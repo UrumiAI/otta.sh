@@ -21,6 +21,7 @@
  */
 import {
 	cents,
+	dispatchOrderEmails,
 	PROVIDER_REFUNDED_FLAG_PREFIX,
 	currency as toCurrency,
 	idempotencyKey as toIdempotencyKey,
@@ -43,6 +44,11 @@ import {
 
 const USD = toCurrency("USD");
 const FAR = "2099-01-01T00:00:00.000Z";
+/** An x402 gate buyer (ADR-0028 Decision 7): a wallet reference, no email address. */
+const X402_BUYER = {
+	buyerRef: "x402:0x1111111111111111111111111111111111111111",
+	paymentMethod: "x402",
+} as const;
 
 let harness: InProcessCommerceHarness;
 const gateways = { stripe: new FakePaymentGateway({ id: "stripe" }) };
@@ -465,10 +471,7 @@ describe("the console is told the truth when the email did not go", () => {
 	});
 
 	test("an order with no email address (an x402 buyer) reports no-recipient — never queued — and sends nothing", async () => {
-		const id = await seedPaid("ord-x402", {
-			buyerRef: "x402:0x1111111111111111111111111111111111111111",
-			paymentMethod: "x402",
-		});
+		const id = await seedPaid("ord-x402", X402_BUYER);
 		const sender = new FakeEmailSender();
 		const orders = adminClient({ emailSender: sender });
 		expect(await orders.transitionOrder(id, "processing", { idempotencyKey: "k" })).toEqual({
@@ -477,8 +480,44 @@ describe("the console is told the truth when the email did not go", () => {
 			email: "no-recipient",
 		});
 		expect(sender.sends).toEqual([]);
-		// Completed, not left for the cron: nothing of the order is due again.
+		// Answered before any claim: the rows are the cron's, whose drain completes them
+		// as skipped — and still sends nothing.
+		const cron = new FakeEmailSender();
+		expect(
+			await dispatchOrderEmails({
+				orderStore: harness.stores.orderStore,
+				emailSender: cron,
+				clock: { now: () => new Date(FAR) },
+			}),
+		).toBe(0);
+		expect(cron.sends).toEqual([]);
 		expect(await harness.stores.orderStore.claimNextEmailForOrder(id, FAR, FAR)).toBeNull();
+	});
+
+	test("no-recipient is answered before the time budget and the provider check — never queued or unconfigured", async () => {
+		const spent = await seedPaid("ord-x402-late", X402_BUYER);
+		let calls = 0;
+		const late = new InProcessAdminOrdersClient(harness.ctx, {
+			gateways,
+			orderEmails: { emailSender: new FakeEmailSender() },
+			// The write's start reads 0; every later reading is past the request budget.
+			now: () => (calls++ === 0 ? 0 : SETTLE_REQUEST_BUDGET_MS),
+		});
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		expect(await late.transitionOrder(spent, "processing", { idempotencyKey: "k" })).toEqual({
+			ok: true,
+			transitioned: true,
+			email: "no-recipient",
+		});
+		// No "the cron sweep will take it" line for an email that will never go. (The
+		// spy may carry an earlier case's calls, so only this order's are checked.)
+		expect(warn.mock.calls.flat().join(" ")).not.toContain(spent);
+
+		const bare = await seedPaid("ord-x402-unconfigured", X402_BUYER);
+		const unconfigured = adminClient({ egress: {} });
+		expect(await unconfigured.transitionOrder(bare, "processing", { idempotencyKey: "k" })).toEqual(
+			{ ok: true, transitioned: true, email: "no-recipient" },
+		);
 	});
 
 	test("a store with no email provider reports unconfigured, and claims nothing", async () => {

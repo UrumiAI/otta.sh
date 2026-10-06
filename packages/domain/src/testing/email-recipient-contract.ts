@@ -266,7 +266,7 @@ export function emailRecipientContract(
 			expect(await h.store.claimNextEmailForOrder(id, LATER, LATER)).toBeNull();
 		});
 
-		test("markEmailSkipped writes only a claimed row: a sent row stays sent, a pending one pending, and a second skip is a no-op", async () => {
+		test("markEmailSkipped leaves a sent row sent, and a second skip is a no-op", async () => {
 			const h = await makeHarness();
 			const id = await seed(h, "ord-1");
 			await driveTo(h, id, ["paid", "processing"]);
@@ -284,13 +284,39 @@ export function emailRecipientContract(
 				{ toState: "paid", notice: null, status: "sent", attempts: 1 },
 				{ toState: "processing", notice: null, status: "skipped", attempts: 0 },
 			]);
+		});
 
-			// A pending row (never claimed) is not skippable: it is still claimed next.
-			await driveTo(h, id, ["shipped"]);
-			const pending = (await h.outboxRows(id))[2];
-			expect(pending?.status).toBe("pending");
-			const third = await h.store.claimNextEmailForOrder(id, now, lease);
-			expect(third?.toState).toBe("shipped");
+		test("markEmailSkipped leaves a PENDING row pending: a claim handed back is still handed out again", async () => {
+			const h = await makeHarness();
+			const id = await seed(h, "ord-1");
+			await driveTo(h, id, ["paid"]);
+			const { now, lease } = claimWindow(h);
+
+			const claimed = await h.store.claimNextEmailForOrder(id, now, lease);
+			// Handed back untried: pending again, the claim's attempt taken back off.
+			await h.store.releaseEmailClaim(claimed!.id);
+			await h.store.markEmailSkipped(claimed!.id, now);
+
+			expect(await h.outboxRows(id)).toEqual([
+				{ toState: "paid", notice: null, status: "pending", attempts: 0 },
+			]);
+			expect((await h.store.claimNextEmailForOrder(id, now, lease))?.id).toBe(claimed!.id);
+		});
+
+		test("markEmailSkipped leaves a FAILED row failed", async () => {
+			const h = await makeHarness();
+			const id = await seed(h, "ord-1");
+			await driveTo(h, id, ["paid"]);
+			const { now, lease } = claimWindow(h);
+
+			const claimed = await h.store.claimNextEmailForOrder(id, now, lease);
+			// Retries exhausted: parked `failed`.
+			await h.store.rescheduleEmail(claimed!.id, null);
+			await h.store.markEmailSkipped(claimed!.id, now);
+
+			expect(await h.outboxRows(id)).toEqual([
+				{ toState: "paid", notice: null, status: "failed", attempts: 1 },
+			]);
 		});
 
 		test("a skipped row leaves the order's other rows claimable", async () => {

@@ -622,6 +622,19 @@ async function refundedTotal(
 }
 
 /**
+ * Whether an order has an email recipient, decided from the order alone (no read):
+ * a linked customer has one, and a guest has one only when its `buyerRef` is an
+ * email address — an x402 gate buyer's `x402:0x…` wallet is not (ADR-0028
+ * Decision 7). `false` is final: {@link resolveRecipient} will skip every row of
+ * the order. `true` is the drain's to confirm — a linked customer whose record is
+ * gone falls back to the `buyerRef`. A caller that must report an email's fate
+ * before any row is claimed (the admin console) asks this.
+ */
+export function orderHasEmailRecipient(order: Pick<Order, "customerId" | "buyerRef">): boolean {
+	return order.customerId !== null || isEmailAddress(order.buyerRef);
+}
+
+/**
  * The order's email recipient, or none — the ONE place it is decided (ADR-0028
  * Decision 7). Every outbox row, state email or notice, reaches the buyer through
  * this function, so an order with no recipient is never emailed whatever the

@@ -168,7 +168,9 @@ export async function sendOrderEmailsNow(
 	options: SendOrderEmailsNowOptions = {},
 ): Promise<InlineOrderEmails> {
 	// Configured-ness FIRST, and quietly: with no sender the cron leg reports `skipped`
-	// as well, so a "the cron sweep will deliver it" line below would be false.
+	// as well, so a "the cron sweep will take it" line below would be false. (And
+	// "take", not "deliver": the sweep may complete a row as skipped — an order with
+	// no email recipient, ADR-0028 Decision 7 — rather than send it.)
 	const egress = options.egress ?? { apiUrl: IN_PROCESS_EGRESS_URLS.emailApiUrl };
 	if (options.emailSender === undefined && !emailSenderConfigured(egress)) {
 		return { configured: false, sent: [], skipped: [] };
@@ -180,7 +182,7 @@ export async function sendOrderEmailsNow(
 	const waitMs = Math.min(ORDER_EMAIL_INLINE_DEADLINE_MS, deadline.remainingMs());
 	if (waitMs <= 0) {
 		console.warn(
-			`[otta] inline order email for ${orderId} skipped: the settle used the request's time budget; the cron sweep will deliver it`,
+			`[otta] inline order email for ${orderId} skipped: the settle used the request's time budget; the cron sweep will take it`,
 		);
 		return { configured: true, sent: [], skipped: [] };
 	}
@@ -243,7 +245,7 @@ export async function sendOrderEmailsNow(
 		if ((await Promise.race([attempt, waitOver])) === "deadline") {
 			expired = true;
 			console.warn(
-				`[otta] inline order email for ${orderId} exceeded its ${waitMs} ms wait; the cron sweep will deliver it`,
+				`[otta] inline order email for ${orderId} exceeded its ${waitMs} ms wait; the cron sweep will take it`,
 			);
 		}
 	} finally {

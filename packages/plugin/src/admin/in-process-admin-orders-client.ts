@@ -101,6 +101,7 @@ import {
 	idempotencyKey as toIdempotencyKey,
 	listOrderNotes,
 	ORDER_STATE_MACHINE,
+	orderHasEmailRecipient,
 	orderId as toOrderId,
 	recordFulfillment as recordFulfillmentUseCase,
 	refundOrder as refundOrderUseCase,
@@ -245,12 +246,21 @@ export class InProcessAdminOrdersClient implements AdminOrdersSurface {
 	 * NEVER FAILS THE WRITE: `sendOrderEmailsNow` resolves whatever the provider or
 	 * the store does, within its bounded wait. The write has already committed by the
 	 * time this runs.
+	 *
+	 * An order with NO email recipient (an x402 buyer's `x402:0x…` reference, ADR-0028
+	 * Decision 7) is answered `no-recipient` first — before the provider check, the
+	 * time budget and the claim — because nothing about it depends on them: no email
+	 * was sent and none ever will be. Asked any later, a spent budget or a missing
+	 * provider would report it `queued` or `unconfigured`. Its rows are left to the
+	 * cron, whose drain completes them as skipped.
 	 */
 	async #sendEmailsNow(
 		orderId: OrderId,
 		deadline: SettleDeadline,
 		announces: (row: OutboxEmail) => boolean,
 	): Promise<InlineEmailStatus> {
+		const order = await this.#stores.orderStore.getById(orderId);
+		if (order !== null && !orderHasEmailRecipient(order)) return "no-recipient";
 		const result = await sendOrderEmailsNow(this.#ctx, this.#stores, orderId, {
 			...this.#orderEmails,
 			deadline,
