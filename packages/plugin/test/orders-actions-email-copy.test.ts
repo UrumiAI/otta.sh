@@ -3,11 +3,13 @@
  *
  * The writes used to answer "the buyer has been emailed" while the email sat in the
  * outbox for up to 15 minutes. Each admin write now sends it inline and reports
- * `email: "sent" | "queued" | "unconfigured"` (absent when it enqueued none), and
- * these cases pin that the copy follows that value and nothing else: "emailed" only
- * when it was sent, "queued and will be retried automatically" when it was not yet (no
- * time promise: the cron's retry can be backed off), and "no
- * email" when the store has no provider. The inline send itself is pinned over a
+ * `email: "sent" | "queued" | "unconfigured" | "no-recipient"` (absent when it enqueued
+ * none), and these cases pin that the copy follows that value and nothing else:
+ * "emailed" only when it was sent, "queued and will be retried automatically" when it
+ * was not yet (no time promise: the cron's retry can be backed off), "no email" when
+ * the store has no provider, and "no email address" when the order has none to send
+ * to (an x402 buyer, ADR-0028 Decision 7) — never "queued" for an email that will
+ * never go. The inline send itself is pinned over a
  * real store in `admin-order-emails-inline.test.ts`.
  */
 import { describe, expect, test } from "vitest";
@@ -23,6 +25,7 @@ const ORDER_ID = "order-email-copy";
 const SENT = "The buyer has been emailed.";
 const QUEUED = "The buyer’s email is queued and will be retried automatically.";
 const UNCONFIGURED = "No email was sent — this store has no email provider set up.";
+const NO_RECIPIENT = "No email was sent — this order has no email address.";
 
 function refuse(method: string) {
 	return (): never => {
@@ -141,6 +144,11 @@ describe("each admin write's notice states what became of the buyer's email", ()
 			const none = await act(surface(write.state, "unconfigured"), write.actionId, write.payload);
 			expect(none.notice?.description).toContain(UNCONFIGURED);
 			expect(none.notice?.description).not.toContain("has been emailed");
+
+			const nobody = await act(surface(write.state, "no-recipient"), write.actionId, write.payload);
+			expect(nobody.notice?.description).toContain(NO_RECIPIENT);
+			expect(nobody.notice?.description).not.toContain("has been emailed");
+			expect(nobody.notice?.description).not.toContain("queued");
 		});
 	}
 

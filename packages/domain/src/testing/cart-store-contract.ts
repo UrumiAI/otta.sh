@@ -3,6 +3,7 @@ import {
 	addLine,
 	type CartDeps,
 	createCart,
+	DEFAULT_HOLD_TTL_MS,
 	expireHolds,
 	getCart,
 	removeLine,
@@ -25,6 +26,30 @@ export interface CartStoreContractOptions {
 
 const USD = currency("USD");
 const PAST_TTL_MS = 16 * 60 * 1000; // > the 15-minute default hold TTL
+
+/** One first-add's store writes, in the use-case's order: claim, reserve, upsert. */
+async function firstAddWrite(
+	h: CartStoreHarness,
+	cartId: string,
+	name: string,
+	productId: string | null,
+	key: string,
+) {
+	const k = idempotencyKey(key);
+	await h.deps.cartStore.claimMutation({ key: k, cartId, kind: "add" });
+	const reserved = await h.deps.inventoryStore.reserve(name, 1, k);
+	if (!reserved.ok) throw new Error("seed reserve must succeed");
+	const expiresAt = new Date(h.deps.clock.now().getTime() + DEFAULT_HOLD_TTL_MS).toISOString();
+	return h.deps.cartStore.upsertLine({
+		cartId,
+		sku: name,
+		productId,
+		qty: 1,
+		reservationId: reserved.reservationId,
+		expiresAt,
+		key: k,
+	});
+}
 
 /**
  * The reusable cart behavioral spec (§1 cases 1–8), run against the fake first,
@@ -311,6 +336,56 @@ export function cartStoreContract(
 			const cart = await getCart(h.deps, cartId);
 			expect(cart?.lines).toHaveLength(1);
 			expect(cart?.lines[0]?.qty).toBe(3);
+		});
+
+		// ── a null productId never overwrites a non-null one (issue #373) ───
+		// Two FIRST adds of the same sku can race: each reads the cart before the
+		// other's line exists, so neither takes the re-add path, and both reach
+		// `upsertLine` for the same (cart, sku). The productId is optional on the
+		// wire (a bare/legacy add sends none), so one of the two may carry null.
+		// Whichever lands second must not clear the line's productId — checkout
+		// refuses a line without one (PRODUCT_NOT_PRICED). The writes are driven
+		// at the port, exactly as the two use-case calls would issue them, so the
+		// interleaving is deterministic rather than left to the scheduler.
+
+		test("a null productId never overwrites a non-null one", async () => {
+			const h = await makeHarness();
+			await h.seedStock("SKU-PID", 10);
+			const cartId = await createCart(h.deps, USD);
+			await firstAddWrite(h, cartId, "SKU-PID", "prod-1", "pid-a");
+			const second = await firstAddWrite(h, cartId, "SKU-PID", null, "pid-b");
+			expect(second.productId).toBe("prod-1");
+			const cart = await getCart(h.deps, cartId);
+			expect(cart?.lines).toHaveLength(1);
+			expect(cart?.lines[0]?.productId).toBe("prod-1");
+		});
+
+		test("a non-null productId still fills a line that was written without one", async () => {
+			const h = await makeHarness();
+			await h.seedStock("SKU-PID", 10);
+			const cartId = await createCart(h.deps, USD);
+			await firstAddWrite(h, cartId, "SKU-PID", null, "pid-a");
+			const second = await firstAddWrite(h, cartId, "SKU-PID", "prod-1", "pid-b");
+			expect(second.productId).toBe("prod-1");
+			expect((await getCart(h.deps, cartId))?.lines[0]?.productId).toBe("prod-1");
+		});
+
+		// The same race with both writes in flight at once, whichever lands last.
+		// This does NOT promise the compare-and-set retry is exercised: the
+		// interleaving is left to the scheduler (on SQLite the two run one after the
+		// other). The retry is forced, and its attempt count asserted, by store-emdash's
+		// `cart-productid-race.dialects.test.ts`.
+		test("concurrent first adds keep the productId, whichever write lands last", async () => {
+			const h = await makeHarness();
+			await h.seedStock("SKU-PID", 10);
+			const cartId = await createCart(h.deps, USD);
+			await Promise.all([
+				firstAddWrite(h, cartId, "SKU-PID", "prod-1", "pid-a"),
+				firstAddWrite(h, cartId, "SKU-PID", null, "pid-b"),
+			]);
+			const cart = await getCart(h.deps, cartId);
+			expect(cart?.lines).toHaveLength(1);
+			expect(cart?.lines[0]?.productId).toBe("prod-1");
 		});
 
 		test("increase delta-reserves the difference", async () => {

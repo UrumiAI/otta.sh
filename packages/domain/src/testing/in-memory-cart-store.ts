@@ -191,7 +191,9 @@ export class InMemoryCartStore implements CartStore {
 			expiresAt: input.expiresAt,
 		};
 		row.qty = input.qty;
-		row.productId = input.productId;
+		// A null productId never clears a stored one (issue #373): a racing first
+		// add of the same sku may carry none, and checkout refuses a line without one.
+		row.productId = input.productId ?? row.productId;
 		row.reservationId = input.reservationId;
 		row.expiresAt = input.expiresAt;
 		this.#lines.set(row.id, row);

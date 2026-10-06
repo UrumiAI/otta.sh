@@ -50,4 +50,20 @@ export interface EntitlementStore {
 	 *  ref is the same principal), so a session-derived lower-normalized Email
 	 *  hits an entitlement granted from a mixed-case checkout ref. */
 	check(query: EntitlementQuery): Promise<boolean>;
+	/**
+	 * Revoke every entitlement `orderId` granted — the full-refund revocation
+	 * (issue #376: a fully refunded order must stop authorizing its downloads).
+	 * Afterwards `check` answers false for every scope those grants satisfied,
+	 * unless ANOTHER order's active grant covers it (a buyer who bought the same
+	 * sku twice and was refunded once keeps it through the other order).
+	 *
+	 * Idempotent: revoking an already-revoked (or never-granted) order changes
+	 * nothing. Returns how many grants THIS call flipped from `active` to
+	 * `revoked` — `0` on a replay — which is an observation, not a guard.
+	 *
+	 * Revocation is terminal. A later `grant` under the same grant key (a
+	 * redelivered settlement) returns the recorded, revoked grant; it never
+	 * re-activates it.
+	 */
+	revokeByOrder(orderId: OrderId): Promise<number>;
 }

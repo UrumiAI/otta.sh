@@ -232,6 +232,18 @@ export interface StripePaymentGatewayOptions {
 	 * have run out during the pre-flight.
 	 */
 	beforeRefundCreate?: () => boolean;
+	/**
+	 * Whether this ACCOUNT needs a Stripe Customer — the buyer's name and billing
+	 * address — on every PaymentIntent (issue #382). An India-based account does:
+	 * Stripe requires the customer's name and billing address for every
+	 * international payment it takes (<https://docs.stripe.com/india-exports>),
+	 * and refuses the payment otherwise. Asked by `createIntent` only, and only
+	 * for an order that captured an address; absent, `false`, or a resolver that
+	 * throws ⇒ no Customer and the intent's wire is exactly what it was before.
+	 * The caller answers it from what it knows about the account (the plugin:
+	 * the cached account country), never from anything in a request.
+	 */
+	customerRequired?: () => Promise<boolean>;
 	/** Freshness window for the signed `t` timestamp (replay hardening): a webhook
 	 *  whose `|now − t|` exceeds this is rejected as INVALID_SIGNATURE even when the
 	 *  HMAC matches. Defaults to {@link DEFAULT_TOLERANCE_SECONDS}. */
@@ -241,7 +253,7 @@ export interface StripePaymentGatewayOptions {
 }
 
 /**
- * The outbound Stripe transport the live paths drive (ADR-0008). Four calls, all
+ * The outbound Stripe transport the live paths drive (ADR-0008). Five calls, all
  * requiring the real `secretKey`:
  *  - `createPaymentIntent` — `POST /v1/payment_intents`, the money-IN call
  *    `createIntent` makes once a `secretKey` is configured.
@@ -252,6 +264,8 @@ export interface StripePaymentGatewayOptions {
  *    native `Idempotency-Key`.
  *  - `cancelPaymentIntent` — `POST /v1/payment_intents/{id}/cancel`, withdrawing an
  *    expired order's unpaid intent (optional on the seam; see its doc).
+ *  - `createCustomer` — `POST /v1/customers`, the buyer's name and billing address
+ *    for an account that needs them on every payment (optional on the seam).
  *
  * Every method returns a NORMALIZED result with an explicit error CLASS — never a
  * thrown Stripe SDK error — so the adapter maps a clean taxonomy (retryable /
@@ -296,7 +310,44 @@ export interface StripeTransport {
 		idempotencyKey: string;
 		secretKey: string;
 	}): Promise<StripeCancelPaymentIntentResult>;
+	/**
+	 * Create the buyer's Customer — `POST /v1/customers` with their name and
+	 * billing address, under `idempotencyKey` as Stripe's native key (issue #382).
+	 * OPTIONAL on the seam for the same reason as `cancelPaymentIntent`; a gateway
+	 * that NEEDS a Customer and has a transport without this verb fails the intent
+	 * TERMINALLY rather than send an intent the account would refuse. The default
+	 * {@link createStripeHttpTransport} always provides it.
+	 */
+	createCustomer?(input: StripeCreateCustomerInput): Promise<StripeCreateCustomerResult>;
 }
+
+/** The wire input for `POST /v1/customers` (issue #382). */
+export interface StripeCreateCustomerInput {
+	/** The order the Customer is for — sent as `metadata[order_id]`. */
+	orderId: string;
+	name: string;
+	/** The billing address, in Stripe's vocabulary (`state`, upper-cased
+	 *  country) — the same translation as the intent's `shipping`. */
+	address: Omit<StripeShipping, "name">;
+	idempotencyKey: string;
+	secretKey: string;
+}
+
+/** A `createCustomer` result. Creating a Customer moves no money and the native
+ *  key dedupes a retry, so like the intent create there is no ambiguous class. */
+export type StripeCreateCustomerResult =
+	| { ok: true; customerId: string }
+	| { ok: false; class: "retryable" | "terminal"; status?: number; code?: string };
+
+/**
+ * The Customer's idempotency key is this prefix plus the ORDER id (issue #382):
+ * every create for one order — the first place, a double submit, the pay page's
+ * resume — gets the SAME Customer back, so the intent that names it serializes
+ * byte-identically and Stripe's same-key replay of the intent is accepted. Like
+ * every Stripe idempotency key it lapses after ~24 h; an order's checkout window
+ * is far shorter.
+ */
+export const STRIPE_CUSTOMER_IDEMPOTENCY_PREFIX = "otta-cus-";
 
 /**
  * A `cancelPaymentIntent` result. `not_cancellable` means the intent SUCCEEDED —
@@ -350,6 +401,9 @@ export interface StripeCreatePaymentIntentInput {
 	/** The ship-to, when the order captured one. India requires it alongside the
 	 *  description for an export of physical GOODS; omitted otherwise. */
 	shipping?: StripeShipping;
+	/** The buyer's Customer (`cus_…`) — only for an account that needs one
+	 *  (issue #382); omitted otherwise, which leaves the wire as it always was. */
+	customer?: string;
 }
 
 /** The provider's live refund view for the pre-flight (minor units). */
@@ -436,7 +490,9 @@ export const IN_FLIGHT_BUDGET_MS = 3500;
  *  processed" — the ONLY 409 that a replay is guaranteed to resolve. */
 const IDEMPOTENCY_KEY_IN_USE = "idempotency_key_in_use";
 
-function isInFlightReplay(result: StripeCreatePaymentIntentResult): boolean {
+function isInFlightReplay(
+	result: StripeCreatePaymentIntentResult | StripeCreateCustomerResult,
+): boolean {
 	return !result.ok && result.status === 409 && result.code === IDEMPOTENCY_KEY_IN_USE;
 }
 
@@ -460,6 +516,7 @@ export class StripePaymentGateway implements PaymentGateway {
 	readonly #inFlightBackoffMs: readonly number[];
 	readonly #sleep: (ms: number) => Promise<void>;
 	readonly #beforeRefundCreate: (() => boolean) | undefined;
+	readonly #customerRequired: (() => Promise<boolean>) | undefined;
 
 	constructor(options: StripePaymentGatewayOptions) {
 		if (options.webhookSecret.length === 0) {
@@ -494,6 +551,7 @@ export class StripePaymentGateway implements PaymentGateway {
 		this.#inFlightBackoffMs = options.inFlightBackoffMs ?? DEFAULT_IN_FLIGHT_BACKOFF_MS;
 		this.#sleep = options.sleep ?? defaultSleep;
 		this.#beforeRefundCreate = options.beforeRefundCreate;
+		this.#customerRequired = options.customerRequired;
 	}
 
 	/**
@@ -608,6 +666,14 @@ export class StripePaymentGateway implements PaymentGateway {
 	 * shape, only on the ACCOUNT's country, so only live QA could ever have caught
 	 * it — which is why both are unconditional here rather than configurable.
 	 *
+	 * **An account that needs a Customer** ({@link StripePaymentGatewayOptions.customerRequired}
+	 * — India) also gets one, created first from the order's address snapshot
+	 * (`name` + `address[…]`, the billing address Stripe requires for every
+	 * international payment such an account takes) under
+	 * {@link STRIPE_CUSTOMER_IDEMPOTENCY_PREFIX}`<orderId>`, and the intent names
+	 * it as `customer`. Every other account sends no Customer and the same intent
+	 * body as before.
+	 *
 	 * **The live path is exponent-2 ONLY.** Every currency in
 	 * {@link STRIPE_UNSUPPORTED_CURRENCIES} (Stripe's zero-decimal and
 	 * three-decimal sets) is rejected TERMINALLY before any network call, because
@@ -638,6 +704,52 @@ export class StripePaymentGateway implements PaymentGateway {
 				});
 			}
 			const shipping = toStripeShipping(input.shipTo);
+			// Issue #382 — Customer precedence: (1) a recorded `cus_…` id → reuse it;
+			// (2) the order's `customerRequired` → create one iff true (and there is an
+			// address); (3) a recorded `null` → none; (4) legacy orders only: this
+			// gateway's own `customerRequired` resolver.
+			//
+			// RESIDUAL CASE (accepted): the intent was never recorded (its answer or its
+			// record write was lost) AND the buyer retries more than ~24 h later (only
+			// possible with a hold TTL above 1440 min) AND Stripe has pruned the
+			// Customer's key `otta-cus-<orderId>` but not yet the intent's. That retry
+			// creates a second Customer, the intent body differs, and Stripe refuses it.
+			// The default 15-minute hold never reaches it.
+			//
+			// The order's Customer is decided ONCE per order: a replay hands
+			// back what the first intent recorded (`customerRef` — an id to name
+			// again, or `null` for none) and nothing is re-read or re-created, so the
+			// same-key request stays byte-identical even if the account's cached
+			// country moved, or Stripe pruned the Customer's own key. Only the
+			// first intent decides: an account that needs a Customer gets one, from
+			// the SAME address snapshot `shipping` is built from.
+			//
+			// THE ORDER DECIDES (`customerRequired`, its snapshot of the requirement it
+			// was placed under): every intent of it gets the same yes/no, and only an
+			// order created before that snapshot existed falls back to the recorded
+			// decision or, failing that, to this gateway's own `customerRequired`.
+			// `customerRef` then says WHICH Customer, once one exists.
+			let customerRef: string | null;
+			if (typeof input.customerRef === "string") {
+				customerRef = input.customerRef;
+			} else if (input.customerRequired !== undefined) {
+				customerRef =
+					input.customerRequired && shipping !== undefined
+						? await this.#createCustomer(input.orderId, shipping, this.#secretKey, this.#transport)
+						: null;
+			} else if (input.customerRef === null) {
+				customerRef = null;
+			} else if (shipping !== undefined && (await this.#needsCustomer())) {
+				customerRef = await this.#createCustomer(
+					input.orderId,
+					shipping,
+					this.#secretKey,
+					this.#transport,
+				);
+			} else {
+				customerRef = null;
+			}
+			const customer = customerRef ?? undefined;
 			const request: StripeCreatePaymentIntentInput = {
 				orderId: input.orderId,
 				// Integer minor units, straight through — no float math, ever. Sound only
@@ -653,6 +765,7 @@ export class StripePaymentGateway implements PaymentGateway {
 					lines: input.lines,
 				}),
 				...(shipping !== undefined ? { shipping } : {}),
+				...(customer !== undefined ? { customer } : {}),
 			};
 			// The SAME request object is replayed, so every attempt serializes a
 			// byte-identical body — Stripe refuses a same-key replay whose
@@ -684,6 +797,8 @@ export class StripePaymentGateway implements PaymentGateway {
 				gateway: this.id,
 				intentId: created.intentId,
 				clientAction: { kind: "stripe_client_secret", clientSecret: created.clientSecret },
+				// Recorded with the intent; every replay of the order hands it back.
+				customerRef,
 			};
 		}
 		const intentId = `pi_${input.orderId}`;
@@ -692,6 +807,76 @@ export class StripePaymentGateway implements PaymentGateway {
 			clientSecret: `${intentId}_secret_${input.idempotencyKey}`,
 		};
 		return { gateway: this.id, intentId, clientAction };
+	}
+
+	/** {@link StripePaymentGatewayOptions.customerRequired}, failing OPEN: a
+	 *  resolver that cannot answer leaves the intent as it always was. */
+	async #needsCustomer(): Promise<boolean> {
+		if (this.#customerRequired === undefined) return false;
+		try {
+			return await this.#customerRequired();
+		} catch {
+			return false;
+		}
+	}
+
+	/**
+	 * `POST /v1/customers` for this order's buyer (issue #382), with a same-key
+	 * request still in flight waited out exactly like the intent create's. A
+	 * failure throws the same {@link PaymentIntentError} an intent create's
+	 * would, BEFORE any intent is asked for: the domain answers it
+	 * PAYMENT_INTENT_FAILED (or _IN_FLIGHT), the pending order stays as it is,
+	 * and a same-key retry creates — or, by its key, finds — the Customer again.
+	 */
+	async #createCustomer(
+		forOrder: string,
+		shipping: StripeShipping,
+		secretKey: string,
+		transport: StripeTransport,
+	): Promise<string> {
+		const create = transport.createCustomer;
+		if (create === undefined) {
+			throw new PaymentIntentError({
+				gateway: this.id,
+				retryable: false,
+				providerCode: "customer_unsupported",
+				message:
+					"this Stripe account needs a Customer on every payment, and the transport cannot create one",
+			});
+		}
+		const { name, ...address } = shipping;
+		const request: StripeCreateCustomerInput = {
+			orderId: forOrder,
+			name,
+			address,
+			idempotencyKey: `${STRIPE_CUSTOMER_IDEMPOTENCY_PREFIX}${forOrder}`,
+			secretKey,
+		};
+		const startedAt = this.#clock.now().getTime();
+		let created = await create.call(transport, request);
+		for (const pause of this.#inFlightBackoffMs) {
+			if (!isInFlightReplay(created)) break;
+			const elapsed = this.#clock.now().getTime() - startedAt;
+			if (elapsed + pause > IN_FLIGHT_BUDGET_MS) break;
+			await this.#sleep(pause);
+			created = await create.call(transport, request);
+		}
+		if (!created.ok) {
+			const inFlight = isInFlightReplay(created);
+			throw new PaymentIntentError({
+				gateway: this.id,
+				retryable: inFlight || created.class === "retryable",
+				...(inFlight ? { inFlight: true } : {}),
+				...(created.status !== undefined ? { providerStatus: created.status } : {}),
+				...(created.code !== undefined ? { providerCode: created.code } : {}),
+				message: `creating the buyer's Stripe Customer failed (${
+					created.class
+				}${created.status === undefined ? "" : `, status ${created.status}`}${
+					created.code === undefined ? "" : `, code ${created.code}`
+				})`,
+			});
+		}
+		return created.customerId;
 	}
 
 	async verifyConfirmation(raw: RawConfirmation): Promise<ConfirmationResult> {
@@ -1014,6 +1199,7 @@ export function createStripeHttpTransport(options: StripeHttpTransportOptions): 
 			secretKey,
 			description,
 			shipping,
+			customer,
 		}): Promise<StripeCreatePaymentIntentResult> {
 			// Key insertion order is FIXED: `URLSearchParams` serializes in insertion
 			// order, so two identical inputs produce a byte-identical body — the
@@ -1027,6 +1213,9 @@ export function createStripeHttpTransport(options: StripeHttpTransportOptions): 
 			form.set("automatic_payment_methods[enabled]", "true");
 			// Required for an India-based account's exports; harmless elsewhere.
 			form.set("description", description);
+			// Issue #382 — FIXED position, right after the description; absent for
+			// every account that does not need a Customer, so their wire is unchanged.
+			if (customer !== undefined) form.set("customer", customer);
 			if (shipping !== undefined) {
 				form.set("shipping[name]", shipping.name);
 				form.set("shipping[address][line1]", shipping.line1);
@@ -1082,6 +1271,68 @@ export function createStripeHttpTransport(options: StripeHttpTransportOptions): 
 			const intent = createdIntentOf(body);
 			if (intent === null) return { ok: false, class: "terminal", status: res.status };
 			return { ok: true, ...intent };
+		},
+
+		async createCustomer({
+			orderId,
+			name,
+			address,
+			idempotencyKey,
+			secretKey,
+		}): Promise<StripeCreateCustomerResult> {
+			// Fixed insertion order, as for the intent: a same-key replay must send
+			// a byte-identical body.
+			const form = new URLSearchParams();
+			form.set("name", name);
+			form.set("address[line1]", address.line1);
+			if (address.line2 !== undefined) form.set("address[line2]", address.line2);
+			form.set("address[city]", address.city);
+			if (address.state !== undefined) form.set("address[state]", address.state);
+			form.set("address[postal_code]", address.postalCode);
+			form.set("address[country]", address.country);
+			// Which order this Customer was created for — one Customer per order.
+			form.set("metadata[order_id]", orderId);
+			let res: Response;
+			try {
+				res = await doFetch(`${base}/v1/customers`, {
+					method: "POST",
+					headers: {
+						...stripeHeaders(secretKey),
+						"content-type": "application/x-www-form-urlencoded",
+						"idempotency-key": idempotencyKey,
+					},
+					body: form.toString(),
+					signal: AbortSignal.timeout(timeoutOf()),
+				});
+			} catch {
+				// Moves no money, and the native key dedupes the retry.
+				return { ok: false, class: "retryable" };
+			}
+			if (!res.ok) {
+				const cls =
+					res.status >= 500 || res.status === 429 || res.status === 409
+						? ("retryable" as const)
+						: ("terminal" as const);
+				const code = await stripeErrorCode(res);
+				return {
+					ok: false,
+					class: cls,
+					status: res.status,
+					...(code !== undefined ? { code } : {}),
+				};
+			}
+			let body: unknown;
+			try {
+				body = await res.json();
+			} catch {
+				return { ok: false, class: "terminal", status: res.status };
+			}
+			const id =
+				typeof body === "object" && body !== null ? (body as { id?: unknown }).id : undefined;
+			if (typeof id !== "string" || id.length === 0) {
+				return { ok: false, class: "terminal", status: res.status };
+			}
+			return { ok: true, customerId: id };
 		},
 
 		async readRefundedAmount({ providerRef, secretKey }): Promise<StripePreflightResult> {
@@ -1291,6 +1542,74 @@ function createdRefundOf(
 		return null;
 	}
 	return { refundId: r.id, amountCents: r.amount, currency: r.currency };
+}
+
+// -- the account's country (issue #382) -------------------------------------
+
+/**
+ * What `GET /v1/account` says about the account a secret key belongs to — only
+ * its country, the one fact checkout needs: an INDIA-based account refuses an
+ * export payment that does not carry the buyer's name and address, for digital
+ * goods too (<https://docs.stripe.com/india-exports>), so a store on one must
+ * collect them for every cart.
+ *
+ *  - `permission_denied` — a 403: a RESTRICTED key (`rk_…`) without read access
+ *    to account details. Named apart because the merchant can fix it (grant the
+ *    key "Account" read, or use the secret key), and because retrying soon
+ *    cannot help.
+ *  - `authentication_failed` — a 401: the key is wrong or revoked.
+ *  - `unavailable` — anything else: a network error, the timeout, a 5xx or 429,
+ *    or a reply with no two-letter country in it. Worth asking again later.
+ *
+ * Never carries the key, nor anything from Stripe's error body.
+ */
+export type StripeAccountCountryResult =
+	| { ok: true; country: string }
+	| { ok: false; reason: "permission_denied" | "authentication_failed" | "unavailable" };
+
+/** The bound on the account read when the caller names none. Short: it can run
+ *  on a checkout render, which must not wait on Stripe for long. */
+export const DEFAULT_ACCOUNT_READ_TIMEOUT_MS = 3_000;
+
+/**
+ * Read the country of the Stripe account `secretKey` belongs to, through the
+ * caller's `fetch` (the plugin passes `ctx.http`, its only egress). One GET,
+ * no body, the same headers as every other live call. Never throws.
+ */
+export async function fetchStripeAccountCountry(options: {
+	secretKey: string;
+	fetch: typeof fetch;
+	timeoutMs?: number;
+	/** Override the API base (tests); defaults to Stripe. */
+	baseUrl?: string;
+}): Promise<StripeAccountCountryResult> {
+	const base = (options.baseUrl ?? STRIPE_API_BASE).replace(/\/$/, "");
+	const timeoutMs = Math.max(1, options.timeoutMs ?? DEFAULT_ACCOUNT_READ_TIMEOUT_MS);
+	let res: Response;
+	try {
+		res = await options.fetch(`${base}/v1/account`, {
+			method: "GET",
+			headers: stripeHeaders(options.secretKey),
+			signal: AbortSignal.timeout(timeoutMs),
+		});
+	} catch {
+		return { ok: false, reason: "unavailable" };
+	}
+	if (res.status === 403) return { ok: false, reason: "permission_denied" };
+	if (res.status === 401) return { ok: false, reason: "authentication_failed" };
+	if (!res.ok) return { ok: false, reason: "unavailable" };
+	let body: unknown;
+	try {
+		body = await res.json();
+	} catch {
+		return { ok: false, reason: "unavailable" };
+	}
+	const country =
+		typeof body === "object" && body !== null ? (body as { country?: unknown }).country : undefined;
+	if (typeof country !== "string" || !/^[A-Za-z]{2}$/.test(country)) {
+		return { ok: false, reason: "unavailable" };
+	}
+	return { ok: true, country: country.toUpperCase() };
 }
 
 // -- offline fake-Stripe driver (test/proxy helper; NO network) --------------

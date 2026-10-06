@@ -48,6 +48,7 @@ import {
 	type OrderRouteResult,
 } from "@otta-sh/plugin";
 import { getPublicPluginApiRouteHandler } from "emdash/plugin-utils";
+import { env } from "virtual:emdash/env";
 import Storefront from "../../layouts/Storefront.astro";
 import {
 	ACCOUNT_HOME_PATH,
@@ -58,6 +59,8 @@ import {
 import { forgetSpentCart } from "../../lib/cart-rotation.js";
 import { clearCheckoutCookie } from "../../lib/checkout-cookie.js";
 import { ORDER_PAGE_RESUME_ERRORS, resumeHref } from "../../lib/checkout-resume.js";
+import { downloadsBucketFrom } from "../../lib/download-delivery.js";
+import { downloadLinks } from "../../lib/download-links.js";
 import { cartErrorMessage } from "../../lib/error-messages.js";
 import { keepPrivate } from "../../lib/no-store.js";
 import {
@@ -261,6 +264,26 @@ const resumeError =
 		? cartErrorMessage(resumeErrorToken)
 		: null;
 
+/* A Download link on each digital line the buyer may download NOW (issue #376):
+   the page asks the delivery gate, once per digital sku, and only for an order
+   that can deliver on a deployment with a DOWNLOADS bucket — so a pending page
+   that polls asks nothing (`lib/download-links.ts`). The link carries the order
+   id, which is this page's own capability; the endpoint re-checks on the click.
+   No Referer leaves with it: this page is no-referrer. */
+const downloads =
+	order === null
+		? new Map<string, string>()
+		: await downloadLinks({
+				handler: getPublicPluginApiRouteHandler(Astro.locals),
+				bucketPresent: downloadsBucketFrom(env) !== undefined,
+				order: {
+					id: order.id,
+					state: order.state,
+					lines: order.lines.map((line) => ({ sku: line.sku, fulfillmentKind: line.fulfillmentKind })),
+				},
+				baseUrl: Astro.url,
+			});
+
 /** The order's lines are a RECEIPT, so they carry the purchase-time title
  *  snapshot as well as the SKU — unlike /checkout, where the cart wire has no
  *  title to show. */
@@ -270,6 +293,7 @@ const ledgerRows =
 		sku: line.sku,
 		qty: line.qty,
 		money: line.lineTotal.formatted,
+		downloadHref: downloads.get(line.sku),
 	})) ?? [];
 
 /* The order page's rows (`lib/order-view.ts`), shared with the account's order

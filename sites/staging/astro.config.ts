@@ -15,6 +15,7 @@ import { defineConfig, fontProviders } from "astro/config";
 import emdash from "emdash/astro";
 import { parseDotEnv } from "./src/lib/dot-env.js";
 import { buildEmdashOptions } from "./src/emdash-options.js";
+import { assertDownloadsBucketPrivate } from "./src/lib/downloads-bucket.js";
 import { resolveStripePublishableKey, STRIPE_PUBLIC_KEY_VAR } from "./src/lib/stripe-config.js";
 
 /** Astro does NOT load .env into process.env for THIS module (verified —
@@ -84,6 +85,18 @@ const stripePublishableKey = resolveStripePublishableKey(
 const localWranglerConfig = existsSync(new URL("wrangler.local.jsonc", import.meta.url))
 	? "wrangler.local.jsonc"
 	: undefined;
+
+/**
+ * The private downloads bucket must never be the public media bucket (issue
+ * #376): EmDash serves every MEDIA key without auth. Checked on the file the
+ * build SELECTS — the gitignored local config when there is one, which no test
+ * sees — and the build fails naming it (`src/lib/downloads-bucket.ts`).
+ */
+const selectedWranglerConfig = localWranglerConfig ?? "wrangler.jsonc";
+assertDownloadsBucketPrivate(
+	readFileSync(new URL(selectedWranglerConfig, import.meta.url), "utf8"),
+	selectedWranglerConfig,
+);
 
 /**
  * The latin `unicode-range`: the range on the face Google Fonts' css2 response

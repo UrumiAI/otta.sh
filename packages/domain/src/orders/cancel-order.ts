@@ -2,6 +2,7 @@ import { cents } from "../money/cents.js";
 import { idempotencyKey as toIdempotencyKey } from "../money/ids.js";
 import type { IdempotencyKey, OrderId } from "../money/ids.js";
 import type { Clock } from "../ports/clock.js";
+import type { EntitlementStore } from "../ports/entitlement-store.js";
 import {
 	ReservationCommitLostError,
 	ReservationNotFoundError,
@@ -26,6 +27,7 @@ import {
 	sumRefunds,
 	type RefundOrderFailure,
 } from "./refund-order.js";
+import { revokeOrderEntitlements } from "./revoke-entitlements.js";
 
 export interface CancelOrderDeps {
 	orderStore: OrderStore;
@@ -198,6 +200,13 @@ export interface CancelOrderWithRefundDeps {
 	 *  "the store was busy" instead of "did not finish". The domain cannot name the
 	 *  adapter's error, so the caller tells it. */
 	isRetryable?: (err: unknown) => boolean;
+	/**
+	 * Revokes the order's download entitlements once the cancellation's refund is
+	 * recorded (issue #376) — see {@link cancelOrderWithRefund}'s "Revocation".
+	 * Optional like the other stores a pure suite need not wire; the admin console's
+	 * composition does, and a test pins it.
+	 */
+	entitlementStore?: EntitlementStore;
 }
 
 export interface CancelOrderWithRefundCommand extends CancelOrderCommand {
@@ -645,6 +654,19 @@ const MAX_CANCELLATION_REFUND_ATTEMPTS = 10;
  * between the refund and the flip. The money is back and cannot be un-refunded, so
  * the order is flagged for reconciliation naming the refund, and the outcome is
  * `CANCEL_LOST_AFTER_REFUND` — loud, never a silent success. No unit was restocked.
+ *
+ * **Revocation (issue #376).** The refund leg returns EVERYTHING still refundable,
+ * and a refund that fails refuses the cancel, so once the leg has recorded a refund
+ * the buyer has all their money back: a full refund, which revokes download access.
+ * The revoke runs right after the refund is recorded and BEFORE the flip — the
+ * money, not the order's state, is what decides it, so a cancel whose flip is then
+ * lost (the order shipped) or does not finish still revokes. It sits inside the
+ * same guarded block as the flip: a revoke that fails is answered
+ * `CANCEL_INCOMPLETE_AFTER_REFUND` (flagged, "click Cancel order again"), and the
+ * retry replays the refund without a second provider call and revokes. The replay
+ * of a finished cancellation revokes again when its cancellation carries a refund
+ * (idempotent). A cancellation that returned no money (a `pending` order, never
+ * granted anything) revokes nothing.
  */
 export async function cancelOrderWithRefund(
 	deps: CancelOrderWithRefundDeps,
@@ -662,6 +684,9 @@ export async function cancelOrderWithRefund(
 		// The replay: report what the cancellation on file did, and finish the restock
 		// it still owes, if any (under the key the flip recorded — never this call's).
 		if (order.cancellation === null) return { ok: false, reason: "NOT_CANCELLABLE" };
+		if ((order.cancellation.refund ?? null) !== null) {
+			await revokeOrderEntitlements(deps.entitlementStore, order);
+		}
 		const owed = await finishOwedRestock(deps, order);
 		return {
 			ok: true,
@@ -699,6 +724,8 @@ export async function cancelOrderWithRefund(
 	const restock = refundLeg.restock;
 	let legs: Awaited<ReturnType<typeof closeAndFlip>>;
 	try {
+		// The money is back in full (see "Revocation"): revoke before the flip.
+		if (refund !== null) await revokeOrderEntitlements(deps.entitlementStore, order);
 		legs = await closeAndFlip(deps, order, cmd, { detail, cancelledBy, refund, restock });
 	} catch (err) {
 		if (refund === null) throw err;

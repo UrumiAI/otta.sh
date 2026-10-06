@@ -840,3 +840,18 @@ export function productFilterParts(filter: {
 	}
 	return parts;
 }
+
+/**
+ * Why a product with a download file cannot become Physical (issue #376). The
+ * product owner's rule: a download file is REPLACED, never removed, so past
+ * buyers never lose access — and the store refuses a file on a physical
+ * product. Shared so the plugin's save refusal and the product editor's help
+ * text beside its disabled Physical choice say the same words.
+ */
+export const DIGITAL_WITH_FILE_TITLE = "This product stays Digital";
+export const DIGITAL_WITH_FILE =
+	"This product has a download file, so it stays Digital. To change the file, use Replace file.";
+/** The save refusal's body, under {@link DIGITAL_WITH_FILE_TITLE} — the reason
+ *  without repeating the title's "stays Digital". */
+export const DIGITAL_WITH_FILE_REASON =
+	"Nothing was saved: this product has a download file, which can be replaced but never removed. To change the file, use Replace file.";

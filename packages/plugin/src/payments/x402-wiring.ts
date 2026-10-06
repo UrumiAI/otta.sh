@@ -1,19 +1,15 @@
 /**
- * x402 settlement, in-process (INC-C5) — the plugin's replacement for
+ * x402 wiring, in-process (INC-C5) — the plugin's replacement for
  * `service/src/x402-wiring.ts`.
  *
- * WHAT ACTUALLY CHANGED. The gateway does not: `X402PaymentGateway` is the same
- * adapter, `refundable` is still `false` (ADR-0008 — on-chain settlement is
- * irreversible and nothing here holds a signing wallet), and the challenge is
- * still the same `x402_challenge` descriptor. What changed is the FACILITATOR.
- * The service could only ever wire `createTestFacilitator` — an OFFLINE
- * shared-secret HMAC that its own comment calls not-production-safe, since any
- * holder of the secret can forge a settling proof — which is why it refused to
- * start without an explicit `X402_ALLOW_TEST_FACILITATOR=true`. In-process the
- * facilitator is `createHttpFacilitator`, a real call to a real facilitator, made
- * through `ctx.http.fetch` and gated by `allowedHosts`. The opt-in gate has
- * nothing left to guard, so it is gone: the offline facilitator is simply not
- * reachable from this path.
+ * WHAT IS WIRED. `X402PaymentGateway`, built from the config below, with
+ * `refundable` still `false` (ADR-0008 — on-chain settlement is irreversible and
+ * nothing here holds a signing wallet) and the same `x402_challenge` descriptor.
+ * Until ADR-0028 increment 2 this module also built a receipt-forwarding
+ * FACILITATOR (`createHttpFacilitator`) for the gateway to verify receipts
+ * through, for the public `entitlements/x402/settle` route. Both are retired:
+ * the gateway refuses every confirmation until increment 7, so it needs no
+ * transport, and the facilitator credential below is not read here any more.
  *
  * THREE HOMES FOR THE CONFIG, one reason each:
  *  - the **facilitator URL** is a BUILD-TIME define (`__OTTA_X402_FACILITATOR_URL__`,
@@ -22,9 +18,11 @@
  *    instead would let the gate and the caller disagree — and the disagreement
  *    would present as an unexplained refused fetch;
  *  - the **facilitator credential** is WRITE-ONLY kv
- *    (`settings:x402FacilitatorApiKey`), because it is a secret. NOTE that this
+ *    (`settings:x402FacilitatorApiKey`), because it is a secret. Nothing reads it
+ *    between ADR-0028 increments 2 and 6; it stays provisionable so a deployment
+ *    keeps its credential for the `/verify` and `/settle` client. NOTE that this
  *    is NOT INC-C3's `settings:x402FacilitatorSecret`: in-process the value is
- *    the facilitator's BEARER API CREDENTIAL and goes ON THE WIRE, where the
+ *    the facilitator's BEARER API CREDENTIAL, meant for the wire, where the
  *    INC-C3 key held an offline HMAC secret that never did. The key was renamed
  *    rather than re-documented so an old provisioning cannot be inherited into
  *    the new threat model (review round 2, A5);
@@ -51,14 +49,15 @@
  * with two DIFFERENT well-formed wallets — is a change-control question, not one
  * a CAS would answer.
  *
- * FAIL-CLOSED. Missing URL or missing `payTo` ⇒ NO GATEWAY. The domain refuses a
- * checkout whose method has no gateway, so an unconfigured deployment gets a loud
- * refusal rather than a silently unverified settlement; and a kv rejection is
- * swallowed to the same `undefined`, because an unreadable `payTo` is exactly as
- * unconfigured as an unset one.
+ * FAIL-CLOSED. Missing URL or missing `payTo` ⇒ NO GATEWAY. The URL still
+ * gates the gateway although nothing calls it yet: "x402 is configured" keeps one
+ * meaning across the increments (ADR-0028 Decision 1). The domain refuses an
+ * order whose method has no gateway, so an unconfigured deployment gets a loud
+ * refusal rather than an order nobody can pay; and a kv rejection is swallowed to
+ * the same `undefined`, because an unreadable `payTo` is exactly as unconfigured
+ * as an unset one.
  */
-import { createHttpFacilitator, X402PaymentGateway } from "@otta-sh/payments-x402";
-import { X402_FACILITATOR_API_KEY_KEY, readWriteOnlySecret } from "../payment-secrets.js";
+import { X402PaymentGateway } from "@otta-sh/payments-x402";
 import type { PluginContext } from "../types.js";
 
 /** `X402_PAYTO` — the destination wallet the challenge names. Non-secret. */
@@ -73,17 +72,14 @@ export const X402_ACCEPTS_KEY = "settings:x402Accepts";
 export const DEFAULT_X402_ACCEPTS = ["eip155:8453"] as const;
 
 export interface WireX402Options {
-	/** The host's gated egress — `ctx.http.fetch`. */
-	fetch: (url: string, init?: RequestInit) => Promise<Response>;
 	facilitatorUrl?: string | undefined;
-	facilitatorApiKey?: string | undefined;
 	payTo?: string | undefined;
 	accepts?: readonly string[] | undefined;
 }
 
 /**
- * Build the gateway from already-resolved config — pure in everything but the
- * injected `fetch`, so both refusal arms are testable without a context.
+ * Build the gateway from already-resolved config — pure, so both refusal arms
+ * are testable without a context.
  */
 export function wireX402Gateway(options: WireX402Options): X402PaymentGateway | undefined {
 	const { facilitatorUrl, payTo } = options;
@@ -94,11 +90,6 @@ export function wireX402Gateway(options: WireX402Options): X402PaymentGateway | 
 			? [...options.accepts]
 			: [...DEFAULT_X402_ACCEPTS];
 	return new X402PaymentGateway({
-		facilitator: createHttpFacilitator({
-			fetch: options.fetch,
-			url: facilitatorUrl,
-			...(options.facilitatorApiKey !== undefined ? { apiKey: options.facilitatorApiKey } : {}),
-		}),
 		payTo,
 		accepts,
 	});
@@ -121,23 +112,21 @@ export async function x402GatewayFromCtx(
 ): Promise<X402PaymentGateway | undefined> {
 	const facilitatorUrl = egress.facilitatorUrl;
 	if (facilitatorUrl === undefined || facilitatorUrl.length === 0) return undefined;
-	const [facilitatorApiKey, payTo, accepts] = await Promise.all([
-		readWriteOnlySecret(ctx, X402_FACILITATOR_API_KEY_KEY),
+	const [payTo, accepts] = await Promise.all([
 		readPlainSetting(ctx, X402_PAYTO_KEY),
 		readPlainSetting(ctx, X402_ACCEPTS_KEY),
 	]);
 	return wireX402Gateway({
-		fetch: ctx.http.fetch,
 		facilitatorUrl,
-		...(facilitatorApiKey !== undefined ? { facilitatorApiKey } : {}),
 		...(payTo !== undefined ? { payTo } : {}),
 		...(accepts !== undefined ? { accepts: splitAccepts(accepts) } : {}),
 	});
 }
 
 /** A non-secret `settings:*` value, or `undefined` for unset / empty / non-string
- *  / unreadable. Same three fail-closed folds as `readWriteOnlySecret`, minus its
- *  no-echo obligations (these values are not credentials). */
+ *  / unreadable. Same three fail-closed folds as `readWriteOnlySecret`
+ *  (`payment-secrets.ts`), minus its no-echo obligations (these values are not
+ *  credentials). */
 async function readPlainSetting(ctx: PluginContext, key: string): Promise<string | undefined> {
 	try {
 		const value = await ctx.kv.get<unknown>(key);

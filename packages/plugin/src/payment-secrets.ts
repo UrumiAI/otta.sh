@@ -16,11 +16,13 @@
  * | `settings:stripeSecretKey`         | `STRIPE_SECRET_KEY`       | `service/src/stripe-wiring.ts:7`  |
  * | `settings:stripeWebhookSecret`     | `STRIPE_WEBHOOK_SECRET`   | `service/src/stripe-wiring.ts:6`  |
  * | `settings:emailApiKey`             | `EMAIL_API_KEY`           | `service/src/index.ts:79`         |
- * | `settings:x402FacilitatorApiKey`   | `X402_FACILITATOR_SECRET` | `payments/x402-wiring.ts` (†)     |
+ * | `settings:x402FacilitatorApiKey`   | `X402_FACILITATOR_SECRET` | nothing yet (†)                   |
  *
  * (†) INC-C5 CHANGED WHAT THAT LAST ROW MEANS, SO IT ALSO CHANGED THE KEY — see
  * its own doc below. It is no longer an offline HMAC secret; it is the bearer
- * credential the in-process facilitator call puts on the wire.
+ * credential for the facilitator. Since ADR-0028 increment 2 nothing reads it:
+ * the receipt-forwarding facilitator call that did is retired, and increment
+ * 6's `/verify` and `/settle` client is its next reader.
  *
  * WHAT IS DELIBERATELY NOT HERE. The service's non-secret companions —
  * `EMAIL_API_URL`, `EMAIL_FROM`, `X402_PAYTO`, `X402_ACCEPTS`,
@@ -64,28 +66,29 @@ export const EMAIL_API_KEY_KEY = "settings:emailApiKey";
 export const SMTP2GO_API_KEY_KEY = "settings:emailSmtp2goApiKey";
 
 /**
- * The x402 facilitator CREDENTIAL — the bearer token
- * `createHttpFacilitator` attaches when it asks a real facilitator to verify a
- * receipt (`payments/x402-wiring.ts`).
+ * The x402 facilitator CREDENTIAL — a bearer token for the facilitator API.
+ * Until ADR-0028 increment 2 `createHttpFacilitator` attached it when it asked a
+ * facilitator to verify a receipt; that call is retired, and nothing reads this
+ * key until increment 6's `/verify` and `/settle` client (ADR-0028 Decision 8:
+ * no credential, or `Authorization: Bearer <this key>`).
  *
  * ⚠ ITS MEANING CHANGED AT INC-C5, SO THE KEY MOVED. Under INC-C3
  * `settings:x402FacilitatorSecret` was the in-process rename of the service's
  * `X402_FACILITATOR_SECRET`: the SHARED HMAC secret `createTestFacilitator`
  * signs and verifies with, a value that is never transmitted and whose leak is
- * forge-a-settlement severity. In-process there is no offline facilitator —
- * `createHttpFacilitator` asks a real one over `ctx.http` — so the configured
- * value now GOES ON THE WIRE as `Authorization: Bearer …` to the facilitator
- * host.
+ * forge-a-settlement severity. In-process there is no offline facilitator, and
+ * the configured value is meant for the WIRE, as `Authorization: Bearer …` to
+ * the facilitator host.
  *
  * WHY A NEW KEY AND NOT A RE-DOCUMENTED ONE (review round 2, A5). Re-documenting
  * would have left an operator who provisioned under the INC-C3 meaning holding a
  * forge-a-settlement HMAC secret that this increment would transmit to a third
  * party — a silent downgrade that no release note can undo, because nothing
  * forces the operator to act. A different key name IS the forcing function: the
- * old value is never read again, the field reads as unset, and the settle route
- * answers `NOT_CONFIGURED` until someone provisions a credential that was minted
- * to be sent. The legacy key is deleted opportunistically on the next save of
- * this field (`settings-form.ts`) so the orphaned secret does not linger in kv.
+ * old value is never read again, and the field reads as unset until someone
+ * provisions a credential that was minted to be sent. The legacy key is deleted
+ * opportunistically on the next save of this field (`settings-form.ts`) so the
+ * orphaned secret does not linger in kv.
  *
  * The SERVICE's own offline facilitator keeps reading its own
  * `X402_FACILITATOR_SECRET` environment variable, which was never this key.

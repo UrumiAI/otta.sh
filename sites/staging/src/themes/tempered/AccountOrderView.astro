@@ -87,7 +87,7 @@ const { order, errorMessage, signedInAs } = Astro.props.model;
 					)}
 					{order.addressLines !== null && (
 						<div class="account-order-address">
-							<h2 class="u-label account-order-head-label">Delivery address</h2>
+							<h2 class="u-label account-order-head-label">{order.addressLabel}</h2>
 							<address>
 								{order.addressLines.map((line) => (
 									<span>{line}</span>

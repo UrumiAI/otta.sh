@@ -521,9 +521,11 @@ export const LEG_QUERY_COSTS: Record<SweepLeg, { readonly entry: number; readonl
 		// by the calls it has left (`healReportingRollups`), so it never exceeds them.
 		"reporting-heal": { entry: 1, unit: 8 },
 		"coupon-orphans": { entry: 2, unit: 7 },
-		// entry: resolving the gateways (their secret kv reads: 2 for Stripe, up to 3
-		// more with x402 configured) — once, and only when a unit needs them. The due
-		// list is the leg's due check, charged before this (see `run`'s `isDue`).
+		// entry: resolving the gateways (their kv reads: 2 for Stripe, up to 2 more
+		// with x402 configured; ADR-0028 increment 2 dropped x402's credential read,
+		// and the budget keeps that one as headroom) — once, and only when a unit
+		// needs them. The due list is the leg's due check, charged before this (see
+		// `run`'s `isDue`).
 		// unit: one order's ledger read, the re-driven refund (the two Stripe
 		// subrequests, finalize with its reporting write) and the resolve, retry
 		// clear and notice that follow — the TRIMMED resume, measured at 20.
