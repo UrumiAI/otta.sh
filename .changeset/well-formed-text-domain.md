@@ -1,0 +1,15 @@
+---
+"@otta-sh/domain": minor
+---
+
+Text a document store can hold (security review R3-B, X1). `isWellFormedText`,
+`toWellFormedText`, `findIllFormedText` and `repairIllFormedText` name the one rule
+Postgres's `jsonb` imposes on every stored string: no lone UTF-16 surrogate and no
+U+0000. `JSON.parse` keeps both, `JSON.stringify` writes them as `\ud800` / `\u0000`
+escapes, and `jsonb` refuses either — for every row a query casts, so one such string
+used to make a whole collection unqueryable. Every other character (controls,
+noncharacters, emoji and other surrogate pairs) is well formed and unaffected.
+
+`normalizeOrderAddress` now refuses an address any of whose fields is not well-formed
+text as `INVALID`, so `createOrderFromCart` answers `INVALID_SHIPPING_ADDRESS` for it
+on every transport.

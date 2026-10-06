@@ -393,6 +393,12 @@ export type {
 	ReconciliationResolution,
 } from "./orders/model.js";
 export {
+	findIllFormedText,
+	isWellFormedText,
+	repairIllFormedText,
+	toWellFormedText,
+} from "./text/well-formed.js";
+export {
 	normalizeOrderAddress,
 	ORDER_ADDRESS_MAX_LENGTHS,
 	type NormalizeOrderAddressResult,
