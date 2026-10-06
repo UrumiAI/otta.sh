@@ -40,6 +40,7 @@
 			"email": null,
 			"phone": null
 		},
+		"buyerAddressRequired": false,
 		"totals": {
 			"subtotal": 89700,
 			"total": 106454,
@@ -149,6 +150,7 @@
 			"email": null,
 			"phone": null
 		},
+		"buyerAddressRequired": false,
 		"reconciliationFlag": null,
 		"reconciliationResolution": null,
 		"fulfillment": null,
@@ -196,6 +198,7 @@
 			}
 		],
 		"shippingAddress": null,
+		"buyerAddressRequired": false,
 		"totals": {
 			"subtotal": 2400,
 			"total": 2040,
@@ -265,6 +268,7 @@
 			}
 		},
 		"shippingAddress": null,
+		"buyerAddressRequired": false,
 		"reconciliationFlag": null,
 		"reconciliationResolution": null,
 		"fulfillment": null,
@@ -323,6 +327,7 @@
 			}
 		],
 		"shippingAddress": null,
+		"buyerAddressRequired": false,
 		"totals": {
 			"subtotal": 2997,
 			"total": 2497,
@@ -392,6 +397,7 @@
 			}
 		},
 		"shippingAddress": null,
+		"buyerAddressRequired": false,
 		"reconciliationFlag": null,
 		"reconciliationResolution": null,
 		"fulfillment": null,
@@ -430,6 +436,7 @@
 			}
 		],
 		"shippingAddress": null,
+		"buyerAddressRequired": false,
 		"totals": {
 			"subtotal": 2500,
 			"total": 2500,
@@ -499,6 +506,7 @@
 			}
 		},
 		"shippingAddress": null,
+		"buyerAddressRequired": false,
 		"reconciliationFlag": null,
 		"reconciliationResolution": null,
 		"fulfillment": null,
@@ -556,6 +564,7 @@
 			"email": null,
 			"phone": null
 		},
+		"buyerAddressRequired": false,
 		"totals": {
 			"subtotal": 3999,
 			"total": 4464,
@@ -665,6 +674,7 @@
 			"email": null,
 			"phone": null
 		},
+		"buyerAddressRequired": false,
 		"reconciliationFlag": null,
 		"reconciliationResolution": null,
 		"fulfillment": null,
@@ -713,6 +723,7 @@
 			}
 		],
 		"shippingAddress": null,
+		"buyerAddressRequired": false,
 		"totals": {
 			"subtotal": 6000,
 			"total": 6000,
@@ -782,6 +793,7 @@
 			}
 		},
 		"shippingAddress": null,
+		"buyerAddressRequired": false,
 		"reconciliationFlag": null,
 		"reconciliationResolution": null,
 		"fulfillment": null,
@@ -829,6 +841,7 @@
 			}
 		],
 		"shippingAddress": null,
+		"buyerAddressRequired": false,
 		"totals": {
 			"subtotal": 7500,
 			"total": 7500,
@@ -920,6 +933,7 @@
 			}
 		},
 		"shippingAddress": null,
+		"buyerAddressRequired": false,
 		"reconciliationFlag": null,
 		"reconciliationResolution": null,
 		"fulfillment": null,

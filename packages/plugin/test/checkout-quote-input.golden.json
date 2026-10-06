@@ -81,6 +81,7 @@
 			"email": null,
 			"phone": null
 		},
+		"buyerAddressRequired": false,
 		"events": [],
 		"emailOutbox": [],
 		"payments": [],
@@ -203,6 +204,7 @@
 			}
 		},
 		"shippingAddress": null,
+		"buyerAddressRequired": false,
 		"events": [],
 		"emailOutbox": [],
 		"payments": [],
@@ -354,6 +356,7 @@
 			}
 		},
 		"shippingAddress": null,
+		"buyerAddressRequired": false,
 		"events": [],
 		"emailOutbox": [],
 		"payments": [],
@@ -467,6 +470,7 @@
 			}
 		},
 		"shippingAddress": null,
+		"buyerAddressRequired": false,
 		"events": [],
 		"emailOutbox": [],
 		"payments": [],
@@ -609,6 +613,7 @@
 			"email": null,
 			"phone": null
 		},
+		"buyerAddressRequired": false,
 		"events": [],
 		"emailOutbox": [],
 		"payments": [],
@@ -762,6 +767,7 @@
 			}
 		},
 		"shippingAddress": null,
+		"buyerAddressRequired": false,
 		"events": [],
 		"emailOutbox": [],
 		"payments": [],
