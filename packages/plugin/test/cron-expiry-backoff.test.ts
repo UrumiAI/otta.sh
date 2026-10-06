@@ -141,3 +141,28 @@ test("the tick's query ceiling inside an order's flip ends the leg as the ceilin
 		"pending",
 	);
 }, 120_000);
+
+test("the leg sizes the back-off's cap to the rows its one-page look can read past (polish P-3)", async () => {
+	// The cap is where starvation returns (more failing orders than it, and evicted
+	// ones take the bite again), so it is as large as the look's one 100-row page
+	// allows beside the bite and its one extra row: 98 on Free (bite 1), 81 at the
+	// Paid bite of 18. No extra query: the look was already one page.
+	const tick = async (backoff: UnitBackoff, expiryBatchLimit?: number) =>
+		await runCommerceSweeps(sweepContext(storage), SWEEP_TASK_NAME, {
+			cursors: memoryCursors(),
+			emailSender: recordingSender([]),
+			now: NOW,
+			...(expiryBatchLimit === undefined ? {} : { expiryBatchLimit }),
+			expiryBackoff: backoff,
+		});
+	const free = new UnitBackoff();
+	await tick(free, 1);
+	expect(free.maxEntries).toBe(100 - (1 + 1));
+	const paid = new UnitBackoff();
+	await tick(paid, 18);
+	expect(paid.maxEntries).toBe(100 - (18 + 1));
+	// A bite too big for the page (a test-only option) keeps the default cap.
+	const huge = new UnitBackoff();
+	await tick(huge, 90);
+	expect(huge.maxEntries).toBe(UnitBackoff.DEFAULT_MAX_ENTRIES);
+}, 120_000);
