@@ -20,6 +20,11 @@ on:
   # into `main` and every `main` push; `workflow_dispatch` runs them on demand.
   workflow_dispatch:
 
+# No job writes to the repo: checkout reads it, and the cache and artifact
+# actions use the runner's own token, not GITHUB_TOKEN.
+permissions:
+  contents: read
+
 # Cancel superseded runs on the same ref. On `main` that means a run for a merge
 # that is already superseded by a newer merge: the newer commit contains it and
 # gets the full check, so finishing the older run only queues behind it.
