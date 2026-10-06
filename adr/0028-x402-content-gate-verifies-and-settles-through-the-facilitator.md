@@ -212,6 +212,15 @@ module and is **not exported from `@otta-sh/domain`'s index**. The type is expor
 can read the fields. Nothing outside the module can build a value without an `as` cast, and review
 rejects that cast. Domain tests import the module by its path.
 
+**One other route reaches the mint: `@otta-sh/domain/testing`.** `FakePaymentGateway.pageGate`
+(`packages/domain/src/testing/fake-payment-gateway.ts:167-176`) has to mint a `GatedSettlement`,
+because adapter suites drive settlement through it. For example,
+`packages/store-emdash/test/order-flow.dialects.test.ts:514` uses it. So the mint is reachable
+through the `./testing` export (`packages/domain/package.json`). Increment 7 adds a
+**dependency-cruiser rule** (`.dependency-cruiser.cjs`) that forbids importing
+`@otta-sh/domain/testing` from any non-test `src` file. That keeps the minting route out of
+production code by lint, not by convention.
+
 **This reverses today's invariant**, "facilitator-verified server-side — never trust the plugin's
 word" (`index.ts:158`). The reversal is safe because of an invariant that increment 2 makes true
 and every later increment keeps:
@@ -428,9 +437,7 @@ make no network call.**
 
    **The pre-broadcast allowlist.** These are the exact `errorReason` strings from the spec's list
    (v2 §9) and from the reference facilitator's constants (`errors.ts:8-25`). The two sets spell
-   some of the same failures differently, so both spellings are listed. In the reference, each of
-   these comes either from the re-verify that `settle` runs **before** it broadcasts
-   (`eip3009.ts:255-266`) or from a revert mapped before any receipt exists:
+   some of the same failures differently, so both spellings are listed.
 
    | Failure | Spec (v2 §9) | Reference (`errors.ts`) |
    |---|---|---|
@@ -445,6 +452,17 @@ make no network call.**
    | Bad payload or requirements | `invalid_payload`, `invalid_payment_requirements`, `invalid_x402_version` | `invalid_exact_evm_missing_eip712_domain`, `invalid_exact_evm_token_name_mismatch`, `invalid_exact_evm_token_version_mismatch`, `invalid_exact_evm_eip3009_not_supported` |
 
    A facilitator that uses other strings simply gets more flags, which is the safe direction.
+
+   **Why these are safe.** In the reference facilitator, each allowlisted reason comes either from
+   the re-verify that `settle` runs **before** it broadcasts (`eip3009.ts:255-266`), or from its
+   `catch` (`eip3009.ts:322-329`). The `try` that `catch` closes covers both the broadcast (`:297`)
+   and `waitForTransactionReceipt` (`:304`), and the `catch` maps errors through
+   `parseEip3009TransferError` (`eip3009-utils.ts:198-215`). That function maps any error it does
+   not recognise to `invalid_exact_evm_transaction_failed`. So the safety rests on one fact: **a
+   post-broadcast error is mapped only to `*_transaction_failed`**, never to an allowlisted reason.
+   A receipt-wait timeout or an RPC error after the broadcast carries none of the revert messages
+   the function matches.
+
 9. **Authorize delivery in the domain, then serve.**
    - `payForGatedProduct` runs **`authorizeDownload`** (Decision 6) for the order's line, right
      after `settleOrder` succeeds.
@@ -703,7 +721,7 @@ x402 client never produces such a proof, and the server would have to trust whoe
 
 ### 9. Checkout stays Stripe-only, and a test pins it (#282 item 2)
 
-`PAYMENT_METHOD = "stripe"` in `checkout-routes.ts:101` stays. Increment 6 adds the test #282 asks
+`PAYMENT_METHOD = "stripe"` in `checkout-routes.ts:101` stays. Increment 7 adds the test #282 asks
 for: it fails the day checkout can create an x402 order. Cart-based x402 is a separate future
 decision. That decision would reuse this ADR's port and adapter, which already have the recipient
 guarantee of Decision 4.
@@ -724,8 +742,8 @@ Each increment typechecks on its own and does one thing.
 **#283's items, in the increment that touches each one's code:**
 - the changeset key names (increment 2);
 - making `dedupe` return the bound order, which closes the store-emdash read-back gap
-  (increment 6);
-- a truly concurrent cross-order replay test (increment 6);
+  (increment 7);
+- a truly concurrent cross-order replay test (increment 7);
 - the stale `x402FacilitatorSecret` symbol, field and action names, renamed with their test matrix
   (increment 8);
 - deleting the orphaned legacy `settings:x402FacilitatorSecret` key on first read (increment 8).
@@ -787,7 +805,7 @@ off: a dormant money-taking route is one flag away from live, and nothing would 
 
 Each listed test must fail first. "Calls" means the fake facilitator's per-path call counts.
 
-**Adapter** (`payments-x402`, increment 7). A **fake facilitator** sits behind the injected `fetch`,
+**Adapter** (`payments-x402`, increment 6). A **fake facilitator** sits behind the injected `fetch`,
 records every call and counts calls per path.
 - **The offer:**
   - it carries the projected `payTo`, the table's asset, `extra` (with
@@ -822,7 +840,7 @@ records every call and counts calls per path.
   `Bearer`, and no credential appears in any error.
 
 **Domain** (`payForGatedProduct` over a scripted `X402Rail` fake; contract suites on fake, SQLite,
-Postgres and D1; increments 4–6).
+Postgres and D1; increments 4, 5 and 7).
 - **Basics:**
   - no payment means no write;
   - a valid payment gives a paid order and one entitlement, with one `/verify` and one `/settle`.
@@ -952,7 +970,7 @@ from five PRs into eight.
      - `x402-gateway.contract.test.ts`, `x402-hardening.test.ts`, `x402-cancel-intent.test.ts` and
        `x402-refund.test.ts` are rewritten without the HMAC facilitator.
    - `X402PaymentGateway.verifyConfirmation` refuses every `page_gate` (`MALFORMED`) until
-     increment 6.
+     increment 7.
    - The domain's `X402Proof` and the fake gateway's `pageGate` (`fake-payment-gateway.ts:167-176`)
      stay for now, because domain tests still mint them.
    - The #283 changeset key names.
@@ -965,9 +983,14 @@ from five PRs into eight.
    - **This conflicts with `tax/3-checkout-display`**, which edits the same checkout lines to add
      `taxProfile` (`in-process-commerce-client.ts:1009-1024` on that branch). Whichever lands
      second rebases. The helper must carry `taxProfile` once both are in.
-4. **[Domain] "The order's email recipient, or none."**
+4. **[Domain][Adapters] "The order's email recipient, or none."**
    - `resolveRecipient` (`transition.ts:602-610`) returns none for a `buyerRef` that is not an
      email address, and the drain completes such a row as "skipped".
+   - **"Skipped" is its own terminal outcome, not the existing `markEmailSent`**
+     (`packages/domain/src/ports/order-store.ts:585`). Recording an email that never went as
+     "sent" would break ADR-0026's rule that admin writes report whether the email went. So the
+     order store gains a "skipped" completion, with contract cases on every dialect. That is why
+     the tag is [Domain][Adapters], not [Domain] alone.
    - One test per `EmailTemplate` (Decision 7).
    - This is on its own because it changes behaviour for every order.
 5. **[Domain][Plugin] Move the delivery gate into the domain.**
@@ -976,24 +999,27 @@ from five PRs into eight.
      contract cases unchanged.
    - **It depends on downloads #394 (revocation, `downloadAsset`) and #396 (the gate being moved)
      being merged.**
-6. **[Domain][Adapters] The gate's money rules.**
-   - The `X402Rail` port.
-   - `payForGatedProduct` with the full replay tree, calling `authorizeDownload`.
+6. **[Domain][Adapters] The `X402Rail` port and its adapter.**
+   - The port in `@otta-sh/domain`, as types only (Decision 2).
+   - `payments-x402` implements it:
+     - the asset table and the `payTo` projection;
+     - the offer, the decoder and the structural match;
+     - the `/verify` and `/settle` client, with no credential or a static bearer (no CDP JWT);
+     - the classification rules, including the pre-broadcast allowlist.
+   - No use case calls it and there is no surface, so it can land before the downloads work.
+7. **[Domain][Adapters] The gate's money rules.** It depends on increments 3, 5 and 6.
+   - `payForGatedProduct` with the full replay tree, calling `X402Rail` and `authorizeDownload`.
    - The branded `GatedSettlement` `page_gate` arm, replacing `X402Proof`. This includes the fake
      gateway and `X402PaymentGateway.verifyConfirmation`'s structural normalisation, so it
      typechecks.
+   - The dependency-cruiser rule that bans `@otta-sh/domain/testing` from non-test `src`
+     (Decision 2).
    - The `x402Settle` marker, and the flag-not-expire rule inside `expireWithOrder`'s guarded flip,
      with contract and race cases on every dialect.
    - `dedupe` returning the bound order, the concurrent replay test, and the #282 pin test.
-   - The "Mark refunded on a gate order revokes access" test, which needs #394's revocation and
+   - The "Mark refunded on a gate order revokes access" test. It needs #394's revocation, which
      comes through increment 5.
    - No surface calls the use case yet.
-7. **[Adapters] `payments-x402` implements `X402Rail`.**
-   - The asset table and the `payTo` projection.
-   - The offer, the decoder and the structural match.
-   - The `/verify` and `/settle` client, with no credential or a static bearer (no CDP JWT).
-   - The classification rules, including the pre-broadcast allowlist.
-   - Still no surface.
 8. **[Plugin][Site] The gate goes live.**
    - The public routes `x402/requirements` and `x402/pay`, behind the edge token, wired to the use
      case and the adapter.
@@ -1003,11 +1029,14 @@ from five PRs into eight.
    - Settings validation that the accepted networks are in the asset table.
    - DEPLOYMENT.md: the facilitator base URL, the edge token, and mandatory rate limiting before
      Base mainnet.
-   - **This increment takes real money. It depends on increments 5–7, on downloads #394 and #396
-     being merged, and on downloads increment 3 (`serveDownload`, `downloadHref`).**
+   - **This increment takes real money.** It depends on:
+     - **all of increments 2–7** (2 retirement, 3 helpers, 4 email suppression, 5 domain delivery
+       gate, 6 port and adapter, 7 money rules);
+     - downloads #394 and #396 being merged;
+     - downloads increment 3 (`serveDownload`, `downloadHref`).
 
-Increments 2, 3, 4 and 7 can land before the downloads work. Increments 5 and 6 wait for #394 and
-#396.
+Increments 2, 3, 4 and 6 can land before the downloads work. Increment 5 waits for #394 and #396,
+and increment 7 waits for 3, 5 and 6.
 
 **Possible later increments, outside this plan:**
 - a CDP facilitator auth strategy (a per-request signed JWT; Decision 8);
@@ -1070,3 +1099,13 @@ The amendments, against the 2026-10-05 draft:
   and rewrites the HMAC-based tests.
 - The plan is split into eight increments, with a pure-refactor PR and a separate
   `resolveRecipient` PR.
+
+**Review round 3:**
+- The port and its adapter (now increment 6) come before the money rules (now increment 7), so
+  each increment typechecks on its own.
+- Go-live depends on all of increments 2–7.
+- The `@otta-sh/domain/testing` route to the `GatedSettlement` mint is named, and a
+  dependency-cruiser rule bans it from non-test `src`.
+- The allowlist's safety is stated as the reference `catch` mapping any post-broadcast error only
+  to `*_transaction_failed`.
+- Increment 4 adds a "skipped" store completion, so it is tagged [Domain][Adapters].
