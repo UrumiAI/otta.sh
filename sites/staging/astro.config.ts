@@ -108,10 +108,7 @@ assertWranglerSessionPairing(
 	selectedWranglerConfig,
 	(buildEmdashOptions(egress).database as { config?: { session?: unknown } }).config,
 );
-assertDownloadsBucketPrivate(
-	selectedWranglerText,
-	selectedWranglerConfig,
-);
+assertDownloadsBucketPrivate(selectedWranglerText, selectedWranglerConfig);
 
 /**
  * The latin `unicode-range`: the range on the face Google Fonts' css2 response
