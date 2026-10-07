@@ -262,7 +262,7 @@ cannot be retried in place:
 > ([ADR-0020](./adr/0020-one-deployable-plugin-owns-commerce-truth.md)), and nothing the
 > Worker fetches today (§4) is on `workers.dev`. One consequence of running without it: a
 > fetch to a hostname on the site's **own zone** is routed to that zone's origin, not back
-> through Cloudflare, so never point `EMAIL_API_URL` or `X402_FACILITATOR_URL` at the site's
+> through Cloudflare, so never point `X402_FACILITATOR_URL` at the site's
 > own zone.
 >
 > D1 `session` in `sites/staging/src/emdash-options.ts` is **`"primary-first"`**: every

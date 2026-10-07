@@ -12,7 +12,7 @@
   plus the x402 facilitator when one is configured.
 - Relates to: [ADR-0004](./0004-customer-auth-mechanism.md) (the sign-in email, its 3 s cap
   and throttle are unchanged).
-- Numbered 0031 because 0030 is reserved by the tax-calculator branch (PR #414).
+- Numbered 0031 because 0030 is the tax-calculator ADR (PR #414).
 
 ## Context
 
