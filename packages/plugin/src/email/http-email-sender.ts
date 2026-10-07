@@ -8,8 +8,9 @@
  * — on top of what is shared here and must stay the same for every provider:
  *  - rendering (`renderEmail` with the storefront's money, the store's name and,
  *    for an order email, the order page link);
- *  - the per-send timeout, and turning OUR abort into `EmailSendTimeoutError`
- *    so the dispatcher hands the row back uncounted;
+ *  - the per-send timeout — a race, never an `AbortSignal` in `init` unless the
+ *    host is trusted (`send-deadline.ts`) — and turning OUR deadline into
+ *    `EmailSendTimeoutError` so the dispatcher hands the row back uncounted;
  *  - the provider's error text, sanitized and bounded before it reaches a log
  *    line, with the recipient and the sender's own key redacted.
  *
@@ -30,6 +31,9 @@ import {
 } from "@otta-sh/domain";
 import { STOREFRONT_LOCALE } from "../storefront/route-input.js";
 import { orderPageUrl, storefrontEmailMoney } from "./email-render-context.js";
+import { startSendDeadline, type ProviderResponse } from "./send-deadline.js";
+
+export type { ProviderResponse } from "./send-deadline.js";
 
 /**
  * A hung email provider must never hang a cron tick — the same rule, and the
@@ -41,7 +45,8 @@ import { orderPageUrl, storefrontEmailMoney } from "./email-render-context.js";
  * nothing about an unbounded await. One unresponsive provider connection would
  * therefore hold the `order-emails` leg open and starve every sweep leg queued
  * behind it. The abort converts the hang into the throw the dispatcher already
- * knows how to handle, and — as with a non-2xx — the row stays unsent.
+ * knows how to handle, and — as with a non-2xx — the row stays unsent. (The
+ * bound is a race, not an `AbortSignal` in `init`: see `send-deadline.ts`.)
  *
  * THIRTY SECONDS IS NOT THE CRON'S CEILING, though. It is the fallback for a
  * caller that sets none; the cron sweep runs inside a host hook abandoned after
@@ -59,11 +64,16 @@ export interface HttpEmailSenderOptions {
 	fetch: (url: string, init?: RequestInit) => Promise<Response>;
 	from: string;
 	apiKey?: string | undefined;
-	/** Per-request timeout, via `AbortSignal.timeout`. Defaults to
-	 *  {@link DEFAULT_EMAIL_TIMEOUT_MS}. A FUNCTION is asked at each send — the cron
-	 *  sweep passes one, so each request is aborted at what is left of the tick when
-	 *  that send starts rather than at a figure fixed long before it. */
+	/** Per-request timeout, enforced by the send's own race (`send-deadline.ts`).
+	 *  Defaults to {@link DEFAULT_EMAIL_TIMEOUT_MS}. A FUNCTION is asked at each
+	 *  send — the cron sweep passes one, so each request is bounded by what is left
+	 *  of the tick when that send starts rather than by a figure fixed long before. */
 	requestTimeoutMs?: number | (() => number) | undefined;
+	/** `true` ONLY on a trusted (in-process) host: the request's `init` then also
+	 *  carries an `AbortSignal`, aborted at the deadline, so a timed-out request's
+	 *  socket is released. Default `false`: EmDash's sandbox runner sends `init`
+	 *  over RPC, which refuses a signal, and every send would fail. */
+	trustedHost?: boolean | undefined;
 	/** The store's name ("Store display name"), for the sign-in email. */
 	storeName?: string | undefined;
 	/** The storefront's public origin (`storefrontOriginOf`), for the order page
@@ -152,6 +162,7 @@ export abstract class HttpEmailSender implements EmailSender {
 	readonly #timeoutMs: number | (() => number);
 	readonly #storeName: string | undefined;
 	readonly #storefrontOrigin: string | undefined;
+	readonly #trustedHost: boolean;
 	/** The key, for the subclass's request and for redaction. Never logged. */
 	protected readonly apiKey: string | undefined;
 
@@ -163,6 +174,7 @@ export abstract class HttpEmailSender implements EmailSender {
 		this.#timeoutMs = options.requestTimeoutMs ?? DEFAULT_EMAIL_TIMEOUT_MS;
 		this.#storeName = options.storeName;
 		this.#storefrontOrigin = options.storefrontOrigin;
+		this.#trustedHost = options.trustedHost === true;
 	}
 
 	/** The provider's request for one message. */
@@ -171,7 +183,7 @@ export abstract class HttpEmailSender implements EmailSender {
 	/** Resolve when the provider accepted the message; throw (an
 	 *  {@link EmailProviderError}) when it did not, so the dispatcher never marks
 	 *  a row sent for a message the provider refused. */
-	protected abstract checkResponse(res: Response, message: OutboundEmail): Promise<void>;
+	protected abstract checkResponse(res: ProviderResponse, message: OutboundEmail): Promise<void>;
 
 	async send(input: SendEmailInput): Promise<void> {
 		// Money as the storefront formats it, the store's name, and — for an order
@@ -200,31 +212,36 @@ export abstract class HttpEmailSender implements EmailSender {
 		};
 		const request = this.buildRequest(message);
 		const timeoutMs = typeof this.#timeoutMs === "function" ? this.#timeoutMs() : this.#timeoutMs;
-		const signal = AbortSignal.timeout(timeoutMs);
-		// Our OWN abort is a TIMEOUT, not a provider failure: the dispatcher hands
-		// the row back without counting the attempt (`EmailSendTimeoutError`).
-		// Judged by OUR signal having fired, not by the error's name — a transport
-		// may reject a timeout-abort as a DOMException "TimeoutError", an
-		// "AbortError", or a plain error, and the sweep's own timer fires at the same
-		// moment, so whichever wins must read as the same timeout.
-		const asTimeout = (err: unknown): never => {
-			if (signal.aborted) throw new EmailSendTimeoutError(timeoutMs);
-			throw err;
-		};
-		const res = await this.#fetch(request.url, {
-			method: "POST",
-			headers: request.headers,
-			body: request.body,
-			// A hung provider must never hold the cron tick open — see
-			// {@link DEFAULT_EMAIL_TIMEOUT_MS}.
-			signal,
-		}).catch(asTimeout);
-		// Reading the body is bounded by the same signal (`readProviderJson` turns
-		// an unreadable body into "said nothing"). A provider whose 2xx must be
-		// READ to know the outcome (SMTP2GO) therefore reports a body cut off by
-		// our timeout as `ambiguous`, not as a timeout: the provider answered, it
-		// may have sent, and the attempt counts.
-		await this.checkResponse(res, message);
+		// No signal in `init` (unless the host is trusted): the send races its own
+		// deadline instead — see `send-deadline.ts`.
+		const deadline = startSendDeadline(timeoutMs, this.#trustedHost);
+		try {
+			let res: Response;
+			try {
+				res = await deadline.fetch(this.#fetch, request.url, {
+					method: "POST",
+					headers: request.headers,
+					body: request.body,
+				});
+			} catch (err) {
+				// Our OWN deadline is a TIMEOUT, not a provider failure: the dispatcher
+				// hands the row back without counting the attempt. Judged by the
+				// deadline having passed, not by the error's name — on a trusted host
+				// the transport may reject our abort as a DOMException "TimeoutError",
+				// an "AbortError" or a plain error, and the sweep's own timer fires at
+				// the same moment, so whichever wins must read as the same timeout.
+				if (deadline.expired) throw new EmailSendTimeoutError(timeoutMs);
+				throw err;
+			}
+			// Reading the body is bounded by the same deadline (`readProviderJson`
+			// turns an unreadable body into "said nothing"). A provider whose 2xx must
+			// be READ to know the outcome (SMTP2GO) therefore reports a body cut off by
+			// our deadline as `ambiguous`, not as a timeout: the provider answered, it
+			// may have sent, and the attempt counts.
+			await this.checkResponse(deadline.bounded(res), message);
+		} finally {
+			deadline.close();
+		}
 	}
 
 	/** Values a provider's error text must never carry back into a log line:
@@ -244,7 +261,7 @@ const PROVIDER_ERROR_MAX_CHARS = 200;
  *  cut, to {@link PROVIDER_ERROR_MAX_CHARS}); anything longer is not a provider
  *  answer, and the error path must not parse megabytes an intermediary chose to
  *  send. (The body is still read whole — `ctx.http.fetch` offers no bounded
- *  read — and the request's abort signal bounds how long that read can take.) */
+ *  read — and the send's deadline bounds how long that read can take.) */
 const PROVIDER_BODY_MAX_CHARS = 64 * 1024;
 
 /** C0 and C1 controls, DEL, the Unicode line/paragraph separators, and the
@@ -269,7 +286,7 @@ export interface Redaction {
  * Never throws: a body that cannot be read is the same as one that says
  * nothing, and the caller decides what that means for its status.
  */
-export async function readProviderJson(res: Response): Promise<unknown> {
+export async function readProviderJson(res: ProviderResponse): Promise<unknown> {
 	try {
 		const text = await res.text();
 		return text.length > PROVIDER_BODY_MAX_CHARS ? undefined : (JSON.parse(text) as unknown);

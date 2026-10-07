@@ -61,6 +61,7 @@ import {
 	type OutboundEmail,
 	type ProviderRequest,
 	readProviderJson,
+	type ProviderResponse,
 	sanitizeProviderDetail,
 	statusFailure,
 	warnOnce,
@@ -136,7 +137,7 @@ export class CtxHttpEmailSender extends HttpEmailSender {
 	 * body — contributes NOTHING, since there is no telling what an
 	 * intermediary's page echoes. A 2xx body is not read.
 	 */
-	protected async checkResponse(res: Response, message: OutboundEmail): Promise<void> {
+	protected async checkResponse(res: ProviderResponse, message: OutboundEmail): Promise<void> {
 		if (res.ok) return;
 		const parsed = await readProviderJson(res);
 		const { name, message: text } =

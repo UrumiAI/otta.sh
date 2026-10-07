@@ -280,7 +280,7 @@ describe("the budget runs from request start", () => {
 describe("a send never outlives the wait", () => {
 	test("when the claim and reads used most of the wait, the send's timeout is the remainder", async () => {
 		// The wait is 5 s on the injected clock; the claim "takes" 4.8 s of it. The real
-		// sender's per-request abort must then be ~200 ms — not the 3 s ceiling, which
+		// sender's per-request bound must then be ~200 ms — not the 3 s ceiling, which
 		// would run 2.8 s past the point the request stopped waiting.
 		const id = await seedOrder("ord-late-send", true);
 		vi.spyOn(console, "error").mockImplementation(() => {});
@@ -293,19 +293,18 @@ describe("a send never outlives the wait", () => {
 			clock += ORDER_EMAIL_INLINE_DEADLINE_MS - 200;
 			return row;
 		});
-		let abortedAfterMs: number | undefined;
+		// Measured from the request to the send giving up — not from a signal
+		// listener: the sender puts no signal in `init` (EmDash's sandbox RPC refuses
+		// one) and bounds the request with its own race.
+		let requestedAt: number | undefined;
 		const ctx = {
 			...harness.ctx,
 			http: {
-				// A provider that never answers: only the per-request abort ends the send.
-				fetch: (_url: string, init?: RequestInit) =>
-					new Promise<Response>((_resolve, reject) => {
-						const started = performance.now();
-						init?.signal?.addEventListener("abort", () => {
-							abortedAfterMs = performance.now() - started;
-							reject(new Error("aborted"));
-						});
-					}),
+				// A provider that never answers: only the send's own deadline ends it.
+				fetch: () => {
+					requestedAt = performance.now();
+					return new Promise<Response>(() => {});
+				},
 			},
 		};
 
@@ -313,9 +312,10 @@ describe("a send never outlives the wait", () => {
 			egress: { apiUrl: MAIL_URL },
 			deadline,
 		});
+		const gaveUpAfterMs = requestedAt === undefined ? undefined : performance.now() - requestedAt;
 
-		expect(abortedAfterMs).toBeDefined();
-		expect(abortedAfterMs!).toBeLessThan(ORDER_EMAIL_INLINE_TIMEOUT_MS / 2);
+		expect(gaveUpAfterMs).toBeDefined();
+		expect(gaveUpAfterMs!).toBeLessThan(ORDER_EMAIL_INLINE_TIMEOUT_MS / 2);
 		// And the abort was OURS, not the provider's failing: released uncounted, no
 		// timeout recorded against the provider, due at once.
 		expect(await dueNow(id)).toMatchObject({ attempts: 1, timeouts: 0 });

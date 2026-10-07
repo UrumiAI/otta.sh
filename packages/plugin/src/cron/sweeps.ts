@@ -1903,10 +1903,10 @@ function outboxSender(
 	};
 	return {
 		/**
-		 * The WHOLE send is raced against a timer — not only the request the
-		 * sender's own abort signal covers. Everything before the request (building
-		 * the sender's kv reads, and the host's `ctx.http.fetch` resolving the
-		 * provider's address over DNS-over-HTTPS, which does not observe our signal)
+		 * The WHOLE send is raced against a timer — not only the request and body
+		 * read the sender's own deadline covers (`send-deadline.ts`). Everything
+		 * before the request (building the sender's kv reads, and the host's
+		 * `ctx.http.fetch` resolving the provider's address over DNS-over-HTTPS)
 		 * can hang too. If the timer wins it is a TIMEOUT: the row goes back
 		 * uncounted, and should the provider deliver late after all, the retry's
 		 * `Idempotency-Key` (the outbox row id) lets it dedupe.
