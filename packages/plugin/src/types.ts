@@ -267,8 +267,10 @@ export type PluginLifecycleEvent = Record<string, never>;
  * only capability-gated surface it ever receives. `kv` and `storage` are both
  * available WITHOUT a capability: the host builds each on an always-available
  * path, and there is no `storage` capability string in its vocabulary to declare
- * (ADR-0018 decision 4). No `content`/`media`/`users`/`email`/`db` — declaring
- * any of those would fail the sandbox-clean guard (DEVELOPMENT.md §5).
+ * (ADR-0018 decision 4). `content` is the host's read under the `content:read`
+ * capability already declared, used by one sweep leg. No `media`/`users`/`email`/
+ * `db` — declaring any of those would fail the sandbox-clean guard
+ * (DEVELOPMENT.md §5).
  */
 export interface PluginContext {
 	http: HttpAccess;
@@ -302,6 +304,44 @@ export interface PluginContext {
 	 * hands over no `cron`, and a caller that needs one says so by name.
 	 */
 	cron?: CronAccess;
+	/**
+	 * The host's CMS read (`ContentAccess` in EmDash), granted by the `content:read`
+	 * capability this plugin already declares for its content hooks. Read-only here
+	 * on purpose: the plugin never writes CMS content.
+	 *
+	 * ONE caller: the `product-orphans` sweep leg (issue #374), which asks whether a
+	 * commerce row's CMS document still exists. Everything else gets what it needs
+	 * from the hook event itself.
+	 *
+	 * OPTIONAL like `storage` and `cron`: the host omits it when the capability is
+	 * missing, and the workerd test mirror (`sandbox-entry.ts`) has no CMS to offer.
+	 */
+	content?: ContentReadAccess;
+}
+
+/**
+ * The slice of EmDash's `ContentAccess` this plugin reads — `get` and `list`.
+ *
+ * What an answer PROVES depends on the host path, verified against EmDash 0.38:
+ *  - trusted (in-process, `createContentAccess`): `get` is `findById` — `WHERE id =
+ *    ? AND deleted_at IS NULL` — so a draft, scheduled, published or unpublished
+ *    document comes back as itself, a TRASHED or permanently deleted one comes back
+ *    `null`, and a database failure REJECTS;
+ *  - sandboxed (`@emdash-cms/cloudflare`'s bridge, `contentGet` / `contentList`):
+ *    the same query, but every database error is CAUGHT and answered as `null` /
+ *    an empty page. A lost binding, an overload or a missing `ec_products` table
+ *    reads exactly like a deleted document.
+ *
+ * So `null` is never proof on its own. The one caller (`product-orphans`) asks the
+ * CMS to LIST a product first, re-reads every `null`, counts it only in a run that
+ * read some other document, and needs three such runs a cadence apart.
+ */
+export interface ContentReadAccess {
+	get(collection: string, id: string): Promise<Record<string, unknown> | null>;
+	list(
+		collection: string,
+		options?: { limit?: number; cursor?: string },
+	): Promise<{ items: readonly Record<string, unknown>[]; cursor?: string; hasMore: boolean }>;
 }
 
 // -- routes -------------------------------------------------------------------

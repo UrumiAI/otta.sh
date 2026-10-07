@@ -23,8 +23,15 @@
  *    suites inject one from outside. `storage` is capability-free — the host
  *    builds it on an always-available path and there is no capability string
  *    for it (ADR-0018) — so nothing about the declared two changes here.
- *  - no `content`/`media`/`users`/`email` on `ctx` at all — this plugin never
- *    declares those capabilities (sandbox-clean guard).
+ *  - no `media`/`users`/`email` on `ctx` at all — this plugin never declares
+ *    those capabilities (sandbox-clean guard).
+ *  - `content`: the REAL EmDash sandbox does provide it — the plugin declares
+ *    `content:read`, and `@emdash-cms/cloudflare`'s bridge serves `contentGet` /
+ *    `contentList`, catching every D1 error and answering `null` / an empty page.
+ *    This mirror has no CMS behind it, so the production entry omits `content`
+ *    (the `product-orphans` sweep leg then reports itself skipped), and a TEST
+ *    fixture may opt into `cmsWithoutTable`: the bridge's answers over a database
+ *    whose `ec_products` query fails — the outage the sweep must survive.
  *
  * Otta does not depend on `~/em-dash`'s internal `packages/workerd`
  * package (DEVELOPMENT.md preamble — standalone repo); this file plus
@@ -36,6 +43,7 @@ import { ALLOWED_HOSTS } from "./manifest.js";
 import plugin from "./plugin.js";
 import { sandboxStorage } from "./sandbox-storage.js";
 import type {
+	ContentReadAccess,
 	CronAccess,
 	CronTaskInfo,
 	HttpAccess,
@@ -185,7 +193,25 @@ export interface SandboxWorkerOptions {
 	 * `src/**\/testing/` that a suite boots through the harness's `entry` option.
 	 */
 	readonly testHooks?: boolean;
+	/**
+	 * TEST ONLY: hand `ctx.content` the EmDash sandbox bridge's answers over a CMS
+	 * whose query fails — `contentGet` catches the D1 error and resolves `null`,
+	 * `contentList` resolves an empty page (`@emdash-cms/cloudflare` 0.38,
+	 * `bridge.ts`). Exactly what a lost binding or a missing `ec_products` table
+	 * looks like to a sandboxed plugin.
+	 */
+	readonly cmsWithoutTable?: boolean;
 }
+
+/** The bridge's swallow-to-null content answers (see `cmsWithoutTable`). */
+const SWALLOWED_CMS: ContentReadAccess = {
+	async get() {
+		return null;
+	},
+	async list() {
+		return { items: [], hasMore: false };
+	},
+};
 
 export function createSandboxWorker(
 	pluginDef: SandboxedPlugin,
@@ -212,6 +238,7 @@ export function createSandboxWorker(
 				// Omitted rather than set to `undefined` when there is no store, so a
 				// bundle without one has the exact context shape it had before.
 				...(storage === undefined ? {} : { storage }),
+				...(options.cmsWithoutTable === true ? { content: SWALLOWED_CMS } : {}),
 			};
 
 			try {

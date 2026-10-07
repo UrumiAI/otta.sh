@@ -353,6 +353,37 @@ describe("the tick's cadence, inside the isolate", () => {
 	}, 120_000);
 });
 
+describe("product-orphans on the EmDash sandbox bridge (issue #374)", () => {
+	test("a CMS whose reads fail and are swallowed to null — the bridge's contentGet/contentList — tombstones nothing", async () => {
+		// The isolate's `ctx.content` answers as `@emdash-cms/cloudflare`'s bridge does
+		// over a database whose `ec_products` query fails: every get `null`, every list
+		// empty (`cmsWithoutTable`, `src/cron/testing/sweep-entry.ts`). To a sandboxed
+		// plugin that is indistinguishable from a deleted catalog.
+		const s = stores(new Date(Date.now() - 2 * HOUR_MS));
+		const ids = ["prod-bridge-a", "prod-bridge-b", "prod-bridge-c"];
+		for (const id of ids) {
+			await s.productCommerce.upsert(
+				{
+					productId: toProductId(id),
+					sku: toSku(`SKU-${id}`),
+					price: money(cents(1200), currency("USD")),
+				},
+				idempotencyKey(`seed-${id}`),
+			);
+		}
+		const products = collectionOf<ProductCommerceDoc>(storage, PRODUCT_COMMERCE_COLLECTION);
+		for (let run = 0; run < 3; run++) {
+			// Rides out ticks on which the (Free) budget deferred it.
+			const outcome = await tickUntilRan("product-orphans");
+			expect(outcome).toMatchObject({ ok: true, count: 0 });
+			expect(outcome.anomalies?.join("\n")).toMatch(/lists no products/);
+		}
+		for (const id of ids) {
+			expect((await products.get(id))?.lifecycle, id).toBe("live");
+		}
+	}, 120_000);
+});
+
 describe("the four ported sweeps", () => {
 	test("expire-holds reclaims a past-TTL cart hold, and a second tick reclaims nothing", async () => {
 		const suffix = "holds";

@@ -544,11 +544,69 @@ editing a text field should not be able to move it.
 **Cron.** The **site's** Cron Trigger is `* * * * *` — that drives the host's cron
 *executor*, which claims due rows from its own task table. The **plugin** registers one task,
 `commerce-sweeps`, also due every minute (`* * * * *`); the executor fires the plugin's `cron`
-hook when it comes due. One task drives all eleven sweep legs: they share a store composition
-and a clock, and splitting them would only put eleven rows in contention on the same documents. The
-four scan legs (`sku-transfers`, `order-sku-index`, `reporting-heal`, `coupon-orphans`) and the
-sign-in challenge prune run at most every fifteen minutes inside that task (housekeeping: the
-scans read a page budget of a collection per run); the outbox, the two expiry legs, the
+hook when it comes due. One task drives all twelve sweep legs: they share a store composition
+and a clock, and splitting them would only put twelve rows in contention on the same documents. The
+five scan legs (`sku-transfers`, `order-sku-index`, `reporting-heal`, `coupon-orphans`,
+`product-orphans`) and the sign-in challenge prune run at most every fifteen minutes inside that
+task (housekeeping: the scans read a page budget of a collection per run); a scan cut short by
+the budget carries on next tick until its pass is done. `product-orphans` soft-deletes a
+commerce row whose CMS product is gone (deleted or in the trash) when the delete hook's own
+soft delete was lost. It reads each live row's document through `ctx.content` (the
+`content:read` capability already declared) and is built for a CMS read that LIES: on the
+sandboxed path EmDash's bridge answers `null` for any D1 error. The gates, in order:
+
+- **The CMS must list at least one product** in each run, or the run judges nothing.
+- **A missing document is re-read twice on the spot.** A row that misses and is then FOUND by
+  a re-read proves the host is answering "missing" for documents that exist. One such
+  contradiction makes the whole run FLAKY: it records no strike, wipes the strikes of every row
+  it read, and moves the walk past them. A real deletion misses on every look of every pass, so
+  it never looks flaky.
+- **A miss counts as a strike only in a run that read some other document successfully.** If
+  nothing on the page was found, the run reads the product the list returned, and a `null` there
+  is treated as an outage.
+- **The row is tombstoned on the third strike,** each strike from a run at least fifteen minutes
+  after the last. Any read that finds the document wipes its strikes. A list or canary trip
+  wipes all strikes.
+- **Strikes expire** after seven days, or four full passes when a pass takes longer, so a
+  catalog whose pass outlasts a week (roughly 30,000 products on Free) still reaches the third
+  strike.
+- **Limits:** at most five tombstones a minute, a failed read never counts, and rows younger than
+  fifteen minutes are not read.
+
+Each of those stops logs a `cron sweep product-orphans` error line. Measured on an otherwise
+idle store, a pass over a 1000-product catalog takes about 350 ticks (about six hours) on the
+Workers Free preset, and about 7 on Paid. An orphan is tombstoned on the third pass that finds
+it: on Free, a 1000-product catalog's orphan went after about 900 ticks, and worst case it is up
+to about eighteen hours. The leg has no deadline, so it is never promoted ahead of other legs
+by aging.
+
+**A dense block of real orphans is struck out like any rows,** five a minute at most. An example
+is a bulk delete of an import whose hooks were all lost. Measured with every read truthful:
+- 60 products, with 20 adjacent orphans plus one more, were all tombstoned by tick 123 on Free
+  and tick 34 on Paid.
+- 250 products, with a 40-orphan block and two lone orphans, by tick 379 on Free and tick 41 on
+  Paid.
+
+**The residual risk on a sandboxed host:** a CMS database failing reads at random is
+indistinguishable from deletions, until a re-read contradicts it. The simulations tombstoned no
+live product across 128 seeded cases:
+- 40 live products, 360 one-minute ticks, `get` failing to `null` with probability 0.15–0.9,
+  alone or with the list failing too, four seeds, both presets;
+- 250 live products with p straddling 0.2–0.35, at 0.5 and 0.9, and in twenty-minute bursts
+  (0.6/0.25, 0.9/0.3), three seeds, both presets.
+
+That is seeded PRNGs and one independent-failure model, not a proof. A host that returned `null`
+for one specific live document on every read, while other reads succeeded, would be
+indistinguishable from a deletion; nothing in EmDash 0.38 is known to do this. The tombstone is final, so
+a live product ever struck out that way sells again only once it is duplicated in the CMS (a new
+id, and its pricing re-entered).
+
+**While CMS reads are failing, real orphans WAIT.** A flaky run strikes nothing, and every list
+or canary trip wipes the strikes gathered so far. So under sustained failures (on Paid, under
+any; on Workers Free, even under a list that fails one time in twenty) an orphan may not be
+tombstoned for hours, or at all while the failures last. That is the safe direction.
+
+The outbox, the two expiry legs, the
 intent-cancel drain and the hold-intent completer run every tick, so on an idle store a
 fifteen-minute hold expires within about a minute of its deadline and a queued email goes out
 within about a minute.
