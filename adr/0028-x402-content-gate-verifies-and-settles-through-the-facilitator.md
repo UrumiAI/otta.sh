@@ -442,15 +442,21 @@ make no network call.**
      in-process `page_gate` confirmation and runs `settleOrder`. That flips `pending → paid`,
      records the payment and grants the entitlement with `source: "x402"`.
    - **`settled`, but `settleOrder` fails** (storage `BUSY`, or it throws). The money is on-chain
-     and this request is the only one that may ever be served, but the order is still `pending`
-     with `in_flight`. The use case **flags the order at once**: "settled on chain, not recorded",
-     naming the transaction hash, the payer and the nonce. It sets `lastOutcome: unconfirmed`, so
-     no later request settles it. The site answers **409** with `error: "settlement_unrecorded"`
-     and `PAYMENT-RESPONSE` (the buyer's receipt), and with **no `Link` and no `Retry-After`**: the
-     links would not work on an unpaid order, and a retry with the same header gets the replay 409
-     (C). The operator records or refunds the payment from the flag. If the flag write fails too,
-     the expiry sweep's flag (attempts ≥ 1) is the backstop; it lacks the hash, which the operator
-     finds from the payer and nonce.
+     and this request is the only one that may ever be served. The use case first retries
+     `settleOrder` a bounded number of times in-process, and re-reads the order before each try
+     and after the last one. **If the order is paid** (an earlier try committed but its answer was
+     lost), it goes on to delivery (step 9) as a fresh settle, `Link` headers included.
+     **Otherwise** the order is still `pending` with `in_flight`, and the use case **flags it at
+     once**: "settled on chain, not recorded", naming the transaction hash, the payer and the
+     nonce. It sets `lastOutcome: unconfirmed`, so no later request settles it. The site answers
+     **409** with `error: "settlement_unrecorded"` and `PAYMENT-RESPONSE` (the buyer's receipt),
+     and with **no `Link` and no `Retry-After`**: the links would not work on an unpaid order, and
+     a retry with the same header gets the replay 409 (C). The flag tells the operator to **check
+     first whether the order is already paid** (a try may have committed after all), and only if
+     it is not, to refund the payer as below. ADR-0026 forbids marking a gateway order paid by
+     hand, so the operator never records this payment. If the flag write fails too, the expiry
+     sweep's flag (attempts ≥ 1) is the backstop; it lacks the hash, which the operator finds
+     from the payer and nonce.
    - **A facilitator's `success: false` does not prove nothing was broadcast.** The reference
      facilitator broadcasts `transferWithAuthorization` and then waits for the receipt. If the wait
      throws, its `catch` answers
@@ -1012,11 +1018,17 @@ Postgres and D1; increments 4, 5 and 7).
     first-attempt `/settle` transport timeout gives **409 `settlement_unconfirmed`, not 503**,
     with no `Retry-After`, and the body warns that the authorization may still settle until
     `validBefore`;
-  - **(unrecorded)** `/settle` answers `settled` and `settleOrder` then fails (an injected `BUSY`,
-    and an injected throw). The order is flagged at once with the transaction hash, payer and
-    nonce, `lastOutcome` is `unconfirmed`, and the answer is 409 `settlement_unrecorded` with
-    `PAYMENT-RESPONSE` and **no `Link` and no `Retry-After`**. A retry with the same header gets
-    the replay 409 and makes no call;
+  - **(unrecorded)** `/settle` answers `settled` and `settleOrder` then fails on every bounded
+    in-process try (an injected `BUSY`, and an injected throw). The order is flagged at once with
+    the transaction hash, payer and nonce, `lastOutcome` is `unconfirmed`, and the answer is 409
+    `settlement_unrecorded` with `PAYMENT-RESPONSE` and **no `Link` and no `Retry-After`**. A retry
+    with the same header gets the replay 409 and makes no call. In a second case a try commits but
+    throws: the re-read finds the order paid, and the request is served with `Link` headers, not
+    `settlement_unrecorded`;
+  - **(delivery busy)** after a recorded settle, `authorizeDownload` hits `BUSY` on every bounded
+    in-process try: the outcome is `delivery_busy` with the `orderId` and sku, the order stays
+    paid and unflagged, and no `Retry-After` is asked for. When a later try succeeds, the request
+    is served as usual;
   - **(A)** a first-attempt `rejected` carrying `invalid_exact_evm_transaction_failed` is flagged
     and answered 409 `settlement_unconfirmed`, **not 402**. So are `unexpected_settle_error`,
     `invalid_exact_evm_nonce_already_used`, an unknown reason, a missing reason, and an allowlisted
@@ -1350,9 +1362,11 @@ The amendments, against the 2026-10-05 draft:
   `index.ts:301-304`.
 
 **Review round 5, polish (both reviewers approved; follow-ups):**
-- `/settle` answering `settled` and `settleOrder` then failing is specified: flag at once with the
-  transaction hash, answer 409 `settlement_unrecorded` with no `Link` and no `Retry-After`, and a
-  test (Decision 5, step 8).
+- `/settle` answering `settled` and `settleOrder` then failing is specified: a bounded in-process
+  retry that re-reads the order and delivers if it is paid; otherwise a flag at once with the
+  transaction hash that tells the operator to check for a paid order before refunding, and 409
+  `settlement_unrecorded` with no `Link` and no `Retry-After`. Tests cover both (Decision 5, step
+  8), and the bounded retry that ends in `delivery_busy`.
 - A storage `BUSY` after a recorded settle is retried in-process, then answers 503 `delivery_busy`
   with no `Retry-After`, telling the client to use the link, not to resend the payment.
 - The `settlement_unconfirmed` body warns that the authorization may still settle until
