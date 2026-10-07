@@ -133,6 +133,25 @@ export function readTaxSettings(raw: unknown): TaxSettings | undefined {
 	return "field" in parsed ? undefined : parsed;
 }
 
+/** Two blocks are the same when every field is — compared in one fixed order. */
+export function sameTaxSettings(a: TaxSettings, b: TaxSettings): boolean {
+	return JSON.stringify(taxSettingsFields(a)) === JSON.stringify(taxSettingsFields(b));
+}
+
+function taxSettingsFields(s: TaxSettings): unknown[] {
+	const cls = s.shippingTaxClass;
+	return [
+		s.enabled,
+		s.pricesIncludeTax,
+		s.basedOn,
+		s.baseAddress === null ? null : [s.baseAddress.country, s.baseAddress.region],
+		cls.kind === "fixed" ? [cls.kind, cls.taxClassId] : [cls.kind],
+		s.roundAtSubtotal,
+		s.displayCart,
+		s.totalsDisplay,
+	];
+}
+
 /** `null` is "no base address"; `undefined` is invalid. */
 function parseBaseAddress(raw: unknown): TaxBaseAddress | null | undefined {
 	if (raw === null) return null;

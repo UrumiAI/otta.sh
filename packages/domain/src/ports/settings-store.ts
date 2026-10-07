@@ -1,5 +1,5 @@
 import type { IdempotencyKey } from "../money/ids.js";
-import type { TaxSettings } from "../pricing/tax-settings.js";
+import { sameTaxSettings, type TaxSettings } from "../pricing/tax-settings.js";
 
 /**
  * `SettingsStore` (Phase 7 §5.2). The service-DB tier of the settings split:
@@ -24,7 +24,56 @@ export interface SettingsStore {
 	update(
 		patch: Partial<OperationalSettings>,
 		idempotencyKey: IdempotencyKey,
+		options?: SettingsUpdateOptions,
 	): Promise<OperationalSettings>;
+}
+
+/** A condition on an `update`, checked atomically with its write. */
+export interface SettingsUpdateOptions {
+	/**
+	 * Apply only while the stored `tax` block is still this one, by value — `null`:
+	 * only while none is saved. Checked against the very state the write replaces
+	 * (the emdash store re-checks it on every compare-and-set attempt), so a peer's
+	 * write that lands in between makes this one refuse rather than overwrite. On a
+	 * mismatch nothing is written or recorded and {@link SettingsPreconditionFailedError}
+	 * is thrown; a replay of a key that already landed returns its result as usual.
+	 */
+	ifTax?: TaxSettings | null;
+}
+
+/** A guarded `update` whose condition no longer holds. Nothing was written. */
+export class SettingsPreconditionFailedError extends Error {
+	override readonly name = "SettingsPreconditionFailedError";
+	/** Structural discriminator — survives a sandbox bridge, unlike `instanceof`. */
+	readonly code = "SETTINGS_PRECONDITION_FAILED";
+	/** The settings the condition was checked against. */
+	readonly current: OperationalSettings;
+
+	constructor(current: OperationalSettings) {
+		super("settings changed since they were read — the guarded update was not applied");
+		this.current = current;
+	}
+}
+
+/** Structural test for {@link SettingsPreconditionFailedError}. */
+export function isSettingsPreconditionFailedError(
+	err: unknown,
+): err is SettingsPreconditionFailedError {
+	return (
+		typeof err === "object" &&
+		err !== null &&
+		(err as { code?: unknown }).code === "SETTINGS_PRECONDITION_FAILED"
+	);
+}
+
+/** Whether `current` satisfies `options` (true when there is no condition). */
+export function settingsUpdateAllowed(
+	current: OperationalSettings,
+	options: SettingsUpdateOptions | undefined,
+): boolean {
+	if (options?.ifTax === undefined) return true;
+	if (options.ifTax === null) return current.tax === undefined;
+	return current.tax !== undefined && sameTaxSettings(current.tax, options.ifTax);
 }
 
 export interface OperationalSettings {

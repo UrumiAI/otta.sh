@@ -90,6 +90,7 @@ import {
 	effectiveTaxSettings,
 	idempotencyKey as toIdempotencyKey,
 	InvalidSettingsError,
+	isSettingsPreconditionFailedError,
 	parseTaxSettings,
 	updateSettings,
 	isCouponCodeConflictError,
@@ -539,13 +540,22 @@ export class InProcessAdminRulesClient implements AdminRulesSurface {
 	 * the same compare-on-value as a tax rate's `expectedRateBps`, ABA accepted
 	 * for the same reason). Options already equal to `next` are answered `ok`
 	 * without a write, so a double submit is not reported stale.
+	 *
+	 * The guard is atomic: the write itself is conditional on the stored block
+	 * still being the one read here (`ifTax`, re-checked by the store on every
+	 * compare-and-set attempt), so a peer save — or a first-rate pin — landing
+	 * between this read and the write makes this save `stale`, never a clobber.
+	 * With nothing saved, the effective options come from "are there rates?";
+	 * every change to that (the first rate, the last rate deleted) writes a block
+	 * first, which fails the `ifTax: null` condition the same way.
 	 */
 	async updateTaxSettings(
 		next: unknown,
 		opts: { expected: string; idempotencyKey: string },
 	): Promise<TaxSettingsUpdateResult> {
 		requireBoundedText("idempotencyKey", opts.idempotencyKey, 1, 200);
-		const { settings: current } = await this.getTaxSettings();
+		const stored = (await this.#stores.settingsStore.get()).tax;
+		const current = stored ?? effectiveTaxSettings(undefined, await this.#stores.taxRules.hasAnyRate());
 		const currentDigest = taxSettingsDigest(current);
 		const parsed = parseTaxSettings(next);
 		if (!("field" in parsed) && taxSettingsDigest(parsed) === currentDigest) {
@@ -557,11 +567,15 @@ export class InProcessAdminRulesClient implements AdminRulesSurface {
 				this.#stores.settingsStore,
 				{ tax: next as TaxSettings },
 				toIdempotencyKey(opts.idempotencyKey),
+				{ ifTax: stored ?? null },
 			);
 			return { ok: true, settings: result.tax ?? current };
 		} catch (err) {
 			if (err instanceof InvalidSettingsError) {
 				return { ok: false, reason: "invalid", field: err.field, message: err.message };
+			}
+			if (isSettingsPreconditionFailedError(err)) {
+				return { ok: false, reason: "stale", current: (await this.getTaxSettings()).settings };
 			}
 			throw err;
 		}
@@ -572,19 +586,30 @@ export class InProcessAdminRulesClient implements AdminRulesSurface {
 	 * (or the last deleted) would flip a store with nothing saved between "new" and
 	 * "existing". Before either, a store with nothing saved has what it has NOW
 	 * written down — a new store stays a new store (tax off), an existing one keeps
-	 * its legacy behaviour. A saved block skips it; two racing pins write the same
-	 * value, so each takes a key of its own (a fixed key could be pinned forever to
-	 * a revision that has since moved, and refuse every later rate edit).
+	 * its legacy behaviour.
+	 *
+	 * The write is conditional on nothing being saved (`ifTax: null`), checked by
+	 * the store atomically with the write: an admin save that lands first wins and
+	 * the pin writes nothing. Two racing pins write the same value, so each takes a
+	 * key of its own (a fixed key could be pinned forever to a revision that has
+	 * since moved, and refuse every later rate edit).
 	 */
 	async #pinTaxSettings(): Promise<void> {
 		if ((await this.#stores.settingsStore.get()).tax !== undefined) return;
 		const hasAnyRate = await this.#stores.taxRules.hasAnyRate();
-		await this.#stores.settingsStore.update(
-			{ tax: effectiveTaxSettings(undefined, hasAnyRate) },
-			toIdempotencyKey(
-				`tax-settings-pin-${this.#stores.clock.now().toISOString()}-${String(++pinSeq)}`,
-			),
-		);
+		try {
+			await this.#stores.settingsStore.update(
+				{ tax: effectiveTaxSettings(undefined, hasAnyRate) },
+				toIdempotencyKey(
+					`tax-settings-pin-${this.#stores.clock.now().toISOString()}-${String(++pinSeq)}`,
+				),
+				{ ifTax: null },
+			);
+		} catch (err) {
+			// Something was saved since the read above — the saved block decides now.
+			if (isSettingsPreconditionFailedError(err)) return;
+			throw err;
+		}
 	}
 
 	// -- Coupons ---------------------------------------------------------------

@@ -659,8 +659,17 @@ export type {
 	TopProductsMetric,
 } from "./ports/reporting-store.js";
 export { REVENUE_COUNTING_STATES } from "./ports/reporting-store.js";
-export type { OperationalSettings, SettingsStore } from "./ports/settings-store.js";
-export { DEFAULT_OPERATIONAL_SETTINGS } from "./ports/settings-store.js";
+export type {
+	OperationalSettings,
+	SettingsStore,
+	SettingsUpdateOptions,
+} from "./ports/settings-store.js";
+export {
+	DEFAULT_OPERATIONAL_SETTINGS,
+	isSettingsPreconditionFailedError,
+	SettingsPreconditionFailedError,
+	settingsUpdateAllowed,
+} from "./ports/settings-store.js";
 export {
 	getLowStockReport,
 	getOrdersByStatusReport,
