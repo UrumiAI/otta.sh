@@ -138,6 +138,60 @@ export default {
 				}
 			},
 		},
+		/**
+		 * A refund whose CREATE the host answers after a short bound (300 ms): the
+		 * verdict and how long it took. `lingerMs` (input) keeps the route running
+		 * that much longer after the verdict, so the late answer reaches the
+		 * isolate while the call that gave up on it is still in scope.
+		 */
+		slowRefund: {
+			async handler({ input }: RouteContext, ctx: PluginContext): Promise<string> {
+				const { lingerMs, key: refundKey } = (input ?? {}) as { lingerMs?: unknown; key?: unknown };
+				const started = Date.now();
+				try {
+					const gw = await stripeGatewayFromCtx(withStripeKv(ctx), { refundCreateTimeoutMs: 300 });
+					if (gw === undefined) return "no gateway";
+					const result = await gw.refund({
+						orderId: ORDER,
+						providerRef: "pi_sandbox_1",
+						amount: cents(500),
+						currency: currency("USD"),
+						priorRefunded: cents(0),
+						idempotencyKey: key(typeof refundKey === "string" ? refundKey : "rf_slow_1"),
+					});
+					const ms = Date.now() - started;
+					if (typeof lingerMs === "number") await new Promise((r) => setTimeout(r, lingerMs));
+					return JSON.stringify({ result, ms });
+				} catch (err) {
+					return describeError(err);
+				}
+			},
+		},
+		/** A PaymentIntent create the host answers after the bound (300 ms). */
+		slowIntent: {
+			async handler(_route: RouteContext, ctx: PluginContext): Promise<string> {
+				const started = Date.now();
+				try {
+					const gw = await stripeGatewayFromCtx(withStripeKv(ctx), { requestTimeoutMs: 300 });
+					if (gw === undefined) return "no gateway";
+					await gw.createIntent({
+						orderId: ORDER,
+						amount: cents(1000),
+						currency: currency("USD"),
+						idempotencyKey: key("pi_slow_1"),
+						lines: [{ title: "Coffee", quantity: 1 }],
+						customerRequired: false,
+					});
+					return JSON.stringify({ result: "created", ms: Date.now() - started });
+				} catch (err) {
+					const { name, retryable } = err as { name?: unknown; retryable?: unknown };
+					return JSON.stringify({
+						result: { name: String(name), retryable },
+						ms: Date.now() - started,
+					});
+				}
+			},
+		},
 		/** A PaymentIntent cancel through the plugin's wiring (the cron sweep's call). */
 		stripeCancel: {
 			async handler(_route: RouteContext, ctx: PluginContext): Promise<string> {
@@ -193,15 +247,24 @@ export default {
 				}
 			},
 		},
-		/** The email senders, Resend and SMTP2GO (`trustedHost` as for `stripeRefund`). */
+		/** The email senders, Resend and SMTP2GO (`trustedHost` as for `stripeRefund`).
+		 *  `timeoutMs` (input) sets the send's bound; the answer says how long it took. */
 		email: {
 			async handler({ input }: RouteContext, ctx: PluginContext): Promise<string> {
-				const { provider } = (input ?? {}) as { provider?: unknown };
+				const {
+					provider,
+					timeoutMs,
+					key: rowKey,
+				} = (input ?? {}) as {
+					provider?: unknown;
+					timeoutMs?: unknown;
+					key?: unknown;
+				};
 				const common = {
 					fetch: ctx.http.fetch,
 					from: "orders@shop.test",
 					apiKey: "fake-email-key",
-					requestTimeoutMs: 5_000,
+					requestTimeoutMs: typeof timeoutMs === "number" ? timeoutMs : 5_000,
 					trustedHost: trustedHostOf(input),
 				};
 				const sender =
@@ -213,7 +276,7 @@ export default {
 						to: "buyer@example.test" as never,
 						template: "order-confirmation",
 						data: { orderId: "ord_1", totalCents: 2599, currency: "USD" },
-						idempotencyKey: "outbox_row_1",
+						idempotencyKey: typeof rowKey === "string" ? rowKey : "outbox_row_1",
 					});
 					return "sent";
 				} catch (err) {

@@ -67,6 +67,7 @@ const SPEC_PAYER = "0x857b06519E91e3A54538791bDbb0E22373e36b66";
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 /** The probe plugin's `allowedHosts`: every host its routes reach. */
 const ALLOWED = [PROBE_HOST, STRIPE_HOST, X402_HOST, EMAIL_HOST, SMTP2GO_HOST];
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 /** The runner's own compatibility date for a loaded plugin (`runner.ts`, 0.38). */
 const RUNNER_COMPATIBILITY_DATE = "2026-04-01";
 
@@ -260,10 +261,19 @@ describe("EmDash's sandbox runner: ctx.http.fetch over the PluginBridge RPC (rea
 		return ((await res.json()) as { result?: unknown; error?: unknown }).result ?? res.status;
 	}
 
+	/** How long the stub holds back an answer, by `METHOD host/path`: a slow host.
+	 *  Each case that sets one clears it. */
+	const delays = new Map<string, number>();
+
 	/** What each stubbed host answers. The isolate's ONLY way out is this stub
 	 *  (`globalOutbound`), so no request can reach a real Stripe or provider. */
-	function answer(req: RecordedRequest): { status: number; body: unknown } {
+	function answer(req: RecordedRequest): { status: number; body: unknown; delayMs?: number } {
 		const where = `${req.method} ${String(req.headers.host)}${req.url}`;
+		const delayMs = delays.get(where);
+		return delayMs === undefined ? answerNow(where) : { ...answerNow(where), delayMs };
+	}
+
+	function answerNow(where: string): { status: number; body: unknown } {
 		switch (where) {
 			case `GET ${PROBE_HOST}/ping`:
 				return { status: 200, body: { pong: true } };
@@ -275,6 +285,8 @@ describe("EmDash's sandbox runner: ctx.http.fetch over the PluginBridge RPC (rea
 				};
 			case `POST ${STRIPE_HOST}/v1/refunds`:
 				return { status: 200, body: { id: "re_sandbox_1", amount: 500, currency: "usd" } };
+			case `POST ${STRIPE_HOST}/v1/payment_intents`:
+				return { status: 200, body: { id: "pi_late_1", client_secret: "pi_late_1_secret_x" } };
 			case `POST ${STRIPE_HOST}/v1/payment_intents/pi_sandbox_1/cancel`:
 				return { status: 200, body: { id: "pi_sandbox_1", status: "canceled" } };
 			case `GET ${STRIPE_HOST}/v1/account`:
@@ -385,5 +397,84 @@ describe("EmDash's sandbox runner: ctx.http.fetch over the PluginBridge RPC (rea
 		stub.requests.length = 0;
 		expect(await route("email", { provider: "resend", trustedHost: true })).toBe(REFUSED);
 		expect(stub.requests).toHaveLength(0);
+	});
+
+	// A LATE answer under the runner. Nothing can abort the request (no signal
+	// crosses the RPC), so each call gives up at its own bound and classifies as
+	// a timeout always did; whatever the host answers afterwards is discarded.
+	describe("a host that answers after the call's bound", () => {
+		test("a refund create answered late is UNVERIFIED at the bound, never TERMINAL; the create was keyed", async () => {
+			stub.requests.length = 0;
+			delays.set(`POST ${STRIPE_HOST}/v1/refunds`, 1_500);
+			try {
+				const out = JSON.parse(String(await route("slowRefund", { key: "rf_slow_1" }))) as {
+					result: unknown;
+					ms: number;
+				};
+				expect(out.result).toEqual({ ok: false, reason: "UNVERIFIED" });
+				expect(out.ms).toBeGreaterThanOrEqual(300);
+				expect(out.ms).toBeLessThan(1_000);
+				const create = stub.requests.find((r) => r.url === "/v1/refunds");
+				expect(create?.headers["idempotency-key"]).toBe("rf_slow_1");
+				expect(stub.requests.filter((r) => r.url === "/v1/refunds")).toHaveLength(1);
+			} finally {
+				delays.clear();
+				// Let the held answer go before the next case.
+				await sleep(1_300);
+			}
+		});
+
+		test("a late refund answer that reaches the isolate while the route runs on is discarded: still UNVERIFIED", async () => {
+			stub.requests.length = 0;
+			delays.set(`POST ${STRIPE_HOST}/v1/refunds`, 800);
+			try {
+				const out = JSON.parse(
+					String(await route("slowRefund", { key: "rf_slow_2", lingerMs: 1_500 })),
+				) as { result: unknown; ms: number };
+				expect(out.result).toEqual({ ok: false, reason: "UNVERIFIED" });
+				expect(out.ms).toBeLessThan(800);
+				// The host did answer, while the route was still running.
+				expect(stub.requests.find((r) => r.url === "/v1/refunds")?.answeredAt).toBeDefined();
+			} finally {
+				delays.clear();
+			}
+		});
+
+		test("a PaymentIntent create answered late is a retryable failure at the bound", async () => {
+			stub.requests.length = 0;
+			delays.set(`POST ${STRIPE_HOST}/v1/payment_intents`, 1_500);
+			try {
+				const out = JSON.parse(String(await route("slowIntent"))) as {
+					result: unknown;
+					ms: number;
+				};
+				expect(out.result).toEqual({ name: "PaymentIntentError", retryable: true });
+				expect(out.ms).toBeLessThan(1_000);
+				expect(
+					stub.requests.find((r) => r.url === "/v1/payment_intents")?.headers["idempotency-key"],
+				).toBe("pi_slow_1");
+			} finally {
+				delays.clear();
+				await sleep(1_300);
+			}
+		});
+
+		test("a Resend send answered late is an EmailSendTimeoutError at the bound; its key travelled", async () => {
+			stub.requests.length = 0;
+			delays.set(`POST ${EMAIL_HOST}/emails`, 1_500);
+			try {
+				const started = Date.now();
+				expect(
+					await route("email", { provider: "resend", timeoutMs: 300, key: "outbox_row_slow" }),
+				).toBe("threw EmailSendTimeoutError: email send abandoned after 300 ms");
+				expect(Date.now() - started).toBeLessThan(1_000);
+				expect(stub.requests.find((r) => r.url === "/emails")?.headers["idempotency-key"]).toBe(
+					"outbox_row_slow",
+				);
+			} finally {
+				delays.clear();
+				await sleep(1_300);
+			}
+		});
 	});
 });
