@@ -584,6 +584,20 @@ export interface OrderStore {
 	 */
 	markEmailSent(id: string, now: string): Promise<void>;
 	/**
+	 * Complete a claimed row as SKIPPED: terminal, and never sent. For a row the
+	 * dispatcher will not send because the order has no email recipient — an x402
+	 * gate buyer's `buyerRef` is a wallet (`x402:0x…`), not an address (ADR-0028
+	 * Decision 7). It is its own outcome rather than {@link markEmailSent} so that
+	 * nothing reads an email that never went as delivered: an admin write reports
+	 * whether its email went (ADR-0026). Nor is it an attempt or a failure — the
+	 * attempt the claim counted is taken back off, as {@link releaseEmailClaim} does.
+	 *
+	 * Only a `sending` row is skipped: a row that is pending, sent, failed or already
+	 * skipped is left as it is, so a double skip is a no-op. The locate semantics are
+	 * `markEmailSent`'s.
+	 */
+	markEmailSkipped(id: string, now: string): Promise<void>;
+	/**
 	 * Return a claimed row to `pending` for a later retry (`retryAt`), or mark it
 	 * `failed` (retries exhausted) when `retryAt` is null. The locate semantics are
 	 * `markEmailSent`'s, unchanged: the SQL adapters' guarded update treats an
@@ -798,6 +812,9 @@ export interface RecordPaymentIntentInput {
 	gateway: PaymentMethod;
 	/** The provider's intent id (`pi_…` for Stripe). */
 	intentId: string;
+	/** The intent's provider-side customer decision (`PaymentIntentHandle.customerRef`),
+	 *  when the gateway made one. Kept from the FIRST record of an intent. */
+	customerRef?: string | null;
 }
 
 /**
@@ -828,6 +845,9 @@ export interface PaymentIntentRecord {
 	cancelAttempts: number;
 	/** How it ended; `null` while unresolved. */
 	cancelOutcome: PaymentIntentCancelOutcome | null;
+	/** The customer decision recorded with it (issue #382); ABSENT when none was
+	 *  — every intent recorded before decisions were, and other gateways'. */
+	customerRef?: string | null;
 }
 
 /** One intent's next cancel bookkeeping ({@link OrderStore.updatePaymentIntentCancel}). */
@@ -925,6 +945,9 @@ export interface CreateOrderInput {
 	 * nothing (the address, like the line snapshots, is carried exactly once).
 	 */
 	shippingAddress?: OrderAddress | null;
+	/** The order's buyer-address-requirement snapshot ({@link Order.buyerAddressRequired}),
+	 *  written once in the same insert. Absent ⇒ the order carries none. */
+	buyerAddressRequired?: boolean;
 	/**
 	 * The `order_totals` write. Phase 4 passed only `{ subtotal, total, currency }`
 	 * (the stub); Phase 6 passes the full computed breakdown. The extra fields are

@@ -15,6 +15,7 @@ import { defineConfig, fontProviders } from "astro/config";
 import emdash from "emdash/astro";
 import { parseDotEnv } from "./src/lib/dot-env.js";
 import { buildEmdashOptions } from "./src/emdash-options.js";
+import { assertDownloadsBucketPrivate } from "./src/lib/downloads-bucket.js";
 import { devStripeOfflineIntegration } from "./src/lib/e2e-stripe-offline.js";
 import { resolveStripePublishableKey, STRIPE_PUBLIC_KEY_VAR } from "./src/lib/stripe-config.js";
 
@@ -51,9 +52,10 @@ function readDotEnv(name: string): string | undefined {
  * UNSET IS THE DEFAULT AND IT IS FAIL-CLOSED, not broken: the define bakes `""`,
  * which `hostnameOf` yields no host for, so `resolveInProcessEgress` reports the
  * provider unconfigured and `resolveAllowedHosts` grants nothing for it. Staging
- * today sets neither, so its allowlist is the Stripe API host alone — order email
- * is a capability this deployment does not yet have, and setting `EMAIL_API_URL`
- * at build time is the whole of turning it on.
+ * today sets neither, so its allowlist is the constant part alone — Stripe's API
+ * host and SMTP2GO's send hosts. Email then goes out only if the store picks
+ * SMTP2GO in Settings; setting `EMAIL_API_URL` at build time turns on the
+ * Resend-shaped sender.
  */
 const egress = {
 	emailApiUrl: process.env.EMAIL_API_URL ?? readDotEnv("EMAIL_API_URL"),
@@ -84,6 +86,18 @@ const stripePublishableKey = resolveStripePublishableKey(
 const localWranglerConfig = existsSync(new URL("wrangler.local.jsonc", import.meta.url))
 	? "wrangler.local.jsonc"
 	: undefined;
+
+/**
+ * The private downloads bucket must never be the public media bucket (issue
+ * #376): EmDash serves every MEDIA key without auth. Checked on the file the
+ * build SELECTS — the gitignored local config when there is one, which no test
+ * sees — and the build fails naming it (`src/lib/downloads-bucket.ts`).
+ */
+const selectedWranglerConfig = localWranglerConfig ?? "wrangler.jsonc";
+assertDownloadsBucketPrivate(
+	readFileSync(new URL(selectedWranglerConfig, import.meta.url), "utf8"),
+	selectedWranglerConfig,
+);
 
 /**
  * The latin `unicode-range`: the range on the face Google Fonts' css2 response

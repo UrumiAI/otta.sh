@@ -22,6 +22,7 @@ function order(over: Record<string, unknown> = {}) {
 		holdExpiresAt: "2026-10-03T12:15:00.000Z",
 		fulfillment: null,
 		shippingAddress: null,
+		lines: [{ fulfillmentKind: "physical" }],
 		...over,
 	} as Parameters<typeof accountOrderExtras>[0];
 }
@@ -93,6 +94,14 @@ describe("accountOrderExtras — the public order page's offers, on the account 
 		]);
 		expect(accountOrderExtras(order(), NOW).addressLines).toBeNull();
 	});
+
+	test("issue #382: an order that ships nothing calls its address the billing address", () => {
+		const digital = [{ fulfillmentKind: "digital" }, { fulfillmentKind: "digital" }];
+		const mixed = [{ fulfillmentKind: "digital" }, { fulfillmentKind: "physical" }];
+		expect(accountOrderExtras(order({ lines: digital }), NOW).addressLabel).toBe("Billing address");
+		expect(accountOrderExtras(order({ lines: mixed }), NOW).addressLabel).toBe("Delivery address");
+		expect(accountOrderExtras(order(), NOW).addressLabel).toBe("Delivery address");
+	});
 });
 
 describe("trackingHref — never a script or another scheme", () => {
@@ -132,6 +141,9 @@ describe.each(viewCases("accountOrder"))("the account order view %s", (_label, {
 		expect(template).toContain("order.tracking.trackingNumber");
 		expect(template).toContain("href={order.tracking.trackingUrl}");
 		expect(template).toContain("order.addressLines.map(");
+		// Issue #382: named by the page — "Billing address" on an order that ships nothing.
+		expect(template).toContain("{order.addressLabel}");
+		expect(template).not.toMatch(/>\s*Delivery address\s*</);
 	});
 
 	test("names the signed-in email", () => {

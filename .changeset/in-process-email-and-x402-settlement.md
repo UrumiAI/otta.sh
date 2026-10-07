@@ -41,7 +41,7 @@ dedupe hinge and `refundable = false` (ADR-0008) are all unchanged.
   `allowedHosts`. Adds the PUBLIC `entitlements/x402/settle` route — the
   in-process entitlement grant, behind the SAME two layers the Stripe webhook
   route uses — the shared edge token
-  (`settings:edgeToken`, pass-through when unset) as a cheap outer gate, then
+  (`settings:otta-wh-token`, pass-through when unset) as a cheap outer gate, then
   the real check: the order must be `paymentMethod: "x402"`, the proof must
   verify through the configured facilitator, and the on-chain `transaction` must
   not already be bound to a different order. Answers

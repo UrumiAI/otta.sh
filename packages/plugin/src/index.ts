@@ -160,6 +160,7 @@ export {
 	IN_PROCESS_EGRESS_URLS,
 	type InProcessEgressUrls,
 	resolveAllowedHosts,
+	SMTP2GO_API_HOSTS,
 	STRIPE_API_HOST,
 	OTTA_PLUGIN_CAPABILITIES,
 	OTTA_PLUGIN_ID,
@@ -240,7 +241,7 @@ export {
 	x402FacilitatorSecretFromKv,
 	X402_FACILITATOR_API_KEY_KEY,
 } from "./payment-secrets.js";
-// INC-C5 — email dispatch and x402 settlement in-process. Both adapters are
+// INC-C5 — email dispatch and the x402 wiring, in-process. Both are
 // exported so a deploying site can name the kv settings keys it provisions
 // (`settings:emailFrom`, `settings:x402PayTo`, `settings:x402Accepts`) without
 // restating the strings, and so a suite can build either adapter directly.
@@ -252,6 +253,23 @@ export {
 	type CtxHttpEmailSenderOptions,
 	type EmailSenderEgress,
 } from "./email/ctx-http-email-sender.js";
+// The "Email provider" choice (Resend-shaped default, or SMTP2GO) and the
+// SMTP2GO sender, so a deploying site can name the kv keys it provisions.
+export {
+	DEFAULT_EMAIL_PROVIDER,
+	DEFAULT_SMTP2GO_REGION,
+	EMAIL_PROVIDER_KEY,
+	EMAIL_PROVIDERS,
+	type EmailProviderId,
+	SMTP2GO_REGION_KEY,
+	SMTP2GO_REGIONS,
+	type Smtp2goRegion,
+} from "./email/email-provider.js";
+export { EmailProviderError, type EmailProviderErrorKind } from "./email/http-email-sender.js";
+export {
+	Smtp2goEmailSender,
+	type Smtp2goEmailSenderOptions,
+} from "./email/smtp2go-email-sender.js";
 export {
 	DEFAULT_X402_ACCEPTS,
 	wireX402Gateway,
@@ -272,17 +290,25 @@ export {
 	type StripeWebhookSettleReason,
 	type StripeWebhookSettleResult,
 } from "./webhooks/stripe-settle-route.js";
-// INC-C5: the in-process x402 page-gate settle surface. Exported for the same
-// reason as the Stripe one above — the calling site reconstructs the HTTP status
-// from the returned `status` field.
+// Issue #376 — the PUBLIC download gate. The site's download endpoint names the
+// route and reads its answer: the file to stream, or the refusal it maps to a
+// status. Only the constant and the shapes; the handler stays internal.
 export {
-	createX402SettleHandler,
-	X402_SETTLE_ROUTE,
-	x402SettleResultToResponse,
-	type X402SettleInput,
-	type X402SettleReason,
-	type X402SettleResult,
-} from "./payments/x402-settle-route.js";
+	ENTITLEMENT_DOWNLOAD_ROUTE,
+	type EntitlementDownloadInput,
+	type EntitlementDownloadResult,
+} from "./entitlements/download-route.js";
+export { type DownloadAssetWire } from "./admin/admin-products-surface.js";
+// Issue #376 increment 4 — the site's admin upload endpoint mints the key and
+// coerces the filename and type with the SAME rules the admin save validates,
+// so what it uploads is always a descriptor the save accepts.
+export {
+	DOWNLOAD_FALLBACK_CONTENT_TYPE,
+	DOWNLOAD_KEY_RANDOM_BYTES,
+	downloadContentTypeFor,
+	mintDownloadAssetKey,
+	sanitizeDownloadFilename,
+} from "@otta-sh/domain";
 export {
 	CommerceClientError,
 	type CartFailureReason,

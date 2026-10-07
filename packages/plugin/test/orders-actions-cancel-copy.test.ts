@@ -168,8 +168,13 @@ describe("the cancel notices when the money and the order part ways", () => {
 		expect(String(queued.notice?.description)).toContain(
 			"Refund email queued; retried automatically.",
 		);
+		// An order with no email address (an x402 buyer): no email, and none queued.
+		const nobody = await cancel({ ...outcome, email: "no-recipient" });
+		expect(String(nobody.notice?.description)).toContain(
+			"No email sent: the order has no email address.",
+		);
 		// The warning is never what fitting the banner cuts.
-		for (const result of [sent, queued]) {
+		for (const result of [sent, queued, nobody]) {
 			expect(String(result.notice?.description)).toContain(
 				"don’t ship or refund it again unchecked",
 			);

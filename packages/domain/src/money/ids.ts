@@ -68,9 +68,20 @@ export function customerId(value: string): CustomerId {
  */
 export function email(value: string): Email {
 	const normalized = value.trim().toLowerCase();
-	const at = normalized.indexOf("@");
-	if (at <= 0 || at !== normalized.lastIndexOf("@") || at === normalized.length - 1) {
+	if (!isEmailAddress(normalized)) {
 		throw new RangeError(`email() requires a valid address, got "${value}"`);
 	}
 	return normalized as Email;
+}
+
+/**
+ * {@link email}'s shape check alone, without normalizing or throwing: a single `@`
+ * with non-empty local and domain parts, after trimming. The email dispatcher asks
+ * it whether a guest order's `buyerRef` is an address at all — an x402 gate buyer's
+ * is a wallet (`x402:0x…`), which has no `@` (ADR-0028 Decision 7).
+ */
+export function isEmailAddress(value: string): boolean {
+	const trimmed = value.trim();
+	const at = trimmed.indexOf("@");
+	return at > 0 && at === trimmed.lastIndexOf("@") && at !== trimmed.length - 1;
 }

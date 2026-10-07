@@ -28,6 +28,7 @@ import {
 	COMMERCE_STORAGE_COLLECTIONS,
 	COMMERCE_STORAGE_COLLECTION_NAMES,
 	PAYMENT_SECRET_KEYS,
+	SMTP2GO_API_HOSTS,
 	STRIPE_API_HOST,
 	COUPONS_PAGE,
 	REPORTS_PAGE,
@@ -52,6 +53,10 @@ import { ottaConsoleDescriptor } from "../src/otta-console-descriptor.js";
 import { ottaPluginDescriptor } from "../src/otta-plugin-descriptor.js";
 import { readFile } from "node:fs/promises";
 
+/** The hosts every build grants: Stripe's API and SMTP2GO's four send hosts
+ *  (a store picks SMTP2GO in Settings; kv cannot widen the build-time list). */
+const BASELINE_HOSTS = [STRIPE_API_HOST, ...Object.values(SMTP2GO_API_HOSTS)];
+
 describe("ottaPluginDescriptor", () => {
 	const descriptor = ottaPluginDescriptor();
 
@@ -65,11 +70,12 @@ describe("ottaPluginDescriptor", () => {
 		expect(descriptor.capabilities).toEqual([...OTTA_PLUGIN_CAPABILITIES]);
 	});
 
-	test("allowedHosts is exactly the in-process egress list (Stripe alone, unconfigured)", () => {
+	test("allowedHosts is exactly the in-process egress list (the baseline alone, unconfigured)", () => {
 		// INC-D3a: there is no commerce service and no service host. With no
-		// email/facilitator URL supplied the list is the Stripe API host alone —
-		// see the exact-set block below for the configured cases.
-		expect(descriptor.allowedHosts).toEqual([STRIPE_API_HOST]);
+		// email/facilitator URL supplied the list is the Stripe API host and
+		// SMTP2GO's send hosts — see the exact-set block below for the configured
+		// cases.
+		expect(descriptor.allowedHosts).toEqual(BASELINE_HOSTS);
 	});
 
 	test("registers NO field widget — the CMS is not a commerce editor (PR 1b)", () => {
@@ -273,18 +279,18 @@ describe("ottaPluginDescriptor allowedHosts, EXACTLY", () => {
 			egress: { emailApiUrl: EMAIL, facilitatorUrl: FACILITATOR },
 		}).allowedHosts;
 		expect(sorted(hosts)).toEqual(
-			sorted([STRIPE_API_HOST, "api.email.example.com", "facilitator.example.com"]),
+			sorted([...BASELINE_HOSTS, "api.email.example.com", "facilitator.example.com"]),
 		);
 	});
 
-	test("with nothing configured: EXACTLY the Stripe API host", () => {
-		expect(ottaPluginDescriptor().allowedHosts).toEqual([STRIPE_API_HOST]);
+	test("with nothing configured: EXACTLY the Stripe API host and SMTP2GO's send hosts", () => {
+		expect(ottaPluginDescriptor().allowedHosts).toEqual(BASELINE_HOSTS);
 	});
 
 	test("FAIL-CLOSED: an unparseable egress URL grants nothing and never throws", () => {
 		const options = { egress: { emailApiUrl: "not a url", facilitatorUrl: "" } };
 		expect(() => ottaPluginDescriptor(options)).not.toThrow();
-		expect(ottaPluginDescriptor(options).allowedHosts).toEqual([STRIPE_API_HOST]);
+		expect(ottaPluginDescriptor(options).allowedHosts).toEqual(BASELINE_HOSTS);
 	});
 
 	test("INC-D3a: no commerce-service host can reach the allowlist at all", () => {
@@ -388,13 +394,13 @@ describe("buildEmdashOptions", () => {
 			facilitatorUrl: "https://facilitator.example.com",
 		}).plugins[0]?.allowedHosts;
 		expect(sorted(hosts)).toEqual(
-			sorted([STRIPE_API_HOST, "api.email.example.com", "facilitator.example.com"]),
+			sorted([...BASELINE_HOSTS, "api.email.example.com", "facilitator.example.com"]),
 		);
 	});
 
-	test("with no egress configured the allowlist is EXACTLY Stripe — fail-closed, unchanged", () => {
+	test("with no egress configured the allowlist is EXACTLY the baseline — fail-closed", () => {
 		// Staging today supplies neither URL, so this is the list it actually ships.
-		expect(buildEmdashOptions().plugins[0]?.allowedHosts).toEqual([STRIPE_API_HOST]);
+		expect(buildEmdashOptions().plugins[0]?.allowedHosts).toEqual(BASELINE_HOSTS);
 	});
 
 	test("registers the Otta plugin FIRST, trusted, unchanged", () => {

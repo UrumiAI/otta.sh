@@ -78,7 +78,7 @@ function sessionCookieDescriptor(token: string, expiresAt: string): SessionCooki
 	};
 }
 
-/** Exported for reuse (e.g. `entitlements/download-route.ts`) rather than each
+/** Exported for reuse (e.g. `storefront/shopper-state-route.ts`) rather than each
  *  route re-inlining the same `typeof value === "string" && value.length > 0`
  *  guard. `cart-routes.ts` keeps its own copy (pre-existing, out of scope here). */
 export function isNonEmptyString(value: unknown): value is string {
