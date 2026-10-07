@@ -216,6 +216,29 @@ describe("shipping tax class — WooCommerce 'based on cart items' (woo-facts-ve
 		).toBe("b-reduced");
 	});
 
+	// Review 2a A m1: WooCommerce's `ORDER BY name` runs under MySQL's default
+	// collation, which compares case-insensitively — so "beer" sorts before "Wine",
+	// where a code-unit compare puts every capital first.
+	test("several classes → the first by name, compared case-insensitively", () => {
+		const mixed = new Map([
+			["c-wine", "Wine"],
+			["c-beer", "beer"],
+		]);
+		expect(
+			inheritShippingTaxClass([line("0", 1, "c-wine"), line("1", 1, "c-beer")], mixed),
+		).toBe("c-beer");
+	});
+
+	test("names equal but for case → the lower id, whatever the insertion order", () => {
+		const tie = new Map([
+			["z-two", "BOOKS"],
+			["a-one", "books"],
+		]);
+		const lines = [line("0", 1, "z-two"), line("1", 1, "a-one")];
+		expect(inheritShippingTaxClass(lines, tie)).toBe("a-one");
+		expect(inheritShippingTaxClass(lines, new Map([...tie].reverse()))).toBe("a-one");
+	});
+
 	test("several classes none of which is declared → standard (WooCommerce's fallback)", () => {
 		expect(inheritShippingTaxClass([line("0", 1, "x"), line("1", 1, "y")], new Map())).toBe(
 			"standard",

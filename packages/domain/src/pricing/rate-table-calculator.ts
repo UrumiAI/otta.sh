@@ -64,7 +64,8 @@ export function rateTableOf(zoneRates: readonly TaxRate[]): RateTable {
  * The rate-table arithmetic. Each line at its class's rate (no rate ⇒ 0%, never
  * a refusal — WooCommerce's rule):
  *  - prices WITHOUT tax: `round_half_up(amount × bps / 10000)` (main's maths);
- *  - prices WITH tax: the tax inside the gross, `round_half_up(G × bps / (10000 + bps))`;
+ *  - prices WITH tax: the tax inside the gross, `round_half_down(G × bps / (10000 + bps))`
+ *    (WooCommerce's rounding for tax-inclusive stores — see {@link taxOn});
  *  - at subtotal: the same formula once per class over the class's summed amount,
  *    allocated back to its lines by amount (largest remainder).
  * Shipping is ALWAYS entered without tax (WooCommerce, woo-facts-verified Q1), at
@@ -203,7 +204,9 @@ function shippingTaxClassOf(
  *  - any in `standard` ⇒ `standard`;
  *  - one class ⇒ that class;
  *  - else the first by class NAME (WooCommerce's `ORDER BY name`) among the
- *    declared classes (`names`), falling back to `standard`.
+ *    declared classes (`names`), falling back to `standard`. Names compare
+ *    case-insensitively, as MySQL's default collation does; names equal but for
+ *    case go to the lower id, so the pick never depends on listing order.
  */
 export function inheritShippingTaxClass(
 	lines: TaxRequest["lines"],
@@ -216,9 +219,12 @@ export function inheritShippingTaxClass(
 	if (found.size === 0) return null;
 	if (found.has("standard")) return "standard";
 	if (found.size === 1) return [...found][0] as TaxClassId;
-	const ordered = [...names].toSorted(([idA, a], [idB, b]) =>
-		a === b ? (idA < idB ? -1 : 1) : a < b ? -1 : 1,
-	);
+	const ordered = [...names].toSorted(([idA, a], [idB, b]) => {
+		const la = a.toLowerCase();
+		const lb = b.toLowerCase();
+		if (la !== lb) return la < lb ? -1 : 1;
+		return idA < idB ? -1 : idA > idB ? 1 : 0;
+	});
 	return ordered.find(([id]) => found.has(id))?.[0] ?? "standard";
 }
 
