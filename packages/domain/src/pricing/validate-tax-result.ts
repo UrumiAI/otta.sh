@@ -62,7 +62,7 @@ export function validateTaxResult(
 			return null;
 		}
 		// A product that is not taxable carries no tax (PR 2b).
-		if (taxStatus !== "taxable" && line.taxCents !== 0) return null;
+		if (taxStatus !== "taxable" && !Object.is(line.taxCents, 0)) return null;
 		total += line.taxCents;
 		lines.push({ lineId, ...line });
 	}

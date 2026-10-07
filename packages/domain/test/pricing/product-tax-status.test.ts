@@ -219,6 +219,10 @@ describe("an outside calculator may not tax an untaxed line (DECISIONS 2b-2)", (
 		]);
 	});
 
+	test("a negative zero on an untaxed line ⇒ refused (only +0 is zero tax)", () => {
+		expect(validateTaxResult(req, answer([100, -0, 0]))).toBeNull();
+	});
+
 	test("the built-in's own answer is held to the same rule", () => {
 		expect(validateTaxResult(req, answer([100, 1, 0]), { boundTaxToAmount: false })).toBeNull();
 	});
@@ -330,6 +334,21 @@ describe("computeQuote: product status and method taxable", () => {
 		expect(q.breakdown.taxCents).toBe(180);
 		expect(q.breakdown.totalCents).toBe(2180);
 	});
+
+	for (const corrupt of [0, "", "false", null]) {
+		test(`a corrupt method flag ${JSON.stringify(corrupt)} still taxes shipping (B2)`, async () => {
+			await save({ ...NEW_STORE_TAX_SETTINGS, enabled: true });
+			// The store is rebuilt per test, so patching this instance is local.
+			const read = shippingRules.getMethod.bind(shippingRules);
+			shippingRules.getMethod = async (id) => {
+				const method = await read(id);
+				return method === null ? null : { ...method, taxable: corrupt as unknown as boolean };
+			};
+			const q = await computeQuote(deps, cart("m-taxed"));
+			if (!q.ok) throw new Error(q.reason);
+			expect(q.breakdown.shippingTaxCents).toBe(180);
+		});
+	}
 
 	test("legacy stores: the method flag is honoured too", async () => {
 		await save({ ...LEGACY_TAX_SETTINGS });

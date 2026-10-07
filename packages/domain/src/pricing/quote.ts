@@ -208,7 +208,7 @@ export async function computeQuote(
 			amountCents: rate.amountCents,
 			minSubtotalCents: rate.minSubtotalCents,
 		};
-		shippingTaxable = method.taxable;
+		shippingTaxable = method.taxable !== false;
 	} else {
 		shippingMethod = {
 			zoneId: zoneId ?? "",
