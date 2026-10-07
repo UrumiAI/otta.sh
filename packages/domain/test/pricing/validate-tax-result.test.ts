@@ -165,3 +165,67 @@ describe("validateTaxResult", () => {
 		).not.toBeNull();
 	});
 });
+
+/**
+ * Review 2a B1: with prices entered WITH tax, a line's amount is the GROSS and
+ * the tax inside it is `G × r / (10000 + r)` — below G at any rate. The bound is
+ * that at the 1000% cap, `ceil(G × 100000 / 110000)`, in exact integers, so the
+ * net (G − tax) can never go negative. Shipping is always entered without tax,
+ * so it keeps the exclusive bound (`amount × 10`).
+ */
+describe("validateTaxResult — the tax bound when prices are entered with tax", () => {
+	const gross = (amounts: [number, number], shipping = 300): TaxRequest => ({
+		...req,
+		pricesIncludeTax: true,
+		lines: [
+			{ ...req.lines[0]!, amountCents: cents(amounts[0]), unitPriceCents: cents(amounts[0]) },
+			{ ...req.lines[1]!, amountCents: cents(amounts[1]), unitPriceCents: cents(amounts[1]) },
+		],
+		shipping: { amountCents: cents(shipping), methodId: "m" },
+	});
+	const answer = (tax0: number, shippingTax = 27) => ({
+		...good(),
+		lines: [line("0", { taxCents: tax0 }), line("1", { taxCents: 0 })],
+		shipping: { rateBps: 888, label: "NY sales tax", taxCents: shippingTax },
+	});
+
+	test.each<[number, number]>([
+		// [gross, the largest tax accepted] — ceil(G × 100000 / 110000)
+		[1100, 1000], // exact: 1100 at 1000% is 1000 tax + 100 net
+		[1, 1],
+		[12, 11], // 10.909… ⇒ 11
+		[11, 10], // exactly 10
+		[1200, 1091], // 1090.909… ⇒ 1091
+	])("gross %i: tax %i is accepted, one more is refused", (g, max) => {
+		expect(validateTaxResult(gross([g, 500]), answer(max))).not.toBeNull();
+		expect(validateTaxResult(gross([g, 500]), answer(max + 1))).toBeNull();
+	});
+
+	test("tax above the gross (the reviewer's repro: tax = 10 × amount) is refused", () => {
+		expect(validateTaxResult(gross([1200, 500]), answer(12_000))).toBeNull();
+		expect(validateTaxResult(gross([1200, 500]), answer(1201))).toBeNull();
+	});
+
+	test("a zero gross allows only zero tax", () => {
+		expect(validateTaxResult(gross([0, 500]), answer(0))).not.toBeNull();
+		expect(validateTaxResult(gross([0, 500]), answer(1))).toBeNull();
+	});
+
+	test("exact at the largest safe gross — no float product", () => {
+		const g = Number.MAX_SAFE_INTEGER;
+		const max = Number((BigInt(g) * 100_000n + 109_999n) / 110_000n);
+		expect(validateTaxResult(gross([g, 0]), answer(max, 0))).not.toBeNull();
+		expect(validateTaxResult(gross([g, 0]), answer(max + 1, 0))).toBeNull();
+	});
+
+	test("shipping keeps the exclusive bound: amount × 10 accepted, one more refused", () => {
+		expect(validateTaxResult(gross([1000, 500]), answer(0, 3000))).not.toBeNull();
+		expect(validateTaxResult(gross([1000, 500]), answer(0, 3001))).toBeNull();
+	});
+
+	test("prices entered without tax keep the exclusive bound on lines: amount × 10", () => {
+		const excl = { ...gross([1000, 500]), pricesIncludeTax: false };
+		expect(validateTaxResult(excl, answer(10_000))).not.toBeNull();
+		expect(validateTaxResult(excl, answer(10_001))).toBeNull();
+	});
+});
