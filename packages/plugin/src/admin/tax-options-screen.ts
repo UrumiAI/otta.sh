@@ -14,6 +14,7 @@ import type { Block, FormBlock, SelectOption } from "../types.js";
 import {
 	type AdminRulesSurface,
 	type TaxClassWire,
+	type TaxSettingsRead,
 	type TaxSettingsWire,
 	taxSettingsDigest,
 } from "./admin-rules-surface.js";
@@ -57,10 +58,41 @@ export function optionsButtonBlock(ids: TaxOptionsActions): Block {
 	};
 }
 
+/**
+ * "Tax is switched off" — for a store that HAS rates but charges none (review 2a
+ * A m3): a new store's first rate leaves tax off, as WooCommerce's does, and
+ * nothing else on the Tax pages would say so. `null` when there is nothing to say.
+ */
+export function taxOffBanner(read: Pick<TaxSettingsRead, "settings" | "hasRates">): Block | null {
+	if (read.settings.enabled || !read.hasRates) return null;
+	return {
+		type: "banner",
+		variant: "alert",
+		title: "Tax is switched off",
+		description:
+			"This store has tax rates, but checkout charges no tax while tax is off. Turn on “Enable tax rates and calculations” in Tax options to charge them.",
+	};
+}
+
+/**
+ * "Based on shop base address" with no base address set (review 2a B5): the quote
+ * then taxes by the customer's shipping address (ADR-0031 §3). Said on the screen
+ * rather than left silent; `null` when it does not apply.
+ */
+function missingBaseAddressNote(current: TaxSettingsWire): Block | null {
+	if (current.basedOn !== "base" || current.baseAddress !== null) return null;
+	return {
+		type: "context",
+		text: "Note: tax is set to the shop base address, but no base address is set — until one is, tax is calculated from the customer's shipping address.",
+	};
+}
+
 export function showOptionsAction(ids: TaxOptionsActions) {
 	return customAction<AdminRulesSurface>(async ({ client }) => {
 		const [read, classes] = await Promise.all([client.getTaxSettings(), client.listTaxClasses()]);
-		return { blocks: optionsScreen(ids, read.settings, classes, draftOf(read.settings)) };
+		return {
+			blocks: optionsScreen(ids, read.settings, read.hasRates, classes, draftOf(read.settings)),
+		};
 	});
 }
 
@@ -82,7 +114,8 @@ export function saveOptionsAction(ids: TaxOptionsActions) {
 		};
 		const result = await client.updateTaxSettings(settingsOf(draft), {
 			expected,
-			idempotencyKey: `tax-options-${expected.length}-${Date.now()}`,
+			// One key per save attempt, never shared by two different saves (B5).
+			idempotencyKey: `tax-options-${crypto.randomUUID()}`,
 		});
 		if (result.ok) {
 			return showList(undefined, {
@@ -92,10 +125,10 @@ export function saveOptionsAction(ids: TaxOptionsActions) {
 					"New quotes and orders use these options. Orders already placed keep the tax they were charged.",
 			});
 		}
-		const classes = await client.listTaxClasses();
+		const [classes, read] = await Promise.all([client.listTaxClasses(), client.getTaxSettings()]);
 		if (result.reason === "stale") {
 			return {
-				blocks: optionsScreen(ids, result.current, classes, draftOf(result.current), {
+				blocks: optionsScreen(ids, result.current, read.hasRates, classes, draftOf(result.current), {
 					variant: "error",
 					title: "Tax options changed since you loaded them — reload",
 					description:
@@ -103,9 +136,8 @@ export function saveOptionsAction(ids: TaxOptionsActions) {
 				}),
 			};
 		}
-		const current = (await client.getTaxSettings()).settings;
 		return {
-			blocks: optionsScreen(ids, current, classes, draft, {
+			blocks: optionsScreen(ids, read.settings, read.hasRates, classes, draft, {
 				variant: "error",
 				title: "Tax options not saved",
 				description: problemText(result.field),
@@ -173,6 +205,7 @@ function selected(options: SelectOption[], value: string): { initial_value?: str
 function optionsScreen(
 	ids: TaxOptionsActions,
 	current: TaxSettingsWire,
+	hasRates: boolean,
 	classes: TaxClassWire[],
 	draft: OptionsDraft,
 	notice?: Notice,
@@ -186,6 +219,10 @@ function optionsScreen(
 		backButton(ids.back, "← Back to tax classes"),
 	];
 	if (notice !== undefined) blocks.push(noticeBanner(notice));
+	const off = taxOffBanner({ settings: current, hasRates });
+	if (off !== null) blocks.push(off);
+	const baseNote = missingBaseAddressNote(current);
+	if (baseNote !== null) blocks.push(baseNote);
 	blocks.push(optionsForm(ids, current, classes, draft));
 	return blocks;
 }

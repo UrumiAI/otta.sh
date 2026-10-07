@@ -23,7 +23,12 @@ import {
 	type TaxRateWire,
 } from "./admin-rules-surface.js";
 import { idInputProblem } from "./id-input.js";
-import { optionsButtonBlock, saveOptionsAction, showOptionsAction } from "./tax-options-screen.js";
+import {
+	optionsButtonBlock,
+	saveOptionsAction,
+	showOptionsAction,
+	taxOffBanner,
+} from "./tax-options-screen.js";
 import { formatBpsAsPercent, parsePercentToBps } from "./percent-input.js";
 import {
 	asRecord,
@@ -247,8 +252,14 @@ export function createTaxPageHandler(): RouteHandler<TaxPageInput> {
 
 // -- level 0: the tax classes registry ----------------------------------------
 
+/** The registry's one "page": the classes, and the "tax is off" banner if any. */
+interface ClassesPageBundle {
+	classes: TaxClassWire[];
+	taxOff: Block | null;
+}
+
 function taxClassesLevel() {
-	return listLevel<AdminRulesSurface, Record<string, never>, TaxClassWire, TaxRenderState>({
+	return listLevel<AdminRulesSurface, Record<string, never>, ClassesPageBundle, TaxRenderState>({
 		// The registry has no service-side pagination (`GET /admin/tax/classes`
 		// returns the full list) — `limit` is unused by `fetchPage` (kept for the
 		// level's shape) and `nextCursor` is always `null`. Deliberately above
@@ -257,11 +268,15 @@ function taxClassesLevel() {
 		limit: 200,
 		filterFromValues: () => ({}),
 		async fetchPage(client) {
-			const classes = await client.listTaxClasses();
-			return { items: classes, nextCursor: null };
+			const [classes, read] = await Promise.all([
+				client.listTaxClasses(),
+				client.getTaxSettings(),
+			]);
+			return { items: [{ classes, taxOff: taxOffBanner(read) }], nextCursor: null };
 		},
 		render({ actions, items, nextToken, notice, renderState }) {
-			return classesBlocks(actions, items, nextToken, notice, renderState);
+			const bundle = items[0] ?? { classes: [], taxOff: null };
+			return classesBlocks(actions, bundle, nextToken, notice, renderState);
 		},
 		onError: () => classesFailClosed(),
 	});
@@ -278,7 +293,7 @@ function taxClassesLevel() {
  */
 function classesBlocks(
 	actions: ScreenActions,
-	classes: TaxClassWire[],
+	{ classes, taxOff }: ClassesPageBundle,
 	nextToken: string | undefined,
 	notice: Notice | undefined,
 	renderState: TaxRenderState | undefined,
@@ -295,6 +310,8 @@ function classesBlocks(
 		optionsButtonBlock(OPTIONS_ACTIONS),
 	];
 	if (notice !== undefined) blocks.push(noticeBanner(notice));
+	// ADR-0031: rates but tax off — say so where the rates are managed.
+	if (taxOff !== null) blocks.push(taxOff);
 	// No filter block: this level has no filter fields (L-2, count 0).
 
 	const accordionBranch = nextToken === undefined && classes.length <= REGISTRY_ACCORDION_LIMIT;

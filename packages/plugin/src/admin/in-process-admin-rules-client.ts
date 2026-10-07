@@ -531,10 +531,15 @@ export class InProcessAdminRulesClient implements AdminRulesSurface {
 	// -- Tax: options (ADR-0031) -------------------------------------------------
 
 	async getTaxSettings(): Promise<TaxSettingsRead> {
-		const saved = (await this.#stores.settingsStore.get()).tax;
-		if (saved !== undefined) return { settings: saved, saved: true };
-		const hasAnyRate = await this.#stores.taxRules.hasAnyRate();
-		return { settings: effectiveTaxSettings(undefined, hasAnyRate), saved: false };
+		const [saved, hasRates] = await Promise.all([
+			this.#stores.settingsStore.get().then((s) => s.tax),
+			this.#stores.taxRules.hasAnyRate(),
+		]);
+		return {
+			settings: effectiveTaxSettings(saved, hasRates),
+			saved: saved !== undefined,
+			hasRates,
+		};
 	}
 
 	/**

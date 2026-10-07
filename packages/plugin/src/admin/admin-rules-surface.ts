@@ -387,6 +387,8 @@ export interface TaxSettingsRead {
 	settings: TaxSettingsWire;
 	/** false ⇒ nothing saved yet: `settings` is the upgrade rule's answer. */
 	saved: boolean;
+	/** Whether the store has any tax rate — tax off with rates gets a notice. */
+	hasRates: boolean;
 }
 
 export type TaxSettingsUpdateResult =

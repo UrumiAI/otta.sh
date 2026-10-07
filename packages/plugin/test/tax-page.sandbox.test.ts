@@ -1169,6 +1169,18 @@ describe("admin Tax console — rates level (workerd sandbox)", () => {
 });
 
 describe("admin Tax console — tax options (PR 2a, ADR-0031)", () => {
+	/** A whole, valid options block with tax on — what a save writes. */
+	const TAX_ON = {
+		enabled: true,
+		pricesIncludeTax: false,
+		basedOn: "shipping",
+		baseAddress: null,
+		shippingTaxClass: { kind: "inherit" },
+		roundAtSubtotal: false,
+		displayCart: "excl",
+		totalsDisplay: "itemized",
+	} as const;
+
 	async function openOptions(): Promise<LooseBlock[]> {
 		const list = await loadClasses();
 		const button = createButton(list, "tax:show-options");
@@ -1305,6 +1317,59 @@ describe("admin Tax console — tax options (PR 2a, ADR-0031)", () => {
 			enabled: true,
 			shippingTaxClass: { kind: "legacy" },
 		});
+	});
+
+	test("deleting the class the options use as the fixed shipping tax class is refused, in words", async () => {
+		// Review 2a B4: the options would otherwise point shipping tax at nothing.
+		await seedRules({ classes: [...DEFAULT_CLASSES, { id: "ship", name: "Shipping" }] });
+		await settingsStore.update(
+			{ tax: { ...TAX_ON, shippingTaxClass: { kind: "fixed", taxClassId: "ship" } } },
+			idempotencyKey("fixed-ship"),
+		);
+		const outcome = await clickButton("tax:delete-class", { classId: "ship" });
+		const banner = bannerOf(outcome);
+		expect(banner?.variant).toBe("error");
+		expect(String(banner?.description)).toMatch(/shipping tax class in Tax options/);
+		expect(await listClassIds()).toContain("ship");
+	});
+
+	// Review 2a A m3: a store with rates but tax off charges nothing — say so.
+	test("rates with tax off: the registry and the options screen both say tax is switched off", async () => {
+		await seedRules();
+		await settingsStore.update({ tax: { ...TAX_ON, enabled: false } }, idempotencyKey("off"));
+		const banners = (blocks: readonly LooseBlock[]) =>
+			blocks.filter((b) => b.type === "banner").map((b) => String(b.title));
+		expect(banners(await loadClasses())).toContain("Tax is switched off");
+		expect(banners(await openOptions())).toContain("Tax is switched off");
+		const off = (await loadClasses()).find((b) => b.title === "Tax is switched off");
+		expect(off?.variant).toBe("alert");
+	});
+
+	test("no banner when tax is on, or when there are no rates to charge", async () => {
+		await seedRules();
+		await settingsStore.update({ tax: TAX_ON }, idempotencyKey("on"));
+		const titles = (blocks: readonly LooseBlock[]) => blocks.map((b) => String(b.title));
+		expect(titles(await loadClasses())).not.toContain("Tax is switched off");
+		await seedRules({ rates: [] });
+		await settingsStore.update({ tax: { ...TAX_ON, enabled: false } }, idempotencyKey("off"));
+		expect(titles(await loadClasses())).not.toContain("Tax is switched off");
+	});
+
+	// Review 2a B5: "shop base address" with none set falls back to the shipping
+	// address — the options screen says so instead of leaving it silent.
+	test("based on the shop base address with none set: the options screen says what happens", async () => {
+		await seedRules();
+		await settingsStore.update(
+			{ tax: { ...TAX_ON, basedOn: "base", baseAddress: null } },
+			idempotencyKey("base-no-address"),
+		);
+		const note = /no base address is set .* customer's shipping address/;
+		expect(contextTexts(await openOptions()).some((t) => note.test(t))).toBe(true);
+		await settingsStore.update(
+			{ tax: { ...TAX_ON, basedOn: "base", baseAddress: { country: "GB", region: null } } },
+			idempotencyKey("base-with-address"),
+		);
+		expect(contextTexts(await openOptions()).some((t) => note.test(t))).toBe(false);
 	});
 });
 
