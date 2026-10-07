@@ -38,7 +38,7 @@ import { storageBridge } from "./sandbox/storage-bridge.js";
 // and `save-token` round-trip tests this file used to carry are deleted
 // below rather than adapted: there is no analogous concept to preserve, and
 // the write-only-secret round trip they were closest to is already covered,
-// against the real 5 payment/email secrets, by `payment-secrets.test.ts`.
+// against the real payment secrets, by `payment-secrets.test.ts`.
 
 /** Places one paid order and seeds one below-threshold sku directly against the
  *  same storage the isolate's `ctx.storage` bridges to — the real write path
@@ -182,7 +182,7 @@ describe("admin route dispatch (workerd sandbox)", () => {
 		expect(String(lowGroup?.label)).toContain("at or below 5");
 	}, 60_000);
 
-	test("page_load /settings renders the Settings form (display + operational + the 5 payment/email secrets, no legacy service token)", async () => {
+	test("page_load /settings renders the Settings form (display + operational + the 4 payment secrets, no legacy service token)", async () => {
 		sandbox = await loadPluginInSandbox({ allowedHosts: [], storage: true });
 
 		const outcome = await sandbox.invokeRoute("admin", { type: "page_load", page: "/settings" });
@@ -198,13 +198,14 @@ describe("admin route dispatch (workerd sandbox)", () => {
 		// field outright (ADR-0014 D3) — there is no second deployable left to
 		// authenticate to, so no form on this page submits that id any more.
 		expect(formFor(blocks, "save-token")).toBeUndefined();
+		// ADR-0031: no email key form either — email is the host's `ctx.email`.
+		expect(formFor(blocks, "save-email-api-key")).toBeUndefined();
 		// INC-09 / U-8: every payment/email secret renders write-only — a
 		// password input (`secret_input`) carrying no `initial_value` and no
 		// `has_value` (the stored secret is never echoed back).
 		for (const actionId of [
 			"save-stripe-secret-key",
 			"save-stripe-webhook-secret",
-			"save-email-api-key",
 			"save-x402-facilitator-secret",
 			"save-webhook-edge-token",
 		]) {

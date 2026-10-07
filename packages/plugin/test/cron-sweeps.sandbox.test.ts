@@ -463,11 +463,9 @@ describe("the four ported sweeps", () => {
 		// `markPaid` enqueues the outbox row the dispatcher drains.
 		await stores().orderStore.markPaid(toOrderId(placed.id));
 		expect(leg(await tick(), "order-emails")).toMatchObject({ count: 0, skipped: true });
-		// Released with no attempt spent, and backed off: not due right now.
-		const now = new Date().toISOString();
-		expect(
-			await stores().orderStore.claimNextEmailForOrder(toOrderId(placed.id), now, now),
-		).toBeNull();
+		// No attempt spent: either this tick claimed the row and released it uncounted,
+		// or an earlier tick in this boot already heard "no provider" and the leg
+		// skipped before claiming (the recorded answer, ADR-0031).
 		const later = new Date(Date.now() + TRANSPORT_UNAVAILABLE_RETRY_MS + 60_000).toISOString();
 		const released = await stores().orderStore.claimNextEmailForOrder(
 			toOrderId(placed.id),
