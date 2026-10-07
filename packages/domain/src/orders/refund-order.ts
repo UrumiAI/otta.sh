@@ -243,9 +243,11 @@ export function sumFinalizedRefunds(refunds: RefundRecord[]): number {
  *
  * That replay arm is the crash story. The refund is recorded before the revoke,
  * so a process that dies between the two leaves a `refunded` order whose grants
- * are still active. The same-key retry (the admin console resubmits under the
- * same key, and an operator's re-click does too) takes the `recorded` replay
- * branch — no second provider call — and revokes there, finishing the job.
+ * are still active. The same-key retry takes the `recorded` replay branch — no
+ * second provider call — and revokes there, finishing the job. In the admin
+ * console an operator's re-click is that retry: its watermark is stale by then,
+ * so the console finds the refund on the ledger and replays it under the key it
+ * was recorded with rather than answering from the ledger alone (issue #405).
  * `revokeByOrder` is idempotent, so running it on every replay costs a read and
  * changes nothing once done. A revocation that throws propagates: the caller
  * sees a failure and retries, rather than a success that left access open. The

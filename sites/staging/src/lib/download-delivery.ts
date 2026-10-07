@@ -140,37 +140,16 @@ export type ByteRange =
 	/** Well-formed but outside the object: 416. */
 	| { kind: "unsatisfiable" };
 
-/** One `bytes=` range against an object of `size` bytes. Multi-part ranges are
- *  ignored (served whole), which RFC 9110 permits and no download client needs. */
-export function parseByteRange(header: string | null, size: number): ByteRange {
-	if (header === null) return { kind: "none" };
-	const match = /^bytes=(\d*)-(\d*)$/.exec(header.trim());
-	if (match === null) return { kind: "none" };
-	const [, rawStart = "", rawEnd = ""] = match;
-	if (rawStart === "" && rawEnd === "") return { kind: "none" };
-	const start = rawStart === "" ? undefined : Number(rawStart);
-	const end = rawEnd === "" ? undefined : Number(rawEnd);
-	if (
-		(start !== undefined && !Number.isSafeInteger(start)) ||
-		(end !== undefined && !Number.isSafeInteger(end))
-	) {
-		return { kind: "none" };
-	}
-	if (start === undefined) {
-		// A suffix: the last `end` bytes.
-		if (end === 0 || size === 0) return { kind: "unsatisfiable" };
-		return { kind: "range", start: Math.max(0, size - end!), end: size - 1 };
-	}
-	if (end !== undefined && end < start) return { kind: "none" };
-	if (start >= size) return { kind: "unsatisfiable" };
-	return { kind: "range", start, end: Math.min(end ?? size - 1, size - 1) };
-}
-
 /**
  * The Range header as an R2 range, WITHOUT the object's size — so a ranged
  * download is ONE `get`, not a `head` then a `get` that could disagree.
  * `unsatisfiable` only for what no size can satisfy (`bytes=-0`); a start past
  * the end is found out by the read itself.
+ *
+ * THE ONE PARSER of the header (issue #405): {@link parseByteRange} is this
+ * plus the object's size, so the two answers cannot drift apart. Multi-part
+ * ranges are ignored (served whole), which RFC 9110 permits and no download
+ * client needs.
  */
 export function rangeRequest(
 	header: string | null,
@@ -196,8 +175,18 @@ export function rangeRequest(
 	return { kind: "range", range: { offset: start, length: end - start + 1 } };
 }
 
+/** One `bytes=` range against an object of `size` bytes: {@link rangeRequest}'s
+ *  answer, resolved to inclusive bounds inside the object — `unsatisfiable`
+ *  when it starts past the end (or asks for a suffix of an empty object). */
+export function parseByteRange(header: string | null, size: number): ByteRange {
+	const wanted = rangeRequest(header);
+	if (wanted.kind !== "range") return wanted;
+	const bytes = servedBytes(wanted.range, size);
+	return bytes === null ? { kind: "unsatisfiable" } : { kind: "range", ...bytes };
+}
+
 /** The inclusive bytes an R2 range covers in an object of `size` bytes, or
- *  `null` when it starts past the end. Clamped like `parseByteRange`. */
+ *  `null` when it starts past the end. */
 function servedBytes(range: R2ByteRange, size: number): { start: number; end: number } | null {
 	if ("suffix" in range) {
 		return size === 0 ? null : { start: Math.max(0, size - range.suffix), end: size - 1 };

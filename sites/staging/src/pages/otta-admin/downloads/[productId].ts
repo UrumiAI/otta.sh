@@ -56,9 +56,6 @@ export const POST: APIRoute = async (context) => {
 	const response = await handleDownloadUpload(
 		{
 			user: signedInUser(context.locals.user),
-			// EmDash's auth middleware sets `tokenScopes` for API/OAuth token auth;
-			// its `Locals` augmentation is not in the site's type scope.
-			tokenAuthenticated: (context.locals as { tokenScopes?: unknown }).tokenScopes !== undefined,
 			bucket: uploadBucketFrom(env),
 			// The FULL user record goes to the plugin as the caller, exactly as
 			// EmDash's own plugin endpoint forwards it.
