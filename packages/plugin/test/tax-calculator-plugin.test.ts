@@ -120,6 +120,21 @@ describe("createOttaPlugin({ taxCalculator })", () => {
 		expect(() => createOttaPlugin({ taxCalculator: fake("other.tax") })).toThrow(/already/);
 	});
 
+	test("a NEW object with the SAME id replaces the registered one (dev hot reload)", async () => {
+		const { createOttaPlugin, makeCommerceClient } = await load();
+		const first = fake();
+		const reloaded = fake();
+		createOttaPlugin({ taxCalculator: first });
+		expect(() => createOttaPlugin({ taxCalculator: reloaded })).not.toThrow();
+		const client = await makeCommerceClient(h.ctx);
+		const quote = await client.quoteCheckout({ cartId: await cartId() });
+		expect(quote.ok).toBe(true);
+		expect(first.seen).toEqual([]);
+		expect(reloaded.seen.map((r) => r.purpose)).toEqual(["quote"]);
+		// A different id after the replacement still throws.
+		expect(() => createOttaPlugin({ taxCalculator: fake("other.tax") })).toThrow(/already/);
+	});
+
 	test.each<[string, unknown]>([
 		["no calculate()", { id: "acme.tax" }],
 		["an empty id", { id: "", calculate: async () => ({}) }],
@@ -180,6 +195,23 @@ describe("the in-process client hands its calculator to quote and place", () => 
 			region: "NY",
 			postalCode: "10001",
 			city: "New York",
+		});
+
+		// Bounds apply AFTER trimming, as in the domain: a 32-char postcode and a
+		// 120-char city with surrounding spaces are accepted, not thrown on.
+		const padded = await client.quoteCheckout({
+			cartId: id,
+			destination: {
+				country: "US",
+				region: "NY",
+				postalCode: ` ${"1".repeat(32)} `,
+				city: ` ${"x".repeat(120)} `,
+			},
+		});
+		expect(padded.ok).toBe(true);
+		expect(calc.seen[1]?.destination).toMatchObject({
+			postalCode: "1".repeat(32),
+			city: "x".repeat(120),
 		});
 	});
 

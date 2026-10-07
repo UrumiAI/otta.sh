@@ -315,13 +315,14 @@ export function requireDestination(destination: {
 	city?: string;
 }): void {
 	requireCodeShapes("destination", destination.country, destination.region);
-	// The order address's own bounds (ADR-0030: the tax calculator may read them).
+	// The order address's own bounds (ADR-0030: the tax calculator may read them),
+	// on the TRIMMED text — the domain trims before it bounds, so must this.
 	const max = ORDER_ADDRESS_MAX_LENGTHS;
 	if (destination.postalCode !== undefined) {
-		requireBoundedText("destination.postalCode", destination.postalCode, 0, max.postalCode);
+		requireBoundedText("destination.postalCode", destination.postalCode.trim(), 0, max.postalCode);
 	}
 	if (destination.city !== undefined) {
-		requireBoundedText("destination.city", destination.city, 0, max.city);
+		requireBoundedText("destination.city", destination.city.trim(), 0, max.city);
 	}
 }
 

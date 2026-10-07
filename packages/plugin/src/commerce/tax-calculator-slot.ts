@@ -18,9 +18,10 @@ import { isValidCalculatorId, type TaxCalculator } from "@otta-sh/domain";
 let registered: TaxCalculator | undefined;
 
 /**
- * Register the site's calculator. Re-registering the SAME object is a no-op (a
- * module evaluated twice by a dev server); a DIFFERENT one throws, so two
- * entries can never silently race for which one prices orders.
+ * Register the site's calculator. Re-registering one with the SAME id replaces
+ * it: a dev server that re-evaluates the site's entry module builds a new
+ * object while this module (a dependency) keeps its state. A DIFFERENT id
+ * throws, so two entries can never silently race for which one prices orders.
  */
 export function setTaxCalculator(calculator: TaxCalculator): void {
 	if (
@@ -33,7 +34,7 @@ export function setTaxCalculator(calculator: TaxCalculator): void {
 			"taxCalculator must be { id, calculate(request) } with an id of 1–64 [A-Za-z0-9._-]",
 		);
 	}
-	if (registered !== undefined && registered !== calculator) {
+	if (registered !== undefined && registered.id !== calculator.id) {
 		throw new Error(
 			`a tax calculator ("${registered.id}") is already registered; register exactly one`,
 		);
