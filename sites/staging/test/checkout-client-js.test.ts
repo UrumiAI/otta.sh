@@ -23,6 +23,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, test } from "vitest";
 import { hasExecutableScript, splitAstro } from "./astro-source.js";
+import { viewCases } from "./theme-views.js";
 
 const SRC_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../src");
 const PAGES_DIR = path.join(SRC_DIR, "pages");
@@ -47,10 +48,19 @@ function listPages(dir: string): string[] {
 }
 
 /**
- * The `.astro` components a file imports, resolved to absolute paths.
+ * The modules a file imports that can carry components, resolved to absolute
+ * paths: every `.astro` import, AND every relative TypeScript module (a `.js`
+ * specifier in this tree is a `.ts` file).
  *
  * One level is not enough: a page importing a component that imports a scripted
  * one ships the script just the same, so this is walked transitively below.
+ *
+ * The `.ts` half is load-bearing since the theme system. Every page renders
+ * through `layouts/Storefront.astro`, which reaches the theme views through
+ * `themes/registry.ts` — a TypeScript module importing `.astro` files. A walk
+ * that only followed `.astro` imports would stop at the registry and never see
+ * a theme view, which is exactly where a second theme's first script would
+ * land. Type-only imports erase at build time and are not followed.
  *
  * An unresolved specifier THROWS rather than being filtered out. A fence that
  * silently drops what it cannot resolve is a fence that a rename turns off, and
@@ -58,19 +68,29 @@ function listPages(dir: string): string[] {
  */
 function componentImports(file: string): string[] {
 	const source = readFileSync(file, "utf8");
-	return [...source.matchAll(/^import\s+\w+\s+from\s+["']([^"']+\.astro)["'];?$/gm)].map((m) => {
-		const resolved = path.resolve(path.dirname(file), m[1] ?? "");
-		if (!existsSync(resolved)) {
-			throw new Error(
-				`the client-JS fence cannot resolve "${m[1]}" imported by ${path.relative(SRC_DIR, file)} — ` +
-					"fix the path, or the fence stops covering this page",
-			);
-		}
+	const unresolved = (specifier: string): Error =>
+		new Error(
+			`the client-JS fence cannot resolve "${specifier}" imported by ${path.relative(SRC_DIR, file)} — ` +
+				"fix the path, or the fence stops covering this page",
+		);
+	const astro = [...source.matchAll(/^import\s+\w+\s+from\s+["']([^"']+\.astro)["'];?$/gm)].map(
+		(m) => {
+			const resolved = path.resolve(path.dirname(file), m[1] ?? "");
+			if (!existsSync(resolved)) throw unresolved(m[1] ?? "");
+			return resolved;
+		},
+	);
+	const modules = [
+		...source.matchAll(/^import\s+(?!type\b)[^;]*?\sfrom\s+["'](\.{1,2}\/[^"']+)\.js["'];?$/gm),
+	].map((m) => {
+		const resolved = path.resolve(path.dirname(file), `${m[1] ?? ""}.ts`);
+		if (!existsSync(resolved)) throw unresolved(`${m[1] ?? ""}.js`);
 		return resolved;
 	});
+	return [...astro, ...modules];
 }
 
-/** Every `.astro` file this one pulls into the browser's bundle, transitively. */
+/** Every module this one pulls in, transitively — `.astro` and `.ts` alike. */
 function componentClosure(entry: string): string[] {
 	const seen = new Set<string>();
 	const queue = componentImports(entry);
@@ -96,7 +116,16 @@ const PERMITTED_CLIENT_JS: ReadonlyArray<readonly [string, string]> = [
 	// ticking timer a shopper times a decision against — information, not
 	// decoration, and it cannot be server-rendered without going stale in one
 	// second. See the ADR's 2026-07-28 amendment.
-	[path.join("cart", "index.astro"), "HoldRibbon.astro"],
+	//
+	// RENAMED, not widened (storefront themes, Phase 3): the pair was
+	// `cart/index.astro → HoldRibbon.astro` while the ribbon's markup and its
+	// script were one component. Theme views now draw the ribbon, and a view
+	// is reached through the registry every page imports — so a view importing
+	// a scripted ribbon would make EVERY page an offender. The script was split
+	// out into `HoldClock.astro` (script only, no markup), which the cart PAGE
+	// renders; `HoldRibbon.astro` is markup only. Still one page, still one
+	// component, still exactly this pair.
+	[path.join("cart", "index.astro"), "HoldClock.astro"],
 ];
 
 /** The dev styleguide renders every component in every state and 404s outside
@@ -121,6 +150,7 @@ function clientJsRoutes(pagesDir: string): string[] {
 				? [`${relative} → (its own template)`]
 				: [];
 			const viaImports = componentClosure(file)
+				.filter((component) => component.endsWith(".astro"))
 				.filter((component) => hasExecutableScript(readFileSync(component, "utf8")))
 				.map((component) => `${relative} → ${path.basename(component)}`);
 			return [...own, ...viaImports];
@@ -179,14 +209,56 @@ describe("10a — the client-JS fence (ADR-0012 decision 2)", () => {
 	});
 
 	test("the scripted components are named, so growing one is a decision", () => {
-		// `HoldRibbon` is the cart's §6 countdown and the only component that
-		// runs anything. `PollRibbon` exists precisely so the confirmation page
-		// can have the same ribbon without it.
+		// `HoldClock` is the cart's §6 countdown SCRIPT and the only component
+		// that runs anything (`HoldRibbon` is its markup, with no script).
+		// `PollRibbon` exists precisely so the confirmation page can have the
+		// same ribbon without it.
 		const scripted = readdirSync(COMPONENTS_DIR)
 			.filter((name) => name.endsWith(".astro"))
 			.filter((name) => hasExecutableScript(readFileSync(path.join(COMPONENTS_DIR, name), "utf8")))
 			.toSorted();
-		expect(scripted).toEqual(["HoldRibbon.astro"]);
+		expect(scripted).toEqual(["HoldClock.astro"]);
+	});
+
+	test("the walk sees THROUGH the theme registry, into every view and the shared form", () => {
+		// Page → Storefront.astro → themes/registry.ts → themes/<id>/*.astro. If
+		// the `.ts` hop were dropped, every theme view would sit outside the
+		// fence while the equality check above still passed.
+		const closure = componentClosure(path.join(PAGES_DIR, "index.astro")).map((file) =>
+			path.relative(SRC_DIR, file).split(path.sep).join("/"),
+		);
+		expect(closure).toEqual(
+			expect.arrayContaining([
+				"layouts/Storefront.astro",
+				"themes/registry.ts",
+				"themes/tempered/Layout.astro",
+				"themes/tempered/HomeView.astro",
+				"themes/tempered/ShopView.astro",
+				"themes/tempered/ProductView.astro",
+				"themes/tempered/CartView.astro",
+				"themes/tempered/CheckoutView.astro",
+				"themes/tempered/PayView.astro",
+				"themes/tempered/OrderView.astro",
+				"themes/tempered/AccountLoginView.astro",
+				"themes/tempered/AccountVerifyView.astro",
+				"themes/tempered/AccountOrdersView.astro",
+				"themes/tempered/AccountOrderView.astro",
+				"components/HoldRibbon.astro",
+				"forms/AddToCartFields.astro",
+			]),
+		);
+	});
+
+	test("no theme and no shared form ships client JS — a theme script is a decision, not a drift", () => {
+		// Every theme renders on every page type, so a script here would reach
+		// pages ADR-0012 keeps free of client JavaScript. A future theme that
+		// needs one must name it in PERMITTED_CLIENT_JS, page by page.
+		const scripted = ["themes", "forms"].flatMap((dir) =>
+			listPages(path.join(SRC_DIR, dir))
+				.filter((file) => hasExecutableScript(readFileSync(file, "utf8")))
+				.map((file) => path.relative(SRC_DIR, file)),
+		);
+		expect(scripted).toEqual([]);
 	});
 
 	test("an unresolvable import FAILS the fence rather than being skipped", () => {
@@ -213,10 +285,10 @@ describe("10a — the client-JS fence (ADR-0012 decision 2)", () => {
 		// script tag — i.e. exactly "the secret becomes a JS literal". Forbidden:
 		// the script reads what it needs from the DOM instead, where Astro's own
 		// attribute escaping applies.
-		expect(source).not.toMatch(/<script[^>]*define:vars/);
+		expect(source).not.toMatch(/<script[^>]*define:vars/i);
 
 		const { body } = splitAstro(source);
-		const scriptBlocks = [...body.matchAll(/<script\b[^>]*>([\s\S]*?)<\/script>/g)].map(
+		const scriptBlocks = [...body.matchAll(/<script\b[^>]*>([\s\S]*?)<\/script[^>]*>/gi)].map(
 			(m) => m[1] ?? "",
 		);
 		expect(scriptBlocks.length).toBeGreaterThan(0);
@@ -233,7 +305,10 @@ describe("10a — the client-JS fence (ADR-0012 decision 2)", () => {
 		// (the card number never touches this site), that the order is held,
 		// and give a way onward.
 		expect(block).toMatch(/JavaScript/i);
-		expect(block).toMatch(/15 minutes/);
+		// The hold is the ORDER's own deadline (QA U-14), not a fixed "15 minutes":
+		// a resumed payment has less left than that.
+		expect(block).toMatch(/model\.holdNote\.lead/);
+		expect(block).toMatch(/reserved for a limited time/);
 		expect(block).toContain("href={orderPath}");
 	});
 
@@ -257,12 +332,12 @@ describe("10a — the client-JS fence (ADR-0012 decision 2)", () => {
 describe("10a′ — the fence against a merged tree", () => {
 	test("the cart's §6 countdown is permitted, and named", () => {
 		// This is what lands when the cart branch merges: `/cart` renders the
-		// hold ribbon, so HoldRibbon's countdown module ships with it. ADR-0012's
+		// countdown, so HoldClock's module ships with it. ADR-0012's
 		// 2026-07-28 amendment allows exactly this pair, and the allowlist entry
 		// is what stops it being a surprise.
 		const tree = scratchTree({
 			"pages/cart/index.astro":
-				'---\nimport HoldRibbon from "../../components/HoldRibbon.astro";\n---\n<HoldRibbon expiresAt={null} />',
+				'---\nimport HoldClock from "../../components/HoldClock.astro";\n---\n<HoldClock />',
 		});
 		expect(clientJsRoutes(path.join(tree, "pages"))).toEqual(PERMITTED);
 	});
@@ -273,12 +348,26 @@ describe("10a′ — the fence against a merged tree", () => {
 		// re-opened every page to the countdown.
 		const tree = scratchTree({
 			"pages/cart/index.astro":
-				'---\nimport HoldRibbon from "../../components/HoldRibbon.astro";\n---\n<HoldRibbon expiresAt={null} />',
+				'---\nimport HoldClock from "../../components/HoldClock.astro";\n---\n<HoldClock />',
 			"pages/rogue.astro":
-				'---\nimport HoldRibbon from "../components/HoldRibbon.astro";\n---\n<HoldRibbon expiresAt={null} />',
+				'---\nimport HoldClock from "../components/HoldClock.astro";\n---\n<HoldClock />',
 		});
 		const routes = clientJsRoutes(path.join(tree, "pages"));
-		expect(routes).toContain("rogue.astro → HoldRibbon.astro");
+		expect(routes).toContain("rogue.astro → HoldClock.astro");
+		expect(routes).not.toEqual(PERMITTED);
+	});
+
+	test("a THEME VIEW that imports the scripted countdown is an offender on every page", () => {
+		// Why the countdown is split. Every page reaches every theme view through
+		// the registry, so the script must be rendered by the cart PAGE and never
+		// by a view — here is the tree where a view forgets that.
+		const tree = scratchTree({
+			"themes/tempered/CartView.astro":
+				'---\nimport HoldClock from "../../components/HoldClock.astro";\n---\n<HoldClock />',
+		});
+		const routes = clientJsRoutes(path.join(tree, "pages"));
+		expect(routes).toContain("index.astro → HoldClock.astro");
+		expect(routes).toContain(`${path.join("orders", "[orderId].astro")} → HoldClock.astro`);
 		expect(routes).not.toEqual(PERMITTED);
 	});
 
@@ -355,3 +444,45 @@ describe("10c — Stripe's redirect parameters are read, never rendered", () => 
 		expect(source).not.toMatch(/state\s*=\s*["']paid["']/);
 	});
 });
+
+/**
+ * 10c, where the markup went. Since Phase 3 the confirmation's markup is a
+ * theme view (each theme's own, or Tempered's fallback); the page hands it a
+ * model that carries the COPY the redirect parameters chose and never the
+ * parameters. The same structural assertions, over every theme's view.
+ */
+describe.each(viewCases("order"))(
+	"10c — the order view %s never renders them either",
+	(_label, { source }) => {
+		const { frontmatter, body } = splitAstro(source);
+		const PARAMS = ["payment_intent_client_secret", "payment_intent", "redirect_status"] as const;
+
+		test("the file really does have a frontmatter fence (otherwise the split below proves nothing)", () => {
+			expect(frontmatter.length).toBeGreaterThan(0);
+			expect(body.length).toBeGreaterThan(0);
+			expect(body).not.toContain(frontmatter);
+		});
+
+		test.each(PARAMS)("%s appears nowhere in the view — not even its frontmatter", (param) => {
+			// Stricter than the page's rule on purpose: a view has no business
+			// reading the request at all (themes-boundary.test.ts), so the name has
+			// no reason to be in the file.
+			expect(source).not.toContain(param);
+		});
+
+		test("the body interpolates no variable whose name suggests it holds one of those parameters", () => {
+			const interpolations = [...body.matchAll(/\{([^}]*)\}/g)].map((m) =>
+				stripComments(m[1] ?? ""),
+			);
+			const leaking = interpolations.filter((expr) =>
+				/client_?secret|payment_?intent|redirect_?status/i.test(expr),
+			);
+			expect(leaking).toEqual([]);
+		});
+
+		test("it never treats anything as proof of payment itself", () => {
+			expect(source).not.toMatch(/state\s*=\s*["']paid["']/);
+			expect(source).not.toMatch(/redirect_?[sS]tatus/);
+		});
+	},
+);

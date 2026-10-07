@@ -1,8 +1,8 @@
 # Phase 4 — Checkout + Gateways
 
-_Implementation plan (no code). Follows [`../DEVELOPMENT.md`](../DEVELOPMENT.md),
-[`../CLAUDE.md`](../CLAUDE.md), and slots into
-[`draft-plans/implementation-plan.md`](../draft-plans/implementation-plan.md) row 4. Every
+_Implementation plan (no code). Follows [`../../DEVELOPMENT.md`](../../DEVELOPMENT.md),
+[`../../CLAUDE.md`](../../CLAUDE.md), and slots into
+`draft-plans/implementation-plan.md` (private) row 4. Every
 step is **failing test first, then the minimum code**; a step is done only when its named
 test is green. The contract suite is the spec._
 

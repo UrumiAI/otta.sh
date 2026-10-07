@@ -24,7 +24,7 @@
 import { joinProduct } from "../catalog/join-product.js";
 import type { CmsProductContent } from "../catalog/join-product.js";
 import type { RouteHandler } from "../types.js";
-import { createCommerceLoader, renderGuard } from "./pdp-route.js";
+import { createCommerceLoader, renderGuard, type RenderGuardFailure } from "./pdp-route.js";
 import { buildProductViewModel, type ProductViewModel } from "./product-view-model.js";
 import { parseCmsProductContent, sanitizeLocale } from "./route-input.js";
 
@@ -56,7 +56,7 @@ export type PlpRouteResult =
 	| { ok: true; items: ProductViewModel[]; query: PlpQuery }
 	| { ok: false; error: "INVALID_ITEMS" }
 	| { ok: false; error: "PAGE_TOO_LARGE"; max: number }
-	| { ok: false; error: "RENDER_FAILED" };
+	| RenderGuardFailure;
 
 export function createPlpRouteHandler(): RouteHandler<PlpRouteInput> {
 	// Caveat (public route, reachable directly): caller-supplied `items` are

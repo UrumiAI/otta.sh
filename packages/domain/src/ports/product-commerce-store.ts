@@ -212,6 +212,37 @@ export interface ProductListResult {
 export type ProductKind = "physical" | "digital";
 
 /**
+ * The file a DIGITAL product delivers (issue #376): a POINTER to bytes held in
+ * the site's private downloads bucket, never the bytes. One file per product,
+ * shared by every variant, in v1.
+ *
+ * The pointer lives on the product, not on the order, deliberately: replacing
+ * the file gives every past buyer the new one (product-owner decision). The
+ * order still snapshots the title and price it was sold at.
+ *
+ * Every field is checked on the admin write path (`updateProductCommerceFields`,
+ * `product-commerce/download-asset.ts`), and the checks ACCEPT OR REFUSE — they
+ * never rewrite a value — so what is stored is exactly what was submitted:
+ *  - `key` — `dl/{productId}/{ulid}`, minted by the server for THIS product and
+ *    never derived from the filename or any request input; the bucket object key.
+ *  - `filename` — what the buyer's browser saves the file as; 1–255 characters
+ *    of well-formed text, no control, quote, slash, backslash, line-separator or
+ *    bidi-control characters.
+ *  - `contentType` — a bare lowercase `type/subtype`. `text/*` is an allowlist
+ *    (`text/plain`, `text/csv`); elsewhere never one a browser would run as a
+ *    document (`*+xml` — SVG, XHTML —, `application/xml`, any JavaScript type).
+ *  - `size` — bytes, a non-negative safe integer.
+ *  - `sha256` — optional; the lowercase hex digest of the bytes when known.
+ */
+export interface DownloadAsset {
+	key: string;
+	filename: string;
+	contentType: string;
+	size: number;
+	sha256?: string;
+}
+
+/**
  * How a product behaves when its available stock hits zero (product data-model
  * adds, Increment 2 slice 5).
  *
@@ -334,8 +365,9 @@ export interface UpdateProductCommerceFieldsInput {
 	 * MUST share the product's own currency (the same atomic currency-integrity
 	 * axis `price` carries — see `ProductCommerceUpdateResult.currency_mismatch`);
 	 * a mismatched currency is rejected, never silently coerced. `undefined`
-	 * PRESERVES, an explicit `null` CLEARS. Storefront strikethrough rendering is
-	 * OUT of scope for this slice (data model + admin edit only). `compareAt <
+	 * PRESERVES, an explicit `null` CLEARS. The storefront reads it off
+	 * `ProductCommerceView.compareAtPrice` and shows it struck through only when
+	 * it is above the price. `compareAt <
 	 * price` is the normal case, but `compareAt >= price` is DELIBERATELY NOT
 	 * rejected (Shopify allows it — a "was" price can legitimately be ≤ the
 	 * current one during a price rise); the admin form's STATIC help copy
@@ -359,6 +391,15 @@ export interface UpdateProductCommerceFieldsInput {
 	widthMm?: number | null;
 	heightMm?: number | null;
 	productKind?: ProductKind;
+	/**
+	 * Attach (a descriptor), replace (another), or detach (`null`) the product's
+	 * download file (issue #376). `undefined` PRESERVES. Only this guarded admin
+	 * edit writes it — the CMS-sync `upsert` has no such field, so a content save
+	 * can never drop or swap a merchant's file. A descriptor on a PHYSICAL product
+	 * (stored, or made physical by this same edit) is refused by the store with
+	 * `InvalidProductFieldError("downloadAsset")` — see `updateCommerceFields`.
+	 */
+	downloadAsset?: DownloadAsset | null;
 	/**
 	 * The out-of-stock policy (product data-model adds, Increment 2 slice 5).
 	 * Only `"deny"` is a legal value this slice (the `InventoryPolicy` union has
@@ -427,6 +468,18 @@ export interface ProductCommerce {
 	widthMm: number | null;
 	heightMm: number | null;
 	productKind: ProductKind;
+	/**
+	 * The digital product's download file (issue #376), or `null` when none is
+	 * attached. A row written before the field existed reads `null`.
+	 *
+	 * The admin edit refuses a file on a physical product, but it is not the only
+	 * writer of `productKind`: the integrator `upsert` (`PUT /products/:id/commerce`)
+	 * can still flip a product to physical and leaves the file in place. So a
+	 * reader that serves bytes must require `productKind === "digital"` as well
+	 * as a non-null descriptor — a file on a physical product is inert, never
+	 * served.
+	 */
+	downloadAsset: DownloadAsset | null;
 	/** The publish gate (§6 step 7): `content:afterPublish` flips it true via
 	 *  `ProductCommerceStore.activate`, `content:afterUnpublish` flips it back
 	 *  false via `deactivate`. New/soft-deleted/unpublished = false. */
@@ -454,6 +507,24 @@ export interface ProductCommerceView {
 	productId: ProductId;
 	sku: Sku;
 	price: Money;
+	/**
+	 * The row's TITLE CACHE (`ProductCommerce.title`) — the name an order line
+	 * snapshots at purchase time. On this view so the checkout review can name
+	 * each line with exactly what the order will freeze, from the read it
+	 * already makes, rather than a second lookup elsewhere. Null until a sync
+	 * has carried one (such a row cannot be ordered: `PRODUCT_NOT_PRICED`).
+	 * Public by nature — it is the storefront heading's own text.
+	 */
+	title: string | null;
+	/**
+	 * The compare-at / was-price (`ProductCommerce.compareAtPrice`), as STORED —
+	 * same currency as `price` by the write-side guard. Reported verbatim, even
+	 * when it is not above `price` (that is allowed, see the update input): the
+	 * store reports state, and whether it reads as a sale is the storefront
+	 * view model's decision. Display-only — never what a buyer is charged.
+	 * (`unitCost` is NOT here and never may be: admin-only margin data.)
+	 */
+	compareAtPrice: Money | null;
 	/**
 	 * Coarse display-only stock signal: `inventory.on_hand > 0` at read time
 	 * (Phase 2 §8 risk 5, pre-approved). NOT reservation-aware — it can say
@@ -604,10 +675,10 @@ export interface ProductCommerceStore {
 	 * store round trip instead of one per line (the per-cart-line N+1 this
 	 * method exists to kill).
 	 *
-	 * Returns the FULL `ProductCommerce` per id — title / taxClass / productKind
+	 * Returns the FULL `ProductCommerce` per id — taxClass / productKind
 	 * included (UNLIKE `listCommerceByIds`, whose narrower `ProductCommerceView`
-	 * drops them) — because each caller snapshots price + title and branches on
-	 * `productKind` per line.
+	 * carries the title but drops those) — because each caller snapshots price +
+	 * title and branches on `productKind` per line.
 	 *
 	 * Identical row semantics to `getByProductId`, NOT `listCommerceByIds`: this
 	 * is the RAW row read. It does NOT filter on `deleted_at`, `sku`, or `price`
@@ -673,7 +744,15 @@ export interface ProductCommerceStore {
 	 *         a product repricing and a variant pricing cannot both pass by
 	 *         reading each other's "before" state. With no variants declared it
 	 *         matches nothing and this guard cannot fire.
-	 *  5. otherwise → applies the partial update, stamps `key` as the row's
+	 *  5. a download file on a PHYSICAL product → throws
+	 *     `InvalidProductFieldError("downloadAsset")`, writing nothing: the row as
+	 *     it WOULD be after this edit (its `productKind` and `downloadAsset`,
+	 *     each from the input when supplied, else stored) carries a file while
+	 *     being physical. Covers attaching to a physical product and making a
+	 *     product with a file physical; an edit that detaches (`null`) and goes
+	 *     physical at once applies. Decided on the row this compare-and-set read,
+	 *     so a concurrent kind flip cannot slip a file past it.
+	 *  6. otherwise → applies the partial update, stamps `key` as the row's
 	 *     last-applied replay key, bumps `updatedAt`, returns the updated row —
 	 *     and, when the update CHANGED the row's `sku`, carries that sku's
 	 *     inventory row with it under THE SKU-RENAME RULE on this interface

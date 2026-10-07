@@ -59,7 +59,7 @@ pnpm test:d1                                   # T3 — real D1 in workerd (mini
 `pnpm test:d1` runs `packages/store-emdash/vitest.d1.config.ts`, a **separate vitest project** under
 the Cloudflare workers pool — it is not part of the root `vitest run`. It needs no Cloudflare
 account, token or remote database; the D1 is the local miniflare simulator. In CI it is the `d1`
-job: nightly, on demand, and as the **release gate** on any PR into `main` and the `main` push that
+job: on demand, and as the **release gate** on any PR into `main` and the `main` push that
 follows. Per-increment PRs into an integration branch do not run it.
 
 Before a PR: **tests pass, lint clean, formatted, changeset added** if a published package
@@ -74,7 +74,7 @@ changed. Migrations are forward-only.
   |---|---|
   | `@otta-sh/domain` (ports, use-cases, invariants) | `[Domain]` |
   | Store/client/payment **adapters** (store-emdash, stripe, x402) | `[Adapters]` |
-  | The EmDash **plugin** (storefront, Block Kit panel, sync hooks) | `[Plugin]` |
+  | The EmDash **plugin** (storefront, Block Kit panel, sync hooks) and its admin packages (`admin-react`, `admin-presentation`) | `[Plugin]` |
   | `sites/*` (the reference storefront site/theme) | `[Site]` |
   | Shared test/contract packages | `[Test]` |
   | CI / tooling / build | `[CI]` |
@@ -96,7 +96,7 @@ Every task is verified end-to-end before the PR is handed over (default, not opt
   runs against `InProcessCommerceClient` over a real document store; a case that fails is a
   defect in the client, never a case to soften.
 - **Plugin / storefront-UI tasks** — exercise against the **workerd-on-Node sandbox** (not
-  trusted in-process mode) and, once storefront e2e exists, drive it with Playwright and
+  trusted in-process mode), drive the storefront with Playwright (`pnpm test:e2e`), and
   attach a screenshot to the PR.
 - **Releases (a merge into `main`)** — the full battery, green on the build being released:
   `pnpm lint`, `pnpm typecheck`, `pnpm -r build`, `pnpm test`, `pnpm test:pg`, **`pnpm test:d1`**,

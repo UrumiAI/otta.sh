@@ -1,6 +1,13 @@
 import { describe, expect, test } from "vitest";
 import { cents, currency } from "../money/cents.js";
-import { idempotencyKey, orderId, productId, reservationId, sku } from "../money/ids.js";
+import {
+	customerId,
+	idempotencyKey,
+	orderId,
+	productId,
+	reservationId,
+	sku,
+} from "../money/ids.js";
 import type { CreateOrderInput, OrderStore } from "../ports/order-store.js";
 import type { SeedOrderSummaryRow } from "./in-memory-order-store.js";
 
@@ -18,6 +25,11 @@ export interface OrderStoreContractOptions {
 }
 
 const USD = currency("USD");
+
+/** One refund-retry schedule entry for the per-refund retry case. */
+function retry(at: string, attempts = 1) {
+	return { at, attempts, since: "2026-07-10T00:00:00.000Z" };
+}
 
 /** A summary-row seed with sensible defaults; overridable per admin-list case. */
 function summaryRow(overrides: Partial<SeedOrderSummaryRow> & { id: string }): SeedOrderSummaryRow {
@@ -287,6 +299,75 @@ export function orderStoreContract(
 			expect((await store.getById(first.order.id))?.shippingAddress).toEqual(address);
 		});
 
+		// A shopper who checks out SIGNED IN, as the email they ordered with, owns the
+		// order from birth: it must be in their list before any later sign-in claims it.
+		test("createFromCart with a customerId owns the order from birth; without one it is a guest order", async () => {
+			const { store } = await makeHarness();
+			const owner = customerId("cust-born");
+			const { order } = await store.createFromCart(
+				physicalInput({ customerId: owner, buyerRef: "born@example.com" }),
+			);
+			expect(order.customerId).toBe(owner);
+			expect((await store.getById(order.id))?.customerId).toBe(owner);
+			expect((await store.listForCustomer(owner)).map((o) => o.id)).toEqual([order.id]);
+			// Nothing left for a sign-in to claim: it is already this customer's.
+			expect(await store.linkGuestOrders(owner, "born@example.com")).toBe(0);
+
+			const guest = await store.createFromCart(
+				physicalInput({
+					orderId: orderId("ord-guest"),
+					idempotencyKey: idempotencyKey("key-guest"),
+				}),
+			);
+			expect(guest.order.customerId).toBeNull();
+		});
+
+		// The owner is written ONCE, with the order. A replay is not a second checkout:
+		// a guest order replayed by a now-signed-in shopper stays a guest order, and the
+		// sign-in (or the signed-in list's claim) is what links it — never the replay.
+		test("a same-key replay that names a customerId never re-owns a guest order", async () => {
+			const { store } = await makeHarness();
+			const first = await store.createFromCart(physicalInput({ buyerRef: "replay@example.com" }));
+			expect(first.order.customerId).toBeNull();
+			const replay = await store.createFromCart(
+				physicalInput({
+					orderId: orderId("ord-replay-2"),
+					buyerRef: "replay@example.com",
+					customerId: customerId("cust-replay"),
+				}),
+			);
+			expect(replay.created).toBe(false);
+			expect(replay.order.id).toBe(first.order.id);
+			expect(replay.order.customerId).toBeNull();
+			expect((await store.getById(first.order.id))?.customerId).toBeNull();
+			expect(await store.listForCustomer(customerId("cust-replay"))).toEqual([]);
+		});
+
+		test("listForCustomer is newest first: created_at DESC, then id DESC", async () => {
+			const h = await makeHarness();
+			const owner = "cust-newest";
+			// Seeded oldest-first, so an implementation that returns insertion or
+			// ascending order fails. Two share a created_at: the id breaks the tie.
+			await h.seedOrder(
+				summaryRow({ id: "ord-old", customerId: owner, createdAt: "2026-07-10T00:00:01.000Z" }),
+			);
+			await h.seedOrder(
+				summaryRow({ id: "ord-tie-a", customerId: owner, createdAt: "2026-07-10T00:00:02.000Z" }),
+			);
+			await h.seedOrder(
+				summaryRow({ id: "ord-tie-b", customerId: owner, createdAt: "2026-07-10T00:00:02.000Z" }),
+			);
+			await h.seedOrder(
+				summaryRow({ id: "ord-new", customerId: owner, createdAt: "2026-07-10T00:00:03.000Z" }),
+			);
+			expect((await h.store.listForCustomer(customerId(owner))).map((o) => o.id)).toEqual([
+				"ord-new",
+				"ord-tie-b",
+				"ord-tie-a",
+				"ord-old",
+			]);
+		});
+
 		test("getById returns the created order; an unknown id is null", async () => {
 			const { store } = await makeHarness();
 			await store.createFromCart(physicalInput());
@@ -332,12 +413,12 @@ export function orderStoreContract(
 			expect(await store.markPaid(orderId("ord-1"))).toBe(false);
 		});
 
-		test("markPaid on a failed order is rejected (illegal transition → false)", async () => {
+		test("markPaid on an expired order is rejected (illegal transition → false)", async () => {
 			const { store } = await makeHarness();
 			await store.createFromCart(physicalInput());
-			expect(await store.markFailed(orderId("ord-1"))).toBe(true);
+			expect(await store.expire(orderId("ord-1"), "2026-07-10T00:20:00.000Z")).toBe(true);
 			expect(await store.markPaid(orderId("ord-1"))).toBe(false);
-			expect((await store.getById(orderId("ord-1")))?.state).toBe("failed");
+			expect((await store.getById(orderId("ord-1")))?.state).toBe("expired");
 		});
 
 		test("expire transitions pending→expired only when hold_expires_at<=now", async () => {
@@ -365,6 +446,318 @@ export function orderStoreContract(
 			await store.markPaid(orderId("ord-1")); // paid ⇒ never expirable
 			const ids = await store.listExpirable("2026-07-10T00:30:00.000Z");
 			expect(ids).toEqual([orderId("ord-2")]);
+		});
+
+		// The cron sweep runs in a time-boxed hook: its LIST must be bounded, not only
+		// the flips after it, or a large backlog is read whole before any check runs.
+		test("listExpirable honours a limit, returning at most that many due orders", async () => {
+			const { store } = await makeHarness();
+			for (const n of [1, 2, 3]) {
+				await store.createFromCart(
+					physicalInput({
+						orderId: orderId(`ord-${String(n)}`),
+						idempotencyKey: idempotencyKey(`key-${String(n)}`),
+						holdExpiresAt: "2026-07-10T00:20:00.000Z",
+					}),
+				);
+			}
+			const now = "2026-07-10T00:30:00.000Z";
+			const limited = await store.listExpirable(now, { limit: 2 });
+			expect(limited).toHaveLength(2);
+			expect(await store.listExpirable(now)).toHaveLength(3);
+			expect(await store.listExpirable(now, { limit: 10 })).toHaveLength(3);
+			await expect(store.listExpirable(now, { limit: 0 })).rejects.toThrow(RangeError);
+		});
+
+		// The cron sweep claims an outbox row and only then learns whether there is
+		// time left to send it. Handing the row back must not cost one of its
+		// attempts — an attempt that never reached the provider is not an attempt.
+		test("releaseEmailClaim returns a claimed row to the queue, due now, WITHOUT counting the attempt", async () => {
+			const { store } = await makeHarness();
+			await store.createFromCart(physicalInput());
+			await store.markPaid(orderId("ord-1")); // enqueues the confirmation
+			const now = "2026-07-10T00:01:00.000Z";
+			const lease = "2026-07-10T00:06:00.000Z";
+			const first = await store.claimNextEmail(now, lease);
+			expect(first?.attempts).toBe(1);
+			// While claimed, it is leased: not claimable again.
+			expect(await store.claimNextEmail(now, lease)).toBeNull();
+
+			await store.releaseEmailClaim(first!.id);
+
+			// Claimable again AT ONCE (no backoff), and the attempt was not counted.
+			const again = await store.claimNextEmail(now, lease);
+			expect(again?.id).toBe(first!.id);
+			expect(again?.attempts).toBe(1);
+		});
+
+		// A TIMED-OUT row is handed back with a FORWARD due time and its timeout
+		// counted, so it moves behind every other due row instead of being claimed
+		// first on every run — still without spending an attempt.
+		test("releaseEmailClaim with a retryAt backs the row off and counts a timeout, not an attempt", async () => {
+			const { store } = await makeHarness();
+			await store.createFromCart(physicalInput());
+			await store.markPaid(orderId("ord-1"));
+			const now = "2026-07-10T00:01:00.000Z";
+			const lease = "2026-07-10T00:06:00.000Z";
+			const first = await store.claimNextEmail(now, lease);
+			expect(first?.timeouts).toBe(0);
+			await store.releaseEmailClaim(first!.id, {
+				retryAt: "2026-07-10T00:02:00.000Z",
+				timedOut: true,
+			});
+			// Not due before its retry time…
+			expect(await store.claimNextEmail(now, lease)).toBeNull();
+			// …due after it, attempt uncounted and the timeout recorded.
+			const later = await store.claimNextEmail(
+				"2026-07-10T00:02:00.000Z",
+				"2026-07-10T00:07:00.000Z",
+			);
+			expect(later).toMatchObject({ id: first!.id, attempts: 1, timeouts: 1 });
+		});
+
+		// -- Payment intents (late-payment prevention) ----------------------------
+
+		test("recordPaymentIntent is idempotent per (order, intent), due at the hold, listed in recording order", async () => {
+			const { store } = await makeHarness();
+			await store.createFromCart(physicalInput());
+			expect(await store.listPaymentIntents(orderId("ord-1"))).toEqual([]);
+			const record = (intentId: string) =>
+				store.recordPaymentIntent({ orderId: orderId("ord-1"), gateway: "stripe", intentId });
+			await record("pi_a");
+			await record("pi_a"); // a checkout replay re-issuing the SAME intent
+			await record("pi_b"); // a second intent (Stripe's ~24 h key expiry)
+
+			const intents = await store.listPaymentIntents(orderId("ord-1"));
+			expect(intents.map((i) => [i.gateway, i.intentId, i.cancelDueAt, i.cancelOutcome])).toEqual([
+				["stripe", "pi_a", "2026-07-10T00:15:00.000Z", null],
+				["stripe", "pi_b", "2026-07-10T00:15:00.000Z", null],
+			]);
+			expect(intents[0]?.cancelAttempts).toBe(0);
+			expect(await store.listPaymentIntents(orderId("ord-other"))).toEqual([]);
+		});
+
+		test("createFromCart freezes the buyer-address-requirement snapshot (issue #382): true, false, or — when not given — absent", async () => {
+			const { store } = await makeHarness();
+			const required = await store.createFromCart(physicalInput({ buyerAddressRequired: true }));
+			const notRequired = await store.createFromCart(
+				physicalInput({
+					orderId: orderId("ord-2"),
+					idempotencyKey: idempotencyKey("key-2"),
+					buyerAddressRequired: false,
+				}),
+			);
+			const legacy = await store.createFromCart(
+				physicalInput({ orderId: orderId("ord-3"), idempotencyKey: idempotencyKey("key-3") }),
+			);
+			expect(required.order.buyerAddressRequired).toBe(true);
+			expect(notRequired.order.buyerAddressRequired).toBe(false);
+			expect(legacy.order).not.toHaveProperty("buyerAddressRequired");
+			expect((await store.getById(orderId("ord-1")))?.buyerAddressRequired).toBe(true);
+			expect((await store.getById(orderId("ord-2")))?.buyerAddressRequired).toBe(false);
+			expect(await store.getById(orderId("ord-3"))).not.toHaveProperty("buyerAddressRequired");
+			// A later write to the order (the guarded expiry flip) keeps the snapshot.
+			expect(await store.expire(orderId("ord-1"), "2026-07-10T00:20:00.000Z")).toBe(true);
+			const flipped = await store.getById(orderId("ord-1"));
+			expect(flipped?.state).toBe("expired");
+			expect(flipped?.buyerAddressRequired).toBe(true);
+		});
+
+		test("recordPaymentIntent keeps the intent's customer decision (issue #382): an id, a recorded 'none', or — when not given — nothing at all", async () => {
+			const { store } = await makeHarness();
+			await store.createFromCart(physicalInput());
+			const at = (intentId: string, customerRef?: string | null) =>
+				store.recordPaymentIntent({
+					orderId: orderId("ord-1"),
+					gateway: "stripe",
+					intentId,
+					...(customerRef !== undefined ? { customerRef } : {}),
+				});
+			await at("pi_a", "cus_1");
+			await at("pi_a", "cus_other"); // idempotent: the first record stands
+			await at("pi_b", null);
+			await at("pi_c");
+			const intents = await store.listPaymentIntents(orderId("ord-1"));
+			expect(intents.map((i) => i.intentId)).toEqual(["pi_a", "pi_b", "pi_c"]);
+			expect(intents[0]?.customerRef).toBe("cus_1");
+			expect(intents[1]?.customerRef).toBeNull();
+			expect(intents[2]).not.toHaveProperty("customerRef");
+		});
+
+		test("listIntentCancelsDue lists orders with an unresolved due intent, earliest first; resolving or rescheduling moves them", async () => {
+			const { store } = await makeHarness();
+			await store.createFromCart(physicalInput());
+			await store.createFromCart(
+				physicalInput({
+					orderId: orderId("ord-2"),
+					idempotencyKey: idempotencyKey("key-2"),
+					holdExpiresAt: "2026-07-10T00:05:00.000Z",
+				}),
+			);
+			await store.recordPaymentIntent({
+				orderId: orderId("ord-1"),
+				gateway: "stripe",
+				intentId: "pi_1",
+			});
+			await store.recordPaymentIntent({
+				orderId: orderId("ord-2"),
+				gateway: "stripe",
+				intentId: "pi_2",
+			});
+
+			expect(await store.listIntentCancelsDue("2026-07-10T00:01:00.000Z", 10)).toEqual([]);
+			expect(await store.listIntentCancelsDue("2026-07-10T01:00:00.000Z", 10)).toEqual([
+				orderId("ord-2"),
+				orderId("ord-1"),
+			]);
+			expect(await store.listIntentCancelsDue("2026-07-10T01:00:00.000Z", 1)).toEqual([
+				orderId("ord-2"),
+			]);
+
+			await store.updatePaymentIntentCancel(orderId("ord-2"), "pi_2", {
+				cancelDueAt: null,
+				cancelAttempts: 1,
+				cancelOutcome: "cancelled",
+			});
+			await store.updatePaymentIntentCancel(orderId("ord-1"), "pi_1", {
+				cancelDueAt: "2026-07-10T02:00:00.000Z",
+				cancelAttempts: 1,
+				cancelOutcome: null,
+			});
+			expect(await store.listIntentCancelsDue("2026-07-10T01:00:00.000Z", 10)).toEqual([]);
+			expect(await store.listIntentCancelsDue("2026-07-10T03:00:00.000Z", 10)).toEqual([
+				orderId("ord-1"),
+			]);
+			const [pi2] = await store.listPaymentIntents(orderId("ord-2"));
+			expect([pi2?.cancelOutcome, pi2?.cancelAttempts, pi2?.cancelDueAt]).toEqual([
+				"cancelled",
+				1,
+				null,
+			]);
+		});
+
+		test("the pending → paid flip resolves the order's unresolved intents as not_needed — a paid order owes no cancel", async () => {
+			const { store } = await makeHarness();
+			await store.createFromCart(physicalInput());
+			await store.recordPaymentIntent({
+				orderId: orderId("ord-1"),
+				gateway: "stripe",
+				intentId: "pi_1",
+			});
+			expect(await store.markPaid(orderId("ord-1"))).toBe(true);
+
+			const [intent] = await store.listPaymentIntents(orderId("ord-1"));
+			expect([intent?.cancelOutcome, intent?.cancelDueAt]).toEqual(["not_needed", null]);
+			expect(await store.listIntentCancelsDue("2026-07-10T09:00:00.000Z", 10)).toEqual([]);
+		});
+
+		// -- Notices: non-transition emails on the outbox --------------------------
+
+		test("enqueueNotice is first-wins per (order, notice kind), carries its own payload, and is claimed beside the state rows", async () => {
+			const { store } = await makeHarness();
+			await store.createFromCart(physicalInput());
+			expect(await store.expire(orderId("ord-1"), "2026-07-10T00:20:00.000Z")).toBe(true);
+			const notice = { kind: "late-payment-refunded" as const, amount: cents(1200), currency: USD };
+
+			expect(await store.enqueueNotice(orderId("ord-1"), notice)).toBe(true);
+			// A second late payment on the same order is not a second email.
+			expect(await store.enqueueNotice(orderId("ord-1"), { ...notice, amount: cents(300) })).toBe(
+				false,
+			);
+			expect(await store.enqueueNotice(orderId("ord-missing"), notice)).toBe(false);
+
+			const claimed: { toState: string; notice: unknown }[] = [];
+			for (let i = 0; i < 10; i++) {
+				const row = await store.claimNextEmail(
+					"2026-07-10T01:00:00.000Z",
+					"2026-07-10T01:05:00.000Z",
+				);
+				if (row === null) break;
+				claimed.push({ toState: row.toState, notice: row.notice });
+				await store.markEmailSent(row.id, "2026-07-10T01:00:00.000Z");
+			}
+			// The expiry's own state email is untouched by the notice (a notice never
+			// occupies a state's slot), and the notice row carries the FIRST payload.
+			expect(claimed).toHaveLength(2);
+			expect(claimed).toContainEqual({ toState: "expired", notice: null });
+			expect(claimed).toContainEqual({ toState: "expired", notice });
+		});
+
+		// -- Late-payment support: the one-read ledger and the refund-retry schedule
+
+		test("readOrderLedger returns the order with its events, payments and refunds; null for an unknown order", async () => {
+			const { store } = await makeHarness();
+			await store.createFromCart(physicalInput());
+			expect(await store.expire(orderId("ord-1"), "2026-07-10T00:20:00.000Z")).toBe(true);
+			await store.recordPayment({
+				orderId: orderId("ord-1"),
+				gateway: "stripe",
+				providerRef: "pi_ledger",
+				amount: cents(1500),
+				currency: USD,
+				status: "succeeded",
+			});
+
+			const ledger = await store.readOrderLedger(orderId("ord-1"));
+			expect(ledger?.order.state).toBe("expired");
+			expect(ledger?.events.map((e) => [e.fromState, e.toState])).toEqual([["pending", "expired"]]);
+			expect(ledger?.payments.map((p) => p.providerRef)).toEqual(["pi_ledger"]);
+			expect(ledger?.refunds).toEqual([]);
+			expect(await store.readOrderLedger(orderId("ord-missing"))).toBeNull();
+		});
+
+		test("scheduleRefundRetry is PER REFUND: due orders list earliest-first and bounded; clearing one refund keeps the order due while another still needs it", async () => {
+			const { store } = await makeHarness();
+			await store.createFromCart(physicalInput());
+			await store.createFromCart(
+				physicalInput({ orderId: orderId("ord-2"), idempotencyKey: idempotencyKey("key-2") }),
+			);
+			const kA = idempotencyKey("late-payment-refund:pi_a");
+			const kB = idempotencyKey("late-payment-refund:pi_b");
+			await store.scheduleRefundRetry(orderId("ord-1"), kA, retry("2026-07-10T00:30:00.000Z"));
+			await store.scheduleRefundRetry(orderId("ord-1"), kB, retry("2026-07-10T00:40:00.000Z", 2));
+			await store.scheduleRefundRetry(orderId("ord-2"), kA, retry("2026-07-10T00:10:00.000Z"));
+			await store.scheduleRefundRetry(
+				orderId("ord-missing"),
+				kA,
+				retry("2026-07-10T00:00:00.000Z"),
+			);
+
+			expect(await store.listRefundRetriesDue("2026-07-10T01:00:00.000Z", 10)).toEqual([
+				orderId("ord-2"),
+				orderId("ord-1"),
+			]);
+			expect(await store.listRefundRetriesDue("2026-07-10T01:00:00.000Z", 1)).toEqual([
+				orderId("ord-2"),
+			]);
+			const ledger = await store.readOrderLedger(orderId("ord-1"));
+			expect(
+				ledger?.refundRetries.map((r) => [r.idempotencyKey, r.at, r.attempts, r.since]),
+			).toEqual([
+				[kA, "2026-07-10T00:30:00.000Z", 1, "2026-07-10T00:00:00.000Z"],
+				[kB, "2026-07-10T00:40:00.000Z", 2, "2026-07-10T00:00:00.000Z"],
+			]);
+
+			// Clearing ONE refund's retry leaves the order due for the other.
+			await store.scheduleRefundRetry(orderId("ord-1"), kA, null);
+			expect(await store.listRefundRetriesDue("2026-07-10T00:35:00.000Z", 10)).toEqual([
+				orderId("ord-2"),
+			]);
+			expect(await store.listRefundRetriesDue("2026-07-10T01:00:00.000Z", 10)).toEqual([
+				orderId("ord-2"),
+				orderId("ord-1"),
+			]);
+			// The STALE list ranks by the OLDEST first failure (`since`), whatever is due:
+			// both orders' retries began at 00:00, and a cutoff before that finds none.
+			expect(
+				(await store.listRefundRetriesStale("2026-07-10T00:00:00.000Z", 10)).toSorted(),
+			).toEqual([orderId("ord-1"), orderId("ord-2")].toSorted());
+			expect(await store.listRefundRetriesStale("2026-07-09T23:59:59.000Z", 10)).toEqual([]);
+			await store.scheduleRefundRetry(orderId("ord-1"), kB, null);
+			await store.scheduleRefundRetry(orderId("ord-2"), kA, null);
+			expect(await store.listRefundRetriesStale("9999-01-01T00:00:00.000Z", 10)).toEqual([]);
+			expect(await store.listRefundRetriesDue("2026-07-10T09:00:00.000Z", 10)).toEqual([]);
+			expect((await store.readOrderLedger(orderId("ord-1")))?.refundRetries).toEqual([]);
 		});
 
 		// -- Admin Orders console: view-only keyset list --------------------------
@@ -921,6 +1314,55 @@ export function orderStoreContract(
 					customer: { customerId: "cust-1" },
 				}),
 			).toBe(1);
+		});
+
+		// -- flagReconciliation: unguarded, or compare-and-set (issue #364) -------
+
+		test("flagReconciliation with no guard always records the flag (an anomaly must be recordable)", async () => {
+			const h = await makeHarness();
+			await h.seedOrder(summaryRow({ id: "ord-flag", state: "paid", reconciliationFlag: "old" }));
+			expect(await h.store.flagReconciliation(orderId("ord-flag"), "new anomaly")).toBe(true);
+			expect((await h.store.getById(orderId("ord-flag")))?.reconciliationFlag).toBe("new anomaly");
+			expect(await h.store.flagReconciliation(orderId("ord-missing"), "x")).toBe(false);
+		});
+
+		test("flagReconciliation guarded on NO flag writes only on an unflagged order: a flag written in between survives", async () => {
+			const h = await makeHarness();
+			await h.seedOrder(summaryRow({ id: "ord-cas-a", state: "paid" }));
+			await h.seedOrder(
+				summaryRow({ id: "ord-cas-b", state: "paid", reconciliationFlag: "written meanwhile" }),
+			);
+			expect(
+				await h.store.flagReconciliation(orderId("ord-cas-a"), "mine", { expectedFlag: null }),
+			).toBe(true);
+			expect((await h.store.getById(orderId("ord-cas-a")))?.reconciliationFlag).toBe("mine");
+			expect(
+				await h.store.flagReconciliation(orderId("ord-cas-b"), "mine", { expectedFlag: null }),
+			).toBe(false);
+			expect((await h.store.getById(orderId("ord-cas-b")))?.reconciliationFlag).toBe(
+				"written meanwhile",
+			);
+		});
+
+		test("flagReconciliation guarded on a flag replaces exactly that flag, and nothing else", async () => {
+			const h = await makeHarness();
+			await h.seedOrder(summaryRow({ id: "ord-cas-c", state: "paid", reconciliationFlag: "seen" }));
+			expect(
+				await h.store.flagReconciliation(orderId("ord-cas-c"), "other", {
+					expectedFlag: "not what is there",
+				}),
+			).toBe(false);
+			expect((await h.store.getById(orderId("ord-cas-c")))?.reconciliationFlag).toBe("seen");
+			expect(
+				await h.store.flagReconciliation(orderId("ord-cas-c"), "replacement", {
+					expectedFlag: "seen",
+				}),
+			).toBe(true);
+			expect((await h.store.getById(orderId("ord-cas-c")))?.reconciliationFlag).toBe("replacement");
+			// A guarded write on an unknown order writes nothing.
+			expect(
+				await h.store.flagReconciliation(orderId("ord-missing"), "x", { expectedFlag: null }),
+			).toBe(false);
 		});
 
 		// -- resolveReconciliation: equality-guarded compare-and-clear ------------

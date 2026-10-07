@@ -1,0 +1,157 @@
+---
+/**
+ * GET /account/orders/<id> — one of the signed-in customer's orders (issue #306).
+ *
+ * Read through `storefront/account/order`, which resolves the customer from the
+ * session and answers NOT_FOUND for an order that is not theirs — the same
+ * answer as for one that does not exist, so this page cannot confirm that
+ * someone else's order id is real. No session ⇒ 303 to /account/login;
+ * `private, no-store` like the list.
+ *
+ * The lines are the purchase-time snapshot (title and price as bought), which is
+ * what a receipt must show.
+ */
+import {
+	ACCOUNT_ORDER_ROUTE,
+	buildCheckoutTotals,
+	orderLabel,
+	orderTotalLabel,
+	orderTotalsFlags,
+	type AccountOrderResult,
+} from "@otta-sh/plugin";
+import { getPublicPluginApiRouteHandler } from "emdash/plugin-utils";
+import { env } from "virtual:emdash/env";
+import Storefront from "../../../layouts/Storefront.astro";
+import {
+	accountOrderStatus,
+	currentSessionToken,
+	orderMoney,
+	orderRefundedNote,
+	signedInEmail,
+} from "../../../lib/account.js";
+import { accountOrderExtras, orderPlacedAt } from "../../../lib/account-order.js";
+import { downloadsBucketFrom } from "../../../lib/download-delivery.js";
+import { downloadLinks } from "../../../lib/download-links.js";
+import { orderStamp } from "../../../lib/order-stamp.js";
+import { orderSumRows } from "../../../lib/order-view.js";
+import { isOrderPayable } from "../../../lib/pay-guard.js";
+import { SITE_LOCALE } from "../../../lib/site-locale.js";
+import { keepPrivate } from "../../../lib/no-store.js";
+import { cartErrorMessage } from "../../../lib/error-messages.js";
+import { dispatchOttaRoute, isBusyResult, markBusy } from "../../../lib/otta-api.js";
+import type { AccountOrderModel } from "../../../themes/contract.js";
+
+// The customer's own data: private, no-store AND out of Astro's route cache,
+// which ignores Cache-Control (middleware.ts, "TWO CACHES").
+keepPrivate(Astro);
+
+const sessionToken = currentSessionToken(Astro.cookies);
+if (sessionToken === undefined) return Astro.redirect("/account/login", 303);
+
+const { id } = Astro.params;
+const result =
+	id === undefined
+		? null
+		: await dispatchOttaRoute<AccountOrderResult>(
+				getPublicPluginApiRouteHandler(Astro.locals),
+				ACCOUNT_ORDER_ROUTE,
+				{ sessionToken, orderId: id },
+				Astro.url,
+			);
+if (result !== null && !result.ok && "redirectTo" in result) {
+	return Astro.redirect("/account/login", 303);
+}
+
+const order = result !== null && result.ok ? result.order : null;
+const notFound = result !== null && !result.ok && "error" in result && result.error === "NOT_FOUND";
+if (order === null) Astro.response.status = notFound ? 404 : 503;
+// Busy (storage contention): the same 503, plus Retry-After and the busy copy.
+const busy = isBusyResult(result);
+if (busy) markBusy(Astro.response);
+
+/* The same Download links as the order's own page (issue #376,
+   `lib/download-links.ts`): asked of the delivery gate with the order's id —
+   the capability the gate reads; this session already proved it owns the order
+   — for an order that can deliver, on a deployment with a DOWNLOADS bucket. */
+const downloads =
+	order === null
+		? new Map<string, string>()
+		: await downloadLinks({
+				handler: getPublicPluginApiRouteHandler(Astro.locals),
+				bucketPresent: downloadsBucketFrom(env) !== undefined,
+				order: { id: order.id, state: order.state, lines: order.lines },
+				baseUrl: Astro.url,
+			});
+
+const ledgerRows =
+	order?.lines.map((line) => ({
+		title: line.title,
+		sku: line.sku,
+		qty: line.quantity,
+		money: orderMoney(line.unitPriceCents * line.quantity, line.currency),
+		downloadHref: downloads.get(line.sku),
+	})) ?? [];
+
+/** The order's name for the shopper — its products, never the id in the URL
+ *  (`orderLabel`, the same function the order emails use). */
+const label = order === null ? "Order" : orderLabel(order.lines);
+
+let detail: AccountOrderModel["order"] = null;
+if (order !== null) {
+	/* The totals by the PUBLIC order page's own rule (QA U-5): built by the
+	   plugin's `buildCheckoutTotals` with `orderTotalsFlags`, so a component the
+	   order was never priced for reads "Not calculated" here too, never $0.00. */
+	const totals = buildCheckoutTotals(order.totals, {
+		locale: SITE_LOCALE,
+		...orderTotalsFlags(order.totals),
+	});
+	/* What the order page says about this state — including whether anything was
+	   charged on a dead order (`latePayment`) — so the two pages agree. */
+	const now = new Date();
+	const stamp = orderStamp({
+		state: order.state,
+		latePayment: order.latePayment,
+		returnedFromStripe: false,
+		holdLapsed: order.state === "pending" && !isOrderPayable(order, now),
+		polling: false,
+	});
+	detail = {
+		label,
+		state: accountOrderStatus(order, now),
+		stateNote: stamp?.body ?? null,
+		placed: orderPlacedAt(order.createdAt),
+		ledgerRows,
+		sumRows: orderSumRows(totals),
+		total: totals.total,
+		totalLabel: orderTotalLabel(order.state),
+		/* Its own line, from the ledger only — never a relabelled total. */
+		refundedNote: orderRefundedNote(order.refundedCents, order.totals.currency),
+		excludesUncalculated: totals.totalExcludesUncalculated,
+		/* What the public order page offers for this order (QA2 X1): Complete
+		   payment while it can be paid (the same resume path; this session
+		   proves ownership), the tracking, the address — this page is private,
+		   the public one never shows it — and the order's own page. */
+		...accountOrderExtras(order, now),
+	};
+}
+
+const model: AccountOrderModel = {
+	order: detail,
+	errorMessage: cartErrorMessage(busy ? "BUSY" : notFound ? "ORDER_NOT_FOUND" : "SERVICE_UNAVAILABLE"),
+	/* Who is signed in, named on this private page (QA2 A7). */
+	signedInAs:
+		order !== null
+			? await signedInEmail(getPublicPluginApiRouteHandler(Astro.locals), Astro.cookies, Astro.url)
+			: null,
+};
+---
+
+{/* An answer about THIS session's order (the order, or NOT_FOUND) means the
+    session is live: the header can say so without asking again. */}
+<Storefront
+	view="accountOrder"
+	model={model}
+	title={label}
+	currency={order?.currency ?? null}
+	signedIn={order !== null || notFound ? true : undefined}
+/>

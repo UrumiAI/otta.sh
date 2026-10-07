@@ -267,8 +267,10 @@ export type PluginLifecycleEvent = Record<string, never>;
  * only capability-gated surface it ever receives. `kv` and `storage` are both
  * available WITHOUT a capability: the host builds each on an always-available
  * path, and there is no `storage` capability string in its vocabulary to declare
- * (ADR-0018 decision 4). No `content`/`media`/`users`/`email`/`db` — declaring
- * any of those would fail the sandbox-clean guard (DEVELOPMENT.md §5).
+ * (ADR-0018 decision 4). `content` is the host's read under the `content:read`
+ * capability already declared, used by one sweep leg. No `media`/`users`/`email`/
+ * `db` — declaring any of those would fail the sandbox-clean guard
+ * (DEVELOPMENT.md §5).
  */
 export interface PluginContext {
 	http: HttpAccess;
@@ -294,7 +296,7 @@ export interface PluginContext {
 	storage?: StorageAccess;
 	/**
 	 * Scheduled-task registration — the OTHER capability-free surface (plan §D5,
-	 * the fifteen-minute cron row). There is no `cron` capability string in the host's
+	 * the cron row; the sweep task is due every minute, see `cron/index.ts`). There is no `cron` capability string in the host's
 	 * vocabulary any more than there is a `storage` one; the only gate is whether
 	 * the runtime wired a cron executor at all.
 	 *
@@ -302,6 +304,44 @@ export interface PluginContext {
 	 * hands over no `cron`, and a caller that needs one says so by name.
 	 */
 	cron?: CronAccess;
+	/**
+	 * The host's CMS read (`ContentAccess` in EmDash), granted by the `content:read`
+	 * capability this plugin already declares for its content hooks. Read-only here
+	 * on purpose: the plugin never writes CMS content.
+	 *
+	 * ONE caller: the `product-orphans` sweep leg (issue #374), which asks whether a
+	 * commerce row's CMS document still exists. Everything else gets what it needs
+	 * from the hook event itself.
+	 *
+	 * OPTIONAL like `storage` and `cron`: the host omits it when the capability is
+	 * missing, and the workerd test mirror (`sandbox-entry.ts`) has no CMS to offer.
+	 */
+	content?: ContentReadAccess;
+}
+
+/**
+ * The slice of EmDash's `ContentAccess` this plugin reads — `get` and `list`.
+ *
+ * What an answer PROVES depends on the host path, verified against EmDash 0.38:
+ *  - trusted (in-process, `createContentAccess`): `get` is `findById` — `WHERE id =
+ *    ? AND deleted_at IS NULL` — so a draft, scheduled, published or unpublished
+ *    document comes back as itself, a TRASHED or permanently deleted one comes back
+ *    `null`, and a database failure REJECTS;
+ *  - sandboxed (`@emdash-cms/cloudflare`'s bridge, `contentGet` / `contentList`):
+ *    the same query, but every database error is CAUGHT and answered as `null` /
+ *    an empty page. A lost binding, an overload or a missing `ec_products` table
+ *    reads exactly like a deleted document.
+ *
+ * So `null` is never proof on its own. The one caller (`product-orphans`) asks the
+ * CMS to LIST a product first, re-reads every `null`, counts it only in a run that
+ * read some other document, and needs three such runs a cadence apart.
+ */
+export interface ContentReadAccess {
+	get(collection: string, id: string): Promise<Record<string, unknown> | null>;
+	list(
+		collection: string,
+		options?: { limit?: number; cursor?: string },
+	): Promise<{ items: readonly Record<string, unknown>[]; cursor?: string; hasMore: boolean }>;
 }
 
 // -- routes -------------------------------------------------------------------
@@ -312,9 +352,23 @@ export interface SandboxedRequest {
 	headers: Record<string, string>;
 }
 
+/**
+ * The signed-in caller the host names on a PRIVATE route (EmDash's
+ * `toRouteCallerInfo`: `routeCtx.user`, absent on a public route). The admin
+ * console's writes record it as who made them.
+ */
+export interface RouteCaller {
+	id?: string;
+	email?: string | null;
+	name?: string | null;
+	role?: unknown;
+}
+
 export interface SandboxedRouteContext<TInput = unknown> {
 	input: TInput;
 	request: SandboxedRequest;
+	/** The authenticated caller — private routes only. */
+	user?: RouteCaller;
 }
 
 export type RouteHandler<TInput = unknown> = (
@@ -340,7 +394,11 @@ export interface SandboxedPluginHooks {
 	 * declared hook name against its own list, on which `cron` carries no required
 	 * capability, so a `format: "standard"` plugin may declare it as it stands.
 	 */
-	cron?: { handler: HookHandler<CronEvent> };
+	cron?: {
+		handler: HookHandler<CronEvent>;
+		/** Ms the host waits for the hook before failing it (host default: 5000). */
+		timeout?: number;
+	};
 	/** Where the sweep task is REGISTERED (`ctx.cron.schedule`), mirroring the
 	 *  host's own bundled plugins. See `cron/index.ts` for why the tick re-affirms
 	 *  it too. */
@@ -502,7 +560,8 @@ export interface ButtonElement {
 /** Discriminated union — a subset of em-dash's 12-member `Element`
  *  (`packages/blocks/src/types.ts`); `checkbox`, `radio`, `repeater`,
  *  `media_picker` and `secret_input` (which has its own field spec below) are
- *  supported by the renderer but nothing in Otta emits them as elements. */
+ *  supported by the renderer but nothing in Otta emits them as elements
+ *  (`radio` appears only as a form field, {@link RadioFieldSpec}). */
 export type Element =
 	| TextInputElement
 	| NumberInputElement
@@ -717,6 +776,22 @@ export interface SelectFieldSpec {
 	options: SelectOption[];
 	initial_value?: string;
 }
+/** A `radio` form field (em-dash `RadioElement`; `elements/radio.tsx` renders a
+ *  `Radio.Group` with each option's LABEL as its row caption). Use it for a short,
+ *  prefilled closed set whose ids are not operator-facing words: a `select`'s
+ *  trigger shows the raw VALUE (R-17a), and a prefilled `combobox` can be cleared
+ *  to `null` (F-6). A radio syncs its display from `initial_value` the way R-12a
+ *  describes, so emit it only through `carriedForm`, which keys the form on the
+ *  prefill and remounts it when the value changes. No screen uses one today
+ *  (the Settings "Store theme" picker was its only user); it stays as part of
+ *  the mirrored Block Kit vocabulary. */
+export interface RadioFieldSpec {
+	type: "radio";
+	action_id: string;
+	label: string;
+	options: SelectOption[];
+	initial_value?: string;
+}
 /** A `date_input` form field (em-dash `DateInputElement`,
  *  `packages/blocks/src/types.ts:74-80`) — the Orders filter from/to bounds
  *  (MOD-8). */
@@ -762,6 +837,7 @@ export interface FormBlock extends CarrierBlockBase {
 			| FormFieldSpec
 			| SecretInputFieldSpec
 			| SelectFieldSpec
+			| RadioFieldSpec
 			| DateFieldSpec
 			| ToggleElement
 			| ComboboxElement

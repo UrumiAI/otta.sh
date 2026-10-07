@@ -41,7 +41,18 @@ export function checkoutEntryRedirect(
 	if (cartId === undefined || cartId.length === 0) return { path: "/cart" };
 
 	if (result === null) return { path: "/cart", error: SERVICE_UNAVAILABLE };
-	if (result.ok) return null;
+	if (result.ok) {
+		// The cart already became an order that is PAID (or later, or in a state
+		// this build does not know): the confirmation page reads its real state and
+		// is the only honest place for the buyer. A pending order renders the locked
+		// review; an ended one renders "start a new cart" — both on this page.
+		if (result.orderCreated && result.order.phase === "placed") {
+			return { path: `/orders/${encodeURIComponent(result.order.id)}` };
+		}
+		// Rendered — including a summary that carries `selectionErrors`: a refused
+		// coupon is a notice beside the undiscounted totals, never a bounce.
+		return null;
+	}
 
 	// Typed reason (CART_EMPTY / CART_NOT_FOUND / PRODUCT_NOT_PRICED /
 	// CURRENCY_MISMATCH / …) or a route-level error token — either way the buyer

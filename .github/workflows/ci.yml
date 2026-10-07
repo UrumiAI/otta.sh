@@ -3,27 +3,37 @@ name: CI
 on:
   push:
     branches: [main]
+    paths-ignore:
+      - "**/*.md"
+      - "adr/**"
+      - "docs/**"
   pull_request:
-  # The D1 tier is nightly AND the release gate, but still not per-PR: it boots
-  # workerd, runs every migration against a fresh D1 database per test file, and
-  # drives 250 reserves through the race shape, which costs several minutes of
-  # runner time for evidence that changes only when the adapter or the host
-  # build changes. The `d1` job below spells out exactly which events run it.
-  schedule:
-    - cron: "0 3 * * *"
+    # A change that touches only prose runs nothing: no job reads these files.
+    # (A changeset `.md` always travels with code, so that code still triggers.)
+    paths-ignore:
+      - "**/*.md"
+      - "adr/**"
+      - "docs/**"
+  # No nightly schedule. It re-tested a commit that had already passed every job
+  # on its `push`, with a frozen lockfile, so it could only ever repeat a result.
+  # The release gates (`d1`, and the Playwright `e2e` job) still run on every PR
+  # into `main` and every `main` push; `workflow_dispatch` runs them on demand.
   workflow_dispatch:
 
-# Cancel a PR's superseded runs when new commits land; never cancel an
-# in-flight main-branch validation (each merge should finish its own check).
+# No job writes to the repo: checkout reads it, and the cache and artifact
+# actions use the runner's own token, not GITHUB_TOKEN.
+permissions:
+  contents: read
+
+# Cancel superseded runs on the same ref. On `main` that means a run for a merge
+# that is already superseded by a newer merge: the newer commit contains it and
+# gets the full check, so finishing the older run only queues behind it.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  cancel-in-progress: true
 
 jobs:
   unit:
-    # The nightly schedule exists for the `d1` job alone; the per-commit jobs
-    # already ran on the commit that is being re-tested.
-    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -88,20 +98,17 @@ jobs:
   # branch's own PR — and again on the `main` push that merge produces. It does
   # NOT run on the per-increment PRs into the integration branch: those gate on
   # the targeted local run, and paying several minutes of workerd per increment
-  # buys nothing the release run doesn't. The nightly `schedule` and manual
-  # `workflow_dispatch` paths are unchanged.
+  # buys nothing the release run doesn't. Manual `workflow_dispatch` runs it too.
   #
   # To make it a REQUIRED check, add the status named `d1` to the branch
   # protection rule for `main` (repo Settings → Branches). GitHub reports a
   # job skipped by its `if:` as successful, so requiring it does not block the
   # per-increment PRs where it deliberately does not run.
   #
-  # No `needs:` on purpose: `unit` is skipped on the nightly schedule, and a
-  # skipped dependency would skip this job with it.
+  # No `needs:` on purpose: it runs alongside `unit` rather than after it.
   d1:
     if: >-
-      github.event_name == 'schedule'
-      || github.event_name == 'workflow_dispatch'
+      github.event_name == 'workflow_dispatch'
       || github.event_name == 'push'
       || (github.event_name == 'pull_request' && github.base_ref == 'main')
     runs-on: ubuntu-latest
@@ -117,3 +124,82 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm test:d1
+
+  # The Playwright e2e suite (issue #378): the React admin console and the
+  # storefront journeys, in a real browser, against a dev server the config
+  # boots itself (`OTTA_E2E_START_STACK=1`). Everything is local: a fresh
+  # `.wrangler` state, the miniflare D1, and the plugin's DEV-ONLY offline Stripe
+  # gateway (`OTTA_E2E_STRIPE_OFFLINE=1`, set by playwright.config.ts on the
+  # server it boots). No Stripe account, secret or network service is involved.
+  #
+  # `OTTA_E2E_SEED=1` has the global setup seed the fresh stack once (content,
+  # priced catalog, paid orders), and `OTTA_E2E_REQUIRE_SITE=1` turns every
+  # "no site / no rows" skip into a failure, so the job cannot go green by
+  # asserting nothing.
+  #
+  # Same trigger as `d1`, and for the same reason: it is a release gate, not a
+  # per-increment one. It runs on any PR into `main`, on the `main` push that
+  # merge produces, and on demand. Like `d1`, a job skipped by its `if:` reports
+  # success, so it can be made a required check without blocking the
+  # per-increment PRs.
+  e2e:
+    if: >-
+      github.event_name == 'workflow_dispatch'
+      || github.event_name == 'push'
+      || (github.event_name == 'pull_request' && github.base_ref == 'main')
+    runs-on: ubuntu-latest
+    # A cold dev server compiles the admin graph on first load; the suite runs
+    # in minutes after that. Anything near this ceiling is a hang.
+    timeout-minutes: 45
+    env:
+      OTTA_E2E_START_STACK: "1"
+      OTTA_E2E_REQUIRE_SITE: "1"
+      OTTA_E2E_SEED: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      # The browser cache is keyed on the INSTALLED Playwright version, so a
+      # lockfile bump downloads the matching browser instead of reusing a stale one.
+      - name: Read the Playwright version
+        id: playwright
+        run: echo "version=$(pnpm exec playwright --version | awk '{print $2}')" >> "$GITHUB_OUTPUT"
+      - name: Cache Playwright browsers
+        id: playwright-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ steps.playwright.outputs.version }}
+      - name: Install Chromium
+        if: steps.playwright-cache.outputs.cache-hit != 'true'
+        run: pnpm exec playwright install --with-deps chromium
+      # The cache holds the browser, not its system libraries.
+      - name: Install Chromium's system dependencies
+        if: steps.playwright-cache.outputs.cache-hit == 'true'
+        run: pnpm exec playwright install-deps chromium
+      - run: pnpm test:e2e
+      # Traces and screenshots are kept for failing specs only
+      # (`trace: "retain-on-failure"`), plus the JUnit report.
+      - name: Upload the e2e report and traces
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-report-and-traces
+          # The dev server's own output reaches the job log (the webServer pipes
+          # stdout and stderr). astro writes `.astro/dev.log` only when it
+          # daemonizes, which this config prevents, so it is listed for the case
+          # where that ever changes; miniflare writes no log file of its own.
+          path: |
+            node_modules/.playwright-artifacts
+            node_modules/.playwright-report
+            sites/staging/.astro/dev.log
+          # Both paths are dot-directories, and upload-artifact@v4 skips hidden
+          # files by default, root path included. Without this the step uploads
+          # nothing, and `if-no-files-found: ignore` hides that.
+          include-hidden-files: true
+          retention-days: 14
+          if-no-files-found: ignore

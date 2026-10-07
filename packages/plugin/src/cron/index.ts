@@ -38,10 +38,11 @@
  * sweep schedule could not be written. The bootstrap swallows and logs, which is
  * safe precisely because it is retried on the next request.
  *
- * The tick still RE-AFFIRMS its own registration on top of all that.
- * `CronAccess.schedule` is an upsert on `(plugin, task)`, so re-affirming is free
- * and idempotent, and it means a schedule CHANGE lands on the next tick instead of
- * waiting for a redeploy.
+ * The tick goes through the same latched bootstrap, so a cron-only isolate (one
+ * that served no request) still re-affirms once. Re-affirming READS first and
+ * upserts only when the host's row differs, so a schedule CHANGE lands on the
+ * first isolate after a deploy at the cost of one write, and an unchanged one
+ * costs a read per isolate — not a write per minute.
  */
 import type { CronEvent, CronTaskInfo, HookHandler, PluginContext } from "../types.js";
 import type { PluginLifecycleEvent } from "../types.js";
@@ -51,16 +52,56 @@ import {
 	type CommerceSweepSummary,
 } from "./sweeps.js";
 
-/** The task name this plugin registers. One task drives all nine legs: they share
- *  a store composition and a clock, and splitting them would buy nothing but nine
- *  rows contending on the same documents. */
+/** The task name this plugin registers. One task drives all twelve legs: they share
+ *  a store composition and a clock, and splitting them would buy nothing but twelve
+ *  rows contending on the same documents.
+ *
+ *  Splitting would NOT buy isolation from a slow leg either, which is the obvious
+ *  reason to want it: EmDash 0.38's executor claims due rows and invokes their hooks
+ *  ONE AFTER ANOTHER in a single scheduled event, each under its own timeout, and a
+ *  timed-out hook is only raced, never cancelled — it keeps running unobserved. Twelve
+ *  tasks could therefore hold the event for twelve timeouts back to back. One task
+ *  with its own time budget (`SWEEP_TICK_BUDGET_MS`) stops cleanly instead. */
 export const SWEEP_TASK_NAME = "commerce-sweeps";
 
-/** Every fifteen minutes — the cadence the standalone service ran its
- *  `scheduled()` handler on, carried over unchanged. The site's own Cron
- *  Trigger fires every minute; that drives the host's EXECUTOR, and this is
- *  what decides when the task is due. */
-export const SWEEP_SCHEDULE = "*/15 * * * *";
+/**
+ * Every minute — the resolution of the site's own Worker Cron Trigger, which
+ * drives the host's EXECUTOR; this is what decides when the task is due.
+ *
+ * It was every fifteen minutes, carried over from the standalone service, whose reason (let a
+ * serverless Postgres origin autosuspend between ticks) left with that service:
+ * commerce lives in the site's own D1 now, which the executor already touches
+ * every minute. Under a one-minute trigger the fifteen-minute task meant a
+ * fifteen-minute cart or order hold actually lasted fifteen to thirty, and a
+ * queued email waited up to fifteen. The scans whose read cost the old cadence
+ * was bounding keep it, per leg (`MAINTENANCE_LEGS` in `sweeps.ts`).
+ *
+ * A deployment registered under the old cadence moves on its own: the
+ * per-isolate bootstrap re-affirms the task, and finding the old schedule it
+ * upserts the new one.
+ */
+export const SWEEP_SCHEDULE = "* * * * *";
+
+/**
+ * The `cron` hook's timeout, DECLARED on the hook (`plugin.ts`) rather than
+ * inherited from the host's 5000 ms default, because the tick's budget is derived
+ * from it and a test pins the two together.
+ *
+ * FIFTEEN SECONDS, raised from the default so that one email send of a
+ * slow-but-working provider fits inside a tick (`SWEEP_EMAIL_SEND_TIMEOUT_MS`,
+ * 5 s, under a 9.5 s budget). The cost, accepted: EmDash 0.38's executor runs due
+ * tasks one after another in a single scheduled event, so a long tick delays any
+ * OTHER plugin's task due in the same minute by up to this much. That is
+ * acceptable because the tick budgets itself well inside it (it ends at 9.5 s,
+ * and usually far sooner — on Workers Free the query budget ends it first), cron
+ * granularity is a minute anyway, and the time is wall time spent waiting on I/O,
+ * not CPU, so Workers Free's CPU limit is unaffected.
+ *
+ * On timeout the host only stops WAITING (a `Promise.race`); the hook's work may
+ * carry on unobserved in the background, or be cut off when the scheduled event
+ * ends — neither is something to rely on, which is why the tick budgets itself.
+ */
+export const SWEEP_HOOK_TIMEOUT_MS = 15_000;
 
 /** What `ensureSweepTaskScheduled` reports, so a caller (and a suite) can see
  *  whether the runtime wired cron at all — and, through `tasks`, what the HOST
@@ -88,6 +129,15 @@ export async function ensureSweepTaskScheduled(ctx: PluginContext): Promise<Swee
 	const cron = ctx.cron;
 	if (cron === undefined) {
 		return { scheduled: false, task: SWEEP_TASK_NAME, schedule: SWEEP_SCHEDULE, tasks: [] };
+	}
+	// READ FIRST, write only on a difference. The host's `schedule` is an upsert
+	// that also resets the row's `next_run_at`; issued from inside a running tick it
+	// nudges the very row the executor is about to reschedule, and issued on every
+	// request path it is a database write per isolate for nothing. A row that
+	// already says this name at this cadence needs no write at all.
+	const existing = await cron.list();
+	if (existing.some((task) => task.name === SWEEP_TASK_NAME && task.schedule === SWEEP_SCHEDULE)) {
+		return { scheduled: true, task: SWEEP_TASK_NAME, schedule: SWEEP_SCHEDULE, tasks: existing };
 	}
 	await cron.schedule(SWEEP_TASK_NAME, { schedule: SWEEP_SCHEDULE });
 	// READ BACK. The upsert resolving proves the call was made; only the host's own
@@ -172,34 +222,40 @@ export function createActivateHandler(): HookHandler<PluginLifecycleEvent> {
  * lie about what ran.
  *
  * NEVER REJECTS on a leg failure — `runCommerceSweeps` catches per leg and reports
- * — because a rejected cron hook is a task the executor retries wholesale, which
- * would re-run the eight legs that worked.
+ * — because a rejected hook is logged by the host as `Hook failed` for the whole
+ * task, hiding which leg broke (for a recurring task the executor simply moves on
+ * to its next scheduled run; only one-shot tasks are retried). And never
+ * OVERRUNS: the legs share a budget, started at this handler's ENTRY, below the
+ * hook's declared timeout (`SWEEP_HOOK_TIMEOUT_MS`).
  *
- * AND THE RE-AFFIRMATION IS INSIDE THE GUARD, which it was not in the first cut: an
- * `ensureSweepTaskScheduled` awaited before the try block would reject the whole
- * hook if the host's task table were briefly unavailable, taking down all nine
- * sweeps for a bookkeeping write none of them needs. The row that made this tick
- * happen already exists; re-affirming it is an optimisation, so it is reported as
- * a failed "leg" and stepped over.
+ * THE RE-AFFIRMATION IS THE PER-ISOLATE BOOTSTRAP, latched and never throwing —
+ * not a write on every tick. Every tick re-affirming cost a database write (and a
+ * `next_run_at` nudge on the running row) per minute for nothing; the bootstrap
+ * reads first and writes only on a difference, once per isolate, which is still
+ * how a schedule change reaches a deployment. Its time counts against the budget,
+ * which starts before it.
  */
 export function createCronHandler(options: CommerceSweepOptions = {}): HookHandler<CronEvent> {
 	return async (event, ctx): Promise<CommerceSweepSummary | { task: string; skipped: true }> => {
+		const tickClock = options.tickClock ?? (() => Date.now());
+		const startedAtMs = tickClock();
 		const name = typeof event?.name === "string" ? event.name : "";
 		if (name !== SWEEP_TASK_NAME) return { task: name, skipped: true };
-		try {
-			// Free, upsert-shaped, and it lets a schedule change take effect on the next
-			// tick rather than on the next isolate.
-			await ensureSweepTaskScheduled(ctx);
-		} catch (err) {
-			console.error("[otta] cron sweep re-affirmation failed (sweeps still run):", err);
-		}
-		return await runCommerceSweeps(ctx, name, options);
+		await bootstrapSweepTask(ctx);
+		return await runCommerceSweeps(ctx, name, { ...options, tickClock, startedAtMs });
 	};
 }
 
 export {
+	MAINTENANCE_LEG_INTERVAL_MS,
+	MAINTENANCE_LEGS,
 	runCommerceSweeps,
+	SWEEP_EMAIL_SEND_TIMEOUT_MS,
 	SWEEP_LEGS,
+	SWEEP_STATE_KV_KEY,
+	SWEEP_TICK_BUDGET_MS,
+	SWEEP_TICK_QUERY_BUDGET,
+	SWEEP_TICK_RESERVE_MS,
 	type CommerceSweepOptions,
 	type CommerceSweepSummary,
 	type SweepCursorStore,

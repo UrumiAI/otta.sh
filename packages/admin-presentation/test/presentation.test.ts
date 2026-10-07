@@ -25,6 +25,9 @@ import { describe, expect, test } from "vitest";
 import {
 	ABSENT,
 	CANCEL_BANNER,
+	CANCEL_GROUP_LABEL,
+	CANCEL_REFUNDS_UNKNOWN,
+	CANCEL_RESTOCK_HINT,
 	DATE_LOCALE,
 	LABEL_BUDGET,
 	MARK_REFUNDED_CONFIRM,
@@ -52,9 +55,13 @@ import {
 	TERMINAL_ORDER_STATES,
 	UNNAMED_REFUND_RECIPIENT,
 	addStockConfirm,
+	buyerRefHint,
 	buyerReferenceText,
 	canonicalMoneyInput,
+	cancelBannerText,
 	cancelConfirmText,
+	cancelGroupLabel,
+	PENDING_CANCEL_EFFECTS,
 	cents,
 	currency,
 	dayOf,
@@ -66,6 +73,7 @@ import {
 	formatMoney,
 	formatOptionalAmount,
 	formatTimestamp,
+	maskBuyerEmail,
 	PRODUCT_SECTION_ORDER,
 	SPLIT_DISCARD_CONTEXT,
 	dirtyGroupLabel,
@@ -1227,10 +1235,66 @@ describe("the Orders detail copy is shared, and says what the Block Kit screen s
 	test("the cancel confirm names the reason and the consequence", () => {
 		// Typographic quotes on BOTH surfaces now: the React tier's hand-copy had
 		// straight ones, which is the drift this module exists to make impossible.
-		expect(cancelConfirmText("Out of stock")).toBe(
+		expect(cancelConfirmText("Out of stock", PENDING_CANCEL_EFFECTS)).toBe(
 			"Cancel this order as “Out of stock”? This is permanent — the order cannot be un-cancelled, and the held stock is released.",
 		);
 		expect(CANCEL_BANNER.description).toContain("“cancelled”");
+	});
+
+	test("cancelling a PAID order says the money goes back and what happens to the stock (T1-4)", () => {
+		// QA: the dialog and the banner said cancelling "releases the held stock" — on a
+		// paid order, whose stock was sold and whose money was kept. They now state the
+		// refund, by amount, and the restock choice.
+		const refunding = { refund: "$24.00", refundAutomatic: true, stock: "restock" } as const;
+		expect(cancelConfirmText("Customer requested it", refunding)).toBe(
+			"Cancel this order as “Customer requested it”? This is permanent — $24.00 is refunded to the buyer, and the items go back to stock.",
+		);
+		expect(cancelConfirmText("Other", { ...refunding, stock: "keep" })).toBe(
+			"Cancel this order as “Other”? This is permanent — $24.00 is refunded to the buyer, and nothing goes back to stock.",
+		);
+		const banner = cancelBannerText(refunding);
+		expect(banner).toContain("refunds $24.00 to the buyer’s original payment method");
+		expect(banner).toContain("returns the items to stock");
+		expect(banner).toContain("that their refund is on its way");
+		expect(banner).not.toContain("held stock");
+		expect(cancelGroupLabel(refunding)).toBe("Cancel order — permanent, refunds the buyer");
+	});
+
+	test("a paid order with nothing captured says nothing is refunded", () => {
+		const effects = { refund: null, refundAutomatic: true, stock: "restock" } as const;
+		expect(cancelConfirmText("Out of stock", effects)).toBe(
+			"Cancel this order as “Out of stock”? This is permanent — nothing is refunded, and the items go back to stock.",
+		);
+		expect(cancelBannerText(effects)).not.toContain("refund is on its way");
+	});
+
+	test("a refund Otta cannot issue says the order cannot be cancelled here", () => {
+		const effects = { refund: "$24.00", refundAutomatic: false, stock: "restock" } as const;
+		expect(cancelBannerText(effects)).toContain("can’t refund");
+		// The next step is a RECORDED manual refund — money on the ledger — never the
+		// status-only Mark refunded.
+		expect(cancelBannerText(effects)).toContain("Money → Refunds");
+		expect(cancelBannerText(effects)).not.toContain("Mark refunded");
+	});
+
+	test("an UNKNOWN refundable amount never reads as nothing refunded", () => {
+		// The refund ledger failed to load: the amount is unknown, not zero.
+		expect(CANCEL_REFUNDS_UNKNOWN).toContain("couldn’t be loaded");
+		expect(CANCEL_REFUNDS_UNKNOWN).not.toContain("nothing is refunded");
+	});
+
+	test("the Return-to-stock hint names the cases where units should NOT go back", () => {
+		expect(CANCEL_RESTOCK_HINT).toContain("damaged");
+		expect(CANCEL_RESTOCK_HINT).toContain("packed");
+		expect(CANCEL_RESTOCK_HINT).toContain("by hand");
+	});
+
+	test("a PENDING order's cancel copy is unchanged: it releases the held stock", () => {
+		expect(cancelBannerText(PENDING_CANCEL_EFFECTS)).toBe(CANCEL_BANNER.description);
+		expect(cancelConfirmText("Out of stock", PENDING_CANCEL_EFFECTS)).toBe(
+			"Cancel this order as “Out of stock”? This is permanent — the order cannot be un-cancelled, and the held stock is released.",
+		);
+		expect(cancelGroupLabel(PENDING_CANCEL_EFFECTS)).toBe(CANCEL_GROUP_LABEL);
 	});
 
 	test("the over-refund refusal names what to enter INSTEAD", () => {
@@ -1257,13 +1321,25 @@ describe("the Orders detail copy is shared, and says what the Block Kit screen s
 		expect(MARK_REFUNDED_CONFIRM.text).toContain("does not move money");
 	});
 
+	test("the mark-refunded confirm says the buyer is NOT emailed, and when to use it (T1-6)", () => {
+		// The move enqueues no email any more (`transitionOrderAsAdmin`): the copy must
+		// not leave the operator believing the buyer heard about a refund.
+		expect(MARK_REFUNDED_CONFIRM.text).toContain("does not email the buyer");
+		expect(MARK_REFUNDED_CONFIRM.text).toContain("outside Otta");
+	});
+
 	test("the list's search label names EVERY axis the filter searches", () => {
 		// A search axis the label does not mention ships dark: nobody types into a
 		// box for a thing they have no reason to believe it looks at. This pins the
-		// label against the port's `OrderListFilter.search`, which matches an
-		// order-id PREFIX, a buyer_ref SUBSTRING and an exact purchase-time line
+		// label against the port's `OrderListFilter.search`, which GUARANTEES an
+		// order-id PREFIX, a folded buyer_ref PREFIX and an exact purchase-time line
 		// SKU — so adding a fourth axis without a word here fails right here.
-		expect(ORDERS_SEARCH_LABEL).toBe("Search order ID, buyer email, or exact SKU");
+		expect(ORDERS_SEARCH_LABEL).toBe("Search by start of order ID or buyer email, or exact SKU");
+		// AND THE MATCH MODE OF THE TWO TEXT AXES. The label used to promise
+		// nothing about them while the document store matches a prefix only, so
+		// QA's `example.com` (a domain-only fragment) found nothing and read as a
+		// broken search. The port calls that narrowing user-visible; this says it.
+		expect(ORDERS_SEARCH_LABEL).toContain("start of");
 		for (const axis of ["order ID", "buyer email", "SKU"]) {
 			expect(ORDERS_SEARCH_LABEL).toContain(axis);
 		}
@@ -1381,6 +1457,86 @@ describe("buyerReferenceText — the readable buyer reference, never the uuid", 
 	test("null and undefined both render the shared em dash", () => {
 		expect(buyerReferenceText(null)).toBe(ABSENT);
 		expect(buyerReferenceText(undefined)).toBe(ABSENT);
+	});
+});
+
+/**
+ * `maskBuyerEmail` — the Orders console's mask (issue #377), and deliberately
+ * NOT a second masking rule: it is `buyerRefHint`, the resume flow's
+ * `j•••@g•••.com`, applied to what `buyerReferenceText` would print. The one
+ * thing it adds is the answer to "is there an email here to mask at all?" —
+ * `null` for anything that is not shaped like an address, which the console
+ * prints as it always did.
+ */
+describe("maskBuyerEmail — the resume flow's hint, applied to an email-shaped reference only", () => {
+	test("an email-shaped reference masks to exactly the resume flow's hint", () => {
+		for (const email of ["jane.doe@gmail.com", "a@b.co", "x@mail.example.co.uk"]) {
+			expect(maskBuyerEmail(email), email).toBe(buyerRefHint(email));
+		}
+		expect(maskBuyerEmail("jane.doe@gmail.com")).toBe("j•••@g•••.com");
+	});
+
+	test("masks what would be PRINTED — the trimmed reference — not the raw value", () => {
+		expect(maskBuyerEmail("  jane.doe@gmail.com\n")).toBe("j•••@g•••.com");
+	});
+
+	test("never carries more of the address than one letter of each half and the last label", () => {
+		const masked = maskBuyerEmail("secret.name@private-company.example");
+		expect(masked).not.toContain("secret");
+		expect(masked).not.toContain("private");
+	});
+
+	test("a reference that is not an email has nothing to mask, and says so with null", () => {
+		// A guest or session token, a long opaque handle: the operator's only
+		// correlation key for the order, and not an address anyone can be reached
+		// at. Hiding it behind `•••` would cost the operator the key and protect
+		// nothing a screenshot could leak.
+		expect(maskBuyerEmail("guest_checkout_772")).toBeNull();
+		expect(maskBuyerEmail("0x52908400098527886E0F7030069857D2E4169EE7")).toBeNull();
+	});
+
+	/**
+	 * NEAR-EMAILS ARE STILL ADDRESSES (review of #377). `buyerRef` is bounded by
+	 * length only (`checkout-route-input.ts`), so a headless caller can store a
+	 * value the resume flow's hint refuses (`•••`) or one whose "TLD" is free
+	 * text. Anything with an `@` in it is masked here; when the hint is not
+	 * clean, the console falls back to `<first char>•••@•••`, which carries no
+	 * part of the domain at all. `buyerRefHint` itself is not touched.
+	 */
+	test.each([
+		["jane@localhost", "j•••@•••"],
+		["jane@gmail.com.", "j•••@•••"],
+		["jane@gmail", "j•••@•••"],
+		["jane@gmail.com, phone 555-1234", "j•••@•••"],
+		["@nolocal.com", "•••@•••"],
+		["nodomain@", "n•••@•••"],
+	])("a near-email %s is masked to the safe fallback %s", (value, masked) => {
+		expect(maskBuyerEmail(value)).toBe(masked);
+	});
+
+	test("the near-email fallback carries none of the domain or trailing text", () => {
+		const masked = maskBuyerEmail("jane@gmail.com, phone 555-1234") ?? "";
+		expect(masked).not.toContain("555");
+		expect(masked).not.toContain("phone");
+		expect(masked).not.toContain("com");
+	});
+
+	test("a well-formed address keeps the resume flow's hint — the control for the fallback cases", () => {
+		expect(maskBuyerEmail("jane@gmail.com")).toBe("j•••@g•••.com");
+		expect(maskBuyerEmail("jane@gmail.com")).toBe(buyerRefHint("jane@gmail.com"));
+		expect(maskBuyerEmail("x@mail.example.co.uk")).toBe("x•••@m•••.uk");
+	});
+
+	test("the resume flow's own hint is unchanged for the same near-emails", () => {
+		expect(buyerRefHint("jane@localhost")).toBe("•••");
+		expect(buyerRefHint("jane@gmail.com, phone 555-1234")).toBe("j•••@g•••.com, phone 555-1234");
+	});
+
+	test("absent, blank and whitespace-only have nothing to mask either", () => {
+		expect(maskBuyerEmail("")).toBeNull();
+		expect(maskBuyerEmail("   ")).toBeNull();
+		expect(maskBuyerEmail(null)).toBeNull();
+		expect(maskBuyerEmail(undefined)).toBeNull();
 	});
 });
 

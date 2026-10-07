@@ -1,0 +1,104 @@
+---
+/**
+ * Tempered's Layout — the document shell and the chrome (docs/theme/TEMPERED.md
+ * §2–§3, §11). It was `src/layouts/Base.astro`; the markup is unchanged.
+ *
+ * PRESENTATION ONLY. Everything here arrives on `chrome`, built by
+ * `src/layouts/Storefront.astro`: the guarded CMS reads (site title, primary
+ * menu, their fallbacks), the Account link, the cart count and its spoken
+ * label, the currency. This file reads nothing and decides nothing — the rule
+ * `themes-boundary.test.ts` holds every theme to.
+ *
+ * STYLES are linked, never imported or scoped: `?url` gives the built asset's
+ * address, so only the ACTIVE theme's sheets reach the browser (the registry
+ * imports every theme's components statically, which is why no theme `.astro`
+ * file may carry a `<style>` block). `theme.css` is the token layer and the
+ * shared recipes; `views.css` is this chrome and the three themed views.
+ *
+ * FONTS are this theme's own, declared in astro.config.ts under the
+ * `--f-tempered-*` namespace and mapped onto `--u-display/-body/-data` by
+ * theme.css. Self-hosted through Astro's font API — no CDN at runtime.
+ */
+import { Font } from "astro:assets";
+import type { ChromeModel } from "../contract.js";
+import themeHref from "./theme.css?url";
+import viewsHref from "./views.css?url";
+
+interface Props {
+	chrome: ChromeModel;
+}
+
+const { chrome } = Astro.props;
+---
+
+<!doctype html>
+<html lang="en" data-theme-id={chrome.themeId}>
+	<head>
+		<meta charset="UTF-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+		{/* Both palettes are real (theme.css), so tell the UA — otherwise
+		    scrollbars and native form controls stay light on a dark page. */}
+		<meta name="color-scheme" content="light dark" />
+		<title>{chrome.fullTitle}</title>
+		{chrome.description && <meta name="description" content={chrome.description} />}
+		{/* Only the two faces that set real text above the fold are preloaded.
+		    The data face currently renders two short chrome strings, so
+		    preloading it competes with them for bandwidth for no gain; the
+		    preload comes back in increment 4, when money and the cart's hold
+		    countdown make it a first-paint face. */}
+		<Font cssVariable="--f-tempered-display" preload />
+		<Font cssVariable="--f-tempered-body" preload />
+		<Font cssVariable="--f-tempered-data" />
+		<link rel="stylesheet" href={themeHref} />
+		<link rel="stylesheet" href={viewsHref} />
+		{/* Per-page <head> additions. Used by the confirmation page for its
+		    `referrer: no-referrer` policy and its bounded meta-refresh poll:
+		    both MUST be in <head> to take effect, and both belong to that page
+		    rather than to every page, so they arrive through this slot. */}
+		<slot name="head" />
+		{/* The coil (§5): an Archimedean spiral swept as a ribbon, the same
+		    shape language the product art uses. Inline so there is no second
+		    request and no public/ asset to rot. */}
+		<link
+			rel="icon"
+			type="image/svg+xml"
+			href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%23131A20'/%3E%3Cpath d='M 17.4 15.6 L 18.0 16.2 L 18.2 17.1 L 18.0 18.1 L 17.2 19.1 L 15.9 19.7 L 14.3 19.7 L 12.8 18.9 L 11.6 17.5 L 11.2 15.6 L 11.6 13.5 L 13.1 11.7 L 15.3 10.6 L 18.0 10.5 L 20.7 11.6 L 22.7 13.7 L 23.7 16.7 L 23.3 19.9 L 21.3 22.8 L 18.2 24.8 L 14.3 25.3 L 10.3 24.1 L 7.1 21.4 L 5.3 17.4 L 5.4 12.9 L 7.6 8.7 L 11.5 5.6 L 16.6 4.4 L 22.0 5.3 L 26.6 8.4 L 29.6 13.3 L 25.0 14.3 L 23.1 11.0 L 20.0 8.9 L 16.4 8.2 L 12.9 8.9 L 10.1 11.0 L 8.5 13.9 L 8.4 17.1 L 9.6 20.0 L 11.9 22.0 L 14.7 22.9 L 17.6 22.6 L 20.0 21.2 L 21.5 19.0 L 21.9 16.6 L 21.2 14.3 L 19.6 12.7 L 17.6 11.8 L 15.5 11.9 L 13.7 12.7 L 12.6 14.1 L 12.2 15.8 L 12.6 17.3 L 13.5 18.4 L 14.7 18.9 L 15.9 18.9 L 16.9 18.4 L 17.4 17.7 L 17.6 16.9 L 17.3 16.3 L 16.8 15.9 Z' fill='%23E0AC3A'/%3E%3C/svg%3E"
+		/>
+	</head>
+	<body>
+		{/* The shell wrapper is what aligns the skip link with the header
+		    content once it drops into flow on focus. */}
+		<div class="t-shell t-skip-shell">
+			<a href="#main" class="t-skip-link">Skip to the main content</a>
+		</div>
+		<header class="t-head">
+			<div class="t-shell t-head-row">
+				<a href="/" class="t-wordmark">{chrome.siteTitle}</a>
+				<nav class="t-nav" aria-label="Primary">
+					{
+						chrome.navItems.map((item) => (
+							<a href={item.url}>
+								{item.label}
+								{item.isCart && chrome.cartCount !== null && (
+									<Fragment>
+										<span class="t-count u-mono" aria-hidden="true"> ({chrome.cartCount})</span>
+										<span class="u-sr-only">, {chrome.cartCountLabel}</span>
+									</Fragment>
+								)}
+							</a>
+						))
+					}
+				</nav>
+			</div>
+		</header>
+		<main id="main" class="t-shell">
+			<slot />
+		</main>
+		<footer class="t-foot">
+			<div class="t-shell t-foot-row">
+				<span>Otta — content by EmDash, commerce by Otta.</span>
+				{chrome.currency !== null && <span class="u-mono">{chrome.currency}</span>}
+			</div>
+		</footer>
+	</body>
+</html>

@@ -44,6 +44,7 @@
  * so the stored JSON is plain, and the same convention the order documents use.
  */
 import type {
+	DownloadAsset,
 	IdempotencyKey,
 	InventoryPolicy,
 	Money,
@@ -239,6 +240,14 @@ export interface ProductCommerceDoc {
 	heightMm: number | null;
 	/** INDEXED. */
 	productKind: ProductKind;
+	/**
+	 * The download file's descriptor (issue #376), or null. NOT indexed: it is
+	 * read with the product, never filtered on. OPTIONAL on the stored shape
+	 * because a document written before the field existed has none —
+	 * {@link normalizeProductDoc} reads that as `null`, so the `??` there is a
+	 * live guard rather than dead code. Every write path sets it.
+	 */
+	downloadAsset?: DownloadAsset | null;
 	/** The publish gate as the port reads it. NOT indexed — see `publishKey`. */
 	active: boolean;
 	/** INDEXED text mirror of {@link ProductCommerceDoc.active}; see the layout doc. */
@@ -387,6 +396,7 @@ export function newShellProductDoc(productId: ProductId, at: string): ProductCom
 		widthMm: null,
 		heightMm: null,
 		productKind: "physical",
+		downloadAsset: null,
 		active: false,
 		publishKey: "inactive",
 		deletedAt: null,
@@ -414,7 +424,15 @@ export function normalizeProductDoc(doc: ProductCommerceDoc): ProductCommerceDoc
 	// document written before the mirror existed — or by any path that set one without
 	// the other — would otherwise read as published while filtering as unpublished. The
 	// boolean is the source of truth; the text is only how the filter reaches it.
-	return { ...doc, variants: doc.variants ?? {}, publishKey: publishKeyFor(doc.active) };
+	//
+	// `downloadAsset` is DEFAULTED: a document from before the field existed has no
+	// file attached, and absent must read as `null` rather than `undefined`.
+	return {
+		...doc,
+		variants: doc.variants ?? {},
+		publishKey: publishKeyFor(doc.active),
+		downloadAsset: doc.downloadAsset ?? null,
+	};
 }
 
 /** Is there a readable product row here? `"absent"` reads as "no such product". */
@@ -443,6 +461,7 @@ export function toProductCommerce(doc: ProductCommerceDoc): ProductCommerce {
 		widthMm: doc.widthMm,
 		heightMm: doc.heightMm,
 		productKind: doc.productKind,
+		downloadAsset: doc.downloadAsset ?? null,
 		active: doc.active,
 		deletedAt: doc.deletedAt === null ? null : new Date(doc.deletedAt),
 		idempotencyKey: doc.idempotencyKey,

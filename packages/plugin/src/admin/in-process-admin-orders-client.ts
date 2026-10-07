@@ -6,8 +6,8 @@
  * twelve methods, the same argument shapes, the same RETURN VALUES — including
  * every field the `*Wire` types carry — with the `@otta-sh/domain` use-cases
  * composed over the `@otta-sh/store-emdash` adapters bound to `ctx.storage`
- * instead of a commerce service. Nothing here reaches for egress; `ctx.http` is
- * never touched.
+ * instead of a commerce service. Nothing here reaches for egress itself; the one
+ * outbound call a refund can make belongs to the injected payment gateway.
  *
  * NO FIELD IS NARROWED, and that is a rule rather than a preference. The React
  * admin screens consume these results through `console-api.ts` STRUCTURAL
@@ -18,15 +18,16 @@
  *    with a count of none);
  *  - `cursorRejected` is only ever `true`, never `false` and never "present but
  *    unset" — it means "you asked for a page you did not get";
- *  - `allowedTransitions` is DERIVED from the domain state machine
- *    (`legalNextStates`), never re-listed here;
+ *  - `allowedTransitions` is DERIVED from the domain (`adminNextStates`: the state
+ *    machine minus a manual `paid` and minus a bare `cancelled`), never re-listed
+ *    here;
  *  - `deletedAt`-style tombstone semantics carry over from products: a non-null
  *    stamp means tombstoned, and nothing collapses it into absence;
  *  - `shippingAddress` is the order's immutable checkout SNAPSHOT (ADR-0009) and
  *    is read off the order row — never re-read from the mutable profile address
  *    book, which appears (separately) on the customer-context panel;
- *  - `RefundsSummaryWire.refundedTotalCents` is the watermark the refund action
- *    reads, and `refundable` is the gateway's HONEST capability — neither is
+ *  - `RefundsSummaryWire.finalizedTotalCents` is the watermark the refund action
+ *    reads (`refundedTotalCents` is the ACTIVE sum the remainder comes from), and `refundable` is the gateway's HONEST capability — neither is
  *    softened;
  *  - `updatedAt` doubles as the optimistic-concurrency token elsewhere in the
  *    admin surface, so an order's stamps pass through as the store spells them.
@@ -62,17 +63,17 @@
  *    are real `@otta-sh/domain` exports; the COMPOSITION lived in the route, and
  *    now lives here too.
  *
- * TWO RECORDED DIVERGENCES, neither of them accidental:
- *  - NO GATEWAYS ARE COMPOSED YET (INC-C1/C3 move the payment adapters). The
- *    refund POST therefore reaches the route's own "no gateway wired for this
- *    order's method" arm and answers `409 REFUND_GATEWAY_UNAVAILABLE`. The whole
- *    path in front of it — input bounds, the REQUIRED idempotency key, the order
- *    lookup — is ported faithfully, so when a gateway map arrives the one line
- *    that changes is where it comes from.
- *  - a refund ROW here carries no `status`. The service's `serializeRefund` emits
- *    one; the plugin's `RefundWire` has never declared it and no console reads
- *    it, so this tier matches the PLUGIN's wire type rather than adding a field
- *    the type says does not exist.
+ * THE GATEWAYS ARE INJECTED, never resolved here. The composition root
+ * (`makeAdminClients`) resolves them from kv exactly as `makeCommerceClient` does
+ * and passes them in through `options.gateways`; a method with no gateway in that
+ * map is the honest "no gateway wired for this order's method", and the refund
+ * POST answers it with `409 REFUND_GATEWAY_UNAVAILABLE` (fail-closed). The only
+ * egress a refund makes is the gateway's own, over the `ctx.http` the root bound
+ * it to — this class never touches `ctx.http` itself.
+ *
+ * A REFUND ROW CARRIES ITS `status`, as the service's `serializeRefund` did: a
+ * `voided` or in-flight attempt is on the ledger for audit, and a console that
+ * could not tell it from a finalized refund would list money that never moved.
  *
  * SEARCH IS PREFIX-ONLY ON THIS TIER, and that is the ADR-0019 §6 floor rather
  * than a gap: id PREFIX or folded buyerRef PREFIX or EXACT folded line sku. A SQL
@@ -90,22 +91,26 @@
  */
 
 import {
+	adminNextStates,
 	appendOrderNote,
-	cancelOrder as cancelOrderUseCase,
+	cancelOrderWithRefund,
+	emailTemplateForState,
 	computeRefundCeiling,
 	getOrderCustomerContext,
 	getOrderTimeline,
 	idempotencyKey as toIdempotencyKey,
-	legalNextStates,
 	listOrderNotes,
 	ORDER_STATE_MACHINE,
+	orderHasEmailRecipient,
 	orderId as toOrderId,
 	recordFulfillment as recordFulfillmentUseCase,
 	refundOrder as refundOrderUseCase,
 	resolveReconciliation as resolveReconciliationUseCase,
+	resolveUnverifiedRefund as resolveUnverifiedRefundUseCase,
 	sumCapturedPayments,
+	sumFinalizedRefunds,
 	sumRefunds,
-	transitionOrder as transitionOrderUseCase,
+	transitionOrderAsAdmin,
 	cents as toCents,
 	currency as toCurrency,
 	type CancellationReason,
@@ -114,14 +119,18 @@ import {
 	type OrderListCursor,
 	type OrderListFilter,
 	type OrderNote,
+	type OrderNotice,
 	type OrderState,
+	type OrderId,
 	type OrderSummary,
+	type OutboxEmail,
 	type OrderTimeline,
 	type PaymentGateway,
 	type PaymentMethod,
 	type ReconciliationOutcome,
 	type RefundOrderFailure,
 	type RefundRecord,
+	type ResolveFollowUp,
 } from "@otta-sh/domain";
 import {
 	CommerceInputError,
@@ -135,12 +144,19 @@ import {
 	type InProcessCommerceStores,
 	type InProcessCommerceStoresOptions,
 } from "../commerce/in-process-commerce-stores.js";
+import { isRetryableStorageBusy } from "@otta-sh/store-emdash";
+import {
+	sendOrderEmailsNow,
+	type SendOrderEmailsNowOptions,
+} from "../email/send-order-emails-now.js";
+import { settleDeadline, type SettleDeadline } from "../settle-deadline.js";
 import type { PluginContext } from "../types.js";
 import type {
 	AddNoteResult,
 	AdminOrdersSurface,
 	CancelOrderResult,
 	CustomerContextWire,
+	InlineEmailStatus,
 	OrderDetailResult,
 	OrderDetailWire,
 	OrderNoteWire,
@@ -152,7 +168,9 @@ import type {
 	RefundOrderResult,
 	RefundsSummaryWire,
 	RefundWire,
+	ResolveFollowUpWire,
 	ResolveReconciliationResult,
+	ResolveUnverifiedRefundResult,
 	TransitionOrderResult,
 } from "./admin-orders-surface.js";
 
@@ -167,26 +185,109 @@ const DEFAULT_LIMIT = 25;
  *  the real ceiling is computed from captured payments below. */
 const MAX_REFUND_AMOUNT_CENTS = 1_000_000_000_000;
 
+export interface InProcessAdminOrdersClientOptions extends InProcessCommerceStoresOptions {
+	gateways?: Partial<Record<PaymentMethod, PaymentGateway>>;
+	/** The inline order-email attempt's options — a deploy passes none (the bundle's
+	 *  sender); a suite injects a sender. The deadline is NOT taken from here: each
+	 *  write fixes its own as it starts (see `#writeDeadline`). */
+	orderEmails?: Omit<SendOrderEmailsNowOptions, "deadline">;
+	/** The wall clock each write's deadline is measured on. Default `Date.now`. */
+	now?: () => number;
+}
+
 export class InProcessAdminOrdersClient implements AdminOrdersSurface {
 	readonly #stores: InProcessCommerceStores;
 
 	/**
 	 * The payment gateways keyed by method (ADR-0008), exactly as
-	 * `AdminRoutesDeps.gateways` carries them — EMPTY until the payment adapters
-	 * move in-process (INC-C1/C3). An empty map is not a stub: it is the honest
-	 * "no gateway is wired for this order's method", and the refund POST answers
-	 * it with the route's own `409 REFUND_GATEWAY_UNAVAILABLE` rather than
-	 * pretending money could move.
+	 * `AdminRoutesDeps.gateways` carries them, taken from `options.gateways`. A
+	 * method missing from the map is not a stub: it is the honest "no gateway is
+	 * wired for this order's method", and the refund POST answers it with the
+	 * route's own `409 REFUND_GATEWAY_UNAVAILABLE` rather than pretending money
+	 * could move.
 	 */
-	readonly #gateways: Partial<Record<PaymentMethod, PaymentGateway>> = {};
+	readonly #gateways: Partial<Record<PaymentMethod, PaymentGateway>>;
+
+	/** The context and options the inline order-email attempt runs with. */
+	readonly #ctx: PluginContext;
+	readonly #orderEmails: Omit<SendOrderEmailsNowOptions, "deadline">;
+	readonly #now: () => number;
 
 	/**
 	 * Takes the whole context and constructs the adapters once per client, the
 	 * same request-scoped lifecycle the console route already had. A context with
 	 * no document store fails HERE, at construction, naming what is missing.
 	 */
-	constructor(ctx: PluginContext, options: InProcessCommerceStoresOptions = {}) {
+	constructor(ctx: PluginContext, options: InProcessAdminOrdersClientOptions = {}) {
 		this.#stores = createInProcessCommerceStores(ctx, options);
+		this.#gateways = options.gateways ?? {};
+		this.#ctx = ctx;
+		this.#orderEmails = options.orderEmails ?? {};
+		this.#now = options.now ?? Date.now;
+	}
+
+	/**
+	 * The write's ONE deadline, fixed as it starts — the same `settle-deadline.ts`
+	 * budget the settle routes use (ADR-0005). The inline email that ends the write
+	 * takes only what the write itself left of it (a Stripe refund can spend most),
+	 * so the request never waits a full email budget on top of a slow write.
+	 */
+	#writeDeadline(): SettleDeadline {
+		return settleDeadline(this.#now);
+	}
+
+	/**
+	 * Send `orderId`'s due emails NOW and say whether the one this write enqueued —
+	 * the row `announces` recognizes — went out (QA T1-6; ADR-0005's second
+	 * 2026-10-02 amendment). Every admin write that enqueues a buyer email ends here,
+	 * so the email goes with the click, in the order the clicks were made, instead of
+	 * on the cron's next 15-minute tick; the cron stays the at-least-once backstop.
+	 *
+	 * NEVER FAILS THE WRITE: `sendOrderEmailsNow` resolves whatever the provider or
+	 * the store does, within its bounded wait. The write has already committed by the
+	 * time this runs.
+	 *
+	 * An order with NO email recipient (an x402 buyer's `x402:0x…` reference, ADR-0028
+	 * Decision 7) is answered `no-recipient` first — before the provider check, the
+	 * time budget and the claim — because nothing about it depends on them: no email
+	 * was sent and none ever will be. Asked any later, a spent budget or a missing
+	 * provider would report it `queued` or `unconfigured`. Its rows are left to the
+	 * cron, whose drain completes them as skipped.
+	 *
+	 * `order` is the order the write already holds (its `customerId` and `buyerRef`
+	 * are all the check reads), so the check costs no read. A caller without one
+	 * passes nothing and the order is read here — GUARDED, because the write has
+	 * committed: a storage fault or a busy store on that read falls through to the
+	 * ordinary path, whose drain still skips the rows (reported via `skipped`).
+	 */
+	async #sendEmailsNow(
+		orderId: OrderId,
+		deadline: SettleDeadline,
+		announces: (row: OutboxEmail) => boolean,
+		order?: Pick<Order, "customerId" | "buyerRef"> | null,
+	): Promise<InlineEmailStatus> {
+		const recipientFacts = order === undefined ? await this.#readQuietly(orderId) : order;
+		if (recipientFacts !== null && !orderHasEmailRecipient(recipientFacts)) {
+			return "no-recipient";
+		}
+		const result = await sendOrderEmailsNow(this.#ctx, this.#stores, orderId, {
+			...this.#orderEmails,
+			deadline,
+		});
+		if (!result.configured) return "unconfigured";
+		if (result.sent.some(announces)) return "sent";
+		// Skipped for want of a recipient: done, and it went nowhere — never "queued".
+		return result.skipped.some(announces) ? "no-recipient" : "queued";
+	}
+
+	/** The order for {@link #sendEmailsNow}'s recipient check, or `null` when the read
+	 *  fails — never a throw, because it runs after the write committed. */
+	async #readQuietly(orderId: OrderId): Promise<Order | null> {
+		try {
+			return await this.#stores.orderStore.getById(orderId);
+		} catch {
+			return null;
+		}
 	}
 
 	/**
@@ -223,44 +324,74 @@ export class InProcessAdminOrdersClient implements AdminOrdersSurface {
 		return { ...retried, cursorRejected: true };
 	}
 
-	/** GET one order plus the legal outbound transitions from its current state.
-	 *  An id that never existed resolves to `null` — the console renders a "not
-	 *  found" state, not an error banner. The transitions come STRAIGHT from the
-	 *  domain state machine, never re-derived console-side. */
+	/** GET one order plus the outbound transitions an admin may make from its
+	 *  current state. An id that never existed resolves to `null` — the console
+	 *  renders a "not found" state, not an error banner. The transitions come
+	 *  STRAIGHT from the domain (`adminNextStates`: the state machine minus a manual
+	 *  `paid` — no payment method may be settled by hand today — and minus a bare
+	 *  `cancelled`, which Cancel order replaces), never re-derived console-side. */
 	async getOrder(orderId: string): Promise<OrderDetailResult | null> {
 		requireIdToken("orderId", orderId);
-		const order = await this.#stores.orderStore.getById(toOrderId(orderId));
-		if (order === null) return null;
+		// The ledger read, not the bare order: Mark refunded is offered only where
+		// it cannot hide captured money (`adminNextStates` reads the payments and
+		// refunds, QA2 M4). The same one document read.
+		const ledger = await this.#stores.orderStore.readOrderLedger(toOrderId(orderId));
+		if (ledger === null) return null;
 		return {
-			order: toOrderDetailWire(order),
-			allowedTransitions: [...legalNextStates(order.state)],
+			order: toOrderDetailWire(ledger.order),
+			allowedTransitions: adminNextStates(ledger.order, ledger),
 		};
 	}
 
-	/** POST an order-status transition. Legality lives in the domain; an unknown
-	 *  order is the route's 404 and an illegal move its 409. */
+	/** POST an order-status transition, as the admin makes it
+	 *  (`transitionOrderAsAdmin`). Legality lives in the domain; an unknown order is
+	 *  the route's 404, and an illegal move, a manual mark-paid
+	 *  (`MANUAL_PAYMENT_NOT_ALLOWED`) or a bare cancel (`USE_CANCEL`) its 409 — with
+	 *  the reason, so the console can say why. */
 	async transitionOrder(
 		orderId: string,
 		toState: string,
-		opts: { idempotencyKey: string },
+		opts: { idempotencyKey: string; actor?: string },
 	): Promise<TransitionOrderResult> {
+		// The write's one deadline, fixed HERE — see `#writeDeadline`.
+		const deadline = this.#writeDeadline();
 		let target: OrderState;
 		try {
 			requireIdToken("orderId", orderId);
 			target = requireOrderState("toState", toState);
+			if (opts.actor !== undefined) requireBoundedText("actor", opts.actor, 1, 200);
 		} catch (err) {
 			if (isCommerceInputError(err)) return { ok: false, status: 400 };
 			throw err;
 		}
 		const key = fallbackKey(opts.idempotencyKey, `admin:transition:${orderId}:${toState}`);
-		const res = await transitionOrderUseCase(
-			{ orderStore: this.#stores.orderStore },
-			{ orderId: toOrderId(orderId), toState: target, idempotencyKey: toIdempotencyKey(key) },
+		const actor = opts.actor?.trim() || undefined;
+		const res = await transitionOrderAsAdmin(
+			// Mark refunded revokes the order's download access (issue #376).
+			{ orderStore: this.#stores.orderStore, entitlementStore: this.#stores.entitlementStore },
+			{
+				orderId: toOrderId(orderId),
+				toState: target,
+				idempotencyKey: toIdempotencyKey(key),
+				...(actor !== undefined ? { actor } : {}),
+			},
 		);
-		if (res.ok) return { ok: true, transitioned: res.transitioned };
-		// `TransitionOrderResult` carries no `reason` on its failure arm — only the
-		// status, which is the shape `AdminOrdersSurface.transitionOrder` declares.
-		return { ok: false, status: res.reason === "ORDER_NOT_FOUND" ? 404 : 409 };
+		if (res.ok) {
+			// A move that enqueued an email sends it now. Mark refunded enqueues none
+			// (bookkeeping), and a replay moved nothing.
+			const emailed =
+				res.transitioned && target !== "refunded" && emailTemplateForState(target) !== null;
+			if (!emailed) return { ok: true, transitioned: res.transitioned };
+			const email = await this.#sendEmailsNow(
+				res.order.id,
+				deadline,
+				(row) => isStateRow(row, target),
+				res.order,
+			);
+			return { ok: true, transitioned: true, email };
+		}
+		if (res.reason === "ORDER_NOT_FOUND") return { ok: false, status: 404 };
+		return { ok: false, status: 409, reason: res.reason };
 	}
 
 	/** POST resolve an order's reconciliation flag. `expectedFlag` is the detail AS
@@ -319,6 +450,8 @@ export class InProcessAdminOrdersClient implements AdminOrdersSurface {
 		},
 		opts: { idempotencyKey: string },
 	): Promise<RecordFulfillmentResult> {
+		// The write's one deadline, fixed HERE — see `#writeDeadline`.
+		const deadline = this.#writeDeadline();
 		try {
 			requireIdToken("orderId", orderId);
 			requireBoundedText("carrier", fulfillment.carrier, 1, 200);
@@ -347,7 +480,16 @@ export class InProcessAdminOrdersClient implements AdminOrdersSurface {
 				idempotencyKey: toIdempotencyKey(key),
 			},
 		);
-		if (res.ok) return { ok: true, recorded: res.recorded };
+		if (res.ok) {
+			if (!res.recorded) return { ok: true, recorded: false };
+			const email = await this.#sendEmailsNow(
+				toOrderId(orderId),
+				deadline,
+				(row) => isStateRow(row, "shipped"),
+				res.order,
+			);
+			return { ok: true, recorded: true, email };
+		}
 		if (res.reason === "ORDER_NOT_FOUND") return { ok: false, status: 404, reason: res.reason };
 		if (res.reason === "NOT_FULFILLABLE") return { ok: false, status: 409, reason: res.reason };
 		return { ok: false, status: 400, reason: res.reason };
@@ -356,12 +498,25 @@ export class InProcessAdminOrdersClient implements AdminOrdersSurface {
 	/** POST cancel an order WITH a structured reason. Cancelling records the reason
 	 *  envelope AND drives the `{pending,paid,processing} → cancelled` transition
 	 *  AND enqueues the cancelled email, atomically — legality lives in the ONE
-	 *  state machine, so an order that cannot reach `cancelled` is 409. */
+	 *  state machine, so an order that cannot reach `cancelled` is 409.
+	 *
+	 *  A PAID order is refunded and restocked first (QA T1-4): the domain's
+	 *  `cancelOrderWithRefund` runs the refund through the order's own gateway — the
+	 *  same one the refund POST uses, so the money takes the one refund path — and
+	 *  restocks through the inventory store. A failed refund cancels nothing and
+	 *  answers with `REFUND_FAILED` and the refund leg's reason. */
 	async cancelOrder(
 		orderId: string,
-		cancellation: { reason: string; detail?: string | null; cancelledBy: string },
+		cancellation: {
+			reason: string;
+			detail?: string | null;
+			cancelledBy: string;
+			restock?: boolean;
+		},
 		opts: { idempotencyKey: string },
 	): Promise<CancelOrderResult> {
+		// The write's one deadline, fixed HERE — see `#writeDeadline`.
+		const deadline = this.#writeDeadline();
 		let reason: CancellationReason;
 		try {
 			requireIdToken("orderId", orderId);
@@ -375,20 +530,108 @@ export class InProcessAdminOrdersClient implements AdminOrdersSurface {
 			throw err;
 		}
 		const key = fallbackKey(opts.idempotencyKey, `admin:cancel:${orderId}`);
-		const res = await cancelOrderUseCase(
-			{ orderStore: this.#stores.orderStore },
+		const oid = toOrderId(orderId);
+		const order = await this.#stores.orderStore.getById(oid);
+		// The order's own gateway, or null — the domain refuses a refund it cannot
+		// issue (`REFUND_NOT_AUTOMATIC`) rather than cancelling with the money kept.
+		const gateway =
+			order === null || order.paymentMethod === null
+				? null
+				: (this.#gateways[order.paymentMethod] ?? null);
+		const res = await cancelOrderWithRefund(
 			{
-				orderId: toOrderId(orderId),
+				orderStore: this.#stores.orderStore,
+				inventoryStore: this.#stores.inventory,
+				paymentEventStore: this.#stores.paymentEventStore,
+				clock: this.#stores.clock,
+				// A busy store after the refund reads "the store was busy", not "did not finish".
+				isRetryable: isRetryableStorageBusy,
+				// The cancellation's refund is the whole remainder: it revokes (issue #376).
+				entitlementStore: this.#stores.entitlementStore,
+			},
+			gateway,
+			{
+				orderId: oid,
 				reason,
 				detail: cancellation.detail ?? null,
 				cancelledBy: cancellation.cancelledBy,
+				restock: cancellation.restock ?? true,
 				idempotencyKey: toIdempotencyKey(key),
 			},
 		);
-		if (res.ok) return { ok: true, cancelled: res.cancelled };
-		if (res.reason === "ORDER_NOT_FOUND") return { ok: false, status: 404, reason: res.reason };
-		if (res.reason === "NOT_CANCELLABLE") return { ok: false, status: 409, reason: res.reason };
-		return { ok: false, status: 400, reason: res.reason };
+		if (res.ok) {
+			const email = res.cancelled
+				? await this.#sendEmailsNow(oid, deadline, (row) => isStateRow(row, "cancelled"), order)
+				: undefined;
+			return {
+				ok: true,
+				cancelled: res.cancelled,
+				...(email !== undefined ? { email } : {}),
+				refund:
+					res.refund === null
+						? null
+						: { amountCents: res.refund.amount, currency: res.refund.currency },
+				restockedUnits: res.restockedUnits,
+				restockSkipped: res.restockSkipped.map((skip) => ({ ...skip })),
+				// Only when it is so — like `email`, absent means nothing to say.
+				...(res.restockPending ? { restockPending: true } : {}),
+			};
+		}
+		switch (res.reason) {
+			case "CANCEL_LOST_AFTER_REFUND": {
+				// The refund happened (the restock waits for a flip that landed, so none
+				// did), so the console must say what moved —
+				// and the refund's own notice goes out NOW, like any other write's email.
+				const lostRefundId = res.refundId;
+				const email =
+					lostRefundId === null
+						? undefined
+						: await this.#sendEmailsNow(
+								oid,
+								deadline,
+								(row) =>
+									row.notice?.kind === "refund-issued" && row.notice.refundId === lostRefundId,
+								order,
+							);
+				return {
+					ok: false,
+					status: 409,
+					reason: res.reason,
+					refund:
+						res.refund === null
+							? null
+							: { amountCents: res.refund.amount, currency: res.refund.currency },
+					restockedUnits: res.restockedUnits,
+					movedTo: res.movedTo,
+					...(email !== undefined ? { email } : {}),
+				};
+			}
+			case "CANCEL_INCOMPLETE_AFTER_REFUND":
+				// The refund happened; closing a commit bracket or the flip then failed. A
+				// retry finishes it — the console says so, with the money that moved.
+				return {
+					ok: false,
+					status: 409,
+					reason: res.reason,
+					refund: { amountCents: res.refund.amount, currency: res.refund.currency },
+					retryable: res.retryable,
+				};
+			case "ORDER_NOT_FOUND":
+				return { ok: false, status: 404, reason: res.reason };
+			case "EMPTY_CANCELLED_BY":
+				return { ok: false, status: 400, reason: res.reason };
+			case "REFUND_FAILED":
+				return {
+					ok: false,
+					status: refundFailureStatus(res.refundFailure),
+					reason: res.reason,
+					refundFailure: res.refundFailure,
+				};
+			default:
+				// NOT_CANCELLABLE, REFUND_NOT_AUTOMATIC, REFUND_IN_FLIGHT and
+				// MULTIPLE_CAPTURES are all conflicts with the order's state.
+				return { ok: false, status: 409, reason: res.reason };
+		}
 	}
 
 	/** GET an order's customer context (read-only). An unknown order resolves to
@@ -446,17 +689,19 @@ export class InProcessAdminOrdersClient implements AdminOrdersSurface {
 		const capturedTotal = sumCapturedPayments(payments);
 		const ceiling = computeRefundCeiling(capturedTotal, order.totals.total);
 		const refundedTotal = sumRefunds(refunds);
+		const finalizedTotal = sumFinalizedRefunds(refunds);
 		const remaining = Math.max(0, ceiling - refundedTotal);
 		// The gateway's HONEST capability (ADR-0008): `refundable` true ⇒ money moves
 		// via the provider; false ⇒ the admin records a manual/off-platform refund.
-		// Never a button that silently no-ops — and with no gateway composed on this
-		// tier yet, false is the truth rather than a placeholder.
+		// Never a button that silently no-ops — and with no gateway composed for the
+		// order's method, false is the truth rather than a placeholder.
 		const gateway = order.paymentMethod === null ? undefined : this.#gateways[order.paymentMethod];
 		return {
 			refunds: refunds.map(toRefundWire),
 			currency: order.totals.currency,
 			capturedTotalCents: capturedTotal,
 			refundedTotalCents: refundedTotal,
+			finalizedTotalCents: finalizedTotal,
 			ceilingCents: ceiling,
 			remainingCents: remaining,
 			paymentMethod: order.paymentMethod,
@@ -469,18 +714,19 @@ export class InProcessAdminOrdersClient implements AdminOrdersSurface {
 	 *
 	 * The `Idempotency-Key` is REQUIRED — a refund is ADDITIVE, so two deliberate
 	 * refunds must not collapse and there is no safe content-only fallback
-	 * (mirrors restock). The order lookup comes next, then the gateway: with no
-	 * gateway map composed on this tier yet (INC-C1/C3), every well-formed call
-	 * against a real order lands on the route's own
-	 * `409 REFUND_GATEWAY_UNAVAILABLE`. The use-case call below is the path that
-	 * lights up the moment a gateway is wired — it is written now so the contract
-	 * around it is the same one the HTTP tier answers.
+	 * (mirrors restock). The order lookup comes next, then the gateway: an order
+	 * whose method has no gateway in the injected map lands on the route's own
+	 * `409 REFUND_GATEWAY_UNAVAILABLE`. Otherwise the domain use-case decides —
+	 * a `refundable` gateway issues at the provider (reserve → issue → finalize),
+	 * a non-refundable one records a manual, off-platform refund.
 	 */
 	async refundOrder(
 		orderId: string,
 		refund: { amountCents: number; currency: string; reason?: string | null; refundedBy: string },
 		opts: { idempotencyKey: string },
 	): Promise<RefundOrderResult> {
+		// The write's one deadline, fixed HERE — see `#writeDeadline`.
+		const deadline = this.#writeDeadline();
 		try {
 			requireIdToken("orderId", orderId);
 			requireRefundAmount(refund.amountCents);
@@ -512,6 +758,10 @@ export class InProcessAdminOrdersClient implements AdminOrdersSurface {
 				orderStore: this.#stores.orderStore,
 				paymentEventStore: this.#stores.paymentEventStore,
 				clock: this.#stores.clock,
+				// A FULL refund revokes the order's download access (issue #376). The
+				// dependency is optional on the use-case, so leaving it out here would
+				// refund correctly and keep the file downloadable.
+				entitlementStore: this.#stores.entitlementStore,
 			},
 			gateway,
 			{
@@ -524,11 +774,32 @@ export class InProcessAdminOrdersClient implements AdminOrdersSurface {
 			},
 		);
 		if (res.ok) {
+			if (res.duplicate) {
+				return {
+					ok: true,
+					recorded: res.recorded,
+					duplicate: true,
+					fullyRefunded: res.fullyRefunded,
+				};
+			}
+			// A full refund is announced by the refunded state email; a partial one by
+			// its own refund email (QA T1-6).
+			const refundId = res.refund.id;
+			const email = await this.#sendEmailsNow(
+				oid,
+				deadline,
+				(row) =>
+					res.fullyRefunded
+						? isStateRow(row, "refunded")
+						: row.notice?.kind === "refund-issued" && row.notice.refundId === refundId,
+				order,
+			);
 			return {
 				ok: true,
 				recorded: res.recorded,
-				duplicate: res.duplicate,
+				duplicate: false,
 				fullyRefunded: res.fullyRefunded,
+				email,
 			};
 		}
 		return { ok: false, status: refundFailureStatus(res.reason), reason: res.reason };
@@ -537,6 +808,79 @@ export class InProcessAdminOrdersClient implements AdminOrdersSurface {
 	/** GET an order's append-only notes, oldest first (the store's own order). An
 	 *  order with no notes — including one that does not exist — is an empty list,
 	 *  exactly as the route answers it. */
+	/** POST a person's answer to an UNVERIFIED refund (review round 2). A
+	 *  confirmation that finalized the row sends its refund email at once, like a
+	 *  refund's own: the refunded state email when it completed the refund, else
+	 *  that refund's `refund-issued` notice. */
+	async resolveUnverifiedRefund(
+		orderId: string,
+		input: {
+			refundKey: string;
+			outcome: "confirmed" | "voided";
+			refundRef?: string;
+			resolvedBy: string;
+		},
+	): Promise<ResolveUnverifiedRefundResult> {
+		const deadline = this.#writeDeadline();
+		try {
+			requireIdToken("orderId", orderId);
+			requireBoundedText("refundKey", input.refundKey, 1, 400);
+			requireBoundedText("resolvedBy", input.resolvedBy, 1, 200);
+			if (input.refundRef !== undefined && input.refundRef.length > 0) {
+				requireBoundedText("refundRef", input.refundRef, 1, 200);
+			}
+		} catch (err) {
+			if (isCommerceInputError(err)) return { ok: false, status: 400 };
+			throw err;
+		}
+		if (input.outcome !== "confirmed" && input.outcome !== "voided") {
+			return { ok: false, status: 400 };
+		}
+		const oid = toOrderId(orderId);
+		const res = await resolveUnverifiedRefundUseCase(
+			{
+				orderStore: this.#stores.orderStore,
+				// A confirmed CANCELLATION refund resumes its cancel, which restocks (#364).
+				inventoryStore: this.#stores.inventory,
+				// A confirm that returns the money in full revokes (issue #376).
+				entitlementStore: this.#stores.entitlementStore,
+				isRetryable: isRetryableStorageBusy,
+			},
+			{
+				orderId: oid,
+				refundKey: toIdempotencyKey(input.refundKey),
+				outcome: input.outcome,
+				...(input.refundRef !== undefined && input.refundRef.length > 0
+					? { refundRef: input.refundRef }
+					: {}),
+				resolvedBy: input.resolvedBy,
+			},
+		);
+		if (!res.ok) {
+			const status =
+				res.reason === "ORDER_NOT_FOUND" || res.reason === "REFUND_NOT_FOUND" ? 404 : 409;
+			return { ok: false, status, reason: res.reason };
+		}
+		const followUp = toFollowUpWire(res.followUp);
+		const base = {
+			ok: true as const,
+			changed: res.changed,
+			fullyRefunded: res.fullyRefunded,
+			...(followUp !== null ? { followUp } : {}),
+		};
+		// The one email the answer (or the follow-up it finished) enqueued, sent now:
+		// a cancellation's cancelled email, a late payment's notice, else the refund's own.
+		const which = emailOfResolve(res);
+		if (which === null) return base;
+		// No order in hand here, so `#sendEmailsNow` reads it — guarded.
+		const email = await this.#sendEmailsNow(oid, deadline, (row) =>
+			which.state !== undefined
+				? isStateRow(row, which.state)
+				: row.notice?.kind === which.notice && row.notice.refundId === res.refundId,
+		);
+		return { ...base, email };
+	}
+
 	async listNotes(orderId: string): Promise<OrderNoteWire[]> {
 		requireIdToken("orderId", orderId);
 		const notes = await listOrderNotes(
@@ -631,6 +975,61 @@ export class InProcessAdminOrdersClient implements AdminOrdersSurface {
 			total,
 		};
 	}
+}
+
+/** An outbox row that is the STATE email for `state` — never a notice row, whatever
+ *  state the order was in when the notice was enqueued. */
+/** The email a resolved refund's answer enqueued, or `null` when it enqueued none
+ *  (a void, a replay with nothing finished now). See `resolveUnverifiedRefund`. */
+function emailOfResolve(
+	res: Extract<Awaited<ReturnType<typeof resolveUnverifiedRefundUseCase>>, { ok: true }>,
+): { state: OrderState; notice?: undefined } | { state?: undefined; notice: OrderNotice } | null {
+	const followUp = res.followUp;
+	if (followUp?.purpose === "cancellation") {
+		switch (followUp.outcome) {
+			case "cancelled":
+				return followUp.cancelledNow ? { state: "cancelled" } : null;
+			case "already_cancelled":
+			case "not_cancelled":
+				// Only when THIS answer enqueued it — on any pass, replays included.
+				return followUp.refundEmailQueued ? { notice: "refund-issued" } : null;
+			case "cancel_again":
+				return null;
+		}
+	}
+	if (followUp?.purpose === "late-payment") {
+		return followUp.outcome === "finished" && res.changed
+			? { notice: "late-payment-refunded" }
+			: null;
+	}
+	if (res.outcome === "voided" || !res.changed) return null;
+	return res.fullyRefunded ? { state: "refunded" } : { notice: "refund-issued" };
+}
+
+/** {@link ResolveFollowUp} on the wire. */
+function toFollowUpWire(followUp: ResolveFollowUp | null): ResolveFollowUpWire | null {
+	if (followUp === null) return null;
+	if (followUp.purpose === "late-payment") return { ...followUp };
+	switch (followUp.outcome) {
+		case "cancelled":
+			return {
+				purpose: "cancellation",
+				outcome: "cancelled",
+				cancelledNow: followUp.cancelledNow,
+				restock: followUp.restock,
+				restockedUnits: followUp.restockedUnits,
+				restockSkipped: followUp.restockSkipped.map((skip) => ({ ...skip })),
+				restockPending: followUp.restockPending,
+			};
+		case "already_cancelled":
+		case "not_cancelled":
+		case "cancel_again":
+			return { ...followUp };
+	}
+}
+
+function isStateRow(row: OutboxEmail, state: OrderState): boolean {
+	return row.notice === null && row.toState === state;
 }
 
 // ── the wire projections, field for field ─────────────────────────────────
@@ -752,10 +1151,8 @@ function toTimelineWire(timeline: OrderTimeline): OrderTimelineWire {
 	};
 }
 
-/** `serializeRefund`'s twin, minus `status`: the plugin's `RefundWire` has never
- *  declared that field and no console reads it, so this tier matches the PLUGIN's
- *  wire type rather than adding a key the type says does not exist. Money is an
- *  integer minor `amountCents` + an ISO-4217 currency — never a float. */
+/** `serializeRefund`'s twin, `status` included (see `RefundWire.status`). Money is
+ *  an integer minor `amountCents` + an ISO-4217 currency — never a float. */
 function toRefundWire(refund: RefundRecord): RefundWire {
 	return {
 		id: refund.id,
@@ -770,6 +1167,8 @@ function toRefundWire(refund: RefundRecord): RefundWire {
 		reason: refund.reason,
 		refundedBy: refund.refundedBy,
 		createdAt: refund.createdAt,
+		status: refund.status,
+		idempotencyKey: refund.idempotencyKey,
 	};
 }
 
@@ -814,6 +1213,9 @@ function refundFailureStatus(reason: RefundOrderFailure): 400 | 404 | 409 | 502 
 		case "GATEWAY_TERMINAL":
 			return 502;
 		case "GATEWAY_RETRYABLE":
+		// Unreachable from the console (its gateway sets no start guard), and the same
+		// "try again, nothing was issued" answer if it ever is.
+		case "GATEWAY_NOT_STARTED":
 			return 503;
 	}
 }
@@ -859,14 +1261,16 @@ function requireOrderState(field: string, value: string): OrderState {
 	return value as OrderState;
 }
 
-const RECONCILIATION_OUTCOMES = [
+/** The outcomes an OPERATOR may choose. `restocked` is Otta's own, written when a
+ *  cancellation's stuck restock lands (ADR-0026), so it is not offered here. */
+const RECONCILIATION_OUTCOMES: readonly string[] = [
 	"refunded",
 	"fulfilled",
 	"written_off",
-] as const satisfies readonly ReconciliationOutcome[];
+] satisfies readonly ReconciliationOutcome[];
 
 function requireReconciliationOutcome(value: string): ReconciliationOutcome {
-	if (!RECONCILIATION_OUTCOMES.includes(value as ReconciliationOutcome)) {
+	if (!RECONCILIATION_OUTCOMES.includes(value)) {
 		throw new CommerceInputError("outcome", "must be a known reconciliation outcome");
 	}
 	return value as ReconciliationOutcome;

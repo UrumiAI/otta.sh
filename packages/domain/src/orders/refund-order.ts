@@ -2,10 +2,23 @@ import type { Cents, Currency } from "../money/cents.js";
 import { cents } from "../money/cents.js";
 import type { IdempotencyKey, OrderId } from "../money/ids.js";
 import type { Clock } from "../ports/clock.js";
-import type { CapturedPayment, OrderStore, RefundRecord } from "../ports/order-store.js";
+import type { EntitlementStore } from "../ports/entitlement-store.js";
+import type {
+	CapturedPayment,
+	OrderLedger,
+	OrderStore,
+	RefundPurpose,
+	RefundRecord,
+} from "../ports/order-store.js";
 import type { PaymentEventStore } from "../ports/payment-event-store.js";
 import type { PaymentGateway } from "../ports/payment-gateway.js";
 import type { Order } from "./model.js";
+import { revokeOrderEntitlements } from "./revoke-entitlements.js";
+import {
+	flagAmount,
+	isProviderRefundFlag,
+	providerRefundedFlag,
+} from "./provider-refunded-flag.js";
 
 export interface RefundOrderDeps {
 	orderStore: OrderStore;
@@ -18,6 +31,14 @@ export interface RefundOrderDeps {
 	/** Timestamp source for the anomaly record; used only with
 	 *  `paymentEventStore`. */
 	clock?: Clock;
+	/**
+	 * Revokes the order's download entitlements once the order is FULLY refunded
+	 * (issue #376) — see {@link refundOrder}'s "Revocation" paragraph. Optional so
+	 * pure ledger tests and the callers whose refunds never close an order as
+	 * `refunded` (a cancellation's refund, a late payment's) need not wire it; the
+	 * admin refund path always does, and a test pins that wiring.
+	 */
+	entitlementStore?: EntitlementStore;
 }
 
 export interface RefundOrderCommand {
@@ -35,6 +56,22 @@ export interface RefundOrderCommand {
 	/** Every command carries one (CLAUDE.md); the ledger enforces once-only AND
 	 *  (for a gateway refund) it is Stripe's native `Idempotency-Key`. */
 	idempotencyKey: IdempotencyKey;
+	/**
+	 * Refund against THIS captured payment (its `providerRef`) rather than the
+	 * order's first succeeded one. Absent ⇒ the first, as an admin refund always
+	 * has. The late-payment auto-refund (`settleOrder`) names the payment it is
+	 * returning: an order can carry more than one capture (a second intent minted
+	 * after Stripe's ~24 h key expiry), and refunding "the first" would aim the
+	 * provider at money that is not the late payment. A named ref that matches no
+	 * succeeded payment on this gateway is `NO_CAPTURED_PAYMENT`.
+	 */
+	providerRef?: string;
+	/** `cancellation` when the refund is the money a cancellation returns
+	 *  (`cancelOrderWithRefund`): stored on the row, and such a row never drives
+	 *  `→ refunded` — the cancellation closes the order instead. Default `refund`. */
+	purpose?: RefundPurpose;
+	/** Stored on a `cancellation` row — see `RefundRecord.restock`. */
+	restock?: boolean;
 }
 
 export type RefundOrderFailure =
@@ -64,6 +101,10 @@ export type RefundOrderFailure =
 	 *  reservation is KEPT, so a retry with the SAME idempotency key resumes it
 	 *  (and Stripe's native key dedupes provider-side). */
 	| "GATEWAY_RETRYABLE"
+	/** The caller declined to start the issuing call (`NOT_STARTED`): nothing was
+	 *  issued, the reservation is KEPT for a same-key retry, and — unlike
+	 *  `GATEWAY_RETRYABLE` — the provider did nothing wrong. */
+	| "GATEWAY_NOT_STARTED"
 	/** A definite provider rejection — the reservation is voided (capacity
 	 *  released); retrying the same request will not help. */
 	| "GATEWAY_TERMINAL"
@@ -169,7 +210,10 @@ export function sumFinalizedRefunds(refunds: RefundRecord[]): number {
  *     - success   → `finalizeRefund` (stamps refundRef; flips `→ refunded` iff
  *                   the FINALIZED Σ reached the ceiling);
  *     - fail-closed / terminal / unsupported → `voidRefund` (nothing issued —
- *                   capacity released, audit row kept);
+ *                   capacity released, audit row kept) — except a RESUMED
+ *                   reservation whose pre-flight fails closed, which is held
+ *                   `unverified` and flagged (its own earlier issue may be the
+ *                   money the provider shows);
  *     - retryable → reservation KEPT (`reserved`): a same-key retry resumes it
  *                   (crash-heal: re-issues under the same provider key);
  *     - ambiguous → `markRefundUnverified` (capacity HELD — the safe direction —
@@ -186,11 +230,58 @@ export function sumFinalizedRefunds(refunds: RefundRecord[]): number {
  * carrying the provider refundRef + flags reconciliation, and returns the
  * distinct `REFUND_ISSUED_UNRECORDED` — never a silent drop, never confusable
  * with a clean rejection.
+ *
+ * **Revocation (issue #376).** A FULL refund revokes the order's download
+ * entitlements; a partial one does not. "Full" is the ledger's own word, not a
+ * second definition: the order is `refunded`, which the store flips exactly when
+ * the FINALIZED refunds reach the ceiling `min(Σ captured, total)` (a
+ * `cancellation` refund never flips it — the cancellation closes the order
+ * instead). So the revocation runs on EVERY `ok` outcome whose order is
+ * `refunded` — the fresh finalize, the manual one-shot record, AND the
+ * idempotent replay — and only after the money is recorded: revoking first would
+ * close access on a refund the provider then rejects, and revocation is terminal.
+ *
+ * That replay arm is the crash story. The refund is recorded before the revoke,
+ * so a process that dies between the two leaves a `refunded` order whose grants
+ * are still active. The same-key retry takes the `recorded` replay branch — no
+ * second provider call — and revokes there, finishing the job. In the admin
+ * console an operator's re-click is that retry: its watermark is stale by then,
+ * so the console finds the refund on the ledger and replays it under the key it
+ * was recorded with rather than answering from the ledger alone (issue #405).
+ * `revokeByOrder` is idempotent, so running it on every replay costs a read and
+ * changes nothing once done. A revocation that throws propagates: the caller
+ * sees a failure and retries, rather than a success that left access open. The
+ * residual — the crash AND no retry ever — is bounded by the order being
+ * `refunded`, which a delivery gate can also refuse on (download increment 2).
  */
 export async function refundOrder(
 	deps: RefundOrderDeps,
 	gateway: PaymentGateway,
 	cmd: RefundOrderCommand,
+	/**
+	 * The order's ledger, when the caller JUST read it (`readOrderLedger`) — the
+	 * late-payment sweep, inside a per-tick query budget. Its order, payments and
+	 * refunds then stand in for this function's own four reads. Only a caller that
+	 * read it immediately before should pass it: every write below is still a
+	 * guarded write on the store, so a stale ledger costs a refused write, never a
+	 * wrong one — but the replay rules are read off it.
+	 */
+	known?: OrderLedger,
+): Promise<RefundOrderOutcome> {
+	const outcome = await refundOnLedger(deps, gateway, cmd, known);
+	if (outcome.ok && outcome.order.state === "refunded") {
+		await revokeOrderEntitlements(deps.entitlementStore, outcome.order);
+	}
+	return outcome;
+}
+
+/** The ledger protocol itself — everything {@link refundOrder} documents except
+ *  the revocation that follows it. */
+async function refundOnLedger(
+	deps: RefundOrderDeps,
+	gateway: PaymentGateway,
+	cmd: RefundOrderCommand,
+	known: OrderLedger | undefined,
 ): Promise<RefundOrderOutcome> {
 	const refundedBy = cmd.refundedBy.trim();
 	if (refundedBy.length === 0) return { ok: false, reason: "EMPTY_REFUNDED_BY" };
@@ -200,7 +291,7 @@ export async function refundOrder(
 	const trimmedReason = (cmd.reason ?? "").trim();
 	const reason = trimmedReason.length === 0 ? null : trimmedReason;
 
-	const order = await deps.orderStore.getById(cmd.orderId);
+	const order = known?.order ?? (await deps.orderStore.getById(cmd.orderId));
 	if (order === null) return { ok: false, reason: "ORDER_NOT_FOUND" };
 	if (cmd.currency !== order.totals.currency) return { ok: false, reason: "CURRENCY_MISMATCH" };
 
@@ -215,7 +306,10 @@ export async function refundOrder(
 	// a definitively-rejected attempt. `reserved` ⇒ a crash/retryable-failure
 	// window — RESUME it below (same key re-issues; Stripe's native idempotency
 	// dedupes provider-side).
-	const existing = await deps.orderStore.getRefundByIdempotencyKey(cmd.idempotencyKey);
+	const existing =
+		known !== undefined
+			? (known.refunds.find((r) => r.idempotencyKey === cmd.idempotencyKey) ?? null)
+			: await deps.orderStore.getRefundByIdempotencyKey(cmd.idempotencyKey);
 	if (existing !== null && !refundMatchesCommand(existing, cmd)) {
 		return { ok: false, reason: "IDEMPOTENCY_KEY_REUSED" };
 	}
@@ -240,9 +334,14 @@ export async function refundOrder(
 	// is what holds the capacity, so it is what the provider is asked to refund.
 	const target = existing ?? { orderId: cmd.orderId, amount: cmd.amount, currency: cmd.currency };
 	const resuming = existing !== null;
+	// Whether THIS call created the reservation it is about to issue against. A
+	// resume, or a reserve that found a concurrent same-key row (`duplicate`),
+	// shares a reservation another request owns — see the PROVIDER_ALREADY_REFUNDED
+	// arm below for why that matters.
+	let createdReservation = false;
 
 	const kind = gateway.refundable ? "gateway" : "manual";
-	const payments = await deps.orderStore.getCapturedPayments(cmd.orderId);
+	const payments = known?.payments ?? (await deps.orderStore.getCapturedPayments(cmd.orderId));
 
 	if (kind === "manual") {
 		// No gateway leg ⇒ the one-shot atomic record (arbitration + finalized
@@ -257,6 +356,8 @@ export async function refundOrder(
 			reason,
 			refundedBy,
 			idempotencyKey: cmd.idempotencyKey,
+			purpose: cmd.purpose ?? "refund",
+			...(cmd.restock !== undefined ? { restock: cmd.restock } : {}),
 		});
 		return settleRecordOutcome(res, cmd);
 	}
@@ -266,7 +367,12 @@ export async function refundOrder(
 	// The charge/PI to refund against: a succeeded payment recorded by settle for
 	// THIS gateway (the money we captured through it). Checked before reserving —
 	// a reservation without an issuable target is pointless.
-	const captured = payments.find((p) => p.status === "succeeded" && p.gateway === gateway.id);
+	const captured = payments.find(
+		(p) =>
+			p.status === "succeeded" &&
+			p.gateway === gateway.id &&
+			(cmd.providerRef === undefined || p.providerRef === cmd.providerRef),
+	);
 	if (captured === undefined) return { ok: false, reason: "NO_CAPTURED_PAYMENT" };
 
 	// 1. RESERVE — the atomic arbitration. A ceiling loser is rejected here,
@@ -284,6 +390,8 @@ export async function refundOrder(
 			reason,
 			refundedBy,
 			idempotencyKey: cmd.idempotencyKey,
+			purpose: cmd.purpose ?? "refund",
+			...(cmd.restock !== undefined ? { restock: cmd.restock } : {}),
 		});
 		if (reserved.outcome === "order_not_found") return { ok: false, reason: "ORDER_NOT_FOUND" };
 		if (reserved.outcome === "exceeds_ceiling") {
@@ -301,6 +409,7 @@ export async function refundOrder(
 		) {
 			return { ok: false, reason: "IDEMPOTENCY_KEY_REUSED" };
 		}
+		createdReservation = reserved.outcome !== "duplicate";
 	}
 
 	// 2. ISSUE — only ever reached with a committed reservation holding the
@@ -310,13 +419,19 @@ export async function refundOrder(
 		providerRef: captured.providerRef,
 		amount: target.amount,
 		currency: target.currency,
-		priorRefunded: cents(sumFinalizedRefunds(await deps.orderStore.listRefunds(target.orderId))),
+		priorRefunded: cents(
+			sumFinalizedRefunds(known?.refunds ?? (await deps.orderStore.listRefunds(target.orderId))),
+		),
 		idempotencyKey: cmd.idempotencyKey,
 	});
 
 	// 3. SETTLE the reservation by outcome.
 	if (!gwRes.ok) {
 		switch (gwRes.reason) {
+			case "NOT_STARTED":
+				// Never started: like a retryable failure, the reservation stays for a
+				// same-key resume — but it is the caller's choice, not a provider error.
+				return { ok: false, reason: "GATEWAY_NOT_STARTED" };
 			case "RETRYABLE":
 				// Definitely not processed; keep the reservation so a same-key retry
 				// resumes it (capacity stays held meanwhile — the safe direction).
@@ -326,9 +441,59 @@ export async function refundOrder(
 				await deps.orderStore.markRefundUnverified(cmd.idempotencyKey);
 				return { ok: false, reason: "GATEWAY_UNVERIFIED" };
 			case "PROVIDER_ALREADY_REFUNDED":
-				// Fail-closed pre-flight: nothing issued — release the capacity.
-				await deps.orderStore.voidRefund(cmd.idempotencyKey);
-				return { ok: false, reason: "PROVIDER_ALREADY_REFUNDED" };
+				// Fail-closed pre-flight: THIS call issued nothing. When this call
+				// created the reservation, nothing under its key can have moved money,
+				// so the capacity is released.
+				if (createdReservation) {
+					await deps.orderStore.voidRefund(cmd.idempotencyKey);
+					// The provider's own word is kept on the order (QA2 M4): refunded IN
+					// FULL outside Otta is the evidence Mark refunded needs to close it;
+					// a PARTIAL dashboard refund is only stated, both amounts named, and
+					// unlocks nothing; no figures, no flag. Never over an open flag that is
+					// not the provider's own earlier answer: an unreviewed anomaly is not
+					// this function's to overwrite. `order` was read before the provider
+					// call, so the write is a compare-and-set on the flag it saw: one
+					// written during the call survives (issue #364).
+					const flag = providerRefundedFlag(gwRes.provider, order.totals.currency);
+					const seen = order.reconciliationFlag;
+					if (flag !== null && (seen === null || isProviderRefundFlag(seen))) {
+						const written = await deps.orderStore.flagReconciliation(cmd.orderId, flag, {
+							expectedFlag: seen,
+						});
+						if (!written) {
+							// Another flag landed during the provider call and is kept for a
+							// person; the provider's answer is logged rather than dropped.
+							console.warn(
+								`[domain] order ${cmd.orderId}: provider-refund flag not written — another reconciliation flag was raised meanwhile. Provider answer: ${flag}`,
+							);
+						}
+					}
+					return { ok: false, reason: "PROVIDER_ALREADY_REFUNDED" };
+				}
+				// A RESUME (or a race into another request's reservation) is different:
+				// the money the pre-flight sees may be THIS key's own earlier issue — a
+				// crash after refunds.create succeeded, or a concurrent owner still in
+				// flight. Voiding would make that refund's finalize miss (money moved,
+				// ledger silent), and leaving the row `reserved` would strand it: every
+				// resume would fail the same way, forever, unflagged. So the row is held
+				// `unverified` (capacity kept, the safe direction) and the order is
+				// flagged for a human to reconcile against the provider. The flip is
+				// guarded to `reserved`, so an owner that already finalized wins and
+				// nothing is flagged; an owner still in flight finalizes from
+				// `unverified` just the same.
+				if (await deps.orderStore.markRefundUnverified(cmd.idempotencyKey)) {
+					// The provider's own figures, when the pre-flight gave them (review
+					// round 2), so the operator resolving it sees what the provider shows.
+					const figures =
+						gwRes.provider === undefined
+							? ""
+							: ` The provider shows ${flagAmount(gwRes.provider.refunded, target.currency)} of ${flagAmount(gwRes.provider.captured, target.currency)} refunded.`;
+					await deps.orderStore.flagReconciliation(
+						cmd.orderId,
+						`${unverifiedRefundFlagPrefix(target.amount, target.currency, cmd.idempotencyKey)} — check the provider, then resolve the unverified refund in Money → Refunds.${figures}`,
+					);
+				}
+				return { ok: false, reason: "GATEWAY_UNVERIFIED" };
 			case "TERMINAL":
 				await deps.orderStore.voidRefund(cmd.idempotencyKey);
 				return { ok: false, reason: "GATEWAY_TERMINAL" };
@@ -377,6 +542,14 @@ export async function refundOrder(
 		refund: finalized.refund,
 		order: finalized.order,
 	};
+}
+
+/** The start of the flag the RESUME arm writes when it holds a refund
+ *  `unverified` — exact for that refund (its amount, currency and key), so the
+ *  person who resolves it (`resolveUnverifiedRefund`) can compare-and-clear THIS
+ *  flag and never another. */
+export function unverifiedRefundFlagPrefix(amount: number, currency: string, key: string): string {
+	return `refund ${String(amount)} ${currency} (key ${key}): the provider already shows it refunded but the ledger never finalized it`;
 }
 
 /** Map a one-shot `recordRefund` result (the manual path) to the outcome. */

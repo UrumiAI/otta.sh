@@ -41,6 +41,7 @@ import {
 	type InProcessEgressUrls,
 	resolveAllowedHosts,
 	resolveInProcessEgress,
+	SMTP2GO_API_HOSTS,
 	STRIPE_API_HOST,
 } from "../../src/manifest.js";
 import { sandboxStorageSource, storageBridge } from "./storage-bridge.js";
@@ -70,23 +71,23 @@ const WORKSPACE_PACKAGES: ReadonlyArray<{
 	// (`tsdown.config.ts` `noExternal`). Absent from this list, the worker fails to
 	// boot at all with `No such module "@otta-sh/payments-stripe"`.
 	{ name: "payments-stripe", exports: { ".": "./src/index.ts" } },
-	// INC-C5: x402 settlement is wired inside the isolate now (the gateway plus
-	// `createHttpFacilitator` over `ctx.http`), so the x402 adapter is a runtime
-	// import for exactly the same reason the Stripe one above is.
+	// INC-C5: the x402 gateway is wired inside the isolate (`x402-wiring.ts`), so
+	// the x402 adapter is a runtime import for exactly the same reason the Stripe
+	// one above is.
 	{ name: "payments-x402", exports: { ".": "./src/index.ts" } },
 	{ name: "store-emdash", exports: { ".": "./src/index.ts" } },
 ];
 /** `-I` search root for the capnp `/workerd/workerd.capnp` builtin import —
  *  resolves via this package's own `node_modules/workerd` (a direct
  *  devDependency). */
-const CAPNP_IMPORT_ROOT = path.join(PLUGIN_ROOT, "node_modules");
+export const CAPNP_IMPORT_ROOT = path.join(PLUGIN_ROOT, "node_modules");
 // NOT `.bin/workerd`: pnpm's generated bin shim always does `exec node
 // <target>`, but the `workerd` npm package's postinstall (install.js)
 // overwrites its own `bin/workerd` in place with the raw platform ELF
 // binary (see `node_modules/workerd/install.js`) — so pnpm's shim ends up
 // doing `node <ELF file>`, which fails. Resolve the real (post-postinstall)
 // binary path directly instead.
-const WORKERD_BIN = path.join(CAPNP_IMPORT_ROOT, "workerd", "bin", "workerd");
+export const WORKERD_BIN = path.join(CAPNP_IMPORT_ROOT, "workerd", "bin", "workerd");
 
 /**
  * The allowlist a REAL deployment boots with, plus whatever extra hosts (a stub
@@ -260,7 +261,7 @@ export async function bootWithPortRetry<T>(
 	throw new Error("bootWithPortRetry: exhausted attempts without a result");
 }
 
-async function waitUntilReady(baseUrl: string, deadlineMs: number): Promise<void> {
+export async function waitUntilReady(baseUrl: string, deadlineMs: number): Promise<void> {
 	const start = Date.now();
 	let lastErr: unknown;
 	while (Date.now() - start < deadlineMs) {
@@ -286,6 +287,8 @@ function manifestSource(options: SandboxOptions): string {
 		'export const OTTA_PLUGIN_VERSION = "0.1.0";',
 		'export const OTTA_PLUGIN_CAPABILITIES = ["content:read", "network:request"];',
 		`export const ALLOWED_HOSTS = ${JSON.stringify(options.allowedHosts)};`,
+		// The SMTP2GO send hosts, a constant the email-provider setting reads.
+		`export const SMTP2GO_API_HOSTS = ${JSON.stringify(SMTP2GO_API_HOSTS)};`,
 		// INC-C5: the email sender and the x402 wiring read their endpoints from
 		// here, the same build-time constant `ALLOWED_HOSTS` is derived from in
 		// production. Absent ⇒ that provider is unconfigured (fail-closed).

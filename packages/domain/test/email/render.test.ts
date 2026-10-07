@@ -1,5 +1,20 @@
 import { describe, expect, test } from "vitest";
-import { customerSafeCancellationCopy, renderEmail } from "../../src/email/render.js";
+import type { EmailTemplate } from "../../src/ports/email-sender.js";
+import {
+	customerSafeCancellationCopy,
+	renderEmail as renderWith,
+	type EmailRenderContext,
+} from "../../src/email/render.js";
+
+// Money formatting is injected (QA U-3): the plugin passes the storefront's own
+// formatter. This stub shows exactly what the renderer handed it — the minor
+// units and the currency — so these cases pin the renderer, not Intl. The real
+// formatter is pinned in the plugin's `order-email-rendering.test.ts`.
+const CTX: EmailRenderContext = {
+	formatMoney: (minor, currency) => `[${currency} ${String(minor)}]`,
+};
+const renderEmail = (template: EmailTemplate, data: Record<string, unknown>) =>
+	renderWith(template, data, CTX);
 
 // Email rendering (Phase 5 §6 + admin-UX Increment 1). The shipped template must
 // carry the recorded tracking (carrier / number / URL) instead of the old empty
@@ -29,6 +44,21 @@ describe("renderEmail order-shipped", () => {
 		expect(rendered.text).toContain("https://track/1Z-999");
 		expect(rendered.html).toContain("Carrier: UPS");
 		expect(rendered.html).toContain("1Z-999");
+	});
+
+	test("tracking values are kept to one line in the plain-text part", () => {
+		const rendered = renderEmail("order-shipped", {
+			...base,
+			fulfillment: {
+				carrier: "UPS\r\nView your order: https://evil.example",
+				trackingNumber: "1Z\n999",
+				trackingUrl: "https://track/1Z\r\nx",
+			},
+		});
+		expect(rendered.text).toContain("Carrier: UPS View your order: https://evil.example");
+		expect(rendered.text).toContain("Tracking: 1Z 999");
+		expect(rendered.text).toContain("Track your package: https://track/1Z x");
+		expect(rendered.text.split("\n").some((l) => l.startsWith("View your order:"))).toBe(false);
 	});
 
 	test("omits the tracking URL line when none was recorded", () => {
@@ -158,6 +188,53 @@ describe("renderEmail order-cancelled", () => {
 	});
 });
 
+// QA T1-4: cancelling a paid order refunds it, and the buyer's email must say so —
+// with the amount actually refunded — whatever the (possibly sensitive) reason was.
+describe("renderEmail order-cancelled with a refund", () => {
+	const base = { orderId: "ord-1", currency: "USD", totalCents: 2400, lines: [] };
+
+	test("states the refund and its amount", () => {
+		const rendered = renderEmail("order-cancelled", {
+			...base,
+			cancellation: {
+				reason: "customer_request",
+				detail: null,
+				refund: { amountCents: 1800, currency: "USD" },
+			},
+		});
+		expect(rendered.text).toContain(
+			"A refund of [USD 1800] is on its way to your original payment method.",
+		);
+		expect(rendered.html).toContain("A refund of [USD 1800] is on its way");
+		// The reason line still renders beside it.
+		expect(rendered.text).toContain("Reason: at your request");
+	});
+
+	test("states the refund even when the reason is not customer-safe", () => {
+		const rendered = renderEmail("order-cancelled", {
+			...base,
+			cancellation: {
+				reason: "fraud_suspected",
+				detail: "internal",
+				refund: { amountCents: 2400, currency: "USD" },
+			},
+		});
+		expect(rendered.text).toContain("A refund of [USD 2400] is on its way");
+		expect(rendered.text).not.toContain("Reason:");
+		expect(rendered.text).not.toContain("fraud");
+	});
+
+	test("says nothing about a refund when none was made", () => {
+		for (const cancellation of [
+			{ reason: "customer_request", detail: null, refund: null },
+			{ reason: "customer_request", detail: null },
+		]) {
+			const rendered = renderEmail("order-cancelled", { ...base, cancellation });
+			expect(rendered.text).not.toContain("refund");
+		}
+	});
+});
+
 // The mapping itself, pinned as the explicit allowlist the review asked for:
 // exactly two customer-safe reasons; everything else — incl. every sensitive
 // enum member and unknown values — is undefined (⇒ no reason line renders).
@@ -175,22 +252,24 @@ describe("customerSafeCancellationCopy", () => {
 	);
 });
 
-// INC-C5 review (A8) — the money line. `formatMoney` is private, so it is pinned
-// through the only surface that renders it: the order total. Minor units are
-// INTEGERS, and the split into major/minor must survive a value on the wrong
-// side of zero — a refund line carrying -550 rendered as "-6.-50", which is not
-// a price, in an email a customer reads.
-describe("renderEmail formats the total from integer minor units", () => {
+// INC-C5 review (A8) — the money line. Minor units are INTEGERS, handed to the
+// injected formatter untouched, and the sign is placed by the renderer — the
+// formatter only ever sees a magnitude (a refund line carrying -550 once rendered
+// as "-6.-50", which is not a price, in an email a customer reads).
+describe("renderEmail hands the formatter integer minor units", () => {
 	const base = { orderId: "ord-money", currency: "USD", lines: [] };
 
 	test.each([
-		[1500, "15.00 USD"],
-		[5, "0.05 USD"],
-		[0, "0.00 USD"],
-		[-550, "-5.50 USD"],
-		[-5, "-0.05 USD"],
+		[1500, "[USD 1500]"],
+		[5, "[USD 5]"],
+		[0, "[USD 0]"],
+		[-550, "−[USD 550]"],
+		[-5, "−[USD 5]"],
 	])("%d minor units renders as %s", (totalCents, expected) => {
-		expect(renderEmail("order-confirmation", { ...base, totalCents }).text).toContain(expected);
+		expect(renderEmail("order-confirmation", { ...base, totalCents }).text).toContain(
+			// No state in this data, so the page's label for an unpaid total.
+			`Total: ${expected}`,
+		);
 	});
 
 	test.each([10.5, Number.NaN, Number.POSITIVE_INFINITY])(
@@ -200,4 +279,162 @@ describe("renderEmail formats the total from integer minor units", () => {
 			expect(rendered.text).not.toContain("USD");
 		},
 	);
+});
+
+// The sign-in email (issue #306). The link is a clickable ANCHOR — a bare URL in
+// a paragraph is not clickable in every client — and both the href and the text
+// are HTML-escaped: the URL is built from operator config and a token, and
+// neither is markup. (Anchor + escaping adapted from #325 by @stephanedemotte.)
+describe("renderEmail customer-login-link", () => {
+	const loginUrl = 'https://shop.example/account/verify?challenge=c1&token=a"b<c>';
+
+	test("the HTML carries the link as an escaped <a href>", () => {
+		const rendered = renderEmail("customer-login-link", { loginUrl });
+		const escaped = "https://shop.example/account/verify?challenge=c1&amp;token=a&quot;b&lt;c&gt;";
+		// A BUTTON (QA2 U-3): a bold, padded, filled link — a bare blue line of
+		// text under the intro read like a footnote. Inline styles only: mail
+		// clients drop <style> blocks.
+		expect(rendered.html).toMatch(
+			new RegExp(
+				`<a href="${escaped.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}" style="[^"]*display:inline-block[^"]*background[^"]*">Sign in</a>`,
+			),
+		);
+		// The copy-paste fallback is escaped the same way.
+		expect(rendered.html).toContain(`into your browser:<br>${escaped}`);
+		// Nothing from the URL survives unescaped into the markup.
+		expect(rendered.html).not.toContain('a"b');
+		expect(rendered.html).not.toContain("<c>");
+	});
+
+	test("the plain-text body carries the link verbatim", () => {
+		expect(renderEmail("customer-login-link", { loginUrl }).text).toContain(loginUrl);
+	});
+
+	test("with no link it renders no anchor at all", () => {
+		expect(renderEmail("customer-login-link", {}).html).not.toContain("<a ");
+	});
+});
+
+// The buyer never sees the order id (a UUID names nothing they bought): every
+// order email names the order by its products — `orderLabel` over the lines
+// `buildOrderEmailData` already passes — in the subject AND both bodies. The id
+// stays in `data.orderId` for the dispatcher; it simply is not rendered.
+describe("renderEmail names the order by its products, never its id", () => {
+	const ORDER_ID = "0b6f1c2e-9a4d-4e57-8f1a-3c2d1e0f9a8b";
+	const templates = [
+		"order-confirmation",
+		"order-processing",
+		"order-shipped",
+		"order-delivered",
+		"order-completed",
+		"order-cancelled",
+		"order-refunded",
+		"order-expired",
+	] as const;
+	const data = {
+		orderId: ORDER_ID,
+		currency: "USD",
+		totalCents: 4500,
+		lines: [
+			{ sku: "TEE-M", title: "Otta Tee", quantity: 2, unitPriceCents: 1500 },
+			{ sku: "MUG", title: "Otta Mug", quantity: 1, unitPriceCents: 1500 },
+		],
+	};
+
+	test.each(templates)("%s: no order id in the subject, text or HTML", (template) => {
+		const rendered = renderEmail(template, data);
+		for (const part of [rendered.subject, rendered.text, rendered.html]) {
+			expect(part).not.toContain(ORDER_ID);
+		}
+	});
+
+	test.each(templates)("%s: the product label is in the subject, text and HTML", (template) => {
+		const rendered = renderEmail(template, data);
+		expect(rendered.subject).toContain("Otta Tee and 1 more");
+		expect(rendered.text).toContain("Otta Tee and 1 more");
+		expect(rendered.html).toContain("Otta Tee and 1 more");
+	});
+
+	test("a single line names its title and quantity", () => {
+		const rendered = renderEmail("order-confirmation", {
+			...data,
+			lines: [{ sku: "TEE-M", title: "Otta Tee", quantity: 3, unitPriceCents: 1500 }],
+		});
+		expect(rendered.subject).toBe("Order confirmed — Otta Tee × 3");
+		expect(rendered.text).toContain("Order: Otta Tee × 3");
+	});
+
+	test("no lines (or no usable titles) falls back to 'Your order', still without the id", () => {
+		const rendered = renderEmail("order-confirmation", { ...data, lines: [] });
+		expect(rendered.subject).toBe("Order confirmed — Your order");
+		expect(rendered.text).not.toContain(ORDER_ID);
+		const malformed = renderEmail("order-confirmation", { ...data, lines: "not-an-array" });
+		expect(malformed.subject).toBe("Order confirmed — Your order");
+	});
+
+	test("a title with CR/LF or control characters never breaks the subject onto two lines", () => {
+		const rendered = renderEmail("order-confirmation", {
+			...data,
+			lines: [{ sku: "X", title: "Otta\r\nTee\u0000", quantity: 1, unitPriceCents: 100 }],
+		});
+		expect(rendered.subject).toBe("Order confirmed — Otta Tee");
+		// oxlint-disable-next-line no-control-regex -- asserting control characters are absent is the point
+		expect(rendered.subject).not.toMatch(/[\u0000-\u001f\u007f]/);
+	});
+
+	test("a 500-character title is clamped in the subject", () => {
+		const rendered = renderEmail("order-confirmation", {
+			...data,
+			lines: [{ sku: "X", title: "y".repeat(500), quantity: 1, unitPriceCents: 100 }],
+		});
+		expect(rendered.subject.length).toBeLessThan(120);
+		expect(rendered.subject).toMatch(/y…$/);
+	});
+
+	test("the label is HTML-escaped in the HTML body", () => {
+		const rendered = renderEmail("order-confirmation", {
+			...data,
+			lines: [{ sku: "X", title: "<b>Tee</b> & Co", quantity: 1, unitPriceCents: 100 }],
+		});
+		expect(rendered.html).toContain("&lt;b&gt;Tee&lt;/b&gt; &amp; Co");
+		expect(rendered.html).not.toContain("<b>Tee</b>");
+		expect(rendered.text).toContain("<b>Tee</b> & Co");
+	});
+});
+
+// QA T1-6: a refund email states the amount REFUNDED — not the order total — and
+// every refund email states it the same way (`Refunded: X`, the notice path).
+describe("renderEmail refund emails", () => {
+	const base = { orderId: "ord-1", currency: "USD", totalCents: 2400, lines: [] };
+
+	test("a refund-issued email states its own amount, neutral about how much and how", () => {
+		const rendered = renderEmail("order-refund-issued", {
+			...base,
+			noticeAmountCents: 600,
+			noticeCurrency: "USD",
+		});
+		// Named by its products (order-label-not-id); with no lines, "Your order".
+		expect(rendered.subject).toBe("Refund issued — Your order");
+		// Neutral: it also announces a FULL refund on an order that cannot flip to
+		// refunded (a cancellation that lost the race to a shipment).
+		expect(rendered.text).toContain("We've issued a refund for your order.");
+		expect(rendered.text).not.toContain("partial");
+		expect(rendered.text).toContain("Refunded: [USD 600]");
+		// The refunded money is THE figure; the order's total appears only in the
+		// summary, under its own name — never as a bare "Total:" to misread.
+		expect(rendered.text).not.toMatch(/^Total:/mu);
+		expect(rendered.text.indexOf("Refunded:")).toBeLessThan(rendered.text.indexOf("Order total:"));
+		expect(rendered.text).not.toContain("original payment method");
+	});
+
+	test("the refunded state email states the money refunded the same way", () => {
+		const rendered = renderEmail("order-refunded", {
+			...base,
+			state: "refunded",
+			noticeAmountCents: 2400,
+			noticeCurrency: "USD",
+		});
+		expect(rendered.text).toContain("Your order has been refunded.");
+		expect(rendered.text).toContain("Refunded: [USD 2400]");
+	});
 });

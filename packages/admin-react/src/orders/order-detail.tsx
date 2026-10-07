@@ -40,14 +40,17 @@
  * that has to change changes once.
  */
 import {
-	CANCEL_BANNER,
 	CANCEL_CONFIRM,
-	CANCEL_GROUP_LABEL,
 	CANCEL_PICK_REASON,
+	CANCEL_REFUNDS_UNKNOWN,
+	CANCEL_RESTOCK_HINT,
+	CANCEL_RESTOCK_LABEL,
 	CUSTOMER_CONTEXT_UNAVAILABLE,
 	FULFILMENT_LABELS,
 	FULLY_REFUNDED_NOTE,
+	CANCEL_BANNER,
 	MARK_REFUNDED_CONFIRM,
+	PENDING_CANCEL_EFFECTS,
 	ORDERS_BACK_LABEL,
 	ORDER_LINES_EMPTY,
 	ORDER_LINES_SNAPSHOT_NOTE,
@@ -55,7 +58,8 @@ import {
 	REFUNDS_UNAVAILABLE,
 	REFUND_ADDITIVE_NOTE,
 	REFUND_AMOUNT_INVALID,
-	REFUND_BY_REQUIRED,
+	REFUND_AMOUNT_PRECISION,
+	hasExcessDecimals,
 	REFUND_PARTIAL_GROUP_LABEL,
 	RESOLVE_RECONCILIATION_NOTE,
 	SHIPPING_ADDRESS_ABSENT,
@@ -63,12 +67,15 @@ import {
 	TIMELINE_UNAVAILABLE,
 	UNNAMED_REFUND_RECIPIENT,
 	buyerReferenceText,
+	cancelBannerText,
 	cancelConfirmText,
+	cancelGroupLabel,
 	fit,
 	formatAmount,
 	formatDate,
 	formatMinorUnitsInput,
 	formatTimestamp,
+	maskBuyerEmail,
 	orderStateCell,
 	parseMinorUnitsInput,
 	reconciliationAlertSentence,
@@ -77,7 +84,15 @@ import {
 	refundConfirmText,
 	refundTooHighInline,
 	refundsGroupLabel,
+	type CancelEffects,
 } from "@otta-sh/admin-presentation";
+
+/** The states an order can still be cancelled from — the state machine's own
+ *  `→ cancelled` sources. The Cancel group is rendered only for these. */
+const CANCELLABLE_STATES: ReadonlySet<string> = new Set(["pending", "paid", "processing"]);
+
+/** The Cancel group's alert title — the same on every order. */
+const CANCEL_BANNER_TITLE = CANCEL_BANNER.title;
 import * as React from "react";
 import {
 	fetchOrderDetail,
@@ -98,6 +113,7 @@ import {
 	Fields,
 	Group,
 	Notice,
+	RevealToggle,
 	StatusPill,
 	Table,
 	buttonStyle,
@@ -132,7 +148,9 @@ export type RefundCheck =
 	| { readonly ok: false; readonly refusal: RefundRefusal };
 
 /**
- * The refund form's three refusals, in the order the operator meets them.
+ * The refund form's refusals, in the order the operator meets them: an amount that
+ * does not parse (with its own sentence for too many decimal places), then one over
+ * the remainder. A blank `Refunded by` is not one of them (QA round 2).
  *
  * Parsed with the SHARED input parser — exact integer string math, never
  * `parseFloat(...) * 100`. The refusal copy is the write handler's own, restated
@@ -141,17 +159,23 @@ export type RefundCheck =
  */
 export function checkRefundInput(
 	amountInput: string,
-	refundedBy: string,
+	/** Not checked any more: a blank `Refunded by` is the signed-in operator, whom
+	 *  the server records (QA round 2). Kept so callers pass what the form holds. */
+	_refundedBy: string,
 	remainingCents: number,
 	currency: string,
 ): RefundCheck {
 	const parsed = parseMinorUnitsInput(amountInput, { allowZero: false });
 	if (parsed === null) {
-		return { ok: false, refusal: { message: REFUND_AMOUNT_INVALID, field: "amount" } };
+		return {
+			ok: false,
+			refusal: {
+				message: hasExcessDecimals(amountInput) ? REFUND_AMOUNT_PRECISION : REFUND_AMOUNT_INVALID,
+				field: "amount",
+			},
+		};
 	}
-	if (refundedBy.trim().length === 0) {
-		return { ok: false, refusal: { message: REFUND_BY_REQUIRED, field: "refundedBy" } };
-	}
+
 	if (parsed > remainingCents) {
 		return {
 			ok: false,
@@ -178,6 +202,40 @@ export function checkRefundInput(
  * group's own label uses, which is why the two can no longer disagree.
  */
 export type RefundPanelMode = "empty" | "fully-refunded" | "form";
+
+/** A refund row's lifecycle, as the ledger labels it. A row with no status came
+ *  from a plugin that only ever listed finalized refunds. */
+type RefundRowStatus = "recorded" | "reserved" | "unverified";
+
+/**
+ * An input in error. It sets the SAME `border` shorthand `inputStyle` does, never
+ * the `borderColor` longhand on top of it: toggling a longhand off under a live
+ * shorthand is a React style collision ("Removing borderColor border" — QA's
+ * console on the refund amount), which can leave the error border painted after
+ * the error is gone.
+ */
+const invalidInputStyle: React.CSSProperties = {
+	...inputStyle,
+	border: `1px solid ${FAIL_ACCENT}`,
+};
+
+function refundRowStatus(refund: RefundsSummary["refunds"][number]): RefundRowStatus {
+	return refund.status === "reserved" || refund.status === "unverified"
+		? refund.status
+		: "recorded";
+}
+
+const REFUND_STATUS_LABEL: Readonly<Record<RefundRowStatus, string>> = {
+	recorded: "Refunded",
+	reserved: "In progress",
+	unverified: "Outcome unknown — check your payment provider",
+};
+
+/** Money that actually came back. An older plugin sends no finalized total, and
+ *  listed only finalized rows, so its active total is the same figure. */
+function finalizedRefundedCents(refunds: RefundsSummary): number {
+	return refunds.finalizedTotalCents ?? refunds.refundedTotalCents;
+}
 
 export function refundPanelMode(summary: {
 	readonly ceilingCents: number;
@@ -217,31 +275,100 @@ function timelineWhat(entry: TimelineEntry): string {
 			return "Cancelled";
 		case "reconciliation_resolved":
 			return "Reconciliation resolved";
+		case "refund":
+			return refundWhat(entry);
 		default:
 			return entry.kind;
 	}
 }
 
+/** A refund row in History (QA round 2): what kind of money went back, and
+ *  whether it has gone back yet. */
+function refundWhat(entry: TimelineEntry): string {
+	const what =
+		entry.purpose === "cancellation"
+			? "Refund (cancellation)"
+			: entry.purpose === "late-payment"
+				? "Refund (late payment)"
+				: "Refund";
+	if (entry.status === "reserved") return `${what} — in progress`;
+	if (entry.status === "unverified") return `${what} — outcome unknown`;
+	return what;
+}
+
 function timelineWho(entry: TimelineEntry): string {
 	return (
-		entry.actor ?? entry.author ?? entry.recordedBy ?? entry.cancelledBy ?? entry.resolvedBy ?? "—"
+		entry.actor ??
+		entry.author ??
+		entry.recordedBy ??
+		entry.cancelledBy ??
+		entry.resolvedBy ??
+		entry.refundedBy ??
+		"—"
 	);
 }
 
-function timelineDetail(entry: TimelineEntry): string {
+/** A cancel reason as the operator chose it ("Customer requested it"), never the
+ *  wire value (`customer_request`) — QA round 2. An unknown value reads as words. */
+function cancelReasonText(reason: string, labels: ReadonlyMap<string, string>): string {
+	return labels.get(reason) ?? reason.replaceAll("_", " ");
+}
+
+function timelineDetail(entry: TimelineEntry, reasonLabels: ReadonlyMap<string, string>): string {
 	if (entry.kind === "note") return entry.body ?? "—";
 	if (entry.kind === "fulfillment") {
 		const parts = [entry.carrier, entry.trackingNumber].filter((p) => p != null && p.length > 0);
 		return parts.length > 0 ? parts.join(" ") : "—";
 	}
 	if (entry.kind === "cancellation") {
-		const reason = entry.reason ?? "";
+		const reason =
+			entry.reason != null && entry.reason.length > 0
+				? cancelReasonText(entry.reason, reasonLabels)
+				: "";
 		const detail = entry.detail ?? "";
-		if (reason.length > 0 && detail.length > 0) return `${reason}: ${detail}`;
-		return reason.length > 0 ? reason : detail.length > 0 ? detail : "—";
+		const parts = [
+			reason.length > 0 && detail.length > 0 ? `${reason}: ${detail}` : reason || detail,
+			entry.refund != null
+				? `refunded ${formatAmount(entry.refund.amount, entry.refund.currency)}`
+				: "",
+			entry.restockPending === true
+				? "restock pending"
+				: entry.restocked === true
+					? "items returned to stock"
+					: "",
+		].filter((part) => part.length > 0);
+		return parts.length > 0 ? parts.join(" · ") : "—";
+	}
+	if (entry.kind === "refund") {
+		const amount =
+			entry.amount != null && entry.currency != null
+				? formatAmount(entry.amount, entry.currency)
+				: "";
+		const parts = [amount, entry.reason ?? ""].filter((part) => part.length > 0);
+		return parts.length > 0 ? parts.join(" · ") : "—";
 	}
 	if (entry.kind === "reconciliation_resolved") return entry.outcome ?? "—";
 	return "—";
+}
+
+/** A tracking URL as a link — http(s) only, so a stored `javascript:` value can
+ *  never become a clickable script. */
+function trackingLink(url: string | null | undefined): React.ReactNode {
+	if (url == null || url.length === 0) return "—";
+	let safe = false;
+	try {
+		const protocol = new URL(url).protocol;
+		safe = protocol === "https:" || protocol === "http:";
+	} catch {
+		safe = false;
+	}
+	return safe ? (
+		<a className="otta-focusable" href={url} target="_blank" rel="noopener noreferrer">
+			{url}
+		</a>
+	) : (
+		url
+	);
 }
 
 /** A secondary surface that could not be loaded. E-1: it degrades to one line
@@ -294,6 +421,19 @@ function escapeQuoteForRecipient(value: string): string {
 }
 
 /**
+ * A buyer-supplied value as this screen prints it (issue #377): in full when
+ * the order's emails are revealed or the value is not an email at all, as
+ * `maskBuyerEmail`'s hint otherwise. Every place the detail writes a buyer's
+ * address reads through this one function, so the heading, the customer and
+ * shipping groups and the refund confirm cannot disagree about whether the
+ * order is masked.
+ */
+function shownEmail(value: string, revealed: boolean): string {
+	if (revealed) return value;
+	return maskBuyerEmail(value) ?? value;
+}
+
+/**
  * WHO A REFUND CONFIRM NAMES — review-mandated, and a DIFFERENT, STRICTER
  * question than {@link buyerReferenceText} answers for the heading and the
  * list cell. A destructive action's confirm text must name the most
@@ -326,10 +466,19 @@ function escapeQuoteForRecipient(value: string): string {
  *     marker for nothing being there. Keep this distinction — it is the
  *     kind of thing a later "simplification" merges back into one helper
  *     and reintroduces the em-dash-as-noun defect.
+ *
+ * MASKING CHANGES HOW THE RECIPIENT IS WRITTEN, NEVER WHICH ONE IT IS (issue
+ * #377). The chain above picks the identity; `revealed` — the order's own
+ * Show/Hide state — decides whether an email-shaped pick is written in full or
+ * as its `j•••@g•••.com` hint. A confirm dialog is a screenshot like any other,
+ * so it follows the screen behind it rather than quietly re-printing what the
+ * operator chose to keep masked. The hint goes through the same escape and
+ * clamp as the full value: its first character is still caller-supplied.
  */
 function resolveRefundRecipient(
 	identity: CustomerContext["identity"] | null | undefined,
 	buyerRef: string | null | undefined,
+	revealed: boolean,
 ): string {
 	if (
 		identity != null &&
@@ -339,7 +488,7 @@ function resolveRefundRecipient(
 		typeof identity.email === "string" &&
 		identity.email.trim().length > 0
 	) {
-		return identity.email.trim();
+		return shownEmail(identity.email.trim(), revealed);
 	}
 	if (typeof buyerRef === "string" && buyerRef.trim().length > 0) {
 		// ESCAPE BEFORE THE CLAMP (review round 3): `refundConfirmText` wraps
@@ -350,7 +499,10 @@ function resolveRefundRecipient(
 		// clamping, means a truncation that lands mid-escape can only ever
 		// strand a bare backslash before the ellipsis, never a live,
 		// unescaped `"`.
-		return fit(escapeQuoteForRecipient(buyerRef.trim()), REFUND_RECIPIENT_MAX_LEN);
+		return fit(
+			escapeQuoteForRecipient(shownEmail(buyerRef.trim(), revealed)),
+			REFUND_RECIPIENT_MAX_LEN,
+		);
 	}
 	return UNNAMED_REFUND_RECIPIENT;
 }
@@ -382,6 +534,7 @@ export function RefundsPanel({
 	setAmountError,
 	amountRef,
 	refundedByRef,
+	onResolveUnverified,
 }: {
 	readonly refunds: RefundsSummary;
 	readonly currency: string;
@@ -397,8 +550,26 @@ export function RefundsPanel({
 	readonly setAmountError: (refusal: RefundRefusal | null) => void;
 	readonly amountRef: React.RefObject<HTMLInputElement | null>;
 	readonly refundedByRef: React.RefObject<HTMLInputElement | null>;
+	/** A person's answer to a refund whose provider outcome is unknown (review
+	 *  round 2); the screen confirms it first. Absent ⇒ no controls. */
+	readonly onResolveUnverified?: (
+		refund: RefundsSummary["refunds"][number],
+		outcome: "confirmed" | "voided",
+		refundRef: string,
+	) => void;
 }): React.ReactElement {
 	const refundMode = refundPanelMode(refunds);
+	// The provider refund id typed for each unknown-outcome row, by its key.
+	const [resolveRefs, setResolveRefs] = React.useState<Readonly<Record<string, string>>>({});
+	// A `voided` attempt moved nothing and is not a refund; it stays on the wire
+	// for audit only. Everything else is listed WITH its status.
+	const listed = refunds.refunds.filter((refund) => refund.status !== "voided");
+	const showRefundKeys = listed.some((refund) => refundRowStatus(refund) === "unverified");
+	const finalizedCents = finalizedRefundedCents(refunds);
+	const recordedCount = listed.filter((refund) => refundRowStatus(refund) === "recorded").length;
+	const unverifiedCents = listed
+		.filter((refund) => refundRowStatus(refund) === "unverified")
+		.reduce((sum, refund) => sum + refund.amountCents, 0);
 	return (
 		<>
 			<section style={panelStyle}>
@@ -406,9 +577,9 @@ export function RefundsPanel({
 					testId="detail-money"
 					entries={[
 						["Captured", formatAmount(refunds.capturedTotalCents, cur)],
-						["Refunded", formatAmount(refunds.refundedTotalCents, cur)],
+						["Refunded", formatAmount(finalizedCents, cur)],
 						["Remaining refundable", formatAmount(refunds.remainingCents, cur)],
-						["Refunds recorded", String(refunds.refunds.length)],
+						["Refunds recorded", String(recordedCount)],
 					]}
 				/>
 			</section>
@@ -420,7 +591,7 @@ export function RefundsPanel({
 					refundMode === "empty"
 						? REFUNDS_GROUP_EMPTY_LABEL
 						: refundsGroupLabel(
-								formatAmount(refunds.refundedTotalCents, cur),
+								formatAmount(finalizedCents, cur),
 								formatAmount(refunds.ceilingCents, cur),
 							)
 				}
@@ -446,20 +617,52 @@ export function RefundsPanel({
 					</p>
 				)}
 
-				{refunds.refunds.length > 0 && (
+				{unverifiedCents > 0 && (
+					<p style={{ fontSize: 13 }} data-testid="refund-unverified-note">
+						{`Refunds totalling ${formatAmount(unverifiedCents, cur)} have an unknown outcome — check your payment provider before refunding again. The amount stays reserved on this order until it is reconciled; match it in the provider by its idempotency key below.`}
+					</p>
+				)}
+
+				{/*
+				  THE IDEMPOTENCY KEY IS SHOWN ONLY WHERE IT HAS A JOB. It is how an
+				  UNKNOWN-outcome refund is found in the provider's request log — the
+				  note above says "match it … by its idempotency key below" — and for
+				  nothing else: a settled refund is matched by its provider id. QA read
+				  a column of `admin-refund:…` strings on every refund as internals
+				  leaking into a money table, so the column appears only when some row
+				  is unverified, and only that row prints its key.
+				*/}
+				{listed.length > 0 && (
 					<Table
 						testId="detail-refund-ledger"
 						caption="Refunds recorded"
-						headers={[<EndHeader label="Amount" />, "Provider ref", "By", "When"]}
+						headers={[
+							<EndHeader label="Amount" />,
+							"Status",
+							"Provider ref",
+							...(showRefundKeys ? ["Idempotency key"] : []),
+							"By",
+							"When",
+						]}
 					>
-						{refunds.refunds.map((refund, index) => (
-							<tr key={`${refund.providerRef ?? "ref"}:${String(index)}`}>
+						{listed.map((refund, index) => (
+							<tr key={`${refund.idempotencyKey ?? refund.refundRef ?? "ref"}:${String(index)}`}>
 								<td className="otta-td otta-num" style={endCellStyle}>
 									{formatAmount(refund.amountCents, refund.currency ?? cur)}
 								</td>
+								<td className="otta-td">{REFUND_STATUS_LABEL[refundRowStatus(refund)]}</td>
 								<td className="otta-td">
-									<code>{refund.providerRef ?? "—"}</code>
+									<code>{refund.refundRef ?? refund.providerRef ?? "—"}</code>
 								</td>
+								{showRefundKeys && (
+									<td className="otta-td">
+										{refundRowStatus(refund) === "unverified" && refund.idempotencyKey != null ? (
+											<code>{refund.idempotencyKey}</code>
+										) : (
+											"—"
+										)}
+									</td>
+								)}
 								<td className="otta-td">{refund.refundedBy ?? "—"}</td>
 								<td className="otta-td otta-num">
 									{refund.createdAt != null ? formatTimestamp(refund.createdAt) : "—"}
@@ -468,6 +671,57 @@ export function RefundsPanel({
 						))}
 					</Table>
 				)}
+
+				{/* A refund whose outcome is UNKNOWN holds its amount until a person
+				    checks the provider (review round 2): it is resolved here, either
+				    way, behind a confirm. */}
+				{onResolveUnverified !== undefined &&
+					listed
+						.filter(
+							(refund) => refundRowStatus(refund) === "unverified" && refund.idempotencyKey != null,
+						)
+						.map((refund) => {
+							const key = refund.idempotencyKey ?? "";
+							return (
+								<Group
+									key={`resolve:${key}`}
+									testId="resolve-refund"
+									label={`Outcome unknown — ${formatAmount(refund.amountCents, refund.currency ?? cur)}: check your payment provider, then record what it shows`}
+									defaultOpen
+								>
+									<div style={{ display: "grid", gap: 10, maxInlineSize: 420 }}>
+										<Field label="Provider refund id (optional)">
+											<input
+												className="otta-focusable"
+												data-testid="resolve-refund-ref"
+												style={inputStyle}
+												placeholder="e.g. re_…"
+												value={resolveRefs[key] ?? ""}
+												onChange={(event) =>
+													setResolveRefs({ ...resolveRefs, [key]: event.target.value })
+												}
+											/>
+										</Field>
+										<div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+											<Button
+												testId="resolve-refund-confirmed"
+												disabled={busy}
+												label="Confirmed at the provider"
+												onClick={() =>
+													onResolveUnverified(refund, "confirmed", resolveRefs[key] ?? "")
+												}
+											/>
+											<Button
+												testId="resolve-refund-voided"
+												disabled={busy}
+												label="It didn’t happen"
+												onClick={() => onResolveUnverified(refund, "voided", "")}
+											/>
+										</div>
+									</div>
+								</Group>
+							);
+						})}
 
 				{/* The empty state says its piece once, in the heading. Repeating the
 				    same sentence in the body read as a rendering fault, and the defect
@@ -495,11 +749,7 @@ export function RefundsPanel({
 										className="otta-focusable"
 										data-testid="refund-amount"
 										ref={amountRef}
-										style={
-											amountError?.field === "amount"
-												? { ...inputStyle, borderColor: FAIL_ACCENT }
-												: inputStyle
-										}
+										style={amountError?.field === "amount" ? invalidInputStyle : inputStyle}
 										placeholder="e.g. 19.99"
 										{...(amountError?.field === "amount"
 											? { "aria-invalid": true, "aria-describedby": REFUND_ERROR_ID }
@@ -520,16 +770,12 @@ export function RefundsPanel({
 										onChange={(event) => setRefundReason(event.target.value)}
 									/>
 								</Field>
-								<Field label="Refunded by">
+								<Field label="Refunded by (optional — you, if left blank)">
 									<input
 										className="otta-focusable"
 										data-testid="refund-by"
 										ref={refundedByRef}
-										style={
-											amountError?.field === "refundedBy"
-												? { ...inputStyle, borderColor: FAIL_ACCENT }
-												: inputStyle
-										}
+										style={amountError?.field === "refundedBy" ? invalidInputStyle : inputStyle}
 										{...(amountError?.field === "refundedBy"
 											? { "aria-invalid": true, "aria-describedby": REFUND_ERROR_ID }
 											: {})}
@@ -627,6 +873,20 @@ export function OrderDetail({
 	const [pending, setPending] = React.useState<PendingAction | null>(null);
 	const [busy, setBusy] = React.useState(false);
 	const [generation, setGeneration] = React.useState(0);
+	// Whether THIS order's buyer emails are shown in full (issue #377). Never
+	// persisted, and never remembered across orders: the state carries the
+	// order id it was set for, and a different `orderId` resets it DURING
+	// RENDER (React's "adjust state when a prop changes" pattern) rather than
+	// in an effect — so A revealed, then B, then back to A without a remount
+	// paints A masked from its first frame, with no one-frame flash an effect
+	// would allow.
+	const [reveal, setReveal] = React.useState({ orderId, revealed: false });
+	if (reveal.orderId !== orderId) setReveal({ orderId, revealed: false });
+	const idBase = React.useId();
+	const emailValueId = `${idBase}-buyer`;
+	const accountEmailId = `${idBase}-account-email`;
+	const contactEmailId = `${idBase}-contact-email`;
+	const shipEmailId = `${idBase}-ship-email`;
 
 	// Form drafts. They live beside the record rather than inside it because a
 	// re-fetch after a write must not blank a field the operator is still typing
@@ -638,6 +898,9 @@ export function OrderDetail({
 	const [cancelReason, setCancelReason] = React.useState("");
 	const [cancelDetail, setCancelDetail] = React.useState("");
 	const [cancelledBy, setCancelledBy] = React.useState("");
+	// Return the units to stock on a paid order's cancel — ticked by default
+	// (T1-4), unticked for goods that came back damaged.
+	const [restock, setRestock] = React.useState(true);
 	const [noteAuthor, setNoteAuthor] = React.useState("");
 	const [noteBody, setNoteBody] = React.useState("");
 	const [amountError, setAmountError] = React.useState<RefundRefusal | null>(null);
@@ -717,16 +980,68 @@ export function OrderDetail({
 	// shared helper the list's Customer cell uses. NOT what a refund confirm
 	// uses: see `resolveRefundRecipient` below for why that is a stricter,
 	// separate question.
-	const recipient = buyerReferenceText(order.buyerRef);
+	//
+	// MASKED UNTIL REVEALED (issue #377): an email-shaped reference prints as
+	// its hint until the operator presses Show email, and the full address is
+	// not rendered anywhere in the document until then. `shownEmail` is the one
+	// gate every buyer address on this screen goes through.
+	const revealed = reveal.revealed && reveal.orderId === orderId && order.id === orderId;
+	const recipient = shownEmail(buyerReferenceText(order.buyerRef), revealed);
+	// The toggle is offered when there is an address on the order to reveal —
+	// the reference itself, the account's email or the ship-to's — and not
+	// otherwise: a guest order keyed by an opaque token has nothing to hide.
+	const hasMaskedEmail = [
+		order.buyerRef,
+		detail.customer?.identity.email,
+		detail.customer?.identity.buyerRef,
+		order.shippingAddress?.email,
+	].some((value) => maskBuyerEmail(value) !== null);
 	const refunds = detail.refunds;
 	const cur =
 		refunds?.currency !== undefined && refunds.currency.length > 0
 			? refunds.currency
 			: order.totals.currency;
+	// What cancelling THIS order does with money and stock (T1-4) — one value every
+	// piece of cancel copy is composed from. A pending order releases its held stock
+	// and refunds nothing; a paid one refunds what remains refundable (the server
+	// computes the same remainder) and restocks unless the box is unticked.
+	const hasPhysical = order.lines.some((line) => line.fulfillmentKind === "physical");
+	const cancelEffects: CancelEffects =
+		order.state === "pending"
+			? PENDING_CANCEL_EFFECTS
+			: {
+					refund:
+						refunds !== null && refunds.remainingCents > 0
+							? formatAmount(refunds.remainingCents, cur)
+							: null,
+					refundAutomatic: refunds?.refundable ?? false,
+					stock: !hasPhysical ? "none" : restock ? "restock" : "keep",
+				};
+	// A refund Otta cannot issue means the server will refuse the cancel, so no
+	// control is offered for it — only the banner saying what to do instead.
+	// An unreadable ledger on a paid order: what the cancel would refund is UNKNOWN,
+	// so it is blocked too rather than described as refunding nothing.
+	const refundsUnknown = order.state !== "pending" && refunds === null;
+	const cancelBlocked =
+		refundsUnknown || (cancelEffects.refund !== null && !cancelEffects.refundAutomatic);
+	// Sent with every cancel of a paid order; a pending order's cancel ignores it.
+	const restockValue: Record<string, string> =
+		order.state === "pending" ? {} : { restock: restock ? "true" : "false" };
 
+	// The cancel reasons as the operator reads them, for History (QA round 2).
+	const reasonLabels: ReadonlyMap<string, string> = new Map(
+		detail.vocabulary.cancellationReasons.map((r) => [r.value, r.label]),
+	);
 	const ladder: ReadonlyArray<readonly [string, number]> = [
 		["Subtotal", order.totals.subtotalCents],
-		["Discount", order.totals.discountCents],
+		// The coupon the order was priced with, as the merchant stored it (QA round
+		// 2: the detail showed "Discount $3.00" with no code).
+		[
+			order.totals.appliedCouponCode != null && order.totals.appliedCouponCode.length > 0
+				? `Discount · ${order.totals.appliedCouponCode}`
+				: "Discount",
+			order.totals.discountCents,
+		],
 		["Shipping", order.totals.shippingCents],
 		["Tax", order.totals.taxCents],
 		["Total", order.totals.totalCents],
@@ -740,13 +1055,20 @@ export function OrderDetail({
 		// then the clamped buyerRef, then the shared "this order's buyer"
 		// fallback; never the heading's `recipient` (readable but unverified)
 		// and never `ABSENT`.
-		const refundRecipient = resolveRefundRecipient(detail.customer?.identity, order.buyerRef);
+		const refundRecipient = resolveRefundRecipient(
+			detail.customer?.identity,
+			order.buyerRef,
+			revealed,
+		);
 		setPending({
 			actionId: "orders:refund",
 			value: {
 				orderId: order.id,
 				amountCents: String(amountCents),
-				refundedSoFarCents: String(refunds.refundedTotalCents),
+				// The FINALIZED total: an attempt still in flight (or one whose outcome
+				// is unknown) moved no money yet, and counting it would turn a retry
+				// into a "someone else refunded this order" refusal.
+				refundedSoFarCents: String(finalizedRefundedCents(refunds)),
 				currency: cur,
 				reason: refundReason,
 				refundedBy,
@@ -798,10 +1120,38 @@ export function OrderDetail({
 				// `order-detail-dom.test.tsx`.
 				data-customer-id={order.customerId ?? undefined}
 			>
-				Order · {recipient} · {formatDate(order.createdAt)}
+				Order · <span id={emailValueId}>{recipient}</span> · {formatDate(order.createdAt)}
 			</h1>
 			<div style={{ marginBlockEnd: 16 }}>
 				<Button label={ORDERS_BACK_LABEL} onClick={onBack} testId="orders-back" />
+				{/*
+				  BESIDE BACK, NOT INSIDE THE HEADING (issue #377). A button inside the
+				  h1 would make the heading's accessible name "Order · j•••@… · 4 Mar
+				  2026 Show email", and turning the h1 into a flex row to sit it
+				  alongside would undo the heading's own wrap containment above. One
+				  toggle for the whole order: the heading, the Customer and Shipping
+				  groups and the refund confirm all follow it.
+				*/}
+				{hasMaskedEmail && (
+					<RevealToggle
+						revealed={revealed}
+						onToggle={() => setReveal({ orderId, revealed: !revealed })}
+						// Every value this toggle discloses that is MOUNTED right now:
+						// the Customer group lives on the Order tab and the ship-to on
+						// Fulfilment, and an id that resolves to nothing is noise to
+						// assistive technology.
+						controls={[
+							emailValueId,
+							...(tab === 0 && detail.customer !== null ? [accountEmailId, contactEmailId] : []),
+							...(tab === 1 && order.shippingAddress?.email != null ? [shipEmailId] : []),
+						].join(" ")}
+						what="email for this order's buyer"
+						showLabel="Show email"
+						hideLabel="Hide email"
+						compact={false}
+						testId="detail-email-toggle"
+					/>
+				)}
 			</div>
 
 			{notice !== null && (
@@ -967,15 +1317,29 @@ export function OrderDetail({
 							) : (
 								<Group
 									testId="detail-customer"
-									label={`Customer — ${detail.customer.identity.email ?? detail.customer.identity.buyerRef}${
-										detail.customer.identity.linkage === "claimed"
-											? ""
-											: ` (${detail.customer.identity.linkage})`
-									}`}
+									label={
+										<>
+											Customer —{" "}
+											<span id={accountEmailId}>
+												{shownEmail(
+													detail.customer.identity.email ?? detail.customer.identity.buyerRef,
+													revealed,
+												)}
+											</span>
+											{detail.customer.identity.linkage === "claimed"
+												? ""
+												: ` (${detail.customer.identity.linkage})`}
+										</>
+									}
 								>
 									<Fields
 										entries={[
-											["Contact email", detail.customer.identity.buyerRef],
+											[
+												"Contact email",
+												<span id={contactEmailId}>
+													{shownEmail(detail.customer.identity.buyerRef, revealed)}
+												</span>,
+											],
 											["Orders placed", String(detail.customer.orderCount)],
 											["Name", detail.customer.identity.name ?? "—"],
 											[
@@ -1036,7 +1400,16 @@ export function OrderDetail({
 										["City", order.shippingAddress.city ?? "—"],
 										["Region", order.shippingAddress.region ?? "—"],
 										["Postal code", order.shippingAddress.postalCode ?? "—"],
-										["Email", order.shippingAddress.email ?? "—"],
+										[
+											"Email",
+											order.shippingAddress.email != null ? (
+												<span id={shipEmailId}>
+													{shownEmail(order.shippingAddress.email, revealed)}
+												</span>
+											) : (
+												"—"
+											),
+										],
 									]}
 								/>
 							</Group>
@@ -1048,6 +1421,9 @@ export function OrderDetail({
 									entries={[
 										["Carrier", order.fulfillment.carrier ?? "—"],
 										["Tracking number", order.fulfillment.trackingNumber ?? "—"],
+										// The tracking link the buyer was emailed (QA round 2) — a
+										// link only for http(s); anything else is shown as text.
+										["Tracking URL", trackingLink(order.fulfillment.trackingUrl)],
 										[
 											"Shipped",
 											order.fulfillment.shippedAt != null
@@ -1117,107 +1493,142 @@ export function OrderDetail({
 							</section>
 						)}
 
-						<Group testId="detail-cancel" label={CANCEL_GROUP_LABEL}>
-							<Notice
-								variant="alert"
-								title={CANCEL_BANNER.title}
-								description={CANCEL_BANNER.description}
-							/>
-							<p style={{ fontSize: 12, opacity: 0.75 }}>{CANCEL_PICK_REASON}</p>
-							{/* One button per reason the plugin says has an id, taken from the list
+						{/* Only an order that can still be cancelled gets the group: on a shipped,
+						    delivered, completed, refunded or cancelled order every control in it
+						    would be refused. */}
+						{CANCELLABLE_STATES.has(order.state) && (
+							<Group testId="detail-cancel" label={cancelGroupLabel(cancelEffects)}>
+								<Notice
+									variant="alert"
+									title={CANCEL_BANNER_TITLE}
+									description={
+										refundsUnknown ? CANCEL_REFUNDS_UNKNOWN : cancelBannerText(cancelEffects)
+									}
+									testId="cancel-banner"
+								/>
+								{!cancelBlocked && order.state !== "pending" && hasPhysical && (
+									<label style={{ display: "flex", gap: 8, alignItems: "baseline", fontSize: 13 }}>
+										<input
+											type="checkbox"
+											className="otta-focusable"
+											data-testid="cancel-restock"
+											checked={restock}
+											onChange={(event) => setRestock(event.target.checked)}
+										/>
+										<span>
+											{CANCEL_RESTOCK_LABEL}
+											<span style={{ display: "block", fontSize: 12, opacity: 0.75 }}>
+												{CANCEL_RESTOCK_HINT}
+											</span>
+										</span>
+									</label>
+								)}
+								{!cancelBlocked && (
+									<>
+										<p style={{ fontSize: 12, opacity: 0.75 }}>{CANCEL_PICK_REASON}</p>
+										{/* One button per reason the plugin says has an id, taken from the list
 							    it SHIPS rather than filtered out of `cancellationReasons` here. The
 							    ids are derived on that side from the same constant; a second copy
 							    of the exclusion on this side would post `orders:cancel-other` the
 							    day the two disagreed, and that id is not registered — the console
 							    would show an unknown-action refusal, not a cancel. */}
-							<div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBlockEnd: 12 }}>
-								{detail.vocabulary.oneClickCancellationReasons.map((reason) => (
-									<Button
-										key={reason.value}
-										testId={`cancel-${reason.value}`}
-										label={reason.label}
-										danger
-										disabled={busy}
-										onClick={() => {
-											setPending({
-												actionId: `orders:cancel-${reason.value}`,
-												value: { orderId: order.id, reason: reason.value, state: order.state },
-												title: CANCEL_CONFIRM.title,
-												text: cancelConfirmText(reason.label),
-												confirmLabel: CANCEL_CONFIRM.confirm,
-												denyLabel: CANCEL_CONFIRM.deny,
-											});
-										}}
-									/>
-								))}
-							</div>
-							<Group testId="detail-cancel-note" label="Cancel with a note">
-								<div style={{ display: "grid", gap: 10, maxInlineSize: 420 }}>
-									<Field label="Reason">
-										<select
-											className="otta-focusable"
-											data-testid="cancel-note-reason"
-											style={inputStyle}
-											value={cancelReason}
-											onChange={(event) => setCancelReason(event.target.value)}
-										>
-											<option value="">Choose a reason…</option>
-											{detail.vocabulary.cancellationReasons.map((reason) => (
-												<option key={reason.value} value={reason.value}>
-													{reason.label}
-												</option>
+										<div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBlockEnd: 12 }}>
+											{detail.vocabulary.oneClickCancellationReasons.map((reason) => (
+												<Button
+													key={reason.value}
+													testId={`cancel-${reason.value}`}
+													label={reason.label}
+													danger
+													disabled={busy}
+													onClick={() => {
+														setPending({
+															actionId: `orders:cancel-${reason.value}`,
+															value: {
+																orderId: order.id,
+																reason: reason.value,
+																state: order.state,
+																...restockValue,
+															},
+															title: CANCEL_CONFIRM.title,
+															text: cancelConfirmText(reason.label, cancelEffects),
+															confirmLabel: CANCEL_CONFIRM.confirm,
+															denyLabel: CANCEL_CONFIRM.deny,
+														});
+													}}
+												/>
 											))}
-										</select>
-									</Field>
-									<Field label="Detail (optional)">
-										<input
-											className="otta-focusable"
-											data-testid="cancel-note-detail"
-											style={inputStyle}
-											value={cancelDetail}
-											onChange={(event) => setCancelDetail(event.target.value)}
-										/>
-									</Field>
-									<Field label="Cancelled by">
-										<input
-											className="otta-focusable"
-											data-testid="cancel-note-by"
-											style={inputStyle}
-											value={cancelledBy}
-											onChange={(event) => setCancelledBy(event.target.value)}
-										/>
-									</Field>
-									<div>
-										<Button
-											label="Cancel the order"
-											testId="cancel-with-note"
-											danger
-											disabled={busy || cancelReason.length === 0}
-											onClick={() => {
-												const label =
-													detail.vocabulary.cancellationReasons.find(
-														(reason) => reason.value === cancelReason,
-													)?.label ?? cancelReason;
-												setPending({
-													actionId: "orders:cancel",
-													value: {
-														orderId: order.id,
-														reason: cancelReason,
-														detail: cancelDetail,
-														cancelledBy,
-														state: order.state,
-													},
-													title: CANCEL_CONFIRM.title,
-													text: cancelConfirmText(label),
-													confirmLabel: CANCEL_CONFIRM.confirm,
-													denyLabel: CANCEL_CONFIRM.deny,
-												});
-											}}
-										/>
-									</div>
-								</div>
+										</div>
+										<Group testId="detail-cancel-note" label="Cancel with a note">
+											<div style={{ display: "grid", gap: 10, maxInlineSize: 420 }}>
+												<Field label="Reason">
+													<select
+														className="otta-focusable"
+														data-testid="cancel-note-reason"
+														style={inputStyle}
+														value={cancelReason}
+														onChange={(event) => setCancelReason(event.target.value)}
+													>
+														<option value="">Choose a reason…</option>
+														{detail.vocabulary.cancellationReasons.map((reason) => (
+															<option key={reason.value} value={reason.value}>
+																{reason.label}
+															</option>
+														))}
+													</select>
+												</Field>
+												<Field label="Detail (optional)">
+													<input
+														className="otta-focusable"
+														data-testid="cancel-note-detail"
+														style={inputStyle}
+														value={cancelDetail}
+														onChange={(event) => setCancelDetail(event.target.value)}
+													/>
+												</Field>
+												<Field label="Cancelled by">
+													<input
+														className="otta-focusable"
+														data-testid="cancel-note-by"
+														style={inputStyle}
+														value={cancelledBy}
+														onChange={(event) => setCancelledBy(event.target.value)}
+													/>
+												</Field>
+												<div>
+													<Button
+														label="Cancel the order"
+														testId="cancel-with-note"
+														danger
+														disabled={busy || cancelReason.length === 0}
+														onClick={() => {
+															const label =
+																detail.vocabulary.cancellationReasons.find(
+																	(reason) => reason.value === cancelReason,
+																)?.label ?? cancelReason;
+															setPending({
+																actionId: "orders:cancel",
+																value: {
+																	orderId: order.id,
+																	reason: cancelReason,
+																	detail: cancelDetail,
+																	cancelledBy,
+																	state: order.state,
+																	...restockValue,
+																},
+																title: CANCEL_CONFIRM.title,
+																text: cancelConfirmText(label, cancelEffects),
+																confirmLabel: CANCEL_CONFIRM.confirm,
+																denyLabel: CANCEL_CONFIRM.deny,
+															});
+														}}
+													/>
+												</div>
+											</div>
+										</Group>
+									</>
+								)}
 							</Group>
-						</Group>
+						)}
 					</>
 				)}
 
@@ -1240,6 +1651,34 @@ export function OrderDetail({
 							setAmountError={setAmountError}
 							amountRef={amountRef}
 							refundedByRef={refundedByRef}
+							onResolveUnverified={(refund, outcome, refundRef) => {
+								const amount = formatAmount(refund.amountCents, refund.currency ?? cur);
+								const trimmed = refundRef.trim();
+								setPending({
+									actionId:
+										outcome === "confirmed"
+											? "orders:resolve-refund-confirmed"
+											: "orders:resolve-refund-voided",
+									value: {
+										orderId: order.id,
+										refundKey: refund.idempotencyKey ?? "",
+										...(outcome === "confirmed" && trimmed.length > 0
+											? { refundRef: trimmed }
+											: {}),
+									},
+									title:
+										outcome === "confirmed"
+											? `Record the ${amount} refund as issued?`
+											: `Record the ${amount} refund as never issued?`,
+									text:
+										outcome === "confirmed"
+											? "Only if your payment provider shows this refund. It is recorded as refunded and what it was for is finished — a cancellation completes, a full refund closes the order — and the buyer is emailed once. The provider is not asked again."
+											: "Only if your payment provider shows no such refund. It is recorded as never issued, and that amount can be refunded again (for a cancellation, click Cancel order again). If it was in fact refunded, a new refund will be stopped by the provider check and nothing more is paid.",
+									confirmLabel:
+										outcome === "confirmed" ? "Yes, it was refunded" : "Yes, it didn’t happen",
+									denyLabel: "Keep as is",
+								});
+							}}
 						/>
 					))}
 
@@ -1258,7 +1697,7 @@ export function OrderDetail({
 										<td className="otta-td otta-num">{formatTimestamp(entry.at)}</td>
 										<td className="otta-td">{timelineWhat(entry)}</td>
 										<td className="otta-td">{timelineWho(entry)}</td>
-										<td className="otta-td">{timelineDetail(entry)}</td>
+										<td className="otta-td">{timelineDetail(entry, reasonLabels)}</td>
 									</tr>
 								))}
 							</Table>

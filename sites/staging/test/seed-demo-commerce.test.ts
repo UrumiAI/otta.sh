@@ -223,10 +223,27 @@ describe("seed-demo-commerce", () => {
 	});
 
 	test("restock sends the OBSERVED count as the watermark and the demo quantity as qty", () => {
-		// `onHand` is not the target. The route re-reads live and refuses if the
-		// count moved, so sending `initialOnHand` here would either refuse or —
-		// worse — pass and double the stock.
-		expect(restockBody(TEE, 0)).toEqual({ productId: TEE.id, onHand: "0", qty: "25" });
+		// `onHand` is not the target: it is the count this script OBSERVED, which
+		// the route uses only to build its key for a caller that sends no nonce (a
+		// restock is not pinned to it — the store judges a watermark for removals
+		// only). `qty` is what is ADDED, so sending `initialOnHand` as `onHand`
+		// would mean nothing, and as `qty` on an already-stocked product would
+		// double the stock — which is what the re-run guard below prevents.
+		expect(restockBody(TEE, 0, "seed-nonce-0123456789")).toEqual({
+			productId: TEE.id,
+			onHand: "0",
+			qty: "25",
+			nonce: "seed-nonce-0123456789",
+		});
+	});
+
+	test("restock carries a FRESH nonce per call — the movement's idempotency key", () => {
+		// The route keys a movement on the caller's nonce; without one it falls back
+		// to a content key that is going away. Two calls are two decisions.
+		const a = restockBody(TEE, 0)["nonce"];
+		const b = restockBody(TEE, 0)["nonce"];
+		expect(a).toMatch(/^[A-Za-z0-9-]{16,64}$/);
+		expect(a).not.toBe(b);
 	});
 
 	// -- THE RE-RUN GUARD ------------------------------------------------------

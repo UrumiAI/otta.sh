@@ -9,12 +9,14 @@
  *    (the egress gate that holds even in trusted mode — ADR-0006);
  *  - NO `sandboxed:` / `sandboxRunner:` keys (a LOADER-consuming sandbox
  *    runner is the Workers-Paid cost pivot this deployment avoids);
- *  - database/storage are d1(DB, session OFF — paired with wrangler's
- *    global_fetch_strictly_public flag) / r2(MEDIA);
+ *  - database/storage are d1(DB, session "primary-first" — never "auto":
+ *    EmDash gives anonymous requests, which every shopper is, no
+ *    read-your-writes under it; and never alongside wrangler's
+ *    global_fetch_strictly_public flag, should it ever return) / r2(MEDIA);
  *  - Astro `security.checkOrigin` is never disabled BY US — note the emdash
  *    integration force-disables it platform-wide and substitutes a CSRF
- *    layer covering only /_emdash/api/* routes, so the real cart-endpoint
- *    CSRF pin is origin-guard.test.ts (see ADR-0006);
+ *    layer covering only /_emdash/api/* routes, so the real storefront
+ *    CSRF pin is origin-middleware.test.ts (see ADR-0006);
  *  - `vite.ssr.noExternal` contains "@otta-sh/plugin" UNCONDITIONALLY: if the
  *    plugin is externalized the `__OTTA_EMAIL_API_URL__` /
  *    `__OTTA_X402_FACILITATOR_URL__` defines silently never apply and every
@@ -28,6 +30,7 @@ import {
 	COMMERCE_STORAGE_COLLECTIONS,
 	COMMERCE_STORAGE_COLLECTION_NAMES,
 	PAYMENT_SECRET_KEYS,
+	SMTP2GO_API_HOSTS,
 	STRIPE_API_HOST,
 	COUPONS_PAGE,
 	REPORTS_PAGE,
@@ -48,9 +51,14 @@ import { describe, expect, test } from "vitest";
 // plain data with no imports at all.
 import { MIGRATED_SCREENS } from "../e2e/registry.js";
 import { buildEmdashOptions } from "../src/emdash-options.js";
+import { violatesPairing, wranglerCompatibilityFlags } from "../src/lib/wrangler-pairing.js";
 import { ottaConsoleDescriptor } from "../src/otta-console-descriptor.js";
 import { ottaPluginDescriptor } from "../src/otta-plugin-descriptor.js";
 import { readFile } from "node:fs/promises";
+
+/** The hosts every build grants: Stripe's API and SMTP2GO's four send hosts
+ *  (a store picks SMTP2GO in Settings; kv cannot widen the build-time list). */
+const BASELINE_HOSTS = [STRIPE_API_HOST, ...Object.values(SMTP2GO_API_HOSTS)];
 
 describe("ottaPluginDescriptor", () => {
 	const descriptor = ottaPluginDescriptor();
@@ -65,11 +73,12 @@ describe("ottaPluginDescriptor", () => {
 		expect(descriptor.capabilities).toEqual([...OTTA_PLUGIN_CAPABILITIES]);
 	});
 
-	test("allowedHosts is exactly the in-process egress list (Stripe alone, unconfigured)", () => {
+	test("allowedHosts is exactly the in-process egress list (the baseline alone, unconfigured)", () => {
 		// INC-D3a: there is no commerce service and no service host. With no
-		// email/facilitator URL supplied the list is the Stripe API host alone —
-		// see the exact-set block below for the configured cases.
-		expect(descriptor.allowedHosts).toEqual([STRIPE_API_HOST]);
+		// email/facilitator URL supplied the list is the Stripe API host and
+		// SMTP2GO's send hosts — see the exact-set block below for the configured
+		// cases.
+		expect(descriptor.allowedHosts).toEqual(BASELINE_HOSTS);
 	});
 
 	test("registers NO field widget — the CMS is not a commerce editor (PR 1b)", () => {
@@ -96,8 +105,9 @@ describe("ottaPluginDescriptor", () => {
 		// ORDERS AND PRICING & INVENTORY ARE BOTH ABSENT (INC-R2/INC-R3,
 		// ADR-0015): each Block Kit screen was retired once the React console's
 		// write path moved off it, taking the list from seven entries to FIVE.
-		// `/orders` and `/products` are now served only by the `otta-console`
-		// descriptor.
+		// `/orders` is now served only by the `otta-console` descriptor, and
+		// pricing and stock live in the products collection's own editor and list
+		// (ADR-0014, amendment 2026-10-01).
 		expect(descriptor.adminPages).toEqual([
 			REPORTS_PAGE,
 			SETTINGS_PAGE,
@@ -272,18 +282,18 @@ describe("ottaPluginDescriptor allowedHosts, EXACTLY", () => {
 			egress: { emailApiUrl: EMAIL, facilitatorUrl: FACILITATOR },
 		}).allowedHosts;
 		expect(sorted(hosts)).toEqual(
-			sorted([STRIPE_API_HOST, "api.email.example.com", "facilitator.example.com"]),
+			sorted([...BASELINE_HOSTS, "api.email.example.com", "facilitator.example.com"]),
 		);
 	});
 
-	test("with nothing configured: EXACTLY the Stripe API host", () => {
-		expect(ottaPluginDescriptor().allowedHosts).toEqual([STRIPE_API_HOST]);
+	test("with nothing configured: EXACTLY the Stripe API host and SMTP2GO's send hosts", () => {
+		expect(ottaPluginDescriptor().allowedHosts).toEqual(BASELINE_HOSTS);
 	});
 
 	test("FAIL-CLOSED: an unparseable egress URL grants nothing and never throws", () => {
 		const options = { egress: { emailApiUrl: "not a url", facilitatorUrl: "" } };
 		expect(() => ottaPluginDescriptor(options)).not.toThrow();
-		expect(ottaPluginDescriptor(options).allowedHosts).toEqual([STRIPE_API_HOST]);
+		expect(ottaPluginDescriptor(options).allowedHosts).toEqual(BASELINE_HOSTS);
 	});
 
 	test("INC-D3a: no commerce-service host can reach the allowlist at all", () => {
@@ -336,29 +346,51 @@ describe("buildEmdashOptions", () => {
 		expect(options).not.toHaveProperty("marketplace");
 	});
 
-	test("database is D1 binding DB with session OFF (required by global_fetch_strictly_public)", () => {
+	test('database is D1 binding DB with session "primary-first" (every shopper request starts on the primary)', () => {
 		expect(options.database).toMatchObject({
 			entrypoint: "@emdash-cms/cloudflare/db/d1",
 			config: { binding: "DB" },
 		});
-		// NOT session:"auto": read-replica sessions are incompatible with the
-		// wrangler.jsonc `global_fetch_strictly_public` flag (every SSR
-		// request hangs, silently — em-dash cloudflare.mdx:121-130, #1273).
+		// "primary-first" — NOT "auto" (issue #375, product-owner decision). In
+		// @emdash-cms/cloudflare 0.38 (dist/db/d1.mjs:630-635) "auto" starts every
+		// request EmDash has not authenticated on `first-unconstrained` — any
+		// replica, no bookmark. Every shopper is anonymous to EmDash (`otta_cart` /
+		// `otta_session` are Otta's own cookies), and every shopper write is a POST
+		// that 303s to a GET reading it back: /checkout/place → /checkout/pay reads
+		// the new order (a lagging replica answers ORDER_NOT_FOUND and the buyer
+		// lands on a 404 for an order holding their stock); /account/verify/confirm
+		// → /account/orders reads the new session (bounced to login); GET
+		// /checkout/resume replays the order's payment from what it reads.
+		// "primary-first" starts those GETs on the primary (`first-primary`), so
+		// each sees every write committed before it. "auto" needs a shopper-side
+		// bookmark first.
 		const d1Config = (options.database as { config?: { session?: unknown } }).config;
-		expect(d1Config?.session).toBeUndefined();
+		expect(d1Config?.session).toBe("primary-first");
 	});
 
-	test("PAIRING INVARIANT: global_fetch_strictly_public (wrangler) ⇒ D1 session OFF", () => {
-		// The flag is required (Worker→*.workers.dev subrequests are stubbed
-		// 404 without it) and deadlocks D1 sessions when combined — the two
-		// halves must only ever change TOGETHER.
-		const wrangler = readFileSync(new URL("../wrangler.jsonc", import.meta.url), "utf8");
-		const flagPresent = wrangler.includes('"global_fetch_strictly_public"');
-		expect(flagPresent).toBe(true);
+	test("PAIRING INVARIANT: the template never has global_fetch_strictly_public on together with a D1 session", () => {
+		// Sessions are ON ("primary-first"), so this is not vacuous: it fails the
+		// moment the flag comes back. The predicate is the build guard's own
+		// (src/lib/wrangler-pairing.ts, unit-tested in wrangler-pairing.test.ts).
+		const flags = wranglerCompatibilityFlags(
+			readFileSync(new URL("../wrangler.jsonc", import.meta.url), "utf8"),
+		);
+		expect(flags).toContain("nodejs_compat");
 		const d1Config = (options.database as { config?: { session?: unknown } }).config;
-		if (flagPresent) {
-			expect(d1Config?.session).toBeUndefined();
-		}
+		expect(violatesPairing(flags, d1Config?.session)).toBe(false);
+	});
+
+	test("astro.config.ts runs the pairing guard on the wrangler config the build SELECTS", async () => {
+		// The template is pinned above; a deployment builds from its own
+		// gitignored wrangler.local.jsonc, which a pre-#375 copy fills with the
+		// flag. Only the build sees that file, so the build must check it.
+		const source = await readFile(new URL("../astro.config.ts", import.meta.url), "utf8");
+		expect(source).toMatch(
+			/const selectedWranglerConfig = localWranglerConfig \?\? "wrangler\.jsonc";/,
+		);
+		expect(source).toMatch(
+			/assertWranglerSessionPairing\(\s*readFileSync\(new URL\(selectedWranglerConfig, import\.meta\.url\), "utf8"\),\s*selectedWranglerConfig,/,
+		);
 	});
 
 	test("storage is R2 binding MEDIA", () => {
@@ -387,13 +419,13 @@ describe("buildEmdashOptions", () => {
 			facilitatorUrl: "https://facilitator.example.com",
 		}).plugins[0]?.allowedHosts;
 		expect(sorted(hosts)).toEqual(
-			sorted([STRIPE_API_HOST, "api.email.example.com", "facilitator.example.com"]),
+			sorted([...BASELINE_HOSTS, "api.email.example.com", "facilitator.example.com"]),
 		);
 	});
 
-	test("with no egress configured the allowlist is EXACTLY Stripe — fail-closed, unchanged", () => {
+	test("with no egress configured the allowlist is EXACTLY the baseline — fail-closed", () => {
 		// Staging today supplies neither URL, so this is the list it actually ships.
-		expect(buildEmdashOptions().plugins[0]?.allowedHosts).toEqual([STRIPE_API_HOST]);
+		expect(buildEmdashOptions().plugins[0]?.allowedHosts).toEqual(BASELINE_HOSTS);
 	});
 
 	test("registers the Otta plugin FIRST, trusted, unchanged", () => {
@@ -723,8 +755,8 @@ describe("astro.config", () => {
 
 			// Our config must never explicitly disable checkOrigin. (The emdash
 			// integration disables it anyway and substitutes its own /_emdash-only
-			// CSRF layer — which is exactly why the /cart/* endpoints carry their
-			// own origin guard, pinned by origin-guard.test.ts.)
+			// CSRF layer — which is exactly why the site middleware runs its own
+			// origin check, pinned by origin-middleware.test.ts.)
 			expect(config.security?.checkOrigin).not.toBe(false);
 
 			const noExternal = config.vite?.ssr?.noExternal;
@@ -780,24 +812,19 @@ describe("astro.config", () => {
 		CONFIG_IMPORT_TIMEOUT_MS,
 	);
 
-	/**
-	 * THE LOAD-BEARING ONE — the baked egress defines and the REGISTERED
-	 * descriptor's allowlist must come from ONE decision.
-	 *
-	 * INC-D3a removed the transport half of this (there is one transport now, and
-	 * no mode to disagree about), but the egress half is unchanged and is the
-	 * reason this test still exists. The two values are consumed in two different
-	 * places: the plugin BUNDLE reads `__OTTA_EMAIL_API_URL__` /
-	 * `__OTTA_X402_FACILITATOR_URL__` as Vite defines to decide whether to build an
-	 * `EmailSender` and a facilitator client at all, while the DESCRIPTOR's
-	 * `allowedHosts` — the one ADR-0006 gate that still bites in trusted mode — is
-	 * built in Node at config time, where those defines do not exist.
-	 *
-	 * Feed only the defines and the bundle holds a sender aimed at a host the gate
-	 * refuses: every send fails, rows reschedule and park `failed`, and the sweep
-	 * leg reports `count: 0` instead of the honest `skipped`. Hence one named
-	 * const, both consumers, and hence this test.
-	 */
+	test(
+		"no storefront theme list is baked into the build: the admin offers no theme choice",
+		async () => {
+			// ADR-0024's amendment of 2026-10-02: the store ships one theme (Tempered), and
+			// the admin's Themes screen and Settings "Store theme" radio — the only
+			// readers of this define — are gone with it.
+			const config = (await import("../astro.config.js")).default;
+			const define = config.vite?.define as Record<string, string>;
+			expect(Object.keys(define)).not.toContain("__OTTA_STORE_THEMES__");
+		},
+		CONFIG_IMPORT_TIMEOUT_MS,
+	);
+
 	test(
 		"the baked egress URLs and the REGISTERED descriptor cannot disagree",
 		async () => {

@@ -8,6 +8,24 @@
 import { describe, expect, test } from "vitest";
 import { cartErrorMessage } from "../src/lib/error-messages.js";
 
+const SELECTION_TOKENS = [
+	"COUPON_NOT_FOUND",
+	"COUPON_NOT_ACTIVE",
+	"COUPON_MIN_SUBTOTAL",
+	"COUPON_EXHAUSTED",
+	"COUPON_MAX_PER_CUSTOMER",
+	"COUPON_CURRENCY_MISMATCH",
+	"SHIPPING_METHOD_NOT_FOUND",
+	"SHIPPING_RATE_NOT_FOUND",
+	// #305 part 2 (ADR-0021) — the zone derived from the address.
+	"SHIPPING_ZONE_NOT_MATCHED",
+	"SHIPPING_REGION_CODE_REQUIRED",
+	"SHIPPING_METHOD_NOT_IN_ZONE",
+	"SHIPPING_METHOD_REQUIRED",
+	"SHIPPING_METHOD_NOT_APPLICABLE",
+	"MISSING_SHIPPING_ADDRESS",
+];
+
 const KNOWN_TOKENS = [
 	"OUT_OF_STOCK",
 	"CART_NOT_FOUND",
@@ -23,18 +41,21 @@ const KNOWN_TOKENS = [
 	"SERVICE_UNAVAILABLE",
 	"PRODUCT_NOT_FOUND",
 	"PRODUCT_UNAVAILABLE",
-	// Checkout (storefront-checkout plan §3 C7). Coupon/shipping-method tokens
-	// are deliberately absent: no such input is offered, so they are unreachable.
+	// Checkout (storefront-checkout plan §3 C7).
 	"CART_EMPTY",
 	"RESERVATION_LOST",
 	"PRODUCT_NOT_PRICED",
 	"CURRENCY_MISMATCH",
 	"PAYMENT_INTENT_FAILED",
 	"IDEMPOTENCY_KEY_REUSED",
+	// The site's own: a review page placed for a cart the cookie no longer names.
+	"CHECKOUT_STALE",
 	"INVALID_SHIPPING_ADDRESS",
 	"INVALID_EMAIL",
 	"ORDER_NOT_FOUND",
 	"STRIPE_NOT_CONFIGURED",
+	// #305 part 1 — the buyer's selection, at the summary and at place.
+	...SELECTION_TOKENS,
 ];
 
 describe("cartErrorMessage", () => {
@@ -73,8 +94,35 @@ describe("cartErrorMessage", () => {
 		expect(cartErrorMessage("CURRENCY_MISMATCH")).toBe(expected);
 	});
 
-	test("RESERVATION_LOST explains the expired hold and points at the cart, without blaming the buyer", () => {
-		expect(cartErrorMessage("RESERVATION_LOST")).toMatch(/expired/i);
+	test("RESERVATION_LOST explains the expired hold and points at a NEW cart, without blaming the buyer", () => {
+		// A lost hold now closes the checkout's order at once (the domain expires it),
+		// so /checkout renders "This checkout has ended." beside this line. It must
+		// agree with that: the way forward is a new cart, not reviewing this one —
+		// and, like the ended notice, it makes no claim about money.
+		const message = cartErrorMessage("RESERVATION_LOST");
+		expect(message).toMatch(/expired/i);
+		expect(message).toMatch(/new cart/i);
+		expect(message).not.toMatch(/review your cart|try again/i);
+		expect(message).not.toMatch(/charged|refund/i);
+	});
+
+	test("CHECKOUT_STALE says the page was out of date and to review again — it blames nobody", () => {
+		expect(cartErrorMessage("CHECKOUT_STALE")).toBe(cartErrorMessage("IDEMPOTENCY_KEY_REUSED"));
+		expect(cartErrorMessage("CHECKOUT_STALE")).toMatch(/out of date/i);
+	});
+
+	test("BUYER_ADDRESS_REQUIRED (issue #382) asks for the name and address and says why — not delivery", () => {
+		const message = cartErrorMessage("BUYER_ADDRESS_REQUIRED");
+		expect(message).toMatch(/name and address/i);
+		expect(message).toMatch(/Stripe accounts in India/);
+		expect(message).not.toMatch(/deliver/i);
+	});
+
+	test("BUYER_ADDRESS_INVALID (issue #382) is the address error without the word delivery", () => {
+		const message = cartErrorMessage("BUYER_ADDRESS_INVALID");
+		expect(message).toMatch(/address/i);
+		expect(message).not.toMatch(/deliver/i);
+		expect(message).not.toBe(cartErrorMessage("SOME_UNMAPPED_TOKEN"));
 	});
 
 	test("INVALID_EMAIL is specific enough to act on", () => {
@@ -94,5 +142,40 @@ describe("cartErrorMessage", () => {
 		const holdExpired = cartErrorMessage("HOLD_EXPIRED");
 		const cartNotFound = cartErrorMessage("CART_NOT_FOUND");
 		expect(new Set([outOfStock, holdExpired, cartNotFound]).size).toBe(3);
+	});
+
+	test.each(SELECTION_TOKENS)("%s has its OWN copy, not the generic fallback", (token) => {
+		expect(cartErrorMessage(token)).not.toBe(cartErrorMessage("SOME_UNMAPPED_TOKEN"));
+	});
+
+	test("the coupon and shipping copy is distinct per reason — a buyer can tell them apart", () => {
+		const coupon = SELECTION_TOKENS.filter((t) => t.startsWith("COUPON_")).map(cartErrorMessage);
+		expect(new Set(coupon).size).toBe(coupon.length);
+	});
+
+	test("COUPON_NOT_FOUND tells the buyer to check the code — and never that case matters: lookup ignores it (ADR-0025)", () => {
+		const message = cartErrorMessage("COUPON_NOT_FOUND");
+		expect(message).toMatch(/check/i);
+		expect(message).not.toMatch(/(?<!n't |not )case-sensitive/i);
+	});
+
+	test("SHIPPING_ZONE_NOT_MATCHED says plainly that the store does not ship there", () => {
+		expect(cartErrorMessage("SHIPPING_ZONE_NOT_MATCHED")).toBe("We don't ship to this address.");
+	});
+
+	test("SHIPPING_REGION_CODE_REQUIRED asks for a CODE, and says blank is fine where a country uses none", () => {
+		const message = cartErrorMessage("SHIPPING_REGION_CODE_REQUIRED");
+		expect(message).toMatch(/code/i);
+		expect(message).toMatch(/e\.g\. CA/);
+		expect(message).toMatch(/leave it blank/i);
+	});
+
+	test("SHIPPING_METHOD_REQUIRED is about the ADDRESS having no delivery options — not a nag to choose", () => {
+		expect(cartErrorMessage("SHIPPING_METHOD_REQUIRED")).toMatch(/no delivery options/i);
+	});
+
+	test("the shipping copy is distinct per reason too", () => {
+		const shipping = SELECTION_TOKENS.filter((t) => !t.startsWith("COUPON_")).map(cartErrorMessage);
+		expect(new Set(shipping).size).toBe(shipping.length);
 	});
 });

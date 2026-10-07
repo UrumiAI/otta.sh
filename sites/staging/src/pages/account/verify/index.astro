@@ -1,0 +1,44 @@
+---
+/**
+ * GET /account/verify?challenge=…&token=… — where the emailed magic link lands
+ * (issue #306, ADR-0004).
+ *
+ * THIS PAGE REDEEMS NOTHING. It renders one button that POSTs the challenge and
+ * token to `/account/verify/confirm`, and that endpoint redeems them. Mail
+ * scanners pre-fetch the links in a message; if the GET redeemed, the scanner
+ * would spend the single-use token and the customer's own click would fail.
+ *
+ * The token is in this page's URL, so the page's referrer policy is
+ * `same-origin`: no Referer ever leaves for another host. It is deliberately NOT
+ * `no-referrer`, the policy the order page uses. Under `no-referrer` a browser
+ * sends `Origin: null` on this page's own form POST, the origin guard rejects
+ * that as cross-site, and every login would 403 at /account/verify/confirm
+ * (caught in a real browser by `e2e/account-login.spec.ts`). Nothing from the
+ * query is rendered except into the two hidden inputs the form needs.
+ */
+import Storefront from "../../../layouts/Storefront.astro";
+import { keepPrivate } from "../../../lib/no-store.js";
+import { cartErrorMessage } from "../../../lib/error-messages.js";
+import type { AccountVerifyModel } from "../../../themes/contract.js";
+
+// The customer's own data: private, no-store AND out of Astro's route cache,
+// which ignores Cache-Control (middleware.ts, "TWO CACHES").
+keepPrivate(Astro);
+
+const challenge = Astro.url.searchParams.get("challenge") ?? "";
+const token = Astro.url.searchParams.get("token") ?? "";
+const usable = challenge.length > 0 && token.length > 0;
+
+/** Nothing from the query reaches the view except the two values its confirm
+ *  form posts back. */
+const model: AccountVerifyModel = {
+	usable,
+	challenge,
+	token,
+	invalidMessage: cartErrorMessage("LOGIN_LINK_INVALID"),
+};
+---
+
+<Storefront view="accountVerify" model={model} title="Sign in or create an account">
+	<meta name="referrer" content="same-origin" slot="head" />
+</Storefront>

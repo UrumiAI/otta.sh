@@ -1,3 +1,5 @@
+import type { ExpiryListOptions } from "../ports/cart-store.js";
+import { assertSweepLimit } from "../sweep/batch.js";
 import type { Currency } from "../money/cents.js";
 import type { IdempotencyKey, OrderId } from "../money/ids.js";
 import {
@@ -52,6 +54,10 @@ interface LedgerRow {
 	lineId: string | null;
 	resultingQty: number | null;
 	completed: boolean;
+	/** Retired by `abandonClaim`. This fake's sweep never lists claims (it
+	 *  tracks holds by deadline), so the flag changes no answer here — it is
+	 *  kept so the fake records the same ledger fact the real store does. */
+	abandoned?: boolean;
 }
 
 export interface InMemoryCartStoreOptions {
@@ -83,6 +89,8 @@ export class InMemoryCartStore implements CartStore {
 	#releaseHold: (reservationId: string) => void;
 
 	#carts = new Map<string, CartRow>();
+	/** Keyed creates: key → the cart it minted (see `CartStore.create`). */
+	#createKeys = new Map<string, string>();
 	#lines = new Map<string, LineRow>();
 	#holds = new Map<string, HoldRow>();
 	/** `cart_mutations` ledger: idempotencyKey → claim/completion record. */
@@ -94,9 +102,14 @@ export class InMemoryCartStore implements CartStore {
 		this.#releaseHold = options.releaseHold;
 	}
 
-	async create(currency: Currency): Promise<string> {
+	async create(currency: Currency, key?: IdempotencyKey): Promise<string> {
+		if (key !== undefined) {
+			const existing = this.#createKeys.get(key);
+			if (existing !== undefined) return existing;
+		}
 		const id = this.#idGen.newId();
 		this.#carts.set(id, { id, currency, state: "active", orderId: null });
+		if (key !== undefined) this.#createKeys.set(key, id);
 		return id;
 	}
 
@@ -115,6 +128,14 @@ export class InMemoryCartStore implements CartStore {
 			currency: cart.currency,
 			lines,
 		};
+	}
+
+	async units(cartId: string): Promise<{ state: Cart["state"]; units: number } | null> {
+		const cart = this.#carts.get(cartId);
+		if (cart === undefined) return null;
+		let units = 0;
+		for (const row of this.#lines.values()) if (row.cartId === cartId) units += row.qty;
+		return { state: cart.state, units };
 	}
 
 	async recordedMutation(key: IdempotencyKey): Promise<RecordedCartMutation | null> {
@@ -136,6 +157,12 @@ export class InMemoryCartStore implements CartStore {
 			completed: false,
 		});
 		return { claimed: true };
+	}
+
+	async abandonClaim(cartId: string, key: IdempotencyKey): Promise<void> {
+		const row = this.#ledger.get(key);
+		if (row === undefined || row.cartId !== cartId || row.completed) return;
+		row.abandoned = true;
 	}
 
 	async upsertLine(input: UpsertLineInput): Promise<CartLine> {
@@ -164,7 +191,9 @@ export class InMemoryCartStore implements CartStore {
 			expiresAt: input.expiresAt,
 		};
 		row.qty = input.qty;
-		row.productId = input.productId;
+		// A null productId never clears a stored one (issue #373): a racing first
+		// add of the same sku may carry none, and checkout refuses a line without one.
+		row.productId = input.productId ?? row.productId;
 		row.reservationId = input.reservationId;
 		row.expiresAt = input.expiresAt;
 		this.#lines.set(row.id, row);
@@ -209,9 +238,19 @@ export class InMemoryCartStore implements CartStore {
 		if (row.reservationId !== null) this.#holds.delete(row.reservationId);
 	}
 
-	async listExpired(now: string, _cutoff: string): Promise<ExpiredHold[]> {
+	async listExpired(
+		now: string,
+		_cutoff: string,
+		options: ExpiryListOptions = {},
+	): Promise<ExpiredHold[]> {
+		assertSweepLimit(options.limit);
+		// No derived candidate index to heal (cf. the document store's
+		// `holdExpiresAt`): a hold that is no longer `held` is filtered out right here,
+		// on every call, so a dead hold never occupies a listing slot.
 		const out: ExpiredHold[] = [];
 		for (const hold of this.#holds.values()) {
+			if (options.limit !== undefined && out.length >= options.limit) break;
+			if (options.shouldContinue !== undefined && !options.shouldContinue()) break;
 			if (this.#reservationState(hold.reservationId) === "held" && hold.expiresAt <= now) {
 				out.push({ reservationId: hold.reservationId });
 			}
@@ -287,6 +326,7 @@ export class InMemoryCartStore implements CartStore {
 			lineId: row.lineId,
 			resultingQty: row.resultingQty,
 			completed: row.completed,
+			...(row.abandoned === true ? { abandoned: true } : {}),
 		};
 	}
 

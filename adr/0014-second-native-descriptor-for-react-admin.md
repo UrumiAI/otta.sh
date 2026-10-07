@@ -15,6 +15,25 @@
   by [ADR-0018](./0018-plugin-owns-commerce-truth-in-process.md). Decision 5's intent — that a
   host upgrade cannot quietly break the plugin — is unchanged, and Decision 1's zero-EmDash-
   dependency property for `@otta-sh/plugin` is untouched.
+- Amended: 2026-09-30 — **Decision 6 only**, by adding one screen: the storefront **Themes** screen
+  is a React page on `otta-console`. See "Amendment 2026-09-30" at the end. Tax, Shipping and
+  Settings still never migrate; the Settings "Store theme" radio stays as the Block Kit fallback.
+- Amended: 2026-10-01 — **Decision 6 only**: Pricing & inventory leaves the sidebar. Its fields
+  move into **Pricing, Inventory and Shipping & tax cards** in the product editor's main column and
+  **content-list columns** on the `products` collection,
+  served by `otta-console`, and the `/products` page is retired. See "Amendment 2026-10-01" at the
+  end.
+- Amended: 2026-10-02 — **the Themes screen is removed again**, with the Settings radio, by
+  [ADR-0024's amendment of the same date](./0024-storefront-themes-are-runtime-selected-full-templates.md):
+  the store ships one theme and the admin offers no choice. The 2026-09-30 amendment below is
+  history; `otta-console` serves the Orders page and the Pricing & stock field editor and list columns.
+- Amended: 2026-10-06 — **Decision 3 only**, and within it only "It gets no new data path", by
+  [ADR-0029](./0029-console-uploads-download-files-to-a-site-endpoint.md): the product editor's
+  Download file card may POST a digital product's file to ONE site endpoint,
+  `/otta-admin/downloads/{productId}`, which stores it in the private `DOWNLOADS` bucket and
+  answers a descriptor. Every read and write of commerce data, the descriptor's save included,
+  still goes through the `otta` admin route; zero capabilities, zero `allowedHosts`, no routes
+  and no hooks are unchanged. See "Amended 2026-10-06" at the end.
 - Relates to: ADR-0003 (route-based storefront — untouched), ADR-0013 (the fields the
   migrated Pricing screen may not offer)
 
@@ -262,3 +281,169 @@ single-descriptor alternative is one page higher than recorded — and no other 
 the figure. Every other count in this record is correct as written, including
 [`docs/admin/ADMIN-CONSOLE.md`](../docs/admin/ADMIN-CONSOLE.md)'s "seven admin screens", which had
 the same off-by-one in its own earlier revisions and was fixed there first.
+
+## Amendment 2026-09-30 — the storefront Themes screen is a React page
+
+**What changes.** Decision 6 fixed the console's scope; a screen outside it needs a ruling. This is
+that ruling, for one screen: `otta-console` gains `/themes`
+(`THEMES_PAGE`), a WordPress-style theme picker for [ADR-0024](./0024-storefront-themes-are-runtime-selected-full-templates.md)'s
+storefront themes — a grid of screenshot cards with the active theme first under a solid accent
+bar, an **Activate** button on every other card, and a **Live preview** that frames the real
+storefront in that theme in a full-screen overlay (desktop / tablet / phone widths, Esc to close,
+"Open in new tab"). The maintainer asked for it in these terms and chose React over Block Kit for it.
+The work is increment **INC-26**.
+
+**Why it cannot be Block Kit.** Not preference — the screen needs things Block Kit does not have:
+
+- **No image card.** Block Kit's `image` block is a standalone element; there is no card that
+  pairs a picture with a footer and actions, and no control over aspect ratio or crop.
+- **No hover or focus state.** The "Live preview" affordance appears over the picture on hover and
+  on keyboard focus; Block Kit renders no pointer or focus styling of its own.
+- **No link.** "View store" and "Open in new tab" are navigations; Block Kit actions are only
+  round trips to the plugin route.
+- **No frame.** The live preview is an `<iframe>` of the storefront; Block Kit has no embed.
+- **No re-ordering or client-side state.** The grid re-orders when a theme is activated; a Block
+  Kit screen can only re-render the whole tree from the server.
+
+**What does not change.**
+
+- **One data path.** The screen reads `themes.list` and writes `themes:activate` through the `otta`
+  admin route with the existing `otta_console_read` / `otta_console_act` interaction types
+  (`packages/plugin/src/admin/themes-console-route.ts`). `otta-console` still holds zero
+  capabilities, zero `allowedHosts`, no route, no hook and no storage (Decision 3).
+- **One write path.** Activate calls the same `saveStoreTheme` the Settings "Store theme" radio
+  calls (`store-theme-kv.ts`): an id the site offers, into kv `settings:storeTheme`, or nothing.
+- **The Block Kit fallback stays.** The Settings "Store theme" radio is not removed. Settings stays
+  Block Kit permanently, as Decision 6 says; this amendment adds a screen and migrates none.
+- **No component library.** The screen reads the admin's Kumo CSS custom properties
+  (`--color-kumo-brand`, `--color-kumo-base`, …) with theme-neutral fallbacks, so it is native in
+  light and dark mode. That is a dependency on the stylesheet the page already renders inside, not
+  on `@cloudflare/kumo`, which stays unadopted.
+
+**The preview is a site feature, not an admin one.** The overlay frames `/?preview_theme=<id>`; the
+site honours it for a signed-in, enabled user with role ≥ ADMIN (50) only, keeps it across in-frame
+links with a session cookie, marks every previewed response `Cache-Control: private, no-store`, and
+shows a "Previewing … — not live · Exit preview" pill. Recorded in ADR-0024's amendment of the same
+date.
+
+**The frame is same-origin and unsandboxed, on purpose.** The overlay's `<iframe>` carries no
+`sandbox`: the dialog listens for Esc on the frame's window (key events inside the frame never reach
+the dialog), and the frame must send the admin's session cookie for the site to honour the preview.
+That is acceptable because what it frames is this store's own first-party storefront code, which
+already runs under [ADR-0012](./0012-storefront-checkout-loads-stripe-elements-in-the-browser.md)'s
+client-JS fence — not third-party content.
+
+**A live preview is the real store.** It renders the real catalogue, cart and checkout in another
+theme; adding to cart or checking out inside it creates real holds and real orders. And the preview
+cookie is browser-session-wide, not frame-wide: while a preview is on, the admin's other storefront
+tabs render in the previewed theme too. Closing the overlay ends the preview everywhere in that
+browser — including a tab opened with "Open in new tab".
+
+**Reopens this amendment:** a second React screen justified by this one instead of by its own gaps;
+the Settings radio being removed; or the Themes screen acquiring a write other than `saveStoreTheme`.
+
+## Amendment 2026-10-01 — Pricing & inventory moves into the product editor
+
+**What changes.** A shop owner edits a product in two places today: its title, description and
+images under **Content › Products**, and its price and stock in **Pricing & inventory**, a page at
+the bottom of the sidebar under "Plugins". Merchants read that as two different products. EmDash
+cannot merge two sidebar items or move a plugin page into the Content group (emdash-cms/emdash
+#1023 is open), but a native plugin can contribute surfaces that sit **inside the collection's own
+screens**:
+
+- a **field editor** (`fields` on the admin module), which EmDash draws in the editor's MAIN column
+  for any field whose `widget` names it; and
+- **content-list columns** (`contentListColumns`), read-only cells in the collection's list.
+
+So the products collection gains one field, `pricing` (`json`, `widget: "otta-console:pricing"`),
+placed after Images, and `otta-console`'s `fields.pricing` draws **Pricing**, **Inventory** and
+**Shipping & tax** cards there — the layout the large commerce admins use. `otta-console` also
+exports **Price** / **Stock** columns. The `/products` page ("Pricing & inventory") is **retired**:
+it leaves `admin.pages`, the sidebar and the console-screens registry.
+
+A content editor panel (`contentEditorPanels`) was built first and rejected for placement: EmDash
+puts plugin panels after all of its own settings sections, with no default-position option, so the
+merchant had to scroll the side column to find the price.
+
+**The `pricing` field holds no data.** It only marks where the cards go: the editor never calls the
+field's `onChange`, no seeded entry carries a value, and every value the cards show or change lives
+in the commerce store, as before (PR 1b's rule, kept). `seed.test.ts` pins the field's role, and
+the binding is the only plugin widget bound on the collection. New stores get the field from the
+seed. EmDash 0.38's Content Types screen cannot bind a widget, so a store created before this change
+adds it with `sites/staging/scripts/add-pricing-field.ts`, through the schema API (which accepts
+`widget`; a later edit of the field in that screen keeps it). **The fallback is a hazard to name:**
+when the widget is missing or `otta-console`'s admin module fails to load, EmDash draws its raw JSON
+editor for the field, which would store whatever is typed into the CMS. DEPLOYMENT.md says to leave
+it empty and re-run the script. Decision 6's
+scope is unchanged in kind — the same fields, edited by the same writes — and only the place they
+are edited moves.
+
+**What does not change.**
+
+- **One data path (Decision 3).** Both surfaces call the existing `otta` admin route with
+  `otta_console_read` / `otta_console_act`. The cards read `products.detail`, move stock with
+  the retired page's `products:restock` / `products:remove-stock`, and saves through one new
+  action id, `products:save`, which runs the same sparse save handler as the page's three split
+  saves (same watermark, same content-derived idempotency key) with every field the cards own. A
+  field editor is not told when the CMS saves the entry (which moves the commerce watermark), so a
+  save re-reads the product first and keeps only the merchant's own edits on top of it. The columns read
+  one new resource on that same route, `products.summaries`: the price and on-hand of a bounded
+  list of product ids, which is the page of rows the list is showing. It is a read on the existing
+  authenticated route, not a new route, capability or host.
+- **CMS ownership (ADR-0013).** Title, description, images and publish status stay the CMS's. The
+  cards offer no title and no active flag, exactly as the retired page did; the product id is the
+  CMS entry id, which the cards read from the editor's address (`…/content/products/<id>`) because
+  EmDash gives a field editor the field's value and nothing about the entry.
+- **Who sees them.** The `otta` admin route requires `plugins:manage` (ADMIN), and remains the
+  authorization boundary. The columns declare `minRole: 50`. A field editor has no `minRole`, so a
+  user below ADMIN who can edit products sees the cards and gets the route's 403 copy ("ask an
+  administrator to grant the plugins:manage permission") — refused, never written.
+- **No component library**, as before: inline styles over the admin's Kumo custom properties
+  with theme-neutral fallbacks.
+
+**What gets harder.** The cards save separately from the CMS's own Save and Publish, and the
+editor's unsaved-changes guard cannot see them. They warn on unload and ask before an in-app link
+leaves them with unsaved edits; the browser's Back button is not covered. A new product has no id yet, so it is saved once before it can be priced; the
+cards say so. The cards depend on the editor's address shape and on the `pricing` field existing on
+the collection; without the field there is nowhere to draw them. The columns are read-only, so stock and price are
+changed from the product, not from the list. A merchant who wants a dedicated stock-taking table
+has none until one is justified on its own.
+
+**Left for a follow-up.** The retired page's React modules (`products-screen.tsx`,
+`products-list.tsx`, `product-detail.tsx`) and the three split save ids only they send stay in the
+tree, unregistered, because the shared console tests use them as their fixture. Moving those tests
+onto Orders and deleting the modules is the next change.
+
+**Reopens this amendment:** the `pricing` field storing a value; a card or column offering a
+CMS-owned field; either surface reading or
+writing through anything but the `otta` admin route; or the retired page returning beside the cards.
+
+## Amendment 2026-10-02 — the Themes screen is removed
+
+The storefront ships one theme, so the admin offers no theme choice ([ADR-0024's amendment of the
+same date](./0024-storefront-themes-are-runtime-selected-full-templates.md)). The Themes screen
+(`/themes`) leaves `admin.pages` and the console-screens registry, and its `themes.*` branch leaves
+the `otta` admin route. Nothing else in this record changes: Decision 6's scope is Orders and
+Pricing & inventory (now the product editor cards and list columns) again, and the reasons recorded in the 2026-09-30 amendment for why such a
+screen could not be Block Kit still stand for any future one.
+
+## Amended 2026-10-06 — one upload request, to the site (Decision 3)
+
+Everything above is left as written. This block amends only Decision 3's "It gets no new data
+path", by [ADR-0029](./0029-console-uploads-download-files-to-a-site-endpoint.md) (issue #376,
+download increment 4).
+
+A digital product's file has to reach the private `DOWNLOADS` R2 bucket, and only the site holds
+that binding: the plugin can neither read R2 nor receive a byte stream, and EmDash's media bucket
+is public. So the product editor's Download file card POSTs the file to the site's
+`/otta-admin/downloads/{productId}`, which stores it under a server-minted key and answers a
+descriptor. The card then saves that descriptor through the `otta` admin route
+(`products:attach-download`), exactly like every other product edit. The upload carries bytes
+only: it reads no commerce data and writes none. It is the console's one request outside the
+`otta` admin route, it lives in its own module (`download-upload-api.ts`), and it stays the only
+one: a second such request reopens this amendment.
+
+Decision 3's other clauses are unchanged: `otta-console` declares zero capabilities and zero
+`allowedHosts` and owns no routes or hooks. The endpoint belongs to the site, not to the
+descriptor.
+

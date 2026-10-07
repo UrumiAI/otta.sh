@@ -46,7 +46,7 @@
  * unreachable half is deleted with its reason.
  *
  * WHAT IT DOES NOT COVER, deliberately: the React components. Those are gated by
- * Playwright (`sites/staging/e2e/products-console.spec.ts`), which is additive
+ * Playwright (`sites/staging/e2e/products-pricing.spec.ts`, which replaced the retired page's spec), which is additive
  * to this tier and replaces none of it.
  *
  * ONE STORE PER PROCESS (`storageBridge`), so every case addresses disjoint ids
@@ -184,6 +184,10 @@ function ids(result: Record<string, unknown>): unknown[] {
 function stockOf(result: Record<string, unknown>): Record<string, unknown> {
 	return result["stock"] as Record<string, unknown>;
 }
+
+/** A nonce as the Pricing & stock cards mint one (`mintMovementNonce`): 128
+ *  random bits as 32 lowercase hex characters. */
+const hexNonce = (): string => crypto.randomUUID().replaceAll("-", "");
 
 describe("the console's Pricing & inventory branch on the otta admin route", () => {
 	test("products.list returns RAW minor units and a RAW on-hand count", async () => {
@@ -604,6 +608,82 @@ describe("the console's Pricing & inventory branch on the otta admin route", () 
 	// not lost: the fail-closed case above makes the same E-7 assertions against a
 	// trigger that still exists.
 
+	// ── products.summaries: the Products list's Price and Stock columns ──────
+
+	test("products.summaries answers the asked ids, in the asked order, with RAW money and stock", async () => {
+		const a = await seedProduct({ term: "sumrow", onHand: 7, priceCents: 3200 });
+		const b = await seedProduct({ term: "sumrow", onHand: 0, priceCents: 600 });
+		const result = await invoke({
+			type: READ,
+			resource: "products.summaries",
+			productIds: [b.productId, a.productId],
+		});
+		expect(result["ok"], JSON.stringify(result)).toBe(true);
+		const summaries = result["products"] as Array<Record<string, unknown>>;
+		expect(summaries.map((s) => s["productId"])).toEqual([b.productId, a.productId]);
+		expect(summaries[1]).toMatchObject({
+			sku: a.sku,
+			priceCents: 3200,
+			currency: "USD",
+			compareAtCents: null,
+			onHand: 7,
+			deletedAt: null,
+		});
+		// Zero is OUT OF STOCK, a real count — not "no record".
+		expect(summaries[0]?.["onHand"]).toBe(0);
+		// The band a cell needs travels with the page, as on products.list.
+		expect(result["threshold"]).toBe(THRESHOLD);
+	});
+
+	test("products.summaries keeps `null` on-hand distinct from zero, and skips ids it has no row for", async () => {
+		const unknown = await seedProduct({ term: "sumnull", onHand: null });
+		const result = await invoke({
+			type: READ,
+			resource: "products.summaries",
+			// A CMS entry that has never been saved through the sync has no commerce
+			// row at all — a draft created a moment ago, say. It is left out, not
+			// invented.
+			productIds: [`${NS}-no-commerce-row`, unknown.productId],
+		});
+		const summaries = result["products"] as Array<Record<string, unknown>>;
+		expect(summaries.map((s) => s["productId"])).toEqual([unknown.productId]);
+		expect(summaries[0]?.["onHand"]).toBeNull();
+	});
+
+	test("products.summaries carries the compare-at price the list strikes through", async () => {
+		const seeded = await seedProduct({ term: "sumsale", priceCents: 3200 });
+		await products.updateCommerceFields(
+			{
+				productId: toProductId(seeded.productId),
+				compareAtPrice: money(cents(4000), toCurrency("USD")),
+			},
+			idempotencyKey(`${NS}-sumsale-compare`),
+			seeded.updatedAt,
+		);
+		const result = await invoke({
+			type: READ,
+			resource: "products.summaries",
+			productIds: [seeded.productId],
+		});
+		const summaries = result["products"] as Array<Record<string, unknown>>;
+		expect(summaries[0]?.["compareAtCents"]).toBe(4000);
+	});
+
+	test("products.summaries refuses a request it cannot bound — no ids, a non-list, or more than a page", async () => {
+		for (const productIds of [
+			undefined,
+			"pcr-prod-1",
+			[],
+			[42],
+			["has space"],
+			Array.from({ length: 101 }, (_, i) => `x${String(i)}`),
+		]) {
+			const result = await invoke({ type: READ, resource: "products.summaries", productIds });
+			expect(result["ok"], JSON.stringify(productIds)).toBe(false);
+			expect(result["title"]).toBe("That request could not be read");
+		}
+	});
+
 	test("an unrecognised products resource is a refusal, not a blank body", async () => {
 		const result = await invoke({ type: READ, resource: "products.nope" });
 		expect(result["ok"]).toBe(false);
@@ -743,6 +823,41 @@ describe("the console's Pricing & inventory branch on the otta admin route", () 
 		expect(row?.updatedAt.toISOString()).not.toBe(seeded.updatedAt);
 	});
 
+	test("the product editor's ONE save writes price, sku, cost and shipping in a single write", async () => {
+		// The Pricing & stock cards have one Save button, so `products:save` takes
+		// every field the cards own at once, through the same sparse save the
+		// split actions use. A cleared compare-at is sent blank and cleared.
+		const seeded = await seedProduct({ term: "panelsave", priceCents: 3200 });
+		const result = await invoke({
+			type: ACT,
+			action_id: "products:save",
+			value: {
+				productId: seeded.productId,
+				expectedUpdatedAt: seeded.updatedAt,
+				sku: `${seeded.sku}-P`,
+				price: "29.00",
+				currency: "USD",
+				compareAt: "",
+				unitCost: "11.00",
+				productKind: "physical",
+				taxClass: "",
+				weightGrams: "450",
+				lengthMm: "",
+				widthMm: "",
+				heightMm: "",
+			},
+		});
+		expect(result["ok"], JSON.stringify(result)).toBe(true);
+		expect((result["notice"] as Record<string, unknown>)["title"]).toBe("Saved");
+
+		const row = await products.getByProductId(toProductId(seeded.productId));
+		expect(row?.sku).toBe(`${seeded.sku}-P`);
+		expect(row?.price?.amount).toBe(2900);
+		expect(row?.unitCost?.amount).toBe(1100);
+		expect(row?.compareAtPrice).toBeNull();
+		expect(row?.weightGrams).toBe(450);
+	});
+
 	test("a save with a STALE watermark comes back as the action's own refusal copy", async () => {
 		const seeded = await seedProduct({ term: "stalesave" });
 		const result = await invoke({
@@ -792,27 +907,84 @@ describe("the console's Pricing & inventory branch on the otta admin route", () 
 	});
 
 	test("a RESTOCK dispatched from the console really adds the units", async () => {
-		// F-2a lives in the action (`${productId}:restock:${onHand}:${qty}`), and
-		// in-process the key is an ARGUMENT rather than a header — it is proven by
-		// what it buys, in `products-actions.sandbox.test.ts`. What this tier still
-		// owns is that the console's flat payload reaches the movement at all.
+		// The key is built in the action (per-click nonce, or F-2a's content key
+		// without one), and in-process it is an ARGUMENT rather than a header — it
+		// is proven by what it buys, in `products-actions.sandbox.test.ts`. What
+		// this tier still owns is that the console's flat payload reaches the
+		// movement at all.
 		const seeded = await seedProduct({ term: "restockwire", onHand: 42 });
 		const result = await invoke({
 			type: ACT,
 			action_id: "products:restock",
-			value: { productId: seeded.productId, onHand: "42", qty: "12" },
+			value: { productId: seeded.productId, onHand: "42", qty: "12", nonce: crypto.randomUUID() },
 		});
 		expect(result["ok"]).toBe(true);
 		expect(await inventory.findOnHand(toSku(seeded.sku))).toBe(54);
 	});
 
-	test("a REMOVAL is re-checked against live stock before anything moves (DA-3a)", async () => {
+	test("the console's NONCE reaches the key: Add 2, Remove 2, Add 2 through the route lands at 9", async () => {
+		// The admin QA repro, end to end through the route's payload reader: a
+		// `nonce` it dropped would put all three clicks back on F-2a's content key,
+		// and the third would be swallowed as a replay of the first.
+		const seeded = await seedProduct({ term: "noncewire", onHand: 7 });
+		for (const [action_id, onHand] of [
+			["products:restock", "7"],
+			["products:remove-stock", "9"],
+			["products:restock", "7"],
+		] as const) {
+			const result = await invoke({
+				type: ACT,
+				action_id,
+				value: { productId: seeded.productId, onHand, qty: "2", nonce: crypto.randomUUID() },
+			});
+			expect((result["notice"] as Record<string, unknown>)["variant"], action_id).toBe("default");
+		}
+		expect(await inventory.findOnHand(toSku(seeded.sku))).toBe(9);
+	});
+
+	test("the PRICING CARDS' payload: a fresh hex nonce per click lands every repeat, and a re-sent one applies once and says `replayed`", async () => {
+		// The product editor's Pricing & stock cards (admin-react
+		// `pricing-cards.tsx`) are the only live stock UI. They post exactly
+		// `{productId, onHand, qty, nonce}` through this route, with the nonce from
+		// `mintMovementNonce` — 32 lowercase hex characters, not the UUID the other
+		// cases use. QA T1-2 through that path: Add 2, Remove 2, Add 2 lands at 9.
+		const seeded = await seedProduct({ term: "cardsnonce", onHand: 7 });
+		const moves = [
+			["products:restock", "7"],
+			["products:remove-stock", "9"],
+			["products:restock", "7"],
+		] as const;
+		for (const [action_id, onHand] of moves) {
+			const result = await invoke({
+				type: ACT,
+				action_id,
+				value: { productId: seeded.productId, onHand, qty: "2", nonce: hexNonce() },
+			});
+			expect((result["notice"] as Record<string, unknown>)["variant"], action_id).toBe("default");
+			expect(result["replayed"], action_id).toBeUndefined();
+		}
+		expect(await inventory.findOnHand(toSku(seeded.sku))).toBe(9);
+
+		// ONE click sent twice (a double-submit, or the cards' explicit Retry after a
+		// lost answer) carries one nonce: it moves once, and the answer says it was
+		// answered from the ledger — as a machine-readable flag, so the cards never
+		// compose a fresh "Added 2" for it.
+		const once = { productId: seeded.productId, onHand: "9", qty: "2", nonce: hexNonce() };
+		const first = await invoke({ type: ACT, action_id: "products:restock", value: once });
+		const again = await invoke({ type: ACT, action_id: "products:restock", value: once });
+		expect(first["replayed"]).toBeUndefined();
+		expect(again["replayed"]).toBe(true);
+		expect((again["notice"] as Record<string, unknown>)["title"]).toBe("Already applied");
+		expect(await inventory.findOnHand(toSku(seeded.sku))).toBe(11);
+	});
+
+	test("a REMOVAL against a count that has moved is refused, and nothing moves (DA-3a)", async () => {
 		// The operator saw 42; the live product is at 40. Nothing may be removed.
 		const seeded = await seedProduct({ term: "da3a", onHand: 40 });
 		const result = await invoke({
 			type: ACT,
 			action_id: "products:remove-stock",
-			value: { productId: seeded.productId, qty: "3", onHand: "42" },
+			value: { productId: seeded.productId, qty: "3", onHand: "42", nonce: crypto.randomUUID() },
 		});
 		expect(result["ok"]).toBe(true);
 		const notice = result["notice"] as Record<string, unknown>;

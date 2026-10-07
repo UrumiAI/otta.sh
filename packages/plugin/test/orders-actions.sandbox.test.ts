@@ -39,18 +39,18 @@
  * watermark moved. What the key BUYS is still observable here too: a replayed
  * note reads `Already added` (below), which is the dedupe the key performs.
  *
- * REFUNDS CANNOT COMPLETE ON THIS TIER, and that is recorded, not worked around.
- * `InProcessAdminOrdersClient` composes NO payment gateways yet (INC-C1/C3 move
- * the payment adapters), so every well-formed refund reaches its "no gateway is
- * wired for this order's method" arm and answers `409
- * REFUND_GATEWAY_UNAVAILABLE`. The refund cases below therefore cover everything
- * IN FRONT of that arm — which is where DA-3a and DA-3b live and where the money
- * bugs are — plus the honest notice the arm itself produces. The success,
- * duplicate and fully-refunded notices, the `REFUND_EXCEEDS_TOTAL` ceiling
- * refusal and the `GATEWAY_UNVERIFIED` ambiguous-timeout copy are unreachable
- * until a gateway map is composed; they had exactly one previous source of truth,
- * a stub answering an invented status code, and a test that stubs a reply it
- * cannot provoke proves nothing about this tier.
+ * REFUNDS RUN ON TWO BOOTS. `makeAdminClients` composes the payment gateways
+ * from kv exactly as checkout does (issue #303), so a refund's fate depends on
+ * whether Stripe is configured. This file's MAIN boot provisions no Stripe
+ * secrets: every well-formed refund there reaches the "no gateway is wired for
+ * this order's method" arm and answers `409 REFUND_GATEWAY_UNAVAILABLE`, and the
+ * refund cases on it cover everything IN FRONT of that arm — which is where
+ * DA-3a and DA-3b live and where the money bugs are. The LAST describe boots a
+ * second isolate with both Stripe secrets saved and `api.stripe.com` stubbed
+ * (`helpers/stripe-api-stub.ts`), and drives the configured path end to end:
+ * one `POST /v1/refunds` over `ctx.http` carrying the refund's idempotency key,
+ * the success and fully-refunded notices, a double-submit that asks Stripe for
+ * nothing more, and a ceiling refusal that never reaches Stripe.
  *
  * THE STALE-WATERMARK REFUSAL IS THE GATE (ADR-0015 Decision 3, as amended), and
  * it is proven on every write that carries a watermark: `THE REFUSAL — a refund
@@ -91,9 +91,19 @@ import {
 	uuidIdGen,
 	type StorageAccess,
 } from "@otta-sh/store-emdash";
-import { afterAll, beforeAll, describe, expect, test } from "vitest";
+import { REFUND_TOO_HIGH_TITLE } from "@otta-sh/admin-presentation";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from "vitest";
 import { ORDERS_ACTION_IDS } from "../src/admin/orders-actions.js";
-import { loadPluginInSandbox, type SandboxHandle } from "./sandbox/harness.js";
+import {
+	startStripeApiStub,
+	type StripeApiStub,
+	type StripeResponder,
+} from "./helpers/stripe-api-stub.js";
+import {
+	loadPluginInSandbox,
+	productionAllowedHosts,
+	type SandboxHandle,
+} from "./sandbox/harness.js";
 import { storageBridge } from "./sandbox/storage-bridge.js";
 
 const ACT = "otta_console_act";
@@ -117,6 +127,7 @@ interface ActOutcome {
 let sandbox: SandboxHandle;
 let storage: StorageAccess;
 let orderStore: EmdashOrderStore;
+let inventory: EmdashInventoryStore;
 let seq = 0;
 
 /** A namespace no other suite writes under. The document store is process-scoped
@@ -124,9 +135,18 @@ let seq = 0;
  *  every case mints its own — no case can observe another's order. */
 const NS = "oa";
 
+/** The states the order's email outbox holds an entry for — what the buyer has
+ *  been, or will be, emailed about. Read off the order document itself. */
+async function outboxStates(id: string): Promise<string[]> {
+	const doc = (await storage["orders"]?.get(id)) as {
+		emailOutbox?: { toState: string }[];
+	} | null;
+	return (doc?.emailOutbox ?? []).map((entry) => entry.toState);
+}
+
 beforeAll(async () => {
 	({ storage } = await storageBridge());
-	const inventory = new EmdashInventoryStore({ storage, idGen: uuidIdGen, clock: systemClock });
+	inventory = new EmdashInventoryStore({ storage, idGen: uuidIdGen, clock: systemClock });
 	orderStore = new EmdashOrderStore({ storage, inventory, idGen: uuidIdGen, clock: systemClock });
 	// ONE boot for the file. The isolate holds no per-case state — the commerce
 	// truth lives in the store beside it — so a boot per case would only pay the
@@ -147,11 +167,15 @@ afterAll(async () => {
  * `createFromCart` lands an order in `pending` and `markPaid` moves it.
  */
 async function seedOrder(
-	options: { paid?: boolean; capturedCents?: number } = {},
+	options: { paid?: boolean; capturedCents?: number; physicalOnHand?: number } = {},
 ): Promise<string> {
 	seq += 1;
 	const suffix = `${NS}-${String(seq)}`;
 	const id = `order-${suffix}`;
+	// A PHYSICAL line when the case is about stock: its sku is seeded on hand, so a
+	// cancellation's restock is observable as `skuOf(id)`'s on-hand moving.
+	const physical = options.physicalOnHand !== undefined;
+	if (physical) await inventory.seedOnHand(skuOf(id), options.physicalOnHand ?? 0);
 	await orderStore.createFromCart({
 		orderId: toOrderId(id),
 		cartId: null,
@@ -163,12 +187,12 @@ async function seedOrder(
 		lines: [
 			{
 				productId: toProductId(`prod-${suffix}`),
-				sku: toSku(`SKU-${suffix.toUpperCase()}`),
+				sku: toSku(skuOf(id)),
 				title: "Linen apron",
 				unitPrice: cents(TOTAL_CENTS),
 				currency: currency("USD"),
 				quantity: 1,
-				fulfillmentKind: "digital",
+				fulfillmentKind: physical ? "physical" : "digital",
 				reservationId: null,
 			},
 		],
@@ -192,6 +216,11 @@ async function seedOrder(
 	return id;
 }
 
+/** The sku a seeded order's one line carries. */
+function skuOf(id: string): string {
+	return `SKU-${id.slice("order-".length).toUpperCase()}`;
+}
+
 /** The order as the store holds it right now — what a refusal must have left
  *  alone, and what an applied write must have moved. */
 async function readOrder(id: string): Promise<Order> {
@@ -200,16 +229,25 @@ async function readOrder(id: string): Promise<Order> {
 	return order;
 }
 
+/** One console write, exactly as `performAction` sends it, on a given boot. */
+async function actOn(
+	boot: SandboxHandle,
+	actionId: string,
+	value: Record<string, string>,
+): Promise<ActOutcome> {
+	const outcome = await boot.invokeRoute("admin", {
+		type: ACT,
+		action_id: actionId,
+		value,
+	});
+	expect(outcome, JSON.stringify(outcome)).toHaveProperty("result");
+	return (outcome as { result: ActOutcome }).result;
+}
+
 describe("the Orders write path (workerd sandbox)", () => {
-	/** One console write, exactly as `performAction` sends it. */
+	/** One console write on this file's main boot (no Stripe secrets). */
 	async function act(actionId: string, value: Record<string, string>): Promise<ActOutcome> {
-		const outcome = await sandbox.invokeRoute("admin", {
-			type: ACT,
-			action_id: actionId,
-			value,
-		});
-		expect(outcome, JSON.stringify(outcome)).toHaveProperty("result");
-		return (outcome as { result: ActOutcome }).result;
+		return actOn(sandbox, actionId, value);
 	}
 
 	/** Move a seeded order along the state machine using the console's own
@@ -223,7 +261,8 @@ describe("the Orders write path (workerd sandbox)", () => {
 				toState: to,
 				state: from,
 			});
-			expect(result.notice, `${from} → ${to}`).toBeNull();
+			// Applied: a non-error notice saying what became of the buyer's email (T1-6).
+			expect(result.notice?.variant, `${from} → ${to}`).toBe("default");
 			from = to;
 		}
 	}
@@ -246,10 +285,13 @@ describe("the Orders write path (workerd sandbox)", () => {
 		// The combination that used to blank a console: a control rendered for an id
 		// the dispatcher does not know. The set is read straight off the dispatch
 		// table, and this drives every member to prove it.
-		// 5 named + one per order state + one per ONE-CLICK cancellation reason.
-		// `other` has no one-click control, so it derives no id (and the deleted
-		// `-review` pair derives none either).
-		expect(ORDERS_ACTION_IDS.size).toBe(5 + 10 + 4);
+		// 7 named (incl. the two answers to an unverified refund, review round 2) +
+		// one per order state + one per ONE-CLICK cancellation reason. `other` has no
+		// one-click control, so it derives no id (and the deleted `-review` pair
+		// derives none either).
+		expect(ORDERS_ACTION_IDS.size).toBe(7 + 10 + 4);
+		expect(ORDERS_ACTION_IDS.has("orders:resolve-refund-confirmed")).toBe(true);
+		expect(ORDERS_ACTION_IDS.has("orders:resolve-refund-voided")).toBe(true);
 		expect(ORDERS_ACTION_IDS.has("orders:cancel-other")).toBe(false);
 		expect(ORDERS_ACTION_IDS.has("orders:cancel-review")).toBe(false);
 		expect(ORDERS_ACTION_IDS.has("orders:refund-review")).toBe(false);
@@ -263,7 +305,7 @@ describe("the Orders write path (workerd sandbox)", () => {
 
 	// -- transitions ------------------------------------------------------------
 
-	test("a transition APPLIES to the persisted order and reports no notice", async () => {
+	test("a transition APPLIES to the persisted order and says what became of the buyer's email", async () => {
 		// What the deleted POST-body assertion was a proxy for. There is no request
 		// to inspect now, so the claim is made directly against the store the write
 		// went to: the order moved, and it moved to the state the id names.
@@ -273,7 +315,13 @@ describe("the Orders write path (workerd sandbox)", () => {
 			toState: "processing",
 			state: "paid",
 		});
-		expect(result.notice).toBeNull();
+		// This boot is bundled with no email API URL, so nothing will be sent — and the
+		// notice says exactly that rather than "the buyer has been emailed" (T1-6).
+		expect(result.notice).toEqual({
+			variant: "default",
+			title: "Order marked processing",
+			description: "No email was sent — this store has no email provider set up.",
+		});
 		expect((await readOrder(id)).state).toBe("processing");
 	});
 
@@ -321,6 +369,83 @@ describe("the Orders write path (workerd sandbox)", () => {
 			expect(result.notice?.title, JSON.stringify(state)).toBe("That action could not be read");
 			expect((await readOrder(id)).state, JSON.stringify(state)).toBe("paid");
 		}
+	});
+
+	test("an unpaid CARD order cannot be marked paid by hand — refused in the domain, nothing moves (T1-3)", async () => {
+		// The console no longer offers the button (orders-console-route.sandbox), but
+		// the payload is operator-alterable, so the WRITE must refuse it too: a click
+		// here used to email "we've received your payment" and count the revenue with
+		// nothing captured.
+		const id = await seedOrder({ paid: false });
+		const result = await act("orders:transition-paid", {
+			orderId: id,
+			toState: "paid",
+			state: "pending",
+		});
+		expect(result.notice?.variant).toBe("error");
+		expect(result.notice?.title).toBe("Only the payment provider can mark this order paid");
+		expect(result.notice?.description).toBe(
+			"Nothing was changed. Otta marks an order paid only when its payment provider confirms the charge. Otta can’t record a payment taken outside it yet.",
+		);
+		const order = await readOrder(id);
+		expect(order.state).toBe("pending");
+		// Nothing was enqueued for the buyer either.
+		expect(await outboxStates(id)).toEqual([]);
+	});
+
+	test("a hand-made bare `cancelled` is refused on a PAID and on an UNPAID order — nothing cancelled, nothing emailed (T1-4)", async () => {
+		// The console offers no bare cancel, but the payload is operator-alterable: a
+		// raw `orders:transition-cancelled` records no reason, releases no stock hold,
+		// and on a paid order keeps the money with a "cancelled" email. The domain
+		// refuses it; Cancel order is the one way to cancel.
+		// The advice is keyed on the state the operator saw: a paid order's says Cancel
+		// order refunds and restocks it; an unpaid one's has no money to talk about.
+		for (const [seed, state, emails, description] of [
+			[
+				{ capturedCents: TOTAL_CENTS },
+				"paid",
+				["paid"],
+				"Nothing was changed. Cancel an order with Cancel order below, which records why, refunds what the buyer paid and returns the items to stock unless you untick it.",
+			],
+			[
+				{ paid: false },
+				"pending",
+				[],
+				"Nothing was changed. Cancel an order with Cancel order below, which records why and returns its held stock.",
+			],
+		] as const) {
+			const id = await seedOrder(seed);
+			const result = await act("orders:transition-cancelled", {
+				orderId: id,
+				toState: "cancelled",
+				state,
+			});
+			expect(result.notice).toEqual({
+				variant: "error",
+				title: "Use Cancel order to cancel an order",
+				description,
+			});
+			const order = await readOrder(id);
+			expect(order.state).toBe(state);
+			expect(order.cancellation).toBeNull();
+			expect(await outboxStates(id)).toEqual(emails);
+		}
+	});
+
+	test("Mark refunded applies and SAYS it moved no money and emailed nobody", async () => {
+		const id = await seedOrder();
+		const result = await act("orders:transition-refunded", {
+			orderId: id,
+			toState: "refunded",
+			state: "paid",
+		});
+		expect(result.notice).toEqual({
+			variant: "default",
+			title: "Marked refunded",
+			description: "No money moved and the buyer was not emailed.",
+		});
+		expect((await readOrder(id)).state).toBe("refunded");
+		expect(await outboxStates(id)).toEqual(["paid"]);
 	});
 
 	test("a no-op transition (ok but transitioned:false) reports a NON-error notice", async () => {
@@ -554,6 +679,7 @@ describe("the Orders write path (workerd sandbox)", () => {
 			orderId: id,
 			reason: "out_of_stock",
 			state: "paid",
+			restock: "true",
 		});
 		expect(result.notice?.title).toBe("Order cancelled");
 		const order = await readOrder(id);
@@ -601,6 +727,29 @@ describe("the Orders write path (workerd sandbox)", () => {
 		}
 	});
 
+	test("a PAID card order with money captured is NOT cancelled when no refund can be issued (T1-4)", async () => {
+		// This boot has no Stripe secret, so no gateway can return the $15.00. The
+		// cancel must refuse rather than cancel and keep the money.
+		const id = await seedOrder({ capturedCents: TOTAL_CENTS, physicalOnHand: 4 });
+		const result = await act("orders:cancel-customer_request", {
+			orderId: id,
+			reason: "customer_request",
+			state: "paid",
+			restock: "true",
+		});
+		expect(result.notice?.variant).toBe("error");
+		expect(result.notice?.title).toBe("Not cancelled — the refund can’t be issued from here");
+		expect(String(result.notice?.description)).toContain("Nothing was changed");
+		// The next step is a recorded manual refund, never a status-only Mark refunded.
+		expect(String(result.notice?.description)).toContain("Money → Refunds");
+		expect(String(result.notice?.description)).not.toContain("Mark refunded");
+		const order = await readOrder(id);
+		expect(order.state).toBe("paid");
+		expect(order.cancellation).toBeNull();
+		expect(await orderStore.listRefunds(toOrderId(id))).toEqual([]);
+		expect(await inventory.getOnHand(skuOf(id))).toBe(4);
+	});
+
 	test("a NOT_CANCELLABLE order gets copy that offers no retry", async () => {
 		// A shipped order cannot be cancelled — the state machine says so, and the
 		// watermark MATCHES, so this is the domain refusing the write rather than
@@ -617,6 +766,7 @@ describe("the Orders write path (workerd sandbox)", () => {
 			orderId: id,
 			reason: "fraud_suspected",
 			state: "shipped",
+			restock: "true",
 		});
 		// The write was ATTEMPTED, so this is an outcome to read rather than an input
 		// to correct — a prefilled retry would promise something no longer possible.
@@ -648,27 +798,24 @@ describe("the Orders write path (workerd sandbox)", () => {
 			refundedBy: "carol",
 		});
 		expect(result.notice?.title).toBe("The refund ledger changed — nothing was refunded");
-		expect(result.notice?.description).toContain("someone else refunded this order");
+		expect(result.notice?.description).toContain("in another tab or by someone else");
 		// The copy names BOTH figures and the CAUSE — "the ledger changed" alone
 		// states an effect and leaves the operator to guess whether they hit a bug.
-		expect(result.notice?.description).toContain("$5.00 was staged");
+		expect(result.notice?.description).toContain("$5.00 was not refunded");
 		expect(result.notice?.description).toContain("$6.00 now remains refundable");
 		expect(String(result.notice?.description).length).toBeLessThanOrEqual(240);
 	});
 
-	test("an HONEST watermark reaches the write, and this tier answers that no gateway is wired", async () => {
+	test("an HONEST watermark reaches the write, and with NO Stripe configured it answers that no gateway is wired", async () => {
 		// THE ARM BEHIND THE GATE. Everything the console checks has passed — the
 		// amount parses as integer minor units, the currency is named, the watermark
 		// matches the live ledger — so the refund genuinely reaches
-		// `InProcessAdminOrdersClient.refundOrder`, which composes no payment
-		// gateways yet (INC-C1/C3) and answers `409 REFUND_GATEWAY_UNAVAILABLE`.
-		// That lands on `refundFailureNotice`'s default arm.
-		//
-		// This is the case the deleted success/duplicate/fully-refunded tests become
-		// until a gateway map exists: asserting the notice a stub was told to produce
-		// would have said nothing about this tier, and asserting a success would have
-		// been false.
-		const id = await seedOrder();
+		// `InProcessAdminOrdersClient.refundOrder`. This boot provisions no Stripe
+		// secrets, so `makeAdminClients` composes no `stripe` gateway and the refund
+		// is refused fail-closed with `409 REFUND_GATEWAY_UNAVAILABLE`, which lands on
+		// `refundFailureNotice`'s default arm. The configured path is the describe
+		// at the end of this file.
+		const id = await seedOrder({ capturedCents: TOTAL_CENTS });
 		const result = await act("orders:refund", {
 			orderId: id,
 			amountCents: "500",
@@ -740,5 +887,433 @@ describe("the Orders write path (workerd sandbox)", () => {
 			});
 			expect(result.notice?.title, amountCents).toBe("That action could not be read");
 		}
+	});
+});
+
+/** Stripe's side of every PaymentIntent the cases refund against. */
+function refundingStripe(
+	captured: number,
+	/** Statuses for the next `POST /v1/refunds` calls, consumed in order, each
+	 *  answered with Stripe's error envelope before anything is refunded. */
+	postFailures: number[] = [],
+): StripeResponder {
+	const refundedByIntent = new Map<string, number>();
+	const byKey = new Map<string, { status: number; body: unknown }>();
+	let n = 0;
+	return (req) => {
+		const read = /^\/v1\/payment_intents\/([^/?]+)\?/.exec(req.path);
+		if (req.method === "GET" && read !== null) {
+			const intent = decodeURIComponent(read[1] ?? "");
+			return {
+				status: 200,
+				body: {
+					id: intent,
+					latest_charge: {
+						amount_refunded: refundedByIntent.get(intent) ?? 0,
+						amount_captured: captured,
+						currency: "usd",
+					},
+				},
+			};
+		}
+		if (req.method === "POST" && req.path === "/v1/refunds") {
+			const failure = postFailures.shift();
+			if (failure !== undefined) {
+				return { status: failure, body: { error: { type: "api_error", code: "scripted" } } };
+			}
+			const key = req.headers["idempotency-key"];
+			const previous = typeof key === "string" ? byKey.get(key) : undefined;
+			if (previous !== undefined) return previous;
+			const intent = req.form.get("payment_intent") ?? "";
+			const amount = Number(req.form.get("amount"));
+			refundedByIntent.set(intent, (refundedByIntent.get(intent) ?? 0) + amount);
+			n += 1;
+			const reply = {
+				status: 200,
+				body: { id: `re_stub_${String(n)}`, amount, currency: "usd", status: "succeeded" },
+			};
+			if (typeof key === "string") byKey.set(key, reply);
+			return reply;
+		}
+		return { status: 404, body: { error: { type: "invalid_request_error" } } };
+	};
+}
+
+/**
+ * ADMIN REFUNDS WITH STRIPE CONFIGURED (issue #303), inside workerd.
+ *
+ * A SECOND BOOT, like `storefront-checkout.sandbox.test.ts`'s `place` suite: it
+ * saves both Stripe secrets through the Settings form's own actions, grants
+ * production's allowlist, and points workerd's global outbound at a local Stripe
+ * API stub — so the refund passes the plugin's real `ctx.http` allowlist check
+ * for `api.stripe.com` and then lands on the stub instead of the internet. The
+ * main boot above stays secret-less, which is what keeps its fail-closed case
+ * honest.
+ *
+ * The stub answers the two requests `StripePaymentGateway.refund` makes the way
+ * Stripe does: the pre-flight `GET /v1/payment_intents/:id?expand[]=latest_charge`
+ * reports the live refunded/captured view, and `POST /v1/refunds` refunds —
+ * honouring Stripe's native idempotency (a repeated `Idempotency-Key` returns the
+ * SAME refund and moves no more money). Orders are seeded through the same
+ * adapters as above, with a succeeded capture whose `providerRef` is the
+ * PaymentIntent the refund targets.
+ */
+describe("Orders refunds with Stripe configured (workerd sandbox, Stripe stubbed)", () => {
+	const STRIPE_SECRET_KEY = "sk_test_refunds_NEVER_LEAK";
+	const STRIPE_WEBHOOK_SECRET = "whsec_refunds_NEVER_LEAK";
+	let stripeBoot: SandboxHandle;
+	let stripe: StripeApiStub;
+
+	function refundPosts(): typeof stripe.requests {
+		return stripe.requests.filter((r) => r.method === "POST" && r.path === "/v1/refunds");
+	}
+
+	beforeAll(async () => {
+		stripe = await startStripeApiStub({ forwardTo: [(await storageBridge()).baseUrl] });
+		stripeBoot = await loadPluginInSandbox({
+			allowedHosts: productionAllowedHosts(),
+			storage: true,
+			globalOutbound: stripe.address,
+		});
+		for (const [action, field, value] of [
+			["save-stripe-secret-key", "stripeSecretKey", STRIPE_SECRET_KEY],
+			["save-stripe-webhook-secret", "stripeWebhookSecret", STRIPE_WEBHOOK_SECRET],
+		] as const) {
+			const saved = await stripeBoot.invokeRoute("admin", {
+				type: "form_submit",
+				action_id: action,
+				values: { [field]: value },
+			});
+			expect(saved).toHaveProperty("result");
+		}
+	}, 300_000);
+
+	afterAll(async () => {
+		await stripeBoot?.close();
+		await stripe?.close();
+	});
+
+	beforeEach(() => {
+		stripe.reset();
+		stripe.respondWith(refundingStripe(TOTAL_CENTS));
+	});
+
+	afterEach(() => {
+		// A refused forward is a 502 INSIDE the isolate, which the refund would
+		// report as an ordinary provider failure — so it is asserted here.
+		expect(stripe.refused).toEqual([]);
+	});
+
+	test("a refund goes to Stripe ONCE over ctx.http, carrying its idempotency key, and is recorded", async () => {
+		const id = await seedOrder({ capturedCents: TOTAL_CENTS });
+		const result = await actOn(stripeBoot, "orders:refund", {
+			orderId: id,
+			amountCents: "500",
+			refundedSoFarCents: "0",
+			currency: "USD",
+			reason: "damaged",
+			refundedBy: "carol",
+		});
+		expect(result.notice?.title).toBe("Refund recorded");
+
+		const posts = refundPosts();
+		expect(posts).toHaveLength(1);
+		// The key the console derived (F-2a) is the key Stripe sees — its NATIVE
+		// idempotency is what makes a retry safe provider-side.
+		expect(posts[0]?.headers["idempotency-key"]).toBe(`admin-refund:${id}:500:0`);
+		expect(posts[0]?.headers.authorization).toBe(`Bearer ${STRIPE_SECRET_KEY}`);
+		expect(Object.fromEntries(posts[0]?.form ?? [])).toEqual({
+			payment_intent: `pi-${id.slice("order-".length)}`,
+			amount: "500",
+		});
+
+		const ledger = await orderStore.listRefunds(toOrderId(id));
+		expect(ledger).toHaveLength(1);
+		expect(ledger[0]).toMatchObject({
+			amount: 500,
+			kind: "gateway",
+			gateway: "stripe",
+			refundRef: "re_stub_1",
+			status: "recorded",
+			refundedBy: "carol",
+		});
+
+		// THE DOUBLE-SUBMIT: the same confirm clicked again. Its watermark is now
+		// stale, so the console refuses it before the write — and, what matters
+		// here, Stripe is asked for nothing more. It is THIS refund, already on the
+		// ledger, so the notice says so rather than "someone else refunded" (QA
+		// round 2).
+		const again = await actOn(stripeBoot, "orders:refund", {
+			orderId: id,
+			amountCents: "500",
+			refundedSoFarCents: "0",
+			currency: "USD",
+			reason: "damaged",
+			refundedBy: "carol",
+		});
+		expect(again.notice?.title).toBe("Already refunded");
+		expect(refundPosts()).toHaveLength(1);
+		expect(await orderStore.listRefunds(toOrderId(id))).toHaveLength(1);
+	});
+
+	test("refunding the rest of the ceiling completes the order", async () => {
+		const id = await seedOrder({ capturedCents: TOTAL_CENTS });
+		expect(
+			(
+				await actOn(stripeBoot, "orders:refund", {
+					orderId: id,
+					amountCents: "500",
+					refundedSoFarCents: "0",
+					currency: "USD",
+					refundedBy: "carol",
+				})
+			).notice?.title,
+		).toBe("Refund recorded");
+		const rest = await actOn(stripeBoot, "orders:refund", {
+			orderId: id,
+			amountCents: "1000",
+			refundedSoFarCents: "500",
+			currency: "USD",
+			refundedBy: "carol",
+		});
+		expect(rest.notice?.title).toBe("Refund complete");
+		expect(refundPosts().map((r) => r.headers["idempotency-key"])).toEqual([
+			`admin-refund:${id}:500:0`,
+			`admin-refund:${id}:1000:500`,
+		]);
+		expect((await readOrder(id)).state).toBe("refunded");
+	});
+
+	test("a refund past a SHORT capture is refused by the ceiling and never reaches Stripe", async () => {
+		// $6.00 captured against a $15.00 total: the ceiling binds at $6.00.
+		const id = await seedOrder({ capturedCents: 600 });
+		const result = await actOn(stripeBoot, "orders:refund", {
+			orderId: id,
+			amountCents: "1000",
+			refundedSoFarCents: "0",
+			currency: "USD",
+			refundedBy: "carol",
+		});
+		expect(result.notice?.title).toBe(REFUND_TOO_HIGH_TITLE);
+		expect(stripe.requests).toEqual([]);
+		expect(await orderStore.listRefunds(toOrderId(id))).toEqual([]);
+	});
+
+	/** The same refund confirm, clicked again with the watermark the console
+	 *  now shows: the FINALIZED total, which a failed attempt did not move. */
+	const confirm500 = (id: string, soFar = "0") =>
+		actOn(stripeBoot, "orders:refund", {
+			orderId: id,
+			amountCents: "500",
+			refundedSoFarCents: soFar,
+			currency: "USD",
+			refundedBy: "carol",
+		});
+
+	test("a 429 from Stripe says try again — and trying again RESUMES the same refund under the same key", async () => {
+		stripe.respondWith(refundingStripe(TOTAL_CENTS, [429]));
+		const id = await seedOrder({ capturedCents: TOTAL_CENTS });
+
+		expect((await confirm500(id)).notice?.title).toBe("Temporary problem");
+		expect((await orderStore.listRefunds(toOrderId(id))).map((r) => r.status)).toEqual([
+			"reserved",
+		]);
+
+		// The operator does what the notice says. Nothing was finalized, so the
+		// watermark they send is unchanged and the retry reaches the SAME key —
+		// never "someone else refunded this order".
+		expect((await confirm500(id)).notice?.title).toBe("Refund recorded");
+		expect(refundPosts().map((r) => r.headers["idempotency-key"])).toEqual([
+			`admin-refund:${id}:500:0`,
+			`admin-refund:${id}:500:0`,
+		]);
+		const ledger = await orderStore.listRefunds(toOrderId(id));
+		expect(ledger.map((r) => [r.status, r.amount])).toEqual([["recorded", 500]]);
+	});
+
+	test("an ambiguous Stripe failure reads as UNKNOWN, and clicking again asks Stripe for nothing", async () => {
+		// A 5xx on the create is ambiguous — Stripe may have refunded — exactly like
+		// a timeout (the unit suite drives the timeout itself).
+		stripe.respondWith(refundingStripe(TOTAL_CENTS, [500]));
+		const id = await seedOrder({ capturedCents: TOTAL_CENTS });
+
+		expect((await confirm500(id)).notice?.title).toBe("Refund status unknown");
+		expect((await orderStore.listRefunds(toOrderId(id))).map((r) => r.status)).toEqual([
+			"unverified",
+		]);
+		const posted = refundPosts().length;
+
+		expect((await confirm500(id)).notice?.title).toBe("Refund status unknown");
+		expect(refundPosts()).toHaveLength(posted);
+	});
+
+	test("a Stripe rejection voids the attempt, and a deliberate retry is a NEW refund under a new key", async () => {
+		stripe.respondWith(refundingStripe(TOTAL_CENTS, [400]));
+		const id = await seedOrder({ capturedCents: TOTAL_CENTS });
+
+		expect((await confirm500(id)).notice?.title).toBe("Refund rejected");
+		expect((await orderStore.listRefunds(toOrderId(id))).map((r) => r.status)).toEqual(["voided"]);
+
+		// The voided key is spent (a replay of it answers the same rejection), so
+		// the console derives a fresh one for the retry rather than a dead end.
+		expect((await confirm500(id)).notice?.title).toBe("Refund recorded");
+		const keys = refundPosts().map((r) => r.headers["idempotency-key"]);
+		expect(keys).toHaveLength(2);
+		expect(keys[0]).toBe(`admin-refund:${id}:500:0`);
+		expect(keys[1]).not.toBe(keys[0]);
+	});
+
+	// -- cancelling a paid order: refund + restock (T1-4) -----------------------
+
+	test("cancelling a PAID card order refunds the capture through Stripe, restocks the item and cancels it", async () => {
+		const id = await seedOrder({ capturedCents: TOTAL_CENTS, physicalOnHand: 4 });
+		const result = await actOn(stripeBoot, "orders:cancel-customer_request", {
+			orderId: id,
+			reason: "customer_request",
+			state: "paid",
+			restock: "true",
+		});
+		expect(result.notice?.variant).toBe("default");
+		expect(result.notice?.title).toBe("Order cancelled and refunded");
+		expect(String(result.notice?.description)).toContain("Refunded $15.00");
+		expect(String(result.notice?.description)).toContain("1 item returned to stock");
+
+		// ONE refund, for the whole capture, under the cancellation's own key.
+		const posts = refundPosts();
+		expect(posts).toHaveLength(1);
+		expect(posts[0]?.headers["idempotency-key"]).toBe(`admin-cancel:${id}:refund`);
+		expect(Object.fromEntries(posts[0]?.form ?? []).amount).toBe(String(TOTAL_CENTS));
+		const ledger = await orderStore.listRefunds(toOrderId(id));
+		expect(ledger).toHaveLength(1);
+		expect(ledger[0]).toMatchObject({ status: "recorded", purpose: "cancellation" });
+
+		const order = await readOrder(id);
+		expect(order.state).toBe("cancelled");
+		expect(order.cancellation).toMatchObject({
+			reason: "customer_request",
+			refund: { amount: TOTAL_CENTS, currency: "USD" },
+			restocked: true,
+		});
+		expect(await inventory.getOnHand(skuOf(id))).toBe(5);
+
+		// A double-click is the replay: nothing more refunded, nothing more restocked.
+		const again = await actOn(stripeBoot, "orders:cancel-customer_request", {
+			orderId: id,
+			reason: "customer_request",
+			state: "cancelled",
+			restock: "true",
+		});
+		expect(again.notice?.title).toBe("Already cancelled");
+		expect(refundPosts()).toHaveLength(1);
+		expect(await inventory.getOnHand(skuOf(id))).toBe(5);
+	});
+
+	test("with Return to stock unticked, the cancel refunds but leaves the stock alone", async () => {
+		const id = await seedOrder({ capturedCents: TOTAL_CENTS, physicalOnHand: 4 });
+		const result = await actOn(stripeBoot, "orders:cancel", {
+			orderId: id,
+			reason: "other",
+			detail: "arrived damaged",
+			cancelledBy: "carol",
+			state: "paid",
+			restock: "false",
+		});
+		expect(result.notice?.title).toBe("Order cancelled and refunded");
+		expect(String(result.notice?.description)).toContain("Nothing was returned to stock");
+		expect(await inventory.getOnHand(skuOf(id))).toBe(4);
+		expect((await readOrder(id)).cancellation).toMatchObject({ restocked: false });
+		expect(refundPosts()).toHaveLength(1);
+	});
+
+	test("a cancel of an order paid in TWO captures is refused with its own reason, nothing refunded", async () => {
+		const id = await seedOrder({ capturedCents: 1000, physicalOnHand: 4 });
+		await orderStore.recordPayment({
+			orderId: toOrderId(id),
+			gateway: "stripe",
+			providerRef: `pi-${id}-second`,
+			amount: cents(500),
+			currency: currency("USD"),
+			status: "succeeded",
+		});
+		const result = await actOn(stripeBoot, "orders:cancel-customer_request", {
+			orderId: id,
+			reason: "customer_request",
+			state: "paid",
+			restock: "true",
+		});
+		expect(result.notice?.title).toBe("Not cancelled — paid in more than one payment");
+		expect(String(result.notice?.description)).toContain("Nothing was changed");
+		expect(refundPosts()).toHaveLength(0);
+		expect((await readOrder(id)).state).toBe("paid");
+		expect(await inventory.getOnHand(skuOf(id))).toBe(4);
+	});
+
+	test("a cancel whose refund Stripe REJECTS changes nothing and says so", async () => {
+		stripe.respondWith(refundingStripe(TOTAL_CENTS, [400]));
+		const id = await seedOrder({ capturedCents: TOTAL_CENTS, physicalOnHand: 4 });
+		const result = await actOn(stripeBoot, "orders:cancel-customer_request", {
+			orderId: id,
+			reason: "customer_request",
+			state: "paid",
+			restock: "true",
+		});
+		expect(result.notice?.variant).toBe("error");
+		expect(result.notice?.title).toBe("Not cancelled — the refund was rejected");
+		expect(String(result.notice?.description)).toContain("Nothing was changed");
+		const order = await readOrder(id);
+		expect(order.state).toBe("paid");
+		expect(order.cancellation).toBeNull();
+		expect(await inventory.getOnHand(skuOf(id))).toBe(4);
+	});
+
+	test("a cancel whose refund hits a 429 says try again — and the retry resumes the SAME refund", async () => {
+		stripe.respondWith(refundingStripe(TOTAL_CENTS, [429]));
+		const id = await seedOrder({ capturedCents: TOTAL_CENTS, physicalOnHand: 4 });
+		const value = { orderId: id, reason: "customer_request", state: "paid", restock: "true" };
+		const first = await actOn(stripeBoot, "orders:cancel-customer_request", value);
+		expect(first.notice?.title).toBe("Not cancelled — temporary problem");
+		expect((await readOrder(id)).state).toBe("paid");
+
+		const retry = await actOn(stripeBoot, "orders:cancel-customer_request", value);
+		expect(retry.notice?.title).toBe("Order cancelled and refunded");
+		expect(refundPosts().map((r) => r.headers["idempotency-key"])).toEqual([
+			`admin-cancel:${id}:refund`,
+			`admin-cancel:${id}:refund`,
+		]);
+		expect(await orderStore.listRefunds(toOrderId(id))).toHaveLength(1);
+		expect(await inventory.getOnHand(skuOf(id))).toBe(5);
+	});
+
+	test("a rejection of a DIFFERENT refund on the order does not move a retryable refund onto a new key", async () => {
+		// $5.00 hits a 429 and stays reserved under `…:500:0`; a $3.00 refund on the
+		// same order is then rejected by Stripe (voided). Retrying the $5.00 must
+		// RESUME its own reservation, not mint a new one beside it.
+		stripe.respondWith(refundingStripe(TOTAL_CENTS, [429, 400]));
+		const id = await seedOrder({ capturedCents: TOTAL_CENTS });
+
+		expect((await confirm500(id)).notice?.title).toBe("Temporary problem");
+		const three = await actOn(stripeBoot, "orders:refund", {
+			orderId: id,
+			amountCents: "300",
+			refundedSoFarCents: "0",
+			currency: "USD",
+			refundedBy: "carol",
+		});
+		expect(three.notice?.title).toBe("Refund rejected");
+
+		expect((await confirm500(id)).notice?.title).toBe("Refund recorded");
+		expect(refundPosts().map((r) => r.headers["idempotency-key"])).toEqual([
+			`admin-refund:${id}:500:0`,
+			`admin-refund:${id}:300:0`,
+			`admin-refund:${id}:500:0`,
+		]);
+		const ledger = await orderStore.listRefunds(toOrderId(id));
+		expect(ledger).toHaveLength(2);
+		expect(ledger.map((r) => [r.status, r.amount])).toEqual(
+			expect.arrayContaining([
+				["recorded", 500],
+				["voided", 300],
+			]),
+		);
 	});
 });

@@ -80,11 +80,13 @@ import {
 	CONSOLE_ACT_INTERACTION,
 	CONSOLE_INTERACTIONS,
 	CONSOLE_READ_INTERACTION,
+	STORE_BUSY,
 	UNKNOWN_ACTION,
 	UNREADABLE_REQUEST,
 	readConsolePayload,
 	type ConsoleFailure,
 } from "./console-transport.js";
+import { isRetryableStorageBusy } from "@otta-sh/store-emdash";
 import { asRecord, readString } from "./scaffold/index.js";
 import { ORDER_STATES } from "@otta-sh/admin-presentation";
 import type { PluginContext, RouteHandler } from "../types.js";
@@ -265,7 +267,9 @@ function readFilter(raw: unknown): OrdersFilterForm {
 	const period = readString(record["period"]);
 	const from = readString(record["from"]);
 	const to = readString(record["to"]);
-	const search = readString(record["search"]);
+	// Trimmed: a surrounding space is never part of an id, an email or a SKU, and
+	// the store's PREFIX match would otherwise search for rows starting with one.
+	const search = readString(record["search"])?.trim();
 	const knownPeriod =
 		period !== undefined &&
 		(period === "custom" || PERIOD_PRESETS.some((preset) => preset.key === period))
@@ -368,16 +372,37 @@ async function consoleDetail(
 async function consoleAct(
 	input: OrdersConsoleInput,
 	ctx: PluginContext,
+	operator: string | undefined,
 ): Promise<OrdersActionResult | ConsoleFailure> {
 	const actionId = readString(input.action_id);
 	if (actionId === undefined) return UNREADABLE_REQUEST;
 	if (!ORDERS_ACTION_IDS.has(actionId)) return UNKNOWN_ACTION;
 	const client = await createClient(ctx);
-	const outcome = await dispatchOrdersAction(actionId, readConsolePayload(input.value), client);
+	const outcome = await dispatchOrdersAction(
+		actionId,
+		readConsolePayload(input.value),
+		client,
+		operator,
+	);
 	// Unreachable while the gate above reads the same table — kept because the two
 	// are separate statements, and "the id was registered but nothing ran" must
 	// never fall through to a quiet success.
 	return outcome ?? UNKNOWN_ACTION;
+}
+
+/**
+ * Who the host says is signed in, as a write records it: the display name, else
+ * the email; `undefined` when the host named nobody (QA2: History showed "—", and
+ * refunds were recorded BY "admin"). The route is private, so the host has
+ * authenticated this caller before the plugin runs.
+ */
+export function operatorName(
+	user: { name?: string | null; email?: string | null } | undefined,
+): string | undefined {
+	const name = user?.name?.trim() ?? "";
+	if (name.length > 0) return name.slice(0, 200);
+	const email = user?.email?.trim() ?? "";
+	return email.length > 0 ? email.slice(0, 200) : undefined;
 }
 
 /**
@@ -388,13 +413,15 @@ export function createOrdersConsoleHandler(): RouteHandler<OrdersConsoleInput> {
 		const input = routeCtx.input;
 		try {
 			if (readString(input.type) === CONSOLE_ACT_INTERACTION) {
-				return await consoleAct(input, ctx);
+				return await consoleAct(input, ctx, operatorName(routeCtx.user));
 			}
 			const resource = readString(input.resource);
 			if (resource === "orders.list") return await consoleList(input, ctx);
 			if (resource === "orders.detail") return await consoleDetail(input, ctx);
 			return UNREADABLE_REQUEST;
-		} catch {
+		} catch (err) {
+			// Storage pressure is its own answer — retryable, and not an outage.
+			if (isRetryableStorageBusy(err)) return STORE_BUSY;
 			// G5's reasoning, one tier up: the console renders a refusal, never a
 			// blank pane, and a non-2xx would be indistinguishable from the
 			// transport failing. Everything lands here — an unreachable service, a

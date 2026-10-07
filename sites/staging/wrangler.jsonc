@@ -1,7 +1,7 @@
 // Otta storefront Worker — TEMPLATE (plan D5). This tracked file carries
 // PLACEHOLDER resource values: copy it to `wrangler.local.jsonc` (gitignored)
 // — or edit this file in place — and fill in YOUR Worker name, D1 database
-// name/id, and R2 bucket (see the root DEPLOYMENT.md §2.1 runbook).
+// name/id, and R2 buckets (see the root DEPLOYMENT.md §2.1 runbook).
 // When `wrangler.local.jsonc` exists, astro.config.ts points the Cloudflare
 // adapter at it (`configPath`) at BUILD time; plain `wrangler deploy` then
 // deploys those values via the adapter-generated dist config — do NOT use
@@ -36,18 +36,22 @@
 	"name": "my-otta-store",
 	"main": "./src/worker.ts",
 	"compatibility_date": "2026-02-24",
-	// `global_fetch_strictly_public` is pinned PRESENT by
-	// test/wrangler-config.test.ts. It was added (deploy-verified) for the
-	// site's ctx.http calls to a commerce-service Worker on workers.dev,
-	// which Cloudflare otherwise blocks and stubs 404; that service and the
-	// call are gone (ADR-0020), so the original reason no longer applies —
-	// removing the flag is a config + test change, not a comment edit.
-	// PAIRING INVARIANT (DEPLOYMENT.md §2.4): the flag is incompatible with
-	// D1 read-replica sessions (every SSR request hangs, silently — em-dash
-	// docs deployment/cloudflare.mdx:121-130, emdash issue #1273), so d1()
-	// in astro.config must keep `session` OFF while this flag is present.
-	// Both halves are pinned by test/{wrangler,site}-config tests.
-	"compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public"],
+	// NO `global_fetch_strictly_public` (issue #375; pinned ABSENT by
+	// test/wrangler-config.test.ts). It was added for the site's ctx.http calls
+	// to a commerce-service Worker on workers.dev, which Cloudflare otherwise
+	// blocks and stubs 404; that service and the call are gone (ADR-0020). The
+	// remaining egress (DEPLOYMENT.md §4) is api.stripe.com, SMTP2GO's API hosts,
+	// and the deployment's email and x402 hosts, none on workers.dev. Without the flag, a fetch to a
+	// hostname on THIS Worker's own zone goes to the zone's origin rather than
+	// back through Cloudflare's front door — so do not point either egress URL at
+	// this site's zone. Do not bring the flag back: D1 sessions are ON
+	// (`session: "primary-first"` in src/emdash-options.ts), and the flag
+	// hangs D1 session queries (emdash issue #1273: a ~5 s stall per new
+	// isolate, then sessions off, and an in-flight write may be rejected) —
+	// DEPLOYMENT.md §2.4. Pinned by test/site-config.test.ts, and astro.config.ts
+	// refuses to build from a copy of this file (wrangler.local.jsonc) that
+	// still lists it.
+	"compatibility_flags": ["nodejs_compat"],
 	"d1_databases": [
 		{
 			"binding": "DB",
@@ -63,14 +67,29 @@
 			// PLACEHOLDER — from `wrangler r2 bucket create <name>`.
 			"bucket_name": "your-media-bucket",
 		},
+		{
+			// PRIVATE — paid digital downloads (issue #376). The site's download
+			// endpoint (src/pages/orders/[orderId]/download/[sku].ts) is the ONLY
+			// reader, and it re-checks the buyer's entitlement on every request.
+			// MUST be a different bucket from MEDIA: EmDash serves every MEDIA key
+			// publicly. The build refuses a config that shares them
+			// (src/lib/downloads-bucket.ts). NEVER turn on r2.dev public access or
+			// a custom domain for this bucket (DEPLOYMENT.md §2.1).
+			"binding": "DOWNLOADS",
+			// PLACEHOLDER — from `wrangler r2 bucket create <name>`.
+			"bucket_name": "your-downloads-bucket",
+		},
 	],
 	"observability": {
 		"enabled": true,
 	},
 	// Drives scheduled publishing, plugin cron, and maintenance (src/worker.ts).
-	// Every-minute matches EmDash's minute-granular scheduled publishing and is
-	// free (D1 free limits unaffected); may be relaxed (e.g. "*/5 * * * *") if
-	// cron noise ever matters more than publish latency.
+	// Every-minute matches EmDash's minute-granular scheduled publishing AND the
+	// commerce sweep's own cadence (due every minute: hold expiry and the order
+	// email outbox), and stays within D1's free limits (the sweep budgets itself to
+	// Workers Free's 50 queries per invocation — DEPLOYMENT.md §5). Do not relax it:
+	// a slower trigger directly lengthens how long an expired hold keeps stock off
+	// sale and how long a queued order email waits.
 	"triggers": {
 		"crons": ["* * * * *"],
 	},

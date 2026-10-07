@@ -35,6 +35,7 @@ import {
 	sku as brandSku,
 	updateLine,
 } from "@otta-sh/domain";
+import { FakePaymentGateway } from "@otta-sh/domain/testing";
 import { expect, test } from "vitest";
 import {
 	collectionOf,
@@ -346,7 +347,7 @@ describeEachDialect("order flow", (ctx) => {
 					reservationId: line.reservationId,
 				},
 			],
-			totals: owner.order.totals,
+			totals: { ...owner.order.totals, taxBreakdown: null },
 		});
 
 		h.advance(2 * 60 * 1000); // stale TTL passed; the owner's 15-minute hold is live
@@ -593,10 +594,19 @@ describeEachDialect("order flow", (ctx) => {
 				await expireOrders(h.expireDeps);
 				return h.store.markPaid(id);
 			},
-			markFailed: (id) => h.store.markFailed(id),
 			expire: (id, at) => h.store.expire(id, at),
+			expireWithOrder: (id, at) => h.store.expireWithOrder(id, at),
 			listExpirable: (at) => h.store.listExpirable(at),
 			recordPayment: (i) => h.store.recordPayment(i),
+			recordPaymentIntent: (i) => h.store.recordPaymentIntent(i),
+			listPaymentIntents: (id) => h.store.listPaymentIntents(id),
+			listIntentCancelsDue: (now, limit) => h.store.listIntentCancelsDue(now, limit),
+			updatePaymentIntentCancel: (id, intent, u) =>
+				h.store.updatePaymentIntentCancel(id, intent, u),
+			readOrderLedger: (id) => h.store.readOrderLedger(id),
+			scheduleRefundRetry: (id, key, retry) => h.store.scheduleRefundRetry(id, key, retry),
+			listRefundRetriesDue: (now, limit) => h.store.listRefundRetriesDue(now, limit),
+			listRefundRetriesStale: (cutoff, limit) => h.store.listRefundRetriesStale(cutoff, limit),
 			getCapturedPayments: (id) => h.store.getCapturedPayments(id),
 			listRefunds: (id) => h.store.listRefunds(id),
 			getRefundByIdempotencyKey: (k) => h.store.getRefundByIdempotencyKey(k),
@@ -605,10 +615,14 @@ describeEachDialect("order flow", (ctx) => {
 			finalizeRefund: (i) => h.store.finalizeRefund(i),
 			voidRefund: (k) => h.store.voidRefund(k),
 			markRefundUnverified: (k) => h.store.markRefundUnverified(k),
-			flagReconciliation: (id, d) => h.store.flagReconciliation(id, d),
+			voidUnverifiedRefund: (i) => h.store.voidUnverifiedRefund(i),
+			flagReconciliation: (id, d, g) => h.store.flagReconciliation(id, d, g),
 			resolveReconciliation: (i) => h.store.resolveReconciliation(i),
 			recordFulfillment: (i) => h.store.recordFulfillment(i),
 			cancelOrder: (i) => h.store.cancelOrder(i),
+			completeCancellationRestock: (i) => h.store.completeCancellationRestock(i),
+			recordCancellationRestockFailure: (id, key, opts) =>
+				h.store.recordCancellationRestockFailure(id, key, opts),
 			transition: (i) => h.store.transition(i),
 			listForCustomer: (c) => h.store.listForCustomer(c),
 			listEventsForOrder: (id) => h.store.listEventsForOrder(id),
@@ -616,13 +630,20 @@ describeEachDialect("order flow", (ctx) => {
 			countOrders: (f) => h.store.countOrders(f),
 			linkGuestOrders: (c, ref) => h.store.linkGuestOrders(c, ref),
 			claimNextEmail: (now, lease) => h.store.claimNextEmail(now, lease),
+			releaseEmailClaim: (id) => h.store.releaseEmailClaim(id),
+			enqueueNotice: (id, notice) => h.store.enqueueNotice(id, notice),
+			claimNextEmailForOrder: (id, now, lease, o) =>
+				h.store.claimNextEmailForOrder(id, now, lease, o),
 			markEmailSent: (id, now) => h.store.markEmailSent(id, now),
+			markEmailSkipped: (id, now) => h.store.markEmailSkipped(id, now),
 			rescheduleEmail: (id, at) => h.store.rescheduleEmail(id, at),
 		};
 
+		// A gateway that CANNOT refund, so the flag must stand for a human; the
+		// refundable case (auto-refund, flag resolved) is `latePaymentContract`'s.
 		const settled = await settleOrder(
 			{ ...h.settleDeps, orderStore: racingOrderStore },
-			h.stripeGateway,
+			new FakePaymentGateway({ id: "stripe", refundable: false }),
 			h.stripeGateway.webhook(evt(res.order)),
 		);
 		expect(settled.ok).toBe(true);
@@ -799,6 +820,11 @@ describeEachDialect("order flow", (ctx) => {
 		await expect(clamped.listExpirable("2026-07-10T00:20:00.000Z")).rejects.toSatisfy(
 			isScanPageLimitError,
 		);
+		// A caller's scan bound is read in as few pages as the host allows, and reaching
+		// it is an answer: one page of budget is enough for a 100-order look (#364).
+		expect(
+			await clamped.listExpirable("2026-07-10T00:20:00.000Z", { scanLimit: 100 }),
+		).toHaveLength(100);
 	});
 
 	test("a three-line order with five transitions stays well under the document-size cap", async () => {
@@ -827,7 +853,7 @@ describeEachDialect("order flow", (ctx) => {
 				line1: "12 Analytical Way",
 				line2: "Unit 4",
 				city: "London",
-				region: "Greater London",
+				region: "LND",
 				postalCode: "EC1A 1BB",
 				country: "GB",
 				email: "ada@example.com",

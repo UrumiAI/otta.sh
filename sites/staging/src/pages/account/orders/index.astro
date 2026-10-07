@@ -1,0 +1,92 @@
+---
+/**
+ * GET /account/orders — the signed-in customer's orders (issue #306, ADR-0004).
+ *
+ * Identity comes from the session and nowhere else: the page passes the
+ * `otta_session` cookie's value to `storefront/account/orders`, and the plugin
+ * resolves the customer from it. No customer id is ever named here, so there is
+ * no one else's list to ask for. Guest orders placed under the same address
+ * appear because verifying the link claimed them.
+ *
+ * No session, or one the plugin no longer honours ⇒ 303 to /account/login. The
+ * response is `private, no-store`, so neither a shared cache nor the back button
+ * after logout can replay it.
+ */
+import { ACCOUNT_ORDERS_ROUTE, orderLabel, type AccountOrdersResult } from "@otta-sh/plugin";
+import { getPublicPluginApiRouteHandler } from "emdash/plugin-utils";
+import Storefront from "../../../layouts/Storefront.astro";
+import {
+	accountOrderStatus,
+	currentSessionToken,
+	orderMoney,
+	signedInEmail,
+} from "../../../lib/account.js";
+import { orderPlacedAt } from "../../../lib/account-order.js";
+import { keepPrivate } from "../../../lib/no-store.js";
+import { cartErrorMessage } from "../../../lib/error-messages.js";
+import { dispatchOttaRoute, isBusyResult, markBusy } from "../../../lib/otta-api.js";
+import type { AccountOrdersModel } from "../../../themes/contract.js";
+
+// The customer's own data: private, no-store AND out of Astro's route cache,
+// which ignores Cache-Control (middleware.ts, "TWO CACHES").
+keepPrivate(Astro);
+
+const sessionToken = currentSessionToken(Astro.cookies);
+if (sessionToken === undefined) return Astro.redirect("/account/login", 303);
+
+const result = await dispatchOttaRoute<AccountOrdersResult>(
+	getPublicPluginApiRouteHandler(Astro.locals),
+	ACCOUNT_ORDERS_ROUTE,
+	{ sessionToken },
+	Astro.url,
+);
+if (result !== null && !result.ok && "redirectTo" in result) {
+	return Astro.redirect("/account/login", 303);
+}
+
+const orders = result !== null && result.ok ? result.orders : null;
+if (orders === null) Astro.response.status = 503;
+// Busy (storage contention): the same 503, plus Retry-After and the busy copy.
+const busy = isBusyResult(result);
+if (busy) markBusy(Astro.response);
+
+/* The plugin lists newest first (`listCustomerOrders`); each row says what the
+   order page says about that order, and when it was placed (QA U-5). */
+const now = new Date();
+const rows =
+	orders?.map((order) => {
+		const items = order.lines.reduce((sum, line) => sum + line.quantity, 0);
+		return {
+			/* Named by what was bought, never by the id (`orderLabel`); the id
+			   stays where a machine reads it — the href. */
+			label: orderLabel(order.lines),
+			href: `/account/orders/${encodeURIComponent(order.id)}`,
+			state: accountOrderStatus(order, now),
+			/* To the minute: two orders of the same thing on one day must not
+			   read alike (QA2 A2). Never any part of the id. */
+			placed: orderPlacedAt(order.createdAt),
+			items: items === 1 ? "1 item" : `${items} items`,
+			total: orderMoney(order.totals.totalCents, order.totals.currency),
+		};
+	}) ?? [];
+
+const model: AccountOrdersModel = {
+	/* BUSY is the page's to say: the view only ever sees the sentence. */
+	errorMessage: orders === null ? cartErrorMessage(busy ? "BUSY" : "SERVICE_UNAVAILABLE") : null,
+	rows,
+	/* Who is signed in, named on this private page (QA2 A7). */
+	signedInAs:
+		orders !== null
+			? await signedInEmail(getPublicPluginApiRouteHandler(Astro.locals), Astro.cookies, Astro.url)
+			: null,
+};
+---
+
+{/* A list came back, so the session is live: the header can say so without
+    asking again. Unknown (busy, unavailable) ⇒ the shell decides. */}
+<Storefront
+	view="accountOrders"
+	model={model}
+	title="Your orders"
+	signedIn={orders !== null ? true : undefined}
+/>

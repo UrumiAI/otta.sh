@@ -49,7 +49,10 @@
 import {
 	activateProductCommerce,
 	addLine,
+	cancelDueIntents,
+	cancelOrder,
 	cents,
+	checkoutOwner,
 	computeQuote,
 	createCart,
 	createOrderFromCart,
@@ -62,12 +65,16 @@ import {
 	idempotencyKey as toIdempotencyKey,
 	InvalidProductFieldError,
 	isProductLive,
+	listCustomerOrders,
 	listProductCommerceByIds,
 	listProductVariants,
 	money,
 	orderId as toOrderId,
 	productId as toProductId,
+	quoteCommandFor,
+	quoteShippingOptions,
 	removeLine,
+	replaceSpentCart,
 	requestLogin,
 	SkuConflictError,
 	SkuHeldStockError,
@@ -78,13 +85,18 @@ import {
 	updateProductVariantFields,
 	upsertProductCommerce,
 	upsertProductVariant,
+	recordedRefundTotal,
+	classifyLatePayment,
 	verifyLogin,
 	type Address,
 	type Cart,
 	type CartDeps,
+	type EmailSender,
+	type TaxCalculator,
 	type CartLine,
 	type CreateOrderDeps,
 	type FulfillmentKind,
+	type LatePaymentStatus,
 	type Money,
 	type Order,
 	type PaymentGateway,
@@ -95,10 +107,14 @@ import {
 	type ProductId,
 	type ProductVariant,
 	type ProductVariantSummary,
-	type TotalsLineInput,
+	type PricedLine,
+	type ZoneResolution,
 } from "@otta-sh/domain";
 import type {
+	AbandonCartOrderResult,
 	AddressWire,
+	AccountOrderAddressWire,
+	AccountOrderWire,
 	AuthedResult,
 	CartLineWire,
 	CartResult,
@@ -117,21 +133,38 @@ import type {
 	ProductVariantWire,
 	PublicOrderResult,
 	PublicOrderWire,
+	QuoteDestinationWire,
 	QuoteRequestWire,
+	ReplaceCartResult,
+	ShopperStateWire,
 	QuoteResult,
+	ResumeOrderPaymentResult,
+	ResumeProof,
+	ShippingOptionsRequestWire,
+	ShippingOptionWire,
 	UpdateProductVariantFieldsInput,
 	UpsertProductCommerceInput,
 	UpsertProductVariantInput,
 	VariantUpdateResult,
 } from "../product-commerce/commerce-client.js";
+import { LOGIN_LINK_TTL_MS, loginLinkUrl } from "../storefront/login-link.js";
+import { buyerRefHint } from "./buyer-ref-hint.js";
+import { emailMatchesBuyer, resumeDeviceThrottleKey, resumeThrottleKey } from "./resume-proof.js";
 import type { PluginContext } from "../types.js";
 import {
+	CommerceInputError,
+	COUPON_CODE_MAX,
+	isIdToken,
 	looksLikeEmail,
 	requireBatchIds,
 	requireBoundedProductId,
 	requireBoundedText,
 	requireCurrencyCode,
+	requireDestination,
+	LOGIN_TOKEN_MAX,
+	BUYER_REF_MAX,
 	requireIdToken,
+	requireDocumentIdempotencyKey,
 	requireIdempotencyKey,
 	requireMoney,
 	requireNonNegativeInteger,
@@ -158,13 +191,61 @@ const DEFAULT_CURRENCY = "USD";
  * The stores' own options plus the payment gateways.
  *
  * Gateways are PASSED IN rather than resolved here because resolving them is
- * asynchronous — the x402 wiring reads `payTo` and its facilitator credential
- * from kv — and this constructor is synchronous by design (a client is built per
- * invocation and must stay cheap). `makeCommerceClient` is already async, so it
+ * asynchronous — the x402 wiring reads `payTo` and its networks from kv — and
+ * this constructor is synchronous by design (a client is built per invocation
+ * and must stay cheap). `makeCommerceClient` is already async, so it
  * is the natural place for that await; see `make-commerce-client.ts`.
  */
 export interface InProcessCommerceClientOptions extends InProcessCommerceStoresOptions {
 	gateways?: Partial<Record<PaymentMethod, PaymentGateway>>;
+	/**
+	 * The mail egress the login link goes out through — resolved LAZILY, because
+	 * building the real one reads kv (the API key, the from-address) and only the
+	 * login request needs it; every other route builds a client too and must not
+	 * pay those reads. Absent, or resolving to `undefined`, means this deployment
+	 * has no email configured: a login request still answers the same generic
+	 * success, and the client logs that once.
+	 */
+	resolveEmailSender?: () => Promise<EmailSender | undefined>;
+	/**
+	 * The gateways "Start a new cart" withdraws an abandoned order's intent through
+	 * (QA2 X4), resolved LAZILY — only when an order was actually cancelled — and
+	 * built for a SHORT, fixed provider bound ({@link ABANDON_CANCEL_CALL_MS}), not
+	 * checkout's. Absent ⇒ no in-request withdrawal; the sweep does it.
+	 */
+	resolveWithdrawGateways?: () => Promise<Partial<Record<PaymentMethod, PaymentGateway>>>;
+	/**
+	 * Whether the payment account needs EVERY buyer's name and address (issue
+	 * #382 — an India-based Stripe account refuses an export payment without
+	 * them). Asked by `createOrder` only, and resolved there rather than taken
+	 * from the request, because it is a fact about the store's payment account,
+	 * never the caller's to waive. `makeCommerceClient` answers it from the
+	 * cached account country (`payments/stripe-account-country.ts`). Absent, or
+	 * a resolver that throws (logged), ⇒ not required: ADR-0021's rules alone.
+	 */
+	resolveAddressRequired?: () => Promise<boolean>;
+	/** ADR-0030: an outside tax calculator for quotes and orders; absent ⇒ built-in. */
+	taxCalculator?: TaxCalculator;
+}
+
+/** The provider bound for the in-request intent withdrawal: fixed, never
+ *  clipped — a cancel gets all of it or is not started (the sweep's rule). */
+export const ABANDON_CANCEL_CALL_MS = 1_500;
+/** The whole in-request withdrawal's budget, measured from the start of the
+ *  abandon: the cancel is started only while a whole {@link ABANDON_CANCEL_CALL_MS}
+ *  still fits, so the shopper's redirect waits at most this long for it. */
+export const ABANDON_WITHDRAW_BUDGET_MS = 2_500;
+
+/**
+ * Server-side notices that are logged ONCE per isolate rather than once per
+ * request — a misconfiguration is a fact about the deployment, and a log line per
+ * login attempt would bury everything else.
+ */
+const loggedOnce = new Set<string>();
+function warnOnce(key: string, message: string): void {
+	if (loggedOnce.has(key)) return;
+	loggedOnce.add(key);
+	console.warn(message);
 }
 
 export class InProcessCommerceClient implements CommerceClient {
@@ -173,6 +254,12 @@ export class InProcessCommerceClient implements CommerceClient {
 	 *  measure a deadline. Everything that does goes through {@link #liveCartDeps}. */
 	readonly #cartDeps: CartDeps;
 	readonly #createOrderDeps: CreateOrderDeps;
+	readonly #resolveEmailSender: (() => Promise<EmailSender | undefined>) | undefined;
+	readonly #resolveWithdrawGateways:
+		| (() => Promise<Partial<Record<PaymentMethod, PaymentGateway>>>)
+		| undefined;
+	readonly #resolveAddressRequired: (() => Promise<boolean>) | undefined;
+	readonly #taxCalculator: TaxCalculator | undefined;
 
 	/**
 	 * Takes the whole context, not just the store, and constructs the adapters once
@@ -186,6 +273,10 @@ export class InProcessCommerceClient implements CommerceClient {
 	 */
 	constructor(ctx: PluginContext, options: InProcessCommerceClientOptions = {}) {
 		this.#stores = createInProcessCommerceStores(ctx, options);
+		this.#resolveEmailSender = options.resolveEmailSender;
+		this.#resolveWithdrawGateways = options.resolveWithdrawGateways;
+		this.#resolveAddressRequired = options.resolveAddressRequired;
+		this.#taxCalculator = options.taxCalculator;
 		this.#cartDeps = {
 			cartStore: this.#stores.cartStore,
 			inventoryStore: this.#stores.inventory,
@@ -199,10 +290,11 @@ export class InProcessCommerceClient implements CommerceClient {
 			shippingRules: this.#stores.shippingRules,
 			taxRules: this.#stores.taxRules,
 			couponStore: this.#stores.couponStore,
+			...(options.taxCalculator !== undefined ? { taxCalculator: options.taxCalculator } : {}),
 			clock: this.#stores.clock,
 			idGen: this.#stores.idGen,
 			// Whatever the composition root could wire, and nothing more. INC-C5 fills
-			// the `x402` slot (its facilitator now runs over `ctx.http`); `stripe`
+			// the `x402` slot (`payments/x402-wiring.ts`); `stripe`
 			// arrives with the rest of the payment topology. A method with no gateway
 			// here is still REFUSED by the domain, loudly, rather than minted as a
 			// silently unpayable order — which is why an empty map stays a correct
@@ -481,6 +573,16 @@ export class InProcessCommerceClient implements CommerceClient {
 		return { cartId };
 	}
 
+	/** The domain's `replaceSpentCart`, which owns every rule (checked out, order
+	 *  finished) and derives the key — never here and never by the caller. */
+	async replaceCart(spentCartId: string): Promise<ReplaceCartResult> {
+		requireIdToken("cartId", spentCartId);
+		return replaceSpentCart(
+			{ ...this.#cartDeps, orderStore: this.#stores.orderStore },
+			spentCartId,
+		);
+	}
+
 	/** Runs the lazy hold expiry the use-case owns, then reads. An unknown cart is
 	 *  the typed token, never a rejection. */
 	async getCart(cartId: string): Promise<CartResult<{ cart: CartWire }>> {
@@ -488,6 +590,33 @@ export class InProcessCommerceClient implements CommerceClient {
 		const cart = await getCart(await this.#liveCartDeps(), cartId);
 		if (cart === null) return { ok: false, reason: "CART_NOT_FOUND" };
 		return { ok: true, cart: serializeCart(cart) };
+	}
+
+	/**
+	 * The header's facts in at most two document reads (see the port). Deliberately
+	 * NOT `getCart`: that expires lapsed holds (writes) and the route around it
+	 * joins live prices, and its store read looks up every line's reservation — the
+	 * header needs none of it, and pays for this on every uncached page. Lines whose
+	 * hold lapsed are still lines of the cart until something touches it, so the
+	 * count is the cart as stored (`CartStore.units`).
+	 */
+	async getShopperState(input: {
+		cartId?: string;
+		sessionToken?: string;
+	}): Promise<ShopperStateWire> {
+		const { cartId, sessionToken } = input;
+		const [cart, customerId] = await Promise.all([
+			cartId !== undefined && cartId.length > 0 && isIdToken(cartId)
+				? this.#stores.cartStore.units(cartId)
+				: Promise.resolve(null),
+			sessionToken !== undefined && sessionToken.length > 0
+				? this.#stores.sessionStore.validate(sessionToken)
+				: Promise.resolve(null),
+		]);
+		return {
+			cart: cart === null ? null : { state: cart.state, count: cart.units },
+			signedIn: customerId !== null,
+		};
 	}
 
 	/**
@@ -526,7 +655,7 @@ export class InProcessCommerceClient implements CommerceClient {
 		// a divergence that refuses MORE is still a divergence.
 		if (productId !== null) requireBoundedProductId(productId);
 		requireQty(qty);
-		requireIdempotencyKey(idempotencyKey);
+		requireDocumentIdempotencyKey(idempotencyKey);
 		let kind: FulfillmentKind = "physical";
 		if (productId !== null) {
 			const resolved = await this.#resolveSellableUnit(toProductId(productId), sku);
@@ -563,7 +692,7 @@ export class InProcessCommerceClient implements CommerceClient {
 		requireIdToken("cartId", cartId);
 		requireIdToken("lineId", lineId);
 		requireQty(qty);
-		requireIdempotencyKey(idempotencyKey);
+		requireDocumentIdempotencyKey(idempotencyKey);
 		const result = await updateLine(
 			await this.#liveCartDeps(),
 			cartId,
@@ -582,7 +711,7 @@ export class InProcessCommerceClient implements CommerceClient {
 	): Promise<CartResult<Record<string, never>>> {
 		requireIdToken("cartId", cartId);
 		requireIdToken("lineId", lineId);
-		requireIdempotencyKey(idempotencyKey);
+		requireDocumentIdempotencyKey(idempotencyKey);
 		const result = await removeLine(
 			this.#cartDeps,
 			cartId,
@@ -600,21 +729,31 @@ export class InProcessCommerceClient implements CommerceClient {
 	// ── customer account ────────────────────────────────────────────────────
 
 	/**
-	 * Issues the login challenge. The answer is IDENTICAL whether or not an account
-	 * exists and whether or not the issue was throttled — an account oracle is
-	 * exactly what this surface must not be — so a malformed address is the same
-	 * generic success rather than a distinguishable refusal.
+	 * Issues the login challenge and emails the magic link. The answer is
+	 * IDENTICAL whatever happens behind it — an account oracle, or a throttle
+	 * oracle, is exactly what this surface must not be:
 	 *
-	 * The emailed link is not dispatched from here yet: mail delivery moves
-	 * in-process with the rest of the outbound topology, and until it does this
-	 * records the challenge and nothing more. A storage failure still rejects —
-	 * that is infrastructure, not an answer about an account.
+	 *  - a malformed address, a throttled one, a new one and a known one all
+	 *    answer `{ ok: true }`;
+	 *  - a THROTTLED issue sends nothing (ADR-0004: past the per-address cap the
+	 *    request no-ops);
+	 *  - a deployment with no email configured, or no sign-in link URL
+	 *    (`settings:loginLinkUrl`) to point the link at, issues nothing — a challenge nobody can receive would only
+	 *    burn a throttle slot — and says so ONCE in the server log;
+	 *  - a provider that refuses or times out is logged and swallowed, because
+	 *    the rejection would reach the caller only on the non-throttled arm.
+	 *
+	 * The token leaves this method in exactly one place: inside the link, inside
+	 * the email. It is never in the reply and never in a log line. A storage
+	 * failure still rejects — that is infrastructure, not an answer about an
+	 * account, and it happens before either arm diverges.
 	 */
-	async requestLoginLink(email: string): Promise<{ ok: true }> {
+	async requestLoginLink(
+		email: string,
+		options: { verifyPageUrl?: string } = {},
+	): Promise<{ ok: true }> {
 		// CHECKED BUT NEVER REPORTED: a bound that fails here ends the call in the
-		// same generic success a valid address gets. This surface must answer
-		// identically whatever it is handed, so a refusal — of a bound OR of an
-		// address — would be a usable signal about which addresses exist.
+		// same generic success a valid address gets.
 		if (!looksLikeEmail(email)) return { ok: true };
 		let address;
 		try {
@@ -622,13 +761,59 @@ export class InProcessCommerceClient implements CommerceClient {
 		} catch {
 			return { ok: true };
 		}
-		await requestLogin({ credentialVerifier: this.#stores.credentialVerifier }, { email: address });
+		const sender = await this.#resolveEmailSender?.();
+		if (sender === undefined) {
+			warnOnce(
+				"login-email-unconfigured",
+				"[otta] login email is not configured (Resend needs an email API URL in this build; " +
+					"SMTP2GO needs its API key saved in Settings): login links are not being sent",
+			);
+			return { ok: true };
+		}
+		const verifyPageUrl = options.verifyPageUrl;
+		if (verifyPageUrl === undefined || verifyPageUrl.length === 0) {
+			warnOnce(
+				"login-link-url-unconfigured",
+				"[otta] login email needs the sign-in link URL configured (settings:loginLinkUrl, " +
+					"the storefront's /account/verify page): login links are not being sent",
+			);
+			return { ok: true };
+		}
+		const issued = await requestLogin(
+			{ credentialVerifier: this.#stores.credentialVerifier },
+			{ email: address },
+		);
+		// THROTTLED: nothing inserted, nothing sent, the same answer.
+		if (!issued.ok) return { ok: true };
+		try {
+			await sender.send({
+				to: address,
+				template: "customer-login-link",
+				// The link ONLY: the token travels nowhere a template or a provider
+				// log could print it on its own. Beside it, the lifetime the email
+				// states — the TTL the verifier was built with (QA U-3).
+				data: {
+					loginUrl: loginLinkUrl(verifyPageUrl, issued.challengeId, issued.token),
+					expiresInMinutes: Math.round(LOGIN_LINK_TTL_MS / 60_000),
+				},
+				// The challenge, not the token: one challenge is one email, so a
+				// retried send dedupes provider-side.
+				idempotencyKey: `login:${issued.challengeId}`,
+			});
+		} catch (err) {
+			// The message, never the error object: a transport error is free to
+			// quote the request it failed on.
+			console.error(
+				"[otta] login email send failed:",
+				err instanceof Error ? err.message : "unknown error",
+			);
+		}
 		return { ok: true };
 	}
 
 	async verifyLogin(challengeId: string, token: string): Promise<LoginVerifyResult> {
 		requireIdToken("challengeId", challengeId);
-		requireBoundedText("token", token, 1, 400);
+		requireBoundedText("token", token, 1, LOGIN_TOKEN_MAX);
 		const result = await verifyLogin(
 			{
 				credentialVerifier: this.#stores.credentialVerifier,
@@ -648,11 +833,39 @@ export class InProcessCommerceClient implements CommerceClient {
 		await this.#stores.sessionStore.revoke(sessionToken);
 	}
 
+	/** Newest first, and including the guest orders placed under the session's
+	 *  own email: the session proves that inbox, so they are claimed here as the
+	 *  sign-in would (`listCustomerOrders`, which states the cost; ADR-0004 as
+	 *  amended 2026-10-02). A claim that fails is logged and the list is served
+	 *  anyway; a session whose customer is gone is UNAUTHENTICATED. */
 	async listMyOrders(sessionToken: string): Promise<AuthedResult<{ orders: OrderSummaryWire[] }>> {
 		const customerId = await this.#stores.sessionStore.validate(sessionToken);
 		if (customerId === null) return { ok: false, reason: "UNAUTHENTICATED" };
-		const orders = await this.#stores.orderStore.listForCustomer(customerId);
+		const orders = await listCustomerOrders(
+			{
+				customerStore: this.#stores.customerStore,
+				orderStore: this.#stores.orderStore,
+				onClaimError: (err) => {
+					// The message, never the error object (it may quote a stored document).
+					console.error(
+						"[otta] listing claim of same-email guest orders failed:",
+						err instanceof Error ? err.message : "unknown error",
+					);
+				},
+			},
+			customerId,
+		);
+		if (orders === null) return { ok: false, reason: "UNAUTHENTICATED" };
 		return { ok: true, orders: orders.map(serializeOrderSummary) };
+	}
+
+	async getMyAccount(sessionToken: string): Promise<AuthedResult<{ email: string }>> {
+		const customerId = await this.#stores.sessionStore.validate(sessionToken);
+		if (customerId === null) return { ok: false, reason: "UNAUTHENTICATED" };
+		const customer = await this.#stores.customerStore.get(customerId);
+		// A session whose customer is gone answers like any other unusable bearer.
+		if (customer === null) return { ok: false, reason: "UNAUTHENTICATED" };
+		return { ok: true, email: customer.email };
 	}
 
 	/** A foreign or unknown order is NOT_FOUND, never a refusal: the answer must
@@ -661,16 +874,36 @@ export class InProcessCommerceClient implements CommerceClient {
 		sessionToken: string,
 		orderId: string,
 	): Promise<
-		{ ok: true; order: OrderSummaryWire } | { ok: false; reason: "UNAUTHENTICATED" | "NOT_FOUND" }
+		{ ok: true; order: AccountOrderWire } | { ok: false; reason: "UNAUTHENTICATED" | "NOT_FOUND" }
 	> {
 		const customerId = await this.#stores.sessionStore.validate(sessionToken);
 		if (customerId === null) return { ok: false, reason: "UNAUTHENTICATED" };
 		requireIdToken("orderId", orderId);
-		const order = await this.#stores.orderStore.getById(toOrderId(orderId));
-		if (order === null || order.customerId !== customerId) {
+		// ONE ledger read, as the public order read makes: the late-payment status
+		// (so the account's order page says what the public page says about money on
+		// a dead order) and the recorded refunds (its refunded figure) both come
+		// off it.
+		const ledger = await this.#stores.orderStore.readOrderLedger(toOrderId(orderId));
+		if (ledger === null || ledger.order.customerId !== customerId) {
 			return { ok: false, reason: "NOT_FOUND" };
 		}
-		return { ok: true, order: serializeOrderSummary(order) };
+		return {
+			ok: true,
+			order: {
+				...serializeOrderSummary(ledger.order),
+				latePayment: classifyLatePayment({
+					state: ledger.order.state,
+					events: ledger.events,
+					payments: ledger.payments,
+					refunds: ledger.refunds,
+				}),
+				refundedCents: recordedRefundTotal(ledger.refunds),
+				// The owner's own page (QA2 X1): the tracking as the public read trims
+				// it, and the ship-to — which the public read never carries.
+				fulfillment: publicFulfillment(ledger.order),
+				shippingAddress: accountOrderAddress(ledger.order),
+			},
+		};
 	}
 
 	async listMyAddresses(sessionToken: string): Promise<AuthedResult<{ addresses: AddressWire[] }>> {
@@ -740,11 +973,13 @@ export class InProcessCommerceClient implements CommerceClient {
 	 */
 	async quoteCheckout(input: QuoteRequestWire): Promise<QuoteResult> {
 		requireIdToken("cartId", input.cartId);
-		if (input.shippingZoneId !== undefined) requireIdToken("shippingZoneId", input.shippingZoneId);
+		refuseSuppliedZone(input);
+		if (input.destination !== undefined) requireDestination(input.destination);
 		if (input.shippingMethodId !== undefined) {
 			requireIdToken("shippingMethodId", input.shippingMethodId);
 		}
-		if (input.couponCode !== undefined) requireBoundedText("couponCode", input.couponCode, 1, 200);
+		if (input.couponCode !== undefined)
+			requireBoundedText("couponCode", input.couponCode, 1, COUPON_CODE_MAX);
 		const cart = await this.#stores.cartStore.get(input.cartId);
 		if (cart === null) return { ok: false, reason: "CART_NOT_FOUND" };
 		if (cart.lines.length === 0) return { ok: false, reason: "CART_EMPTY" };
@@ -755,7 +990,7 @@ export class InProcessCommerceClient implements CommerceClient {
 				.filter((id): id is string => id !== null)
 				.map((id) => toProductId(id)),
 		);
-		const lines: TotalsLineInput[] = [];
+		const lines: PricedLine[] = [];
 		for (const line of cart.lines) {
 			if (line.productId === null) return { ok: false, reason: "PRODUCT_NOT_PRICED" };
 			const row = byId.get(toProductId(line.productId)) ?? null;
@@ -766,31 +1001,41 @@ export class InProcessCommerceClient implements CommerceClient {
 			}
 			if (row.price.currency !== cart.currency) return { ok: false, reason: "CURRENCY_MISMATCH" };
 			lines.push({
-				unitPriceCents: row.price.amount,
+				price: row.price,
 				qty: line.qty,
-				taxClassId: row.taxClass ?? "standard",
+				taxClass: row.taxClass,
+				productKind: row.productKind,
 			});
 		}
 
+		// The same quote command `createOrderFromCart` prices the order with, so the
+		// review and the order cannot disagree on what was quoted.
+		const command = quoteCommandFor({
+			currency: cart.currency,
+			lines,
+			destination: input.destination,
+			methodId: input.shippingMethodId,
+			couponCode: input.couponCode,
+		});
+		const requiresShipping = command.requiresShipping;
 		const quote = await computeQuote(
 			{
 				shippingRules: this.#stores.shippingRules,
 				taxRules: this.#stores.taxRules,
 				couponStore: this.#stores.couponStore,
 				clock: this.#stores.clock,
+				...(this.#taxCalculator !== undefined ? { taxCalculator: this.#taxCalculator } : {}),
 			},
-			{
-				currency: cart.currency,
-				lines,
-				...(input.shippingZoneId !== undefined ? { zoneId: input.shippingZoneId } : {}),
-				...(input.shippingMethodId !== undefined ? { methodId: input.shippingMethodId } : {}),
-				...(input.couponCode !== undefined ? { couponCode: input.couponCode } : {}),
-			},
+			command,
 		);
 		if (!quote.ok) return { ok: false, reason: quote.reason };
 		const breakdown = quote.breakdown;
+		logZoneTieBreak(quote.destination);
 		return {
 			ok: true,
+			requiresShipping,
+			destination: serializeDestination(quote.destination),
+			discountedSubtotalCents: breakdown.subtotalCents - breakdown.discountCents,
 			breakdown: {
 				currency: breakdown.currency,
 				subtotalCents: breakdown.subtotalCents,
@@ -808,31 +1053,64 @@ export class InProcessCommerceClient implements CommerceClient {
 	 * intent. The `idempotencyKey` is the CALLER's and is used verbatim: it must be
 	 * stable per cart, or a reload mints a second order.
 	 *
-	 * NO CUSTOMER ID IS THREADED, matching the surface this replaces: the claim
-	 * travelling with a checkout is the `buyerRef`, and a guest's orders are linked
-	 * to an account when the buyer next proves that inbox is theirs.
+	 * THE OWNER COMES FROM THE SESSION, NEVER FROM AN ARGUMENT (rule 1). A signed-in
+	 * shopper's `opts.sessionToken` is resolved to its customer by the domain's
+	 * `checkoutOwner`, and the order is theirs from birth only when `buyerRef` is
+	 * that customer's own email (ADR-0004, amended 2026-10-02) — so it is in "Your
+	 * orders" at once, not after another sign-in. Another email (a gift), an
+	 * unusable session, or a session read that fails places a GUEST order, linked
+	 * to an account when someone proves that inbox; a session never refuses a
+	 * checkout. A same-key replay is still a replay: the order keeps whatever owner
+	 * its first write gave it.
 	 *
 	 * The reply carries the PUBLIC order projection, which is the narrower of the
 	 * two available and deliberately so: the only fields a checkout page uses off
 	 * this reply are the order's id and state, and projecting the whitelist means
 	 * the ship-to snapshot and the buyer reference cannot reach a page by accident.
 	 */
-	async createOrder(input: CheckoutRequestWire, idempotencyKey: string): Promise<CheckoutResult> {
+	async createOrder(
+		input: CheckoutRequestWire,
+		idempotencyKey: string,
+		opts: { sessionToken?: string } = {},
+	): Promise<CheckoutResult> {
 		requireIdToken("cartId", input.cartId);
-		requireIdempotencyKey(idempotencyKey);
-		requireBoundedText("buyerRef", input.buyerRef, 1, 320);
-		if (input.shippingZoneId !== undefined) requireIdToken("shippingZoneId", input.shippingZoneId);
+		requireDocumentIdempotencyKey(idempotencyKey);
+		requireBoundedText("buyerRef", input.buyerRef, 1, BUYER_REF_MAX);
+		refuseSuppliedZone(input);
 		if (input.shippingMethodId !== undefined) {
 			requireIdToken("shippingMethodId", input.shippingMethodId);
 		}
-		if (input.couponCode !== undefined) requireBoundedText("couponCode", input.couponCode, 1, 200);
+		if (input.couponCode !== undefined)
+			requireBoundedText("couponCode", input.couponCode, 1, COUPON_CODE_MAX);
 		if (input.shippingAddress !== undefined) requireShippingAddress(input.shippingAddress);
+		const customerId =
+			opts.sessionToken === undefined
+				? undefined
+				: await checkoutOwner(
+						{
+							sessionStore: this.#stores.sessionStore,
+							customerStore: this.#stores.customerStore,
+							onError: (err) => {
+								console.error(
+									"[otta] checkout owner could not be resolved; placing a guest order:",
+									err instanceof Error ? err.message : "unknown error",
+								);
+							},
+						},
+						{ sessionToken: opts.sessionToken, buyerRef: input.buyerRef },
+					);
+		// Issue #382: a fact about the STRIPE account, so it binds a Stripe
+		// checkout only — x402 has no such rule. A kv read, made before the
+		// domain's same-key short-circuit (which lives inside the use-case); a
+		// replay short-circuits before the domain looks at it.
+		const addressRequired = input.paymentMethod === "stripe" && (await this.#addressRequired());
 		const result = await createOrderFromCart(this.#createOrderDeps, {
 			cartId: input.cartId,
 			idempotencyKey: toIdempotencyKey(idempotencyKey),
 			buyerRef: input.buyerRef,
+			...(customerId !== undefined ? { customerId } : {}),
+			...(addressRequired ? { addressRequired } : {}),
 			paymentMethod: input.paymentMethod,
-			...(input.shippingZoneId !== undefined ? { shippingZoneId: input.shippingZoneId } : {}),
 			...(input.shippingMethodId !== undefined ? { shippingMethodId: input.shippingMethodId } : {}),
 			...(input.couponCode !== undefined ? { couponCode: input.couponCode } : {}),
 			...(input.shippingAddress !== undefined ? { shippingAddress: input.shippingAddress } : {}),
@@ -840,18 +1118,225 @@ export class InProcessCommerceClient implements CommerceClient {
 		if (!result.ok) return { ok: false, reason: result.reason };
 		return {
 			ok: true,
-			order: serializePublicOrder(result.order),
+			// A checkout's reply describes the order it just placed (or replayed);
+			// whatever `latePayment` would say, the place route projects only id and
+			// state out of it, so it is not worth three reads on the hot path.
+			order: serializePublicOrder(result.order, "none", 0),
 			intent: serializeIntent(result.intent),
+			// A same-key replay is the order ANOTHER tab placed, with the email it
+			// was placed with (QA2 X2): masked, and whether it is this request's.
+			buyerRefHint: buyerRefHint(result.order.buyerRef),
+			buyerRefMatches: sameBuyerRef(result.order.buyerRef, input.buyerRef),
 		};
+	}
+
+	/** {@link InProcessCommerceClientOptions.resolveAddressRequired}, failing
+	 *  OPEN: a resolver that cannot answer must not refuse every checkout (the
+	 *  resolver itself treats an unknown country the same way, for the same
+	 *  reason — see `payments/stripe-account-country.ts`). */
+	async #addressRequired(): Promise<boolean> {
+		if (this.#resolveAddressRequired === undefined) return false;
+		try {
+			return await this.#resolveAddressRequired();
+		} catch (err) {
+			console.error(
+				"[otta] whether the payment account requires the buyer's address could not be resolved; not requiring it:",
+				err instanceof Error ? err.message : "unknown error",
+			);
+			return false;
+		}
+	}
+
+	/**
+	 * The priced delivery options of ONE zone — the one the summary's quote
+	 * matched. Validated like every other input: a malformed zone id, currency
+	 * or subtotal is a programmer error (the routes only ever pass the quote's
+	 * own reply), never a silent empty list.
+	 */
+	async listShippingOptions(input: ShippingOptionsRequestWire): Promise<ShippingOptionWire[]> {
+		requireIdToken("zoneId", input.zoneId);
+		requireCurrencyCode("currency", input.currency);
+		requireNonNegativeInteger("discountedSubtotalCents", input.discountedSubtotalCents);
+		const options = await quoteShippingOptions(
+			{ shippingRules: this.#stores.shippingRules },
+			{
+				zoneId: input.zoneId,
+				currency: toCurrency(input.currency),
+				discountedSubtotal: cents(input.discountedSubtotalCents),
+			},
+		);
+		return options.map((option) => ({
+			methodId: option.methodId,
+			name: option.name,
+			type: option.type,
+			amountCents: option.amountCents,
+		}));
 	}
 
 	/** The capability read: the order id alone is the credential, so the reply is
 	 *  the public whitelist and never the operator's view. */
 	async getPublicOrder(orderId: string): Promise<PublicOrderResult> {
 		requireIdToken("orderId", orderId);
+		// ONE read of the order aggregate — the order and the ledgers its
+		// `latePayment` status and its recorded refunds (QA2 X3) are derived from,
+		// as the account's order read makes. On a live order (every poll of a
+		// pending confirmation page, the pay page's guard) the derivation is pure;
+		// nothing is read twice.
+		const ledger = await this.#stores.orderStore.readOrderLedger(toOrderId(orderId));
+		if (ledger === null) return { ok: false, reason: "ORDER_NOT_FOUND" };
+		return {
+			ok: true,
+			order: serializePublicOrder(
+				ledger.order,
+				classifyLatePayment({
+					state: ledger.order.state,
+					events: ledger.events,
+					payments: ledger.payments,
+					refunds: ledger.refunds,
+				}),
+				recordedRefundTotal(ledger.refunds),
+			),
+		};
+	}
+
+	/**
+	 * Resume a pending order's payment from its id plus a second factor (cart,
+	 * owning session or email; the id alone is PROOF_REQUIRED) — see the port. The
+	 * order's OWN checkout is replayed through `createOrderFromCart`'s same-key
+	 * short-circuit: its cart, its key, its buyer, its method. That path returns
+	 * the original order, re-snapshots nothing, and asks the gateway for the
+	 * intent under the SAME key with the SAME body (`intentInputFor`), which is
+	 * what makes Stripe hand back the same PaymentIntent rather than a second one.
+	 *
+	 * The caller must hold a second factor beside the id (`proof`): the order's
+	 * cart, a session owning it, or its email — see the port.
+	 *
+	 * Payability is decided BEFORE the replay, on the order as stored, by the pay
+	 * page's own rule (`pending`, strictly before `holdExpiresAt`), so a lapsed or
+	 * settled order never reaches the provider. The replay's own answer is checked
+	 * again: an order that left pending in between comes back with no client
+	 * action, and that is not payable either.
+	 */
+	async resumeOrderPayment(
+		orderId: string,
+		proof: ResumeProof = {},
+	): Promise<ResumeOrderPaymentResult> {
+		requireIdToken("orderId", orderId);
 		const order = await this.#stores.orderStore.getById(toOrderId(orderId));
 		if (order === null) return { ok: false, reason: "ORDER_NOT_FOUND" };
-		return { ok: true, order: serializePublicOrder(order) };
+		const deadline = Date.parse(order.holdExpiresAt);
+		if (
+			order.state !== "pending" ||
+			!Number.isFinite(deadline) ||
+			deadline <= this.#stores.clock.now().getTime() ||
+			order.cartId === null ||
+			order.paymentMethod === null
+		) {
+			return { ok: false, reason: "ORDER_NOT_PAYABLE" };
+		}
+		// THE SECOND FACTOR (resume-proof.ts). The cart and the session are
+		// possession proofs and cost no throttle slot; an email is a guess, so
+		// every one takes a slot BEFORE it is compared: first of the ORDER's window
+		// across devices, then of this device's window on the order. Order first,
+		// because `clientKey` is the caller's choice: a refused order window writes
+		// no device document, so device windows stay bounded by the order's cap
+		// (issue #364 review). A device past its own cap still spends an order slot.
+		let proven = proof.cartId !== undefined && proof.cartId === order.cartId;
+		if (!proven && proof.sessionToken !== undefined && order.customerId !== null) {
+			const customerId = await this.#stores.sessionStore.validate(proof.sessionToken);
+			proven = customerId !== null && customerId === order.customerId;
+		}
+		if (!proven && proof.email !== undefined) {
+			if (!(await this.#stores.resumeOrderThrottle.admit(resumeThrottleKey(order.id)))) {
+				return { ok: false, reason: "THROTTLED" };
+			}
+			const deviceKey = resumeDeviceThrottleKey(order.id, proof.clientKey);
+			if (!(await this.#stores.resumeThrottle.admit(deviceKey))) {
+				return { ok: false, reason: "THROTTLED" };
+			}
+			if (!(await emailMatchesBuyer(proof.email, order.buyerRef))) {
+				return { ok: false, reason: "EMAIL_MISMATCH" };
+			}
+			proven = true;
+		}
+		if (!proven) return { ok: false, reason: "PROOF_REQUIRED" };
+		const result = await createOrderFromCart(this.#createOrderDeps, {
+			cartId: order.cartId,
+			idempotencyKey: order.idempotencyKey,
+			buyerRef: order.buyerRef,
+			paymentMethod: order.paymentMethod,
+		});
+		if (!result.ok) return { ok: false, reason: result.reason };
+		if (result.order.state !== "pending" || result.intent.clientAction.kind === "none") {
+			return { ok: false, reason: "ORDER_NOT_PAYABLE" };
+		}
+		return {
+			ok: true,
+			order: serializePublicOrder(result.order, "none", 0),
+			intent: serializeIntent(result.intent),
+			buyerRefHint: buyerRefHint(order.buyerRef),
+		};
+	}
+
+	/**
+	 * "Start a new cart" (QA2 X4) — see the port. The cart is the proof: its
+	 * order is read through the cart row's own `orderId`, never from the caller.
+	 * Only a `pending` order is cancelled; a race lost to a settle (the order was
+	 * paid meanwhile) or to the expiry is a no-op, not an error.
+	 */
+	async abandonCartOrder(cartId: string): Promise<AbandonCartOrderResult> {
+		requireIdToken("cartId", cartId);
+		const startedAt = Date.now();
+		const cart = await this.#stores.cartStore.get(cartId);
+		if (cart === null || cart.orderId === null) {
+			return { ok: true, cancelled: false, orderId: null };
+		}
+		const orderId = toOrderId(cart.orderId);
+		const order = await this.#stores.orderStore.getById(orderId);
+		if (order === null || order.state !== "pending") {
+			return { ok: true, cancelled: false, orderId: cart.orderId };
+		}
+		const res = await cancelOrder(
+			{ orderStore: this.#stores.orderStore },
+			{
+				orderId,
+				reason: "customer_request",
+				detail: "Started a new cart",
+				cancelledBy: "shopper",
+				idempotencyKey: toIdempotencyKey(`shopper:new-cart:${cart.orderId}`),
+			},
+		);
+		const cancelled = res.ok && res.cancelled;
+		if (cancelled) await this.#withdrawIntentsNow(orderId, startedAt);
+		return { ok: true, cancelled, orderId: cart.orderId };
+	}
+
+	/**
+	 * Withdraw a just-cancelled order's PaymentIntent at the provider IN the
+	 * request, so a tab still open on it stops being payable now rather than on
+	 * the sweep's next tick. BEST-EFFORT and BOUNDED: the cancel made it due at
+	 * once, and this is the sweep's own drain (`cancelDueIntents`) run for that one
+	 * order — same keys, same bookkeeping — so a definite answer is recorded and
+	 * the sweep never asks again, a RETRYABLE one is rescheduled for the sweep
+	 * exactly as there, and a cancel that would not fit whole in
+	 * {@link ABANDON_WITHDRAW_BUDGET_MS} is not started at all (still due,
+	 * uncounted). Never throws: the cancellation already stands.
+	 */
+	async #withdrawIntentsNow(orderId: ReturnType<typeof toOrderId>, startedAt: number) {
+		const resolve = this.#resolveWithdrawGateways;
+		if (resolve === undefined) return;
+		const remainingMs = () => ABANDON_WITHDRAW_BUDGET_MS - (Date.now() - startedAt);
+		try {
+			await cancelDueIntents(
+				{ orderStore: this.#stores.orderStore, clock: this.#stores.clock, gateways: resolve },
+				{ due: [orderId], limit: 1, canStartCancel: () => remainingMs() >= ABANDON_CANCEL_CALL_MS },
+			);
+		} catch (err) {
+			console.error(
+				`[otta] withdrawing the payment intent of abandoned order ${orderId} failed; the sweep will`,
+				{ error: err instanceof Error ? err.message : String(err) },
+			);
+		}
 	}
 
 	/**
@@ -945,6 +1430,11 @@ function serializeView(view: ProductCommerceView): ProductCommerceBatchItem {
 		productId: view.productId,
 		sku: view.sku,
 		price: { amount: view.price.amount, currency: view.price.currency },
+		title: view.title,
+		compareAtPrice:
+			view.compareAtPrice === null
+				? null
+				: { amount: view.compareAtPrice.amount, currency: view.compareAtPrice.currency },
 		inStock: view.inStock,
 		active: view.active,
 	};
@@ -1027,6 +1517,7 @@ function serializeOrderSummary(order: Order): OrderSummaryWire {
 		currency: order.currency,
 		paymentMethod: order.paymentMethod,
 		holdExpiresAt: order.holdExpiresAt,
+		createdAt: order.createdAt,
 		totals: {
 			currency: order.totals.currency,
 			subtotalCents: order.totals.subtotal,
@@ -1034,6 +1525,11 @@ function serializeOrderSummary(order: Order): OrderSummaryWire {
 			shippingCents: order.totals.shipping,
 			taxCents: order.totals.tax,
 			totalCents: order.totals.total,
+			// The same evidence the public wire carries (`serializePublicOrder`), so
+			// the account pages apply the order page's "Not calculated" rule.
+			appliedCouponCode: order.totals.appliedCouponCode,
+			shippingZoneId: shippingZoneIdOf(order.totals.shippingMethodSnapshot),
+			shippingMethodId: shippingMethodIdOf(order.totals.shippingMethodSnapshot),
 		},
 		lines: serializeOrderLines(order),
 	};
@@ -1048,7 +1544,11 @@ function serializeOrderSummary(order: Order): OrderSummaryWire {
  * guest may legitimately read — carrier and tracking, the cancellation reason —
  * never the staff identity, the audit witness or the free-text detail.
  */
-function serializePublicOrder(order: Order): PublicOrderWire {
+function serializePublicOrder(
+	order: Order,
+	latePayment: LatePaymentStatus,
+	refundedCents: number,
+): PublicOrderWire {
 	return {
 		id: order.id,
 		state: order.state,
@@ -1065,22 +1565,51 @@ function serializePublicOrder(order: Order): PublicOrderWire {
 			totalCents: order.totals.total,
 			appliedCouponCode: order.totals.appliedCouponCode,
 			shippingZoneId: shippingZoneIdOf(order.totals.shippingMethodSnapshot),
+			shippingMethodId: shippingMethodIdOf(order.totals.shippingMethodSnapshot),
 		},
 		lines: serializeOrderLines(order),
-		fulfillment:
-			order.fulfillment === null
-				? null
-				: {
-						carrier: order.fulfillment.carrier,
-						trackingNumber: order.fulfillment.trackingNumber,
-						trackingUrl: order.fulfillment.trackingUrl,
-						shippedAt: order.fulfillment.shippedAt,
-					},
+		fulfillment: publicFulfillment(order),
 		cancellation:
 			order.cancellation === null
 				? null
 				: { reason: order.cancellation.reason, cancelledAt: order.cancellation.cancelledAt },
+		latePayment,
+		refundedCents,
 	};
+}
+
+/** The fulfilment trimmed to what a buyer may read: carrier and tracking, never
+ *  who recorded it. */
+function publicFulfillment(order: Order): PublicOrderWire["fulfillment"] {
+	return order.fulfillment === null
+		? null
+		: {
+				carrier: order.fulfillment.carrier,
+				trackingNumber: order.fulfillment.trackingNumber,
+				trackingUrl: order.fulfillment.trackingUrl,
+				shippedAt: order.fulfillment.shippedAt,
+			};
+}
+
+/** The ship-to for its OWNER's page: where it goes, without the contact fields
+ *  (email, phone) captured beside it. */
+function accountOrderAddress(order: Order): AccountOrderAddressWire | null {
+	const address = order.shippingAddress;
+	if (address === null) return null;
+	return {
+		name: address.name,
+		line1: address.line1,
+		line2: address.line2,
+		city: address.city,
+		region: address.region,
+		postalCode: address.postalCode,
+		country: address.country,
+	};
+}
+
+/** The same mailbox, as the resume proof compares one: trimmed, case-folded. */
+function sameBuyerRef(stored: string, typed: string): boolean {
+	return stored.trim().toLowerCase() === typed.trim().toLowerCase();
 }
 
 /** The chosen shipping zone, read off the totals' method snapshot (an opaque value
@@ -1089,6 +1618,63 @@ function shippingZoneIdOf(snapshot: unknown): string | null {
 	if (snapshot === null || typeof snapshot !== "object") return null;
 	const zoneId = (snapshot as { zoneId?: unknown }).zoneId;
 	return typeof zoneId === "string" ? zoneId : null;
+}
+
+/**
+ * ADR-0021 Decision 1: the zone is derived, never supplied. The wire types
+ * carry no zone field, so reaching here means a cast past the type — a
+ * programmer error, and one no buyer can reach (the routes build requests
+ * through `quoteSelection`). Refused loudly rather than silently ignored, so a
+ * caller that still sends one finds out.
+ */
+function refuseSuppliedZone(input: object): void {
+	if ("shippingZoneId" in input) {
+		throw new CommerceInputError(
+			"shippingZoneId",
+			"is not accepted: the shipping/tax zone is derived from the address (ADR-0021)",
+		);
+	}
+}
+
+/** The quote's zone resolution → the wire. Only a resolution the quote can
+ *  SUCCEED with reaches here (unmatched / region-required are refusals). */
+function serializeDestination(resolution: ZoneResolution): QuoteDestinationWire {
+	if (resolution.status === "matched") {
+		return {
+			status: "matched",
+			zoneId: resolution.zoneId,
+			matchedRegion: resolution.matchedRegion,
+		};
+	}
+	const status =
+		resolution.status === "not_required" || resolution.status === "no_zones"
+			? resolution.status
+			: "address_needed";
+	return { status, zoneId: null, matchedRegion: null };
+}
+
+/**
+ * ADR-0021 Decision 10: two zones matched at the same specificity (an overlap
+ * the admin refuses, so a store that has one predates that check). The lowest
+ * id priced it; the tie is logged with zone ids and the matched code ONLY — no
+ * address, no cart id.
+ */
+function logZoneTieBreak(resolution: ZoneResolution): void {
+	if (resolution.status !== "matched" || resolution.ambiguousWith.length === 0) return;
+	console.warn("[otta] shipping zone tie-break", {
+		zoneId: resolution.zoneId,
+		ambiguousWith: resolution.ambiguousWith,
+		matchedRegion: resolution.matchedRegion,
+	});
+}
+
+/** The shipping method the order was priced with, read off the same snapshot.
+ *  Display-only, like the zone: it decides whether the confirmation page may
+ *  state the shipping charge as money. */
+function shippingMethodIdOf(snapshot: unknown): string | null {
+	if (snapshot === null || typeof snapshot !== "object") return null;
+	const methodId = (snapshot as { methodId?: unknown }).methodId;
+	return typeof methodId === "string" && methodId.length > 0 ? methodId : null;
 }
 
 function serializeAddress(address: Address): AddressWire {

@@ -16,7 +16,8 @@ import type { BannerBlock, BlockResponse } from "../../types.js";
 export interface Notice {
 	variant: "default" | "error";
 	title: string;
-	description: string;
+	/** Omit when the title already says it all — a banner never repeats itself. */
+	description?: string;
 }
 
 export function noticeBanner(notice: Notice): BannerBlock {
@@ -24,7 +25,7 @@ export function noticeBanner(notice: Notice): BannerBlock {
 		type: "banner",
 		variant: notice.variant,
 		title: notice.title,
-		description: notice.description,
+		...(notice.description === undefined ? {} : { description: notice.description }),
 	};
 }
 

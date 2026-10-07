@@ -8,7 +8,14 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, test } from "vitest";
-import { cartCountLabel, FALLBACK_MENU_ITEMS, isCartLink } from "../src/lib/nav.js";
+import {
+	ACCOUNT_NAV_ITEM,
+	cartCountLabel,
+	FALLBACK_MENU_ITEMS,
+	isAccountLink,
+	isCartLink,
+	withAccountLink,
+} from "../src/lib/nav.js";
 
 describe("isCartLink", () => {
 	test.each(["/cart", "/cart/", "/cart//", "/cart?added=1", "/cart#lines", "/cart/?added=1"])(
@@ -36,8 +43,9 @@ describe("cartCountLabel", () => {
 
 /**
  * The nav the layout substitutes when the content store cannot be reached
- * (`Base.astro`, guarded in increment 6). Its whole justification is that these
- * links resolve when nothing else does — so the thing worth testing is that
+ * (the guard lives in `layouts/Storefront.astro`; it was `Base.astro`'s, added
+ * in increment 6). Its whole justification is that these links resolve when
+ * nothing else does — so the thing worth testing is that
  * every one of them is a route THIS SITE defines, not a guess at the operator's
  * menu.
  */
@@ -77,5 +85,44 @@ describe("FALLBACK_MENU_ITEMS", () => {
 				`the seeded menu labels ${item.url} differently`,
 			).toBe(item.label);
 		}
+	});
+});
+
+/**
+ * "Account" in the header (issue #306). The primary menu is CMS-authored, so the
+ * theme APPENDS its own account entry rather than depending on an operator to
+ * add one — unless the menu already links into /account, in which case the
+ * operator's entry stands and no duplicate appears.
+ */
+describe("withAccountLink", () => {
+	test("appends Account → /account/orders to a menu without one", () => {
+		expect(withAccountLink(FALLBACK_MENU_ITEMS)).toEqual([
+			...FALLBACK_MENU_ITEMS,
+			ACCOUNT_NAV_ITEM,
+		]);
+		expect(ACCOUNT_NAV_ITEM).toEqual({ label: "Account", url: "/account/orders" });
+	});
+
+	test("leaves a menu that already links into /account alone", () => {
+		const menu = [...FALLBACK_MENU_ITEMS, { label: "My account", url: "/account/" }];
+		expect(withAccountLink(menu)).toEqual(menu);
+	});
+
+	test.each(["/account", "/account/", "/account/orders", "/account/login?x=1"])(
+		"recognises %s as an account link",
+		(url) => {
+			expect(isAccountLink(url)).toBe(true);
+		},
+	);
+
+	test.each(["/accounts", "/", "/cart", "/account-help"])("does not claim %s", (url) => {
+		expect(isAccountLink(url)).toBe(false);
+	});
+
+	test("the account link's target is a real page in this theme", () => {
+		const PAGES = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../src/pages");
+		expect(
+			readFileSync(path.join(PAGES, "account/orders/index.astro"), "utf8").length,
+		).toBeGreaterThan(0);
 	});
 });

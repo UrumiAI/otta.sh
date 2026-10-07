@@ -1,0 +1,113 @@
+---
+/**
+ * Tempered's home — the asymmetric hero of docs/theme/TEMPERED.md §8: thesis
+ * copy and the shop link on the left, the INVENTORY TAPE on the right. The hero
+ * is the inventory rather than a slogan over a stock photo — a small shop has
+ * nothing to hide behind, so it leads with the shelf.
+ *
+ * Presentation only: `src/pages/index.astro` makes the reads and computes the
+ * model. The DEGRADED RULE is carried by the model — when either read failed
+ * the page hands over no rows, and the tape is omitted entirely rather than
+ * replaced by an error box (a shopper who has not asked for a price does not
+ * need to be told the shop is having a moment).
+ *
+ * Styles: `views.css` (`home-*`), linked by this theme's Layout.
+ */
+import Notice from "../../components/Notice.astro";
+import PriceTag from "../../components/PriceTag.astro";
+import type { HomeModel } from "../contract.js";
+
+interface Props {
+	model: HomeModel;
+}
+
+const { model } = Astro.props;
+const { rows } = model;
+---
+
+{
+	model.notice !== null && (
+		<div class="home-notice" role="status">
+			<Notice>{model.notice}</Notice>
+		</div>
+	)
+}
+
+<div class="home-hero">
+	<div class="home-thesis">
+		<h1 class="home-title">{model.thesis}</h1>
+		<p class="home-lede">{model.lede}</p>
+		<div>
+			<a class="u-btn" href={model.shopHref}>{model.shopLabel}</a>
+		</div>
+	</div>
+
+	{
+		rows.length > 0 && (
+			<div class="home-tape">
+				{/* Three labelled columns of facts IS a table, and the theme
+				    draws it with hairlines rather than a `<table>` because the
+				    hero column has to reflow to one column on a phone. The
+				    roles put the structure back for a screen reader at zero
+				    visual cost. They live on an inner element, not on the tape:
+				    a `role="table"` may only contain rows, and the foot below
+				    is a caption-ish aside that is not one. */}
+				<div class="home-rows" role="table" aria-label="Items, prices and stock">
+					<div class="home-row home-row-head" role="row">
+						{/* `Stock`, not `In stock`: the cells below hold the WORDS
+						    "In stock" and "Sold out", and a column headed with one
+						    of its own values reads as a claim about the column.
+						    Same label as the PDP's spec ledger. */}
+						{/* `home-stock-head`, not `home-stock`: the column heading
+						    is an eyebrow label and keeps `.u-label`'s size — it
+						    only borrows the data column's alignment. */}
+						<span class="u-label" role="columnheader">
+							Item
+						</span>
+						<span class="u-label" role="columnheader">
+							Price
+						</span>
+						<span class="u-label home-stock-head" role="columnheader">
+							Stock
+						</span>
+					</div>
+					{rows.map((row) => (
+						<div class="home-row" role="row">
+							{/* The NAME leads and is the link — the shelf on the front
+							    door is a way in, and a shopper shops by name. The
+							    sku drops beneath it as the reference, the Ledger's
+							    pattern. The anchor sits INSIDE the cell so the
+							    table roles stay row → cell. */}
+							<span class="home-item" role="cell">
+								<a class="home-item-link" href={row.href}>
+									{row.title}
+								</a>
+								{row.sku !== null && <span class="u-mono home-sku">{row.sku}</span>}
+							</span>
+							{/* The component, not a copy of it: the tape and the
+							    catalog card must not disagree about the same
+							    product. PriceTag pins `white-space: nowrap` so a
+							    figure cannot break across two lines when a column
+							    narrows, and the sold-out strike arrives with it. */}
+							<PriceTag
+								formatted={row.price}
+								size="sm"
+								soldOut={row.soldOut}
+								was={row.was}
+								role="cell"
+							/>
+							<span
+								class="u-mono home-stock"
+								role="cell"
+								data-sold-out={row.soldOut ? "" : undefined}
+							>
+								{row.stock}
+							</span>
+						</div>
+					))}
+				</div>
+				<p class="home-tape-foot">Stock updates as people buy.</p>
+			</div>
+		)
+	}
+</div>

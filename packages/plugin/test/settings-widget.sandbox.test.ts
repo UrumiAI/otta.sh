@@ -101,6 +101,7 @@ async function withSettingsReadFailing<T>(body: () => Promise<T>): Promise<T> {
 const ALL_SUBMIT_IDS = [
 	"save-display",
 	"save-operational",
+	"save-background-work",
 	"save-stripe-secret-key",
 	"save-stripe-webhook-secret",
 	"save-email-api-key",
@@ -196,6 +197,17 @@ describe("Settings admin form (workerd sandbox)", () => {
 		expect(`${String(banner?.title)} ${String(banner?.description)}`).toMatch(/1–200 characters/);
 	});
 
+	test("Settings offers no store-theme choice: the store ships one theme (ADR-0024, amendment 2026-10-02)", async () => {
+		sandbox = await loadPluginInSandbox({ allowedHosts: [], storage: true });
+
+		const loaded = blocksOf(
+			await sandbox.invokeRoute("admin", { type: "page_load", page: "/settings" }),
+		);
+		expect(formFor(loaded, "save-theme")).toBeUndefined();
+		// The Store group's label states the display name alone — no theme.
+		expect(groupLabels(loaded).get("settings:store")).toBe("Store — no display name");
+	});
+
 	test("holdTtlMinutes and lowStockThreshold save through the real in-process settings store, with a success toast", async () => {
 		await resetOperationalSettings();
 		sandbox = await loadPluginInSandbox({ allowedHosts: [], storage: true });
@@ -228,7 +240,7 @@ describe("Settings admin form (workerd sandbox)", () => {
 		);
 	});
 
-	test("F-6: holdTtlMinutes/lowStockThreshold are text_input, digit-parsed — a non-digit submission is OMITTED from the patch, not saved as NaN/zero", async () => {
+	test("F-6: holdTtlMinutes/lowStockThreshold are text_input, digit-parsed", async () => {
 		await resetOperationalSettings();
 		sandbox = await loadPluginInSandbox({ allowedHosts: [], storage: true });
 
@@ -237,22 +249,99 @@ describe("Settings admin form (workerd sandbox)", () => {
 		const opForm = formFor(blocksOf(loaded), "save-operational");
 		expect(field(opForm, "holdTtlMinutes")?.type).toBe("text_input");
 		expect(field(opForm, "lowStockThreshold")?.type).toBe("text_input");
+	});
 
-		// "abc" fails /^\d+$/ — omitted from the patch rather than coerced to
-		// NaN or 0, so the field it would have touched keeps its EXISTING
-		// (default) value; "20" is valid and passes through.
-		await sandbox.invokeRoute("admin", {
-			type: "form_submit",
-			action_id: "save-operational",
-			values: { holdTtlMinutes: "abc", lowStockThreshold: "20" },
-			idempotencyKey: "k-digits-only",
-		});
-		const after = blocksOf(
-			await sandbox.invokeRoute("admin", { type: "page_load", page: "/settings" }),
+	// U-8 (QA 2026-10-02): "abc", "-1", "1.5" and a blank box were dropped from the
+	// patch and the screen said "Settings saved" while nothing changed. Every
+	// invalid value is now REFUSED by name, and the whole submit with it.
+	test("U-8: an invalid operational value is refused by field name, and NOTHING in the submit is saved", async () => {
+		await resetOperationalSettings();
+		sandbox = await loadPluginInSandbox({ allowedHosts: [], storage: true });
+
+		const cases: ReadonlyArray<readonly [Record<string, string>, RegExp]> = [
+			[{ holdTtlMinutes: "abc", lowStockThreshold: "20" }, /Cart hold time/],
+			[{ holdTtlMinutes: "-1", lowStockThreshold: "20" }, /Cart hold time/],
+			[{ holdTtlMinutes: "1.5", lowStockThreshold: "20" }, /Cart hold time/],
+			[{ holdTtlMinutes: "", lowStockThreshold: "20" }, /Cart hold time/],
+			[{ holdTtlMinutes: "0", lowStockThreshold: "20" }, /Cart hold time/],
+			[{ holdTtlMinutes: "99999", lowStockThreshold: "20" }, /Cart hold time/],
+			[{ holdTtlMinutes: "30", lowStockThreshold: "-1" }, /Low-stock threshold/],
+			[{ holdTtlMinutes: "30", lowStockThreshold: "abc" }, /Low-stock threshold/],
+			[{ holdTtlMinutes: "30", lowStockThreshold: "" }, /Low-stock threshold/],
+			[{ holdTtlMinutes: "30", lowStockThreshold: "99999999999" }, /Low-stock threshold/],
+		];
+		for (const [values, names] of cases) {
+			const outcome = await sandbox.invokeRoute("admin", {
+				type: "form_submit",
+				action_id: "save-operational",
+				values,
+				idempotencyKey: `k-u8-${values.holdTtlMinutes}-${values.lowStockThreshold}`,
+			});
+			const blocks = blocksOf(outcome);
+			assertBlockContract(blocks, { screen: "settings", level: "list" });
+			const banner = findBlocks(blocks, "banner").find((b) => b.variant === "error");
+			const label = JSON.stringify(values);
+			expect(banner, label).toBeDefined();
+			expect(String(banner?.title), label).toBe("Settings not saved");
+			expect(String(banner?.description), label).toMatch(names);
+			expect(String(banner?.description), label).toContain("Nothing was saved");
+			// No internal field name reaches the operator.
+			expect(String(banner?.description), label).not.toMatch(/holdTtlMinutes|lowStockThreshold/);
+			expect(toastOf(outcome), label).toEqual({ message: "Settings not saved", type: "error" });
+			// J6: the form keeps what was typed so it can be corrected…
+			const opForm = formFor(blocks, "save-operational");
+			expect(field(opForm, "holdTtlMinutes")?.initial_value, label).toBe(values.holdTtlMinutes);
+			expect(field(opForm, "lowStockThreshold")?.initial_value, label).toBe(
+				values.lowStockThreshold,
+			);
+			// …while the label, and the store, keep the stored values: the VALID
+			// sibling in the same submit did not land either.
+			expect(groupLabels(blocks).get("settings:checkout"), label).toBe(
+				"Checkout & holds — 15 min hold · low stock at 5",
+			);
+		}
+		const after = formFor(
+			blocksOf(await sandbox.invokeRoute("admin", { type: "page_load", page: "/settings" })),
+			"save-operational",
 		);
-		const opFormAfter = formFor(after, "save-operational");
-		expect(field(opFormAfter, "holdTtlMinutes")?.initial_value).toBe("15");
-		expect(field(opFormAfter, "lowStockThreshold")?.initial_value).toBe("20");
+		expect(field(after, "holdTtlMinutes")?.initial_value).toBe("15");
+		expect(field(after, "lowStockThreshold")?.initial_value).toBe("5");
+	});
+
+	test("U-8: two invalid values are BOTH named in one refusal", async () => {
+		await resetOperationalSettings();
+		sandbox = await loadPluginInSandbox({ allowedHosts: [], storage: true });
+		const blocks = blocksOf(
+			await sandbox.invokeRoute("admin", {
+				type: "form_submit",
+				action_id: "save-operational",
+				values: { holdTtlMinutes: "abc", lowStockThreshold: "-3" },
+				idempotencyKey: "k-u8-both",
+			}),
+		);
+		const banner = findBlocks(blocks, "banner").find((b) => b.variant === "error");
+		expect(String(banner?.description)).toMatch(/Cart hold time.*Low-stock threshold/s);
+	});
+
+	test('U-8: "Settings saved" names what was saved', async () => {
+		await resetOperationalSettings();
+		sandbox = await loadPluginInSandbox({ allowedHosts: [], storage: true });
+		const blocks = blocksOf(
+			await sandbox.invokeRoute("admin", {
+				type: "form_submit",
+				action_id: "save-operational",
+				values: { holdTtlMinutes: " 30 ", lowStockThreshold: "0" },
+				idempotencyKey: "k-u8-ok",
+			}),
+		);
+		const banner = findBlocks(blocks, "banner")[0];
+		expect(String(banner?.title)).toBe("Settings saved");
+		expect(String(banner?.description)).toBe(
+			"Cart hold time is 30 minutes and the low-stock threshold is 0.",
+		);
+		expect(groupLabels(blocks).get("settings:checkout")).toBe(
+			"Checkout & holds — 30 min hold · low stock at 0",
+		);
 	});
 
 	test("a real domain validation error surfaces inline and never zeroes an un-edited field", async () => {
@@ -274,7 +363,9 @@ describe("Settings admin form (workerd sandbox)", () => {
 		assertBlockContract(blocks, { screen: "settings", level: "list" });
 		const banner = findBlocks(blocks, "banner").find((b) => b.variant === "error");
 		expect(banner).toBeDefined();
-		expect(String(banner?.description)).toContain("holdTtlMinutes must be <= 10080, got 99999");
+		expect(String(banner?.description)).toContain(
+			"Cart hold time must be a whole number of minutes from 1 to 10080.",
+		);
 
 		// J6: the operational form re-renders the ATTEMPTED holdTtlMinutes
 		// (99999) but the un-edited lowStockThreshold keeps its STORED value (the
@@ -403,7 +494,7 @@ describe("Settings admin form (workerd sandbox)", () => {
 		// defect E-1 fixed, and this is what keeps it fixed.)
 		expect(findBlocks(blocks, "banner")).toHaveLength(0);
 		expect(
-			contextTexts(blocks).some((text) => /Operational settings could not be loaded/.test(text)),
+			contextTexts(blocks).some((text) => /Checkout settings could not be loaded/.test(text)),
 		).toBe(true);
 		// INC-15: the closed group's LABEL says so as a FACT too, rather than
 		// inventing a zero that would read as a stored value.
@@ -440,10 +531,9 @@ describe("Settings admin form (workerd sandbox)", () => {
 	});
 
 	// INC-D3a deletes the old "INC-09: Admin token and Service token render as
-	// plain text_input" case outright — both fields are gone. The identical
-	// claim (plain, always-empty `text_input`, no `secret_input`, no
-	// `has_value`) is proven below against the five REAL secrets that remain,
-	// which is the concept this case was actually protecting.
+	// plain text_input" case outright — both fields are gone. U-8 then moved
+	// the five REAL secrets that remain to an always-empty `secret_input` (a
+	// password box) with no `initial_value` and no `has_value`, proven below.
 
 	/**
 	 * INC-C3 — the payment/email secrets the folded-in commerce layer needs,
@@ -458,9 +548,13 @@ describe("Settings admin form (workerd sandbox)", () => {
 		sandbox = await loadPluginInSandbox({ allowedHosts: [], storage: true });
 
 		const SECRETS = [
-			["save-stripe-secret-key", "stripeSecretKey", "qa-sk-live-NEVER-RENDER"],
-			["save-stripe-webhook-secret", "stripeWebhookSecret", "qa-whsec-NEVER-RENDER"],
-			["save-email-api-key", "emailApiKey", "qa-email-key-NEVER-RENDER"],
+			["save-stripe-secret-key", "stripeSecretKey", ["sk_live_", "NEVERRENDER0000000000"].join("")],
+			[
+				"save-stripe-webhook-secret",
+				"stripeWebhookSecret",
+				["whsec_", "NEVERRENDER0000000000"].join(""),
+			],
+			["save-email-api-key", "emailApiKey", "re_NEVER_RENDER_0000000000"],
 			["save-x402-facilitator-secret", "x402FacilitatorSecret", "qa-x402-NEVER-RENDER"],
 			["save-webhook-edge-token", "webhookEdgeToken", "qa-wh-token-NEVER-RENDER"],
 		] as const;
@@ -485,15 +579,18 @@ describe("Settings admin form (workerd sandbox)", () => {
 
 		for (const [actionId, fieldId, value] of SECRETS) {
 			const rendered = field(formFor(blocks, actionId), fieldId);
-			expect(rendered?.type).toBe("text_input");
+			// U-8: a password input, never a value.
+			expect(rendered?.type).toBe("secret_input");
 			expect(rendered).not.toHaveProperty("initial_value");
 			expect(rendered).not.toHaveProperty("has_value");
 			expect(JSON.stringify(loaded)).not.toContain(value);
 		}
 
-		// The group's label states WHICH credentials are missing — with all five
-		// set, it says so without naming any of them.
-		expect(groupLabels(blocks).get("settings:payments")).toBe("Payments & email — configured");
+		// U-8: the group's label states what card checkout and email have — the
+		// Stripe mode comes from the key's prefix, never any more of it.
+		expect(groupLabels(blocks).get("settings:payments")).toBe(
+			"Payments & email — Stripe live · webhook set · email set",
+		);
 	});
 
 	/**
@@ -518,7 +615,7 @@ describe("Settings admin form (workerd sandbox)", () => {
 			type: "form_submit",
 			action_id: "save-payment-settings",
 			values: {
-				emailFrom: "orders@shop.example",
+				emailFrom: "orders@shop.otta.sh",
 				x402PayTo: PAY_TO,
 				x402Accepts: "eip155:8453, eip155:1",
 			},
@@ -529,7 +626,7 @@ describe("Settings admin form (workerd sandbox)", () => {
 		);
 		assertBlockContract(loaded, { screen: "settings", level: "list" });
 		const form = formFor(loaded, "save-payment-settings");
-		expect(field(form, "emailFrom")?.["initial_value"]).toBe("orders@shop.example");
+		expect(field(form, "emailFrom")?.["initial_value"]).toBe("orders@shop.otta.sh");
 		expect(field(form, "x402PayTo")?.["initial_value"]).toBe(PAY_TO);
 		expect(field(form, "x402Accepts")?.["initial_value"]).toBe("eip155:8453, eip155:1");
 	});
@@ -546,21 +643,21 @@ describe("Settings admin form (workerd sandbox)", () => {
 		await sandbox.invokeRoute("admin", {
 			type: "form_submit",
 			action_id: "save-payment-settings",
-			values: { emailFrom: "orders@shop.example", x402PayTo: PAY_TO, x402Accepts: "eip155:8453" },
+			values: { emailFrom: "orders@shop.otta.sh", x402PayTo: PAY_TO, x402Accepts: "eip155:8453" },
 		});
 
 		// A submit carrying ONLY the from-address.
 		await sandbox.invokeRoute("admin", {
 			type: "form_submit",
 			action_id: "save-payment-settings",
-			values: { emailFrom: "hello@shop.example" },
+			values: { emailFrom: "hello@shop.otta.sh" },
 		});
 
 		const after = blocksOf(
 			await sandbox.invokeRoute("admin", { type: "page_load", page: "/settings" }),
 		);
 		const form = formFor(after, "save-payment-settings");
-		expect(field(form, "emailFrom")?.["initial_value"]).toBe("hello@shop.example");
+		expect(field(form, "emailFrom")?.["initial_value"]).toBe("hello@shop.otta.sh");
 		// The two the submit never mentioned are UNCHANGED, not blanked.
 		expect(field(form, "x402PayTo")?.["initial_value"]).toBe(PAY_TO);
 		expect(field(form, "x402Accepts")?.["initial_value"]).toBe("eip155:8453");
@@ -570,7 +667,7 @@ describe("Settings admin form (workerd sandbox)", () => {
 		await sandbox.invokeRoute("admin", {
 			type: "form_submit",
 			action_id: "save-payment-settings",
-			values: { emailFrom: "hello@shop.example", x402PayTo: "", x402Accepts: "" },
+			values: { emailFrom: "hello@shop.otta.sh", x402PayTo: "", x402Accepts: "" },
 		});
 		const cleared = blocksOf(
 			await sandbox.invokeRoute("admin", { type: "page_load", page: "/settings" }),
@@ -586,7 +683,7 @@ describe("Settings admin form (workerd sandbox)", () => {
 		const refused = await sandbox.invokeRoute("admin", {
 			type: "form_submit",
 			action_id: "save-payment-settings",
-			values: { emailFrom: "orders@shop.example", x402PayTo: "my-wallet", x402Accepts: "" },
+			values: { emailFrom: "orders@shop.otta.sh", x402PayTo: "my-wallet", x402Accepts: "" },
 		});
 		const blocks = blocksOf(refused);
 		// The whole screen comes back (S-5a: never a terminal receipt with no form).
@@ -601,6 +698,121 @@ describe("Settings admin form (workerd sandbox)", () => {
 		const form = formFor(after, "save-payment-settings");
 		expect(field(form, "emailFrom")?.["initial_value"]).toBe("");
 		expect(field(form, "x402PayTo")?.["initial_value"]).toBe("");
+	});
+
+	// Issue #306: the sign-in link page. Setting and validation adapted from #325
+	// by @stephanedemotte. The emailed link points here and ONLY here, so a
+	// relative path, a non-http(s) scheme or a URL carrying credentials is
+	// refused whole, like a bad payTo.
+	test("#306: the sign-in link URL is SET, READ BACK, and validated on save", async () => {
+		sandbox = await loadPluginInSandbox({ allowedHosts: [], storage: true });
+
+		await sandbox.invokeRoute("admin", {
+			type: "form_submit",
+			action_id: "save-payment-settings",
+			values: { loginLinkUrl: "https://boutique.example/account/verify" },
+		});
+		const loaded = blocksOf(
+			await sandbox.invokeRoute("admin", { type: "page_load", page: "/settings" }),
+		);
+		expect(field(formFor(loaded, "save-payment-settings"), "loginLinkUrl")?.["initial_value"]).toBe(
+			"https://boutique.example/account/verify",
+		);
+
+		for (const bad of [
+			"/account/verify",
+			"javascript:alert(1)",
+			"ftp://boutique.example/verify",
+			"https://user:pw@boutique.example/account/verify",
+			// U-8: the emailed link carries a sign-in token, so clear text is
+			// refused off this machine — the order-link rule.
+			"http://boutique.example/account/verify",
+			"http://192.168.1.20:4321/account/verify",
+		]) {
+			const refused = await sandbox.invokeRoute("admin", {
+				type: "form_submit",
+				action_id: "save-payment-settings",
+				values: { emailFrom: "orders@boutique.otta.sh", loginLinkUrl: bad },
+			});
+			expect(JSON.stringify(refused)).toContain("Nothing was saved");
+			// The banner names the field and the shape, never the rejected value
+			// (the FORM keeps what was typed, so it can be corrected).
+			const banner = findBlocks(blocksOf(refused), "banner").find((b) => b.variant === "error");
+			expect(JSON.stringify(banner)).not.toContain("user:pw");
+		}
+		const after = formFor(
+			blocksOf(await sandbox.invokeRoute("admin", { type: "page_load", page: "/settings" })),
+			"save-payment-settings",
+		);
+		expect(field(after, "loginLinkUrl")?.["initial_value"]).toBe(
+			"https://boutique.example/account/verify",
+		);
+		// ATOMIC, like payTo: the valid sibling in a refused submit did not land.
+		expect(field(after, "emailFrom")?.["initial_value"]).toBe("");
+	});
+
+	test("U-8: the sign-in page refusal names the https rule, and http is accepted for this machine only", async () => {
+		sandbox = await loadPluginInSandbox({ allowedHosts: [], storage: true });
+
+		const refused = await sandbox.invokeRoute("admin", {
+			type: "form_submit",
+			action_id: "save-payment-settings",
+			values: { loginLinkUrl: "http://boutique.example/account/verify" },
+		});
+		const banner = findBlocks(blocksOf(refused), "banner").find((b) => b.variant === "error");
+		expect(String(banner?.description)).toContain("sign-in page");
+		expect(String(banner?.description)).toContain("https://");
+		expect(String(banner?.description)).toContain("localhost");
+
+		for (const local of [
+			"http://localhost:4700/account/verify",
+			"http://127.0.0.1:4321/account/verify",
+			"http://[::1]:4321/account/verify",
+		]) {
+			const saved = await sandbox.invokeRoute("admin", {
+				type: "form_submit",
+				action_id: "save-payment-settings",
+				values: { loginLinkUrl: local },
+			});
+			expect(toastOf(saved), local).toEqual({ message: "Payment settings saved", type: "success" });
+		}
+	});
+
+	// U-8: the screen spoke in the build's terms ("lives in the service", "stored
+	// write-only", "CAIP-2", "TTL"). An operator reads none of those.
+	test("U-8: the Settings screen carries no developer wording", async () => {
+		await resetOperationalSettings();
+		sandbox = await loadPluginInSandbox({ allowedHosts: [], storage: true });
+		const blocks = blocksOf(
+			await sandbox.invokeRoute("admin", { type: "page_load", page: "/settings" }),
+		);
+		const prose: string[] = [];
+		const walk = (node: unknown): void => {
+			if (Array.isArray(node)) {
+				for (const item of node) walk(item);
+				return;
+			}
+			if (typeof node !== "object" || node === null) return;
+			for (const [key, value] of Object.entries(node)) {
+				if (["text", "label", "title", "description", "placeholder"].includes(key)) {
+					if (typeof value === "string") prose.push(value);
+				} else walk(value);
+			}
+		};
+		walk(blocks);
+		const text = prose.join("\n");
+		for (const jargon of [
+			/\bservice\b/i,
+			/write-only/i,
+			/\bkv\b/i,
+			/\bTTL\b/,
+			/CAIP/,
+			/operational/i,
+			/credentials?/i,
+			/\bsubmit\b/i,
+		]) {
+			expect(text, String(jargon)).not.toMatch(jargon);
+		}
 	});
 
 	test("INC-09: a successful secret save remounts its own form BLANK with a DIFFERENT block_id, and does not remount an unrelated secret's form", async () => {
@@ -622,7 +834,7 @@ describe("Settings admin form (workerd sandbox)", () => {
 			await sandbox.invokeRoute("admin", {
 				type: "form_submit",
 				action_id: "save-stripe-secret-key",
-				values: { stripeSecretKey: "qa-local-stripe-key" },
+				values: { stripeSecretKey: ["sk_test_", "QaLocalStripeKey0000"].join("") },
 			}),
 		);
 		const stripeKeyFieldAfter = field(
@@ -630,8 +842,8 @@ describe("Settings admin form (workerd sandbox)", () => {
 			"stripeSecretKey",
 		);
 		const stripeKeyBlockIdAfterSave = formFor(stripeKeySaved, "save-stripe-secret-key")?.block_id;
-		// The re-rendered field carries no value — still a plain, empty
-		// text_input, nothing left lingering from what was typed.
+		// The re-rendered field carries no value — an empty password input,
+		// nothing left lingering from what was typed.
 		expect(stripeKeyFieldAfter).not.toHaveProperty("initial_value");
 		// The KEY changed: a real host remounts the input on this response,
 		// discarding whatever DOM value the operator had just typed.
@@ -667,17 +879,17 @@ describe("Settings admin form (workerd sandbox)", () => {
 		const blocks = blocksOf(blank);
 		assertBlockContract(blocks, { screen: "settings", level: "list" });
 		const banner = findBlocks(blocks, "banner")[0];
-		expect(String(banner?.title)).toBe("Nothing entered — stripe secret key unchanged");
+		expect(String(banner?.title)).toBe("Nothing entered — Stripe secret key unchanged");
 		expect(String(banner?.title)).not.toMatch(/saved/i);
 		expect(toastOf(blank)).toEqual({ message: "Stripe secret key unchanged", type: "info" });
 		// Nothing was ever set, so the group label still lists it as missing.
-		expect(groupLabels(blocks).get("settings:payments")).toContain("stripe key");
+		expect(groupLabels(blocks).get("settings:payments")).toContain("no Stripe key");
 
 		// Save it for real, then submit blank — the earlier save must survive.
 		await sandbox.invokeRoute("admin", {
 			type: "form_submit",
 			action_id: "save-stripe-secret-key",
-			values: { stripeSecretKey: "qa-local-stripe-key" },
+			values: { stripeSecretKey: ["sk_test_", "QaLocalStripeKey0000"].join("") },
 		});
 		const afterBlank = await sandbox.invokeRoute("admin", {
 			type: "form_submit",
@@ -686,12 +898,13 @@ describe("Settings admin form (workerd sandbox)", () => {
 		});
 		const afterBlankBlocks = blocksOf(afterBlank);
 		expect(String(findBlocks(afterBlankBlocks, "banner")[0]?.title)).toBe(
-			"Nothing entered — stripe secret key unchanged",
+			"Nothing entered — Stripe secret key unchanged",
 		);
-		// The label now says "configured" for stripe key's slot (no longer
-		// listed as missing) — the earlier save held.
-		expect(groupLabels(afterBlankBlocks).get("settings:payments")).not.toContain("stripe key");
-		expect(JSON.stringify(afterBlankBlocks)).not.toContain("qa-local-stripe-key");
+		// The label now states the key's mode — the earlier save held.
+		expect(groupLabels(afterBlankBlocks).get("settings:payments")).toContain("Stripe test");
+		expect(JSON.stringify(afterBlankBlocks)).not.toContain(
+			["sk_test_", "QaLocalStripeKey0000"].join(""),
+		);
 	});
 
 	// -- INC-15: the labels carry the values, so every group can start closed ----
@@ -715,8 +928,9 @@ describe("Settings admin form (workerd sandbox)", () => {
 		expect(labels.get("settings:store")).toBe("Store — no display name");
 		expect(labels.get("settings:checkout")).toBe("Checkout & holds — 15 min hold · low stock at 5");
 		expect(labels.get("settings:payments")).toBe(
-			// Exactly 60 characters — the X-11 budget, with nothing elided.
-			"Payments & email — no stripe key, webhook, email, x402, edge",
+			// U-8: card checkout and email, stated — the optional x402 and edge
+			// credentials no longer read as missing pieces.
+			"Payments & email — no Stripe key · no webhook · no email",
 		);
 		for (const label of labels.values()) expect(label.length).toBeLessThanOrEqual(60);
 
@@ -754,7 +968,7 @@ describe("Settings admin form (workerd sandbox)", () => {
 			await sandbox.invokeRoute("admin", {
 				type: "form_submit",
 				action_id: "save-stripe-secret-key",
-				values: { stripeSecretKey: "qa-local-stripe-key" },
+				values: { stripeSecretKey: ["sk_test_", "QaLocalStripeKey0000"].join("") },
 			}),
 		);
 		// THE WHOLE LABEL, EXACTLY — a substring check ("no longer mentions the
@@ -763,7 +977,7 @@ describe("Settings admin form (workerd sandbox)", () => {
 		// lost the "no " prefix that makes the list read as MISSING rather than
 		// as present.
 		expect(groupLabels(savedKey).get("settings:payments")).toBe(
-			"Payments & email — no webhook, email, x402, edge",
+			"Payments & email — Stripe test · no webhook · no email",
 		);
 
 		// …and a later page load agrees, so the label is reporting kv, not the
@@ -774,7 +988,7 @@ describe("Settings admin form (workerd sandbox)", () => {
 			await sandbox.invokeRoute("admin", { type: "page_load", page: "/settings" }),
 		);
 		expect(groupLabels(reloaded).get("settings:payments")).toBe(
-			"Payments & email — no webhook, email, x402, edge",
+			"Payments & email — Stripe test · no webhook · no email",
 		);
 
 		// SECURITY PIN: no part of the secret value appears in any of these
@@ -783,7 +997,7 @@ describe("Settings admin form (workerd sandbox)", () => {
 		// time, and the plain unmasked field is what put that plaintext one
 		// submit away from the response body).
 		for (const response of [savedKey, reloaded, named]) {
-			expect(JSON.stringify(response)).not.toContain("qa-local-stripe-key");
+			expect(JSON.stringify(response)).not.toContain(["sk_test_", "QaLocalStripeKey0000"].join(""));
 		}
 	});
 
@@ -793,7 +1007,7 @@ describe("Settings admin form (workerd sandbox)", () => {
 			await sandbox.invokeRoute("admin", {
 				type: "form_submit",
 				action_id: "save-stripe-secret-key",
-				values: { stripeSecretKey: "qa-local-stripe-key" },
+				values: { stripeSecretKey: ["sk_test_", "QaLocalStripeKey0000"].join("") },
 			}),
 		);
 		assertBlockContract(saved, { screen: "settings", level: "list" });
@@ -881,5 +1095,73 @@ describe("Settings admin form (workerd sandbox)", () => {
 		// its block_id is the FORBIDDEN programmatic close (§1.2) — it would
 		// discard whatever the operator had typed into the other two groups.
 		expect([...groupLabels(after).keys()]).toEqual([...groupLabels(before).keys()]);
+	});
+});
+
+/**
+ * "Background work per minute" — the commerce sweep's per-tick query budget, an
+ * operational choice because it depends on the Cloudflare plan: Workers Free
+ * allows 50 D1 queries per invocation, Workers Paid 1000. A store on Paid that
+ * kept the Free budget would drain an expiry backlog a couple of holds a minute.
+ */
+describe("Background work per minute (the sweep's query budget)", () => {
+	async function settingsPage(): Promise<LooseBlock[]> {
+		if (sandbox === undefined) throw new Error("no sandbox loaded");
+		return blocksOf(await sandbox.invokeRoute("admin", { type: "page_load", page: "/settings" }));
+	}
+
+	test("defaults to the Workers Free preset, with Workers Paid offered beside it", async () => {
+		sandbox = await loadPluginInSandbox({ allowedHosts: [], storage: true });
+		const radio = field(
+			formFor(await settingsPage(), "save-background-work"),
+			"backgroundWorkPerMinute",
+		);
+		expect(radio?.type).toBe("radio");
+		expect(radio?.initial_value).toBe("30");
+		expect(radio?.options).toEqual([
+			{ value: "30", label: "Workers Free (30)" },
+			{ value: "600", label: "Workers Paid (600)" },
+		]);
+	});
+
+	test("choosing Workers Paid persists it, and the next page load agrees", async () => {
+		sandbox = await loadPluginInSandbox({ allowedHosts: [], storage: true });
+		const outcome = await sandbox.invokeRoute("admin", {
+			type: "form_submit",
+			action_id: "save-background-work",
+			values: { backgroundWorkPerMinute: "600" },
+		});
+		const blocks = blocksOf(outcome);
+		assertBlockContract(blocks, { screen: "settings", level: "list" });
+		expectAllRealFormsPresent(blocks);
+		expect(toastOf(outcome)).toEqual({ message: "Background work saved", type: "success" });
+		expect(
+			field(formFor(await settingsPage(), "save-background-work"), "backgroundWorkPerMinute")
+				?.initial_value,
+		).toBe("600");
+	});
+
+	test("a value outside 30–900 is refused with a clear message, and nothing changes", async () => {
+		sandbox = await loadPluginInSandbox({ allowedHosts: [], storage: true });
+		// 29 and below would leave a critical leg unable to start (see the floor
+		// pinned in cron-sweep-budget.test.ts).
+		for (const bad of ["5", "29", "901", "abc", ""]) {
+			const outcome = await sandbox.invokeRoute("admin", {
+				type: "form_submit",
+				action_id: "save-background-work",
+				values: { backgroundWorkPerMinute: bad },
+			});
+			const blocks = blocksOf(outcome);
+			assertBlockContract(blocks, { screen: "settings", level: "list" });
+			const banner = findBlocks(blocks, "banner").find((b) => b.variant === "error");
+			expect(String(banner?.description)).toContain(
+				"Background work per minute must be a whole number from 30 to 900",
+			);
+			expect(toastOf(outcome)).toEqual({ message: "Background work not saved", type: "error" });
+		}
+		expect(
+			field(formFor(await settingsPage(), "save-background-work"), "backgroundWorkPerMinute")
+				?.initial_value,
+		).toBe("30");
 	});
 });

@@ -4,10 +4,11 @@
  * cookie (read + Set-Cookie via the descriptor shim) and the redirect;
  * the plugin routes own the cart logic as straight service proxies.
  *
- * CSRF: every /cart/* endpoint calls `rejectCrossOrigin` (origin-guard.ts)
- * FIRST — Astro's `security.checkOrigin` is force-disabled by the emdash
- * integration and its replacement layer covers only /_emdash/api/* routes
- * (ADR-0006) — plus the cart cookie's SameSite=Lax.
+ * CSRF: the site middleware's origin check (origin-guard.ts) refuses a
+ * cross-site POST before any /cart/* endpoint runs — Astro's
+ * `security.checkOrigin` is force-disabled by the emdash integration and its
+ * replacement layer covers only /_emdash/api/* routes (ADR-0006) — plus the
+ * cart cookie's SameSite=Lax.
  */
 import {
 	CART_COOKIE_NAME,
@@ -19,7 +20,7 @@ import type { APIContext } from "astro";
 import type { PublicPluginApiRouteHandler } from "emdash/plugin-utils";
 import { getPublicPluginApiRouteHandler } from "emdash/plugin-utils";
 import { applyCartCookie } from "./cart-cookie.js";
-import { dispatchOttaRoute } from "./otta-api.js";
+import { dispatchOttaRoute, isBusyResult, sameSitePath } from "./otta-api.js";
 
 /** Semantic error tokens this shim adds on top of the plugin's own
  *  (`RENDER_FAILED`, `OUT_OF_STOCK`, ...). */
@@ -30,13 +31,37 @@ export const SERVICE_UNAVAILABLE = "SERVICE_UNAVAILABLE";
  *  whose live product disagrees with the submitted `sku` / isn't
  *  purchasable. Rejected BEFORE the plugin's add-line route is ever called. */
 export const PRODUCT_NOT_FOUND = "PRODUCT_NOT_FOUND";
+
+/** A quantity over the plugin's `CART_LINE_MAX_QTY` — the plugin's own typed
+ *  refusal, which `/cart/add` and `/cart/update` also give before dispatch (so an
+ *  over-cap add never mints a cart). Its copy names the limit. */
+export const QTY_TOO_LARGE = "QTY_TOO_LARGE";
 export const PRODUCT_UNAVAILABLE = "PRODUCT_UNAVAILABLE";
 
-/** 303 See Other — the POST-redirect-GET turn. */
+/** 303 See Other — the POST-redirect-GET turn. The target is normalized to a
+ *  same-site path first ({@link sameSitePath}; `/` if it is not one), so a
+ *  dot-segment path that resolves to `//host` can never become the Location. */
 export function seeOther(context: APIContext, path: string, error?: string): Response {
-	const url = new URL(path, context.url);
+	const url = new URL(sameSitePath(path), context.url);
 	if (error !== undefined) url.searchParams.set("error", error);
 	return context.redirect(url.pathname + url.search, 303);
+}
+
+/**
+ * Stamp `Referrer-Policy: no-referrer` on a response to one of /checkout's own
+ * POSTs (/checkout/place, /checkout/new-cart).
+ *
+ * The POST carries `/checkout?coupon=…` as its Referer (same-origin allows
+ * it), and a 303 keeps the request's referrer — so without this, the page the
+ * redirect lands on (/checkout/pay, where js.stripe.com runs) would hold the
+ * code in `document.referrer`. A redirect response's `Referrer-Policy` replaces
+ * the request's policy for the follow-up GET (Fetch, "HTTP-redirect fetch"), so
+ * that GET carries no referrer at all. Applied to EVERY response, not just the
+ * 303s to /checkout/pay: one invariant is easier to keep than a list.
+ */
+export function withoutReferrer(response: Response): Response {
+	response.headers.set("Referrer-Policy", "no-referrer");
+	return response;
 }
 
 export function routeDispatcher(context: APIContext): PublicPluginApiRouteHandler | undefined {
@@ -52,27 +77,40 @@ export function clearCartCookie(context: APIContext): void {
 	context.cookies.delete(CART_COOKIE_NAME, { path: CART_COOKIE_PATH });
 }
 
+/** {@link ensureCartId}'s answer: a cart id, or WHY there is none — `busy`
+ *  (storage contention: the caller answers the busy 503) vs `unavailable`
+ *  (anything else: the caller answers SERVICE_UNAVAILABLE). */
+export type EnsureCartResult =
+	| { ok: true; cartId: string }
+	| { ok: false; reason: "busy" | "unavailable" };
+
 /**
  * Ensure a cart exists: reuse the cookie's id, else mint one via the
  * plugin's `storefront/cart/create` and apply its cookie DESCRIPTOR to this
  * response (the plugin cannot set headers — the shim owns Set-Cookie).
+ * `cart/create` carries no key, so a BUSY here is never auto-retried.
  */
 export async function ensureCartId(
 	context: APIContext,
 	handler: PublicPluginApiRouteHandler | undefined,
-): Promise<string | undefined> {
+	/** When there is no cart, mint the REPLACEMENT for this spent cart: the plugin
+	 *  checks it and derives the key, so the same spent cart always gets the same new
+	 *  cart (cart-rotation.ts). */
+	opts: { replacesCartId?: string } = {},
+): Promise<EnsureCartResult> {
 	const existing = currentCartId(context);
-	if (existing !== undefined) return existing;
+	if (existing !== undefined) return { ok: true, cartId: existing };
 
 	const created = await dispatchOttaRoute<CartCreateRouteResult>(
 		handler,
 		STOREFRONT_CART_CREATE_ROUTE,
-		{},
+		opts.replacesCartId !== undefined ? { replacesCartId: opts.replacesCartId } : {},
 		context.url,
 	);
-	if (created === null || !created.ok) return undefined;
+	if (isBusyResult(created)) return { ok: false, reason: "busy" };
+	if (created === null || !created.ok) return { ok: false, reason: "unavailable" };
 	applyCartCookie(context.cookies, created.cookie);
-	return created.cartId;
+	return { ok: true, cartId: created.cartId };
 }
 
 /** Uniform failure → error token mapping for the line-mutation results. */

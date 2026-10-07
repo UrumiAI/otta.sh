@@ -52,6 +52,7 @@ import {
 	InMemoryProductCommerceStore,
 	InMemoryShippingRulesStore,
 	InMemoryTaxRulesStore,
+	type EmailRecipientHarness,
 	type OrderStoreHarness,
 	type OrderTimelineHarness,
 	type OrderTransitionHarness,
@@ -277,7 +278,6 @@ export function makeOrderHarness(
 		entitlementStore,
 		paymentEventStore,
 		inventoryStore: inventory,
-		couponStore,
 		clock,
 	};
 	const expireDeps: ExpireOrdersDeps = {
@@ -471,6 +471,24 @@ export function orderStoreHarness(harness: OrderHarness): OrderStoreHarness {
  *  have. That is a stronger statement on this store than a rollback would be. */
 export function orderTransitionHarness(harness: OrderHarness): OrderTransitionHarness {
 	return { store: harness.store, emailSender: harness.emailSender, clock: harness.clock };
+}
+
+/** The `emailRecipientContract` harness shape: the transition harness plus the order
+ *  document's outbox entries read back, which is the only place a SKIPPED completion
+ *  is distinguishable from a sent one. */
+export function emailRecipientHarness(harness: OrderHarness): EmailRecipientHarness {
+	return {
+		store: harness.store,
+		emailSender: harness.emailSender,
+		clock: harness.clock,
+		outboxRows: async (orderId) =>
+			((await harness.orders.get(orderId))?.emailOutbox ?? []).map((entry) => ({
+				toState: entry.toState,
+				notice: entry.notice?.kind ?? null,
+				status: entry.status,
+				attempts: entry.attempts,
+			})),
+	};
 }
 
 /** The `orderTimelineContract` harness shape. */

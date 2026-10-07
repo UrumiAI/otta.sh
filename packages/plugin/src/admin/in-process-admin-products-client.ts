@@ -62,6 +62,7 @@ import {
 	SkuHeldStockError,
 	SkuStockConflictError,
 	updateProductCommerceFields,
+	type DownloadAsset,
 	type ProductCommerce as DomainProductCommerce,
 	type ProductListCursor,
 	type ProductListFilter,
@@ -75,6 +76,7 @@ import {
 	requireIdToken,
 	requireMoney,
 	requireNullableInteger,
+	requireSku,
 	requireWatermark,
 } from "../commerce/commerce-input.js";
 import {
@@ -85,13 +87,16 @@ import {
 import type { PluginContext } from "../types.js";
 import type {
 	AdminProductsSurface,
+	DownloadAssetWire,
 	ProductDetailWire,
 	ProductEditResult,
 	ProductEditWire,
+	ProductPriceStockWire,
 	ProductsListFilter,
 	ProductsListResult,
 	ProductSummaryWire,
 	RestockResult,
+	StockMoveApplied,
 	StockRemovalResult,
 	TaxClassWire,
 } from "./admin-products-surface.js";
@@ -171,6 +176,32 @@ export class InProcessAdminProductsClient implements AdminProductsSurface {
 		const onHand =
 			product.sku === null ? null : await this.#stores.inventory.findOnHand(product.sku);
 		return toProductDetailWire(product, onHand);
+	}
+
+	/** Price and stock for a bounded list of products, in the order asked; ids
+	 *  with no commerce row are left out. One batched row read, then one stock
+	 *  read per sku — the same `findOnHand` the detail uses, so `null` ("no
+	 *  inventory row") is never collapsed into `0`. */
+	async getProductSummaries(productIds: readonly string[]): Promise<ProductPriceStockWire[]> {
+		for (const id of productIds) requireIdToken("productId", id);
+		const rows = await this.#stores.productCommerce.getManyByProductId(
+			productIds.map((id) => toProductId(id)),
+		);
+		const ordered = productIds.flatMap((id) => {
+			const row = rows.get(toProductId(id));
+			return row === undefined ? [] : [row];
+		});
+		return Promise.all(
+			ordered.map(async (product) => ({
+				productId: product.productId,
+				sku: product.sku,
+				priceCents: product.price?.amount ?? null,
+				currency: product.price?.currency ?? null,
+				compareAtCents: product.compareAtPrice?.amount ?? null,
+				onHand: product.sku === null ? null : await this.#stores.inventory.findOnHand(product.sku),
+				deletedAt: product.deletedAt === null ? null : product.deletedAt.toISOString(),
+			})),
+		);
 	}
 
 	/**
@@ -262,7 +293,7 @@ export class InProcessAdminProductsClient implements AdminProductsSurface {
 	 *  per submission: a restock is additive, so two deliberate "+5"s must not
 	 *  collapse and there is no safe content-only fallback. */
 	async restock(productId: string, qty: number, key: string): Promise<RestockResult> {
-		const resolved = await this.#resolveStockMovement(productId, qty, key);
+		const resolved = await this.#resolveStockMovement(productId, qty, key, undefined);
 		if (resolved.status !== "ok") return { ok: false, reason: resolved.status };
 		const res = await restockUseCase(
 			this.#stores.inventory,
@@ -270,7 +301,7 @@ export class InProcessAdminProductsClient implements AdminProductsSurface {
 			qty,
 			toIdempotencyKey(key),
 		);
-		if (res.ok) return { ok: true, onHand: res.onHand };
+		if (res.ok) return appliedMove(res);
 		// UNKNOWN_SKU: the product exists but has no inventory row yet (priced but
 		// never seeded). A stock movement cannot create one.
 		return { ok: false, reason: "no_inventory_row" };
@@ -279,16 +310,25 @@ export class InProcessAdminProductsClient implements AdminProductsSurface {
 	/** REMOVE `qty` damaged/shrinkage units. The domain applies a GUARDED
 	 *  decrement, so an over-removal is a clean `insufficient_stock` carrying the
 	 *  current count — never a negative stock and never a throw. */
-	async removeStock(productId: string, qty: number, key: string): Promise<StockRemovalResult> {
-		const resolved = await this.#resolveStockMovement(productId, qty, key);
+	async removeStock(
+		productId: string,
+		qty: number,
+		key: string,
+		expectedOnHand?: number,
+	): Promise<StockRemovalResult> {
+		const resolved = await this.#resolveStockMovement(productId, qty, key, expectedOnHand);
 		if (resolved.status !== "ok") return { ok: false, reason: resolved.status };
 		const res = await removeStockUseCase(
 			this.#stores.inventory,
 			toSku(resolved.sku),
 			qty,
 			toIdempotencyKey(key),
+			watermark(expectedOnHand),
 		);
-		if (res.ok) return { ok: true, onHand: res.onHand };
+		if (res.ok) return appliedMove(res);
+		if (res.reason === "STALE_ON_HAND") {
+			return { ok: false, reason: "stale_on_hand", onHand: res.onHand };
+		}
 		if (res.reason === "INSUFFICIENT_STOCK") {
 			return { ok: false, reason: "insufficient_stock", onHand: res.onHand };
 		}
@@ -373,11 +413,20 @@ export class InProcessAdminProductsClient implements AdminProductsSurface {
 		productId: string,
 		qty: number,
 		key: string,
+		expectedOnHand: number | undefined,
 	): Promise<{ status: "ok"; sku: string } | { status: "not_found" | "no_sku" | "invalid" }> {
 		try {
 			requireIdToken("productId", productId);
 			requireStockMovementQty(qty);
 			if (key.length === 0) throw new CommerceInputError("idempotencyKey", "must not be empty");
+			// A count, or absent. Checked here so a bad one is `invalid` like a bad
+			// qty, rather than the RangeError the use-case would throw.
+			if (
+				expectedOnHand !== undefined &&
+				(!Number.isSafeInteger(expectedOnHand) || expectedOnHand < 0)
+			) {
+				throw new CommerceInputError("expectedOnHand", "must be a non-negative integer");
+			}
 		} catch (err) {
 			if (isCommerceInputError(err)) return { status: "invalid" };
 			throw err;
@@ -387,6 +436,20 @@ export class InProcessAdminProductsClient implements AdminProductsSurface {
 		if (product.sku === null) return { status: "no_sku" };
 		return { status: "ok", sku: product.sku };
 	}
+}
+
+/** A movement that went in, with the store's `replayed` marker carried through
+ *  — dropping it would let a ledger echo read as a fresh movement. */
+function appliedMove(res: { onHand: number; replayed?: true }): StockMoveApplied {
+	return res.replayed === true
+		? { ok: true, onHand: res.onHand, replayed: true }
+		: { ok: true, onHand: res.onHand };
+}
+
+/** The use-case's options for an optional watermark — none at all when absent,
+ *  so an unpinned movement stays exactly the unconditional one it always was. */
+function watermark(expectedOnHand: number | undefined): { expectedOnHand: number } | undefined {
+	return expectedOnHand === undefined ? undefined : { expectedOnHand };
 }
 
 // ── the wire projections, field for field ─────────────────────────────────
@@ -432,6 +495,7 @@ function toProductDetailWire(
 		widthMm: product.widthMm,
 		heightMm: product.heightMm,
 		productKind: product.productKind,
+		downloadAsset: product.downloadAsset === null ? null : { ...product.downloadAsset },
 		active: product.active,
 		deletedAt: product.deletedAt === null ? null : product.deletedAt.toISOString(),
 		onHand,
@@ -524,7 +588,18 @@ const PRODUCT_EDIT_KEYS = [
 	"heightMm",
 	"productKind",
 	"inventoryPolicy",
+	"downloadAsset",
 ] as const satisfies readonly (keyof ProductEditWire)[];
+
+/** The keys a download-file descriptor may carry — strict for the same reason
+ *  the edit body is: a stray key (a `url`, say) is refused, never stored. */
+const DOWNLOAD_ASSET_KEYS = [
+	"key",
+	"filename",
+	"contentType",
+	"size",
+	"sha256",
+] as const satisfies readonly (keyof DownloadAssetWire)[];
 
 /** `editProductCommerceBody`'s bounds, then the branding the use-case takes.
  *  Money is an integer minor amount carrying an explicit ISO-4217 currency —
@@ -538,8 +613,10 @@ function toUpdateInput(productId: string, body: ProductEditWire): UpdateProductC
 	}
 	if (body.sku !== undefined) {
 		// `min(1)` and no ceiling, as the edit body's schema has it — the sku's real
-		// bounds belong to the store's column, not to this boundary.
-		if (body.sku.length === 0) throw new CommerceInputError("sku", "must not be empty");
+		// bounds belong to the store's column, not to this boundary. `requireSku` is
+		// that rule plus no U+0000, which no store could keep anyway (#379): the same
+		// check the cart add makes, so a sku the admin saves is one a shopper can add.
+		requireSku(body.sku);
 		input.sku = toSku(body.sku);
 	}
 	if (body.price !== undefined) {
@@ -576,7 +653,41 @@ function toUpdateInput(productId: string, body: ProductEditWire): UpdateProductC
 		}
 		input.inventoryPolicy = "deny";
 	}
+	if (body.downloadAsset !== undefined) {
+		input.downloadAsset = toDownloadAsset(body.downloadAsset as unknown);
+	}
 	return input;
+}
+
+/**
+ * The download-file descriptor's SHAPE: `null` (detach), or an object of exactly
+ * the known keys with the right primitive types. Only an untyped caller can get
+ * this wrong, and it is refused as the strict body schema would refuse it — no
+ * field. The VALUE rules (the key minted for this product, the filename and type
+ * rules, a byte count, a digest) are the domain's `validateDownloadAsset`, run by
+ * the use-case, which names the sub-field it refused.
+ */
+function toDownloadAsset(value: unknown): DownloadAsset | null {
+	if (value === null) return null;
+	if (typeof value !== "object" || Array.isArray(value)) {
+		throw new CommerceInputError("downloadAsset", "must be an object or null");
+	}
+	const record = value as Record<string, unknown>;
+	for (const key of Object.keys(record)) {
+		if (!DOWNLOAD_ASSET_KEYS.includes(key as (typeof DOWNLOAD_ASSET_KEYS)[number])) {
+			throw new CommerceInputError(`downloadAsset.${key}`, "is not a field a download file has");
+		}
+	}
+	const { key, filename, contentType, size, sha256 } = record;
+	if (typeof key !== "string" || typeof filename !== "string" || typeof contentType !== "string") {
+		throw new CommerceInputError("downloadAsset", "key, filename and contentType must be strings");
+	}
+	if (typeof size !== "number")
+		throw new CommerceInputError("downloadAsset.size", "must be a number");
+	if (sha256 !== undefined && typeof sha256 !== "string") {
+		throw new CommerceInputError("downloadAsset.sha256", "must be a string when present");
+	}
+	return { key, filename, contentType, size, ...(sha256 !== undefined ? { sha256 } : {}) };
 }
 
 /** Compare-at and cost are NON-NEGATIVE money (unlike `price`: a cleared-to-zero

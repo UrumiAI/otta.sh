@@ -4,6 +4,10 @@
   folded in as notes, 2026-07-23: the admin display-only country-vs-zone juxtaposition, and the
   operational resolution of zone/address divergence via refunds — see ADR-0008)
 - Date: 2026-07-22 (amended 2026-07-23 per review of PR #77)
+- Amended: 2026-09-29 — **Decision 3, Decision 5 and the zone/address-divergence consequence**,
+  by [ADR-0021](./0021-checkout-derives-zone-from-address.md): the shipping/tax zone is now DERIVED
+  from this address (ISO 3166 codes), so the address is a pricing input, and required-for-physical
+  is enforced in stores with zones. See "Amended 2026-09-29" at the end of this record.
 - Refines: ADR-0001/0004 (the commerce service owns customer identity + the profile address book).
   Relates to `create-order-from-cart.ts`, `ports/address-store.ts`, `orders/customer-context.ts`
   (#62), the order snapshot invariant (`orders/model.ts`), and shipping zones (#73).
@@ -158,3 +162,15 @@ against the chosen zone (#73), a buyer can be quoted/charged a "domestic" shippi
 entering an out-of-zone address — the order captures both, contradictorily, and ships (or refuses)
 downstream with no checkout-time guard. Whether address capture can honestly ship *before* any
 address→zone validation exists is the crux.
+
+## Amended 2026-09-29 (ADR-0021)
+
+- **Decision 3** is now enforced, scoped: a cart with a physical line in a store with shipping
+  zones is refused `MISSING_SHIPPING_ADDRESS` without an address. A store with no zones still
+  accepts a physical order without one.
+- **Decision 5** is reversed: the captured address decides the shipping/tax zone (exact ISO 3166
+  codes, most specific wins), so it is a pricing input. Every new order's country is an ISO
+  alpha-2 code and a non-blank region a real ISO 3166-2 subdivision code.
+- The **zone/address divergence** consequence no longer arises for new orders: the zone cannot be
+  chosen independently of the address. Orders placed before ADR-0021 are unchanged.
+

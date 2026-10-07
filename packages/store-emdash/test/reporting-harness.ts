@@ -38,6 +38,7 @@ import {
 	INVENTORY_COLLECTION,
 	lifecycleFor,
 	newShellProductDoc,
+	normalizeReportingDailyDoc,
 	ORDERS_COLLECTION,
 	PRODUCT_COMMERCE_COLLECTION,
 	publishKeyFor,
@@ -52,6 +53,7 @@ import {
 	type ReportingAppliedDoc,
 	type ReportingAnomaly,
 	type ReportingDailyDoc,
+	type ReportingDailyStoredDoc,
 	type ReportingOrderEvent,
 	type SkuOwnerDoc,
 	type StorageAccess,
@@ -82,8 +84,15 @@ export interface ReportingHarnessOptions {
 export interface ReportingHarness extends ReportingStoreHarness {
 	readonly clock: FixedClock;
 	readonly store: EmdashReportingStore;
-	/** The documents, for the assertions the port cannot express. */
+	/**
+	 * The documents, for the assertions the port cannot express. `daily` is the day
+	 * documents as VALUES, read through the store's own normalizer, so a suite asserts
+	 * the counters rather than the stored layout (which has two shapes, see
+	 * `ReportingDailyStoredDoc`); `dailyRaw` is the stored layout, for the cases that
+	 * are about it.
+	 */
 	readonly daily: StorageCollection<ReportingDailyDoc>;
+	readonly dailyRaw: StorageCollection<ReportingDailyStoredDoc>;
 	readonly applied: StorageCollection<ReportingAppliedDoc>;
 	readonly orders: StorageCollection<OrderDoc>;
 	readonly inventoryDocs: StorageCollection<InventoryDoc>;
@@ -131,7 +140,8 @@ export function makeReportingHarness(
 		onAnomaly: options.onAnomaly,
 	});
 
-	const daily = collectionOf<ReportingDailyDoc>(storage, REPORTING_DAILY_COLLECTION);
+	const dailyRaw = collectionOf<ReportingDailyStoredDoc>(storage, REPORTING_DAILY_COLLECTION);
+	const daily = normalizedDaily(dailyRaw);
 	const applied = collectionOf<ReportingAppliedDoc>(storage, REPORTING_APPLIED_COLLECTION);
 	const orders = collectionOf<OrderDoc>(storage, ORDERS_COLLECTION);
 	const inventoryDocs = collectionOf<InventoryDoc>(storage, INVENTORY_COLLECTION);
@@ -224,6 +234,7 @@ export function makeReportingHarness(
 		clock,
 		store,
 		daily,
+		dailyRaw,
 		applied,
 		orders,
 		inventoryDocs,
@@ -419,6 +430,44 @@ export function makeReportingHarness(
 		now() {
 			return clock.now().toISOString();
 		},
+	};
+}
+
+/**
+ * The day documents read as values: every read goes through `normalizeReportingDailyDoc`,
+ * and every other method is the stored collection's own. The writes are typed as the
+ * logical value, which is also a legal stored document (the legacy shape), so a suite
+ * that writes one is seeding a legacy document on purpose.
+ */
+function normalizedDaily(
+	raw: StorageCollection<ReportingDailyStoredDoc>,
+): StorageCollection<ReportingDailyDoc> {
+	return {
+		async get(id) {
+			const doc = await raw.get(id);
+			return doc === null ? null : normalizeReportingDailyDoc(doc);
+		},
+		put: (id, data) => raw.put(id, { ...data }),
+		delete: (id) => raw.delete(id),
+		async query(options) {
+			const page = await raw.query(options);
+			return {
+				...page,
+				items: page.items.map((row) => ({ ...row, data: normalizeReportingDailyDoc(row.data) })),
+			};
+		},
+		count: (where) => raw.count(where),
+		updateIf: () => {
+			throw new Error("the harness's value view of the day documents is not a write path");
+		},
+		async getVersioned(id) {
+			const held = await raw.getVersioned(id);
+			return held === null
+				? null
+				: { value: normalizeReportingDailyDoc(held.value), revision: held.revision };
+		},
+		compareAndSet: (id, revision, data) => raw.compareAndSet(id, revision, { ...data }),
+		compareAndDelete: (id, revision) => raw.compareAndDelete(id, revision),
 	};
 }
 

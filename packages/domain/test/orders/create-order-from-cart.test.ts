@@ -19,7 +19,7 @@ const SHIP_TO: OrderAddressInput = {
 	line1: "12 Analytical Way",
 	line2: "Unit 4",
 	city: "London",
-	region: "Greater London",
+	region: "LND",
 	postalCode: "EC1A 1BB",
 	country: "GB",
 	email: "ada@example.com",
@@ -121,7 +121,7 @@ describe("createOrderFromCart", () => {
 		expect(res).toEqual({ ok: false, reason: "RESERVATION_LOST" });
 	});
 
-	test("a multi-line cart aborts on a later line's RESERVATION_LOST after an earlier line was already adopted: the pending order row was durably inserted before any line was adopted, so the earlier line's adopted hold is not stranded and is later released by expireOrders", async () => {
+	test("a multi-line cart aborts on a later line's RESERVATION_LOST after an earlier line was already adopted: the order row was durably inserted before any line was adopted, and the abort expires it AT ONCE, releasing the earlier line's adopted hold (nothing left for expireOrders)", async () => {
 		await h.seedPhysical({
 			productId: "p1",
 			sku: "SKU-1",
@@ -148,15 +148,16 @@ describe("createOrderFromCart", () => {
 
 		const res = await createOrderFromCart(h.createDeps, cmd(cartId));
 		expect(res).toEqual({ ok: false, reason: "RESERVATION_LOST" });
-		// The first hold was adopted (not stranded) and points at a real pending order.
-		expect(h.inventory.reservationState(first)).toBe("adopted");
-		// expireOrders heals it once the TTL passes: the pending order expires and
-		// its adopted hold is released.
+		// The order can never be paid, so it is abandoned now — exactly as the
+		// expiry sweep would abandon it — rather than squatting on the first line's
+		// units (and on the cart's fixed checkout key) until the TTL passes.
+		const order = await h.orderStore.getByIdempotencyKey(cmd(cartId).idempotencyKey);
+		expect(order?.state).toBe("expired");
+		expect(h.inventory.reservationState(first)).toBe("released");
+		expect(h.inventory.onHand("SKU-1")).toBe(10);
 		h.clock.advance(16 * 60 * 1000);
 		const { expireOrders } = await import("@otta-sh/domain");
-		const expired = await expireOrders(h.expireDeps);
-		expect(expired).toBe(1);
-		expect(h.inventory.reservationState(first)).toBe("released");
+		expect(await expireOrders(h.expireDeps)).toBe(0);
 	});
 
 	test("a PHYSICAL line whose cart line carries no reservation (product flipped digital→physical after add-to-cart) fails loudly with RESERVATION_LOST — never an order that would settle with no commit", async () => {
@@ -534,7 +535,7 @@ describe("createOrderFromCart", () => {
 			line1: "12 Analytical Way",
 			line2: "Unit 4",
 			city: "London",
-			region: "Greater London",
+			region: "LND",
 			postalCode: "EC1A 1BB",
 			country: "GB",
 			email: "ada@example.com",
@@ -544,13 +545,14 @@ describe("createOrderFromCart", () => {
 		expect((await h.orderStore.getById(res.order.id))?.shippingAddress?.name).toBe("Ada Lovelace");
 	});
 
-	test("an order created without a shipping address has shippingAddress null (capture is optional this slice)", async () => {
+	test("an order created without a shipping address has shippingAddress null (a store with no zones)", async () => {
 		const cartId = await seededCart();
 		const res = await createOrderFromCart(h.createDeps, cmd(cartId));
 		expect(res.ok).toBe(true);
 		if (!res.ok) return;
-		// A PHYSICAL order with no address is still accepted — the required-for-physical
-		// enforcement is deferred until the storefront UI collects it (ADR-0009).
+		// A PHYSICAL order with no address is accepted in a store with NO zones:
+		// nothing prices by it (ADR-0021 Decision 4). With zones it is refused
+		// MISSING_SHIPPING_ADDRESS — see create-order-zone-derivation.test.ts.
 		expect(res.order.shippingAddress).toBeNull();
 	});
 
@@ -576,6 +578,22 @@ describe("createOrderFromCart", () => {
 		expect(res.ok).toBe(false);
 		if (res.ok) return;
 		expect(res.reason).toBe("INVALID_SHIPPING_ADDRESS");
+	});
+
+	// A signed-in checkout names its owner, and the ORDER carries it — not only the
+	// coupon's per-customer count — so the order is in the shopper's list at once.
+	test("a checkout carrying a customerId mints an order that customer owns; without one it is a guest order", async () => {
+		const cartId = await seededCart();
+		const owner = brandCustomerId("cust-owner");
+		const res = await createOrderFromCart(h.createDeps, { ...cmd(cartId), customerId: owner });
+		expect(res.ok).toBe(true);
+		if (!res.ok) return;
+		expect(res.order.customerId).toBe(owner);
+		expect((await h.orderStore.listForCustomer(owner)).map((o) => o.id)).toEqual([res.order.id]);
+
+		const guestCart = await seededCart();
+		const guest = await createOrderFromCart(h.createDeps, cmd(guestCart, "k-guest"));
+		expect(guest.ok && guest.order.customerId).toBeNull();
 	});
 
 	test("the order ship-to is frozen: editing the profile address book afterward never rewrites it", async () => {

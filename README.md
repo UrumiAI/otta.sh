@@ -6,6 +6,17 @@
 Open source (MIT), version 0.0.1. The WooCommerce-equivalent for
 [EmDash](https://github.com/emdash-cms/emdash), Cloudflare's TypeScript CMS.
 
+> [!WARNING]
+> **In active development — pre-1.0.** The core buy flow — catalog, cart and card checkout —
+> works today, but APIs, storage document shapes, settings and admin screens may still change
+> between releases, and the `@otta-sh/*` packages are not on npm yet. Pin a commit if you build
+> on it.
+>
+> **Coming soon: one-click Cloudflare Workers deployment.** A one-click / hosted way to put
+> an Otta store on Cloudflare Workers is on the way. Until then you can self-deploy the
+> reference site by following [`DEPLOYMENT.md`](./DEPLOYMENT.md) — see [Status](#status)
+> for what is and isn't built yet.
+
 ![The Otta storefront: a product listing with three sample products, each showing generated coil artwork, a title, a description, a price, and whether it is in stock — the first is sold out, its price struck through](./docs/storefront.png)
 
 <sub>The reference storefront running locally, with prices and stock served in-process by the
@@ -18,11 +29,11 @@ Otta turns an EmDash site into a store. It is **one deployable**, and it ships a
 1. **Otta plugin** — a sandbox-clean EmDash plugin that owns all money and stock truth
    **in-process**: catalog, inventory, cart, checkout, orders, customers, payments, tax,
    shipping, discounts, entitlements, reporting, and webhooks, plus storefront routes,
-   content-sync hooks and an admin console (pricing & inventory, orders, reports,
-   settings) and x402 gating for digital goods. Commerce state lives in the host's
-   per-plugin document store (`ctx.storage`) via the `@otta-sh/store-emdash` adapter — no
-   separate service, no second database. Its only outbound egress is `ctx.http.fetch`,
-   gated by `network:request` + `allowedHosts`. The CMS owns content; every commercial
+   content-sync hooks and an admin console (pricing & inventory, orders, coupons, tax,
+   shipping, reports, settings) and x402 gating for digital goods. Commerce state lives in
+   the host's per-plugin document store (`ctx.storage`) via the `@otta-sh/store-emdash`
+   adapter — no separate service, no second database. Its only outbound egress is
+   `ctx.http.fetch`, gated by `network:request` + `allowedHosts`. The CMS owns content; every commercial
    field lives in the plugin's store and is edited in the admin console
    ([ADR-0018](./adr/0018-plugin-owns-commerce-truth-in-process.md),
    [ADR-0020](./adr/0020-one-deployable-plugin-owns-commerce-truth.md)).
@@ -30,16 +41,16 @@ Otta turns an EmDash site into a store. It is **one deployable**, and it ships a
    registered, so there's something to actually run. It's the storefront in the screenshot
    above and what the [quick start](#quick-start-local-2-minutes) boots: product listing
    pages, cart, and the admin console. Treat it as the worked example to copy from when
-   wiring Otta into your own site — it covers catalog, cart and card checkout today; the
-   x402 gate, download delivery and customer account pages are not built yet (see
-   [Status](#status)).
+   wiring Otta into your own site — it covers catalog, cart, card checkout and customer
+   accounts (magic-link sign-in, order history) and paid digital downloads today; the x402
+   gate is not built yet (see [Status](#status)).
 
 ## Quick start (local, ~2 minutes)
 
 A full store on your laptop — no Cloudflare account, no deploy, no database to run. The
 site's D1 content database and R2 media bucket are emulated locally by the Astro Cloudflare
 adapter, and commerce runs **in-process** inside the same worker (the plugin owns cart,
-order and inventory state in em-dash plugin storage), so there is no separate service and
+order and inventory state in EmDash plugin storage), so there is no separate service and
 no Postgres in the loop.
 
 ```bash
@@ -63,22 +74,23 @@ commerce fields it does not touch — so give them some:
 # 2. Price, stock and activate the demo products (second terminal).
 #    It reads the products' real ids from the CMS (matching the seed's slugs),
 #    then prices and stocks each one through the SITE's own admin API — the same
-#    route the Pricing & inventory page uses, so the site URL is all it needs.
+#    route the product editor's Pricing & stock section uses, so the site URL is all it needs.
 SITE_URL=http://localhost:4321 \
   pnpm dlx tsx@4 sites/staging/scripts/seed-demo-commerce.ts
 ```
 
-`/products` now renders a priced catalog and add-to-cart takes a real inventory hold. Open
-**Pricing & inventory** in the admin to reprice, restock, or price a product of your own —
-that page is the only place commercial fields are edited; the CMS owns the title,
-description and images.
+`/products` now renders a priced catalog and add-to-cart takes a real inventory hold. In the
+admin, **Content › Products** lists each product's price and stock; open a product and use its
+**Pricing & stock** cards (under the images) to reprice, restock, or price a product of your own.
+They are the only place commercial fields are edited; the CMS owns the title, description and images.
 
 One thing to know: card checkout needs Stripe configured (both secrets in admin Settings, plus
-the build-time publishable key), and the storefront has no account or download pages yet —
-see [Status](#status).
+the build-time publishable key). A Digital product's file is attached in the same editor
+(the **Download file** card) and needs a private `DOWNLOADS` bucket, which local dev
+simulates — see [Status](#status).
 
-To deploy this for free on Cloudflare Workers, follow
-[`DEPLOYMENT.md`](./DEPLOYMENT.md) §2.
+To self-deploy this for free on Cloudflare Workers today, follow
+[`DEPLOYMENT.md`](./DEPLOYMENT.md) §2 (one-click deployment: see [Status](#status)).
 
 ## Architecture (summary)
 
@@ -110,10 +122,10 @@ To deploy this for free on Cloudflare Workers, follow
 | `@otta-sh/domain` | Pure ports, use-cases, branded money types, contract-test suites. No IO. |
 | `@otta-sh/store-emdash` | Store adapters over the host's per-plugin document store — one document per aggregate, compare-and-set writes. |
 | `@otta-sh/payments-stripe` | Stripe `PaymentGateway` adapter (async-webhook, raw-body HMAC). |
-| `@otta-sh/payments-x402` | x402 `PaymentGateway` adapter (synchronous page-gate, facilitator-verified). |
+| `@otta-sh/payments-x402` | x402 `PaymentGateway` adapter (settles nothing until the ADR-0028 content gate). |
 | `@otta-sh/plugin` | The EmDash plugin: commerce composition, storefront routes, admin console, content-sync hooks. |
 | `@otta-sh/admin-presentation` | Pure admin presentation primitives (money, dates, short ids, status vocabulary) shared by both console surfaces. No IO. |
-| `@otta-sh/admin-react` | The React admin console on the `otta-console` native descriptor (ADR-0014) — Orders and Pricing & inventory. |
+| `@otta-sh/admin-react` | The React admin console on the `otta-console` native descriptor (ADR-0014) — Orders and Themes pages, plus the product editor's Pricing & stock cards and the products list's Price / Stock columns. |
 | `sites/staging` | Staging storefront + admin — EmDash on Cloudflare Workers, plugin registered trusted. |
 
 Design decisions live in [`adr/`](./adr/); development practices in
@@ -137,21 +149,30 @@ process, so it verifies the SQL is correct, not that it's race-safe under conten
 
 ## Status
 
-**v0.0.1** — first open-source release. The `@otta-sh/*` packages are all at `0.0.1` and are
-not published to npm yet; consume them from the workspace.
+**v0.0.1 — in active development.** First open-source release. The `@otta-sh/*` packages
+are all at `0.0.1` and are not published to npm yet; consume them from the workspace. Expect
+breaking changes before 1.0.
+
+**Cloudflare Workers:** self-deploying the reference site to Workers works today
+([`DEPLOYMENT.md`](./DEPLOYMENT.md)); a one-click / hosted Workers deployment is coming soon.
 
 The commerce **layer** is feature-complete (Phases 0–7 merged): catalog, inventory,
-cart, checkout, orders, customers with magic-link auth, Stripe + x402 payments, tax,
-shipping, discounts, entitlements, reporting, and settings.
+cart, checkout, orders, customers with magic-link auth, Stripe payments (x402 planned), tax,
+shipping, discounts, entitlements, reporting, and settings. The magic-link email is sent once
+an email API is configured and the Settings "Sign-in page address" (`settings:loginLinkUrl`)
+points at the storefront's `/account/verify` page.
 
-The reference **storefront** (`sites/staging`) covers catalog, cart and **card
-checkout**: `/checkout`, the Stripe pay page and the order confirmation page are built
+The reference **storefront** (`sites/staging`) covers catalog, cart, **card checkout** and
+**customer accounts** (`/account/login`, `/account/verify`, `/account/orders`):
+`/checkout`, the Stripe pay page and the order confirmation page are built
 ([ADR-0012](./adr/0012-storefront-checkout-loads-stripe-elements-in-the-browser.md)), so a
 Stripe-configured deployment completes a card purchase end-to-end
-([`DEPLOYMENT.md`](./DEPLOYMENT.md) §3). The x402 gate and the download delivery page
-([#27](https://github.com/UrumiAI/otta.sh/issues/27)) and the customer account pages are
-not built yet — for those, build the pages or drive the plugin's own commerce routes
-directly.
+([`DEPLOYMENT.md`](./DEPLOYMENT.md) §3). **Digital downloads** are built (issue #376): the
+merchant attaches a file to a Digital product in the product editor, it is stored in a private
+R2 bucket, and a buyer downloads it from the order page, re-authorized on every request and
+closed by a full refund ([`DEPLOYMENT.md`](./DEPLOYMENT.md) §2.1). The x402 gate
+([#27](https://github.com/UrumiAI/otta.sh/issues/27)) is not built yet — for that, build the
+page or drive the plugin's own commerce routes directly.
 
 ## License
 

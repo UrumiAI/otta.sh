@@ -29,10 +29,12 @@
  * framework JSON-parses a route's request body before any handler runs and
  * exposes no raw-body read.)
  *
- * ── Why there is no origin guard ──────────────────────────────────────────
- * Every other POST endpoint in this site starts with `rejectCrossOrigin()`.
- * This one omits it as a NO-OP, not as a hazard — the distinction matters, so
- * that nobody "restores" the guard believing it was dropped for safety.
+ * ── Why the origin check is not applied ───────────────────────────────────
+ * Every other write route in this site is origin-checked by `src/middleware.ts`
+ * (`lib/origin-guard.ts`). This route is on that check's exemption list
+ * (`ORIGIN_GUARD_EXEMPT_ROUTES`) — and the exemption is a NO-OP for Stripe's
+ * own deliveries, not a hazard; the distinction matters, so that nobody
+ * "restores" the check believing it was dropped for safety.
  * `isForbiddenCrossOrigin` forbids only a PRESENT-and-mismatched `Origin` and
  * deliberately allows an absent one (server-to-server carries no ambient
  * cookie); Stripe sends no `Origin`, so the guard would pass every genuine
@@ -58,7 +60,7 @@ import {
 } from "@otta-sh/plugin";
 import type { APIRoute } from "astro";
 import { routeDispatcher } from "../../lib/cart-actions.js";
-import { dispatchOttaRoute } from "../../lib/otta-api.js";
+import { BUSY_RETRY_AFTER_SECONDS, dispatchOttaRoute } from "../../lib/otta-api.js";
 import { webhookEdgeToken } from "../../lib/webhook-env.js";
 
 /** Stripe's own header, verbatim. Read case-insensitively by `Headers.get`. */
@@ -75,10 +77,19 @@ function toBase64(bytes: Uint8Array): string {
 }
 
 function respond(result: StripeWebhookSettleResult): Response {
-	return new Response(JSON.stringify(result), {
-		status: result.status,
-		headers: { "Content-Type": "application/json" },
-	});
+	const headers: Record<string, string> = { "Content-Type": "application/json" };
+	// A `retryable` refusal says "this same delivery will work later": BUSY
+	// (storage contention — nothing was committed by the step that gave up) and
+	// LATE_PAYMENT_REFUND_RETRYABLE (a late payment's refund hit a transient
+	// provider error; its reservation is kept). The plugin's settle is replay-safe
+	// either way (the domain dedupes on the Stripe event id and resumes the refund
+	// under the same key). Stripe schedules its own retries and does not promise to
+	// honour Retry-After, so this is advisory — and the site does NOT retry here
+	// itself: Stripe's redelivery is the retry, and doubling it only adds load.
+	if (!result.ok && "retryable" in result && result.retryable) {
+		headers["Retry-After"] = String(BUSY_RETRY_AFTER_SECONDS);
+	}
+	return new Response(JSON.stringify(result), { status: result.status, headers });
 }
 
 export const POST: APIRoute = async (context) => {

@@ -11,6 +11,7 @@ import {
 	SkuStockConflictError,
 } from "../product-commerce/errors.js";
 import type {
+	DownloadAsset,
 	ProductCommerce,
 	ProductCommerceStore,
 	ProductVariant,
@@ -139,6 +140,33 @@ function redeclare(
 	return h.store.upsertVariant(
 		{ productId: productId(pid), variantKey: key, title: `Variant ${key}`, contentUpdatedAt: at },
 		idempotencyKey(idem),
+	);
+}
+
+/** A canonical ULID for the download-file cases' keys. */
+const DL_ULID = "01J9ZQ3V8K4M2N6P7R8S9T0VWX";
+
+/** A well-formed download-file descriptor for product `id`. */
+function assetFor(id: string, over: Partial<DownloadAsset> = {}): DownloadAsset {
+	return {
+		key: `dl/${id}/${DL_ULID}`,
+		filename: "guide.pdf",
+		contentType: "application/pdf",
+		size: 2048,
+		...over,
+	};
+}
+
+/** Seed a priced, sku'd DIGITAL product — the only kind a download file may sit on. */
+function seedDigital(h: ProductCommerceStoreHarness, id: string): Promise<ProductCommerce> {
+	return h.store.upsert(
+		{
+			productId: productId(id),
+			sku: sku(`SKU-${id}`),
+			price: money(cents(900), currency("USD")),
+			productKind: "digital",
+		},
+		idempotencyKey(`seed-${id}`),
 	);
 }
 
@@ -1733,6 +1761,43 @@ export function productCommerceStoreContract(
 			expect(tombstone?.deletedAt).not.toBeNull();
 		});
 
+		// Issue #374 — the delete-and-recreate shape the plugin's `product-orphans`
+		// sweep completes when the CMS delete hook was lost. The sweep calls nothing
+		// but `softDelete`, so what makes that safe is pinned here, on every adapter.
+		test("DELETE-AND-RECREATE: softDelete leaves the sku's stock and its live hold alone, a replay changes nothing, and the product re-created under a NEW id takes the sku with its stock", async () => {
+			const h = await makeStore();
+			const old = productId("prod-374-old");
+			const recreated = productId("prod-374-new");
+			await h.seedStock("SKU-374", 6);
+			await h.store.upsert(
+				{ productId: old, sku: sku("SKU-374"), price: money(cents(1200), currency("USD")) },
+				idempotencyKey("k-374-old"),
+			);
+			// A buyer's hold on the sku, taken while the old product was on sale.
+			await h.seedHold("SKU-374", 2);
+
+			await h.store.softDelete(old, idempotencyKey("products:prod-374-old:deleted"));
+			const tombstone = await h.store.getByProductId(old);
+			expect(tombstone).toMatchObject({ active: false, sku: "SKU-374" });
+			expect(tombstone?.deletedAt).not.toBeNull();
+
+			// The replay — the sweep and a late hook delivery share one key — is a no-op.
+			await h.store.softDelete(old, idempotencyKey("products:prod-374-old:deleted"));
+			expect(await h.store.getByProductId(old)).toEqual(tombstone);
+
+			// The CMS minted a new id for "the same" product. Its first sku is the old
+			// one's: the claim was released, and the stock the delete never touched is
+			// adopted whole — the live hold neither blocks the claim nor moved a unit.
+			const priced = await h.store.upsert(
+				{ productId: recreated, sku: sku("SKU-374"), price: money(cents(1200), currency("USD")) },
+				idempotencyKey("k-374-new"),
+			);
+			expect(priced).toMatchObject({ sku: "SKU-374", deletedAt: null });
+			expect(await onHandOf(h, "prod-374-new")).toBe(6);
+			// And the tombstone still names the sku it sold under, for order history.
+			expect((await h.store.getByProductId(old))?.sku).toBe("SKU-374");
+		});
+
 		// -- Phase 2: listCommerceByIds (batch catalog read, plan §6) -----------
 
 		test("listCommerceByIds returns records for existing ids and omits missing ids", async () => {
@@ -1761,9 +1826,95 @@ export function productCommerceStoreContract(
 				productId: p1,
 				sku: "SKU-B1",
 				price: { amount: 1999, currency: "USD" },
+				// No sync has carried a title yet — null, never "" or the sku.
+				title: null,
+				// No was-price set — null, never a zero amount.
+				compareAtPrice: null,
 				inStock: true,
 				active: false, // afterPublish deferred — unpublished until it lands
 			});
+		});
+
+		test("listCommerceByIds carries the title cache — the name an order line will snapshot", async () => {
+			const h = await makeStore();
+			const pid = productId("prod-bt1");
+			await h.store.upsert(
+				{
+					productId: pid,
+					sku: sku("SKU-BT1"),
+					price: money(cents(600), currency("USD")),
+					title: "Otta Stickers",
+				},
+				idempotencyKey("k1"),
+			);
+
+			const [view] = await h.store.listCommerceByIds([pid]);
+
+			expect(view?.title).toBe("Otta Stickers");
+		});
+
+		test("listCommerceByIds carries the compare-at (was) price as STORED — the store reports it, the storefront decides whether it is a sale", async () => {
+			const h = await makeStore();
+			const pid = productId("prod-bc1");
+			const seeded = await seedEditable(h, "prod-bc1", { priceCents: 1200 });
+			const res = await h.store.updateCommerceFields(
+				{ productId: pid, compareAtPrice: money(cents(2000), currency("USD")) },
+				idempotencyKey("was-1"),
+				seeded.updatedAt.toISOString(),
+			);
+			expect(res.ok).toBe(true);
+
+			const [view] = await h.store.listCommerceByIds([pid]);
+
+			expect(view?.price).toEqual({ amount: 1200, currency: "USD" });
+			expect(view?.compareAtPrice).toEqual({ amount: 2000, currency: "USD" });
+		});
+
+		test("listCommerceByIds reports a compare-at at or below the price VERBATIM — a price rise is data, not an error", async () => {
+			const h = await makeStore();
+			const pid = productId("prod-bc3");
+			const seeded = await seedEditable(h, "prod-bc3", { priceCents: 1200 });
+			const res = await h.store.updateCommerceFields(
+				{ productId: pid, compareAtPrice: money(cents(900), currency("USD")) },
+				idempotencyKey("was-low-1"),
+				seeded.updatedAt.toISOString(),
+			);
+			expect(res.ok).toBe(true);
+
+			const [view] = await h.store.listCommerceByIds([pid]);
+
+			// Not dropped, not clamped: whether it reads as a sale is decided
+			// downstream, so the store must not decide it here.
+			expect(view?.compareAtPrice).toEqual({ amount: 900, currency: "USD" });
+		});
+
+		test("the catalog view's public key set is exactly this — the admin-only unit cost can never ride it", async () => {
+			const h = await makeStore();
+			const pid = productId("prod-bc2");
+			const seeded = await seedEditable(h, "prod-bc2");
+			await h.store.updateCommerceFields(
+				{
+					productId: pid,
+					unitCost: money(cents(300), currency("USD")),
+					compareAtPrice: money(cents(2000), currency("USD")),
+				},
+				idempotencyKey("cost-1"),
+				seeded.updatedAt.toISOString(),
+			);
+
+			const [view] = await h.store.listCommerceByIds([pid]);
+
+			// An exact set, not a `not.toHaveProperty("unitCost")`: a new field on
+			// this storefront-reachable view must be added here on purpose.
+			expect(Object.keys(view ?? {}).toSorted()).toEqual([
+				"active",
+				"compareAtPrice",
+				"inStock",
+				"price",
+				"productId",
+				"sku",
+				"title",
+			]);
 		});
 
 		test("listCommerceByIds computes inStock via the store's own inventory join: on_hand > 0 ⇒ true; 0 or no inventory row ⇒ false", async () => {
@@ -2769,6 +2920,156 @@ export function productCommerceStoreContract(
 		test("countProducts on an empty store is 0", async () => {
 			const h = await makeStore();
 			expect(await h.store.countProducts({})).toBe(0);
+		});
+
+		// -- downloadAsset: the product's one download file (issue #376) -------
+		//
+		// The POINTER to a digital product's file lives on the product, so every
+		// past buyer gets whichever file is attached now (product-owner decision).
+		// The value rules (key shape, filename, type, size, digest) are the use-
+		// case's; what the STORE owns is the cross-field invariant that needs the
+		// stored row to decide — a physical product carries no file — decided
+		// inside the same compare-and-set as the write, so a concurrent kind flip
+		// cannot slip a file onto a physical product.
+
+		describe("downloadAsset: the product's one download file", () => {
+			test("a product starts with no file: downloadAsset reads null", async () => {
+				const h = await makeStore();
+				const row = await seedDigital(h, "dl-none");
+				expect(row.downloadAsset).toBeNull();
+				expect((await h.store.getByProductId(productId("dl-none")))?.downloadAsset).toBeNull();
+			});
+
+			test("an edit attaches a file to a digital product; the read returns it; null detaches it", async () => {
+				const h = await makeStore();
+				const seeded = await seedDigital(h, "dl-attach");
+				const withDigest = assetFor("dl-attach", { sha256: "ab".repeat(32) });
+				const res = await h.store.updateCommerceFields(
+					{ productId: productId("dl-attach"), downloadAsset: withDigest },
+					idempotencyKey("e1"),
+					seeded.updatedAt.toISOString(),
+				);
+				expect(res.ok && res.product.downloadAsset).toEqual(withDigest);
+				const read = await h.store.getByProductId(productId("dl-attach"));
+				expect(read?.downloadAsset).toEqual(withDigest);
+				expect(
+					(await h.store.getManyByProductId([productId("dl-attach")])).get(productId("dl-attach"))
+						?.downloadAsset,
+				).toEqual(withDigest);
+
+				// Without a digest, the stored descriptor has no `sha256` key at all.
+				const plain = await h.store.updateCommerceFields(
+					{ productId: productId("dl-attach"), downloadAsset: assetFor("dl-attach") },
+					idempotencyKey("e2"),
+					read?.updatedAt.toISOString() ?? "",
+				);
+				expect(plain.ok && plain.product.downloadAsset).toEqual(assetFor("dl-attach"));
+
+				const cleared = await h.store.updateCommerceFields(
+					{ productId: productId("dl-attach"), downloadAsset: null },
+					idempotencyKey("e3"),
+					plain.ok ? plain.product.updatedAt.toISOString() : "",
+				);
+				expect(cleared.ok && cleared.product.downloadAsset).toBeNull();
+				expect((await h.store.getByProductId(productId("dl-attach")))?.downloadAsset).toBeNull();
+			});
+
+			test("replacing the file replaces the pointer — every past buyer gets the new one", async () => {
+				const h = await makeStore();
+				const seeded = await seedDigital(h, "dl-replace");
+				const first = await h.store.updateCommerceFields(
+					{ productId: productId("dl-replace"), downloadAsset: assetFor("dl-replace") },
+					idempotencyKey("e1"),
+					seeded.updatedAt.toISOString(),
+				);
+				const next = assetFor("dl-replace", {
+					key: "dl/dl-replace/01J9ZQ3V8K4M2N6P7R8S9T0VWY",
+					filename: "guide-v2.pdf",
+					size: 4096,
+				});
+				const res = await h.store.updateCommerceFields(
+					{ productId: productId("dl-replace"), downloadAsset: next },
+					idempotencyKey("e2"),
+					first.ok ? first.product.updatedAt.toISOString() : "",
+				);
+				expect(res.ok && res.product.downloadAsset).toEqual(next);
+			});
+
+			test("a later CMS-sync upsert and an unrelated edit both PRESERVE the attached file", async () => {
+				const h = await makeStore();
+				const seeded = await seedDigital(h, "dl-keep");
+				const attached = await h.store.updateCommerceFields(
+					{ productId: productId("dl-keep"), downloadAsset: assetFor("dl-keep") },
+					idempotencyKey("e1"),
+					seeded.updatedAt.toISOString(),
+				);
+				const synced = await h.store.upsert(
+					{ productId: productId("dl-keep"), title: "Field Guide" },
+					idempotencyKey("sync-1"),
+				);
+				expect(synced.downloadAsset).toEqual(assetFor("dl-keep"));
+				const edited = await h.store.updateCommerceFields(
+					{ productId: productId("dl-keep"), taxClass: "reduced" },
+					idempotencyKey("e2"),
+					synced.updatedAt.toISOString(),
+				);
+				expect(attached.ok).toBe(true);
+				expect(edited.ok && edited.product.downloadAsset).toEqual(assetFor("dl-keep"));
+			});
+
+			test("a file on a PHYSICAL product is refused, and nothing is written", async () => {
+				const h = await makeStore();
+				const seeded = await seedEditable(h, "dl-phys");
+				await expect(
+					h.store.updateCommerceFields(
+						{ productId: productId("dl-phys"), downloadAsset: assetFor("dl-phys") },
+						idempotencyKey("e1"),
+						seeded.updatedAt.toISOString(),
+					),
+				).rejects.toMatchObject({ name: "InvalidProductFieldError", field: "downloadAsset" });
+				const read = await h.store.getByProductId(productId("dl-phys"));
+				expect(read?.downloadAsset).toBeNull();
+				expect(read?.updatedAt.toISOString()).toBe(seeded.updatedAt.toISOString());
+			});
+
+			test("making a product with a file physical is refused, unless the same edit detaches the file", async () => {
+				const h = await makeStore();
+				const seeded = await seedDigital(h, "dl-flip");
+				const attached = await h.store.updateCommerceFields(
+					{ productId: productId("dl-flip"), downloadAsset: assetFor("dl-flip") },
+					idempotencyKey("e1"),
+					seeded.updatedAt.toISOString(),
+				);
+				const at = attached.ok ? attached.product.updatedAt.toISOString() : "";
+				await expect(
+					h.store.updateCommerceFields(
+						{ productId: productId("dl-flip"), productKind: "physical" },
+						idempotencyKey("e2"),
+						at,
+					),
+				).rejects.toMatchObject({ name: "InvalidProductFieldError", field: "downloadAsset" });
+				expect((await h.store.getByProductId(productId("dl-flip")))?.productKind).toBe("digital");
+
+				const both = await h.store.updateCommerceFields(
+					{ productId: productId("dl-flip"), productKind: "physical", downloadAsset: null },
+					idempotencyKey("e3"),
+					at,
+				);
+				expect(both.ok && both.product.productKind).toBe("physical");
+				expect(both.ok && both.product.downloadAsset).toBeNull();
+			});
+
+			test("the guard order holds: a stale edit carrying a file reports stale, not a refusal", async () => {
+				const h = await makeStore();
+				await seedEditable(h, "dl-stale");
+				const res = await h.store.updateCommerceFields(
+					{ productId: productId("dl-stale"), downloadAsset: assetFor("dl-stale") },
+					idempotencyKey("e1"),
+					"2000-01-01T00:00:00.000Z",
+				);
+				expect(res.ok).toBe(false);
+				expect(!res.ok && res.reason).toBe("stale");
+			});
 		});
 
 		// -- Variants: one commerce row per sellable unit ----------------------

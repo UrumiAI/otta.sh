@@ -12,8 +12,9 @@
  * stamp is the FIRST thing on the page (docs/theme/TEMPERED.md §8): the state
  * is the most important thing on it.
  *
- * The redirect parameters are read for exactly ONE purpose — choosing between
- * two `pending` copy variants — and are otherwise inert: never echoed into the
+ * The redirect parameters are read for exactly ONE purpose — choosing how a
+ * `pending` order is presented (the "confirming" copy, even past the hold, since a
+ * just-paid pending order may still settle) — and are otherwise inert: never echoed into the
  * markup, never forwarded, never used to decide that anything is paid. That
  * "never echoed" rule is asserted structurally (checkout-client-js.test.ts):
  * their names may appear in this frontmatter and NOWHERE in the template below.
@@ -29,28 +30,61 @@
  *
  * ── Zero client JavaScript, and that is a rule (ADR-0012 decision 2) ─────
  * Polling is `<meta http-equiv="refresh">`, bounded to 8 hops (~30 s), then a
- * manual link: no JS, no busy loop. The sweeping ribbon beside the count is a
+ * manual link: no JS, no busy loop. It runs only while a change is expected
+ * (the buyer just came back from Stripe), and each hop reloads the SAME URL, so
+ * it replaces the history entry instead of adding one; the hop count lives in a
+ * short-lived cookie (`lib/order-poll.ts`, QA U-13). The sweeping ribbon beside the count is a
  * CSS animation on a page that reloads itself, which is why it comes from
- * `PollRibbon` and NOT from `HoldRibbon` — the latter ships a bundled script
- * for its countdown, and Astro emits a component's script whenever that
- * component renders, so importing it here would have put ~1 kB of client JS on
- * a page specified to carry none. `checkout-client-js.test.ts` now scans
- * component imports for exactly that.
+ * `PollRibbon` and NOT from the cart's countdown — whose script
+ * (`HoldClock.astro`) Astro emits wherever it renders, so it would have put
+ * ~1 kB of client JS on a page specified to carry none. The markup is the
+ * theme's `OrderView` since Phase 3, and `checkout-client-js.test.ts` walks
+ * page → shell → registry → every view for exactly that.
  */
-import { STOREFRONT_ORDER_ROUTE, type OrderRouteResult } from "@otta-sh/plugin";
+import {
+	orderLabel,
+	orderTotalLabel,
+	STOREFRONT_ORDER_ROUTE,
+	type OrderRouteResult,
+} from "@otta-sh/plugin";
 import { getPublicPluginApiRouteHandler } from "emdash/plugin-utils";
-import Ledger from "../../components/Ledger.astro";
-import Notice from "../../components/Notice.astro";
-import PollRibbon from "../../components/PollRibbon.astro";
-import StateStamp from "../../components/StateStamp.astro";
-import StepTrack from "../../components/StepTrack.astro";
-import Sum from "../../components/Sum.astro";
-import Base from "../../layouts/Base.astro";
+import { env } from "virtual:emdash/env";
+import Storefront from "../../layouts/Storefront.astro";
+import {
+	ACCOUNT_HOME_PATH,
+	ACCOUNT_LOGIN_PATH,
+	orderRefundedNote,
+	sessionOwnsOrder,
+} from "../../lib/account.js";
+import { forgetSpentCart } from "../../lib/cart-rotation.js";
 import { clearCheckoutCookie } from "../../lib/checkout-cookie.js";
+import { ORDER_PAGE_RESUME_ERRORS, resumeHref } from "../../lib/checkout-resume.js";
+import { downloadsBucketFrom } from "../../lib/download-delivery.js";
+import { downloadLinks } from "../../lib/download-links.js";
 import { cartErrorMessage } from "../../lib/error-messages.js";
-import { dispatchOttaRoute } from "../../lib/otta-api.js";
+import { keepPrivate } from "../../lib/no-store.js";
+import {
+	MAX_ORDER_POLLS,
+	ORDER_POLL_SECONDS,
+	orderPollHop,
+	orderPollKey,
+	recordOrderPollHop,
+	shouldPollOrder,
+} from "../../lib/order-poll.js";
+import { orderStamp } from "../../lib/order-stamp.js";
+import { orderProgress, orderReadOutcome, orderSumRows } from "../../lib/order-view.js";
+import { dispatchOttaRoute, isBusyResult, markBusy } from "../../lib/otta-api.js";
+import { isOrderPayable } from "../../lib/pay-guard.js";
+import type { OrderModel } from "../../themes/contract.js";
 
 const { orderId } = Astro.params;
+
+/* This page renders one buyer's order, and may delete the checkout stash and a
+   spent cart's cookie: never stored by a shared cache, and kept out of Astro's
+   route cache, which ignores Cache-Control (middleware.ts, "TWO CACHES") — QA
+   U-7. Called FIRST, before any cookie is touched; a stored copy of a response
+   that deletes a cookie would delete the next shopper's. */
+keepPrivate(Astro);
 
 // The stash has done its job the moment the buyer lands here — whether payment
 // succeeded, failed or was abandoned. Drop it either way.
@@ -67,71 +101,107 @@ const result =
 			);
 
 const order = result !== null && result.ok ? result.order : null;
-if (order === null) Astro.response.status = result !== null && !result.ok ? 404 : 503;
+/* 404 only for an order that does not exist; a fault (RENDER_FAILED, or no answer
+   at all) is a 503 — never "not found" for a live order's address (issue #381).
+   `lib/order-view.ts` decides the status and the failure copy together. */
+const outcome = orderReadOutcome(result);
+Astro.response.status = outcome.status;
+
+/* A FINISHED order (no longer pending — paid, expired, failed…) leaves its cart
+   spent: it can never produce another order. If the cart cookie still names it,
+   forget it here, so the shopper's next "Add to cart" starts a new cart instead
+   of failing CART_CHECKED_OUT. A PENDING order's cart is kept: the cart page's
+   way back to its checkout is built from that cookie (cart-rotation.ts).
+   The response is already private (keepPrivate, above). */
+if (order !== null) {
+	await forgetSpentCart(
+		{ cookies: Astro.cookies, handler: getPublicPluginApiRouteHandler(Astro.locals), url: Astro.url },
+		order,
+	);
+}
+/* BUSY is not "no such order": the read was refused under load (already retried
+   once). 503 + short Retry-After, and the busy copy below — never a 404. */
+const busy = isBusyResult(result);
+if (busy) markBusy(Astro.response);
 
 /** Did the buyer arrive via Stripe's redirect? Read ONLY to pick the pending
  *  copy — the value is never rendered, forwarded, or trusted. */
 const returnedFromStripe = Astro.url.searchParams.has("payment_intent");
+/** …and did Stripe say the payment went through (or is going through)? Read ONLY
+ *  so a dead order's page does not say "Nothing was charged" before the webhook
+ *  has recorded a late payment, and polls until its refund is (QA2 M3). Never
+ *  rendered, forwarded, or trusted to decide anything about the order. */
+const returnStatus = Astro.url.searchParams.get("redirect_status");
+const returnedPaid =
+	returnedFromStripe && (returnStatus === "succeeded" || returnStatus === "processing");
+/** Only processing — the refund is then promised only if it goes through. */
+const returnedProcessing = returnedPaid && returnStatus === "processing";
 
 const state = order?.state ?? null;
 const isPending = state === "pending";
 
-/** Bounded meta-refresh poll: at most 8 hops (~30 s), then a manual link. */
-const MAX_POLLS = 8;
-const poll = Number.parseInt(Astro.url.searchParams.get("p") ?? "0", 10);
-const pollAttempt = Number.isFinite(poll) && poll > 0 ? poll : 0;
-const shouldPoll = isPending && pollAttempt < MAX_POLLS;
-const nextPollUrl = `/orders/${encodeURIComponent(orderId ?? "")}?p=${pollAttempt + 1}`;
-
-interface StateCopy {
-	/** The stamp's headline — the largest type on the page. */
-	headline: string;
-	/** What it means and what happens next. */
-	body: string | null;
-}
+/**
+ * A pending order PAST its hold, reached other than from Stripe's redirect. The
+ * sweep will expire it on its next tick, and `/checkout/pay` already refuses it
+ * (`lib/pay-guard.ts`) — so offering "resume" would walk the buyer round a loop.
+ * It keeps the bounded poll (a payment made a moment ago may still settle it) and
+ * gets the door out. A buyer just back from Stripe is not "lapsed" here at all:
+ * they get the confirming copy.
+ */
+const holdLapsed =
+	order !== null && isPending && !returnedFromStripe && !isOrderPayable(order, new Date());
 
 /**
- * The order's own state → what we are willing to say. Copy lives here so the
- * template stays a mapping and the honesty rules are readable in one place.
- *
- * These are the page's OWN sentences, split at the boundary that was already in
- * them — §10 says quote the copy that exists rather than rewriting it, and the
- * stamp simply wants the first sentence larger than the second. The expired
- * body is the one line taken from the mockup: it says the same thing the old
- * sentence did and adds the fact a buyer looking at a lapsed order needs most.
+ * The bounded poll (`lib/order-poll.ts`): only for a pending order the buyer has
+ * just paid for — nothing else is about to change on its own — at most
+ * `MAX_ORDER_POLLS` hops, counted in a cookie because every hop reloads this
+ * same URL (so it replaces the history entry rather than adding one). The
+ * response is already private (keepPrivate, above).
  */
-const COPY: Record<string, StateCopy> = {
-	paid: { headline: "Order confirmed.", body: "Thank you — we've received your payment." },
-	failed: { headline: "The payment did not go through.", body: "No charge was made." },
-	expired: {
-		headline: "This order expired.",
-		body: "Payment didn't complete in time, so the items went back on sale. Nothing was charged.",
-	},
-	cancelled: { headline: "This order was cancelled.", body: null },
-	refunded: { headline: "This order has been refunded.", body: null },
-};
-
-const pendingCopy: StateCopy = returnedFromStripe
-	? {
-			headline: "Payment submitted.",
-			body: "We're confirming it with our payment provider — this usually takes a few seconds. This page refreshes automatically.",
-		}
-	: { headline: "This order is awaiting payment.", body: null };
-
-const stamp: StateCopy | null =
-	state === null
+/* Keyed on the order AND the payment it came back from, so a second return
+   within the cookie's lifetime gets its full run (the intent id, never the
+   client secret, and only into an HttpOnly cookie — never the markup). */
+const pollKey =
+	order === null
 		? null
-		: isPending
-			? pendingCopy
-			: (COPY[state] ?? { headline: `Order status: ${state}.`, body: null });
+		: orderPollKey(order.id, Astro.url.searchParams.get("payment_intent"));
+const pollHop =
+	pollKey !== null && returnedFromStripe ? orderPollHop(Astro.cookies, pollKey) : 1;
+const shouldPoll = shouldPollOrder({
+	state,
+	returnedFromStripe,
+	hop: pollHop,
+	returnedPaid,
+	latePayment: order?.latePayment ?? "none",
+});
+if (shouldPoll && pollKey !== null) recordOrderPollHop(Astro.cookies, pollKey, pollHop);
+/* "Check again" reloads this same URL too: `""` is the document's own address,
+   which keeps the confirming copy for a buyer back from Stripe, adds no history
+   entry, and echoes none of the redirect parameters into the markup. */
+const nextPollUrl = "";
 
-/** "Total" while it is still a quote; "Paid" once the order settled (§7). A map
- *  rather than a comparison so no other state can ever pick up the word. */
-const TOTAL_LABEL: Record<string, string> = { paid: "Paid" };
+/**
+ * The order's own state → what we are willing to say: `lib/order-stamp.ts`, where
+ * the honesty rules are unit-tested. The one sentence that depends on more than
+ * the state — whether anything was charged on an expired or cancelled order — is
+ * decided by `order.latePayment`, which the plugin derives from the payments and
+ * refunds ledgers: "Nothing was charged" only when nothing was captured, and "we've
+ * refunded it" only once the refund is on the ledger.
+ */
+const stamp = orderStamp({
+	state,
+	latePayment: order?.latePayment ?? "none",
+	returnedFromStripe,
+	holdLapsed,
+	polling: shouldPoll,
+	returnedPaid,
+	returnedProcessing,
+});
 
 /**
  * The states with nowhere left to go, and therefore the states that get the
- * door out.
+ * door out — plus a pending order past its hold (`holdLapsed` above), which is
+ * one sweep away from `expired` and which the pay page already refuses.
  *
  * `failed` is in this set, which it was not before. The cart that produced the
  * order is `checked_out` and never returns to `active`, so /checkout answers
@@ -140,18 +210,83 @@ const TOTAL_LABEL: Record<string, string> = { paid: "Paid" };
  * stops. `POST /checkout/new-cart` is the one control that actually moves them,
  * and it is already built. The stamp still leads with "No charge was made", so
  * the offer reads as "try again", not "pay again".
+ *
+ * The door is a GET LINK TO /cart, NOT that POST, and it must stay one. This
+ * page is `no-referrer` (ADR-0012 decision 6: its URL can hold the client
+ * secret), and under `no-referrer` browsers send `Origin: null` on the page's
+ * own form POSTs (Fetch, "append a request `Origin` header") — the guard 403s
+ * that, so a new-cart form here could never work. /cart is not `no-referrer`,
+ * and for the one cart that needs the door — `checked_out`, which is exactly
+ * this order's — it renders the same `POST /checkout/new-cart` button with its
+ * consequence stated. A buyer whose cookie holds some other cart, or none, lands
+ * on a cart they can already use. The link itself carries no Referer from here.
  */
-const deadEnd = state === "expired" || state === "cancelled" || state === "failed";
+const deadEnd = state === "expired" || state === "cancelled" || state === "failed" || holdLapsed;
 
-/* Resuming a PENDING order is different, and still goes through /checkout
-   rather than straight to /checkout/pay: the stash was just deleted above, so
-   the pay page has no client secret to mount. Re-submitting the review form
-   replays `checkout:<cartId>` — the same order, and through Stripe's own
-   idempotency the same PaymentIntent and the same client secret — which
-   re-stashes it. The stable key is what makes resuming possible at all. */
-const canResume = state === "pending" && !returnedFromStripe;
-const canCheckAgain = isPending && !shouldPoll;
+/* Signed in as this order's owner? Then it is already in their list (a signed-in
+   checkout under the account's own email is owned from birth), and the keep-this-
+   link line can point straight there instead of at sign-in. Asked of the plugin
+   through the session's own order read — the public order carries no email — and
+   only once the poll has stopped: a polling page reloads every few seconds, and
+   the answer changes nothing it shows. The render is private already
+   (keepPrivate, above, for every request). */
+const ownsOrder =
+	order !== null &&
+	!shouldPoll &&
+	(await sessionOwnsOrder(
+		getPublicPluginApiRouteHandler(Astro.locals),
+		Astro.cookies,
+		order.id,
+		Astro.url,
+	));
+
+/* Resuming a PENDING order goes through the page-owned resume path
+   (`/checkout/resume?order=…`, QA U-2), not through /checkout: the review
+   rebuilds from the CART cookie, which another device — or this one after the
+   cart rotated — does not have. The resume needs this order's id PLUS a second
+   factor: this browser's cart or owning session, else the order's email asked
+   for on /checkout/resume/email (the id alone, the capability this page reads
+   with, is not enough). The plugin replays the order's own
+   checkout on its own key, so the pay page gets the same PaymentIntent and the
+   same client secret, re-stashed. The stash was just deleted above; the resume
+   writes it again. */
+const canResume = state === "pending" && !returnedFromStripe && !holdLapsed;
+/* A late payment on a dead order whose refund is not recorded yet, once the
+   poll has stopped: the stamp says "Check again in a minute", so the page
+   offers it (QA2 M3). */
+const lateRefundUnrecorded =
+	deadEnd && !holdLapsed && returnedPaid && (order?.latePayment ?? "none") !== "refunded";
+const canCheckAgain = (isPending || lateRefundUnrecorded) && !shouldPoll;
 const hasActions = deadEnd || canResume || canCheckAgain;
+
+/** A resume that could not reach the pay page says why here — only for the
+ *  tokens the resume endpoint sends (`ORDER_PAGE_RESUME_ERRORS`), and only while
+ *  the order can still be resumed: for any other state the stamp is the answer. */
+const resumeErrorToken = Astro.url.searchParams.get("error");
+const resumeError =
+	canResume && resumeErrorToken !== null && ORDER_PAGE_RESUME_ERRORS.has(resumeErrorToken)
+		? cartErrorMessage(resumeErrorToken)
+		: null;
+
+/* A Download link on each digital line the buyer may download NOW (issue #376):
+   the page asks the delivery gate, once per digital sku, and only for an order
+   that can deliver on a deployment with a DOWNLOADS bucket — so a pending page
+   that polls asks nothing (`lib/download-links.ts`). The link carries the order
+   id, which is this page's own capability; the endpoint re-checks on the click.
+   No Referer leaves with it: this page is no-referrer. */
+const downloads =
+	order === null
+		? new Map<string, string>()
+		: await downloadLinks({
+				handler: getPublicPluginApiRouteHandler(Astro.locals),
+				bucketPresent: downloadsBucketFrom(env) !== undefined,
+				order: {
+					id: order.id,
+					state: order.state,
+					lines: order.lines.map((line) => ({ sku: line.sku, fulfillmentKind: line.fulfillmentKind })),
+				},
+				baseUrl: Astro.url,
+			});
 
 /** The order's lines are a RECEIPT, so they carry the purchase-time title
  *  snapshot as well as the SKU — unlike /checkout, where the cart wire has no
@@ -162,242 +297,65 @@ const ledgerRows =
 		sku: line.sku,
 		qty: line.qty,
 		money: line.lineTotal.formatted,
+		downloadHref: downloads.get(line.sku),
 	})) ?? [];
 
-const sumRows =
+/* The order page's rows (`lib/order-view.ts`), shared with the account's order
+   page so the two cannot disagree: "Not calculated" stays prose (§7). */
+const sumRows = order === null ? [] : orderSumRows(order.totals);
+/** The order's name for the shopper: what was bought, never the order id (a
+ *  UUID that names nothing to them). The SAME function names the order in its
+ *  emails, so the page and the inbox agree. `PublicOrderView` lines say `qty`;
+ *  `orderLabel` takes `quantity` — mapped here rather than widened there. The id
+ *  keeps every machine job it has on this page: the URL, the poll URL. */
+const label =
 	order === null
-		? []
-		: [
-				{ label: "Subtotal", amount: order.totals.subtotal },
-				{
-					label:
-						order.totals.appliedCouponCode !== null
-							? `Discount · ${order.totals.appliedCouponCode}`
-							: "Discount",
-					amount: order.totals.discount,
-					fallback: "No coupon applied",
-				},
-				{ label: "Shipping", amount: order.totals.shipping },
-				{ label: "Tax", amount: order.totals.tax },
-			];
+		? null
+		: orderLabel(order.lines.map((line) => ({ title: line.title, quantity: line.qty })));
+
+/**
+ * The model. Everything the view prints is decided above — including the
+ * failure sentence (`orderReadOutcome`), so BUSY / not-found / unavailable stay
+ * the page's call, and each matches the status the page answers with.
+ * `returnedFromStripe` is NOT in it: only the copy it chose is.
+ */
+const model: OrderModel = {
+	order,
+	stamp,
+	orderLabel: label,
+	failureMessage: cartErrorMessage(outcome.failure ?? "SERVICE_UNAVAILABLE"),
+	/* The tracker never says Payment is completed on an order nobody paid. */
+	progress: state === null ? null : orderProgress(state),
+	shouldPoll,
+	pollHop,
+	pollMax: MAX_ORDER_POLLS,
+	nextPollUrl,
+	hasActions,
+	canCheckAgain,
+	resumeHref: canResume && order !== null ? resumeHref(order.id) : null,
+	resumeError,
+	deadEnd,
+	ledgerRows,
+	sumRows,
+	/* The domain's one rule (shared with the account page and the emails): "Paid"
+	   for every state the money was captured in, refunded included — a refund is
+	   the stamp's to say — else "Total" (§7). */
+	totalLabel: order === null ? "Total" : orderTotalLabel(order.state),
+	/* The refunds ledger's figure, by the account page's own rule (QA2 X3). */
+	refundedNote: order === null ? null : orderRefundedNote(order.refundedCents, order.currency),
+	accountSignInHref: ACCOUNT_LOGIN_PATH,
+	accountOrdersHref: ownsOrder ? ACCOUNT_HOME_PATH : null,
+};
 ---
 
 {/* The order names its own currency; a failed read names none (§7). */}
-<Base
-	title={order === null ? "Order" : `Order ${order.id}`}
+<Storefront
+	view="order"
+	model={model}
+	title={label ?? "Order"}
 	currency={order?.currency ?? null}
 >
 	<meta name="referrer" content="no-referrer" slot="head" />
-	{shouldPoll && <meta http-equiv="refresh" content={`4;url=${nextPollUrl}`} slot="head" />}
-
-	{
-		order === null || stamp === null ? (
-			<>
-				{/* NO step track here. It says Cart and Details and Payment are
-				    behind you, and for an order that does not exist — a mistyped
-				    link, someone else's reference, a service that is down — that
-				    is a journey the visitor never made. */}
-				<h1 class="title">Order</h1>
-				<div class="alert">
-					<Notice>
-						{result !== null && !result.ok && "reason" in result
-							? cartErrorMessage(result.reason)
-							: cartErrorMessage("SERVICE_UNAVAILABLE")}
-					</Notice>
-				</div>
-				<p class="back">
-					<a href="/products">Browse products</a>
-				</p>
-			</>
-		) : (
-			<>
-				{/* Wrapped rather than given a class: a page's scoped selector
-				    cannot reach a component's root (src/lib/rest-props.ts), so the
-				    spacing around one lives on an element the page owns. */}
-				<div class="steps"><StepTrack current="order" /></div>
-
-				<StateStamp
-					state={order.state}
-					headline={stamp.headline}
-					body={stamp.body}
-					reference={order.id}
-				>
-					{/* The hold ribbon's grammar, running indeterminate and
-					    SCRIPT-FREE: there is no duration to drain against, so the
-					    count carries the information and the sweep says only
-					    "still working". */}
-					{shouldPoll && (
-						<div class="poll">
-							<PollRibbon poll={pollAttempt + 1} pollMax={MAX_POLLS} />
-						</div>
-					)}
-				</StateStamp>
-
-				<p class="keep">Keep this link to check its status.</p>
-
-				{hasActions && (
-					<div class="actions">
-						{canCheckAgain && (
-							<a class="u-btn u-btn-ghost" href={nextPollUrl}>
-								Check again
-							</a>
-						)}
-						{canResume && (
-							<a class="u-btn u-btn-ghost" href="/checkout">
-								Complete payment
-							</a>
-						)}
-						{deadEnd && (
-							<form method="POST" action="/checkout/new-cart">
-								<button type="submit" class="u-btn u-btn-ghost">
-									Start a new cart
-								</button>
-							</form>
-						)}
-					</div>
-				)}
-
-				<div class="cols">
-					<section class="panel">
-						<div class="panel-head">
-							<h2 class="u-label head-label">Items</h2>
-						</div>
-						<Ledger rows={ledgerRows} />
-						{order.fulfillment !== null && (
-							<p class="ship">
-								Shipped with {order.fulfillment.carrier} — tracking{" "}
-								<span class="u-mono">{order.fulfillment.trackingNumber}</span>
-							</p>
-						)}
-					</section>
-
-					<section class="panel">
-						<div class="panel-head">
-							<h2 class="u-label head-label">Totals</h2>
-						</div>
-						<Sum
-							rows={sumRows}
-							total={order.totals.total}
-							totalLabel={TOTAL_LABEL[order.state] ?? "Total"}
-							excludesUncalculated={order.totals.totalExcludesUncalculated}
-						/>
-					</section>
-				</div>
-			</>
-		)
-	}
-</Base>
-
-<style>
-	.steps {
-		margin-bottom: 2rem;
-	}
-
-	.title {
-		font-family: var(--u-display);
-		font-variation-settings: "wdth" 78, "opsz" 48;
-		font-weight: 700;
-		font-size: clamp(1.75rem, 4vw, 2.25rem);
-		letter-spacing: -0.025em;
-		line-height: 1;
-		margin: 0 0 1.5rem;
-	}
-
-	.alert {
-		margin-bottom: 1.5rem;
-	}
-
-	/* The stamp is a flex column with `align-items: flex-start`, so a wrapper
-	   shrinks to its content — which would leave the sweeping track only as wide
-	   as "CHECKING 1 OF 8". §6 gives the ribbon a 22rem measure; this is what
-	   lets it have one. */
-	.poll {
-		width: 100%;
-		max-width: 22rem;
-		margin-top: 0.375rem;
-	}
-
-	.keep {
-		margin: 0.75rem 0 0;
-		font-size: 0.75rem;
-		color: var(--u-mute);
-	}
-
-	.actions {
-		display: flex;
-		flex-wrap: wrap;
-		gap: 0.75rem;
-		margin-top: 1.5rem;
-	}
-	.actions form {
-		margin: 0;
-	}
-
-	/* §8: items and totals, side by side under the stamp. */
-	.cols {
-		display: grid;
-		grid-template-columns: 1.15fr 1fr;
-		gap: 3rem;
-		align-items: start;
-		margin-top: 2.5rem;
-	}
-
-	.panel {
-		display: flex;
-		flex-direction: column;
-		gap: 1.25rem;
-		min-width: 0;
-	}
-
-	.panel-head {
-		display: flex;
-		flex-direction: column;
-		gap: 0.25rem;
-		padding-bottom: 0.75rem;
-		border-bottom: var(--u-hair);
-	}
-	/* A real <h2> wearing the eyebrow treatment — styling, not a demotion, so
-	   screen-reader heading navigation still works. `.u-label` (tokens.css)
-	   already beats the UA sheet on size and weight; the margin is all that is
-	   left to undo. */
-	.head-label {
-		margin: 0;
-		color: var(--u-ink);
-	}
-
-	.ship {
-		margin: 0;
-		font-size: 0.8125rem;
-		color: var(--u-mute);
-	}
-	.ship .u-mono {
-		font-size: 0.75rem;
-		color: var(--u-ink);
-		overflow-wrap: anywhere;
-	}
-
-	/* GHOST ONLY, and that is this page's decision rather than the shape's:
-	   nothing here is a primary action — the order is already placed, and every
-	   control is a way out rather than a way on (§2). This page used to say so
-	   by redefining `.btn` as a ghost, which meant `class="btn"` here and
-	   `class="btn"` on the PDP drew two different buttons. It now says it by
-	   writing `.u-btn .u-btn-ghost` on all three controls (tokens.css). */
-
-	.back {
-		margin: 2rem 0 0;
-		font-size: 0.8125rem;
-	}
-	.back a {
-		color: var(--u-mute);
-	}
-	.back a:hover {
-		color: var(--u-ink);
-	}
-
-	@media (max-width: 54rem) {
-		.cols {
-			grid-template-columns: 1fr;
-			gap: 2.5rem;
-		}
-	}
-</style>
+	{/* No `url=`: the same URL reloads, replacing the history entry (QA U-13). */}
+	{shouldPoll && <meta http-equiv="refresh" content={String(ORDER_POLL_SECONDS)} slot="head" />}
+</Storefront>

@@ -53,7 +53,8 @@ simulator** — no Cloudflare account, API token, remote database or deployment 
 involved, and nothing here can reach one. It is wired as its own vitest project
 (`store-emdash-d1`, `vitest.d1.config.ts`) rather than into the default battery:
 it boots `workerd`, migrates a fresh database per test file, and takes a couple of
-minutes. CI runs it **nightly** and on manual dispatch, never per PR. Miniflare is
+minutes. CI runs it on manual dispatch and as the release gate (PRs into `main` and
+`main` pushes), never on per-increment PRs. Miniflare is
 given the **storefront's own** compatibility date and flags
 (`sites/staging/wrangler.jsonc`), so a divergence found here means something about
 production rather than about an invented runtime.
@@ -61,14 +62,14 @@ production rather than about an invented runtime.
 **What the toolchain costs, stated plainly.** `@cloudflare/vitest-plugin` pins its
 `wrangler` and `miniflare` versions **exactly**, and that `miniflare` in turn pins
 its own `workerd` exactly. So installing it adds a third `workerd` build (~150 MB)
-that only the nightly job ever executes, and **every** install — including every
+that only the `d1` job ever executes, and **every** install — including every
 per-PR CI install — pays for it. It also moves the version `sites/staging`'s
 `@astrojs/cloudflare` peer-resolves `workerd` to, because pnpm picks the highest
 `workerd` in the graph: the storefront build now runs the newer one. Overriding
 `wrangler` back to the catalog version was tried and does **not** undo either
 effect — `miniflare`'s exact `workerd` pin is what carries it — so the override is
 deliberately absent rather than forgotten. The honest fix is upstream ranges or a
-separate install for the nightly; until then the whole toolchain is enumerated in
+separate install for the `d1` job; until then the whole toolchain is enumerated in
 `pnpm-workspace.yaml`'s `minimumReleaseAgeExclude` so nothing about it is
 implicit.
 
@@ -276,12 +277,13 @@ increment renders, not for this store.
 ## Cart document model
 
 `EmdashCartStore` implements the domain's `CartStore` over **one aggregate document
-per cart**, plus one lookup collection the port signature forces.
+per cart**, plus two lookup collections the port signatures force.
 
 | Collection | Doc id | Holds | Declared indexes |
 |---|---|---|---|
 | `carts` | cart id | `state`, `orderId`, `currency`, the `lines` map keyed by sku, the embedded mutation ledger, the denormalized `holdExpiresAt` | `state`, `holdExpiresAt` |
 | `cart_mutation_index` | mutation idempotency key | `{ cartId }` — a locator, never the record | — |
+| `cart_create_keys` | a keyed create's key (server-derived: `rotate:<spentCartId>`) | `{ cartId }` — the cart that key minted; claimed before the cart is written, so racing creates converge | — |
 
 **Three SQL features disappear into the shape.** `cart_lines (cart_id, sku)` UNIQUE
 becomes the lines map being keyed by sku — structural, and not an index, which
@@ -303,6 +305,18 @@ that mutates is given the cart id directly and each of them re-ensures the locat
 reserve key, which IS the add's mutation key, which the locator maps to the cart —
 and that second hop is also the sweep's SCOPING: a raw reserve has no cart claim,
 so no locator, so the cart sweep can never reap it.
+
+**Why there is a third.** A keyed `create(currency, key)` must answer the same cart
+for the same key however many calls race, and a create has no cart id to start
+from. `cart_create_keys/{key}` is claimed FIRST (create-if-absent naming a freshly
+minted id); a loser reads the winner's id back, and every caller then
+create-if-absents the cart document, so a crash between the two writes is finished
+by the next call. The only key producer is the domain's `replaceSpentCart`
+(`rotate:<spentCartId>`), so the collection gains **one document per replaced
+cart** — bounded by the number of orders that ever left a cart behind — and it is
+**never pruned**: a locator removed while its spent cart's cookie is still in some
+browser would let a later replacement mint a second cart. That growth is accepted
+(one tiny document per order) until a retention policy for spent carts exists.
 
 ### The cart is the first cross-aggregate edge
 
@@ -415,8 +429,13 @@ is **never** pruned at any age: it is what tells a replayer to resume and what m
 a dangling hold listable, so dropping one would orphan real stock. `completed`
 records keep the last `CART_MUTATION_LEDGER_SIZE = 64`, oldest evicted. `abandoned`
 records — the audit trail of a reaped crash, whose units are already back and whose
-claim is retired — keep the last `CART_ABANDONED_LEDGER_SIZE = 16`, so the second
-thing that could grow without limit on a long-lived cart does not. The accepted
+claim is retired, or of an add refused `OUT_OF_STOCK`, which never had a hold and
+is retired by the domain as it decides (`abandonClaim`) — keep the last
+`CART_ABANDONED_LEDGER_SIZE = 16`, so the second thing that could grow without
+limit on a long-lived cart does not. Evicting a refused add's record has one
+residual: a very late replay of its key runs as a fresh add, which on a cart that
+has since gained a line for that sku is an increment of that line (current truth,
+as for an evicted completed record). The accepted
 residual is
 narrow and stated in the source: a replay of a key whose completed record was
 evicted no longer short-circuits, so it answers with current truth instead of the
@@ -2179,7 +2198,7 @@ of the four reports moved to write time and two did not:
 
 | Document | Contents |
 |---|---|
-| `reporting_daily/{currency}:{YYYY-MM-DD}` | the orders CREATED that UTC day in that currency: `stateCounts`, `revenueOrders`, `revenueCents`, `refundEntries`, `refundedCents` |
+| `reporting_daily/{currency}:{YYYY-MM-DD}` | the orders CREATED that UTC day in that currency: one flat `state_<state>` count per state, `revenueOrders`, `revenueCents`, `refundEntries`, `refundedCents`, and the two guards `epoch` and `seq` (see "One event is one guarded delta"). Read back as a `stateCounts` map. A LEGACY document (nested `stateCounts`, no guards) is still read as it stands and migrated forward on its first write |
 | `reporting_applied/{orderId}:{from}>{to}` · `{orderId}:refund:{refundId}` | one rollup event, claimed — and, once a recompute has counted it absolutely, `absorbedAt`. Indexed by `date` (how a recompute pages a day's claims) and `orderId` (the diagnostic axis) |
 
 **The day is the grain, and the other two intervals are folds over it.** A week is the
@@ -2227,8 +2246,9 @@ itself, whereas the observer has already reached the log.
 One event is two documents and there is no transaction between them:
 
 ```
+epoch     reporting_daily/{currency}:{day} read (created / migrated forward if need be)
 claim     reporting_applied/{claim} create-if-absent — the once-only gate
-counters  reporting_daily/{currency}:{day} compare-and-set — the value
+counters  reporting_daily/{currency}:{day} ONE guarded numeric delta (`updateIf`) — the value
 stamp     the claim's `appliedAt`, best-effort, as a DIAGNOSTIC
 ```
 
@@ -2255,21 +2275,27 @@ both against one document has exactly two failure modes — the recompute erasin
 transition it did not see, and a delta landing on top of a recompute that already counted
 it. Three mechanisms close them, in the order the code does them:
 
-1. **Pin before scanning.** Every day document an attempt may write has its revision read
-   BEFORE the orders are scanned, so a live delta landing in between costs the recompute
-   its commit and forces a re-scan. Scanning first and pinning afterwards is the bug that
-   ordering exists to prevent: the value in hand would predate the transition and the
-   revision would not say so.
+1. **Pin before scanning.** Every day document an attempt may write has its `epoch` and
+   `seq` read BEFORE the orders are scanned, and the commit is an `updateIf` guarded on
+   both, so a live delta landing in between (every delta bumps `seq`) costs the recompute
+   its commit and forces a re-scan. The pin cannot be the revision: the host's `updateIf`
+   never moves it, so a revision pin would not see a delta at all. Scanning first and
+   pinning afterwards is the bug that ordering exists to prevent: the value in hand would
+   predate the transition and the pin would not say so. (An absent or legacy document is
+   pinned by revision and committed by compare-and-set; no delta ever lands on either.)
 2. **Absorb the claims the scan proves, before committing.** A claim is the right to move
    these counters; a recompute that has counted the event absolutely spends that right, and
    `absorbedAt` is how the claim says so. The claims absorbed are exactly the ones
    RECONSTRUCTED from the scanned orders — never every claim an order has — because a
    transition that is not in the scanned document is one the recompute did not count, and
    absorbing it would drop its delta.
-3. **Every delta re-reads its claim immediately before every bucket write** and skips
-   itself when it has been absorbed (cross-cutting rule (a): the token is re-asserted
-   before each write it guards, on every attempt, because this path retries with backoff
-   and a writer parked past the moment its right was revoked must not commit anyway).
+3. **The commit bumps `epoch`, and every delta is guarded on the epoch it read before its
+   claim was last checked.** A delta parked across a recompute's commit is therefore
+   refused by its own statement, re-reads its claim, and skips itself when it has been
+   absorbed (cross-cutting rule (a): the token is re-asserted before each write it guards,
+   on every attempt, and here the check and the write are one statement). A commit bumps
+   the epoch even over an already-exact document when its attempt absorbed claims, so a
+   delta that passed its claim check just before the absorb cannot land afterwards.
 
 The claims are reconstructed from the order itself: its append-only audit log carries every
 `(fromState → toState)` pair, its refunds ledger every finalized refund, and the arrival
@@ -2277,7 +2303,7 @@ into its original state is the event creation owes. An amount carried on a recon
 claim is diagnostic only — nothing recomputes from a claim.
 
 A day that has lost every order keeps a ZEROED document rather than being deleted: a live
-event racing that write needs a revision to lose to, and an all-zero document reads as no
+event racing that write needs a guard to lose to, and an all-zero document reads as no
 bucket at all.
 
 **Reconcile a CLOSED day as a matter of course, and a live day only on demand.** Yesterday
@@ -2369,25 +2395,51 @@ it heals:
 | the CLAIM write landed and the caller then died | a spent claim over counters that never moved | only `reconcile` — every redelivery is a no-op, however often it is retried |
 | a decrement arriving with no matching increment | the counter floored at zero, the day's money still on the document | `reconcile`; meanwhile the anomaly observer has announced it and the bucket is still reported |
 
+### One event is one guarded delta
+
+Every order created on a day in a currency shares one document, so every checkout, settle
+and refund that day writes to it. When the counters were moved by read-modify-write
+compare-and-set, that was a crowd-bound hotspot: nothing refuses a reporting writer, so a
+writer lost its revision once per peer that committed ahead of it, the retry depth grew
+with the crowd, and the order path (which awaits the hook inline) paid the backoff and the
+extra round trips on every checkout.
+
+An event is now **one `updateIf`** on flat top-level counters: `delta` carries the
+arithmetic (done in SQL, so the database serializes the writers on the row lock instead of
+refusing them), and `where` carries only
+- the **`epoch`** the writer read before its claim was checked (moved only by a
+  recompute's commit, see above), and
+- a **floor guard** per decremented counter (`>= dec`). A floor guard failing means a lost
+  increment. The delta is then re-planned from a fresh read, the counter floored at zero
+  against the exact value it was judged on, and the floor announced, exactly as before.
+
+and it bumps **`seq`**, which is what a recompute pins. Peers' deltas never guard on each
+other, so the crowd costs lock queueing and nothing else. The first write to an absent day
+is a create-if-absent (race-safe: a loser re-reads), and the first write to a LEGACY
+nested document migrates it forward by a revision compare-and-set (safe for the same
+reason: no delta lands on a legacy document). Claim-once, stamp and absorb are unchanged.
+
+A document an OLDER version rewrote during a mixed-version deploy or after a rollback (its
+guards and flat counters, plus a nested `stateCounts` map: a "hybrid") is read by its flat
+fields. The next event un-taints it in ONE `updateIf` guarded on the `(epoch, seq)` it read
+(the map set to `null`, the epoch moved past everything known), reports a `tainted`
+anomaly, and applies its delta. It never recomputes the day inline, since that would put a
+full-day scan on every checkout during the window; what the old writer discarded is left to
+`reconcile`. The decision is ADR-0023.
+
 ### Reporting contention, measured
 
-The day document's bound is the CROWD rather than the document: every distinct event
-legitimately moves a counter, so nothing refuses anybody and a writer can lose its revision
-once per peer that commits ahead of it. That is the shipping/tax-rules shape, not the
-inventory one.
+`test/reporting-bucket-race.pg.test.ts`, at **N=200 writers on one day document**:
 
-**The shape that would exceed it is a BATCH**, not a busy shop: a hold-expiry sweep or a
-bulk fulfilment run flips many orders at once, and if those orders were placed on the same
-day they all contend for one document. Past roughly the ceiling the surplus writers raise
-the typed contention refusal — which the order store's hook swallows, because reporting
-must never fail a transition — so the day reads low until a recompute fixes it. That chain
-is the designed degradation: batch → contention → swallowed → under-count → healed.
+| Shape | Before (compare-and-set loop, `CAS_MAX_ATTEMPTS` = 24) | After (one guarded delta) |
+|---|---|---|
+| 200 concurrent transitions | 120–143 of 200 refused with `StorageContentionError`, depth 24 | 0 refused, depth **1**, exact sum |
+| 250 first events (200 arrivals + 50 refunds) on an absent document | 146–176 of 250 refused, depth 24 | 0 refused, depth 1, exact sums |
+| 200 deliveries of ONE event | one delta | one delta |
+| 200 deltas racing a recompute | 47 of 200 refused | 0 refused; never over-counts mid-race; a quiet recompute is exact |
 
-**Measured max CAS attempts: 12 at N=24 transitions into one day document (4 loops),
-against `CAS_MAX_ATTEMPTS` = 24** — `test/reporting-bucket-race.pg.test.ts`, which also
-races N=16 deliveries of ONE event and asserts a single delta. No contention refusal occurs
-at that size; the headroom is what the extra attempts buy, and a busier day spends more of
-it before the typed, retryable refusal rather than reporting a wrong total.
+The depth assertion (exactly 1) is what keeps a regression back to a read-modify-write loop
+from passing quietly. The old measurement, 12 attempts at N=24, is superseded.
 
 ### What the reporting tier does NOT carry
 
