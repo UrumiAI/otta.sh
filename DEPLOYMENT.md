@@ -157,8 +157,9 @@ expired holds and queued emails drain at the Free pace (§5).
 2. **Fill in the local config.** Copy `sites/staging/wrangler.jsonc` (also a template) to
    `wrangler.local.jsonc` (gitignored) and set your Worker `name` (over `my-otta-store`),
    D1 `database_name`/`database_id`, and the two R2 `bucket_name`s (`MEDIA` and
-   `DOWNLOADS`, which must differ). Leave the
-   `global_fetch_strictly_public` compatibility flag alone — §2.4 explains it.
+   `DOWNLOADS`, which must differ). Do not add the
+   `global_fetch_strictly_public` compatibility flag: D1 sessions are on, and the flag
+   hangs them — §2.4 explains both.
 
 3. **Set the site's one secret** (the only secret first boot needs):
 
@@ -253,15 +254,52 @@ cannot be retried in place:
 3. **Rebuild** (the wrangler config is read at build time — §2.1 step 4), redeploy, then
    claim the admin again (§2.1 step 5 → §2.2).
 
-### 2.4 The `global_fetch_strictly_public` pairing invariant
+### 2.4 D1 sessions (`"primary-first"`) and `global_fetch_strictly_public`
 
-> The site's `wrangler.jsonc` carries the `global_fetch_strictly_public` compatibility flag.
-> That flag silently breaks the D1 Sessions API — its internal routing request is blocked and
-> **every SSR request hangs with nothing in the logs** — so `d1()` in the site config must
-> keep `session` **off** while the flag is present. Both halves are pinned by tests:
-> `sites/staging/test/site-config.test.ts` (session stays off, placeholder equality) and
-> `sites/staging/test/wrangler-config.test.ts` (flag presence, template hygiene). Do not
-> "fix" one side without the other.
+> The site's `wrangler.jsonc` does **not** carry the `global_fetch_strictly_public`
+> compatibility flag (issue #375). It was there so the site's calls to a commerce-service
+> Worker on `*.workers.dev` were not blocked and stubbed 404; that service is gone
+> ([ADR-0020](./adr/0020-one-deployable-plugin-owns-commerce-truth.md)), and nothing the
+> Worker fetches today (§4) is on `workers.dev`. One consequence of running without it: a
+> fetch to a hostname on the site's **own zone** is routed to that zone's origin, not back
+> through Cloudflare, so never point `EMAIL_API_URL` or `X402_FACILITATOR_URL` at the site's
+> own zone.
+>
+> D1 `session` in `sites/staging/src/emdash-options.ts` is **`"primary-first"`**: every
+> request EmDash has not authenticated — every shopper — and every write and cron run starts
+> on the primary, so a shopper's redirect after a write (placing an order, signing in,
+> resuming a payment) always reads what it just wrote, even with read replicas on. It is
+> **not** `"auto"`: that mode gives read-your-writes (a bookmark cookie) only to requests
+> EmDash authenticates and starts every other request on any replica, so a lagging replica
+> would show a just-placed order as not found or bounce a just-signed-in buyer to the login
+> page. `"auto"` needs a shopper-side bookmark first. EmDash-authenticated requests resume
+> from their `__em_d1_bookmark` cookie. That cookie is never set on an **anonymous**
+> storefront response, so shopper pages stay cacheable as before; an admin browsing the
+> storefront while signed in does get one, which is harmless. Read replication itself is switched on separately, on the D1 database
+> (dashboard or REST API); until it is, every query goes to the primary anyway.
+>
+> **The old pairing invariant is moot, but its rule stands:** the flag blocks the request the
+> D1 Sessions API makes to route queries (emdash issue #1273). With EmDash 0.38 the symptom
+> is a **~5 s stall on the first session query of every new isolate**; EmDash's hang guard
+> then turns sessions off for that isolate, silently, and a **write caught in flight**
+> (placing an order, a cart change, the Stripe webhook settle) **may be rejected** with a
+> 500 rather than re-run. Nothing fails at deploy time. So the flag must never come back
+> while a session mode is set. Pinned by `sites/staging/test/wrangler-config.test.ts` (flag
+> absent, template hygiene) and `sites/staging/test/site-config.test.ts` (`"primary-first"`;
+> never flag + session together), and enforced at **build** time on the config the build
+> actually uses (`sites/staging/src/lib/wrangler-pairing.ts`, called from `astro.config.ts`).
+>
+> **Upgrading an existing deployment.** If you made `wrangler.local.jsonc` by copying the
+> template before this change (§2.1 step 2), it still lists the flag. Before building this
+> version, delete `"global_fetch_strictly_public"` from its `compatibility_flags`, leaving
+> `["nodejs_compat"]`. If you don't, the build stops with:
+>
+> ```text
+> Error: wrangler.local.jsonc sets the "global_fetch_strictly_public" compatibility flag, but
+> D1 sessions are on (session: "primary-first", sites/staging/src/emdash-options.ts). …
+> Delete "global_fetch_strictly_public" from compatibility_flags in wrangler.local.jsonc,
+> then build again (DEPLOYMENT.md §2.4, "Upgrading an existing deployment").
+> ```
 >
 > A **custom domain** on the site (issue #32) is what unlocks zone-level WAF rules.
 
@@ -534,6 +572,11 @@ transport to `globalThis.fetch`, but the plugin constructs the live gateway with
 so the allowlist is the perimeter for `api.stripe.com` too. This
 closes the caveat recorded in
 [ADR-0020](./adr/0020-one-deployable-plugin-owns-commerce-truth.md) §2.
+
+All of these are third-party hosts on the public internet. The Worker runs without
+`global_fetch_strictly_public` (§2.4), so a URL on the site's **own** Cloudflare zone would
+reach that zone's origin directly, skipping its Workers routes and security settings — keep
+both URLs off the site's zone.
 
 Because it is build-time, adding a provider means a rebuild and redeploy — a Settings edit
 alone cannot widen it. That is deliberate: the allowlist is the perimeter, and an operator
@@ -817,7 +860,7 @@ until then. Orders, stock and payments are unaffected — only the reporting rol
 
 | Symptom | Cause → fix |
 |---|---|
-| Every SSR request hangs, nothing in logs | `global_fetch_strictly_public` + D1 `session` both on — pairing invariant violated (§2.4); turn `session` off |
+| A ~5 s stall on a new isolate's first request, an occasional 500 on a write, and `[emdash] A D1 session query hung …` in the logs | `global_fetch_strictly_public` + D1 `session` both on (emdash #1273). The build refuses this pair, so check what was deployed: remove the flag (§2.4, "Upgrading an existing deployment"), rebuild, redeploy |
 | `/products` empty right after deploy | Healthy (§1) — sample content lands via the wizard checkbox, not first boot |
 | `POST /webhooks/stripe` reports `NOT_CONFIGURED` | The Stripe webhook signing secret is unset — provision it in admin Settings (§3) |
 | Every Stripe delivery 401s | `OTTA_WH_TOKEN` set on the plugin side but not on the site (or the values differ) — §3 |

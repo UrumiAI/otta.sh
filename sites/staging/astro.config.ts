@@ -17,6 +17,7 @@ import { parseDotEnv } from "./src/lib/dot-env.js";
 import { buildEmdashOptions } from "./src/emdash-options.js";
 import { assertDownloadsBucketPrivate } from "./src/lib/downloads-bucket.js";
 import { resolveStripePublishableKey, STRIPE_PUBLIC_KEY_VAR } from "./src/lib/stripe-config.js";
+import { assertWranglerSessionPairing } from "./src/lib/wrangler-pairing.js";
 
 /** Astro does NOT load .env into process.env for THIS module (verified —
  *  see src/lib/dot-env.ts), so fall back to sites/staging/.env explicitly:
@@ -87,12 +88,25 @@ const localWranglerConfig = existsSync(new URL("wrangler.local.jsonc", import.me
 	: undefined;
 
 /**
+ * Two guards on the config this build actually uses — the gitignored local
+ * config when there is one, which no test sees; with no local file, the tracked
+ * template. Each throws naming the file.
+ *
+ * THE PAIRING GUARD (issue #375). D1 sessions are on, and a `wrangler.local.jsonc`
+ * copied from the pre-#375 template still carries `global_fetch_strictly_public`,
+ * which breaks them at runtime with nothing failing at deploy — so the build
+ * throws instead, naming the line to delete (`src/lib/wrangler-pairing.ts`). The
+ * tracked template never carries the flag.
+ *
  * The private downloads bucket must never be the public media bucket (issue
- * #376): EmDash serves every MEDIA key without auth. Checked on the file the
- * build SELECTS — the gitignored local config when there is one, which no test
- * sees — and the build fails naming it (`src/lib/downloads-bucket.ts`).
+ * #376): EmDash serves every MEDIA key without auth (`src/lib/downloads-bucket.ts`).
  */
 const selectedWranglerConfig = localWranglerConfig ?? "wrangler.jsonc";
+assertWranglerSessionPairing(
+	readFileSync(new URL(selectedWranglerConfig, import.meta.url), "utf8"),
+	selectedWranglerConfig,
+	(buildEmdashOptions(egress).database as { config?: { session?: unknown } }).config,
+);
 assertDownloadsBucketPrivate(
 	readFileSync(new URL(selectedWranglerConfig, import.meta.url), "utf8"),
 	selectedWranglerConfig,
