@@ -251,7 +251,12 @@ export async function computeQuote(
 			result: {
 				ok: true,
 				currency: command.currency,
-				lines: lines.map((l) => ({ lineId: l.lineId, rateBps: 0, label: "Tax", taxCents: cents(0) })),
+				lines: lines.map((l) => ({
+					lineId: l.lineId,
+					rateBps: 0,
+					label: "Tax",
+					taxCents: cents(0),
+				})),
 				shipping: null,
 			},
 		};

@@ -17,6 +17,7 @@ import type { OrderStore, OutboxEmail } from "../ports/order-store.js";
 import type { Order, OrderState, PaymentMethod } from "./model.js";
 import { orderTotalLabel } from "./order-total-label.js";
 import { PROVIDER_REFUNDED_FLAG_PREFIX } from "./provider-refunded-flag.js";
+import { readOrderTaxSnapshot } from "./order-tax-snapshot.js";
 import { sumFinalizedRefunds } from "./refund-order.js";
 import { revokeOrderEntitlements } from "./revoke-entitlements.js";
 import {
@@ -708,6 +709,9 @@ export function buildOrderEmailData(order: Order, toState: OrderState): Record<s
 		appliedCouponCode: order.totals.appliedCouponCode,
 		shippingCalculated: snapshotField(order.totals.shippingMethodSnapshot, "methodId", true),
 		taxCalculated: snapshotField(order.totals.shippingMethodSnapshot, "zoneId", false),
+		// ADR-0031: prices entered WITH tax — the tax is inside the subtotal, so the
+		// email says so rather than reading as one more row to add.
+		...(pricedWithTaxIncluded(order) ? { taxIncluded: true } : {}),
 		// The order's line SNAPSHOT (title and unit price as bought), never the
 		// live product: an email sent after a rename still names what was paid for.
 		lines: order.lines.map((l) => ({
@@ -783,4 +787,10 @@ function snapshotField(snapshot: unknown, key: "zoneId" | "methodId", nonEmpty: 
 	if (snapshot === null || typeof snapshot !== "object") return false;
 	const value = (snapshot as Record<string, unknown>)[key];
 	return typeof value === "string" && (!nonEmpty || value.length > 0);
+}
+
+/** Whether the order's frozen tax snapshot says prices were entered with tax (ADR-0031). */
+function pricedWithTaxIncluded(order: Order): boolean {
+	const snapshot = readOrderTaxSnapshot(order.totals.taxBreakdown);
+	return snapshot?.v === 1 && snapshot.pricesIncludeTax;
 }

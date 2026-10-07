@@ -91,7 +91,12 @@ function spy(): TaxCalculator & { seen: TaxRequest[] } {
 			return {
 				ok: true,
 				currency: req.currency,
-				lines: req.lines.map((l) => ({ lineId: l.lineId, rateBps: 0, label: "X", taxCents: cents(0) })),
+				lines: req.lines.map((l) => ({
+					lineId: l.lineId,
+					rateBps: 0,
+					label: "X",
+					taxCents: cents(0),
+				})),
 				shipping: null,
 			};
 		},
@@ -135,9 +140,7 @@ describe("tax on/off", () => {
 		expect(q.breakdown.taxCents).toBe(0);
 		expect(q.breakdown.totalCents).toBe(1200 + 500);
 		expect(q.tax.pricesIncludeTax).toBe(false);
-		expect(q.tax.result.lines).toEqual([
-			{ lineId: "0", rateBps: 0, label: "Tax", taxCents: 0 },
-		]);
+		expect(q.tax.result.lines).toEqual([{ lineId: "0", rateBps: 0, label: "Tax", taxCents: 0 }]);
 	});
 
 	test("enabled with the new-store defaults taxes at the shipping address", async () => {
@@ -277,9 +280,7 @@ describe("shipping tax class and rounding settings reach the built-in", () => {
 	});
 	const mixed: QuoteCommand = {
 		...physical,
-		lines: [
-			{ unitPriceCents: cents(1200), qty: 1, taxClassId: "reduced", requiresShipping: true },
-		],
+		lines: [{ unitPriceCents: cents(1200), qty: 1, taxClassId: "reduced", requiresShipping: true }],
 	};
 
 	test("legacy: the last flagged rate's class (standard) taxes shipping at 20%", async () => {

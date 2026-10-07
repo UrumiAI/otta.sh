@@ -7,6 +7,7 @@
  * Defaults are WooCommerce's option defaults (woo-facts-verified, 11.1.2).
  */
 import { normalizeCountryCode, normalizeSubdivision } from "./region-codes.js";
+import { isValidTaxLabel } from "./tax-calculator.js";
 import type { TaxClassId } from "./types.js";
 
 /** How shipping's tax class is chosen. */
@@ -155,21 +156,13 @@ function parseBaseAddress(raw: unknown): TaxBaseAddress | null | undefined {
 	return region.ok ? { country, region: region.code } : undefined;
 }
 
-const CLASS_ID_MAX = 200;
-
 function parseShippingTaxClass(raw: unknown): ShippingTaxClassSetting | undefined {
 	if (!isRecord(raw)) return undefined;
 	if (raw["kind"] === "inherit") return { kind: "inherit" };
 	if (raw["kind"] === "legacy") return { kind: "legacy" };
 	const id = raw["taxClassId"];
-	if (
-		raw["kind"] === "fixed" &&
-		typeof id === "string" &&
-		id.length > 0 &&
-		id.length <= CLASS_ID_MAX &&
-		id.trim() === id &&
-		!/[\u0000-\u001f\u007f-\u009f]/.test(id)
-	) {
+	// A class id has the bounds of a tax label: 1–200 chars, no control characters.
+	if (raw["kind"] === "fixed" && isValidTaxLabel(id) && id.trim() === id) {
 		return { kind: "fixed", taxClassId: id };
 	}
 	return undefined;

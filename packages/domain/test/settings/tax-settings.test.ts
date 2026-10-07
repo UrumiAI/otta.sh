@@ -106,7 +106,9 @@ describe("updateSettings validates the tax block before it reaches the store", (
 		const store = new InMemorySettingsStore();
 		const attempt = updateSettings(store, { tax: tax as TaxSettings }, idempotencyKey("k1"));
 		await expect(attempt).rejects.toBeInstanceOf(InvalidSettingsError);
-		await expect(attempt).rejects.toMatchObject({ field: `tax.${field}`.replace("tax.tax", "tax") });
+		await expect(attempt).rejects.toMatchObject({
+			field: `tax.${field}`.replace("tax.tax", "tax"),
+		});
 		expect((await store.get()).tax).toBeUndefined();
 	});
 

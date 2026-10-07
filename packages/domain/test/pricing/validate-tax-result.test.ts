@@ -19,7 +19,7 @@ const req: TaxRequest = {
 			amountCents: cents(1000),
 			taxClassId: "standard",
 			taxStatus: "taxable",
-				requiresShipping: true,
+			requiresShipping: true,
 		},
 		{
 			lineId: "1",
@@ -28,7 +28,7 @@ const req: TaxRequest = {
 			amountCents: cents(500),
 			taxClassId: "standard",
 			taxStatus: "taxable",
-				requiresShipping: true,
+			requiresShipping: true,
 		},
 	],
 	shipping: { amountCents: cents(300), methodId: "m" },

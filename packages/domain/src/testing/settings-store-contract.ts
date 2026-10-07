@@ -81,7 +81,9 @@ export function settingsStoreContract(
 			await store.update({ tax: changed }, idempotencyKey("k3"));
 			expect((await store.get()).tax).toEqual(changed);
 			// A same-key replay returns its recorded result and does not clobber.
-			expect((await store.update({ tax: SAMPLE_TAX }, idempotencyKey("k1"))).tax).toEqual(SAMPLE_TAX);
+			expect((await store.update({ tax: SAMPLE_TAX }, idempotencyKey("k1"))).tax).toEqual(
+				SAMPLE_TAX,
+			);
 			expect((await store.get()).tax).toEqual(changed);
 		});
 	});

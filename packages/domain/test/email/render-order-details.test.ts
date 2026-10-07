@@ -193,6 +193,15 @@ describe("absent totals components", () => {
 		expect(rendered.text).toContain("Tax: [USD 0]");
 	});
 
+	test("ADR-0031: an order priced with tax-inclusive prices says the tax is included", () => {
+		const rendered = renderEmail(
+			"order-confirmation",
+			{ ...bare, taxCalculated: true, taxCents: 200, taxIncluded: true },
+			ctx,
+		);
+		expect(rendered.text).toContain("Tax (included in prices): [USD 200]");
+	});
+
 	test("no coupon and no discount: the page's 'No coupon applied'", () => {
 		const rendered = renderEmail("order-confirmation", bare, ctx);
 		expect(rendered.text).toContain("Discount: No coupon applied");

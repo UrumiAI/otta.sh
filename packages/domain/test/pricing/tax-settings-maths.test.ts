@@ -105,9 +105,14 @@ describe("SPEC §4 worked examples", () => {
 		// per line: 199·725/10725 = 13.45 → 13 each = 39; at subtotal 597·725/10725 = 40.36 → 40
 		const perLine = applyRateTable(request({ lines, pricesIncludeTax: true }), table, NO_LABELS);
 		expect(perLine.lines.map((l) => l.taxCents)).toEqual([13, 13, 13]);
-		const atSubtotal = applyRateTable(request({ lines, pricesIncludeTax: true }), table, NO_LABELS, {
-			roundAtSubtotal: true,
-		});
+		const atSubtotal = applyRateTable(
+			request({ lines, pricesIncludeTax: true }),
+			table,
+			NO_LABELS,
+			{
+				roundAtSubtotal: true,
+			},
+		);
 		expect(atSubtotal.lines.map((l) => l.taxCents)).toEqual([14, 13, 13]);
 	});
 
@@ -171,9 +176,9 @@ describe("shipping tax class — WooCommerce 'based on cart items' (woo-facts-ve
 	});
 
 	test("exactly one class → that class", () => {
-		expect(
-			inheritShippingTaxClass([line("0", 1, "reduced"), line("1", 1, "reduced")], names),
-		).toBe("reduced");
+		expect(inheritShippingTaxClass([line("0", 1, "reduced"), line("1", 1, "reduced")], names)).toBe(
+			"reduced",
+		);
 	});
 
 	test("several classes → the first by class NAME (WooCommerce's ORDER BY name)", () => {
@@ -229,9 +234,14 @@ describe("shipping tax under each shipping-class setting", () => {
 	});
 
 	test("inherit: a single-class cart taxes shipping at that class's flagged rate", () => {
-		const r = applyRateTable(request({ ...req, lines: [lines[0] as TaxRequestLine] }), table, NO_LABELS, {
-			shippingTaxClass: { kind: "inherit" },
-		});
+		const r = applyRateTable(
+			request({ ...req, lines: [lines[0] as TaxRequestLine] }),
+			table,
+			NO_LABELS,
+			{
+				shippingTaxClass: { kind: "inherit" },
+			},
+		);
 		expect(r.shipping?.taxCents).toBe(882);
 	});
 
