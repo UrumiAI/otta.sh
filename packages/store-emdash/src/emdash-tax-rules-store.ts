@@ -288,6 +288,12 @@ export class EmdashTaxRulesStore implements TaxRulesStore {
 	 * code — the collection declares no index, and a zone index would have to be
 	 * maintained on an embedded child.
 	 */
+	/** Whether any class document holds a rate — the tax settings' upgrade rule. */
+	async hasAnyRate(): Promise<boolean> {
+		const docs = await this.#scanClasses("hasAnyRate");
+		return docs.some((doc) => ratesOf(doc).length > 0);
+	}
+
 	async listRatesForZone(zoneId: string): Promise<TaxRate[]> {
 		const docs = await this.#scanClasses("listRatesForZone");
 		const found: TaxRate[] = [];
