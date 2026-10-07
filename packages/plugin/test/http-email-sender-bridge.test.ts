@@ -78,7 +78,8 @@ describe("email senders over the sandbox bridge (default: no signal in init)", (
 		expect(seen).toHaveLength(2);
 		for (const init of seen) expect("signal" in init).toBe(false);
 		// The Resend dedupe key still travels.
-		expect((seen[0]?.headers as Record<string, string>)["Idempotency-Key"]).toBe("outbox_row_1");
+		const headers = seen[0]?.headers as Record<string, string> | undefined;
+		expect(headers?.["Idempotency-Key"]).toBe("outbox_row_1");
 	});
 
 	test("a provider that never answers (and ignores signals) is an EmailSendTimeoutError at the bound", async () => {

@@ -302,7 +302,9 @@ describe("the transport's own race bounds every call (a fetch that ignores signa
 				requestTimeoutMs: 20,
 				fetch: (async () => body.response) as unknown as typeof fetch,
 			});
-			expect(await settlesWithin(1_000, callsOf(transport)[name]()), name).toEqual(expected);
+			expect(await settlesWithin<unknown>(1_000, callsOf(transport)[name]()), name).toEqual(
+				expected,
+			);
 			expect(body.cancelled(), name).toBe(true);
 		}
 	});
