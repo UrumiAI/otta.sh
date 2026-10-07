@@ -23,6 +23,7 @@ import {
 	type TaxRateWire,
 } from "./admin-rules-surface.js";
 import { idInputProblem } from "./id-input.js";
+import { optionsButtonBlock, saveOptionsAction, showOptionsAction } from "./tax-options-screen.js";
 import { formatBpsAsPercent, parsePercentToBps } from "./percent-input.js";
 import {
 	asRecord,
@@ -98,6 +99,12 @@ const ACTION_SHOW_NEW_RATE = TAX_ACTIONS.custom("show-new-rate");
 /** Leave either create screen — re-lists the level the operator came from
  *  (the path rides in the button's own `value`, L-6). */
 const ACTION_CANCEL_NEW = TAX_ACTIONS.custom("cancel-new");
+/** ADR-0031: the "Tax options" drill-in and its save. */
+const OPTIONS_ACTIONS = {
+	show: TAX_ACTIONS.custom("show-options"),
+	save: TAX_ACTIONS.custom("save-options"),
+	back: ACTION_CANCEL_NEW,
+};
 
 /**
  * The action ids the admin-route dispatcher recognizes as belonging to the
@@ -115,6 +122,8 @@ export const TAX_ACTION_IDS: ReadonlySet<string> = TAX_ACTIONS.actionIds(
 	"delete-rate",
 	"show-new-rate",
 	"cancel-new",
+	"show-options",
+	"save-options",
 );
 
 /** The em-dash BlockInteraction envelope this page consumes (the scaffold's
@@ -230,6 +239,8 @@ export function createTaxPageHandler(): RouteHandler<TaxPageInput> {
 			[ACTION_DELETE_RATE]: deleteRateAction(),
 			[ACTION_SHOW_NEW_RATE]: showNewRateAction(),
 			[ACTION_CANCEL_NEW]: cancelNewAction(),
+			[OPTIONS_ACTIONS.show]: showOptionsAction(OPTIONS_ACTIONS),
+			[OPTIONS_ACTIONS.save]: saveOptionsAction(OPTIONS_ACTIONS),
 		},
 	});
 }
@@ -280,6 +291,8 @@ function classesBlocks(
 			text: "A tax class is a rate group; products and rates reference one by id.",
 		},
 		createActionBlock("tax:create-class-action", ACTION_SHOW_NEW_CLASS, "New tax class"),
+		// ADR-0031: the store's tax options, one drill-in away.
+		optionsButtonBlock(OPTIONS_ACTIONS),
 	];
 	if (notice !== undefined) blocks.push(noticeBanner(notice));
 	// No filter block: this level has no filter fields (L-2, count 0).

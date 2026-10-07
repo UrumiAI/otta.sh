@@ -87,6 +87,11 @@ import {
 	cents as toCents,
 	currency as toCurrency,
 	deleteTaxClass as deleteTaxClassUseCase,
+	effectiveTaxSettings,
+	idempotencyKey as toIdempotencyKey,
+	InvalidSettingsError,
+	parseTaxSettings,
+	updateSettings,
 	isCouponCodeConflictError,
 	isCouponIdCollisionError,
 	isIsoCurrencyCode,
@@ -103,6 +108,7 @@ import {
 	type ShippingZone,
 	type TaxClass,
 	type TaxRate,
+	type TaxSettings,
 } from "@otta-sh/domain";
 import {
 	CommerceInputError,
@@ -155,8 +161,11 @@ import type {
 	TaxClassWire,
 	TaxRateEdit,
 	TaxRateInput,
+	TaxSettingsRead,
+	TaxSettingsUpdateResult,
 	TaxRateWire,
 } from "./admin-rules-surface.js";
+import { taxSettingsDigest } from "./admin-rules-surface.js";
 
 /** The coupon-list page bounds (`couponsListQuery`: `min(1).max(100)`, default
  *  25). Mirrored, not imported — the service package goes away. */
@@ -468,6 +477,7 @@ export class InProcessAdminRulesClient implements AdminRulesSurface {
 		requireIdToken("taxClassId", input.taxClassId);
 		requireIdToken("zoneId", input.zoneId);
 		requireBps("rateBps", input.rateBps, MAX_TAX_RATE_BPS);
+		await this.#pinTaxSettings();
 		return createOrRefuse(async () =>
 			toTaxRateWire(
 				await this.#stores.taxRules.createRate({
@@ -510,8 +520,71 @@ export class InProcessAdminRulesClient implements AdminRulesSurface {
 	 *  shipping rate's. */
 	async deleteTaxRate(rateId: string): Promise<RulesDeleteResult> {
 		requireIdToken("rateId", rateId);
+		await this.#pinTaxSettings();
 		const res = await this.#stores.taxRules.deleteRate(rateId);
 		return res.ok ? { ok: true } : { ok: false, reason: "not_found" };
+	}
+
+	// -- Tax: options (ADR-0031) -------------------------------------------------
+
+	async getTaxSettings(): Promise<TaxSettingsRead> {
+		const saved = (await this.#stores.settingsStore.get()).tax;
+		if (saved !== undefined) return { settings: saved, saved: true };
+		const hasAnyRate = await this.#stores.taxRules.hasAnyRate();
+		return { settings: effectiveTaxSettings(undefined, hasAnyRate), saved: false };
+	}
+
+	/**
+	 * Replace the options whole, guarded on the VALUE the form loaded (`expected`,
+	 * the same compare-on-value as a tax rate's `expectedRateBps`, ABA accepted
+	 * for the same reason). Options already equal to `next` are answered `ok`
+	 * without a write, so a double submit is not reported stale.
+	 */
+	async updateTaxSettings(
+		next: unknown,
+		opts: { expected: string; idempotencyKey: string },
+	): Promise<TaxSettingsUpdateResult> {
+		requireBoundedText("idempotencyKey", opts.idempotencyKey, 1, 200);
+		const { settings: current } = await this.getTaxSettings();
+		const currentDigest = taxSettingsDigest(current);
+		const parsed = parseTaxSettings(next);
+		if (!("field" in parsed) && taxSettingsDigest(parsed) === currentDigest) {
+			return { ok: true, settings: current };
+		}
+		if (currentDigest !== opts.expected) return { ok: false, reason: "stale", current };
+		try {
+			const result = await updateSettings(
+				this.#stores.settingsStore,
+				{ tax: next as TaxSettings },
+				toIdempotencyKey(opts.idempotencyKey),
+			);
+			return { ok: true, settings: result.tax ?? current };
+		} catch (err) {
+			if (err instanceof InvalidSettingsError) {
+				return { ok: false, reason: "invalid", field: err.field, message: err.message };
+			}
+			throw err;
+		}
+	}
+
+	/**
+	 * The upgrade rule is decided by whether rates exist, so the first rate created
+	 * (or the last deleted) would flip a store with nothing saved between "new" and
+	 * "existing". Before either, a store with nothing saved has what it has NOW
+	 * written down — a new store stays a new store (tax off), an existing one keeps
+	 * its legacy behaviour. A saved block skips it; two racing pins write the same
+	 * value, so each takes a key of its own (a fixed key could be pinned forever to
+	 * a revision that has since moved, and refuse every later rate edit).
+	 */
+	async #pinTaxSettings(): Promise<void> {
+		if ((await this.#stores.settingsStore.get()).tax !== undefined) return;
+		const hasAnyRate = await this.#stores.taxRules.hasAnyRate();
+		await this.#stores.settingsStore.update(
+			{ tax: effectiveTaxSettings(undefined, hasAnyRate) },
+			toIdempotencyKey(
+				`tax-settings-pin-${this.#stores.clock.now().toISOString()}-${String(++pinSeq)}`,
+			),
+		);
 	}
 
 	// -- Coupons ---------------------------------------------------------------
@@ -772,6 +845,9 @@ function toRateWire(rate: ShippingRate): ShippingRateWire {
 function toTaxClassWire(cls: TaxClass): TaxClassWire {
 	return { id: cls.id, name: cls.name };
 }
+
+/** Disambiguates two pins in one isolate within one clock tick. */
+let pinSeq = 0;
 
 function toTaxRateWire(rate: TaxRate): TaxRateWire {
 	return {

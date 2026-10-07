@@ -3,6 +3,7 @@ import {
 	currency,
 	idempotencyKey,
 	money,
+	NEW_STORE_TAX_SETTINGS,
 	productId as brandProductId,
 	sku as brandSku,
 	type TaxCalculator,
@@ -45,6 +46,13 @@ beforeEach(async () => {
 		brandProductId("p1"),
 		idempotencyKey("publish"),
 		"2026-01-01T00:00:00.000Z",
+	);
+	// PR 2a: a store with no rates and nothing saved has tax OFF (WooCommerce's
+	// default), and then no calculator is asked — an outside calculator needs tax
+	// switched on, exactly as Avalara/Stripe Tax need WooCommerce's "Enable taxes".
+	await h.stores.settingsStore.update(
+		{ tax: { ...NEW_STORE_TAX_SETTINGS, enabled: true } },
+		idempotencyKey("tax-on"),
 	);
 });
 

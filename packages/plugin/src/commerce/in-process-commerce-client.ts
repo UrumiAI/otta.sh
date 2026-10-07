@@ -108,6 +108,8 @@ import {
 	type ProductVariant,
 	type ProductVariantSummary,
 	type PricedLine,
+	type QuoteResult as DomainQuoteResult,
+	readOrderTaxSnapshot,
 	type ZoneResolution,
 } from "@otta-sh/domain";
 import type {
@@ -133,6 +135,7 @@ import type {
 	ProductVariantWire,
 	PublicOrderResult,
 	PublicOrderWire,
+	QuoteTaxWire,
 	QuoteDestinationWire,
 	QuoteRequestWire,
 	ReplaceCartResult,
@@ -290,6 +293,7 @@ export class InProcessCommerceClient implements CommerceClient {
 			taxRules: this.#stores.taxRules,
 			couponStore: this.#stores.couponStore,
 			...(options.taxCalculator !== undefined ? { taxCalculator: options.taxCalculator } : {}),
+			settings: this.#stores.settingsStore,
 			clock: this.#stores.clock,
 			idGen: this.#stores.idGen,
 			// Whatever the composition root could wire, and nothing more. INC-C5 fills
@@ -1024,6 +1028,7 @@ export class InProcessCommerceClient implements CommerceClient {
 				couponStore: this.#stores.couponStore,
 				clock: this.#stores.clock,
 				...(this.#taxCalculator !== undefined ? { taxCalculator: this.#taxCalculator } : {}),
+				settings: this.#stores.settingsStore,
 			},
 			command,
 		);
@@ -1043,6 +1048,7 @@ export class InProcessCommerceClient implements CommerceClient {
 				taxCents: breakdown.taxCents,
 				totalCents: breakdown.totalCents,
 				appliedCouponCode: breakdown.appliedCouponCode ?? null,
+				tax: quoteTaxWire(quote),
 			},
 		};
 	}
@@ -1529,8 +1535,51 @@ function serializeOrderSummary(order: Order): OrderSummaryWire {
 			appliedCouponCode: order.totals.appliedCouponCode,
 			shippingZoneId: shippingZoneIdOf(order.totals.shippingMethodSnapshot),
 			shippingMethodId: shippingMethodIdOf(order.totals.shippingMethodSnapshot),
+			...orderTaxWire(order),
 		},
 		lines: serializeOrderLines(order),
+	};
+}
+
+/** The quote's tax display facts (ADR-0031): settings, location, and the tax per label. */
+function quoteTaxWire(quote: Extract<DomainQuoteResult, { ok: true }>): QuoteTaxWire {
+	const { result } = quote.tax;
+	const itemized: QuoteTaxWire["itemized"] = [];
+	for (const line of [...result.lines, ...(result.shipping === null ? [] : [result.shipping])]) {
+		if (line.taxCents === 0) continue;
+		const row = itemized.find((r) => r.label === line.label);
+		if (row === undefined) itemized.push({ label: line.label, amountCents: line.taxCents });
+		else row.amountCents += line.taxCents;
+	}
+	return {
+		enabled: quote.taxSettings.enabled,
+		located: quote.taxLocated,
+		pricesIncludeTax: quote.tax.pricesIncludeTax,
+		displayCart: quote.taxSettings.displayCart,
+		totalsDisplay: quote.taxSettings.totalsDisplay,
+		lineTaxCents: result.lines.reduce((sum, l) => sum + l.taxCents, 0),
+		itemized,
+	};
+}
+
+/**
+ * An order priced with tax-INCLUSIVE prices carries that fact from its frozen
+ * snapshot, so its pages show the subtotal net and the rows still sum to the
+ * total. Every other order keeps today's single "Tax" row (no `tax` key).
+ */
+function orderTaxWire(order: Order): { tax?: QuoteTaxWire } {
+	const snapshot = readOrderTaxSnapshot(order.totals.taxBreakdown);
+	if (snapshot === null || snapshot.v !== 1 || !snapshot.pricesIncludeTax) return {};
+	return {
+		tax: {
+			enabled: true,
+			located: true,
+			pricesIncludeTax: true,
+			displayCart: "excl",
+			totalsDisplay: "single",
+			lineTaxCents: snapshot.lines.reduce((sum, l) => sum + l.taxCents, 0),
+			itemized: [],
+		},
 	};
 }
 
@@ -1565,6 +1614,7 @@ function serializePublicOrder(
 			appliedCouponCode: order.totals.appliedCouponCode,
 			shippingZoneId: shippingZoneIdOf(order.totals.shippingMethodSnapshot),
 			shippingMethodId: shippingMethodIdOf(order.totals.shippingMethodSnapshot),
+			...orderTaxWire(order),
 		},
 		lines: serializeOrderLines(order),
 		fulfillment: publicFulfillment(order),

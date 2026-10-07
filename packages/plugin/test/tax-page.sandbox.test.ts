@@ -8,6 +8,7 @@ import {
 } from "@otta-sh/domain";
 import {
 	EmdashProductCommerceStore,
+	EmdashSettingsStore,
 	EmdashShippingRulesStore,
 	EmdashTaxRulesStore,
 	systemClock,
@@ -68,6 +69,7 @@ let storage: StorageAccess;
 let shippingRules: EmdashShippingRulesStore;
 let taxRules: EmdashTaxRulesStore;
 let productCommerce: EmdashProductCommerceStore;
+let settingsStore: EmdashSettingsStore;
 let sandbox: SandboxHandle;
 
 interface ZoneFixture {
@@ -191,6 +193,7 @@ beforeAll(async () => {
 	shippingRules = new EmdashShippingRulesStore({ storage, clock: systemClock });
 	taxRules = new EmdashTaxRulesStore({ storage, clock: systemClock });
 	productCommerce = new EmdashProductCommerceStore({ storage, clock: systemClock });
+	settingsStore = new EmdashSettingsStore({ storage, clock: systemClock });
 	// ONE boot for the file: the isolate holds no per-case state of its own now
 	// that the fixtures live in the store, so rebooting it between cases would buy
 	// nothing but seconds.
@@ -1165,6 +1168,146 @@ describe("admin Tax console — rates level (workerd sandbox)", () => {
 	});
 });
 
+describe("admin Tax console — tax options (PR 2a, ADR-0031)", () => {
+	async function openOptions(): Promise<LooseBlock[]> {
+		const list = await loadClasses();
+		const button = createButton(list, "tax:show-options");
+		expect(button, "no Tax options button").toBeDefined();
+		return clickButton("tax:show-options", button!.value);
+	}
+
+	/** Every field's current value, as the untouched form would post it. */
+	function untouched(blocks: readonly LooseBlock[]): Record<string, unknown> {
+		return formInitialValues(blocks, "tax:save-options");
+	}
+
+	test("a store with rates and nothing saved shows today's behaviour: tax on, the legacy shipping class", async () => {
+		await seedRules();
+		const blocks = await openOptions();
+		expect(blocks.some((b) => b.type === "header" && b.text === "Tax options")).toBe(true);
+		const values = untouched(blocks);
+		expect(values.enabled).toBe(true);
+		expect(values.shippingTaxClass).toBe("legacy");
+		expect(values.totalsDisplay).toBe("single");
+		const options = field(formFor(blocks, "tax:save-options"), "shippingTaxClass")?.options as
+			| Array<{ value: string }>
+			| undefined;
+		expect(options?.map((o) => o.value)).toEqual(["inherit", "legacy", "fixed:standard"]);
+	});
+
+	test("a new store shows WooCommerce's defaults: tax off, based on cart items — and no legacy option", async () => {
+		await seedRules({ rates: [] });
+		const blocks = await openOptions();
+		const values = untouched(blocks);
+		expect(values).toMatchObject({
+			enabled: false,
+			pricesIncludeTax: "excl",
+			basedOn: "shipping",
+			shippingTaxClass: "inherit",
+			roundAtSubtotal: false,
+			displayCart: "excl",
+			totalsDisplay: "itemized",
+		});
+		const options = field(formFor(blocks, "tax:save-options"), "shippingTaxClass")?.options as
+			| Array<{ value: string }>
+			| undefined;
+		expect(options?.map((o) => o.value)).toEqual(["inherit", "fixed:standard"]);
+	});
+
+	test("saving writes the whole block to the store and returns to the registry with a notice", async () => {
+		await seedRules({ rates: [] });
+		const blocks = await openOptions();
+		const after = await submitForm(blocks, "tax:save-options", {
+			...untouched(blocks),
+			enabled: true,
+			pricesIncludeTax: "incl",
+			basedOn: "base",
+			baseCountry: "gb",
+			baseRegion: "",
+			shippingTaxClass: "fixed:standard",
+			roundAtSubtotal: true,
+			displayCart: "incl",
+			totalsDisplay: "single",
+		});
+		expect(bannerOf(after)?.title).toBe("Tax options saved");
+		expect((await settingsStore.get()).tax).toEqual({
+			enabled: true,
+			pricesIncludeTax: true,
+			basedOn: "base",
+			baseAddress: { country: "GB", region: null },
+			shippingTaxClass: { kind: "fixed", taxClassId: "standard" },
+			roundAtSubtotal: true,
+			displayCart: "incl",
+			totalsDisplay: "single",
+		});
+	});
+
+	test("an invalid base address is refused on the options screen, with the typing kept — nothing is saved", async () => {
+		await seedRules({ rates: [] });
+		const blocks = await openOptions();
+		const after = await submitForm(blocks, "tax:save-options", {
+			...untouched(blocks),
+			baseCountry: "XX",
+		});
+		expect(bannerOf(after)?.title).toBe("Tax options not saved");
+		expect(untouched(after).baseCountry).toBe("XX");
+		expect((await settingsStore.get()).tax).toBeUndefined();
+	});
+
+	test("a save over options that changed since the form loaded is refused as stale — never a clobber", async () => {
+		await seedRules({ rates: [] });
+		const blocks = await openOptions();
+		await settingsStore.update(
+			{
+				tax: {
+					enabled: true,
+					pricesIncludeTax: false,
+					basedOn: "shipping",
+					baseAddress: null,
+					shippingTaxClass: { kind: "inherit" },
+					roundAtSubtotal: false,
+					displayCart: "excl",
+					totalsDisplay: "itemized",
+				},
+			},
+			idempotencyKey("peer-edit"),
+		);
+		const after = await submitForm(blocks, "tax:save-options", {
+			...untouched(blocks),
+			roundAtSubtotal: true,
+		});
+		expect(bannerOf(after)?.title).toMatch(/changed since you loaded/);
+		expect((await settingsStore.get()).tax?.roundAtSubtotal).toBe(false);
+		expect((await settingsStore.get()).tax?.enabled).toBe(true);
+	});
+
+	test("the first rate on a new store pins the new-store defaults: tax stays OFF, based on cart items", async () => {
+		await seedRules({ rates: [] });
+		const screen = await openNewRateScreen("standard");
+		await submitForm(screen, "tax:create-rate", {
+			id: "std-us",
+			zoneId: "us",
+			ratePercent: "10",
+			appliesToShipping: true,
+		});
+		expect(await findRate("us", "std-us")).toBeDefined();
+		expect((await settingsStore.get()).tax).toMatchObject({
+			enabled: false,
+			shippingTaxClass: { kind: "inherit" },
+		});
+	});
+
+	test("deleting the last rate of an existing store pins the legacy options: tax stays ON", async () => {
+		await seedRules({ rates: [DEFAULT_RATES[0] as RateFixture] });
+		await clickButton("tax:delete-rate", { classId: "standard", rateId: "std-us" });
+		expect(await findRate("us", "std-us")).toBeUndefined();
+		expect((await settingsStore.get()).tax).toMatchObject({
+			enabled: true,
+			shippingTaxClass: { kind: "legacy" },
+		});
+	});
+});
+
 describe("admin Tax console — assertBlockContract (§15 V-3)", () => {
 	// Every H-marked §13 row this helper enforces, on every distinct render
 	// shape this screen produces: both L-9 branches (accordion at ≤25 rows,
@@ -1179,6 +1322,16 @@ describe("admin Tax console — assertBlockContract (§15 V-3)", () => {
 	test("assertBlockContract holds on every rendered shape this screen produces", async () => {
 		await seedRules();
 		assertBlockContract(await loadClasses(), { screen: "tax", level: "list" });
+		// ADR-0031: the Tax options drill-in, fresh and after a refusal.
+		const options = await clickButton("tax:show-options", undefined);
+		assertBlockContract(options, { screen: "tax", level: "list" });
+		assertBlockContract(
+			await submitForm(options, "tax:save-options", {
+				...formInitialValues(options, "tax:save-options"),
+				baseCountry: "XX",
+			}),
+			{ screen: "tax", level: "list" },
+		);
 		assertBlockContract(await openClass("standard"), { screen: "tax", level: "list" });
 		const filtered = await submitForm(await openClass("standard"), "tax:apply-filter", {
 			zoneId: "us",

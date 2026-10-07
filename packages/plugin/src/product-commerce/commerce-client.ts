@@ -542,6 +542,26 @@ export interface QuoteBreakdownWire {
 	taxCents: number;
 	totalCents: number;
 	appliedCouponCode: string | null;
+	/** How the tax was charged and is to be shown (ADR-0031). Absent ⇒ today's
+	 *  single "Tax" row with prices as entered. */
+	tax?: QuoteTaxWire;
+}
+
+/** The tax display facts of a quote or order (ADR-0031). */
+export interface QuoteTaxWire {
+	/** Tax switched on in the store's settings. */
+	enabled: boolean;
+	/** A tax location matched a zone — the tax was really calculated. */
+	located: boolean;
+	/** Prices (not shipping) were entered with tax: the line tax is inside `subtotalCents`. */
+	pricesIncludeTax: boolean;
+	displayCart: "excl" | "incl";
+	totalsDisplay: "itemized" | "single";
+	/** The tax on the lines (`taxCents` minus the shipping tax). */
+	lineTaxCents: number;
+	/** The tax per label (lines and shipping together), in first-seen order. Labels
+	 *  are the merchant's or a calculator's text: render them escaped, never as HTML. */
+	itemized: Array<{ label: string; amountCents: number }>;
 }
 
 /** The quote rejections: the cart pre-checks run before `computeQuote`, plus

@@ -136,12 +136,14 @@
 			{
 				"unitPriceCents": 49900,
 				"qty": 1,
-				"taxClassId": "gst18"
+				"taxClassId": "gst18",
+				"requiresShipping": true
 			},
 			{
 				"unitPriceCents": 19900,
 				"qty": 2,
-				"taxClassId": "standard"
+				"taxClassId": "standard",
+				"requiresShipping": false
 			}
 		],
 		"requiresShipping": true,
@@ -167,7 +169,25 @@
 			"shippingCents": 4900,
 			"taxCents": 11854,
 			"totalCents": 106454,
-			"appliedCouponCode": null
+			"appliedCouponCode": null,
+			"tax": {
+				"enabled": true,
+				"located": true,
+				"pricesIncludeTax": false,
+				"displayCart": "excl",
+				"totalsDisplay": "single",
+				"lineTaxCents": 10972,
+				"itemized": [
+					{
+						"label": "GST 18%",
+						"amountCents": 9864
+					},
+					{
+						"label": "standard",
+						"amountCents": 1990
+					}
+				]
+			}
 		}
 	},
 	"jpy-digital-percent.orderDocument": {
@@ -208,7 +228,7 @@
 			"shippingMethodSnapshot": null,
 			"taxBreakdown": {
 				"v": 1,
-				"calculatorId": "otta.rate-table",
+				"calculatorId": "otta.tax-disabled",
 				"pricesIncludeTax": false,
 				"lines": [
 					{
@@ -216,7 +236,7 @@
 						"taxClassId": "standard",
 						"taxableCents": 2040,
 						"rateBps": 0,
-						"label": "standard",
+						"label": "Tax",
 						"taxCents": 0
 					}
 				],
@@ -265,7 +285,8 @@
 			{
 				"unitPriceCents": 1200,
 				"qty": 2,
-				"taxClassId": "standard"
+				"taxClassId": "standard",
+				"requiresShipping": false
 			}
 		],
 		"requiresShipping": false,
@@ -287,7 +308,16 @@
 			"shippingCents": 0,
 			"taxCents": 0,
 			"totalCents": 2040,
-			"appliedCouponCode": "JP15"
+			"appliedCouponCode": "JP15",
+			"tax": {
+				"enabled": false,
+				"located": false,
+				"pricesIncludeTax": false,
+				"displayCart": "excl",
+				"totalsDisplay": "itemized",
+				"lineTaxCents": 0,
+				"itemized": []
+			}
 		}
 	},
 	"unpublished.quoteReply": {
@@ -304,7 +334,8 @@
 			{
 				"unitPriceCents": 999,
 				"qty": 1,
-				"taxClassId": "standard"
+				"taxClassId": "standard",
+				"requiresShipping": false
 			}
 		],
 		"requiresShipping": false
@@ -325,7 +356,16 @@
 			"shippingCents": 0,
 			"taxCents": 0,
 			"totalCents": 999,
-			"appliedCouponCode": null
+			"appliedCouponCode": null,
+			"tax": {
+				"enabled": false,
+				"located": false,
+				"pricesIncludeTax": false,
+				"displayCart": "excl",
+				"totalsDisplay": "itemized",
+				"lineTaxCents": 0,
+				"itemized": []
+			}
 		}
 	},
 	"usd-digital-fixed.orderDocument": {
@@ -423,7 +463,8 @@
 			{
 				"unitPriceCents": 999,
 				"qty": 3,
-				"taxClassId": "standard"
+				"taxClassId": "standard",
+				"requiresShipping": false
 			}
 		],
 		"requiresShipping": false,
@@ -445,7 +486,16 @@
 			"shippingCents": 0,
 			"taxCents": 0,
 			"totalCents": 2497,
-			"appliedCouponCode": "SAVE5"
+			"appliedCouponCode": "SAVE5",
+			"tax": {
+				"enabled": true,
+				"located": false,
+				"pricesIncludeTax": false,
+				"displayCart": "excl",
+				"totalsDisplay": "single",
+				"lineTaxCents": 0,
+				"itemized": []
+			}
 		}
 	},
 	"usd-digital-single.orderDocument": {
@@ -486,7 +536,7 @@
 			"shippingMethodSnapshot": null,
 			"taxBreakdown": {
 				"v": 1,
-				"calculatorId": "otta.rate-table",
+				"calculatorId": "otta.tax-disabled",
 				"pricesIncludeTax": false,
 				"lines": [
 					{
@@ -494,7 +544,7 @@
 						"taxClassId": "standard",
 						"taxableCents": 2500,
 						"rateBps": 0,
-						"label": "standard",
+						"label": "Tax",
 						"taxCents": 0
 					}
 				],
@@ -543,7 +593,8 @@
 			{
 				"unitPriceCents": 2500,
 				"qty": 1,
-				"taxClassId": "standard"
+				"taxClassId": "standard",
+				"requiresShipping": false
 			}
 		],
 		"requiresShipping": false
@@ -564,7 +615,16 @@
 			"shippingCents": 0,
 			"taxCents": 0,
 			"totalCents": 2500,
-			"appliedCouponCode": null
+			"appliedCouponCode": null,
+			"tax": {
+				"enabled": false,
+				"located": false,
+				"pricesIncludeTax": false,
+				"displayCart": "excl",
+				"totalsDisplay": "itemized",
+				"lineTaxCents": 0,
+				"itemized": []
+			}
 		}
 	},
 	"usd-mixed-zoned-percent.orderDocument": {
@@ -700,12 +760,14 @@
 			{
 				"unitPriceCents": 1500,
 				"qty": 2,
-				"taxClassId": "standard"
+				"taxClassId": "standard",
+				"requiresShipping": true
 			},
 			{
 				"unitPriceCents": 999,
 				"qty": 1,
-				"taxClassId": "reduced"
+				"taxClassId": "reduced",
+				"requiresShipping": false
 			}
 		],
 		"requiresShipping": true,
@@ -732,7 +794,25 @@
 			"shippingCents": 599,
 			"taxCents": 266,
 			"totalCents": 4464,
-			"appliedCouponCode": "TENOFF"
+			"appliedCouponCode": "TENOFF",
+			"tax": {
+				"enabled": true,
+				"located": true,
+				"pricesIncludeTax": false,
+				"displayCart": "excl",
+				"totalsDisplay": "single",
+				"lineTaxCents": 223,
+				"itemized": [
+					{
+						"label": "standard",
+						"amountCents": 239
+					},
+					{
+						"label": "reduced",
+						"amountCents": 27
+					}
+				]
+			}
 		}
 	},
 	"usd-physical-address-needed.quoteCommand": {
@@ -741,7 +821,8 @@
 			{
 				"unitPriceCents": 1500,
 				"qty": 1,
-				"taxClassId": "standard"
+				"taxClassId": "standard",
+				"requiresShipping": true
 			}
 		],
 		"requiresShipping": true
@@ -762,7 +843,16 @@
 			"shippingCents": 0,
 			"taxCents": 0,
 			"totalCents": 1500,
-			"appliedCouponCode": null
+			"appliedCouponCode": null,
+			"tax": {
+				"enabled": true,
+				"located": false,
+				"pricesIncludeTax": false,
+				"displayCart": "excl",
+				"totalsDisplay": "single",
+				"lineTaxCents": 0,
+				"itemized": []
+			}
 		}
 	},
 	"usd-variant-product.orderDocument": {
@@ -803,7 +893,7 @@
 			"shippingMethodSnapshot": null,
 			"taxBreakdown": {
 				"v": 1,
-				"calculatorId": "otta.rate-table",
+				"calculatorId": "otta.tax-disabled",
 				"pricesIncludeTax": false,
 				"lines": [
 					{
@@ -811,7 +901,7 @@
 						"taxClassId": "standard",
 						"taxableCents": 5000,
 						"rateBps": 0,
-						"label": "standard",
+						"label": "Tax",
 						"taxCents": 0
 					}
 				],
@@ -860,7 +950,8 @@
 			{
 				"unitPriceCents": 2500,
 				"qty": 2,
-				"taxClassId": "standard"
+				"taxClassId": "standard",
+				"requiresShipping": false
 			}
 		],
 		"requiresShipping": false
@@ -881,7 +972,16 @@
 			"shippingCents": 0,
 			"taxCents": 0,
 			"totalCents": 5000,
-			"appliedCouponCode": null
+			"appliedCouponCode": null,
+			"tax": {
+				"enabled": false,
+				"located": false,
+				"pricesIncludeTax": false,
+				"displayCart": "excl",
+				"totalsDisplay": "itemized",
+				"lineTaxCents": 0,
+				"itemized": []
+			}
 		}
 	}
 }
