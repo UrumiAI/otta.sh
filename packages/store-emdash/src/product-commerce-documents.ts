@@ -57,6 +57,7 @@ import type {
 	ProductVariantSummary,
 	Sku,
 } from "@otta-sh/domain";
+import { isProductTaxStatus } from "@otta-sh/domain";
 
 /**
  * The replay key a SHELL document carries — a document a variant created before its
@@ -435,13 +436,14 @@ export function normalizeProductDoc(doc: ProductCommerceDoc): ProductCommerceDoc
 	//
 	// `downloadAsset` is DEFAULTED: a document from before the field existed has no
 	// file attached, and absent must read as `null` rather than `undefined`.
-	// `taxStatus` likewise (PR 2b): such a product was always charged as taxable.
+	// `taxStatus` likewise (PR 2b): such a product was always charged as taxable, and
+	// any value outside the known statuses reads taxable too (fail closed).
 	return {
 		...doc,
 		variants: doc.variants ?? {},
 		publishKey: publishKeyFor(doc.active),
 		downloadAsset: doc.downloadAsset ?? null,
-		taxStatus: doc.taxStatus ?? "taxable",
+		taxStatus: isProductTaxStatus(doc.taxStatus) ? doc.taxStatus : "taxable",
 	};
 }
 
@@ -463,7 +465,7 @@ export function toProductCommerce(doc: ProductCommerceDoc): ProductCommerce {
 		price: doc.price,
 		title: doc.title,
 		taxClass: doc.taxClass,
-		taxStatus: doc.taxStatus ?? "taxable",
+		taxStatus: isProductTaxStatus(doc.taxStatus) ? doc.taxStatus : "taxable",
 		compareAtPrice: doc.compareAtPrice,
 		unitCost: doc.unitCost,
 		inventoryPolicy: doc.inventoryPolicy,

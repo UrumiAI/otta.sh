@@ -183,7 +183,7 @@ export function normalizeZoneDoc(doc: ShippingZoneDoc): ShippingZoneDoc {
 
 /** As {@link normalizeZoneDoc}, for one embedded method. */
 export function normalizeMethodDoc(doc: ShippingMethodDoc): ShippingMethodDoc {
-	return { ...doc, taxable: doc.taxable ?? true, rates: doc.rates ?? {} };
+	return { ...doc, taxable: doc.taxable !== false, rates: doc.rates ?? {} };
 }
 
 /** As {@link normalizeZoneDoc}, for a tax class document. */
@@ -207,7 +207,7 @@ export function toShippingMethod(zoneId: string, doc: ShippingMethodDoc): Shippi
 		zoneId,
 		name: doc.name,
 		type: doc.type,
-		taxable: doc.taxable ?? true,
+		taxable: doc.taxable !== false,
 	};
 }
 
