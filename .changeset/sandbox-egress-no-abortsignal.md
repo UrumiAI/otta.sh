@@ -24,9 +24,27 @@ deployments such as staging were not affected.
   `StripePaymentGateway`, `fetchStripeAccountCountry` and the HTTP email senders. When set, a
   signal goes back in `init`, aborted at the same deadline, so a timed-out request's socket is
   released. Set it only on an in-process host; under the sandbox runner it fails every call.
-  Nothing on `main` sets it yet. Until something does, a timed-out request on a trusted host
-  keeps running in the background until the host's own limits end it, and its answer is
-  discarded.
+- **Interim cost on trusted hosts.** Nothing sets `trustedHost` yet, so on an in-process host
+  (staging) a timed-out request is no longer cancelled at the socket. Results do not change:
+  the call still gives up at the same bound with the same class, and its late answer is
+  discarded. Resources do:
+  - on Node, the socket stays open until undici's own 300 s header and body timeouts;
+  - on Workers, the connection stays open until the request (or cron invocation) ends, and it
+    uses one of the 6 simultaneous connections a Workers invocation may hold. So a hung Stripe
+    during one cron tick can make the other sends and refunds in that tick queue and time out.
+    That costs availability, not money: a refund create that times out is `ambiguous` and
+    keyed, a Resend send is keyed, an SMTP2GO send is a counted attempt, and each is retried on
+    a later tick.
+
+  The fix is to have the site's composition root set the flag
+  (`createOttaPlugin({ trustedHost })`, which is coming with the tax work). That restores
+  cancellation at the socket on trusted hosts.
+- **Email error bodies are capped.** A Resend or SMTP2GO non-2xx body is now read only as far
+  as 16 KiB and then cancelled. Before, it was read whole until the deadline. A provider's
+  refusal is far smaller than that, so its reason still reaches the log.
 - **Type change for subclasses.** A subclass of the exported `CtxHttpEmailSender` that
   overrides the protected `checkResponse` now receives a `ProviderResponse` (`ok`, `status`,
-  `text()`) instead of a `Response`.
+  `text()`) instead of a `Response`. An override still typed `(res: Response)` **still
+  compiles**, because TypeScript checks method parameters bivariantly. It then fails at
+  runtime if it calls `res.json()` or reads `res.headers` or `res.body`. Read the body with
+  `res.text()` instead.
