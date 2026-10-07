@@ -18,6 +18,7 @@
  */
 import {
 	EmailSendTimeoutError,
+	TRANSPORT_UNAVAILABLE_RETRY_MS,
 	isEmailSendTimeoutError,
 	isEmailTransportUnavailableError,
 	type EmailTemplate,
@@ -33,6 +34,8 @@ import {
 	CtxEmailSender,
 	EMDASH_PIPELINE_NOT_CONFIGURED_MESSAGE,
 	EMDASH_SANDBOX_NOT_CONFIGURED_MESSAGE,
+	EMAIL_TRANSPORT_UNAVAILABLE_KEY,
+	emailSendingAvailable,
 	emailSendingConfigured,
 	isEmailNotConfiguredError,
 	LOGIN_EMAIL_TIMEOUT_MS,
@@ -64,13 +67,15 @@ function senderOver(send: EmailAccess["send"], requestTimeoutMs?: number) {
 	return new CtxEmailSender({ email: { send }, requestTimeoutMs });
 }
 
-function ctxWith(email?: EmailAccess): PluginContext {
+function ctxWith(email?: EmailAccess, kv = new Map<string, unknown>()): PluginContext {
 	return {
 		http: { fetch: () => Promise.reject(new Error("email never uses ctx.http")) },
 		kv: {
-			get: async () => null,
-			set: async () => undefined,
-			delete: async () => false,
+			get: async <T>(key: string) => (kv.has(key) ? (kv.get(key) as T) : null),
+			set: async (key: string, value: unknown) => {
+				kv.set(key, value);
+			},
+			delete: async (key: string) => kv.delete(key),
 			list: async () => [],
 		},
 		...(email === undefined ? {} : { email }),
@@ -142,6 +147,49 @@ describe("no EmDash email provider", () => {
 		expect(emailSendingConfigured(ctxWith())).toBe(false);
 		expect(await makeEmailSender(ctxWith())).toBeUndefined();
 		expect(await makeLoginEmailSender(ctxWith())).toBeUndefined();
+	});
+});
+
+/** The host's sandbox bridge answer with no provider selected. */
+const notConfigured = () =>
+	Promise.reject(new Error("Email is not configured. No email provider is available."));
+
+describe("a sandboxed host's 'no provider' answer is remembered (ADR-0031)", () => {
+	test("the answer is recorded, and while it is fresh nothing tries to send — the sign-in sender is not even built", async () => {
+		const kv = new Map<string, unknown>();
+		const ctx = ctxWith({ send: notConfigured }, kv);
+		expect(await emailSendingAvailable(ctx)).toBe(true);
+		const sender = await makeEmailSender(ctx);
+		const err = await rejectionOf(sender!.send(INPUT));
+		expect(isEmailTransportUnavailableError(err)).toBe(true);
+		expect(typeof kv.get(EMAIL_TRANSPORT_UNAVAILABLE_KEY)).toBe("string");
+
+		expect(await emailSendingAvailable(ctx)).toBe(false);
+		// No sender ⇒ `requestLoginLink` mints no challenge and spends no throttle slot.
+		expect(await makeLoginEmailSender(ctx)).toBeUndefined();
+	});
+
+	test("it lapses: after the retry window one send is tried again", async () => {
+		const kv = new Map<string, unknown>([
+			[
+				EMAIL_TRANSPORT_UNAVAILABLE_KEY,
+				new Date(Date.now() - TRANSPORT_UNAVAILABLE_RETRY_MS - 1).toISOString(),
+			],
+		]);
+		const ctx = ctxWith({ send: async () => undefined }, kv);
+		expect(await emailSendingAvailable(ctx)).toBe(true);
+		expect(await makeLoginEmailSender(ctx)).toBeDefined();
+	});
+
+	test("an unreadable or garbage record reads as 'try' (fail-soft)", async () => {
+		const garbage = ctxWith(
+			{ send: async () => undefined },
+			new Map([[EMAIL_TRANSPORT_UNAVAILABLE_KEY, 42]]),
+		);
+		expect(await emailSendingAvailable(garbage)).toBe(true);
+		const failing = ctxWith({ send: async () => undefined });
+		failing.kv.get = () => Promise.reject(new Error("kv down"));
+		expect(await emailSendingAvailable(failing)).toBe(true);
 	});
 });
 

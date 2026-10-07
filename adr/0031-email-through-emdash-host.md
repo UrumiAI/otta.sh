@@ -54,13 +54,19 @@ Facts verified against emdash 0.38.0 (installed):
    - Sandboxed: both "not configured" messages (and the error name) become the domain's
      `EmailTransportUnavailableError`. The dispatcher releases the row **uncounted**, due
      again after `TRANSPORT_UNAVAILABLE_RETRY_MS` (5 min), and stops the drain. The cron leg
-     and the inline send report it as unconfigured. Pinned by the domain contract suite
-     (`emailRecipientContract`, every dialect) and by `ctx-email-sender.test.ts`, which pins
-     both strings verbatim.
-3. **At-least-once, bounded.** `ctx.email` takes no idempotency key and no abort signal, so
+     and the inline send report it as unconfigured. The answer is also recorded in kv
+     (`state:emailTransportUnavailableAt`); while it is fresh (5 min) the cron leg, the
+     inline send and the sign-in request stop **before** claiming a row or minting a
+     challenge, and Settings shows "no provider". After that one send tries again. Pinned by
+     the domain contract suite (`emailRecipientContract`, every dialect) and by
+     `ctx-email-sender.test.ts`, which pins both strings verbatim.
+3. **At-least-once, bounded — a deliberate change.** `ctx.email` takes no idempotency key and no abort signal, so
    the send is raced against the existing ceilings (3 s login, 3 s inline, 5 s sweep) and a
    timeout is re-thrown as a **counted** attempt (`countTimeoutsAsAttempts`, outermost).
-   Duplicates are bounded by the row's `maxAttempts` (5). The uncounted-timeout path in the
+   Duplicates are bounded by the row's `maxAttempts` (5). Before, a timeout on the
+   Resend-shaped sender was uncounted (up to ten, backed off) because Resend deduped the
+   retry; with no idempotency key that would multiply duplicates, so a slow provider now
+   parks a row `failed` after five timed-out sends. The uncounted-timeout path in the
    domain stays for other callers; the plugin no longer uses it. A query-ceiling refusal
    while building the sender (before any send) is still released uncounted.
 4. **The extension point is EmDash's.** otta adds no provider registry of its own. A store
@@ -79,10 +85,11 @@ Facts verified against emdash 0.38.0 (installed):
   selected the backlog goes out, including old status mail; there is no max age.
 - Lost: the per-store from-address setting (now the provider's), and Resend's 24 h
   idempotency (dedup becomes bounded duplicates).
-- In a sandboxed host the plugin cannot tell "no provider" until it sends: the Settings line
-  and the "email set" label read as configured, a sign-in request with no provider mints a
-  challenge (spending a throttle slot) before the send is refused, and the warning is logged
-  once.
+- In a sandboxed host the plugin cannot tell "no provider" until it sends. Until the first
+  refused send (and again once each 5-minute record lapses) one outbox row is claimed and
+  released uncounted, or one sign-in request mints a challenge (spending a throttle slot)
+  before its send is refused; the Settings line reads as configured until then. The
+  `order-emails` leg pays one kv read per tick with an email due to check the record.
 - **Trust widening (security).** The sign-in link carries a bearer token. Through `ctx.email`
   it now passes every installed plugin's `email:beforeSend`/`email:afterSend` hooks and the
   provider plugin, not only otta's own sender. EmDash's dev console provider prints part of

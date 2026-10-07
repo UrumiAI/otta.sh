@@ -652,7 +652,9 @@ that runs the sweep also runs EmDash's own executor, scheduled publishing, clean
 so by default the sweep keeps itself to 30. Measured on the document store (each storage or kv
 call counted once, `cron-leg-costs.test.ts`): an idle tick is **8 queries**; a tick where the
 scans come due adds about 17–20 more; one email is about **12** (the claim, the order, the
-store-name and sign-in-page reads, the send, marking it sent), one hold expired about
+store-name and sign-in-page reads, the send, marking it sent), plus 1 once per tick that
+has an email due, to check the host has not just answered "no email provider", one hold
+expired about
 **20** with its list on Free, one order expired **13** for a one-line order (22 before the
 QA2 fix; a three-line order 23, was 40), one order whose hold bookkeeping needs completing
 about 7 plus 7 per extra line. A closed day's first rollup heal costs two calls per order

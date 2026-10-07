@@ -5,7 +5,7 @@ import {
 	validateBackgroundWork,
 } from "../cron/background-work-setting.js";
 import { MAX_HOLD_TTL_MINUTES } from "@otta-sh/domain";
-import { emailSendingConfigured } from "../email/ctx-email-sender.js";
+import { emailSendingAvailable } from "../email/ctx-email-sender.js";
 import { STORE_DISPLAY_NAME_KEY } from "../email/email-render-context.js";
 import { isPlausiblePayTo, X402_ACCEPTS_KEY, X402_PAYTO_KEY } from "../payments/x402-wiring.js";
 import {
@@ -395,25 +395,33 @@ async function readPlainSettings(ctx: PluginContext): Promise<Map<string, string
  * budget: four concurrent gets.
  */
 async function readPageState(ctx: PluginContext): Promise<SettingsPageState> {
-	const [displayName, paymentSecrets, plainSettings, backgroundWork, stripeAccount] =
-		await Promise.all([
-			// FAIL-SOFT alongside the rest (INC-C3): the display name is cosmetic, and
-			// a kv blip on it must not deny the operator the secret forms below.
-			ctx.kv.get<string>(STORE_DISPLAY_NAME_KEY).catch(() => null),
-			readPaymentSecretState(ctx),
-			readPlainSettings(ctx),
-			// Fail-soft inside (a kv blip reads as the default), and the SAME read the
-			// sweep makes, so the form shows the budget the next tick will use.
-			readBackgroundWork(ctx),
-			// Never throws. The ONE place besides the key's save that may ask
-			// Stripe: only when nothing usable is cached for the stored key (never
-			// cached, or an unknown answer past its back-off), so checkout never has to.
-			readStripeAccountCountry(ctx),
-		]);
+	const [
+		displayName,
+		paymentSecrets,
+		plainSettings,
+		backgroundWork,
+		stripeAccount,
+		emailAvailable,
+	] = await Promise.all([
+		// FAIL-SOFT alongside the rest (INC-C3): the display name is cosmetic, and
+		// a kv blip on it must not deny the operator the secret forms below.
+		ctx.kv.get<string>(STORE_DISPLAY_NAME_KEY).catch(() => null),
+		readPaymentSecretState(ctx),
+		readPlainSettings(ctx),
+		// Fail-soft inside (a kv blip reads as the default), and the SAME read the
+		// sweep makes, so the form shows the budget the next tick will use.
+		readBackgroundWork(ctx),
+		// Never throws. The ONE place besides the key's save that may ask
+		// Stripe: only when nothing usable is cached for the stored key (never
+		// cached, or an unknown answer past its back-off), so checkout never has to.
+		readStripeAccountCountry(ctx),
+		// ADR-0031: `ctx.email`, and no recent "no email provider" answer.
+		emailSendingAvailable(ctx),
+	]);
 	return {
 		backgroundWork,
 		stripeAccount,
-		emailAvailable: emailSendingConfigured(ctx),
+		emailAvailable,
 		plainSettings,
 		displayName: displayName ?? "",
 		paymentSecrets,

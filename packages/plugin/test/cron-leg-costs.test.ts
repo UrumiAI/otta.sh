@@ -64,7 +64,12 @@ import {
 	TICK_OVERHEAD_QUERIES,
 	UNPROMOTED_LEGS,
 } from "../src/cron/sweeps.js";
-import { EMAIL_SENDER_BUILD_READS, makeEmailSender } from "../src/email/ctx-email-sender.js";
+import {
+	EMAIL_AVAILABILITY_READS,
+	EMAIL_SENDER_BUILD_READS,
+	emailSendingAvailable,
+	makeEmailSender,
+} from "../src/email/ctx-email-sender.js";
 import { resolvePaymentGateways } from "../src/payments/resolve-payment-gateways.js";
 import { STORE_DISPLAY_NAME_KEY } from "../src/email/email-render-context.js";
 import { LOGIN_LINK_URL_KEY } from "../src/storefront/login-link.js";
@@ -311,8 +316,15 @@ describe("one real unit of each leg fits its LEG_QUERY_COSTS estimate", () => {
 			[LOGIN_LINK_URL_KEY]: "https://shop.example/account/verify",
 		};
 
-		test("the leg has no entry cost: whether a provider exists is ctx.email, not a read", () => {
-			expect(LEG_QUERY_COSTS["order-emails"].entry).toBe(0);
+		test("the leg's entry is the availability check: ctx.email, plus one read of the 'no provider' record", async () => {
+			const { ctx } = countedEmailContext(seed);
+			let available = false;
+			const used = await cost(async () => {
+				available = await emailSendingAvailable(ctx);
+			});
+			expect(available).toBe(true);
+			expect(used).toBe(EMAIL_AVAILABILITY_READS);
+			expect(LEG_QUERY_COSTS["order-emails"].entry).toBe(EMAIL_AVAILABILITY_READS);
 		});
 
 		test("building the sender and its send fit EMAIL_SENDER_BUILD_READS + 1", async () => {
@@ -780,9 +792,9 @@ describe("the cost table against the Workers Free preset (review of QA2 M2)", ()
 			"expire-holds",
 			"expire-orders",
 			"hold-intents",
-			// Not "order-emails" any more (ADR-0031): with no per-tick provider resolve
-			// and a two-read sender build its unit is 12 and fits behind a cancel. It is
-			// still the FIRST leg, so it runs at the head anyway.
+			// Its unit (12 since ADR-0031) plus the availability read (1). It is the
+			// FIRST leg, so the head is where it runs.
+			"order-emails",
 			"sku-transfers",
 		]);
 		expect(SWEEP_LEGS[0]).toBe("order-emails");

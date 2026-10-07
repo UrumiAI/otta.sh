@@ -18,15 +18,19 @@ DKIM and any key belong to it. The outbox and its at-least-once delivery are unc
   is not configured" answer becomes `EmailTransportUnavailableError` (new in
   `@otta-sh/domain`, with `isEmailTransportUnavailableError`); the dispatcher releases the row
   without counting an attempt, due again after `TRANSPORT_UNAVAILABLE_RETRY_MS` (5 min), and
-  calls the new `onTransportUnavailable` option.
-- **A timeout counts as an attempt.** `ctx.email` has no idempotency key, so a send that
-  timed out may have gone; counting it bounds duplicates by `maxAttempts` (5). The 3 s
+  calls the new `onTransportUnavailable` option. The answer is recorded in kv
+  (`state:emailTransportUnavailableAt`) for 5 minutes, during which the cron leg, the inline
+  send and the sign-in request stop before claiming a row or minting a challenge.
+- **A timeout counts as an attempt (behaviour change).** `ctx.email` has no idempotency key,
+  so a send that timed out may have gone; counting it bounds duplicates by `maxAttempts` (5).
+  Before, a Resend-path timeout was uncounted (up to ten, backed off), so a slow provider now
+  parks a row `failed` sooner. The 3 s
   sign-in and inline ceilings and the 5 s sweep ceiling are unchanged.
 - **Settings.** The email API key, SMTP2GO key, from-address, email provider and SMTP2GO
   region fields are removed. "Payments & email" shows one line: sent via EmDash's provider, or
   no provider (with a pointer to `docs/email-providers.md`).
-- **Cron budget.** The `order-emails` leg has no entry cost any more, and one email unit is
-  12 calls (was 14).
+- **Cron budget.** The `order-emails` leg's entry cost is one kv read (was up to three), and
+  one email unit is 12 calls (was 14), so the Workers Paid email batch is 15 (was 12).
 
 **Breaking (`@otta-sh/plugin`), removed from the package root:** `CtxHttpEmailSender`,
 `CtxHttpEmailSenderOptions`, `EmailSenderEgress`, `DEFAULT_EMAIL_FROM`, `EMAIL_FROM_KEY`,

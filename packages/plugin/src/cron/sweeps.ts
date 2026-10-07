@@ -188,8 +188,9 @@ import {
 } from "../commerce/in-process-commerce-stores.js";
 import {
 	countTimeoutsAsAttempts,
+	EMAIL_AVAILABILITY_READS,
 	EMAIL_SENDER_BUILD_READS,
-	emailSendingConfigured,
+	emailSendingAvailable,
 	makeEmailSender,
 } from "../email/ctx-email-sender.js";
 import {
@@ -613,9 +614,10 @@ export const LEG_QUERY_COSTS: Record<SweepLeg, { readonly entry: number; readonl
 		// reads before the send, building the real sender (up to four kv reads, the
 		// first send), the request, and marking it sent. QA3 saw 13-14 a tick with its due
 		// check; 8 counted only an injected sender, and the ceiling then fell after the
-		// send — the duplicate emails of N2. No entry cost: whether the host has an
-		// email provider is `ctx.email`'s presence, not a read.
-		"order-emails": { entry: 0, unit: 4 + EMAIL_SEND_AND_RECORD_CALLS },
+		// send — the duplicate emails of N2. entry: whether the host has an email
+		// provider — `ctx.email`, plus one kv read of the "no provider" record
+		// (`EMAIL_AVAILABILITY_READS`).
+		"order-emails": { entry: EMAIL_AVAILABILITY_READS, unit: 4 + EMAIL_SEND_AND_RECORD_CALLS },
 		"expire-holds": { entry: 2, unit: 14 },
 		// The flip, the email locator, the rollup delta, the batched hold release and
 		// the intent stamp: 13 for a one-line order (QA2 M2; it was 22). A bigger order
@@ -1283,15 +1285,19 @@ export async function runCommerceSweeps(
 	// An injected sender (a suite) needs no provider. Otherwise the host's email
 	// provider is `ctx.email` (ADR-0031): absent ⇒ `skipped`, nothing claimed, no
 	// attempt spent. A sandboxed host always has `ctx.email` and says "no provider"
-	// on the first send instead: the dispatcher releases that row uncounted and the
-	// leg reports `skipped` all the same (`onTransportUnavailable`).
+	// on a send instead: the dispatcher releases that row uncounted, the leg reports
+	// `skipped` all the same (`onTransportUnavailable`), and the sender records the
+	// answer, so the next ticks skip BEFORE claiming (`emailSendingAvailable`, one
+	// kv read — the leg's entry cost) until the record lapses and one send retries.
 	const injectedSender =
 		options.emailSender !== undefined || options.emailSenderFactory !== undefined;
 	const orderEmailsLeg = async (): Promise<void> => {
 		await run(
 			"order-emails",
 			async (legBudget) => {
-				if (!injectedSender && !emailSendingConfigured(ctx)) return { count: 0, skipped: true };
+				if (!injectedSender && !(await emailSendingAvailable(ctx))) {
+					return { count: 0, skipped: true };
+				}
 				const provider = outboxSender(ctx, options, legBudget);
 				if (provider === undefined) return { count: 0, skipped: true };
 				let unavailable = false;

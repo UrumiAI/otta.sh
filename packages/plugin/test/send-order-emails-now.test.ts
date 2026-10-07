@@ -35,7 +35,10 @@ import {
 	sendOrderEmailsNow,
 } from "../src/email/send-order-emails-now.js";
 import { SETTLE_REQUEST_BUDGET_MS, settleDeadline } from "../src/settle-deadline.js";
-import { LOGIN_EMAIL_TIMEOUT_MS } from "../src/email/ctx-email-sender.js";
+import {
+	EMAIL_TRANSPORT_UNAVAILABLE_KEY,
+	LOGIN_EMAIL_TIMEOUT_MS,
+} from "../src/email/ctx-email-sender.js";
 import type { EmailAccess, EmailMessage, PluginContext } from "../src/types.js";
 import {
 	makeInProcessCommerce,
@@ -50,6 +53,8 @@ let harness: InProcessCommerceHarness;
 beforeEach(async () => {
 	if (harness === undefined) harness = await makeInProcessCommerce();
 	else await harness.reset();
+	// kv outlives `reset()`: forget any "no email provider" answer a case recorded.
+	await harness.ctx.kv.delete(EMAIL_TRANSPORT_UNAVAILABLE_KEY);
 });
 
 afterEach(() => {
@@ -139,7 +144,7 @@ describe("constants", () => {
 });
 
 describe("a replay costs one order read: the sender is built lazily", () => {
-	test("nothing due ⇒ no kv read, no send — only the claim's read of the order", async () => {
+	test("nothing due ⇒ one kv read (the 'no provider' record), no send — and the claim's read of the order", async () => {
 		const id = await seedOrder("ord-noop", false); // pending: no outbox row
 		const { ctx, messages } = withEmail();
 		const kvGet = vi.spyOn(ctx.kv, "get");
@@ -147,9 +152,9 @@ describe("a replay costs one order read: the sender is built lazily", () => {
 
 		const result = await sendOrderEmailsNow(ctx, harness.stores, id);
 
-		// Whether the host has a provider is `ctx.email`'s presence, not a read; the
-		// sender's own reads wait for a claimed row.
-		expect(kvGet).not.toHaveBeenCalled();
+		// Whether to try is `ctx.email` plus the host's last "no provider" answer
+		// (ADR-0031); the sender's own reads wait for a claimed row.
+		expect(kvGet.mock.calls.map((call) => call[0])).toEqual([EMAIL_TRANSPORT_UNAVAILABLE_KEY]);
 		expect(getVersioned).toHaveBeenCalledTimes(1);
 		expect(messages).toEqual([]);
 		expect(result).toEqual({ configured: true, sent: [], skipped: [] });
@@ -195,8 +200,8 @@ describe("a replay costs one order read: the sender is built lazily", () => {
 		expect(result.configured).toBe(true);
 		expect(result.sent).toEqual([]);
 		expect(result.skipped.map((row) => [row.orderId, row.toState])).toEqual([[id, "paid"]]);
-		// No sender built, so no reads and no send.
-		expect(kvGet).not.toHaveBeenCalled();
+		// No sender built: only the availability read, and no send.
+		expect(kvGet.mock.calls.map((call) => call[0])).toEqual([EMAIL_TRANSPORT_UNAVAILABLE_KEY]);
 		expect(messages).toEqual([]);
 		expect(await cronView(id)).toBeNull(); // completed, not left for the cron
 	});
@@ -220,6 +225,20 @@ describe("a replay costs one order read: the sender is built lazily", () => {
 		// Not due right now (backed off), and no attempt spent: still a first attempt.
 		expect(await dueNow(id)).toBeNull();
 		expect(await cronView(id)).toMatchObject({ attempts: 1, timeouts: 0 });
+		// The answer was recorded: the next order is not even claimed, and no send is tried.
+		const next = await seedOrder("ord-sandbox-unconfigured-2", true);
+		let tried = 0;
+		const again = withEmail(() => {
+			tried += 1;
+			return Promise.reject(new Error("Email is not configured. No email provider is available."));
+		});
+		expect(await sendOrderEmailsNow(again.ctx, harness.stores, next)).toEqual({
+			configured: false,
+			sent: [],
+			skipped: [],
+		});
+		expect(tried).toBe(0);
+		expect(await cronView(next)).toMatchObject({ attempts: 1 }); // never claimed
 	});
 
 	test("no email provider is a QUIET no-op even when the budget is spent — nothing to say", async () => {

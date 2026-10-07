@@ -351,6 +351,14 @@ describe("Settings: how a key field renders", () => {
 		const viaText = contextTexts(via.blocks).join("\n");
 		expect(viaText).toContain("sent via EmDash");
 		expect(viaText).not.toContain("docs/email-providers.md");
+		// A sandboxed host always hands over `ctx.email`; once it has answered "no
+		// email provider" the line says so (ADR-0031).
+		const answered = await invoke(
+			makeCtx({ "state:emailTransportUnavailableAt": new Date().toISOString() }, { email: true })
+				.ctx,
+			{ type: "page_load", page: "/settings" },
+		);
+		expect(contextTexts(answered.blocks).join("\n")).toContain("no EmDash email provider");
 		// No email key, from-address, provider or region field is left on the screen.
 		for (const page of [none, via]) {
 			const ids = JSON.stringify(page).match(/"action_id":"[^"]*"/g) ?? [];

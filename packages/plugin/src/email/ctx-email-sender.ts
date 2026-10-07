@@ -30,6 +30,7 @@ import {
 	EmailTransportUnavailableError,
 	isEmailSendTimeoutError,
 	renderEmail,
+	TRANSPORT_UNAVAILABLE_RETRY_MS,
 	type EmailSender,
 	type SendEmailInput,
 } from "@otta-sh/domain";
@@ -72,6 +73,9 @@ export interface CtxEmailSenderOptions {
 	/** The storefront's public origin, for the order page link. Absent ⇒ order
 	 *  emails carry no link. */
 	storefrontOrigin?: string | undefined;
+	/** Told when the host answered "no email provider" — {@link makeEmailSender}
+	 *  records it ({@link markEmailTransportUnavailable}). */
+	onUnavailable?: (() => Promise<void>) | undefined;
 }
 
 /** Renders with the storefront's money, the store name and the order link, and
@@ -81,8 +85,10 @@ export class CtxEmailSender implements EmailSender {
 	readonly #timeoutMs: number | (() => number);
 	readonly #storeName: string | undefined;
 	readonly #storefrontOrigin: string | undefined;
+	readonly #onUnavailable: (() => Promise<void>) | undefined;
 
 	constructor(options: CtxEmailSenderOptions) {
+		this.#onUnavailable = options.onUnavailable;
 		this.#email = options.email;
 		this.#timeoutMs = options.requestTimeoutMs ?? DEFAULT_EMAIL_TIMEOUT_MS;
 		this.#storeName = options.storeName;
@@ -122,7 +128,10 @@ export class CtxEmailSender implements EmailSender {
 			await Promise.race([sending, timeout]);
 		} catch (err) {
 			if (isEmailSendTimeoutError(err)) throw err;
-			if (isEmailNotConfiguredError(err)) throw new EmailTransportUnavailableError();
+			if (isEmailNotConfiguredError(err)) {
+				await this.#onUnavailable?.();
+				throw new EmailTransportUnavailableError();
+			}
 			throw err;
 		} finally {
 			clearTimeout(timer);
@@ -165,10 +174,58 @@ export function isEmailNotConfiguredError(err: unknown): boolean {
 }
 
 /** Whether this context can send at all — the trusted-mode answer. A sandboxed
- *  context says yes and learns otherwise from the first send. */
+ *  context says yes and learns otherwise from a send ({@link emailSendingAvailable}). */
 export function emailSendingConfigured(ctx: PluginContext): boolean {
 	return ctx.email !== undefined;
 }
+
+/**
+ * When the host last answered "no email provider" (readable kv, an ISO time).
+ *
+ * A sandboxed host always hands over `ctx.email`, so the only way to learn there
+ * is no provider is a send. Recording the answer lets every caller stop BEFORE it
+ * claims an outbox row or mints a sign-in challenge, for
+ * {@link TRANSPORT_UNAVAILABLE_RETRY_MS}; after that one send tries again. Not a
+ * secret, and not a setting: plain kv, written fail-soft.
+ */
+export const EMAIL_TRANSPORT_UNAVAILABLE_KEY = "state:emailTransportUnavailableAt";
+
+/** Record that the host has no email provider, now. Never throws. */
+export async function markEmailTransportUnavailable(
+	ctx: PluginContext,
+	nowMs: number = Date.now(),
+): Promise<void> {
+	try {
+		await ctx.kv.set(EMAIL_TRANSPORT_UNAVAILABLE_KEY, new Date(nowMs).toISOString());
+	} catch {
+		// Fail-soft: the next send learns it again.
+	}
+}
+
+/**
+ * Whether a send should be TRIED: the host hands over `ctx.email`, and has not
+ * said "no email provider" in the last {@link TRANSPORT_UNAVAILABLE_RETRY_MS}. One
+ * kv read when `ctx.email` is there; none when it is not. Fail-soft: an unreadable
+ * record reads as "try".
+ */
+export async function emailSendingAvailable(
+	ctx: PluginContext,
+	nowMs: number = Date.now(),
+): Promise<boolean> {
+	if (!emailSendingConfigured(ctx)) return false;
+	let at: unknown;
+	try {
+		at = await ctx.kv.get<unknown>(EMAIL_TRANSPORT_UNAVAILABLE_KEY);
+	} catch {
+		return true;
+	}
+	if (typeof at !== "string") return true;
+	const atMs = Date.parse(at);
+	return !(Number.isFinite(atMs) && nowMs - atMs < TRANSPORT_UNAVAILABLE_RETRY_MS && atMs <= nowMs);
+}
+
+/** The kv reads {@link emailSendingAvailable} makes when `ctx.email` is there. */
+export const EMAIL_AVAILABILITY_READS = 1;
 
 /**
  * Build the sender for a context, or `undefined` when the host has no email
@@ -192,15 +249,19 @@ export async function makeEmailSender(
 		// From line's display name used to give (QA2 U-3).
 		storeName: storeName ?? storeNameFrom(ctx.site?.name),
 		storefrontOrigin: storefrontOriginOf(signInPageUrl),
+		onUnavailable: () => markEmailTransportUnavailable(ctx),
 		...(options.requestTimeoutMs !== undefined
 			? { requestTimeoutMs: options.requestTimeoutMs }
 			: {}),
 	});
 }
 
-/** {@link makeEmailSender} with the login ceiling. (No outbox row behind it, so
- *  nothing to count: a failed or timed-out sign-in email is logged.) */
-export function makeLoginEmailSender(ctx: PluginContext): Promise<EmailSender | undefined> {
+/** {@link makeEmailSender} with the login ceiling — and `undefined` while the
+ *  host is known to have no provider ({@link emailSendingAvailable}), so a sign-in
+ *  request then mints no challenge and spends no throttle slot. (No outbox row
+ *  behind it, so nothing to count: a failed or timed-out sign-in email is logged.) */
+export async function makeLoginEmailSender(ctx: PluginContext): Promise<EmailSender | undefined> {
+	if (!(await emailSendingAvailable(ctx))) return undefined;
 	return makeEmailSender(ctx, { requestTimeoutMs: LOGIN_EMAIL_TIMEOUT_MS });
 }
 

@@ -28,8 +28,9 @@
  *    no idempotency key, so the email may have been delivered and an uncounted
  *    retry would deliver it again (ADR-0031);
  *  - it is CHEAP when there is nothing to do — no provider (`ctx.email` absent)
- *    costs nothing, and the sender (its kv reads) is built only once a row has
- *    been claimed, so a replay costs one read of the order;
+ *    costs nothing, a present `ctx.email` costs one kv read (the "no provider"
+ *    record, ADR-0031), and the sender (its kv reads) is built only once a row has
+ *    been claimed, so a replay costs that and one read of the order;
  *  - it makes the FIRST ATTEMPT ONLY — it claims a row no dispatcher has tried
  *    (`onlyUnattempted`), so it makes at most one COUNTED attempt per row and every
  *    counted retry is the cron's; the total budget (`maxAttempts`) is unchanged.
@@ -62,7 +63,7 @@ import { settleDeadline, type SettleDeadline } from "../settle-deadline.js";
 import type { PluginContext } from "../types.js";
 import {
 	countTimeoutsAsAttempts,
-	emailSendingConfigured,
+	emailSendingAvailable,
 	LOGIN_EMAIL_TIMEOUT_MS,
 	makeEmailSender,
 } from "./ctx-email-sender.js";
@@ -165,7 +166,7 @@ export async function sendOrderEmailsNow(
 	// as well, so a "the cron sweep will take it" line below would be false. (And
 	// "take", not "deliver": the sweep may complete a row as skipped — an order with
 	// no email recipient, ADR-0028 Decision 7 — rather than send it.)
-	if (options.emailSender === undefined && !emailSendingConfigured(ctx)) {
+	if (options.emailSender === undefined && !(await emailSendingAvailable(ctx))) {
 		return { configured: false, sent: [], skipped: [] };
 	}
 	const sent: OutboxEmail[] = [];
