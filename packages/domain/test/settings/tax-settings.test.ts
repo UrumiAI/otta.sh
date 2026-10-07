@@ -68,11 +68,23 @@ describe("readTaxSettings — a stored block, whatever its age", () => {
 		expect(readTaxSettings(JSON.parse(JSON.stringify(block)))).toEqual(block);
 	});
 
-	test("a field missing or invalid in a stored block falls back to the new-store default", () => {
-		expect(readTaxSettings({ enabled: true, displayCart: "sideways" })).toEqual({
-			...NEW_STORE_TAX_SETTINGS,
-			enabled: true,
-		});
+	// Review 2a B3: Otta always writes the block whole and normalised, so a field
+	// missing or wrong-typed means a damaged document. Reading it field by field
+	// made `enabled: "true"` read as tax OFF — on a store with rates, a silent stop
+	// to charging tax. A malformed block is "never saved" instead, so the upgrade
+	// rule decides: a store with rates keeps charging (legacy, on).
+	test.each<[string, Record<string, unknown>]>([
+		["enabled as a string", { ...NEW_STORE_TAX_SETTINGS, enabled: "true" }],
+		["enabled missing", { ...NEW_STORE_TAX_SETTINGS, enabled: undefined }],
+		["pricesIncludeTax as a number", { ...NEW_STORE_TAX_SETTINGS, pricesIncludeTax: 1 }],
+		["an unknown displayCart", { ...NEW_STORE_TAX_SETTINGS, displayCart: "sideways" }],
+		["a bad base address", { ...NEW_STORE_TAX_SETTINGS, baseAddress: { country: "XX" } }],
+		["a bad shipping class", { ...NEW_STORE_TAX_SETTINGS, shippingTaxClass: { kind: "x" } }],
+		["only two fields", { enabled: false, displayCart: "excl" }],
+	])("a block with %s reads as never saved — a store with rates stays on", (_name, raw) => {
+		expect(readTaxSettings(raw)).toBeUndefined();
+		expect(effectiveTaxSettings(readTaxSettings(raw), true)).toEqual(LEGACY_TAX_SETTINGS);
+		expect(effectiveTaxSettings(readTaxSettings(raw), true).enabled).toBe(true);
 	});
 });
 

@@ -121,25 +121,16 @@ export function parseTaxSettings(raw: unknown): TaxSettings | TaxSettingsProblem
 }
 
 /**
- * Read a STORED block, leniently: absent or not an object ⇒ `undefined` (never
- * saved); a field missing or malformed ⇒ the new-store default for that field
- * (a partially written block is the same condition as an unwritten field).
+ * Read a STORED block: absent, not an object, or with ANY field missing or
+ * malformed ⇒ `undefined` (never saved), so the upgrade rule decides. Otta writes
+ * the block whole and normalised, so a bad field means a damaged document — and
+ * reading it field by field would turn `enabled: "true"` into tax OFF on a store
+ * with rates (review 2a B3). Never saved fails toward what the store charged
+ * before: rates ⇒ legacy, on.
  */
 export function readTaxSettings(raw: unknown): TaxSettings | undefined {
-	if (!isRecord(raw)) return undefined;
-	const d = NEW_STORE_TAX_SETTINGS;
-	const bool = (key: "enabled" | "pricesIncludeTax" | "roundAtSubtotal") =>
-		typeof raw[key] === "boolean" ? (raw[key] as boolean) : d[key];
-	return {
-		enabled: bool("enabled"),
-		pricesIncludeTax: bool("pricesIncludeTax"),
-		basedOn: oneOf(raw["basedOn"], ["shipping", "base"] as const) ?? d.basedOn,
-		baseAddress: parseBaseAddress(raw["baseAddress"]) ?? null,
-		shippingTaxClass: parseShippingTaxClass(raw["shippingTaxClass"]) ?? d.shippingTaxClass,
-		roundAtSubtotal: bool("roundAtSubtotal"),
-		displayCart: oneOf(raw["displayCart"], ["excl", "incl"] as const) ?? d.displayCart,
-		totalsDisplay: oneOf(raw["totalsDisplay"], ["itemized", "single"] as const) ?? d.totalsDisplay,
-	};
+	const parsed = parseTaxSettings(raw);
+	return "field" in parsed ? undefined : parsed;
 }
 
 /** `null` is "no base address"; `undefined` is invalid. */
