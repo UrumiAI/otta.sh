@@ -447,7 +447,9 @@ describe("the query budget is an operational setting (Background work per minute
 			timeMs: SWEEP_TICK_BUDGET_MS,
 			queries: 600,
 			expiryBatch: 18,
-			emailBatch: 15,
+			// 12 since the email unit counts the real sender's build (four kv reads)
+			// and the per-tick provider resolve (up to three): it was 15 at 12/unit.
+			emailBatch: 12,
 		});
 	}, 120_000);
 

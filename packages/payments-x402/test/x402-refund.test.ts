@@ -1,13 +1,12 @@
 import { cents, currency, idempotencyKey, orderId } from "@otta-sh/domain";
 import { describe, expect, test } from "vitest";
-import { createTestFacilitator, X402PaymentGateway } from "../src/index.js";
+import { X402PaymentGateway } from "../src/index.js";
 
 // ADR-0008: x402 cannot refund. On-chain settlement is irreversible and the
 // adapter holds no signing wallet — `refundable` is false by construction and
 // `refund` returns the capability statement UNSUPPORTED (never a thrown error).
 
 const gateway = new X402PaymentGateway({
-	facilitator: createTestFacilitator("secret"),
 	payTo: "0xTEST",
 	accepts: ["eip155:8453"],
 });

@@ -15,8 +15,14 @@ import {
 	IN_PROCESS_EGRESS_URLS,
 	resolveAllowedHosts,
 	resolveInProcessEgress,
+	SMTP2GO_API_HOSTS,
 	STRIPE_API_HOST,
 } from "../src/manifest.js";
+
+/** The hosts granted in EVERY build: Stripe's API and SMTP2GO's four send
+ *  hosts (a store picks SMTP2GO in Settings, which is kv and cannot extend the
+ *  build-time list). */
+const BASELINE = [STRIPE_API_HOST, ...Object.values(SMTP2GO_API_HOSTS)];
 
 /** Order-insensitive EXACT comparison: `toEqual` on both sides sorted catches a
  *  missing host AND a leaked extra one, which `toContain` cannot. */
@@ -26,19 +32,32 @@ describe("resolveAllowedHosts — the egress set, EXACTLY", () => {
 	const EMAIL = "https://api.email.example.com/v1/send";
 	const FACILITATOR = "https://facilitator.example.com";
 
-	test("with nothing configured, EXACTLY the Stripe API host", () => {
+	test("with nothing configured, EXACTLY the Stripe API host and SMTP2GO's send hosts", () => {
 		// Stripe is the one host the in-process plugin always talks to itself
-		// (`paymentIntents.create` / refunds). Email and the facilitator are
+		// (`paymentIntents.create` / refunds). SMTP2GO's hosts are granted too,
+		// because the store chooses SMTP2GO at runtime and kv cannot widen the
+		// gate. The Resend-shaped email URL and the facilitator are
 		// deployment-supplied, so an unconfigured deployment gets no egress for
 		// them — absent, never a wildcard.
-		expect(resolveAllowedHosts()).toEqual([STRIPE_API_HOST]);
-		expect(resolveAllowedHosts({})).toEqual([STRIPE_API_HOST]);
+		expect(resolveAllowedHosts()).toEqual(BASELINE);
+		expect(resolveAllowedHosts({})).toEqual(BASELINE);
+	});
+
+	test("SMTP2GO's hosts are exactly its global and three regional send-API hosts", () => {
+		// Exact hosts, never a wildcard like *.smtp2go.com. A new one is a manifest
+		// and ADR-0005 change.
+		expect(SMTP2GO_API_HOSTS).toEqual({
+			global: "api.smtp2go.com",
+			us: "us-api.smtp2go.com",
+			eu: "eu-api.smtp2go.com",
+			au: "au-api.smtp2go.com",
+		});
 	});
 
 	test("EXACTLY Stripe + email + facilitator once both are configured", () => {
 		const hosts = resolveAllowedHosts({ emailApiUrl: EMAIL, facilitatorUrl: FACILITATOR });
 		expect(sorted(hosts)).toEqual(
-			sorted([STRIPE_API_HOST, "api.email.example.com", "facilitator.example.com"]),
+			sorted([...BASELINE, "api.email.example.com", "facilitator.example.com"]),
 		);
 	});
 
@@ -59,7 +78,7 @@ describe("resolveAllowedHosts — the egress set, EXACTLY", () => {
 		// An unparseable define must not throw at module load (it would take the
 		// whole plugin down) and must not silently widen the gate. It grants
 		// nothing, which surfaces as a refused fetch — a legible failure.
-		expect(resolveAllowedHosts({ emailApiUrl: value })).toEqual([STRIPE_API_HOST]);
+		expect(resolveAllowedHosts({ emailApiUrl: value })).toEqual(BASELINE);
 	});
 
 	test("duplicate hosts collapse — the list is a SET, not a bag", () => {
@@ -68,15 +87,15 @@ describe("resolveAllowedHosts — the egress set, EXACTLY", () => {
 				emailApiUrl: "https://api.stripe.com/mail",
 				facilitatorUrl: "https://api.stripe.com/x402",
 			}),
-		).toEqual([STRIPE_API_HOST]);
+		).toEqual(BASELINE);
 	});
 });
 
 describe("ALLOWED_HOSTS / IN_PROCESS_EGRESS_URLS — the resolved constants for THIS bundle", () => {
-	test("this un-defined build (no bundler define) resolves to the Stripe-only allowlist", () => {
+	test("this un-defined build (no bundler define) resolves to the baseline allowlist", () => {
 		// vitest bundles without `__OTTA_EMAIL_API_URL__` / `__OTTA_X402_FACILITATOR_URL__`,
 		// so the module-level constants must reflect an unconfigured deployment.
-		expect(ALLOWED_HOSTS).toEqual([STRIPE_API_HOST]);
+		expect(ALLOWED_HOSTS).toEqual(BASELINE);
 		expect(IN_PROCESS_EGRESS_URLS).toEqual({});
 	});
 

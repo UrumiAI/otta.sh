@@ -147,3 +147,60 @@ Two things are new. `sendOrderEmailsNow` resolves to the rows it delivered while
 waiting, and the dispatchers gained `onSent(row)`. With these the console says "the buyer has
 been emailed" only when the row the write enqueued was delivered. The email goes out in click
 order: each write sends what is due for that order, oldest first.
+
+## Amended 2026-10-05 — the store chooses its email provider: Resend or SMTP2GO
+
+A store can now send through SMTP2GO's HTTP API as well as the Resend-shaped sender.
+
+- **The choice is a Settings value, and the default is unchanged.** "Email provider"
+  (`settings:emailProvider`, readable kv) is `resend` or `smtp2go`. Unset means `resend`, so an
+  existing store keeps sending as before. "SMTP2GO region" (`settings:emailSmtp2goRegion`) is
+  `global`, `us`, `eu` or `au`, default `global`. The Settings save refuses any other value,
+  all-or-nothing with the rest of the payment settings.
+- **One key slot per provider.** Resend keeps the write-only `settings:emailApiKey`; SMTP2GO
+  has its own, `settings:emailSmtp2goApiKey`, each with its own field and Remove button. The
+  sender reads only the chosen provider's slot, so a provider switch can never send one
+  provider's live key to the other. (A first draft shared one slot; a switch then sent the old
+  provider's key to the new one, and each 401 spent an outbox attempt.)
+- **Unusable means unconfigured, and nothing is claimed.** `resolveEmailTransport` decides,
+  once per cron tick or inline attempt, whether the store can send: Resend needs the build's
+  email URL (its key stays optional, as before, so a keyless relay or local mail catcher still
+  works); SMTP2GO needs its own key. A provider read that fails, or an unknown stored value,
+  is unconfigured too: never a guess that would hand the wrong provider a key. Unconfigured,
+  the cron leg reports `skipped` and the inline send claims nothing, so no attempt is spent.
+  The resolved transport is handed to the sender build, so the choice is read once. In the
+  cron leg the resolve runs inside the leg's body, after its due check and budget gate: a
+  tick too busy for it defers the leg (which then ages), rather than letting the tick's query
+  ceiling refuse a read that the fail-soft readers would mistake for "unconfigured".
+- **The seam.** `HttpEmailSender` (`packages/plugin/src/email/http-email-sender.ts`) holds
+  what every HTTP provider shares: rendering, the per-send timeout and its
+  `EmailSendTimeoutError`, and the sanitizing of provider error text (control, line-separator
+  and bidi characters become spaces; the recipient and the sender's own key are redacted; the
+  detail is cut to 200 characters; a body over 64 KiB is not parsed). A provider is a subclass
+  with two methods: build the request and read the response. `CtxHttpEmailSender` (Resend's
+  body, unchanged) and `Smtp2goEmailSender` are the two. Refusals are `EmailProviderError`s
+  with a `kind` (`auth`, `rate_limited`, `unavailable`, `invalid`, `refused`, `ambiguous`).
+- **SMTP2GO can refuse with HTTP 200.** A send counts only when `data.succeeded ≥ 1` and
+  `data.failed = 0`. A 200 with `failed > 0` is a refusal carrying `data.failures` and
+  SMTP2GO's `request_id`. A 2xx whose body is not SMTP2GO's JSON is `ambiguous` and not taken
+  as sent; so is a 2xx whose body read was cut off by our own timeout — SMTP2GO answered and
+  may have sent, so that attempt counts.
+- **Dedupe holds only for providers with an idempotency key.** The Decision above says
+  effectively-once relies on the provider's idempotency key. That is true of Resend. SMTP2GO
+  defines none, and no outbox id is put in a message header (recipients can read headers;
+  SMTP2GO's own `email_id` / `request_id` identify a message). So on SMTP2GO a timeout is a
+  COUNTED attempt (`countTimeoutsAsAttempts`, applied outermost in the cron leg and the inline
+  send), not the uncounted, immediately-retried kind: a slow-but-accepting SMTP2GO can deliver
+  a duplicate at most once per counted attempt, so at most `maxAttempts` copies, instead of
+  without bound. The `in_flight` / `ambiguous` outbox states from the provider research are
+  the full fix and are not built here.
+- **The cron budget counts the real cost.** The leg's `entry` is the provider resolve (up to
+  three kv reads) and the email unit counts the real sender build (up to four kv reads), so
+  `EMAIL_SEND_AND_RECORD_CALLS` is ten and the unit fourteen. `cron-leg-costs.test.ts`
+  measures both with the real sender construction for both providers.
+- **allowedHosts.** `api.smtp2go.com`, `us-api.smtp2go.com`, `eu-api.smtp2go.com` and
+  `au-api.smtp2go.com` are constant entries in `resolveAllowedHosts` (`manifest.ts`), like
+  `api.stripe.com`. The region is a runtime choice and kv cannot widen the build-time list, so
+  every region's host is granted in every build. Each host only accepts an SMTP2GO key. They
+  are exact hosts, not `*.smtp2go.com`. Adding a provider host remains a manifest change and an
+  amendment here. SMTP2GO therefore needs no `EMAIL_API_URL`.

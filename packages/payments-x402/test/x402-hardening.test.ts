@@ -1,91 +1,67 @@
-import { cents, currency, orderId } from "@otta-sh/domain";
-import { describe, expect, test } from "vitest";
-import {
-	createTestFacilitator,
-	signX402Proof,
-	X402FacilitatorUnavailableError,
-	X402PaymentGateway,
-	type X402Facilitator,
-} from "../src/index.js";
+import { cents, currency, orderId, type RawConfirmation } from "@otta-sh/domain";
+import { afterEach, describe, expect, test, vi } from "vitest";
+import { X402PaymentGateway } from "../src/index.js";
 
-// Review round (F4): seam hardening — a receipt settled on a network the
-// gateway's challenge never offered proves nothing about our requirements and
-// must be rejected before (and regardless of) facilitator verification.
+// ADR-0028, increment 2: the receipt-forwarding model is retired, and until
+// increment 7 the gateway settles NOTHING. A `page_gate` still carries an
+// `X402Proof` that any caller can fill in, and the facilitator call that used to
+// stand between it and a paid order is gone. So `verifyConfirmation` refuses
+// every confirmation, however plausible, and never reaches the network.
+// Decision 2's invariant — no client-supplied JSON ever reaches a `page_gate`
+// confirmation — rests on this refusal and on the settle route's deletion.
 
-const SECRET = "x402_facilitator_test_secret";
+const gateway = new X402PaymentGateway({ payTo: "0xTEST", accepts: ["eip155:8453"] });
 
-describe("X402PaymentGateway seam hardening", () => {
-	const gateway = new X402PaymentGateway({
-		facilitator: createTestFacilitator(SECRET),
-		payTo: "0xTEST",
-		accepts: ["eip155:8453"],
+function pageGate(overrides: Partial<{ network: string; signature: string }> = {}) {
+	return {
+		kind: "page_gate",
+		proof: {
+			orderId: orderId("ord-1"),
+			transaction: "0xdeadbeef",
+			network: overrides.network ?? "eip155:8453",
+			payer: "0xbuyer",
+			amount: cents(900),
+			currency: currency("USD"),
+			signature: overrides.signature ?? "ab".repeat(32),
+		},
+	} as const satisfies RawConfirmation;
+}
+
+afterEach(() => {
+	vi.restoreAllMocks();
+});
+
+describe("X402PaymentGateway refuses every confirmation until ADR-0028 increment 7", () => {
+	test("a well-formed page_gate on an accepted network is MALFORMED, not settled", async () => {
+		expect(await gateway.verifyConfirmation(pageGate())).toEqual({
+			ok: false,
+			reason: "MALFORMED",
+		});
 	});
 
-	function proofOn(network: string) {
-		return signX402Proof(
-			{
-				orderId: orderId("ord-1"),
-				transaction: "0xdeadbeef",
-				network,
-				payer: "0xbuyer",
-				amount: cents(900),
-				currency: currency("USD"),
-			},
-			SECRET,
-		);
-	}
-
-	test("rejects a proof settled on a network outside the gateway's accepts", async () => {
-		const res = await gateway.verifyConfirmation({
-			kind: "page_gate",
-			proof: await proofOn("eip155:1"), // validly signed, wrong network
+	test("a page_gate on a network the challenge never offered is MALFORMED too", async () => {
+		expect(await gateway.verifyConfirmation(pageGate({ network: "eip155:1" }))).toEqual({
+			ok: false,
+			reason: "MALFORMED",
 		});
-		expect(res).toEqual({ ok: false, reason: "INVALID_SIGNATURE" });
 	});
 
-	test("accepts the same proof on an accepted network", async () => {
-		const res = await gateway.verifyConfirmation({
-			kind: "page_gate",
-			proof: await proofOn("eip155:8453"),
+	test("a page_gate with an empty signature is MALFORMED", async () => {
+		expect(await gateway.verifyConfirmation(pageGate({ signature: "" }))).toEqual({
+			ok: false,
+			reason: "MALFORMED",
 		});
-		expect(res.ok).toBe(true);
 	});
 
-	// Revision 2: a facilitator OUTAGE must never read as a forged receipt. The
-	// port's `ConfirmationResult` has three reasons and all three are terminal, so
-	// "could not ask" cannot be expressed as one of them without lying — the
-	// gateway therefore throws a classified, RETRYABLE error instead, exactly as
-	// `payments-stripe` throws `PaymentIntentError({retryable})` rather than
-	// folding an ambiguous Stripe failure into a definite refusal.
-	test("an UNAVAILABLE facilitator throws a retryable error, never INVALID_SIGNATURE", async () => {
-		const unavailable: X402Facilitator = {
-			async verifyReceipt() {
-				return { valid: false, unavailable: true };
-			},
-		};
-		const g = new X402PaymentGateway({
-			facilitator: unavailable,
-			payTo: "0xTEST",
-			accepts: ["eip155:8453"],
-		});
-		const raw = { kind: "page_gate", proof: await proofOn("eip155:8453") } as const;
-		await expect(g.verifyConfirmation(raw)).rejects.toBeInstanceOf(X402FacilitatorUnavailableError);
-		await expect(g.verifyConfirmation(raw)).rejects.toMatchObject({ retryable: true });
-	});
-
-	test("a facilitator that ANSWERED no is still a terminal INVALID_SIGNATURE", async () => {
-		const answeredNo: X402Facilitator = {
-			async verifyReceipt() {
-				return { valid: false };
-			},
-		};
-		const g = new X402PaymentGateway({
-			facilitator: answeredNo,
-			payTo: "0xTEST",
-			accepts: ["eip155:8453"],
-		});
+	test("a webhook-shaped confirmation is MALFORMED (x402 has no webhooks)", async () => {
 		expect(
-			await g.verifyConfirmation({ kind: "page_gate", proof: await proofOn("eip155:8453") }),
-		).toEqual({ ok: false, reason: "INVALID_SIGNATURE" });
+			await gateway.verifyConfirmation({ kind: "webhook", body: new Uint8Array(), headers: {} }),
+		).toEqual({ ok: false, reason: "MALFORMED" });
+	});
+
+	test("the refusal makes no network call: the gateway holds no transport at all", async () => {
+		const fetchSpy = vi.spyOn(globalThis, "fetch");
+		await gateway.verifyConfirmation(pageGate());
+		expect(fetchSpy).not.toHaveBeenCalled();
 	});
 });

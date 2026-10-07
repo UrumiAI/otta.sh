@@ -33,9 +33,13 @@
  * is not a scope with a pointer of its own — a third key space for a read no hot
  * path takes. It goes straight to the indexed query, which is one read either way.
  *
- * **Revocation needs no pointer maintenance**, which is why there is no revoke
- * method here to keep in step: flipping a grant's `state` is enough, because every
- * pointer is re-validated against the grant it names on the read that uses it.
+ * **Revocation needs no pointer maintenance.** `revokeByOrder` flips each of the
+ * order's grants to `revoked` and touches no pointer: every pointer is re-validated
+ * against the grant it names on the read that uses it, so a pointer left on a
+ * revoked grant falls through to the indexed query and is re-pointed (or refused)
+ * there. A grant is one document, so each flip is one compare-and-set and there is
+ * no partial state to heal: a crash mid-way leaves some grants revoked and the rest
+ * active, and the replay — which is the same call — finishes the rest.
  */
 import type {
 	Clock,
@@ -44,6 +48,7 @@ import type {
 	EntitlementStore,
 	GrantEntitlementInput,
 	IdGen,
+	OrderId,
 } from "@otta-sh/domain";
 import {
 	CAS_RETRY,
@@ -68,6 +73,9 @@ import {
 import { EntitlementScopeRequiredError } from "./entitlement-errors.js";
 import { foldBuyerRef } from "./order-documents.js";
 import type { StorageAccess, StorageCollection, WhereClause } from "./storage-access.js";
+
+/** One page of `revokeByOrder`'s scan. The host clamps `limit` at 100. */
+const REVOKE_PAGE_SIZE = 100;
 
 export interface EmdashEntitlementStoreOptions {
 	/** The collections the descriptor declared (`ENTITLEMENT_COLLECTIONS`). */
@@ -202,6 +210,53 @@ export class EmdashEntitlementStore implements EntitlementStore {
 		if (found === undefined) return false;
 		await this.#repointLookup(lookupId, found.id);
 		return true;
+	}
+
+	/**
+	 * Revoke every grant `orderId` made — the full-refund revocation.
+	 *
+	 * Pages the declared `orderId` index rather than `{ orderId, state: "active" }`:
+	 * the flip below changes `state`, and a page keyed on the field it is mutating
+	 * would shift under its own cursor. An order grants one entitlement per digital
+	 * line, so this is a page or two at most.
+	 *
+	 * Each grant is flipped by its own compare-and-set, guarded on the revision it
+	 * read, and only from `active`: a concurrent revoke of the same order flips each
+	 * grant exactly once between them, and the count each call returns is the grants
+	 * IT flipped, so two racing callers sum to the order's total and a replay is `0`.
+	 */
+	async revokeByOrder(orderId: OrderId): Promise<number> {
+		let flipped = 0;
+		let cursor: string | undefined;
+		do {
+			const page = await this.#grants.query({
+				where: { orderId },
+				limit: REVOKE_PAGE_SIZE,
+				cursor,
+			});
+			for (const { id } of page.items) {
+				if (await this.#revokeGrant(id)) flipped += 1;
+			}
+			cursor = page.hasMore ? page.cursor : undefined;
+		} while (cursor !== undefined);
+		return flipped;
+	}
+
+	/** Flip one grant `active → revoked`. True iff this call made the flip. */
+	#revokeGrant(grantKey: string): Promise<boolean> {
+		return this.#cas<boolean>("revokeEntitlement", async () => {
+			const current = await this.#grants.getVersioned(grantKey);
+			if (current === null) return casDone(false);
+			const doc = normalizeEntitlementDoc(current.value);
+			if (!isActiveGrant(doc)) return casDone(false);
+			const written = await this.#grants.compareAndSet(grantKey, current.revision, {
+				...doc,
+				state: "revoked",
+			});
+			// A refusal means a peer wrote this grant since the read — most likely a
+			// concurrent revoke. Re-reading settles whether there is anything left to do.
+			return written.applied ? casDone(true) : CAS_RETRY;
+		});
 	}
 
 	/** The first grant matching `where`, as `{ id, data }` — `id` is its grant key. */

@@ -296,15 +296,26 @@ describe("CtxHttpEmailSender — the transport, and only the transport", () => {
 			expect(message).toContain("bad request");
 		});
 
-		test("reads at most 4 KiB of the body: a larger one contributes nothing", async () => {
+		test("parses at most 64 KiB of the body: a larger one contributes nothing", async () => {
 			// Bounded BEFORE JSON.parse, so a provider (or an intermediary) answering
 			// with megabytes cannot make the error path parse megabytes.
 			const huge = JSON.stringify({
 				name: "validation_error",
 				message: "ok",
-				padding: "x".repeat(10_000),
+				padding: "x".repeat(70_000),
 			});
 			expect(await failure(500, huge)).toBe("email transport failed with status 500");
+		});
+
+		test("a body over 4 KiB but under the bound still gives its reason", async () => {
+			const long = JSON.stringify({
+				name: "validation_error",
+				message: "ok",
+				padding: "x".repeat(10_000),
+			});
+			expect(await failure(500, long)).toBe(
+				"email transport failed with status 500: validation_error: ok",
+			);
 		});
 
 		test("a refused LOGIN send never carries the token, even with Resend's testing-mode refusal", async () => {

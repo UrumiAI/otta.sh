@@ -280,6 +280,10 @@ export interface LedgerLine {
 	title?: string;
 	/** `lineTotal.formatted`, or the honest prose — never assembled. */
 	money: string;
+	/** The line's download URL (issue #376) — only on a digital line the buyer
+	 *  may download now; the page asked the delivery gate. A view links to it
+	 *  and never builds one of its own. */
+	downloadHref?: string;
 }
 
 /**
@@ -616,6 +620,8 @@ export interface AccountOrderModel {
 		tracking: { carrier: string; trackingNumber: string; trackingUrl: string | null } | null;
 		/** Where it is going, as display lines; `null` when no address was taken. */
 		addressLines: string[] | null;
+		/** "Delivery address", or "Billing address" for an order that ships nothing. */
+		addressLabel: "Delivery address" | "Billing address";
 	} | null;
 	errorMessage: string;
 	/** The signed-in email, named on the page; `null` when unknown. */

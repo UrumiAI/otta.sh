@@ -15,6 +15,7 @@ import { defineConfig, fontProviders } from "astro/config";
 import emdash from "emdash/astro";
 import { parseDotEnv } from "./src/lib/dot-env.js";
 import { buildEmdashOptions } from "./src/emdash-options.js";
+import { assertDownloadsBucketPrivate } from "./src/lib/downloads-bucket.js";
 import { resolveStripePublishableKey, STRIPE_PUBLIC_KEY_VAR } from "./src/lib/stripe-config.js";
 import { assertWranglerSessionPairing } from "./src/lib/wrangler-pairing.js";
 
@@ -51,9 +52,10 @@ function readDotEnv(name: string): string | undefined {
  * UNSET IS THE DEFAULT AND IT IS FAIL-CLOSED, not broken: the define bakes `""`,
  * which `hostnameOf` yields no host for, so `resolveInProcessEgress` reports the
  * provider unconfigured and `resolveAllowedHosts` grants nothing for it. Staging
- * today sets neither, so its allowlist is the Stripe API host alone — order email
- * is a capability this deployment does not yet have, and setting `EMAIL_API_URL`
- * at build time is the whole of turning it on.
+ * today sets neither, so its allowlist is the constant part alone — Stripe's API
+ * host and SMTP2GO's send hosts. Email then goes out only if the store picks
+ * SMTP2GO in Settings; setting `EMAIL_API_URL` at build time turns on the
+ * Resend-shaped sender.
  */
 const egress = {
 	emailApiUrl: process.env.EMAIL_API_URL ?? readDotEnv("EMAIL_API_URL"),
@@ -86,18 +88,29 @@ const localWranglerConfig = existsSync(new URL("wrangler.local.jsonc", import.me
 	: undefined;
 
 /**
- * THE PAIRING GUARD, on the config this build actually uses (issue #375). D1
- * sessions are on, and a `wrangler.local.jsonc` copied from the pre-#375 template
- * still carries `global_fetch_strictly_public`, which breaks them at runtime with
- * nothing failing at deploy — so the build throws instead, naming the file and
- * the line to delete (`src/lib/wrangler-pairing.ts`). With no local file it reads
- * the tracked template, which never carries the flag.
+ * Two guards on the config this build actually uses — the gitignored local
+ * config when there is one, which no test sees; with no local file, the tracked
+ * template. Each throws naming the file.
+ *
+ * THE PAIRING GUARD (issue #375). D1 sessions are on, and a `wrangler.local.jsonc`
+ * copied from the pre-#375 template still carries `global_fetch_strictly_public`,
+ * which breaks them at runtime with nothing failing at deploy — so the build
+ * throws instead, naming the line to delete (`src/lib/wrangler-pairing.ts`). The
+ * tracked template never carries the flag.
+ *
+ * The private downloads bucket must never be the public media bucket (issue
+ * #376): EmDash serves every MEDIA key without auth (`src/lib/downloads-bucket.ts`).
  */
 const selectedWranglerConfig = localWranglerConfig ?? "wrangler.jsonc";
+const selectedWranglerText = readFileSync(new URL(selectedWranglerConfig, import.meta.url), "utf8");
 assertWranglerSessionPairing(
-	readFileSync(new URL(selectedWranglerConfig, import.meta.url), "utf8"),
+	selectedWranglerText,
 	selectedWranglerConfig,
 	(buildEmdashOptions(egress).database as { config?: { session?: unknown } }).config,
+);
+assertDownloadsBucketPrivate(
+	selectedWranglerText,
+	selectedWranglerConfig,
 );
 
 /**

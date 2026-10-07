@@ -21,8 +21,10 @@
  * tag, `{ name: "template", value }`, which keeps it visible in the provider's
  * dashboard and logs without changing what is sent. Every `EmailTemplate` name
  * fits the tag charset (ASCII letters, digits, `_`, `-`); the suite pins that
- * exhaustively. Another provider needs its own adapter behind the
- * `EmailSender` port — this file does not pretend to be generic.
+ * exhaustively. Another provider gets its own sender on the shared
+ * `HttpEmailSender` base (`http-email-sender.ts`) — SMTP2GO's is
+ * `smtp2go-email-sender.ts` — and `makeEmailSender` below picks one from the
+ * store's "Email provider" setting (`email-provider.ts`).
  *
  * `ctx.email` IS REJECTED, by the plan (§D5) and not by omission: EmDash's native
  * sender needs an `email:send` capability grant — widening the manifest's
@@ -40,26 +42,32 @@
  *
  * A NON-2XX THROWS, for the same reason: the dispatcher must not mark a row sent
  * for a message the provider refused. The error names WHY — see
- * {@link describeProviderError}.
+ * {@link CtxHttpEmailSender.checkResponse}.
  */
-import {
-	EmailSendTimeoutError,
-	renderEmail,
-	type EmailSender,
-	type SendEmailInput,
-} from "@otta-sh/domain";
-import { EMAIL_API_KEY_KEY, readWriteOnlySecret } from "../payment-secrets.js";
+import type { EmailSender } from "@otta-sh/domain";
+import { EMAIL_API_KEY_KEY, readWriteOnlySecret, SMTP2GO_API_KEY_KEY } from "../payment-secrets.js";
 import { resolveLoginLinkUrl } from "../storefront/login-link.js";
-import { STOREFRONT_LOCALE } from "../storefront/route-input.js";
 import type { PluginContext } from "../types.js";
 import {
-	orderPageUrl,
 	STORE_DISPLAY_NAME_KEY,
-	storefrontEmailMoney,
 	storefrontOriginOf,
 	storeNameFrom,
 } from "./email-render-context.js";
+import { readEmailProvider, readSmtp2goRegion, type Smtp2goRegion } from "./email-provider.js";
 import { fromDisplayName, isDeliverableFromAddress } from "./from-address.js";
+import {
+	HttpEmailSender,
+	type HttpEmailSenderOptions,
+	type OutboundEmail,
+	type ProviderRequest,
+	readProviderJson,
+	sanitizeProviderDetail,
+	statusFailure,
+	warnOnce,
+} from "./http-email-sender.js";
+import { Smtp2goEmailSender } from "./smtp2go-email-sender.js";
+
+export { DEFAULT_EMAIL_TIMEOUT_MS, resetEmailWarningsForTesting } from "./http-email-sender.js";
 
 /**
  * The from-address, in READABLE kv — the in-process equivalent of the service's
@@ -74,205 +82,69 @@ export const EMAIL_FROM_KEY = "settings:emailFrom";
  *  over unchanged so a deployment that never set it behaves identically. */
 export const DEFAULT_EMAIL_FROM = "no-reply@otta.local";
 
-export interface CtxHttpEmailSenderOptions {
-	/** The host's gated egress — `ctx.http.fetch`. Injected, never ambient: a bare
-	 *  `fetch` here would bypass `allowedHosts` outright (and the sandbox-clean
-	 *  guard would fail the build). */
-	fetch: (url: string, init?: RequestInit) => Promise<Response>;
+export interface CtxHttpEmailSenderOptions extends HttpEmailSenderOptions {
 	/** Transactional-email API endpoint that accepts a POST of the rendered mail
 	 *  — the in-process equivalent of `EMAIL_API_URL`. */
 	apiUrl: string;
-	from: string;
-	apiKey?: string | undefined;
-	/** Per-request timeout, via `AbortSignal.timeout`. Defaults to
-	 *  {@link DEFAULT_EMAIL_TIMEOUT_MS}. A FUNCTION is asked at each send — the cron
-	 *  sweep passes one, so each request is aborted at what is left of the tick when
-	 *  that send starts rather than at a figure fixed long before it. */
-	requestTimeoutMs?: number | (() => number) | undefined;
-	/** The store's name ("Store display name"), for the sign-in email. */
-	storeName?: string | undefined;
-	/** The storefront's public origin (`storefrontOriginOf`), for the order page
-	 *  link in order emails. Absent ⇒ order emails carry no link. */
-	storefrontOrigin?: string | undefined;
 }
 
-/**
- * A hung email provider must never hang a cron tick — the same rule, and the
- * same default, as `payments-stripe`'s `DEFAULT_REQUEST_TIMEOUT_MS` ("a hung
- * Stripe must never hang a Worker checkout").
- *
- * WHY IT IS LOAD-BEARING HERE SPECIFICALLY. `dispatchOrderEmails` wraps each
- * outbox row in its own try/catch, which contains a THROWN send — it does
- * nothing about an unbounded await. One unresponsive provider connection would
- * therefore hold the `order-emails` leg open and starve every sweep leg queued
- * behind it. The abort converts the hang into the throw the dispatcher already
- * knows how to handle, and — as with a non-2xx — the row stays unsent.
- *
- * THIRTY SECONDS IS NOT THE CRON'S CEILING, though. It is the fallback for a
- * caller that sets none; the cron sweep runs inside a host hook abandoned after
- * 5 s, so it passes its own, far shorter, per-send timeout
- * (`SWEEP_EMAIL_SEND_TIMEOUT_MS` in `cron/sweeps.ts`) — a 30 s send there would
- * outlive the hook, leave its row leased, and be re-sent when the lease lapsed.
- */
-export const DEFAULT_EMAIL_TIMEOUT_MS = 30_000;
-
-/** Posts the rendered email to a transactional-email HTTP API over `ctx.http`. */
-export class CtxHttpEmailSender implements EmailSender {
-	readonly #fetch: (url: string, init?: RequestInit) => Promise<Response>;
+/** Posts the rendered email, in Resend's `POST /emails` shape, to the build's
+ *  `EMAIL_API_URL` over `ctx.http`. Rendering, the timeout and error
+ *  sanitizing are {@link HttpEmailSender}'s. */
+export class CtxHttpEmailSender extends HttpEmailSender {
 	readonly #apiUrl: string;
-	readonly #from: string;
-	readonly #apiKey: string | undefined;
-	readonly #timeoutMs: number | (() => number);
-	readonly #storeName: string | undefined;
-	readonly #storefrontOrigin: string | undefined;
 
 	constructor(options: CtxHttpEmailSenderOptions) {
-		this.#fetch = options.fetch;
+		super(options);
 		this.#apiUrl = options.apiUrl;
-		this.#from = options.from;
-		this.#apiKey = options.apiKey;
-		this.#timeoutMs = options.requestTimeoutMs ?? DEFAULT_EMAIL_TIMEOUT_MS;
-		this.#storeName = options.storeName;
-		this.#storefrontOrigin = options.storefrontOrigin;
 	}
 
-	async send(input: SendEmailInput): Promise<void> {
-		// Money as the storefront formats it, the store's name, and — for an order
-		// email — the order's page (QA U-3). See `email-render-context.ts`.
-		const orderId = input.data["orderId"];
-		const rendered = renderEmail(input.template, input.data, {
-			formatMoney: storefrontEmailMoney,
-			locale: STOREFRONT_LOCALE,
-			storeName: this.#storeName,
-			orderPageUrl:
-				input.template !== "customer-login-link" &&
-				typeof orderId === "string" &&
-				orderId.length > 0 &&
-				this.#storefrontOrigin !== undefined
-					? orderPageUrl(this.#storefrontOrigin, orderId)
-					: undefined,
-		});
+	protected buildRequest(message: OutboundEmail): ProviderRequest {
 		const headers: Record<string, string> = {
 			"content-type": "application/json",
 			// The outbox row id. See this module's head comment — removing this line
 			// is a silent duplicate-email bug, not a cleanup.
-			"Idempotency-Key": input.idempotencyKey,
+			"Idempotency-Key": message.ottaId,
 		};
-		if (this.#apiKey !== undefined && this.#apiKey.length > 0) {
-			headers["authorization"] = `Bearer ${this.#apiKey}`;
-		}
-		const timeoutMs = typeof this.#timeoutMs === "function" ? this.#timeoutMs() : this.#timeoutMs;
-		const signal = AbortSignal.timeout(timeoutMs);
-		const res = await this.#fetch(this.#apiUrl, {
-			method: "POST",
+		if (this.apiKey !== undefined) headers["authorization"] = `Bearer ${this.apiKey}`;
+		return {
+			url: this.#apiUrl,
 			headers,
 			body: JSON.stringify({
-				from: this.#from,
-				to: input.to,
-				subject: rendered.subject,
-				text: rendered.text,
-				html: rendered.html,
+				from: message.from,
+				to: message.to,
+				subject: message.subject,
+				text: message.text,
+				html: message.html,
 				// NOT a top-level `template`: Resend reads that as a hosted-template
 				// object and refuses it beside `html`. See this module's head comment.
-				tags: [{ name: "template", value: input.template }],
+				tags: [{ name: "template", value: message.template }],
 			}),
-			// A hung provider must never hold the cron tick open — see
-			// {@link DEFAULT_EMAIL_TIMEOUT_MS}.
-			signal,
-		}).catch((err: unknown) => {
-			// Our OWN abort is a TIMEOUT, not a provider failure: the dispatcher hands
-			// the row back without counting the attempt (`EmailSendTimeoutError`).
-			// Judged by OUR signal having fired, not by the error's name — a transport
-			// may reject a timeout-abort as a DOMException "TimeoutError", an
-			// "AbortError", or a plain error, and the sweep's own timer fires at the same
-			// moment, so whichever wins must read as the same timeout.
-			if (signal.aborted) throw new EmailSendTimeoutError(timeoutMs);
-			throw err;
-		});
-		if (!res.ok) {
-			const detail = await describeProviderError(res, input.to);
-			throw new Error(
-				`email transport failed with status ${res.status}${detail === undefined ? "" : `: ${detail}`}`,
-			);
-		}
+		};
 	}
-}
 
-/** The ceiling on how much of a provider's error message reaches a log line. */
-const PROVIDER_ERROR_MAX_CHARS = 200;
-
-/** The error body is parsed from at most its first this-many characters.
- *  Resend's error object is well under 1 KiB; anything past this is not one,
- *  and the error path must not parse megabytes an intermediary chose to send.
- *  (The body is still read whole — `ctx.http.fetch` offers no bounded read —
- *  and the request's abort signal bounds how long that read can take.) */
-const PROVIDER_ERROR_MAX_BODY_CHARS = 4096;
-
-/** C0 and C1 controls, DEL, and the Unicode line/paragraph separators — what a
- *  provider message must not smuggle into a log line (a CR/LF, NEL or U+2028
- *  there forges a second, fake log entry in a viewer that breaks on it). */
-// oxlint-disable-next-line no-control-regex -- matching control characters IS the point
-const CONTROL_CHARS = /[\u0000-\u001f\u007f-\u009f\u2028\u2029]/gu;
-
-/**
- * WHY the provider refused, as `name: message`, or `undefined` when the body
- * does not say in a shape we trust.
- *
- * A BARE STATUS IS UNDIAGNOSABLE. The reasons a real provider refuses are
- * specific and operator-fixable — an unverified sending domain, a revoked key,
- * a sandbox account sending to someone other than its owner — and Resend says
- * which in `{ statusCode, name, message }`. The login route logs this error's
- * message; without the detail its log says only "403".
- *
- * WHAT IS NEVER IN IT: anything of the REQUEST. The body carries the sign-in
- * link (a live token) and the headers carry the API key, and neither is read
- * here. Only the provider's own `name` and `message` strings are used, and:
- *  - the body is parsed from at most its first
- *    {@link PROVIDER_ERROR_MAX_BODY_CHARS} characters — a longer body fails to
- *    parse and contributes nothing;
- *  - control characters become spaces BEFORE truncation, so the message cannot
- *    forge a log line;
- *  - the recipient is redacted case-insensitively, in case the provider quotes
- *    it back in any case;
- *  - the result is bounded to {@link PROVIDER_ERROR_MAX_CHARS}.
- * Not redacted: an address that is not the recipient. Resend's testing-mode
- * refusal quotes the ACCOUNT OWNER's address, which can therefore appear in the
- * login route's log — the operator's own address, not a customer's.
- *
- * A non-JSON body — an HTML gateway page, an empty body — contributes NOTHING:
- * there is no telling what an intermediary's page echoes. Never throws: a body
- * that cannot be read is the same as one that says nothing.
- */
-async function describeProviderError(
-	res: Response,
-	recipient: string,
-): Promise<string | undefined> {
-	let parsed: unknown;
-	try {
-		parsed = JSON.parse((await res.text()).slice(0, PROVIDER_ERROR_MAX_BODY_CHARS));
-	} catch {
-		return undefined;
+	/**
+	 * A non-2xx THROWS, naming WHY.
+	 *
+	 * A BARE STATUS IS UNDIAGNOSABLE. The reasons a real provider refuses are
+	 * specific and operator-fixable — an unverified sending domain, a revoked key,
+	 * a sandbox account sending to someone other than its owner — and Resend says
+	 * which in `{ statusCode, name, message }`. The login route logs this error's
+	 * message; without the detail its log says only "403". Only the provider's
+	 * own `name` and `message` strings are used, sanitized by
+	 * `sanitizeProviderDetail`; a non-JSON body — an HTML gateway page, an empty
+	 * body — contributes NOTHING, since there is no telling what an
+	 * intermediary's page echoes. A 2xx body is not read.
+	 */
+	protected async checkResponse(res: Response, message: OutboundEmail): Promise<void> {
+		if (res.ok) return;
+		const parsed = await readProviderJson(res);
+		const { name, message: text } =
+			typeof parsed === "object" && parsed !== null
+				? (parsed as { name?: unknown; message?: unknown })
+				: {};
+		throw statusFailure(res.status, sanitizeProviderDetail([name, text], this.redactions(message)));
 	}
-	if (typeof parsed !== "object" || parsed === null) return undefined;
-	const { name, message } = parsed as { name?: unknown; message?: unknown };
-	const parts = [name, message].filter(
-		(part): part is string => typeof part === "string" && part.length > 0,
-	);
-	if (parts.length === 0) return undefined;
-	const joined = parts.join(": ").replace(CONTROL_CHARS, " ");
-	const detail =
-		recipient.length > 0
-			? joined.replace(new RegExp(escapeRegExp(recipient), "giu"), "<recipient>")
-			: joined;
-	return detail.length > PROVIDER_ERROR_MAX_CHARS
-		? `${detail.slice(0, PROVIDER_ERROR_MAX_CHARS)}…`
-		: detail;
-}
-
-/** `value` as a literal inside a RegExp — an address's `.` and `+` are
- *  metacharacters. */
-function escapeRegExp(value: string): string {
-	return value.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
 }
 
 /** The deployment-supplied half of the wiring — the build-time email URL, the
@@ -283,8 +155,58 @@ export interface EmailSenderEgress {
 }
 
 /**
- * Build the sender for a context, or `undefined` when this bundle was built with
- * no email API URL.
+ * The provider a store sends through, resolved ONCE and handed on: which one,
+ * and what that provider needs to be usable. `undefined` ⇒ this store cannot
+ * send, and nothing should be claimed.
+ *  - `resend`: the build's email URL (the key stays optional, as it always was:
+ *    a keyless relay or local mail catcher still works).
+ *  - `smtp2go`: SMTP2GO's OWN key slot must hold a key; the region is read only
+ *    here, only for SMTP2GO.
+ * Unset provider ⇒ Resend. A provider read that FAILS, or an unknown stored
+ * value, ⇒ `undefined`: never a guess that would hand the wrong provider a key.
+ * Cost: one kv read for Resend, three for SMTP2GO
+ * ({@link EMAIL_TRANSPORT_RESOLVE_READS}).
+ */
+export type EmailTransport =
+	| { provider: "resend"; apiUrl: string }
+	| { provider: "smtp2go"; apiKey: string; region: Smtp2goRegion };
+
+/** The most kv reads {@link resolveEmailTransport} makes. */
+export const EMAIL_TRANSPORT_RESOLVE_READS = 3;
+
+export async function resolveEmailTransport(
+	ctx: PluginContext,
+	egress: EmailSenderEgress,
+): Promise<EmailTransport | undefined> {
+	const provider = await readEmailProvider(ctx);
+	if (provider === undefined) return undefined;
+	if (provider === "resend") {
+		return egress.apiUrl !== undefined && emailSenderConfigured(egress)
+			? { provider, apiUrl: egress.apiUrl }
+			: undefined;
+	}
+	const [apiKey, region] = await Promise.all([
+		readWriteOnlySecret(ctx, SMTP2GO_API_KEY_KEY),
+		readSmtp2goRegion(ctx),
+	]);
+	return apiKey === undefined ? undefined : { provider, apiKey, region };
+}
+
+/** The most kv reads {@link makeEmailSender} makes when handed a resolved
+ *  transport: Resend's key, the from-address, the store name and the sign-in
+ *  page (SMTP2GO's key came with the transport, so it makes one fewer). */
+export const EMAIL_SENDER_BUILD_READS = 4;
+
+/**
+ * Build the sender for a context, or `undefined` when there is none to build.
+ *
+ * THE PROVIDER SETTING PICKS IT ({@link resolveEmailTransport}): `smtp2go`
+ * builds an {@link Smtp2goEmailSender} with SMTP2GO's own key on the saved
+ * region; `resend` — the default, so a store that never chose keeps today's
+ * behaviour — builds the {@link CtxHttpEmailSender} on the build's email URL
+ * with Resend's key. Each reads ONLY its own key slot, so no provider is ever
+ * sent another's key. A caller that has already resolved the transport (the
+ * cron leg, the inline send) passes it, so the choice is not read twice.
  *
  * FAIL-CLOSED, and `undefined` rather than a console-logging stand-in: the
  * service could fall back to `ConsoleEmailSender` because a Node process has a
@@ -292,50 +214,69 @@ export interface EmailSenderEgress {
  * which is what makes the cron sweep's `order-emails` leg report `skipped`
  * instead of draining the outbox into nowhere.
  *
- * Every kv read is fail-soft (`readWriteOnlySecret` and `resolveLoginLinkUrl`
- * already swallow a rejection to `undefined`): a kv outage must degrade to an
- * unauthenticated send against the documented default from-address — with no
- * store name and no order link — never take down the tick that was about to
- * drain the outbox.
+ * The other kv reads are fail-soft (`readWriteOnlySecret` and
+ * `resolveLoginLinkUrl` swallow a rejection): a Resend store whose key read
+ * fails sends unauthenticated against the documented default from-address, with
+ * no store name and no order link, rather than take down the tick.
  */
 export async function makeEmailSender(
 	ctx: PluginContext,
 	egress: EmailSenderEgress,
-	options: { requestTimeoutMs?: number | (() => number) } = {},
+	options: { requestTimeoutMs?: number | (() => number); transport?: EmailTransport } = {},
 ): Promise<EmailSender | undefined> {
-	const apiUrl = egress.apiUrl;
-	if (apiUrl === undefined || !emailSenderConfigured(egress)) return undefined;
-	const [apiKey, from, storeName, signInPageUrl] = await Promise.all([
-		readWriteOnlySecret(ctx, EMAIL_API_KEY_KEY),
+	const transport = options.transport ?? (await resolveEmailTransport(ctx, egress));
+	if (transport === undefined) return undefined;
+	const [resendKey, from, storeName, signInPageUrl] = await Promise.all([
+		transport.provider === "resend"
+			? readWriteOnlySecret(ctx, EMAIL_API_KEY_KEY)
+			: Promise.resolve(undefined),
 		readEmailFrom(ctx),
 		ctx.kv.get<string>(STORE_DISPLAY_NAME_KEY).then(storeNameFrom, () => undefined),
 		// Already fail-soft: unset, invalid or unreadable ⇒ undefined ⇒ no link.
 		resolveLoginLinkUrl(ctx),
 	]);
-	return new CtxHttpEmailSender({
+	const common: HttpEmailSenderOptions = {
 		fetch: ctx.http.fetch,
-		apiUrl,
 		from,
 		// "Store display name", else the From address's own display name (QA2
 		// U-3): an unset field left the sign-in email nameless though its From
 		// line named the store.
 		storeName: storeName ?? fromDisplayName(from),
 		storefrontOrigin: storefrontOriginOf(signInPageUrl),
-		...(apiKey !== undefined ? { apiKey } : {}),
 		...(options.requestTimeoutMs !== undefined
 			? { requestTimeoutMs: options.requestTimeoutMs }
 			: {}),
+	};
+	if (transport.provider === "smtp2go") {
+		return new Smtp2goEmailSender({
+			...common,
+			apiKey: transport.apiKey,
+			region: transport.region,
+		});
+	}
+	return new CtxHttpEmailSender({
+		...common,
+		apiUrl: transport.apiUrl,
+		...(resendKey !== undefined ? { apiKey: resendKey } : {}),
 	});
 }
 
 /**
- * Whether {@link makeEmailSender} would build a sender for this egress — the same
- * predicate, without its kv reads. A caller that only wants to pay for the sender
- * once there is something to send (the settle routes' inline dispatch) asks this
- * first, so "unconfigured" is decided before anything is claimed.
+ * Whether this bundle has a build-time email URL — the Resend-shaped sender's
+ * precondition, with no kv read. NOT the whole answer to "can this store send":
+ * callers deciding whether to claim outbox rows use
+ * {@link resolveEmailTransport} / {@link emailSendingConfigured}.
  */
 export function emailSenderConfigured(egress: EmailSenderEgress): boolean {
 	return egress.apiUrl !== undefined && egress.apiUrl.length > 0;
+}
+
+/** Whether {@link makeEmailSender} would build a sender for this context. */
+export async function emailSendingConfigured(
+	ctx: PluginContext,
+	egress: EmailSenderEgress,
+): Promise<boolean> {
+	return (await resolveEmailTransport(ctx, egress)) !== undefined;
 }
 
 /**
@@ -402,23 +343,4 @@ async function readEmailFrom(ctx: PluginContext): Promise<string> {
 		);
 	}
 	return value;
-}
-
-/**
- * Logged ONCE per isolate, like `in-process-commerce-client.ts`'s notices: a
- * misconfiguration is a fact about the deployment, and a line per send (every
- * login request, every outbox row) would bury everything else.
- */
-const loggedOnce = new Set<string>();
-
-/** Clears the once-per-isolate latch. TESTS ONLY: without it, a case asserting
- *  "no warning" passes vacuously whenever an earlier case already logged. */
-export function resetEmailWarningsForTesting(): void {
-	loggedOnce.clear();
-}
-
-function warnOnce(key: string, message: string): void {
-	if (loggedOnce.has(key)) return;
-	loggedOnce.add(key);
-	console.warn(message);
 }

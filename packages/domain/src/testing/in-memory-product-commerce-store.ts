@@ -21,6 +21,7 @@ import type {
 } from "../ports/product-commerce-store.js";
 import {
 	InvalidLowStockThresholdError,
+	InvalidProductFieldError,
 	isValidLowStockThreshold,
 	MissingProductIdError,
 	MissingVariantKeyError,
@@ -278,6 +279,8 @@ export class InMemoryProductCommerceStore implements ProductCommerceStore {
 			widthMm: input.widthMm ?? null,
 			heightMm: input.heightMm ?? null,
 			productKind: input.productKind ?? "physical",
+			// Edit-only, like compare-at: the CMS-sync upsert never carries a file.
+			downloadAsset: null,
 			active: false,
 			deletedAt: null,
 			idempotencyKey: key,
@@ -375,7 +378,19 @@ export class InMemoryProductCommerceStore implements ProductCommerceStore {
 			);
 			if (clash) return { ok: false, reason: "currency_mismatch", current: existing };
 		}
-		// 5. Apply. Live-sku collisions throw SkuConflictError, exactly like upsert —
+		// 5. No download file on a physical product (issue #376), judged on the row
+		//    as it WOULD be after this edit: attaching to a physical product, and
+		//    making a product that has a file physical, are both refused.
+		const nextKind = input.productKind ?? existing.productKind;
+		const nextAsset =
+			input.downloadAsset !== undefined ? input.downloadAsset : existing.downloadAsset;
+		if (nextKind === "physical" && nextAsset !== null) {
+			throw new InvalidProductFieldError(
+				"downloadAsset",
+				"a physical product cannot carry a download file",
+			);
+		}
+		// 6. Apply. Live-sku collisions throw SkuConflictError, exactly like upsert —
 		//    on BOTH halves of the pair: another live product, and a live variant.
 		this.#assertLiveSkuFree(input);
 		this.#assertProductSkuFreeOfVariants(input.sku);
@@ -400,7 +415,8 @@ export class InMemoryProductCommerceStore implements ProductCommerceStore {
 			lengthMm: input.lengthMm !== undefined ? input.lengthMm : existing.lengthMm,
 			widthMm: input.widthMm !== undefined ? input.widthMm : existing.widthMm,
 			heightMm: input.heightMm !== undefined ? input.heightMm : existing.heightMm,
-			productKind: input.productKind ?? existing.productKind,
+			productKind: nextKind,
+			downloadAsset: nextAsset === null ? null : { ...nextAsset },
 			idempotencyKey: key,
 			updatedAt: this.#clock.now(),
 		};
@@ -982,6 +998,7 @@ export class InMemoryProductCommerceStore implements ProductCommerceStore {
 			widthMm: null,
 			heightMm: null,
 			productKind: row.productKind ?? "physical",
+			downloadAsset: null,
 			active: row.active ?? false,
 			deletedAt:
 				row.deletedAt !== undefined && row.deletedAt !== null ? new Date(row.deletedAt) : null,

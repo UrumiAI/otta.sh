@@ -1287,6 +1287,24 @@ describe("storefront/checkout/place (workerd sandbox)", () => {
  *    is still refused as INVALID_INPUT before an order, a hold adoption or a
  *    PaymentIntent exists.
  */
+/**
+ * Review round 3: Stripe CREATED the first intent but the answer was lost
+ * (the stub keeps the request under its key, as Stripe does, and answers
+ * 500) — so nothing was recorded. The retry must still send the request
+ * Stripe holds, or Stripe refuses it (`idempotency_error`) for good.
+ */
+function losingTheFirstIntentAnswer(base: StripeResponder): StripeResponder {
+	let lost = false;
+	return (req) => {
+		const reply = base(req);
+		if (req.path === "/v1/payment_intents" && !lost) {
+			lost = true;
+			return { status: 500, body: { error: { type: "api_error" } } };
+		}
+		return reply;
+	};
+}
+
 describe("storefront/checkout/place success path (workerd sandbox, Stripe stubbed)", () => {
 	const STRIPE_SECRET_KEY = "sk_test_sandbox_NEVER_LEAK";
 	const STRIPE_WEBHOOK_SECRET = "whsec_sandbox_NEVER_LEAK";
@@ -2463,6 +2481,335 @@ describe("storefront/checkout/place success path (workerd sandbox, Stripe stubbe
 			expect(totals["shipping"]!.label).toBe("$5.99");
 			expect(totals["tax"]!.label).toBe("$2.18");
 			expect(totals["total"]!.label).toBe("$38.17");
+		});
+	});
+
+	/**
+	 * Issue #382: an India-based Stripe account refuses an export payment that
+	 * does not carry the buyer's name and address — digital carts included. The
+	 * plugin learns the account's country from `GET /v1/account` when the secret
+	 * key is saved, caches it, and from then on requires the address for EVERY
+	 * cart; a US account (the stub's default) changes nothing.
+	 */
+	describe("the Stripe account's country (issue #382)", () => {
+		const IN_ADDRESS = {
+			name: "Asha Rao",
+			line1: "12 Park Street",
+			city: "Kolkata",
+			postalCode: "700016",
+			country: "IN",
+		};
+
+		/** Save the secret key again — the Settings save that re-reads the country. */
+		async function resaveSecretKey(): Promise<void> {
+			const saved = await stripeBoot.invokeRoute("admin", {
+				type: "form_submit",
+				action_id: "save-stripe-secret-key",
+				values: { stripeSecretKey: STRIPE_SECRET_KEY },
+			});
+			expect(saved).toHaveProperty("result");
+		}
+
+		async function stripeSummary(cartId: string): Promise<Record<string, unknown>> {
+			return resultOf(await stripeBoot.invokeRoute("storefront/checkout/summary", { cartId }));
+		}
+
+		test("a US account: a digital cart asks for no address and places without one — no account read on the way", async () => {
+			const cartId = await p2Cart("digital");
+			expect(await stripeSummary(cartId)).toMatchObject({
+				ok: true,
+				addressRequired: false,
+				paymentAccountNeedsAddress: false,
+			});
+			expect(await placeCart(cartId)).toMatchObject({ ok: true, state: "pending" });
+			// The country was cached when the key was saved: checkout only read kv.
+			expect(stripe.requests.map((r) => `${r.method} ${r.path}`)).toEqual([
+				"POST /v1/payment_intents",
+			]);
+			expect(stripe.requests[0]!.form.has("shipping[name]")).toBe(false);
+			expect(stripe.requests[0]!.form.has("customer")).toBe(false);
+		});
+
+		test("a US account: a physical-style address on the order still makes NO Customer call", async () => {
+			const placed = await placeCart(await p2Cart("digital"), {
+				shippingAddress: { ...IN_ADDRESS, country: "US", postalCode: "94107" },
+			});
+			expect(placed).toMatchObject({ ok: true });
+			expect(stripe.requests.map((r) => `${r.method} ${r.path}`)).toEqual([
+				"POST /v1/payment_intents",
+			]);
+			expect(stripe.requests[0]!.form.has("customer")).toBe(false);
+		});
+
+		/**
+		 * Review round 2 (F1/F2): the Customer decision is the ORDER's — made on its
+		 * first intent, recorded with it, and handed back on every replay — so
+		 * nothing that moves afterwards (the cached country, a pruned Customer key)
+		 * can change the same-key intent body Stripe already holds.
+		 */
+		describe("the Customer decision is recorded with the order's first intent", () => {
+			/** Answer `GET /v1/account` with `account` from now on, and re-save the key
+			 *  so the cache takes it — then clear the requests. */
+			async function accountAnswers(
+				account: { status: number; body: unknown },
+				rest: StripeResponder = stripeLikeResponder(),
+			): Promise<void> {
+				stripe.respondWith((req) =>
+					req.method === "GET" && req.path === "/v1/account" ? account : rest(req),
+				);
+				await resaveSecretKey();
+				stripe.requests.length = 0;
+			}
+			const IN_ACCOUNT = { status: 200, body: { id: "acct_in", country: "IN" } };
+			const US_ACCOUNT = { status: 200, body: { id: "acct_us", country: "US" } };
+
+			afterEach(async () => {
+				stripe.reset();
+				await resaveSecretKey();
+				stripe.reset();
+			});
+
+			test("a lost intent answer, then the country flips to IN: the retry is byte-identical, with no Customer, and accepted", async () => {
+				const stripeLike = losingTheFirstIntentAnswer(stripeLikeResponder());
+				await accountAnswers(US_ACCOUNT, stripeLike);
+				const cartId = await p2Cart("digital");
+				expect(await placeCart(cartId, { shippingAddress: IN_ADDRESS })).toEqual({
+					ok: false,
+					reason: "PAYMENT_INTENT_FAILED",
+				});
+				const first = stripe.requests[0]!;
+
+				await accountAnswers(IN_ACCOUNT, stripeLike);
+				const retried = await placeCart(cartId);
+				expect(retried, JSON.stringify(retried)).toMatchObject({ ok: true });
+				expect(stripe.requests.map((r) => r.path)).toEqual(["/v1/payment_intents"]);
+				expect(stripe.requests[0]!.form.toString()).toBe(first.form.toString());
+			});
+
+			test("a lost intent answer, then the country reads unknown: the retry names the same Customer, byte-identical, and is accepted", async () => {
+				const stripeLike = losingTheFirstIntentAnswer(stripeLikeResponder());
+				await accountAnswers(IN_ACCOUNT, stripeLike);
+				const cartId = await p2Cart("digital");
+				expect(await placeCart(cartId, { shippingAddress: IN_ADDRESS })).toEqual({
+					ok: false,
+					reason: "PAYMENT_INTENT_FAILED",
+				});
+				const [customer, first] = stripe.requests as [StripeRecordedRequest, StripeRecordedRequest];
+				expect(first.form.get("customer")).toBe("cus_stub_1");
+
+				await accountAnswers({ status: 503, body: {} }, stripeLike);
+				const retried = await placeCart(cartId);
+				expect(retried, JSON.stringify(retried)).toMatchObject({ ok: true });
+				// Nothing was recorded, so the Customer is asked for again — under the
+				// same key, with the same body, and Stripe hands back the same one.
+				expect(stripe.requests.map((r) => r.path)).toEqual([
+					"/v1/customers",
+					"/v1/payment_intents",
+				]);
+				expect(stripe.requests[0]!.form.toString()).toBe(customer.form.toString());
+				expect(stripe.requests[1]!.form.toString()).toBe(first.form.toString());
+			});
+
+			test("the country flips to IN after the first intent: the replay sends a byte-identical body, still with no Customer", async () => {
+				const stripeLike = stripeLikeResponder();
+				await accountAnswers(US_ACCOUNT, stripeLike);
+				const cartId = await p2Cart("digital");
+				const placed = await placeCart(cartId, { shippingAddress: IN_ADDRESS });
+				expect(placed).toMatchObject({ ok: true });
+				const first = stripe.requests[0]!;
+
+				await accountAnswers(IN_ACCOUNT, stripeLike); // the merchant opened Settings
+				const replay = await placeCart(cartId);
+				expect(replay).toMatchObject({ ok: true, orderId: placed["orderId"] });
+				expect(stripe.requests.map((r) => r.path)).toEqual(["/v1/payment_intents"]);
+				expect(stripe.requests[0]!.form.toString()).toBe(first.form.toString());
+				expect(stripe.requests[0]!.form.has("customer")).toBe(false);
+			});
+
+			test("after an intent WITH a Customer the cache reads unknown: the replay still names the Customer", async () => {
+				const stripeLike = stripeLikeResponder();
+				await accountAnswers(IN_ACCOUNT, stripeLike);
+				const cartId = await p2Cart("digital");
+				const placed = await placeCart(cartId, { shippingAddress: IN_ADDRESS });
+				expect(placed).toMatchObject({ ok: true });
+				const intent = stripe.requests[1]!;
+				expect(intent.form.get("customer")).toBe("cus_stub_1");
+
+				// Stripe unreachable at the next Settings save: the country is unknown.
+				await accountAnswers({ status: 503, body: {} }, stripeLike);
+				const replay = await placeCart(cartId);
+				expect(replay).toMatchObject({ ok: true, orderId: placed["orderId"] });
+				expect(stripe.requests.map((r) => r.path)).toEqual(["/v1/payment_intents"]);
+				expect(stripe.requests[0]!.form.toString()).toBe(intent.form.toString());
+			});
+
+			test("a resume after Stripe would have pruned the Customer's key: no second create — the recorded id is reused", async () => {
+				// A Customer create that ignores its key hands out a NEW id each time —
+				// what a create after Stripe pruned `otta-cus-<orderId>` would do.
+				let creates = 0;
+				const stripeLike = stripeLikeResponder();
+				await accountAnswers(IN_ACCOUNT, (req) => {
+					if (req.path !== "/v1/customers") return stripeLike(req);
+					creates += 1;
+					return { status: 200, body: { id: `cus_fresh_${String(creates)}` } };
+				});
+				const cartId = await p2Cart("digital");
+				const placed = await placeCart(cartId, { shippingAddress: IN_ADDRESS });
+				expect(placed).toMatchObject({ ok: true });
+				const intent = stripe.requests[1]!;
+				expect(intent.form.get("customer")).toBe("cus_fresh_1");
+				stripe.requests.length = 0;
+
+				const resumed = resultOf(
+					await stripeBoot.invokeRoute("storefront/order/resume", {
+						orderId: placed["orderId"],
+						cartId,
+					}),
+				);
+				expect(resumed).toMatchObject({ ok: true, orderId: placed["orderId"] });
+				expect(creates).toBe(1);
+				expect(stripe.requests.map((r) => r.path)).toEqual(["/v1/payment_intents"]);
+				expect(stripe.requests[0]!.form.toString()).toBe(intent.form.toString());
+			});
+		});
+
+		describe("an India account", () => {
+			beforeEach(async () => {
+				const stripeLike = stripeLikeResponder();
+				stripe.respondWith((req) =>
+					req.method === "GET" && req.path === "/v1/account"
+						? { status: 200, body: { id: "acct_in", object: "account", country: "IN" } }
+						: stripeLike(req),
+				);
+				await resaveSecretKey();
+				expect(stripe.requests.map((r) => `${r.method} ${r.path}`)).toEqual(["GET /v1/account"]);
+				stripe.reset();
+				// The reset restored the default responder; keep answering as Stripe.
+			});
+
+			afterEach(async () => {
+				// Back to the US account the rest of this boot assumes.
+				stripe.reset();
+				await resaveSecretKey();
+				stripe.reset();
+			});
+
+			test("the summary of a digital cart requires the name and address, and says it is the payment account", async () => {
+				const cartId = await p2Cart("digital");
+				expect(await stripeSummary(cartId)).toMatchObject({
+					ok: true,
+					requiresShipping: false,
+					addressRequired: true,
+					paymentAccountNeedsAddress: true,
+					// Nothing to choose — the address goes on the same form as the email.
+					readyToPlace: true,
+				});
+				expect(stripe.requests).toHaveLength(0);
+			});
+
+			test("a digital cart placed with NO address is refused MISSING_SHIPPING_ADDRESS before anything is minted", async () => {
+				await expectRefusedAtPlace(await p2Cart("digital"), {}, "MISSING_SHIPPING_ADDRESS");
+			});
+
+			test("a digital cart placed with a complete address: a Customer with the name and billing address, then a PaymentIntent naming it — and a replay reuses both", async () => {
+				const cartId = await p2Cart("digital");
+				const placed = await placeCart(cartId, { shippingAddress: IN_ADDRESS });
+				expect(placed, JSON.stringify(placed)).toMatchObject({ ok: true, state: "pending" });
+				expect(stripe.requests.map((r) => `${r.method} ${r.path}`)).toEqual([
+					"POST /v1/customers",
+					"POST /v1/payment_intents",
+				]);
+				const [customer, intent] = stripe.requests as [
+					StripeRecordedRequest,
+					StripeRecordedRequest,
+				];
+				expect(customer.headers["idempotency-key"]).toBe(`otta-cus-${String(placed["orderId"])}`);
+				expect(customer.headers.authorization).toBe(`Bearer ${STRIPE_SECRET_KEY}`);
+				expect([...customer.form.entries()]).toEqual([
+					["name", "Asha Rao"],
+					["address[line1]", "12 Park Street"],
+					["address[city]", "Kolkata"],
+					["address[postal_code]", "700016"],
+					["address[country]", "IN"],
+					["metadata[order_id]", String(placed["orderId"])],
+				]);
+				expect(intent.form.get("customer")).toBe("cus_stub_1");
+				expect(intent.form.get("description")).toBe("2 × Bamboo Water Bottle");
+				expect(intent.form.get("shipping[name]")).toBe("Asha Rao");
+				expect(intent.form.get("shipping[address][line1]")).toBe("12 Park Street");
+				expect(intent.form.get("shipping[address][city]")).toBe("Kolkata");
+				expect(intent.form.get("shipping[address][postal_code]")).toBe("700016");
+				expect(intent.form.get("shipping[address][country]")).toBe("IN");
+
+				// The locked review's retry: same key, no address. The RECORDED Customer is
+				// named again — no second Customer call — and the intent body is
+				// byte-identical (Stripe would refuse a drifted one).
+				const replay = await placeCart(cartId);
+				expect(replay).toMatchObject({ ok: true, orderId: placed["orderId"] });
+				expect(stripe.requests.map((r) => r.path)).toEqual([
+					"/v1/customers",
+					"/v1/payment_intents",
+					"/v1/payment_intents",
+				]);
+				expect(stripe.requests[2]!.form.toString()).toBe(intent.form.toString());
+			});
+
+			test("the Customer create failing is a typed PAYMENT_INTENT_FAILED; the order stays payable, and a retry completes it", async () => {
+				const cartId = await p2Cart("digital");
+				const stripeLike = stripeLikeResponder();
+				stripe.respondWith((req) =>
+					req.path === "/v1/customers"
+						? { status: 500, body: { error: { type: "api_error" } } }
+						: stripeLike(req),
+				);
+				const failed = await placeCart(cartId, { shippingAddress: IN_ADDRESS });
+				expect(failed).toEqual({ ok: false, reason: "PAYMENT_INTENT_FAILED" });
+				expect(stripe.requests.map((r) => r.path)).toEqual(["/v1/customers"]);
+				const order = await orderStore.getByIdempotencyKey(idempotencyKey(`checkout:${cartId}`));
+				expect(order?.state).toBe("pending");
+
+				stripe.respondWith(stripeLike);
+				const retried = await placeCart(cartId);
+				expect(retried).toMatchObject({ ok: true, orderId: order!.id, state: "pending" });
+				expect(stripe.requests.map((r) => r.path)).toEqual([
+					"/v1/customers",
+					"/v1/customers",
+					"/v1/payment_intents",
+				]);
+			});
+		});
+
+		test("a restricted key that cannot read the account (403): not required, cached — checkout does not ask again", async () => {
+			stripe.respondWith((req) =>
+				req.method === "GET" && req.path === "/v1/account"
+					? {
+							status: 403,
+							body: {
+								error: {
+									type: "invalid_request_error",
+									message:
+										"The provided key does not have the required permissions for this endpoint.",
+								},
+							},
+						}
+					: stripeLikeResponder()(req),
+			);
+			try {
+				await resaveSecretKey();
+				expect(stripe.requests.map((r) => `${r.method} ${r.path}`)).toEqual(["GET /v1/account"]);
+				const cartId = await p2Cart("digital");
+				expect(await stripeSummary(cartId)).toMatchObject({
+					addressRequired: false,
+					paymentAccountNeedsAddress: false,
+				});
+				expect(await stripeSummary(cartId)).toMatchObject({ addressRequired: false });
+				// Two renders, no second account read.
+				expect(stripe.requests).toHaveLength(1);
+			} finally {
+				stripe.reset();
+				await resaveSecretKey();
+				stripe.reset();
+			}
 		});
 	});
 });

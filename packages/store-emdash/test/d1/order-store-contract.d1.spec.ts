@@ -2,7 +2,7 @@
  * The `OrderStore` contract slices against `EmdashOrderStore`, on **D1** — the
  * dialect Otta actually ships on, through the host's OWN Kysely wiring.
  *
- * Six suites run here, not just the store contract: they cost little and they exercise
+ * Seven suites run here, not just the store contract: they cost little and they exercise
  * the things only this tier can. `listExpirable` and the admin LIST are real indexed
  * `query()` calls with the host's limit clamp and cursor, against the `json_extract`
  * expressions D1 has to plan — the list reaches four declared fields (`state`,
@@ -20,6 +20,7 @@
  */
 import {
 	buildRefundSeed,
+	emailRecipientContract,
 	orderCancellationContract,
 	orderFulfillmentContract,
 	orderStoreContract,
@@ -31,6 +32,7 @@ import { cancellationReleaseCase } from "../order-cancellation-release.js";
 import { orderListCases } from "../order-list-cases.js";
 import { ORDER_LAYOUT } from "../order-collections.js";
 import {
+	emailRecipientHarness,
 	makeOrderHarness,
 	orderStoreHarness,
 	orderTimelineHarness,
@@ -49,6 +51,10 @@ orderTransitionContract(
 );
 orderTimelineContract(
 	async () => orderTimelineHarness(makeOrderHarness(bound.storage, { countingIds: true })),
+	{ dialect: "d1" },
+);
+emailRecipientContract(
+	async () => emailRecipientHarness(makeOrderHarness(bound.storage, { countingIds: true })),
 	{ dialect: "d1" },
 );
 
