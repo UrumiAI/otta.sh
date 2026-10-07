@@ -182,9 +182,21 @@ function parseDestination(value: unknown): DestinationRequestWire | undefined | 
 	if (!COUNTRY_SHAPE.test(country)) return null;
 	const region = optionalString(raw["region"]);
 	if (region === null) return null;
-	if (region === undefined) return { country };
-	if (!isCodeShapedRegion(region)) return null;
-	return { country, region: region.toUpperCase() };
+	if (region !== undefined && !isCodeShapedRegion(region)) return null;
+	// ADR-0030: an optional postcode and city, for a tax calculator that prices by
+	// address — bounded like the order address; zones never read them.
+	const postalCode = optionalString(raw["postalCode"]);
+	const city = optionalString(raw["city"]);
+	if (postalCode === null || (postalCode?.length ?? 0) > ORDER_ADDRESS_MAX_LENGTHS.postalCode) {
+		return null;
+	}
+	if (city === null || (city?.length ?? 0) > ORDER_ADDRESS_MAX_LENGTHS.city) return null;
+	return {
+		country,
+		...(region !== undefined ? { region: region.toUpperCase() } : {}),
+		...(postalCode !== undefined ? { postalCode } : {}),
+		...(city !== undefined ? { city } : {}),
+	};
 }
 
 export function parseOrderRouteInput(input: {

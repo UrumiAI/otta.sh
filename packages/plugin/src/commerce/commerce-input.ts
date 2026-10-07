@@ -46,7 +46,7 @@
  *  - `qty` — a positive integer no greater than 10,000 (the shopper-facing cap,
  *    far tighter than the raw inventory primitive's);
  *  - `sku` — non-empty, and at most 200 characters where the entitlement check
- *    bounded it;
+ *    bounded it; never carrying U+0000 (an addition — see below);
  *  - `buyerRef` — 1 to 320 characters; `couponCode` — 1 to 200; the login token —
  *    1 to 400; the shipping address — the per-field bounds the address schema
  *    pins, which the domain then re-validates and trims;
@@ -54,6 +54,12 @@
  *    schema allowed null), never floats;
  *  - the idempotency key — non-empty, which is what every write route demanded of
  *    the header.
+ *
+ * ADDED, not mirrored (#379), because the wire's absence of a rule was a bug the
+ * in-process store makes visible: U+0000 is refused in a `sku`, the cart add's
+ * `productId` and an idempotency key, since Postgres cannot store it and a NUL
+ * failed the first store read there as a throw; and the key of a write that makes
+ * it part of a document id is capped at {@link IDEMPOTENCY_KEY_MAX}.
  *
  * NOT mirrored, and why: the email on a login request is validated but never
  * REPORTED on — that surface answers identically whatever it is handed, so a
@@ -98,6 +104,27 @@ export const LOGIN_TOKEN_MAX = 400;
  *  `z.string().min(1).max(320)`. Exported so the place route's parser and a
  *  storefront's email field use this one number. */
 export const BUYER_REF_MAX = 320;
+
+/**
+ * The ceiling on an idempotency key that becomes (part of) a DOCUMENT ID — see
+ * {@link requireDocumentIdempotencyKey} for which writes those are. A document id
+ * is at most 1,024 characters (the host's `assertStorageKey`), and some ids
+ * prefix the key — `adjust:<key>` when a cart line's quantity changes,
+ * `<couponId>:<key>` on a coupon redemption, with a coupon id of up to 200 — so a
+ * key near 1,024 throws there (a 1,018-character key already does, on a quantity
+ * update). Half the id ceiling leaves every such prefix room. No earlier bound
+ * existed to reuse: the wire only ever demanded a non-empty header.
+ *
+ * What those writes' callers send is far below it: a `crypto.randomUUID()` from
+ * the site's cart forms (36 characters), `checkout:<cartId>`, and the admin
+ * settings form's key.
+ *
+ * NOT applied to the product-row writes (upsert, activate, the variant writes,
+ * …): their key is a FIELD on the row, and variant sync derives keys from opaque,
+ * unbounded CMS text (`<collection>:<id>:variant:<variantKey>:<updatedAt>:<version>`),
+ * which legitimately runs past this.
+ */
+export const IDEMPOTENCY_KEY_MAX = 512;
 
 /** The shopper-facing quantity cap. Deliberately far below the raw inventory
  *  primitive's: this is the anonymous-caller surface. */
@@ -157,6 +184,59 @@ export function requireProductId(value: string): string {
 }
 
 /**
+ * Whether `value` is free of U+0000 — the one character Postgres `text` can never
+ * hold. A NUL that reaches a store read there fails as `invalid byte sequence for
+ * encoding "UTF8": 0x00`, a throw (RENDER_FAILED), not an answer; SQLite stores it
+ * happily, so only one dialect shows the bug. Nothing legitimate is refused: no
+ * value carrying it could ever have been saved. The id-token charset already
+ * excludes it; this is for the fields that have no charset rule.
+ */
+function isStorableText(value: string): boolean {
+	return !value.includes("\u0000");
+}
+
+/** {@link requireBoundedProductId}'s ceiling. */
+const BOUNDED_PRODUCT_ID_MAX = 200;
+
+/*
+ * ONE DEFINITION PER RULE. Each rule below is a `…Problem` function answering
+ * what is wrong with a value, or null. The exported predicate (`is…`, which the
+ * storefront routes answer a bad value with) and the `require…` (which this
+ * client throws from) are both read off it, so the route can never let through
+ * what the client throws on, nor refuse what it accepts (#379).
+ */
+
+function skuProblem(value: string): string | null {
+	if (value.length === 0) return "must not be empty";
+	if (!isStorableText(value)) return "must not contain U+0000";
+	return null;
+}
+
+function boundedProductIdProblem(value: string): string | null {
+	if (value.length < 1) return "must be at least 1 characters";
+	if (value.length > BOUNDED_PRODUCT_ID_MAX) {
+		return `must be at most ${String(BOUNDED_PRODUCT_ID_MAX)} characters`;
+	}
+	if (!isStorableText(value)) return "must not contain U+0000";
+	return null;
+}
+
+function idempotencyKeyProblem(value: string): string | null {
+	if (value.length === 0) return "must not be empty";
+	if (!isStorableText(value)) return "must not contain U+0000";
+	return null;
+}
+
+function documentIdempotencyKeyProblem(value: string): string | null {
+	const problem = idempotencyKeyProblem(value);
+	if (problem !== null) return problem;
+	if (value.length > IDEMPOTENCY_KEY_MAX) {
+		return `must be at most ${String(IDEMPOTENCY_KEY_MAX)} characters`;
+	}
+	return null;
+}
+
+/**
  * A product id where the schema bounded it as TEXT rather than as a path
  * parameter: non-empty, at most 200 characters, and no charset rule. The
  * distinction is not pedantry — imposing the path parameter's printable-ASCII
@@ -164,7 +244,17 @@ export function requireProductId(value: string): string {
  * that refuses MORE is still a divergence.
  */
 export function requireBoundedProductId(value: string): string {
-	return requireBoundedText("productId", value, 1, 200);
+	const problem = boundedProductIdProblem(value);
+	if (problem !== null) fail("productId", problem);
+	return value;
+}
+
+/** `requireBoundedProductId`'s rule as a predicate — length, and no U+0000, but
+ *  NO charset — for the cart add route, which must answer a bad product id as its
+ *  own INVALID_INPUT rather than let this client throw. Not {@link isIdToken},
+ *  which would refuse ids this accepts. */
+export function isBoundedProductId(value: string): boolean {
+	return boundedProductIdProblem(value) === null;
 }
 
 /** A variant key: non-empty after trimming. The key is opaque CMS text, so no
@@ -183,13 +273,58 @@ export function requireWatermark(field: string, value: string): string {
 	return value;
 }
 
+/** `requireIdempotencyKey`'s rule as a predicate: non-empty, no U+0000. */
+export function isIdempotencyKeyText(value: string): boolean {
+	return idempotencyKeyProblem(value) === null;
+}
+
+/** Every write's key: non-empty, and no U+0000 (Postgres cannot store it). No
+ *  length rule — see {@link requireDocumentIdempotencyKey} for the writes that
+ *  need one. */
 export function requireIdempotencyKey(value: string): string {
-	if (value.length === 0) fail("idempotencyKey", "must not be empty");
+	const problem = idempotencyKeyProblem(value);
+	if (problem !== null) fail("idempotencyKey", problem);
 	return value;
 }
 
+/** `requireDocumentIdempotencyKey`'s rule as a predicate, for the cart routes,
+ *  which must answer a bad key as their own INVALID_INPUT rather than let this
+ *  client throw. */
+export function isDocumentIdempotencyKey(value: string): boolean {
+	return documentIdempotencyKeyProblem(value) === null;
+}
+
+/**
+ * The key of a write that makes it (part of) a DOCUMENT ID: {@link
+ * requireIdempotencyKey}'s rule plus the {@link IDEMPOTENCY_KEY_MAX} ceiling.
+ * The writes on THIS client whose key becomes a document id:
+ *  - the cart mutations (add, adjust, remove): `cart_mutation_index/{key}`,
+ *    `reservation_keys/{key}`, and `adjust:{key}` in the movement collection;
+ *  - the order create: `order_keys/{key}`, and `{couponId}:{key}` when a coupon
+ *    is redeemed;
+ *  - the settings update: `settings_mutations/{key}`.
+ * Past the ceiling the store threw on the id length (or, for a megabyte-sized
+ * key, on the 1 MiB value cap) instead of refusing. Other stores also build
+ * document ids from a key — refunds (`refund_keys/{key}`), restock/remove-stock
+ * (`stock:{key}`) and the sku-rename ledger — but those keys are built by the
+ * admin tier from bounded parts and do not pass through this function.
+ */
+export function requireDocumentIdempotencyKey(value: string): string {
+	const problem = documentIdempotencyKeyProblem(value);
+	if (problem !== null) fail("idempotencyKey", problem);
+	return value;
+}
+
+/** `requireSku`'s rule (without the optional ceiling) as a predicate: non-empty
+ *  and storable, and nothing else — the admin saves any such sku, so a route that
+ *  asked more would refuse a product the store sells. */
+export function isSkuText(value: string): boolean {
+	return skuProblem(value) === null;
+}
+
 export function requireSku(value: string, max?: number): string {
-	if (value.length === 0) fail("sku", "must not be empty");
+	const problem = skuProblem(value);
+	if (problem !== null) fail("sku", problem);
 	if (max !== undefined && value.length > max) {
 		fail("sku", `must be at most ${String(max)} characters`);
 	}
@@ -308,8 +443,22 @@ export function requireShippingAddress(address: {
  * (`INVALID_SHIPPING_ADDRESS` / `SHIPPING_REGION_CODE_REQUIRED`). The routes'
  * parsers refuse the same shapes first, so a buyer never reaches this throw.
  */
-export function requireDestination(destination: { country: string; region?: string }): void {
+export function requireDestination(destination: {
+	country: string;
+	region?: string;
+	postalCode?: string;
+	city?: string;
+}): void {
 	requireCodeShapes("destination", destination.country, destination.region);
+	// The order address's own bounds (ADR-0030: the tax calculator may read them),
+	// on the TRIMMED text — the domain trims before it bounds, so must this.
+	const max = ORDER_ADDRESS_MAX_LENGTHS;
+	if (destination.postalCode !== undefined) {
+		requireBoundedText("destination.postalCode", destination.postalCode.trim(), 0, max.postalCode);
+	}
+	if (destination.city !== undefined) {
+		requireBoundedText("destination.city", destination.city.trim(), 0, max.city);
+	}
 }
 
 function requireCodeShapes(prefix: string, country: string, region: string | undefined): void {

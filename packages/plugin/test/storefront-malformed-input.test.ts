@@ -15,15 +15,25 @@
  * found; a challenge that cannot exist is an invalid link; a quantity over the
  * cap is the typed QTY_TOO_LARGE, which the site words with the limit.
  */
-import { customerId } from "@otta-sh/domain";
+import {
+	cents,
+	currency,
+	customerId,
+	idempotencyKey,
+	productId as toProductId,
+	sku as toSku,
+} from "@otta-sh/domain";
 import { afterAll, afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { IDEMPOTENCY_KEY_MAX } from "../src/commerce/commerce-input.js";
 import {
 	createAccountLoginVerifyHandler,
 	createAccountOrderHandler,
 } from "../src/storefront/account-routes.js";
 import {
 	createCartLineAddRouteHandler,
+	createCartLineRemoveRouteHandler,
 	createCartLineUpdateRouteHandler,
+	createCartReadRouteHandler,
 } from "../src/storefront/cart-routes.js";
 import { createOrderRouteHandler } from "../src/storefront/checkout-routes.js";
 import type { RouteHandler } from "../src/types.js";
@@ -137,5 +147,392 @@ describe("storefront/cart/lines — a quantity over the 10,000 cap is QTY_TOO_LA
 				idempotencyKey: "k-update",
 			}),
 		).toEqual({ ok: false, error: "QTY_TOO_LARGE" });
+	});
+});
+
+/**
+ * Issue #379: the cart routes' ids. The client bounds `cartId` and `lineId` as
+ * opaque id tokens (`requireIdToken`) and the add's `productId` as 1–200
+ * characters of ANY text (`requireBoundedProductId`) — by throwing. The routes
+ * checked only "non-empty", so a tampered cookie or form field surfaced as
+ * RENDER_FAILED (and an error log) instead of the route's own refusal.
+ *
+ * `sku` is deliberately NOT tightened: the admin saves any non-empty sku (no
+ * charset, no ceiling) and the domain's `sku()` brand agrees, so an id-token
+ * rule at this edge would make a legitimately-saved product un-addable. The
+ * client never throws on a sku's shape either — an unresolvable one is the
+ * typed SKU_MISMATCH — so there is no RENDER_FAILED to fix there.
+ */
+describe("storefront/cart — ids the store could never have minted are refused, never RENDER_FAILED", () => {
+	/** A CMS content id is a ULID; the store's cart and line ids are UUIDs. */
+	const PRODUCT_ID = "01JB7Z9QK3W8N5V2X4R6T0Y1MC";
+	const SKU = "OTTA-TEE";
+	/** A sku the admin accepts (non-empty, nothing else) but `isIdToken` would not. */
+	const SPACED_SKU = "Blend 250g";
+	const SPACED_PRODUCT_ID = "01JB7Z9QK3W8N5V2X4R6T0Y1MD";
+	const OVER_LENGTH = "x".repeat(201);
+
+	async function seedProduct(id: string, sku: string): Promise<void> {
+		const commerce = harness.stores.productCommerce;
+		await commerce.upsert(
+			{
+				productId: toProductId(id),
+				sku: toSku(sku),
+				price: { amount: cents(3200), currency: currency("USD") },
+				title: `Product ${id}`,
+			},
+			idempotencyKey(`seed-${id}`),
+		);
+		await harness.stores.inventory.seedOnHand(toSku(sku), 5);
+		await commerce.activate(
+			toProductId(id),
+			idempotencyKey(`pub-${id}`),
+			"2026-01-01T00:00:00.000Z",
+		);
+	}
+
+	/** A cart holding one priced line — the `lineId` the update/remove cases need. */
+	async function cartWithLine(): Promise<{ cartId: string; lineId: string }> {
+		await seedProduct(PRODUCT_ID, SKU);
+		const { cartId } = await harness.client.createCart();
+		const added = await harness.client.addCartLine(cartId, SKU, PRODUCT_ID, 1, "k-seed-line");
+		if (!added.ok) throw new Error(`seed add refused: ${added.reason}`);
+		return { cartId, lineId: added.line.lineId };
+	}
+
+	const MALFORMED_IDS: Array<[string, string]> = [
+		["whitespace", "has space"],
+		["a control character", "tab\there"],
+		["DEL", "a\x7fb"],
+		["non-ASCII", "cärt"],
+		["over 200 characters", OVER_LENGTH],
+	];
+	/** The charset cases alone — within the length bound. */
+	const CHARSET_IDS = MALFORMED_IDS.filter(([, id]) => id.length <= 200);
+	/** Not an id at all: the wrong type, or blank. */
+	const NOT_ID_STRINGS: Array<[string, unknown]> = [
+		["a number", 42],
+		["an array", ["a"]],
+		["an object", { a: 1 }],
+		["null", null],
+		["an empty string", ""],
+	];
+	const ID_CASES: Array<[string, unknown]> = [...MALFORMED_IDS, ...NOT_ID_STRINGS];
+	/** U+0000 — the one character Postgres text can never hold. */
+	const NUL = "a\u0000b";
+
+	describe("read", () => {
+		test.each(ID_CASES)("a cartId with %s is INVALID_CART_ID", async (_label, cartId) => {
+			expect(await invoke(createCartReadRouteHandler(), { cartId })).toEqual({
+				ok: false,
+				error: "INVALID_CART_ID",
+			});
+		});
+
+		test("a cartId of exactly 200 characters passes the bound — it names no cart", async () => {
+			expect(await invoke(createCartReadRouteHandler(), { cartId: "c".repeat(200) })).toEqual({
+				ok: false,
+				reason: "CART_NOT_FOUND",
+			});
+		});
+
+		test("a minted cartId is still read", async () => {
+			const { cartId } = await harness.client.createCart();
+			expect(await invoke(createCartReadRouteHandler(), { cartId })).toMatchObject({
+				ok: true,
+				cart: { cartId },
+			});
+		});
+	});
+
+	describe("lines/add", () => {
+		test.each(ID_CASES)("a cartId with %s is INVALID_INPUT", async (_label, cartId) => {
+			await seedProduct(PRODUCT_ID, SKU);
+			expect(
+				await invoke(createCartLineAddRouteHandler(), {
+					cartId,
+					sku: SKU,
+					productId: PRODUCT_ID,
+					qty: 1,
+					idempotencyKey: "k-add",
+				}),
+			).toEqual({ ok: false, error: "INVALID_INPUT" });
+		});
+
+		test("a productId over 200 characters is INVALID_INPUT", async () => {
+			const { cartId } = await harness.client.createCart();
+			expect(
+				await invoke(createCartLineAddRouteHandler(), {
+					cartId,
+					sku: SKU,
+					productId: OVER_LENGTH,
+					qty: 1,
+					idempotencyKey: "k-add",
+				}),
+			).toEqual({ ok: false, error: "INVALID_INPUT" });
+		});
+
+		// The add's productId has NO charset rule in the client (it was bounded as
+		// text, not as a path parameter), so the edge imposes none either: an odd
+		// one goes through and is refused by the sku guard as not resolving.
+		test.each(CHARSET_IDS)(
+			"a productId with %s is not refused at the edge — it does not resolve (SKU_MISMATCH)",
+			async (_label, productId) => {
+				const { cartId } = await harness.client.createCart();
+				expect(
+					await invoke(createCartLineAddRouteHandler(), {
+						cartId,
+						sku: SKU,
+						productId,
+						qty: 1,
+						idempotencyKey: "k-add",
+					}),
+				).toEqual({ ok: false, reason: "SKU_MISMATCH" });
+			},
+		);
+
+		test("a sku of any length or charset is not refused at the edge — an unknown one is SKU_MISMATCH", async () => {
+			await seedProduct(PRODUCT_ID, SKU);
+			const { cartId } = await harness.client.createCart();
+			for (const [label, sku] of MALFORMED_IDS) {
+				expect(
+					await invoke(createCartLineAddRouteHandler(), {
+						cartId,
+						sku,
+						productId: PRODUCT_ID,
+						qty: 1,
+						idempotencyKey: `k-add-${label}`,
+					}),
+				).toEqual({ ok: false, reason: "SKU_MISMATCH" });
+			}
+		});
+
+		test("a productId of exactly 200 characters passes the bound — it does not resolve", async () => {
+			const { cartId } = await harness.client.createCart();
+			expect(
+				await invoke(createCartLineAddRouteHandler(), {
+					cartId,
+					sku: SKU,
+					productId: "p".repeat(200),
+					qty: 1,
+					idempotencyKey: "k-add-200",
+				}),
+			).toEqual({ ok: false, reason: "SKU_MISMATCH" });
+		});
+
+		// U+0000 cannot be stored by Postgres at all, so a NUL that reached a store
+		// read there failed as `invalid byte sequence for encoding "UTF8"` —
+		// RENDER_FAILED. SQLite hides it, which is why it is refused at the edge
+		// (before any read, on every dialect) rather than left to the store.
+		test("a productId carrying U+0000 is INVALID_INPUT", async () => {
+			await seedProduct(PRODUCT_ID, SKU);
+			const { cartId } = await harness.client.createCart();
+			expect(
+				await invoke(createCartLineAddRouteHandler(), {
+					cartId,
+					sku: SKU,
+					productId: NUL,
+					qty: 1,
+					idempotencyKey: "k-add-nul-pid",
+				}),
+			).toEqual({ ok: false, error: "INVALID_INPUT" });
+		});
+
+		test.each([
+			["a bare add", {}],
+			["an add naming a product", { productId: PRODUCT_ID }],
+		])("a sku carrying U+0000 on %s is INVALID_INPUT", async (_label, extra) => {
+			await seedProduct(PRODUCT_ID, SKU);
+			const { cartId } = await harness.client.createCart();
+			expect(
+				await invoke(createCartLineAddRouteHandler(), {
+					cartId,
+					sku: NUL,
+					qty: 1,
+					idempotencyKey: "k-add-nul-sku",
+					...extra,
+				}),
+			).toEqual({ ok: false, error: "INVALID_INPUT" });
+		});
+
+		test("a sku the admin accepts with a space in it is still added", async () => {
+			await seedProduct(SPACED_PRODUCT_ID, SPACED_SKU);
+			const { cartId } = await harness.client.createCart();
+			expect(
+				await invoke(createCartLineAddRouteHandler(), {
+					cartId,
+					sku: SPACED_SKU,
+					productId: SPACED_PRODUCT_ID,
+					qty: 1,
+					idempotencyKey: "k-add-spaced",
+				}),
+			).toMatchObject({ ok: true, line: { sku: SPACED_SKU, productId: SPACED_PRODUCT_ID } });
+		});
+
+		test("a minted cartId, a CMS productId and a seeded sku are still added", async () => {
+			await seedProduct(PRODUCT_ID, SKU);
+			const { cartId } = await harness.client.createCart();
+			expect(
+				await invoke(createCartLineAddRouteHandler(), {
+					cartId,
+					sku: SKU,
+					productId: PRODUCT_ID,
+					qty: 1,
+					idempotencyKey: "k-add-ok",
+				}),
+			).toMatchObject({ ok: true, line: { sku: SKU, productId: PRODUCT_ID, qty: 1 } });
+		});
+	});
+
+	describe("lines/update", () => {
+		test.each(ID_CASES)("a cartId with %s is INVALID_INPUT", async (_label, cartId) => {
+			const { lineId } = await cartWithLine();
+			expect(
+				await invoke(createCartLineUpdateRouteHandler(), {
+					cartId,
+					lineId,
+					qty: 2,
+					idempotencyKey: "k-update",
+				}),
+			).toEqual({ ok: false, error: "INVALID_INPUT" });
+		});
+
+		test.each(ID_CASES)("a lineId with %s is INVALID_INPUT", async (_label, lineId) => {
+			const { cartId } = await cartWithLine();
+			expect(
+				await invoke(createCartLineUpdateRouteHandler(), {
+					cartId,
+					lineId,
+					qty: 2,
+					idempotencyKey: "k-update",
+				}),
+			).toEqual({ ok: false, error: "INVALID_INPUT" });
+		});
+
+		test("a minted cartId and lineId are still updated", async () => {
+			const { cartId, lineId } = await cartWithLine();
+			expect(
+				await invoke(createCartLineUpdateRouteHandler(), {
+					cartId,
+					lineId,
+					qty: 2,
+					idempotencyKey: "k-update-ok",
+				}),
+			).toMatchObject({ ok: true, line: { lineId, qty: 2 } });
+		});
+	});
+
+	describe("lines/remove", () => {
+		test.each(ID_CASES)("a cartId with %s is INVALID_INPUT", async (_label, cartId) => {
+			const { lineId } = await cartWithLine();
+			expect(
+				await invoke(createCartLineRemoveRouteHandler(), {
+					cartId,
+					lineId,
+					idempotencyKey: "k-remove",
+				}),
+			).toEqual({ ok: false, error: "INVALID_INPUT" });
+		});
+
+		test.each(ID_CASES)("a lineId with %s is INVALID_INPUT", async (_label, lineId) => {
+			const { cartId } = await cartWithLine();
+			expect(
+				await invoke(createCartLineRemoveRouteHandler(), {
+					cartId,
+					lineId,
+					idempotencyKey: "k-remove",
+				}),
+			).toEqual({ ok: false, error: "INVALID_INPUT" });
+		});
+
+		test("a minted cartId and lineId are still removed", async () => {
+			const { cartId, lineId } = await cartWithLine();
+			expect(
+				await invoke(createCartLineRemoveRouteHandler(), {
+					cartId,
+					lineId,
+					idempotencyKey: "k-remove-ok",
+				}),
+			).toEqual({ ok: true });
+		});
+	});
+});
+
+describe("storefront/cart/lines — the idempotency key is bounded and storable", () => {
+	const PRODUCT_ID = "01JB7Z9QK3W8N5V2X4R6T0Y1MC";
+	const SKU = "OTTA-TEE";
+	const BAD_KEYS: Array<[string, string]> = [
+		["U+0000", "k\u0000ey"],
+		["one character over the ceiling", "k".repeat(IDEMPOTENCY_KEY_MAX + 1)],
+		// Past the conditional-storage 1 MiB cap — a throw on every dialect before.
+		["two megabytes", "k".repeat(2_000_000)],
+	];
+
+	async function cartWithLine(): Promise<{ cartId: string; lineId: string }> {
+		const commerce = harness.stores.productCommerce;
+		await commerce.upsert(
+			{
+				productId: toProductId(PRODUCT_ID),
+				sku: toSku(SKU),
+				price: { amount: cents(3200), currency: currency("USD") },
+				title: "Tee",
+			},
+			idempotencyKey("seed-key-cases"),
+		);
+		await harness.stores.inventory.seedOnHand(toSku(SKU), 5);
+		await commerce.activate(
+			toProductId(PRODUCT_ID),
+			idempotencyKey("pub-key-cases"),
+			"2026-01-01T00:00:00.000Z",
+		);
+		const { cartId } = await harness.client.createCart();
+		const added = await harness.client.addCartLine(cartId, SKU, PRODUCT_ID, 1, "k-seed");
+		if (!added.ok) throw new Error(`seed add refused: ${added.reason}`);
+		return { cartId, lineId: added.line.lineId };
+	}
+
+	test.each(BAD_KEYS)("add: a key with %s is INVALID_INPUT", async (_label, key) => {
+		const { cartId } = await cartWithLine();
+		expect(
+			await invoke(createCartLineAddRouteHandler(), {
+				cartId,
+				sku: SKU,
+				productId: PRODUCT_ID,
+				qty: 1,
+				idempotencyKey: key,
+			}),
+		).toEqual({ ok: false, error: "INVALID_INPUT" });
+	});
+
+	test.each(BAD_KEYS)("update: a key with %s is INVALID_INPUT", async (_label, key) => {
+		const { cartId, lineId } = await cartWithLine();
+		expect(
+			await invoke(createCartLineUpdateRouteHandler(), {
+				cartId,
+				lineId,
+				qty: 2,
+				idempotencyKey: key,
+			}),
+		).toEqual({ ok: false, error: "INVALID_INPUT" });
+	});
+
+	test.each(BAD_KEYS)("remove: a key with %s is INVALID_INPUT", async (_label, key) => {
+		const { cartId, lineId } = await cartWithLine();
+		expect(
+			await invoke(createCartLineRemoveRouteHandler(), { cartId, lineId, idempotencyKey: key }),
+		).toEqual({ ok: false, error: "INVALID_INPUT" });
+	});
+
+	test("a key of exactly the ceiling is still accepted", async () => {
+		const { cartId } = await cartWithLine();
+		expect(
+			await invoke(createCartLineAddRouteHandler(), {
+				cartId,
+				sku: SKU,
+				productId: PRODUCT_ID,
+				qty: 1,
+				idempotencyKey: "k".repeat(IDEMPOTENCY_KEY_MAX),
+			}),
+		).toMatchObject({ ok: true, line: { sku: SKU, qty: 2 } });
 	});
 });

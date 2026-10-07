@@ -1,5 +1,6 @@
 import type { ExpiryListOptions } from "./cart-store.js";
 import type { Cents, Currency } from "../money/cents.js";
+import type { OrderTaxSnapshotV1 } from "../orders/order-tax-snapshot.js";
 import type {
 	CustomerId,
 	IdempotencyKey,
@@ -967,7 +968,9 @@ export interface CreateOrderTotalsInput {
 	tax?: Cents;
 	appliedCouponCode?: string | null;
 	shippingMethodSnapshot?: unknown | null;
-	taxBreakdown?: unknown | null;
+	/** ADR-0030: new orders write the typed v1 snapshot. Stored documents stay
+	 *  `unknown` on read (older orders exist) — read via `readOrderTaxSnapshot`. */
+	taxBreakdown?: OrderTaxSnapshotV1 | null;
 }
 
 export type CreateOrderResult = { created: boolean; order: Order };

@@ -72,7 +72,13 @@ export type CreateOrderFailure =
 	| "COUPON_MIN_SUBTOTAL"
 	| "COUPON_EXHAUSTED"
 	| "COUPON_MAX_PER_CUSTOMER"
-	| "COUPON_CURRENCY_MISMATCH";
+	| "COUPON_CURRENCY_MISMATCH"
+	/**
+	 * A registered outside tax calculator threw, refused, answered invalidly or
+	 * timed out (ADR-0030). Refused before any redemption, mint or adoption, so
+	 * nothing moved; a retry may succeed. The built-in never yields it.
+	 */
+	| "TAX_UNAVAILABLE";
 
 /** `settleOrder` outcomes (the confirmation path). */
 export type SettleFailure =

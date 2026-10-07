@@ -55,19 +55,33 @@
 				"matchedRegion": "IN"
 			},
 			"taxBreakdown": {
+				"v": 1,
+				"calculatorId": "otta.rate-table",
+				"pricesIncludeTax": false,
 				"lines": [
 					{
+						"lineIndex": 0,
 						"taxClassId": "gst18",
-						"discountedCents": 49900,
+						"taxableCents": 49900,
+						"rateBps": 1800,
+						"label": "GST 18%",
 						"taxCents": 8982
 					},
 					{
+						"lineIndex": 1,
 						"taxClassId": "standard",
-						"discountedCents": 39800,
+						"taxableCents": 39800,
+						"rateBps": 500,
+						"label": "standard",
 						"taxCents": 1990
 					}
 				],
-				"shippingTaxCents": 882
+				"shipping": {
+					"taxableCents": 4900,
+					"rateBps": 1800,
+					"label": "GST 18%",
+					"taxCents": 882
+				}
 			}
 		},
 		"shippingAddress": {
@@ -193,14 +207,20 @@
 			"appliedCouponCode": "JP15",
 			"shippingMethodSnapshot": null,
 			"taxBreakdown": {
+				"v": 1,
+				"calculatorId": "otta.rate-table",
+				"pricesIncludeTax": false,
 				"lines": [
 					{
+						"lineIndex": 0,
 						"taxClassId": "standard",
-						"discountedCents": 2040,
+						"taxableCents": 2040,
+						"rateBps": 0,
+						"label": "standard",
 						"taxCents": 0
 					}
 				],
-				"shippingTaxCents": 0
+				"shipping": null
 			}
 		},
 		"shippingAddress": null,
@@ -345,14 +365,20 @@
 			"appliedCouponCode": "SAVE5",
 			"shippingMethodSnapshot": null,
 			"taxBreakdown": {
+				"v": 1,
+				"calculatorId": "otta.rate-table",
+				"pricesIncludeTax": false,
 				"lines": [
 					{
+						"lineIndex": 0,
 						"taxClassId": "standard",
-						"discountedCents": 2497,
+						"taxableCents": 2497,
+						"rateBps": 0,
+						"label": "standard",
 						"taxCents": 0
 					}
 				],
-				"shippingTaxCents": 0
+				"shipping": null
 			}
 		},
 		"shippingAddress": null,
@@ -459,14 +485,20 @@
 			"appliedCouponCode": null,
 			"shippingMethodSnapshot": null,
 			"taxBreakdown": {
+				"v": 1,
+				"calculatorId": "otta.rate-table",
+				"pricesIncludeTax": false,
 				"lines": [
 					{
+						"lineIndex": 0,
 						"taxClassId": "standard",
-						"discountedCents": 2500,
+						"taxableCents": 2500,
+						"rateBps": 0,
+						"label": "standard",
 						"taxCents": 0
 					}
 				],
-				"shippingTaxCents": 0
+				"shipping": null
 			}
 		},
 		"shippingAddress": null,
@@ -587,19 +619,33 @@
 				"matchedRegion": "US-CA"
 			},
 			"taxBreakdown": {
+				"v": 1,
+				"calculatorId": "otta.rate-table",
+				"pricesIncludeTax": false,
 				"lines": [
 					{
+						"lineIndex": 0,
 						"taxClassId": "standard",
-						"discountedCents": 2700,
+						"taxableCents": 2700,
+						"rateBps": 725,
+						"label": "standard",
 						"taxCents": 196
 					},
 					{
+						"lineIndex": 1,
 						"taxClassId": "reduced",
-						"discountedCents": 899,
+						"taxableCents": 899,
+						"rateBps": 300,
+						"label": "reduced",
 						"taxCents": 27
 					}
 				],
-				"shippingTaxCents": 43
+				"shipping": {
+					"taxableCents": 599,
+					"rateBps": 725,
+					"label": "standard",
+					"taxCents": 43
+				}
 			}
 		},
 		"shippingAddress": {
@@ -756,14 +802,20 @@
 			"appliedCouponCode": null,
 			"shippingMethodSnapshot": null,
 			"taxBreakdown": {
+				"v": 1,
+				"calculatorId": "otta.rate-table",
+				"pricesIncludeTax": false,
 				"lines": [
 					{
+						"lineIndex": 0,
 						"taxClassId": "standard",
-						"discountedCents": 5000,
+						"taxableCents": 5000,
+						"rateBps": 0,
+						"label": "standard",
 						"taxCents": 0
 					}
 				],
-				"shippingTaxCents": 0
+				"shipping": null
 			}
 		},
 		"shippingAddress": null,

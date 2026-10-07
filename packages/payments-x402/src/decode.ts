@@ -188,7 +188,9 @@ export function decodePaymentHeader(header: string): X402DecodeResult {
 			extra: extra === undefined ? undefined : Object.freeze({ ...extra }),
 		},
 		signature,
-		authorization: { from, to, value, validAfter, validBefore, nonce },
+		// Frozen: `value` is what `prepare` compares to our amount and then sends,
+		// so nothing may change it between the two.
+		authorization: Object.freeze({ from, to, value, validAfter, validBefore, nonce }),
 	};
 	// The opaque token carries nothing: the port requires a payload field the
 	// domain cannot read, and an empty frozen object is exactly that. What the

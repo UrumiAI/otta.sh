@@ -9,8 +9,9 @@
  * `readFormBody` answers `null` for all of those and the endpoint returns 400
  * BEFORE dispatching anything.
  *
- * The cross-origin guard still runs FIRST (asserted elsewhere per endpoint):
- * these requests are same-origin, so they reach the body.
+ * The cross-origin check runs FIRST, in the site middleware (asserted in
+ * origin-middleware.test.ts); these requests are same-origin, so they reach
+ * the body either way.
  */
 import type { APIContext, APIRoute } from "astro";
 import { describe, expect, test, vi } from "vitest";

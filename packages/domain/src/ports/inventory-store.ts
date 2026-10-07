@@ -73,11 +73,13 @@ export interface InventoryStore {
 	// is a no-op (`{ lost: [] }`, no DB round trip). Membership only.
 	commitMany(reservationIds: string[]): Promise<CommitManyResult>;
 
-	// Additive (review G2): the ORDER-SCOPED release used by every order-driven
-	// release path (`expireOrders`, the cancel release). A single guarded
-	// flip `adopted → released` scoped `WHERE order_id = :orderId`, then the
-	// stock return — an order can only ever release a hold IT adopted. 0 rows is
-	// ALWAYS a silent no-op: already released/committed (benign replay), or
+	// Additive (review G2): the ORDER-SCOPED release of one hold. Its direct
+	// caller is `createOrderFromCart`, releasing the holds an order adopted when
+	// that order cannot go on; `expireOrders` and the cancel release use the
+	// batched `releaseAdoptedMany` below, whose per-id rules are these. A single
+	// guarded flip `adopted → released` scoped `WHERE order_id = :orderId`, then
+	// the stock return — an order can only ever release a hold IT adopted. 0 rows
+	// is ALWAYS a silent no-op: already released/committed (benign replay), or
 	// owned by another order / still cart-`held` (not this order's to touch —
 	// an unscoped release here is how a stale order could free a live checkout's
 	// hold, or crash the sweep on a committed one). Never throws on state; the

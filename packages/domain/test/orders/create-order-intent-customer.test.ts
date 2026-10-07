@@ -66,6 +66,14 @@ async function digitalCart(): Promise<string> {
 	return h.cartWith([{ sku: "EBOOK", productId: "d1", qty: 1, kind: "digital" }]);
 }
 
+const ADDRESS = {
+	name: "Asha Rao",
+	line1: "12 Park Street",
+	city: "Kolkata",
+	postalCode: "700016",
+	country: "IN",
+};
+
 function cmd(cartId: string): CreateOrderCommand {
 	return {
 		cartId,
@@ -75,12 +83,18 @@ function cmd(cartId: string): CreateOrderCommand {
 	};
 }
 
+/** The checkout of an order placed UNDER the address requirement — the only
+ *  orders whose replay reads the recorded decision back (issue #405). */
+function requiredCmd(cartId: string): CreateOrderCommand {
+	return { ...cmd(cartId), addressRequired: true, shippingAddress: ADDRESS };
+}
+
 describe("the order's customer decision is recorded with its first intent and replayed", () => {
 	test("the first intent decides; it is recorded; a replay hands the recorded customer back", async () => {
 		const { gateway, inputs } = customerGateway(() => "cus_1");
 		const deps = { ...h.createDeps, gateways: { stripe: gateway } };
 		const cartId = await digitalCart();
-		const first = await createOrderFromCart(deps, cmd(cartId));
+		const first = await createOrderFromCart(deps, requiredCmd(cartId));
 		if (!first.ok) throw new Error(first.reason);
 		expect(inputs[0]?.customerRef).toBeUndefined();
 		const recorded = await h.createDeps.orderStore.listPaymentIntents(first.order.id);
@@ -95,7 +109,7 @@ describe("the order's customer decision is recorded with its first intent and re
 		const { gateway, inputs } = customerGateway(() => null);
 		const deps = { ...h.createDeps, gateways: { stripe: gateway } };
 		const cartId = await digitalCart();
-		await createOrderFromCart(deps, cmd(cartId));
+		await createOrderFromCart(deps, requiredCmd(cartId));
 		await createOrderFromCart(deps, cmd(cartId));
 		expect(inputs[1]?.customerRef).toBeNull();
 	});
@@ -104,7 +118,7 @@ describe("the order's customer decision is recorded with its first intent and re
 		const { gateway, inputs } = customerGateway(() => undefined);
 		const deps = { ...h.createDeps, gateways: { stripe: gateway } };
 		const cartId = await digitalCart();
-		const first = await createOrderFromCart(deps, cmd(cartId));
+		const first = await createOrderFromCart(deps, requiredCmd(cartId));
 		if (!first.ok) throw new Error(first.reason);
 		const recorded = await h.createDeps.orderStore.listPaymentIntents(first.order.id);
 		expect(recorded[0]).not.toHaveProperty("customerRef");
@@ -114,14 +128,6 @@ describe("the order's customer decision is recorded with its first intent and re
 });
 
 describe("the ORDER decides whether its payment carries a customer (review round 3)", () => {
-	const ADDRESS = {
-		name: "Asha Rao",
-		line1: "12 Park Street",
-		city: "Kolkata",
-		postalCode: "700016",
-		country: "IN",
-	};
-
 	test("the requirement is frozen on the order in the creating insert — true, or an explicit false", async () => {
 		const { gateway } = customerGateway(() => null);
 		const deps = { ...h.createDeps, gateways: { stripe: gateway } };
@@ -203,20 +209,61 @@ describe("the ORDER decides whether its payment carries a customer (review round
 		expect(inputs[1]).not.toHaveProperty("customerRequired");
 	});
 
-	test("a failed read of the recorded decision on a replay THROWS — it is never read as 'none'", async () => {
+	test("a failed read of the recorded decision on a replay is a clean PAYMENT_INTENT_FAILED — never read as 'none', never an escaped throw (issue #405)", async () => {
 		const { gateway, inputs } = customerGateway(() => "cus_1");
 		const cartId = await digitalCart();
-		await createOrderFromCart({ ...h.createDeps, gateways: { stripe: gateway } }, cmd(cartId));
+		await createOrderFromCart(
+			{ ...h.createDeps, gateways: { stripe: gateway } },
+			requiredCmd(cartId),
+		);
 		const store = h.createDeps.orderStore;
 		const failingStore = overriding(store, {
 			listPaymentIntents: () => Promise.reject(new Error("read failed")),
 		});
-		await expect(
-			createOrderFromCart(
-				{ ...h.createDeps, orderStore: failingStore, gateways: { stripe: gateway } },
-				cmd(cartId),
-			),
-		).rejects.toThrow("read failed");
+		const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+		const replay = await createOrderFromCart(
+			{ ...h.createDeps, orderStore: failingStore, gateways: { stripe: gateway } },
+			cmd(cartId),
+		);
+		expect(replay).toEqual({ ok: false, reason: "PAYMENT_INTENT_FAILED" });
+		// Logged like any other intent failure, and the gateway was asked nothing:
+		// guessing "none" could change the request Stripe already holds.
+		expect(errors).toHaveBeenCalledWith(
+			"[domain] createIntent failed → PAYMENT_INTENT_FAILED",
+			expect.objectContaining({ gateway: "stripe", retryable: true }),
+		);
 		expect(inputs).toHaveLength(1);
+		errors.mockRestore();
+
+		// The buyer's same-key retry, once the store answers, goes through.
+		const retry = await createOrderFromCart(
+			{ ...h.createDeps, gateways: { stripe: gateway } },
+			cmd(cartId),
+		);
+		expect(retry.ok).toBe(true);
+		expect(inputs[1]?.customerRef).toBe("cus_1");
+	});
+
+	test("an order NOT placed under the requirement never reads the recorded intents on a replay (issue #405)", async () => {
+		// Its customer decision is "none" by construction (customerRequired: false),
+		// so there is nothing to read back — and nothing to fail on.
+		const { gateway, inputs } = customerGateway(() => null);
+		const cartId = await digitalCart();
+		const first = await createOrderFromCart(
+			{ ...h.createDeps, gateways: { stripe: gateway } },
+			cmd(cartId),
+		);
+		expect(first.ok && first.order.buyerAddressRequired).toBe(false);
+		const store = h.createDeps.orderStore;
+		const reads = vi.fn(() => Promise.reject(new Error("must not be read")));
+		const watchedStore = overriding(store, { listPaymentIntents: reads });
+		const replay = await createOrderFromCart(
+			{ ...h.createDeps, orderStore: watchedStore, gateways: { stripe: gateway } },
+			cmd(cartId),
+		);
+		expect(replay.ok && replay.order.id).toBe(first.ok && first.order.id);
+		expect(reads).not.toHaveBeenCalled();
+		expect(inputs[1]).not.toHaveProperty("customerRef");
+		expect(inputs[1]?.customerRequired).toBe(false);
 	});
 });

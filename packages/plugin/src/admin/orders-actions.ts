@@ -1063,12 +1063,41 @@ const refundOrderAction: OrdersAction = async (client, payload, operator) => {
 		// went through): the ledger moved because of it. Saying "someone else
 		// refunded this order" blamed a stranger for the operator's own refund (QA
 		// round 2).
-		const ownRecorded = live.refunds.some(
+		const ownRecorded = live.refunds.find(
 			(r) =>
 				r.status === "recorded" &&
 				(r.idempotencyKey === baseKey || r.idempotencyKey.startsWith(`${baseKey}:v`)),
 		);
-		if (ownRecorded) return applied(ALREADY_REFUNDED);
+		if (ownRecorded !== undefined) {
+			// REPLAY IT, under the key it was recorded with (issue #405, item 3). The
+			// refund is recorded before the order's download access is revoked, so a
+			// process that died between the two left a `refunded` order whose grants
+			// are still active — and THIS re-click is the retry that is meant to
+			// finish the job. Answering from the ledger alone never reached the
+			// service, so the revoke never ran. The domain resolves a `recorded` key
+			// as a benign duplicate with NO provider call, and revokes there when the
+			// order is `refunded`; `revokeByOrder` is idempotent, so on the ordinary
+			// double-click this costs a read and changes nothing. The row's own
+			// amount, currency and name are sent, so the domain's same-request check
+			// matches by construction.
+			//
+			// Whatever the replay answers, the notice stays ALREADY_REFUNDED: the
+			// money is on the ledger, and that is the operator's question. A refusal
+			// here (the order's gateway unwired since, say) cannot heal the revoke,
+			// and the residual is the one `refund-order.ts` names — a `refunded`
+			// order, which the download route refuses on. A revoke that THROWS
+			// propagates, so the operator sees a failure and clicks again.
+			await client.refundOrder(
+				orderId,
+				{
+					amountCents: ownRecorded.amountCents,
+					currency: ownRecorded.currency,
+					refundedBy: ownRecorded.refundedBy,
+				},
+				{ idempotencyKey: ownRecorded.idempotencyKey },
+			);
+			return applied(ALREADY_REFUNDED);
+		}
 		// The genuinely CONCURRENT case: the ledger moved between the confirm being
 		// drawn and this click. This is the ONLY window now checked server-side, and
 		// the surface's own pre-dialog validation cannot see it.

@@ -11,14 +11,14 @@
  *    binding's own (src/lib/downloads-bucket.ts re-checks the bucket split on
  *    the config the build really uses);
  *  - `nodejs_compat` present (required by the emdash CF stack);
- *  - `global_fetch_strictly_public` PRESENT (deploy-verified: Cloudflare
- *    blocks Worker→*.workers.dev subrequests and stubs them 404 — the
- *    site's ctx.http calls to a commerce-service Worker on workers.dev
- *    never arrived without the flag). The flag is incompatible with D1 read-replica
- *    sessions (every SSR request hangs, silently — em-dash docs
- *    deployment/cloudflare.mdx:121-130, issue #1273), so D1 `session`
- *    must stay OFF while it is present — the pairing invariant is pinned
- *    in site-config.test.ts;
+ *  - `global_fetch_strictly_public` ABSENT (issue #375). It was added for the
+ *    site's ctx.http calls to a commerce-service Worker on *.workers.dev,
+ *    which Cloudflare otherwise blocks and stubs 404; that service and the
+ *    call are gone (ADR-0020, #288), and no remaining egress targets
+ *    workers.dev or this Worker's own zone. It must not come back: D1
+ *    sessions are on (`"primary-first"`), and the flag hangs every session
+ *    query (emdash issue #1273) — the pairing guard in site-config.test.ts
+ *    fails on the pair, and astro.config.ts refuses it at build time;
  *  - a cron trigger (scheduled publishing needs it on Workers);
  *  - no secret-shaped keys under `vars` (secrets go via `wrangler secret`).
  */
@@ -109,14 +109,16 @@ describe("wrangler.jsonc", () => {
 		expect(JSON.stringify(bucket("DOWNLOADS"))).not.toMatch(/public|domain|dev_?url/i);
 	});
 
-	test("nodejs_compat on; global_fetch_strictly_public on (workers.dev subrequests are otherwise stubbed 404)", () => {
+	test("nodejs_compat on; global_fetch_strictly_public OFF (its workers.dev reason is gone)", () => {
 		const flags = config["compatibility_flags"] as string[];
 		expect(flags).toContain("nodejs_compat");
-		// Without this flag the deployed Worker's fetch to the commerce
-		// service on *.workers.dev never leaves Cloudflare (stub 404) —
-		// verified with parallel wrangler tails. Requires D1 session OFF
-		// (pairing invariant in site-config.test.ts).
-		expect(flags).toContain("global_fetch_strictly_public");
+		// The flag existed only so the Worker's fetch to the commerce service on
+		// *.workers.dev left Cloudflare instead of being stubbed 404. That service
+		// is gone (ADR-0020): the plugin's egress is api.stripe.com plus the
+		// deployment's email and x402 hosts (DEPLOYMENT.md §4), none of them on
+		// workers.dev, and the site makes no fetch of its own. It must not come
+		// back while D1 sessions are on — the pairing guard in site-config.test.ts.
+		expect(flags).not.toContain("global_fetch_strictly_public");
 	});
 
 	test("cron trigger present (scheduled publishing on Workers)", () => {

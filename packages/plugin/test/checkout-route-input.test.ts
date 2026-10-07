@@ -389,7 +389,16 @@ describe("parseCheckoutSummaryInput — the destination", () => {
 		});
 	});
 
+	test("an optional postcode and city are trimmed and kept, for a tax calculator (ADR-0030)", () => {
+		expect(
+			parse({ country: "us", postalCode: " 10001 ", city: "New York", region: "" })?.selection,
+		).toEqual({ destination: { country: "US", postalCode: "10001", city: "New York" } });
+	});
+
 	test.each([
+		[{ country: "US", postalCode: 10001 }],
+		[{ country: "US", postalCode: "1".repeat(33) }],
+		[{ country: "US", city: "x".repeat(121) }],
 		[{ country: "United States" }],
 		[{ country: "" }],
 		[{ region: "CA" }],

@@ -159,6 +159,7 @@ function cancelBody(response: FacilitatorResponse): void {
  */
 async function readBoundedText(
 	response: FacilitatorResponse,
+	onReader: (cancel: () => void) => void,
 ): Promise<string | "oversize" | "not_utf8"> {
 	const declared = response.headers.get("content-length");
 	if (declared !== null && /^[0-9]+$/u.test(declared) && Number(declared) > MAX_RESPONSE_BYTES) {
@@ -172,7 +173,7 @@ async function readBoundedText(
 		if (new TextEncoder().encode(text).byteLength > MAX_RESPONSE_BYTES) return "oversize";
 		return text;
 	}
-	const bytes = await readBoundedStream(body);
+	const bytes = await readBoundedStream(body, onReader);
 	if (bytes === undefined) return "oversize";
 	try {
 		return new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes);
@@ -184,8 +185,10 @@ async function readBoundedText(
 /** `undefined` for "too large", otherwise the bytes read. */
 async function readBoundedStream(
 	stream: ReadableStream<Uint8Array>,
+	onReader: (cancel: () => void) => void,
 ): Promise<Uint8Array | undefined> {
 	const reader = stream.getReader();
+	onReader(() => void reader.cancel().catch(() => {}));
 	const chunks: Uint8Array[] = [];
 	let total = 0;
 	for (;;) {
@@ -212,7 +215,9 @@ async function readBoundedStream(
  *
  * The timeout covers the whole exchange — the request AND the body — and is a
  * race of its own, so it holds whatever the platform does with the request (no
- * `signal` is passed: see {@link FacilitatorFetch}).
+ * `signal` is passed: see {@link FacilitatorFetch}). Once the race is lost
+ * nothing more is read: a body being read has its reader cancelled, and an
+ * answer that arrives later is discarded with its body cancelled unread.
  *
  * A final response whose `url` is a non-empty string other than the URL
  * requested was redirected, and is never trusted as a verdict. Where the
@@ -235,8 +240,14 @@ export async function postToFacilitator(
 	timeoutMs: number,
 ): Promise<Exchange> {
 	let timer: ReturnType<typeof setTimeout> | undefined;
+	let timedOut = false;
+	let cancelReading: (() => void) | undefined;
 	const timeout = new Promise<Exchange>((resolve) => {
-		timer = setTimeout(() => resolve({ ok: false, cause: "timeout" }), timeoutMs);
+		timer = setTimeout(() => {
+			timedOut = true;
+			cancelReading?.();
+			resolve({ ok: false, cause: "timeout" });
+		}, timeoutMs);
 	});
 
 	const work = (async (): Promise<Exchange> => {
@@ -245,6 +256,11 @@ export async function postToFacilitator(
 			response = await fetchFn(url, { method: "POST", headers, body, redirect: "manual" });
 			if (typeof response !== "object" || response === null)
 				return { ok: false, cause: "transport" };
+			if (timedOut) {
+				// A late answer: the caller already has its timeout. Read nothing.
+				cancelBody(response);
+				return { ok: false, cause: "timeout" };
+			}
 			if (typeof response.url === "string" && response.url !== "" && response.url !== url) {
 				cancelBody(response);
 				return { ok: false, cause: "redirect" };
@@ -258,7 +274,9 @@ export async function postToFacilitator(
 		}
 		let text: string;
 		try {
-			const read = await readBoundedText(response);
+			const read = await readBoundedText(response, (cancel) => {
+				cancelReading = cancel;
+			});
 			if (read === "oversize") return { ok: false, cause: "oversize" };
 			if (read === "not_utf8") return { ok: false, cause: "body" };
 			text = read;

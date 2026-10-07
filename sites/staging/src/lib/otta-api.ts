@@ -291,8 +291,8 @@ async function dispatchOnce<TResult>(
  * all — and every form endpoint used to await it bare, so a curl, a bot or a
  * broken client became an unhandled exception and the host's 500 (QA U-6).
  * That is the caller's mistake, not ours: the endpoint answers
- * {@link notAFormResponse} instead. Call it AFTER `rejectCrossOrigin`, as the
- * endpoints read the body.
+ * {@link notAFormResponse} instead. The site middleware's origin check has
+ * already refused a cross-site POST by the time an endpoint calls this.
  */
 export async function readFormBody(request: Request): Promise<FormData | null> {
 	try {

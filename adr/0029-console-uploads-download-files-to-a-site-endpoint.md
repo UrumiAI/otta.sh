@@ -108,9 +108,44 @@ forbids.
   uploaded file. Computing one would mean hashing the stream on the way to R2, which can be
   added without changing the wire.
 
+## Amendment, 2026-10-06: the save is checked against the bucket (issue #405)
+
+Decision 2 left one gap. The plugin validates the descriptor's shape, but it cannot reach R2,
+so a well-formed `dl/{productId}/{ULID}` key with no object behind it (from a console bug, or
+a stale or hand-made request) was saved, and every buyer's download of that product then
+answered 404.
+
+**The site's middleware checks the save before the plugin sees it**
+(`sites/staging/src/lib/download-attach-guard.ts`). It looks at every request to a plugin route
+that can carry the write: every method except GET, HEAD, DELETE and OPTIONS. EmDash's plugin
+catch-all serves POST, PUT and PATCH from one handler and parses a JSON body for each, and the
+plugin never reads the method. The four methods left out take their input from the query string,
+where no descriptor can ride. The middleware checks only a request EmDash would dispatch: a user
+holding `plugins:manage`, plus either the `X-EmDash-Request: 1` header or a token with the
+`admin` scope. If the body is the console's `products:attach-download` act (matched against
+the plugin's exported action id), it first applies the save's own key rule
+(`dl/{productId}/{ULID}` for that product). A key that fails it is passed to the plugin, which
+refuses it on that rule, so it never reaches R2. Otherwise the middleware `head()`s the key in
+`DOWNLOADS`. With no object, or one of a different size from the descriptor's, it answers in
+the plugin's place with a refusal the Download file card shows ("Upload the file again"). With
+no `DOWNLOADS` binding it refuses too. If the bucket throws, it answers a retryable failure.
+Every other request passes through, and the body is read from a clone. The plugin and the card
+are unchanged, and the plugin is still the only writer. A test pins the catch-all's methods,
+EmDash's body-method set and the route's CSRF and scope rules against the installed EmDash, so
+an upgrade that changes them fails.
+
+Two alternatives were rejected. The site could sign the descriptor for the plugin to verify,
+but that needs a secret shared between site and plugin. The endpoint could make the save
+itself, but that is a second write path into the plugin. Either is more machinery than one
+existence check needs.
+
+The check belongs to this site. Another site hosting the plugin needs the same check, or it
+keeps the gap: the plugin alone cannot see the bucket.
+
 ### What would reopen this decision
 
 A second console request of any kind; the upload endpoint writing the product; the endpoint
 accepting a key, a path or a product kind from the request; the route moving under `/_`,
-dropping its origin guard, or going onto the middleware's exempt list; or a way to remove a
-product's file.
+dropping its origin guard, or going onto the middleware's exempt list; a way to remove a
+product's file; or a way for the descriptor's save to reach the plugin without the site's
+bucket check.
