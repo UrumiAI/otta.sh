@@ -488,9 +488,18 @@ const CLAIMED_BUYER_REF = "priya.kapoor@example.test";
 const CLAIMED_CUSTOMER_ID = "4c2a8f91-7b3e-4d6a-9f1c-8a2b3c4d5e6f";
 
 /** Open the refund confirm over a `CAPTURED`-refunds record and return its
- *  text node — every confirm-recipient test below needs exactly this. */
+ *  text node — every confirm-recipient test below needs exactly this.
+ *
+ *  WITH THE ORDER'S EMAILS REVEALED (issue #377), when there is one to reveal.
+ *  These tests are about WHICH identity the confirm names, and a masked email
+ *  would make two different addresses with the same first letters read alike;
+ *  what the confirm does while masked is `buyer-email-mask-dom.test.tsx`'s. */
 async function openRefundConfirm(payload: DetailPayload): Promise<HTMLElement> {
 	const view = await show(payload);
+	const reveal = view.container.querySelector<HTMLButtonElement>(
+		'[data-testid="detail-email-toggle"]',
+	);
+	if (reveal !== null) await fire(reveal, "click");
 	await fire(tab(view, "money"), "click");
 	await fire(one<HTMLButtonElement>(view, '[data-testid="refund-full"]'), "click");
 	return one<HTMLElement>(view, '[data-testid="otta-confirm-text"]');
@@ -502,6 +511,12 @@ test("the heading names the readable buyer reference, not the opaque customer id
 	const view = await show(withIdentity(detailFor("paid"), CLAIMED_BUYER_REF, CLAIMED_CUSTOMER_ID));
 
 	const heading = one<HTMLHeadingElement>(view, '[data-testid="detail-heading"]');
+	// Masked until revealed (issue #377) — the readable reference's hint, still
+	// not the uuid.
+	expect(heading.textContent).toContain("p•••@e•••.test");
+	expect(heading.textContent).not.toContain(CLAIMED_CUSTOMER_ID);
+
+	await fire(one<HTMLButtonElement>(view, '[data-testid="detail-email-toggle"]'), "click");
 	expect(heading.textContent).toContain(CLAIMED_BUYER_REF);
 	expect(heading.textContent).not.toContain(CLAIMED_CUSTOMER_ID);
 });
