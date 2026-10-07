@@ -5,11 +5,17 @@
 - Amended: 2026-10-06. The product owner answered the draft's two open questions (Decisions 5 and
   8), and review rounds 1 and 2 reshaped the flow and the plan. The changes are listed at the end
   of this record.
+- Amended: 2026-10-07. Review round 5 found that replaying a paid payment would hand the file and
+  the `orderId` to anyone who can read the chain. The product owner decided that a lost response
+  is **not** recovered automatically: only the request that settled the payment receives the file
+  (Decision 5, "Who receives the file").
 - Decided by: the product owner, 2026-10-05 (issue #376 part 2): standard x402, digital products
   only, USD stores first, USDC on Base, access re-checked on every download, and a full refund
   revokes it. On 2026-10-06 the product owner added two more decisions: live payments use any
   facilitator that takes no credential or a static API key, and a lost `/settle` answer is flagged
-  for a manual check with no chain read in v1.
+  for a manual check with no chain read in v1. On 2026-10-07 the product owner decided that a
+  replayed payment never receives the file again, and that v1 has no lost-response recovery (no
+  wallet-ownership proof).
 - Refines: [ADR-0008](./0008-order-refunds.md) (x402 refunds stay manual and recorded; this record
   says what "refund" means for a gate order). Builds on [ADR-0011](./0011-entitlement-check-authentication.md)
   (the `orderId` scope is how an agent downloads again) and [ADR-0020](./0020-one-deployable-plugin-owns-commerce-truth.md)
@@ -184,11 +190,19 @@ protocol-specific. `@otta-sh/payments-x402` implements it. Its methods:
 
 | Method | Kind | What it does |
 |---|---|---|
-| `offer({amount: Cents, currency}, resourceUrl)` | pure | Returns the `PaymentRequired` object and its per-network requirements, or `NOT_OFFERED`. |
+| `offer(price: Money, resourceUrl)` | pure | Returns the `PaymentRequired` object and its per-network requirements, or `NOT_OFFERED`. |
 | `decode(header)` | pure | Returns the decoded payment, or `MALFORMED`. The decoded payment exposes what the domain decides on: `paymentKey`, `network`, `payer`, the amount converted exactly back to `Cents`, `validAfter`, `validBefore`, and the opaque payload. |
 | `matchOffer(decoded, offer)` | pure | Structural match: scheme, network, asset, `payTo`, `authorization.to`, `extra` and the transfer method. Never the amount or the time window: the domain checks those against the order or the clock. |
 | `verify(decoded, offer)` | IO | `{valid, payer}`, `{invalid, reason}` or `{unavailable}`. |
-| `settle(decoded, offer)` | IO | `{settled, transaction, network, payer}`, `{rejected, reason}` or `{unconfirmed}`. |
+| `settle(decoded, offer)` | IO | `{settled, transaction, network, payer}`, `{rejected, reason}` or `{unconfirmed}`. The adapter returns `rejected` only when it is proven pre-broadcast (Decision 5, step 8). |
+
+**One rail instance, the same objects.** A request calls `offer`, `matchOffer`, `verify` and
+`settle` on **one** rail instance, and passes back the exact `offer` and decoded payment that
+instance returned. The merged rail refuses a copy (a spread, a rebuilt object, or an offer from
+another instance) with no facilitator call: `matchOffer` answers `PAYMENT_MISMATCH` (`payload`),
+and `verify` and `settle` answer `offer_mismatch` (`packages/domain/src/ports/x402-rail.ts:25-31`).
+So every offer the use case builds, including the snapshot-priced offer for a retry (C), comes from
+`offer()` on the same instance it then verifies and settles through.
 
 **Rejected: new methods on `PaymentGateway`.**
 - Stripe has no analogue, so every new method would need a Stripe stub. ADR-0008 already rejected
@@ -358,10 +372,16 @@ make no network call.**
    - The `paymentKey` is `eip3009:{chainId}:{asset}:{from}:{nonce}`, lowercased. It names exactly
      one authorization, because the token contract tracks nonce use per authorizer (v2 §10.1).
    - From it we derive the order's idempotency key and read with `getByIdempotencyKey`.
-   - **Found, and for another product:** `PAYMENT_ALREADY_USED`, and the site answers **409**.
-   - **Found, and for this product:** go to the replay rules (C). The price and window checks in
-     step 4 apply only to new payments. A late retry of a payment we already hold still reaches its
-     order.
+   - **Nothing in that key is secret, and this step checks no signature.** Once a payment has been
+     sent to `/settle`, its `from`, `nonce` and even its signature are public: USDC emits
+     `AuthorizationUsed(authorizer, nonce)` and `Transfer(from, payTo, value)`, and the settle
+     transaction's calldata carries the whole authorization, `v`, `r` and `s` included. Anyone
+     watching our `payTo` can rebuild a `PAYMENT-SIGNATURE` header from that and our public 402.
+     Checking the signature here would not help, because the signature is public too. So **a
+     found order never yields the file, the `orderId` or a `Link`** (C).
+   - **Found:** the replay rules (C). Every case there except a still-unbroadcast pending order of
+     this product answers the same **409 `payment_already_used`**, whatever product the order is
+     for. The price and window checks in step 4 apply only to new payments.
    - **Not found:** continue.
 4. **New payments only: amount and window.**
    - The decoded amount must equal today's quote in `Cents` exactly. The one exception is a
@@ -390,7 +410,8 @@ make no network call.**
      snapshots price and title exactly as a cart order does.
    - **Then re-check the returned order's line.** Two requests with the same payload for products
      A and B can race the idempotent create, and only one product wins. The loser finds a line
-     that is not its product and answers `PAYMENT_ALREADY_USED` (409).
+     that is not its product and answers the same 409 `payment_already_used` as any other found
+     payment (C).
 7. **Begin the settle attempt: a durable marker, written before `/settle`.**
    - The order carries `x402Settle: {attempts, lastOutcome}`, where `lastOutcome` is
      `in_flight`, `rejected_pre_broadcast` or `unconfirmed`.
@@ -400,9 +421,10 @@ make no network call.**
      - `attempts` still has the value this request read;
      - **the hold's remaining time exceeds the 30 s settle timeout plus a 15 s margin**, so the
        expiry sweep cannot win while `/settle` runs.
-   - **Only the winner calls `/settle`.** A loser re-reads the order:
-     - if it is paid, the loser serves it;
-     - otherwise it answers **503** with `Retry-After`.
+   - **Only the winner calls `/settle`, and only the winner can receive the file.** A loser
+     answers the same 409 `payment_already_used` as a replay (C). It does not wait for the winner,
+     and it never serves the order even once it is paid: a concurrent request carrying the same
+     authorization is indistinguishable from someone who copied it from the mempool.
    - If the hold is too short on a **first** attempt, the answer is 402 with fresh requirements
      and `error: "payment_window_closed"`. The order then expires normally, because no attempt
      was made. On a retry of an order that already has an attempt, a hold that is too short is a
@@ -411,33 +433,43 @@ make no network call.**
    - **`settled`** (a well-formed `success: true`; Decision 8 lists the checks) builds the
      in-process `page_gate` confirmation and runs `settleOrder`. That flips `pending → paid`,
      records the payment and grants the entitlement with `source: "x402"`.
-   - **`rejected` (a well-formed `success: false`) does not prove nothing was broadcast.** The
-     reference facilitator broadcasts `transferWithAuthorization` and then waits for the receipt.
-     If the wait throws, its `catch` answers
+   - **A facilitator's `success: false` does not prove nothing was broadcast.** The reference
+     facilitator broadcasts `transferWithAuthorization` and then waits for the receipt. If the wait
+     throws, its `catch` answers
      `{success: false, errorReason: "invalid_exact_evm_transaction_failed", transaction: ""}`, even
      though the transaction may still land (`coinbase/x402`
      `typescript/packages/mechanisms/evm/src/exact/facilitator/eip3009.ts:297-329`, reason mapping
-     at `eip3009-utils.ts:198-215`, constant at `errors.ts:17`). So `rejected` splits in two:
-     - **Pre-broadcast rejected.** The `errorReason` is on the allowlist below **and**
-       `transaction` is `""`. First, re-read the order: if it is paid (an identical request won),
-       serve it. Otherwise, on the **first** attempt, set `lastOutcome: rejected_pre_broadcast`
-       and answer **402** with a `PAYMENT-RESPONSE` carrying the failure (HTTP v2, "Example
-       (Failure)"). On a **later** attempt it is a non-success with a prior attempt: flag the
-       order and answer **409** (C).
-     - **Anything else is treated as `unconfirmed`.** That includes:
-       - `invalid_exact_evm_transaction_failed`, and any other `*_transaction_failed`;
-       - `unexpected_settle_error`;
-       - `invalid_exact_evm_nonce_already_used`;
-       - any reason not on the allowlist, including an unknown or missing one;
-       - any `success: false` that names a non-empty `transaction`.
-   - **`unconfirmed`** (could not ask, a `success: true` that fails the checks, or a `rejected` not
-     proven pre-broadcast): first re-read the order and serve it if it is paid. Otherwise **flag
-     the order at once** and set `lastOutcome: unconfirmed`. On the first attempt, answer **503**
-     with `Retry-After`; a retry goes through (C). On a later attempt, answer **409**.
+     at `eip3009-utils.ts:198-215`, constant at `errors.ts:17`).
+   - **The adapter splits a `success: false` in two, not the domain.** `classifySettle`
+     (`packages/payments-x402/src/facilitator.ts:365`) returns `rejected` only when the
+     `errorReason` is in `PRE_BROADCAST_REASONS` (the allowlist below, `facilitator.ts:61`) **and**
+     `transaction` is `""`. Every other `success: false` comes back as `unconfirmed` with
+     `cause: "unproven_rejection"`. That includes:
+     - `invalid_exact_evm_transaction_failed`, and any other `*_transaction_failed`;
+     - `unexpected_settle_error`;
+     - `invalid_exact_evm_nonce_already_used`;
+     - any reason not on the allowlist, including an unknown or missing one;
+     - any `success: false` that names a non-empty `transaction`.
 
-   **The pre-broadcast allowlist.** These are the exact `errorReason` strings from the spec's list
-   (v2 §9) and from the reference facilitator's constants (`errors.ts:8-25`). The two sets spell
-   some of the same failures differently, so both spellings are listed.
+     So in the port, `rejected` already means **proven pre-broadcast**, and the domain handles
+     three arms as they come:
+   - **`rejected`.** First, re-read the order: if it is paid (an identical request's earlier
+     attempt won), answer 409 `payment_already_used` (C); this request did not settle it.
+     Otherwise, on the **first** attempt, set `lastOutcome: rejected_pre_broadcast` and answer
+     **402** with a `PAYMENT-RESPONSE` carrying the failure (HTTP v2, "Example (Failure)"). On a
+     **later** attempt it is a non-success with a prior attempt: flag the order and answer **409**
+     (C).
+   - **`unconfirmed`** (could not ask, a `success: true` that fails the checks, or an
+     `unproven_rejection`): first re-read the order; if it is paid, answer 409
+     `payment_already_used`. Otherwise **flag the order at once**, set `lastOutcome: unconfirmed`
+     and answer **409** with `error: "settlement_unconfirmed"`. The authorization may now be on
+     the chain, so no later request may settle it again or receive the file (C). The flag is the
+     only way forward: the operator checks the chain and sends any money back (below).
+
+   **The pre-broadcast allowlist** (`PRE_BROADCAST_REASONS`). These are the exact `errorReason`
+   strings from the spec's list (v2 §9) and from the reference facilitator's constants
+   (`errors.ts:8-25`). The two sets spell some of the same failures differently, so both
+   spellings are listed.
 
    | Failure | Spec (v2 §9) | Reference (`errors.ts`) |
    |---|---|---|
@@ -472,43 +504,63 @@ make no network call.**
      store and returns `PAID_UNDELIVERABLE`. The site answers **409** with `PAYMENT-RESPONSE` and
      the `Link` headers.
    - A storage `BUSY` at this point answers **503** with `Retry-After`, `PAYMENT-RESPONSE` and
-     `Link`. A retry with the same header takes the replay path.
+     `Link`. This request settled the payment, so it may carry the `orderId`. The client downloads
+     again through the `rel="enclosure"` link; a retry with the same payment header gets 409 (C).
    - If it authorizes, `x402/pay` returns the order id and the sku. The site then:
      - calls `serveDownload` for that line, which re-checks the gate (Decision 6);
      - adds `PAYMENT-RESPONSE` (base64 `SettlementResponse`, v2 §5.3);
      - adds the `Link` headers.
    - If that second check refuses (a race in the milliseconds between the two checks),
-     `serveDownload` answers its own 404. The order is already paid, so the next replay runs the
-     domain check again and flags the order.
+     `serveDownload` answers its own 404. The response still carries `PAYMENT-RESPONSE` and the
+     `Link` headers, so the buyer keeps the way back once the file is restored. This race is not
+     flagged: it needs the merchant to remove the file or change the product in that instant, and
+     a replay of the payment no longer runs the delivery check (C).
 
-**C. Replay rules: a payment whose order already exists, for this product.**
+**C. Replay rules: a payment whose order already exists.**
 
-| Order state | What happens | Facilitator calls |
+**Who receives the file** (decided by the product owner, 2026-10-07). A payment header is a secret
+only until it is first sent to `/settle`. From then on it can be rebuilt by anyone who reads the
+chain or the mempool (step 3). So:
+
+> **Only the request whose own `/settle` call returned `settled` receives the bytes,
+> `PAYMENT-RESPONSE`, the `orderId` or the `Link` headers.** Every other request carrying that
+> payment, whatever product it asks for, gets the same 409.
+
+The links from that first response are the only way to download again. **v1 has no lost-response
+recovery:** a buyer whose successful response was lost has paid and holds no link. They have the
+transaction, and the operator can find the order by payer and nonce and help them off-band. We
+accept that rather than serve a paid order to whoever presents its public authorization.
+
+| Order found by `paymentKey` | What happens | Facilitator calls |
 |---|---|---|
-| Paid, and `authorizeDownload` passes | Serve again. `PAYMENT-RESPONSE` is rebuilt from the recorded payment. | None |
-| Refunded (the refund revoked access) | **402** with fresh requirements and `error: "payment_already_used"`. | None |
-| Paid or later, not refunded, but `authorizeDownload` refuses (the file was removed, or the product made physical) | The use case flags "paid but undeliverable" and answers **409** with the `Link` headers. Never 402 or 404, because the money moved. | None |
-| Expired, cancelled or failed | **402** with fresh requirements and `error: "payment_already_used"`. | None |
-| Pending, no settle attempt (a crash between create and step 7) | Continue from step 4: window, verify, attempt, settle. The amount is checked against the order's snapshot, and the offer is built from it. Money cannot have moved, because nothing was ever sent to `/settle`. | As for a new payment |
-| Pending, with a prior attempt | See below. | `/verify`, then at most one `/settle` |
+| **Every case not in the two rows below:** paid, refunded, expired, cancelled or failed, for this product or another; pending for another product; pending for this product with an attempt that is `in_flight` or `unconfirmed` | **409 `payment_already_used`.** No bytes, no `orderId`, no `Link`, no `PAYMENT-RESPONSE`, and a body that is byte-identical across every case in this row, so the answer is no oracle for which product was bought or what state the order is in. Nothing is written. | None |
+| This product, pending, no settle attempt (a crash between create and step 7) | Continue from step 4: window, verify, attempt, settle. The amount is checked against the order's snapshot, and the offer is built from it. Money cannot have moved, and the header has not been public, because nothing was ever sent to `/settle`. | As for a new payment |
+| This product, pending, every attempt so far `rejected_pre_broadcast` | See below. Nothing was broadcast, so the header has not been public. | `/verify`, then at most one `/settle` |
 
-**`/settle` is never called on an order that is not `pending`.**
+**`/settle` is never called on an order that is not `pending`, nor on one whose authorization may
+already have been broadcast.**
 
-**Pending with a prior attempt.**
+**Pending, with only pre-broadcast attempts.**
 - **The offer is rebuilt from the order's snapshot amount** (`order.totals.total`), never from
-  today's quote. The authorization signed the old amount, and a price change since then must not
-  turn a retry into a mismatch.
+  today's quote, by calling `offer()` on the same rail instance the request then verifies and
+  settles through (Decision 2). The authorization signed the old amount, and a price change since
+  then must not turn a retry into a mismatch.
 - Call `/verify` again.
 - If the authorization is still valid, begin a new attempt (step 7: compare-and-set and hold check)
   and call `/settle` again. **This cannot charge twice.** The token contract executes a nonce once
-  (v2 §10.1): if the earlier transaction is still in the mempool, exactly one of the two lands.
-- `settled` pays the order as usual.
+  (v2 §10.1).
+- `settled` pays the order and serves this request, which is now the one that settled it.
 - **Any non-success with a prior attempt means "flagged, 409", never 402.** That covers
-  `/verify` invalid, `/settle` rejected (allowlisted or not) and `/settle` unconfirmed. A
-  `success: false` on a retry does not prove no money moved, because the first transaction may
-  already be mined or still pending. Before flagging, the request re-reads the order and serves it if it is now paid.
-- `/verify` unavailable answers **503** and changes nothing. The order is already flagged if its
-  last outcome was `unconfirmed`.
+  `/verify` invalid, `/settle` rejected and `/settle` unconfirmed. Before flagging, the request
+  re-reads the order; if it is now paid, it answers 409 `payment_already_used` instead.
+- `/verify` unavailable answers **503** and changes nothing.
+
+**Rejected: proving control of the paying wallet to recover a lost response.** A request could
+prove it controls `from` (a SIWX signature over a server-issued challenge, v2 §10.2) before a paid
+order is served again. The product owner decided against it for v1 (2026-10-07). It would add a
+challenge round-trip, a second signature format and its verification for a rare case. Adding it
+later changes only the first row of the table above, for paid orders of this product, and must
+keep that row's answer the same for every case that fails the proof.
 
 **The expiry sweep flags; it does not expire.**
 - **The rule lives inside the store's guarded flip, not in a pre-check.** `expireOrdersBatch`
@@ -543,14 +595,15 @@ resolve this automatically is a possible later increment.
 
 | Outcome | HTTP | Kind |
 |---|---|---|
-| `FACILITATOR_UNAVAILABLE`, a first-attempt `SETTLEMENT_UNCONFIRMED` (including a `rejected` not proven pre-broadcast), settle in progress, storage `BUSY` | 503 with `Retry-After` | Retryable |
+| `FACILITATOR_UNAVAILABLE` (`/verify` could not be asked), storage `BUSY` after a settle (sent with `PAYMENT-RESPONSE` and `Link`; the client then uses the link) | 503 with `Retry-After` | Retryable |
 | `MALFORMED` | 400 | Terminal |
-| `PAYMENT_MISMATCH`, `PAYMENT_INVALID`, a first-attempt pre-broadcast `rejected` (allowlisted reason, empty `transaction`), `payment_already_used`, `payment_window_closed` | 402 | Terminal |
-| `PAYMENT_ALREADY_USED` (another product), a flagged reconciliation, `PAID_UNDELIVERABLE` | 409 | Terminal |
+| `PAYMENT_MISMATCH`, `PAYMENT_INVALID`, a first-attempt `rejected` (proven pre-broadcast by the adapter), `payment_window_closed` | 402 | Terminal |
+| `PAYMENT_ALREADY_USED` (`payment_already_used`: any found payment except a still-unbroadcast pending order of this product, with nothing else in the answer), `SETTLEMENT_UNCONFIRMED` (`settlement_unconfirmed`, flagged), a flagged non-success after a prior attempt, `PAID_UNDELIVERABLE` | 409 | Terminal |
 | `NOT_GATEABLE` | 404 | Terminal |
 
-The adapter keeps today's rule that "could not ask" is never reported as "the answer was no"
-(`packages/payments-x402/src/index.ts:48-96`).
+The adapter keeps the rule that "could not ask" is never reported as "the answer was no": the
+rail never throws, and an unanswered call is `unavailable` or `unconfirmed`
+(`packages/domain/src/ports/x402-rail.ts:20-23`).
 
 **Why verify → create → mark → settle:**
 - Verifying before creating keeps junk out of storage. A payload the facilitator rejects never
@@ -581,8 +634,8 @@ x402 client never produces such a proof, and the server would have to trust whoe
   undeliverable" when the gate refuses right after a settle (Decision 5, step 9). Today the gate
   lives only in the plugin route. The site's `serveDownload` can only answer 404 and cannot write
   to the order, and by then `x402/pay` has already returned. With the gate in the domain:
-  - `payForGatedProduct` runs it after every fresh settle and on every paid replay, and flags and
-    answers 409 itself;
+  - `payForGatedProduct` runs it after every fresh settle, and flags and answers 409 itself. A
+    replay never reaches it (Decision 5, C);
   - the rule is testable against ports alone.
 - **The site still streams through `serveDownload`, unchanged.** The site passes it a
   `DownloadRequest` whose URL is `downloadHref(orderId, sku)`, resolved against the request's own
@@ -597,12 +650,14 @@ x402 client never produces such a proof, and the server would have to trust whoe
   A gate request therefore runs the check twice, once in `x402/pay` and once in `serveDownload`.
   We accept that: each run is a few storage reads, and the second keeps `serveDownload` the single
   streaming path for every download.
-- **Two `Link` headers go out on success and on every replay:**
+- **Two `Link` headers go out only in the response to the request that settled the payment**
+  (Decision 5, C), never on a replay:
   - `Link: <{downloadHref(orderId, sku)}>; rel="enclosure"` is the direct re-download URL;
   - `Link: </orders/{orderId}>; rel="related"` is the order page.
 
-  Both use ADR-0011's `orderId` scope. The agent can fetch the file again without paying, for as
-  long as the entitlement stays active.
+  Both use ADR-0011's `orderId` scope, which makes the `orderId` a bearer capability. That is why
+  only the settling request may see it. The agent can fetch the file again through these links,
+  without paying, for as long as the entitlement stays active.
 
 ### 7. What a gate order is, its email, and what "refund" means for it
 
@@ -636,10 +691,10 @@ x402 client never produces such a proof, and the server would have to trust whoe
       but it is covered anyway.
   - There is one test per template.
 - **Access is re-checked on every download.** There is no token, no cache and no expiry, which is
-  the part 1 rule. The gate runs on the first stream, on every replay and on every use of either
-  link.
+  the part 1 rule. The gate runs on the first stream and on every use of either link. A replayed
+  payment never reaches it.
 - **Refund.** x402 money cannot be pulled back on-chain, and Otta holds no wallet that could send
-  it (ADR-0008 Decision 3; `payments-x402` `refundable = false`, `index.ts:117-124`). For a paid
+  it (ADR-0008 Decision 3; `payments-x402` `refundable = false`, `index.ts:57-61`). For a paid
   gate order, "refund" means:
   1. The operator **sends USDC back to the payer's wallet from their own wallet, outside Otta**.
      The payer and the transaction are on the order's payment.
@@ -648,7 +703,8 @@ x402 client never produces such a proof, and the server would have to trust whoe
      (`transition.ts:145-148`), once nothing is left to refund through a provider.
 
   Mark refunded is a full refund, so it **revokes** the entitlement (downloads increment 1, #394).
-  The next download, and the next replay of the payload, are then refused. A partial manual refund
+  The next download through either link is then refused. A replay of the payload was already
+  refused before the refund (Decision 5, C). A partial manual refund
   does not revoke.
 
 ### 8. The facilitator: URL, `allowedHosts`, credentials, answers
@@ -670,12 +726,13 @@ x402 client never produces such a proof, and the server would have to trust whoe
     and accepts no credential or a static API key.**
 - **Credentials: none, or a static bearer key.**
   - The adapter sends either no `Authorization` header, or `Authorization: Bearer <key>` from the
-    existing write-only `settings:x402FacilitatorApiKey`, as `index.ts:301-304` does today.
+    existing write-only `settings:x402FacilitatorApiKey` (`headersFor`,
+    `packages/payments-x402/src/rail.ts:159-166`).
   - It builds the headers per call path, the seam the reference client exposes
     (`createAuthHeaders(path)`, `httpFacilitatorClient.ts:16,215-217`). Another scheme can then be
     added later without changing the flow.
   - No credential, and no part of a payload, ever appears in an error, a log line or a returned
-    reason (`index.ts:84-86`).
+    reason (`passableReason`, `packages/payments-x402/src/facilitator.ts:313`).
 - **Known limitation: the Coinbase CDP facilitator is not supported in v1.**
   - CDP does not take a static key. Every request needs a fresh **JWT signed with the CDP API key
     secret** (Ed25519 or ES256, bound to the method, host and path, valid for 120 s).
@@ -709,12 +766,16 @@ x402 client never produces such a proof, and the server would have to trust whoe
     those is still classified strictly by shape, so it cannot pass as a verdict or a settlement.
 - **Bounds.**
   - `/verify` has a 10 s timeout, and `/settle` has 30 s, because it waits for inclusion on-chain
-    (`DEFAULT_FACILITATOR_TIMEOUT_MS`, `index.ts:229`).
-  - **An `AbortSignal` may not cross the Worker Loader bridge.** The sandbox passes `init` to
-    `bridge.httpFetch` (`runner-CQpZcxVz.mjs:999`), and the host-side `sandboxHttpFetch` spreads
-    whatever arrives into its own fetch. A signal does not survive that crossing reliably. So the
-    adapter's own timeout race (`Promise.race` against a timer) is what bounds the time, and the
-    signal is only a best effort.
+    (`VERIFY_TIMEOUT_MS` and `SETTLE_TIMEOUT_MS`,
+    `packages/payments-x402/src/facilitator.ts:29,31`).
+  - **The adapter never puts a `signal` in `init`.** The Worker Loader sandbox sends `init` to
+    the host over RPC (`bridge.httpFetch(url, init)`, `runner-CQpZcxVz.mjs:999`), and an
+    `AbortSignal` cannot be structured-cloned. Passing one fails **every** call there with
+    `DataCloneError: AbortSignal serialization is not enabled.` (measured in #409, which removed
+    the signal from the Stripe adapter for the same reason). So the adapter's own timeout race
+    (`Promise.race` against a timer) is the only bound on time, on every platform
+    (`FacilitatorFetch`, `facilitator.ts:113-121`). A later change must not add a signal "as a best
+    effort": it would break every sandboxed facilitator call.
   - **Response bodies are capped at 16 KiB.** When `body` is present, the cap applies to the
     stream. Otherwise it applies to `text()`'s UTF-8 byte length. In the Worker Loader the bridge
     has already buffered the whole body by then, so the cap bounds what the adapter parses, not
@@ -743,10 +804,12 @@ x402 client never produces such a proof, and the server would have to trust whoe
       - `network` equal to ours;
       - `payer`, if present, equal to `from` (20-byte comparison);
       - `amount`, if present, equal to ours.
-    - A well-formed `success: false`, on any status not in the unavailable set, is `rejected`.
-      Decision 5, step 8 then splits `rejected` with the pre-broadcast allowlist. Only an
-      allowlisted reason with an empty `transaction` counts as nothing having been broadcast.
-    - Everything else is `unconfirmed`, including a `success: true` that fails a check.
+    - A well-formed `success: false`, on any status not in the unavailable set, is split **by
+      the adapter** (`classifySettle`, `PRE_BROADCAST_REASONS`): `rejected` only for an
+      allowlisted reason with an empty `transaction`, which counts as nothing having been
+      broadcast; otherwise `unconfirmed` with `cause: "unproven_rejection"` (Decision 5, step 8).
+    - Everything else is `unconfirmed`, including a `success: true` that fails a check
+      (`cause: "failed_check"`).
 
 ### 9. Checkout stays Stripe-only, and a test pins it (#282 item 2)
 
@@ -811,7 +874,8 @@ off: a dormant money-taking route is one flag away from live, and nothing would 
   - the flag-not-expire sweep;
   - the hold check before each settle;
   - the single-winner compare-and-set;
-  - the re-read before any refusal;
+  - the re-read before any refusal, which answers 409 rather than serving when the order turns
+    out paid;
   - the product re-check after create.
 - **Abuse of the facilitator calls.** `/verify` may be metered. Any key can sign a well-formed
   authorization even with an empty wallet, so a local signature check (`ecrecover`) would not stop
@@ -825,9 +889,15 @@ off: a dormant money-taking route is one flag away from live, and nothing would 
   - **per-IP rate limiting on `/x402/*` at the edge is mandatory before x402 is enabled on Base
     mainnet.** DEPLOYMENT.md says so in increment 8. ADR-0004 asks for the same before sign-in is
     used.
-- **Privacy.** The public plugin routes return only the outcome, the `orderId`, the line's sku and
-  the transaction, never other order contents. The retired route followed the same redaction rule
-  (`x402-settle-route.ts:50-55`). Flags and notes name the payer and the nonce, never the
+- **A replayed payment is worth nothing.** Everything in a payment header becomes public once it
+  is broadcast, signature included, so a header proves nothing about who holds it. Only the
+  request whose own `/settle` returned `settled` receives the file, `PAYMENT-RESPONSE`, the
+  `orderId` or the `Link` headers. Every other request with that payment gets one identical 409,
+  whatever product it names and whatever state the order is in (Decision 5, C). That 409 only says
+  "this authorization is spent", which the chain already says.
+- **Privacy.** The public plugin routes return only the outcome, and, to the settling request
+  alone, the `orderId`, the line's sku and the transaction, never other order contents. The
+  retired route followed the same redaction rule (`x402-settle-route.ts:50-55`). Flags and notes name the payer and the nonce, never the
   signature.
 
 ### 12. Test plan
@@ -864,8 +934,12 @@ records every call and counts calls per path.
   - a non-JSON 2xx, the wrong shape, a redirected response (`url` present and changed) and an
     oversize body are unavailable. The oversize case is tested both as a stream and as `text()`;
   - a Worker Loader-shaped response (no `url`, no `body`, `text()` only) is classified the same as
-    a `Response`, and a hung transport that ignores `AbortSignal` is still cut off by the
-    adapter's own timeout;
+    a `Response`;
+  - **the injected fetch never receives a `signal` in `init`**, on `/verify` and on `/settle`. The
+    fake facilitator's bridge mode throws `DataCloneError` for any `init.signal`, as the real
+    bridge does, so a call carrying one fails the test. (Merged with increment 6:
+    `x402-rail.verify.test.ts:46` and `x402-rail.platform.test.ts:111`.) A transport that never
+    answers is cut off by the adapter's own timeout at 10 s and 30 s, and not before;
   - a truthy-but-not-`true` answer is refused;
   - a settle answer with the wrong network, payer or amount is `unconfirmed`.
 - **Credentials:** with no key, no `Authorization` header is sent. With a key, it is sent only as
@@ -880,17 +954,28 @@ Postgres and D1; increments 4, 5 and 7).
   - one authorization makes one order, concurrently;
   - the same `paymentKey` on another order is `RECEIPT_REBOUND`, concurrently too (#283);
   - **the same payload for products A and B, concurrently, gives one order; the other request
-    gets `PAYMENT_ALREADY_USED`.**
-- **Replays:**
-  - **(a)** a late retry after `validBefore` reaches its paid order and serves, with zero calls;
-  - **(f)** a replay against an expired or cancelled order is a 402 with fresh requirements and
-    zero `/settle` calls.
+    gets the replay 409 (`PAYMENT_ALREADY_USED`) with no `orderId`.**
+- **Replays: a found payment yields nothing** (Decision 5, C). Each case asserts the outcome is
+  `PAYMENT_ALREADY_USED` with **no `orderId`, no sku, no transaction and no settlement to send as
+  `PAYMENT-RESPONSE`**, zero `/verify` and `/settle` calls, and no write.
+  - **(a)** a replay of a paid order's own header, for the same product, before and after
+    `validBefore`, gets the 409 and nothing else;
+  - **(chain)** a header rebuilt **only from public data**: `from`, `to`, `value`, `validAfter`,
+    `validBefore` and `nonce` as the `AuthorizationUsed` and `Transfer` events and the settle
+    calldata expose them, and `accepted` from our public 402. It carries a **junk signature** in
+    one case and the real (public) signature in another. Both get exactly the answer (a) gets;
+  - **(no oracle)** the same paid payment presented for **another** product gets an answer equal,
+    field for field, to (a). So do a refunded, an expired, a cancelled and a failed order, a
+    pending order for another product, and a pending order of this product whose attempt is
+    `in_flight` or `unconfirmed`;
+  - a pending order of this product with no attempt, or with only `rejected_pre_broadcast`
+    attempts, still continues to `/verify` and `/settle`, and its settling request is served.
 - **The settle-attempt marker:**
   - **(b)** the marker is durable before `/settle`: a crash injected inside `settle` leaves
     `attempts = 1`, `in_flight`;
   - **(c)** `unconfirmed` flags at once;
   - **(A)** a first-attempt `rejected` carrying `invalid_exact_evm_transaction_failed` is flagged
-    and answered 503, **not 402**. So are `unexpected_settle_error`,
+    and answered 409 `settlement_unconfirmed`, **not 402**. So are `unexpected_settle_error`,
     `invalid_exact_evm_nonce_already_used`, an unknown reason, a missing reason, and an allowlisted
     reason with a non-empty `transaction`. Each allowlisted reason in both spellings, with an empty
     `transaction`, is a 402;
@@ -903,18 +988,21 @@ Postgres and D1; increments 4, 5 and 7).
     `attempts == 1 && lastOutcome == rejected_pre_broadcast`;
   - **(g)** a re-settle is refused when the hold's remaining time is at or below the settle
     timeout plus margin;
-  - **(h)** two identical concurrent requests make exactly one `/settle` call. The loser serves
-    once the order is paid. A request whose `/settle` is rejected after the other request paid
-    re-reads the order and serves it;
-  - **(snapshot)** a retry of a pending order, with or without an attempt, after a price change
-    builds its offer and its amount check from `order.totals.total`.
+  - **(h)** two identical concurrent requests make exactly one `/settle` call. Only the winner
+    gets the `orderId`; the loser gets the replay 409, even after the order is paid. A request
+    whose `/settle` is rejected after the other request paid re-reads the order and answers the
+    replay 409, not the file;
+  - **(no re-settle)** after a first-attempt `unconfirmed`, a retry with the same header makes no
+    `/verify` and no `/settle` call and gets the replay 409;
+  - **(snapshot)** a retry of a pending order, with no attempt or only pre-broadcast attempts,
+    after a price change builds its offer and its amount check from `order.totals.total`, through
+    `offer()` on the same rail instance it then verifies and settles with.
 - **Delivery** (all against ports, with no plugin involved):
   - `authorizeDownload` refuses on each of its four checks and passes when all four hold. The
     `entitlements/download` adapter keeps #396's wire answers;
-  - when `authorizeDownload` refuses after a fresh settle, and on a replay of a paid, unrefunded
-    order, `payForGatedProduct` writes the "paid but undeliverable" flag and returns
-    `PAID_UNDELIVERABLE` (409), never 402 or 404;
-  - a replay of a refunded order is a 402 with zero calls.
+  - when `authorizeDownload` refuses after a fresh settle, `payForGatedProduct` writes the "paid
+    but undeliverable" flag and returns `PAID_UNDELIVERABLE` (409), never 402 or 404;
+  - a replay never runs `authorizeDownload` (it gets the replay 409 first).
 - **Type level:** a test-only `as`-free attempt to build a `page_gate` confirmation outside
   `pay-for-gated-product.ts` fails to compile (a `@ts-expect-error` case).
 - **Email and refunds:**
@@ -930,7 +1018,8 @@ Postgres and D1; increments 4, 5 and 7).
 a fake R2; increment 8).
 - **Plugin routes:**
   - `x402/requirements` writes nothing;
-  - `x402/pay` maps every outcome above;
+  - `x402/pay` maps every outcome above. Its `payment_already_used` answer carries no `orderId`,
+    sku or transaction, and is the same bytes for every replay case;
   - the edge token is enforced when it is set;
   - not configured, or not gateable, answers `NOT_GATEABLE`.
 - **Site responses:**
@@ -940,14 +1029,18 @@ a fake R2; increment 8).
   - on success: the bytes through `serveDownload`, `PAYMENT-RESPONSE`, both `Link` headers and the
     download headers;
   - `PAID_UNDELIVERABLE` maps to 409 with `PAYMENT-RESPONSE` and both `Link` headers;
+  - a replay maps to 409 `payment_already_used` with **no body bytes of the file, no `Link`, no
+    `PAYMENT-RESPONSE`** and no `orderId` anywhere in the response;
   - 400, 402, 409 and 503 as mapped;
   - 404 for an unknown or ungateable slug, with no difference between the two.
 
 **End-to-end** (manual, then Playwright where a testnet wallet is available):
 1. Pay on Base Sepolia through `x402.org/facilitator` with a reference x402 client.
 2. Check that the bytes' sha256 matches the uploaded file.
-3. Mark refunded.
-4. Check that both links and the payload replay are refused.
+3. Replay the same payment header: 409 `payment_already_used`, no file and no `Link`.
+4. Check that both links from step 1 still download.
+5. Mark refunded.
+6. Check that both links are refused, and the payload replay still gets the same 409.
 
 ## Consequences
 
@@ -970,6 +1063,12 @@ a fake R2; increment 8).
     out, lands in the reconciliation queue for a manual chain check, because v1 does not read the
     chain (Decision 5). Most such flags will turn out to be "no money moved". We accept that noise
     rather than risk expiring an order whose money is on-chain.
+- **No lost-response recovery** (decided by the product owner, 2026-10-07). Only the request that
+  settled a payment receives the file and the links. An agent that loses that response has paid
+  and cannot get the file by sending the payment again; a settle whose answer is lost is flagged
+  (409 `settlement_unconfirmed`), not retried. The operator resolves both by hand from the payer
+  and nonce. A wallet-ownership proof (SIWX, v2 §10.2) could later re-open a paid order to its
+  payer by changing only the first row of Decision 5's table C.
 - We trust the facilitator's "settled" (Decision 11).
 - The CDP facilitator, and any other facilitator that needs per-request signed credentials, cannot
   be used in v1 (Decision 8).
@@ -1170,3 +1269,33 @@ The amendments, against the 2026-10-05 draft:
 - The adapter's own timeout race bounds the time, because an `AbortSignal` may not cross the
   bridge.
 - Increment 8 makes the test sandbox exercise the bridge's response shape.
+
+## Amended 2026-10-07 (review round 5)
+
+- **A replayed payment never receives the file.** Everything in a payment header, the signature
+  included, is public once it is broadcast. So only the request whose own `/settle` returned
+  `settled` receives the bytes, `PAYMENT-RESPONSE`, the `orderId` or the `Link` headers. Every
+  other found payment, for this product or another and in any state but a still-unbroadcast
+  pending order of this product, gets one identical 409 `payment_already_used` with nothing else
+  (Decision 5, step 3 and C; Decision 6; Decision 11).
+- The single-winner loser, and the re-reads in step 8 and in a retry, answer that 409 instead of
+  serving a paid order.
+- A first-attempt `unconfirmed` is flagged and answered 409 `settlement_unconfirmed`, not 503. A
+  payment that may have been broadcast is never settled again, so a retry could not help.
+- **The product owner decided there is no lost-response recovery in v1**, and no SIWX
+  proof-of-wallet challenge. This is recorded as a rejected alternative in Decision 5, C.
+- The test plan inverts replay test (a), adds a header rebuilt from chain data with a junk
+  signature, and requires the answer for another product, and for every other found state, to
+  equal it.
+- Decision 8 states the merged behaviour: the adapter never passes an `AbortSignal`, because it
+  fails every call over the Worker Loader bridge with `DataCloneError` (#409). The test asserts the
+  injected fetch receives no `signal`.
+- Decision 5 step 8 and Decision 8 say that the adapter, not the domain, splits a `success: false`
+  (`PRE_BROADCAST_REASONS`), and that an unproven one comes back as `unconfirmed` /
+  `unproven_rejection`.
+- Decision 2 states that every offer, the snapshot-priced retry offer included, comes from
+  `offer()` on the same rail instance, because the rail refuses copies (`offer_mismatch`,
+  `PAYMENT_MISMATCH`).
+- Stale names fixed: `offer(price: Money, resourceUrl)`, `VERIFY_TIMEOUT_MS` /
+  `SETTLE_TIMEOUT_MS`, and the bearer header now cited at `rail.ts`, not the deleted
+  `index.ts:301-304`.
