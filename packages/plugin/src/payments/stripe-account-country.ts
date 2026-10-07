@@ -61,10 +61,11 @@ const ADDRESS_REQUIRED_COUNTRIES: ReadonlySet<string> = new Set(["IN"]);
 type UnknownReason = "permission_denied" | "authentication_failed" | "unavailable";
 
 /**
- * How long an UNKNOWN answer stands before a checkout asks again. A restricted
- * key's 403 will not fix itself soon (the merchant must change the key's
- * permissions, and saving the key again re-checks at once), a refused key
- * likewise; an unreachable Stripe usually will.
+ * How long an UNKNOWN answer stands before the Settings page load asks again
+ * (checkout never asks; it reads what stands). A restricted key's 403 will not
+ * fix itself soon (the merchant must change the key's permissions, and saving
+ * the key again re-checks at once), a refused key likewise; an unreachable
+ * Stripe usually will.
  */
 const RETRY_AFTER_MS: Record<UnknownReason, number> = {
 	permission_denied: 24 * 60 * 60 * 1000,
@@ -236,7 +237,8 @@ const UNKNOWN_WARNING: Record<UnknownReason | "not_checked", string> = {
 	permission_denied:
 		"the restricted key cannot read account details (Stripe answered 403). If the Stripe account is in India, give the key read access to account details and write access to customers, or use the secret key",
 	authentication_failed: "Stripe refused the secret key (401)",
-	unavailable: "Stripe could not be reached; it is asked again in a few minutes",
+	unavailable:
+		"Stripe could not be reached; opening Settings asks again once a few minutes have passed, and saving the key again asks now",
 };
 
 /**
