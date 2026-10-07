@@ -1,6 +1,7 @@
 packages:
   - "packages/*"
   - "sites/*"
+  - "examples/*"
 
 # There are no `emdash` overrides any more. The host used to be a locally built
 # merge of upstream `main` and its then-open conditional-write PR, vendored as
