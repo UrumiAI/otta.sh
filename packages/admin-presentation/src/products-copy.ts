@@ -653,6 +653,25 @@ export function taxClassOptions(
 	return options;
 }
 
+/** The product tax status select's options (PR 2b, WooCommerce's tax status),
+ *  in the order WooCommerce lists them. Values are the wire's enum. */
+export const TAX_STATUS_OPTIONS: ReadonlyArray<{ value: string; label: string }> = [
+	{ value: "taxable", label: "Taxable" },
+	{ value: "shipping_only", label: "Shipping only" },
+	{ value: "none", label: "None" },
+];
+
+/** What the tax status means, under the select. "Shipping only" on a digital
+ *  product behaves like "None": nothing ships (DECISIONS 2b-4). */
+export const TAX_STATUS_HINT =
+	"Taxable: tax is charged on the product. Shipping only: no tax on the product, but its tax class still sets the shipping tax. None: no tax, and it does not count toward shipping tax. On a digital product, Shipping only works like None.";
+
+/** A stored status as the summary shows it; a record without one reads Taxable. */
+export function taxStatusLabel(taxStatus: string | undefined): string {
+	const value = taxStatus ?? "taxable";
+	return TAX_STATUS_OPTIONS.find((o) => o.value === value)?.label ?? value;
+}
+
 /** The `Dimensions (mm, LxWxH)` cell. A partially-measured product shows which
  *  axis is missing (`120 x ? x 40`) rather than a single dash that would hide
  *  the two figures somebody did record. */
@@ -723,6 +742,7 @@ export const PRODUCT_FIELD_LABELS = {
 	compareAt: "Compare-at",
 	unitCost: "Unit cost",
 	taxClass: "Tax class",
+	taxStatus: "Tax status",
 	kind: "Kind",
 	weight: "Weight (g)",
 	dimensions: "Dimensions (mm, LxWxH)",

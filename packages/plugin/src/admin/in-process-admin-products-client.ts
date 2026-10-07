@@ -52,6 +52,7 @@ import {
 	currency as toCurrency,
 	idempotencyKey as toIdempotencyKey,
 	InvalidProductFieldError,
+	isProductTaxStatus,
 	MAX_LOW_STOCK_THRESHOLD,
 	money as toMoney,
 	productId as toProductId,
@@ -484,6 +485,7 @@ function toProductDetailWire(
 		priceCents: product.price?.amount ?? null,
 		currency: product.price?.currency ?? null,
 		taxClass: product.taxClass,
+		taxStatus: product.taxStatus,
 		compareAtCents: product.compareAtPrice?.amount ?? null,
 		compareAtCurrency: product.compareAtPrice?.currency ?? null,
 		unitCostCents: product.unitCost?.amount ?? null,
@@ -579,6 +581,7 @@ const PRODUCT_EDIT_KEYS = [
 	"sku",
 	"price",
 	"taxClass",
+	"taxStatus",
 	"compareAtPrice",
 	"unitCost",
 	"weightGrams",
@@ -623,6 +626,13 @@ function toUpdateInput(productId: string, body: ProductEditWire): UpdateProductC
 	// No `title`: it is CMS-owned and the other transport's `.strict()` body
 	// rejects one outright (ADR-0013). The port has no field for it either.
 	if (body.taxClass !== undefined) input.taxClass = body.taxClass;
+	if (body.taxStatus !== undefined) {
+		// A closed set: an unknown status never reaches the store (PR 2b).
+		if (!isProductTaxStatus(body.taxStatus)) {
+			throw new CommerceInputError("taxStatus", 'must be "taxable", "shipping_only" or "none"');
+		}
+		input.taxStatus = body.taxStatus;
+	}
 	if (body.compareAtPrice !== undefined) {
 		input.compareAtPrice = toNullableMoney("compareAtPrice", body.compareAtPrice);
 	}

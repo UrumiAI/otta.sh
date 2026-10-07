@@ -1008,6 +1008,7 @@ export class InProcessCommerceClient implements CommerceClient {
 				qty: line.qty,
 				taxClass: row.taxClass,
 				productKind: row.productKind,
+				taxStatus: row.taxStatus,
 			});
 		}
 
