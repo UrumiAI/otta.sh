@@ -98,17 +98,36 @@ export function isResendApiUrl(apiUrl: string | undefined): boolean {
 	}
 }
 
+/** `api-` then letters, digits, `_` and `-`: an SMTP2GO API key (its
+ *  dashboard issues `api-` and a hex tail; the tail is checked loosely). */
+const SMTP2GO_API_KEY = /^api-[A-Za-z0-9_-]{8,}$/;
+
 /**
- * The email provider's API key. When the store sends through Resend the key
- * must be a Resend key; any other endpoint (a local mail catcher, a provider
- * behind its own adapter) only gets the one-line, no-spaces check, because this
- * file cannot know its format.
+ * The key for the build's email URL (the Resend slot). When that URL is
+ * Resend's the key must be a Resend key; any other endpoint (a local mail
+ * catcher, a relay) only gets the one-line, no-spaces check, because this file
+ * cannot know its format. An SMTP2GO key pasted here is refused with where it
+ * belongs: the SMTP2GO API key field.
  */
 export function checkEmailApiKey(raw: string, emailApiUrl: string | undefined): SecretShapeCheck {
 	const base = opaque(raw);
 	if (!base.ok) return base;
 	if (isResendApiUrl(emailApiUrl) && !RESEND_API_KEY.test(base.value)) {
-		return { ok: false, problem: "must be a Resend API key, starting with re_" };
+		return {
+			ok: false,
+			problem: SMTP2GO_API_KEY.test(base.value)
+				? "must be a Resend API key, starting with re_ (an SMTP2GO key goes in the SMTP2GO API key field)"
+				: "must be a Resend API key, starting with re_",
+		};
 	}
 	return base;
+}
+
+/** The SMTP2GO API key: `api-…`, in its own slot. */
+export function checkSmtp2goApiKey(raw: string): SecretShapeCheck {
+	const base = opaque(raw);
+	if (!base.ok) return base;
+	return SMTP2GO_API_KEY.test(base.value)
+		? base
+		: { ok: false, problem: "must be an SMTP2GO API key, starting with api-" };
 }

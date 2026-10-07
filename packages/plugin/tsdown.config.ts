@@ -37,9 +37,9 @@ export default defineConfig({
 	 * the `webhooks/stripe/settle` route verifies the webhook HMAC INSIDE the
 	 * isolate, so the adapter has to be in the bundle for the same reason the
 	 * other two are, and `@otta-sh/payments-x402` at INC-C5 for exactly the same
-	 * reason: `payments/x402-wiring.ts` imports `createHttpFacilitator` and
-	 * `X402PaymentGateway` as VALUES, evaluated inside the isolate, where a
-	 * surviving bare specifier has no resolver.
+	 * reason: `payments/x402-wiring.ts` imports `X402PaymentGateway` as a VALUE,
+	 * evaluated inside the isolate, where a surviving bare specifier has no
+	 * resolver.
 	 */
 	noExternal: [
 		"@otta-sh/domain",

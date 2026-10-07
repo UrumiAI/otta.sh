@@ -11,6 +11,7 @@ import {
 	SkuStockConflictError,
 } from "../product-commerce/errors.js";
 import type {
+	DownloadAsset,
 	ProductCommerce,
 	ProductCommerceStore,
 	ProductVariant,
@@ -139,6 +140,33 @@ function redeclare(
 	return h.store.upsertVariant(
 		{ productId: productId(pid), variantKey: key, title: `Variant ${key}`, contentUpdatedAt: at },
 		idempotencyKey(idem),
+	);
+}
+
+/** A canonical ULID for the download-file cases' keys. */
+const DL_ULID = "01J9ZQ3V8K4M2N6P7R8S9T0VWX";
+
+/** A well-formed download-file descriptor for product `id`. */
+function assetFor(id: string, over: Partial<DownloadAsset> = {}): DownloadAsset {
+	return {
+		key: `dl/${id}/${DL_ULID}`,
+		filename: "guide.pdf",
+		contentType: "application/pdf",
+		size: 2048,
+		...over,
+	};
+}
+
+/** Seed a priced, sku'd DIGITAL product — the only kind a download file may sit on. */
+function seedDigital(h: ProductCommerceStoreHarness, id: string): Promise<ProductCommerce> {
+	return h.store.upsert(
+		{
+			productId: productId(id),
+			sku: sku(`SKU-${id}`),
+			price: money(cents(900), currency("USD")),
+			productKind: "digital",
+		},
+		idempotencyKey(`seed-${id}`),
 	);
 }
 
@@ -2892,6 +2920,156 @@ export function productCommerceStoreContract(
 		test("countProducts on an empty store is 0", async () => {
 			const h = await makeStore();
 			expect(await h.store.countProducts({})).toBe(0);
+		});
+
+		// -- downloadAsset: the product's one download file (issue #376) -------
+		//
+		// The POINTER to a digital product's file lives on the product, so every
+		// past buyer gets whichever file is attached now (product-owner decision).
+		// The value rules (key shape, filename, type, size, digest) are the use-
+		// case's; what the STORE owns is the cross-field invariant that needs the
+		// stored row to decide — a physical product carries no file — decided
+		// inside the same compare-and-set as the write, so a concurrent kind flip
+		// cannot slip a file onto a physical product.
+
+		describe("downloadAsset: the product's one download file", () => {
+			test("a product starts with no file: downloadAsset reads null", async () => {
+				const h = await makeStore();
+				const row = await seedDigital(h, "dl-none");
+				expect(row.downloadAsset).toBeNull();
+				expect((await h.store.getByProductId(productId("dl-none")))?.downloadAsset).toBeNull();
+			});
+
+			test("an edit attaches a file to a digital product; the read returns it; null detaches it", async () => {
+				const h = await makeStore();
+				const seeded = await seedDigital(h, "dl-attach");
+				const withDigest = assetFor("dl-attach", { sha256: "ab".repeat(32) });
+				const res = await h.store.updateCommerceFields(
+					{ productId: productId("dl-attach"), downloadAsset: withDigest },
+					idempotencyKey("e1"),
+					seeded.updatedAt.toISOString(),
+				);
+				expect(res.ok && res.product.downloadAsset).toEqual(withDigest);
+				const read = await h.store.getByProductId(productId("dl-attach"));
+				expect(read?.downloadAsset).toEqual(withDigest);
+				expect(
+					(await h.store.getManyByProductId([productId("dl-attach")])).get(productId("dl-attach"))
+						?.downloadAsset,
+				).toEqual(withDigest);
+
+				// Without a digest, the stored descriptor has no `sha256` key at all.
+				const plain = await h.store.updateCommerceFields(
+					{ productId: productId("dl-attach"), downloadAsset: assetFor("dl-attach") },
+					idempotencyKey("e2"),
+					read?.updatedAt.toISOString() ?? "",
+				);
+				expect(plain.ok && plain.product.downloadAsset).toEqual(assetFor("dl-attach"));
+
+				const cleared = await h.store.updateCommerceFields(
+					{ productId: productId("dl-attach"), downloadAsset: null },
+					idempotencyKey("e3"),
+					plain.ok ? plain.product.updatedAt.toISOString() : "",
+				);
+				expect(cleared.ok && cleared.product.downloadAsset).toBeNull();
+				expect((await h.store.getByProductId(productId("dl-attach")))?.downloadAsset).toBeNull();
+			});
+
+			test("replacing the file replaces the pointer — every past buyer gets the new one", async () => {
+				const h = await makeStore();
+				const seeded = await seedDigital(h, "dl-replace");
+				const first = await h.store.updateCommerceFields(
+					{ productId: productId("dl-replace"), downloadAsset: assetFor("dl-replace") },
+					idempotencyKey("e1"),
+					seeded.updatedAt.toISOString(),
+				);
+				const next = assetFor("dl-replace", {
+					key: "dl/dl-replace/01J9ZQ3V8K4M2N6P7R8S9T0VWY",
+					filename: "guide-v2.pdf",
+					size: 4096,
+				});
+				const res = await h.store.updateCommerceFields(
+					{ productId: productId("dl-replace"), downloadAsset: next },
+					idempotencyKey("e2"),
+					first.ok ? first.product.updatedAt.toISOString() : "",
+				);
+				expect(res.ok && res.product.downloadAsset).toEqual(next);
+			});
+
+			test("a later CMS-sync upsert and an unrelated edit both PRESERVE the attached file", async () => {
+				const h = await makeStore();
+				const seeded = await seedDigital(h, "dl-keep");
+				const attached = await h.store.updateCommerceFields(
+					{ productId: productId("dl-keep"), downloadAsset: assetFor("dl-keep") },
+					idempotencyKey("e1"),
+					seeded.updatedAt.toISOString(),
+				);
+				const synced = await h.store.upsert(
+					{ productId: productId("dl-keep"), title: "Field Guide" },
+					idempotencyKey("sync-1"),
+				);
+				expect(synced.downloadAsset).toEqual(assetFor("dl-keep"));
+				const edited = await h.store.updateCommerceFields(
+					{ productId: productId("dl-keep"), taxClass: "reduced" },
+					idempotencyKey("e2"),
+					synced.updatedAt.toISOString(),
+				);
+				expect(attached.ok).toBe(true);
+				expect(edited.ok && edited.product.downloadAsset).toEqual(assetFor("dl-keep"));
+			});
+
+			test("a file on a PHYSICAL product is refused, and nothing is written", async () => {
+				const h = await makeStore();
+				const seeded = await seedEditable(h, "dl-phys");
+				await expect(
+					h.store.updateCommerceFields(
+						{ productId: productId("dl-phys"), downloadAsset: assetFor("dl-phys") },
+						idempotencyKey("e1"),
+						seeded.updatedAt.toISOString(),
+					),
+				).rejects.toMatchObject({ name: "InvalidProductFieldError", field: "downloadAsset" });
+				const read = await h.store.getByProductId(productId("dl-phys"));
+				expect(read?.downloadAsset).toBeNull();
+				expect(read?.updatedAt.toISOString()).toBe(seeded.updatedAt.toISOString());
+			});
+
+			test("making a product with a file physical is refused, unless the same edit detaches the file", async () => {
+				const h = await makeStore();
+				const seeded = await seedDigital(h, "dl-flip");
+				const attached = await h.store.updateCommerceFields(
+					{ productId: productId("dl-flip"), downloadAsset: assetFor("dl-flip") },
+					idempotencyKey("e1"),
+					seeded.updatedAt.toISOString(),
+				);
+				const at = attached.ok ? attached.product.updatedAt.toISOString() : "";
+				await expect(
+					h.store.updateCommerceFields(
+						{ productId: productId("dl-flip"), productKind: "physical" },
+						idempotencyKey("e2"),
+						at,
+					),
+				).rejects.toMatchObject({ name: "InvalidProductFieldError", field: "downloadAsset" });
+				expect((await h.store.getByProductId(productId("dl-flip")))?.productKind).toBe("digital");
+
+				const both = await h.store.updateCommerceFields(
+					{ productId: productId("dl-flip"), productKind: "physical", downloadAsset: null },
+					idempotencyKey("e3"),
+					at,
+				);
+				expect(both.ok && both.product.productKind).toBe("physical");
+				expect(both.ok && both.product.downloadAsset).toBeNull();
+			});
+
+			test("the guard order holds: a stale edit carrying a file reports stale, not a refusal", async () => {
+				const h = await makeStore();
+				await seedEditable(h, "dl-stale");
+				const res = await h.store.updateCommerceFields(
+					{ productId: productId("dl-stale"), downloadAsset: assetFor("dl-stale") },
+					idempotencyKey("e1"),
+					"2000-01-01T00:00:00.000Z",
+				);
+				expect(res.ok).toBe(false);
+				expect(!res.ok && res.reason).toBe("stale");
+			});
 		});
 
 		// -- Variants: one commerce row per sellable unit ----------------------

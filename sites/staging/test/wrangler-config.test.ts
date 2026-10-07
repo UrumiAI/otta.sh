@@ -3,9 +3,13 @@
  * paid-plan/footgun exclusions are pinned as tests:
  *  - NO `worker_loaders` (the LOADER binding is consumed only by the
  *    sandbox runner and flips the account onto Workers Paid — ADR-0006);
- *  - the DB/MEDIA binding SHAPE (the tracked file is a template — real
- *    resource ids live in the gitignored wrangler.local.jsonc, so only
+ *  - the DB/MEDIA/DOWNLOADS binding SHAPE (the tracked file is a template —
+ *    real resource ids live in the gitignored wrangler.local.jsonc, so only
  *    structure is pinned, never account-specific values);
+ *  - `DOWNLOADS` is PRIVATE (issue #376): a different bucket from `MEDIA`,
+ *    whose every key EmDash serves without auth, and no setting beyond the
+ *    binding's own (src/lib/downloads-bucket.ts re-checks the bucket split on
+ *    the config the build really uses);
  *  - `nodejs_compat` present (required by the emdash CF stack);
  *  - `global_fetch_strictly_public` PRESENT (deploy-verified: Cloudflare
  *    blocks Worker→*.workers.dev subrequests and stubs them 404 — the
@@ -68,12 +72,41 @@ describe("wrangler.jsonc", () => {
 		expect(d1[0]?.database_id).toMatch(/^[0-9a-f-]{36}$/);
 	});
 
-	test("exactly one R2 bucket, bound as MEDIA, with a bucket name", () => {
-		const r2 = config["r2_buckets"] as { binding?: string; bucket_name?: string }[];
-		expect(r2).toHaveLength(1);
-		expect(r2[0]?.binding).toBe("MEDIA");
-		expect(typeof r2[0]?.bucket_name).toBe("string");
-		expect(r2[0]?.bucket_name?.length).toBeGreaterThan(0);
+	const r2 = config["r2_buckets"] as Record<string, unknown>[];
+	const bucket = (binding: string): Record<string, unknown> | undefined =>
+		r2.find((entry) => entry["binding"] === binding);
+
+	test("exactly two R2 buckets, bound as MEDIA and DOWNLOADS, each with a bucket name", () => {
+		expect(r2.map((entry) => entry["binding"])).toEqual(["MEDIA", "DOWNLOADS"]);
+		for (const binding of ["MEDIA", "DOWNLOADS"]) {
+			const name = bucket(binding)?.["bucket_name"];
+			expect(typeof name).toBe("string");
+			expect((name as string).length).toBeGreaterThan(0);
+		}
+	});
+
+	test("DOWNLOADS is a DIFFERENT bucket from MEDIA (EmDash serves every MEDIA key publicly)", () => {
+		const media = bucket("MEDIA");
+		const downloads = bucket("DOWNLOADS");
+		expect(downloads?.["bucket_name"]).not.toBe(media?.["bucket_name"]);
+		// A preview bucket, if one is ever added, must not cross over either.
+		const mediaNames = [media?.["bucket_name"], media?.["preview_bucket_name"]].filter(Boolean);
+		for (const name of [downloads?.["bucket_name"], downloads?.["preview_bucket_name"]]) {
+			if (name !== undefined) expect(mediaNames).not.toContain(name);
+		}
+	});
+
+	test("DOWNLOADS carries the binding's own keys and nothing else — no public or domain setting", () => {
+		// Public access (r2.dev) and custom domains are bucket settings made in the
+		// dashboard or with `wrangler r2 bucket dev-url|domain`, never here — so the
+		// template must not grow a key that reads like one, and DEPLOYMENT.md §2.1
+		// says never to turn either on for this bucket. An allowlist, so any new key
+		// is a decision this test makes someone take.
+		const allowed = ["binding", "bucket_name", "preview_bucket_name", "jurisdiction"];
+		for (const key of Object.keys(bucket("DOWNLOADS") ?? {})) {
+			expect(allowed).toContain(key);
+		}
+		expect(JSON.stringify(bucket("DOWNLOADS"))).not.toMatch(/public|domain|dev_?url/i);
 	});
 
 	test("nodejs_compat on; global_fetch_strictly_public on (workers.dev subrequests are otherwise stubbed 404)", () => {

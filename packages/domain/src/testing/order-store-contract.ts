@@ -537,6 +537,53 @@ export function orderStoreContract(
 			expect(await store.listPaymentIntents(orderId("ord-other"))).toEqual([]);
 		});
 
+		test("createFromCart freezes the buyer-address-requirement snapshot (issue #382): true, false, or — when not given — absent", async () => {
+			const { store } = await makeHarness();
+			const required = await store.createFromCart(physicalInput({ buyerAddressRequired: true }));
+			const notRequired = await store.createFromCart(
+				physicalInput({
+					orderId: orderId("ord-2"),
+					idempotencyKey: idempotencyKey("key-2"),
+					buyerAddressRequired: false,
+				}),
+			);
+			const legacy = await store.createFromCart(
+				physicalInput({ orderId: orderId("ord-3"), idempotencyKey: idempotencyKey("key-3") }),
+			);
+			expect(required.order.buyerAddressRequired).toBe(true);
+			expect(notRequired.order.buyerAddressRequired).toBe(false);
+			expect(legacy.order).not.toHaveProperty("buyerAddressRequired");
+			expect((await store.getById(orderId("ord-1")))?.buyerAddressRequired).toBe(true);
+			expect((await store.getById(orderId("ord-2")))?.buyerAddressRequired).toBe(false);
+			expect(await store.getById(orderId("ord-3"))).not.toHaveProperty("buyerAddressRequired");
+			// A later write to the order (the guarded expiry flip) keeps the snapshot.
+			expect(await store.expire(orderId("ord-1"), "2026-07-10T00:20:00.000Z")).toBe(true);
+			const flipped = await store.getById(orderId("ord-1"));
+			expect(flipped?.state).toBe("expired");
+			expect(flipped?.buyerAddressRequired).toBe(true);
+		});
+
+		test("recordPaymentIntent keeps the intent's customer decision (issue #382): an id, a recorded 'none', or — when not given — nothing at all", async () => {
+			const { store } = await makeHarness();
+			await store.createFromCart(physicalInput());
+			const at = (intentId: string, customerRef?: string | null) =>
+				store.recordPaymentIntent({
+					orderId: orderId("ord-1"),
+					gateway: "stripe",
+					intentId,
+					...(customerRef !== undefined ? { customerRef } : {}),
+				});
+			await at("pi_a", "cus_1");
+			await at("pi_a", "cus_other"); // idempotent: the first record stands
+			await at("pi_b", null);
+			await at("pi_c");
+			const intents = await store.listPaymentIntents(orderId("ord-1"));
+			expect(intents.map((i) => i.intentId)).toEqual(["pi_a", "pi_b", "pi_c"]);
+			expect(intents[0]?.customerRef).toBe("cus_1");
+			expect(intents[1]?.customerRef).toBeNull();
+			expect(intents[2]).not.toHaveProperty("customerRef");
+		});
+
 		test("listIntentCancelsDue lists orders with an unresolved due intent, earliest first; resolving or rescheduling moves them", async () => {
 			const { store } = await makeHarness();
 			await store.createFromCart(physicalInput());

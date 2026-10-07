@@ -179,6 +179,8 @@ describe("requestLoginLink on a deployment with NO email configured", () => {
 				String(call[0]).includes("login email is not configured"),
 			);
 			expect(unconfigured).toHaveLength(1);
+			// It names what each provider needs, not only the build URL.
+			expect(String(unconfigured[0]?.[0])).toContain("SMTP2GO needs its API key");
 			// No egress was attempted — there is no sender to attempt it.
 			expect(harness.egressAttempts()).toBe(0);
 		} finally {

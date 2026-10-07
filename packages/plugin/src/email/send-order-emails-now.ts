@@ -26,14 +26,17 @@
  *    the work is awaited inline;
  *  - its timeouts are CUT SHORT — an inline send gets less than the sweep's full
  *    allowance, so a timeout is released uncounted for the cron and never recorded
- *    against the provider;
- *  - it is CHEAP when there is nothing to do — the sender (two kv reads) is built
- *    only once a row has been claimed, so a replay costs one read of the order;
+ *    against the provider. EXCEPT for a provider with no idempotency key
+ *    (SMTP2GO), where a timeout is a counted attempt: it may have been delivered,
+ *    and an uncounted retry would deliver it again;
+ *  - it is CHEAP when there is nothing to do — the provider choice is read (one kv
+ *    read, three for SMTP2GO) and the sender (its other kv reads) is built only
+ *    once a row has been claimed, so a replay costs that and one read of the order;
  *  - it makes the FIRST ATTEMPT ONLY — it claims a row no dispatcher has tried
  *    (`onlyUnattempted`), so it makes at most one COUNTED attempt per row and every
  *    counted retry is the cron's; the total budget (`maxAttempts`) is unchanged.
- *    Repeated Stripe redeliveries or x402 re-posts during a provider outage
- *    therefore cannot spend it and park the confirmation `failed` within minutes. A
+ *    Repeated Stripe redeliveries during a provider outage therefore cannot
+ *    spend it and park the confirmation `failed` within minutes. A
  *    cut-short inline attempt is uncounted and may recur on a later delivery before
  *    the sweep takes the row; the `Idempotency-Key` dedupes it.
  *
@@ -65,11 +68,14 @@ import { IN_PROCESS_EGRESS_URLS } from "../manifest.js";
 import { settleDeadline, type SettleDeadline } from "../settle-deadline.js";
 import type { PluginContext } from "../types.js";
 import {
-	emailSenderConfigured,
+	type EmailSenderEgress,
+	type EmailTransport,
 	LOGIN_EMAIL_TIMEOUT_MS,
 	makeEmailSender,
-	type EmailSenderEgress,
+	resolveEmailTransport,
 } from "./ctx-http-email-sender.js";
+import { providerDedupesRetries } from "./email-provider.js";
+import { countTimeoutsAsAttempts } from "./http-email-sender.js";
 
 /**
  * The ceiling on ONE inline send — DEFINED as the login email's ceiling, for the
@@ -142,10 +148,16 @@ export interface SendOrderEmailsNowOptions {
  * did not deliver (a failed send, the wait running out, a spent budget) is not
  * there and is the cron's to send. A row sent AFTER the wait ran out is not listed
  * either — the conservative direction for a caller reporting it.
+ *
+ * `skipped` lists every row this attempt completed WITHOUT a send because the order
+ * has no email recipient (an x402 buyer's `x402:0x…` reference, ADR-0028 Decision 7).
+ * Such a row is done: it was not sent and never will be, so a caller must not call it
+ * queued.
  */
 export interface InlineOrderEmails {
 	readonly configured: boolean;
 	readonly sent: readonly OutboxEmail[];
+	readonly skipped: readonly OutboxEmail[];
 }
 
 /**
@@ -162,20 +174,27 @@ export async function sendOrderEmailsNow(
 	options: SendOrderEmailsNowOptions = {},
 ): Promise<InlineOrderEmails> {
 	// Configured-ness FIRST, and quietly: with no sender the cron leg reports `skipped`
-	// as well, so a "the cron sweep will deliver it" line below would be false.
+	// as well, so a "the cron sweep will take it" line below would be false. (And
+	// "take", not "deliver": the sweep may complete a row as skipped — an order with
+	// no email recipient, ADR-0028 Decision 7 — rather than send it.)
 	const egress = options.egress ?? { apiUrl: IN_PROCESS_EGRESS_URLS.emailApiUrl };
-	if (options.emailSender === undefined && !emailSenderConfigured(egress)) {
-		return { configured: false, sent: [] };
+	// The store's provider, resolved ONCE (one kv read for Resend, three for
+	// SMTP2GO) and handed to the sender build so it is not read again.
+	const transport =
+		options.emailSender === undefined ? await resolveEmailTransport(ctx, egress) : undefined;
+	if (options.emailSender === undefined && transport === undefined) {
+		return { configured: false, sent: [], skipped: [] };
 	}
 	const sent: OutboxEmail[] = [];
+	const skipped: OutboxEmail[] = [];
 
 	const deadline = options.deadline ?? settleDeadline();
 	const waitMs = Math.min(ORDER_EMAIL_INLINE_DEADLINE_MS, deadline.remainingMs());
 	if (waitMs <= 0) {
 		console.warn(
-			`[otta] inline order email for ${orderId} skipped: the settle used the request's time budget; the cron sweep will deliver it`,
+			`[otta] inline order email for ${orderId} skipped: the settle used the request's time budget; the cron sweep will take it`,
 		);
-		return { configured: true, sent: [] };
+		return { configured: true, sent: [], skipped: [] };
 	}
 	// The inline wait's own end — at most the request's deadline, sooner when the
 	// 5 s inline cap is the tighter of the two.
@@ -185,9 +204,15 @@ export async function sendOrderEmailsNow(
 	const sendTimeoutMs = (): number =>
 		Math.max(1, Math.min(ORDER_EMAIL_INLINE_TIMEOUT_MS, waitEndsAt - deadline.now()));
 
-	const emailSender = cutShortTimeouts(
-		options.emailSender ?? lazySender(ctx, egress, sendTimeoutMs),
+	const inline = cutShortTimeouts(
+		options.emailSender ?? lazySender(ctx, egress, sendTimeoutMs, transport),
 	);
+	// No idempotency key (SMTP2GO): a timeout is a COUNTED attempt, so a slow but
+	// accepting provider is not re-sent the same email every time.
+	const emailSender =
+		transport !== undefined && !providerDedupesRetries(transport.provider)
+			? countTimeoutsAsAttempts(inline)
+			: inline;
 
 	// Flipped by the deadline: the drain asks before every claim, so once the request
 	// stops waiting nothing NEW is claimed by the abandoned work.
@@ -211,6 +236,9 @@ export async function sendOrderEmailsNow(
 			onSent: (row) => {
 				if (!expired) sent.push(row);
 			},
+			onSkipped: (row) => {
+				if (!expired) skipped.push(row);
+			},
 		},
 	).then(
 		() => undefined,
@@ -233,20 +261,20 @@ export async function sendOrderEmailsNow(
 		if ((await Promise.race([attempt, waitOver])) === "deadline") {
 			expired = true;
 			console.warn(
-				`[otta] inline order email for ${orderId} exceeded its ${waitMs} ms wait; the cron sweep will deliver it`,
+				`[otta] inline order email for ${orderId} exceeded its ${waitMs} ms wait; the cron sweep will take it`,
 			);
 		}
 	} finally {
 		clearTimeout(timer);
 	}
-	return { configured: true, sent: [...sent] };
+	return { configured: true, sent: [...sent], skipped: [...skipped] };
 }
 
 /**
  * The context's sender, built on FIRST SEND rather than up front — so a replay with
- * nothing due never pays its two kv reads. The caller has already established that
- * this bundle has an email API URL (`emailSenderConfigured`, the predicate
- * `makeEmailSender` applies), so a row is never claimed for a sender that cannot
+ * nothing due never pays its kv reads. The caller has already established that
+ * this context can send (`resolveEmailTransport`, the decision
+ * `makeEmailSender` makes), so a row is never claimed for a sender that cannot
  * exist. `timeoutMs` is a FUNCTION the sender asks at each send, so every
  * per-request abort is what is left of the wait when that send starts.
  */
@@ -254,13 +282,17 @@ function lazySender(
 	ctx: PluginContext,
 	egress: EmailSenderEgress,
 	timeoutMs: () => number,
+	transport: EmailTransport | undefined,
 ): EmailSender {
 	let built: Promise<EmailSender | undefined> | undefined;
 	return {
 		async send(input) {
-			built ??= makeEmailSender(ctx, egress, { requestTimeoutMs: timeoutMs });
+			built ??= makeEmailSender(ctx, egress, {
+				requestTimeoutMs: timeoutMs,
+				...(transport !== undefined ? { transport } : {}),
+			});
 			const sender = await built;
-			// Unreachable while `emailSenderConfigured` and `makeEmailSender` agree; a
+			// Unreachable while `resolveEmailTransport` and `makeEmailSender` agree; a
 			// throw here is a failed send, rescheduled for the cron like any other.
 			if (sender === undefined) throw new Error("email sender is not configured");
 			await sender.send(input);

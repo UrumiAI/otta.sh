@@ -455,6 +455,16 @@ describe("the four ported sweeps", () => {
 		// indistinguishable from an empty outbox, so the leg says so.
 		// `in-process-egress.sandbox.test.ts` covers the CONFIGURED arm, where the
 		// URL is baked into the scratch manifest and its host is in `allowedHosts`.
+		// A row is due FIRST: the leg asks "is any row due?" before it resolves the
+		// provider, so with an empty outbox it is idle, not `skipped` — `skipped` is
+		// the report for work that cannot be sent.
+		const suffix = "emails";
+		const placed = await placeOrder(suffix, {
+			at: new Date(Date.now() - HOUR_MS),
+			holdExpiresAt: new Date(Date.now() + DAY_MS).toISOString(),
+		});
+		// `markPaid` enqueues the outbox row the dispatcher drains.
+		await stores().orderStore.markPaid(toOrderId(placed.id));
 		expect(leg(await tick(), "order-emails")).toMatchObject({ count: 0, skipped: true });
 
 		// And with one injected, over the SAME real store, the leg is a real drain.
@@ -464,13 +474,6 @@ describe("the four ported sweeps", () => {
 				sent.push(input);
 			},
 		};
-		const suffix = "emails";
-		const placed = await placeOrder(suffix, {
-			at: new Date(Date.now() - HOUR_MS),
-			holdExpiresAt: new Date(Date.now() + DAY_MS).toISOString(),
-		});
-		// `markPaid` enqueues the outbox row the dispatcher drains.
-		await stores().orderStore.markPaid(toOrderId(placed.id));
 
 		const ctx = { http: { fetch: notReached }, kv: kvStub(), storage } as unknown as PluginContext;
 		// No query cap: this pins the drain, and the shared store's outbox may hold

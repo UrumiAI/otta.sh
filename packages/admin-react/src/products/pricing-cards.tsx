@@ -38,6 +38,7 @@ import {
 	type TaxClass,
 } from "../console-api.js";
 import { ConfirmDialog, ConsoleStyles } from "../ui.js";
+import { DownloadFileCard } from "./download-file-card.js";
 import { mintMovementNonce } from "./movement-nonce.js";
 import { forgetSummaries } from "./pricing-columns.js";
 import { usePricingStyles } from "./pricing-styles.js";
@@ -56,7 +57,7 @@ import {
 	type DraftProblems,
 	type PricingDraft,
 } from "./pricing-model.js";
-import { parseStockQty } from "@otta-sh/admin-presentation";
+import { DIGITAL_WITH_FILE, parseStockQty } from "@otta-sh/admin-presentation";
 
 /** What EmDash hands a plugin field editor. Declared structurally: this
  *  package does not depend on `@emdash-cms/admin`. `onChange` is never called —
@@ -358,13 +359,19 @@ export function PricingStockEditor({ productId }: { productId: string }): React.
 	/** Whether the cards hold edits their own Save has not written — read by the
 	 *  leave-page guard below, which is registered once. */
 	const unsaved = React.useRef(false);
+	/** Whether the Download file card is uploading or attaching a file — leaving
+	 *  the page would throw that upload away, so the same guard asks first. */
+	const downloadBusy = React.useRef(false);
+	const onDownloadBusy = React.useCallback((busy: boolean) => {
+		downloadBusy.current = busy;
+	}, []);
 	const saveButton = React.useRef<HTMLButtonElement | null>(null);
 	React.useEffect(() => {
 		// The CMS's own Save and Publish do not save these cards, and the editor's
 		// unsaved-changes guard cannot see them, so leaving the page with a typed
 		// price would lose it without a word.
 		const warn = (event: BeforeUnloadEvent): void => {
-			if (!unsaved.current) return;
+			if (!unsaved.current && !downloadBusy.current) return;
 			event.preventDefault();
 			event.returnValue = "";
 		};
@@ -373,14 +380,21 @@ export function PricingStockEditor({ productId }: { productId: string }): React.
 		// an in-app link outside the cards asks first. (The browser's own Back
 		// button is not covered; nothing a page can do intercepts it reliably.)
 		const leave = (event: MouseEvent): void => {
-			if (!unsaved.current || event.defaultPrevented || event.button !== 0) return;
+			if (
+				(!unsaved.current && !downloadBusy.current) ||
+				event.defaultPrevented ||
+				event.button !== 0
+			)
+				return;
 			if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
 			const link = (event.target as Element | null)?.closest?.("a[href]");
 			if (!(link instanceof HTMLAnchorElement) || link.target === "_blank") return;
 			if (panelRef.current?.contains(link) === true) return;
 			if (new URL(link.href, window.location.href).origin !== window.location.origin) return;
-			if (window.confirm("You have unsaved price or stock changes. Leave without saving them?"))
-				return;
+			const question = downloadBusy.current
+				? "A download file is still uploading. Leave and cancel the upload?"
+				: "You have unsaved price or stock changes. Leave without saving them?";
+			if (window.confirm(question)) return;
 			event.preventDefault();
 			event.stopPropagation();
 		};
@@ -653,6 +667,8 @@ export function PricingStockEditor({ productId }: { productId: string }): React.
 	const margin = marginSummary(d.price, d.unitCost, currency);
 	const stock = stockStatus(p.onHand, threshold);
 	const hasSku = p.sku !== null;
+	/** The SAVED product has a download file: it stays Digital. */
+	const hasDownloadFile = (p.downloadAsset ?? null) !== null;
 	const id = (name: string): string => `${idBase}-${name}`;
 	/** The store's refusal of a typed SKU, else the panel's own objection. */
 	const skuProblem = skuRefusal ?? shown.sku ?? null;
@@ -1088,6 +1104,38 @@ export function PricingStockEditor({ productId }: { productId: string }): React.
 					</div>
 				</section>
 
+				{/* The file a buyer of a DIGITAL product downloads (issue #376). Only on
+				    a product SAVED as digital: the plugin refuses a file on a physical
+				    one, so a kind switched here but not yet saved asks for the save. */}
+				{p.productKind === "digital" ? (
+					<DownloadFileCard
+						record={p}
+						titleId={id("h-download")}
+						onAttached={() => {
+							// A product with a file stays Digital (ADR-0029 Decision 6). An
+							// UNSAVED switch to Physical made before the upload can no longer
+							// be saved, so the choice goes back to Digital — where the now
+							// disabled Physical radio and its reason say why.
+							setDraft((prev) =>
+								prev === null || prev.productKind === "digital"
+									? prev
+									: { ...prev, productKind: "digital" },
+							);
+							rereadNow();
+						}}
+						onBusyChange={onDownloadBusy}
+					/>
+				) : d.productKind === "digital" ? (
+					<section className="otta-pricing-card" aria-labelledby={id("h-download")}>
+						<h3 id={id("h-download")} className="otta-pricing-card-title">
+							Download file
+						</h3>
+						<p className="otta-pricing-hint">
+							Save this product as Digital first, then upload the file buyers get.
+						</p>
+					</section>
+				) : null}
+
 				<details
 					className="otta-pricing-card"
 					open={shippingOpen}
@@ -1111,22 +1159,39 @@ export function PricingStockEditor({ productId }: { productId: string }): React.
 						<fieldset className="otta-pricing-fieldset">
 							<legend className="otta-pricing-label">Product type</legend>
 							<div className="otta-pricing-segment">
-								{(["physical", "digital"] as const).map((kind) => (
-									<label key={kind} data-checked={d.productKind === kind}>
-										<input
-											type="radio"
-											className="otta-sr-only"
-											name={id("kind")}
-											value={kind}
-											checked={d.productKind === kind}
-											onChange={() => {
-												set("productKind")(kind);
-											}}
-										/>
-										{kind === "physical" ? "Physical" : "Digital"}
-									</label>
-								))}
+								{(["physical", "digital"] as const).map((kind) => {
+									// REPLACE ONLY (ADR-0029): a product with a download file stays
+									// Digital, so past buyers never lose it. Physical is offered as
+									// disabled, with the reason, rather than refused after a save.
+									const locked = kind === "physical" && hasDownloadFile;
+									return (
+										<label key={kind} data-checked={d.productKind === kind} data-disabled={locked}>
+											<input
+												type="radio"
+												className="otta-sr-only"
+												name={id("kind")}
+												value={kind}
+												checked={d.productKind === kind}
+												disabled={locked}
+												aria-describedby={locked ? id("kind-locked") : undefined}
+												onChange={() => {
+													set("productKind")(kind);
+												}}
+											/>
+											{kind === "physical" ? "Physical" : "Digital"}
+										</label>
+									);
+								})}
 							</div>
+							{hasDownloadFile && (
+								<span
+									id={id("kind-locked")}
+									className="otta-pricing-hint"
+									data-testid="otta-kind-locked"
+								>
+									{DIGITAL_WITH_FILE}
+								</span>
+							)}
 						</fieldset>
 						<div className="otta-pricing-field">
 							<LabelRow htmlFor={id("tax")}>Tax class</LabelRow>

@@ -20,6 +20,7 @@ import {
 	type AccountOrderResult,
 } from "@otta-sh/plugin";
 import { getPublicPluginApiRouteHandler } from "emdash/plugin-utils";
+import { env } from "virtual:emdash/env";
 import Storefront from "../../../layouts/Storefront.astro";
 import {
 	accountOrderStatus,
@@ -29,6 +30,8 @@ import {
 	signedInEmail,
 } from "../../../lib/account.js";
 import { accountOrderExtras, orderPlacedAt } from "../../../lib/account-order.js";
+import { downloadsBucketFrom } from "../../../lib/download-delivery.js";
+import { downloadLinks } from "../../../lib/download-links.js";
 import { orderStamp } from "../../../lib/order-stamp.js";
 import { orderSumRows } from "../../../lib/order-view.js";
 import { isOrderPayable } from "../../../lib/pay-guard.js";
@@ -66,12 +69,27 @@ if (order === null) Astro.response.status = notFound ? 404 : 503;
 const busy = isBusyResult(result);
 if (busy) markBusy(Astro.response);
 
+/* The same Download links as the order's own page (issue #376,
+   `lib/download-links.ts`): asked of the delivery gate with the order's id —
+   the capability the gate reads; this session already proved it owns the order
+   — for an order that can deliver, on a deployment with a DOWNLOADS bucket. */
+const downloads =
+	order === null
+		? new Map<string, string>()
+		: await downloadLinks({
+				handler: getPublicPluginApiRouteHandler(Astro.locals),
+				bucketPresent: downloadsBucketFrom(env) !== undefined,
+				order: { id: order.id, state: order.state, lines: order.lines },
+				baseUrl: Astro.url,
+			});
+
 const ledgerRows =
 	order?.lines.map((line) => ({
 		title: line.title,
 		sku: line.sku,
 		qty: line.quantity,
 		money: orderMoney(line.unitPriceCents * line.quantity, line.currency),
+		downloadHref: downloads.get(line.sku),
 	})) ?? [];
 
 /** The order's name for the shopper — its products, never the id in the URL
