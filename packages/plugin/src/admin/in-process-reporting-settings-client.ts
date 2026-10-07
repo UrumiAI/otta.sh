@@ -80,7 +80,7 @@ import {
 	type TopProductsMetric,
 } from "@otta-sh/domain";
 import { isSettingsMutationSupersededError } from "@otta-sh/store-emdash";
-import { CommerceInputError, requireIdempotencyKey } from "../commerce/commerce-input.js";
+import { CommerceInputError, requireDocumentIdempotencyKey } from "../commerce/commerce-input.js";
 import {
 	createInProcessCommerceStores,
 	type InProcessCommerceStores,
@@ -215,7 +215,9 @@ export class InProcessReportingSettingsClient implements ReportingSettingsSurfac
 		// a caller that did not supply one, and there is no inline field to render
 		// it beside. (`adminToken` is accepted and ignored: there is no service to
 		// present it to — ADR-0014 D3.)
-		requireIdempotencyKey(opts.idempotencyKey);
+		// The key is the `settings_mutations/{key}` document id, so it takes the
+		// document-id ceiling (#379).
+		requireDocumentIdempotencyKey(opts.idempotencyKey);
 
 		// The one bound the DOMAIN does not carry: the threshold's `int4` ceiling
 		// lived in the request schema, so without it this tier would accept a value

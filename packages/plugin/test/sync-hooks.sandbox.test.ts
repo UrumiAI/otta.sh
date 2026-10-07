@@ -816,6 +816,27 @@ describe("sync hooks — the variant repeater declares presence and the name cac
 		expect((await requireVariant(id, "large")).orphanedAt).toBeNull();
 	});
 
+	// The variant key is opaque CMS text with no length bound, and both derived
+	// keys carry it whole — so a long key must still sync. The cart's 512-character
+	// key ceiling (#379) exists for keys that become a DOCUMENT ID; a variant's key
+	// is a field on the product row, and capping it there broke this path.
+	test("a ~480-character variant key still declares, and still orphans", async () => {
+		const id = pid("prod-long-key");
+		const longKey = `size-${"x".repeat(475)}`;
+		const goneKey = `gone-${"y".repeat(475)}`;
+		await seedVariant(id, goneKey, "Gone");
+
+		await afterSave(productContent(id, {}, TITLE, { variants: [{ key: longKey, name: "Long" }] }));
+
+		const declared = await requireVariant(id, longKey);
+		expect(declared.orphanedAt).toBeNull();
+		expect(declared.idempotencyKey).toBe(`products:${id}:variant:${longKey}:${WM}:1`);
+		expect(declared.idempotencyKey.length).toBeGreaterThan(512);
+		const orphaned = await requireVariant(id, goneKey);
+		expect(orphaned.orphanedAt).not.toBeNull();
+		expect(orphaned.idempotencyKey).toBe(`products:${id}:variant-orphaned:${goneKey}:${WM}:1`);
+	});
+
 	test("the drop set is read AFTER the declares, so a resurrected key is never dropped by the save that brought it back", async () => {
 		const id = pid("prod-order");
 		await seedOrphanedVariant(id, "small", "Small");
