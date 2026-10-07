@@ -10,3 +10,6 @@ behaviour). `updateSettings` validates the block. `computeQuote` takes `deps.set
 returns `taxSettings`, `taxLocated` and `tax.pricesIncludeTax`; tax off asks no calculator.
 `TaxRequestLine.requiresShipping` and `TotalsLineInput.requiresShipping` are new;
 `TaxRulesStore.hasAnyRate()` is a new port method.
+`SettingsStore.update` takes an optional `{ ifTax }` condition, checked atomically with the
+write (`SettingsPreconditionFailedError` when it no longer holds). `deleteTaxClass` takes
+`deps.settings` and refuses the fixed shipping tax class (`in_use_by_settings`).

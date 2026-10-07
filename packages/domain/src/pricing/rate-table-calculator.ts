@@ -242,7 +242,7 @@ function labelOf(classId: TaxClassId, labels: ReadonlyMap<TaxClassId, string>): 
  *
  * A FIXED shipping tax class that is not among the store's classes (never
  * existed, or deleted since) falls back to "based on cart items" rather than
- * silently untaxing shipping (ADR-0031 §5): the cart's own classes pick, so
+ * silently untaxing shipping (ADR-0031 §6): the cart's own classes pick, so
  * shipping is taxed whenever a shipping line's class has a flagged rate.
  */
 export function createRateTableCalculator(

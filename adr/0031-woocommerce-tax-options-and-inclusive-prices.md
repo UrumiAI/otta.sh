@@ -25,14 +25,19 @@ pay must not change silently (user decision 4).
    `displayCart` (`excl` | `incl`), `totalsDisplay` (`itemized` | `single`). It is stored
    whole in the settings singleton (no schema change on Postgres, D1 or sqlite: it is a
    document field) and validated by the `updateSettings` use-case. Billing address is not
-   offered (decision 5): Otta holds none.
+   offered (decision 5): Otta holds none. A stored block with any field missing or
+   wrong-typed (only a damaged document can have one: Otta writes it whole and
+   normalised) reads as never saved, so the upgrade rule below decides — a store with
+   rates keeps charging, rather than `enabled: "true"` reading as tax off.
 2. **Defaults and the upgrade rule.** A new store gets WooCommerce's defaults: tax off,
    prices without tax, shipping address, based on cart items, per-line rounding, excl,
    itemized. With nothing saved, `effectiveTaxSettings` decides: any rate exists ⇒
    `LEGACY_TAX_SETTINGS` (on, `legacy` shipping class, one "Tax" row: exactly today);
    none ⇒ the new-store defaults. The first rate created, or the last deleted, on a store
    with nothing saved first writes its current options down, so adding or removing rates
-   can never flip a store between the two. Tax off asks no calculator, outside ones
+   can never flip a store between the two. That write is conditional on nothing being
+   saved, checked by the settings store atomically with the write (see 8), so it never
+   overwrites an admin save that landed first. Tax off asks no calculator, outside ones
    included, as WooCommerce's integrations need "Enable taxes".
 3. **Prices entered with tax** (all integer): a line's tax is the tax inside its
    discounted gross, `round_half_DOWN(G × r / (10000 + r))` — WooCommerce's rounding
@@ -45,16 +50,28 @@ pay must not change silently (user decision 4).
    is split back to classes by largest remainder and within a class by amount, so the
    snapshot keeps per-line amounts that add up. Shipping tax always rounds half up on its own.
 5. **Tax location**: `base` taxes at the shop's base address (falling back to the ship-to
-   when none is set). A cart with only digital goods is taxed at the base address when one
+   when none is set; the Tax options screen says so while that is the case). A cart with only digital goods is taxed at the base address when one
    is set, and stays untaxed, exactly as before, when none is. A location no zone matches
    gets no rate, so 0%, never a refusal.
-6. **Display**: the quote reply carries the tax per label and the display options; the
+6. **Shipping tax class.** `inherit` is WooCommerce's "based on cart items"; class
+   names are ordered case-insensitively, as MySQL's default collation orders them, with
+   names equal but for case going to the lower id. A `fixed` class cannot be deleted while
+   the options name it (`in_use_by_settings`). If it is missing anyway (a damaged document,
+   or a delete that raced the save), the built-in falls back to `inherit` — not to
+   `legacy`, whose last-flagged-rate rule is a pre-2a store's and can tax shipping in a
+   class no item in the cart has. `inherit` taxes shipping whenever a shipping line's
+   class has a flagged rate, so a missing class never silently untaxes shipping.
+7. **Display**: the quote reply carries the tax per label and the display options; the
    checkout shows prices with or without tax and the tax itemized or as one row, every row
    still summing to the total. Labels are merchant or calculator text and are rendered only
    as escaped text. A store with tax off, or with nothing saved, renders exactly as before.
-7. **Admin**: a "Tax options" drill-in on the Tax page; a save is guarded on the value the
-   form loaded (a compare like the tax rate's `expectedRateBps`), so a concurrent change is
-   refused as stale rather than overwritten.
+8. **Admin**: a "Tax options" drill-in on the Tax page; a save is guarded on the value the
+   form loaded (a compare like the tax rate's `expectedRateBps`, ABA accepted the same
+   way). The guard is atomic: the save is written with `SettingsStore.update(…, { ifTax })`,
+   which the store checks against the very state each compare-and-set attempt replaces, so
+   a concurrent change — another save, or a first-rate pin — makes it `stale` rather than
+   being overwritten. The Tax pages show a "tax is switched off" banner when the store has
+   rates but tax is off.
 
 ## Consequences
 
@@ -76,8 +93,14 @@ pay must not change silently (user decision 4).
   discounted lines; the rows still sum exactly.
 - A site that registered an outside calculator (ADR-0030) on a store with no rates must
   switch tax on.
+- An outside calculator's answer is bounded by the 1000% rate cap: `amount × 10` for an
+  amount entered without tax and for shipping; for a line entered with tax, the tax inside
+  the gross at that rate, `ceil(G × 100000 / 110000)`, so the net can never go negative.
 - Follow-ups, not built: product tax status and shipping-method taxable (PR 2b); shop-page
   price display; hiding the tax row when tax is off; per-line prices with/without tax on the
   review table and the cart page; postcode/city matching, priority/compound rates, CSV;
   customer tax-exempt; adjusting inclusive prices for non-base buyers; finer rate
-  precision; buyer-location tax for digital goods.
+  precision; buyer-location tax for digital goods; WooCommerce-style coupon allocation (per
+  unit, highest price first — EX-08); itemized tax rows on the order pages, the emails and
+  the admin order detail; marking a tax-inclusive order on the admin order detail (its
+  subtotal is the gross, and nothing there says the tax is included).

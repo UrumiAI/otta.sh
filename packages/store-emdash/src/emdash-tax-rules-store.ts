@@ -282,18 +282,18 @@ export class EmdashTaxRulesStore implements TaxRulesStore {
 		return match === undefined ? null : toTaxRate(taxClassId, match);
 	}
 
-	/**
-	 * The checkout read: every class's rate in one zone, `ORDER BY id` as the SQL
-	 * read it. A bounded paged scan of the class documents, filtered and ordered in
-	 * code — the collection declares no index, and a zone index would have to be
-	 * maintained on an embedded child.
-	 */
 	/** Whether any class document holds a rate — the tax settings' upgrade rule. */
 	async hasAnyRate(): Promise<boolean> {
 		const docs = await this.#scanClasses("hasAnyRate");
 		return docs.some((doc) => ratesOf(doc).length > 0);
 	}
 
+	/**
+	 * The checkout read: every class's rate in one zone, `ORDER BY id` as the SQL
+	 * read it. A bounded paged scan of the class documents, filtered and ordered in
+	 * code — the collection declares no index, and a zone index would have to be
+	 * maintained on an embedded child.
+	 */
 	async listRatesForZone(zoneId: string): Promise<TaxRate[]> {
 		const docs = await this.#scanClasses("listRatesForZone");
 		const found: TaxRate[] = [];
