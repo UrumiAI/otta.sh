@@ -26,6 +26,29 @@
  * gateway at all, exactly like `x402GatewayFromCtx` (`payments/x402-wiring.ts`)
  * refuses to arm on a partial config.
  *
+ * ONE DEV-ONLY EXCEPTION (issue #378), and it is not a relaxation of the rule
+ * above. A local or CI e2e stack has no Stripe account, so with the rule as
+ * written it can never create an order, and the admin Orders specs had nothing
+ * to look at. {@link devStripeOfflineEnabled} arms the adapter's OWN offline
+ * path — `createIntent` without a `secretKey` mints the deterministic,
+ * unpayable `pi_<orderId>` handle and makes no network call — when, and only
+ * when, BOTH of these hold:
+ *
+ *  - THE PRIMARY GATE: the site baked `__OTTA_DEV_STRIPE_OFFLINE__` as the
+ *    literal `true`. The staging site bakes it only under `astro dev` with
+ *    `OTTA_E2E_STRIPE_OFFLINE=1`, and REFUSES to build with that variable set
+ *    (`sites/staging/src/lib/e2e-stripe-offline.ts`). A site that never bakes
+ *    it can never arm this path.
+ *  - DEFENCE IN DEPTH: `import.meta.env.DEV` is `true`. The published `dist`
+ *    keeps the expression as written (`import.meta.env?.DEV`) and the
+ *    CONSUMER's bundler rewrites it: Vite folds it to `false` in any build with
+ *    `NODE_ENV=production`, and a bundle that never rewrites it (no Vite, the
+ *    workerd sandbox) has no `import.meta.env` and reads it as off.
+ *
+ * The webhook secret is still required: the order is marked paid only by a
+ * signed `payment_intent.succeeded`, verified by the same HMAC as production.
+ * A configured secret key always wins — the live gateway, never this one.
+ *
  * `api.stripe.com` needs no `allowedHosts` wiring here — it is the one
  * constant entry `resolveAllowedHosts` always grants (`manifest.ts`,
  * `STRIPE_API_HOST`), unlike x402's deployment-supplied facilitator URL.
@@ -66,6 +89,34 @@ export interface StripeGatewayOptions {
 	beforeRefundCreate?: () => boolean;
 }
 
+/** Baked by the SITE's Vite config, never by this package — see
+ *  {@link devStripeOfflineEnabled}. Undeclared in any other build. */
+declare const __OTTA_DEV_STRIPE_OFFLINE__: unknown;
+
+/**
+ * Is the dev-only offline Stripe gateway armed in THIS bundle? Both guards,
+ * independently, as the module doc explains: the site's define is the literal
+ * `true`, AND this is a Vite dev build. Exported so a test pins each guard.
+ *
+ * `import.meta.env` is SPELLED LITERALLY, with no cast around `import.meta`:
+ * Vite and vitest find it by its text, and `(import.meta as …).env` is not
+ * rewritten — measured under vitest, where the cast form read the unstubbed
+ * `true` after `vi.stubEnv("DEV", false)`. The `?.` is for every bundle outside
+ * Vite, where `import.meta.env` does not exist and must read as "not dev"
+ * rather than throw.
+ */
+export function devStripeOfflineEnabled(): boolean {
+	const baked =
+		typeof __OTTA_DEV_STRIPE_OFFLINE__ === "boolean" && __OTTA_DEV_STRIPE_OFFLINE__ === true;
+	// `@ts-ignore`, not `@ts-expect-error`: this package's own program has no
+	// `vite/client` types (so `env` is unknown to it), but a Vite site that
+	// type-checks this source DOES have them, and an expect-error would then fail
+	// that site's check as unused.
+	// @ts-ignore -- `import.meta.env` is Vite's; see the comment above.
+	const devBuild = import.meta.env?.DEV === true;
+	return baked && devBuild;
+}
+
 /**
  * Resolve the Stripe gateway for a context, or report `undefined` for
  * "Stripe is not configured on this deployment" — the same fail-closed shape
@@ -82,7 +133,11 @@ export async function stripeGatewayFromCtx(
 		stripeSecretKeyFromKv(ctx),
 		stripeWebhookSecretFromKv(ctx),
 	]);
-	if (secretKey === undefined || webhookSecret === undefined) return undefined;
+	if (webhookSecret === undefined) return undefined;
+	if (secretKey === undefined) {
+		// The dev-only offline arm (module doc). Everywhere else: no gateway.
+		return devStripeOfflineEnabled() ? new StripePaymentGateway({ webhookSecret }) : undefined;
+	}
 	return new StripePaymentGateway({
 		secretKey,
 		webhookSecret,
