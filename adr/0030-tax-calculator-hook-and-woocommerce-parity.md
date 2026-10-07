@@ -37,19 +37,28 @@ the service they choose, not to core).
    bit for bit (pinned by a property test against a frozen copy of the old code and by
    both characterization goldens, whose only change is the snapshot shape). It never
    refuses: a class with no rate is 0%, as in WooCommerce. Its label is the tax class
-   name. It reads nothing for a cart with no matched zone.
+   name. It reads nothing for a cart with no matched zone. A stored rate above 1000%
+   (only data written outside the admin, which caps at 100%) still charges exactly as
+   before; only the display rate it reports is capped at 1000%.
 3. **Registration.** A site gives em-dash its own entry module containing
    `export default createOttaPlugin({ taxCalculator })` and points the descriptor's
-   `entrypoint` at it (verified: em-dash bundles a site-local entrypoint exactly like the
-   package one). The default export, and sandboxed mode, use the built-in. Registering a
-   second, different calculator throws.
+   `entrypoint` at it. That em-dash bundles a site-local entrypoint like the package
+   one was proven by a build spike, not by a committed test. em-dash imports the
+   entrypoint from a generated virtual module, so a relative path does not resolve: the
+   site must give an absolute path (for example
+   `new URL("./otta-entry.ts", import.meta.url).pathname`) or a package alias. The
+   default export, and sandboxed mode, use the built-in. Registering a calculator with
+   the same id again replaces it (a dev server re-evaluating the entry module); one with
+   a different id throws.
 4. **The answer is checked, not the code.** An outside calculator's answer is validated
    against the request: same currency; exactly one line per request line (matched
-   through a `Map`); amounts are safe non-negative integers; rates are integer basis
-   points in [0, 1000%] (display only, so 8.875% may be rounded for display while the
-   amounts stay exact); labels are 1–200 characters without control characters; no
-   shipping line unless shipping was asked about; the total is a safe integer. Only
-   those fields are kept. A throw, a refusal, an invalid answer or no answer within
+   through a `Map`); amounts are safe non-negative integers, no more than the taxable
+   amount × 1000% (the rate's own bound, so a units mix-up cannot overcharge); rates are
+   integer basis points in [0, 1000%] (display only, so 8.875% may be rounded for
+   display while the amounts stay exact); labels are 1–200 characters without control
+   characters; no non-zero shipping line unless shipping was asked about (a zero one is
+   dropped); the tax and the order total are safe integers. Only those fields are
+   kept. A throw, a refusal, an invalid answer or no answer within
    **5 seconds** fails the quote with `TAX_UNAVAILABLE`, which `createOrderFromCart`
    reaches before any coupon redemption, order insert or hold adoption, so nothing
    moves. The request handed over is frozen.
@@ -96,5 +105,12 @@ rate.
   provider records as a transaction, and reuse would need a shared cache.
 - A slow or broken calculator stops checkout with a clear message instead of charging
   the wrong tax.
-- Orders now say which calculator priced them and at what rate and label.
+- Orders now say which calculator priced them and at what rate and label. A label is
+  calculator-supplied text: wherever it is later rendered (pages, emails, invoices,
+  the admin) it must be escaped by the template, never inserted as raw HTML.
+- Known limitation: the review page's quote sends only country and region, while the
+  order sends the postcode and city too. A calculator that prices by postcode may
+  therefore show one tax on the review page and charge another on the order (the pay
+  page shows the order's total). Follow-up: send the postcode on the review once the
+  address is known.
 - `TotalsBreakdown` is unchanged, so emails, pages and reports read the same totals.
