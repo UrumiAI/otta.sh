@@ -505,6 +505,9 @@ export interface QuoteRequestWire {
 export interface DestinationRequestWire {
 	country: string;
 	region?: string;
+	/** For a tax calculator that prices by address (ADR-0030); zones ignore it. */
+	postalCode?: string;
+	city?: string;
 }
 
 /** How the quote resolved the zone. `matched` names the zone (an opaque

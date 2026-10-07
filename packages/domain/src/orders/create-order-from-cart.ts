@@ -319,7 +319,13 @@ export async function createOrderFromCart(
 			lines: pricedLines,
 			destination:
 				shippingAddress !== null
-					? { country: shippingAddress.country, region: shippingAddress.region }
+					? {
+							country: shippingAddress.country,
+							region: shippingAddress.region,
+							// ADR-0030: a calculator may price by postcode and city.
+							postalCode: shippingAddress.postalCode,
+							city: shippingAddress.city,
+						}
 					: undefined,
 			methodId: command.shippingMethodId,
 			couponCode: command.couponCode,

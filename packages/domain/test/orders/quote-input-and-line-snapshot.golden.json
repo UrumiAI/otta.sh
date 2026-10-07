@@ -201,7 +201,9 @@
 		"requiresShipping": true,
 		"destination": {
 			"country": "IN",
-			"region": "KA"
+			"region": "KA",
+			"postalCode": "90001",
+			"city": "Springfield"
 		},
 		"methodId": "m-z-in"
 	},
@@ -789,7 +791,9 @@
 		"requiresShipping": true,
 		"destination": {
 			"country": "US",
-			"region": "CA"
+			"region": "CA",
+			"postalCode": "90001",
+			"city": "Springfield"
 		},
 		"methodId": "m-z-us-ca",
 		"couponCode": "TENOFF"

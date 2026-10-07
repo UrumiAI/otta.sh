@@ -146,6 +146,43 @@ describe("the in-process client hands its calculator to quote and place", () => 
 		expect(calc.seen.map((r) => r.purpose)).toEqual(["order"]);
 	});
 
+	test("a postcode and city on the quote's destination reach the calculator", async () => {
+		await h.stores.productCommerce.upsert(
+			{
+				productId: brandProductId("p2"),
+				sku: brandSku("BOX"),
+				price: money(cents(2000), USD),
+				title: "Box",
+				productKind: "physical",
+			},
+			idempotencyKey("seed-2"),
+		);
+		await h.stores.productCommerce.activate(
+			brandProductId("p2"),
+			idempotencyKey("publish-2"),
+			"2026-01-01T00:00:00.000Z",
+		);
+		await h.stores.inventory.seedOnHand("BOX", 5);
+		await h.stores.shippingRules.createZone({ id: "z-us", name: "US", regions: ["US"] });
+		const { cartId: id } = await h.client.createCart(USD);
+		const added = await h.client.addCartLine(id, "BOX", "p2", 1, "add-box");
+		expect(added.ok).toBe(true);
+
+		const calc = fake();
+		const client = new InProcessCommerceClient(h.ctx, { taxCalculator: calc });
+		const quote = await client.quoteCheckout({
+			cartId: id,
+			destination: { country: "US", region: "NY", postalCode: " 10001 ", city: "New York" },
+		});
+		expect(quote.ok).toBe(true);
+		expect(calc.seen[0]?.destination).toEqual({
+			country: "US",
+			region: "NY",
+			postalCode: "10001",
+			city: "New York",
+		});
+	});
+
 	test("a refusing calculator ⇒ TAX_UNAVAILABLE at quote and at place", async () => {
 		vi.spyOn(console, "warn").mockImplementation(() => {});
 		const client = new InProcessCommerceClient(h.ctx, {

@@ -126,7 +126,7 @@ describe("createOrderFromCart → TaxCalculator", () => {
 		expect(readOrderTaxSnapshot(res.order.totals.taxBreakdown)?.v).toBe(1);
 	});
 
-	test("an outside calculator is asked for purpose 'order', and its answer frozen", async () => {
+	test("an outside calculator is asked for purpose 'order' with the full address, and frozen", async () => {
 		const seen: TaxRequest[] = [];
 		const calc: TaxCalculator = {
 			id: "acme.tax",
@@ -153,7 +153,7 @@ describe("createOrderFromCart → TaxCalculator", () => {
 		expect(seen).toHaveLength(1);
 		expect(seen[0]).toMatchObject({
 			purpose: "order",
-			destination: { country: "US", region: "NY" },
+			destination: { country: "US", region: "NY", postalCode: "10001", city: "New York" },
 		});
 		expect(res.ok && res.order.totals).toMatchObject({
 			tax: 222,

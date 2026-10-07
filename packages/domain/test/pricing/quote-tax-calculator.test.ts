@@ -170,6 +170,20 @@ describe("computeQuote → TaxCalculator", () => {
 		});
 	});
 
+	test("a postcode or city longer than the order address allows is INVALID_SHIPPING_ADDRESS", async () => {
+		const calc = fake();
+		const over = [
+			{ ...command.destination, country: "US", postalCode: "1".repeat(33) },
+			{ ...command.destination, country: "US", city: "x".repeat(121) },
+		];
+		for (const destination of over) {
+			expect(
+				await computeQuote({ ...deps, taxCalculator: calc }, { ...command, destination }),
+			).toEqual({ ok: false, reason: "INVALID_SHIPPING_ADDRESS" });
+		}
+		expect(calc.seen).toEqual([]);
+	});
+
 	test.each<[string, TaxCalculator["calculate"]]>([
 		[
 			"throws synchronously",

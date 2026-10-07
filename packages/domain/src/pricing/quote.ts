@@ -1,4 +1,5 @@
 import { type Cents, cents, type Currency } from "../money/cents.js";
+import { ORDER_ADDRESS_MAX_LENGTHS } from "../orders/order-address.js";
 import type { Clock } from "../ports/clock.js";
 import type { CouponRecord, CouponStore } from "../ports/coupon-store.js";
 import type { ShippingRulesStore } from "../ports/shipping-rules-store.js";
@@ -128,8 +129,11 @@ export async function computeQuote(
 		if (country === null) return { ok: false, reason: "INVALID_SHIPPING_ADDRESS" };
 		const region = normalizeSubdivision(country, command.destination.region);
 		if (!region.ok) return { ok: false, reason: "SHIPPING_REGION_CODE_REQUIRED" };
-		const postalCode = boundedOrNull(command.destination.postalCode, POSTAL_CODE_MAX);
-		const city = boundedOrNull(command.destination.city, CITY_MAX);
+		const postalCode = boundedOrNull(
+			command.destination.postalCode,
+			ORDER_ADDRESS_MAX_LENGTHS.postalCode,
+		);
+		const city = boundedOrNull(command.destination.city, ORDER_ADDRESS_MAX_LENGTHS.city);
 		if (postalCode === false || city === false) {
 			return { ok: false, reason: "INVALID_SHIPPING_ADDRESS" };
 		}
@@ -228,9 +232,6 @@ export async function computeQuote(
 	const breakdown = assembleTotals(preTax, tax.result);
 	return { ok: true, breakdown, couponRecord, destination: resolution, tax };
 }
-
-const POSTAL_CODE_MAX = 32;
-const CITY_MAX = 120;
 
 /** Trimmed text, `null` when absent/blank, `false` when over `max` (the order address's bounds). */
 function boundedOrNull(value: string | null | undefined, max: number): string | null | false {

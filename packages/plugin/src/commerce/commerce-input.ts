@@ -308,8 +308,21 @@ export function requireShippingAddress(address: {
  * (`INVALID_SHIPPING_ADDRESS` / `SHIPPING_REGION_CODE_REQUIRED`). The routes'
  * parsers refuse the same shapes first, so a buyer never reaches this throw.
  */
-export function requireDestination(destination: { country: string; region?: string }): void {
+export function requireDestination(destination: {
+	country: string;
+	region?: string;
+	postalCode?: string;
+	city?: string;
+}): void {
 	requireCodeShapes("destination", destination.country, destination.region);
+	// The order address's own bounds (ADR-0030: the tax calculator may read them).
+	const max = ORDER_ADDRESS_MAX_LENGTHS;
+	if (destination.postalCode !== undefined) {
+		requireBoundedText("destination.postalCode", destination.postalCode, 0, max.postalCode);
+	}
+	if (destination.city !== undefined) {
+		requireBoundedText("destination.city", destination.city, 0, max.city);
+	}
 }
 
 function requireCodeShapes(prefix: string, country: string, region: string | undefined): void {
