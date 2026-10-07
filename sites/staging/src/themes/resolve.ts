@@ -7,9 +7,12 @@
  * EmDash's `createKVAccess` prefixes every plugin kv key with `plugin:<id>:`,
  * so the row lands in the options table as `plugin:otta:settings:storeTheme` —
  * and EmDash's public `getPluginSetting(pluginId, key)` reads exactly
- * `plugin:<id>:settings:<key>` (emdash@0.38.0, `dist/settings-*.mjs`). So the
- * site reads the plugin's write as `getPluginSetting("otta", "storeTheme")`
- * with no shared constant to drift.
+ * `plugin:<id>:settings:<key>` (emdash@1.0.1, `src/settings/index.ts`
+ * `getPluginSettingWithDb`). On 1.0.1 a `settings:*` kv key goes through the
+ * plugin settings layer (`src/plugins/settings.ts` `createSettingsAccess`),
+ * which writes the same `plugin:<id>:settings:<key>` row. So the site reads the
+ * plugin's write as `getPluginSetting("otta", "storeTheme")` with no shared
+ * constant to drift.
  * `test/theme-resolve.test.ts` proves that round trip against a real migrated
  * host database: a real plugin route's `ctx.kv.set` in, this module's read out.
  *

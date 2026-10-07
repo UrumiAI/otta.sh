@@ -17,9 +17,10 @@
  *    their `__em_d1_bookmark` cookie (read-your-own-writes); that cookie is never
  *    set on an anonymous response. The old pairing invariant with wrangler's
  *    `global_fetch_strictly_public` is moot now the flag is gone, but the rule
- *    stands: the flag hangs every SESSION query (emdash #1273); EmDash 0.38's
+ *    stands: the flag hangs every SESSION query (emdash #1273); EmDash 1.0.1's
  *    guard gives up after ~5 s, turns sessions off for that isolate, and may
- *    reject the write that was in flight. So the flag must never return beside
+ *    reject the write that was in flight (`@emdash-cms/cloudflare@1.0.1`
+ *    `src/db/d1-session-guard.ts`). So the flag must never return beside
  *    a session mode: site-config.test.ts pins the template, and astro.config.ts
  *    refuses to build from a config that has it (src/lib/wrangler-pairing.ts).
  *  - R2 (`MEDIA`) — zero-config media storage.
