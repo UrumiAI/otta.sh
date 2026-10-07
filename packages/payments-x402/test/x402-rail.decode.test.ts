@@ -382,6 +382,74 @@ describe("bad payloads reach the facilitator zero times", () => {
 		expect(facilitator.calls).toEqual({ verify: 0, settle: 0, other: 0 });
 	});
 
+	describe("verify and settle send only a signed value equal to our amount (#405 item 1)", () => {
+		// `matchOffer` leaves the amount to the domain, but `verify` and `settle`
+		// do not leave it to the facilitator: one that accepted `value >= amount`
+		// would settle an overpayment the order then refuses. 1¢ is "10000".
+		const signed = (value: string) =>
+			corrupt((p) => {
+				p.accepted.amount = value;
+				p.payload.authorization.value = value;
+			});
+
+		test.each([
+			["over: 2¢ signed against a 1¢ offer", "20000"],
+			["under: 1¢ signed against a 2¢ offer", "10000", cents(2)],
+			[
+				"over by the smallest whole-cent step on a large price",
+				"1000000010000",
+				cents(100_000_000),
+			],
+		])("%s is refused with zero calls", async (_label, value, price = cents(1)) => {
+			const { rail, facilitator } = makeRail();
+			const payment = decodeOrThrow(rail, signed(value));
+			const offer = offerOrThrow(rail, { amount: price, currency: currency("USD") });
+			expect(rail.matchOffer(payment, offer).ok).toBe(true);
+			expect(await rail.verify(payment, offer)).toEqual({
+				outcome: "unavailable",
+				cause: "offer_mismatch",
+			});
+			expect(await rail.settle(payment, offer)).toEqual({
+				outcome: "unconfirmed",
+				cause: "offer_mismatch",
+			});
+			expect(facilitator.calls).toEqual({ verify: 0, settle: 0, other: 0 });
+		});
+
+		test("equal: the signed value is sent, byte for byte", async () => {
+			const { rail, facilitator } = makeRail();
+			const payment = decodeOrThrow(rail, signed("20000"));
+			const offer = offerOrThrow(rail, { amount: cents(2), currency: currency("USD") });
+			facilitator.onVerify({ status: 200, body: SPEC_VERIFY_VALID });
+			facilitator.onSettle({ status: 200, body: { ...SPEC_SETTLE_SUCCESS, amount: "20000" } });
+			expect(await rail.verify(payment, offer)).toMatchObject({ outcome: "valid" });
+			expect(await rail.settle(payment, offer)).toMatchObject({ outcome: "settled" });
+			expect(facilitator.calls).toEqual({ verify: 1, settle: 1, other: 0 });
+			for (const request of facilitator.requests) {
+				expect(request.body).toMatchObject({
+					paymentPayload: { payload: { authorization: { value: "20000" } } },
+					paymentRequirements: { amount: "20000" },
+				});
+			}
+		});
+
+		test.each(["020000", "+20000", "2e4", "20000.0", " 20000"])(
+			"non-canonical %j never gets as far as a comparison: decode refuses it, zero calls",
+			async (value) => {
+				// The string comparison is exact only because both sides are
+				// canonical: `centsToAtomic` prints BigInt's base 10 and the decoder
+				// accepts nothing else. This pins the second half.
+				const { rail, facilitator } = makeRail();
+				expect(rail.decode(signed(value))).toEqual({
+					ok: false,
+					reason: "MALFORMED",
+					detail: "value",
+				});
+				expect(facilitator.calls).toEqual({ verify: 0, settle: 0, other: 0 });
+			},
+		);
+	});
+
 	test("a spread copy with edited public fields is refused, with zero calls (identity, not shape)", async () => {
 		const { rail, facilitator } = makeRail({ networks: [BASE, BASE_SEPOLIA] });
 		const decoded = decodeOrThrow(rail, SPEC_PAYMENT_SIGNATURE_HEADER);
