@@ -101,6 +101,7 @@ import {
 	idempotencyKey as toIdempotencyKey,
 	listOrderNotes,
 	ORDER_STATE_MACHINE,
+	orderHasEmailRecipient,
 	orderId as toOrderId,
 	recordFulfillment as recordFulfillmentUseCase,
 	refundOrder as refundOrderUseCase,
@@ -245,18 +246,48 @@ export class InProcessAdminOrdersClient implements AdminOrdersSurface {
 	 * NEVER FAILS THE WRITE: `sendOrderEmailsNow` resolves whatever the provider or
 	 * the store does, within its bounded wait. The write has already committed by the
 	 * time this runs.
+	 *
+	 * An order with NO email recipient (an x402 buyer's `x402:0x…` reference, ADR-0028
+	 * Decision 7) is answered `no-recipient` first — before the provider check, the
+	 * time budget and the claim — because nothing about it depends on them: no email
+	 * was sent and none ever will be. Asked any later, a spent budget or a missing
+	 * provider would report it `queued` or `unconfigured`. Its rows are left to the
+	 * cron, whose drain completes them as skipped.
+	 *
+	 * `order` is the order the write already holds (its `customerId` and `buyerRef`
+	 * are all the check reads), so the check costs no read. A caller without one
+	 * passes nothing and the order is read here — GUARDED, because the write has
+	 * committed: a storage fault or a busy store on that read falls through to the
+	 * ordinary path, whose drain still skips the rows (reported via `skipped`).
 	 */
 	async #sendEmailsNow(
 		orderId: OrderId,
 		deadline: SettleDeadline,
 		announces: (row: OutboxEmail) => boolean,
+		order?: Pick<Order, "customerId" | "buyerRef"> | null,
 	): Promise<InlineEmailStatus> {
+		const recipientFacts = order === undefined ? await this.#readQuietly(orderId) : order;
+		if (recipientFacts !== null && !orderHasEmailRecipient(recipientFacts)) {
+			return "no-recipient";
+		}
 		const result = await sendOrderEmailsNow(this.#ctx, this.#stores, orderId, {
 			...this.#orderEmails,
 			deadline,
 		});
 		if (!result.configured) return "unconfigured";
-		return result.sent.some(announces) ? "sent" : "queued";
+		if (result.sent.some(announces)) return "sent";
+		// Skipped for want of a recipient: done, and it went nowhere — never "queued".
+		return result.skipped.some(announces) ? "no-recipient" : "queued";
+	}
+
+	/** The order for {@link #sendEmailsNow}'s recipient check, or `null` when the read
+	 *  fails — never a throw, because it runs after the write committed. */
+	async #readQuietly(orderId: OrderId): Promise<Order | null> {
+		try {
+			return await this.#stores.orderStore.getById(orderId);
+		} catch {
+			return null;
+		}
 	}
 
 	/**
@@ -336,7 +367,8 @@ export class InProcessAdminOrdersClient implements AdminOrdersSurface {
 		const key = fallbackKey(opts.idempotencyKey, `admin:transition:${orderId}:${toState}`);
 		const actor = opts.actor?.trim() || undefined;
 		const res = await transitionOrderAsAdmin(
-			{ orderStore: this.#stores.orderStore },
+			// Mark refunded revokes the order's download access (issue #376).
+			{ orderStore: this.#stores.orderStore, entitlementStore: this.#stores.entitlementStore },
 			{
 				orderId: toOrderId(orderId),
 				toState: target,
@@ -350,8 +382,11 @@ export class InProcessAdminOrdersClient implements AdminOrdersSurface {
 			const emailed =
 				res.transitioned && target !== "refunded" && emailTemplateForState(target) !== null;
 			if (!emailed) return { ok: true, transitioned: res.transitioned };
-			const email = await this.#sendEmailsNow(res.order.id, deadline, (row) =>
-				isStateRow(row, target),
+			const email = await this.#sendEmailsNow(
+				res.order.id,
+				deadline,
+				(row) => isStateRow(row, target),
+				res.order,
 			);
 			return { ok: true, transitioned: true, email };
 		}
@@ -447,8 +482,11 @@ export class InProcessAdminOrdersClient implements AdminOrdersSurface {
 		);
 		if (res.ok) {
 			if (!res.recorded) return { ok: true, recorded: false };
-			const email = await this.#sendEmailsNow(toOrderId(orderId), deadline, (row) =>
-				isStateRow(row, "shipped"),
+			const email = await this.#sendEmailsNow(
+				toOrderId(orderId),
+				deadline,
+				(row) => isStateRow(row, "shipped"),
+				res.order,
 			);
 			return { ok: true, recorded: true, email };
 		}
@@ -508,6 +546,8 @@ export class InProcessAdminOrdersClient implements AdminOrdersSurface {
 				clock: this.#stores.clock,
 				// A busy store after the refund reads "the store was busy", not "did not finish".
 				isRetryable: isRetryableStorageBusy,
+				// The cancellation's refund is the whole remainder: it revokes (issue #376).
+				entitlementStore: this.#stores.entitlementStore,
 			},
 			gateway,
 			{
@@ -521,7 +561,7 @@ export class InProcessAdminOrdersClient implements AdminOrdersSurface {
 		);
 		if (res.ok) {
 			const email = res.cancelled
-				? await this.#sendEmailsNow(oid, deadline, (row) => isStateRow(row, "cancelled"))
+				? await this.#sendEmailsNow(oid, deadline, (row) => isStateRow(row, "cancelled"), order)
 				: undefined;
 			return {
 				ok: true,
@@ -551,6 +591,7 @@ export class InProcessAdminOrdersClient implements AdminOrdersSurface {
 								deadline,
 								(row) =>
 									row.notice?.kind === "refund-issued" && row.notice.refundId === lostRefundId,
+								order,
 							);
 				return {
 					ok: false,
@@ -717,6 +758,10 @@ export class InProcessAdminOrdersClient implements AdminOrdersSurface {
 				orderStore: this.#stores.orderStore,
 				paymentEventStore: this.#stores.paymentEventStore,
 				clock: this.#stores.clock,
+				// A FULL refund revokes the order's download access (issue #376). The
+				// dependency is optional on the use-case, so leaving it out here would
+				// refund correctly and keep the file downloadable.
+				entitlementStore: this.#stores.entitlementStore,
 			},
 			gateway,
 			{
@@ -740,10 +785,14 @@ export class InProcessAdminOrdersClient implements AdminOrdersSurface {
 			// A full refund is announced by the refunded state email; a partial one by
 			// its own refund email (QA T1-6).
 			const refundId = res.refund.id;
-			const email = await this.#sendEmailsNow(oid, deadline, (row) =>
-				res.fullyRefunded
-					? isStateRow(row, "refunded")
-					: row.notice?.kind === "refund-issued" && row.notice.refundId === refundId,
+			const email = await this.#sendEmailsNow(
+				oid,
+				deadline,
+				(row) =>
+					res.fullyRefunded
+						? isStateRow(row, "refunded")
+						: row.notice?.kind === "refund-issued" && row.notice.refundId === refundId,
+				order,
 			);
 			return {
 				ok: true,
@@ -793,6 +842,8 @@ export class InProcessAdminOrdersClient implements AdminOrdersSurface {
 				orderStore: this.#stores.orderStore,
 				// A confirmed CANCELLATION refund resumes its cancel, which restocks (#364).
 				inventoryStore: this.#stores.inventory,
+				// A confirm that returns the money in full revokes (issue #376).
+				entitlementStore: this.#stores.entitlementStore,
 				isRetryable: isRetryableStorageBusy,
 			},
 			{
@@ -821,6 +872,7 @@ export class InProcessAdminOrdersClient implements AdminOrdersSurface {
 		// a cancellation's cancelled email, a late payment's notice, else the refund's own.
 		const which = emailOfResolve(res);
 		if (which === null) return base;
+		// No order in hand here, so `#sendEmailsNow` reads it — guarded.
 		const email = await this.#sendEmailsNow(oid, deadline, (row) =>
 			which.state !== undefined
 				? isStateRow(row, which.state)

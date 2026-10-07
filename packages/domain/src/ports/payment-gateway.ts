@@ -250,6 +250,27 @@ export interface CreateIntentInput {
 	 * be worse than omitting it.
 	 */
 	shipTo?: CreateIntentShipTo;
+	/**
+	 * The provider-side customer this order's FIRST intent was created with, as
+	 * that intent's record kept it (issue #382 — Stripe: the Customer an
+	 * India-based account needs on every payment). Absent: no decision recorded
+	 * (the order's first intent, or one recorded before decisions were) — the
+	 * gateway decides. `null`: decided "none" — the gateway must not create one.
+	 * A string: name exactly this one again, creating nothing. Handing the
+	 * decision back is what keeps a replay's request byte-identical however the
+	 * gateway's own inputs (an account's cached country) moved in between.
+	 */
+	customerRef?: string | null;
+	/**
+	 * Whether this order's payment carries a provider-side customer, DECIDED BY
+	 * THE ORDER (issue #382): placed under the payment account's buyer-address
+	 * requirement AND holding an address. The same answer for the first intent,
+	 * every replay and every resume — the gateway reads nothing of its own to
+	 * decide it. {@link customerRef} still says WHICH customer, once one exists.
+	 * Absent for an order created before the snapshot existed: the gateway then
+	 * decides as it always did.
+	 */
+	customerRequired?: boolean;
 }
 
 export interface PaymentIntentErrorInput {
@@ -322,6 +343,13 @@ export interface PaymentIntentHandle {
 	/** `pi_…` (Stripe) or the x402 resource id. */
 	intentId: string;
 	clientAction: ClientAction;
+	/**
+	 * The provider-side customer the intent was created with (`cus_…`), or `null`
+	 * for a decided "none" — recorded with the intent so every replay of the order
+	 * gets it back as {@link CreateIntentInput.customerRef}. Absent from a gateway
+	 * with no such notion; nothing is recorded then.
+	 */
+	customerRef?: string | null;
 }
 
 export type ClientAction =

@@ -100,11 +100,19 @@ describe("sandbox-clean guard: the checkout feature widens NOTHING (ADR-0012)", 
 	// INC-D3a: the commerce service is gone, and with it the one host this
 	// suite used to pin. In-process, the plugin's own baseline egress is
 	// Stripe's SERVER-SIDE API (`STRIPE_API_HOST`, always granted — it is a
-	// constant, not a deployment-supplied define) plus whatever email/x402
-	// hosts a deployment's build-time defines resolve to. Neither define is
-	// set in this vitest run, so the allowlist is exactly the Stripe API host.
-	test("ALLOWED_HOSTS still holds exactly ONE host in this build (Stripe's server-side API — no email/x402 define is set)", () => {
-		expect(ALLOWED_HOSTS).toEqual([STRIPE_API_HOST]);
+	// constant, not a deployment-supplied define) and SMTP2GO's four send-API
+	// hosts (`SMTP2GO_API_HOSTS`, always granted because a store picks SMTP2GO in
+	// Settings, which cannot widen a build-time list — ADR-0005), plus whatever
+	// email/x402 hosts a deployment's build-time defines resolve to. Neither
+	// define is set in this vitest run, so the allowlist is exactly those five.
+	test("ALLOWED_HOSTS holds exactly Stripe's API host and SMTP2GO's four send hosts in this build (no email/x402 define is set)", () => {
+		expect(ALLOWED_HOSTS).toEqual([
+			STRIPE_API_HOST,
+			"api.smtp2go.com",
+			"us-api.smtp2go.com",
+			"eu-api.smtp2go.com",
+			"au-api.smtp2go.com",
+		]);
 	});
 
 	test("js.stripe.com is NOT in allowedHosts — browser→Stripe is not plugin egress, even though api.stripe.com legitimately is", () => {

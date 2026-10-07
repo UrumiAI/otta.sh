@@ -46,22 +46,37 @@ export const OTTA_PLUGIN_CAPABILITIES = ["content:read", "network:request"] as c
 export const STRIPE_API_HOST = "api.stripe.com";
 
 /**
+ * SMTP2GO's send-API hosts, one per region: the global host and the three
+ * regional ones (`/v3/email/send` on each). A store picks SMTP2GO and its
+ * region in Settings (`email/email-provider.ts`), which is kv — and kv cannot
+ * extend `allowedHosts`, a build-time list. So every region's host is granted
+ * in every build, the way Stripe's API host is: a store that never chooses
+ * SMTP2GO never calls them, and each one only accepts an SMTP2GO key.
+ * Granting a new provider host is a change to this list and to ADR-0005.
+ */
+export const SMTP2GO_API_HOSTS = {
+	global: "api.smtp2go.com",
+	us: "us-api.smtp2go.com",
+	eu: "eu-api.smtp2go.com",
+	au: "au-api.smtp2go.com",
+} as const;
+
+/**
  * The deployment-supplied halves of the in-process allowlist.
  *
  * Both are URLs, not hostnames, because that is the shape the values already
  * have: the service derives its email host from `EMAIL_API_URL`
  * (`service/src/index.ts:74`). Neither has a sensible default — there is no
- * canonical email provider, and the service has NO facilitator-URL env var at
- * all today (`service/src/x402-wiring.ts` only ever builds the offline
- * `createTestFacilitator`) — so an absent value grants no host rather than
+ * canonical email provider, and no default x402 facilitator (ADR-0028 Decision 8:
+ * the deployer picks it) — so an absent value grants no host rather than
  * guessing one.
  */
 export interface InProcessEgressUrls {
 	/** Where `HttpEmailSender` posts; the in-process equivalent of
 	 *  `EMAIL_API_URL`. */
 	emailApiUrl?: string | undefined;
-	/** The x402 facilitator's base URL, for the day a real
-	 *  `HTTPFacilitatorClient` replaces the offline test facilitator. */
+	/** The x402 facilitator's URL. Nothing calls it between ADR-0028 increments 2
+	 *  and 6; increment 6's `/verify` and `/settle` client uses it as a base URL. */
 	facilitatorUrl?: string | undefined;
 }
 
@@ -89,13 +104,15 @@ function hostnameOf(url: string | undefined): string | undefined {
  * There is ONE list now (INC-D3a): the commerce service is gone, and the calls
  * it used to make are the plugin's own — Stripe's API, the email provider's
  * API, the x402 facilitator. No service host appears here at all; that is the
- * fold-in, visible in one line.
+ * fold-in, visible in one line. The constant part is Stripe's API host and
+ * SMTP2GO's four send hosts ({@link SMTP2GO_API_HOSTS}); the rest comes from
+ * the deployment's egress URLs.
  *
  * The result is a SET: duplicates collapse, and order is insertion order so the
  * list is stable across builds.
  */
 export function resolveAllowedHosts(egress: InProcessEgressUrls = {}): string[] {
-	const hosts = new Set<string>([STRIPE_API_HOST]);
+	const hosts = new Set<string>([STRIPE_API_HOST, ...Object.values(SMTP2GO_API_HOSTS)]);
 	for (const url of [egress.emailApiUrl, egress.facilitatorUrl]) {
 		const host = hostnameOf(url);
 		if (host !== undefined) hosts.add(host);

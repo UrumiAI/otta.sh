@@ -1305,6 +1305,7 @@ describe("GET /checkout entry guard (§1.7)", () => {
 				requiresShipping: true,
 				shipping: { status: "no_zones", matchedRegion: null, noOptions: false, options: [] },
 				addressRequired: false,
+				paymentAccountNeedsAddress: false,
 				readyToPlace: true,
 				uncalculatedReason: "no_zones",
 				orderCreated: false,

@@ -13,6 +13,7 @@ import type {
 	UpsertProductCommerceInput,
 	UpsertProductVariantInput,
 } from "../ports/product-commerce-store.js";
+import { validateDownloadAsset } from "./download-asset.js";
 import { InvalidProductFieldError } from "./errors.js";
 
 export interface ProductCommerceDeps {
@@ -116,6 +117,13 @@ export async function listProductCommerceByIds(
  *    A cleared field (`null`) carries no currency and is exempt.
  *  - `weightGrams` / `lengthMm` / `widthMm` / `heightMm`, when provided
  *    non-null, must be non-negative safe integers.
+ *  - `downloadAsset`, when provided non-null, passes `validateDownloadAsset`
+ *    (`download-asset.ts`: the key minted for THIS product, a bounded filename,
+ *    a safe content type, a byte size, an optional digest — refused, never
+ *    rewritten), and is not paired with `productKind: "physical"` in the same
+ *    edit. The store refuses it against a STORED physical kind.
+ *  - `downloadAsset: null` (detach) is refused on a product whose stored row has
+ *    a file: a file is replaced, never removed (ADR-0029 Decision 6).
  * NOT re-checked here: stored-currency integrity + existence + staleness are the
  * STORE's atomic concern (checking them here would be a TOCTOU race the CAS
  * already closes); SKU live-uniqueness stays the store's partial-index guard.
@@ -205,7 +213,46 @@ export async function updateProductCommerceFields(
 			throw new InvalidProductFieldError(field, `${field} must be a non-negative integer`);
 		}
 	}
-	const result = await deps.productCommerce.updateCommerceFields(input, key, expectedUpdatedAt);
+	// The download file (issue #376): every value rule here, as a pure check; the
+	// rule that needs the STORED row — no file on a physical product — is the
+	// store's, inside its compare-and-set. The one half of it that needs no row is
+	// answered here, so a self-contradicting edit is a 400 before any read.
+	let checked = input;
+	if (input.downloadAsset !== undefined && input.downloadAsset !== null) {
+		if (input.productKind === "physical") {
+			throw new InvalidProductFieldError(
+				"downloadAsset",
+				"a physical product cannot carry a download file",
+			);
+		}
+		checked = {
+			...input,
+			downloadAsset: validateDownloadAsset(input.productId, input.downloadAsset),
+		};
+	}
+	// REPLACE ONLY (ADR-0029 Decision 6, the product owner's rule): a product's
+	// download file can be replaced but never removed, so past buyers never lose
+	// what they bought. Detaching (`null`) needs the STORED row, read here at the
+	// edit's own watermark. That read is sound without a transaction: the store's
+	// compare-and-set applies the edit only to a row still at `expectedUpdatedAt`,
+	// so when the row read here is at that watermark it IS the row the write
+	// would apply to; when it is not, the store answers stale (or a same-key
+	// replay) and this check has nothing to protect. `null` on a product with no
+	// file is a harmless no-op and passes.
+	if (input.downloadAsset === null) {
+		const stored = await deps.productCommerce.getByProductId(input.productId);
+		if (
+			stored !== null &&
+			stored.downloadAsset !== null &&
+			stored.updatedAt.toISOString() === expectedUpdatedAt
+		) {
+			throw new InvalidProductFieldError(
+				"downloadAsset",
+				"a product's download file can be replaced but never removed",
+			);
+		}
+	}
+	const result = await deps.productCommerce.updateCommerceFields(checked, key, expectedUpdatedAt);
 	// Only an applied (or replayed) edit seeds: a not_found / stale /
 	// currency_mismatch wrote nothing, so there is no sku it may claim.
 	if (result.ok && result.product.sku !== null) {

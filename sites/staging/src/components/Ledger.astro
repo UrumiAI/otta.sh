@@ -60,6 +60,12 @@ export interface LedgerRow {
 	 * screen the first time, so the value has the deciding vote.
 	 */
 	unpriced?: boolean;
+	/**
+	 * The line's download URL (issue #376): present only on a digital line the
+	 * buyer may download now — the PAGE decided that by asking the delivery gate
+	 * (`lib/download-links.ts`). Omitted ⇒ no link.
+	 */
+	downloadHref?: string;
 }
 
 interface Props extends HTMLAttributes<"div"> {
@@ -77,6 +83,10 @@ const cells = rows.map((row) => {
 		title: row.title !== undefined && row.title !== "" ? row.title : null,
 		money,
 		unpriced: row.unpriced === true || isUnpricedText(money),
+		downloadHref: row.downloadHref ?? null,
+		/** What the link downloads, for a screen reader — "Download" alone, in a
+		 *  list of several, names nothing. */
+		downloadName: row.title !== undefined && row.title !== "" ? row.title : row.sku,
 	};
 });
 ---
@@ -94,6 +104,9 @@ const cells = rows.map((row) => {
 						{cell.title !== null && <span class="u-sr-only">Item code </span>}
 						{cell.sku}
 					</span>
+					{cell.downloadHref !== null && (
+						<a class="u-mono download" href={cell.downloadHref}>Download<span class="u-sr-only"> {cell.downloadName}</span></a>
+					)}
 				</span>
 				<span class="u-mono qty">
 					<span class="u-sr-only">Quantity </span>
@@ -154,6 +167,23 @@ const cells = rows.map((row) => {
 	/* Demoted to a reference once something else names the line. */
 	.title + .sku {
 		color: var(--u-mute);
+	}
+
+	/* A digital line's file: a plain underlined link under the reference, in the
+	   data face like the SKU above it, and in ink — not the muted reference
+	   colour — so it reads as the line's action. */
+	/* WCAG 2.2 SC 2.5.8: a target at least 24 × 24 CSS px. The line box of a
+	   0.75rem link is ~18px, so the box itself is given the height. */
+	.download {
+		display: inline-flex;
+		align-items: center;
+		min-height: 24px;
+		min-width: 24px;
+		align-self: flex-start;
+		margin-top: 0.125rem;
+		font-size: 0.75rem;
+		font-weight: 500;
+		color: var(--u-ink);
 	}
 
 	.qty {

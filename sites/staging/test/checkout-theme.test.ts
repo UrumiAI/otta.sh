@@ -170,6 +170,29 @@ describe.each(REVIEW_VIEWS)("the /checkout form contract — %s", (_label, { sou
 		}
 	});
 
+	test("issue #382: the address block says WHY it is required when the payment account needs it", () => {
+		const text = shown(VIEW);
+		expect(VIEW).toMatch(/summary\.paymentAccountNeedsAddress/);
+		expect(text).toContain("Stripe accounts in India need the buyer's name and address");
+		// A cart that ships nothing is not "delivered": the block is the buyer's address.
+		expect(text).toMatch(/summary\.requiresShipping \? "Delivery address" : "Billing address"/);
+		// The country select is marked required like the typed fields.
+		expect(VIEW).toMatch(
+			/Country\{summary\.addressRequired && <span class="checkout-req">required<\/span>\}/,
+		);
+	});
+
+	test("review B: the required address fields say so to assistive tech, not only in the label", () => {
+		for (const name of ["name", "line1", "city", "postalCode", "country"]) {
+			const field =
+				new RegExp(`<(?:input|select)(?![^>]*type="hidden")[^>]*?name="${name}"[\\s\\S]*?>`).exec(
+					VIEW.slice(VIEW.indexOf('<fieldset class="checkout-group">')),
+				)?.[0] ?? "";
+			// Omitted — never `aria-required="false"` — when the address is optional.
+			expect(field, name).toContain('aria-required={summary.addressRequired ? "true" : undefined}');
+		}
+	});
+
 	test("the address block is one answer in eight boxes, and says so", () => {
 		// `place.ts` treats the five required fields as ALL-OR-NOTHING, so the
 		// grouping is semantic, not decorative.
@@ -380,7 +403,22 @@ describe("/checkout — the coupon: the page's half", () => {
 	});
 
 	test("the LOCKED review's address block is decided here — the order's ship-to is fixed", () => {
-		expect(REVIEW).toContain("const showAddress = locked === null && summary.requiresShipping;");
+		expect(REVIEW).toContain(
+			"const showAddress = locked === null && (summary.requiresShipping || summary.addressRequired);",
+		);
+	});
+
+	test("issue #382: a cart that ships nothing still gets the address block when the address is required", () => {
+		// An India-based Stripe account needs every buyer's name and address
+		// (`paymentAccountNeedsAddress` ⇒ `addressRequired`), digital carts too.
+		expect(REVIEW).toMatch(/summary\.requiresShipping \|\| summary\.addressRequired/);
+	});
+
+	test("issue #382: an address refused for the payment account's sake is explained as that, not as delivery", () => {
+		expect(REVIEW).toContain('"BUYER_ADDRESS_REQUIRED"');
+		expect(REVIEW).toMatch(/summary\.paymentAccountNeedsAddress/);
+		// A partly filled address on a cart that ships nothing is not a "delivery address".
+		expect(REVIEW).toContain('INVALID_SHIPPING_ADDRESS: "BUYER_ADDRESS_INVALID"');
 	});
 
 	test("the retired 'unreachable' note stays retired on the page too", () => {
