@@ -205,9 +205,10 @@ function isCartIdToken(value: unknown): value is string {
 /**
  * The client's own rules for the fields that are NOT id tokens, as type guards —
  * each read off the SAME rule function as the client's `require*`, so the route
- * and the client cannot drift (#379). Every one of them refuses U+0000, which
- * Postgres cannot store: let through, a NUL failed the first store read on that
- * dialect as RENDER_FAILED.
+ * and the client cannot drift (#379). Every one of them refuses ill-formed text
+ * — U+0000 or a lone UTF-16 surrogate (review R3-B X1) — which Postgres cannot
+ * store: let through, it failed the first store read on that dialect as
+ * RENDER_FAILED.
  */
 function isSku(value: unknown): value is string {
 	return typeof value === "string" && isSkuText(value);
@@ -217,7 +218,7 @@ function isAddProductId(value: unknown): value is string {
 	return typeof value === "string" && isBoundedProductId(value);
 }
 
-/** Non-empty, at most `IDEMPOTENCY_KEY_MAX`, no U+0000 — the client's own rule
+/** Non-empty, at most `IDEMPOTENCY_KEY_MAX`, well-formed — the client's own rule
  *  for a cart mutation's key, which becomes part of a document id. A real
  *  caller's key is a form-minted UUID; past the ceiling the store's document-id
  *  and value caps threw. */
@@ -364,15 +365,16 @@ export function createCartLineAddRouteHandler(): RouteHandler<CartLineAddRouteIn
 			//
 			// Each field is held to exactly the client's own bound for it, so none can
 			// reach its throw (issue #379): `cartId` is an id token; `productId` is 1–200
-			// characters with no U+0000 and NO charset rule beyond that (a CMS ULID fits
+			// characters of well-formed text and NO charset rule beyond that (a CMS ULID fits
 			// either way, but the client accepts more, and refusing more here would be a
-			// divergence too); `sku` is non-empty with no U+0000 and nothing else,
+			// divergence too); `sku` is non-empty well-formed text and nothing else,
 			// because that is all the admin, the domain's `sku()` and the client ask of
 			// one — an id-token rule here would make a saved sku such as "Blend 250g"
 			// un-addable. A storable sku or product id that matches nothing is the typed
-			// SKU_MISMATCH. U+0000 is the exception that made "no charset rule" unsafe:
-			// Postgres cannot store it, so it failed the first store read as
-			// RENDER_FAILED there (SQLite hid it) — and is refused here instead.
+			// SKU_MISMATCH. Ill-formed text (U+0000, a lone surrogate) is the exception
+			// that made "no charset rule" unsafe: Postgres cannot store it, so it failed
+			// the first store read as RENDER_FAILED there (SQLite hid it) — and is
+			// refused here instead.
 			if (
 				!isCartIdToken(cartId) ||
 				!isSku(sku) ||

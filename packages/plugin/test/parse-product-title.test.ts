@@ -74,3 +74,20 @@ describe("parseProductTitle", () => {
 		expect(parseProductTitle(`  ${"T".repeat(500)}  `)).toEqual({ title: "T".repeat(500) });
 	});
 });
+
+/** Review R3-B X1: the title is the CMS's text, already saved there, so a lone
+ *  surrogate or NUL is REPAIRED to U+FFFD — never sent on to a boundary that
+ *  would refuse the whole sync, and never stored as-is. */
+describe("parseProductTitle — text that is not well formed", () => {
+	test.each([
+		["Mug\uD800", "Mug\uFFFD"],
+		["\uDC00Mug", "\uFFFDMug"],
+		["Mu\u0000g", "Mu\uFFFDg"],
+	])("%j is repaired to %j", (raw, repaired) => {
+		expect(parseProductTitle(raw)).toEqual({ title: repaired });
+	});
+
+	test("an emoji title is kept exactly", () => {
+		expect(parseProductTitle("Mug \uD83D\uDE00")).toEqual({ title: "Mug \uD83D\uDE00" });
+	});
+});

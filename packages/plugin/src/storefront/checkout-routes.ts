@@ -50,6 +50,7 @@ import {
 } from "./cart-pricing.js";
 import {
 	exceedsAddressBounds,
+	holdsIllFormedAddressText,
 	parseCheckoutPlaceInput,
 	parseCheckoutSummaryInput,
 	parseOrderRouteInput,
@@ -642,7 +643,11 @@ export function createCheckoutPlaceRouteHandler(): RouteHandler<CheckoutPlaceRou
 				// typed INVALID_SHIPPING_ADDRESS the domain would give — not a malformed
 				// call (QA U-6).
 				const { shippingAddress, ...rest } = routeCtx.input;
-				if (exceedsAddressBounds(shippingAddress) && parseCheckoutPlaceInput(rest) !== null) {
+				// The same for a field holding text that cannot be stored — a lone
+				// surrogate or NUL (review R3-B X1): the buyer retypes the address.
+				const addressRefused =
+					exceedsAddressBounds(shippingAddress) || holdsIllFormedAddressText(shippingAddress);
+				if (addressRefused && parseCheckoutPlaceInput(rest) !== null) {
 					return { ok: false as const, reason: "INVALID_SHIPPING_ADDRESS" as const };
 				}
 				return { ok: false, error: "INVALID_INPUT" } as const;

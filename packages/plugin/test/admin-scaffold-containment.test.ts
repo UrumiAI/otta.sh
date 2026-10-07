@@ -7,7 +7,7 @@ import {
 	screenActions,
 	type ListDetailInput,
 } from "../src/admin/scaffold/index.js";
-import { CommerceInputError } from "../src/commerce/commerce-input.js";
+import { CommerceInputError, ILL_FORMED_TEXT_REASON } from "../src/commerce/commerce-input.js";
 import type { Block, BlockResponse, PluginContext } from "../src/types.js";
 
 /**
@@ -285,6 +285,20 @@ describe("containment: a REFUSED INPUT is a validation message, never 'outcome u
 		});
 		expect(String(bannerOf(res)?.description)).toBe(
 			"The code can only use plain letters, digits and punctuation — no accented letters or symbols. Nothing was changed.",
+		);
+	});
+
+	test("a field refused for a broken character (review R3-B X1) reads in words an operator can act on", async () => {
+		const { actions, handler } = screen("contain-input-ill-formed", {
+			custom: () => Promise.reject(new CommerceInputError("name", ILL_FORMED_TEXT_REASON)),
+		});
+		const res = await run(handler, {
+			type: "form_submit",
+			action_id: actions.custom("boom"),
+			values: {},
+		});
+		expect(String(bannerOf(res)?.description)).toBe(
+			"The name contains a character that cannot be saved (a broken emoji or an invisible NUL) — retype it. Nothing was changed.",
 		);
 	});
 

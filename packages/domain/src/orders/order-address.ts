@@ -16,6 +16,7 @@
 
 import { normalizeCountryCode, normalizeSubdivision } from "../pricing/region-codes.js";
 import type { OrderAddress } from "./model.js";
+import { isWellFormedText } from "../text/well-formed.js";
 
 /**
  * The optional shipping address a checkout submits. Required fields
@@ -113,6 +114,11 @@ export function normalizeOrderAddress(input: OrderAddressInput): NormalizeOrderA
 		(email !== null && email.length > ORDER_ADDRESS_MAX_LENGTHS.email) ||
 		(phone !== null && phone.length > ORDER_ADDRESS_MAX_LENGTHS.phone);
 	if (overLength) return { ok: false, reason: "INVALID" };
+	// Review R3-B X1: a lone surrogate or NUL cannot be stored on Postgres (every
+	// query over the orders collection would then fail), so it is not an address.
+	if (Object.values(value).some((field) => field !== null && !isWellFormedText(field))) {
+		return { ok: false, reason: "INVALID" };
+	}
 
 	// ADR-0021: codes, not free text.
 	const countryCode = normalizeCountryCode(country);
