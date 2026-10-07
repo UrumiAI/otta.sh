@@ -41,6 +41,10 @@ export function recordingEmailProvider(): RecordingEmailProvider {
 	const sent: TestEmailMessage[] = [];
 	let mode: Mode = { kind: "succeed" };
 	const send = async (message: TestEmailMessage): Promise<void> => {
+		// Like EmDash's pipeline: an empty to/subject/text is rejected before any provider sees it.
+		for (const field of ["to", "subject", "text"] as const) {
+			if (!message[field]) throw new Error(`Invalid email message: '${field}' is required`);
+		}
 		const copy = { ...message };
 		attempts.push(copy);
 		if (mode.kind === "fail") throw mode.error;

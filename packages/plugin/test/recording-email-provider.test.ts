@@ -47,6 +47,16 @@ describe("recordingEmailProvider", () => {
 		await expect(provider.send(message)).rejects.toThrow(/configured to fail/);
 	});
 
+	test("rejects an empty to, subject or text without recording it, as EmDash does", async () => {
+		const provider = recordingEmailProvider();
+		await expect(provider.send({ ...message, to: "" })).rejects.toThrow(/'to' is required/);
+		await expect(provider.send({ ...message, subject: "" })).rejects.toThrow(/'subject'/);
+		await expect(
+			provider.deliver({ message: { ...message, text: "" }, source: "otta" }),
+		).rejects.toThrow(/'text'/);
+		expect(provider.attempts).toEqual([]);
+	});
+
 	test("hang() never settles, and succeed() restores delivery", async () => {
 		const provider = recordingEmailProvider();
 		provider.hang();
