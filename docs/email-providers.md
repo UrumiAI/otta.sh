@@ -9,10 +9,11 @@ otta ──ctx.email.send()──▶ EmDash ──email:deliver──▶ your pl
 ```
 
 **Start from the template.** Copy `examples/email-provider/` to a new folder under `examples/`
-or `packages/` (both are workspace globs). Rename `name` in `package.json` and `entrypoint` in
-`src/index.ts`, set `EMAIL_API_URL` in `src/plugin.ts`, and change the request body to your
-API's shape. Run `pnpm install`, then add `{ "path": "<your-folder>" }` to the root
-`tsconfig.json` references so `pnpm typecheck` covers it.
+or `packages/` (both are workspace globs). Rename `name` in `package.json`, and the plugin `id`
+(`http-email`) and `entrypoint` in `src/index.ts`, so copies don't collide. Set `EMAIL_API_URL`
+in `src/plugin.ts`, and change the request body to your API's shape. Run `pnpm install`, then
+add `{ "path": "<your-folder>" }` to the root `tsconfig.json` references so `pnpm typecheck`
+covers it.
 
 ## The hook (emdash 0.38)
 
@@ -59,7 +60,8 @@ The message has no `from` and no idempotency key. Your plugin supplies the sende
 - **At-least-once.** A send that timed out, or succeeded but was not recorded, is sent again.
   If your API supports an `Idempotency-Key` header, send one derived from the message, for
   example a SHA-256 of `to`, `subject` and `text` via `crypto.subtle`. Otherwise recipients
-  may occasionally get a duplicate.
+  may occasionally get a duplicate. A content-derived key also suppresses a deliberate
+  identical re-send within your API's idempotency window.
 - **Don't leak secrets.** Error messages reach logs. Say the status and the host, never the
   API key or the response body. Don't attach the fetch error as `cause`, since it can quote
   your headers. Reject a key with non-printable characters before using it in a header.

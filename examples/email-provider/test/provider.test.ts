@@ -109,6 +109,7 @@ describe("example email provider", () => {
 	test("the API URL must be https; its exact host is the only allowed host", () => {
 		expect(httpsHost(EMAIL_API_URL)).toBe("api.mail.example.net");
 		expect(() => httpsHost("http://api.mail.example.net:8080/x")).toThrow("must use https");
+		expect(() => httpsHost("https://*.example.net/send")).toThrow("not a wildcard");
 	});
 
 	test("registers an exclusive email:deliver hook, with the capabilities and host it needs", () => {

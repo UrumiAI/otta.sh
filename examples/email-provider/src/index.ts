@@ -9,6 +9,8 @@ import { EMAIL_API_URL } from "./plugin.js";
 export function httpsHost(url: string): string {
 	const parsed = new URL(url);
 	if (parsed.protocol !== "https:") throw new Error("email provider: the API URL must use https");
+	if (parsed.hostname.includes("*"))
+		throw new Error("email provider: the API host must be exact, not a wildcard");
 	return parsed.hostname;
 }
 
