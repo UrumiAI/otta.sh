@@ -74,6 +74,7 @@ import {
 	tickOrder,
 } from "../src/cron/sweeps.js";
 import {
+	adapters,
 	DAY_MS,
 	fakeCms,
 	HOUR_MS,
@@ -962,6 +963,16 @@ describe("scheduling and logging", () => {
 			lines.push(args.map(String).join(" "));
 		});
 		await product("p-unwired");
+		// A paid order's confirmation email is DUE, so the outbox leg — which has no
+		// sender here — reports `skipped` too. Since main's 3cfbba39 an outbox with
+		// nothing due is idle, not skipped, and would say nothing at all.
+		const paid = await placeOrder(
+			storage,
+			"unwired-email",
+			new Date(NOW.getTime() + DAY_MS),
+			CREATED,
+		);
+		await adapters(storage, CREATED).orderStore.markPaid(toOrderId(paid.id));
 		const cursors = memoryCursors();
 		for (let run = 0; run < 2; run++) {
 			// The cadence stamp is forgotten, so the scan is due both times.
