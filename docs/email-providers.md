@@ -90,7 +90,9 @@ are write-only in the admin and are never echoed back.
    from the config are active by default.
 3. Choose it under **Settings → Email**. If it is the only active provider, EmDash selects it
    automatically. In `astro dev` EmDash's built-in console provider is active too, so select
-   yours explicitly. Until a provider is selected, otta's emails stay queued.
+   yours explicitly. Until a provider is selected, otta's emails stay queued. Email queued
+   more than 72 hours ago is skipped, not sent, so a late setup does not mail stale codes or
+   receipts.
 
 ## Test it
 
