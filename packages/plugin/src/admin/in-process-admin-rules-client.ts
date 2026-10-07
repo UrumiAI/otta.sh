@@ -454,11 +454,13 @@ export class InProcessAdminRulesClient implements AdminRulesSurface {
 			{
 				taxRules: this.#stores.taxRules,
 				productCommerce: this.#stores.productCommerce,
+				settings: this.#stores.settingsStore,
 			},
 			classId,
 		);
 		if (res.ok) return { ok: true };
 		if (res.reason === "not_found") return { ok: false, reason: "not_found" };
+		if (res.reason === "in_use_by_settings") return { ok: false, reason: "in_use_by_settings" };
 		if (res.reason === "in_use_by_products") {
 			return { ok: false, reason: "in_use_by_products", count: res.count };
 		}

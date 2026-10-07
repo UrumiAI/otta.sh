@@ -1211,6 +1211,14 @@ function deleteClassNotice(result: TaxClassDeleteResult): Notice {
 			description: `${result.count} product${result.count === 1 ? "" : "s"} still reference${result.count === 1 ? "s" : ""} this class — clear those references first, then retry.`,
 		};
 	}
+	if (result.reason === "in_use_by_settings") {
+		return {
+			variant: "error",
+			title: "Class not deleted",
+			description:
+				"Tax options use this class as the shipping tax class — choose another shipping tax class in Tax options first, then retry.",
+		};
+	}
 	if (result.reason === "in_use_by_rates") {
 		return {
 			variant: "error",

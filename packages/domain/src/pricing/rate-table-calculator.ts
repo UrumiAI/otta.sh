@@ -239,6 +239,11 @@ function labelOf(classId: TaxClassId, labels: ReadonlyMap<TaxClassId, string>): 
  * reads the matched zone's rates and the class names (for labels) — nothing at
  * all when no zone matched (a digital-only cart, or no zones configured), which
  * is then untaxed, exactly as before.
+ *
+ * A FIXED shipping tax class that is not among the store's classes (never
+ * existed, or deleted since) falls back to "based on cart items" rather than
+ * silently untaxing shipping (ADR-0031 §5): the cart's own classes pick, so
+ * shipping is taxed whenever a shipping line's class has a flagged rate.
  */
 export function createRateTableCalculator(
 	taxRules: TaxRulesStore,
@@ -254,12 +259,13 @@ export function createRateTableCalculator(
 				taxRules.listRatesForZone(request.zoneId),
 				taxRules.listClasses(),
 			]);
-			return applyRateTable(
-				request,
-				rateTableOf(zoneRates),
-				new Map(classes.map((c) => [c.id, c.name])),
-				options,
-			);
+			const names = new Map(classes.map((c) => [c.id, c.name]));
+			const setting = options.shippingTaxClass;
+			const effective: RateTableOptions =
+				setting?.kind === "fixed" && !names.has(setting.taxClassId)
+					? { ...options, shippingTaxClass: { kind: "inherit" } }
+					: options;
+			return applyRateTable(request, rateTableOf(zoneRates), names, effective);
 		},
 	};
 }

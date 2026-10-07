@@ -158,6 +158,8 @@ export type TaxClassDeleteResult =
 	| { ok: false; reason: "not_found" }
 	| { ok: false; reason: "in_use_by_products"; count: number }
 	| { ok: false; reason: "in_use_by_rates"; count: number }
+	/** The tax options use the class as the fixed shipping tax class (ADR-0031). */
+	| { ok: false; reason: "in_use_by_settings" }
 	| { ok: false; reason: "error"; status: number };
 
 // -- Input shapes -------------------------------------------------------------

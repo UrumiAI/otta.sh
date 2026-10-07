@@ -4,7 +4,9 @@ import { idempotencyKey, productId, sku } from "../src/money/ids.js";
 import { deleteTaxClass } from "../src/pricing/delete-tax-class.js";
 import { FixedClock } from "../src/testing/deterministic.js";
 import { InMemoryProductCommerceStore } from "../src/testing/in-memory-product-commerce-store.js";
+import { InMemorySettingsStore } from "../src/testing/in-memory-settings-store.js";
 import { InMemoryTaxRulesStore } from "../src/testing/in-memory-tax-rules-store.js";
+import { NEW_STORE_TAX_SETTINGS } from "../src/pricing/tax-settings.js";
 
 /**
  * `deleteTaxClass` — the tax-class registry's delete-in-use guard (Increment 2
@@ -16,22 +18,24 @@ import { InMemoryTaxRulesStore } from "../src/testing/in-memory-tax-rules-store.
 describe("deleteTaxClass (delete-in-use guard over the in-memory fakes)", () => {
 	let taxRules: InMemoryTaxRulesStore;
 	let productCommerce: InMemoryProductCommerceStore;
+	let settings: InMemorySettingsStore;
 	const clock = new FixedClock(new Date("2026-07-10T00:00:00.000Z"));
 
 	beforeEach(() => {
 		taxRules = new InMemoryTaxRulesStore();
 		productCommerce = new InMemoryProductCommerceStore({ clock });
+		settings = new InMemorySettingsStore();
 	});
 
 	test("deletes an unreferenced class", async () => {
 		await taxRules.createClass({ id: "temp", name: "Temp" });
-		const res = await deleteTaxClass({ taxRules, productCommerce }, "temp");
+		const res = await deleteTaxClass({ taxRules, productCommerce, settings }, "temp");
 		expect(res).toEqual({ ok: true });
 		expect((await taxRules.listClasses()).map((c) => c.id)).not.toContain("temp");
 	});
 
 	test("not_found for an unknown class", async () => {
-		expect(await deleteTaxClass({ taxRules, productCommerce }, "nope")).toEqual({
+		expect(await deleteTaxClass({ taxRules, productCommerce, settings }, "nope")).toEqual({
 			ok: false,
 			reason: "not_found",
 		});
@@ -50,7 +54,7 @@ describe("deleteTaxClass (delete-in-use guard over the in-memory fakes)", () => 
 			seeded.updatedAt.toISOString(),
 		);
 
-		const res = await deleteTaxClass({ taxRules, productCommerce }, "reduced");
+		const res = await deleteTaxClass({ taxRules, productCommerce, settings }, "reduced");
 		expect(res).toEqual({ ok: false, reason: "in_use_by_products", count: 1 });
 		// The class survives.
 		expect((await taxRules.listClasses()).map((c) => c.id)).toContain("reduced");
@@ -70,7 +74,7 @@ describe("deleteTaxClass (delete-in-use guard over the in-memory fakes)", () => 
 		);
 		await productCommerce.softDelete(pid, idempotencyKey("del-1"));
 
-		expect(await deleteTaxClass({ taxRules, productCommerce }, "reduced")).toEqual({ ok: true });
+		expect(await deleteTaxClass({ taxRules, productCommerce, settings }, "reduced")).toEqual({ ok: true });
 	});
 
 	test("refuses a class a rate references (in_use_by_rates), checked after the product guard", async () => {
@@ -82,7 +86,7 @@ describe("deleteTaxClass (delete-in-use guard over the in-memory fakes)", () => 
 			rateBps: 725,
 			appliesToShipping: false,
 		});
-		expect(await deleteTaxClass({ taxRules, productCommerce }, "standard")).toEqual({
+		expect(await deleteTaxClass({ taxRules, productCommerce, settings }, "standard")).toEqual({
 			ok: false,
 			reason: "in_use_by_rates",
 			count: 1,
@@ -105,10 +109,39 @@ describe("deleteTaxClass (delete-in-use guard over the in-memory fakes)", () => 
 			rateBps: 2000,
 			appliesToShipping: false,
 		});
-		expect(await deleteTaxClass({ taxRules, productCommerce }, "standard")).toEqual({
+		expect(await deleteTaxClass({ taxRules, productCommerce, settings }, "standard")).toEqual({
 			ok: false,
 			reason: "in_use_by_rates",
 			count: 2,
+		});
+	});
+
+	// Review 2a B4: a class the tax options name as the FIXED shipping tax class is
+	// in use too — deleting it would leave shipping tax pointing at nothing.
+	test("refuses the class the tax options use as the fixed shipping tax class", async () => {
+		await taxRules.createClass({ id: "ship", name: "Shipping" });
+		await settings.update(
+			{
+				tax: {
+					...NEW_STORE_TAX_SETTINGS,
+					shippingTaxClass: { kind: "fixed", taxClassId: "ship" },
+				},
+			},
+			idempotencyKey("tax-options"),
+		);
+		expect(await deleteTaxClass({ taxRules, productCommerce, settings }, "ship")).toEqual({
+			ok: false,
+			reason: "in_use_by_settings",
+		});
+		expect((await taxRules.listClasses()).map((c) => c.id)).toContain("ship");
+
+		// Once the options name another class, the delete goes through.
+		await settings.update(
+			{ tax: { ...NEW_STORE_TAX_SETTINGS, shippingTaxClass: { kind: "inherit" } } },
+			idempotencyKey("tax-options-2"),
+		);
+		expect(await deleteTaxClass({ taxRules, productCommerce, settings }, "ship")).toEqual({
+			ok: true,
 		});
 	});
 });
