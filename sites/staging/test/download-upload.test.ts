@@ -17,9 +17,9 @@
  *  - the answer: the descriptor, which the console then saves through the
  *    plugin's `products:attach-download`. The endpoint itself writes no product.
  * The fake bucket records every key it is asked to write or delete, so "nothing
- * reached R2" is an assertion, not a hope. The ORIGIN check is the site's
- * per-route guard (`rejectCrossOrigin`), run first, as on every other write
- * route of this base.
+ * reached R2" is an assertion, not a hope. The ORIGIN check is the site
+ * middleware's (`test/origin-middleware.test.ts`), run before the endpoint, as
+ * on every other write route of this base.
  */
 import { createHash } from "node:crypto";
 import { readdirSync, readFileSync, realpathSync } from "node:fs";
@@ -35,7 +35,16 @@ import {
 	MAX_DOWNLOAD_UPLOAD_BYTES,
 	UPLOAD_MIN_ROLE,
 } from "../src/lib/download-upload.js";
+import { onRequest } from "../src/middleware.js";
 import { POST } from "../src/pages/otta-admin/downloads/[productId].js";
+
+vi.mock("astro:middleware", () => ({
+	defineMiddleware: <T>(handler: T): T => handler,
+}));
+
+/** The site middleware, which runs the origin check before the page (#390). */
+type Middleware = (ctx: unknown, next: () => Promise<Response>) => Promise<Response>;
+const siteMiddleware = onRequest as unknown as Middleware;
 
 const SITE = "http://localhost:4321";
 const PRODUCT = "01KAPRODUCT0000000000000000";
@@ -165,8 +174,11 @@ async function upload(drive: Drive = {}) {
 			emdash: { handlePluginApiRoute: dispatcher.handlePluginApiRoute },
 		},
 		cache,
+		routePattern: "/otta-admin/downloads/[productId]",
+		cookies: { get: () => undefined },
 	} as unknown as APIContext;
-	const response = await POST(context);
+	// As Astro serves it: the site middleware first, then the page.
+	const response = await siteMiddleware(context, async () => POST(context));
 	// The origin guard's refusal is plain text; every other answer is JSON.
 	const text = await response.clone().text();
 	const json = (text.startsWith("{") ? JSON.parse(text) : { ok: false }) as {

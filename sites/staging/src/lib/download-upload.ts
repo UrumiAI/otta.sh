@@ -28,9 +28,9 @@
  * public route to EmDash's auth middleware, which reads only the session cookie
  * on it and never a Bearer token, so a token request has no `locals.user` and
  * is refused as not signed in (pinned against the installed EmDash in
- * `download-upload.test.ts`, issue #405). Before any of that, the page
- * runs the site's per-route origin guard (`rejectCrossOrigin`, as every write
- * route on this base does). The request must also carry `X-EmDash-Request: 1`,
+ * `download-upload.test.ts`, issue #405). Before any of that, the site
+ * middleware's origin check refuses a cross-origin write (as on every write
+ * route of this base). The request must also carry `X-EmDash-Request: 1`,
  * the custom header EmDash's own authenticated API demands: a cross-site form
  * cannot set it, so it holds even if the origin check were ever loosened.
  *
@@ -75,8 +75,8 @@ import { PRIVATE_NO_STORE } from "./no-store.js";
 import { BUSY_RETRY_AFTER_SECONDS } from "./otta-api.js";
 
 /** The route's path prefix. Not under `/_` (EmDash guards only its own
- *  `/_emdash` paths), so the page guards its own origin with `rejectCrossOrigin`
- *  first. */
+ *  `/_emdash` paths), so the site middleware's origin check guards it before
+ *  the page runs. */
 export const DOWNLOAD_UPLOAD_PATH_PREFIX = "/otta-admin/downloads/";
 
 /** The upload URL for one product. */

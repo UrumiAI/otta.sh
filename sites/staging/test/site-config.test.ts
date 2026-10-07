@@ -13,8 +13,8 @@
  *    global_fetch_strictly_public flag) / r2(MEDIA);
  *  - Astro `security.checkOrigin` is never disabled BY US — note the emdash
  *    integration force-disables it platform-wide and substitutes a CSRF
- *    layer covering only /_emdash/api/* routes, so the real cart-endpoint
- *    CSRF pin is origin-guard.test.ts (see ADR-0006);
+ *    layer covering only /_emdash/api/* routes, so the real storefront
+ *    CSRF pin is origin-middleware.test.ts (see ADR-0006);
  *  - `vite.ssr.noExternal` contains "@otta-sh/plugin" UNCONDITIONALLY: if the
  *    plugin is externalized the `__OTTA_EMAIL_API_URL__` /
  *    `__OTTA_X402_FACILITATOR_URL__` defines silently never apply and every
@@ -730,8 +730,8 @@ describe("astro.config", () => {
 
 			// Our config must never explicitly disable checkOrigin. (The emdash
 			// integration disables it anyway and substitutes its own /_emdash-only
-			// CSRF layer — which is exactly why the /cart/* endpoints carry their
-			// own origin guard, pinned by origin-guard.test.ts.)
+			// CSRF layer — which is exactly why the site middleware runs its own
+			// origin check, pinned by origin-middleware.test.ts.)
 			expect(config.security?.checkOrigin).not.toBe(false);
 
 			const noExternal = config.vite?.ssr?.noExternal;

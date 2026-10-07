@@ -1,7 +1,17 @@
 /**
- * The site's own middleware. It decides one thing: who may be served a stored
- * copy of a storefront page (ADR-0024).
+ * The site's own middleware. It decides two things: whether a state-changing
+ * request may reach a storefront route at all (the origin check, below), and
+ * who may be served a stored copy of a storefront page (ADR-0024).
  *
+ * THE ORIGIN CHECK (CSRF, ADR-0006; issue #376). Every non-safe request to a
+ * storefront route is refused with a 403 when it carries a present-but-foreign
+ * `Origin` — before any endpoint runs, reads a body or touches a cookie. The
+ * rule, its exemptions (`/_*`, the Stripe webhook) and the one refusal it
+ * answers with live in `lib/origin-guard.ts`. It used to be a call each
+ * endpoint made first; here it is default-deny, so a new endpoint cannot ship
+ * unguarded by forgetting it.
+ *
+ * THE CACHING RULE.
  * A page whose chrome draws the shopper's own state is PER-SHOPPER. For a theme
  * that opts into the chrome's cart-lines read (`ThemeModule.chrome.cartLines`)
  * or into the shopper's state (`chrome.shopperState`: the cart count and the
@@ -39,7 +49,7 @@
  * reads the options only once `next()` has returned, so the call after the page
  * is the one that counts. With no cache provider configured it is a no-op.
  *
- * SCOPE. Storefront GET/HEAD only. `/_emdash/*` (the admin and its API) and
+ * SCOPE of the caching rule. Storefront GET/HEAD only. `/_emdash/*` (the admin and its API) and
  * `/_astro/*`, `/_image` (assets) are passed straight through, as is every
  * write — with ONE exception that runs first: EmDash's public media route never
  * serves a key under `dl/`, where
@@ -61,6 +71,7 @@ import { attachBucketFrom, guardAttachDownload } from "./lib/download-attach-gua
 import { UPLOAD_MIN_ROLE } from "./lib/download-upload.js";
 import { isPrivateDownloadMediaRequest } from "./lib/media-deny.js";
 import { PRIVATE_NO_STORE } from "./lib/no-store.js";
+import { rejectCrossOrigin } from "./lib/origin-guard.js";
 import { themeFor } from "./themes/registry.js";
 import { activeTheme } from "./themes/resolve.js";
 
@@ -88,6 +99,10 @@ function skipRouteCache(context: { cache?: { set(options: false): void } }): voi
 }
 
 export const onRequest = defineMiddleware(async (context, next) => {
+	// CSRF first: a refused write never reaches its endpoint.
+	const forbidden = rejectCrossOrigin(context);
+	if (forbidden !== null) return forbidden;
+
 	const { request, url, cookies } = context;
 	// Every method that can carry a body — the guard decides (it gates all but
 	// GET, HEAD, DELETE and OPTIONS, as EmDash's plugin route parses a JSON body

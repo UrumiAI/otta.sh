@@ -224,12 +224,13 @@ export default defineConfig({
 		},
 	],
 	integrations: [react(), emdash(buildEmdashOptions(egress))],
-	// CSRF: Astro's `security.checkOrigin` does NOT protect the /cart/*
+	// CSRF: Astro's `security.checkOrigin` does NOT protect the storefront's
 	// endpoints — the emdash integration force-injects `checkOrigin: false`
 	// and its replacement layer covers only /_emdash/api/* routes. The
-	// protection is the site-owned origin guard (src/lib/origin-guard.ts,
-	// ADR-0006). We still never set checkOrigin:false ourselves (pinned by
-	// the site-config test) so nothing regresses if emdash stops overriding.
+	// protection is the site-owned origin check in src/middleware.ts
+	// (src/lib/origin-guard.ts, ADR-0006). We still never set checkOrigin:false
+	// ourselves (pinned by the site-config test) so nothing regresses if emdash
+	// stops overriding.
 	vite: {
 		// Build-time globals the @otta-sh/plugin bundle reads through `typeof`
 		// guards (manifest.ts, src/lib/stripe-config.ts).
