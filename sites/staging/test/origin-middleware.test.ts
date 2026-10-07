@@ -86,8 +86,8 @@ const REFUSAL_HEADERS: Array<[string, string]> = [
 	["referrer-policy", "no-referrer"],
 ];
 
-/** Every non-GET route the site serves that the middleware guards (each a
- *  static route, so its pattern is its path). */
+/** Every non-GET route the site serves that the middleware guards (its route
+ *  pattern; for the static routes that is also its path). */
 const GUARDED: readonly string[] = [
 	"/account/login/request",
 	"/account/logout",
@@ -98,6 +98,7 @@ const GUARDED: readonly string[] = [
 	"/checkout/new-cart",
 	"/checkout/place",
 	"/checkout/resume",
+	"/otta-admin/downloads/[productId]",
 ];
 const EXEMPT: readonly string[] = ["/webhooks/stripe"];
 
