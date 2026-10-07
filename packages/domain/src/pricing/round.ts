@@ -77,3 +77,14 @@ export function mulDivRoundHalfUpAny(a: number, b: number, denominator: number):
 	const d = BigInt(denominator);
 	return Number((2n * BigInt(a) * BigInt(b) + d) / (2n * d));
 }
+
+/**
+ * `round_half_down(a × b / d)` for any positive integer `d`: an exact half rounds
+ * DOWN — WooCommerce's tax rounding for prices entered with tax (ADR-0031).
+ * `floor((2ab + d − 1) / 2d)` in BigInt.
+ */
+export function mulDivRoundHalfDownAny(a: number, b: number, denominator: number): number {
+	mulDivRoundHalfUpAny(a, b, denominator); // the same argument checks
+	const d = BigInt(denominator);
+	return Number((2n * BigInt(a) * BigInt(b) + d - 1n) / (2n * d));
+}

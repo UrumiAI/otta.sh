@@ -34,14 +34,16 @@ pay must not change silently (user decision 4).
    with nothing saved first writes its current options down, so adding or removing rates
    can never flip a store between the two. Tax off asks no calculator, outside ones
    included, as WooCommerce's integrations need "Enable taxes".
-3. **Prices entered with tax** (ADR-level maths, all integer, half up): a line's tax is
-   the tax inside its discounted gross, `round(G × r / (10000 + r))`, and the total adds
-   only the shipping tax. `totals.tax` stays the whole tax; the snapshot's
+3. **Prices entered with tax** (all integer): a line's tax is the tax inside its
+   discounted gross, `round_half_DOWN(G × r / (10000 + r))` — WooCommerce's rounding
+   mode for tax-inclusive stores, which keeps `net + tax = gross` — and the total adds
+   only the shipping tax. Prices without tax keep main's half-up rounding. `totals.tax` stays the whole tax; the snapshot's
    `pricesIncludeTax` tells readers. Shipping is always entered without tax. Buyers outside
    the base location pay the same gross (WooCommerce's adjustment is a follow-up).
-4. **Rounding at subtotal**: one rounding per class over the class's summed amount, then
-   allocated back to its lines by amount (largest remainder), so the snapshot keeps per-line
-   amounts that add up.
+4. **Rounding at subtotal**: as WooCommerce, the lines' exact taxes across all classes are
+   summed and rounded once (half up; half down with tax-inclusive prices); the rounded total
+   is split back to classes by largest remainder and within a class by amount, so the
+   snapshot keeps per-line amounts that add up. Shipping tax always rounds half up on its own.
 5. **Tax location**: `base` taxes at the shop's base address (falling back to the ship-to
    when none is set). A cart with only digital goods is taxed at the base address when one
    is set, and stays untaxed, exactly as before, when none is. A location no zone matches
@@ -55,6 +57,16 @@ pay must not change silently (user decision 4).
    refused as stale rather than overwritten.
 
 ## Consequences
+
+- Parity is checked against an independent WooCommerce 11.1.2 answer key
+  (`test/pricing/woo-oracle-parity.test.ts`, 33 in-scope scenarios of 39; the six skipped
+  are product tax status, method taxable and shop-page display). Two divergences remain, by
+  choice: **RD-07** — rounding at subtotal, WooCommerce rounds the grand total once from
+  unrounded parts (725) while its tax total says 120; Otta keeps
+  `subtotal − discount + shipping + tax = total` exact (724). **Coupon cents** — Otta
+  allocates a coupon pro rata over line subtotals (unchanged); WooCommerce goes per unit,
+  highest price first (EX-08: WooCommerce 334/666, Otta 500/500), which can move a cent of
+  tax between lines.
 
 - No existing store's charges change: the domain and plugin goldens keep every money
   figure (the INR case's shipping tax stays 882). They gain `requiresShipping` on quote

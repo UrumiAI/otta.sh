@@ -5,7 +5,7 @@ import {
 	inheritShippingTaxClass,
 	rateTableOf,
 } from "../../src/pricing/rate-table-calculator.js";
-import { mulDivRoundHalfUpAny } from "../../src/pricing/round.js";
+import { mulDivRoundHalfDownAny, mulDivRoundHalfUpAny } from "../../src/pricing/round.js";
 import type { TaxRequest, TaxRequestLine } from "../../src/pricing/tax-calculator.js";
 import type { TaxRate } from "../../src/ports/tax-rules-store.js";
 
@@ -55,6 +55,13 @@ function rate(taxClassId: string, rateBps: number, appliesToShipping = false, id
 const NO_LABELS = new Map<string, string>();
 
 describe("mulDivRoundHalfUpAny — half-up with any positive denominator", () => {
+	test("half down rounds an exact half down, and everything else to nearest", () => {
+		expect(mulDivRoundHalfDownAny(999, 2000, 12_000)).toBe(166); // 166.5
+		expect(mulDivRoundHalfDownAny(1, 1, 2)).toBe(0);
+		expect(mulDivRoundHalfDownAny(2, 1, 3)).toBe(1);
+		expect(mulDivRoundHalfDownAny(0, 1, 3)).toBe(0);
+	});
+
 	test("odd denominators round half up", () => {
 		expect(mulDivRoundHalfUpAny(1200, 2000, 12_000)).toBe(200);
 		expect(mulDivRoundHalfUpAny(999, 725, 10_725)).toBe(68); // 67.53
@@ -122,6 +129,22 @@ describe("SPEC §4 worked examples", () => {
 		const r = applyRateTable(request({ lines }), table, NO_LABELS, { roundAtSubtotal: true });
 		// standard: 398·725/10000 = 28.855 → 29 → 15/14; reduced: 9.95 → 10
 		expect(r.lines.map((l) => l.taxCents)).toEqual([15, 10, 14]);
+	});
+
+	test("at subtotal the classes are rounded ONCE together, as WooCommerce does (1.4 + 1.4 → 3, not 2)", () => {
+		const lines = [line("0", 14, "a"), line("1", 28, "b")];
+		const table = rateTableOf([rate("a", 1000), rate("b", 500)]);
+		const r = applyRateTable(request({ lines }), table, NO_LABELS, { roundAtSubtotal: true });
+		expect(r.lines.map((l) => l.taxCents)).toEqual([2, 1]);
+	});
+
+	test("prices with tax round an exact half DOWN (WooCommerce IN-02: 999 at 20% → 166, net 833)", () => {
+		const r = applyRateTable(
+			request({ pricesIncludeTax: true, lines: [line("0", 999)] }),
+			rateTableOf([rate("standard", 2000)]),
+			NO_LABELS,
+		);
+		expect(r.lines[0]?.taxCents).toBe(166);
 	});
 
 	test("4. inclusive 20% with a 10% coupon: discounted G=1080 → tax 180", () => {

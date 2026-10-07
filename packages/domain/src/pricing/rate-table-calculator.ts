@@ -1,7 +1,7 @@
 import { type Cents, cents } from "../money/cents.js";
 import type { TaxRate, TaxRulesStore } from "../ports/tax-rules-store.js";
 import { allocateCents } from "./allocate.js";
-import { mulDivRoundHalfUpAny } from "./round.js";
+import { mulDivRoundHalfDownAny } from "./round.js";
 import { computeLineTax } from "./tax.js";
 import {
 	isValidTaxLabel,
@@ -102,9 +102,15 @@ export function applyRateTable(
 	};
 }
 
+/**
+ * One line's tax. Prices WITHOUT tax round half UP (main's maths). Prices WITH tax
+ * round the tax inside the gross half DOWN — WooCommerce's `WC_TAX_ROUNDING_MODE`
+ * for tax-inclusive stores (woo-oracle IN-02: 999 at 20% → 166), which is what
+ * keeps `net + tax = gross` with the net rounded half up.
+ */
 function taxOn(amount: number, rateBps: number, inclusive: boolean): Cents {
 	return inclusive
-		? cents(mulDivRoundHalfUpAny(amount, rateBps, 10_000 + rateBps))
+		? cents(mulDivRoundHalfDownAny(amount, rateBps, 10_000 + rateBps))
 		: computeLineTax(cents(amount), rateBps);
 }
 
@@ -117,22 +123,57 @@ function lineTaxes(
 	if (!roundAtSubtotal) {
 		return request.lines.map((l) => taxOn(l.amountCents, rateOf(l.taxClassId), inclusive));
 	}
-	const out: Cents[] = request.lines.map(() => cents(0));
-	const byClass = new Map<TaxClassId, number[]>();
+	return taxRoundedAtSubtotal(request, rateOf, inclusive);
+}
+
+/**
+ * WooCommerce's "round tax at subtotal level": the lines' EXACT taxes, across every
+ * class, are summed and rounded ONCE (half up, or half down for prices with tax).
+ * The rounded total is then split back so the per-line figures still add up: to
+ * the classes by largest remainder of their exact tax (ties by first line), then
+ * within a class by line amount. All in exact integer arithmetic.
+ */
+function taxRoundedAtSubtotal(
+	request: TaxRequest,
+	rateOf: (classId: TaxClassId) => number,
+	inclusive: boolean,
+): Cents[] {
+	const classes = new Map<TaxClassId, number[]>();
 	request.lines.forEach((l, i) => {
-		const group = byClass.get(l.taxClassId);
-		if (group === undefined) byClass.set(l.taxClassId, [i]);
+		const group = classes.get(l.taxClassId);
+		if (group === undefined) classes.set(l.taxClassId, [i]);
 		else group.push(i);
 	});
-	for (const [classId, indexes] of byClass) {
+	const groups = [...classes].map(([classId, indexes]) => {
 		const amounts: number[] = indexes.map((i) => request.lines[i]?.amountCents ?? 0);
-		const total = taxOn(
-			amounts.reduce((a, b) => a + b, 0),
-			rateOf(classId),
-			inclusive,
-		);
-		allocateCents(total, amounts).forEach((t, k) => {
-			out[indexes[k] as number] = t;
+		const rate = BigInt(rateOf(classId));
+		const num = BigInt(amounts.reduce((a, b) => a + b, 0)) * rate;
+		const den = inclusive ? 10_000n + rate : 10_000n;
+		return { indexes, amounts, num, den, floor: num / den, rem: num % den };
+	});
+	// Σ num/den over a common denominator, rounded once.
+	const common = groups.reduce((l, g) => (l % g.den === 0n ? l : l * g.den), 1n);
+	const sum = groups.reduce((n, g) => n + g.num * (common / g.den), 0n);
+	const rounded = inclusive
+		? (2n * sum + common - 1n) / (2n * common)
+		: (2n * sum + common) / (2n * common);
+	let extra = rounded - groups.reduce((n, g) => n + g.floor, 0n);
+	const byRemainder = groups
+		.map((g, order) => ({ g, order }))
+		.toSorted((a, b) => {
+			const diff = b.g.rem * a.g.den - a.g.rem * b.g.den;
+			return diff > 0n ? 1 : diff < 0n ? -1 : a.order - b.order;
+		});
+	const classTax = new Map<(typeof groups)[number], bigint>();
+	for (const { g } of byRemainder) {
+		const bump = extra > 0n && g.rem > 0n ? 1n : 0n;
+		extra -= bump;
+		classTax.set(g, g.floor + bump);
+	}
+	const out: Cents[] = request.lines.map(() => cents(0));
+	for (const g of groups) {
+		allocateCents(cents(Number(classTax.get(g) ?? 0n)), g.amounts).forEach((t, k) => {
+			out[g.indexes[k] as number] = t;
 		});
 	}
 	return out;
