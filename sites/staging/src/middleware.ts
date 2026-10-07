@@ -51,10 +51,25 @@
  *
  * SCOPE of the caching rule. Storefront GET/HEAD only. `/_emdash/*` (the admin and its API) and
  * `/_astro/*`, `/_image` (assets) are passed straight through, as is every
- * write.
+ * write — with ONE exception that runs first: EmDash's public media route never
+ * serves a key under `dl/`, where
+ * paid downloads live (issue #376; `lib/media-deny.ts`). Paid files belong in
+ * the private DOWNLOADS bucket, never MEDIA; this is the backstop for one put
+ * in the wrong bucket by hand.
+ *
+ * ONE WRITE IS LOOKED AT, too (issue #405): a plugin-route write (POST, PUT or
+ * PATCH — any method but GET, HEAD, DELETE and OPTIONS) that attaches a
+ * download file has its key `head()`ed in the DOWNLOADS bucket before EmDash
+ * dispatches it, because the plugin cannot reach R2 and a key with no object
+ * would 404 every buyer (`lib/download-attach-guard.ts`). Every other write
+ * passes through.
  */
 import { CART_COOKIE_NAME, SESSION_COOKIE_NAME } from "@otta-sh/plugin";
 import { defineMiddleware } from "astro:middleware";
+import { env } from "virtual:emdash/env";
+import { attachBucketFrom, guardAttachDownload } from "./lib/download-attach-guard.js";
+import { UPLOAD_MIN_ROLE } from "./lib/download-upload.js";
+import { isPrivateDownloadMediaRequest } from "./lib/media-deny.js";
 import { PRIVATE_NO_STORE } from "./lib/no-store.js";
 import { rejectCrossOrigin } from "./lib/origin-guard.js";
 import { themeFor } from "./themes/registry.js";
@@ -89,7 +104,31 @@ export const onRequest = defineMiddleware(async (context, next) => {
 	if (forbidden !== null) return forbidden;
 
 	const { request, url, cookies } = context;
+	// Every method that can carry a body — the guard decides (it gates all but
+	// GET, HEAD, DELETE and OPTIONS, as EmDash's plugin route parses a JSON body
+	// for POST, PUT and PATCH alike).
+	const locals = context.locals as { user?: unknown; tokenScopes?: unknown };
+	const refused = await guardAttachDownload(
+		request,
+		url,
+		{ user: locals.user, tokenScopes: locals.tokenScopes },
+		UPLOAD_MIN_ROLE,
+		attachBucketFrom(env),
+	);
+	if (refused !== null) return refused;
 	if (request.method !== "GET" && request.method !== "HEAD") return next();
+	// Before the `/_` pass-through: the media route is under `/_emdash`. The same
+	// plain 404 EmDash answers for a key it does not have, and never stored.
+	if (isPrivateDownloadMediaRequest(url)) {
+		return new Response("Not found", {
+			status: 404,
+			headers: {
+				"Content-Type": "text/plain; charset=utf-8",
+				"Cache-Control": PRIVATE_NO_STORE,
+				"X-Content-Type-Options": "nosniff",
+			},
+		});
+	}
 	if (url.pathname.startsWith("/_")) return next();
 
 	// A shopper with a cart or a session, on a theme whose chrome draws it. The

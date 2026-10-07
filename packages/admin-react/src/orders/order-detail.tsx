@@ -75,6 +75,7 @@ import {
 	formatDate,
 	formatMinorUnitsInput,
 	formatTimestamp,
+	maskBuyerEmail,
 	orderStateCell,
 	parseMinorUnitsInput,
 	reconciliationAlertSentence,
@@ -112,6 +113,7 @@ import {
 	Fields,
 	Group,
 	Notice,
+	RevealToggle,
 	StatusPill,
 	Table,
 	buttonStyle,
@@ -419,6 +421,19 @@ function escapeQuoteForRecipient(value: string): string {
 }
 
 /**
+ * A buyer-supplied value as this screen prints it (issue #377): in full when
+ * the order's emails are revealed or the value is not an email at all, as
+ * `maskBuyerEmail`'s hint otherwise. Every place the detail writes a buyer's
+ * address reads through this one function, so the heading, the customer and
+ * shipping groups and the refund confirm cannot disagree about whether the
+ * order is masked.
+ */
+function shownEmail(value: string, revealed: boolean): string {
+	if (revealed) return value;
+	return maskBuyerEmail(value) ?? value;
+}
+
+/**
  * WHO A REFUND CONFIRM NAMES — review-mandated, and a DIFFERENT, STRICTER
  * question than {@link buyerReferenceText} answers for the heading and the
  * list cell. A destructive action's confirm text must name the most
@@ -451,10 +466,19 @@ function escapeQuoteForRecipient(value: string): string {
  *     marker for nothing being there. Keep this distinction — it is the
  *     kind of thing a later "simplification" merges back into one helper
  *     and reintroduces the em-dash-as-noun defect.
+ *
+ * MASKING CHANGES HOW THE RECIPIENT IS WRITTEN, NEVER WHICH ONE IT IS (issue
+ * #377). The chain above picks the identity; `revealed` — the order's own
+ * Show/Hide state — decides whether an email-shaped pick is written in full or
+ * as its `j•••@g•••.com` hint. A confirm dialog is a screenshot like any other,
+ * so it follows the screen behind it rather than quietly re-printing what the
+ * operator chose to keep masked. The hint goes through the same escape and
+ * clamp as the full value: its first character is still caller-supplied.
  */
 function resolveRefundRecipient(
 	identity: CustomerContext["identity"] | null | undefined,
 	buyerRef: string | null | undefined,
+	revealed: boolean,
 ): string {
 	if (
 		identity != null &&
@@ -464,7 +488,7 @@ function resolveRefundRecipient(
 		typeof identity.email === "string" &&
 		identity.email.trim().length > 0
 	) {
-		return identity.email.trim();
+		return shownEmail(identity.email.trim(), revealed);
 	}
 	if (typeof buyerRef === "string" && buyerRef.trim().length > 0) {
 		// ESCAPE BEFORE THE CLAMP (review round 3): `refundConfirmText` wraps
@@ -475,7 +499,10 @@ function resolveRefundRecipient(
 		// clamping, means a truncation that lands mid-escape can only ever
 		// strand a bare backslash before the ellipsis, never a live,
 		// unescaped `"`.
-		return fit(escapeQuoteForRecipient(buyerRef.trim()), REFUND_RECIPIENT_MAX_LEN);
+		return fit(
+			escapeQuoteForRecipient(shownEmail(buyerRef.trim(), revealed)),
+			REFUND_RECIPIENT_MAX_LEN,
+		);
 	}
 	return UNNAMED_REFUND_RECIPIENT;
 }
@@ -846,6 +873,20 @@ export function OrderDetail({
 	const [pending, setPending] = React.useState<PendingAction | null>(null);
 	const [busy, setBusy] = React.useState(false);
 	const [generation, setGeneration] = React.useState(0);
+	// Whether THIS order's buyer emails are shown in full (issue #377). Never
+	// persisted, and never remembered across orders: the state carries the
+	// order id it was set for, and a different `orderId` resets it DURING
+	// RENDER (React's "adjust state when a prop changes" pattern) rather than
+	// in an effect — so A revealed, then B, then back to A without a remount
+	// paints A masked from its first frame, with no one-frame flash an effect
+	// would allow.
+	const [reveal, setReveal] = React.useState({ orderId, revealed: false });
+	if (reveal.orderId !== orderId) setReveal({ orderId, revealed: false });
+	const idBase = React.useId();
+	const emailValueId = `${idBase}-buyer`;
+	const accountEmailId = `${idBase}-account-email`;
+	const contactEmailId = `${idBase}-contact-email`;
+	const shipEmailId = `${idBase}-ship-email`;
 
 	// Form drafts. They live beside the record rather than inside it because a
 	// re-fetch after a write must not blank a field the operator is still typing
@@ -939,7 +980,22 @@ export function OrderDetail({
 	// shared helper the list's Customer cell uses. NOT what a refund confirm
 	// uses: see `resolveRefundRecipient` below for why that is a stricter,
 	// separate question.
-	const recipient = buyerReferenceText(order.buyerRef);
+	//
+	// MASKED UNTIL REVEALED (issue #377): an email-shaped reference prints as
+	// its hint until the operator presses Show email, and the full address is
+	// not rendered anywhere in the document until then. `shownEmail` is the one
+	// gate every buyer address on this screen goes through.
+	const revealed = reveal.revealed && reveal.orderId === orderId && order.id === orderId;
+	const recipient = shownEmail(buyerReferenceText(order.buyerRef), revealed);
+	// The toggle is offered when there is an address on the order to reveal —
+	// the reference itself, the account's email or the ship-to's — and not
+	// otherwise: a guest order keyed by an opaque token has nothing to hide.
+	const hasMaskedEmail = [
+		order.buyerRef,
+		detail.customer?.identity.email,
+		detail.customer?.identity.buyerRef,
+		order.shippingAddress?.email,
+	].some((value) => maskBuyerEmail(value) !== null);
 	const refunds = detail.refunds;
 	const cur =
 		refunds?.currency !== undefined && refunds.currency.length > 0
@@ -999,7 +1055,11 @@ export function OrderDetail({
 		// then the clamped buyerRef, then the shared "this order's buyer"
 		// fallback; never the heading's `recipient` (readable but unverified)
 		// and never `ABSENT`.
-		const refundRecipient = resolveRefundRecipient(detail.customer?.identity, order.buyerRef);
+		const refundRecipient = resolveRefundRecipient(
+			detail.customer?.identity,
+			order.buyerRef,
+			revealed,
+		);
 		setPending({
 			actionId: "orders:refund",
 			value: {
@@ -1060,10 +1120,38 @@ export function OrderDetail({
 				// `order-detail-dom.test.tsx`.
 				data-customer-id={order.customerId ?? undefined}
 			>
-				Order · {recipient} · {formatDate(order.createdAt)}
+				Order · <span id={emailValueId}>{recipient}</span> · {formatDate(order.createdAt)}
 			</h1>
 			<div style={{ marginBlockEnd: 16 }}>
 				<Button label={ORDERS_BACK_LABEL} onClick={onBack} testId="orders-back" />
+				{/*
+				  BESIDE BACK, NOT INSIDE THE HEADING (issue #377). A button inside the
+				  h1 would make the heading's accessible name "Order · j•••@… · 4 Mar
+				  2026 Show email", and turning the h1 into a flex row to sit it
+				  alongside would undo the heading's own wrap containment above. One
+				  toggle for the whole order: the heading, the Customer and Shipping
+				  groups and the refund confirm all follow it.
+				*/}
+				{hasMaskedEmail && (
+					<RevealToggle
+						revealed={revealed}
+						onToggle={() => setReveal({ orderId, revealed: !revealed })}
+						// Every value this toggle discloses that is MOUNTED right now:
+						// the Customer group lives on the Order tab and the ship-to on
+						// Fulfilment, and an id that resolves to nothing is noise to
+						// assistive technology.
+						controls={[
+							emailValueId,
+							...(tab === 0 && detail.customer !== null ? [accountEmailId, contactEmailId] : []),
+							...(tab === 1 && order.shippingAddress?.email != null ? [shipEmailId] : []),
+						].join(" ")}
+						what="email for this order's buyer"
+						showLabel="Show email"
+						hideLabel="Hide email"
+						compact={false}
+						testId="detail-email-toggle"
+					/>
+				)}
 			</div>
 
 			{notice !== null && (
@@ -1229,15 +1317,29 @@ export function OrderDetail({
 							) : (
 								<Group
 									testId="detail-customer"
-									label={`Customer — ${detail.customer.identity.email ?? detail.customer.identity.buyerRef}${
-										detail.customer.identity.linkage === "claimed"
-											? ""
-											: ` (${detail.customer.identity.linkage})`
-									}`}
+									label={
+										<>
+											Customer —{" "}
+											<span id={accountEmailId}>
+												{shownEmail(
+													detail.customer.identity.email ?? detail.customer.identity.buyerRef,
+													revealed,
+												)}
+											</span>
+											{detail.customer.identity.linkage === "claimed"
+												? ""
+												: ` (${detail.customer.identity.linkage})`}
+										</>
+									}
 								>
 									<Fields
 										entries={[
-											["Contact email", detail.customer.identity.buyerRef],
+											[
+												"Contact email",
+												<span id={contactEmailId}>
+													{shownEmail(detail.customer.identity.buyerRef, revealed)}
+												</span>,
+											],
 											["Orders placed", String(detail.customer.orderCount)],
 											["Name", detail.customer.identity.name ?? "—"],
 											[
@@ -1298,7 +1400,16 @@ export function OrderDetail({
 										["City", order.shippingAddress.city ?? "—"],
 										["Region", order.shippingAddress.region ?? "—"],
 										["Postal code", order.shippingAddress.postalCode ?? "—"],
-										["Email", order.shippingAddress.email ?? "—"],
+										[
+											"Email",
+											order.shippingAddress.email != null ? (
+												<span id={shipEmailId}>
+													{shownEmail(order.shippingAddress.email, revealed)}
+												</span>
+											) : (
+												"—"
+											),
+										],
 									]}
 								/>
 							</Group>

@@ -8,19 +8,16 @@
  * together.
  *
  * Nothing here seeds a document behind a store's back: every fixture goes through the
- * store. The ONE write that does not is {@link MiscHarness.revoke}, and it is not a
- * fixture — the `EntitlementStore` port has no revoke method at all, so the domain's
- * contract defines the hook as "the adapter's UPDATE / fake helper", and the SQL
- * harness implements it as a raw `UPDATE entitlements SET state = 'revoked'`. This is
- * that statement, spelled as a compare-and-set over the declared `orderId` index. It
- * is deliberately NOT a method on the production store: a revocation path with no
- * caller belongs on the port when one arrives, not in an adapter as test surface.
+ * store. {@link MiscHarness.revoke} is now the port's own `revokeByOrder` — it used to
+ * be a raw compare-and-set standing in for a revocation the port did not have, until
+ * the full-refund revocation (issue #376) gave it a caller.
  */
 import type {
 	EntitlementStoreHarness,
 	OrderNotesStoreHarness,
 	SettingsStoreHarness,
 } from "@otta-sh/domain/testing";
+import { orderId as toOrderId } from "@otta-sh/domain";
 import { CountingIdGen, FixedClock } from "@otta-sh/domain/testing";
 import {
 	collectionOf,
@@ -49,8 +46,8 @@ import {
 /** The epoch every suite in this tier starts from. */
 export const MISC_EPOCH = new Date("2026-07-10T00:00:00.000Z");
 
-/** One page of the revoke helper's scan. The host clamps `limit` at 100. */
-const REVOKE_PAGE_SIZE = 100;
+/** One page of the anomaly listing's scan. The host clamps `limit` at 100. */
+const LIST_PAGE_SIZE = 100;
 
 export interface MiscHarnessOptions {
 	/** Override the compare-and-set ceiling (the race suites measure the depth). */
@@ -86,7 +83,7 @@ export interface MiscHarness {
 	readonly settings: StorageCollection<SettingsDoc>;
 	readonly mutations: StorageCollection<SettingsMutationDoc>;
 	readonly notes: StorageCollection<OrderNoteDoc>;
-	/** The contract's revoke hook — see this file's docblock. */
+	/** Revoke an order's grants through the port — see this file's docblock. */
 	revoke(orderId: string): Promise<void>;
 	/** Every recorded anomaly, in no particular order. */
 	listAnomalies(): Promise<PaymentAnomalyDoc[]>;
@@ -155,29 +152,13 @@ export function makeMiscHarness(
 		},
 		now: () => clock.now().toISOString(),
 		async revoke(orderId) {
-			let cursor: string | undefined;
-			do {
-				const page = await grants.query({
-					where: { orderId },
-					limit: REVOKE_PAGE_SIZE,
-					cursor,
-				});
-				for (const { id } of page.items) {
-					const current = await grants.getVersioned(id);
-					if (current === null) continue;
-					await grants.compareAndSet(id, current.revision, {
-						...current.value,
-						state: "revoked",
-					});
-				}
-				cursor = page.hasMore ? page.cursor : undefined;
-			} while (cursor !== undefined);
+			await entitlementStore.revokeByOrder(toOrderId(orderId));
 		},
 		async listAnomalies() {
 			const found: PaymentAnomalyDoc[] = [];
 			let cursor: string | undefined;
 			do {
-				const page = await anomalies.query({ limit: REVOKE_PAGE_SIZE, cursor });
+				const page = await anomalies.query({ limit: LIST_PAGE_SIZE, cursor });
 				for (const { data } of page.items) found.push(data);
 				cursor = page.hasMore ? page.cursor : undefined;
 			} while (cursor !== undefined);
@@ -192,10 +173,7 @@ export function makeEntitlementHarness(
 	options: MiscHarnessOptions = {},
 ): EntitlementStoreHarness {
 	const harness = makeMiscHarness(storage, options);
-	return {
-		store: harness.entitlementStore,
-		revoke: (orderId) => harness.revoke(orderId),
-	};
+	return { store: harness.entitlementStore };
 }
 
 /** The `settingsStoreContract` view of the bag. */

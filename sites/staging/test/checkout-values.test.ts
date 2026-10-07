@@ -232,6 +232,17 @@ describe("field errors — shown only for the error the URL names", () => {
 		});
 	});
 
+	test("issue #382: a required address's blank field says only to fill it in", () => {
+		const missing = {
+			values: { email: "a@b.co" },
+			errors: { name: "missing" as const },
+			error: "MISSING_SHIPPING_ADDRESS",
+		};
+		expect(
+			shownFieldErrors(missing, "MISSING_SHIPPING_ADDRESS", { addressRequired: true }),
+		).toEqual({ name: "Fill this in." });
+	});
+
 	test("a stale draft (another token, or none) marks no field", () => {
 		expect(shownFieldErrors(draft, null)).toEqual({});
 		expect(shownFieldErrors(draft, "PAYMENT_INTENT_FAILED")).toEqual({});
@@ -245,6 +256,9 @@ describe("field errors — shown only for the error the URL names", () => {
 		expect(fieldErrorCopy("city", "missing")).toBe(
 			"Fill this in, or leave the whole address blank.",
 		);
+		// When the address is REQUIRED (the page passes this for an India Stripe
+		// account — issue #382) "leave the whole address blank" is not an option.
+		expect(fieldErrorCopy("city", "missing", { addressRequired: true })).toBe("Fill this in.");
 		expect(fieldErrorCopy("line1", "too_long")).toBe(
 			`Too long — use at most ${ORDER_ADDRESS_MAX_LENGTHS.line1} characters.`,
 		);
@@ -642,7 +656,9 @@ describe("/checkout reads the draft back", () => {
 	test("typed values win over the account's email; the fields get the draft's values", () => {
 		expect(page).toMatch(/emailValue: draft\?\.values\.email \?\? accountEmail \?\? ""/);
 		expect(page).toMatch(/addressValues: draftAddressValues\(draft\)/);
-		expect(page).toMatch(/fieldErrors: shownFieldErrors\(draft, shownError\)/);
+		expect(page).toMatch(
+			/fieldErrors: shownFieldErrors\(draft, shownError, \{\s*addressRequired: summary\.paymentAccountNeedsAddress,?\s*\}\)/,
+		);
 	});
 
 	test("a coupon refused at place comes back into the coupon field, with its error beside it", () => {

@@ -25,16 +25,18 @@ staging-only.
 > Workers deployment is coming soon.
 
 > **Status honesty.** The commerce layer is feature-complete: catalog, inventory, cart,
-> checkout, orders, customers with magic-link auth, Stripe + x402 payments, tax, shipping,
-> discounts, entitlements, reporting, and settings (the magic-link email needs the email API
-> and a sign-in page URL, §3 Email). The reference **storefront** covers
+> checkout, orders, customers with magic-link auth, Stripe payments (x402 planned), tax,
+> shipping, discounts, entitlements, reporting, and settings (the magic-link email needs the
+> email API and a sign-in page URL, §3 Email). The reference **storefront** covers
 > catalog, cart and **card checkout**: `/checkout`, the Stripe pay page (`/checkout/pay`) and
 > the order confirmation page (`/orders/<orderId>`) are built (ADR-0012), and so are the
-> customer account pages (`/account/login`, `/account/verify`, `/account/orders`). Two page
-> surfaces are not built yet: the x402 payment gate and the download delivery page (both still
-> under issue #27). Deploying today gives you a browsable catalog, carts with real inventory
-> holds, magic-link customer accounts, and a Stripe card purchase end-to-end once Stripe is
-> configured (§3). When #27 closes, this banner shrinks to a version note.
+> customer account pages (`/account/login`, `/account/verify`, `/account/orders`). Paid
+> digital downloads are built too (issue #376): the merchant attaches a file to a digital
+> product in the admin, and a buyer downloads it from the order page. One page surface is not
+> built yet: the x402 payment gate (issue #27). Deploying today gives you a browsable
+> catalog, carts with real inventory holds, magic-link customer accounts, digital downloads,
+> and a Stripe card purchase end-to-end once Stripe is configured (§3). When #27 closes, this
+> banner shrinks to a version note.
 
 ## 1. Universal contracts
 
@@ -89,11 +91,73 @@ expired holds and queued emails drain at the Free pace (§5).
    wrangler whoami                                # confirm the right account
    wrangler d1 create YOUR-D1-DATABASE-NAME       # prints the database_id to paste in
    wrangler r2 bucket create your-media-bucket
+   wrangler r2 bucket create your-downloads-bucket  # PRIVATE: paid digital downloads
    ```
+
+   > **Never make the downloads bucket public.** It holds the files buyers pay for. The
+   > site Worker is its only reader, through the `DOWNLOADS` binding, and it re-checks the
+   > buyer's entitlement on every download (issue #376). So:
+   > - **never enable its Public Development URL** (r2.dev): in the dashboard, the bucket's
+   >   Settings → "Public Development URL"; on the command line,
+   >   `wrangler r2 bucket dev-url enable`;
+   > - **never connect a custom domain** to it: the bucket's Settings → "Custom Domains", or
+   >   `wrangler r2 bucket domain add`;
+   > - **never use the media bucket for it.** EmDash serves every key in the media bucket
+   >   publicly at `/_emdash/api/media/file/<key>`, so a paid file there is readable by
+   >   anyone who learns its key, including a buyer whose purchase was refunded. The build
+   >   fails if `DOWNLOADS` and `MEDIA` name the same bucket, and the site refuses media keys
+   >   under `dl/`, but neither can see a bucket's public-access settings.
+   >
+   > Check with `wrangler r2 bucket dev-url get your-downloads-bucket` (it should say
+   > disabled) and `wrangler r2 bucket domain list your-downloads-bucket` (it should list
+   > none). An existing deployment that leaves `DOWNLOADS` out of its config still builds:
+   > downloads are then off, the order pages show no Download link, and the download URL
+   > answers 404.
+   >
+   > **Attaching a file.** The merchant uploads it in the product editor: a Digital product's
+   > **Download file** card sends the file to the site's `POST /otta-admin/downloads/<productId>`
+   > (store admins only — the `plugins:manage` role), which stores it in this bucket under a
+   > fresh `dl/<productId>/<id>` key and hands the card a descriptor that it saves on the
+   > product ([ADR-0029](./adr/0029-console-uploads-download-files-to-a-site-endpoint.md)).
+   > Files can be at most **100 MB** (Cloudflare's request limit on the Free and Pro plans).
+   > Without the binding, an upload is refused with a sentence saying downloads are not set
+   > up on this store (the card shows it once the merchant tries). Saving the file checks that
+   > its object is in this bucket at the uploaded size, and refuses it otherwise. The reference
+   > site's middleware makes this check, on whatever HTTP method the save arrives with, so on this
+   > site a save cannot point buyers at a missing file. A different site hosting the plugin needs
+   > the same check: the plugin cannot see the bucket.
+   >
+   > **Refunds the order's state doesn't show yet keep the download open.** A buyer loses access
+   > when the order is refunded or cancelled in Otta. Money returned in a way the order does not
+   > show yet does not close access by itself:
+   > - **A refund made in the Stripe dashboard:** start the same refund in Money → Refunds
+   >   (Otta checks with Stripe, issues nothing and flags the order), then use **Mark refunded**.
+   > - **A chargeback:** Otta does not act on disputes, and Mark refunded is refused while the
+   >   payment shows as captured, so the console cannot close access for it today.
+   > - **A cancellation whose refund timed out** ("refund status unknown"): the order stays
+   >   uncancelled until you confirm that refund in Money → Refunds, which finishes the
+   >   cancellation and closes access.
+   >
+   > A partial refund keeps access by design.
+   >
+   > **A file is replaced, never removed.** Past buyers keep access, so a product with a
+   > download file stays Digital: the editor disables the Physical choice and says why.
+   >
+   > **Replaced files are not deleted.** Replacing a file uploads a new object and points the
+   > product at it; every buyer's link serves the new file from then on. The old object stays
+   > in the bucket, because deleting it could cut off a download already in progress, and an
+   > upload whose save never happened (a closed tab) stays too. They cost storage, never access:
+   > nothing serves a key the product does not name. To tidy up, open the bucket in the
+   > Cloudflare dashboard (R2 → the bucket → Objects, filtered by the prefix
+   > `dl/<productId>/`; wrangler has no `object list`), compare with the current key — the
+   > product's Download file card shows it under the file's name — and remove the rest there or
+   > with `wrangler r2 object delete your-downloads-bucket/<key> --remote`. Each object's metadata
+   > records the product, the original filename and who uploaded it.
 
 2. **Fill in the local config.** Copy `sites/staging/wrangler.jsonc` (also a template) to
    `wrangler.local.jsonc` (gitignored) and set your Worker `name` (over `my-otta-store`),
-   D1 `database_name`/`database_id`, and R2 `bucket_name`. Leave the
+   D1 `database_name`/`database_id`, and the two R2 `bucket_name`s (`MEDIA` and
+   `DOWNLOADS`, which must differ). Leave the
    `global_fetch_strictly_public` compatibility flag alone — §2.4 explains it.
 
 3. **Set the site's one secret** (the only secret first boot needs):
@@ -320,17 +384,21 @@ order of appearance in a deployment's life:
 > boundary, not an adapter tweak — the deny-list is `STRIPE_UNSUPPORTED_CURRENCIES` in
 > `packages/payments-stripe/src/index.ts`.
 
-> **x402 settles against a real facilitator over `ctx.http`.** The configured facilitator
-> credential goes **on the wire** as `Authorization: Bearer …` to the facilitator host, so
-> provision a credential that was minted to be sent. The facilitator host must be in the
-> plugin's `allowedHosts` — it is seeded at **build** time from the site's Astro config, not
-> from `kv`, so changing facilitators is a rebuild, not a settings edit. The pay-to address
-> and the accepted-networks list (default `eip155:8453`) are configuration, not credentials,
-> and live alongside it in Settings.
+> **x402 does not take payments yet.** The old receipt-forwarding settle route
+> (`entitlements/x402/settle`) is retired, and nothing settles an x402 payment until the
+> content gate in [ADR-0028](./adr/0028-x402-content-gate-verifies-and-settles-through-the-facilitator.md)
+> ships. The settings below still save, so a deployment can be configured ahead of it. The
+> facilitator credential is meant to go **on the wire** as `Authorization: Bearer …` to the
+> facilitator host, so provision a credential that was minted to be sent. The facilitator
+> host must be in the plugin's `allowedHosts` — it is seeded at **build** time from the
+> site's Astro config, not from `kv`, so changing facilitators is a rebuild, not a settings
+> edit. The pay-to address and the accepted-networks list (default `eip155:8453`) are
+> configuration, not credentials, and live alongside it in Settings.
 
-- **Email** — with no email API URL baked in at build time there is **no sender at all**:
+- **Email** — with no configured provider (no email API URL baked in for Resend, no SMTP2GO
+  key in Settings) there is **no sender at all**:
   nothing is logged or delivered, and the cron sweep's `order-emails` leg reports `skipped`
-  rather than draining the outbox (`packages/plugin/src/email/ctx-http-email-sender.ts`).
+  whenever an email is due, rather than draining the outbox (`packages/plugin/src/email/ctx-http-email-sender.ts`).
   With a sender, a settled payment's **order confirmation goes out inline** from the settle
   route, and an admin's status move, fulfilment, cancel or refund sends its email inline from
   the console write (best-effort, a few seconds at most); the `order-emails` leg is the backstop
@@ -371,9 +439,17 @@ order of appearance in a deployment's life:
   emails list the order's own line snapshot, totals and ship-to, with money formatted as the
   storefront formats it.
 
-> **Email provider: Resend.** The sender posts Resend's `POST /emails` body exactly (bearer
-> auth, `Idempotency-Key` = the outbox row id, the template name as a `template` tag), so
-> Resend is the supported provider. To reach real inboxes:
+> **Email provider: Resend (default) or SMTP2GO.** Settings → "Payments & email" →
+> "Email provider" picks which one the store sends through. Resend is the default, so a
+> store that never sets it behaves as before. Each provider has its **own** key field
+> ("Resend API key (email)" and "SMTP2GO API key (email)"), and a key is only ever sent to
+> its own provider. Switching is safe in either order; while the chosen provider has no
+> usable setup (SMTP2GO with no key, Resend with no `EMAIL_API_URL`) the store sends and
+> claims nothing, so no outbox attempt is spent.
+>
+> **Resend.** The sender posts Resend's `POST /emails` body exactly (bearer
+> auth, `Idempotency-Key` = the outbox row id, the template name as a `template` tag) to the
+> build's `EMAIL_API_URL`. To reach real inboxes:
 >
 > 1. Build with `EMAIL_API_URL=https://api.resend.com/emails` (§4 — this also grants
 >    `api.resend.com` in `allowedHosts`).
@@ -400,6 +476,39 @@ order of appearance in a deployment's life:
 >
 > Another provider needs its own adapter behind the `EmailSender` port; pointing
 > `EMAIL_API_URL` at a non-Resend API is not supported.
+>
+> **SMTP2GO.** The sender posts SMTP2GO's `POST /v3/email/send` body (`sender`, `to` as a
+> list, `subject`, `html_body`, `text_body`) with the key in `X-Smtp2go-Api-Key`. Its hosts — `api.smtp2go.com` and the
+> regional `us-api`, `eu-api` and `au-api.smtp2go.com` — are granted in every build (§4), so
+> SMTP2GO needs **no** `EMAIL_API_URL` and no rebuild. To reach real inboxes:
+>
+> 1. In SMTP2GO, go to **Sending → Verified Senders** and add your sending domain. Publish
+>    the DNS records it lists (the DKIM and return-path CNAMEs) and wait until it shows as
+>    verified. Until then SMTP2GO refuses every send from that domain.
+> 2. Go to **Sending → API Keys** and add a key for this store. In the key's permissions,
+>    allow **only** sending email (the `/email/send` endpoint) — the store never needs
+>    anything else, so a leaked key cannot read your account or change its settings.
+> 3. In admin Settings → "Payments & email", save the key in "SMTP2GO API key (email)" (it
+>    starts `api-`; the field refuses any other shape). Then set "Email provider" to SMTP2GO,
+>    "SMTP2GO region" (Global unless your account is tied to the US, EU or AU region) and a
+>    from-address on the verified domain, and save the payment settings.
+> 4. Set "Sign-in page address" and "Store display name" as for Resend (step 4 above).
+>
+> **SMTP2GO can refuse a send with HTTP 200.** An unverified sender domain, for one, comes
+> back as `200` with `data.failed: 1` and the reason in `data.failures`. The sender treats any
+> answer without `data.succeeded ≥ 1` and `data.failed = 0` as a failed send, and its error
+> carries SMTP2GO's reason and `request_id` (sanitized and cut to 200 characters, never the
+> key or the recipient), for example "From header sender domain not verified". The row is
+> retried and eventually parked `failed`, as with any refusal.
+>
+> **SMTP2GO has no idempotency key, so dedupe does not hold for it.** Resend dedupes a
+> retried send on its `Idempotency-Key`; SMTP2GO does not. With SMTP2GO, "once" rests on the
+> outbox's claim alone: a send SMTP2GO accepted but whose answer was lost (a timeout after
+> acceptance, a body read cut off by the timeout, a tick cut off before the row was marked
+> sent) is sent again. To bound that, every SMTP2GO timeout counts as one of the row's
+> attempts (Resend timeouts do not), so a buyer gets at most one copy per attempt — rarely
+> more than one in practice. Find a message in SMTP2GO's activity log by recipient and time,
+> or by the `request_id` a refusal quotes.
 
 ## 4. Egress and `allowedHosts`
 
@@ -409,8 +518,9 @@ allowlist (capability `network:request`). That allowlist is resolved at **build*
 
 | Host | When |
 |---|---|
-| `api.stripe.com` | always — the one constant entry |
-| the email API host | when an email API URL is configured |
+| `api.stripe.com` | always |
+| `api.smtp2go.com`, `us-api.smtp2go.com`, `eu-api.smtp2go.com`, `au-api.smtp2go.com` | always — a store chooses SMTP2GO and its region in Settings, which cannot widen this build-time list |
+| the email API host | when an email API URL is configured (the Resend-shaped sender) |
 | the x402 facilitator host | when a facilitator URL is configured |
 
 The two URLs are `EMAIL_API_URL` and `X402_FACILITATOR_URL`, read by
@@ -420,8 +530,8 @@ the provider is simply unconfigured and no host is granted for it.
 
 Stripe traffic goes through the same gate: `@otta-sh/payments-stripe` would default its
 transport to `globalThis.fetch`, but the plugin constructs the live gateway with
-`ctx.http.fetch` (`packages/plugin/src/payments/stripe-wiring.ts`), like the email sender and
-the x402 facilitator client — so the allowlist is the perimeter for `api.stripe.com` too. This
+`ctx.http.fetch` (`packages/plugin/src/payments/stripe-wiring.ts`), like the email sender —
+so the allowlist is the perimeter for `api.stripe.com` too. This
 closes the caveat recorded in
 [ADR-0020](./adr/0020-one-deployable-plugin-owns-commerce-truth.md) §2.
 
@@ -434,11 +544,69 @@ editing a text field should not be able to move it.
 **Cron.** The **site's** Cron Trigger is `* * * * *` — that drives the host's cron
 *executor*, which claims due rows from its own task table. The **plugin** registers one task,
 `commerce-sweeps`, also due every minute (`* * * * *`); the executor fires the plugin's `cron`
-hook when it comes due. One task drives all eleven sweep legs: they share a store composition
-and a clock, and splitting them would only put eleven rows in contention on the same documents. The
-four scan legs (`sku-transfers`, `order-sku-index`, `reporting-heal`, `coupon-orphans`) and the
-sign-in challenge prune run at most every fifteen minutes inside that task (housekeeping: the
-scans read a page budget of a collection per run); the outbox, the two expiry legs, the
+hook when it comes due. One task drives all twelve sweep legs: they share a store composition
+and a clock, and splitting them would only put twelve rows in contention on the same documents. The
+five scan legs (`sku-transfers`, `order-sku-index`, `reporting-heal`, `coupon-orphans`,
+`product-orphans`) and the sign-in challenge prune run at most every fifteen minutes inside that
+task (housekeeping: the scans read a page budget of a collection per run); a scan cut short by
+the budget carries on next tick until its pass is done. `product-orphans` soft-deletes a
+commerce row whose CMS product is gone (deleted or in the trash) when the delete hook's own
+soft delete was lost. It reads each live row's document through `ctx.content` (the
+`content:read` capability already declared) and is built for a CMS read that LIES: on the
+sandboxed path EmDash's bridge answers `null` for any D1 error. The gates, in order:
+
+- **The CMS must list at least one product** in each run, or the run judges nothing.
+- **A missing document is re-read twice on the spot.** A row that misses and is then FOUND by
+  a re-read proves the host is answering "missing" for documents that exist. One such
+  contradiction makes the whole run FLAKY: it records no strike, wipes the strikes of every row
+  it read, and moves the walk past them. A real deletion misses on every look of every pass, so
+  it never looks flaky.
+- **A miss counts as a strike only in a run that read some other document successfully.** If
+  nothing on the page was found, the run reads the product the list returned, and a `null` there
+  is treated as an outage.
+- **The row is tombstoned on the third strike,** each strike from a run at least fifteen minutes
+  after the last. Any read that finds the document wipes its strikes. A list or canary trip
+  wipes all strikes.
+- **Strikes expire** after seven days, or four full passes when a pass takes longer, so a
+  catalog whose pass outlasts a week (roughly 30,000 products on Free) still reaches the third
+  strike.
+- **Limits:** at most five tombstones a minute, a failed read never counts, and rows younger than
+  fifteen minutes are not read.
+
+Each of those stops logs a `cron sweep product-orphans` error line. Measured on an otherwise
+idle store, a pass over a 1000-product catalog takes about 350 ticks (about six hours) on the
+Workers Free preset, and about 7 on Paid. An orphan is tombstoned on the third pass that finds
+it: on Free, a 1000-product catalog's orphan went after about 900 ticks, and worst case it is up
+to about eighteen hours. The leg has no deadline, so it is never promoted ahead of other legs
+by aging.
+
+**A dense block of real orphans is struck out like any rows,** five a minute at most. An example
+is a bulk delete of an import whose hooks were all lost. Measured with every read truthful:
+- 60 products, with 20 adjacent orphans plus one more, were all tombstoned by tick 123 on Free
+  and tick 34 on Paid.
+- 250 products, with a 40-orphan block and two lone orphans, by tick 379 on Free and tick 41 on
+  Paid.
+
+**The residual risk on a sandboxed host:** a CMS database failing reads at random is
+indistinguishable from deletions, until a re-read contradicts it. The simulations tombstoned no
+live product across 128 seeded cases:
+- 40 live products, 360 one-minute ticks, `get` failing to `null` with probability 0.15–0.9,
+  alone or with the list failing too, four seeds, both presets;
+- 250 live products with p straddling 0.2–0.35, at 0.5 and 0.9, and in twenty-minute bursts
+  (0.6/0.25, 0.9/0.3), three seeds, both presets.
+
+That is seeded PRNGs and one independent-failure model, not a proof. A host that returned `null`
+for one specific live document on every read, while other reads succeeded, would be
+indistinguishable from a deletion; nothing in EmDash 0.38 is known to do this. The tombstone is final, so
+a live product ever struck out that way sells again only once it is duplicated in the CMS (a new
+id, and its pricing re-entered).
+
+**While CMS reads are failing, real orphans WAIT.** A flaky run strikes nothing, and every list
+or canary trip wipes the strikes gathered so far. So under sustained failures (on Paid, under
+any; on Workers Free, even under a list that fails one time in twenty) an orphan may not be
+tombstoned for hours, or at all while the failures last. That is the safe direction.
+
+The outbox, the two expiry legs, the
 intent-cancel drain and the hold-intent completer run every tick, so on an idle store a
 fifteen-minute hold expires within about a minute of its deadline and a queued email goes out
 within about a minute.
@@ -514,8 +682,9 @@ Cloudflare's [D1 limits](https://developers.cloudflare.com/d1/platform/limits/) 
 that runs the sweep also runs EmDash's own executor, scheduled publishing, cleanup and heartbeat,
 so by default the sweep keeps itself to 30. Measured on the document store (each storage or kv
 call counted once, `cron-leg-costs.test.ts`): an idle tick is **8 queries**; a tick where the
-scans come due adds about 17–20 more; one email is about **12** (the claim, the order, the
-sender's key and from-address reads, the request, marking it sent), one hold expired about
+scans come due adds about 17–20 more; one email is about **14** (the claim, the order, the
+provider, key and from-address reads, the request, marking it sent), plus 1–3 once per tick
+that has an email due, to resolve the email provider, one hold expired about
 **20** with its list on Free, one order expired **13** for a one-line order (22 before the
 QA2 fix; a three-line order 23, was 40), one order whose hold bookkeeping needs completing
 about 7 plus 7 per extra line. A closed day's first rollup heal costs two calls per order
@@ -656,4 +825,4 @@ until then. Orders, stock and payments are unaffected — only the reporting rol
 | An expired order is flagged `late payment … automatic refund failed (…) — refund it manually` | Stripe definitively refused the automatic refund (or it would exceed the order total). Refund in Stripe or the admin console, then resolve the flag |
 | An expired order is flagged `settle on expired` and nothing was refunded | The Stripe secret key is not set (so the settle route cannot refund), or it is a cancelled order with no audit evidence it was unpaid — refund in Stripe and resolve the flag |
 | Sweeps never run | Nothing has bootstrapped the schedule, or the runtime wired no cron executor — check that the site's Cron Trigger is present and load `/products` or a product page once (§5) |
-| An outbound call to Stripe / the email provider / the x402 facilitator never leaves | The host is not in the build-time `allowedHosts` allowlist (§4) — rebuild and redeploy |
+| An outbound call to Stripe or the email provider never leaves | The host is not in the build-time `allowedHosts` allowlist (§4) — rebuild and redeploy |

@@ -59,6 +59,10 @@
  *    remove-stock confirm.
  *  - **Copy budgets and trimmers** (`copy.ts`) — §1's banner and label budgets
  *    and the `fit` they are applied with, which both screens' copy needs.
+ *  - **The buyer-email hint** (`buyer-ref-hint.ts`) — issue #377. The resume
+ *    flow's `j•••@g•••.com`, moved out of the plugin so the React Orders
+ *    console can mask a buyer's email by default with the SAME rule rather
+ *    than a second one (`maskBuyerEmail` in `copy.ts` applies it).
  *
  * WHAT IS NOT IN IT. Anything with IO, anything React, anything EmDash, and any
  * wire type. Both consumers are hostile environments for a dependency: the
@@ -146,6 +150,7 @@ export {
 	fit,
 	fitBanner,
 	fitLabel,
+	maskBuyerEmail,
 	unitWord,
 	valueLabel,
 } from "./copy.js";
@@ -209,6 +214,7 @@ export {
 	type ProductTone,
 } from "./product-status.js";
 export { parseOnHandWatermark, parseStockQty } from "./stock-input.js";
+export { buyerRefHint } from "./buyer-ref-hint.js";
 export {
 	ADD_STOCK_FIELD_LABEL,
 	ADD_STOCK_INVALID_QTY,
@@ -246,6 +252,9 @@ export {
 	PRODUCT_KIND_LABELS,
 	PRODUCT_MEASUREMENT_LABELS,
 	PRODUCT_NOT_FOUND_TITLE,
+	DIGITAL_WITH_FILE,
+	DIGITAL_WITH_FILE_REASON,
+	DIGITAL_WITH_FILE_TITLE,
 	PRODUCT_SECTION_LABELS,
 	PRODUCT_SECTION_ORDER,
 	PRODUCT_TAB_LABELS,

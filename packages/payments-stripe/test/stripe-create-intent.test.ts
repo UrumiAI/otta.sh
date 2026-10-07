@@ -174,6 +174,9 @@ describe("StripePaymentGateway.createIntent — the LIVE path (mock transport)",
 			gateway: "stripe",
 			intentId: "pi_3Nxyz",
 			clientAction: { kind: "stripe_client_secret", clientSecret: "pi_3Nxyz_secret_abc" },
+			// Issue #382: the live path always states its Customer decision — here
+			// "none" — so it is recorded with the intent and replayed as is.
+			customerRef: null,
 		});
 	});
 

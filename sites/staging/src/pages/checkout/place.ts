@@ -107,7 +107,8 @@ type AddressResult =
 /**
  * Read the ship-to block. Three outcomes, and the middle one matters:
  *  - every counted field blank ⇒ ABSENT (whether the order may go without one
- *    is the plugin's call: a cart that ships, in a store with zones, is
+ *    is the plugin's call: a cart that ships, in a store with zones — or any
+ *    cart, when the store's Stripe account is in India (issue #382) — is
  *    refused MISSING_SHIPPING_ADDRESS);
  *  - PARTIALLY filled ⇒ a validation reject, never a silently truncated
  *    snapshot: an order that quietly loses half its delivery address is

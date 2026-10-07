@@ -1,0 +1,392 @@
+/**
+ * The part of an HTTP `EmailSender` that does not depend on the provider.
+ *
+ * Every provider Otta sends through takes one HTTPS POST of an already-rendered
+ * message. What differs is the request (URL, auth header, body field names) and
+ * how a refusal is read back. So a provider sender is two methods —
+ * {@link HttpEmailSender.buildRequest} and {@link HttpEmailSender.checkResponse}
+ * — on top of what is shared here and must stay the same for every provider:
+ *  - rendering (`renderEmail` with the storefront's money, the store's name and,
+ *    for an order email, the order page link);
+ *  - the per-send timeout — a race, never an `AbortSignal` in `init` unless the
+ *    host is trusted (`send-deadline.ts`) — and turning OUR deadline into
+ *    `EmailSendTimeoutError` so the dispatcher hands the row back uncounted;
+ *  - the provider's error text, sanitized and bounded before it reaches a log
+ *    line, with the recipient and the sender's own key redacted.
+ *
+ * This is the seam the multi-provider design grows from (the "provider layer
+ * beneath the port" in the provider research): today the two senders are
+ * `CtxHttpEmailSender` (Resend's body) and `Smtp2goEmailSender`; a registry of
+ * adapters can replace the subclasses without moving any of this.
+ *
+ * SANDBOX-CLEAN: `fetch` is injected (`ctx.http.fetch`), never ambient.
+ */
+import {
+	EmailSendTimeoutError,
+	isEmailSendTimeoutError,
+	renderEmail,
+	type EmailSender,
+	type EmailTemplate,
+	type SendEmailInput,
+} from "@otta-sh/domain";
+import { STOREFRONT_LOCALE } from "../storefront/route-input.js";
+import { orderPageUrl, storefrontEmailMoney } from "./email-render-context.js";
+import { startSendDeadline, type ProviderResponse } from "./send-deadline.js";
+
+export type { ProviderResponse } from "./send-deadline.js";
+
+/**
+ * A hung email provider must never hang a cron tick — the same rule, and the
+ * same default, as `payments-stripe`'s `DEFAULT_REQUEST_TIMEOUT_MS` ("a hung
+ * Stripe must never hang a Worker checkout").
+ *
+ * WHY IT IS LOAD-BEARING HERE SPECIFICALLY. `dispatchOrderEmails` wraps each
+ * outbox row in its own try/catch, which contains a THROWN send — it does
+ * nothing about an unbounded await. One unresponsive provider connection would
+ * therefore hold the `order-emails` leg open and starve every sweep leg queued
+ * behind it. The abort converts the hang into the throw the dispatcher already
+ * knows how to handle, and — as with a non-2xx — the row stays unsent. (The
+ * bound is a race, not an `AbortSignal` in `init`: see `send-deadline.ts`.)
+ *
+ * THIRTY SECONDS IS NOT THE CRON'S CEILING, though. It is the fallback for a
+ * caller that sets none; the cron sweep runs inside a host hook abandoned after
+ * 5 s, so it passes its own, far shorter, per-send timeout
+ * (`SWEEP_EMAIL_SEND_TIMEOUT_MS` in `cron/sweeps.ts`) — a 30 s send there would
+ * outlive the hook, leave its row leased, and be re-sent when the lease lapsed.
+ */
+export const DEFAULT_EMAIL_TIMEOUT_MS = 30_000;
+
+/** What every HTTP sender is built from, whichever provider it speaks. */
+export interface HttpEmailSenderOptions {
+	/** The host's gated egress — `ctx.http.fetch`. Injected, never ambient: a bare
+	 *  `fetch` here would bypass `allowedHosts` outright (and the sandbox-clean
+	 *  guard would fail the build). */
+	fetch: (url: string, init?: RequestInit) => Promise<Response>;
+	from: string;
+	apiKey?: string | undefined;
+	/** Per-request timeout, enforced by the send's own race (`send-deadline.ts`).
+	 *  Defaults to {@link DEFAULT_EMAIL_TIMEOUT_MS}. A FUNCTION is asked at each
+	 *  send — the cron sweep passes one, so each request is bounded by what is left
+	 *  of the tick when that send starts rather than by a figure fixed long before. */
+	requestTimeoutMs?: number | (() => number) | undefined;
+	/** `true` ONLY on a trusted (in-process) host: the request's `init` then also
+	 *  carries an `AbortSignal`, aborted at the deadline, so a timed-out request's
+	 *  socket is released. Default `false`: EmDash's sandbox runner sends `init`
+	 *  over RPC, which refuses a signal, and every send would fail. */
+	trustedHost?: boolean | undefined;
+	/** The store's name ("Store display name"), for the sign-in email. */
+	storeName?: string | undefined;
+	/** The storefront's public origin (`storefrontOriginOf`), for the order page
+	 *  link in order emails. Absent ⇒ order emails carry no link. */
+	storefrontOrigin?: string | undefined;
+}
+
+/** One rendered message, in provider-neutral terms. */
+export interface OutboundEmail {
+	from: string;
+	to: string;
+	subject: string;
+	text: string;
+	html: string;
+	template: EmailTemplate;
+	/** The outbox row id (`SendEmailInput.idempotencyKey`): a dedupe key where
+	 *  the provider honours one, a correlation id where it does not. */
+	ottaId: string;
+}
+
+/** The request a provider sender wants made. Method is always POST. */
+export interface ProviderRequest {
+	url: string;
+	headers: Record<string, string>;
+	body: string;
+}
+
+/**
+ * Why a provider refused, by class — the start of the error taxonomy the
+ * multi-provider design needs for retry and failover decisions. Today the
+ * outbox treats every class the same (rescheduled, counted); the class is for
+ * the log and for whoever reads it.
+ *  - `auth`: 401/403 — a missing, wrong or revoked key, or one without send rights.
+ *  - `rate_limited`: 429.
+ *  - `unavailable`: 5xx.
+ *  - `invalid`: any other non-2xx.
+ *  - `refused`: the provider answered success-shaped but sent nothing
+ *    (SMTP2GO's 200 with `failed > 0`).
+ *  - `ambiguous`: a 2xx we cannot read — it may or may not have been sent.
+ */
+export type EmailProviderErrorKind =
+	| "auth"
+	| "rate_limited"
+	| "unavailable"
+	| "invalid"
+	| "refused"
+	| "ambiguous";
+
+/** A provider's refusal. The message carries the provider's own reason,
+ *  sanitized and bounded ({@link sanitizeProviderDetail}); it never carries the
+ *  request, the key or the recipient. */
+export class EmailProviderError extends Error {
+	readonly kind: EmailProviderErrorKind;
+	readonly status: number;
+
+	constructor(kind: EmailProviderErrorKind, status: number, message: string) {
+		super(message);
+		this.name = "EmailProviderError";
+		this.kind = kind;
+		this.status = status;
+	}
+}
+
+/** The class of a non-2xx status. */
+export function kindOfStatus(status: number): EmailProviderErrorKind {
+	if (status === 401 || status === 403) return "auth";
+	if (status === 429) return "rate_limited";
+	if (status >= 500) return "unavailable";
+	return "invalid";
+}
+
+/** The error a non-2xx becomes: `email transport failed with status N[: detail]`
+ *  — the wording the Resend sender has always logged. */
+export function statusFailure(status: number, detail: string | undefined): EmailProviderError {
+	return new EmailProviderError(
+		kindOfStatus(status),
+		status,
+		`email transport failed with status ${String(status)}${detail === undefined ? "" : `: ${detail}`}`,
+	);
+}
+
+/** Posts a rendered email to one provider's HTTP API over `ctx.http`. */
+export abstract class HttpEmailSender implements EmailSender {
+	readonly #fetch: (url: string, init?: RequestInit) => Promise<Response>;
+	readonly #from: string;
+	readonly #timeoutMs: number | (() => number);
+	readonly #storeName: string | undefined;
+	readonly #storefrontOrigin: string | undefined;
+	readonly #trustedHost: boolean;
+	/** The key, for the subclass's request and for redaction. Never logged. */
+	protected readonly apiKey: string | undefined;
+
+	constructor(options: HttpEmailSenderOptions) {
+		this.#fetch = options.fetch;
+		this.#from = options.from;
+		this.apiKey =
+			options.apiKey !== undefined && options.apiKey.length > 0 ? options.apiKey : undefined;
+		this.#timeoutMs = options.requestTimeoutMs ?? DEFAULT_EMAIL_TIMEOUT_MS;
+		this.#storeName = options.storeName;
+		this.#storefrontOrigin = options.storefrontOrigin;
+		this.#trustedHost = options.trustedHost === true;
+	}
+
+	/** The provider's request for one message. */
+	protected abstract buildRequest(message: OutboundEmail): ProviderRequest;
+
+	/** Resolve when the provider accepted the message; throw (an
+	 *  {@link EmailProviderError}) when it did not, so the dispatcher never marks
+	 *  a row sent for a message the provider refused. */
+	protected abstract checkResponse(res: ProviderResponse, message: OutboundEmail): Promise<void>;
+
+	async send(input: SendEmailInput): Promise<void> {
+		// Money as the storefront formats it, the store's name, and — for an order
+		// email — the order's page (QA U-3). See `email-render-context.ts`.
+		const orderId = input.data["orderId"];
+		const rendered = renderEmail(input.template, input.data, {
+			formatMoney: storefrontEmailMoney,
+			locale: STOREFRONT_LOCALE,
+			storeName: this.#storeName,
+			orderPageUrl:
+				input.template !== "customer-login-link" &&
+				typeof orderId === "string" &&
+				orderId.length > 0 &&
+				this.#storefrontOrigin !== undefined
+					? orderPageUrl(this.#storefrontOrigin, orderId)
+					: undefined,
+		});
+		const message: OutboundEmail = {
+			from: this.#from,
+			to: input.to,
+			subject: rendered.subject,
+			text: rendered.text,
+			html: rendered.html,
+			template: input.template,
+			ottaId: input.idempotencyKey,
+		};
+		const request = this.buildRequest(message);
+		const timeoutMs = typeof this.#timeoutMs === "function" ? this.#timeoutMs() : this.#timeoutMs;
+		// No signal in `init` (unless the host is trusted): the send races its own
+		// deadline instead — see `send-deadline.ts`.
+		const deadline = startSendDeadline(timeoutMs, this.#trustedHost);
+		try {
+			let res: Response;
+			try {
+				res = await deadline.request(this.#fetch, request.url, {
+					method: "POST",
+					headers: request.headers,
+					body: request.body,
+				});
+			} catch (err) {
+				// Our OWN deadline is a TIMEOUT, not a provider failure: the dispatcher
+				// hands the row back without counting the attempt. Judged by the
+				// deadline having passed, not by the error's name — on a trusted host
+				// the transport may reject our abort as a DOMException "TimeoutError",
+				// an "AbortError" or a plain error, and the sweep's own timer fires at
+				// the same moment, so whichever wins must read as the same timeout.
+				if (deadline.expired) throw new EmailSendTimeoutError(timeoutMs);
+				throw err;
+			}
+			// Reading the body is bounded by the same deadline (`readProviderJson`
+			// turns an unreadable body into "said nothing"). A provider whose 2xx must
+			// be READ to know the outcome (SMTP2GO) therefore reports a body cut off by
+			// our deadline as `ambiguous`, not as a timeout: the provider answered, it
+			// may have sent, and the attempt counts.
+			// A refusal's body is read only as far as PROVIDER_ERROR_BODY_MAX_BYTES:
+			// the deadline bounds that read in time, this bounds it in bytes.
+			await this.checkResponse(
+				deadline.bounded(res, res.ok ? undefined : PROVIDER_ERROR_BODY_MAX_BYTES),
+				message,
+			);
+		} finally {
+			deadline.close();
+		}
+	}
+
+	/** Values a provider's error text must never carry back into a log line:
+	 *  the recipient and this sender's key. */
+	protected redactions(message: OutboundEmail): Redaction[] {
+		const list: Redaction[] = [{ value: message.to, as: "<recipient>" }];
+		if (this.apiKey !== undefined) list.push({ value: this.apiKey, as: "<api key>" });
+		return list;
+	}
+}
+
+/** The ceiling on how much of a provider's error message reaches a log line. */
+const PROVIDER_ERROR_MAX_CHARS = 200;
+
+/** The body is parsed only when it is at most this many characters. Room for a
+ *  long SMTP2GO `failures` list on a 2xx (whose reason must survive: only the
+ *  DETAIL is cut, to {@link PROVIDER_ERROR_MAX_CHARS}); anything longer is not a
+ *  provider answer, and the error path must not parse megabytes an intermediary
+ *  chose to send. A 2xx body is read whole, within the send's deadline; a
+ *  non-2xx one only to {@link PROVIDER_ERROR_BODY_MAX_BYTES} (below). */
+const PROVIDER_BODY_MAX_CHARS = 64 * 1024;
+
+/** How far a NON-2xx body is read before it is cancelled: a provider's refusal
+ *  is a small JSON object (Resend's `{ statusCode, name, message }`, SMTP2GO's
+ *  `data.error`), well under this, so anything longer is not one and is not
+ *  read on. Applies to a streamed body; the sandbox bridge's answer was already
+ *  buffered by the host. Without it an error body was read whole until the
+ *  deadline, however large. */
+const PROVIDER_ERROR_BODY_MAX_BYTES = 16 * 1024;
+
+/** C0 and C1 controls, DEL, the Unicode line/paragraph separators, and the
+ *  bidi controls (LRM/RLM U+200E–200F, embeddings and overrides U+202A–202E,
+ *  isolates U+2066–2069) — what a provider message must not smuggle into a log
+ *  line: a CR/LF, NEL or U+2028 there forges a second, fake log entry in a
+ *  viewer that breaks on it, and a bidi control makes the line read in an order
+ *  other than the one it is stored in. */
+// oxlint-disable-next-line no-control-regex -- matching control characters IS the point
+const CONTROL_CHARS = /[\u0000-\u001f\u007f-\u009f\u200e\u200f\u2028-\u202e\u2066-\u2069]/gu;
+
+/** A value to strip from provider text, and what to put in its place. */
+export interface Redaction {
+	value: string;
+	as: string;
+}
+
+/**
+ * A provider's response body as JSON, or `undefined` when it is longer than
+ * {@link PROVIDER_BODY_MAX_CHARS}, is not JSON (an HTML gateway page, an empty
+ * body) or cannot be read at all — including a read our own timeout aborted.
+ * Never throws: a body that cannot be read is the same as one that says
+ * nothing, and the caller decides what that means for its status.
+ */
+export async function readProviderJson(res: ProviderResponse): Promise<unknown> {
+	try {
+		const text = await res.text();
+		return text.length > PROVIDER_BODY_MAX_CHARS ? undefined : (JSON.parse(text) as unknown);
+	} catch {
+		return undefined;
+	}
+}
+
+/**
+ * The provider's own words, made safe for a log line, or `undefined` when there
+ * are none. Only the provider's STRING fields are used, and:
+ *  - control characters become spaces BEFORE truncation, so the message cannot
+ *    forge a log line;
+ *  - each redaction (the recipient, the key) is replaced case-insensitively, in
+ *    case the provider quotes it back in any case;
+ *  - the result is bounded to {@link PROVIDER_ERROR_MAX_CHARS}.
+ * Not redacted: an address that is not the recipient. Resend's testing-mode
+ * refusal quotes the ACCOUNT OWNER's address — the operator's own, not a
+ * customer's.
+ */
+export function sanitizeProviderDetail(
+	parts: readonly unknown[],
+	redactions: readonly Redaction[],
+): string | undefined {
+	const strings = parts.filter(
+		(part): part is string => typeof part === "string" && part.length > 0,
+	);
+	if (strings.length === 0) return undefined;
+	let detail = strings.join(": ").replace(CONTROL_CHARS, " ");
+	for (const { value, as } of redactions) {
+		if (value.length > 0) detail = detail.replace(new RegExp(escapeRegExp(value), "giu"), as);
+	}
+	return detail.length > PROVIDER_ERROR_MAX_CHARS
+		? `${detail.slice(0, PROVIDER_ERROR_MAX_CHARS)}…`
+		: detail;
+}
+
+/** `value` as a literal inside a RegExp — an address's `.` and `+` are
+ *  metacharacters. */
+function escapeRegExp(value: string): string {
+	return value.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+}
+
+/**
+ * For a provider with no idempotency key: a TIMEOUT becomes a COUNTED attempt.
+ *
+ * An `EmailSendTimeoutError` hands the row back uncounted (and, when cut short,
+ * due at once), on the premise that a retry is deduped by the provider. Without
+ * an idempotency key that premise is false: a provider that is slow but
+ * accepting would be sent the same email on every retry, without bound. So the
+ * timeout is re-thrown as an `ambiguous` {@link EmailProviderError}, which the
+ * dispatcher counts and reschedules like any failure — duplicates are then
+ * bounded by the row's `maxAttempts`. Wrap OUTERMOST, around any wrapper that
+ * produces its own timeouts (the sweep's timer, the inline `cutShortTimeouts`).
+ */
+export function countTimeoutsAsAttempts(sender: EmailSender): EmailSender {
+	return {
+		async send(input) {
+			try {
+				await sender.send(input);
+			} catch (err) {
+				if (!isEmailSendTimeoutError(err)) throw err;
+				throw new EmailProviderError(
+					"ambiguous",
+					0,
+					`email transport failed: the send timed out${err.timeoutMs === undefined ? "" : ` after ${String(err.timeoutMs)} ms`}; counted as an attempt because this provider has no idempotency key`,
+				);
+			}
+		},
+	};
+}
+
+/**
+ * Logged ONCE per isolate, like `in-process-commerce-client.ts`'s notices: a
+ * misconfiguration is a fact about the deployment, and a line per send (every
+ * login request, every outbox row) would bury everything else.
+ */
+const loggedOnce = new Set<string>();
+
+/** Clears the once-per-isolate latch. TESTS ONLY: without it, a case asserting
+ *  "no warning" passes vacuously whenever an earlier case already logged. */
+export function resetEmailWarningsForTesting(): void {
+	loggedOnce.clear();
+}
+
+export function warnOnce(key: string, message: string): void {
+	if (loggedOnce.has(key)) return;
+	loggedOnce.add(key);
+	console.warn(message);
+}

@@ -13,7 +13,8 @@
  *    the sweep itself — the two agree);
  *  - `cancel-intents` is never deferred: a due payment intent is withdrawn first;
  *  - every leg with work makes progress within `PROGRESS_WITHIN` ticks, and no leg
- *    waits more than `MAX_WAIT` ticks in a row;
+ *    waits more than `MAX_WAIT` ticks in a row — save the deadline-free
+ *    `UNPROMOTED_LEGS`, which only have to finish;
  *  - the expiry keeps a throughput of at least `MIN_EXPIRIES_PER_MINUTE` while every
  *    other leg is busy too — 50 lapsed orders cleared inside `EXPIRY_WITHIN` ticks.
  */
@@ -56,10 +57,11 @@ import {
 	type SweepLeg,
 } from "../src/cron/index.js";
 import { BACKGROUND_WORK_KEY } from "../src/cron/background-work-setting.js";
-import { LEG_PRIORITY, MAINTENANCE_LEGS } from "../src/cron/sweeps.js";
+import { LEG_PRIORITY, MAINTENANCE_LEGS, UNPROMOTED_LEGS } from "../src/cron/sweeps.js";
 import {
 	adapters,
 	DAY_MS,
+	fakeCms,
 	HOUR_MS,
 	memoryCursors,
 	MINUTE_MS,
@@ -92,6 +94,9 @@ const START = new Date(Math.floor((Date.now() + 2 * HOUR_MS) / MINUTE_MS) * MINU
 
 let storage: StorageAccess;
 const stripe = new FakePaymentGateway({ id: "stripe" });
+/** product-orphans: the CMS behind `ctx.content`, missing three products' documents. */
+const ORPHANED_PRODUCTS = [0, 1, 2].map((i) => `prod-orphan-${String(i)}`);
+const cms = fakeCms({ gone: ORPHANED_PRODUCTS });
 
 beforeAll(async () => {
 	({ storage } = await makeSqliteStorage(commerceStorageLayout()));
@@ -232,6 +237,18 @@ async function seedEveryLeg(): Promise<void> {
 		if (!claimed.ok) throw new Error("seed redemption failed");
 	}
 
+	// product-orphans: three products deleted in the CMS whose afterDelete was lost.
+	for (const id of ORPHANED_PRODUCTS) {
+		await products.upsert(
+			{
+				productId: toProductId(id),
+				sku: toSku(`SKU-${id}`),
+				price: money(cents(1000), currency("USD")),
+			},
+			idempotencyKey(`upsert-${id}`),
+		);
+	}
+
 	// late-refunds: an expired order paid late, whose refund hit a retryable failure.
 	const late = await placeOrder(
 		storage,
@@ -318,6 +335,13 @@ async function allWorkDone(sent: readonly SendEmailInput[]): Promise<Record<stri
 		"order-sku-index": unindexed.every((pointer) => pointer !== null),
 		"reporting-heal": claims.items.every((claim) => claim.data.absorbedAt !== null),
 		"coupon-orphans": (await coupons.findById("coupon-orphan"))?.usesCount === 0,
+		"product-orphans": (
+			await Promise.all(
+				ORPHANED_PRODUCTS.map((id) =>
+					collectionOf<ProductCommerceDoc>(storage, PRODUCT_COMMERCE_COLLECTION).get(id),
+				),
+			)
+		).every((doc) => doc?.lifecycle === "deleted"),
 		"late-refunds": stripe.refundCalls.length >= 1,
 	};
 }
@@ -325,7 +349,7 @@ async function allWorkDone(sent: readonly SendEmailInput[]): Promise<Record<stri
 describe("a backlog in every leg, on the Workers Free preset", () => {
 	test("no tick passes 30 calls, cancel-intents always runs, every leg progresses, and the expiry keeps its pace", async () => {
 		const counter: CallCounter = { calls: 0 };
-		const ctx = sweepContext(storage, counter, { [BACKGROUND_WORK_KEY]: FREE });
+		const ctx = sweepContext(storage, counter, { [BACKGROUND_WORK_KEY]: FREE }, cms);
 		const cursors = memoryCursors();
 		const sent: SendEmailInput[] = [];
 		const traces = new Map<SweepLeg, LegTrace>(
@@ -394,9 +418,13 @@ describe("a backlog in every leg, on the Workers Free preset", () => {
 			`all ${String(LAPSED_ORDERS)} expired by tick ${String(expiredBy)}`,
 		).toBeLessThanOrEqual(EXPIRY_WITHIN);
 		// Every leg had work, and every leg got to it — soon, and never passed over long.
+		// Except the legs that are deliberately never promoted (`UNPROMOTED_LEGS`): with
+		// no deadline, they wait for the backlog to clear rather than jump it — and are
+		// still required to finish below.
 		for (const leg of SWEEP_LEGS) {
 			const trace = traces.get(leg)!;
 			expect(trace.firstProgress, `${leg} never progressed\n${report}`).not.toBeNull();
+			if (UNPROMOTED_LEGS.includes(leg)) continue;
 			expect(trace.firstProgress!, `${leg}\n${report}`).toBeLessThan(PROGRESS_WITHIN);
 			expect(trace.longestWait, `${leg}\n${report}`).toBeLessThanOrEqual(MAX_WAIT);
 		}
@@ -439,6 +467,7 @@ describe("a backlog in every leg, on the Workers Free preset", () => {
 			"order-sku-index",
 			"reporting-heal",
 			"coupon-orphans",
+			"product-orphans",
 		];
 		for (const moneyLeg of ["expire-orders", "hold-intents", "late-refunds"] as const) {
 			for (const chore of housekeeping) {

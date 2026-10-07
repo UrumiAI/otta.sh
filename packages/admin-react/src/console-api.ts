@@ -6,8 +6,15 @@
  * existing authenticated `otta` admin route from the browser with the operator's
  * own session. Everything in this module goes through that one route, through
  * `apiFetch` (which adds the `X-EmDash-Request` CSRF header state-changing
- * endpoints require), same-origin. There is no second fetch anywhere in this
- * package, and there must never be one.
+ * endpoints require), same-origin. Every read and write of commerce data in
+ * this package goes through here.
+ *
+ * ONE EXCEPTION, AND ONLY ONE (ADR-0029, amending Decision 3): the product
+ * editor's Download file card uploads a digital product's file to the SITE
+ * (`download-upload-api.ts`), because only the site holds the private bucket.
+ * That request carries bytes, reads and writes no commerce data, and the
+ * descriptor it answers is saved through this module like any other edit.
+ * There must never be a second one.
  *
  * WIRE TYPES ARE MIRRORED, NOT IMPORTED, and for the same reason
  * `packages/plugin/src/types.ts` hand-mirrors EmDash's plugin surface: the
@@ -355,11 +362,24 @@ export interface ProductRecord {
 	readonly widthMm: number | null;
 	readonly heightMm: number | null;
 	readonly productKind: string;
+	/** The digital product's download file (issue #376) — the plugin's
+	 *  `DownloadAssetWire`, mirrored. `null` (or absent, from a plugin older than
+	 *  the field) when no file is attached. */
+	readonly downloadAsset?: DownloadAssetView | null;
 	readonly active: boolean;
 	readonly deletedAt: string | null;
 	readonly onHand: number | null;
 	readonly createdAt: string;
 	readonly updatedAt: string;
+}
+
+/** A product's attached download file, as the editor's Download file card shows
+ *  it. `size` is bytes. */
+export interface DownloadAssetView {
+	readonly key: string;
+	readonly filename: string;
+	readonly contentType: string;
+	readonly size: number;
 }
 
 export interface TaxClass {

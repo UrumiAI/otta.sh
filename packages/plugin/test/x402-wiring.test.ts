@@ -1,21 +1,21 @@
 /**
- * INC-C5 — x402 settlement, in-process.
+ * INC-C5 — x402 wiring, in-process; since ADR-0028 increment 2, with no facilitator.
  *
- * WHAT FOLDS IN. The service's `wireX402Gateway` read four env vars and built an
- * `X402PaymentGateway` around the OFFLINE test facilitator. In-process the same
- * gateway is built around {@link createHttpFacilitator}, whose one egress goes
- * through `ctx.http.fetch` and whose host INC-C3 already put in `allowedHosts`
- * (`IN_PROCESS_EGRESS_URLS.facilitatorUrl`). Nothing about the gateway itself
- * changes — `refundable` is still `false`, the challenge is still the same
- * `x402_challenge` descriptor — which is the point: the fold-in is a transport
- * change, not a payment-semantics change.
+ * WHAT IS WIRED. The composition root still builds an `X402PaymentGateway` when
+ * x402 is configured: `refundable` is still `false` and the challenge is still
+ * the same `x402_challenge` descriptor. What increment 2 removed is the
+ * receipt-forwarding FACILITATOR (`createHttpFacilitator`) this wiring used to
+ * hand the gateway. The gateway now refuses every confirmation until increment 7,
+ * so it makes no facilitator call, and nothing here reads the facilitator
+ * credential any more.
  *
  * WHERE THE CONFIG COMES FROM, and why it is split across three homes:
  *  - the facilitator URL is a BUILD-TIME define (`__OTTA_X402_FACILITATOR_URL__`),
  *    because `allowedHosts` is resolved at module load and the gate and the
  *    caller must not be able to disagree about which host that is;
  *  - the facilitator credential is WRITE-ONLY kv
- *    (`settings:x402FacilitatorApiKey`), because it is a secret;
+ *    (`settings:x402FacilitatorApiKey`), because it is a secret. It stays
+ *    provisionable; increment 6's `/verify` and `/settle` client reads it;
  *  - `payTo` and the accepted networks are READABLE kv, because they are ordinary
  *    non-secret configuration — exactly the split `payment-secrets.ts` already
  *    records for the service's non-secret companions.
@@ -23,9 +23,7 @@
  * FAIL-CLOSED. No facilitator URL, or no `payTo`, means NO GATEWAY — `undefined`,
  * not a half-wired one. The domain refuses a checkout whose method has no
  * gateway, so an unconfigured deployment gets a loud refusal instead of a
- * silently unverified settlement. This mirrors the service's own throw-rather-
- * than-arm posture without needing the test-facilitator opt-in, because the
- * offline HMAC facilitator is no longer reachable from here at all.
+ * silently unverified settlement.
  */
 import {
 	cents,
@@ -85,15 +83,12 @@ function makeCtx(
 
 describe("wireX402Gateway — the pure half", () => {
 	test("no facilitator URL ⇒ no gateway", () => {
-		expect(
-			wireX402Gateway({ fetch: () => Promise.reject(new Error("x")), payTo: PAY_TO }),
-		).toBeUndefined();
+		expect(wireX402Gateway({ payTo: PAY_TO })).toBeUndefined();
 	});
 
 	test("no payTo ⇒ no gateway, because a challenge with no destination is unpayable", () => {
 		expect(
 			wireX402Gateway({
-				fetch: () => Promise.reject(new Error("x")),
 				facilitatorUrl: FACILITATOR_URL,
 			}),
 		).toBeUndefined();
@@ -121,7 +116,6 @@ describe("wireX402Gateway — the pure half", () => {
 	])("a payTo that is not a wallet address ⇒ NO gateway (%s)", (_why, payTo) => {
 		expect(
 			wireX402Gateway({
-				fetch: () => Promise.reject(new Error("x")),
 				facilitatorUrl: FACILITATOR_URL,
 				payTo,
 			}),
@@ -135,7 +129,6 @@ describe("wireX402Gateway — the pure half", () => {
 		// refusing one.
 		const payTo = `eip155:8453:${PAY_TO}`;
 		const gateway = wireX402Gateway({
-			fetch: () => Promise.reject(new Error("x")),
 			facilitatorUrl: FACILITATOR_URL,
 			payTo,
 		});
@@ -152,7 +145,6 @@ describe("wireX402Gateway — the pure half", () => {
 	test("a mixed-case (EIP-55 checksummed) address is accepted", () => {
 		expect(
 			wireX402Gateway({
-				fetch: () => Promise.reject(new Error("x")),
 				facilitatorUrl: FACILITATOR_URL,
 				payTo: "0xAbC0000000000000000000000000000000000001",
 			}),
@@ -161,7 +153,6 @@ describe("wireX402Gateway — the pure half", () => {
 
 	test("configured ⇒ an x402 gateway that is still honestly non-refundable", () => {
 		const gateway = wireX402Gateway({
-			fetch: () => Promise.reject(new Error("x")),
 			facilitatorUrl: FACILITATOR_URL,
 			payTo: PAY_TO,
 		});
@@ -173,7 +164,6 @@ describe("wireX402Gateway — the pure half", () => {
 
 	test("the challenge carries the configured payTo and networks, price in minor units", async () => {
 		const gateway = wireX402Gateway({
-			fetch: () => Promise.reject(new Error("x")),
 			facilitatorUrl: FACILITATOR_URL,
 			payTo: PAY_TO,
 			accepts: ["eip155:8453", "eip155:1"],
@@ -195,12 +185,17 @@ describe("wireX402Gateway — the pure half", () => {
 });
 
 describe("x402GatewayFromCtx — the wiring the composition root uses", () => {
-	test("settlement verification goes over ctx.http to the facilitator, not an offline HMAC", async () => {
+	test("the wired gateway settles nothing and calls no facilitator (ADR-0028 increment 2)", async () => {
+		// Until increment 7 there is no confirmation this gateway accepts: the
+		// receipt-forwarding facilitator is gone, and a `page_gate` built from
+		// caller-supplied fields must never settle. So a fully configured context,
+		// credential included, still yields a refusal and no egress at all.
 		const { ctx, calls } = makeCtx({
 			[X402_PAYTO_KEY]: PAY_TO,
 			[X402_FACILITATOR_API_KEY_KEY]: "fk",
 		});
 		const gateway = await x402GatewayFromCtx(ctx, { facilitatorUrl: FACILITATOR_URL });
+		expect(gateway).toBeDefined();
 		const result = await gateway?.verifyConfirmation({
 			kind: "page_gate",
 			proof: {
@@ -210,17 +205,11 @@ describe("x402GatewayFromCtx — the wiring the composition root uses", () => {
 				payer: "0xbuyer",
 				amount: cents(2599),
 				currency: toCurrency("USD"),
-				// Deliberately NOT an HMAC: the whole point is that the facilitator,
-				// not a shared secret this process holds, decides validity.
 				signature: "",
 			},
 		});
-		expect(result?.ok).toBe(true);
-		expect(calls).toHaveLength(1);
-		expect(calls[0]?.url).toBe(FACILITATOR_URL);
-		expect(((calls[0]?.init?.headers ?? {}) as Record<string, string>)["authorization"]).toBe(
-			"Bearer fk",
-		);
+		expect(result).toEqual({ ok: false, reason: "MALFORMED" });
+		expect(calls).toHaveLength(0);
 	});
 
 	test("an unconfigured deployment gets NO gateway rather than an unverified one", async () => {

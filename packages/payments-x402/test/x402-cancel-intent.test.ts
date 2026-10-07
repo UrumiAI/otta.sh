@@ -1,6 +1,6 @@
 import { idempotencyKey, orderId } from "@otta-sh/domain";
 import { describe, expect, test } from "vitest";
-import { createTestFacilitator, X402PaymentGateway } from "../src/index.js";
+import { X402PaymentGateway } from "../src/index.js";
 
 // Late-payment prevention asks every gateway to withdraw an expired order's
 // intent. x402 has none to withdraw: its "intent" is a stateless page-gate
@@ -9,7 +9,6 @@ import { createTestFacilitator, X402PaymentGateway } from "../src/index.js";
 // call — so the expiry sweep moves on without logging noise.
 
 const gateway = new X402PaymentGateway({
-	facilitator: createTestFacilitator("secret"),
 	payTo: "0xTEST",
 	accepts: ["eip155:8453"],
 });

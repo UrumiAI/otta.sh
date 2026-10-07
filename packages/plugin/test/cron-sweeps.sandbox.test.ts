@@ -353,6 +353,37 @@ describe("the tick's cadence, inside the isolate", () => {
 	}, 120_000);
 });
 
+describe("product-orphans on the EmDash sandbox bridge (issue #374)", () => {
+	test("a CMS whose reads fail and are swallowed to null — the bridge's contentGet/contentList — tombstones nothing", async () => {
+		// The isolate's `ctx.content` answers as `@emdash-cms/cloudflare`'s bridge does
+		// over a database whose `ec_products` query fails: every get `null`, every list
+		// empty (`cmsWithoutTable`, `src/cron/testing/sweep-entry.ts`). To a sandboxed
+		// plugin that is indistinguishable from a deleted catalog.
+		const s = stores(new Date(Date.now() - 2 * HOUR_MS));
+		const ids = ["prod-bridge-a", "prod-bridge-b", "prod-bridge-c"];
+		for (const id of ids) {
+			await s.productCommerce.upsert(
+				{
+					productId: toProductId(id),
+					sku: toSku(`SKU-${id}`),
+					price: money(cents(1200), currency("USD")),
+				},
+				idempotencyKey(`seed-${id}`),
+			);
+		}
+		const products = collectionOf<ProductCommerceDoc>(storage, PRODUCT_COMMERCE_COLLECTION);
+		for (let run = 0; run < 3; run++) {
+			// Rides out ticks on which the (Free) budget deferred it.
+			const outcome = await tickUntilRan("product-orphans");
+			expect(outcome).toMatchObject({ ok: true, count: 0 });
+			expect(outcome.anomalies?.join("\n")).toMatch(/lists no products/);
+		}
+		for (const id of ids) {
+			expect((await products.get(id))?.lifecycle, id).toBe("live");
+		}
+	}, 120_000);
+});
+
 describe("the four ported sweeps", () => {
 	test("expire-holds reclaims a past-TTL cart hold, and a second tick reclaims nothing", async () => {
 		const suffix = "holds";
@@ -424,6 +455,16 @@ describe("the four ported sweeps", () => {
 		// indistinguishable from an empty outbox, so the leg says so.
 		// `in-process-egress.sandbox.test.ts` covers the CONFIGURED arm, where the
 		// URL is baked into the scratch manifest and its host is in `allowedHosts`.
+		// A row is due FIRST: the leg asks "is any row due?" before it resolves the
+		// provider, so with an empty outbox it is idle, not `skipped` — `skipped` is
+		// the report for work that cannot be sent.
+		const suffix = "emails";
+		const placed = await placeOrder(suffix, {
+			at: new Date(Date.now() - HOUR_MS),
+			holdExpiresAt: new Date(Date.now() + DAY_MS).toISOString(),
+		});
+		// `markPaid` enqueues the outbox row the dispatcher drains.
+		await stores().orderStore.markPaid(toOrderId(placed.id));
 		expect(leg(await tick(), "order-emails")).toMatchObject({ count: 0, skipped: true });
 
 		// And with one injected, over the SAME real store, the leg is a real drain.
@@ -433,13 +474,6 @@ describe("the four ported sweeps", () => {
 				sent.push(input);
 			},
 		};
-		const suffix = "emails";
-		const placed = await placeOrder(suffix, {
-			at: new Date(Date.now() - HOUR_MS),
-			holdExpiresAt: new Date(Date.now() + DAY_MS).toISOString(),
-		});
-		// `markPaid` enqueues the outbox row the dispatcher drains.
-		await stores().orderStore.markPaid(toOrderId(placed.id));
 
 		const ctx = { http: { fetch: notReached }, kv: kvStub(), storage } as unknown as PluginContext;
 		// No query cap: this pins the drain, and the shared store's outbox may hold

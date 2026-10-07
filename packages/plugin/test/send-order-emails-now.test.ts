@@ -2,8 +2,8 @@
  * `sendOrderEmailsNow` — the settle routes' inline, best-effort order-email attempt
  * (ADR-0005, amended 2026-10-02), driven directly over a REAL document store.
  *
- * The route suites (`stripe-settle-route.test.ts`, `x402-settle-route.test.ts`) pin
- * that a dispatch problem can never change a settle's status. This file pins the
+ * The route suite (`stripe-settle-route.test.ts`) pins that a dispatch problem can
+ * never change a settle's status. This file pins the
  * helper's own budget rules, which a route-level case cannot observe precisely:
  *
  *  - a replay or no-op costs ONE order read — the sender (two kv reads) is built only
@@ -37,6 +37,8 @@ import {
 } from "../src/email/send-order-emails-now.js";
 import { SETTLE_REQUEST_BUDGET_MS, settleDeadline } from "../src/settle-deadline.js";
 import { LOGIN_EMAIL_TIMEOUT_MS } from "../src/email/ctx-http-email-sender.js";
+import { EMAIL_PROVIDER_KEY } from "../src/email/email-provider.js";
+import { SMTP2GO_API_KEY_KEY } from "../src/payment-secrets.js";
 import {
 	makeInProcessCommerce,
 	type InProcessCommerceHarness,
@@ -63,7 +65,11 @@ afterAll(async () => {
 });
 
 /** A pending order, optionally paid (which enqueues its confirmation row). */
-async function seedOrder(id: string, paid: boolean): Promise<OrderId> {
+async function seedOrder(
+	id: string,
+	paid: boolean,
+	buyerRef = "buyer@example.com",
+): Promise<OrderId> {
 	const usd = toCurrency("USD");
 	const oid = toOrderId(id);
 	await harness.stores.orderStore.createFromCart({
@@ -72,7 +78,7 @@ async function seedOrder(id: string, paid: boolean): Promise<OrderId> {
 		currency: usd,
 		idempotencyKey: toIdempotencyKey(`seed-${id}`),
 		holdExpiresAt: FAR,
-		buyerRef: "buyer@example.com",
+		buyerRef,
 		paymentMethod: "stripe",
 		lines: [
 			{
@@ -119,14 +125,16 @@ describe("constants", () => {
 });
 
 describe("a replay costs one order read: the sender is built lazily", () => {
-	test("nothing due ⇒ no kv read, no egress — only the claim's read of the order", async () => {
+	test("nothing due ⇒ one kv read (the provider choice), no egress — and the claim's read of the order", async () => {
 		const id = await seedOrder("ord-noop", false); // pending: no outbox row
 		const kvGet = vi.spyOn(harness.ctx.kv, "get");
 		const getVersioned = vi.spyOn(harness.ctx.storage!["orders"]!, "getVersioned");
 
 		await sendOrderEmailsNow(harness.ctx, harness.stores, id, { egress: { apiUrl: MAIL_URL } });
 
-		expect(kvGet).not.toHaveBeenCalled();
+		// Which provider is decided before anything is claimed; the sender's own reads
+		// wait for a claimed row.
+		expect(kvGet.mock.calls.map((call) => call[0])).toEqual([EMAIL_PROVIDER_KEY]);
 		expect(getVersioned).toHaveBeenCalledTimes(1);
 		expect(harness.egressAttempts()).toBe(0);
 	});
@@ -143,10 +151,63 @@ describe("a replay costs one order read: the sender is built lazily", () => {
 		expect(await cronView(id)).toMatchObject({ attempts: 2 }); // backed off for the cron
 	});
 
+	test("an order with no email address ⇒ its row is reported skipped, and no sender is built", async () => {
+		const id = await seedOrder("ord-x402", true, "x402:0x1111111111111111111111111111111111111111");
+		const kvGet = vi.spyOn(harness.ctx.kv, "get");
+		const egressBefore = harness.egressAttempts();
+
+		const result = await sendOrderEmailsNow(harness.ctx, harness.stores, id, {
+			egress: { apiUrl: MAIL_URL },
+		});
+
+		expect(result.configured).toBe(true);
+		expect(result.sent).toEqual([]);
+		expect(result.skipped.map((row) => [row.orderId, row.toState])).toEqual([[id, "paid"]]);
+		// Only the provider choice, read before anything is claimed; no sender's reads.
+		expect(kvGet.mock.calls.map((call) => call[0])).toEqual([EMAIL_PROVIDER_KEY]);
+		expect(harness.egressAttempts()).toBe(egressBefore);
+		expect(await cronView(id)).toBeNull(); // completed, not left for the cron
+	});
+
 	test("no email API URL ⇒ returns before claiming anything", async () => {
 		const id = await seedOrder("ord-unconfigured", true);
 		await sendOrderEmailsNow(harness.ctx, harness.stores, id, { egress: {} });
 		expect(await cronView(id)).toMatchObject({ attempts: 1 }); // never claimed
+	});
+
+	test("no email API URL but SMTP2GO chosen in Settings ⇒ claimed and sent through SMTP2GO", async () => {
+		// SMTP2GO's hosts are granted in every build, so the store's provider choice
+		// alone makes it able to send.
+		const id = await seedOrder("ord-smtp2go", true);
+		const before = harness.egressAttempts();
+		await harness.ctx.kv.set(EMAIL_PROVIDER_KEY, "smtp2go");
+		await harness.ctx.kv.set(SMTP2GO_API_KEY_KEY, "api-0123456789ABCDEF0123456789ABCDEF");
+		vi.spyOn(console, "error").mockImplementation(() => {});
+		try {
+			const result = await sendOrderEmailsNow(harness.ctx, harness.stores, id, { egress: {} });
+			expect(result.configured).toBe(true);
+			// The harness's ctx.http rejects it.
+			expect(harness.egressAttempts() - before).toBe(1);
+			expect(await cronView(id)).toMatchObject({ attempts: 2 });
+		} finally {
+			// kv outlives `harness.reset()`.
+			await harness.ctx.kv.delete(EMAIL_PROVIDER_KEY);
+			await harness.ctx.kv.delete(SMTP2GO_API_KEY_KEY);
+		}
+	});
+
+	test("SMTP2GO chosen without its own key ⇒ unconfigured: nothing claimed, no attempt spent", async () => {
+		const id = await seedOrder("ord-smtp2go-nokey", true);
+		await harness.ctx.kv.set(EMAIL_PROVIDER_KEY, "smtp2go");
+		try {
+			const result = await sendOrderEmailsNow(harness.ctx, harness.stores, id, {
+				egress: { apiUrl: MAIL_URL },
+			});
+			expect(result.configured).toBe(false);
+			expect(await cronView(id)).toMatchObject({ attempts: 1 }); // never claimed
+		} finally {
+			await harness.ctx.kv.delete(EMAIL_PROVIDER_KEY);
+		}
 	});
 
 	test("no email API URL is a QUIET no-op even when the budget is spent — nothing to say", async () => {
@@ -219,7 +280,7 @@ describe("the budget runs from request start", () => {
 describe("a send never outlives the wait", () => {
 	test("when the claim and reads used most of the wait, the send's timeout is the remainder", async () => {
 		// The wait is 5 s on the injected clock; the claim "takes" 4.8 s of it. The real
-		// sender's per-request abort must then be ~200 ms — not the 3 s ceiling, which
+		// sender's per-request bound must then be ~200 ms — not the 3 s ceiling, which
 		// would run 2.8 s past the point the request stopped waiting.
 		const id = await seedOrder("ord-late-send", true);
 		vi.spyOn(console, "error").mockImplementation(() => {});
@@ -232,19 +293,18 @@ describe("a send never outlives the wait", () => {
 			clock += ORDER_EMAIL_INLINE_DEADLINE_MS - 200;
 			return row;
 		});
-		let abortedAfterMs: number | undefined;
+		// Measured from the request to the send giving up — not from a signal
+		// listener: the sender puts no signal in `init` (EmDash's sandbox RPC refuses
+		// one) and bounds the request with its own race.
+		let requestedAt: number | undefined;
 		const ctx = {
 			...harness.ctx,
 			http: {
-				// A provider that never answers: only the per-request abort ends the send.
-				fetch: (_url: string, init?: RequestInit) =>
-					new Promise<Response>((_resolve, reject) => {
-						const started = performance.now();
-						init?.signal?.addEventListener("abort", () => {
-							abortedAfterMs = performance.now() - started;
-							reject(new Error("aborted"));
-						});
-					}),
+				// A provider that never answers: only the send's own deadline ends it.
+				fetch: () => {
+					requestedAt = performance.now();
+					return new Promise<Response>(() => {});
+				},
 			},
 		};
 
@@ -252,9 +312,10 @@ describe("a send never outlives the wait", () => {
 			egress: { apiUrl: MAIL_URL },
 			deadline,
 		});
+		const gaveUpAfterMs = requestedAt === undefined ? undefined : performance.now() - requestedAt;
 
-		expect(abortedAfterMs).toBeDefined();
-		expect(abortedAfterMs!).toBeLessThan(ORDER_EMAIL_INLINE_TIMEOUT_MS / 2);
+		expect(gaveUpAfterMs).toBeDefined();
+		expect(gaveUpAfterMs!).toBeLessThan(ORDER_EMAIL_INLINE_TIMEOUT_MS / 2);
 		// And the abort was OURS, not the provider's failing: released uncounted, no
 		// timeout recorded against the provider, due at once.
 		expect(await dueNow(id)).toMatchObject({ attempts: 1, timeouts: 0 });

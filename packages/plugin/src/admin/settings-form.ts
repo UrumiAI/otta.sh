@@ -6,12 +6,27 @@ import {
 } from "../cron/background-work-setting.js";
 import { MAX_HOLD_TTL_MINUTES } from "@otta-sh/domain";
 import { EMAIL_FROM_KEY } from "../email/ctx-http-email-sender.js";
+import {
+	DEFAULT_EMAIL_PROVIDER,
+	DEFAULT_SMTP2GO_REGION,
+	EMAIL_PROVIDER_KEY,
+	type EmailProviderId,
+	isEmailProviderId,
+	SMTP2GO_REGION_KEY,
+} from "../email/email-provider.js";
 import { STORE_DISPLAY_NAME_KEY } from "../email/email-render-context.js";
 import { isDeliverableFromAddress } from "../email/from-address.js";
 import { isPlausiblePayTo, X402_ACCEPTS_KEY, X402_PAYTO_KEY } from "../payments/x402-wiring.js";
 import { IN_PROCESS_EGRESS_URLS } from "../manifest.js";
 import {
+	countryRequiresBuyerAddress,
+	readStripeAccountCountry,
+	refreshStripeAccountCountry,
+	type StripeAccountCountryStatus,
+} from "../payments/stripe-account-country.js";
+import {
 	checkEmailApiKey,
+	checkSmtp2goApiKey,
 	checkOpaqueToken,
 	checkStripeSecretKey,
 	checkStripeWebhookSecret,
@@ -27,6 +42,7 @@ import {
 import {
 	EMAIL_API_KEY_KEY,
 	readWriteOnlySecret,
+	SMTP2GO_API_KEY_KEY,
 	STRIPE_SECRET_KEY_KEY,
 	STRIPE_WEBHOOK_SECRET_KEY,
 	WEBHOOK_EDGE_TOKEN_KEY,
@@ -195,21 +211,43 @@ const PAYMENT_SECRET_FIELDS: readonly SecretFieldSpec[] = [
 		fieldId: "emailApiKey",
 		kvKey: EMAIL_API_KEY_KEY,
 		genKey: "settings:emailApiKeyGen",
-		label: "Email provider API key",
+		// The RESEND slot (or the build's Resend-compatible email URL). SMTP2GO has
+		// its own slot below: a key is only ever sent to the provider it belongs to.
+		label: isResendApiUrl(IN_PROCESS_EGRESS_URLS.emailApiUrl)
+			? "Resend API key (email)"
+			: "Email API key (the email URL set at build time)",
 		noun: "Email API key",
 		hint: isResendApiUrl(IN_PROCESS_EGRESS_URLS.emailApiUrl)
 			? "re_…"
 			: "Your email provider's API key",
-		// Which provider the store sends through is fixed at build time
-		// (`IN_PROCESS_EGRESS_URLS`), so the shape is too.
+		// The build's email URL is fixed at build time (`IN_PROCESS_EGRESS_URLS`),
+		// so this slot's shape is too.
 		check: (raw) => checkEmailApiKey(raw, IN_PROCESS_EGRESS_URLS.emailApiUrl),
-		removeEffect: "Order and sign-in emails stop sending until a new key is saved.",
+		removeEffect:
+			"While Resend is the email provider, order and sign-in emails stop sending until a new key is saved.",
 		shapeHelp: isResendApiUrl(IN_PROCESS_EGRESS_URLS.emailApiUrl)
 			? "Starts with re_ — a Resend API key."
 			: "Your email provider's API key: one line, no spaces.",
 		whereToFind: isResendApiUrl(IN_PROCESS_EGRESS_URLS.emailApiUrl)
 			? "Resend → API Keys"
 			: "your email provider's dashboard",
+	},
+	{
+		// SMTP2GO's OWN slot (ADR-0005, 2026-10-05). Read only when "Email provider"
+		// is SMTP2GO; unset then, the store sends nothing (and claims nothing).
+		actionId: "save-smtp2go-api-key",
+		fieldId: "smtp2goApiKey",
+		kvKey: SMTP2GO_API_KEY_KEY,
+		genKey: "settings:emailSmtp2goApiKeyGen",
+		label: "SMTP2GO API key (email)",
+		noun: "SMTP2GO API key",
+		hint: "api-…",
+		check: checkSmtp2goApiKey,
+		removeEffect:
+			"While SMTP2GO is the email provider, order and sign-in emails stop sending until a new key is saved.",
+		shapeHelp:
+			"Starts with api- — an SMTP2GO API key allowed to send email. Used only when the email provider below is SMTP2GO.",
+		whereToFind: "SMTP2GO → Sending → API Keys",
 	},
 	{
 		actionId: "save-x402-facilitator-secret",
@@ -228,7 +266,10 @@ const PAYMENT_SECRET_FIELDS: readonly SecretFieldSpec[] = [
 		noun: "x402 facilitator API key",
 		hint: "Your x402 facilitator's API key",
 		check: checkOpaqueToken,
-		removeEffect: "Crypto (x402) checkout stops working until a new key is saved.",
+		// ADR-0028 increment 2: nothing reads this key until the x402 content gate
+		// ships, so the copy must not claim a removal breaks anything today.
+		removeEffect:
+			"Nothing uses this key yet. x402 payments are not available until x402 support ships.",
 		shapeHelp: "Your x402 facilitator's API key: one line, no spaces.",
 		whereToFind: "your x402 facilitator's dashboard",
 	},
@@ -295,6 +336,18 @@ interface PlainSettingSpec {
 	kvKey: string;
 	label: string;
 	placeholder: string;
+	/** A CLOSED set: rendered as a radio, and a submitted value outside it is
+	 *  refused. Unset in kv ⇒ the form shows {@link PlainChoice.fallback}. */
+	choice?: PlainChoice;
+}
+
+interface PlainChoice {
+	options: ReadonlyArray<{ value: string; label: string }>;
+	fallback: string;
+	/** The field as a refusal names it ("the email provider"). */
+	field: string;
+	/** The refusal's rule, naming the field and the allowed values. */
+	rule: string;
 }
 
 const PLAIN_PAYMENT_SETTINGS: readonly PlainSettingSpec[] = [
@@ -307,6 +360,41 @@ const PLAIN_PAYMENT_SETTINGS: readonly PlainSettingSpec[] = [
 		// the save now refuses (`email/from-address.ts`). Shows the display-name
 		// form because that is what customers read in their inbox.
 		placeholder: "Your Shop <orders@yourdomain.com>",
+	},
+	// Which provider the store's email goes through, and SMTP2GO's region
+	// (`email/email-provider.ts`). Read back like the from-address: the operator
+	// must be able to see which one is in use.
+	{
+		fieldId: "emailProvider",
+		kvKey: EMAIL_PROVIDER_KEY,
+		label: "Email provider",
+		placeholder: "",
+		choice: {
+			options: [
+				{ value: "resend", label: "Resend (or a Resend-compatible URL set at build time)" },
+				{ value: "smtp2go", label: "SMTP2GO" },
+			],
+			fallback: DEFAULT_EMAIL_PROVIDER,
+			field: "the email provider",
+			rule: "The email provider must be Resend or SMTP2GO.",
+		},
+	},
+	{
+		fieldId: "emailSmtp2goRegion",
+		kvKey: SMTP2GO_REGION_KEY,
+		label: "SMTP2GO region (used only when the provider is SMTP2GO)",
+		placeholder: "",
+		choice: {
+			options: [
+				{ value: "global", label: "Global (api.smtp2go.com)" },
+				{ value: "us", label: "United States" },
+				{ value: "eu", label: "Europe" },
+				{ value: "au", label: "Australia" },
+			],
+			fallback: DEFAULT_SMTP2GO_REGION,
+			field: "the SMTP2GO region",
+			rule: "The SMTP2GO region must be Global, United States, Europe or Australia.",
+		},
 	},
 	// Issue #306 — where the emailed sign-in link points, and the ONLY place it may
 	// point: required for customer login (unset ⇒ no link is sent). Read back for
@@ -387,6 +475,9 @@ interface SettingsPageState {
 	/** The commerce sweep's per-tick query budget ("Background work per minute"),
 	 *  as the sweep would read it — the default when unset or unusable. */
 	backgroundWork: number;
+	/** Issue #382: the Stripe account's country — the cache, read afresh from
+	 *  Stripe only when it holds nothing usable for the stored key. */
+	stripeAccount: StripeAccountCountryStatus;
 }
 
 /** Read the three non-secret payment/email settings. FAIL-SOFT per key, for the
@@ -396,7 +487,14 @@ async function readPlainSettings(ctx: PluginContext): Promise<Map<string, string
 	const entries = await Promise.all(
 		PLAIN_PAYMENT_SETTINGS.map(async (spec) => {
 			const value = await ctx.kv.get<string>(spec.kvKey).catch(() => null);
-			return [spec.kvKey, typeof value === "string" ? value : ""] as const;
+			const text = typeof value === "string" ? value : "";
+			// A closed choice shows what the sender will use: the default when
+			// nothing (or something unknown) is stored.
+			const shown =
+				spec.choice !== undefined && !spec.choice.options.some((o) => o.value === text)
+					? spec.choice.fallback
+					: text;
+			return [spec.kvKey, shown] as const;
 		}),
 	);
 	return new Map(entries);
@@ -416,18 +514,24 @@ async function readPlainSettings(ctx: PluginContext): Promise<Map<string, string
  * budget: four concurrent gets.
  */
 async function readPageState(ctx: PluginContext): Promise<SettingsPageState> {
-	const [displayName, paymentSecrets, plainSettings, backgroundWork] = await Promise.all([
-		// FAIL-SOFT alongside the rest (INC-C3): the display name is cosmetic, and
-		// a kv blip on it must not deny the operator the secret forms below.
-		ctx.kv.get<string>(STORE_DISPLAY_NAME_KEY).catch(() => null),
-		readPaymentSecretState(ctx),
-		readPlainSettings(ctx),
-		// Fail-soft inside (a kv blip reads as the default), and the SAME read the
-		// sweep makes, so the form shows the budget the next tick will use.
-		readBackgroundWork(ctx),
-	]);
+	const [displayName, paymentSecrets, plainSettings, backgroundWork, stripeAccount] =
+		await Promise.all([
+			// FAIL-SOFT alongside the rest (INC-C3): the display name is cosmetic, and
+			// a kv blip on it must not deny the operator the secret forms below.
+			ctx.kv.get<string>(STORE_DISPLAY_NAME_KEY).catch(() => null),
+			readPaymentSecretState(ctx),
+			readPlainSettings(ctx),
+			// Fail-soft inside (a kv blip reads as the default), and the SAME read the
+			// sweep makes, so the form shows the budget the next tick will use.
+			readBackgroundWork(ctx),
+			// Never throws. The ONE place besides the key's save that may ask
+			// Stripe: only when nothing usable is cached for the stored key (never
+			// cached, or an unknown answer past its back-off), so checkout never has to.
+			readStripeAccountCountry(ctx),
+		]);
 	return {
 		backgroundWork,
+		stripeAccount,
 		plainSettings,
 		displayName: displayName ?? "",
 		paymentSecrets,
@@ -663,6 +767,15 @@ export function createSettingsFormHandler(): RouteHandler<SettingsFormInput> {
 				}
 				await ctx.kv.set(secretSpec.kvKey, checked.value);
 				await bumpSaveGen(ctx, secretSpec.genKey);
+				// Issue #382: a new Stripe key may be another account — read its
+				// country NOW, so the answer is cached before the first checkout
+				// needs it and the screen below can state it. Never throws; a
+				// failure is recorded as unknown and asked again by the next
+				// Settings page load once its back-off runs out — checkout only
+				// reads the cache, it never asks Stripe.
+				if (secretSpec.kvKey === STRIPE_SECRET_KEY_KEY) {
+					await refreshStripeAccountCountry(ctx, { timeoutMs: STRIPE_ACCOUNT_READ_ON_SAVE_MS });
+				}
 				// A5. The INC-C3 key this credential moved OFF of holds a value with a
 				// different threat model (an offline HMAC secret, never transmitted)
 				// that nothing reads any more. Deleting it here — the one moment an
@@ -785,6 +898,15 @@ export function createSettingsFormHandler(): RouteHandler<SettingsFormInput> {
 					rule: "The order email from-address must be name@domain or Name <name@domain> on a real domain (not .local, .test or example.com; write an international domain in its xn-- form).",
 				});
 			}
+			// The closed choices (email provider, SMTP2GO region): a value outside the
+			// set is refused — an empty one too, since a radio always submits one.
+			for (const spec of PLAIN_PAYMENT_SETTINGS) {
+				if (spec.choice === undefined || !submitted.has(spec.kvKey)) continue;
+				const value = submitted.get(spec.kvKey) ?? "";
+				if (!spec.choice.options.some((option) => option.value === value)) {
+					problems.push({ field: spec.choice.field, rule: spec.choice.rule });
+				}
+			}
 			if (problems.length > 0) {
 				// One problem: its rule IS the banner. Several: the banner names them
 				// all (the 240-character budget cannot hold every rule) and each rule
@@ -798,6 +920,14 @@ export function createSettingsFormHandler(): RouteHandler<SettingsFormInput> {
 					PLAIN_PAYMENT_SETTINGS.flatMap((spec) => {
 						const raw = input.values?.[spec.fieldId];
 						if (typeof raw !== "string") return [];
+						// A refused choice is not put back: a radio can only show one of its
+						// options, so it keeps showing what is saved.
+						if (
+							spec.choice !== undefined &&
+							!spec.choice.options.some((o) => o.value === raw.trim())
+						) {
+							return [];
+						}
 						// A sign-in URL with user:pw@ in it is put back WITHOUT them: the
 						// credentials are refused anyway, and are not echoed into the page.
 						const shown = spec.kvKey === LOGIN_LINK_URL_KEY ? withoutUserInfo(raw) : raw;
@@ -815,7 +945,7 @@ export function createSettingsFormHandler(): RouteHandler<SettingsFormInput> {
 			const page = await renderPage(ctx, client, {
 				variant: "default",
 				title: "Payment settings saved",
-				description: "The from-address, sign-in page and x402 settings were saved.",
+				description: "The email, sign-in page and x402 settings were saved.",
 			});
 			return {
 				...page,
@@ -1090,6 +1220,7 @@ function buildSettingsBlocks(args: {
 	paymentSecrets: Map<string, SecretRenderState>;
 	plainSettings: Map<string, string>;
 	backgroundWork: number;
+	stripeAccount: StripeAccountCountryStatus;
 	notice?: Notice;
 	paymentRefusal?: PaymentRefusal;
 }): Block[] {
@@ -1104,7 +1235,7 @@ function buildSettingsBlocks(args: {
 	blocks.push(
 		storeGroup(args.displayName),
 		checkoutGroup(args.settings, args.persisted, args.backgroundWork),
-		paymentsGroup(args.paymentSecrets, args.plainSettings, args.paymentRefusal),
+		paymentsGroup(args.paymentSecrets, args.plainSettings, args.stripeAccount, args.paymentRefusal),
 	);
 	return blocks;
 }
@@ -1309,12 +1440,13 @@ function checkoutGroup(
 function paymentsGroup(
 	state: Map<string, SecretRenderState>,
 	plain: Map<string, string>,
+	stripeAccount: StripeAccountCountryStatus,
 	refusal?: PaymentRefusal,
 ): AccordionBlock {
 	return {
 		type: "accordion",
 		block_id: "settings:payments",
-		label: paymentsGroupLabel(state),
+		label: paymentsGroupLabel(state, emailProviderOf(plain)),
 		default_open: false,
 		blocks: [
 			{
@@ -1325,14 +1457,24 @@ function paymentsGroup(
 				const secret = state.get(spec.kvKey);
 				const help: Block = { type: "context", text: spec.shapeHelp };
 				const form = secretForm(spec, secret?.set === true, secret?.gen ?? 0);
-				return secret?.set === true ? [help, form, removeSecretActions(spec)] : [help, form];
+				const blocks: Block[] =
+					secret?.set === true ? [help, form, removeSecretActions(spec)] : [help, form];
+				// Issue #382: what the stored key's account is — read-only.
+				const country =
+					spec.kvKey === STRIPE_SECRET_KEY_KEY ? stripeAccountLine(stripeAccount) : null;
+				if (country !== null) blocks.push({ type: "context", text: country });
+				return blocks;
 			}),
 			// INC-C5: the non-secret companions, LAST so the group still reads
 			// keys-first, and visibly a different kind of field — these prefill with
 			// what is stored.
 			{
 				type: "context",
-				text: "The settings below are shown as saved. Crypto (x402) checkout stays off until a destination wallet is set.",
+				text: "The settings below are shown as saved. x402 payments are not available yet. These settings are kept for when they are.",
+			},
+			{
+				type: "context",
+				text: "Email provider: each provider uses its own key above, and email goes only through the one chosen here. Choosing SMTP2GO sends nothing until the SMTP2GO API key is saved.",
 			},
 			...legacySignInWarning(plain.get(LOGIN_LINK_URL_KEY) ?? ""),
 			// A refused save states each rule in full beside the form, and the form
@@ -1341,6 +1483,53 @@ function paymentsGroup(
 			plainSettingsForm(refusal === undefined ? plain : new Map([...plain, ...refusal.typed])),
 		],
 	};
+}
+
+/** How long the Settings save waits on Stripe for the account's country. */
+const STRIPE_ACCOUNT_READ_ON_SAVE_MS = 5_000;
+
+/** `IN` → `India`, in the admin's language (English); the code if the runtime
+ *  cannot name it. */
+function countryName(code: string): string {
+	try {
+		return new Intl.DisplayNames(["en"], { type: "region" }).of(code) ?? code;
+	} catch {
+		return code;
+	}
+}
+
+/**
+ * Issue #382 — the read-only line under the Stripe secret key: which country the
+ * key's account is in, and what that means for checkout; or why it is not known
+ * and what to do. `null` (no line) when no key is stored. Names the account's
+ * country, never anything about the key.
+ */
+function stripeAccountLine(found: StripeAccountCountryStatus): string | null {
+	switch (found.status) {
+		case "not_configured":
+			return null;
+		case "known": {
+			const named = `Stripe account country: ${countryName(found.country)} (${found.country}).`;
+			return countryRequiresBuyerAddress(found.country)
+				? `${named} Checkout asks every buyer for their name and address — Stripe accounts in India need them. A restricted key needs write access to customers.`
+				: named;
+		}
+		case "permission_denied":
+			return "Stripe account country: unknown — this restricted key can't read account details. If your account is in India, give it read access to account details and write access to customers, then save it again.";
+		case "authentication_failed":
+			return "Stripe account country: unknown — Stripe refused this key. Check the key and save it again.";
+		case "unavailable":
+			return "Stripe account country: not checked yet — Stripe couldn't be reached. Opening this page again checks in a few minutes; saving the key again checks now.";
+		case "not_checked":
+			return "Stripe account country: not checked yet. Saving the key again checks now.";
+	}
+}
+
+/** The saved email provider, from the plain settings already read (the
+ *  default when unset or unknown — `readPlainSettings` already folded those). */
+function emailProviderOf(plain: Map<string, string>): EmailProviderId {
+	const value = plain.get(EMAIL_PROVIDER_KEY);
+	return isEmailProviderId(value) ? value : DEFAULT_EMAIL_PROVIDER;
 }
 
 /** A refused payment-settings save: every rule broken, and what was typed. */
@@ -1374,13 +1563,23 @@ function plainSettingsForm(plain: Map<string, string>): FormBlock {
 		namespace: `settings:${SAVE_PAYMENT_SETTINGS_ACTION}`,
 		form: {
 			type: "form",
-			fields: PLAIN_PAYMENT_SETTINGS.map((spec) => ({
-				type: "text_input" as const,
-				action_id: spec.fieldId,
-				label: spec.label,
-				placeholder: spec.placeholder,
-				initial_value: plain.get(spec.kvKey) ?? "",
-			})),
+			fields: PLAIN_PAYMENT_SETTINGS.map((spec) =>
+				spec.choice === undefined
+					? {
+							type: "text_input" as const,
+							action_id: spec.fieldId,
+							label: spec.label,
+							placeholder: spec.placeholder,
+							initial_value: plain.get(spec.kvKey) ?? "",
+						}
+					: {
+							type: "radio" as const,
+							action_id: spec.fieldId,
+							label: spec.label,
+							options: spec.choice.options.map((option) => ({ ...option })),
+							initial_value: plain.get(spec.kvKey) ?? spec.choice.fallback,
+						},
+			),
 			submit: { label: "Save payment settings", action_id: SAVE_PAYMENT_SETTINGS_ACTION },
 		},
 	});
@@ -1399,7 +1598,10 @@ function plainSettingsForm(plain: Map<string, string>): FormBlock {
  *  key, not any part of it; no value is in scope here. The longest render
  *  ("no Stripe key"/"Stripe key set" · "webhook set" · "email set") is exactly
  *  the X-11 60-character budget. */
-function paymentsGroupLabel(state: Map<string, SecretRenderState>): string {
+function paymentsGroupLabel(
+	state: Map<string, SecretRenderState>,
+	provider: EmailProviderId,
+): string {
 	const stripe = state.get(STRIPE_SECRET_KEY_KEY);
 	const stripePart =
 		stripe?.set !== true
@@ -1409,7 +1611,9 @@ function paymentsGroupLabel(state: Map<string, SecretRenderState>): string {
 				: `Stripe ${stripe.mode}`;
 	const webhookPart =
 		state.get(STRIPE_WEBHOOK_SECRET_KEY)?.set === true ? "webhook set" : "no webhook";
-	const emailPart = state.get(EMAIL_API_KEY_KEY)?.set === true ? "email set" : "no email";
+	// The CHOSEN provider's key: SMTP2GO's slot counts only while SMTP2GO is chosen.
+	const emailKey = provider === "smtp2go" ? SMTP2GO_API_KEY_KEY : EMAIL_API_KEY_KEY;
+	const emailPart = state.get(emailKey)?.set === true ? "email set" : "no email";
 	return valueLabel("Payments & email", [stripePart, webhookPart, emailPart]);
 }
 

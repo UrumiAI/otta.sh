@@ -94,6 +94,8 @@
  */
 import {
 	ADD_STOCK_INVALID_QTY,
+	DIGITAL_WITH_FILE_REASON,
+	DIGITAL_WITH_FILE_TITLE,
 	NO_TAX_CLASS,
 	PRODUCT_DELETED_SINCE_LOADED,
 	PRODUCT_NOT_FOUND_TITLE,
@@ -123,6 +125,20 @@ const ACTION_SAVE_SHIPPING = PRODUCTS_ACTIONS.custom("save-shipping");
  *  2026-10-01) has ONE Save, so it sends every field it owns in one write —
  *  the same sparse save, the same watermark, the same idempotency key. */
 const ACTION_SAVE = PRODUCTS_ACTIONS.custom("save");
+/** The product editor's Download file card (issue #376, increment 4): after the
+ *  site's upload endpoint has put the bytes in the private bucket and answered a
+ *  descriptor, the card saves that descriptor here — the console's one data path
+ *  for every product write (ADR-0014 Decision 3, amended by ADR-0029 for the
+ *  upload alone). */
+const ACTION_ATTACH_DOWNLOAD = PRODUCTS_ACTIONS.custom("attach-download");
+/** The attach write's action id, exported so the site that holds the
+ *  `DOWNLOADS` bucket can recognise the one write that names a key and check the
+ *  object exists before it is dispatched here (issue #405) — never a copied
+ *  literal that would silently stop matching. */
+export const ATTACH_DOWNLOAD_ACTION_ID: string = ACTION_ATTACH_DOWNLOAD;
+/** The title of every refusal of a download file's save — this action's own and
+ *  the site's bucket check's, so the card reads them as one. */
+export const DOWNLOAD_NOT_ATTACHED_TITLE = "This file wasn't attached";
 /** Restock stays DA-4: one-shot, no staging, no confirm. */
 const ACTION_RESTOCK = PRODUCTS_ACTIONS.custom("restock");
 /** The screen's ONE destructive act (DA-5's second exception: a removal is
@@ -428,6 +444,108 @@ const saveAction: ProductsAction = async (client, payload) => {
 	return editOutcome(result);
 };
 
+// -- attaching an uploaded download file (issue #376, increment 4) ------------
+
+/** A byte count as the card sends it: a plain non-negative whole-number string.
+ *  Anything else is an unreadable payload — never coerced. */
+const BYTE_COUNT = /^(0|[1-9][0-9]{0,15})$/;
+
+/**
+ * Save the descriptor of a file the site's upload endpoint just stored.
+ *
+ * The four descriptor fields arrive flat, as every console write's do, exactly
+ * as the endpoint answered them: the key it minted, the filename and type it
+ * coerced, the byte count it stored. This action RE-CHECKS nothing about their
+ * values itself — the domain's `validateDownloadAsset` does, on the write, and
+ * a refusal names the sub-field — but refuses a payload it cannot read (no
+ * watermark, a missing field, a size that is not a whole number) before
+ * anything is sent, on the same terms as {@link saveAction}.
+ *
+ * THE EDIT IS SPARSE: only `downloadAsset` is on the wire, so the price, sku and
+ * the rest are preserved, and the store refuses a file on a physical product
+ * inside the same compare-and-set. The key is content-derived (the product, the
+ * watermark, the descriptor), so the SAME payload sent twice — a double click,
+ * a transport retry — writes once, while a different file on the same watermark
+ * is a stale refusal. A retry the card makes after a lost answer carries a
+ * FRESH watermark, so the key alone cannot dedupe it: the card's re-read does
+ * (it finds its own key already attached and writes nothing).
+ *
+ * WHETHER THE OBJECT EXISTS IS NOT CHECKED HERE: the plugin cannot reach R2.
+ * The site holding the `DOWNLOADS` binding checks it before this write is
+ * dispatched (ADR-0029's 2026-10-06 amendment; the reference site's
+ * `download-attach-guard.ts`, which matches {@link ATTACH_DOWNLOAD_ACTION_ID}),
+ * so a key with nothing behind it never reaches this action there. A site that
+ * hosts this plugin without that check keeps the gap.
+ */
+const attachDownloadAction: ProductsAction = async (client, payload) => {
+	const productId = readString(payload["productId"]);
+	const expectedUpdatedAt = readString(payload["expectedUpdatedAt"]);
+	const key = readString(payload["key"]);
+	const filename = readString(payload["filename"]);
+	const contentType = readString(payload["contentType"]);
+	const size = readString(payload["size"]);
+	if (
+		productId === undefined ||
+		expectedUpdatedAt === undefined ||
+		expectedUpdatedAt.trim().length === 0 ||
+		key === undefined ||
+		key.length === 0 ||
+		filename === undefined ||
+		contentType === undefined ||
+		size === undefined ||
+		!BYTE_COUNT.test(size)
+	) {
+		return applied(UNREADABLE);
+	}
+	const bytes = Number(size);
+	if (!Number.isSafeInteger(bytes)) return applied(UNREADABLE);
+	const wire: ProductEditWire = {
+		expectedUpdatedAt,
+		downloadAsset: { key, filename, contentType, size: bytes },
+	};
+	const canonical = JSON.stringify([
+		productId,
+		expectedUpdatedAt,
+		key,
+		filename,
+		contentType,
+		bytes,
+	]);
+	const idempotencyKey = `${productId}:download:${fnv1a(canonical, 0x811c9dc5)}${fnv1a(canonical, 0x01234567)}`;
+	const result = await client.updateProduct(productId, wire, idempotencyKey);
+	if (result.ok) {
+		return applied({
+			variant: "default",
+			title: "File attached",
+			description: `Buyers' download links now serve ${filename}.`,
+		});
+	}
+	if (result.reason === "invalid" && (result.field ?? "").startsWith("downloadAsset")) {
+		return applied({
+			variant: "error",
+			title: DOWNLOAD_NOT_ATTACHED_TITLE,
+			description: downloadRefusal(result.field ?? "downloadAsset"),
+		});
+	}
+	return editOutcome(result);
+};
+
+/** The sentence for a refused descriptor, by the sub-field the domain named. */
+function downloadRefusal(field: string): string {
+	switch (field) {
+		case "downloadAsset":
+			return "Only a Digital product can have a download file. Set the product type to Digital and save, then upload the file again.";
+		case "downloadAsset.filename":
+			return "The file's name can't be used. Rename the file and upload it again.";
+		case "downloadAsset.contentType":
+			return "The file's type can't be used. Upload it again; it will be stored as a plain download.";
+		case "downloadAsset.size":
+			return "The file's size could not be read. Upload it again.";
+		default:
+			return "The upload did not match this product. Upload the file again from this product's page.";
+	}
+}
+
 /** A sku as it appears INSIDE a sentence: quoted, so a sku with a space or a
  *  trailing character is still copyable exactly; or a plain phrase when the
  *  service named none, because an empty pair of quotes reads as a sku called
@@ -526,6 +644,16 @@ function editOutcome(
 			);
 		}
 		case "invalid":
+			// The store refuses switching a product that has a download file to
+			// Physical (the product owner's rule: a file is replaced, never removed,
+			// so past buyers never lose access). Never the price/measurement copy.
+			if ((result.field ?? "").startsWith("downloadAsset")) {
+				return applied({
+					variant: "error",
+					title: DIGITAL_WITH_FILE_TITLE,
+					description: DIGITAL_WITH_FILE_REASON,
+				});
+			}
 			return applied({
 				variant: "error",
 				title: "Invalid value",
@@ -848,6 +976,7 @@ const PRODUCTS_ACTIONS_BY_ID: Readonly<Record<string, ProductsAction>> = {
 	[ACTION_SAVE_PRICE]: saveAction,
 	[ACTION_SAVE_SHIPPING]: saveAction,
 	[ACTION_SAVE]: saveAction,
+	[ACTION_ATTACH_DOWNLOAD]: attachDownloadAction,
 	[ACTION_RESTOCK]: restockAction,
 	[ACTION_REMOVE_STOCK]: removeStockAction,
 };

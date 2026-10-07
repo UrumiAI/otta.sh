@@ -33,6 +33,7 @@
 
 import { StripePaymentGateway } from "@otta-sh/payments-stripe";
 import { stripeSecretKeyFromKv, stripeWebhookSecretFromKv } from "../payment-secrets.js";
+import { checkoutRequiresBuyerAddress } from "./stripe-account-country.js";
 import type { PluginContext } from "../types.js";
 
 /**
@@ -95,5 +96,10 @@ export async function stripeGatewayFromCtx(
 		...(options.beforeRefundCreate !== undefined
 			? { beforeRefundCreate: options.beforeRefundCreate }
 			: {}),
+		// Issue #382: an India-based account needs the buyer's Customer (name and
+		// billing address) on every payment. Asked only by `createIntent`, as a kv
+		// read of the cached account country — the same answer that made the place
+		// require the address, and the same on a replay or resume of the order.
+		customerRequired: () => checkoutRequiresBuyerAddress(ctx),
 	});
 }

@@ -29,6 +29,8 @@ import {
 	DEFAULT_INTENT_CANCEL_MAX_ATTEMPTS,
 	retryLatePaymentRefunds,
 	settleOrder,
+	dispatchOrderEmails,
+	type EmailSender,
 	type PaymentGateway,
 } from "@otta-sh/domain";
 import { FakePaymentGateway } from "@otta-sh/domain/testing";
@@ -49,14 +51,28 @@ import { makeSqliteStorage } from "@otta-sh/store-emdash/testing";
 import { beforeAll, describe, expect, test } from "vitest";
 import { createInProcessCommerceStores } from "../src/commerce/in-process-commerce-stores.js";
 import {
+	CONTENT_MISS_QUERIES,
+	CONTENT_READ_QUERIES,
 	LATE_REFUND_ESCALATION_UNIT,
 	LEG_QUERY_COSTS,
 	legReserveQueries,
 	legStartCalls,
 	MAINTENANCE_LEGS,
+	PRODUCT_ORPHAN_DELETE_CALLS,
 	SWEEP_LEGS,
+	EMAIL_SEND_AND_RECORD_CALLS,
 	TICK_OVERHEAD_QUERIES,
+	UNPROMOTED_LEGS,
 } from "../src/cron/sweeps.js";
+import {
+	EMAIL_SENDER_BUILD_READS,
+	EMAIL_TRANSPORT_RESOLVE_READS,
+	type EmailTransport,
+	makeEmailSender,
+	resolveEmailTransport,
+} from "../src/email/ctx-http-email-sender.js";
+import { EMAIL_PROVIDER_KEY, SMTP2GO_REGION_KEY } from "../src/email/email-provider.js";
+import { EMAIL_API_KEY_KEY, SMTP2GO_API_KEY_KEY } from "../src/payment-secrets.js";
 import { resolvePaymentGateways } from "../src/payments/resolve-payment-gateways.js";
 import type { PluginContext } from "../src/types.js";
 import { commerceStorageLayout } from "./sandbox/storage-layout.js";
@@ -101,6 +117,39 @@ function counted() {
 		storage: wrapped,
 	} as unknown as PluginContext;
 	return createInProcessCommerceStores(ctx);
+}
+
+/** The sweep's composition with a seeded kv and an SMTP2GO/Resend-shaped fetch,
+ *  every storage, kv and egress call counted. */
+function countedEmailContext(seed: Record<string, unknown>) {
+	const kv = new Map<string, unknown>(Object.entries(seed));
+	const ok = JSON.stringify({ data: { succeeded: 1, failed: 0, failures: [], email_id: "e" } });
+	const ctx = {
+		http: {
+			fetch() {
+				counter.calls++;
+				return Promise.resolve(new Response(ok, { status: 200 }));
+			},
+		},
+		kv: {
+			async get(key: string) {
+				counter.calls++;
+				return kv.get(key) ?? null;
+			},
+			async set(key: string, value: unknown) {
+				counter.calls++;
+				kv.set(key, value);
+			},
+			async delete(key: string) {
+				return kv.delete(key);
+			},
+			async list() {
+				return [];
+			},
+		},
+		storage: wrappedStorage(),
+	} as unknown as PluginContext;
+	return { ctx, stores: createInProcessCommerceStores(ctx) };
 }
 
 /** Count the calls `body` makes. */
@@ -253,6 +302,86 @@ describe("one real unit of each leg fits its LEG_QUERY_COSTS estimate", () => {
 			await s.orderStore.markEmailSent(row.id, now);
 		});
 		expect(used).toBeLessThanOrEqual(LEG_QUERY_COSTS["order-emails"].unit);
+	});
+
+	// QA3 N2 guard: the email unit's cost is measured with the REAL sender
+	// construction (`resolveEmailTransport` + `makeEmailSender` + the request), for
+	// both providers, so the table cannot drift below what a send really costs.
+	describe.each([
+		[
+			"resend",
+			{ [EMAIL_API_KEY_KEY]: "re_0123456789abcdef" },
+			{ apiUrl: "https://api.resend.com/emails" },
+		],
+		[
+			"smtp2go",
+			{
+				[EMAIL_PROVIDER_KEY]: "smtp2go",
+				[SMTP2GO_API_KEY_KEY]: "api-0123456789ABCDEF0123456789ABCDEF",
+				[SMTP2GO_REGION_KEY]: "eu",
+			},
+			{},
+		],
+	] as const)("order-emails with the real %s sender", (_provider, seed, egress) => {
+		test("the per-tick provider resolve fits the leg's entry", async () => {
+			const { ctx } = countedEmailContext(seed);
+			let transport: EmailTransport | undefined;
+			const used = await cost(async () => {
+				transport = await resolveEmailTransport(ctx, egress);
+			});
+			expect(transport).toBeDefined();
+			expect(used).toBeLessThanOrEqual(EMAIL_TRANSPORT_RESOLVE_READS);
+			expect(used).toBeLessThanOrEqual(LEG_QUERY_COSTS["order-emails"].entry);
+		});
+
+		test("building the sender and its request fit EMAIL_SENDER_BUILD_READS + 1", async () => {
+			const { ctx } = countedEmailContext(seed);
+			const transport = await resolveEmailTransport(ctx, egress);
+			if (transport === undefined) throw new Error("expected a transport");
+			const used = await cost(async () => {
+				const sender = await makeEmailSender(ctx, egress, { transport });
+				await sender?.send({
+					to: "buyer@example.test" as never,
+					template: "order-confirmation",
+					data: { orderId: "ord_cost", totalCents: 100, currency: "USD" },
+					idempotencyKey: "row_cost",
+				});
+			});
+			expect(used).toBeGreaterThan(1);
+			expect(used).toBeLessThanOrEqual(EMAIL_SENDER_BUILD_READS + 1);
+		});
+
+		test("one real unit — claim, reads, the first send with its build, the mark — fits the unit", async () => {
+			const placed = await placeOrder(
+				`email-real-${_provider}`,
+				new Date(Date.now() + DAY_MS).toISOString(),
+			);
+			const { ctx, stores } = countedEmailContext(seed);
+			await stores.orderStore.markPaid(toOrderId(placed.id));
+			const transport = await resolveEmailTransport(ctx, egress);
+			if (transport === undefined) throw new Error("expected a transport");
+			let sent = 0;
+			const used = await cost(async () => {
+				let built: Promise<EmailSender | undefined> | undefined;
+				sent = await dispatchOrderEmails(
+					{
+						orderStore: stores.orderStore,
+						customerStore: stores.customerStore,
+						clock: stores.clock,
+						emailSender: {
+							async send(input) {
+								built ??= makeEmailSender(ctx, egress, { transport });
+								await (await built)?.send(input);
+							},
+						},
+					},
+					{ batchLimit: 1 },
+				);
+			});
+			expect(sent).toBe(1);
+			expect(used).toBeLessThanOrEqual(LEG_QUERY_COSTS["order-emails"].unit);
+			expect(LEG_QUERY_COSTS["order-emails"].unit).toBe(4 + EMAIL_SEND_AND_RECORD_CALLS);
+		});
 	});
 
 	test("hold-intents: the three completers on one order with an outstanding intent", async () => {
@@ -602,6 +731,27 @@ describe("one real unit of each leg fits its LEG_QUERY_COSTS estimate", () => {
 		expect(used).toBeLessThanOrEqual(LEG_QUERY_COSTS["late-refunds"].entry);
 	});
 
+	test("product-orphans: one orphan's soft delete (the row's flip and its sku claim's release)", async () => {
+		const s = counted();
+		const pid = toProductId("prod-cost-orphan");
+		await s.productCommerce.upsert(
+			{ productId: pid, sku: toSku("COST-ORPHAN"), price: money(cents(900), currency("USD")) },
+			idempotencyKey("cost-orphan-seed"),
+		);
+		const used = await cost(() =>
+			s.productCommerce.softDelete(pid, idempotencyKey("products:prod-cost-orphan:deleted")),
+		);
+		expect(used).toBeLessThanOrEqual(PRODUCT_ORPHAN_DELETE_CALLS);
+		// On top: one row's reads at worst (two misses at one query each, then a hit at
+		// three), the canary read, and this delete.
+		expect(LEG_QUERY_COSTS["product-orphans"].unit).toBe(
+			2 * CONTENT_MISS_QUERIES +
+				CONTENT_READ_QUERIES +
+				CONTENT_READ_QUERIES +
+				PRODUCT_ORPHAN_DELETE_CALLS,
+		);
+	});
+
 	test("reporting-heal: one day reconciled", async () => {
 		const s = counted();
 		const day = new Date(Date.now() - DAY_MS).toISOString().slice(0, 10);
@@ -621,6 +771,8 @@ describe("the cost table against the Workers Free preset (review of QA2 M2)", ()
 	const FREE = 30;
 	/** An ordinary cancel unit, measured above: ledger, cancel, bookkeeping write. */
 	const ORDINARY_CANCEL_UNIT = 5;
+	/** An idle Free tick's own spend (DEPLOYMENT.md §5: "an idle tick is 8 queries"). */
+	const IDLE_FREE_TICK = 8;
 	test("one unit of every leg fits behind an intent cancel and the fixed reads — or fits alone, at the head the guard gives it", () => {
 		// The setting and cadence-state reads, then late-refunds' due check at the head.
 		const fixed = TICK_OVERHEAD_QUERIES + 1;
@@ -630,6 +782,15 @@ describe("the cost table against the Workers Free preset (review of QA2 M2)", ()
 		for (const leg of SWEEP_LEGS) {
 			// The late-refund lead has its own rule (it leads ahead of the cancel).
 			if (leg === "cancel-intents" || leg === "late-refunds") continue;
+			// A leg with no deadline is never given the head (`UNPROMOTED_LEGS`): it must
+			// fit ALONE in an idle Free tick, and otherwise waits for one.
+			if (UNPROMOTED_LEGS.includes(leg)) {
+				expect(
+					IDLE_FREE_TICK + legStartCalls(leg, FREE) + legReserveQueries(leg),
+					leg,
+				).toBeLessThanOrEqual(FREE);
+				continue;
+			}
 			const own =
 				(MAINTENANCE_LEGS.includes(leg) ? 0 : 1) +
 				legStartCalls(leg, FREE) +
@@ -646,8 +807,12 @@ describe("the cost table against the Workers Free preset (review of QA2 M2)", ()
 			"expire-holds",
 			"expire-orders",
 			"hold-intents",
+			// Since the unit counts the real sender's build and the per-tick provider
+			// resolve (3 + 14). It is the FIRST leg, so the head is where it runs.
+			"order-emails",
 			"sku-transfers",
 		]);
+		expect(SWEEP_LEGS[0]).toBe("order-emails");
 		// ...but they fit behind an ordinary one (5), which is every cancel but an
 		// intent's last failing attempt — for them the guard is a backstop, not the pace.
 		const ordinaryCancel = 1 + LEG_QUERY_COSTS["cancel-intents"].entry + ORDINARY_CANCEL_UNIT;

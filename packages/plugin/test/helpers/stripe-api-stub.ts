@@ -46,7 +46,8 @@ function invalidRequest(code: string, message: string): { status: number; body: 
 
 /**
  * The default responder: `POST /v1/payment_intents` answered the way Stripe
- * answers it, including the refusals — so a case cannot pass on a reply real
+ * answers it, including the refusals — and `GET /v1/account` as a US account,
+ * `POST /v1/customers` idempotently (issue #382) — so a case cannot pass on a reply real
  * Stripe would never give.
  *
  *  - `amount` must be a positive integer string and `currency` a lowercase
@@ -60,7 +61,23 @@ function invalidRequest(code: string, message: string): { status: number; body: 
 export function stripeLikeResponder(): StripeResponder {
 	const byKey = new Map<string, { params: string; reply: { status: number; body: unknown } }>();
 	let n = 0;
+	const customers = new Map<string, string>();
 	return (req) => {
+		// The account read (issue #382): a US account, so a suite that does not
+		// care about the account's country sees no change in what checkout asks.
+		if (req.method === "GET" && req.path === "/v1/account") {
+			return { status: 200, body: { id: "acct_stub", object: "account", country: "US" } };
+		}
+		// The buyer's Customer (issue #382, India accounts): Stripe's native
+		// idempotency, so a replayed key gets the same Customer back.
+		if (req.method === "POST" && req.path === "/v1/customers") {
+			const key = req.headers["idempotency-key"];
+			const known = typeof key === "string" ? customers.get(key) : undefined;
+			if (known !== undefined) return { status: 200, body: { id: known, object: "customer" } };
+			const id = `cus_stub_${String(customers.size + 1)}`;
+			if (typeof key === "string") customers.set(key, id);
+			return { status: 200, body: { id, object: "customer" } };
+		}
 		const amount = req.form.get("amount") ?? "";
 		const currency = req.form.get("currency") ?? "";
 		if (!/^[1-9]\d*$/.test(amount)) {

@@ -1,6 +1,7 @@
 /**
- * The ONE deadline a settle request runs under — `webhooks/stripe/settle` and
- * `entitlements/x402/settle`.
+ * The ONE deadline a settle request runs under — `webhooks/stripe/settle`. (The
+ * x402 page-gate route that shared it, `entitlements/x402/settle`, was retired
+ * by ADR-0028 increment 2.)
  *
  * WHY ONE, AND WHY FROM THE REQUEST'S START. Stripe treats a webhook delivery as
  * failed after ~10 s and sends it again. After verifying, a settle can do two slow
@@ -25,9 +26,7 @@
  *    not-started, leaving the refund reserved, uncounted, for the redelivery.
  *
  * Worst case on the Stripe route: storage, a read of at most 3 s, a 3 s create only
- * if it fits, then the inline email from whatever is left — inside 8 s. The x402
- * route uses the deadline for its inline email only; its facilitator call keeps its
- * own bound.
+ * if it fits, then the inline email from whatever is left — inside 8 s.
  */
 
 /** The whole request's budget, from its start: comfortably under Stripe's ~10 s,

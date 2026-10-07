@@ -1,0 +1,835 @@
+{
+	"currency-mismatch.quoteReply": {
+		"ok": false,
+		"reason": "CURRENCY_MISMATCH"
+	},
+	"inr-physical-gst.orderDocument": {
+		"orderId": "id-5",
+		"cartId": "id-1",
+		"currency": "INR",
+		"state": "pending",
+		"idempotencyKey": "place-id-1",
+		"holdExpiresAt": "2026-07-10T00:15:00.000Z",
+		"paymentMethod": "stripe",
+		"buyerRef": "ada@example.com",
+		"customerId": null,
+		"customerKey": "ada@example.com",
+		"buyerRefLower": "ada@example.com",
+		"searchKey": "id-5",
+		"emailDueAt": null,
+		"items": [
+			{
+				"id": "id-6",
+				"productId": "p-in",
+				"sku": "KETTLE",
+				"title": "Kettle",
+				"unitPrice": 49900,
+				"currency": "INR",
+				"quantity": 1,
+				"fulfillmentKind": "physical",
+				"reservationId": "id-2"
+			},
+			{
+				"id": "id-7",
+				"productId": "d-in",
+				"sku": "RECIPES",
+				"title": "Recipes",
+				"unitPrice": 19900,
+				"currency": "INR",
+				"quantity": 2,
+				"fulfillmentKind": "digital",
+				"reservationId": null
+			}
+		],
+		"totals": {
+			"currency": "INR",
+			"subtotal": 89700,
+			"discount": 0,
+			"shipping": 4900,
+			"tax": 11854,
+			"total": 106454,
+			"appliedCouponCode": null,
+			"shippingMethodSnapshot": {
+				"zoneId": "z-in",
+				"methodId": "m-z-in",
+				"matchedRegion": "IN"
+			},
+			"taxBreakdown": {
+				"lines": [
+					{
+						"taxClassId": "gst18",
+						"discountedCents": 49900,
+						"taxCents": 8982
+					},
+					{
+						"taxClassId": "standard",
+						"discountedCents": 39800,
+						"taxCents": 1990
+					}
+				],
+				"shippingTaxCents": 882
+			}
+		},
+		"shippingAddress": {
+			"name": "Ada Lovelace",
+			"line1": "1 Main St",
+			"line2": null,
+			"city": "Springfield",
+			"region": "KA",
+			"postalCode": "90001",
+			"country": "IN",
+			"email": null,
+			"phone": null
+		},
+		"buyerAddressRequired": false,
+		"events": [],
+		"emailOutbox": [],
+		"payments": [],
+		"refunds": [],
+		"holdsPendingAt": "2026-07-10T00:00:00.000Z",
+		"holdsAdopted": {
+			"reservationIds": ["id-2"],
+			"holdExpiresAt": "2026-07-10T00:15:00.000Z",
+			"recordedAt": "2026-07-10T00:00:00.000Z",
+			"completedAt": null
+		},
+		"holdsCommitted": null,
+		"holdsReleased": null,
+		"reconciliationFlag": null,
+		"reconciliationResolution": null,
+		"fulfillment": null,
+		"cancellation": null,
+		"createdAt": "2026-07-10T00:00:00.000Z",
+		"updatedAt": "2026-07-10T00:00:00.000Z",
+		"refundRetries": {},
+		"refundRetryAt": null,
+		"refundRetrySince": null,
+		"paymentIntents": [
+			{
+				"gateway": "stripe",
+				"intentId": "fake_id-5",
+				"recordedAt": "2026-07-10T00:00:00.000Z",
+				"cancelDueAt": "2026-07-10T00:15:00.000Z",
+				"cancelAttempts": 0,
+				"cancelOutcome": null
+			}
+		],
+		"intentCancelDueAt": "2026-07-10T00:15:00.000Z"
+	},
+	"inr-physical-gst.quoteCommand": {
+		"currency": "INR",
+		"lines": [
+			{
+				"unitPriceCents": 49900,
+				"qty": 1,
+				"taxClassId": "gst18"
+			},
+			{
+				"unitPriceCents": 19900,
+				"qty": 2,
+				"taxClassId": "standard"
+			}
+		],
+		"requiresShipping": true,
+		"destination": {
+			"country": "IN",
+			"region": "IN-KA"
+		},
+		"methodId": "m-z-in"
+	},
+	"inr-physical-gst.quoteReply": {
+		"ok": true,
+		"requiresShipping": true,
+		"destination": {
+			"status": "matched",
+			"zoneId": "z-in",
+			"matchedRegion": "IN"
+		},
+		"discountedSubtotalCents": 89700,
+		"breakdown": {
+			"currency": "INR",
+			"subtotalCents": 89700,
+			"discountCents": 0,
+			"shippingCents": 4900,
+			"taxCents": 11854,
+			"totalCents": 106454,
+			"appliedCouponCode": null
+		}
+	},
+	"jpy-digital-percent.orderDocument": {
+		"orderId": "id-3",
+		"cartId": "id-1",
+		"currency": "JPY",
+		"state": "pending",
+		"idempotencyKey": "place-id-1",
+		"holdExpiresAt": "2026-07-10T00:15:00.000Z",
+		"paymentMethod": "stripe",
+		"buyerRef": "ada@example.com",
+		"customerId": null,
+		"customerKey": "ada@example.com",
+		"buyerRefLower": "ada@example.com",
+		"searchKey": "id-3",
+		"emailDueAt": null,
+		"items": [
+			{
+				"id": "id-5",
+				"productId": "d-jp",
+				"sku": "FONT",
+				"title": "Font",
+				"unitPrice": 1200,
+				"currency": "JPY",
+				"quantity": 2,
+				"fulfillmentKind": "digital",
+				"reservationId": null
+			}
+		],
+		"totals": {
+			"currency": "JPY",
+			"subtotal": 2400,
+			"discount": 360,
+			"shipping": 0,
+			"tax": 0,
+			"total": 2040,
+			"appliedCouponCode": "JP15",
+			"shippingMethodSnapshot": null,
+			"taxBreakdown": {
+				"lines": [
+					{
+						"taxClassId": "standard",
+						"discountedCents": 2040,
+						"taxCents": 0
+					}
+				],
+				"shippingTaxCents": 0
+			}
+		},
+		"shippingAddress": null,
+		"buyerAddressRequired": false,
+		"events": [],
+		"emailOutbox": [],
+		"payments": [],
+		"refunds": [],
+		"holdsPendingAt": null,
+		"holdsAdopted": {
+			"reservationIds": [],
+			"holdExpiresAt": "2026-07-10T00:15:00.000Z",
+			"recordedAt": "2026-07-10T00:00:00.000Z",
+			"completedAt": "2026-07-10T00:00:00.000Z"
+		},
+		"holdsCommitted": null,
+		"holdsReleased": null,
+		"reconciliationFlag": null,
+		"reconciliationResolution": null,
+		"fulfillment": null,
+		"cancellation": null,
+		"createdAt": "2026-07-10T00:00:00.000Z",
+		"updatedAt": "2026-07-10T00:00:00.000Z",
+		"refundRetries": {},
+		"refundRetryAt": null,
+		"refundRetrySince": null,
+		"paymentIntents": [
+			{
+				"gateway": "stripe",
+				"intentId": "fake_id-3",
+				"recordedAt": "2026-07-10T00:00:00.000Z",
+				"cancelDueAt": "2026-07-10T00:15:00.000Z",
+				"cancelAttempts": 0,
+				"cancelOutcome": null
+			}
+		],
+		"intentCancelDueAt": "2026-07-10T00:15:00.000Z"
+	},
+	"jpy-digital-percent.quoteCommand": {
+		"currency": "JPY",
+		"lines": [
+			{
+				"unitPriceCents": 1200,
+				"qty": 2,
+				"taxClassId": "standard"
+			}
+		],
+		"requiresShipping": false,
+		"couponCode": "JP15"
+	},
+	"jpy-digital-percent.quoteReply": {
+		"ok": true,
+		"requiresShipping": false,
+		"destination": {
+			"status": "not_required",
+			"zoneId": null,
+			"matchedRegion": null
+		},
+		"discountedSubtotalCents": 2040,
+		"breakdown": {
+			"currency": "JPY",
+			"subtotalCents": 2400,
+			"discountCents": 360,
+			"shippingCents": 0,
+			"taxCents": 0,
+			"totalCents": 2040,
+			"appliedCouponCode": "JP15"
+		}
+	},
+	"unpublished.quoteReply": {
+		"ok": false,
+		"reason": "PRODUCT_NOT_PRICED"
+	},
+	"untitled-quotes.placeReply": {
+		"ok": false,
+		"reason": "PRODUCT_NOT_PRICED"
+	},
+	"untitled-quotes.quoteCommand": {
+		"currency": "USD",
+		"lines": [
+			{
+				"unitPriceCents": 999,
+				"qty": 1,
+				"taxClassId": "standard"
+			}
+		],
+		"requiresShipping": false
+	},
+	"untitled-quotes.quoteReply": {
+		"ok": true,
+		"requiresShipping": false,
+		"destination": {
+			"status": "not_required",
+			"zoneId": null,
+			"matchedRegion": null
+		},
+		"discountedSubtotalCents": 999,
+		"breakdown": {
+			"currency": "USD",
+			"subtotalCents": 999,
+			"discountCents": 0,
+			"shippingCents": 0,
+			"taxCents": 0,
+			"totalCents": 999,
+			"appliedCouponCode": null
+		}
+	},
+	"usd-digital-fixed.orderDocument": {
+		"orderId": "id-3",
+		"cartId": "id-1",
+		"currency": "USD",
+		"state": "pending",
+		"idempotencyKey": "place-id-1",
+		"holdExpiresAt": "2026-07-10T00:15:00.000Z",
+		"paymentMethod": "stripe",
+		"buyerRef": "ada@example.com",
+		"customerId": null,
+		"customerKey": "ada@example.com",
+		"buyerRefLower": "ada@example.com",
+		"searchKey": "id-3",
+		"emailDueAt": null,
+		"items": [
+			{
+				"id": "id-5",
+				"productId": "d1",
+				"sku": "EBOOK",
+				"title": "Ebook",
+				"unitPrice": 999,
+				"currency": "USD",
+				"quantity": 3,
+				"fulfillmentKind": "digital",
+				"reservationId": null
+			}
+		],
+		"totals": {
+			"currency": "USD",
+			"subtotal": 2997,
+			"discount": 500,
+			"shipping": 0,
+			"tax": 0,
+			"total": 2497,
+			"appliedCouponCode": "SAVE5",
+			"shippingMethodSnapshot": null,
+			"taxBreakdown": {
+				"lines": [
+					{
+						"taxClassId": "standard",
+						"discountedCents": 2497,
+						"taxCents": 0
+					}
+				],
+				"shippingTaxCents": 0
+			}
+		},
+		"shippingAddress": null,
+		"buyerAddressRequired": false,
+		"events": [],
+		"emailOutbox": [],
+		"payments": [],
+		"refunds": [],
+		"holdsPendingAt": null,
+		"holdsAdopted": {
+			"reservationIds": [],
+			"holdExpiresAt": "2026-07-10T00:15:00.000Z",
+			"recordedAt": "2026-07-10T00:00:00.000Z",
+			"completedAt": "2026-07-10T00:00:00.000Z"
+		},
+		"holdsCommitted": null,
+		"holdsReleased": null,
+		"reconciliationFlag": null,
+		"reconciliationResolution": null,
+		"fulfillment": null,
+		"cancellation": null,
+		"createdAt": "2026-07-10T00:00:00.000Z",
+		"updatedAt": "2026-07-10T00:00:00.000Z",
+		"refundRetries": {},
+		"refundRetryAt": null,
+		"refundRetrySince": null,
+		"paymentIntents": [
+			{
+				"gateway": "stripe",
+				"intentId": "fake_id-3",
+				"recordedAt": "2026-07-10T00:00:00.000Z",
+				"cancelDueAt": "2026-07-10T00:15:00.000Z",
+				"cancelAttempts": 0,
+				"cancelOutcome": null
+			}
+		],
+		"intentCancelDueAt": "2026-07-10T00:15:00.000Z"
+	},
+	"usd-digital-fixed.quoteCommand": {
+		"currency": "USD",
+		"lines": [
+			{
+				"unitPriceCents": 999,
+				"qty": 3,
+				"taxClassId": "standard"
+			}
+		],
+		"requiresShipping": false,
+		"couponCode": "SAVE5"
+	},
+	"usd-digital-fixed.quoteReply": {
+		"ok": true,
+		"requiresShipping": false,
+		"destination": {
+			"status": "not_required",
+			"zoneId": null,
+			"matchedRegion": null
+		},
+		"discountedSubtotalCents": 2497,
+		"breakdown": {
+			"currency": "USD",
+			"subtotalCents": 2997,
+			"discountCents": 500,
+			"shippingCents": 0,
+			"taxCents": 0,
+			"totalCents": 2497,
+			"appliedCouponCode": "SAVE5"
+		}
+	},
+	"usd-digital-single.orderDocument": {
+		"orderId": "id-3",
+		"cartId": "id-1",
+		"currency": "USD",
+		"state": "pending",
+		"idempotencyKey": "place-id-1",
+		"holdExpiresAt": "2026-07-10T00:15:00.000Z",
+		"paymentMethod": "stripe",
+		"buyerRef": "ada@example.com",
+		"customerId": null,
+		"customerKey": "ada@example.com",
+		"buyerRefLower": "ada@example.com",
+		"searchKey": "id-3",
+		"emailDueAt": null,
+		"items": [
+			{
+				"id": "id-4",
+				"productId": "d1",
+				"sku": "EBOOK",
+				"title": "Ebook",
+				"unitPrice": 2500,
+				"currency": "USD",
+				"quantity": 1,
+				"fulfillmentKind": "digital",
+				"reservationId": null
+			}
+		],
+		"totals": {
+			"currency": "USD",
+			"subtotal": 2500,
+			"discount": 0,
+			"shipping": 0,
+			"tax": 0,
+			"total": 2500,
+			"appliedCouponCode": null,
+			"shippingMethodSnapshot": null,
+			"taxBreakdown": {
+				"lines": [
+					{
+						"taxClassId": "standard",
+						"discountedCents": 2500,
+						"taxCents": 0
+					}
+				],
+				"shippingTaxCents": 0
+			}
+		},
+		"shippingAddress": null,
+		"buyerAddressRequired": false,
+		"events": [],
+		"emailOutbox": [],
+		"payments": [],
+		"refunds": [],
+		"holdsPendingAt": null,
+		"holdsAdopted": {
+			"reservationIds": [],
+			"holdExpiresAt": "2026-07-10T00:15:00.000Z",
+			"recordedAt": "2026-07-10T00:00:00.000Z",
+			"completedAt": "2026-07-10T00:00:00.000Z"
+		},
+		"holdsCommitted": null,
+		"holdsReleased": null,
+		"reconciliationFlag": null,
+		"reconciliationResolution": null,
+		"fulfillment": null,
+		"cancellation": null,
+		"createdAt": "2026-07-10T00:00:00.000Z",
+		"updatedAt": "2026-07-10T00:00:00.000Z",
+		"refundRetries": {},
+		"refundRetryAt": null,
+		"refundRetrySince": null,
+		"paymentIntents": [
+			{
+				"gateway": "stripe",
+				"intentId": "fake_id-3",
+				"recordedAt": "2026-07-10T00:00:00.000Z",
+				"cancelDueAt": "2026-07-10T00:15:00.000Z",
+				"cancelAttempts": 0,
+				"cancelOutcome": null
+			}
+		],
+		"intentCancelDueAt": "2026-07-10T00:15:00.000Z"
+	},
+	"usd-digital-single.quoteCommand": {
+		"currency": "USD",
+		"lines": [
+			{
+				"unitPriceCents": 2500,
+				"qty": 1,
+				"taxClassId": "standard"
+			}
+		],
+		"requiresShipping": false
+	},
+	"usd-digital-single.quoteReply": {
+		"ok": true,
+		"requiresShipping": false,
+		"destination": {
+			"status": "not_required",
+			"zoneId": null,
+			"matchedRegion": null
+		},
+		"discountedSubtotalCents": 2500,
+		"breakdown": {
+			"currency": "USD",
+			"subtotalCents": 2500,
+			"discountCents": 0,
+			"shippingCents": 0,
+			"taxCents": 0,
+			"totalCents": 2500,
+			"appliedCouponCode": null
+		}
+	},
+	"usd-mixed-zoned-percent.orderDocument": {
+		"orderId": "id-5",
+		"cartId": "id-1",
+		"currency": "USD",
+		"state": "pending",
+		"idempotencyKey": "place-id-1",
+		"holdExpiresAt": "2026-07-10T00:15:00.000Z",
+		"paymentMethod": "stripe",
+		"buyerRef": "ada@example.com",
+		"customerId": null,
+		"customerKey": "ada@example.com",
+		"buyerRefLower": "ada@example.com",
+		"searchKey": "id-5",
+		"emailDueAt": null,
+		"items": [
+			{
+				"id": "id-7",
+				"productId": "p1",
+				"sku": "MUG",
+				"title": "Mug",
+				"unitPrice": 1500,
+				"currency": "USD",
+				"quantity": 2,
+				"fulfillmentKind": "physical",
+				"reservationId": "id-2"
+			},
+			{
+				"id": "id-8",
+				"productId": "d1",
+				"sku": "EBOOK",
+				"title": "Ebook",
+				"unitPrice": 999,
+				"currency": "USD",
+				"quantity": 1,
+				"fulfillmentKind": "digital",
+				"reservationId": null
+			}
+		],
+		"totals": {
+			"currency": "USD",
+			"subtotal": 3999,
+			"discount": 400,
+			"shipping": 599,
+			"tax": 266,
+			"total": 4464,
+			"appliedCouponCode": "TENOFF",
+			"shippingMethodSnapshot": {
+				"zoneId": "z-us-ca",
+				"methodId": "m-z-us-ca",
+				"matchedRegion": "US-CA"
+			},
+			"taxBreakdown": {
+				"lines": [
+					{
+						"taxClassId": "standard",
+						"discountedCents": 2700,
+						"taxCents": 196
+					},
+					{
+						"taxClassId": "reduced",
+						"discountedCents": 899,
+						"taxCents": 27
+					}
+				],
+				"shippingTaxCents": 43
+			}
+		},
+		"shippingAddress": {
+			"name": "Ada Lovelace",
+			"line1": "1 Main St",
+			"line2": null,
+			"city": "Springfield",
+			"region": "CA",
+			"postalCode": "90001",
+			"country": "US",
+			"email": null,
+			"phone": null
+		},
+		"buyerAddressRequired": false,
+		"events": [],
+		"emailOutbox": [],
+		"payments": [],
+		"refunds": [],
+		"holdsPendingAt": "2026-07-10T00:00:00.000Z",
+		"holdsAdopted": {
+			"reservationIds": ["id-2"],
+			"holdExpiresAt": "2026-07-10T00:15:00.000Z",
+			"recordedAt": "2026-07-10T00:00:00.000Z",
+			"completedAt": null
+		},
+		"holdsCommitted": null,
+		"holdsReleased": null,
+		"reconciliationFlag": null,
+		"reconciliationResolution": null,
+		"fulfillment": null,
+		"cancellation": null,
+		"createdAt": "2026-07-10T00:00:00.000Z",
+		"updatedAt": "2026-07-10T00:00:00.000Z",
+		"refundRetries": {},
+		"refundRetryAt": null,
+		"refundRetrySince": null,
+		"paymentIntents": [
+			{
+				"gateway": "stripe",
+				"intentId": "fake_id-5",
+				"recordedAt": "2026-07-10T00:00:00.000Z",
+				"cancelDueAt": "2026-07-10T00:15:00.000Z",
+				"cancelAttempts": 0,
+				"cancelOutcome": null
+			}
+		],
+		"intentCancelDueAt": "2026-07-10T00:15:00.000Z"
+	},
+	"usd-mixed-zoned-percent.quoteCommand": {
+		"currency": "USD",
+		"lines": [
+			{
+				"unitPriceCents": 1500,
+				"qty": 2,
+				"taxClassId": "standard"
+			},
+			{
+				"unitPriceCents": 999,
+				"qty": 1,
+				"taxClassId": "reduced"
+			}
+		],
+		"requiresShipping": true,
+		"destination": {
+			"country": "US",
+			"region": "CA"
+		},
+		"methodId": "m-z-us-ca",
+		"couponCode": "TENOFF"
+	},
+	"usd-mixed-zoned-percent.quoteReply": {
+		"ok": true,
+		"requiresShipping": true,
+		"destination": {
+			"status": "matched",
+			"zoneId": "z-us-ca",
+			"matchedRegion": "US-CA"
+		},
+		"discountedSubtotalCents": 3599,
+		"breakdown": {
+			"currency": "USD",
+			"subtotalCents": 3999,
+			"discountCents": 400,
+			"shippingCents": 599,
+			"taxCents": 266,
+			"totalCents": 4464,
+			"appliedCouponCode": "TENOFF"
+		}
+	},
+	"usd-physical-address-needed.quoteCommand": {
+		"currency": "USD",
+		"lines": [
+			{
+				"unitPriceCents": 1500,
+				"qty": 1,
+				"taxClassId": "standard"
+			}
+		],
+		"requiresShipping": true
+	},
+	"usd-physical-address-needed.quoteReply": {
+		"ok": true,
+		"requiresShipping": true,
+		"destination": {
+			"status": "address_needed",
+			"zoneId": null,
+			"matchedRegion": null
+		},
+		"discountedSubtotalCents": 1500,
+		"breakdown": {
+			"currency": "USD",
+			"subtotalCents": 1500,
+			"discountCents": 0,
+			"shippingCents": 0,
+			"taxCents": 0,
+			"totalCents": 1500,
+			"appliedCouponCode": null
+		}
+	},
+	"usd-variant-product.orderDocument": {
+		"orderId": "id-3",
+		"cartId": "id-1",
+		"currency": "USD",
+		"state": "pending",
+		"idempotencyKey": "place-id-1",
+		"holdExpiresAt": "2026-07-10T00:15:00.000Z",
+		"paymentMethod": "stripe",
+		"buyerRef": "ada@example.com",
+		"customerId": null,
+		"customerKey": "ada@example.com",
+		"buyerRefLower": "ada@example.com",
+		"searchKey": "id-3",
+		"emailDueAt": null,
+		"items": [
+			{
+				"id": "id-4",
+				"productId": "v1",
+				"sku": "SHIRT",
+				"title": "Shirt",
+				"unitPrice": 2500,
+				"currency": "USD",
+				"quantity": 2,
+				"fulfillmentKind": "digital",
+				"reservationId": null
+			}
+		],
+		"totals": {
+			"currency": "USD",
+			"subtotal": 5000,
+			"discount": 0,
+			"shipping": 0,
+			"tax": 0,
+			"total": 5000,
+			"appliedCouponCode": null,
+			"shippingMethodSnapshot": null,
+			"taxBreakdown": {
+				"lines": [
+					{
+						"taxClassId": "standard",
+						"discountedCents": 5000,
+						"taxCents": 0
+					}
+				],
+				"shippingTaxCents": 0
+			}
+		},
+		"shippingAddress": null,
+		"buyerAddressRequired": false,
+		"events": [],
+		"emailOutbox": [],
+		"payments": [],
+		"refunds": [],
+		"holdsPendingAt": null,
+		"holdsAdopted": {
+			"reservationIds": [],
+			"holdExpiresAt": "2026-07-10T00:15:00.000Z",
+			"recordedAt": "2026-07-10T00:00:00.000Z",
+			"completedAt": "2026-07-10T00:00:00.000Z"
+		},
+		"holdsCommitted": null,
+		"holdsReleased": null,
+		"reconciliationFlag": null,
+		"reconciliationResolution": null,
+		"fulfillment": null,
+		"cancellation": null,
+		"createdAt": "2026-07-10T00:00:00.000Z",
+		"updatedAt": "2026-07-10T00:00:00.000Z",
+		"refundRetries": {},
+		"refundRetryAt": null,
+		"refundRetrySince": null,
+		"paymentIntents": [
+			{
+				"gateway": "stripe",
+				"intentId": "fake_id-3",
+				"recordedAt": "2026-07-10T00:00:00.000Z",
+				"cancelDueAt": "2026-07-10T00:15:00.000Z",
+				"cancelAttempts": 0,
+				"cancelOutcome": null
+			}
+		],
+		"intentCancelDueAt": "2026-07-10T00:15:00.000Z"
+	},
+	"usd-variant-product.quoteCommand": {
+		"currency": "USD",
+		"lines": [
+			{
+				"unitPriceCents": 2500,
+				"qty": 2,
+				"taxClassId": "standard"
+			}
+		],
+		"requiresShipping": false
+	},
+	"usd-variant-product.quoteReply": {
+		"ok": true,
+		"requiresShipping": false,
+		"destination": {
+			"status": "not_required",
+			"zoneId": null,
+			"matchedRegion": null
+		},
+		"discountedSubtotalCents": 5000,
+		"breakdown": {
+			"currency": "USD",
+			"subtotalCents": 5000,
+			"discountCents": 0,
+			"shippingCents": 0,
+			"taxCents": 0,
+			"totalCents": 5000,
+			"appliedCouponCode": null
+		}
+	}
+}

@@ -17,7 +17,9 @@ export interface PrivatePage {
 	cache?: { set(options: false): void };
 }
 
-export function keepPrivate(page: PrivatePage): void {
-	page.response.headers.set("Cache-Control", PRIVATE_NO_STORE);
+/** `cacheControl` may only ADD to the private, no-store default (a download adds
+ *  `no-transform`); it defaults to {@link PRIVATE_NO_STORE}. */
+export function keepPrivate(page: PrivatePage, cacheControl: string = PRIVATE_NO_STORE): void {
+	page.response.headers.set("Cache-Control", cacheControl);
 	page.cache?.set(false);
 }

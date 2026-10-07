@@ -83,6 +83,7 @@ import {
 import { CRITICAL_LEGS, minimumQueryBudget } from "../src/cron/sweeps.js";
 import plugin from "../src/plugin.js";
 import type { PluginContext } from "../src/types.js";
+import { fakeCms } from "./cron-sweep-fixtures.js";
 import { commerceStorageLayout } from "./sandbox/storage-layout.js";
 
 const MINUTE_MS = 60_000;
@@ -125,12 +126,13 @@ describe("the sweep's schedule and timeout are pinned", () => {
 	test("the critical legs come first in the summary, expiry before the coupon sweeper, and only housekeeping is on the slow cadence", () => {
 		expect(SWEEP_LEGS.slice(0, 3)).toEqual([...CRITICAL_LEGS]);
 		expect(SWEEP_LEGS.indexOf("expire-orders")).toBeLessThan(SWEEP_LEGS.indexOf("coupon-orphans"));
-		// The four scans, and (QA2 M2) the sign-in challenge prune — housekeeping a
+		// The five scans, and (QA2 M2) the sign-in challenge prune — housekeeping a
 		// customer never waits on.
 		expect([...MAINTENANCE_LEGS].toSorted()).toEqual(
 			[
 				"coupon-orphans",
 				"order-sku-index",
+				"product-orphans",
 				"prune-challenges",
 				"reporting-heal",
 				"sku-transfers",
@@ -447,7 +449,9 @@ describe("the query budget is an operational setting (Background work per minute
 			timeMs: SWEEP_TICK_BUDGET_MS,
 			queries: 600,
 			expiryBatch: 18,
-			emailBatch: 15,
+			// 12 since the email unit counts the real sender's build (four kv reads)
+			// and the per-tick provider resolve (up to three): it was 15 at 12/unit.
+			emailBatch: 12,
 		});
 	}, 120_000);
 
@@ -875,6 +879,9 @@ function context(
 			},
 		},
 		storage: store,
+		// A CMS in which every product exists, so `product-orphans` runs (and is
+		// budgeted) like any scan here rather than reporting itself unwired.
+		content: fakeCms().access(),
 	} as unknown as PluginContext;
 }
 

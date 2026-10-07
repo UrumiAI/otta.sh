@@ -45,6 +45,12 @@ export {
 } from "./order-transition-contract.js";
 export { orderFulfillmentContract } from "./order-fulfillment-contract.js";
 export {
+	emailRecipientContract,
+	type EmailRecipientContractOptions,
+	type EmailRecipientHarness,
+	type StoredOutboxRow,
+} from "./email-recipient-contract.js";
+export {
 	buildRefundSeed,
 	refundOrderContract,
 	type RefundOrderContractOptions,

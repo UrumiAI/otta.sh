@@ -13,7 +13,11 @@ import type { Clock } from "../ports/clock.js";
 import type { CouponStore } from "../ports/coupon-store.js";
 import type { IdGen } from "../ports/id-gen.js";
 import type { InventoryStore } from "../ports/inventory-store.js";
-import type { CreateOrderLineInput, OrderStore } from "../ports/order-store.js";
+import type {
+	CreateOrderLineInput,
+	OrderStore,
+	PaymentIntentRecord,
+} from "../ports/order-store.js";
 import {
 	PaymentIntentError,
 	type CreateIntentInput,
@@ -25,8 +29,9 @@ import { isProductLive } from "../product-commerce/sellable.js";
 import type { ShippingRulesStore } from "../ports/shipping-rules-store.js";
 import type { TaxRulesStore } from "../ports/tax-rules-store.js";
 import { computeQuote } from "../pricing/quote.js";
-import type { TotalsLineInput } from "../pricing/types.js";
+import { type PricedLine, quoteCommandFor } from "../pricing/quote-input.js";
 import type { CreateOrderFailure } from "./errors.js";
+import { snapshotOrderLine } from "./line-snapshot.js";
 import type { Order, OrderAddress, PaymentMethod } from "./model.js";
 import { normalizeOrderAddress, type OrderAddressInput } from "./order-address.js";
 
@@ -78,9 +83,23 @@ export interface CreateOrderCommand {
 	 * frozen copy of whatever checkout submitted (the Shopify model), never a
 	 * live pointer to the profile address book. It is the ONLY input to the
 	 * shipping/tax zone. Required for a cart with a physical line when zones
-	 * are configured (`MISSING_SHIPPING_ADDRESS`); optional otherwise.
+	 * are configured (`MISSING_SHIPPING_ADDRESS`), or for ANY cart when
+	 * {@link addressRequired} says so; optional otherwise.
 	 */
 	shippingAddress?: OrderAddressInput;
+	/**
+	 * The buyer's name and address are required for THIS checkout whatever the
+	 * cart holds (issue #382): a payment account under India's export rules
+	 * refuses a payment without them, digital and no-zone carts included. The
+	 * CALLER decides — whether the account needs it is a fact about the payment
+	 * provider, which the domain does not read — and the domain enforces it with
+	 * the same `MISSING_SHIPPING_ADDRESS` refusal, at the same point, as a
+	 * physical cart in a zoned store: before any redemption or mint. A same-key
+	 * replay short-circuits before the check, so the locked review's retry
+	 * (which sends no address) still replays. Absent or `false` ⇒ ADR-0021's
+	 * rules alone.
+	 */
+	addressRequired?: boolean;
 }
 
 export type CreateOrderFromCartResult =
@@ -167,7 +186,13 @@ export async function createOrderFromCart(
 		try {
 			// Same builder as the fresh path below — the replay must describe the SAME
 			// goods, byte-for-byte, or the provider's same-key retry is rejected.
-			intent = await gateway.createIntent(intentInputFor(already, command.idempotencyKey));
+			intent = await gateway.createIntent(
+				intentInputFor(
+					already,
+					command.idempotencyKey,
+					await recordedCustomer(deps, already, gateway.id),
+				),
+			);
 		} catch (err) {
 			// ONLY a typed intent failure is a clean checkout failure; every other
 			// throw is a bug and must keep propagating. The replayed order is
@@ -220,7 +245,7 @@ export async function createOrderFromCart(
 	// rewrite it (immutability is structural).
 	const currency = cart.currency;
 	const lines: CreateOrderLineInput[] = [];
-	const totalsLines: TotalsLineInput[] = [];
+	const pricedLines: PricedLine[] = [];
 	// Bulk-fetch every priced line's product projection in ONE store round trip
 	// (kills the per-cart-line N+1). Branding only the non-null ids keeps a null
 	// line's PRODUCT_NOT_PRICED precedence identical to the per-line read: a null
@@ -257,23 +282,24 @@ export async function createOrderFromCart(
 			// hold).
 			return { ok: false, reason: "RESERVATION_LOST" };
 		}
-		lines.push({
-			productId: pc.productId,
-			sku: brandSku(line.sku),
-			title: pc.title,
-			unitPrice: pc.price.amount,
-			currency: pc.price.currency,
-			quantity: line.qty,
-			fulfillmentKind: pc.productKind,
-			// Physical lines adopt their cart reservation; digital carry none (§6).
-			reservationId: physical ? asReservationId(line.reservationId) : null,
-		});
-		// Tax base for the pipeline: the line's snapshot price × qty at its tax class.
-		totalsLines.push({
-			unitPriceCents: pc.price.amount,
+		const priced: PricedLine = {
+			price: pc.price,
 			qty: line.qty,
-			taxClassId: pc.taxClass ?? "standard",
-		});
+			taxClass: pc.taxClass,
+			productKind: pc.productKind,
+		};
+		lines.push(
+			snapshotOrderLine({
+				...priced,
+				productId: pc.productId,
+				sku: brandSku(line.sku),
+				title: pc.title,
+				// Physical lines adopt their cart reservation; digital carry none (§6).
+				reservationId: physical ? asReservationId(line.reservationId) : null,
+			}),
+		);
+		// Tax base for the pipeline: the line's snapshot price × qty at its tax class.
+		pricedLines.push(priced);
 	}
 
 	// Phase 6: compute the full totals breakdown (subtotal → discount → shipping
@@ -281,7 +307,7 @@ export async function createOrderFromCart(
 	// engine after the store reads; read-only (no redemption here). The zone is
 	// derived from the address inside the quote (ADR-0021), so the review and
 	// the order resolve it identically.
-	const requiresShipping = lines.some((line) => line.fulfillmentKind === "physical");
+	// The same quote command the checkout review builds (`quoteCommandFor`).
 	const quote = await computeQuote(
 		{
 			shippingRules: deps.shippingRules,
@@ -289,16 +315,16 @@ export async function createOrderFromCart(
 			couponStore: deps.couponStore,
 			clock: deps.clock,
 		},
-		{
+		quoteCommandFor({
 			currency,
-			lines: totalsLines,
-			requiresShipping,
-			...(shippingAddress !== null
-				? { destination: { country: shippingAddress.country, region: shippingAddress.region } }
-				: {}),
-			...(command.shippingMethodId !== undefined ? { methodId: command.shippingMethodId } : {}),
-			...(command.couponCode !== undefined ? { couponCode: command.couponCode } : {}),
-		},
+			lines: pricedLines,
+			destination:
+				shippingAddress !== null
+					? { country: shippingAddress.country, region: shippingAddress.region }
+					: undefined,
+			methodId: command.shippingMethodId,
+			couponCode: command.couponCode,
+		}),
 	);
 	if (!quote.ok) return { ok: false, reason: quote.reason };
 	const breakdown = quote.breakdown;
@@ -307,6 +333,12 @@ export async function createOrderFromCart(
 	// mint.
 	const zone = quote.destination;
 	if (zone.status === "address_needed") return { ok: false, reason: "MISSING_SHIPPING_ADDRESS" };
+	// Issue #382: the payment account needs an address on every payment. The
+	// address, when given, was already validated whole above (name, line1, city,
+	// postal code, ISO country; region by ADR-0021's rules).
+	if (command.addressRequired === true && shippingAddress === null) {
+		return { ok: false, reason: "MISSING_SHIPPING_ADDRESS" };
+	}
 	const methodId = command.shippingMethodId ?? "";
 	if (zone.status === "matched" && methodId === "") {
 		return { ok: false, reason: "SHIPPING_METHOD_REQUIRED" };
@@ -477,6 +509,9 @@ async function finalizeOrder(
 		// ADR-0009: freeze the ship-to snapshot alongside the order, in the same
 		// guarded insert. A replay re-inserts nothing (idempotency-key conflict).
 		shippingAddress: ctx.shippingAddress,
+		// Issue #382: the requirement this checkout was placed under, frozen in the
+		// same insert — it also decides the payment's customer for every intent.
+		buyerAddressRequired: command.addressRequired === true,
 		totals: {
 			subtotal: breakdown.subtotalCents,
 			total: breakdown.totalCents,
@@ -755,6 +790,7 @@ async function rememberIntent(
 			orderId: order.id,
 			gateway: intent.gateway,
 			intentId: intent.intentId,
+			...(intent.customerRef !== undefined ? { customerRef: intent.customerRef } : {}),
 		});
 	} catch (err) {
 		console.error(
@@ -762,6 +798,52 @@ async function rememberIntent(
 			{ error: err instanceof Error ? err.message : String(err) },
 		);
 	}
+}
+
+/**
+ * The provider-side customer decision this order's earliest recorded intent
+ * kept (issue #382), for a REPLAY to hand back to the gateway — so the gateway
+ * decides it once per order and every same-key request it makes afterwards is
+ * byte-identical. `undefined` when no recorded intent carries one (none yet, an
+ * order from before decisions were recorded, another gateway): the gateway then
+ * behaves exactly as it always did.
+ *
+ * NOT READ for an order placed outside the address requirement
+ * (`buyerAddressRequired === false`, issue #405): its intents all carry
+ * `customerRequired: false`, so its decision is "no customer" by construction
+ * and the gateway never needs the record to stay byte-identical. That is every
+ * order on a store whose payments do not need a Customer, so their replays and
+ * resumes pay no extra read. An older order (`undefined`) still reads it.
+ *
+ * A failed read is an INTENT failure, not a bug (issue #405): it surfaces as a
+ * retryable `PaymentIntentError`, which the caller's catch maps to
+ * `PAYMENT_INTENT_FAILED` with nothing asked of the gateway, and the buyer's
+ * same-key retry asks again. It is never read as "none": guessing could change
+ * the request Stripe already holds under this key, which it refuses for good.
+ * The store's own error is logged here — the intent-failure log carries only
+ * the typed error's fields.
+ */
+async function recordedCustomer(
+	deps: CreateOrderDeps,
+	order: Order,
+	gateway: PaymentMethod,
+): Promise<string | null | undefined> {
+	if (order.buyerAddressRequired === false) return undefined;
+	let intents: PaymentIntentRecord[];
+	try {
+		intents = await deps.orderStore.listPaymentIntents(order.id);
+	} catch (err) {
+		console.error(
+			`[domain] could not read the recorded payment intents of order ${order.id}; the replay is refused, a retry reads again`,
+			{ error: err instanceof Error ? err.message : String(err) },
+		);
+		throw new PaymentIntentError({
+			gateway,
+			retryable: true,
+			message: `could not read the recorded payment intents of order ${order.id}`,
+		});
+	}
+	return intents.find((intent) => intent.customerRef !== undefined)?.customerRef;
 }
 
 /**
@@ -782,9 +864,24 @@ async function rememberIntent(
  * naming the field `description` — is the adapter's job (ports-and-adapters: the
  * domain must not learn Stripe's string format).
  */
-function intentInputFor(order: Order, key: IdempotencyKey): CreateIntentInput {
+// Issue #382, the one residual case: an intent never recorded (lost answer or a
+// failed record write), retried after Stripe pruned the Customer's ~24 h key but
+// not the intent's, makes the gateway create a second Customer and the same-key
+// intent body differs. It needs a hold TTL above 1440 min (the default is 15);
+// see the precedence note in the Stripe adapter's `createIntent`.
+function intentInputFor(
+	order: Order,
+	key: IdempotencyKey,
+	customerRef?: string | null,
+): CreateIntentInput {
 	const address = order.shippingAddress;
 	return {
+		...(customerRef !== undefined ? { customerRef } : {}),
+		// Issue #382: the order decides whether its payment carries a customer —
+		// the same answer for every intent of it. Absent on older orders.
+		...(order.buyerAddressRequired !== undefined
+			? { customerRequired: order.buyerAddressRequired && address !== null }
+			: {}),
 		orderId: order.id,
 		amount: order.totals.total,
 		currency: order.totals.currency,
