@@ -74,7 +74,9 @@ describe("deleteTaxClass (delete-in-use guard over the in-memory fakes)", () => 
 		);
 		await productCommerce.softDelete(pid, idempotencyKey("del-1"));
 
-		expect(await deleteTaxClass({ taxRules, productCommerce, settings }, "reduced")).toEqual({ ok: true });
+		expect(await deleteTaxClass({ taxRules, productCommerce, settings }, "reduced")).toEqual({
+			ok: true,
+		});
 	});
 
 	test("refuses a class a rate references (in_use_by_rates), checked after the product guard", async () => {

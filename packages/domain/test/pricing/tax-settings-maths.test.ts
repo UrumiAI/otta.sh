@@ -224,9 +224,9 @@ describe("shipping tax class — WooCommerce 'based on cart items' (woo-facts-ve
 			["c-wine", "Wine"],
 			["c-beer", "beer"],
 		]);
-		expect(
-			inheritShippingTaxClass([line("0", 1, "c-wine"), line("1", 1, "c-beer")], mixed),
-		).toBe("c-beer");
+		expect(inheritShippingTaxClass([line("0", 1, "c-wine"), line("1", 1, "c-beer")], mixed)).toBe(
+			"c-beer",
+		);
 	});
 
 	test("names equal but for case → the lower id, whatever the insertion order", () => {
@@ -236,7 +236,7 @@ describe("shipping tax class — WooCommerce 'based on cart items' (woo-facts-ve
 		]);
 		const lines = [line("0", 1, "z-two"), line("1", 1, "a-one")];
 		expect(inheritShippingTaxClass(lines, tie)).toBe("a-one");
-		expect(inheritShippingTaxClass(lines, new Map([...tie].reverse()))).toBe("a-one");
+		expect(inheritShippingTaxClass(lines, new Map([...tie].toReversed()))).toBe("a-one");
 	});
 
 	test("several classes none of which is declared → standard (WooCommerce's fallback)", () => {

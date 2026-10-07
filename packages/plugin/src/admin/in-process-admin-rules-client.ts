@@ -562,7 +562,8 @@ export class InProcessAdminRulesClient implements AdminRulesSurface {
 	): Promise<TaxSettingsUpdateResult> {
 		requireBoundedText("idempotencyKey", opts.idempotencyKey, 1, 200);
 		const stored = (await this.#stores.settingsStore.get()).tax;
-		const current = stored ?? effectiveTaxSettings(undefined, await this.#stores.taxRules.hasAnyRate());
+		const current =
+			stored ?? effectiveTaxSettings(undefined, await this.#stores.taxRules.hasAnyRate());
 		const currentDigest = taxSettingsDigest(current);
 		const parsed = parseTaxSettings(next);
 		if (!("field" in parsed) && taxSettingsDigest(parsed) === currentDigest) {

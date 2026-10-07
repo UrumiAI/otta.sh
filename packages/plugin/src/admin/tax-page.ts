@@ -268,10 +268,7 @@ function taxClassesLevel() {
 		limit: 200,
 		filterFromValues: () => ({}),
 		async fetchPage(client) {
-			const [classes, read] = await Promise.all([
-				client.listTaxClasses(),
-				client.getTaxSettings(),
-			]);
+			const [classes, read] = await Promise.all([client.listTaxClasses(), client.getTaxSettings()]);
 			return { items: [{ classes, taxOff: taxOffBanner(read) }], nextCursor: null };
 		},
 		render({ actions, items, nextToken, notice, renderState }) {

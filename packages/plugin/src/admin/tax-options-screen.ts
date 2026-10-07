@@ -128,12 +128,19 @@ export function saveOptionsAction(ids: TaxOptionsActions) {
 		const [classes, read] = await Promise.all([client.listTaxClasses(), client.getTaxSettings()]);
 		if (result.reason === "stale") {
 			return {
-				blocks: optionsScreen(ids, result.current, read.hasRates, classes, draftOf(result.current), {
-					variant: "error",
-					title: "Tax options changed since you loaded them — reload",
-					description:
-						"Your change was NOT applied — the current options are shown below. Re-apply your change and save again.",
-				}),
+				blocks: optionsScreen(
+					ids,
+					result.current,
+					read.hasRates,
+					classes,
+					draftOf(result.current),
+					{
+						variant: "error",
+						title: "Tax options changed since you loaded them — reload",
+						description:
+							"Your change was NOT applied — the current options are shown below. Re-apply your change and save again.",
+					},
+				),
 			};
 		}
 		return {

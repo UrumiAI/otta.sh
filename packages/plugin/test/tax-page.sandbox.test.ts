@@ -1168,6 +1168,11 @@ describe("admin Tax console — rates level (workerd sandbox)", () => {
 	});
 });
 
+/** Every top-level banner's title. */
+function bannerTitles(blocks: readonly LooseBlock[]): string[] {
+	return blocks.filter((b) => b.type === "banner").map((b) => String(b.title));
+}
+
 describe("admin Tax console — tax options (PR 2a, ADR-0031)", () => {
 	/** A whole, valid options block with tax on — what a save writes. */
 	const TAX_ON = {
@@ -1337,10 +1342,8 @@ describe("admin Tax console — tax options (PR 2a, ADR-0031)", () => {
 	test("rates with tax off: the registry and the options screen both say tax is switched off", async () => {
 		await seedRules();
 		await settingsStore.update({ tax: { ...TAX_ON, enabled: false } }, idempotencyKey("off"));
-		const banners = (blocks: readonly LooseBlock[]) =>
-			blocks.filter((b) => b.type === "banner").map((b) => String(b.title));
-		expect(banners(await loadClasses())).toContain("Tax is switched off");
-		expect(banners(await openOptions())).toContain("Tax is switched off");
+		expect(bannerTitles(await loadClasses())).toContain("Tax is switched off");
+		expect(bannerTitles(await openOptions())).toContain("Tax is switched off");
 		const off = (await loadClasses()).find((b) => b.title === "Tax is switched off");
 		expect(off?.variant).toBe("alert");
 	});
@@ -1348,11 +1351,10 @@ describe("admin Tax console — tax options (PR 2a, ADR-0031)", () => {
 	test("no banner when tax is on, or when there are no rates to charge", async () => {
 		await seedRules();
 		await settingsStore.update({ tax: TAX_ON }, idempotencyKey("on"));
-		const titles = (blocks: readonly LooseBlock[]) => blocks.map((b) => String(b.title));
-		expect(titles(await loadClasses())).not.toContain("Tax is switched off");
+		expect(bannerTitles(await loadClasses())).not.toContain("Tax is switched off");
 		await seedRules({ rates: [] });
 		await settingsStore.update({ tax: { ...TAX_ON, enabled: false } }, idempotencyKey("off"));
-		expect(titles(await loadClasses())).not.toContain("Tax is switched off");
+		expect(bannerTitles(await loadClasses())).not.toContain("Tax is switched off");
 	});
 
 	// Review 2a B5: "shop base address" with none set falls back to the shipping
