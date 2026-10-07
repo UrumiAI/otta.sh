@@ -12,6 +12,7 @@ import {
 	type EmailSender,
 	isCutShortEmailTimeout,
 	isEmailSendTimeoutError,
+	isEmailTransportUnavailableError,
 } from "../ports/email-sender.js";
 import type { OrderStore, OutboxEmail } from "../ports/order-store.js";
 import type { Order, OrderState, PaymentMethod } from "./model.js";
@@ -383,6 +384,10 @@ export interface DispatchOrderEmailsOptions {
 	 * as an attempt, so the row parks with reason "provider kept timing out".
 	 */
 	onRepeatedTimeouts?: (row: { id: string; orderId: OrderId; timeouts: number }) => void;
+	/** Called when the transport reported no provider to send through
+	 *  (`EmailTransportUnavailableError`): the row went back uncounted and the
+	 *  drain stopped. Lets a caller report "not configured" rather than "sent 0". */
+	onTransportUnavailable?: () => void;
 	/** Uncounted timeouts a row is allowed. Default: {@link MAX_UNCOUNTED_TIMEOUTS}. */
 	maxUncountedTimeouts?: number;
 	/**
@@ -436,6 +441,13 @@ export function timeoutBackoffMs(timeouts: number): number {
  * from a run that does have time.
  */
 export const UNTRIED_RETRY_MS = 30_000;
+
+/**
+ * How long a row waits after the transport said it has no provider to send
+ * through (`EmailTransportUnavailableError`). Uncounted, like an untried row;
+ * longer, because a missing provider is an operator's fix, not a moment's.
+ */
+export const TRANSPORT_UNAVAILABLE_RETRY_MS = 5 * 60_000;
 
 /** The reason a row parked by repeated timeouts carries. */
 export const TIMEOUT_FAILURE_REASON = "provider kept timing out";
@@ -601,6 +613,16 @@ async function drainOutbox(
 				sent++;
 			}
 		} catch (err) {
+			// No provider to send through (ADR-0031): nothing was sent and nothing is
+			// wrong with the row. Hand it back uncounted, backed off, and stop — every
+			// other row would meet the same answer.
+			if (isEmailTransportUnavailableError(err)) {
+				await deps.orderStore.releaseEmailClaim(row.id, {
+					retryAt: new Date(now.getTime() + TRANSPORT_UNAVAILABLE_RETRY_MS).toISOString(),
+				});
+				options.onTransportUnavailable?.();
+				break;
+			}
 			// A send cut off by the CALLER's timeout is not a failed attempt: hand the
 			// row back uncounted, and stop — the time is gone, and re-claiming the
 			// same row inside this drain would only time out again.

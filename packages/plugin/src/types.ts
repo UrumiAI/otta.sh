@@ -263,12 +263,13 @@ export type PluginLifecycleEvent = Record<string, never>;
 
 /**
  * The context passed to every hook/route handler. Otta's plugin declares
- * only `content:read` + `network:request` (manifest.ts) — so `http` is the
- * only capability-gated surface it ever receives. `kv` and `storage` are both
+ * only `content:read` + `network:request` + `email:send` (manifest.ts) — so
+ * `http` and `email` are the only capability-gated surfaces it ever receives.
+ * `kv` and `storage` are both
  * available WITHOUT a capability: the host builds each on an always-available
  * path, and there is no `storage` capability string in its vocabulary to declare
  * (ADR-0018 decision 4). `content` is the host's read under the `content:read`
- * capability already declared, used by one sweep leg. No `media`/`users`/`email`/
+ * capability already declared, used by one sweep leg. No `media`/`users`/
  * `db` — declaring any of those would fail the sandbox-clean guard
  * (DEVELOPMENT.md §5).
  */
@@ -317,6 +318,35 @@ export interface PluginContext {
 	 * missing, and the workerd test mirror (`sandbox-entry.ts`) has no CMS to offer.
 	 */
 	content?: ContentReadAccess;
+	/**
+	 * The host's email pipeline (`email:send` capability, ADR-0031). EmDash hands
+	 * the message to whichever email provider plugin the site selected.
+	 *
+	 * OPTIONAL, and absence MEANS something: in trusted mode the host omits it
+	 * when no provider is selected. A sandboxed plugin always has it once the
+	 * capability is declared, and its `send` then rejects with "Email is not
+	 * configured" — `email/ctx-email-sender.ts` maps both to "no provider".
+	 */
+	email?: EmailAccess;
+	/** The host's site settings (emdash 0.38 `SiteInfo`; always present on a
+	 *  real host, absent in hand-built test contexts). The email falls back to
+	 *  its `name` when no "Store display name" is saved. */
+	site?: { name: string; url: string; locale: string };
+}
+
+/** The message `ctx.email.send` takes (emdash 0.38 `EmailMessage`). No `from`
+ *  (the provider owns it) and no idempotency key. */
+export interface EmailMessage {
+	to: string;
+	subject: string;
+	text: string;
+	html?: string;
+}
+
+/** emdash 0.38 `EmailAccess`. Resolves once the provider accepted the message
+ *  (or a `email:beforeSend` hook cancelled it); rejects otherwise. */
+export interface EmailAccess {
+	send: (message: EmailMessage) => Promise<void>;
 }
 
 /**

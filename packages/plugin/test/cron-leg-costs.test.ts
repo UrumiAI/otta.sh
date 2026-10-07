@@ -64,16 +64,10 @@ import {
 	TICK_OVERHEAD_QUERIES,
 	UNPROMOTED_LEGS,
 } from "../src/cron/sweeps.js";
-import {
-	EMAIL_SENDER_BUILD_READS,
-	EMAIL_TRANSPORT_RESOLVE_READS,
-	type EmailTransport,
-	makeEmailSender,
-	resolveEmailTransport,
-} from "../src/email/ctx-http-email-sender.js";
-import { EMAIL_PROVIDER_KEY, SMTP2GO_REGION_KEY } from "../src/email/email-provider.js";
-import { EMAIL_API_KEY_KEY, SMTP2GO_API_KEY_KEY } from "../src/payment-secrets.js";
+import { EMAIL_SENDER_BUILD_READS, makeEmailSender } from "../src/email/ctx-email-sender.js";
 import { resolvePaymentGateways } from "../src/payments/resolve-payment-gateways.js";
+import { STORE_DISPLAY_NAME_KEY } from "../src/email/email-render-context.js";
+import { LOGIN_LINK_URL_KEY } from "../src/storefront/login-link.js";
 import type { PluginContext } from "../src/types.js";
 import { commerceStorageLayout } from "./sandbox/storage-layout.js";
 
@@ -119,16 +113,20 @@ function counted() {
 	return createInProcessCommerceStores(ctx);
 }
 
-/** The sweep's composition with a seeded kv and an SMTP2GO/Resend-shaped fetch,
- *  every storage, kv and egress call counted. */
+/** The sweep's composition with a seeded kv and the host's `ctx.email`
+ *  (ADR-0031), every storage, kv and send call counted. */
 function countedEmailContext(seed: Record<string, unknown>) {
 	const kv = new Map<string, unknown>(Object.entries(seed));
-	const ok = JSON.stringify({ data: { succeeded: 1, failed: 0, failures: [], email_id: "e" } });
 	const ctx = {
 		http: {
 			fetch() {
+				throw new Error("email never goes over ctx.http");
+			},
+		},
+		email: {
+			send() {
 				counter.calls++;
-				return Promise.resolve(new Response(ok, { status: 200 }));
+				return Promise.resolve();
 			},
 		},
 		kv: {
@@ -305,41 +303,22 @@ describe("one real unit of each leg fits its LEG_QUERY_COSTS estimate", () => {
 	});
 
 	// QA3 N2 guard: the email unit's cost is measured with the REAL sender
-	// construction (`resolveEmailTransport` + `makeEmailSender` + the request), for
-	// both providers, so the table cannot drift below what a send really costs.
-	describe.each([
-		[
-			"resend",
-			{ [EMAIL_API_KEY_KEY]: "re_0123456789abcdef" },
-			{ apiUrl: "https://api.resend.com/emails" },
-		],
-		[
-			"smtp2go",
-			{
-				[EMAIL_PROVIDER_KEY]: "smtp2go",
-				[SMTP2GO_API_KEY_KEY]: "api-0123456789ABCDEF0123456789ABCDEF",
-				[SMTP2GO_REGION_KEY]: "eu",
-			},
-			{},
-		],
-	] as const)("order-emails with the real %s sender", (_provider, seed, egress) => {
-		test("the per-tick provider resolve fits the leg's entry", async () => {
-			const { ctx } = countedEmailContext(seed);
-			let transport: EmailTransport | undefined;
-			const used = await cost(async () => {
-				transport = await resolveEmailTransport(ctx, egress);
-			});
-			expect(transport).toBeDefined();
-			expect(used).toBeLessThanOrEqual(EMAIL_TRANSPORT_RESOLVE_READS);
-			expect(used).toBeLessThanOrEqual(LEG_QUERY_COSTS["order-emails"].entry);
+	// construction (`makeEmailSender` + the `ctx.email` send), so the table cannot
+	// drift below what a send really costs.
+	describe("order-emails with the real ctx.email sender", () => {
+		const seed = {
+			[STORE_DISPLAY_NAME_KEY]: "Cost Shop",
+			[LOGIN_LINK_URL_KEY]: "https://shop.example/account/verify",
+		};
+
+		test("the leg has no entry cost: whether a provider exists is ctx.email, not a read", () => {
+			expect(LEG_QUERY_COSTS["order-emails"].entry).toBe(0);
 		});
 
-		test("building the sender and its request fit EMAIL_SENDER_BUILD_READS + 1", async () => {
+		test("building the sender and its send fit EMAIL_SENDER_BUILD_READS + 1", async () => {
 			const { ctx } = countedEmailContext(seed);
-			const transport = await resolveEmailTransport(ctx, egress);
-			if (transport === undefined) throw new Error("expected a transport");
 			const used = await cost(async () => {
-				const sender = await makeEmailSender(ctx, egress, { transport });
+				const sender = await makeEmailSender(ctx);
 				await sender?.send({
 					to: "buyer@example.test" as never,
 					template: "order-confirmation",
@@ -347,19 +326,13 @@ describe("one real unit of each leg fits its LEG_QUERY_COSTS estimate", () => {
 					idempotencyKey: "row_cost",
 				});
 			});
-			expect(used).toBeGreaterThan(1);
-			expect(used).toBeLessThanOrEqual(EMAIL_SENDER_BUILD_READS + 1);
+			expect(used).toBe(EMAIL_SENDER_BUILD_READS + 1);
 		});
 
 		test("one real unit — claim, reads, the first send with its build, the mark — fits the unit", async () => {
-			const placed = await placeOrder(
-				`email-real-${_provider}`,
-				new Date(Date.now() + DAY_MS).toISOString(),
-			);
+			const placed = await placeOrder("email-real", new Date(Date.now() + DAY_MS).toISOString());
 			const { ctx, stores } = countedEmailContext(seed);
 			await stores.orderStore.markPaid(toOrderId(placed.id));
-			const transport = await resolveEmailTransport(ctx, egress);
-			if (transport === undefined) throw new Error("expected a transport");
 			let sent = 0;
 			const used = await cost(async () => {
 				let built: Promise<EmailSender | undefined> | undefined;
@@ -370,7 +343,7 @@ describe("one real unit of each leg fits its LEG_QUERY_COSTS estimate", () => {
 						clock: stores.clock,
 						emailSender: {
 							async send(input) {
-								built ??= makeEmailSender(ctx, egress, { transport });
+								built ??= makeEmailSender(ctx);
 								await (await built)?.send(input);
 							},
 						},
@@ -807,9 +780,9 @@ describe("the cost table against the Workers Free preset (review of QA2 M2)", ()
 			"expire-holds",
 			"expire-orders",
 			"hold-intents",
-			// Since the unit counts the real sender's build and the per-tick provider
-			// resolve (3 + 14). It is the FIRST leg, so the head is where it runs.
-			"order-emails",
+			// Not "order-emails" any more (ADR-0031): with no per-tick provider resolve
+			// and a two-read sender build its unit is 12 and fits behind a cancel. It is
+			// still the FIRST leg, so it runs at the head anyway.
 			"sku-transfers",
 		]);
 		expect(SWEEP_LEGS[0]).toBe("order-emails");

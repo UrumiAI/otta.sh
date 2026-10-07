@@ -32,20 +32,17 @@ import { afterAll, afterEach, beforeEach, describe, expect, test, vi } from "vit
 import {
 	ORDER_EMAIL_INLINE_DEADLINE_MS,
 	ORDER_EMAIL_INLINE_TIMEOUT_MS,
-	cutShortTimeouts,
 	sendOrderEmailsNow,
 } from "../src/email/send-order-emails-now.js";
 import { SETTLE_REQUEST_BUDGET_MS, settleDeadline } from "../src/settle-deadline.js";
-import { LOGIN_EMAIL_TIMEOUT_MS } from "../src/email/ctx-http-email-sender.js";
-import { EMAIL_PROVIDER_KEY } from "../src/email/email-provider.js";
-import { SMTP2GO_API_KEY_KEY } from "../src/payment-secrets.js";
+import { LOGIN_EMAIL_TIMEOUT_MS } from "../src/email/ctx-email-sender.js";
+import type { EmailAccess, EmailMessage, PluginContext } from "../src/types.js";
 import {
 	makeInProcessCommerce,
 	type InProcessCommerceHarness,
 } from "./helpers/in-process-commerce.js";
 import { runUnderFakeTime } from "./helpers/run-under-fake-time.js";
 
-const MAIL_URL = "https://mail.example.test/send";
 const FAR = "2099-01-01T00:00:00.000Z";
 
 let harness: InProcessCommerceHarness;
@@ -98,6 +95,23 @@ async function seedOrder(
 	return oid;
 }
 
+/** The harness context with a host email pipeline (`ctx.email`, ADR-0031) whose
+ *  `send` is `send` — recording by default. */
+function withEmail(send?: EmailAccess["send"]): {
+	ctx: PluginContext;
+	messages: EmailMessage[];
+} {
+	const messages: EmailMessage[] = [];
+	const email: EmailAccess = {
+		send:
+			send ??
+			(async (message) => {
+				messages.push(message);
+			}),
+	};
+	return { ctx: { ...harness.ctx, email }, messages };
+}
+
 /** A deadline whose request started `elapsedMs` ago. */
 function deadlineAfter(elapsedMs: number) {
 	let clock = 0;
@@ -125,98 +139,95 @@ describe("constants", () => {
 });
 
 describe("a replay costs one order read: the sender is built lazily", () => {
-	test("nothing due ⇒ one kv read (the provider choice), no egress — and the claim's read of the order", async () => {
+	test("nothing due ⇒ no kv read, no send — only the claim's read of the order", async () => {
 		const id = await seedOrder("ord-noop", false); // pending: no outbox row
-		const kvGet = vi.spyOn(harness.ctx.kv, "get");
-		const getVersioned = vi.spyOn(harness.ctx.storage!["orders"]!, "getVersioned");
+		const { ctx, messages } = withEmail();
+		const kvGet = vi.spyOn(ctx.kv, "get");
+		const getVersioned = vi.spyOn(ctx.storage!["orders"]!, "getVersioned");
 
-		await sendOrderEmailsNow(harness.ctx, harness.stores, id, { egress: { apiUrl: MAIL_URL } });
+		const result = await sendOrderEmailsNow(ctx, harness.stores, id);
 
-		// Which provider is decided before anything is claimed; the sender's own reads
-		// wait for a claimed row.
-		expect(kvGet.mock.calls.map((call) => call[0])).toEqual([EMAIL_PROVIDER_KEY]);
+		// Whether the host has a provider is `ctx.email`'s presence, not a read; the
+		// sender's own reads wait for a claimed row.
+		expect(kvGet).not.toHaveBeenCalled();
 		expect(getVersioned).toHaveBeenCalledTimes(1);
+		expect(messages).toEqual([]);
+		expect(result).toEqual({ configured: true, sent: [], skipped: [] });
 		expect(harness.egressAttempts()).toBe(0);
 	});
 
-	test("a due row ⇒ the sender is built (kv) and the real send is attempted", async () => {
+	test("a due row ⇒ the sender is built (kv) and the confirmation goes out through ctx.email", async () => {
 		const id = await seedOrder("ord-due", true);
-		const kvGet = vi.spyOn(harness.ctx.kv, "get");
-		vi.spyOn(console, "error").mockImplementation(() => {});
+		const { ctx, messages } = withEmail();
+		const kvGet = vi.spyOn(ctx.kv, "get");
 
-		await sendOrderEmailsNow(harness.ctx, harness.stores, id, { egress: { apiUrl: MAIL_URL } });
+		const result = await sendOrderEmailsNow(ctx, harness.stores, id);
 
 		expect(kvGet).toHaveBeenCalled();
-		expect(harness.egressAttempts()).toBe(1); // the harness's ctx.http rejects it
+		expect(messages).toHaveLength(1);
+		expect(messages[0]).toMatchObject({ to: "buyer@example.com" });
+		expect(messages[0]!.subject.length).toBeGreaterThan(0);
+		expect(messages[0]!.text).toContain("Digital Widget × 1 — $15.00");
+		expect(messages[0]!.html).toContain("Digital Widget");
+		expect(result.configured).toBe(true);
+		expect(result.sent.map((row) => [row.orderId, row.toState])).toEqual([[id, "paid"]]);
+		expect(await cronView(id)).toBeNull(); // sent: nothing left for the cron
+		expect(harness.egressAttempts()).toBe(0); // never ctx.http
+	});
+
+	test("a provider failure ⇒ the row is backed off for the cron, one attempt spent", async () => {
+		const id = await seedOrder("ord-fail", true);
+		const { ctx } = withEmail(() => Promise.reject(new Error("provider said no")));
+
+		const result = await sendOrderEmailsNow(ctx, harness.stores, id);
+
+		expect(result).toEqual({ configured: true, sent: [], skipped: [] });
 		expect(await cronView(id)).toMatchObject({ attempts: 2 }); // backed off for the cron
 	});
 
 	test("an order with no email address ⇒ its row is reported skipped, and no sender is built", async () => {
 		const id = await seedOrder("ord-x402", true, "x402:0x1111111111111111111111111111111111111111");
-		const kvGet = vi.spyOn(harness.ctx.kv, "get");
-		const egressBefore = harness.egressAttempts();
+		const { ctx, messages } = withEmail();
+		const kvGet = vi.spyOn(ctx.kv, "get");
 
-		const result = await sendOrderEmailsNow(harness.ctx, harness.stores, id, {
-			egress: { apiUrl: MAIL_URL },
-		});
+		const result = await sendOrderEmailsNow(ctx, harness.stores, id);
 
 		expect(result.configured).toBe(true);
 		expect(result.sent).toEqual([]);
 		expect(result.skipped.map((row) => [row.orderId, row.toState])).toEqual([[id, "paid"]]);
-		// Only the provider choice, read before anything is claimed; no sender's reads.
-		expect(kvGet.mock.calls.map((call) => call[0])).toEqual([EMAIL_PROVIDER_KEY]);
-		expect(harness.egressAttempts()).toBe(egressBefore);
+		// No sender built, so no reads and no send.
+		expect(kvGet).not.toHaveBeenCalled();
+		expect(messages).toEqual([]);
 		expect(await cronView(id)).toBeNull(); // completed, not left for the cron
 	});
 
-	test("no email API URL ⇒ returns before claiming anything", async () => {
+	test("no EmDash email provider (trusted: ctx.email absent) ⇒ returns before claiming anything", async () => {
 		const id = await seedOrder("ord-unconfigured", true);
-		await sendOrderEmailsNow(harness.ctx, harness.stores, id, { egress: {} });
+		const result = await sendOrderEmailsNow(harness.ctx, harness.stores, id);
+		expect(result).toEqual({ configured: false, sent: [], skipped: [] });
 		expect(await cronView(id)).toMatchObject({ attempts: 1 }); // never claimed
 	});
 
-	test("no email API URL but SMTP2GO chosen in Settings ⇒ claimed and sent through SMTP2GO", async () => {
-		// SMTP2GO's hosts are granted in every build, so the store's provider choice
-		// alone makes it able to send.
-		const id = await seedOrder("ord-smtp2go", true);
-		const before = harness.egressAttempts();
-		await harness.ctx.kv.set(EMAIL_PROVIDER_KEY, "smtp2go");
-		await harness.ctx.kv.set(SMTP2GO_API_KEY_KEY, "api-0123456789ABCDEF0123456789ABCDEF");
-		vi.spyOn(console, "error").mockImplementation(() => {});
-		try {
-			const result = await sendOrderEmailsNow(harness.ctx, harness.stores, id, { egress: {} });
-			expect(result.configured).toBe(true);
-			// The harness's ctx.http rejects it.
-			expect(harness.egressAttempts() - before).toBe(1);
-			expect(await cronView(id)).toMatchObject({ attempts: 2 });
-		} finally {
-			// kv outlives `harness.reset()`.
-			await harness.ctx.kv.delete(EMAIL_PROVIDER_KEY);
-			await harness.ctx.kv.delete(SMTP2GO_API_KEY_KEY);
-		}
+	test("no EmDash email provider (sandboxed: send says 'not configured') ⇒ released uncounted, reported unconfigured", async () => {
+		const id = await seedOrder("ord-sandbox-unconfigured", true);
+		const { ctx } = withEmail(() =>
+			Promise.reject(new Error("Email is not configured. No email provider is available.")),
+		);
+
+		const result = await sendOrderEmailsNow(ctx, harness.stores, id);
+
+		expect(result).toEqual({ configured: false, sent: [], skipped: [] });
+		// Not due right now (backed off), and no attempt spent: still a first attempt.
+		expect(await dueNow(id)).toBeNull();
+		expect(await cronView(id)).toMatchObject({ attempts: 1, timeouts: 0 });
 	});
 
-	test("SMTP2GO chosen without its own key ⇒ unconfigured: nothing claimed, no attempt spent", async () => {
-		const id = await seedOrder("ord-smtp2go-nokey", true);
-		await harness.ctx.kv.set(EMAIL_PROVIDER_KEY, "smtp2go");
-		try {
-			const result = await sendOrderEmailsNow(harness.ctx, harness.stores, id, {
-				egress: { apiUrl: MAIL_URL },
-			});
-			expect(result.configured).toBe(false);
-			expect(await cronView(id)).toMatchObject({ attempts: 1 }); // never claimed
-		} finally {
-			await harness.ctx.kv.delete(EMAIL_PROVIDER_KEY);
-		}
-	});
-
-	test("no email API URL is a QUIET no-op even when the budget is spent — nothing to say", async () => {
+	test("no email provider is a QUIET no-op even when the budget is spent — nothing to say", async () => {
 		// "Skipped; the cron will deliver it" would be false here: with no sender the cron
 		// leg reports `skipped` too. Configured-ness is decided before the budget.
 		const id = await seedOrder("ord-unconfigured-late", true);
 		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
 		await sendOrderEmailsNow(harness.ctx, harness.stores, id, {
-			egress: {},
 			deadline: deadlineAfter(SETTLE_REQUEST_BUDGET_MS),
 		});
 		expect(warn).not.toHaveBeenCalled();
@@ -279,11 +290,10 @@ describe("the budget runs from request start", () => {
 
 describe("a send never outlives the wait", () => {
 	test("when the claim and reads used most of the wait, the send's timeout is the remainder", async () => {
-		// The wait is 5 s on the injected clock; the claim "takes" 4.8 s of it. The real
-		// sender's per-request bound must then be ~200 ms — not the 3 s ceiling, which
-		// would run 2.8 s past the point the request stopped waiting.
+		// The wait is 5 s on the injected clock; the claim "takes" 4.8 s of it. The
+		// send must then be cut off at ~200 ms — not the 3 s ceiling, which would run
+		// 2.8 s past the point the request stopped waiting.
 		const id = await seedOrder("ord-late-send", true);
-		vi.spyOn(console, "error").mockImplementation(() => {});
 		let clock = 0;
 		const deadline = settleDeadline(() => clock);
 		const { orderStore } = harness.stores;
@@ -293,44 +303,29 @@ describe("a send never outlives the wait", () => {
 			clock += ORDER_EMAIL_INLINE_DEADLINE_MS - 200;
 			return row;
 		});
-		// Measured from the request to the send giving up — not from a signal
-		// listener: the sender puts no signal in `init` (EmDash's sandbox RPC refuses
-		// one) and bounds the request with its own race.
-		let requestedAt: number | undefined;
-		const ctx = {
-			...harness.ctx,
-			http: {
-				// A provider that never answers: only the send's own deadline ends it.
-				fetch: () => {
-					requestedAt = performance.now();
-					return new Promise<Response>(() => {});
-				},
-			},
-		};
+		// A provider that never answers: only the sender's own timer ends the send.
+		const { ctx } = withEmail(() => new Promise<void>(() => {}));
+		const started = performance.now();
 
-		await sendOrderEmailsNow(ctx, harness.stores, id, {
-			egress: { apiUrl: MAIL_URL },
-			deadline,
-		});
-		const gaveUpAfterMs = requestedAt === undefined ? undefined : performance.now() - requestedAt;
+		await sendOrderEmailsNow(ctx, harness.stores, id, { deadline });
 
-		expect(gaveUpAfterMs).toBeDefined();
-		expect(gaveUpAfterMs!).toBeLessThan(ORDER_EMAIL_INLINE_TIMEOUT_MS / 2);
-		// And the abort was OURS, not the provider's failing: released uncounted, no
-		// timeout recorded against the provider, due at once.
-		expect(await dueNow(id)).toMatchObject({ attempts: 1, timeouts: 0 });
+		expect(performance.now() - started).toBeLessThan(ORDER_EMAIL_INLINE_TIMEOUT_MS / 2);
+		// `ctx.email` has no idempotency key, so the timed-out send may have gone: it
+		// is a COUNTED attempt (ADR-0031), backed off for the cron.
+		expect(await dueNow(id)).toBeNull();
+		expect(await cronView(id)).toMatchObject({ attempts: 2, timeouts: 0 });
 	});
 
-	test("an inline timeout is CUT SHORT, never charged to the provider — even from an injected sender", async () => {
-		// Inline sends get less than the sweep's full per-send allowance (3 s, not 5 s),
-		// so a timeout here says nothing about the provider: it must be released
-		// uncounted and due at once — not recorded as a timeout and backed off.
+	test("an inline timeout is a COUNTED attempt — even from an injected sender", async () => {
+		// A timeout may have been delivered and no provider can dedupe a retry, so it
+		// spends one of the row's attempts: duplicates stop at `maxAttempts`.
 		const id = await seedOrder("ord-inline-timeout", true);
 		const slow: EmailSender = {
 			send: () => Promise.reject(new EmailSendTimeoutError(ORDER_EMAIL_INLINE_TIMEOUT_MS)),
 		};
 		await sendOrderEmailsNow(harness.ctx, harness.stores, id, { emailSender: slow });
-		expect(await dueNow(id)).toMatchObject({ attempts: 1, timeouts: 0 });
+		expect(await dueNow(id)).toBeNull();
+		expect(await cronView(id)).toMatchObject({ attempts: 2, timeouts: 0 });
 	});
 });
 
@@ -416,42 +411,5 @@ describe("failures are logged with the order id and the message only", () => {
 		expect(args.every((a) => typeof a === "string")).toBe(true);
 		expect(args.join(" ")).toContain("ord-store-err");
 		expect(args.join(" ")).toContain("storage exploded");
-	});
-});
-
-/** What `cutShortTimeouts(sender).send` rejects with, or `undefined`. */
-async function rejectionOf(sender: EmailSender): Promise<unknown> {
-	return cutShortTimeouts(sender)
-		.send({
-			to: "a@example.com" as never,
-			template: "order-confirmation",
-			data: {},
-			idempotencyKey: "k",
-		})
-		.then(
-			() => undefined,
-			(err: unknown) => err,
-		);
-}
-
-describe("cutShortTimeouts", () => {
-	test("re-marks a timeout cut short and KEEPS its real allowance", async () => {
-		const err = await rejectionOf({
-			send: () => Promise.reject(new EmailSendTimeoutError(1_234)),
-		});
-		expect(err).toBeInstanceOf(EmailSendTimeoutError);
-		expect(err).toMatchObject({ cutShort: true, timeoutMs: 1_234 });
-	});
-
-	test("a bridged timeout that dropped its allowance falls back to the inline ceiling", async () => {
-		const err = await rejectionOf({
-			send: () => Promise.reject({ name: "EmailSendTimeoutError" }),
-		});
-		expect(err).toMatchObject({ cutShort: true, timeoutMs: ORDER_EMAIL_INLINE_TIMEOUT_MS });
-	});
-
-	test("any other failure passes through untouched", async () => {
-		const boom = new Error("provider said no");
-		expect(await rejectionOf({ send: () => Promise.reject(boom) })).toBe(boom);
 	});
 });

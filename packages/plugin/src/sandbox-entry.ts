@@ -23,7 +23,10 @@
  *    suites inject one from outside. `storage` is capability-free — the host
  *    builds it on an always-available path and there is no capability string
  *    for it (ADR-0018) — so nothing about the declared two changes here.
- *  - no `media`/`users`/`email` on `ctx` at all — this plugin never declares
+ *  - construct `ctx.email` like the host's sandbox bridge does for a plugin
+ *    that declares `email:send` (ADR-0031): ALWAYS present, and `send` rejects
+ *    "Email is not configured…" when no provider is wired (`sandbox-email.ts`).
+ *  - no `media`/`users` on `ctx` at all — this plugin never declares
  *    those capabilities (sandbox-clean guard).
  *  - `content`: the REAL EmDash sandbox does provide it — the plugin declares
  *    `content:read`, and `@emdash-cms/cloudflare`'s bridge serves `contentGet` /
@@ -41,10 +44,12 @@
  */
 import { ALLOWED_HOSTS } from "./manifest.js";
 import plugin from "./plugin.js";
+import { sandboxEmail } from "./sandbox-email.js";
 import { sandboxStorage } from "./sandbox-storage.js";
 import type {
 	ContentReadAccess,
 	CronAccess,
+	EmailAccess,
 	CronTaskInfo,
 	HttpAccess,
 	KvAccess,
@@ -65,6 +70,20 @@ function isHostAllowed(hostname: string, allowedHosts: readonly string[]): boole
 		}
 	}
 	return false;
+}
+
+/** The host sandbox bridge's `ctx.email` (emdash 0.38 `emailSend`): the message
+ *  goes to the provider, or the send rejects with the bridge's own words. */
+function createEmailAccess(): EmailAccess {
+	return {
+		async send(message) {
+			const provider = sandboxEmail();
+			if (provider === undefined) {
+				throw new Error("Email is not configured. No email provider is available.");
+			}
+			await provider(message);
+		},
+	};
 }
 
 function createHttpAccess(allowedHosts: readonly string[]): HttpAccess {
@@ -235,6 +254,7 @@ export function createSandboxWorker(
 				http: createHttpAccess(ALLOWED_HOSTS),
 				kv: createKvAccess(kvStore),
 				cron: createCronAccess(cronTasks),
+				email: createEmailAccess(),
 				// Omitted rather than set to `undefined` when there is no store, so a
 				// bundle without one has the exact context shape it had before.
 				...(storage === undefined ? {} : { storage }),

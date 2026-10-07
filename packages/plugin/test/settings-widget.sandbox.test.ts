@@ -96,15 +96,14 @@ async function withSettingsReadFailing<T>(body: () => Promise<T>): Promise<T> {
 
 /** Every form's submit action_id the Settings screen renders on a FULL-screen
  *  render (S-5) — eight now, not the four this file used to pin before the
- *  fold-in deleted `save-token`/`save-service-token` and added five real
- *  payment/email secrets plus `save-payment-settings`. */
+ *  fold-in deleted `save-token`/`save-service-token` and added the payment
+ *  secrets plus `save-payment-settings` (ADR-0031 then removed the email key). */
 const ALL_SUBMIT_IDS = [
 	"save-display",
 	"save-operational",
 	"save-background-work",
 	"save-stripe-secret-key",
 	"save-stripe-webhook-secret",
-	"save-email-api-key",
 	"save-x402-facilitator-secret",
 	"save-webhook-edge-token",
 	"save-payment-settings",
@@ -511,8 +510,8 @@ describe("Settings admin form (workerd sandbox)", () => {
 		expect(formFor(blocks, "save-operational")).toBeUndefined();
 	});
 
-	test("SECURITY: the settings form manifest declares only content:read + network:request (no storage/kv/db), and the schema has no secret field", () => {
-		expect(OTTA_PLUGIN_CAPABILITIES).toEqual(["content:read", "network:request"]);
+	test("SECURITY: the settings form manifest declares only content:read + network:request + email:send (no storage/kv/db), and the schema has no secret field", () => {
+		expect(OTTA_PLUGIN_CAPABILITIES).toEqual(["content:read", "network:request", "email:send"]);
 		for (const cap of OTTA_PLUGIN_CAPABILITIES) {
 			expect(cap.startsWith("storage")).toBe(false);
 			expect(cap.startsWith("db")).toBe(false);
@@ -544,7 +543,7 @@ describe("Settings admin form (workerd sandbox)", () => {
 	 * response that crosses the host boundary carries a credential, and the
 	 * sandbox is where that boundary actually exists.
 	 */
-	test("INC-C3: every payment/email secret is write-only — set, then never rendered back anywhere", async () => {
+	test("INC-C3: every payment secret is write-only — set, then never rendered back anywhere", async () => {
 		sandbox = await loadPluginInSandbox({ allowedHosts: [], storage: true });
 
 		const SECRETS = [
@@ -554,7 +553,6 @@ describe("Settings admin form (workerd sandbox)", () => {
 				"stripeWebhookSecret",
 				["whsec_", "NEVERRENDER0000000000"].join(""),
 			],
-			["save-email-api-key", "emailApiKey", "re_NEVER_RENDER_0000000000"],
 			["save-x402-facilitator-secret", "x402FacilitatorSecret", "qa-x402-NEVER-RENDER"],
 			["save-webhook-edge-token", "webhookEdgeToken", "qa-wh-token-NEVER-RENDER"],
 		] as const;
@@ -570,7 +568,7 @@ describe("Settings admin form (workerd sandbox)", () => {
 			expect(JSON.stringify(saved)).not.toContain(value);
 		}
 
-		// And the subsequent page load, with all five now SET, renders none of
+		// And the subsequent page load, with all four now SET, renders none of
 		// them: no initial_value, no has_value, no masked variant, nothing in a
 		// label, context line, notice or toast.
 		const loaded = await sandbox.invokeRoute("admin", { type: "page_load", page: "/settings" });
@@ -587,14 +585,15 @@ describe("Settings admin form (workerd sandbox)", () => {
 		}
 
 		// U-8: the group's label states what card checkout and email have — the
-		// Stripe mode comes from the key's prefix, never any more of it.
+		// Stripe mode comes from the key's prefix, never any more of it. Email is
+		// `ctx.email` (ADR-0031), which a sandboxed host always hands over.
 		expect(groupLabels(blocks).get("settings:payments")).toBe(
 			"Payments & email — Stripe live · webhook set · email set",
 		);
 	});
 
 	/**
-	 * INC-C5 — the NON-SECRET in-process settings (`emailFrom`, `x402PayTo`,
+	 * INC-C5 — the NON-SECRET in-process settings (`loginLinkUrl`, `x402PayTo`,
 	 * `x402Accepts`). These are READ BACK, unlike the secrets in the same
 	 * group — that difference is the tier, and it is deliberate: an operator
 	 * must be able to see which wallet they are being paid at.
@@ -615,7 +614,7 @@ describe("Settings admin form (workerd sandbox)", () => {
 			type: "form_submit",
 			action_id: "save-payment-settings",
 			values: {
-				emailFrom: "orders@shop.otta.sh",
+				loginLinkUrl: "https://shop.otta.sh/account/verify",
 				x402PayTo: PAY_TO,
 				x402Accepts: "eip155:8453, eip155:1",
 			},
@@ -626,9 +625,13 @@ describe("Settings admin form (workerd sandbox)", () => {
 		);
 		assertBlockContract(loaded, { screen: "settings", level: "list" });
 		const form = formFor(loaded, "save-payment-settings");
-		expect(field(form, "emailFrom")?.["initial_value"]).toBe("orders@shop.otta.sh");
+		expect(field(form, "loginLinkUrl")?.["initial_value"]).toBe(
+			"https://shop.otta.sh/account/verify",
+		);
 		expect(field(form, "x402PayTo")?.["initial_value"]).toBe(PAY_TO);
 		expect(field(form, "x402Accepts")?.["initial_value"]).toBe("eip155:8453, eip155:1");
+		// ADR-0031: no email from-address, provider or region field any more.
+		expect(field(form, "emailFrom")).toBeUndefined();
 	});
 
 	test("INC-C5: a PARTIAL submit leaves untouched settings alone — absent is not empty", async () => {
@@ -643,21 +646,23 @@ describe("Settings admin form (workerd sandbox)", () => {
 		await sandbox.invokeRoute("admin", {
 			type: "form_submit",
 			action_id: "save-payment-settings",
-			values: { emailFrom: "orders@shop.otta.sh", x402PayTo: PAY_TO, x402Accepts: "eip155:8453" },
+			values: { x402PayTo: PAY_TO, x402Accepts: "eip155:8453" },
 		});
 
-		// A submit carrying ONLY the from-address.
+		// A submit carrying ONLY the sign-in page.
 		await sandbox.invokeRoute("admin", {
 			type: "form_submit",
 			action_id: "save-payment-settings",
-			values: { emailFrom: "hello@shop.otta.sh" },
+			values: { loginLinkUrl: "https://shop.otta.sh/account/verify" },
 		});
 
 		const after = blocksOf(
 			await sandbox.invokeRoute("admin", { type: "page_load", page: "/settings" }),
 		);
 		const form = formFor(after, "save-payment-settings");
-		expect(field(form, "emailFrom")?.["initial_value"]).toBe("hello@shop.otta.sh");
+		expect(field(form, "loginLinkUrl")?.["initial_value"]).toBe(
+			"https://shop.otta.sh/account/verify",
+		);
 		// The two the submit never mentioned are UNCHANGED, not blanked.
 		expect(field(form, "x402PayTo")?.["initial_value"]).toBe(PAY_TO);
 		expect(field(form, "x402Accepts")?.["initial_value"]).toBe("eip155:8453");
@@ -667,7 +672,7 @@ describe("Settings admin form (workerd sandbox)", () => {
 		await sandbox.invokeRoute("admin", {
 			type: "form_submit",
 			action_id: "save-payment-settings",
-			values: { emailFrom: "hello@shop.otta.sh", x402PayTo: "", x402Accepts: "" },
+			values: { x402PayTo: "", x402Accepts: "" },
 		});
 		const cleared = blocksOf(
 			await sandbox.invokeRoute("admin", { type: "page_load", page: "/settings" }),
@@ -683,7 +688,7 @@ describe("Settings admin form (workerd sandbox)", () => {
 		const refused = await sandbox.invokeRoute("admin", {
 			type: "form_submit",
 			action_id: "save-payment-settings",
-			values: { emailFrom: "orders@shop.otta.sh", x402PayTo: "my-wallet", x402Accepts: "" },
+			values: { x402PayTo: "my-wallet", x402Accepts: "eip155:8453" },
 		});
 		const blocks = blocksOf(refused);
 		// The whole screen comes back (S-5a: never a terminal receipt with no form).
@@ -696,7 +701,7 @@ describe("Settings admin form (workerd sandbox)", () => {
 			await sandbox.invokeRoute("admin", { type: "page_load", page: "/settings" }),
 		);
 		const form = formFor(after, "save-payment-settings");
-		expect(field(form, "emailFrom")?.["initial_value"]).toBe("");
+		expect(field(form, "x402Accepts")?.["initial_value"]).toBe("");
 		expect(field(form, "x402PayTo")?.["initial_value"]).toBe("");
 	});
 
@@ -732,7 +737,7 @@ describe("Settings admin form (workerd sandbox)", () => {
 			const refused = await sandbox.invokeRoute("admin", {
 				type: "form_submit",
 				action_id: "save-payment-settings",
-				values: { emailFrom: "orders@boutique.otta.sh", loginLinkUrl: bad },
+				values: { x402Accepts: "eip155:8453", loginLinkUrl: bad },
 			});
 			expect(JSON.stringify(refused)).toContain("Nothing was saved");
 			// The banner names the field and the shape, never the rejected value
@@ -748,7 +753,7 @@ describe("Settings admin form (workerd sandbox)", () => {
 			"https://boutique.example/account/verify",
 		);
 		// ATOMIC, like payTo: the valid sibling in a refused submit did not land.
-		expect(field(after, "emailFrom")?.["initial_value"]).toBe("");
+		expect(field(after, "x402Accepts")?.["initial_value"]).toBe("");
 	});
 
 	test("U-8: the sign-in page refusal names the https rule, and http is accepted for this machine only", async () => {
@@ -929,8 +934,9 @@ describe("Settings admin form (workerd sandbox)", () => {
 		expect(labels.get("settings:checkout")).toBe("Checkout & holds — 15 min hold · low stock at 5");
 		expect(labels.get("settings:payments")).toBe(
 			// U-8: card checkout and email, stated — the optional x402 and edge
-			// credentials no longer read as missing pieces.
-			"Payments & email — no Stripe key · no webhook · no email",
+			// credentials no longer read as missing pieces. Email is the host's
+			// `ctx.email` (ADR-0031), always present in a sandboxed boot.
+			"Payments & email — no Stripe key · no webhook · email set",
 		);
 		for (const label of labels.values()) expect(label.length).toBeLessThanOrEqual(60);
 
@@ -977,7 +983,7 @@ describe("Settings admin form (workerd sandbox)", () => {
 		// lost the "no " prefix that makes the list read as MISSING rather than
 		// as present.
 		expect(groupLabels(savedKey).get("settings:payments")).toBe(
-			"Payments & email — Stripe test · no webhook · no email",
+			"Payments & email — Stripe test · no webhook · email set",
 		);
 
 		// …and a later page load agrees, so the label is reporting kv, not the
@@ -988,7 +994,7 @@ describe("Settings admin form (workerd sandbox)", () => {
 			await sandbox.invokeRoute("admin", { type: "page_load", page: "/settings" }),
 		);
 		expect(groupLabels(reloaded).get("settings:payments")).toBe(
-			"Payments & email — Stripe test · no webhook · no email",
+			"Payments & email — Stripe test · no webhook · email set",
 		);
 
 		// SECURITY PIN: no part of the secret value appears in any of these

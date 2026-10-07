@@ -2,13 +2,14 @@ import { describe, expect, test } from "vitest";
 import { cents, currency } from "../money/cents.js";
 import { idempotencyKey, orderId, productId, sku, type OrderId } from "../money/ids.js";
 import type { Clock } from "../ports/clock.js";
-import type { EmailTemplate } from "../ports/email-sender.js";
+import { EmailTransportUnavailableError, type EmailTemplate } from "../ports/email-sender.js";
 import type { CreateOrderInput, OrderStore, OutboxEmail } from "../ports/order-store.js";
 import type { OrderNotice, OrderState } from "../orders/model.js";
 import { emailTemplateForNotice, emailTemplateForState } from "../orders/state-machine.js";
 import {
 	dispatchOrderEmails,
 	dispatchOrderEmailsForOrder,
+	TRANSPORT_UNAVAILABLE_RETRY_MS,
 	transitionOrder,
 } from "../orders/transition.js";
 import type { FakeEmailSender } from "./fake-email-sender.js";
@@ -215,6 +216,41 @@ export function emailRecipientContract(
 				["Buyer@Example.com", "order-confirmation"],
 			]);
 			expect((await h.outboxRows(id)).map((r) => r.status)).toEqual(["sent"]);
+		});
+
+		test("no email provider (ADR-0031): the row is released uncounted, backed off, and goes out once one exists", async () => {
+			const h = await makeHarness();
+			const id = await seed(h, "ord-card", {
+				buyerRef: "buyer@example.com",
+				paymentMethod: "stripe",
+			});
+			await driveTo(h, id, ["paid"]);
+			let unavailable = 0;
+			const noProvider = {
+				send: () => Promise.reject(new EmailTransportUnavailableError()),
+			};
+			for (let n = 0; n < 3; n++) {
+				expect(
+					await dispatchOrderEmails(
+						{ orderStore: h.store, emailSender: noProvider, clock: h.clock },
+						{ maxAttempts: 1, onTransportUnavailable: () => unavailable++ },
+					),
+				).toBe(0);
+			}
+			// Only the first drain found it due; it was handed back each time it was
+			// tried, and never spent an attempt — even with a budget of one.
+			expect(unavailable).toBe(1);
+			expect(await h.outboxRows(id)).toEqual([
+				{ toState: "paid", notice: null, status: "pending", attempts: 0 },
+			]);
+			const { now, lease } = claimWindow(h);
+			expect(await h.store.claimNextEmailForOrder(id, now, lease)).toBeNull();
+			// Due again after the back-off, as a first attempt.
+			const later = new Date(h.clock.now().getTime() + TRANSPORT_UNAVAILABLE_RETRY_MS);
+			const laterLease = new Date(later.getTime() + 60_000).toISOString();
+			expect(
+				await h.store.claimNextEmailForOrder(id, later.toISOString(), laterLease),
+			).toMatchObject({ attempts: 1 });
 		});
 
 		test("the drain reports a skipped row through onSkipped — never onSent — and does not count it", async () => {

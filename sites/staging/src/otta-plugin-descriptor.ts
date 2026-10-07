@@ -60,8 +60,8 @@ function commerceStorage(): DescriptorStorage {
 
 /** INC-C3 — what the egress allowlist depends on. */
 export interface OttaPluginDescriptorOptions {
-	/** Deployment-supplied in-process egress URLs (email provider, x402
-	 *  facilitator). Absent ⇒ no host granted for that provider. */
+	/** Deployment-supplied in-process egress URL (the x402 facilitator). Absent ⇒
+	 *  no host granted for it. Email needs none: it goes through `ctx.email`. */
 	egress?: InProcessEgressUrls;
 }
 
@@ -71,7 +71,7 @@ export function ottaPluginDescriptor(options: OttaPluginDescriptorOptions = {}):
 		version: OTTA_PLUGIN_VERSION,
 		format: "standard",
 		entrypoint: "@otta-sh/plugin/plugin",
-		// EXACTLY the manifest's two capabilities — never more (the
+		// EXACTLY the manifest's three capabilities — never more (the
 		// sandbox-clean contract, pinned by the plugin's own guard test).
 		capabilities: [...OTTA_PLUGIN_CAPABILITIES],
 		// The egress allowlist — resolved by the plugin's own `resolveAllowedHosts`
@@ -79,11 +79,11 @@ export function ottaPluginDescriptor(options: OttaPluginDescriptorOptions = {}):
 		// two different answers.
 		//
 		// The commerce service is gone (INC-D3a), so the calls it used to make are
-		// the plugin's own: the list is Stripe's API host plus whichever of the
-		// email/facilitator hosts the deployment supplied, and no service host
-		// appears at all. The CREDENTIALS for those calls are never baked in here:
-		// they live in write-only plugin kv (`settings:stripe*`,
-		// `settings:emailApiKey`, `settings:x402FacilitatorApiKey`), provisioned
+		// the plugin's own: the list is Stripe's API host plus the facilitator host
+		// when the deployment supplied one, and no service host appears at all. No
+		// email host: email goes through `ctx.email` (ADR-0031). The CREDENTIALS
+		// for those calls are never baked in here: they live in write-only plugin
+		// kv (`settings:stripe*`, `settings:x402FacilitatorApiKey`), provisioned
 		// through the admin Settings form.
 		allowedHosts: resolveAllowedHosts(options.egress),
 		// THIS DECLARATION IS THE SCHEMA. `ctx.storage.collectionOf(name)` throws

@@ -20,8 +20,8 @@ import {
 } from "@otta-sh/domain";
 import { StripePaymentGateway } from "@otta-sh/payments-stripe";
 import { createX402Rail } from "@otta-sh/payments-x402";
-import { CtxHttpEmailSender } from "../../src/email/ctx-http-email-sender.js";
-import { Smtp2goEmailSender } from "../../src/email/smtp2go-email-sender.js";
+import { isEmailTransportUnavailableError } from "@otta-sh/domain";
+import { CtxEmailSender, isEmailNotConfiguredError } from "../../src/email/ctx-email-sender.js";
 import { STRIPE_SECRET_KEY_KEY, STRIPE_WEBHOOK_SECRET_KEY } from "../../src/payment-secrets.js";
 import { refreshStripeAccountCountry } from "../../src/payments/stripe-account-country.js";
 import { stripeGatewayFromCtx } from "../../src/payments/stripe-wiring.js";
@@ -31,8 +31,6 @@ import type { KvAccess, PluginContext } from "../../src/types.js";
 export const PROBE_HOST = "probe.example.com";
 export const STRIPE_HOST = "api.stripe.com";
 export const X402_HOST = "x402.example.com";
-export const EMAIL_HOST = "email.example.com";
-export const SMTP2GO_HOST = "api.smtp2go.com";
 
 const PROBE_URL = `https://${PROBE_HOST}/ping`;
 
@@ -247,40 +245,41 @@ export default {
 				}
 			},
 		},
-		/** The email senders, Resend and SMTP2GO (`trustedHost` as for `stripeRefund`).
-		 *  `timeoutMs` (input) sets the send's bound; the answer says how long it took. */
+		/** The order email through `ctx.email` — the wrapper's `bridge.emailSend`,
+		 *  an RPC to the host (ADR-0031). Answers "sent", "unavailable" (the host's
+		 *  "no provider", as the adapter classifies it) or the error. */
 		email: {
-			async handler({ input }: RouteContext, ctx: PluginContext): Promise<string> {
-				const {
-					provider,
-					timeoutMs,
-					key: rowKey,
-				} = (input ?? {}) as {
-					provider?: unknown;
-					timeoutMs?: unknown;
-					key?: unknown;
-				};
-				const common = {
-					fetch: ctx.http.fetch,
-					from: "orders@shop.test",
-					apiKey: "fake-email-key",
-					requestTimeoutMs: typeof timeoutMs === "number" ? timeoutMs : 5_000,
-					trustedHost: trustedHostOf(input),
-				};
-				const sender =
-					provider === "smtp2go"
-						? new Smtp2goEmailSender({ ...common, region: "global" })
-						: new CtxHttpEmailSender({ ...common, apiUrl: `https://${EMAIL_HOST}/emails` });
+			async handler(_route: RouteContext, ctx: PluginContext): Promise<string> {
+				if (ctx.email === undefined) return "no ctx.email";
+				const sender = new CtxEmailSender({ email: ctx.email, requestTimeoutMs: 5_000 });
 				try {
 					await sender.send({
 						to: "buyer@example.test" as never,
 						template: "order-confirmation",
 						data: { orderId: "ord_1", totalCents: 2599, currency: "USD" },
-						idempotencyKey: typeof rowKey === "string" ? rowKey : "outbox_row_1",
+						idempotencyKey: "outbox_row_1",
 					});
 					return "sent";
 				} catch (err) {
-					return describeError(err);
+					return isEmailTransportUnavailableError(err) ? "unavailable" : describeError(err);
+				}
+			},
+		},
+		/** The host's raw "no provider" answer, as it reaches the plugin over the RPC:
+		 *  its name, its message, and whether the adapter recognises it. */
+		rawEmail: {
+			async handler(_route: RouteContext, ctx: PluginContext): Promise<string> {
+				if (ctx.email === undefined) return "no ctx.email";
+				try {
+					await ctx.email.send({ to: "buyer@example.test", subject: "s", text: "t" });
+					return "sent";
+				} catch (err) {
+					const { name, message } = err as { name?: unknown; message?: unknown };
+					return JSON.stringify({
+						name,
+						message,
+						recognised: isEmailNotConfiguredError(err),
+					});
 				}
 			},
 		},

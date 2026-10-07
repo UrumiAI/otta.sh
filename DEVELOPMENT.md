@@ -113,7 +113,8 @@ in-process leniency.
   which replaced the duplicated Block Kit screens (ADR-0015);
   `@otta-sh/admin-presentation` holds the pure presentation primitives both surfaces share.
 - **Every capability is declared explicitly.** The plugin's only egress is `ctx.http` +
-  `allowedHosts`, and its state lives only in what the host injects — `ctx.storage` for
+  `allowedHosts` (email is not egress: it goes through the host's `ctx.email`, ADR-0031),
+  and its state lives only in what the host injects — `ctx.storage` for
   commerce truth (ADR-0018), `ctx.kv` for settings — nothing else. A test/CI check guards
   that the plugin has no other network or DB surface.
 - Any storefront/admin UI string is localized and RTL-safe (logical Tailwind classes),

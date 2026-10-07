@@ -1,5 +1,5 @@
 /**
- * U-8 (QA 2026-10-02): the payment and email keys on the Settings screen.
+ * U-8 (QA 2026-10-02): the payment keys on the Settings screen.
  *
  * QA found every key saved exactly as typed (surrounding spaces included, any
  * shape at all), rendered as a plain text box, with no way to tell a set key
@@ -11,9 +11,10 @@
  *  - every key field is a password input (`secret_input`) whose label says
  *    "set" or "not set", and nothing about the value;
  *  - a set key can be removed on purpose;
- *  - the group label states what card checkout and email actually have.
+ *  - the group label states what card checkout and email actually have (email:
+ *    whether the EmDash host hands over `ctx.email`, ADR-0031).
  *
- * Driven over a fake kv, as `email-from-setting.test.ts` is: kv is the only
+ * Driven over a fake kv: kv is the only
  * store these settings touch, and a fake kv is the only way to read back
  * exactly what was stored (the sandbox suite cannot see kv).
  */
@@ -22,20 +23,17 @@ import { describe, expect, test } from "vitest";
 import { createSettingsFormHandler } from "../src/admin/settings-form.js";
 import { COMMERCE_STORAGE_COLLECTIONS } from "../src/commerce/commerce-storage.js";
 import {
-	checkEmailApiKey,
 	checkOpaqueToken,
 	checkStripeSecretKey,
 	checkStripeWebhookSecret,
 	stripeKeyMode,
 } from "../src/payment-secret-shapes.js";
 import {
-	EMAIL_API_KEY_KEY,
 	STRIPE_SECRET_KEY_KEY,
 	STRIPE_WEBHOOK_SECRET_KEY,
 	WEBHOOK_EDGE_TOKEN_KEY,
 	X402_FACILITATOR_API_KEY_KEY,
 } from "../src/payment-secrets.js";
-import { EMAIL_FROM_KEY } from "../src/email/ctx-http-email-sender.js";
 import { X402_PAYTO_KEY } from "../src/payments/x402-wiring.js";
 import { LOGIN_LINK_URL_KEY } from "../src/storefront/login-link.js";
 import type { PluginContext } from "../src/types.js";
@@ -49,7 +47,6 @@ const SK_TEST = ["sk_test_", "51QaFixtureKey000000000000"].join("");
 const SK_LIVE = ["sk_live_", "51QaFixtureKey000000000000"].join("");
 const RK_TEST = ["rk_test_", "51QaFixtureKey000000000000"].join("");
 const WHSEC = ["whsec_", "0123456789abcdef0123456789abcdef"].join("");
-const RESEND_KEY = "re_QaFixture_0123456789abcdef";
 
 function refuseStorageCall(): never {
 	throw new Error("this suite asserts kv settings, never commerce storage");
@@ -62,7 +59,10 @@ function makeUnusedStorage(): StorageAccess {
 	);
 }
 
-function makeCtx(seed: Record<string, unknown> = {}): {
+function makeCtx(
+	seed: Record<string, unknown> = {},
+	options: { email?: boolean } = {},
+): {
 	ctx: PluginContext;
 	kv: Map<string, unknown>;
 } {
@@ -70,6 +70,10 @@ function makeCtx(seed: Record<string, unknown> = {}): {
 	const ctx: PluginContext = {
 		storage: makeUnusedStorage(),
 		http: { fetch: () => Promise.reject(new Error("no egress in this suite")) },
+		// The EmDash host's email pipeline (ADR-0031): present only when a provider is.
+		...(options.email === true
+			? { email: { send: () => Promise.reject(new Error("no sends in this suite")) } }
+			: {}),
 		kv: {
 			async get<T>(k: string): Promise<T | null> {
 				return kv.has(k) ? (kv.get(k) as T) : null;
@@ -121,7 +125,6 @@ function paymentsLabel(blocks: readonly LooseBlock[]): string {
 const SECRETS = [
 	["save-stripe-secret-key", "stripeSecretKey", STRIPE_SECRET_KEY_KEY, SK_TEST],
 	["save-stripe-webhook-secret", "stripeWebhookSecret", STRIPE_WEBHOOK_SECRET_KEY, WHSEC],
-	["save-email-api-key", "emailApiKey", EMAIL_API_KEY_KEY, RESEND_KEY],
 	[
 		"save-x402-facilitator-secret",
 		"x402FacilitatorSecret",
@@ -186,21 +189,6 @@ describe("key shapes", () => {
 		expect(checkStripeWebhookSecret(value).ok).toBe(false);
 	});
 
-	test("the email key must be a Resend key when the email provider is Resend", () => {
-		const resend = "https://api.resend.com/emails";
-		expect(checkEmailApiKey(RESEND_KEY, resend)).toEqual({ ok: true, value: RESEND_KEY });
-		const wrong = checkEmailApiKey(SK_TEST, resend);
-		expect(wrong.ok).toBe(false);
-		if (!wrong.ok) expect(wrong.problem).toContain("re_");
-	});
-
-	test("any other email provider only needs a single-line key with no spaces", () => {
-		const other = "https://mail.example.net/send";
-		expect(checkEmailApiKey("anything-0123", other).ok).toBe(true);
-		expect(checkEmailApiKey("anything-0123", undefined).ok).toBe(true);
-		expect(checkEmailApiKey("two words", other).ok).toBe(false);
-	});
-
 	test.each(["has space", "tab\there", "line\nbreak", "é-not-ascii", "x".repeat(513)])(
 		"an opaque token %j is refused",
 		(value) => {
@@ -209,7 +197,7 @@ describe("key shapes", () => {
 	);
 });
 
-describe("Settings: saving a payment or email key", () => {
+describe("Settings: saving a payment key", () => {
 	test("each key is trimmed before it is stored", async () => {
 		for (const [actionId, fieldId, kvKey, value] of SECRETS) {
 			const { ctx, kv } = makeCtx();
@@ -235,7 +223,6 @@ describe("Settings: saving a payment or email key", () => {
 				SK_TEST,
 				/webhook signing secret/i,
 			],
-			["save-email-api-key", "emailApiKey", EMAIL_API_KEY_KEY, "two words", /email/i],
 			[
 				"save-x402-facilitator-secret",
 				"x402FacilitatorSecret",
@@ -321,11 +308,13 @@ describe("Settings: how a key field renders", () => {
 		);
 
 		const testMode = await invoke(
-			makeCtx({
-				[STRIPE_SECRET_KEY_KEY]: SK_TEST,
-				[STRIPE_WEBHOOK_SECRET_KEY]: WHSEC,
-				[EMAIL_API_KEY_KEY]: RESEND_KEY,
-			}).ctx,
+			makeCtx(
+				{
+					[STRIPE_SECRET_KEY_KEY]: SK_TEST,
+					[STRIPE_WEBHOOK_SECRET_KEY]: WHSEC,
+				},
+				{ email: true },
+			).ctx,
 			{ type: "page_load", page: "/settings" },
 		);
 		expect(paymentsLabel(testMode.blocks)).toBe(
@@ -348,6 +337,25 @@ describe("Settings: how a key field renders", () => {
 		expect(paymentsLabel(legacy.blocks)).toBe(
 			"Payments & email — Stripe key set · no webhook · no email",
 		);
+	});
+
+	test("one email status line: via EmDash, or no provider with a pointer to the guide (ADR-0031)", async () => {
+		const none = await invoke(makeCtx().ctx, { type: "page_load", page: "/settings" });
+		const noneText = contextTexts(none.blocks).join("\n");
+		expect(noneText).toContain("no EmDash email provider");
+		expect(noneText).toContain("docs/email-providers.md");
+		const via = await invoke(makeCtx({}, { email: true }).ctx, {
+			type: "page_load",
+			page: "/settings",
+		});
+		const viaText = contextTexts(via.blocks).join("\n");
+		expect(viaText).toContain("sent via EmDash");
+		expect(viaText).not.toContain("docs/email-providers.md");
+		// No email key, from-address, provider or region field is left on the screen.
+		for (const page of [none, via]) {
+			const ids = JSON.stringify(page).match(/"action_id":"[^"]*"/g) ?? [];
+			for (const id of ids) expect(id).not.toMatch(/email|smtp/i);
+		}
 	});
 
 	test("the label follows a save on the same response", async () => {
@@ -507,7 +515,6 @@ describe("Settings: review nits", () => {
 	test("a payment-settings refusal names EVERY problem and keeps what was typed", async () => {
 		const { ctx, kv } = makeCtx();
 		const typed = {
-			emailFrom: "orders@shop.local",
 			loginLinkUrl: "http://shop.otta.sh/account/verify",
 			x402PayTo: "my-wallet",
 			x402Accepts: "eip155:8453",
@@ -522,19 +529,17 @@ describe("Settings: review nits", () => {
 		const description = String(banner?.description);
 		expect(description).toContain("x402 destination wallet");
 		expect(description).toContain("sign-in page address");
-		expect(description).toContain("from-address");
 		expect(description).toContain("Nothing was saved");
 		// Each rule is stated in full beside the form.
 		const help = contextTexts(outcome.blocks).join("\n");
 		expect(help).toContain("0x followed by 40 hex characters");
 		expect(help).toContain("https://");
-		expect(help).toContain("xn--");
 		// J6: the form keeps exactly what was typed.
 		const form = formFor(outcome.blocks, "save-payment-settings");
 		for (const [fieldId, value] of Object.entries(typed)) {
 			expect(field(form, fieldId)?.initial_value, fieldId).toBe(value);
 		}
-		for (const key of [EMAIL_FROM_KEY, LOGIN_LINK_URL_KEY, X402_PAYTO_KEY]) {
+		for (const key of [LOGIN_LINK_URL_KEY, X402_PAYTO_KEY]) {
 			expect(kv.has(key), key).toBe(false);
 		}
 	});

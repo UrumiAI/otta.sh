@@ -24,21 +24,18 @@
  *    {@link ORDER_EMAIL_INLINE_DEADLINE_MS} and what is left of that deadline; a
  *    spent budget skips the attempt. The plugin has no `waitUntil` (ADR-0004), so
  *    the work is awaited inline;
- *  - its timeouts are CUT SHORT — an inline send gets less than the sweep's full
- *    allowance, so a timeout is released uncounted for the cron and never recorded
- *    against the provider. EXCEPT for a provider with no idempotency key
- *    (SMTP2GO), where a timeout is a counted attempt: it may have been delivered,
- *    and an uncounted retry would deliver it again;
- *  - it is CHEAP when there is nothing to do — the provider choice is read (one kv
- *    read, three for SMTP2GO) and the sender (its other kv reads) is built only
- *    once a row has been claimed, so a replay costs that and one read of the order;
+ *  - a timeout is a COUNTED attempt (`countTimeoutsAsAttempts`): `ctx.email` has
+ *    no idempotency key, so the email may have been delivered and an uncounted
+ *    retry would deliver it again (ADR-0031);
+ *  - it is CHEAP when there is nothing to do — no provider (`ctx.email` absent)
+ *    costs nothing, and the sender (its kv reads) is built only once a row has
+ *    been claimed, so a replay costs one read of the order;
  *  - it makes the FIRST ATTEMPT ONLY — it claims a row no dispatcher has tried
  *    (`onlyUnattempted`), so it makes at most one COUNTED attempt per row and every
  *    counted retry is the cron's; the total budget (`maxAttempts`) is unchanged.
  *    Repeated Stripe redeliveries during a provider outage therefore cannot
- *    spend it and park the confirmation `failed` within minutes. A
- *    cut-short inline attempt is uncounted and may recur on a later delivery before
- *    the sweep takes the row; the `Idempotency-Key` dedupes it.
+ *    spend it and park the confirmation `failed` within minutes. A row the
+ *    host had no provider for goes back uncounted (ADR-0031) and is tried again.
  *
  * WHY ONLY THIS ORDER'S ROWS. `dispatchOrderEmails` drains the whole queue, up to
  * 100 rows across every order — a cron's job, not a request's. The order-scoped
@@ -48,15 +45,12 @@
  *
  * WHY THIS IS SAFE AGAINST THE CRON RUNNING AT THE SAME TIME. The claim is the same
  * single-winner compare-and-set the cron's claim is (ADR-0005 already allows
- * concurrent dispatchers), so at most one of them holds a row at a time; and the
- * provider `Idempotency-Key` is the row id on both paths, which dedupes the
- * at-least-once tail (a send accepted but not yet marked when the request died).
+ * concurrent dispatchers), so at most one of them holds a row at a time. The
+ * at-least-once tail (a send accepted but not yet marked when the request died)
+ * is bounded by the row's `maxAttempts` (ADR-0031).
  */
 import {
 	dispatchOrderEmailsForOrder,
-	EmailSendTimeoutError,
-	isCutShortEmailTimeout,
-	isEmailSendTimeoutError,
 	type Clock,
 	type CustomerStore,
 	type EmailSender,
@@ -64,18 +58,14 @@ import {
 	type OrderStore,
 	type OutboxEmail,
 } from "@otta-sh/domain";
-import { IN_PROCESS_EGRESS_URLS } from "../manifest.js";
 import { settleDeadline, type SettleDeadline } from "../settle-deadline.js";
 import type { PluginContext } from "../types.js";
 import {
-	type EmailSenderEgress,
-	type EmailTransport,
+	countTimeoutsAsAttempts,
+	emailSendingConfigured,
 	LOGIN_EMAIL_TIMEOUT_MS,
 	makeEmailSender,
-	resolveEmailTransport,
-} from "./ctx-http-email-sender.js";
-import { providerDedupesRetries } from "./email-provider.js";
-import { countTimeoutsAsAttempts } from "./http-email-sender.js";
+} from "./ctx-email-sender.js";
 
 /**
  * The ceiling on ONE inline send — DEFINED as the login email's ceiling, for the
@@ -103,8 +93,8 @@ export const ORDER_EMAIL_INLINE_DEADLINE_MS = 5_000;
  * cron may reclaim it. The cron's 5 minutes is sized for a whole tick draining 100
  * rows; the inline path holds a row for at most {@link ORDER_EMAIL_INLINE_DEADLINE_MS},
  * so a minute is still a 12x margin over the longest legitimate hold (a shorter lease
- * would let a cron tick reclaim a row a live request is still sending — harmless,
- * the Idempotency-Key dedupes it, but pointless). It is also the backoff a FAILED
+ * would let a cron tick reclaim a row a live request is still sending, and
+ * send it twice). It is also the backoff a FAILED
  * inline send is rescheduled to, so the next cron tick past it retries it.
  */
 export const ORDER_EMAIL_INLINE_LEASE_MS = 60_000;
@@ -129,11 +119,9 @@ export interface SendOrderEmailsNowOptions {
 	/**
 	 * The sender, injected — the same override `CommerceSweepOptions.emailSender`
 	 * is, so a suite pins the inline path against a fake with no egress. Unset, it is
-	 * built from the context and {@link egress} with the inline ceiling, lazily.
+	 * built from `ctx.email` with the inline ceiling, lazily.
 	 */
 	emailSender?: EmailSender;
-	/** The build-time email URL. Default: this bundle's resolved define. */
-	egress?: EmailSenderEgress;
 	/** The request's ONE deadline (`settle-deadline.ts`), fixed as the route started
 	 *  and shared with its other slow steps. Default: a fresh one, starting here. */
 	deadline?: SettleDeadline;
@@ -143,8 +131,8 @@ export interface SendOrderEmailsNowOptions {
  * What an inline attempt did — so a caller that tells a person "the buyer has been
  * emailed" (the admin console, QA T1-6) can say it only when it is true.
  *
- * `configured: false` ⇒ this bundle has no email provider: nothing was or will be
- * sent. Otherwise `sent` lists every row this attempt delivered, in order; a row it
+ * `configured: false` ⇒ the host has no email provider: nothing was sent, and the
+ * rows wait in the outbox until one is selected. Otherwise `sent` lists every row this attempt delivered, in order; a row it
  * did not deliver (a failed send, the wait running out, a spent budget) is not
  * there and is the cron's to send. A row sent AFTER the wait ran out is not listed
  * either — the conservative direction for a caller reporting it.
@@ -163,8 +151,8 @@ export interface InlineOrderEmails {
 /**
  * Dispatch `orderId`'s due, never-attempted outbox emails now. Resolves (never
  * rejects) once they are sent, have failed and been rescheduled for the cron, the
- * wait has run out, or there was nothing to do — with what it sent. A bundle with no
- * email API URL is a quiet no-op — the cron leg reports that configuration as
+ * wait has run out, or there was nothing to do — with what it sent. A host with no
+ * email provider is a quiet no-op — the cron leg reports that configuration as
  * `skipped`; a per-request log line would only be noise.
  */
 export async function sendOrderEmailsNow(
@@ -177,12 +165,7 @@ export async function sendOrderEmailsNow(
 	// as well, so a "the cron sweep will take it" line below would be false. (And
 	// "take", not "deliver": the sweep may complete a row as skipped — an order with
 	// no email recipient, ADR-0028 Decision 7 — rather than send it.)
-	const egress = options.egress ?? { apiUrl: IN_PROCESS_EGRESS_URLS.emailApiUrl };
-	// The store's provider, resolved ONCE (one kv read for Resend, three for
-	// SMTP2GO) and handed to the sender build so it is not read again.
-	const transport =
-		options.emailSender === undefined ? await resolveEmailTransport(ctx, egress) : undefined;
-	if (options.emailSender === undefined && transport === undefined) {
+	if (options.emailSender === undefined && !emailSendingConfigured(ctx)) {
 		return { configured: false, sent: [], skipped: [] };
 	}
 	const sent: OutboxEmail[] = [];
@@ -204,15 +187,14 @@ export async function sendOrderEmailsNow(
 	const sendTimeoutMs = (): number =>
 		Math.max(1, Math.min(ORDER_EMAIL_INLINE_TIMEOUT_MS, waitEndsAt - deadline.now()));
 
-	const inline = cutShortTimeouts(
-		options.emailSender ?? lazySender(ctx, egress, sendTimeoutMs, transport),
+	// No idempotency key on `ctx.email`: a timeout is a COUNTED attempt, so a slow
+	// but accepting provider is not re-sent the same email every time. Outermost.
+	const emailSender = countTimeoutsAsAttempts(
+		options.emailSender ?? lazySender(ctx, sendTimeoutMs),
 	);
-	// No idempotency key (SMTP2GO): a timeout is a COUNTED attempt, so a slow but
-	// accepting provider is not re-sent the same email every time.
-	const emailSender =
-		transport !== undefined && !providerDedupesRetries(transport.provider)
-			? countTimeoutsAsAttempts(inline)
-			: inline;
+	// A sandboxed host with no provider answers the first send (`ctx.email` is
+	// always present there): the row goes back uncounted and nothing was sent.
+	let unavailable = false;
 
 	// Flipped by the deadline: the drain asks before every claim, so once the request
 	// stops waiting nothing NEW is claimed by the abandoned work.
@@ -238,6 +220,9 @@ export async function sendOrderEmailsNow(
 			},
 			onSkipped: (row) => {
 				if (!expired) skipped.push(row);
+			},
+			onTransportUnavailable: () => {
+				unavailable = true;
 			},
 		},
 	).then(
@@ -267,62 +252,26 @@ export async function sendOrderEmailsNow(
 	} finally {
 		clearTimeout(timer);
 	}
-	return { configured: true, sent: [...sent], skipped: [...skipped] };
+	return { configured: !unavailable, sent: [...sent], skipped: [...skipped] };
 }
 
 /**
  * The context's sender, built on FIRST SEND rather than up front — so a replay with
  * nothing due never pays its kv reads. The caller has already established that
- * this context can send (`resolveEmailTransport`, the decision
- * `makeEmailSender` makes), so a row is never claimed for a sender that cannot
- * exist. `timeoutMs` is a FUNCTION the sender asks at each send, so every
+ * this context can send (`ctx.email` is there), so a row is never claimed for a
+ * sender that cannot exist. `timeoutMs` is a FUNCTION the sender asks at each send, so every
  * per-request abort is what is left of the wait when that send starts.
  */
-function lazySender(
-	ctx: PluginContext,
-	egress: EmailSenderEgress,
-	timeoutMs: () => number,
-	transport: EmailTransport | undefined,
-): EmailSender {
+function lazySender(ctx: PluginContext, timeoutMs: () => number): EmailSender {
 	let built: Promise<EmailSender | undefined> | undefined;
 	return {
 		async send(input) {
-			built ??= makeEmailSender(ctx, egress, {
-				requestTimeoutMs: timeoutMs,
-				...(transport !== undefined ? { transport } : {}),
-			});
+			built ??= makeEmailSender(ctx, { requestTimeoutMs: timeoutMs });
 			const sender = await built;
-			// Unreachable while `resolveEmailTransport` and `makeEmailSender` agree; a
+			// Unreachable while `emailSendingConfigured` and `makeEmailSender` agree; a
 			// throw here is a failed send, rescheduled for the cron like any other.
 			if (sender === undefined) throw new Error("email sender is not configured");
 			await sender.send(input);
-		},
-	};
-}
-
-/**
- * Every inline timeout is CUT SHORT. The sweep gives a send its full allowance
- * (`SWEEP_EMAIL_SEND_TIMEOUT_MS`) and treats a timeout there as the provider's
- * doing — backed off, recorded, counted past a limit. An inline send gets less (3 s,
- * and less still near the request's deadline), so its timeout says nothing about
- * the provider: re-marked `cutShort`, the drain releases the row uncounted and due
- * at once, and the cron sends it with the full allowance. Exported for its test.
- */
-export function cutShortTimeouts(sender: EmailSender): EmailSender {
-	return {
-		async send(input) {
-			try {
-				await sender.send(input);
-			} catch (err) {
-				if (isEmailSendTimeoutError(err) && !isCutShortEmailTimeout(err)) {
-					// The original allowance, kept; only a bridged copy that dropped the field
-					// falls back to the inline ceiling (the most it could have been given).
-					throw new EmailSendTimeoutError(err.timeoutMs ?? ORDER_EMAIL_INLINE_TIMEOUT_MS, {
-						cutShort: true,
-					});
-				}
-				throw err;
-			}
 		},
 	};
 }

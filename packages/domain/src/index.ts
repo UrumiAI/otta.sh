@@ -237,8 +237,10 @@ export type {
 export {
 	EmailSendTimeoutError,
 	type EmailSendTimeoutLike,
+	EmailTransportUnavailableError,
 	isCutShortEmailTimeout,
 	isEmailSendTimeoutError,
+	isEmailTransportUnavailableError,
 	type EmailSender,
 	type EmailTemplate,
 	type SendEmailInput,
@@ -307,6 +309,7 @@ export {
 	TIMEOUT_BACKOFF_MAX_MS,
 	TIMEOUT_FAILURE_REASON,
 	timeoutBackoffMs,
+	TRANSPORT_UNAVAILABLE_RETRY_MS,
 	UNTRIED_RETRY_MS,
 	adminNextStates,
 	manualPaymentAllowed,
