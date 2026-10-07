@@ -34,7 +34,7 @@ off by the expiry leg's budget every minute.
 The expiry leg keeps a per-process back-off for orders whose expiry flip throws, and
 reads past them in the same one-page list, so they cannot starve the orders behind
 them. Its cap is sized to that page (98 orders on Free, 81 at the Paid bite), at no
-extra query; up to 59 always-failing orders on Free (80 on Paid) still let the rest
+extra query; up to 59 always-failing orders on Free (89 on Paid, measured) still let the rest
 expire, and past that the rest starve, as they did before at one bite's worth. The
 tick's query ceiling inside an order now ends the leg as the ceiling
 instead of being logged as that order failing.

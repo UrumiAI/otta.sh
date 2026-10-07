@@ -365,6 +365,35 @@ describe("bounded order expiry", () => {
 		error.mockRestore();
 	});
 
+	test("an email cut by the 1 KB input limit does not leak its local part (final verify, F-1)", async () => {
+		// Scrubbing shortens text, so characters from past position 160 of the raw
+		// message can reach the logged 160. An email straddling the 1 KB cut has lost
+		// its `@`, so the email rule cannot see it: the cut's trailing partial word is
+		// redacted instead.
+		const error = vi.spyOn(console, "error").mockImplementation(() => {});
+		await pendingOrders(1);
+		vi.spyOn(h.orderStore, "expireWithOrder").mockRejectedValueOnce(
+			new Error(`"${"q".repeat(900)}" contact jane.doe${"z".repeat(200)}@example.com`),
+		);
+		await expireOrdersBatch(h.expireDeps);
+		const logged = JSON.stringify(error.mock.calls[0]);
+		expect(logged).toMatch(/<value> contact <value>/);
+		expect(logged).not.toMatch(/jane|doe|zzz|example/);
+		error.mockRestore();
+	});
+
+	test("a message under the 1 KB input limit keeps its last word (final verify, F-1)", async () => {
+		const error = vi.spyOn(console, "error").mockImplementation(() => {});
+		await pendingOrders(1);
+		vi.spyOn(h.orderStore, "expireWithOrder").mockRejectedValueOnce(
+			new Error("connection reset by peer"),
+		);
+		await expireOrdersBatch(h.expireDeps);
+		const logged = JSON.stringify(error.mock.calls[0]);
+		expect(logged).toMatch(/connection reset by peer/);
+		error.mockRestore();
+	});
+
 	test("a 100k-character message with no spaces is scrubbed in linear time, and redacted (review round 3 polish, P-1)", async () => {
 		// The email pattern backtracked quadratically on a long run with no space, `@`
 		// or `<>`, over the WHOLE message (100k characters took 13 s). The message is

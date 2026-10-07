@@ -574,9 +574,9 @@ const ORDER_EXPIRY_BACKOFF = new UnitBackoff({ maxEntries: expiryBackoffCap(1) }
  * is below both this cap and about 60 × the bite (each failing order is retried
  * once an hour at most, so past that the retries alone fill every bite). On Free
  * that is up to 59 such orders (the order behind 59 is reached in about six
- * hours); at the Paid bite, up to 80 (88 measured). Past it the rest starve, which
- * before the back-off happened as soon as one bite's worth failed. See
- * `UnitBackoff`.
+ * hours); at the Paid bite, up to 89 measured (the condition is sufficient, not
+ * tight; the order behind 90 starves). Past it the rest starve, which before the
+ * back-off happened as soon as one bite's worth failed. See `UnitBackoff`.
  */
 function expiryBackoffCap(expiryLimit: number): number {
 	return Math.max(UnitBackoff.DEFAULT_MAX_ENTRIES, EXPIRY_SCAN_ORDERS - (expiryLimit + 1));

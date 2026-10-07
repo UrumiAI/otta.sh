@@ -27,8 +27,9 @@
  *    and past that many the retries alone fill every bite.
  * Measured on the domain harness, cap sized to a 100-row look: bite 1 reaches the
  * good order behind 59 failing ones (in about six hours), not behind 60; bite 18
- * behind 88. Past the bound the rest starve, which before the back-off happened
- * as soon as `limit` units failed.
+ * behind 89, not behind 90 (the condition above is sufficient, not tight). Past the
+ * bound the rest starve, which before the back-off happened as soon as `limit`
+ * units failed.
  */
 export interface UnitBackoffOptions {
 	/** Wait after the first failure. Default {@link UnitBackoff.DEFAULT_BASE_MS}. */

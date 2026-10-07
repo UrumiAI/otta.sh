@@ -213,8 +213,7 @@ function describeErrorForLog(err: unknown): {
  */
 function scrub(text: string): string {
 	return (
-		text
-			.slice(0, SCRUB_INPUT_MAX)
+		cutAtWord(text)
 			// Quoted runs: the usual place a driver puts a value.
 			.replace(/"[^"]*"|'[^']*'|`[^`]*`/g, "<value>")
 			// A quote left open (or opened before the cut) runs to the end.
@@ -225,4 +224,19 @@ function scrub(text: string): string {
 			// Control characters, lone surrogates and the like: printable text only.
 			.replace(/[^\x20-\x7E]/g, "?")
 	);
+}
+
+/**
+ * The text cut to {@link SCRUB_INPUT_MAX}, with a word the cut splits redacted
+ * whole (final verify, F-1): an email that straddles the cut has lost its `@`, so
+ * the email rule cannot see it, and scrubbing shortens what comes before, which
+ * would bring it into the logged 160. A scan back to the last whitespace, not a
+ * `\S*$` regex, so it stays linear.
+ */
+function cutAtWord(text: string): string {
+	if (text.length <= SCRUB_INPUT_MAX) return text;
+	const cut = text.slice(0, SCRUB_INPUT_MAX);
+	let end = cut.length;
+	while (end > 0 && !/\s/.test(cut.charAt(end - 1))) end--;
+	return `${cut.slice(0, end)}<value>`;
 }
