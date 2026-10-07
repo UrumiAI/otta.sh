@@ -55,5 +55,6 @@ function totalsLineOf(line: PricedLine): TotalsLineInput {
 		unitPriceCents: line.price.amount,
 		qty: line.qty,
 		taxClassId: line.taxClass ?? "standard",
+		requiresShipping: line.productKind === "physical",
 	};
 }

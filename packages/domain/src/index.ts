@@ -30,7 +30,20 @@ export {
 	type QuoteDeps,
 	type QuoteFailure,
 	type QuoteResult,
+	type QuoteTax,
 } from "./pricing/quote.js";
+// ADR-0031: the store's tax options (WooCommerce's Tax tab).
+export {
+	effectiveTaxSettings,
+	LEGACY_TAX_SETTINGS,
+	NEW_STORE_TAX_SETTINGS,
+	parseTaxSettings,
+	readTaxSettings,
+	TAX_DISABLED_CALCULATOR_ID,
+	type ShippingTaxClassSetting,
+	type TaxBaseAddress,
+	type TaxSettings,
+} from "./pricing/tax-settings.js";
 // ADR-0030: the tax calculator hook, the built-in rate table, the order's frozen snapshot.
 export {
 	DEFAULT_TAX_CALCULATOR_TIMEOUT_MS,

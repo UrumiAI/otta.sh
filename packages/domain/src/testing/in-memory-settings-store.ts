@@ -17,7 +17,7 @@ export class InMemorySettingsStore implements SettingsStore {
 	#ledger = new Map<string, OperationalSettings>();
 
 	async get(): Promise<OperationalSettings> {
-		return { ...this.#current };
+		return structuredClone(this.#current);
 	}
 
 	async update(
@@ -25,14 +25,16 @@ export class InMemorySettingsStore implements SettingsStore {
 		idempotencyKey: IdempotencyKey,
 	): Promise<OperationalSettings> {
 		const recorded = this.#ledger.get(idempotencyKey);
-		if (recorded !== undefined) return { ...recorded };
+		if (recorded !== undefined) return structuredClone(recorded);
 
 		const next: OperationalSettings = {
 			holdTtlMinutes: patch.holdTtlMinutes ?? this.#current.holdTtlMinutes,
 			lowStockThreshold: patch.lowStockThreshold ?? this.#current.lowStockThreshold,
 		};
+		const tax = patch.tax ?? this.#current.tax;
+		if (tax !== undefined) next.tax = structuredClone(tax);
 		this.#current = next;
-		this.#ledger.set(idempotencyKey, { ...next });
-		return { ...next };
+		this.#ledger.set(idempotencyKey, structuredClone(next));
+		return structuredClone(next);
 	}
 }

@@ -24,9 +24,10 @@ import type { ProductCommerceStore } from "../ports/product-commerce-store.js";
 import { isProductLive } from "../product-commerce/sellable.js";
 import type { ShippingRulesStore } from "../ports/shipping-rules-store.js";
 import type { TaxRulesStore } from "../ports/tax-rules-store.js";
-import { computeQuote } from "../pricing/quote.js";
+import { computeQuote, type QuoteTax } from "../pricing/quote.js";
 import { type PricedLine, quoteCommandFor } from "../pricing/quote-input.js";
-import type { TaxCalculator, TaxResult } from "../pricing/tax-calculator.js";
+import type { SettingsStore } from "../ports/settings-store.js";
+import type { TaxCalculator } from "../pricing/tax-calculator.js";
 import type { CreateOrderFailure } from "./errors.js";
 import { snapshotOrderLine } from "./line-snapshot.js";
 import type { Order, OrderAddress, PaymentMethod } from "./model.js";
@@ -47,6 +48,8 @@ export interface CreateOrderDeps {
 	couponStore: CouponStore;
 	/** A registered outside tax calculator (ADR-0030); absent ⇒ the built-in. */
 	taxCalculator?: TaxCalculator;
+	/** The store's tax options (ADR-0031); absent ⇒ nothing saved (the upgrade rule). */
+	settings?: Pick<SettingsStore, "get">;
 	clock: Clock;
 	idGen: IdGen;
 	/** Payment adapters keyed by method — the buyer's chosen gateway is resolved here. */
@@ -313,6 +316,7 @@ export async function createOrderFromCart(
 			couponStore: deps.couponStore,
 			clock: deps.clock,
 			...(deps.taxCalculator !== undefined ? { taxCalculator: deps.taxCalculator } : {}),
+			...(deps.settings !== undefined ? { settings: deps.settings } : {}),
 		},
 		quoteCommandFor({
 			currency,
@@ -468,7 +472,7 @@ interface FinalizeContext {
 	lines: CreateOrderLineInput[];
 	breakdown: TotalsBreakdown;
 	/** The calculator's validated answer, frozen as the order's tax snapshot. */
-	tax: { calculatorId: string; result: TaxResult };
+	tax: QuoteTax;
 	couponRecord: CouponRecord | null;
 	/** What priced the shipping and tax (ADR-0021 Decision 7); null when no zone
 	 *  matched (no zones configured, or nothing ships). */

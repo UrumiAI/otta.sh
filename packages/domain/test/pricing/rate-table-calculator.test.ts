@@ -41,6 +41,7 @@ function request(over: Partial<TaxRequest> = {}): TaxRequest {
 				amountCents: cents(10_000),
 				taxClassId: "standard",
 				taxStatus: "taxable",
+				requiresShipping: true,
 			},
 			{
 				lineId: "1",
@@ -49,6 +50,7 @@ function request(over: Partial<TaxRequest> = {}): TaxRequest {
 				amountCents: cents(999),
 				taxClassId: "reduced",
 				taxStatus: "taxable",
+				requiresShipping: true,
 			},
 		],
 		shipping: { amountCents: cents(500), methodId: "m-1" },

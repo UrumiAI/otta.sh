@@ -72,6 +72,8 @@ export interface TotalsLineInput {
 	unitPriceCents: Cents;
 	qty: number;
 	taxClassId: TaxClassId;
+	/** Whether the line ships; absent ⇒ the cart's `requiresShipping`. */
+	requiresShipping?: boolean;
 }
 
 export interface TotalsInput {

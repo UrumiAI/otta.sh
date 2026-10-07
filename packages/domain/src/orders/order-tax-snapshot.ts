@@ -38,12 +38,12 @@ export type OrderTaxSnapshot = OrderTaxSnapshotV1 | OrderTaxSnapshotV0;
 /** The v1 snapshot for an order priced by `breakdown`, from the calculator's answer. */
 export function buildOrderTaxSnapshot(
 	breakdown: TotalsBreakdown,
-	tax: { calculatorId: string; result: TaxResult },
+	tax: { calculatorId: string; result: TaxResult; pricesIncludeTax?: boolean },
 ): OrderTaxSnapshotV1 {
 	return {
 		v: 1,
 		calculatorId: tax.calculatorId,
-		pricesIncludeTax: false,
+		pricesIncludeTax: tax.pricesIncludeTax === true,
 		lines: breakdown.lineBreakdown.map((line, lineIndex) => {
 			const answered = tax.result.lines[lineIndex];
 			if (answered === undefined) throw new RangeError(`no tax line for line ${String(lineIndex)}`);

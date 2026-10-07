@@ -1,0 +1,190 @@
+/**
+ * The store's tax options (PR 2a, ADR-0031) — WooCommerce core's Tax tab, minus
+ * what Otta has no data for yet (billing address; shop-page display). Stored
+ * whole as the `tax` block of the operational settings; ABSENT means "never
+ * saved", which is what the upgrade rule keys on.
+ *
+ * Defaults are WooCommerce's option defaults (woo-facts-verified, 11.1.2).
+ */
+import { normalizeCountryCode, normalizeSubdivision } from "./region-codes.js";
+import type { TaxClassId } from "./types.js";
+
+/** How shipping's tax class is chosen. */
+export type ShippingTaxClassSetting =
+	/** WooCommerce's "based on cart items" (`inherit`). */
+	| { kind: "inherit" }
+	/** Otta before 2a: the class of the zone's last rate flagged "applies to
+	 *  shipping". Set only for stores that already had rates (DECISIONS 4). */
+	| { kind: "legacy" }
+	| { kind: "fixed"; taxClassId: TaxClassId };
+
+/** The shop's own address, for "based on shop base address" and digital goods. */
+export interface TaxBaseAddress {
+	/** ISO 3166-1 alpha-2, uppercased. */
+	country: string;
+	/** ISO 3166-2 subdivision suffix, or null. */
+	region: string | null;
+}
+
+export interface TaxSettings {
+	/** "Enable tax rates and calculations". */
+	enabled: boolean;
+	/** Prices are entered with tax. Never applies to shipping costs. */
+	pricesIncludeTax: boolean;
+	/** "Calculate tax based on" — the customer's shipping address or the shop's. */
+	basedOn: "shipping" | "base";
+	baseAddress: TaxBaseAddress | null;
+	shippingTaxClass: ShippingTaxClassSetting;
+	/** Round tax at subtotal level (per class) instead of per line. */
+	roundAtSubtotal: boolean;
+	/** Cart and checkout show prices with or without tax. */
+	displayCart: "excl" | "incl";
+	/** Tax totals as one row per tax, or a single row. */
+	totalsDisplay: "itemized" | "single";
+}
+
+/** What a new store gets: WooCommerce's defaults — tax OFF, and no rates ship. */
+export const NEW_STORE_TAX_SETTINGS: TaxSettings = Object.freeze({
+	enabled: false,
+	pricesIncludeTax: false,
+	basedOn: "shipping",
+	baseAddress: null,
+	shippingTaxClass: Object.freeze({ kind: "inherit" }),
+	roundAtSubtotal: false,
+	displayCart: "excl",
+	totalsDisplay: "itemized",
+}) as TaxSettings;
+
+/**
+ * What a store that had rates before 2a, and has saved no tax options since,
+ * keeps: exactly today's maths and today's single "Tax" row. What customers pay
+ * must not change silently (DECISIONS 4).
+ */
+export const LEGACY_TAX_SETTINGS: TaxSettings = Object.freeze({
+	...NEW_STORE_TAX_SETTINGS,
+	enabled: true,
+	shippingTaxClass: Object.freeze({ kind: "legacy" }),
+	totalsDisplay: "single",
+}) as TaxSettings;
+
+/** The id a quote with tax switched off records — no calculator was asked. */
+export const TAX_DISABLED_CALCULATOR_ID = "otta.tax-disabled";
+
+/** The upgrade rule: a saved block wins; else rates exist ⇒ legacy; else a new store. */
+export function effectiveTaxSettings(
+	saved: TaxSettings | undefined,
+	hasAnyRate: boolean,
+): TaxSettings {
+	if (saved !== undefined) return saved;
+	return hasAnyRate ? LEGACY_TAX_SETTINGS : NEW_STORE_TAX_SETTINGS;
+}
+
+/** A refused field: `field` is the dotted path (`tax.basedOn`). */
+export type TaxSettingsProblem = { field: string; message: string };
+
+/**
+ * Validate and normalise a block an operator submitted. Every field is required:
+ * the block is replaced whole, so an omitted key would silently reset a setting.
+ */
+export function parseTaxSettings(raw: unknown): TaxSettings | TaxSettingsProblem {
+	if (!isRecord(raw)) return problem("tax", "must be an object");
+	for (const key of ["enabled", "pricesIncludeTax", "roundAtSubtotal"] as const) {
+		if (typeof raw[key] !== "boolean") return problem(`tax.${key}`, "must be true or false");
+	}
+	const basedOn = oneOf(raw["basedOn"], ["shipping", "base"] as const);
+	if (basedOn === undefined) return problem("tax.basedOn", "must be shipping or base");
+	const displayCart = oneOf(raw["displayCart"], ["excl", "incl"] as const);
+	if (displayCart === undefined) return problem("tax.displayCart", "must be excl or incl");
+	const totalsDisplay = oneOf(raw["totalsDisplay"], ["itemized", "single"] as const);
+	if (totalsDisplay === undefined) {
+		return problem("tax.totalsDisplay", "must be itemized or single");
+	}
+	const baseAddress = parseBaseAddress(raw["baseAddress"]);
+	if (baseAddress === undefined) {
+		return problem("tax.baseAddress", "must be null or an ISO country with a valid region");
+	}
+	const shippingTaxClass = parseShippingTaxClass(raw["shippingTaxClass"]);
+	if (shippingTaxClass === undefined) {
+		return problem("tax.shippingTaxClass", "must be inherit, legacy, or a fixed tax class");
+	}
+	return {
+		enabled: raw["enabled"] as boolean,
+		pricesIncludeTax: raw["pricesIncludeTax"] as boolean,
+		basedOn,
+		baseAddress,
+		shippingTaxClass,
+		roundAtSubtotal: raw["roundAtSubtotal"] as boolean,
+		displayCart,
+		totalsDisplay,
+	};
+}
+
+/**
+ * Read a STORED block, leniently: absent or not an object ⇒ `undefined` (never
+ * saved); a field missing or malformed ⇒ the new-store default for that field
+ * (a partially written block is the same condition as an unwritten field).
+ */
+export function readTaxSettings(raw: unknown): TaxSettings | undefined {
+	if (!isRecord(raw)) return undefined;
+	const d = NEW_STORE_TAX_SETTINGS;
+	const bool = (key: "enabled" | "pricesIncludeTax" | "roundAtSubtotal") =>
+		typeof raw[key] === "boolean" ? (raw[key] as boolean) : d[key];
+	return {
+		enabled: bool("enabled"),
+		pricesIncludeTax: bool("pricesIncludeTax"),
+		basedOn: oneOf(raw["basedOn"], ["shipping", "base"] as const) ?? d.basedOn,
+		baseAddress: parseBaseAddress(raw["baseAddress"]) ?? null,
+		shippingTaxClass: parseShippingTaxClass(raw["shippingTaxClass"]) ?? d.shippingTaxClass,
+		roundAtSubtotal: bool("roundAtSubtotal"),
+		displayCart: oneOf(raw["displayCart"], ["excl", "incl"] as const) ?? d.displayCart,
+		totalsDisplay: oneOf(raw["totalsDisplay"], ["itemized", "single"] as const) ?? d.totalsDisplay,
+	};
+}
+
+/** `null` is "no base address"; `undefined` is invalid. */
+function parseBaseAddress(raw: unknown): TaxBaseAddress | null | undefined {
+	if (raw === null) return null;
+	if (!isRecord(raw) || typeof raw["country"] !== "string") return undefined;
+	const country = normalizeCountryCode(raw["country"]);
+	if (country === null) return undefined;
+	const regionRaw = raw["region"];
+	if (regionRaw !== null && regionRaw !== undefined && typeof regionRaw !== "string") {
+		return undefined;
+	}
+	const region = normalizeSubdivision(country, regionRaw);
+	return region.ok ? { country, region: region.code } : undefined;
+}
+
+const CLASS_ID_MAX = 200;
+
+function parseShippingTaxClass(raw: unknown): ShippingTaxClassSetting | undefined {
+	if (!isRecord(raw)) return undefined;
+	if (raw["kind"] === "inherit") return { kind: "inherit" };
+	if (raw["kind"] === "legacy") return { kind: "legacy" };
+	const id = raw["taxClassId"];
+	if (
+		raw["kind"] === "fixed" &&
+		typeof id === "string" &&
+		id.length > 0 &&
+		id.length <= CLASS_ID_MAX &&
+		id.trim() === id &&
+		!/[\u0000-\u001f\u007f-\u009f]/.test(id)
+	) {
+		return { kind: "fixed", taxClassId: id };
+	}
+	return undefined;
+}
+
+function oneOf<T extends string>(raw: unknown, options: readonly T[]): T | undefined {
+	return typeof raw === "string" && (options as readonly string[]).includes(raw)
+		? (raw as T)
+		: undefined;
+}
+
+function problem(field: string, message: string): TaxSettingsProblem {
+	return { field, message: `${field} ${message}` };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
+}

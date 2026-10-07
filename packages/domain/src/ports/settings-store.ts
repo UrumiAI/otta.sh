@@ -1,4 +1,5 @@
 import type { IdempotencyKey } from "../money/ids.js";
+import type { TaxSettings } from "../pricing/tax-settings.js";
 
 /**
  * `SettingsStore` (Phase 7 §5.2). The service-DB tier of the settings split:
@@ -31,6 +32,12 @@ export interface OperationalSettings {
 	holdTtlMinutes: number;
 	/** Default low-stock threshold (non-negative integer). */
 	lowStockThreshold: number;
+	/**
+	 * The tax options (PR 2a, ADR-0031), replaced WHOLE by an update. ABSENT means
+	 * never saved — the upgrade rule (`effectiveTaxSettings`) decides what that
+	 * means — so `get()` never fills it with a default.
+	 */
+	tax?: TaxSettings;
 }
 
 /** Defaults returned by `get()` before anything is persisted (§5.1). */

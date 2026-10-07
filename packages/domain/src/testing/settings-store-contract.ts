@@ -1,6 +1,18 @@
 import { describe, expect, test } from "vitest";
 import { idempotencyKey } from "../money/ids.js";
 import { DEFAULT_OPERATIONAL_SETTINGS, type SettingsStore } from "../ports/settings-store.js";
+import type { TaxSettings } from "../pricing/tax-settings.js";
+
+const SAMPLE_TAX: TaxSettings = {
+	enabled: true,
+	pricesIncludeTax: true,
+	basedOn: "base",
+	baseAddress: { country: "GB", region: null },
+	shippingTaxClass: { kind: "fixed", taxClassId: "reduced" },
+	roundAtSubtotal: true,
+	displayCart: "incl",
+	totalsDisplay: "single",
+};
 
 export interface SettingsStoreHarness {
 	store: SettingsStore;
@@ -47,6 +59,30 @@ export function settingsStoreContract(
 			const replay = await store.update({ holdTtlMinutes: 30 }, idempotencyKey("k1"));
 			expect(replay).toEqual(first);
 			expect((await store.get()).holdTtlMinutes).toBe(99);
+		});
+
+		// PR 2a: the `tax` block rides in the same singleton. Absent means "never saved",
+		// which is what the upgrade rule keys on — never a default block.
+		test("tax is absent until saved, and an update without it never writes one", async () => {
+			const { store } = await makeStore();
+			expect((await store.get()).tax).toBeUndefined();
+			await store.update({ holdTtlMinutes: 30 }, idempotencyKey("k1"));
+			expect((await store.get()).tax).toBeUndefined();
+		});
+
+		test("the tax block round-trips whole, and a later partial update keeps it", async () => {
+			const { store } = await makeStore();
+			const result = await store.update({ tax: SAMPLE_TAX }, idempotencyKey("k1"));
+			expect(result.tax).toEqual(SAMPLE_TAX);
+			expect((await store.get()).tax).toEqual(SAMPLE_TAX);
+			await store.update({ lowStockThreshold: 3 }, idempotencyKey("k2"));
+			expect((await store.get()).tax).toEqual(SAMPLE_TAX);
+			const changed = { ...SAMPLE_TAX, enabled: false };
+			await store.update({ tax: changed }, idempotencyKey("k3"));
+			expect((await store.get()).tax).toEqual(changed);
+			// A same-key replay returns its recorded result and does not clobber.
+			expect((await store.update({ tax: SAMPLE_TAX }, idempotencyKey("k1"))).tax).toEqual(SAMPLE_TAX);
+			expect((await store.get()).tax).toEqual(changed);
 		});
 	});
 }
