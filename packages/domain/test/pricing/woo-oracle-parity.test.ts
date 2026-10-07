@@ -46,12 +46,8 @@ const ORACLE = JSON.parse(
 	readFileSync(new URL("./fixtures/woo-oracle-11.1.2.json", import.meta.url), "utf8"),
 ) as OracleScenario[];
 
-/** Out of 2a's scope, so not run: product tax status and method taxable (2b), shop-page display. */
+/** Out of scope, so not run: shop-page price display (a follow-up, DECISIONS 6). */
 const OUT_OF_SCOPE: Record<string, string> = {
-	"IN-07": "product tax status 'none' (PR 2b)",
-	"SH-04": "product tax status 'none' (PR 2b)",
-	"SH-05": "product tax status 'shipping' / 'none' (PR 2b)",
-	"SH-07": "shipping method not taxable (PR 2b)",
 	"DP-01": "shop-page price display (follow-up)",
 	"DP-02": "shop-page price display (follow-up)",
 };
@@ -66,6 +62,9 @@ const KNOWN_DIVERGENCES: Record<string, { grand_total: number }> = {
 	"RD-07": { grand_total: 724 },
 };
 
+/** WooCommerce's product `tax_status` → Otta's (PR 2b). */
+const TAX_STATUS = { taxable: "taxable", shipping: "shipping_only", none: "none" } as const;
+
 /** WooCommerce's standard class is "" — Otta's is `standard`. */
 const classId = (woo: string) => (woo === "" ? "standard" : woo);
 
@@ -79,7 +78,7 @@ function run(s: OracleScenario) {
 			unitPriceCents: cents(item.unit_cents),
 			amountCents: cents(gross - (expected.lines[i]?.discount ?? 0)),
 			taxClassId: classId(item.tax_class),
-			taxStatus: "taxable" as const,
+			taxStatus: TAX_STATUS[item.tax_status],
 			requiresShipping: item.needs_shipping,
 		};
 	});
@@ -88,8 +87,9 @@ function run(s: OracleScenario) {
 		currency: currency("USD"),
 		pricesIncludeTax: inputs.prices_include_tax,
 		lines,
+		// A method that is not taxable is asked about as no shipping at all (quote.ts).
 		shipping:
-			inputs.shipping === null
+			inputs.shipping === null || !inputs.shipping.method_taxable
 				? null
 				: { amountCents: cents(inputs.shipping.cost_cents), methodId: "m" },
 		origin: null,
@@ -132,9 +132,9 @@ function run(s: OracleScenario) {
 describe("the built-in calculator against WooCommerce 11.1.2 (independent oracle)", () => {
 	const inScope = ORACLE.filter((s) => !(s.id in OUT_OF_SCOPE));
 
-	test("the oracle holds 39 scenarios, 33 of them in 2a's scope", () => {
+	test("the oracle holds 39 scenarios, 37 of them in scope", () => {
 		expect(ORACLE).toHaveLength(39);
-		expect(inScope).toHaveLength(33);
+		expect(inScope).toHaveLength(37);
 	});
 
 	test.each(inScope.map((s) => [s.id, s] as const))("%s", (_id, s) => {

@@ -184,6 +184,9 @@ export async function computeQuote(
 	//    absent ⇒ the zero-shipping synthetic method (no method chosen — the
 	//    pipeline still runs, never the naive Phase-4 stub sum).
 	let shippingMethod: RulesSnapshot["shippingMethod"];
+	// Whether the chosen method's charge is taxed at all (PR 2b; WooCommerce's
+	// `is_taxable()`). The zero-shipping synthetic method has nothing to tax.
+	let shippingTaxable = false;
 	if (command.methodId !== undefined && command.methodId !== "") {
 		if (resolution.status === "not_required") {
 			return { ok: false, reason: "SHIPPING_METHOD_NOT_APPLICABLE" };
@@ -205,6 +208,7 @@ export async function computeQuote(
 			amountCents: rate.amountCents,
 			minSubtotalCents: rate.minSubtotalCents,
 		};
+		shippingTaxable = method.taxable;
 	} else {
 		shippingMethod = {
 			zoneId: zoneId ?? "",
@@ -281,10 +285,12 @@ export async function computeQuote(
 		currency: command.currency,
 		pricesIncludeTax: taxSettings.pricesIncludeTax,
 		lines,
-		shipping:
-			shippingMethod.methodId === ""
-				? null
-				: { amountCents: preTax.shippingCents, methodId: shippingMethod.methodId },
+		// A method that is not taxable is asked about as no shipping at all: the
+		// built-in then taxes none, and an outside calculator that taxes it anyway
+		// is refused by the validator (fail-closed).
+		shipping: shippingTaxable
+			? { amountCents: preTax.shippingCents, methodId: shippingMethod.methodId }
+			: null,
 		origin: base === null ? null : { ...base, postalCode: null, city: null },
 		destination: located.address,
 		zoneId: located.zoneId,

@@ -129,7 +129,7 @@ export function taxRequestLinesOf(
 		unitPriceCents: l.unitPriceCents,
 		amountCents: preTax.discountedLineCents[i] as Cents,
 		taxClassId: l.taxClassId,
-		taxStatus: "taxable",
+		taxStatus: l.taxStatus ?? "taxable",
 		requiresShipping: l.requiresShipping ?? cartRequiresShipping,
 	}));
 }

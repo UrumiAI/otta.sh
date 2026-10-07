@@ -10,6 +10,7 @@
  * returns are authoritative and are never recomputed from the rate.
  */
 import type { Cents, Currency } from "../money/cents.js";
+import type { ProductTaxStatus } from "../ports/product-commerce-store.js";
 import type { TaxClassId } from "./types.js";
 
 /** How long an outside calculator may take before the checkout is refused. */
@@ -36,8 +37,12 @@ export interface TaxRequestLine {
 	/** The line's DISCOUNTED amount — the tax base. */
 	amountCents: Cents;
 	taxClassId: TaxClassId;
-	/** WooCommerce's product tax status. Always "taxable" until product tax status lands (2b). */
-	taxStatus: "taxable" | "shipping_only" | "none";
+	/**
+	 * WooCommerce's product tax status (PR 2b). Only a `taxable` line may carry
+	 * tax: a non-zero tax on any other line is refused (`TAX_UNAVAILABLE`).
+	 * `shipping_only` still counts toward a "based on cart items" shipping class.
+	 */
+	taxStatus: ProductTaxStatus;
 	/** Whether this line is shipped (a physical good) — WooCommerce's `needs_shipping`. */
 	requiresShipping: boolean;
 }
@@ -53,7 +58,8 @@ export interface TaxRequest {
 	 */
 	pricesIncludeTax: boolean;
 	lines: readonly TaxRequestLine[];
-	/** The chosen shipping charge; null when no method is chosen or none applies. */
+	/** The chosen shipping charge; null when no method is chosen or none applies,
+	 *  and also when the chosen method is not taxable (PR 2b). */
 	shipping: { amountCents: Cents; methodId: string } | null;
 	/** The shop's base address from the tax settings, or null when none is set. */
 	origin: TaxAddress | null;

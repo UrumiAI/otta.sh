@@ -2885,6 +2885,52 @@ export function productCommerceStoreContract(
 			expect(await h.store.countProducts({})).toBe(0);
 		});
 
+		// -- taxStatus: WooCommerce's product tax status (PR 2b) ---------------
+		//
+		// Admin-only, like `inventoryPolicy`: the guarded edit writes it, the CMS
+		// sync never does. A row that never had one reads "taxable".
+
+		describe("taxStatus: the product's tax status", () => {
+			test("a new product reads taxable", async () => {
+				const h = await makeStore();
+				const row = await seedEditable(h, "ts-new");
+				expect(row.taxStatus).toBe("taxable");
+				expect((await h.store.getByProductId(productId("ts-new")))?.taxStatus).toBe("taxable");
+			});
+
+			test("an edit sets it; an edit without it and a CMS sync PRESERVE it", async () => {
+				const h = await makeStore();
+				const seeded = await seedEditable(h, "ts-set");
+				const none = await h.store.updateCommerceFields(
+					{ productId: productId("ts-set"), taxStatus: "none" },
+					idempotencyKey("ts-e1"),
+					seeded.updatedAt.toISOString(),
+				);
+				expect(none.ok && none.product.taxStatus).toBe("none");
+				const other = await h.store.updateCommerceFields(
+					{ productId: productId("ts-set"), taxClass: "reduced" },
+					idempotencyKey("ts-e2"),
+					none.ok ? none.product.updatedAt.toISOString() : "",
+				);
+				expect(other.ok && other.product.taxStatus).toBe("none");
+				const synced = await h.store.upsert(
+					{ productId: productId("ts-set"), title: "Renamed" },
+					idempotencyKey("ts-sync"),
+				);
+				expect(synced.taxStatus).toBe("none");
+				const back = await h.store.updateCommerceFields(
+					{ productId: productId("ts-set"), taxStatus: "shipping_only" },
+					idempotencyKey("ts-e3"),
+					synced.updatedAt.toISOString(),
+				);
+				expect(back.ok && back.product.taxStatus).toBe("shipping_only");
+				expect(
+					(await h.store.getManyByProductId([productId("ts-set")])).get(productId("ts-set"))
+						?.taxStatus,
+				).toBe("shipping_only");
+			});
+		});
+
 		// -- downloadAsset: the product's one download file (issue #376) -------
 		//
 		// The POINTER to a digital product's file lives on the product, so every

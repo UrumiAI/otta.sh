@@ -1,5 +1,5 @@
 import type { Currency, Money } from "../money/cents.js";
-import type { ProductKind } from "../ports/product-commerce-store.js";
+import type { ProductKind, ProductTaxStatus } from "../ports/product-commerce-store.js";
 import type { QuoteCommand } from "./quote.js";
 import type { TotalsLineInput } from "./types.js";
 
@@ -15,6 +15,8 @@ export interface PricedLine {
 	qty: number;
 	taxClass: string | null;
 	productKind: ProductKind;
+	/** The row's tax status (PR 2b); absent ⇒ `taxable`. */
+	taxStatus?: ProductTaxStatus;
 }
 
 export interface QuoteInput {
@@ -56,5 +58,10 @@ function totalsLineOf(line: PricedLine): TotalsLineInput {
 		qty: line.qty,
 		taxClassId: line.taxClass ?? "standard",
 		requiresShipping: line.productKind === "physical",
+		// Only a status that changes the tax is carried, so a taxable line's command
+		// is key for key what it was before PR 2b.
+		...(line.taxStatus !== undefined && line.taxStatus !== "taxable"
+			? { taxStatus: line.taxStatus }
+			: {}),
 	};
 }

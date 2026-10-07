@@ -555,6 +555,7 @@ export {
 export type { Clock } from "./ports/clock.js";
 export type { IdGen } from "./ports/id-gen.js";
 export { commit, release, removeStock, reserve, restock } from "./inventory/use-cases.js";
+export { isProductTaxStatus, PRODUCT_TAX_STATUSES } from "./ports/product-commerce-store.js";
 export type {
 	DownloadAsset,
 	InventoryPolicy,
@@ -563,6 +564,7 @@ export type {
 	ProductCommerceUpdateResult,
 	ProductCommerceView,
 	ProductKind,
+	ProductTaxStatus,
 	ProductListCursor,
 	ProductListFilter,
 	ProductListPage,
