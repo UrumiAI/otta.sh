@@ -26,7 +26,8 @@ export const OTTA_PLUGIN_VERSION = "0.1.0";
  *    `allowedHosts`. No `network:request:unrestricted`.
  *  - `email:send` — `ctx.email`, the host's email pipeline (ADR-0031). EmDash
  *    owns email providers; the plugin grants itself no email host and holds no
- *    email credential. Not `email:provide`: otta delivers nothing itself.
+ *    email credential. Not `hooks.email-transport:register` (or its deprecated
+ *    alias `email:provide`): otta delivers nothing itself.
  * No `storage`/`kv`/db CAPABILITY — and not because the plugin holds no
  * commercial state: it holds all of it. `ctx.storage` is where commerce truth
  * lives (ADR-0018), and the host builds it on an always-available path with no

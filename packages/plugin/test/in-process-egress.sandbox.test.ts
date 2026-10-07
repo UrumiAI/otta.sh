@@ -9,7 +9,7 @@
  * below is kept for the x402 half.
  *
  * WHY THIS FILE EXISTS. INC-C5 added the email and facilitator URLs to the
- * sandbox harness and then never set either, so `CtxHttpEmailSender.send` and
+ * sandbox harness and then never set either, so the (since removed) email sender and
  * the x402 facilitator call had never once run inside an isolate:
  * every sandbox assertion was about the UNCONFIGURED arm, which is the arm where
  * neither adapter is constructed at all. The property only the sandbox can prove

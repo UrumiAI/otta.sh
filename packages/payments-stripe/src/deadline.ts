@@ -27,10 +27,10 @@
  * in `init` again, aborted by the same timer, and the socket is released. Never
  * set it under the sandbox runner: the RPC refuses the signal and every call fails.
  *
- * TWIN of `@otta-sh/plugin`'s `src/email/send-deadline.ts` (the package graph
- * keeps them apart: this package cannot import the plugin, and the domain stays
- * IO-free; `@otta-sh/payments-x402`'s facilitator race is a third variant). Keep
- * them in step: a fix to one is very likely owed to the other.
+ * `@otta-sh/payments-x402`'s facilitator race is a variant of the same idea; keep
+ * them in step: a fix to one is very likely owed to the other. (The plugin's
+ * email twin went with the HTTP email senders, ADR-0031: `ctx.email` takes no
+ * signal, and `CtxEmailSender` races the host call alone.)
  */
 
 /** What a call's own bound rejects with. Never leaves the transport: every

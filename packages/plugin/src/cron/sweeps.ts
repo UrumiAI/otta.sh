@@ -104,9 +104,11 @@
  *  - an email SEND is the one unit whose length someone else decides, so the
  *    whole send is raced against a timer at `SWEEP_EMAIL_SEND_TIMEOUT_MS` or at
  *    what is left of the leg, whichever is sooner, and the time is checked once
- *    more just before it. A send cut off either way is handed back WITHOUT
- *    counting an attempt (`releaseEmailClaim`): a timeout is not a provider
- *    failure, and a row must never be parked `failed` for our own deadline;
+ *    more just before it. A send left too little time is handed back untried
+ *    and uncounted (`releaseEmailClaim`). A send that STARTED and timed out —
+ *    at the full cap or at what the tick had left — counts as an attempt
+ *    (`countTimeoutsAsAttempts`, ADR-0031): `ctx.email` has no idempotency key,
+ *    so it may have been delivered, and counting bounds the duplicates;
  *  - each leg may use only a SHARE of the tick (never less than one unit of its own
  *    work), so a hung provider or a backlog cannot take it all — and a leg its share
  *    stopped gets a SECOND PASS on whatever the tick has left once every leg has had

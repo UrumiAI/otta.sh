@@ -22,7 +22,8 @@ on `allowedHosts`. That is third-party integration code in core, against the pro
 principles (lean, global, no vendor code in core; payments are the one exemption for now).
 
 EmDash already owns email providers. A site installs one provider plugin (the `email:deliver`
-exclusive hook, registered with the `email:provide` capability) and selects it in EmDash's
+exclusive hook, registered with the `hooks.email-transport:register` capability;
+`email:provide` is its deprecated alias, warned at bundle time and refused at publish) and selects it in EmDash's
 Settings > Email. Any plugin that declares `email:send` gets `ctx.email.send(message)`, and
 the host runs `email:beforeSend` hooks, the selected provider, then `email:afterSend` hooks.
 
@@ -58,15 +59,19 @@ Facts verified against emdash 0.38.0 (installed):
      (`state:emailTransportUnavailableAt`); while it is fresh (5 min) the cron leg, the
      inline send and the sign-in request stop **before** claiming a row or minting a
      challenge, and Settings shows "no provider". After that one send tries again. Pinned by
-     the domain contract suite (`emailRecipientContract`, every dialect) and by
-     `ctx-email-sender.test.ts`, which pins both strings verbatim.
+     the domain contract suite (`emailRecipientContract`, every dialect).
+   - The match is EXACT: the error name `EmailNotConfiguredError`, or a message equal to
+     one of EmDash's two texts. Never a substring: a provider's own error may quote the
+     recipient, and a buyer chooses the recipient (security review F1).
 3. **At-least-once, bounded — a deliberate change.** `ctx.email` takes no idempotency key and no abort signal, so
    the send is raced against the existing ceilings (3 s login, 3 s inline, 5 s sweep) and a
    timeout is re-thrown as a **counted** attempt (`countTimeoutsAsAttempts`, outermost).
    Duplicates are bounded by the row's `maxAttempts` (5). Before, a timeout on the
    Resend-shaped sender was uncounted (up to ten, backed off) because Resend deduped the
    retry; with no idempotency key that would multiply duplicates, so a slow provider now
-   parks a row `failed` after five timed-out sends. The uncounted-timeout path in the
+   parks a row `failed` after five timed-out sends — including a send the sweep itself
+   cut short because the tick was running out of time (it may have been delivered too).
+   `onRepeatedTimeouts` therefore no longer fires for the plugin's sender. The uncounted-timeout path in the
    domain stays for other callers; the plugin no longer uses it. A query-ceiling refusal
    while building the sender (before any send) is still released uncounted.
 4. **The extension point is EmDash's.** otta adds no provider registry of its own. A store
@@ -75,14 +80,20 @@ Facts verified against emdash 0.38.0 (installed):
    admin Settings screen shows one line: "sent via EmDash's email provider", or "no EmDash
    email provider … see docs/email-providers.md".
 5. **Stale credentials.** The keys earlier builds stored (`settings:emailApiKey`,
-   `settings:emailSmtp2goApiKey` and their save generations) are no longer read. They are
-   purged once, behind a marker key (a separate, droppable change).
+   `settings:emailSmtp2goApiKey` and their save generations) are no longer read. The first
+   cron tick purges them once, behind a marker key (a separate commit; it ships).
+6. **Old email is not sent (user decision, 2026-10-07).** An outbox row older than 72 hours
+   (`OUTBOX_EMAIL_MAX_AGE_MS`, from when it was enqueued) is completed WITHOUT a send when
+   the dispatcher claims it: terminal (`skipped`), no attempt spent, for every template.
+   So a store that had no provider for days does not mail its buyers stale "shipped" or
+   "cancelled" news the moment one is selected. A sign-in link never enters the outbox;
+   it expires on its own (15 min). Pinned by `emailRecipientContract` on every store.
 
 ## Consequences
 
 - Live stores that sent through SMTP2GO or a Resend-shaped URL go quiet until the site
   selects an EmDash provider. Rows queue without spending attempts. When a provider is
-  selected the backlog goes out, including old status mail; there is no max age.
+  selected the backlog goes out — only the last 72 hours of it (Decision 6).
 - Lost: the per-store from-address setting (now the provider's), and Resend's 24 h
   idempotency (dedup becomes bounded duplicates).
 - In a sandboxed host the plugin cannot tell "no provider" until it sends. Until the first
@@ -90,10 +101,19 @@ Facts verified against emdash 0.38.0 (installed):
   released uncounted, or one sign-in request mints a challenge (spending a throttle slot)
   before its send is refused; the Settings line reads as configured until then. The
   `order-emails` leg pays one kv read per tick with an email due to check the record.
+  After an operator selects a provider on a sandboxed host, allow up to 5 minutes for the
+  record to lapse: until then order emails stay queued and a sign-in request sends nothing
+  (it answers its generic success).
 - **Trust widening (security).** The sign-in link carries a bearer token. Through `ctx.email`
   it now passes every installed plugin's `email:beforeSend`/`email:afterSend` hooks and the
-  provider plugin, not only otta's own sender. EmDash's dev console provider prints part of
-  the text and keeps the message (dev only). A site must treat email hooks as trusted code.
-- The "not configured" detection matches host error messages. An EmDash upgrade that rewords
-  them fails `ctx-email-sender.test.ts` rather than silently spending attempts; re-verify on
-  EmDash 1.x.
+  provider plugin, not only otta's own sender: any of them can read, log or forward it,
+  and a provider's own delivery logs may keep it. EmDash's dev console provider prints the
+  text and keeps the message (dev only). A site must treat every plugin with email hooks,
+  and its provider, as able to sign in as any customer who requests a link. This amends
+  ADR-0004's promise that the token travels nowhere a provider log could print it.
+- The "not configured" detection matches host error texts exactly. Both are pinned against
+  EmDash itself, not against copies: the sandbox bridge's text by
+  `emdash-sandbox-rpc.sandbox.test.ts`, which calls EmDash's real `PluginBridge.emailSend`
+  over the real Workers RPC; the pipeline's text by `ctx-email-sender.test.ts`, which reads
+  it from the installed package's source. An EmDash upgrade that rewords either fails CI
+  rather than silently spending attempts. Both texts are unchanged in EmDash 1.0.1.

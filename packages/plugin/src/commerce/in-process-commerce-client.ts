@@ -790,9 +790,11 @@ export class InProcessCommerceClient implements CommerceClient {
 			await sender.send({
 				to: address,
 				template: "customer-login-link",
-				// The link ONLY: the token travels nowhere a template or a provider
-				// log could print it on its own. Beside it, the lifetime the email
-				// states — the TTL the verifier was built with (QA U-3).
+				// The link ONLY: the token is in no field of its own. But the link IS
+				// the email: through `ctx.email` it reaches every plugin's email hooks
+				// and the site's provider, whose logs may keep it (ADR-0031, amending
+				// ADR-0004). Beside it, the lifetime the email states — the TTL the
+				// verifier was built with (QA U-3).
 				data: {
 					loginUrl: loginLinkUrl(verifyPageUrl, issued.challengeId, issued.token),
 					expiresInMinutes: Math.round(LOGIN_LINK_TTL_MS / 60_000),

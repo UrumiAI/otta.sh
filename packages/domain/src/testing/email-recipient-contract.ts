@@ -9,6 +9,7 @@ import { emailTemplateForNotice, emailTemplateForState } from "../orders/state-m
 import {
 	dispatchOrderEmails,
 	dispatchOrderEmailsForOrder,
+	OUTBOX_EMAIL_MAX_AGE_MS,
 	TRANSPORT_UNAVAILABLE_RETRY_MS,
 	transitionOrder,
 } from "../orders/transition.js";
@@ -251,6 +252,63 @@ export function emailRecipientContract(
 			expect(
 				await h.store.claimNextEmailForOrder(id, later.toISOString(), laterLease),
 			).toMatchObject({ attempts: 1 });
+		});
+
+		test("72 h (ADR-0031): an email older than OUTBOX_EMAIL_MAX_AGE_MS is completed unsent, terminal, no attempt spent", async () => {
+			const h = await makeHarness();
+			const id = await seed(h, "ord-stale", {
+				buyerRef: "buyer@example.com",
+				paymentMethod: "stripe",
+			});
+			await driveTo(h, id, ["paid"]);
+			const later = new Date(h.clock.now().getTime() + OUTBOX_EMAIL_MAX_AGE_MS + 60_000);
+			const expired: OutboxEmail[] = [];
+			const skipped: OutboxEmail[] = [];
+			expect(
+				await dispatchOrderEmails(
+					{ orderStore: h.store, emailSender: h.emailSender, clock: { now: () => later } },
+					{ onExpired: (row) => expired.push(row), onSkipped: (row) => skipped.push(row) },
+				),
+			).toBe(0);
+			expect(h.emailSender.sends).toEqual([]);
+			expect(expired.map((row) => row.orderId)).toEqual([id]);
+			expect(skipped).toEqual([]);
+			expect(await h.outboxRows(id)).toEqual([
+				{ toState: "paid", notice: null, status: "skipped", attempts: 0 },
+			]);
+			// Terminal: never claimed again.
+			expect(await h.store.claimNextEmailForOrder(id, LATER, LATER)).toBeNull();
+		});
+
+		test("72 h (ADR-0031): an email just inside the limit still goes out", async () => {
+			const h = await makeHarness();
+			const id = await seed(h, "ord-fresh", {
+				buyerRef: "buyer@example.com",
+				paymentMethod: "stripe",
+			});
+			await driveTo(h, id, ["paid"]);
+			const later = new Date(h.clock.now().getTime() + OUTBOX_EMAIL_MAX_AGE_MS - 60_000);
+			expect(
+				await dispatchOrderEmails({
+					orderStore: h.store,
+					emailSender: h.emailSender,
+					clock: { now: () => later },
+				}),
+			).toBe(1);
+			expect((await h.outboxRows(id)).map((r) => r.status)).toEqual(["sent"]);
+		});
+
+		test("a claimed row carries when it was enqueued", async () => {
+			const h = await makeHarness();
+			const id = await seed(h, "ord-created", {
+				buyerRef: "buyer@example.com",
+				paymentMethod: "stripe",
+			});
+			await driveTo(h, id, ["paid"]);
+			const { now, lease } = claimWindow(h);
+			const row = await h.store.claimNextEmailForOrder(id, now, lease);
+			expect(typeof row?.createdAt).toBe("string");
+			expect(Number.isFinite(Date.parse(row?.createdAt ?? ""))).toBe(true);
 		});
 
 		test("the drain reports a skipped row through onSkipped — never onSent — and does not count it", async () => {

@@ -384,6 +384,12 @@ export interface DispatchOrderEmailsOptions {
 	 * as an attempt, so the row parks with reason "provider kept timing out".
 	 */
 	onRepeatedTimeouts?: (row: { id: string; orderId: OrderId; timeouts: number }) => void;
+	/** Rows older than this are completed unsent (`markEmailSkipped`, no attempt
+	 *  spent) and reported through `onExpired`. Default {@link OUTBOX_EMAIL_MAX_AGE_MS}. */
+	maxAgeMs?: number;
+	/** Told about every row the drain completed unsent because it was too old.
+	 *  Never passed to `onSent` or `onSkipped`. */
+	onExpired?: (row: OutboxEmail) => void;
 	/** Called when the transport reported no provider to send through
 	 *  (`EmailTransportUnavailableError`): the row went back uncounted and the
 	 *  drain stopped. Lets a caller report "not configured" rather than "sent 0". */
@@ -449,6 +455,16 @@ export const UNTRIED_RETRY_MS = 30_000;
  */
 export const TRANSPORT_UNAVAILABLE_RETRY_MS = 5 * 60_000;
 
+/**
+ * The oldest an outbox email may be and still go out: 72 hours (a user decision,
+ * ADR-0031). A row claimed after that is completed WITHOUT a send — terminal, no
+ * attempt spent — so a store that had no email provider for days does not
+ * flood its buyers with stale "shipped" or "cancelled" mail the moment one is
+ * selected. Every template alike (a sign-in link never enters the outbox and
+ * expires on its own).
+ */
+export const OUTBOX_EMAIL_MAX_AGE_MS = 72 * 60 * 60 * 1000;
+
 /** The reason a row parked by repeated timeouts carries. */
 export const TIMEOUT_FAILURE_REASON = "provider kept timing out";
 
@@ -470,9 +486,10 @@ const DEFAULT_ORDER_BATCH_LIMIT = 10;
  * later tick (or parks it `failed` after `maxAttempts`) — durable retry WITHOUT
  * re-running the state transition itself. Note: claim is exactly-once but
  * delivery is only at-least-once — a crash after `send()` but before the row is
- * marked sent lets the lease lapse and the row be re-claimed and re-sent; dedup
- * to effectively-once relies on the provider's `Idempotency-Key` (§6,
- * `HttpEmailSender`). Returns the number of emails actually sent — a row skipped
+ * marked sent lets the lease lapse and the row be re-claimed and re-sent; with no
+ * idempotency key on EmDash's `ctx.email` such duplicates are bounded by
+ * `maxAttempts`, not deduped (ADR-0031). A row older than `maxAgeMs` (72 h) is
+ * completed unsent. Returns the number of emails actually sent — a row skipped
  * for want of a recipient (`markEmailSkipped`) is not one.
  */
 export async function dispatchOrderEmails(
@@ -536,6 +553,17 @@ async function drainOutbox(
 		if (options.shouldContinue !== undefined && !options.shouldContinue()) break;
 		const row = await claim(nowIso, leaseUntil);
 		if (row === null) break;
+
+		// Too old to send (ADR-0031): completed, never sent, no attempt spent.
+		const createdMs = row.createdAt === undefined ? Number.NaN : Date.parse(row.createdAt);
+		if (
+			Number.isFinite(createdMs) &&
+			now.getTime() - createdMs > (options.maxAgeMs ?? OUTBOX_EMAIL_MAX_AGE_MS)
+		) {
+			await deps.orderStore.markEmailSkipped(row.id, nowIso);
+			options.onExpired?.(row);
+			continue;
+		}
 
 		// A NOTICE row (`enqueueNotice`) renders its own template; every other row is
 		// a state email keyed by the state it announces. `toState` on a notice row is

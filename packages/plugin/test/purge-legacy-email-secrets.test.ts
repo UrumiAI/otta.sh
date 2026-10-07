@@ -104,6 +104,33 @@ describe("purgeLegacyEmailSecrets", () => {
 		for (const key of LEGACY_EMAIL_SECRET_KEYS) expect(healthy.kv.has(key), key).toBe(false);
 	});
 
+	test("per site: a second site served by the same isolate is purged too (security review F3)", async () => {
+		const a = makeCtx(STORED);
+		const b = makeCtx(STORED);
+		expect(
+			await purgeLegacyEmailSecrets({
+				...a.ctx,
+				site: { name: "A", url: "https://a.example", locale: "en" },
+			}),
+		).toBe(true);
+		expect(
+			await purgeLegacyEmailSecrets({
+				...b.ctx,
+				site: { name: "B", url: "https://b.example", locale: "en" },
+			}),
+		).toBe(true);
+		for (const key of LEGACY_EMAIL_SECRET_KEYS) expect(b.kv.has(key), key).toBe(false);
+	});
+
+	test("a host that answers `undefined` for a missing marker still purges", async () => {
+		const { ctx, kv } = makeCtx(STORED);
+		const get = ctx.kv.get.bind(ctx.kv);
+		ctx.kv.get = async <T>(key: string) =>
+			key === LEGACY_EMAIL_PURGE_MARKER_KEY ? (undefined as T) : get<T>(key);
+		expect(await purgeLegacyEmailSecrets(ctx)).toBe(true);
+		expect(kv.has("settings:emailApiKey")).toBe(false);
+	});
+
 	test("never logs a value", async () => {
 		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
 		await purgeLegacyEmailSecrets(makeCtx(STORED, "settings:emailApiKey").ctx);

@@ -7,6 +7,10 @@
  * later tick pays more than one kv read for this (and none after that, in the
  * same isolate).
  *
+ * COST: it runs outside the tick's query budget (`cron/index.ts`): one kv read
+ * per site per isolate, plus four deletes and one write once — well inside the
+ * host's slack on Workers Free.
+ *
  * THE MARKER IS WRITTEN ONLY AFTER EVERY DELETE SUCCEEDED, so a kv failure part
  * way through is retried on a later tick. It never throws: a failed purge must
  * not take the sweep down. Only these four keys are touched — never a Stripe,
@@ -28,11 +32,16 @@ export const LEGACY_EMAIL_SECRET_KEYS = [
 /** Set once the purge has completed. */
 export const LEGACY_EMAIL_PURGE_MARKER_KEY = "state:legacyEmailSecretsPurged";
 
-let doneInIsolate = false;
+/**
+ * The sites this isolate has already seen purged, by site URL (`ctx.site.url`;
+ * "" where the host gives none). Per site, not one flag, in case an isolate ever
+ * serves more than one site's plugin kv (security review F3).
+ */
+const doneInIsolate = new Set<string>();
 
-/** TESTS ONLY: forget that this isolate already purged. */
+/** TESTS ONLY: forget which sites this isolate already purged. */
 export function resetLegacyEmailPurgeForTesting(): void {
-	doneInIsolate = false;
+	doneInIsolate.clear();
 }
 
 /**
@@ -41,15 +50,18 @@ export function resetLegacyEmailPurgeForTesting(): void {
  * failure left the marker unset for a later retry).
  */
 export async function purgeLegacyEmailSecrets(ctx: PluginContext): Promise<boolean> {
-	if (doneInIsolate) return false;
+	const site = ctx.site?.url ?? "";
+	if (doneInIsolate.has(site)) return false;
 	try {
-		if ((await ctx.kv.get<unknown>(LEGACY_EMAIL_PURGE_MARKER_KEY)) !== null) {
-			doneInIsolate = true;
+		// A string marker (what the purge writes) means done; `null` or `undefined`
+		// (a host's "missing") means not yet.
+		if (typeof (await ctx.kv.get<unknown>(LEGACY_EMAIL_PURGE_MARKER_KEY)) === "string") {
+			doneInIsolate.add(site);
 			return false;
 		}
 		for (const key of LEGACY_EMAIL_SECRET_KEYS) await ctx.kv.delete(key);
 		await ctx.kv.set(LEGACY_EMAIL_PURGE_MARKER_KEY, new Date().toISOString());
-		doneInIsolate = true;
+		doneInIsolate.add(site);
 		return true;
 	} catch {
 		// Names nothing about any value; retried on a later tick.

@@ -392,7 +392,7 @@ async function readPlainSettings(ctx: PluginContext): Promise<Map<string, string
  * authenticated to is gone — there is nothing left to derive from a
  * caller-supplied argument, so this reads everything itself: the display name,
  * the payment-secret state, the plain payment settings and the background-work
- * budget: four concurrent gets.
+ * budget, the Stripe account and whether email is available: six concurrent reads.
  */
 async function readPageState(ctx: PluginContext): Promise<SettingsPageState> {
 	const [
@@ -1394,8 +1394,8 @@ function stripeAccountLine(found: StripeAccountCountryStatus): string | null {
 /**
  * ADR-0031 — the one email line: emails go through the EmDash host's email
  * provider, or there is none and they wait in the queue. A sandboxed host always
- * hands over `ctx.email`, so there a missing provider shows up as emails that
- * stay queued, not on this line.
+ * hands over `ctx.email`, so there a missing provider shows on this line once a
+ * send has been refused and recorded (`emailSendingAvailable`), for 5 minutes.
  */
 export function emailStatusLine(emailAvailable: boolean): string {
 	return emailAvailable

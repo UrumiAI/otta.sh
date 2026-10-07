@@ -127,13 +127,17 @@ describe("no EmDash email provider", () => {
 	])(
 		"security F1: %j is an ORDINARY (counted) failure, and never records 'no provider'",
 		async (message) => {
+			const kv = new Map<string, unknown>();
 			const boom = new Error(message);
-			const ctx = ctxWith({ send: () => Promise.reject(boom) });
+			const ctx = ctxWith({ send: () => Promise.reject(boom) }, kv);
 			expect(isEmailNotConfiguredError(boom)).toBe(false);
 			const sender = await makeEmailSender(ctx);
 			const err = await rejectionOf(sender!.send(INPUT));
 			expect(err).toBe(boom);
 			expect(isEmailTransportUnavailableError(err)).toBe(false);
+			// No "no provider" record: email stays on for every other buyer.
+			expect(kv.has(EMAIL_TRANSPORT_UNAVAILABLE_KEY)).toBe(false);
+			expect(await emailSendingAvailable(ctx)).toBe(true);
 		},
 	);
 

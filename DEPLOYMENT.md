@@ -443,8 +443,11 @@ order of appearance in a deployment's life:
   With **no provider** nothing is sent and nothing is lost: the order emails wait in the
   outbox **without spending attempts** (the cron sweep's `order-emails` leg reports `skipped`),
   the console says "no email provider" on every write that would have emailed, and Settings →
-  "Payments & email" says so on one line. When a provider is selected the queue goes out,
-  old status mail included. With a provider, a settled payment's **order confirmation goes
+  "Payments & email" says so on one line. When a provider is selected the queue goes out —
+  only email enqueued in the last **72 hours**; anything older is completed unsent, with no
+  attempt spent, so buyers never get days-old status mail. On a sandboxed host, allow up
+  to 5 minutes after selecting a provider: until the host's last "no provider" answer
+  lapses, order emails stay queued and a sign-in request sends nothing. With a provider, a settled payment's **order confirmation goes
   out inline** from the settle route, and an admin's status move, fulfilment, cancel or refund
   sends its email inline from the console write (best-effort, a few seconds at most); the
   `order-emails` leg is the backstop that delivers anything those attempts missed, on its next

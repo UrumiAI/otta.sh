@@ -18,10 +18,11 @@
  *   `sandbox-plugin.js`;
  * - a `PluginBridge` whose `httpFetch` is EmDash's (`bridge.ts:1106`): the props'
  *   capabilities and allowed hosts handed to the REAL `sandboxHttpFetch`; and
- *   whose `emailSend` IS EmDash's own method (`bridge.ts:1253`), called on this
- *   bridge, with EmDash's own `setEmailSendCallback` deciding whether a provider
- *   is wired. So the "no provider" refusal the plugin receives is EmDash's real
- *   text, through the real RPC: if EmDash rewords it, this suite fails. (The
+ *   whose `emailSend` body IS EmDash's own (`bridge.ts:1253`), lifted verbatim
+ *   from the installed source (the module itself needs D1 and the host package
+ *   to load), over the same module-level `emailSendCallback` it reads. So the
+ *   "no provider" refusal the plugin receives is EmDash's real text, through
+ *   the real RPC: if EmDash rewords it, this suite fails. (The
  *   rest of EmDash's bridge needs D1; the probe gives Stripe its fake secrets
  *   through an in-isolate kv.)
  * - the host's only outbound is a recording stub, so nothing reaches a real
@@ -83,6 +84,7 @@ function emdashSandboxSources(): {
 	bridge: string;
 	pluginTypes: string;
 } {
+	// (`bridge` is read as text: see `emailSendBody`.)
 	const fromStore = createRequire(path.resolve(HERE, "../../store-emdash/package.json"));
 	const cloudflareRoot = path.resolve(
 		path.dirname(fromStore.resolve("@emdash-cms/cloudflare")),
@@ -102,15 +104,29 @@ function emdashSandboxSources(): {
 	};
 }
 
-function hostSource(sources: ReturnType<typeof emdashSandboxSources>, pluginCode: string): string {
+/** The body of EmDash's `PluginBridge.emailSend`, from the installed source: plain
+ *  JavaScript (its only types are in the signature), reading `this.ctx.props` and
+ *  the module-level `emailSendCallback`. */
+async function emailSendBody(bridgePath: string): Promise<string> {
+	const source = await readFile(bridgePath, "utf8");
+	const body = /async emailSend\([\s\S]*?\): Promise<void> \{\n([\s\S]*?)\n\t\}\n/.exec(
+		source,
+	)?.[1];
+	if (body === undefined) throw new Error(`EmDash's emailSend not found in ${bridgePath}`);
+	return body;
+}
+
+function hostSource(
+	sources: ReturnType<typeof emdashSandboxSources>,
+	pluginCode: string,
+	emailSend: string,
+): string {
 	return `
 import { WorkerEntrypoint } from "cloudflare:workers";
 import { generatePluginWrapper } from ${JSON.stringify(sources.wrapper)};
 import { sandboxHttpFetch } from ${JSON.stringify(sources.bridgeHttp)};
-import {
-	PluginBridge as EmDashBridge,
-	setEmailSendCallback,
-} from ${JSON.stringify(sources.bridge)};
+// EmDash's own module-level provider callback (bridge.ts), set per request below.
+let emailSendCallback = null;
 
 const MANIFEST = {
 	id: "probe",
@@ -128,9 +144,9 @@ export class PluginBridge extends WorkerEntrypoint {
 		const { capabilities, allowedHosts } = this.ctx.props;
 		return sandboxHttpFetch(url, init, { capabilities, allowedHosts });
 	}
-	// EmDash's PluginBridge.emailSend itself (bridge.ts:1253), on this bridge.
+	// EmDash's PluginBridge.emailSend, its body verbatim (bridge.ts:1253).
 	async emailSend(message) {
-		return EmDashBridge.prototype.emailSend.call(this, message);
+${emailSend}
 	}
 	async log() {}
 }
@@ -144,14 +160,14 @@ export default {
 		if (route === undefined) return new Response("ready");
 		if (route === "__delivered") return Response.json({ result: DELIVERED });
 		const input = await request.json();
-		// EmDash's own switch: a callback when a provider is wired, none otherwise.
-		setEmailSendCallback(
+		// EmDash's own switch (setEmailSendCallback): a callback when a provider is
+		// wired, none otherwise.
+		emailSendCallback =
 			input?.provider === "recording"
 				? async (message) => {
 						DELIVERED.push(message);
 					}
-				: null,
-		);
+				: null;
 		const bridge = ctx.exports.PluginBridge({
 			props: {
 				pluginId: MANIFEST.id,
@@ -223,7 +239,11 @@ describe("EmDash's sandbox runner: ctx.http.fetch over the PluginBridge RPC (rea
 			noExternal: [/^@otta-sh\//],
 		});
 		const pluginCode = await readFile(path.join(workDir, "probe/emdash-rpc-probe.mjs"), "utf8");
-		await writeFile(path.join(workDir, "host.js"), hostSource(sources, pluginCode), "utf8");
+		await writeFile(
+			path.join(workDir, "host.js"),
+			hostSource(sources, pluginCode, await emailSendBody(sources.bridge)),
+			"utf8",
+		);
 		await build({
 			entry: [path.join(workDir, "host.js")],
 			outDir: path.join(workDir, "dist"),

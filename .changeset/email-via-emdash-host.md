@@ -21,6 +21,14 @@ DKIM and any key belong to it. The outbox and its at-least-once delivery are unc
   calls the new `onTransportUnavailable` option. The answer is recorded in kv
   (`state:emailTransportUnavailableAt`) for 5 minutes, during which the cron leg, the inline
   send and the sign-in request stop before claiming a row or minting a challenge.
+- **The "no provider" match is exact.** Only EmDash's own error (its name, or a message equal
+  to one of its two texts) counts; a provider error that merely quotes the text — for example
+  a buyer-chosen recipient address — is an ordinary, counted failure.
+- **Email older than 72 hours is not sent.** The dispatcher completes an outbox row enqueued
+  more than `OUTBOX_EMAIL_MAX_AGE_MS` (72 h) ago without sending it: terminal (`skipped`), no
+  attempt spent, every template. `@otta-sh/domain`: `OutboxEmail` gains an optional
+  `createdAt`; `dispatchOrderEmails` takes `maxAgeMs` and `onExpired`; `OUTBOX_EMAIL_MAX_AGE_MS`
+  is exported. A custom `OrderStore` that does not return `createdAt` never expires a row.
 - **A timeout counts as an attempt (behaviour change).** `ctx.email` has no idempotency key,
   so a send that timed out may have gone; counting it bounds duplicates by `maxAttempts` (5).
   Before, a Resend-path timeout was uncounted (up to ten, backed off), so a slow provider now
@@ -48,4 +56,7 @@ This supersedes the email-transport parts of earlier unreleased entries (the Res
 and SMTP2GO senders, their keys and hosts, and the from-address setting).
 
 **On upgrade:** a store that sent through a build-time email URL or SMTP2GO goes quiet until
-an EmDash email provider is selected; its emails wait in the outbox and go out then.
+an EmDash email provider is selected; its emails wait in the outbox and go out then (the last
+72 hours of them). Adding `email:send` is a capability escalation: an install through EmDash's
+registry or marketplace asks the operator to confirm it on update. The sign-in link now passes
+through the site's email hooks and provider (ADR-0004 amended).
