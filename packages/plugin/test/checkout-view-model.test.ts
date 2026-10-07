@@ -461,6 +461,8 @@ describe("selectionFieldFor — which selection a quote refusal blames", () => {
 		CART_EMPTY: null,
 		PRODUCT_NOT_PRICED: null,
 		CURRENCY_MISMATCH: null,
+		// ADR-0030: the tax calculator, not the buyer's selection.
+		TAX_UNAVAILABLE: null,
 	};
 
 	test.each(Object.entries(EXPECTED))("%s → %s", (reason, field) => {

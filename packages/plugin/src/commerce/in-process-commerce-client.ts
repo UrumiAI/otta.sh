@@ -92,6 +92,7 @@ import {
 	type Cart,
 	type CartDeps,
 	type EmailSender,
+	type TaxCalculator,
 	type CartLine,
 	type CreateOrderDeps,
 	type FulfillmentKind,
@@ -222,6 +223,8 @@ export interface InProcessCommerceClientOptions extends InProcessCommerceStoresO
 	 * a resolver that throws (logged), ⇒ not required: ADR-0021's rules alone.
 	 */
 	resolveAddressRequired?: () => Promise<boolean>;
+	/** ADR-0030: an outside tax calculator for quotes and orders; absent ⇒ built-in. */
+	taxCalculator?: TaxCalculator;
 }
 
 /** The provider bound for the in-request intent withdrawal: fixed, never
@@ -255,6 +258,7 @@ export class InProcessCommerceClient implements CommerceClient {
 		| (() => Promise<Partial<Record<PaymentMethod, PaymentGateway>>>)
 		| undefined;
 	readonly #resolveAddressRequired: (() => Promise<boolean>) | undefined;
+	readonly #taxCalculator: TaxCalculator | undefined;
 
 	/**
 	 * Takes the whole context, not just the store, and constructs the adapters once
@@ -271,6 +275,7 @@ export class InProcessCommerceClient implements CommerceClient {
 		this.#resolveEmailSender = options.resolveEmailSender;
 		this.#resolveWithdrawGateways = options.resolveWithdrawGateways;
 		this.#resolveAddressRequired = options.resolveAddressRequired;
+		this.#taxCalculator = options.taxCalculator;
 		this.#cartDeps = {
 			cartStore: this.#stores.cartStore,
 			inventoryStore: this.#stores.inventory,
@@ -284,6 +289,7 @@ export class InProcessCommerceClient implements CommerceClient {
 			shippingRules: this.#stores.shippingRules,
 			taxRules: this.#stores.taxRules,
 			couponStore: this.#stores.couponStore,
+			...(options.taxCalculator !== undefined ? { taxCalculator: options.taxCalculator } : {}),
 			clock: this.#stores.clock,
 			idGen: this.#stores.idGen,
 			// Whatever the composition root could wire, and nothing more. INC-C5 fills
@@ -1017,6 +1023,7 @@ export class InProcessCommerceClient implements CommerceClient {
 				taxRules: this.#stores.taxRules,
 				couponStore: this.#stores.couponStore,
 				clock: this.#stores.clock,
+				...(this.#taxCalculator !== undefined ? { taxCalculator: this.#taxCalculator } : {}),
 			},
 			command,
 		);

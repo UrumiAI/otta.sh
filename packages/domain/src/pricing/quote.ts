@@ -3,9 +3,19 @@ import type { Clock } from "../ports/clock.js";
 import type { CouponRecord, CouponStore } from "../ports/coupon-store.js";
 import type { ShippingRulesStore } from "../ports/shipping-rules-store.js";
 import type { TaxRulesStore } from "../ports/tax-rules-store.js";
-import { computeTotals } from "./compute-totals.js";
+import { assembleTotals, computePreTax, taxRequestLinesOf } from "./compute-totals.js";
+import { createRateTableCalculator } from "./rate-table-calculator.js";
 import { normalizeCountryCode, normalizeSubdivision } from "./region-codes.js";
+import {
+	DEFAULT_TAX_CALCULATOR_TIMEOUT_MS,
+	isValidCalculatorId,
+	type TaxAddress,
+	type TaxCalculator,
+	type TaxRequest,
+	type TaxResult,
+} from "./tax-calculator.js";
 import type { Coupon, RulesSnapshot, TotalsBreakdown, TotalsLineInput } from "./types.js";
+import { validateTaxResult } from "./validate-tax-result.js";
 import { type CouponValidationFailure, validateCoupon } from "./validate-coupon.js";
 import { resolveShippingZone, type ZoneDestination, type ZoneResolution } from "./zone-match.js";
 
@@ -14,6 +24,20 @@ export interface QuoteDeps {
 	taxRules: TaxRulesStore;
 	couponStore: CouponStore;
 	clock: Clock;
+	/**
+	 * A registered outside calculator (ADR-0030). Absent ⇒ the built-in
+	 * `otta.rate-table` over `taxRules`, which never refuses. An outside one
+	 * that throws, refuses, answers invalidly or exceeds
+	 * {@link taxCalculatorTimeoutMs} fails the quote with `TAX_UNAVAILABLE`.
+	 */
+	taxCalculator?: TaxCalculator;
+	/** Defaults to {@link DEFAULT_TAX_CALCULATOR_TIMEOUT_MS}. */
+	taxCalculatorTimeoutMs?: number;
+}
+
+/** Why the quote is being made — passed to the calculator as `purpose`. */
+export interface QuoteContext {
+	purpose: "quote" | "order";
 }
 
 export interface QuoteCommand {
@@ -30,7 +54,13 @@ export interface QuoteCommand {
 	 * there is deliberately no way to pass a zone (ADR-0021 Decision 1).
 	 * Validated here with the same rules as the order's address.
 	 */
-	destination?: { country: string; region?: string | null };
+	destination?: {
+		country: string;
+		region?: string | null;
+		/** For calculators that price by postcode/city (ADR-0030); zones do not read them. */
+		postalCode?: string | null;
+		city?: string | null;
+	};
 	/** The selected shipping method; absent ⇒ zero shipping (no method chosen). */
 	methodId?: string;
 	couponCode?: string;
@@ -53,7 +83,9 @@ export type QuoteFailure =
 	| "SHIPPING_METHOD_NOT_APPLICABLE"
 	| "SHIPPING_RATE_NOT_FOUND"
 	| "COUPON_NOT_FOUND"
-	| CouponValidationFailure;
+	| CouponValidationFailure
+	/** An outside tax calculator could not answer (ADR-0030). Never the built-in. */
+	| "TAX_UNAVAILABLE";
 
 export type QuoteResult =
 	| {
@@ -63,32 +95,46 @@ export type QuoteResult =
 			/** How the zone was resolved — `matched` names the zone that priced
 			 *  the shipping and the tax. */
 			destination: ZoneResolution;
+			/** The calculator's validated answer, for the order's frozen snapshot. */
+			tax: { calculatorId: string; result: TaxResult };
 	  }
 	| { ok: false; reason: QuoteFailure };
 
 /**
- * The read-side checkout preview (Phase 6 §6): load the shipping/tax rules and
- * validate the coupon via the store ports, then hand PURE data to `computeTotals`.
- * This is the single place IO meets the engine — reused by `/checkout/quote`
- * (read-only, no redemption) and by `createOrderFromCart` (which additionally
- * redeems). It never mutates anything.
+ * The read-side checkout preview (Phase 6 §6): load the shipping rules and
+ * validate the coupon via the store ports, price the pre-tax totals, then ask
+ * the tax calculator (ADR-0030) — the ONE place tax is calculated, reused by
+ * `/checkout/quote` (read-only, no redemption) and by `createOrderFromCart`
+ * (which additionally redeems). It never mutates anything.
  *
  * ORDER MATTERS, and the plugin's checkout summary bounds its fallback
  * re-quotes on it (plugin storefront/checkout-routes.ts): destination →
- * zone → method → rate → coupon.
+ * zone → method → rate → coupon → tax. Tax is LAST, so every other refusal
+ * comes first and costs no calculator call.
  */
-export async function computeQuote(deps: QuoteDeps, command: QuoteCommand): Promise<QuoteResult> {
+export async function computeQuote(
+	deps: QuoteDeps,
+	command: QuoteCommand,
+	context: QuoteContext = { purpose: "quote" },
+): Promise<QuoteResult> {
 	const subtotal = sumLineSubtotals(command.lines);
 
 	// 1. The destination, normalised with the SAME rules as the order address.
 	//    A digital-only cart's destination is ignored entirely (Decision 5).
 	let destination: ZoneDestination | undefined;
+	let taxDestination: TaxAddress | null = null;
 	if (command.requiresShipping && command.destination !== undefined) {
 		const country = normalizeCountryCode(command.destination.country);
 		if (country === null) return { ok: false, reason: "INVALID_SHIPPING_ADDRESS" };
 		const region = normalizeSubdivision(country, command.destination.region);
 		if (!region.ok) return { ok: false, reason: "SHIPPING_REGION_CODE_REQUIRED" };
+		const postalCode = boundedOrNull(command.destination.postalCode, POSTAL_CODE_MAX);
+		const city = boundedOrNull(command.destination.city, CITY_MAX);
+		if (postalCode === false || city === false) {
+			return { ok: false, reason: "INVALID_SHIPPING_ADDRESS" };
+		}
 		destination = { country, region: region.code };
+		taxDestination = { country, region: region.code, postalCode, city };
 	}
 
 	// 2. The zone. A digital-only cart needs none, so it reads none.
@@ -138,31 +184,8 @@ export async function computeQuote(deps: QuoteDeps, command: QuoteCommand): Prom
 		};
 	}
 
-	// 5. Tax: all rates in the MATCHED zone → the per-class map + the
-	//    shipping-tax class. No zone ⇒ no rates (all classes 0 bps).
-	const taxRatesByClass: Record<string, number> = {};
-	let shippingTaxable = false;
-	let shippingTaxClassId = "standard";
-	if (zoneId !== null) {
-		const zoneRates = await deps.taxRules.listRatesForZone(zoneId);
-		for (const r of zoneRates) {
-			taxRatesByClass[r.taxClassId] = r.rateBps;
-			if (r.appliesToShipping) {
-				shippingTaxable = true;
-				shippingTaxClassId = r.taxClassId;
-			}
-		}
-	}
-
-	const rules: RulesSnapshot = {
-		shippingMethod,
-		taxRatesByClass,
-		shippingTaxable,
-		shippingTaxClassId,
-	};
-
-	// 6. Coupon: load + validate (dates, min-subtotal, currency, soft-exhaustion).
-	// Checked LAST — see the ORDER MATTERS note above.
+	// 5. Coupon: load + validate (dates, min-subtotal, currency, soft-exhaustion).
+	// The last check on the buyer's selection — see the ORDER MATTERS note above.
 	let couponRecord: CouponRecord | null = null;
 	let coupon: Coupon | undefined;
 	if (command.couponCode !== undefined && command.couponCode !== "") {
@@ -177,13 +200,117 @@ export async function computeQuote(deps: QuoteDeps, command: QuoteCommand): Prom
 		coupon = validation.coupon;
 	}
 
-	const breakdown = computeTotals({
+	// 6. Pre-tax totals: subtotal → discount → discounted lines → shipping fee.
+	const preTax = computePreTax({
 		currency: command.currency,
 		lines: command.lines,
 		...(coupon !== undefined ? { coupon } : {}),
-		rules,
+		shippingMethod,
 	});
-	return { ok: true, breakdown, couponRecord, destination: resolution };
+
+	// 7. Tax — the ONE calculator call (ADR-0030), after every refusal above,
+	//    so a refused quote never costs a paid outside call.
+	const request = freezeRequest({
+		purpose: context.purpose,
+		currency: command.currency,
+		pricesIncludeTax: false,
+		lines: taxRequestLinesOf(preTax),
+		shipping:
+			shippingMethod.methodId === ""
+				? null
+				: { amountCents: preTax.shippingCents, methodId: shippingMethod.methodId },
+		origin: null,
+		destination: taxDestination,
+		zoneId,
+	});
+	const tax = await calculateTax(deps, request);
+	if (tax === null) return { ok: false, reason: "TAX_UNAVAILABLE" };
+	const breakdown = assembleTotals(preTax, tax.result);
+	return { ok: true, breakdown, couponRecord, destination: resolution, tax };
+}
+
+const POSTAL_CODE_MAX = 32;
+const CITY_MAX = 120;
+
+/** Trimmed text, `null` when absent/blank, `false` when over `max` (the order address's bounds). */
+function boundedOrNull(value: string | null | undefined, max: number): string | null | false {
+	const trimmed = value?.trim() ?? "";
+	if (trimmed === "") return null;
+	return trimmed.length > max ? false : trimmed;
+}
+
+/** The request is handed to code Otta does not own: freeze it, so the answer
+ *  is validated against exactly what was asked. */
+function freezeRequest(request: TaxRequest): TaxRequest {
+	for (const line of request.lines) Object.freeze(line);
+	Object.freeze(request.lines);
+	if (request.shipping !== null) Object.freeze(request.shipping);
+	if (request.destination !== null) Object.freeze(request.destination);
+	return Object.freeze(request);
+}
+
+/**
+ * Ask the calculator. The built-in cannot fail on valid rules — an invalid
+ * answer from it is a programming error and THROWS. An outside one is fenced:
+ * a throw, a refusal, an invalid answer or the timeout is `null`
+ * (`TAX_UNAVAILABLE`), logged by calculator id and reason, never by address.
+ */
+async function calculateTax(
+	deps: QuoteDeps,
+	request: TaxRequest,
+): Promise<{ calculatorId: string; result: TaxResult } | null> {
+	const outside = deps.taxCalculator;
+	if (outside === undefined) {
+		const builtIn = createRateTableCalculator(deps.taxRules);
+		const result = validateTaxResult(request, await builtIn.calculate(request));
+		if (result === null) throw new Error(`${builtIn.id} produced an invalid tax result`);
+		return { calculatorId: builtIn.id, result };
+	}
+
+	const id: unknown = outside.id;
+	if (!isValidCalculatorId(id)) return refuse("<invalid id>", "has an invalid id");
+	let raw: unknown;
+	try {
+		raw = await withTimeout(
+			() => outside.calculate(request),
+			deps.taxCalculatorTimeoutMs ?? DEFAULT_TAX_CALCULATOR_TIMEOUT_MS,
+		);
+	} catch (err) {
+		return refuse(id, err === TIMED_OUT ? "timed out" : "threw");
+	}
+	if (typeof raw === "object" && raw !== null && (raw as { ok?: unknown }).ok === false) {
+		return refuse(id, "refused");
+	}
+	const result = validateTaxResult(request, raw);
+	if (result === null) return refuse(id, "answered invalidly");
+	return { calculatorId: id, result };
+}
+
+function refuse(id: string, why: string): null {
+	// `console` is an ambient global, not an IO import (see create-order-from-cart's
+	// logIntentFailure). No request data is logged: it carries the buyer's address.
+	console.warn(`[domain] tax calculator ${JSON.stringify(id)} ${why} → TAX_UNAVAILABLE`);
+	return null;
+}
+
+const TIMED_OUT: unique symbol = Symbol("tax calculator timed out");
+
+/** Settles with `run()`'s outcome, or rejects with {@link TIMED_OUT} after `ms`;
+ *  the timer is always cleared. A synchronous throw from `run` rejects too. */
+async function withTimeout<T>(run: () => Promise<T>, ms: number): Promise<T> {
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	try {
+		return await Promise.race([
+			new Promise<T>((resolve, reject) => {
+				Promise.resolve().then(run).then(resolve, reject);
+			}),
+			new Promise<never>((_, reject) => {
+				timer = setTimeout(() => reject(TIMED_OUT), ms);
+			}),
+		]);
+	} finally {
+		clearTimeout(timer);
+	}
 }
 
 /** Convenience: subtotal of a line set (integer minor units). */

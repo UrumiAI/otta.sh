@@ -561,7 +561,9 @@ export type QuoteFailureReason =
 	| "COUPON_NOT_ACTIVE"
 	| "COUPON_MIN_SUBTOTAL"
 	| "COUPON_EXHAUSTED"
-	| "COUPON_CURRENCY_MISMATCH";
+	| "COUPON_CURRENCY_MISMATCH"
+	/** ADR-0030: the site's outside tax calculator could not answer. */
+	| "TAX_UNAVAILABLE";
 
 export type QuoteResult =
 	| {
@@ -687,7 +689,9 @@ export type CheckoutFailureReason =
 	| "COUPON_MIN_SUBTOTAL"
 	| "COUPON_EXHAUSTED"
 	| "COUPON_MAX_PER_CUSTOMER"
-	| "COUPON_CURRENCY_MISMATCH";
+	| "COUPON_CURRENCY_MISMATCH"
+	/** ADR-0030: the outside tax calculator could not answer; nothing was placed. */
+	| "TAX_UNAVAILABLE";
 
 /**
  * NOTE the asymmetry, deliberate and load-bearing: `POST /checkout/orders`
