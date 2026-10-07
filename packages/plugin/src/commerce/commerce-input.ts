@@ -203,7 +203,6 @@ export function requireProductId(value: string): string {
 	return requireWellFormedText("productId", value);
 }
 
-
 /** {@link requireBoundedProductId}'s ceiling. */
 const BOUNDED_PRODUCT_ID_MAX = 200;
 

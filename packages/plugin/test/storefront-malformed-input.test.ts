@@ -220,6 +220,13 @@ describe("storefront/cart — ids the store could never have minted are refused,
 	const ID_CASES: Array<[string, unknown]> = [...MALFORMED_IDS, ...NOT_ID_STRINGS];
 	/** U+0000 — the one character Postgres text can never hold. */
 	const NUL = "a\u0000b";
+	/** Ill-formed text Postgres's `jsonb` cannot read back (review R3-B X1): U+0000
+	 *  and either half of a surrogate pair standing alone. */
+	const ILL_FORMED: Array<[string, string]> = [
+		["U+0000", NUL],
+		["a lone high surrogate", "a\uD800b"],
+		["a lone low surrogate", "a\uDC00b"],
+	];
 
 	describe("read", () => {
 		test.each(ID_CASES)("a cartId with %s is INVALID_CART_ID", async (_label, cartId) => {
@@ -324,30 +331,32 @@ describe("storefront/cart — ids the store could never have minted are refused,
 		// read there failed as `invalid byte sequence for encoding "UTF8"` —
 		// RENDER_FAILED. SQLite hides it, which is why it is refused at the edge
 		// (before any read, on every dialect) rather than left to the store.
-		test("a productId carrying U+0000 is INVALID_INPUT", async () => {
+		test.each(ILL_FORMED)("a productId carrying %s is INVALID_INPUT", async (_label, bad) => {
 			await seedProduct(PRODUCT_ID, SKU);
 			const { cartId } = await harness.client.createCart();
 			expect(
 				await invoke(createCartLineAddRouteHandler(), {
 					cartId,
 					sku: SKU,
-					productId: NUL,
+					productId: bad,
 					qty: 1,
 					idempotencyKey: "k-add-nul-pid",
 				}),
 			).toEqual({ ok: false, error: "INVALID_INPUT" });
 		});
 
-		test.each([
-			["a bare add", {}],
-			["an add naming a product", { productId: PRODUCT_ID }],
-		])("a sku carrying U+0000 on %s is INVALID_INPUT", async (_label, extra) => {
+		test.each(
+			ILL_FORMED.flatMap(([label, bad]) => [
+				[label, "a bare add", bad, {}],
+				[label, "an add naming a product", bad, { productId: PRODUCT_ID }],
+			]),
+		)("a sku carrying %s on %s is INVALID_INPUT", async (_label, _shape, bad, extra) => {
 			await seedProduct(PRODUCT_ID, SKU);
 			const { cartId } = await harness.client.createCart();
 			expect(
 				await invoke(createCartLineAddRouteHandler(), {
 					cartId,
-					sku: NUL,
+					sku: bad,
 					qty: 1,
 					idempotencyKey: "k-add-nul-sku",
 					...extra,
@@ -463,6 +472,8 @@ describe("storefront/cart/lines — the idempotency key is bounded and storable"
 	const SKU = "OTTA-TEE";
 	const BAD_KEYS: Array<[string, string]> = [
 		["U+0000", "k\u0000ey"],
+		["a lone high surrogate", "k\uD800ey"],
+		["a lone low surrogate", "k\uDC00ey"],
 		["one character over the ceiling", "k".repeat(IDEMPOTENCY_KEY_MAX + 1)],
 		// Past the conditional-storage 1 MiB cap — a throw on every dialect before.
 		["two megabytes", "k".repeat(2_000_000)],
