@@ -102,13 +102,15 @@ const localWranglerConfig = existsSync(new URL("wrangler.local.jsonc", import.me
  * #376): EmDash serves every MEDIA key without auth (`src/lib/downloads-bucket.ts`).
  */
 const selectedWranglerConfig = localWranglerConfig ?? "wrangler.jsonc";
-const selectedWranglerText = readFileSync(new URL(selectedWranglerConfig, import.meta.url), "utf8");
 assertWranglerSessionPairing(
-	selectedWranglerText,
+	readFileSync(new URL(selectedWranglerConfig, import.meta.url), "utf8"),
 	selectedWranglerConfig,
 	(buildEmdashOptions(egress).database as { config?: { session?: unknown } }).config,
 );
-assertDownloadsBucketPrivate(selectedWranglerText, selectedWranglerConfig);
+assertDownloadsBucketPrivate(
+	readFileSync(new URL(selectedWranglerConfig, import.meta.url), "utf8"),
+	selectedWranglerConfig,
+);
 
 /**
  * The latin `unicode-range`: the range on the face Google Fonts' css2 response
