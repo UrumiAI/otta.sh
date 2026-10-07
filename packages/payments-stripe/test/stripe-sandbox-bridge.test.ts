@@ -329,6 +329,41 @@ describe("the transport's own race bounds every call (a fetch that ignores signa
 		expect(body.cancelled()).toBe(true);
 	});
 
+	// The error code is read off a non-2xx body under the call's own bound: a 400
+	// whose body never ends (a refused cancel, a rejected create) settles at the
+	// bound, classified by its status, with the stream cancelled. Without the
+	// bound a trusted host would hang the cron's cancel leg on that read.
+	test("a non-2xx error body that never ends is read under the call's bound, and its stream cancelled", async () => {
+		const stalled400 = (): { fetch: typeof fetch; cancelled: () => boolean } => {
+			const body = endlessBody();
+			return {
+				fetch: (async () =>
+					new Response(body.response.body, { status: 400 })) as unknown as typeof fetch,
+				cancelled: body.cancelled,
+			};
+		};
+		const cases = [
+			["cancelPaymentIntent", { ok: false, class: "terminal" }],
+			["createPaymentIntent", { ok: false, class: "terminal", status: 400 }],
+			["createCustomer", { ok: false, class: "terminal", status: 400 }],
+		] as const;
+		for (const [name, expected] of cases) {
+			const stalled = stalled400();
+			const transport = createStripeHttpTransport({
+				baseUrl: BASE,
+				requestTimeoutMs: 50,
+				cancelTimeoutMs: 50,
+				fetch: stalled.fetch,
+			});
+			const started = Date.now();
+			expect(await settlesWithin<unknown>(1_000, callsOf(transport)[name]()), name).toEqual(
+				expected,
+			);
+			expect(Date.now() - started, name).toBeLessThan(500);
+			expect(stalled.cancelled(), name).toBe(true);
+		}
+	});
+
 	test("a non-2xx body that is never read is not left open", async () => {
 		const body = endlessBody();
 		const transport = createStripeHttpTransport({
