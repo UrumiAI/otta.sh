@@ -362,12 +362,23 @@ describe("the methods the guard covers, against the INSTALLED EmDash", () => {
 			.split(",")
 			.map((name) => name.trim())
 			.filter((name) => /^[A-Z]+$/.test(name));
-		expect(methods.toSorted()).toEqual(["DELETE", "GET", "PATCH", "POST", "PUT"]);
-		// The route reads its CSRF header and token scope exactly as the guard
-		// mirrors them (it answers only what EmDash would have dispatched).
-		expect(route).toContain('requireScope(locals, "admin")');
-		expect(route).toContain(
-			'if (!locals.tokenScopes && request.headers.get("X-EmDash-Request") !== "1") return apiError("CSRF_REJECTED"',
+		// EmDash 1.0.1 added HEAD; it is bodyless, so the guard passes it (below).
+		expect(methods.toSorted()).toEqual(["DELETE", "GET", "HEAD", "PATCH", "POST", "PUT"]);
+		// Since 1.0 the route hands every request to the shared plugin-route
+		// dispatcher (`src/plugins/http-route-dispatch.ts`), which reads the CSRF
+		// header and token scope exactly as the guard mirrors them (it answers
+		// only what EmDash would have dispatched).
+		const dispatchImport = /import \{[^}]*\bas dispatchPluginApiRequest \} from "([^"]+)";/.exec(
+			route,
+		)?.[1];
+		expect(dispatchImport).toBeDefined();
+		const dispatch = readFileSync(
+			new URL(dispatchImport!, new URL("astro/routes/api/plugins/_pluginId_/", dist)),
+			"utf8",
+		);
+		expect(dispatch).toContain('requireScope({ tokenScopes }, "admin")');
+		expect(dispatch).toContain(
+			'if (!tokenScopes && request.headers.get("X-EmDash-Request") !== "1") return apiError("CSRF_REJECTED"',
 		);
 
 		const bodyMethodSets = readdirSync(dist)

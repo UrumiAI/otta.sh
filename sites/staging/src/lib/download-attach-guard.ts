@@ -208,7 +208,7 @@ export interface AttachCaller {
 function wouldDispatch(request: Request, caller: AttachCaller, minRole: number): boolean {
 	const role = (caller.user as { role?: unknown } | null | undefined)?.role;
 	if (typeof role !== "number" || !(role >= minRole)) return false;
-	// EmDash's own TRUTHINESS (`if (!locals.tokenScopes)` in the route and in
+	// EmDash's own TRUTHINESS (`if (!tokenScopes)` in the plugin-route dispatcher and in
 	// `requireScope`), so a falsy value is a session and the header decides. A
 	// truthy value that is not a list is checked rather than skipped: when in
 	// doubt this errs toward the `head()`, never toward letting the save through.
