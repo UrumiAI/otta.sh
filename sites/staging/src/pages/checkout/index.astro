@@ -246,7 +246,10 @@ const sumRows = [
 	{ label: "Subtotal", amount: totals.subtotal },
 	{ label: "Discount", ...discountCode, amount: totals.discount, fallback: "No coupon applied" },
 	{ label: "Shipping", amount: totals.shipping },
-	{ label: "Tax", amount: totals.tax },
+	// ADR-0031: one row per tax (itemized), one "Tax" row, or none when prices are
+	// shown with tax (the total then carries an "includes" note). Labels are the
+	// merchant's text and render as escaped text, never HTML.
+	...totals.taxRows.map((row) => ({ label: row.label, amount: row.amount })),
 ];
 /**
  * The model — every answer the view prints. The refusals arrive as COPY: the
