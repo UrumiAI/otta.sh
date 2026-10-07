@@ -268,7 +268,12 @@ async function calculateTax(
 		return { calculatorId: builtIn.id, result };
 	}
 
-	const id: unknown = outside.id;
+	let id: unknown;
+	try {
+		id = outside.id;
+	} catch {
+		id = undefined;
+	}
 	if (!isValidCalculatorId(id)) return refuse("<invalid id>", "has an invalid id");
 	let raw: unknown;
 	try {
@@ -279,12 +284,18 @@ async function calculateTax(
 	} catch (err) {
 		return refuse(id, err === TIMED_OUT ? "timed out" : "threw");
 	}
-	if (typeof raw === "object" && raw !== null && (raw as { ok?: unknown }).ok === false) {
-		return refuse(id, "refused");
+	// Reading the answer runs ITS code too (a getter, a Proxy trap), so every
+	// read stays inside the fence; the validated copy holds only primitives.
+	try {
+		if (typeof raw === "object" && raw !== null && (raw as { ok?: unknown }).ok === false) {
+			return refuse(id, "refused");
+		}
+		const result = validateTaxResult(request, raw);
+		if (result === null) return refuse(id, "answered invalidly");
+		return { calculatorId: id, result };
+	} catch {
+		return refuse(id, "answered invalidly");
 	}
-	const result = validateTaxResult(request, raw);
-	if (result === null) return refuse(id, "answered invalidly");
-	return { calculatorId: id, result };
 }
 
 function refuse(id: string, why: string): null {

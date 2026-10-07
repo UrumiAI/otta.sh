@@ -195,6 +195,27 @@ describe("computeQuote → TaxCalculator", () => {
 		["refuses", async () => ({ ok: false, reason: "unavailable", detail: "down" })],
 		["answers garbage", async () => ({ ok: true }) as never],
 		[
+			"answers with a throwing getter",
+			async () =>
+				({
+					get ok(): boolean {
+						throw new Error("gotcha");
+					},
+				}) as never,
+		],
+		[
+			"answers with a hostile Proxy",
+			async () =>
+				new Proxy(
+					{},
+					{
+						get() {
+							throw new Error("gotcha");
+						},
+					},
+				) as never,
+		],
+		[
 			"answers in another currency",
 			async () => ({ ok: true, currency: currency("EUR"), lines: [], shipping: null }) as never,
 		],

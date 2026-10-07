@@ -102,9 +102,7 @@
 		"refunds": [],
 		"holdsPendingAt": "2026-07-10T00:00:00.000Z",
 		"holdsAdopted": {
-			"reservationIds": [
-				"id-2"
-			],
+			"reservationIds": ["id-2"],
 			"holdExpiresAt": "2026-07-10T00:15:00.000Z",
 			"recordedAt": "2026-07-10T00:00:00.000Z",
 			"completedAt": null
@@ -668,9 +666,7 @@
 		"refunds": [],
 		"holdsPendingAt": "2026-07-10T00:00:00.000Z",
 		"holdsAdopted": {
-			"reservationIds": [
-				"id-2"
-			],
+			"reservationIds": ["id-2"],
 			"holdExpiresAt": "2026-07-10T00:15:00.000Z",
 			"recordedAt": "2026-07-10T00:00:00.000Z",
 			"completedAt": null
