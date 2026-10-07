@@ -347,7 +347,7 @@ describeEachDialect("order flow", (ctx) => {
 					reservationId: line.reservationId,
 				},
 			],
-			totals: owner.order.totals,
+			totals: { ...owner.order.totals, taxBreakdown: null },
 		});
 
 		h.advance(2 * 60 * 1000); // stale TTL passed; the owner's 15-minute hold is live

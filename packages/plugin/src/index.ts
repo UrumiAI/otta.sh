@@ -563,3 +563,15 @@ export type {
 	SettingsFieldSpec,
 } from "./types.js";
 export { default as plugin } from "./plugin.js";
+// ADR-0030 — the tax calculator hook: a site's entry module calls
+// `createOttaPlugin({ taxCalculator })`; the types let it write one.
+export { createOttaPlugin, type OttaPluginOptions } from "./plugin.js";
+export type {
+	TaxAddress,
+	TaxCalculator,
+	TaxLine,
+	TaxRefusal,
+	TaxRequest,
+	TaxRequestLine,
+	TaxResult,
+} from "@otta-sh/domain";

@@ -263,6 +263,8 @@ export interface OrderTotals {
 	total: Cents;
 	appliedCouponCode: string | null;
 	shippingMethodSnapshot: unknown | null;
+	/** Untyped on read: v1 (ADR-0030), the legacy shape, or null — read it
+	 *  through `readOrderTaxSnapshot`. */
 	taxBreakdown: unknown | null;
 }
 

@@ -73,6 +73,8 @@ import {
 	createAfterSaveHandler,
 	createAfterUnpublishHandler,
 } from "./sync/hooks.js";
+import type { TaxCalculator } from "@otta-sh/domain";
+import { setTaxCalculator } from "./commerce/tax-calculator-slot.js";
 import type { SandboxedPlugin } from "./types.js";
 
 /**
@@ -248,5 +250,28 @@ const plugin: SandboxedPlugin = {
 		[ADMIN_ROUTE]: { handler: createAdminRouteHandler() as never, public: false },
 	},
 };
+
+/** Options a site passes from its own plugin entry module (ADR-0030). */
+export interface OttaPluginOptions {
+	/**
+	 * Replaces the built-in `otta.rate-table` for every quote and order. Trusted
+	 * code (it runs in-process); its answers are validated, and an answer that
+	 * is invalid, refused or later than ~5 s refuses the checkout with
+	 * `TAX_UNAVAILABLE` before any order is created.
+	 */
+	taxCalculator?: TaxCalculator;
+}
+
+/**
+ * The plugin, configured. A site that wants an outside tax calculator gives
+ * em-dash its OWN entry module (the descriptor's `entrypoint`) containing
+ * `export default createOttaPlugin({ taxCalculator })`. Returns the same plugin
+ * object as the default export; the option is held in a module slot that the
+ * commerce composition root reads. Trusted (in-process) mode only.
+ */
+export function createOttaPlugin(options: OttaPluginOptions = {}): SandboxedPlugin {
+	if (options.taxCalculator !== undefined) setTaxCalculator(options.taxCalculator);
+	return plugin;
+}
 
 export default plugin;

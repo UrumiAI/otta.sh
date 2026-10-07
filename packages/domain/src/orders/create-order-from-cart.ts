@@ -30,10 +30,12 @@ import type { ShippingRulesStore } from "../ports/shipping-rules-store.js";
 import type { TaxRulesStore } from "../ports/tax-rules-store.js";
 import { computeQuote } from "../pricing/quote.js";
 import { type PricedLine, quoteCommandFor } from "../pricing/quote-input.js";
+import type { TaxCalculator, TaxResult } from "../pricing/tax-calculator.js";
 import type { CreateOrderFailure } from "./errors.js";
 import { snapshotOrderLine } from "./line-snapshot.js";
 import type { Order, OrderAddress, PaymentMethod } from "./model.js";
 import { normalizeOrderAddress, type OrderAddressInput } from "./order-address.js";
+import { buildOrderTaxSnapshot } from "./order-tax-snapshot.js";
 
 /** 15 minutes — the checkout hold TTL (§9 decision 5), configurable. */
 export const DEFAULT_CHECKOUT_TTL_MS = 15 * 60 * 1000;
@@ -47,6 +49,8 @@ export interface CreateOrderDeps {
 	shippingRules: ShippingRulesStore;
 	taxRules: TaxRulesStore;
 	couponStore: CouponStore;
+	/** A registered outside tax calculator (ADR-0030); absent ⇒ the built-in. */
+	taxCalculator?: TaxCalculator;
 	clock: Clock;
 	idGen: IdGen;
 	/** Payment adapters keyed by method — the buyer's chosen gateway is resolved here. */
@@ -308,23 +312,33 @@ export async function createOrderFromCart(
 	// derived from the address inside the quote (ADR-0021), so the review and
 	// the order resolve it identically.
 	// The same quote command the checkout review builds (`quoteCommandFor`).
+	// The tax calculator is asked here with purpose "order" — before any
+	// redemption or mint, so its refusal (TAX_UNAVAILABLE) moves nothing.
 	const quote = await computeQuote(
 		{
 			shippingRules: deps.shippingRules,
 			taxRules: deps.taxRules,
 			couponStore: deps.couponStore,
 			clock: deps.clock,
+			...(deps.taxCalculator !== undefined ? { taxCalculator: deps.taxCalculator } : {}),
 		},
 		quoteCommandFor({
 			currency,
 			lines: pricedLines,
 			destination:
 				shippingAddress !== null
-					? { country: shippingAddress.country, region: shippingAddress.region }
+					? {
+							country: shippingAddress.country,
+							region: shippingAddress.region,
+							// ADR-0030: a calculator may price by postcode and city.
+							postalCode: shippingAddress.postalCode,
+							city: shippingAddress.city,
+						}
 					: undefined,
 			methodId: command.shippingMethodId,
 			couponCode: command.couponCode,
 		}),
+		{ purpose: "order" },
 	);
 	if (!quote.ok) return { ok: false, reason: quote.reason };
 	const breakdown = quote.breakdown;
@@ -393,6 +407,7 @@ export async function createOrderFromCart(
 			holdExpiresAt,
 			lines,
 			breakdown,
+			tax: quote.tax,
 			couponRecord: quote.couponRecord,
 			shippingMethodSnapshot,
 			shippingAddress,
@@ -460,6 +475,8 @@ interface FinalizeContext {
 	holdExpiresAt: string;
 	lines: CreateOrderLineInput[];
 	breakdown: TotalsBreakdown;
+	/** The calculator's validated answer, frozen as the order's tax snapshot. */
+	tax: { calculatorId: string; result: TaxResult };
 	couponRecord: CouponRecord | null;
 	/** What priced the shipping and tax (ADR-0021 Decision 7); null when no zone
 	 *  matched (no zones configured, or nothing ships). */
@@ -521,10 +538,8 @@ async function finalizeOrder(
 			tax: breakdown.taxCents,
 			appliedCouponCode: breakdown.appliedCouponCode ?? null,
 			shippingMethodSnapshot: ctx.shippingMethodSnapshot,
-			taxBreakdown: {
-				lines: breakdown.lineBreakdown,
-				shippingTaxCents: breakdown.shippingTaxCents,
-			},
+			// ADR-0030: the typed v1 snapshot, written once, never recomputed.
+			taxBreakdown: buildOrderTaxSnapshot(breakdown, ctx.tax),
 		},
 	});
 	// Issue #133, race twin of the I1 cart check: a same-key call for ANOTHER cart

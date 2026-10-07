@@ -31,6 +31,7 @@ import { checkoutRequiresBuyerAddress } from "../payments/stripe-account-country
 import type { CommerceClient } from "../product-commerce/commerce-client.js";
 import type { PluginContext } from "../types.js";
 import { ABANDON_CANCEL_CALL_MS, InProcessCommerceClient } from "./in-process-commerce-client.js";
+import { getTaxCalculator } from "./tax-calculator-slot.js";
 
 /**
  * One client per invocation, matching the request-scoped lifecycle the
@@ -53,8 +54,12 @@ export async function makeCommerceClient(ctx: PluginContext): Promise<CommerceCl
 	// from the map, which the domain refuses loudly rather than minting an
 	// unpayable order. `resolvePaymentGateways` is shared with `makeAdminClients`,
 	// so console refunds reach the same gateways checkout charged through.
+	const taxCalculator = getTaxCalculator();
 	return new InProcessCommerceClient(ctx, {
 		gateways: await resolvePaymentGateways(ctx),
+		// ADR-0030: the site's registered calculator, if any (`createOttaPlugin`);
+		// absent ⇒ the built-in rate table.
+		...(taxCalculator !== undefined ? { taxCalculator } : {}),
 		// Lazy: only the login request sends mail, and building the sender reads kv.
 		// `undefined` when no provider is usable (Resend with no email API URL,
 		// SMTP2GO with no key, an unreadable provider choice) — the unconfigured arm. The
