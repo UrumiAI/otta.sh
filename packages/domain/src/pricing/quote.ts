@@ -314,7 +314,13 @@ async function withTimeout<T>(run: () => Promise<T>, ms: number): Promise<T> {
 	try {
 		return await Promise.race([
 			new Promise<T>((resolve, reject) => {
-				Promise.resolve().then(run).then(resolve, reject);
+				// The handler is attached SYNCHRONOUSLY: an already-rejected promise
+				// adopted a microtask later is reported as unhandled by workerd.
+				try {
+					Promise.resolve(run()).then(resolve, reject);
+				} catch (err) {
+					reject(err);
+				}
 			}),
 			new Promise<never>((_, reject) => {
 				timer = setTimeout(() => reject(TIMED_OUT), ms);
