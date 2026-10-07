@@ -304,7 +304,7 @@ describe("EmDash's sandbox runner: ctx.http.fetch over the PluginBridge RPC (rea
 
 	function seen(): string[] {
 		return stub.requests.map(
-			(r) => `${r.method} ${String(r.headers.host)}${r.url.replace("%5B%5D", "[]")}`,
+			(r) => `${r.method} ${String(r.headers.host)}${r.url.replaceAll("%5B%5D", "[]")}`,
 		);
 	}
 
