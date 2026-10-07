@@ -1,8 +1,10 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { cents, currency } from "../../src/money/cents.js";
 import { computeQuote, type QuoteCommand, type QuoteDeps } from "../../src/pricing/quote.js";
+import { computeLineTax } from "../../src/pricing/tax.js";
 import {
 	DEFAULT_TAX_CALCULATOR_TIMEOUT_MS,
+	TAX_RATE_BPS_MAX,
 	type TaxCalculator,
 	type TaxRequest,
 } from "../../src/pricing/tax-calculator.js";
@@ -231,6 +233,51 @@ describe("computeQuote → TaxCalculator", () => {
 		expect(JSON.stringify(warn.mock.calls)).toContain("acme.tax");
 		expect(JSON.stringify(warn.mock.calls)).not.toContain("10001");
 	});
+
+	test("a tax that is safe on its own but overflows the order total ⇒ TAX_UNAVAILABLE, not a throw", async () => {
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		// One 9e14 line: its tax (8.5e15, under the 1000% cap) is a safe integer,
+		// but 9e14 + 500 shipping + 8.5e15 is past Number.MAX_SAFE_INTEGER.
+		const huge: QuoteCommand = {
+			...command,
+			lines: [{ unitPriceCents: cents(900_000_000_000_000), qty: 1, taxClassId: "standard" }],
+		};
+		const calc = fake((req) => ({
+			ok: true,
+			currency: req.currency,
+			lines: [{ lineId: "0", rateBps: 100_000, label: "Big", taxCents: 8_500_000_000_000_000 }],
+			shipping: null,
+		}));
+		const res = await computeQuote({ ...deps, taxCalculator: calc }, huge);
+		expect(res).toEqual({ ok: false, reason: "TAX_UNAVAILABLE" });
+		expect(warn).toHaveBeenCalledTimes(1);
+	});
+
+	test.each([150_000, 2_000_000])(
+		"the built-in charges a stored rate of %i bps exactly as main did; only the display rate is capped",
+		async (rateBps) => {
+			// Data written outside the admin (which caps at 10000) may exceed 1000%.
+			const rules = new InMemoryTaxRulesStore();
+			await rules.createRate({
+				id: "t-big",
+				taxClassId: "standard",
+				zoneId: "z-us",
+				rateBps,
+				appliesToShipping: true,
+			});
+			const res = await computeQuote({ ...deps, taxRules: rules }, command);
+			expect(res.ok).toBe(true);
+			if (!res.ok) return;
+			// Main: computeLineTax(3000, rate) + computeLineTax(500, rate); 999 has no rate.
+			const lineTax = computeLineTax(cents(3000), rateBps);
+			const shipTax = computeLineTax(cents(500), rateBps);
+			expect(res.breakdown.lineBreakdown.map((l) => l.taxCents)).toEqual([lineTax, 0]);
+			expect(res.breakdown.shippingTaxCents).toBe(shipTax);
+			expect(res.breakdown.taxCents).toBe(lineTax + shipTax);
+			expect(res.tax.result.lines[0]?.rateBps).toBe(TAX_RATE_BPS_MAX);
+			expect(res.tax.result.shipping?.rateBps).toBe(TAX_RATE_BPS_MAX);
+		},
+	);
 
 	test("a calculator with an unusable id is refused before it is called", async () => {
 		vi.spyOn(console, "warn").mockImplementation(() => {});

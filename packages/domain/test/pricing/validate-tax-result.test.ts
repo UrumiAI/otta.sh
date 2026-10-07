@@ -117,11 +117,44 @@ describe("validateTaxResult", () => {
 		expect(validateTaxResult(req, raw)).toBeNull();
 	});
 
-	test("refuses a shipping tax line when no shipping was requested", () => {
+	test("refuses a NON-ZERO shipping tax line when no shipping was requested", () => {
 		expect(validateTaxResult({ ...req, shipping: null }, good())).toBeNull();
 		expect(validateTaxResult({ ...req, shipping: null }, { ...good(), shipping: null })).not.toBe(
 			null,
 		);
+	});
+
+	test("a ZERO shipping tax line when no shipping was requested is accepted and dropped", () => {
+		const zero = { ...good(), shipping: { rateBps: 888, label: "NY sales tax", taxCents: 0 } };
+		const result = validateTaxResult({ ...req, shipping: null }, zero);
+		expect(result).not.toBeNull();
+		expect(result?.shipping).toBeNull();
+		// Still validated: a malformed zero line is refused.
+		expect(
+			validateTaxResult(
+				{ ...req, shipping: null },
+				{ ...zero, shipping: { rateBps: 888, label: "", taxCents: 0 } },
+			),
+		).toBeNull();
+	});
+
+	test("a tax above the taxable amount × 1000% is refused, on a line and on shipping", () => {
+		// Line 0 is 1000 ⇒ at most 10000; shipping is 300 ⇒ at most 3000.
+		expect(validateTaxResult(req, withLine0({ taxCents: 10_000 }))).not.toBeNull();
+		expect(validateTaxResult(req, withLine0({ taxCents: 10_001 }))).toBeNull();
+		const ship = (taxCents: number) => ({
+			...good(),
+			shipping: { rateBps: 888, label: "NY sales tax", taxCents },
+		});
+		expect(validateTaxResult(req, ship(3_000))).not.toBeNull();
+		expect(validateTaxResult(req, ship(3_001))).toBeNull();
+		// A zero-amount line can carry no tax.
+		const freeLine = {
+			...req,
+			lines: req.lines.map((l, i) => (i === 0 ? { ...l, amountCents: cents(0) } : l)),
+		};
+		expect(validateTaxResult(freeLine, withLine0({ taxCents: 1 }))).toBeNull();
+		expect(validateTaxResult(freeLine, withLine0({ taxCents: 0 }))).not.toBeNull();
 	});
 
 	test("a label of exactly 200 chars and a 1000% rate are the inclusive bounds", () => {

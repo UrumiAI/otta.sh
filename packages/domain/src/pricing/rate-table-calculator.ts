@@ -2,6 +2,7 @@ import type { TaxRate, TaxRulesStore } from "../ports/tax-rules-store.js";
 import { computeLineTax } from "./tax.js";
 import {
 	isValidTaxLabel,
+	TAX_RATE_BPS_MAX,
 	type TaxCalculator,
 	type TaxLine,
 	type TaxRequest,
@@ -56,7 +57,13 @@ export function applyRateTable(
 ): TaxResult {
 	const lineOf = (classId: TaxClassId, amount: TaxRequest["lines"][number]["amountCents"]) => {
 		const rateBps = table.ratesByClass.get(classId) ?? 0;
-		return { rateBps, label: labelOf(classId, labels), taxCents: computeLineTax(amount, rateBps) };
+		// The tax is main's arithmetic at the STORED rate; only the display rate is
+		// capped, so a rate written outside the admin (> 1000%) still charges as before.
+		return {
+			rateBps: Math.min(rateBps, TAX_RATE_BPS_MAX),
+			label: labelOf(classId, labels),
+			taxCents: computeLineTax(amount, rateBps),
+		};
 	};
 	const shipping: TaxLine | null =
 		table.shippingTaxable && request.shipping !== null

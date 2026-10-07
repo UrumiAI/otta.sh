@@ -4,7 +4,12 @@ import type { Clock } from "../ports/clock.js";
 import type { CouponRecord, CouponStore } from "../ports/coupon-store.js";
 import type { ShippingRulesStore } from "../ports/shipping-rules-store.js";
 import type { TaxRulesStore } from "../ports/tax-rules-store.js";
-import { assembleTotals, computePreTax, taxRequestLinesOf } from "./compute-totals.js";
+import {
+	assembleTotals,
+	computePreTax,
+	type PreTaxTotals,
+	taxRequestLinesOf,
+} from "./compute-totals.js";
 import { createRateTableCalculator } from "./rate-table-calculator.js";
 import { normalizeCountryCode, normalizeSubdivision } from "./region-codes.js";
 import {
@@ -227,7 +232,7 @@ export async function computeQuote(
 		destination: taxDestination,
 		zoneId,
 	});
-	const tax = await calculateTax(deps, request);
+	const tax = await calculateTax(deps, request, preTax);
 	if (tax === null) return { ok: false, reason: "TAX_UNAVAILABLE" };
 	const breakdown = assembleTotals(preTax, tax.result);
 	return { ok: true, breakdown, couponRecord, destination: resolution, tax };
@@ -259,11 +264,14 @@ function freezeRequest(request: TaxRequest): TaxRequest {
 async function calculateTax(
 	deps: QuoteDeps,
 	request: TaxRequest,
+	preTax: PreTaxTotals,
 ): Promise<{ calculatorId: string; result: TaxResult } | null> {
 	const outside = deps.taxCalculator;
 	if (outside === undefined) {
 		const builtIn = createRateTableCalculator(deps.taxRules);
-		const result = validateTaxResult(request, await builtIn.calculate(request));
+		const result = validateTaxResult(request, await builtIn.calculate(request), {
+			boundTaxToAmount: false,
+		});
 		if (result === null) throw new Error(`${builtIn.id} produced an invalid tax result`);
 		return { calculatorId: builtIn.id, result };
 	}
@@ -292,10 +300,21 @@ async function calculateTax(
 		}
 		const result = validateTaxResult(request, raw);
 		if (result === null) return refuse(id, "answered invalidly");
+		// A tax that is safe on its own may still overflow the ORDER total, which
+		// `assembleTotals` would throw on — refuse it here instead.
+		if (!Number.isSafeInteger(orderTotalOf(preTax, result))) {
+			return refuse(id, "answered a tax that overflows the order total");
+		}
 		return { calculatorId: id, result };
 	} catch {
 		return refuse(id, "answered invalidly");
 	}
+}
+
+/** `assembleTotals`' grand total, as an unchecked number. */
+function orderTotalOf(preTax: PreTaxTotals, result: TaxResult): number {
+	const tax = result.lines.reduce((sum, l) => sum + l.taxCents, result.shipping?.taxCents ?? 0);
+	return preTax.subtotalCents - preTax.discountCents + preTax.shippingCents + tax;
 }
 
 function refuse(id: string, why: string): null {
