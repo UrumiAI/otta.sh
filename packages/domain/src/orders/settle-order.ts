@@ -1,6 +1,5 @@
 import { idempotencyKey } from "../money/ids.js";
 import type { Clock } from "../ports/clock.js";
-import type { CouponStore } from "../ports/coupon-store.js";
 import type { ConfirmationResult } from "../ports/payment-gateway.js";
 import type { EntitlementStore } from "../ports/entitlement-store.js";
 import type { InventoryStore } from "../ports/inventory-store.js";
@@ -8,6 +7,7 @@ import type { OrderStore } from "../ports/order-store.js";
 import type { PaymentEventStore } from "../ports/payment-event-store.js";
 import type { PaymentGateway, RawConfirmation } from "../ports/payment-gateway.js";
 import type { SettleFailure } from "./errors.js";
+import { isUnpaidTerminalState, refundLatePayment } from "./late-payment.js";
 import type { Order } from "./model.js";
 
 export interface SettleDeps {
@@ -15,9 +15,6 @@ export interface SettleDeps {
 	entitlementStore: EntitlementStore;
 	paymentEventStore: PaymentEventStore;
 	inventoryStore: InventoryStore;
-	/** Phase 6 (review I2): release the failed order's coupon, symmetric with the
-	 *  inventory-hold release on the payment-failure path. */
-	couponStore: CouponStore;
 	clock: Clock;
 }
 
@@ -36,13 +33,20 @@ type VerifiedSuccess = Extract<ConfirmationResult, { ok: true }>;
  * 1. `gateway.verifyConfirmation(raw)` — a reject (bad signature / unknown /
  *    malformed) is a typed failure (HTTP 400). All crypto is adapter-side.
  * 2. Record the delivery in `payment_events` (UNIQUE `dedupeKey` — the audit
- *    trail). **A duplicate does NOT short-circuit**: every delivery re-DRIVES the
+ *    trail). **A duplicate OF THE SAME ORDER does NOT short-circuit**: every
+ *    delivery re-DRIVES the
  *    idempotent, state-guarded steps below, so a crash between any two of them
  *    (dedupe→flip, flip→commit/grant) is healed by the next gateway retry — the
  *    Phase-3 claim/resume idiom. "Settles once" is enforced by the guarded
  *    `pending → paid` flip, the `provider_ref`-keyed payment record, the
  *    state-guarded `commit`, and the grant-once entitlement key — never by
  *    blind-trusting the dedupe row.
+ * 2b. A duplicate whose recorded row names a **different** order is the opposite
+ *    case and is TERMINAL (`RECEIPT_REBOUND` + anomaly, nothing moved): one
+ *    settlement consumes one payment. This is the tx-hash binding
+ *    `@otta-sh/payments-x402`'s header calls load-bearing — `proof.orderId` is
+ *    never on-chain-attestable, so the amount equality in step 3 is not on its
+ *    own enough to stop one receipt from settling a second, same-priced order.
  * 3. Amount + currency MUST equal `order_totals.total` — mismatch ⇒ reject +
  *    record anomaly (§9 Risk 3); no auto-refund. Checked only while the order
  *    can still settle: a terminal order short-circuits FIRST (review G6), so a
@@ -52,14 +56,30 @@ type VerifiedSuccess = Extract<ConfirmationResult, { ok: true }>;
  *    `commit(reservationId)` (a lost adopted hold is the loud 0-row anomaly, §5);
  *    digital ⇒ grant entitlement (grant-once). An already-`paid` order re-drives
  *    the side-effects idempotently and no-ops.
- * 5. **Losing the `pending → paid` flip mid-flight** (an expiry/failure raced the
+ * 5. **Losing the `pending → paid` flip mid-flight** (an expiry/cancellation raced the
  *    settle between load and flip) is exactly as LOUD as finding the order
  *    already terminal: `PAID_FLIP_LOST` anomaly + manual-reconciliation flag —
  *    money was captured while stock was released; never a silent no-op.
- *
- * A verified `failed` event (`payment_intent.payment_failed`) instead drives
- * `pending → failed` + `release` (§5), re-driving the release on a retry after a
- * crash between the flip and the release.
+ * 6. **A late payment is refunded automatically** (`refundLatePayment`). On a
+ *    dead order (`expired`/`cancelled`/`failed`) the capture is ALWAYS recorded on
+ *    the payments ledger, so nothing downstream can claim "nothing was charged".
+ *    When the order provably left `pending` unpaid (for `cancelled`, its audit
+ *    holds the `pending → cancelled` flip) and the gateway can refund, the payment
+ *    is refunded once under a key derived from it, the flag resolved and the buyer
+ *    notified — instead of sitting in the reconciliation queue while the buyer is
+ *    out of pocket. A gateway that cannot refund (x402, Stripe with no secret key),
+ *    or an order with no such evidence, keeps the manual flag above. A TRANSIENT
+ *    refund failure answers `LATE_PAYMENT_REFUND_RETRYABLE` so the provider
+ *    redelivers, and schedules a sweep retry (`retryLatePaymentRefunds`) for when
+ *    it stops. *
+ * A verified `failed` event (`payment_intent.payment_failed`) is INFORMATIONAL
+ * (ADR-0022): it is recorded by step 2 — deduped, bound to its order, auditable —
+ * and changes nothing else. The order stays `pending` with its stock held and its
+ * coupon consumed, because the PaymentIntent is still payable after a decline and
+ * the pay page retries on it; failing the order here is what turned a decline
+ * followed by a successful retry into `PAID_FLIP_LOST`. If the buyer pays, the
+ * `succeeded` event settles it normally; if nobody does, the order-expiry sweep
+ * (`expireOrders`) releases the stock and the coupon when the hold lapses.
  */
 export async function settleOrder(
 	deps: SettleDeps,
@@ -71,28 +91,52 @@ export async function settleOrder(
 
 	const now = deps.clock.now().toISOString();
 
-	// 2. Record the delivery (UNIQUE dedupe_key = the audit row). Deliberately
-	// NOT a short-circuit — see the function doc: replays re-drive by state.
-	await deps.paymentEventStore.dedupe(conf.dedupeKey, conf.orderId, conf.gateway, now);
+	// 2. Record the delivery (UNIQUE dedupe_key = the audit row). A duplicate of
+	// THIS order is deliberately NOT a short-circuit — see the function doc:
+	// replays re-drive by state. A duplicate naming a DIFFERENT order is not a
+	// replay at all, and is terminally refused here (step 2b).
+	const claimed = await deps.paymentEventStore.dedupe(
+		conf.dedupeKey,
+		conf.orderId,
+		conf.gateway,
+		now,
+	);
+
+	// 2b. THE TX-HASH BINDING, enforced rather than assumed. For x402 the dedupe
+	// key IS the on-chain `transaction`, and `proof.orderId` is never
+	// on-chain-attestable — so without this, a receipt already bound to order A,
+	// resubmitted naming a same-priced order B, would sail past the amount check
+	// and settle B off one payment. (`recordPayment`'s globally-unique
+	// `provider_ref` then silently swallows the second ledger row, so the second
+	// settle would not even be visible in the ledger.) The lookup runs ONLY on the
+	// duplicate arm: a first delivery costs exactly what it always did.
+	if (!claimed) {
+		const boundTo = await deps.paymentEventStore.orderForDedupeKey(conf.dedupeKey);
+		if (boundTo !== null && boundTo !== conf.orderId) {
+			// The attempt is the alert-worthy fact, so it is recorded against the
+			// order it was AIMED at. The detail names the order that legitimately owns
+			// the receipt; neither is a credential.
+			await deps.paymentEventStore.recordAnomaly({
+				orderId: conf.orderId,
+				gateway: conf.gateway,
+				kind: "RECEIPT_REBOUND",
+				detail: `confirmation dedupe key is already recorded against order ${boundTo}`,
+				now,
+			});
+			return { ok: false, reason: "RECEIPT_REBOUND" };
+		}
+	}
 
 	const order = await deps.orderStore.getById(conf.orderId);
 	if (order === null) return { ok: false, reason: "ORDER_NOT_FOUND" };
 
-	// A verified FAILURE event: guarded pending → failed, then release. The
-	// release runs whenever the order IS failed (fresh flip or a retry resuming a
-	// crash between flip and release) — `release` is state-guarded/idempotent, so
-	// stock returns exactly once.
+	// A verified FAILURE event (a declined attempt) is recorded above and moves
+	// nothing: no state flip, no stock or coupon release, whatever state the order
+	// is in (ADR-0022). A pending order stays payable on the same PaymentIntent; a
+	// late decline on a paid or expired order is equally inert. Checked BEFORE the
+	// terminal short-circuits below, so a decline can never raise an anomaly.
 	if (conf.outcome === "failed") {
-		const won = await deps.orderStore.markFailed(order.id);
-		const fresh = (await deps.orderStore.getById(order.id)) ?? order;
-		if (fresh.state === "failed") {
-			await releaseAll(deps, fresh);
-			// Review I2: free the coupon on payment failure, symmetric with the
-			// inventory release. Order-scoped + idempotent (re-driven failed events
-			// release exactly once).
-			await deps.couponStore.releaseByOrder(fresh.id);
-		}
-		return { ok: true, order: fresh, noop: !won };
+		return { ok: true, order, noop: true };
 	}
 
 	// Already paid (webhook-before-redirect, duplicate delivery, or a retry after
@@ -112,13 +156,27 @@ export async function settleOrder(
 		return { ok: true, order: fresh, noop: true };
 	}
 
-	// Terminal non-paid + a verified success: money moved but cannot settle →
-	// anomaly + manual reconciliation (no auto-refund, v1). Gated on the flag so
-	// a gateway's retry storm records the incident once, not once per delivery.
+	// Terminal non-paid + a verified success: money moved but cannot settle.
 	// Also ahead of the amount check (G6): SETTLE_ON_NON_PENDING is the right
 	// signal for a terminal order, whatever amount the stray event carries.
 	if (order.state !== "pending") {
-		if (order.reconciliationFlag === null) {
+		// 6. A LATE payment on a never-paid dead order is refunded automatically
+		// (see the function doc). Everything else it declines keeps the manual path.
+		const late = await refundLatePayment(
+			deps,
+			gateway,
+			conf,
+			order,
+			{
+				kind: "SETTLE_ON_NON_PENDING",
+				detail: `verified success on order in state=${order.state}`,
+			},
+			now,
+		);
+		if (late === "retryable") return { ok: false, reason: "LATE_PAYMENT_REFUND_RETRYABLE" };
+		// Anomaly + manual reconciliation. Gated on the flag so a gateway's retry
+		// storm records the incident once, not once per delivery.
+		if (late === "ineligible" && order.reconciliationFlag === null) {
 			await deps.paymentEventStore.recordAnomaly({
 				orderId: order.id,
 				gateway: conf.gateway,
@@ -126,7 +184,10 @@ export async function settleOrder(
 				detail: `verified success on order in state=${order.state}`,
 				now,
 			});
-			await deps.orderStore.flagReconciliation(order.id, `settle on ${order.state}`);
+			// `order` was read at the start: never over a flag written since (#364).
+			await deps.orderStore.flagReconciliation(order.id, `settle on ${order.state}`, {
+				expectedFlag: null,
+			});
 		}
 		const fresh = await deps.orderStore.getById(order.id);
 		return { ok: true, order: fresh, noop: true };
@@ -157,20 +218,39 @@ export async function settleOrder(
 			return { ok: true, order: await deps.orderStore.getById(order.id), noop: true };
 		}
 		// F1: a verified, amount-checked success LOST the flip to a mid-flight
-		// expiry/failure — the customer was charged while the stock was released.
+		// expiry/cancellation — the customer was charged while the stock was released.
 		// Exactly as loud as the already-terminal-at-load case above.
 		const lostTo = fresh?.state ?? "missing";
+		const detail = `verified success lost the pending→paid flip; order is now state=${lostTo}`;
+		// 6. The order the flip was lost to is, almost always, an expiry — a late
+		// payment by any other name. Refund it the same way, under the loud
+		// PAID_FLIP_LOST anomaly rather than a quieter one.
+		if (fresh !== null && isUnpaidTerminalState(fresh.state)) {
+			const late = await refundLatePayment(
+				deps,
+				gateway,
+				conf,
+				fresh,
+				{ kind: "PAID_FLIP_LOST", detail },
+				now,
+			);
+			if (late === "retryable") return { ok: false, reason: "LATE_PAYMENT_REFUND_RETRYABLE" };
+			if (late !== "ineligible") {
+				return { ok: true, order: await deps.orderStore.getById(order.id), noop: true };
+			}
+		}
 		if (fresh === null || fresh.reconciliationFlag === null) {
 			await deps.paymentEventStore.recordAnomaly({
 				orderId: order.id,
 				gateway: conf.gateway,
 				kind: "PAID_FLIP_LOST",
-				detail: `verified success lost the pending→paid flip; order is now state=${lostTo}`,
+				detail,
 				now,
 			});
 			await deps.orderStore.flagReconciliation(
 				order.id,
 				`lost pending→paid flip to state=${lostTo}`,
+				{ expectedFlag: null },
 			);
 		}
 		return { ok: true, order: await deps.orderStore.getById(order.id), noop: true };
@@ -210,7 +290,9 @@ async function applyPaidSideEffects(
 	// loud COMMIT_LOST anomaly + manual-reconciliation flag, NEVER a silent no-op.
 	// Recorded once PER lost line, each gated on the SAME stale reconciliationFlag
 	// read off the `order` loaded once (never re-read in the loop): N lost lines ⇒
-	// N anomalies + N flag writes, byte-for-byte with the pre-batch per-line loop.
+	// N anomalies. The flag write is a compare-and-set on "still unflagged" (issue
+	// #364), so the FIRST lost reservation's flag lands and the later ones' are
+	// refused — every lost line is still in the anomalies.
 	const physicalReservationIds = order.lines
 		.filter((line) => line.fulfillmentKind === "physical" && line.reservationId !== null)
 		.map((line) => line.reservationId)
@@ -225,9 +307,12 @@ async function applyPaidSideEffects(
 				detail: `commit matched 0 rows for reservation ${reservationId}`,
 				now,
 			});
+			// Compare-and-set on "still unflagged": `order` was read before the
+			// commit, and a flag written since is never overwritten (issue #364).
 			await deps.orderStore.flagReconciliation(
 				order.id,
 				`commit lost for reservation ${reservationId}`,
+				{ expectedFlag: null },
 			);
 		}
 	}
@@ -245,16 +330,6 @@ async function applyPaidSideEffects(
 				// Deterministic grant-once key per (order, sku): replay grants nothing.
 				grantIdempotencyKey: idempotencyKey(`ent:${order.id}:${line.sku}`),
 			});
-		}
-	}
-}
-
-/** Release every reservation THIS order adopted (order-scoped, review G2;
- *  idempotent per reservation — a foreign/committed hold is a silent skip). */
-async function releaseAll(deps: SettleDeps, order: Order): Promise<void> {
-	for (const line of order.lines) {
-		if (line.reservationId !== null) {
-			await deps.inventoryStore.releaseAdopted(line.reservationId, order.id);
 		}
 	}
 }

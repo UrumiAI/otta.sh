@@ -1,10 +1,11 @@
 /**
  * Cart — PLUGIN-OWNED PUBLIC ROUTES (Phase 3 group E, plan §7 step E1, shape
  * per ADR-0003). The plugin holds no cart/stock state (plan §4 "Where cart
- * state lives"): every route here is a straight proxy over `ctx.http` to
- * `@otta-sh/service`'s `/carts` REST surface — validate input → `HttpCommerceClient`
- * call → serialize the (already-typed) result. No cart truth is duplicated
- * or cached in the plugin.
+ * state lives"): every route here validates input → calls the in-process
+ * `CommerceClient` from `makeCommerceClient` → serializes the (already-typed)
+ * result — the shape the plugin's own `/carts` handling used to reach over
+ * `ctx.http` before the commerce service was folded in. No cart truth is
+ * duplicated or cached in the plugin.
  *
  * ── Platform-verified deviation from plan §4's literal wording ────────────
  * Plan §4 says "The plugin storefront route sets [cartId] as a cookie:
@@ -38,18 +39,24 @@
  * Phase 5's session-cookie design, which makes the same now-disproven
  * assumption) — a candidate follow-up ADR, not resolved here.
  */
+import {
+	CART_LINE_MAX_QTY,
+	isBoundedProductId,
+	isDocumentIdempotencyKey,
+	isIdToken,
+	isSkuText,
+} from "../commerce/commerce-input.js";
+import { makeCommerceClient } from "../commerce/make-commerce-client.js";
 import type { CatalogProductCommerce } from "../catalog/commerce-view.js";
-import { COMMERCE_SERVICE_BASE_URL, serviceTokenFromKv } from "../manifest.js";
 import type {
 	CartFailureReason,
 	CartLineWire,
 	CartResult,
 	CartWire,
 } from "../product-commerce/commerce-client.js";
-import { HttpCommerceClient } from "../product-commerce/http-commerce-client.js";
-import type { PluginContext, RouteHandler } from "../types.js";
+import type { RouteHandler } from "../types.js";
 import { buildCartPricing, DEGRADED_CART_PRICING, type CartPricingWire } from "./cart-pricing.js";
-import { createCommerceLoader, renderGuard } from "./pdp-route.js";
+import { createCommerceLoader, renderGuard, type RenderGuardFailure } from "./pdp-route.js";
 import { sanitizeLocale } from "./route-input.js";
 
 // ── Public route names ──────────────────────────────────────────────────
@@ -62,6 +69,10 @@ export const STOREFRONT_CART_LINE_REMOVE_ROUTE = "storefront/cart/lines/remove";
 /** The cart-cookie name — a single constant so the plugin's descriptor and
  *  (documentation for) the theme shim's read side never drift. */
 export const CART_COOKIE_NAME = "otta_cart";
+
+/** The cart-cookie path — a single constant so the plugin's descriptor and
+ *  the theme shim's delete side share one source of truth. */
+export const CART_COOKIE_PATH = "/";
 
 /** 30 days — not specified by the plan (only the hold TTL, 15 min, is); a
  *  reasonable default for how long an anonymous cart pointer survives. The
@@ -92,29 +103,23 @@ function cartCookieDescriptor(cartId: string): CartCookieDescriptor {
 		httpOnly: true,
 		secure: true,
 		sameSite: "lax",
-		path: "/",
+		path: CART_COOKIE_PATH,
 		maxAgeSeconds: CART_COOKIE_MAX_AGE_SECONDS,
 	};
-}
-
-/** One client per invocation (matches `createCommerceLoader`'s
- *  request-scoped lifecycle, pdp-route.ts) — no cross-request state. Async
- *  because it awaits the write-gate token from write-only kv (ADR-0007): the
- *  cart writes (create/add/adjust/remove) are non-GETs the service gate blocks
- *  without `X-Service-Token`. Undefined ⇒ no header ⇒ pre-gate wire. */
-async function createCommerceClient(ctx: PluginContext): Promise<HttpCommerceClient> {
-	const serviceToken = await serviceTokenFromKv(ctx);
-	return new HttpCommerceClient({
-		fetch: ctx.http.fetch,
-		baseUrl: COMMERCE_SERVICE_BASE_URL,
-		...(serviceToken !== undefined ? { serviceToken } : {}),
-	});
 }
 
 // ── Input shapes (hand-validated — the routes are PUBLIC, ADR-0003) ───────
 
 export interface CartCreateRouteInput {
 	currency?: unknown;
+	/**
+	 * Optional: the SPENT cart this one replaces (the cookie's cart, checked out
+	 * into a finished order). The plugin checks both and derives the idempotency key
+	 * itself, so the same spent cart always gets the same replacement; a caller can
+	 * never name a key. When present, `currency` is ignored — the replacement takes
+	 * the spent cart's.
+	 */
+	replacesCartId?: unknown;
 }
 
 export interface CartReadRouteInput {
@@ -130,7 +135,8 @@ export interface CartLineAddRouteInput {
 	/** The CMS content id (the join key to `product_commerce`), threaded from the
 	 *  PDP add-to-cart slot so the line is priceable/quotable/orderable — issue
 	 *  #80. Optional for backward-compat with a bare (legacy) add; when present it
-	 *  must be a non-empty string, and it flows to the service `addLine` call. */
+	 *  must be a non-empty string of at most 200 characters, and it flows to the
+	 *  service `addLine` call. */
 	productId?: unknown;
 	qty?: unknown;
 	/** Fresh per user action (plan §8 Risk 8) — the Block Kit add-to-cart
@@ -154,20 +160,26 @@ export interface CartLineRemoveRouteInput {
 
 export type CartCreateRouteResult =
 	| { ok: true; cartId: string; cookie: CartCookieDescriptor }
-	| { ok: false; error: "INVALID_CURRENCY" }
-	| { ok: false; error: "RENDER_FAILED" };
+	| { ok: false; error: "INVALID_CURRENCY" | "INVALID_INPUT" }
+	/** `replacesCartId` names no cart, one still active (nothing to replace), or one
+	 *  whose order is not finished (a pending payment may still use it). */
+	| { ok: false; reason: "CART_NOT_FOUND" | "CART_NOT_CHECKED_OUT" | "ORDER_NOT_FINISHED" }
+	| RenderGuardFailure;
 
 export type CartReadRouteResult =
 	| { ok: true; cart: CartWire; pricing: CartPricingWire }
 	| { ok: false; error: "INVALID_CART_ID" }
 	| { ok: false; reason: CartFailureReason }
-	| { ok: false; error: "RENDER_FAILED" };
+	| RenderGuardFailure;
 
 export type CartLineMutationRouteResult<T> =
 	| ({ ok: true } & T)
 	| { ok: false; error: "INVALID_INPUT" }
+	/** A quantity over {@link CART_LINE_MAX_QTY} — its own token, so a storefront
+	 *  can name the limit instead of a generic failure. */
+	| { ok: false; error: "QTY_TOO_LARGE" }
 	| { ok: false; reason: CartFailureReason }
-	| { ok: false; error: "RENDER_FAILED" };
+	| RenderGuardFailure;
 
 /** Not `CartLineMutationRouteResult<Record<string, never>>` — intersecting
  *  `{ok:true}` with an index-signature "empty object" type rejects `ok`'s
@@ -177,14 +189,55 @@ export type CartLineRemoveRouteResult =
 	| { ok: true }
 	| { ok: false; error: "INVALID_INPUT" }
 	| { ok: false; reason: CartFailureReason }
-	| { ok: false; error: "RENDER_FAILED" };
+	| RenderGuardFailure;
 
-function isNonEmptyString(value: unknown): value is string {
-	return typeof value === "string" && value.length > 0;
+/**
+ * A cart or line id the client will take: the client bounds both as opaque id
+ * tokens (`requireIdToken`) by THROWING, which renderGuard would log and answer as
+ * RENDER_FAILED — "Something went wrong" for a tampered cookie or form field. The
+ * store mints both as UUIDs, so this refuses nothing it could ever have issued
+ * (issue #379).
+ */
+function isCartIdToken(value: unknown): value is string {
+	return typeof value === "string" && isIdToken(value);
+}
+
+/**
+ * The client's own rules for the fields that are NOT id tokens, as type guards —
+ * each read off the SAME rule function as the client's `require*`, so the route
+ * and the client cannot drift (#379). Every one of them refuses U+0000, which
+ * Postgres cannot store: let through, a NUL failed the first store read on that
+ * dialect as RENDER_FAILED.
+ */
+function isSku(value: unknown): value is string {
+	return typeof value === "string" && isSkuText(value);
+}
+
+function isAddProductId(value: unknown): value is string {
+	return typeof value === "string" && isBoundedProductId(value);
+}
+
+/** Non-empty, at most `IDEMPOTENCY_KEY_MAX`, no U+0000 — the client's own rule
+ *  for a cart mutation's key, which becomes part of a document id. A real
+ *  caller's key is a form-minted UUID; past the ceiling the store's document-id
+ *  and value caps threw. */
+function isIdempotencyKey(value: unknown): value is string {
+	return typeof value === "string" && isDocumentIdempotencyKey(value);
 }
 
 function isPositiveInt(value: unknown): value is number {
 	return typeof value === "number" && Number.isInteger(value) && value > 0;
+}
+
+/**
+ * A positive integer OVER the shopper-facing cap: the route's own typed
+ * QTY_TOO_LARGE, checked here rather than left to the client's `requireQty`
+ * throw, which renderGuard would log and answer as RENDER_FAILED — "Something
+ * went wrong" for a shopper who typed a big number (QA U-6). The cap is per
+ * REQUEST: an add that takes an existing line past it is not refused here.
+ */
+function isOverCartQtyCap(value: number): boolean {
+	return value > CART_LINE_MAX_QTY;
 }
 
 const CURRENCY_PATTERN = /^[A-Z]{3}$/;
@@ -200,7 +253,22 @@ export function createCartCreateRouteHandler(): RouteHandler<CartCreateRouteInpu
 			if (raw !== undefined && (typeof raw !== "string" || !CURRENCY_PATTERN.test(raw))) {
 				return { ok: false, error: "INVALID_CURRENCY" } as const;
 			}
-			const client = await createCommerceClient(ctx);
+			const replaces = routeCtx.input.replacesCartId;
+			if (replaces !== undefined) {
+				// Present-but-malformed is REFUSED, never dropped: dropped, it would turn
+				// a converging replacement into one cart per racing request.
+				if (typeof replaces !== "string" || !isIdToken(replaces)) {
+					return { ok: false, error: "INVALID_INPUT" } as const;
+				}
+				const replaced = await (await makeCommerceClient(ctx)).replaceCart(replaces);
+				if (!replaced.ok) return { ok: false as const, reason: replaced.reason };
+				return {
+					ok: true as const,
+					cartId: replaced.cartId,
+					cookie: cartCookieDescriptor(replaced.cartId),
+				};
+			}
+			const client = await makeCommerceClient(ctx);
 			const { cartId } = await client.createCart(raw as string | undefined);
 			return { ok: true as const, cartId, cookie: cartCookieDescriptor(cartId) };
 		});
@@ -240,9 +308,9 @@ export function createCartReadRouteHandler(): RouteHandler<CartReadRouteInput> {
 	return (routeCtx, ctx): Promise<CartReadRouteResult> =>
 		renderGuard(STOREFRONT_CART_READ_ROUTE, async () => {
 			const cartId = routeCtx.input.cartId;
-			if (!isNonEmptyString(cartId)) return { ok: false, error: "INVALID_CART_ID" } as const;
+			if (!isCartIdToken(cartId)) return { ok: false, error: "INVALID_CART_ID" } as const;
 
-			const client = await createCommerceClient(ctx);
+			const client = await makeCommerceClient(ctx);
 			const result = await client.getCart(cartId);
 			if (!result.ok) return { ok: false as const, reason: result.reason };
 			const cart = result.cart;
@@ -293,16 +361,29 @@ export function createCartLineAddRouteHandler(): RouteHandler<CartLineAddRouteIn
 			// `productId` is OPTIONAL (bare/legacy add) but, when present, must be a
 			// non-empty string — a present-but-blank value is a validation reject,
 			// never silently dropped (issue #80). Absent ⇒ null on the wire.
+			//
+			// Each field is held to exactly the client's own bound for it, so none can
+			// reach its throw (issue #379): `cartId` is an id token; `productId` is 1–200
+			// characters with no U+0000 and NO charset rule beyond that (a CMS ULID fits
+			// either way, but the client accepts more, and refusing more here would be a
+			// divergence too); `sku` is non-empty with no U+0000 and nothing else,
+			// because that is all the admin, the domain's `sku()` and the client ask of
+			// one — an id-token rule here would make a saved sku such as "Blend 250g"
+			// un-addable. A storable sku or product id that matches nothing is the typed
+			// SKU_MISMATCH. U+0000 is the exception that made "no charset rule" unsafe:
+			// Postgres cannot store it, so it failed the first store read as
+			// RENDER_FAILED there (SQLite hid it) — and is refused here instead.
 			if (
-				!isNonEmptyString(cartId) ||
-				!isNonEmptyString(sku) ||
-				(productId !== undefined && !isNonEmptyString(productId)) ||
+				!isCartIdToken(cartId) ||
+				!isSku(sku) ||
+				(productId !== undefined && !isAddProductId(productId)) ||
 				!isPositiveInt(qty) ||
-				!isNonEmptyString(idempotencyKey)
+				!isIdempotencyKey(idempotencyKey)
 			) {
 				return { ok: false, error: "INVALID_INPUT" } as const;
 			}
-			const client = await createCommerceClient(ctx);
+			if (isOverCartQtyCap(qty)) return { ok: false, error: "QTY_TOO_LARGE" } as const;
+			const client = await makeCommerceClient(ctx);
 			const result: CartResult<{ line: CartLineWire }> = await client.addCartLine(
 				cartId,
 				sku,
@@ -316,20 +397,21 @@ export function createCartLineAddRouteHandler(): RouteHandler<CartLineAddRouteIn
 }
 
 /** `PATCH /carts/:cartId/lines/:lineId` proxy — target qty, not a delta (the
- *  service computes the delta; see `HttpCommerceClient.adjustCartLine`). */
+ *  client computes the delta; see `InProcessCommerceClient.adjustCartLine`). */
 export function createCartLineUpdateRouteHandler(): RouteHandler<CartLineUpdateRouteInput> {
 	return (routeCtx, ctx): Promise<CartLineMutationRouteResult<{ line: CartLineWire }>> =>
 		renderGuard(STOREFRONT_CART_LINE_UPDATE_ROUTE, async () => {
 			const { cartId, lineId, qty, idempotencyKey } = routeCtx.input;
 			if (
-				!isNonEmptyString(cartId) ||
-				!isNonEmptyString(lineId) ||
+				!isCartIdToken(cartId) ||
+				!isCartIdToken(lineId) ||
 				!isPositiveInt(qty) ||
-				!isNonEmptyString(idempotencyKey)
+				!isIdempotencyKey(idempotencyKey)
 			) {
 				return { ok: false, error: "INVALID_INPUT" } as const;
 			}
-			const client = await createCommerceClient(ctx);
+			if (isOverCartQtyCap(qty)) return { ok: false, error: "QTY_TOO_LARGE" } as const;
+			const client = await makeCommerceClient(ctx);
 			const result: CartResult<{ line: CartLineWire }> = await client.adjustCartLine(
 				cartId,
 				lineId,
@@ -346,14 +428,10 @@ export function createCartLineRemoveRouteHandler(): RouteHandler<CartLineRemoveR
 	return (routeCtx, ctx): Promise<CartLineRemoveRouteResult> =>
 		renderGuard(STOREFRONT_CART_LINE_REMOVE_ROUTE, async () => {
 			const { cartId, lineId, idempotencyKey } = routeCtx.input;
-			if (
-				!isNonEmptyString(cartId) ||
-				!isNonEmptyString(lineId) ||
-				!isNonEmptyString(idempotencyKey)
-			) {
+			if (!isCartIdToken(cartId) || !isCartIdToken(lineId) || !isIdempotencyKey(idempotencyKey)) {
 				return { ok: false, error: "INVALID_INPUT" } as const;
 			}
-			const client = await createCommerceClient(ctx);
+			const client = await makeCommerceClient(ctx);
 			const result: CartResult<Record<string, never>> = await client.removeCartLine(
 				cartId,
 				lineId,

@@ -1,22 +1,18 @@
-import type { RouteHandler, SandboxedRouteContext } from "../types.js";
+import type { Block, RouteHandler, SandboxedRouteContext } from "../types.js";
 import {
 	COUPONS_ACTION_IDS,
 	COUPONS_PAGE,
 	createCouponsPageHandler,
 	type CouponsPageInput,
 } from "./coupons-page.js";
+import { CONSOLE_INTERACTIONS } from "./console-transport.js";
+import { createOrdersConsoleHandler, type OrdersConsoleInput } from "./orders-console-route.js";
+import { PRODUCTS_ACTION_IDS } from "./products-actions.js";
 import {
-	createOrdersPageHandler,
-	ORDERS_ACTION_IDS,
-	ORDERS_PAGE,
-	type OrdersPageInput,
-} from "./orders-page.js";
-import {
-	createProductsPageHandler,
-	PRODUCTS_ACTION_IDS,
-	PRODUCTS_PAGE,
-	type ProductsPageInput,
-} from "./products-page.js";
+	PRODUCTS_CONSOLE_RESOURCE_PREFIX,
+	createProductsConsoleHandler,
+	type ProductsConsoleInput,
+} from "./products-console-route.js";
 import {
 	createReportsPageHandler,
 	REPORTS_ACTION_IDS,
@@ -57,6 +53,10 @@ interface AdminInteractionInput {
 	type?: unknown;
 	page?: unknown;
 	action_id?: unknown;
+	/** The React console's read target (`orders.list`, `products.detail`, …).
+	 *  Never present on an EmDash interaction — the two vocabularies are
+	 *  disjoint. */
+	resource?: unknown;
 }
 
 /**
@@ -71,17 +71,43 @@ interface AdminInteractionInput {
 export function createAdminRouteHandler(): RouteHandler<AdminInteractionInput> {
 	const reports = createReportsPageHandler();
 	const settings = createSettingsFormHandler();
-	const orders = createOrdersPageHandler();
-	const products = createProductsPageHandler();
 	const tax = createTaxPageHandler();
 	const shipping = createShippingPageHandler();
 	const coupons = createCouponsPageHandler();
+	const ordersConsole = createOrdersConsoleHandler();
+	const productsConsole = createProductsConsoleHandler();
 
 	return async (routeCtx, ctx) => {
 		const input = routeCtx.input;
 		const type = typeof input.type === "string" ? input.type : undefined;
 		const page = typeof input.page === "string" ? input.page : undefined;
 		const actionId = typeof input.action_id === "string" ? input.action_id : undefined;
+
+		// 0. THE REACT CONSOLE (INC-20, INC-21), gated FIRST and on its own
+		// interaction types. `otta-console` holds no routes of its own (ADR-0014
+		// Decision 3), so its screens reach commerce through THIS route, with the
+		// operator's session and the same CSRF header the admin shell sends — the
+		// only data path the amendment grants them. The types are disjoint from
+		// EmDash's (`page_load` / `block_action` / `form_submit`), which is what
+		// guarantees the branches below are untouched: the five Block Kit screens
+		// that remain keep rendering exactly as they did. The two whose consoles
+		// these branches serve are gone (ADR-0015) — this is now their only surface.
+		//
+		// WHICH console screen: a READ names its `resource`, and an ACT names an
+		// action id that is already namespaced by screen. Orders is the fallthrough
+		// rather than a third test, so an unrecognised read still reaches a handler
+		// and comes back as that handler's refusal copy — never as this
+		// dispatcher's `{blocks: []}`, which a console cannot render at all.
+		if (type !== undefined && CONSOLE_INTERACTIONS.has(type)) {
+			const resource = typeof input.resource === "string" ? input.resource : undefined;
+			const forProducts =
+				resource?.startsWith(PRODUCTS_CONSOLE_RESOURCE_PREFIX) === true ||
+				(actionId !== undefined && PRODUCTS_ACTION_IDS.has(actionId));
+			if (forProducts) {
+				return productsConsole(routeCtx as SandboxedRouteContext<ProductsConsoleInput>, ctx);
+			}
+			return ordersConsole(routeCtx as SandboxedRouteContext<OrdersConsoleInput>, ctx);
+		}
 
 		// 1–4. GATE page branches on `type === "page_load"` (em-dash's reference
 		// returns blocks-empty for a block_action that happens to carry a page).
@@ -90,12 +116,6 @@ export function createAdminRouteHandler(): RouteHandler<AdminInteractionInput> {
 		}
 		if (type === "page_load" && page === SETTINGS_PAGE.path) {
 			return settings(routeCtx as SandboxedRouteContext<SettingsFormInput>, ctx);
-		}
-		if (type === "page_load" && page === ORDERS_PAGE.path) {
-			return orders(routeCtx as SandboxedRouteContext<OrdersPageInput>, ctx);
-		}
-		if (type === "page_load" && page === PRODUCTS_PAGE.path) {
-			return products(routeCtx as SandboxedRouteContext<ProductsPageInput>, ctx);
 		}
 		if (type === "page_load" && page === TAX_PAGE.path) {
 			return tax(routeCtx as SandboxedRouteContext<TaxPageInput>, ctx);
@@ -108,21 +128,15 @@ export function createAdminRouteHandler(): RouteHandler<AdminInteractionInput> {
 		}
 
 		// 5. Action interactions (block_action/form_submit) carry an action_id and
-		// no page — route each page's actions to its handler. Every Orders/Products
-		// action is namespaced `orders:*`/`products:*` and listed in
-		// ORDERS_ACTION_IDS/PRODUCTS_ACTION_IDS (MOD-2), so none falls through to
-		// the blocks-empty fallback below.
+		// no page — route each remaining Block Kit page's actions to its handler.
+		// Orders and Pricing & inventory are ABSENT from this list (INC-R2/INC-R3,
+		// ADR-0015): both screens were retired, and their `orders:*`/`products:*`
+		// ids are now console actions, gated in branch 0 above.
 		if (actionId !== undefined && SETTINGS_ACTION_IDS.has(actionId)) {
 			return settings(routeCtx as SandboxedRouteContext<SettingsFormInput>, ctx);
 		}
 		if (actionId !== undefined && REPORTS_ACTION_IDS.has(actionId)) {
 			return reports(routeCtx as SandboxedRouteContext<ReportsPageInput>, ctx);
-		}
-		if (actionId !== undefined && ORDERS_ACTION_IDS.has(actionId)) {
-			return orders(routeCtx as SandboxedRouteContext<OrdersPageInput>, ctx);
-		}
-		if (actionId !== undefined && PRODUCTS_ACTION_IDS.has(actionId)) {
-			return products(routeCtx as SandboxedRouteContext<ProductsPageInput>, ctx);
 		}
 		if (actionId !== undefined && TAX_ACTION_IDS.has(actionId)) {
 			return tax(routeCtx as SandboxedRouteContext<TaxPageInput>, ctx);
@@ -134,7 +148,38 @@ export function createAdminRouteHandler(): RouteHandler<AdminInteractionInput> {
 			return coupons(routeCtx as SandboxedRouteContext<CouponsPageInput>, ctx);
 		}
 
-		// 6. Fallback — em-dash house style for an unrecognized interaction.
+		// 6. An UNKNOWN PAGE gets a not-found screen, not an empty tree. A bookmark
+		// to a retired Block Kit page (`/orders`, `/products` — ADR-0015) or a typo
+		// used to render nothing at all, which reads as a broken console.
+		if (type === "page_load" && page !== undefined) return pageNotFound();
+
+		// 7. Fallback — em-dash house style for an unrecognized interaction.
 		return { blocks: [] };
+	};
+}
+
+/**
+ * What an unknown `page_load` renders. Header + one page-level `context` (≤140,
+ * §1) — no banner, because nothing failed: the page simply does not exist.
+ *
+ * SCOPE: this covers the `otta` descriptor only. An unknown path under the React
+ * `otta-console` descriptor never reaches this route — that descriptor
+ * deliberately has no routes (ADR-0014 D3), so the host falls back to its own
+ * sandboxed-page renderer, which answers "Plugin responded with 404: …". Fixing
+ * that needs either a route on `otta-console` (an ADR-0014 amendment) or a host
+ * change, and is out of this module's reach.
+ */
+function pageNotFound(): { blocks: Block[] } {
+	// THE REQUESTED PATH IS NOT ECHOED. It is URL-controlled text, and the
+	// renderer is the only thing standing between it and the page; naming it buys
+	// the operator nothing they cannot read in their own address bar.
+	return {
+		blocks: [
+			{ type: "header", text: "Page not found" },
+			{
+				type: "context",
+				text: "This Otta admin page doesn't exist. Pick one from the sidebar — Orders and Pricing & inventory are there too.",
+			},
+		],
 	};
 }

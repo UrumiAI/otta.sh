@@ -1,6 +1,13 @@
 import { describe, expect, test } from "vitest";
 import { cents, currency } from "../money/cents.js";
-import { idempotencyKey, orderId, productId, reservationId, sku } from "../money/ids.js";
+import {
+	customerId,
+	idempotencyKey,
+	orderId,
+	productId,
+	reservationId,
+	sku,
+} from "../money/ids.js";
 import type { CreateOrderInput, OrderStore } from "../ports/order-store.js";
 import type { SeedOrderSummaryRow } from "./in-memory-order-store.js";
 
@@ -18,6 +25,11 @@ export interface OrderStoreContractOptions {
 }
 
 const USD = currency("USD");
+
+/** One refund-retry schedule entry for the per-refund retry case. */
+function retry(at: string, attempts = 1) {
+	return { at, attempts, since: "2026-07-10T00:00:00.000Z" };
+}
 
 /** A summary-row seed with sensible defaults; overridable per admin-list case. */
 function summaryRow(overrides: Partial<SeedOrderSummaryRow> & { id: string }): SeedOrderSummaryRow {
@@ -56,6 +68,40 @@ function physicalInput(overrides: Partial<CreateOrderInput> = {}): CreateOrderIn
 		totals: { subtotal: cents(1500), total: cents(1500), currency: USD },
 		...overrides,
 	};
+}
+
+/**
+ * Seed an order that carries REAL line snapshots, through the port's own
+ * `createFromCart` — the harness's `seedOrder` writes a bare order + totals row
+ * with NO lines, and the line-sku search half reads the line snapshots. Every
+ * harness runs a clock fixed to the same instant, so these orders share a
+ * `created_at` and the list's tie-break (`id DESC`) is what orders them.
+ */
+async function seedLinedOrder(
+	store: OrderStore,
+	input: { id: string; skus: readonly string[]; productIdValue?: string; buyerRef?: string },
+): Promise<void> {
+	const unit = 500;
+	const lines: CreateOrderInput["lines"] = input.skus.map((s, i) => ({
+		productId: productId(input.productIdValue ?? `p-${input.id}-${String(i)}`),
+		sku: sku(s),
+		title: "Widget",
+		unitPrice: cents(unit),
+		currency: USD,
+		quantity: 1,
+		fulfillmentKind: "physical",
+		reservationId: reservationId(`res-${input.id}-${String(i)}`),
+	}));
+	const total = cents(unit * input.skus.length);
+	await store.createFromCart(
+		physicalInput({
+			orderId: orderId(input.id),
+			idempotencyKey: idempotencyKey(`key-${input.id}`),
+			...(input.buyerRef !== undefined ? { buyerRef: input.buyerRef } : {}),
+			lines,
+			totals: { subtotal: total, total, currency: USD },
+		}),
+	);
 }
 
 /**
@@ -253,6 +299,75 @@ export function orderStoreContract(
 			expect((await store.getById(first.order.id))?.shippingAddress).toEqual(address);
 		});
 
+		// A shopper who checks out SIGNED IN, as the email they ordered with, owns the
+		// order from birth: it must be in their list before any later sign-in claims it.
+		test("createFromCart with a customerId owns the order from birth; without one it is a guest order", async () => {
+			const { store } = await makeHarness();
+			const owner = customerId("cust-born");
+			const { order } = await store.createFromCart(
+				physicalInput({ customerId: owner, buyerRef: "born@example.com" }),
+			);
+			expect(order.customerId).toBe(owner);
+			expect((await store.getById(order.id))?.customerId).toBe(owner);
+			expect((await store.listForCustomer(owner)).map((o) => o.id)).toEqual([order.id]);
+			// Nothing left for a sign-in to claim: it is already this customer's.
+			expect(await store.linkGuestOrders(owner, "born@example.com")).toBe(0);
+
+			const guest = await store.createFromCart(
+				physicalInput({
+					orderId: orderId("ord-guest"),
+					idempotencyKey: idempotencyKey("key-guest"),
+				}),
+			);
+			expect(guest.order.customerId).toBeNull();
+		});
+
+		// The owner is written ONCE, with the order. A replay is not a second checkout:
+		// a guest order replayed by a now-signed-in shopper stays a guest order, and the
+		// sign-in (or the signed-in list's claim) is what links it — never the replay.
+		test("a same-key replay that names a customerId never re-owns a guest order", async () => {
+			const { store } = await makeHarness();
+			const first = await store.createFromCart(physicalInput({ buyerRef: "replay@example.com" }));
+			expect(first.order.customerId).toBeNull();
+			const replay = await store.createFromCart(
+				physicalInput({
+					orderId: orderId("ord-replay-2"),
+					buyerRef: "replay@example.com",
+					customerId: customerId("cust-replay"),
+				}),
+			);
+			expect(replay.created).toBe(false);
+			expect(replay.order.id).toBe(first.order.id);
+			expect(replay.order.customerId).toBeNull();
+			expect((await store.getById(first.order.id))?.customerId).toBeNull();
+			expect(await store.listForCustomer(customerId("cust-replay"))).toEqual([]);
+		});
+
+		test("listForCustomer is newest first: created_at DESC, then id DESC", async () => {
+			const h = await makeHarness();
+			const owner = "cust-newest";
+			// Seeded oldest-first, so an implementation that returns insertion or
+			// ascending order fails. Two share a created_at: the id breaks the tie.
+			await h.seedOrder(
+				summaryRow({ id: "ord-old", customerId: owner, createdAt: "2026-07-10T00:00:01.000Z" }),
+			);
+			await h.seedOrder(
+				summaryRow({ id: "ord-tie-a", customerId: owner, createdAt: "2026-07-10T00:00:02.000Z" }),
+			);
+			await h.seedOrder(
+				summaryRow({ id: "ord-tie-b", customerId: owner, createdAt: "2026-07-10T00:00:02.000Z" }),
+			);
+			await h.seedOrder(
+				summaryRow({ id: "ord-new", customerId: owner, createdAt: "2026-07-10T00:00:03.000Z" }),
+			);
+			expect((await h.store.listForCustomer(customerId(owner))).map((o) => o.id)).toEqual([
+				"ord-new",
+				"ord-tie-b",
+				"ord-tie-a",
+				"ord-old",
+			]);
+		});
+
 		test("getById returns the created order; an unknown id is null", async () => {
 			const { store } = await makeHarness();
 			await store.createFromCart(physicalInput());
@@ -298,12 +413,12 @@ export function orderStoreContract(
 			expect(await store.markPaid(orderId("ord-1"))).toBe(false);
 		});
 
-		test("markPaid on a failed order is rejected (illegal transition → false)", async () => {
+		test("markPaid on an expired order is rejected (illegal transition → false)", async () => {
 			const { store } = await makeHarness();
 			await store.createFromCart(physicalInput());
-			expect(await store.markFailed(orderId("ord-1"))).toBe(true);
+			expect(await store.expire(orderId("ord-1"), "2026-07-10T00:20:00.000Z")).toBe(true);
 			expect(await store.markPaid(orderId("ord-1"))).toBe(false);
-			expect((await store.getById(orderId("ord-1")))?.state).toBe("failed");
+			expect((await store.getById(orderId("ord-1")))?.state).toBe("expired");
 		});
 
 		test("expire transitions pending→expired only when hold_expires_at<=now", async () => {
@@ -331,6 +446,318 @@ export function orderStoreContract(
 			await store.markPaid(orderId("ord-1")); // paid ⇒ never expirable
 			const ids = await store.listExpirable("2026-07-10T00:30:00.000Z");
 			expect(ids).toEqual([orderId("ord-2")]);
+		});
+
+		// The cron sweep runs in a time-boxed hook: its LIST must be bounded, not only
+		// the flips after it, or a large backlog is read whole before any check runs.
+		test("listExpirable honours a limit, returning at most that many due orders", async () => {
+			const { store } = await makeHarness();
+			for (const n of [1, 2, 3]) {
+				await store.createFromCart(
+					physicalInput({
+						orderId: orderId(`ord-${String(n)}`),
+						idempotencyKey: idempotencyKey(`key-${String(n)}`),
+						holdExpiresAt: "2026-07-10T00:20:00.000Z",
+					}),
+				);
+			}
+			const now = "2026-07-10T00:30:00.000Z";
+			const limited = await store.listExpirable(now, { limit: 2 });
+			expect(limited).toHaveLength(2);
+			expect(await store.listExpirable(now)).toHaveLength(3);
+			expect(await store.listExpirable(now, { limit: 10 })).toHaveLength(3);
+			await expect(store.listExpirable(now, { limit: 0 })).rejects.toThrow(RangeError);
+		});
+
+		// The cron sweep claims an outbox row and only then learns whether there is
+		// time left to send it. Handing the row back must not cost one of its
+		// attempts — an attempt that never reached the provider is not an attempt.
+		test("releaseEmailClaim returns a claimed row to the queue, due now, WITHOUT counting the attempt", async () => {
+			const { store } = await makeHarness();
+			await store.createFromCart(physicalInput());
+			await store.markPaid(orderId("ord-1")); // enqueues the confirmation
+			const now = "2026-07-10T00:01:00.000Z";
+			const lease = "2026-07-10T00:06:00.000Z";
+			const first = await store.claimNextEmail(now, lease);
+			expect(first?.attempts).toBe(1);
+			// While claimed, it is leased: not claimable again.
+			expect(await store.claimNextEmail(now, lease)).toBeNull();
+
+			await store.releaseEmailClaim(first!.id);
+
+			// Claimable again AT ONCE (no backoff), and the attempt was not counted.
+			const again = await store.claimNextEmail(now, lease);
+			expect(again?.id).toBe(first!.id);
+			expect(again?.attempts).toBe(1);
+		});
+
+		// A TIMED-OUT row is handed back with a FORWARD due time and its timeout
+		// counted, so it moves behind every other due row instead of being claimed
+		// first on every run — still without spending an attempt.
+		test("releaseEmailClaim with a retryAt backs the row off and counts a timeout, not an attempt", async () => {
+			const { store } = await makeHarness();
+			await store.createFromCart(physicalInput());
+			await store.markPaid(orderId("ord-1"));
+			const now = "2026-07-10T00:01:00.000Z";
+			const lease = "2026-07-10T00:06:00.000Z";
+			const first = await store.claimNextEmail(now, lease);
+			expect(first?.timeouts).toBe(0);
+			await store.releaseEmailClaim(first!.id, {
+				retryAt: "2026-07-10T00:02:00.000Z",
+				timedOut: true,
+			});
+			// Not due before its retry time…
+			expect(await store.claimNextEmail(now, lease)).toBeNull();
+			// …due after it, attempt uncounted and the timeout recorded.
+			const later = await store.claimNextEmail(
+				"2026-07-10T00:02:00.000Z",
+				"2026-07-10T00:07:00.000Z",
+			);
+			expect(later).toMatchObject({ id: first!.id, attempts: 1, timeouts: 1 });
+		});
+
+		// -- Payment intents (late-payment prevention) ----------------------------
+
+		test("recordPaymentIntent is idempotent per (order, intent), due at the hold, listed in recording order", async () => {
+			const { store } = await makeHarness();
+			await store.createFromCart(physicalInput());
+			expect(await store.listPaymentIntents(orderId("ord-1"))).toEqual([]);
+			const record = (intentId: string) =>
+				store.recordPaymentIntent({ orderId: orderId("ord-1"), gateway: "stripe", intentId });
+			await record("pi_a");
+			await record("pi_a"); // a checkout replay re-issuing the SAME intent
+			await record("pi_b"); // a second intent (Stripe's ~24 h key expiry)
+
+			const intents = await store.listPaymentIntents(orderId("ord-1"));
+			expect(intents.map((i) => [i.gateway, i.intentId, i.cancelDueAt, i.cancelOutcome])).toEqual([
+				["stripe", "pi_a", "2026-07-10T00:15:00.000Z", null],
+				["stripe", "pi_b", "2026-07-10T00:15:00.000Z", null],
+			]);
+			expect(intents[0]?.cancelAttempts).toBe(0);
+			expect(await store.listPaymentIntents(orderId("ord-other"))).toEqual([]);
+		});
+
+		test("createFromCart freezes the buyer-address-requirement snapshot (issue #382): true, false, or — when not given — absent", async () => {
+			const { store } = await makeHarness();
+			const required = await store.createFromCart(physicalInput({ buyerAddressRequired: true }));
+			const notRequired = await store.createFromCart(
+				physicalInput({
+					orderId: orderId("ord-2"),
+					idempotencyKey: idempotencyKey("key-2"),
+					buyerAddressRequired: false,
+				}),
+			);
+			const legacy = await store.createFromCart(
+				physicalInput({ orderId: orderId("ord-3"), idempotencyKey: idempotencyKey("key-3") }),
+			);
+			expect(required.order.buyerAddressRequired).toBe(true);
+			expect(notRequired.order.buyerAddressRequired).toBe(false);
+			expect(legacy.order).not.toHaveProperty("buyerAddressRequired");
+			expect((await store.getById(orderId("ord-1")))?.buyerAddressRequired).toBe(true);
+			expect((await store.getById(orderId("ord-2")))?.buyerAddressRequired).toBe(false);
+			expect(await store.getById(orderId("ord-3"))).not.toHaveProperty("buyerAddressRequired");
+			// A later write to the order (the guarded expiry flip) keeps the snapshot.
+			expect(await store.expire(orderId("ord-1"), "2026-07-10T00:20:00.000Z")).toBe(true);
+			const flipped = await store.getById(orderId("ord-1"));
+			expect(flipped?.state).toBe("expired");
+			expect(flipped?.buyerAddressRequired).toBe(true);
+		});
+
+		test("recordPaymentIntent keeps the intent's customer decision (issue #382): an id, a recorded 'none', or — when not given — nothing at all", async () => {
+			const { store } = await makeHarness();
+			await store.createFromCart(physicalInput());
+			const at = (intentId: string, customerRef?: string | null) =>
+				store.recordPaymentIntent({
+					orderId: orderId("ord-1"),
+					gateway: "stripe",
+					intentId,
+					...(customerRef !== undefined ? { customerRef } : {}),
+				});
+			await at("pi_a", "cus_1");
+			await at("pi_a", "cus_other"); // idempotent: the first record stands
+			await at("pi_b", null);
+			await at("pi_c");
+			const intents = await store.listPaymentIntents(orderId("ord-1"));
+			expect(intents.map((i) => i.intentId)).toEqual(["pi_a", "pi_b", "pi_c"]);
+			expect(intents[0]?.customerRef).toBe("cus_1");
+			expect(intents[1]?.customerRef).toBeNull();
+			expect(intents[2]).not.toHaveProperty("customerRef");
+		});
+
+		test("listIntentCancelsDue lists orders with an unresolved due intent, earliest first; resolving or rescheduling moves them", async () => {
+			const { store } = await makeHarness();
+			await store.createFromCart(physicalInput());
+			await store.createFromCart(
+				physicalInput({
+					orderId: orderId("ord-2"),
+					idempotencyKey: idempotencyKey("key-2"),
+					holdExpiresAt: "2026-07-10T00:05:00.000Z",
+				}),
+			);
+			await store.recordPaymentIntent({
+				orderId: orderId("ord-1"),
+				gateway: "stripe",
+				intentId: "pi_1",
+			});
+			await store.recordPaymentIntent({
+				orderId: orderId("ord-2"),
+				gateway: "stripe",
+				intentId: "pi_2",
+			});
+
+			expect(await store.listIntentCancelsDue("2026-07-10T00:01:00.000Z", 10)).toEqual([]);
+			expect(await store.listIntentCancelsDue("2026-07-10T01:00:00.000Z", 10)).toEqual([
+				orderId("ord-2"),
+				orderId("ord-1"),
+			]);
+			expect(await store.listIntentCancelsDue("2026-07-10T01:00:00.000Z", 1)).toEqual([
+				orderId("ord-2"),
+			]);
+
+			await store.updatePaymentIntentCancel(orderId("ord-2"), "pi_2", {
+				cancelDueAt: null,
+				cancelAttempts: 1,
+				cancelOutcome: "cancelled",
+			});
+			await store.updatePaymentIntentCancel(orderId("ord-1"), "pi_1", {
+				cancelDueAt: "2026-07-10T02:00:00.000Z",
+				cancelAttempts: 1,
+				cancelOutcome: null,
+			});
+			expect(await store.listIntentCancelsDue("2026-07-10T01:00:00.000Z", 10)).toEqual([]);
+			expect(await store.listIntentCancelsDue("2026-07-10T03:00:00.000Z", 10)).toEqual([
+				orderId("ord-1"),
+			]);
+			const [pi2] = await store.listPaymentIntents(orderId("ord-2"));
+			expect([pi2?.cancelOutcome, pi2?.cancelAttempts, pi2?.cancelDueAt]).toEqual([
+				"cancelled",
+				1,
+				null,
+			]);
+		});
+
+		test("the pending → paid flip resolves the order's unresolved intents as not_needed — a paid order owes no cancel", async () => {
+			const { store } = await makeHarness();
+			await store.createFromCart(physicalInput());
+			await store.recordPaymentIntent({
+				orderId: orderId("ord-1"),
+				gateway: "stripe",
+				intentId: "pi_1",
+			});
+			expect(await store.markPaid(orderId("ord-1"))).toBe(true);
+
+			const [intent] = await store.listPaymentIntents(orderId("ord-1"));
+			expect([intent?.cancelOutcome, intent?.cancelDueAt]).toEqual(["not_needed", null]);
+			expect(await store.listIntentCancelsDue("2026-07-10T09:00:00.000Z", 10)).toEqual([]);
+		});
+
+		// -- Notices: non-transition emails on the outbox --------------------------
+
+		test("enqueueNotice is first-wins per (order, notice kind), carries its own payload, and is claimed beside the state rows", async () => {
+			const { store } = await makeHarness();
+			await store.createFromCart(physicalInput());
+			expect(await store.expire(orderId("ord-1"), "2026-07-10T00:20:00.000Z")).toBe(true);
+			const notice = { kind: "late-payment-refunded" as const, amount: cents(1200), currency: USD };
+
+			expect(await store.enqueueNotice(orderId("ord-1"), notice)).toBe(true);
+			// A second late payment on the same order is not a second email.
+			expect(await store.enqueueNotice(orderId("ord-1"), { ...notice, amount: cents(300) })).toBe(
+				false,
+			);
+			expect(await store.enqueueNotice(orderId("ord-missing"), notice)).toBe(false);
+
+			const claimed: { toState: string; notice: unknown }[] = [];
+			for (let i = 0; i < 10; i++) {
+				const row = await store.claimNextEmail(
+					"2026-07-10T01:00:00.000Z",
+					"2026-07-10T01:05:00.000Z",
+				);
+				if (row === null) break;
+				claimed.push({ toState: row.toState, notice: row.notice });
+				await store.markEmailSent(row.id, "2026-07-10T01:00:00.000Z");
+			}
+			// The expiry's own state email is untouched by the notice (a notice never
+			// occupies a state's slot), and the notice row carries the FIRST payload.
+			expect(claimed).toHaveLength(2);
+			expect(claimed).toContainEqual({ toState: "expired", notice: null });
+			expect(claimed).toContainEqual({ toState: "expired", notice });
+		});
+
+		// -- Late-payment support: the one-read ledger and the refund-retry schedule
+
+		test("readOrderLedger returns the order with its events, payments and refunds; null for an unknown order", async () => {
+			const { store } = await makeHarness();
+			await store.createFromCart(physicalInput());
+			expect(await store.expire(orderId("ord-1"), "2026-07-10T00:20:00.000Z")).toBe(true);
+			await store.recordPayment({
+				orderId: orderId("ord-1"),
+				gateway: "stripe",
+				providerRef: "pi_ledger",
+				amount: cents(1500),
+				currency: USD,
+				status: "succeeded",
+			});
+
+			const ledger = await store.readOrderLedger(orderId("ord-1"));
+			expect(ledger?.order.state).toBe("expired");
+			expect(ledger?.events.map((e) => [e.fromState, e.toState])).toEqual([["pending", "expired"]]);
+			expect(ledger?.payments.map((p) => p.providerRef)).toEqual(["pi_ledger"]);
+			expect(ledger?.refunds).toEqual([]);
+			expect(await store.readOrderLedger(orderId("ord-missing"))).toBeNull();
+		});
+
+		test("scheduleRefundRetry is PER REFUND: due orders list earliest-first and bounded; clearing one refund keeps the order due while another still needs it", async () => {
+			const { store } = await makeHarness();
+			await store.createFromCart(physicalInput());
+			await store.createFromCart(
+				physicalInput({ orderId: orderId("ord-2"), idempotencyKey: idempotencyKey("key-2") }),
+			);
+			const kA = idempotencyKey("late-payment-refund:pi_a");
+			const kB = idempotencyKey("late-payment-refund:pi_b");
+			await store.scheduleRefundRetry(orderId("ord-1"), kA, retry("2026-07-10T00:30:00.000Z"));
+			await store.scheduleRefundRetry(orderId("ord-1"), kB, retry("2026-07-10T00:40:00.000Z", 2));
+			await store.scheduleRefundRetry(orderId("ord-2"), kA, retry("2026-07-10T00:10:00.000Z"));
+			await store.scheduleRefundRetry(
+				orderId("ord-missing"),
+				kA,
+				retry("2026-07-10T00:00:00.000Z"),
+			);
+
+			expect(await store.listRefundRetriesDue("2026-07-10T01:00:00.000Z", 10)).toEqual([
+				orderId("ord-2"),
+				orderId("ord-1"),
+			]);
+			expect(await store.listRefundRetriesDue("2026-07-10T01:00:00.000Z", 1)).toEqual([
+				orderId("ord-2"),
+			]);
+			const ledger = await store.readOrderLedger(orderId("ord-1"));
+			expect(
+				ledger?.refundRetries.map((r) => [r.idempotencyKey, r.at, r.attempts, r.since]),
+			).toEqual([
+				[kA, "2026-07-10T00:30:00.000Z", 1, "2026-07-10T00:00:00.000Z"],
+				[kB, "2026-07-10T00:40:00.000Z", 2, "2026-07-10T00:00:00.000Z"],
+			]);
+
+			// Clearing ONE refund's retry leaves the order due for the other.
+			await store.scheduleRefundRetry(orderId("ord-1"), kA, null);
+			expect(await store.listRefundRetriesDue("2026-07-10T00:35:00.000Z", 10)).toEqual([
+				orderId("ord-2"),
+			]);
+			expect(await store.listRefundRetriesDue("2026-07-10T01:00:00.000Z", 10)).toEqual([
+				orderId("ord-2"),
+				orderId("ord-1"),
+			]);
+			// The STALE list ranks by the OLDEST first failure (`since`), whatever is due:
+			// both orders' retries began at 00:00, and a cutoff before that finds none.
+			expect(
+				(await store.listRefundRetriesStale("2026-07-10T00:00:00.000Z", 10)).toSorted(),
+			).toEqual([orderId("ord-1"), orderId("ord-2")].toSorted());
+			expect(await store.listRefundRetriesStale("2026-07-09T23:59:59.000Z", 10)).toEqual([]);
+			await store.scheduleRefundRetry(orderId("ord-1"), kB, null);
+			await store.scheduleRefundRetry(orderId("ord-2"), kA, null);
+			expect(await store.listRefundRetriesStale("9999-01-01T00:00:00.000Z", 10)).toEqual([]);
+			expect(await store.listRefundRetriesDue("2026-07-10T09:00:00.000Z", 10)).toEqual([]);
+			expect((await store.readOrderLedger(orderId("ord-1")))?.refundRetries).toEqual([]);
 		});
 
 		// -- Admin Orders console: view-only keyset list --------------------------
@@ -414,23 +841,277 @@ export function orderStoreContract(
 			expect(orders.map((o) => o.id).toSorted()).toEqual(["at-from", "inside"]);
 		});
 
-		test("listOrders search matches an exact order id", async () => {
+		test("listOrders search matches an order-id PREFIX, and a whole id (its own prefix)", async () => {
 			const h = await makeHarness();
 			await h.seedOrder(summaryRow({ id: "ord-find-me", buyerRef: "a@x.com" }));
 			await h.seedOrder(summaryRow({ id: "ord-other", buyerRef: "b@x.com" }));
-			const { orders } = await h.store.listOrders({ search: "ord-find-me" }, { limit: 25 });
-			expect(orders.map((o) => o.id)).toEqual(["ord-find-me"]);
+			// The whole id — the pre-prefix behaviour, preserved as a special case.
+			const whole = await h.store.listOrders({ search: "ord-find-me" }, { limit: 25 });
+			expect(whole.orders.map((o) => o.id)).toEqual(["ord-find-me"]);
+			// A leading fragment — what the console actually renders (the git-style
+			// short id) and therefore what an operator types back.
+			const prefix = await h.store.listOrders({ search: "ord-find" }, { limit: 25 });
+			expect(prefix.orders.map((o) => o.id)).toEqual(["ord-find-me"]);
+			// A common prefix matches BOTH, in the LIST's order, not the search's:
+			// the two share a created_at, so the tie breaks on id DESC. Search widens
+			// the set; it never reorders it.
+			const both = await h.store.listOrders({ search: "ord-" }, { limit: 25 });
+			expect(both.orders.map((o) => o.id)).toEqual(["ord-other", "ord-find-me"]);
+			// ANCHORED: a mid-string fragment of an id is NOT a match. Both text arms
+			// are anchored under the ratified narrowing, so nothing in the guaranteed
+			// predicate reaches an id mid-string (an adapter serving the buyer-ref arm
+			// unanchored still never widens the ID arm).
+			const mid = await h.store.listOrders({ search: "find-me" }, { limit: 25 });
+			expect(mid.orders).toHaveLength(0);
 		});
 
-		test("listOrders search matches buyer_ref case-insensitively (exact, not substring)", async () => {
+		test("listOrders search folds the id prefix on BOTH sides (ids are lowercase hex)", async () => {
 			const h = await makeHarness();
-			await h.seedOrder(summaryRow({ id: "a", buyerRef: "Buyer@Example.com" }));
-			await h.seedOrder(summaryRow({ id: "b", buyerRef: "someone-else@example.com" }));
-			const { orders } = await h.store.listOrders({ search: "buyer@example.com" }, { limit: 25 });
-			expect(orders.map((o) => o.id)).toEqual(["a"]);
-			// A substring of a buyer_ref must NOT match (exact-lower-equals only).
-			const partial = await h.store.listOrders({ search: "buyer" }, { limit: 25 });
-			expect(partial.orders).toHaveLength(0);
+			await h.seedOrder(summaryRow({ id: "ord-7e4ce728", buyerRef: "a@x.com" }));
+			// A uuid pasted back from a mail client that upper-cased it still finds
+			// its order: `lower(id) LIKE lower(:s || '%')`, explicit on both sides in
+			// both dialects and in the fake (never a bare LIKE, whose default case
+			// sensitivity differs between Postgres and SQLite).
+			const upper = await h.store.listOrders({ search: "ORD-7E4C" }, { limit: 25 });
+			expect(upper.orders.map((o) => o.id)).toEqual(["ord-7e4ce728"]);
+		});
+
+		test("listOrders search matches a buyer_ref PREFIX, case-folded on both sides", async () => {
+			const h = await makeHarness();
+			await h.seedOrder(summaryRow({ id: "ord-a", buyerRef: "Buyer@Example.com" }));
+			await h.seedOrder(summaryRow({ id: "ord-b", buyerRef: "someone-else@example.com" }));
+			// The whole address, folded — an address is its own prefix, so an exact
+			// lookup still works.
+			const whole = await h.store.listOrders({ search: "buyer@example.com" }, { limit: 25 });
+			expect(whole.orders.map((o) => o.id)).toEqual(["ord-a"]);
+			// A LEADING fragment of the address, folded on both sides — the guarantee
+			// the ratified narrowing (ADR-0019 §6) fixes for every adapter: this arm
+			// is ANCHORED, like the id arm.
+			const local = await h.store.listOrders({ search: "BUY" }, { limit: 25 });
+			expect(local.orders.map((o) => o.id)).toEqual(["ord-a"]);
+			// A fragment of neither column matches nothing.
+			const miss = await h.store.listOrders({ search: "nobody" }, { limit: 25 });
+			expect(miss.orders).toHaveLength(0);
+			// DELIBERATELY NOT ASSERTED: what a MID-STRING fragment ("example.com")
+			// does. The contract fixes the FLOOR every adapter must reach, and an
+			// adapter may match more — a store whose SQL can serve an unanchored
+			// `LIKE` offers substring as a superset of the prefix, and stays
+			// conformant. A store whose filter algebra has no substring operator
+			// serves the prefix alone and pins its own narrower behaviour in its own
+			// package tests. Asserting the negative here would outlaw the superset.
+		});
+
+		test("listOrders search treats `%` and `_` as LITERAL characters, never wildcards", async () => {
+			const h = await makeHarness();
+			await h.seedOrder(summaryRow({ id: "ord-pct", buyerRef: "50%off@example.com" }));
+			await h.seedOrder(summaryRow({ id: "ord-plain", buyerRef: "50xoff@example.com" }));
+			await h.seedOrder(summaryRow({ id: "ord-us", buyerRef: "a_b@example.com" }));
+			await h.seedOrder(summaryRow({ id: "ord-any", buyerRef: "axb@example.com" }));
+			await h.seedOrder(summaryRow({ id: "ord-pct-lead", buyerRef: "%off@example.com" }));
+			await h.seedOrder(summaryRow({ id: "ord-us-lead", buyerRef: "_x@example.com" }));
+			// `%` unescaped would make this pattern match `50xoff@…` too.
+			const pct = await h.store.listOrders({ search: "50%off" }, { limit: 25 });
+			expect(pct.orders.map((o) => o.id)).toEqual(["ord-pct"]);
+			// `_` unescaped is LIKE's single-character wildcard — it would match `axb`.
+			const us = await h.store.listOrders({ search: "a_b" }, { limit: 25 });
+			expect(us.orders.map((o) => o.id)).toEqual(["ord-us"]);
+			// A search that is nothing BUT a metacharacter is a search for that
+			// character: it reaches the address that literally STARTS with it, and it
+			// does not reach an address free of the character — which is exactly what
+			// a wildcard reading would sweep in. Asserted by membership rather than
+			// as the whole page, because an adapter offering substring as a superset
+			// also reaches `50%off@…`/`a_b@…` here and is conformant either way.
+			const bare = (await h.store.listOrders({ search: "%" }, { limit: 25 })).orders.map(
+				(o) => o.id,
+			);
+			expect(bare).toContain("ord-pct-lead");
+			expect(bare).not.toContain("ord-plain");
+			const bareUs = (await h.store.listOrders({ search: "_" }, { limit: 25 })).orders.map(
+				(o) => o.id,
+			);
+			expect(bareUs).toContain("ord-us-lead");
+			expect(bareUs).not.toContain("ord-plain");
+		});
+
+		test("listOrders search treats `\\` — the ESCAPE character itself — LITERALLY", async () => {
+			const h = await makeHarness();
+			await h.seedOrder(summaryRow({ id: "ord-bs", buyerRef: "a\\b@example.com" }));
+			await h.seedOrder(summaryRow({ id: "ord-nobs", buyerRef: "ab@example.com" }));
+			await h.seedOrder(summaryRow({ id: "ord-bs-lead", buyerRef: "\\lead@example.com" }));
+			// The metacharacter the `%`/`_` cases cannot catch. Unescaped, a search
+			// for `a\b` compiles to the pattern `a\b%`, where `\b` means "a literal
+			// b" — it would match `ab@…` and MISS the address that actually contains
+			// the backslash. Exactly inverted, on both text arms of the OR.
+			const both = await h.store.listOrders({ search: "a\\b" }, { limit: 25 });
+			expect(both.orders.map((o) => o.id)).toEqual(["ord-bs"]);
+			// A bare backslash is a character, not an escape introducer, once it
+			// reaches the store: it reaches the address that starts with one and
+			// leaves the address that has none alone. Membership again — a substring
+			// superset also reaches `a\b@…`, and that is conformant.
+			const bare = (await h.store.listOrders({ search: "\\" }, { limit: 25 })).orders.map(
+				(o) => o.id,
+			);
+			expect(bare).toContain("ord-bs-lead");
+			expect(bare).not.toContain("ord-nobs");
+		});
+
+		test("listOrders search of the EMPTY string matches every order (it constrains nothing)", async () => {
+			const h = await makeHarness();
+			await h.seedOrder(summaryRow({ id: "ord-a", createdAt: "2026-07-10T00:00:02.000Z" }));
+			await h.seedOrder(summaryRow({ id: "ord-b", createdAt: "2026-07-10T00:00:01.000Z" }));
+			// The inverted edge of a prefix/substring predicate: EVERY string starts
+			// with "" and contains "", so an empty search is the widest filter there
+			// is, not the narrowest. Pinned because the naive reading of "search for
+			// nothing" is "find nothing", and because the fake and the SQL have to
+			// agree on which one it is. The service never sends it — its query schema
+			// requires `min(1)` — so this is the port's own boundary, held for any
+			// other caller.
+			const { orders } = await h.store.listOrders({ search: "" }, { limit: 25 });
+			expect(orders.map((o) => o.id)).toEqual(["ord-a", "ord-b"]);
+			expect(await h.store.countOrders({ search: "" })).toBe(2);
+			const unfiltered = await h.store.listOrders({}, { limit: 25 });
+			expect(orders.map((o) => o.id)).toEqual(unfiltered.orders.map((o) => o.id));
+		});
+
+		test("listOrders search matches a purchase-time LINE SKU, folded but EXACT", async () => {
+			const h = await makeHarness();
+			await seedLinedOrder(h.store, { id: "ord-alpha", skus: ["SKU-ALPHA"] });
+			await seedLinedOrder(h.store, { id: "ord-beta", skus: ["SKU-BETA"] });
+			// The sku an operator pastes off a packing slip finds the order that
+			// bought it — read off the ORDER's own line snapshot, not the catalogue.
+			const exact = await h.store.listOrders({ search: "SKU-ALPHA" }, { limit: 25 });
+			expect(exact.orders.map((o) => o.id)).toEqual(["ord-alpha"]);
+			// Folded on both sides, like every other half of this predicate.
+			const folded = await h.store.listOrders({ search: "sku-alpha" }, { limit: 25 });
+			expect(folded.orders.map((o) => o.id)).toEqual(["ord-alpha"]);
+			// EXACT, unlike the buyer_ref half: a sku is an identifier the operator
+			// pastes whole, so neither a PREFIX nor a mid-string fragment is a match.
+			// (Both would otherwise hit here — `SKU-` is a prefix of both seeded skus.)
+			expect((await h.store.listOrders({ search: "SKU-" }, { limit: 25 })).orders).toHaveLength(0);
+			expect((await h.store.listOrders({ search: "ALPHA" }, { limit: 25 })).orders).toHaveLength(0);
+			// An order with no lines at all is simply not matched by this half.
+			await h.seedOrder(summaryRow({ id: "ord-lineless", buyerRef: "z@x.test" }));
+			const still = await h.store.listOrders({ search: "SKU-ALPHA" }, { limit: 25 });
+			expect(still.orders.map((o) => o.id)).toEqual(["ord-alpha"]);
+			expect(await h.store.countOrders({ search: "SKU-ALPHA" })).toBe(1);
+		});
+
+		test("listOrders returns a MULTI-LINE order matching on sku exactly ONCE", async () => {
+			const h = await makeHarness();
+			// Two lines of the SAME sku on one order (a split shipment, a re-add), plus
+			// a third line that does not match. The line half must be an EXISTENCE
+			// test over the lines, never a join onto them: a join would emit this
+			// order once PER matching line, double it in the page, and make the
+			// `limit + 1` next-page detection — and the count that captions it — lie.
+			await seedLinedOrder(h.store, { id: "ord-dup", skus: ["SKU-DUP", "SKU-DUP", "SKU-OTHER"] });
+			const one = await h.store.listOrders({ search: "SKU-DUP" }, { limit: 25 });
+			expect(one.orders.map((o) => o.id)).toEqual(["ord-dup"]);
+			expect(await h.store.countOrders({ search: "SKU-DUP" })).toBe(1);
+
+			// And the page size stays honest across a boundary: two such orders at
+			// `limit: 1` are two pages of one row, not one page that repeats a row.
+			await seedLinedOrder(h.store, { id: "ord-dup2", skus: ["SKU-DUP", "SKU-DUP"] });
+			const page1 = await h.store.listOrders({ search: "SKU-DUP" }, { limit: 1 });
+			expect(page1.orders.map((o) => o.id)).toEqual(["ord-dup2"]); // same clock ⇒ id DESC
+			expect(page1.nextCursor).not.toBeNull();
+			const page2 = await h.store.listOrders(
+				{ search: "SKU-DUP" },
+				{ limit: 1, cursor: page1.nextCursor },
+			);
+			expect(page2.orders.map((o) => o.id)).toEqual(["ord-dup"]);
+			expect(page2.nextCursor).toBeNull();
+			expect(await h.store.countOrders({ search: "SKU-DUP" })).toBe(2);
+		});
+
+		test("listOrders search reads the FROZEN sku — a later rename never moves an old order", async () => {
+			const h = await makeHarness();
+			// One product, sold under one sku and later renamed to another: the two
+			// orders differ only in the sku frozen onto their lines at purchase time.
+			await seedLinedOrder(h.store, {
+				id: "ord-before",
+				skus: ["sku-old"],
+				productIdValue: "p-renamed",
+			});
+			await seedLinedOrder(h.store, {
+				id: "ord-after",
+				skus: ["sku-new"],
+				productIdValue: "p-renamed",
+			});
+			// The old order answers to the sku it was BOUGHT under, forever…
+			const old = await h.store.listOrders({ search: "sku-old" }, { limit: 25 });
+			expect(old.orders.map((o) => o.id)).toEqual(["ord-before"]);
+			// …and never migrates to the new one, which finds only what shipped as it.
+			const renamed = await h.store.listOrders({ search: "sku-new" }, { limit: 25 });
+			expect(renamed.orders.map((o) => o.id)).toEqual(["ord-after"]);
+		});
+
+		test("listOrders search treats a sku's `%`/`_`/`\\` as LITERAL characters", async () => {
+			const h = await makeHarness();
+			// The sku half is an EQUALITY, so it has no pattern language to escape —
+			// but a sku really can be spelled with LIKE metacharacters, and the claim
+			// that they are inert has to be pinned rather than reasoned about. Under
+			// LIKE semantics `50%_OFF` would also match `50-XOFF` (`%` any run, `_`
+			// any one character); under equality it matches itself and nothing else.
+			await seedLinedOrder(h.store, { id: "ord-meta", skus: ["50%_OFF"] });
+			await seedLinedOrder(h.store, { id: "ord-decoy", skus: ["50-XOFF"] });
+			await seedLinedOrder(h.store, { id: "ord-esc", skus: ["A\\B"] });
+			const meta = await h.store.listOrders({ search: "50%_OFF" }, { limit: 25 });
+			expect(meta.orders.map((o) => o.id)).toEqual(["ord-meta"]);
+			expect(await h.store.countOrders({ search: "50%_OFF" })).toBe(1);
+			// The decoy answers only to its own spelling — nothing wildcarded onto it.
+			const decoy = await h.store.listOrders({ search: "50-XOFF" }, { limit: 25 });
+			expect(decoy.orders.map((o) => o.id)).toEqual(["ord-decoy"]);
+			// The escape character itself is just a character on this half too.
+			const esc = await h.store.listOrders({ search: "a\\b" }, { limit: 25 });
+			expect(esc.orders.map((o) => o.id)).toEqual(["ord-esc"]);
+			// And a bare metacharacter matches no sku at all (it is not "everything").
+			expect((await h.store.listOrders({ search: "%" }, { limit: 25 })).orders).toHaveLength(0);
+		});
+
+		test("listOrders search UNIONS its arms — one string, one order by id, another by sku", async () => {
+			const h = await makeHarness();
+			// The three arms are ORed, so a single string can reach two DIFFERENT
+			// orders through two different arms. Each still appears exactly once, in
+			// the LIST's order rather than the search's — the union is over rows, not
+			// over arms, and an order that matched twice would be the same row twice.
+			await seedLinedOrder(h.store, { id: "sku-7", skus: ["OTHER"] }); // by id PREFIX
+			await seedLinedOrder(h.store, { id: "ord-buyer", skus: ["SKU-7"] }); // by line SKU
+			const both = await h.store.listOrders({ search: "SKU-7" }, { limit: 25 });
+			// Same clock ⇒ the tie breaks on id DESC: "sku-7" sorts after "ord-buyer".
+			expect(both.orders.map((o) => o.id)).toEqual(["sku-7", "ord-buyer"]);
+			expect(await h.store.countOrders({ search: "SKU-7" })).toBe(2);
+			// The order that matches BOTH arms at once is still one row, not two.
+			await seedLinedOrder(h.store, { id: "sku-7-self", skus: ["SKU-7-SELF"] });
+			const selfMatch = await h.store.listOrders({ search: "SKU-7-SELF" }, { limit: 25 });
+			expect(selfMatch.orders.map((o) => o.id)).toEqual(["sku-7-self"]);
+			expect(await h.store.countOrders({ search: "SKU-7-SELF" })).toBe(1);
+		});
+
+		test("countOrders counts under the SAME search predicate as listOrders", async () => {
+			const h = await makeHarness();
+			await h.seedOrder(summaryRow({ id: "ord-a", buyerRef: "amy@example.com" }));
+			await h.seedOrder(summaryRow({ id: "ord-b", buyerRef: "bea@example.com" }));
+			await h.seedOrder(summaryRow({ id: "zzz-c", buyerRef: "cal@other.test" }));
+			await seedLinedOrder(h.store, {
+				id: "yyy-d",
+				skus: ["SKU-COUNTED"],
+				buyerRef: "dee@lined.test",
+			});
+			// An order reachable through TWO arms at once — its id starts with the
+			// string AND one of its lines carries it as a sku — is still one row, so
+			// the count is one: the union is over rows, never over arms.
+			await seedLinedOrder(h.store, { id: "sku-both", skus: ["SKU-BOTH"] });
+			// The id arm (prefix), the buyer_ref arm (prefix) and the line-sku arm
+			// (exact) all count, under the one shared predicate.
+			expect(await h.store.countOrders({ search: "ord-" })).toBe(2);
+			expect(await h.store.countOrders({ search: "amy@" })).toBe(1);
+			expect(await h.store.countOrders({ search: "SKU-COUNTED" })).toBe(1);
+			expect(await h.store.countOrders({ search: "SKU-BOTH" })).toBe(1);
+			// And the caption can never disagree with the page it captions.
+			for (const search of ["ord-", "amy@", "SKU-COUNTED", "SKU-BOTH"]) {
+				const { orders } = await h.store.listOrders({ search }, { limit: 25 });
+				expect(orders).toHaveLength(await h.store.countOrders({ search }));
+			}
 		});
 
 		test("listOrders paginates forward with a keyset cursor — no overlap, no gap", async () => {
@@ -536,7 +1217,7 @@ export function orderStoreContract(
 			expect(orders.map((o) => o.id)).toEqual(["ord-both"]);
 		});
 
-		test("listOrders customer.buyerRef folds case exactly (never substring), matching search's semantics", async () => {
+		test("listOrders customer.buyerRef folds case but stays EXACT — it does NOT follow search's prefix", async () => {
 			const h = await makeHarness();
 			await h.seedOrder(summaryRow({ id: "a", buyerRef: "Buyer@Example.com" }));
 			await h.seedOrder(summaryRow({ id: "b", buyerRef: "someone-else@example.com" }));
@@ -545,8 +1226,14 @@ export function orderStoreContract(
 				{ limit: 25 },
 			);
 			expect(exact.orders.map((o) => o.id)).toEqual(["a"]);
+			// The two keys diverge on purpose: this one is an IDENTITY predicate
+			// (one person's orders, index-backed `lower(buyer_ref) = lower(:ref)`),
+			// while `search` is a fuzzy operator lookup. The same fragment that
+			// `search` now matches must still miss here.
 			const partial = await h.store.listOrders({ customer: { buyerRef: "buyer" } }, { limit: 25 });
 			expect(partial.orders).toHaveLength(0);
+			const bySearch = await h.store.listOrders({ search: "buyer" }, { limit: 25 });
+			expect(bySearch.orders.map((o) => o.id)).toEqual(["a"]);
 		});
 
 		test("listOrders customer key with a single half set filters on that half alone", async () => {
@@ -627,6 +1314,55 @@ export function orderStoreContract(
 					customer: { customerId: "cust-1" },
 				}),
 			).toBe(1);
+		});
+
+		// -- flagReconciliation: unguarded, or compare-and-set (issue #364) -------
+
+		test("flagReconciliation with no guard always records the flag (an anomaly must be recordable)", async () => {
+			const h = await makeHarness();
+			await h.seedOrder(summaryRow({ id: "ord-flag", state: "paid", reconciliationFlag: "old" }));
+			expect(await h.store.flagReconciliation(orderId("ord-flag"), "new anomaly")).toBe(true);
+			expect((await h.store.getById(orderId("ord-flag")))?.reconciliationFlag).toBe("new anomaly");
+			expect(await h.store.flagReconciliation(orderId("ord-missing"), "x")).toBe(false);
+		});
+
+		test("flagReconciliation guarded on NO flag writes only on an unflagged order: a flag written in between survives", async () => {
+			const h = await makeHarness();
+			await h.seedOrder(summaryRow({ id: "ord-cas-a", state: "paid" }));
+			await h.seedOrder(
+				summaryRow({ id: "ord-cas-b", state: "paid", reconciliationFlag: "written meanwhile" }),
+			);
+			expect(
+				await h.store.flagReconciliation(orderId("ord-cas-a"), "mine", { expectedFlag: null }),
+			).toBe(true);
+			expect((await h.store.getById(orderId("ord-cas-a")))?.reconciliationFlag).toBe("mine");
+			expect(
+				await h.store.flagReconciliation(orderId("ord-cas-b"), "mine", { expectedFlag: null }),
+			).toBe(false);
+			expect((await h.store.getById(orderId("ord-cas-b")))?.reconciliationFlag).toBe(
+				"written meanwhile",
+			);
+		});
+
+		test("flagReconciliation guarded on a flag replaces exactly that flag, and nothing else", async () => {
+			const h = await makeHarness();
+			await h.seedOrder(summaryRow({ id: "ord-cas-c", state: "paid", reconciliationFlag: "seen" }));
+			expect(
+				await h.store.flagReconciliation(orderId("ord-cas-c"), "other", {
+					expectedFlag: "not what is there",
+				}),
+			).toBe(false);
+			expect((await h.store.getById(orderId("ord-cas-c")))?.reconciliationFlag).toBe("seen");
+			expect(
+				await h.store.flagReconciliation(orderId("ord-cas-c"), "replacement", {
+					expectedFlag: "seen",
+				}),
+			).toBe(true);
+			expect((await h.store.getById(orderId("ord-cas-c")))?.reconciliationFlag).toBe("replacement");
+			// A guarded write on an unknown order writes nothing.
+			expect(
+				await h.store.flagReconciliation(orderId("ord-missing"), "x", { expectedFlag: null }),
+			).toBe(false);
 		});
 
 		// -- resolveReconciliation: equality-guarded compare-and-clear ------------

@@ -8,7 +8,11 @@ import {
 
 // Step 5.4: lift the order state-machine + exactly-once-email spec into the
 // shared contract suite, run against the in-memory fake first. (The pg/sqlite
-// dialect runs, incl. the atomicity case, live in @otta-sh/store-postgres.)
+// dialect runs now live in store-emdash's order-transition-contract.dialects.test.ts
+// — @otta-sh/store-postgres is gone. The atomicity case moved with the store
+// change: this document store has no transaction to roll back, so it is
+// asserted instead in store-emdash's order-crash-seams.dialects.test.ts, which
+// parks the single compare-and-set and reads the documents back.)
 
 orderTransitionContract(
 	async () => {

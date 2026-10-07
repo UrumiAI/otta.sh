@@ -5,8 +5,8 @@ const SECRET = "whsec_test_phase4";
 
 type ConfirmInput = Parameters<ReturnType<typeof buildGatewayHarness>["confirm"]>[0];
 
-function mint(input: ConfirmInput, secret: string) {
-	const signed = signStripeWebhook(
+async function mint(input: ConfirmInput, secret: string) {
+	const signed = await signStripeWebhook(
 		{
 			eventId: input.dedupeKey,
 			type:

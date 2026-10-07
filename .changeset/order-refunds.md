@@ -2,8 +2,6 @@
 "@otta-sh/domain": minor
 "@otta-sh/payments-stripe": minor
 "@otta-sh/payments-x402": minor
-"@otta-sh/store-postgres": minor
-"@otta-sh/service": minor
 "@otta-sh/plugin": minor
 ---
 
@@ -24,7 +22,7 @@ preserves every invariant.
   (capacity kept — the safe direction — pending a human re-check). So no
   interleaving can let money leave the gateway without a ledger row already holding
   its capacity — ceiling arbitration always precedes issuance (proven by
-  gateway-interleaved Postgres races). ACTIVE = every non-`voided` row (finalized +
+  gateway-interleaved concurrency races). ACTIVE = every non-`voided` row (finalized +
   held reservations); the `→ refunded` flip counts FINALIZED (`recorded`) rows
   only. The manual/record-only path (x402) stays the one-shot atomic
   `recordRefund` (reserve+finalize collapsed). `UNIQUE(idempotency_key)` is the
@@ -42,9 +40,9 @@ preserves every invariant.
   "unverified, re-check"). `secretKey` unset ⇒ `refundable:false`. x402 declares
   `refundable:false` and records a manual, out-of-band refund. Contract-tested
   offline via an injected mock transport.
-- **Service:** `POST /admin/orders/:id/refund` (write-gated, Idempotency-Key
-  required) + `GET /admin/orders/:id/refunds` (ledger + ceiling/remaining +
-  honest capability).
+- **Admin surface:** issuing a refund is an idempotency-keyed write on the order,
+  and the order detail reads the ledger back with the ceiling, the remaining
+  refundable amount and the gateway's honest capability flag.
 - **Plugin:** a Refunds section on the admin order detail — the ledger, remaining
   refundable, a money-input refund form whose framing is honest per gateway
   (real Stripe refund vs record-a-manual x402/off-platform refund), and refreshed

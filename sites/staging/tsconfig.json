@@ -8,6 +8,10 @@
 	"include": [
 		"src",
 		"test",
+		// The Playwright harness. Also covered by the root `tsconfig.e2e.json`
+		// (which is what `pnpm typecheck` runs); listed here so `astro check`
+		// sees it too and it cannot rot in either direction.
+		"e2e",
 		"scripts",
 		".astro/types.d.ts",
 		"emdash-env.d.ts",

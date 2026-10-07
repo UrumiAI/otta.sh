@@ -435,25 +435,25 @@ function checkX11(blocks: readonly LooseBlock[]): string[] {
 }
 
 // ---------------------------------------------------------------------------
-// X-13 (M-6) — millisecond timestamps, or any non-UTC offset.
+// X-13 (M-6) — a wire timestamp on any operator-facing surface.
 // ---------------------------------------------------------------------------
 
 const MS_TIMESTAMP_RE = /T\d{2}:\d{2}:\d{2}\.\d+/;
 const OFFSET_TZ_RE = /T\d{2}:\d{2}:\d{2}(?:\.\d+)?[+-]\d{2}:?\d{2}\b/;
+/** A wire timestamp of ANY precision or zone — the shape INC-13 says must not
+ *  reach an operator at all, not merely be trimmed. */
+const ISO_TIMESTAMP_RE = /\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/;
 
-function checkX13(blocks: readonly LooseBlock[]): string[] {
-	const out: string[] = [];
-	const scan = (label: string, value: string): void => {
-		if (MS_TIMESTAMP_RE.test(value)) {
-			out.push(
-				`X-13: "${label}" = "${value}" carries millisecond precision (M-6) — trim to seconds.`,
-			);
-		} else if (OFFSET_TZ_RE.test(value)) {
-			out.push(
-				`X-13: "${label}" = "${value}" carries a non-UTC offset (M-6) — no timezone conversion anywhere; render absolute UTC.`,
-			);
-		}
-	};
+/**
+ * Walk every literal-text surface of a rendered response — `fields` values,
+ * non-`relative_time` table cells, `context` lines — handing each to `scan`
+ * with the label that names it. One traversal, so a surface added to it is
+ * checked by every timestamp rule at once.
+ */
+function scanRenderedText(
+	blocks: readonly LooseBlock[],
+	scan: (label: string, value: string) => void,
+): void {
 	for (const fb of findBlocks(blocks, "fields")) {
 		const entries = Array.isArray(fb.fields)
 			? (fb.fields as Array<{ label: unknown; value: unknown }>)
@@ -478,6 +478,48 @@ function checkX13(blocks: readonly LooseBlock[]): string[] {
 		}
 	}
 	for (const text of contextTexts(blocks)) scan("context", text);
+}
+
+/**
+ * NO RAW WIRE TIMESTAMP REACHES AN OPERATOR (M-6, INC-13). Every rendered
+ * instant goes through `scaffold/datetime.js` and reads `8 Jul 2026, 10:30
+ * UTC`; a literal `2026-07-08T10:30:35Z` on any surface is a defect, not a
+ * formatting preference.
+ *
+ * THE ISO RULE SUBSUMES THE OTHER TWO and is checked first — a value carrying
+ * milliseconds or a `+05:00` offset is an ISO timestamp too, so a single
+ * violation is reported once, in the strongest terms available. The
+ * millisecond and offset messages are kept for the one shape that fails them
+ * without matching `ISO_TIMESTAMP_RE`: a value whose date and time were split
+ * or partly formatted, which is worth naming precisely rather than lumping in.
+ *
+ * IT SHIPPED AS A SEPARATE EXPORT, AND NO LONGER NEEDS TO. This file is
+ * ALL-OR-NOTHING PER CALL (see the header), so folding the rule in while one
+ * screen still failed it would have meant either failing that screen or
+ * smuggling in the per-rule opt-out this file exists without. Coupons' detail
+ * was that screen — it rendered `Created (UTC)` as a raw instant, and INC-13
+ * could not touch the file because another increment held it. INC-10 converted
+ * it, so the standalone `assertNoRawTimestamps` is folded in here and deleted:
+ * every screen now gets the rule from the one `assertBlockContract` call it
+ * already makes, and no screen can be wired out of it.
+ */
+function checkX13(blocks: readonly LooseBlock[]): string[] {
+	const out: string[] = [];
+	scanRenderedText(blocks, (label, value) => {
+		if (ISO_TIMESTAMP_RE.test(value)) {
+			out.push(
+				`X-13: "${label}" = "${value}" renders a raw wire timestamp (M-6) — format it through \`scaffold/datetime.js\` (\`formatTimestamp\` → "8 Jul 2026, 10:30 UTC").`,
+			);
+		} else if (MS_TIMESTAMP_RE.test(value)) {
+			out.push(
+				`X-13: "${label}" = "${value}" carries millisecond precision (M-6) — render it through \`scaffold/datetime.js\`.`,
+			);
+		} else if (OFFSET_TZ_RE.test(value)) {
+			out.push(
+				`X-13: "${label}" = "${value}" carries a non-UTC offset (M-6) — no timezone conversion anywhere; render absolute UTC through \`scaffold/datetime.js\`.`,
+			);
+		}
+	});
 	return out;
 }
 
@@ -688,7 +730,23 @@ function checkX20(blocks: readonly LooseBlock[]): string[] {
 // ---------------------------------------------------------------------------
 // X-22 (L-7, M-7, R-17a/b) — an "Open X" picker that is a select instead of
 // a combobox, more than one per response, or any select/combobox option
-// whose label leaks its own opaque-id value.
+// whose label leaks its own opaque-id value IN FULL.
+//
+// The last clause is narrower than it once read, and §1.3 (the UUID display
+// rule) is why: the console now REQUIRES the Orders picker to lead its label
+// with a short unique prefix of the very id it carries as a value, because two
+// orders of one repeat customer are otherwise identical character for
+// character. So "no id in a label" was never the rule worth enforcing — "no
+// WHOLE id in a label" is. What the check tests is unchanged (`includes` of the
+// entire value); only the sentence describing it has been brought back in line
+// with the screens.
+//
+// KNOWN EDGE, noted rather than resolved: `shortIdsFor` maps an id SHORTER than
+// its 4-character floor to itself, so such an id would BE its own prefix and
+// compliant code leading a label with it would trip this check. Nothing on any
+// screen is that short today (every opaque id here is a uuid), and the
+// fragility belongs to this helper rather than to the console — recording it
+// beats loosening the rule for a case that has never occurred.
 // ---------------------------------------------------------------------------
 
 function checkX22(blocks: readonly LooseBlock[]): string[] {
@@ -721,7 +779,7 @@ function checkX22(blocks: readonly LooseBlock[]): string[] {
 				const label = String(opt.label ?? "");
 				if (value.length >= 4 && looksLikeOpaqueId(value) && label.includes(value)) {
 					out.push(
-						`X-22: option label "${label}" (field "${String(f.label ?? f.action_id)}") contains its own id-like value "${value}" (M-7/X-22) — an id is the option's VALUE, never its text.`,
+						`X-22: option label "${label}" (field "${String(f.label ?? f.action_id)}") contains its own id-like value "${value}" IN FULL (M-7/X-22, §1.3) — a whole id is the option's VALUE, never its text. A §1.3 short prefix MAY lead the label (the Orders picker requires one); it is the id in full that must not appear.`,
 					);
 				}
 			}

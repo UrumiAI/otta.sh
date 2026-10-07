@@ -12,7 +12,18 @@ import type { CouponType } from "../pricing/types.js";
  */
 export interface CouponStore {
 	create(input: CreateCouponInput): Promise<CouponRecord>;
-	/** The full record for validation (dates, min-subtotal, exhaustion), or null. */
+	/**
+	 * The full record for validation (dates, min-subtotal, exhaustion), or null.
+	 *
+	 * CASE-INSENSITIVE. Codes are unique after case folding (`create` refuses a
+	 * code that differs from a live coupon's only in case), so a folded match
+	 * names at most one coupon — and a shopper typing `save5` for the merchant's
+	 * `SAVE5` is not typing a different code. The admin list's search was already
+	 * case-insensitive; checkout matching case-sensitively was the one place the
+	 * rule split, and QA found the console promising one behaviour and checkout
+	 * applying the other. The returned record carries the merchant's own spelling,
+	 * which is what an order snapshots.
+	 */
 	findByCode(code: string): Promise<CouponRecord | null>;
 	findById(couponId: string): Promise<CouponRecord | null>;
 
@@ -35,6 +46,13 @@ export interface CouponStore {
 	 * `redeem`/`release`) is NEVER touched by this admin edit, so an edit and a
 	 * concurrent redemption cannot corrupt each other. Unknown `couponId` →
 	 * `not_found` (an edit is not a create; no row minted).
+	 *
+	 * THE ONE WRITER THAT IS NOT A FORM: the admin's RETIRE (`retireCoupon` in the
+	 * plugin) reads the coupon and writes every field back with only the window
+	 * changed. Under LWW an edit landing between that read and that write loses
+	 * its economics to the values retire read. The window is a read-to-write gap
+	 * on a rare administrative act, accepted for the same reasons as above, and
+	 * pinned by a test so a future CAS here changes it on purpose.
 	 */
 	update(couponId: string, input: UpdateCouponInput): Promise<UpdateCouponResult>;
 
@@ -75,8 +93,8 @@ export interface CouponStore {
 	 * Order-scoped release (§5, review round I2 — mirrors
 	 * `InventoryStore.releaseAdopted`): delete the order's redemption(s) and
 	 * decrement `uses_count`, guarded + idempotent (0 rows ⇒ silent no-op, never
-	 * a double-release). Called by `expireOrders` and the payment-failure path so
-	 * a coupon consumed by an abandoned-then-expired (or failed) checkout is freed
+	 * a double-release). Called by `expireOrders` so a coupon consumed by an abandoned-then-expired checkout — including
+	 * one whose payment was declined and never retried (ADR-0022) — is freed
 	 * exactly like its inventory hold. Returns the number of redemptions released.
 	 * A paid/completed order never calls this, so its coupon stays consumed.
 	 */
@@ -111,15 +129,31 @@ export interface CouponStore {
 	 * cheap "has this been redeemed" indicator the admin list needs — no
 	 * correlated `EXISTS` on `coupon_redemptions`, no N+1.
 	 *
-	 * `filter.search` is a case-insensitive EXACT match on `code` — a
-	 * structured identifier a merchant looks up precisely (mirrors
-	 * `OrderListFilter.search`'s exact-only semantics, NOT `ProductListFilter
-	 * .search`'s title-substring half — a coupon has no free-text field to
-	 * partially remember). No other filter axis ships this slice (coupons have
-	 * no soft-delete/publish-gate/kind axis to mirror `deleted`/`active`/
-	 * `productKind`) — deliberately minimal, not "filterable where cheap".
+	 * `filter.search` is a case-insensitive EXACT match on `code` — a structured
+	 * identifier a merchant looks up precisely, and the strictest `search` in the
+	 * product: NEITHER `ProductListFilter.search`'s title-substring half NOR
+	 * `OrderListFilter.search`'s id-PREFIX / buyer_ref-PREFIX widening applies
+	 * here (that filter's THIRD arm, an exact-lower purchase-time line sku, is a
+	 * widening only in what it reaches, not in how it matches — it is the same
+	 * exact-identifier rule this one keeps). A coupon has no free-text field to
+	 * partially remember, and a code is short, chosen and quoted whole — it never
+	 * renders as a truncated prefix the way an order uuid does, which is what
+	 * earned orders their prefix match. No
+	 * other filter axis ships this slice (coupons have no soft-delete/
+	 * publish-gate/kind axis to mirror `deleted`/`active`/`productKind`) —
+	 * deliberately minimal, not "filterable where cheap".
 	 */
 	listCoupons(filter: CouponListFilter, page: CouponListPage): Promise<CouponListResult>;
+
+	/**
+	 * Count the coupons matching a filter (INC-23: the admin list's exact
+	 * "N coupons" caption). Shares the EXACT predicate with `listCoupons` — the
+	 * same case-insensitive EXACT-match `search` semantics — so a count can
+	 * never disagree with the list it captions (one predicate builder in every
+	 * adapter; mirrors `OrderStore.countOrders` / `ProductCommerceStore
+	 * .countProducts` 1:1). No ordering, no cursor: a count is one scalar.
+	 */
+	countCoupons(filter: CouponListFilter): Promise<number>;
 }
 
 /**

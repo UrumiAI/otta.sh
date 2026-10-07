@@ -1,7 +1,25 @@
-import type { Block, BlockResponse, PluginContext, RouteHandler } from "../../types.js";
+import type {
+	Block,
+	BlockResponse,
+	ButtonElement,
+	ContextBlock,
+	Element,
+	EmptyBlock,
+	PlainBlockId,
+	PluginContext,
+	RouteHandler,
+} from "../../types.js";
+import { isCommerceInputError } from "../../commerce/commerce-input.js";
 import type { ScreenActions } from "./actions.js";
 import { failClosedResponse, noticeBanner, type Notice } from "./banner.js";
 import { carriedFields, type CarriedContext, decodeCarrier } from "./carrier.js";
+import {
+	CLEAR_FILTERS_LABEL,
+	listOutcome,
+	type RowNoun,
+	type ZeroStateCopy as SharedZeroStateCopy,
+} from "@otta-sh/admin-presentation";
+import { emptyState } from "./layout.js";
 import {
 	decodeListCursor,
 	decodePath,
@@ -73,7 +91,23 @@ export interface ListLevelDef<Client, Filter, Summary, RenderState = unknown> {
 		parentPath: NavPath,
 		filter: Filter,
 		opts: { cursor?: string; limit: number },
-	): Promise<{ items: Summary[]; nextCursor: string | null }>;
+	): Promise<{
+		items: Summary[];
+		nextCursor: string | null;
+		/**
+		 * The EXACT size of the filtered set this page came from, when the service
+		 * reports one (INC-23). Passed straight through to `render` and on to
+		 * {@link listResult}, which is the only thing that reads it.
+		 *
+		 * OMIT IT rather than guessing. Any level whose count was taken under a
+		 * DIFFERENT predicate than its page MUST omit it — one that narrows the
+		 * fetched page client-side, and equally one whose filter the service was
+		 * never asked to apply. Passing it would caption the rows on screen with
+		 * a number that does not describe them, the same class of lie the
+		 * page-scoped wording exists to avoid.
+		 */
+		total?: number;
+	}>;
 	/** Render the list blocks. `nextToken` is the scaffold-wrapped keyset cursor
 	 *  (undefined on the last page) to hand the table's `next_cursor`. `notice`
 	 *  is set when a list-level {@link CustomActionFn} re-renders this level via
@@ -93,6 +127,23 @@ export interface ListLevelDef<Client, Filter, Summary, RenderState = unknown> {
 		filter: Filter;
 		items: Summary[];
 		nextToken: string | undefined;
+		/** TRUE when this render is the FIRST page of its filter (the interaction
+		 *  carried no keyset cursor: a page load, an open/back, or an apply-filter).
+		 *  FALSE on every "Load more" page.
+		 *
+		 *  It exists for ONE reason and it is an honesty rule, not a convenience:
+		 *  the service's list responses carry a page and a cursor and NO total, so
+		 *  `items.length` is a whole-set count only when this is the first page AND
+		 *  `nextToken` is undefined. Everywhere else it counts THIS PAGE and must
+		 *  say so. {@link listResult} is where the two are combined; a level should
+		 *  hand this to that rather than reason about it again. */
+		firstPage: boolean;
+		/** Whatever this level's own `fetchPage` returned as `total` — the exact
+		 *  size of the filtered set, or `undefined` when the service does not
+		 *  report one (or the level declined to pass it on). Hand it to
+		 *  {@link listResult}; it is the one input that lets the count line state
+		 *  the SET rather than the page. */
+		total: number | undefined;
 		notice: Notice | undefined;
 		/** This screen's render state, when a list-level {@link CustomActionFn}
 		 *  passed one to {@link CustomActionApi.showList} — `undefined` on every
@@ -363,6 +414,111 @@ const ACTION_OUTCOME_UNKNOWN: Notice = {
 		"The action may already have been applied, but this screen could not be rebuilt afterwards. Re-check the record before retrying.",
 };
 
+/** The banner/toast title for a refused input (see {@link inputRefusedNotice}). */
+const INPUT_REFUSED_TITLE = "Not saved — check what you entered";
+
+/**
+ * The notice for a custom action the commerce boundary REFUSED.
+ *
+ * WHY IT IS NOT {@link ACTION_OUTCOME_UNKNOWN}. `CommerceInputError` is thrown by
+ * the input checks in `commerce-input.ts` (and the clients' own bounds) BEFORE any
+ * read or write — that is the class's documented contract — so the outcome is
+ * KNOWN: nothing happened. QA found "the action may already have been applied" on
+ * an operator's typo (a zone id with a space in it), which sends them off to audit
+ * a record that was never touched. Screens should catch such input themselves and
+ * keep the draft; this is the net for the ones that slip through, and it states
+ * the refusal in the operator's terms rather than the boundary's.
+ *
+ * Matched STRUCTURALLY (`code === "INVALID_INPUT"`), never by message text: a
+ * look-alike error with no code is still an unknown outcome.
+ */
+function inputRefusedNotice(field: string, reason: string): Notice {
+	return {
+		variant: "error",
+		title: INPUT_REFUSED_TITLE,
+		description: `The ${humanFieldName(field)} ${humanReason(reason)}. Nothing was changed.`,
+	};
+}
+
+/** `taxClassId` → `tax class ID`, `rates[].amount` → `rates amount`. A field name
+ *  is the boundary's word for an input, and the banner is for an operator. */
+function humanFieldName(field: string): string {
+	return field
+		.replace(/\[\]/g, "")
+		.split(".")
+		.flatMap((part) => part.split(/(?=[A-Z])/))
+		.map((word) => (word.toLowerCase() === "id" ? "ID" : word.toLowerCase()))
+		.join(" ");
+}
+
+/** The one boundary reason an operator can actually trip from a text field gets
+ *  words they can act on; every other reason is already plain. */
+function humanReason(reason: string): string {
+	// The boundary's one reason covers BOTH a space and a non-ASCII character
+	// (`ID_CHARSET`), and this net has only the reason, not the value — so the
+	// words name both, in `id-input.ts`'s vocabulary. A coupon code's own ASCII
+	// reason (ADR-0025) gets the console's create-screen wording.
+	if (reason === "must be printable ASCII with no whitespace") {
+		return "can only use plain letters, digits and punctuation — no spaces or accented characters";
+	}
+	if (reason === "must be printable ASCII") {
+		return "can only use plain letters, digits and punctuation — no accented letters or symbols";
+	}
+	return reason;
+}
+
+/** Client methods that only READ: a read verb followed by a capital or nothing
+ *  (`listZones`, `get`), so `issueRefund` or `listen…` is not mistaken for one.
+ *  Everything else is treated as a possible write — the conservative default,
+ *  since a wrongly-flagged read only costs the friendlier banner, while a
+ *  wrongly-trusted write would make it lie. */
+const READ_METHOD = /^(get|list|count|find|read|load|search|has|is)(?:[A-Z]|$)/;
+
+/**
+ * Watch the client a custom action is handed, so the refusal banner's "Nothing
+ * was changed" is a STRUCTURAL fact rather than a convention every action must
+ * keep.
+ *
+ * A non-read call counts as a possible write FROM THE MOMENT IT IS CALLED — a
+ * sibling in a `Promise.all` can be refused while it is still in flight and may
+ * yet land — and is un-counted only when THAT SAME call is refused with
+ * `CommerceInputError` (whose contract is "refused before any write"). So
+ * `wrote()` is true while any write is pending or has completed.
+ *
+ * A Proxy that calls through on the REAL target (`apply(target, …)`), so a client
+ * class's private fields keep working; non-function properties pass untouched.
+ * A non-object client (a test's literal) is handed over as-is.
+ */
+function watchWrites(client: unknown): { client: unknown; wrote(): boolean } {
+	let writes = 0;
+	const wrote = (): boolean => writes > 0;
+	if (client === null || typeof client !== "object") return { client, wrote };
+	const target = client as Record<PropertyKey, unknown>;
+	const proxy = new Proxy(target, {
+		get(obj, prop) {
+			const value = Reflect.get(obj, prop, obj);
+			if (typeof value !== "function" || typeof prop !== "string" || READ_METHOD.test(prop)) {
+				return typeof value === "function" ? value.bind(obj) : value;
+			}
+			return (...args: unknown[]): unknown => {
+				writes += 1;
+				const refused = (err: unknown): never => {
+					if (isCommerceInputError(err)) writes -= 1;
+					throw err;
+				};
+				let result: unknown;
+				try {
+					result = (value as (...a: unknown[]) => unknown).apply(obj, args);
+				} catch (err) {
+					return refused(err);
+				}
+				return result instanceof Promise ? result.catch(refused) : result;
+			};
+		},
+	});
+	return { client: proxy, wrote };
+}
+
 /**
  * Build the single `RouteHandler` for a list/detail screen. The returned
  * handler is what the admin-route dispatcher forwards `open`/`back`/`page`/
@@ -435,6 +591,16 @@ function createDispatcher<RenderState>(
 					limit: level.limit,
 					...(cursor !== undefined ? { cursor } : {}),
 				});
+				// THE FILTER ENCODED HERE IS THE POST-FETCH ONE, and that is a real leg
+				// of the screen's page state, not just a round-trip of what the operator
+				// submitted: `fetchPage` receives the SAME object `render` and this line
+				// see, so anything it writes onto the filter (products' `filter.stock` —
+				// the threshold and degraded-read flags its synchronous `render` cannot
+				// go and read for itself) rides the next-page cursor too. Harmless while
+				// such a field is re-derived by the next `fetchPage`, and a stale value
+				// on screen the moment one is not — so page context written in
+				// `fetchPage` must be OVERWRITTEN there unconditionally, never merged
+				// into what the cursor brought back.
 				const nextToken =
 					page.nextCursor === null
 						? undefined
@@ -449,6 +615,8 @@ function createDispatcher<RenderState>(
 					filter,
 					items: page.items,
 					nextToken,
+					firstPage: cursor === undefined,
+					total: page.total,
 					notice,
 					renderState,
 				});
@@ -564,10 +732,11 @@ function createDispatcher<RenderState>(
 		// -- custom (side-effecting) actions --------------------------------------
 		const custom = action === undefined ? undefined : config.customActions?.[action];
 		if (custom !== undefined) {
+			const watched = watchWrites(client);
 			try {
 				return (await custom({
 					input,
-					client,
+					client: watched.client,
 					carried: readCarrier(input),
 					carriedPath: readNavPath(input),
 					// The render-state argument is forwarded UNTOUCHED and un-inspected: the
@@ -580,6 +749,25 @@ function createDispatcher<RenderState>(
 							: renderPath(path, notice, renderState),
 				})) as Awaited<ReturnType<RouteHandler<ListDetailInput>>>;
 			} catch (err) {
+				// A REFUSED INPUT is the exception to everything below: it was refused
+				// before any read or write (see `inputRefusedNotice`), so its outcome is
+				// known, and saying otherwise is the scary-and-false banner QA reported.
+				// ONLY WHILE NOTHING WAS WRITTEN. "Nothing was changed" is a claim about
+				// the whole action, not about the call that threw: an action that wrote
+				// and THEN tripped a refusal has an outcome the operator must re-check.
+				if (isCommerceInputError(err) && !watched.wrote()) {
+					let refusedBlocks: Block[];
+					try {
+						refusedBlocks = (await rootList()).blocks;
+					} catch (fallbackErr) {
+						console.error("[otta] admin custom action fallback render failed:", fallbackErr);
+						refusedBlocks = [];
+					}
+					return {
+						blocks: [noticeBanner(inputRefusedNotice(err.field, err.reason)), ...refusedBlocks],
+						toast: { message: INPUT_REFUSED_TITLE, type: "error" as const },
+					};
+				}
 				// A custom action is the one place a SIDE EFFECT may already have
 				// applied, so this cannot be a silent fallback: the mutation might have
 				// committed and only the re-render failed. Log it (the operator's banner
@@ -706,6 +894,271 @@ function withChildBlockLists(block: Block, lists: Block[][]): Block {
 		default:
 			return block;
 	}
+}
+
+// -- how a list states its size and its zero states (INC-12) ------------------
+
+/**
+ * THE SHARED ANSWER TO "how many, and what if none" — built once here because a
+ * filtered-to-zero list is the most common empty state in a live store and every
+ * screen was answering it with a different half-measure: one line of `empty_text`,
+ * no count anywhere, and no way to undo the filter except reopening the panel and
+ * emptying each field by hand.
+ *
+ * WHAT THE WIRE SUPPORTS, because the copy below is bounded by it. The three
+ * admin list endpoints answer `{items, nextCursor, total}` — a page, a way to
+ * ask for the next one, and (since INC-23) the exact size of the filtered set.
+ * `total` is what the earlier version of this note called "a queued service
+ * increment"; the queue moved. So the count this module renders is:
+ *
+ *  - the WHOLE (filtered) set — `17 orders` — whenever a `total` is present,
+ *    on ANY page. It is a COUNT(*) under the same predicate as the page, so it
+ *    is exact on page 3 of 3 as much as on page 1;
+ *  - the WHOLE (filtered) set from the PAGE ITSELF — same wording — when there
+ *    is no `total` but the render is the first page of its filter AND there is
+ *    no next cursor. Both halves are needed for that inference: page 1 of many
+ *    counts a page, and page 3 of 3 knows nothing about pages 1 and 2 (keyset
+ *    paging carries no running offset, and the scaffold deliberately does not
+ *    accumulate one across stateless interactions);
+ *  - THIS PAGE otherwise — `25 orders on this page`, which is a smaller claim
+ *    and a true one. That is now the fallback for a service older than `total`,
+ *    and for a level that deliberately withholds one because it narrowed the
+ *    fetched page itself (see `ListLevelDef.fetchPage`'s `total`).
+ *
+ * NOTHING HERE INVENTS A TOTAL. A count that says the set is bigger than the
+ * page must have been told so by the service; a renderer that guessed one would
+ * produce exactly the number an operator reconciles against and loses.
+ *
+ * ZERO RENDERS NO COUNT AT ALL — zero ROWS, whatever the `total` says, and a
+ * `total` of zero. `0 orders` is never emitted: at zero the state below already
+ * says it in words, and a count line repeating it is the "unknown rendered as 0"
+ * failure in a costume. A `total` above an empty page is the same self-
+ * contradiction from the other direction, and is suppressed with it.
+ */
+
+/**
+ * THE COUNT LINE, THE ZERO-STATE LADDER AND THEIR WORDS ALL MOVED (INC-20
+ * review) into `@otta-sh/admin-presentation`, and this module now ADAPTS the
+ * decision into Block Kit blocks rather than making it.
+ *
+ * WHY. INC-20 gave the console a React Orders list, and its first cut
+ * reimplemented a two-branch version of the five outcomes below — so a page-2
+ * miss claimed "No orders yet" (a whole-collection claim that render has not
+ * earned) and a zero-row page with a cursor still behind it hid `Load more`
+ * behind an empty state. Neither is a React bug; both are what happens when a
+ * decision argued this carefully is written twice. The DECISION is now shared
+ * and each surface keeps only its own rendering — a `Clear filters` button
+ * carrying a nav path here, an `onClick` there.
+ *
+ * `rowCountLine`, `RowNoun` and `PAGE_SCOPED_SUFFIX` are re-exported so the six
+ * screens and the suites that import them from `scaffold/index.js` are
+ * unaffected.
+ */
+export {
+	CLEAR_FILTERS_LABEL,
+	NOTHING_ON_PAGE,
+	PAGE_SCOPED_SUFFIX,
+	PAGE_ZERO,
+	SCAN_FURTHER,
+	rowCountLine,
+} from "@otta-sh/admin-presentation";
+export type { RowNoun } from "@otta-sh/admin-presentation";
+
+/**
+ * The `Clear filters` control, wherever it appears.
+ *
+ * A BARE `apply-filter` IS THE CLEAR: it carries no `values`, so the scaffold
+ * rebuilds the level's DEFAULT filter (`filterFromValues({})`) and re-lists. The
+ * drill path rides in `value`, never in a `block_id` — a button echoes no
+ * `block_id` (L-6, B-1) — which is also what keeps the operator's place in the
+ * nav path: the dispatcher reads `value.__path` and re-lists THAT level, not the
+ * root.
+ *
+ * This is the sanctioned, EXPLICIT way to drop a filter. The `back` button drops
+ * one too (it re-renders the parent level with its default filter), but that is
+ * an implicit side effect of navigating and is not touched here.
+ */
+export function clearFiltersButton(actions: ScreenActions, path: NavPath): ButtonElement {
+	return {
+		type: "button",
+		action_id: actions.applyFilter,
+		label: CLEAR_FILTERS_LABEL,
+		value: { [PATH_FIELD]: encodePath(path) },
+	};
+}
+
+/** The wording of ONE zero state PLUS the Block Kit key it renders under.
+ *  The WORDS are `@otta-sh/admin-presentation`'s `ZeroStateCopy` — shared,
+ *  because the React tier renders the same states from the same decision — and
+ *  `blockId` is the half only this surface has (a React key on an `empty`
+ *  block). Screens still author every string: six screens describe their rows
+ *  differently, and a generic "No results" would be the half-measure this
+ *  replaces. */
+export interface ZeroStateCopy extends SharedZeroStateCopy {
+	/** The `empty` block's React key. */
+	blockId: PlainBlockId;
+}
+
+export interface ListResultOptions {
+	/** For the `Clear filters` button's target. */
+	actions: ScreenActions;
+	/** This level's drill path, so the clear re-lists HERE. */
+	path: NavPath;
+	/** Rows on the page about to be rendered. */
+	count: number;
+	/** Whether any filter is on — the same boolean the active-filter summary is
+	 *  derived from, so the count line, the summary and the zero state cannot
+	 *  disagree about it. */
+	filtered: boolean;
+	/** `render`'s own `firstPage`. */
+	firstPage: boolean;
+	/** `render`'s own `nextToken`. */
+	nextToken: string | undefined;
+	/** `render`'s own `total` — the exact size of the filtered set when the
+	 *  service reports one. Absent ⇒ the count falls back to describing the page
+	 *  (see the module note above). */
+	total?: number;
+	/**
+	 * What `count` (and `total`) describe — forwarded to `listOutcome`'s own
+	 * required discriminant of the same name. REQUIRED here too, and
+	 * deliberately not defaulted: every list has a scope, so there is no real
+	 * state an absent value could mean, unlike `total` above (whose absence
+	 * genuinely means "the service reported none"). Coupons — the only caller
+	 * today — filters entirely through the service and states
+	 * `"service-filtered"`; a Block Kit screen that ever narrows a fetched page
+	 * client-side now has somewhere to say so instead of forgetting to.
+	 */
+	countScope: "service-filtered" | "narrowed-after-fetch";
+	noun: RowNoun;
+	/** Zero rows and NO filter on: the collection itself is empty. Non-accusatory
+	 *  by construction — nothing has gone wrong — and it may offer the way IN
+	 *  (`actions`, e.g. Coupons' "New coupon") where such a way exists. */
+	empty: ZeroStateCopy & { actions?: readonly Element[] };
+	/** Zero rows WITH a filter on: the operator narrowed to nothing, so the way out
+	 *  is the filter. The `Clear filters` button is appended by this function — a
+	 *  screen never supplies it, so it can never be forgotten on one screen. */
+	noMatch: ZeroStateCopy & {
+		/** The table's `empty_text` for this filter — still needed, because a table
+		 *  WITH rows carries it against a later render. */
+		emptyText: string;
+		/** The "another page remains" note, when the screen has better words for it
+		 *  than the default `${emptyText} ${SCAN_FURTHER}`. */
+		scanNote?: string;
+	};
+}
+
+/**
+ * What a list level renders in place of (or alongside) its table. FIVE outcomes,
+ * and the third one is the one that is easy to get wrong:
+ *
+ *  1. **Rows.** `emptyBlock` undefined — the screen renders its table as usual,
+ *     with `emptyText` on it.
+ *  2. **Zero, unfiltered, FIRST page, no next page.** The collection is empty:
+ *     `emptyBlock` carries the screen's `empty` copy and REPLACES the table (E-2).
+ *  2b. **Zero, unfiltered, NOT the first page.** The same shape with
+ *     {@link PAGE_ZERO}'s page-scoped wording instead — the screen's copy is a
+ *     whole-collection claim this render has not earned.
+ *  3. **Zero with ANOTHER PAGE BEHIND IT.** No `empty` block and NO `emptyText`,
+ *     plus a `scanNote` — the pinned renderer short-circuits a zero-row table
+ *     that carries `empty_text` to a bare `<p>` (`blocks/table.tsx`) AND takes
+ *     the "Load more" button with it, so both would strand an operator mid-scan
+ *     on a page that is not the end of anything. A headers-only table keeps
+ *     `Load more` alive and the note says what to do with it. (First established
+ *     for the low-stock filter, back when it narrowed the fetched page and made
+ *     this the ordinary case; generalized here so no screen has to rediscover
+ *     it.)
+ *  4. **Zero, filtered, last page.** `emptyBlock` carries the screen's `noMatch`
+ *     copy plus the `Clear filters` button, and replaces the table.
+ */
+export interface ListResult {
+	/** `17 orders` for the intro line, or `undefined` at zero. */
+	countLine: string | undefined;
+	/** Render INSTEAD of the table when set. */
+	emptyBlock: EmptyBlock | undefined;
+	/** The table's `empty_text` — `undefined` means OMIT IT (outcome 3). */
+	emptyText: string | undefined;
+	/** A trailing `context` line, set only in outcome 3. */
+	scanNote: ContextBlock | undefined;
+}
+
+export function listResult(opts: ListResultOptions): ListResult {
+	// THE DECISION IS NOT MADE HERE ANY MORE — `listOutcome` makes it, and the
+	// React Orders list makes the same call with the same inputs. What is left
+	// here is the half that is genuinely Block Kit's: an `empty` block with a
+	// `block_id`, a `context` block, and a `Clear filters` button that has to
+	// carry the nav path so the clear re-lists THIS level rather than the root.
+	//
+	// `total` (INC-23) is threaded straight through, and that is the whole of
+	// the reconciliation between the two increments: the exact-count logic lives
+	// with the count line, the count line lives in the shared package, so BOTH
+	// surfaces state an exact whole-set figure the moment the service reports
+	// one. Had it stayed here, the React list would have kept saying
+	// "25 orders on this page" against a Block Kit screen one sidebar entry away
+	// saying "137 orders" — a parity gap opening on the day INC-23 merged.
+	const outcome = listOutcome({
+		count: opts.count,
+		filtered: opts.filtered,
+		firstPage: opts.firstPage,
+		hasNext: opts.nextToken !== undefined,
+		countScope: opts.countScope,
+		noun: opts.noun,
+		empty: opts.empty,
+		noMatch: opts.noMatch,
+		...(opts.total !== undefined ? { total: opts.total } : {}),
+	});
+	if (outcome.kind === "rows") {
+		return {
+			countLine: outcome.countLine,
+			emptyBlock: undefined,
+			emptyText: outcome.emptyText,
+			scanNote: undefined,
+		};
+	}
+	if (outcome.kind === "scan") {
+		return {
+			countLine: undefined,
+			emptyBlock: undefined,
+			emptyText: undefined,
+			scanNote: { type: "context", text: outcome.scanNote },
+		};
+	}
+	// The three zero states differ in their ACTIONS as much as in their words: a
+	// narrowed-to-nothing list offers the undo, an empty collection offers the
+	// way in, and a page that ran off the end offers neither (an `empty` block
+	// with no actions is a valid state — `emptyState` omits the key rather than
+	// emitting `[]`). `offer` is the shared decision; the CONTROLS are this
+	// surface's own.
+	const actions =
+		outcome.offer === "clear-filters"
+			? [clearFiltersButton(opts.actions, opts.path)]
+			: outcome.offer === "way-in"
+				? (opts.empty.actions ?? [])
+				: [];
+	// The `block_id` follows the copy that is actually rendered: `noMatch`'s when
+	// the operator filtered, and `empty`'s otherwise — including for the
+	// page-scoped wording, which has no key of its own and borrows it so a
+	// remount does not depend on which page the operator ran off the end of.
+	const blockId = outcome.offer === "clear-filters" ? opts.noMatch.blockId : opts.empty.blockId;
+	return {
+		countLine: undefined,
+		emptyBlock: emptyState({
+			title: outcome.title,
+			description: outcome.description,
+			size: "base",
+			actions,
+			blockId,
+		}),
+		emptyText: outcome.emptyText,
+		scanNote: undefined,
+	};
+}
+
+/** The list's intro `context` line with its row count in front —
+ *  `17 orders · Filter, open an order, …`. The count leads because it is the one
+ *  part of the line that changes, and the standing sentence is what an operator
+ *  stops reading after the first visit. */
+export function listIntroLine(countLine: string | undefined, intro: string): ContextBlock {
+	return { type: "context", text: countLine === undefined ? intro : `${countLine} · ${intro}` };
 }
 
 // -- shared payload parsing (exported: screens reuse the same coercions) -------

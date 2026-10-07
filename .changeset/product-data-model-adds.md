@@ -1,7 +1,5 @@
 ---
 "@otta-sh/domain": minor
-"@otta-sh/store-postgres": minor
-"@otta-sh/service": minor
 "@otta-sh/plugin": minor
 ---
 
@@ -30,21 +28,12 @@ no storefront rendering, and NO change to reservation semantics.
   live-only, registry delete-in-use) plus two fast-follow pins: a soft-deleted row
   is always inactive, and keyset pagination works under the archive (`deleted`)
   view.
-- `@otta-sh/store-postgres`: forward-only migration `0017` adds
-  `compare_at_cents`/`compare_at_currency`, `unit_cost_cents`/`unit_cost_currency`
-  (nullable, `>= 0` CHECK), and `inventory_policy text NOT NULL DEFAULT 'deny'`,
-  additively (no backfill). The Kysely store rows/edits carry the new fields and
-  the extended currency guards, dialect-identical on better-sqlite3 and Postgres;
-  `KyselyTaxRulesStore.deleteClass` and `countByTaxClass` implement the guards.
-- `@otta-sh/service`: `PATCH /admin/products/:id` accepts the new fields;
-  `editProductCommerceBody` bounds compare-at/cost (non-negative money) and
-  `inventoryPolicy` (`"deny"` enum). The internal-token admin detail serializes
-  unit cost; the PUBLIC `GET /products/:id/commerce` (an un-gated, storefront-
-  reachable GET) and the catalog view DELIBERATELY OMIT unit cost — admin-only
-  margin data never reaches a buyer, pinned by a test.
 - `@otta-sh/plugin`: the product edit form surfaces the four fields via Block Kit —
   compare-at + unit cost as TEXT money inputs (integer-string parsed, never a
-  float), a tax-class SELECT sourced from the live registry (`GET
-  /admin/tax/classes`, static-seeded fallback, best-effort so a registry read
+  float, and bounded as non-negative money), a tax-class SELECT sourced from the
+  live registry (static-seeded fallback, best-effort so a registry read
   failure degrades rather than breaks the detail), and a DENY-ONLY inventory-
-  policy select. Sandbox-clean (local wire types, `ctx.http`-only egress).
+  policy select. Unit cost is serialized to the admin detail only: the
+  storefront-reachable product commerce view and the catalog view DELIBERATELY
+  OMIT it — admin-only margin data never reaches a buyer, pinned by a test.
+  Sandbox-clean (local wire types).

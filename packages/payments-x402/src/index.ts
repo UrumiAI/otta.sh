@@ -1,4 +1,6 @@
 import {
+	type CancelIntentInput,
+	type CancelIntentResult,
 	type ClientAction,
 	type ConfirmationResult,
 	type CreateIntentInput,
@@ -7,39 +9,34 @@ import {
 	type RawConfirmation,
 	type RefundInput,
 	type RefundResult,
-	type X402Proof,
 } from "@otta-sh/domain";
-import { createHmac, timingSafeEqual } from "node:crypto";
+
+export { createX402Rail, type X402RailOptions } from "./rail.js";
+export { X402_USDC_ASSETS, type X402UsdcAsset } from "./assets.js";
+export type { FacilitatorFetch, FacilitatorResponse } from "./facilitator.js";
+export { encodeX402Header } from "./decode.js";
 
 /**
- * Server-side facilitator verification of an x402 settlement receipt (§9 Risk 2).
- * The x402 adapter NEVER trusts the plugin's assertion that payment happened — it
- * asks a facilitator to re-verify the receipt. In production this is an HTTP call
- * to the x402 facilitator (`@x402/core`'s `HTTPFacilitatorClient`, which the
- * `@emdash-cms/x402` Astro integration uses); in tests it is the offline HMAC
- * facilitator below (no network).
+ * The receipt-forwarding model is retired (ADR-0028, increment 2).
  *
- * ⚠️ PRODUCTION SWAP-IN REQUIREMENTS (load-bearing — read before wiring a real
- * facilitator client here):
- *  - The facilitator MUST cryptographically attest the settlement's **amount,
- *    asset/currency, and recipient** for `proof.transaction` on `proof.network`
- *    — "the tx exists" is NOT sufficient. `proof.orderId` is NEVER
- *    on-chain-attestable (it exists only in our DB), so the ONLY things binding
- *    a receipt to an order are (a) the domain's `amount == order_totals.total`
- *    equality check in `settleOrder` and (b) the tx-hash dedupe (one settlement
- *    consumes one on-chain payment, so a receipt cannot be replayed onto a
- *    second same-priced order). Both checks are therefore LOAD-BEARING: weaken
- *    either and a single payment could settle an arbitrary same-priced order.
- *  - The adapter MUST additionally verify the attested **recipient equals this
- *    gateway's `payTo`** once the real client exposes it — otherwise a payment
- *    to the attacker's own wallet would satisfy the amount check.
+ * This package used to verify a "receipt" — a settle response something else had
+ * obtained, plus a `signature` — by posting it to one custom facilitator endpoint
+ * (`createHttpFacilitator`) or checking it against an offline HMAC secret
+ * (`createTestFacilitator`). No standard x402 facilitator has that endpoint, only
+ * the offline HMAC could ever produce `signature`, and nothing checked that the
+ * money went to our `payTo`. ADR-0028 replaces the model: the resource server
+ * calls the facilitator's standard `/verify` and `/settle` itself, through the
+ * `X402Rail` port (increment 6: `createX402Rail`, `./rail.ts`), from a domain use
+ * case that is the only thing able to build a `page_gate` confirmation
+ * (increment 7).
+ *
+ * Until then the gateway settles nothing. Its one caller, the public
+ * `entitlements/x402/settle` route, is deleted in the same increment, and
+ * `verifyConfirmation` refuses every `page_gate` — so ADR-0028 Decision 2's
+ * invariant holds from here on: no client-supplied JSON ever reaches a
+ * `page_gate` confirmation.
  */
-export interface X402Facilitator {
-	verifyReceipt(proof: X402Proof): Promise<{ valid: boolean }>;
-}
-
 export interface X402PaymentGatewayOptions {
-	facilitator: X402Facilitator;
 	/** Destination wallet (the x402 challenge `payTo`). */
 	payTo: string;
 	/** CAIP-2 networks the challenge accepts (e.g. `["eip155:8453"]`). */
@@ -48,29 +45,24 @@ export interface X402PaymentGatewayOptions {
 
 /**
  * x402 `PaymentGateway` adapter (§5/§6, step 4.7). `createIntent` returns the
- * `x402_challenge` descriptor the page layer serves as a 402. `verifyConfirmation`
- * takes the page-gate proof (the facilitator **SettleResponse**: on-chain
- * `transaction` + `network` + `payer` — see `@emdash-cms/x402`), re-verifies it
- * server-side via the injected facilitator, and normalizes it to the shared
- * `ConfirmationResult` — landing on the identical `settleOrder` path as Stripe,
- * granting an entitlement. `transaction` (unique per settlement) is the dedupe key.
+ * `x402_challenge` descriptor. `verifyConfirmation` refuses every confirmation
+ * until ADR-0028 increment 7 gives the `page_gate` arm a value only the domain's
+ * `payForGatedProduct` can build (see the note above). `refund` and
+ * `cancelIntent` are capability statements, unchanged.
  */
 export class X402PaymentGateway implements PaymentGateway {
 	readonly id = "x402" as const;
 	/**
 	 * x402 CANNOT refund (ADR-0008). On-chain USDC settlement is irreversible and
-	 * this adapter holds no signing wallet — it only VERIFIES inbound receipts via
-	 * a facilitator. `refundable:false` is honest by construction; the domain
-	 * records an x402 refund as a `manual`, out-of-band entry instead of ever
-	 * pretending money moved.
+	 * this adapter holds no signing wallet. `refundable:false` is honest by
+	 * construction; the domain records an x402 refund as a `manual`, out-of-band
+	 * entry instead of ever pretending money moved.
 	 */
 	readonly refundable = false;
-	readonly #facilitator: X402Facilitator;
 	readonly #payTo: string;
 	readonly #accepts: string[];
 
 	constructor(options: X402PaymentGatewayOptions) {
-		this.#facilitator = options.facilitator;
 		this.#payTo = options.payTo;
 		this.#accepts = options.accepts;
 	}
@@ -85,32 +77,18 @@ export class X402PaymentGateway implements PaymentGateway {
 		return { gateway: this.id, intentId: `x402_${input.orderId}`, clientAction };
 	}
 
-	async verifyConfirmation(raw: RawConfirmation): Promise<ConfirmationResult> {
-		if (raw.kind !== "page_gate") return { ok: false, reason: "MALFORMED" };
-		const proof = raw.proof;
-		if (typeof proof.transaction !== "string" || proof.transaction.length === 0) {
-			return { ok: false, reason: "MALFORMED" };
-		}
-		// The settlement network must be one this gateway's challenge accepts — a
-		// receipt from a foreign network is rejected as unverified (a facilitator
-		// attestation for a network we never offered proves nothing about our
-		// requirements).
-		if (!this.#accepts.includes(proof.network)) {
-			return { ok: false, reason: "INVALID_SIGNATURE" };
-		}
-		// Facilitator-verified server-side — never trust the plugin's word.
-		const { valid } = await this.#facilitator.verifyReceipt(proof);
-		if (!valid) return { ok: false, reason: "INVALID_SIGNATURE" };
-		return {
-			ok: true,
-			outcome: "succeeded",
-			orderId: proof.orderId,
-			providerRef: proof.transaction,
-			amount: proof.amount,
-			currency: proof.currency,
-			dedupeKey: proof.transaction,
-			gateway: "x402",
-		};
+	/**
+	 * Refuses EVERY confirmation, `page_gate` included, with `MALFORMED` (ADR-0028,
+	 * increment 2). A `page_gate` today carries an `X402Proof` that any caller can
+	 * fill in, and the facilitator call that used to stand between it and a settled
+	 * order is gone with the receipt-forwarding model. Increment 7 replaces the arm
+	 * with a branded `GatedSettlement` that only `payForGatedProduct` can mint, from
+	 * a `/settle` it made itself, and this method then normalises its shape.
+	 * `MALFORMED` rather than `INVALID_SIGNATURE`: no confirmation of this shape can
+	 * be valid, whatever it says.
+	 */
+	async verifyConfirmation(_raw: RawConfirmation): Promise<ConfirmationResult> {
+		return { ok: false, reason: "MALFORMED" };
 	}
 
 	/**
@@ -125,48 +103,16 @@ export class X402PaymentGateway implements PaymentGateway {
 	async refund(_input: RefundInput): Promise<RefundResult> {
 		return { ok: false, reason: "UNSUPPORTED" };
 	}
-}
 
-// -- offline HMAC facilitator (test/dev; NO network) -------------------------
-
-/** Canonical bytes the offline facilitator signs/verifies a receipt over. */
-function canonical(proof: Omit<X402Proof, "signature">): string {
-	return [
-		proof.orderId,
-		proof.transaction,
-		proof.network,
-		proof.payer,
-		String(proof.amount),
-		proof.currency,
-	].join("|");
-}
-
-/**
- * An offline facilitator that treats `proof.signature` as an HMAC over the
- * receipt's canonical bytes with a shared secret — a deterministic stand-in for
- * the real facilitator's cryptographic verification (NO network). A real
- * deployment swaps this for an `HTTPFacilitatorClient`-backed impl.
- */
-export function createTestFacilitator(secret: string): X402Facilitator {
-	return {
-		async verifyReceipt(proof: X402Proof): Promise<{ valid: boolean }> {
-			const expected = createHmac("sha256", secret).update(canonical(proof)).digest("hex");
-			return { valid: safeEqualHex(proof.signature, expected) };
-		},
-	};
-}
-
-/** Mint a valid page-gate proof signed for {@link createTestFacilitator}. */
-export function signX402Proof(proof: Omit<X402Proof, "signature">, secret: string): X402Proof {
-	const signature = createHmac("sha256", secret).update(canonical(proof)).digest("hex");
-	return { ...proof, signature };
-}
-
-function safeEqualHex(a: string, b: string): boolean {
-	if (a.length !== b.length) return false;
-	try {
-		return timingSafeEqual(Buffer.from(a, "hex"), Buffer.from(b, "hex"));
-	} catch {
-		return false;
+	/**
+	 * Nothing to withdraw: an x402 "intent" is a stateless page-gate challenge,
+	 * not a provider-side object that stays payable. When an x402 order expires,
+	 * nothing can settle it: `verifyConfirmation` refuses every confirmation until
+	 * ADR-0028 increment 7, and even then `settleOrder` refuses a dead order. The
+	 * capability statement `UNSUPPORTED`, never a throw, so the expiry sweep moves
+	 * on without logging it.
+	 */
+	async cancelIntent(_input: CancelIntentInput): Promise<CancelIntentResult> {
+		return { ok: false, reason: "UNSUPPORTED" };
 	}
 }

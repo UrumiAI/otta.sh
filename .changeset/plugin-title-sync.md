@@ -8,7 +8,7 @@ Fix: products created through the CMS were unpurchasable — the plugin never sy
 Every product synced by the plugin was born with `product_commerce.title = NULL`, and an order
 line snapshots the product title at purchase time, so `createOrderFromCart` rejected the checkout
 with `PRODUCT_NOT_PRICED`. The buyer saw a checkout failure on a product the storefront had
-happily shown as in stock and priced. The service, its request schema and the store all handled
+happily shown as in stock and priced. The commerce upsert and the store both handled
 `title` correctly the whole time; the plugin's derive simply never sent it.
 
 The sync now sends the title on every commerce upsert, read from the collection's own **Title
@@ -24,8 +24,8 @@ top of the product editor. Because it lives in the shared derive, both `content:
   carries SKU, price, kind and stock; only the title is omitted, with a specific warning logged
   naming `data.title`. Vetoing the upsert instead would mean such a collection silently loses
   *all* commerce sync, a worse failure than an untitled product. The title is never sent as an
-  empty or over-long string either: both are 400s at the service, and a 400 is a transport
-  failure, which at publish fails closed and skips the activation.
+  empty or over-long string either: both are refused at the commerce write, and a refused
+  upsert fails closed at publish and skips the activation.
 - Omitting is also safe against data loss: the store preserves a stored title when the field is
   absent from the body, so a momentarily blank title can never blank a good one.
 

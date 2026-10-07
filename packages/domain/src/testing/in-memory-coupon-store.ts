@@ -16,6 +16,11 @@ import type {
 	UpdateCouponInput,
 	UpdateCouponResult,
 } from "../ports/coupon-store.js";
+import {
+	CouponCodeConflictError,
+	CouponIdCollisionError,
+	foldCouponCode,
+} from "../pricing/coupon-code.js";
 import type { CouponType } from "../pricing/types.js";
 
 interface RedemptionRow {
@@ -91,6 +96,12 @@ export class InMemoryCouponStore implements CouponStore {
 	}
 
 	async create(input: CreateCouponInput): Promise<CouponRecord> {
+		// The port's two create refusals, with the port's own structural errors —
+		// the in-memory twin of the document store's id document and its
+		// `coupon_codes/{folded}` claim (ADR-0025).
+		if (this.#coupons.has(input.id)) throw new CouponIdCollisionError(input.id);
+		const heldBy = this.#byCode.get(foldCouponCode(input.code));
+		if (heldBy !== undefined) throw new CouponCodeConflictError(input.code, heldBy);
 		const record: StoredCoupon = {
 			id: input.id,
 			code: input.code,
@@ -108,12 +119,12 @@ export class InMemoryCouponStore implements CouponStore {
 			createdAt: this.#clock.now(),
 		};
 		this.#coupons.set(record.id, record);
-		this.#byCode.set(record.code, record.id);
+		this.#byCode.set(foldCouponCode(record.code), record.id);
 		return { ...toRecord(record) };
 	}
 
 	async findByCode(code: string): Promise<CouponRecord | null> {
-		const id = this.#byCode.get(code);
+		const id = this.#byCode.get(foldCouponCode(code));
 		if (id === undefined) return null;
 		const c = this.#coupons.get(id);
 		return c === undefined ? null : toRecord(c);
@@ -149,7 +160,7 @@ export class InMemoryCouponStore implements CouponStore {
 			if (r.couponId === couponId) return { ok: false, reason: "in_use_by_redemptions" };
 		}
 		const coupon = this.#coupons.get(couponId);
-		if (coupon !== undefined) this.#byCode.delete(coupon.code);
+		if (coupon !== undefined) this.#byCode.delete(foldCouponCode(coupon.code));
 		this.#coupons.delete(couponId);
 		return { ok: true };
 	}
@@ -276,6 +287,15 @@ export class InMemoryCouponStore implements CouponStore {
 		return { coupons: rows.map((row) => toSummary(row)), nextCursor };
 	}
 
+	/** Count under the SAME `#matchesFilter` predicate `listCoupons` pages with
+	 *  (MOD-5) — one predicate, so a count and the list it captions can never
+	 *  disagree. No cursor: a count covers the whole filtered set, not a page. */
+	async countCoupons(filter: CouponListFilter): Promise<number> {
+		let count = 0;
+		for (const row of this.#coupons.values()) if (this.#matchesFilter(row, filter)) count++;
+		return count;
+	}
+
 	// -- test surface ---------------------------------------------------------
 
 	/** Current uses_count for a coupon (contract assertions). */
@@ -310,8 +330,14 @@ export class InMemoryCouponStore implements CouponStore {
 			usesCount: row.usesCount ?? 0,
 			createdAt: new Date(row.createdAt),
 		};
+		// The seed bypasses `create`, so it re-asserts the same uniqueness: a
+		// case-variant of a live code would make a folded lookup ambiguous.
+		const heldBy = this.#byCode.get(foldCouponCode(record.code));
+		if (heldBy !== undefined && heldBy !== record.id) {
+			throw new CouponCodeConflictError(record.code, heldBy);
+		}
 		this.#coupons.set(record.id, record);
-		this.#byCode.set(record.code, record.id);
+		this.#byCode.set(foldCouponCode(record.code), record.id);
 	}
 }
 

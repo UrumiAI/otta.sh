@@ -1,8 +1,9 @@
 /**
  * Storefront customer account — PLUGIN-OWNED PUBLIC ROUTES (Phase 5 §9, shape
- * per ADR-0003 and the cart-routes precedent). Thin, HTTP-only: each route
- * validates input → `HttpCommerceClient` call over `ctx.http` → serialize the
- * (already-typed) result. The plugin holds NO customer/session state.
+ * per ADR-0003 and the cart-routes precedent). Thin: each route validates
+ * input → calls the in-process `CommerceClient` from `makeCommerceClient` →
+ * serializes the (already-typed) result. The plugin holds NO customer/session
+ * state.
  *
  * ── Platform-verified deviation from plan §4's session-cookie wording ──────
  * Plan §4 has the plugin route set/read the session cookie directly. That is
@@ -21,11 +22,16 @@
  * The service remains the sole authority on identity — it derives `customerId`
  * from the bearer token (§4); this layer only transports it.
  */
-import { COMMERCE_SERVICE_BASE_URL, serviceTokenFromKv } from "../manifest.js";
-import type { AddressWire, OrderSummaryWire } from "../product-commerce/commerce-client.js";
-import { HttpCommerceClient } from "../product-commerce/http-commerce-client.js";
-import type { PluginContext, RouteHandler } from "../types.js";
-import { renderGuard } from "./pdp-route.js";
+import { isIdToken, LOGIN_TOKEN_MAX } from "../commerce/commerce-input.js";
+import { makeCommerceClient } from "../commerce/make-commerce-client.js";
+import type {
+	AccountOrderWire,
+	AddressWire,
+	OrderSummaryWire,
+} from "../product-commerce/commerce-client.js";
+import type { RouteHandler } from "../types.js";
+import { resolveLoginLinkUrl } from "./login-link.js";
+import { renderGuard, type RenderGuardFailure } from "./pdp-route.js";
 
 // ── Public route names ──────────────────────────────────────────────────
 export const ACCOUNT_LOGIN_REQUEST_ROUTE = "storefront/account/login/request";
@@ -33,6 +39,10 @@ export const ACCOUNT_LOGIN_VERIFY_ROUTE = "storefront/account/login/verify";
 export const ACCOUNT_ORDERS_ROUTE = "storefront/account/orders";
 export const ACCOUNT_ORDER_ROUTE = "storefront/account/order";
 export const ACCOUNT_ADDRESSES_ROUTE = "storefront/account/addresses";
+export const ACCOUNT_LOGOUT_ROUTE = "storefront/account/logout";
+/** Who the session is — its customer's email — for a storefront that greets a
+ *  signed-in shopper or prefills their checkout. */
+export const ACCOUNT_ME_ROUTE = "storefront/account/me";
 
 /** Where an unauthenticated account request is redirected. */
 export const ACCOUNT_LOGIN_PATH = "/account/login";
@@ -68,21 +78,7 @@ function sessionCookieDescriptor(token: string, expiresAt: string): SessionCooki
 	};
 }
 
-/** Async because it awaits the write-gate token from write-only kv (ADR-0007).
- *  The login pre-auth calls (`/auth/login/request`, `/auth/login/verify`) and
- *  `logout` are POSTs the service gate blocks without `X-Service-Token`; the
- *  `/me/*` reads carry it harmlessly alongside the session Bearer. Undefined ⇒
- *  no header ⇒ byte-identical to the pre-gate wire. */
-async function createCommerceClient(ctx: PluginContext): Promise<HttpCommerceClient> {
-	const serviceToken = await serviceTokenFromKv(ctx);
-	return new HttpCommerceClient({
-		fetch: ctx.http.fetch,
-		baseUrl: COMMERCE_SERVICE_BASE_URL,
-		...(serviceToken !== undefined ? { serviceToken } : {}),
-	});
-}
-
-/** Exported for reuse (e.g. `entitlements/download-route.ts`) rather than each
+/** Exported for reuse (e.g. `storefront/shopper-state-route.ts`) rather than each
  *  route re-inlining the same `typeof value === "string" && value.length > 0`
  *  guard. `cart-routes.ts` keeps its own copy (pre-existing, out of scope here). */
 export function isNonEmptyString(value: unknown): value is string {
@@ -97,7 +93,7 @@ export interface AccountLoginRequestInput {
 export type AccountLoginRequestResult =
 	| { ok: true }
 	| { ok: false; error: "INVALID_INPUT" }
-	| { ok: false; error: "RENDER_FAILED" };
+	| RenderGuardFailure;
 
 export interface AccountLoginVerifyInput {
 	challengeId?: unknown;
@@ -107,7 +103,7 @@ export type AccountLoginVerifyResult =
 	| { ok: true; cookie: SessionCookieDescriptor; redirectTo: string }
 	| { ok: false; error: "INVALID_INPUT" }
 	| { ok: false; reason: "EXPIRED" | "INVALID" | "CONSUMED" }
-	| { ok: false; error: "RENDER_FAILED" };
+	| RenderGuardFailure;
 
 export interface AccountSessionInput {
 	sessionToken?: unknown;
@@ -115,31 +111,57 @@ export interface AccountSessionInput {
 export type AccountOrdersResult =
 	| { ok: true; orders: OrderSummaryWire[] }
 	| { ok: false; redirectTo: string }
-	| { ok: false; error: "RENDER_FAILED" };
+	| RenderGuardFailure;
 
 export interface AccountOrderInput {
 	sessionToken?: unknown;
 	orderId?: unknown;
 }
 export type AccountOrderResult =
-	| { ok: true; order: OrderSummaryWire }
+	| { ok: true; order: AccountOrderWire }
 	| { ok: false; error: "NOT_FOUND" }
 	| { ok: false; redirectTo: string }
-	| { ok: false; error: "RENDER_FAILED" };
+	| RenderGuardFailure;
+
+/** Logout always answers the same: the session (if any) is revoked, and the
+ *  theme clears its cookie and goes home. */
+export interface AccountLogoutResult {
+	ok: true;
+	clearCookie: { name: string; path: string };
+	redirectTo: string;
+}
+
+/** A session token longer than this is not one we minted — it is dropped
+ *  without a store round trip. Shared with the checkout's place input, which
+ *  carries the same bearer. */
+export const MAX_SESSION_TOKEN_LENGTH = 512;
+
+/** `ok: false` is "not signed in" — no session, or one that no longer resolves —
+ *  with the login path, like every other account read. Never an error: a page
+ *  that asks is rendering for a signed-out shopper too. */
+export type AccountMeResult =
+	| { ok: true; email: string }
+	| { ok: false; redirectTo: string }
+	| RenderGuardFailure;
 
 export type AccountAddressesResult =
 	| { ok: true; addresses: AddressWire[] }
 	| { ok: false; redirectTo: string }
-	| { ok: false; error: "RENDER_FAILED" };
+	| RenderGuardFailure;
 
-/** `POST /auth/login/request` proxy — generic success regardless of account
- *  existence (§9 Risk 4). */
+/** Issue a challenge and email the magic link — generic success regardless of
+ *  account existence or throttling (§9 Risk 4). The link is the operator's
+ *  configured sign-in page and nothing request-derived — not the input, not the
+ *  request's origin (see `login-link.ts`). */
 export function createAccountLoginRequestHandler(): RouteHandler<AccountLoginRequestInput> {
 	return (routeCtx, ctx): Promise<AccountLoginRequestResult> =>
 		renderGuard(ACCOUNT_LOGIN_REQUEST_ROUTE, async () => {
 			const email = routeCtx.input.email;
 			if (!isNonEmptyString(email)) return { ok: false, error: "INVALID_INPUT" } as const;
-			await (await createCommerceClient(ctx)).requestLoginLink(email);
+			const verifyPageUrl = await resolveLoginLinkUrl(ctx);
+			await (
+				await makeCommerceClient(ctx)
+			).requestLoginLink(email, verifyPageUrl === undefined ? {} : { verifyPageUrl });
 			return { ok: true as const };
 		});
 }
@@ -153,13 +175,52 @@ export function createAccountLoginVerifyHandler(): RouteHandler<AccountLoginVeri
 			if (!isNonEmptyString(challengeId) || !isNonEmptyString(token)) {
 				return { ok: false, error: "INVALID_INPUT" } as const;
 			}
-			const result = await (await createCommerceClient(ctx)).verifyLogin(challengeId, token);
+			// A challenge id or token no store could have minted is an INVALID LINK —
+			// the answer a tampered or truncated link deserves — not the client's
+			// thrown input error, which renderGuard would report as RENDER_FAILED and
+			// the site as an outage (QA U-6).
+			if (!isIdToken(challengeId) || token.length > LOGIN_TOKEN_MAX) {
+				return { ok: false as const, reason: "INVALID" as const };
+			}
+			const result = await (await makeCommerceClient(ctx)).verifyLogin(challengeId, token);
 			if (!result.ok) return { ok: false as const, reason: result.reason };
 			return {
 				ok: true as const,
 				cookie: sessionCookieDescriptor(result.sessionToken, result.expiresAt),
 				redirectTo: ACCOUNT_ORDERS_PATH,
 			};
+		});
+}
+
+/** Revoke the session. Idempotent and uniform: no token, an unknown token and a
+ *  live one all answer the same, with the cookie the theme must clear. */
+export function createAccountLogoutHandler(): RouteHandler<AccountSessionInput> {
+	return (routeCtx, ctx): Promise<AccountLogoutResult | RenderGuardFailure> =>
+		renderGuard(ACCOUNT_LOGOUT_ROUTE, async () => {
+			const sessionToken = routeCtx.input.sessionToken;
+			if (isNonEmptyString(sessionToken) && sessionToken.length <= MAX_SESSION_TOKEN_LENGTH) {
+				await (await makeCommerceClient(ctx)).logout(sessionToken);
+			}
+			return {
+				ok: true as const,
+				clearCookie: { name: SESSION_COOKIE_NAME, path: "/" },
+				redirectTo: "/",
+			};
+		});
+}
+
+/** Who the session is. The email is read off the session's customer — the
+ *  route takes no other identity input, so it cannot be asked about anyone else. */
+export function createAccountMeHandler(): RouteHandler<AccountSessionInput> {
+	return (routeCtx, ctx): Promise<AccountMeResult> =>
+		renderGuard(ACCOUNT_ME_ROUTE, async () => {
+			const sessionToken = routeCtx.input.sessionToken;
+			if (!isNonEmptyString(sessionToken) || sessionToken.length > MAX_SESSION_TOKEN_LENGTH) {
+				return { ok: false as const, redirectTo: ACCOUNT_LOGIN_PATH };
+			}
+			const result = await (await makeCommerceClient(ctx)).getMyAccount(sessionToken);
+			if (!result.ok) return { ok: false as const, redirectTo: ACCOUNT_LOGIN_PATH };
+			return { ok: true as const, email: result.email };
 		});
 }
 
@@ -171,7 +232,7 @@ export function createAccountOrdersHandler(): RouteHandler<AccountSessionInput> 
 			if (!isNonEmptyString(sessionToken)) {
 				return { ok: false as const, redirectTo: ACCOUNT_LOGIN_PATH };
 			}
-			const result = await (await createCommerceClient(ctx)).listMyOrders(sessionToken);
+			const result = await (await makeCommerceClient(ctx)).listMyOrders(sessionToken);
 			if (!result.ok) return { ok: false as const, redirectTo: ACCOUNT_LOGIN_PATH };
 			return { ok: true as const, orders: result.orders };
 		});
@@ -186,8 +247,13 @@ export function createAccountOrderHandler(): RouteHandler<AccountOrderInput> {
 			if (!isNonEmptyString(sessionToken)) {
 				return { ok: false as const, redirectTo: ACCOUNT_LOGIN_PATH };
 			}
-			if (!isNonEmptyString(orderId)) return { ok: false as const, error: "NOT_FOUND" };
-			const result = await (await createCommerceClient(ctx)).getMyOrder(sessionToken, orderId);
+			// An id no store could have minted is simply not found — never the
+			// client's thrown input error, which renderGuard would report as
+			// RENDER_FAILED and the account page as a 503 outage (QA U-6).
+			if (!isNonEmptyString(orderId) || !isIdToken(orderId)) {
+				return { ok: false as const, error: "NOT_FOUND" };
+			}
+			const result = await (await makeCommerceClient(ctx)).getMyOrder(sessionToken, orderId);
 			if (result.ok) return { ok: true as const, order: result.order };
 			if (result.reason === "NOT_FOUND") return { ok: false as const, error: "NOT_FOUND" };
 			return { ok: false as const, redirectTo: ACCOUNT_LOGIN_PATH };
@@ -202,7 +268,7 @@ export function createAccountAddressesHandler(): RouteHandler<AccountSessionInpu
 			if (!isNonEmptyString(sessionToken)) {
 				return { ok: false as const, redirectTo: ACCOUNT_LOGIN_PATH };
 			}
-			const result = await (await createCommerceClient(ctx)).listMyAddresses(sessionToken);
+			const result = await (await makeCommerceClient(ctx)).listMyAddresses(sessionToken);
 			if (!result.ok) return { ok: false as const, redirectTo: ACCOUNT_LOGIN_PATH };
 			return { ok: true as const, addresses: result.addresses };
 		});

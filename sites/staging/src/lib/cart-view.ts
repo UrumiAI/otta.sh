@@ -77,19 +77,20 @@ export function isCartPricingDegraded(pricing: CartPricingWire | null | undefine
  * radius of failing closed points the other way. `state !== "active"` here
  * would brick a LIVE cart read-only — no quantity field, no remove button, no
  * way to check out — for a shopper whose cart is perfectly fine. And it would
- * do it on a value that NOTHING validates at runtime anywhere on the wire path:
- * `CartWire.state` is typed `string`, and `HttpCommerceClient`'s `#cartResult`
- * blind-casts the response body after checking only that it carries an
- * `ok`/`reason` envelope. Whatever the service ever emits arrives here
- * unchecked.
+ * do it on a value that NOTHING narrows at runtime anywhere on the wire path:
+ * `CartWire.state` is typed `string`, deliberately wider than the domain's
+ * `CartState` union that `InProcessCommerceClient`'s `serializeCart` copies it
+ * from — so this site, one real HTTP hop downstream of the plugin, still sees
+ * a bare `string` with nothing to narrow it back.
  *
- * `CartWire.orderId` rides that same unchecked path, and it is the reason the
- * plugin normalizes ONE field and not this one: `state` fails safely under a
- * blind cast (`isCartTerminal(undefined)` is `false`, so the page draws the
+ * `CartWire.orderId` rides that same wide-open path, and it is the reason the
+ * plugin normalizes ONE field and not this one: `state` fails safely staying
+ * a bare string (`isCartTerminal(undefined)` is `false`, so the page draws the
  * live cart it draws for every unknown state), whereas `orderId` fails
  * UNSAFELY — `undefined !== null` is true, so `cart/index.astro` would offer
- * `/orders/undefined` as the panel's only action. Hence the coercion in
- * `HttpCommerceClient.getCart`, at the wire boundary, and none downstream.
+ * `/orders/undefined` as the panel's only action. Hence `CartWire.orderId` is
+ * declared REQUIRED rather than optional (see its own doc comment on
+ * `commerce-client.ts`), and none downstream.
  *
  * So this answers for the ONE state that is genuinely terminal (`checked_out`
  * is one-way — `CartState` in `packages/domain/src/ports/cart-store.ts`, and
@@ -115,9 +116,11 @@ export function isCartTerminal(state: string | undefined): boolean {
  * unrecognised state as a live cart, and logs that it did. Without this, a
  * third state would arrive as a permanent, silent mis-render. The other half of
  * that worry — a `serializeCart` that quietly stopped emitting the field — is
- * now pinned at the producer instead (#136): `carts.http.contract.test.ts`
- * asserts the wire carries `state`, so a silent drop fails CI rather than
- * reaching this log.
+ * pinned at the producer by the type itself: `InProcessCommerceClient`'s
+ * `serializeCart` is annotated `: CartWire`, whose `state` is a required field,
+ * so dropping it fails to compile. Read-back assertions on `state` in the
+ * plugin's sandbox and client-contract suites corroborate that at runtime. This
+ * log guards the half the type cannot: a third state VALUE.
  */
 export function isKnownCartState(state: string | undefined): boolean {
 	return state === "active" || state === "checked_out";
@@ -145,9 +148,16 @@ export const CART_CHECKED_OUT_TITLE = "This cart has been checked out.";
  */
 export const CART_CHECKED_OUT_BODY =
 	"Its items are on an order now, so this cart can't be changed.";
-/** Said BESIDE the "Start a new cart" control, never after it: it clears an
- *  in-flight payment too, and a buyer must know that before they click. */
-export const CART_NEW_CART_CONSEQUENCE = "This clears the cart and any payment still in progress.";
+/** Said BESIDE the "Start a new cart" control, never after it: it cancels the
+ *  cart's unpaid order too (`/checkout/new-cart` → `storefront/order/abandon`,
+ *  QA2 X4), and a buyer must know that before they click — including the
+ *  "cancelled" email the cancel sends ("at your request"). It promises no more
+ *  than happens: the order's PaymentIntent is withdrawn at Stripe in the same
+ *  request when Stripe answers in time, and otherwise by the sweep shortly
+ *  after — so a payment can still land in between, and is then refunded like
+ *  any payment on a cancelled unpaid order. A PAID order is never touched. */
+export const CART_NEW_CART_CONSEQUENCE =
+	"This clears the cart and cancels its order if it is still awaiting payment — we'll email you that it was cancelled. Any payment for that order that arrives after this will be refunded.";
 /** The honest version of "we lost your order link", for the cart that carries
  *  no `orderId`: one checked out before `carts.order_id` existed, or a wire
  *  that stopped emitting the field. Uncommon since #132 — the cart names its

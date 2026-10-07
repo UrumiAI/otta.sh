@@ -2,7 +2,7 @@ import { readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, test } from "vitest";
-import { ALLOWED_HOSTS, OTTA_PLUGIN_CAPABILITIES } from "../src/manifest.js";
+import { ALLOWED_HOSTS, OTTA_PLUGIN_CAPABILITIES, STRIPE_API_HOST } from "../src/manifest.js";
 
 const SRC_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../src");
 
@@ -97,13 +97,33 @@ describe("sandbox-clean guard: the checkout feature widens NOTHING (ADR-0012)", 
 		expect([...OTTA_PLUGIN_CAPABILITIES]).toEqual(["content:read", "network:request"]);
 	});
 
-	test("ALLOWED_HOSTS still holds exactly ONE host (the commerce service)", () => {
-		expect(ALLOWED_HOSTS).toHaveLength(1);
+	// INC-D3a: the commerce service is gone, and with it the one host this
+	// suite used to pin. In-process, the plugin's own baseline egress is
+	// Stripe's SERVER-SIDE API (`STRIPE_API_HOST`, always granted — it is a
+	// constant, not a deployment-supplied define) and SMTP2GO's four send-API
+	// hosts (`SMTP2GO_API_HOSTS`, always granted because a store picks SMTP2GO in
+	// Settings, which cannot widen a build-time list — ADR-0005), plus whatever
+	// email/x402 hosts a deployment's build-time defines resolve to. Neither
+	// define is set in this vitest run, so the allowlist is exactly those five.
+	test("ALLOWED_HOSTS holds exactly Stripe's API host and SMTP2GO's four send hosts in this build (no email/x402 define is set)", () => {
+		expect(ALLOWED_HOSTS).toEqual([
+			STRIPE_API_HOST,
+			"api.smtp2go.com",
+			"us-api.smtp2go.com",
+			"eu-api.smtp2go.com",
+			"au-api.smtp2go.com",
+		]);
 	});
 
-	test("js.stripe.com is NOT in allowedHosts — browser→Stripe is not plugin egress", () => {
+	test("js.stripe.com is NOT in allowedHosts — browser→Stripe is not plugin egress, even though api.stripe.com legitimately is", () => {
+		// `api.stripe.com` (server-side, PaymentIntents/refunds) is REAL plugin
+		// egress now and belongs in ALLOWED_HOSTS — granting it does not grant
+		// `js.stripe.com` (the browser-side CDN host `stripe.confirmPayment()`
+		// talks to, which never passes through the plugin). A blanket
+		// "nothing containing 'stripe'" assertion would fail on the sanctioned
+		// host, so this pins the SPECIFIC absent host by name instead.
 		expect(ALLOWED_HOSTS).not.toContain("js.stripe.com");
-		expect(ALLOWED_HOSTS.some((host) => host.includes("stripe"))).toBe(false);
+		expect(ALLOWED_HOSTS).toContain(STRIPE_API_HOST);
 	});
 
 	test("no plugin source references js.stripe.com — Stripe.js is loaded by the THEME page, never the plugin", () => {

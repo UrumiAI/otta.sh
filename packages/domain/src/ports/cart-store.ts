@@ -13,10 +13,35 @@ import type { IdempotencyKey, OrderId } from "../money/ids.js";
  * (Phase 1) at display/checkout, not stored here.
  */
 export interface CartStore {
-	/** Mint a fresh 128-bit-unguessable cart, `state='active'`, in `currency`. */
-	create(currency: Currency): Promise<string>;
+	/**
+	 * Mint a fresh 128-bit-unguessable cart, `state='active'`, in `currency`.
+	 *
+	 * With a `key` the create is IDEMPOTENT: every call with the same key — however
+	 * many race — answers the same cart (created by whichever call won). The id is
+	 * still minted, never derived from the key.
+	 *
+	 * KEYS ARE SERVER-DERIVED, never caller-chosen: a key answers its cart's id. The
+	 * only producer is `replaceSpentCart`, which derives `rotate:<spentCartId>` after
+	 * checking the spent cart exists, is checked out and its order is finished — so
+	 * the one thing a key reveals is the replacement of a cart the caller already
+	 * holds the id of (cart ids are bearer secrets).
+	 *
+	 * The answer is the cart the key minted, IN WHATEVER STATE IT IS NOW: a keyed
+	 * create asked again after its cart has itself been checked out returns that
+	 * checked-out cart. A caller adding to it gets CART_CHECKED_OUT, and the next
+	 * replacement — keyed on THAT cart — is fresh, so it heals on the next rotation.
+	 * Absent ⇒ every call mints a new cart, as before.
+	 */
+	create(currency: Currency, key?: IdempotencyKey): Promise<string>;
 	/** Read a cart with its lines (each carrying its live reservation state), or null. */
 	get(cartId: string): Promise<Cart | null>;
+	/**
+	 * The cart's state and the sum of its lines' quantities, or null for an unknown
+	 * cart — from the cart's OWN record only: no reservation state, no hold expiry,
+	 * no write. For a reader that only counts (the storefront header, on every
+	 * page), where `get`'s per-line reservation reads would be the whole cost.
+	 */
+	units(cartId: string): Promise<{ state: Cart["state"]; units: number } | null>;
 	/**
 	 * Read the `cart_mutations` ledger entry for `key`, or null. The use-cases
 	 * consult this BEFORE any inventory movement (ledger-first): a `completed`
@@ -35,6 +60,30 @@ export interface CartStore {
 	 */
 	claimMutation(input: ClaimMutationInput): Promise<ClaimMutationResult>;
 	/**
+	 * Retire an `add` claim whose reserve was DECIDED with no reservation
+	 * (`OUT_OF_STOCK`), so it stops being outstanding work for the sweep.
+	 *
+	 * The claim exists so a crash between it and the line write leaves a marker
+	 * the sweep can follow to a dangling hold. A decided-out-of-stock reserve has
+	 * no hold and never will — the reserve key is once-only, so every replay reads
+	 * back the same refusal — yet the claim stayed outstanding for good, and an
+	 * adapter that indexes outstanding claims for its sweep (the document store's
+	 * `holdExpiresAt`) kept that cart listed and re-read it on every tick.
+	 *
+	 * The record is RETIRED, never completed and never deleted: it reads back
+	 * `completed: false, abandoned: true`, so a same-key replay resumes, re-reads
+	 * the reserve's refusal and answers `OUT_OF_STOCK` again. An adapter may bound
+	 * how many retired records it keeps; once one is evicted, a very late replay of
+	 * its key finds no record and runs as a fresh add — which, if the cart has
+	 * since gained a line for that sku, is an increment of that line answered with
+	 * current truth, exactly the residual an evicted COMPLETED record already has.
+	 * Idempotent; a no-op for an absent key, an unknown cart, or a record that is
+	 * completed or already retired. The caller must only retire a claim whose
+	 * reserve answered not-ok: retiring one that may still own a hold would hide
+	 * that hold from the sweep.
+	 */
+	abandonClaim(cartId: string, key: IdempotencyKey): Promise<void>;
+	/**
 	 * Write/replace the line for `input.sku` and mark the `input.key` ledger
 	 * entry completed (recording the resulting line). Also stamps the
 	 * reservation's `expires_at` so an abandoned hold is reaped by the sweep —
@@ -44,6 +93,12 @@ export interface CartStore {
 	 * instead of resurrecting a visible line over dead stock ("visible line ⟺
 	 * live hold"). Idempotent: an already-completed entry returns the line
 	 * without re-applying.
+	 *
+	 * `productId`: a null one keeps the line's stored productId; a non-null one
+	 * replaces it (issue #373). Two first adds of the same sku can race here, and
+	 * the one sent without a productId must not clear the other's — checkout
+	 * refuses a line that has none. On a compare-and-set store the rule holds on
+	 * every retry, against the line as re-read.
 	 */
 	upsertLine(input: UpsertLineInput): Promise<CartLine>;
 	/**
@@ -77,11 +132,12 @@ export interface CartStore {
 	 * call did not record its order id**.
 	 *
 	 * **The converse does NOT hold**: `orderId === null` does not mean no order
-	 * exists for this cart. The stamp lives only in `finalizeOrder`, and the I1
-	 * idempotency short-circuit returns before it. A crash between
-	 * `orderStore.createFromCart` and this flip, or a `RESERVATION_LOST` abort,
-	 * leaves a real `pending` order behind a permanently `active`, NULL cart —
-	 * and every same-key replay thereafter returns at I1 without ever flipping.
+	 * exists for this cart. The stamp is written only after every hold is
+	 * adopted. A crash between `orderStore.createFromCart` and this flip leaves a
+	 * real `pending` order behind an `active`, NULL cart until the same key is
+	 * replayed (the replay of a `pending` order re-runs adoption and this flip);
+	 * a `RESERVATION_LOST` abort leaves it that way permanently — no replay of
+	 * that key ever flips it.
 	 * The column answers "which order did this cart *successfully* hand off to",
 	 * never "does an order exist for this cart". `orders.cart_id` remains the
 	 * only complete answer to the latter and is not maintained here.
@@ -100,8 +156,16 @@ export interface CartStore {
 	 * `expires_at IS NULL AND created_at <= cutoff` with the reservation's key
 	 * present in the `cart_mutations` ledger. A raw (non-cart) reserve is never
 	 * listed. Drives both lazy-on-read and the scheduled sweep.
+	 *
+	 * A hold that can no longer be expired (its reservation released or committed
+	 * behind the cart's back) is never listed. A store that keeps a DERIVED
+	 * candidate index (the document store's `holdExpiresAt`) may rewrite that index
+	 * while listing, so such a cart stops matching — and that is the ONLY write a
+	 * listing may make: it never touches stock, holds, lines or the mutation ledger.
+	 * A store with no derived index (the in-memory fake, which filters live holds
+	 * directly on every call) has nothing to heal.
 	 */
-	listExpired(now: string, cutoff: string): Promise<ExpiredHold[]>;
+	listExpired(now: string, cutoff: string, options?: ExpiryListOptions): Promise<ExpiredHold[]>;
 	/**
 	 * Atomically expire one hold: the guarded flip `held → released` RE-CHECKS
 	 * the deadline inside the same conditional statement (`expires_at <= now`, or
@@ -126,6 +190,10 @@ export interface RecordedCartMutation {
 	/** False until the mutation's final write landed; a replay of an incomplete
 	 *  entry RESUMES the choreography instead of short-circuiting. */
 	completed: boolean;
+	/** True once `abandonClaim` (or the sweep) retired an incomplete claim: it is
+	 *  no longer outstanding work. Informational — a replay still resumes on
+	 *  `completed: false`. Absent on every other record. */
+	abandoned?: boolean;
 }
 
 export interface ClaimMutationInput {
@@ -214,6 +282,7 @@ export interface ExpiredHold {
 export interface UpsertLineInput {
 	cartId: string;
 	sku: string;
+	/** Null keeps the line's stored productId; non-null replaces it (see `upsertLine`). */
 	productId: string | null;
 	qty: number;
 	/** Null for a **digital** line (Phase 4 §6): it reserves nothing, so there is
@@ -231,4 +300,27 @@ export interface AdjustLineInput {
 	/** Null for a digital line (no hold to re-stamp, Phase 4 §6). */
 	expiresAt: string | null;
 	key: IdempotencyKey;
+}
+
+/**
+ * Bounds an expiry LIST (`CartStore.listExpired`, `OrderStore.listExpirable`).
+ *
+ * The scheduled sweep runs in a host hook with a hard timeout, and an unbounded
+ * list reads the whole backlog — every page, plus per-row reads — before the
+ * sweep's own per-unit checks ever run. With a `limit` the store stops reading
+ * once it holds that many candidates and returns at most that many; without one
+ * it returns them all, as before. A positive integer; anything else is a
+ * `RangeError`. Which candidates a limited call returns is unspecified: the
+ * rest are still lapsed, and still listed, on the next call.
+ */
+export interface ExpiryListOptions {
+	readonly limit?: number;
+	/**
+	 * Asked before each CANDIDATE the store would examine (a cart document, for a
+	 * document store; a hold, for the fake); `false` ends the list with what it
+	 * has. The bound on the list's own cost: a run of candidates that yield
+	 * nothing, or carts with many lines, would otherwise be read in full before the
+	 * caller's per-unit budget ever runs. Default: never stop.
+	 */
+	readonly shouldContinue?: () => boolean;
 }

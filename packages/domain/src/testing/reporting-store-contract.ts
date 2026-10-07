@@ -1,16 +1,21 @@
 import { describe, expect, test } from "vitest";
 import type { ReportingStore } from "../ports/reporting-store.js";
 import {
+	EXPECTED_ACTIVE_REFUND_SUM,
 	EXPECTED_ORDERS_BY_STATUS,
+	EXPECTED_REFUNDS_UNDER_REVENUE_ALLOW_LIST,
 	EXPECTED_REVENUE_BY_DAY,
 	EXPECTED_SUM_ALL,
 	EXPECTED_SUM_EXCLUDING_CANCELLED_REFUNDED,
 	EXPECTED_TOP_BY_QUANTITY,
 	EXPECTED_TOP_BY_REVENUE,
+	EXPECTED_TOTAL_REFUNDED,
 	EXPECTED_TOTAL_REVENUE,
 	FIXTURE_INVENTORY,
 	FIXTURE_ITEMS,
 	FIXTURE_ORDERS,
+	FIXTURE_PRODUCT_TITLES,
+	FIXTURE_REFUNDS,
 	REPORTING_WINDOW,
 } from "./reporting-fixture.js";
 
@@ -33,6 +38,21 @@ export interface ReportingStoreHarness {
 		quantity: number;
 	}): Promise<void>;
 	seedInventory(row: { sku: string; onHand: number }): Promise<void>;
+	/** Seed a `refunds` ledger row for `revenueByPeriod`'s refunded half. `status`
+	 *  defaults to `'recorded'` (the column default) — only that state is money
+	 *  that came back. The row needs no timestamp of its own: the bucket comes
+	 *  from the ORDER's `created_at`. */
+	seedRefund(row: {
+		orderId: string;
+		amountCents: number;
+		currency: string;
+		status?: string;
+	}): Promise<void>;
+	/** Seed a `product_commerce` row behind a sku, for `lowStock`'s title join.
+	 *  Several rows MAY share one sku as long as at most one is live — that is
+	 *  exactly what the partial unique index permits, and the case the join's
+	 *  `deleted_at IS NULL` predicate exists to survive. */
+	seedProduct(row: { sku: string; title: string | null; deletedAt?: string | null }): Promise<void>;
 }
 
 export interface ReportingStoreContractOptions {
@@ -50,6 +70,8 @@ export function reportingStoreContract(
 			for (const o of FIXTURE_ORDERS) await h.seedOrder(o);
 			for (const it of FIXTURE_ITEMS) await h.seedOrderItem(it);
 			for (const inv of FIXTURE_INVENTORY) await h.seedInventory(inv);
+			for (const p of FIXTURE_PRODUCT_TITLES) await h.seedProduct(p);
+			for (const r of FIXTURE_REFUNDS) await h.seedRefund(r);
 			return h;
 		}
 
@@ -74,8 +96,18 @@ export function reportingStoreContract(
 			const buckets = await store.revenueByPeriod(REPORTING_WINDOW, "month");
 			// All three fixture days fall in 2026-07 → one bucket per currency.
 			expect(buckets).toEqual([
-				{ bucketStart: "2026-07-01T00:00:00.000Z", currency: "EUR", revenueCents: 9000 },
-				{ bucketStart: "2026-07-01T00:00:00.000Z", currency: "USD", revenueCents: 11_500 },
+				{
+					bucketStart: "2026-07-01T00:00:00.000Z",
+					currency: "EUR",
+					revenueCents: 9000,
+					refundedCents: 300,
+				},
+				{
+					bucketStart: "2026-07-01T00:00:00.000Z",
+					currency: "USD",
+					revenueCents: 11_500,
+					refundedCents: 6916,
+				},
 			]);
 		});
 
@@ -111,9 +143,107 @@ export function reportingStoreContract(
 				"week",
 			);
 			expect(weeks).toEqual([
-				{ bucketStart: "2026-07-06T00:00:00.000Z", currency: "USD", revenueCents: 1000 },
-				{ bucketStart: "2026-07-13T00:00:00.000Z", currency: "USD", revenueCents: 2500 },
+				{
+					bucketStart: "2026-07-06T00:00:00.000Z",
+					currency: "USD",
+					revenueCents: 1000,
+					refundedCents: 0,
+				},
+				{
+					bucketStart: "2026-07-13T00:00:00.000Z",
+					currency: "USD",
+					revenueCents: 2500,
+					refundedCents: 0,
+				},
 			]);
+		});
+
+		// -- refundedCents (INC-23: the revenue wire stops omitting refunds) -------
+
+		test("revenueByPeriod carries refundedCents per bucket, aggregating a partial and several refunds on one order — without netting revenue down", async () => {
+			const { store } = await seeded();
+			const buckets = await store.revenueByPeriod(REPORTING_WINDOW, "day");
+			const at = (day: string, currency: string) =>
+				buckets.find((b) => b.bucketStart === day && b.currency === currency);
+			// o1's 250 came back out of a 1000 order that is still `paid`: the day's
+			// revenue is untouched and the refund is stated beside it.
+			expect(at("2026-07-10T00:00:00.000Z", "USD")).toEqual({
+				bucketStart: "2026-07-10T00:00:00.000Z",
+				currency: "USD",
+				revenueCents: 3000,
+				refundedCents: 250,
+			});
+			// o4's two rows aggregate (100 + 200), rather than the last one winning.
+			expect(at("2026-07-10T00:00:00.000Z", "EUR")?.refundedCents).toBe(300);
+		});
+
+		test("refundedCents counts FINALIZED rows only — a reserved/unverified/voided row is not money that came back", async () => {
+			const { store } = await seeded();
+			const buckets = await store.revenueByPeriod(REPORTING_WINDOW, "day");
+			const total = buckets.reduce((s, b) => s + b.refundedCents, 0);
+			expect(total).toBe(EXPECTED_TOTAL_REFUNDED);
+			// The ceiling's ACTIVE sum (everything but `voided`) is a DIFFERENT number
+			// and reusing it here would report in-flight attempts as refunds.
+			expect(total).not.toBe(EXPECTED_ACTIVE_REFUND_SUM);
+			// 07-11 carries three non-finalized rows between its two currencies and
+			// must still read zero in both.
+			for (const currency of ["EUR", "USD"]) {
+				expect(
+					buckets.find(
+						(b) => b.bucketStart === "2026-07-11T00:00:00.000Z" && b.currency === currency,
+					)?.refundedCents,
+				).toBe(0);
+			}
+		});
+
+		test("refundedCents does NOT apply the revenue allow-list: a fully refunded order's money is still reported", async () => {
+			const { store } = await seeded();
+			const buckets = await store.revenueByPeriod(REPORTING_WINDOW, "day");
+			const total = buckets.reduce((s, b) => s + b.refundedCents, 0);
+			// o10 is `refunded` — excluded from revenue by the allow-list. Filtering
+			// refunds through the same list would drop exactly the refund that
+			// matters most, leaving the money reportable nowhere.
+			expect(total).not.toBe(EXPECTED_REFUNDS_UNDER_REVENUE_ALLOW_LIST);
+			expect(
+				buckets.find((b) => b.bucketStart === "2026-07-12T00:00:00.000Z" && b.currency === "USD")
+					?.refundedCents,
+			).toBe(6666);
+		});
+
+		test("a period whose ONLY activity was a refund is a bucket at revenueCents 0, never a missing bucket", async () => {
+			const h = await makeStore();
+			await h.seedOrder({
+				id: "r-only",
+				state: "refunded",
+				currency: "USD",
+				createdAt: "2026-07-11T09:00:00.000Z",
+				totalCents: 4200,
+			});
+			await h.seedRefund({ orderId: "r-only", amountCents: 4200, currency: "USD" });
+			// Nothing here is in the revenue allow-list, so a revenue-only query
+			// returns NOTHING for this window — which is precisely how the money used
+			// to disappear from the report.
+			expect(await h.store.revenueByPeriod(REPORTING_WINDOW, "day")).toEqual([
+				{
+					bucketStart: "2026-07-11T00:00:00.000Z",
+					currency: "USD",
+					revenueCents: 0,
+					refundedCents: 4200,
+				},
+			]);
+		});
+
+		test("a refund on an order OUTSIDE the window is not reported inside it (the bucket is the ORDER's, not the refund's)", async () => {
+			const h = await makeStore();
+			await h.seedOrder({
+				id: "old",
+				state: "paid",
+				currency: "USD",
+				createdAt: "2026-06-01T09:00:00.000Z", // before REPORTING_WINDOW
+				totalCents: 5000,
+			});
+			await h.seedRefund({ orderId: "old", amountCents: 5000, currency: "USD" });
+			expect(await h.store.revenueByPeriod(REPORTING_WINDOW, "day")).toEqual([]);
 		});
 
 		test("ordersByStatus counts orders per state for the window, including expired", async () => {
@@ -181,16 +311,49 @@ export function reportingStoreContract(
 		test("lowStock returns SKUs at or below threshold, ascending by on_hand", async () => {
 			const { store } = await seeded();
 			expect(await store.lowStock(5)).toEqual([
-				{ sku: "SKU-A", onHand: 0 },
-				{ sku: "SKU-B", onHand: 3 },
-				{ sku: "SKU-C", onHand: 5 },
-				{ sku: "SKU-E", onHand: 5 },
+				{ sku: "SKU-A", onHand: 0, title: "Alpha Widget" },
+				{ sku: "SKU-B", onHand: 3, title: null },
+				{ sku: "SKU-C", onHand: 5, title: "Gamma Sprocket" },
+				{ sku: "SKU-E", onHand: 5, title: null },
 			]);
 			expect(await store.lowStock(3)).toEqual([
-				{ sku: "SKU-A", onHand: 0 },
-				{ sku: "SKU-B", onHand: 3 },
+				{ sku: "SKU-A", onHand: 0, title: "Alpha Widget" },
+				{ sku: "SKU-B", onHand: 3, title: null },
 			]);
-			expect(await store.lowStock(0)).toEqual([{ sku: "SKU-A", onHand: 0 }]);
+			expect(await store.lowStock(0)).toEqual([{ sku: "SKU-A", onHand: 0, title: "Alpha Widget" }]);
+		});
+
+		test("lowStock carries the LIVE product title; a null product title stays null and is NEVER the sku", async () => {
+			const { store } = await seeded();
+			const rows = await store.lowStock(5);
+			const bySku = new Map(rows.map((r) => [r.sku, r]));
+			expect(bySku.get("SKU-A")?.title).toBe("Alpha Widget");
+			// The product exists and is live, but its own title is null. The sku
+			// must never be substituted — a renderer's `(untitled)` affordance
+			// depends on telling these apart.
+			expect(bySku.get("SKU-B")?.title).toBeNull();
+			expect(bySku.get("SKU-B")?.title).not.toBe("SKU-B");
+		});
+
+		test("lowStock: a soft-deleted product sharing a live sku neither duplicates the row nor titles it", async () => {
+			const { store } = await seeded();
+			const rows = await store.lowStock(5);
+			// SKU-C is claimed by one LIVE row and one tombstone (legal — live-sku
+			// uniqueness is a PARTIAL index, so a soft delete frees the sku). The
+			// join must be 1:1 against the live row only.
+			expect(rows.filter((r) => r.sku === "SKU-C")).toHaveLength(1);
+			expect(rows.find((r) => r.sku === "SKU-C")?.title).toBe("Gamma Sprocket");
+			// SKU-E is claimed ONLY by a tombstone: the low-stock row still lists
+			// (inventory is the driving table) but a dead product cannot title it.
+			expect(rows.filter((r) => r.sku === "SKU-E")).toHaveLength(1);
+			expect(rows.find((r) => r.sku === "SKU-E")?.title).toBeNull();
+		});
+
+		test("lowStock: a sku with no product row at all reports title null, never the sku", async () => {
+			const h = await seeded();
+			await h.seedInventory({ sku: "SKU-ORPHAN", onHand: 1 });
+			const row = (await h.store.lowStock(5)).find((r) => r.sku === "SKU-ORPHAN");
+			expect(row).toEqual({ sku: "SKU-ORPHAN", onHand: 1, title: null });
 		});
 
 		test("revenueByPeriod on an empty window returns no buckets", async () => {

@@ -3,18 +3,22 @@
  * paid-plan/footgun exclusions are pinned as tests:
  *  - NO `worker_loaders` (the LOADER binding is consumed only by the
  *    sandbox runner and flips the account onto Workers Paid — ADR-0006);
- *  - the DB/MEDIA binding SHAPE (the tracked file is a template — real
- *    resource ids live in the gitignored wrangler.local.jsonc, so only
+ *  - the DB/MEDIA/DOWNLOADS binding SHAPE (the tracked file is a template —
+ *    real resource ids live in the gitignored wrangler.local.jsonc, so only
  *    structure is pinned, never account-specific values);
+ *  - `DOWNLOADS` is PRIVATE (issue #376): a different bucket from `MEDIA`,
+ *    whose every key EmDash serves without auth, and no setting beyond the
+ *    binding's own (src/lib/downloads-bucket.ts re-checks the bucket split on
+ *    the config the build really uses);
  *  - `nodejs_compat` present (required by the emdash CF stack);
- *  - `global_fetch_strictly_public` PRESENT (deploy-verified: Cloudflare
- *    blocks Worker→*.workers.dev subrequests and stubs them 404 — the
- *    site's ctx.http calls to a commerce-service Worker on workers.dev
- *    never arrived without the flag). The flag is incompatible with D1 read-replica
- *    sessions (every SSR request hangs, silently — em-dash docs
- *    deployment/cloudflare.mdx:121-130, issue #1273), so D1 `session`
- *    must stay OFF while it is present — the pairing invariant is pinned
- *    in site-config.test.ts;
+ *  - `global_fetch_strictly_public` ABSENT (issue #375). It was added for the
+ *    site's ctx.http calls to a commerce-service Worker on *.workers.dev,
+ *    which Cloudflare otherwise blocks and stubs 404; that service and the
+ *    call are gone (ADR-0020, #288), and no remaining egress targets
+ *    workers.dev or this Worker's own zone. It must not come back: D1
+ *    sessions are on (`"primary-first"`), and the flag hangs every session
+ *    query (emdash issue #1273) — the pairing guard in site-config.test.ts
+ *    fails on the pair, and astro.config.ts refuses it at build time;
  *  - a cron trigger (scheduled publishing needs it on Workers);
  *  - no secret-shaped keys under `vars` (secrets go via `wrangler secret`).
  */
@@ -68,22 +72,53 @@ describe("wrangler.jsonc", () => {
 		expect(d1[0]?.database_id).toMatch(/^[0-9a-f-]{36}$/);
 	});
 
-	test("exactly one R2 bucket, bound as MEDIA, with a bucket name", () => {
-		const r2 = config["r2_buckets"] as { binding?: string; bucket_name?: string }[];
-		expect(r2).toHaveLength(1);
-		expect(r2[0]?.binding).toBe("MEDIA");
-		expect(typeof r2[0]?.bucket_name).toBe("string");
-		expect(r2[0]?.bucket_name?.length).toBeGreaterThan(0);
+	const r2 = config["r2_buckets"] as Record<string, unknown>[];
+	const bucket = (binding: string): Record<string, unknown> | undefined =>
+		r2.find((entry) => entry["binding"] === binding);
+
+	test("exactly two R2 buckets, bound as MEDIA and DOWNLOADS, each with a bucket name", () => {
+		expect(r2.map((entry) => entry["binding"])).toEqual(["MEDIA", "DOWNLOADS"]);
+		for (const binding of ["MEDIA", "DOWNLOADS"]) {
+			const name = bucket(binding)?.["bucket_name"];
+			expect(typeof name).toBe("string");
+			expect((name as string).length).toBeGreaterThan(0);
+		}
 	});
 
-	test("nodejs_compat on; global_fetch_strictly_public on (workers.dev subrequests are otherwise stubbed 404)", () => {
+	test("DOWNLOADS is a DIFFERENT bucket from MEDIA (EmDash serves every MEDIA key publicly)", () => {
+		const media = bucket("MEDIA");
+		const downloads = bucket("DOWNLOADS");
+		expect(downloads?.["bucket_name"]).not.toBe(media?.["bucket_name"]);
+		// A preview bucket, if one is ever added, must not cross over either.
+		const mediaNames = [media?.["bucket_name"], media?.["preview_bucket_name"]].filter(Boolean);
+		for (const name of [downloads?.["bucket_name"], downloads?.["preview_bucket_name"]]) {
+			if (name !== undefined) expect(mediaNames).not.toContain(name);
+		}
+	});
+
+	test("DOWNLOADS carries the binding's own keys and nothing else — no public or domain setting", () => {
+		// Public access (r2.dev) and custom domains are bucket settings made in the
+		// dashboard or with `wrangler r2 bucket dev-url|domain`, never here — so the
+		// template must not grow a key that reads like one, and DEPLOYMENT.md §2.1
+		// says never to turn either on for this bucket. An allowlist, so any new key
+		// is a decision this test makes someone take.
+		const allowed = ["binding", "bucket_name", "preview_bucket_name", "jurisdiction"];
+		for (const key of Object.keys(bucket("DOWNLOADS") ?? {})) {
+			expect(allowed).toContain(key);
+		}
+		expect(JSON.stringify(bucket("DOWNLOADS"))).not.toMatch(/public|domain|dev_?url/i);
+	});
+
+	test("nodejs_compat on; global_fetch_strictly_public OFF (its workers.dev reason is gone)", () => {
 		const flags = config["compatibility_flags"] as string[];
 		expect(flags).toContain("nodejs_compat");
-		// Without this flag the deployed Worker's fetch to the commerce
-		// service on *.workers.dev never leaves Cloudflare (stub 404) —
-		// verified with parallel wrangler tails. Requires D1 session OFF
-		// (pairing invariant in site-config.test.ts).
-		expect(flags).toContain("global_fetch_strictly_public");
+		// The flag existed only so the Worker's fetch to the commerce service on
+		// *.workers.dev left Cloudflare instead of being stubbed 404. That service
+		// is gone (ADR-0020): the plugin's egress is api.stripe.com plus the
+		// deployment's email and x402 hosts (DEPLOYMENT.md §4), none of them on
+		// workers.dev, and the site makes no fetch of its own. It must not come
+		// back while D1 sessions are on — the pairing guard in site-config.test.ts.
+		expect(flags).not.toContain("global_fetch_strictly_public");
 	});
 
 	test("cron trigger present (scheduled publishing on Workers)", () => {

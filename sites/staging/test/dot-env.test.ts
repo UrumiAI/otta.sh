@@ -1,7 +1,8 @@
 /**
  * .env parser guard (review item 6): astro.config.ts falls back to
- * sites/staging/.env for COMMERCE_SERVICE_URL because Astro does NOT load
- * .env into process.env for the config module (verified: an .env-only
+ * sites/staging/.env for its build-time variables (`EMAIL_API_URL`,
+ * `X402_FACILITATOR_URL`, the Stripe publishable key) because Astro does NOT
+ * load .env into process.env for the config module (verified: an .env-only
  * value never reached the define/allowedHosts). This pins the tiny parser
  * that closes that gap.
  */
@@ -14,7 +15,7 @@ describe("parseDotEnv", () => {
 			[
 				"# comment",
 				"",
-				"COMMERCE_SERVICE_URL=http://127.0.0.1:3000",
+				"EMAIL_API_URL=http://127.0.0.1:3000",
 				'QUOTED="https://svc.example.com"',
 				"SINGLE='v'",
 				"SPACED = padded ",
@@ -23,7 +24,7 @@ describe("parseDotEnv", () => {
 			].join("\n"),
 		);
 		expect(parsed).toEqual({
-			COMMERCE_SERVICE_URL: "http://127.0.0.1:3000",
+			EMAIL_API_URL: "http://127.0.0.1:3000",
 			QUOTED: "https://svc.example.com",
 			SINGLE: "v",
 			SPACED: "padded",

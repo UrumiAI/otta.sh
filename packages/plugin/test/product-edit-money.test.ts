@@ -1,12 +1,20 @@
 import { describe, expect, test } from "vitest";
-import { formatPriceMinorUnits, parsePriceMinorUnits } from "../src/admin/products-page.js";
+import { formatMinorUnitsInput } from "../src/admin/money-input.js";
+import { parsePriceMinorUnits } from "../src/admin/products-actions.js";
 
-// The money input for the standalone product edit page (admin-UX Increment 2
-// slice 2). Money is integer minor units, NEVER a float (CLAUDE.md): a Block Kit
-// number_input would hand back a JS float, so price is a TEXT input parsed by
-// EXACT integer string math. These pin that the parse/format round-trips and
-// that no float-arithmetic footguns leak in (`parseFloat("19.99")*100` yields
-// 1998.9999… — this parser must yield exactly 1999).
+// The money input for the Pricing & inventory price edit. Money is integer minor
+// units, NEVER a float (CLAUDE.md): a `number_input` would hand back a JS float,
+// so price is a TEXT field parsed by EXACT integer string math. These pin that
+// the parse/format round-trips and that no float-arithmetic footguns leak in
+// (`parseFloat("19.99")*100` yields 1998.9999… — this parser must yield exactly
+// 1999).
+//
+// THE FORMAT HALF NAMES `formatMinorUnitsInput` DIRECTLY now (INC-R3). The
+// retired Block Kit screen exported it under the alias `formatPriceMinorUnits`
+// for its own text inputs' `initial_value`; the React screen calls the shared
+// `@otta-sh/admin-presentation` formatter, so with that screen gone the alias had
+// no caller. Deleting an alias is not deleting an assertion — every case below is
+// the one it always was, against the function the alias forwarded to.
 
 describe("parsePriceMinorUnits", () => {
 	test("parses hundredths exactly (no float drift)", () => {
@@ -33,17 +41,17 @@ describe("parsePriceMinorUnits", () => {
 	});
 });
 
-describe("formatPriceMinorUnits", () => {
+describe("formatMinorUnitsInput", () => {
 	test("formats minor units to a hundredths decimal string", () => {
-		expect(formatPriceMinorUnits(1999)).toBe("19.99");
-		expect(formatPriceMinorUnits(1)).toBe("0.01");
-		expect(formatPriceMinorUnits(2450)).toBe("24.50");
-		expect(formatPriceMinorUnits(10000)).toBe("100.00");
+		expect(formatMinorUnitsInput(1999)).toBe("19.99");
+		expect(formatMinorUnitsInput(1)).toBe("0.01");
+		expect(formatMinorUnitsInput(2450)).toBe("24.50");
+		expect(formatMinorUnitsInput(10000)).toBe("100.00");
 	});
 
 	test("round-trips with the parser for representative amounts", () => {
 		for (const units of [1, 99, 100, 1999, 2450, 10000, 999999]) {
-			expect(parsePriceMinorUnits(formatPriceMinorUnits(units))).toBe(units);
+			expect(parsePriceMinorUnits(formatMinorUnitsInput(units))).toBe(units);
 		}
 	});
 });

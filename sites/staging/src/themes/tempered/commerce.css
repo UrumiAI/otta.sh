@@ -1,0 +1,1219 @@
+/**
+ * "Tempered" — the commerce views: cart, checkout, the pay step's frame, the
+ * order confirmation and the account pages.
+ *
+ * These rules were the scoped `<style>` blocks of those eight pages, moved here
+ * unchanged in VALUE when the pages started rendering through the theme (Phase
+ * 3). The scoping was kept the way `views.css` keeps it:
+ *
+ *  - every class is namespaced to its view (`cart-`, `checkout-`, `pay-`,
+ *    `order-`, `account-login-`, `account-verify-`, `account-orders-`,
+ *    `account-order-`), so no rule here can match the chrome or another
+ *    view's element. That is LOOSER than the Astro scope hash in one way: a
+ *    descendant selector (`.cart-foot p`, `.checkout-field input`,
+ *    `.order-ship .u-mono`, …) can also match an element a component renders
+ *    inside that view, which the hash prevented. None changes a pixel today
+ *    (Tempered's before/after diff is 0); a new rule should target a
+ *    view-namespaced class instead;
+ *  - every selector opens with `[data-theme-id]` (on <html>), the one
+ *    attribute of specificity the scope hash carried, so these rules still
+ *    outrank the global `.u-*` recipes exactly as they did.
+ *
+ * WHY `[data-theme-id]` AND NOT `[data-theme-id="tempered"]`: these views are
+ * every theme's fallback. A theme that has not ported its cart renders THIS
+ * cart, in its own `--u-*` tokens, so the sheet must apply under any theme. It
+ * is not linked by Tempered's Layout: the shell links it on exactly the pages
+ * that render one of these views (`themes/registry.ts`), whichever theme is
+ * active, and on no other page.
+ *
+ * Same rules as any page's CSS (`page-css.test.ts` sweeps this file): the token
+ * layer only, one radius, one hairline, no focus restyling, no motion.
+ */
+
+/* ── Cart (was pages/cart/index.astro) ───────────────────────────────────────── */
+
+/* §8's header block: the count in mono caps, then the title. */
+[data-theme-id] .cart-head {
+	display: flex;
+	flex-direction: column;
+	gap: 0.5rem;
+	margin-bottom: 2rem;
+}
+[data-theme-id] .cart-summary {
+	margin: 0;
+}
+
+/* §3: the display face, set narrow. */
+[data-theme-id] .cart-title {
+	margin: 0;
+	font-family: var(--u-display);
+	font-variation-settings:
+		"wdth" 78,
+		"opsz" 48;
+	font-weight: 700;
+	font-size: clamp(2rem, 6vw, 2.25rem);
+	letter-spacing: -0.025em;
+	line-height: 1;
+}
+
+[data-theme-id] .cart-main {
+	display: flex;
+	flex-direction: column;
+}
+
+/* The list is structure for a screen reader and nothing for the eye: the
+   markers and the indent go, the hairlines between the lines stay. */
+[data-theme-id] .cart-lines {
+	margin: 0;
+	padding: 0;
+	list-style: none;
+}
+
+/* §8's empty state: an invitation, not an apology. */
+[data-theme-id] .cart-empty {
+	display: flex;
+	flex-direction: column;
+	align-items: flex-start;
+	gap: 1rem;
+	padding: 3rem 0 4rem;
+}
+/* §3's display face, one step down from the page title — this is the line
+   the shopper reads first on an otherwise bare page. */
+[data-theme-id] .cart-empty-title {
+	margin: 0;
+	font-family: var(--u-display);
+	font-variation-settings:
+		"wdth" 78,
+		"opsz" 32;
+	font-weight: 700;
+	font-size: 1.75rem;
+	letter-spacing: -0.025em;
+	line-height: 1;
+}
+[data-theme-id] .cart-empty p {
+	margin: 0;
+	max-width: 44ch;
+	color: var(--u-mute);
+}
+
+/* Issue #110's panel. Deliberately built out of the same parts as the empty
+   state rather than out of new ones: a checked-out cart is a page with
+   nothing left to do on it, and §8's answer to that is prose and a way out,
+   not a second styling language. EVERY colour here is a token, and since
+   increment 6 deleted the transitional `?error=` panel that is true of the
+   whole page — a test pins that it declares no literal at all. */
+[data-theme-id] .cart-terminal {
+	display: flex;
+	flex-direction: column;
+	align-items: flex-start;
+	gap: 1rem;
+	padding: 2rem 0 3rem;
+}
+/* §3's display face, one step down from the page title — the same rank the
+   empty state's line takes, because it is the same kind of line. */
+[data-theme-id] .cart-terminal-title {
+	margin: 0;
+	font-family: var(--u-display);
+	font-variation-settings:
+		"wdth" 78,
+		"opsz" 32;
+	font-weight: 700;
+	font-size: 1.75rem;
+	letter-spacing: -0.025em;
+	line-height: 1;
+}
+[data-theme-id] .cart-terminal-body {
+	margin: 0;
+	max-width: 44ch;
+	color: var(--u-mute);
+}
+
+/* The record. Hairlines only (§2) — this is a list of what left, and a box
+   around it would give it more weight than the way forward below it. */
+[data-theme-id] .cart-terminal-lines {
+	width: 100%;
+	margin: 0.5rem 0 0;
+	padding: 0;
+	list-style: none;
+}
+[data-theme-id] .cart-terminal-line {
+	display: flex;
+	align-items: baseline;
+	justify-content: space-between;
+	gap: 1rem;
+	padding: 0.75rem 0;
+	border-bottom: var(--u-hair);
+}
+[data-theme-id] .cart-terminal-line:first-of-type {
+	border-top: var(--u-hair);
+}
+/* The line's identity, stacked: the same two-part shape `.cart-line-id` gives the
+   live arm, so a shopper reads the same thing in the same order on both. */
+[data-theme-id] .cart-terminal-id {
+	display: flex;
+	flex-direction: column;
+	gap: 0.125rem;
+	min-width: 0;
+}
+[data-theme-id] .cart-terminal-name {
+	overflow-wrap: anywhere;
+}
+[data-theme-id] .cart-terminal-sku {
+	font-size: 0.625rem;
+	color: var(--u-mute);
+	overflow-wrap: anywhere;
+}
+[data-theme-id] .cart-terminal-qty {
+	flex: none;
+	font-size: 0.625rem;
+	color: var(--u-mute);
+}
+
+/* Primary first, and `align-items: flex-start` so the two ranks sit on one
+   baseline however long each one's note wraps. Wrapping rather than
+   collapsing at 390px: two stacked buttons is the phone layout. */
+[data-theme-id] .cart-terminal-actions {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: flex-start;
+	gap: 1.5rem;
+	padding-top: 0.5rem;
+}
+[data-theme-id] .cart-terminal-resume,
+[data-theme-id] .cart-terminal-restart {
+	display: flex;
+	flex-direction: column;
+	align-items: flex-start;
+	gap: 0.5rem;
+}
+/* Beside its control, never under the fold: the consequence of "Start a new
+   cart" has to be readable before it is clicked. */
+[data-theme-id] .cart-terminal-note {
+	margin: 0;
+	max-width: 34ch;
+	font-size: 0.75rem;
+	color: var(--u-mute);
+}
+
+/* §2: one hairline, never a box. The rules between lines are the only
+   structure on the page. `minmax(0, 1fr)` rather than `1fr` so a long
+   product name or SKU wraps instead of widening the column — a grid track's
+   automatic minimum is min-content, which is what took the whole PAGE wide
+   in the pre-theme table (§11). That table is why <main> carried a
+   transitional `overflow-x: auto` through increments 1–5; these lines are
+   what let increment 6 delete it. */
+[data-theme-id] .cart-line {
+	display: grid;
+	grid-template-columns: 4.5rem minmax(0, 1fr) auto;
+	gap: 1.25rem;
+	align-items: start;
+	padding: 1.25rem 0;
+	border-bottom: var(--u-hair);
+}
+[data-theme-id] .cart-line:first-of-type {
+	border-top: var(--u-hair);
+}
+
+/* The ribbon fills this column, so the column is what bounds it: past about
+   this width a 2px rule stops reading as a ribbon and starts reading as a
+   divider, which is the one thing §2 reserves the hairline for. */
+[data-theme-id] .cart-line-main {
+	display: flex;
+	flex-direction: column;
+	gap: 0.625rem;
+	min-width: 0;
+	max-width: 34rem;
+}
+[data-theme-id] .cart-line-id {
+	display: flex;
+	flex-direction: column;
+	gap: 0.125rem;
+}
+
+/* §3: "never below 17px" — 1.0625rem is exactly that. */
+[data-theme-id] .cart-line-name {
+	font-family: var(--u-display);
+	font-variation-settings:
+		"wdth" 78,
+		"opsz" 24;
+	font-weight: 700;
+	font-size: 1.0625rem;
+	letter-spacing: -0.02em;
+	line-height: 1.2;
+	overflow-wrap: anywhere;
+}
+[data-theme-id] .cart-line-sku {
+	font-size: 0.625rem;
+	color: var(--u-mute);
+	overflow-wrap: anywhere;
+}
+
+[data-theme-id] .cart-line-right {
+	display: flex;
+	flex-direction: column;
+	align-items: flex-end;
+	gap: 0.5rem;
+}
+[data-theme-id] .cart-line-money {
+	display: flex;
+	flex-direction: column;
+	align-items: flex-end;
+	gap: 0.125rem;
+}
+
+/* Prose, not a figure — muted and a size down, so "priced at checkout"
+   cannot be read as an amount (§7). */
+[data-theme-id] .cart-unpriced {
+	font-size: 0.6875rem;
+	color: var(--u-mute);
+	text-align: right;
+}
+/* Secondary to the line total, which is the figure that matters here. */
+[data-theme-id] .cart-each {
+	font-size: 0.625rem;
+	color: var(--u-mute);
+}
+
+[data-theme-id] .cart-line-actions {
+	display: flex;
+	align-items: center;
+	gap: 0.5rem;
+}
+
+/* A control that is a control, not a button-shaped thing: the cart has one
+   primary action and it is at the foot. Focus is the global straw ring.
+
+   §11's "tap targets": the LABEL is 12px, so the button's own box came out
+   41×15px — two of them side by side on a phone, both under the 24px
+   minimum a thumb needs. `min-height` grows the TARGET (and with it the
+   focus ring, which should trace what is actually clickable) while
+   `inline-flex` keeps the text on the same optical line it was on. What
+   grows is the BUTTON, by 9px (15 → 24). The ROW barely notices: measured,
+   the cart line is unchanged at 390px and 0.5px taller at 1280px.
+   Padding was the obvious fix
+   and is the wrong one here: `.cart-line-right` wraps at 390px, and the negative
+   margin that would give the space back can bring two wrapped rows' hit
+   areas into overlap. Measured at 390px under workerd preview. */
+[data-theme-id] .cart-link-btn {
+	display: inline-flex;
+	align-items: center;
+	min-height: 1.5rem;
+	padding: 0;
+	border: none;
+	background: none;
+	font-family: var(--u-body);
+	font-size: 0.75rem;
+	color: var(--u-mute);
+	cursor: pointer;
+	text-decoration: underline;
+	text-decoration-color: var(--u-edge);
+	text-underline-offset: 2px;
+}
+[data-theme-id] .cart-link-btn:hover {
+	color: var(--u-ink);
+	text-decoration-color: var(--u-straw);
+}
+
+/* Bottom-right (§8). A width on the WRAPPER, not on `Sum` — Astro scopes a
+   page's CSS to the page's own hash, so a rule aimed at a component's root
+   would compile, ship and silently do nothing (see lib/rest-props.ts). */
+[data-theme-id] .cart-totals {
+	width: 100%;
+	max-width: 20rem;
+	margin-left: auto;
+	padding-top: 1.25rem;
+}
+
+[data-theme-id] .cart-foot {
+	display: flex;
+	flex-direction: column;
+	align-items: flex-end;
+	gap: 0.875rem;
+	padding-top: 1.25rem;
+}
+[data-theme-id] .cart-foot p {
+	margin: 0;
+	font-size: 0.75rem;
+	color: var(--u-mute);
+}
+
+/* The banners (§4). The component owns everything inside them; the page owns
+   the air under them. */
+[data-theme-id] .cart-notice-slot {
+	margin-bottom: 1.5rem;
+}
+
+/* No `.btn` rule here, and none on any other page: §2's one button shape is
+   `.u-btn` / `.u-btn-ghost` in tokens.css, written down once. Seven pages
+   carried a private copy of it and they had already drifted. The rank is
+   still this page's decision — the checkout button is `.u-btn`, the empty
+   state's way out and "Start a new cart" are `.u-btn .u-btn-ghost`, because
+   there is nothing on those screens to be primary about. */
+
+/* §11: 390px with no horizontal page scroll. Three columns cannot hold a
+   hold ribbon AND a qty row on a phone, so the controls drop under the line
+   rather than squeezing the ribbon — the ribbon is the thing being read. */
+@media (max-width: 34rem) {
+	[data-theme-id] .cart-line {
+		grid-template-columns: 3.5rem minmax(0, 1fr);
+		gap: 1rem 1rem;
+	}
+	[data-theme-id] .cart-line-right {
+		grid-column: 1 / -1;
+		flex-direction: row;
+		flex-wrap: wrap;
+		align-items: center;
+		justify-content: space-between;
+		gap: 0.75rem 1rem;
+	}
+	[data-theme-id] .cart-line-money {
+		align-items: flex-start;
+	}
+	[data-theme-id] .cart-unpriced {
+		text-align: left;
+	}
+	[data-theme-id] .cart-totals {
+		max-width: none;
+	}
+}
+
+/* ── Checkout review (was pages/checkout/index.astro) ────────────────────────── */
+
+[data-theme-id] .checkout-steps {
+	margin-bottom: 1.75rem;
+}
+
+/* §3: the display face, narrow. One size down from the order stamp — this
+   page's weight belongs on the panels, not the title. */
+[data-theme-id] .checkout-title {
+	font-family: var(--u-display);
+	font-variation-settings:
+		"wdth" 78,
+		"opsz" 48;
+	font-weight: 700;
+	font-size: clamp(1.75rem, 4vw, 2.25rem);
+	letter-spacing: -0.025em;
+	line-height: 1;
+	margin: 0 0 1.5rem;
+	text-wrap: balance;
+}
+
+/* `.notice-slot` is the name every other page gives this wrapper — the PDP,
+   the PLP and the cart all use it — so it is what this one uses too. */
+[data-theme-id] .checkout-notice-slot,
+[data-theme-id] .checkout-restart {
+	margin-bottom: 1.5rem;
+}
+[data-theme-id] .checkout-restart {
+	margin-top: -0.5rem;
+}
+
+/* §8: ~1.15fr / 1fr — the form carries more, so it gets more. */
+[data-theme-id] .checkout-cols {
+	display: grid;
+	grid-template-columns: 1.15fr 1fr;
+	gap: 3rem;
+	align-items: start;
+}
+
+[data-theme-id] .checkout-panel {
+	display: flex;
+	flex-direction: column;
+	gap: 1.25rem;
+	/* Without this a long SKU in the ledger can widen its grid track and take
+	   the page with it (§11). */
+	min-width: 0;
+}
+
+[data-theme-id] .checkout-panel-head {
+	display: flex;
+	flex-direction: column;
+	gap: 0.25rem;
+	padding-bottom: 0.75rem;
+	border-bottom: var(--u-hair);
+}
+/* A section's own name reads at full contrast; a field's does not. These are
+   real <h2>/<legend> elements — the eyebrow is a TREATMENT, not a demotion,
+   so a screen reader still gets a heading to navigate by — which leaves only
+   the UA margin to undo. `.u-label` (tokens.css) already beats the UA sheet
+   on specificity for size and weight. */
+[data-theme-id] .checkout-head-label {
+	margin: 0;
+	color: var(--u-ink);
+}
+
+[data-theme-id] .checkout-coupon-row {
+	display: flex;
+	gap: 0.5rem;
+	min-width: 0;
+}
+[data-theme-id] .checkout-coupon-row input {
+	flex: 1;
+	min-width: 0;
+}
+[data-theme-id] .checkout-coupon .checkout-note a {
+	color: var(--u-mute);
+}
+/* "Remove coupon" is a submit button of the details form (it carries what was
+   typed with it — QA U-1), drawn as the quiet link it used to be. */
+[data-theme-id] .checkout-link-button {
+	padding: 0;
+	border: 0;
+	background: none;
+	color: var(--u-mute);
+	font: inherit;
+	text-decoration: underline;
+	cursor: pointer;
+}
+
+[data-theme-id] .checkout-details {
+	display: flex;
+	flex-direction: column;
+	gap: 1.25rem;
+	min-width: 0;
+}
+
+[data-theme-id] .checkout-field {
+	display: flex;
+	flex-direction: column;
+	gap: 0.375rem;
+	min-width: 0;
+}
+
+[data-theme-id] .checkout-field input,
+[data-theme-id] .checkout-field select {
+	width: 100%;
+	padding: 0.625rem 0.75rem;
+	border: var(--u-hair);
+	border-radius: var(--u-r);
+	background: var(--u-surface);
+	color: var(--u-ink);
+	font-family: var(--u-body);
+	font-size: 0.875rem;
+}
+
+[data-theme-id] .checkout-note {
+	margin: 0;
+	font-size: 0.75rem;
+	line-height: 1.5;
+	color: var(--u-mute);
+}
+
+/* A refused field says why, beside the field (QA U-1). Bronze, the tempering
+   scale's warning — the same colour Stripe's own field errors take (§9). */
+[data-theme-id] .checkout-field-error {
+	margin: 0;
+	font-size: 0.75rem;
+	line-height: 1.5;
+	color: var(--u-bronze);
+}
+[data-theme-id] .checkout-field [aria-invalid="true"] {
+	border-color: var(--u-bronze);
+}
+
+/* "required" must not fuse into the uppercase mono label beside it, so it
+   steps out of the label's recipe entirely — body face, sentence case, and
+   straw as a fitting rather than a colour-coded badge (§2). */
+[data-theme-id] .checkout-req {
+	font-family: var(--u-body);
+	font-size: 0.6875rem;
+	font-weight: 500;
+	letter-spacing: 0;
+	text-transform: none;
+	color: var(--u-straw);
+}
+[data-theme-id] .checkout-req::before {
+	content: "· ";
+	color: var(--u-edge);
+}
+
+/* A real <fieldset>/<legend> — the address block is one answer in eight
+   boxes and a screen reader should hear it that way — with the browser's
+   box removed so the theme's own hairline is the only divider (§2). */
+[data-theme-id] .checkout-group {
+	border: none;
+	margin: 0;
+	padding: 0;
+	min-width: 0;
+}
+[data-theme-id] .checkout-group legend {
+	padding: 0;
+	color: var(--u-ink);
+}
+/* The address block gets the same head treatment as a panel: its own name,
+   its own note, and the hairline that separates a section from its fields. */
+[data-theme-id] .checkout-group-note {
+	padding: 0.25rem 0 0.75rem;
+	margin-bottom: 1rem;
+	border-bottom: var(--u-hair);
+}
+
+[data-theme-id] .checkout-delivery {
+	display: flex;
+	flex-direction: column;
+	gap: 1rem;
+	min-width: 0;
+}
+[data-theme-id] .checkout-methods {
+	display: flex;
+	flex-direction: column;
+	gap: 0.5rem;
+	margin: 1rem 0;
+}
+[data-theme-id] .checkout-method {
+	display: flex;
+	align-items: center;
+	gap: 0.625rem;
+	font-size: 0.875rem;
+}
+[data-theme-id] .checkout-method-price {
+	margin-inline-start: auto;
+}
+[data-theme-id] .checkout-delivery-line {
+	font-size: 0.8125rem;
+	color: var(--u-ink);
+}
+
+[data-theme-id] .checkout-fields {
+	display: grid;
+	grid-template-columns: repeat(2, 1fr);
+	gap: 0.875rem;
+}
+[data-theme-id] .checkout-span2 {
+	grid-column: 1 / -1;
+}
+
+/* "Continue to payment" is `.u-btn` and the dead-cart escape is
+   `.u-btn .u-btn-ghost` (tokens.css) — §2's one shape, written down once.
+   This page's copy of it had already drifted from the others' (it wrote the
+   transparent inset as `rgba(0, 0, 0, 0)`, which is also the only raw colour
+   left anywhere in the theme). */
+
+[data-theme-id] .checkout-back {
+	margin: 2.5rem 0 0;
+	font-size: 0.8125rem;
+}
+[data-theme-id] .checkout-back a {
+	color: var(--u-mute);
+}
+[data-theme-id] .checkout-back a:hover {
+	color: var(--u-ink);
+}
+
+/* The two panels stop being two columns well before the phone: the address
+   grid needs the width more than the layout needs the split.
+
+   DELIBERATE, and it looks like an oversight: stacked, the details panel
+   comes first, so "Continue to payment" sits ABOVE the order summary. That
+   is the mockup's own stacking (details panel, then order panel), it keeps
+   DOM order and focus order identical, and the summary a shopper is
+   reviewing is the thing they scroll to last on the way back up. Reordering
+   with `order:` would split the visual and tab sequences. */
+@media (max-width: 54rem) {
+	[data-theme-id] .checkout-cols {
+		grid-template-columns: 1fr;
+		gap: 2.5rem;
+	}
+}
+
+@media (max-width: 26rem) {
+	[data-theme-id] .checkout-fields {
+		grid-template-columns: 1fr;
+	}
+}
+
+/* ── Pay step frame (was pages/checkout/pay.astro) ─────────────────────────── */
+/* The mount box, the pay button and the error line stay the page's: it renders
+   them into the view's `payment` slot, and styles them itself. */
+
+[data-theme-id] .pay-steps {
+	margin-bottom: 1.75rem;
+}
+
+[data-theme-id] .pay-title {
+	font-family: var(--u-display);
+	font-variation-settings:
+		"wdth" 78,
+		"opsz" 48;
+	font-weight: 700;
+	font-size: clamp(1.75rem, 4vw, 2.25rem);
+	letter-spacing: -0.025em;
+	line-height: 1;
+	margin: 0 0 1.5rem;
+	text-wrap: balance;
+}
+
+/* §8: a narrow single column. Nothing competes with the fields. */
+[data-theme-id] .pay-main {
+	display: flex;
+	flex-direction: column;
+	gap: 1.25rem;
+	max-width: 30rem;
+}
+
+[data-theme-id] .pay-trust {
+	display: flex;
+	gap: 0.625rem;
+	align-items: flex-start;
+	margin: 0;
+	font-size: 0.8125rem;
+	color: var(--u-mute);
+	max-width: 46ch;
+}
+
+/* The order's email (a hint) and its hold deadline, read-only lines above the
+   card fields (QA U-2, U-14). */
+[data-theme-id] .pay-email,
+[data-theme-id] .pay-hold {
+	margin: 0;
+	font-size: 0.8125rem;
+	color: var(--u-mute);
+	max-width: 46ch;
+}
+/* Continuous, not the dashed bronze a Notice uses: this is a statement of
+   fact, not a degraded state. */
+[data-theme-id] .pay-trust-mark {
+	flex: none;
+	width: 1.5rem;
+	height: 2px;
+	margin-top: 0.5rem;
+	background: var(--u-straw);
+}
+
+/* The pay button is `.u-btn` (tokens.css) — including its disabled state,
+   which this page is the only caller of and which the shared shape now
+   carries. Nothing button-shaped is declared here. */
+
+[data-theme-id] .pay-back {
+	margin: 2.5rem 0 0;
+	font-size: 0.8125rem;
+}
+[data-theme-id] .pay-back a {
+	color: var(--u-mute);
+}
+[data-theme-id] .pay-back a:hover {
+	color: var(--u-ink);
+}
+
+/* ── Order confirmation (was pages/orders/[orderId].astro) ───────────────────── */
+
+[data-theme-id] .order-steps {
+	margin-bottom: 2rem;
+}
+
+[data-theme-id] .order-title {
+	font-family: var(--u-display);
+	font-variation-settings:
+		"wdth" 78,
+		"opsz" 48;
+	font-weight: 700;
+	font-size: clamp(1.75rem, 4vw, 2.25rem);
+	letter-spacing: -0.025em;
+	line-height: 1;
+	margin: 0 0 1.5rem;
+}
+
+[data-theme-id] .order-alert {
+	margin-bottom: 1.5rem;
+}
+
+/* The stamp is a flex column with `align-items: flex-start`, so a wrapper
+   shrinks to its content — which would leave the sweeping track only as wide
+   as "CHECKING 1 OF 8". §6 gives the ribbon a 22rem measure; this is what
+   lets it have one. */
+[data-theme-id] .order-poll {
+	width: 100%;
+	max-width: 22rem;
+	margin-top: 0.375rem;
+}
+
+[data-theme-id] .order-keep {
+	margin: 0.75rem 0 0;
+	font-size: 0.75rem;
+	color: var(--u-mute);
+}
+[data-theme-id] .order-keep a {
+	color: var(--u-ink);
+	text-decoration: underline;
+	text-decoration-color: var(--u-edge);
+	text-underline-offset: 2px;
+}
+[data-theme-id] .order-keep a:hover {
+	text-decoration-color: var(--u-straw);
+}
+
+[data-theme-id] .order-actions {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 0.75rem;
+	margin-top: 1.5rem;
+}
+[data-theme-id] .order-actions form {
+	margin: 0;
+}
+
+/* §8: items and totals, side by side under the stamp. */
+[data-theme-id] .order-cols {
+	display: grid;
+	grid-template-columns: 1.15fr 1fr;
+	gap: 3rem;
+	align-items: start;
+	margin-top: 2.5rem;
+}
+
+[data-theme-id] .order-panel {
+	display: flex;
+	flex-direction: column;
+	gap: 1.25rem;
+	min-width: 0;
+}
+
+[data-theme-id] .order-panel-head {
+	display: flex;
+	flex-direction: column;
+	gap: 0.25rem;
+	padding-bottom: 0.75rem;
+	border-bottom: var(--u-hair);
+}
+/* A real <h2> wearing the eyebrow treatment — styling, not a demotion, so
+   screen-reader heading navigation still works. `.u-label` (tokens.css)
+   already beats the UA sheet on size and weight; the margin is all that is
+   left to undo. */
+[data-theme-id] .order-head-label {
+	margin: 0;
+	color: var(--u-ink);
+}
+
+/* The ledger's refunded figure under the total (QA2 X3): the account page's
+   `.account-order-refunded`, on the confirmation. */
+[data-theme-id] .order-refunded {
+	margin: 0;
+	font-size: 0.8125rem;
+	color: var(--u-mute);
+	text-align: right;
+}
+
+[data-theme-id] .order-ship {
+	margin: 0;
+	font-size: 0.8125rem;
+	color: var(--u-mute);
+}
+[data-theme-id] .order-ship .u-mono {
+	font-size: 0.75rem;
+	color: var(--u-ink);
+	overflow-wrap: anywhere;
+}
+
+/* GHOST ONLY, and that is this page's decision rather than the shape's:
+   nothing here is a primary action — the order is already placed, and every
+   control is a way out rather than a way on (§2). This page used to say so
+   by redefining `.btn` as a ghost, which meant `class="btn"` here and
+   `class="btn"` on the PDP drew two different buttons. It now says it by
+   writing `.u-btn .u-btn-ghost` on all three controls (tokens.css). */
+
+[data-theme-id] .order-back {
+	margin: 2rem 0 0;
+	font-size: 0.8125rem;
+}
+[data-theme-id] .order-back a {
+	color: var(--u-mute);
+}
+[data-theme-id] .order-back a:hover {
+	color: var(--u-ink);
+}
+
+@media (max-width: 54rem) {
+	[data-theme-id] .order-cols {
+		grid-template-columns: 1fr;
+		gap: 2.5rem;
+	}
+}
+
+/* ── Sign in (was pages/account/login/index.astro) ───────────────────────────── */
+
+[data-theme-id] .account-login-title {
+	font-family: var(--u-display);
+	font-variation-settings:
+		"wdth" 78,
+		"opsz" 48;
+	font-weight: 700;
+	font-size: clamp(1.75rem, 4vw, 2.25rem);
+	letter-spacing: -0.025em;
+	line-height: 1;
+	margin: 0 0 1rem;
+}
+
+[data-theme-id] .account-login-lede {
+	margin: 0 0 1.5rem;
+	max-width: 34rem;
+	font-size: 0.875rem;
+	line-height: 1.6;
+	color: var(--u-mute);
+}
+
+[data-theme-id] .account-login-notice-slot {
+	margin-bottom: 1.5rem;
+	max-width: 34rem;
+}
+
+[data-theme-id] .account-login-form {
+	display: flex;
+	flex-direction: column;
+	gap: 1.25rem;
+	max-width: 26rem;
+}
+
+[data-theme-id] .account-login-field {
+	display: flex;
+	flex-direction: column;
+	gap: 0.375rem;
+}
+
+[data-theme-id] .account-login-field input {
+	width: 100%;
+	padding: 0.625rem 0.75rem;
+	border: var(--u-hair);
+	border-radius: var(--u-r);
+	background: var(--u-surface);
+	color: var(--u-ink);
+	font-family: var(--u-body);
+	font-size: 0.875rem;
+}
+
+/* Already signed in: a hairline-ruled block above the form, quiet links in the
+   order page's `.order-keep` style — informational, not a second form. */
+[data-theme-id] .account-login-signed-in {
+	margin: 0 0 1.5rem;
+	padding: 0.875rem 0;
+	max-width: 34rem;
+	border-block: var(--u-hair);
+	font-size: 0.875rem;
+}
+
+[data-theme-id] .account-login-signed-in-who {
+	margin: 0 0 0.625rem;
+}
+
+[data-theme-id] .account-login-signed-in-actions {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 0.75rem 1.25rem;
+}
+
+[data-theme-id] .account-login-signed-in-actions a {
+	color: var(--u-ink);
+	text-decoration: underline;
+	text-decoration-color: var(--u-edge);
+	text-underline-offset: 2px;
+}
+
+[data-theme-id] .account-login-signed-in-actions a:hover {
+	text-decoration-color: var(--u-straw);
+}
+
+[data-theme-id] .account-login-signout {
+	margin: 0;
+}
+
+/* ── Verify (was pages/account/verify/index.astro) ───────────────────────────── */
+
+[data-theme-id] .account-verify-title {
+	font-family: var(--u-display);
+	font-variation-settings:
+		"wdth" 78,
+		"opsz" 48;
+	font-weight: 700;
+	font-size: clamp(1.75rem, 4vw, 2.25rem);
+	letter-spacing: -0.025em;
+	line-height: 1;
+	margin: 0 0 1rem;
+}
+
+[data-theme-id] .account-verify-lede {
+	margin: 0;
+	font-size: 0.875rem;
+	line-height: 1.6;
+	color: var(--u-mute);
+}
+
+[data-theme-id] .account-verify-form {
+	display: flex;
+	flex-direction: column;
+	gap: 1.25rem;
+	max-width: 26rem;
+}
+
+[data-theme-id] .account-verify-notice-slot {
+	margin-bottom: 1.5rem;
+	max-width: 34rem;
+}
+
+[data-theme-id] .account-verify-back {
+	margin: 0;
+	font-size: 0.8125rem;
+}
+[data-theme-id] .account-verify-back a {
+	color: var(--u-mute);
+}
+[data-theme-id] .account-verify-back a:hover {
+	color: var(--u-ink);
+}
+
+/* ── Your orders (was pages/account/orders/index.astro) ──────────────────────── */
+
+[data-theme-id] .account-orders-head-row {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	justify-content: space-between;
+	gap: 1rem;
+	margin-bottom: 1.5rem;
+}
+[data-theme-id] .account-orders-head-row form {
+	margin: 0;
+}
+[data-theme-id] .account-orders-session {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 0.75rem 1rem;
+}
+[data-theme-id] .account-orders-who {
+	font-size: 0.8125rem;
+	color: var(--u-mute);
+	overflow-wrap: anywhere;
+}
+
+[data-theme-id] .account-orders-title {
+	font-family: var(--u-display);
+	font-variation-settings:
+		"wdth" 78,
+		"opsz" 48;
+	font-weight: 700;
+	font-size: clamp(1.75rem, 4vw, 2.25rem);
+	letter-spacing: -0.025em;
+	line-height: 1;
+	margin: 0;
+}
+
+[data-theme-id] .account-orders-notice-slot {
+	margin-bottom: 1.5rem;
+}
+
+[data-theme-id] .account-orders-empty {
+	margin: 0;
+	font-size: 0.875rem;
+	color: var(--u-mute);
+}
+/* The theme's quiet link, as on the order page's keep-this-link line. */
+[data-theme-id] .account-orders-empty-link {
+	color: var(--u-ink);
+	text-decoration: underline;
+	text-decoration-color: var(--u-edge);
+	text-underline-offset: 2px;
+}
+[data-theme-id] .account-orders-empty-link:hover {
+	text-decoration-color: var(--u-straw);
+}
+
+[data-theme-id] .account-orders-list {
+	list-style: none;
+	margin: 0;
+	padding: 0;
+	border-top: var(--u-hair);
+}
+
+/* Each row is its own grid, so every track past the name is a FIXED width:
+   `auto` tracks sized to each row's own text, and a row whose status or total
+   was shorter drifted out of line with the rest (QA2 A3). */
+[data-theme-id] .account-orders-row {
+	display: grid;
+	grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr) 11.5rem 4.5rem 6.5rem;
+	gap: 1rem;
+	align-items: baseline;
+	padding: 0.875rem 0;
+	border-bottom: var(--u-hair);
+	font-size: 0.875rem;
+}
+
+/* The order's products, in the body face: a name, not a code, so not mono
+   (TEMPERED.md §1 rule 2). `anywhere` keeps a long title inside its column. */
+[data-theme-id] .account-orders-name {
+	color: var(--u-ink);
+	overflow-wrap: anywhere;
+}
+
+[data-theme-id] .account-orders-state,
+[data-theme-id] .account-orders-date,
+[data-theme-id] .account-orders-items {
+	color: var(--u-mute);
+}
+
+[data-theme-id] .account-orders-date {
+	white-space: nowrap;
+}
+
+[data-theme-id] .account-orders-total {
+	color: var(--u-ink);
+	text-align: right;
+}
+
+@media (max-width: 40rem) {
+	[data-theme-id] .account-orders-row {
+		grid-template-columns: minmax(0, 1fr) auto;
+	}
+}
+
+/* ── One of your orders (was pages/account/orders/[id].astro) ────────────────── */
+
+[data-theme-id] .account-order-back {
+	margin: 0 0 1.5rem;
+	font-size: 0.8125rem;
+}
+[data-theme-id] .account-order-back a {
+	color: var(--u-mute);
+}
+[data-theme-id] .account-order-back a:hover {
+	color: var(--u-ink);
+}
+[data-theme-id] .account-order-back {
+	display: flex;
+	flex-wrap: wrap;
+	justify-content: space-between;
+	gap: 0.5rem 1rem;
+}
+[data-theme-id] .account-order-who {
+	color: var(--u-mute);
+	overflow-wrap: anywhere;
+}
+
+/* Complete payment and the order's own page (QA2 X1). They follow the status
+   (or its note) directly, so that line gives up half its gap to them. */
+[data-theme-id] .account-order-state:has(+ .account-order-actions),
+[data-theme-id] .account-order-note:has(+ .account-order-actions) {
+	margin-bottom: 1rem;
+}
+[data-theme-id] .account-order-actions {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 0.75rem 1.25rem;
+	margin: 0 0 2rem;
+	font-size: 0.875rem;
+}
+[data-theme-id] .account-order-link {
+	color: var(--u-ink);
+	text-decoration: underline;
+	text-decoration-color: var(--u-edge);
+	text-underline-offset: 2px;
+}
+[data-theme-id] .account-order-link:hover {
+	text-decoration-color: var(--u-straw);
+}
+
+[data-theme-id] .account-order-ship {
+	margin: 0;
+	font-size: 0.8125rem;
+	color: var(--u-mute);
+}
+[data-theme-id] .account-order-ship .u-mono {
+	font-size: 0.75rem;
+	color: var(--u-ink);
+}
+
+[data-theme-id] .account-order-address {
+	display: flex;
+	flex-direction: column;
+	gap: 0.5rem;
+	padding-top: 1rem;
+	border-top: var(--u-hair);
+}
+[data-theme-id] .account-order-address address {
+	display: flex;
+	flex-direction: column;
+	font-style: normal;
+	font-size: 0.875rem;
+	line-height: 1.5;
+	overflow-wrap: anywhere;
+}
+
+[data-theme-id] .account-order-title {
+	font-family: var(--u-display);
+	font-variation-settings:
+		"wdth" 78,
+		"opsz" 48;
+	font-weight: 700;
+	font-size: clamp(1.75rem, 4vw, 2.25rem);
+	letter-spacing: -0.025em;
+	line-height: 1;
+	margin: 0 0 0.75rem;
+	/* The heading is the order's products now, not a short id: a long title
+	   balances across lines like the confirmation's stamp, and an unbroken one
+	   wraps rather than widening the page. */
+	text-wrap: balance;
+	overflow-wrap: anywhere;
+}
+
+[data-theme-id] .account-order-state {
+	margin: 0 0 2rem;
+	font-size: 0.875rem;
+	color: var(--u-mute);
+}
+/* What the order page says about this state (e.g. whether anything was charged):
+   it follows the status line directly, so the status gives up its gap to it. */
+[data-theme-id] .account-order-state:has(+ .account-order-note) {
+	margin-bottom: 0.5rem;
+}
+[data-theme-id] .account-order-note {
+	margin: 0 0 2rem;
+	max-width: 36rem;
+	font-size: 0.875rem;
+	color: var(--u-ink);
+}
+
+[data-theme-id] .account-order-notice-slot {
+	margin-bottom: 1.5rem;
+}
+
+/* The ledger's refunded figure, under the paid total: a fact about the money,
+   set quieter than the total it qualifies. */
+[data-theme-id] .account-order-refunded {
+	margin: 0;
+	font-size: 0.8125rem;
+	color: var(--u-mute);
+	text-align: right;
+}
+
+[data-theme-id] .account-order-cols {
+	display: grid;
+	grid-template-columns: 1.15fr 1fr;
+	gap: 3rem;
+	align-items: start;
+}
+
+[data-theme-id] .account-order-panel {
+	display: flex;
+	flex-direction: column;
+	gap: 1.25rem;
+	min-width: 0;
+}
+
+[data-theme-id] .account-order-panel-head {
+	display: flex;
+	flex-direction: column;
+	gap: 0.25rem;
+	padding-bottom: 0.75rem;
+	border-bottom: var(--u-hair);
+}
+[data-theme-id] .account-order-head-label {
+	margin: 0;
+	color: var(--u-ink);
+}
+
+@media (max-width: 54rem) {
+	[data-theme-id] .account-order-cols {
+		grid-template-columns: 1fr;
+		gap: 2.5rem;
+	}
+}

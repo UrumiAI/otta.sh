@@ -1,41 +1,31 @@
 ---
 "@otta-sh/domain": minor
-"@otta-sh/store-postgres": patch
-"@otta-sh/service": minor
 ---
 
-Typed 404 for `POST /inventory/commit` and `POST /inventory/release` against an
-unknown `reservationId` (previously an untyped 500).
+Typed "reservation not found" on the `InventoryStore` port: committing or
+releasing an unknown `reservationId` now raises something a caller can
+recognise, where before it was an untyped `Error` indistinguishable from a
+store fault.
 
 At `0.x`, changesets map a **minor** bump to a breaking change (there is no
 major to take yet — semver's `0.x` carve-out). The `minor` here IS the
 breaking bump, not a feature bump.
 
-- **`@otta-sh/domain`** — new exported `ReservationNotFoundError` on the
-  `InventoryStore` port, thrown from `commit`/`release` (and `commitMany`)
-  when `reservationId` was never created — distinct from
-  `ReservationCommitLostError`, the existing loud anomaly for a reservation
-  that existed but is no longer committable/releasable. The port docblock
-  above `commit` documents both, plus a known asymmetry: `adjust` shares the
-  same store choke point and throws the same typed error, but nothing at the
-  HTTP boundary maps it, so a cart `PATCH /carts/:id/lines/:lineId` against a
-  vanished reservation still 500s (deliberate, out of scope — the cart
-  failure taxonomy has no "reservation vanished" member).
-- **`@otta-sh/store-postgres`** — the Kysely adapter's `#selectById` choke point
-  (reached by `commit`, `release`, `adjust`) and `commitMany`'s unknown-id
-  branch now throw `ReservationNotFoundError` instead of a bare `Error`. No
-  control-flow change, only a richer type.
-- **`@otta-sh/service`** — `POST /inventory/commit` and `POST /inventory/release`
-  now catch `ReservationNotFoundError` and return **404**
-  `{ ok: false, reason: "RESERVATION_NOT_FOUND" }` (matching the repo's
-  `{ok:false,reason:…}` 404 convention) instead of falling through to the
-  generic 500 envelope. Any caller polling for a status code to distinguish
-  "unknown reservation" from a DB fault now gets one; a caller that only
-  checked `!response.ok` sees no change. `ReservationCommitLostError` keeps
-  its existing 500 anomaly semantics — a reservation that existed but was
-  lost (released/failed) is still an operational anomaly, not a client error.
+The new exported `ReservationNotFoundError` is thrown from `commit`/`release`
+(and `commitMany`) when `reservationId` was never created — distinct from
+`ReservationCommitLostError`, the existing loud anomaly for a reservation that
+existed but is no longer committable/releasable. The port docblock above
+`commit` documents both, plus a known asymmetry: `adjust` shares the same store
+choke point and throws the same typed error, but nothing on the cart path reads
+it, so adjusting a cart line against a vanished reservation still surfaces as a
+generic fault (deliberate, out of scope — the cart failure taxonomy has no
+"reservation vanished" member).
+
+A caller that only asked "did this throw" sees no change; a caller that needs
+to tell "unknown reservation" from a store fault now has the type to do it.
 
 **Known follow-up (not in this change):** `release` against a reservation
 that exists but is in a non-releasable state still throws an **untyped**
-`Error` and 500s (the sibling of `ReservationCommitLostError` that was never
-given a type). Typing it, and deciding 409-vs-500, is its own change.
+`Error` (the sibling of `ReservationCommitLostError` that was never given a
+type). Typing it, and deciding whether it reads as a caller error or an
+operational anomaly, is its own change.

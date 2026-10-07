@@ -1,3 +1,4 @@
+import type { OrderId } from "../money/ids.js";
 import type { Clock } from "../ports/clock.js";
 import type { IdGen } from "../ports/id-gen.js";
 import type {
@@ -9,7 +10,8 @@ import type {
 
 /**
  * IO-free `EntitlementStore` fake — passes `entitlementStoreContract`. Grant is
- * idempotent under `grantIdempotencyKey` UNIQUE; check authorizes delivery.
+ * idempotent under `grantIdempotencyKey` UNIQUE; check authorizes delivery;
+ * revokeByOrder flips an order's active grants and counts the ones it flipped.
  */
 export class InMemoryEntitlementStore implements EntitlementStore {
 	#idGen: IdGen;
@@ -58,14 +60,17 @@ export class InMemoryEntitlementStore implements EntitlementStore {
 		return false;
 	}
 
-	// -- test surface ---------------------------------------------------------
-
-	/** Revoke every entitlement for an order (contract revoke case). */
-	revokeByOrder(orderId: string): void {
+	async revokeByOrder(orderId: OrderId): Promise<number> {
+		let flipped = 0;
 		for (const e of this.#byGrantKey.values()) {
-			if (e.orderId === orderId) e.state = "revoked";
+			if (e.orderId !== orderId || e.state === "revoked") continue;
+			e.state = "revoked";
+			flipped += 1;
 		}
+		return flipped;
 	}
+
+	// -- test surface ---------------------------------------------------------
 
 	all(): Entitlement[] {
 		return [...this.#byGrantKey.values()].map((e) => ({ ...e }));

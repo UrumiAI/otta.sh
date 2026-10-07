@@ -5,6 +5,7 @@
  * form — and is forwarded verbatim; never invented here.
  */
 import {
+	CART_LINE_MAX_QTY,
 	STOREFRONT_CART_LINE_UPDATE_ROUTE,
 	type CartLineMutationRouteResult,
 	type CartLineWire,
@@ -14,19 +15,24 @@ import {
 	clearCartCookie,
 	currentCartId,
 	failureToken,
+	QTY_TOO_LARGE,
 	routeDispatcher,
 	seeOther,
 } from "../../lib/cart-actions.js";
-import { rejectCrossOrigin } from "../../lib/origin-guard.js";
-import { dispatchOttaRoute, formPositiveInt, formString } from "../../lib/otta-api.js";
+import {
+	busyResponse,
+	dispatchOttaRoute,
+	formPositiveInt,
+	formString,
+	isBusyResult,
+	notAFormResponse,
+	readFormBody,
+} from "../../lib/otta-api.js";
 
 export const POST: APIRoute = async (context) => {
-	// CSRF first: emdash disables Astro's checkOrigin; the shim enforces
-	// its own origin check (origin-guard.ts, ADR-0006).
-	const forbidden = rejectCrossOrigin(context);
-	if (forbidden !== null) return forbidden;
-
-	const form = await context.request.formData();
+	// CSRF: src/middleware.ts has already refused a cross-site POST (ADR-0006).
+	const form = await readFormBody(context.request);
+	if (form === null) return notAFormResponse();
 	const lineId = formString(form.get("lineId"));
 	const qty = formPositiveInt(form.get("qty"));
 	const idempotencyKey = formString(form.get("idempotencyKey"));
@@ -36,6 +42,10 @@ export const POST: APIRoute = async (context) => {
 			status: 400,
 		});
 	}
+
+	// Over the cap: the plugin's own QTY_TOO_LARGE, answered without the
+	// dispatch; the copy names the limit (QA U-6).
+	if (qty > CART_LINE_MAX_QTY) return seeOther(context, "/cart", QTY_TOO_LARGE);
 
 	const cartId = currentCartId(context);
 	if (cartId === undefined) return seeOther(context, "/cart");
@@ -47,6 +57,8 @@ export const POST: APIRoute = async (context) => {
 		context.url,
 	);
 
+	// Still busy after dispatch's one retry: 503, not a generic "went wrong".
+	if (isBusyResult(result)) return busyResponse("/cart");
 	if (result === null || !result.ok) {
 		const token = failureToken(result);
 		if (token === "CART_NOT_FOUND") clearCartCookie(context);

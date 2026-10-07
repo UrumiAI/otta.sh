@@ -33,6 +33,34 @@ export interface SeedInventoryRow {
 	sku: string;
 	onHand: number;
 }
+/**
+ * A `refunds` ledger row, only as much of it as `revenueByPeriod`'s refunded
+ * half reads: which order it belongs to, how much, in what currency, and its
+ * reserve-before-issue `status` (only `'recorded'` — finalized — counts; see
+ * `PeriodBucket.refundedCents`). The refund's OWN `created_at` is deliberately
+ * absent: the bucket comes from the ORDER's, so there is nothing here to
+ * mis-seed it with.
+ */
+export interface SeedRefundRow {
+	orderId: string;
+	amountCents: number;
+	currency: string;
+	/** `'recorded'` | `'reserved'` | `'unverified'` | `'voided'`; defaults to
+	 *  `'recorded'` so a seed that does not care about the lifecycle reads as
+	 *  finalized money (mirrors the column default). */
+	status?: string;
+}
+/** A `product_commerce` row, only as much of it as `lowStock`'s title join
+ *  reads: the sku it claims, its title, and whether it is a tombstone. */
+export interface SeedProductTitleRow {
+	sku: string;
+	title: string | null;
+	/** Soft-delete tombstone. A tombstoned row must NEVER title a low-stock row
+	 *  nor duplicate it — the adapters' ON clause carries `deleted_at IS NULL`
+	 *  because live-sku uniqueness is only a PARTIAL index (migration 0002), so
+	 *  a live row and any number of tombstones can share one sku. */
+	deletedAt?: string | null;
+}
 
 const REVENUE_STATES: ReadonlySet<string> = new Set(REVENUE_COUNTING_STATES);
 
@@ -46,9 +74,14 @@ export class InMemoryReportingStore implements ReportingStore {
 	#orders: SeedOrderRow[] = [];
 	#items: SeedOrderItemRow[] = [];
 	#inventory: SeedInventoryRow[] = [];
+	#products: SeedProductTitleRow[] = [];
+	#refunds: SeedRefundRow[] = [];
 
 	seedOrder(row: SeedOrderRow): void {
 		this.#orders.push(row);
+	}
+	seedRefund(row: SeedRefundRow): void {
+		this.#refunds.push(row);
 	}
 	seedOrderItem(row: SeedOrderItemRow): void {
 		this.#items.push(row);
@@ -56,19 +89,46 @@ export class InMemoryReportingStore implements ReportingStore {
 	seedInventory(row: SeedInventoryRow): void {
 		this.#inventory.push(row);
 	}
+	seedProduct(row: SeedProductTitleRow): void {
+		this.#products.push(row);
+	}
 
+	/**
+	 * EXACT parity with `KyselyReportingStore.revenueByPeriod`, including the
+	 * UNION shape: the revenue half applies the state allow-list, the refunded
+	 * half applies NONE (a fully refunded order's money must still be reportable)
+	 * and counts FINALIZED rows only, and a bucket exists as soon as EITHER half
+	 * contributes — so a refund-only period is a row at `revenueCents: 0`, never
+	 * a missing row.
+	 */
 	async revenueByPeriod(range: DateRange, interval: ReportInterval): Promise<PeriodBucket[]> {
 		const groups = new Map<
 			string,
-			{ bucketStart: string; currency: string; revenueCents: number }
+			{ bucketStart: string; currency: string; revenueCents: number; refundedCents: number }
 		>();
-		for (const o of this.#orders) {
-			if (!inWindow(o.createdAt, range) || !REVENUE_STATES.has(o.state)) continue;
-			const bucketStart = truncateToBucket(o.createdAt, interval);
-			const key = JSON.stringify([bucketStart, o.currency]);
-			const g = groups.get(key) ?? { bucketStart, currency: o.currency, revenueCents: 0 };
-			g.revenueCents += o.totalCents;
+		const at = (bucketStart: string, currency: string) => {
+			const key = JSON.stringify([bucketStart, currency]);
+			const g = groups.get(key) ?? { bucketStart, currency, revenueCents: 0, refundedCents: 0 };
 			groups.set(key, g);
+			return g;
+		};
+		const bucketOf = new Map<string, string>();
+		for (const o of this.#orders) {
+			if (!inWindow(o.createdAt, range)) continue;
+			const bucketStart = truncateToBucket(o.createdAt, interval);
+			bucketOf.set(o.id, bucketStart);
+			// The allow-list gates REVENUE only — an excluded order still exists in
+			// `bucketOf` above, so its refunds land in the right bucket below.
+			if (!REVENUE_STATES.has(o.state)) continue;
+			at(bucketStart, o.currency).revenueCents += o.totalCents;
+		}
+		for (const r of this.#refunds) {
+			const bucketStart = bucketOf.get(r.orderId);
+			// An order outside the window (or unseeded) carries no bucket: the refund
+			// belongs to a period this call is not reporting on.
+			if (bucketStart === undefined) continue;
+			if ((r.status ?? "recorded") !== "recorded") continue;
+			at(bucketStart, r.currency).refundedCents += r.amountCents;
 		}
 		return [...groups.values()]
 			.toSorted((a, b) =>
@@ -80,6 +140,7 @@ export class InMemoryReportingStore implements ReportingStore {
 				bucketStart: g.bucketStart,
 				currency: toCurrency(g.currency),
 				revenueCents: cents(g.revenueCents),
+				refundedCents: cents(g.refundedCents),
 			}));
 	}
 
@@ -136,13 +197,19 @@ export class InMemoryReportingStore implements ReportingStore {
 			}));
 	}
 
+	/** EXACT parity with `KyselyReportingStore.lowStock`, including the title
+	 *  join's tombstone predicate: only a LIVE product row can title a sku, so a
+	 *  soft-deleted row sharing the sku neither duplicates the row nor supplies
+	 *  its title. No live match ⇒ `title: null`, never the sku (port doc). */
 	async lowStock(threshold: number): Promise<LowStockRow[]> {
+		const liveTitle = (sku: string): string | null =>
+			this.#products.find((p) => p.sku === sku && (p.deletedAt ?? null) === null)?.title ?? null;
 		return this.#inventory
 			.filter((r) => r.onHand <= threshold)
 			.toSorted((a, b) =>
 				a.onHand === b.onHand ? a.sku.localeCompare(b.sku) : a.onHand - b.onHand,
 			)
-			.map((r) => ({ sku: r.sku, onHand: r.onHand }));
+			.map((r) => ({ sku: r.sku, onHand: r.onHand, title: liveTitle(r.sku) }));
 	}
 }
 

@@ -31,7 +31,16 @@ export function parseCmsProductContent(value: unknown): CmsProductContent | null
 	return content;
 }
 
-export const DEFAULT_LOCALE = "en";
+/**
+ * The storefront's one locale: the language the reference site declares
+ * (`SITE_LOCALE` re-exports this), formats money in, and writes its customer
+ * emails in. One constant, so a page and an email cannot format the same order
+ * differently.
+ */
+export const STOREFRONT_LOCALE = "en";
+
+/** What a garbage or absent per-request locale falls back to. */
+export const DEFAULT_LOCALE = STOREFRONT_LOCALE;
 
 /**
  * A garbage/absent locale must degrade the render's FORMATTING, never fail

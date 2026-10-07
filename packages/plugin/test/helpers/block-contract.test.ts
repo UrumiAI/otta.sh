@@ -483,15 +483,22 @@ describe("assertBlockContract — X-11 (§1 prose budgets)", () => {
 	});
 });
 
+/** One `fields` entry — the surface most X-13 cases below are stated on. */
+function rawField(label: string, value: string): LooseBlock {
+	return { type: "fields", fields: [{ label, value }] };
+}
+
 describe("assertBlockContract — X-13 (M-6)", () => {
-	test("compliant: absolute UTC trimmed to seconds", () => {
-		passes(
-			[
-				HEADER,
-				{ type: "fields", fields: [{ label: "Placed (UTC)", value: "2026-07-10T01:00:00Z" }] },
-			],
-			LIST,
-		);
+	// INC-10 folded the standalone `assertNoRawTimestamps` in here: X-13 no
+	// longer asks whether a wire timestamp is PRECISE or ZONED enough, it asks
+	// whether one reached the operator at all. The trimmed-to-seconds ISO string
+	// that used to pass this rule is the first case below, and it now fails.
+	test("compliant: the console's one timestamp format", () => {
+		passes([HEADER, rawField("Placed", "10 Jul 2026, 01:00 UTC")], LIST);
+	});
+
+	test("compliant: a date-only bound is not a timestamp", () => {
+		passes([HEADER, rawField("Starts", "2026-07-10")], LIST);
 	});
 
 	test("compliant: a relative_time table column carries the raw timestamp on purpose", () => {
@@ -510,23 +517,38 @@ describe("assertBlockContract — X-13 (M-6)", () => {
 		);
 	});
 
+	test("violates: a raw ISO instant in a fields value — even trimmed to seconds", () => {
+		throwsRule([HEADER, rawField("Placed (UTC)", "2026-07-10T01:00:00Z")], LIST, "X-13");
+	});
+
 	test("violates: milliseconds in a fields value", () => {
+		throwsRule([HEADER, rawField("Placed (UTC)", "2026-07-10T01:00:00.000Z")], LIST, "X-13");
+	});
+
+	test("violates: a non-UTC offset", () => {
+		throwsRule([HEADER, rawField("Placed (UTC)", "2026-07-10T01:00:00+05:00")], LIST, "X-13");
+	});
+
+	test("violates: a raw ISO instant in a plain table cell", () => {
 		throwsRule(
 			[
 				HEADER,
-				{ type: "fields", fields: [{ label: "Placed (UTC)", value: "2026-07-10T01:00:00.000Z" }] },
+				{
+					type: "table",
+					block_id: "orders:list",
+					page_action_id: "orders:page",
+					columns: [{ key: "createdAt", label: "Placed" }],
+					rows: [{ createdAt: "2026-07-10T01:00:00Z" }],
+				},
 			],
 			LIST,
 			"X-13",
 		);
 	});
 
-	test("violates: a non-UTC offset", () => {
+	test("violates: a raw ISO instant composed into a context line", () => {
 		throwsRule(
-			[
-				HEADER,
-				{ type: "fields", fields: [{ label: "Placed (UTC)", value: "2026-07-10T01:00:00+05:00" }] },
-			],
+			[HEADER, { type: "context", text: "Deleted on 2026-07-10T01:00:00Z." }],
 			LIST,
 			"X-13",
 		);
@@ -768,6 +790,41 @@ describe("assertBlockContract — X-22 (L-7, M-7, R-17a/b)", () => {
 							options: [
 								{ value: "none", label: "Choose an order…" },
 								{ value: "ord-1", label: "alice@example.com · $15.00 · paid" },
+							],
+						},
+					],
+					submit: { label: "Open order", action_id: "orders:open" },
+				},
+			],
+			LIST,
+		);
+	});
+
+	test("compliant: a label LEADING with a §1.3 short prefix of its own value", () => {
+		// The reconciled rule as a test rather than as a comment. The Orders picker
+		// is REQUIRED to lead its label with a short prefix of the id it carries as
+		// a value, so a prefix must PASS exactly where the whole id fails. Without
+		// this case the boundary is asserted only from the violating side, and
+		// tightening the `includes` back to a `startsWith` would silently outlaw
+		// the console's own picker.
+		passes(
+			[
+				HEADER,
+				{
+					type: "form",
+					block_id: carriedFormId("orders:open"),
+					fields: [
+						{
+							type: "combobox",
+							action_id: "orderId",
+							label: "Open order",
+							initial_value: "none",
+							options: [
+								{ value: "none", label: "Choose an order…" },
+								{
+									value: "7e4ce728-1b3f-4a5e-9c21-0d5f6a7b8c90",
+									label: "#7e4c · alice@example.com · $15.00 · paid",
+								},
 							],
 						},
 					],
@@ -1234,7 +1291,7 @@ describe("assertBlockContract — X-42 (E-7)", () => {
 					variant: "error",
 					title: "Orders are unavailable",
 					description:
-						"Orders could not be loaded. Check the service connection and the admin token in Settings; if both look right, this is a fault in the console itself — not your data.",
+						"Orders could not be loaded. Retry in a moment; if it keeps failing, this is a fault in the console itself — not your data.",
 				},
 			],
 			LIST,

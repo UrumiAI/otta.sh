@@ -1,7 +1,7 @@
 {
 	"name": "@otta-sh/plugin",
 	"version": "0.0.1",
-	"description": "Otta EmDash plugin — sandbox-clean (workerd, Block Kit, ctx.http + allowedHosts only). No React, no DB/storage capability.",
+	"description": "Otta EmDash plugin — sandbox-clean (workerd, Block Kit, ctx.http + allowedHosts only). Runs commerce in-process on the host-injected ctx.storage; no React, no DB driver.",
 	"homepage": "https://github.com/UrumiAI/otta.sh#readme",
 	"bugs": {
 		"url": "https://github.com/UrumiAI/otta.sh/issues"
@@ -13,7 +13,8 @@
 		"directory": "packages/plugin"
 	},
 	"files": [
-		"dist"
+		"dist",
+		"THIRD_PARTY_NOTICES"
 	],
 	"type": "module",
 	"exports": {
@@ -40,12 +41,14 @@
 	"scripts": {
 		"build": "tsdown"
 	},
-	"devDependencies": {
-		"@hono/node-server": "catalog:",
+	"dependencies": {
+		"@otta-sh/admin-presentation": "workspace:*",
 		"@otta-sh/domain": "workspace:*",
 		"@otta-sh/payments-stripe": "workspace:*",
-		"@otta-sh/service": "workspace:*",
-		"@otta-sh/store-postgres": "workspace:*",
+		"@otta-sh/payments-x402": "workspace:*",
+		"@otta-sh/store-emdash": "workspace:*"
+	},
+	"devDependencies": {
 		"@types/node": "catalog:",
 		"tsdown": "catalog:",
 		"typescript": "catalog:",

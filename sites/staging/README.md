@@ -15,32 +15,38 @@ one at POST time, so a double-submit replays instead of duplicating.
 ## Local development
 
 ```bash
-# 1. Start the commerce service (repo root; point PG_CONNECTION_STRING at your
-#    own local test Postgres). tsx, not the built dist bin: the unpublished
-#    workspace exports point at TS sources (#44).
-PG_CONNECTION_STRING=postgres://postgres:postgres@127.0.0.1:55432/otta_test \
-  pnpm dlx tsx@4 packages/service/src/index.ts
-
-# 2. Run the site against it:
-COMMERCE_SERVICE_URL=http://127.0.0.1:3000 pnpm --filter @otta-sh/site-staging dev
+pnpm --filter @otta-sh/site-staging dev
 ```
+
+Nothing else has to be running: commerce is **in-process** in this site's own Worker
+(ADR-0006), so there is no second process to start and no service URL to point at.
 
 In `astro dev` the fastest path to a populated catalog is the dev-only bypass, which
 applies the full seed including the 3 sample products:
 `/_emdash/api/setup/dev-bypass?redirect=/_emdash/admin`. What first boot does and does
-not seed in a real deployment is covered in [`DEPLOYMENT.md`](../../DEPLOYMENT.md) §1.
+not seed in a real deployment is covered in [`DEPLOYMENT.md`](../../DEPLOYMENT.md) §2.2.
 
-## The COMMERCE_SERVICE_URL build-time contract
+### Plugin settings are namespaced by plugin id
 
-`COMMERCE_SERVICE_URL` is read **at build time** in `astro.config.ts` and baked into the
-plugin bundle and the plugin descriptor's `allowedHosts` (the `ctx.http` egress gate).
-**Changing the service URL means rebuild + redeploy** — there is no runtime override. The
-full contract lives in [`DEPLOYMENT.md`](../../DEPLOYMENT.md) §1.
+A setting saved under one plugin id is not visible to another. The Block Kit screens and the
+React console both read `otta`'s.
+
+### Running the stack from a non-interactive shell (agents, CI sandboxes)
+
+`astro dev` is a long-running foreground process: started in the usual way it holds the
+terminal and never returns. In an automated or agent-driven environment, start it **detached**
+and wait until it reports its URL before driving it — a request issued before the server is
+listening fails in a way that looks like an application error.
+
+`STRIPE_PUBLIC_KEY` is read by the process that starts, not per request: it is baked as a
+Vite `define`. **Changing it means restarting the dev server** — there is no runtime
+override, in dev any more than in production. Setting it in a later shell has no effect on a
+server that is already up.
 
 ## The STRIPE_PUBLIC_KEY build-time contract
 
-The checkout's Payment Element needs a Stripe **publishable** key, and it is baked the same
-way (`astro.config.ts` → a Vite `define`): shell env → `sites/staging/.env` → absent.
+The checkout's Payment Element needs a Stripe **publishable** key, baked in
+`astro.config.ts` as a Vite `define`: shell env → `sites/staging/.env` → absent.
 **Changing it means rebuild + redeploy.** The variable is **`STRIPE_PUBLIC_KEY`** — the name
 matters, see below. It is not put in wrangler `vars` because the guard test forbids any
 `vars` key matching `/SECRET|KEY|TOKEN|PASSWORD/i`, and that guard is worth keeping.
@@ -65,32 +71,62 @@ the key.
 ## Deploying
 
 The deploy runbook for this site lives in the root [`DEPLOYMENT.md`](../../DEPLOYMENT.md):
-resource creation, secrets, the build/deploy ordering, first boot + claim, and
-failed-first-boot recovery are §3 (Shape B); the workers.dev networking constraints and
-the flag⇒session-off pairing invariant are §3.5; the secrets/token checklist — including
-why `SERVICE_API_TOKEN` must stay unset for now — is §4.
+resource creation, the build/deploy ordering, first boot + claim, and failed-first-boot
+recovery are §2; why D1 `session` is `"primary-first"` (not `"auto"`), and why
+`global_fetch_strictly_public` must never return beside it, are §2.4; the secrets & tokens
+checklist is §3. There is one deployable, so the only Worker secrets are
+`EMDASH_ENCRYPTION_KEY` (required before first boot) and the optional `OTTA_WH_TOKEN` webhook
+edge gate — every payment and email credential is provisioned in the
+admin console's **Settings** page instead.
 
 ## Notes
 
 - **The checkout is built** (ADR-0012): `/checkout` (review + honest totals + contact and
-  ship-to), `POST /checkout/place`, `/checkout/pay` (the Payment Element — **the only
-  client JavaScript on this site**, and `js.stripe.com` the only third-party origin), and
+  ship-to), `POST /checkout/place`, `/checkout/pay` (the Payment Element — the site's only
+  third-party script, `js.stripe.com` its only third-party origin; the one other client
+  script is the hold ribbon's countdown, `src/components/HoldClock.astro`, rendered by
+  `/cart` alone — the ribbon's markup, `HoldRibbon.astro`, carries none), and
   `/orders/<orderId>` (the capability-URL confirmation page, which polls with a bounded
   `<meta http-equiv="refresh">` and never claims "paid" on the strength of Stripe's
   redirect — the webhook is the sole authority). `POST /checkout/new-cart` is the way out
   of the dead-cart trap. `allowedHosts` is unchanged: browser→Stripe is not plugin egress.
-- **Still a follow-up:** the x402 payment gate (designed to live at THIS Astro page layer)
-  and the digital-download delivery page (the plugin route authorizes; the site serves the
-  bytes / signed URL). Note for that task: `entitlements/download` is a public existence oracle
-  (it confirms whether an orderId/buyerRef/sku combination is entitled) — the delivery
-  page must rate-limit and/or tokenize access to it rather than exposing raw probing.
-- **Phase 5 customer-account pages are also a follow-up** (same scope note — no theme
-  pages built here). The plugin now serves five public account routes the theme is
-  expected to surface with login/account pages plus a first-party session cookie (the
-  plugin is session-stateless; the bearer token is route INPUT, so the theme layer owns
-  the cookie exactly like the cart shim does): `storefront/account/login/request`,
-  `storefront/account/login/verify`, `storefront/account/orders`,
-  `storefront/account/order`, `storefront/account/addresses`.
+- **Digital downloads (issue #376).** `GET /orders/<orderId>/download/<sku>`
+  (`src/pages/orders/[orderId]/download/[sku].ts`, logic in `src/lib/download-delivery.ts`)
+  streams a paid file from the private `DOWNLOADS` R2 bucket. On every request it first asks
+  the plugin's `entitlements/download` gate in-process with `{orderId, sku}`; the gate
+  answers the file only for an active grant on a deliverable order of a digital product with
+  a file attached. The endpoint reads only the key the gate answers, never one from the
+  request. The order id in the path is the capability (ADR-0011, as amended), so the gate
+  is not an oracle: every refusal is the same 404, and a caller without the order id learns
+  nothing. Nothing is minted or cached, so a full refund closes the URL at once, and a
+  replaced file serves the new one. Range requests get 206/416; BUSY is 503 + `Retry-After`.
+  `/orders/<id>` and `/account/orders/<id>` show a Download link on each digital line the
+  gate authorizes (`src/lib/download-links.ts`). The middleware refuses EmDash's public media
+  route for any `dl/` key (`src/lib/media-deny.ts`), and the build refuses a wrangler config
+  whose `DOWNLOADS` is the `MEDIA` bucket (`src/lib/downloads-bucket.ts`; DEPLOYMENT.md
+  §2.1). Attaching a file from the admin is increment 4; until then a file is attached by
+  writing the descriptor through the admin product edit and putting the object with
+  `wrangler r2 object put`.
+- **Still a follow-up:** the x402 payment gate (designed to live at THIS Astro page layer).
+- **Customer account pages (issue #306, ADR-0004).** Magic-link sign-in:
+  `/account/login` (email form → `POST /account/login/request` → the same generic
+  "check your inbox" notice for every address), `/account/verify` (where the
+  emailed link lands — it renders a button and redeems NOTHING on the GET, so a
+  mail scanner's pre-fetch cannot spend the single-use token; `POST
+  /account/verify/confirm` redeems it and applies the plugin's session-cookie
+  descriptor verbatim, HttpOnly/Secure/SameSite=Lax), `/account/orders` and
+  `/account/orders/<id>` (read through the session; guest orders under the same
+  address are claimed at sign-in), and `POST /account/logout` (revokes server-side,
+  always clears the cookie). Every POST runs the origin guard first; account pages
+  are `private, no-store`. The header carries a theme-owned "Account" link unless the
+  CMS menu already links into `/account`. Saved addresses
+  (`storefront/account/addresses`) have no page yet.
+  **Operator setup, required for sign-in:** in the plugin's Settings, set **Sign-in link
+  page** (`settings:loginLinkUrl`) to this site's absolute verify URL, e.g.
+  `https://shop.example/account/verify`. The emailed link points there and nowhere else.
+  The request's origin is never used, because a spoofed `Host` could otherwise aim a
+  victim's link at another domain. While the setting is unset, the login form still
+  shows its generic notice but no link is sent, and the plugin logs that once.
 - No secrets anywhere in this package: `.env` is gitignored, `.env.example` holds
   placeholders, `wrangler.jsonc` `vars` must never grow a secret-shaped key (pinned by
   `test/wrangler-config.test.ts`).

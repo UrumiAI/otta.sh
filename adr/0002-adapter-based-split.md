@@ -1,8 +1,19 @@
 # 0002. Adapter-based split: the plugin↔authority boundary is a deployment choice
 
-- Status: accepted
+- Status: accepted, **partially superseded** 2026-09-20 by
+  [ADR-0020](./0020-one-deployable-plugin-owns-commerce-truth.md) — the **plugin/service split
+  only**: the separate commerce service is removed, Otta is one deployable, and the five "a
+  service may remain preferable" reasons in the Context below are answered there as rejected
+  (pre-launch, no users). The **ports-and-adapters discipline this record established is not
+  superseded — it is reaffirmed**, and it is what made the deletion safe. Read the Decision's
+  five numbered clauses as standing; read every sentence promising a service as historical.
 - Date: 2026-07-10
 - Refines: ADR-0001 (does not supersede)
+- Refined by: [ADR-0018](./0018-plugin-owns-commerce-truth-in-process.md) (the plugin may own
+  commerce truth in-process) and
+  [ADR-0019](./0019-commerce-aggregates-are-one-document-each.md) (the document model that
+  spends the storage seam, and that answers and reverses this record's single-statement
+  conditional-`UPDATE` premise)
 
 ## Context
 
@@ -12,7 +23,7 @@ constraint, no cross-call transaction, and no DDL** — verified against source
 (`ctx.storage` is a shared `_plugin_storage` JSON document store whose only write is an
 unconditional upsert; declared `uniqueIndexes` are downgraded to plain indexes; there is
 no `db`/`schema` capability). A sandboxed plugin therefore cannot own inventory / order /
-payment truth. See [`../draft-plans/emdash-platform-notes.md`](../draft-plans/emdash-platform-notes.md).
+payment truth. See `draft-plans/emdash-platform-notes.md` (private, not in this repo).
 
 These are **gaps in EmDash's current plugin surface, not permanent laws.** EmDash may
 later add a conditional-write / CAS primitive, DB-enforced unique constraints, or

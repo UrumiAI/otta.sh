@@ -86,6 +86,55 @@ export function couponStoreContract(
 			expect(await store.findByCode("NOPE")).toBeNull();
 		});
 
+		// QA round 2: a double-submitted create (the same ID and the same code)
+		// collided on its ID — and the refusal gave back the code claim the EXISTING
+		// coupon held, so checkout stopped finding the live coupon by its code.
+		test("a create refused on its ID never takes the existing coupon's code with it", async () => {
+			const { store } = await makeStore();
+			await store.create(fixedCoupon());
+			await expect(store.create(fixedCoupon())).rejects.toThrow();
+			expect((await store.findByCode("SAVE5"))?.id).toBe("c1");
+			// A NEW code under a taken ID is refused too, and claims nothing.
+			await expect(store.create({ ...fixedCoupon(), code: "OTHER" })).rejects.toThrow();
+			expect(await store.findByCode("OTHER")).toBeNull();
+			expect((await store.findByCode("SAVE5"))?.id).toBe("c1");
+		});
+
+		test("findByCode matches a code whatever its case — the shopper's `save5` is the merchant's `SAVE5`", async () => {
+			// ONE RULE FOR CODES, end to end. Codes are unique after case folding (a
+			// store refuses `save5` beside `SAVE5`), the admin search is
+			// case-insensitive, and so is the checkout lookup — a shopper typing a
+			// code in lower case is not typing a different code. The record keeps the
+			// spelling the merchant chose; that is what an order snapshots.
+			const { store } = await makeStore();
+			await store.create(fixedCoupon());
+			expect((await store.findByCode("save5"))?.code).toBe("SAVE5");
+			expect((await store.findByCode("Save5"))?.id).toBe("c1");
+			expect(await store.findByCode("save50")).toBeNull();
+		});
+
+		test("create refuses a code that differs from a live coupon's only in case", async () => {
+			const { store } = await makeStore();
+			await store.create(fixedCoupon());
+			// STRUCTURAL, not "some error": the code is the port's contract
+			// (`CouponCodeConflictError`), so a caller maps it the same on every adapter.
+			await expect(
+				store.create(fixedCoupon({ id: "c-lower", code: "save5" })),
+			).rejects.toMatchObject({ code: "COUPON_CODE_CONFLICT" });
+			expect(await store.findById("c-lower")).toBeNull();
+			expect((await store.findByCode("save5"))?.id).toBe("c1");
+		});
+
+		test("create refuses an id a live coupon already holds — never adopting someone else's coupon", async () => {
+			const { store } = await makeStore();
+			await store.create(fixedCoupon());
+			await expect(
+				store.create(fixedCoupon({ code: "OTHER", amountCents: cents(900) })),
+			).rejects.toMatchObject({ code: "COUPON_ID_COLLISION" });
+			expect((await store.findById("c1"))?.amountCents).toBe(500);
+			expect(await store.findByCode("OTHER")).toBeNull();
+		});
+
 		test("percentage coupon round-trips rateBps + cap", async () => {
 			const { store } = await makeStore();
 			await store.create(
@@ -474,6 +523,34 @@ export function couponStoreContract(
 			const res = await h.store.listCoupons({}, { limit: 2 });
 			expect(res.coupons.map((c) => c.id)).toEqual(["p2", "p1"]);
 			expect(res.nextCursor).toBeNull();
+		});
+
+		// -- countCoupons (INC-23: the exact count the admin list captions with) --
+
+		test("countCoupons counts the whole filtered set, independently of any page size", async () => {
+			const h = await makeStore();
+			for (const id of ["c1", "c2", "c3"]) {
+				await h.seedCoupon(couponRow({ id, code: `CODE-${id}` }));
+			}
+			// The point of the count: a 2-row page says nothing about the set behind
+			// it, and keyset paging carries no running offset to derive one from.
+			const page = await h.store.listCoupons({}, { limit: 2 });
+			expect(page.coupons).toHaveLength(2);
+			expect(await h.store.countCoupons({})).toBe(3);
+		});
+
+		test("countCoupons applies the same EXACT-match search predicate as listCoupons", async () => {
+			const h = await makeStore();
+			await h.seedCoupon(couponRow({ id: "a", code: "SAVE5" }));
+			await h.seedCoupon(couponRow({ id: "b", code: "SAVE50" }));
+			expect(await h.store.countCoupons({ search: "save5" })).toBe(1);
+			// A substring must no more match the count than it matches the list.
+			expect(await h.store.countCoupons({ search: "save" })).toBe(0);
+		});
+
+		test("countCoupons on an empty store is 0", async () => {
+			const h = await makeStore();
+			expect(await h.store.countCoupons({})).toBe(0);
 		});
 	});
 }

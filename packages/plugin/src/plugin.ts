@@ -18,9 +18,13 @@ import {
 	createCheckoutPlaceRouteHandler,
 	createCheckoutSummaryRouteHandler,
 	createOrderRouteHandler,
+	createOrderAbandonRouteHandler,
+	createOrderResumeRouteHandler,
 	STOREFRONT_CHECKOUT_PLACE_ROUTE,
 	STOREFRONT_CHECKOUT_SUMMARY_ROUTE,
 	STOREFRONT_ORDER_ROUTE,
+	STOREFRONT_ORDER_ABANDON_ROUTE,
+	STOREFRONT_ORDER_RESUME_ROUTE,
 } from "./storefront/checkout-routes.js";
 // ── end Phase 4 checkout routes ────────────────────────────────────────────
 import {
@@ -30,25 +34,47 @@ import {
 // ── Phase 5: storefront customer account routes (plan §9) ─────────────────
 import {
 	ACCOUNT_ADDRESSES_ROUTE,
+	ACCOUNT_LOGOUT_ROUTE,
 	ACCOUNT_LOGIN_REQUEST_ROUTE,
 	ACCOUNT_LOGIN_VERIFY_ROUTE,
+	ACCOUNT_ME_ROUTE,
 	ACCOUNT_ORDER_ROUTE,
 	ACCOUNT_ORDERS_ROUTE,
 	createAccountAddressesHandler,
+	createAccountLogoutHandler,
 	createAccountLoginRequestHandler,
 	createAccountLoginVerifyHandler,
 	createAccountOrderHandler,
+	createAccountMeHandler,
 	createAccountOrdersHandler,
 } from "./storefront/account-routes.js";
 // ── end Phase 5 account routes ─────────────────────────────────────────────
+// ── Work order 02 INC-C1b: the Stripe webhook settle route ────────────────
+import {
+	createStripeWebhookSettleHandler,
+	STRIPE_WEBHOOK_SETTLE_ROUTE,
+} from "./webhooks/stripe-settle-route.js";
+// ── Work order 02 INC-C4: the scheduled commerce sweep ────────────────────
+import {
+	createActivateHandler,
+	createCronHandler,
+	SWEEP_HOOK_TIMEOUT_MS,
+	withSweepBootstrap,
+} from "./cron/index.js";
 import { createPdpRouteHandler, STOREFRONT_PRODUCT_ROUTE } from "./storefront/pdp-route.js";
 import { createPlpRouteHandler, STOREFRONT_LIST_ROUTE } from "./storefront/plp-route.js";
+import {
+	createShopperStateHandler,
+	STOREFRONT_SHOPPER_STATE_ROUTE,
+} from "./storefront/shopper-state-route.js";
 import {
 	createAfterDeleteHandler,
 	createAfterPublishHandler,
 	createAfterSaveHandler,
 	createAfterUnpublishHandler,
 } from "./sync/hooks.js";
+import type { TaxCalculator } from "@otta-sh/domain";
+import { setTaxCalculator } from "./commerce/tax-calculator-slot.js";
 import type { SandboxedPlugin } from "./types.js";
 
 /**
@@ -79,18 +105,44 @@ import type { SandboxedPlugin } from "./types.js";
  */
 const plugin: SandboxedPlugin = {
 	hooks: {
-		"content:afterSave": { handler: createAfterSaveHandler() },
-		"content:afterDelete": { handler: createAfterDeleteHandler() },
-		"content:afterPublish": { handler: createAfterPublishHandler() },
-		"content:afterUnpublish": { handler: createAfterUnpublishHandler() },
+		// Work order 02 INC-C4: `withSweepBootstrap` is what actually gets the sweep
+		// task REGISTERED on this deployment. Otta is hand-registered in the site's
+		// `plugins` array, so the host never fires `plugin:activate` for it (that runs
+		// only from an admin enable toggle) — but these four content hooks and the
+		// storefront routes below do fire, with a live `ctx.cron` on each. The wrapper
+		// ensures the task exists, once per isolate, and can neither slow nor fail the
+		// handler it wraps. See `cron/index.ts`.
+		"content:afterSave": { handler: withSweepBootstrap(createAfterSaveHandler()) },
+		"content:afterDelete": { handler: withSweepBootstrap(createAfterDeleteHandler()) },
+		"content:afterPublish": { handler: withSweepBootstrap(createAfterPublishHandler()) },
+		"content:afterUnpublish": { handler: withSweepBootstrap(createAfterUnpublishHandler()) },
+		// `cron` carries NO capability requirement — the only gate is whether the
+		// runtime wired a cron executor — so a `format: "standard"` descriptor may
+		// declare it as it stands, and the declared capabilities stay exactly
+		// `content:read` + `network:request`. `plugin:activate` is the host's own
+		// registration moment (an admin toggle, or a marketplace install); the tick
+		// re-affirms; the wrappers above cover the configured deployment that reaches
+		// neither.
+		"plugin:activate": { handler: createActivateHandler() },
+		// The timeout is DECLARED, not inherited: the tick's time budget
+		// (`SWEEP_TICK_BUDGET_MS`) is derived from it. See `cron/index.ts`.
+		cron: { handler: createCronHandler(), timeout: SWEEP_HOOK_TIMEOUT_MS },
 	},
 	routes: {
 		// Cast to the route record's erased `unknown`-input shape — each
 		// handler validates its own input at runtime (mirrors em-dash's own
 		// plugins, e.g. `packages/plugins/forms/src/index.ts`, which cast
 		// route handlers `as never` for the same contravariance reason).
-		[STOREFRONT_PRODUCT_ROUTE]: { handler: createPdpRouteHandler() as never, public: true },
-		[STOREFRONT_LIST_ROUTE]: { handler: createPlpRouteHandler() as never, public: true },
+		// The two routes every storefront page hits, and therefore the registration
+		// path a deployment with no content edits still reaches (INC-C4).
+		[STOREFRONT_PRODUCT_ROUTE]: {
+			handler: withSweepBootstrap(createPdpRouteHandler()) as never,
+			public: true,
+		},
+		[STOREFRONT_LIST_ROUTE]: {
+			handler: withSweepBootstrap(createPlpRouteHandler()) as never,
+			public: true,
+		},
 		// ── Phase 3 group E: cart (public — proxies over ctx.http only) ────
 		[STOREFRONT_CART_CREATE_ROUTE]: {
 			handler: createCartCreateRouteHandler() as never,
@@ -125,25 +177,50 @@ const plugin: SandboxedPlugin = {
 			public: true,
 		},
 		[STOREFRONT_ORDER_ROUTE]: { handler: createOrderRouteHandler() as never, public: true },
+		// QA U-2: the order page's "Complete payment" — the order id PLUS a second
+		// factor (cart, owning session or email), answering the pending order's
+		// OWN intent. The id alone is PROOF_REQUIRED.
+		[STOREFRONT_ORDER_RESUME_ROUTE]: {
+			handler: createOrderResumeRouteHandler() as never,
+			public: true,
+		},
+		// QA2 X4: "Start a new cart" cancels the cart's unpaid order, from the cart
+		// id alone (the cookie is the proof).
+		[STOREFRONT_ORDER_ABANDON_ROUTE]: {
+			handler: createOrderAbandonRouteHandler() as never,
+			public: true,
+		},
 		// ── end Phase 4 checkout ────────────────────────────────────────────
-		// Phase 4 (§6): PUBLIC download route — authorizes a digital delivery via
-		// the service's entitlement check over ctx.http. There is deliberately NO
-		// Stripe webhook proxy route (review G1): EmDash's handleSandboxedRoute
-		// JSON-parses the request body before any route runs (the raw bytes a
-		// Stripe HMAC needs are destroyed) and wraps the return `{success, data}`
-		// at HTTP 200 (Stripe's retry logic keys on status), so a byte-exact proxy
-		// is structurally impossible on the real host contract. Stripe posts
-		// directly to the SERVICE's /webhooks/stripe — the plan's preferred
-		// direct-to-service design (§9 Risk 1).
+		// Work order 02 INC-C1b: the PUBLIC Stripe webhook SETTLE route. It
+		// supersedes the note that used to stand here, which said a webhook route
+		// was structurally impossible. Two of its three premises still hold and are
+		// now DESIGNED AROUND rather than blocking: the framework JSON-parses the
+		// body before any handler runs, so the raw bytes travel base64-encoded in
+		// the input; and it wraps the return at HTTP 200, so the status Stripe must
+		// see is returned as a FIELD the calling site replays. The third premise —
+		// that the service would receive webhooks directly — is what the fold-in
+		// removes: there is no second deployable left to post to, so the plugin
+		// verifies the HMAC itself. `public: true` is REQUIRED, not a relaxation: a
+		// webhook is always unauthenticated, and EmDash routes an anonymous request
+		// only through the PUBLIC dispatcher. Auth is cryptographic (the Stripe
+		// signature) plus a shared edge token — see the route's own module doc.
+		[STRIPE_WEBHOOK_SETTLE_ROUTE]: {
+			handler: createStripeWebhookSettleHandler() as never,
+			public: true,
+		},
+		// Phase 4 (§6), issue #376: PUBLIC download route — the delivery gate the
+		// site runs before it streams a file, answering the file's descriptor.
+		// PUBLIC because the site's in-process dispatcher reaches public routes
+		// only; why returning the bucket key there is safe is in the route's doc.
 		[ENTITLEMENT_DOWNLOAD_ROUTE]: {
 			handler: createEntitlementDownloadHandler() as never,
 			public: true,
 		},
-		// Phase 5 (§9): PUBLIC storefront account routes — thin HTTP-only proxies
-		// over ctx.http to the service's /auth + /me surface. No new capability
-		// beyond network:request/allowedHosts; the plugin holds no session state
-		// (the bearer token is threaded in as route input from the theme's
-		// first-party cookie layer — see account-routes.ts's platform note).
+		// Phase 5 (§9): PUBLIC storefront account routes over the in-process
+		// commerce client. The login request emails its link over ctx.http (the
+		// email host in allowedHosts) — no new capability; the plugin holds no
+		// session state (the bearer token is threaded in as route input from the
+		// theme's first-party cookie layer — see account-routes.ts's platform note).
 		[ACCOUNT_LOGIN_REQUEST_ROUTE]: {
 			handler: createAccountLoginRequestHandler() as never,
 			public: true,
@@ -155,6 +232,12 @@ const plugin: SandboxedPlugin = {
 		[ACCOUNT_ORDERS_ROUTE]: { handler: createAccountOrdersHandler() as never, public: true },
 		[ACCOUNT_ORDER_ROUTE]: { handler: createAccountOrderHandler() as never, public: true },
 		[ACCOUNT_ADDRESSES_ROUTE]: { handler: createAccountAddressesHandler() as never, public: true },
+		[ACCOUNT_LOGOUT_ROUTE]: { handler: createAccountLogoutHandler() as never, public: true },
+		[ACCOUNT_ME_ROUTE]: { handler: createAccountMeHandler() as never, public: true },
+		[STOREFRONT_SHOPPER_STATE_ROUTE]: {
+			handler: createShopperStateHandler() as never,
+			public: true,
+		},
 		// Phase 7 (§6): the SINGLE `admin` dispatch route em-dash's admin shell
 		// invokes (`POST /plugins/{id}/admin` with a BlockInteraction body). It
 		// fans out on `type` + `page`/`action_id` to the Reports page and the
@@ -167,5 +250,28 @@ const plugin: SandboxedPlugin = {
 		[ADMIN_ROUTE]: { handler: createAdminRouteHandler() as never, public: false },
 	},
 };
+
+/** Options a site passes from its own plugin entry module (ADR-0030). */
+export interface OttaPluginOptions {
+	/**
+	 * Replaces the built-in `otta.rate-table` for every quote and order. Trusted
+	 * code (it runs in-process); its answers are validated, and an answer that
+	 * is invalid, refused or later than ~5 s refuses the checkout with
+	 * `TAX_UNAVAILABLE` before any order is created.
+	 */
+	taxCalculator?: TaxCalculator;
+}
+
+/**
+ * The plugin, configured. A site that wants an outside tax calculator gives
+ * em-dash its OWN entry module (the descriptor's `entrypoint`) containing
+ * `export default createOttaPlugin({ taxCalculator })`. Returns the same plugin
+ * object as the default export; the option is held in a module slot that the
+ * commerce composition root reads. Trusted (in-process) mode only.
+ */
+export function createOttaPlugin(options: OttaPluginOptions = {}): SandboxedPlugin {
+	if (options.taxCalculator !== undefined) setTaxCalculator(options.taxCalculator);
+	return plugin;
+}
 
 export default plugin;

@@ -45,12 +45,12 @@ const NAMES_NOTHING: readonly string[] = ["404.astro"];
 describe("footer currency", () => {
 	test.each(NAMES_A_CURRENCY)("%s passes its own %s", (file, field) => {
 		const source = read(file);
-		expect(source).toMatch(/<Base[\s\S]*?currency=\{/);
+		expect(source).toMatch(/<Storefront[\s\S]*?currency=\{/);
 		expect(source).toContain(field);
 	});
 
 	test.each(NAMES_NOTHING)("%s passes none, because it reads no money", (file) => {
-		expect(read(file)).not.toMatch(/<Base[\s\S]*?currency=/);
+		expect(read(file)).not.toMatch(/<Storefront[\s\S]*?currency=/);
 	});
 
 	test("no page hands the layout a currency literal", () => {

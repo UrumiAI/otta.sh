@@ -14,18 +14,24 @@ export interface RecordedAnomaly {
  * no-op (first delivery ⇒ true); anomalies are recorded durably (never swallowed).
  */
 export class InMemoryPaymentEventStore implements PaymentEventStore {
-	#dedupeKeys = new Set<string>();
+	/** `dedupe_key → order_id`: the row, not just the key, because the order a key
+	 *  is bound to is what distinguishes a redelivery from a cross-order replay. */
+	#dedupeKeys = new Map<string, OrderId>();
 	#anomalies: RecordedAnomaly[] = [];
 
 	async dedupe(
 		dedupeKey: string,
-		_orderId: OrderId,
+		orderId: OrderId,
 		_gateway: PaymentMethod,
 		_now: string,
 	): Promise<boolean> {
 		if (this.#dedupeKeys.has(dedupeKey)) return false;
-		this.#dedupeKeys.add(dedupeKey);
+		this.#dedupeKeys.set(dedupeKey, orderId);
 		return true;
+	}
+
+	async orderForDedupeKey(dedupeKey: string): Promise<OrderId | null> {
+		return this.#dedupeKeys.get(dedupeKey) ?? null;
 	}
 
 	async recordAnomaly(input: RecordAnomalyInput): Promise<void> {

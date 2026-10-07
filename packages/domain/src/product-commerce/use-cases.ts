@@ -5,9 +5,15 @@ import type {
 	ProductCommerceStore,
 	ProductCommerceUpdateResult,
 	ProductCommerceView,
+	ProductVariant,
+	ProductVariantSummary,
+	ProductVariantUpdateResult,
 	UpdateProductCommerceFieldsInput,
+	UpdateProductVariantFieldsInput,
 	UpsertProductCommerceInput,
+	UpsertProductVariantInput,
 } from "../ports/product-commerce-store.js";
+import { validateDownloadAsset } from "./download-asset.js";
 import { InvalidProductFieldError } from "./errors.js";
 
 export interface ProductCommerceDeps {
@@ -77,8 +83,8 @@ export async function getProductCommerce(
  * Batch catalog read (Phase 2 §6) — a query, not a command (no idempotency
  * key). Straight pass-through: the semantics (missing ids omitted,
  * commerce-complete rows only, intra-store `inStock` join) are the PORT's
- * contract; this wrapper exists so `@otta-sh/service` composes use-cases, not
- * store methods, like its siblings.
+ * contract; this wrapper exists so the plugin's route/client layer composes
+ * use-cases, not store methods, like its siblings.
  */
 export async function listProductCommerceByIds(
 	store: ProductCommerceStore,
@@ -93,8 +99,8 @@ export async function listProductCommerceByIds(
  * rules the branded types cannot express), then the store's optimistic
  * compare-and-set (`ProductCommerceStore.updateCommerceFields`) — the port doc
  * carries the guard semantics (replay dedupe, not_found, stale, currency
- * integrity). Exists so `@otta-sh/service` composes a use-case, not a store
- * method, like its siblings.
+ * integrity). Exists so the plugin's route/client layer composes a use-case,
+ * not a store method, like its siblings.
  *
  * Validation (throws `InvalidProductFieldError`, mapped to 400 upstream):
  *  - `price.amount` must be STRICTLY POSITIVE — a $0 commerce price is not a
@@ -111,6 +117,13 @@ export async function listProductCommerceByIds(
  *    A cleared field (`null`) carries no currency and is exempt.
  *  - `weightGrams` / `lengthMm` / `widthMm` / `heightMm`, when provided
  *    non-null, must be non-negative safe integers.
+ *  - `downloadAsset`, when provided non-null, passes `validateDownloadAsset`
+ *    (`download-asset.ts`: the key minted for THIS product, a bounded filename,
+ *    a safe content type, a byte size, an optional digest — refused, never
+ *    rewritten), and is not paired with `productKind: "physical"` in the same
+ *    edit. The store refuses it against a STORED physical kind.
+ *  - `downloadAsset: null` (detach) is refused on a product whose stored row has
+ *    a file: a file is replaced, never removed (ADR-0029 Decision 6).
  * NOT re-checked here: stored-currency integrity + existence + staleness are the
  * STORE's atomic concern (checking them here would be a TOCTOU race the CAS
  * already closes); SKU live-uniqueness stays the store's partial-index guard.
@@ -144,6 +157,20 @@ export async function listProductCommerceByIds(
  * reloads the fresh detail first, so it carries a new `expectedUpdatedAt` and
  * hence a new key, and heals through the ordinary CAS path instead. Both routes
  * heal; the tests name and pin each one separately.
+ *
+ * A SKU RENAME IS NOT THIS FUNCTION'S BUSINESS, and that is deliberate. When an
+ * edit CHANGES the sku, the store carries that sku's on-hand row onto the new
+ * one inside its own transaction (THE SKU-RENAME RULE on `ProductCommerceStore`
+ * — carry, retain the source zeroed, or refuse with `SkuStockConflictError`),
+ * because only the store can make the movement atomic with the row write; this
+ * use-case composes two ports over two IO calls and could only ever leave a
+ * half-done rename behind. The seed below therefore stays exactly what it was:
+ * UNCONDITIONAL on every `ok`, never gated on "the sku changed". It runs after
+ * a rename too, where the row it would create already exists holding the
+ * carried units, so create-if-absent makes it the no-op it always was — the
+ * always-attempt heal path is preserved, and the carried count is never
+ * clobbered back to zero. A refusal propagates: the store threw, nothing was
+ * written on either side, and no seed is attempted.
  */
 export async function updateProductCommerceFields(
 	deps: ProductCommerceDeps,
@@ -186,7 +213,46 @@ export async function updateProductCommerceFields(
 			throw new InvalidProductFieldError(field, `${field} must be a non-negative integer`);
 		}
 	}
-	const result = await deps.productCommerce.updateCommerceFields(input, key, expectedUpdatedAt);
+	// The download file (issue #376): every value rule here, as a pure check; the
+	// rule that needs the STORED row — no file on a physical product — is the
+	// store's, inside its compare-and-set. The one half of it that needs no row is
+	// answered here, so a self-contradicting edit is a 400 before any read.
+	let checked = input;
+	if (input.downloadAsset !== undefined && input.downloadAsset !== null) {
+		if (input.productKind === "physical") {
+			throw new InvalidProductFieldError(
+				"downloadAsset",
+				"a physical product cannot carry a download file",
+			);
+		}
+		checked = {
+			...input,
+			downloadAsset: validateDownloadAsset(input.productId, input.downloadAsset),
+		};
+	}
+	// REPLACE ONLY (ADR-0029 Decision 6, the product owner's rule): a product's
+	// download file can be replaced but never removed, so past buyers never lose
+	// what they bought. Detaching (`null`) needs the STORED row, read here at the
+	// edit's own watermark. That read is sound without a transaction: the store's
+	// compare-and-set applies the edit only to a row still at `expectedUpdatedAt`,
+	// so when the row read here is at that watermark it IS the row the write
+	// would apply to; when it is not, the store answers stale (or a same-key
+	// replay) and this check has nothing to protect. `null` on a product with no
+	// file is a harmless no-op and passes.
+	if (input.downloadAsset === null) {
+		const stored = await deps.productCommerce.getByProductId(input.productId);
+		if (
+			stored !== null &&
+			stored.downloadAsset !== null &&
+			stored.updatedAt.toISOString() === expectedUpdatedAt
+		) {
+			throw new InvalidProductFieldError(
+				"downloadAsset",
+				"a product's download file can be replaced but never removed",
+			);
+		}
+	}
+	const result = await deps.productCommerce.updateCommerceFields(checked, key, expectedUpdatedAt);
 	// Only an applied (or replayed) edit seeds: a not_found / stale /
 	// currency_mismatch wrote nothing, so there is no sku it may claim.
 	if (result.ok && result.product.sku !== null) {
@@ -209,8 +275,8 @@ export async function softDeleteProductCommerce(
  * (unknown/soft-deleted/already-active rows are no-ops; a soft-deleted
  * product is never resurrected by a publish; a stale `contentUpdatedAt`
  * watermark arriving after a newer lifecycle event is a no-op so out-of-order
- * publish/unpublish delivery converges). Exists so `@otta-sh/service` composes
- * use-cases, not store methods, like its siblings.
+ * publish/unpublish delivery converges). Exists so the plugin's route/client
+ * layer composes use-cases, not store methods, like its siblings.
  */
 export async function activateProductCommerce(
 	store: ProductCommerceStore,
@@ -228,8 +294,8 @@ export async function activateProductCommerce(
  * (unknown/soft-deleted/already-inactive rows are no-ops; deactivation flips
  * only the publish gate and never touches `deletedAt`; a stale
  * `contentUpdatedAt` watermark is a no-op so out-of-order delivery converges).
- * Exists so `@otta-sh/service` composes use-cases, not store methods, like its
- * siblings.
+ * Exists so the plugin's route/client layer composes use-cases, not store
+ * methods, like its siblings.
  */
 export async function deactivateProductCommerce(
 	store: ProductCommerceStore,
@@ -238,4 +304,93 @@ export async function deactivateProductCommerce(
 	contentUpdatedAt: string,
 ): Promise<void> {
 	return store.deactivate(productId, key, contentUpdatedAt);
+}
+
+// -- Variants: one commerce row per sellable unit ----------------------------
+
+/**
+ * The CMS-sync declare (port doc on `ProductCommerceStore.upsertVariant`): a
+ * thin pass-through, because this channel writes only the variant's display-name
+ * cache and its presence — no sku, so there is nothing for an inventory row to
+ * be seeded against and no second port to compose (the deliberate contrast with
+ * `upsertProductCommerce`, which always attempts a seed precisely because it CAN
+ * carry a sku). Exists so the plugin's route/client layer composes a
+ * use-case, not a store method, like its siblings.
+ */
+export async function upsertProductVariant(
+	store: ProductCommerceStore,
+	input: UpsertProductVariantInput,
+	key: IdempotencyKey,
+): Promise<ProductVariant> {
+	return store.upsertVariant(input, key);
+}
+
+/** Every variant of one product (port doc) — a query, not a command. Ordered by
+ *  key, orphans included and flagged, `onHand` joined in the same statement. */
+export async function listProductVariants(
+	store: ProductCommerceStore,
+	productId: ProductId,
+): Promise<ProductVariantSummary[]> {
+	return store.listVariants(productId);
+}
+
+/**
+ * The guarded admin edit at variant grain — `updateProductCommerceFields`'s
+ * mirror, one level down: pure field validation the branded types cannot
+ * express, then the store's compare-and-set (whose guard order, currency
+ * integrity and rename carry are the PORT's contract).
+ *
+ * Validation (throws `InvalidProductFieldError`, mapped to 400 upstream):
+ *  - `price.amount` must be STRICTLY POSITIVE. Branded `Cents` already rejects a
+ *    float or a negative; ">0" is the one rule left to the domain, and it is the
+ *    same rule the product level applies — a $0 size is not a price, it is a
+ *    missing one, and an absent price is expressed by leaving the field unset.
+ * There is no within-edit currency check here as there is at product level: a
+ * variant edit carries exactly ONE money field, so there is nothing for it to
+ * disagree with inside one call. The cross-row agreements — against the
+ * variant's own stored currency and against the product's — are the store's
+ * atomic concern, checked under the same compare-and-set that applies the write.
+ *
+ * IT SEEDS, exactly like its product-level sibling and for the same B1 reason:
+ * the invariant is "a sellable unit with a sku has an inventory row", held by the
+ * data rather than by one caller. THE SKU-RENAME RULE already claims (and thereby
+ * creates) the target row inside the store's own transaction, so the seed is a
+ * no-op after a rename; the case it actually covers is a FIRST sku, where the
+ * rule never engages and nothing else would create the row. Always-attempt, never
+ * gated on "the sku changed", so a retried save heals a stranded unit — and
+ * because `seedOnHand` is create-if-absent, it can never clobber units the carry
+ * just moved. A refused edit (a throw) never reaches it, and every zero-row
+ * outcome except the replay `ok` wrote no sku for it to claim.
+ */
+export async function updateProductVariantFields(
+	deps: ProductCommerceDeps,
+	input: UpdateProductVariantFieldsInput,
+	key: IdempotencyKey,
+	expectedUpdatedAt: string,
+): Promise<ProductVariantUpdateResult> {
+	if (input.price !== undefined && input.price.amount <= 0) {
+		throw new InvalidProductFieldError("price", "price must be greater than zero");
+	}
+	const result = await deps.productCommerce.updateVariantFields(input, key, expectedUpdatedAt);
+	// The same always-attempt heal the product level runs, for the same reason
+	// (two IO calls, no shared transaction): only an applied or replayed edit has
+	// a sku it may claim, and `seedOnHand` is create-if-absent, so it can never
+	// clobber units the rename carry just moved.
+	if (result.ok && result.variant.sku !== null) {
+		await deps.inventory.seedOnHand(result.variant.sku, 0);
+	}
+	return result;
+}
+
+/** The ORPHAN transition (port doc): a thin pass-through. Deactivation, never
+ *  deletion — the row, its sku, its price and its stock are all retained, and a
+ *  stale watermark is a no-op so out-of-order delivery converges. */
+export async function deactivateProductVariant(
+	store: ProductCommerceStore,
+	productId: ProductId,
+	variantKey: string,
+	key: IdempotencyKey,
+	contentUpdatedAt: string,
+): Promise<void> {
+	return store.deactivateVariant(productId, variantKey, key, contentUpdatedAt);
 }

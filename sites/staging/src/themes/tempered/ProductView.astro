@@ -1,0 +1,183 @@
+---
+/**
+ * Tempered's PDP (docs/theme/TEMPERED.md §8): media left at 4/5, and a right
+ * column that runs title → description → SPEC LEDGER → buy row → hold note.
+ * Everything a shopper needs to decide sits in that ledger — price, stock,
+ * sku — as label/value rows separated by hairlines, and the add-to-cart button
+ * is the only filled element on the page.
+ *
+ * Presentation only: `src/pages/products/[slug].astro` owns the reads, the
+ * 404/503 status, BUSY, the error token, the idempotency key and the return
+ * path. The form's hidden fields are `src/forms/AddToCartFields.astro`, shared
+ * by every theme so none can change what `/cart/add` receives.
+ *
+ * Styles: `views.css` (`pdp-*`), linked by this theme's Layout.
+ */
+import MediaPanel from "../../components/MediaPanel.astro";
+import Notice from "../../components/Notice.astro";
+import PriceTag from "../../components/PriceTag.astro";
+import QtyField from "../../components/QtyField.astro";
+import StockRule from "../../components/StockRule.astro";
+import AddToCartFields from "../../forms/AddToCartFields.astro";
+import type { ProductModel } from "../contract.js";
+
+interface Props {
+	model: ProductModel;
+}
+
+const { model } = Astro.props;
+---
+
+{
+	model.state === "unavailable" ? (
+		/* NOT the not-found state: telling a shopper a product does not exist,
+		   when in fact the store could not be read, is the wrong fact. §10 —
+		   what happened and what to do, no apology, no internals. Built from the
+		   same parts as the not-found sibling below and as 404.astro — display-
+		   face line, one muted sentence, a way out — because it is the same §8
+		   state wearing a different fact. The Notice carries the second sentence
+		   rather than repeating the first. */
+		<div class="pdp-empty">
+			<h1 class="pdp-title pdp-empty-title">This product is unavailable.</h1>
+			<div class="pdp-empty-notice">
+				<Notice>Try again in a moment.</Notice>
+			</div>
+			<a class="u-btn u-btn-ghost" href="/products">
+				Back to all products
+			</a>
+		</div>
+	) : model.state === "notFound" ? (
+		<div class="pdp-empty">
+			<h1 class="pdp-title pdp-empty-title">Product not found.</h1>
+			<p class="pdp-empty-copy">
+				{/* States the fact and stops. The page knows the address resolves
+				    to nothing; it does NOT know why, and a story about a product
+				    being retired may be about one that never existed. */}
+				Nothing here under that address.
+			</p>
+			<a class="u-btn u-btn-ghost" href="/products">
+				Back to all products
+			</a>
+		</div>
+	) : (
+		<>
+			<p class="pdp-crumb">
+				<a href="/products">← All products</a>
+			</p>
+
+			{/* The WRAPPER carries the spacing, not a class on the component —
+			    a view cannot style a component's root element. */}
+			{model.degradedLead !== null && (
+				<div class="pdp-notice-slot">
+					<Notice lead={model.degradedLead}>
+						Check back in a moment — everything else on this page is up to date.
+					</Notice>
+				</div>
+			)}
+			{model.errorMessage !== null && (
+				<div class="pdp-notice-slot">
+					<Notice>
+						{model.errorMessage}
+						{model.errorAction !== null && (
+							<>
+								{" "}
+								<a href={model.errorAction.href}>{model.errorAction.label}</a>
+							</>
+						)}
+					</Notice>
+				</div>
+			)}
+
+			<div class="pdp">
+				{/* The product art, or the image when there is one (§5). 4/5 here:
+				    the ratio is layout, so the view owns it. The WRAPPER carries
+				    the phone width cap for the same scoping reason as above. */}
+				<div class="pdp-art">
+					{/* `dimmed` is a PROP, not a rule this view writes: Astro
+					    scopes a component's CSS to its own hash. */}
+					<MediaPanel
+						slug={model.art}
+						image={model.image}
+						alt={model.title}
+						ratio="4 / 5"
+						dimmed={model.dimmed}
+					/>
+				</div>
+
+				<div class="pdp-side">
+					<div>
+						<h1 class="pdp-title">{model.title}</h1>
+						{model.description && <p class="pdp-desc">{model.description}</p>}
+					</div>
+
+					{model.purchase !== null ? (
+						<>
+							{/* The spec ledger: label left, fact right, one hairline
+							    between each — the whole decision in one block. */}
+							<div class="pdp-spec">
+								<div class="pdp-spec-row">
+									<span class="u-label">Price</span>
+									<PriceTag
+										formatted={model.purchase.priceFormatted}
+										size="lg"
+										soldOut={model.purchase.priceStruck}
+										was={model.purchase.compareAtFormatted}
+									/>
+								</div>
+								<div class="pdp-spec-row">
+									<span class="u-label">Stock</span>
+									<StockRule availability={model.purchase.availability} />
+								</div>
+								{model.purchase.sku !== null && (
+									<div class="pdp-spec-row">
+										<span class="u-label">SKU</span>
+										<span class="u-mono pdp-sku">{model.purchase.sku}</span>
+									</div>
+								)}
+							</div>
+
+							{model.purchase.addToCart !== null && (
+								<div class="pdp-buy-block">
+									<form class="pdp-buy" method="POST" action="/cart/add">
+										<AddToCartFields fields={model.purchase.addToCart} />
+										<QtyField name="qty" value={1} min={1} />
+										<button class="u-btn" type="submit">
+											Add to cart
+										</button>
+									</form>
+									{/* The hold is worth telling a shopper about, and
+									    §10 keeps the duration visible because it is
+									    the useful part. The sentence states the
+									    store's EFFECTIVE window, as the page computed
+									    it from the route (issue #127). */}
+									<p class="pdp-hold-note">
+										{model.purchase.holdNote}
+									</p>
+								</div>
+							)}
+
+							{/* A sold-out PDP is otherwise a dead end: a price, a
+							    ledger saying you cannot have it, and no way on.
+							    §8 — a failure explains what still works. ONE
+							    element does that here, and it is the door: the
+							    ledger's Stock row and the struck price already
+							    state the fact, so a third sentence would be the
+							    theme repeating itself where the button should be. */}
+							{model.purchase.soldOut && (
+								<div class="pdp-buy-block">
+									<div>
+										<a class="u-btn u-btn-ghost" href="/products">
+											See what's in stock
+										</a>
+									</div>
+								</div>
+							)}
+						</>
+					) : (
+						model.showNotForSale && <p class="pdp-note">Not currently available for purchase</p>
+					)}
+				</div>
+			</div>
+		</>
+	)
+}

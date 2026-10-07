@@ -5,8 +5,8 @@
 Tax admin drill-down UI (admin-UX Increment 3, slice 2): a new `/tax` admin
 screen — tax classes (registry list/create) drilling into a class's tax
 rates (list/create/edit-with-CAS/delete). Built entirely on the existing
-list/detail scaffold and `AdminRulesClient` (both landed in prior slices) —
-no domain or service change.
+list/detail scaffold and the admin rules client (both landed in prior
+slices) — no domain change.
 
 This is the FIRST production screen where both scaffold levels are LISTS (no
 leaf level): a class drills straight into its rates list, not a detail. Row
@@ -24,8 +24,8 @@ existing orders' snapshotted totals are untouched.
 
 **Scope note**: renaming or deleting a tax CLASS is intentionally NOT
 offered. `deleteTaxClass`'s in-use guard exists in `@otta-sh/domain`
-(contract-tested) but was never wired to a service HTTP route, and there is
-no domain port method for renaming a class at all — both are real
-domain/service work for a future slice, not something a UI-only slice should
-add. Tax RATES are fully wired end-to-end already, so this screen ships their
+(contract-tested) but was never wired through to the console, and there is
+no domain port method for renaming a class at all — both are real domain
+work for a future slice, not something a UI-only slice should add. Tax
+RATES are fully wired end-to-end already, so this screen ships their
 complete create/list/update-with-CAS/delete-idempotent surface.

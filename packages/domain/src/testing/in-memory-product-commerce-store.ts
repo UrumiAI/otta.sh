@@ -11,10 +11,24 @@ import type {
 	ProductListPage,
 	ProductListResult,
 	ProductSummary,
+	ProductVariant,
+	ProductVariantSummary,
+	ProductVariantUpdateResult,
 	UpdateProductCommerceFieldsInput,
+	UpdateProductVariantFieldsInput,
 	UpsertProductCommerceInput,
+	UpsertProductVariantInput,
 } from "../ports/product-commerce-store.js";
-import { MissingProductIdError, SkuConflictError } from "../product-commerce/errors.js";
+import {
+	InvalidLowStockThresholdError,
+	InvalidProductFieldError,
+	isValidLowStockThreshold,
+	MissingProductIdError,
+	MissingVariantKeyError,
+	SkuConflictError,
+	SkuHeldStockError,
+	SkuStockConflictError,
+} from "../product-commerce/errors.js";
 
 /** Test-only seed shape for the admin-list contract — a direct product row (no
  *  upsert/idempotency-key dance), so a case can pin an EXACT `createdAt` per
@@ -40,6 +54,12 @@ function codeUnitDesc(a: string, b: string): number {
 	return a > b ? -1 : a < b ? 1 : 0;
 }
 
+/** Ascending code-unit string comparison — `listVariants`'s `variant_key ASC`
+ *  order, the mirror of {@link codeUnitDesc} (never `localeCompare`). */
+function codeUnitAsc(a: string, b: string): number {
+	return a < b ? -1 : a > b ? 1 : 0;
+}
+
 /** Escape-free substring test — the fake's stand-in for the SQL adapter's
  *  `lower(title) LIKE lower(:pattern) ESCAPE '\'`: a plain case-insensitive
  *  `includes`, since the fake never builds a LIKE pattern (nothing to escape
@@ -51,13 +71,51 @@ function containsCaseInsensitive(haystack: string, needle: string): boolean {
 export interface InMemoryProductCommerceStoreOptions {
 	clock: Clock;
 	/**
-	 * Phase 2 (`listCommerceByIds`): the fake's stand-in for the real store's
-	 * intra-service `inventory` join — a plain lookup the harness seeds
-	 * (`InMemoryInventoryStore.onHand` satisfies it structurally). Defaults
-	 * to "no inventory row" (0) so `inStock` is coarsely false, mirroring a
-	 * LEFT JOIN miss.
+	 * The fake's stand-in for the real store's `inventory` LEFT JOIN — a plain
+	 * lookup the harness seeds, feeding BOTH `listCommerceByIds`'s coarse
+	 * `inStock` (Phase 2) and `listProducts`'s `onHand` projection.
+	 *
+	 * Returns `null` for "no inventory row", exactly like the SQL join miss it
+	 * models — NOT `0`, which means a known sku that is out of stock. A lookup
+	 * that collapses the two (e.g. `InMemoryInventoryStore.onHand`, which
+	 * returns 0 for an unseeded sku) would make the fake disagree with every
+	 * real adapter on the `onHand: null` case the contract pins. Defaults to
+	 * "no inventory row" (`null`), so `inStock` stays coarsely false.
 	 */
-	inventoryOnHand?: (sku: string) => number;
+	inventoryOnHand?: (sku: string) => number | null;
+	/**
+	 * The WRITE half of the same stand-in, for THE SKU-RENAME RULE (see the
+	 * `ProductCommerceStore` port doc): a rename carries the source sku's
+	 * on-hand count onto the target row, in the same "transaction" as the
+	 * product-row write. Create-or-overwrite, exactly like the SQL adapters'
+	 * `INSERT … ON CONFLICT` + `UPDATE` pair.
+	 *
+	 * OPTIONAL, and normally omitted. Left out, the fake keeps its own overlay
+	 * of the rows IT has written and layers that over `inventoryOnHand`, so a
+	 * harness that only supplies a reader still exercises the rule end to end.
+	 * Supply it when the fake must share ONE inventory table with something
+	 * else — a fake `InventoryStore` in a use-case test, where the point is
+	 * that the caller's always-attempt `seedOnHand` sees the carried row and
+	 * no-ops on it rather than clobbering it.
+	 *
+	 * THE OVERLAY'S ONE LIMIT, which is why the option exists: a sku this store
+	 * has written SHADOWS `inventoryOnHand` from then on, so a harness that
+	 * re-seeds that same sku afterwards is not seen. The SQL adapters have one
+	 * table and no such blind spot, so a contract case must either avoid
+	 * re-seeding a carried sku or supply a shared writer here.
+	 */
+	writeInventoryOnHand?: (sku: string, onHand: number) => void;
+	/**
+	 * How many LIVE (`held`/`adopted`) reservations reference a sku — the fake's
+	 * stand-in for the adapters' `reservations` count, and step 0 of THE
+	 * SKU-RENAME RULE: a rename AWAY from a sku with live holds is refused,
+	 * because a hold's units are already out of `on_hand` (so the carry cannot
+	 * move them) and the hold itself cannot follow the rename.
+	 *
+	 * Defaults to "no holds" — which is the truth for a harness that has no
+	 * reservations at all, so a store built without it behaves as it always did.
+	 */
+	liveHoldsOnSku?: (sku: string) => number;
 }
 
 /**
@@ -93,11 +151,59 @@ export class InMemoryProductCommerceStore implements ProductCommerceStore {
 	 * first transition always wins.
 	 */
 	#activeWatermark = new Map<string, string>();
-	#inventoryOnHand: (sku: string) => number;
+	#inventoryOnHand: (sku: string) => number | null;
+	#writeInventoryOnHand: ((sku: string, onHand: number) => void) | undefined;
+	/** Rows THIS store has written (the sku-rename carry), when no external
+	 *  writer was supplied — layered OVER `#inventoryOnHand` so the fake models
+	 *  one inventory table rather than a read-only view plus a lost write. */
+	#localOnHand = new Map<string, number>();
+	#liveHoldsOnSku: (sku: string) => number;
 
 	constructor(options: InMemoryProductCommerceStoreOptions) {
 		this.#clock = options.clock;
-		this.#inventoryOnHand = options.inventoryOnHand ?? (() => 0);
+		this.#inventoryOnHand = options.inventoryOnHand ?? (() => null);
+		this.#writeInventoryOnHand = options.writeInventoryOnHand;
+		this.#liveHoldsOnSku = options.liveHoldsOnSku ?? (() => 0);
+	}
+
+	/** The one inventory read every projection and predicate goes through:
+	 *  this store's own writes first, then the harness's lookup. `null` is "no
+	 *  row" and `0` is "a row holding nothing" — never collapsed. */
+	#readOnHand(s: string): number | null {
+		return this.#localOnHand.get(s) ?? this.#inventoryOnHand(s);
+	}
+
+	/** Create-or-overwrite one inventory row (the rename carry's only write). */
+	#writeOnHand(s: string, onHand: number): void {
+		if (this.#writeInventoryOnHand !== undefined) this.#writeInventoryOnHand(s, onHand);
+		else this.#localOnHand.set(s, onHand);
+	}
+
+	/**
+	 * THE SKU-RENAME RULE (port doc), applied synchronously so it lands with the
+	 * row write it belongs to — the fake's stand-in for the adapters' single
+	 * transaction. Called by BOTH writers of `sku`, with the row's BEFORE and
+	 * AFTER values, so a write that changes no sku (a same-key replay, a stale
+	 * sync no-op, a re-supplied identical sku) never reaches it.
+	 *
+	 * Live holds on the SOURCE refuse FIRST (rule step 0): their units are
+	 * already out of `on_hand`, and the hold cannot follow the rename. Then
+	 * claim the target — a row already there refuses too, occupied being
+	 * occupied whatever it holds. Only then move the source's count and zero the
+	 * source, retaining that row. Mirrors the SQL adapters' statement order
+	 * byte-for-byte, including minting the target at `0` when the source has no
+	 * row to carry.
+	 */
+	#carrySkuStock(fromSku: string, toSku: string): void {
+		if (fromSku === toSku) return;
+		const liveHolds = this.#liveHoldsOnSku(fromSku);
+		if (liveHolds > 0) throw new SkuHeldStockError(fromSku, liveHolds);
+		if (this.#readOnHand(toSku) !== null) throw new SkuStockConflictError(fromSku, toSku);
+		this.#writeOnHand(toSku, 0);
+		const carried = this.#readOnHand(fromSku);
+		if (carried === null || carried === 0) return;
+		this.#writeOnHand(toSku, carried);
+		this.#writeOnHand(fromSku, 0);
 	}
 
 	async upsert(input: UpsertProductCommerceInput, key: IdempotencyKey): Promise<ProductCommerce> {
@@ -124,8 +230,15 @@ export class InMemoryProductCommerceStore implements ProductCommerceStore {
 				return existing;
 			}
 			// After the no-op guards, mirroring the store: a skipped DO UPDATE
-			// never contends for the sku index.
+			// never contends for the sku index — and, on the cross-table half, a
+			// skipped write refuses nothing either.
 			this.#assertLiveSkuFree(input);
+			this.#assertProductSkuFreeOfVariants(input.sku);
+			// THE SKU-RENAME RULE — before the row is replaced, so a refusal leaves
+			// the stored row exactly as it was (the adapters' rollback).
+			if (input.sku !== undefined && existing.sku !== null) {
+				this.#carrySkuStock(existing.sku, input.sku);
+			}
 			const updated: ProductCommerce = {
 				...existing,
 				sku: input.sku !== undefined ? input.sku : existing.sku,
@@ -147,6 +260,7 @@ export class InMemoryProductCommerceStore implements ProductCommerceStore {
 		}
 
 		this.#assertLiveSkuFree(input);
+		this.#assertProductSkuFreeOfVariants(input.sku);
 		const created: ProductCommerce = {
 			productId: input.productId,
 			sku: input.sku ?? null,
@@ -165,6 +279,8 @@ export class InMemoryProductCommerceStore implements ProductCommerceStore {
 			widthMm: input.widthMm ?? null,
 			heightMm: input.heightMm ?? null,
 			productKind: input.productKind ?? "physical",
+			// Edit-only, like compare-at: the CMS-sync upsert never carries a file.
+			downloadAsset: null,
 			active: false,
 			deletedAt: null,
 			idempotencyKey: key,
@@ -248,8 +364,41 @@ export class InMemoryProductCommerceStore implements ProductCommerceStore {
 				}
 			}
 		}
-		// 5. Apply. Live-sku collisions throw SkuConflictError, exactly like upsert.
+		// 4c. The RECIPROCAL of the variant path's guard 4b: a repricing that would
+		//     leave a LIVE VARIANT of this product holding another currency is
+		//     refused, so the rule cannot be bypassed by repricing the product
+		//     instead of the size. With no variants declared this matches nothing.
+		if (input.price !== undefined) {
+			const clash = [...this.#variants.values()].some(
+				(v) =>
+					v.productId === input.productId &&
+					v.orphanedAt === null &&
+					v.price !== null &&
+					v.price.currency !== input.price?.currency,
+			);
+			if (clash) return { ok: false, reason: "currency_mismatch", current: existing };
+		}
+		// 5. No download file on a physical product (issue #376), judged on the row
+		//    as it WOULD be after this edit: attaching to a physical product, and
+		//    making a product that has a file physical, are both refused.
+		const nextKind = input.productKind ?? existing.productKind;
+		const nextAsset =
+			input.downloadAsset !== undefined ? input.downloadAsset : existing.downloadAsset;
+		if (nextKind === "physical" && nextAsset !== null) {
+			throw new InvalidProductFieldError(
+				"downloadAsset",
+				"a physical product cannot carry a download file",
+			);
+		}
+		// 6. Apply. Live-sku collisions throw SkuConflictError, exactly like upsert —
+		//    on BOTH halves of the pair: another live product, and a live variant.
 		this.#assertLiveSkuFree(input);
+		this.#assertProductSkuFreeOfVariants(input.sku);
+		// THE SKU-RENAME RULE — only an APPLYING edit reaches here (every zero-row
+		// branch returned above), so a replay/stale/not_found never moves stock.
+		if (input.sku !== undefined && existing.sku !== null) {
+			this.#carrySkuStock(existing.sku, input.sku);
+		}
 		const updated: ProductCommerce = {
 			...existing,
 			sku: input.sku !== undefined ? input.sku : existing.sku,
@@ -266,7 +415,8 @@ export class InMemoryProductCommerceStore implements ProductCommerceStore {
 			lengthMm: input.lengthMm !== undefined ? input.lengthMm : existing.lengthMm,
 			widthMm: input.widthMm !== undefined ? input.widthMm : existing.widthMm,
 			heightMm: input.heightMm !== undefined ? input.heightMm : existing.heightMm,
-			productKind: input.productKind ?? existing.productKind,
+			productKind: nextKind,
+			downloadAsset: nextAsset === null ? null : { ...nextAsset },
 			idempotencyKey: key,
 			updatedAt: this.#clock.now(),
 		};
@@ -313,7 +463,10 @@ export class InMemoryProductCommerceStore implements ProductCommerceStore {
 				productId: row.productId,
 				sku: row.sku,
 				price: row.price,
-				inStock: this.#inventoryOnHand(row.sku) > 0,
+				title: row.title,
+				compareAtPrice: row.compareAtPrice,
+				// A join miss (`null`) is coarsely "not in stock", exactly like 0.
+				inStock: (this.#readOnHand(row.sku) ?? 0) > 0,
 				active: row.active,
 			});
 		}
@@ -396,6 +549,28 @@ export class InMemoryProductCommerceStore implements ProductCommerceStore {
 
 	// -- Admin Products console: view-only keyset list (admin-UX Increment 2) --
 
+	/**
+	 * Validates `filter.lowStockThreshold` BEFORE any row is considered (port
+	 * doc — `InvalidLowStockThresholdError`), via the shared
+	 * `isValidLowStockThreshold` guard every adapter calls. Checked ONCE per
+	 * `listProducts`/`countProducts` invocation, never inside `#matchesFilter`
+	 * (which only runs per EXISTING row): an empty store must throw exactly
+	 * like a populated one, mirroring the SQL adapters, whose parameter
+	 * binding rejects an out-of-domain value independently of how many rows
+	 * the query would have matched. Short-circuits BEFORE any `>` comparison
+	 * ever runs — the fix for the divergence `InvalidLowStockThresholdError`'s
+	 * doc records (a naive `onHand > threshold` lets `NaN` silently decide
+	 * "nothing is low stock" instead of failing loudly).
+	 */
+	#assertValidLowStockThreshold(filter: ProductListFilter): void {
+		if (
+			filter.lowStockThreshold !== undefined &&
+			!isValidLowStockThreshold(filter.lowStockThreshold)
+		) {
+			throw new InvalidLowStockThresholdError(filter.lowStockThreshold);
+		}
+	}
+
 	/** The ONE `ProductListFilter` predicate (mirrors `OrderStore`'s
 	 *  `#matchesFilter` / the Kysely adapter's shared predicate builder) —
 	 *  excludes soft-deleted rows UNLESS `filter.deleted: true` requests the
@@ -410,6 +585,13 @@ export class InMemoryProductCommerceStore implements ProductCommerceStore {
 			const byTitle = row.title !== null && containsCaseInsensitive(row.title, filter.search);
 			if (!bySku && !byTitle) return false;
 		}
+		if (filter.lowStockThreshold !== undefined) {
+			// Mirrors the SQL adapter's LEFT JOIN predicate: a row with no sku (or
+			// a sku with no inventory row) resolves to `null` — UNKNOWN stock,
+			// never "low" — so it fails this half regardless of the threshold.
+			const onHand = row.sku === null ? null : this.#readOnHand(row.sku);
+			if (onHand === null || onHand > filter.lowStockThreshold) return false;
+		}
 		return true;
 	}
 
@@ -418,6 +600,7 @@ export class InMemoryProductCommerceStore implements ProductCommerceStore {
 		// `InMemoryOrderStore.listOrders`, MOD-5): same filters (via the shared
 		// `#matchesFilter` predicate), same `created_at DESC, product_id DESC`
 		// order, same `limit + 1` next-page detection.
+		this.#assertValidLowStockThreshold(filter);
 		const cursor = page.cursor ?? null;
 
 		const matched = [...this.#rows.values()]
@@ -449,6 +632,16 @@ export class InMemoryProductCommerceStore implements ProductCommerceStore {
 		return { products: rows.map((row) => this.#toSummary(row)), nextCursor };
 	}
 
+	/** Count under the SAME `#matchesFilter` predicate `listProducts` pages with
+	 *  (MOD-5) — one predicate, so a count and the list it captions can never
+	 *  disagree. No cursor: a count covers the whole filtered set, not a page. */
+	async countProducts(filter: ProductListFilter): Promise<number> {
+		this.#assertValidLowStockThreshold(filter);
+		let count = 0;
+		for (const row of this.#rows.values()) if (this.#matchesFilter(row, filter)) count++;
+		return count;
+	}
+
 	/** Count LIVE products referencing a tax class (port doc) — the delete-in-use
 	 *  guard's product half. Soft-deleted rows are historical, not live
 	 *  dependencies, so they never block reclaiming a class id. */
@@ -468,9 +661,318 @@ export class InMemoryProductCommerceStore implements ProductCommerceStore {
 			price: row.price,
 			productKind: row.productKind,
 			active: row.active,
+			// Mirrors the adapters' LEFT JOIN: a row with NO sku can never match
+			// an inventory row, so it lands on the same `null` ("unknown") the
+			// lookup returns for an unseeded sku. Never 0.
+			onHand: row.sku === null ? null : this.#readOnHand(row.sku),
 			deletedAt: row.deletedAt === null ? null : row.deletedAt.toISOString(),
 			createdAt: row.createdAt.toISOString(),
 		};
+	}
+
+	// -- Variants: one commerce row per sellable unit --------------------------
+
+	/** Every declared variant, keyed `product_id` + `variant_key` — the fake's
+	 *  stand-in for the store's composite primary key. A separator no id can
+	 *  contain keeps two products' keys from ever colliding in one flat map. */
+	#variants = new Map<string, ProductVariant>();
+
+	static #variantId(productId: string, variantKey: string): string {
+		// The separator is written as an ESCAPE, never as a literal control
+		// character: a raw NUL byte makes this whole file "binary" to grep,
+		// ripgrep and every diff viewer, which silently hides the line from the
+		// searches a reader would actually use to find it.
+		return `${productId}\u0000${variantKey}`;
+	}
+
+	/**
+	 * The CMS-sync channel (port doc): declare-or-update by `(productId,
+	 * variantKey)`, idempotent under `key`, order-aware under `contentUpdatedAt`,
+	 * and the RESURRECT half of the presence axis. Writes the title cache and
+	 * nothing else — `sku`/`price` are absent from the input by design, so this
+	 * channel cannot touch them (ADR-0016).
+	 */
+	async upsertVariant(
+		input: UpsertProductVariantInput,
+		key: IdempotencyKey,
+	): Promise<ProductVariant> {
+		if (typeof input.productId !== "string" || input.productId.length === 0) {
+			throw new MissingProductIdError();
+		}
+		if (typeof input.variantKey !== "string" || input.variantKey.length === 0) {
+			throw new MissingVariantKeyError();
+		}
+		const id = InMemoryProductCommerceStore.#variantId(input.productId, input.variantKey);
+		const now = this.#clock.now();
+		const existing = this.#variants.get(id);
+
+		if (existing !== undefined) {
+			// Replay with the same stored key: a provable no-op.
+			if (existing.idempotencyKey === key) return existing;
+			// A strictly older content revision than the stored watermark is a
+			// delayed/re-ordered delivery — it never overwrites fresher data.
+			if (
+				input.contentUpdatedAt !== undefined &&
+				existing.contentUpdatedAt !== null &&
+				input.contentUpdatedAt < existing.contentUpdatedAt
+			) {
+				return existing;
+			}
+			// PRESENCE moves only on an ORDERED, STRICTLY NEWER delivery (port doc),
+			// which is narrower than the title's own last-writer-wins guard above: a
+			// watermark-less declare, or one at a watermark the row already carries,
+			// updates the cache but can NEVER undo an orphan. That is what makes a
+			// redelivered declare unable to resurrect a variant a newer save dropped.
+			const resurrecting =
+				existing.orphanedAt !== null &&
+				input.contentUpdatedAt !== undefined &&
+				(existing.contentUpdatedAt === null || input.contentUpdatedAt > existing.contentUpdatedAt);
+			// A resurrect REVALIDATES the stale commerce facts rather than asserting
+			// them: while the variant was orphaned its sku was free for reuse, so it
+			// may no longer be there to reclaim, and a price whose currency the product
+			// no longer holds is not a price. Never a refusal and never a throw — the
+			// declare states a fact about the CMS, and the commerce row gives way.
+			// The `inventory` row is untouched either way: a cleared sku leaves its
+			// stock exactly where it is, and re-assigning it later ADOPTS that row
+			// under THE FIRST-SKU ASYMMETRY.
+			let sku = existing.sku;
+			let price = existing.price;
+			if (resurrecting) {
+				if (
+					sku !== null &&
+					(this.#skuTakenByLiveVariant(sku, {
+						productId: input.productId,
+						variantKey: input.variantKey,
+					}) ||
+						this.#skuTakenByLiveProduct(sku))
+				) {
+					sku = null;
+				}
+				if (price !== null) {
+					const productCurrency = this.#resolveProductCurrency(input.productId, input.variantKey);
+					if (productCurrency !== null && productCurrency !== price.currency) price = null;
+				}
+			}
+			const updated: ProductVariant = {
+				...existing,
+				title: input.title !== undefined ? input.title : existing.title,
+				sku,
+				price,
+				orphanedAt: resurrecting ? null : existing.orphanedAt,
+				idempotencyKey: key,
+				contentUpdatedAt:
+					input.contentUpdatedAt !== undefined ? input.contentUpdatedAt : existing.contentUpdatedAt,
+				updatedAt: now,
+			};
+			this.#variants.set(id, updated);
+			return updated;
+		}
+
+		const created: ProductVariant = {
+			productId: input.productId,
+			variantKey: input.variantKey,
+			// Declared, not priced: this channel has no field for either.
+			sku: null,
+			price: null,
+			title: input.title ?? null,
+			orphanedAt: null,
+			idempotencyKey: key,
+			contentUpdatedAt: input.contentUpdatedAt ?? null,
+			createdAt: now,
+			updatedAt: now,
+		};
+		this.#variants.set(id, created);
+		return created;
+	}
+
+	/** Every variant of one product, `variant_key ASC`, orphans included and
+	 *  flagged, each carrying the same three-state `onHand` the adapters' LEFT
+	 *  JOIN produces (port doc). */
+	async listVariants(productId: ProductId): Promise<ProductVariantSummary[]> {
+		return [...this.#variants.values()]
+			.filter((v) => v.productId === productId)
+			.toSorted((a, b) => codeUnitAsc(a.variantKey, b.variantKey))
+			.map((v) => {
+				// NARROWED, exactly like the adapters' SELECT list: the replay key and
+				// the sync watermark are write-path bookkeeping and never reach a
+				// reader. Destructured out by name so adding a field to the stored row
+				// cannot silently widen this projection.
+				const { idempotencyKey: _key, contentUpdatedAt: _watermark, ...rest } = v;
+				return { ...rest, onHand: v.sku === null ? null : this.#readOnHand(v.sku) };
+			});
+	}
+
+	/**
+	 * The guarded admin edit at variant grain (port doc): the EXACT guard order
+	 * `updateCommerceFields` uses — not_found (unknown / orphaned) FIRST, then
+	 * idempotent replay, then the `updatedAt` compare-and-set, then currency
+	 * integrity, then apply (carrying stock under THE SKU-RENAME RULE). Never
+	 * touches `title`, `variantKey` or `orphanedAt`.
+	 */
+	async updateVariantFields(
+		input: UpdateProductVariantFieldsInput,
+		key: IdempotencyKey,
+		expectedUpdatedAt: string,
+	): Promise<ProductVariantUpdateResult> {
+		const id = InMemoryProductCommerceStore.#variantId(input.productId, input.variantKey);
+		const existing = this.#variants.get(id);
+		// 1. An edit is neither a create nor a resurrection.
+		if (existing === undefined || existing.orphanedAt !== null) {
+			return { ok: false, reason: "not_found" };
+		}
+		// 2. Replay precedence over the CAS, so a double-submitted rename moves the
+		//    units exactly once.
+		if (existing.idempotencyKey === key) {
+			return { ok: true, variant: existing };
+		}
+		// 3. Optimistic CAS on updatedAt (ISO text).
+		if (existing.updatedAt.toISOString() !== expectedUpdatedAt) {
+			return { ok: false, reason: "stale", current: existing };
+		}
+		// 4. Currency integrity, on both sub-axes: never switch this variant's own
+		//    currency, and never disagree with the product's.
+		if (input.price !== undefined) {
+			if (existing.price !== null && existing.price.currency !== input.price.currency) {
+				return { ok: false, reason: "currency_mismatch", current: existing };
+			}
+			const productCurrency = this.#resolveProductCurrency(input.productId, input.variantKey);
+			if (productCurrency !== null && productCurrency !== input.price.currency) {
+				return { ok: false, reason: "currency_mismatch", current: existing };
+			}
+		}
+		// 5. Apply. A sku another LIVE sellable unit holds throws, exactly like the
+		//    product-level writers.
+		this.#assertVariantSkuFree(input);
+		// THE SKU-RENAME RULE — only an APPLYING edit reaches here.
+		if (input.sku !== undefined && existing.sku !== null) {
+			this.#carrySkuStock(existing.sku, input.sku);
+		}
+		const updated: ProductVariant = {
+			...existing,
+			sku: input.sku !== undefined ? input.sku : existing.sku,
+			price: input.price !== undefined ? input.price : existing.price,
+			idempotencyKey: key,
+			updatedAt: this.#clock.now(),
+		};
+		this.#variants.set(id, updated);
+		return { ok: true, variant: updated };
+	}
+
+	/** The ORPHAN transition (port doc): retains the row, its sku, its price and
+	 *  its stock; a no-op on an unknown key, a same-key replay, an already-orphaned
+	 *  row, or a stale watermark (the ONE watermark shared with `upsertVariant`). */
+	async deactivateVariant(
+		productId: ProductId,
+		variantKey: string,
+		key: IdempotencyKey,
+		contentUpdatedAt: string,
+	): Promise<void> {
+		const id = InMemoryProductCommerceStore.#variantId(productId, variantKey);
+		const existing = this.#variants.get(id);
+		if (existing === undefined) return; // unknown variant: no row minted.
+		// Same-key replay, AHEAD of every other guard exactly as the two write paths
+		// dedupe: this command already applied, whatever the row has done since.
+		if (existing.idempotencyKey === key) return;
+		if (existing.orphanedAt !== null) return; // already orphaned: stable no-op.
+		if (existing.contentUpdatedAt !== null && existing.contentUpdatedAt > contentUpdatedAt) {
+			return; // a delayed "the row is gone" never orphans a newer declaration.
+		}
+		this.#variants.set(id, {
+			...existing,
+			orphanedAt: this.#clock.now(),
+			idempotencyKey: key,
+			contentUpdatedAt,
+			updatedAt: this.#clock.now(),
+		});
+	}
+
+	/**
+	 * The currency a product's money must agree on: the product row's own price
+	 * currency when it has one, else any OTHER live priced variant's (a product
+	 * with mixed-price sizes has no product-level price, so the currency lives on
+	 * the sizes and they must still agree with each other). `null` ⇒ nothing to
+	 * match yet, so a first pricing is free.
+	 */
+	#resolveProductCurrency(productId: string, exceptVariantKey: string): string | null {
+		const product = this.#rows.get(productId);
+		if (product?.price != null) return product.price.currency;
+		for (const v of this.#variants.values()) {
+			if (v.productId !== productId) continue;
+			if (v.variantKey === exceptVariantKey) continue;
+			if (v.orphanedAt !== null) continue;
+			if (v.price !== null) return v.price.currency;
+		}
+		return null;
+	}
+
+	/**
+	 * Is this sku carried by a LIVE VARIANT? Mirrors the store's
+	 * `UNIQUE (sku) WHERE orphaned_at IS NULL` partial index.
+	 *
+	 * `exceptVariant` excludes the variant doing the writing — re-supplying your
+	 * own sku is not a conflict. The product-level writers pass nothing, having no
+	 * variant of their own to exclude.
+	 */
+	#skuTakenByLiveVariant(
+		s: string,
+		exceptVariant?: { productId: string; variantKey: string },
+	): boolean {
+		for (const v of this.#variants.values()) {
+			if (
+				exceptVariant !== undefined &&
+				v.productId === exceptVariant.productId &&
+				v.variantKey === exceptVariant.variantKey
+			) {
+				continue;
+			}
+			if (v.orphanedAt === null && v.sku === s) return true;
+		}
+		return false;
+	}
+
+	/** Is this sku carried by a LIVE PRODUCT row? Mirrors the store's
+	 *  `UNIQUE (sku) WHERE deleted_at IS NULL` partial index. */
+	#skuTakenByLiveProduct(s: string): boolean {
+		for (const row of this.#rows.values()) {
+			if (row.deletedAt === null && row.sku === s) return true;
+		}
+		return false;
+	}
+
+	/**
+	 * A SKU NAMES ONE LIVE SELLABLE UNIT, in BOTH directions (port doc) — but the
+	 * two sides ask DIFFERENT questions, which is why this is two predicates and
+	 * not one. Each writer's own table is already covered by its own partial unique
+	 * index, so each only has to ask about the OTHER table: the variant writer asks
+	 * about live products, the product writers ask about live variants. A single
+	 * shared predicate would have to be told which half to skip, which is the same
+	 * branch wearing a disguise.
+	 *
+	 * This is the variant writer's half. Live product rows are checked
+	 * unconditionally, INCLUDING a variant's own parent — two names over one
+	 * `inventory` row would let a later rename of either carry the other's stock
+	 * away.
+	 */
+	#assertVariantSkuFree(input: UpdateProductVariantFieldsInput): void {
+		if (input.sku === undefined) return;
+		const taken =
+			this.#skuTakenByLiveVariant(input.sku, {
+				productId: input.productId,
+				variantKey: input.variantKey,
+			}) || this.#skuTakenByLiveProduct(input.sku);
+		if (taken) throw new SkuConflictError(input.sku);
+	}
+
+	/**
+	 * The RECIPROCAL half: a product-level writer refuses a sku a LIVE VARIANT
+	 * already carries, with the same typed refusal the variant writer raises in the
+	 * other direction. Called only where the write actually applies, so a replayed
+	 * / stale / watermark-rejected write refuses nothing — the exact position the
+	 * partial unique index occupies on the same-table half.
+	 */
+	#assertProductSkuFreeOfVariants(s: string | null | undefined): void {
+		if (s === undefined || s === null) return;
+		if (this.#skuTakenByLiveVariant(s)) throw new SkuConflictError(s);
 	}
 
 	/** TEST-ONLY: directly seed a product row for the admin-list contract with
@@ -496,6 +998,7 @@ export class InMemoryProductCommerceStore implements ProductCommerceStore {
 			widthMm: null,
 			heightMm: null,
 			productKind: row.productKind ?? "physical",
+			downloadAsset: null,
 			active: row.active ?? false,
 			deletedAt:
 				row.deletedAt !== undefined && row.deletedAt !== null ? new Date(row.deletedAt) : null,

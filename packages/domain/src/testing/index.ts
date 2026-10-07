@@ -45,12 +45,39 @@ export {
 } from "./order-transition-contract.js";
 export { orderFulfillmentContract } from "./order-fulfillment-contract.js";
 export {
+	emailRecipientContract,
+	type EmailRecipientContractOptions,
+	type EmailRecipientHarness,
+	type StoredOutboxRow,
+} from "./email-recipient-contract.js";
+export {
 	buildRefundSeed,
 	refundOrderContract,
 	type RefundOrderContractOptions,
 	type RefundOrderHarness,
 } from "./refund-order-contract.js";
 export { orderCancellationContract } from "./order-cancellation-contract.js";
+export {
+	intentCancelContract,
+	type IntentCancelContractOptions,
+	type IntentCancelHarness,
+} from "./intent-cancel-contract.js";
+export {
+	latePaymentContract,
+	type LatePaymentContractOptions,
+	type LatePaymentHarness,
+} from "./late-payment-contract.js";
+export {
+	cancelWithRefundContract,
+	type CancelWithRefundContractOptions,
+	type CancelWithRefundHarness,
+} from "./cancel-with-refund-contract.js";
+export {
+	paymentDeclineContract,
+	type PaymentDeclineContractOptions,
+	type PaymentDeclineHarness,
+} from "./payment-decline-contract.js";
+export { orderExpiryContract, type OrderExpiryContractOptions } from "./order-expiry-contract.js";
 export {
 	orderTimelineContract,
 	type OrderTimelineHarness,
@@ -132,6 +159,8 @@ export {
 	type SeedInventoryRow,
 	type SeedOrderItemRow,
 	type SeedOrderRow,
+	type SeedProductTitleRow,
+	type SeedRefundRow,
 } from "./in-memory-reporting-store.js";
 export { InMemorySettingsStore } from "./in-memory-settings-store.js";
 export {
@@ -145,15 +174,26 @@ export {
 	type SettingsStoreContractOptions,
 } from "./settings-store-contract.js";
 export {
+	EXPECTED_ACTIVE_REFUND_SUM,
 	EXPECTED_ORDERS_BY_STATUS,
+	EXPECTED_REFUNDS_UNDER_REVENUE_ALLOW_LIST,
 	EXPECTED_REVENUE_BY_DAY,
 	EXPECTED_SUM_ALL,
 	EXPECTED_SUM_EXCLUDING_CANCELLED_REFUNDED,
 	EXPECTED_TOP_BY_QUANTITY,
 	EXPECTED_TOP_BY_REVENUE,
+	EXPECTED_TOTAL_REFUNDED,
 	EXPECTED_TOTAL_REVENUE,
 	FIXTURE_INVENTORY,
 	FIXTURE_ITEMS,
 	FIXTURE_ORDERS,
+	FIXTURE_PRODUCT_TITLES,
+	FIXTURE_REFUNDS,
 	REPORTING_WINDOW,
 } from "./reporting-fixture.js";
+export { InMemoryAttemptThrottle } from "./in-memory-attempt-throttle.js";
+export {
+	attemptThrottleContract,
+	type AttemptThrottleContractOptions,
+	type AttemptThrottleHarness,
+} from "./attempt-throttle-contract.js";

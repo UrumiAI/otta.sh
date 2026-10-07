@@ -1,8 +1,22 @@
 import { describe, expect, test } from "vitest";
 import { cents, currency, money } from "../money/cents.js";
 import { idempotencyKey, productId, sku } from "../money/ids.js";
-import { MissingProductIdError, SkuConflictError } from "../product-commerce/errors.js";
-import type { ProductCommerce, ProductCommerceStore } from "../ports/product-commerce-store.js";
+import {
+	InvalidLowStockThresholdError,
+	MAX_LOW_STOCK_THRESHOLD,
+	MissingProductIdError,
+	MissingVariantKeyError,
+	SkuConflictError,
+	SkuHeldStockError,
+	SkuStockConflictError,
+} from "../product-commerce/errors.js";
+import type {
+	DownloadAsset,
+	ProductCommerce,
+	ProductCommerceStore,
+	ProductVariant,
+	ProductVariantSummary,
+} from "../ports/product-commerce-store.js";
 import type { SeedProductSummaryRow } from "./in-memory-product-commerce-store.js";
 
 export interface ProductCommerceStoreHarness {
@@ -17,6 +31,18 @@ export interface ProductCommerceStoreHarness {
 	 *  the Kysely harness inserts a real row — so fake, sqlite, and pg exercise
 	 *  the identical `listProducts` spec (mirrors `OrderStoreHarness.seedOrder`). */
 	seedProduct(row: SeedProductSummaryRow): Promise<void>;
+	/**
+	 * Put a LIVE (`held`) reservation on a sku — step 0 of THE SKU-RENAME RULE,
+	 * which refuses to rename away from a sku that still has one. The dialect
+	 * harness inserts a real `reservations` row; the fake harness feeds the
+	 * fake's live-hold lookup.
+	 *
+	 * Models the reservation row ONLY, not the `on_hand` decrement a real
+	 * `reserve` would also make — the rule branches on the hold's EXISTENCE, and
+	 * a case that cares about the count seeds it separately with `seedStock`.
+	 * Seed the sku's stock first: `reservations.sku` references `inventory.sku`.
+	 */
+	seedHold(sku: string, qty: number): Promise<void>;
 }
 
 /** Seed a priced live product via upsert; return its post-seed row (its
@@ -42,6 +68,103 @@ function seedEditable(
 			title: overrides.title ?? `Product ${id}`,
 			...(overrides.taxClass !== undefined ? { taxClass: overrides.taxClass } : {}),
 			productKind: "physical",
+		},
+		idempotencyKey(`seed-${id}`),
+	);
+}
+
+/**
+ * The on-hand the store PROJECTS for one product id — `ProductSummary.onHand`,
+ * sourced from the same `inventory` LEFT JOIN on every adapter, and the only
+ * window the harness has onto the stock table. Keeps the two facts the rename
+ * rule turns on apart: `null` is "no inventory row at this sku", `0` is "a row
+ * that holds nothing".
+ */
+async function onHandOf(h: ProductCommerceStoreHarness, id: string): Promise<number | null> {
+	const { products } = await h.store.listProducts({}, { limit: 100 });
+	const row = products.find((p) => p.productId === id);
+	if (row === undefined) throw new Error(`onHandOf: no live product listed for ${id}`);
+	return row.onHand;
+}
+
+/**
+ * The same read for a sku NO live product holds — the only ones a rename can
+ * legally target. Parks a throwaway product on the sku (a plain create, which
+ * changes no sku and therefore carries nothing) and reads its projection, so
+ * "the row is retained, holding nothing" (`0`) stays distinguishable from "the
+ * row is gone" (`null`). Call it AFTER the assertions about the products a case
+ * actually cares about: it mints a row of its own.
+ */
+async function onHandOfSku(
+	h: ProductCommerceStoreHarness,
+	probeId: string,
+	target: string,
+): Promise<number | null> {
+	await h.store.upsert(
+		{ productId: productId(probeId), sku: sku(target) },
+		idempotencyKey(`probe-${probeId}`),
+	);
+	return onHandOf(h, probeId);
+}
+
+/**
+ * One variant's row as the store projects it, by key — the only window the
+ * contract has onto a variant's stock, since `onHand` rides on `listVariants`
+ * exactly as `ProductSummary.onHand` rides on `listProducts`. Throws rather than
+ * returning undefined so a case never quietly asserts against a hole.
+ */
+async function variantOf(
+	h: ProductCommerceStoreHarness,
+	pid: string,
+	key: string,
+): Promise<ProductVariantSummary> {
+	const rows = await h.store.listVariants(productId(pid));
+	const row = rows.find((v) => v.variantKey === key);
+	if (row === undefined) throw new Error(`variantOf: no variant ${key} on ${pid}`);
+	return row;
+}
+
+/**
+ * Re-declare a variant key at a given content watermark — the CMS-sync shape a
+ * resurrect needs. Presence moves only on a delivery that CARRIES a watermark
+ * and is strictly newer than the stored one, so every case that expects a
+ * resurrect goes through here rather than through the bare `declare` helper.
+ */
+function redeclare(
+	h: ProductCommerceStoreHarness,
+	pid: string,
+	key: string,
+	at: string,
+	idem: string,
+): Promise<ProductVariant> {
+	return h.store.upsertVariant(
+		{ productId: productId(pid), variantKey: key, title: `Variant ${key}`, contentUpdatedAt: at },
+		idempotencyKey(idem),
+	);
+}
+
+/** A canonical ULID for the download-file cases' keys. */
+const DL_ULID = "01J9ZQ3V8K4M2N6P7R8S9T0VWX";
+
+/** A well-formed download-file descriptor for product `id`. */
+function assetFor(id: string, over: Partial<DownloadAsset> = {}): DownloadAsset {
+	return {
+		key: `dl/${id}/${DL_ULID}`,
+		filename: "guide.pdf",
+		contentType: "application/pdf",
+		size: 2048,
+		...over,
+	};
+}
+
+/** Seed a priced, sku'd DIGITAL product — the only kind a download file may sit on. */
+function seedDigital(h: ProductCommerceStoreHarness, id: string): Promise<ProductCommerce> {
+	return h.store.upsert(
+		{
+			productId: productId(id),
+			sku: sku(`SKU-${id}`),
+			price: money(cents(900), currency("USD")),
+			productKind: "digital",
 		},
 		idempotencyKey(`seed-${id}`),
 	);
@@ -452,6 +575,414 @@ export function productCommerceStoreContract(
 					b.updatedAt.toISOString(),
 				),
 			).rejects.toBeInstanceOf(SkuConflictError);
+		});
+
+		// -- THE SKU-RENAME RULE (see the `ProductCommerceStore` port doc) -------
+		//
+		// `inventory` is keyed by the natural key `sku`, so renaming a product's
+		// sku is a stock movement wearing a string edit's clothes. These cases pin
+		// both halves of the rule on BOTH writers of the column: the units follow
+		// the rename inside its own transaction, or the whole write is refused —
+		// they are never left behind under a sku no product owns.
+		describe("a sku rename carries its on-hand row, or refuses", () => {
+			test("updateCommerceFields: a rename CARRIES the on-hand count onto the new sku", async () => {
+				const h = await makeStore();
+				const seeded = await seedEditable(h, "prod-carry", { sku: "SKU-OLD" });
+				await h.seedStock("SKU-OLD", 40);
+				expect(await onHandOf(h, "prod-carry")).toBe(40);
+
+				const res = await h.store.updateCommerceFields(
+					{ productId: productId("prod-carry"), sku: sku("SKU-NEW") },
+					idempotencyKey("rename-1"),
+					seeded.updatedAt.toISOString(),
+				);
+
+				expect(res.ok).toBe(true);
+				if (!res.ok) throw new Error("unreachable");
+				expect(res.product.sku).toBe("SKU-NEW");
+				// The 40 units followed the product. Before this rule they stayed
+				// under SKU-OLD while the product started again from a fresh zero.
+				expect(await onHandOf(h, "prod-carry")).toBe(40);
+			});
+
+			test("updateCommerceFields: the source row is RETAINED at zero — a stock row is never deleted", async () => {
+				const h = await makeStore();
+				const seeded = await seedEditable(h, "prod-retain", { sku: "SKU-FROM" });
+				await h.seedStock("SKU-FROM", 12);
+
+				await h.store.updateCommerceFields(
+					{ productId: productId("prod-retain"), sku: sku("SKU-TO") },
+					idempotencyKey("rename-retain"),
+					seeded.updatedAt.toISOString(),
+				);
+
+				expect(await onHandOf(h, "prod-retain")).toBe(12);
+				// `0`, not `null`: the row survives the rename holding nothing.
+				// `reservations.sku` references it, so the history a sold sku leaves
+				// behind can be neither deleted nor re-keyed.
+				expect(await onHandOfSku(h, "probe-retain", "SKU-FROM")).toBe(0);
+			});
+
+			test("updateCommerceFields: renaming ONTO a sku that already has an inventory row refuses, naming both skus, and writes nothing", async () => {
+				const h = await makeStore();
+				const seeded = await seedEditable(h, "prod-src", { sku: "SKU-SRC" });
+				await h.seedStock("SKU-SRC", 5);
+				// An inventory row NO live product holds — so the live-sku partial
+				// index has nothing to say and the refusal is genuinely the stock
+				// row's, not `SkuConflictError` wearing a different name.
+				await h.seedStock("SKU-TAKEN", 12);
+
+				await expect(
+					h.store.updateCommerceFields(
+						{ productId: productId("prod-src"), sku: sku("SKU-TAKEN") },
+						idempotencyKey("rename-conflict"),
+						seeded.updatedAt.toISOString(),
+					),
+				).rejects.toMatchObject({
+					name: "SkuStockConflictError",
+					fromSku: "SKU-SRC",
+					toSku: "SKU-TAKEN",
+				});
+
+				// ATOMIC: the product row rolled back with the stock. The stored
+				// replay key is still the seed's, so the guarded UPDATE left no trace.
+				const after = await h.store.getByProductId(productId("prod-src"));
+				expect(after?.sku).toBe("SKU-SRC");
+				expect(after?.idempotencyKey).toBe("seed-prod-src");
+				expect(await onHandOf(h, "prod-src")).toBe(5);
+				expect(await onHandOfSku(h, "probe-taken", "SKU-TAKEN")).toBe(12);
+			});
+
+			test("updateCommerceFields: the refusal is a typed domain error, catchable by class", async () => {
+				const h = await makeStore();
+				const seeded = await seedEditable(h, "prod-typed", { sku: "SKU-TYPED" });
+				await h.seedStock("SKU-TYPED", 1);
+				await h.seedStock("SKU-TYPED-TARGET", 1);
+
+				await expect(
+					h.store.updateCommerceFields(
+						{ productId: productId("prod-typed"), sku: sku("SKU-TYPED-TARGET") },
+						idempotencyKey("rename-typed"),
+						seeded.updatedAt.toISOString(),
+					),
+				).rejects.toBeInstanceOf(SkuStockConflictError);
+			});
+
+			test("updateCommerceFields: occupied is occupied — a target row holding ZERO refuses exactly like a stocked one", async () => {
+				const h = await makeStore();
+				const seeded = await seedEditable(h, "prod-zero", { sku: "SKU-Z-SRC" });
+				await h.seedStock("SKU-Z-SRC", 8);
+				// A row at 0 is "known sku, out of stock" — a DIFFERENT fact from "no
+				// such sku", and it may already carry reservations and order lines.
+				await h.seedStock("SKU-Z-TARGET", 0);
+
+				await expect(
+					h.store.updateCommerceFields(
+						{ productId: productId("prod-zero"), sku: sku("SKU-Z-TARGET") },
+						idempotencyKey("rename-zero"),
+						seeded.updatedAt.toISOString(),
+					),
+				).rejects.toMatchObject({ name: "SkuStockConflictError", toSku: "SKU-Z-TARGET" });
+
+				expect(await onHandOf(h, "prod-zero")).toBe(8);
+			});
+
+			test("updateCommerceFields: re-supplying the SAME sku is not a rename — the count is untouched and nothing refuses", async () => {
+				const h = await makeStore();
+				const seeded = await seedEditable(h, "prod-same", { sku: "SKU-SAME" });
+				await h.seedStock("SKU-SAME", 9);
+
+				const res = await h.store.updateCommerceFields(
+					{ productId: productId("prod-same"), sku: sku("SKU-SAME"), taxClass: "standard" },
+					idempotencyKey("rename-same"),
+					seeded.updatedAt.toISOString(),
+				);
+
+				// The row IS its own target: a naive claim-then-zero would refuse the
+				// edit outright, or zero the product's own stock.
+				expect(res.ok).toBe(true);
+				expect(await onHandOf(h, "prod-same")).toBe(9);
+			});
+
+			test("updateCommerceFields: setting the FIRST sku on a row that had none carries nothing", async () => {
+				const h = await makeStore();
+				const bare = await h.store.upsert(
+					{ productId: productId("prod-first") },
+					idempotencyKey("seed-first"),
+				);
+				const res = await h.store.updateCommerceFields(
+					{ productId: productId("prod-first"), sku: sku("SKU-FIRST") },
+					idempotencyKey("rename-first"),
+					bare.updatedAt.toISOString(),
+				);
+
+				expect(res.ok).toBe(true);
+				// No source sku ⇒ no rename ⇒ the rule never engages, so the store
+				// mints no inventory row here. Creating it stays the caller's
+				// always-attempt `seedOnHand` (`updateProductCommerceFields`), which
+				// is where the "a product with a sku has an inventory row" invariant
+				// lives — this is a plain edit, not a movement.
+				expect(await onHandOf(h, "prod-first")).toBeNull();
+			});
+
+			test("updateCommerceFields: a rename FROM a sku with no inventory row moves nothing and refuses nothing", async () => {
+				const h = await makeStore();
+				const seeded = await seedEditable(h, "prod-norow", { sku: "SKU-NOROW" });
+				expect(await onHandOf(h, "prod-norow")).toBeNull();
+
+				const res = await h.store.updateCommerceFields(
+					{ productId: productId("prod-norow"), sku: sku("SKU-FRESH") },
+					idempotencyKey("rename-norow"),
+					seeded.updatedAt.toISOString(),
+				);
+
+				expect(res.ok).toBe(true);
+				expect(await onHandOf(h, "prod-norow")).toBe(0);
+			});
+
+			test("updateCommerceFields: an idempotent REPLAY of a rename moves the units exactly once", async () => {
+				const h = await makeStore();
+				const seeded = await seedEditable(h, "prod-replay", { sku: "SKU-R-FROM" });
+				await h.seedStock("SKU-R-FROM", 30);
+				const key = idempotencyKey("rename-replay");
+				const input = { productId: productId("prod-replay"), sku: sku("SKU-R-TO") };
+
+				const first = await h.store.updateCommerceFields(
+					input,
+					key,
+					seeded.updatedAt.toISOString(),
+				);
+				expect(first.ok).toBe(true);
+				expect(await onHandOf(h, "prod-replay")).toBe(30);
+
+				// The same key against the now-stale watermark: the replay branch,
+				// which the port pins AHEAD of the staleness check. A second carry
+				// could not stay quiet even if it wanted to — SKU-R-TO now has a row
+				// of its own, so re-running the rule would REFUSE this replay instead
+				// of returning ok.
+				const replay = await h.store.updateCommerceFields(
+					input,
+					key,
+					seeded.updatedAt.toISOString(),
+				);
+
+				expect(replay.ok).toBe(true);
+				expect(await onHandOf(h, "prod-replay")).toBe(30);
+				expect(await onHandOfSku(h, "probe-replay", "SKU-R-FROM")).toBe(0);
+			});
+
+			test("updateCommerceFields: a stale or unknown edit naming a new sku moves nothing", async () => {
+				const h = await makeStore();
+				await seedEditable(h, "prod-guard", { sku: "SKU-G" });
+				await h.seedStock("SKU-G", 6);
+
+				const stale = await h.store.updateCommerceFields(
+					{ productId: productId("prod-guard"), sku: sku("SKU-G-STALE") },
+					idempotencyKey("guard-stale"),
+					"1999-01-01T00:00:00.000Z",
+				);
+				expect(stale).toMatchObject({ ok: false, reason: "stale" });
+
+				const missing = await h.store.updateCommerceFields(
+					{ productId: productId("ghost"), sku: sku("SKU-G-GHOST") },
+					idempotencyKey("guard-ghost"),
+					"1999-01-01T00:00:00.000Z",
+				);
+				expect(missing).toEqual({ ok: false, reason: "not_found" });
+
+				expect(await onHandOf(h, "prod-guard")).toBe(6);
+				// Neither rejected write so much as claimed a row for its target sku.
+				expect(await onHandOfSku(h, "probe-stale", "SKU-G-STALE")).toBeNull();
+			});
+
+			test("upsert: a sku change carries the on-hand row too — the rule belongs to the column, not to one writer", async () => {
+				const h = await makeStore();
+				await h.store.upsert(
+					{ productId: productId("prod-u"), sku: sku("SKU-U-FROM") },
+					idempotencyKey("u-1"),
+				);
+				await h.seedStock("SKU-U-FROM", 21);
+
+				const renamed = await h.store.upsert(
+					{ productId: productId("prod-u"), sku: sku("SKU-U-TO") },
+					idempotencyKey("u-2"),
+				);
+
+				expect(renamed.sku).toBe("SKU-U-TO");
+				expect(await onHandOf(h, "prod-u")).toBe(21);
+				expect(await onHandOfSku(h, "probe-u", "SKU-U-FROM")).toBe(0);
+			});
+
+			test("upsert: a sku change onto an occupied inventory row refuses, and the upsert applies nothing", async () => {
+				const h = await makeStore();
+				await h.store.upsert(
+					{ productId: productId("prod-ux"), sku: sku("SKU-UX-FROM") },
+					idempotencyKey("ux-1"),
+				);
+				await h.seedStock("SKU-UX-FROM", 4);
+				await h.seedStock("SKU-UX-TAKEN", 3);
+
+				await expect(
+					h.store.upsert(
+						{ productId: productId("prod-ux"), sku: sku("SKU-UX-TAKEN") },
+						idempotencyKey("ux-2"),
+					),
+				).rejects.toMatchObject({
+					name: "SkuStockConflictError",
+					fromSku: "SKU-UX-FROM",
+					toSku: "SKU-UX-TAKEN",
+				});
+
+				const after = await h.store.getByProductId(productId("prod-ux"));
+				expect(after?.sku).toBe("SKU-UX-FROM");
+				expect(after?.idempotencyKey).toBe("ux-1");
+				expect(await onHandOf(h, "prod-ux")).toBe(4);
+			});
+
+			test("a rename away from a sku with a LIVE hold is refused, naming the sku and the count", async () => {
+				const h = await makeStore();
+				const seeded = await seedEditable(h, "prod-held", { sku: "SKU-HELD" });
+				await h.seedStock("SKU-HELD", 20);
+				// `seedHold` writes the reservation row WITHOUT the on_hand decrement a
+				// real `reserve` would also make, so the 20 asserted below is the
+				// fixture's number rather than stock arithmetic. That is deliberate:
+				// the rule branches on a hold EXISTING, and the decrement's own
+				// arithmetic belongs to `InventoryStore`'s contract, not this one.
+				await h.seedHold("SKU-HELD", 3);
+
+				// The hold's units are already out of on_hand, and the hold itself
+				// cannot follow the rename — so the carry has nothing honest to do
+				// with them, and the whole write waits.
+				await expect(
+					h.store.updateCommerceFields(
+						{ productId: productId("prod-held"), sku: sku("SKU-HELD-NEW") },
+						idempotencyKey("rename-held"),
+						seeded.updatedAt.toISOString(),
+					),
+				).rejects.toMatchObject({ name: "SkuHeldStockError", sku: "SKU-HELD", liveHolds: 1 });
+
+				const after = await h.store.getByProductId(productId("prod-held"));
+				expect(after?.sku).toBe("SKU-HELD");
+				expect(after?.idempotencyKey).toBe("seed-prod-held");
+				expect(await onHandOf(h, "prod-held")).toBe(20);
+				// The target sku was never even claimed.
+				expect(await onHandOfSku(h, "probe-held", "SKU-HELD-NEW")).toBeNull();
+			});
+
+			test("the live-hold refusal is a typed domain error, and applies to upsert too", async () => {
+				const h = await makeStore();
+				const seeded = await seedEditable(h, "prod-held-typed", { sku: "SKU-HT" });
+				await h.seedStock("SKU-HT", 4);
+				await h.seedHold("SKU-HT", 1);
+
+				await expect(
+					h.store.updateCommerceFields(
+						{ productId: productId("prod-held-typed"), sku: sku("SKU-HT-NEW") },
+						idempotencyKey("ht-1"),
+						seeded.updatedAt.toISOString(),
+					),
+				).rejects.toBeInstanceOf(SkuHeldStockError);
+
+				// Same rule, other writer — it belongs to the column, not the caller.
+				await expect(
+					h.store.upsert(
+						{ productId: productId("prod-held-typed"), sku: sku("SKU-HT-NEW2") },
+						idempotencyKey("ht-2"),
+					),
+				).rejects.toBeInstanceOf(SkuHeldStockError);
+				expect((await h.store.getByProductId(productId("prod-held-typed")))?.sku).toBe("SKU-HT");
+			});
+
+			test("when BOTH refusals apply, the live hold wins — guard order is fixed, like every sibling guard on this port", async () => {
+				const h = await makeStore();
+				const seeded = await seedEditable(h, "prod-both", { sku: "SKU-BOTH" });
+				await h.seedStock("SKU-BOTH", 7);
+				await h.seedHold("SKU-BOTH", 1);
+				// The target is occupied TOO, so both refusals are live at once and
+				// only a fixed order can make every adapter answer the same way.
+				await h.seedStock("SKU-BOTH-TARGET", 9);
+
+				// Holds first: it is a fact about the sku the operator is renaming
+				// AWAY from, so it is the one they can act on without first choosing a
+				// different target — and it is the refusal that will clear by itself.
+				await expect(
+					h.store.updateCommerceFields(
+						{ productId: productId("prod-both"), sku: sku("SKU-BOTH-TARGET") },
+						idempotencyKey("both-1"),
+						seeded.updatedAt.toISOString(),
+					),
+				).rejects.toBeInstanceOf(SkuHeldStockError);
+
+				expect((await h.store.getByProductId(productId("prod-both")))?.sku).toBe("SKU-BOTH");
+				expect(await onHandOf(h, "prod-both")).toBe(7);
+			});
+
+			test("a live hold on the sku does NOT block an edit that leaves the sku alone", async () => {
+				const h = await makeStore();
+				const seeded = await seedEditable(h, "prod-held-other", { sku: "SKU-HO" });
+				await h.seedStock("SKU-HO", 5);
+				await h.seedHold("SKU-HO", 2);
+
+				// The refusal is the RENAME's, not the sku's: a busy product stays
+				// fully editable on every other field, and on its own sku re-supplied.
+				const res = await h.store.updateCommerceFields(
+					{ productId: productId("prod-held-other"), sku: sku("SKU-HO"), taxClass: "reduced" },
+					idempotencyKey("ho-1"),
+					seeded.updatedAt.toISOString(),
+				);
+				expect(res.ok).toBe(true);
+				expect(await onHandOf(h, "prod-held-other")).toBe(5);
+			});
+
+			test("THE FIRST-SKU ASYMMETRY: a first sku ADOPTS an existing inventory row, where a rename would have refused", async () => {
+				const h = await makeStore();
+				const bare = await h.store.upsert(
+					{ productId: productId("prod-adopt") },
+					idempotencyKey("seed-adopt"),
+				);
+				// Units already parked under the sku — the state a rename refuses.
+				await h.seedStock("SKU-ADOPTED", 33);
+
+				const res = await h.store.updateCommerceFields(
+					{ productId: productId("prod-adopt"), sku: sku("SKU-ADOPTED") },
+					idempotencyKey("adopt-1"),
+					bare.updatedAt.toISOString(),
+				);
+
+				// Deliberate, and the pre-existing seed/heal semantics rather than a
+				// new decision (see THE FIRST-SKU ASYMMETRY on the port): a product
+				// re-linked to a sku it used to own gets its stock back this way, and
+				// there is no second count to reconcile because it had none. Renames
+				// refuse; first assignment adopts.
+				expect(res.ok).toBe(true);
+				expect(await onHandOf(h, "prod-adopt")).toBe(33);
+			});
+
+			test("upsert: a STALE (reordered) sync whose sku was REJECTED carries nothing", async () => {
+				const h = await makeStore();
+				const pid = productId("prod-reorder-stock");
+				await h.store.upsert(
+					{ productId: pid, sku: sku("SKU-CURRENT"), contentUpdatedAt: "2026-07-10T02:00:00.000Z" },
+					idempotencyKey("sync-newer"),
+				);
+				await h.seedStock("SKU-CURRENT", 15);
+
+				// The delayed, older delivery applies nothing — so the sku it names
+				// was never the row's, and moving stock onto it would mint inventory
+				// for a sku no product owns.
+				const returned = await h.store.upsert(
+					{
+						productId: pid,
+						sku: sku("SKU-REJECTED"),
+						contentUpdatedAt: "2026-07-10T01:00:00.000Z",
+					},
+					idempotencyKey("sync-older"),
+				);
+
+				expect(returned.sku).toBe("SKU-CURRENT");
+				expect(await onHandOf(h, "prod-reorder-stock")).toBe(15);
+				expect(await onHandOfSku(h, "probe-rejected", "SKU-REJECTED")).toBeNull();
+			});
 		});
 
 		test("updateCommerceFields never touches the publish gate (active) or the tombstone", async () => {
@@ -1230,6 +1761,43 @@ export function productCommerceStoreContract(
 			expect(tombstone?.deletedAt).not.toBeNull();
 		});
 
+		// Issue #374 — the delete-and-recreate shape the plugin's `product-orphans`
+		// sweep completes when the CMS delete hook was lost. The sweep calls nothing
+		// but `softDelete`, so what makes that safe is pinned here, on every adapter.
+		test("DELETE-AND-RECREATE: softDelete leaves the sku's stock and its live hold alone, a replay changes nothing, and the product re-created under a NEW id takes the sku with its stock", async () => {
+			const h = await makeStore();
+			const old = productId("prod-374-old");
+			const recreated = productId("prod-374-new");
+			await h.seedStock("SKU-374", 6);
+			await h.store.upsert(
+				{ productId: old, sku: sku("SKU-374"), price: money(cents(1200), currency("USD")) },
+				idempotencyKey("k-374-old"),
+			);
+			// A buyer's hold on the sku, taken while the old product was on sale.
+			await h.seedHold("SKU-374", 2);
+
+			await h.store.softDelete(old, idempotencyKey("products:prod-374-old:deleted"));
+			const tombstone = await h.store.getByProductId(old);
+			expect(tombstone).toMatchObject({ active: false, sku: "SKU-374" });
+			expect(tombstone?.deletedAt).not.toBeNull();
+
+			// The replay — the sweep and a late hook delivery share one key — is a no-op.
+			await h.store.softDelete(old, idempotencyKey("products:prod-374-old:deleted"));
+			expect(await h.store.getByProductId(old)).toEqual(tombstone);
+
+			// The CMS minted a new id for "the same" product. Its first sku is the old
+			// one's: the claim was released, and the stock the delete never touched is
+			// adopted whole — the live hold neither blocks the claim nor moved a unit.
+			const priced = await h.store.upsert(
+				{ productId: recreated, sku: sku("SKU-374"), price: money(cents(1200), currency("USD")) },
+				idempotencyKey("k-374-new"),
+			);
+			expect(priced).toMatchObject({ sku: "SKU-374", deletedAt: null });
+			expect(await onHandOf(h, "prod-374-new")).toBe(6);
+			// And the tombstone still names the sku it sold under, for order history.
+			expect((await h.store.getByProductId(old))?.sku).toBe("SKU-374");
+		});
+
 		// -- Phase 2: listCommerceByIds (batch catalog read, plan §6) -----------
 
 		test("listCommerceByIds returns records for existing ids and omits missing ids", async () => {
@@ -1258,9 +1826,95 @@ export function productCommerceStoreContract(
 				productId: p1,
 				sku: "SKU-B1",
 				price: { amount: 1999, currency: "USD" },
+				// No sync has carried a title yet — null, never "" or the sku.
+				title: null,
+				// No was-price set — null, never a zero amount.
+				compareAtPrice: null,
 				inStock: true,
 				active: false, // afterPublish deferred — unpublished until it lands
 			});
+		});
+
+		test("listCommerceByIds carries the title cache — the name an order line will snapshot", async () => {
+			const h = await makeStore();
+			const pid = productId("prod-bt1");
+			await h.store.upsert(
+				{
+					productId: pid,
+					sku: sku("SKU-BT1"),
+					price: money(cents(600), currency("USD")),
+					title: "Otta Stickers",
+				},
+				idempotencyKey("k1"),
+			);
+
+			const [view] = await h.store.listCommerceByIds([pid]);
+
+			expect(view?.title).toBe("Otta Stickers");
+		});
+
+		test("listCommerceByIds carries the compare-at (was) price as STORED — the store reports it, the storefront decides whether it is a sale", async () => {
+			const h = await makeStore();
+			const pid = productId("prod-bc1");
+			const seeded = await seedEditable(h, "prod-bc1", { priceCents: 1200 });
+			const res = await h.store.updateCommerceFields(
+				{ productId: pid, compareAtPrice: money(cents(2000), currency("USD")) },
+				idempotencyKey("was-1"),
+				seeded.updatedAt.toISOString(),
+			);
+			expect(res.ok).toBe(true);
+
+			const [view] = await h.store.listCommerceByIds([pid]);
+
+			expect(view?.price).toEqual({ amount: 1200, currency: "USD" });
+			expect(view?.compareAtPrice).toEqual({ amount: 2000, currency: "USD" });
+		});
+
+		test("listCommerceByIds reports a compare-at at or below the price VERBATIM — a price rise is data, not an error", async () => {
+			const h = await makeStore();
+			const pid = productId("prod-bc3");
+			const seeded = await seedEditable(h, "prod-bc3", { priceCents: 1200 });
+			const res = await h.store.updateCommerceFields(
+				{ productId: pid, compareAtPrice: money(cents(900), currency("USD")) },
+				idempotencyKey("was-low-1"),
+				seeded.updatedAt.toISOString(),
+			);
+			expect(res.ok).toBe(true);
+
+			const [view] = await h.store.listCommerceByIds([pid]);
+
+			// Not dropped, not clamped: whether it reads as a sale is decided
+			// downstream, so the store must not decide it here.
+			expect(view?.compareAtPrice).toEqual({ amount: 900, currency: "USD" });
+		});
+
+		test("the catalog view's public key set is exactly this — the admin-only unit cost can never ride it", async () => {
+			const h = await makeStore();
+			const pid = productId("prod-bc2");
+			const seeded = await seedEditable(h, "prod-bc2");
+			await h.store.updateCommerceFields(
+				{
+					productId: pid,
+					unitCost: money(cents(300), currency("USD")),
+					compareAtPrice: money(cents(2000), currency("USD")),
+				},
+				idempotencyKey("cost-1"),
+				seeded.updatedAt.toISOString(),
+			);
+
+			const [view] = await h.store.listCommerceByIds([pid]);
+
+			// An exact set, not a `not.toHaveProperty("unitCost")`: a new field on
+			// this storefront-reachable view must be added here on purpose.
+			expect(Object.keys(view ?? {}).toSorted()).toEqual([
+				"active",
+				"compareAtPrice",
+				"inStock",
+				"price",
+				"productId",
+				"sku",
+				"title",
+			]);
 		});
 
 		test("listCommerceByIds computes inStock via the store's own inventory join: on_hand > 0 ⇒ true; 0 or no inventory row ⇒ false", async () => {
@@ -1501,6 +2155,36 @@ export function productCommerceStoreContract(
 			expect(un?.price).toBeNull();
 		});
 
+		test("getManyByProductId reports the LIVE publish gate: published → active, unpublished → inactive, deleted → inactive + tombstoned (checkout's liveness rule reads exactly this)", async () => {
+			const h = await makeStore();
+			const pid = productId("prod-gm-6");
+			const gone = productId("prod-gm-6-del");
+			await h.store.upsert(
+				{ productId: pid, sku: sku("SKU-GM-6"), price: money(cents(1400), currency("USD")) },
+				idempotencyKey("k1"),
+			);
+			await h.store.upsert(
+				{ productId: gone, sku: sku("SKU-GM-6D"), price: money(cents(1400), currency("USD")) },
+				idempotencyKey("k2"),
+			);
+			await h.store.activate(pid, idempotencyKey("pub-1"), "2026-01-01T00:00:00.000Z");
+			await h.store.activate(gone, idempotencyKey("pub-2"), "2026-01-01T00:00:00.000Z");
+
+			const published = await h.store.getManyByProductId([pid]);
+			expect(published.get(pid)).toMatchObject({ active: true, deletedAt: null });
+
+			await h.store.deactivate(pid, idempotencyKey("unpub-1"), "2026-01-02T00:00:00.000Z");
+			await h.store.softDelete(gone, idempotencyKey("del-2"));
+			const after = await h.store.getManyByProductId([pid, gone]);
+			// The price survives both lifecycle events — which is exactly why the
+			// sell paths must read `active`/`deletedAt`, not just "is it priced".
+			expect(after.get(pid)).toMatchObject({ active: false, deletedAt: null });
+			expect(after.get(pid)?.price).toEqual({ amount: 1400, currency: "USD" });
+			expect(after.get(gone)?.active).toBe(false);
+			expect(after.get(gone)?.deletedAt).not.toBeNull();
+			expect(after.get(gone)?.price).toEqual({ amount: 1400, currency: "USD" });
+		});
+
 		// -- Admin Products console: view-only keyset list (admin-UX Increment 2) --
 
 		test("listProducts on an empty store returns no rows and a null cursor", async () => {
@@ -1549,6 +2233,103 @@ export function productCommerceStoreContract(
 			const { products } = await h.store.listProducts({}, { limit: 25 });
 			expect(products).toHaveLength(1);
 			expect(products[0]).toMatchObject({ sku: null, title: null, price: null });
+			// No sku ⇒ nothing to join against ⇒ unknown, not "out of stock".
+			expect(products[0]!.onHand).toBeNull();
+		});
+
+		// -- onHand on the list projection (INC-03) ---------------------------
+		// Carried by ONE LEFT JOIN per page, never an N+1. The three states are
+		// pinned separately because conflating them is the whole hazard:
+		// `null` = no inventory row ("unknown"), `0` = known and out of stock.
+
+		test("listProducts projects onHand from the stock join", async () => {
+			const h = await makeStore();
+			await h.seedProduct(productRow({ id: "prod-stocked", sku: "SKU-STOCKED" }));
+			await h.seedStock("SKU-STOCKED", 7);
+			const { products } = await h.store.listProducts({}, { limit: 25 });
+			expect(products[0]!.onHand).toBe(7);
+		});
+
+		test("listProducts: a product with NO inventory row projects onHand null — 'unknown', never 0", async () => {
+			const h = await makeStore();
+			await h.seedProduct(productRow({ id: "prod-nostock", sku: "SKU-NOSTOCK" }));
+			const { products } = await h.store.listProducts({}, { limit: 25 });
+			expect(products[0]!.onHand).toBeNull();
+			// The assertion that matters: `null` must not have collapsed to 0.
+			expect(products[0]!.onHand).not.toBe(0);
+		});
+
+		test("listProducts: a sku stocked at ZERO projects onHand 0 — 'out of stock', never null", async () => {
+			const h = await makeStore();
+			await h.seedProduct(productRow({ id: "prod-zero", sku: "SKU-ZERO" }));
+			await h.seedStock("SKU-ZERO", 0);
+			const { products } = await h.store.listProducts({}, { limit: 25 });
+			expect(products[0]!.onHand).toBe(0);
+			expect(products[0]!.onHand).not.toBeNull();
+		});
+
+		test("listProducts carries onHand for EVERY row of a page, mixing all three states", async () => {
+			const h = await makeStore();
+			await h.seedProduct(
+				productRow({ id: "p-a", sku: "SKU-A", createdAt: "2026-07-10T03:00:00.000Z" }),
+			);
+			await h.seedProduct(
+				productRow({ id: "p-b", sku: "SKU-B", createdAt: "2026-07-10T02:00:00.000Z" }),
+			);
+			await h.seedProduct(
+				productRow({
+					id: "p-c",
+					sku: null,
+					title: "No sku",
+					createdAt: "2026-07-10T01:00:00.000Z",
+				}),
+			);
+			await h.seedStock("SKU-A", 12);
+			await h.seedStock("SKU-B", 0);
+			const { products } = await h.store.listProducts({}, { limit: 25 });
+			expect(products.map((p) => [p.productId, p.onHand])).toEqual([
+				["p-a", 12],
+				["p-b", 0],
+				["p-c", null],
+			]);
+		});
+
+		test("listProducts: the stock join never multiplies, drops, or reorders a page", async () => {
+			const h = await makeStore();
+			// Interleave stocked and unstocked rows so a join that turned INNER
+			// would drop rows and one that fanned out would duplicate them.
+			for (let i = 0; i < 6; i++) {
+				await h.seedProduct(
+					productRow({
+						id: `p-${i}`,
+						sku: `SKU-${i}`,
+						createdAt: `2026-07-10T0${String(i)}:00:00.000Z`,
+					}),
+				);
+				if (i % 2 === 0) await h.seedStock(`SKU-${i}`, i);
+			}
+			const { products, nextCursor } = await h.store.listProducts({}, { limit: 4 });
+			expect(products.map((p) => p.productId)).toEqual(["p-5", "p-4", "p-3", "p-2"]);
+			expect(products.map((p) => p.onHand)).toEqual([null, 4, null, 2]);
+			// The keyset cursor still comes off the LAST returned row, unaffected.
+			expect(nextCursor).toEqual({
+				createdAt: "2026-07-10T02:00:00.000Z",
+				productId: "p-2",
+			});
+			const page2 = await h.store.listProducts({}, { limit: 4, cursor: nextCursor });
+			expect(page2.products.map((p) => p.productId)).toEqual(["p-1", "p-0"]);
+			expect(page2.products.map((p) => p.onHand)).toEqual([null, 0]);
+		});
+
+		test("listProducts: the archive view carries onHand too (a tombstone's sku may still hold stock)", async () => {
+			const h = await makeStore();
+			await h.seedProduct(
+				productRow({ id: "prod-dead", sku: "SKU-DEAD", deletedAt: "2026-07-11T00:00:00.000Z" }),
+			);
+			await h.seedStock("SKU-DEAD", 3);
+			const { products } = await h.store.listProducts({ deleted: true }, { limit: 25 });
+			expect(products).toHaveLength(1);
+			expect(products[0]!.onHand).toBe(3);
 		});
 
 		test("listProducts excludes soft-deleted rows by DEFAULT (filter.deleted omitted or false)", async () => {
@@ -1678,13 +2459,15 @@ export function productCommerceStoreContract(
 			await h.seedProduct(productRow({ id: "b", sku: "Widget-Red" }));
 			const { products } = await h.store.listProducts({ search: "widget-blue" }, { limit: 25 });
 			expect(products.map((p) => p.productId)).toEqual(["a"]);
-			// A substring of a sku must NOT match (exact-lower-equals only, like
-			// OrderListFilter's buyer_ref search).
+			// A substring of a sku must NOT match (exact-lower-equals only). The sku
+			// half is the STRICTEST search axis in the product: a product TITLE
+			// matches as a folded SUBSTRING and an order's buyer_ref and id each as a
+			// folded PREFIX, while a sku is quoted whole and stays exact.
 			const partial = await h.store.listProducts({ search: "widget" }, { limit: 25 });
 			expect(partial.products.map((p) => p.productId).toSorted()).toEqual([]);
 		});
 
-		test("listProducts search matches a title SUBSTRING, case-insensitively (deliberately diverges from the exact sku/order-search semantics)", async () => {
+		test("listProducts search matches a title SUBSTRING, case-insensitively (the sku half stays exact)", async () => {
 			const h = await makeStore();
 			await h.seedProduct(productRow({ id: "a", title: "Blue Widget Deluxe" }));
 			await h.seedProduct(productRow({ id: "b", title: "Red Gadget" }));
@@ -1711,6 +2494,18 @@ export function productCommerceStoreContract(
 			await h.seedProduct(productRow({ id: "no-percent", title: "50X off Widget" }));
 			const percentSearch = await h.store.listProducts({ search: "50%" }, { limit: 25 });
 			expect(percentSearch.products.map((p) => p.productId)).toEqual(["literal-percent"]);
+
+			// `\` is the ESCAPE character itself, and the one metacharacter the two
+			// cases above cannot pin: leave it unescaped and a search for `a\b`
+			// becomes the pattern `%a\b%`, where `\b` means "a literal b" — it
+			// matches "AB Widget" and MISSES the title actually containing the
+			// backslash, i.e. exactly inverted. It is escaped FIRST for the same
+			// reason (escaping it last would re-escape the backslashes the other two
+			// rules just introduced).
+			await h.seedProduct(productRow({ id: "literal-backslash", title: "A\\B Widget" }));
+			await h.seedProduct(productRow({ id: "no-backslash", title: "AB Widget" }));
+			const backslashSearch = await h.store.listProducts({ search: "a\\b" }, { limit: 25 });
+			expect(backslashSearch.products.map((p) => p.productId)).toEqual(["literal-backslash"]);
 		});
 
 		test("listProducts search matches EITHER the sku half or the title half (not both required)", async () => {
@@ -1809,6 +2604,2174 @@ export function productCommerceStoreContract(
 				{ limit: 25 },
 			);
 			expect(products.map((p) => p.productId)).toEqual(["match"]);
+		});
+
+		// -- lowStockThreshold (the low-stock filter predicate) ----------------
+		// The rule behind the admin console's "Low stock only" filter, applied by
+		// the store over the whole catalog rather than by a caller trimming a
+		// page it already fetched: a row matches iff its sku resolves to a KNOWN
+		// on-hand count (an `inventory` row exists)
+		// AND that count is <= the threshold. Absent (no inventory row, or no sku
+		// at all) is NEVER low stock — "unknown" is a different fact from "known
+		// and low" (port doc, `ProductSummary.onHand`). Omitting the field is a
+		// no-op, mirroring the plugin's `filterUnavailable` degradation for an
+		// unresolved threshold: never filter, never "filter to nothing".
+
+		test("listProducts filter.lowStockThreshold omitted is a no-op — every row lists regardless of stock (the unchanged default)", async () => {
+			const h = await makeStore();
+			await h.seedProduct(productRow({ id: "p-low", sku: "SKU-LOW" }));
+			await h.seedProduct(productRow({ id: "p-high", sku: "SKU-HIGH" }));
+			await h.seedProduct(productRow({ id: "p-none", sku: "SKU-NONE" }));
+			await h.seedStock("SKU-LOW", 1);
+			await h.seedStock("SKU-HIGH", 100);
+			// SKU-NONE is never seeded: onHand stays null (unknown), and the omitted
+			// filter still lists it — proof this is a no-op, not "threshold 0".
+			const { products } = await h.store.listProducts({}, { limit: 25 });
+			expect(products.map((p) => p.productId).toSorted()).toEqual(["p-high", "p-low", "p-none"]);
+		});
+
+		test("listProducts filter.lowStockThreshold matches a KNOWN on-hand count at or below the threshold, inclusive", async () => {
+			const h = await makeStore();
+			await h.seedProduct(productRow({ id: "p-low", sku: "SKU-LOW" }));
+			await h.seedProduct(productRow({ id: "p-boundary", sku: "SKU-BOUNDARY" }));
+			await h.seedProduct(productRow({ id: "p-high", sku: "SKU-HIGH" }));
+			await h.seedStock("SKU-LOW", 2);
+			await h.seedStock("SKU-BOUNDARY", 5); // exactly the threshold: INCLUDED (<=, not <).
+			await h.seedStock("SKU-HIGH", 6); // one over the threshold: excluded.
+			const { products } = await h.store.listProducts({ lowStockThreshold: 5 }, { limit: 25 });
+			expect(products.map((p) => p.productId).toSorted()).toEqual(["p-boundary", "p-low"]);
+		});
+
+		test("listProducts filter.lowStockThreshold treats on-hand ZERO as low stock — a known fact, not an unknown one", async () => {
+			const h = await makeStore();
+			await h.seedProduct(productRow({ id: "p-zero", sku: "SKU-ZERO" }));
+			await h.seedStock("SKU-ZERO", 0);
+			const { products } = await h.store.listProducts({ lowStockThreshold: 5 }, { limit: 25 });
+			expect(products.map((p) => p.productId)).toEqual(["p-zero"]);
+		});
+
+		test("listProducts filter.lowStockThreshold EXCLUDES a product with NO inventory row — unknown is never low stock", async () => {
+			const h = await makeStore();
+			await h.seedProduct(productRow({ id: "p-unknown", sku: "SKU-UNKNOWN" }));
+			await h.seedProduct(productRow({ id: "p-low", sku: "SKU-LOW" }));
+			await h.seedStock("SKU-LOW", 1);
+			// SKU-UNKNOWN is never seeded — absent is not zero (port doc).
+			const { products } = await h.store.listProducts({ lowStockThreshold: 5 }, { limit: 25 });
+			expect(products.map((p) => p.productId)).toEqual(["p-low"]);
+		});
+
+		test("listProducts filter.lowStockThreshold EXCLUDES a 'create then price' row with no sku at all", async () => {
+			const h = await makeStore();
+			await h.seedProduct(productRow({ id: "p-nosku", sku: null, title: "No sku yet" }));
+			await h.seedProduct(productRow({ id: "p-low", sku: "SKU-LOW" }));
+			await h.seedStock("SKU-LOW", 1);
+			const { products } = await h.store.listProducts({ lowStockThreshold: 5 }, { limit: 25 });
+			expect(products.map((p) => p.productId)).toEqual(["p-low"]);
+		});
+
+		test("listProducts filter.lowStockThreshold composes with active/productKind/search like every other axis", async () => {
+			const h = await makeStore();
+			await h.seedProduct(
+				productRow({
+					id: "match",
+					sku: "SKU-MATCH",
+					active: true,
+					productKind: "digital",
+					title: "Findable Ebook",
+				}),
+			);
+			await h.seedStock("SKU-MATCH", 1);
+			await h.seedProduct(
+				productRow({
+					id: "wrong-kind",
+					sku: "SKU-WRONG-KIND",
+					active: true,
+					productKind: "physical",
+					title: "Findable Mug",
+				}),
+			);
+			await h.seedStock("SKU-WRONG-KIND", 1);
+			await h.seedProduct(
+				productRow({
+					id: "wrong-stock",
+					sku: "SKU-WRONG-STOCK",
+					active: true,
+					productKind: "digital",
+					title: "Findable Plenty",
+				}),
+			);
+			await h.seedStock("SKU-WRONG-STOCK", 999);
+			const { products } = await h.store.listProducts(
+				{ active: true, productKind: "digital", search: "findable", lowStockThreshold: 5 },
+				{ limit: 25 },
+			);
+			expect(products.map((p) => p.productId)).toEqual(["match"]);
+		});
+
+		test("listProducts filter.lowStockThreshold paginates correctly — a filtered set keysets with no overlap and no gap", async () => {
+			const h = await makeStore();
+			// Five low-stock rows, distinct createdAt for a deterministic order, plus
+			// a plentiful row and an unknown-stock row that must NEVER surface on any
+			// page of the filtered walk.
+			for (let i = 0; i < 5; i++) {
+				await h.seedProduct(
+					productRow({
+						id: `p-low-${i}`,
+						sku: `SKU-LOW-${i}`,
+						createdAt: `2026-07-10T0${String(i)}:00:00.000Z`,
+					}),
+				);
+				await h.seedStock(`SKU-LOW-${i}`, i);
+			}
+			await h.seedProduct(
+				productRow({ id: "p-high", sku: "SKU-HIGH", createdAt: "2026-07-10T09:00:00.000Z" }),
+			);
+			await h.seedStock("SKU-HIGH", 999);
+			await h.seedProduct(
+				productRow({ id: "p-unknown", sku: "SKU-UNKNOWN", createdAt: "2026-07-10T08:00:00.000Z" }),
+			);
+
+			// Newest-first: p-low-4, p-low-3, p-low-2, p-low-1, p-low-0 — p-high and
+			// p-unknown never appear on any page.
+			const page1 = await h.store.listProducts({ lowStockThreshold: 4 }, { limit: 2 });
+			expect(page1.products.map((p) => p.productId)).toEqual(["p-low-4", "p-low-3"]);
+			expect(page1.nextCursor).not.toBeNull();
+			const page2 = await h.store.listProducts(
+				{ lowStockThreshold: 4 },
+				{ limit: 2, cursor: page1.nextCursor },
+			);
+			expect(page2.products.map((p) => p.productId)).toEqual(["p-low-2", "p-low-1"]);
+			expect(page2.nextCursor).not.toBeNull();
+			const page3 = await h.store.listProducts(
+				{ lowStockThreshold: 4 },
+				{ limit: 2, cursor: page2.nextCursor },
+			);
+			expect(page3.products.map((p) => p.productId)).toEqual(["p-low-0"]);
+			expect(page3.nextCursor).toBeNull();
+		});
+
+		test("listProducts filter.lowStockThreshold matching NOTHING returns an empty page with a null cursor (an inventory-never-synced store)", async () => {
+			const h = await makeStore();
+			// Never seeded via `seedStock` at all — every row is unknown stock, the
+			// most realistic way to hit the "total describes the filtered set"
+			// boundary this increment exists to guarantee.
+			await h.seedProduct(productRow({ id: "p-unsynced-1", sku: "SKU-UNSYNCED-1" }));
+			await h.seedProduct(productRow({ id: "p-unsynced-2", sku: "SKU-UNSYNCED-2" }));
+			const { products, nextCursor } = await h.store.listProducts(
+				{ lowStockThreshold: 0 },
+				{ limit: 25 },
+			);
+			expect(products).toEqual([]);
+			expect(nextCursor).toBeNull();
+		});
+
+		test("listProducts filter.lowStockThreshold OUTSIDE its non-negative-integer domain throws InvalidLowStockThresholdError, never a silent per-adapter answer", async () => {
+			const h = await makeStore();
+			await h.seedProduct(productRow({ id: "p-1", sku: "SKU-1" }));
+			await h.seedStock("SKU-1", 3);
+			for (const bad of [
+				2.5,
+				-1,
+				-0.5,
+				Number.NaN,
+				Number.POSITIVE_INFINITY,
+				Number.NEGATIVE_INFINITY,
+				// ABOVE int4, and it belongs IN this list rather than beside it: the
+				// threshold is bound against `inventory.on_hand`, a Postgres
+				// `integer`, so an out-of-range value is refused by pg and ACCEPTED
+				// by SQLite and the fake. That is the same three-way disagreement
+				// every other entry here names, which is why the bound lives in the
+				// shared guard rather than at one adapter.
+				MAX_LOW_STOCK_THRESHOLD + 1,
+				Number.MAX_SAFE_INTEGER,
+			]) {
+				await expect(
+					h.store.listProducts({ lowStockThreshold: bad }, { limit: 25 }),
+				).rejects.toBeInstanceOf(InvalidLowStockThresholdError);
+			}
+		});
+
+		// -- countProducts (INC-23: the exact count the admin list captions with) --
+
+		test("countProducts counts the whole filtered set, independently of any page size", async () => {
+			const h = await makeStore();
+			for (const id of ["c1", "c2", "c3"]) await h.seedProduct(productRow({ id }));
+			// The point of the count: a 2-row page says nothing about the set behind
+			// it, and keyset paging carries no running offset to derive one from.
+			const page = await h.store.listProducts({}, { limit: 2 });
+			expect(page.products).toHaveLength(2);
+			expect(page.nextCursor).not.toBeNull();
+			expect(await h.store.countProducts({})).toBe(3);
+		});
+
+		test("countProducts applies the SAME tombstone default as listProducts, and the archive axis with it", async () => {
+			const h = await makeStore();
+			await h.seedProduct(productRow({ id: "live-1" }));
+			await h.seedProduct(productRow({ id: "live-2" }));
+			await h.seedProduct(productRow({ id: "gone", deletedAt: "2026-07-10T02:00:00.000Z" }));
+			// Default: live rows only — a count must never include a tombstone the
+			// list it captions will never show.
+			expect(await h.store.countProducts({})).toBe(2);
+			// Archive view: the mirror image, exactly as `listProducts` flips it.
+			expect(await h.store.countProducts({ deleted: true })).toBe(1);
+		});
+
+		test("countProducts applies the full listProducts predicate (active AND kind AND search)", async () => {
+			const h = await makeStore();
+			await h.seedProduct(
+				productRow({ id: "match", active: true, productKind: "digital", title: "Findable Ebook" }),
+			);
+			await h.seedProduct(
+				productRow({ id: "wrong-kind", active: true, productKind: "physical", title: "Findable" }),
+			);
+			await h.seedProduct(
+				productRow({
+					id: "wrong-active",
+					active: false,
+					productKind: "digital",
+					title: "Findable",
+				}),
+			);
+			expect(
+				await h.store.countProducts({ active: true, productKind: "digital", search: "findable" }),
+			).toBe(1);
+			expect(await h.store.countProducts({})).toBe(3);
+		});
+
+		test("countProducts applies the SAME lowStockThreshold predicate as listProducts, inclusive at the boundary", async () => {
+			const h = await makeStore();
+			await h.seedProduct(productRow({ id: "p-low", sku: "SKU-LOW" }));
+			await h.seedProduct(productRow({ id: "p-boundary", sku: "SKU-BOUNDARY" }));
+			await h.seedProduct(productRow({ id: "p-high", sku: "SKU-HIGH" }));
+			await h.seedProduct(productRow({ id: "p-unknown", sku: "SKU-UNKNOWN" }));
+			await h.seedStock("SKU-LOW", 2);
+			await h.seedStock("SKU-BOUNDARY", 5);
+			await h.seedStock("SKU-HIGH", 6);
+			// SKU-UNKNOWN is never seeded.
+			expect(await h.store.countProducts({ lowStockThreshold: 5 })).toBe(2);
+			expect(await h.store.countProducts({})).toBe(4);
+		});
+
+		test("countProducts filter.lowStockThreshold composes with active/productKind/search like every other axis", async () => {
+			const h = await makeStore();
+			await h.seedProduct(
+				productRow({
+					id: "match",
+					sku: "SKU-MATCH",
+					active: true,
+					productKind: "digital",
+					title: "Findable Ebook",
+				}),
+			);
+			await h.seedStock("SKU-MATCH", 1);
+			await h.seedProduct(
+				productRow({
+					id: "wrong-stock",
+					sku: "SKU-WRONG-STOCK",
+					active: true,
+					productKind: "digital",
+					title: "Findable Plenty",
+				}),
+			);
+			await h.seedStock("SKU-WRONG-STOCK", 999);
+			expect(
+				await h.store.countProducts({
+					active: true,
+					productKind: "digital",
+					search: "findable",
+					lowStockThreshold: 5,
+				}),
+			).toBe(1);
+			expect(await h.store.countProducts({})).toBe(2);
+		});
+
+		test("countProducts filter.lowStockThreshold matching NOTHING is 0 — describes the filtered set, not the unfiltered catalog (an inventory-never-synced store)", async () => {
+			const h = await makeStore();
+			await h.seedProduct(productRow({ id: "p-unsynced-1", sku: "SKU-UNSYNCED-1" }));
+			await h.seedProduct(productRow({ id: "p-unsynced-2", sku: "SKU-UNSYNCED-2" }));
+			expect(await h.store.countProducts({ lowStockThreshold: 0 })).toBe(0);
+			expect(await h.store.countProducts({})).toBe(2);
+		});
+
+		test("countProducts filter.lowStockThreshold OUTSIDE its non-negative-integer domain throws InvalidLowStockThresholdError, matching listProducts", async () => {
+			const h = await makeStore();
+			for (const bad of [
+				2.5,
+				-1,
+				-0.5,
+				Number.NaN,
+				Number.POSITIVE_INFINITY,
+				Number.NEGATIVE_INFINITY,
+				// ABOVE int4, and it belongs IN this list rather than beside it: the
+				// threshold is bound against `inventory.on_hand`, a Postgres
+				// `integer`, so an out-of-range value is refused by pg and ACCEPTED
+				// by SQLite and the fake. That is the same three-way disagreement
+				// every other entry here names, which is why the bound lives in the
+				// shared guard rather than at one adapter.
+				MAX_LOW_STOCK_THRESHOLD + 1,
+				Number.MAX_SAFE_INTEGER,
+			]) {
+				await expect(h.store.countProducts({ lowStockThreshold: bad })).rejects.toBeInstanceOf(
+					InvalidLowStockThresholdError,
+				);
+			}
+		});
+
+		test("countProducts on an empty store is 0", async () => {
+			const h = await makeStore();
+			expect(await h.store.countProducts({})).toBe(0);
+		});
+
+		// -- downloadAsset: the product's one download file (issue #376) -------
+		//
+		// The POINTER to a digital product's file lives on the product, so every
+		// past buyer gets whichever file is attached now (product-owner decision).
+		// The value rules (key shape, filename, type, size, digest) are the use-
+		// case's; what the STORE owns is the cross-field invariant that needs the
+		// stored row to decide — a physical product carries no file — decided
+		// inside the same compare-and-set as the write, so a concurrent kind flip
+		// cannot slip a file onto a physical product.
+
+		describe("downloadAsset: the product's one download file", () => {
+			test("a product starts with no file: downloadAsset reads null", async () => {
+				const h = await makeStore();
+				const row = await seedDigital(h, "dl-none");
+				expect(row.downloadAsset).toBeNull();
+				expect((await h.store.getByProductId(productId("dl-none")))?.downloadAsset).toBeNull();
+			});
+
+			test("an edit attaches a file to a digital product; the read returns it; null detaches it", async () => {
+				const h = await makeStore();
+				const seeded = await seedDigital(h, "dl-attach");
+				const withDigest = assetFor("dl-attach", { sha256: "ab".repeat(32) });
+				const res = await h.store.updateCommerceFields(
+					{ productId: productId("dl-attach"), downloadAsset: withDigest },
+					idempotencyKey("e1"),
+					seeded.updatedAt.toISOString(),
+				);
+				expect(res.ok && res.product.downloadAsset).toEqual(withDigest);
+				const read = await h.store.getByProductId(productId("dl-attach"));
+				expect(read?.downloadAsset).toEqual(withDigest);
+				expect(
+					(await h.store.getManyByProductId([productId("dl-attach")])).get(productId("dl-attach"))
+						?.downloadAsset,
+				).toEqual(withDigest);
+
+				// Without a digest, the stored descriptor has no `sha256` key at all.
+				const plain = await h.store.updateCommerceFields(
+					{ productId: productId("dl-attach"), downloadAsset: assetFor("dl-attach") },
+					idempotencyKey("e2"),
+					read?.updatedAt.toISOString() ?? "",
+				);
+				expect(plain.ok && plain.product.downloadAsset).toEqual(assetFor("dl-attach"));
+
+				const cleared = await h.store.updateCommerceFields(
+					{ productId: productId("dl-attach"), downloadAsset: null },
+					idempotencyKey("e3"),
+					plain.ok ? plain.product.updatedAt.toISOString() : "",
+				);
+				expect(cleared.ok && cleared.product.downloadAsset).toBeNull();
+				expect((await h.store.getByProductId(productId("dl-attach")))?.downloadAsset).toBeNull();
+			});
+
+			test("replacing the file replaces the pointer — every past buyer gets the new one", async () => {
+				const h = await makeStore();
+				const seeded = await seedDigital(h, "dl-replace");
+				const first = await h.store.updateCommerceFields(
+					{ productId: productId("dl-replace"), downloadAsset: assetFor("dl-replace") },
+					idempotencyKey("e1"),
+					seeded.updatedAt.toISOString(),
+				);
+				const next = assetFor("dl-replace", {
+					key: "dl/dl-replace/01J9ZQ3V8K4M2N6P7R8S9T0VWY",
+					filename: "guide-v2.pdf",
+					size: 4096,
+				});
+				const res = await h.store.updateCommerceFields(
+					{ productId: productId("dl-replace"), downloadAsset: next },
+					idempotencyKey("e2"),
+					first.ok ? first.product.updatedAt.toISOString() : "",
+				);
+				expect(res.ok && res.product.downloadAsset).toEqual(next);
+			});
+
+			test("a later CMS-sync upsert and an unrelated edit both PRESERVE the attached file", async () => {
+				const h = await makeStore();
+				const seeded = await seedDigital(h, "dl-keep");
+				const attached = await h.store.updateCommerceFields(
+					{ productId: productId("dl-keep"), downloadAsset: assetFor("dl-keep") },
+					idempotencyKey("e1"),
+					seeded.updatedAt.toISOString(),
+				);
+				const synced = await h.store.upsert(
+					{ productId: productId("dl-keep"), title: "Field Guide" },
+					idempotencyKey("sync-1"),
+				);
+				expect(synced.downloadAsset).toEqual(assetFor("dl-keep"));
+				const edited = await h.store.updateCommerceFields(
+					{ productId: productId("dl-keep"), taxClass: "reduced" },
+					idempotencyKey("e2"),
+					synced.updatedAt.toISOString(),
+				);
+				expect(attached.ok).toBe(true);
+				expect(edited.ok && edited.product.downloadAsset).toEqual(assetFor("dl-keep"));
+			});
+
+			test("a file on a PHYSICAL product is refused, and nothing is written", async () => {
+				const h = await makeStore();
+				const seeded = await seedEditable(h, "dl-phys");
+				await expect(
+					h.store.updateCommerceFields(
+						{ productId: productId("dl-phys"), downloadAsset: assetFor("dl-phys") },
+						idempotencyKey("e1"),
+						seeded.updatedAt.toISOString(),
+					),
+				).rejects.toMatchObject({ name: "InvalidProductFieldError", field: "downloadAsset" });
+				const read = await h.store.getByProductId(productId("dl-phys"));
+				expect(read?.downloadAsset).toBeNull();
+				expect(read?.updatedAt.toISOString()).toBe(seeded.updatedAt.toISOString());
+			});
+
+			test("making a product with a file physical is refused, unless the same edit detaches the file", async () => {
+				const h = await makeStore();
+				const seeded = await seedDigital(h, "dl-flip");
+				const attached = await h.store.updateCommerceFields(
+					{ productId: productId("dl-flip"), downloadAsset: assetFor("dl-flip") },
+					idempotencyKey("e1"),
+					seeded.updatedAt.toISOString(),
+				);
+				const at = attached.ok ? attached.product.updatedAt.toISOString() : "";
+				await expect(
+					h.store.updateCommerceFields(
+						{ productId: productId("dl-flip"), productKind: "physical" },
+						idempotencyKey("e2"),
+						at,
+					),
+				).rejects.toMatchObject({ name: "InvalidProductFieldError", field: "downloadAsset" });
+				expect((await h.store.getByProductId(productId("dl-flip")))?.productKind).toBe("digital");
+
+				const both = await h.store.updateCommerceFields(
+					{ productId: productId("dl-flip"), productKind: "physical", downloadAsset: null },
+					idempotencyKey("e3"),
+					at,
+				);
+				expect(both.ok && both.product.productKind).toBe("physical");
+				expect(both.ok && both.product.downloadAsset).toBeNull();
+			});
+
+			test("the guard order holds: a stale edit carrying a file reports stale, not a refusal", async () => {
+				const h = await makeStore();
+				await seedEditable(h, "dl-stale");
+				const res = await h.store.updateCommerceFields(
+					{ productId: productId("dl-stale"), downloadAsset: assetFor("dl-stale") },
+					idempotencyKey("e1"),
+					"2000-01-01T00:00:00.000Z",
+				);
+				expect(res.ok).toBe(false);
+				expect(!res.ok && res.reason).toBe("stale");
+			});
+		});
+
+		// -- Variants: one commerce row per sellable unit ----------------------
+		//
+		// Stock and price are sku-level facts, so a size that can be bought
+		// separately is a ROW. Everything below is ADDITIVE: with no variants
+		// declared — the state the entire live catalog is in — not one assertion
+		// above changes, which is what the first case in this block pins.
+
+		describe("variants: one commerce row per sellable unit", () => {
+			/** The one instant every variant case uses where ordering is not the
+			 *  point (the presence watermark; distinct values below where it is). */
+			const V_WM = "2026-07-10T00:00:00.000Z";
+
+			/** Declare a variant the way the CMS does — key + display name only,
+			 *  never a commercial field — and return the stored row. */
+			function declare(
+				h: ProductCommerceStoreHarness,
+				pid: string,
+				key: string,
+				title?: string,
+			): Promise<ProductVariant> {
+				return h.store.upsertVariant(
+					{
+						productId: productId(pid),
+						variantKey: key,
+						title: title ?? `Variant ${key}`,
+						contentUpdatedAt: V_WM,
+					},
+					idempotencyKey(`declare-${pid}-${key}`),
+				);
+			}
+
+			test("INERT: a product that declares no variants lists none, and the product surfaces are untouched", async () => {
+				const h = await makeStore();
+				await seedEditable(h, "prod-inert", { sku: "SKU-INERT" });
+				await h.seedStock("SKU-INERT", 5);
+
+				// The entire live catalog is in this state. Absence, never an error —
+				// and never a phantom "default" variant standing in for the product.
+				expect(await h.store.listVariants(productId("prod-inert"))).toEqual([]);
+				expect(await h.store.listVariants(productId("no-such-product"))).toEqual([]);
+
+				// And the product-level reads answer exactly as they did before this
+				// table existed: same row, same projection, same count.
+				const { products, nextCursor } = await h.store.listProducts({}, { limit: 25 });
+				expect(products).toHaveLength(1);
+				expect(products[0]).toMatchObject({
+					productId: "prod-inert",
+					sku: "SKU-INERT",
+					onHand: 5,
+				});
+				expect(nextCursor).toBeNull();
+				expect(await h.store.countProducts({})).toBe(1);
+			});
+
+			test("upsertVariant declares a variant: the CMS writes the key and the name, and NOTHING commercial", async () => {
+				const h = await makeStore();
+				await seedEditable(h, "prod-dec");
+
+				const v = await declare(h, "prod-dec", "large", "Large");
+
+				expect(v.productId).toBe("prod-dec");
+				expect(v.variantKey).toBe("large");
+				expect(v.title).toBe("Large");
+				// Declared, not priced: the sync channel cannot write either field, so
+				// a fresh variant is always absent on both — never 0, never "".
+				expect(v.sku).toBeNull();
+				expect(v.price).toBeNull();
+				expect(v.orphanedAt).toBeNull();
+				expect(await variantOf(h, "prod-dec", "large")).toMatchObject({
+					variantKey: "large",
+					title: "Large",
+					onHand: null,
+				});
+			});
+
+			test("upsertVariant rejects an empty variant key and an empty product id before any row is minted", async () => {
+				const h = await makeStore();
+				await expect(
+					h.store.upsertVariant(
+						{ productId: productId("prod-bad"), variantKey: "" },
+						idempotencyKey("bad-1"),
+					),
+				).rejects.toBeInstanceOf(MissingVariantKeyError);
+				await expect(
+					h.store.upsertVariant(
+						{ productId: "" as ReturnType<typeof productId>, variantKey: "k" },
+						idempotencyKey("bad-2"),
+					),
+				).rejects.toBeInstanceOf(MissingProductIdError);
+				expect(await h.store.listVariants(productId("prod-bad"))).toEqual([]);
+			});
+
+			test("upsertVariant lands a variant even when its product row does not exist yet (out-of-order delivery converges)", async () => {
+				const h = await makeStore();
+				// The repeater's POST can outrun `content:afterSave`'s, exactly as
+				// `activate` can. A foreign key would abort here instead of converging.
+				const v = await declare(h, "prod-later", "small", "Small");
+				expect(v.variantKey).toBe("small");
+				expect(await h.store.listVariants(productId("prod-later"))).toHaveLength(1);
+			});
+
+			test("upsertVariant replayed under the SAME key is a no-op returning the stored row", async () => {
+				const h = await makeStore();
+				const first = await h.store.upsertVariant(
+					{ productId: productId("prod-rep"), variantKey: "k", title: "First" },
+					idempotencyKey("v-rep"),
+				);
+				const replay = await h.store.upsertVariant(
+					{ productId: productId("prod-rep"), variantKey: "k", title: "Second" },
+					idempotencyKey("v-rep"),
+				);
+				expect(replay.title).toBe("First");
+				expect(replay.updatedAt).toEqual(first.updatedAt);
+			});
+
+			test("upsertVariant is order-aware: a strictly OLDER contentUpdatedAt is a stale no-op; equal or newer applies", async () => {
+				const h = await makeStore();
+				await h.store.upsertVariant(
+					{
+						productId: productId("prod-wm"),
+						variantKey: "k",
+						title: "Newer",
+						contentUpdatedAt: "2026-07-10T02:00:00.000Z",
+					},
+					idempotencyKey("wm-newer"),
+				);
+
+				const stale = await h.store.upsertVariant(
+					{
+						productId: productId("prod-wm"),
+						variantKey: "k",
+						title: "Delayed older delivery",
+						contentUpdatedAt: "2026-07-10T01:00:00.000Z",
+					},
+					idempotencyKey("wm-older"),
+				);
+				expect(stale.title).toBe("Newer");
+
+				const applied = await h.store.upsertVariant(
+					{
+						productId: productId("prod-wm"),
+						variantKey: "k",
+						title: "Newest",
+						contentUpdatedAt: "2026-07-10T03:00:00.000Z",
+					},
+					idempotencyKey("wm-newest"),
+				);
+				expect(applied.title).toBe("Newest");
+			});
+
+			test("upsertVariant preserves an omitted title and clears an explicit null", async () => {
+				const h = await makeStore();
+				await declare(h, "prod-t", "k", "Named");
+
+				const preserved = await h.store.upsertVariant(
+					{ productId: productId("prod-t"), variantKey: "k" },
+					idempotencyKey("t-preserve"),
+				);
+				expect(preserved.title).toBe("Named");
+
+				const cleared = await h.store.upsertVariant(
+					{ productId: productId("prod-t"), variantKey: "k", title: null },
+					idempotencyKey("t-clear"),
+				);
+				expect(cleared.title).toBeNull();
+			});
+
+			test("THE KEY IS THE IDENTITY: a different key mints a SECOND variant and leaves the first exactly as it was — never a re-key", async () => {
+				const h = await makeStore();
+				await declare(h, "prod-key", "sizel", "Large");
+				const seeded = await variantOf(h, "prod-key", "sizel");
+				await h.store.updateVariantFields(
+					{ productId: productId("prod-key"), variantKey: "sizel", sku: sku("TEE-L") },
+					idempotencyKey("key-price"),
+					seeded.updatedAt.toISOString(),
+				);
+
+				// The shape a CMS re-key takes on this side: a new key arrives, the old
+				// one is still there holding the sku. Nothing is renamed and nothing is
+				// silently moved — and nothing has to be, because the old row is
+				// retained rather than deleted and re-declaring its key brings it back.
+				// That retention IS the enforcement (adr/0016, "Amendment 2026-08-09");
+				// the CMS has no way to refuse the re-key at save time.
+				await declare(h, "prod-key", "sizelarge", "Large");
+
+				const rows = await h.store.listVariants(productId("prod-key"));
+				expect(rows.map((v) => v.variantKey)).toEqual(["sizel", "sizelarge"]);
+				expect(rows.find((v) => v.variantKey === "sizel")?.sku).toBe("TEE-L");
+				expect(rows.find((v) => v.variantKey === "sizelarge")?.sku).toBeNull();
+			});
+
+			test("listVariants orders by variant key, ascending and stably", async () => {
+				const h = await makeStore();
+				await declare(h, "prod-ord", "small");
+				await declare(h, "prod-ord", "large");
+				await declare(h, "prod-ord", "medium");
+
+				const rows = await h.store.listVariants(productId("prod-ord"));
+				expect(rows.map((v) => v.variantKey)).toEqual(["large", "medium", "small"]);
+			});
+
+			test("listVariants scopes to its own product", async () => {
+				const h = await makeStore();
+				await declare(h, "prod-x", "k");
+				await declare(h, "prod-y", "k");
+
+				const rows = await h.store.listVariants(productId("prod-x"));
+				expect(rows.map((v) => v.productId)).toEqual(["prod-x"]);
+			});
+
+			test("listVariants projects onHand in THREE states: unknown (no row / no sku), zero, and a real count", async () => {
+				const h = await makeStore();
+				await declare(h, "prod-stock", "nosku");
+				await declare(h, "prod-stock", "unstocked");
+				await declare(h, "prod-stock", "empty");
+				await declare(h, "prod-stock", "stocked");
+				const rows = await h.store.listVariants(productId("prod-stock"));
+				for (const key of ["unstocked", "empty", "stocked"]) {
+					const row = rows.find((v) => v.variantKey === key);
+					if (row === undefined) throw new Error(`missing ${key}`);
+					await h.store.updateVariantFields(
+						{
+							productId: productId("prod-stock"),
+							variantKey: key,
+							sku: sku(`SKU-${key.toUpperCase()}`),
+						},
+						idempotencyKey(`price-${key}`),
+						row.updatedAt.toISOString(),
+					);
+				}
+				await h.seedStock("SKU-EMPTY", 0);
+				await h.seedStock("SKU-STOCKED", 7);
+
+				// A variant with no inventory row is ABSENT, never 0 — the fact the
+				// console renders as an em dash. `0` is a KNOWN sku that is out of
+				// stock, and the two may never be folded together.
+				expect((await variantOf(h, "prod-stock", "nosku")).onHand).toBeNull();
+				expect((await variantOf(h, "prod-stock", "unstocked")).onHand).toBeNull();
+				expect((await variantOf(h, "prod-stock", "empty")).onHand).toBe(0);
+				expect((await variantOf(h, "prod-stock", "stocked")).onHand).toBe(7);
+			});
+
+			test("updateVariantFields prices a declared variant (integer minor units + explicit currency) under a compare-and-set", async () => {
+				const h = await makeStore();
+				const declared = await declare(h, "prod-price", "large");
+
+				const res = await h.store.updateVariantFields(
+					{
+						productId: productId("prod-price"),
+						variantKey: "large",
+						sku: sku("TEE-L"),
+						price: money(cents(2599), currency("USD")),
+					},
+					idempotencyKey("price-1"),
+					declared.updatedAt.toISOString(),
+				);
+
+				expect(res.ok).toBe(true);
+				if (!res.ok) throw new Error("unreachable");
+				expect(res.variant.sku).toBe("TEE-L");
+				expect(res.variant.price).toEqual({ amount: 2599, currency: "USD" });
+				// The edit never reaches the CMS-owned column.
+				expect(res.variant.title).toBe("Variant large");
+			});
+
+			test("updateVariantFields preserves fields the edit omits", async () => {
+				const h = await makeStore();
+				const declared = await declare(h, "prod-part", "k");
+				const priced = await h.store.updateVariantFields(
+					{
+						productId: productId("prod-part"),
+						variantKey: "k",
+						sku: sku("PART-1"),
+						price: money(cents(500), currency("USD")),
+					},
+					idempotencyKey("part-1"),
+					declared.updatedAt.toISOString(),
+				);
+				if (!priced.ok) throw new Error("unreachable");
+
+				const res = await h.store.updateVariantFields(
+					{
+						productId: productId("prod-part"),
+						variantKey: "k",
+						price: money(cents(700), currency("USD")),
+					},
+					idempotencyKey("part-2"),
+					priced.variant.updatedAt.toISOString(),
+				);
+				if (!res.ok) throw new Error("unreachable");
+				expect(res.variant.price).toEqual({ amount: 700, currency: "USD" });
+				expect(res.variant.sku).toBe("PART-1");
+			});
+
+			test("updateVariantFields returns not_found for an unknown variant key and an unknown product — never mints a row", async () => {
+				const h = await makeStore();
+				await declare(h, "prod-nf", "known");
+
+				expect(
+					await h.store.updateVariantFields(
+						{ productId: productId("prod-nf"), variantKey: "ghost", sku: sku("GHOST") },
+						idempotencyKey("nf-1"),
+						"2026-07-10T00:00:00.000Z",
+					),
+				).toEqual({ ok: false, reason: "not_found" });
+				expect(
+					await h.store.updateVariantFields(
+						{ productId: productId("ghost-product"), variantKey: "k", sku: sku("GHOST-2") },
+						idempotencyKey("nf-2"),
+						"2026-07-10T00:00:00.000Z",
+					),
+				).toEqual({ ok: false, reason: "not_found" });
+
+				const rows = await h.store.listVariants(productId("prod-nf"));
+				expect(rows.map((v) => v.variantKey)).toEqual(["known"]);
+				expect(await h.store.listVariants(productId("ghost-product"))).toEqual([]);
+			});
+
+			test("updateVariantFields is an idempotent replay under the same key (the stale guard never fires)", async () => {
+				const h = await makeStore();
+				const declared = await declare(h, "prod-vrep", "k");
+				const key = idempotencyKey("vrep-1");
+				const input = {
+					productId: productId("prod-vrep"),
+					variantKey: "k",
+					price: money(cents(900), currency("USD")),
+				};
+				const first = await h.store.updateVariantFields(
+					input,
+					key,
+					declared.updatedAt.toISOString(),
+				);
+				expect(first.ok).toBe(true);
+
+				const replay = await h.store.updateVariantFields(
+					input,
+					key,
+					declared.updatedAt.toISOString(),
+				);
+				expect(replay.ok).toBe(true);
+				if (!replay.ok) throw new Error("unreachable");
+				expect(replay.variant.price).toEqual({ amount: 900, currency: "USD" });
+			});
+
+			test("updateVariantFields returns stale (with the current row) when expectedUpdatedAt mismatches", async () => {
+				const h = await makeStore();
+				await declare(h, "prod-vstale", "k");
+
+				const res = await h.store.updateVariantFields(
+					{ productId: productId("prod-vstale"), variantKey: "k", sku: sku("STALE-1") },
+					idempotencyKey("vstale-1"),
+					"1999-01-01T00:00:00.000Z",
+				);
+				expect(res).toMatchObject({ ok: false, reason: "stale" });
+				if (res.ok || res.reason !== "stale") throw new Error("unreachable");
+				expect(res.current.sku).toBeNull();
+			});
+
+			test("updateVariantFields refuses a silent currency switch on an already-priced variant", async () => {
+				const h = await makeStore();
+				const declared = await declare(h, "prod-vcur", "k");
+				const priced = await h.store.updateVariantFields(
+					{
+						productId: productId("prod-vcur"),
+						variantKey: "k",
+						price: money(cents(1000), currency("USD")),
+					},
+					idempotencyKey("vcur-1"),
+					declared.updatedAt.toISOString(),
+				);
+				if (!priced.ok) throw new Error("unreachable");
+
+				const res = await h.store.updateVariantFields(
+					{
+						productId: productId("prod-vcur"),
+						variantKey: "k",
+						price: money(cents(1000), currency("EUR")),
+					},
+					idempotencyKey("vcur-2"),
+					priced.variant.updatedAt.toISOString(),
+				);
+				expect(res).toMatchObject({ ok: false, reason: "currency_mismatch" });
+				if (res.ok || res.reason !== "currency_mismatch") throw new Error("unreachable");
+				expect(res.current.price).toEqual({ amount: 1000, currency: "USD" });
+			});
+
+			test("updateVariantFields refuses a variant price whose currency disagrees with the PRODUCT's", async () => {
+				const h = await makeStore();
+				// The product is priced in USD; a EUR size would give the product no
+				// honest total, no honest picker and no honest cart.
+				await seedEditable(h, "prod-vpc", { sku: "SKU-VPC", currency: "USD" });
+				const declared = await declare(h, "prod-vpc", "k");
+
+				const res = await h.store.updateVariantFields(
+					{
+						productId: productId("prod-vpc"),
+						variantKey: "k",
+						price: money(cents(1000), currency("EUR")),
+					},
+					idempotencyKey("vpc-1"),
+					declared.updatedAt.toISOString(),
+				);
+				expect(res).toMatchObject({ ok: false, reason: "currency_mismatch" });
+
+				// The product's own currency is accepted, so the refusal is the
+				// disagreement's and not "variants cannot be priced".
+				const ok = await h.store.updateVariantFields(
+					{
+						productId: productId("prod-vpc"),
+						variantKey: "k",
+						price: money(cents(1000), currency("USD")),
+					},
+					idempotencyKey("vpc-2"),
+					declared.updatedAt.toISOString(),
+				);
+				expect(ok.ok).toBe(true);
+			});
+
+			test("updateVariantFields refuses a variant price whose currency disagrees with a SIBLING variant's (an unpriced product still has a currency)", async () => {
+				const h = await makeStore();
+				// The realistic variants case: no product-level price at all (a
+				// mixed-price product has no honest parent cell), so the currency lives
+				// on the sizes and they must still agree with each other.
+				await h.store.upsert({ productId: productId("prod-vsib") }, idempotencyKey("vsib-seed"));
+				const a = await declare(h, "prod-vsib", "large");
+				const b = await declare(h, "prod-vsib", "small");
+
+				const first = await h.store.updateVariantFields(
+					{
+						productId: productId("prod-vsib"),
+						variantKey: "large",
+						price: money(cents(3000), currency("GBP")),
+					},
+					idempotencyKey("vsib-1"),
+					a.updatedAt.toISOString(),
+				);
+				expect(first.ok).toBe(true);
+
+				const res = await h.store.updateVariantFields(
+					{
+						productId: productId("prod-vsib"),
+						variantKey: "small",
+						price: money(cents(2500), currency("USD")),
+					},
+					idempotencyKey("vsib-2"),
+					b.updatedAt.toISOString(),
+				);
+				expect(res).toMatchObject({ ok: false, reason: "currency_mismatch" });
+
+				const agreeing = await h.store.updateVariantFields(
+					{
+						productId: productId("prod-vsib"),
+						variantKey: "small",
+						price: money(cents(2500), currency("GBP")),
+					},
+					idempotencyKey("vsib-3"),
+					b.updatedAt.toISOString(),
+				);
+				expect(agreeing.ok).toBe(true);
+			});
+
+			test("A SKU NAMES ONE SELLABLE UNIT: two live variants cannot share one, and a variant cannot take a live product's", async () => {
+				const h = await makeStore();
+				const other = await seedEditable(h, "prod-owner", { sku: "SKU-OWNED" });
+				expect(other.sku).toBe("SKU-OWNED");
+				await h.store.upsert({ productId: productId("prod-vsku") }, idempotencyKey("vsku-seed"));
+				const a = await declare(h, "prod-vsku", "large");
+				const b = await declare(h, "prod-vsku", "small");
+
+				const first = await h.store.updateVariantFields(
+					{ productId: productId("prod-vsku"), variantKey: "large", sku: sku("TEE-SHARED") },
+					idempotencyKey("vsku-1"),
+					a.updatedAt.toISOString(),
+				);
+				expect(first.ok).toBe(true);
+
+				// Sibling variant reaching for the same sku: one inventory row cannot
+				// belong to two sellable units.
+				await expect(
+					h.store.updateVariantFields(
+						{ productId: productId("prod-vsku"), variantKey: "small", sku: sku("TEE-SHARED") },
+						idempotencyKey("vsku-2"),
+						b.updatedAt.toISOString(),
+					),
+				).rejects.toBeInstanceOf(SkuConflictError);
+
+				// And a sku a live PRODUCT row holds is just as taken.
+				await expect(
+					h.store.updateVariantFields(
+						{ productId: productId("prod-vsku"), variantKey: "small", sku: sku("SKU-OWNED") },
+						idempotencyKey("vsku-3"),
+						b.updatedAt.toISOString(),
+					),
+				).rejects.toBeInstanceOf(SkuConflictError);
+
+				expect((await variantOf(h, "prod-vsku", "small")).sku).toBeNull();
+			});
+
+			test("an ORPHANED variant frees its sku for reuse, exactly like a soft-deleted product's", async () => {
+				const h = await makeStore();
+				await h.store.upsert({ productId: productId("prod-free") }, idempotencyKey("free-seed"));
+				const a = await declare(h, "prod-free", "large");
+				const applied = await h.store.updateVariantFields(
+					{ productId: productId("prod-free"), variantKey: "large", sku: sku("FREE-1") },
+					idempotencyKey("free-1"),
+					a.updatedAt.toISOString(),
+				);
+				expect(applied.ok).toBe(true);
+				await h.store.deactivateVariant(
+					productId("prod-free"),
+					"large",
+					idempotencyKey("free-orphan"),
+					"2026-07-10T01:00:00.000Z",
+				);
+
+				const b = await declare(h, "prod-free", "small");
+				const reuse = await h.store.updateVariantFields(
+					{ productId: productId("prod-free"), variantKey: "small", sku: sku("FREE-1") },
+					idempotencyKey("free-2"),
+					b.updatedAt.toISOString(),
+				);
+				expect(reuse.ok).toBe(true);
+			});
+
+			// -- the orphan state --------------------------------------------------
+
+			test("deactivateVariant ORPHANS the row and retains it — sku, price and stock all intact (deactivation, never deletion)", async () => {
+				const h = await makeStore();
+				const declared = await declare(h, "prod-orph", "large", "Large");
+				const priced = await h.store.updateVariantFields(
+					{
+						productId: productId("prod-orph"),
+						variantKey: "large",
+						sku: sku("ORPH-L"),
+						price: money(cents(1500), currency("USD")),
+					},
+					idempotencyKey("orph-price"),
+					declared.updatedAt.toISOString(),
+				);
+				expect(priced.ok).toBe(true);
+				await h.seedStock("ORPH-L", 11);
+
+				await h.store.deactivateVariant(
+					productId("prod-orph"),
+					"large",
+					idempotencyKey("orph-1"),
+					"2026-07-10T01:00:00.000Z",
+				);
+
+				// A distinct STATE, not an absence: the row still lists, flagged, still
+				// holding the units and the price a live order line may reference.
+				const row = await variantOf(h, "prod-orph", "large");
+				expect(row.orphanedAt).not.toBeNull();
+				expect(row.sku).toBe("ORPH-L");
+				expect(row.price).toEqual({ amount: 1500, currency: "USD" });
+				expect(row.onHand).toBe(11);
+			});
+
+			test("deactivateVariant is a stable no-op when replayed, on an already-orphaned row, and on an unknown key", async () => {
+				const h = await makeStore();
+				await declare(h, "prod-orph2", "k");
+				await h.store.deactivateVariant(
+					productId("prod-orph2"),
+					"k",
+					idempotencyKey("o2-1"),
+					"2026-07-10T01:00:00.000Z",
+				);
+				const first = await variantOf(h, "prod-orph2", "k");
+
+				await h.store.deactivateVariant(
+					productId("prod-orph2"),
+					"k",
+					idempotencyKey("o2-2"),
+					"2026-07-10T02:00:00.000Z",
+				);
+				expect((await variantOf(h, "prod-orph2", "k")).orphanedAt).toEqual(first.orphanedAt);
+
+				// Unknown key / unknown product mint nothing.
+				await h.store.deactivateVariant(
+					productId("prod-orph2"),
+					"ghost",
+					idempotencyKey("o2-3"),
+					"2026-07-10T02:00:00.000Z",
+				);
+				await h.store.deactivateVariant(
+					productId("ghost-product"),
+					"k",
+					idempotencyKey("o2-4"),
+					"2026-07-10T02:00:00.000Z",
+				);
+				expect(
+					(await h.store.listVariants(productId("prod-orph2"))).map((v) => v.variantKey),
+				).toEqual(["k"]);
+				expect(await h.store.listVariants(productId("ghost-product"))).toEqual([]);
+			});
+
+			test("out-of-order presence converges: a STALE deactivate arriving after a newer declare leaves the variant live", async () => {
+				const h = await makeStore();
+				await h.store.upsertVariant(
+					{
+						productId: productId("prod-conv"),
+						variantKey: "k",
+						title: "Re-declared",
+						contentUpdatedAt: "2026-07-10T02:00:00.000Z",
+					},
+					idempotencyKey("conv-1"),
+				);
+
+				// The delayed "the repeater row is gone", from a save that is OLDER than
+				// the one that re-declared it. Applied, it would orphan a variant the
+				// CMS currently declares, with nothing to heal it until the next save.
+				await h.store.deactivateVariant(
+					productId("prod-conv"),
+					"k",
+					idempotencyKey("conv-2"),
+					"2026-07-10T01:00:00.000Z",
+				);
+
+				expect((await variantOf(h, "prod-conv", "k")).orphanedAt).toBeNull();
+			});
+
+			test("upsertVariant RESURRECTS an orphaned variant — the CMS declared the key again, and the stock comes back with it", async () => {
+				const h = await makeStore();
+				const declared = await declare(h, "prod-res", "large", "Large");
+				const priced = await h.store.updateVariantFields(
+					{ productId: productId("prod-res"), variantKey: "large", sku: sku("RES-L") },
+					idempotencyKey("res-price"),
+					declared.updatedAt.toISOString(),
+				);
+				expect(priced.ok).toBe(true);
+				await h.seedStock("RES-L", 6);
+				await h.store.deactivateVariant(
+					productId("prod-res"),
+					"large",
+					idempotencyKey("res-orphan"),
+					"2026-07-10T01:00:00.000Z",
+				);
+				expect((await variantOf(h, "prod-res", "large")).orphanedAt).not.toBeNull();
+
+				// The deliberate DIVERGENCE from publish-never-resurrects: the orphan is
+				// the CMS's own statement, so the CMS is the right authority to undo it,
+				// and refusing would strand the units behind a key nobody can re-declare.
+				await h.store.upsertVariant(
+					{
+						productId: productId("prod-res"),
+						variantKey: "large",
+						title: "Large",
+						contentUpdatedAt: "2026-07-10T02:00:00.000Z",
+					},
+					idempotencyKey("res-back"),
+				);
+
+				const row = await variantOf(h, "prod-res", "large");
+				expect(row.orphanedAt).toBeNull();
+				expect(row.sku).toBe("RES-L");
+				expect(row.onHand).toBe(6);
+			});
+
+			test("updateVariantFields returns not_found for an ORPHANED variant — an edit is not a resurrection", async () => {
+				const h = await makeStore();
+				const declared = await declare(h, "prod-oedit", "k");
+				await h.store.deactivateVariant(
+					productId("prod-oedit"),
+					"k",
+					idempotencyKey("oedit-1"),
+					"2026-07-10T01:00:00.000Z",
+				);
+
+				expect(
+					await h.store.updateVariantFields(
+						{ productId: productId("prod-oedit"), variantKey: "k", sku: sku("OEDIT-1") },
+						idempotencyKey("oedit-2"),
+						declared.updatedAt.toISOString(),
+					),
+				).toEqual({ ok: false, reason: "not_found" });
+				expect((await variantOf(h, "prod-oedit", "k")).sku).toBeNull();
+			});
+
+			// -- THE SKU-RENAME RULE, at variant grain -----------------------------
+			//
+			// The rule belongs to the `sku` COLUMN, not to one writer: `inventory` is
+			// keyed by the bare sku and knows nothing about products or variants, so a
+			// variant rename strands units exactly as a product rename did. Every case
+			// below is its product-level sibling, one level down.
+
+			describe("a variant sku rename carries its on-hand row, or refuses", () => {
+				/** A declared, sku-bearing variant with a stocked inventory row;
+				 *  returns the `updatedAt` its next guarded edit must pass back. */
+				async function stockedVariant(
+					h: ProductCommerceStoreHarness,
+					pid: string,
+					key: string,
+					s: string,
+					onHand?: number,
+				): Promise<string> {
+					const declared = await declare(h, pid, key);
+					const res = await h.store.updateVariantFields(
+						{ productId: productId(pid), variantKey: key, sku: sku(s) },
+						idempotencyKey(`sv-${pid}-${key}`),
+						declared.updatedAt.toISOString(),
+					);
+					if (!res.ok) throw new Error(`stockedVariant: ${pid}/${key} could not be priced`);
+					if (onHand !== undefined) await h.seedStock(s, onHand);
+					return res.variant.updatedAt.toISOString();
+				}
+
+				test("a rename CARRIES the on-hand count onto the new sku, and RETAINS the source at zero", async () => {
+					const h = await makeStore();
+					const wm = await stockedVariant(h, "prod-vc", "large", "VC-OLD", 40);
+					expect((await variantOf(h, "prod-vc", "large")).onHand).toBe(40);
+
+					const res = await h.store.updateVariantFields(
+						{ productId: productId("prod-vc"), variantKey: "large", sku: sku("VC-NEW") },
+						idempotencyKey("vc-rename"),
+						wm,
+					);
+
+					expect(res.ok).toBe(true);
+					const row = await variantOf(h, "prod-vc", "large");
+					expect(row.sku).toBe("VC-NEW");
+					// The 40 units followed the SIZE. Without the carry they stay under
+					// the old label while the size starts again from a fresh zero.
+					expect(row.onHand).toBe(40);
+					// `0`, not `null`: a stock row is never deleted, because
+					// `reservations.sku` references it.
+					expect(await onHandOfSku(h, "probe-vc", "VC-OLD")).toBe(0);
+				});
+
+				test("renaming ONTO a sku that already has an inventory row refuses, naming both skus, and writes nothing", async () => {
+					const h = await makeStore();
+					const wm = await stockedVariant(h, "prod-vconf", "large", "VCONF-SRC", 5);
+					// Units under a sku no live sellable unit holds — so the refusal is
+					// genuinely the stock row's, not live-sku uniqueness in disguise.
+					await h.seedStock("VCONF-TAKEN", 12);
+
+					await expect(
+						h.store.updateVariantFields(
+							{ productId: productId("prod-vconf"), variantKey: "large", sku: sku("VCONF-TAKEN") },
+							idempotencyKey("vconf-1"),
+							wm,
+						),
+					).rejects.toMatchObject({
+						name: "SkuStockConflictError",
+						fromSku: "VCONF-SRC",
+						toSku: "VCONF-TAKEN",
+					});
+
+					// ATOMIC: the variant row rolled back with the stock.
+					const row = await variantOf(h, "prod-vconf", "large");
+					expect(row.sku).toBe("VCONF-SRC");
+					expect(row.onHand).toBe(5);
+					expect(await onHandOfSku(h, "probe-vconf", "VCONF-TAKEN")).toBe(12);
+				});
+
+				test("occupied is occupied — a target row holding ZERO refuses exactly like a stocked one", async () => {
+					const h = await makeStore();
+					const wm = await stockedVariant(h, "prod-vzero", "large", "VZ-SRC", 8);
+					await h.seedStock("VZ-TARGET", 0);
+
+					await expect(
+						h.store.updateVariantFields(
+							{ productId: productId("prod-vzero"), variantKey: "large", sku: sku("VZ-TARGET") },
+							idempotencyKey("vz-1"),
+							wm,
+						),
+					).rejects.toBeInstanceOf(SkuStockConflictError);
+					expect((await variantOf(h, "prod-vzero", "large")).onHand).toBe(8);
+				});
+
+				test("re-supplying the SAME sku is not a rename — the count is untouched and nothing refuses", async () => {
+					const h = await makeStore();
+					const wm = await stockedVariant(h, "prod-vsame", "large", "VSAME", 9);
+
+					const res = await h.store.updateVariantFields(
+						{
+							productId: productId("prod-vsame"),
+							variantKey: "large",
+							sku: sku("VSAME"),
+							price: money(cents(1200), currency("USD")),
+						},
+						idempotencyKey("vsame-1"),
+						wm,
+					);
+
+					expect(res.ok).toBe(true);
+					expect((await variantOf(h, "prod-vsame", "large")).onHand).toBe(9);
+				});
+
+				test("setting the FIRST sku on a variant that had none carries nothing, and ADOPTS an existing inventory row", async () => {
+					const h = await makeStore();
+					const declared = await declare(h, "prod-vfirst", "large");
+					// Units already parked under the sku — the state a rename refuses.
+					await h.seedStock("VFIRST", 33);
+
+					const res = await h.store.updateVariantFields(
+						{ productId: productId("prod-vfirst"), variantKey: "large", sku: sku("VFIRST") },
+						idempotencyKey("vfirst-1"),
+						declared.updatedAt.toISOString(),
+					);
+
+					// The same asymmetry the product level pins, and for the same reason:
+					// there is no second count to reconcile, and adoption is how a
+					// re-linked sellable unit gets its stock back after a failed sync.
+					expect(res.ok).toBe(true);
+					expect((await variantOf(h, "prod-vfirst", "large")).onHand).toBe(33);
+				});
+
+				test("a rename FROM a sku with no inventory row moves nothing and refuses nothing", async () => {
+					const h = await makeStore();
+					const wm = await stockedVariant(h, "prod-vnorow", "large", "VNOROW");
+					expect((await variantOf(h, "prod-vnorow", "large")).onHand).toBeNull();
+
+					const res = await h.store.updateVariantFields(
+						{ productId: productId("prod-vnorow"), variantKey: "large", sku: sku("VFRESH") },
+						idempotencyKey("vnorow-1"),
+						wm,
+					);
+					expect(res.ok).toBe(true);
+					expect((await variantOf(h, "prod-vnorow", "large")).onHand).toBe(0);
+				});
+
+				test("an idempotent REPLAY of a variant rename moves the units exactly once", async () => {
+					const h = await makeStore();
+					const wm = await stockedVariant(h, "prod-vrp", "large", "VRP-FROM", 30);
+					const key = idempotencyKey("vrp-rename");
+					const input = {
+						productId: productId("prod-vrp"),
+						variantKey: "large",
+						sku: sku("VRP-TO"),
+					};
+
+					const first = await h.store.updateVariantFields(input, key, wm);
+					expect(first.ok).toBe(true);
+					expect((await variantOf(h, "prod-vrp", "large")).onHand).toBe(30);
+
+					// The replay branch, pinned AHEAD of the staleness check: a second
+					// carry could not stay quiet even if it wanted to, since VRP-TO now
+					// has a row of its own and re-running the rule would REFUSE.
+					const replay = await h.store.updateVariantFields(input, key, wm);
+					expect(replay.ok).toBe(true);
+					expect((await variantOf(h, "prod-vrp", "large")).onHand).toBe(30);
+					expect(await onHandOfSku(h, "probe-vrp", "VRP-FROM")).toBe(0);
+				});
+
+				test("a stale or not_found variant edit naming a new sku moves nothing and claims nothing", async () => {
+					const h = await makeStore();
+					await stockedVariant(h, "prod-vguard", "large", "VGUARD", 6);
+
+					const stale = await h.store.updateVariantFields(
+						{ productId: productId("prod-vguard"), variantKey: "large", sku: sku("VGUARD-STALE") },
+						idempotencyKey("vguard-1"),
+						"1999-01-01T00:00:00.000Z",
+					);
+					expect(stale).toMatchObject({ ok: false, reason: "stale" });
+
+					const missing = await h.store.updateVariantFields(
+						{ productId: productId("prod-vguard"), variantKey: "ghost", sku: sku("VGUARD-GHOST") },
+						idempotencyKey("vguard-2"),
+						"1999-01-01T00:00:00.000Z",
+					);
+					expect(missing).toEqual({ ok: false, reason: "not_found" });
+
+					expect((await variantOf(h, "prod-vguard", "large")).onHand).toBe(6);
+					expect(await onHandOfSku(h, "probe-vguard", "VGUARD-STALE")).toBeNull();
+				});
+
+				test("a rename away from a variant sku with a LIVE hold is refused, naming the sku and the count", async () => {
+					const h = await makeStore();
+					const wm = await stockedVariant(h, "prod-vheld", "large", "VHELD", 20);
+					await h.seedHold("VHELD", 3);
+
+					// The hold's units are already out of on_hand and the hold cannot
+					// follow the rename, so the whole write waits — at variant grain
+					// exactly as at product grain.
+					await expect(
+						h.store.updateVariantFields(
+							{ productId: productId("prod-vheld"), variantKey: "large", sku: sku("VHELD-NEW") },
+							idempotencyKey("vheld-1"),
+							wm,
+						),
+					).rejects.toMatchObject({ name: "SkuHeldStockError", sku: "VHELD", liveHolds: 1 });
+
+					const row = await variantOf(h, "prod-vheld", "large");
+					expect(row.sku).toBe("VHELD");
+					expect(row.onHand).toBe(20);
+					expect(await onHandOfSku(h, "probe-vheld", "VHELD-NEW")).toBeNull();
+				});
+
+				test("when BOTH refusals apply the live hold wins, at variant grain too", async () => {
+					const h = await makeStore();
+					const wm = await stockedVariant(h, "prod-vboth", "large", "VBOTH", 7);
+					await h.seedHold("VBOTH", 1);
+					await h.seedStock("VBOTH-TARGET", 9);
+
+					await expect(
+						h.store.updateVariantFields(
+							{ productId: productId("prod-vboth"), variantKey: "large", sku: sku("VBOTH-TARGET") },
+							idempotencyKey("vboth-1"),
+							wm,
+						),
+					).rejects.toBeInstanceOf(SkuHeldStockError);
+					expect((await variantOf(h, "prod-vboth", "large")).sku).toBe("VBOTH");
+				});
+
+				test("PRECEDENCE over the live-hold refusal: a target held by a LIVE UNIT is SkuConflictError, even when the source also has holds", async () => {
+					const h = await makeStore();
+					// THREE refusals are live at once here — the source has a hold, the
+					// target has a stock row, and the target is held by a live product —
+					// so this is where the whole ladder is fixed rather than left to
+					// whichever check a future reorder happens to run first.
+					//
+					// The live-unit collision wins, and it should: a hold clears by
+					// itself and the message says "try again shortly", while a sku that
+					// names another sellable unit never clears on its own. Telling the
+					// operator to wait for a hold that is not the real obstacle sends
+					// them back for nothing.
+					const wm = await stockedVariant(h, "prod-vprec", "large", "VPREC-SRC", 6);
+					await h.seedHold("VPREC-SRC", 1);
+					await seedEditable(h, "prod-vprec-owner", { sku: "VPREC-OWNED" });
+					await h.seedStock("VPREC-OWNED", 3);
+
+					await expect(
+						h.store.updateVariantFields(
+							{ productId: productId("prod-vprec"), variantKey: "large", sku: sku("VPREC-OWNED") },
+							idempotencyKey("vprec-1"),
+							wm,
+						),
+					).rejects.toMatchObject({ name: "SkuConflictError" });
+
+					const row = await variantOf(h, "prod-vprec", "large");
+					expect(row.sku).toBe("VPREC-SRC");
+					expect(row.onHand).toBe(6);
+				});
+			});
+
+			// -- the resurrect revalidates rather than asserts ----------------------
+			//
+			// An orphan's sku is FREE for reuse, so by the time the CMS declares the
+			// key again the commerce facts the row is carrying may no longer hold.
+			// The declare states a fact about the CMS and cannot be refused, so the
+			// row gives way: whatever no longer holds is CLEARED, and nothing throws.
+
+			describe("a resurrect revalidates the stale commerce facts", () => {
+				/** Declare, price with a sku, then orphan — the state every case here
+				 *  starts from. Returns the orphaning watermark. */
+				async function orphanedWithSku(
+					h: ProductCommerceStoreHarness,
+					pid: string,
+					key: string,
+					s: string,
+				): Promise<void> {
+					const declared = await declare(h, pid, key);
+					const priced = await h.store.updateVariantFields(
+						{ productId: productId(pid), variantKey: key, sku: sku(s) },
+						idempotencyKey(`ow-price-${pid}-${key}`),
+						declared.updatedAt.toISOString(),
+					);
+					if (!priced.ok) throw new Error(`orphanedWithSku: ${pid}/${key} could not take a sku`);
+					await h.store.deactivateVariant(
+						productId(pid),
+						key,
+						idempotencyKey(`ow-orphan-${pid}-${key}`),
+						"2026-07-10T01:00:00.000Z",
+					);
+				}
+
+				test("the sku is KEPT when it is still free — the ordinary case, stock and all", async () => {
+					const h = await makeStore();
+					await orphanedWithSku(h, "prod-keep", "large", "KEEP-L");
+					await h.seedStock("KEEP-L", 6);
+
+					const back = await redeclare(
+						h,
+						"prod-keep",
+						"large",
+						"2026-07-10T02:00:00.000Z",
+						"keep-1",
+					);
+
+					expect(back.orphanedAt).toBeNull();
+					expect(back.sku).toBe("KEEP-L");
+					expect((await variantOf(h, "prod-keep", "large")).onHand).toBe(6);
+				});
+
+				test("the sku is CLEARED when another live VARIANT took it while the row was orphaned — never a throw, and the reuser keeps it", async () => {
+					const h = await makeStore();
+					await orphanedWithSku(h, "prod-reuse", "large", "REUSE-1");
+					await h.seedStock("REUSE-1", 9);
+					// The blessed reuse: an orphan frees its sku, so a sibling may take it.
+					const sibling = await declare(h, "prod-reuse", "small");
+					const took = await h.store.updateVariantFields(
+						{ productId: productId("prod-reuse"), variantKey: "small", sku: sku("REUSE-1") },
+						idempotencyKey("reuse-took"),
+						sibling.updatedAt.toISOString(),
+					);
+					expect(took.ok).toBe(true);
+
+					// The declare states a fact about the CMS. It cannot refuse presence,
+					// and it must not raise a raw unique-index violation at a hook the
+					// merchant never sees — so the orphan comes back WITHOUT the claim.
+					const back = await redeclare(
+						h,
+						"prod-reuse",
+						"large",
+						"2026-07-10T02:00:00.000Z",
+						"reuse-back",
+					);
+
+					expect(back.orphanedAt).toBeNull();
+					expect(back.sku).toBeNull();
+					// The reuser is untouched, and so is the stock: nothing moved, the
+					// row simply lost a claim it no longer had.
+					const rows = await h.store.listVariants(productId("prod-reuse"));
+					expect(rows.find((v) => v.variantKey === "small")?.sku).toBe("REUSE-1");
+					expect(rows.find((v) => v.variantKey === "small")?.onHand).toBe(9);
+					expect(rows.find((v) => v.variantKey === "large")?.onHand).toBeNull();
+				});
+
+				test("the sku is CLEARED when a live PRODUCT took it while the row was orphaned", async () => {
+					const h = await makeStore();
+					await orphanedWithSku(h, "prod-pgrab", "large", "PGRAB-1");
+					// A product row is the other kind of live sellable unit.
+					await seedEditable(h, "prod-other", { sku: "PGRAB-1" });
+
+					const back = await redeclare(
+						h,
+						"prod-pgrab",
+						"large",
+						"2026-07-10T02:00:00.000Z",
+						"pgrab-back",
+					);
+
+					expect(back.orphanedAt).toBeNull();
+					expect(back.sku).toBeNull();
+					expect((await h.store.getByProductId(productId("prod-other")))?.sku).toBe("PGRAB-1");
+				});
+
+				test("a cleared sku leaves its inventory row where it is — re-assigning it later ADOPTS the units back", async () => {
+					const h = await makeStore();
+					await orphanedWithSku(h, "prod-adoptback", "large", "ADOPTBACK-1");
+					await h.seedStock("ADOPTBACK-1", 14);
+					const sibling = await declare(h, "prod-adoptback", "small");
+					await h.store.updateVariantFields(
+						{
+							productId: productId("prod-adoptback"),
+							variantKey: "small",
+							sku: sku("ADOPTBACK-1"),
+						},
+						idempotencyKey("adoptback-took"),
+						sibling.updatedAt.toISOString(),
+					);
+					const back = await redeclare(
+						h,
+						"prod-adoptback",
+						"large",
+						"2026-07-10T02:00:00.000Z",
+						"adoptback-back",
+					);
+					expect(back.sku).toBeNull();
+
+					// Free the sku again, then give it back to the resurrected size. The
+					// units are still there: the resurrect never touched `inventory`, and
+					// a FIRST sku adopts the existing row (THE FIRST-SKU ASYMMETRY).
+					await h.store.deactivateVariant(
+						productId("prod-adoptback"),
+						"small",
+						idempotencyKey("adoptback-free"),
+						"2026-07-10T03:00:00.000Z",
+					);
+					const reassigned = await h.store.updateVariantFields(
+						{
+							productId: productId("prod-adoptback"),
+							variantKey: "large",
+							sku: sku("ADOPTBACK-1"),
+						},
+						idempotencyKey("adoptback-again"),
+						back.updatedAt.toISOString(),
+					);
+					expect(reassigned.ok).toBe(true);
+					expect((await variantOf(h, "prod-adoptback", "large")).onHand).toBe(14);
+				});
+
+				test("the PRICE is cleared when its currency no longer matches the product's", async () => {
+					const h = await makeStore();
+					// A product with no price of its own: the sizes carry the currency.
+					await h.store.upsert(
+						{ productId: productId("prod-vcur2") },
+						idempotencyKey("vcur2-seed"),
+					);
+					const declared = await declare(h, "prod-vcur2", "large");
+					const priced = await h.store.updateVariantFields(
+						{
+							productId: productId("prod-vcur2"),
+							variantKey: "large",
+							price: money(cents(3000), currency("GBP")),
+						},
+						idempotencyKey("vcur2-price"),
+						declared.updatedAt.toISOString(),
+					);
+					expect(priced.ok).toBe(true);
+					await h.store.deactivateVariant(
+						productId("prod-vcur2"),
+						"large",
+						idempotencyKey("vcur2-orphan"),
+						"2026-07-10T01:00:00.000Z",
+					);
+					// While it was away the product settled on a different currency.
+					const sibling = await declare(h, "prod-vcur2", "small");
+					const settled = await h.store.updateVariantFields(
+						{
+							productId: productId("prod-vcur2"),
+							variantKey: "small",
+							price: money(cents(2500), currency("USD")),
+						},
+						idempotencyKey("vcur2-settle"),
+						sibling.updatedAt.toISOString(),
+					);
+					expect(settled.ok).toBe(true);
+
+					const back = await redeclare(
+						h,
+						"prod-vcur2",
+						"large",
+						"2026-07-10T02:00:00.000Z",
+						"vcur2-back",
+					);
+
+					// A price the product can no longer honour is not a price. Absent,
+					// never coerced and never zero.
+					expect(back.orphanedAt).toBeNull();
+					expect(back.price).toBeNull();
+				});
+
+				test("BOTH are cleared in one resurrect: a sku that was reused AND a price whose currency moved on", async () => {
+					const h = await makeStore();
+					// The corner where the two clearing rules meet. Each is pinned alone
+					// above; a store that cleared one and asserted the other would pass
+					// both of those and fail this.
+					await h.store.upsert(
+						{ productId: productId("prod-both2") },
+						idempotencyKey("both2-seed"),
+					);
+					const declared = await declare(h, "prod-both2", "large");
+					const priced = await h.store.updateVariantFields(
+						{
+							productId: productId("prod-both2"),
+							variantKey: "large",
+							sku: sku("BOTH2-L"),
+							price: money(cents(3000), currency("GBP")),
+						},
+						idempotencyKey("both2-price"),
+						declared.updatedAt.toISOString(),
+					);
+					expect(priced.ok).toBe(true);
+					await h.seedStock("BOTH2-L", 4);
+					await h.store.deactivateVariant(
+						productId("prod-both2"),
+						"large",
+						idempotencyKey("both2-orphan"),
+						"2026-07-10T01:00:00.000Z",
+					);
+
+					// While it was away a sibling took both the sku AND the currency.
+					const sibling = await declare(h, "prod-both2", "small");
+					const took = await h.store.updateVariantFields(
+						{
+							productId: productId("prod-both2"),
+							variantKey: "small",
+							sku: sku("BOTH2-L"),
+							price: money(cents(2500), currency("USD")),
+						},
+						idempotencyKey("both2-took"),
+						sibling.updatedAt.toISOString(),
+					);
+					expect(took.ok).toBe(true);
+
+					const back = await redeclare(
+						h,
+						"prod-both2",
+						"large",
+						"2026-07-10T02:00:00.000Z",
+						"both2-back",
+					);
+
+					expect(back.orphanedAt).toBeNull();
+					expect(back.sku).toBeNull();
+					expect(back.price).toBeNull();
+					// And neither clearing disturbed the unit that legitimately holds them.
+					const rows = await h.store.listVariants(productId("prod-both2"));
+					expect(rows.find((v) => v.variantKey === "small")).toMatchObject({
+						sku: "BOTH2-L",
+						onHand: 4,
+					});
+				});
+
+				test("the price is cleared against a SIBLING's currency when the product itself carries no price", async () => {
+					const h = await makeStore();
+					// The `#resolveProductCurrency` FALLBACK branch: with no product-level
+					// price there is nothing to read on the parent, so the currency has to
+					// come from a live sibling. A resurrect that consulted only the parent
+					// would find null, conclude "nothing to match", and hand back a price
+					// in a currency the product no longer sells in.
+					await h.store.upsert({ productId: productId("prod-sib2") }, idempotencyKey("sib2-seed"));
+					const declared = await declare(h, "prod-sib2", "large");
+					const priced = await h.store.updateVariantFields(
+						{
+							productId: productId("prod-sib2"),
+							variantKey: "large",
+							price: money(cents(3000), currency("GBP")),
+						},
+						idempotencyKey("sib2-price"),
+						declared.updatedAt.toISOString(),
+					);
+					expect(priced.ok).toBe(true);
+					await h.store.deactivateVariant(
+						productId("prod-sib2"),
+						"large",
+						idempotencyKey("sib2-orphan"),
+						"2026-07-10T01:00:00.000Z",
+					);
+					expect((await h.store.getByProductId(productId("prod-sib2")))?.price).toBeNull();
+
+					// The only currency the product now has lives on a sibling size.
+					const sibling = await declare(h, "prod-sib2", "small");
+					await h.store.updateVariantFields(
+						{
+							productId: productId("prod-sib2"),
+							variantKey: "small",
+							price: money(cents(2500), currency("USD")),
+						},
+						idempotencyKey("sib2-settle"),
+						sibling.updatedAt.toISOString(),
+					);
+
+					const back = await redeclare(
+						h,
+						"prod-sib2",
+						"large",
+						"2026-07-10T02:00:00.000Z",
+						"sib2-back",
+					);
+					expect(back.price).toBeNull();
+				});
+
+				test("a MATCHING price survives the resurrect untouched", async () => {
+					const h = await makeStore();
+					await seedEditable(h, "prod-vkeep", { sku: "VKEEP-P", currency: "USD" });
+					const declared = await declare(h, "prod-vkeep", "large");
+					const priced = await h.store.updateVariantFields(
+						{
+							productId: productId("prod-vkeep"),
+							variantKey: "large",
+							price: money(cents(1200), currency("USD")),
+						},
+						idempotencyKey("vkeep-price"),
+						declared.updatedAt.toISOString(),
+					);
+					expect(priced.ok).toBe(true);
+					await h.store.deactivateVariant(
+						productId("prod-vkeep"),
+						"large",
+						idempotencyKey("vkeep-orphan"),
+						"2026-07-10T01:00:00.000Z",
+					);
+
+					const back = await redeclare(
+						h,
+						"prod-vkeep",
+						"large",
+						"2026-07-10T02:00:00.000Z",
+						"vkeep-back",
+					);
+					expect(back.price).toEqual({ amount: 1200, currency: "USD" });
+				});
+			});
+
+			// -- redelivery of a presence command ----------------------------------
+			//
+			// Presence has two OPPOSING transitions delivered by independent
+			// fire-and-forget POSTs, so a redelivery of either one must not undo the
+			// other. Both sequences below are no-ops on a correct store, and both
+			// flip a variant's sellability on a naive one.
+
+			describe("a redelivered presence command changes nothing", () => {
+				test("resurrect, then a REPLAYED deactivate: the variant stays live", async () => {
+					const h = await makeStore();
+					await declare(h, "prod-rd1", "large");
+					const orphanKey = idempotencyKey("rd1-orphan");
+					await h.store.deactivateVariant(
+						productId("prod-rd1"),
+						"large",
+						orphanKey,
+						"2026-07-10T01:00:00.000Z",
+					);
+					await h.store.upsertVariant(
+						{
+							productId: productId("prod-rd1"),
+							variantKey: "large",
+							title: "Large",
+							contentUpdatedAt: "2026-07-10T02:00:00.000Z",
+						},
+						idempotencyKey("rd1-back"),
+					);
+					expect((await variantOf(h, "prod-rd1", "large")).orphanedAt).toBeNull();
+
+					// The hook retries the drop it already delivered. Applied a second
+					// time it would silently un-sell a size the CMS currently declares.
+					await h.store.deactivateVariant(
+						productId("prod-rd1"),
+						"large",
+						orphanKey,
+						"2026-07-10T01:00:00.000Z",
+					);
+
+					expect((await variantOf(h, "prod-rd1", "large")).orphanedAt).toBeNull();
+				});
+
+				test("orphan, then a REPLAYED WATERMARK-LESS declare: the variant stays orphaned, though its title still updates", async () => {
+					const h = await makeStore();
+					// A watermark-less declare is a panel-shaped, unordered write. It may
+					// refresh the cache — last-writer-wins — but it carries no position,
+					// so it can never move an ordered axis.
+					await h.store.upsertVariant(
+						{ productId: productId("prod-rd2"), variantKey: "large", title: "Large" },
+						idempotencyKey("rd2-declare"),
+					);
+					await h.store.deactivateVariant(
+						productId("prod-rd2"),
+						"large",
+						idempotencyKey("rd2-orphan"),
+						"2026-07-10T01:00:00.000Z",
+					);
+
+					await h.store.upsertVariant(
+						{ productId: productId("prod-rd2"), variantKey: "large", title: "Large (redelivered)" },
+						idempotencyKey("rd2-redelivered"),
+					);
+
+					const row = await variantOf(h, "prod-rd2", "large");
+					expect(row.orphanedAt).not.toBeNull();
+					expect(row.title).toBe("Large (redelivered)");
+				});
+
+				test("a declare at an EQUAL watermark cannot resurrect either — presence moves only strictly forward", async () => {
+					const h = await makeStore();
+					await declare(h, "prod-rd3", "large");
+					await h.store.deactivateVariant(
+						productId("prod-rd3"),
+						"large",
+						idempotencyKey("rd3-orphan"),
+						"2026-07-10T01:00:00.000Z",
+					);
+
+					await h.store.upsertVariant(
+						{
+							productId: productId("prod-rd3"),
+							variantKey: "large",
+							title: "Large",
+							contentUpdatedAt: "2026-07-10T01:00:00.000Z",
+						},
+						idempotencyKey("rd3-equal"),
+					);
+
+					expect((await variantOf(h, "prod-rd3", "large")).orphanedAt).not.toBeNull();
+				});
+
+				test("a same-key deactivate replay is a no-op even after the row came back and went out again", async () => {
+					const h = await makeStore();
+					await declare(h, "prod-rd4", "large");
+					const key = idempotencyKey("rd4-orphan");
+					await h.store.deactivateVariant(
+						productId("prod-rd4"),
+						"large",
+						key,
+						"2026-07-10T01:00:00.000Z",
+					);
+					const first = await variantOf(h, "prod-rd4", "large");
+
+					// Straight redelivery, nothing in between: already orphaned AND a
+					// same-key replay, so the tombstone instant must not move either.
+					await h.store.deactivateVariant(
+						productId("prod-rd4"),
+						"large",
+						key,
+						"2026-07-10T01:00:00.000Z",
+					);
+					expect((await variantOf(h, "prod-rd4", "large")).orphanedAt).toEqual(first.orphanedAt);
+				});
+			});
+
+			// -- the reciprocal direction: product-level writers see variants -------
+			//
+			// Uniqueness across a pair of tables holds in both directions or in
+			// neither. These are the product-level half; the variant-level half is
+			// pinned above.
+
+			describe("a product-level write sees live variants", () => {
+				/**
+				 * A live variant holding `s`, on a product with no sku of its own — WITH
+				 * an `inventory` row, because that is production-normal: every applied
+				 * assignment is followed by the caller's create-if-absent seed, so a sku
+				 * a live unit holds nearly always has a stock row too. Seeding it here
+				 * keeps the two refusals SIMULTANEOUSLY applicable, which is the only
+				 * state in which their precedence is observable at all.
+				 */
+				async function variantHolding(
+					h: ProductCommerceStoreHarness,
+					pid: string,
+					key: string,
+					s: string,
+				): Promise<void> {
+					await h.store.upsert({ productId: productId(pid) }, idempotencyKey(`vh-seed-${pid}`));
+					const declared = await declare(h, pid, key);
+					const res = await h.store.updateVariantFields(
+						{ productId: productId(pid), variantKey: key, sku: sku(s) },
+						idempotencyKey(`vh-price-${pid}-${key}`),
+						declared.updatedAt.toISOString(),
+					);
+					if (!res.ok) throw new Error(`variantHolding: ${pid}/${key} could not take a sku`);
+					await h.seedStock(s, 0);
+				}
+
+				test("updateCommerceFields refuses a sku a LIVE VARIANT holds — the same typed refusal, the other way round", async () => {
+					const h = await makeStore();
+					await variantHolding(h, "prod-owner-v", "large", "OWNED-BY-VARIANT");
+					const seeded = await seedEditable(h, "prod-taker", { sku: "TAKER-1" });
+
+					await expect(
+						h.store.updateCommerceFields(
+							{ productId: productId("prod-taker"), sku: sku("OWNED-BY-VARIANT") },
+							idempotencyKey("recip-1"),
+							seeded.updatedAt.toISOString(),
+						),
+					).rejects.toBeInstanceOf(SkuConflictError);
+
+					// Atomic: the product kept its own sku and its own replay key.
+					const after = await h.store.getByProductId(productId("prod-taker"));
+					expect(after?.sku).toBe("TAKER-1");
+					expect(after?.idempotencyKey).toBe("seed-prod-taker");
+				});
+
+				test("upsert refuses a sku a LIVE VARIANT holds too — the rule belongs to the column, not to one writer", async () => {
+					const h = await makeStore();
+					await variantHolding(h, "prod-owner-u", "large", "OWNED-BY-VARIANT-U");
+					await h.store.upsert(
+						{ productId: productId("prod-taker-u"), sku: sku("TAKER-U") },
+						idempotencyKey("recip-u-seed"),
+					);
+
+					await expect(
+						h.store.upsert(
+							{ productId: productId("prod-taker-u"), sku: sku("OWNED-BY-VARIANT-U") },
+							idempotencyKey("recip-u-1"),
+						),
+					).rejects.toBeInstanceOf(SkuConflictError);
+					expect((await h.store.getByProductId(productId("prod-taker-u")))?.sku).toBe("TAKER-U");
+				});
+
+				test("an ORPHANED variant's sku is FREE to a product writer — the tombstone releases the identifier", async () => {
+					const h = await makeStore();
+					await variantHolding(h, "prod-freed", "large", "FREED-1");
+					await h.store.deactivateVariant(
+						productId("prod-freed"),
+						"large",
+						idempotencyKey("freed-orphan"),
+						"2026-07-10T02:00:00.000Z",
+					);
+
+					const res = await h.store.upsert(
+						{ productId: productId("prod-freed-taker"), sku: sku("FREED-1") },
+						idempotencyKey("freed-take"),
+					);
+					expect(res.sku).toBe("FREED-1");
+				});
+
+				test("a STALE product edit naming a live variant's sku refuses nothing — the check keeps its place in the guard order", async () => {
+					const h = await makeStore();
+					await variantHolding(h, "prod-guard-v", "large", "GUARDED-1");
+					await seedEditable(h, "prod-stale-taker", { sku: "STALE-TAKER" });
+
+					// The write never applies, so it never contends for the sku — exactly
+					// as a skipped statement never contends for a unique index.
+					const res = await h.store.updateCommerceFields(
+						{ productId: productId("prod-stale-taker"), sku: sku("GUARDED-1") },
+						idempotencyKey("guard-v-1"),
+						"1999-01-01T00:00:00.000Z",
+					);
+					expect(res).toMatchObject({ ok: false, reason: "stale" });
+				});
+
+				test("updateCommerceFields refuses a repricing that would leave a LIVE VARIANT in another currency", async () => {
+					const h = await makeStore();
+					const seeded = await seedEditable(h, "prod-recur", {
+						sku: "RECUR-1",
+						currency: "USD",
+						priceCents: 1000,
+					});
+					const declared = await declare(h, "prod-recur", "large");
+					const priced = await h.store.updateVariantFields(
+						{
+							productId: productId("prod-recur"),
+							variantKey: "large",
+							price: money(cents(2000), currency("USD")),
+						},
+						idempotencyKey("recur-price"),
+						declared.updatedAt.toISOString(),
+					);
+					expect(priced.ok).toBe(true);
+
+					// Without this direction the variant guard is bypassed by repricing
+					// the product instead of the size.
+					const res = await h.store.updateCommerceFields(
+						{ productId: productId("prod-recur"), price: money(cents(1000), currency("EUR")) },
+						idempotencyKey("recur-1"),
+						seeded.updatedAt.toISOString(),
+					);
+					expect(res).toMatchObject({ ok: false, reason: "currency_mismatch" });
+					expect((await h.store.getByProductId(productId("prod-recur")))?.price).toEqual({
+						amount: 1000,
+						currency: "USD",
+					});
+				});
+
+				test("a repricing in the SAME currency as the live variants applies", async () => {
+					const h = await makeStore();
+					const seeded = await seedEditable(h, "prod-recur-ok", {
+						sku: "RECUR-OK",
+						currency: "USD",
+						priceCents: 1000,
+					});
+					const declared = await declare(h, "prod-recur-ok", "large");
+					await h.store.updateVariantFields(
+						{
+							productId: productId("prod-recur-ok"),
+							variantKey: "large",
+							price: money(cents(2000), currency("USD")),
+						},
+						idempotencyKey("recur-ok-price"),
+						declared.updatedAt.toISOString(),
+					);
+
+					const res = await h.store.updateCommerceFields(
+						{ productId: productId("prod-recur-ok"), price: money(cents(1500), currency("USD")) },
+						idempotencyKey("recur-ok-1"),
+						seeded.updatedAt.toISOString(),
+					);
+					expect(res.ok).toBe(true);
+				});
+
+				test("PRECEDENCE: a product rename onto a sku a LIVE VARIANT holds refuses as SkuConflictError, never as a stock conflict", async () => {
+					const h = await makeStore();
+					// BOTH refusals apply here, which is the point: the target sku is held
+					// by a live variant AND has an inventory row. Only a fixed precedence
+					// makes every adapter say the same thing, and only one of the two
+					// sentences is actionable — the operator has to pick a different sku,
+					// not go looking for units to move.
+					await variantHolding(h, "prec-owner", "large", "PREC-OWNED");
+					const seeded = await seedEditable(h, "prec-taker", { sku: "PREC-FROM" });
+					await h.seedStock("PREC-FROM", 9);
+
+					await expect(
+						h.store.updateCommerceFields(
+							{ productId: productId("prec-taker"), sku: sku("PREC-OWNED") },
+							idempotencyKey("prec-1"),
+							seeded.updatedAt.toISOString(),
+						),
+					).rejects.toMatchObject({ name: "SkuConflictError" });
+
+					// Atomic either way: the rename applied nothing and moved nothing.
+					expect((await h.store.getByProductId(productId("prec-taker")))?.sku).toBe("PREC-FROM");
+					expect(await onHandOf(h, "prec-taker")).toBe(9);
+				});
+
+				test("PRECEDENCE, the same way round for upsert", async () => {
+					const h = await makeStore();
+					await variantHolding(h, "prec-owner-u", "large", "PREC-OWNED-U");
+					await h.store.upsert(
+						{ productId: productId("prec-taker-u"), sku: sku("PREC-FROM-U") },
+						idempotencyKey("prec-u-seed"),
+					);
+					await h.seedStock("PREC-FROM-U", 4);
+
+					await expect(
+						h.store.upsert(
+							{ productId: productId("prec-taker-u"), sku: sku("PREC-OWNED-U") },
+							idempotencyKey("prec-u-1"),
+						),
+					).rejects.toMatchObject({ name: "SkuConflictError" });
+					expect((await h.store.getByProductId(productId("prec-taker-u")))?.sku).toBe(
+						"PREC-FROM-U",
+					);
+				});
+
+				test("PRECEDENCE, from the variant side: a variant rename onto a sku a LIVE PRODUCT holds is also SkuConflictError", async () => {
+					const h = await makeStore();
+					// The mirror image, and it must answer identically — the rule belongs
+					// to the pair, so the sentence an operator reads cannot depend on
+					// which kind of unit they happened to be editing.
+					await seedEditable(h, "prec-p-owner", { sku: "PREC-P-OWNED" });
+					await h.seedStock("PREC-P-OWNED", 3);
+					await h.store.upsert({ productId: productId("prec-v") }, idempotencyKey("prec-v-seed"));
+					const declared = await declare(h, "prec-v", "large");
+					const priced = await h.store.updateVariantFields(
+						{ productId: productId("prec-v"), variantKey: "large", sku: sku("PREC-V-FROM") },
+						idempotencyKey("prec-v-price"),
+						declared.updatedAt.toISOString(),
+					);
+					if (!priced.ok) throw new Error("unreachable");
+					await h.seedStock("PREC-V-FROM", 7);
+
+					await expect(
+						h.store.updateVariantFields(
+							{ productId: productId("prec-v"), variantKey: "large", sku: sku("PREC-P-OWNED") },
+							idempotencyKey("prec-v-1"),
+							priced.variant.updatedAt.toISOString(),
+						),
+					).rejects.toMatchObject({ name: "SkuConflictError" });
+
+					const row = await variantOf(h, "prec-v", "large");
+					expect(row.sku).toBe("PREC-V-FROM");
+					expect(row.onHand).toBe(7);
+				});
+
+				test("PRECEDENCE over the live-hold refusal, from the product side too", async () => {
+					const h = await makeStore();
+					// The mirror of the variant-side ladder: same three refusals live at
+					// once, same winner, so the sentence an operator reads does not depend
+					// on which kind of unit they were editing.
+					await variantHolding(h, "prec-hold-owner", "large", "PREC-HOLD-OWNED");
+					const seeded = await seedEditable(h, "prec-hold-taker", { sku: "PREC-HOLD-FROM" });
+					await h.seedStock("PREC-HOLD-FROM", 8);
+					await h.seedHold("PREC-HOLD-FROM", 2);
+
+					await expect(
+						h.store.updateCommerceFields(
+							{ productId: productId("prec-hold-taker"), sku: sku("PREC-HOLD-OWNED") },
+							idempotencyKey("prec-hold-1"),
+							seeded.updatedAt.toISOString(),
+						),
+					).rejects.toMatchObject({ name: "SkuConflictError" });
+
+					expect((await h.store.getByProductId(productId("prec-hold-taker")))?.sku).toBe(
+						"PREC-HOLD-FROM",
+					);
+					expect(await onHandOf(h, "prec-hold-taker")).toBe(8);
+				});
+
+				test("a sku NO live unit holds still refuses as SkuStockConflictError — the two are distinguishable, not collapsed", async () => {
+					const h = await makeStore();
+					// The other refusal has to remain reachable, or the precedence above
+					// would just be the stock rule quietly deleted.
+					const seeded = await seedEditable(h, "prec-stock", { sku: "PREC-S-FROM" });
+					await h.seedStock("PREC-S-FROM", 5);
+					await h.seedStock("PREC-S-PARKED", 12);
+
+					await expect(
+						h.store.updateCommerceFields(
+							{ productId: productId("prec-stock"), sku: sku("PREC-S-PARKED") },
+							idempotencyKey("prec-s-1"),
+							seeded.updatedAt.toISOString(),
+						),
+					).rejects.toMatchObject({ name: "SkuStockConflictError" });
+				});
+
+				test("an ORPHANED variant's price never blocks a product pricing", async () => {
+					const h = await makeStore();
+					// Deliberately UNPRICED: the product's own stored currency (guard 4a)
+					// then has nothing to say, so this case is genuinely about 4c and
+					// cannot pass for the wrong reason.
+					const seeded = await h.store.upsert(
+						{ productId: productId("prod-recur-orph"), sku: sku("RECUR-ORPH") },
+						idempotencyKey("recur-orph-seed"),
+					);
+					const declared = await declare(h, "prod-recur-orph", "large");
+					await h.store.updateVariantFields(
+						{
+							productId: productId("prod-recur-orph"),
+							variantKey: "large",
+							price: money(cents(2000), currency("USD")),
+						},
+						idempotencyKey("recur-orph-price"),
+						declared.updatedAt.toISOString(),
+					);
+					await h.store.deactivateVariant(
+						productId("prod-recur-orph"),
+						"large",
+						idempotencyKey("recur-orph-drop"),
+						"2026-07-10T02:00:00.000Z",
+					);
+
+					// A tombstone is history, not a live dependency — the same stance the
+					// tax-class delete guard takes about soft-deleted products.
+					const res = await h.store.updateCommerceFields(
+						{ productId: productId("prod-recur-orph"), price: money(cents(900), currency("EUR")) },
+						idempotencyKey("recur-orph-1"),
+						seeded.updatedAt.toISOString(),
+					);
+					expect(res.ok).toBe(true);
+				});
+			});
 		});
 	});
 }

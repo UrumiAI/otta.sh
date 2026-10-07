@@ -13,10 +13,63 @@
  * rendered even if a new one is introduced later and someone forgets this
  * file.
  */
+import { CART_LINE_MAX_QTY, type CheckoutFailureReason } from "@otta-sh/plugin";
+
 const GENERIC_FALLBACK = "Something went wrong — please try again shortly.";
 
+const STALE_CHECKOUT_PAGE =
+	"This checkout page was out of date — please review your order and place it again.";
+
+/**
+ * #305 part 1 — the buyer's selection, refused at the summary or at place.
+ * Derived from the plugin's wire union with `Extract<>` and checked with
+ * `satisfies`, so a coupon or shipping reason added to the plugin without copy
+ * here fails the type check (`CheckoutFailureReason` is the wider union: it
+ * also carries the place-only `COUPON_MAX_PER_CUSTOMER`).
+ *
+ * No copy promises a refund: no order is minted before the coupon and the
+ * method are checked, so nothing was charged.
+ */
+const SELECTION_MESSAGES = {
+	COUPON_NOT_FOUND: "We couldn't find that coupon code — check the spelling and try again.",
+	COUPON_NOT_ACTIVE: "That coupon isn't active right now — it may have expired or not started yet.",
+	COUPON_MIN_SUBTOTAL: "Your order doesn't reach that coupon's minimum spend yet.",
+	COUPON_EXHAUSTED: "That coupon has reached its usage limit.",
+	// Unreachable today (no customer id is passed at checkout), but in the union.
+	COUPON_MAX_PER_CUSTOMER: "You've already used that coupon as many times as it allows.",
+	COUPON_CURRENCY_MISMATCH: "That coupon can't be used with this store's currency.",
+	SHIPPING_METHOD_NOT_FOUND: "That delivery option is no longer available — please choose another.",
+	SHIPPING_RATE_NOT_FOUND: "That delivery option isn't available for this order's currency.",
+	// #305 part 2 (ADR-0021): the zone is derived from the address.
+	SHIPPING_ZONE_NOT_MATCHED: "We don't ship to this address.",
+	// Neutral about delivery: the site shows it only for a cart that ships (a
+	// digital-only review has no address block), but the words stay true for
+	// an API caller's digital order with a bad region too.
+	SHIPPING_REGION_CODE_REQUIRED:
+		"Enter your state/province code (e.g. CA), or leave it blank if your country doesn't use one.",
+	SHIPPING_METHOD_NOT_IN_ZONE: "Delivery options changed for your address — please choose again.",
+	SHIPPING_METHOD_REQUIRED: "There are no delivery options for this address.",
+	// For API callers: no page of this site sends a method for a cart with
+	// nothing to ship (the summary drops a stale one silently).
+	SHIPPING_METHOD_NOT_APPLICABLE: "Your order doesn't need delivery.",
+} satisfies Record<
+	Extract<CheckoutFailureReason, `COUPON_${string}` | `SHIPPING_${string}`>,
+	string
+>;
+
 const MESSAGES: Record<string, string> = {
-	OUT_OF_STOCK: "Sorry, that item is out of stock.",
+	// About the QUANTITY, deliberately: an add that outruns the stock is refused
+	// OUT_OF_STOCK while the page still — truthfully — says In stock, and "that
+	// item is out of stock" then contradicted it (QA U-6). This sentence is true
+	// for that case and for a sold-out item alike. The available count is not
+	// named because the OUT_OF_STOCK refusal does not carry one.
+	OUT_OF_STOCK: "Sorry, we don't have enough of that in stock — try a smaller quantity.",
+	// The site's own (cart/add.ts): ONE unit refused OUT_OF_STOCK — there is no
+	// smaller quantity to try (QA2 F).
+	SOLD_OUT: "Sorry, this item is sold out.",
+	// Built from the plugin's own cap, so the number cannot drift. "At a time":
+	// the cap is per request, and an add can still take a line past it.
+	QTY_TOO_LARGE: `You can add at most ${CART_LINE_MAX_QTY.toLocaleString("en-US")} of one item at a time — please enter a smaller quantity.`,
 	CART_NOT_FOUND: "Your cart could not be found — it may have expired.",
 	LINE_NOT_FOUND: "That cart item could not be found — it may have already been removed.",
 	CART_CHECKED_OUT: "This cart has already been checked out.",
@@ -30,15 +83,27 @@ const MESSAGES: Record<string, string> = {
 	INVALID_CURRENCY: GENERIC_FALLBACK,
 	RENDER_FAILED: GENERIC_FALLBACK,
 	SERVICE_UNAVAILABLE: GENERIC_FALLBACK,
+	// The plugin's BUSY (storage contention on a hot item): nothing went wrong
+	// with the shopper's request and nothing was lost — the store is just
+	// momentarily busy, and trying again in a few seconds will work.
+	BUSY: "We're a little busy right now — please try again in a few seconds.",
+	// QA2 X4: "Start a new cart" could not confirm it cancelled the cart's unpaid
+	// order (busy, unreachable), so it cleared nothing — saying it had would be the
+	// lie the control used to tell.
+	NEW_CART_NOT_CLEARED:
+		"We couldn't start a new cart just now, so nothing was changed — please try again in a few seconds.",
 	// Item 3 — bogus SKU/productId rejection tokens (cart-actions.ts).
 	PRODUCT_NOT_FOUND: "That product couldn't be found — please refresh the page and try again.",
 	PRODUCT_UNAVAILABLE: "That product couldn't be found — please refresh the page and try again.",
 	// ── Checkout (storefront-checkout plan §1.7) ────────────────────────────
 	CART_EMPTY: "Your cart is empty — add something before checking out.",
-	// The 15-minute hold lapsed, or stock moved between the quote and the order.
-	// Not the buyer's fault, and not a dead end: the cart is still there.
+	// The hold lapsed, or stock moved between the quote and the order. Not the
+	// buyer's fault. The domain closes the checkout's order at once, so /checkout
+	// shows "This checkout has ended." beside this line: the way forward is a NEW
+	// cart (the checkout key is per cart), and — like that notice — no claim about
+	// money is made here.
 	RESERVATION_LOST:
-		"Your hold on one or more items expired before payment completed — please review your cart and try again.",
+		"Your hold on one or more items expired before payment, so this checkout was closed — start a new cart to order again.",
 	// Quoted from §1.7 rather than paraphrased, and shared by both reasons: from
 	// the buyer's side an unpriced product and a currency mismatch are the same
 	// fact — this cannot be bought right now.
@@ -51,16 +116,74 @@ const MESSAGES: Record<string, string> = {
 	// purpose and expire-orders sweeps it at TTL.
 	PAYMENT_INTENT_FAILED:
 		"We couldn't start a payment for this order. No charge was made — please try again in a moment.",
+	// ADR-0030: the store's outside tax calculator did not answer (or answered
+	// nonsense). Refused before any order existed, so a retry is all it takes.
+	TAX_UNAVAILABLE: "We couldn't calculate tax for this order right now. Please try again.",
+	// Issue #133: a stale/second tab placed with the key of a cart that was
+	// already ordered. The redirect back to /checkout re-renders the form with
+	// the CURRENT cart's key, so placing again simply works.
+	IDEMPOTENCY_KEY_REUSED: STALE_CHECKOUT_PAGE,
+	// The site's own (QA T1-10): the form's key names a cart the cookie does not
+	// — the page was reviewed for another cart. Same fact, same remedy.
+	CHECKOUT_STALE: STALE_CHECKOUT_PAGE,
 	INVALID_SHIPPING_ADDRESS:
 		"Please check the delivery address — some fields are missing or too long.",
+	MISSING_SHIPPING_ADDRESS: "Enter your delivery address to continue.",
+	/* The site's own (issue #382): MISSING_SHIPPING_ADDRESS as /checkout shows
+	   it for a cart that ships nothing, when the store's Stripe account is in
+	   India — the address is for the payment, not for a delivery. */
+	BUYER_ADDRESS_REQUIRED:
+		"Enter your name and address to continue — Stripe accounts in India need them to take your payment.",
+	/* …and INVALID_SHIPPING_ADDRESS there: the same check, without "delivery". */
+	BUYER_ADDRESS_INVALID: "Please check your address — some fields are missing or too long.",
 	INVALID_EMAIL: "That doesn't look like a valid email address — please check it and try again.",
 	ORDER_NOT_FOUND: "That order could not be found — please check the link you followed.",
+	/* Resuming a payment with the order's email (QA U-2): one generic sentence
+	   for a wrong address — it says nothing the order link does not already. */
+	EMAIL_MISMATCH: "That email doesn't match this order.",
+	THROTTLED:
+		"Too many tries for this order. Try again in up to 15 minutes, or start a new checkout.",
+	/* An explicit Apply of the code already applied: re-rendered, never placed. */
+	COUPON_ALREADY_APPLIED: "That code is already applied.",
+	/* QA2 X2: another tab already placed this cart's order, with another email.
+	   The locked review says WHICH (masked, `checkout-review.ts`); this is the
+	   sentence for a review that is no longer locked to it. */
+	ORDER_PLACED_OTHER_EMAIL:
+		"This order was already placed in another tab or window, with a different email, so the one you typed wasn't used.",
 	// The store has not connected Stripe. Honest about WHOSE problem it is.
 	STRIPE_NOT_CONFIGURED: "Card payment isn't set up on this store yet.",
+	...SELECTION_MESSAGES,
+	// ── Customer account (issue #306, ADR-0004) ─────────────────────────────
+	// A failed magic link. Each says what to do next, and none says anything
+	// about whether an account exists.
+	LOGIN_LINK_USED: "That sign-in link has already been used — request a new one below.",
+	LOGIN_LINK_EXPIRED: "That sign-in link has expired — request a new one below.",
+	LOGIN_LINK_INVALID: "That sign-in link isn't valid — request a new one below.",
 };
 
 /** Never returns the raw token, `undefined`, or an empty string — an
  *  unrecognized token (including `""`) falls back to the generic copy. */
 export function cartErrorMessage(token: string): string {
 	return MESSAGES[token] ?? GENERIC_FALLBACK;
+}
+
+/** A link a notice may offer beside its sentence. */
+export interface CartErrorAction {
+	href: string;
+	label: string;
+}
+
+/**
+ * The way out an error token offers, when it has one — decided here, beside the
+ * copy, so no view invents a path.
+ *
+ * Only CART_CHECKED_OUT has one today. `/cart/add` already starts a new cart when
+ * the order that cart became is finished (cart-rotation.ts), so a CART_CHECKED_OUT
+ * that still reaches a page means a cart whose payment may be IN PROGRESS. The
+ * cart page is where that is resolved — it links the order (which can complete
+ * the payment) and offers "Start a new cart" with its consequence stated — so the
+ * notice links there rather than discarding anything itself.
+ */
+export function cartErrorAction(token: string): CartErrorAction | null {
+	return token === "CART_CHECKED_OUT" ? { href: "/cart", label: "Go to your cart" } : null;
 }

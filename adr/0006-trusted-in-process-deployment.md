@@ -2,6 +2,15 @@
 
 - Status: accepted
 - Date: 2026-07-11
+- Amended: 2026-07-31 — **Decision 2 only**, by
+  [ADR-0014](./0014-second-native-descriptor-for-react-admin.md); Decision 1 is reaffirmed
+  unchanged. See "Amended 2026-07-31" at the end of this record.
+- Amended: 2026-09-13 — **Decision 2 only**, and within it only the **"no direct DB/storage
+  access"** clause, by [ADR-0018](./0018-plugin-owns-commerce-truth-in-process.md); Decision 1 is
+  reaffirmed again. See "Amended 2026-09-13" at the end of this record.
+- Amended: 2026-10-05 — **the "CSRF story" section only**: the origin check moved from each
+  endpoint into the site middleware and became default-deny (issue #376). See "Amended
+  2026-10-05" at the end of this record.
 - Refines: ADR-0001 (the plugin's runtime placement), ADR-0003 (the storefront/cart shim contract)
 
 ## Context
@@ -99,3 +108,84 @@ So the site's `/cart/*` POST endpoints enforce CSRF themselves:
   `allowedHosts`); changing it is a rebuild + redeploy, not a config flip.
 - A future multi-tenant / marketplace deployment must NOT inherit this: third-party
   plugins go back in `sandboxed: []` with a sandbox runner (and Workers Paid).
+
+## Amended 2026-07-31 — Decision 2's React clause, and only that clause
+
+Everything above is left exactly as written on 2026-07-11. This block only points at the
+record that amends one sentence of it.
+
+**[ADR-0014](./0014-second-native-descriptor-for-react-admin.md)** permits a SECOND EmDash
+descriptor — id `otta-console`, `format: "native"` — to render React admin pages from a
+separate package, alongside the unchanged standard-format `otta` descriptor, for the
+migrated screens only. It carries the evidence this record could not: a built-and-run
+two-descriptor spike, the measured Worker cost, and the costs accepted.
+
+Decision 3's hand-written descriptor list (`sites/staging/src/otta-plugin-descriptor.ts`) gains
+a second entry, `otta-console`; its constraints stand — no `sandboxed:`, no `sandboxRunner:` —
+and the existing `otta` descriptor's capabilities and `allowedHosts` are unchanged.
+
+**Decision 1 is untouched and expressly reaffirmed there.** The 18 workerd sandbox suites
+remain the contract gate; none is deleted, skipped or weakened, and Playwright is added for
+React screens as an *addition*, never a replacement. Decision 2 continues to bind
+`@otta-sh/plugin` in full — standard format, sandbox-clean, zero EmDash dependency — and its
+other prohibitions (no `page:fragments`, no `options`-configured native format, no direct
+DB/storage access, ADR-0003's route-based storefront) stand unamended.
+
+## Amended 2026-09-13 — Decision 2's "no direct DB/storage access" clause, and only that clause
+
+Everything above is left exactly as written. This block only points at the record that amends
+one phrase of it.
+
+**[ADR-0018](./0018-plugin-owns-commerce-truth-in-process.md)** permits the plugin to own
+commerce truth **in-process on `ctx.storage`**, and admits `@otta-sh/domain` and the
+`@otta-sh/store-emdash` adapter package into the plugin's dependency perimeter. The reasoning is
+that the ban was a proxy for "the plugin must not acquire IO", and that property is enforced
+directly by the domain-purity rule rather than by forbidding the import.
+
+**The capability posture of Decision 3 is unchanged**: the descriptor's capabilities stay exactly
+the manifest's two. `ctx.storage` is built on an always-available path with no capability string
+to grant, so nothing here widens a declared permission — and `sandboxed:` / `sandboxRunner:` stay
+absent, as Decision 3 requires.
+
+**Decision 1 is untouched and expressly reaffirmed there**, with an added statement of what the
+sandbox suites prove and what they do not: the storage-backed suites are an **obligation** of
+ADR-0018 that lands with the storage increment, no Otta tier exercises the host's sandbox
+storage bridge, and the D1 tier observes the host's real repository, migrations and dialect
+rather than the bridge. Decision 2's other prohibitions — no React admin components in this
+package, no `page:fragments`, no `options`-configured native format, ADR-0003's route-based
+storefront — stand unamended.
+
+## Amended 2026-10-05 — the origin check runs once, in the site middleware, default-deny
+
+Everything above is left as written. In this record, this block amends only the first
+bullet of "CSRF story for the cart endpoints"; its last paragraph notes the matching change
+to ADR-0024 Decision 6, recorded there as its own amendment.
+
+The rule is unchanged — a present-but-mismatched `Origin` (including the opaque `"null"`) is
+a 403, an absent `Origin` passes, and "same origin" is the request's own `url.origin`. What
+changed is **where** it runs and **what** it covers (issue #376):
+
+- It runs once, in `sites/staging/src/middleware.ts`, before any endpoint reads a body or a
+  cookie — no longer as a `rejectCrossOrigin(context)` call each endpoint had to remember to
+  make first. `src/lib/origin-guard.ts` keeps the rule as pure, unit-tested functions.
+- It is **default-deny**: every method other than GET, HEAD and OPTIONS, on every path not
+  under `/_`, is checked unless its route is on an explicit exemption list. Forgetting the
+  check now fails closed. The list has one entry, `POST /webhooks/stripe`, whose authority
+  is Stripe's signature (Stripe sends no `Origin`, so the check was a no-op there anyway).
+- Paths under `/_` stay EmDash's and Astro's: `/_emdash/*` is guarded by EmDash's own layer
+  (`X-EmDash-Request` / `checkPublicCsrf`, which run first), and double-guarding it here
+  would refuse the cross-origin OAuth routes EmDash leaves open on purpose.
+- Every refusal is the same answer: the 403 and body the endpoints sent, always with
+  `Referrer-Policy: no-referrer` and `Cache-Control: private, no-store`, the strictest headers
+  any endpoint wrapped its own refusal in. Byte-identity is deliberately given up where a
+  refusal used to carry fewer headers, and those refusals only GAIN headers: the six routes that
+  sent a bare 403 (`/cart/add|remove|update`, `/account/login/request`, `/account/logout`,
+  `/account/verify/confirm`) gain both, `/checkout/place` and `/checkout/new-cart` gain
+  `Cache-Control`, and `/checkout/resume`'s refusal is unchanged. One answer means no
+  per-route table that copies the endpoints' wrappers from a distance and can drift from them.
+
+The route table — every write route the site serves, guarded or exempt — is pinned by
+`sites/staging/test/origin-middleware.test.ts`, which fails when a new write route appears
+in neither column. ADR-0024 Decision 6's "the origin guard … stay in the page files" now reads
+"in the site middleware" — still single-sourced, still never in a theme; see ADR-0024's
+"Amended 2026-10-05".

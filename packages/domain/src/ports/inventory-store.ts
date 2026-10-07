@@ -73,16 +73,30 @@ export interface InventoryStore {
 	// is a no-op (`{ lost: [] }`, no DB round trip). Membership only.
 	commitMany(reservationIds: string[]): Promise<CommitManyResult>;
 
-	// Additive (review G2): the ORDER-SCOPED release used by every order-driven
-	// release path (`expireOrders`, settle's failed release). A single guarded
-	// flip `adopted → released` scoped `WHERE order_id = :orderId`, then the
-	// stock return — an order can only ever release a hold IT adopted. 0 rows is
-	// ALWAYS a silent no-op: already released/committed (benign replay), or
+	// Additive (review G2): the ORDER-SCOPED release of one hold. Its direct
+	// caller is `createOrderFromCart`, releasing the holds an order adopted when
+	// that order cannot go on; `expireOrders` and the cancel release use the
+	// batched `releaseAdoptedMany` below, whose per-id rules are these. A single
+	// guarded flip `adopted → released` scoped `WHERE order_id = :orderId`, then
+	// the stock return — an order can only ever release a hold IT adopted. 0 rows
+	// is ALWAYS a silent no-op: already released/committed (benign replay), or
 	// owned by another order / still cart-`held` (not this order's to touch —
 	// an unscoped release here is how a stale order could free a live checkout's
 	// hold, or crash the sweep on a committed one). Never throws on state; the
 	// loud lost-hold anomaly stays `commit`'s.
 	releaseAdopted(reservationId: string, orderId: string): Promise<void>;
+
+	// Additive (QA2 M2 — sweep budget): the BATCHED counterpart of
+	// `releaseAdopted`, for an order releasing every hold it adopted at once (the
+	// expiry and cancel paths). Per-id semantics are `releaseAdopted`'s,
+	// byte-for-byte: only a hold THIS order adopted is released and its units
+	// returned; an unknown id, another order's hold, a still cart-`held` hold or
+	// an already-terminal one is a silent no-op, never a throw. Duplicate ids are
+	// collapsed and an empty list is a no-op with no round trip. Grouped by SKU,
+	// one guarded write per SKU rather than per id; not atomic across SKUs, and
+	// every per-SKU write is idempotent, so a partial application is safe to
+	// re-run to completion.
+	releaseAdoptedMany(reservationIds: readonly string[], orderId: string): Promise<void>;
 
 	// Additive (Phase 1 §7/§8 Risk 4) — a dedicated create-if-absent initial
 	// stock write, NOT part of the reserve/commit/release authority path.
@@ -91,6 +105,19 @@ export interface InventoryStore {
 	// `reserve`) is a no-op that never clobbers the current `on_hand`. Its
 	// natural key is `sku` — deliberately no `idempotencyKey` (the
 	// create-if-absent guard IS the idempotency; see Phase 1 plan §8 Risk 4).
+	//
+	// THAT NATURAL KEY IS WHY A SKU RENAME IS NOT A STRING SWAP. `seedOnHand` is
+	// attempted after EVERY product save with a known sku, and it is
+	// create-if-absent, so on its own it answers a rename by minting a fresh
+	// ZERO row under the new sku and leaving the old row holding the units,
+	// referenced by nothing. The carry-forward that prevents that is NOT here: it
+	// belongs to whichever write changed the sku, because it has to commit with
+	// the product row — see THE SKU-RENAME RULE on `ProductCommerceStore`. This
+	// call stays exactly what it is: UNCONDITIONAL on every save (the heal path
+	// for a product whose row never landed) and a pure no-op once the row exists,
+	// including the row a rename just carried. Do NOT make it conditional on "the
+	// sku changed", and do NOT teach it to move stock — a create-if-absent write
+	// that sometimes moves units is neither.
 	seedOnHand(sku: string, qty: number): Promise<void>;
 	// Additive (Phase 3): atomically move a *held* reservation to `newQty` and
 	// couple the change with the matching durable inventory movement, so the
@@ -117,13 +144,58 @@ export interface InventoryStore {
 	// nothing). Exists so a SINGLE product's admin detail view can show its raw
 	// stock count without a store-side join (unlike `ProductCommerceStore.
 	// listCommerceByIds`, whose `inStock` is a coarse boolean scoped to
-	// commerce-complete rows only). A sku with NO inventory row reads as `0` —
-	// the SAME "no row ⇒ out of stock" semantics `listCommerceByIds`'s LEFT JOIN
-	// already establishes — never a throw, never null-as-logic. Deliberately NOT
-	// a batch/list method: the admin list screen must not N+1 into inventory per
-	// row (the list omits stock entirely, mirroring the port's `listCommerceByIds`
-	// doc); this is a single-row read for the ONE product a detail view opens.
+	// commerce-complete rows only).
+	//
+	// A sku with NO inventory row reads as `0` here — never a throw, never
+	// null-as-logic — the same "no row ⇒ out of stock" collapse
+	// `listCommerceByIds`'s coarse `inStock` boolean makes.
+	//
+	// ⚠ DELIBERATE DIVERGENCE from `ProductCommerceStore.listProducts`. That
+	// projection reports a missing inventory row as `onHand: null` —
+	// "unknown" — and treats `0` as the DIFFERENT fact "known sku, out of
+	// stock", because the list renders a per-row stock cell where inventing a
+	// zero would invent an out-of-stock claim for every never-synced product.
+	// This method cannot make that distinction: its return type is `number`,
+	// so `0` is overloaded and the two cases are indistinguishable to a
+	// caller. Do NOT "harmonize" the two by making the list coerce `null → 0`
+	// — that erases a fact the list is specifically there to show. Widening
+	// THIS signature to `number | null` is the direction that preserves
+	// information, and is a separate change with its own callers to audit.
+	//
+	// Deliberately NOT a batch/list method: it is a single-row read for the
+	// ONE product a detail view opens. The admin list no longer needs it — it
+	// carries `onHand` via a single LEFT JOIN inside `listProducts`'s own
+	// statement (one round trip per page, measured against an N+1 of these
+	// calls and 6x faster at page size 25), so per-row calls into this method
+	// from a list path remain the anti-pattern they always were.
 	getOnHand(sku: string): Promise<number>;
+
+	// Additive (INC-23, admin product detail): the SAME single-row read as
+	// `getOnHand` with the one distinction that method's return type cannot
+	// carry — a sku with NO inventory row reads `null` ("unknown"), and `0`
+	// means a known sku that is out of stock.
+	//
+	// WHY A SECOND METHOD RATHER THAN A WIDENED `getOnHand`. The warning above
+	// says widening is "the direction that preserves information, and is a
+	// separate change with its own callers to audit". That audit was done and
+	// came back: `getOnHand`'s `0`-for-missing is PINNED by the contract suite
+	// ("mirrors the LEFT JOIN miss") and relied on by tests that assert a
+	// concrete count; changing it would rewrite a shipped contract statement to
+	// close a rendering defect. So the information is added ALONGSIDE it, and
+	// `getOnHand` stays byte-for-byte what it was.
+	//
+	// This is what the admin DETAIL leaf reads. It exists because the same
+	// product read `—` in the products list (which sources `onHand` from
+	// `listProducts`'s LEFT JOIN and reports a miss as `null`) and `0` on its own
+	// detail page — one fact, two answers, one click apart. A detail view is the
+	// screen with the MOST context, so it is the last place that should be the
+	// one guessing.
+	//
+	// Still deliberately NOT a batch/list method, for the same reason as
+	// `getOnHand`: a list carries stock through its own join (port doc), and
+	// per-row calls into either of these from a list path remain the anti-pattern
+	// they always were.
+	findOnHand(sku: string): Promise<number | null>;
 
 	// Additive (admin-UX Increment 2, merchant restock): ADD `qty` units to an
 	// existing sku's on-hand — the merchant's "we received more stock" path.
@@ -160,6 +232,12 @@ export interface InventoryStore {
 	// uniqueness is independent); reuse is only rejected WITHIN a ledger — for the
 	// stock-movements ledger, when the recorded (sku, direction, qty) differs
 	// (`StockMovementMismatchError`).
+	//
+	// NO WATERMARK, deliberately (contrast `removeStock`). `on_hand` is the
+	// AVAILABLE count, which every reserve, release and hold expiry moves, so a
+	// restock pinned to the count an operator saw would fail as stale through an
+	// ordinary sale — and it would buy nothing, because an add is commutative:
+	// two operators who each add 3 to 4 end at 10 whichever lands first.
 	restock(sku: string, qty: number, key: IdempotencyKey): Promise<RestockResult>;
 
 	// Additive (admin-UX Increment 2, merchant stock removal): REMOVE `qty` units
@@ -180,19 +258,80 @@ export interface InventoryStore {
 	// consume the key (stays recorded, replays deterministically — the R2
 	// counterpart to `reserve`'s consumed OUT_OF_STOCK). An `UNKNOWN_SKU` does NOT
 	// consume the key (claim rolls back), exactly as `restock`.
-	removeStock(sku: string, qty: number, key: IdempotencyKey): Promise<StockRemovalResult>;
+	//
+	// WATERMARK (`options.expectedOnHand`, optional): the on-hand the caller's
+	// decision was taken against. When present, the removal applies ONLY if the
+	// live on-hand still equals it, checked in the SAME write as the decrement; a
+	// mismatch is a terminal `STALE_ON_HAND` carrying the live count, which moves
+	// nothing and consumes the key exactly as `INSUFFICIENT_STOCK` does, and is
+	// judged before that guard. It is checked AFTER the ledger, never before: a
+	// replay of an applied key echoes its recorded result although the count has
+	// since moved (it moved because of that very removal). Because `on_hand` is
+	// the AVAILABLE count, checkout traffic (reserve/release/expiry) also makes a
+	// watermark stale — accepted: a removal is the movement that can strand
+	// units, and a refusal naming the live count is the safe answer.
+	//
+	// KEY REUSE: a key recorded with one watermark and replayed with another, or
+	// recorded with one and replayed without, is a mis-keyed caller
+	// (`StockMovementMismatchError`). A key recorded WITHOUT a watermark (a claim
+	// written before watermarks existed) is honoured whatever the replay carries:
+	// the recorded intent wins, so an applied claim echoes its answer, and a
+	// claim still pending completes as recorded — unconditionally. Every removal
+	// the admin writes from this release on is pinned, so an unpinned removal
+	// claim can only come from a previous release (or from a caller that omits
+	// the option, whose removal is unconditional by its own choice).
+	removeStock(
+		sku: string,
+		qty: number,
+		key: IdempotencyKey,
+		options?: StockMovementOptions,
+	): Promise<StockRemovalResult>;
 }
 
-/** Outcome of {@link InventoryStore.restock}. `onHand` is the resulting count
- *  AFTER the units were added (recorded in the ledger, so a replay echoes it). */
-export type RestockResult = { ok: true; onHand: number } | { ok: false; reason: "UNKNOWN_SKU" };
+/** Optional preconditions on a `removeStock` (see the port doc). */
+export interface StockMovementOptions {
+	/** The on-hand the movement was decided against: a non-negative integer. */
+	readonly expectedOnHand?: number;
+}
+
+/** The watermark is a COUNT: a non-negative integer, or absent. A fractional or
+ *  negative one is a caller bug, never a value that could ever match — so it
+ *  throws rather than answering a STALE_ON_HAND that would read as a race.
+ *  Shared by the use-cases and every adapter (defense-in-depth, like `qty`). */
+export function assertStockMovementOptions(
+	method: string,
+	options: StockMovementOptions | undefined,
+): void {
+	const expected = options?.expectedOnHand;
+	if (expected !== undefined && (!Number.isSafeInteger(expected) || expected < 0)) {
+		throw new RangeError(
+			`${method}() requires a non-negative integer expectedOnHand, got ${String(expected)}`,
+		);
+	}
+}
+
+/** The removal was decided against an on-hand that is no longer true. `onHand`
+ *  is the live count it was refused against. Terminal: the key is consumed. */
+export type StaleOnHandResult = { ok: false; reason: "STALE_ON_HAND"; onHand: number };
+
+/** A successful stock movement. `onHand` is the count the movement produced
+ *  (recorded in the ledger, so a replay echoes it). `replayed: true` says the
+ *  answer came FROM THE LEDGER — this call moved nothing, an earlier call with
+ *  the same key did — so a caller can say "already applied" rather than report
+ *  a fresh movement. Absent on the call that actually moved the units. Only a
+ *  success carries it: a replayed refusal reads as the refusal it was. */
+export type StockMovementApplied = { ok: true; onHand: number; replayed?: true };
+
+/** Outcome of {@link InventoryStore.restock}. */
+export type RestockResult = StockMovementApplied | { ok: false; reason: "UNKNOWN_SKU" };
 
 /** Outcome of {@link InventoryStore.removeStock}. On success `onHand` is the
  *  count after removal; on `INSUFFICIENT_STOCK` it is the current count (fewer
  *  than `qty` units are available to remove). `UNKNOWN_SKU` carries no count. */
 export type StockRemovalResult =
-	| { ok: true; onHand: number }
+	| StockMovementApplied
 	| { ok: false; reason: "INSUFFICIENT_STOCK"; onHand: number }
+	| StaleOnHandResult
 	| { ok: false; reason: "UNKNOWN_SKU" };
 
 export type ReserveResult =
@@ -244,9 +383,12 @@ export type CommitManyResult = { lost: string[] };
  * the order for manual reconciliation; it is never swallowed.
  */
 export class ReservationCommitLostError extends Error {
+	/** The state the reservation was in — `released` means its units went back. */
+	readonly state: string;
 	constructor(reservationId: string, state: string) {
 		super(`cannot commit reservation ${reservationId}: it is ${state}, not held/adopted/committed`);
 		this.name = "ReservationCommitLostError";
+		this.state = state;
 	}
 }
 

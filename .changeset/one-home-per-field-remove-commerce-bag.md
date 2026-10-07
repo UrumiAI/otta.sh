@@ -45,8 +45,8 @@ Behavioural changes worth knowing:
   guard and the ordering-watermark guard sit on the same conditional update, so a same-key no-op
   would freeze `content_updated_at` and let a reordered older save win permanently, corrupting
   the value order lines snapshot. The correct fix is in the store adapter, tracked as issue #153.
-- No migration. No change to `PUT /products/:id/commerce`, which keeps carrying `title` — it is
-  the sync's channel.
+- No migration, and no change to the sync's own write path, which keeps carrying `title` — that
+  write is the sync's channel.
 
 **Upgrading.** Removing the field from the seed does not remove it from a database that already
 has it: EmDash's seed applier creates and updates fields but never deletes one the seed stopped

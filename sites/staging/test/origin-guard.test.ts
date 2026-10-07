@@ -1,5 +1,6 @@
 /**
- * Origin guard for the /cart/* POST endpoints.
+ * The origin guard's pure decision — the rule `src/middleware.ts` applies to
+ * every state-changing storefront route (which routes: origin-middleware.test.ts).
  *
  * The reviewer-assumed CSRF story ("Astro checkOrigin defaults true") does
  * NOT hold on an emdash site: the emdash astro integration force-disables

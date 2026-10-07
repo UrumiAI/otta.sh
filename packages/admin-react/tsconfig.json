@@ -1,0 +1,30 @@
+{
+	// EXACTLY ONE reference, and the rule that permits it is narrower than it
+	// looks. ADR-0014 Decision 3 gives the console exactly one DATA path — HTTP
+	// to `otta`'s existing authenticated admin routes — so importing
+	// @otta-sh/plugin (or the domain, service, store or payments packages) would
+	// be a second one, compiled in and invisible to the empty capability set.
+	// `@otta-sh/admin-presentation` is not a data path: it holds no IO, no wire
+	// types and no dependencies, only the money renderer, the date dialect, the
+	// short-id rule and the status vocabulary that BOTH admin surfaces must
+	// agree on. INC-20 extracted it precisely so the console could satisfy G1
+	// without a second `formatMoney`; `console-imports-no-workspace-package`
+	// allows this one package and still forbids every other, and this reference
+	// is that same fact stated in the build graph.
+	"extends": "../../tsconfig.base.json",
+	"compilerOptions": {
+		"outDir": "dist/tsc",
+		"emitDeclarationOnly": true,
+		"rootDir": ".",
+		// This is the ONE package in the workspace that renders in a browser.
+		"jsx": "react-jsx",
+		"lib": ["ES2023", "DOM", "DOM.Iterable"],
+		// Empty, overriding the base's `["node"]`: nothing here runs in Node.
+		// Ambient Node globals in scope would let `process.env`, `Buffer` or a
+		// `node:` import typecheck cleanly inside a module that ships to a
+		// browser — the failure would be at runtime, in the admin, not here.
+		"types": []
+	},
+	"include": ["src", "test", "tsdown.config.ts", "vitest.config.ts"],
+	"references": [{ "path": "../admin-presentation" }]
+}

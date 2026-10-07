@@ -90,24 +90,34 @@ describe("couponWindowSummary", () => {
 	test("both bounds open", () => {
 		expect(couponWindowSummary(null, null)).toBe("always");
 	});
-	test("start only (UTC date part of the ISO string — no timezone math)", () => {
-		expect(couponWindowSummary("2026-07-01T00:00:00.000Z", null)).toBe("from 2026-07-01");
+	// THE CONSOLE'S DATE DIALECT (M-6), not the wire's: a window bound is a
+	// DAY, and it renders the way every other day in the console renders — the
+	// date half of `formatTimestamp`, UTC-pinned, no timezone math. The
+	// separator is an en dash because this is a range, not a transition.
+	test("start only", () => {
+		expect(couponWindowSummary("2026-07-01T00:00:00.000Z", null)).toBe("from 1 Jul 2026");
 	});
 	test("expiry only", () => {
-		expect(couponWindowSummary(null, "2026-09-01T00:00:00.000Z")).toBe("until 2026-09-01");
+		expect(couponWindowSummary(null, "2026-09-01T00:00:00.000Z")).toBe("until 1 Sept 2026");
 	});
 	test("both bounds", () => {
 		expect(couponWindowSummary("2026-07-01T00:00:00.000Z", "2026-09-01T00:00:00.000Z")).toBe(
-			"2026-07-01 → 2026-09-01",
+			"1 Jul 2026 – 1 Sept 2026",
 		);
 	});
 });
 
+// The `∞` glyph is gone from all three renderings of this fact (list column,
+// picker label, detail field): it does not localize, and `N of M` is already
+// how the Redemptions meter reads.
 describe("couponUsesSummary", () => {
 	test("bounded", () => {
-		expect(couponUsesSummary(3, 100)).toBe("3 / 100");
+		expect(couponUsesSummary(3, 100)).toBe("3 of 100");
 	});
 	test("unlimited", () => {
-		expect(couponUsesSummary(0, null)).toBe("0 / ∞");
+		expect(couponUsesSummary(0, null)).toBe("0 uses");
+	});
+	test("unlimited, singular", () => {
+		expect(couponUsesSummary(1, null)).toBe("1 use");
 	});
 });

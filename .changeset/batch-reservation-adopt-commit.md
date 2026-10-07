@@ -1,6 +1,5 @@
 ---
 "@otta-sh/domain": minor
-"@otta-sh/store-postgres": minor
 ---
 
 Batch the per-line checkout ADOPT and settle COMMIT into single guarded UPDATE
@@ -29,13 +28,8 @@ state-machine semantics and anomaly detection byte-for-byte.
   `commitMany` catches `ReservationCommitLostError` per id → `lost` and continues.
   The digital `entitlement.grant` loop and the release path are untouched.
 
-- **`@otta-sh/store-postgres`**: implements `adoptMany`/`commitMany` on
-  `KyselyInventoryStore` as the single guarded UPDATE + classification SELECT
-  described above (empty-ids short-circuit; `IN (:ids)`, never `= ANY`).
-
 The contract suite gains adoptMany/commitMany cases (all-success, partial
 released/committed/expired, idempotent replay incl. adopted-past-deadline, empty,
-and commitMany unknown-id-throws), run against the fake, SQLite, and Postgres. A
-new Postgres-required multi-line no-oversell test races carts with 2–3
-distinct-sku physical lines and proves the batch never oversells or half-commits
-(committed == fullWinners × linesPerOrder, each sku on_hand == 0).
+and commitMany unknown-id-throws), run against every `InventoryStore`
+implementation, so a batch that oversells or half-commits a multi-line order
+fails the suite rather than the storefront.

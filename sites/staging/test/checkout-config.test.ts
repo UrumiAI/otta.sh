@@ -10,8 +10,8 @@
  * have shipped that message to every buyer while a valid `pk_test_…` sat
  * unread in `~/.otta-deploy.env`. So the variable NAME is pinned as test
  * data, the config module is pinned to read that spelling and no other, and a
- * present-but-malformed value THROWS at build (mirroring `resolveServiceUrl`'s
- * "throw early rather than bake garbage") — leaving quiet degradation as the
+ * present-but-malformed value THROWS at build (throw early rather than bake
+ * garbage) — leaving quiet degradation as the
  * behaviour for a genuinely unprovisioned key, and only that.
  */
 import { readFileSync } from "node:fs";

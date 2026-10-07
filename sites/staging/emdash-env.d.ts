@@ -11,8 +11,9 @@ export interface Product {
   status: string;
   title: string;
   description?: string;
-  images?: { id: string; src?: string; alt?: string; width?: number; height?: number; provider?: string; previewUrl?: string; meta?: Record<string, unknown> };
-  commerce?: unknown;
+  images?: { id: string; src?: string; alt?: string; width?: number; height?: number; filename?: string; mimeType?: string; blurhash?: string; dominantColor?: string; provider?: string; previewUrl?: string; meta?: Record<string, unknown>; darkVariant?: { id: string; src?: string; alt?: string; width?: number; height?: number; filename?: string; mimeType?: string; blurhash?: string; dominantColor?: string; provider?: string; previewUrl?: string; meta?: Record<string, unknown> } };
+  pricing?: unknown;
+  variants?: { "key": string; "name": string }[];
   createdAt: Date;
   updatedAt: Date;
   publishedAt: Date | null;

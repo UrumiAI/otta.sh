@@ -1,5 +1,5 @@
 /**
- * Nav helpers for the site chrome (src/layouts/Base.astro).
+ * Nav helpers for the site chrome (src/layouts/Storefront.astro builds the nav).
  *
  * The primary menu is CMS-authored, so the layout cannot assume any particular
  * spelling of a URL: it has to RECOGNISE the cart entry rather than be told
@@ -55,4 +55,40 @@ export function isCartLink(url: string): boolean {
  */
 export function cartCountLabel(count: number): string {
 	return count === 1 ? "1 item" : `${count} items`;
+}
+
+/**
+ * The theme's own "Account" entry (issue #306). The primary menu is
+ * CMS-authored and predates the account pages, so the theme appends this rather
+ * than waiting for an operator to add it — the account is a route THIS THEME
+ * defines, like the fallback entries above.
+ */
+export const ACCOUNT_NAV_ITEM: NavItem = { label: "Account", url: "/account/orders" };
+
+/** Does this menu URL point into the account area? Same tolerance as
+ *  {@link isCartLink}: query, fragment and trailing slashes are all legal. */
+export function isAccountLink(url: string): boolean {
+	const path = (url.split(/[?#]/)[0] ?? "").replace(/\/+$/, "");
+	return path === "/account" || path.startsWith("/account/");
+}
+
+/**
+ * The theme's Account entry when the shopper IS signed in (QA U-12: the header
+ * looked the same signed in and out). It names no one: the email never reaches
+ * the chrome, so even a page that must stay private carries no address in its
+ * header.
+ */
+export const ACCOUNT_NAV_SIGNED_IN_LABEL = "Your account";
+
+/** The menu plus the account entry — unless the operator's menu already links
+ *  into /account, in which case theirs stands, in the operator's own words, and
+ *  no duplicate is added. `signedIn` (known only for a request carrying a live
+ *  session) relabels the theme's own entry; signed out or unknown, it stays the
+ *  neutral "Account". */
+export function withAccountLink(items: readonly NavItem[], signedIn = false): readonly NavItem[] {
+	if (items.some((item) => isAccountLink(item.url))) return items;
+	return [
+		...items,
+		signedIn ? { ...ACCOUNT_NAV_ITEM, label: ACCOUNT_NAV_SIGNED_IN_LABEL } : ACCOUNT_NAV_ITEM,
+	];
 }

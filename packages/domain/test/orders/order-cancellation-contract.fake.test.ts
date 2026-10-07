@@ -8,8 +8,9 @@ import {
 
 // The order-cancellation spec (admin-UX Increment 1, "cancel with reason") run
 // against the in-memory fake first. The pg/sqlite dialect runs — incl. the
-// concurrent-cancel and cancel-vs-recordFulfillment races — live in
-// @otta-sh/store-postgres.
+// concurrent-cancel and cancel-vs-recordFulfillment races — now live in
+// store-emdash's order-cancellation-contract.dialects.test.ts;
+// @otta-sh/store-postgres is gone.
 
 orderCancellationContract(
 	async () => {

@@ -69,16 +69,19 @@ fraction of the cost and with no capability loss.
 written through exactly ONE channel: `UpsertProductCommerceInput.title`
 (`PUT /products/:id/commerce`).**
 
-That channel has **two callers, both sourcing the value from the CMS**, so they converge rather
-than diverge:
+That channel has **one caller, sourcing the value from the CMS**:
 
-1. the `content:afterSave` / `content:afterPublish` sync — the writer in steady state;
-2. `sites/staging/scripts/seed-demo-commerce.ts`, the operator-run demo seed — the README
-   quickstart and `DEPLOYMENT.md` §3 ("Smoke") both instruct operators to run it. It exists
-   because EmDash's seed applier creates content through the repository directly and fires no
-   content hooks, so the demo products would otherwise be born `title = NULL` and unbuyable. It
-   reads each title from the CMS content API before writing it, so it can only ever write what
-   the sync would have written.
+1. the `content:afterSave` / `content:afterPublish` sync — the writer, in steady state and at
+   seed time alike.
+
+`sites/staging/scripts/seed-demo-commerce.ts`, the operator-run demo seed that the README
+quickstart and `DEPLOYMENT.md` §3 ("Smoke") both instruct operators to run, USED to be a second
+caller. It exists because EmDash's seed applier creates content through the repository directly
+and fires no content hooks, so the demo products would otherwise be born `title = NULL` and
+unbuyable — but as of work order 02 it re-publishes each product through the CMS and lets the
+`content:afterPublish` sync above write the title, then prices and stocks it through the admin
+route, which carries no title at all. The decision is therefore stronger than it was when it was
+taken: the cache has a single writer, structurally.
 
 A third caller sourcing a title from somewhere other than the CMS would break this decision; that
 is the line, not the caller count.

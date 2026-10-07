@@ -4,9 +4,11 @@
 	"type": "module",
 	"scripts": {
 		"lint": "oxlint && depcruise --config .dependency-cruiser.cjs packages",
-		"typecheck": "tsc -b",
+		"typecheck": "tsc -b && tsc -p tsconfig.e2e.json",
 		"test": "vitest run",
-		"test:pg": "vitest run",
+		"test:pg": "vitest run $(./scripts/pg-test-files.sh)",
+		"test:d1": "pnpm -C packages/store-emdash test:d1",
+		"test:e2e": "playwright test",
 		"format": "oxfmt",
 		"format:check": "oxfmt --check",
 		"build": "pnpm -r build",
@@ -14,12 +16,16 @@
 	},
 	"devDependencies": {
 		"@changesets/cli": "catalog:",
+		"@playwright/test": "catalog:",
 		"@types/node": "catalog:",
 		"dependency-cruiser": "catalog:",
 		"oxfmt": "catalog:",
 		"oxlint": "catalog:",
 		"typescript": "catalog:",
 		"vitest": "catalog:"
+	},
+	"engines": {
+		"node": ">=22.16"
 	},
 	"packageManager": "pnpm@11.10.0"
 }

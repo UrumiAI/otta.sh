@@ -17,22 +17,58 @@
  * which would carry no `SameSite=Lax` cookie in the first place — and the
  * origin guard rejects a cross-site form POST regardless.)
  *
+ * IT STOPS THE OLD ORDER FIRST (QA2 X4). The control says it clears any
+ * payment still in progress, and clearing cookies alone did not: the order the
+ * cart became stayed pending, its stock held, its PaymentIntent payable from
+ * another tab. So before anything is cleared, the cart cookie (the possession
+ * proof) is handed to `storefront/order/abandon`, which cancels that order if it
+ * is still unpaid — releasing its stock and making its intent due for withdrawal
+ * at once. If that cannot be confirmed (busy, unreachable), NOTHING is cleared
+ * and /cart says so: dropping the cookies would leave the order running with the
+ * shopper's only handle on it gone.
+ *
  * Anything smarter — reactivating a `checked_out` cart — is a domain change and
  * belongs in its own PR.
  */
+import {
+	CART_COOKIE_NAME,
+	STOREFRONT_ORDER_ABANDON_ROUTE,
+	type OrderAbandonRouteResult,
+} from "@otta-sh/plugin";
 import type { APIRoute } from "astro";
-import { clearCartCookie, seeOther } from "../../lib/cart-actions.js";
+import { getPublicPluginApiRouteHandler } from "emdash/plugin-utils";
+import { clearCartCookie, seeOther, withoutReferrer } from "../../lib/cart-actions.js";
 import { clearCheckoutCookie } from "../../lib/checkout-cookie.js";
-import { rejectCrossOrigin } from "../../lib/origin-guard.js";
+import { clearCheckoutDraft } from "../../lib/checkout-draft.js";
+import { dispatchOttaRoute } from "../../lib/otta-api.js";
 
-export const POST: APIRoute = (context) => {
-	// CSRF first — a forged cross-site POST must not be able to bin someone's
-	// cart. Nothing is cleared before this returns.
-	const forbidden = rejectCrossOrigin(context);
-	if (forbidden !== null) return forbidden;
+export const POST: APIRoute = async (context) => {
+	// CSRF: src/middleware.ts has already refused a cross-site POST (ADR-0006),
+	// so a forged form cannot bin someone's cart or cancel its order.
+	const cartId = context.cookies.get(CART_COOKIE_NAME)?.value;
+	if (cartId !== undefined && cartId.length > 0) {
+		const abandoned = await dispatchOttaRoute<OrderAbandonRouteResult>(
+			getPublicPluginApiRouteHandler(context.locals),
+			STOREFRONT_ORDER_ABANDON_ROUTE,
+			{ cartId },
+			context.url,
+		);
+		// INVALID_INPUT is a cookie that cannot name a cart, so it names no order
+		// either: nothing to stop. Anything else that is not a definite answer
+		// leaves everything as it was.
+		const settled =
+			abandoned !== null &&
+			(abandoned.ok || ("error" in abandoned && abandoned.error === "INVALID_INPUT"));
+		if (!settled) {
+			return withoutReferrer(seeOther(context, "/cart?error=NEW_CART_NOT_CLEARED"));
+		}
+	}
 
 	clearCartCookie(context);
 	clearCheckoutCookie(context.cookies);
+	clearCheckoutDraft(context.cookies);
 
-	return seeOther(context, "/products");
+	// Posted from /checkout, whose URL may hold a coupon: the GET this 303
+	// starts must not carry it as its Referer (see `withoutReferrer`).
+	return withoutReferrer(seeOther(context, "/products"));
 };

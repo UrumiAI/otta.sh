@@ -30,6 +30,10 @@ import {
 
 export const USD = currency("USD");
 
+/** The publish watermark every seeded product carries — older than any lifecycle
+ *  event a case applies afterwards, so a later unpublish is never "stale". */
+export const SEED_PUBLISHED_AT = "2026-01-01T00:00:00.000Z";
+
 export interface OrderHarness {
 	clock: FixedClock;
 	inventory: InMemoryInventoryStore;
@@ -112,7 +116,6 @@ export function makeOrderHarness(): OrderHarness {
 		entitlementStore,
 		paymentEventStore,
 		inventoryStore: inventory,
-		couponStore,
 		clock,
 	};
 	const expireDeps: ExpireOrdersDeps = {
@@ -121,6 +124,16 @@ export function makeOrderHarness(): OrderHarness {
 		couponStore,
 		clock,
 	};
+
+	/** A seeded product is a SELLABLE one: published through the same publish-gate
+	 *  flip `content:afterPublish` drives, since checkout refuses an unpublished row. */
+	async function publish(id: string): Promise<void> {
+		await productCommerce.activate(
+			brandProductId(id),
+			idempotencyKey(`publish-${seq++}`),
+			SEED_PUBLISHED_AT,
+		);
+	}
 
 	return {
 		clock,
@@ -150,6 +163,7 @@ export function makeOrderHarness(): OrderHarness {
 				},
 				idempotencyKey(`seed-${seq++}`),
 			);
+			await publish(input.productId);
 			inventory.seed(input.sku, input.onHand);
 		},
 		async seedDigital(input) {
@@ -163,6 +177,7 @@ export function makeOrderHarness(): OrderHarness {
 				},
 				idempotencyKey(`seed-${seq++}`),
 			);
+			await publish(input.productId);
 		},
 		async cartWith(specs) {
 			const cartId = await createCart(cartDeps, USD);

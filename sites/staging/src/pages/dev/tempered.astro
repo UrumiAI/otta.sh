@@ -31,13 +31,14 @@
  * anywhere in `dist/`. `dev-route-guard.test.ts` pins the shape that buys
  * this; a static import here would silently put both chunks back.
  */
-import Base from "../../layouts/Base.astro";
+import Storefront from "../../layouts/Storefront.astro";
 import type { CheckoutAmountView } from "@otta-sh/plugin";
 import { NOT_APPLICABLE_LABEL, NOT_CALCULATED_LABEL } from "@otta-sh/plugin";
 
 if (!import.meta.env.DEV) return new Response(null, { status: 404 });
 
 const [
+	{ default: HoldClock },
 	{ default: HoldRibbon },
 	{ default: Ledger },
 	{ default: MediaPanel },
@@ -51,6 +52,7 @@ const [
 	{ default: StockRule },
 	{ default: Sum },
 ] = await Promise.all([
+	import("../../components/HoldClock.astro"),
 	import("../../components/HoldRibbon.astro"),
 	import("../../components/Ledger.astro"),
 	import("../../components/MediaPanel.astro"),
@@ -92,7 +94,7 @@ const CONFIGURED = [
 ];
 ---
 
-<Base title="Tempered styleguide" cartCount={3} currency="USD">
+<Storefront title="Tempered styleguide" cartCount={3} currency="USD">
 	<h1 class="page-title">Tempered</h1>
 	<p class="lede">
 		Every component in every state. Dev only — this route is a 404 in a built worker.
@@ -100,10 +102,9 @@ const CONFIGURED = [
 
 	<section id="cards">
 		<p class="u-label eyebrow">ProductCard · MediaPanel · PriceTag · StockRule</p>
-		<p class="u-label cap">tints cycle by grid position — every three cards show all three</p>
+		<p class="u-label cap">each product keeps its own tint on every page</p>
 		<div class="grid">
 			<ProductCard
-				index={0}
 				href="#"
 				slug="otta-tee"
 				title="Otta Tee"
@@ -112,7 +113,6 @@ const CONFIGURED = [
 				availability="in_stock"
 			/>
 			<ProductCard
-				index={1}
 				href="#"
 				slug="otta-mug"
 				title="Otta Mug"
@@ -121,7 +121,6 @@ const CONFIGURED = [
 				availability="in_stock"
 			/>
 			<ProductCard
-				index={2}
 				href="#"
 				slug="otta-sticker-pack"
 				title="Otta Sticker Pack"
@@ -129,13 +128,33 @@ const CONFIGURED = [
 				price="$12.00"
 				availability="out_of_stock"
 			/>
-			<ProductCard index={3} href="#" slug="otta-poster" title="Otta Poster" price={null} />
+			<ProductCard href="#" slug="otta-poster" title="Otta Poster" price={null} />
+			{/* On sale: the struck was-price beside the price. */}
+			<ProductCard
+				href="#"
+				slug="otta-cap"
+				title="Otta Cap"
+				description="On sale."
+				price="$12.00"
+				was="$20.00"
+				availability="in_stock"
+			/>
+			{/* Sold out AND on sale: one struck figure — the was-price is dropped. */}
+			<ProductCard
+				href="#"
+				slug="otta-tote"
+				title="Otta Tote"
+				description="On sale, sold out."
+				price="$12.00"
+				was="$20.00"
+				availability="out_of_stock"
+			/>
 		</div>
 	</section>
 
 	<section id="coils">
 		<p class="u-label eyebrow">MediaPanel · the coil is keyed to the slug (§5)</p>
-		<p class="u-label cap">no index — the tint falls back to the slug's own hash (a PDP, a cart line)</p>
+		<p class="u-label cap">drawing and tint both keyed to the slug — the same coil on every page</p>
 		<div class="coils">
 			{
 				// "a" and "" are the degenerate ends of the hash: one code unit,
@@ -195,6 +214,9 @@ const CONFIGURED = [
 				<HoldRibbon expiresAt={null} />
 			</div>
 		</div>
+		{/* The ribbons above are markup; this is what makes them tick — the
+		    same script the cart page renders (ADR-0012's one pair). */}
+		<HoldClock />
 	</section>
 
 	<section id="steps">
@@ -251,7 +273,7 @@ const CONFIGURED = [
 				level="h2"
 				headline="Order confirmed."
 				body="Thank you — we've received your payment. A confirmation is on its way to your email."
-				reference="ord_01J8XQ4M7"
+				orderLabel="Otta Tee and 2 more"
 			/>
 			<StateStamp
 				state="pending"
@@ -301,7 +323,7 @@ const CONFIGURED = [
 			<Notice>Totals are unavailable right now. Your quantities and your holds are still exact.</Notice>
 		</div>
 	</section>
-</Base>
+</Storefront>
 
 <style>
 	.page-title {

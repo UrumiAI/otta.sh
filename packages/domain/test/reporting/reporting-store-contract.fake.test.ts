@@ -20,6 +20,12 @@ reportingStoreContract(
 			async seedInventory(row) {
 				store.seedInventory(row);
 			},
+			async seedProduct(row) {
+				store.seedProduct(row);
+			},
+			async seedRefund(row) {
+				store.seedRefund(row);
+			},
 		};
 	},
 	{ dialect: "in-memory-fake" },

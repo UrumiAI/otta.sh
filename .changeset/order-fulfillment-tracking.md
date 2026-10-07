@@ -1,7 +1,5 @@
 ---
 "@otta-sh/domain": minor
-"@otta-sh/store-postgres": minor
-"@otta-sh/service": minor
 "@otta-sh/plugin": minor
 ---
 
@@ -36,24 +34,19 @@ The core design decisions:
   idempotent replay + the stale-race disambiguation mirror
   `transitionOrder`/`resolveReconciliation`). `buildOrderEmailData` now carries the
   fulfillment so the shipped template can render it.
-- **Adapters (`[Adapters]`).** Forward-only migration `0012_order_fulfillment` adds six
-  nullable columns to `orders` (portable text DDL, identical on better-sqlite3 + pg). Both
-  adapters green against the new `orderFulfillmentContract`; Postgres additionally runs the
-  concurrency races — N concurrent record-fulfillment ship exactly once (one shipped email),
-  and record-vs-cancel resolves to exactly one winner (the order is never both).
-- **Service (`[Service]`).** `POST /admin/orders/:id/fulfillment` mirrors the use-case 1:1
-  under the internal-token guard + the X-Service-Token write gate (a non-GET);
-  `serializeOrder` gains `fulfillment` (additive). `trackingUrl` is scheme-bound to http(s)
-  at the boundary (defense-in-depth — the value is emailed to the buyer; `javascript:`/
-  `data:` URIs are a 400, never storable). `renderEmail`'s `order-shipped` template now
-  renders the recorded carrier / tracking number / tracking URL (escaped), degrading to
-  the plain body when an order shipped without fulfillment.
+  The store adapter is green against the new `orderFulfillmentContract`, concurrency races
+  included — N concurrent record-fulfillments ship exactly once (one shipped email), and
+  record-vs-cancel resolves to exactly one winner (the order is never both).
+- **Validation + email.** `trackingUrl` is scheme-bound to http(s) where it enters
+  (defense-in-depth — the value is emailed to the buyer; `javascript:`/`data:` URIs are
+  refused, never storable). The `order-shipped` email template now renders the recorded
+  carrier / tracking number / tracking URL (escaped), degrading to the plain body when an
+  order shipped without fulfillment.
 - **Plugin (`[Plugin]`).** The order detail gains a "Fulfillment" section: a `processing`
   order shows the record-fulfillment form (honest copy that recording ships the order and
   emails tracking) and the bare "Mark shipped" one-click is HIDDEN from the transition
   buttons (UI steering — shipping goes through the form so an order is never shipped
-  without tracking; the service still accepts the bare transition for other callers); a
+  without tracking; the bare transition stays legal for other callers); a
   shipped order shows the recorded tracking read-only; a shipped-without-
   tracking order gets an honest note. A `NOT_FULFILLABLE` conflict surfaces a "reload"
-  notice, not a token-check error. Typed `ctx.http` client method threads both tokens like
-  the transition; sandbox-clean (Block Kit only).
+  notice, not a token-check error. Sandbox-clean (Block Kit only).

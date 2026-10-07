@@ -1,8 +1,9 @@
 /**
  * The build-time Stripe publishable key (ADR-0012 decision 4).
  *
- * Baked into the bundle by a Vite `define` in `astro.config.ts`, exactly like
- * `COMMERCE_SERVICE_URL`: shell env → `sites/staging/.env` → absent. Changing
+ * Baked into the bundle by a Vite `define` in `astro.config.ts`, resolved
+ * exactly like the two egress URLs there (`EMAIL_API_URL`,
+ * `X402_FACILITATOR_URL`): shell env → `sites/staging/.env` → absent. Changing
  * it is a rebuild + redeploy. It is baked rather than read from wrangler `vars`
  * at runtime because `test/wrangler-config.test.ts` forbids any `vars` key
  * matching `/SECRET|KEY|TOKEN|PASSWORD/i` — a guard worth keeping — and a
@@ -18,8 +19,8 @@
  *
  * So: absence degrades QUIETLY (that is a real, supported state — a store that
  * has not connected Stripe), while a value that is PRESENT but does not look
- * like a publishable key THROWS AT BUILD, mirroring `resolveServiceUrl`'s
- * "throw early rather than bake garbage into the bundle". Between them, the
+ * like a publishable key THROWS AT BUILD — throw early rather than bake garbage
+ * into the bundle. Between them, the
  * only way to reach the degraded path is to genuinely have no key.
  */
 
