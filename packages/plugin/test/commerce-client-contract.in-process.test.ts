@@ -399,22 +399,23 @@ describe("each boundary predicate agrees with the require* the client throws fro
 	});
 });
 
+/** The refusal reason a `require*` throws, or null when it accepts. */
+function reasonOf(fn: () => unknown): string | null {
+	try {
+		fn();
+		return null;
+	} catch (err) {
+		if (!isCommerceInputError(err)) throw err;
+		return err.reason;
+	}
+}
+
 /**
  * ONE REASON PER VALUE. Ill-formed text (U+0000 or a lone surrogate) is refused
  * with {@link ILL_FORMED_TEXT_REASON}; a value that is ALSO out of bounds is
  * refused for the bound, because the bound is checked first in every rule.
  */
 describe("the refusal reason for ill-formed text", () => {
-	function reasonOf(fn: () => unknown): string | null {
-		try {
-			fn();
-			return null;
-		} catch (err) {
-			if (!isCommerceInputError(err)) throw err;
-			return err.reason;
-		}
-	}
-
 	test.each(["S\u0000KU", "S\uD800KU", "S\uDC00KU"])(
 		"%j is refused as ill-formed by every edge rule",
 		(value) => {
