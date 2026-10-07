@@ -664,7 +664,7 @@ export const TAX_STATUS_OPTIONS: ReadonlyArray<{ value: string; label: string }>
 /** What the tax status means, under the select. "Shipping only" on a digital
  *  product behaves like "None": nothing ships (DECISIONS 2b-4). */
 export const TAX_STATUS_HINT =
-	"Taxable: tax is charged on the product. Shipping only: no tax on the product, but its tax class still sets the shipping tax. None: no tax, and it does not count toward shipping tax. On a digital product, Shipping only works like None.";
+	"Taxable: tax is charged on the product. Shipping only: no tax on the product; its tax class still counts toward shipping tax when the shipping tax class is 'Based on cart items'. None: no tax, and it does not count toward shipping tax. On a digital product, Shipping only works like None.";
 
 /** A stored status as the summary shows it; a record without one reads Taxable. */
 export function taxStatusLabel(taxStatus: string | undefined): string {

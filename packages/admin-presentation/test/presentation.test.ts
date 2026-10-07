@@ -111,6 +111,7 @@ import {
 	stockDegradation,
 	taxClassLabel,
 	taxClassOptions,
+	TAX_STATUS_HINT,
 } from "../src/index.js";
 
 const USD = currency("USD");
@@ -1513,5 +1514,12 @@ describe("the words that describe unsaved work (F6, F8, F9)", () => {
 		// The suffix a shut group's summary takes is the same fact in the same
 		// register, and it is still the group's, not the tab's.
 		expect(dirtyGroupLabel("Price — $9.00 USD", true)).toBe("Price — $9.00 USD · unsaved");
+	});
+});
+
+describe("the tax status hint", () => {
+	test("'Shipping only' ties the item's class to shipping tax only under 'Based on cart items'", () => {
+		expect(TAX_STATUS_HINT).toContain("when the shipping tax class is 'Based on cart items'");
+		expect(TAX_STATUS_HINT).not.toContain("still sets the shipping tax");
 	});
 });

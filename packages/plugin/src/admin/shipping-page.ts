@@ -1002,7 +1002,7 @@ function methodTypeLabel(type: string): string {
 function methodAccordion(zoneId: string, method: MethodRow): AccordionBlock {
 	return {
 		type: "accordion",
-		label: `${methodPriceLabel(method.price)} — ${method.name} · ${method.id} · ${methodTypeLabel(method.type)}${method.taxable ? "" : " · not taxed"}`,
+		label: `${methodPriceLabel(method.price)} — ${method.name} · ${method.id} · ${methodTypeLabel(method.type)}${method.taxable === false ? " · not taxed" : ""}`,
 		default_open: false,
 		block_id: `ship:method:${zoneId}:${method.id}`,
 		blocks: [
