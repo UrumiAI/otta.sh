@@ -67,6 +67,7 @@ import {
 	ReservationNotFoundError,
 	ReservationNotHeldError,
 	StockMovementMismatchError,
+	assertStockMovementOptions,
 	type AdoptInput,
 	type AdoptManyInput,
 	type AdoptManyResult,
@@ -75,6 +76,7 @@ import {
 	type InventoryStore,
 	type ReserveResult,
 	type RestockResult,
+	type StockMovementOptions,
 	type StockRemovalResult,
 } from "@otta-sh/domain";
 import {
@@ -139,16 +141,55 @@ interface PruneEntry {
 	terminal: TerminalReservationState;
 }
 
+/** A not-yet-terminal id `releaseAdoptedMany` read, with the revision it read. */
+interface LiveRelease {
+	readonly id: string;
+	readonly index: ReservationIndexDoc;
+	readonly revision: string;
+}
+
+/**
+ * The prune as a pure document transform: the holds in `entries` removed, the
+ * released ones' units returned. `null` when nothing in `entries` is still there
+ * (an already-pruned hold is simply absent — what makes the prune idempotent).
+ */
+function withoutPruned(doc: InventoryDoc, entries: readonly PruneEntry[]): InventoryDoc | null {
+	const holds = { ...doc.holds };
+	let onHand = doc.onHand;
+	let changed = false;
+	for (const entry of entries) {
+		const hold = holds[entry.reserveKey];
+		if (hold === undefined || hold.reservationId !== entry.reservationId) continue;
+		delete holds[entry.reserveKey];
+		if (entry.terminal === "released") onHand += hold.qty;
+		changed = true;
+	}
+	return changed ? { ...doc, onHand, holds } : null;
+}
+
 /** The port's wording for a recorded stock movement, used in mismatch messages. */
-function describeMovement(direction: StockDirection, qty: number, sku: string): string {
-	return `${direction} ${String(qty)}×${sku}`;
+function describeMovement(
+	direction: StockDirection,
+	qty: number,
+	sku: string,
+	expectedOnHand?: number,
+): string {
+	const base = `${direction} ${String(qty)}×${sku}`;
+	return expectedOnHand === undefined ? base : `${base} at on-hand ${String(expectedOnHand)}`;
 }
 
 /** How a movement claim of the other kind is described in a mismatch message. */
 function describeOtherKind(claim: MovementClaimDoc): string {
 	return claim.kind === "stock"
-		? describeMovement(claim.direction, claim.qty, claim.sku)
+		? describeMovement(claim.direction, claim.qty, claim.sku, claim.expectedOnHand)
 		: `an adjust of reservation ${claim.reservationId}`;
+}
+
+/** A recorded answer handed back by the ledger: a success says it was replayed
+ *  (the port's `replayed`), a refusal reads as the refusal it was. The flag is
+ *  never STORED — a recorded result is always the fresh one. */
+function replayedAnswer(result: StockRemovalResult): StockRemovalResult {
+	return result.ok ? { ok: true, onHand: result.onHand, replayed: true } : { ...result };
 }
 
 function assertPositiveInt(value: number, method: string, field: string): void {
@@ -404,6 +445,111 @@ export class EmdashInventoryStore implements InventoryStore, HoldDeadlineStamper
 		const hold = await this.#liveHold(index, reservationId);
 		if (hold === undefined || hold.state !== "adopted" || hold.orderId !== orderId) return;
 		await this.#settle(index, reservationId, "released");
+	}
+
+	/**
+	 * `releaseAdopted` for every hold one order adopted, in as few round trips as the
+	 * settle's ordering allows (QA2 M2: the expiry sweep released an order's holds one
+	 * id at a time, seven calls each, on a 30-call Workers Free tick).
+	 *
+	 * The per-id RULE is `releaseAdopted`'s exactly — only a hold THIS order adopted,
+	 * anything else a silent no-op — and so is the per-id ORDER of writes (the reserve
+	 * key's answer, then the terminal state, then the prune; see `#settle`). What is
+	 * batched is the reading and the prune:
+	 *
+	 *  - each id's index document is read ONCE, versioned, so its terminal-state write
+	 *    needs no second read (it falls back to the re-reading write if a peer moved it);
+	 *  - each SKU's aggregate is read ONCE, and that one read decides which of its ids
+	 *    this order adopted (what `#liveHold` read per id);
+	 *  - each SKU is pruned in ONE compare-and-set against the revision already in hand
+	 *    (falling back to the re-reading `#prune` if a peer moved it).
+	 *
+	 * So one id on one SKU is five calls rather than seven, and N ids over S SKUs are
+	 * 3N + 2S rather than 7N. An id already terminal only has any hold residue pruned,
+	 * as in `releaseAdopted`. Not atomic across SKUs; every step is idempotent, so a
+	 * partial application is completed by any replayer.
+	 */
+	async releaseAdoptedMany(reservationIds: readonly string[], orderId: string): Promise<void> {
+		const ids = [...new Set(reservationIds)];
+		if (ids.length === 0) return;
+		const rows = await Promise.all(ids.map((id) => this.#index.getVersioned(id)));
+		const live = new Map<string, LiveRelease[]>();
+		const residue = new Map<string, PruneEntry[]>();
+		for (const [i, id] of ids.entries()) {
+			const row = rows[i];
+			if (row === null || row === undefined) continue;
+			const index = row.value;
+			if (index.terminalState !== undefined) {
+				const entries = this.#pruneEntries(index, id);
+				if (entries.length > 0)
+					residue.set(index.sku, [...(residue.get(index.sku) ?? []), ...entries]);
+				continue;
+			}
+			live.set(index.sku, [...(live.get(index.sku) ?? []), { id, index, revision: row.revision }]);
+		}
+		for (const sku of new Set([...live.keys(), ...residue.keys()])) {
+			await this.#releaseAdoptedOnSku(sku, live.get(sku) ?? [], residue.get(sku) ?? [], orderId);
+		}
+	}
+
+	/** One SKU's share of {@link releaseAdoptedMany}: one read, the per-id terminal
+	 *  writes for the holds this order adopted, one prune. */
+	async #releaseAdoptedOnSku(
+		sku: string,
+		live: readonly LiveRelease[],
+		residue: readonly PruneEntry[],
+		orderId: string,
+	): Promise<void> {
+		const current = await this.#inventory.getVersioned(sku);
+		if (current === null) return;
+		const doc = normalizeInventoryDoc(current.value);
+		const entries: PruneEntry[] = [...residue];
+		for (const { id, index, revision } of live) {
+			const hold = doc.holds[index.idempotencyKey];
+			// `#liveHold` plus `releaseAdopted`'s scope check, on the one read.
+			if (hold === undefined || hold.reservationId !== id) continue;
+			if (hold.state !== "adopted" || hold.orderId !== orderId) continue;
+			await this.#markKeyTerminal(index.idempotencyKey, { ok: true, reservationId: id }, id);
+			const terminal = await this.#setTerminalStateAt(id, index, revision, "released");
+			entries.push({ reserveKey: index.idempotencyKey, reservationId: id, terminal });
+		}
+		if (entries.length === 0) return;
+		if (await this.#pruneAt(sku, current.revision, doc, entries)) return;
+		// A peer moved the aggregate since the read: the ordinary, re-reading prune.
+		await this.#prune(sku, entries, "releaseAdoptedMany");
+	}
+
+	/**
+	 * `#setTerminalState` against a revision already read, answering the terminal
+	 * state that WON — this call's, or a peer's that got there first (first wins, as
+	 * ever). Only a moved revision costs the re-reading path.
+	 */
+	async #setTerminalStateAt(
+		reservationId: string,
+		index: ReservationIndexDoc,
+		revision: string,
+		terminal: TerminalReservationState,
+	): Promise<TerminalReservationState> {
+		const written = await this.#index.compareAndSet(reservationId, revision, {
+			...index,
+			terminalState: terminal,
+		});
+		if (written.applied) return terminal;
+		await this.#setTerminalState(reservationId, terminal);
+		return (await this.#index.get(reservationId))?.terminalState ?? terminal;
+	}
+
+	/** `#prune`'s write against an aggregate already read. False when a peer moved it. */
+	async #pruneAt(
+		sku: string,
+		revision: string,
+		doc: InventoryDoc,
+		entries: readonly PruneEntry[],
+	): Promise<boolean> {
+		const next = withoutPruned(doc, entries);
+		if (next === null) return true;
+		const written = await this.#inventory.compareAndSet(sku, revision, next);
+		return written.applied;
 	}
 
 	/**
@@ -863,23 +1009,31 @@ export class EmdashInventoryStore implements InventoryStore, HoldDeadlineStamper
 
 	/**
 	 * Merchant restock: an unconditional, oversell-safe increment. Adding units can
-	 * never invalidate a concurrent reservation, so there is no guard to fail —
-	 * only the claim discipline that makes a double-clicked restock add once.
+	 * never invalidate a concurrent reservation, so there is no guard to fail and
+	 * no watermark to judge (the port doc says why a restock takes none) — only the
+	 * claim discipline that makes a double-clicked restock add once.
 	 */
 	async restock(sku: string, qty: number, key: IdempotencyKey): Promise<RestockResult> {
 		assertPositiveInt(qty, "restock", "qty");
-		const result = await this.#moveStock(sku, qty, key, "restock");
+		const result = await this.#moveStock(sku, qty, key, "restock", undefined);
 		return result.ok ? result : { ok: false, reason: "UNKNOWN_SKU" };
 	}
 
 	/**
 	 * Merchant stock removal: the oversell-critical guarded decrement, the same
 	 * `onHand >= qty` guard `reserve` uses and competing for the same units. It can
-	 * never drive the count below zero.
+	 * never drive the count below zero. `options.expectedOnHand`, when given, is
+	 * judged on the same read the decrement's compare-and-set is conditioned on.
 	 */
-	async removeStock(sku: string, qty: number, key: IdempotencyKey): Promise<StockRemovalResult> {
+	async removeStock(
+		sku: string,
+		qty: number,
+		key: IdempotencyKey,
+		options?: StockMovementOptions,
+	): Promise<StockRemovalResult> {
 		assertPositiveInt(qty, "removeStock", "qty");
-		return this.#moveStock(sku, qty, key, "removal");
+		assertStockMovementOptions("removeStock", options);
+		return this.#moveStock(sku, qty, key, "removal", options?.expectedOnHand);
 	}
 
 	/**
@@ -889,19 +1043,23 @@ export class EmdashInventoryStore implements InventoryStore, HoldDeadlineStamper
 	 * typed rejection rather than an `ok` echoing the wrong one — and is updated to
 	 * `applied` with the recorded result once the units moved. An `UNKNOWN_SKU`
 	 * rejection precedes the claim, so it does not consume the key; an
-	 * `INSUFFICIENT_STOCK` on a known sku is a terminal outcome that does.
+	 * `INSUFFICIENT_STOCK` or `STALE_ON_HAND` on a known sku is a terminal outcome
+	 * that does. The watermark rides IN the claim and is judged inside the
+	 * aggregate's compare-and-set, so it can never be checked against a count
+	 * that moved between the check and the write.
 	 */
 	async #moveStock(
 		sku: string,
 		qty: number,
 		key: string,
 		direction: StockDirection,
+		expectedOnHand: number | undefined,
 	): Promise<StockRemovalResult> {
 		const claimId = stockClaimId(key);
 		const existing = await this.#movements.get(claimId);
 		if (existing !== null) {
-			const claim = this.#asStockClaim(key, existing, sku, direction, qty);
-			if (claim.applied !== undefined) return { ...claim.applied.result };
+			const claim = this.#asStockClaim(key, existing, sku, direction, qty, expectedOnHand);
+			if (claim.applied !== undefined) return replayedAnswer(claim.applied.result);
 			return this.#applyStockClaim(key, claimId, claim);
 		}
 
@@ -914,14 +1072,15 @@ export class EmdashInventoryStore implements InventoryStore, HoldDeadlineStamper
 			sku,
 			direction,
 			qty,
+			...(expectedOnHand === undefined ? {} : { expectedOnHand }),
 			createdAt: this.#clock.now().toISOString(),
 		};
 		const written = await this.#movements.compareAndSet(claimId, null, intent);
 		if (!written.applied) {
 			const peer = await this.#movements.get(claimId);
 			if (peer !== null) {
-				const claim = this.#asStockClaim(key, peer, sku, direction, qty);
-				if (claim.applied !== undefined) return { ...claim.applied.result };
+				const claim = this.#asStockClaim(key, peer, sku, direction, qty, expectedOnHand);
+				if (claim.applied !== undefined) return replayedAnswer(claim.applied.result);
 				return this.#applyStockClaim(key, claimId, claim);
 			}
 		}
@@ -935,17 +1094,24 @@ export class EmdashInventoryStore implements InventoryStore, HoldDeadlineStamper
 		sku: string,
 		direction: StockDirection,
 		qty: number,
+		expectedOnHand: number | undefined,
 	): StockMovementClaim {
 		if (
 			claim.kind !== "stock" ||
 			claim.sku !== sku ||
 			claim.direction !== direction ||
-			claim.qty !== qty
+			claim.qty !== qty ||
+			// A claim recorded BEFORE watermarks existed carries none, and is
+			// honoured whatever the caller now sends: it was written by a release
+			// whose keys already embedded the watermark they were taken against.
+			// The RECORDED intent wins — an applied one echoes its answer, and a
+			// pending one completes as recorded, which is unconditionally.
+			(claim.expectedOnHand !== undefined && claim.expectedOnHand !== expectedOnHand)
 		) {
 			throw new StockMovementMismatchError(
 				key,
 				describeOtherKind(claim),
-				describeMovement(direction, qty, sku),
+				describeMovement(direction, qty, sku, expectedOnHand),
 			);
 		}
 		return claim;
@@ -957,6 +1123,9 @@ export class EmdashInventoryStore implements InventoryStore, HoldDeadlineStamper
 		claimId: string,
 		claim: StockMovementClaim,
 	): Promise<StockRemovalResult> {
+		// Whether THIS call found the movement already on the aggregate (its
+		// witness in the applied-movement ring) rather than applying it.
+		let replayed = false;
 		const result = await this.#cas<StockRemovalResult>(
 			claim.direction === "restock" ? "restock" : "removeStock",
 			async () => {
@@ -967,12 +1136,17 @@ export class EmdashInventoryStore implements InventoryStore, HoldDeadlineStamper
 				const doc = normalizeInventoryDoc(current.value);
 				const remembered = findAppliedMovement(doc.appliedMovements, key);
 				if (remembered?.kind === "stock") {
+					replayed = true;
 					return casDone<StockRemovalResult>({ ...remembered.result });
 				}
 
 				let moved: StockRemovalResult;
 				let onHand = doc.onHand;
-				if (claim.direction === "restock") {
+				if (claim.expectedOnHand !== undefined && doc.onHand !== claim.expectedOnHand) {
+					// Judged on the SAME read the compare-and-set below is conditioned
+					// on, so the count cannot move between this check and the write.
+					moved = { ok: false, reason: "STALE_ON_HAND", onHand: doc.onHand };
+				} else if (claim.direction === "restock") {
 					onHand = doc.onHand + claim.qty;
 					moved = { ok: true, onHand };
 				} else if (doc.onHand < claim.qty) {
@@ -1004,10 +1178,11 @@ export class EmdashInventoryStore implements InventoryStore, HoldDeadlineStamper
 		// Read the answer back out of the durable record, so a same-key pair cannot
 		// disagree: whoever marked the claim first owns the recorded result.
 		const settled = await this.#movements.get(claimId);
-		if (settled !== null && settled.kind === "stock" && settled.applied !== undefined) {
-			return { ...settled.applied.result };
-		}
-		return result;
+		const answer =
+			settled !== null && settled.kind === "stock" && settled.applied !== undefined
+				? settled.applied.result
+				: result;
+		return replayed ? replayedAnswer(answer) : { ...answer };
 	}
 
 	/** Record a movement claim's terminal answer. First writer wins; idempotent. */
@@ -1152,23 +1327,9 @@ export class EmdashInventoryStore implements InventoryStore, HoldDeadlineStamper
 		await this.#cas<void>(operation, async () => {
 			const current = await this.#inventory.getVersioned(sku);
 			if (current === null) return casDone<void>(undefined);
-			const doc = normalizeInventoryDoc(current.value);
-			const holds = { ...doc.holds };
-			let onHand = doc.onHand;
-			let changed = false;
-			for (const entry of entries) {
-				const hold = holds[entry.reserveKey];
-				if (hold === undefined || hold.reservationId !== entry.reservationId) continue;
-				delete holds[entry.reserveKey];
-				if (entry.terminal === "released") onHand += hold.qty;
-				changed = true;
-			}
-			if (!changed) return casDone<void>(undefined);
-			const written = await this.#inventory.compareAndSet(sku, current.revision, {
-				...doc,
-				onHand,
-				holds,
-			});
+			const next = withoutPruned(normalizeInventoryDoc(current.value), entries);
+			if (next === null) return casDone<void>(undefined);
+			const written = await this.#inventory.compareAndSet(sku, current.revision, next);
 			return written.applied ? casDone<void>(undefined) : CAS_RETRY;
 		});
 	}

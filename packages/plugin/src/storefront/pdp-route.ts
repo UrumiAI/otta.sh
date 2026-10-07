@@ -22,11 +22,13 @@
  * request-scoped batch loader, so the PDP exercises the same one-call path
  * the PLP proves at scale.
  */
+import { isRetryableStorageBusy } from "@otta-sh/store-emdash";
 import { makeCommerceClient } from "../commerce/make-commerce-client.js";
 import { CommerceBatchLoader } from "../catalog/commerce-batch-loader.js";
 import { parseCommerceBatchItem } from "../catalog/commerce-view.js";
 import { joinProduct } from "../catalog/join-product.js";
 import { buildProductJsonLd } from "../catalog/product-json-ld.js";
+import type { CommerceClient } from "../product-commerce/commerce-client.js";
 import type { PluginContext, RouteHandler } from "../types.js";
 import { buildProductViewModel, type ProductViewModel } from "./product-view-model.js";
 import { parseCmsProductContent, sanitizeLocale } from "./route-input.js";
@@ -43,9 +45,35 @@ export interface PdpRouteInput {
 }
 
 export type PdpRouteResult =
-	| { ok: true; product: ProductViewModel; jsonLd: Record<string, unknown> }
+	| {
+			ok: true;
+			product: ProductViewModel;
+			jsonLd: Record<string, unknown>;
+			/** The EFFECTIVE cart-hold window in whole minutes — the admin's saved
+			 *  `holdTtlMinutes` (or its default), the same value an add from this page
+			 *  stamps its deadline with (issue #127). The hold note states THIS rather
+			 *  than a hard-coded default. */
+			cartHoldMinutes: number;
+	  }
 	| { ok: false; error: "INVALID_CONTENT" }
-	| { ok: false; error: "RENDER_FAILED" };
+	| RenderGuardFailure;
+
+/**
+ * The store is too busy right now: a compare-and-set budget ran out or the host
+ * aborted a transaction as retryable. The step that gave up wrote nothing, so the
+ * caller may try again — the site answers it with a 503 and `Retry-After`.
+ * `retryable` is on the wire so a caller need not know the token to act on it.
+ */
+export interface RenderBusy {
+	ok: false;
+	error: "BUSY";
+	retryable: true;
+}
+
+/** Everything {@link renderGuard} itself can answer with. Every public storefront
+ *  result union ends in this, so a new guard answer reaches every consumer's
+ *  exhaustiveness check at once. */
+export type RenderGuardFailure = { ok: false; error: "RENDER_FAILED" } | RenderBusy;
 
 /**
  * Unexpected-failure guard for the PUBLIC storefront handlers: an uncaught
@@ -54,15 +82,26 @@ export type PdpRouteResult =
  * `emdash-runtime.ts:3563-3571`) — leaking internals (e.g. a `cents()`
  * RangeError describing a malformed upstream amount) to anonymous callers.
  * Expected rejections keep their structured shapes; anything else is logged
- * server-side and collapsed to a message-free `RENDER_FAILED`.
+ * server-side and collapsed to a message-free answer:
+ *
+ *  - storage pressure ({@link isRetryableStorageBusy}) → `BUSY`, retryable. It is
+ *    not a render failure: nothing was written by the refused step, and telling
+ *    the shopper "something went wrong" instead of "try again" loses the sale;
+ *  - everything else → `RENDER_FAILED`.
  */
 export async function renderGuard<T>(
 	route: string,
 	render: () => Promise<T>,
-): Promise<T | { ok: false; error: "RENDER_FAILED" }> {
+): Promise<T | RenderGuardFailure> {
 	try {
 		return await render();
 	} catch (err) {
+		if (isRetryableStorageBusy(err)) {
+			// A warn, not an error: this is load, not a defect. The log keeps the
+			// operation/attempts for measurement; the envelope carries none of it.
+			console.warn(`[otta] ${route} busy (retryable storage contention):`, err);
+			return { ok: false, error: "BUSY", retryable: true };
+		}
 		console.error(`[otta] ${route} render failed:`, err);
 		return { ok: false, error: "RENDER_FAILED" };
 	}
@@ -75,7 +114,10 @@ export async function renderGuard<T>(
  *  `X-Service-Token` — so PDP/PLP genuinely depend on kv provisioning when the
  *  service secret is set. Undefined ⇒ no header ⇒ pre-gate wire. */
 export async function createCommerceLoader(ctx: PluginContext): Promise<CommerceBatchLoader> {
-	const client = await makeCommerceClient(ctx);
+	return commerceLoaderFor(await makeCommerceClient(ctx));
+}
+
+function commerceLoaderFor(client: CommerceClient): CommerceBatchLoader {
 	return new CommerceBatchLoader(async (ids) =>
 		(await client.getCommerceBatch(ids)).map(parseCommerceBatchItem),
 	);
@@ -95,8 +137,11 @@ export function createPdpRouteHandler(): RouteHandler<PdpRouteInput> {
 			}
 			const locale = sanitizeLocale(routeCtx.input.locale);
 
-			const loader = await createCommerceLoader(ctx);
-			const commerce = await loader.load(content.id);
+			const client = await makeCommerceClient(ctx);
+			const [commerce, cartHoldMinutes] = await Promise.all([
+				commerceLoaderFor(client).load(content.id),
+				client.getCartHoldTtlMinutes(),
+			]);
 			// null covers unsynced / soft-deleted / batch-omitted identically
 			// (§4.2): the page renders not-purchasable instead of 500ing.
 			const joined = joinProduct(content, commerce);
@@ -105,6 +150,7 @@ export function createPdpRouteHandler(): RouteHandler<PdpRouteInput> {
 				ok: true as const,
 				product: buildProductViewModel(joined, locale),
 				jsonLd: buildProductJsonLd(joined),
+				cartHoldMinutes,
 			};
 		});
 }

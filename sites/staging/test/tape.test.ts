@@ -11,17 +11,7 @@
  */
 import { describe, expect, test } from "vitest";
 import type { ProductViewModel } from "@otta-sh/plugin";
-import {
-	exactCount,
-	FALLBACK_THESIS,
-	itemCountLabel,
-	shopLinkLabel,
-	storeDescription,
-	storeThesis,
-	storeTitle,
-	tapeRows,
-	TAPE_ROWS,
-} from "../src/lib/tape.js";
+import { exactCount, itemCountLabel, shopLinkLabel, tapeRows, TAPE_ROWS } from "../src/lib/tape.js";
 
 /** A priced, sellable view model — the shape the plugin's list route returns. */
 function priced(
@@ -69,8 +59,11 @@ describe("tapeRows — only what the store can actually sell", () => {
 		const rows = tapeRows(list(1));
 		expect(rows).toHaveLength(1);
 		expect(rows[0]).toEqual({
-			item: "SKU-1",
+			title: "Product 1",
+			sku: "SKU-1",
+			href: "/products/product:p1",
 			price: "$11.00",
+			was: null,
 			stock: "In stock",
 			soldOut: false,
 		});
@@ -84,7 +77,7 @@ describe("tapeRows — only what the store can actually sell", () => {
 		const rows = tapeRows(list(TAPE_ROWS + 1));
 		expect(rows).toHaveLength(TAPE_ROWS);
 		// It is the FIRST rows that survive, in catalog order.
-		expect(rows.at(-1)?.item).toBe(`SKU-${TAPE_ROWS}`);
+		expect(rows.at(-1)?.sku).toBe(`SKU-${TAPE_ROWS}`);
 	});
 
 	test("an all-unpriced catalog yields no rows at all", () => {
@@ -96,7 +89,7 @@ describe("tapeRows — only what the store can actually sell", () => {
 
 	test("unpriced products are skipped, not counted against the row budget", () => {
 		const mixed = [unpriced(1), priced(1), unpriced(2), priced(2)];
-		expect(tapeRows(mixed).map((row) => row.item)).toEqual(["SKU-1", "SKU-2"]);
+		expect(tapeRows(mixed).map((row) => row.sku)).toEqual(["SKU-1", "SKU-2"]);
 	});
 
 	test("a sold-out product keeps its row, its price and its state", () => {
@@ -109,12 +102,38 @@ describe("tapeRows — only what the store can actually sell", () => {
 
 	test("rows keep catalog order — sold-out products are NOT pushed to the end", () => {
 		const rows = tapeRows([priced(1, "out_of_stock"), priced(2)]);
-		expect(rows.map((row) => row.item)).toEqual(["SKU-1", "SKU-2"]);
+		expect(rows.map((row) => row.sku)).toEqual(["SKU-1", "SKU-2"]);
 	});
 
-	test("a priced product with no sku falls back to its title", () => {
+	test("the row is NAMED by the product's title — the sku is the reference beneath, not the name", () => {
+		// QA: the ITEM column read OTTA-STICKERS / OTTA-MUG / OTTA-TEE. A shopper
+		// shops by name; the sku stays as the store's own reference.
+		const [row] = tapeRows([priced(1)]);
+		expect(row?.title).toBe("Product 1");
+		expect(row?.sku).toBe("SKU-1");
+	});
+
+	test("each row links to its product — the page the catalog card links to", () => {
+		const withUrl = { ...priced(2), url: "/products/otta-mug" } as ProductViewModel;
+		const withSlugOnly = { ...priced(3), slug: "otta-tee" } as ProductViewModel;
+		expect(tapeRows([withUrl, withSlugOnly]).map((row) => row.href)).toEqual([
+			"/products/otta-mug",
+			"/products/otta-tee",
+		]);
+	});
+
+	test("a product on sale carries its was-price — the plugin's decision, same as the cards", () => {
+		const onSale = {
+			...priced(1),
+			compareAtPrice: { amount: 2000, currency: "USD", formatted: "$20.00" },
+		} as ProductViewModel;
+		expect(tapeRows([onSale])[0]?.was).toBe("$20.00");
+		expect(tapeRows([priced(2)])[0]?.was).toBeNull();
+	});
+
+	test("a priced product with no sku keeps its name and drops the reference line", () => {
 		const model = { ...priced(9), sku: null } as ProductViewModel;
-		expect(tapeRows([model])[0]?.item).toBe("Product 9");
+		expect(tapeRows([model])[0]).toMatchObject({ title: "Product 9", sku: null });
 	});
 
 	test("an UNKNOWN availability token makes no claim either way", () => {
@@ -191,59 +210,5 @@ describe("the counted labels", () => {
 	test("at one product or none a number is noise", () => {
 		expect(shopLinkLabel(1)).toBe("Shop");
 		expect(shopLinkLabel(0)).toBe("Shop");
-	});
-});
-
-describe("the store's own words — blank is not the same as set", () => {
-	test("the tagline leads where there is one", () => {
-		expect(storeThesis({ title: "Otta", tagline: "A reference storefront" })).toBe(
-			"A reference storefront",
-		);
-	});
-
-	test("an EMPTY tagline falls through to the title, not to an empty h1", () => {
-		// The bug this function exists for: `settings.tagline ?? settings.title`
-		// keeps `""`, and the biggest type on the site renders nothing.
-		expect(storeThesis({ title: "Otta", tagline: "" })).toBe("Otta");
-	});
-
-	test("a WHITESPACE tagline is empty too", () => {
-		expect(storeThesis({ title: "Otta", tagline: "   \n\t " })).toBe("Otta");
-	});
-
-	test("a ZERO-WIDTH tagline is empty too — `trim` alone does not catch it", () => {
-		// U+200B is a format character, not whitespace, so `"​".trim()` is
-		// still truthy. A field cleared by select-and-delete in a rich editor
-		// routinely keeps one behind, and it would otherwise be a "set" tagline
-		// rendering as an empty `<h1>` — the same bug through another door.
-		expect(storeThesis({ title: "Otta", tagline: "​" })).toBe("Otta");
-		expect(storeThesis({ title: "Otta", tagline: " ​ ﻿ " })).toBe("Otta");
-		expect(storeDescription({ tagline: "​" })).toBeUndefined();
-		expect(storeTitle({ title: "​", tagline: "A reference storefront" })).toBe(FALLBACK_THESIS);
-		// A real tagline keeps every character a shopper can see.
-		expect(storeThesis({ tagline: "Spring steel" })).toBe("Spring steel");
-	});
-
-	test("a blank title falls through as well, to the theme's own name", () => {
-		expect(storeThesis({ title: "  ", tagline: "" })).toBe(FALLBACK_THESIS);
-		expect(storeThesis({})).toBe(FALLBACK_THESIS);
-	});
-
-	test("a set tagline is trimmed rather than rendered with its padding", () => {
-		expect(storeThesis({ tagline: "  Spring steel  " })).toBe("Spring steel");
-	});
-
-	test("the document title never falls back to the TAGLINE", () => {
-		// A page title is the store's name, and a tagline in the browser tab is a
-		// different fact. Blank ⇒ the theme's own name.
-		expect(storeTitle({ title: "Otta", tagline: "A reference storefront" })).toBe("Otta");
-		expect(storeTitle({ title: "", tagline: "A reference storefront" })).toBe(FALLBACK_THESIS);
-	});
-
-	test("a blank tagline yields NO meta description, not an empty one", () => {
-		expect(storeDescription({ tagline: "A reference storefront" })).toBe("A reference storefront");
-		expect(storeDescription({ tagline: "" })).toBeUndefined();
-		expect(storeDescription({ tagline: "  " })).toBeUndefined();
-		expect(storeDescription({})).toBeUndefined();
 	});
 });

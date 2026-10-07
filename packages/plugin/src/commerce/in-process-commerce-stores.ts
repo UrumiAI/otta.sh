@@ -23,21 +23,13 @@
  * Everything else shares state through the collections rather than through an
  * object, which is why it takes no sibling store.
  *
- * TWO TTLs TAKE THE DOMAIN'S DEFAULTS HERE, AND THAT IS A PARITY GAP, not a
- * design choice — say so plainly, because the knob exists in both places this
- * composition replaces. The deployment documentation carries one environment
- * variable that drives BOTH the cart hold and the checkout hold, and the settings
- * aggregate this function builds a store for carries a hold-TTL setting of its
- * own. Neither is read here: nothing in the plugin reads a TTL yet, so a
- * deployment that had moved its hold window would silently get fifteen minutes
- * back.
- *
- * Reading it belongs with the settings and scheduled-sweep wiring, where the
- * value is loaded once and the sweeps that expire holds run — a TTL read
- * per-request off a store is a read on the hot path for a value that changes
- * almost never. It is a MUST-CLOSE item before a deployment flips to this
- * transport, and it is recorded as one rather than left for someone to discover
- * from a shorter hold.
+ * NO TTL IS READ HERE, and neither is missing. The cart-hold window is the
+ * admin's `holdTtlMinutes`, read from the settings store this function builds —
+ * by the client on every cart call that stamps or measures a deadline, and by the
+ * cron's `expire-holds` leg once per tick — so the cart, its lazy expiry and the
+ * sweep all measure one window (issue #127). The checkout hold (an order's own
+ * reservation window) keeps the domain's `DEFAULT_CHECKOUT_TTL_MS`: no setting
+ * governs it.
  *
  * SANDBOX-CLEAN. Nothing here opens a connection, reads an environment or
  * imports host code: the storage arrives injected on `ctx`, the clock is `Date`
@@ -47,6 +39,7 @@
 
 import type {
 	AddressStore,
+	AttemptThrottle,
 	Clock,
 	CouponStore,
 	CustomerCredentialVerifier,
@@ -58,6 +51,7 @@ import type {
 } from "@otta-sh/domain";
 import {
 	EmdashAddressStore,
+	EmdashAttemptThrottle,
 	EmdashCartStore,
 	EmdashCouponStore,
 	EmdashCredentialVerifier,
@@ -76,8 +70,14 @@ import {
 	systemClock,
 	uuidIdGen,
 } from "@otta-sh/store-emdash";
+import {
+	RESUME_EMAIL_MAX_ATTEMPTS,
+	RESUME_EMAIL_ORDER_MAX_ATTEMPTS,
+	RESUME_EMAIL_WINDOW_MS,
+} from "./resume-proof.js";
 import type { StorageAccess as AdapterStorageAccess } from "@otta-sh/store-emdash";
 import type { PluginContext, StorageAccess as PluginStorageAccess } from "../types.js";
+import { LOGIN_LINK_TTL_MS } from "../storefront/login-link.js";
 
 /** Test-facing overrides. A deploy passes none of them. */
 export interface InProcessCommerceStoresOptions {
@@ -109,6 +109,12 @@ export interface InProcessCommerceStores {
 	readonly addressStore: AddressStore;
 	readonly sessionStore: SessionStore;
 	readonly credentialVerifier: CustomerCredentialVerifier;
+	/** Email guesses on an order link's resume (QA U-2): the sign-in throttle's
+	 *  slot window, keyed per DEVICE of an order (issue #364). */
+	readonly resumeThrottle: AttemptThrottle;
+	/** The same guesses, keyed per ORDER across devices — the higher cap that
+	 *  still stops guessing from many browsers. */
+	readonly resumeOrderThrottle: AttemptThrottle;
 	readonly reportingStore: EmdashReportingStore;
 	readonly settingsStore: EmdashSettingsStore;
 }
@@ -189,6 +195,22 @@ export function createInProcessCommerceStores(
 			customerStore,
 			idGen,
 			clock,
+			// The lifetime the sign-in email states (`LOGIN_LINK_TTL_MS`).
+			ttlMs: LOGIN_LINK_TTL_MS,
+		}),
+		resumeThrottle: new EmdashAttemptThrottle({
+			storage,
+			clock,
+			idGen,
+			windowMs: RESUME_EMAIL_WINDOW_MS,
+			maxAttempts: RESUME_EMAIL_MAX_ATTEMPTS,
+		}),
+		resumeOrderThrottle: new EmdashAttemptThrottle({
+			storage,
+			clock,
+			idGen,
+			windowMs: RESUME_EMAIL_WINDOW_MS,
+			maxAttempts: RESUME_EMAIL_ORDER_MAX_ATTEMPTS,
 		}),
 		reportingStore,
 		settingsStore: new EmdashSettingsStore({ storage, clock }),

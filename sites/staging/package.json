@@ -25,12 +25,14 @@
 	"devDependencies": {
 		"@astrojs/check": "^0.9.9",
 		"@cloudflare/workers-types": "^5.20260708.1",
+		"@otta-sh/domain": "workspace:*",
 		"@otta-sh/payments-stripe": "workspace:*",
 		"@types/better-sqlite3": "catalog:",
 		"@types/react": "^19.2.14",
 		"@types/react-dom": "^19.2.3",
 		"better-sqlite3": "catalog:",
 		"kysely": "catalog:",
+		"sharp": "^0.35.4",
 		"typescript": "catalog:",
 		"vitest": "catalog:",
 		"wrangler": "catalog:"

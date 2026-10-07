@@ -40,6 +40,10 @@ import type { AdminOrdersSurface } from "../../src/admin/admin-orders-surface.js
 import type { AdminProductsSurface } from "../../src/admin/admin-products-surface.js";
 import type { AdminRulesSurface } from "../../src/admin/admin-rules-surface.js";
 import type { ReportingSettingsSurface } from "../../src/admin/reporting-settings-surface.js";
+import {
+	RESUME_EMAIL_MAX_ATTEMPTS,
+	RESUME_EMAIL_ORDER_MAX_ATTEMPTS,
+} from "../../src/commerce/resume-proof.js";
 import type { CommerceClient, CommerceMoney } from "../../src/product-commerce/commerce-client.js";
 
 // ── The tier interface ────────────────────────────────────────────────────
@@ -71,11 +75,17 @@ export type OrdersClientSurface = Pick<
 	| "addNote"
 >;
 /** The admin products surface the contract exercises — the port's WHOLE
- *  surface, named method by method, because all six are implemented in-process
+ *  surface, named method by method, because all seven are implemented in-process
  *  and a surface that listed fewer would let one be forgotten silently. */
 export type ProductsClientSurface = Pick<
 	AdminProductsSurface,
-	"updateProduct" | "restock" | "removeStock" | "listProducts" | "getProduct" | "getTaxClasses"
+	| "updateProduct"
+	| "restock"
+	| "removeStock"
+	| "listProducts"
+	| "getProduct"
+	| "getProductSummaries"
+	| "getTaxClasses"
 >;
 /** The rules surface the contract exercises (shipping, tax, coupons) — the
  *  port's WHOLE surface, all twenty-five methods named one by one, because all
@@ -108,6 +118,7 @@ export type RulesClientSurface = Pick<
 	| "createCoupon"
 	| "updateCoupon"
 	| "deleteCoupon"
+	| "retireCoupon"
 >;
 /**
  * The reporting + settings surface, in full (work order 02, INC-B10c-ii).
@@ -168,6 +179,13 @@ export interface ArrangedProduct {
 	price?: CommerceMoney;
 	title?: string;
 	onHand?: number;
+	/** Whether the seeded product is PUBLISHED (its publish gate open), the state
+	 *  `content:afterPublish` leaves it in. Defaults to `true`: a seeded product is a
+	 *  sellable one, because every sell path refuses an unpublished row. A case about
+	 *  the gate itself passes `false` and drives the flips it asserts on. */
+	published?: boolean;
+	/** Physical by default. A digital product ships nothing (ADR-0021). */
+	productKind?: "physical" | "digital";
 	idempotencyKey: string;
 }
 
@@ -198,6 +216,32 @@ export interface ArrangedOrder {
 	title?: string;
 	unitPrice?: CommerceMoney;
 	quantity?: number;
+	/** The method the order was placed with. Defaults to `stripe`. */
+	paymentMethod?: "stripe" | "x402";
+	/**
+	 * A SETTLED payment for the order, in the order's currency: the order is
+	 * flipped `pending → paid` and one `succeeded` payment row is recorded under
+	 * the order's method, carrying `providerRef` (the PaymentIntent / transaction
+	 * id a gateway refund targets). This is what gives the refund ceiling —
+	 * `min(Σ captured, frozen total)` — a non-zero value. Absent ⇒ a pending order
+	 * with nothing captured, the state every order is born in.
+	 */
+	captured?: { amountCents: number; providerRef: string };
+	/** The shipping snapshot the order was priced with — absent ⇒ none, which is
+	 *  every order placed without a method. */
+	shippingMethod?: { zoneId: string | null; methodId: string };
+}
+
+/** A complete ship-to for the destination-refusal cases (ADR-0021). */
+function refusalAddress(country: string, region?: string) {
+	return {
+		name: "Ada",
+		line1: "1 Main St",
+		city: "Town",
+		postalCode: "00001",
+		country,
+		...(region !== undefined ? { region } : {}),
+	};
 }
 
 /** One shipping zone, one flat-rate method in it, and optionally the rate. A spec
@@ -207,6 +251,13 @@ export interface ArrangedShippingMethod {
 	zoneId: string;
 	methodId: string;
 	rate?: CommerceMoney;
+	/** A `standard`-class tax rate in the zone, applied to shipping too — so a
+	 *  case can show when a zone's tax does and does not reach a quote. */
+	taxRateBps?: number;
+	/** The zone's ISO region codes (ADR-0021) — what a destination matches.
+	 *  Absent ⇒ `null`, a zone that matches no address. A second spec naming
+	 *  an existing zone adds a method to it (the zone is not re-created). */
+	regions?: string[];
 }
 
 /**
@@ -224,6 +275,8 @@ export interface ArrangedCoupon {
 	amount: CommerceMoney;
 	minSubtotalCents?: number | null;
 	maxUses?: number | null;
+	/** Absent ⇒ no per-customer cap. */
+	maxUsesPerCustomer?: number | null;
 	startsAt?: string | null;
 	expiresAt?: string | null;
 }
@@ -242,6 +295,13 @@ export interface CommerceClientTierArrange {
 	session(email: string): Promise<ArrangedSession>;
 	/** Seed one guest order; resolves to its orderId. */
 	order(spec: ArrangedOrder): Promise<string>;
+	/**
+	 * Settle a seeded order `pending → paid` the way the payment provider's
+	 * confirmation does (the settle path's `markPaid`), with no capture recorded. The
+	 * admin surface cannot do it (ADR-0026: no manual mark-paid), so a case that
+	 * needs a paid order arranges one here.
+	 */
+	settle(orderId: string): Promise<void>;
 	/** Seed one address belonging to `session`'s customer. */
 	address(session: ArrangedSession, spec: { name: string }): Promise<void>;
 	/** Seed a shipping zone + method (+ rate, when the spec carries one). */
@@ -270,17 +330,55 @@ export interface CommerceClientTierClock {
 
 /**
  * OPTIONAL. Whether this tier composes a payment gateway at all, i.e. whether a
- * checkout can SUCCEED on it. Absent ⇒ it cannot, and the cases whose subject is a
- * minted order skip with the reason in the case name.
- *
- * This is a phase gap rather than a defect, and it is asymmetric in the useful
- * direction: the transport being replaced carries the gateways today and the
- * replacement gets them when the payment adapters move, at which point the flag
- * appears and these cases start running with no edit here.
+ * checkout can SUCCEED on it and a refund can reach a provider. Absent ⇒ neither
+ * can, and the cases whose subject is a minted order or a gateway refund skip
+ * with the reason in the case name.
  */
 export interface CommerceClientTierPayments {
 	/** The method whose gateway this tier composes. */
 	readonly method: "stripe" | "x402";
+	/**
+	 * OPTIONAL: a method whose gateway the tier ALSO composes and which declares
+	 * `refundable: false` (x402), so a refund against it is RECORDED as a manual,
+	 * off-platform refund and never sent to a provider. Absent ⇒ the manual-refund
+	 * case skips, saying so in its name.
+	 */
+	readonly manualRefundMethod?: "x402";
+	/**
+	 * Every refund call the tier's composed gateways have received, oldest first
+	 * and across cases (a case filters by its own idempotency key, which is
+	 * disjoint by rule). This is the PROVIDER's view: what money a refund actually
+	 * asked a payment provider to move, which the ledger alone cannot show.
+	 */
+	providerRefundCalls(): readonly ProviderRefundCall[];
+	/**
+	 * OPTIONAL: every `createIntent` call the tier's composed gateways have
+	 * received, oldest first and across cases (filter by order id). It is how a
+	 * case proves a resumed payment asked the provider for the SAME intent — the
+	 * same idempotency key, the same amount — rather than a second one. Absent ⇒
+	 * that half of the resume case is skipped, saying so in its name.
+	 */
+	providerIntentCalls?(): readonly ProviderIntentCall[];
+}
+
+/** One `createIntent` request as a payment gateway received it. */
+export interface ProviderIntentCall {
+	readonly gateway: string;
+	readonly orderId: string;
+	readonly amountCents: number;
+	readonly currency: string;
+	readonly idempotencyKey: string;
+}
+
+/** One refund request as a payment gateway received it. Money in integer minor
+ *  units, as the port carries it. */
+export interface ProviderRefundCall {
+	readonly gateway: string;
+	readonly orderId: string;
+	readonly providerRef: string;
+	readonly amountCents: number;
+	readonly currency: string;
+	readonly idempotencyKey: string;
 }
 
 export interface CommerceClientTier {
@@ -302,14 +400,13 @@ export interface CommerceClientTier {
 	 *  subject is an elapsed deadline skip, saying so in their own names. */
 	readonly clock?: CommerceClientTierClock;
 	/** OPTIONAL: see {@link CommerceClientTierPayments}. Absent ⇒ the cases whose
-	 *  subject is a minted order skip, saying so in their own names. NO TIER
-	 *  DECLARES IT since the HTTP tier was deleted, so those three cases (the
-	 *  checkout replay, the lapsed-hold checkout, the refund ceiling) now skip
-	 *  everywhere: a composition-layer gap, not an unguarded invariant — each is
-	 *  covered at the domain layer, in `orders/create-order-from-cart.test.ts` and
-	 *  `refund-order-contract.ts`. They start running again the day the payment
-	 *  adapters move in-process, with no edit to any case. */
+	 *  subject is a minted order or a gateway refund skip, saying so in their own
+	 *  names. The in-process tier declares it (it composes a fake Stripe gateway),
+	 *  so the checkout-replay, lapsed-hold and refund cases run there. */
 	readonly payments?: CommerceClientTierPayments;
+	/** How many attempt-throttle documents the tier's store holds — so a case can
+	 *  show a refused guess wrote nothing. Optional: the cases that need it skip. */
+	readonly throttleDocuments?: () => Promise<number>;
 	arrange: CommerceClientTierArrange;
 }
 
@@ -399,9 +496,9 @@ function requireSurface<K extends keyof AdminClientSurfaces>(
 // every other. No case asserts a generated id.
 //
 // TWO OPTIONAL HOOKS, AND WHY OPTIONAL IS NOT A LOOPHOLE. `clock` and `payments`
-// gate one case each, in OPPOSITE directions — one tier has the gateways and not
-// the movable clock, the other has the movable clock and not the gateways — so
-// neither gate is a tier quietly excusing itself from the shared spec. A gated
+// gate only the cases whose subject needs them — a movable clock, a composed
+// payment gateway — and the in-process tier offers both, so nothing it runs is
+// excused from the shared spec. A gated
 // case states its gate in its own NAME, so a test report says which tier skipped
 // what and why without anyone reading this file. Every other case runs on every
 // tier, unchanged: the moment a tier is allowed to narrow, reorder or soften one,
@@ -490,6 +587,8 @@ export function storefrontCommerceClientContract(tier: CommerceClientTier): void
 				productId: "prod-cb1",
 				sku: "SKU-CB1",
 				price: { amount: 1999, currency: "USD" },
+				title: null,
+				compareAtPrice: null,
 				inStock: true,
 				active: false, // unpublished until the deferred afterPublish wiring lands
 			});
@@ -497,6 +596,8 @@ export function storefrontCommerceClientContract(tier: CommerceClientTier): void
 				productId: "prod-cb2",
 				sku: "SKU-CB2",
 				price: { amount: 500, currency: "EUR" },
+				title: null,
+				compareAtPrice: null,
 				inStock: false, // never seeded — coarse out-of-stock, still listed
 				active: false,
 			});
@@ -724,6 +825,51 @@ export function storefrontCommerceClientContract(tier: CommerceClientTier): void
 			});
 		});
 
+		// The storefront replaces a spent cart under a key derived from it, so two
+		// racing requests land in ONE new cart (cart-rotation.ts on the site).
+		// The storefront replaces a SPENT cart under a key the server derives from it,
+		// so two racing requests land in ONE new cart (cart-rotation.ts on the site).
+		// The caller names only the spent cart; it can never choose a key.
+		test("replaceCart refuses an unknown cart and an active one", async () => {
+			expect(await client.replaceCart("cart-never-minted")).toEqual({
+				ok: false,
+				reason: "CART_NOT_FOUND",
+			});
+			const active = await tier.arrange.cart("USD");
+			expect(await client.replaceCart(active)).toEqual({
+				ok: false,
+				reason: "CART_NOT_CHECKED_OUT",
+			});
+		});
+
+		test.skipIf(tier.payments === undefined)(
+			"replaceCart refuses a checked-out cart whose order is still PENDING — its payment may still happen (SKIPPED where the tier composes no payment gateway)",
+			async () => {
+				const paymentMethod = tier.payments?.method ?? "stripe";
+				const productId = await tier.arrange.product({
+					productId: "prod-replace",
+					sku: "SKU-REPLACE",
+					title: "Replace Product",
+					price: { amount: 700, currency: "USD" },
+					onHand: 2,
+					idempotencyKey: "replace-seed",
+				});
+				const spent = await tier.arrange.cart("USD");
+				const added = await client.addCartLine(spent, "SKU-REPLACE", productId, 1, "replace-add");
+				if (!added.ok) throw new Error(`arrange failed: ${added.reason}`);
+				const placed = await client.createOrder(
+					{ cartId: spent, paymentMethod, buyerRef: "replace@example.test" },
+					"replace-key",
+				);
+				if (!placed.ok) throw new Error(`checkout failed: ${placed.reason}`);
+				// The order was just minted, so it is pending: the cart is not yet spent.
+				expect(await client.replaceCart(spent)).toEqual({
+					ok: false,
+					reason: "ORDER_NOT_FINISHED",
+				});
+			},
+		);
+
 		test("getCart on an unknown cartId returns the typed CART_NOT_FOUND token, not a thrown error", async () => {
 			const result = await client.getCart("does-not-exist");
 			expect(result).toEqual({ ok: false, reason: "CART_NOT_FOUND" });
@@ -792,6 +938,101 @@ export function storefrontCommerceClientContract(tier: CommerceClientTier): void
 				reason: "CART_EMPTY",
 			});
 		});
+
+		// ── the publish gate is a SELL rule, not only a listing one ────────
+		// An unpublished (`active=false`) or deleted product keeps its sku, price and
+		// stock row, so nothing but the gate stops it being bought: the add refuses
+		// it up front and the quote refuses a cart that held it before the lifecycle
+		// event landed. Both answer with a token the storefront already renders.
+
+		test("an UNPUBLISHED product is refused PRODUCT_NOT_PRICED at the ADD — nothing held, nothing persisted", async () => {
+			const productId = await tier.arrange.product({
+				productId: "prod-draft",
+				sku: "SKU-DRAFT",
+				price: { amount: 1400, currency: "USD" },
+				onHand: 5,
+				published: false,
+				idempotencyKey: "seed-draft",
+			});
+			const cartId = await tier.arrange.cart("USD");
+			const added = await client.addCartLine(cartId, "SKU-DRAFT", productId, 1, "draft-add-1");
+			expect(added).toEqual({ ok: false, reason: "PRODUCT_NOT_PRICED" });
+			expect(await client.getCart(cartId)).toMatchObject({ ok: true, cart: { lines: [] } });
+		});
+
+		test("a product UNPUBLISHED after being sold is refused at the add — and publishing it again restores the add", async () => {
+			const productId = await seedProduct({
+				sku: "SKU-UNPUB",
+				onHand: 5,
+				price: { amount: 1400, currency: "USD" },
+			});
+			await client.deactivateProductCommerce(productId, "unpub-1", "2026-08-01T00:00:00.000Z");
+			const cartId = await tier.arrange.cart("USD");
+			expect(await client.addCartLine(cartId, "SKU-UNPUB", productId, 1, "unpub-add-1")).toEqual({
+				ok: false,
+				reason: "PRODUCT_NOT_PRICED",
+			});
+			expect(await client.getCart(cartId)).toMatchObject({ ok: true, cart: { lines: [] } });
+
+			await client.activateProductCommerce(productId, "repub-1", "2026-08-02T00:00:00.000Z");
+			const again = await client.addCartLine(cartId, "SKU-UNPUB", productId, 1, "unpub-add-2");
+			expect(again.ok).toBe(true);
+		});
+
+		test("a DELETED product is refused at the add (SKU_MISMATCH — it names no live sellable unit)", async () => {
+			const productId = await seedProduct({
+				sku: "SKU-DELETED",
+				onHand: 5,
+				price: { amount: 1400, currency: "USD" },
+			});
+			await client.softDeleteProductCommerce(productId, "del-1");
+			const cartId = await tier.arrange.cart("USD");
+			expect(await client.addCartLine(cartId, "SKU-DELETED", productId, 1, "del-add-1")).toEqual({
+				ok: false,
+				reason: "SKU_MISMATCH",
+			});
+			expect(await client.getCart(cartId)).toMatchObject({ ok: true, cart: { lines: [] } });
+		});
+
+		test.each([["UNPUBLISHED"], ["DELETED"]] as const)(
+			"a cart holding a line whose product was %s after the add no longer QUOTES (PRODUCT_NOT_PRICED), and its hold is left intact",
+			async (lifecycle) => {
+				const tag = lifecycle === "UNPUBLISHED" ? "UNPUBQ" : "DELQ";
+				const productId = await seedProduct({
+					sku: `SKU-${tag}`,
+					onHand: 5,
+					price: { amount: 1400, currency: "USD" },
+				});
+				const cartId = await tier.arrange.cart("USD");
+				const added = await client.addCartLine(cartId, `SKU-${tag}`, productId, 1, `${tag}-add`);
+				if (!added.ok) throw new Error(`arrange failed: ${added.reason}`);
+				expect((await client.quoteCheckout({ cartId })).ok).toBe(true);
+
+				if (lifecycle === "UNPUBLISHED") {
+					await client.deactivateProductCommerce(
+						productId,
+						`${tag}-flip`,
+						"2026-08-01T00:00:00.000Z",
+					);
+				} else {
+					await client.softDeleteProductCommerce(productId, `${tag}-flip`);
+				}
+
+				expect(await client.quoteCheckout({ cartId })).toEqual({
+					ok: false,
+					reason: "PRODUCT_NOT_PRICED",
+				});
+				// The refusal is read-only: the line and its reservation are still there
+				// for the shopper to remove (which releases the unit) or the sweep to reap.
+				expect(await client.getCart(cartId)).toMatchObject({
+					ok: true,
+					cart: {
+						state: "active",
+						lines: [{ sku: `SKU-${tag}`, reservationId: added.line.reservationId }],
+					},
+				});
+			},
+		);
 
 		test("a legacy add with NO productId (absent) is preserved as null and still quotes PRODUCT_NOT_PRICED", async () => {
 			await seedProduct({
@@ -1020,10 +1261,10 @@ export function storefrontCommerceClientContract(tier: CommerceClientTier): void
 		// in its own title so a test report says why rather than a comment:
 		//  - the elapsed-deadline case needs `tier.clock`, which a shared,
 		//    long-lived backend could not offer;
-		//  - the minted-order case needs `tier.payments`, which the transport
-		//    that has not yet received the payment adapters cannot offer.
-		// Neither is a weakened case. Each runs in full where it can run at all,
-		// and starts running the day the surviving tier grows the hook it lacks.
+		//  - the minted-order case needs `tier.payments`, which a tier that
+		//    composes no payment gateway cannot offer.
+		// Neither is a weakened case. Each runs in full on any tier that has the
+		// hook — the in-process tier has both.
 
 		// ── identity: the session is the only credential ───────────────────
 		//
@@ -1176,6 +1417,232 @@ export function storefrontCommerceClientContract(tier: CommerceClientTier): void
 			expect(await client.listMyOrders(theirs.bearer)).toEqual({ ok: true, orders: [] });
 		});
 
+		// A session proves its customer's inbox exactly as the sign-in did, so a guest
+		// order placed under that email (signed out, in another browser, before the
+		// account existed) is claimed when the signed-in shopper looks at their list —
+		// not only at their NEXT sign-in, which they have no reason to make.
+		test("a guest order under a signed-in customer's own email joins their list without another sign-in", async () => {
+			const mine = await tier.arrange.session("id-late-guest@example.test");
+			const theirs = await tier.arrange.session("id-late-other@example.test");
+			// Placed AFTER the session was minted, in another case of the address: the
+			// sign-in's claim has already run and cannot have caught it.
+			const orderId = await tier.arrange.order({
+				orderId: "id-late-guest-order",
+				buyerRef: "ID-Late-Guest@example.test",
+			});
+
+			const listed = await client.listMyOrders(mine.bearer);
+			expect(listed.ok && listed.orders.map((order) => order.id)).toEqual([orderId]);
+			// Claimed, not merely listed: the single-order read agrees.
+			const read = await client.getMyOrder(mine.bearer, orderId);
+			expect(read.ok && read.order.id).toBe(orderId);
+			// Another inbox's session claims nothing of it.
+			expect(await client.listMyOrders(theirs.bearer)).toEqual({ ok: true, orders: [] });
+			expect(await client.getMyOrder(theirs.bearer, orderId)).toEqual({
+				ok: false,
+				reason: "NOT_FOUND",
+			});
+		});
+
+		// QA U-5: the account pages showed every unpaid order the same, with no date,
+		// and "Shipping $0.00 / Tax $0.00" where the public order page says "Not
+		// calculated". They can only say what the public page says if the account
+		// wire carries the same evidence: when the order was placed, what its totals
+		// were priced WITH (the snapshot ids `orderTotalsFlags` reads), the coupon,
+		// and — on the single-order read, which is what the order page also is — the
+		// late-payment status its "was anything charged?" sentence follows.
+		test("the account reads carry the order page's evidence: placed-at, the totals' snapshot ids and coupon, and (one order) the late-payment status", async () => {
+			const priced = await tier.arrange.order({
+				orderId: "id-acct-evidence-priced",
+				buyerRef: "id-acct-evidence@example.test",
+				shippingMethod: { zoneId: "zone-acct-1", methodId: "method-acct-1" },
+			});
+			const unpriced = await tier.arrange.order({
+				orderId: "id-acct-evidence-unpriced",
+				buyerRef: "id-acct-evidence@example.test",
+			});
+			const mine = await tier.arrange.session("id-acct-evidence@example.test");
+
+			const listed = await client.listMyOrders(mine.bearer);
+			if (!listed.ok) throw new Error("unreachable: the session is live");
+			const byId = new Map(listed.orders.map((order) => [order.id, order]));
+			for (const id of [priced, unpriced]) {
+				const createdAt = byId.get(id)?.createdAt;
+				expect(typeof createdAt, `${id} carries when it was placed`).toBe("string");
+				expect(Number.isNaN(Date.parse(createdAt ?? ""))).toBe(false);
+			}
+			expect(byId.get(priced)?.totals).toMatchObject({
+				appliedCouponCode: null,
+				shippingZoneId: "zone-acct-1",
+				shippingMethodId: "method-acct-1",
+			});
+			expect(byId.get(unpriced)?.totals).toMatchObject({
+				appliedCouponCode: null,
+				shippingZoneId: null,
+				shippingMethodId: null,
+			});
+
+			const read = await client.getMyOrder(mine.bearer, unpriced);
+			if (!read.ok) throw new Error(`unreachable: ${read.reason}`);
+			expect(read.order).toMatchObject({
+				id: unpriced,
+				createdAt: byId.get(unpriced)?.createdAt,
+				// A live order: nothing late, exactly what the public read says of it.
+				latePayment: "none",
+				// Nothing refunded on the ledger; the account page shows a refunded
+				// figure only when this is above zero.
+				refundedCents: 0,
+				totals: { shippingZoneId: null, shippingMethodId: null },
+			});
+			const publicRead = await client.getPublicOrder(unpriced);
+			if (!publicRead.ok) throw new Error("unreachable: the order exists");
+			expect(read.order.latePayment).toBe(publicRead.order.latePayment);
+			expect(read.order.createdAt).toBe(publicRead.order.createdAt);
+		});
+
+		// The storefront header's two facts (QA U-12, U-14): the cart's units and a
+		// yes/no for the session — never who, and nothing at all for unusable input.
+		test("getShopperState: the cart's state and units, and whether the session is live — never who", async () => {
+			const cartId = await tier.arrange.cart("USD");
+			const { bearer } = await tier.arrange.session("id-shopper-state@example.test");
+			const state = await client.getShopperState({ cartId, sessionToken: bearer });
+			expect(state).toEqual({ cart: { state: "active", count: 0 }, signedIn: true });
+			expect(JSON.stringify(state)).not.toContain("example.test");
+			expect(await client.getShopperState({})).toEqual({ cart: null, signedIn: false });
+			expect(
+				await client.getShopperState({ cartId: "id-cart-never-minted", sessionToken: "forged" }),
+			).toEqual({ cart: null, signedIn: false });
+		});
+
+		test("getMyAccount names the session's own email, and nothing for an unusable bearer", async () => {
+			const { bearer } = await tier.arrange.session("id-whoami@example.test");
+			expect(await client.getMyAccount(bearer)).toEqual({
+				ok: true,
+				email: "id-whoami@example.test",
+			});
+			expect(await client.getMyAccount("not-a-session-token")).toEqual({
+				ok: false,
+				reason: "UNAUTHENTICATED",
+			});
+			await client.logout(bearer);
+			expect(await client.getMyAccount(bearer)).toEqual({ ok: false, reason: "UNAUTHENTICATED" });
+		});
+
+		test.skipIf(tier.payments === undefined)(
+			"a signed-in checkout under the session's own email is the customer's order at once; another email, or an unusable session, is a guest order (SKIPPED where the tier composes no payment gateway)",
+			async () => {
+				const paymentMethod = tier.payments?.method ?? "stripe";
+				const productId = await tier.arrange.product({
+					productId: "prod-co-session",
+					sku: "SKU-CO-SESSION",
+					title: "Session Product",
+					price: { amount: 1200, currency: "USD" },
+					onHand: 5,
+					idempotencyKey: "co-session-seed",
+				});
+				const placeOne = async (
+					tag: string,
+					buyerRef: string,
+					sessionToken: string,
+				): Promise<string> => {
+					const cartId = await tier.arrange.cart("USD");
+					const added = await client.addCartLine(
+						cartId,
+						"SKU-CO-SESSION",
+						productId,
+						1,
+						`co-session-add-${tag}`,
+					);
+					if (!added.ok) throw new Error(`arrange failed: ${added.reason}`);
+					const placed = await client.createOrder(
+						{ cartId, paymentMethod, buyerRef },
+						`co-session-key-${tag}`,
+						{ sessionToken },
+					);
+					if (!placed.ok) throw new Error(`checkout failed: ${placed.reason}`);
+					return placed.order.id;
+				};
+				const mine = await tier.arrange.session("co-session@example.test");
+
+				// The buyer's own email, in another case: owned at birth. Read through
+				// getMyOrder, which claims nothing, so this is the checkout's doing and not
+				// the list's claim.
+				const own = await placeOne("own", "CO-Session@example.test", mine.bearer);
+				const ownRead = await client.getMyOrder(mine.bearer, own);
+				expect(ownRead.ok && ownRead.order.id).toBe(own);
+
+				// Someone else's email (a gift): never filed under this account.
+				const gift = await placeOne("gift", "co-gift@example.test", mine.bearer);
+				expect(await client.getMyOrder(mine.bearer, gift)).toEqual({
+					ok: false,
+					reason: "NOT_FOUND",
+				});
+				const listed = await client.listMyOrders(mine.bearer);
+				expect(listed.ok && listed.orders.map((order) => order.id)).toEqual([own]);
+
+				// An unusable session never blocks a checkout: the order is simply a guest
+				// order, owned by nobody yet.
+				const forged = await placeOne("forged", "co-forged@example.test", "not-a-session-token");
+				const stranger = await tier.arrange.session("co-forged-other@example.test");
+				expect(await client.getMyOrder(stranger.bearer, forged)).toEqual({
+					ok: false,
+					reason: "NOT_FOUND",
+				});
+			},
+		);
+
+		// A signed-in, same-email checkout now carries its customer, so a coupon's
+		// per-customer cap applies to it (ADR-0004 amendment, item 5). A guest email
+		// is not counted per customer, exactly as before.
+		test.skipIf(tier.payments === undefined)(
+			"a coupon's per-customer cap now binds a signed-in same-email checkout; a guest email is not counted (SKIPPED where the tier composes no payment gateway)",
+			async () => {
+				const paymentMethod = tier.payments?.method ?? "stripe";
+				const productId = await tier.arrange.product({
+					productId: "prod-co-percust",
+					sku: "SKU-CO-PERCUST",
+					title: "Per Customer Product",
+					price: { amount: 2000, currency: "USD" },
+					onHand: 5,
+					idempotencyKey: "co-percust-seed",
+				});
+				await tier.arrange.coupon({
+					id: "coupon-percust",
+					code: "ONCEEACH",
+					amount: { amount: 500, currency: "USD" },
+					maxUsesPerCustomer: 1,
+				});
+				const placeOne = async (tag: string, buyerRef: string, sessionToken?: string) => {
+					const cartId = await tier.arrange.cart("USD");
+					const added = await client.addCartLine(
+						cartId,
+						"SKU-CO-PERCUST",
+						productId,
+						1,
+						`co-percust-add-${tag}`,
+					);
+					if (!added.ok) throw new Error(`arrange failed: ${added.reason}`);
+					return client.createOrder(
+						{ cartId, paymentMethod, buyerRef, couponCode: "ONCEEACH" },
+						`co-percust-key-${tag}`,
+						sessionToken !== undefined ? { sessionToken } : {},
+					);
+				};
+				const mine = await tier.arrange.session("co-percust@example.test");
+
+				const first = await placeOne("first", "co-percust@example.test", mine.bearer);
+				expect(first.ok && first.order.totals.totalCents).toBe(1500);
+				// The same customer again, signed in under the same email: at the cap.
+				expect(await placeOne("second", "co-percust@example.test", mine.bearer)).toEqual({
+					ok: false,
+					reason: "COUPON_MAX_PER_CUSTOMER",
+				});
+				// A guest checkout (no session) is not counted per customer.
+				const guest = await placeOne("guest", "co-percust-guest@example.test");
+				expect(guest.ok).toBe(true);
+			},
+		);
+
 		// ── the publish gate and its watermark ─────────────────────────────
 
 		test("activate/deactivate are watermark-ordered: a newer watermark wins and an older one is a stale no-op", async () => {
@@ -1183,6 +1650,7 @@ export function storefrontCommerceClientContract(tier: CommerceClientTier): void
 				productId: "prod-wmgate",
 				sku: "SKU-WMGATE",
 				price: { amount: 1000, currency: "USD" },
+				published: false,
 				idempotencyKey: "wmgate-seed",
 			});
 			async function active(): Promise<boolean | undefined> {
@@ -1223,6 +1691,10 @@ export function storefrontCommerceClientContract(tier: CommerceClientTier): void
 			const productId = await tier.arrange.product({
 				productId: `prod-q-${tag}`,
 				sku: `SKU-Q-${tag.toUpperCase()}`,
+				// createOrder refuses an untitled product (the quote doesn't — #156), so
+				// a fixture the order cases share must carry one. It only matters once
+				// the tier composes a payment gateway and those cases stop skipping.
+				title: `Quote product ${tag}`,
 				price: { amount: 1500, currency: "USD" },
 				onHand: 10,
 				idempotencyKey: `q-seed-${tag}`,
@@ -1239,17 +1711,21 @@ export function storefrontCommerceClientContract(tier: CommerceClientTier): void
 			return cartId;
 		}
 
-		test("a quote with a shipping zone and method selected adds the method's rate to the total", async () => {
+		// ADR-0021 (#305 part 2): the zone is DERIVED from the destination, never
+		// passed. Tax follows the matched zone; a chosen method must belong to it.
+
+		test("a quote with a destination and a method of the zone it matches adds the method's rate to the total", async () => {
 			await tier.arrange.shippingMethod({
 				zoneId: "zone-q-ship",
 				methodId: "method-q-ship",
+				regions: ["US"],
 				rate: { amount: 599, currency: "USD" },
 			});
 			const cartId = await pricedCart("ship");
 
 			const quoted = await client.quoteCheckout({
 				cartId,
-				shippingZoneId: "zone-q-ship",
+				destination: { country: "US", region: "NY" },
 				shippingMethodId: "method-q-ship",
 			});
 			expect(quoted.ok).toBe(true);
@@ -1265,6 +1741,47 @@ export function storefrontCommerceClientContract(tier: CommerceClientTier): void
 				totalCents: 3599,
 				appliedCouponCode: null,
 			});
+			expect(quoted.requiresShipping).toBe(true);
+			expect(quoted.discountedSubtotalCents).toBe(3000);
+			expect(quoted.destination).toEqual({
+				status: "matched",
+				zoneId: "zone-q-ship",
+				matchedRegion: "US",
+			});
+		});
+
+		// INVERTS PR 1's transitional "a method with NO zone charges the method's
+		// rate and applies no tax": in a zoned store a method with no destination is
+		// refused, and with one the matched zone's tax applies.
+		test("in a zoned store a method with no destination refuses MISSING_SHIPPING_ADDRESS; with a destination the zone's tax applies", async () => {
+			await tier.arrange.shippingMethod({
+				zoneId: "zone-q-nozone",
+				methodId: "method-q-nozone",
+				regions: ["US"],
+				rate: { amount: 599, currency: "USD" },
+				taxRateBps: 1000,
+			});
+			const cartId = await pricedCart("nozone");
+
+			expect(await client.quoteCheckout({ cartId, shippingMethodId: "method-q-nozone" })).toEqual({
+				ok: false,
+				reason: "MISSING_SHIPPING_ADDRESS",
+			});
+			const quoted = await client.quoteCheckout({
+				cartId,
+				destination: { country: "us" },
+				shippingMethodId: "method-q-nozone",
+			});
+			expect(quoted.ok).toBe(true);
+			if (!quoted.ok) throw new Error("unreachable");
+			// 10% of 3000 = 300, plus 10% of the 599 shipping (applies to shipping)
+			// = 59.9 → 60 half-up.
+			expect(quoted.breakdown).toMatchObject({
+				subtotalCents: 3000,
+				shippingCents: 599,
+				taxCents: 360,
+				totalCents: 3959,
+			});
 		});
 
 		test("a shipping method nobody declared refuses SHIPPING_METHOD_NOT_FOUND", async () => {
@@ -1277,15 +1794,217 @@ export function storefrontCommerceClientContract(tier: CommerceClientTier): void
 		test("a declared method with no rate in the cart's currency refuses SHIPPING_RATE_NOT_FOUND", async () => {
 			// The method resolves and its rate does not, which is the only way to reach
 			// this refusal and a real merchant state: a method added and never priced.
-			await tier.arrange.shippingMethod({ zoneId: "zone-q-norate", methodId: "method-q-norate" });
+			await tier.arrange.shippingMethod({
+				zoneId: "zone-q-norate",
+				methodId: "method-q-norate",
+				regions: ["US"],
+			});
 			const cartId = await pricedCart("norate");
 			expect(
 				await client.quoteCheckout({
 					cartId,
-					shippingZoneId: "zone-q-norate",
+					destination: { country: "US" },
 					shippingMethodId: "method-q-norate",
 				}),
 			).toEqual({ ok: false, reason: "SHIPPING_RATE_NOT_FOUND" });
+		});
+
+		test("destination.status: no_zones, address_needed, matched — and not_required for a digital-only cart", async () => {
+			const cartId = await pricedCart("status");
+			const bare = await client.quoteCheckout({ cartId, destination: { country: "US" } });
+			expect(bare.ok && bare.destination).toEqual({
+				status: "no_zones",
+				zoneId: null,
+				matchedRegion: null,
+			});
+
+			await tier.arrange.shippingMethod({
+				zoneId: "zone-q-status",
+				methodId: "method-q-status",
+				regions: ["US-CA", "US"],
+				rate: { amount: 100, currency: "USD" },
+			});
+			const needed = await client.quoteCheckout({ cartId });
+			expect(needed.ok && needed.destination.status).toBe("address_needed");
+			const matched = await client.quoteCheckout({
+				cartId,
+				destination: { country: "US", region: "US-CA" },
+			});
+			expect(matched.ok && matched.destination).toEqual({
+				status: "matched",
+				zoneId: "zone-q-status",
+				matchedRegion: "US-CA",
+			});
+
+			const digitalId = await tier.arrange.product({
+				productId: "prod-q-digital",
+				sku: "SKU-Q-DIGITAL",
+				price: { amount: 1500, currency: "USD" },
+				productKind: "digital",
+				idempotencyKey: "q-seed-digital",
+			});
+			const digitalCart = await tier.arrange.cart("USD");
+			const added = await client.addCartLine(
+				digitalCart,
+				"SKU-Q-DIGITAL",
+				digitalId,
+				1,
+				"q-add-dig",
+			);
+			if (!added.ok) throw new Error(`arrange failed: ${added.reason}`);
+			const digital = await client.quoteCheckout({
+				cartId: digitalCart,
+				destination: { country: "FR" },
+			});
+			expect(digital.ok && digital.requiresShipping).toBe(false);
+			expect(digital.ok && digital.destination.status).toBe("not_required");
+			expect(
+				await client.quoteCheckout({ cartId: digitalCart, shippingMethodId: "method-q-status" }),
+			).toEqual({ ok: false, reason: "SHIPPING_METHOD_NOT_APPLICABLE" });
+		});
+
+		/** Zones {US, US-CA}, each with one priced method, and a priced cart. */
+		async function refusalFixture(tag: string): Promise<string> {
+			await tier.arrange.shippingMethod({
+				zoneId: `zone-${tag}-us`,
+				methodId: `method-${tag}-us`,
+				regions: ["US"],
+				rate: { amount: 100, currency: "USD" },
+			});
+			await tier.arrange.shippingMethod({
+				zoneId: `zone-${tag}-ca`,
+				methodId: `method-${tag}-ca`,
+				regions: ["US-CA"],
+				rate: { amount: 200, currency: "USD" },
+			});
+			return pricedCart(tag);
+		}
+
+		const REFUSED_DESTINATIONS: ReadonlyArray<[{ country: string; region?: string }, string]> = [
+			[{ country: "FR" }, "SHIPPING_ZONE_NOT_MATCHED"],
+			[{ country: "US" }, "SHIPPING_REGION_CODE_REQUIRED"],
+			[{ country: "US", region: "XX" }, "SHIPPING_REGION_CODE_REQUIRED"],
+			[{ country: "ZZ" }, "INVALID_SHIPPING_ADDRESS"],
+		];
+
+		test("every destination refusal on the quote, and a method outside the matched zone", async () => {
+			const cartId = await refusalFixture("qrf");
+			for (const [destination, reason] of REFUSED_DESTINATIONS) {
+				expect(
+					await client.quoteCheckout({ cartId, destination, shippingMethodId: "method-qrf-us" }),
+				).toEqual({ ok: false, reason });
+			}
+			expect(
+				await client.quoteCheckout({
+					cartId,
+					destination: { country: "US", region: "CA" },
+					shippingMethodId: "method-qrf-us",
+				}),
+			).toEqual({ ok: false, reason: "SHIPPING_METHOD_NOT_IN_ZONE" });
+		});
+
+		test.skipIf(tier.payments === undefined)(
+			"every destination refusal on createOrder, plus MISSING_SHIPPING_ADDRESS / SHIPPING_METHOD_REQUIRED / SHIPPING_METHOD_NOT_IN_ZONE (SKIPPED where the tier composes no payment gateway)",
+			async () => {
+				const paymentMethod = tier.payments?.method ?? "stripe";
+				const cartId = await refusalFixture("orf");
+				const inputs: Array<[Record<string, unknown>, string]> = [
+					...REFUSED_DESTINATIONS.map(([d, reason]): [Record<string, unknown>, string] => [
+						{
+							shippingAddress: refusalAddress(d.country, d.region),
+							shippingMethodId: "method-orf-us",
+						},
+						reason,
+					]),
+					[{ shippingMethodId: "method-orf-us" }, "MISSING_SHIPPING_ADDRESS"],
+					[{ shippingAddress: refusalAddress("US", "TX") }, "SHIPPING_METHOD_REQUIRED"],
+					[
+						{ shippingAddress: refusalAddress("US", "CA"), shippingMethodId: "method-orf-us" },
+						"SHIPPING_METHOD_NOT_IN_ZONE",
+					],
+				];
+				for (const [i, [input, reason]] of inputs.entries()) {
+					expect(
+						await client.createOrder(
+							{ cartId, paymentMethod, buyerRef: "refuse@example.test", ...input },
+							`refuse-${String(i)}`,
+						),
+					).toEqual({ ok: false, reason });
+				}
+			},
+		);
+
+		test("listShippingOptions: the zone's methods only, priced, a method with no rate as null; an unknown zone is []", async () => {
+			await tier.arrange.shippingMethod({
+				zoneId: "zone-q-opts",
+				methodId: "method-q-opts-a",
+				regions: ["DE"],
+				rate: { amount: 450, currency: "USD" },
+			});
+			await tier.arrange.shippingMethod({
+				zoneId: "zone-q-opts",
+				methodId: "method-q-opts-b",
+				regions: ["DE"],
+			});
+			await tier.arrange.shippingMethod({
+				zoneId: "zone-q-other",
+				methodId: "method-q-other",
+				regions: ["FR"],
+				rate: { amount: 1, currency: "USD" },
+			});
+			const options = await client.listShippingOptions({
+				zoneId: "zone-q-opts",
+				currency: "USD",
+				discountedSubtotalCents: 3000,
+			});
+			expect(options).toEqual([
+				{
+					methodId: "method-q-opts-a",
+					name: "method-q-opts-a",
+					type: "flat_rate",
+					amountCents: 450,
+				},
+				{
+					methodId: "method-q-opts-b",
+					name: "method-q-opts-b",
+					type: "flat_rate",
+					amountCents: null,
+				},
+			]);
+			expect(
+				await client.listShippingOptions({
+					zoneId: "zone-q-unknown",
+					currency: "USD",
+					discountedSubtotalCents: 0,
+				}),
+			).toEqual([]);
+		});
+
+		test("listShippingOptions refuses malformed input as a programmer error, never a silent []", async () => {
+			for (const input of [
+				{ zoneId: "", currency: "USD", discountedSubtotalCents: 0 },
+				{ zoneId: "zone x", currency: "USD", discountedSubtotalCents: 0 },
+				{ zoneId: "z", currency: "usd", discountedSubtotalCents: 0 },
+				{ zoneId: "z", currency: "USD", discountedSubtotalCents: -1 },
+				{ zoneId: "z", currency: "USD", discountedSubtotalCents: 1.5 },
+			]) {
+				await expect(client.listShippingOptions(input), JSON.stringify(input)).rejects.toThrow();
+			}
+		});
+
+		test("a zone smuggled onto the quote or the order (a cast past the type) is refused, never priced", async () => {
+			const cartId = await pricedCart("smuggle");
+			const quoteInput = { cartId, shippingZoneId: "zone-anything" } as unknown as Parameters<
+				typeof client.quoteCheckout
+			>[0];
+			await expect(client.quoteCheckout(quoteInput)).rejects.toThrow(/shippingZoneId/);
+			const orderInput = {
+				cartId,
+				paymentMethod: "stripe",
+				buyerRef: "smuggle@example.test",
+				shippingZoneId: "zone-anything",
+			} as unknown as Parameters<typeof client.createOrder>[0];
+			await expect(client.createOrder(orderInput, "smuggle-1")).rejects.toThrow(/shippingZoneId/);
 		});
 
 		// EVERY quote-time coupon refusal the port declares, one case each, each with
@@ -1412,6 +2131,9 @@ export function storefrontCommerceClientContract(tier: CommerceClientTier): void
 			expect(read.order).toMatchObject({
 				id: orderId,
 				currency: "USD",
+				// A live order carries no late payment — the confirmation page's
+				// "was anything charged?" sentence reads this, never the private ledger.
+				latePayment: "none",
 				totals: { currency: "USD", subtotalCents: 5000, totalCents: 5000 },
 				lines: [
 					{
@@ -1432,6 +2154,41 @@ export function storefrontCommerceClientContract(tier: CommerceClientTier): void
 			expect(await client.getPublicOrder("order-public-never-minted")).toEqual({
 				ok: false,
 				reason: "ORDER_NOT_FOUND",
+			});
+		});
+
+		test("getPublicOrder exposes totals.shippingMethodId beside shippingZoneId — the method id when one was chosen, null when not", async () => {
+			const withMethod = await tier.arrange.order({
+				orderId: "order-public-method",
+				buyerRef: "public-method@example.test",
+				shippingMethod: { zoneId: null, methodId: "method-public-1" },
+			});
+			const withBoth = await tier.arrange.order({
+				orderId: "order-public-zone",
+				buyerRef: "public-zone@example.test",
+				shippingMethod: { zoneId: "zone-public-1", methodId: "method-public-2" },
+			});
+			const withNeither = await tier.arrange.order({
+				orderId: "order-public-none",
+				buyerRef: "public-none@example.test",
+			});
+
+			const totalsOf = async (orderId: string) => {
+				const read = await client.getPublicOrder(orderId);
+				if (!read.ok) throw new Error(`unreachable: ${read.reason}`);
+				return read.order.totals;
+			};
+			expect(await totalsOf(withMethod)).toMatchObject({
+				shippingZoneId: null,
+				shippingMethodId: "method-public-1",
+			});
+			expect(await totalsOf(withBoth)).toMatchObject({
+				shippingZoneId: "zone-public-1",
+				shippingMethodId: "method-public-2",
+			});
+			expect(await totalsOf(withNeither)).toMatchObject({
+				shippingZoneId: null,
+				shippingMethodId: null,
 			});
 		});
 
@@ -1506,6 +2263,69 @@ export function storefrontCommerceClientContract(tier: CommerceClientTier): void
 			},
 		);
 
+		test.skipIf(tier.payments === undefined)(
+			"a checkout key already spent on ANOTHER cart is refused IDEMPOTENCY_KEY_REUSED and leaves this cart open (issue #133; SKIPPED where the tier composes no payment gateway)",
+			async () => {
+				const paymentMethod = tier.payments?.method ?? "stripe";
+				const productId = await tier.arrange.product({
+					productId: "prod-co-reuse",
+					sku: "SKU-CO-REUSE",
+					title: "Reuse Product",
+					price: { amount: 2500, currency: "USD" },
+					onHand: 5,
+					idempotencyKey: "co-reuse-seed",
+				});
+				const oldCart = await tier.arrange.cart("USD");
+				const addedOld = await client.addCartLine(
+					oldCart,
+					"SKU-CO-REUSE",
+					productId,
+					1,
+					"co-reuse-add-old",
+				);
+				if (!addedOld.ok) throw new Error(`arrange failed: ${addedOld.reason}`);
+				const first = await client.createOrder(
+					{ cartId: oldCart, paymentMethod, buyerRef: "co-reuse@example.test" },
+					`checkout:${oldCart}`,
+				);
+				if (!first.ok) throw new Error(`checkout failed: ${first.reason}`);
+
+				// A stale tab: the OLD cart's key, submitted against a NEW cart.
+				const newCart = await tier.arrange.cart("USD");
+				const addedNew = await client.addCartLine(
+					newCart,
+					"SKU-CO-REUSE",
+					productId,
+					1,
+					"co-reuse-add-new",
+				);
+				if (!addedNew.ok) throw new Error(`arrange failed: ${addedNew.reason}`);
+				expect(
+					await client.createOrder(
+						{ cartId: newCart, paymentMethod, buyerRef: "co-reuse@example.test" },
+						`checkout:${oldCart}`,
+					),
+				).toEqual({ ok: false, reason: "IDEMPOTENCY_KEY_REUSED" });
+
+				// The new cart was never checked out: it still takes a line, and it
+				// places under its own key as a DIFFERENT order.
+				const stillOpen = await client.addCartLine(
+					newCart,
+					"SKU-CO-REUSE",
+					productId,
+					1,
+					"co-reuse-add-again",
+				);
+				expect(stillOpen.ok).toBe(true);
+				const own = await client.createOrder(
+					{ cartId: newCart, paymentMethod, buyerRef: "co-reuse@example.test" },
+					`checkout:${newCart}`,
+				);
+				if (!own.ok) throw new Error(`checkout failed: ${own.reason}`);
+				expect(own.order.id).not.toBe(first.order.id);
+			},
+		);
+
 		test.skipIf(tier.clock === undefined)(
 			"once a cart's hold lapses the cart holds nothing, cannot be quoted, and its units are free again (SKIPPED where the tier cannot move its own clock)",
 			async () => {
@@ -1569,22 +2389,25 @@ export function storefrontCommerceClientContract(tier: CommerceClientTier): void
 			},
 		);
 
-		// BOTH HOOKS, so it runs on NEITHER tier today — and it is written anyway,
-		// because the gap it names is real and otherwise invisible. Checkout resolves
-		// its gateway BEFORE it reads the cart, so on a tier with no gateway every
-		// cart-level checkout refusal is unreachable, and on a tier with a gateway there
-		// is no way to reach the deadline. The refusal a lapsed hold must produce at the
-		// checkout itself is therefore unasserted on both transports right now; this is
-		// where it gets asserted the moment either tier grows the hook it lacks.
+		// BOTH HOOKS. Checkout resolves its gateway BEFORE it reads the cart, so on a
+		// tier with no gateway every cart-level checkout refusal is unreachable, and on
+		// a tier with no movable clock there is no way to reach the deadline. The
+		// in-process tier has both, so this is where the refusal a lapsed hold must
+		// produce at the checkout itself is asserted.
 		test.skipIf(tier.clock === undefined || tier.payments === undefined)(
-			"a checkout against a lapsed hold is refused RESERVATION_LOST (SKIPPED until one tier has both a movable clock and a payment gateway)",
+			"a checkout against a lapsed hold is refused RESERVATION_LOST (SKIPPED where the tier lacks a movable clock or a payment gateway)",
 			async () => {
 				const clock = tier.clock;
 				const paymentMethod = tier.payments?.method;
 				if (clock === undefined || paymentMethod === undefined) throw new Error("unreachable");
+				// THE TITLE IS LOAD-BEARING here too, for the same reason the checkout-
+				// replay case above documents: order pricing snapshots price AND title,
+				// and a row nobody has titled is refused PRODUCT_NOT_PRICED before this
+				// case's own subject — the lapsed hold — is ever reached.
 				const productId = await tier.arrange.product({
 					productId: "prod-co-lost",
 					sku: "SKU-CO-LOST",
+					title: "Lapsed Hold Product",
 					price: { amount: 2500, currency: "USD" },
 					onHand: 3,
 					idempotencyKey: "co-lost-seed",
@@ -1606,6 +2429,370 @@ export function storefrontCommerceClientContract(tier: CommerceClientTier): void
 				).toEqual({ ok: false, reason: "RESERVATION_LOST" });
 			},
 		);
+
+		// ── resuming a pending order's payment (QA U-2) ────────────────────
+		//
+		// The order page is the buyer's way back to an unpaid order on ANY device.
+		// `resumeOrderPayment` answers with the order's OWN intent — the original
+		// checkout replayed on its own key, never a second order or intent — but only
+		// to a caller holding a SECOND factor beside the order id: the cart the order
+		// was made from, a session whose customer owns the order, or the order's
+		// email. The order id alone is a link that sits in mailboxes and histories,
+		// and the intent's client secret reads its ship-to back from Stripe.
+
+		/** One pending order, placed under `checkout:<cartId>`; `session` places it
+		 *  signed in (owned from birth when the email is the account's). */
+		async function placeResumable(
+			slug: string,
+			buyerRef: string,
+			opts: { sessionToken?: string; amount?: number } = {},
+		): Promise<{ cartId: string; orderId: string; intent: unknown; totalCents: number }> {
+			const payments = tier.payments;
+			if (payments === undefined) throw new Error("unreachable");
+			const sku = `SKU-CO-RES-${slug.toUpperCase()}`;
+			const productId = await tier.arrange.product({
+				productId: `prod-co-res-${slug}`,
+				sku,
+				title: `Resume ${slug}`,
+				price: { amount: opts.amount ?? 2500, currency: "USD" },
+				onHand: 3,
+				idempotencyKey: `co-res-${slug}-seed`,
+			});
+			const cartId = await tier.arrange.cart("USD");
+			const added = await client.addCartLine(cartId, sku, productId, 1, `co-res-${slug}-add`);
+			if (!added.ok) throw new Error(`arrange failed: ${added.reason}`);
+			const placed = await client.createOrder(
+				{ cartId, paymentMethod: payments.method, buyerRef },
+				`checkout:${cartId}`,
+				opts.sessionToken !== undefined ? { sessionToken: opts.sessionToken } : {},
+			);
+			if (!placed.ok) throw new Error(`checkout failed: ${placed.reason}`);
+			return {
+				cartId,
+				orderId: placed.order.id,
+				intent: placed.intent,
+				totalCents: placed.order.totals.totalCents,
+			};
+		}
+
+		test.skipIf(tier.payments === undefined)(
+			"resumeOrderPayment with the order's own CART hands back the SAME intent: same order, no second order (SKIPPED where the tier composes no payment gateway)",
+			async () => {
+				const payments = tier.payments!;
+				const placed = await placeResumable("cart", "Resume.Buyer@Example.test");
+
+				const resumed = await client.resumeOrderPayment(placed.orderId, { cartId: placed.cartId });
+				if (!resumed.ok) throw new Error(`resume failed: ${resumed.reason}`);
+				expect(resumed.order.id).toBe(placed.orderId);
+				expect(resumed.order.state).toBe("pending");
+				expect(resumed.order.totals.totalCents).toBe(placed.totalCents);
+				expect(resumed.intent).toEqual(placed.intent);
+				// The order's email as a HINT, never the address.
+				expect(resumed.buyerRefHint).toBe("R\u2022\u2022\u2022@E\u2022\u2022\u2022.test");
+				expect(JSON.stringify(resumed)).not.toContain("Resume.Buyer");
+
+				expect(
+					await client.createOrder(
+						{
+							cartId: placed.cartId,
+							paymentMethod: payments.method,
+							buyerRef: "other@example.test",
+						},
+						"co-res-cart-other-key",
+					),
+				).toEqual({ ok: false, reason: "CART_CHECKED_OUT" });
+			},
+		);
+
+		test.skipIf(tier.payments === undefined)(
+			"the order id ALONE is not enough: PROOF_REQUIRED, and the provider is asked nothing (SKIPPED where the tier composes no payment gateway)",
+			async () => {
+				const placed = await placeResumable("alone", "alone@example.test");
+				const before = tier.payments?.providerIntentCalls?.().length ?? 0;
+				expect(await client.resumeOrderPayment(placed.orderId)).toEqual({
+					ok: false,
+					reason: "PROOF_REQUIRED",
+				});
+				// Some OTHER cart, or a session that does not own the order, is no proof.
+				const otherCart = await tier.arrange.cart("USD");
+				const { bearer } = await tier.arrange.session("stranger@example.test");
+				expect(
+					await client.resumeOrderPayment(placed.orderId, {
+						cartId: otherCart,
+						sessionToken: bearer,
+					}),
+				).toEqual({ ok: false, reason: "PROOF_REQUIRED" });
+				expect(tier.payments?.providerIntentCalls?.().length ?? 0).toBe(before);
+			},
+		);
+
+		test.skipIf(tier.payments === undefined)(
+			"a signed-in session whose customer OWNS the order resumes it (SKIPPED where the tier composes no payment gateway)",
+			async () => {
+				const { bearer } = await tier.arrange.session("owner@example.test");
+				const placed = await placeResumable("owner", "owner@example.test", {
+					sessionToken: bearer,
+				});
+				const resumed = await client.resumeOrderPayment(placed.orderId, { sessionToken: bearer });
+				expect(resumed.ok, JSON.stringify(resumed)).toBe(true);
+			},
+		);
+
+		test.skipIf(tier.payments === undefined)(
+			"the order's EMAIL resumes it — trimmed and case-folded; a wrong one is EMAIL_MISMATCH and asks the provider nothing (SKIPPED where the tier composes no payment gateway)",
+			async () => {
+				const placed = await placeResumable("email", "Jane.Doe@Example.test");
+				const before = tier.payments?.providerIntentCalls?.().length ?? 0;
+				expect(
+					await client.resumeOrderPayment(placed.orderId, { email: "jane.doe@example.tes" }),
+				).toEqual({ ok: false, reason: "EMAIL_MISMATCH" });
+				expect(tier.payments?.providerIntentCalls?.().length ?? 0).toBe(before);
+
+				const resumed = await client.resumeOrderPayment(placed.orderId, {
+					email: "  jane.doe@EXAMPLE.test ",
+				});
+				expect(resumed.ok, JSON.stringify(resumed)).toBe(true);
+			},
+		);
+
+		test.skipIf(tier.payments === undefined)(
+			"an order whose buyerRef is NOT an email cannot be resumed by typing the buyerRef back — it is public (an x402 wallet), so it proves nothing (issue #405 item 2; SKIPPED where the tier composes no payment gateway)",
+			async () => {
+				const wallet = "x402:0x52908400098527886E0F7030069857D2E4169EE7";
+				const placed = await placeResumable("wallet", wallet);
+				const before = tier.payments?.providerIntentCalls?.().length ?? 0;
+				expect(await client.resumeOrderPayment(placed.orderId, { email: wallet })).toEqual({
+					ok: false,
+					reason: "EMAIL_MISMATCH",
+				});
+				expect(tier.payments?.providerIntentCalls?.().length ?? 0).toBe(before);
+				// The cart is still a proof for it.
+				const byCart = await client.resumeOrderPayment(placed.orderId, { cartId: placed.cartId });
+				expect(byCart.ok, JSON.stringify(byCart)).toBe(true);
+			},
+		);
+
+		test.skipIf(tier.payments === undefined)(
+			`email attempts are THROTTLED per DEVICE after ${RESUME_EMAIL_MAX_ATTEMPTS} — even the right one — while the real buyer's device still resumes (SKIPPED where the tier composes no payment gateway)`,
+			async () => {
+				const placed = await placeResumable("throttle", "t@example.test");
+				const other = await placeResumable("throttle2", "t2@example.test");
+				for (let i = 0; i < RESUME_EMAIL_MAX_ATTEMPTS; i++) {
+					expect(
+						await client.resumeOrderPayment(placed.orderId, {
+							email: `guess${i}@example.test`,
+							clientKey: "device-guesser",
+						}),
+					).toEqual({ ok: false, reason: "EMAIL_MISMATCH" });
+				}
+				expect(
+					await client.resumeOrderPayment(placed.orderId, {
+						email: "t@example.test",
+						clientKey: "device-guesser",
+					}),
+				).toEqual({ ok: false, reason: "THROTTLED" });
+				// Issue #364: five wrong guesses no longer lock the real buyer out.
+				const buyer = await client.resumeOrderPayment(placed.orderId, {
+					email: "t@example.test",
+					clientKey: "device-buyer",
+				});
+				expect(buyer.ok, JSON.stringify(buyer)).toBe(true);
+				// Requests that name no device share ONE window per order.
+				for (let i = 0; i < RESUME_EMAIL_MAX_ATTEMPTS; i++) {
+					await client.resumeOrderPayment(placed.orderId, { email: `anon${i}@example.test` });
+				}
+				expect(
+					await client.resumeOrderPayment(placed.orderId, { email: "t@example.test" }),
+				).toEqual({ ok: false, reason: "THROTTLED" });
+				// Per ORDER: another order's windows are untouched.
+				const elsewhere = await client.resumeOrderPayment(other.orderId, {
+					email: "t2@example.test",
+					clientKey: "device-guesser",
+				});
+				expect(elsewhere.ok).toBe(true);
+				// The cart is still proof: the throttle is on email guesses only.
+				const byCart = await client.resumeOrderPayment(placed.orderId, { cartId: placed.cartId });
+				expect(byCart.ok).toBe(true);
+			},
+		);
+
+		test.skipIf(tier.payments === undefined)(
+			`guessing from many devices is still stopped: ${RESUME_EMAIL_ORDER_MAX_ATTEMPTS} email attempts per order, from any devices, close the email route for every device (SKIPPED where the tier composes no payment gateway)`,
+			async () => {
+				const placed = await placeResumable("throttle3", "t3@example.test");
+				for (let i = 0; i < RESUME_EMAIL_ORDER_MAX_ATTEMPTS; i++) {
+					expect(
+						await client.resumeOrderPayment(placed.orderId, {
+							email: `guess${i}@example.test`,
+							clientKey: `device-${i}`,
+						}),
+					).toEqual({ ok: false, reason: "EMAIL_MISMATCH" });
+				}
+				expect(
+					await client.resumeOrderPayment(placed.orderId, {
+						email: "t3@example.test",
+						clientKey: "device-fresh",
+					}),
+				).toEqual({ ok: false, reason: "THROTTLED" });
+				// The cart and the owning session are possession proofs, never throttled.
+				const byCart = await client.resumeOrderPayment(placed.orderId, { cartId: placed.cartId });
+				expect(byCart.ok).toBe(true);
+			},
+		);
+
+		test.skipIf(tier.payments === undefined || tier.throttleDocuments === undefined)(
+			"once the order's cap is spent, a guess under a NEW device key is refused and writes nothing — device windows stay bounded per order (SKIPPED where the tier cannot count throttle documents)",
+			async () => {
+				const placed = await placeResumable("throttle4", "t4@example.test");
+				for (let i = 0; i < RESUME_EMAIL_ORDER_MAX_ATTEMPTS; i++) {
+					await client.resumeOrderPayment(placed.orderId, {
+						email: `guess${i}@example.test`,
+						clientKey: `spent-${i}`,
+					});
+				}
+				const before = await tier.throttleDocuments!();
+				for (let i = 0; i < 5; i++) {
+					expect(
+						await client.resumeOrderPayment(placed.orderId, {
+							email: "t4@example.test",
+							clientKey: `fresh-${i}`,
+						}),
+					).toEqual({ ok: false, reason: "THROTTLED" });
+				}
+				expect(await tier.throttleDocuments!()).toBe(before);
+			},
+		);
+
+		test.skipIf(tier.payments?.providerIntentCalls === undefined)(
+			"a resumed payment asks the provider under the order's own checkout key with the same amount (SKIPPED where the tier cannot show its gateway's intent calls)",
+			async () => {
+				const payments = tier.payments!;
+				const placed = await placeResumable("key", "key@example.test", { amount: 1800 });
+				await client.resumeOrderPayment(placed.orderId, { cartId: placed.cartId });
+				await client.resumeOrderPayment(placed.orderId, { email: "key@example.test" });
+
+				const calls = payments.providerIntentCalls!().filter(
+					(call) => call.orderId === placed.orderId,
+				);
+				expect(calls).toHaveLength(3);
+				for (const call of calls) {
+					expect(call).toEqual({
+						gateway: payments.method,
+						orderId: placed.orderId,
+						amountCents: 1800,
+						currency: "USD",
+						idempotencyKey: `checkout:${placed.cartId}`,
+					});
+				}
+			},
+		);
+
+		test("resumeOrderPayment of an unknown or malformed order id is ORDER_NOT_FOUND", async () => {
+			expect(await client.resumeOrderPayment("00000000-0000-4000-8000-000000000000")).toEqual({
+				ok: false,
+				reason: "ORDER_NOT_FOUND",
+			});
+			await expectRejectedInput(client.resumeOrderPayment("not an id"), "orderId");
+		});
+
+		test.skipIf(tier.clock === undefined || tier.payments === undefined)(
+			"resumeOrderPayment refuses a pending order past its hold, and mints nothing (SKIPPED where the tier lacks a movable clock or a payment gateway)",
+			async () => {
+				const clock = tier.clock!;
+				const placed = await placeResumable("lapsed", "lapsed@example.test", { amount: 900 });
+				const before = tier.payments?.providerIntentCalls?.().length ?? 0;
+				await clock.advance(31 * 60 * 1000);
+				expect(await client.resumeOrderPayment(placed.orderId, { cartId: placed.cartId })).toEqual({
+					ok: false,
+					reason: "ORDER_NOT_PAYABLE",
+				});
+				expect(tier.payments?.providerIntentCalls?.().length ?? 0).toBe(before);
+			},
+		);
+
+		test.skipIf(tier.payments === undefined)(
+			"resumeOrderPayment refuses an order that has left pending — a paid order is not paid twice (SKIPPED where the tier composes no payment gateway)",
+			async () => {
+				const placed = await placeResumable("paid", "paid@example.test", { amount: 700 });
+				await tier.arrange.settle(placed.orderId);
+				expect(await client.resumeOrderPayment(placed.orderId, { cartId: placed.cartId })).toEqual({
+					ok: false,
+					reason: "ORDER_NOT_PAYABLE",
+				});
+			},
+		);
+
+		// ── "Start a new cart" cancels the cart's unpaid order (QA2 X4) ────
+		//
+		// The cart page's "Start a new cart" says it clears any payment still in
+		// progress. It only cleared cookies: the old order stayed pending, its
+		// stock held and its PaymentIntent payable from another tab. Now the cart
+		// (the cookie — the same possession proof `resumeOrderPayment` accepts)
+		// cancels the order it became, if that order is still unpaid: the plain
+		// cancel, which releases the held stock and makes the intent due for
+		// withdrawal at once. Anything else is a no-op success: nothing is in
+		// progress to clear.
+
+		test.skipIf(tier.payments === undefined)(
+			"abandonCartOrder cancels the cart's PENDING order — once; a replay changes nothing (SKIPPED where the tier composes no payment gateway)",
+			async () => {
+				const placed = await placeResumable("abandon", "abandon@example.test", { amount: 1100 });
+
+				expect(await client.abandonCartOrder(placed.cartId)).toEqual({
+					ok: true,
+					cancelled: true,
+					orderId: placed.orderId,
+				});
+				const read = await client.getPublicOrder(placed.orderId);
+				if (!read.ok) throw new Error("order vanished");
+				expect(read.order.state).toBe("cancelled");
+				// It can no longer be resumed — the cart's way back to paying is gone.
+				expect(await client.resumeOrderPayment(placed.orderId, { cartId: placed.cartId })).toEqual({
+					ok: false,
+					reason: "ORDER_NOT_PAYABLE",
+				});
+
+				expect(await client.abandonCartOrder(placed.cartId)).toEqual({
+					ok: true,
+					cancelled: false,
+					orderId: placed.orderId,
+				});
+			},
+		);
+
+		test.skipIf(tier.payments === undefined)(
+			"abandonCartOrder never touches a PAID order — nothing is in progress to clear (SKIPPED where the tier composes no payment gateway)",
+			async () => {
+				const placed = await placeResumable("abandon-paid", "abandon-paid@example.test", {
+					amount: 1200,
+				});
+				await tier.arrange.settle(placed.orderId);
+
+				expect(await client.abandonCartOrder(placed.cartId)).toEqual({
+					ok: true,
+					cancelled: false,
+					orderId: placed.orderId,
+				});
+				const read = await client.getPublicOrder(placed.orderId);
+				if (!read.ok) throw new Error("order vanished");
+				expect(read.order.state).toBe("paid");
+			},
+		);
+
+		test("abandonCartOrder of a cart with no order, or no such cart, is a no-op success; a malformed id is rejected", async () => {
+			const active = await tier.arrange.cart("USD");
+			expect(await client.abandonCartOrder(active)).toEqual({
+				ok: true,
+				cancelled: false,
+				orderId: null,
+			});
+			expect(await client.abandonCartOrder("00000000-0000-4000-8000-000000000000")).toEqual({
+				ok: true,
+				cancelled: false,
+				orderId: null,
+			});
+			await expectRejectedInput(client.abandonCartOrder("not an id"), "cartId");
+		});
 
 		// ── the input bounds, on both transports ───────────────────────────
 		//
@@ -1645,6 +2832,7 @@ export function storefrontCommerceClientContract(tier: CommerceClientTier): void
 				productId: "prod-bnd-wm2",
 				sku: "SKU-BND-WM2",
 				price: { amount: 100, currency: "USD" },
+				published: false,
 				idempotencyKey: "bnd-wm2-seed",
 			});
 			await expectRejectedInput(
@@ -1815,13 +3003,14 @@ export function storefrontCommerceClientContract(tier: CommerceClientTier): void
  *
  * WHAT THE ORDERS CASES CANNOT ARRANGE, recorded for the same reason the
  * products gaps are: `arrange.order` seeds a PENDING guest order with one
- * digital line, no captured payment, no shipping-address snapshot and no
- * reconciliation flag — which is the state every order is born in. So a CAPTURED
- * payment (and with it a non-zero refund ceiling), a flagged reconciliation, and
- * a `processing` order that can legally be fulfilled are all out of reach from
- * here. Each is therefore asserted in the direction this surface CAN reach — the
- * refusal — and the refusals are the load-bearing half anyway: `NOT_FULFILLABLE`,
- * `NOT_IN_RECONCILIATION`, and a refund that moves no money.
+ * digital line, no shipping-address snapshot and no reconciliation flag — which
+ * is the state every order is born in — or, with `captured`, a PAID one carrying
+ * a settled payment (which is what gives the refund ceiling a non-zero value, so
+ * the gateway refund cases can reach the provider). A flagged reconciliation and
+ * a `processing` order that can legally be fulfilled are still out of reach from
+ * here, so each is asserted in the direction this surface CAN reach — the
+ * refusal — and the refusals are the load-bearing half anyway: `NOT_FULFILLABLE`
+ * and `NOT_IN_RECONCILIATION`.
  *
  * SEARCH IS ASSERTED AT ITS FLOOR, NEVER AT A TIER'S CEILING (ADR-0019 §6). The
  * shared case pins the three matches every dialect owes — an order-id PREFIX, a
@@ -1831,17 +3020,16 @@ export function storefrontCommerceClientContract(tier: CommerceClientTier): void
  * each tier pins its own side of it in its own file, where the difference is
  * visible as a difference.
  *
- * THE ONE REFUSAL THE TIERS SPELL DIFFERENTLY is a refund against an order that
- * captured nothing. Both refuse with a 409 and both leave the ledger empty —
- * that much is shared — but the REASON differs because the composition does: a
- * tier with gateways composed is refused by the ceiling
- * (`REFUND_EXCEEDS_CAPTURED`), and a tier with none is refused for want of a
- * gateway (`REFUND_GATEWAY_UNAVAILABLE`, until INC-C1/C3 moves the payment
- * adapters in-process). Rather than soften the shared case into accepting
- * either, the shared case asserts what both owe and a GATED PAIR — keyed off the
- * existing `payments` hook, each naming its gate in its own name — pins the
- * reason on each side. The pair collapses into one case the day gateways are
- * composed on both tiers.
+ * THE ONE REFUSAL WHOSE REASON DEPENDS ON THE COMPOSITION is a refund against an
+ * order that captured nothing. Every tier refuses it with a 409 and leaves the
+ * ledger empty — that much is shared — but the REASON differs: a tier with a
+ * gateway composed for the order's method is refused because there is no
+ * captured payment to refund against (`NO_CAPTURED_PAYMENT`, checked before the
+ * ceiling is ever arbitrated), and a tier with none is refused for want of a
+ * gateway (`REFUND_GATEWAY_UNAVAILABLE`). Rather than soften the shared case
+ * into accepting either, the shared case asserts what both owe and a GATED PAIR
+ * — keyed off the `payments` hook, each naming its gate in its own name — pins
+ * the reason on each side.
  *
  * WHAT THE SHARED ARRANGE SURFACE CANNOT REACH, recorded so it is not mistaken
  * for a decision: `arrange.product` goes through `upsertProductCommerce`, which
@@ -1905,6 +3093,7 @@ export function adminOrdersProductsClientContract(tier: CommerceClientTier): voi
 			price?: CommerceMoney;
 			title?: string;
 			onHand?: number;
+			productKind?: "physical" | "digital";
 		}): Promise<string> {
 			await tier.arrange.product({ ...spec, idempotencyKey: `seed-${spec.productId}` });
 			const read = await client.getProduct(spec.productId);
@@ -2112,9 +3301,11 @@ export function adminOrdersProductsClientContract(tier: CommerceClientTier): voi
 						},
 					],
 				},
-				// DERIVED, never re-listed: exactly the domain state machine's row for
-				// `pending`.
-				allowedTransitions: ["paid", "failed", "expired", "cancelled"],
+				// DERIVED, never re-listed: the domain's `adminNextStates` — the state
+				// machine's row for `pending` MINUS `paid` (only the payment provider's
+				// confirmation settles an order, QA T1-3) and MINUS a bare `cancelled`
+				// (Cancel order is the one way to cancel, QA T1-4).
+				allowedTransitions: ["expired"],
 			});
 
 			// An id that never existed is a "not found" state, not an error banner.
@@ -2125,20 +3316,25 @@ export function adminOrdersProductsClientContract(tier: CommerceClientTier): voi
 
 		test("a legal transition moves the order, its replay is a no-op, and an illegal one conflicts", async () => {
 			await tier.arrange.order({ orderId: "adm-o-trans", buyerRef: "trans@example.test" });
+			await tier.arrange.settle("adm-o-trans");
 
 			expect(
-				await orders.transitionOrder("adm-o-trans", "paid", { idempotencyKey: "adm-o-trans-1" }),
-			).toEqual({ ok: true, transitioned: true });
+				await orders.transitionOrder("adm-o-trans", "processing", {
+					idempotencyKey: "adm-o-trans-1",
+				}),
+			).toEqual({ ok: true, transitioned: true, email: NO_EMAIL_PROVIDER });
 			// THE REPLAY, under the same key: already there, so nothing moved — and the
 			// surface says so rather than reporting a second transition.
 			expect(
-				await orders.transitionOrder("adm-o-trans", "paid", { idempotencyKey: "adm-o-trans-1" }),
+				await orders.transitionOrder("adm-o-trans", "processing", {
+					idempotencyKey: "adm-o-trans-1",
+				}),
 			).toEqual({ ok: true, transitioned: false });
 
-			// `paid → pending` is not a row in the machine.
+			// `processing → pending` is not a row in the machine.
 			expect(
 				await orders.transitionOrder("adm-o-trans", "pending", { idempotencyKey: "adm-o-trans-2" }),
-			).toEqual({ ok: false, status: 409 });
+			).toEqual({ ok: false, status: 409, reason: "INVALID_TRANSITION" });
 			expect(
 				await orders.transitionOrder("adm-o-missing", "paid", { idempotencyKey: "adm-o-trans-3" }),
 			).toEqual({ ok: false, status: 404 });
@@ -2149,15 +3345,34 @@ export function adminOrdersProductsClientContract(tier: CommerceClientTier): voi
 					idempotencyKey: "adm-o-trans-4",
 				}),
 			).toEqual({ ok: false, status: 400 });
+			// A bare cancel is refused from any state (QA T1-4): Cancel order, which
+			// records why, is the one way to cancel.
+			expect(
+				await orders.transitionOrder("adm-o-trans", "cancelled", {
+					idempotencyKey: "adm-o-trans-5",
+				}),
+			).toEqual({ ok: false, status: 409, reason: "USE_CANCEL" });
+
+			// No order is marked paid by hand (QA T1-3, ADR-0026): not a card order and not
+			// an x402 one. (The no-method case — the refusal failing CLOSED — cannot be
+			// arranged on this surface; the domain's orderTransitionContract pins it.)
+			for (const [id, paymentMethod] of [
+				["adm-o-trans-card", "stripe"],
+				["adm-o-trans-x402", "x402"],
+			] as const) {
+				await tier.arrange.order({ orderId: id, buyerRef: `${id}@example.test`, paymentMethod });
+				expect(await orders.transitionOrder(id, "paid", { idempotencyKey: `${id}-1` })).toEqual({
+					ok: false,
+					status: 409,
+					reason: "MANUAL_PAYMENT_NOT_ALLOWED",
+				});
+				expect((await orders.getOrder(id))?.order.state).toBe("pending");
+			}
 
 			const read = await orders.getOrder("adm-o-trans");
-			expect(read?.order.state).toBe("paid");
-			expect(read?.allowedTransitions).toEqual([
-				"processing",
-				"completed",
-				"cancelled",
-				"refunded",
-			]);
+			expect(read?.order.state).toBe("processing");
+			// STEERED in the domain: no bare `cancelled` from any state.
+			expect(read?.allowedTransitions).toEqual(["shipped", "refunded"]);
 		});
 
 		// ── resolveReconciliation ─────────────────────────────────────────
@@ -2243,7 +3458,14 @@ export function adminOrdersProductsClientContract(tier: CommerceClientTier): voi
 				await orders.cancelOrder("adm-o-cancel", cancellation, {
 					idempotencyKey: "adm-o-cancel-1",
 				}),
-			).toEqual({ ok: true, cancelled: true });
+			).toEqual({
+				ok: true,
+				cancelled: true,
+				refund: null,
+				restockedUnits: 0,
+				restockSkipped: [],
+				email: NO_EMAIL_PROVIDER,
+			});
 
 			const read = await orders.getOrder("adm-o-cancel");
 			expect(read?.order.state).toBe("cancelled");
@@ -2252,6 +3474,10 @@ export function adminOrdersProductsClientContract(tier: CommerceClientTier): voi
 				detail: "changed their mind",
 				cancelledBy: "ops@example.test",
 				cancelledAt: expect.any(String) as unknown as string,
+				// A PENDING order: nothing captured, so nothing refunded, and its held
+				// stock is released by the cancel itself rather than restocked.
+				refund: null,
+				restocked: false,
 			});
 			// `cancelled` is terminal: the console renders no transition buttons.
 			expect(read?.allowedTransitions).toEqual([]);
@@ -2262,7 +3488,13 @@ export function adminOrdersProductsClientContract(tier: CommerceClientTier): voi
 				await orders.cancelOrder("adm-o-cancel", cancellation, {
 					idempotencyKey: "adm-o-cancel-2",
 				}),
-			).toEqual({ ok: true, cancelled: false });
+			).toEqual({
+				ok: true,
+				cancelled: false,
+				refund: null,
+				restockedUnits: 0,
+				restockSkipped: [],
+			});
 
 			expect(
 				await orders.cancelOrder("adm-o-missing", cancellation, {
@@ -2279,6 +3511,42 @@ export function adminOrdersProductsClientContract(tier: CommerceClientTier): voi
 			).toMatchObject({ ok: false, status: 400 });
 		});
 
+		test("cancelling a PAID order refunds what was captured through its gateway before it cancels (T1-4)", async () => {
+			await tier.arrange.order({
+				orderId: "adm-o-cancel-paid",
+				buyerRef: "cancel-paid@example.test",
+				captured: { providerRef: "pi_cancel_paid", amountCents: 1500 },
+			});
+			const res = await orders.cancelOrder(
+				"adm-o-cancel-paid",
+				{ reason: "customer_request", cancelledBy: "ops@example.test", restock: true },
+				{ idempotencyKey: "adm-o-cancel-paid-1" },
+			);
+			// The arranged line is digital, so there is nothing to restock.
+			expect(res).toEqual({
+				ok: true,
+				cancelled: true,
+				refund: { amountCents: 1500, currency: "USD" },
+				restockedUnits: 0,
+				restockSkipped: [],
+				email: NO_EMAIL_PROVIDER,
+			});
+			const read = await orders.getOrder("adm-o-cancel-paid");
+			expect(read?.order.state).toBe("cancelled");
+			expect(read?.order.cancellation).toMatchObject({
+				refund: { amount: 1500, currency: "USD" },
+			});
+			// The refund is on the ledger like any other, under the cancellation's key.
+			const refunds = await orders.getRefunds("adm-o-cancel-paid");
+			expect(refunds?.refunds).toHaveLength(1);
+			expect(refunds?.refunds[0]).toMatchObject({
+				amountCents: 1500,
+				status: "recorded",
+				idempotencyKey: "adm-o-cancel-paid-1:refund",
+			});
+			expect(refunds?.remainingCents).toBe(0);
+		});
+
 		// ── the guest's read of an order the console has acted on ─────────
 		//
 		// THE STAFF SIDE OF THE PUBLIC WHITELIST. The storefront slice pins the
@@ -2293,18 +3561,18 @@ export function adminOrdersProductsClientContract(tier: CommerceClientTier): voi
 		// stood; the type guards them, and this proves the composition honours it.
 
 		test("a guest's read of a SHIPPED order trims fulfillment to carrier and tracking, never the staff witness", async () => {
-			await tier.arrange.order({ orderId: "adm-o-pubful", buyerRef: "pubful@example.test" });
+			await tier.arrange.order({
+				orderId: "adm-o-pubful",
+				buyerRef: "pubful@example.test",
+			});
 			// Fulfillment IS the `processing → shipped` flip, so the order has to be
 			// walked there first — a pending one is NOT_FULFILLABLE.
-			for (const [to, key] of [
-				["paid", "adm-o-pubful-t1"],
-				["processing", "adm-o-pubful-t2"],
-			] as const) {
-				expect(await orders.transitionOrder("adm-o-pubful", to, { idempotencyKey: key })).toEqual({
-					ok: true,
-					transitioned: true,
-				});
-			}
+			await tier.arrange.settle("adm-o-pubful");
+			expect(
+				await orders.transitionOrder("adm-o-pubful", "processing", {
+					idempotencyKey: "adm-o-pubful-t2",
+				}),
+			).toEqual({ ok: true, transitioned: true, email: NO_EMAIL_PROVIDER });
 			expect(
 				await orders.recordFulfillment(
 					"adm-o-pubful",
@@ -2360,7 +3628,14 @@ export function adminOrdersProductsClientContract(tier: CommerceClientTier): voi
 					},
 					{ idempotencyKey: "adm-o-pubcan-1" },
 				),
-			).toEqual({ ok: true, cancelled: true });
+			).toEqual({
+				ok: true,
+				cancelled: true,
+				refund: null,
+				restockedUnits: 0,
+				restockSkipped: [],
+				email: NO_EMAIL_PROVIDER,
+			});
 
 			const read = await storefront.getPublicOrder("adm-o-pubcan");
 			expect(read.ok).toBe(true);
@@ -2410,7 +3685,10 @@ export function adminOrdersProductsClientContract(tier: CommerceClientTier): voi
 		// ── getTimeline + notes ───────────────────────────────────────────
 
 		test("the timeline starts at `created`, says its state history is unaudited, and then merges both", async () => {
-			await tier.arrange.order({ orderId: "adm-o-tl", buyerRef: "tl@example.test" });
+			await tier.arrange.order({
+				orderId: "adm-o-tl",
+				buyerRef: "tl@example.test",
+			});
 
 			expect(await orders.getTimeline("adm-o-tl")).toEqual({
 				orderId: "adm-o-tl",
@@ -2428,9 +3706,7 @@ export function adminOrdersProductsClientContract(tier: CommerceClientTier): voi
 					{ idempotencyKey: "adm-o-tl-note" },
 				),
 			).toMatchObject({ ok: true, appended: true });
-			expect(
-				await orders.transitionOrder("adm-o-tl", "paid", { idempotencyKey: "adm-o-tl-paid" }),
-			).toEqual({ ok: true, transitioned: true });
+			await tier.arrange.settle("adm-o-tl");
 
 			const after = await orders.getTimeline("adm-o-tl");
 			expect(after?.stateChangesAudited).toBe(true);
@@ -2512,14 +3788,16 @@ export function adminOrdersProductsClientContract(tier: CommerceClientTier): voi
 				currency: "USD",
 				capturedTotalCents: 0,
 				refundedTotalCents: 0,
+				finalizedTotalCents: 0,
 				ceilingCents: 0,
 				remainingCents: 0,
 				paymentMethod: "stripe",
-				// The gateway's HONEST capability: false ⇒ the panel offers "record a
-				// manual refund", never a provider button that silently no-ops. Both
-				// tiers answer false today, for different reasons (no gateway composed /
-				// a Stripe gateway with no secret), and neither softens it.
-				refundable: false,
+				// The gateway's HONEST capability: a tier that composes a Stripe gateway
+				// answers `true`, because Stripe genuinely supports refunds; a tier with
+				// no gateway composed answers `false`. The panel reads this to decide
+				// between a provider button and "record a manual refund" (ADR-0008), and
+				// neither state is faked here.
+				refundable: tier.payments !== undefined,
 			});
 
 			expect(await orders.getRefunds("adm-o-missing")).toBeNull();
@@ -2571,7 +3849,7 @@ export function adminOrdersProductsClientContract(tier: CommerceClientTier): voi
 		});
 
 		test.skipIf(tier.payments === undefined)(
-			"(gateways composed) that refusal names the CEILING: nothing was captured to refund against",
+			"(gateways composed) that refusal is NO_CAPTURED_PAYMENT: there is nothing captured to refund against",
 			async () => {
 				await tier.arrange.order({ orderId: "adm-o-refc", buyerRef: "refc@example.test" });
 				expect(
@@ -2580,12 +3858,12 @@ export function adminOrdersProductsClientContract(tier: CommerceClientTier): voi
 						{ amountCents: 500, currency: "USD", refundedBy: "ops@example.test" },
 						{ idempotencyKey: "adm-o-refc-1" },
 					),
-				).toEqual({ ok: false, status: 409, reason: "REFUND_EXCEEDS_CAPTURED" });
+				).toEqual({ ok: false, status: 409, reason: "NO_CAPTURED_PAYMENT" });
 			},
 		);
 
 		test.skipIf(tier.payments !== undefined)(
-			"(no gateways yet — INC-C1/C3) that refusal names the missing GATEWAY, not the ceiling",
+			"(no gateway composed) that refusal names the missing GATEWAY, not the ceiling",
 			async () => {
 				await tier.arrange.order({ orderId: "adm-o-refg", buyerRef: "refg@example.test" });
 				expect(
@@ -2595,6 +3873,208 @@ export function adminOrdersProductsClientContract(tier: CommerceClientTier): voi
 						{ idempotencyKey: "adm-o-refg-1" },
 					),
 				).toEqual({ ok: false, status: 409, reason: "REFUND_GATEWAY_UNAVAILABLE" });
+			},
+		);
+
+		/** The refund calls a provider received under ONE idempotency key. */
+		function providerCallsFor(idempotencyKey: string): readonly ProviderRefundCall[] {
+			const payments = tier.payments;
+			if (payments === undefined) throw new Error("unreachable: gated on tier.payments");
+			return payments.providerRefundCalls().filter((c) => c.idempotencyKey === idempotencyKey);
+		}
+
+		test.skipIf(tier.payments === undefined)(
+			"(gateways composed) a refund past a SHORT capture is refused REFUND_EXCEEDS_CAPTURED before any provider call",
+			async () => {
+				// $10.00 captured against a $15.00 total: the ceiling is min(1000, 1500),
+				// so it binds at what was CAPTURED, not at the order total.
+				await tier.arrange.order({
+					orderId: "adm-o-refshort",
+					buyerRef: "refshort@example.test",
+					captured: { amountCents: 1000, providerRef: "pi_adm_o_refshort" },
+				});
+				expect(await orders.getRefunds("adm-o-refshort")).toMatchObject({
+					capturedTotalCents: 1000,
+					ceilingCents: 1000,
+					remainingCents: 1000,
+					refundable: true,
+				});
+
+				expect(
+					await orders.refundOrder(
+						"adm-o-refshort",
+						{ amountCents: 1200, currency: "USD", refundedBy: "ops@example.test" },
+						{ idempotencyKey: "adm-o-refshort-1" },
+					),
+				).toEqual({ ok: false, status: 409, reason: "REFUND_EXCEEDS_CAPTURED" });
+				// Refused at RESERVATION, so no money was ever asked of the provider and
+				// no row — not even a voided one — is on the ledger.
+				expect(providerCallsFor("adm-o-refshort-1")).toEqual([]);
+				expect(await orders.getRefunds("adm-o-refshort")).toMatchObject({
+					refunds: [],
+					refundedTotalCents: 0,
+					remainingCents: 1000,
+				});
+			},
+		);
+
+		test.skipIf(tier.payments === undefined)(
+			"(gateways composed) a refund within the ceiling calls the provider EXACTLY ONCE with its key, and the ledger records it",
+			async () => {
+				const method = tier.payments?.method ?? "stripe";
+				await tier.arrange.order({
+					orderId: "adm-o-refok",
+					buyerRef: "refok@example.test",
+					paymentMethod: method,
+					captured: { amountCents: 1500, providerRef: "pi_adm_o_refok" },
+				});
+
+				expect(
+					await orders.refundOrder(
+						"adm-o-refok",
+						{
+							amountCents: 500,
+							currency: "USD",
+							reason: "damaged",
+							refundedBy: "ops@example.test",
+						},
+						{ idempotencyKey: "adm-o-refok-1" },
+					),
+				).toEqual({
+					ok: true,
+					recorded: true,
+					duplicate: false,
+					fullyRefunded: false,
+					email: NO_EMAIL_PROVIDER,
+				});
+				// The PROVIDER's view: one call, against the captured PaymentIntent, for
+				// the amount asked, carrying the command's key as its own idempotency key.
+				expect(providerCallsFor("adm-o-refok-1")).toEqual([
+					{
+						gateway: method,
+						orderId: "adm-o-refok",
+						providerRef: "pi_adm_o_refok",
+						amountCents: 500,
+						currency: "USD",
+						idempotencyKey: "adm-o-refok-1",
+					},
+				]);
+				const after = await orders.getRefunds("adm-o-refok");
+				expect(after).toMatchObject({ refundedTotalCents: 500, remainingCents: 1000 });
+				expect(after?.refunds).toHaveLength(1);
+				expect(after?.refunds[0]).toMatchObject({
+					orderId: "adm-o-refok",
+					amountCents: 500,
+					currency: "USD",
+					kind: "gateway",
+					gateway: method,
+					status: "recorded",
+					reason: "damaged",
+					refundedBy: "ops@example.test",
+				});
+				// A gateway refund carries the provider's own refund id — the proof money
+				// moved, which a manual row never has.
+				expect(typeof after?.refunds[0]?.refundRef).toBe("string");
+
+				// The REST of the ceiling, under a new key, refunds the order fully.
+				expect(
+					await orders.refundOrder(
+						"adm-o-refok",
+						{ amountCents: 1000, currency: "USD", refundedBy: "ops@example.test" },
+						{ idempotencyKey: "adm-o-refok-2" },
+					),
+				).toEqual({
+					ok: true,
+					recorded: true,
+					duplicate: false,
+					fullyRefunded: true,
+					email: NO_EMAIL_PROVIDER,
+				});
+				expect(providerCallsFor("adm-o-refok-2")).toHaveLength(1);
+				expect(await orders.getRefunds("adm-o-refok")).toMatchObject({
+					refundedTotalCents: 1500,
+					remainingCents: 0,
+				});
+				expect((await orders.getOrder("adm-o-refok"))?.order.state).toBe("refunded");
+			},
+		);
+
+		test.skipIf(tier.payments === undefined)(
+			"(gateways composed) a replayed refund key records nothing new and makes NO second provider call",
+			async () => {
+				await tier.arrange.order({
+					orderId: "adm-o-refrep",
+					buyerRef: "refrep@example.test",
+					paymentMethod: tier.payments?.method ?? "stripe",
+					captured: { amountCents: 1500, providerRef: "pi_adm_o_refrep" },
+				});
+				const refund = { amountCents: 700, currency: "USD", refundedBy: "ops@example.test" };
+				expect(
+					await orders.refundOrder("adm-o-refrep", refund, { idempotencyKey: "adm-o-refrep-1" }),
+				).toEqual({
+					ok: true,
+					recorded: true,
+					duplicate: false,
+					fullyRefunded: false,
+					email: NO_EMAIL_PROVIDER,
+				});
+
+				// THE DOUBLE-SUBMIT: same key, same refund. The ledger answers it — the
+				// provider is never asked twice, so money cannot move twice.
+				expect(
+					await orders.refundOrder("adm-o-refrep", refund, { idempotencyKey: "adm-o-refrep-1" }),
+				).toEqual({ ok: true, recorded: false, duplicate: true, fullyRefunded: false });
+				expect(providerCallsFor("adm-o-refrep-1")).toHaveLength(1);
+				expect(await orders.getRefunds("adm-o-refrep")).toMatchObject({
+					refundedTotalCents: 700,
+					remainingCents: 800,
+				});
+				expect((await orders.getRefunds("adm-o-refrep"))?.refunds).toHaveLength(1);
+			},
+		);
+
+		test.skipIf(tier.payments?.manualRefundMethod === undefined)(
+			"(non-refundable gateway composed) a MANUAL refund is recorded without any provider call (SKIPPED where the tier composes no such gateway)",
+			async () => {
+				const method = tier.payments?.manualRefundMethod ?? "x402";
+				await tier.arrange.order({
+					orderId: "adm-o-refman",
+					buyerRef: "refman@example.test",
+					paymentMethod: method,
+					captured: { amountCents: 1500, providerRef: "0xadm-o-refman" },
+				});
+				// The gateway's HONEST capability: it cannot move money back, so the panel
+				// offers "record a manual refund" — and recording one must still work.
+				expect(await orders.getRefunds("adm-o-refman")).toMatchObject({
+					paymentMethod: method,
+					refundable: false,
+					remainingCents: 1500,
+				});
+
+				expect(
+					await orders.refundOrder(
+						"adm-o-refman",
+						{ amountCents: 1500, currency: "USD", refundedBy: "ops@example.test" },
+						{ idempotencyKey: "adm-o-refman-1" },
+					),
+				).toEqual({
+					ok: true,
+					recorded: true,
+					duplicate: false,
+					fullyRefunded: true,
+					email: NO_EMAIL_PROVIDER,
+				});
+				expect(providerCallsFor("adm-o-refman-1")).toEqual([]);
+				const after = await orders.getRefunds("adm-o-refman");
+				expect(after?.refunds).toHaveLength(1);
+				expect(after?.refunds[0]).toMatchObject({
+					kind: "manual",
+					gateway: method,
+					status: "recorded",
+					refundRef: null,
+					amountCents: 1500,
+				});
+				expect(after).toMatchObject({ refundedTotalCents: 1500, remainingCents: 0 });
 			},
 		);
 
@@ -2650,6 +4130,7 @@ export function adminOrdersProductsClientContract(tier: CommerceClientTier): voi
 				widthMm: null,
 				heightMm: null,
 				productKind: expect.any(String) as unknown as string,
+				downloadAsset: null,
 				active: expect.any(Boolean) as unknown as boolean,
 				deletedAt: null,
 				onHand: 7,
@@ -2665,6 +4146,36 @@ export function adminOrdersProductsClientContract(tier: CommerceClientTier): voi
 
 		test("getProduct: an id that never existed is null, not an error", async () => {
 			expect(await client.getProduct("adm-p-missing")).toBeNull();
+		});
+
+		test("getProductSummaries: the asked ids in the asked order, unknown ids left out, zero kept as zero", async () => {
+			await seed({
+				productId: "adm-sum-priced",
+				sku: "ADM-SUM-PRICED",
+				title: "Priced",
+				price: { amount: 2599, currency: "USD" },
+				onHand: 7,
+			});
+			await seed({ productId: "adm-sum-zero", sku: "ADM-SUM-ZERO", title: "Zero" });
+			// Written out in full for the same reason as the detail above: a
+			// narrowed projection must fail on the missing key.
+			const summaries = await client.getProductSummaries([
+				"adm-sum-zero",
+				"adm-sum-missing",
+				"adm-sum-priced",
+			]);
+			expect(summaries).toEqual([
+				expect.objectContaining({ productId: "adm-sum-zero", onHand: 0 }),
+				{
+					productId: "adm-sum-priced",
+					sku: "ADM-SUM-PRICED",
+					priceCents: 2599,
+					currency: "USD",
+					compareAtCents: null,
+					onHand: 7,
+					deletedAt: null,
+				},
+			]);
 		});
 
 		test("a soft-deleted product reads back as a tombstone, lists only under deleted, and takes no stock movement", async () => {
@@ -2852,6 +4363,137 @@ export function adminOrdersProductsClientContract(tier: CommerceClientTier): voi
 			});
 		});
 
+		// ── the download file (issue #376) ─────────────────────────────────
+		//
+		// The descriptor rides the ordinary edit. Its SHAPE (an object of the five
+		// known keys, with the right types) is this boundary's to refuse, as the
+		// edit's strict body schema refuses any unknown key — a refusal with no
+		// field. Its VALUE rules are the domain's, which name the sub-field.
+
+		const DL_ULID = "01J9ZQ3V8K4M2N6P7R8S9T0VWX";
+
+		test("an edit attaches a download file to a digital product, the detail carries it, and null is REFUSED (replace only)", async () => {
+			const watermark = await seed({
+				productId: "adm-dl-ok",
+				sku: "ADM-DL-OK",
+				price: { amount: 900, currency: "USD" },
+				productKind: "digital",
+			});
+			const asset = {
+				key: `dl/adm-dl-ok/${DL_ULID}`,
+				filename: "Field Guide.pdf",
+				contentType: "application/pdf",
+				size: 2048,
+				sha256: "ab".repeat(32),
+			};
+			const applied = await client.updateProduct(
+				"adm-dl-ok",
+				{ expectedUpdatedAt: watermark, downloadAsset: asset },
+				"adm-dl-ok-1",
+			);
+			expect(applied.ok).toBe(true);
+			const read = await client.getProduct("adm-dl-ok");
+			expect(read?.downloadAsset).toEqual(asset);
+
+			const detached = await client.updateProduct(
+				"adm-dl-ok",
+				{ expectedUpdatedAt: read?.updatedAt ?? "", downloadAsset: null },
+				"adm-dl-ok-2",
+			);
+			// A file is replaced, never removed (ADR-0029 Decision 6): past buyers keep
+			// what they bought.
+			expect(detached).toEqual({ ok: false, reason: "invalid", field: "downloadAsset" });
+			expect((await client.getProduct("adm-dl-ok"))?.downloadAsset).toEqual(asset);
+		});
+
+		test("a download file on a physical product is refused, naming the field", async () => {
+			const watermark = await seed({ productId: "adm-dl-phys", sku: "ADM-DL-PHYS" });
+			const result = await client.updateProduct(
+				"adm-dl-phys",
+				{
+					expectedUpdatedAt: watermark,
+					downloadAsset: {
+						key: `dl/adm-dl-phys/${DL_ULID}`,
+						filename: "guide.pdf",
+						contentType: "application/pdf",
+						size: 1,
+					},
+				},
+				"adm-dl-phys-1",
+			);
+			expect(result).toEqual({ ok: false, reason: "invalid", field: "downloadAsset" });
+			expect((await client.getProduct("adm-dl-phys"))?.downloadAsset).toBeNull();
+		});
+
+		test("a download file that breaks a value rule is refused, naming the sub-field", async () => {
+			const watermark = await seed({
+				productId: "adm-dl-rule",
+				sku: "ADM-DL-RULE",
+				productKind: "digital",
+			});
+			const good = {
+				key: `dl/adm-dl-rule/${DL_ULID}`,
+				filename: "guide.pdf",
+				contentType: "application/pdf",
+				size: 1,
+			};
+			const cases = [
+				[{ ...good, key: `dl/another-product/${DL_ULID}` }, "downloadAsset.key"],
+				[{ ...good, filename: 'guide.pdf"\r\nSet-Cookie: a=b' }, "downloadAsset.filename"],
+				[{ ...good, contentType: "text/html" }, "downloadAsset.contentType"],
+				[{ ...good, contentType: "image/svg+xml" }, "downloadAsset.contentType"],
+				[{ ...good, size: -1 }, "downloadAsset.size"],
+				[{ ...good, sha256: "XYZ" }, "downloadAsset.sha256"],
+			] as const;
+			for (const [downloadAsset, field] of cases) {
+				expect(
+					await client.updateProduct(
+						"adm-dl-rule",
+						{ expectedUpdatedAt: watermark, downloadAsset },
+						`adm-dl-rule-${field}-${downloadAsset.contentType}`,
+					),
+					field,
+				).toEqual({ ok: false, reason: "invalid", field });
+			}
+			expect((await client.getProduct("adm-dl-rule"))?.downloadAsset).toBeNull();
+		});
+
+		test("a download file of the wrong SHAPE is refused at the boundary, with no field", async () => {
+			const watermark = await seed({
+				productId: "adm-dl-shape",
+				sku: "ADM-DL-SHAPE",
+				productKind: "digital",
+			});
+			const good = {
+				key: `dl/adm-dl-shape/${DL_ULID}`,
+				filename: "guide.pdf",
+				contentType: "application/pdf",
+				size: 1,
+			};
+			// Only an UNTYPED caller can send these; the wire type stops a typed one.
+			const shapes: unknown[] = [
+				"dl/adm-dl-shape/x",
+				[good],
+				{ ...good, url: "https://elsewhere.example/file" },
+				{ ...good, size: "1" },
+				{ key: good.key, filename: good.filename, size: 1 },
+				{ ...good, sha256: null },
+			];
+			for (const [i, downloadAsset] of shapes.entries()) {
+				expect(
+					await client.updateProduct(
+						"adm-dl-shape",
+						{ expectedUpdatedAt: watermark, downloadAsset } as unknown as Parameters<
+							typeof client.updateProduct
+						>[1],
+						`adm-dl-shape-${String(i)}`,
+					),
+					`shape ${String(i)}`,
+				).toEqual({ ok: false, reason: "invalid", field: null });
+			}
+			expect((await client.getProduct("adm-dl-shape"))?.downloadAsset).toBeNull();
+		});
+
 		test("a stale watermark is refused and hands back the current one", async () => {
 			const watermark = await seed({
 				productId: "adm-e-stale",
@@ -3006,9 +4648,11 @@ export function adminOrdersProductsClientContract(tier: CommerceClientTier): voi
 				ok: true,
 				onHand: 5,
 			});
+			// The replay SAYS it is one, so the screen never reports it as a fresh add.
 			expect(await client.restock("adm-r-replay", 5, "adm-r-replay-1")).toEqual({
 				ok: true,
 				onHand: 5,
+				replayed: true,
 			});
 			expect((await client.getProduct("adm-r-replay"))?.onHand).toBe(5);
 		});
@@ -3062,6 +4706,36 @@ export function adminOrdersProductsClientContract(tier: CommerceClientTier): voi
 			expect((await client.getProduct("adm-sm-bad"))?.onHand).toBe(5);
 		});
 
+		test("a removal pinned to a count that has moved is stale_on_hand with the live count; a current one applies", async () => {
+			await seed({ productId: "adm-sm-wm", sku: "ADM-SM-WM", onHand: 7 });
+
+			expect(await client.removeStock("adm-sm-wm", 3, "adm-sm-wm-1", 10)).toEqual({
+				ok: false,
+				reason: "stale_on_hand",
+				onHand: 7,
+			});
+			expect(await client.removeStock("adm-sm-wm", 3, "adm-sm-wm-2", 7)).toEqual({
+				ok: true,
+				onHand: 4,
+			});
+			// A retry of the applied removal answers its success, although the count
+			// it was pinned to (7) is no longer the count — and says it is a replay.
+			expect(await client.removeStock("adm-sm-wm", 3, "adm-sm-wm-2", 7)).toEqual({
+				ok: true,
+				onHand: 4,
+				replayed: true,
+			});
+			for (const bad of [-1, 1.5]) {
+				expect(await client.removeStock("adm-sm-wm", 1, "adm-sm-wm-bad", bad)).toMatchObject({
+					ok: false,
+					reason: "invalid",
+				});
+			}
+			// A restock is never pinned: it applies whatever the count is.
+			expect(await client.restock("adm-sm-wm", 6, "adm-sm-wm-3")).toEqual({ ok: true, onHand: 10 });
+			expect((await client.getProduct("adm-sm-wm"))?.onHand).toBe(10);
+		});
+
 		// ── getTaxClasses ─────────────────────────────────────────────────
 
 		test("the tax-class registry comes back whole, id and name", async () => {
@@ -3087,6 +4761,14 @@ export function adminOrdersProductsClientContract(tier: CommerceClientTier): voi
 type ProductsListResultShape = Awaited<ReturnType<ProductsClientSurface["listProducts"]>>;
 
 // ── Slice 3: admin rules + reporting (INC-B10c) ───────────────────────────
+
+/**
+ * What an admin write reports about the buyer's email on this tier (QA T1-6): it is
+ * built with no email API URL, so a write that enqueues the email says nothing will
+ * be sent — never "emailed". The inline send itself is pinned, with a sender, in
+ * `admin-order-emails-inline.test.ts`.
+ */
+const NO_EMAIL_PROVIDER = "unconfigured";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -3225,12 +4907,8 @@ export function adminRulesReportingClientContract(tier: CommerceClientTier): voi
 				buyerRef: "rev3@example.test",
 				unitPrice: { amount: 9900, currency: "CAD" },
 			});
-			expect(
-				await orders.transitionOrder("rep-rev-1", "paid", { idempotencyKey: "rep-rev-1-paid" }),
-			).toEqual({ ok: true, transitioned: true });
-			expect(
-				await orders.transitionOrder("rep-rev-2", "paid", { idempotencyKey: "rep-rev-2-paid" }),
-			).toEqual({ ok: true, transitioned: true });
+			await tier.arrange.settle("rep-rev-1");
+			await tier.arrange.settle("rep-rev-2");
 
 			const window = await windowAroundOrder("rep-rev-1");
 			const buckets = (await reporting.getRevenue(window, "day")).filter(
@@ -3291,8 +4969,14 @@ export function adminRulesReportingClientContract(tier: CommerceClientTier): voi
 		// ── reporting: getOrdersByStatus ──────────────────────────────────
 
 		test("orders-by-status counts EVERY state, with no allow-list, and omits the empty ones", async () => {
-			await tier.arrange.order({ orderId: "rep-obs-1", buyerRef: "obs1@example.test" });
-			await tier.arrange.order({ orderId: "rep-obs-2", buyerRef: "obs2@example.test" });
+			await tier.arrange.order({
+				orderId: "rep-obs-1",
+				buyerRef: "obs1@example.test",
+			});
+			await tier.arrange.order({
+				orderId: "rep-obs-2",
+				buyerRef: "obs2@example.test",
+			});
 			await tier.arrange.order({ orderId: "rep-obs-3", buyerRef: "obs3@example.test" });
 			const window = await windowAroundOrder("rep-obs-1");
 			// A DELTA, not an absolute: the other slice's orders share this window on a
@@ -3301,14 +4985,21 @@ export function adminRulesReportingClientContract(tier: CommerceClientTier): voi
 			// PENDING, so the deltas below say the states MOVED rather than merely that
 			// a count went up.
 			const before = await reporting.getOrdersByStatus(window);
+			await tier.arrange.settle("rep-obs-1");
 			expect(
-				await orders.transitionOrder("rep-obs-1", "paid", { idempotencyKey: "rep-obs-1-paid" }),
-			).toEqual({ ok: true, transitioned: true });
-			expect(
-				await orders.transitionOrder("rep-obs-2", "cancelled", {
-					idempotencyKey: "rep-obs-2-cancel",
-				}),
-			).toEqual({ ok: true, transitioned: true });
+				await orders.cancelOrder(
+					"rep-obs-2",
+					{ reason: "customer_request", cancelledBy: "ops@example.test" },
+					{ idempotencyKey: "rep-obs-2-cancel" },
+				),
+			).toEqual({
+				ok: true,
+				cancelled: true,
+				refund: null,
+				restockedUnits: 0,
+				restockSkipped: [],
+				email: NO_EMAIL_PROVIDER,
+			});
 
 			const after = await reporting.getOrdersByStatus(window);
 			expect(countOf(after, "paid") - countOf(before, "paid")).toBe(1);
@@ -3354,11 +5045,7 @@ export function adminRulesReportingClientContract(tier: CommerceClientTier): voi
 				unitPrice: { amount: 2000, currency: "USD" },
 				quantity: 1,
 			});
-			for (const orderId of ["rep-top-a1", "rep-top-a2"]) {
-				expect(
-					await orders.transitionOrder(orderId, "paid", { idempotencyKey: `${orderId}-paid` }),
-				).toEqual({ ok: true, transitioned: true });
-			}
+			for (const orderId of ["rep-top-a1", "rep-top-a2"]) await tier.arrange.settle(orderId);
 
 			const window = await windowAroundOrder("rep-top-a1");
 			const rows = (
@@ -3390,9 +5077,7 @@ export function adminRulesReportingClientContract(tier: CommerceClientTier): voi
 				unitPrice: { amount: 1, currency: "USD" },
 				quantity: BIG_QTY,
 			});
-			expect(
-				await orders.transitionOrder("rep-top-big", "paid", { idempotencyKey: "rep-top-big-paid" }),
-			).toEqual({ ok: true, transitioned: true });
+			await tier.arrange.settle("rep-top-big");
 
 			const window = await windowAroundOrder("rep-top-big");
 			const row = (await reporting.getTopProducts(window, "quantity", TOP_PRODUCTS_MAX_LIMIT)).find(
@@ -3602,6 +5287,253 @@ export function adminRulesReportingClientContract(tier: CommerceClientTier): voi
 			expect(await client.deleteZone("z1")).toEqual({ ok: true });
 		});
 
+		test("a create that collides with an existing id or code ANSWERS 409 — never a rejection — and writes nothing", async () => {
+			// THE OPERATOR'S MOST COMMON TYPO is a duplicate id, and it used to reach the
+			// console as a thrown store collision, which the scaffold's last-resort net
+			// can only describe as "Action outcome unknown — may already have been
+			// applied". A collision is the one failure that is KNOWN to have written
+			// nothing, so it must arrive as the typed refusal the create result already
+			// has an arm for, and the screen's own "already in use" copy can say so.
+			expect((await client.createZone({ id: "dup-z", name: "Zone" })).ok).toBe(true);
+			expect(await client.createZone({ id: "dup-z", name: "Again" })).toEqual({
+				ok: false,
+				status: 409,
+			});
+			expect((await client.listZones()).filter((z) => z.id === "dup-z")).toEqual([
+				{ id: "dup-z", name: "Zone", regions: null },
+			]);
+
+			expect(
+				(await client.createMethod("dup-z", { id: "dup-m", name: "Flat", type: "flat_rate" })).ok,
+			).toBe(true);
+			expect(
+				await client.createMethod("dup-z", { id: "dup-m", name: "Again", type: "flat_rate" }),
+			).toEqual({ ok: false, status: 409 });
+
+			expect((await client.createRate("dup-m", { currency: "USD", amountCents: 500 })).ok).toBe(
+				true,
+			);
+			expect(await client.createRate("dup-m", { currency: "USD", amountCents: 900 })).toEqual({
+				ok: false,
+				status: 409,
+			});
+			expect((await client.getRate("dup-m", "USD"))?.amountCents).toBe(500);
+
+			expect((await client.createTaxClass({ id: "dup-c", name: "Class" })).ok).toBe(true);
+			expect(await client.createTaxClass({ id: "dup-c", name: "Again" })).toEqual({
+				ok: false,
+				status: 409,
+			});
+
+			const rate = { id: "dup-t", taxClassId: "dup-c", zoneId: "dup-z", rateBps: 725 };
+			expect((await client.createTaxRate(rate)).ok).toBe(true);
+			expect(await client.createTaxRate({ ...rate, rateBps: 900 })).toEqual({
+				ok: false,
+				status: 409,
+			});
+			expect((await client.listTaxRates("dup-z")).map((r) => r.rateBps)).toEqual([725]);
+
+			const coupon = {
+				id: "dup-cpn",
+				code: "DUPCODE",
+				type: "fixed_amount",
+				amountCents: 500,
+				currency: "USD",
+			};
+			expect((await client.createCoupon(coupon)).ok).toBe(true);
+			// Same id, and — separately — the same code under a new id, case-folded.
+			expect(await client.createCoupon({ ...coupon, code: "OTHER" })).toEqual({
+				ok: false,
+				status: 409,
+			});
+			expect(await client.createCoupon({ ...coupon, id: "dup-cpn-2", code: "dupcode" })).toEqual({
+				ok: false,
+				status: 409,
+			});
+			expect(await client.getCoupon("OTHER")).toBeNull();
+			expect((await client.getCoupon("DUPCODE"))?.id).toBe("dup-cpn");
+		});
+
+		test("a create under a parent that does not exist ANSWERS 404 and writes nothing", async () => {
+			// The stores raise a missing zone/method only after giving back the id
+			// they claimed, so — like a collision — it is known to have written nothing.
+			expect(
+				await client.createMethod("no-such-zone", { id: "orphan-m", name: "M", type: "flat_rate" }),
+			).toEqual({ ok: false, status: 404 });
+			expect(
+				await client.createRate("no-such-method", { currency: "USD", amountCents: 1 }),
+			).toEqual({ ok: false, status: 404 });
+			expect(await client.getRate("no-such-method", "USD")).toBeNull();
+			// The claimed method id was given back: it can be used under a real zone.
+			await client.createZone({ id: "real-z", name: "Real" });
+			expect(
+				(await client.createMethod("real-z", { id: "orphan-m", name: "M", type: "flat_rate" })).ok,
+			).toBe(true);
+		});
+
+		test("a coupon code with whitespace inside it is refused before anything is written", async () => {
+			await expect(
+				client.createCoupon({
+					id: "ws-cpn",
+					code: "QA ADMIN",
+					type: "fixed_amount",
+					amountCents: 500,
+					currency: "USD",
+				}),
+			).rejects.toMatchObject({ code: "INVALID_INPUT", field: "code" });
+			expect(await client.getCoupon("QA ADMIN")).toBeNull();
+		});
+
+		test("a coupon code outside printable ASCII is refused, so case folding is exact for every new code", async () => {
+			// `toLowerCase` is an exact fold on ASCII; on other scripts "the same code"
+			// would depend on Unicode normalisation a shopper's keyboard does not share.
+			await expect(
+				client.createCoupon({
+					id: "uni-cpn",
+					code: "ÉTÉ10",
+					type: "fixed_amount",
+					amountCents: 500,
+					currency: "USD",
+				}),
+			).rejects.toMatchObject({ code: "INVALID_INPUT", field: "code" });
+		});
+
+		test("a tax rate above 100% (10000 bps) is refused on create and on edit", async () => {
+			await client.createZone({ id: "cap-z", name: "Cap" });
+			await client.createTaxClass({ id: "cap-c", name: "Cap" });
+			const rate = { id: "cap-t", taxClassId: "cap-c", zoneId: "cap-z", rateBps: 10_001 };
+			await expect(client.createTaxRate(rate)).rejects.toMatchObject({
+				code: "INVALID_INPUT",
+				field: "rateBps",
+			});
+			expect((await client.createTaxRate({ ...rate, rateBps: 10_000 })).ok).toBe(true);
+			await expect(
+				client.updateTaxRate("cap-t", {
+					rateBps: 15_000,
+					appliesToShipping: false,
+					expectedRateBps: 10_000,
+				}),
+			).rejects.toMatchObject({ code: "INVALID_INPUT", field: "rateBps" });
+		});
+
+		test("a currency-shaped code that is not ISO-4217 (XYZ) is refused on a rate and a coupon create", async () => {
+			// The console checks this first; the client is the second line, so no
+			// caller of the surface can store a price nobody is quoted in.
+			await client.createZone({ id: "cur-z", name: "Cur" });
+			await client.createMethod("cur-z", { id: "cur-m", name: "M", type: "flat_rate" });
+			await expect(
+				client.createRate("cur-m", { currency: "XYZ", amountCents: 500 }),
+			).rejects.toMatchObject({ code: "INVALID_INPUT", field: "currency" });
+			await expect(
+				client.createCoupon({
+					id: "cur-c",
+					code: "CURXYZ",
+					type: "fixed_amount",
+					amountCents: 500,
+					currency: "XYZ",
+				}),
+			).rejects.toMatchObject({ code: "INVALID_INPUT", field: "currency" });
+			expect(await client.getCoupon("CURXYZ")).toBeNull();
+		});
+
+		test("a free-shipping threshold on a FLAT-RATE method's rate is refused on create and edit; a blank one is fine", async () => {
+			await client.createZone({ id: "thr-z", name: "Thr" });
+			await client.createMethod("thr-z", { id: "thr-flat", name: "Flat", type: "flat_rate" });
+			await expect(
+				client.createRate("thr-flat", {
+					currency: "USD",
+					amountCents: 500,
+					minSubtotalCents: 3500,
+				}),
+			).rejects.toMatchObject({ code: "INVALID_INPUT", field: "minSubtotalCents" });
+			expect((await client.createRate("thr-flat", { currency: "USD", amountCents: 500 })).ok).toBe(
+				true,
+			);
+			await expect(
+				client.updateRate("thr-flat", "USD", {
+					amountCents: 500,
+					minSubtotalCents: 3500,
+					expectedAmountCents: 500,
+				}),
+			).rejects.toMatchObject({ code: "INVALID_INPUT", field: "minSubtotalCents" });
+			await client.createMethod("thr-z", { id: "thr-free", name: "Free", type: "free_shipping" });
+			expect(
+				(
+					await client.createRate("thr-free", {
+						currency: "USD",
+						amountCents: 500,
+						minSubtotalCents: 3500,
+					})
+				).ok,
+			).toBe(true);
+		});
+
+		test("a coupon window bound is STORED canonically, so an untouched save can never move it", async () => {
+			const storedWindowOf = async (code: string) =>
+				(await client.listCoupons({ search: code })).coupons[0];
+			const base = { type: "fixed_amount", amountCents: 500, currency: "USD" };
+			expect(
+				(
+					await client.createCoupon({
+						...base,
+						id: "canon-z",
+						code: "CANONZ",
+						startsAt: "2026-10-02T12:00:00Z",
+					})
+				).ok,
+			).toBe(true);
+			expect(
+				(
+					await client.createCoupon({
+						...base,
+						id: "canon-off",
+						code: "CANONOFF",
+						expiresAt: "2026-10-02T13:00:00+01:00",
+					})
+				).ok,
+			).toBe(true);
+			expect((await storedWindowOf("CANONZ"))?.startsAt).toBe("2026-10-02T12:00:00.000Z");
+			expect((await storedWindowOf("CANONOFF"))?.expiresAt).toBe("2026-10-02T12:00:00.000Z");
+			// ISO's end-of-day `24:00` is accepted and stored as the next midnight it denotes.
+			expect(
+				(
+					await client.updateCoupon("canon-z", {
+						amountCents: 500,
+						expiresAt: "2026-10-02T24:00:00Z",
+					})
+				).ok,
+			).toBe(true);
+			expect((await storedWindowOf("CANONZ"))?.expiresAt).toBe("2026-10-03T00:00:00.000Z");
+		});
+
+		test("a coupon window bound that is not a zoned ISO instant is refused on create and edit", async () => {
+			// Checkout fails closed on an unreadable bound; the write side refuses
+			// one in the first place, so an API writer cannot store a coupon that
+			// can never be redeemed by accident. The wire's 64-char bound still holds.
+			const base = {
+				id: "win-c",
+				code: "WINC",
+				type: "fixed_amount",
+				amountCents: 500,
+				currency: "USD",
+			};
+			for (const bad of ["2026-13-01", "2026-10-02T12:00:00", "soon"]) {
+				await expect(client.createCoupon({ ...base, startsAt: bad })).rejects.toMatchObject({
+					code: "INVALID_INPUT",
+					field: "startsAt",
+				});
+			}
+			await expect(
+				client.createCoupon({ ...base, expiresAt: `2026-10-02T12:00:00Z${" ".repeat(60)}` }),
+			).rejects.toMatchObject({ code: "INVALID_INPUT", field: "expiresAt" });
+			expect(
+				(await client.createCoupon({ ...base, expiresAt: "2026-10-02T13:00:00+01:00" })).ok,
+			).toBe(true);
+			await expect(
+				client.updateCoupon("win-c", { amountCents: 500, expiresAt: "2026-13-01" }),
+			).rejects.toMatchObject({ code: "INVALID_INPUT", field: "expiresAt" });
+		});
+
 		test("tax: create class+rate, CAS-edit, delete", async () => {
 			// ARRANGEMENT, not an assertion: a zone of this case's OWN. It used to
 			// name `z1` — the zone the shipping case above creates AND deletes — so
@@ -3651,6 +5583,75 @@ export function adminRulesReportingClientContract(tier: CommerceClientTier): voi
 
 			expect(await client.deleteTaxRate("t1")).toEqual({ ok: true });
 			expect(await client.deleteTaxRate("t1")).toEqual({ ok: false, reason: "not_found" });
+		});
+
+		/** A live coupon for the retire cases, with a window chosen by the case. */
+		async function retirable(id: string, window: { startsAt?: string; expiresAt?: string } = {}) {
+			const created = await client.createCoupon({
+				id,
+				code: id.toUpperCase(),
+				type: "fixed_amount",
+				amountCents: 1000,
+				currency: "USD",
+				minSubtotalCents: 2000,
+				maxUses: 50,
+				maxUsesPerCustomer: 2,
+				...window,
+			});
+			expect(created.ok).toBe(true);
+		}
+		async function windowOf(code: string) {
+			const page = await client.listCoupons({ search: code });
+			return page.coupons[0];
+		}
+
+		test.skipIf(tier.clock === undefined)(
+			"retireCoupon stamps the expiry from the tier's OWN clock, keeps every other field, and returns the window it replaced (SKIPPED where the tier cannot move its clock)",
+			async () => {
+				const clock = tier.clock;
+				if (clock === undefined) throw new Error("unreachable");
+				await retirable("ret-a", { startsAt: "2000-01-01T00:00:00.000Z" });
+				await retirable("ret-b");
+				const first = await client.retireCoupon("ret-a");
+				// Moving the TIER's clock moves the stamp — wall time would not jump an hour.
+				await clock.advance(60 * 60 * 1000);
+				const second = await client.retireCoupon("ret-b");
+				if (!first.ok || !second.ok) throw new Error("expected both retires to succeed");
+				const gap = Date.parse(second.value.retiredAt) - Date.parse(first.value.retiredAt);
+				expect(gap).toBeGreaterThanOrEqual(60 * 60 * 1000);
+				expect(gap).toBeLessThan(60 * 60 * 1000 + 60_000);
+				expect(first.value.previous).toEqual({
+					startsAt: "2000-01-01T00:00:00.000Z",
+					expiresAt: null,
+				});
+				expect(await windowOf("RET-A")).toMatchObject({
+					expiresAt: first.value.retiredAt,
+					startsAt: "2000-01-01T00:00:00.000Z",
+					amountCents: 1000,
+					minSubtotalCents: 2000,
+					maxUses: 50,
+					maxUsesPerCustomer: 2,
+				});
+			},
+		);
+
+		test("retireCoupon drops a start still in the future, so the window is not left inverted", async () => {
+			await retirable("ret-later", { startsAt: "2999-01-01T00:00:00.000Z" });
+			const result = await client.retireCoupon("ret-later");
+			expect(result.ok && result.value.previous.startsAt).toBe("2999-01-01T00:00:00.000Z");
+			expect((await windowOf("RET-LATER"))?.startsAt).toBeNull();
+		});
+
+		test("retireCoupon on a coupon that already ended answers already_ended and writes nothing", async () => {
+			await retirable("ret-old", { expiresAt: "2000-01-01T00:00:00Z" });
+			expect(await client.retireCoupon("ret-old")).toEqual({ ok: false, reason: "already_ended" });
+			// Unchanged since its create, which stores the bound canonically
+			// (fix/coupon-window-compare): "…00Z" is kept as "…00.000Z".
+			expect((await windowOf("RET-OLD"))?.expiresAt).toBe("2000-01-01T00:00:00.000Z");
+		});
+
+		test("retireCoupon on an unknown coupon is not_found", async () => {
+			expect(await client.retireCoupon("ret-missing")).toEqual({ ok: false, reason: "not_found" });
 		});
 
 		test("coupons: create, LWW-edit, read, delete", async () => {
@@ -3780,7 +5781,13 @@ export function adminRulesReportingClientContract(tier: CommerceClientTier): voi
 
 		test("shipping: getRate reads one method's rate in one currency, and absence is null rather than an error", async () => {
 			await client.createZone({ id: "gr-zone", name: "Get Rate" });
-			await client.createMethod("gr-zone", { id: "gr-method", name: "Flat", type: "flat_rate" });
+			// FREE SHIPPING, because the row below carries a threshold — and a
+			// threshold is refused on a flat-rate method's rate.
+			await client.createMethod("gr-zone", {
+				id: "gr-method",
+				name: "Free",
+				type: "free_shipping",
+			});
 
 			// A method with no rate yet: the read is an ABSENCE, not a failure.
 			expect(await client.getRate("gr-method", "USD")).toBeNull();

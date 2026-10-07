@@ -525,6 +525,82 @@ export function CopyIdButton({
 }
 
 /**
+ * The Show/Hide control beside a masked buyer email (issue #377).
+ *
+ * A DISCLOSURE, SO `aria-expanded` AND `aria-controls`. The button discloses the
+ * element whose id it is handed, and the visible word changes with the state:
+ * `aria-pressed` would make a screen reader say "Hide, pressed", which states
+ * the same thing twice and backwards. The accessible name CONTAINS the visible
+ * word (`Show buyer email for order #7e4c`), so a voice-control user can say
+ * what they see and a screen-reader user moving down a column hears which row
+ * each one belongs to, not "Show, Show, Show" — the reason `CopyIdButton`'s
+ * label names its id.
+ *
+ * ONE ELEMENT ACROSS BOTH STATES. The caller flips `revealed`; this button is
+ * never swapped for another, so a keyboard operator who pressed it still has
+ * focus on it. A native `<button>` is what makes Enter and Space work, with no
+ * key handler of our own to get wrong.
+ *
+ * IN A CELL, THE SAME COMPACT INK AS `CopyIdButton` (`compact`, the default),
+ * and visible at rest rather than on row hover: the masked text says something
+ * is hidden, and the way to see it must not itself be hidden. `fontWeight: 400`
+ * because the list's Customer cell is bold and a Show beside it should not look
+ * as though it were part of the value. Beside an ordinary `Button` — the
+ * detail's Back row — it takes that button's size instead.
+ */
+export function RevealToggle({
+	revealed,
+	onToggle,
+	controls,
+	what,
+	showLabel = "Show",
+	hideLabel = "Hide",
+	compact = true,
+	testId,
+}: {
+	revealed: boolean;
+	onToggle: () => void;
+	/** The id of the element this discloses. */
+	controls: string;
+	/** What is revealed, and whose — read after the verb: `buyer email for order #7e4c`. */
+	what: string;
+	showLabel?: string;
+	hideLabel?: string;
+	/** The Copy-sized control a table cell wants; `false` is the ordinary
+	 *  `Button` size, for a toolbar row beside one. */
+	compact?: boolean;
+	testId?: string;
+}): React.ReactElement {
+	const verb = revealed ? "Hide" : "Show";
+	return (
+		<button
+			type="button"
+			className="otta-focusable otta-btn"
+			data-testid={testId}
+			aria-expanded={revealed}
+			aria-controls={controls}
+			aria-label={`${verb} ${what}`}
+			onClick={onToggle}
+			style={
+				compact
+					? {
+							...buttonStyle,
+							padding: "1px 6px",
+							fontSize: 11,
+							fontWeight: 400,
+							marginInlineStart: 6,
+							opacity: 0.85,
+							verticalAlign: "baseline",
+						}
+					: { ...buttonStyle, marginInlineStart: 8 }
+			}
+		>
+			{revealed ? hideLabel : showLabel}
+		</button>
+	);
+}
+
+/**
  * An outcome the operator must read: a refusal, a success, or a warning about
  * the record itself.
  *
@@ -777,7 +853,9 @@ export function Group({
 	children,
 	testId,
 }: {
-	label: string;
+	/** Usually a string; a node when part of the title must be addressable —
+	 *  the detail's Customer title carries a masked email a toggle controls. */
+	label: React.ReactNode;
 	defaultOpen?: boolean;
 	children: React.ReactNode;
 	testId?: string;
@@ -826,6 +904,8 @@ export function ConfirmDialog({
 	confirmLabel,
 	denyLabel,
 	confirmTone = "danger",
+	confirmDisabled,
+	status,
 	onConfirm,
 	onDeny,
 }: {
@@ -844,6 +924,13 @@ export function ConfirmDialog({
 	 * operator to read past the styling on the confirms that are not.
 	 */
 	confirmTone?: "danger" | "neutral";
+	/** Hold the confirm while the caller cannot act on it yet (its text should
+	 *  say why); Deny stays available. */
+	confirmDisabled?: boolean;
+	/** A passing state the dialog should announce (why the confirm is held,
+	 *  say). Rendered in a polite live region that is always present, so a
+	 *  change is read out. */
+	status?: string;
 	onConfirm: () => void;
 	onDeny: () => void;
 }): React.ReactElement | null {
@@ -883,12 +970,22 @@ export function ConfirmDialog({
 			>
 				{text}
 			</p>
+			{status !== undefined && (
+				<p
+					style={{ fontSize: 13, margin: status === "" ? 0 : "0 0 16px", lineHeight: 1.5 }}
+					aria-live="polite"
+					data-testid="otta-confirm-status"
+				>
+					{status}
+				</p>
+			)}
 			<div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
 				<Button label={denyLabel} onClick={onDeny} testId="otta-confirm-deny" />
 				<Button
 					label={confirmLabel}
 					onClick={onConfirm}
 					danger={confirmTone === "danger"}
+					disabled={confirmDisabled}
 					testId="otta-confirm-yes"
 				/>
 			</div>

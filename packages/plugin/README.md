@@ -10,16 +10,13 @@ two declared capabilities.
 
 Everything that touches commerce goes through the `CommerceClient` port and
 obtains it from **one** composition root, `src/commerce/make-commerce-client.ts`.
-There are two implementations behind that port:
-
-- `HttpCommerceClient` — the commerce service over `ctx.http`. Transitional.
-- `InProcessCommerceClient` — the domain's use-cases composed over the
-  `@otta-sh/store-emdash` adapters, bound to the plugin's own document store.
-  No service, no egress at all.
-
-The build-time mode picks one. It is pinned to the HTTP transport, and the flag,
-the branch and the HTTP client are all removed once the in-process client has
-replaced them — **nothing may be designed around the flag.**
+There is one implementation behind that port, `InProcessCommerceClient`: the
+domain's use-cases composed over the `@otta-sh/store-emdash` adapters, bound to the
+plugin's own document store. There is no service, no HTTP transport and no mode
+flag (ADR-0020). Any egress it makes goes over `ctx.http`; the composition root
+wires the payment gateways — Stripe (`src/payments/stripe-wiring.ts`) and x402
+(`src/payments/x402-wiring.ts`) — each only when fully configured, and a method
+with no gateway fails loudly rather than minting an order nobody can pay for.
 
 ### Where commerce truth lives
 
@@ -59,25 +56,20 @@ as the retryable error it is — a caller has to be able to see that.
 
 ### Not yet wired
 
-Two gaps in the in-process transport are deliberate, and each is pinned by a test so
-it stays visible until it closes:
+One gap in the in-process transport is still open, and stays listed here until it closes.
+(The other, "`requestLoginLink` dispatches no mail", closed with issue #306: the magic link
+is emailed through `CtxHttpEmailSender` over `ctx.http`, pointing at the sign-in page the
+operator saves in Settings (`settings:loginLinkUrl`, required; never the request's origin).
+With no email API URL in the build, or no sign-in link URL, it still answers the same
+generic success, issues nothing, and logs once server-side.)
 
-- **`createOrder` has no payment gateway.** It composes an EMPTY gateway map, so
-  every payment method fails loudly rather than minting an order nobody can pay for.
-  The gateways move in-process with the payment adapters.
-- **`requestLoginLink` dispatches no mail.** It records the challenge — the login
-  itself works if you hold the token — and sends nothing, because the outbound mail
-  path moves in-process with the rest of the outbound topology. The reply is the same
-  generic success either way, so the surface is still no account oracle.
-
-- **Two hold TTLs fall back to the domain's defaults** — a PARITY GAP, not a
-  decision. The deployment docs carry one environment variable that drives both the
-  cart hold and the checkout hold, and the settings aggregate this composition
-  builds a store for carries a hold TTL of its own; neither is read yet, so a
-  deployment that had moved its hold window would silently get fifteen minutes back.
-  Reading it belongs with the settings and scheduled-sweep wiring (a per-request read
-  for a value that changes almost never is a read on the hot path), and it must close
-  before a deployment flips to this transport.
+- **The checkout hold ignores the hold TTL setting.** The Settings page's "Cart hold
+  TTL (minutes)" field (`holdTtlMinutes` in the settings aggregate; there is no
+  environment variable for it) now drives the CART hold end to end: add-to-cart and
+  adjust stamp it, the lazy expiry on cart read measures against it, and the
+  `expire-holds` sweep leg reaps by it (#318). The CHECKOUT hold — the window a
+  `pending` order keeps its adopted stock — does not read it: `createOrder` passes no
+  `ttlMs`, so it is always the domain's fifteen-minute `DEFAULT_CHECKOUT_TTL_MS`.
 
 ### Narrower, never wider
 
@@ -95,16 +87,13 @@ later stays private until someone adds it here on purpose.
 
 ### Running the proof
 
-The behavioural spec lives in `test/contracts/commerce-client-contract.ts` and is
-run by both tiers from the same cases. Both must be green; a case that fails on one
-transport is a defect in that transport, never a case to soften.
+The behavioural spec lives in `test/contracts/commerce-client-contract.ts` and runs
+against the in-process client. It must be green; a case that fails is a defect in
+the client, never a case to soften.
 
 ```bash
 # In-process, over a real document store on SQLite.
 pnpm --filter @otta-sh/plugin exec vitest run test/commerce-client-contract.in-process.test.ts
-
-# The HTTP transport, against a live service on Postgres.
-PG_CONNECTION_STRING=... pnpm --filter @otta-sh/plugin exec vitest run test/commerce-client-contract.http.test.ts
 ```
 
 ## The workerd suites

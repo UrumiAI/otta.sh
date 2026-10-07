@@ -51,6 +51,7 @@ import {
 	formatAmount,
 	formatTimestamp,
 	listOutcome,
+	maskBuyerEmail,
 	orderStateCell,
 	shortIdFixed,
 	shortIdsFor,
@@ -101,6 +102,7 @@ import {
 	Group,
 	Notice,
 	PagerButton,
+	RevealToggle,
 	StatusPill,
 	Table,
 	buttonStyle,
@@ -187,6 +189,12 @@ export function activeFilterParts(filter: OrdersFilter, periodLabel: string): st
  *  `readFilter` expects to receive. */
 function normalize(draft: OrdersFilter, statusAny: string): OrdersFilter {
 	const custom = draft.period === "custom";
+	// TRIMMED HERE, ONCE, because this is the value both the request and the
+	// active-filter summary are built from. Untrimmed, `  qa@x.com  ` was sent
+	// with its spaces — and the store's PREFIX match found nothing starting with
+	// a space — while the summary, rendered as HTML, collapsed them and showed
+	// the very term that "matched nothing". A whitespace-only search is no search.
+	const search = draft.search?.trim();
 	return {
 		...(draft.status !== undefined && draft.status !== statusAny && draft.status.length > 0
 			? { status: draft.status }
@@ -194,7 +202,7 @@ function normalize(draft: OrdersFilter, statusAny: string): OrdersFilter {
 		...(draft.period !== undefined && draft.period !== statusAny ? { period: draft.period } : {}),
 		...(custom && draft.from !== undefined && draft.from.length > 0 ? { from: draft.from } : {}),
 		...(custom && draft.to !== undefined && draft.to.length > 0 ? { to: draft.to } : {}),
-		...(draft.search !== undefined && draft.search.length > 0 ? { search: draft.search } : {}),
+		...(search !== undefined && search.length > 0 ? { search } : {}),
 	};
 }
 
@@ -412,6 +420,55 @@ export interface OrdersChrome {
 		readonly busy: boolean;
 		readonly autoFocus: boolean;
 	};
+}
+
+/**
+ * One row's Customer cell content: the buyer reference, an email MASKED until
+ * the operator asks (issue #377).
+ *
+ * WHY MASKED, given only an EmDash admin reaches this screen: there is no lower
+ * role to hide an address from, but there is a shoulder and a screenshot. A
+ * list of forty orders is forty buyers' addresses on one screen, and the
+ * operator rarely needs any of them in full to do the work in front of them.
+ *
+ * NOT IN THE DOCUMENT UNTIL REVEALED. Masked, the cell renders the hint and
+ * nothing else — no `title`, no `data-*`, no visually-hidden copy — so a DOM
+ * snapshot or a devtools screenshot of a masked screen carries no address. What
+ * this does NOT do is keep the address from the browser: it arrived in the
+ * admin API response, and the hint is drawn from it in memory. This is a
+ * presentation default for the person at the screen, not access control.
+ *
+ * PER ROW, IN COMPONENT STATE, NEVER PERSISTED. Revealing one buyer is not
+ * revealing the page, and nothing about it is written to the URL or storage: a
+ * reload, a new page of rows or a trip to the detail and back masks again. A
+ * reference that is not an email (`maskBuyerEmail` returns `null`) prints as it
+ * always did, with no toggle — there is no address in it to protect.
+ */
+function BuyerReference({
+	buyerRef,
+	prefix,
+}: {
+	buyerRef: string;
+	prefix: string;
+}): React.ReactElement {
+	const [revealed, setRevealed] = React.useState(false);
+	const valueId = `${React.useId()}-buyer`;
+	const masked = maskBuyerEmail(buyerRef);
+	if (masked === null) return <>{buyerReferenceText(buyerRef)}</>;
+	return (
+		<>
+			<span id={valueId} data-testid="buyer-ref">
+				{revealed ? buyerReferenceText(buyerRef) : masked}
+			</span>
+			<RevealToggle
+				revealed={revealed}
+				onToggle={() => setRevealed((open) => !open)}
+				controls={valueId}
+				what={`buyer email for order #${prefix}`}
+				testId="buyer-email-toggle"
+			/>
+		</>
+	);
 }
 
 /**
@@ -1439,6 +1496,14 @@ export function OrdersList({
 								style={inputStyle}
 								value={draft.search ?? ""}
 								onChange={(event) => setDraft({ ...draft, search: event.target.value })}
+								// Enter searches, as Apply filters does (QA round 2: it did
+								// nothing). Not while a read is in flight — Apply is
+								// unavailable then too.
+								onKeyDown={(event) => {
+									if (event.key !== "Enter" || busy) return;
+									event.preventDefault();
+									apply(normalize(draft, statusAny));
+								}}
 							/>
 						</Field>
 					</div>
@@ -1621,8 +1686,10 @@ export function OrdersList({
 									  is known about the buyer — and an opaque uuid on every CLAIMED
 									  one. `buyerReferenceText` is shared with the detail heading
 									  (`order-detail.tsx`, `@otta-sh/admin-presentation`) so the two
-									  screens cannot drift back apart on this rule. */}
-									{buyerReferenceText(order.buyerRef)}
+									  screens cannot drift back apart on this rule. An email is
+									  MASKED until this row's Show is pressed (issue #377) — see
+									  `BuyerReference`. */}
+									<BuyerReference buyerRef={order.buyerRef} prefix={prefix} />
 								</td>
 								<td className="otta-td">
 									{order.state === PILLED_ORDER_STATE ? (

@@ -4,7 +4,7 @@
  *
  * WHY THIS FILE EXISTS. INC-C5 added `emailApiUrl`/`facilitatorUrl` to the
  * sandbox harness and then never set either, so `CtxHttpEmailSender.send` and
- * `createHttpFacilitator.verifyReceipt` had never once run inside an isolate:
+ * the x402 facilitator call had never once run inside an isolate:
  * every sandbox assertion was about the UNCONFIGURED arm, which is the arm where
  * neither adapter is constructed at all. The property only the sandbox can prove
  * is exactly the one this increment changed — that these adapters reach the
@@ -19,6 +19,12 @@
  * them: the same code, the same baked URL, ZERO recorded requests. A bare
  * `fetch` anywhere in either adapter would pass the first boot and fail the
  * second, which is the regression this pair is here to catch.
+ *
+ * THE x402 HALF IS NOW A NEGATIVE. ADR-0028 increment 2 retired the
+ * receipt-forwarding facilitator call (`createHttpFacilitator.verifyReceipt`) and
+ * its only caller, the public `entitlements/x402/settle` route. What this file
+ * pins for x402 now is that the route is gone from a fully configured isolate,
+ * and that nothing reaches a granted, baked facilitator URL through it.
  *
  * ONE STORE, SHARED, SO ORDERING IS LOAD-BEARING. The outbox lives in the
  * process-scoped bridge both boots proxy to, and any tick drains every pending
@@ -44,7 +50,6 @@ import {
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import { SWEEP_TASK_NAME } from "../src/cron/index.js";
 import type { CommerceSweepSummary, SweepLegOutcome } from "../src/cron/index.js";
-import { X402_SETTLE_ROUTE } from "../src/payments/x402-settle-route.js";
 import { startStubHttpServer, type StubHttpServer } from "./helpers/stub-http-server.js";
 import { loadPluginInSandbox, type SandboxHandle } from "./sandbox/harness.js";
 import { storageBridge } from "./sandbox/storage-bridge.js";
@@ -55,7 +60,7 @@ const DAY_MS = 24 * 60 * 60 * 1000;
  *  placeholder like "0xshop" would arm no gateway and make every x402 case
  *  below pass for the wrong reason. */
 const PAY_TO = "0x00000000000000000000000000000000000000a1";
-const EMAIL_FROM = "orders@egress.example";
+const EMAIL_FROM = "orders@egress.otta.sh";
 
 /** The two paths the stub answers on. Distinct so a single responder can say
  *  which adapter it heard from — and so an assertion about "the email call"
@@ -147,16 +152,10 @@ async function configure(sandbox: SandboxHandle): Promise<void> {
 }
 
 /**
- * A pending, digital, x402-paid order — the state the settle route's CHECK 2
- * demands before it will spend a facilitator call.
- *
- * WHY THIS REPLACED A BARE UUID (review round 2, A1/B1). These cases used to
- * settle a proof naming NO order, on the reasoning that `settleOrder` asked the
- * facilitator first and `ORDER_NOT_FOUND` therefore proved the network had been
- * reached. That ordering is exactly what the review closed: the route now loads
- * the order and refuses a non-x402 one BEFORE any egress, so a nonexistent order
- * proves the opposite — that nothing was asked. A real order is what makes the
- * egress assertion mean anything again.
+ * A pending, digital, x402-paid order — the state the retired settle route
+ * demanded before it would spend a facilitator call. Seeding it is what makes
+ * the negative below mean something: with the route still registered, this
+ * order and {@link proofFor} reached the facilitator and settled.
  */
 async function placePendingX402Order(suffix: string): Promise<string> {
 	const s = stores();
@@ -209,9 +208,9 @@ beforeAll(async () => {
 	stub.respondWith("POST", (req) => {
 		if (req.url === FACILITATOR_PATH) {
 			const asked = req.body as { orderId?: string; transaction?: string };
-			// ECHOES THE QUESTION, because the adapter now refuses an answer that
-			// does not (review B7) — a stub replying a bare `{valid:true}` would
-			// still pass, but this is the shape a real facilitator returns.
+			// Answers as the retired receipt-forwarding facilitator expected, echo
+			// and all, so anything that still reached it would be ACCEPTED — the
+			// x402 case below can then only pass on the request count.
 			return {
 				status: 200,
 				body: { valid: true, orderId: asked.orderId, transaction: asked.transaction },
@@ -291,45 +290,16 @@ describe("the email adapter, inside workerd", () => {
 	}, 300_000);
 });
 
-describe("the x402 facilitator, inside workerd", () => {
-	test("a baked facilitator URL on a granted host actually reaches the facilitator", async () => {
-		const orderId = await placePendingX402Order("granted");
+describe("the x402 facilitator, inside workerd (ADR-0028 increment 2)", () => {
+	test("the retired entitlements/x402/settle route is not registered, and asks no facilitator", async () => {
+		const orderId = await placePendingX402Order("retired");
 		const before = postsTo(FACILITATOR_PATH);
 
-		const outcome = await granted.invokeRoute(X402_SETTLE_ROUTE, proofFor(orderId));
-		if ("error" in outcome) throw new Error(outcome.error);
-
-		// A full settlement, end to end inside the isolate: the facilitator was
-		// asked over `ctx.http`, its echoing `valid: true` was accepted, and the
-		// domain moved the order. A refused proof would have been 400
-		// INVALID_SIGNATURE and an unreachable one 503.
-		expect(outcome.result).toEqual({ ok: true, status: 200 });
-
-		const calls = stub.requests.filter(
-			(req) => req.method === "POST" && req.url === FACILITATOR_PATH,
-		);
-		expect(calls.length).toBe(before + 1);
-		const asked = calls[calls.length - 1];
-		if (asked === undefined) throw new Error("no recorded verification");
-		// The WHOLE receipt is forwarded, with `amount` still an integer minor unit.
-		expect(asked.body).toMatchObject({ orderId, amount: 1999, currency: "USD" });
-	}, 300_000);
-
-	test("the same baked URL is REFUSED when its host is not in allowedHosts", async () => {
-		const orderId = await placePendingX402Order("refused");
-		const before = postsTo(FACILITATOR_PATH);
-
-		const outcome = await refused.invokeRoute(X402_SETTLE_ROUTE, proofFor(orderId));
-		if ("error" in outcome) throw new Error(outcome.error);
-
-		// 503, NOT 400: a transport the gate refused is "we could not ask", which
-		// must never present to a buyer whose money already moved as "your receipt
-		// is invalid" (review B2).
-		expect(outcome.result).toEqual({
-			ok: false,
-			status: 503,
-			reason: "FACILITATOR_UNAVAILABLE",
-		});
+		// The granted boot: facilitator URL baked, its host allowed, `payTo` saved.
+		// Everything the old route needed to settle this order is in place, so an
+		// `unknown route` here is the deletion, not a misconfiguration.
+		const outcome = await granted.invokeRoute("entitlements/x402/settle", proofFor(orderId));
+		expect(outcome).toEqual({ error: "unknown route: entitlements/x402/settle" });
 		expect(postsTo(FACILITATOR_PATH)).toBe(before);
 	}, 300_000);
 });

@@ -46,6 +46,14 @@ const SHOT_DIR = `${REPO_ROOT}/node_modules/.playwright-artifacts`;
 async function openOrders(page: Page): Promise<void> {
 	await page.goto(consoleScreenUrl("/orders"));
 	await expect(page.getByTestId("orders-intro")).toBeVisible({ timeout: ADMIN_SHELL_TIMEOUT_MS });
+	// The intro renders with the screen; the first page of orders arrives after
+	// it, behind "Loading orders…" (shown from the first render: `busy` starts
+	// true). A row count taken before that settles reads 0 on a stack that has
+	// orders — measured: one run failed "the stack has no orders" on a screenshot
+	// still saying "Loading orders…". So wait for the load to finish first.
+	await expect(page.getByText("Loading orders…")).toHaveCount(0, {
+		timeout: ADMIN_SHELL_TIMEOUT_MS,
+	});
 }
 
 test.describe("the migrated Orders console", () => {

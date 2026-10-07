@@ -13,12 +13,27 @@ export type CreateOrderFailure =
 	/** A line's `product_commerce` price currency ≠ the cart currency (review G5)
 	 *  — summing it into the cart-currency total would mix monies. */
 	| "CURRENCY_MISMATCH"
-	/** The submitted shipping address (ADR-0009) failed shape validation — a
-	 *  required field (name/line1/city/postalCode/country) was empty, or a field
-	 *  exceeded its bound. NOT the "physical order requires an address" rule: that
-	 *  enforcement is deferred until the storefront UI collects it (ADR-0009
-	 *  sequencing), so this slice ships capture-optional. */
+	/** The submitted shipping address (ADR-0009) failed validation — a required
+	 *  field (name/line1/city/postalCode/country) was empty, a field exceeded its
+	 *  bound, or the country is not an ISO 3166-1 alpha-2 code (ADR-0021). */
 	| "INVALID_SHIPPING_ADDRESS"
+	// ADR-0021 — the zone is derived from the address:
+	/** No address where one is required: a cart with a physical line in a store
+	 *  with zones, or any cart when the command says `addressRequired` (a
+	 *  payment account that needs the buyer's address — issue #382). */
+	| "MISSING_SHIPPING_ADDRESS"
+	/** Zones exist and the address matches none of them ("we don't ship there"). */
+	| "SHIPPING_ZONE_NOT_MATCHED"
+	/** A non-blank region is not a real ISO 3166-2 subdivision of the country —
+	 *  or, for a cart that ships, it is blank where the country has a
+	 *  subdivision-level zone. */
+	| "SHIPPING_REGION_CODE_REQUIRED"
+	/** The chosen method does not belong to the zone the address matched. */
+	| "SHIPPING_METHOD_NOT_IN_ZONE"
+	/** The address matched a zone, and no method was chosen. */
+	| "SHIPPING_METHOD_REQUIRED"
+	/** A method was chosen for a cart with nothing to ship. */
+	| "SHIPPING_METHOD_NOT_APPLICABLE"
 	/**
 	 * The gateway's `createIntent` failed (a live provider call refused or could
 	 * not be reached — a thrown `PaymentIntentError`). The `pending` order row
@@ -29,6 +44,26 @@ export type CreateOrderFailure =
 	 * dedupes. The service maps this to 502 (a bad upstream, not a bad request).
 	 */
 	| "PAYMENT_INTENT_FAILED"
+	/**
+	 * The gateway's `createIntent` was refused only because a request with the
+	 * SAME key is still being processed (`PaymentIntentError.inFlight`) — a
+	 * double-submitted checkout. Everything about the order is exactly as for
+	 * `PAYMENT_INTENT_FAILED` (the pending row stays; a same-key retry re-issues
+	 * the intent), but nothing failed: the right answer to the buyer is "busy,
+	 * try again in a moment", which a retry then satisfies with the first
+	 * request's intent.
+	 */
+	| "PAYMENT_INTENT_IN_FLIGHT"
+	/**
+	 * The `idempotencyKey` already names an order minted from a DIFFERENT cart
+	 * (issue #133) — e.g. a stale or second tab submitting the old cart's
+	 * `checkout:<cartId>` key while the cart cookie now names a new cart. A key
+	 * is bound to the request it first carried: replaying it for another cart is
+	 * not a replay, so it must never report that other order as this cart's
+	 * success. Nothing is minted, adopted or flipped; the submitted cart stays
+	 * `active`. The recovery is to reload checkout, which derives the key afresh.
+	 */
+	| "IDEMPOTENCY_KEY_REUSED"
 	// Phase 6 checkout-pipeline failures (shipping / tax / coupon):
 	| "SHIPPING_METHOD_NOT_FOUND"
 	| "SHIPPING_RATE_NOT_FOUND"
@@ -37,7 +72,13 @@ export type CreateOrderFailure =
 	| "COUPON_MIN_SUBTOTAL"
 	| "COUPON_EXHAUSTED"
 	| "COUPON_MAX_PER_CUSTOMER"
-	| "COUPON_CURRENCY_MISMATCH";
+	| "COUPON_CURRENCY_MISMATCH"
+	/**
+	 * A registered outside tax calculator threw, refused, answered invalidly or
+	 * timed out (ADR-0030). Refused before any redemption, mint or adoption, so
+	 * nothing moved; a retry may succeed. The built-in never yields it.
+	 */
+	| "TAX_UNAVAILABLE";
 
 /** `settleOrder` outcomes (the confirmation path). */
 export type SettleFailure =
@@ -53,4 +94,14 @@ export type SettleFailure =
 	 * receipt aimed at a second order, and it must be terminally refused before any
 	 * state moves. Recorded as the `RECEIPT_REBOUND` anomaly.
 	 */
-	| "RECEIPT_REBOUND";
+	| "RECEIPT_REBOUND"
+	/**
+	 * A verified success landed on a never-paid `expired`/`cancelled` order and
+	 * its automatic refund hit a TRANSIENT gateway failure (network / 5xx — the
+	 * refund was definitely not issued). Nothing is lost: the payment is
+	 * recorded, the refund reservation is KEPT and the order is flagged. This is a
+	 * failure only so the transport answers "retry" (Stripe redelivers on a
+	 * non-2xx): the redelivery re-drives settle, which resumes the SAME reserved
+	 * refund under the SAME idempotency key — so retrying can never refund twice.
+	 */
+	| "LATE_PAYMENT_REFUND_RETRYABLE";

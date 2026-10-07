@@ -1,0 +1,304 @@
+---
+/**
+ * Storefront — the ONE shell every storefront page renders through.
+ *
+ * It replaces `Base.astro`'s role: it makes the chrome's content reads (guarded,
+ * with the same true fallbacks), asks which theme is active for this request,
+ * and hands the result to that theme's Layout. A page that has a themed view
+ * (`home`, `shop`, `product`, and since Phase 3 the cart, checkout, pay,
+ * order and account views) passes its finished model and the theme renders it
+ * — or Tempered's view renders it, in the active theme's tokens, when that
+ * theme has not ported the view; every other page passes its markup in the
+ * default slot and gets the active theme's chrome and `--u-*` tokens around it.
+ *
+ * ADR-0003 is unchanged: the plugin serves JSON view models, the theme owns the
+ * markup. By default nothing here calls commerce — the cart count arrives as a
+ * PROP from a page that already read the cart, so the shell never puts commerce
+ * on the critical path of a page that would otherwise make no commerce call.
+ *
+ * THE OPT-IN EXCEPTIONS are a theme whose chrome draws the cart's LINES
+ * (`ThemeModule.chrome.cartLines` — e.g. a bag drawer or a bag strip), and one
+ * whose chrome draws the SHOPPER'S STATE (`chrome.shopperState`: the cart count
+ * and "Your account" on every page — QA U-12, U-14; Tempered opts in). For
+ * those themes only — the bag off the checkout flow, the shopper's state off the
+ * pay page — the shell makes one guarded
+ * read: the cart's lines (`lib/bag.ts`), or for `shopperState` ONE dispatch of
+ * the lean `storefront/shopper-state` route for the count and a yes/no on the
+ * session — never who (`lib/chrome-state.ts`). Each read happens ONLY when the request
+ * carries the cookie it depends on — a visitor with neither cookie costs no
+ * commerce call and gets the neutral header — and each FAILS SOFT: no answer
+ * becomes an error page or a 503. The middleware keeps every page rendered with
+ * such state private and out of the route cache. Every other theme pays nothing.
+ */
+import { getMenu, getSiteSettings } from "emdash";
+import SafeJsonLd from "../components/SafeJsonLd.astro";
+import {
+	cartCountLabel,
+	FALLBACK_MENU_ITEMS,
+	isCartLink,
+	withAccountLink,
+	type NavItem,
+} from "../lib/nav.js";
+import type {
+	AccountLoginModel,
+	AccountOrderModel,
+	AccountOrdersModel,
+	AccountVerifyModel,
+	CartModel,
+	CheckoutModel,
+	ChromeModel,
+	HomeModel,
+	OrderModel,
+	PayModel,
+	ProductModel,
+	ShopModel,
+} from "../themes/contract.js";
+import { fallbackSheetFor, themeFor, viewFor } from "../themes/registry.js";
+import { readBag } from "../lib/bag.js";
+import { chromeCartCount, readShopperState } from "../lib/chrome-state.js";
+import { documentTitle } from "../lib/document-title.js";
+import { storeTitle } from "../lib/store-settings.js";
+import { activeTheme } from "../themes/resolve.js";
+
+interface ShellProps {
+	title: string;
+	description?: string | null;
+	/**
+	 * Units in the cart, for the nav badge. `null`/omitted means "this page read
+	 * no cart". The badge itself follows ONE rule on every page
+	 * (`chromeCartCount`): drawn only when the cart has something in it, so an
+	 * empty cart and an unread one both show the bare link (review, QA U-14:
+	 * /cart said "(0)" while every other page said nothing).
+	 */
+	cartCount?: number | null;
+	/**
+	 * The store's currency CODE, from a view model that already knows it
+	 * (§7: the shell never invents anything money-shaped, and it cannot know
+	 * the currency on its own). `null`/omitted renders no currency at all.
+	 *
+	 * Absence is meaningful and is why this is not defaulted: the pages that
+	 * pass nothing — home, the catalog index, 404 — are the ones that read no
+	 * money. A page that shows a price shows the currency; a page that shows
+	 * none says nothing. /checkout/pay passes whatever its cookie stash holds:
+	 * the code beside the place-time total when the stash carries one, and
+	 * nothing when it does not, because then the button names no amount either.
+	 */
+	currency?: string | null;
+	/**
+	 * Whether the shopper is signed in, from a page that already asked (the
+	 * account pages, the sign-in page) — saves the shell asking again. Omitted ⇒
+	 * the shell asks, for a theme that draws it and a request with a session
+	 * cookie. Never the email: the chrome only ever learns yes or no.
+	 */
+	signedIn?: boolean;
+}
+
+/** Discriminated on `view`: a themed view takes its model; no `view` takes the slot. */
+type Props = ShellProps &
+	(
+		| { view: "home"; model: HomeModel }
+		| { view: "shop"; model: ShopModel }
+		| { view: "product"; model: ProductModel; jsonLd?: unknown }
+		| { view: "cart"; model: CartModel }
+		| { view: "checkout"; model: CheckoutModel }
+		| { view: "pay"; model: PayModel }
+		| { view: "order"; model: OrderModel }
+		| { view: "accountLogin"; model: AccountLoginModel }
+		| { view: "accountVerify"; model: AccountVerifyModel }
+		| { view: "accountOrders"; model: AccountOrdersModel }
+		| { view: "accountOrder"; model: AccountOrderModel }
+		| { view?: undefined }
+	);
+
+const props = Astro.props;
+const { title, description = null, cartCount: pageCount = null, currency = null } = props;
+
+/**
+ * BOTH content reads here are guarded, and this was the last unguarded read on
+ * the site — the one remaining path from "the content store is unreachable" to
+ * a 500 on every page at once.
+ *
+ * Neither call has an error channel. `getSiteSettings()` and `getMenu()` both
+ * await `getDb()` and a query behind it, and both reject outright when that
+ * fails; there is no `{ error }` to inspect the way `getEmDashCollection` gives
+ * one. An unguarded `await` in the SHELL is the worst version of that, because
+ * every page renders through it: the home page and the shop page already guard
+ * their own reads and still went down with this one. Probed against a dead D1:
+ * unguarded, every route 500s; guarded, the store serves 200 with the fallback
+ * chrome below and each page's own degraded state inside it.
+ *
+ * The fallbacks are chosen to be TRUE rather than merely non-empty:
+ *
+ *  - the title falls back to "Otta", which is what an absent `settings.title`
+ *    already did — a failed read and an unset setting land in the same place
+ *    rather than growing a second rule;
+ *  - the nav falls back to the routes THIS SITE defines (`FALLBACK_MENU_ITEMS`
+ *    in lib/nav.ts). They exist whatever the content store is doing, so a
+ *    shopper mid-visit keeps a way to the shop and to their cart instead of
+ *    being stranded on a page with a wordmark and nothing else.
+ *
+ * The fallback is used ONLY when the read THREW. A menu that comes back `null`
+ * is a store with no `primary` menu configured, which is a real answer and the
+ * operator's to change — substituting our own there would quietly override a
+ * deliberately empty nav.
+ */
+/* Which theme renders this request — STARTED here, before the two content
+   reads, so its options-row read runs alongside them instead of after them.
+   It never rejects (fail-soft to Tempered, memoized per request — see
+   themes/resolve.ts), so leaving it pending across the awaits below is safe. */
+const themeIdPending = activeTheme(Astro);
+
+/* The settings read is started here too, and awaited last: the menu and the
+   theme decide whether the bag is read at all, and the bag's read then runs
+   alongside this one rather than after it. Guarded as described above. */
+let settings: { title?: string; tagline?: string } = {};
+const settingsRead = (async () => {
+	try {
+		settings = (await getSiteSettings()) as { title?: string; tagline?: string };
+	} catch (error) {
+		console.error("[site-staging] layout settings read threw:", error);
+	}
+})();
+
+let navItems: readonly NavItem[] = [];
+try {
+	navItems = (await getMenu("primary"))?.items ?? [];
+} catch (error) {
+	console.error("[site-staging] layout menu read threw:", error);
+	navItems = FALLBACK_MENU_ITEMS;
+}
+const themeId = await themeIdPending;
+const theme = themeFor(themeId);
+
+/**
+ * The bag, for a theme that draws it (see the note at the top), and only where
+ * it can be drawn: the chrome must have a cart link to hang it on. Not on the
+ * checkout flow: `/cart` IS the bag, `/checkout` and `/checkout/pay` carry their
+ * own summary, and `/orders/<id>` sends `no-referrer` — under which a browser
+ * posts `Origin: null`, so the drawer's forms would be refused there — and
+ * carries Stripe's redirect parameters in its URL. Started before the settings
+ * read is awaited, so the two run together.
+ */
+const BAGLESS_VIEWS: ReadonlySet<string> = new Set(["cart", "checkout", "pay", "order"]);
+const hasCartLink = withAccountLink(navItems).some((item) => isCartLink(item.url));
+const drawsBag =
+	theme.chrome?.cartLines === true && !BAGLESS_VIEWS.has(props.view ?? "") && hasCartLink;
+const bagPending = drawsBag
+	? readBag({ cookies: Astro.cookies, locals: Astro.locals, url: Astro.url })
+	: null;
+
+/**
+ * The shopper's state, for a theme whose chrome draws it (the note at the top).
+ * Everywhere but `/checkout/pay`, the payment path, which keeps its header to the
+ * one job it has. `/checkout` and `/orders/<id>` get the count too (QA2 U-14):
+ * both are private pages already, and this is a server-side dispatch — nothing
+ * here reaches a URL or a Referer, so the order page's `no-referrer` and Stripe's
+ * parameters in its URL are untouched; on the order page a cart that became the
+ * order is terminal and draws no badge. `/cart` passes its own count. Each read
+ * is made only for a request carrying its cookie (no cookie ⇒ no dispatch),
+ * started here so both run alongside the settings read. The middleware has
+ * already made such a response private.
+ */
+const SHOPPERLESS_VIEWS: ReadonlySet<string> = new Set(["pay"]);
+const drawsShopper =
+	theme.chrome?.shopperState === true && !SHOPPERLESS_VIEWS.has(props.view ?? "");
+/* ONE lean dispatch for whatever the page did not already supply (lib/chrome-state.ts). */
+const shopperPending = drawsShopper
+	? readShopperState(
+			{ cookies: Astro.cookies, locals: Astro.locals, url: Astro.url },
+			{
+				count:
+					pageCount === null && bagPending === null && props.view !== "cart" && hasCartLink,
+				signedIn: props.signedIn === undefined,
+			},
+		)
+	: null;
+
+await settingsRead;
+/* The store's name by the ONE rule the home page also titles itself with
+   (`storeTitle`: a blank or padded setting reads as unset, "Otta" as the
+   fallback), so the shell and the home page cannot disagree about it. */
+const siteTitle = storeTitle(settings);
+const fullTitle = documentTitle(title, siteTitle);
+
+const bag = bagPending === null ? null : await bagPending;
+const shopper = shopperPending === null ? null : await shopperPending;
+/* The page's own count wins; the bag's or the header's read fills it in where
+   the page read none. One badge rule for every page, /cart included: no badge
+   for an empty cart. */
+const cartCount = chromeCartCount(pageCount ?? bag?.count ?? shopper?.cartCount ?? null);
+/* Yes or no — the route never says who, so no email can reach the chrome. */
+const signedIn = props.signedIn ?? shopper?.signedIn ?? false;
+
+const chromeNav = withAccountLink(navItems, signedIn).map((item) => ({
+	label: item.label,
+	url: item.url,
+	isCart: isCartLink(item.url),
+}));
+
+const chrome: ChromeModel = {
+	siteTitle,
+	fullTitle,
+	description: description ?? null,
+	navItems: chromeNav,
+	cartCount,
+	cartCountLabel: cartCount === null ? null : cartCountLabel(cartCount),
+	currency,
+	signedIn,
+	themeId,
+	bag,
+};
+
+const Layout = theme.Layout;
+const HomeView = viewFor(theme, "home");
+const ShopView = viewFor(theme, "shop");
+const ProductView = viewFor(theme, "product");
+const CartView = viewFor(theme, "cart");
+const CheckoutView = viewFor(theme, "checkout");
+const PayView = viewFor(theme, "pay");
+const OrderView = viewFor(theme, "order");
+const AccountLoginView = viewFor(theme, "accountLogin");
+const AccountVerifyView = viewFor(theme, "accountVerify");
+const AccountOrdersView = viewFor(theme, "accountOrders");
+const AccountOrderView = viewFor(theme, "accountOrder");
+const jsonLd = props.view === "product" ? (props.jsonLd ?? null) : null;
+/* Tempered's commerce views are every theme's fallback; their sheet is linked
+   here, on the pages that render one, rather than by any one theme's Layout. */
+const viewSheet = props.view === undefined ? null : fallbackSheetFor(theme, props.view);
+---
+
+<Layout chrome={chrome}>
+	{viewSheet !== null && <link rel="stylesheet" href={viewSheet} slot="head" />}
+	<slot name="head" slot="head" />
+	{
+		props.view === "home" ? (
+			<HomeView model={props.model} />
+		) : props.view === "shop" ? (
+			<ShopView model={props.model} />
+		) : props.view === "product" ? (
+			<ProductView model={props.model} />
+		) : props.view === "cart" ? (
+			<CartView model={props.model} />
+		) : props.view === "checkout" ? (
+			<CheckoutView model={props.model} />
+		) : props.view === "pay" ? (
+			/* The page's Stripe mount + script (ADR-0012), framed by the view. */
+			<PayView model={props.model}>
+				<slot name="payment" slot="payment" />
+			</PayView>
+		) : props.view === "order" ? (
+			<OrderView model={props.model} />
+		) : props.view === "accountLogin" ? (
+			<AccountLoginView model={props.model} />
+		) : props.view === "accountVerify" ? (
+			<AccountVerifyView model={props.model} />
+		) : props.view === "accountOrders" ? (
+			<AccountOrdersView model={props.model} />
+		) : props.view === "accountOrder" ? (
+			<AccountOrderView model={props.model} />
+		) : (
+			<slot />
+		)
+	}
+	{jsonLd !== null && <SafeJsonLd data={jsonLd} />}
+</Layout>

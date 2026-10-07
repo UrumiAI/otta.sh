@@ -5,7 +5,10 @@ Design direction for `sites/staging`, approved 2026-07-28. This file is the **sp
 browser and compare against it as you build. Where the two disagree, the mockup wins for
 *appearance* and this file wins for *rules*.
 
-ADR-0003 is unchanged: the plugin serves JSON view models, the theme owns every byte of
+Tempered is the storefront theme this repo ships (others come from a separate themes repo); see
+[ADR-0024](../../adr/0024-storefront-themes-are-runtime-selected-full-templates.md).
+
+ADR-0003 stands: the plugin serves JSON view models, the active theme owns every byte of
 markup. Nothing in here belongs in `@otta-sh/plugin`.
 
 ---
@@ -21,7 +24,9 @@ Three rules fall out, and everything else follows from them:
 
 1. **Tempering colours are state, never decoration.** A hue means one thing, everywhere.
 2. **Money is set in mono, and nothing else is.** Prices, quantities, SKUs, stock,
-   countdowns, order references. Tabular figures so columns align for free.
+   countdowns. Tabular figures so columns align for free. An order is not a code to the
+   shopper: it is named by its products (`orderLabel` — "Otta Tee and 2 more") in the body
+   face, and its id is never shown on a customer page.
 3. **One hairline, never a box.** A single 1px rule is the only divider. No card borders,
    no shadows, 2px radius maximum.
 
@@ -29,7 +34,8 @@ Three rules fall out, and everything else follows from them:
 
 ## 2. Tokens
 
-Define once in `src/styles/tokens.css`, imported by `Base.astro`. Every page reads these —
+Define once in `src/themes/tempered/theme.css`, linked by `src/themes/tempered/Layout.astro`
+(was `src/styles/tokens.css` / `Base.astro` before the theme system). Every page reads these —
 no page declares a raw colour or a font stack of its own.
 
 ### Light (default)
@@ -87,7 +93,8 @@ a 3px straw rule along the inner bottom edge.
 ## 3. Type
 
 Three faces, three roles, no overlap. Self-host through Astro's font API (`astro:fonts`,
-Google provider, latin subset) — **no CDN link at runtime**, and no silent fallback.
+local provider, latin subset, files vendored under `sites/staging/src/fonts/`) — **no CDN
+link at runtime**, and no silent fallback.
 
 | Role | Face | Settings | Used for |
 |---|---|---|---|
@@ -99,23 +106,38 @@ The display face is set **narrow** because the object the project is named after
 thin ribbon; the data face is set **wide** so figures read as objects rather than as text.
 The contrast between them is the theme's loudest move — don't flatten it.
 
-Self-hosting means the **ranges** are a build-time decision, not just the weights: Astro's
-font API asks Google's css2 endpoint for a variable file, and an axis nobody named is not in
-it. What the three entries in `astro.config.ts` actually ship:
+The files are the latin-subset variable fonts Google serves a Windows or Linux browser,
+checked in with each family's SIL OFL beside it. They are **vendored rather than fetched by
+Astro's Google provider** because that provider asks Google with a macOS user agent, and
+Google answers macOS with builds that carry no `prep` table. That table is a 7-byte
+scan-control program (`PUSHW 511 SCANCTRL PUSHB 4 SCANTYPE`), not real hinting, but its
+presence is what makes FreeType take the native TrueType path. A font with no instructions
+goes to FreeType's autohinter instead on Linux and Android Chromium, which rounds each
+glyph's advance at text sizes, so body copy spaces unevenly. Apart from that one table the
+two builds are identical.
 
-| Face | Weight range | Variable axes |
+Each file is the full variable font (same axes as the previous Google download), so every
+axis the theme sets is present. What the three entries in `astro.config.ts` ship:
+
+| Face | Weight range declared | Axes in the file |
 |---|---|---|
-| Bricolage Grotesque | `400 800` | `opsz` 12–96, `wdth` 75–100 |
-| Schibsted Grotesk | `400 700` | — (weight is its only axis) |
-| Martian Mono | `300 700` | `wdth` 75–112.5 |
+| Bricolage Grotesque | `400 800` | `opsz` 12–96, `wdth` 75–100, `wght` 200–800 |
+| Schibsted Grotesk | `400 700` | `wght` 400–900 |
+| Martian Mono | `300 700` | `wdth` 75–112.5, `wght` 100–800 |
 
-The axes go through `options.experimental.variableAxis` — **unifont's** namespace, not
-Astro's, so a transitive patch bump can rename it with no major release to warn anyone. Drop
-them and every `font-variation-settings: "wdth" …` in the theme becomes a silent no-op that
-renders at the default width, with no error anywhere. `test/fonts-config.test.ts` pins that
-they are *requested* for that reason — the axis names, and that every weight is asked for as
-a range rather than as N static cuts. The numbers in the table above are the config's to
-choose; the test does not hold them.
+Drop the `wdth` axis from a file and every `font-variation-settings: "wdth" …` in the theme
+becomes a silent no-op that renders at the default width, with no error anywhere.
+`test/fonts-config.test.ts` pins the local provider, that each file exists with its OFL, that
+each carries a non-empty `prep` table (FreeType checks the table's size, not just its
+presence), and that the display and data files carry their `wdth` (and `opsz`) axes.
+
+To refresh a file, fetch the family's css2 with a current Windows or Linux browser user
+agent, for example
+`Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36`,
+and take the `/* latin */` face. Before checking it in, confirm both that its tables still
+list `prep` and that its `fvar` axes match the table above, e.g.
+`uvx --from 'fonttools[woff]' ttx -l file.woff2` for the table list (and `prep`'s size) and
+`uvx --from 'fonttools[woff]' ttx -t fvar -o - file.woff2` for the axes.
 
 ### The two data recipes
 
@@ -145,13 +167,14 @@ Build these in `src/components/`. Each renders one view-model field group and no
 |---|---|
 | `MediaPanel` | Neutral `--u-panel` ground + one generated coil. See §5 |
 | `ProductCard` | Media, title, description, foot. Foot uses `margin-top: auto` so feet align across a row regardless of description length |
-| `PriceTag` | Mono, tabular. Struck + muted when sold out |
+| `PriceTag` | Mono, tabular. Struck + muted when sold out. Takes an optional `was` — the compare-at price — and then sets it first, struck, muted and a step smaller, beside the price ("was $20.00, now $12.00"), with visually-hidden "Was" / "Now" — the component's own copy — because a strike is not announced. Mute, never a tempering colour: a sale is not a store state. **Sold out wins:** a sold-out price is already struck, so `was` is dropped rather than drawing two crossed-out figures. The product page's spec ledger, every product card and the home tape pass it |
 | `StockRule` | A short 2px rule + mono caps. Solid when in stock, dashed when sold out. **Not** a coloured badge. **Words, not a figure** — see below |
 | `HoldRibbon` | §6 — the signature |
-| `PollRibbon` | §6's indeterminate variant, for `/orders/<id>` while an order is `pending`. Its own file rather than a prop on `HoldRibbon`: that component carries a bundled `<script>`, and Astro emits a component's script wherever the component renders, so sharing one would put the countdown on a page ADR-0012 keeps free of client JavaScript. Nothing here runs in the browser — the sweep is CSS, the count is server-rendered on each hop |
-| `StepTrack` | Cart → Details → Payment → Order. Done = ink dot, current = straw dot with a soft ring |
-| `Ledger` / `Sum` | SKU / qty / money rows; the totals block with the "not calculated" rule (§7). A `Ledger` row takes an optional `title`: given, it leads in the body face and the SKU drops beneath it as the reference you quote in an email; omitted, the SKU stands alone. `/checkout` omits it — the row is still a cart line, the wire carries no title, and the shopper picked the thing a moment ago. `/orders/<id>` passes it, because there the same block is a **receipt** and the title is the purchase-time snapshot the order froze |
-| `StateStamp` | Order state: a 4.5rem × 3px rule in the state colour, then the headline |
+| `HoldClock` | §6's countdown SCRIPT, split from `HoldRibbon` (which is markup only) so a theme's cart view can draw the ribbon while `/cart` renders the one script (ADR-0012's single pair) |
+| `PollRibbon` | §6's indeterminate variant, for `/orders/<id>` while an order is `pending`. Its own file rather than a prop on `HoldRibbon`: that component carried a bundled `<script>` (now `HoldClock`), and Astro emits a component's script wherever the component renders, so sharing one would put the countdown on a page ADR-0012 keeps free of client JavaScript. Nothing here runs in the browser — the sweep is CSS, the count is server-rendered on each hop. Shown only while the page polls: a pending order the buyer has just paid for (back from Stripe), at most 8 hops, each reloading the SAME URL so no history entry is added |
+| `StepTrack` | Cart → Details → Payment → Order. Done = ink dot, current = straw dot with a soft ring. `halted`: the journey stopped at the current step (an expired or failed order, at Payment) — an open ring and a muted label (`--u-mute`), and ", not completed" in words; never the straw "in progress" |
+| `Ledger` / `Sum` | SKU / qty / money rows; the totals block with the "not calculated" rule (§7). A `Ledger` row takes an optional `title`: given, it leads in the body face and the SKU drops beneath it as the reference you quote in an email; omitted, the SKU stands alone. Both ledgers pass it whenever the store can name the line: `/orders/<id>`, where the block is a **receipt** and the title is the purchase-time snapshot the order froze, and `/checkout`, where it is the title the order *will* snapshot (`CheckoutLineView.title`). The review used to omit it — "the shopper picked the thing a moment ago" — and QA read the result, `OTTA-STICKERS 1 $6.00`, as the last summary before paying naming nothing a shopper recognises. Only a line the store cannot name shows the SKU alone. The review's name is the order's copy of the title; `/cart` reads the CMS title itself, so just after a rename the two pages can briefly differ — the review shows what the order will record |
+| `StateStamp` | Order state: a 4.5rem × 3px rule in the state colour, then the headline; optionally an `Order` row naming the order by its products (`orderLabel`), never its id |
 | `Notice` | Degraded/error. Dashed bronze rules top and bottom, a dashed mark, **no filled background** |
 | `QtyField` | Mono numeric input |
 
@@ -180,8 +203,16 @@ A fresh install must look intentional with zero images. Each product gets a **co
 Archimedean spiral swept as a ribbon that tapers to a point at its inner end, drawn on the
 neutral panel, in one of `--u-tint-violet` / `--u-tint-straw` / `--u-tint-blue`.
 
-Generate it — do not hand-author path data. Centre, turn count, rotation and outer radius all
-key off the product slug so each one crops differently instead of repeating like a logo.
+Generate it — do not hand-author path data. Centre, turn count, rotation, outer radius **and
+tint** all key off the product slug so each one crops differently instead of repeating like a
+logo — and so a product wears the same coil on its card, its page and its cart line. The tint
+once cycled by grid position (every three cards showed all three), which left the product page
+and the cart, with no grid, on the slug's hash: QA found the Tee blue-grey in the shop and tan on
+its own page. One product in two colours a click apart is the worse failure; the price is that a
+small catalog can repeat a tint (the three-product seed draws two straw coils), and the
+geometry still tells two products apart.
+**Decided, not drift:** the user approved fixed-per-product tints on 2026-10-02, superseding
+the position cycling added by the reviewer revision in `70973ef` — do not restore it.
 Reference implementation is in the mockup's `coilPath()`. It must:
 
 - be `aria-hidden` (it carries no information);
@@ -196,8 +227,8 @@ Every cart line carries one. A 2px track in `--u-edge`; a fill that drains left�
 the line's `expiresAt` (already on the cart wire); the remaining time in mono beside it.
 
 The window is the store's hold TTL — **900 seconds, fifteen minutes**: the domain's
-`DEFAULT_HOLD_TTL_MS`, which a deployment overrides with `CART_HOLD_TTL_MS` and otherwise
-gets by default. It is *only* the fill's denominator. The wire carries the expiry instant,
+`DEFAULT_HOLD_TTL_MS`, unless the store changes the Settings "Cart hold TTL (minutes)"
+field (`holdTtlMinutes`; there is no environment variable for it). It is *only* the fill's denominator. The wire carries the expiry instant,
 not the length of the hold, so the state, the label and the countdown all come off
 `expiresAt` and are unaffected by this number: getting it wrong draws the bar at the wrong
 width, never the wrong time. (It shipped at 600, which pinned the bar at full for the first
@@ -225,6 +256,10 @@ becomes a static filled track at 40% opacity.
 ## 7. Money rules
 
 - Never invent a money string. Render `price.formatted` / `.label` from the view model.
+- **A was-price is the plugin's decision, not the theme's.** `compareAtPrice` arrives only
+  when it is above the price, in the same currency, on a product for sale; a store may keep a
+  lower "was" during a price rise, and striking it would claim a discount nobody is giving. A
+  page passes it only beside a live price, and the theme never compares two figures itself.
 - **"Not calculated" is not zero.** `totals.shipping.label` and `totals.tax.label` can mean
   *this store has not configured it*. That renders as muted mono prose — `Not calculated` —
   and **never** as `$0.00`, `—` alone, or "Free shipping". When `totalExcludesUncalculated`
@@ -240,14 +275,60 @@ Compare each against the matching frame in the mockup.
 
 | Page | Shape |
 |---|---|
-| `index.astro` | Asymmetric hero (~1.15fr / 1fr): thesis copy + CTA left, the **inventory tape** right — ITEM / PRICE / STOCK as mono rows. The head is `Stock`, not the mockup's `In stock`: the cells below hold the words `In stock` and `Sold out`, and a column headed with one of its own values reads as a claim about the column. The tape fetches a bounded window of the catalog, so this page does make a commerce call — render thesis copy alone when the service is down |
+| `index.astro` | Asymmetric hero (~1.15fr / 1fr): thesis copy + CTA left, the **inventory tape** right — ITEM / PRICE / STOCK rows. The ITEM cell is the product's **name**, in the body face and linked to its page (straw underline on hover, like a card title), with the SKU beneath it in muted mono as the reference — the `Ledger`'s pattern. The mockup's SKU-only, unlinked ITEM column read as a stock sheet rather than a shelf, and a shelf on the front door should be a way in. The head is `Stock`, not the mockup's `In stock`: the cells below hold the words `In stock` and `Sold out`, and a column headed with one of its own values reads as a claim about the column. The tape fetches a bounded window of the catalog, so this page does make a commerce call — render thesis copy alone when the service is down |
 | `products/index.astro` | 3-up grid, no card borders, generous air. Titles carry the weight |
-| `products/[slug].astro` | Media left (~4/5), right column: title, description, **spec ledger** (Price / Stock / SKU), qty + add-to-cart, then the hold note |
+| `products/[slug].astro` | Media left (~4/5), right column: title, description, **spec ledger** (Price / Stock / SKU), qty + add-to-cart, then the hold note. A cart error carried back on the URL is a `Notice`; when the page gives it a way out (`model.errorAction` — CART_CHECKED_OUT links "Go to your cart"), the view links it after the sentence and never chooses the path itself |
 | `cart/index.astro` | Lines, not a table: media, name + SKU + hold ribbon, then price and controls right. Totals block bottom-right. The header carries the **unit count alone** — see below |
-| `checkout/index.astro` | Step track, then two panels: details form left (~1.15fr), order ledger + totals right |
-| `checkout/pay.astro` | Narrow single column. Trust line, Stripe mount, `Pay $X`. See §9 |
-| `orders/[orderId].astro` | State stamp first (it's the most important thing on the page), reference in mono, then items + totals |
+| `checkout/index.astro` | Step track, then two panels: details form left (~1.15fr), order ledger + totals right. The email field takes its initial value from `model.emailValue` (the signed-in account's address, else empty) and its hint from `model.emailNote` — the page's copy, which for a signed-in shopper says an order placed with a different email won't appear in their account. No client JS, so the note is stated up front, never on typing. After a refused place the fields are filled from `model.emailValue` / `model.addressValues` (the page's draft, never the URL) and `model.fieldErrors` names the fields to fix — print each beside its field. The coupon's field and Apply / Remove buttons, and the delivery block's fields (`deliveryCountry`, `deliveryRegion`, `deliveryMethod`, `fromCountry`, `fromRegion`) and Update button, belong to the place form (`form="checkout-place"`, `name="intent"`, `formnovalidate`). The visually hidden `intent=enter` button (`u-sr-only`, `tabindex="-1"`, `aria-hidden="true"`) must stay the place form's FIRST submit button, before Apply: Enter in a details field goes through it, and an explicit Apply never places. Echo a refused code as the hidden `refusedCoupon` (`model.refusedCouponCode`). A LOCKED review renders no place form: its way on is `model.locked.resumeHref` |
+| `account/login/index.astro` | Heading, lede, then the email form. Signed in (`model.signedIn`), a hairline-ruled block ABOVE the form says "You're signed in as <email>" with a quiet "View your orders" link (`signedIn.ordersHref`) and a Sign out POST to `/account/logout`; the form stays, to switch address |
+| `checkout/pay.astro` | Narrow single column. Trust line, then the hold line (`model.holdNote`: `lead`, and `until` in a `<time datetime={iso}>`) and, on a resumed payment, the order's email as read-only text (`model.emailHint`), then the Stripe mount and `Pay $X`. See §9 |
+| `orders/[orderId].astro` | State stamp first (it's the most important thing on the page), the order named by its products (never the id), then items + totals. The "keep this link" line links straight to Your orders (`model.accountOrdersHref`) when the shopper is signed in as the order's owner, else to sign-in (`model.accountSignInHref`), where the order joins the shopper's list. "Complete payment" links to `model.resumeHref` (the page's resume path, which works on any device) and never to a path the view invents; `model.resumeError` is a notice when the last resume failed |
 | `404.astro` | Same empty-state language as the others |
+
+**An order is named by its products, never its id.** The stamp's `Order` row, the account
+list's links and the account order heading all print `orderLabel` ("Otta Tee and 2 more");
+the id stays in URLs only. This changed the theme contract (`src/themes/contract.ts`), which
+breaks a theme written against the old one: `AccountOrderRow` and `AccountOrderModel.order`
+lost `id` (now `label`), and `OrderModel` gained `orderLabel`.
+
+**The order pages tell one story (QA U-5, U-13).** `/orders/<id>` and the account's own order
+page share `lib/order-view.ts`: the totals rows (`orderSumRows`, so shipping and tax the order
+was never priced for read "Not calculated" on both, never $0.00, through the same `Sum`), and
+the total's label (the domain's `orderTotalLabel`, shared with the order emails: "Paid" for
+every state the money was captured in — paid, processing, shipped, delivered, completed and
+refunded, since it was paid — else "Total"). A refund is never said by relabelling the total:
+the stamp and the account status say "refunded", and the account order page adds the ledger's
+refunded figure as its own line ("Refunded $Y", `order.refundedNote`) when there is one. The
+confirmation's step track follows the order (`OrderModel.progress`, `orderProgress`): at Order
+with Payment done only once paid; at Payment while pending; halted at Payment when expired or
+failed; no track for a cancelled order, which may or may not have been paid first.
+
+**Your orders** (`account/orders/index.astro`): a row per order, newest first — the order's
+products as the link, its status in words (`row.state`, `accountOrderStatus`: "Awaiting
+payment" only while the order can still be paid; "Payment not completed — time ran out",
+"Payment not completed — expired", "Payment didn't go through"), the date it was placed
+(`row.placed`, in a `<time>`, UTC), the item count and the total. **One order**
+(`account/orders/[id].astro`): heading, the status and placed date on one quiet line, then the
+order page's own sentence for that state (`order.stateNote` — e.g. whether anything was
+charged), then items and the `Sum` (`order.sumRows`, `order.total`, `order.totalLabel`), with
+`order.refundedNote` in muted mono under it when the ledger shows a refund.
+
+**The header shows the shopper's state** (`chrome.shopperState`, which Tempered opts into): the
+cart link carries the unit count on every storefront page off the checkout flow — and on no
+page for an empty cart, `/cart` included — and the
+theme's Account link reads "Your account" when the request carries a live session. The page
+owns both facts (the shell reads them only for a request carrying the matching cookie, and the
+middleware keeps such pages private); the header never prints the email. The badge counts the
+cart AS STORED (`CartStore.units`, one read, no hold expiry), so a line whose hold has lapsed
+still counts until something touches the cart — `/cart`, which expires lapsed holds as it reads,
+may then show fewer. A visitor with no
+cart and no session sees the neutral "Cart" and "Account".
+
+**The PDP's hold note departs from the mockup on purpose.** The mockup reads "Adding this holds
+one in stock for 15 minutes." under a quantity field the shopper can set to 3, and the hold covers
+whatever quantity is added. The page says "We'll hold what you add for 15 minutes." — the store's
+effective window, still a number (§10), and no unit count to get wrong (`lib/hold.ts`'s
+`holdNote`).
 
 **No `· N held` clause on the cart header.** The mockup draws `3 items · 2 held` and the page
 shipped it; both halves were wrong at once. The item count sums units while the held count
@@ -336,5 +417,6 @@ Not optional, and not worth announcing in the UI:
 - Both themes carry equal care — dark is not a naive inversion, and the accent works on both
   grounds.
 - Text contrast meets AA. Straw is never a text-on-fill colour.
-- `base-layout-favicon.test.ts` pins an inline SVG data-URI favicon in `Base.astro`. Keep it
+- `base-layout-favicon.test.ts` pins an inline SVG data-URI favicon in every theme's `Layout.astro`
+  (was `Base.astro`). Keep it
   inline; redraw the mark as the coil.

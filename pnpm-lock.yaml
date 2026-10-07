@@ -296,6 +296,9 @@ importers:
       '@cloudflare/workers-types':
         specifier: ^5.20260708.1
         version: 5.20260710.1
+      '@otta-sh/domain':
+        specifier: workspace:*
+        version: link:../../packages/domain
       '@otta-sh/payments-stripe':
         specifier: workspace:*
         version: link:../../packages/payments-stripe
@@ -314,6 +317,9 @@ importers:
       kysely:
         specifier: 'catalog:'
         version: 0.29.3
+      sharp:
+        specifier: ^0.35.4
+        version: 0.35.4(@types/node@26.1.1)
       typescript:
         specifier: 'catalog:'
         version: 5.9.3

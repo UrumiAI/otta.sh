@@ -72,33 +72,61 @@ the key.
 
 The deploy runbook for this site lives in the root [`DEPLOYMENT.md`](../../DEPLOYMENT.md):
 resource creation, the build/deploy ordering, first boot + claim, and failed-first-boot
-recovery are §2; the `global_fetch_strictly_public` ⇒ D1-`session`-off pairing invariant is
-§2.4; the secrets & tokens checklist is §3. There is one deployable, so the only Worker
-secrets are `EMDASH_ENCRYPTION_KEY` (required before first boot) and the optional
-`OTTA_WH_TOKEN` webhook edge gate — every payment and email credential is provisioned in the
+recovery are §2; why D1 `session` is `"primary-first"` (not `"auto"`), and why
+`global_fetch_strictly_public` must never return beside it, are §2.4; the secrets & tokens
+checklist is §3. There is one deployable, so the only Worker secrets are
+`EMDASH_ENCRYPTION_KEY` (required before first boot) and the optional `OTTA_WH_TOKEN` webhook
+edge gate — every payment and email credential is provisioned in the
 admin console's **Settings** page instead.
 
 ## Notes
 
 - **The checkout is built** (ADR-0012): `/checkout` (review + honest totals + contact and
-  ship-to), `POST /checkout/place`, `/checkout/pay` (the Payment Element — **the only
-  client JavaScript on this site**, and `js.stripe.com` the only third-party origin), and
+  ship-to), `POST /checkout/place`, `/checkout/pay` (the Payment Element — the site's only
+  third-party script, `js.stripe.com` its only third-party origin; the one other client
+  script is the hold ribbon's countdown, `src/components/HoldClock.astro`, rendered by
+  `/cart` alone — the ribbon's markup, `HoldRibbon.astro`, carries none), and
   `/orders/<orderId>` (the capability-URL confirmation page, which polls with a bounded
   `<meta http-equiv="refresh">` and never claims "paid" on the strength of Stripe's
   redirect — the webhook is the sole authority). `POST /checkout/new-cart` is the way out
   of the dead-cart trap. `allowedHosts` is unchanged: browser→Stripe is not plugin egress.
-- **Still a follow-up:** the x402 payment gate (designed to live at THIS Astro page layer)
-  and the digital-download delivery page (the plugin route authorizes; the site serves the
-  bytes / signed URL). Note for that task: `entitlements/download` is a public existence oracle
-  (it confirms whether an orderId/buyerRef/sku combination is entitled) — the delivery
-  page must rate-limit and/or tokenize access to it rather than exposing raw probing.
-- **Phase 5 customer-account pages are also a follow-up** (same scope note — no theme
-  pages built here). The plugin now serves five public account routes the theme is
-  expected to surface with login/account pages plus a first-party session cookie (the
-  plugin is session-stateless; the bearer token is route INPUT, so the theme layer owns
-  the cookie exactly like the cart shim does): `storefront/account/login/request`,
-  `storefront/account/login/verify`, `storefront/account/orders`,
-  `storefront/account/order`, `storefront/account/addresses`.
+- **Digital downloads (issue #376).** `GET /orders/<orderId>/download/<sku>`
+  (`src/pages/orders/[orderId]/download/[sku].ts`, logic in `src/lib/download-delivery.ts`)
+  streams a paid file from the private `DOWNLOADS` R2 bucket. On every request it first asks
+  the plugin's `entitlements/download` gate in-process with `{orderId, sku}`; the gate
+  answers the file only for an active grant on a deliverable order of a digital product with
+  a file attached. The endpoint reads only the key the gate answers, never one from the
+  request. The order id in the path is the capability (ADR-0011, as amended), so the gate
+  is not an oracle: every refusal is the same 404, and a caller without the order id learns
+  nothing. Nothing is minted or cached, so a full refund closes the URL at once, and a
+  replaced file serves the new one. Range requests get 206/416; BUSY is 503 + `Retry-After`.
+  `/orders/<id>` and `/account/orders/<id>` show a Download link on each digital line the
+  gate authorizes (`src/lib/download-links.ts`). The middleware refuses EmDash's public media
+  route for any `dl/` key (`src/lib/media-deny.ts`), and the build refuses a wrangler config
+  whose `DOWNLOADS` is the `MEDIA` bucket (`src/lib/downloads-bucket.ts`; DEPLOYMENT.md
+  §2.1). Attaching a file from the admin is increment 4; until then a file is attached by
+  writing the descriptor through the admin product edit and putting the object with
+  `wrangler r2 object put`.
+- **Still a follow-up:** the x402 payment gate (designed to live at THIS Astro page layer).
+- **Customer account pages (issue #306, ADR-0004).** Magic-link sign-in:
+  `/account/login` (email form → `POST /account/login/request` → the same generic
+  "check your inbox" notice for every address), `/account/verify` (where the
+  emailed link lands — it renders a button and redeems NOTHING on the GET, so a
+  mail scanner's pre-fetch cannot spend the single-use token; `POST
+  /account/verify/confirm` redeems it and applies the plugin's session-cookie
+  descriptor verbatim, HttpOnly/Secure/SameSite=Lax), `/account/orders` and
+  `/account/orders/<id>` (read through the session; guest orders under the same
+  address are claimed at sign-in), and `POST /account/logout` (revokes server-side,
+  always clears the cookie). Every POST runs the origin guard first; account pages
+  are `private, no-store`. The header carries a theme-owned "Account" link unless the
+  CMS menu already links into `/account`. Saved addresses
+  (`storefront/account/addresses`) have no page yet.
+  **Operator setup, required for sign-in:** in the plugin's Settings, set **Sign-in link
+  page** (`settings:loginLinkUrl`) to this site's absolute verify URL, e.g.
+  `https://shop.example/account/verify`. The emailed link points there and nowhere else.
+  The request's origin is never used, because a spoofed `Host` could otherwise aim a
+  victim's link at another domain. While the setting is unset, the login form still
+  shows its generic notice but no link is sent, and the plugin logs that once.
 - No secrets anywhere in this package: `.env` is gitignored, `.env.example` holds
   placeholders, `wrangler.jsonc` `vars` must never grow a secret-shaped key (pinned by
   `test/wrangler-config.test.ts`).

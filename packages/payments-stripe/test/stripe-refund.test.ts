@@ -113,7 +113,13 @@ describe("StripePaymentGateway.refund (ADR-0008; offline mock transport)", () =>
 		};
 		const gw = new StripePaymentGateway({ webhookSecret: WEBHOOK, secretKey: SK, transport });
 		const res = await gw.refund(refundInput({ amount: cents(300), priorRefunded: cents(0) }));
-		expect(res).toEqual({ ok: false, reason: "PROVIDER_ALREADY_REFUNDED" });
+		// The provider's own figures ride along (review round 1), so the domain can
+		// tell a FULL refund outside Otta from a partial one.
+		expect(res).toEqual({
+			ok: false,
+			reason: "PROVIDER_ALREADY_REFUNDED",
+			provider: { refunded: 500, captured: 1000 },
+		});
 		expect(transport.creates, "nothing issued").toHaveLength(0);
 	});
 
@@ -126,7 +132,11 @@ describe("StripePaymentGateway.refund (ADR-0008; offline mock transport)", () =>
 		};
 		const gw = new StripePaymentGateway({ webhookSecret: WEBHOOK, secretKey: SK, transport });
 		const res = await gw.refund(refundInput({ amount: cents(300), priorRefunded: cents(800) }));
-		expect(res).toEqual({ ok: false, reason: "PROVIDER_ALREADY_REFUNDED" });
+		expect(res).toEqual({
+			ok: false,
+			reason: "PROVIDER_ALREADY_REFUNDED",
+			provider: { refunded: 800, captured: 1000 },
+		});
 		expect(transport.creates).toHaveLength(0);
 	});
 
@@ -165,6 +175,42 @@ describe("StripePaymentGateway.refund (ADR-0008; offline mock transport)", () =>
 		if (!res.ok) expect(res.reason).toBe("UNVERIFIED");
 	});
 });
+
+/** A fetch that NEVER answers on its own — it settles only by rejecting when the
+ *  request's abort signal fires, as the platform `fetch` does on a trusted host.
+ *  The default transport sends NO signal (EmDash's sandbox RPC refuses one), so
+ *  there it never settles and only the transport's own race ends the wait.
+ *  `answer` lets a test serve some calls (e.g. the pre-flight GET) and hang the
+ *  rest. Every `init` is recorded so a test can assert what was passed. */
+function hangingFetch(
+	seen: RequestInit[],
+	answer: (url: string, init?: RequestInit) => Response | undefined = () => undefined,
+): typeof fetch {
+	return ((target: Parameters<typeof fetch>[0], init?: RequestInit) => {
+		seen.push(init ?? {});
+		const served = answer(String(target), init);
+		if (served !== undefined) return Promise.resolve(served);
+		return new Promise<Response>((_resolve, reject) => {
+			init?.signal?.addEventListener("abort", () => {
+				reject(new Error("The operation was aborted"));
+			});
+		});
+	}) as unknown as typeof fetch;
+}
+
+/** Races a call against a generous ceiling so a regression (an unbounded call)
+ *  fails fast and legibly instead of hanging the suite until vitest's timeout. */
+async function settlesWithin<T>(ms: number, call: Promise<T>): Promise<T> {
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	const ceiling = new Promise<never>((_resolve, reject) => {
+		timer = setTimeout(() => reject(new Error(`call did not settle within ${ms}ms`)), ms);
+	});
+	try {
+		return await Promise.race([call, ceiling]);
+	} finally {
+		clearTimeout(timer);
+	}
+}
 
 function stubFetch(handler: (url: string, init?: RequestInit) => Response): typeof fetch {
 	return (async (target: Parameters<typeof fetch>[0], init?: RequestInit) =>
@@ -275,5 +321,177 @@ describe("createStripeHttpTransport (default live transport; stub fetch — NO n
 				class: cls,
 			});
 		}
+	});
+	test("a hung pre-flight READ is bounded by requestTimeoutMs and classifies retryable", async () => {
+		const seen: RequestInit[] = [];
+		const transport = createStripeHttpTransport({
+			baseUrl: "https://api.example",
+			requestTimeoutMs: 20,
+			fetch: hangingFetch(seen),
+		});
+		// A timed-out READ issued nothing — retryable, exactly like a network error.
+		expect(
+			await settlesWithin(
+				1_000,
+				transport.readRefundedAmount({ providerRef: "pi_1", secretKey: SK }),
+			),
+		).toEqual({ ok: false, class: "retryable" });
+		expect(seen).toHaveLength(1);
+		// No signal: the sandbox RPC refuses one; the transport's own race bounds it.
+		expect(seen[0]?.signal).toBeUndefined();
+	});
+
+	test("a hung refund CREATE is bounded by requestTimeoutMs and classifies ambiguous", async () => {
+		const seen: RequestInit[] = [];
+		const transport = createStripeHttpTransport({
+			baseUrl: "https://api.example",
+			requestTimeoutMs: 20,
+			fetch: hangingFetch(seen),
+		});
+		// The POST may have reached Stripe before the abort: fate UNKNOWN — never a
+		// clean failure, never retried blind.
+		expect(
+			await settlesWithin(
+				1_000,
+				transport.createRefund({
+					providerRef: "pi_1",
+					amountCents: 500,
+					idempotencyKey: "rf-t",
+					secretKey: SK,
+				}),
+			),
+		).toEqual({ ok: false, class: "ambiguous" });
+		expect(seen).toHaveLength(1);
+		// No signal: the sandbox RPC refuses one; the transport's own race bounds it.
+		expect(seen[0]?.signal).toBeUndefined();
+	});
+
+	test("the gateway's OWN requestTimeoutMs bounds its default transport — the settle webhook's refund cannot outlast Stripe's delivery timeout", async () => {
+		// The settle route refunds a late payment INSIDE the webhook request. Stripe
+		// gives a delivery ~10 s before treating it as failed, so a refund pinned to
+		// the 30 s default could still be running when Stripe gives up and redelivers.
+		const seen: RequestInit[] = [];
+		const gw = new StripePaymentGateway({
+			webhookSecret: WEBHOOK,
+			secretKey: SK,
+			fetch: hangingFetch(seen),
+			requestTimeoutMs: 20,
+		});
+		expect(await settlesWithin(1_000, gw.refund(refundInput()))).toEqual({
+			ok: false,
+			reason: "RETRYABLE",
+		});
+		expect(seen).toHaveLength(1);
+	});
+
+	test("requestTimeoutMs may be a FUNCTION, asked at each call — a cron leg bounds every call by the time it has left", async () => {
+		let left = 5_000;
+		const asked: number[] = [];
+		const seen: RequestInit[] = [];
+		const gw = new StripePaymentGateway({
+			webhookSecret: WEBHOOK,
+			secretKey: SK,
+			fetch: hangingFetch(seen),
+			requestTimeoutMs: () => {
+				asked.push(left);
+				return left;
+			},
+		});
+		left = 20; // the leg's budget shrank before the call
+		expect(await settlesWithin(1_000, gw.refund(refundInput()))).toEqual({
+			ok: false,
+			reason: "RETRYABLE",
+		});
+		expect(asked).toEqual([20]);
+	});
+
+	test("beforeRefundCreate=false after the pre-flight ⇒ NOT_STARTED and NO create — never start a create that is bound to time out", async () => {
+		const transport = new MockTransport();
+		const gw = new StripePaymentGateway({
+			webhookSecret: WEBHOOK,
+			secretKey: SK,
+			transport,
+			beforeRefundCreate: () => false,
+		});
+		expect(await gw.refund(refundInput())).toEqual({ ok: false, reason: "NOT_STARTED" });
+		expect(transport.reads).toHaveLength(1);
+		expect(transport.creates).toHaveLength(0);
+	});
+
+	test("the create gets its FIXED bound (refundCreateTimeoutMs), however little the caller's shrinking budget says is left", async () => {
+		const seen: { method: string | undefined; at: number }[] = [];
+		const gw = new StripePaymentGateway({
+			webhookSecret: WEBHOOK,
+			secretKey: SK,
+			requestTimeoutMs: () => 5,
+			refundCreateTimeoutMs: 80,
+			fetch: hangingFetch([], (_url, init) => {
+				seen.push({ method: init?.method, at: Date.now() });
+				return init?.method === "GET"
+					? new Response(
+							JSON.stringify({
+								latest_charge: { amount_refunded: 0, amount_captured: 1000, currency: "usd" },
+							}),
+							{ status: 200 },
+						)
+					: undefined;
+			}),
+		});
+		const started = Date.now();
+		expect(await settlesWithin(2_000, gw.refund(refundInput()))).toEqual({
+			ok: false,
+			reason: "UNVERIFIED",
+		});
+		// Aborted at ITS bound (80 ms), not at the 5 ms the caller had left.
+		expect(Date.now() - started).toBeGreaterThanOrEqual(70);
+		expect(seen.map((x) => x.method)).toEqual(["GET", "POST"]);
+	});
+
+	test("through the gateway: a hung READ is RETRYABLE (nothing issued), a hung CREATE is UNVERIFIED", async () => {
+		const readSeen: RequestInit[] = [];
+		const hungRead = new StripePaymentGateway({
+			webhookSecret: WEBHOOK,
+			secretKey: SK,
+			transport: createStripeHttpTransport({
+				baseUrl: "https://api.example",
+				requestTimeoutMs: 20,
+				fetch: hangingFetch(readSeen),
+			}),
+		});
+		expect(await settlesWithin(1_000, hungRead.refund(refundInput()))).toEqual({
+			ok: false,
+			reason: "RETRYABLE",
+		});
+		expect(
+			readSeen.map((init) => init.method),
+			"no refund POST after a failed read",
+		).toEqual(["GET"]);
+
+		const createSeen: RequestInit[] = [];
+		const hungCreate = new StripePaymentGateway({
+			webhookSecret: WEBHOOK,
+			secretKey: SK,
+			transport: createStripeHttpTransport({
+				baseUrl: "https://api.example",
+				requestTimeoutMs: 20,
+				// Serve the pre-flight GET cleanly; hang only the refund POST.
+				fetch: hangingFetch(createSeen, (_url, init) =>
+					init?.method === "GET"
+						? new Response(
+								JSON.stringify({
+									latest_charge: { amount_refunded: 0, amount_captured: 1000, currency: "usd" },
+								}),
+								{ status: 200 },
+							)
+						: undefined,
+				),
+			}),
+		});
+		expect(await settlesWithin(1_000, hungCreate.refund(refundInput()))).toEqual({
+			ok: false,
+			reason: "UNVERIFIED",
+		});
+		expect(createSeen.map((init) => init.method)).toEqual(["GET", "POST"]);
+		for (const init of createSeen) expect(init.signal).toBeUndefined();
 	});
 });

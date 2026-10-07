@@ -1,5 +1,10 @@
 import type { Currency } from "../money/cents.js";
-import type { IdempotencyKey, Sku } from "../money/ids.js";
+import {
+	idempotencyKey as brandIdempotencyKey,
+	orderId as brandOrderId,
+	type IdempotencyKey,
+	type Sku,
+} from "../money/ids.js";
 import type { FulfillmentKind } from "../orders/model.js";
 import {
 	type Cart,
@@ -9,7 +14,14 @@ import {
 	type RecordedCartMutation,
 } from "../ports/cart-store.js";
 import type { Clock } from "../ports/clock.js";
+import type { OrderStore } from "../ports/order-store.js";
 import { type InventoryStore, ReservationNotHeldError } from "../ports/inventory-store.js";
+import {
+	listLimitFor,
+	mayContinue,
+	type SweepBatchOptions,
+	type SweepBatchResult,
+} from "../sweep/batch.js";
 
 /**
  * IO-free cart orchestration over `CartStore` + `InventoryStore` + `Clock`
@@ -70,8 +82,56 @@ function isExpiredHeld(
 	);
 }
 
+/** Mint a new cart. There is no keyed variant here on purpose: the only code that
+ *  makes a create key is `replaceSpentCart`, which derives it server-side. */
 export async function createCart(deps: CartDeps, currency: Currency): Promise<string> {
 	return deps.cartStore.create(currency);
+}
+
+export type ReplaceSpentCartResult =
+	| { ok: true; cartId: string }
+	| { ok: false; reason: "CART_NOT_FOUND" | "CART_NOT_CHECKED_OUT" | "ORDER_NOT_FINISHED" };
+
+/** The cart deps, plus the order read the "finished" check needs. */
+export interface ReplaceSpentCartDeps extends CartDeps {
+	orderStore: Pick<OrderStore, "getById">;
+}
+
+/**
+ * The cart that REPLACES a spent one — a cart checked out into an order that can
+ * no longer be paid.
+ *
+ * The key is derived HERE, `rotate:<spentCartId>`, and this is the only code that
+ * makes a create key: the same spent cart always has the same replacement, so two
+ * requests racing to replace it converge on one cart. Cart ids are bearer secrets,
+ * so a spent cart's id grants access to the cart that replaces it — exactly as it
+ * already grants access to the spent cart itself. The replacement is in the spent
+ * cart's currency.
+ *
+ * Refused, in order: `CART_NOT_FOUND` (no such cart), `CART_NOT_CHECKED_OUT` (an
+ * active cart needs no replacing, and rotating it would orphan its lines), and
+ * `ORDER_NOT_FINISHED` — the cart names no order, the order cannot be found, or it
+ * is still `pending`. A pending order's payment may still happen, and its cart is
+ * how the shopper resumes it (the storefront applies the same rule before asking;
+ * this is where it cannot be skipped).
+ */
+export async function replaceSpentCart(
+	deps: ReplaceSpentCartDeps,
+	spentCartId: string,
+): Promise<ReplaceSpentCartResult> {
+	const spent = await deps.cartStore.get(spentCartId);
+	if (spent === null) return { ok: false, reason: "CART_NOT_FOUND" };
+	if (spent.state !== "checked_out") return { ok: false, reason: "CART_NOT_CHECKED_OUT" };
+	const order =
+		spent.orderId === null ? null : await deps.orderStore.getById(brandOrderId(spent.orderId));
+	if (order === null || order.state === "pending") {
+		return { ok: false, reason: "ORDER_NOT_FINISHED" };
+	}
+	const cartId = await deps.cartStore.create(
+		spent.currency,
+		brandIdempotencyKey(`rotate:${spentCartId}`),
+	);
+	return { ok: true, cartId };
 }
 
 /**
@@ -102,10 +162,18 @@ export async function getCart(deps: CartDeps, cartId: string): Promise<Cart | nu
 /**
  * Add `{sku, qty}` to a cart. Ledger-first: a completed replay returns the
  * recorded line; otherwise claim the key, reserve via the atomic inventory port,
- * then complete the line. `OUT_OF_STOCK` writes **no** line (the claim stays
- * incomplete; a replay resumes and re-reads reserve's recorded `failed` state).
+ * then complete the line. `OUT_OF_STOCK` writes **no** line and RETIRES the
+ * claim (`abandonClaim`): it stays incomplete, so a replay resumes and re-reads
+ * reserve's recorded `failed` state, but it is no longer the sweep's work.
  * The pre-reserve claim marks the hold cart-originated so a crash between
  * reserve and the line write leaves a hold the sweep can identify and reap.
+ *
+ * **Re-adding a sku already in the cart adds to that line** (one line per sku,
+ * one reservation per physical line — phase-3 plan §4): the add becomes an
+ * {@link updateLine} of the existing line to `line.qty + qty`, keyed by this
+ * add's `idempotencyKey`, so stock moves by delta on the line's OWN hold. A
+ * fresh `reserve` here would be attached over the line's current reservation
+ * and orphan it until the TTL sweep — locking stock no cart line accounts for.
  */
 export async function addLine(
 	deps: CartDeps,
@@ -121,6 +189,15 @@ export async function addLine(
 
 	const guard = await guardActiveCart(deps, cartId);
 	if (!guard.ok) return guard;
+
+	// The sku already has a line: add to it through the line's own hold. The one
+	// exception is RESUMING this key's own incomplete `add` claim — that attempt
+	// may already have reserved under the key, so it must finish the reserve
+	// choreography it started (its hold is ledger-scoped, so the sweep can reap it).
+	const existing = guard.cart.lines.find((l) => l.sku === sku);
+	if (existing !== undefined && recorded?.kind !== "add") {
+		return updateLine(deps, cartId, existing.lineId, existing.qty + qty, key);
+	}
 
 	const claim = await deps.cartStore.claimMutation({ key, cartId, kind: "add" });
 	if (!claim.claimed && claim.recorded.completed) return replayLine(deps, cartId, claim.recorded);
@@ -144,7 +221,24 @@ export async function addLine(
 	}
 
 	const reserved = await deps.inventoryStore.reserve(sku, qty, key);
-	if (!reserved.ok) return { ok: false, reason: "OUT_OF_STOCK" };
+	if (!reserved.ok) {
+		// Decided: no hold exists under this key, and none ever will (the reserve
+		// key is once-only). Retire the claim so it is not swept forever (QA U-16);
+		// a same-key replay still resumes here and answers OUT_OF_STOCK again.
+		// BEST-EFFORT: the answer is already decided and the retirement only spares
+		// the sweep a read, so a failed write (contention, a fault) is logged and
+		// the shopper still gets OUT_OF_STOCK — never a 500 or a BUSY for it. An
+		// unretired claim is exactly the pre-fix state, which the sweep tolerates.
+		try {
+			await deps.cartStore.abandonClaim(cartId, key);
+		} catch (err) {
+			console.warn(
+				"[domain] addLine: could not retire an out-of-stock claim:",
+				err instanceof Error ? err.message : String(err),
+			);
+		}
+		return { ok: false, reason: "OUT_OF_STOCK" };
+	}
 
 	try {
 		const line = await deps.cartStore.upsertLine({
@@ -286,17 +380,35 @@ export async function removeLine(
  * actually reclaimed (flips won).
  */
 export async function expireHolds(deps: CartDeps, at?: Date): Promise<number> {
+	return (await expireHoldsBatch(deps, at)).count;
+}
+
+/**
+ * `expireHolds`, bounded: at most `limit` holds attempted, each only while
+ * `shouldContinue` allows, reporting whether the expired set was `drained`. The
+ * scheduled sweep calls this so a hold backlog drains over several ticks instead
+ * of overrunning the host's hook timeout (see `sweep/batch.ts`). A hold not
+ * reached is still expired-and-listed next time; the guarded flip is unchanged.
+ */
+export async function expireHoldsBatch(
+	deps: CartDeps,
+	at?: Date,
+	options: SweepBatchOptions = {},
+): Promise<SweepBatchResult> {
 	const now = at ?? deps.clock.now();
 	const nowIso = now.toISOString();
 	const cutoff = cutoffIso(deps, now);
 
-	const expired = await deps.cartStore.listExpired(nowIso, cutoff);
+	const expired = await deps.cartStore.listExpired(nowIso, cutoff, listLimitFor(options));
 	let reclaimed = 0;
+	let attempted = 0;
 	for (const hold of expired) {
+		if (!mayContinue(options, attempted)) return { count: reclaimed, drained: false };
+		attempted++;
 		const won = await deps.cartStore.expireHold(hold.reservationId, nowIso, cutoff);
 		if (won) reclaimed++;
 	}
-	return reclaimed;
+	return { count: reclaimed, drained: true };
 }
 
 type ActiveCartGuard = { ok: true; cart: Cart } | { ok: false; reason: CartFailure };

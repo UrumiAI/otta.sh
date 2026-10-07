@@ -41,6 +41,21 @@ function intentError(retryable = true): PaymentIntentError {
 	});
 }
 
+// QA T1-9: a double-clicked checkout sends the same key twice, and the
+// provider answers the second "a request with this key is still in
+// progress". That is not a failed payment — asking again shortly returns
+// the first request's intent — so it gets its own reason, which the place
+// route turns into "busy, try again in a few seconds".
+function inFlightError(): PaymentIntentError {
+	return new PaymentIntentError({
+		gateway: "stripe",
+		retryable: true,
+		inFlight: true,
+		providerStatus: 409,
+		providerCode: "idempotency_key_in_use",
+	});
+}
+
 function cmd(cartId: string, over: Record<string, unknown> = {}) {
 	return {
 		cartId,
@@ -97,6 +112,36 @@ describe("createOrderFromCart — a live createIntent failure (PAYMENT_INTENT_FA
 		const order = await h.orderStore.getByIdempotencyKey(idempotencyKey("k-intent"));
 		expect(order, "the pending order row stays — it carries holdExpiresAt").not.toBeNull();
 		expect(order?.state).toBe("pending");
+	});
+
+	test("an IN-FLIGHT intent failure is PAYMENT_INTENT_IN_FLIGHT, not PAYMENT_INTENT_FAILED; the pending order stays", async () => {
+		const cartId = await cart();
+		gw.failWith = inFlightError();
+		const res = await createOrderFromCart(h.createDeps, cmd(cartId));
+		expect(res).toEqual({ ok: false, reason: "PAYMENT_INTENT_IN_FLIGHT" });
+		const order = await h.orderStore.getByIdempotencyKey(idempotencyKey("k-intent"));
+		expect(order?.state).toBe("pending");
+
+		gw.failWith = null; // the first request landed; the same key now succeeds
+		const retry = await createOrderFromCart(h.createDeps, cmd(cartId));
+		expect(retry.ok).toBe(true);
+		if (!retry.ok) return;
+		expect(retry.order.id).toBe(order?.id);
+	});
+
+	test("an IN-FLIGHT failure on the I1 REPLAY path is PAYMENT_INTENT_IN_FLIGHT too", async () => {
+		const cartId = await cart();
+		expect((await createOrderFromCart(h.createDeps, cmd(cartId))).ok).toBe(true);
+		gw.failWith = inFlightError();
+		expect(await createOrderFromCart(h.createDeps, cmd(cartId))).toEqual({
+			ok: false,
+			reason: "PAYMENT_INTENT_IN_FLIGHT",
+		});
+	});
+
+	test("a PaymentIntentError without inFlight is still PAYMENT_INTENT_FAILED (the flag defaults to false)", () => {
+		expect(intentError().inFlight).toBe(false);
+		expect(inFlightError().inFlight).toBe(true);
 	});
 
 	test("the mapped failure is LOGGED with providerStatus/providerCode — those fields are never write-only", async () => {

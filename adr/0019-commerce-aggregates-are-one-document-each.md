@@ -5,6 +5,9 @@
   unchanged and reaffirmed; the amendment corrects the statements the built adapters proved wrong, adds
   the rows they proved missing, and states four rules that recurred. Every in-place correction carries a
   **†**.
+  **Amended again 2026-10-02** — see
+  [Amendment 2026-10-02 — the sweepers run every minute, inside a time budget](#amendment-2026-10-02--the-sweepers-run-every-minute-inside-a-time-budget).
+  When and how long the sweepers run; what they must complete is unchanged.
 - Date: 2026-09-13
 - Refines: [ADR-0002](./0002-adapter-based-split.md) — this record names the document model that
   satisfies the storage seam ADR-0002 designed, on a store with **no transactions**. The ports do not
@@ -87,6 +90,8 @@ it failed.** Everything else — including every lease — is `compareAndSet`.
 
 Both surviving sites take their refusal **decision from a prior read**, never from `applied: false`, for
 that same reason.
+
+Refined by [ADR-0023](./0023-reporting-rollup-is-a-guarded-delta.md) for the reporting rollup.
 
 **Reserve is a `compareAndSet` read-modify-write, permanently.** A guarded single statement cannot
 carry it: the hold must be recorded in the same write as the decrement, and the hold lives at a nested
@@ -462,6 +467,7 @@ code, not that it changed. A row with no **†** is still design. See the
 | `inventory_movements` | `stock:<key>` / `adjust:<key>` | `sku`, `createdAt` | — |
 | `carts` | cartId | `state`, `holdExpiresAt` | — |
 | **†** `cart_mutation_index` | cart mutation idempotency key | — | — |
+| `cart_create_keys` *(added 2026-10-02, see the [amendment](#amendment-2026-10-02--cart_create_keys))* | server-derived create key, `rotate:<spentCartId>` | — | — |
 | **†** `orders` | orderId | `state`, `createdAt`, `customerKey`, `buyerRefLower`, `searchKey`, `emailDueAt`, `holdExpiresAt`, `holdsPendingAt`, `[state, createdAt]` | — |
 | `order_keys` | order idempotency key | — | — |
 | `refund_keys` | refund idempotency key | — | — |
@@ -504,7 +510,11 @@ id the port never pairs with a parent — nine such methods across the two rules
 whose parent is known (the order the event belongs to, and the day document its effect lands
 in), keyed by the event rather than by a lookup nobody else can serve — its second job is to
 be revocable, since a recompute that counts an event absolutely must be able to stop that
-event's delta from ever applying.
+event's delta from ever applying. `cart_create_keys` (added 2026-10-02) is the
+same device once more, for a create rather than a lookup: one locator per keyed create,
+claimed create-if-absent on the key BEFORE the cart is written, so racing creates of the same
+replacement cart converge. It is never pruned and grows by one document per replaced cart —
+bounded by the number of orders that ever left a cart behind.
 
 **† The product document's index list has no `sku` and no `titleLower`, and `active` is filtered
 through a text mirror.** Nothing queries `product_commerce` by sku — live-sku uniqueness is the
@@ -959,6 +969,7 @@ superset stays conformant.
 | **†** *(new 2026-09-14 — no SQL analogue)* cancellation releases the order's **adopted** holds | a cancelled order does not strand its holds; a **paid** order's spent units are never returned | The SQL's cancel was a pure envelope write, and the expiry sweep scans only `pending`, so a cancelled `pending` order strands its holds forever. The `→ cancelled` flip therefore records the same `holdsReleased` intent the `→ expired` flip does, state-guarded, and the release is completed idempotently by any replayer. What makes that safe on a **paid** order cancelled after settle is the inventory store's **`adopted`-only** guard on `releaseAdopted`: a `committed` hold is not adopted, so the release is an unconditional no-op, `onHand` is unchanged and spent units are never put back. That guard is load-bearing here, not incidental | the shared paid-cancellation case, registered on every dialect |
 | `resolveReconciliation`: compare-and-clear — sets the disposition and nulls the flag `WHERE id = :id AND reconciliation_flag = :expectedFlag` | a resolution never clobbers an anomaly re-raised since the operator read it | the same comparison inside the order document's compare-and-set, where the revision adds a second guard | `order-store-contract` "resolveReconciliation with a STALE expectedFlag is a 0-row miss: the re-flagged anomaly survives"; the non-flagged and once-only cases |
 | `flagReconciliation`: unguarded, **last-writer-wins** | an anomaly is always recordable | preserved as last-writer-wins on the field; it is deliberately not a CAS | `resolve-reconciliation-race.pg.test.ts` |
+| `flagReconciliation` with a guard (amended 2026-10-05, issue #364): written only while the live flag equals `expectedFlag` (`null` = unflagged) | a writer that decided from a flag it read EARLIER (before a provider call, a commit) never overwrites a flag written in between | the expected-flag comparison inside the order document's compare-and-set, against the same revision the write is conditioned on | `order-store-contract` "flagReconciliation guarded on NO flag …" and "… guarded on a flag …"; the interleaving cases in `refund-order-contract`, `intent-cancel-contract` and `settle-order.test.ts` |
 | `recordPayment`: `ON CONFLICT (provider_ref) DO NOTHING` | a gateway redelivery records one payment | the provider reference keys the entry inside `payments[]`; a present key is a no-op — **†** and, for a reference already claimed by a **different** order, the new `payment_refs` row above | `refund-order-contract` captured-sum cases |
 | `voidRefund` / `markRefundUnverified`: guarded flips out of `status = 'reserved'` | capacity is released or held deliberately, never by accident | R6, inside the order document's compare-and-set | the three `refund-order-contract` cases named in R6 |
 | `order_totals.order_id` as PRIMARY KEY | one totals row per order | tautological once totals are a field of the order document | `order-store-contract` |
@@ -1073,7 +1084,7 @@ by the same bounded budget.
   coupon per-customer refusal above all — the document model must write an explicit, idempotent
   compensation, and get its ordering right.
 - **Reporting becomes write-time work**, with past-bucket decrements and paged reads.
-- **†** **32 rows naming 35 collections** to declare and keep in step with the descriptor — their
+- **†** **32 rows naming 35 collections** (33 naming 36 since the 2026-10-02 amendment) to declare and keep in step with the descriptor — their
   index lists part of the read contract. The count rose from the ~22 first estimated, and every
   addition is a claim or locator document standing in for a lookup the port signatures force (§4).
 - **The orders search narrows** as recorded in 6.1.
@@ -1251,3 +1262,399 @@ as adoptable where the port, the SQL reference and the document adapter do not �
 follow-ups in the domain, outside this record. The mapping of the retryable contention error to a
 retryable HTTP response is still owed by the route increments. And §5's substance is unchanged: the
 descriptor still declares no storage, so §4's lists become a **pinned** read contract only when it does.
+
+## Amendment 2026-10-02 — `cart_create_keys`
+
+The storefront now replaces a SPENT cart (checked out into an order that can no longer be paid)
+with a fresh one by itself, and two requests can race to do it — a double-submitted "Add to cart"
+sent while the cookie still names the spent cart. Unkeyed, each would mint its own cart and the
+shopper would keep whichever cookie arrived last. So `CartStore.create` takes an optional key, and
+the domain's `replaceSpentCart` — the only code that makes a key — derives it server-side as
+`rotate:<spentCartId>` after checking the cart exists, is checked out, and that its order is no
+longer pending. Callers name only the spent cart, never a key. Cart ids are bearer secrets, so a
+spent cart's id grants access to the cart that replaces it, just as it already grants access to
+the spent cart itself.
+
+- **One new collection, `cart_create_keys`** (§4's table; doc id = the key; no indexes, every
+  access is by id). It is the claim/locator device again: the key is claimed create-if-absent
+  naming a freshly minted cart id; a losing racer reads the winner's id back; every caller then
+  create-if-absents the cart document itself, so a crash between the two writes is finished by the
+  next call. Pinned by `cartStoreContract`'s keyed-create and `replaceSpentCart` cases.
+- **Never pruned.** It grows by one document per replaced cart, bounded by orders. Pruning a
+  locator while the spent cart's cookie survives in some browser would let a later replacement mint
+  a second cart, so retention waits for a policy on spent carts themselves.
+- The decision is unchanged; this adds one row to §4 and one name to its "claim collections" list.
+
+## Amendment 2026-10-02 — a cart add decided out of stock retires its claim
+
+**What changed.** `CartStore` gains `abandonClaim(cartId, key)`, and `addLine` calls it — best-effort:
+a failed retirement is logged and the add still answers `OUT_OF_STOCK` — the moment `reserve` answers
+`OUT_OF_STOCK`. `recordedMutation` reads the retirement back as `abandoned: true`. The add's ledger record is retired — on the document store, marked
+`abandoned`, the flag the sweep already skips — in the same compare-and-set that recomputes the cart's
+`holdExpiresAt`.
+
+**Why.** §7.7's candidate filter folds every outstanding `add` claim into `holdExpiresAt` at its
+`claimedAt`, because a claim may front a hold whose line write never landed. An add refused
+`OUT_OF_STOCK` claimed its key, then had its reserve decided with no reservation, and the domain never
+completed or retired that claim — so it pinned the cart's deadline in the past, and every expiry tick
+listed the cart and re-read its reserve key, for good (QA U-16). The per-document re-check already
+refused to reap anything (a terminal reserve key with `reservationId: null` names no hold), so this
+was never a correctness fault, only unbounded sweep work; but it grew with every refused add.
+
+**What did not change.** The record is retired, never completed or deleted: it still reads back
+`completed: false`, so a same-key replay resumes, reads the reserve key's recorded refusal and answers
+`OUT_OF_STOCK` again — the replay contract is untouched, and `cart-store-contract` pins it. Retiring is
+safe only because the reserve was DECIDED: the key is once-only, so no hold can ever exist under it.
+The §7.7 re-check of an un-retired decided claim stays, for records written before this change and for
+a retirement that did not land.
+
+**The residual this accepts.** The abandoned bound (16 per cart) now also carries these records, so
+one can be evicted — which an incomplete claim never could be. Eviction moves no stock it should not,
+but it is not answer-free: a very late replay of the evicted key finds no record and runs as a fresh
+add, and if the cart has since gained a line for that sku the replay becomes an increment of that line,
+answered with current truth. That is the residual an evicted completed record already carries (the
+ledger bound above), and reaching it takes sixteen later refused or reaped adds on one cart between a
+request and its retry.
+
+**Follow-up, not done here.** The retirement happens only on the add path, so a claim whose retirement
+failed (`abandonClaim` is best-effort) or that was written before this change stays unretired, and its
+cart stays a candidate on every tick. `#collectExpired` already reads the reserve key of such a claim
+and finds it decided with no reservation; it could retire the claim there on an active cart (on a
+checked-out one `#narrowCheckedOut` already leaves it out of the deadline), making the sweep
+self-healing. It is deferred because the
+sweep's expiry pass is being reworked separately (`fix/sweep-cadence`).
+
+## Amendment 2026-10-02 — the sweepers run every minute, inside a time budget
+
+**What this changes.** Only *when* and *for how long* the sweepers of
+[The sweepers the adapters now require](#the-sweepers-the-adapters-now-require) run. What each must
+complete, and the rule that a missing sweeper is a correctness bug, are unchanged and reaffirmed — this
+amendment exists because, as shipped, five of the nine legs were missing in practice.
+
+**Context.** The plugin's one cron task, `commerce-sweeps`, was due every fifteen minutes — the cadence
+the standalone service ran its `scheduled()` handler on, chosen there so a serverless Postgres origin
+could autosuspend between ticks. That reason left with the service: commerce truth now lives in the
+site's own D1, and the site's Worker Cron Trigger already fires every minute to drive the host's
+executor. End-to-end QA found two compounding defects:
+
+1. **Holds outlived their TTL.** A fifteen-minute cart or order hold lasted fifteen to thirty minutes,
+   and a queued email waited up to fifteen.
+2. **One slow leg starved the rest.** The nine legs ran back to back in one host hook, and the host
+   abandons a hook after its timeout (5000 ms in EmDash 0.38, per hook, configurable as the hook's
+   `timeout`). The QA log showed `expire-holds 18`, `expire-orders 14`, then
+   `Hook timeout after 5000ms` — twice. Every leg after them — the outbox, the challenge prune and the
+   hold-intent, reporting and coupon completers — never ran. The per-leg try/catch contained a leg that
+   *threw*; nothing contained a leg that was *slow*.
+
+**Decision.**
+
+1. **The task is due every minute** (`SWEEP_SCHEDULE = "* * * * *"`), the trigger's own resolution.
+   Deployments registered under the old cadence move on their own: the per-isolate bootstrap reads the
+   host's task row and upserts only when its schedule differs. The tick does not re-affirm on every run
+   (that was a database write, and a `next_run_at` nudge on the running row, every minute).
+2. **The scans keep the fifteen-minute cadence, per leg.** `sku-transfers`, `order-sku-index`,
+   `reporting-heal` and `coupon-orphans` read up to a page budget of a collection (or re-reconcile the
+   closed day) on every run; that read cost, not the holds, is what the old cadence was bounding, and
+   the residue they heal is rare and not customer-visible within minutes. Each runs only when fifteen
+   minutes have passed since it last completed (one state document in the plugin's `ctx.kv`); a run the
+   budget cut short is not stamped, so it resumes on the next tick; a run that *failed* is stamped, so a
+   broken scan retries at its own cadence rather than every minute. The other five legs find their work
+   through a predicate that narrows as the work completes, so an idle run costs only its discovery read
+   (one query each, a little more for the outbox claim and the settings read).
+3. **The tick has a budget in two dimensions, started at hook entry.**
+   - *Time.* The hook declares its timeout, `SWEEP_HOOK_TIMEOUT_MS = 15000` — RAISED from the host's
+     5000 ms default so one send of a slow-but-working email provider fits in a tick (see 5). The legs
+     get `SWEEP_TICK_BUDGET_MS = 9500`; the 5.5 s between them hold one whole email send plus the
+     trailing reserve (a test pins that inequality). The cost, accepted: EmDash 0.38's executor runs
+     due tasks one after another in a single scheduled event, so a long tick can delay another
+     plugin's task due in the same minute by up to the hook's timeout. Acceptable because the tick
+     ends itself at 9.5 s and usually far sooner (on Workers Free the query budget ends it first), cron
+     granularity is a minute anyway, and the time is wall time spent waiting on I/O — Workers Free's
+     per-invocation CPU limit is unaffected.
+   - *Queries.* Cloudflare caps one Worker invocation at **50 D1 queries and 50 subrequests on Workers
+     Free (1000 and 10,000 on Paid)**, and the scheduled event that runs the tick also runs the host's
+     executor, its scheduled-publishing pass, system cleanup and heartbeat. Every storage, kv and egress
+     call the tick makes is counted, against an OPERATIONAL SETTING, "Background work per minute"
+     (Settings → Checkout & holds, beside the hold TTL; plugin `ctx.kv`, not the domain's settings
+     store — the domain has no notion of a Cloudflare plan). Presets: Workers Free (30, the default —
+     the plan DEPLOYMENT.md §2 builds for) and Workers Paid (600); any whole number from **30** to 900
+     is accepted on save, anything else refused with a message; a stored value outside the bounds is
+     ignored for the default. 30 is the FLOOR, not only the default: below it the costliest critical
+     unit (an order expiry, ~23 calls with its list, plus the tick's own reads and reserve) could never
+     start, and order expiry would stop silently and forever — a test pins the floor against the
+     measured cost table. The sweep reads the setting once per tick, and that read counts against the
+     budget. The per-tick bites are sized from it and the measured unit costs (Free: 2 holds/orders,
+     1 email; Paid: 18 holds/orders, 22 emails), because the expiry list is read before per-unit
+     checks run. The time budget applies on both plans.
+   - *Measured costs.* Each leg's per-unit call cost is measured (`cron-leg-costs.test.ts`, one real
+     unit per leg through the counting context, SQLite): an email ~8, a hold flip ~14, an order expiry
+     ~22, a hold-intent completion ~14, a stranded sku carry ~12, a coupon orphan ~7. A loop's first
+     unit is admitted on that estimate (time estimated as calls × the tick's observed cost per call)
+     until it has timed a real one.
+4. **What the budget checks, exactly.** Each leg asks before it starts (room for its fixed entry reads
+   plus one unit) and is reported `deferred` — not a failure — if refused. Inside, a check precedes each
+   *unit*: each hold flip, order flip, outbox claim, scanned page and row, and reporting day. A unit is
+   admitted only if the slowest unit seen so far in that loop (or a measured estimate, before one has
+   been seen) still fits with the trailing reserve kept back. The expiry legs' candidate lists are
+   bounded by a count (`batch + 1` — `listExpired` and `listExpirable` gained an optional `limit`) and
+   `listExpired` also asks a stop check before each candidate cart, keeping room for one flip. Not
+   checked call by call: the settings read and the single `prune-challenges` call.
+   **Head-of-line.** `listExpired` no longer offers a lapsed hold whose reservation is no longer live
+   (released or committed behind the cart's back): `expireHold` refuses such a hold every time, and
+   under a small limit a few of them would fill every bite forever while live holds waited. A line
+   already carrying an expiry token is still offered — it is a claimed expiry owed its completion.
+   Skipping is not enough on its own: the cart's `holdExpiresAt` index would still match, so the cart
+   would be fetched and its reads paid on every listing, and a few such carts sorted ahead of a live
+   one would use the Free listing allowance every tick. So the listing also HEALS the index — exactly
+   as it already narrowed checked-out carts — recomputing `holdExpiresAt` without the dead candidates
+   (lines and claims stay on the document). Safe because a reservation that is no longer live never
+   becomes live again; a later write that recomputes the index re-arms the cart for one more heal.
+   *Accepted residual:* a candidate whose reservation index is live but which `#claimExpiry` still
+   refuses — its inventory hold not `held`, or its mutation locator missing — is not healed (telling
+   those apart costs an inventory read per line; they are rare crash residue costing only their own
+   reads). A stop lands *between* guarded units, and an advancing cursor moves only past rows actually
+   handled — always forward, even when a cut-short walk's rows all fall inside the cursor's overlap.
+5. **The email send is capped, and a timeout is not (at first) an attempt.** The sweep's sender is
+   given `SWEEP_EMAIL_SEND_TIMEOUT_MS = 5000` — long enough for a slow-but-working provider; a cap
+   below its normal round trip would time out every send and never deliver — or what is left of the
+   leg, whichever is sooner, computed at send time — and the WHOLE send is raced against a timer at that limit, because work before the
+   request (the sender's kv reads; the host's `ctx.http.fetch` resolving the provider over
+   DNS-over-HTTPS, which ignores our abort signal) can hang too. The outbox stops claiming once less
+   than a send's worth is left, and asks again just before the send (the claim and the order reads take
+   time): too little left, and the row is handed back untried, due again in 30 s (`UNTRIED_RETRY_MS`,
+   forward so a run short of time cannot pin the same row at the head of the queue). A send given
+   LESS than the full cap (the tick was short of time) that times out is the sweep's doing, not the
+   provider's (`EmailSendTimeoutError.cutShort`): handed back due at once, no backoff, nothing
+   recorded. Either way — handed back, or cut off by
+   the timer or our own abort (`EmailSendTimeoutError`) — the row goes back through the new
+   `OrderStore.releaseEmailClaim`, **without counting the attempt**, and the drain stops. A timed-out
+   row is released with a FORWARD backoff (`dueAt` = now + 1 min, doubling per timeout to 15 min), so
+   it falls behind every other due row instead of being claimed first again and stalling the queue
+   (only a timeout WITH the full cap counts here) —
+   the order-scoped claim on the in-flight order-email-on-payment branch applies the same due
+   predicate, so it respects the backoff too. The row keeps its own timeout counter, which stops at
+   ten; past ten timeouts the sweep logs `console.error` (alertable) and each further timeout counts
+   as an attempt instead,
+   so a provider that never answers in time does eventually park the row, with the reason "provider
+   kept timing out". A transport that words our own abort differently is still read as a timeout (the
+   sender judges by its own signal having fired). Otherwise only a genuine provider failure counts
+   toward the five attempts after which a row is parked `failed`; a late delivery of a timed-out send
+   is deduped by the `Idempotency-Key` (the outbox row id) on the retry. There is no admin action to re-queue a parked row yet (a follow-up). The sender's general
+   30 s default is not the cron's: a send outliving the hook would leave its row leased and be re-sent
+   when the lease lapsed.
+6. **Shares, order and bites.** The three critical legs — the outbox (a customer is waiting on it) and
+   the two expiry legs — run first and take turns LEADING by minute: on the Free preset one unit is most
+   of the budget, so under a backlog the leader is often the only one that can run, and a fixed order
+   would let one leg's backlog starve the others. Each of these three may use only a share of the tick
+   (a cap, not a reservation) — but never less than one unit of its own work — so a hung provider or a
+   hold backlog takes its share and not the whole tick. The expiry legs take bounded bites
+   (`expireHoldsBatch`/`expireOrdersBatch` in the domain: a `limit`, a `shouldContinue`, and whether the
+   backlog was `drained`; the stop condition is the caller's, injected as a predicate, so the domain stays
+   pure) and `dispatchOrderEmails` takes a `shouldContinue` checked before each claim. Stopping early is
+   safe because every unit is a guarded, idempotent write.
+7. **`coupon-orphans` waits for a drained `expire-orders`.** Its `expired` arm is the retry for a coupon
+   release `expire-orders` owed, and it judges a redemption once and moves its cursor past it. So a tick
+   whose `expire-orders` was deferred, failed or stopped early defers `coupon-orphans` too, preserving the
+   "two faults" bound recorded for that residual.
+
+**Consequences.** A hold outlives its TTL by about a minute plus any backlog, and a queued email waits
+about a minute. The hook can no longer be killed by the sweep's own work, so a leg that does not run is
+visible as `deferred` in the summary and in one log line (with a warning after five consecutive
+deferrals), instead of as a host-level hook failure that hid which legs never started. Idle legs log
+nothing; a leg logs when it did work, has more left, or failed.
+
+**Accepted costs.** On Workers Free the query cap, not time, is the binding limit: with backlogs on
+every critical leg one tick advances about one unit of whichever leads it — roughly one email, one hold
+or one order a minute, each leading one minute in three. The scans, and `coupon-orphans` especially
+(last in the tick, and only after a finished order expiry), may run much less often than every
+fifteen minutes while Free works through a backlog. A forward cursor cut short by the budget steps to
+1 ms before its newest handled row when its overlap would not advance it, so on such a walk a row
+written late with a `createdAt` already behind the cursor can be stepped over — the residual the
+overlap otherwise covers; for `coupon-orphans` that is an orphaned redemption left holding a use (the
+safe direction: a coupon looks one use fuller than it is). A store that
+abandons more checkouts than that per minute outgrows Workers Free. On Paid the operator must choose
+the Paid preset; one who leaves the default drains at the Free pace, and one who picks Paid on Free
+gets ticks failing with D1's per-invocation cap. The every-tick legs issue their (mostly empty) discovery reads every minute. A budget-cut
+tick can leave a scan an interval later than before. ADR-0022's window ("the order's hold plus up to one
+run of the plugin's scheduled sweep") shrinks accordingly; its decision is unaffected.
+
+## Amendment 2026-10-03 — a hard query ceiling, fair turns, and a cheaper order expiry (QA2 M2)
+
+**What this changes.** How the tick of the 2026-10-02 amendment spends its budget, and what one
+order expiry costs. What each sweeper must complete is unchanged.
+
+**Context.** The second QA round ran a store on the Workers Free preset (30 calls a tick) under a
+modest backlog. One order expiry cost 22 calls, so lapsed orders expired about one every three
+minutes and lagged by up to 43. The legs behind the three critical ones were deferred for hours —
+`coupon-orphans` 180 ticks in a row, `sku-transfers` 175, `hold-intents` 145 (a paid order's stock
+commit two hours late). Two ticks used 334 and 44 calls against the budget of 30; on a real Worker
+on Workers Free (50 per invocation) both fail. And idle ticks logged `order-emails 0 (more next
+tick)` and deferred `expire-orders` with 10 of 30 calls used.
+
+The overrun was `reporting-heal`. A closed day's FIRST heal absorbs every live rollup claim of that
+day — two calls each — inside one `reconcile` call, and the tick checks only between days. The
+44-call tick was the same leg on a smaller day. `prune-challenges` had the same shape (a delete per
+row, nothing between them). The idle oddity had two causes: the outbox counted a claim attempt that
+found nothing as a claim, so a batch of one always read "more next tick"; and `expire-orders`
+reserved room for a whole 22-call unit before asking whether anything was due.
+
+**Decision.**
+
+1. **A hard ceiling.** The tick's call counter REFUSES the call that would pass the budget
+   (`SweepQueryCeilingError`, thrown before the call is made). While the legs run the ceiling is the
+   budget less one call, kept for the cadence-state write. The cooperative checks of the 2026-10-02
+   amendment still keep every unit under it; the ceiling is the backstop for a unit whose estimate is
+   wrong. A leg it stops is reported `incomplete` (not failed) and logged by name. An email send the
+   ceiling interrupts is handed back like a send the tick cut short (uncounted).
+2. **Every call is attributed** to the leg running when it was made, or to the tick's own reads.
+   The summary carries `queries` per leg and `overheadQueries`. A tick that did work logs one line:
+   `[otta] cron sweep used 27 of 30 queries (…): cancel-intents 2, expire-orders 14, …, overhead 3;
+   deferred to the next tick: …`.
+3. **Every leg stops at its share.**
+   - `reporting-heal` reconciles each day with a page budget sized to the calls the leg has left
+     (`maxReconcilePages`; a unit is a page or an absorbed claim). A day that runs out while
+     absorbing has made progress — absorbed claims stay absorbed and are skipped next time — so it is
+     `incomplete` and resumes next tick, its cursor not moved. A day whose orders cannot even be read
+     within the most this budget could ever give the leg fails loudly (raise the setting).
+   - `prune-challenges` takes a `shouldContinue` (the port's `PruneChallengesOptions`), asked before
+     each read and delete.
+   - `hold-intents` sizes each row from the order in hand (three reads, about seven calls per
+     outstanding reservation and two per intent stamp) before it starts it. A row too big for any
+     slice the budget could give is clamped to the leg's whole slice and finished across ticks: its
+     per-id writes persist.
+   - Every leg now has a share. A leg its share stopped gets a second go, on whatever the tick has
+     left, after every leg has had its turn — a share is a cap, not a reservation.
+4. **The order, and fairness.** `cancel-intents` runs first, then `expire-orders`, `order-emails`,
+   `hold-intents`, `expire-holds`, `late-refunds`, and housekeeping (`prune-challenges` and the four
+   scans) last (`LEG_PRIORITY`). The rotation of the lead by minute is gone. **Aging** replaces it: a
+   leg passed over `AGING_TICKS` (3) ticks in a row with work goes to the head of the next tick,
+   longest wait first, ties to the lower-priority leg. Its share always holds one unit of its work,
+   so no leg waits without bound. On a Free tick where a late refund is due and its lead interval
+   has passed, the late-refund resume leads ahead of even `cancel-intents` (ADR-0022's amendment of
+   this date). `prune-challenges` moves to the fifteen-minute cadence: it is hygiene a customer
+   never waits on.
+5. **No due check is paid twice, and none is paid for an answer already known.** `expire-orders`,
+   `expire-holds`, `order-emails` and `hold-intents` each ask one indexed "anything due?" read; idle,
+   they are not deferred, so an idle tick never reserves room for work it does not have. The
+   expiry's list IS its due check, handed to the domain (`ExpireOrdersBatchOptions.due`). A leg
+   deferred last tick with known work skips its check. The outbox counts claims from the store's own
+   answer. An idle tick is 8 calls.
+6. **`coupon-orphans` no longer waits for a drained `expire-orders`.** It walks its window and STOPS
+   at a redemption whose order is still `pending` past its hold, without moving its cursor past it,
+   until the expiry has flipped that order. Same "two faults" bound, and no deferral for hours.
+   One residual of the coupon skip in 7: a coupon release for an order whose
+   `appliedCouponCode` is missing (a redemption the expiry therefore did not free) waits for this
+   leg — up to its fifteen-minute cadence plus any aging wait (`AGING_TICKS`, at most
+   `STARVING_TICKS` under a backlog) — before the use is returned. Safe direction: the coupon
+   looks one use fuller than it is meanwhile.
+
+7. **One order expiry is 13 calls, not 22** (a three-line order 23, not 40). The use-case no longer
+   re-reads the order the flip wrote and no longer releases its holds a second time
+   (`OrderStore.expireWithOrder` answers the flip and the expired order in one call). It releases
+   in ONE batched call (`InventoryStore.releaseAdoptedMany`) only when the store has not already
+   done so, and touches the coupon store only for an order that carried a coupon
+   (`appliedCouponCode`; the sweeper's `expired` arm is the backstop). The document store completes
+   the release intent from the flip's own document and revision: one batched, order-scoped release
+   (one aggregate read and one prune per SKU) and one compare-and-set to close the intent. The
+   reporting rollup no longer pre-reads its claim (ADR-0023's amendment of this date). The floor is
+   the flip (2), the email locator (1), the rollup delta (4), the release (5 for one line on one
+   SKU: the index, the aggregate, the reserve key, the terminal state, the prune) and the stamp (1).
+   Each is a guarded write the crash-safety rules of this record need. Going lower means dropping
+   one of those guarantees.
+8. **Batches on the Free preset are one hold, one order, one email a tick.** A bite of two made the
+   hold leg's list alone six calls, and it could not start behind the other legs' due checks. A
+   second unit never fits a Free tick anyway. The hold listing's per-candidate check is sized to the
+   candidate (about three calls), not to a candidate and a flip. A dead cart it examines is healed
+   out of the index, and a live hold found with no room left is flipped next tick, as the first
+   candidate.
+
+9. **Review round (same date).** A refusal a leg's body SWALLOWED (a unit loop that catches
+   each unit's failure, as the kv cursor store does a write) still marks the leg incomplete and
+   unstamped: the budget remembers which leg it refused. Legs with no trailing write keep back one
+   call (the cadence state), not two. And a static invariant (`cron-leg-costs.test.ts`) checks one
+   unit of every leg against one intent cancel and the tick's fixed reads on Free: every leg fits
+   except `expire-holds` (~20 with its list) and `hold-intents` (~15). For those two the
+   **starvation guard** puts a leg passed over `STARVING_TICKS` (9) ticks in a row ahead of even
+   `cancel-intents`, once, except in a tick a late refund leads; ordinary aging only places a leg
+   right behind it.
+   **The guard's cost to the cancel-first rule:** in a guard tick a due intent withdrawal may wait
+   about one more minute. If the starving leg is `expire-orders`, an order may expire before its
+   intent is withdrawn; a payment in that minute is kept while the order is still held, and refunded
+   automatically once it has expired (the late-payment path, ADR-0022).
+   With fix/late-charge-window's read-back of a refused cancel and its give-up flag, the worst
+   cancel unit is 7 calls (measured on the merge); the estimate is 7. Behind such a cancel an
+   order expiry and a stranded sku carry do not fit either, but they fit behind an ordinary one
+   (5), so for them the guard is a backstop, not the pace.
+
+**Measured** (`cron-sweep-backlog.test.ts`: a backlog in every leg at once on the Free preset — 50
+lapsed orders, ten with a payable intent, ten abandoned carts, five paid orders owing their commit
+and email, expired challenges, a stranded carry, lost sku pointers, an unhealed closed day, orphaned
+redemptions and a late refund). No tick passed 30 calls, counted from outside the sweep and by the
+sweep itself, and the two agree. `cancel-intents` was never deferred. Every leg did some of its work
+within seven ticks, and no leg waited more than six in a row. All 50 orders expired by minute 71
+(about 0.7 a minute, while everything else progressed too). Everything was done by minute 120. With
+only an expiry backlog: one order a minute (20 in 22 ticks). Before: about one every three minutes,
+with everything else starved. The suite pins ≥ 0.6 a minute, every leg's progress within 12 ticks
+and no wait longer than 8.
+
+**Accepted costs.** On Workers Free with every leg backlogged, an order that lapses behind N others
+stays `pending` for about N to 1.5·N minutes. A closed day's first rollup heal on Free absorbs about
+five claims a tick (a day of a few hundred transitions heals within the hour). A store with more
+abandoned checkouts per minute than that needs Workers Paid. The aging state lives in the sweep's
+`ctx.kv` state document; a store that loses it falls back to plain priority order until the next
+tick writes it again.
+
+## Amendment 2026-10-03 (QA round 3) — no expiry ahead of its withdrawal; provider calls are always recorded
+
+**N1 — an order never expires while its intent is payable.**
+
+On an idle Workers Free store, QA round 3 saw an order expire about two minutes after its
+deadline with its PaymentIntent still open; the intent was withdrawn a minute later. Under a
+backlog, intents stayed payable 23–24 minutes past the deadline, and two buyers were charged and
+then refunded.
+
+The head-of-tick `cancel-intents` run skipped the intents of the orders the expiry bite was about
+to flip, and left them to a run after the flip. On Free that run had no room, and with a batch of
+one the skip emptied the whole list.
+
+Now:
+- `cancel-intents` withdraws every due intent on its list. A lapsed order's intent is due at the
+  hold deadline (ADR-0022), so there is no exclusion and no post-expiry run.
+- The expiry never flips an order whose intent is due and not yet withdrawn. Its list drops orders
+  with `intentCancelDueAt <= now`, read off the same page (no extra query), and looks ten orders
+  past the bite so waiting orders do not block the ones behind them.
+- An intent whose cancel failed and was rescheduled is not due until its retry, so a provider
+  outage never holds stock. That order expires, and a late payment is refunded.
+
+The starvation guard's caveat in item 9 above ("if the starving leg is `expire-orders`, an order
+may expire before its intent is withdrawn") no longer holds. A guard tick can delay a withdrawal,
+and the expiry waits with it.
+
+**N2 — a provider call is recorded wherever the ceiling lands.**
+
+QA saw "Checkout expired" emails sent twice and three times. The ceiling refused `markEmailSent`
+after the provider had the email, and the row went out again when its lease lapsed.
+
+Two rules now apply to every leg that calls a provider and then writes:
+- **Nothing is started that cannot be recorded.** Before the send or cancel, the leg checks that
+  the ceiling still has room for the rest of the unit including its record: 8 calls for an email,
+  6 for a cancel.
+- **The record is never refused.** Once the provider call returns, a commit window (email 3,
+  cancel 4) lets the record past the ceiling. A tick overruns its budget only by that window, and
+  only when an estimate was wrong; the log line says how many calls. Review: above the Workers Free preset the
+  largest window (4) is kept out of the ceiling the legs plan against
+  (`MAX_COMMIT_WINDOW`), so a tick never passes its configured budget. On the Free preset (30)
+  reserving it cost a quarter of the expiry pace in the backlog simulation, so it is not kept:
+  the worst Free tick is 34 calls, inside the 20 the preset leaves the host under Workers Free's
+  50 (`COMMIT_WINDOW_EXEMPT_BUDGET`). The cadence-state write follows any such overrun.
+
+A late-refund resume needs neither. Its unit gate already demands room for a whole resume, and an
+interrupted one is re-driven under the same key, which Stripe answers with the refund it already
+made.
+
+The email unit estimate rises from 8 to 12. The claim is three calls, and the real sender reads
+its key and from-address and makes a request. The Paid email batch moves from 22 to 15.
+
+**Measured (`cron-sweep-backlog.test.ts`, Free).** At no tick boundary does an expired order have
+a payable intent. All 50 orders expired by minute 73, and everything was done by minute 120. Every
+leg did some of its work within 7 ticks, and no leg waited more than 6 in a row.

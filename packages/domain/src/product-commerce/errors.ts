@@ -123,7 +123,7 @@ export class SkuStockConflictError extends Error {
  * follow the rename: `reservations.sku` references `inventory.sku`, so the row
  * can be neither re-keyed nor deleted. Every later transition on that hold
  * therefore lands on the source row the rename left behind and zeroed:
- *  - `release` / `releaseAdopted` (a cart expiring, an order failing) CREDITS
+ *  - `release` / `releaseAdopted` (a cart expiring, an order expiring or being cancelled) CREDITS
  *    the units back to the source sku — units that silently leave the product,
  *    reappearing under a sku nothing points at;
  *  - a downward `adjust` credits the same orphaned row;

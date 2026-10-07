@@ -29,11 +29,13 @@ import {
 	idempotencyKey,
 	type Order,
 	type OrderStore,
+	productId as brandProductId,
 	removeLine,
 	settleOrder,
 	sku as brandSku,
 	updateLine,
 } from "@otta-sh/domain";
+import { FakePaymentGateway } from "@otta-sh/domain/testing";
 import { expect, test } from "vitest";
 import {
 	collectionOf,
@@ -243,6 +245,65 @@ describeEachDialect("order flow", (ctx) => {
 		if (replay.ok) expect(replay.order.id).toBe(first.order.id);
 	});
 
+	test("issue #133: a key already spent on ANOTHER cart is refused IDEMPOTENCY_KEY_REUSED, and the other cart stays active and unstamped", async () => {
+		const h = harness();
+		await h.seedPhysical({
+			productId: "p1",
+			sku: "SKU-1",
+			priceCents: 500,
+			title: "W",
+			onHand: 10,
+		});
+		const oldCart = await h.cartWith([{ sku: "SKU-1", productId: "p1", qty: 1, kind: "physical" }]);
+		const first = await createOrderFromCart(h.createDeps, cmd(oldCart, "stripe", "checkout:old"));
+		if (!first.ok) throw new Error(first.reason);
+
+		const newCart = await h.cartWith([{ sku: "SKU-1", productId: "p1", qty: 2, kind: "physical" }]);
+		const stale = await createOrderFromCart(h.createDeps, cmd(newCart, "stripe", "checkout:old"));
+		expect(stale).toEqual({ ok: false, reason: "IDEMPOTENCY_KEY_REUSED" });
+		expect((await h.store.getById(first.order.id))?.cartId).toBe(oldCart);
+		// The new cart can still be checked out under its OWN key.
+		const own = await createOrderFromCart(h.createDeps, cmd(newCart, "stripe", "checkout:new"));
+		if (!own.ok) throw new Error(own.reason);
+		expect(own.order.cartId).toBe(newCart);
+		expect(own.order.id).not.toBe(first.order.id);
+	});
+
+	test("issue #133: a same-key call for ANOTHER cart that raced past the short-circuit is refused after the store dedupes its insert", async () => {
+		const h = harness();
+		await h.seedPhysical({
+			productId: "p1",
+			sku: "SKU-1",
+			priceCents: 500,
+			title: "W",
+			onHand: 10,
+		});
+		const oldCart = await h.cartWith([{ sku: "SKU-1", productId: "p1", qty: 1, kind: "physical" }]);
+		const first = await createOrderFromCart(h.createDeps, cmd(oldCart, "stripe", "checkout:old"));
+		if (!first.ok) throw new Error(first.reason);
+
+		// The race window: I1 read before the winner's insert landed.
+		const orderStore = h.createDeps.orderStore;
+		const racing = new Proxy(orderStore, {
+			get(target, prop) {
+				if (prop === "getByIdempotencyKey") return async () => null;
+				const value: unknown = Reflect.get(target, prop, target);
+				return typeof value === "function" ? value.bind(target) : value;
+			},
+		});
+		const newCart = await h.cartWith([{ sku: "SKU-1", productId: "p1", qty: 2, kind: "physical" }]);
+		const stale = await createOrderFromCart(
+			{ ...h.createDeps, orderStore: racing },
+			cmd(newCart, "stripe", "checkout:old"),
+		);
+		expect(stale).toEqual({ ok: false, reason: "IDEMPOTENCY_KEY_REUSED" });
+		// The new cart was NOT checked out under the foreign order: its own key works.
+		const own = await createOrderFromCart(h.createDeps, cmd(newCart, "stripe", "checkout:new"));
+		if (!own.ok) throw new Error(own.reason);
+		expect(own.order.cartId).toBe(newCart);
+		expect(await h.reservationState(mustReservation(first.order))).toBe("adopted");
+	});
+
 	test("expireOrders' release is order-scoped: a stale order pointing at a foreign adopted (or committed) reservation never frees it and never crashes the sweep", async () => {
 		const h = harness();
 		await h.seedPhysical({
@@ -286,7 +347,7 @@ describeEachDialect("order flow", (ctx) => {
 					reservationId: line.reservationId,
 				},
 			],
-			totals: owner.order.totals,
+			totals: { ...owner.order.totals, taxBreakdown: null },
 		});
 
 		h.advance(2 * 60 * 1000); // stale TTL passed; the owner's 15-minute hold is live
@@ -360,6 +421,59 @@ describeEachDialect("order flow", (ctx) => {
 		const rm = await removeLine(h.cartDeps, cartId, lineId, idempotencyKey("rm-2"));
 		expect(rm).toEqual({ ok: false, reason: "CART_CHECKED_OUT" });
 	});
+
+	test.each([
+		["UNPUBLISHED", "unpublish"],
+		["DELETED", "delete"],
+	] as const)(
+		"a cart line whose product was %s after the add cannot check out — no order, the hold stays held, and removing the line returns the unit",
+		async (_label, lifecycle) => {
+			const h = harness();
+			await h.seedPhysical({
+				productId: "p1",
+				sku: "SKU-1",
+				priceCents: 1400,
+				title: "W",
+				onHand: 5,
+			});
+			const cartId = await h.cartWith([
+				{ sku: "SKU-1", productId: "p1", qty: 1, kind: "physical" },
+			]);
+			expect(await h.onHand("SKU-1")).toBe(4);
+			const reservationId = (await getCart(h.cartDeps, cartId))?.lines[0]?.reservationId;
+			if (reservationId === null || reservationId === undefined) {
+				throw new Error("the physical line must hold a reservation");
+			}
+
+			const pid = brandProductId("p1");
+			if (lifecycle === "unpublish") {
+				await h.shared.productCommerce.deactivate(
+					pid,
+					idempotencyKey("unpublish-p1"),
+					"2026-07-09T00:00:00.000Z",
+				);
+			} else {
+				await h.shared.productCommerce.softDelete(pid, idempotencyKey("delete-p1"));
+			}
+
+			const res = await createOrderFromCart(h.createDeps, cmd(cartId));
+			expect(res).toEqual({ ok: false, reason: "PRODUCT_NOT_PRICED" });
+			expect(await h.store.getByIdempotencyKey(idempotencyKey("k-order"))).toBeNull();
+			// The refusal moved no stock: the hold is still the cart's, on-hand unchanged.
+			expect(await h.reservationState(reservationId)).toBe("held");
+			expect(await h.onHand("SKU-1")).toBe(4);
+			const cart = await getCart(h.cartDeps, cartId);
+			expect(cart?.state).toBe("active");
+			const lineId = cart?.lines[0]?.lineId;
+			if (lineId === undefined) throw new Error("the refused cart must still carry its line");
+
+			// The shopper's recovery — remove the line — releases the hold exactly once.
+			expect(await removeLine(h.cartDeps, cartId, lineId, idempotencyKey("rm-dead"))).toEqual({
+				ok: true,
+			});
+			expect(await h.onHand("SKU-1")).toBe(5);
+		},
+	);
 
 	test("Stripe webhook → paid + inventory commit exactly once; a replay settles once", async () => {
 		const h = harness();
@@ -480,10 +594,19 @@ describeEachDialect("order flow", (ctx) => {
 				await expireOrders(h.expireDeps);
 				return h.store.markPaid(id);
 			},
-			markFailed: (id) => h.store.markFailed(id),
 			expire: (id, at) => h.store.expire(id, at),
+			expireWithOrder: (id, at) => h.store.expireWithOrder(id, at),
 			listExpirable: (at) => h.store.listExpirable(at),
 			recordPayment: (i) => h.store.recordPayment(i),
+			recordPaymentIntent: (i) => h.store.recordPaymentIntent(i),
+			listPaymentIntents: (id) => h.store.listPaymentIntents(id),
+			listIntentCancelsDue: (now, limit) => h.store.listIntentCancelsDue(now, limit),
+			updatePaymentIntentCancel: (id, intent, u) =>
+				h.store.updatePaymentIntentCancel(id, intent, u),
+			readOrderLedger: (id) => h.store.readOrderLedger(id),
+			scheduleRefundRetry: (id, key, retry) => h.store.scheduleRefundRetry(id, key, retry),
+			listRefundRetriesDue: (now, limit) => h.store.listRefundRetriesDue(now, limit),
+			listRefundRetriesStale: (cutoff, limit) => h.store.listRefundRetriesStale(cutoff, limit),
 			getCapturedPayments: (id) => h.store.getCapturedPayments(id),
 			listRefunds: (id) => h.store.listRefunds(id),
 			getRefundByIdempotencyKey: (k) => h.store.getRefundByIdempotencyKey(k),
@@ -492,10 +615,14 @@ describeEachDialect("order flow", (ctx) => {
 			finalizeRefund: (i) => h.store.finalizeRefund(i),
 			voidRefund: (k) => h.store.voidRefund(k),
 			markRefundUnverified: (k) => h.store.markRefundUnverified(k),
-			flagReconciliation: (id, d) => h.store.flagReconciliation(id, d),
+			voidUnverifiedRefund: (i) => h.store.voidUnverifiedRefund(i),
+			flagReconciliation: (id, d, g) => h.store.flagReconciliation(id, d, g),
 			resolveReconciliation: (i) => h.store.resolveReconciliation(i),
 			recordFulfillment: (i) => h.store.recordFulfillment(i),
 			cancelOrder: (i) => h.store.cancelOrder(i),
+			completeCancellationRestock: (i) => h.store.completeCancellationRestock(i),
+			recordCancellationRestockFailure: (id, key, opts) =>
+				h.store.recordCancellationRestockFailure(id, key, opts),
 			transition: (i) => h.store.transition(i),
 			listForCustomer: (c) => h.store.listForCustomer(c),
 			listEventsForOrder: (id) => h.store.listEventsForOrder(id),
@@ -503,13 +630,20 @@ describeEachDialect("order flow", (ctx) => {
 			countOrders: (f) => h.store.countOrders(f),
 			linkGuestOrders: (c, ref) => h.store.linkGuestOrders(c, ref),
 			claimNextEmail: (now, lease) => h.store.claimNextEmail(now, lease),
+			releaseEmailClaim: (id) => h.store.releaseEmailClaim(id),
+			enqueueNotice: (id, notice) => h.store.enqueueNotice(id, notice),
+			claimNextEmailForOrder: (id, now, lease, o) =>
+				h.store.claimNextEmailForOrder(id, now, lease, o),
 			markEmailSent: (id, now) => h.store.markEmailSent(id, now),
+			markEmailSkipped: (id, now) => h.store.markEmailSkipped(id, now),
 			rescheduleEmail: (id, at) => h.store.rescheduleEmail(id, at),
 		};
 
+		// A gateway that CANNOT refund, so the flag must stand for a human; the
+		// refundable case (auto-refund, flag resolved) is `latePaymentContract`'s.
 		const settled = await settleOrder(
 			{ ...h.settleDeps, orderStore: racingOrderStore },
-			h.stripeGateway,
+			new FakePaymentGateway({ id: "stripe", refundable: false }),
 			h.stripeGateway.webhook(evt(res.order)),
 		);
 		expect(settled.ok).toBe(true);
@@ -686,6 +820,11 @@ describeEachDialect("order flow", (ctx) => {
 		await expect(clamped.listExpirable("2026-07-10T00:20:00.000Z")).rejects.toSatisfy(
 			isScanPageLimitError,
 		);
+		// A caller's scan bound is read in as few pages as the host allows, and reaching
+		// it is an answer: one page of budget is enough for a 100-order look (#364).
+		expect(
+			await clamped.listExpirable("2026-07-10T00:20:00.000Z", { scanLimit: 100 }),
+		).toHaveLength(100);
 	});
 
 	test("a three-line order with five transitions stays well under the document-size cap", async () => {
@@ -714,7 +853,7 @@ describeEachDialect("order flow", (ctx) => {
 				line1: "12 Analytical Way",
 				line2: "Unit 4",
 				city: "London",
-				region: "Greater London",
+				region: "LND",
 				postalCode: "EC1A 1BB",
 				country: "GB",
 				email: "ada@example.com",

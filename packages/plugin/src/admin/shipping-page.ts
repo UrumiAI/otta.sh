@@ -1,9 +1,16 @@
+import {
+	COUNTRY_CODES,
+	parseZoneRegions,
+	validateZoneRegionsInput,
+	type ShippingMethodType,
+} from "@otta-sh/domain";
 import { formatMoney } from "../presentation/format-money.js";
 import { cents as toCents, currency as toCurrency } from "../presentation/money.js";
 import type {
 	AccordionBlock,
 	ActionsBlock,
 	AdminPageConfig,
+	BannerBlock,
 	Block,
 	ButtonElement,
 	FieldsBlock,
@@ -23,6 +30,8 @@ import {
 	type ShippingRateWire,
 	type ShippingZoneWire,
 } from "./admin-rules-surface.js";
+import { idInputProblem } from "./id-input.js";
+import { isIsoCurrencyCode } from "@otta-sh/domain";
 import { formatMinorUnitsInput, parseMinorUnitsInput } from "./money-input.js";
 import {
 	asRecord,
@@ -38,6 +47,7 @@ import {
 	listLevel,
 	noticeBanner,
 	PATH_FIELD,
+	readBoolean,
 	readString,
 	screenActions,
 	type ListDetailInput,
@@ -71,13 +81,17 @@ import {
  * accordion wrapping one row would cost a click and save nothing. It keeps
  * its existing inline `fields` + edit-or-create form shape.
  *
- * REGIONS, presented honestly: `ShippingZone.regions` is opaque config the
- * pricing engine never reads (`@otta-sh/domain`'s `ShippingRulesStore` doc:
- * "opaque config the engine never reads") — checkout/quote takes an explicit
- * `shippingZoneId`, not an address-to-zone match. That fact does not fit the
- * zones level's ≤140-char page context, so it lives as one `context` line on
- * the "New shipping zone" create screen instead (F-8) — the one place an
- * operator is about to type into the field it explains.
+ * REGIONS ARE ISO CODES (ADR-0021). Checkout DERIVES the buyer's shipping/tax
+ * zone from their address by matching these codes — an ISO 3166-1 country
+ * (`US`) or an ISO 3166-2 subdivision (`US-CA`), exactly, the most specific
+ * zone winning. So the console refuses anything else on write (naming each bad
+ * token, with a hint), refuses a code another zone already lists (an overlap
+ * would make the match ambiguous), labels the stored tokens that can never
+ * match (zones written before the rule), and warns about such zones on this
+ * landing screen and on the zone's own methods screen. How matching works does
+ * not fit the zones level's ≤140-char page context, so it lives as one
+ * `context` line on the "New shipping zone" create screen (F-8) — the one place
+ * an operator is about to type into the field it explains.
  *
  * NO METHOD/RATE COUNT ON A ZONE OR METHOD LABEL (D-6): `ShippingZoneWire` is
  * `{id, name, regions}` and `ShippingMethodWire` carries no rate count either
@@ -188,11 +202,14 @@ type ShippingRenderState =
 	| { kind: "new-zone"; draft?: ZoneDraft }
 	| { kind: "new-method"; draft?: MethodDraft };
 
-/** The "New shipping zone" form's three fields, as submitted. */
+/** The "New shipping zone" form's fields, as submitted. `ackFirstZone` is the
+ *  first-zone acknowledgement toggle — restated on a refusal because a toggle is
+ *  mount-only (X-24), so a refusal for another reason does not untick it. */
 interface ZoneDraft {
 	id: string;
 	name: string;
 	regions: string;
+	ackFirstZone?: boolean;
 }
 
 /** The "New shipping method" form's three fields, as submitted. `type` is a
@@ -355,7 +372,9 @@ function zonesBlocks(
 	notice: Notice | undefined,
 	renderState: ShippingRenderState | undefined,
 ): Block[] {
-	if (renderState?.kind === "new-zone") return newZoneScreen(renderState.draft, notice);
+	if (renderState?.kind === "new-zone") {
+		return newZoneScreen(renderState.draft, notice, zones.length === 0);
+	}
 	const blocks: Block[] = [
 		{ type: "header", text: "Shipping zones" },
 		{
@@ -365,6 +384,21 @@ function zonesBlocks(
 		createActionBlock("ship:create-zone-action", ACTION_OPEN_CREATE_ZONE, "New shipping zone"),
 	];
 	if (notice !== undefined) blocks.push(noticeBanner(notice));
+	const warnings = zoneRegionWarnings(zones);
+	blocks.push(...warnings);
+	const coverage = zoneCoverageNotice(zones);
+	if (coverage !== undefined) {
+		// X-31 allows TWO top-level banners. The region warnings are the more
+		// urgent (they are refusing checkouts the operator meant to allow), so the
+		// coverage statement steps down to a plain line when they fill the budget —
+		// the words are the same either way.
+		const used = warnings.length + (notice === undefined ? 0 : 1);
+		blocks.push(
+			used < 2
+				? { type: "banner", block_id: "ship:coverage", variant: "alert", ...coverage }
+				: { type: "context", text: `${coverage.title}: ${coverage.description}` },
+		);
+	}
 
 	if (zones.length === 0) {
 		blocks.push(
@@ -383,7 +417,7 @@ function zonesBlocks(
 	}
 
 	if (isRegistryAccordion(nextToken, zones.length)) {
-		for (const zone of zones) blocks.push(zoneAccordion(zone));
+		for (const zone of zones) blocks.push(zoneAccordion(zone, zones.length === 1));
 	} else {
 		blocks.push(zonesFallbackTable(zones));
 		blocks.push(openZoneForm(zones));
@@ -420,7 +454,7 @@ function createActionBlock(
 
 /** One zone's per-row group (L-9): edit form, the "View methods" drill-in
  *  (§12.7), and delete — all collapsed (L-9's own "zero open groups" rule). */
-function zoneAccordion(zone: ShippingZoneWire): AccordionBlock {
+function zoneAccordion(zone: ShippingZoneWire, onlyZone: boolean): AccordionBlock {
 	return {
 		type: "accordion",
 		label: `${zone.id} — ${zone.name}`,
@@ -433,6 +467,7 @@ function zoneAccordion(zone: ShippingZoneWire): AccordionBlock {
 		// just a string with no grammar to violate.
 		block_id: `ship:zone:${zone.id}`,
 		blocks: [
+			{ type: "context", text: zoneMatchSummary(zone.regions) },
 			editZoneForm(zone),
 			{
 				type: "actions",
@@ -447,7 +482,7 @@ function zoneAccordion(zone: ShippingZoneWire): AccordionBlock {
 					},
 				],
 			},
-			deleteZoneActions(zone),
+			deleteZoneActions(zone, onlyZone),
 		],
 	};
 }
@@ -486,7 +521,14 @@ function editZoneForm(zone: ShippingZoneWire): FormBlock {
 	});
 }
 
-function deleteZoneActions(zone: ShippingZoneWire): ActionsBlock {
+/**
+ * `onlyZone`: deleting the LAST zone is the mirror of creating the first
+ * (FIRST_ZONE_WARNING) — ADR-0021 §4's "no zones" mode returns, and checkout
+ * ships physical items anywhere with no address check, shipping charge or tax.
+ * The confirm says so. Decided from this render's registry read, so like the
+ * first-zone acknowledgement it is a CONSOLE guard, not a store rule.
+ */
+function deleteZoneActions(zone: ShippingZoneWire, onlyZone: boolean): ActionsBlock {
 	const button: ButtonElement = {
 		type: "button",
 		action_id: ACTION_DELETE_ZONE,
@@ -495,7 +537,9 @@ function deleteZoneActions(zone: ShippingZoneWire): ActionsBlock {
 		value: { zoneId: zone.id },
 		confirm: {
 			title: `Delete zone ${zone.id}?`,
-			text: "This only works while the zone has no shipping methods — delete those first if this fails. This cannot be undone.",
+			text: onlyZone
+				? "This is your only zone: without it, checkout ships physical items anywhere again, with no shipping charge or tax. It only works once the zone has no methods."
+				: "This only works while the zone has no shipping methods — delete those first if this fails. This cannot be undone.",
 			confirm: "Yes, delete",
 			deny: "Keep it",
 			style: "danger",
@@ -508,25 +552,60 @@ function deleteZoneActions(zone: ShippingZoneWire): ActionsBlock {
  *  context · the form, the shape every other non-list level on this console
  *  already has. The banner sits above the form because it explains the values
  *  the form below has just put back. */
-function newZoneScreen(draft: ZoneDraft | undefined, notice: Notice | undefined): Block[] {
+function newZoneScreen(
+	draft: ZoneDraft | undefined,
+	notice: Notice | undefined,
+	firstZone: boolean,
+): Block[] {
 	const blocks: Block[] = [
 		{ type: "header", text: "New shipping zone" },
 		// No path: this screen belongs to the ROOT registry.
 		backButton(ACTION_CANCEL_NEW, "← Back to shipping zones"),
 	];
 	if (notice !== undefined) blocks.push(noticeBanner(notice));
+	if (firstZone) blocks.push(FIRST_ZONE_WARNING);
 	blocks.push({
 		type: "context",
-		text: "Regions are a reference list only — checkout does not yet auto-match a buyer's address to a zone.",
+		text: "Regions are ISO codes: a country (US) or state/province (US-CA). Addresses match exactly; the most specific zone wins.",
 	});
-	blocks.push(createZoneForm(draft));
+	blocks.push(createZoneForm(draft, firstZone));
 	return blocks;
 }
+
+/**
+ * THE FIRST ZONE CHANGES WHAT CHECKOUT DOES FOR EVERY OTHER COUNTRY.
+ *
+ * ADR-0021 §4: a store with NO zones ships physical items anywhere (no shipping,
+ * no tax, no address check); a store with ANY zone refuses an address no zone
+ * lists. So creating a Japan-only zone silently turns away every non-Japanese
+ * buyer with "We don't ship to this address" — QA did exactly that and found
+ * nothing on the screen had said so. The rule is the ADR's and stays; what
+ * changes is that the operator meets it before the one click that triggers it.
+ * Block Kit's form submit has no `confirm` (only a button does), so the
+ * acknowledgement is a required toggle on the form itself, checked server-side
+ * against a FRESH zones read — a second tab having created a zone meanwhile
+ * means this one is no longer the first.
+ *
+ * CONSOLE-ONLY. The rules client and the stores still create a first zone
+ * without any acknowledgement — the matching rule is ADR-0021's and nothing
+ * below the console has an operator to warn.
+ */
+const FIRST_ZONE_WARNING: BannerBlock = {
+	type: "banner",
+	block_id: "ship:first-zone",
+	variant: "alert",
+	title: "This is your first zone",
+	// 196 chars ≤ 240 (X-11).
+	description:
+		'Once any zone exists, checkout only ships physical items to addresses a zone lists. Buyers anywhere else see "We don\'t ship to this address" until you add a zone for them.',
+};
+
+const ACK_FIRST_ZONE_FIELD = "ackFirstZone";
 
 /** `draft` is the refusal path (DA-3a-i): what was submitted comes back as
  *  `initial_value`, so a rejected duplicate id costs one edit and not three
  *  retypes. */
-function createZoneForm(draft?: ZoneDraft): FormBlock {
+function createZoneForm(draft: ZoneDraft | undefined, firstZone: boolean): FormBlock {
 	return carriedForm({
 		namespace: "ship:zone-create",
 		form: {
@@ -553,6 +632,18 @@ function createZoneForm(draft?: ZoneDraft): FormBlock {
 					placeholder: "e.g. US",
 					...prefill(draft?.regions),
 				},
+				...(firstZone
+					? [
+							{
+								type: "toggle" as const,
+								action_id: ACK_FIRST_ZONE_FIELD,
+								label: "I understand addresses outside my zones can't check out",
+								// F-6b/X-24: declared, or an untouched toggle is absent from
+								// `values`; restated from the draft because it is mount-only.
+								initial_value: draft?.ackFirstZone === true,
+							},
+						]
+					: []),
 			],
 			submit: { label: "Create zone", action_id: ACTION_CREATE_ZONE },
 		},
@@ -637,11 +728,26 @@ function methodsLevel() {
 			const zoneId = path[0];
 			if (zoneId === undefined) return { items: [], nextCursor: null };
 			const methods = await client.listMethods(zoneId);
-			return { items: await pricedMethods(client, methods, filter), nextCursor: null };
+			const items = await pricedMethods(client, methods, filter);
+			// SECONDARY and contained, like the price reads: the zone is read only for
+			// its legacy-regions warning, and losing it must not blank the level.
+			try {
+				const zone = (await client.listZones()).find((z) => z.id === zoneId);
+				if (zone !== undefined) METHODS_ZONE.set(items, zone);
+			} catch (err) {
+				console.error("[otta] admin shipping zone read for the methods level failed:", err);
+			}
+			return { items, nextCursor: null };
 		},
 		render({ path, filter, items, nextToken, notice, renderState }) {
 			const zoneId = path[0] ?? "";
-			return methodsBlocks(zoneId, filter, items, nextToken, notice, renderState);
+			const blocks = methodsBlocks(zoneId, filter, items, nextToken, notice, renderState);
+			const zone = METHODS_ZONE.get(items);
+			const warnings = zone === undefined ? [] : zoneRegionWarnings([zone]);
+			if (warnings.length === 0 || renderState?.kind === "new-method") return blocks;
+			// Under the intro, above the rows — the same place the landing puts them.
+			const at = blocks.findIndex((b) => b.type === "actions");
+			return [...blocks.slice(0, at + 1), ...warnings, ...blocks.slice(at + 1)];
 		},
 		onError: () => methodsFailClosed(),
 	});
@@ -915,12 +1021,44 @@ function methodAccordion(zoneId: string, method: MethodRow): AccordionBlock {
 	};
 }
 
-function methodTypeField(actionId: string, initial: string): FormBlock["fields"][number] {
-	const options: SelectOption[] = [
-		{ value: "flat_rate", label: "Flat rate" },
-		{ value: "free_shipping", label: "Free shipping (threshold-based)" },
-	];
-	return { type: "select", action_id: actionId, label: "Type", options, initial_value: initial };
+/**
+ * THE SELECT'S VALUES ARE WORDS, because a `select` trigger renders the option
+ * VALUE and never its label (R-17a) — QA saw `flat_rate` sitting in the trigger.
+ * F-6c tolerated that as "a word, readable"; it is a wire enum all the same, and
+ * the copy everywhere else on this screen already says "Flat rate". So the value
+ * an operator sees IS the label's word, and {@link methodTypeFromInput} maps it
+ * back to the enum before anything reaches the client: the domain, the store and
+ * the carrier still spell `flat_rate`. The raw enum is still ACCEPTED on input, so
+ * a form rendered before this change submits fine.
+ */
+const METHOD_TYPE_CHOICES: ReadonlyArray<{
+	type: ShippingMethodType;
+	value: string;
+	label: string;
+}> = [
+	{ type: "flat_rate", value: "Flat rate", label: "Flat rate" },
+	{ type: "free_shipping", value: "Free shipping", label: "Free shipping (threshold-based)" },
+];
+
+/** A submitted type (the word, or the legacy enum) → the enum, or `undefined`. */
+function methodTypeFromInput(raw: string): ShippingMethodType | undefined {
+	return METHOD_TYPE_CHOICES.find((c) => c.value === raw || c.type === raw)?.type;
+}
+
+/** The enum → the select value that renders it. */
+function methodTypeInputValue(type: string): string {
+	return (METHOD_TYPE_CHOICES.find((c) => c.type === type) ?? METHOD_TYPE_CHOICES[0]!).value;
+}
+
+function methodTypeField(actionId: string, type: string): FormBlock["fields"][number] {
+	const options: SelectOption[] = METHOD_TYPE_CHOICES.map(({ value, label }) => ({ value, label }));
+	return {
+		type: "select",
+		action_id: actionId,
+		label: "Type",
+		options,
+		initial_value: methodTypeInputValue(type),
+	};
 }
 
 function editMethodForm(zoneId: string, method: ShippingMethodWire): FormBlock {
@@ -976,8 +1114,7 @@ function newMethodScreen(
  *  select's own options first (X-23), so an unknown value falls back to the
  *  default rather than rendering a blank trigger. */
 function createMethodForm(zoneId: string, draft?: MethodDraft): FormBlock {
-	const type =
-		draft?.type === "free_shipping" || draft?.type === "flat_rate" ? draft.type : "flat_rate";
+	const type = methodTypeFromInput(draft?.type ?? "") ?? "flat_rate";
 	return carriedForm({
 		namespace: "ship:method-create",
 		context: { zoneId },
@@ -1272,6 +1409,11 @@ function ratesFailClosed() {
 
 // -- custom action: create a zone ------------------------------------------------
 
+/** The status a create answers when the id (or rate currency) is already taken
+ *  — the store's collision, refused before anything was written. A code the
+ *  notices key their copy off, never rendered. */
+const CREATE_CONFLICT = 409;
+
 function createZoneAction() {
 	return customAction<AdminRulesSurface, ShippingRenderState>(
 		async ({ input, client, showList }) => {
@@ -1280,10 +1422,12 @@ function createZoneAction() {
 			const name = (readString(values.name) ?? "").trim();
 			// EVERY refusal below re-renders the create screen with what was typed
 			// (DA-3a-i) — see ShippingRenderState.
+			const acknowledged = readBoolean(values[ACK_FIRST_ZONE_FIELD]) === true;
 			const draft: ZoneDraft = {
 				id: readString(values.id) ?? "",
 				name: readString(values.name) ?? "",
 				regions: readString(values.regions) ?? "",
+				ackFirstZone: acknowledged,
 			};
 			if (id.length === 0 || name.length === 0) {
 				return showList(
@@ -1296,8 +1440,32 @@ function createZoneAction() {
 					{ kind: "new-zone", draft },
 				);
 			}
-			const regions = parseRegionsInput(readString(values.regions) ?? "");
-			const result = await client.createZone({ id, name, regions });
+			const idProblem = idInputProblem(id);
+			if (idProblem !== undefined) {
+				return showList(
+					undefined,
+					{ variant: "error", title: "Zone not created", description: idProblem },
+					{ kind: "new-zone", draft },
+				);
+			}
+			const checked = await checkZoneRegions(client, readString(values.regions) ?? "", null);
+			if (!checked.ok) {
+				return showList(undefined, checked.notice("Zone not created"), { kind: "new-zone", draft });
+			}
+			// A FRESH read, not the screen's: see FIRST_ZONE_WARNING.
+			if (!acknowledged && (await client.listZones()).length === 0) {
+				return showList(
+					undefined,
+					{
+						variant: "error",
+						title: "Zone not created",
+						description:
+							"This is your first zone — confirm you understand that addresses outside your zones can't check out, then create it.",
+					},
+					{ kind: "new-zone", draft },
+				);
+			}
+			const result = await client.createZone({ id, name, regions: checked.codes });
 			const notice = createZoneNotice(result, id, name);
 			// A SERVICE refusal keeps the draft too (a duplicate id is one edit
 			// away); success drops it, which is what returns the operator to the
@@ -1324,7 +1492,10 @@ function createZoneNotice(
 	return {
 		variant: "error",
 		title: "Zone not created",
-		description: `Could not create "${id}" — check the zone ID isn't already in use, then try again.`,
+		description:
+			result.status === CREATE_CONFLICT
+				? `A zone with the ID "${id}" already exists — choose another ID.`
+				: `Could not create "${id}" — check the zone ID isn't already in use, then try again.`,
 	};
 }
 
@@ -1343,8 +1514,9 @@ function saveZoneAction() {
 				description: "Name cannot be blank.",
 			});
 		}
-		const regions = parseRegionsInput(readString(values.regions) ?? "");
-		const result = await client.updateZone(zoneId, { name, regions });
+		const checked = await checkZoneRegions(client, readString(values.regions) ?? "", zoneId);
+		if (!checked.ok) return showList(undefined, checked.notice("Zone not saved"));
+		const result = await client.updateZone(zoneId, { name, regions: checked.codes });
 		return showList(undefined, saveZoneNotice(result));
 	});
 }
@@ -1433,19 +1605,16 @@ function createMethodAction() {
 			const values = input.values ?? {};
 			const id = (readString(values.id) ?? "").trim();
 			const name = (readString(values.name) ?? "").trim();
-			const type = readString(values.type) ?? "";
+			const typed = readString(values.type) ?? "";
+			const type = methodTypeFromInput(typed);
 			// EVERY refusal below re-renders the create screen with what was typed
 			// (DA-3a-i) — see ShippingRenderState.
 			const draft: MethodDraft = {
 				id: readString(values.id) ?? "",
 				name: readString(values.name) ?? "",
-				type,
+				type: typed,
 			};
-			if (
-				id.length === 0 ||
-				name.length === 0 ||
-				(type !== "flat_rate" && type !== "free_shipping")
-			) {
+			if (id.length === 0 || name.length === 0 || type === undefined) {
 				return showList(
 					[zoneId],
 					{
@@ -1453,6 +1622,14 @@ function createMethodAction() {
 						title: "Method not created",
 						description: "Enter a method ID, a name, and a valid type.",
 					},
+					{ kind: "new-method", draft },
+				);
+			}
+			const idProblem = idInputProblem(id);
+			if (idProblem !== undefined) {
+				return showList(
+					[zoneId],
+					{ variant: "error", title: "Method not created", description: idProblem },
 					{ kind: "new-method", draft },
 				);
 			}
@@ -1480,7 +1657,10 @@ function createMethodNotice(
 	return {
 		variant: "error",
 		title: "Method not created",
-		description: `Could not create "${id}" — check the method ID isn't already in use, then try again.`,
+		description:
+			result.status === CREATE_CONFLICT
+				? `A shipping method with the ID "${id}" already exists — method IDs are unique across every zone, so choose another.`
+				: `Could not create "${id}" — check the method ID isn't already in use, then try again.`,
 	};
 }
 
@@ -1493,15 +1673,31 @@ function saveMethodAction() {
 		if (zoneId === undefined || methodId === undefined) return showList();
 		const values = input.values ?? {};
 		const name = (readString(values.name) ?? "").trim();
-		const type = readString(values.type) ?? "";
-		if (name.length === 0 || (type !== "flat_rate" && type !== "free_shipping")) {
+		const type = methodTypeFromInput(readString(values.type) ?? "");
+		if (name.length === 0 || type === undefined) {
 			return showList([zoneId], {
 				variant: "error",
 				title: "Method not saved",
 				description: "Enter a name and a valid type.",
 			});
 		}
+		// A free_shipping → flat_rate switch strands any threshold its rates carry:
+		// the domain stops reading it, and listing every currency's rate to clear
+		// them is not a read this surface offers. So the switch is allowed and SAID.
+		const before =
+			type === "flat_rate"
+				? (await client.listMethods(zoneId)).find((m) => m.id === methodId)?.type
+				: undefined;
 		const result = await client.updateMethod(methodId, { name, type });
+		if (result.ok && before === "free_shipping") {
+			return showList([zoneId], {
+				// A `Notice` is default|error only; the TITLE carries the consequence.
+				variant: "default",
+				title: "Saved as flat rate",
+				description:
+					"If any of this method's rates had a free-shipping threshold, it no longer applies — a flat rate always charges its rate. Blank it on those rates to keep the screens honest.",
+			});
+		}
 		return showList([zoneId], saveMethodNotice(result));
 	});
 }
@@ -1575,6 +1771,30 @@ function openCreateMethodAction() {
 
 // -- custom action: create a rate ---------------------------------------------------
 
+/**
+ * A FREE-SHIPPING THRESHOLD ONLY MEANS SOMETHING ON A `free_shipping` METHOD.
+ * The domain's `shippingCost` charges a flat rate's amount whatever the
+ * subtotal and reads `minSubtotalCents` only for `free_shipping`, so a threshold
+ * typed on a flat-rate method's rate is stored and never applied — QA saved one
+ * and the console said "Rate created", which reads as a promise of free shipping
+ * over $35 that checkout never keeps. Refused with the reason instead.
+ *
+ * Only checked when a threshold was actually entered, so the common blank case
+ * costs no read. A stored threshold on an existing flat-rate rate (written
+ * before this rule) is left alone until the operator saves that rate.
+ */
+const FLAT_RATE_THRESHOLD_REFUSAL =
+	"A flat-rate method always charges its rate, so a free-shipping threshold would never apply. Leave it blank, or change the method's type to Free shipping.";
+
+async function isFlatRateMethod(
+	client: AdminRulesSurface,
+	zoneId: string,
+	methodId: string,
+): Promise<boolean> {
+	const methods = await client.listMethods(zoneId);
+	return methods.find((m) => m.id === methodId)?.type === "flat_rate";
+}
+
 function createRateAction() {
 	return customAction<AdminRulesSurface>(async ({ input, carried, client, showList }) => {
 		const zoneId = carried?.zoneId;
@@ -1587,6 +1807,13 @@ function createRateAction() {
 				variant: "error",
 				title: "Rate not created",
 				description: "Currency must be a 3-letter ISO-4217 code like USD.",
+			});
+		}
+		if (!isIsoCurrencyCode(currency)) {
+			return showList([zoneId, methodId], {
+				variant: "error",
+				title: "Rate not created",
+				description: `${currency} is not an ISO-4217 currency — use the code your store prices in, like USD or EUR.`,
 			});
 		}
 		const amountCents = parseAmountInput(readString(values.amount) ?? "");
@@ -1609,6 +1836,13 @@ function createRateAction() {
 						"Free-shipping threshold must be 0 or a positive number like 35.00, or blank for none.",
 				});
 			}
+			if (await isFlatRateMethod(client, zoneId, methodId)) {
+				return showList([zoneId, methodId], {
+					variant: "error",
+					title: "Rate not created",
+					description: FLAT_RATE_THRESHOLD_REFUSAL,
+				});
+			}
 		}
 		const result = await client.createRate(methodId, { currency, amountCents, minSubtotalCents });
 		return showList([zoneId, methodId], createRateNotice(result, currency));
@@ -1626,7 +1860,10 @@ function createRateNotice(result: RulesCreateResult<ShippingRateWire>, currency:
 	return {
 		variant: "error",
 		title: "Rate not created",
-		description: `Could not create a ${currency} rate — check a rate for this currency doesn't already exist, then try again.`,
+		description:
+			result.status === CREATE_CONFLICT
+				? `This method already has a ${currency} rate — edit that rate instead.`
+				: `Could not create a ${currency} rate — check a rate for this currency doesn't already exist, then try again.`,
 	};
 }
 
@@ -1666,6 +1903,13 @@ function saveRateAction() {
 					title: "Rate not saved",
 					description:
 						"Free-shipping threshold must be 0 or a positive number like 35.00, or blank for none.",
+				});
+			}
+			if (await isFlatRateMethod(client, zoneId, methodId)) {
+				return showList([zoneId, methodId], {
+					variant: "error",
+					title: "Rate not saved",
+					description: FLAT_RATE_THRESHOLD_REFUSAL,
 				});
 			}
 		}
@@ -1746,16 +1990,187 @@ function deleteRateNotice(result: RulesDeleteResult): Notice {
 
 // -- regions (opaque, string[]-or-null) helpers ---------------------------------
 
-/** Parse the comma-separated regions text input into the wire's `string[] |
- *  null` — blank ⇒ `null` (an explicit clear on edit; simply "no regions" on
- *  create). Never throws: any token that trims to empty is dropped. */
-function parseRegionsInput(raw: string): string[] | null {
-	const parts = raw
-		.split(",")
-		.map((p) => p.trim())
-		.filter((p) => p.length > 0);
-	return parts.length > 0 ? parts : null;
+/**
+ * The regions input → the ISO codes to store (ADR-0021), or a refusal the
+ * screen shows as-is. Two checks, both before any write:
+ *  - every token is a country or a real `CC-SUB` code (the domain's
+ *    `validateZoneRegionsInput`) — each bad token is named, with a hint;
+ *  - no code is already listed by ANOTHER zone: an overlap would make an
+ *    address match two zones (checkout would take the lowest id and log it).
+ * Blank ⇒ `null` (no regions — a zone that matches no address).
+ */
+async function checkZoneRegions(
+	client: AdminRulesSurface,
+	raw: string,
+	selfId: string | null,
+): Promise<
+	{ ok: true; codes: string[] | null } | { ok: false; notice: (title: string) => Notice }
+> {
+	const validated = validateZoneRegionsInput(raw);
+	if (!validated.ok) {
+		const bad = validated.invalid.map(regionHint).join("; ");
+		return {
+			ok: false,
+			notice: (title) => ({
+				variant: "error",
+				title,
+				description: `Not ISO region codes: ${bad}. Use a country code (US) or a state/province code (US-CA).`,
+			}),
+		};
+	}
+	if (validated.codes === null) return { ok: true, codes: null };
+	const zones = await client.listZones();
+	for (const other of zones) {
+		if (other.id === selfId) continue;
+		const theirs = parseZoneRegions(other.regions).codes;
+		const shared = validated.codes.find((code) => theirs.includes(code));
+		if (shared !== undefined) {
+			return {
+				ok: false,
+				notice: (title) => ({
+					variant: "error",
+					title,
+					description: `${shared} is already in the zone "${other.name}" (${other.id}). A code can belong to one zone only — remove it there first.`,
+				}),
+			};
+		}
+	}
+	return { ok: true, codes: validated.codes };
 }
+
+/** One refused token, with the likeliest fix. */
+function regionHint(token: string): string {
+	const upper = token.trim().toUpperCase();
+	if (upper === "UK") return "UK (use GB)";
+	if (upper === "EU") return "EU (not a country — list its countries)";
+	const prefixed = /^([A-Z]{2})-/.exec(upper);
+	if (prefixed !== null && COUNTRY_CODES.has(prefixed[1] ?? "")) {
+		return `${token} (not a ${prefixed[1] ?? ""} subdivision)`;
+	}
+	return `${token} (not a code)`;
+}
+
+/** What a stored zone matches, for its row: its valid codes, and every legacy
+ *  token labelled as never matching. */
+function zoneMatchSummary(regions: unknown): string {
+	const { codes, invalid } = parseZoneRegions(regions);
+	const matches = codes.length > 0 ? `Matches: ${codes.join(", ")}` : "Matches no address";
+	const legacy = invalid.map((token) => `${token} (not a region code — never matches)`);
+	return [matches, ...legacy].join(" · ");
+}
+
+/**
+ * The landing (and methods-screen) warnings about zone regions checkout cannot
+ * use (ADR-0021), in this order:
+ *  - a zone that MATCHES NO ADDRESS — no valid code at all (`null`, `[]`, or
+ *    only legacy text). Before ADR-0021 a blank regions list was normal; now
+ *    such a zone's methods are never offered, and a store whose zones all match
+ *    nothing refuses every physical checkout;
+ *  - stored tokens that are not codes (zones written before the rule).
+ */
+function zoneRegionWarnings(zones: ReadonlyArray<ShippingZoneWire>): BannerBlock[] {
+	const warnings: BannerBlock[] = [];
+	const unmatched = zones.filter((zone) => parseZoneRegions(zone.regions).codes.length === 0);
+	if (unmatched.length > 0) {
+		warnings.push({
+			type: "banner",
+			block_id: NO_MATCH_ZONES_BLOCK_ID,
+			variant: "alert",
+			title: "Some zones match no address",
+			description: fitDescription(
+				"These zones list no ISO code, so no order can be delivered through them. Add codes such as US, US-CA: ",
+				unmatched.map((zone) => `${zone.name} (${zone.id})`),
+			),
+		});
+	}
+	const legacy = legacyRegionsWarning(zones);
+	if (legacy !== null) warnings.push(legacy);
+	return warnings;
+}
+
+const NO_MATCH_ZONES_BLOCK_ID = "ship:no-match-zones";
+
+/**
+ * What checkout ships to, stated on the landing whenever ANY zone exists — the
+ * standing half of {@link FIRST_ZONE_WARNING}. ADR-0021 §4 refuses an address no
+ * zone lists, so the registry IS the store's delivery map; listing its codes in
+ * one sentence is what lets an operator see "only JP" at a glance. `undefined`
+ * with no zones, when checkout ships anywhere and there is nothing to warn about.
+ */
+function zoneCoverageNotice(
+	zones: ReadonlyArray<ShippingZoneWire>,
+): { title: string; description: string } | undefined {
+	if (zones.length === 0) return undefined;
+	const codes = [...new Set(zones.flatMap((zone) => parseZoneRegions(zone.regions).codes))];
+	return {
+		title: "Checkout only ships to addresses your zones list",
+		description:
+			codes.length === 0
+				? 'No zone lists a region code yet, so every physical checkout is refused with "We don\'t ship to this address".'
+				: fitDescription(
+						'Physical orders to anywhere else are refused ("We don\'t ship to this address"). Covered: ',
+						[codes.join(", ")],
+					),
+	};
+}
+
+/** A banner description's budget (X-11, §1). */
+const BANNER_DESCRIPTION_MAX = 240;
+
+/**
+ * `prefix` + as many entries as fit, then "and N more" + ".", within the banner
+ * budget — a store can have any number of affected zones, with names of any
+ * length. At least the first entry's name is attempted; an entry that alone
+ * would overflow is cut to fit.
+ */
+function fitDescription(prefix: string, entries: readonly string[]): string {
+	const room = BANNER_DESCRIPTION_MAX - prefix.length - 1; // the closing "."
+	const shown: string[] = [];
+	for (const [i, entry] of entries.entries()) {
+		const rest = entries.length - i - 1;
+		const tail = rest > 0 ? `; and ${String(rest)} more` : "";
+		const candidate = [...shown, entry].join("; ") + tail;
+		if (candidate.length <= room) {
+			shown.push(entry);
+			continue;
+		}
+		if (shown.length === 0) {
+			// The first entry alone overflows: show as much of it as fits.
+			const cut = entry.slice(0, Math.max(0, room - tail.length - 1));
+			return `${prefix}${cut}…${tail}.`;
+		}
+		return `${prefix}${shown.join("; ")}; and ${String(entries.length - shown.length)} more.`;
+	}
+	return `${prefix}${shown.join("; ")}.`;
+}
+
+/** Stored region tokens that are not codes, or `null` when there are none. */
+function legacyRegionsWarning(zones: ReadonlyArray<ShippingZoneWire>): BannerBlock | null {
+	const affected = zones
+		.map((zone) => ({ zone, invalid: parseZoneRegions(zone.regions).invalid }))
+		.filter((entry) => entry.invalid.length > 0);
+	if (affected.length === 0) return null;
+	return {
+		type: "banner",
+		block_id: LEGACY_REGIONS_BLOCK_ID,
+		variant: "alert",
+		title: "Some zone regions can never match an address",
+		description: fitDescription(
+			"These entries are not ISO codes, so they never match an address. Replace them with codes (e.g. US, US-CA): ",
+			affected.map(({ zone, invalid }) => `${zone.name} (${zone.id}): ${invalid.join(", ")}`),
+		),
+	};
+}
+
+const LEGACY_REGIONS_BLOCK_ID = "ship:legacy-regions";
+
+/**
+ * The methods screen's zone, looked up by `fetchPage` for its warning. Keyed by
+ * the rows array the level hands `render` (the scaffold passes it through by
+ * reference), because `render` is synchronous and the level's rows are methods,
+ * not the zone. Weak, so a render's entry dies with it.
+ */
+const METHODS_ZONE = new WeakMap<object, ShippingZoneWire>();
 
 /** Pre-fill the regions text input from whatever the wire returned — only a
  *  `string[]` round-trips to a comma list; anything else (a legacy shape, or

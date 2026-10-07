@@ -29,6 +29,25 @@ export function shippingRulesStoreContract(
 			expect(await store.getZone("missing")).toBeNull();
 		});
 
+		// ADR-0021: the checkout's zone matcher reads `regions` off `listZones()`.
+		// Every adapter must hand them back VERBATIM — codes and legacy text alike,
+		// in order — or an address that should match silently would not.
+		test("listZones carries each zone's regions verbatim (the zone matcher's input)", async () => {
+			const { store } = await makeStore();
+			await store.createZone({ id: "z-us", name: "US", regions: ["US", "US-CA"] });
+			await store.createZone({ id: "z-legacy", name: "Legacy", regions: ["United States", "de"] });
+			await store.createZone({ id: "z-none", name: "None", regions: null });
+			const byId = new Map((await store.listZones()).map((z) => [z.id, z.regions]));
+			expect(byId.get("z-us")).toEqual(["US", "US-CA"]);
+			expect(byId.get("z-legacy")).toEqual(["United States", "de"]);
+			expect(byId.get("z-none") ?? null).toBeNull();
+			await store.updateZone("z-us", { name: "US", regions: ["US-TX", "US"] });
+			expect((await store.listZones()).find((z) => z.id === "z-us")?.regions).toEqual([
+				"US-TX",
+				"US",
+			]);
+		});
+
 		test("create + list methods scoped to a zone", async () => {
 			const { store } = await makeStore();
 			await store.createZone({ id: "z-us", name: "US", regions: null });

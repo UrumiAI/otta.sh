@@ -25,14 +25,30 @@
  * Settings form's own save actions, into the isolate's kv, which also proves that
  * surface writes the key this route reads.
  */
+import {
+	cents,
+	currency,
+	idempotencyKey,
+	orderId as toOrderId,
+	productId as toProductId,
+	sku as toSku,
+} from "@otta-sh/domain";
 import { signStripeWebhook } from "@otta-sh/payments-stripe";
+import {
+	EmdashInventoryStore,
+	EmdashOrderStore,
+	systemClock,
+	uuidIdGen,
+} from "@otta-sh/store-emdash";
 import { afterEach, describe, expect, test } from "vitest";
+import { chargeRefundedEvent, signedStripeEvent } from "./helpers/signed-stripe-event.js";
 import { startStubHttpServer, type StubHttpServer } from "./helpers/stub-http-server.js";
 import {
 	loadPluginInSandbox,
 	productionAllowedHosts,
 	type SandboxHandle,
 } from "./sandbox/harness.js";
+import { storageBridge } from "./sandbox/storage-bridge.js";
 
 const WEBHOOK_SECRET = "whsec_sandbox_NEVER_LEAK";
 const EDGE_TOKEN = "otta_edge_sandbox_NEVER_LEAK";
@@ -201,6 +217,86 @@ describe("webhooks/stripe/settle under workerd", () => {
 				await sandbox.invokeRoute(
 					"webhooks/stripe/settle",
 					await delivery("ord-open", { secret: "whsec_attacker" }),
+				),
+			),
+		).toMatchObject({ ok: false, status: 400, reason: "INVALID_SIGNATURE" });
+	}, 180_000);
+
+	test("a correctly signed `charge.refunded` is acknowledged 200 and leaves the order untouched (#300)", async () => {
+		// The order lives in the SAME document store the isolate's `ctx.storage`
+		// proxies to, seeded through the same adapters the route composes — so
+		// "untouched" is read from the store the route would have written.
+		const { storage } = await storageBridge();
+		const inventory = new EmdashInventoryStore({ storage, idGen: uuidIdGen, clock: systemClock });
+		const orderStore = new EmdashOrderStore({
+			storage,
+			inventory,
+			idGen: uuidIdGen,
+			clock: systemClock,
+		});
+		const id = "ord-sandbox-refunded";
+		await orderStore.createFromCart({
+			orderId: toOrderId(id),
+			cartId: null,
+			currency: currency("USD"),
+			idempotencyKey: idempotencyKey(`seed-${id}`),
+			holdExpiresAt: "2099-01-01T00:00:00.000Z",
+			buyerRef: "buyer@example.com",
+			paymentMethod: "stripe",
+			lines: [
+				{
+					productId: toProductId(`prod-${id}`),
+					sku: toSku("SKU-SANDBOX-REFUNDED"),
+					title: "Digital Widget",
+					unitPrice: cents(1500),
+					currency: currency("USD"),
+					quantity: 1,
+					fulfillmentKind: "digital",
+					reservationId: null,
+				},
+			],
+			totals: { subtotal: cents(1500), total: cents(1500), currency: currency("USD") },
+		});
+		const before = await orderStore.getById(toOrderId(id));
+		expect(before?.state).toBe("pending");
+
+		stub = await startStubHttpServer();
+		stub.respondWith("GET", () => ({
+			status: 200,
+			body: { ok: true, settings: { holdTtlMinutes: 15, lowStockThreshold: 5 } },
+		}));
+		sandbox = await loadPluginInSandbox({
+			allowedHosts: productionAllowedHosts([stub.host]),
+			storage: true,
+		});
+		await sandbox.invokeRoute("admin", {
+			type: "form_submit",
+			action_id: "save-stripe-webhook-secret",
+			values: { stripeWebhookSecret: WEBHOOK_SECRET },
+		});
+
+		// Verified inside the isolate on workerd's WebCrypto, then refused by TYPE:
+		// 200, so Stripe stops retrying rather than eventually disabling the
+		// endpoint (and every `payment_intent.succeeded` with it).
+		expect(
+			resultOf(
+				await sandbox.invokeRoute(
+					"webhooks/stripe/settle",
+					signedStripeEvent(chargeRefundedEvent(id, 1500), WEBHOOK_SECRET, `wh-refund-${id}`),
+				),
+			),
+		).toEqual({ ok: false, status: 200, reason: "UNKNOWN_EVENT" });
+
+		// Acknowledged, nothing done: the order is exactly what it was.
+		expect(await orderStore.getById(toOrderId(id))).toEqual(before);
+
+		// The 200 is earned by the signature, not granted to the type: the same
+		// event under an attacker's secret is still refused.
+		expect(
+			resultOf(
+				await sandbox.invokeRoute(
+					"webhooks/stripe/settle",
+					signedStripeEvent(chargeRefundedEvent(id, 1500), "whsec_attacker", `wh-forged-${id}`),
 				),
 			),
 		).toMatchObject({ ok: false, status: 400, reason: "INVALID_SIGNATURE" });

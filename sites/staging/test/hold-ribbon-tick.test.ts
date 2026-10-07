@@ -62,6 +62,19 @@ describe("holdFrame — recomputed from the absolute expiry, never decremented (
 		expect(holdFrame(expiry, HOLD_WINDOW_SECONDS, "held", T0 + 300_000)?.clock).toBe("04:00");
 	});
 
+	test("the time in words is floored whole minutes and whole seconds, from the same instant", () => {
+		// A theme that says "14 min left" must never round UP: 14:59 left is
+		// "14 min", and 4:59 is under five minutes, not five.
+		const frame = holdFrame(T0 + 899_900, HOLD_WINDOW_SECONDS, "held", T0);
+		expect(frame?.secondsLeft).toBe(899);
+		expect(frame?.minutesLeft).toBe(14);
+		expect(holdFrame(T0 + 299_000, HOLD_WINDOW_SECONDS, "held", T0)?.minutesLeft).toBe(4);
+		expect(holdFrame(T0 + 42_500, HOLD_WINDOW_SECONDS, "held", T0)?.secondsLeft).toBe(42);
+		const gone = holdFrame(T0, HOLD_WINDOW_SECONDS, "held", T0 + 5_000);
+		expect(gone?.secondsLeft).toBe(0);
+		expect(gone?.minutesLeft).toBe(0);
+	});
+
 	test("a jump straight past the expiry lands on released, not on a negative clock", () => {
 		const frame = holdFrame(T0 + 60_000, HOLD_WINDOW_SECONDS, "held", T0 + 3_600_000);
 		expect(frame?.state).toBe("released");

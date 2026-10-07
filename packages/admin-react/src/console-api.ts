@@ -6,8 +6,15 @@
  * existing authenticated `otta` admin route from the browser with the operator's
  * own session. Everything in this module goes through that one route, through
  * `apiFetch` (which adds the `X-EmDash-Request` CSRF header state-changing
- * endpoints require), same-origin. There is no second fetch anywhere in this
- * package, and there must never be one.
+ * endpoints require), same-origin. Every read and write of commerce data in
+ * this package goes through here.
+ *
+ * ONE EXCEPTION, AND ONLY ONE (ADR-0029, amending Decision 3): the product
+ * editor's Download file card uploads a digital product's file to the SITE
+ * (`download-upload-api.ts`), because only the site holds the private bucket.
+ * That request carries bytes, reads and writes no commerce data, and the
+ * descriptor it answers is saved through this module like any other edit.
+ * There must never be a second one.
  *
  * WIRE TYPES ARE MIRRORED, NOT IMPORTED, and for the same reason
  * `packages/plugin/src/types.ts` hand-mirrors EmDash's plugin surface: the
@@ -129,9 +136,18 @@ export interface OrderDetail {
 export interface RefundRow {
 	readonly amountCents: number;
 	readonly currency?: string | null;
+	/** The provider's own refund id (Stripe `re_…`) — the WIRE field. */
+	readonly refundRef?: string | null;
+	/** Legacy spelling some fixtures used; read only when `refundRef` is absent. */
 	readonly providerRef?: string | null;
+	/** The key the refund was attempted under (Stripe's `Idempotency-Key`). */
+	readonly idempotencyKey?: string | null;
 	readonly refundedBy?: string | null;
 	readonly createdAt?: string | null;
+	/** The row's lifecycle: `recorded` (money came back), `reserved` (an attempt
+	 *  still in progress), `unverified` (outcome unknown — check the provider) or
+	 *  `voided` (nothing moved). Absent on a row from an older plugin ⇒ recorded. */
+	readonly status?: string | null;
 }
 
 export interface RefundsSummary {
@@ -139,6 +155,9 @@ export interface RefundsSummary {
 	readonly currency: string;
 	readonly capturedTotalCents: number;
 	readonly refundedTotalCents: number;
+	/** Σ refunds that actually came back — the refund confirm's watermark and
+	 *  the "Refunded" figure. Absent from an older plugin ⇒ `refundedTotalCents`. */
+	readonly finalizedTotalCents?: number;
 	readonly ceilingCents: number;
 	readonly remainingCents: number;
 	readonly paymentMethod: string | null;
@@ -160,6 +179,17 @@ export interface TimelineEntry {
 	readonly reason?: string | null;
 	readonly detail?: string | null;
 	readonly outcome?: string | null;
+	/** refund (QA round 2): the ledger row's money, its state and who issued it. */
+	readonly amount?: number | null;
+	readonly currency?: string | null;
+	readonly status?: string | null;
+	readonly purpose?: string | null;
+	readonly refundedBy?: string | null;
+	/** cancellation: what it refunded, and whether it returned the units to stock. */
+	readonly refund?: { readonly amount: number; readonly currency: string } | null;
+	readonly restocked?: boolean | null;
+	/** cancellation: true only while its restock is still owed (issue #364). */
+	readonly restockPending?: boolean | null;
 }
 
 export interface OrderTimeline {
@@ -283,6 +313,13 @@ export interface ActPayload {
 	 * HTTP, not a guarantee about it.
 	 */
 	readonly field?: "sku";
+	/** The plugin's `ProductsActionResult.recordMoved`, mirrored: someone else
+	 *  saved first, so the form shows the latest values. */
+	readonly recordMoved?: true;
+	/** The plugin's `ProductsActionResult.replayed`, mirrored: a stock move the
+	 *  ledger answered — an earlier send with the same nonce moved the units, and
+	 *  this one moved nothing. */
+	readonly replayed?: true;
 }
 
 // ── wire shapes: Pricing & inventory (INC-21) ────────────────────────────────
@@ -325,11 +362,24 @@ export interface ProductRecord {
 	readonly widthMm: number | null;
 	readonly heightMm: number | null;
 	readonly productKind: string;
+	/** The digital product's download file (issue #376) — the plugin's
+	 *  `DownloadAssetWire`, mirrored. `null` (or absent, from a plugin older than
+	 *  the field) when no file is attached. */
+	readonly downloadAsset?: DownloadAssetView | null;
 	readonly active: boolean;
 	readonly deletedAt: string | null;
 	readonly onHand: number | null;
 	readonly createdAt: string;
 	readonly updatedAt: string;
+}
+
+/** A product's attached download file, as the editor's Download file card shows
+ *  it. `size` is bytes. */
+export interface DownloadAssetView {
+	readonly key: string;
+	readonly filename: string;
+	readonly contentType: string;
+	readonly size: number;
 }
 
 export interface TaxClass {
@@ -415,6 +465,18 @@ export interface Failure {
 	readonly ok: false;
 	readonly title: string;
 	readonly description: string;
+	/** The HTTP status, when the refusal came from one — so a surface can tell
+	 *  "you may not" (403) from "it is broken" without reading the sentence. */
+	readonly status?: number;
+	/**
+	 * THE WRITE MAY HAVE RUN. Set when the request never came back, came back
+	 * 5xx, or came back 2xx with an answer this screen could not read — every
+	 * case where the plugin may have applied a write whose outcome was lost.
+	 * Absent on a 4xx and on the plugin's own `{ok:false}`, which are a
+	 * definitive no. A stock movement holds its nonce across exactly these, so a
+	 * re-send is answered by the ledger rather than applied a second time.
+	 */
+	readonly indeterminate?: true;
 }
 
 export type Result<T> = T | Failure;
@@ -457,8 +519,11 @@ async function readFailure(response: Response, subject: string): Promise<Failure
 		// the Pricing & inventory screen sends an operator to look at the wrong
 		// thing. It names the SCREEN rather than the request, because the screen
 		// is what the operator is looking at.
+		status: response.status,
 		title: `${subject} (HTTP ${String(response.status)})`,
 		description: served.length > 0 ? `${served} ${remediation}` : remediation,
+		// A 5xx can follow a write that landed; a 4xx refused before anything ran.
+		...(response.status >= 500 ? { indeterminate: true as const } : {}),
 	};
 }
 
@@ -479,6 +544,7 @@ function transportFailure(error: unknown): Failure {
 		description: `The request never completed${
 			error instanceof Error ? ` — ${error.message}` : ""
 		}. Check that you are online, then reload.`,
+		indeterminate: true,
 	};
 }
 
@@ -507,6 +573,8 @@ async function post<T extends { ok: true }>(body: unknown, subject: string): Pro
 	if (typeof data === "object" && data !== null && "ok" in data) return data as Result<T>;
 	return {
 		ok: false,
+		// It answered 2xx, so the plugin ran — whatever it did is unknown here.
+		indeterminate: true,
 		title: "The admin sent something this screen could not read",
 		description:
 			"The response did not have the shape this screen expects. Reload the page; if it happens again, this is a fault in the console itself.",
@@ -550,6 +618,36 @@ export function fetchProducts(
 export function fetchProductDetail(productId: string): Promise<Result<ProductDetailPayload>> {
 	return post<ProductDetailPayload>(
 		{ type: READ, resource: "products.detail", productId },
+		PRODUCTS_UNAVAILABLE,
+	);
+}
+
+/** One product's price and stock for the Products list's columns — the
+ *  plugin's `ProductPriceStockWire`, mirrored. `onHand: null` is "no inventory
+ *  record", never zero. */
+export interface ProductPriceStock {
+	readonly productId: string;
+	readonly sku: string | null;
+	readonly priceCents: number | null;
+	readonly currency: string | null;
+	readonly compareAtCents: number | null;
+	readonly onHand: number | null;
+	readonly deletedAt: string | null;
+}
+
+export interface ProductSummariesPayload {
+	readonly ok: true;
+	readonly products: readonly ProductPriceStock[];
+	readonly threshold: number | null;
+}
+
+/** The price and stock of a page of products (ADR-0014, amendment
+ *  2026-10-01). The ids are CMS entry ids, which are the commerce ids. */
+export function fetchProductSummaries(
+	productIds: readonly string[],
+): Promise<Result<ProductSummariesPayload>> {
+	return post<ProductSummariesPayload>(
+		{ type: READ, resource: "products.summaries", productIds },
 		PRODUCTS_UNAVAILABLE,
 	);
 }

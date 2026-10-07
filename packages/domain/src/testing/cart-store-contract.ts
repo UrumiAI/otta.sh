@@ -3,6 +3,7 @@ import {
 	addLine,
 	type CartDeps,
 	createCart,
+	DEFAULT_HOLD_TTL_MS,
 	expireHolds,
 	getCart,
 	removeLine,
@@ -26,6 +27,30 @@ export interface CartStoreContractOptions {
 const USD = currency("USD");
 const PAST_TTL_MS = 16 * 60 * 1000; // > the 15-minute default hold TTL
 
+/** One first-add's store writes, in the use-case's order: claim, reserve, upsert. */
+async function firstAddWrite(
+	h: CartStoreHarness,
+	cartId: string,
+	name: string,
+	productId: string | null,
+	key: string,
+) {
+	const k = idempotencyKey(key);
+	await h.deps.cartStore.claimMutation({ key: k, cartId, kind: "add" });
+	const reserved = await h.deps.inventoryStore.reserve(name, 1, k);
+	if (!reserved.ok) throw new Error("seed reserve must succeed");
+	const expiresAt = new Date(h.deps.clock.now().getTime() + DEFAULT_HOLD_TTL_MS).toISOString();
+	return h.deps.cartStore.upsertLine({
+		cartId,
+		sku: name,
+		productId,
+		qty: 1,
+		reservationId: reserved.reservationId,
+		expiresAt,
+		key: k,
+	});
+}
+
 /**
  * The reusable cart behavioral spec (§1 cases 1–8), run against the fake first,
  * then each DB dialect via `describeEachDialect`. Exercises the **use-cases**
@@ -37,6 +62,71 @@ export function cartStoreContract(
 	opts: CartStoreContractOptions,
 ): void {
 	describe(`cartStoreContract [${opts.dialect}]`, () => {
+		// A KEYED create is idempotent: the same key is the same cart. The storefront
+		// keys the cart it starts in place of a spent one on that spent cart's id, so two
+		// requests racing to replace it (a double-submitted "Add to cart") land in ONE
+		// new cart instead of each minting its own and leaving the shopper in whichever
+		// cookie arrived last.
+		test("a keyed create returns the same cart for the same key; another key, or none, mints a fresh one", async () => {
+			const h = await makeHarness();
+			const key = idempotencyKey("rotate:cart-spent-1");
+			const first = await h.deps.cartStore.create(USD, key);
+			const again = await h.deps.cartStore.create(USD, key);
+			expect(again).toBe(first);
+			expect((await getCart(h.deps, first))?.state).toBe("active");
+			const other = await h.deps.cartStore.create(USD, idempotencyKey("rotate:cart-spent-2"));
+			const unkeyed = await createCart(h.deps, USD);
+			expect(new Set([first, other, unkeyed]).size).toBe(3);
+		});
+
+		// The storefront header asks this on every uncached page a shopper with a cart
+		// loads (QA U-14), so it must be the cart's own document and nothing else: the
+		// state and the summed quantities, with no hold resolution and no writes.
+		test("units(): the cart's state and summed quantities, agreeing with get(); null for an unknown cart", async () => {
+			const h = await makeHarness();
+			await h.seedStock("SKU-UNITS-A", 10);
+			await h.seedStock("SKU-UNITS-B", 10);
+			const cartId = await createCart(h.deps, USD);
+			expect(await h.deps.cartStore.units(cartId)).toEqual({ state: "active", units: 0 });
+			await addLine(h.deps, cartId, sku("SKU-UNITS-A"), null, 2, idempotencyKey("k-units-a"));
+			await addLine(h.deps, cartId, sku("SKU-UNITS-B"), null, 3, idempotencyKey("k-units-b"));
+			const read = await h.deps.cartStore.get(cartId);
+			const summed = read?.lines.reduce((sum, line) => sum + line.qty, 0);
+			expect(await h.deps.cartStore.units(cartId)).toEqual({ state: "active", units: summed });
+			expect(summed).toBe(5);
+			await h.deps.cartStore.checkout(cartId, brandOrderId("ord-units-1"));
+			expect(await h.deps.cartStore.units(cartId)).toEqual({ state: "checked_out", units: 5 });
+			expect(await h.deps.cartStore.units("cart-units-never-minted")).toBeNull();
+		});
+
+		test("concurrent keyed creates converge on one cart", async () => {
+			const h = await makeHarness();
+			const key = idempotencyKey("rotate:cart-spent-race");
+			const ids = await Promise.all([
+				h.deps.cartStore.create(USD, key),
+				h.deps.cartStore.create(USD, key),
+				h.deps.cartStore.create(USD, key),
+			]);
+			expect(new Set(ids).size).toBe(1);
+			expect((await getCart(h.deps, ids[0]!))?.state).toBe("active");
+		});
+
+		// The storefront retries a refused add on the replacement cart with the SAME
+		// key. That is safe only because the refusal claimed nothing.
+		test("an add refused CART_CHECKED_OUT records no mutation under its key", async () => {
+			const h = await makeHarness();
+			await h.seedStock("SKU-SPENT", 5);
+			const spent = await createCart(h.deps, USD);
+			await h.deps.cartStore.checkout(spent, brandOrderId("ord-spent-2"));
+			const key = idempotencyKey("k-refused-add");
+			expect(await addLine(h.deps, spent, sku("SKU-SPENT"), null, 1, key)).toEqual({
+				ok: false,
+				reason: "CART_CHECKED_OUT",
+			});
+			expect(await h.deps.cartStore.recordedMutation(key)).toBeNull();
+			expect(await h.onHand("SKU-SPENT")).toBe(5);
+		});
+
 		test("add reserves via the inventory port and records the reservationId", async () => {
 			const h = await makeHarness();
 			await h.seedStock("SKU-1", 5);
@@ -64,6 +154,71 @@ export function cartStoreContract(
 			expect(cart?.lines).toHaveLength(0);
 		});
 
+		// ── an add DECIDED out of stock retires its claim (QA U-16) ─────────
+		// The add claims its key before it reserves, so a crash between the two
+		// leaves a marker the sweep can follow to a dangling hold. An add whose
+		// reserve was decided OUT_OF_STOCK has no hold and never will (the reserve
+		// key is once-only), yet its claim stayed outstanding forever: on the
+		// document store it pinned the cart's sweep deadline in the past and was
+		// re-read on every tick. The use-case now retires it with `abandonClaim`.
+		// What must NOT change is the replay: the same key still answers
+		// OUT_OF_STOCK, writes no line and moves no stock.
+
+		test("an out-of-stock add's same-key replay still answers OUT_OF_STOCK and moves nothing", async () => {
+			const h = await makeHarness();
+			await h.seedStock("SKU-1", 3);
+			const cartId = await createCart(h.deps, USD);
+			const first = await addLine(h.deps, cartId, sku("SKU-1"), null, 4, idempotencyKey("k1"));
+			const replay = await addLine(h.deps, cartId, sku("SKU-1"), null, 4, idempotencyKey("k1"));
+			expect(first).toEqual({ ok: false, reason: "OUT_OF_STOCK" });
+			expect(replay).toEqual({ ok: false, reason: "OUT_OF_STOCK" });
+			expect(await h.onHand("SKU-1")).toBe(3);
+			expect((await getCart(h.deps, cartId))?.lines).toHaveLength(0);
+			// The probe that catches an adapter whose abandonClaim does nothing: the
+			// claim reads back RETIRED — still not completed, so replays resume.
+			expect(await h.deps.cartStore.recordedMutation(idempotencyKey("k1"))).toMatchObject({
+				kind: "add",
+				completed: false,
+				abandoned: true,
+			});
+
+			// A fresh key for a quantity that fits is unaffected.
+			const fits = await addLine(h.deps, cartId, sku("SKU-1"), null, 3, idempotencyKey("k2"));
+			expect(fits.ok).toBe(true);
+			expect(await h.onHand("SKU-1")).toBe(0);
+		});
+
+		test("abandonClaim never touches a COMPLETED add — its replay still returns the line", async () => {
+			const h = await makeHarness();
+			await h.seedStock("SKU-1", 5);
+			const cartId = await createCart(h.deps, USD);
+			const first = await addLine(h.deps, cartId, sku("SKU-1"), null, 2, idempotencyKey("k1"));
+			if (!first.ok) throw new Error("seed add must succeed");
+
+			await h.deps.cartStore.abandonClaim(cartId, idempotencyKey("k1"));
+
+			const replay = await addLine(h.deps, cartId, sku("SKU-1"), null, 2, idempotencyKey("k1"));
+			expect(replay.ok).toBe(true);
+			if (!replay.ok) return;
+			expect(replay.line.lineId).toBe(first.line.lineId);
+			expect(await h.onHand("SKU-1")).toBe(3);
+			const recorded = await h.deps.cartStore.recordedMutation(idempotencyKey("k1"));
+			expect(recorded?.completed).toBe(true);
+			expect(recorded?.abandoned).not.toBe(true);
+		});
+
+		test("abandonClaim of an unknown key, or on an unknown cart, is a quiet no-op", async () => {
+			const h = await makeHarness();
+			const cartId = await createCart(h.deps, USD);
+			await expect(
+				h.deps.cartStore.abandonClaim(cartId, idempotencyKey("never-claimed")),
+			).resolves.toBeUndefined();
+			await expect(
+				h.deps.cartStore.abandonClaim("no-such-cart", idempotencyKey("k1")),
+			).resolves.toBeUndefined();
+			expect(await h.deps.cartStore.recordedMutation(idempotencyKey("never-claimed"))).toBeNull();
+		});
+
 		test("add is idempotent — a replayed add returns the same line and decrements once", async () => {
 			const h = await makeHarness();
 			await h.seedStock("SKU-1", 5);
@@ -75,6 +230,162 @@ export function cartStoreContract(
 			expect(replay.line.lineId).toBe(first.line.lineId);
 			expect(replay.line.reservationId).toBe(first.line.reservationId);
 			expect(await h.onHand("SKU-1")).toBe(3);
+		});
+
+		// ── re-adding a sku that is already in the cart ─────────────────────
+		// One line per sku, one reservation per physical line (phase-3 plan §4):
+		// a second add of the same sku ADDS its qty to that line, moving stock by
+		// delta on the line's own hold. It must never mint a second reservation
+		// and orphan the first one (which only came back at TTL, via the sweep).
+
+		test("re-adding a sku already in the cart adds to its line on the same hold — no orphan reservation", async () => {
+			const h = await makeHarness();
+			await h.seedStock("SKU-1", 10);
+			const cartId = await createCart(h.deps, USD);
+			const first = await addLine(h.deps, cartId, sku("SKU-1"), null, 1, idempotencyKey("k1"));
+			if (!first.ok) throw new Error("seed add must succeed");
+
+			const again = await addLine(h.deps, cartId, sku("SKU-1"), null, 2, idempotencyKey("k2"));
+			expect(again.ok).toBe(true);
+			if (!again.ok) return;
+			expect(again.line.qty).toBe(3);
+			expect(again.line.lineId).toBe(first.line.lineId);
+			expect(again.line.reservationId).toBe(first.line.reservationId);
+			// Held stock equals the one line's qty: 10 - 3.
+			expect(await h.onHand("SKU-1")).toBe(7);
+
+			const cart = await getCart(h.deps, cartId);
+			expect(cart?.lines).toHaveLength(1);
+			expect(cart?.lines[0]?.qty).toBe(3);
+
+			// Removing the line returns EVERYTHING the cart held — an orphaned first
+			// hold would leave a unit stranded here until the sweep.
+			const rm = await removeLine(h.deps, cartId, again.line.lineId, idempotencyKey("k3"));
+			expect(rm.ok).toBe(true);
+			expect(await h.onHand("SKU-1")).toBe(10);
+		});
+
+		test("a replayed re-add returns its recorded line and moves no further stock", async () => {
+			const h = await makeHarness();
+			await h.seedStock("SKU-1", 10);
+			const cartId = await createCart(h.deps, USD);
+			const first = await addLine(h.deps, cartId, sku("SKU-1"), null, 1, idempotencyKey("k1"));
+			if (!first.ok) throw new Error("seed add must succeed");
+			const again = await addLine(h.deps, cartId, sku("SKU-1"), null, 1, idempotencyKey("k2"));
+			const replay = await addLine(h.deps, cartId, sku("SKU-1"), null, 1, idempotencyKey("k2"));
+			expect(again.ok && replay.ok).toBe(true);
+			if (!again.ok || !replay.ok) return;
+			expect(replay.line.lineId).toBe(first.line.lineId);
+			expect(replay.line.qty).toBe(2);
+			expect(await h.onHand("SKU-1")).toBe(8); // 1 + 1 held, once each
+
+			const cart = await getCart(h.deps, cartId);
+			expect(cart?.lines).toHaveLength(1);
+			expect(cart?.lines[0]?.qty).toBe(2);
+
+			// The lapsed hold returns exactly the line's qty — no second hold remains.
+			h.advance(PAST_TTL_MS);
+			expect((await getCart(h.deps, cartId))?.lines).toHaveLength(0);
+			expect(await expireHolds(h.deps)).toBe(0);
+			expect(await h.onHand("SKU-1")).toBe(10);
+		});
+
+		test("a re-add beyond stock reports OUT_OF_STOCK and leaves the line and its hold untouched", async () => {
+			const h = await makeHarness();
+			await h.seedStock("SKU-1", 3);
+			const cartId = await createCart(h.deps, USD);
+			const first = await addLine(h.deps, cartId, sku("SKU-1"), null, 2, idempotencyKey("k1"));
+			if (!first.ok) throw new Error("seed add must succeed");
+
+			const again = await addLine(h.deps, cartId, sku("SKU-1"), null, 2, idempotencyKey("k2"));
+			expect(again).toEqual({ ok: false, reason: "OUT_OF_STOCK" });
+			expect(await h.onHand("SKU-1")).toBe(1);
+			const cart = await getCart(h.deps, cartId);
+			expect(cart?.lines).toHaveLength(1);
+			expect(cart?.lines[0]?.qty).toBe(2);
+			expect(cart?.lines[0]?.reservationId).toBe(first.line.reservationId);
+		});
+
+		test("re-adding a digital sku adds to its line and reserves nothing", async () => {
+			const h = await makeHarness();
+			const cartId = await createCart(h.deps, USD);
+			const first = await addLine(
+				h.deps,
+				cartId,
+				sku("EBOOK-1"),
+				null,
+				1,
+				idempotencyKey("k1"),
+				"digital",
+			);
+			if (!first.ok) throw new Error("seed add must succeed");
+			const again = await addLine(
+				h.deps,
+				cartId,
+				sku("EBOOK-1"),
+				null,
+				2,
+				idempotencyKey("k2"),
+				"digital",
+			);
+			expect(again.ok).toBe(true);
+			if (!again.ok) return;
+			expect(again.line.lineId).toBe(first.line.lineId);
+			expect(again.line.qty).toBe(3);
+			expect(again.line.reservationId).toBeNull();
+			const cart = await getCart(h.deps, cartId);
+			expect(cart?.lines).toHaveLength(1);
+			expect(cart?.lines[0]?.qty).toBe(3);
+		});
+
+		// ── a null productId never overwrites a non-null one (issue #373) ───
+		// Two FIRST adds of the same sku can race: each reads the cart before the
+		// other's line exists, so neither takes the re-add path, and both reach
+		// `upsertLine` for the same (cart, sku). The productId is optional on the
+		// wire (a bare/legacy add sends none), so one of the two may carry null.
+		// Whichever lands second must not clear the line's productId — checkout
+		// refuses a line without one (PRODUCT_NOT_PRICED). The writes are driven
+		// at the port, exactly as the two use-case calls would issue them, so the
+		// interleaving is deterministic rather than left to the scheduler.
+
+		test("a null productId never overwrites a non-null one", async () => {
+			const h = await makeHarness();
+			await h.seedStock("SKU-PID", 10);
+			const cartId = await createCart(h.deps, USD);
+			await firstAddWrite(h, cartId, "SKU-PID", "prod-1", "pid-a");
+			const second = await firstAddWrite(h, cartId, "SKU-PID", null, "pid-b");
+			expect(second.productId).toBe("prod-1");
+			const cart = await getCart(h.deps, cartId);
+			expect(cart?.lines).toHaveLength(1);
+			expect(cart?.lines[0]?.productId).toBe("prod-1");
+		});
+
+		test("a non-null productId still fills a line that was written without one", async () => {
+			const h = await makeHarness();
+			await h.seedStock("SKU-PID", 10);
+			const cartId = await createCart(h.deps, USD);
+			await firstAddWrite(h, cartId, "SKU-PID", null, "pid-a");
+			const second = await firstAddWrite(h, cartId, "SKU-PID", "prod-1", "pid-b");
+			expect(second.productId).toBe("prod-1");
+			expect((await getCart(h.deps, cartId))?.lines[0]?.productId).toBe("prod-1");
+		});
+
+		// The same race with both writes in flight at once, whichever lands last.
+		// This does NOT promise the compare-and-set retry is exercised: the
+		// interleaving is left to the scheduler (on SQLite the two run one after the
+		// other). The retry is forced, and its attempt count asserted, by store-emdash's
+		// `cart-productid-race.dialects.test.ts`.
+		test("concurrent first adds keep the productId, whichever write lands last", async () => {
+			const h = await makeHarness();
+			await h.seedStock("SKU-PID", 10);
+			const cartId = await createCart(h.deps, USD);
+			await Promise.all([
+				firstAddWrite(h, cartId, "SKU-PID", "prod-1", "pid-a"),
+				firstAddWrite(h, cartId, "SKU-PID", null, "pid-b"),
+			]);
+			const cart = await getCart(h.deps, cartId);
+			expect(cart?.lines).toHaveLength(1);
+			expect(cart?.lines[0]?.productId).toBe("prod-1");
 		});
 
 		test("increase delta-reserves the difference", async () => {
@@ -190,6 +501,111 @@ export function cartStoreContract(
 			expect(await h.onHand("SKU-1")).toBe(5); // returned exactly once
 			const cart = await getCart(h.deps, cartId);
 			expect(cart?.lines).toHaveLength(0);
+		});
+
+		// The cron sweep runs in a time-boxed hook: its LIST must be bounded, not only
+		// the flips after it, or a large backlog is read whole before any check runs.
+		test("listExpired honours a limit, returning at most that many lapsed holds", async () => {
+			const h = await makeHarness();
+			await h.seedStock("SKU-1", 9);
+			for (const n of [1, 2, 3]) {
+				const cartId = await createCart(h.deps, USD);
+				const add = await addLine(
+					h.deps,
+					cartId,
+					sku("SKU-1"),
+					null,
+					1,
+					idempotencyKey(`lim-${String(n)}`),
+				);
+				if (!add.ok) throw new Error("seed add must succeed");
+			}
+			h.advance(PAST_TTL_MS);
+			const now = h.deps.clock.now().toISOString();
+			expect(await h.deps.cartStore.listExpired(now, now, { limit: 2 })).toHaveLength(2);
+			expect(await h.deps.cartStore.listExpired(now, now)).toHaveLength(3);
+			expect(await h.deps.cartStore.listExpired(now, now, { limit: 10 })).toHaveLength(3);
+			await expect(h.deps.cartStore.listExpired(now, now, { limit: 0 })).rejects.toThrow(
+				RangeError,
+			);
+			// Listing is read-only: nothing was released by it.
+			expect(await h.onHand("SKU-1")).toBe(6);
+		});
+
+		/** One cart per sku, one unit each, every hold lapsed by `PAST_TTL_MS`. */
+		async function lapsedCarts(h: CartStoreHarness, skus: readonly string[], tag: string) {
+			const reservations: string[] = [];
+			for (const [n, name] of skus.entries()) {
+				await h.seedStock(name, 5);
+				const cartId = await createCart(h.deps, USD);
+				const add = await addLine(
+					h.deps,
+					cartId,
+					sku(name),
+					null,
+					1,
+					idempotencyKey(`${tag}-${String(n)}`),
+				);
+				if (!add.ok || add.line.reservationId === null) throw new Error("seed add must succeed");
+				reservations.push(add.line.reservationId);
+			}
+			return reservations;
+		}
+
+		// HEAD-OF-LINE. A lapsed line whose reservation is no longer held (released
+		// behind the cart's back, say) can never be expired. Listed under a small
+		// limit, a couple of those would fill every bite forever and no live hold
+		// behind them would ever be reached — so the list must not offer them.
+		test("an unexpirable lapsed hold is not listed, so it cannot starve the expirable ones behind it", async () => {
+			const h = await makeHarness();
+			const [deadA, deadB, live] = await lapsedCarts(h, ["SKU-DA", "SKU-DB", "SKU-LIVE"], "hol");
+			await h.deps.inventoryStore.release(deadA!);
+			await h.deps.inventoryStore.release(deadB!);
+			h.advance(PAST_TTL_MS);
+			const now = h.deps.clock.now().toISOString();
+			expect(await h.deps.cartStore.listExpired(now, now, { limit: 1 })).toEqual([
+				{ reservationId: live },
+			]);
+			const all = await h.deps.cartStore.listExpired(now, now);
+			expect(all.map((hold) => hold.reservationId)).toEqual([live]);
+		});
+
+		// The list itself must be stoppable: under a tight per-tick query budget a
+		// run of candidates that yield nothing would otherwise be read in full.
+		test("listExpired asks shouldContinue before each candidate, and stops when told", async () => {
+			const h = await makeHarness();
+			await lapsedCarts(h, ["SKU-S1", "SKU-S2", "SKU-S3"], "stop");
+			h.advance(PAST_TTL_MS);
+			const now = h.deps.clock.now().toISOString();
+			expect(await h.deps.cartStore.listExpired(now, now, { shouldContinue: () => false })).toEqual(
+				[],
+			);
+			let allowed = 1;
+			const one = await h.deps.cartStore.listExpired(now, now, {
+				shouldContinue: () => allowed-- > 0,
+			});
+			expect(one).toHaveLength(1);
+		});
+
+		test("a multi-line cart counts each of its holds against the limit", async () => {
+			const h = await makeHarness();
+			const cartId = await createCart(h.deps, USD);
+			for (const [n, name] of ["SKU-M1", "SKU-M2", "SKU-M3"].entries()) {
+				await h.seedStock(name, 5);
+				const add = await addLine(
+					h.deps,
+					cartId,
+					sku(name),
+					null,
+					1,
+					idempotencyKey(`multi-${String(n)}`),
+				);
+				if (!add.ok) throw new Error("seed add must succeed");
+			}
+			h.advance(PAST_TTL_MS);
+			const now = h.deps.clock.now().toISOString();
+			expect(await h.deps.cartStore.listExpired(now, now, { limit: 2 })).toHaveLength(2);
+			expect(await h.deps.cartStore.listExpired(now, now)).toHaveLength(3);
 		});
 
 		// ── the cart's `order_id` (issue #132) ───────────────────────────────

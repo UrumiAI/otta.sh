@@ -12,14 +12,14 @@ import {
 } from "@otta-sh/domain";
 import { CountingIdGen, FixedClock, InMemoryAddressStore } from "@otta-sh/domain/testing";
 import { beforeEach, describe, expect, test } from "vitest";
-import { makeOrderHarness, type OrderHarness } from "./fake-harness.js";
+import { makeOrderHarness, type OrderHarness, SEED_PUBLISHED_AT } from "./fake-harness.js";
 
 const SHIP_TO: OrderAddressInput = {
 	name: "Ada Lovelace",
 	line1: "12 Analytical Way",
 	line2: "Unit 4",
 	city: "London",
-	region: "Greater London",
+	region: "LND",
 	postalCode: "EC1A 1BB",
 	country: "GB",
 	email: "ada@example.com",
@@ -121,7 +121,7 @@ describe("createOrderFromCart", () => {
 		expect(res).toEqual({ ok: false, reason: "RESERVATION_LOST" });
 	});
 
-	test("a multi-line cart aborts on a later line's RESERVATION_LOST after an earlier line was already adopted: the pending order row was durably inserted before any line was adopted, so the earlier line's adopted hold is not stranded and is later released by expireOrders", async () => {
+	test("a multi-line cart aborts on a later line's RESERVATION_LOST after an earlier line was already adopted: the order row was durably inserted before any line was adopted, and the abort expires it AT ONCE, releasing the earlier line's adopted hold (nothing left for expireOrders)", async () => {
 		await h.seedPhysical({
 			productId: "p1",
 			sku: "SKU-1",
@@ -148,15 +148,16 @@ describe("createOrderFromCart", () => {
 
 		const res = await createOrderFromCart(h.createDeps, cmd(cartId));
 		expect(res).toEqual({ ok: false, reason: "RESERVATION_LOST" });
-		// The first hold was adopted (not stranded) and points at a real pending order.
-		expect(h.inventory.reservationState(first)).toBe("adopted");
-		// expireOrders heals it once the TTL passes: the pending order expires and
-		// its adopted hold is released.
+		// The order can never be paid, so it is abandoned now — exactly as the
+		// expiry sweep would abandon it — rather than squatting on the first line's
+		// units (and on the cart's fixed checkout key) until the TTL passes.
+		const order = await h.orderStore.getByIdempotencyKey(cmd(cartId).idempotencyKey);
+		expect(order?.state).toBe("expired");
+		expect(h.inventory.reservationState(first)).toBe("released");
+		expect(h.inventory.onHand("SKU-1")).toBe(10);
 		h.clock.advance(16 * 60 * 1000);
 		const { expireOrders } = await import("@otta-sh/domain");
-		const expired = await expireOrders(h.expireDeps);
-		expect(expired).toBe(1);
-		expect(h.inventory.reservationState(first)).toBe("released");
+		expect(await expireOrders(h.expireDeps)).toBe(0);
 	});
 
 	test("a PHYSICAL line whose cart line carries no reservation (product flipped digital→physical after add-to-cart) fails loudly with RESERVATION_LOST — never an order that would settle with no commit", async () => {
@@ -195,6 +196,11 @@ describe("createOrderFromCart", () => {
 			},
 			idempotencyKey("seed-eur"),
 		);
+		await h.productCommerce.activate(
+			brandProductId("d-eur"),
+			idempotencyKey("publish-eur"),
+			SEED_PUBLISHED_AT,
+		);
 		const cartId = await h.cartWith([
 			{ sku: "DIG-EUR", productId: "d-eur", qty: 1, kind: "digital" },
 		]);
@@ -226,6 +232,135 @@ describe("createOrderFromCart", () => {
 		expect(second).toEqual({ ok: false, reason: "CART_CHECKED_OUT" });
 		// The first order's adopted hold is untouched.
 		expect(h.inventory.reservationState(reservationId)).toBe("adopted");
+	});
+
+	// -- issue #133: a replayed key must belong to THIS cart ----------------------
+
+	test("a key already spent on ANOTHER cart is refused IDEMPOTENCY_KEY_REUSED — never ok:true for an order this cart has nothing to do with", async () => {
+		await h.seedPhysical({
+			productId: "p1",
+			sku: "SKU-1",
+			priceCents: 500,
+			title: "Widget",
+			onHand: 10,
+		});
+		const oldCart = await h.cartWith([{ sku: "SKU-1", productId: "p1", qty: 1, kind: "physical" }]);
+		const first = await createOrderFromCart(h.createDeps, cmd(oldCart, "checkout:old"));
+		if (!first.ok) throw new Error(first.reason);
+
+		// A stale tab submits the OLD cart's key while the cookie names a NEW cart.
+		const newCart = await h.cartWith([{ sku: "SKU-1", productId: "p1", qty: 2, kind: "physical" }]);
+		const newReservation = (await h.cartStore.get(newCart))!.lines[0]!.reservationId!;
+		const res = await createOrderFromCart(h.createDeps, cmd(newCart, "checkout:old"));
+
+		expect(res).toEqual({ ok: false, reason: "IDEMPOTENCY_KEY_REUSED" });
+		// The new cart is untouched: still active, no order stamped, its hold still held.
+		const cart = await h.cartStore.get(newCart);
+		expect({ state: cart?.state, orderId: cart?.orderId }).toEqual({
+			state: "active",
+			orderId: null,
+		});
+		expect(h.inventory.reservationState(newReservation)).toBe("held");
+		// And the key's own cart can still replay it.
+		const replay = await createOrderFromCart(h.createDeps, cmd(oldCart, "checkout:old"));
+		expect(replay.ok && replay.order.id).toBe(first.order.id);
+	});
+
+	test("the mismatch is refused even once the key's order has left pending (a PAID order is still not this cart's)", async () => {
+		await h.seedDigital({ productId: "d1", sku: "DIG-1", priceCents: 900, title: "Ebook" });
+		const oldCart = await h.cartWith([{ sku: "DIG-1", productId: "d1", qty: 1, kind: "digital" }]);
+		const first = await createOrderFromCart(h.createDeps, cmd(oldCart, "checkout:old"));
+		if (!first.ok) throw new Error(first.reason);
+		await h.orderStore.markPaid(first.order.id);
+
+		const newCart = await h.cartWith([{ sku: "DIG-1", productId: "d1", qty: 1, kind: "digital" }]);
+		const res = await createOrderFromCart(h.createDeps, cmd(newCart, "checkout:old"));
+		expect(res).toEqual({ ok: false, reason: "IDEMPOTENCY_KEY_REUSED" });
+		expect((await h.cartStore.get(newCart))?.state).toBe("active");
+	});
+
+	test("a same-key call for another cart that RACES past the short-circuit is refused after the deduped insert — the foreign order's id is never stamped on this cart", async () => {
+		await h.seedPhysical({
+			productId: "p1",
+			sku: "SKU-1",
+			priceCents: 500,
+			title: "Widget",
+			onHand: 10,
+		});
+		const oldCart = await h.cartWith([{ sku: "SKU-1", productId: "p1", qty: 1, kind: "physical" }]);
+		const first = await createOrderFromCart(h.createDeps, cmd(oldCart, "checkout:old"));
+		if (!first.ok) throw new Error(first.reason);
+
+		// The race window: this caller's I1 read ran before the winner's insert
+		// landed, so it saw no order — then its own insert is deduped on the key.
+		const racing = new Proxy(h.orderStore, {
+			get(target, prop) {
+				if (prop === "getByIdempotencyKey") return async () => null;
+				const value: unknown = Reflect.get(target, prop, target);
+				return typeof value === "function" ? value.bind(target) : value;
+			},
+		});
+		const newCart = await h.cartWith([{ sku: "SKU-1", productId: "p1", qty: 2, kind: "physical" }]);
+		const newReservation = (await h.cartStore.get(newCart))!.lines[0]!.reservationId!;
+		const res = await createOrderFromCart(
+			{ ...h.createDeps, orderStore: racing },
+			cmd(newCart, "checkout:old"),
+		);
+
+		expect(res).toEqual({ ok: false, reason: "IDEMPOTENCY_KEY_REUSED" });
+		const cart = await h.cartStore.get(newCart);
+		expect({ state: cart?.state, orderId: cart?.orderId }).toEqual({
+			state: "active",
+			orderId: null,
+		});
+		expect(h.inventory.reservationState(newReservation)).toBe("held");
+		// The winner's order and its adopted hold are untouched.
+		expect(h.inventory.reservationState(first.order.lines[0]!.reservationId!)).toBe("adopted");
+		expect((await h.cartStore.get(oldCart))?.orderId).toBe(first.order.id);
+	});
+
+	test("the racing foreign-cart call releases a coupon use IT redeemed — the orphan names an order that was never inserted", async () => {
+		await h.seedPhysical({
+			productId: "p1",
+			sku: "SKU-1",
+			priceCents: 1000,
+			title: "Widget",
+			onHand: 10,
+		});
+		await h.couponStore.create({
+			id: "cpn",
+			code: "SAVE5",
+			type: "fixed_amount",
+			amountCents: cents(500),
+			rateBps: null,
+			capCents: null,
+			currency: currency("USD"),
+			minSubtotalCents: null,
+			startsAt: null,
+			expiresAt: null,
+			maxUses: 100,
+			maxUsesPerCustomer: null,
+		});
+		// The key's winning order used NO coupon.
+		const oldCart = await h.cartWith([{ sku: "SKU-1", productId: "p1", qty: 1, kind: "physical" }]);
+		const first = await createOrderFromCart(h.createDeps, cmd(oldCart, "checkout:old"));
+		if (!first.ok) throw new Error(first.reason);
+
+		const racing = new Proxy(h.orderStore, {
+			get(target, prop) {
+				if (prop === "getByIdempotencyKey") return async () => null;
+				const value: unknown = Reflect.get(target, prop, target);
+				return typeof value === "function" ? value.bind(target) : value;
+			},
+		});
+		const newCart = await h.cartWith([{ sku: "SKU-1", productId: "p1", qty: 1, kind: "physical" }]);
+		const res = await createOrderFromCart(
+			{ ...h.createDeps, orderStore: racing },
+			{ ...cmd(newCart, "checkout:old"), couponCode: "SAVE5" },
+		);
+
+		expect(res).toEqual({ ok: false, reason: "IDEMPOTENCY_KEY_REUSED" });
+		expect((await h.couponStore.findById("cpn"))?.usesCount).toBe(0);
 	});
 
 	test("anti-N+1: an N-line cart reads product snapshots via ONE getManyByProductId, never per-line getByProductId", async () => {
@@ -400,7 +535,7 @@ describe("createOrderFromCart", () => {
 			line1: "12 Analytical Way",
 			line2: "Unit 4",
 			city: "London",
-			region: "Greater London",
+			region: "LND",
 			postalCode: "EC1A 1BB",
 			country: "GB",
 			email: "ada@example.com",
@@ -410,13 +545,14 @@ describe("createOrderFromCart", () => {
 		expect((await h.orderStore.getById(res.order.id))?.shippingAddress?.name).toBe("Ada Lovelace");
 	});
 
-	test("an order created without a shipping address has shippingAddress null (capture is optional this slice)", async () => {
+	test("an order created without a shipping address has shippingAddress null (a store with no zones)", async () => {
 		const cartId = await seededCart();
 		const res = await createOrderFromCart(h.createDeps, cmd(cartId));
 		expect(res.ok).toBe(true);
 		if (!res.ok) return;
-		// A PHYSICAL order with no address is still accepted — the required-for-physical
-		// enforcement is deferred until the storefront UI collects it (ADR-0009).
+		// A PHYSICAL order with no address is accepted in a store with NO zones:
+		// nothing prices by it (ADR-0021 Decision 4). With zones it is refused
+		// MISSING_SHIPPING_ADDRESS — see create-order-zone-derivation.test.ts.
 		expect(res.order.shippingAddress).toBeNull();
 	});
 
@@ -442,6 +578,22 @@ describe("createOrderFromCart", () => {
 		expect(res.ok).toBe(false);
 		if (res.ok) return;
 		expect(res.reason).toBe("INVALID_SHIPPING_ADDRESS");
+	});
+
+	// A signed-in checkout names its owner, and the ORDER carries it — not only the
+	// coupon's per-customer count — so the order is in the shopper's list at once.
+	test("a checkout carrying a customerId mints an order that customer owns; without one it is a guest order", async () => {
+		const cartId = await seededCart();
+		const owner = brandCustomerId("cust-owner");
+		const res = await createOrderFromCart(h.createDeps, { ...cmd(cartId), customerId: owner });
+		expect(res.ok).toBe(true);
+		if (!res.ok) return;
+		expect(res.order.customerId).toBe(owner);
+		expect((await h.orderStore.listForCustomer(owner)).map((o) => o.id)).toEqual([res.order.id]);
+
+		const guestCart = await seededCart();
+		const guest = await createOrderFromCart(h.createDeps, cmd(guestCart, "k-guest"));
+		expect(guest.ok && guest.order.customerId).toBeNull();
 	});
 
 	test("the order ship-to is frozen: editing the profile address book afterward never rewrites it", async () => {
@@ -499,5 +651,106 @@ describe("createOrderFromCart", () => {
 		expect(replay.order.id).toBe(first.order.id);
 		expect(replay.order.shippingAddress).toEqual(first.order.shippingAddress);
 		expect(replay.order.shippingAddress?.name).toBe("Ada Lovelace");
+	});
+});
+
+/**
+ * The publish gate is a CHECKOUT rule, not only a listing one. A product the
+ * merchant unpublished (`active=false`) or deleted (`deletedAt` set, which also
+ * closes the gate) must not be sold — including from a cart that already held it
+ * before the lifecycle event landed. The refusal is the existing
+ * `PRODUCT_NOT_PRICED` token ("this line cannot be ordered"), raised BEFORE any
+ * order row, coupon redemption or adoption, so the line's hold is left exactly
+ * as it was: still `held`, releasable by the shopper's remove or the TTL sweep.
+ */
+describe("createOrderFromCart sells only live products (publish gate + tombstone)", () => {
+	let h: OrderHarness;
+	beforeEach(() => {
+		h = makeOrderHarness();
+	});
+
+	async function heldCart(): Promise<{ cartId: string; reservationId: string }> {
+		await h.seedPhysical({
+			productId: "p1",
+			sku: "SKU-1",
+			priceCents: 1400,
+			title: "Widget",
+			onHand: 5,
+		});
+		const cartId = await h.cartWith([{ sku: "SKU-1", productId: "p1", qty: 1, kind: "physical" }]);
+		const reservationId = (await h.cartStore.get(cartId))!.lines[0]!.reservationId!;
+		return { cartId, reservationId };
+	}
+
+	async function expectRefusedAndUntouched(cartId: string, reservationId: string): Promise<void> {
+		const res = await createOrderFromCart(h.createDeps, cmd(cartId));
+		expect(res).toEqual({ ok: false, reason: "PRODUCT_NOT_PRICED" });
+		// Nothing minted, nothing adopted, the cart still the shopper's to edit.
+		expect(await h.orderStore.getByIdempotencyKey(idempotencyKey("k-order"))).toBeNull();
+		expect(h.inventory.reservationState(reservationId)).toBe("held");
+		expect(h.inventory.onHand("SKU-1")).toBe(4);
+		const cart = (await h.cartStore.get(cartId))!;
+		expect(cart.state).toBe("active");
+		expect(cart.orderId).toBeNull();
+	}
+
+	test("a live, published, priced product still checks out (the gate is not over-eager)", async () => {
+		const { cartId } = await heldCart();
+		const res = await createOrderFromCart(h.createDeps, cmd(cartId));
+		expect(res.ok).toBe(true);
+	});
+
+	test("a cart line whose product was UNPUBLISHED after the add is refused PRODUCT_NOT_PRICED, leaving its hold held", async () => {
+		const { cartId, reservationId } = await heldCart();
+		await h.productCommerce.deactivate(
+			brandProductId("p1"),
+			idempotencyKey("unpublish-p1"),
+			"2026-07-09T00:00:00.000Z",
+		);
+		await expectRefusedAndUntouched(cartId, reservationId);
+	});
+
+	test("a cart line whose product was DELETED after the add is refused PRODUCT_NOT_PRICED, leaving its hold held", async () => {
+		const { cartId, reservationId } = await heldCart();
+		await h.productCommerce.softDelete(brandProductId("p1"), idempotencyKey("delete-p1"));
+		await expectRefusedAndUntouched(cartId, reservationId);
+	});
+
+	test("a priced product that was NEVER published cannot be ordered", async () => {
+		await h.productCommerce.upsert(
+			{
+				productId: brandProductId("d-draft"),
+				sku: brandSku("DIG-DRAFT"),
+				price: money(cents(900), currency("USD")),
+				title: "Draft ebook",
+				productKind: "digital",
+			},
+			idempotencyKey("seed-draft"),
+		);
+		const cartId = await h.cartWith([
+			{ sku: "DIG-DRAFT", productId: "d-draft", qty: 1, kind: "digital" },
+		]);
+		const res = await createOrderFromCart(h.createDeps, cmd(cartId));
+		expect(res).toEqual({ ok: false, reason: "PRODUCT_NOT_PRICED" });
+	});
+
+	test("republishing restores the sale: the same cart then checks out", async () => {
+		const { cartId } = await heldCart();
+		await h.productCommerce.deactivate(
+			brandProductId("p1"),
+			idempotencyKey("unpublish-p1"),
+			"2026-07-09T00:00:00.000Z",
+		);
+		expect(await createOrderFromCart(h.createDeps, cmd(cartId, "k-1"))).toEqual({
+			ok: false,
+			reason: "PRODUCT_NOT_PRICED",
+		});
+		await h.productCommerce.activate(
+			brandProductId("p1"),
+			idempotencyKey("republish-p1"),
+			"2026-07-09T01:00:00.000Z",
+		);
+		const res = await createOrderFromCart(h.createDeps, cmd(cartId, "k-2"));
+		expect(res.ok).toBe(true);
 	});
 });

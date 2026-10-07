@@ -149,7 +149,7 @@ a **gap** — build the listing, report the gap.
 ---
 
 **Precedence — against the plan.** Where this document and
-[`plans/admin-ui-density-cleanup.md`](../../plans/admin-ui-density-cleanup.md) disagree on
+[`plans/archive/admin-ui-density-cleanup.md`](../../plans/archive/admin-ui-density-cleanup.md) disagree on
 *visual structure*, this document wins. Where they disagree on *scope* (which increment ships
 what), the plan wins — **except** for the three plan items withdrawn in §0.1 A, which are
 withdrawn outright and have been struck from the plan in the same commit as this revision.
@@ -852,7 +852,10 @@ names only the verb makes the most dangerous control on the panel the quietest t
 
 | Group | Label |
 |---|---|
-| Cancel | `Cancel order — permanent, releases held stock` |
+| *(no Cancel group)* | shipped, delivered, completed, refunded or cancelled — nothing in the group could succeed, so it is not rendered |
+| Cancel (pending order) | `Cancel order — permanent, releases held stock` |
+| Cancel (paid order, money to refund) | `Cancel order — permanent, refunds the buyer` |
+| Cancel (paid order, nothing captured) | `Cancel order — permanent` |
 | Refund a partial amount | `Refund a different amount — cannot be reversed` |
 | Any delete (§12) | `Delete <thing> — permanent` |
 
@@ -940,7 +943,7 @@ gone.)*
 
 **Why Settings opens nothing, stated as a ruling.** Every group's **label** now carries its own
 current values — `Store — <name>`, `Checkout & holds — 15 min hold · low stock at 5`,
-`Service connection — token not set · service token not set` — so the screen answers "what is this
+`Payments & email — Stripe test · webhook set · email set` — so the screen answers "what is this
 set to?" with **zero** clicks rather than one group's worth (D-6's discipline, applied to a
 settings screen). An opened group answers one question and buries the other two; three labels answer
 three. Label builders: `settings-form.ts:641-674`; the reasoning is at `:480-489`. Zero open groups
@@ -1088,7 +1091,8 @@ listed it as a lifecycle badge while the third bullet above forbade it — a con
 rule, which the Orders listing then mandated (§0.2 E-m). It resolves against the badge, decisively:
 `kind` is `gateway.refundable ? "gateway" : "manual"`
 (`domain/src/orders/refund-order.ts:211`), and the gateway is resolved once from the **order's own**
-`paymentMethod` (`service/src/routes/admin.ts:742`), so within any single order's ledger the value
+`paymentMethod` (`service/src/routes/admin.ts:742` when this was written; `service/` was removed
+under ADR-0020 and the in-process client resolves it the same way), so within any single order's ledger the value
 **cannot vary** — and the per-order ledger, now a React surface, is the only table in the console that
 renders it at all. The
 whitelist entry was therefore never valid anywhere it applied. `Kind` is deleted from the refunds
@@ -1187,6 +1191,27 @@ response, or a handler that throws, replaces the entire block tree with
 - B-5's "an open group stays open across a round trip" holds **only for a failed submit that still
   returns 200**.
 
+**E-6a — a failed custom action is a REFUSAL or an UNKNOWN OUTCOME, and the scaffold decides
+which structurally.** *(Added 2026-10-02, after QA met "Action outcome unknown — the action may
+already have been applied" on a zone id with a space in it.)* Three tiers, in this order:
+
+1. **The screen refuses first.** A create/save action validates what it can (blank fields, the
+   boundary's own `isIdToken`, money/percent parses, ISO codes) and re-renders its own level with
+   the draft put back (DA-3a-i). This is the normal path and the only one that keeps typing.
+2. **A known refusal from the client is answered, not thrown.** The rules client returns a store
+   collision as the create's `{ok:false, status: 409}` (a missing parent as `404`) — both raised
+   before anything is written — and the screen's own copy names the conflict.
+3. **The scaffold's net.** A custom action that throws is caught in `list-detail.ts`. It renders
+   **"Not saved — check what you entered … Nothing was changed."** only when BOTH hold: the error
+   is a `CommerceInputError` (matched by `code === "INVALID_INPUT"`, whose contract is "refused
+   before any write"), AND no write is counted — the scaffold hands the action a watching proxy
+   of its client, and every non-read call (a read is `get|list|count|find|read|load|search|has|is`
+   followed by a capital or nothing) counts as a write from the moment it is CALLED, cleared only
+   if that same call is refused with `CommerceInputError`. A write still in flight therefore
+   counts too. "Nothing was changed" is a fact the engine checked, not a convention each action
+   must keep. Every other failure — a transport error, contention, any throw after or beside a
+   write — keeps **"Action outcome unknown"**.
+
 **E-7 — a fail-closed banner must not assert a cause it does not know.** E-6 makes the fail-closed
 path swallow *everything* — an unreachable service, a 401, a malformed response, and **a bug in the
 console's own code**. A banner reading *"Could not reach the commerce service"* is therefore false
@@ -1194,12 +1219,12 @@ whenever a console defect lands on the same path, and its cost is not cosmetic: 
 the network is down and sends whoever they page to the wrong team. A `carriedForm` digest throw is
 exactly such a defect, and it surfaces here (§0.2 E-h).
 
-So the copy names the **symptom**, lists the two things the operator can check, and then says the
-remaining possibility out loud. Normative, ≤240 — **this blockquote is the spec** and the code is
+So the copy names the **symptom**, tells the operator the one thing worth doing (retry), and then
+says the remaining possibility out loud. Normative, ≤240 — **this blockquote is the spec** and the code is
 trimmed to it:
 
-> `<Screen> could not be loaded. Check the service connection and the admin token in Settings; if
-> both look right, this is a fault in the console itself — not your data.`
+> `<Screen> could not be loaded. Retry in a moment; if it keeps failing, this is a fault in the
+> console itself — not your data.`
 
 **It deliberately does not say "nothing was changed", and that is an accepted trade, not an omission
 to fix (§0.3 item 2).** The banner is honest about **cause** and silent about **effect**: `onError` is
@@ -1210,11 +1235,13 @@ would be a false statement about money. `showLeaf` is the same call on both path
 ("Nothing was refunded" / "Refund recorded"); the fail-closed banner carries only the symptom. Do not
 add an effect claim to the blockquote above.
 
-(164 chars at `Orders`.) Title: `<Screen> are unavailable` / `<Screen> is unavailable`. The last clause
-is the load-bearing one — it is the only thing that stops a console bug from being reported as an
-outage, and it costs 62 characters. **Applies to every screen's fail-closed banner**, and to any
-`context` line standing in for a failed secondary read where the cause is equally unknown (E-3's
-"read failed" row already gets this right by naming only what failed).
+(122 chars at `Orders`. The copy named "the service connection and the admin token in Settings"
+until ADR-0020 removed the service, and both with it.) Title: `<Screen> are unavailable` / `<Screen>
+is unavailable`. The last clause is the load-bearing one — it is the only thing that stops a console
+bug from being reported as an outage. **Applies to every screen's
+fail-closed banner**, and to any `context` line standing in for a failed secondary read where the
+cause is equally unknown (E-3's "read failed" row already gets this right by naming only what
+failed).
 
 ---
 
@@ -1248,9 +1275,9 @@ watermark as a key component**. No `crypto.randomUUID()` is minted at render tim
 | Write | Key |
 |---|---|
 | Refund | `admin-refund:${orderId}:${amountCents}:${refundedSoFarCents}` — the third component is the watermark the operator *saw* |
-| Stock movement | `${productId}:${direction}:${onHandAtRender}:${qty}` |
+| Stock movement | ~~`${productId}:${direction}:${onHandAtRender}:${qty}`~~ — **superseded 2026-10-02**: a nonce minted fresh per click, re-sent only by an explicit Retry; a removal's watermark is judged in the store, a restock carries none ([ADR-0015, amended 2026-10-02](../../adr/0015-retire-duplicated-block-kit-screens.md)) |
 | Transition | `admin-transition:${orderId}:${toState}` |
-| Cancel | `admin-cancel:${orderId}` |
+| Cancel | `admin-cancel:${orderId}` — a paid order's refund and restock legs derive theirs from it in the domain: `…:refund` (then `…:refund:<n>` after a rejected attempt) and `…:restock:<lineId>` (ADR-0026) |
 | Note | `admin-note:${orderId}:${author}:${body}` |
 | Edit / save (sparse PATCH) | content hash of the submitted wire + `expectedUpdatedAt` (`deriveEditIdempotencyKey`, `products-actions.ts:307-324`) |
 
@@ -1280,7 +1307,11 @@ inventory — and all four were deleted rather than relocated when those write p
 the shipped keys are `admin-refund:${orderId}:${amountCents}:${observedSoFar}`
 (`orders-actions.ts:642`) and `${productId}:${direction}:${onHand}:${qty}`
 (`stockMovementKey`, `products-actions.ts:430-437`), both watermarked and neither random. X-28 is a
-regression gate from here. This also keeps the document self-consistent: §2 already lists nonce
+regression gate from here. **Except stock movements — [ADR-0015, amended
+2026-10-02](../../adr/0015-retire-duplicated-block-kit-screens.md):** a stock movement's key is now a
+nonce the console mints fresh per CLICK (not per render) and sends in the action payload; it is
+re-sent only by an explicit "Retry this change" after a lost answer, held in memory for ten minutes; the content key above survives only as a
+one-release fallback for a caller that sends none. This also keeps the document self-consistent: §2 already lists nonce
 fields under `form` → forbidden, and F-2 already says a key is never something a human can see, pick
 or alter — a render-time carried nonce satisfies neither half.
 
@@ -1347,7 +1378,10 @@ PATCH.** A record needing more than 6 fields *may* be split into sibling forms, 
 accordion, each with its own submit and its own `carriedForm` `block_id` (including
 `expectedUpdatedAt`) — **but only when omitting a key provably preserves it end to end.**
 
-**Verify the whole path, not just the plugin.** For products it holds and preservation is designed:
+**Verify the whole path, not just the plugin.** (Historical citations: the `service/src/…` and
+`kysely-product-commerce-store.ts` references below are to code deleted under ADR-0020; the rule
+stands, and today's path is the plugin's in-process client over `@otta-sh/store-emdash`.) For
+products it holds and preservation is designed:
 `buildEditWire` assigns conditionally only (`products-actions.ts:205-291`, with the
 `// field not in the form ⇒ preserve.` comment at `:242`), every wire field is `.optional()`
 (`service/src/schemas.ts:387-425`), the route spreads `...(body.x !== undefined ? {x} : {})`
@@ -1449,7 +1483,7 @@ evaluates against `undefined` (R-12b). Do **not** use `condition` to smuggle a h
 | Closed set, >8 options, **and the field never prefills** | `combobox` | Searchable, and it renders the label. Only safe unprefilled (R-12a). |
 | Closed set, >8 options, **prefilling** | `select` | A long dropdown beats a control that shows one value and submits another. Its values must still pass F-6c. |
 | Date | `date_input` | Yields `YYYY-MM-DD`; normalize server-side. |
-| Secret | **`text_input`, always empty**, with the contract in the **placeholder** (`blank keeps current`) | Never echo the stored value — which no variant does, so masking hides only the operator's own keystrokes. `secret_input` has **no live use** in the console after INC-09; whether a secret is *set* is a fact about the credential and belongs in the group's D-6 **label**, not in the field. A `secret_input` is not forbidden; it must earn its masking against a real shoulder-surfing threat, and echoing-the-stored-value is not one. |
+| Secret | **`secret_input`, always empty** — no `initial_value`, no `has_value` — with the status in the **label** (`— set` / `— not set`) and the contract in the **placeholder** (`leave blank to keep`) | Never echo the stored value — which no variant does. U-8 (QA 2026-10-02) brought the masking back for the keystrokes themselves: a live Stripe key is typed or pasted on this screen, and a password box keeps it off the screen for anyone nearby. `has_value` stays out: it makes the host draw a fake `••••••••` value that "reveals" to the same dots. Whether a secret is *set* is a fact about the credential; it goes in the field label and the group's D-6 **label**, never in the field's value. |
 | Free text over one line | `text_input` with `multiline: true` | |
 
 **F-6a — a `select`, `radio` or `combobox` must never render blank.** `SelectElement` has no
@@ -1484,7 +1518,7 @@ differs by control, and revisions 1–3 got this wrong:
 
 | Control | The trigger reads | Verified instances |
 |---|---|---|
-| `select` | the raw **value** (R-17a) | the coupon create form's type reads `fixed_amount` (`coupons-page.ts:731-736`); the tax rates filter's zone reads `any` (`tax-page.ts:674,688`) |
+| `select` | the raw **value** (R-17a) | the coupon create form's type reads `Fixed amount off` and the shipping method type `Flat rate` — their values ARE the words since 2026-10-02 (`COUPON_TYPE_CHOICES`, `METHOD_TYPE_CHOICES`); the tax rates filter's zone reads `any` (`tax-page.ts:674,688`) |
 | `combobox` | the option **label** (R-17b) | the Coupons picker reads `Choose a coupon…` closed, and `SUMMER25 · 20% off · 3 uses` selected (`coupons-page.ts:689-700`) |
 
 So a screenshot criterion asking for a "resolved label" is **unsatisfiable on a `select`** and must
@@ -1503,8 +1537,12 @@ shows. So sentinels are words (`any`, `none`), never `""` or `0`.
 is a `combobox` or it is not a dropdown at all: the row-action drill-in would be preferable, but
 it is unreachable on Block Kit (§14 item 2).
 
-The worst *live* instance is now the coupon type `select`, whose trigger reads `fixed_amount`. That is
-inside F-6c's tolerance — a word, readable, unambiguous — which is the whole point of the constraint.
+The worst *live* instance used to be the coupon type `select`, whose trigger read `fixed_amount` —
+inside F-6c's tolerance, but QA (2026-10-02) still read it as a raw enum, as it did the shipping
+method type's `flat_rate`. **Amended:** a closed-set `select` whose enum is not itself the word an
+operator reads takes the WORD as its option value, and the action maps it back to the enum before
+the client call (accepting the bare enum too, for a form rendered before the change). The wire,
+the store and every carrier still spell the enum.
 **Revisions 1–3 named the Orders picker's "raw UUID" here; it was never real** (§0.2 E-a), and the
 picker it referred to has since left Block Kit anyway.
 
@@ -1524,6 +1562,22 @@ the same accordion, ≤200 chars, describing only what the operator cannot infer
 paragraph is deleted, not relocated.
 
 ---
+
+### 7.x Value rules on the rules screens *(added 2026-10-02, QA)*
+
+Each rule is enforced twice — by the screen first, so the draft survives (DA-3a-i), and by the
+in-process rules client, so no caller of the surface can store the value:
+
+- **Currency (ISO-4217).** A currency an operator TYPES — a new shipping rate's, a new
+  fixed-amount coupon's — must be a member of `@otta-sh/domain`'s `CURRENCY_CODES`, not merely
+  three upper-case letters (`XYZ` used to save). Static data, not the host's ICU; a Node-only test
+  fails on drift against `Intl.supportedValuesOf("currency")`. Create paths only: a stored code
+  is never refused on read or edit.
+- **Tax rate ≤ 100%.** `rateBps` 0–10000, the port's documented range; the console used to accept
+  (and advertise) 1000%. Coupon percentages keep the wider wire bound — the pricing math clamps a
+  discount to the subtotal.
+- **Free-shipping threshold only on a `free_shipping` method.** `shippingCost` never reads it for a
+  flat rate, so a non-blank threshold on a flat-rate method's rate is refused with that reason.
 
 ## 8. Destructive actions
 
@@ -1579,8 +1633,22 @@ trip, no staleness window, no staged payload to decode.
 > because a listing somewhere still draws it.
 
 - **Cancel order** (the worked instance, now React). The reason is a closed set. One danger button per
-  reason, the reason **named in the confirm text**:
-  *"Cancel this order as 'out of stock'? This is permanent and releases the held stock."*
+  reason, the reason **named in the confirm text**, and the text states what the cancel does with the
+  MONEY and the STOCK — composed from one `CancelEffects` value (`cancelConfirmText` /
+  `cancelBannerText` / `cancelGroupLabel`) so the label, the banner and the confirm cannot describe
+  three different cancellations (QA T1-4, ADR-0026's cancel-with-refund amendment):
+  - pending: *"Cancel this order as 'out of stock'? This is permanent — the order cannot be
+    un-cancelled, and the held stock is released."*
+  - paid: *"Cancel this order as 'customer requested it'? This is permanent — $24.00 is refunded to
+    the buyer, and the items go back to stock."* A **Return the items to stock** checkbox (ticked;
+    its hint says to untick for damaged, lost, already-packed or hand-restocked goods) sits above the
+    reason buttons on a paid order with physical lines, and rides every cancel's payload as
+    `restock`. **No cancel control is offered** when Otta cannot issue the refund (the banner says to
+    send it and record a manual refund in Money → Refunds) or when the refund ledger could not be
+    loaded (the amount is unknown, never "nothing is refunded").
+  - The outcome notice names the refund, the units returned, and any line NOT returned to stock
+    (`restockSkipped`); a refused refund says nothing was changed; the shipped-first race says what
+    moved and the next step.
   **Four buttons, not five:** `other` gets no button, because a bare `Other` button records no detail
   and a label promising detail (`Other (add detail below)`) promises a field the button does not have
   and points at a group that may be collapsed. Button labels are the **bare reason** — `Out of stock`,
@@ -2138,20 +2206,37 @@ rule generalises past Orders and past the renderer** — DA-6's "derived, never 
 same rule ADR-0015 applied to the one-click cancellation reasons when a process boundary opened
 between the two halves.
 
+**The offer is the domain's `adminNextStates`, not `legalNextStates` (ADR-0026, 2026-10-02).** It is
+the state machine minus a manual `paid` — no payment method is declared offline today, so **Mark
+paid is never offered**: Otta marks an order paid only when its provider confirms the charge — and
+minus a bare `cancelled`, from any state. Both are also refused by `transitionOrderAsAdmin` when a
+hand-made payload asks for them, each with its own notice ("Only the payment provider can mark this
+order paid"; "Use Cancel order to cancel an order", keyed on the observed state: an unpaid
+order's says Cancel order returns its held stock; a paid order's says Cancel order records why,
+refunds what the buyer paid and returns the items to stock unless the box is unticked — ADR-0026's
+cancel-with-refund amendment). **Mark refunded** stays offered, as bookkeeping for
+a refund made outside Otta: it moves no money, **emails nobody**, and both its confirm and its
+success notice ("Marked refunded") say so.
+
 The UI steering stays: on a `processing` order the bare `shipped` move is withheld (use Fulfilment,
-which records tracking), and `cancelled` is always withheld (use Cancel, which records a reason) —
-`offeredTransitions`, `orders-read.ts:158-170`, which applies the `ORDER_STATE_SET` filter of item 2
-in the same function. Each withheld move gets a DA-7 line, written per DA-7a.
+which records tracking) — UI steering only, the domain still accepts it — and `cancelled` is
+withheld here too, as a second guard behind the domain's own refusal (use Cancel, which records a
+reason) — `offeredTransitions` in `orders-read.ts`, which applies the `ORDER_STATE_SET` filter of
+item 2 in the same function. Each withheld move gets a DA-7 line, written per DA-7a.
 
 **DA-7 — withheld actions: generalize the coupons pattern.** When a precondition knowably forbids
 an action, render **no control** plus one `context` line stating the reason and the alternative.
 Never a "disabled" button (R-11 — and after the foundation, a compile error).
 
-The normative copy, ≤200 chars — **this blockquote is the spec, and the code is trimmed to it.**
-The current string (`coupons-page.ts:492`) is 217 chars and says "3 time(s)":
+The normative copy, ≤200 chars — **this blockquote is the spec, and the code is trimmed to it**
+(`withheldDeleteContext` in `coupons-page.ts`, which pluralises the count — `1 time` / `3 times`):
 
 > `This coupon has been redeemed 3 times — deletion is blocked to keep the redemption audit
-> trail. To retire it, set its expiry to a past date.`
+> trail. To stop it at checkout, use Retire coupon.`
+
+*(Amended 2026-10-02: the alternative used to read "set its expiry to a past date", an
+instruction with no control of its own; the coupon detail now has a `Retire coupon` action that
+does exactly that — see §12.2.)*
 
 Applies to: coupon delete when redeemed; tax class / zone / method delete when referenced; edit and
 stock forms on a soft-deleted product; refund action when nothing remains refundable; cancel when the
@@ -2177,6 +2262,24 @@ One consequence worth knowing before you write a test: a DA-7 line quotes the co
 *starts with* the label, or resolve by `block_id` (§15 V-1).
 
 ---
+
+### 8.1 What an admin write says about the buyer's email (QA T1-6, ADR-0026)
+
+Every Orders write that enqueues a buyer email — a status move, a fulfilment, a cancel, a refund —
+sends it **inline** before it answers (`sendOrderEmailsNow`, budgeted from the write's start;
+ADR-0005's second 2026-10-02 amendment), so the email goes with the click and in click order rather
+than on the cron's next 15-minute tick. The write's result carries `email`, and the notice follows
+it — **never a blanket "the buyer has been emailed"**:
+
+| `email` | Sentence in the notice |
+|---|---|
+| `sent` — the row this write enqueued was delivered | *The buyer has been emailed.* (fulfilment: *…emailed their tracking.*) |
+| `queued` — the provider failed or was slow; the cron retries it | *The buyer's email is queued and will be retried automatically.* |
+| `unconfigured` — no email provider in this bundle | *No email was sent — this store has no email provider set up.* |
+| absent — the write enqueued none (a replay; Mark refunded) | nothing about email; Mark refunded says *No money moved and the buyer was not emailed.* |
+
+A status move therefore answers with a notice (`Order marked <state>` + the sentence) where it used
+to answer `null`. The inline send is best-effort and bounded and can never fail the write.
 
 ## 9. Money, dates, IDs
 
@@ -2662,6 +2765,25 @@ tab         block_id coupons:<id>:tabs   default_tab 0   panels ALWAYS 2
 │                  ── every editable field on `coupons-page.ts:1096-1175` has a home here:
 │                     amount, ratePercent, cap, minSubtotal, startsAt, expiresAt, maxUses,
 │                     maxUsesPerCustomer. None is orphaned. ──
+│  actions    (cond status ≠ expired) block_id coupons:retire-action
+│             [ "Retire coupon" style danger  value {couponId, code}
+│                 confirm{ title "Retire SUMMER25?", text "Checkout stops accepting this
+│                   code now, even for a shopper mid-checkout. Placed orders keep their
+│                   discount; a later expiry in Edit reopens it.",
+│                   confirm "Yes, retire", deny "Keep it" } ]
+│             ← RETIRE = expiresAt := now on the STORES' clock (`retireCoupon` on the rules
+│               surface; a future startsAt is dropped; instants compared parsed, never as
+│               strings). The domain's own window, so no `retired` state exists on the
+│               port; works on a REDEEMED coupon, which delete cannot touch. A shopper who
+│               already applied the code is refused on the next quote with the ordinary
+│               COUPON_NOT_ACTIVE ("isn't active right now — it may have expired").
+│               The success notice names the replaced window, so reopening is a copy job.
+│               Re-reads before its LWW full-replace write; an edit landing in the
+│               read-to-write gap is lost (documented on `CouponStore.update`, pinned by
+│               `coupon-retire.test.ts`).
+│             ← FOLLOW-UP: reporting cannot tell a RETIRED coupon from one that expired on
+│               schedule — both are just a past `expiresAt`. A `retiredAt` stamp would be
+│               the port change that buys it.                    ← ADDED (QA 2026-10-02)
 │
 └─ panel "Redemptions"
      fields     block_id coupons:uses     Redemptions | Max uses ·
@@ -2803,6 +2925,14 @@ header      "Shipping zones"
 context     "A zone groups the shipping methods you offer for a set of destinations." (≤140)
 actions     [ button "New shipping zone" style primary → the create SCREEN ]       (L-8)
 banner      (cond) notice        ── no filter (0 fields) ──
+banner      (cond ≥1 zone) block_id ship:coverage, alert — "Checkout only ships to addresses
+            your zones list" + the covered codes (ADR-0021 §4). Steps down to a `context`
+            line when the notice and the region warnings already fill X-31's two banners.
+            The FIRST zone's create screen adds banner ship:first-zone and a required
+            toggle `ackFirstZone` (a form submit has no `confirm`). Deleting the LAST zone
+            says, in its confirm, that checkout ships anywhere again. Both are CONSOLE
+            guards: the rules client and stores accept the write unprompted.
+                                                                   ← ADDED (QA 2026-10-02)
 accordion   block_id "ship:zone:u1.<b64 {zoneId}>"
             label "us — United States"     ← NOT "· 3 methods": ShippingZoneWire is
                                              {id,name,regions}; the count would cost up to
@@ -3017,14 +3147,18 @@ the accordion labels above (P-2); the legacy `{variant, text}` banner at `:81-84
 
 ### 12.6 Settings (`settings-form.ts`) — §4.1 skeleton
 
-Four bare forms become three accordions. `Service connection` holds **two** forms with two
-submits — that is deliberate, because the two tokens are set independently and a combined form
-would make saving one require re-entering the other.
+Three accordions. The fourth group this section once specified, `Service connection` (the
+`X-Internal-Token` / `X-Service-Token` forms), was **retired** in work order 02 INC-D3a with the
+service it authenticated to (ADR-0020); its write-only-field discipline (INC-09, below) carries over
+unchanged to `Payments & email`, which holds **one form per credential** for the same reason the
+two tokens had two: each is set independently, and a combined form would make saving one require
+re-entering the others. The tree below matches `settings-form.ts` as built, copy included (U-8 replaced the build's
+wording — "service", "write-only", "CAIP-2", "TTL" — with the operator's).
 
 ```
 header      "Settings"
-context     "Display name is cosmetic; the rest is operational and lives in the service."
-                                                                                  (≤140)
+context     "Your store's name, how checkout holds stock, and the payment and email accounts
+             the store uses."                                                     (≤140)
 banner      (cond) notice, or the fail-closed error banner (variant "error")
 ── ALL THREE GROUPS RENDER `default_open: false` (INC-15). ZERO open groups is legal:
    S-3 caps at one per response and sets no floor. Each LABEL carries its own current
@@ -3037,41 +3171,77 @@ accordion   block_id settings:store
                      submit "Save display name"          → save-display
 accordion   block_id settings:checkout
             label "Checkout & holds — 15 min hold · low stock at 5"
-                  |  "Checkout & holds — not loaded"   ← when the secondary GET failed:
+                  |  "Checkout & holds — not loaded"   ← when the secondary read failed:
                      the label says so rather than implying a zero (E-3, D-6b)
             default_open FALSE
-            └─ context "These persist in the commerce service and affect live checkout."
-                                                                                  (≤200)
+            └─ context "These apply to live checkout as soon as you save them."   (≤200)
                form  cf{"settings:ops", {holdTtl, lowStock}}                     ← S-4
-                     text_input  "Cart hold TTL (minutes)"   initial_value "15"
-                     text_input  "Low-stock threshold"        initial_value "5"
-                     ← both were `number_input`; F-6 routes non-money integers through
-                       text_input with one `/^\d+$/` parse. They are NOT money, so
-                       `number_input` was not a violation — this is consistency, not a fix.
-                     submit "Save operational settings"       → save-operational
-accordion   block_id settings:connection
-            label "Service connection — token set · service token not set"
-            ← the PROVISIONING question this group exists to answer. "token set" is a fact
-              ABOUT the credential, never any part of it: only booleans reach the label
+                     text_input  "Cart hold time (minutes)"   initial_value "15"
+                     text_input  "Low-stock threshold"         initial_value "5"
+                     ← F-6: one `/^\d+$/` parse. U-8: ALL-OR-NOTHING — a present value
+                       that is blank, signed, fractional, non-numeric or out of range
+                       (1–10080 minutes; 0–2147483647) is refused by field name and
+                       nothing is saved; the form keeps what was typed (J6), the label
+                       keeps what is stored. "Settings saved" states the new values.
+                     submit "Save checkout settings"          → save-operational
+accordion   block_id settings:payments
+            label "Payments & email — <Stripe> · <webhook> · <email>"
+            ← U-8: states what card checkout and email have: "Stripe test" | "Stripe
+              live" (from the key's prefix) | "Stripe key set" (an unchecked legacy
+              value) | "no Stripe key"; "webhook set" | "no webhook"; "email set" |
+              "no email". The optional x402 and edge keys state their status on their
+              own fields. Longest render is exactly 60 (X-11).
             default_open FALSE
-            └─ context "Both tokens are stored write-only — a blank submit keeps the current
-                        one. Neither is ever displayed."                          (≤200)
-               form  cf{"settings:admin-token", {gen:"<save generation>"}}       ← AMENDED
-                     text_input "Admin token (X-Internal-Token)"
-                     placeholder "Enter new admin token (blank keeps current)"
-                     ← PLAIN `text_input`, always empty. NO `secret_input`, NO `has_value`,
-                       NO `initial_value`                              ← AMENDED (INC-09)
-                     submit "Save admin token"                → save-token
-               form  cf{"settings:service-token", {gen:"<save generation>"}}
-                     text_input "Service token (X-Service-Token)"
-                     placeholder "Enter new service token (blank keeps current)"
-                     submit "Save service token"              → save-service-token
-               context (cond) "Admin token saved." / "Service token saved."
-                       ← never the value (F-6)
+            └─ context "Keys are never shown once saved. Leave a field blank to keep the
+                        key you saved before."                                    (≤200)
+               per credential: context (the expected shape, e.g. "Starts with sk_live_ or
+                     sk_test_ …"), then its form:
+               form × 5, one per credential, each cf{"settings:<actionId>",
+                     {gen:"<save generation>"}}                          ← AMENDED (INC-09)
+                     secret_input "Stripe secret key — set|not set"
+                                                         → save-stripe-secret-key
+                     secret_input "Stripe webhook signing secret — …"
+                                                         → save-stripe-webhook-secret
+                     secret_input "Email provider API key — …"  → save-email-api-key
+                     secret_input "x402 facilitator API key — …"
+                                                         → save-x402-facilitator-secret
+                     secret_input "Stripe webhook edge token (optional) — …"
+                                                         → save-webhook-edge-token
+                     placeholder  set: "Set — leave blank to keep it, or enter a new one"
+                                  not set: the shape to paste ("sk_live_… or sk_test_…")
+                     ← U-8: always empty, NO `has_value`, NO `initial_value`. Saved TRIMMED,
+                       after a shape check (sk_/rk_ live|test, whsec_, re_ when the email
+                       endpoint is Resend, else one line with no spaces); a wrong shape is
+                       refused naming the field, never echoing the value.
+               actions (only under a SET key)
+                     button "Remove <noun>" danger, confirm states what stops working
+                                                         → clear-payment-secret {secret}
+                     ← a removal notice names where to find the key again; a Remove on
+                       a key not stored answers "No <key> was stored — nothing was removed."
+               context "The settings below are shown as saved. x402 payments are not
+                        available yet. These settings are kept for when they are."
+               banner alert (cond) a stored http sign-in page saved before the https
+                     rule: "The links in sign-in emails point to an http page, so their
+                     tokens travel unencrypted when clicked — change this address to https. …"
+               context × n (cond, on a refused save) each broken rule in full; the banner
+                     names every field, and the form keeps what was typed (J6) — a
+                     sign-in URL without any user:pw@ part
+               form  cf{"settings:save-payment-settings", {…}}   ← prefilled from kv
+                     text_input "Order email from-address"
+                                        placeholder "Your Shop <orders@yourdomain.com>"
+                     text_input "Sign-in page address (your storefront's /account/verify page)"
+                                        placeholder "https://shop.example/account/verify"
+                                        ← U-8: https://, or http:// on localhost only
+                     text_input "x402 destination wallet"
+                     text_input "x402 networks, comma-separated"
+                     submit "Save payment settings"          → save-payment-settings
 ```
 
 **Why the masked variant went, and why the carrier had to grow a `gen` (INC-09).** Both are one
-change and neither works without the other.
+change and neither works without the other. *(U-8, 2026-10-02, amends the first bullet: the
+fields are `secret_input` again — without `has_value`, which was the source of the confusion —
+because a live key typed on screen is the shoulder-surfing case the field table asks for. The
+`gen` remount below is unchanged and still needed: a `secret_input` is mount-only too.)*
 
 - **`secret_input` bought nothing here and cost clarity.** The field is *always* empty — the stored
   token is never echoed under any variant — so masking dots an operator's own keystrokes while
@@ -3166,7 +3336,7 @@ catch, exactly as every non-**H** row is — named, not silently dropped.
 | X-25 | H | A `meter` whose `value`/`max` are minor units and which has no `custom_value`. | M-8 |
 | X-26 | H | `banner.variant` outside `default` \| `alert` \| `error`, or a banner with a `text` field. | M-9, §2 |
 | X-27 | H | A `table` with no `page_action_id`, or with `next_cursor` inside a leaf detail. | T-6, T-8 |
-| X-28 | H | An idempotency key or nonce anywhere in a form field, a carrier payload, or a `button.value`. | F-2a |
+| X-28 | H | An idempotency key or nonce anywhere in a form field, a carrier payload, or a `button.value`. **Except stock movements** — a per-click nonce in the action payload (ADR-0015 amended 2026-10-02). | F-2a |
 | X-29 | H | A DA-3 state-2 accordion that changes its `block_id` without `default_open: true`, or sets the flag without changing the id. | B-6 |
 | X-30 | | A prefilling `combobox`; or a `combobox` used for a closed set of ≤8 **whose values are already readable words** — a **record picker is a `combobox` at any count** and is never an X-30 (L-7). | F-6, R-12a, R-17b |
 | X-31 | H | More than 2 `banner`s at the top level of a screen (banners inside an accordion are not counted). | §2 |
@@ -3388,7 +3558,7 @@ row you are claiming. And do not claim one verified because it "reads right".
 
 The order the programme was actually run in. It was **not** a suggestion; step 2 was a gate. (The
 plan's increment numbers map on as 3 · 3a · 5 · 5-last — see
-[`plans/admin-ui-density-cleanup.md`](../../plans/admin-ui-density-cleanup.md), whose own screen
+[`plans/archive/admin-ui-density-cleanup.md`](../../plans/archive/admin-ui-density-cleanup.md), whose own screen
 counts predate ADR-0015 and were not updated with it.)
 
 | Step | What | Concurrency |
@@ -3438,9 +3608,9 @@ fails loudly:
   a hand-written ternary returning `paid`'s row for every state it did not special-case
   (`test/orders-page.sandbox.test.ts:378-383`, as it stood before that suite was retired), so it offered
   `processing` **from** `shipped` — which the domain forbids outright — and omitted the legal
-  `delivered`. The real service returns `[...legalNextStates(state)]` with no narrowing whatsoever
-  (`service/src/routes/admin.ts`), so the fixture must be `ORDER_STATE_MACHINE[order.state]` imported
-  from `domain/src/orders/state-machine.ts`. That fidelity is load-bearing, not tidiness: a
+  `delivered`. The real service returned `[...legalNextStates(state)]` with no narrowing whatsoever
+  (`service/src/routes/admin.ts`, since removed under ADR-0020), so the fixture must be
+  `ORDER_STATE_MACHINE[order.state]` imported from `domain/src/orders/state-machine.ts`. That fidelity is load-bearing, not tidiness: a
   `processing` order's legal targets *include* the bare `shipped` the plugin must steer away from
   (DA-6), and a `shipped` order's *include* `refunded` — a **terminal** state (`refunded: []`) — which
   is the whole reason a transition carries a watermark (DA-2a). Neither assertion is expressible

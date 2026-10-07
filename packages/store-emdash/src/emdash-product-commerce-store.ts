@@ -44,6 +44,7 @@
  */
 import {
 	InvalidLowStockThresholdError,
+	InvalidProductFieldError,
 	isValidLowStockThreshold,
 	MissingProductIdError,
 	MissingVariantKeyError,
@@ -415,7 +416,14 @@ export class EmdashProductCommerceStore implements ProductCommerceStore {
 			if (doc.lifecycle !== "live") continue;
 			const { sku, price } = doc;
 			if (sku === null || price === null) continue;
-			sellable.push({ productId: doc.productId, sku, price, active: doc.active });
+			sellable.push({
+				productId: doc.productId,
+				sku,
+				price,
+				title: doc.title,
+				compareAtPrice: doc.compareAtPrice,
+				active: doc.active,
+			});
 		}
 		const stock = this.#stockReader();
 		return Promise.all(
@@ -724,6 +732,8 @@ export class EmdashProductCommerceStore implements ProductCommerceStore {
 				widthMm: input.widthMm ?? null,
 				heightMm: input.heightMm ?? null,
 				productKind: input.productKind ?? "physical",
+				// Edit-only, like compare-at: the sync input has no download file.
+				downloadAsset: null,
 				active: false,
 				publishKey: "inactive",
 				deletedAt: null,
@@ -754,6 +764,9 @@ export class EmdashProductCommerceStore implements ProductCommerceStore {
 	 * The optimistic compare-and-set edit, with the port's zero-row classifier in
 	 * the order it pins: not_found → same-key replay `ok` → `stale` → the three
 	 * currency mismatches → apply.
+	 *
+	 * The download-file refusal (no file on a physical product) sits between the
+	 * currency guards and the apply, as the port's step 5, and throws.
 	 *
 	 * The `expectedUpdatedAt` comparison is the port's guard and stays exactly
 	 * that: raw ISO text, lexical = chronological. The document's own revision is a
@@ -823,7 +836,20 @@ export class EmdashProductCommerceStore implements ProductCommerceStore {
 				});
 			}
 
-			// 5. Apply.
+			// 5. No download file on a physical product (issue #376), judged on the row
+			//    as it WOULD be after this edit, and before any sku claim is taken so a
+			//    refusal leaves nothing to undo.
+			const nextKind = input.productKind ?? doc.productKind;
+			const nextAsset =
+				input.downloadAsset !== undefined ? input.downloadAsset : (doc.downloadAsset ?? null);
+			if (nextKind === "physical" && nextAsset !== null) {
+				throw new InvalidProductFieldError(
+					"downloadAsset",
+					"a physical product cannot carry a download file",
+				);
+			}
+
+			// 6. Apply.
 			const owed = await this.#settleRecorded(doc.pendingRenames, ref, clearStamp);
 			EmdashProductCommerceStore.#refuseWhileOwed(owed, doc.sku, input.sku);
 			const prepared = await this.#prepareSku(ledger, ref, doc.sku, input.sku, key);
@@ -845,7 +871,8 @@ export class EmdashProductCommerceStore implements ProductCommerceStore {
 				lengthMm: input.lengthMm !== undefined ? input.lengthMm : doc.lengthMm,
 				widthMm: input.widthMm !== undefined ? input.widthMm : doc.widthMm,
 				heightMm: input.heightMm !== undefined ? input.heightMm : doc.heightMm,
-				productKind: input.productKind ?? doc.productKind,
+				productKind: nextKind,
+				downloadAsset: nextAsset,
 				idempotencyKey: key,
 				updatedAt: this.#clock.now().toISOString(),
 			};

@@ -1,0 +1,50 @@
+---
+/**
+ * Tempered's verify step — where the emailed magic link lands (issue #306).
+ *
+ * THIS PAGE REDEEMS NOTHING: it renders one button that POSTs the challenge and
+ * token to `/account/verify/confirm`, because mail scanners pre-fetch links and
+ * a redeeming GET would spend the single-use token. The two values are printed
+ * ONLY into the two hidden inputs that form needs. The referrer policy
+ * (`same-origin`, deliberately not `no-referrer`) is the page's, in <head>.
+ *
+ * Styles: `commerce.css` (`account-verify-*`).
+ */
+import Notice from "../../components/Notice.astro";
+import type { AccountVerifyModel } from "../contract.js";
+
+interface Props {
+	model: AccountVerifyModel;
+}
+
+const { usable, challenge, token, invalidMessage } = Astro.props.model;
+---
+
+<h1 class="account-verify-title">Sign in or create an account</h1>
+
+{
+	usable ? (
+		<form method="POST" action="/account/verify/confirm" class="account-verify-form">
+			<input type="hidden" name="challenge" value={challenge} />
+			<input type="hidden" name="token" value={token} />
+			<p class="account-verify-lede">
+				Continue to finish signing in. A new address gets its account here. The link works once.
+			</p>
+			<div>
+				<button type="submit" class="u-btn">
+					Continue signing in
+				</button>
+			</div>
+		</form>
+	) : (
+		<>
+			<div class="account-verify-notice-slot" role="alert">
+				<Notice>{invalidMessage}</Notice>
+			</div>
+			<p class="account-verify-back">
+				<a href="/account/login">Request a new sign-in link</a>
+			</p>
+		</>
+	)
+}
+

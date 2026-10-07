@@ -21,13 +21,20 @@
  * single-option select — a rendering concern, and it retires with the renderer.
  * The console sends one flat payload and each action reads the keys it needs.
  *
- * THE STALE-WATERMARK REFUSAL IS CARRIED VERBATIM (ADR-0015 Decision 3). A
- * reworded check is a failed port, not a port. **DA-3a:** the `onHand` the
- * operator SAW is re-read against live truth before any stock moves and the
- * write REFUSES on a mismatch — including the case where the re-read comes back
- * with NO inventory record at all, which gets its own sentence rather than being
- * reported as a count nobody took. An ABSENT or unparseable watermark refuses
- * fail-closed, with no re-read: see {@link parseOnHand}. The EDIT path carries
+ * THE STALE-WATERMARK REFUSAL (DA-3a) GUARDS THE REMOVAL, AND MOVED INTO THE
+ * STORE. The `onHand` the operator SAW travels with a removal as the domain's
+ * `expectedOnHand`, and the inventory store refuses a mismatch inside the same
+ * compare-and-set as the decrement — including the case where there is NO
+ * inventory record at all, which gets its own sentence rather than being
+ * reported as a count nobody took. It used to be a re-read HERE, before the
+ * write; a re-read before the write runs before the idempotency ledger, so a
+ * retry of a removal that already landed re-read the count that removal produced
+ * and was told "stock changed". `onHand` is the AVAILABLE count, so checkout
+ * traffic can make a removal stale too — accepted, and said so in the copy. A
+ * RESTOCK is not pinned (an add is commutative; pinning it would refuse an
+ * honest add through every sale), as before. An ABSENT or unparseable watermark
+ * still refuses fail-closed for both, before anything is sent: see
+ * {@link parseOnHand}. The EDIT path carries
  * its own watermark, `expectedUpdatedAt`, guarded on the SAME terms — absent or
  * blank refuses here, before anything is sent — and re-checked by the service's
  * optimistic concurrency behind it. Both watermarks are guarded at THIS tier,
@@ -42,12 +49,29 @@
  * A blank compare-at or unit cost is an explicit CLEAR (`null`), never a zero,
  * and a blank price is omitted from the wire rather than sent as one.
  *
- * NO NONCE, ANYWHERE (F-2a). A stock movement's idempotency key is
- * `${productId}:${direction}:${onHandAtRender}:${qty}` — content plus the
- * watermark the operator saw — and an edit's is a content hash of the submitted
- * wire plus `expectedUpdatedAt`. That is what lets a double-submit of the same
- * rendered form dedupe while two deliberate movements, taken against two
- * different observed counts, both apply.
+ * A STOCK MOVEMENT'S KEY IS PER-INTENT: A NONCE THE CONSOLE MINTS PER CLICK
+ * (superseding F-2a's "no nonce" for movements; an edit's key is still a content
+ * hash of the submitted wire plus `expectedUpdatedAt`, which is sound there
+ * because a save is idempotent by content). F-2a keyed a movement on
+ * `${productId}:${direction}:${onHandAtRender}:${qty}` so a double-submit of one
+ * rendered form would dedupe with no client state — but a movement is NOT
+ * idempotent by content: Add 2 at 7, Remove 2, Add 2 at 7 is three decisions,
+ * and the third derived the first's key and was dropped while the card said it
+ * was done. Two tabs that saw the same count and added the same amount collided
+ * the same way. Only the caller knows which submits are the same decision, so it
+ * says so: every click mints a fresh nonce, and the only re-send is the
+ * console's explicit "Retry this change" after a lost answer, which the ledger
+ * answers once. A click is never taken for a retry because it looks like one —
+ * that would drop a genuine repeat move. When the ledger does answer, the store
+ * says so (`replayed`), and this module reports "already applied", never a
+ * fresh movement: see {@link replayedNotice}.
+ *
+ * A CALLER WITHOUT A NONCE (a tab rendered by the previous release) keeps the
+ * F-2a key for one release, so its double-submit still dedupes, and is made
+ * HONEST rather than correct: a removal's watermark refuses a stale count, and
+ * an answer the store marks as a ledger replay is reported as "this submit
+ * changed nothing", never as done. See {@link replayedNotice}. Remove the
+ * fallback, and make the nonce mandatory, in the release after this one.
  *
  * EVERY FIELD ARRIVING HERE IS UNTRUSTED operator-round-tripped input, exactly
  * as a decoded carrier was: closed sets are re-checked, watermarks are
@@ -70,6 +94,8 @@
  */
 import {
 	ADD_STOCK_INVALID_QTY,
+	DIGITAL_WITH_FILE_REASON,
+	DIGITAL_WITH_FILE_TITLE,
 	NO_TAX_CLASS,
 	PRODUCT_DELETED_SINCE_LOADED,
 	PRODUCT_NOT_FOUND_TITLE,
@@ -95,6 +121,24 @@ const PRODUCTS_ACTIONS = screenActions("products");
 const ACTION_SAVE_IDENTITY = PRODUCTS_ACTIONS.custom("save-identity");
 const ACTION_SAVE_PRICE = PRODUCTS_ACTIONS.custom("save-price");
 const ACTION_SAVE_SHIPPING = PRODUCTS_ACTIONS.custom("save-shipping");
+/** The product editor's Pricing & stock cards (ADR-0014, amendment
+ *  2026-10-01) has ONE Save, so it sends every field it owns in one write —
+ *  the same sparse save, the same watermark, the same idempotency key. */
+const ACTION_SAVE = PRODUCTS_ACTIONS.custom("save");
+/** The product editor's Download file card (issue #376, increment 4): after the
+ *  site's upload endpoint has put the bytes in the private bucket and answered a
+ *  descriptor, the card saves that descriptor here — the console's one data path
+ *  for every product write (ADR-0014 Decision 3, amended by ADR-0029 for the
+ *  upload alone). */
+const ACTION_ATTACH_DOWNLOAD = PRODUCTS_ACTIONS.custom("attach-download");
+/** The attach write's action id, exported so the site that holds the
+ *  `DOWNLOADS` bucket can recognise the one write that names a key and check the
+ *  object exists before it is dispatched here (issue #405) — never a copied
+ *  literal that would silently stop matching. */
+export const ATTACH_DOWNLOAD_ACTION_ID: string = ACTION_ATTACH_DOWNLOAD;
+/** The title of every refusal of a download file's save — this action's own and
+ *  the site's bucket check's, so the card reads them as one. */
+export const DOWNLOAD_NOT_ATTACHED_TITLE = "This file wasn't attached";
 /** Restock stays DA-4: one-shot, no staging, no confirm. */
 const ACTION_RESTOCK = PRODUCTS_ACTIONS.custom("restock");
 /** The screen's ONE destructive act (DA-5's second exception: a removal is
@@ -130,6 +174,21 @@ export interface ProductsActionResult {
 	 * screen, exactly as every outcome did before.
 	 */
 	readonly field?: "sku";
+	/**
+	 * THE RECORD MOVED UNDER THE WRITE — someone else saved first. Present only
+	 * on that refusal, so a surface can show the latest values (as the notice
+	 * promises) without matching on the sentence; every other refusal declined a
+	 * value and the merchant's typing should stay.
+	 */
+	readonly recordMoved?: true;
+	/**
+	 * THIS STOCK MOVE WAS ANSWERED FROM THE IDEMPOTENCY LEDGER — an earlier call
+	 * with the same key moved the units and this one moved nothing. Present only
+	 * then, so a surface that composes its own receipt (the Pricing & stock
+	 * cards) never reports a replay as a fresh "Added N" — and never has to match
+	 * on the notice's sentence to tell. The notice still says it in words.
+	 */
+	readonly replayed?: true;
 }
 
 /** A write's payload: the flat string record the caller carried. Untrusted,
@@ -385,6 +444,108 @@ const saveAction: ProductsAction = async (client, payload) => {
 	return editOutcome(result);
 };
 
+// -- attaching an uploaded download file (issue #376, increment 4) ------------
+
+/** A byte count as the card sends it: a plain non-negative whole-number string.
+ *  Anything else is an unreadable payload — never coerced. */
+const BYTE_COUNT = /^(0|[1-9][0-9]{0,15})$/;
+
+/**
+ * Save the descriptor of a file the site's upload endpoint just stored.
+ *
+ * The four descriptor fields arrive flat, as every console write's do, exactly
+ * as the endpoint answered them: the key it minted, the filename and type it
+ * coerced, the byte count it stored. This action RE-CHECKS nothing about their
+ * values itself — the domain's `validateDownloadAsset` does, on the write, and
+ * a refusal names the sub-field — but refuses a payload it cannot read (no
+ * watermark, a missing field, a size that is not a whole number) before
+ * anything is sent, on the same terms as {@link saveAction}.
+ *
+ * THE EDIT IS SPARSE: only `downloadAsset` is on the wire, so the price, sku and
+ * the rest are preserved, and the store refuses a file on a physical product
+ * inside the same compare-and-set. The key is content-derived (the product, the
+ * watermark, the descriptor), so the SAME payload sent twice — a double click,
+ * a transport retry — writes once, while a different file on the same watermark
+ * is a stale refusal. A retry the card makes after a lost answer carries a
+ * FRESH watermark, so the key alone cannot dedupe it: the card's re-read does
+ * (it finds its own key already attached and writes nothing).
+ *
+ * WHETHER THE OBJECT EXISTS IS NOT CHECKED HERE: the plugin cannot reach R2.
+ * The site holding the `DOWNLOADS` binding checks it before this write is
+ * dispatched (ADR-0029's 2026-10-06 amendment; the reference site's
+ * `download-attach-guard.ts`, which matches {@link ATTACH_DOWNLOAD_ACTION_ID}),
+ * so a key with nothing behind it never reaches this action there. A site that
+ * hosts this plugin without that check keeps the gap.
+ */
+const attachDownloadAction: ProductsAction = async (client, payload) => {
+	const productId = readString(payload["productId"]);
+	const expectedUpdatedAt = readString(payload["expectedUpdatedAt"]);
+	const key = readString(payload["key"]);
+	const filename = readString(payload["filename"]);
+	const contentType = readString(payload["contentType"]);
+	const size = readString(payload["size"]);
+	if (
+		productId === undefined ||
+		expectedUpdatedAt === undefined ||
+		expectedUpdatedAt.trim().length === 0 ||
+		key === undefined ||
+		key.length === 0 ||
+		filename === undefined ||
+		contentType === undefined ||
+		size === undefined ||
+		!BYTE_COUNT.test(size)
+	) {
+		return applied(UNREADABLE);
+	}
+	const bytes = Number(size);
+	if (!Number.isSafeInteger(bytes)) return applied(UNREADABLE);
+	const wire: ProductEditWire = {
+		expectedUpdatedAt,
+		downloadAsset: { key, filename, contentType, size: bytes },
+	};
+	const canonical = JSON.stringify([
+		productId,
+		expectedUpdatedAt,
+		key,
+		filename,
+		contentType,
+		bytes,
+	]);
+	const idempotencyKey = `${productId}:download:${fnv1a(canonical, 0x811c9dc5)}${fnv1a(canonical, 0x01234567)}`;
+	const result = await client.updateProduct(productId, wire, idempotencyKey);
+	if (result.ok) {
+		return applied({
+			variant: "default",
+			title: "File attached",
+			description: `Buyers' download links now serve ${filename}.`,
+		});
+	}
+	if (result.reason === "invalid" && (result.field ?? "").startsWith("downloadAsset")) {
+		return applied({
+			variant: "error",
+			title: DOWNLOAD_NOT_ATTACHED_TITLE,
+			description: downloadRefusal(result.field ?? "downloadAsset"),
+		});
+	}
+	return editOutcome(result);
+};
+
+/** The sentence for a refused descriptor, by the sub-field the domain named. */
+function downloadRefusal(field: string): string {
+	switch (field) {
+		case "downloadAsset":
+			return "Only a Digital product can have a download file. Set the product type to Digital and save, then upload the file again.";
+		case "downloadAsset.filename":
+			return "The file's name can't be used. Rename the file and upload it again.";
+		case "downloadAsset.contentType":
+			return "The file's type can't be used. Upload it again; it will be stored as a plain download.";
+		case "downloadAsset.size":
+			return "The file's size could not be read. Upload it again.";
+		default:
+			return "The upload did not match this product. Upload the file again from this product's page.";
+	}
+}
+
 /** A sku as it appears INSIDE a sentence: quoted, so a sku with a space or a
  *  trailing character is still copyable exactly; or a plain phrase when the
  *  service named none, because an empty pair of quotes reads as a sku called
@@ -415,12 +576,15 @@ function editOutcome(
 	}
 	switch (result.reason) {
 		case "stale":
-			return applied({
-				variant: "error",
-				title: "This product changed since you opened it",
-				description:
-					"Your edit was NOT applied — the latest values are shown below. Re-apply your changes and save again.",
-			});
+			return {
+				...applied({
+					variant: "error",
+					title: "This product changed since you opened it",
+					description:
+						"Your edit was NOT applied — the latest values are shown below. Re-apply your changes and save again.",
+				}),
+				recordMoved: true,
+			};
 		case "currency_mismatch":
 			return applied({
 				variant: "error",
@@ -428,11 +592,14 @@ function editOutcome(
 				description: `This product is priced in ${result.currency ?? "its existing currency"}. A price edit keeps the same currency; re-currencying a product is not supported on this page.`,
 			});
 		case "sku_taken":
-			return applied({
-				variant: "error",
-				title: "SKU already in use",
-				description: `SKU "${result.sku ?? ""}" is already used by another live product. Choose a different SKU.`,
-			});
+			return applied(
+				{
+					variant: "error",
+					title: "SKU already in use",
+					description: `SKU "${result.sku ?? ""}" is already used by another live product. Choose a different SKU.`,
+				},
+				"sku",
+			);
 		// THE TWO RENAME REFUSALS. Both name the sku(s) so the sentence can be acted
 		// on without opening a database, and both say NOTHING MOVED out loud: the
 		// rename and the stock carry are one transaction, so a refusal leaves the
@@ -477,6 +644,16 @@ function editOutcome(
 			);
 		}
 		case "invalid":
+			// The store refuses switching a product that has a download file to
+			// Physical (the product owner's rule: a file is replaced, never removed,
+			// so past buyers never lose access). Never the price/measurement copy.
+			if ((result.field ?? "").startsWith("downloadAsset")) {
+				return applied({
+					variant: "error",
+					title: DIGITAL_WITH_FILE_TITLE,
+					description: DIGITAL_WITH_FILE_REASON,
+				});
+			}
 			return applied({
 				variant: "error",
 				title: "Invalid value",
@@ -499,109 +676,204 @@ function editOutcome(
 
 // -- merchant stock movements -------------------------------------------------
 
-/** F-2a: `${productId}:${direction}:${onHandAtRender}:${qty}` — content plus
- *  the watermark the operator saw. No nonce anywhere on this screen. */
+/** A caller-minted nonce: 32 hex characters from `mintMovementNonce` (the
+ *  console), or a UUID (the staging demo seed). The shape is checked so a key is
+ *  never built from arbitrary operator-round-tripped text, and is loose enough
+ *  to admit any opaque id of comparable entropy. */
+const NONCE_PATTERN = /^[A-Za-z0-9-]{16,64}$/;
+
+type ReadNonce = { kind: "absent" } | { kind: "ok"; value: string } | { kind: "bad" };
+
+/** Read the per-click nonce. ABSENT selects the one-release legacy key; PRESENT
+ *  but malformed refuses — falling back to the legacy key would quietly reopen
+ *  the replay-collision this nonce exists to close. */
+function readNonce(value: unknown): ReadNonce {
+	const raw = readString(value);
+	if (raw === undefined) return { kind: "absent" };
+	return NONCE_PATTERN.test(raw) ? { kind: "ok", value: raw } : { kind: "bad" };
+}
+
+/** The movement's idempotency key: per-intent when the caller sent a nonce, and
+ *  F-2a's content-derived key otherwise (the legacy fallback, one release). The
+ *  `nonce:` segment keeps the two shapes from ever colliding. */
 function stockMovementKey(
 	productId: string,
 	direction: "restock" | "removal",
 	onHand: number,
 	qty: number,
+	nonce: string | undefined,
 ): string {
-	return `${productId}:${direction}:${onHand}:${qty}`;
+	return nonce === undefined
+		? `${productId}:${direction}:${onHand}:${qty}`
+		: `${productId}:${direction}:nonce:${nonce}`;
 }
 
+/** What one movement needs, read and checked off the payload. */
+type MovementInput =
+	| { ok: true; productId: string; onHand: number; qty: number; nonce: string | undefined }
+	| { ok: false; notice: Notice };
+
 /**
- * The restock handler (DA-4 — one-shot, no staging, no confirm; restocking is
- * not the destructive act on this screen). Reads `productId`/`onHand` off the
- * payload, validates the qty, then POSTs under the derived key.
+ * Read a movement's payload. Every field is re-checked for PRESENCE as well as
+ * shape, and an absent watermark refuses here, before anything is sent (see
+ * `parseOnHand`). A bad restock QUANTITY gets the field-level add-stock line; a
+ * bad removal quantity gets the payload-level refusal, because the surface
+ * parses it with the same shared `parseStockQty` before it opens its confirm, so
+ * an unparseable one arriving here was hand-made rather than mistyped.
  */
-const restockAction: ProductsAction = async (client, payload) => {
+function readMovement(
+	payload: ProductsActionPayload,
+	direction: "restock" | "removal",
+): MovementInput {
 	const productId = readString(payload["productId"]);
-	if (productId === undefined) return applied(UNREADABLE);
+	// TODO(next release, with the legacy fallback): a restock with a nonce needs
+	// no `onHand` — it is unpinned, and the count is only the legacy key's
+	// component. Drop the restock requirement when `stockMovementKey`'s content
+	// branch goes; a removal keeps it, as its watermark.
 	const onHand = parseOnHand(payload["onHand"]);
-	if (onHand === null) return applied(UNREADABLE);
+	const nonce = readNonce(payload["nonce"]);
+	if (productId === undefined || onHand === null || nonce.kind === "bad") {
+		return { ok: false, notice: UNREADABLE };
+	}
 	const qty = parseStockQty(readString(payload["qty"]));
 	if (qty === null) {
-		return applied({ variant: "error", ...ADD_STOCK_INVALID_QTY });
-	}
-	const key = stockMovementKey(productId, "restock", onHand, qty);
-	const result = await client.restock(productId, qty, key);
-	return applied(restockNotice(result, qty));
-};
-
-/** A refusal on the stock-changed-since-render path (DA-3a).
- *
- *  `null` is its own sentence, never a count: the re-read came back with NO
- *  inventory record for the sku (INC-23 — the wire says that now instead of
- *  calling it zero), and "0 units are on hand now" would be a count nobody
- *  took. */
-function stockChangedNotice(liveOnHand: number | null): Notice {
-	if (liveOnHand === null) {
 		return {
-			variant: "error",
-			title: "Stock changed — nothing was removed",
-			description:
-				"This SKU no longer has an inventory record, so there is no count to remove from. Reload the product to see it as it stands now.",
+			ok: false,
+			notice: direction === "restock" ? { variant: "error", ...ADD_STOCK_INVALID_QTY } : UNREADABLE,
 		};
 	}
-	const unit = liveOnHand === 1 ? "unit is" : "units are";
 	return {
-		variant: "error",
-		title: "Stock changed — nothing was removed",
-		description: `Stock on hand changed since you started — ${liveOnHand} ${unit} on hand now. Re-enter the amount below to try again.`,
+		ok: true,
+		productId,
+		onHand,
+		qty,
+		nonce: nonce.kind === "ok" ? nonce.value : undefined,
 	};
 }
 
 /**
- * The stock-moving write — the screen's one destructive act, which the surface
+ * A REPLAYED MOVEMENT IS REPORTED AS ONE. The store says when its answer came
+ * from the idempotency ledger (`replayed`): an earlier call with this key moved
+ * the units, and this one moved nothing. Reporting it as a fresh "Added 8" is
+ * the same lie the original bug told.
+ *
+ * WITH A NONCE the replay is this decision's own retry (a lost response, then
+ * the console's explicit Retry), so it is "already applied", with the count
+ * RE-READ now — the recorded one is the count that earlier call produced, and
+ * the shelf may have moved since.
+ *
+ * WITHOUT ONE (the legacy key, one release), a replay is EITHER a double-submit
+ * OR a different later move of the same shape that derived an earlier one's key
+ * (Add 2, Remove 2, Add 2), and nothing — not even the live count, which a sale
+ * can move either way — tells the two apart reliably. So it says only what is
+ * certain: this submit changed nothing. "Reload" is the way out, not a figure of
+ * speech: a reload fetches the console that sends a nonce, while retrying in the
+ * old tab re-derives the very same key.
+ */
+async function replayedNotice(
+	client: AdminProductsSurface,
+	productId: string,
+	nonce: string | undefined,
+): Promise<Notice> {
+	if (nonce === undefined) {
+		return {
+			variant: "error",
+			title: "Nothing changed",
+			description:
+				"This submit changed nothing — an identical earlier change was already applied; if you meant a second change, reload and try again.",
+		};
+	}
+	const live = await client.getProduct(productId).catch(() => null);
+	const liveOnHand = live === null ? null : live.onHand;
+	return {
+		variant: "default",
+		title: "Already applied",
+		description:
+			liveOnHand === null
+				? "This change was already applied."
+				: `This change was already applied — stock is now ${liveOnHand}.`,
+	};
+}
+
+/**
+ * The restock handler (DA-4 — one-shot, no staging, no confirm; restocking is
+ * not the destructive act on this screen). NOT PINNED to the count the operator
+ * saw: an add is commutative, so two tabs that both saw 4 and both add 3 end at
+ * 10 — two clicks, two decisions, two nonces — and an honest "Add 10" is never
+ * refused because a shopper checked out meanwhile. Lost-response safety is the
+ * nonce's job: the console re-sends the SAME nonce until it gets an answer.
+ * `onHand` is still read (and still required) because it is the legacy key's
+ * component for a caller that sends no nonce.
+ */
+const restockAction: ProductsAction = async (client, payload) => {
+	const input = readMovement(payload, "restock");
+	if (!input.ok) return applied(input.notice);
+	const { productId, onHand, qty, nonce } = input;
+	const key = stockMovementKey(productId, "restock", onHand, qty, nonce);
+	const result = await client.restock(productId, qty, key);
+	if (result.ok && result.replayed === true) {
+		return { ...applied(await replayedNotice(client, productId, nonce)), replayed: true };
+	}
+	return applied(restockNotice(result, qty));
+};
+
+/** A removal refused on the stock-changed-since-render path (DA-3a).
+ *
+ *  THE SENTENCE DOES NOT BLAME ANOTHER ADMIN. The watermark is the AVAILABLE
+ *  count, so a shopper's reservation moves it as surely as a colleague's
+ *  removal; "orders or another change" sends the operator to the count, not
+ *  looking for a person.
+ *
+ *  `null` is its own sentence, never a count: there is NO inventory record for
+ *  the sku (INC-23 — the wire says that now instead of calling it zero), and
+ *  "changed to 0" would be a count nobody took. */
+function stockChangedNotice(liveOnHand: number | null): Notice {
+	const title = "Stock changed — nothing was removed";
+	if (liveOnHand === null) {
+		return {
+			variant: "error",
+			title,
+			description:
+				"This SKU no longer has an inventory record, so there is no count to remove from. Reload the product to see it as it stands now.",
+		};
+	}
+	return {
+		variant: "error",
+		title,
+		description: `Stock changed to ${liveOnHand} (orders or another change) — nothing was removed; check and try again.`,
+	};
+}
+
+/**
+ * The stock-removing write — the screen's one destructive act, which the surface
  * confirms for itself before this runs. It is the ONLY removal handler: the
  * `-review` step that used to precede it is not ported, so every guard a removal
- * gets is in this function or in the service behind it.
+ * gets is in this function or in the store behind it.
  *
- * DA-3a, MANDATORY: re-read the product and refuse on a watermark mismatch
- * before deriving the key and writing (F-2a). Operator A opens a confirm for 5
- * units; operator B removes 12; A's dialog still says "Remove 5 units" against a
- * count that is already false.
+ * DA-3a, MANDATORY, AND NOW ATOMIC: the watermark rides with the movement and the
+ * store refuses a mismatch in the same write (see the module header for why it
+ * is no longer a re-read here). Operator A opens a confirm for 5 units; operator
+ * B removes 12; A's dialog still says "Remove 5 units" against a count that is
+ * already false, and A's removal is refused with the count as it is.
  *
- * THE SERVICE APPLIES A GUARDED DECREMENT, so removing more than is on hand is
- * refused cleanly (never a negative and never an oversell) — the live re-read
- * here catches the common case before the write; that is the backstop, and it is
- * what the retired review step's client-side bound check has left behind.
+ * THE STORE APPLIES A GUARDED DECREMENT, so removing more than is on hand is
+ * refused cleanly (never a negative and never an oversell) — the backstop the
+ * retired review step's bound check has left behind.
  */
 const removeStockAction: ProductsAction = async (client, payload) => {
-	const productId = readString(payload["productId"]);
-	if (productId === undefined) return applied(UNREADABLE);
-	const qty = parseStockQty(readString(payload["qty"]));
-	const observedOnHand = parseOnHand(payload["onHand"]);
-	// Both are re-checked for PRESENCE as well as for shape, and an absent
-	// watermark refuses here with NO re-read (see `parseOnHand`). A bad QUANTITY
-	// gets the same payload-level refusal rather than the field-level
-	// `REMOVE_STOCK_INVALID_QTY` line: that copy belonged to the retired review
-	// step's form, and the surface parses the quantity with the same shared
-	// `parseStockQty` before it opens its confirm, so an unparseable one arriving
-	// here means the payload was hand-made rather than that someone mistyped.
-	if (qty === null || observedOnHand === null) return applied(UNREADABLE);
-	const live = await client.getProduct(productId).catch(() => null);
-	if (live === null) {
-		return applied({
-			variant: "error",
-			title: "Nothing was removed",
-			description: "Stock could not be re-checked, so nothing was applied. Reload and try again.",
-		});
+	const input = readMovement(payload, "removal");
+	if (!input.ok) return applied(input.notice);
+	const { productId, onHand, qty, nonce } = input;
+	const key = stockMovementKey(productId, "removal", onHand, qty, nonce);
+	const result = await client.removeStock(productId, qty, key, onHand);
+	if (result.ok && result.replayed === true) {
+		return { ...applied(await replayedNotice(client, productId, nonce)), replayed: true };
 	}
-	// A `null` re-read (the inventory record itself is gone) takes the SAME
-	// branch and is not folded into a count — `observedOnHand` is always a number,
-	// so the inequality alone would already refuse; the explicit test is what
-	// gives the case its own words.
-	if (live.onHand === null || live.onHand !== observedOnHand) {
-		return applied(stockChangedNotice(live.onHand));
-	}
-	const key = stockMovementKey(productId, "removal", observedOnHand, qty);
-	const result = await client.removeStock(productId, qty, key);
 	return applied(removeStockNotice(result, qty));
 };
 
-/** Map a restock outcome to the notice shown above the reloaded detail. */
+/** Map a restock outcome to the notice shown above the reloaded detail. The
+ *  count is the one the movement itself produced — never worked out here. */
 function restockNotice(result: RestockResult, qty: number): Notice {
 	if (result.ok) {
 		return {
@@ -622,6 +894,7 @@ function removeStockNotice(result: StockRemovalResult, qty: number): Notice {
 			description: `Removed ${qty} ${unitWord(qty)}. Available is now ${result.onHand}.`,
 		};
 	}
+	if (result.reason === "stale_on_hand") return stockChangedNotice(result.onHand);
 	if (result.reason === "insufficient_stock") {
 		return {
 			variant: "error",
@@ -629,6 +902,10 @@ function removeStockNotice(result: StockRemovalResult, qty: number): Notice {
 			description: `Only ${result.onHand} ${unitWord(result.onHand)} on hand — you cannot remove ${qty}.`,
 		};
 	}
+	// The operator confirmed against a count, so they saw a record: its absence
+	// now is a change since render, and keeps DA-3a's own sentence rather than
+	// the "re-save the SKU" advice a restock gets for a record that never was.
+	if (result.reason === "no_inventory_row") return stockChangedNotice(null);
 	return stockFailureNotice(result.reason);
 }
 
@@ -698,6 +975,8 @@ const PRODUCTS_ACTIONS_BY_ID: Readonly<Record<string, ProductsAction>> = {
 	[ACTION_SAVE_IDENTITY]: saveAction,
 	[ACTION_SAVE_PRICE]: saveAction,
 	[ACTION_SAVE_SHIPPING]: saveAction,
+	[ACTION_SAVE]: saveAction,
+	[ACTION_ATTACH_DOWNLOAD]: attachDownloadAction,
 	[ACTION_RESTOCK]: restockAction,
 	[ACTION_REMOVE_STOCK]: removeStockAction,
 };

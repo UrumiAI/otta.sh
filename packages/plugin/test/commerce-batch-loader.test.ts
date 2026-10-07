@@ -8,6 +8,8 @@ function view(productId: string): CatalogProductCommerce {
 		productId,
 		sku: `SKU-${productId}`,
 		price: { amount: cents(1999), currency: currency("USD") },
+		title: null,
+		compareAtPrice: null,
 		inStock: true,
 		active: true,
 	};

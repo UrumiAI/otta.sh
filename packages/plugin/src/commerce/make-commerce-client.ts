@@ -14,14 +14,24 @@
  * `reporting-settings-surface`). They are their own ports rather than
  * implementations of this one, and `makeAdminClients` constructs them; INC-D3b
  * deleted the HTTP arm of each, leaving one in-process implementation apiece.
+ *
+ * THE ONE STOREFRONT EXCEPTION: `storefront/shopper-state`
+ * (`storefront/shopper-state-route.ts`) constructs `InProcessCommerceClient`
+ * directly. It runs on every uncached page a shopper with a cart or session
+ * loads and only reads (`getShopperState`: a cart document and a session
+ * document), so it needs no payment gateways and no login email sender — and
+ * building them here would cost the kv reads `resolvePaymentGateways` makes on
+ * every call. Any route that can take a payment or send mail comes through here.
  */
 
+import { makeLoginEmailSender } from "../email/ctx-http-email-sender.js";
 import { IN_PROCESS_EGRESS_URLS } from "../manifest.js";
-import { stripeGatewayFromCtx } from "../payments/stripe-wiring.js";
-import { x402GatewayFromCtx } from "../payments/x402-wiring.js";
+import { resolvePaymentGateways } from "../payments/resolve-payment-gateways.js";
+import { checkoutRequiresBuyerAddress } from "../payments/stripe-account-country.js";
 import type { CommerceClient } from "../product-commerce/commerce-client.js";
 import type { PluginContext } from "../types.js";
-import { InProcessCommerceClient } from "./in-process-commerce-client.js";
+import { ABANDON_CANCEL_CALL_MS, InProcessCommerceClient } from "./in-process-commerce-client.js";
+import { getTaxCalculator } from "./tax-calculator-slot.js";
 
 /**
  * One client per invocation, matching the request-scoped lifecycle the
@@ -37,22 +47,32 @@ import { InProcessCommerceClient } from "./in-process-commerce-client.js";
  * never several frames later inside a storefront route.
  */
 export async function makeCommerceClient(ctx: PluginContext): Promise<CommerceClient> {
-	// The payment gateways the service used to wire from env are wired HERE,
+	// The payment gateways the service used to wire from env are resolved HERE,
 	// because resolving them is asynchronous (kv) and the client's constructor is
-	// not. INC-C5 wires x402, whose facilitator call goes over `ctx.http` to the
-	// host `allowedHosts` already grants; `stripe-wiring.ts` wires the other half
-	// storefront checkout actually uses (`PAYMENT_METHOD` in
-	// `checkout-routes.ts`). Each resolves independently to `undefined` on an
-	// unconfigured deployment and is simply omitted from the map, which the
-	// domain refuses loudly rather than minting an unpayable order.
-	const [x402, stripe] = await Promise.all([
-		x402GatewayFromCtx(ctx, { facilitatorUrl: IN_PROCESS_EGRESS_URLS.facilitatorUrl }),
-		stripeGatewayFromCtx(ctx),
-	]);
+	// not: x402 (INC-C5) and Stripe, the method storefront checkout actually uses
+	// (`PAYMENT_METHOD` in `checkout-routes.ts`). An unconfigured one is omitted
+	// from the map, which the domain refuses loudly rather than minting an
+	// unpayable order. `resolvePaymentGateways` is shared with `makeAdminClients`,
+	// so console refunds reach the same gateways checkout charged through.
+	const taxCalculator = getTaxCalculator();
 	return new InProcessCommerceClient(ctx, {
-		gateways: {
-			...(x402 === undefined ? {} : { x402 }),
-			...(stripe === undefined ? {} : { stripe }),
-		},
+		gateways: await resolvePaymentGateways(ctx),
+		// ADR-0030: the site's registered calculator, if any (`createOttaPlugin`);
+		// absent ⇒ the built-in rate table.
+		...(taxCalculator !== undefined ? { taxCalculator } : {}),
+		// Lazy: only the login request sends mail, and building the sender reads kv.
+		// `undefined` when no provider is usable (Resend with no email API URL,
+		// SMTP2GO with no key, an unreadable provider choice) — the unconfigured arm. The
+		// LOGIN sender, with its short ceiling: the send is awaited inline.
+		resolveEmailSender: () =>
+			makeLoginEmailSender(ctx, { apiUrl: IN_PROCESS_EGRESS_URLS.emailApiUrl }),
+		// Lazy too: only "Start a new cart" that actually cancelled an order uses it
+		// (QA2 X4). Built with the cancel's own short, fixed bound — not checkout's.
+		resolveWithdrawGateways: () =>
+			resolvePaymentGateways(ctx, { requestTimeoutMs: ABANDON_CANCEL_CALL_MS }),
+		// Issue #382: an India-based Stripe account needs every buyer's name and
+		// address. A kv read of the cached account country — Stripe is asked only
+		// when nothing usable is cached (see stripe-account-country.ts).
+		resolveAddressRequired: () => checkoutRequiresBuyerAddress(ctx),
 	});
 }

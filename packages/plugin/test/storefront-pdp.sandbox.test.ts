@@ -8,6 +8,7 @@ import {
 import {
 	EmdashInventoryStore,
 	EmdashProductCommerceStore,
+	EmdashSettingsStore,
 	systemClock,
 	uuidIdGen,
 	type StorageAccess,
@@ -236,11 +237,69 @@ describe("storefront PDP route (workerd sandbox)", () => {
 		});
 	});
 
+	test("issue #127: the route reports the EFFECTIVE cart-hold window — the admin's saved holdTtlMinutes — for the hold note to state", async () => {
+		await seedProduct({
+			id: "pdp-prod-hold",
+			sku: "SKU-PDP-HOLD",
+			amount: 1999,
+			currency: "USD",
+			onHand: 5,
+		});
+		const settings = new EmdashSettingsStore({ storage, clock: systemClock });
+		const before = (await settings.get()).holdTtlMinutes;
+		try {
+			// Saved the way the admin's settings form saves it.
+			await settings.update({ holdTtlMinutes: 20 }, idempotencyKey("pdp-hold-ttl-20"));
+			const result = await renderProduct({ content: { ...CONTENT, id: "pdp-prod-hold" } });
+			expect(result["ok"]).toBe(true);
+			expect(result["cartHoldMinutes"]).toBe(20);
+		} finally {
+			// The document store is process-scoped: put the window back for the cases after.
+			await settings.update({ holdTtlMinutes: before }, idempotencyKey("pdp-hold-ttl-restore"));
+		}
+	});
+
 	test("the add-to-cart slot is null for a NON-purchasable product (no sku to add) — it rides the purchasable flag", async () => {
 		const result = await renderProduct({ content: { ...CONTENT, id: "pdp-prod-unsynced" } });
 		const product = result["product"] as Record<string, unknown>;
 		expect(product["purchasable"]).toBe(false);
 		expect(product["slots"]).toEqual({ addToCart: null });
+	});
+
+	test("a compare-at price set in the admin reaches the storefront as the struck was-price (only above the price)", async () => {
+		// The admin stores a compare-at price, and no storefront read carried
+		// it: the catalog view had no was-price on it. Written through
+		// the admin's own guarded edit, read back through the public route.
+		await seedProduct({
+			id: "pdp-prod-sale",
+			sku: "SKU-PDP-SALE",
+			amount: 1200,
+			currency: "USD",
+			onHand: 5,
+		});
+		const commerce = new EmdashProductCommerceStore({ storage, clock: systemClock });
+		const seeded = await commerce.getByProductId(toProductId("pdp-prod-sale"));
+		const edit = await commerce.updateCommerceFields(
+			{
+				productId: toProductId("pdp-prod-sale"),
+				compareAtPrice: { amount: cents(2000), currency: currency("USD") },
+			},
+			idempotencyKey("was-pdp-prod-sale"),
+			seeded!.updatedAt.toISOString(),
+		);
+		expect(edit.ok).toBe(true);
+
+		const result = await renderProduct({
+			content: { ...CONTENT, id: "pdp-prod-sale" },
+			locale: "en-US",
+		});
+		const product = result["product"] as Record<string, unknown>;
+		expect(product["price"]).toMatchObject({ formatted: "$12.00" });
+		expect(product["compareAtPrice"]).toEqual({
+			amount: 2000,
+			currency: "USD",
+			formatted: "$20.00",
+		});
 	});
 
 	test("out-of-stock is a coarse display state: price still renders, availability flips, JSON-LD says OutOfStock", async () => {

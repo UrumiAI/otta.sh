@@ -9,11 +9,14 @@
  */
 import { describe, expect, test } from "vitest";
 import {
+	FRESH_HOLD_GRACE_SECONDS,
 	HOLD_LABELS,
 	HOLD_WINDOW_SECONDS,
 	absoluteExpiry,
 	holdClock,
+	holdNote,
 	holdView,
+	isFreshHold,
 } from "../src/lib/hold.js";
 
 /** A fixed "now" — the tests move `expiresAt`, never the clock. */
@@ -138,5 +141,72 @@ describe("absoluteExpiry — the value a browser with no JavaScript is left hold
 
 	test("an unparseable timestamp yields nothing rather than `Invalid Date`", () => {
 		expect(absoluteExpiry("nope")).toBeNull();
+	});
+});
+
+describe("holdNote — the PDP states the EFFECTIVE hold window (issue #127)", () => {
+	test("states the minutes the store is actually configured with", () => {
+		expect(holdNote(15)).toBe("We'll hold what you add for 15 minutes.");
+		expect(holdNote(30)).toBe("We'll hold what you add for 30 minutes.");
+	});
+
+	test("one minute is singular", () => {
+		expect(holdNote(1)).toBe("We'll hold what you add for 1 minute.");
+	});
+
+	test("a whole number of hours reads as hours, the way a shopper plans", () => {
+		expect(holdNote(60)).toBe("We'll hold what you add for 1 hour.");
+		expect(holdNote(120)).toBe("We'll hold what you add for 2 hours.");
+		expect(holdNote(90)).toBe("We'll hold what you add for 90 minutes.");
+	});
+
+	test("never counts the units — the shopper picks the quantity beside it", () => {
+		// QA: "Adding this holds one in stock" sat beside a quantity field set to
+		// 3. The hold covers whatever quantity is added, so the note names none.
+		for (const minutes of [15, 60, undefined]) {
+			expect(holdNote(minutes)).not.toMatch(/\bone\b/);
+		}
+	});
+
+	test("an unusable value falls back to NOT naming a figure rather than inventing one", () => {
+		// The route always reports a positive integer; a malformed one must not render
+		// "for NaN minutes" or "for 0 minutes".
+		for (const bad of [0, -5, 1.5, Number.NaN, undefined]) {
+			expect(holdNote(bad)).toBe("We'll hold what you add while you check out.");
+		}
+	});
+});
+
+describe('isFreshHold — a theme\'s "on add" moment plays once, not on every render', () => {
+	test("fresh: the hold was taken within the grace (the render after the add)", () => {
+		expect(FRESH_HOLD_GRACE_SECONDS).toBe(15);
+		expect(isFreshHold(inSeconds(HOLD_WINDOW_SECONDS - 1), NOW)).toBe(true);
+		expect(isFreshHold(inSeconds(HOLD_WINDOW_SECONDS - 15), NOW)).toBe(true);
+	});
+
+	test("stale but live: a reload, a revisit, a change to another line", () => {
+		expect(isFreshHold(inSeconds(HOLD_WINDOW_SECONDS - 16), NOW)).toBe(false);
+		expect(isFreshHold(inSeconds(600), NOW)).toBe(false);
+		expect(isFreshHold(inSeconds(30), NOW)).toBe(false);
+	});
+
+	test("released, no hold, or an unparsable expiry: never", () => {
+		expect(isFreshHold(inSeconds(-1), NOW)).toBe(false);
+		expect(isFreshHold(inSeconds(0), NOW)).toBe(false);
+		expect(isFreshHold(null, NOW)).toBe(false);
+		expect(isFreshHold(undefined, NOW)).toBe(false);
+		expect(isFreshHold("nope", NOW)).toBe(false);
+	});
+
+	test("a hold longer than the window cannot be aged, so it fails static", () => {
+		expect(isFreshHold(inSeconds(HOLD_WINDOW_SECONDS + 60), NOW)).toBe(false);
+		// …unless the caller names the store's real window.
+		expect(isFreshHold(inSeconds(1795), NOW, 1800)).toBe(true);
+	});
+
+	test("the grace is a parameter", () => {
+		expect(isFreshHold(inSeconds(HOLD_WINDOW_SECONDS - 40), NOW, HOLD_WINDOW_SECONDS, 60)).toBe(
+			true,
+		);
 	});
 });

@@ -45,9 +45,14 @@ export function splitAstro(source: string): AstroParts {
  * vaguer comments, which is exactly backwards.
  */
 export function templateOf(source: string): string {
-	return splitAstro(source)
-		.body.replace(/\{\/\*[\s\S]*?\*\/\}/g, "")
-		.replace(/<!--[\s\S]*?-->/g, "");
+	// Strip until nothing changes: one pass could splice a comment's halves into
+	// a new comment (or a tag) that a single replace never sees.
+	let text = splitAstro(source).body;
+	for (let prev = ""; prev !== text;) {
+		prev = text;
+		text = text.replace(/\{\/\*[\s\S]*?\*\/\}/g, "").replace(/<!--[\s\S]*?-->/g, "");
+	}
+	return text;
 }
 
 /**
@@ -65,7 +70,7 @@ export function templateOf(source: string): string {
  */
 export function hasExecutableScript(source: string): boolean {
 	const template = templateOf(source);
-	for (const match of template.matchAll(/<script\b([^>]*)>/g)) {
+	for (const match of template.matchAll(/<script\b([^>]*)>/gi)) {
 		const attrs = match[1] ?? "";
 		if (/type\s*=\s*["']application\/(ld\+json|json)["']/.test(attrs)) continue;
 		return true;

@@ -13,6 +13,7 @@
  * exports `BANNER_BUDGET`, `fit` and `fitBanner`, and `orders-copy.ts` still
  * uses them. Only the file they live in moved.
  */
+import { BUYER_REF_HINT_HIDDEN, buyerRefHint } from "./buyer-ref-hint.js";
 
 /**
  * What an ABSENT value renders as, anywhere on either surface.
@@ -158,3 +159,52 @@ export function buyerReferenceText(buyerRef: string | null | undefined): string 
 	const trimmed = buyerRef.trim();
 	return trimmed.length > 0 ? trimmed : ABSENT;
 }
+
+/**
+ * The Orders console's MASKED buyer email (issue #377), or `null` when there is
+ * no email to mask.
+ *
+ * MASKED BY DEFAULT, REVEALED ON A CLICK. Only an EmDash admin reaches the
+ * console, so there is no lower role to hide an address from; what the mask
+ * buys is that an ordinary working screen — over a shoulder, in a screenshot
+ * pasted into a ticket — does not carry every buyer's address. The operator
+ * loses nothing: the list and the detail both put a Show/Hide toggle beside it.
+ *
+ * NOT A SECOND MASKING RULE. This is {@link buyerRefHint}, the resume flow's
+ * `j•••@g•••.com`, applied to what {@link buyerReferenceText} would PRINT (so
+ * incidental whitespace cannot change the mask). Two screens that hint at the
+ * same address show the same hint.
+ *
+ * `null` FOR ANYTHING NOT SHAPED LIKE AN ADDRESS, and the caller prints such a
+ * value exactly as it always did. `buyerRef` is length-checked free text — an
+ * email at checkout, but documented as an "email/session claim token"
+ * (`plugin/src/storefront/checkout-route-input.ts`) — and a non-email value is
+ * the operator's only key for finding that buyer's other orders. The resume
+ * flow hides such a value entirely (`•••`) because its audience is whoever
+ * holds a bearer link; this audience is the store's admin, and hiding an
+ * opaque handle from them would cost the key and protect no address.
+ *
+ * BUT ANYTHING WITH AN `@` IS AN ADDRESS HERE (review of #377). The checkout
+ * route bounds `buyerRef` by length only, so a headless caller can store
+ * `jane@localhost`, `jane@gmail` or `jane@gmail.com.` — which the hint refuses
+ * (`•••`) and which would then have printed IN FULL — or
+ * `jane@gmail.com, phone 555-1234`, whose "last label" is free text the hint
+ * would carry straight through. The hint is used only when it is clean: well
+ * formed AND its last segment a plain label. Anything else falls back to
+ * `j•••@•••`, which keeps nothing of the domain. `buyerRefHint` itself is
+ * deliberately unchanged: the resume flow's output is a contract of its own.
+ */
+export function maskBuyerEmail(value: string | null | undefined): string | null {
+	const printed = buyerReferenceText(value);
+	if (printed === ABSENT || !printed.includes("@")) return null;
+	const hint = buyerRefHint(printed);
+	if (hint !== BUYER_REF_HINT_HIDDEN && PLAIN_LABEL.test(hint.slice(hint.lastIndexOf(".") + 1))) {
+		return hint;
+	}
+	const first = [...printed][0];
+	return `${first === "@" ? "" : first}${BUYER_REF_HINT_HIDDEN}@${BUYER_REF_HINT_HIDDEN}`;
+}
+
+/** What a hint's last segment must look like to be printed: one DNS-style
+ *  label of a plausible TLD's length. See {@link maskBuyerEmail}. */
+const PLAIN_LABEL = /^[A-Za-z0-9-]{1,24}$/;

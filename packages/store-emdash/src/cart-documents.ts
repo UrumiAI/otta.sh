@@ -42,6 +42,13 @@ import type { CollectionIndexDeclaration } from "./inventory-documents.js";
 export const CARTS_COLLECTION = "carts";
 /** Collection name: mutation idempotency key → the cart whose ledger holds it. */
 export const CART_MUTATION_INDEX_COLLECTION = "cart_mutation_index";
+/**
+ * Collection name: a KEYED create's key → the cart it minted (`CartStore.create`'s
+ * optional key). A locator like `cart_mutation_index`, and kept separate from it on
+ * purpose: a create key and a mutation key are different namespaces, and a caller-
+ * supplied mutation key must never be able to read a create key's cart.
+ */
+export const CART_CREATE_KEYS_COLLECTION = "cart_create_keys";
 
 /**
  * The collections `EmdashCartStore` reads and writes, with the indexes each must
@@ -52,11 +59,12 @@ export const CART_MUTATION_INDEX_COLLECTION = "cart_mutation_index";
  * `carts` declares the two fields ADR-0019 §4 names. `state` is for the admin
  * cart views a later increment renders; `holdExpiresAt` is what `listExpired`
  * queries, and the store would be unable to sweep without it. The lookup
- * collection declares none — every access to it is by document id.
+ * collections declare none — every access to them is by document id.
  */
 export const CART_COLLECTIONS: Readonly<Record<string, CollectionIndexDeclaration>> = {
 	[CARTS_COLLECTION]: { indexes: ["state", "holdExpiresAt"] },
 	[CART_MUTATION_INDEX_COLLECTION]: {},
+	[CART_CREATE_KEYS_COLLECTION]: {},
 };
 
 /**
@@ -91,15 +99,22 @@ export const CART_MUTATION_LEDGER_SIZE = 64;
 /**
  * How many ABANDONED mutation records one cart document remembers.
  *
- * An abandoned record is the audit trail of a crash the sweep reaped: its hold's
- * units are already back and its claim is retired, so it is no longer outstanding
- * work and evicting an old one reopens no window and changes no answer. It still
- * has to be bounded, because a long-lived cart that keeps crashing mid-add would
- * otherwise accumulate them forever on the hot document.
+ * An abandoned record is the audit trail of a crash the sweep reaped, or of an add
+ * refused OUT_OF_STOCK: its hold's units are already back (or there never was a
+ * hold) and its claim is retired, so it is no longer outstanding work: evicting an
+ * old one returns no stock twice and orphans no hold. It is not answer-free, though —
+ * see the residual below. It still has to be bounded, because a long-lived cart that
+ * keeps crashing mid-add would otherwise accumulate them forever on the hot
+ * document.
  *
- * 16 rather than 64: reaching even one of these takes a crash between a claim and
- * its completion, so a cart with sixteen of them has a problem no ledger size will
- * fix, and keeping the most recent sixteen is enough to see it in the document.
+ * 16 rather than 64: a reaped crash is rare, and a cart with sixteen of them has a
+ * problem no ledger size will fix. An add refused OUT_OF_STOCK is abandoned too and
+ * is common. Evicting one of those moves no stock it should not, but it is not
+ * answer-free: a very late replay of its key finds no record and runs as a fresh
+ * add, so if the cart has since gained a line for that sku the replay becomes an
+ * increment of that line, answered with current truth — the same residual an
+ * evicted COMPLETED record already carries. Reaching it takes sixteen later
+ * refused or reaped adds on ONE cart between a request and its retry.
  */
 export const CART_ABANDONED_LEDGER_SIZE = 16;
 
@@ -163,10 +178,12 @@ export interface CartMutationRecord {
 	 */
 	expiring?: { token: string; at: string };
 	/**
-	 * Set when the sweep has reaped the hold this claim created, so the claim can
-	 * never be listed again. It is NOT `completed` — the mutation never happened —
-	 * but it is no longer outstanding work, and it is not prunable either: it stays
-	 * as the audit trail of a reaped crash.
+	 * Set when the claim is no longer outstanding work, so it can never be listed
+	 * again: the sweep has reaped the hold it created, or (`abandonClaim`) its
+	 * reserve was decided OUT_OF_STOCK and so never created one. It is NOT
+	 * `completed` — the mutation never happened, and a same-key replay still
+	 * resumes — and it stays as the audit trail, bounded by
+	 * {@link CART_ABANDONED_LEDGER_SIZE}.
 	 */
 	abandoned?: boolean;
 }
@@ -201,6 +218,11 @@ export interface CartDoc {
 	holdExpiresAt: string | null;
 	createdAt: string;
 	updatedAt: string;
+}
+
+/** `cart_create_keys/{key}` — the cart a keyed create minted. */
+export interface CartCreateKeyDoc {
+	cartId: string;
 }
 
 /** `cart_mutation_index/{key}` — the locator, never the record. */
@@ -282,11 +304,15 @@ export function computeHoldExpiresAt(doc: Pick<CartDoc, "lines" | "mutations">):
  *   dangling hold listable. Dropping one would orphan real stock.
  * - **completed** — the last {@link CART_MUTATION_LEDGER_SIZE} are kept, oldest
  *   evicted. Losing one costs a replay its recorded answer, nothing more.
- * - **abandoned** — the audit trail of a reaped crash, and the second thing that
- *   could grow without limit on a long-lived cart, so the last
- *   {@link CART_ABANDONED_LEDGER_SIZE} are kept. An abandoned record is not
- *   outstanding work — its hold has already been returned and its claim retired —
- *   so evicting an old one changes no answer and reopens no window.
+ * - **abandoned** — the audit trail of a reaped crash or of an add refused
+ *   OUT_OF_STOCK, and the second thing that could grow without limit on a
+ *   long-lived cart, so the last {@link CART_ABANDONED_LEDGER_SIZE} are kept. An
+ *   abandoned record is not outstanding work — its hold has already been returned
+ *   (or never existed) and its claim retired — so evicting one moves no stock it
+ *   should not. Its one residual: a very late replay of the evicted key runs as a
+ *   fresh add, which on a cart that has since gained a line for that sku is an
+ *   increment of that line answered with current truth (see
+ *   {@link CART_ABANDONED_LEDGER_SIZE}).
  *
  * Each class is ordered by the store's own clock (`completedAt`, the expiry token's
  * `at`, then `claimedAt`), so a record never sorts against a foreign timestamp.

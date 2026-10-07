@@ -12,6 +12,7 @@ import {
 	settleOrder,
 	sku as brandSku,
 } from "@otta-sh/domain";
+import { FakePaymentGateway } from "@otta-sh/domain/testing";
 import { beforeEach, describe, expect, test } from "vitest";
 import { makeOrderHarness, type OrderHarness } from "./fake-harness.js";
 
@@ -141,15 +142,16 @@ describe("settleOrder", () => {
 		expect((await h.orderStore.getById(order.id))?.state).toBe("pending");
 	});
 
-	test("payment_failed → failed → releases the reservation", async () => {
+	test("payment_failed keeps the order pending and its reservation adopted (ADR-0022)", async () => {
 		const order = await pendingPhysical();
 		const reservationId = order.lines[0]!.reservationId!;
 		expect(h.inventory.onHand("SKU-1")).toBe(4); // 5 - 1 reserved
 		const res = await settleOrder(h.settleDeps, h.stripeGw, evt(order, { outcome: "failed" }));
-		expect(res.ok).toBe(true);
-		expect((await h.orderStore.getById(order.id))?.state).toBe("failed");
-		expect(h.inventory.reservationState(reservationId)).toBe("released");
-		expect(h.inventory.onHand("SKU-1")).toBe(5); // stock returned
+		expect(res).toMatchObject({ ok: true, noop: true });
+		expect((await h.orderStore.getById(order.id))?.state).toBe("pending");
+		expect(h.inventory.reservationState(reservationId)).toBe("adopted");
+		expect(h.inventory.onHand("SKU-1")).toBe(4); // still held for the retry
+		expect(h.paymentEventStore.anomalies()).toHaveLength(0);
 	});
 
 	test("order-expiry guarded transition (pending→expired) releases the adopted reservation exactly once", async () => {
@@ -259,6 +261,27 @@ describe("settleOrder", () => {
 		expect(h.paymentEventStore.anomalies().some((a) => a.kind === "COMMIT_LOST")).toBe(true);
 	});
 
+	test("a lost commit never overwrites a flag written on the order DURING the commit (issue #364)", async () => {
+		const order = await pendingPhysical();
+		await h.inventory.release(order.lines[0]!.reservationId!);
+		const inventoryStore = h.settleDeps.inventoryStore;
+		const racing = Object.assign(Object.create(inventoryStore) as typeof inventoryStore, {
+			async commitMany(ids: Parameters<typeof inventoryStore.commitMany>[0]) {
+				await h.orderStore.flagReconciliation(order.id, "an anomaly raised meanwhile");
+				return inventoryStore.commitMany(ids);
+			},
+		});
+		const res = await settleOrder(
+			{ ...h.settleDeps, inventoryStore: racing },
+			h.stripeGw,
+			evt(order),
+		);
+		expect(res.ok).toBe(true);
+		expect((await h.orderStore.getById(order.id))?.reconciliationFlag).toBe(
+			"an anomaly raised meanwhile",
+		);
+	});
+
 	test("a paid order with TWO physical lines both concurrently lost records EXACTLY 2 COMMIT_LOST anomalies + flags reconciliation (batched commitMany must not collapse N→1)", async () => {
 		// PR B fidelity: commitMany returns BOTH lost ids, and settle records one
 		// anomaly + one flag write per lost line off the SAME stale null flag — a
@@ -286,9 +309,14 @@ describe("settleOrder", () => {
 		expect(res.ok).toBe(true); // money received; the order is paid
 		const settled = await h.orderStore.getById(order.id);
 		expect(settled?.state).toBe("paid");
-		expect(settled?.reconciliationFlag).not.toBeNull();
+		// The flag write is compare-and-set on "unflagged": the FIRST lost line's flag
+		// lands, the second's is refused; both lines are in the anomalies.
+		expect(settled?.reconciliationFlag).toMatch(/^commit lost for reservation /);
 		const commitLost = h.paymentEventStore.anomalies().filter((a) => a.kind === "COMMIT_LOST");
 		expect(commitLost).toHaveLength(2);
+		expect(settled?.reconciliationFlag).toBe(
+			`commit lost for reservation ${commitLost[0]!.detail.split(" ").at(-1)!}`,
+		);
 	});
 
 	test("commit on an already-committed reservation (idempotent replay) is a benign no-op, not an anomaly", async () => {
@@ -314,10 +342,19 @@ describe("settleOrder", () => {
 				await expireOrders(h.expireDeps);
 				return h.orderStore.markPaid(id);
 			},
-			markFailed: (id) => h.orderStore.markFailed(id),
 			expire: (id, at) => h.orderStore.expire(id, at),
+			expireWithOrder: (id, at) => h.orderStore.expireWithOrder(id, at),
 			listExpirable: (at) => h.orderStore.listExpirable(at),
 			recordPayment: (i) => h.orderStore.recordPayment(i),
+			recordPaymentIntent: (i) => h.orderStore.recordPaymentIntent(i),
+			listPaymentIntents: (id) => h.orderStore.listPaymentIntents(id),
+			listIntentCancelsDue: (now, limit) => h.orderStore.listIntentCancelsDue(now, limit),
+			updatePaymentIntentCancel: (id, intent, u) =>
+				h.orderStore.updatePaymentIntentCancel(id, intent, u),
+			readOrderLedger: (id) => h.orderStore.readOrderLedger(id),
+			scheduleRefundRetry: (id, key, retry) => h.orderStore.scheduleRefundRetry(id, key, retry),
+			listRefundRetriesDue: (now, limit) => h.orderStore.listRefundRetriesDue(now, limit),
+			listRefundRetriesStale: (cutoff, limit) => h.orderStore.listRefundRetriesStale(cutoff, limit),
 			getCapturedPayments: (id) => h.orderStore.getCapturedPayments(id),
 			listRefunds: (id) => h.orderStore.listRefunds(id),
 			getRefundByIdempotencyKey: (k) => h.orderStore.getRefundByIdempotencyKey(k),
@@ -326,10 +363,14 @@ describe("settleOrder", () => {
 			finalizeRefund: (i) => h.orderStore.finalizeRefund(i),
 			voidRefund: (k) => h.orderStore.voidRefund(k),
 			markRefundUnverified: (k) => h.orderStore.markRefundUnverified(k),
-			flagReconciliation: (id, d) => h.orderStore.flagReconciliation(id, d),
+			voidUnverifiedRefund: (i) => h.orderStore.voidUnverifiedRefund(i),
+			flagReconciliation: (id, d, g) => h.orderStore.flagReconciliation(id, d, g),
 			resolveReconciliation: (i) => h.orderStore.resolveReconciliation(i),
 			recordFulfillment: (i) => h.orderStore.recordFulfillment(i),
 			cancelOrder: (i) => h.orderStore.cancelOrder(i),
+			completeCancellationRestock: (i) => h.orderStore.completeCancellationRestock(i),
+			recordCancellationRestockFailure: (id, key, opts) =>
+				h.orderStore.recordCancellationRestockFailure(id, key, opts),
 			transition: (i) => h.orderStore.transition(i),
 			listForCustomer: (c) => h.orderStore.listForCustomer(c),
 			listEventsForOrder: (id) => h.orderStore.listEventsForOrder(id),
@@ -337,8 +378,13 @@ describe("settleOrder", () => {
 			countOrders: (f) => h.orderStore.countOrders(f),
 			linkGuestOrders: (c, ref) => h.orderStore.linkGuestOrders(c, ref),
 			claimNextEmail: (now, lease) => h.orderStore.claimNextEmail(now, lease),
+			enqueueNotice: (id, notice) => h.orderStore.enqueueNotice(id, notice),
+			claimNextEmailForOrder: (id, now, lease, o) =>
+				h.orderStore.claimNextEmailForOrder(id, now, lease, o),
 			markEmailSent: (id, now) => h.orderStore.markEmailSent(id, now),
+			markEmailSkipped: (id, now) => h.orderStore.markEmailSkipped(id, now),
 			rescheduleEmail: (id, at) => h.orderStore.rescheduleEmail(id, at),
+			releaseEmailClaim: (id) => h.orderStore.releaseEmailClaim(id),
 		};
 	}
 
@@ -348,9 +394,14 @@ describe("settleOrder", () => {
 		// Past the checkout TTL, but the sweep has not run yet: settle loads the
 		// order still `pending`, then the sweep wins between load and flip.
 		h.clock.advance(16 * 60 * 1000);
+		// A gateway that CANNOT refund (x402, or Stripe with no secret key): the
+		// late payment cannot be returned automatically, so the flag must stand for
+		// a human. The refundable case — refunded, flag resolved — is pinned in
+		// `late-payment.test.ts` and the shared `latePaymentContract`.
+		const cannotRefund = new FakePaymentGateway({ id: "stripe", refundable: false });
 		const res = await settleOrder(
 			{ ...h.settleDeps, orderStore: raceExpiryIntoMarkPaid() },
-			h.stripeGw,
+			cannotRefund,
 			evt(order),
 		);
 		expect(res.ok).toBe(true);
@@ -492,28 +543,5 @@ describe("settleOrder", () => {
 		expect((await settleOrder(h.settleDeps, h.x402Gw, raw)).ok).toBe(true);
 		expect(h.paymentEventStore.anomalies()).toHaveLength(0);
 		expect(h.entitlementStore.all()).toHaveLength(1);
-	});
-
-	test("a retry after a crash between markFailed and release completes the release", async () => {
-		const order = await pendingPhysical();
-		const reservationId = order.lines[0]!.reservationId!;
-		// Simulate the crash: dedupe + failed flip landed; the release did not.
-		await h.paymentEventStore.dedupe(
-			"evt-fail-crash",
-			order.id,
-			"stripe",
-			h.clock.now().toISOString(),
-		);
-		await h.orderStore.markFailed(order.id);
-		expect(h.inventory.reservationState(reservationId)).toBe("adopted"); // stock still gone
-
-		const res = await settleOrder(
-			h.settleDeps,
-			h.stripeGw,
-			evt(order, { outcome: "failed", dedupeKey: "evt-fail-crash" }),
-		);
-		expect(res.ok).toBe(true);
-		expect(h.inventory.reservationState(reservationId)).toBe("released");
-		expect(h.inventory.onHand("SKU-1")).toBe(5); // stock returned exactly once
 	});
 });

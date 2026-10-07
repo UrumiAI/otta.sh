@@ -23,11 +23,8 @@ import { restProps } from "../lib/rest-props.js";
 interface Props extends HTMLAttributes<"a"> {
 	href: string;
 	title: string;
-	/** Keys the coil's geometry (§5) — the slug, or the id when there is none. */
+	/** Keys the coil (§5) — the slug, or the id when there is none. */
 	slug: string;
-	/** Position in the grid, which cycles the coil's tint so every three cards
-	 *  show all three. Omit off a list. */
-	index?: number;
 	description?: string | null;
 	image?: string | null;
 	/** Pre-formatted, off the view model's `price.formatted`. `null` when the
@@ -37,6 +34,9 @@ interface Props extends HTMLAttributes<"a"> {
 	availability?: AvailabilityToken | null;
 	/** The prose that replaces the price when there is none. */
 	priceNote?: string;
+	/** The compare-at price, pre-formatted, when the product is on sale —
+	 *  struck beside `price`. Ignored without a `price` to sit beside. */
+	was?: string | null;
 	/**
 	 * The card title's heading level.
 	 *
@@ -54,12 +54,12 @@ const {
 	href,
 	title,
 	slug,
-	index,
 	description = null,
 	image = null,
 	price = null,
 	availability = null,
 	priceNote = "Not currently available for purchase",
+	was = null,
 	level = "h2",
 	class: className,
 	...rest
@@ -73,7 +73,7 @@ const Heading = level;
 	{/* `dimmed` is a PROP, not a parent CSS rule: Astro scopes each
 	    component's styles to its own hash, so a descendant selector written
 	    here could never reach MediaPanel's root element. */}
-	<MediaPanel slug={slug} index={index} image={image} dimmed={soldOut} />
+	<MediaPanel slug={slug} image={image} dimmed={soldOut} />
 	<Heading class="card-title">{title}</Heading>
 	{description !== null && description !== "" && <p class="card-desc">{description}</p>}
 	<span class="card-foot">
@@ -81,7 +81,7 @@ const Heading = level;
 			price === null ? (
 				<span class="card-note">{priceNote}</span>
 			) : (
-				<PriceTag formatted={price} soldOut={soldOut} />
+				<PriceTag formatted={price} soldOut={soldOut} was={was} />
 			)
 		}
 		<StockRule availability={availability} />

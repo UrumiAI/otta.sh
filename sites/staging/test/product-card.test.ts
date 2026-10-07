@@ -63,14 +63,6 @@ describe("ProductCard — the heading level is the page's to choose", () => {
 	});
 });
 
-describe("ProductCard — the coil's tint follows the grid position", () => {
-	test("the index reaches MediaPanel", async () => {
-		const tint = async (index: number): Promise<string | undefined> =>
-			/--coil-tint: var\((--u-tint-\w+)\)/.exec(await card({ index }))?.[1];
-		expect(new Set([await tint(0), await tint(1), await tint(2)]).size).toBe(3);
-	});
-});
-
 describe("ProductCard — money (§7)", () => {
 	test("prints the view model's formatted price verbatim", async () => {
 		expect(await card({ price: "$15.00", availability: "in_stock" })).toContain("$15.00");
@@ -139,6 +131,64 @@ describe("PriceTag — a figure, and only ever a figure it was handed", () => {
 		for (const size of ["sm", "md", "lg"] as const) {
 			expect(await price({ formatted: "$1.00", size })).toContain(`size-${size}`);
 		}
+	});
+});
+
+describe("PriceTag — the compare-at (was) price", () => {
+	const price = (props: Record<string, unknown>): Promise<string> =>
+		container.renderToString(PriceTag, { props });
+
+	test("a was-price is struck BESIDE the price, both handed in pre-formatted", async () => {
+		const html = await price({ formatted: "$12.00", was: "$20.00" });
+		expect(html).toMatch(/<s [^>]*class="[^"]*\bwas\b[^"]*"[^>]*>[\s\S]*\$20\.00[\s\S]*<\/s>/);
+		expect(html).toContain("$12.00");
+		// Was first, then now — the conventional reading order.
+		expect(html.indexOf("$20.00")).toBeLessThan(html.indexOf("$12.00"));
+	});
+
+	test("a screen reader hears which figure is which — a strike is not announced", async () => {
+		const html = await price({ formatted: "$12.00", was: "$20.00" });
+		expect(html).toMatch(/<span class="u-sr-only"[^>]*>Was <\/span>\s*\$20\.00/);
+		expect(html).toMatch(/<span class="u-sr-only"[^>]*>Now <\/span>\s*\$12\.00/);
+	});
+
+	test("no was-price ⇒ the same single figure as ever, with no Was/Now words", async () => {
+		for (const was of [undefined, null, ""]) {
+			const html = await price({ formatted: "$12.00", was });
+			expect(html).not.toContain("<s ");
+			expect(html).not.toContain("Now ");
+		}
+	});
+
+	test("sold out wins over on sale: ONE struck figure, never two", async () => {
+		// Sold out already strikes the price. Striking the was-price beside it
+		// would put two crossed-out figures side by side and say nothing either
+		// one does not; the sale is moot while nothing can be bought.
+		const html = await price({ formatted: "$12.00", was: "$20.00", soldOut: true });
+		expect(html).toContain("data-sold-out");
+		expect(html).toContain("$12.00");
+		expect(html).not.toContain("$20.00");
+		expect(html).not.toContain("<s ");
+		expect(html).not.toContain("Was ");
+	});
+});
+
+describe("ProductCard — a product on sale", () => {
+	test("the card's foot shows the struck was-price beside the price", async () => {
+		const html = await card({ price: "$12.00", was: "$20.00", availability: "in_stock" });
+		expect(html).toMatch(/<s [^>]*>[\s\S]*\$20\.00/);
+		expect(html).toContain("$12.00");
+	});
+
+	test("a sold-out card on sale shows its one struck price, not two", async () => {
+		const html = await card({ price: "$12.00", was: "$20.00", availability: "out_of_stock" });
+		expect(html).toContain("$12.00");
+		expect(html).not.toContain("$20.00");
+	});
+
+	test("no price ⇒ no was-price either: a sale needs a figure to be a sale of", async () => {
+		const html = await card({ price: null, was: "$20.00" });
+		expect(html).not.toContain("$20.00");
 	});
 });
 

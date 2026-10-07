@@ -30,6 +30,7 @@ import {
 	constantTimeEquals,
 	EMAIL_API_KEY_KEY,
 	PAYMENT_SECRET_KEYS,
+	SMTP2GO_API_KEY_KEY,
 	readPaymentSecrets,
 	readWriteOnlySecret,
 	STRIPE_SECRET_KEY_KEY,
@@ -131,7 +132,7 @@ describe("the payment/email secret kv keys", () => {
 		expect(WEBHOOK_EDGE_TOKEN_HEADER).toBe("X-Otta-Wh-Token");
 	});
 
-	test("PAYMENT_SECRET_KEYS is EXACTLY those five — a sixth needs a deliberate edit here", () => {
+	test("PAYMENT_SECRET_KEYS is EXACTLY those six — a seventh needs a deliberate edit here", () => {
 		// Exact set, not containment: this list drives the Settings provisioning
 		// forms and the no-echo pins below, so an accidentally-added key would
 		// otherwise ship an unreviewed secret surface, and an accidentally-dropped
@@ -139,6 +140,8 @@ describe("the payment/email secret kv keys", () => {
 		expect([...PAYMENT_SECRET_KEYS].toSorted()).toEqual(
 			[
 				EMAIL_API_KEY_KEY,
+				// SMTP2GO's own slot (ADR-0005, 2026-10-05): never shared with Resend's.
+				SMTP2GO_API_KEY_KEY,
 				STRIPE_SECRET_KEY_KEY,
 				STRIPE_WEBHOOK_SECRET_KEY,
 				X402_FACILITATOR_API_KEY_KEY,
@@ -414,7 +417,7 @@ describe("Settings provisioning of the payment/email secrets (write-only)", () =
 		for (const [, , , value] of CASES) expect(whole).not.toContain(value);
 	});
 
-	test("the rendered secret fields are plain, always-empty text_inputs (INC-09 discipline)", async () => {
+	test("the rendered secret fields are always-empty password inputs (INC-09 discipline, U-8 secret_input)", async () => {
 		const seed = Object.fromEntries(CASES.map(([, , kvKey, value]) => [kvKey, value]));
 		const { ctx } = makeCtx(seed);
 		const res = await createSettingsFormHandler()(
@@ -425,7 +428,7 @@ describe("Settings provisioning of the payment/email secrets (write-only)", () =
 		for (const [, fieldId] of CASES) {
 			const found = fields.find((f) => f["action_id"] === fieldId);
 			expect(found, `no rendered field for ${fieldId}`).toBeDefined();
-			expect(found?.["type"]).toBe("text_input");
+			expect(found?.["type"]).toBe("secret_input");
 			expect(found).not.toHaveProperty("initial_value");
 			expect(found).not.toHaveProperty("has_value");
 		}

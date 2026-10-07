@@ -50,10 +50,29 @@ function declarations(text: string): string {
 	return styles(text).replace(/\/\*[\s\S]*?\*\//g, "");
 }
 
+/**
+ * Remove every `<tag …>…</tag …>` block, case-insensitively, by scanning rather
+ * than a tag regex. An unclosed block runs to the end, as a browser reads it.
+ */
+function stripBlocks(input: string, tag: string): string {
+	let out = input;
+	for (;;) {
+		const lower = out.toLowerCase();
+		let start = lower.indexOf(`<${tag}`);
+		while (start >= 0 && /[\w-]/.test(lower.charAt(start + tag.length + 1))) {
+			start = lower.indexOf(`<${tag}`, start + 1);
+		}
+		if (start < 0) return out;
+		const close = lower.indexOf(`</${tag}`, start);
+		const end = close < 0 ? -1 : lower.indexOf(">", close);
+		out = out.slice(0, start) + (end < 0 ? "" : out.slice(end + 1));
+	}
+}
+
 /** The template — everything after the frontmatter fence, minus the styles. */
 function markup(text: string): string {
 	const body = text.slice(text.indexOf("\n---", 3) + 4);
-	return body.replace(/<style>[\s\S]*?<\/style>/g, "").replace(/<script>[\s\S]*?<\/script>/g, "");
+	return stripBlocks(stripBlocks(body, "style"), "script");
 }
 
 /** The literal class names inside one `class=` / `class:list=` attribute. */
@@ -91,6 +110,9 @@ function classesPassedToChildren(text: string): string[] {
 
 describe("the component set the spec asks for (§4's table, plus §6's poll ribbon)", () => {
 	test.each([
+		// The cart's countdown script, split from the ribbon's markup (Phase 3):
+		// `HoldRibbon` draws, `HoldClock` ticks — see checkout-client-js.test.ts.
+		"HoldClock.astro",
 		"HoldRibbon.astro",
 		"Ledger.astro",
 		"MediaPanel.astro",
@@ -200,7 +222,7 @@ describe("component boundaries", () => {
 		 * allowed; the pattern below only matches a bare global as a whole
 		 * selector.
 		 */
-		const tokens = readFileSync(path.join(SRC_DIR, "styles/tokens.css"), "utf8").replace(
+		const tokens = readFileSync(path.join(SRC_DIR, "themes/tempered/theme.css"), "utf8").replace(
 			/\/\*[\s\S]*?\*\//g,
 			"",
 		);
@@ -260,16 +282,19 @@ describe("the boundary guard is not vacuous", () => {
 });
 
 describe("the motion budget (§2, §6, §11)", () => {
-	test("only the hold ribbon ships client JavaScript", () => {
+	test("only the hold countdown ships client JavaScript", () => {
 		// "One countdown, one hover" is the whole budget. A component growing a
-		// script is a decision, not a detail.
+		// script is a decision, not a detail. The countdown's script is
+		// `HoldClock` since the ribbon's markup and its script were split
+		// (storefront themes, Phase 3); `HoldRibbon` is the markup and runs
+		// nothing.
 		//
 		// Judged on the TEMPLATE (`hasExecutableScript`, shared with the ADR-0012
 		// fence), not on the file: a component must be able to say in prose that
 		// it deliberately has no script without that sentence failing the test
 		// which guarantees it.
 		const withScripts = files.filter((name) => hasExecutableScript(source(name)));
-		expect(withScripts).toEqual(["HoldRibbon.astro"]);
+		expect(withScripts).toEqual(["HoldClock.astro"]);
 	});
 
 	test("only the two ribbons animate, and each declares both sides of the rule", () => {

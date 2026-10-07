@@ -39,6 +39,19 @@ export interface ProductSummaryWire {
 	createdAt: string;
 }
 
+/** One product's price and stock, as the Products list's columns show them.
+ *  Money in minor units and `onHand` as a raw count — `null` is "no inventory
+ *  record", never zero. */
+export interface ProductPriceStockWire {
+	productId: string;
+	sku: string | null;
+	priceCents: number | null;
+	currency: string | null;
+	compareAtCents: number | null;
+	onHand: number | null;
+	deletedAt: string | null;
+}
+
 /** The full admin Product detail (read-only) — carries the single-sku stock
  *  read (`onHand`) the detail leaf fetches for the ONE product opened; the
  *  list gets the same field from its per-page join instead. */
@@ -65,6 +78,9 @@ export interface ProductDetailWire {
 	widthMm: number | null;
 	heightMm: number | null;
 	productKind: string;
+	/** The digital product's download file (issue #376), or null when none is
+	 *  attached. Admin-only, like everything on this detail. */
+	downloadAsset: DownloadAssetWire | null;
 	active: boolean;
 	/** Soft-delete tombstone (product lifecycle surfacing). Non-null ⇒ this IS
 	 *  the read-only archive view — the detail leaf renders it instead of the
@@ -152,6 +168,25 @@ export interface ProductEditWire {
 	productKind?: string;
 	/** Out-of-stock policy — only `"deny"` is accepted this slice. */
 	inventoryPolicy?: string;
+	/**
+	 * Attach/replace (a descriptor) or detach (`null`) the digital product's
+	 * download file (issue #376); absent preserves. The descriptor is minted by
+	 * the upload endpoint (a later increment), never typed by a person: an
+	 * object of exactly these keys, else `invalid` with no field. Its value rules
+	 * (the key minted for THIS product, filename, type, size, digest) and "not on
+	 * a physical product" are `invalid` naming the sub-field.
+	 */
+	downloadAsset?: DownloadAssetWire | null;
+}
+
+/** The download-file descriptor on the wire — the domain's `DownloadAsset`,
+ *  field for field. `size` is bytes; `sha256` is lowercase hex when present. */
+export interface DownloadAssetWire {
+	key: string;
+	filename: string;
+	contentType: string;
+	size: number;
+	sha256?: string;
 }
 
 /** One tax-class registry entry (mirrors the domain `TaxClass`) — the edit
@@ -183,11 +218,22 @@ export type ProductEditResult =
 	| { ok: false; reason: "invalid"; field: string | null }
 	| { ok: false; reason: "error" };
 
+/** A stock movement that went in. `replayed: true` says this answer came from
+ *  the idempotency ledger — an EARLIER call with the same key moved the units and
+ *  this one moved nothing — so the screen reports "already applied", never a
+ *  fresh "Added N". Absent on the call that moved them. */
+export type StockMoveApplied = { ok: true; onHand: number; replayed?: true };
+
+/** The REMOVAL was decided against an on-hand that is no longer true: nothing
+ *  moved, and `onHand` is the live count it was refused against. A restock is
+ *  never pinned, so it never answers this. */
+export type StaleOnHandOutcome = { ok: false; reason: "stale_on_hand"; onHand: number };
+
 /** Discriminated restock outcome (admin-UX Increment 2 slice 3). `not_found`/
  *  `no_sku`/`no_inventory_row` are the productId → sku resolution failures; the
  *  panel renders each without treating a status code as logic. */
 export type RestockResult =
-	| { ok: true; onHand: number }
+	| StockMoveApplied
 	| { ok: false; reason: "not_found" }
 	| { ok: false; reason: "no_sku" }
 	| { ok: false; reason: "no_inventory_row" }
@@ -198,7 +244,8 @@ export type RestockResult =
  *  `insufficient_stock` (carrying the current count) — the guarded floor that
  *  keeps a removal from ever driving on-hand below zero. */
 export type StockRemovalResult =
-	| { ok: true; onHand: number }
+	| StockMoveApplied
+	| StaleOnHandOutcome
 	| { ok: false; reason: "not_found" }
 	| { ok: false; reason: "no_sku" }
 	| { ok: false; reason: "no_inventory_row" }
@@ -236,7 +283,9 @@ export interface AdminProductsSurface {
 	 * RESTOCK — ADD `qty` units to the product's stock (admin-UX Increment 2 slice
 	 * 3). `key` is REQUIRED and must be stable per submission: a restock is
 	 * additive (not idempotent by nature), so there is no safe content-only
-	 * fallback — a double-submit dedupes only when the SAME key is sent.
+	 * fallback — a double-submit dedupes only when the SAME key is sent. Not
+	 * pinned to an observed count: an add is commutative (the domain port says
+	 * why a restock takes no watermark).
 	 */
 	restock(productId: string, qty: number, key: string): Promise<RestockResult>;
 
@@ -245,8 +294,18 @@ export interface AdminProductsSurface {
 	 * slice 3). Same required-key discipline as {@link restock}. The decrement is
 	 * GUARDED, so an over-removal is a clean `insufficient_stock` (carrying the
 	 * current count), never a negative stock or a throw.
+	 *
+	 * `expectedOnHand` is the count the operator decided against. When given,
+	 * the removal applies only if the live count still equals it, judged with
+	 * the decrement itself (after the key's ledger, so a retry of an applied key
+	 * still answers its success); otherwise it is `stale_on_hand`.
 	 */
-	removeStock(productId: string, qty: number, key: string): Promise<StockRemovalResult>;
+	removeStock(
+		productId: string,
+		qty: number,
+		key: string,
+		expectedOnHand?: number,
+	): Promise<StockRemovalResult>;
 
 	/**
 	 * THE FILTER TRAVELS BESIDE THE CURSOR, and it did not used to — the same
@@ -280,6 +339,15 @@ export interface AdminProductsSurface {
 	 *  exist resolves to `null` (the console renders a "not found" state, not an
 	 *  error banner); a soft-deleted one is a real row with `deletedAt` set. */
 	getProduct(productId: string): Promise<ProductDetailWire | null>;
+
+	/**
+	 * The price and stock of a BOUNDED list of products, in the order asked — the
+	 * Products list's Price and Stock columns, which show one page of CMS entries
+	 * and need one read for all of them rather than one per row (ADR-0014,
+	 * amendment 2026-10-01). An id with no commerce row is LEFT OUT rather than
+	 * invented: a CMS draft that has never synced has nothing to show.
+	 */
+	getProductSummaries(productIds: readonly string[]): Promise<ProductPriceStockWire[]>;
 
 	/**
 	 * Read the tax-class registry (Increment 2 slice 5) — the source for the edit

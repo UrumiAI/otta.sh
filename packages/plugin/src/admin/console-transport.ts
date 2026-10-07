@@ -78,6 +78,24 @@ export const UNKNOWN_ACTION: ConsoleFailure = {
 		"This console asked for an action this screen does not offer. Nothing was applied. Reload the page; if it happens again, this is a fault in the console itself.",
 };
 
+/**
+ * The store was too busy to answer (storage contention: a compare-and-set budget
+ * ran out, or the host aborted a transaction as retryable). Distinct from the
+ * screens' generic "unavailable" copy, which sends an operator looking for an
+ * outage. `retryable: true` rides on the wire — the same flag every Otta busy
+ * shape carries (storefront `BUSY`, download, webhook and x402 settle) — for any
+ * consumer that wants to branch on it; the React console needs only the copy.
+ * The copy is careful not to claim nothing changed — for a multi-step action
+ * only the step that gave up is known clean.
+ */
+export const STORE_BUSY: ConsoleFailure & { readonly retryable: true } = {
+	ok: false,
+	title: "The store is busy",
+	description:
+		"Too many changes are landing on the same records right now. Wait a few seconds and try again — if you were making a change, reload first to see whether it was applied.",
+	retryable: true,
+};
+
 /** A console write's payload: the flat string record the React button carried.
  *  Untrusted, exactly as anything else arriving off the wire is. */
 export type ConsolePayload = Readonly<Record<string, string>>;

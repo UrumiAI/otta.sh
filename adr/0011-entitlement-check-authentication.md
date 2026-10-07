@@ -2,6 +2,10 @@
 
 - Status: accepted
 - Date: 2026-07-14
+- Amended: 2026-10-05 — **the plugin's `entitlements/download` route only** (issue #376,
+  downloads increment 2). The route takes the `orderId` as its one capability, ignores a
+  session, and no longer has a session-only scope. The scope rules for the entitlement check
+  itself are unchanged. See "Amended 2026-10-05" at the end of this record.
 - Closes: #33 (Phase-4 follow-up, security). Builds on ADR-0004 (customer session mechanism) and ADR-0007 (the `X-Service-Token` write gate).
 
 ## Context
@@ -47,9 +51,10 @@ to bottom — never on which scope the request best "fits":
    check).
 
 `sku` remains the one always-required field (400 if absent). The plugin download route drops
-`buyerRef` entirely and gains an optional `sessionToken` (threaded from the theme's first-party
-cookie layer, exactly like the account routes); its client normalizes a 401 to a typed
-`UNAUTHENTICATED`.
+`buyerRef` entirely and gains an optional `sessionToken` (threaded from the theme's
+first-party cookie layer, exactly like the account routes); its client normalizes a 401 to a
+typed `UNAUTHENTICATED`. (Superseded for that route by the 2026-10-05 amendment: the session
+is now ignored.)
 
 ### Why `X-Internal-Token`, not the service token or a minted claim token
 
@@ -100,7 +105,8 @@ non-ASCII folding without a shared collation, and fail-closed is the safe defaul
 
 - **Wire break, called out in the changesets.** Any caller probing by email now needs
   `X-Internal-Token` (401/503 otherwise); the plugin `entitlements/download` route input drops
-  `buyerRef` for `sessionToken`; the client's `checkEntitlement` returns a typed `UNAUTHENTICATED`.
+  `buyerRef` for `sessionToken` (since the 2026-10-05 amendment the route requires `orderId` and
+  ignores the session); the client's `checkEntitlement` returns a typed `UNAUTHENTICATED`.
   Grep confirms the plugin was the only in-repo consumer.
 - **The `internalToken`-disabled path returns 503, and that is expected-not-incident.** Local dev
   and any intentionally-token-disabled deploy will see 503 on a buyerRef-scoped check. 5xx
@@ -140,3 +146,38 @@ non-ASCII folding without a shared collation, and fail-closed is the safe defaul
   does not close the oracle); with buyerRef gated and orderId at 122 bits, a limiter adds ops
   complexity without closing anything further. A possible future addition, not a substitute.
 - **Delete the raw-buyerRef scope outright** — deferred; kept for the near-term admin/support need.
+
+## Amended 2026-10-05 — the download route is order-scoped only
+
+Issue #376 (downloads increment 2) turned `entitlements/download` from a yes/no check into the
+delivery gate: it answers the file to stream only when the grant is active, the order is in a
+state that kept its money, the product is digital and its file is bound to it. That gate reads
+one named order, which changes how the route uses this record's scopes. The entitlement check's
+own scope rules above are unchanged.
+
+- **`orderId` is required, and holding it is the authorization** — scope 2, as decided above.
+- **A `sessionToken` sent with it is ignored**, exactly as scope 2 already rules for a Bearer
+  next to an `orderId`. So a guest who later signs in to an unrelated account keeps access.
+- **The session-only scope (scope 3) is gone from this route.** "Any order of mine" names no
+  order for the gate to read, so such a request is now `INVALID_INPUT`. The account page links
+  with the order's own id and loses nothing.
+- **The route's old fallback is removed.** It tried the order id, then, if that order had no
+  grant, the session's own entitlements. Once delivery is per order, that let one buyer's
+  session authorize a download on another buyer's order id, with the other order deciding what
+  was served. A contract case pins that this is now refused.
+- Every data-dependent refusal is one `NOT_FOUND`; `NOT_ENTITLED` and `UNAUTHENTICATED` are no
+  longer answered by the route.
+
+The Consequences bullet on the wire break and the Decision's note on the download route's
+`sessionToken` describe the route as it was before this amendment.
+
+**What the order-state check cannot see (noted 2026-10-06, issue #405).** The gate reads
+Otta's order state, so money that leaves without moving it keeps the download open until it is
+recorded in the admin. A refund made in the Stripe dashboard stays open until the operator
+starts the refund in Money → Refunds, whose pre-flight finds it and flags the order, and then
+uses Mark refunded. A chargeback stays open with no console action to close it: Otta acts on no
+`charge.dispute.*` event, the pre-flight does not count a dispute as a refund, and Mark
+refunded is refused while the ledger shows the money captured. A cancellation whose refund came
+back unverified leaves the order uncancelled until that refund is confirmed in Money → Refunds,
+which finishes the cancel and revokes; Mark refunded is refused until then. A partial refund
+keeps access by design.

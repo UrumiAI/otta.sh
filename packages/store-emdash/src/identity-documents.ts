@@ -65,7 +65,11 @@ export const CUSTOMER_EMAILS_COLLECTION = "customer_emails";
 export const SESSIONS_COLLECTION = "sessions";
 /** Collection name: one magic-link challenge per challenge id. */
 export const LOGIN_CHALLENGES_COLLECTION = "login_challenges";
-/** Collection name: the per-address active-challenge slots — the throttle claim. */
+/** Collection name: the per-address active-challenge slots — the throttle claim.
+ *  ALSO holds `EmdashAttemptThrottle`'s windows (QA U-2), under ids prefixed
+ *  `attempt:` — a prefix no email address can start with (an unquoted colon is
+ *  not valid in one), so an attempt window and a sign-in window never share a
+ *  document. The `emailLower` field of such a document holds that id. */
 export const LOGIN_CHALLENGE_CLAIMS_COLLECTION = "login_challenge_claims";
 
 /** One collection as the plugin descriptor declares it. */

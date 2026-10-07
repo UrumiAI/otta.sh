@@ -51,7 +51,7 @@ const {
 	ORDERS_STALE_CLEARED_NOTE,
 	REFUNDS_GROUP_EMPTY_LABEL,
 	REFUND_AMOUNT_INVALID,
-	REFUND_BY_REQUIRED,
+	REFUND_AMOUNT_PRECISION,
 	RETRYING_LABEL,
 	RETRY_LABEL,
 	formatAmount,
@@ -704,12 +704,17 @@ describe("each refund refusal names the field it is about", () => {
 		);
 	});
 
-	test("nobody recorded as issuing it is about `refunded by`", () => {
+	test("a blank `refunded by` is not refused — the server records the signed-in operator (QA round 2)", () => {
 		const check = checkRefundInput("19.99", "   ", 4500, "USD");
+		expect(check).toEqual({ ok: true, amountCents: 1999 });
+	});
+
+	test("more than two decimal places says so, not 'enter a valid amount' (QA round 2: 7.001)", () => {
+		const check = checkRefundInput("7.001", "", 4500, "USD");
 		expect(check.ok).toBe(false);
 		if (check.ok) return;
-		expect(check.refusal.field).toBe("refundedBy");
-		expect(check.refusal.message).toBe(REFUND_BY_REQUIRED);
+		expect(check.refusal.field).toBe("amount");
+		expect(check.refusal.message).toBe(REFUND_AMOUNT_PRECISION);
 	});
 
 	test("a valid refund parses to exact minor units and refuses nothing", () => {
@@ -767,10 +772,10 @@ describe("a standing refusal accents the field it names, and only that field (F2
 		expect(attr(other, "aria-describedby")).toBeNull();
 	});
 
-	test("nobody recorded as issuing it marks the `refunded by` input, and only that input", () => {
-		const check = checkRefundInput("19.99", "   ", 4500, "USD");
-		expect(check.ok).toBe(false);
-		if (check.ok) return;
+	test("a refusal about `refunded by` marks that input, and only that input", () => {
+		// No check produces one now (a blank name is the operator's), but the panel
+		// still accents whichever field a refusal names.
+		const check = { refusal: { message: "Who refunded it?", field: "refundedBy" as const } };
 		const html = renderRefundsPanel(FORM, check.refusal);
 		const message = tagFor(html, "refund-amount-error");
 		const messageId = attr(message, "id");

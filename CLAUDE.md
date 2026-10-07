@@ -6,7 +6,7 @@ Operational guide for Claude working in this repo. The **why** lives in
 conventions, and the guardrails that must not be crossed.
 
 > **Status: shipped, pre-1.0.** Phases 0–7 are merged and the full toolchain below is wired —
-> `@otta-sh/domain`, the EmDash plugin (which now carries the commerce service in-process),
+> `@otta-sh/domain`, the EmDash plugin (which now runs commerce in-process on `ctx.storage`),
 > `@otta-sh/store-emdash`, the payment adapters and the React admin all exist under
 > `packages/`. Treat the commands below as live, not aspirational; if one genuinely doesn't
 > exist, say so rather than inventing output.
@@ -33,8 +33,8 @@ These are build-breaking, not code-review nits (see `DEVELOPMENT.md` for the ful
 - **The plugin is sandbox-clean.** Dev/test against the workerd-on-Node sandbox; Block Kit
   widgets, not React — the discriminator is `format` (`format: "native"` may declare
   `adminEntry`; a `format: "standard"` descriptor that declares `adminEntry` throws at build
-  time), and `@otta-sh/plugin` registers `format: "standard"` and stays Block Kit; the plugin
-  reaches the service **only** via `ctx.http` + `allowedHosts`.
+  time), and `@otta-sh/plugin` registers `format: "standard"` and stays Block Kit; the plugin's
+  **only** egress is `ctx.http` + `allowedHosts`, and commerce truth lives in `ctx.storage`.
 
 ## Toolchain & the edit loop
 
@@ -59,7 +59,7 @@ pnpm test:d1                                   # T3 — real D1 in workerd (mini
 `pnpm test:d1` runs `packages/store-emdash/vitest.d1.config.ts`, a **separate vitest project** under
 the Cloudflare workers pool — it is not part of the root `vitest run`. It needs no Cloudflare
 account, token or remote database; the D1 is the local miniflare simulator. In CI it is the `d1`
-job: nightly, on demand, and as the **release gate** on any PR into `main` and the `main` push that
+job: on demand, and as the **release gate** on any PR into `main` and the `main` push that
 follows. Per-increment PRs into an integration branch do not run it.
 
 Before a PR: **tests pass, lint clean, formatted, changeset added** if a published package
@@ -74,7 +74,7 @@ changed. Migrations are forward-only.
   |---|---|
   | `@otta-sh/domain` (ports, use-cases, invariants) | `[Domain]` |
   | Store/client/payment **adapters** (store-emdash, stripe, x402) | `[Adapters]` |
-  | The EmDash **plugin** (storefront, Block Kit panel, sync hooks) | `[Plugin]` |
+  | The EmDash **plugin** (storefront, Block Kit panel, sync hooks) and its admin packages (`admin-react`, `admin-presentation`) | `[Plugin]` |
   | `sites/*` (the reference storefront site/theme) | `[Site]` |
   | Shared test/contract packages | `[Test]` |
   | CI / tooling / build | `[CI]` |
@@ -88,14 +88,15 @@ changed. Migrations are forward-only.
 
 Every task is verified end-to-end before the PR is handed over (default, not opt-in):
 
-- **Domain / adapter / service tasks** — the **contract suite is the spec**. A change is done
+- **Domain / adapter tasks** — the **contract suite is the spec**. A change is done
   when its behavioral suite is green against every relevant adapter. Run the no-oversell
   concurrency test **against Postgres** (`better-sqlite3` verifies the SQL, not the race).
   Record the passing run in the PR.
-- **HTTP tasks** — the same client-side contract suite runs against `HttpCommerceClient` over
-  a live test server; the wire format must not drift from the port.
+- **Commerce-client tasks** — the client-side contract suite (`packages/plugin/test/contracts/`)
+  runs against `InProcessCommerceClient` over a real document store; a case that fails is a
+  defect in the client, never a case to soften.
 - **Plugin / storefront-UI tasks** — exercise against the **workerd-on-Node sandbox** (not
-  trusted in-process mode) and, once storefront e2e exists, drive it with Playwright and
+  trusted in-process mode), drive the storefront with Playwright (`pnpm test:e2e`), and
   attach a screenshot to the PR.
 - **Releases (a merge into `main`)** — the full battery, green on the build being released:
   `pnpm lint`, `pnpm typecheck`, `pnpm -r build`, `pnpm test`, `pnpm test:pg`, **`pnpm test:d1`**,
