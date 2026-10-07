@@ -47,6 +47,7 @@ import type {
 	DownloadAsset,
 	IdempotencyKey,
 	InventoryPolicy,
+	ProductTaxStatus,
 	Money,
 	ProductCommerce,
 	ProductId,
@@ -231,6 +232,12 @@ export interface ProductCommerceDoc {
 	title: string | null;
 	/** INDEXED — `countByTaxClass`'s only predicate. */
 	taxClass: string | null;
+	/**
+	 * The product's tax status (PR 2b). NOT indexed: never filtered on. OPTIONAL on
+	 * the stored shape — a document from before the field reads `taxable`
+	 * ({@link normalizeProductDoc}); no migration.
+	 */
+	taxStatus?: ProductTaxStatus;
 	compareAtPrice: Money | null;
 	unitCost: Money | null;
 	inventoryPolicy: InventoryPolicy;
@@ -388,6 +395,7 @@ export function newShellProductDoc(productId: ProductId, at: string): ProductCom
 		price: null,
 		title: null,
 		taxClass: null,
+		taxStatus: "taxable",
 		compareAtPrice: null,
 		unitCost: null,
 		inventoryPolicy: "deny",
@@ -427,11 +435,13 @@ export function normalizeProductDoc(doc: ProductCommerceDoc): ProductCommerceDoc
 	//
 	// `downloadAsset` is DEFAULTED: a document from before the field existed has no
 	// file attached, and absent must read as `null` rather than `undefined`.
+	// `taxStatus` likewise (PR 2b): such a product was always charged as taxable.
 	return {
 		...doc,
 		variants: doc.variants ?? {},
 		publishKey: publishKeyFor(doc.active),
 		downloadAsset: doc.downloadAsset ?? null,
+		taxStatus: doc.taxStatus ?? "taxable",
 	};
 }
 
@@ -453,6 +463,7 @@ export function toProductCommerce(doc: ProductCommerceDoc): ProductCommerce {
 		price: doc.price,
 		title: doc.title,
 		taxClass: doc.taxClass,
+		taxStatus: doc.taxStatus ?? "taxable",
 		compareAtPrice: doc.compareAtPrice,
 		unitCost: doc.unitCost,
 		inventoryPolicy: doc.inventoryPolicy,
