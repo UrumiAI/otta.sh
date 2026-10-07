@@ -33,7 +33,7 @@ allowBuilds:
   # sharp: originally skipped for the service Worker (wrangler's optional
   # image codec, nothing fed it images) — sites/staging's Astro/EmDash chain
   # installs it as a real dependency, so the native build is allowed now.
-  sharp: false
+  sharp: true
   workerd: true
 
 catalog:
