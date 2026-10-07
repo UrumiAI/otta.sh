@@ -1032,25 +1032,25 @@ describe("(xii) ONE deadline for the whole settle: the refund calls and the inli
 	test("a late payment's Stripe call made after the settle used most of the budget is bounded by what is LEFT", async () => {
 		// The gateway the route builds is refund-capable (a secret key is set). The
 		// settle seam "uses" 7 s of the 8 s budget, then makes a Stripe call through
-		// that gateway against a provider that never answers: the call must be aborted
+		// that gateway against a provider that never answers: the call must give up
 		// at ~1 s (what is left), not at its own 3 s ceiling — two such calls plus the
 		// inline email would otherwise run past Stripe's ~10 s.
 		await harness.ctx.kv.set(STRIPE_WEBHOOK_SECRET_KEY, WEBHOOK_SECRET);
 		await harness.ctx.kv.set(STRIPE_SECRET_KEY_KEY, "sk_test_settle_route");
 		await seedPendingOrder("ord-deadline-refund");
 		let clock = 0;
+		// Measured from the request to the refund giving up — not from a signal
+		// listener: the transport puts no signal in `init` (EmDash's sandbox RPC
+		// refuses one) and bounds the call with its own race.
+		let requestedAt: number | undefined;
 		let abortedAfterMs: number | undefined;
 		const ctx: PluginContext = {
 			...harness.ctx,
 			http: {
-				fetch: (_url: string, init?: RequestInit) =>
-					new Promise<Response>((_resolve, reject) => {
-						const started = performance.now();
-						init?.signal?.addEventListener("abort", () => {
-							abortedAfterMs = performance.now() - started;
-							reject(new DOMException("timed out", "TimeoutError"));
-						});
-					}),
+				fetch: () => {
+					requestedAt ??= performance.now();
+					return new Promise<Response>(() => {});
+				},
 			},
 		};
 		const settle: SettleFn = async (deps, gateway, raw) => {
@@ -1066,6 +1066,7 @@ describe("(xii) ONE deadline for the whole settle: the refund calls and the inli
 					idempotencyKey: toIdempotencyKey("refund-deadline"),
 				})
 				.catch(() => undefined);
+			if (requestedAt !== undefined) abortedAfterMs = performance.now() - requestedAt;
 			return result;
 		};
 

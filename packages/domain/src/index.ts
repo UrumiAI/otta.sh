@@ -26,10 +26,34 @@ export {
 	computeQuote,
 	sumLineSubtotals,
 	type QuoteCommand,
+	type QuoteContext,
 	type QuoteDeps,
 	type QuoteFailure,
 	type QuoteResult,
 } from "./pricing/quote.js";
+// ADR-0030: the tax calculator hook, the built-in rate table, the order's frozen snapshot.
+export {
+	DEFAULT_TAX_CALCULATOR_TIMEOUT_MS,
+	isValidCalculatorId,
+	type TaxAddress,
+	type TaxCalculator,
+	type TaxLine,
+	type TaxRefusal,
+	type TaxRequest,
+	type TaxRequestLine,
+	type TaxResult,
+} from "./pricing/tax-calculator.js";
+export {
+	createRateTableCalculator,
+	RATE_TABLE_CALCULATOR_ID,
+} from "./pricing/rate-table-calculator.js";
+export { validateTaxResult } from "./pricing/validate-tax-result.js";
+export {
+	readOrderTaxSnapshot,
+	type OrderTaxSnapshot,
+	type OrderTaxSnapshotV0,
+	type OrderTaxSnapshotV1,
+} from "./orders/order-tax-snapshot.js";
 // ADR-0028 Decision 1: one quote command for checkout, the order and the x402 gate.
 export { quoteCommandFor, type PricedLine, type QuoteInput } from "./pricing/quote-input.js";
 // ADR-0021: ISO 3166 codes (CLDR) and the zone derived from the address.

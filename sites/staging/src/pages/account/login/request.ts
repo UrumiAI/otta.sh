@@ -21,7 +21,6 @@ import type { APIRoute } from "astro";
 import { routeDispatcher, seeOther, SERVICE_UNAVAILABLE } from "../../../lib/cart-actions.js";
 import { recordLoginRequest } from "../../../lib/account.js";
 import { isPlausibleEmail } from "../../../lib/email.js";
-import { rejectCrossOrigin } from "../../../lib/origin-guard.js";
 import {
 	busyResponse,
 	dispatchOttaRoute,
@@ -33,12 +32,8 @@ import {
 const LOGIN_PATH = "/account/login";
 
 export const POST: APIRoute = async (context) => {
-	// CSRF FIRST — emdash disables Astro's checkOrigin and guards only
-	// /_emdash/api/* (ADR-0006); without this a cross-site form could make a
-	// shopper's browser mail links on anyone's behalf.
-	const forbidden = rejectCrossOrigin(context);
-	if (forbidden !== null) return forbidden;
-
+	// CSRF: src/middleware.ts has already refused a cross-site POST (ADR-0006),
+	// so a forged form cannot make a shopper's browser mail links on anyone's behalf.
 	const form = await readFormBody(context.request);
 	if (form === null) return notAFormResponse();
 	const raw = form.get("email");

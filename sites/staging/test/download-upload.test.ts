@@ -17,12 +17,12 @@
  *  - the answer: the descriptor, which the console then saves through the
  *    plugin's `products:attach-download`. The endpoint itself writes no product.
  * The fake bucket records every key it is asked to write or delete, so "nothing
- * reached R2" is an assertion, not a hope. The ORIGIN check is the site's
- * per-route guard (`rejectCrossOrigin`), run first, as on every other write
- * route of this base.
+ * reached R2" is an assertion, not a hope. The ORIGIN check is the site
+ * middleware's (`test/origin-middleware.test.ts`), run before the endpoint, as
+ * on every other write route of this base.
  */
 import { createHash } from "node:crypto";
-import { realpathSync } from "node:fs";
+import { readdirSync, readFileSync, realpathSync } from "node:fs";
 import { createRequire } from "node:module";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
@@ -35,7 +35,16 @@ import {
 	MAX_DOWNLOAD_UPLOAD_BYTES,
 	UPLOAD_MIN_ROLE,
 } from "../src/lib/download-upload.js";
+import { onRequest } from "../src/middleware.js";
 import { POST } from "../src/pages/otta-admin/downloads/[productId].js";
+
+vi.mock("astro:middleware", () => ({
+	defineMiddleware: <T>(handler: T): T => handler,
+}));
+
+/** The site middleware, which runs the origin check before the page (#390). */
+type Middleware = (ctx: unknown, next: () => Promise<Response>) => Promise<Response>;
+const siteMiddleware = onRequest as unknown as Middleware;
 
 const SITE = "http://localhost:4321";
 const PRODUCT = "01KAPRODUCT0000000000000000";
@@ -128,7 +137,6 @@ interface Drive {
 	body?: Uint8Array | null;
 	productId?: string;
 	bucket?: ReturnType<typeof makeBucket> | null;
-	tokenScopes?: string[];
 }
 
 async function upload(drive: Drive = {}) {
@@ -163,12 +171,14 @@ async function upload(drive: Drive = {}) {
 		params: { productId },
 		locals: {
 			user: drive.user === undefined ? ADMIN : (drive.user ?? undefined),
-			...(drive.tokenScopes !== undefined ? { tokenScopes: drive.tokenScopes } : {}),
 			emdash: { handlePluginApiRoute: dispatcher.handlePluginApiRoute },
 		},
 		cache,
+		routePattern: "/otta-admin/downloads/[productId]",
+		cookies: { get: () => undefined },
 	} as unknown as APIContext;
-	const response = await POST(context);
+	// As Astro serves it: the site middleware first, then the page.
+	const response = await siteMiddleware(context, async () => POST(context));
 	// The origin guard's refusal is plain text; every other answer is JSON.
 	const text = await response.clone().text();
 	const json = (text.startsWith("{") ? JSON.parse(text) : { ok: false }) as {
@@ -298,12 +308,48 @@ describe("who may upload", () => {
 		expect(dispatcher.calls).toEqual([]);
 	});
 
-	test("a request authenticated by an API token is refused, even with an admin user", async () => {
-		const { response, json, r2, dispatcher } = await upload({ tokenScopes: ["admin"] });
-		expect(response.status).toBe(403);
-		expect(json.error?.code).toBe("TOKEN_NOT_ACCEPTED");
-		expect(r2.puts).toEqual([]);
-		expect(dispatcher.calls).toEqual([]);
+	test("an API token can never authenticate this route: the INSTALLED EmDash reads only the session on it (issue #405)", () => {
+		// The endpoint once refused `locals.tokenScopes` (TOKEN_NOT_ACCEPTED). That
+		// branch could not run: `/otta-admin/*` is neither `/_emdash/admin` nor
+		// `/_emdash/api`, so EmDash's auth middleware treats it as a PUBLIC route
+		// and resolves the session cookie only (`handlePublicRouteAuth`), returning
+		// before `handleBearerAuth` — the one place `tokenScopes` is set. A Bearer
+		// token here leaves `locals.user` unset, so it is answered NOT_SIGNED_IN
+		// like any other request without a session. This reads the copy EmDash
+		// itself loads and fails if an upgrade changes any of that.
+		const emdashPackage = realpathSync(
+			fileURLToPath(new URL("../node_modules/emdash/package.json", import.meta.url)),
+		);
+		const middlewareDir = new URL("dist/astro/middleware/", pathToFileURL(emdashPackage));
+		const auth = readFileSync(new URL("auth.mjs", middlewareDir), "utf8");
+		const fn = (name: string): string => {
+			const start = auth.indexOf(`async function ${name}(`);
+			expect(start, name).toBeGreaterThan(-1);
+			const rest = auth.slice(start + 1);
+			const end = rest.search(/\n(?:async )?function /);
+			return end === -1 ? rest : rest.slice(0, end);
+		};
+		expect(auth).toContain("const isPublicRoute = !isAdminRoute && !isApiRoute;");
+		expect(auth).toContain('const isAdminRoute = url.pathname.startsWith("/_emdash/admin");');
+		expect(auth).toContain('const isApiRoute = url.pathname.startsWith("/_emdash/api");');
+		const publicReturn = auth.indexOf(
+			"if (isPublicRoute) return handlePublicRouteAuth(context, next);",
+		);
+		expect(publicReturn).toBeGreaterThan(-1);
+		expect(publicReturn).toBeLessThan(auth.indexOf("await handleBearerAuth(context)"));
+		const publicAuth = fn("handlePublicRouteAuth");
+		expect(publicAuth).not.toContain("handleBearerAuth");
+		expect(publicAuth).not.toContain("tokenScopes");
+		// `tokenScopes` is ASSIGNED once in EmDash's middleware, by the Bearer path.
+		const assignments = readdirSync(middlewareDir)
+			.filter((file) => file.endsWith(".mjs"))
+			.flatMap((file) =>
+				[
+					...readFileSync(new URL(file, middlewareDir), "utf8").matchAll(/tokenScopes\s*=[^=]/g),
+				].map(() => file),
+			);
+		expect(assignments).toEqual(["auth.mjs"]);
+		expect(fn("handleBearerAuth")).toMatch(/tokenScopes\s*=[^=]/);
 	});
 
 	test("the minimum role is exactly the level the INSTALLED @emdash-cms/auth gives plugins:manage", async () => {

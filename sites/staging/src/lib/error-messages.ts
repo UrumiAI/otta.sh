@@ -116,6 +116,9 @@ const MESSAGES: Record<string, string> = {
 	// purpose and expire-orders sweeps it at TTL.
 	PAYMENT_INTENT_FAILED:
 		"We couldn't start a payment for this order. No charge was made — please try again in a moment.",
+	// ADR-0030: the store's outside tax calculator did not answer (or answered
+	// nonsense). Refused before any order existed, so a retry is all it takes.
+	TAX_UNAVAILABLE: "We couldn't calculate tax for this order right now. Please try again.",
 	// Issue #133: a stale/second tab placed with the key of a cart that was
 	// already ordered. The redirect back to /checkout re-renders the form with
 	// the CURRENT cart's key, so placing again simply works.

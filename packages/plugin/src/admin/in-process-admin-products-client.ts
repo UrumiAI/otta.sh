@@ -613,8 +613,10 @@ function toUpdateInput(productId: string, body: ProductEditWire): UpdateProductC
 	}
 	if (body.sku !== undefined) {
 		// `min(1)` and no ceiling, as the edit body's schema has it — the sku's real
-		// bounds belong to the store's column, not to this boundary. (And well-formed
-		// text, as every text field is: `requireSku`.)
+		// bounds belong to the store's column, not to this boundary. `requireSku` is
+		// that rule plus well-formed text (no U+0000, no lone surrogate), which no
+		// store could keep anyway (#379, review R3-B X1): the same check the cart add
+		// makes, so a sku the admin saves is one a shopper can add.
 		requireSku(body.sku);
 		input.sku = toSku(body.sku);
 	}

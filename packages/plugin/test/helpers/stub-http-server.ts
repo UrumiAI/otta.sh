@@ -5,9 +5,17 @@ export interface RecordedRequest {
 	url: string;
 	headers: Record<string, string | string[] | undefined>;
 	body: unknown;
+	/** When the answer was written (`Date.now()`); absent until it is. */
+	answeredAt?: number;
 }
 
-export type StubResponder = (req: RecordedRequest) => { status: number; body: unknown };
+/** A responder's answer. `delayMs` holds it back that long (a slow host); the
+ *  answer is dropped if the client has gone by then. */
+export type StubResponder = (req: RecordedRequest) => {
+	status: number;
+	body: unknown;
+	delayMs?: number;
+};
 
 export interface StubHttpServer {
 	baseUrl: string;
@@ -61,8 +69,14 @@ export async function startStubHttpServer(): Promise<StubHttpServer> {
 			const result = responder
 				? responder(recorded)
 				: { status: 404, body: { error: "no responder configured" } };
-			res.writeHead(result.status, { "content-type": "application/json" });
-			res.end(result.body === undefined ? "" : JSON.stringify(result.body));
+			const write = () => {
+				if (res.destroyed) return;
+				recorded.answeredAt = Date.now();
+				res.writeHead(result.status, { "content-type": "application/json" });
+				res.end(result.body === undefined ? "" : JSON.stringify(result.body));
+			};
+			if (result.delayMs !== undefined && result.delayMs > 0) setTimeout(write, result.delayMs);
+			else write();
 		});
 	});
 

@@ -21,6 +21,8 @@
   merchant picks the theme in the admin") and the 2026-09-30 Themes-screen amendment are retired;
   the rest of the theme system stays. See "Amendment 2026-10-02 — no theme choice in the admin" at
   the end.
+- Amended: 2026-10-05 — Decision 6's "the origin guard … stay in the page files": the origin
+  guard now lives in the site middleware. See "Amended 2026-10-05" at the end.
 
 ## Context
 
@@ -296,3 +298,12 @@ cart. QA U-12: the header looked the same signed in and signed out.
   page-level rule for a cart that no longer exists could do it later. Client-side fetching from a private
   endpoint was considered and not chosen: it would keep those pages cacheable for shoppers too,
   but it puts client JavaScript on every page, which ADR-0012 decision 2 fences to two pages.
+
+## Amended 2026-10-05 — the origin guard lives in the site middleware
+
+Decision 6 lists "the origin guard" among the page logic that stays in the page files. Since
+issue #376 it runs once, in `sites/staging/src/middleware.ts`, before any endpoint, for every
+state-changing storefront route (see
+[ADR-0006's "Amended 2026-10-05"](./0006-trusted-in-process-deployment.md#amended-2026-10-05--the-origin-check-runs-once-in-the-site-middleware-default-deny)).
+The point of Decision 6 is unchanged: the guard is single-sourced in site code and never in a
+theme. A theme view still never imports `origin-guard`, and the sweep test still enforces that.

@@ -12,12 +12,13 @@
  *
  * NOT under `/_emdash`: EmDash guards only its own paths, and the plugin can
  * neither read a request body as bytes nor reach R2. So, like every other
- * storefront write route, it runs the site's origin guard FIRST
- * (`rejectCrossOrigin`, ADR-0006's CSRF section), before the session, the body
- * or the bucket is touched; and `lib/download-upload.ts` additionally requires
- * the `X-EmDash-Request: 1` header a cross-site form cannot send. (When the
- * origin check moves into the site middleware — #390, default-deny — this call
- * moves with it and the route is listed in that table's GUARDED column.)
+ * storefront write route, it is origin-checked by the site middleware
+ * (`src/middleware.ts`, default-deny; ADR-0006's CSRF section) before this
+ * endpoint runs — before the session, the body or the bucket is touched — and
+ * the route is listed in `test/origin-middleware.test.ts`'s GUARDED table. The
+ * middleware's refusal is itself `private, no-store`. `lib/download-upload.ts`
+ * additionally requires the `X-EmDash-Request: 1` header a cross-site form
+ * cannot send.
  *
  * The answer is private and never stored by a cache: it names a key, and it
  * belongs to one admin session.
@@ -32,7 +33,6 @@ import {
 	type UploadUser,
 } from "../../../lib/download-upload.js";
 import { keepPrivate } from "../../../lib/no-store.js";
-import { rejectCrossOrigin } from "../../../lib/origin-guard.js";
 
 export const prerender = false;
 
@@ -44,21 +44,13 @@ function signedInUser(user: unknown): UploadUser | undefined {
 }
 
 export const POST: APIRoute = async (context) => {
-	// CSRF FIRST — before the session is trusted or a byte of the body is read.
-	const forbidden = rejectCrossOrigin(context);
-	if (forbidden !== null) {
-		keepPrivate({ response: forbidden, cache: context.cache });
-		return forbidden;
-	}
+	// CSRF: the site middleware has already refused a cross-origin POST here.
 	const dispatch = (
 		context.locals.emdash as { handlePluginApiRoute?: PluginRouteDispatcher } | undefined
 	)?.handlePluginApiRoute;
 	const response = await handleDownloadUpload(
 		{
 			user: signedInUser(context.locals.user),
-			// EmDash's auth middleware sets `tokenScopes` for API/OAuth token auth;
-			// its `Locals` augmentation is not in the site's type scope.
-			tokenAuthenticated: (context.locals as { tokenScopes?: unknown }).tokenScopes !== undefined,
 			bucket: uploadBucketFrom(env),
 			// The FULL user record goes to the plugin as the caller, exactly as
 			// EmDash's own plugin endpoint forwards it.

@@ -359,6 +359,8 @@ const SELECTION_FIELD: Record<QuoteFailureReason, SelectionField | null> = {
 	CART_EMPTY: null,
 	PRODUCT_NOT_PRICED: null,
 	CURRENCY_MISMATCH: null,
+	// Blames no selection: the summary returns it, and the buyer may retry.
+	TAX_UNAVAILABLE: null,
 };
 
 export function selectionFieldFor(reason: QuoteFailureReason): SelectionField | null {

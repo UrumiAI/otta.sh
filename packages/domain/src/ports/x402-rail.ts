@@ -47,9 +47,13 @@ export interface X402Rail {
 	 * those against the order or the clock.
 	 */
 	matchOffer(payment: X402DecodedPayment, offer: X402Offer): X402MatchResult;
-	/** `POST /verify` with OUR requirements for the payment's network. */
+	/** `POST /verify` with OUR requirements for the payment's network. A
+	 *  signed value that is not exactly the offer's amount is refused first,
+	 *  with no call (`offer_mismatch`): the facilitator is not relied on to
+	 *  compare them. */
 	verify(payment: X402DecodedPayment, offer: X402Offer): Promise<X402VerifyResult>;
-	/** `POST /settle` with OUR requirements for the payment's network. */
+	/** `POST /settle` with OUR requirements for the payment's network, after
+	 *  the same exact-amount refusal as `verify`. */
 	settle(payment: X402DecodedPayment, offer: X402Offer): Promise<X402SettleResult>;
 }
 
@@ -184,12 +188,15 @@ export type X402MatchResult =
  *
  * `unconfigured` and `offer_mismatch` mean NO CALL WAS MADE. In correct code
  * neither can happen after a successful `offer` and `matchOffer` on the same
- * rail with the same objects, so the domain must treat them as programming
- * errors (log loudly), not as facilitator weather. They stay inside the
- * `unavailable` / `unconfirmed` arms on purpose: those arms already mean "no
- * verdict", and their conservative handling (503, or a flag for a manual check)
- * is safe for a case that should never occur — a separate arm would add a branch
- * every caller must get right for no money-safety gain.
+ * rail with the same objects, followed by the domain's own amount check (the
+ * decoded amount equals the offer's price). `verify` and `settle` additionally
+ * refuse a signed value that is not exactly the offer's amount. So the domain
+ * must treat them as programming errors (log loudly), not as facilitator
+ * weather. They stay inside the `unavailable` / `unconfirmed` arms on purpose:
+ * those arms already mean "no verdict", and their conservative handling (503,
+ * or a flag for a manual check) is safe for a case that should never occur — a
+ * separate arm would add a branch every caller must get right for no
+ * money-safety gain.
  */
 export type X402UnavailableCause =
 	| "unconfigured"

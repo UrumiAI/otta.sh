@@ -10,11 +10,9 @@ export default defineConfig({
 				// The storefront's own compatibility date and flags
 				// (`sites/staging/wrangler.jsonc`), so this tier runs the runtime
 				// semantics the deployed site runs. A third, invented date would make a
-				// divergence found here mean nothing about production. Note
-				// `global_fetch_strictly_public` is known to break D1's Sessions API;
-				// the harness uses the raw binding (no session), so it does not apply.
+				// divergence found here mean nothing about production.
 				compatibilityDate: "2026-02-24",
-				compatibilityFlags: ["nodejs_compat", "global_fetch_strictly_public"],
+				compatibilityFlags: ["nodejs_compat"],
 				d1Databases: ["DB"],
 			},
 		}),

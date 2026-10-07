@@ -2556,6 +2556,23 @@ export function storefrontCommerceClientContract(tier: CommerceClientTier): void
 		);
 
 		test.skipIf(tier.payments === undefined)(
+			"an order whose buyerRef is NOT an email cannot be resumed by typing the buyerRef back — it is public (an x402 wallet), so it proves nothing (issue #405 item 2; SKIPPED where the tier composes no payment gateway)",
+			async () => {
+				const wallet = "x402:0x52908400098527886E0F7030069857D2E4169EE7";
+				const placed = await placeResumable("wallet", wallet);
+				const before = tier.payments?.providerIntentCalls?.().length ?? 0;
+				expect(await client.resumeOrderPayment(placed.orderId, { email: wallet })).toEqual({
+					ok: false,
+					reason: "EMAIL_MISMATCH",
+				});
+				expect(tier.payments?.providerIntentCalls?.().length ?? 0).toBe(before);
+				// The cart is still a proof for it.
+				const byCart = await client.resumeOrderPayment(placed.orderId, { cartId: placed.cartId });
+				expect(byCart.ok, JSON.stringify(byCart)).toBe(true);
+			},
+		);
+
+		test.skipIf(tier.payments === undefined)(
 			`email attempts are THROTTLED per DEVICE after ${RESUME_EMAIL_MAX_ATTEMPTS} — even the right one — while the real buyer's device still resumes (SKIPPED where the tier composes no payment gateway)`,
 			async () => {
 				const placed = await placeResumable("throttle", "t@example.test");

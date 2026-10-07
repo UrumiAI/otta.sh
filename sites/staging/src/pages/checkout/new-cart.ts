@@ -41,14 +41,10 @@ import { clearCartCookie, seeOther, withoutReferrer } from "../../lib/cart-actio
 import { clearCheckoutCookie } from "../../lib/checkout-cookie.js";
 import { clearCheckoutDraft } from "../../lib/checkout-draft.js";
 import { dispatchOttaRoute } from "../../lib/otta-api.js";
-import { rejectCrossOrigin } from "../../lib/origin-guard.js";
 
 export const POST: APIRoute = async (context) => {
-	// CSRF first — a forged cross-site POST must not be able to bin someone's
-	// cart, or cancel its order. Nothing is cleared before this returns.
-	const forbidden = rejectCrossOrigin(context);
-	if (forbidden !== null) return withoutReferrer(forbidden);
-
+	// CSRF: src/middleware.ts has already refused a cross-site POST (ADR-0006),
+	// so a forged form cannot bin someone's cart or cancel its order.
 	const cartId = context.cookies.get(CART_COOKIE_NAME)?.value;
 	if (cartId !== undefined && cartId.length > 0) {
 		const abandoned = await dispatchOttaRoute<OrderAbandonRouteResult>(
