@@ -38,6 +38,13 @@
 
 ## Context
 
+**Citations.** File and line citations to the repo in this Context section, and in the Decisions
+where they describe code that existed before this plan, are as of `main` at `49360fe6`
+(2026-10-05), the base this record was written on. Some of that code has since moved or been
+deleted, for example by increment 2. Citations to the merged `X402Rail` port and the
+`payments-x402` rail (`x402-rail.ts`, `rail.ts`, `facilitator.ts`) and its tests are as of `main`
+at `efcf5a7a` (2026-10-07).
+
 Issue #376 asks for an x402 content gate. An agent or a person asks for a digital product, is told
 the price with an HTTP 402, pays in USDC, and gets the file in the same exchange. The design note
 for #376 (§4) found that the repo has x402 pieces, but they do not fit the protocol.
@@ -208,8 +215,8 @@ So every offer the use case builds, including the snapshot-priced offer for a re
 - Stripe has no analogue, so every new method would need a Stripe stub. ADR-0008 already rejected
   a gateway interface that pretends a method can do something it cannot.
 - These outcomes have three arms each: valid, invalid or unavailable, and settled, rejected or
-  unconfirmed. `ConfirmationResult`'s failure union is closed and terminal-only. That is why today's
-  adapter has to throw to say "retry" (`packages/payments-x402/src/index.ts:75-82`).
+  unconfirmed. `ConfirmationResult`'s failure union is closed and terminal-only. That is why the
+  pre-increment-2 adapter had to throw to say "retry" (`packages/payments-x402/src/index.ts:75-82`).
 - `settleOrder` keeps calling `PaymentGateway.verifyConfirmation`, unchanged. Dedupe, the amount
   check, the grant and the late-payment logic stay shared with Stripe.
 
@@ -381,12 +388,13 @@ make no network call.**
      found order never yields the file, the `orderId` or a `Link`** (C).
    - **Found:** the replay rules (C). Every case there except a still-unbroadcast pending order of
      this product answers the same **409 `payment_already_used`**, whatever product the order is
-     for. The price and window checks in step 4 apply only to new payments.
+     for. The two pending rows of C continue through step 4, with the snapshot price.
    - **Not found:** continue.
-4. **New payments only: amount and window.**
-   - The decoded amount must equal today's quote in `Cents` exactly. The one exception is a
-     pending order with no settle attempt (C): its payment is compared against the order's
-     snapshot (`order.totals.total`), not against today's quote.
+4. **Amount and window.** This runs for a new payment and for the two pending rows of C.
+   - The decoded amount must equal today's quote in `Cents` exactly. For a pending order of this
+     product (no settle attempt, or only `rejected_pre_broadcast` attempts; C), the payment is
+     compared against the order's snapshot (`order.totals.total`) instead of today's quote. The
+     window check is the same in every case.
    - The window must satisfy `validAfter ≤ now` and
      `now + 45 s < validBefore ≤ now + maxTimeoutSeconds + 30 s`. The 45 s covers the 10 s
      `/verify` and 30 s `/settle` budgets (Decision 8).
@@ -433,6 +441,16 @@ make no network call.**
    - **`settled`** (a well-formed `success: true`; Decision 8 lists the checks) builds the
      in-process `page_gate` confirmation and runs `settleOrder`. That flips `pending → paid`,
      records the payment and grants the entitlement with `source: "x402"`.
+   - **`settled`, but `settleOrder` fails** (storage `BUSY`, or it throws). The money is on-chain
+     and this request is the only one that may ever be served, but the order is still `pending`
+     with `in_flight`. The use case **flags the order at once**: "settled on chain, not recorded",
+     naming the transaction hash, the payer and the nonce. It sets `lastOutcome: unconfirmed`, so
+     no later request settles it. The site answers **409** with `error: "settlement_unrecorded"`
+     and `PAYMENT-RESPONSE` (the buyer's receipt), and with **no `Link` and no `Retry-After`**: the
+     links would not work on an unpaid order, and a retry with the same header gets the replay 409
+     (C). The operator records or refunds the payment from the flag. If the flag write fails too,
+     the expiry sweep's flag (attempts ≥ 1) is the backstop; it lacks the hash, which the operator
+     finds from the payer and nonce.
    - **A facilitator's `success: false` does not prove nothing was broadcast.** The reference
      facilitator broadcasts `transferWithAuthorization` and then waits for the receipt. If the wait
      throws, its `catch` answers
@@ -463,7 +481,9 @@ make no network call.**
      `unproven_rejection`): first re-read the order; if it is paid, answer 409
      `payment_already_used`. Otherwise **flag the order at once**, set `lastOutcome: unconfirmed`
      and answer **409** with `error: "settlement_unconfirmed"`. The authorization may now be on
-     the chain, so no later request may settle it again or receive the file (C). The flag is the
+     the chain, so no later request may settle it again or receive the file (C). The body warns
+     the client that **this authorization may still settle until its `validBefore`**, so paying
+     again with a new one before then may pay twice. The flag is the
      only way forward: the operator checks the chain and sends any money back (below).
 
    **The pre-broadcast allowlist** (`PRE_BROADCAST_REASONS`). These are the exact `errorReason`
@@ -503,9 +523,11 @@ make no network call.**
      physical mid-request. The use case flags the order "paid but undeliverable" through the order
      store and returns `PAID_UNDELIVERABLE`. The site answers **409** with `PAYMENT-RESPONSE` and
      the `Link` headers.
-   - A storage `BUSY` at this point answers **503** with `Retry-After`, `PAYMENT-RESPONSE` and
-     `Link`. This request settled the payment, so it may carry the `orderId`. The client downloads
-     again through the `rel="enclosure"` link; a retry with the same payment header gets 409 (C).
+   - A storage `BUSY` at this point is retried a bounded number of times in-process. If it
+     persists, the answer is **503 with no `Retry-After`**, with `PAYMENT-RESPONSE`, both `Link`
+     headers and `error: "delivery_busy"`. The order is paid, and this request settled it, so it
+     may carry the `orderId`. The body tells the client **not to resend the payment** (that gets
+     the replay 409, C) and to fetch the `rel="enclosure"` link instead, after a short wait.
    - If it authorizes, `x402/pay` returns the order id and the sku. The site then:
      - calls `serveDownload` for that line, which re-checks the gate (Decision 6);
      - adds `PAYMENT-RESPONSE` (base64 `SettlementResponse`, v2 §5.3);
@@ -595,11 +617,15 @@ resolve this automatically is a possible later increment.
 
 | Outcome | HTTP | Kind |
 |---|---|---|
-| `FACILITATOR_UNAVAILABLE` (`/verify` could not be asked), storage `BUSY` after a settle (sent with `PAYMENT-RESPONSE` and `Link`; the client then uses the link) | 503 with `Retry-After` | Retryable |
+| `FACILITATOR_UNAVAILABLE` (`/verify` could not be asked; nothing was sent to `/settle`) | 503 with `Retry-After` | Retryable with the same header |
+| `delivery_busy`: storage `BUSY` after a recorded settle | 503, **no `Retry-After`**, with `PAYMENT-RESPONSE` and both `Link` headers | Terminal for the header; download through the `rel="enclosure"` link |
 | `MALFORMED` | 400 | Terminal |
 | `PAYMENT_MISMATCH`, `PAYMENT_INVALID`, a first-attempt `rejected` (proven pre-broadcast by the adapter), `payment_window_closed` | 402 | Terminal |
-| `PAYMENT_ALREADY_USED` (`payment_already_used`: any found payment except a still-unbroadcast pending order of this product, with nothing else in the answer), `SETTLEMENT_UNCONFIRMED` (`settlement_unconfirmed`, flagged), a flagged non-success after a prior attempt, `PAID_UNDELIVERABLE` | 409 | Terminal |
+| `PAYMENT_ALREADY_USED` (`payment_already_used`: any found payment except a still-unbroadcast pending order of this product, with nothing else in the answer), `SETTLEMENT_UNCONFIRMED` (`settlement_unconfirmed`, flagged, including a transport timeout on `/settle`), `settlement_unrecorded` (flagged, with `PAYMENT-RESPONSE`, no `Link`), a flagged non-success after a prior attempt, `PAID_UNDELIVERABLE` | 409 | Terminal |
 | `NOT_GATEABLE` | 404 | Terminal |
+
+**Every gate response carries `Cache-Control: private, no-store`**: the 402, the 400, the 404, the
+409s, the 503s and the file. No shared cache may keep a payment answer, a `Link` or the bytes.
 
 The adapter keeps the rule that "could not ask" is never reported as "the answer was no": the
 rail never throws, and an unanswered call is `unavailable` or `unconfirmed`
@@ -895,6 +921,14 @@ off: a dormant money-taking route is one flag away from live, and nothing would 
   `orderId` or the `Link` headers. Every other request with that payment gets one identical 409,
   whatever product it names and whatever state the order is in (Decision 5, C). That 409 only says
   "this authorization is spent", which the chain already says.
+- **Accepted risk: a mempool front-run can deny an honest buyer the file.** Someone who sees the
+  facilitator's `transferWithAuthorization` before it is mined can submit the same authorization
+  first. The facilitator's transaction then reverts, the adapter returns `unconfirmed`, and the
+  buyer gets 409 `settlement_unconfirmed` with no file. **Nothing is stolen:** the signature fixes
+  `to` and `value`, so the money still reaches our `payTo`, and the order is flagged for the
+  operator to refund. The attacker gains nothing and pays the gas. Base's sequencer does not
+  expose a public mempool, which makes this unlikely. We accept it rather than add a recovery path
+  (C).
 - **Privacy.** The public plugin routes return only the outcome, and, to the settling request
   alone, the `orderId`, the line's sku and the transaction, never other order contents. The
   retired route followed the same redaction rule (`x402-settle-route.ts:50-55`). Flags and notes name the payer and the nonce, never the
@@ -937,9 +971,10 @@ records every call and counts calls per path.
     a `Response`;
   - **the injected fetch never receives a `signal` in `init`**, on `/verify` and on `/settle`. The
     fake facilitator's bridge mode throws `DataCloneError` for any `init.signal`, as the real
-    bridge does, so a call carrying one fails the test. (Merged with increment 6:
-    `x402-rail.verify.test.ts:46` and `x402-rail.platform.test.ts:111`.) A transport that never
-    answers is cut off by the adapter's own timeout at 10 s and 30 s, and not before;
+    bridge does, so a call carrying one fails the test. The `/verify` assertion is merged
+    (`x402-rail.verify.test.ts:46`, `x402-rail.platform.test.ts:111`). **The same assertion for
+    `/settle` is still to be added.** A transport that never answers is cut off by the adapter's
+    own timeout at 10 s and 30 s, and not before;
   - a truthy-but-not-`true` answer is refused;
   - a settle answer with the wrong network, payer or amount is `unconfirmed`.
 - **Credentials:** with no key, no `Authorization` header is sent. With a key, it is sent only as
@@ -973,7 +1008,15 @@ Postgres and D1; increments 4, 5 and 7).
 - **The settle-attempt marker:**
   - **(b)** the marker is durable before `/settle`: a crash injected inside `settle` leaves
     `attempts = 1`, `in_flight`;
-  - **(c)** `unconfirmed` flags at once;
+  - **(c)** `unconfirmed` flags at once, and its HTTP mapping is asserted explicitly: a
+    first-attempt `/settle` transport timeout gives **409 `settlement_unconfirmed`, not 503**,
+    with no `Retry-After`, and the body warns that the authorization may still settle until
+    `validBefore`;
+  - **(unrecorded)** `/settle` answers `settled` and `settleOrder` then fails (an injected `BUSY`,
+    and an injected throw). The order is flagged at once with the transaction hash, payer and
+    nonce, `lastOutcome` is `unconfirmed`, and the answer is 409 `settlement_unrecorded` with
+    `PAYMENT-RESPONSE` and **no `Link` and no `Retry-After`**. A retry with the same header gets
+    the replay 409 and makes no call;
   - **(A)** a first-attempt `rejected` carrying `invalid_exact_evm_transaction_failed` is flagged
     and answered 409 `settlement_unconfirmed`, **not 402**. So are `unexpected_settle_error`,
     `invalid_exact_evm_nonce_already_used`, an unknown reason, a missing reason, and an allowlisted
@@ -1031,6 +1074,12 @@ a fake R2; increment 8).
   - `PAID_UNDELIVERABLE` maps to 409 with `PAYMENT-RESPONSE` and both `Link` headers;
   - a replay maps to 409 `payment_already_used` with **no body bytes of the file, no `Link`, no
     `PAYMENT-RESPONSE`** and no `orderId` anywhere in the response;
+  - **(no oracle, at the site)** the full responses for the row-1 cases of C, at least paid for
+    this product, paid for another product and pending `in_flight`, are equal in status, in every
+    header and in the body;
+  - `delivery_busy` maps to 503 with `PAYMENT-RESPONSE` and both `Link` headers and **no
+    `Retry-After`**;
+  - **every** gate response, the file included, carries `Cache-Control: private, no-store`;
   - 400, 402, 409 and 503 as mapped;
   - 404 for an unknown or ungateable slug, with no difference between the two.
 
@@ -1299,3 +1348,20 @@ The amendments, against the 2026-10-05 draft:
 - Stale names fixed: `offer(price: Money, resourceUrl)`, `VERIFY_TIMEOUT_MS` /
   `SETTLE_TIMEOUT_MS`, and the bearer header now cited at `rail.ts`, not the deleted
   `index.ts:301-304`.
+
+**Review round 5, polish (both reviewers approved; follow-ups):**
+- `/settle` answering `settled` and `settleOrder` then failing is specified: flag at once with the
+  transaction hash, answer 409 `settlement_unrecorded` with no `Link` and no `Retry-After`, and a
+  test (Decision 5, step 8).
+- A storage `BUSY` after a recorded settle is retried in-process, then answers 503 `delivery_busy`
+  with no `Retry-After`, telling the client to use the link, not to resend the payment.
+- The `settlement_unconfirmed` body warns that the authorization may still settle until
+  `validBefore`. Test (c) asserts a `/settle` timeout maps to 409, not 503.
+- A mempool front-run of the authorization is recorded as an accepted risk (Decision 11).
+- A site-level test compares status, headers and body across the replay cases, and every gate
+  response carries `Cache-Control: private, no-store`.
+- The no-signal test is merged for `/verify` only; the `/settle` assertion is listed as still to
+  add.
+- Step 3 and step 4 now agree that both pending rows of C run the window check and use the snapshot
+  price.
+- The Context names the commits its citations refer to.
