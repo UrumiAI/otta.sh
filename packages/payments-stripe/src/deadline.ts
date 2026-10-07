@@ -43,7 +43,7 @@ export class StripeRequestTimeoutError extends Error {
 export interface CallDeadline {
 	/** The request, raced against the bound. `init` gains a `signal` only on a
 	 *  trusted host. */
-	fetch(doFetch: typeof fetch, url: string, init: RequestInit): Promise<Response>;
+	request(doFetch: typeof fetch, url: string, init: RequestInit): Promise<Response>;
 	/** The body as JSON, read under the same bound (`res.json()`'s semantics). */
 	readJson(res: Response): Promise<unknown>;
 	/** Ends the call: clears the timer and cancels any body left unread. */
@@ -83,7 +83,7 @@ export function startDeadline(timeoutMs: number, trustedHost: boolean): CallDead
 	const race = <T>(work: Promise<T>): Promise<T> => Promise.race([work, expiry]);
 
 	return {
-		async fetch(doFetch, url, init) {
+		async request(doFetch, url, init) {
 			if (expired) throw new StripeRequestTimeoutError(timeoutMs);
 			const request = doFetch(
 				url,

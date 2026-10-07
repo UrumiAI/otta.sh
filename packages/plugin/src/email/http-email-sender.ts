@@ -218,7 +218,7 @@ export abstract class HttpEmailSender implements EmailSender {
 		try {
 			let res: Response;
 			try {
-				res = await deadline.fetch(this.#fetch, request.url, {
+				res = await deadline.request(this.#fetch, request.url, {
 					method: "POST",
 					headers: request.headers,
 					body: request.body,

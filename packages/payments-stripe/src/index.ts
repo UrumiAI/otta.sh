@@ -1190,7 +1190,7 @@ export function createStripeHttpTransport(options: StripeHttpTransportOptions): 
 		let status: unknown;
 		const call = deadlineOf(left);
 		try {
-			const res = await call.fetch(
+			const res = await call.request(
 				doFetch,
 				`${base}/v1/payment_intents/${encodeURIComponent(intentId)}`,
 				{ method: "GET", headers: stripeHeaders(secretKey) },
@@ -1253,7 +1253,7 @@ export function createStripeHttpTransport(options: StripeHttpTransportOptions): 
 			try {
 				let res: Response;
 				try {
-					res = await call.fetch(doFetch, `${base}/v1/payment_intents`, {
+					res = await call.request(doFetch, `${base}/v1/payment_intents`, {
 						method: "POST",
 						headers: {
 							...stripeHeaders(secretKey),
@@ -1324,7 +1324,7 @@ export function createStripeHttpTransport(options: StripeHttpTransportOptions): 
 			try {
 				let res: Response;
 				try {
-					res = await call.fetch(doFetch, `${base}/v1/customers`, {
+					res = await call.request(doFetch, `${base}/v1/customers`, {
 						method: "POST",
 						headers: {
 							...stripeHeaders(secretKey),
@@ -1377,7 +1377,7 @@ export function createStripeHttpTransport(options: StripeHttpTransportOptions): 
 			try {
 				let res: Response;
 				try {
-					res = await call.fetch(doFetch, url, {
+					res = await call.request(doFetch, url, {
 						method: "GET",
 						headers: stripeHeaders(secretKey),
 					});
@@ -1422,7 +1422,7 @@ export function createStripeHttpTransport(options: StripeHttpTransportOptions): 
 			try {
 				let res: Response;
 				try {
-					res = await call.fetch(doFetch, `${base}/v1/refunds`, {
+					res = await call.request(doFetch, `${base}/v1/refunds`, {
 						method: "POST",
 						headers: {
 							...stripeHeaders(secretKey),
@@ -1487,7 +1487,7 @@ export function createStripeHttpTransport(options: StripeHttpTransportOptions): 
 					// The id is PATH-ESCAPED: it is ours (recorded at checkout), but a value
 					// that reached a URL path unescaped could retarget the POST to another
 					// endpoint under the same secret key.
-					res = await call.fetch(
+					res = await call.request(
 						doFetch,
 						`${base}/v1/payment_intents/${encodeURIComponent(intentId)}/cancel`,
 						{
@@ -1642,7 +1642,7 @@ export async function fetchStripeAccountCountry(options: {
 	try {
 		let res: Response;
 		try {
-			res = await call.fetch(options.fetch, `${base}/v1/account`, {
+			res = await call.request(options.fetch, `${base}/v1/account`, {
 				method: "GET",
 				headers: stripeHeaders(options.secretKey),
 			});

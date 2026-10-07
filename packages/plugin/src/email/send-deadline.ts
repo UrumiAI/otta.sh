@@ -39,7 +39,7 @@ export interface SendDeadline {
 	/** Whether the bound has passed (a trusted host's transport may reject with
 	 *  its own abort error, which is then this send's timeout). */
 	readonly expired: boolean;
-	fetch(
+	request(
 		fetchFn: (url: string, init?: RequestInit) => Promise<Response>,
 		url: string,
 		init: RequestInit,
@@ -84,7 +84,7 @@ export function startSendDeadline(timeoutMs: number, trustedHost: boolean): Send
 			return expired;
 		},
 
-		async fetch(fetchFn, url, init) {
+		async request(fetchFn, url, init) {
 			if (expired) throw new EmailSendTimeoutError(timeoutMs);
 			const request = Promise.resolve(
 				fetchFn(url, controller !== undefined ? { ...init, signal: controller.signal } : init),
