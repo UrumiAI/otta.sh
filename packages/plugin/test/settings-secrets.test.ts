@@ -342,7 +342,10 @@ describe("Settings: how a key field renders", () => {
 	test("one email status line: via EmDash, or no provider with a pointer to the guide (ADR-0031)", async () => {
 		const none = await invoke(makeCtx().ctx, { type: "page_load", page: "/settings" });
 		const noneText = contextTexts(none.blocks).join("\n");
-		expect(noneText).toContain("no EmDash email provider");
+		expect(noneText).toContain(
+			"Email: no EmDash email provider. Order emails wait up to 72 h, then are skipped; sign-in links are not sent.",
+		);
+		expect(noneText).not.toContain("queued");
 		expect(noneText).toContain("docs/email-providers.md");
 		const via = await invoke(makeCtx({}, { email: true }).ctx, {
 			type: "page_load",

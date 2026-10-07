@@ -67,6 +67,7 @@ import {
 	LOGIN_EMAIL_TIMEOUT_MS,
 	makeEmailSender,
 } from "./ctx-email-sender.js";
+import { logExpiredEmails } from "./expired-emails.js";
 
 /**
  * The ceiling on ONE inline send — DEFINED as the login email's ceiling, for the
@@ -196,6 +197,8 @@ export async function sendOrderEmailsNow(
 	// A sandboxed host with no provider answers the first send (`ctx.email` is
 	// always present there): the row goes back uncounted and nothing was sent.
 	let unavailable = false;
+	// Rows the 72 h cap completed unsent: logged once the drain ends (ADR-0031).
+	const expiredRows: OutboxEmail[] = [];
 
 	// Flipped by the deadline: the drain asks before every claim, so once the request
 	// stops waiting nothing NEW is claimed by the abandoned work.
@@ -225,9 +228,14 @@ export async function sendOrderEmailsNow(
 			onTransportUnavailable: () => {
 				unavailable = true;
 			},
+			onExpired: (row) => {
+				expiredRows.push(row);
+			},
 		},
 	).then(
-		() => undefined,
+		() => {
+			logExpiredEmails(`inline order email for ${orderId}`, expiredRows);
+		},
 		(err: unknown) => {
 			// A STORE rejection (the claim or the mark — a failed send never gets here).
 			// The message, never the error object: a transport error is free to quote the

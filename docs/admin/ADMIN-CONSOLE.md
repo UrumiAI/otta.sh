@@ -3220,8 +3220,9 @@ accordion   block_id settings:payments
                context "The settings below are shown as saved. x402 payments are not
                         available yet. These settings are kept for when they are."
                context "Email: sent via EmDash's email provider. …" | "Email: no EmDash
-                        email provider, so order and sign-in emails stay queued. See
-                        docs/email-providers.md."         ← ADR-0031: `ctx.email` present?
+                        email provider. Order emails wait up to 72 h, then are skipped;
+                        sign-in links are not sent. See docs/email-providers.md."
+                                                          ← ADR-0031: `ctx.email` present?
                banner alert (cond) a stored http sign-in page saved before the https
                      rule: "The links in sign-in emails point to an http page, so their
                      tokens travel unencrypted when clicked — change this address to https. …"

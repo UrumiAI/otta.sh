@@ -1393,14 +1393,15 @@ function stripeAccountLine(found: StripeAccountCountryStatus): string | null {
 
 /**
  * ADR-0031 — the one email line: emails go through the EmDash host's email
- * provider, or there is none and they wait in the queue. A sandboxed host always
- * hands over `ctx.email`, so there a missing provider shows on this line once a
- * send has been refused and recorded (`emailSendingAvailable`), for 5 minutes.
+ * provider, or there is none: order emails wait (72 h at most, then are skipped)
+ * and sign-in links are not sent. A sandboxed host always hands over `ctx.email`,
+ * so there a missing provider shows on this line once a send has been refused and
+ * recorded (`emailSendingAvailable`), for 5 minutes.
  */
 export function emailStatusLine(emailAvailable: boolean): string {
 	return emailAvailable
 		? "Email: sent via EmDash's email provider. The from-address, SPF and DKIM are set in that provider."
-		: "Email: no EmDash email provider, so order and sign-in emails stay queued. See docs/email-providers.md.";
+		: "Email: no EmDash email provider. Order emails wait up to 72 h, then are skipped; sign-in links are not sent. See docs/email-providers.md.";
 }
 
 /** A refused payment-settings save: every rule broken, and what was typed. */

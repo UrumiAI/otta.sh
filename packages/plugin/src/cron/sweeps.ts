@@ -166,6 +166,7 @@ import {
 	type EmailSender,
 	type OrderId,
 	type OrderState,
+	type OutboxEmail,
 } from "@otta-sh/domain";
 import {
 	CARTS_COLLECTION,
@@ -195,6 +196,7 @@ import {
 	emailSendingAvailable,
 	makeEmailSender,
 } from "../email/ctx-email-sender.js";
+import { logExpiredEmails } from "../email/expired-emails.js";
 import {
 	boundedRefundStripeOptions,
 	type BoundedRefundStripeOptions,
@@ -1322,6 +1324,8 @@ export async function runCommerceSweeps(
 				const orderStore = countClaims(stores.orderStore, () => {
 					claimed++;
 				});
+				// Rows the 72 h cap completed unsent: logged once per tick below (ADR-0031).
+				const expired: OutboxEmail[] = [];
 				const count = await dispatchOrderEmails(
 					{
 						orderStore,
@@ -1350,6 +1354,9 @@ export async function runCommerceSweeps(
 						onTransportUnavailable: () => {
 							unavailable = true;
 						},
+						onExpired: (row) => {
+							expired.push(row);
+						},
 						// Alertable: past ten timeouts a provider is not slow but not working,
 						// and from here each timeout counts toward parking the row.
 						onRepeatedTimeouts: (row) => {
@@ -1362,6 +1369,7 @@ export async function runCommerceSweeps(
 					},
 				);
 				noteUnits("order-emails", claimed, legBudget);
+				logExpiredEmails("cron sweep order-emails", expired);
 				// The host has no email provider (sandboxed: learned from the send). The
 				// row went back uncounted; report the configuration, not "sent 0".
 				if (unavailable && count === 0) return { count: 0, skipped: true };

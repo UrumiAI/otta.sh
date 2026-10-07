@@ -254,6 +254,35 @@ describe("a replay costs one order read: the sender is built lazily", () => {
 	});
 });
 
+describe("an email older than 72 h (ADR-0031)", () => {
+	test("completed unsent and logged with the row id and template, never the address", async () => {
+		const buyer = "stale-inline@example.test";
+		const id = await seedOrder("ord-stale-inline", true, buyer);
+		// Age the queued confirmation past the cap, in the stored document itself.
+		const orders = harness.ctx.storage!["orders"]!;
+		const doc = (await orders.get(id)) as {
+			emailOutbox: { id: string; createdAt: string }[];
+		} | null;
+		const row = doc?.emailOutbox[0];
+		if (doc === null || row === undefined) throw new Error("no outbox row seeded");
+		row.createdAt = new Date(Date.now() - 96 * 60 * 60 * 1000).toISOString();
+		await orders.put(id, doc);
+		const { ctx, messages } = withEmail();
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+
+		const result = await sendOrderEmailsNow(ctx, harness.stores, id);
+
+		expect(result).toEqual({ configured: true, sent: [], skipped: [] });
+		expect(messages).toEqual([]);
+		expect(await cronView(id)).toBeNull(); // completed, never sent
+		const lines = warn.mock.calls.map((call) => call.map(String).join(" "));
+		expect(lines).toEqual([
+			`[otta] inline order email for ${id}: 1 email(s) older than 72 h completed unsent (ADR-0031): ${row.id} (order-confirmation)`,
+		]);
+		expect(lines.join("\n")).not.toContain(buyer);
+	});
+});
+
 describe("at most one inline attempt per row — every retry is the cron's", () => {
 	test("a row a previous inline attempt already tried is not claimed again", async () => {
 		const id = await seedOrder("ord-retry", true);

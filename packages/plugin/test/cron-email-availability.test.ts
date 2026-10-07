@@ -19,9 +19,14 @@ import {
 	productId as toProductId,
 	sku as toSku,
 } from "@otta-sh/domain";
-import type { StorageAccess } from "@otta-sh/store-emdash";
+import {
+	collectionOf,
+	ORDERS_COLLECTION,
+	type OrderDoc,
+	type StorageAccess,
+} from "@otta-sh/store-emdash";
 import { makeSqliteStorage } from "@otta-sh/store-emdash/testing";
-import { beforeAll, describe, expect, test } from "vitest";
+import { beforeAll, describe, expect, test, vi } from "vitest";
 import { SWEEP_TASK_NAME } from "../src/cron/index.js";
 import { runCommerceSweeps } from "../src/cron/sweeps.js";
 import type { EmailMessage, PluginContext } from "../src/types.js";
@@ -40,8 +45,8 @@ beforeAll(async () => {
 	({ storage } = await makeSqliteStorage(commerceStorageLayout()));
 }, 120_000);
 
-async function paidOrder(id: string): Promise<void> {
-	const { orderStore } = adapters(storage);
+async function paidOrder(id: string, at?: Date, buyerRef = "buyer@example.com"): Promise<void> {
+	const { orderStore } = adapters(storage, at);
 	const usd = toCurrency("USD");
 	const oid = toOrderId(id);
 	await orderStore.createFromCart({
@@ -50,7 +55,7 @@ async function paidOrder(id: string): Promise<void> {
 		currency: usd,
 		idempotencyKey: toIdempotencyKey(`seed-${id}`),
 		holdExpiresAt: "2099-01-01T00:00:00.000Z",
-		buyerRef: "buyer@example.com",
+		buyerRef,
 		paymentMethod: "stripe",
 		lines: [
 			{
@@ -120,6 +125,42 @@ describe("order-emails leg, trusted mode", () => {
 		expect(leg.skipped).toBeUndefined();
 		expect(leg.count).toBeGreaterThanOrEqual(1);
 		expect(sent.length).toBeGreaterThanOrEqual(1);
+	}, 60_000);
+});
+
+describe("order-emails older than 72 h (ADR-0031)", () => {
+	test("completed unsent, and the tick logs the count, row id and template, never the address", async () => {
+		const id = `ord-stale-${crypto.randomUUID()}`;
+		const buyer = `stale-${crypto.randomUUID()}@example.test`;
+		await paidOrder(id, new Date(Date.now() - 96 * 60 * 60 * 1000), buyer);
+		const doc = await collectionOf<OrderDoc>(storage, ORDERS_COLLECTION).get(id);
+		const rowId = doc?.emailOutbox[0]?.id;
+		expect(rowId).toBeDefined();
+		const sent: EmailMessage[] = [];
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+		try {
+			await runCommerceSweeps(withEmail(sweepContext(storage), sent), SWEEP_TASK_NAME, {
+				cursors: memoryCursors(),
+				queryBudget: 100_000,
+			});
+			const lines = warn.mock.calls
+				.map((call) => call.map(String).join(" "))
+				.filter((line) => line.includes("older than 72 h"));
+			expect(lines).toHaveLength(1);
+			expect(lines[0]).toMatch(/^\[otta\] cron sweep order-emails: \d+ email\(s\) older than 72 h/);
+			expect(lines[0]).toContain(`${String(rowId)} (order-confirmation)`);
+			expect(lines[0]).not.toContain(buyer);
+		} finally {
+			warn.mockRestore();
+		}
+		expect(sent.some((message) => message.to === buyer)).toBe(false);
+		// Completed: never claimed again.
+		const again = await adapters(storage).orderStore.claimNextEmailForOrder(
+			toOrderId(id),
+			"2099-01-01T00:00:00.000Z",
+			"2099-01-01T00:00:00.000Z",
+		);
+		expect(again).toBeNull();
 	}, 60_000);
 });
 
