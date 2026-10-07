@@ -1241,6 +1241,72 @@ describe("storefront/checkout/place (workerd sandbox)", () => {
 		// old `stubServer.requests` count carried.
 		expect(orderOps).toEqual([]);
 	});
+
+	/**
+	 * Review R3-B X1, over the real wire: `JSON.parse` keeps a lone UTF-16
+	 * surrogate (and U+0000), and Postgres's `jsonb` cannot read either back — one
+	 * stored copy used to make every order query fail. The route refuses them
+	 * before anything is read or written: a ship-to field is the buyer's address to
+	 * retype (INVALID_SHIPPING_ADDRESS, as an over-long field is); anything else is
+	 * a malformed call (INVALID_INPUT).
+	 */
+	const WF_BASE = { cartId: "cart-wf", buyerRef: "a@b.co", idempotencyKey: "checkout:cart-wf" };
+	const WF_ADDRESS = {
+		name: "Asha Rao",
+		line1: "12 Park Street",
+		city: "Kolkata",
+		postalCode: "700016",
+		country: "IN",
+	};
+	test.each([
+		["a lone high surrogate in the city", { city: "Kolkata\uD800" }],
+		["a lone low surrogate in the name", { name: "\uDC00Asha" }],
+		["a NUL in line 1", { line1: "12 Park\u0000 Street" }],
+		["a reversed pair in the postal code", { postalCode: "7000\uDE00\uD83D" }],
+	])("%s is INVALID_SHIPPING_ADDRESS, before any store work", async (_label, field) => {
+		const result = resultOf(
+			await sandboxHandle.invokeRoute("storefront/checkout/place", {
+				...WF_BASE,
+				shippingAddress: { ...WF_ADDRESS, ...field },
+			}),
+		);
+		expect(result).toEqual({ ok: false, reason: "INVALID_SHIPPING_ADDRESS" });
+		expect(productQueries).toHaveLength(0);
+		expect(orderOps).toEqual([]);
+	});
+
+	test.each([
+		["buyerRef", { buyerRef: "a\uD800@b.co" }],
+		["buyerRef (NUL)", { buyerRef: "a\u0000@b.co" }],
+		["couponCode", { couponCode: "SAVE\uDC00" }],
+		["cartId", { cartId: "cart\uD800", idempotencyKey: "checkout:cart\uD800" }],
+	])(
+		"a lone surrogate or NUL in %s is INVALID_INPUT, before any store work",
+		async (_label, field) => {
+			const result = resultOf(
+				await sandboxHandle.invokeRoute("storefront/checkout/place", {
+					...WF_BASE,
+					shippingAddress: WF_ADDRESS,
+					...field,
+				}),
+			);
+			expect(result).toEqual({ ok: false, error: "INVALID_INPUT" });
+			expect(orderOps).toEqual([]);
+		},
+	);
+
+	test("an emoji in the ship-to name is NOT refused — it is well-formed text", async () => {
+		const result = resultOf(
+			await sandboxHandle.invokeRoute("storefront/checkout/place", {
+				...WF_BASE,
+				shippingAddress: { ...WF_ADDRESS, name: "Asha \uD83D\uDE00" },
+			}),
+		);
+		// It gets past the parser to the store (this cart does not exist), which is
+		// the point: the refusal is about broken text, not about unusual text.
+		expect(result).not.toEqual({ ok: false, reason: "INVALID_SHIPPING_ADDRESS" });
+		expect(result).not.toEqual({ ok: false, error: "INVALID_INPUT" });
+	});
 });
 
 /**

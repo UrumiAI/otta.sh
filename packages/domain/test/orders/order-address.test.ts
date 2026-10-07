@@ -65,3 +65,30 @@ describe("normalizeOrderAddress — ISO codes", () => {
 		});
 	});
 });
+
+/** Review R3-B X1: a field holding a lone surrogate or NUL cannot be stored on
+ *  Postgres, so it is not an address — the buyer gets the typed refusal they
+ *  can act on, not a store that breaks later. */
+describe("normalizeOrderAddress — text that is not well formed", () => {
+	test.each([
+		["name", "Asha\uD800"],
+		["line1", "12 Park\u0000 Street"],
+		["line2", "\uDC00Flat 2"],
+		["city", "Kolkata\uDBFF"],
+		["postalCode", "700\u0000016"],
+		["email", "a\uD800@example.com"],
+		["phone", "+91\uDC00"],
+	] as const)("%s holding %j → INVALID", (field, value) => {
+		expect(normalizeOrderAddress({ ...base, [field]: value })).toEqual({
+			ok: false,
+			reason: "INVALID",
+		});
+	});
+
+	test("an emoji (a proper pair) is still a valid name", () => {
+		expect(normalizeOrderAddress({ ...base, name: "Ada \uD83D\uDE00" })).toMatchObject({
+			ok: true,
+			value: { name: "Ada \uD83D\uDE00" },
+		});
+	});
+});

@@ -46,7 +46,7 @@
  *  - `qty` — a positive integer no greater than 10,000 (the shopper-facing cap,
  *    far tighter than the raw inventory primitive's);
  *  - `sku` — non-empty, and at most 200 characters where the entitlement check
- *    bounded it; never carrying U+0000 (an addition — see below);
+ *    bounded it; always well-formed text (an addition — see below);
  *  - `buyerRef` — 1 to 320 characters; `couponCode` — 1 to 200; the login token —
  *    1 to 400; the shipping address — the per-field bounds the address schema
  *    pins, which the domain then re-validates and trims;
@@ -55,11 +55,20 @@
  *  - the idempotency key — non-empty, which is what every write route demanded of
  *    the header.
  *
- * ADDED, not mirrored (#379), because the wire's absence of a rule was a bug the
- * in-process store makes visible: U+0000 is refused in a `sku`, the cart add's
- * `productId` and an idempotency key, since Postgres cannot store it and a NUL
- * failed the first store read there as a throw; and the key of a write that makes
- * it part of a document id is capped at {@link IDEMPOTENCY_KEY_MAX}.
+ * ADDED, with no wire counterpart (security review R3-B, X1; #379): every
+ * free-text field is refused when it holds a lone UTF-16 surrogate or U+0000
+ * ({@link ILL_FORMED_TEXT_REASON}). `JSON.parse` keeps both, and Postgres's `jsonb`
+ * cannot read either back (and `text` cannot hold U+0000 at all), so one such
+ * string stored once used to break every query over its collection — or fail the
+ * first store read as a throw. Refused rather than repaired, because no keyboard
+ * produces either and the person who sent it should hear so; the storage adapter
+ * repairs whatever slips past (and logs it as a gap here). Where a value is BOTH
+ * out of bounds (empty, too long, wrong charset) and ill-formed, the bound's
+ * reason wins: well-formedness is checked last, so a refusal names the same
+ * problem whichever order a caller fixes things in.
+ *
+ * Also ADDED (#379): the key of a write that makes it part of a document id is
+ * capped at {@link IDEMPOTENCY_KEY_MAX}.
  *
  * NOT mirrored, and why: the email on a login request is validated but never
  * REPORTED on — that surface answers identically whatever it is handed, so a
@@ -73,7 +82,7 @@
  * here to carry one, and a caller branches on the code.
  */
 
-import { isCodeShapedRegion, ORDER_ADDRESS_MAX_LENGTHS } from "@otta-sh/domain";
+import { isCodeShapedRegion, isWellFormedText, ORDER_ADDRESS_MAX_LENGTHS } from "@otta-sh/domain";
 
 /** `Date.toISOString()` output, and only that: fixed-width UTC milliseconds. */
 const ISO_MILLIS_UTC = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
@@ -163,6 +172,17 @@ function fail(field: string, reason: string): never {
 	throw new CommerceInputError(field, reason);
 }
 
+/** The reason every not-well-formed text refusal carries — one string, so the
+ *  admin's refusal banner can word it for an operator (`list-detail.ts`). */
+export const ILL_FORMED_TEXT_REASON =
+	"must not contain a broken character (an unpaired surrogate or NUL)";
+
+/** Refuse text Postgres cannot store: a lone surrogate or U+0000. */
+export function requireWellFormedText(field: string, value: string): string {
+	if (!isWellFormedText(value)) fail(field, ILL_FORMED_TEXT_REASON);
+	return value;
+}
+
 /** Whether `value` passes {@link requireIdToken}, without throwing — for a
  *  boundary that answers a bad id as a refused request. */
 export function isCommerceIdToken(value: string): boolean {
@@ -180,19 +200,7 @@ export function requireIdToken(field: string, value: string): string {
 /** A product id: non-empty, which is the whole of what the product routes checked. */
 export function requireProductId(value: string): string {
 	if (value.length === 0) fail("productId", "must not be empty");
-	return value;
-}
-
-/**
- * Whether `value` is free of U+0000 — the one character Postgres `text` can never
- * hold. A NUL that reaches a store read there fails as `invalid byte sequence for
- * encoding "UTF8": 0x00`, a throw (RENDER_FAILED), not an answer; SQLite stores it
- * happily, so only one dialect shows the bug. Nothing legitimate is refused: no
- * value carrying it could ever have been saved. The id-token charset already
- * excludes it; this is for the fields that have no charset rule.
- */
-function isStorableText(value: string): boolean {
-	return !value.includes("\u0000");
+	return requireWellFormedText("productId", value);
 }
 
 /** {@link requireBoundedProductId}'s ceiling. */
@@ -206,9 +214,25 @@ const BOUNDED_PRODUCT_ID_MAX = 200;
  * what the client throws on, nor refuse what it accepts (#379).
  */
 
-function skuProblem(value: string): string | null {
+/*
+ * ORDER WITHIN A RULE: emptiness and length first, well-formedness LAST — so a
+ * value that is both over a bound and ill-formed is refused for the bound, the
+ * same as `requireTitle` and `requireBoundedText` answer. Well-formedness is the
+ * domain's `isWellFormedText` (no U+0000, no lone surrogate): a NUL that reaches
+ * a Postgres store read fails as `invalid byte sequence for encoding "UTF8"`, a
+ * lone surrogate as `invalid input syntax for type json` — throws
+ * (RENDER_FAILED), not answers — and SQLite stores both happily, so only one
+ * dialect shows the bug. Nothing legitimate is refused: no keyboard produces
+ * either. The id-token charset already excludes both; this is for the fields
+ * that have no charset rule.
+ */
+
+function skuProblem(value: string, max?: number): string | null {
 	if (value.length === 0) return "must not be empty";
-	if (!isStorableText(value)) return "must not contain U+0000";
+	if (max !== undefined && value.length > max) {
+		return `must be at most ${String(max)} characters`;
+	}
+	if (!isWellFormedText(value)) return ILL_FORMED_TEXT_REASON;
 	return null;
 }
 
@@ -217,23 +241,21 @@ function boundedProductIdProblem(value: string): string | null {
 	if (value.length > BOUNDED_PRODUCT_ID_MAX) {
 		return `must be at most ${String(BOUNDED_PRODUCT_ID_MAX)} characters`;
 	}
-	if (!isStorableText(value)) return "must not contain U+0000";
+	if (!isWellFormedText(value)) return ILL_FORMED_TEXT_REASON;
 	return null;
 }
 
-function idempotencyKeyProblem(value: string): string | null {
+function idempotencyKeyProblem(value: string, max?: number): string | null {
 	if (value.length === 0) return "must not be empty";
-	if (!isStorableText(value)) return "must not contain U+0000";
+	if (max !== undefined && value.length > max) {
+		return `must be at most ${String(max)} characters`;
+	}
+	if (!isWellFormedText(value)) return ILL_FORMED_TEXT_REASON;
 	return null;
 }
 
 function documentIdempotencyKeyProblem(value: string): string | null {
-	const problem = idempotencyKeyProblem(value);
-	if (problem !== null) return problem;
-	if (value.length > IDEMPOTENCY_KEY_MAX) {
-		return `must be at most ${String(IDEMPOTENCY_KEY_MAX)} characters`;
-	}
-	return null;
+	return idempotencyKeyProblem(value, IDEMPOTENCY_KEY_MAX);
 }
 
 /**
@@ -249,7 +271,7 @@ export function requireBoundedProductId(value: string): string {
 	return value;
 }
 
-/** `requireBoundedProductId`'s rule as a predicate — length, and no U+0000, but
+/** `requireBoundedProductId`'s rule as a predicate — length, and well-formed, but
  *  NO charset — for the cart add route, which must answer a bad product id as its
  *  own INVALID_INPUT rather than let this client throw. Not {@link isIdToken},
  *  which would refuse ids this accepts. */
@@ -261,7 +283,7 @@ export function isBoundedProductId(value: string): boolean {
  *  charset is imposed — a key carrying a slash or a space is legitimate. */
 export function requireVariantKey(value: string): string {
 	if (value.trim().length === 0) fail("variantKey", "must not be empty or whitespace");
-	return value;
+	return requireWellFormedText("variantKey", value);
 }
 
 /** The ordering / compare-and-set watermark. See this module's doc: the format is
@@ -273,14 +295,14 @@ export function requireWatermark(field: string, value: string): string {
 	return value;
 }
 
-/** `requireIdempotencyKey`'s rule as a predicate: non-empty, no U+0000. */
+/** `requireIdempotencyKey`'s rule as a predicate: non-empty, well-formed. */
 export function isIdempotencyKeyText(value: string): boolean {
 	return idempotencyKeyProblem(value) === null;
 }
 
-/** Every write's key: non-empty, and no U+0000 (Postgres cannot store it). No
- *  length rule — see {@link requireDocumentIdempotencyKey} for the writes that
- *  need one. */
+/** Every write's key: non-empty, and well-formed (Postgres cannot store a NUL or
+ *  a lone surrogate). No length rule — see {@link requireDocumentIdempotencyKey}
+ *  for the writes that need one. */
 export function requireIdempotencyKey(value: string): string {
 	const problem = idempotencyKeyProblem(value);
 	if (problem !== null) fail("idempotencyKey", problem);
@@ -323,11 +345,8 @@ export function isSkuText(value: string): boolean {
 }
 
 export function requireSku(value: string, max?: number): string {
-	const problem = skuProblem(value);
+	const problem = skuProblem(value, max);
 	if (problem !== null) fail("sku", problem);
-	if (max !== undefined && value.length > max) {
-		fail("sku", `must be at most ${String(max)} characters`);
-	}
 	return value;
 }
 
@@ -360,7 +379,7 @@ export function requireTitle(value: string | null): string | null {
 	if (value === null) return null;
 	if (value.length === 0) fail("title", "must not be empty");
 	if (value.length > 500) fail("title", "must be at most 500 characters");
-	return value;
+	return requireWellFormedText("title", value);
 }
 
 export function requireQty(value: number): number {
@@ -394,13 +413,13 @@ export function requireNonNegativeInteger(field: string, value: number): number 
 export function requireBoundedText(field: string, value: string, min: number, max: number): string {
 	if (value.length < min) fail(field, `must be at least ${String(min)} characters`);
 	if (value.length > max) fail(field, `must be at most ${String(max)} characters`);
-	return value;
+	return requireWellFormedText(field, value);
 }
 
 /** True when the string is a plausible email by the same loose bound the login
  *  surface applied. NOT a refusal: the caller answers identically either way. */
 export function looksLikeEmail(value: string): boolean {
-	return value.length >= 3 && value.length <= 320;
+	return value.length >= 3 && value.length <= 320 && isWellFormedText(value);
 }
 
 /** The optional ship-to snapshot's per-field bounds. The domain re-validates and

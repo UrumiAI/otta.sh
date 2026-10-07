@@ -32,6 +32,7 @@ import type {
 import type { RouteHandler } from "../types.js";
 import { resolveLoginLinkUrl } from "./login-link.js";
 import { renderGuard, type RenderGuardFailure } from "./pdp-route.js";
+import { isWellFormedText } from "@otta-sh/domain";
 
 // ── Public route names ──────────────────────────────────────────────────
 export const ACCOUNT_LOGIN_REQUEST_ROUTE = "storefront/account/login/request";
@@ -82,7 +83,8 @@ function sessionCookieDescriptor(token: string, expiresAt: string): SessionCooki
  *  route re-inlining the same `typeof value === "string" && value.length > 0`
  *  guard. `cart-routes.ts` keeps its own copy (pre-existing, out of scope here). */
 export function isNonEmptyString(value: unknown): value is string {
-	return typeof value === "string" && value.length > 0;
+	// Well-formed text too (review R3-B X1): no lone surrogate, no NUL.
+	return typeof value === "string" && value.length > 0 && isWellFormedText(value);
 }
 
 // ── Input / result shapes (hand-validated — the routes are PUBLIC) ─────────
