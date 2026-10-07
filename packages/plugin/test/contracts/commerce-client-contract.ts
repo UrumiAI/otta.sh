@@ -4103,6 +4103,7 @@ export function adminOrdersProductsClientContract(tier: CommerceClientTier): voi
 				priceCents: 2599,
 				currency: "USD",
 				taxClass: null,
+				taxStatus: "taxable",
 				compareAtCents: null,
 				compareAtCurrency: null,
 				unitCostCents: null,
