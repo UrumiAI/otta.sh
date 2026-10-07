@@ -16,7 +16,14 @@
  * cancelled (and, read through `readProviderJson`, says nothing — so an
  * SMTP2GO 2xx cut off by the deadline is still `ambiguous`, as before); an
  * answer that arrives after the deadline is discarded with its body cancelled;
- * a body nobody read (a Resend 2xx) is cancelled when the send ends.
+ * a body nobody read (a Resend 2xx) is cancelled when the send ends. The
+ * deadline bounds a read in TIME; a caller may also bound it in BYTES
+ * (`bounded(res, maxBytes)`), as the senders do for a non-2xx error body.
+ *
+ * TWIN of `@otta-sh/payments-stripe`'s `src/deadline.ts` (the package graph
+ * keeps them apart: Stripe cannot import the plugin, and the domain stays
+ * IO-free; `@otta-sh/payments-x402`'s facilitator race is a third variant).
+ * Keep them in step: a fix to one is very likely owed to the other.
  *
  * THE COST, and the opt-in that removes it. With no signal the host is never
  * told to stop: a timed-out request runs on in the background until the host's
@@ -44,8 +51,11 @@ export interface SendDeadline {
 		url: string,
 		init: RequestInit,
 	): Promise<Response>;
-	/** `res` with its body read under the same bound. */
-	bounded(res: Response): ProviderResponse;
+	/** `res` with its body read under the same bound. With `maxBytes`, a streamed
+	 *  body is read only that far (whole chunks: the last may overshoot it), then
+	 *  cancelled, and what was read is the text; a body with no stream (the
+	 *  sandbox bridge's answer) was already buffered by the host and is read whole. */
+	bounded(res: Response, maxBytes?: number): ProviderResponse;
 	/** Ends the send: clears the timer and cancels any body left unread. */
 	close(): void;
 }
@@ -101,7 +111,7 @@ export function startSendDeadline(timeoutMs: number, trustedHost: boolean): Send
 			return await race(request);
 		},
 
-		bounded(res) {
+		bounded(res, maxBytes) {
 			return {
 				ok: res.ok,
 				status: res.status,
@@ -116,9 +126,16 @@ export function startSendDeadline(timeoutMs: number, trustedHost: boolean): Send
 					const read = (async (): Promise<string> => {
 						const decoder = new TextDecoder();
 						let text = "";
+						let bytes = 0;
 						for (;;) {
+							if (maxBytes !== undefined && bytes >= maxBytes) {
+								// Enough to say why: the rest is not read, and not left open.
+								void reader.cancel().catch(() => {});
+								return text;
+							}
 							const { done, value } = await reader.read();
 							if (done) break;
+							bytes += value.byteLength;
 							text += decoder.decode(value, { stream: true });
 						}
 						return text + decoder.decode();

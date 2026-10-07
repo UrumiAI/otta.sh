@@ -142,6 +142,70 @@ describe("email senders over the sandbox bridge (default: no signal in init)", (
 		expect(body.cancelled()).toBe(true);
 	});
 
+	// The deadline bounds an error body's read in TIME; this bounds it in BYTES.
+	// A refusal is a small JSON object, so a non-2xx body is read only as far as
+	// 16 KiB and then cancelled, before the 64 KiB parse check ever applies.
+	test("a non-2xx body that streams without end is read only to 16 KiB, then cancelled — long before the deadline", async () => {
+		for (const [name, make] of [
+			["resend", resend],
+			["smtp2go", smtp2go],
+		] as const) {
+			let pulled = 0;
+			let cancelled = false;
+			const chunk = new TextEncoder().encode(`{"pad":"${"x".repeat(1_000)}`);
+			const stream = new ReadableStream<Uint8Array>({
+				pull(controller) {
+					pulled += chunk.byteLength;
+					controller.enqueue(chunk);
+				},
+				cancel() {
+					cancelled = true;
+				},
+			});
+			const started = Date.now();
+			const err = await make(async () => new Response(stream, { status: 400 }), {
+				requestTimeoutMs: 5_000,
+			})
+				.send(input)
+				.then(
+					() => undefined,
+					(e: unknown) => e,
+				);
+			expect(err, name).toBeInstanceOf(EmailProviderError);
+			expect((err as EmailProviderError).status, name).toBe(400);
+			expect(Date.now() - started, name).toBeLessThan(1_000);
+			expect(cancelled, name).toBe(true);
+			// 16 KiB, plus at most the chunk in hand and what the stream queued ahead.
+			expect(pulled, name).toBeLessThanOrEqual(16 * 1024 + 3 * chunk.byteLength);
+		}
+	});
+
+	test("a provider's refusal within 16 KiB still reaches the error message", async () => {
+		const refusal = { name: "validation_error", message: "domain not verified" };
+		const err = await resend(async () => new Response(JSON.stringify(refusal), { status: 403 }))
+			.send(input)
+			.then(
+				() => undefined,
+				(e: unknown) => e,
+			);
+		expect((err as Error).message).toBe(
+			"email transport failed with status 403: validation_error: domain not verified",
+		);
+	});
+
+	test("SMTP2GO: a long 2xx answer (its failures list) is not cut at the error cap", async () => {
+		const failures = Array.from({ length: 40 }, (_, i) => `reason ${String(i)} ${"y".repeat(500)}`);
+		const body = JSON.stringify({ data: { succeeded: 0, failed: 1, failures } });
+		expect(body.length).toBeGreaterThan(16 * 1024);
+		const err = await smtp2go(async () => new Response(body, { status: 200 }))
+			.send(input)
+			.then(
+				() => undefined,
+				(e: unknown) => e,
+			);
+		expect((err as EmailProviderError).kind).toBe("refused");
+	});
+
 	test("Resend: a 2xx body it never reads is cancelled, not left open", async () => {
 		const body = endlessBody(200);
 		await resend(async () => body.response).send(input);

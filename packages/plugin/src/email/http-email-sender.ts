@@ -238,7 +238,12 @@ export abstract class HttpEmailSender implements EmailSender {
 			// be READ to know the outcome (SMTP2GO) therefore reports a body cut off by
 			// our deadline as `ambiguous`, not as a timeout: the provider answered, it
 			// may have sent, and the attempt counts.
-			await this.checkResponse(deadline.bounded(res), message);
+			// A refusal's body is read only as far as PROVIDER_ERROR_BODY_MAX_BYTES:
+			// the deadline bounds that read in time, this bounds it in bytes.
+			await this.checkResponse(
+				deadline.bounded(res, res.ok ? undefined : PROVIDER_ERROR_BODY_MAX_BYTES),
+				message,
+			);
 		} finally {
 			deadline.close();
 		}
@@ -257,12 +262,20 @@ export abstract class HttpEmailSender implements EmailSender {
 const PROVIDER_ERROR_MAX_CHARS = 200;
 
 /** The body is parsed only when it is at most this many characters. Room for a
- *  long SMTP2GO `failures` list (whose reason must survive: only the DETAIL is
- *  cut, to {@link PROVIDER_ERROR_MAX_CHARS}); anything longer is not a provider
- *  answer, and the error path must not parse megabytes an intermediary chose to
- *  send. (The body is still read whole — `ctx.http.fetch` offers no bounded
- *  read — and the send's deadline bounds how long that read can take.) */
+ *  long SMTP2GO `failures` list on a 2xx (whose reason must survive: only the
+ *  DETAIL is cut, to {@link PROVIDER_ERROR_MAX_CHARS}); anything longer is not a
+ *  provider answer, and the error path must not parse megabytes an intermediary
+ *  chose to send. A 2xx body is read whole, within the send's deadline; a
+ *  non-2xx one only to {@link PROVIDER_ERROR_BODY_MAX_BYTES} (below). */
 const PROVIDER_BODY_MAX_CHARS = 64 * 1024;
+
+/** How far a NON-2xx body is read before it is cancelled: a provider's refusal
+ *  is a small JSON object (Resend's `{ statusCode, name, message }`, SMTP2GO's
+ *  `data.error`), well under this, so anything longer is not one and is not
+ *  read on. Applies to a streamed body; the sandbox bridge's answer was already
+ *  buffered by the host. Without it an error body was read whole until the
+ *  deadline, however large. */
+const PROVIDER_ERROR_BODY_MAX_BYTES = 16 * 1024;
 
 /** C0 and C1 controls, DEL, the Unicode line/paragraph separators, and the
  *  bidi controls (LRM/RLM U+200E–200F, embeddings and overrides U+202A–202E,
