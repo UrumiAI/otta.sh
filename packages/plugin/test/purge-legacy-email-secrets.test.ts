@@ -4,6 +4,10 @@
  */
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import {
+	EMAIL_LAST_SENT_KEY,
+	EMAIL_TRANSPORT_UNAVAILABLE_KEY,
+} from "../src/email/ctx-email-sender.js";
+import {
 	LEGACY_EMAIL_PURGE_MARKER_KEY,
 	LEGACY_EMAIL_SECRET_KEYS,
 	purgeLegacyEmailSecrets,
@@ -18,7 +22,11 @@ import {
 } from "../src/payment-secrets.js";
 import type { KvAccess, PluginContext } from "../src/types.js";
 
-function makeCtx(seed: Record<string, unknown>, failDeleteOf?: string) {
+function makeCtx(
+	seed: Record<string, unknown>,
+	failDeleteOf?: string,
+	{ email = true }: { email?: boolean } = {},
+) {
 	const kv = new Map<string, unknown>(Object.entries(seed));
 	const calls: string[] = [];
 	const access: KvAccess = {
@@ -42,6 +50,7 @@ function makeCtx(seed: Record<string, unknown>, failDeleteOf?: string) {
 	const ctx: PluginContext = {
 		http: { fetch: () => Promise.reject(new Error("no egress")) },
 		kv: access,
+		...(email ? { email: { send: async () => {} } } : {}),
 	};
 	return { ctx, kv, calls };
 }
@@ -56,7 +65,12 @@ const STORED = {
 	[X402_FACILITATOR_API_KEY_KEY]: "fac_keep",
 	[WEBHOOK_EDGE_TOKEN_KEY]: "edge_keep",
 	"settings:storeDisplayName": "Keep",
+	// The host has accepted a send: a provider is confirmed working.
+	[EMAIL_LAST_SENT_KEY]: "2026-10-08T00:00:00.000Z",
 };
+
+/** The same store, before any send has gone through the host's provider. */
+const { [EMAIL_LAST_SENT_KEY]: _sent, ...UNCONFIRMED } = STORED;
 
 beforeEach(() => resetLegacyEmailPurgeForTesting());
 afterEach(() => vi.restoreAllMocks());
@@ -89,7 +103,11 @@ describe("purgeLegacyEmailSecrets", () => {
 			[LEGACY_EMAIL_PURGE_MARKER_KEY]: "2026-10-07T00:00:00Z",
 		});
 		expect(await purgeLegacyEmailSecrets(restored.ctx)).toBe(false);
-		expect(restored.calls).toEqual([`get ${LEGACY_EMAIL_PURGE_MARKER_KEY}`]);
+		expect(restored.calls).toEqual([
+			`get ${EMAIL_TRANSPORT_UNAVAILABLE_KEY}`,
+			`get ${EMAIL_LAST_SENT_KEY}`,
+			`get ${LEGACY_EMAIL_PURGE_MARKER_KEY}`,
+		]);
 		expect(restored.kv.has("settings:emailApiKey")).toBe(true);
 	});
 
@@ -129,6 +147,50 @@ describe("purgeLegacyEmailSecrets", () => {
 			key === LEGACY_EMAIL_PURGE_MARKER_KEY ? (undefined as T) : get<T>(key);
 		expect(await purgeLegacyEmailSecrets(ctx)).toBe(true);
 		expect(kv.has("settings:emailApiKey")).toBe(false);
+	});
+
+	describe("PR #418 review: only once a host email provider has delivered (rollback stays possible)", () => {
+		test("no `ctx.email` (trusted, no provider selected) ⇒ keys kept, not even a kv read", async () => {
+			const { ctx, kv, calls } = makeCtx(STORED, undefined, { email: false });
+			expect(await purgeLegacyEmailSecrets(ctx)).toBe(false);
+			expect(calls).toEqual([]);
+			for (const key of LEGACY_EMAIL_SECRET_KEYS) expect(kv.has(key), key).toBe(true);
+			expect(kv.has(LEGACY_EMAIL_PURGE_MARKER_KEY)).toBe(false);
+		});
+
+		test("`ctx.email` there but no send confirmed yet (a sandboxed host with no provider looks like this) ⇒ keys kept, retried next tick", async () => {
+			const { ctx, kv } = makeCtx(UNCONFIRMED);
+			expect(await purgeLegacyEmailSecrets(ctx)).toBe(false);
+			expect(await purgeLegacyEmailSecrets(ctx)).toBe(false);
+			for (const key of LEGACY_EMAIL_SECRET_KEYS) expect(kv.has(key), key).toBe(true);
+			expect(kv.has(LEGACY_EMAIL_PURGE_MARKER_KEY)).toBe(false);
+
+			// The first send goes through the host's provider: the next tick purges.
+			kv.set(EMAIL_LAST_SENT_KEY, new Date().toISOString());
+			expect(await purgeLegacyEmailSecrets(ctx)).toBe(true);
+			for (const key of LEGACY_EMAIL_SECRET_KEYS) expect(kv.has(key), key).toBe(false);
+		});
+
+		test("a 'no provider' answer NEWER than the last send ⇒ not confirmed, keys kept", async () => {
+			const { ctx, kv } = makeCtx({
+				...STORED,
+				[EMAIL_LAST_SENT_KEY]: "2026-10-01T00:00:00.000Z",
+				[EMAIL_TRANSPORT_UNAVAILABLE_KEY]: "2026-10-02T00:00:00.000Z",
+			});
+			expect(await purgeLegacyEmailSecrets(ctx)).toBe(false);
+			expect(kv.has("settings:emailApiKey")).toBe(true);
+		});
+
+		test("an unreadable status record ⇒ not confirmed, keys kept, never throws", async () => {
+			const { ctx, kv } = makeCtx(STORED);
+			const get = ctx.kv.get.bind(ctx.kv);
+			ctx.kv.get = async <T>(key: string) => {
+				if (key === EMAIL_LAST_SENT_KEY) throw new Error("kv down");
+				return get<T>(key);
+			};
+			expect(await purgeLegacyEmailSecrets(ctx)).toBe(false);
+			expect(kv.has("settings:emailApiKey")).toBe(true);
+		});
 	});
 
 	test("never logs a value", async () => {
