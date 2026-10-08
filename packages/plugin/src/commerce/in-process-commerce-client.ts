@@ -57,7 +57,6 @@ import {
 	createCart,
 	createOrderFromCart,
 	currency as toCurrency,
-	isLegacyPaymentMethod,
 	deactivateProductCommerce,
 	deactivateProductVariant,
 	email as toEmail,
@@ -1248,9 +1247,9 @@ export class InProcessCommerceClient implements CommerceClient {
 			deadline <= this.#stores.clock.now().getTime() ||
 			order.cartId === null ||
 			order.paymentMethod === null ||
-			// A method Otta removed (a pending x402 order from before): no gateway can
-			// take its payment, so it is not payable — never a replay that throws.
-			isLegacyPaymentMethod(order.paymentMethod)
+			// No gateway wired for the stored method (unconfigured, removed like x402,
+			// or unknown): nothing can take the payment. Own keys only ("toString").
+			!Object.hasOwn(this.#createOrderDeps.gateways, order.paymentMethod)
 		) {
 			return { ok: false, reason: "ORDER_NOT_PAYABLE" };
 		}

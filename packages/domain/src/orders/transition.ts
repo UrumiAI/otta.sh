@@ -165,9 +165,13 @@ const PAYMENT_METHOD_SETTLEMENT: Readonly<Record<PaymentMethod, "gateway" | "off
  * refund automatically: its money goes back OUTSIDE Otta, and Mark refunded or a
  * recorded refund is how the admin says so.
  */
-export const LEGACY_PAYMENT_METHODS: Readonly<
-	Record<string, { refunds: "outside"; settlement: "gateway" }>
-> = Object.freeze({
+/** What a removed method declared, kept for the orders that still store it. */
+export interface LegacyMethodFacts {
+	refunds: "outside";
+	settlement: "gateway";
+}
+
+export const LEGACY_PAYMENT_METHODS: Readonly<Record<string, LegacyMethodFacts>> = Object.freeze({
 	x402: Object.freeze({ refunds: "outside", settlement: "gateway" }),
 });
 
@@ -182,14 +186,13 @@ export function isLegacyPaymentMethod(stored: string): boolean {
  * is a `PaymentMethod`, else from its {@link LEGACY_PAYMENT_METHODS} entry, else
  * `undefined` — an unknown method, which every caller treats as fail-closed.
  */
-function factForStored<V>(
+function factForStored<K extends keyof LegacyMethodFacts, V>(
 	table: Readonly<Record<PaymentMethod, V>>,
 	stored: string,
-	legacy: (entry: { refunds: "outside"; settlement: "gateway" }) => V,
-): V | undefined {
+	field: K,
+): V | LegacyMethodFacts[K] | undefined {
 	if (Object.hasOwn(table, stored)) return (table as Readonly<Record<string, V>>)[stored];
-	const entry = isLegacyPaymentMethod(stored) ? LEGACY_PAYMENT_METHODS[stored] : undefined;
-	return entry === undefined ? undefined : legacy(entry);
+	return isLegacyPaymentMethod(stored) ? LEGACY_PAYMENT_METHODS[stored]?.[field] : undefined;
 }
 
 /**
@@ -203,7 +206,7 @@ export function manualPaymentAllowed(method: PaymentMethod | null): boolean {
 	if (method === null) return false;
 	// A legacy method is settled by its (removed) gateway; an unknown one has no
 	// entry. Neither is offline.
-	return factForStored(PAYMENT_METHOD_SETTLEMENT, method, (e) => e.settlement) === "offline";
+	return factForStored(PAYMENT_METHOD_SETTLEMENT, method, "settlement") === "offline";
 }
 
 /**
@@ -225,12 +228,14 @@ const PAYMENT_METHOD_REFUNDS: Readonly<Record<PaymentMethod, "provider" | "outsi
  * `undefined`: NOT outside, so Mark refunded goes through the captured-money check.
  */
 function refundRouteOf(stored: string): "provider" | "outside" | undefined {
-	return factForStored(PAYMENT_METHOD_REFUNDS, stored, (e) => e.refunds);
+	return factForStored(PAYMENT_METHOD_REFUNDS, stored, "refunds");
 }
 
 /** The two ledgers Mark refunded is decided from. */
 export interface RefundLedgerFacts {
-	payments: readonly { amount: number; status: string }[];
+	/** `gateway`: the method the payment came through. Absent reads as NOT a
+	 *  legacy method (fail-closed: see {@link markRefundedRefusal}). */
+	payments: readonly { amount: number; status: string; gateway?: string }[];
 	refunds: readonly { amount: number; status: string }[];
 }
 
@@ -262,7 +267,17 @@ export function markRefundedRefusal(
 	if (facts.refunds.some((r) => r.status === "reserved" || r.status === "unverified")) {
 		return "REFUND_IN_FLIGHT";
 	}
-	if (order.paymentMethod !== null && refundRouteOf(order.paymentMethod) === "outside") {
+	// The `outside` shortcut holds only while every captured payment came through a
+	// named legacy method too: money a current provider captured (a Stripe payment
+	// on an order that somehow stores x402) still goes through the check below.
+	if (
+		order.paymentMethod !== null &&
+		refundRouteOf(order.paymentMethod) === "outside" &&
+		facts.payments.every(
+			(p) =>
+				p.status !== "succeeded" || (p.gateway !== undefined && isLegacyPaymentMethod(p.gateway)),
+		)
+	) {
 		return null;
 	}
 	if (unrefundedCapturedCents(facts) === 0) return null;

@@ -259,10 +259,10 @@ export class InProcessAdminOrdersClient implements AdminOrdersSurface {
 	 */
 	#refundGatewayFor(method: PaymentMethod | null): PaymentGateway | undefined {
 		if (method === null) return undefined;
-		if (isLegacyPaymentMethod(method)) return recordOnlyLegacyGateway(method);
-		// Own keys only: an unknown stored method ("bogus", even "toString") has no
-		// gateway, and the refund POST answers it 409 like an unconfigured one.
-		return Object.hasOwn(this.#gateways, method) ? this.#gateways[method] : undefined;
+		// The wired gateway first (own keys only: "toString" is no gateway), then the
+		// legacy list — the domain's `factForStored` order. Anything else: 409.
+		if (Object.hasOwn(this.#gateways, method)) return this.#gateways[method];
+		return isLegacyPaymentMethod(method) ? recordOnlyLegacyGateway(method) : undefined;
 	}
 
 	/**

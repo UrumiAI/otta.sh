@@ -171,6 +171,10 @@ export async function createOrderFromCart(
 		// success for an order this cart has nothing to do with. Checked before the
 		// state branch: a paid order is no more this cart's than a pending one.
 		if (already.cartId !== command.cartId) return { ok: false, reason: "IDEMPOTENCY_KEY_REUSED" };
+		// Nor of a request for ANOTHER method: an order placed with a method Otta
+		// removed (a legacy x402 order) must never be handed this gateway's intent.
+		if (already.paymentMethod !== gateway.id)
+			return { ok: false, reason: "IDEMPOTENCY_KEY_REUSED" };
 		if (already.state !== "pending") {
 			// Already left the checkout window: nothing to pay for (see the helper).
 			// A dead order's coupon use is re-freed here too — the self-heal for a

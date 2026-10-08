@@ -138,11 +138,34 @@ describe("Mark refunded is offered only where no money is left to return through
 		// still stores it. No provider can return that money, so it is OUTSIDE Otta:
 		// the operator refunds it and Mark refunded records it, as before.
 		const legacy = { ...stripePaid, paymentMethod: "x402" as unknown as PaymentMethod };
-		expect(markRefundedRefusal(legacy, CAPTURED)).toBeNull();
-		expect(markRefundedAllowed(legacy, CAPTURED)).toBe(true);
-		expect(adminNextStates(legacy, CAPTURED)).toContain("refunded");
+		const viaX402 = {
+			payments: [{ amount: 1000, status: "succeeded", gateway: "x402" }],
+			refunds: [],
+		};
+		expect(markRefundedRefusal(legacy, viaX402)).toBeNull();
+		expect(markRefundedAllowed(legacy, viaX402)).toBe(true);
+		expect(adminNextStates(legacy, viaX402)).toContain("refunded");
+		expect(markRefundedAllowed(legacy, NOTHING)).toBe(true);
 		// And it still cannot be marked paid by hand.
 		expect(manualPaymentAllowed(legacy.paymentMethod)).toBe(false);
+	});
+	test("a legacy order whose captured money came through a CURRENT provider (Stripe) is refused while it is held", () => {
+		const legacy = { ...stripePaid, paymentMethod: "x402" as unknown as PaymentMethod };
+		const viaStripe = {
+			payments: [{ amount: 1000, status: "succeeded", gateway: "stripe" }],
+			refunds: [],
+		};
+		expect(markRefundedRefusal(legacy, viaStripe)).toBe("REFUND_THROUGH_MONEY");
+		expect(adminNextStates(legacy, viaStripe)).not.toContain("refunded");
+		// A payment with no gateway on file is not taken as legacy either.
+		expect(markRefundedRefusal(legacy, CAPTURED)).toBe("REFUND_THROUGH_MONEY");
+		// Once it is refunded back through the ledger, nothing is held.
+		expect(
+			markRefundedAllowed(legacy, {
+				...viaStripe,
+				refunds: [{ amount: 1000, status: "recorded" }],
+			}),
+		).toBe(true);
 	});
 	test("the legacy list is NAMED: x402 only", () => {
 		expect(Object.keys(LEGACY_PAYMENT_METHODS)).toEqual(["x402"]);

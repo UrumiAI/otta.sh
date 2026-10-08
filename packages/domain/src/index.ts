@@ -333,6 +333,7 @@ export {
 	transitionOrder,
 	transitionOrderAsAdmin,
 	unrefundedCapturedCents,
+	type LegacyMethodFacts,
 	type RefundLedgerFacts,
 	type TransitionOrderAsAdminFailure,
 	type TransitionOrderAsAdminResult,

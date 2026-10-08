@@ -210,6 +210,29 @@ describe("purgeLegacyX402Settings", () => {
 		expect(typeof kv.get(LEGACY_X402_PURGE_MARKER_KEY)).toBe("string");
 	});
 
+	test("an email purge that FAILED part way still counts as this tick's work: the x402 purge waits", async () => {
+		vi.spyOn(console, "warn").mockImplementation(() => {});
+		const { ctx, kv } = makeCtx(
+			{
+				...STORED,
+				"settings:emailApiKey": "re_LIVE_KEY_0000000000",
+				[EMAIL_LAST_SENT_KEY]: "2026-10-08T00:00:00.000Z",
+			},
+			"settings:emailApiKey",
+		);
+		try {
+			await createCronHandler()(
+				{ name: SWEEP_TASK_NAME, scheduledAt: "" },
+				{ ...ctx, email: { send: async () => {} } },
+			);
+		} catch {
+			// The sweep itself needs a document store this bare ctx lacks.
+		}
+		expect(kv.has(LEGACY_EMAIL_PURGE_MARKER_KEY)).toBe(false);
+		expect(kv.has("settings:x402PayTo")).toBe(true);
+		expect(kv.has(LEGACY_X402_PURGE_MARKER_KEY)).toBe(false);
+	});
+
 	test("the sweep tick runs it: a cron tick purges the stored keys, a foreign task does not", async () => {
 		const foreign = makeCtx(STORED);
 		await createCronHandler()({ name: "someone-else", scheduledAt: "" }, foreign.ctx);
