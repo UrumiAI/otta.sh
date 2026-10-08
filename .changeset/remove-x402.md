@@ -16,11 +16,12 @@ removal from published API.
   `refundable: true`, loses `pageGate()` and gains `setRefundable()`.
 - `@otta-sh/plugin`: removed `wireX402Gateway`, `x402GatewayFromCtx`, `X402_PAYTO_KEY`,
   `X402_ACCEPTS_KEY`, `DEFAULT_X402_ACCEPTS`, `X402_FACILITATOR_API_KEY_KEY`,
-  `x402FacilitatorSecretFromKv` and the `x402Gateway` types. The facilitator URL was the last
-  deployment-supplied egress host, so `InProcessEgressUrls`, `IN_PROCESS_EGRESS_URLS` and the
-  `__OTTA_X402_FACILITATOR_URL__` build define are gone, and `resolveAllowedHosts()` takes no
-  argument: `allowedHosts` is exactly Stripe's API host. Settings no longer shows the x402
-  facilitator key, destination wallet or networks fields.
+  `x402FacilitatorSecretFromKv` and the `x402Gateway` types. `InProcessEgressUrls` loses
+  `facilitatorUrl` and the `__OTTA_X402_FACILITATOR_URL__` build define is gone: the facilitator
+  host is no longer on `allowedHosts`, which is now Stripe's API host alone. The egress
+  plumbing itself (`InProcessEgressUrls`, `IN_PROCESS_EGRESS_URLS`, `resolveAllowedHosts`,
+  `resolveInProcessEgress`) is kept for operator-supplied hosts. Settings no longer shows the
+  x402 facilitator key, destination wallet or networks fields.
 - A cron tick deletes the x402 settings earlier builds stored in plugin kv
   (`settings:x402PayTo`, `settings:x402Accepts`, `settings:x402FacilitatorApiKey` and its
   generation, `settings:x402FacilitatorSecret`), once per store.

@@ -10,6 +10,17 @@
 	},
 	"overrides": [
 		{
+			"files": ["packages/plugin/src/manifest.ts"],
+			"rules": {
+				"no-underscore-dangle": [
+					"error",
+					{
+						"allow": []
+					}
+				]
+			}
+		},
+		{
 			"files": ["packages/plugin/src/payments/stripe-wiring.ts"],
 			"rules": {
 				"no-underscore-dangle": [

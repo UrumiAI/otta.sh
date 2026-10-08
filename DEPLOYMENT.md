@@ -470,8 +470,8 @@ order of appearance in a deployment's life:
 ## 4. Egress and `allowedHosts`
 
 The plugin's only egress is `ctx.http.fetch`, gated by the descriptor's `allowedHosts`
-allowlist (capability `network:request`). That allowlist is fixed at **build** time
-(`packages/plugin/src/manifest.ts`) and contains:
+allowlist (capability `network:request`). That allowlist is resolved at **build** time
+(`packages/plugin/src/manifest.ts`, fed by `sites/staging/astro.config.ts`) and contains:
 
 | Host | When |
 |---|---|

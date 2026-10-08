@@ -3,8 +3,9 @@
  * egress allowlist — imported by both the runtime (`plugin.ts`) and the
  * sandbox-clean guard test (DEVELOPMENT.md §5), so the two can never drift.
  *
- * `ALLOWED_HOSTS` is a constant: the plugin's own egress. The sandbox test
- * harness (`test/sandbox/harness.ts`) rewrites a COPY of this file before
+ * `ALLOWED_HOSTS` is a build-time constant: the plugin's own egress, resolved
+ * once at module load from the deployment-supplied egress defines. The sandbox
+ * test harness (`test/sandbox/harness.ts`) rewrites a COPY of this file before
  * bundling — `src/manifest.ts` itself is never mutated.
  */
 
@@ -38,7 +39,7 @@ export const OTTA_PLUGIN_CAPABILITIES = ["content:read", "network:request", "ema
 /**
  * Stripe's SERVER-SIDE API host — the one egress the in-process plugin always
  * makes itself (`paymentIntents.create`, refunds), and the only host in the
- * in-process allowlist.
+ * in-process allowlist that is a constant rather than deployment-supplied.
  *
  * NOT the Stripe.js CDN host. Stripe.js and `stripe.confirmPayment()` run in
  * the BUYER'S BROWSER and never pass through the plugin, which is why
@@ -51,19 +52,62 @@ export const OTTA_PLUGIN_CAPABILITIES = ["content:read", "network:request", "ema
 export const STRIPE_API_HOST = "api.stripe.com";
 
 /**
+ * The deployment-supplied half of the in-process allowlist.
+ *
+ * EMPTY TODAY: operator-supplied egress plugs in here (a field, resolved by
+ * {@link resolveAllowedHosts} and baked through {@link BAKED_EGRESS_URLS}).
+ * There is no email URL — email goes through `ctx.email` (ADR-0031) — and an
+ * absent value always grants no host rather than guessing one.
+ */
+export interface InProcessEgressUrls {
+	// Operator-supplied egress hosts plug in here.
+}
+
+/**
  * The plugin's egress allowlist — the host's `ctx.http.fetch` rejects any host
  * not in this list (plan §5) — as a pure function so it is testable without a
  * bundler.
  *
  * There is ONE list now (INC-D3a): the commerce service is gone, and the call
  * it used to make is the plugin's own — Stripe's API. No service host appears
- * here at all; that is the fold-in, visible in one line. It is a constant: no
- * deployment-supplied host remains (email goes through `ctx.email`, ADR-0031,
- * never `ctx.http`).
+ * here at all; that is the fold-in, visible in one line. The constant part is
+ * Stripe's API host; anything else comes from the deployment's egress
+ * ({@link InProcessEgressUrls}, none today). No email host: email goes through
+ * `ctx.email` (ADR-0031), never `ctx.http`.
+ *
+ * The result is a SET: duplicates collapse, and order is insertion order so the
+ * list is stable across builds.
  */
-export function resolveAllowedHosts(): string[] {
-	return [STRIPE_API_HOST];
+export function resolveAllowedHosts(_egress: InProcessEgressUrls = {}): string[] {
+	const hosts = new Set<string>([STRIPE_API_HOST]);
+	return [...hosts];
 }
+
+/** The raw defines, before resolution — none today (see
+ *  {@link InProcessEgressUrls}). Not exported: every consumer must see
+ *  {@link IN_PROCESS_EGRESS_URLS}, which agrees with `ALLOWED_HOSTS` by
+ *  construction. A deployment-supplied value is a Vite `define` behind a
+ *  `typeof` guard, so the undeclared global is safe in the plain tsdown dist,
+ *  this package's vitest run and the sandbox harness — and it is never a
+ *  secret: credentials live in write-only kv (`payment-secrets.ts`). */
+const BAKED_EGRESS_URLS: InProcessEgressUrls = {};
+
+/**
+ * The egress URLs a CONSUMER may use, resolved by the SAME rules the allowlist
+ * is (review round 2, A3): a value that would grant no host is dropped —
+ * unconfigured, which every consumer already handles — so "a consumer never
+ * holds a URL whose host is not granted" is true by construction rather than
+ * by every caller remembering. No URL is deployment-supplied today, so this
+ * resolves to `{}`.
+ */
+export function resolveInProcessEgress(_egress: InProcessEgressUrls = {}): InProcessEgressUrls {
+	return {};
+}
+
+/** The in-process egress URLs this bundle may actually use. Absent or
+ *  unparseable define ⇒ that provider is unconfigured (fail-closed). */
+export const IN_PROCESS_EGRESS_URLS: InProcessEgressUrls =
+	resolveInProcessEgress(BAKED_EGRESS_URLS);
 
 /**
  * The resolved allowlist for THIS bundle.
@@ -71,5 +115,8 @@ export function resolveAllowedHosts(): string[] {
  * Still a module-load `string[]`, not a function, and deliberately so: the
  * descriptor in `plugin.ts`, `sandbox-entry.ts`'s `createHttpAccess`, the three
  * `sync/hooks.ts` defaults and both guard suites all consume it as a VALUE.
+ * Turning it into a function would have rippled through the descriptor shape,
+ * which INC-A6 must not touch. The egress URLs are build-time defines, so
+ * resolving at module load loses nothing.
  */
-export const ALLOWED_HOSTS: string[] = resolveAllowedHosts();
+export const ALLOWED_HOSTS: string[] = resolveAllowedHosts(BAKED_EGRESS_URLS);

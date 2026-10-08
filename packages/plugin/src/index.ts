@@ -159,6 +159,8 @@ export {
 } from "./admin/admin-rules-surface.js";
 export {
 	ALLOWED_HOSTS,
+	IN_PROCESS_EGRESS_URLS,
+	type InProcessEgressUrls,
 	resolveAllowedHosts,
 	STRIPE_API_HOST,
 	OTTA_PLUGIN_CAPABILITIES,

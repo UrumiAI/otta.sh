@@ -1,18 +1,21 @@
 /**
- * `resolveAllowedHosts` — the plugin's egress allowlist, as a pure function so
- * it is unit-testable without a bundler (§5).
+ * `resolveAllowedHosts` / `resolveInProcessEgress` — the plugin's egress
+ * allowlist and the matching consumer-facing URLs, as pure functions so both
+ * are unit-testable without a bundler (§5).
  *
  * INC-D3a retired the http/in-process mode branch: there is ONE list now, the
  * commerce service is gone, and `resolveAllowedHosts` no longer takes a mode
- * or a service base URL. ADR-0031 removed every email host: email goes through
- * `ctx.email`, never `ctx.http`. No deployment-supplied host is left, so the
- * list is a constant: Stripe's API host alone.
+ * or a service base URL — it is always Stripe's API host plus whatever the
+ * deployment's egress supplies (nothing today). ADR-0031 removed every email
+ * host: email goes through `ctx.email`, never `ctx.http`.
  */
 import { describe, expect, test } from "vitest";
 import {
 	ALLOWED_HOSTS,
+	IN_PROCESS_EGRESS_URLS,
 	OTTA_PLUGIN_CAPABILITIES,
 	resolveAllowedHosts,
+	resolveInProcessEgress,
 	STRIPE_API_HOST,
 } from "../src/manifest.js";
 
@@ -24,10 +27,11 @@ describe("resolveAllowedHosts — the egress set, EXACTLY", () => {
 		// Stripe is the one host the in-process plugin always talks to itself
 		// (`paymentIntents.create` / refunds). No email host at all (ADR-0031).
 		expect(resolveAllowedHosts()).toEqual(BASELINE);
+		expect(resolveAllowedHosts({})).toEqual(BASELINE);
 	});
 
 	test("no email vendor host is ever granted (ADR-0031: email is ctx.email)", () => {
-		for (const host of resolveAllowedHosts()) {
+		for (const host of resolveAllowedHosts({})) {
 			expect(host).not.toMatch(/smtp|mail/i);
 		}
 	});
@@ -41,12 +45,15 @@ describe("resolveAllowedHosts — the egress set, EXACTLY", () => {
 	});
 });
 
-describe("ALLOWED_HOSTS — the resolved constant for THIS bundle", () => {
-	test("this build resolves to the baseline allowlist", () => {
+describe("ALLOWED_HOSTS / IN_PROCESS_EGRESS_URLS — the resolved constants for THIS bundle", () => {
+	test("this un-defined build (no bundler define) resolves to the baseline allowlist", () => {
+		// vitest bundles without any egress define, so the module-level constants
+		// must reflect an unconfigured deployment.
 		expect(ALLOWED_HOSTS).toEqual(BASELINE);
+		expect(IN_PROCESS_EGRESS_URLS).toEqual({});
 	});
 
-	test("ALLOWED_HOSTS agrees with resolveAllowedHosts()", () => {
+	test("ALLOWED_HOSTS agrees with resolveAllowedHosts() called with no egress", () => {
 		expect(ALLOWED_HOSTS).toEqual(resolveAllowedHosts());
 	});
 });
@@ -58,5 +65,12 @@ describe("OTTA_PLUGIN_CAPABILITIES", () => {
 			"network:request",
 			"email:send",
 		]);
+	});
+});
+
+describe("resolveInProcessEgress — the CONSUMERS see the same URLs the gate grants", () => {
+	test("with nothing configured a consumer is handed no egress URL", () => {
+		expect(resolveInProcessEgress()).toEqual({});
+		expect(resolveInProcessEgress({})).toEqual({});
 	});
 });

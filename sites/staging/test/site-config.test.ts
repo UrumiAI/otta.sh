@@ -5,7 +5,8 @@
  *  - the Otta plugin descriptor is standard-format, entrypoint
  *    `@otta-sh/plugin/plugin`, capabilities EXACTLY the manifest's, and its
  *    allowedHosts is exactly the in-process egress list — Stripe's API host
- *    alone (the egress gate that holds even in trusted mode — ADR-0006);
+ *    plus whatever the deployment's egress supplies (nothing today) (the
+ *    egress gate that holds even in trusted mode — ADR-0006);
  *  - NO `sandboxed:` / `sandboxRunner:` keys (a LOADER-consuming sandbox
  *    runner is the Workers-Paid cost pivot this deployment avoids);
  *  - database/storage are d1(DB, session "primary-first" — never "auto":
@@ -17,8 +18,9 @@
  *    layer covering only /_emdash/api/* routes, so the real storefront
  *    CSRF pin is origin-middleware.test.ts (see ADR-0006);
  *  - `vite.ssr.noExternal` contains "@otta-sh/plugin" UNCONDITIONALLY: if the
- *    plugin is externalized the build-time defines it reads silently never
- *    apply. It also contains
+ *    plugin is externalized its build-time defines silently never apply and
+ *    every
+ *    ctx.http call fails against allowedHosts at runtime. It also contains
  *    "@otta-sh/admin-react", whose workspace exports are TS/TSX source;
  *  - and, since INC-19, ADR-0014's SECOND descriptor `otta-console` — its own
  *    block below.
@@ -72,8 +74,9 @@ describe("ottaPluginDescriptor", () => {
 	});
 
 	test("allowedHosts is exactly the in-process egress list (the baseline alone, unconfigured)", () => {
-		// INC-D3a: there is no commerce service and no service host. The list
-		// is the Stripe API host — see the exact-set block below.
+		// INC-D3a: there is no commerce service and no service host. With no
+		// deployment-supplied egress the list is the Stripe API host — see the
+		// exact-set block below.
 		expect(descriptor.allowedHosts).toEqual(BASELINE_HOSTS);
 	});
 
@@ -258,15 +261,26 @@ describe("ottaPluginDescriptor storage, EXACTLY (INC-D1)", () => {
  * and both are failures here: a MISSING host silently breaks a payment or an
  * email at runtime with no build-time signal, and an EXTRA host widens the gate
  * ADR-0006 exists to keep minimal. Every assertion below therefore compares the
- * whole array — never `toContain`, which would pass for either mistake.
+ * whole sorted array — never `toContain`, which would pass for either mistake.
  *
- * Stripe's API host is the one host, and a constant: nothing is
- * deployment-supplied any more (email goes through `ctx.email`, ADR-0031).
+ * Anything beyond Stripe's API host is DEPLOYMENT-SUPPLIED through the
+ * descriptor's `egress` input (nothing today), and grants NOTHING when absent.
+ * Stripe's API host is the one constant. No email host: email is `ctx.email`
+ * (ADR-0031).
  */
+/** Order-insensitive EXACT comparison: `toEqual` on both sides sorted catches a
+ *  missing host AND a leaked extra one, which `toContain` cannot. */
+const sorted = (hosts: readonly string[] | undefined): string[] => [...(hosts ?? [])].toSorted();
 
 describe("ottaPluginDescriptor allowedHosts, EXACTLY", () => {
-	test("EXACTLY the Stripe API host", () => {
+	test("with nothing configured: EXACTLY the Stripe API host", () => {
 		expect(ottaPluginDescriptor().allowedHosts).toEqual(BASELINE_HOSTS);
+	});
+
+	test("an EMPTY egress grants nothing beyond Stripe and never throws", () => {
+		const options = { egress: {} };
+		expect(() => ottaPluginDescriptor(options)).not.toThrow();
+		expect(ottaPluginDescriptor(options).allowedHosts).toEqual(BASELINE_HOSTS);
 	});
 
 	test("INC-D3a: no commerce-service host can reach the allowlist at all", () => {
@@ -274,9 +288,13 @@ describe("ottaPluginDescriptor allowedHosts, EXACTLY", () => {
 		// service host could arrive through, and no mode on which one would be
 		// granted. This is the pin that the retirement actually happened rather
 		// than the http arm merely going unused.
-		const hosts = ottaPluginDescriptor().allowedHosts;
-		expect(hosts).not.toContain("commerce.otta.internal");
-		expect(hosts).not.toContain("svc.example.com");
+		for (const hosts of [
+			ottaPluginDescriptor().allowedHosts,
+			ottaPluginDescriptor({ egress: {} }).allowedHosts,
+		]) {
+			expect(hosts).not.toContain("commerce.otta.internal");
+			expect(hosts).not.toContain("svc.example.com");
+		}
 	});
 });
 
@@ -368,8 +386,24 @@ describe("buildEmdashOptions", () => {
 		});
 	});
 
-	test("the registered allowlist is EXACTLY the baseline", () => {
-		// No egress is deployment-supplied, so this is the list every build ships.
+	/**
+	 * INC-D1 review round 3, B1 — the egress reaches the DESCRIPTOR, not only the
+	 * bundle's defines.
+	 *
+	 * `manifest.ts` resolves its egress from Vite defines; `allowedHosts` decides
+	 * whether those calls are permitted. Before this parameter existed the second
+	 * half was unreachable: the descriptor structurally could not allowlist a
+	 * deployment-supplied host, so the first build to set a define would ship a
+	 * client aimed at a host the gate refuses.
+	 */
+	test("threads the in-process egress into the registered descriptor", () => {
+		const registered = buildEmdashOptions({}).plugins[0];
+		expect(registered).toEqual(ottaPluginDescriptor({ egress: {} }));
+		expect(sorted(registered?.allowedHosts)).toEqual(sorted(BASELINE_HOSTS));
+	});
+
+	test("with no egress configured the allowlist is EXACTLY the baseline — fail-closed", () => {
+		// Staging today supplies no URL, so this is the list it actually ships.
 		expect(buildEmdashOptions().plugins[0]?.allowedHosts).toEqual(BASELINE_HOSTS);
 	});
 
@@ -740,12 +774,12 @@ describe("astro.config", () => {
 	);
 
 	test(
-		"no in-process egress URL rides a build-time define",
+		"no in-process egress URL rides a build-time define today — and no email URL does",
 		async () => {
 			// INC-D3a retired the commerce-mode define along with the transport it
 			// selected; ADR-0031 retired the email URL, and the last egress URL went
-			// with its payment rail. The plugin's allowlist is a constant, so no
-			// `__OTTA_…_URL__` define is left for the bundle to read.
+			// with its payment rail. An operator-supplied egress define is added
+			// beside the `egress` const when one exists.
 			const config = (await import("../astro.config.js")).default;
 			const define = config.vite?.define as Record<string, string>;
 			expect(Object.keys(define).filter((name) => name.endsWith("_URL__"))).toEqual([]);
@@ -768,21 +802,36 @@ describe("astro.config", () => {
 	);
 
 	test(
-		"the config registers the descriptor with no egress input",
+		"the baked egress URLs and the REGISTERED descriptor cannot disagree",
 		async () => {
-			// `emdash()` captures its options in a closure, so the registered
-			// descriptor is not reachable from here: read the source instead, and
-			// require the no-argument registration whose result is pinned below.
+			// THE TIE IS PINNED IN THE SOURCE, NOT BY REBUILDING THE VALUE (review
+			// round 3, A3). `config.integrations` cannot answer this: `emdash()`
+			// captures its options in a closure and hands Astro back `{name, hooks}`,
+			// so the registered descriptor is not reachable from here, and rebuilding
+			// it from the baked values compares two values derived from ONE input —
+			// green no matter what the config actually registers, including for the
+			// precise mistake this const exists to prevent: `emdash(buildEmdashOptions())`
+			// with the egress argument dropped.
+			//
+			// So read the source and require that ONE NAMED CONST feeds both consumers.
+			// Same technique this file already uses for the wrangler pairing invariant.
 			const source = await readFile(new URL("../astro.config.ts", import.meta.url), "utf8");
 			const registration = /emdash\(\s*buildEmdashOptions\(([^)]*)\)/.exec(source);
-			expect(registration?.[1], "the config must register via buildEmdashOptions()").toBe("");
+			expect(registration?.[1], "the config must register via buildEmdashOptions(...)").toBeTypeOf(
+				"string",
+			);
+			const args = (registration?.[1] ?? "").split(",").map((a) => a.trim());
+			// Argument 1 is the egress const (review round 3, B1). An omitted argument
+			// fails here as `undefined`; every egress define must be baked from it too.
+			expect(args[0], "buildEmdashOptions must be passed the egress const").toBe("egress");
+			expect(source).toMatch(/\nconst egress\b/);
 
 			// And the registered descriptor is the single in-process shape: storage
 			// declared, Stripe allowlisted, no service host anywhere.
 			const registered = buildEmdashOptions().plugins[0];
 			expect(registered).toEqual(ottaPluginDescriptor());
 			expect(registered?.storage).toEqual(COMMERCE_STORAGE_COLLECTIONS);
-			expect(registered?.allowedHosts).toEqual(BASELINE_HOSTS);
+			expect(registered?.allowedHosts).toContain(STRIPE_API_HOST);
 		},
 		CONFIG_IMPORT_TIMEOUT_MS,
 	);

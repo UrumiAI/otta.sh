@@ -105,9 +105,10 @@ describe("sandbox-clean guard: the checkout feature widens NOTHING (ADR-0012)", 
 	// INC-D3a: the commerce service is gone, and with it the one host this
 	// suite used to pin. In-process, the plugin's own baseline egress is
 	// Stripe's SERVER-SIDE API (`STRIPE_API_HOST`, always granted — it is a
-	// constant), and nothing else: no deployment-supplied host is left, and no
-	// email host (ADR-0031: email is `ctx.email`).
-	test("ALLOWED_HOSTS holds exactly Stripe's API host in this build", () => {
+	// constant, not a deployment-supplied define), plus whatever the
+	// deployment's egress defines resolve to — none in this vitest run. No email
+	// host (ADR-0031: email is `ctx.email`).
+	test("ALLOWED_HOSTS holds exactly Stripe's API host in this build (no egress define is set)", () => {
 		expect(ALLOWED_HOSTS).toEqual([STRIPE_API_HOST]);
 	});
 
