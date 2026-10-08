@@ -796,6 +796,13 @@ x402 client never produces such a proof, and the server would have to trust whoe
     the bridge in the Worker Loader. A redirect can then land only on an allowlisted host: the
     facilitator, Stripe's API or the email provider (`manifest.ts:97-104`). An answer from one of
     those is still classified strictly by shape, so it cannot pass as a verdict or a settlement.
+  > Note (2026-10-07, EmDash 1.0.1): both host paths now return a real `Response` rebuilt from a
+  > buffered wire form (`emdash` `src/plugins/http-wire.ts` `pluginHttpResponseFromWire`), with
+  > `url` set to the final hop and a `body` over bytes the host already read (up to 8 MiB), in
+  > process and over the Worker Loader bridge (`@emdash-cms/cloudflare@1.0.1`
+  > `src/sandbox/wrapper.ts` `http.fetch`, `src/sandbox/bridge-http.ts` `sandboxHttpFetch`). Both
+  > also honour `init.redirect`: the adapter's `redirect: "manual"` now gets the 3xx back, which
+  > is unavailable by status; a followed redirect still re-checks `allowedHosts` per hop.
 - **Bounds.**
   - `/verify` has a 10 s timeout, and `/settle` has 30 s, because it waits for inclusion on-chain
     (`VERIFY_TIMEOUT_MS` and `SETTLE_TIMEOUT_MS`,
@@ -808,6 +815,11 @@ x402 client never produces such a proof, and the server would have to trust whoe
     (`Promise.race` against a timer) is the only bound on time, on every platform
     (`FacilitatorFetch`, `facilitator.ts:113-121`). A later change must not add a signal "as a best
     effort": it would break every sandboxed facilitator call.
+    > Note (2026-10-07, EmDash 1.0.1): 1.0.1's Worker Loader wrapper no longer throws
+    > `DataCloneError` for `init.signal`; it forwards only method, redirect, headers and body, so a
+    > signal is dropped silently and the abort never reaches the host fetch
+    > (`@emdash-cms/cloudflare@1.0.1` `src/sandbox/wrapper.ts` `http.fetch`). The adapter's
+    > deadline race remains the only timeout, on every platform.
   - **Response bodies are capped at 16 KiB.** When `body` is present, the cap applies to the
     stream. Otherwise it applies to `text()`'s UTF-8 byte length. In the Worker Loader the bridge
     has already buffered the whole body by then, so the cap bounds what the adapter parses, not
@@ -981,6 +993,9 @@ records every call and counts calls per path.
     (`x402-rail.verify.test.ts:46`, `x402-rail.platform.test.ts:111`). **The same assertion for
     `/settle` is still to be added.** A transport that never answers is cut off by the adapter's
     own timeout at 10 s and 30 s, and not before;
+    > Note (2026-10-07, EmDash 1.0.1): the fake's bridge mode models 0.38. 1.0.1's bridge returns
+    > a real `Response` with `url` and `body`, and drops `init.signal` silently instead of throwing
+    > `DataCloneError`. The fake keeps the 0.38 refusal as the strictest case.
   - a truthy-but-not-`true` answer is refused;
   - a settle answer with the wrong network, payer or amount is `unconfirmed`.
 - **Credentials:** with no key, no `Authorization` header is sent. With a key, it is sent only as
@@ -1351,6 +1366,9 @@ The amendments, against the 2026-10-05 draft:
 - Decision 8 states the merged behaviour: the adapter never passes an `AbortSignal`, because it
   fails every call over the Worker Loader bridge with `DataCloneError` (#409). The test asserts the
   injected fetch receives no `signal`.
+  > Note (2026-10-07, EmDash 1.0.1): the signal no longer fails the call there; 1.0.1's
+  > wrapper drops `init.signal` silently (`@emdash-cms/cloudflare@1.0.1` `src/sandbox/wrapper.ts`
+  > `http.fetch`). The adapter still passes none, and the deadline race remains the only timeout.
 - Decision 5 step 8 and Decision 8 say that the adapter, not the domain, splits a `success: false`
   (`PRE_BROADCAST_REASONS`), and that an unproven one comes back as `unconfirmed` /
   `unproven_rejection`.

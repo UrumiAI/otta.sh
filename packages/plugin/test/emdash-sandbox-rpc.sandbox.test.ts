@@ -4,10 +4,14 @@
  * does its email reach the host through `ctx.email` (ADR-0031), when the plugin
  * runs SANDBOXED?
  *
- * In EmDash's sandboxed mode (`@emdash-cms/cloudflare` 0.38 `sandbox/runner.ts`)
+ * In EmDash's sandboxed mode (`@emdash-cms/cloudflare` 1.0.1 `src/sandbox/runner.ts`)
  * a plugin runs in a Worker Loader isolate, and its `ctx.http.fetch(url, init)`
- * is the generated wrapper's `bridge.httpFetch(url, init)`: a Workers RPC call to
- * the host's `PluginBridge` entrypoint, whose arguments are structured-cloned.
+ * is the generated wrapper's `bridge.httpFetch(url, bridgeInit)`: a Workers RPC
+ * call to the host's `PluginBridge` entrypoint, whose arguments are
+ * structured-cloned. Since 1.0 the wrapper first buffers the request
+ * (`bufferPluginHttpRequest`) and sends only its method, redirect mode, headers
+ * and body; the answer comes back as a wire object the wrapper turns into a
+ * `Response` again (`pluginHttpResponseFromWire`).
  * This suite boots the real `workerd` with that exact path:
  *
  * - a Worker Loader binding (`LOADER`), loading the plugin with the runner's own
@@ -16,30 +20,35 @@
  * - EmDash's REAL generated wrapper as `plugin.js` (`generatePluginWrapper`, from
  *   the package's own source), and {@link ./sandbox/emdash-rpc-probe.ts} as
  *   `sandbox-plugin.js`;
- * - a `PluginBridge` whose `httpFetch` is EmDash's (`bridge.ts:1106`): the props'
- *   capabilities and allowed hosts handed to the REAL `sandboxHttpFetch`; and
- *   whose `emailSend` body IS EmDash's own (`bridge.ts:1253`), lifted verbatim
- *   from the installed source (the module itself needs D1 and the host package
- *   to load), over the same module-level `emailSendCallback` it reads. So the
- *   "no provider" refusal the plugin receives is EmDash's real text, through
- *   the real RPC: if EmDash rewords it, this suite fails. (The
- *   rest of EmDash's bridge needs D1; the probe gives Stripe its fake secrets
- *   through an in-isolate kv.)
+ * - a `PluginBridge` whose `httpFetch` is EmDash's (`src/sandbox/bridge.ts`,
+ *   `PluginBridge.httpFetch`): the props' capabilities and allowed hosts handed
+ *   to the REAL `sandboxHttpFetch`, with no runner fetch callback (the runner
+ *   passes one only when the site configures `httpFetch`); and whose `emailSend`
+ *   body IS EmDash's own (`PluginBridge.emailSend`), lifted verbatim from the
+ *   installed source (the module itself needs D1 and the host package to load),
+ *   over the same module-level `emailSendCallback` it reads. So the "no provider"
+ *   refusal the plugin receives is EmDash's real text, through the real RPC: if
+ *   EmDash rewords it, this suite fails. (The rest of EmDash's bridge needs D1;
+ *   the probe gives Stripe its fake secrets through an in-isolate kv.)
  * - the host's only outbound is a recording stub, so nothing reaches a real
  *   Stripe, facilitator or email provider. Every secret is a fake.
  *
- * MEASURED (workerd 1.20260710, EmDash 0.38): the RPC REFUSES an `AbortSignal`
- * in `init` — `DataCloneError: AbortSignal serialization is not enabled.`
- * (workerd gates it behind the experimental `enable_abortsignal_rpc` flag, which
- * the runner does not set). Before this suite's fix the Stripe transport and the
- * email senders put `AbortSignal.timeout(...)` in `init`, so every Stripe call
- * and every email send failed in sandboxed mode; they now race their own
- * deadline instead, and a signal travels only when the composition root says the
- * host is trusted (in-process). The `trustedHost` cases below pin what that
- * opt-in does under the sandbox runner. If the first test ever starts passing,
- * the platform carries signals and the opt-in could become the default. (The
- * email senders this paragraph describes were replaced by `ctx.email`, which
- * carries no signal at all.)
+ * MEASURED (workerd 1.20260710, EmDash 0.38): the RPC REFUSED an `AbortSignal`
+ * in `init` — `DataCloneError: AbortSignal serialization is not enabled.` — so
+ * a Stripe transport that put `AbortSignal.timeout(...)` in `init` failed every
+ * call in sandboxed mode. It now races its own deadline instead, and a signal
+ * travels only when the composition root says the host is trusted (in-process).
+ * (Email no longer goes through `ctx.http`: it is `ctx.email`, which carries no
+ * signal at all.)
+ *
+ * MEASURED (workerd 1.20260710, EmDash 1.0.1): the wrapper never forwards
+ * `init.signal` — it is DROPPED silently, so the call goes through, and even an
+ * already-aborted signal does not stop it. Nothing a plugin aborts reaches the
+ * host's fetch, so the deadline race is still the only thing that bounds a call
+ * under the runner (the slow-host cases below), and the `trustedHost` opt-in
+ * is harmless here but buys nothing: its abort never leaves the isolate. If a
+ * signal ever starts crossing (the first cases change), the opt-in could become
+ * the default.
  *
  * Ported from the tax branch's R5e suite of the same name (same harness).
  */
@@ -71,7 +80,7 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 /** The probe plugin's `allowedHosts`: every host its routes reach. */
 const ALLOWED = [PROBE_HOST, STRIPE_HOST, X402_HOST];
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-/** The runner's own compatibility date for a loaded plugin (`runner.ts`, 0.38). */
+/** The runner's own compatibility date for a loaded plugin (`src/sandbox/runner.ts`, 1.0.1). */
 const RUNNER_COMPATIBILITY_DATE = "2026-04-01";
 
 /**
@@ -83,6 +92,7 @@ function emdashSandboxSources(): {
 	bridgeHttp: string;
 	bridge: string;
 	pluginTypes: string;
+	httpWire: string;
 } {
 	// (`bridge` is read as text: see `emailSendBody`.)
 	const fromStore = createRequire(path.resolve(HERE, "../../store-emdash/package.json"));
@@ -90,17 +100,21 @@ function emdashSandboxSources(): {
 		path.dirname(fromStore.resolve("@emdash-cms/cloudflare")),
 		"..",
 	);
-	// The wrapper imports only `normalizeCapabilities` from `emdash`, which
-	// re-exports it from `@emdash-cms/plugin-types`; that small module is what
-	// gets bundled in its place.
+	// The wrapper and `bridge-http.ts` import two things from `emdash`:
+	// `normalizePluginCapabilities` from the root entry and the request/response
+	// wire helpers from `emdash/internal/plugins/http-wire`. The root entry drags
+	// in Astro and the whole CMS, so the build resolves each import to the one
+	// small module that defines it: the core's `src/plugins/types.ts` (its value
+	// imports are only `@emdash-cms/plugin-types`) and the published `http-wire`
+	// entry (no imports at all).
 	const fromCloudflare = createRequire(path.join(cloudflareRoot, "package.json"));
 	const emdashRoot = path.resolve(path.dirname(fromCloudflare.resolve("emdash")), "..");
-	const fromEmdash = createRequire(path.join(emdashRoot, "package.json"));
 	return {
 		wrapper: path.join(cloudflareRoot, "src/sandbox/wrapper.ts"),
 		bridgeHttp: path.join(cloudflareRoot, "src/sandbox/bridge-http.ts"),
 		bridge: path.join(cloudflareRoot, "src/sandbox/bridge.ts"),
-		pluginTypes: fromEmdash.resolve("@emdash-cms/plugin-types"),
+		pluginTypes: path.join(emdashRoot, "src/plugins/types.ts"),
+		httpWire: fromCloudflare.resolve("emdash/internal/plugins/http-wire"),
 	};
 }
 
@@ -138,7 +152,8 @@ const MANIFEST = {
 const PLUGIN = ${JSON.stringify(pluginCode)};
 const WRAPPER = generatePluginWrapper(MANIFEST);
 
-// EmDash's PluginBridge.httpFetch, verbatim in what it does (bridge.ts:1106).
+// EmDash's PluginBridge.httpFetch (src/sandbox/bridge.ts, 1.0.1), verbatim in
+// what it does when the runner has no fetch callback.
 export class PluginBridge extends WorkerEntrypoint {
 	async httpFetch(url, init) {
 		const { capabilities, allowedHosts } = this.ctx.props;
@@ -177,7 +192,8 @@ export default {
 				storageCollections: [],
 			},
 		});
-		// The runner's loader config (runner.ts, 0.38), field for field.
+		// The runner's loader config (src/sandbox/runner.ts, 1.0.1), field for field
+		// (minus \`limits\`: this suite measures the transport, not resource limits).
 		const worker = env.LOADER.get("probe:1.0.0", () => ({
 			compatibilityDate: ${JSON.stringify(RUNNER_COMPATIBILITY_DATE)},
 			mainModule: "plugin.js",
@@ -253,7 +269,16 @@ describe("EmDash's sandbox runner: ctx.http.fetch over the PluginBridge RPC (rea
 			platform: "neutral",
 			external: ["cloudflare:workers"],
 			noExternal: (id) => id !== "cloudflare:workers",
-			alias: { emdash: sources.pluginTypes },
+			plugins: [
+				{
+					name: "emdash-sandbox-sources",
+					resolveId(id: string) {
+						if (id === "emdash") return sources.pluginTypes;
+						if (id === "emdash/internal/plugins/http-wire") return sources.httpWire;
+						return null;
+					},
+				},
+			],
 		});
 
 		const stubAddress = new URL(stub.baseUrl).host;
@@ -352,26 +377,30 @@ describe("EmDash's sandbox runner: ctx.http.fetch over the PluginBridge RPC (rea
 		);
 	}
 
-	const REFUSED = "threw DataCloneError 25: AbortSignal serialization is not enabled.";
+	const PONG = 'status 200: {"pong":true}';
 
-	test("an AbortSignal in init is refused by the RPC itself, before the bridge runs", async () => {
+	test("an AbortSignal in init is dropped by the wrapper: the call reaches the host", async () => {
 		stub.requests.length = 0;
-		expect(await route("raw", { withSignal: true })).toBe(REFUSED);
-		expect(stub.requests).toHaveLength(0);
+		expect(await route("raw", { withSignal: true })).toBe(PONG);
+		expect(seen()).toEqual([`GET ${PROBE_HOST}/ping`]);
+	});
+
+	test("even an already-aborted signal does not stop the call: the abort never leaves the isolate", async () => {
+		stub.requests.length = 0;
+		expect(await route("raw", { withSignal: true, aborted: true })).toBe(PONG);
+		expect(seen()).toEqual([`GET ${PROBE_HOST}/ping`]);
 	});
 
 	test("the same call without a signal goes through the bridge to the host", async () => {
 		stub.requests.length = 0;
-		expect(await route("raw", { withSignal: false })).toBe('status 200: {"pong":true}');
+		expect(await route("raw", { withSignal: false })).toBe(PONG);
 		expect(seen()).toEqual([`GET ${PROBE_HOST}/ping`]);
 	});
 
-	test("a null-prototype init is refused by the RPC too", async () => {
+	test("a null-prototype init is accepted too (the wrapper rebuilds init before the RPC)", async () => {
 		stub.requests.length = 0;
-		expect(await route("raw", { nullPrototype: true })).toBe(
-			'threw DataCloneError 25: Could not serialize object of type "Object". This type does not support serialization.',
-		);
-		expect(stub.requests).toHaveLength(0);
+		expect(await route("raw", { nullPrototype: true })).toBe(PONG);
+		expect(seen()).toEqual([`GET ${PROBE_HOST}/ping`]);
 	});
 
 	test("Stripe refund through the plugin's wiring: pre-flight and create both reach the host, keyed", async () => {
@@ -438,20 +467,25 @@ describe("EmDash's sandbox runner: ctx.http.fetch over the PluginBridge RPC (rea
 		expect(await route("email")).toBe("unavailable");
 	});
 
-	// `trustedHost` puts a signal in init, which is why only an IN-PROCESS host may
-	// set it: under the sandbox runner it fails before the bridge, as every call
-	// did before this fix.
-	test("trustedHost under the sandbox runner: the Stripe refund never reaches the host", async () => {
+	// `trustedHost` puts a signal in init. Under 0.38's runner that failed every
+	// call before the bridge; under 1.0.1's the signal is dropped and the call
+	// goes through, still bounded by its own deadline. Only an IN-PROCESS host
+	// gains anything from it.
+	test("trustedHost under the sandbox runner: the Stripe refund still reaches the host (signal dropped)", async () => {
 		stub.requests.length = 0;
-		const result = JSON.parse(String(await route("stripeRefund", { trustedHost: true }))) as {
-			ok: boolean;
-		};
-		expect(result.ok).toBe(false);
-		expect(stub.requests).toHaveLength(0);
+		const result = JSON.parse(String(await route("stripeRefund", { trustedHost: true }))) as Record<
+			string,
+			unknown
+		>;
+		expect(result).toMatchObject({ ok: true, refundRef: "re_sandbox_1" });
+		expect(seen()).toEqual([
+			`GET ${STRIPE_HOST}/v1/payment_intents/pi_sandbox_1?expand[]=latest_charge`,
+			`POST ${STRIPE_HOST}/v1/refunds`,
+		]);
 	});
 
 	// A LATE answer under the runner. Nothing can abort the request (no signal
-	// crosses the RPC), so each call gives up at its own bound and classifies as
+	// crosses the wrapper), so each call gives up at its own bound and classifies as
 	// a timeout always did; whatever the host answers afterwards is discarded.
 	describe("a host that answers after the call's bound", () => {
 		test("a refund create answered late is UNVERIFIED at the bound, never TERMINAL; the create was keyed", async () => {

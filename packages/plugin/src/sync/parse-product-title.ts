@@ -1,3 +1,5 @@
+import { toWellFormedText } from "@otta-sh/domain";
+
 /** Mirrors the `upsertProductCommerceBody.title` bound
  *  (`z.string().min(1).max(500)`) that the standalone `@otta-sh/service`
  *  enforced before it was folded into the plugin; restated as a constant here
@@ -42,7 +44,11 @@ export function parseProductTitle(value: unknown): ParsedProductTitle {
 	if (typeof value !== "string") {
 		return { problem: `\`data.title\` is ${typeof value}, not a string` };
 	}
-	const title = value.trim();
+	// REPAIRED, not refused (review R3-B X1): the title is the CMS's text, already
+	// saved there, and this hook cannot send the editor back to fix it. A lone
+	// surrogate or NUL becomes U+FFFD — the one form Postgres can store — instead
+	// of failing the whole sync at the commerce boundary, which refuses it.
+	const title = toWellFormedText(value.trim());
 	if (title.length === 0) return { problem: "`data.title` is empty/whitespace" };
 	if (title.length > TITLE_MAX_LENGTH) {
 		return {

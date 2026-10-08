@@ -83,13 +83,20 @@ const key = (value: string): IdempotencyKey => idempotencyKey(value);
 
 export default {
 	routes: {
-		/** `ctx.http.fetch` straight: with or without an `AbortSignal` in `init`, or with a null-prototype `init`. */
+		/** `ctx.http.fetch` straight: with or without an `AbortSignal` in `init` (`aborted`:
+		 *  one that has already fired), or with a null-prototype `init`. */
 		raw: {
 			async handler({ input }: RouteContext, ctx: PluginContext): Promise<string> {
-				const options = (input ?? {}) as { withSignal?: unknown; nullPrototype?: unknown };
+				const options = (input ?? {}) as {
+					withSignal?: unknown;
+					aborted?: unknown;
+					nullPrototype?: unknown;
+				};
+				const controller = new AbortController();
+				if (options.aborted === true) controller.abort();
 				const init: RequestInit = {
 					method: "GET",
-					...(options.withSignal === true ? { signal: new AbortController().signal } : {}),
+					...(options.withSignal === true ? { signal: controller.signal } : {}),
 				};
 				try {
 					const res = await ctx.http.fetch(

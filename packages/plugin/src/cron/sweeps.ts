@@ -163,6 +163,7 @@ import {
 	productId as toProductId,
 	retryLatePaymentRefunds,
 	softDeleteProductCommerce,
+	UnitBackoff,
 	type EmailSender,
 	type OrderId,
 	type OrderState,
@@ -184,6 +185,7 @@ import {
 	type OrderSkuIndexDoc,
 	type ProductCommerceDoc,
 	type StorageAccess as AdapterStorageAccess,
+	UNMETERED_COLLECTION,
 } from "@otta-sh/store-emdash";
 import {
 	createInProcessCommerceStores,
@@ -679,6 +681,35 @@ const LIST_CANDIDATE_CALLS = 3;
  */
 const EXPIRY_SCAN_ORDERS = 100;
 
+/**
+ * Orders whose expiry flip threw, waiting before they are tried again (review
+ * round 3, B I4), so orders that fail every time cannot take every tick's bite and
+ * starve the orders listed behind them. Per process, like the storage guard's heal
+ * state; losing it (a restart, a fresh isolate) only means such an order is tried
+ * once more sooner. Its cap is sized each tick by {@link expiryBackoffCap}.
+ */
+const ORDER_EXPIRY_BACKOFF = new UnitBackoff({ maxEntries: expiryBackoffCap(1) });
+
+/**
+ * The expiry back-off's cap for a bite of `expiryLimit` (polish P-3): the rows the
+ * look's one page ({@link EXPIRY_SCAN_ORDERS}) has left beside the bite and its one
+ * extra row — 98 on Free (bite 1), 81 at the Paid bite of 18 — so reading past
+ * every waiting order never costs a second page. Never below the default 32 (only a
+ * test-only bite of 68 or more gets there, and that look already paged).
+ *
+ * THE BOUND, stated plainly: the back-off holds starvation back, it does not end
+ * it. Orders behind F orders whose flip fails EVERY time are still expired while F
+ * is below both this cap and about 60 × the bite (each failing order is retried
+ * once an hour at most, so past that the retries alone fill every bite). On Free
+ * that is up to 59 such orders (the order behind 59 is reached in about six
+ * hours); at the Paid bite, up to 89 measured (the condition is sufficient, not
+ * tight; the order behind 90 starves). Past it the rest starve, which before the
+ * back-off happened as soon as one bite's worth failed. See `UnitBackoff`.
+ */
+function expiryBackoffCap(expiryLimit: number): number {
+	return Math.max(UnitBackoff.DEFAULT_MAX_ENTRIES, EXPIRY_SCAN_ORDERS - (expiryLimit + 1));
+}
+
 /** `expire-holds`' entry reads for a given bite: its fixed reads, plus two per
  *  listed candidate (it lists `batch + 1`). */
 function expireHoldsEntry(expiryBatch: number): number {
@@ -907,6 +938,9 @@ export interface CommerceSweepOptions {
 	/** Most holds, and most orders, each expiry leg attempts per tick. Default:
 	 *  scaled from the query budget (`batchesFor`) — 1 on the Free preset, 18 on Paid. */
 	readonly expiryBatchLimit?: number;
+	/** Where failed order expiries back off. Default: one per process. Tests pass
+	 *  their own. The leg sizes its cap each tick (`expiryBackoffCap`). */
+	readonly expiryBackoff?: UnitBackoff;
 	/** Most outbox rows the email leg claims per tick. Default: scaled from the
 	 *  query budget — 10 on the Free preset, 25 on Paid. */
 	readonly emailBatchLimit?: number;
@@ -1462,13 +1496,22 @@ export async function runCommerceSweeps(
 	// a time — a dozen queries for 150 orders, charged to a check costed as one. An
 	// order the look did not reach is not listed, so it is never expired unchecked;
 	// it is read on a later tick, once `cancel-intents` has withdrawn the ones ahead.
+	//
+	// Orders still backing off after a failed flip (review round 3, B I4) are read
+	// past: the look lists that many more and leaves them out, in the same query.
+	const expiryBackoff = options.expiryBackoff ?? ORDER_EXPIRY_BACKOFF;
 	let expirable: Promise<readonly OrderId[]> | undefined;
 	const expirableIds = (): Promise<readonly OrderId[]> =>
-		(expirable ??= stores.orderStore.listExpirable(nowIso, {
-			limit: expiryLimit + 1,
-			excludeIntentDue: true,
-			scanLimit: Math.max(expiryLimit + 1, EXPIRY_SCAN_ORDERS),
-		}));
+		(expirable ??= (async () => {
+			expiryBackoff.setMaxEntries(expiryBackoffCap(expiryLimit));
+			const waiting = expiryBackoff.waiting(now.getTime());
+			const listed = await stores.orderStore.listExpirable(nowIso, {
+				limit: expiryLimit + 1 + waiting.size,
+				excludeIntentDue: true,
+				scanLimit: Math.max(expiryLimit + 1 + waiting.size, EXPIRY_SCAN_ORDERS),
+			});
+			return waiting.size === 0 ? listed : listed.filter((id) => !waiting.has(id));
+		})());
 	const expireOrdersLeg = async (): Promise<void> =>
 		await run(
 			"expire-orders",
@@ -1488,6 +1531,9 @@ export async function runCommerceSweeps(
 							limit,
 							shouldContinue: legBudget.gate(0, LEG_QUERY_COSTS["expire-orders"].unit),
 							due: await expirableIds(),
+							backoff: expiryBackoff,
+							// The tick's query ceiling ends the leg; it is not one order failing.
+							stopsBatch: isSweepQueryCeilingError,
 						},
 					),
 					(count) => noteUnits("expire-orders", count, legBudget),
@@ -1957,6 +2003,11 @@ function countingContext(ctx: PluginContext, budget: TickBudget): PluginContext 
 	const counted = <T extends object>(target: T): T =>
 		new Proxy(target, {
 			get(inner, prop, receiver) {
+				// The storage guard's repair walk reads past the meter (review A2): the
+				// budget is D1's per-invocation cap, the walk only runs after a Postgres
+				// error, and it is bounded by its own page budget. Charged here, a bad
+				// row deep in a collection cut the walk off every tick, from page 0.
+				if (prop === UNMETERED_COLLECTION) return inner;
 				const value: unknown = Reflect.get(inner, prop, receiver);
 				if (typeof value !== "function") return value;
 				return (...args: unknown[]) => {

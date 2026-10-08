@@ -10,6 +10,7 @@ import { describe, expect, test } from "vitest";
 import { ORDER_ADDRESS_MAX_LENGTHS } from "@otta-sh/domain";
 import {
 	exceedsAddressBounds,
+	holdsIllFormedAddressText,
 	parseCheckoutPlaceInput,
 	parseCheckoutSummaryInput,
 	parseOrderRouteInput,
@@ -424,5 +425,74 @@ describe("parseOrderRouteInput", () => {
 
 	test.each([[undefined], [""], [null], [42]])("rejects an orderId of %p", (orderId) => {
 		expect(parseOrderRouteInput({ orderId })).toBeNull();
+	});
+});
+
+/**
+ * Review R3-B X1: every string these parsers accept is well-formed text. A lone
+ * UTF-16 surrogate or U+0000 survives `JSON.parse`, and Postgres's `jsonb` cannot
+ * read either back — one stored copy used to break every order query.
+ */
+describe("text that is not well formed", () => {
+	const PLACE = { cartId: "cart-1", buyerRef: "b@example.com", idempotencyKey: "checkout:cart-1" };
+	const POISONS = ["\uD800", "\uDC00", "\uDE00\uD83D", "\u0000"];
+
+	test.each(POISONS)("the place parser refuses %j in every text field", (poison) => {
+		for (const field of ["cartId", "buyerRef", "idempotencyKey"] as const) {
+			expect(parseCheckoutPlaceInput({ ...PLACE, [field]: `x${poison}` }), field).toBeNull();
+		}
+		expect(parseCheckoutPlaceInput({ ...PLACE, couponCode: `SAVE${poison}` })).toBeNull();
+		for (const field of [
+			"name",
+			"line1",
+			"line2",
+			"city",
+			"region",
+			"postalCode",
+			"email",
+			"phone",
+		]) {
+			expect(
+				parseCheckoutPlaceInput({
+					...PLACE,
+					shippingAddress: { ...ADDRESS, [field]: `x${poison}` },
+				}),
+				field,
+			).toBeNull();
+		}
+	});
+
+	test.each(POISONS)("the summary and order parsers refuse %j too", (poison) => {
+		expect(parseCheckoutSummaryInput({ cartId: `cart${poison}` })).toBeNull();
+		expect(parseCheckoutSummaryInput({ cartId: "cart-1", couponCode: poison })).toBeNull();
+		expect(
+			parseCheckoutSummaryInput({
+				cartId: "cart-1",
+				destination: { country: "US", region: `C${poison}` },
+			}),
+		).toBeNull();
+		expect(parseOrderRouteInput({ orderId: `ord${poison}` })).toBeNull();
+	});
+
+	test("a ship-to field holding one is flagged for INVALID_SHIPPING_ADDRESS — and only then", () => {
+		expect(holdsIllFormedAddressText({ ...ADDRESS, city: "Kolkata\uD800" })).toBe(true);
+		expect(holdsIllFormedAddressText({ ...ADDRESS, name: "\u0000" })).toBe(true);
+		expect(holdsIllFormedAddressText(ADDRESS)).toBe(false);
+		expect(holdsIllFormedAddressText({ ...ADDRESS, name: "Asha \uD83D\uDE00" })).toBe(false);
+		for (const value of [null, "x\uD800", ["\uD800"], 42]) {
+			expect(holdsIllFormedAddressText(value)).toBe(false);
+		}
+	});
+
+	test("an emoji, a flag and Devanagari are well-formed text and pass", () => {
+		const parsed = parseCheckoutPlaceInput({
+			...PLACE,
+			shippingAddress: {
+				...ADDRESS,
+				name: "Asha \uD83D\uDE00",
+				line1: "\u0915\u094D\u0937 \uD83C\uDDEE\uD83C\uDDF3",
+			},
+		});
+		expect(parsed?.shippingAddress?.name).toBe("Asha \uD83D\uDE00");
 	});
 });

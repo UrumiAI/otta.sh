@@ -80,7 +80,12 @@ export interface DialectStorage {
 	collection<T>(name: string): StorageCollection<T>;
 }
 
-/** Build the collections the way the host builds `ctx.storage`. */
+/**
+ * Build each collection as the host's repository (`PluginStorageRepository`), the
+ * object the host's `ctx.storage` wraps, with the same arguments. The suites use
+ * the repositories directly; {@link hostShapedCollection} adds the host's wrapper
+ * where the difference matters (it hides the repository's own fields).
+ */
 function buildStorage(db: HostDb, layout: StorageLayout): StorageAccess {
 	const storage: StorageAccess = {};
 	for (const [name, config] of Object.entries(layout)) {
@@ -90,6 +95,35 @@ function buildStorage(db: HostDb, layout: StorageLayout): StorageAccess {
 		storage[name] = new PluginStorageRepository(db, PLUGIN_ID, name, indexes);
 	}
 	return storage;
+}
+
+/**
+ * A collection exactly as the host hands it to a plugin: emdash's
+ * `createStorageCollection` returns a plain object of closures over a private
+ * `PluginStorageRepository`, so neither the repository's database handle (`db`)
+ * nor its `pluginId` is reachable. The storage guard's heal state therefore falls
+ * back to the collection name in production (review round 3, A R3-A1 / B L8).
+ */
+export function hostShapedCollection<T>(repo: StorageCollection<T>): StorageCollection<T> {
+	return {
+		get: (id) => repo.get(id),
+		getVersioned: (id) => repo.getVersioned(id),
+		compareAndSet: (id, expectedRevision, data) => repo.compareAndSet(id, expectedRevision, data),
+		compareAndDelete: (id, expectedRevision) => repo.compareAndDelete(id, expectedRevision),
+		put: (id, data) => repo.put(id, data),
+		delete: (id) => repo.delete(id),
+		count: (where) => repo.count(where),
+		updateIf: (id, updateArgs) => repo.updateIf(id, updateArgs),
+		async query(options) {
+			const result = await repo.query({
+				where: options?.where,
+				orderBy: options?.orderBy,
+				limit: options?.limit,
+				cursor: options?.cursor,
+			});
+			return { items: result.items, cursor: result.cursor, hasMore: result.hasMore };
+		},
+	};
 }
 
 /** Fresh in-memory SQLite, migrated to latest. */

@@ -258,6 +258,27 @@ describe("storefront cart routes (workerd sandbox)", () => {
 		expect(cartCalls.calls).toEqual([]);
 	});
 
+	test.each([
+		["sku", { sku: "SKU\uD800" }],
+		["productId", { productId: "prod\uDC00" }],
+		["idempotencyKey", { idempotencyKey: "idem\u0000" }],
+	])(
+		"add-to-cart refuses a lone surrogate or NUL in %s as INVALID_INPUT, before any store work (review R3-B X1)",
+		async (_label, field) => {
+			const cartId = await createCart();
+			cartCalls.reset();
+			const result = await addLine({
+				cartId,
+				sku: `SKU-WF-${SUFFIX}`,
+				qty: 1,
+				idempotencyKey: `idem-wf-${SUFFIX}`,
+				...field,
+			});
+			expect(result).toEqual({ ok: false, error: "INVALID_INPUT" });
+			expect(cartCalls.calls).toEqual([]);
+		},
+	);
+
 	test("add-to-cart THREADS productId onto the persisted line, and the line still carries it on re-read (issue #80)", async () => {
 		await seedProduct({ id: `prod-thread-${SUFFIX}`, sku: `SKU-THREAD-${SUFFIX}`, amount: 1000 });
 		const cartId = await createCart();

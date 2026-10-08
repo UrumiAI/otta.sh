@@ -45,6 +45,7 @@ import { FakePaymentGateway, FixedClock } from "@otta-sh/domain/testing";
 import { afterAll, afterEach, beforeAll, describe, expect, test, vi } from "vitest";
 import {
 	IDEMPOTENCY_KEY_MAX,
+	ILL_FORMED_TEXT_REASON,
 	isBoundedProductId,
 	isCommerceInputError,
 	isDocumentIdempotencyKey,
@@ -366,6 +367,11 @@ describe("each boundary predicate agrees with the require* the client throws fro
 		"a b",
 		"a\u0000b",
 		"\u0000",
+		// Lone UTF-16 surrogates (review R3-B X1): ill-formed like U+0000.
+		"a\uD800b",
+		"\uDC00",
+		"\uDE00\uD83D",
+		"x".repeat(201) + "\uD800",
 		"tab\there",
 		"a\x7fb",
 		"cärt",
@@ -390,6 +396,51 @@ describe("each boundary predicate agrees with the require* the client throws fro
 				!throwsInputError(() => require(value)),
 			);
 		}
+	});
+});
+
+/** The refusal reason a `require*` throws, or null when it accepts. */
+function reasonOf(fn: () => unknown): string | null {
+	try {
+		fn();
+		return null;
+	} catch (err) {
+		if (!isCommerceInputError(err)) throw err;
+		return err.reason;
+	}
+}
+
+/**
+ * ONE REASON PER VALUE. Ill-formed text (U+0000 or a lone surrogate) is refused
+ * with {@link ILL_FORMED_TEXT_REASON}; a value that is ALSO out of bounds is
+ * refused for the bound, because the bound is checked first in every rule.
+ */
+describe("the refusal reason for ill-formed text", () => {
+	test.each(["S\u0000KU", "S\uD800KU", "S\uDC00KU"])(
+		"%j is refused as ill-formed by every edge rule",
+		(value) => {
+			expect(reasonOf(() => requireSku(value))).toBe(ILL_FORMED_TEXT_REASON);
+			expect(reasonOf(() => requireBoundedProductId(value))).toBe(ILL_FORMED_TEXT_REASON);
+			expect(reasonOf(() => requireIdempotencyKey(value))).toBe(ILL_FORMED_TEXT_REASON);
+			expect(reasonOf(() => requireDocumentIdempotencyKey(value))).toBe(ILL_FORMED_TEXT_REASON);
+		},
+	);
+
+	test("a value both too long and ill-formed is refused for its length", () => {
+		expect(reasonOf(() => requireSku(`${"s".repeat(200)}\uD800`, 200))).toBe(
+			"must be at most 200 characters",
+		);
+		expect(reasonOf(() => requireBoundedProductId(`${"p".repeat(200)}\u0000`))).toBe(
+			"must be at most 200 characters",
+		);
+		expect(
+			reasonOf(() => requireDocumentIdempotencyKey(`${"k".repeat(IDEMPOTENCY_KEY_MAX)}\uDC00`)),
+		).toBe(`must be at most ${String(IDEMPOTENCY_KEY_MAX)} characters`);
+	});
+
+	test("a surrogate PAIR is well-formed and passes", () => {
+		expect(reasonOf(() => requireSku("BEANS-\uD83D\uDE00"))).toBeNull();
+		expect(reasonOf(() => requireDocumentIdempotencyKey("k-\uD83D\uDE00"))).toBeNull();
 	});
 });
 

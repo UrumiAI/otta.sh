@@ -10,8 +10,10 @@
  * template — so every deployment made before #375 still carries the flag in a
  * file no test sees. Pull #375 and D1 sessions come on beside it: the flag blocks
  * the request the D1 Sessions API makes to route queries (emdash #1273). EmDash
- * 0.38's hang guard turns that into a ~5 s stall on the first session query of
- * every new isolate, after which sessions are silently off for that isolate — and
+ * 1.0.1's hang guard (`@emdash-cms/cloudflare@1.0.1`
+ * `src/db/d1-session-guard.ts`, `SESSION_HANG_TIMEOUT_MS = 5_000`) turns that
+ * into a ~5 s stall on the first session query of every new isolate, after
+ * which sessions are silently off for that isolate — and
  * a WRITE caught in that window (placing an order, a cart write, the Stripe
  * webhook settle) is rejected rather than re-run, i.e. a 500. Nothing fails at
  * deploy time. So the build refuses the pair instead, naming the file.

@@ -3,11 +3,15 @@
  *
  * WHY NO SIGNAL. Under EmDash's sandbox runner the plugin's `ctx.http.fetch(url,
  * init)` is a Workers RPC call to the host (`bridge.httpFetch(url, init)`), whose
- * arguments are structured-cloned, and workerd refuses to clone an `AbortSignal`:
- * `DataCloneError: AbortSignal serialization is not enabled.` (the
- * `enable_abortsignal_rpc` flag is experimental and the runner does not set it).
- * The refusal happens before anything is sent, so a signal in `init` made EVERY
- * Stripe call fail in sandboxed mode. Measured in real workerd by
+ * arguments are structured-cloned. On EmDash 0.38 workerd refused to clone an
+ * `AbortSignal` there (`DataCloneError: AbortSignal serialization is not
+ * enabled.`; the `enable_abortsignal_rpc` flag is experimental and the runner
+ * does not set it), before anything was sent, so a signal in `init` made EVERY
+ * Stripe call fail in sandboxed mode. On 1.0.1 the wrapper forwards only
+ * method, redirect, headers and body (`@emdash-cms/cloudflare@1.0.1`
+ * `src/sandbox/wrapper.ts` `http.fetch`), so a signal is silently dropped and
+ * the abort never reaches the host fetch. Either way the race below is the only
+ * bound. Measured in real workerd by
  * `packages/plugin/test/emdash-sandbox-rpc.sandbox.test.ts`.
  *
  * WHAT BOUNDS THE CALL INSTEAD. A race: the request, and every body read that
@@ -25,7 +29,8 @@
  * it — Stripe's idempotency key, not the transport, dedupes a caller's retry. A
  * TRUSTED (in-process) host can carry a signal, so `trustedHost: true` puts one
  * in `init` again, aborted by the same timer, and the socket is released. Never
- * set it under the sandbox runner: the RPC refuses the signal and every call fails.
+ * set it under the sandbox runner: 0.38's RPC refused the signal and every call
+ * failed; 1.0.1's wrapper drops it, so it would release nothing there.
  *
  * `@otta-sh/payments-x402`'s facilitator race is a variant of the same idea; keep
  * them in step: a fix to one is very likely owed to the other. (The plugin's

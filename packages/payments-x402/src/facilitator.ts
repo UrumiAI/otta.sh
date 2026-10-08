@@ -93,13 +93,18 @@ export const PRE_BROADCAST_REASONS: ReadonlySet<string> = new Set([
 
 /**
  * What the adapter needs from a fetch response — no more, because the platforms
- * differ. A real `Response` (EmDash's in-process `ctx.http`, the test sandbox)
- * has all of it. EmDash's Cloudflare Worker Loader bridge
- * (`@emdash-cms/cloudflare@0.38.0`, `dist/runner-CQpZcxVz.mjs:997-1007`) returns
- * a plain object `{status, ok, headers, text(), json()}` with NO `url` and NO
- * `body`: the host side follows redirects itself, re-checks `allowedHosts` and
- * strips `Authorization` on every cross-origin hop (`:164-209`, `:207`), and
- * buffers the whole body (`:192`).
+ * differ. On EmDash 1.0.1 both host paths hand back a real `Response` rebuilt
+ * from a buffered wire form (`emdash` `src/plugins/http-wire.ts`,
+ * `pluginHttpResponseFromWire`): `status`, `statusText`, `headers`, a `body`
+ * over bytes the host already read in full (capped at 8 MiB), and `url` /
+ * `redirected` set to the final hop. That holds in-process
+ * (`src/plugins/context.ts` `createHttpAccess`) and over the Cloudflare Worker
+ * Loader bridge (`@emdash-cms/cloudflare@1.0.1` `src/sandbox/wrapper.ts`
+ * `http.fetch`, host side `src/sandbox/bridge-http.ts` `sandboxHttpFetch`). The
+ * host honours `redirect: "manual"`, and when it follows a redirect it re-checks
+ * `allowedHosts` and strips `Authorization` on every cross-origin hop. EmDash
+ * 0.38's bridge returned a plain `{status, ok, headers, text(), json()}` with NO
+ * `url` and NO `body`, which is why both stay optional here.
  */
 export interface FacilitatorResponse {
 	readonly status: number;
@@ -113,10 +118,14 @@ export interface FacilitatorResponse {
 /**
  * The injected egress — the plugin passes `ctx.http.fetch`. Called with a plain
  * `init` (method, headers as a plain object, a string body, `redirect`) and
- * deliberately NO `signal`: the Worker Loader bridge sends `init` over RPC
- * (`bridge.httpFetch(url, init)`, `runner-CQpZcxVz.mjs:999`), and an
- * `AbortSignal` is not structured-cloneable, so passing one would fail every
- * call there. The adapter's own timeout race bounds the wait on every platform.
+ * deliberately NO `signal`: the Worker Loader bridge sends `init` to the host
+ * over RPC (`bridge.httpFetch(url, init)`). On EmDash 0.38 an `AbortSignal`
+ * could not be structured-cloned there, so passing one failed every call with
+ * `DataCloneError`; on 1.0.1 the wrapper forwards only method, redirect,
+ * headers and body (`@emdash-cms/cloudflare@1.0.1` `src/sandbox/wrapper.ts`
+ * `http.fetch`), so a signal is silently dropped and the abort never reaches
+ * the host fetch. Either way the adapter's own timeout race is the only bound
+ * on the wait, on every platform.
  */
 export type FacilitatorFetch = (url: string, init: RequestInit) => Promise<FacilitatorResponse>;
 
@@ -221,13 +230,14 @@ async function readBoundedStream(
  *
  * A final response whose `url` is a non-empty string other than the URL
  * requested was redirected, and is never trusted as a verdict. Where the
- * platform reports no `url` (the Worker Loader bridge), the redirect rule is the
- * platform's own: it follows at most five hops, each re-checked against
- * `allowedHosts`, with `Authorization` stripped on a cross-origin hop. A
- * redirect can then only land on another allowlisted host (Stripe, the email
+ * platform reports no `url` (EmDash 0.38's Worker Loader bridge), the redirect
+ * rule is the platform's own: it follows at most five hops, each re-checked
+ * against `allowedHosts`, with `Authorization` stripped on a cross-origin hop.
+ * A redirect can then only land on another allowlisted host (Stripe, the email
  * API), whose answer is not a well-formed verdict and so classifies as
- * unavailable. `redirect: "manual"` is asked for as well; where it is honoured,
- * a 3xx comes back and is unavailable by status.
+ * unavailable. `redirect: "manual"` is asked for as well; where it is honoured
+ * (EmDash 1.0.1, on both host paths), a 3xx comes back and is unavailable by
+ * status.
  *
  * Nothing in here throws: any failure of the injected fetch or of the response
  * object it returns (even a fetch that resolves to `null`) is `transport`.

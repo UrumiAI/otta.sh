@@ -320,4 +320,33 @@ describe("the store-emdash perimeter", () => {
 			rulesViolatedBy("store-emdash", 'import type { Pool } from "pg";\nexport type P = Pool;\n'),
 		).toEqual(["store-emdash-is-sandbox-clean"]);
 	});
+
+	test("a RESOLVED payment adapter is forbidden here — store-emdash is not the payments layer", () => {
+		expect(
+			rulesViolatedBy(
+				"store-emdash",
+				'import { stub } from "@otta-sh/payments-stripe";\nexport const x = stub;\n',
+			),
+		).toEqual(["store-emdash-is-sandbox-clean"]);
+	});
+});
+
+describe("the domain perimeter", () => {
+	test("a RESOLVED SQL store adapter is forbidden", () => {
+		expect(
+			rulesViolatedBy(
+				"domain",
+				'import { stub } from "@otta-sh/store-sqlite";\nexport const x = stub;\n',
+			),
+		).toEqual(["domain-is-io-free"]);
+	});
+
+	test("the plugin is forbidden — the domain cannot depend on its callers", () => {
+		expect(
+			rulesViolatedBy(
+				"domain",
+				'import { stub } from "@otta-sh/plugin";\nexport const x = stub;\n',
+			),
+		).toEqual(["domain-is-io-free"]);
+	});
 });
