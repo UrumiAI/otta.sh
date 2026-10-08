@@ -104,6 +104,7 @@ import {
 	orderHasEmailRecipient,
 	orderId as toOrderId,
 	orderNumber,
+	orderNumberIdPrefix,
 	recordFulfillment as recordFulfillmentUseCase,
 	refundOrder as refundOrderUseCase,
 	resolveReconciliation as resolveReconciliationUseCase,
@@ -974,6 +975,11 @@ export class InProcessAdminOrdersClient implements AdminOrdersSurface {
 			nextCursor:
 				result.nextCursor === null ? null : encodeOrderCursor(result.nextCursor, filter, limit),
 			total,
+			// From the filter these rows were ACTUALLY read with (a cursor's own, when
+			// one was honoured), so the console's note matches the rows (ADR-0033).
+			...(filter.search !== undefined && orderNumberIdPrefix(filter.search) !== null
+				? { searchedByNumber: true as const }
+				: {}),
 		};
 	}
 }

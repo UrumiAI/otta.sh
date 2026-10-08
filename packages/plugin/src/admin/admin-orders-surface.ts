@@ -154,6 +154,10 @@ export interface OrdersListResult {
 	 * page of rows with a count of none.
 	 */
 	total?: number;
+	/** The search these rows were found by — the cursor's own filter when a cursor
+	 *  was honoured — was typed as an order number (`orderNumberIdPrefix`,
+	 *  ADR-0033). ABSENT otherwise. */
+	searchedByNumber?: true;
 	/**
 	 * THIS IS PAGE ONE, and it is page one because the cursor the caller asked
 	 * with was REFUSED — mismatched against these filters, or undecodable — and
