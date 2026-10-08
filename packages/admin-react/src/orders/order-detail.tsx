@@ -58,8 +58,8 @@ import {
 	REFUNDS_UNAVAILABLE,
 	REFUND_ADDITIVE_NOTE,
 	REFUND_AMOUNT_INVALID,
-	REFUND_AMOUNT_PRECISION,
 	hasExcessDecimals,
+	refundAmountPrecisionText,
 	REFUND_PARTIAL_GROUP_LABEL,
 	RESOLVE_RECONCILIATION_NOTE,
 	SHIPPING_ADDRESS_ABSENT,
@@ -165,12 +165,15 @@ export function checkRefundInput(
 	remainingCents: number,
 	currency: string,
 ): RefundCheck {
-	const parsed = parseMinorUnitsInput(amountInput, { allowZero: false });
+	// In the ORDER's currency: a JPY refund of "1500" is 1500 yen, never 150000.
+	const parsed = parseMinorUnitsInput(amountInput, currency, { allowZero: false });
 	if (parsed === null) {
 		return {
 			ok: false,
 			refusal: {
-				message: hasExcessDecimals(amountInput) ? REFUND_AMOUNT_PRECISION : REFUND_AMOUNT_INVALID,
+				message: hasExcessDecimals(amountInput, currency)
+					? refundAmountPrecisionText(currency)
+					: REFUND_AMOUNT_INVALID,
 				field: "amount",
 			},
 		};
@@ -835,7 +838,7 @@ export function RefundsPanel({
 								</div>
 								<p style={{ fontSize: 12, opacity: 0.7, margin: 0 }}>
 									{REFUND_ADDITIVE_NOTE} The remaining refundable amount is{" "}
-									{formatMinorUnitsInput(refunds.remainingCents)}.
+									{formatMinorUnitsInput(refunds.remainingCents, cur)}.
 								</p>
 							</div>
 						</Group>

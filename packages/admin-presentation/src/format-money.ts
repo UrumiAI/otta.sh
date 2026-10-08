@@ -24,11 +24,12 @@
  * from Intl itself, never hand-assembled symbol+number strings.
  */
 import { ABSENT } from "./copy.js";
+import { minorUnitDigits } from "./currencies.js";
 import { cents, currency, type Cents, type Currency } from "./money.js";
 
 export function formatMoney(amount: Cents, currencyCode: Currency, locale: string): string {
-	const format = new Intl.NumberFormat(locale, { style: "currency", currency: currencyCode });
-	return format.format(toMajorUnitsString(amount, minorUnitDigits(format)));
+	const { format, digits } = currencyFormat(locale, currencyCode);
+	return format.format(toMajorUnitsString(amount, digits));
 }
 
 /**
@@ -37,13 +38,37 @@ export function formatMoney(amount: Cents, currencyCode: Currency, locale: strin
  * 8), gated by the same brands.
  */
 export function majorUnits(amount: Cents, currencyCode: Currency): string {
-	const format = new Intl.NumberFormat("en-US", { style: "currency", currency: currencyCode });
-	return toMajorUnitsString(amount, minorUnitDigits(format));
+	return toMajorUnitsString(amount, minorUnitDigits(currencyCode));
 }
 
-/** The currency's minor-unit count, from ICU's own table (JPY 0, USD 2, …). */
-function minorUnitDigits(format: Intl.NumberFormat): number {
-	return format.resolvedOptions().maximumFractionDigits ?? 2;
+/**
+ * The formatter and the exponent for `currencyCode`. The exponent is the
+ * currency table's ({@link minorUnitDigits}: JPY 0, USD 2, KWD 3), the SAME one
+ * the money inputs parse with — so what was typed is what is shown. ICU agrees
+ * with the table for almost every listed code, and then the formatter is built
+ * exactly as it always was (byte-identical output). Only where ICU's default
+ * differs (HUF, IDR, COP, PKR: CLDR 0, ISO 2) are the fraction digits pinned to
+ * the table's, so ICU never rounds away a stored minor unit. A code outside the
+ * table falls back to ICU's own exponent, i.e. today's behaviour.
+ */
+function currencyFormat(
+	locale: string,
+	currencyCode: string,
+): { format: Intl.NumberFormat; digits: number } {
+	const digits = minorUnitDigits(currencyCode);
+	const plain = new Intl.NumberFormat(locale, { style: "currency", currency: currencyCode });
+	if ((plain.resolvedOptions().maximumFractionDigits ?? 2) === digits) {
+		return { format: plain, digits };
+	}
+	return {
+		format: new Intl.NumberFormat(locale, {
+			style: "currency",
+			currency: currencyCode,
+			minimumFractionDigits: digits,
+			maximumFractionDigits: digits,
+		}),
+		digits,
+	};
 }
 
 /** Pure integer string math: `1999, 2 → "19.99"`; `5, 2 → "0.05"`. The

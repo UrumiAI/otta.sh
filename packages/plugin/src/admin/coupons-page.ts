@@ -25,10 +25,14 @@ import {
 	type RulesDeleteResult,
 	type RulesUpdateResult,
 } from "./admin-rules-surface.js";
-import { formatMinorUnitsInput, parseMinorUnitsInput } from "./money-input.js";
+import {
+	formatMinorUnitsInput,
+	moneyPrecisionPhrase,
+	parseMinorUnitsInput,
+} from "./money-input.js";
 import { isIdToken } from "../commerce/commerce-input.js";
 import { idInputProblem } from "./id-input.js";
-import { isIsoCurrencyCode } from "@otta-sh/domain";
+import { isSupportedCurrency } from "@otta-sh/domain";
 import { formatBpsAsPercent, parsePercentToBps } from "./percent-input.js";
 import {
 	asRecord,
@@ -392,12 +396,20 @@ function couponMinSpendSummary(
  *  currency-agnostic); a `CUR amount` fallback if the branding constructors
  *  reject the wire value (never throws into the render path). */
 function formatCentsForDisplay(minorUnits: number, currencyCode: string | null): string {
-	if (currencyCode === null) return formatMinorUnitsInput(minorUnits);
+	if (currencyCode === null) return formatMinorUnitsInput(minorUnits, null);
 	try {
 		return formatMoney(toCents(minorUnits), toCurrency(currencyCode), "en-US");
 	} catch {
-		return `${currencyCode} ${formatMinorUnitsInput(minorUnits)}`;
+		return `${currencyCode} ${formatMinorUnitsInput(minorUnits, currencyCode)}`;
 	}
+}
+
+/** The example a fixed amount's refusal quotes, in the coupon currency's own
+ *  shape: `5.00` for a two-decimal currency (and for no currency yet — the
+ *  wording this copy always had), `5` for JPY, `5.000` for KWD. */
+function amountExample(currencyCode: string | null): string {
+	const five = parseMinorUnitsInput("5", currencyCode, { allowZero: false });
+	return five === null ? "5" : formatMinorUnitsInput(five, currencyCode);
 }
 
 // -- level 0: the coupons list -------------------------------------------------
@@ -1197,7 +1209,7 @@ function editCouponForm(detail: CouponSummaryWire): FormBlock {
 			action_id: "amount",
 			label: `Amount off (${detail.currency ?? "?"})`,
 			...(detail.amountCents !== null
-				? { initial_value: formatMinorUnitsInput(detail.amountCents) }
+				? { initial_value: formatMinorUnitsInput(detail.amountCents, detail.currency) }
 				: {}),
 		});
 	} else {
@@ -1229,7 +1241,7 @@ function editCouponForm(detail: CouponSummaryWire): FormBlock {
 			limitField(
 				"cap",
 				"Discount cap (optional)",
-				detail.capCents === null ? undefined : formatMinorUnitsInput(detail.capCents),
+				detail.capCents === null ? undefined : formatMinorUnitsInput(detail.capCents, null),
 			),
 		);
 	}
@@ -1237,7 +1249,9 @@ function editCouponForm(detail: CouponSummaryWire): FormBlock {
 		limitField(
 			"minSubtotal",
 			"Minimum spend (optional)",
-			detail.minSubtotalCents === null ? undefined : formatMinorUnitsInput(detail.minSubtotalCents),
+			detail.minSubtotalCents === null
+				? undefined
+				: formatMinorUnitsInput(detail.minSubtotalCents, detail.currency),
 		),
 	);
 	editFields.push(
@@ -1338,6 +1352,10 @@ function currentContext(detail: CouponSummaryWire): Record<string, string> {
 			: {}),
 		...(detail.startsAt !== null ? { curStartsAt: detail.startsAt } : {}),
 		...(detail.expiresAt !== null ? { curExpiresAt: detail.expiresAt } : {}),
+		// The coupon's currency, which the edit form does not let anyone change:
+		// carried so the money fields are read in ITS exponent (JPY `1500` is
+		// 1500 yen, not 150000). A percentage coupon has none, and carries none.
+		...(detail.currency !== null ? { curCurrency: detail.currency } : {}),
 	};
 }
 
@@ -1466,6 +1484,10 @@ type ParsedEconomics =
  * because {@link resolveBound} preserves them byte for byte.
  */
 interface CurrentValues {
+	/** The coupon's own currency (fixed-amount), or `null` — a percentage
+	 *  coupon, or a form rendered before the currency was carried, both of
+	 *  which keep the hundredths scale these fields always had. */
+	currency: string | null;
 	cap: string;
 	minSubtotal: string;
 	maxUses: string;
@@ -1477,6 +1499,7 @@ interface CurrentValues {
 /** No carried current at all — the CREATE form, which has none of these fields
  *  and whose absent keys therefore mean "unset", exactly as before. */
 const NO_CURRENT: CurrentValues = {
+	currency: null,
 	cap: "",
 	minSubtotal: "",
 	maxUses: "",
@@ -1486,9 +1509,14 @@ const NO_CURRENT: CurrentValues = {
 };
 
 function currentValues(carried: Readonly<Record<string, string>> | undefined): CurrentValues {
+	const currency =
+		carried?.curCurrency !== undefined && /^[A-Z]{3}$/.test(carried.curCurrency)
+			? carried.curCurrency
+			: null;
 	return {
-		cap: carriedMoneyInput(carried?.curCap),
-		minSubtotal: carriedMoneyInput(carried?.curMinSubtotal),
+		currency,
+		cap: carriedMoneyInput(carried?.curCap, currency),
+		minSubtotal: carriedMoneyInput(carried?.curMinSubtotal, currency),
 		maxUses: carriedCount(carried?.curMaxUses),
 		maxUsesPerCustomer: carriedCount(carried?.curMaxUsesPerCustomer),
 		startsAt: carriedInstant(carried?.curStartsAt),
@@ -1500,9 +1528,9 @@ function currentValues(carried: Readonly<Record<string, string>> | undefined): C
  *  round-trips through the operator's browser, so anything that is not a plain
  *  non-negative integer reads as "no current value" rather than being trusted
  *  into a money field. */
-function carriedMoneyInput(raw: string | undefined): string {
+function carriedMoneyInput(raw: string | undefined, currency: string | null): string {
 	const count = carriedCount(raw);
-	return count === "" ? "" : formatMinorUnitsInput(Number.parseInt(count, 10));
+	return count === "" ? "" : formatMinorUnitsInput(Number.parseInt(count, 10), currency);
 }
 
 /** Carried whole count, or `""` for absent/untrusted. */
@@ -1581,12 +1609,20 @@ function parseEconomics(
 				message: "Leave the percentage-only fields (rate, cap) blank for a fixed-amount coupon.",
 			};
 		}
-		const amountCents = parseMinorUnitsInput(amountRaw, { allowZero: false });
+		// The amount is read in the coupon's currency: the one typed beside it on
+		// CREATE (when it is one the store supports), the carried one on EDIT. A
+		// create whose currency is not yet usable is still read — in hundredths, as
+		// before — so an unreadable amount is reported first, as it always was.
+		const createCurrency =
+			mode === "create" && /^[A-Z]{3}$/.test(currencyRaw) && isSupportedCurrency(currencyRaw)
+				? currencyRaw
+				: null;
+		const amountCurrency = mode === "create" ? createCurrency : current.currency;
+		const amountCents = parseMinorUnitsInput(amountRaw, amountCurrency, { allowZero: false });
 		if (amountCents === null) {
 			return {
 				ok: false,
-				message:
-					"Amount off must be a positive number like 5.00 (up to two decimal places) — a fixed-amount coupon cannot leave it unset.",
+				message: `Amount off must be a positive number like ${amountExample(amountCurrency)} (${moneyPrecisionPhrase(amountCurrency)}) — a fixed-amount coupon cannot leave it unset.`,
 			};
 		}
 		let currency: string | null = null;
@@ -1594,13 +1630,13 @@ function parseEconomics(
 			if (!/^[A-Z]{3}$/.test(currencyRaw)) {
 				return { ok: false, message: "Currency must be a 3-letter ISO-4217 code like USD." };
 			}
-			if (!isIsoCurrencyCode(currencyRaw)) {
+			if (createCurrency === null) {
 				return {
 					ok: false,
-					message: `${currencyRaw} is not an ISO-4217 currency — use the code your store prices in, like USD or EUR.`,
+					message: `${currencyRaw} isn't a supported currency — use one your store prices in, like USD or EUR.`,
 				};
 			}
-			currency = currencyRaw;
+			currency = createCurrency;
 		}
 		return { ok: true, amountCents, rateBps: null, capCents: null, currency };
 	}
@@ -1623,7 +1659,9 @@ function parseEconomics(
 	}
 	let capCents: number | null = null;
 	if (capRaw.length > 0) {
-		capCents = parseMinorUnitsInput(capRaw, { allowZero: false });
+		// A percentage coupon has no currency: its cap applies in the cart's, and
+		// keeps the hundredths scale it always had.
+		capCents = parseMinorUnitsInput(capRaw, null, { allowZero: false });
 		if (capCents === null) {
 			return {
 				ok: false,
@@ -1656,7 +1694,7 @@ function parseSharedFields(values: Record<string, unknown>, current: CurrentValu
 	const minSubtotalRaw = submittedOr(values, "minSubtotal", current.minSubtotal, disclosed);
 	let minSubtotalCents: number | null = null;
 	if (minSubtotalRaw.length > 0) {
-		minSubtotalCents = parseMinorUnitsInput(minSubtotalRaw, { allowZero: true });
+		minSubtotalCents = parseMinorUnitsInput(minSubtotalRaw, current.currency, { allowZero: true });
 		if (minSubtotalCents === null) {
 			return {
 				ok: false,

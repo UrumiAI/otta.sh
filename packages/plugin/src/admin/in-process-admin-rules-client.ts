@@ -89,7 +89,7 @@ import {
 	deleteTaxClass as deleteTaxClassUseCase,
 	isCouponCodeConflictError,
 	isCouponIdCollisionError,
-	isIsoCurrencyCode,
+	isSupportedCurrency,
 	parseCouponInstant,
 	parseZoneRegions,
 	type CouponListCursor,
@@ -893,14 +893,16 @@ function requireFullReplaceKey(field: string, edit: object): void {
 
 /**
  * A currency a merchant AUTHORS (a new rate's, a new coupon's): the shape, then
- * ISO-4217 membership (`@otta-sh/domain`'s `isIsoCurrencyCode`). Create paths
- * only — reads and edits name a currency that already exists, and refusing a
- * stored code on read would strand a row written before this rule.
+ * membership of the store's currency table (`@otta-sh/domain`'s
+ * `isSupportedCurrency` — the currencies whose minor unit every money boundary
+ * knows). Create paths only — reads and edits name a currency that already
+ * exists, and refusing a stored code on read would strand a row written before
+ * this rule.
  */
 function requireAuthoredCurrency(field: string, value: string): void {
 	requireCurrencyCode(field, value);
-	if (!isIsoCurrencyCode(value)) {
-		throw new CommerceInputError(field, "must be an ISO-4217 currency in current use");
+	if (!isSupportedCurrency(value)) {
+		throw new CommerceInputError(field, "must be a currency the store supports");
 	}
 }
 

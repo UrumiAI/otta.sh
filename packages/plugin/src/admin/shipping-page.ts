@@ -1,5 +1,7 @@
+import { minorUnitDigits } from "@otta-sh/admin-presentation";
 import {
 	COUNTRY_CODES,
+	isSupportedCurrency,
 	parseZoneRegions,
 	validateZoneRegionsInput,
 	type ShippingMethodType,
@@ -31,8 +33,11 @@ import {
 	type ShippingZoneWire,
 } from "./admin-rules-surface.js";
 import { idInputProblem } from "./id-input.js";
-import { isIsoCurrencyCode } from "@otta-sh/domain";
-import { formatMinorUnitsInput, parseMinorUnitsInput } from "./money-input.js";
+import {
+	formatMinorUnitsInput,
+	moneyPrecisionPhrase,
+	parseMinorUnitsInput,
+} from "./money-input.js";
 import {
 	asRecord,
 	backButton,
@@ -1323,7 +1328,7 @@ function createRateForm(zoneId: string, methodId: string, filter: RatesFilterFor
 				{
 					type: "text_input",
 					action_id: "amount",
-					label: "Amount (up to 2 decimals, e.g. 4.99 — 0 is allowed)",
+					label: "Amount (in the currency's own decimals, e.g. 4.99 or ¥500 — 0 is allowed)",
 					placeholder: "4.99",
 				},
 				{
@@ -1362,15 +1367,15 @@ function editRateForm(zoneId: string, methodId: string, row: ShippingRateWire): 
 				{
 					type: "text_input",
 					action_id: "amount",
-					label: `Amount for ${row.currency} (up to 2 decimals)`,
-					initial_value: formatMinorUnitsInput(row.amountCents),
+					label: `Amount for ${row.currency} (${amountDecimalsHint(row.currency)})`,
+					initial_value: formatMinorUnitsInput(row.amountCents, row.currency),
 				},
 				{
 					type: "text_input",
 					action_id: "minSubtotal",
 					label: "Free-shipping threshold (blank = none)",
 					...(row.minSubtotalCents !== null
-						? { initial_value: formatMinorUnitsInput(row.minSubtotalCents) }
+						? { initial_value: formatMinorUnitsInput(row.minSubtotalCents, row.currency) }
 						: {}),
 				},
 			],
@@ -1809,25 +1814,25 @@ function createRateAction() {
 				description: "Currency must be a 3-letter ISO-4217 code like USD.",
 			});
 		}
-		if (!isIsoCurrencyCode(currency)) {
+		if (!isSupportedCurrency(currency)) {
 			return showList([zoneId, methodId], {
 				variant: "error",
 				title: "Rate not created",
-				description: `${currency} is not an ISO-4217 currency — use the code your store prices in, like USD or EUR.`,
+				description: `${currency} isn't a supported currency — use one your store prices in, like USD or EUR.`,
 			});
 		}
-		const amountCents = parseAmountInput(readString(values.amount) ?? "");
+		const amountCents = parseAmountInput(readString(values.amount) ?? "", currency);
 		if (amountCents === null) {
 			return showList([zoneId, methodId], {
 				variant: "error",
 				title: "Rate not created",
-				description: "Amount must be 0 or a positive number like 4.99 (up to two decimal places).",
+				description: amountRefusal(currency),
 			});
 		}
 		const minSubtotalRaw = (readString(values.minSubtotal) ?? "").trim();
 		let minSubtotalCents: number | null = null;
 		if (minSubtotalRaw.length > 0) {
-			minSubtotalCents = parseAmountInput(minSubtotalRaw);
+			minSubtotalCents = parseAmountInput(minSubtotalRaw, currency);
 			if (minSubtotalCents === null) {
 				return showList([zoneId, methodId], {
 					variant: "error",
@@ -1885,18 +1890,18 @@ function saveRateAction() {
 		}
 		const expectedAmountCents = Number.parseInt(expectedAmountCentsRaw, 10);
 		const values = input.values ?? {};
-		const amountCents = parseAmountInput(readString(values.amount) ?? "");
+		const amountCents = parseAmountInput(readString(values.amount) ?? "", currency);
 		if (amountCents === null) {
 			return showList([zoneId, methodId], {
 				variant: "error",
 				title: "Rate not saved",
-				description: "Amount must be 0 or a positive number like 4.99 (up to two decimal places).",
+				description: amountRefusal(currency),
 			});
 		}
 		const minSubtotalRaw = (readString(values.minSubtotal) ?? "").trim();
 		let minSubtotalCents: number | null = null;
 		if (minSubtotalRaw.length > 0) {
-			minSubtotalCents = parseAmountInput(minSubtotalRaw);
+			minSubtotalCents = parseAmountInput(minSubtotalRaw, currency);
 			if (minSubtotalCents === null) {
 				return showList([zoneId, methodId], {
 					variant: "error",
@@ -2202,10 +2207,30 @@ function regionsSummary(regions: unknown): string {
 // schemas use `nonnegative()`, not `positive()`) — in one place instead of at
 // every call site.
 
-/** Parse a merchant-entered decimal amount into integer minor units; null
- *  for any non-conforming or NEGATIVE input (never throws). */
-function parseAmountInput(input: string): number | null {
-	return parseMinorUnitsInput(input, { allowZero: true });
+/** Parse a merchant-entered decimal amount into integer minor units of
+ *  `currency` (its own exponent: JPY `"500"` is 500); null for any
+ *  non-conforming or NEGATIVE input (never throws). */
+function parseAmountInput(input: string, currency: string): number | null {
+	return parseMinorUnitsInput(input, currency, { allowZero: true });
+}
+
+/** The refusal for an unreadable rate amount, in the currency's own shape —
+ *  for a two-decimal currency, word for word what it always said. */
+function amountRefusal(currency: string): string {
+	const example = formatMinorUnitsInput(
+		parseMinorUnitsInput("4.99", currency, { allowZero: true }) ??
+			parseMinorUnitsInput("499", currency, { allowZero: true }) ??
+			499,
+		currency,
+	);
+	return `Amount must be 0 or a positive number like ${example} (${moneyPrecisionPhrase(currency)}).`;
+}
+
+/** The rate edit field's decimals hint: `up to 2 decimals` (as it always read)
+ *  for a two-decimal currency, `whole units` for JPY, `up to 3 decimals` for KWD. */
+function amountDecimalsHint(currency: string): string {
+	const digits = minorUnitDigits(currency);
+	return digits === 0 ? "whole units" : `up to ${String(digits)} decimals`;
 }
 
 /** Display-format (with currency symbol) for the rate readout — falls back to
@@ -2215,6 +2240,6 @@ function formatCentsForDisplay(minorUnits: number, currencyCode: string): string
 	try {
 		return formatMoney(toCents(minorUnits), toCurrency(currencyCode), "en-US");
 	} catch {
-		return `${currencyCode} ${formatMinorUnitsInput(minorUnits)}`;
+		return `${currencyCode} ${formatMinorUnitsInput(minorUnits, currencyCode)}`;
 	}
 }

@@ -281,11 +281,13 @@ export function changedPriceFields(
 function canonicalPriceValues(
 	values: Readonly<Record<string, string>>,
 ): Readonly<Record<string, string>> {
+	// Amounts are spelled in the row's own currency (JPY `1500` stays `1500`).
+	const currency = (values["currency"] ?? "").trim().toUpperCase();
 	return {
-		price: canonicalMoneyInput(values["price"] ?? ""),
-		currency: (values["currency"] ?? "").trim().toUpperCase(),
-		compareAt: canonicalMoneyInput(values["compareAt"] ?? ""),
-		unitCost: canonicalMoneyInput(values["unitCost"] ?? ""),
+		price: canonicalMoneyInput(values["price"] ?? "", currency),
+		currency,
+		compareAt: canonicalMoneyInput(values["compareAt"] ?? "", currency),
+		unitCost: canonicalMoneyInput(values["unitCost"] ?? "", currency),
 	};
 }
 
@@ -293,8 +295,8 @@ function canonicalPriceValues(
  *  never `0.00` — the blank-vs-zero distinction is load-bearing on this screen,
  *  because a blank compare-at CLEARS it and `0.00` would be a price of zero the
  *  domain refuses. */
-function moneyInput(minorUnits: number | null): string {
-	return minorUnits === null ? "" : formatMinorUnitsInput(minorUnits);
+function moneyInput(minorUnits: number | null, currency: string | null): string {
+	return minorUnits === null ? "" : formatMinorUnitsInput(minorUnits, currency);
 }
 
 /** The same, for a non-money integer (weight, dimensions), where blank means
@@ -1550,10 +1552,10 @@ export function PriceGroup({
 	// afterwards without anything resetting it.
 	const committed = React.useMemo(
 		() => ({
-			price: moneyInput(p.priceCents),
+			price: moneyInput(p.priceCents, p.currency),
 			currency: p.currency ?? "",
-			compareAt: moneyInput(p.compareAtCents),
-			unitCost: moneyInput(p.unitCostCents),
+			compareAt: moneyInput(p.compareAtCents, p.currency),
+			unitCost: moneyInput(p.unitCostCents, p.currency),
 		}),
 		[p.priceCents, p.currency, p.compareAtCents, p.unitCostCents],
 	);
@@ -1567,7 +1569,13 @@ export function PriceGroup({
 	// anything unparseable — neither has an amount to name.
 	const change = priceChangeSummary(
 		p.priceCents,
-		parseMinorUnitsInput(values["price"] ?? "", { allowZero: false }),
+		parseMinorUnitsInput(
+			values["price"] ?? "",
+			p.currency ?? (values["currency"] ?? "").trim().toUpperCase(),
+			{
+				allowZero: false,
+			},
+		),
 		p.currency,
 	);
 	const pendingLine = pricePendingLine(change);

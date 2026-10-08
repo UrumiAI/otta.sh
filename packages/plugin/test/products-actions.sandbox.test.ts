@@ -185,7 +185,12 @@ interface Seeded {
  * rename rules read is created the way a real write creates it.
  */
 async function seedProduct(
-	options: { onHand?: number | null; productKind?: "physical" | "digital" } = {},
+	options: {
+		onHand?: number | null;
+		productKind?: "physical" | "digital";
+		/** The seeded price; `null` seeds an UNPRICED row. Default 1999 USD. */
+		price?: { amount: number; currency: string } | null;
+	} = {},
 ): Promise<Seeded> {
 	const n = ++seq;
 	const productId = `${NS}-prod-${n}`;
@@ -195,7 +200,14 @@ async function seedProduct(
 			productId: toProductId(productId),
 			sku: toSku(sku),
 			title: "Blue Widget",
-			price: money(cents(1999), toCurrency("USD")),
+			...(options.price === null
+				? {}
+				: {
+						price: money(
+							cents(options.price?.amount ?? 1999),
+							toCurrency(options.price?.currency ?? "USD"),
+						),
+					}),
 			taxClass: "standard",
 			weightGrams: 300,
 			lengthMm: 10,
@@ -379,6 +391,64 @@ describe("the Pricing & inventory write path (workerd sandbox)", () => {
 			expect(row.updatedAt.toISOString(), price).toBe(seeded.updatedAt);
 			expect(row.price, price).toEqual({ amount: 1999, currency: "USD" });
 		}
+	});
+
+	test("a JPY price is read in WHOLE YEN — '1500' is stored as 1500, never 150000", async () => {
+		const seeded = await seedProduct({ price: null });
+		const result = await act("products:save-price", {
+			...carrierFor(seeded),
+			price: "1500",
+			currency: "JPY",
+			compareAt: "2000",
+			unitCost: "",
+		});
+		expect(result.notice?.variant, JSON.stringify(result)).not.toBe("error");
+		const row = await readProduct(seeded.productId);
+		expect(row.price).toEqual({ amount: 1500, currency: "JPY" });
+		expect(row.compareAtPrice).toEqual({ amount: 2000, currency: "JPY" });
+	});
+
+	test("a JPY price with a fraction is refused in the currency's own words — nothing is written", async () => {
+		const seeded = await seedProduct({ price: { amount: 1500, currency: "JPY" } });
+		const result = await act("products:save-price", {
+			...carrierFor(seeded),
+			price: "15.50",
+			currency: "JPY",
+			compareAt: "",
+			unitCost: "",
+		});
+		expect(result.notice?.variant).toBe("error");
+		expect(String(result.notice?.description)).toContain("whole numbers only");
+		expect((await readProduct(seeded.productId)).updatedAt.toISOString()).toBe(seeded.updatedAt);
+	});
+
+	test("a FIRST pricing in a currency the store does not support is refused — nothing is written", async () => {
+		const seeded = await seedProduct({ price: null });
+		const result = await act("products:save-price", {
+			...carrierFor(seeded),
+			price: "24.50",
+			currency: "XYZ",
+			compareAt: "",
+			unitCost: "",
+		});
+		expect(result.notice?.variant).toBe("error");
+		expect(String(result.notice?.description)).toContain("XYZ isn't a supported currency");
+		expect((await readProduct(seeded.productId)).price).toBeNull();
+	});
+
+	test("a product priced BEFORE the currency table, in an unlisted code, is still editable", async () => {
+		// LKR is a real two-decimal currency outside the table. Its form re-sends
+		// the stored code with every save; refusing it would lock the product.
+		const seeded = await seedProduct({ price: { amount: 1999, currency: "LKR" } });
+		const result = await act("products:save-price", {
+			...carrierFor(seeded),
+			price: "25.00",
+			currency: "LKR",
+			compareAt: "",
+			unitCost: "",
+		});
+		expect(result.notice?.variant, JSON.stringify(result)).not.toBe("error");
+		expect((await readProduct(seeded.productId)).price).toEqual({ amount: 2500, currency: "LKR" });
 	});
 
 	test("a price with no valid currency is refused — a money amount never travels without one", async () => {

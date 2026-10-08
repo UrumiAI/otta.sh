@@ -44,6 +44,7 @@ import { forgetSummaries } from "./pricing-columns.js";
 import { usePricingStyles } from "./pricing-styles.js";
 import {
 	CURRENCY_CHOICES,
+	currencyChoiceLabel,
 	draftFromRecord,
 	isDraftDirty,
 	marginSummary,
@@ -908,7 +909,7 @@ export function PricingStockEditor({ productId }: { productId: string }): React.
 									>
 										{CURRENCY_CHOICES.map((code) => (
 											<option key={code} value={code}>
-												{code}
+												{currencyChoiceLabel(code)}
 											</option>
 										))}
 									</select>

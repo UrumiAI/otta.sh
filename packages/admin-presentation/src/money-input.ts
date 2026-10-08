@@ -8,10 +8,10 @@
  * Parse a merchant-entered decimal amount into integer MINOR UNITS with
  * EXACT integer string math — never `parseFloat(...)*100` (which yields
  * 1998.9999… for "19.99"). A Block Kit `number_input` hands back a JS float,
- * so money is a TEXT input parsed here instead. Hundredths scale (two
- * fractional digits — the near-universal case; zero-decimal currencies like
- * JPY are out of scope, consistent with the codebase's minor-units
- * convention).
+ * so money is a TEXT input parsed here instead. The scale is the CURRENCY's
+ * minor-unit exponent from the currency table (`./currencies.ts`): hundredths
+ * for USD/EUR, whole units for JPY, thousandths for KWD — so every caller
+ * names the currency the amount is in.
  *
  * The ONE behavioral fork between consumers is whether ZERO is a valid
  * amount, so it is an explicit parameter rather than a second copy:
@@ -22,35 +22,80 @@
  *     `shippingRateBody`/`shippingRateUpdateBody` schemas use
  *     `nonnegative()`, not `positive()`).
  */
+import { minorUnitDigits } from "./currencies.js";
+
+/**
+ * The exponent an amount in `currencyCode` is typed and shown in. `null` is an
+ * amount with NO currency of its own — a percentage coupon's cap and minimum
+ * spend, which apply in whatever the cart is priced in — and keeps the
+ * hundredths scale those fields have always used.
+ */
+function inputDigits(currencyCode: string | null): number {
+	return currencyCode === null ? 2 : minorUnitDigits(currencyCode);
+}
+
+/**
+ * How many decimals an amount in `currencyCode` may carry, as the clause the
+ * admin's refusal copy and field labels use: `"up to two decimal places"` for
+ * USD (the exact wording those messages always had), `"whole numbers only"` for
+ * JPY, `"up to three decimal places"` for KWD.
+ */
+export function moneyPrecisionPhrase(currencyCode: string | null): string {
+	const digits = inputDigits(currencyCode);
+	if (digits === 0) return "whole numbers only";
+	if (digits === 2) return "up to two decimal places";
+	if (digits === 3) return "up to three decimal places";
+	return `up to ${String(digits)} decimal places`;
+}
 
 /** Returns integer minor units, or null for any non-conforming or
  *  out-of-range input (the caller surfaces a per-field message); never
- *  throws. */
-export function parseMinorUnitsInput(input: string, opts: { allowZero: boolean }): number | null {
-	const m = /^(\d+)(?:\.(\d{1,2}))?$/.exec(input.trim());
+ *  throws.
+ *
+ *  THE EXPONENT IS THE CURRENCY'S ({@link minorUnitDigits} — the same table
+ *  `formatMoney` displays with): up to `digits` fractional digits are accepted
+ *  and padded, so USD `"24.5"` → 2450, JPY `"1500"` → 1500 (a fraction is
+ *  refused — there is no sub-yen unit), KWD `"1.234"` → 1234. A two-decimal
+ *  currency parses exactly as it did before the table existed. */
+export function parseMinorUnitsInput(
+	input: string,
+	currencyCode: string | null,
+	opts: { allowZero: boolean },
+): number | null {
+	const digits = inputDigits(currencyCode);
+	const m = /^(\d+)(?:\.(\d+))?$/.exec(input.trim());
 	if (m === null) return null;
+	const fraction = m[2];
+	// "1." / ".5" never match the pattern; a fraction longer than the
+	// currency's exponent (or any fraction at all for a zero-decimal one) is a
+	// precision the currency does not have — refused, never rounded.
+	if (fraction !== undefined && (digits === 0 || fraction.length > digits)) return null;
 	const major = Number.parseInt(m[1] ?? "", 10);
-	// Pad fractional digits to hundredths: ""→"00", "9"→"90", "99"→"99".
-	const minor = Number.parseInt((m[2] ?? "").padEnd(2, "0"), 10);
+	// Pad fractional digits to the exponent: USD ""→"00", "9"→"90"; KWD "5"→"500".
+	const minor = digits === 0 ? 0 : Number.parseInt((fraction ?? "").padEnd(digits, "0"), 10);
 	if (!Number.isSafeInteger(major)) return null;
-	// major×100 + minor: all integer operands, exact for safe integers.
-	const units = major * 100 + minor;
+	// major×10^digits + minor: all integer operands, exact for safe integers.
+	const units = major * 10 ** digits + minor;
 	if (!Number.isSafeInteger(units)) return null;
 	return units > 0 || (units === 0 && opts.allowZero) ? units : null;
 }
 
 /**
- * Format integer minor units back to a hundredths decimal string for a text
- * input's initial value — pure integer math (no float division on money).
+ * Format integer minor units back to a decimal string in the currency's own
+ * exponent (USD `"4.99"`, JPY `"1500"`, KWD `"1.234"`) for a text input's
+ * initial value — pure integer math (no float division on money).
  * WITHOUT a currency symbol — mirrors `formatMoney` being the one
  * symbol-bearing display boundary.
  */
-export function formatMinorUnitsInput(minorUnits: number): string {
+export function formatMinorUnitsInput(minorUnits: number, currencyCode: string | null): string {
+	const digits = inputDigits(currencyCode);
+	const sign = minorUnits < 0 ? "-" : "";
 	const abs = Math.abs(minorUnits);
-	const frac = abs % 100;
-	const major = (abs - frac) / 100; // (abs - frac) is a multiple of 100 ⇒ exact.
-	const fracStr = frac < 10 ? `0${frac}` : String(frac);
-	return `${minorUnits < 0 ? "-" : ""}${major}.${fracStr}`;
+	if (digits === 0) return `${sign}${String(abs)}`;
+	const scale = 10 ** digits;
+	const frac = abs % scale;
+	const major = (abs - frac) / scale; // (abs - frac) is a multiple of scale ⇒ exact.
+	return `${sign}${String(major)}.${String(frac).padStart(digits, "0")}`;
 }
 
 /**
@@ -72,7 +117,7 @@ export function formatMinorUnitsInput(minorUnits: number): string {
  * is a legal amount belongs to the write (`allowZero`), not to the question of
  * whether the field moved.
  */
-export function canonicalMoneyInput(input: string): string {
-	const units = parseMinorUnitsInput(input, { allowZero: true });
-	return units === null ? input.trim() : formatMinorUnitsInput(units);
+export function canonicalMoneyInput(input: string, currencyCode: string | null): string {
+	const units = parseMinorUnitsInput(input, currencyCode, { allowZero: true });
+	return units === null ? input.trim() : formatMinorUnitsInput(units, currencyCode);
 }

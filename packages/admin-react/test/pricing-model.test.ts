@@ -7,6 +7,8 @@
 import { describe, expect, test } from "vitest";
 import type { ProductRecord } from "../src/console-api.js";
 import {
+	CURRENCY_CHOICES,
+	currencyChoiceLabel,
 	draftFromRecord,
 	isDraftDirty,
 	marginSummary,
@@ -68,6 +70,50 @@ describe("the draft", () => {
 		});
 		expect(draft.price).toBe("");
 		expect(draft.currency).toBe("USD");
+	});
+
+	test("a JPY product's amounts are WHOLE YEN, both ways: 1500 shows as 1500 and '1500' saves as 1500", () => {
+		const jpy: ProductRecord = {
+			...BASE,
+			priceCents: 1500,
+			currency: "JPY",
+			compareAtCents: 2000,
+			compareAtCurrency: "JPY",
+			unitCostCents: 900,
+			unitCostCurrency: "JPY",
+		};
+		const draft = draftFromRecord(jpy);
+		expect(draft.price).toBe("1500");
+		expect(draft.compareAt).toBe("2000");
+		expect(validateDraft(draft, jpy)).toEqual({});
+		expect(savePayload(jpy, { ...draft, price: " 1600 " })).toMatchObject({
+			price: "1600",
+			currency: "JPY",
+		});
+		// A fraction of a yen is a problem quoted in the currency's own shape.
+		expect(validateDraft({ ...draft, price: "15.50" }, jpy).price).toBe("Enter a price like 2499");
+		expect(isDraftDirty(draft, { ...draft, price: "1500" })).toBe(false);
+	});
+
+	test("a first pricing in JPY reads the picked currency, and every offered currency is supported", () => {
+		const unpriced: ProductRecord = {
+			...BASE,
+			priceCents: null,
+			currency: null,
+			compareAtCents: null,
+			unitCostCents: null,
+		};
+		const draft = { ...draftFromRecord(unpriced), price: "1500", currency: "JPY" };
+		expect(validateDraft(draft, unpriced)).toEqual({});
+		expect(savePayload(unpriced, draft)).toMatchObject({ price: "1500", currency: "JPY" });
+		expect(validateDraft({ ...draft, currency: "XYZ" }, unpriced).currency).toBe(
+			"Choose a supported currency",
+		);
+		expect(CURRENCY_CHOICES.slice(0, 3)).toEqual(["USD", "EUR", "GBP"]);
+		expect(CURRENCY_CHOICES).toContain("JPY");
+		expect(CURRENCY_CHOICES).toContain("KWD");
+		expect(new Set(CURRENCY_CHOICES).size).toBe(CURRENCY_CHOICES.length);
+		expect(currencyChoiceLabel("JPY")).toBe("JPY — Japanese Yen");
 	});
 
 	test("is dirty only when a value differs, and `32` vs `32.00` is not a difference", () => {

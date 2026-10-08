@@ -1337,7 +1337,7 @@ describe("admin Shipping console — rates level, depth 2, EXEMPT from L-9 (work
 		expect(bannerOf(blocks)?.variant).toBe("error");
 	});
 
-	test("a currency-SHAPED code that is not an ISO-4217 currency (XYZ) is refused — nothing is written", async () => {
+	test("a currency-SHAPED code that is not a supported currency (XYZ) is refused — nothing is written", async () => {
 		// QA saved an "XYZ" rate: three letters passes the shape check, and a rate
 		// in a currency no cart is ever in is a price nobody is quoted.
 		await seedShipping();
@@ -1348,7 +1348,32 @@ describe("admin Shipping console — rates level, depth 2, EXEMPT from L-9 (work
 			createForm?.block_id,
 		);
 		expect(await shippingRules.getRate("bare", toCurrency("XYZ"))).toBeNull();
-		expect(String(bannerOf(blocks)?.description)).toMatch(/XYZ is not an ISO-4217 currency/);
+		expect(String(bannerOf(blocks)?.description)).toMatch(/XYZ isn't a supported currency/);
+	});
+
+	test("a JPY rate is read in whole yen: '1500' is stored as 1500, and the edit form shows 1500 back", async () => {
+		await seedShipping();
+		const createForm = formFor(await openPath(["us", "bare"]), "shipping:create-rate");
+		await submitForm(
+			"shipping:create-rate",
+			{ currency: "JPY", amount: "1500", minSubtotal: "" },
+			createForm?.block_id,
+		);
+		expect(await shippingRules.getRate("bare", toCurrency("JPY"))).toEqual({
+			methodId: "bare",
+			currency: "JPY",
+			amountCents: 1500,
+			minSubtotalCents: null,
+		});
+		// A fraction of a yen is no amount at all — refused, nothing written.
+		const again = formFor(await openPath(["us", "bare"]), "shipping:create-rate");
+		const refused = await submitForm(
+			"shipping:create-rate",
+			{ currency: "JPY", amount: "15.5", minSubtotal: "" },
+			again?.block_id,
+		);
+		expect(String(bannerOf(refused)?.description)).toMatch(/whole numbers only/);
+		expect((await shippingRules.getRate("bare", toCurrency("JPY")))?.amountCents).toBe(1500);
 	});
 
 	test("a free-shipping threshold on a FLAT-RATE method is refused with the reason — the domain would never apply it", async () => {

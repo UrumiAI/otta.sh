@@ -1,5 +1,16 @@
 import { describe, expect, test } from "vitest";
-import { cents as domainCents, currency as domainCurrency } from "@otta-sh/domain";
+import {
+	SUPPORTED_CURRENCIES as ADMIN_CURRENCIES,
+	currencyDigits as adminCurrencyDigits,
+	isSupportedCurrency as adminIsSupported,
+} from "@otta-sh/admin-presentation";
+import {
+	SUPPORTED_CURRENCIES as DOMAIN_CURRENCIES,
+	cents as domainCents,
+	currency as domainCurrency,
+	currencyDigits as domainCurrencyDigits,
+	isSupportedCurrency as domainIsSupported,
+} from "@otta-sh/domain";
 import { cents as pluginCents, currency as pluginCurrency } from "../src/presentation/money.js";
 
 /**
@@ -73,6 +84,27 @@ describe("money mirror parity (plugin/presentation/money.ts ⇄ domain/money/cen
 			expect(plugin.value).toBe(domain.value);
 		} else {
 			expect(plugin.error).toBe(domain.error);
+		}
+	});
+});
+
+/**
+ * The CURRENCY TABLE has the same mirror: `@otta-sh/domain`'s
+ * `money/currencies.ts` is canonical, `@otta-sh/admin-presentation`'s
+ * `currencies.ts` is its copy (the admin surfaces cannot import the domain).
+ * Deep equality here is what makes the pair ONE source of truth: a row added,
+ * removed or changed in one file and not the other fails this test.
+ */
+describe("currency table mirror parity (admin-presentation/currencies.ts ⇄ domain/money/currencies.ts)", () => {
+	test("the two tables are identical, row for row and in order", () => {
+		expect(ADMIN_CURRENCIES).toEqual(DOMAIN_CURRENCIES);
+	});
+
+	test("the helpers agree on every listed code and on unlisted ones", () => {
+		const probes = [...DOMAIN_CURRENCIES.map((row) => row.code), "XYZ", "usd", "", "LKR", "UGX"];
+		for (const code of probes) {
+			expect(adminIsSupported(code), code).toBe(domainIsSupported(code));
+			expect(adminCurrencyDigits(code), code).toBe(domainCurrencyDigits(code));
 		}
 	});
 });

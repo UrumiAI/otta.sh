@@ -19,8 +19,11 @@
  * leaving the browser.
  */
 import {
+	SUPPORTED_CURRENCIES,
 	formatAmount,
 	formatMinorUnitsInput,
+	isSupportedCurrency,
+	minorUnitDigits,
 	parseMinorUnitsInput,
 } from "@otta-sh/admin-presentation";
 import type { ProductRecord } from "../console-api.js";
@@ -29,10 +32,9 @@ import type { ProductRecord } from "../console-api.js";
  *  currency setting; the merchant can pick another before the first save. */
 export const DEFAULT_CURRENCY = "USD";
 
-/** Offered when a product has no price yet. Two-decimal currencies only: the
- *  money parser reads hundredths, so a zero-decimal currency (JPY) would be
- *  priced a hundred times too high. */
-export const CURRENCY_CHOICES: readonly string[] = [
+/** The currencies offered first, in this order — the list the picker showed
+ *  before the currency table existed, kept at the top so it reads as it did. */
+const LEADING_CHOICES: readonly string[] = [
 	"USD",
 	"EUR",
 	"GBP",
@@ -44,6 +46,24 @@ export const CURRENCY_CHOICES: readonly string[] = [
 	"CHF",
 	"SEK",
 ];
+
+/** Offered when a product has no price yet: EVERY currency in the shared
+ *  currency table (`@otta-sh/admin-presentation`'s `SUPPORTED_CURRENCIES`, the
+ *  copy of the domain's), the familiar ten first and the rest by code. Each is
+ *  typed and stored in its own minor unit (JPY in whole yen, KWD in fils), so
+ *  any of them prices correctly. */
+export const CURRENCY_CHOICES: readonly string[] = [
+	...LEADING_CHOICES,
+	...SUPPORTED_CURRENCIES.map((row) => row.code)
+		.filter((code) => !LEADING_CHOICES.includes(code))
+		.toSorted(),
+];
+
+/** The picker's label for a code: `USD — US Dollar`. */
+export function currencyChoiceLabel(code: string): string {
+	const row = SUPPORTED_CURRENCIES.find((r) => r.code === code);
+	return row === undefined ? code : `${code} — ${row.name}`;
+}
 
 /** Every input the panel owns, as the text in the field. */
 export interface PricingDraft {
@@ -65,8 +85,8 @@ export type DraftField = keyof PricingDraft;
 /** Per-field problems, in the merchant's words. Empty when the draft can save. */
 export type DraftProblems = Partial<Record<DraftField, string>>;
 
-function moneyText(minorUnits: number | null): string {
-	return minorUnits === null ? "" : formatMinorUnitsInput(minorUnits);
+function moneyText(minorUnits: number | null, currency: string): string {
+	return minorUnits === null ? "" : formatMinorUnitsInput(minorUnits, currency);
 }
 
 function countText(n: number | null): string {
@@ -74,11 +94,12 @@ function countText(n: number | null): string {
 }
 
 export function draftFromRecord(p: ProductRecord): PricingDraft {
+	const currency = p.currency ?? DEFAULT_CURRENCY;
 	return {
-		price: moneyText(p.priceCents),
-		currency: p.currency ?? DEFAULT_CURRENCY,
-		compareAt: moneyText(p.compareAtCents),
-		unitCost: moneyText(p.unitCostCents),
+		price: moneyText(p.priceCents, currency),
+		currency,
+		compareAt: moneyText(p.compareAtCents, currency),
+		unitCost: moneyText(p.unitCostCents, currency),
 		sku: p.sku ?? "",
 		productKind: p.productKind,
 		taxClass: p.taxClass ?? "",
@@ -91,13 +112,14 @@ export function draftFromRecord(p: ProductRecord): PricingDraft {
 
 const MONEY_FIELDS = new Set<DraftField>(["price", "compareAt", "unitCost"]);
 
-/** A value as it will be SENT: money canonicalised (`32` → `32.00`), text
- *  trimmed. Two drafts are equal when they would send the same thing. */
-function canonical(field: DraftField, value: string): string {
+/** A value as it will be SENT: money canonicalised in its currency (`32` →
+ *  `32.00` for USD, `1500` stays `1500` for JPY), text trimmed. Two drafts are
+ *  equal when they would send the same thing. */
+function canonical(field: DraftField, value: string, currency: string): string {
 	const trimmed = value.trim();
 	if (!MONEY_FIELDS.has(field)) return trimmed;
-	const units = parseMinorUnitsInput(trimmed, { allowZero: true });
-	return units === null ? trimmed : formatMinorUnitsInput(units);
+	const units = parseMinorUnitsInput(trimmed, currency, { allowZero: true });
+	return units === null ? trimmed : formatMinorUnitsInput(units, currency);
 }
 
 function changedFields(saved: PricingDraft, draft: PricingDraft): DraftField[] {
@@ -107,7 +129,10 @@ function changedFields(saved: PricingDraft, draft: PricingDraft): DraftField[] {
 		if (field === "currency" && draft.price.trim().length === 0) return false;
 		// Nor is a weight or size typed before switching to digital: it is not sent.
 		if (draft.productKind === "digital" && SIZE_FIELDS.has(field)) return false;
-		return canonical(field, saved[field]) !== canonical(field, draft[field]);
+		return (
+			canonical(field, saved[field], saved.currency) !==
+			canonical(field, draft[field], draft.currency)
+		);
 	});
 }
 
@@ -138,16 +163,30 @@ export function mergeDraft(
 	const merged: Record<string, string> = { ...after };
 	let conflict = false;
 	for (const field of mine) {
-		if (canonical(field, before[field]) !== canonical(field, after[field])) conflict = true;
-		else merged[field] = draft[field];
+		if (
+			canonical(field, before[field], before.currency) !==
+			canonical(field, after[field], after.currency)
+		) {
+			conflict = true;
+		} else merged[field] = draft[field];
 	}
 	return { draft: merged as unknown as PricingDraft, conflict };
 }
 
-function money(value: string): number | null | "invalid" {
+function money(value: string, currency: string): number | null | "invalid" {
 	const trimmed = value.trim();
 	if (trimmed.length === 0) return null;
-	return parseMinorUnitsInput(trimmed, { allowZero: false }) ?? "invalid";
+	return parseMinorUnitsInput(trimmed, currency, { allowZero: false }) ?? "invalid";
+}
+
+/** The example a money problem quotes, in the currency's own shape: `24.99`
+ *  for a two-decimal currency (as the copy always read), `2499` for JPY,
+ *  `24.990` for KWD. */
+function example(major: string, minor: string, currency: string): string {
+	const digits = minorUnitDigits(currency);
+	return digits === 0
+		? `${major}${minor}`
+		: `${major}.${minor.padEnd(digits, "0").slice(0, digits)}`;
 }
 
 /** Weight and size: hidden, unchecked and unsent for a digital product. */
@@ -175,14 +214,27 @@ const UNCLEARABLE: ReadonlyArray<readonly [DraftField, (p: ProductRecord) => boo
 
 export function validateDraft(d: PricingDraft, p: ProductRecord): DraftProblems {
 	const problems: DraftProblems = {};
-	const price = money(d.price);
-	const compareAt = money(d.compareAt);
-	const unitCost = money(d.unitCost);
-	if (price === "invalid") problems.price = "Enter a price like 24.99";
-	if (compareAt === "invalid") problems.compareAt = "Enter a price like 39.99";
-	if (unitCost === "invalid") problems.unitCost = "Enter an amount like 9.50";
+	// Amounts are read in the currency the save will send: the stored one, or —
+	// for a first pricing — the one picked beside the price.
+	const currency = p.currency ?? d.currency;
+	const price = money(d.price, currency);
+	const compareAt = money(d.compareAt, currency);
+	const unitCost = money(d.unitCost, currency);
+	if (price === "invalid") problems.price = `Enter a price like ${example("24", "99", currency)}`;
+	if (compareAt === "invalid") {
+		problems.compareAt = `Enter a price like ${example("39", "99", currency)}`;
+	}
+	if (unitCost === "invalid") {
+		problems.unitCost = `Enter an amount like ${example("9", "50", currency)}`;
+	}
 	if (price === null && (compareAt !== null || unitCost !== null)) {
 		problems.price = "Add a price first";
+	}
+	// A first pricing AUTHORS the currency, so it must be one the store
+	// supports; a stored one (even one written before the table) is never
+	// questioned, or an old product could not be edited at all.
+	if (p.currency === null && price !== null && !isSupportedCurrency(d.currency)) {
+		problems.currency = "Choose a supported currency";
 	}
 	if (typeof price === "number" && typeof compareAt === "number" && compareAt <= price) {
 		problems.compareAt = "Must be higher than the price to show a sale";
@@ -208,8 +260,8 @@ export function marginSummary(
 	unitCost: string,
 	currency: string,
 ): { profit: string; margin: string } | null {
-	const p = money(price);
-	const c = money(unitCost);
+	const p = money(price, currency);
+	const c = money(unitCost, currency);
 	if (typeof p !== "number" || typeof c !== "number") return null;
 	const profit = p - c;
 	const percent = Math.round((profit / p) * 100);
@@ -226,8 +278,8 @@ export function salePreview(
 	compareAt: string,
 	currency: string,
 ): { was: string; now: string } | null {
-	const p = money(price);
-	const c = money(compareAt);
+	const p = money(price, currency);
+	const c = money(compareAt, currency);
 	if (typeof p !== "number" || typeof c !== "number" || c <= p) return null;
 	return { was: formatAmount(c, currency), now: formatAmount(p, currency) };
 }
@@ -260,10 +312,10 @@ export function savePayload(p: ProductRecord, d: PricingDraft): Record<string, s
 		productId: p.productId,
 		expectedUpdatedAt: p.updatedAt,
 		sku: d.sku.trim(),
-		price: canonical("price", d.price),
+		price: canonical("price", d.price, p.currency ?? d.currency),
 		currency: p.currency ?? d.currency,
-		compareAt: canonical("compareAt", d.compareAt),
-		unitCost: canonical("unitCost", d.unitCost),
+		compareAt: canonical("compareAt", d.compareAt, p.currency ?? d.currency),
+		unitCost: canonical("unitCost", d.unitCost, p.currency ?? d.currency),
 		productKind: d.productKind,
 		taxClass: d.taxClass,
 		// Blank keeps what is stored — for a digital product, whose weight and size

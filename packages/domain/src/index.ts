@@ -66,7 +66,6 @@ export {
 export { quoteCommandFor, type PricedLine, type QuoteInput } from "./pricing/quote-input.js";
 // ADR-0021: ISO 3166 codes (CLDR) and the zone derived from the address.
 export { COUNTRY_CODES, SUBDIVISIONS } from "./pricing/iso-3166.generated.js";
-export { CURRENCY_CODES, isIsoCurrencyCode } from "./pricing/iso-4217.js";
 export {
 	isCodeShapedRegion,
 	normalizeCountryCode,

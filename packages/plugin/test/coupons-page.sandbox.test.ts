@@ -984,7 +984,7 @@ describe("admin Coupons console — list level (workerd sandbox)", () => {
 		expect(await stored("qa-ete")).toBeNull();
 	});
 
-	test("a coupon currency that is not an ISO-4217 currency (XYZ) is refused on the create screen", async () => {
+	test("a coupon currency that is not a supported currency (XYZ) is refused on the create screen", async () => {
 		await boot(makeCouponsState());
 		const outcome = blocksOf(
 			await sandbox!.invokeRoute("admin", {
@@ -999,8 +999,41 @@ describe("admin Coupons console — list level (workerd sandbox)", () => {
 				},
 			}),
 		);
-		expect(String(bannerOf(outcome)?.description)).toMatch(/XYZ is not an ISO-4217 currency/);
+		expect(String(bannerOf(outcome)?.description)).toMatch(/XYZ isn't a supported currency/);
 		expect(await stored("qa-xyz")).toBeNull();
+	});
+
+	test("a fixed KWD coupon is read in fils: '1.234' is 1234, a fourth decimal is refused", async () => {
+		await boot(makeCouponsState());
+		await sandbox!.invokeRoute("admin", {
+			type: "form_submit",
+			action_id: "coupons:create",
+			values: {
+				id: "qa-kwd",
+				code: "KWD1",
+				type: "fixed_amount",
+				amount: "1.234",
+				currency: "KWD",
+			},
+		});
+		const kwd = await stored("qa-kwd");
+		expect(kwd?.amountCents).toBe(1234);
+		expect(kwd?.currency).toBe("KWD");
+		const refused = blocksOf(
+			await sandbox!.invokeRoute("admin", {
+				type: "form_submit",
+				action_id: "coupons:create",
+				values: {
+					id: "qa-kwd4",
+					code: "KWD4",
+					type: "fixed_amount",
+					amount: "1.2345",
+					currency: "KWD",
+				},
+			}),
+		);
+		expect(String(bannerOf(refused)?.description)).toMatch(/up to three decimal places/);
+		expect(await stored("qa-kwd4")).toBeNull();
 	});
 
 	test("a bare enum coupon type (a form rendered before the word values) still creates", async () => {
@@ -1578,6 +1611,24 @@ describe("admin Coupons console — detail/edit leaf (workerd sandbox)", () => {
 		const banner = bannerOf(outcome);
 		expect(banner?.variant).toBe("default");
 		expect(String(banner?.title)).toContain("saved");
+	});
+
+	test("a JPY coupon is edited in WHOLE YEN: the form shows 500 / 3500, and '600' saves as 600 — the carried currency decides", async () => {
+		const state = makeCouponsState();
+		const five = state.coupons.find((c) => c.id === "c-five");
+		if (five === undefined) throw new Error("fixture moved");
+		five.currency = "JPY";
+		await boot(state);
+		const blocks = await openCoupon("FIVEOFF");
+		const byId = new Map(formFields(blocks, "coupons:save").map((f) => [f.action_id, f]));
+		expect(byId.get("amount")?.initial_value).toBe("500");
+		expect(byId.get("minSubtotal")?.initial_value).toBe("3500");
+		await submitForm(blocks, "coupons:save", {
+			...FIVEOFF_PREFILL,
+			amount: "600",
+			minSubtotal: "3500",
+		});
+		expect(await stored("c-five")).toMatchObject({ amountCents: 600, minSubtotalCents: 3500 });
 	});
 
 	test("CLEAR semantics: blanking a pre-filled field saves it as an explicit null, and the reloaded detail shows it cleared", async () => {
