@@ -3,11 +3,15 @@
  *
  * WHY NO SIGNAL. Under EmDash's sandbox runner `ctx.http.fetch(url, init)` is a
  * Workers RPC call to the host (`bridge.httpFetch(url, init)`), whose arguments
- * are structured-cloned, and workerd refuses to clone an `AbortSignal`
- * (`DataCloneError: AbortSignal serialization is not enabled.`; the
- * `enable_abortsignal_rpc` flag is experimental and the runner does not set it).
- * A signal in `init` made every send fail in sandboxed mode before anything was
- * sent. Measured in real workerd by `test/emdash-sandbox-rpc.sandbox.test.ts`.
+ * are structured-cloned. On EmDash 0.38 workerd refused to clone an
+ * `AbortSignal` there (`DataCloneError: AbortSignal serialization is not
+ * enabled.`; the `enable_abortsignal_rpc` flag is experimental and the runner
+ * does not set it), so a signal in `init` made every send fail in sandboxed
+ * mode before anything was sent. On 1.0.1 the wrapper forwards only method,
+ * redirect, headers and body (`@emdash-cms/cloudflare@1.0.1`
+ * `src/sandbox/wrapper.ts` `http.fetch`), so a signal is silently dropped and
+ * the abort never reaches the host fetch. Either way the race below is the only
+ * bound. Measured in real workerd by `test/emdash-sandbox-rpc.sandbox.test.ts`.
  *
  * WHAT BOUNDS THE SEND INSTEAD. A race: the request, and the provider's body
  * read after it, lose to the send's own timer, which rejects with
@@ -30,7 +34,8 @@
  * own limits end it, and its answer is discarded. A TRUSTED (in-process) host
  * can carry a signal, so `trustedHost: true` puts one in `init` again, aborted
  * by the same timer, and the socket is released. Never under the sandbox
- * runner: the RPC refuses it and every send fails.
+ * runner: 0.38's RPC refused it and every send failed; 1.0.1's wrapper drops
+ * it, so it would release nothing there.
  */
 import { EmailSendTimeoutError } from "@otta-sh/domain";
 

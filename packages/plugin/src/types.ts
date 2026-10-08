@@ -322,15 +322,19 @@ export interface PluginContext {
 /**
  * The slice of EmDash's `ContentAccess` this plugin reads — `get` and `list`.
  *
- * What an answer PROVES depends on the host path, verified against EmDash 0.38:
+ * What an answer PROVES depends on the host path, verified against EmDash 0.38
+ * and 1.0.1:
  *  - trusted (in-process, `createContentAccess`): `get` is `findById` — `WHERE id =
  *    ? AND deleted_at IS NULL` — so a draft, scheduled, published or unpublished
  *    document comes back as itself, a TRASHED or permanently deleted one comes back
- *    `null`, and a database failure REJECTS;
+ *    `null`, and a database failure REJECTS (both versions; 1.0.1:
+ *    `src/plugins/content-access.ts`, `src/database/repositories/content.ts`);
  *  - sandboxed (`@emdash-cms/cloudflare`'s bridge, `contentGet` / `contentList`):
- *    the same query, but every database error is CAUGHT and answered as `null` /
- *    an empty page. A lost binding, an overload or a missing `ec_products` table
- *    reads exactly like a deleted document.
+ *    the same query. On 0.38 every database error was CAUGHT and answered as
+ *    `null` / an empty page, so a lost binding, an overload or a missing
+ *    `ec_products` table read exactly like a deleted document. On 1.0.1 a failed
+ *    read REJECTS, as on the trusted path (`src/sandbox/bridge.ts`: `contentGet`
+ *    retries once on the raw binding and lets that error out).
  *
  * So `null` is never proof on its own. The one caller (`product-orphans`) asks the
  * CMS to LIST a product first, re-reads every `null`, counts it only in a run that

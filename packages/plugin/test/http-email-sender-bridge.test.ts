@@ -2,10 +2,12 @@
  * The email senders over EmDash's sandbox bridge: no `AbortSignal` in `init`.
  *
  * Under EmDash's sandbox runner `ctx.http.fetch(url, init)` is a Workers RPC
- * call whose arguments are structured-cloned, and workerd refuses an
- * `AbortSignal` (`DataCloneError: AbortSignal serialization is not enabled.`,
- * measured in `emdash-sandbox-rpc.sandbox.test.ts`). So by default a send puts
- * no signal in `init` and bounds itself with a race against its own deadline,
+ * call. On EmDash 0.38 workerd refused an `AbortSignal` there (`DataCloneError:
+ * AbortSignal serialization is not enabled.`); on 1.0.1 the wrapper drops it
+ * silently, so the abort never reaches the host fetch (both measured in
+ * `emdash-sandbox-rpc.sandbox.test.ts`). Either way the racing deadline is the
+ * only bound: by default a send puts no signal in `init` and bounds itself with
+ * a race against its own deadline,
  * which still rejects with `EmailSendTimeoutError(timeoutMs)`. Only a trusted
  * (in-process) host may opt back in to a signal (`trustedHost`).
  */

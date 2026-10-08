@@ -352,7 +352,7 @@ describe("buildEmdashOptions", () => {
 			config: { binding: "DB" },
 		});
 		// "primary-first" — NOT "auto" (issue #375, product-owner decision). In
-		// @emdash-cms/cloudflare 0.38 (dist/db/d1.mjs:630-635) "auto" starts every
+		// @emdash-cms/cloudflare 1.0.1 (src/db/d1.ts:408-431) "auto" starts every
 		// request EmDash has not authenticated on `first-unconstrained` — any
 		// replica, no bookmark. Every shopper is anonymous to EmDash (`otta_cart` /
 		// `otta_session` are Otta's own cookies), and every shopper write is a POST
