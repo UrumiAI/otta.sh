@@ -67,3 +67,28 @@ describe("tax options with an outside calculator, no rates, nothing saved", () =
 		expect((await h.stores.settingsStore.get()).tax).toEqual(next);
 	});
 });
+
+describe("a fixed shipping tax class", () => {
+	test("naming a class that does not exist is refused, and nothing is saved", async () => {
+		const client = rules(false);
+		const res = await client.updateTaxSettings(
+			{ ...NEW_STORE_TAX_SETTINGS, shippingTaxClass: { kind: "fixed", taxClassId: "nope" } },
+			{ expected: taxSettingsDigest(NEW_STORE_TAX_SETTINGS), idempotencyKey: "save-fixed" },
+		);
+		expect(res).toMatchObject({ ok: false, reason: "invalid", field: "tax.shippingTaxClass" });
+		expect((await h.stores.settingsStore.get()).tax).toBeUndefined();
+	});
+
+	test("naming a class that exists is saved", async () => {
+		await h.stores.taxRules.createClass({ id: "reduced", name: "Reduced" });
+		const next = {
+			...NEW_STORE_TAX_SETTINGS,
+			shippingTaxClass: { kind: "fixed" as const, taxClassId: "reduced" },
+		};
+		const res = await rules(false).updateTaxSettings(next, {
+			expected: taxSettingsDigest(NEW_STORE_TAX_SETTINGS),
+			idempotencyKey: "save-fixed-ok",
+		});
+		expect(res).toEqual({ ok: true, settings: next });
+	});
+});

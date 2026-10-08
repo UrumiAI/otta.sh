@@ -582,6 +582,20 @@ export class InProcessAdminRulesClient implements AdminRulesSurface {
 			return { ok: true, settings: current };
 		}
 		if (currentDigest !== opts.expected) return { ok: false, reason: "stale", current };
+		// A fixed shipping tax class must name a class that exists: an unknown id
+		// would silently price shipping "based on cart items" instead.
+		if (!("field" in parsed) && parsed.shippingTaxClass.kind === "fixed") {
+			const { taxClassId } = parsed.shippingTaxClass;
+			const classes = await this.#stores.taxRules.listClasses();
+			if (!classes.some((c) => c.id === taxClassId)) {
+				return {
+					ok: false,
+					reason: "invalid",
+					field: "tax.shippingTaxClass",
+					message: `no tax class "${taxClassId}" exists`,
+				};
+			}
+		}
 		try {
 			const result = await updateSettings(
 				this.#stores.settingsStore,
