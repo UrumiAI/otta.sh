@@ -7,6 +7,7 @@
 		{ "path": "packages/payments-stripe" },
 		{ "path": "packages/payments-x402" },
 		{ "path": "packages/plugin" },
-		{ "path": "packages/admin-react" }
+		{ "path": "packages/admin-react" },
+		{ "path": "examples/email-provider" }
 	]
 }

@@ -4,7 +4,7 @@ export default defineConfig({
 	// `src/plugin.ts` is the standard-format descriptor entrypoint
 	// (`@otta-sh/plugin/plugin` — default-exports the {hooks, routes} object
 	// for em-dash's `plugins: []` / `adaptSandboxEntry`).
-	entry: ["src/index.ts", "src/plugin.ts", "src/sandbox-entry.ts"],
+	entry: ["src/index.ts", "src/plugin.ts", "src/sandbox-entry.ts", "src/testing.ts"],
 	format: ["esm"],
 	/**
 	 * `build: true` — declaration emit goes through the TypeScript PROJECT, not
