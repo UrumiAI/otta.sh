@@ -21,7 +21,7 @@ vi.mock("emdash/plugin-utils", async (importOriginal) => {
 	return { ...actual, apiFetch };
 });
 
-const { OrdersList } = await import("../src/orders/orders-list.js");
+const { OrdersList, orderNumberMatchesNote } = await import("../src/orders/orders-list.js");
 const { OrderDetail } = await import("../src/orders/order-detail.js");
 type DetailPayload = import("../src/console-api.js").DetailPayload;
 
@@ -115,12 +115,11 @@ test("two rows sharing a number also show what tells them apart", async () => {
 	expect(a.textContent).toContain("#FEE1D");
 	expect(b.textContent).toContain("#FEE1D");
 	expect(a.textContent).not.toBe(b.textContent);
-	expect(a.querySelector('[data-testid="order-number-disambiguator"]')?.textContent).toBe(
-		" fee1d1",
-	);
-	expect(b.querySelector('[data-testid="order-number-disambiguator"]')?.textContent).toBe(
-		" fee1d2",
-	);
+	// The tie-breaker EXTENDS the number in its own format, so the whole cell is
+	// itself a number the search accepts (and the refund confirm's prefix extends).
+	expect(a.textContent).toBe("#FEE1D1");
+	expect(b.textContent).toBe("#FEE1D2");
+	expect(a.querySelector('[data-testid="order-number-disambiguator"]')?.textContent).toBe("1");
 	// A number nobody else on the page has needs no disambiguation.
 	expect(link(container, SOLO).querySelector('[data-testid="order-number-disambiguator"]')).toBe(
 		null,
@@ -191,4 +190,37 @@ test("a detail without a number has no number row, and still its full id", async
 	const container = await showDetail(detail(undefined));
 	expect(container.querySelector('[data-testid="detail-order-number"]')).toBe(null);
 	expect(container.querySelector('[data-testid="detail-full-id"]')?.textContent).toBe(SOLO);
+});
+
+test("the identity column is headed Order, not a second #", async () => {
+	const container = await mountList();
+	const headers = [...container.querySelectorAll("th")].map((th) => th.textContent?.trim());
+	expect(headers).toContain("Order");
+	expect(headers).not.toContain("Order #");
+});
+
+test("a search by number that answers several orders says so; one answer, or another search, does not", () => {
+	expect(orderNumberMatchesNote("#fee1d", 2)).toBe(
+		"#FEE1D matches 2 orders. An order number can be shared — confirm the buyer, date and total before acting.",
+	);
+	expect(orderNumberMatchesNote(" #FEE1D ", 3)).toMatch(/^#FEE1D matches 3 orders\./);
+	expect(orderNumberMatchesNote("#FEE1D", 1)).toBeNull();
+	expect(orderNumberMatchesNote("fee1d", 2)).toBeNull();
+	expect(orderNumberMatchesNote("jo@example.com", 5)).toBeNull();
+	expect(orderNumberMatchesNote(undefined, 5)).toBeNull();
+});
+
+test("the note renders above the rows when the applied search is a shared number", async () => {
+	respond({
+		ok: true,
+		orders: [row(TWIN_A, "#FEE1D"), row(TWIN_B, "#FEE1D")],
+		nextCursor: null,
+		total: 2,
+		vocabulary: VOCABULARY,
+	});
+	const node = <OrdersList onOpen={() => undefined} initialFilter={{ search: "#FEE1D" }} />;
+	mounted = await mount(node);
+	await mounted.rerender(node);
+	const note = mounted.container.querySelector('[data-testid="orders-number-matches-note"]');
+	expect(note?.textContent).toMatch(/^#FEE1D matches 2 orders\./);
 });

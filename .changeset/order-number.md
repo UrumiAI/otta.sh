@@ -15,6 +15,7 @@ gains `orderNumber` on list rows and the detail.
 It is a display label derived on read, never stored and never a lookup key (ADR-0033):
 order ids are random v4 UUIDs, so the prefix is spread out, but five hex characters will
 collide eventually. The admin search accepts a number as typed (`#3F9A2`, any case) and
-answers every order whose id starts with it; two console rows sharing a number also show
-their shortest-unique prefix. The refund confirm's 8-character prefix is upper-cased so
+answers every order whose id starts with it; a search by number that answers several orders
+says so, and two console rows sharing a number extend it, upper-cased, to their
+shortest-unique prefix (`#FEE1D1`). The list's "Order #" column is now "Order". The refund confirm's 8-character prefix is upper-cased so
 it visibly extends the number. No order id, storage format or migration changes.

@@ -96,7 +96,7 @@ test.describe("the migrated Orders console", () => {
 		await expect(adminPage.getByTestId("orders-table")).toBeVisible();
 	});
 
-	test("the row shows a SHORT prefix and the copy button copies the FULL id", async ({
+	test("the row shows the ORDER NUMBER and the copy button copies the FULL id", async ({
 		adminPage,
 	}, info) => {
 		// Reading the clipboard back needs the permission explicitly; writing does
@@ -114,12 +114,14 @@ test.describe("the migrated Orders console", () => {
 		const orderId = (await first.getAttribute("data-order-id")) as string;
 		const shown = ((await first.textContent()) ?? "").trim();
 
-		// §1.3: never the full id in a list row, never shorter than 4, and always
-		// a prefix of the real thing — the property that lets an operator match a
-		// row against a confirm dialog.
-		expect(shown.length).toBeGreaterThanOrEqual(4);
+		// ADR-0033: the row prints the ORDER NUMBER — "#" + the id's first five
+		// characters, upper-cased (extended, still upper-cased, only on a row whose
+		// number another row on the page shares). Never the full id, and always a
+		// prefix of the real thing — the property that lets an operator match a
+		// row against the confirm dialog and a shopper's email.
+		expect(shown).toMatch(/^#[0-9A-F]{5,}$/);
 		expect(shown.length).toBeLessThan(orderId.length);
-		expect(orderId.startsWith(shown)).toBe(true);
+		expect(orderId.startsWith(shown.slice(1).toLowerCase())).toBe(true);
 
 		// The affordance Block Kit could not have at all. Clipboard permissions
 		// are origin-gated and CI-dependent, so the assertion is on what the
@@ -221,12 +223,13 @@ test.describe("the migrated Orders console", () => {
 			await expect(text).toBeVisible();
 
 			// THE ASSERTION. D4/§1.3: the confirm names the order FIRST, by an
-			// 8-character prefix — never the full uuid, and never nothing at all.
+			// 8-character prefix, upper-cased so it visibly extends the order number
+			// (ADR-0033) — never the full uuid, and never nothing at all.
 			// Amount and buyer are the two attributes a repeat customer's orders
 			// share, so a dialog naming only those cannot tell the operator which
 			// order the money is about to leave.
 			const body = (await text.textContent()) ?? "";
-			expect(body).toContain(`Order #${orderId.slice(0, 8)}`);
+			expect(body).toContain(`Order #${orderId.slice(0, 8).toUpperCase()}`);
 			expect(body).not.toContain(orderId);
 			expect(body.length).toBeLessThanOrEqual(200);
 

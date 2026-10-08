@@ -42,8 +42,11 @@ the admin console (list rows and detail, sent on the admin wire as `orderNumber`
   only has to tell a shopper's *own* orders apart and give support a short search term:
   - the admin search returns every order with that prefix, and the operator confirms by
     buyer, date or total — never by the number alone;
-  - two rows sharing a number on one console page also show their shortest-unique prefix,
-    so no two rows on screen read the same; the detail shows the full id beside the number;
+  - a search by number that answers several orders says so ("#3F9A2 matches 2 orders —
+    confirm the buyer, date and total") above the rows;
+  - two rows sharing a number on one console page extend it, upper-cased, to their
+    shortest-unique prefix (`#FEE1D1`, `#FEE1D2`), so no two rows read the same and each
+    cell is itself a searchable number; the detail shows the full id beside the number;
   - the refund confirm keeps its 8-character prefix, now upper-cased so it visibly extends
     the number.
 - A search spelled exactly `#` + hex is read as an order number, so a sku or email local

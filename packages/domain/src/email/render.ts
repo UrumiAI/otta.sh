@@ -553,8 +553,9 @@ function numberOf(orderId: unknown): string | null {
 }
 
 /** "Order confirmed #3F9A2 — Otta Tee": the template's subject, the order's number,
- *  then what was bought. One placeholder-shaped spelling, so a translated subject
- *  table can reorder the three without touching the renderer. */
+ *  then what was bought. English word order, fixed here as the rest of the copy is;
+ *  the composition lives in this one function, which is the seam a translated
+ *  subject table would replace. */
 function subjectLine(subject: string, number: string | null, label: string): string {
 	return number === null ? `${subject} — ${label}` : `${subject} ${number} — ${label}`;
 }

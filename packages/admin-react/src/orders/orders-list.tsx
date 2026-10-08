@@ -1034,8 +1034,17 @@ export function OrdersList({
 	// The order NUMBER is the identity cell's text (ADR-0033): the label the
 	// shopper reads off their email, so an operator and a buyer name an order the
 	// same way. It is only five characters, so two rows CAN share one; those rows
-	// also show their shortest-unique prefix (§1.3's rule, above) so no two rows on
-	// screen ever read the same.
+	// EXTEND it, upper-cased, to their shortest-unique prefix ("#FEE1D" + "1") so
+	// no two rows on screen read the same, and the whole cell is itself a number
+	// the search accepts.
+	const tieBreakers = React.useMemo(
+		() =>
+			shortIdsFor(
+				orders.map((o) => o.id),
+				ORDER_NUMBER_DIGITS,
+			),
+		[orders],
+	);
 	const sharedNumbers = React.useMemo(() => {
 		const seen = new Map<string, number>();
 		for (const o of orders) {
@@ -1043,6 +1052,10 @@ export function OrdersList({
 		}
 		return new Set([...seen].filter(([, n]) => n > 1).map(([number]) => number));
 	}, [orders]);
+	// ADR-0033: an order number is a label, not a key, and five characters can be
+	// shared. When the operator searched by one and it answers several orders, say
+	// so before they act on the first row — confirm by buyer, date and total.
+	const numberMatches = orderNumberMatchesNote(applied.search, page?.total ?? orders.length);
 	const vocabulary = page?.vocabulary;
 	const statusAny = vocabulary?.statusAny ?? "any";
 	const periodLabel =
@@ -1617,12 +1630,22 @@ export function OrdersList({
 				</p>
 			)}
 
+			{outcome.kind === "rows" && answerVisible && numberMatches !== null && (
+				<p
+					data-testid="orders-number-matches-note"
+					role="note"
+					style={{ fontSize: 13, marginBlockEnd: 12 }}
+				>
+					{numberMatches}
+				</p>
+			)}
+
 			{outcome.kind === "rows" && answerVisible && (
 				<Table
 					testId="orders-table"
 					caption="Orders"
 					card
-					headers={["Placed", "Customer", "Status", "Order #", <EndHeader label="Total" />]}
+					headers={["Placed", "Customer", "Status", "Order", <EndHeader label="Total" />]}
 					onActivateRow={onOpen}
 				>
 					{orders.map((order) => {
@@ -1745,7 +1768,7 @@ export function OrdersList({
 										{order.orderNumber ?? prefix}
 										{order.orderNumber !== undefined && sharedNumbers.has(order.orderNumber) && (
 											<span data-testid="order-number-disambiguator" style={{ opacity: 0.72 }}>
-												{` ${prefix}`}
+												{(tieBreakers.get(order.id) ?? "").slice(ORDER_NUMBER_DIGITS).toUpperCase()}
 											</span>
 										)}
 									</a>
@@ -1860,4 +1883,22 @@ export function OrdersList({
 			)}
 		</div>
 	);
+}
+
+/** How many characters of the id an order number shows — the domain's
+ *  `ORDER_NUMBER_LENGTH` (ADR-0033). The server computes the number itself; this
+ *  is only how far a colliding row's tie-breaker starts past it. */
+const ORDER_NUMBER_DIGITS = 5;
+
+/** A search spelled the way an order number is printed: `#`, then hex. */
+const TYPED_ORDER_NUMBER = /^#[0-9a-f]+$/i;
+
+/**
+ * The note for a search by order number that answered more than one order, or
+ * `null` (not a number-shaped search, or one match or none). Exported for tests.
+ */
+export function orderNumberMatchesNote(search: string | undefined, count: number): string | null {
+	const typed = search?.trim() ?? "";
+	if (!TYPED_ORDER_NUMBER.test(typed) || count <= 1) return null;
+	return `${typed.toUpperCase()} matches ${String(count)} orders. An order number can be shared — confirm the buyer, date and total before acting.`;
 }
