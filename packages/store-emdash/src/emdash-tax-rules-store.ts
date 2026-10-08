@@ -255,7 +255,12 @@ export class EmdashTaxRulesStore implements TaxRulesStore {
 				// The refusal is the answer; a release that fails must not replace it. A
 				// claim left behind is an orphan, which the next create of the id takes over.
 				try {
-					await this.#rateOwners.compareAndDelete(input.id, claim.revision);
+					// …and never while the class holds the id: a same-id create that took the
+					// claim over from this one in flight, re-asserted, and landed, needs it.
+					const holder = await this.#classes.get(input.taxClassId);
+					if (holder === null || normalizeTaxClassDoc(holder).rates[input.id] === undefined) {
+						await this.#rateOwners.compareAndDelete(input.id, claim.revision);
+					}
 				} catch (releaseErr) {
 					console.warn(
 						`[otta] tax rate ${input.id}: could not release its id claim after a duplicate refusal (left as a self-healing orphan)`,
@@ -295,6 +300,13 @@ export class EmdashTaxRulesStore implements TaxRulesStore {
 			claimRevision = reasserted.revision;
 			claim.revision = claimRevision;
 			const held = await this.#heldClass(input.taxClassId);
+			// A concurrent create of the SAME id landed here after this one claimed: the
+			// id is live, so this is an id collision — never an embed over that rate (the
+			// map key is the id) and never a duplicate refusal whose release would take
+			// the live rate's claim away.
+			if (held?.doc.rates[input.id] !== undefined) {
+				throw new TaxRateIdCollisionError(input.id, input.taxClassId);
+			}
 			const occupant =
 				held === null
 					? null
