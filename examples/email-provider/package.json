@@ -11,7 +11,7 @@
 	},
 	"devDependencies": {
 		"@otta-sh/plugin": "workspace:*",
-		"emdash": "0.38.0",
+		"emdash": "1.0.1",
 		"typescript": "catalog:",
 		"vitest": "catalog:"
 	}
