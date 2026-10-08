@@ -1,7 +1,8 @@
 ---
 "@otta-sh/domain": minor
 "@otta-sh/plugin": minor
-"@otta-sh/admin-presentation": patch
+"@otta-sh/admin-presentation": minor
+"@otta-sh/admin-react": patch
 ---
 
 Remove x402 (HTTP 402, USDC on Base) from Otta. Stripe, checkout, orders, refunds, downloads
@@ -25,5 +26,17 @@ removal from published API.
 - A cron tick deletes the x402 settings earlier builds stored in plugin kv
   (`settings:x402PayTo`, `settings:x402Accepts`, `settings:x402FacilitatorApiKey` and its
   generation, `settings:x402FacilitatorSecret` and its generation), once per store.
-- `@otta-sh/admin-presentation`: the "paid on-chain (x402)" refund-capability sentence is gone;
-  the record-only copy for a gateway that cannot refund is unchanged.
+- Orders placed with x402 before its removal still store `paymentMethod: "x402"`. Their refunds
+  are record-only: the admin refund action records a manual refund (ledgered under `x402`, no
+  money moves), where it would otherwise answer `409 REFUND_GATEWAY_UNAVAILABLE`. A Stripe order
+  with no Stripe gateway configured still answers 409. The admin refunds summary
+  (`RefundsSummaryWire`) gains `legacyPaymentMethod: boolean`, true for such an order.
+- `@otta-sh/admin-presentation`: the "paid on-chain (x402)" refund-capability sentence is gone.
+  `refundCapabilityText` takes a third argument, `legacyPaymentMethod`; when it is true the
+  panel reads "Paid with a payment method Otta no longer supports. Refunds are record-only:
+  return the money outside Otta, then record it here." The Stripe and record-only sentences are
+  worded as before.
+- `@otta-sh/admin-react`: the order's Money tab passes the summary's `legacyPaymentMethod`
+  through, so a legacy x402 order shows that sentence.
+- The late-refund and intent-cancel sweeps reserve 2 queries, not 5, for resolving the payment
+  gateways: Stripe's two secret reads, now the only gateway.

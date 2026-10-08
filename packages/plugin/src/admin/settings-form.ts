@@ -1255,13 +1255,9 @@ function paymentsGroup(
 				if (country !== null) blocks.push({ type: "context", text: country });
 				return blocks;
 			}),
-			// INC-C5: the non-secret companions, LAST so the group still reads
-			// keys-first, and visibly a different kind of field — these prefill with
-			// what is stored.
-			{
-				type: "context",
-				text: "The settings below are shown as saved.",
-			},
+			// INC-C5: the non-secret companion, LAST so the group still reads
+			// keys-first. It prefills with what is stored, which says on its own that
+			// it is not a write-only key.
 			{ type: "context", text: emailStatusLine(emailStatus) },
 			...legacySignInWarning(plain.get(LOGIN_LINK_URL_KEY) ?? ""),
 			// A refused save states each rule in full beside the form, and the form

@@ -265,6 +265,9 @@ export interface RefundsSummaryWire {
 	remainingCents: number;
 	paymentMethod: string | null;
 	refundable: boolean;
+	/** True when `paymentMethod` is one Otta no longer supports (a legacy x402
+	 *  order): its refunds are record-only for good, and the panel says so. */
+	legacyPaymentMethod: boolean;
 }
 
 /**

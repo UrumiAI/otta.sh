@@ -590,7 +590,7 @@ only a share of the tick, never less than one unit of its own work; a leg its sh
 gets a second go on whatever the other legs left. **No leg is starved**: a leg passed over for
 three ticks in a row with work goes to the head of the next tick (right behind
 `cancel-intents`), and one passed over for nine goes ahead of even that, once — on Free a hold
-expiry or a stock-commit completion does not fit behind an intent cancel at all. A tick that did work logs one
+expiry does not fit behind an intent cancel at all. A tick that did work logs one
 line naming what each leg spent:
 
 ```

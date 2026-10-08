@@ -311,10 +311,10 @@ export const AGING_TICKS = 3;
 
 /**
  * THE STARVATION GUARD (review of QA2 M2). A leg passed over this many ticks in a
- * row goes ahead of even `cancel-intents`. Some units cannot fit behind an intent
- * cancel on the Workers Free preset at all — a hold expiry with its list (about
- * 20 calls) or a stock-commit completion (about 15), plus a cancel (about 11 with
- * its gateway reads and due check) and the tick's own reads, pass 30 — so while
+ * row goes ahead of even `cancel-intents`. A unit can be too big to fit behind an
+ * intent cancel on the Workers Free preset at all — a hold expiry with its list
+ * (about 20 calls), plus a cancel (up to 10 with its gateway reads and due check)
+ * and the tick's own reads, passes 30 — so while
  * cancels keep coming, ordinary aging (which places a leg right BEHIND
  * `cancel-intents`) would never let them run. Three aging periods: long enough
  * that a burst of cancels finishes first, bounded so nothing waits forever.
@@ -651,21 +651,21 @@ export const LEG_QUERY_COSTS: Record<SweepLeg, { readonly entry: number; readonl
 			entry: 2 + CONTENT_LIST_QUERIES,
 			unit: ORPHAN_ROW_READ_QUERIES + CONTENT_READ_QUERIES + PRODUCT_ORPHAN_DELETE_CALLS,
 		},
-		// entry: resolving the gateways (their kv reads: 2 for Stripe; the budget
-		// keeps the headroom a second gateway's reads once needed) — once, and only when a unit
-		// needs them. The due list is the leg's due check, charged before this (see
-		// `run`'s `isDue`).
+		// entry: resolving the gateways — Stripe's two secret kv reads
+		// (`stripeGatewayFromCtx`), measured in cron-leg-costs.test.ts — once, and only
+		// when a unit needs them. A new gateway adds its own reads here. The due list
+		// is the leg's due check, charged before this (see `run`'s `isDue`).
 		// unit: one order's ledger read, the re-driven refund (the two Stripe
 		// subrequests, finalize with its reporting write) and the resolve, retry
 		// clear and notice that follow — the TRIMMED resume, measured at 20.
-		"late-refunds": { entry: 5, unit: 20 },
-		// entry: resolving the gateways (their secret kv reads) — once, only when a
-		// unit needs them; the due list is the leg's due check, charged before this.
+		"late-refunds": { entry: 2, unit: 20 },
+		// entry: resolving the gateways — Stripe's two secret kv reads — once, only
+		// when a unit needs them; the due list is the leg's due check, charged before this.
 		// unit: one order's ledger read, the Stripe cancel (one subrequest) and the
 		// intent's bookkeeping write — 5 — and, at worst, the read-back of an intent
 		// Stripe refused to cancel (a second subrequest) and, on the last attempt, the
 		// give-up flag on the order: 7, measured with fix/late-charge-window merged.
-		"cancel-intents": { entry: 5, unit: 7 },
+		"cancel-intents": { entry: 2, unit: 7 },
 	};
 
 /** What examining one cart in the hold listing costs, at most: the cart (already in

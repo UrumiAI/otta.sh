@@ -16,10 +16,12 @@
  *
  * Nothing else is touched: never a Stripe, email or edge-token key.
  *
- * COST: it runs outside the sweep tick's query budget (`cron/index.ts`). The
- * marker is read first, so a purged store pays one kv read per site per isolate
- * and none after that in the same isolate. A store that never had x402 settings
- * pays six idempotent deletes and one write, once.
+ * COST: it runs outside the sweep tick's query budget (`cron/index.ts`), and
+ * never on the tick where the email purge did its own deletes — that tick is
+ * already paying for one purge, so this one waits for the next. The marker is
+ * read first, so a purged store pays one kv read per site per isolate and none
+ * after that in the same isolate. A store that never had x402 settings pays six
+ * idempotent deletes, issued together, and one write, once.
  *
  * THE MARKER IS WRITTEN ONLY AFTER EVERY DELETE SUCCEEDED, so a kv failure part
  * way through is retried on a later tick. It never throws: a failed purge must
@@ -71,7 +73,8 @@ export async function purgeLegacyX402Settings(ctx: PluginContext): Promise<boole
 			doneInIsolate.add(site);
 			return false;
 		}
-		for (const key of LEGACY_X402_SETTING_KEYS) await ctx.kv.delete(key);
+		// Independent keys: deleted together. Any rejection skips the marker below.
+		await Promise.all(LEGACY_X402_SETTING_KEYS.map((key) => ctx.kv.delete(key)));
 		await ctx.kv.set(LEGACY_X402_PURGE_MARKER_KEY, new Date().toISOString());
 		doneInIsolate.add(site);
 		return true;

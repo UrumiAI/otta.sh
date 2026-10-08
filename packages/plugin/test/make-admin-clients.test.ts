@@ -221,6 +221,7 @@ describe("makeAdminClients wires the payment gateways into admin refunds", () =>
 		expect(await orders.getRefunds(id)).toMatchObject({
 			refundable: false,
 			paymentMethod: "x402",
+			legacyPaymentMethod: true,
 			remainingCents: 1500,
 		});
 		expect(
@@ -243,6 +244,11 @@ describe("makeAdminClients wires the payment gateways into admin refunds", () =>
 		// A STRIPE order on the same unconfigured deployment still fails closed: the
 		// stand-in is only for a method Otta no longer has.
 		const stripeId = await seedPaidOrder("stripe");
+		expect(await orders.getRefunds(stripeId)).toMatchObject({
+			refundable: false,
+			paymentMethod: "stripe",
+			legacyPaymentMethod: false,
+		});
 		expect(
 			await orders.refundOrder(
 				stripeId,

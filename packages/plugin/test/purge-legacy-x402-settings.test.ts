@@ -4,6 +4,11 @@
  */
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { createCronHandler, SWEEP_TASK_NAME } from "../src/cron/index.js";
+import { EMAIL_LAST_SENT_KEY } from "../src/email/ctx-email-sender.js";
+import {
+	LEGACY_EMAIL_PURGE_MARKER_KEY,
+	resetLegacyEmailPurgeForTesting,
+} from "../src/email/purge-legacy-email-secrets.js";
 import {
 	PAYMENT_SECRET_KEYS,
 	STRIPE_SECRET_KEY_KEY,
@@ -60,7 +65,10 @@ const STORED = {
 	"settings:storeDisplayName": "Keep",
 };
 
-beforeEach(() => resetLegacyX402PurgeForTesting());
+beforeEach(() => {
+	resetLegacyX402PurgeForTesting();
+	resetLegacyEmailPurgeForTesting();
+});
 afterEach(() => vi.restoreAllMocks());
 
 describe("purgeLegacyX402Settings", () => {
@@ -154,6 +162,52 @@ describe("purgeLegacyX402Settings", () => {
 		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
 		await purgeLegacyX402Settings(makeCtx(STORED, "settings:x402FacilitatorApiKey").ctx);
 		expect(JSON.stringify(warn.mock.calls)).not.toMatch(/LIVE/);
+	});
+
+	test("the six deletes are issued together, before the marker is written", async () => {
+		const { ctx, calls } = makeCtx(STORED);
+		let inFlight = 0;
+		let peak = 0;
+		const del = ctx.kv.delete.bind(ctx.kv);
+		ctx.kv.delete = async (key: string) => {
+			inFlight += 1;
+			peak = Math.max(peak, inFlight);
+			await Promise.resolve();
+			inFlight -= 1;
+			return del(key);
+		};
+		expect(await purgeLegacyX402Settings(ctx)).toBe(true);
+		expect(peak).toBe(LEGACY_X402_SETTING_KEYS.length);
+		expect(calls.at(-1)).toBe(`set ${LEGACY_X402_PURGE_MARKER_KEY}`);
+	});
+
+	test("never on the same tick as the email purge's deletes: it waits for the next tick", async () => {
+		const { ctx, kv } = makeCtx({
+			...STORED,
+			"settings:emailApiKey": "re_LIVE_KEY_0000000000",
+			// The host accepted a send, so the email purge does its deletes now.
+			[EMAIL_LAST_SENT_KEY]: "2026-10-08T00:00:00.000Z",
+		});
+		const tick = async () => {
+			try {
+				// The sweep itself needs the document store this bare ctx lacks; the
+				// purges run before it, which is all this case looks at.
+				await createCronHandler()(
+					{ name: SWEEP_TASK_NAME, scheduledAt: "" },
+					{ ...ctx, email: { send: async () => {} } },
+				);
+			} catch {
+				// expected: see above
+			}
+		};
+		await tick();
+		expect(typeof kv.get(LEGACY_EMAIL_PURGE_MARKER_KEY)).toBe("string");
+		expect(kv.has("settings:x402PayTo")).toBe(true);
+		expect(kv.has(LEGACY_X402_PURGE_MARKER_KEY)).toBe(false);
+
+		await tick();
+		for (const key of LEGACY_X402_SETTING_KEYS) expect(kv.has(key), key).toBe(false);
+		expect(typeof kv.get(LEGACY_X402_PURGE_MARKER_KEY)).toBe("string");
 	});
 
 	test("the sweep tick runs it: a cron tick purges the stored keys, a foreign task does not", async () => {

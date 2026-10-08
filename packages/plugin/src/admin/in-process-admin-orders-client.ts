@@ -193,6 +193,12 @@ const MAX_REFUND_AMOUNT_CENTS = 1_000_000_000_000;
  */
 const CURRENT_PAYMENT_METHODS: Readonly<Record<PaymentMethod, true>> = { stripe: true };
 
+/** Whether a STORED method is one Otta no longer supports (see above). Read as a
+ *  string: a legacy order carries a method the type no longer has. */
+function isLegacyPaymentMethod(stored: string): boolean {
+	return !Object.hasOwn(CURRENT_PAYMENT_METHODS, stored);
+}
+
 /**
  * A record-only gateway for a LEGACY order: one whose stored payment method Otta
  * no longer supports (an x402 order placed before its removal). That method's
@@ -265,10 +271,7 @@ export class InProcessAdminOrdersClient implements AdminOrdersSurface {
 	 */
 	#refundGatewayFor(method: PaymentMethod | null): PaymentGateway | undefined {
 		if (method === null) return undefined;
-		// Read as the stored STRING: a legacy order carries a method the type no longer has.
-		const stored: string = method;
-		if (Object.hasOwn(CURRENT_PAYMENT_METHODS, stored)) return this.#gateways[method];
-		return recordOnlyLegacyGateway(stored);
+		return isLegacyPaymentMethod(method) ? recordOnlyLegacyGateway(method) : this.#gateways[method];
 	}
 
 	/**
@@ -751,6 +754,8 @@ export class InProcessAdminOrdersClient implements AdminOrdersSurface {
 			remainingCents: remaining,
 			paymentMethod: order.paymentMethod,
 			refundable: gateway?.refundable ?? false,
+			legacyPaymentMethod:
+				order.paymentMethod !== null && isLegacyPaymentMethod(order.paymentMethod),
 		};
 	}
 

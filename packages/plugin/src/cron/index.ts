@@ -246,9 +246,10 @@ export function createCronHandler(options: CommerceSweepOptions = {}): HookHandl
 		if (name !== SWEEP_TASK_NAME) return { task: name, skipped: true };
 		await bootstrapSweepTask(ctx);
 		// Once per isolate, never throw: see purge-legacy-email-secrets.ts
-		// (ADR-0031) and purge-legacy-x402-settings.ts.
-		await purgeLegacyEmailSecrets(ctx);
-		await purgeLegacyX402Settings(ctx);
+		// (ADR-0031) and purge-legacy-x402-settings.ts. Both run outside the tick's
+		// query budget, so they never pile onto one tick: a tick whose email purge
+		// did its deletes leaves the x402 purge to the next tick.
+		if (!(await purgeLegacyEmailSecrets(ctx))) await purgeLegacyX402Settings(ctx);
 		return await runCommerceSweeps(ctx, name, { ...options, tickClock, startedAtMs });
 	};
 }
