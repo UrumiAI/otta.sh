@@ -71,7 +71,12 @@ export const OTTA_PAGE_SCOPE = `:root:has(${OTTA_CURRENT_PAGE_LINK})`;
 /** A Block Kit accordion that still renders Kumo's default trigger. */
 const ACCORDION = '[data-testid="collapsible"]:has(> [data-kumo-part="default-trigger"])';
 const ROOT = `${OTTA_PAGE_SCOPE} ${ACCORDION}`;
-const WRAPPER = `div:has(> ${ACCORDION})`;
+/**
+ * The wrapper `div` around one accordion. Spelled out rather than built from
+ * `ACCORDION`: `:has()` may not nest inside another `:has()`, and a browser
+ * drops the whole rule that tries (see the test that guards this).
+ */
+const WRAPPER = 'div:has(> [data-testid="collapsible"] > [data-kumo-part="default-trigger"])';
 const TRIGGER = `${ROOT} > [data-kumo-part="default-trigger"]`;
 const PANEL = `${TRIGGER} + [id]`;
 
@@ -92,11 +97,11 @@ ${ROOT} {
 	border-radius: ${RADIUS};
 	overflow: hidden;
 }
-${OTTA_PAGE_SCOPE} ${WRAPPER}:has(+ ${WRAPPER}) > ${ACCORDION} {
+${OTTA_PAGE_SCOPE} ${WRAPPER}:has(+ div > [data-testid="collapsible"] > [data-kumo-part="default-trigger"]) > ${ACCORDION} {
 	border-end-start-radius: 0;
 	border-end-end-radius: 0;
 }
-${OTTA_PAGE_SCOPE} ${WRAPPER} + div > ${ACCORDION} {
+${OTTA_PAGE_SCOPE} ${WRAPPER} + ${WRAPPER} > ${ACCORDION} {
 	margin-block-start: calc(-1rem - 1px);
 	border-start-start-radius: 0;
 	border-start-end-radius: 0;
