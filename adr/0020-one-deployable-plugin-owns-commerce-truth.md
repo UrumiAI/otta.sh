@@ -86,7 +86,7 @@ This is the one genuine loss, and it is recorded rather than minimised.
 
 Before the fold-in, the payment and email credentials were environment variables on a
 separate Worker or Node process — `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`,
-`EMAIL_API_KEY`, the x402 facilitator secret. With no second deployable to hold them, they
+`EMAIL_API_KEY` (since removed: superseded by ADR-0031), the x402 facilitator secret. With no second deployable to hold them, they
 move to the one operator-provisionable store the plugin has: **write-only plugin `kv`**,
 under the existing `settings:*` convention (`packages/plugin/src/payment-secrets.ts`,
 work-order increment C3). Every key there is an existing service environment variable,

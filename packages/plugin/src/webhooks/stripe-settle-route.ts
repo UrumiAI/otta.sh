@@ -232,7 +232,7 @@ export interface StripeWebhookSettleOptions {
 	settle?: SettleFn;
 	/** The inline order-email dispatch's overrides — chiefly an injected sender, so a
 	 *  suite proves the confirmation goes out without any egress. Default: the sender
-	 *  built from this bundle's email API URL (none ⇒ no inline send). */
+	 *  built over the host's `ctx.email` (no provider ⇒ no inline send). */
 	orderEmails?: SendOrderEmailsNowOptions;
 	/** The wall clock the request's deadline is measured on. Default: `Date.now`. */
 	now?: () => number;

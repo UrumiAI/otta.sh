@@ -516,7 +516,7 @@ describe("the console is told the truth when the email did not go", () => {
 		expect(warn.mock.calls.flat().join(" ")).not.toContain(spent);
 
 		const bare = await seedPaid("ord-x402-unconfigured", X402_BUYER);
-		const unconfigured = adminClient({ egress: {} });
+		const unconfigured = adminClient({});
 		expect(await unconfigured.transitionOrder(bare, "processing", { idempotencyKey: "k" })).toEqual(
 			{ ok: true, transitioned: true, email: "no-recipient" },
 		);
@@ -592,7 +592,7 @@ describe("the console is told the truth when the email did not go", () => {
 
 	test("a store with no email provider reports unconfigured, and claims nothing", async () => {
 		const id = await seedPaid("ord-unconfigured");
-		const orders = adminClient({ egress: {} });
+		const orders = adminClient({});
 		expect(await orders.transitionOrder(id, "processing", { idempotencyKey: "k" })).toEqual({
 			ok: true,
 			transitioned: true,

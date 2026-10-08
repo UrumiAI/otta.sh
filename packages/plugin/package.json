@@ -20,7 +20,8 @@
 	"exports": {
 		".": "./src/index.ts",
 		"./plugin": "./src/plugin.ts",
-		"./sandbox-entry": "./src/sandbox-entry.ts"
+		"./sandbox-entry": "./src/sandbox-entry.ts",
+		"./testing": "./src/testing.ts"
 	},
 	"publishConfig": {
 		"exports": {
@@ -35,6 +36,10 @@
 			"./sandbox-entry": {
 				"types": "./dist/sandbox-entry.d.mts",
 				"default": "./dist/sandbox-entry.mjs"
+			},
+			"./testing": {
+				"types": "./dist/testing.d.mts",
+				"default": "./dist/testing.mjs"
 			}
 		}
 	},

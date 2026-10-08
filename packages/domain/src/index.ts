@@ -237,8 +237,10 @@ export type {
 export {
 	EmailSendTimeoutError,
 	type EmailSendTimeoutLike,
+	EmailTransportUnavailableError,
 	isCutShortEmailTimeout,
 	isEmailSendTimeoutError,
+	isEmailTransportUnavailableError,
 	type EmailSender,
 	type EmailTemplate,
 	type SendEmailInput,
@@ -272,9 +274,8 @@ export {
 	ORDER_STATE_MACHINE,
 } from "./orders/state-machine.js";
 // Template rendering lives beside `buildOrderEmailData` and `EmailTemplate`
-// because BOTH `EmailSender` adapters now need it and they live in different
-// packages: the service's `HttpEmailSender` (deleted with the service) and the
-// plugin's `CtxHttpEmailSender` over `ctx.http` (INC-C5). It is a PURE function
+// because every `EmailSender` adapter needs it, and they live outside the domain:
+// today the plugin's `CtxEmailSender` over EmDash's `ctx.email` (ADR-0031). It is a PURE function
 // of a template + explicit data — no IO, no store reach-back — so it does not
 // widen the domain's purity contract by one byte.
 export {
@@ -307,6 +308,8 @@ export {
 	TIMEOUT_BACKOFF_MAX_MS,
 	TIMEOUT_FAILURE_REASON,
 	timeoutBackoffMs,
+	OUTBOX_EMAIL_MAX_AGE_MS,
+	TRANSPORT_UNAVAILABLE_RETRY_MS,
 	UNTRIED_RETRY_MS,
 	adminNextStates,
 	manualPaymentAllowed,
