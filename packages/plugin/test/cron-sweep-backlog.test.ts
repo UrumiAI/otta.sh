@@ -13,7 +13,8 @@
  *    the sweep itself — the two agree);
  *  - `cancel-intents` is never deferred: a due payment intent is withdrawn first;
  *  - every leg with work makes progress within `PROGRESS_WITHIN` ticks, and no leg
- *    waits more than `MAX_WAIT` ticks in a row;
+ *    waits more than `MAX_WAIT` ticks in a row — save the deadline-free
+ *    `UNPROMOTED_LEGS`, which only have to finish;
  *  - the expiry keeps a throughput of at least `MIN_EXPIRIES_PER_MINUTE` while every
  *    other leg is busy too — 50 lapsed orders cleared inside `EXPIRY_WITHIN` ticks.
  */
@@ -56,10 +57,11 @@ import {
 	type SweepLeg,
 } from "../src/cron/index.js";
 import { BACKGROUND_WORK_KEY } from "../src/cron/background-work-setting.js";
-import { LEG_PRIORITY, MAINTENANCE_LEGS } from "../src/cron/sweeps.js";
+import { LEG_PRIORITY, MAINTENANCE_LEGS, UNPROMOTED_LEGS } from "../src/cron/sweeps.js";
 import {
 	adapters,
 	DAY_MS,
+	fakeCms,
 	HOUR_MS,
 	memoryCursors,
 	MINUTE_MS,
@@ -75,7 +77,7 @@ import { commerceStorageLayout } from "./sandbox/storage-layout.js";
 
 const FREE = 30;
 const LAPSED_ORDERS = 50;
-/** The pinned pace. Measured on this simulation: all 50 expired by tick 72 (0.69 a
+/** The pinned pace. Measured on this simulation: all 50 expired by tick 73 (0.68 a
  *  minute) with every other leg busy at the same time — about twice QA's one every
  *  three minutes, which starved everything else. With only an expiry backlog it is
  *  one a minute (`cron-sweep-ceiling`). The floor leaves room for the cost table
@@ -87,22 +89,55 @@ const PROGRESS_WITHIN = 12;
 /** And is never passed over more than this many ticks in a row. */
 const MAX_WAIT = 8;
 
-/** Two hours on from now, so a late refund the setup leaves `reserved` is due. */
-const START = new Date(Math.floor((Date.now() + 2 * HOUR_MS) / MINUTE_MS) * MINUTE_MS);
+/**
+ * The instant the backlog is seeded at, and START, two hours on (so a late refund
+ * the setup leaves `reserved` is due). FIXED for the main case, never the wall
+ * clock (review I-2: a START taken from `Date.now()` failed the pinned pace when
+ * the suite ran near 22:00 UTC); the time-of-day scan below re-seeds at other
+ * instants.
+ *
+ * THE SWEEP RUNS ON ONE CLOCK. Production passes no `now`: the tick's `now` IS the
+ * stores' clock. So the (faked) wall clock reads the seed's instant while seeding
+ * and each tick's instant while it runs. Driving `now` on its own while the stores
+ * read the real wall clock is what made the outcome move with the time of day the
+ * suite ran: the email dispatcher leases and re-schedules rows on the stores'
+ * clock, and with that clock hours AHEAD of the tick an untried row came back due
+ * after the four-hour run, so the expiry emails were "never sent" — two clocks no
+ * deployment has. Only `Date` is faked; the tick's time budget is measured on
+ * `performance.now`, which is not.
+ */
+let SETUP_NOW = new Date("2026-09-20T08:00:00.000Z");
+let START = new Date(SETUP_NOW.getTime() + 2 * HOUR_MS);
 
 let storage: StorageAccess;
-const stripe = new FakePaymentGateway({ id: "stripe" });
+let stripe = new FakePaymentGateway({ id: "stripe" });
+/** product-orphans: the CMS behind `ctx.content`, missing three products' documents. */
+const ORPHANED_PRODUCTS = [0, 1, 2].map((i) => `prod-orphan-${String(i)}`);
+const cms = fakeCms({ gone: ORPHANED_PRODUCTS });
+
+/** A fresh store holding the whole backlog, seeded with the wall clock at `setupNow`. */
+async function seedAt(setupNow: Date): Promise<void> {
+	SETUP_NOW = setupNow;
+	START = new Date(setupNow.getTime() + 2 * HOUR_MS);
+	stripe = new FakePaymentGateway({ id: "stripe" });
+	({ storage } = await makeSqliteStorage(commerceStorageLayout()));
+	vi.useFakeTimers({ toFake: ["Date"], now: setupNow });
+	try {
+		await seedEveryLeg();
+	} finally {
+		vi.useRealTimers();
+	}
+}
 
 beforeAll(async () => {
-	({ storage } = await makeSqliteStorage(commerceStorageLayout()));
 	vi.spyOn(console, "log").mockImplementation(() => undefined);
 	vi.spyOn(console, "warn").mockImplementation(() => undefined);
-	await seedEveryLeg();
+	await seedAt(SETUP_NOW);
 }, 300_000);
 
 /** Work in every leg, each through the adapters production uses. */
 async function seedEveryLeg(): Promise<void> {
-	const base = adapters(storage);
+	const base = adapters(storage, SETUP_NOW);
 
 	// expire-orders: 50 lapsed orders; cancel-intents: ten of them carry a recorded
 	// payment intent the buyer could still pay.
@@ -232,15 +267,27 @@ async function seedEveryLeg(): Promise<void> {
 		if (!claimed.ok) throw new Error("seed redemption failed");
 	}
 
+	// product-orphans: three products deleted in the CMS whose afterDelete was lost.
+	for (const id of ORPHANED_PRODUCTS) {
+		await products.upsert(
+			{
+				productId: toProductId(id),
+				sku: toSku(`SKU-${id}`),
+				price: money(cents(1000), currency("USD")),
+			},
+			idempotencyKey(`upsert-${id}`),
+		);
+	}
+
 	// late-refunds: an expired order paid late, whose refund hit a retryable failure.
 	const late = await placeOrder(
 		storage,
 		"late-paid",
-		new Date(Date.now() - 30 * MINUTE_MS),
-		new Date(Date.now() - HOUR_MS),
+		new Date(SETUP_NOW.getTime() - 30 * MINUTE_MS),
+		new Date(SETUP_NOW.getTime() - HOUR_MS),
 	);
-	const now = adapters(storage);
-	expect(await now.orderStore.expire(toOrderId(late.id), new Date().toISOString())).toBe(true);
+	const now = adapters(storage, SETUP_NOW);
+	expect(await now.orderStore.expire(toOrderId(late.id), SETUP_NOW.toISOString())).toBe(true);
 	stripe.setRefundResult({ ok: false, reason: "RETRYABLE" });
 	const settled = await settleOrder(
 		{
@@ -318,92 +365,125 @@ async function allWorkDone(sent: readonly SendEmailInput[]): Promise<Record<stri
 		"order-sku-index": unindexed.every((pointer) => pointer !== null),
 		"reporting-heal": claims.items.every((claim) => claim.data.absorbedAt !== null),
 		"coupon-orphans": (await coupons.findById("coupon-orphan"))?.usesCount === 0,
+		"product-orphans": (
+			await Promise.all(
+				ORPHANED_PRODUCTS.map((id) =>
+					collectionOf<ProductCommerceDoc>(storage, PRODUCT_COMMERCE_COLLECTION).get(id),
+				),
+			)
+		).every((doc) => doc?.lifecycle === "deleted"),
 		"late-refunds": stripe.refundCalls.length >= 1,
 	};
 }
 
+/**
+ * Sweep the seeded backlog minute by minute, the wall clock following the ticks,
+ * and pin the ceiling, the ordering, every leg's progress, the expiry's pace
+ * (`expiryWithin` ticks for all 50) and that ALL the work — every expiry email
+ * included — is done inside four hours of ticks.
+ */
+async function sweepTheBacklog(expiryWithin: number): Promise<void> {
+	vi.useFakeTimers({ toFake: ["Date"], now: START });
+	try {
+		await sweepTheBacklogOnFakedClock(expiryWithin);
+	} finally {
+		vi.useRealTimers();
+	}
+}
+
+async function sweepTheBacklogOnFakedClock(expiryWithin: number): Promise<void> {
+	const counter: CallCounter = { calls: 0 };
+	const ctx = sweepContext(storage, counter, { [BACKGROUND_WORK_KEY]: FREE }, cms);
+	const cursors = memoryCursors();
+	const sent: SendEmailInput[] = [];
+	const traces = new Map<SweepLeg, LegTrace>(
+		SWEEP_LEGS.map((leg) => [leg, { firstProgress: null, longestWait: 0, wait: 0 }]),
+	);
+	let expired = 0;
+	let expiredBy: number | null = null;
+	let done: Record<string, boolean> = {};
+	let tick = 0;
+
+	for (; tick < 240; tick++) {
+		counter.calls = 0;
+		const tickNow = new Date(START.getTime() + tick * MINUTE_MS);
+		vi.setSystemTime(tickNow);
+		const summary: CommerceSweepSummary = await runCommerceSweeps(ctx, SWEEP_TASK_NAME, {
+			cursors,
+			emailSender: recordingSender(sent),
+			gateways: { stripe },
+			now: tickNow,
+			tickClock: () => performance.now(),
+		});
+		expect(counter.calls, `tick ${String(tick)} (outside count)`).toBeLessThanOrEqual(FREE);
+		expect(summary.budget.queriesUsed, `tick ${String(tick)}`).toBe(counter.calls);
+
+		for (const entry of summary.legs) {
+			expect(entry.ok, `${entry.leg} at tick ${String(tick)}: ${entry.error ?? ""}`).toBe(true);
+			const trace = traces.get(entry.leg)!;
+			const ran = entry.deferred !== true && entry.notDue !== true && entry.queries > 0;
+			const progressed = MAINTENANCE_LEGS.includes(entry.leg) ? ran : entry.count > 0;
+			if (progressed && trace.firstProgress === null) trace.firstProgress = tick;
+			if (entry.deferred === true) {
+				trace.wait++;
+				trace.longestWait = Math.max(trace.longestWait, trace.wait);
+			} else {
+				trace.wait = 0;
+			}
+		}
+		// cancel-intents runs first — except in the one tick per interval a Free
+		// late-refund resume leads; the expiry waits with it (N1 below).
+		const cancel = summary.legs.find((entry) => entry.leg === "cancel-intents");
+		const lead = summary.legs.find((entry) => entry.leg === "late-refunds");
+		if (cancel?.deferred === true) {
+			expect(
+				lead?.queries ?? 0,
+				`cancel-intents deferred at tick ${String(tick)}`,
+			).toBeGreaterThanOrEqual(15);
+		}
+		// QA3 N1: at no tick boundary is an expired order still payable.
+		expect(await expiredWithPayableIntent(), `after tick ${String(tick)}`).toEqual([]);
+
+		expired += summary.legs.find((entry) => entry.leg === "expire-orders")?.count ?? 0;
+		if (expired >= LAPSED_ORDERS && expiredBy === null) expiredBy = tick + 1;
+		if (expiredBy !== null && tick % 10 === 9) {
+			done = await allWorkDone(sent);
+			if (Object.values(done).every(Boolean)) break;
+		}
+	}
+
+	const report = [...traces]
+		.map(
+			([leg, trace]) =>
+				`${leg}: first progress at tick ${String(trace.firstProgress)}, longest wait ${String(trace.longestWait)}`,
+		)
+		.join("\n");
+	// The pace: 50 lapsed orders, every other leg busy too.
+	expect(expiredBy, report).not.toBeNull();
+	expect(
+		expiredBy!,
+		`all ${String(LAPSED_ORDERS)} expired by tick ${String(expiredBy)}`,
+	).toBeLessThanOrEqual(expiryWithin);
+	// Every leg had work, and every leg got to it — soon, and never passed over long.
+	// Except the legs that are deliberately never promoted (`UNPROMOTED_LEGS`): with
+	// no deadline, they wait for the backlog to clear rather than jump it — and are
+	// still required to finish below.
+	for (const leg of SWEEP_LEGS) {
+		const trace = traces.get(leg)!;
+		expect(trace.firstProgress, `${leg} never progressed\n${report}`).not.toBeNull();
+		if (UNPROMOTED_LEGS.includes(leg)) continue;
+		expect(trace.firstProgress!, `${leg}\n${report}`).toBeLessThan(PROGRESS_WITHIN);
+		expect(trace.longestWait, `${leg}\n${report}`).toBeLessThanOrEqual(MAX_WAIT);
+	}
+	// And all of it was done, on the Free preset, within four hours of ticks.
+	expect(done, `after ${String(tick + 1)} ticks`).toEqual(
+		Object.fromEntries(SWEEP_LEGS.map((leg) => [leg, true])),
+	);
+}
+
 describe("a backlog in every leg, on the Workers Free preset", () => {
 	test("no tick passes 30 calls, cancel-intents always runs, every leg progresses, and the expiry keeps its pace", async () => {
-		const counter: CallCounter = { calls: 0 };
-		const ctx = sweepContext(storage, counter, { [BACKGROUND_WORK_KEY]: FREE });
-		const cursors = memoryCursors();
-		const sent: SendEmailInput[] = [];
-		const traces = new Map<SweepLeg, LegTrace>(
-			SWEEP_LEGS.map((leg) => [leg, { firstProgress: null, longestWait: 0, wait: 0 }]),
-		);
-		let expired = 0;
-		let expiredBy: number | null = null;
-		let done: Record<string, boolean> = {};
-		let tick = 0;
-
-		for (; tick < 240; tick++) {
-			counter.calls = 0;
-			const summary: CommerceSweepSummary = await runCommerceSweeps(ctx, SWEEP_TASK_NAME, {
-				cursors,
-				emailSender: recordingSender(sent),
-				gateways: { stripe },
-				now: new Date(START.getTime() + tick * MINUTE_MS),
-			});
-			expect(counter.calls, `tick ${String(tick)} (outside count)`).toBeLessThanOrEqual(FREE);
-			expect(summary.budget.queriesUsed, `tick ${String(tick)}`).toBe(counter.calls);
-
-			for (const entry of summary.legs) {
-				expect(entry.ok, `${entry.leg} at tick ${String(tick)}: ${entry.error ?? ""}`).toBe(true);
-				const trace = traces.get(entry.leg)!;
-				const ran = entry.deferred !== true && entry.notDue !== true && entry.queries > 0;
-				const progressed = MAINTENANCE_LEGS.includes(entry.leg) ? ran : entry.count > 0;
-				if (progressed && trace.firstProgress === null) trace.firstProgress = tick;
-				if (entry.deferred === true) {
-					trace.wait++;
-					trace.longestWait = Math.max(trace.longestWait, trace.wait);
-				} else {
-					trace.wait = 0;
-				}
-			}
-			// cancel-intents runs first — except in the one tick per interval a Free
-			// late-refund resume leads; the expiry waits with it (N1 below).
-			const cancel = summary.legs.find((entry) => entry.leg === "cancel-intents");
-			const lead = summary.legs.find((entry) => entry.leg === "late-refunds");
-			if (cancel?.deferred === true) {
-				expect(
-					lead?.queries ?? 0,
-					`cancel-intents deferred at tick ${String(tick)}`,
-				).toBeGreaterThanOrEqual(15);
-			}
-			// QA3 N1: at no tick boundary is an expired order still payable.
-			expect(await expiredWithPayableIntent(), `after tick ${String(tick)}`).toEqual([]);
-
-			expired += summary.legs.find((entry) => entry.leg === "expire-orders")?.count ?? 0;
-			if (expired >= LAPSED_ORDERS && expiredBy === null) expiredBy = tick + 1;
-			if (expiredBy !== null && tick % 10 === 9) {
-				done = await allWorkDone(sent);
-				if (Object.values(done).every(Boolean)) break;
-			}
-		}
-
-		const report = [...traces]
-			.map(
-				([leg, trace]) =>
-					`${leg}: first progress at tick ${String(trace.firstProgress)}, longest wait ${String(trace.longestWait)}`,
-			)
-			.join("\n");
-		// The pace: 50 lapsed orders, every other leg busy too.
-		expect(expiredBy, report).not.toBeNull();
-		expect(
-			expiredBy!,
-			`all ${String(LAPSED_ORDERS)} expired by tick ${String(expiredBy)}`,
-		).toBeLessThanOrEqual(EXPIRY_WITHIN);
-		// Every leg had work, and every leg got to it — soon, and never passed over long.
-		for (const leg of SWEEP_LEGS) {
-			const trace = traces.get(leg)!;
-			expect(trace.firstProgress, `${leg} never progressed\n${report}`).not.toBeNull();
-			expect(trace.firstProgress!, `${leg}\n${report}`).toBeLessThan(PROGRESS_WITHIN);
-			expect(trace.longestWait, `${leg}\n${report}`).toBeLessThanOrEqual(MAX_WAIT);
-		}
-		// And all of it was done, on the Free preset, within four hours of ticks.
-		expect(done, `after ${String(tick + 1)} ticks`).toEqual(
-			Object.fromEntries(SWEEP_LEGS.map((leg) => [leg, true])),
-		);
+		await sweepTheBacklog(EXPIRY_WITHIN);
 	}, 300_000);
 
 	test("an expiry-only backlog clears at about one order a minute (QA: one every three)", async () => {
@@ -439,6 +519,7 @@ describe("a backlog in every leg, on the Workers Free preset", () => {
 			"order-sku-index",
 			"reporting-heal",
 			"coupon-orphans",
+			"product-orphans",
 		];
 		for (const moneyLeg of ["expire-orders", "hold-intents", "late-refunds"] as const) {
 			for (const chore of housekeeping) {
@@ -448,4 +529,40 @@ describe("a backlog in every leg, on the Workers Free preset", () => {
 			}
 		}
 	});
+});
+
+/**
+ * THE TIME OF DAY. The sweep's only UTC-day key is `reporting-heal`'s closed day,
+ * and that is a legitimate daily schedule: a backlog whose orders were created
+ * before 00:00 UTC and are worked after it lands in the CLOSED day, whose first
+ * heal must absorb every rollup claim those orders make — the expiry's included —
+ * and is aged ahead of the expiry every few ticks. Measured: all 50 expired by
+ * tick 91–94 when START is near 00:00 (73–76 at every other hour), every email
+ * still sent. So the run is scanned across the day: the work is ALL done at every
+ * hour, and the pace holds everywhere, with the midnight straddle given its
+ * measured floor (0.5 a minute) rather than hidden by the fixed instant above.
+ */
+const MIDNIGHT_EXPIRY_WITHIN = Math.ceil(LAPSED_ORDERS / 0.5);
+
+describe("the same backlog at any time of day", () => {
+	test.each([
+		"2026-10-06T22:00:00.000Z",
+		"2026-10-06T22:30:00.000Z",
+		"2026-10-07T02:00:00.000Z",
+		"2026-10-07T06:00:00.000Z",
+		"2026-10-07T10:00:00.000Z",
+		"2026-10-07T14:00:00.000Z",
+		"2026-10-07T21:00:00.000Z",
+	])(
+		"seeded at %s, swept from two hours on",
+		async (setup) => {
+			await seedAt(new Date(setup));
+			const start = START.getTime();
+			// The backlog's orders were made the hour before START: straddling 00:00 UTC.
+			const straddles =
+				new Date(start - HOUR_MS).getUTCDate() !== new Date(start + 2 * HOUR_MS).getUTCDate();
+			await sweepTheBacklog(straddles ? MIDNIGHT_EXPIRY_WITHIN : EXPIRY_WITHIN);
+		},
+		300_000,
+	);
 });

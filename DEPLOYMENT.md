@@ -121,7 +121,24 @@ expired holds and queued emails drain at the Free pace (§5).
    > product ([ADR-0029](./adr/0029-console-uploads-download-files-to-a-site-endpoint.md)).
    > Files can be at most **100 MB** (Cloudflare's request limit on the Free and Pro plans).
    > Without the binding, an upload is refused with a sentence saying downloads are not set
-   > up on this store (the card shows it once the merchant tries).
+   > up on this store (the card shows it once the merchant tries). Saving the file checks that
+   > its object is in this bucket at the uploaded size, and refuses it otherwise. The reference
+   > site's middleware makes this check, on whatever HTTP method the save arrives with, so on this
+   > site a save cannot point buyers at a missing file. A different site hosting the plugin needs
+   > the same check: the plugin cannot see the bucket.
+   >
+   > **Refunds the order's state doesn't show yet keep the download open.** A buyer loses access
+   > when the order is refunded or cancelled in Otta. Money returned in a way the order does not
+   > show yet does not close access by itself:
+   > - **A refund made in the Stripe dashboard:** start the same refund in Money → Refunds
+   >   (Otta checks with Stripe, issues nothing and flags the order), then use **Mark refunded**.
+   > - **A chargeback:** Otta does not act on disputes, and Mark refunded is refused while the
+   >   payment shows as captured, so the console cannot close access for it today.
+   > - **A cancellation whose refund timed out** ("refund status unknown"): the order stays
+   >   uncancelled until you confirm that refund in Money → Refunds, which finishes the
+   >   cancellation and closes access.
+   >
+   > A partial refund keeps access by design.
    >
    > **A file is replaced, never removed.** Past buyers keep access, so a product with a
    > download file stays Digital: the editor disables the Physical choice and says why.
@@ -140,8 +157,9 @@ expired holds and queued emails drain at the Free pace (§5).
 2. **Fill in the local config.** Copy `sites/staging/wrangler.jsonc` (also a template) to
    `wrangler.local.jsonc` (gitignored) and set your Worker `name` (over `my-otta-store`),
    D1 `database_name`/`database_id`, and the two R2 `bucket_name`s (`MEDIA` and
-   `DOWNLOADS`, which must differ). Leave the
-   `global_fetch_strictly_public` compatibility flag alone — §2.4 explains it.
+   `DOWNLOADS`, which must differ). Do not add the
+   `global_fetch_strictly_public` compatibility flag: D1 sessions are on, and the flag
+   hangs them — §2.4 explains both.
 
 3. **Set the site's one secret** (the only secret first boot needs):
 
@@ -208,7 +226,7 @@ expired holds and queued emails drain at the Free pace (§5).
 
    **A store created before 2026-10-01** has no `pricing` field on its products collection, and
    the Pricing & stock cards draw on that field. Add it once with the script below — **not** in
-   Admin › Content Types, which in EmDash 0.38 cannot attach the cards to a field: a JSON field
+   Admin › Content Types, which in EmDash 1.0.1 cannot attach the cards to a field: a JSON field
    added there shows EmDash's raw JSON box instead, where commerce data must never be typed.
    The script places the field after Images, re-binds a hand-made one, and is safe to re-run:
 
@@ -236,15 +254,52 @@ cannot be retried in place:
 3. **Rebuild** (the wrangler config is read at build time — §2.1 step 4), redeploy, then
    claim the admin again (§2.1 step 5 → §2.2).
 
-### 2.4 The `global_fetch_strictly_public` pairing invariant
+### 2.4 D1 sessions (`"primary-first"`) and `global_fetch_strictly_public`
 
-> The site's `wrangler.jsonc` carries the `global_fetch_strictly_public` compatibility flag.
-> That flag silently breaks the D1 Sessions API — its internal routing request is blocked and
-> **every SSR request hangs with nothing in the logs** — so `d1()` in the site config must
-> keep `session` **off** while the flag is present. Both halves are pinned by tests:
-> `sites/staging/test/site-config.test.ts` (session stays off, placeholder equality) and
-> `sites/staging/test/wrangler-config.test.ts` (flag presence, template hygiene). Do not
-> "fix" one side without the other.
+> The site's `wrangler.jsonc` does **not** carry the `global_fetch_strictly_public`
+> compatibility flag (issue #375). It was there so the site's calls to a commerce-service
+> Worker on `*.workers.dev` were not blocked and stubbed 404; that service is gone
+> ([ADR-0020](./adr/0020-one-deployable-plugin-owns-commerce-truth.md)), and nothing the
+> Worker fetches today (§4) is on `workers.dev`. One consequence of running without it: a
+> fetch to a hostname on the site's **own zone** is routed to that zone's origin, not back
+> through Cloudflare, so never point `EMAIL_API_URL` or `X402_FACILITATOR_URL` at the site's
+> own zone.
+>
+> D1 `session` in `sites/staging/src/emdash-options.ts` is **`"primary-first"`**: every
+> request EmDash has not authenticated — every shopper — and every write and cron run starts
+> on the primary, so a shopper's redirect after a write (placing an order, signing in,
+> resuming a payment) always reads what it just wrote, even with read replicas on. It is
+> **not** `"auto"`: that mode gives read-your-writes (a bookmark cookie) only to requests
+> EmDash authenticates and starts every other request on any replica, so a lagging replica
+> would show a just-placed order as not found or bounce a just-signed-in buyer to the login
+> page. `"auto"` needs a shopper-side bookmark first. EmDash-authenticated requests resume
+> from their `__em_d1_bookmark` cookie. That cookie is never set on an **anonymous**
+> storefront response, so shopper pages stay cacheable as before; an admin browsing the
+> storefront while signed in does get one, which is harmless. Read replication itself is switched on separately, on the D1 database
+> (dashboard or REST API); until it is, every query goes to the primary anyway.
+>
+> **The old pairing invariant is moot, but its rule stands:** the flag blocks the request the
+> D1 Sessions API makes to route queries (emdash issue #1273). With EmDash 1.0.1 the symptom
+> is a **~5 s stall on the first session query of every new isolate**; EmDash's hang guard
+> then turns sessions off for that isolate, silently, and a **write caught in flight**
+> (placing an order, a cart change, the Stripe webhook settle) **may be rejected** with a
+> 500 rather than re-run. Nothing fails at deploy time. So the flag must never come back
+> while a session mode is set. Pinned by `sites/staging/test/wrangler-config.test.ts` (flag
+> absent, template hygiene) and `sites/staging/test/site-config.test.ts` (`"primary-first"`;
+> never flag + session together), and enforced at **build** time on the config the build
+> actually uses (`sites/staging/src/lib/wrangler-pairing.ts`, called from `astro.config.ts`).
+>
+> **Upgrading an existing deployment.** If you made `wrangler.local.jsonc` by copying the
+> template before this change (§2.1 step 2), it still lists the flag. Before building this
+> version, delete `"global_fetch_strictly_public"` from its `compatibility_flags`, leaving
+> `["nodejs_compat"]`. If you don't, the build stops with:
+>
+> ```text
+> Error: wrangler.local.jsonc sets the "global_fetch_strictly_public" compatibility flag, but
+> D1 sessions are on (session: "primary-first", sites/staging/src/emdash-options.ts). …
+> Delete "global_fetch_strictly_public" from compatibility_flags in wrangler.local.jsonc,
+> then build again (DEPLOYMENT.md §2.4, "Upgrading an existing deployment").
+> ```
 >
 > A **custom domain** on the site (issue #32) is what unlocks zone-level WAF rules.
 
@@ -518,6 +573,11 @@ so the allowlist is the perimeter for `api.stripe.com` too. This
 closes the caveat recorded in
 [ADR-0020](./adr/0020-one-deployable-plugin-owns-commerce-truth.md) §2.
 
+All of these are third-party hosts on the public internet. The Worker runs without
+`global_fetch_strictly_public` (§2.4), so a URL on the site's **own** Cloudflare zone would
+reach that zone's origin directly, skipping its Workers routes and security settings — keep
+both URLs off the site's zone.
+
 Because it is build-time, adding a provider means a rebuild and redeploy — a Settings edit
 alone cannot widen it. That is deliberate: the allowlist is the perimeter, and an operator
 editing a text field should not be able to move it.
@@ -527,11 +587,69 @@ editing a text field should not be able to move it.
 **Cron.** The **site's** Cron Trigger is `* * * * *` — that drives the host's cron
 *executor*, which claims due rows from its own task table. The **plugin** registers one task,
 `commerce-sweeps`, also due every minute (`* * * * *`); the executor fires the plugin's `cron`
-hook when it comes due. One task drives all eleven sweep legs: they share a store composition
-and a clock, and splitting them would only put eleven rows in contention on the same documents. The
-four scan legs (`sku-transfers`, `order-sku-index`, `reporting-heal`, `coupon-orphans`) and the
-sign-in challenge prune run at most every fifteen minutes inside that task (housekeeping: the
-scans read a page budget of a collection per run); the outbox, the two expiry legs, the
+hook when it comes due. One task drives all twelve sweep legs: they share a store composition
+and a clock, and splitting them would only put twelve rows in contention on the same documents. The
+five scan legs (`sku-transfers`, `order-sku-index`, `reporting-heal`, `coupon-orphans`,
+`product-orphans`) and the sign-in challenge prune run at most every fifteen minutes inside that
+task (housekeeping: the scans read a page budget of a collection per run); a scan cut short by
+the budget carries on next tick until its pass is done. `product-orphans` soft-deletes a
+commerce row whose CMS product is gone (deleted or in the trash) when the delete hook's own
+soft delete was lost. It reads each live row's document through `ctx.content` (the
+`content:read` capability already declared) and is built for a CMS read that LIES: on the
+sandboxed path EmDash's bridge answers `null` for any D1 error. The gates, in order:
+
+- **The CMS must list at least one product** in each run, or the run judges nothing.
+- **A missing document is re-read twice on the spot.** A row that misses and is then FOUND by
+  a re-read proves the host is answering "missing" for documents that exist. One such
+  contradiction makes the whole run FLAKY: it records no strike, wipes the strikes of every row
+  it read, and moves the walk past them. A real deletion misses on every look of every pass, so
+  it never looks flaky.
+- **A miss counts as a strike only in a run that read some other document successfully.** If
+  nothing on the page was found, the run reads the product the list returned, and a `null` there
+  is treated as an outage.
+- **The row is tombstoned on the third strike,** each strike from a run at least fifteen minutes
+  after the last. Any read that finds the document wipes its strikes. A list or canary trip
+  wipes all strikes.
+- **Strikes expire** after seven days, or four full passes when a pass takes longer, so a
+  catalog whose pass outlasts a week (roughly 30,000 products on Free) still reaches the third
+  strike.
+- **Limits:** at most five tombstones a minute, a failed read never counts, and rows younger than
+  fifteen minutes are not read.
+
+Each of those stops logs a `cron sweep product-orphans` error line. Measured on an otherwise
+idle store, a pass over a 1000-product catalog takes about 350 ticks (about six hours) on the
+Workers Free preset, and about 7 on Paid. An orphan is tombstoned on the third pass that finds
+it: on Free, a 1000-product catalog's orphan went after about 900 ticks, and worst case it is up
+to about eighteen hours. The leg has no deadline, so it is never promoted ahead of other legs
+by aging.
+
+**A dense block of real orphans is struck out like any rows,** five a minute at most. An example
+is a bulk delete of an import whose hooks were all lost. Measured with every read truthful:
+- 60 products, with 20 adjacent orphans plus one more, were all tombstoned by tick 123 on Free
+  and tick 34 on Paid.
+- 250 products, with a 40-orphan block and two lone orphans, by tick 379 on Free and tick 41 on
+  Paid.
+
+**The residual risk on a sandboxed host:** a CMS database failing reads at random is
+indistinguishable from deletions, until a re-read contradicts it. The simulations tombstoned no
+live product across 128 seeded cases:
+- 40 live products, 360 one-minute ticks, `get` failing to `null` with probability 0.15–0.9,
+  alone or with the list failing too, four seeds, both presets;
+- 250 live products with p straddling 0.2–0.35, at 0.5 and 0.9, and in twenty-minute bursts
+  (0.6/0.25, 0.9/0.3), three seeds, both presets.
+
+That is seeded PRNGs and one independent-failure model, not a proof. A host that returned `null`
+for one specific live document on every read, while other reads succeeded, would be
+indistinguishable from a deletion; nothing in EmDash 1.0.1 is known to do this. The tombstone is final, so
+a live product ever struck out that way sells again only once it is duplicated in the CMS (a new
+id, and its pricing re-entered).
+
+**While CMS reads are failing, real orphans WAIT.** A flaky run strikes nothing, and every list
+or canary trip wipes the strikes gathered so far. So under sustained failures (on Paid, under
+any; on Workers Free, even under a list that fails one time in twenty) an orphan may not be
+tombstoned for hours, or at all while the failures last. That is the safe direction.
+
+The outbox, the two expiry legs, the
 intent-cancel drain and the hold-intent completer run every tick, so on an idle store a
 fifteen-minute hold expires within about a minute of its deadline and a queued email goes out
 within about a minute.
@@ -738,11 +856,22 @@ the scheduled reconcile reaches a day only once it has closed. So after a rollba
 release, or a rollout that overlapped versions, treat today's report figures as provisional
 until then. Orders, stock and payments are unaffected — only the reporting rollup is.
 
+**Upgrading the EmDash host (0.38 → 1.0.1).** The host runs its own schema migrations on the
+**first request** after the deploy, with no separate step: EmDash 1.0.1 adds
+`078_menu_item_translation_groups` through `089_auto_seed_completion` on top of 0.38's
+`077_plugin_storage_revisions`. Most of them are **not reversible**, so rolling the Worker back
+to 0.38 afterwards does not roll the database back. **Before deploying, take a D1 backup** —
+note a Time Travel bookmark (`wrangler d1 time-travel info <database>`) or export the database
+(`wrangler d1 export <database> --remote --output=<file>.sql`) — so a failed upgrade can be
+restored with `wrangler d1 time-travel restore <database> --bookmark=<bookmark>`. The same holds
+for any later host release that adds migrations (`sites/staging/test/host-pin.test.ts` pins the
+reviewed tip, so a new one fails CI first).
+
 ## 6. Troubleshooting
 
 | Symptom | Cause → fix |
 |---|---|
-| Every SSR request hangs, nothing in logs | `global_fetch_strictly_public` + D1 `session` both on — pairing invariant violated (§2.4); turn `session` off |
+| A ~5 s stall on a new isolate's first request, an occasional 500 on a write, and `[emdash] A D1 session query hung …` in the logs | `global_fetch_strictly_public` + D1 `session` both on (emdash #1273). The build refuses this pair, so check what was deployed: remove the flag (§2.4, "Upgrading an existing deployment"), rebuild, redeploy |
 | `/products` empty right after deploy | Healthy (§1) — sample content lands via the wizard checkbox, not first boot |
 | `POST /webhooks/stripe` reports `NOT_CONFIGURED` | The Stripe webhook signing secret is unset — provision it in admin Settings (§3) |
 | Every Stripe delivery 401s | `OTTA_WH_TOKEN` set on the plugin side but not on the site (or the values differ) — §3 |

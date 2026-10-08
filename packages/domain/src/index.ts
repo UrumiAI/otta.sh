@@ -430,6 +430,12 @@ export type {
 	ReconciliationResolution,
 } from "./orders/model.js";
 export {
+	findIllFormedText,
+	isWellFormedText,
+	repairIllFormedText,
+	toWellFormedText,
+} from "./text/well-formed.js";
+export {
 	normalizeOrderAddress,
 	ORDER_ADDRESS_MAX_LENGTHS,
 	type NormalizeOrderAddressResult,
@@ -524,6 +530,7 @@ export {
 	type ExpireOrdersDeps,
 } from "./orders/expire-orders.js";
 export { assertSweepLimit, type SweepBatchOptions, type SweepBatchResult } from "./sweep/batch.js";
+export { UnitBackoff, type UnitBackoffOptions } from "./sweep/backoff.js";
 export {
 	cancelDueIntents,
 	DEFAULT_INTENT_CANCEL_BATCH,

@@ -4,11 +4,12 @@
  * mock-dispatcher pattern.
  *
  * What each group is really protecting:
- *  - **6a** `rejectCrossOrigin()` is the FIRST statement, so a forged
- *    cross-site POST cannot create an order (emdash force-disables Astro's
- *    `security.checkOrigin` and its replacement layer covers only
- *    `/_emdash/api/*` — ADR-0006). Asserted as "the dispatcher was never
- *    called", not merely "the status was 403".
+ *  - **6a** the site middleware's origin check refuses a forged cross-site
+ *    POST before the endpoint runs, so it cannot create an order (emdash
+ *    force-disables Astro's `security.checkOrigin` and its replacement layer
+ *    covers only `/_emdash/api/*` — ADR-0006). Served here through the
+ *    middleware, and asserted as "the dispatcher was never called", not
+ *    merely "the status was 403".
  *  - **6b** the `buyerRef` guard nothing upstream provides: the service accepts
  *    `"asdf"` happily, and the resulting order can never be claimed (ADR-0004)
  *    nor emailed (ADR-0005), and is immutable.
@@ -45,6 +46,12 @@ import {
 import { PAY_FALLBACK_LABEL, payButtonLabel } from "../src/lib/totals.js";
 import { POST as NEW_CART_POST } from "../src/pages/checkout/new-cart.js";
 import { POST as PLACE_POST } from "../src/pages/checkout/place.js";
+import { onRequest } from "../src/middleware.js";
+import { serve } from "./helpers/serve.js";
+
+vi.mock("astro:middleware", () => ({
+	defineMiddleware: <T>(handler: T): T => handler,
+}));
 
 /**
  * The publishable key is a BUILD-TIME constant (a Vite define), so under vitest
@@ -187,12 +194,12 @@ const VALID_FORM = {
 	idempotencyKey: "checkout:cart-existing",
 };
 
-describe("6a — CSRF: rejectCrossOrigin is the FIRST statement", () => {
+describe("6a — CSRF: the middleware refuses a cross-site POST before the endpoint runs", () => {
 	test("a cross-origin POST /checkout/place is 403 and the plugin dispatcher is NEVER called", async () => {
 		const { handler, calls } = makeHandler();
 		const { context } = makeContext(VALID_FORM, handler, { origin: "https://evil.example" });
 
-		const response = await PLACE_POST(context);
+		const response = await serve(onRequest, context, PLACE_POST);
 
 		expect(response.status).toBe(403);
 		expect(calls).toHaveLength(0);
@@ -205,7 +212,7 @@ describe("6a — CSRF: rejectCrossOrigin is the FIRST statement", () => {
 			url: "/checkout/new-cart",
 		});
 
-		const response = await NEW_CART_POST(context);
+		const response = await serve(onRequest, context, NEW_CART_POST);
 
 		expect(response.status).toBe(403);
 		expect(calls).toHaveLength(0);
@@ -216,7 +223,7 @@ describe("6a — CSRF: rejectCrossOrigin is the FIRST statement", () => {
 		const { handler, calls } = makeHandler();
 		const { context } = makeContext(VALID_FORM, handler, { origin: null });
 
-		const response = await PLACE_POST(context);
+		const response = await serve(onRequest, context, PLACE_POST);
 
 		expect(response.status).toBe(303);
 		expect(calls).toHaveLength(1);

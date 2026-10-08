@@ -8,6 +8,9 @@
 - Amended: 2026-09-13 — **Decision 2 only**, and within it only the **"no direct DB/storage
   access"** clause, by [ADR-0018](./0018-plugin-owns-commerce-truth-in-process.md); Decision 1 is
   reaffirmed again. See "Amended 2026-09-13" at the end of this record.
+- Amended: 2026-10-05 — **the "CSRF story" section only**: the origin check moved from each
+  endpoint into the site middleware and became default-deny (issue #376). See "Amended
+  2026-10-05" at the end of this record.
 - Refines: ADR-0001 (the plugin's runtime placement), ADR-0003 (the storefront/cart shim contract)
 
 ## Context
@@ -151,3 +154,38 @@ storage bridge, and the D1 tier observes the host's real repository, migrations 
 rather than the bridge. Decision 2's other prohibitions — no React admin components in this
 package, no `page:fragments`, no `options`-configured native format, ADR-0003's route-based
 storefront — stand unamended.
+
+## Amended 2026-10-05 — the origin check runs once, in the site middleware, default-deny
+
+Everything above is left as written. In this record, this block amends only the first
+bullet of "CSRF story for the cart endpoints"; its last paragraph notes the matching change
+to ADR-0024 Decision 6, recorded there as its own amendment.
+
+The rule is unchanged — a present-but-mismatched `Origin` (including the opaque `"null"`) is
+a 403, an absent `Origin` passes, and "same origin" is the request's own `url.origin`. What
+changed is **where** it runs and **what** it covers (issue #376):
+
+- It runs once, in `sites/staging/src/middleware.ts`, before any endpoint reads a body or a
+  cookie — no longer as a `rejectCrossOrigin(context)` call each endpoint had to remember to
+  make first. `src/lib/origin-guard.ts` keeps the rule as pure, unit-tested functions.
+- It is **default-deny**: every method other than GET, HEAD and OPTIONS, on every path not
+  under `/_`, is checked unless its route is on an explicit exemption list. Forgetting the
+  check now fails closed. The list has one entry, `POST /webhooks/stripe`, whose authority
+  is Stripe's signature (Stripe sends no `Origin`, so the check was a no-op there anyway).
+- Paths under `/_` stay EmDash's and Astro's: `/_emdash/*` is guarded by EmDash's own layer
+  (`X-EmDash-Request` / `checkPublicCsrf`, which run first), and double-guarding it here
+  would refuse the cross-origin OAuth routes EmDash leaves open on purpose.
+- Every refusal is the same answer: the 403 and body the endpoints sent, always with
+  `Referrer-Policy: no-referrer` and `Cache-Control: private, no-store`, the strictest headers
+  any endpoint wrapped its own refusal in. Byte-identity is deliberately given up where a
+  refusal used to carry fewer headers, and those refusals only GAIN headers: the six routes that
+  sent a bare 403 (`/cart/add|remove|update`, `/account/login/request`, `/account/logout`,
+  `/account/verify/confirm`) gain both, `/checkout/place` and `/checkout/new-cart` gain
+  `Cache-Control`, and `/checkout/resume`'s refusal is unchanged. One answer means no
+  per-route table that copies the endpoints' wrappers from a distance and can drift from them.
+
+The route table — every write route the site serves, guarded or exempt — is pinned by
+`sites/staging/test/origin-middleware.test.ts`, which fails when a new write route appears
+in neither column. ADR-0024 Decision 6's "the origin guard … stay in the page files" now reads
+"in the site middleware" — still single-sourced, still never in a theme; see ADR-0024's
+"Amended 2026-10-05".

@@ -22,7 +22,12 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { APIContext } from "astro";
 import { STOREFRONT_ORDER_RESUME_ROUTE } from "@otta-sh/plugin";
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
+
+vi.mock("astro:middleware", () => ({
+	defineMiddleware: <T>(handler: T): T => handler,
+}));
+
 import { splitAstro, templateOf } from "./astro-source.js";
 import { CHECKOUT_COOKIE_NAME, readCheckoutStash } from "../src/lib/checkout-cookie.js";
 import {
@@ -37,6 +42,8 @@ import {
 import { cartErrorMessage } from "../src/lib/error-messages.js";
 import { reviewErrorToken } from "../src/lib/checkout-review.js";
 import { GET as RESUME_GET, POST as RESUME_POST } from "../src/pages/checkout/resume.js";
+import { onRequest } from "../src/middleware.js";
+import { serve } from "./helpers/serve.js";
 import { viewSources } from "./theme-views.js";
 
 const SITE = "http://localhost:4321";
@@ -377,7 +384,7 @@ describe("POST /checkout/resume — the order's email as the proof", () => {
 			form: { order: ORDER_ID, email: "buyer@example.com" },
 			headers: { origin: "https://evil.example" },
 		});
-		const response = await RESUME_POST(context);
+		const response = await serve(onRequest, context, RESUME_POST);
 		expect(response.status).toBe(403);
 		expect(calls).toHaveLength(0);
 	});

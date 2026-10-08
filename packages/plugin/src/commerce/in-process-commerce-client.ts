@@ -167,6 +167,7 @@ import {
 	LOGIN_TOKEN_MAX,
 	BUYER_REF_MAX,
 	requireIdToken,
+	requireDocumentIdempotencyKey,
 	requireIdempotencyKey,
 	requireMoney,
 	requireNonNegativeInteger,
@@ -658,7 +659,7 @@ export class InProcessCommerceClient implements CommerceClient {
 		// a divergence that refuses MORE is still a divergence.
 		if (productId !== null) requireBoundedProductId(productId);
 		requireQty(qty);
-		requireIdempotencyKey(idempotencyKey);
+		requireDocumentIdempotencyKey(idempotencyKey);
 		let kind: FulfillmentKind = "physical";
 		if (productId !== null) {
 			const resolved = await this.#resolveSellableUnit(toProductId(productId), sku);
@@ -695,7 +696,7 @@ export class InProcessCommerceClient implements CommerceClient {
 		requireIdToken("cartId", cartId);
 		requireIdToken("lineId", lineId);
 		requireQty(qty);
-		requireIdempotencyKey(idempotencyKey);
+		requireDocumentIdempotencyKey(idempotencyKey);
 		const result = await updateLine(
 			await this.#liveCartDeps(),
 			cartId,
@@ -714,7 +715,7 @@ export class InProcessCommerceClient implements CommerceClient {
 	): Promise<CartResult<Record<string, never>>> {
 		requireIdToken("cartId", cartId);
 		requireIdToken("lineId", lineId);
-		requireIdempotencyKey(idempotencyKey);
+		requireDocumentIdempotencyKey(idempotencyKey);
 		const result = await removeLine(
 			this.#cartDeps,
 			cartId,
@@ -1079,7 +1080,7 @@ export class InProcessCommerceClient implements CommerceClient {
 		opts: { sessionToken?: string } = {},
 	): Promise<CheckoutResult> {
 		requireIdToken("cartId", input.cartId);
-		requireIdempotencyKey(idempotencyKey);
+		requireDocumentIdempotencyKey(idempotencyKey);
 		requireBoundedText("buyerRef", input.buyerRef, 1, BUYER_REF_MAX);
 		refuseSuppliedZone(input);
 		if (input.shippingMethodId !== undefined) {

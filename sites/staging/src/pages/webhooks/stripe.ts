@@ -29,10 +29,12 @@
  * framework JSON-parses a route's request body before any handler runs and
  * exposes no raw-body read.)
  *
- * ── Why there is no origin guard ──────────────────────────────────────────
- * Every other POST endpoint in this site starts with `rejectCrossOrigin()`.
- * This one omits it as a NO-OP, not as a hazard — the distinction matters, so
- * that nobody "restores" the guard believing it was dropped for safety.
+ * ── Why the origin check is not applied ───────────────────────────────────
+ * Every other write route in this site is origin-checked by `src/middleware.ts`
+ * (`lib/origin-guard.ts`). This route is on that check's exemption list
+ * (`ORIGIN_GUARD_EXEMPT_ROUTES`) — and the exemption is a NO-OP for Stripe's
+ * own deliveries, not a hazard; the distinction matters, so that nobody
+ * "restores" the check believing it was dropped for safety.
  * `isForbiddenCrossOrigin` forbids only a PRESENT-and-mismatched `Origin` and
  * deliberately allows an absent one (server-to-server carries no ambient
  * cookie); Stripe sends no `Origin`, so the guard would pass every genuine

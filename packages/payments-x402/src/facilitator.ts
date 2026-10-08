@@ -93,13 +93,18 @@ export const PRE_BROADCAST_REASONS: ReadonlySet<string> = new Set([
 
 /**
  * What the adapter needs from a fetch response — no more, because the platforms
- * differ. A real `Response` (EmDash's in-process `ctx.http`, the test sandbox)
- * has all of it. EmDash's Cloudflare Worker Loader bridge
- * (`@emdash-cms/cloudflare@0.38.0`, `dist/runner-CQpZcxVz.mjs:997-1007`) returns
- * a plain object `{status, ok, headers, text(), json()}` with NO `url` and NO
- * `body`: the host side follows redirects itself, re-checks `allowedHosts` and
- * strips `Authorization` on every cross-origin hop (`:164-209`, `:207`), and
- * buffers the whole body (`:192`).
+ * differ. On EmDash 1.0.1 both host paths hand back a real `Response` rebuilt
+ * from a buffered wire form (`emdash` `src/plugins/http-wire.ts`,
+ * `pluginHttpResponseFromWire`): `status`, `statusText`, `headers`, a `body`
+ * over bytes the host already read in full (capped at 8 MiB), and `url` /
+ * `redirected` set to the final hop. That holds in-process
+ * (`src/plugins/context.ts` `createHttpAccess`) and over the Cloudflare Worker
+ * Loader bridge (`@emdash-cms/cloudflare@1.0.1` `src/sandbox/wrapper.ts`
+ * `http.fetch`, host side `src/sandbox/bridge-http.ts` `sandboxHttpFetch`). The
+ * host honours `redirect: "manual"`, and when it follows a redirect it re-checks
+ * `allowedHosts` and strips `Authorization` on every cross-origin hop. EmDash
+ * 0.38's bridge returned a plain `{status, ok, headers, text(), json()}` with NO
+ * `url` and NO `body`, which is why both stay optional here.
  */
 export interface FacilitatorResponse {
 	readonly status: number;
@@ -113,10 +118,14 @@ export interface FacilitatorResponse {
 /**
  * The injected egress — the plugin passes `ctx.http.fetch`. Called with a plain
  * `init` (method, headers as a plain object, a string body, `redirect`) and
- * deliberately NO `signal`: the Worker Loader bridge sends `init` over RPC
- * (`bridge.httpFetch(url, init)`, `runner-CQpZcxVz.mjs:999`), and an
- * `AbortSignal` is not structured-cloneable, so passing one would fail every
- * call there. The adapter's own timeout race bounds the wait on every platform.
+ * deliberately NO `signal`: the Worker Loader bridge sends `init` to the host
+ * over RPC (`bridge.httpFetch(url, init)`). On EmDash 0.38 an `AbortSignal`
+ * could not be structured-cloned there, so passing one failed every call with
+ * `DataCloneError`; on 1.0.1 the wrapper forwards only method, redirect,
+ * headers and body (`@emdash-cms/cloudflare@1.0.1` `src/sandbox/wrapper.ts`
+ * `http.fetch`), so a signal is silently dropped and the abort never reaches
+ * the host fetch. Either way the adapter's own timeout race is the only bound
+ * on the wait, on every platform.
  */
 export type FacilitatorFetch = (url: string, init: RequestInit) => Promise<FacilitatorResponse>;
 
@@ -159,6 +168,7 @@ function cancelBody(response: FacilitatorResponse): void {
  */
 async function readBoundedText(
 	response: FacilitatorResponse,
+	onReader: (cancel: () => void) => void,
 ): Promise<string | "oversize" | "not_utf8"> {
 	const declared = response.headers.get("content-length");
 	if (declared !== null && /^[0-9]+$/u.test(declared) && Number(declared) > MAX_RESPONSE_BYTES) {
@@ -172,7 +182,7 @@ async function readBoundedText(
 		if (new TextEncoder().encode(text).byteLength > MAX_RESPONSE_BYTES) return "oversize";
 		return text;
 	}
-	const bytes = await readBoundedStream(body);
+	const bytes = await readBoundedStream(body, onReader);
 	if (bytes === undefined) return "oversize";
 	try {
 		return new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes);
@@ -184,8 +194,10 @@ async function readBoundedText(
 /** `undefined` for "too large", otherwise the bytes read. */
 async function readBoundedStream(
 	stream: ReadableStream<Uint8Array>,
+	onReader: (cancel: () => void) => void,
 ): Promise<Uint8Array | undefined> {
 	const reader = stream.getReader();
+	onReader(() => void reader.cancel().catch(() => {}));
 	const chunks: Uint8Array[] = [];
 	let total = 0;
 	for (;;) {
@@ -212,17 +224,20 @@ async function readBoundedStream(
  *
  * The timeout covers the whole exchange — the request AND the body — and is a
  * race of its own, so it holds whatever the platform does with the request (no
- * `signal` is passed: see {@link FacilitatorFetch}).
+ * `signal` is passed: see {@link FacilitatorFetch}). Once the race is lost
+ * nothing more is read: a body being read has its reader cancelled, and an
+ * answer that arrives later is discarded with its body cancelled unread.
  *
  * A final response whose `url` is a non-empty string other than the URL
  * requested was redirected, and is never trusted as a verdict. Where the
- * platform reports no `url` (the Worker Loader bridge), the redirect rule is the
- * platform's own: it follows at most five hops, each re-checked against
- * `allowedHosts`, with `Authorization` stripped on a cross-origin hop. A
- * redirect can then only land on another allowlisted host (Stripe, the email
+ * platform reports no `url` (EmDash 0.38's Worker Loader bridge), the redirect
+ * rule is the platform's own: it follows at most five hops, each re-checked
+ * against `allowedHosts`, with `Authorization` stripped on a cross-origin hop.
+ * A redirect can then only land on another allowlisted host (Stripe, the email
  * API), whose answer is not a well-formed verdict and so classifies as
- * unavailable. `redirect: "manual"` is asked for as well; where it is honoured,
- * a 3xx comes back and is unavailable by status.
+ * unavailable. `redirect: "manual"` is asked for as well; where it is honoured
+ * (EmDash 1.0.1, on both host paths), a 3xx comes back and is unavailable by
+ * status.
  *
  * Nothing in here throws: any failure of the injected fetch or of the response
  * object it returns (even a fetch that resolves to `null`) is `transport`.
@@ -235,8 +250,14 @@ export async function postToFacilitator(
 	timeoutMs: number,
 ): Promise<Exchange> {
 	let timer: ReturnType<typeof setTimeout> | undefined;
+	let timedOut = false;
+	let cancelReading: (() => void) | undefined;
 	const timeout = new Promise<Exchange>((resolve) => {
-		timer = setTimeout(() => resolve({ ok: false, cause: "timeout" }), timeoutMs);
+		timer = setTimeout(() => {
+			timedOut = true;
+			cancelReading?.();
+			resolve({ ok: false, cause: "timeout" });
+		}, timeoutMs);
 	});
 
 	const work = (async (): Promise<Exchange> => {
@@ -245,6 +266,11 @@ export async function postToFacilitator(
 			response = await fetchFn(url, { method: "POST", headers, body, redirect: "manual" });
 			if (typeof response !== "object" || response === null)
 				return { ok: false, cause: "transport" };
+			if (timedOut) {
+				// A late answer: the caller already has its timeout. Read nothing.
+				cancelBody(response);
+				return { ok: false, cause: "timeout" };
+			}
 			if (typeof response.url === "string" && response.url !== "" && response.url !== url) {
 				cancelBody(response);
 				return { ok: false, cause: "redirect" };
@@ -258,7 +284,9 @@ export async function postToFacilitator(
 		}
 		let text: string;
 		try {
-			const read = await readBoundedText(response);
+			const read = await readBoundedText(response, (cancel) => {
+				cancelReading = cancel;
+			});
 			if (read === "oversize") return { ok: false, cause: "oversize" };
 			if (read === "not_utf8") return { ok: false, cause: "body" };
 			text = read;

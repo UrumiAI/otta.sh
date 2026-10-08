@@ -51,14 +51,18 @@ import { makeSqliteStorage } from "@otta-sh/store-emdash/testing";
 import { beforeAll, describe, expect, test } from "vitest";
 import { createInProcessCommerceStores } from "../src/commerce/in-process-commerce-stores.js";
 import {
+	CONTENT_MISS_QUERIES,
+	CONTENT_READ_QUERIES,
 	LATE_REFUND_ESCALATION_UNIT,
 	LEG_QUERY_COSTS,
 	legReserveQueries,
 	legStartCalls,
 	MAINTENANCE_LEGS,
+	PRODUCT_ORPHAN_DELETE_CALLS,
 	SWEEP_LEGS,
 	EMAIL_SEND_AND_RECORD_CALLS,
 	TICK_OVERHEAD_QUERIES,
+	UNPROMOTED_LEGS,
 } from "../src/cron/sweeps.js";
 import {
 	EMAIL_SENDER_BUILD_READS,
@@ -727,6 +731,27 @@ describe("one real unit of each leg fits its LEG_QUERY_COSTS estimate", () => {
 		expect(used).toBeLessThanOrEqual(LEG_QUERY_COSTS["late-refunds"].entry);
 	});
 
+	test("product-orphans: one orphan's soft delete (the row's flip and its sku claim's release)", async () => {
+		const s = counted();
+		const pid = toProductId("prod-cost-orphan");
+		await s.productCommerce.upsert(
+			{ productId: pid, sku: toSku("COST-ORPHAN"), price: money(cents(900), currency("USD")) },
+			idempotencyKey("cost-orphan-seed"),
+		);
+		const used = await cost(() =>
+			s.productCommerce.softDelete(pid, idempotencyKey("products:prod-cost-orphan:deleted")),
+		);
+		expect(used).toBeLessThanOrEqual(PRODUCT_ORPHAN_DELETE_CALLS);
+		// On top: one row's reads at worst (two misses at one query each, then a hit at
+		// three), the canary read, and this delete.
+		expect(LEG_QUERY_COSTS["product-orphans"].unit).toBe(
+			2 * CONTENT_MISS_QUERIES +
+				CONTENT_READ_QUERIES +
+				CONTENT_READ_QUERIES +
+				PRODUCT_ORPHAN_DELETE_CALLS,
+		);
+	});
+
 	test("reporting-heal: one day reconciled", async () => {
 		const s = counted();
 		const day = new Date(Date.now() - DAY_MS).toISOString().slice(0, 10);
@@ -746,6 +771,8 @@ describe("the cost table against the Workers Free preset (review of QA2 M2)", ()
 	const FREE = 30;
 	/** An ordinary cancel unit, measured above: ledger, cancel, bookkeeping write. */
 	const ORDINARY_CANCEL_UNIT = 5;
+	/** An idle Free tick's own spend (DEPLOYMENT.md §5: "an idle tick is 8 queries"). */
+	const IDLE_FREE_TICK = 8;
 	test("one unit of every leg fits behind an intent cancel and the fixed reads — or fits alone, at the head the guard gives it", () => {
 		// The setting and cadence-state reads, then late-refunds' due check at the head.
 		const fixed = TICK_OVERHEAD_QUERIES + 1;
@@ -755,6 +782,15 @@ describe("the cost table against the Workers Free preset (review of QA2 M2)", ()
 		for (const leg of SWEEP_LEGS) {
 			// The late-refund lead has its own rule (it leads ahead of the cancel).
 			if (leg === "cancel-intents" || leg === "late-refunds") continue;
+			// A leg with no deadline is never given the head (`UNPROMOTED_LEGS`): it must
+			// fit ALONE in an idle Free tick, and otherwise waits for one.
+			if (UNPROMOTED_LEGS.includes(leg)) {
+				expect(
+					IDLE_FREE_TICK + legStartCalls(leg, FREE) + legReserveQueries(leg),
+					leg,
+				).toBeLessThanOrEqual(FREE);
+				continue;
+			}
 			const own =
 				(MAINTENANCE_LEGS.includes(leg) ? 0 : 1) +
 				legStartCalls(leg, FREE) +

@@ -59,8 +59,24 @@ const stack: WebServer[] = [
 		// plugin, so this dev server runs commerce in-process against its own
 		// store. It used to be handed `COMMERCE_SERVICE_URL` here, which the build
 		// no longer reads at all.
-		command: `pnpm --filter @otta-sh/site-staging dev --port ${new URL(E2E_BASE_URL).port}`,
+		// `--host` IS EXPLICIT, AND IT IS THE HOST PLAYWRIGHT POLLS. Without it Vite
+		// listens on `localhost`, which binds whichever address the resolver lists
+		// first. On this repo's dev boxes that is 127.0.0.1, but GitHub's Ubuntu
+		// runners also map `::1` to `localhost` in /etc/hosts, so the server can come
+		// up on IPv6 only while Playwright waits on http://127.0.0.1:4500. That is
+		// how the first CI run of the e2e job failed: "Timed out waiting 180000ms
+		// from config.webServer", with the server alive the whole time. The
+		// brackets of an IPv6 literal (`[::1]`) are not part of the address Vite
+		// takes.
+		command:
+			`pnpm --filter @otta-sh/site-staging dev --port ${new URL(E2E_BASE_URL).port} ` +
+			`--host ${new URL(E2E_BASE_URL).hostname.replace(/^\[|\]$/g, "")}`,
 		url: E2E_BASE_URL,
+		// Playwright's default is to DROP the server's stdout, which left the failed
+		// CI run with one line of log for a three-minute wait. Piped, astro's own
+		// startup lines and any error reach the job log, prefixed [WebServer].
+		stdout: "pipe",
+		stderr: "pipe",
 		reuseExistingServer: process.env["CI"] === undefined,
 		timeout: 180_000,
 		env: {
@@ -84,19 +100,40 @@ const stack: WebServer[] = [
 			// wants in every environment, agent or not: a webServer Playwright
 			// cannot stop is a leaked process, not a convenience.
 			ASTRO_DEV_BACKGROUND: "1",
+			// Arms the plugin's dev-only offline Stripe gateway (issue #378), so this
+			// stack can create orders with no Stripe account and the order seed can
+			// mark them paid with a signed test webhook. It only works under `astro
+			// dev`, and `astro build` refuses to run with it set
+			// (sites/staging/src/lib/e2e-stripe-offline.ts).
+			OTTA_E2E_STRIPE_OFFLINE: "1",
+			// /checkout offers no place button without a publishable key (by design:
+			// no order may hold stock against a payment that cannot happen). A
+			// placeholder is enough, because the specs block js.stripe.com and the
+			// offline gateway never hands Stripe a real client secret. A key already
+			// in the environment wins.
+			STRIPE_PUBLIC_KEY: process.env["STRIPE_PUBLIC_KEY"] ?? "pk_test_e2eplaceholder",
 		},
 	},
 ];
 
 export default defineConfig({
 	testDir: "sites/staging/e2e",
+	// Warms the dev server (and, under OTTA_E2E_SEED=1, seeds it) before the
+	// first spec, so a cold server's compile time is not charged to whichever
+	// console spec happens to run first. A no-op with no site up (issue #378).
+	globalSetup: "./sites/staging/e2e/global-setup.ts",
 	testMatch: /.*\.spec\.ts$/,
 	// Artifacts land under node_modules/ so a run never dirties the tree; the
 	// repo has no ignore entry for Playwright output and this increment does
 	// not add one.
 	outputDir: "node_modules/.playwright-artifacts",
 	preserveOutput: "failures-only",
-	reporter: [["list"]],
+	// Under CI a JUnit report rides along for the failure upload (ci.yml's e2e
+	// job). Still no HTML reporter: nothing here serves or opens one.
+	reporter:
+		process.env["CI"] !== undefined
+			? [["list"], ["junit", { outputFile: "node_modules/.playwright-report/junit.xml" }]]
+			: [["list"]],
 	fullyParallel: false,
 	workers: 1,
 	retries: 0,

@@ -2556,6 +2556,23 @@ export function storefrontCommerceClientContract(tier: CommerceClientTier): void
 		);
 
 		test.skipIf(tier.payments === undefined)(
+			"an order whose buyerRef is NOT an email cannot be resumed by typing the buyerRef back — it is public (an x402 wallet), so it proves nothing (issue #405 item 2; SKIPPED where the tier composes no payment gateway)",
+			async () => {
+				const wallet = "x402:0x52908400098527886E0F7030069857D2E4169EE7";
+				const placed = await placeResumable("wallet", wallet);
+				const before = tier.payments?.providerIntentCalls?.().length ?? 0;
+				expect(await client.resumeOrderPayment(placed.orderId, { email: wallet })).toEqual({
+					ok: false,
+					reason: "EMAIL_MISMATCH",
+				});
+				expect(tier.payments?.providerIntentCalls?.().length ?? 0).toBe(before);
+				// The cart is still a proof for it.
+				const byCart = await client.resumeOrderPayment(placed.orderId, { cartId: placed.cartId });
+				expect(byCart.ok, JSON.stringify(byCart)).toBe(true);
+			},
+		);
+
+		test.skipIf(tier.payments === undefined)(
 			`email attempts are THROTTLED per DEVICE after ${RESUME_EMAIL_MAX_ATTEMPTS} — even the right one — while the real buyer's device still resumes (SKIPPED where the tier composes no payment gateway)`,
 			async () => {
 				const placed = await placeResumable("throttle", "t@example.test");
@@ -2940,6 +2957,68 @@ export function storefrontCommerceClientContract(tier: CommerceClientTier): void
 				"price.amount",
 			);
 			expect((await client.listProductVariants(productId))[0]?.price).toBeNull();
+		});
+
+		// Review R3-B X1: text Postgres cannot store — a lone UTF-16 surrogate or
+		// U+0000 — is refused at the boundary, field by field, before anything is
+		// read or written. One such string stored once used to make every query over
+		// its collection fail on Postgres (the admin order list, the expiry sweep).
+		test("a lone surrogate or NUL in any storefront text input is refused, and nothing is placed", async () => {
+			const cartId = await tier.arrange.cart("USD");
+			const address = {
+				name: "Asha Rao",
+				line1: "12 Park Street",
+				city: "Kolkata",
+				postalCode: "700016",
+				country: "IN",
+			};
+			const place = (input: Record<string, unknown>) =>
+				client.createOrder(
+					{ cartId, paymentMethod: "stripe", buyerRef: "asha@example.test", ...input },
+					`checkout:${cartId}`,
+				);
+			for (const [i, poison] of ["\uD800", "\uDC00", "\u0000"].entries()) {
+				await expectRejectedInput(place({ buyerRef: `asha${poison}@example.test` }), "buyerRef");
+				await expectRejectedInput(place({ couponCode: `SAVE${poison}` }), "couponCode");
+				for (const field of ["name", "line1", "city", "postalCode"] as const) {
+					await expectRejectedInput(
+						place({ shippingAddress: { ...address, [field]: `x${poison}` } }),
+						`shippingAddress.${field}`,
+					);
+				}
+				await expectRejectedInput(
+					client.addCartLine(cartId, `SKU${poison}`, null, 1, `bnd-wf-add-${String(i)}`),
+					"sku",
+				);
+				await expectRejectedInput(
+					client.upsertProductCommerce(
+						"prod-bnd-wf",
+						{ sku: "SKU-BND-WF", title: `Mug${poison}` },
+						"bnd-wf-t",
+					),
+					"title",
+				);
+			}
+			// Nothing was placed or written: the cart is still open and empty, and the
+			// refused product does not exist.
+			const cart = await client.getCart(cartId);
+			expect(cart.ok && cart.cart.orderId).toBeNull();
+			expect(cart.ok && cart.cart.lines).toEqual([]);
+			expect(await client.getProductCommerce("prod-bnd-wf")).toBeNull();
+		});
+
+		test("well-formed text that LOOKS unusual — an emoji, a flag, Devanagari — is not refused", async () => {
+			const productId = "prod-bnd-wf-ok";
+			await client.upsertProductCommerce(
+				productId,
+				{
+					sku: "SKU-BND-WF-OK",
+					title: "Mug \uD83D\uDE00 \uD83C\uDDEE\uD83C\uDDF3 \u0915\u094D\u0937",
+				},
+				"bnd-wf-ok",
+			);
+			// Accepted and written (the wire read carries no title — it is CMS-owned).
+			expect(await client.getProductCommerce(productId)).not.toBeNull();
 		});
 
 		test("a batch read over the cap is refused as a whole, never silently truncated", async () => {
@@ -3706,6 +3785,27 @@ export function adminOrdersProductsClientContract(tier: CommerceClientTier): voi
 			});
 
 			expect(await orders.getTimeline("adm-o-missing")).toBeNull();
+		});
+
+		test("a note, refund reason or fulfilment carrier holding a lone surrogate or NUL is refused (review R3-B X1)", async () => {
+			await tier.arrange.order({ orderId: "adm-o-wf", buyerRef: "wf@example.test" });
+			for (const [i, poison] of ["\uD800", "\uDC00", "\u0000"].entries()) {
+				expect(
+					await orders.addNote(
+						"adm-o-wf",
+						{ author: "ops@example.test", body: `called${poison}` },
+						{ idempotencyKey: `adm-o-wf-note-${String(i)}` },
+					),
+				).toMatchObject({ ok: false, status: 400 });
+				expect(
+					await orders.recordFulfillment(
+						"adm-o-wf",
+						{ carrier: `DHL${poison}`, trackingNumber: "1Z", recordedBy: "ops@example.test" },
+						{ idempotencyKey: `adm-o-wf-ful-${String(i)}` },
+					),
+				).toMatchObject({ ok: false, status: 400 });
+			}
+			expect(await orders.listNotes("adm-o-wf")).toEqual([]);
 		});
 
 		test("notes are append-only, dedupe on their key, and must hang off a real order", async () => {
@@ -5352,6 +5452,32 @@ export function adminRulesReportingClientContract(tier: CommerceClientTier): voi
 			expect(
 				(await client.createMethod("real-z", { id: "orphan-m", name: "M", type: "flat_rate" })).ok,
 			).toBe(true);
+		});
+
+		test("a lone surrogate or NUL in an admin name is refused, and nothing is written (review R3-B X1)", async () => {
+			for (const [i, poison] of ["\uD800", "\uDC00", "\u0000"].entries()) {
+				const n = String(i);
+				await expect(
+					client.createZone({ id: `wf-z-${n}`, name: `EU${poison}` }),
+				).rejects.toMatchObject({
+					code: "INVALID_INPUT",
+					field: "name",
+				});
+				await expect(
+					client.createTaxClass({ id: `wf-c-${n}`, name: `Books${poison}` }),
+				).rejects.toMatchObject({ code: "INVALID_INPUT", field: "name" });
+			}
+			const zones = await client.listZones();
+			expect(zones.some((z) => z.id.startsWith("wf-z-"))).toBe(false);
+			const classes = await client.listTaxClasses();
+			expect(classes.some((c) => c.id.startsWith("wf-c-"))).toBe(false);
+
+			// An edit is refused the same way, and leaves the stored name as it was.
+			await client.createZone({ id: "wf-z-edit", name: "Kept" });
+			await expect(
+				client.updateZone("wf-z-edit", { name: "Bad\uD800", regions: null }),
+			).rejects.toMatchObject({ code: "INVALID_INPUT", field: "name" });
+			expect((await client.listZones()).find((z) => z.id === "wf-z-edit")?.name).toBe("Kept");
 		});
 
 		test("a coupon code with whitespace inside it is refused before anything is written", async () => {

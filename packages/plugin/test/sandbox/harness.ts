@@ -80,14 +80,14 @@ const WORKSPACE_PACKAGES: ReadonlyArray<{
 /** `-I` search root for the capnp `/workerd/workerd.capnp` builtin import —
  *  resolves via this package's own `node_modules/workerd` (a direct
  *  devDependency). */
-const CAPNP_IMPORT_ROOT = path.join(PLUGIN_ROOT, "node_modules");
+export const CAPNP_IMPORT_ROOT = path.join(PLUGIN_ROOT, "node_modules");
 // NOT `.bin/workerd`: pnpm's generated bin shim always does `exec node
 // <target>`, but the `workerd` npm package's postinstall (install.js)
 // overwrites its own `bin/workerd` in place with the raw platform ELF
 // binary (see `node_modules/workerd/install.js`) — so pnpm's shim ends up
 // doing `node <ELF file>`, which fails. Resolve the real (post-postinstall)
 // binary path directly instead.
-const WORKERD_BIN = path.join(CAPNP_IMPORT_ROOT, "workerd", "bin", "workerd");
+export const WORKERD_BIN = path.join(CAPNP_IMPORT_ROOT, "workerd", "bin", "workerd");
 
 /**
  * The allowlist a REAL deployment boots with, plus whatever extra hosts (a stub
@@ -261,7 +261,7 @@ export async function bootWithPortRetry<T>(
 	throw new Error("bootWithPortRetry: exhausted attempts without a result");
 }
 
-async function waitUntilReady(baseUrl: string, deadlineMs: number): Promise<void> {
+export async function waitUntilReady(baseUrl: string, deadlineMs: number): Promise<void> {
 	const start = Date.now();
 	let lastErr: unknown;
 	while (Date.now() - start < deadlineMs) {

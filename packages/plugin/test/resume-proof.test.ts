@@ -23,6 +23,25 @@ describe("emailMatchesBuyer", () => {
 		expect(await emailMatchesBuyer("", "jane.doe@example.com")).toBe(false);
 		expect(await emailMatchesBuyer("   ", "")).toBe(false);
 	});
+
+	test("a buyerRef that is not an email never matches — not even itself (issue #405 item 2)", async () => {
+		// An x402 order's buyerRef is the paying wallet, which is public on chain:
+		// typing it back proves nothing about who placed the order.
+		const wallet = "x402:0x52908400098527886E0F7030069857D2E4169EE7";
+		expect(await emailMatchesBuyer(wallet, wallet)).toBe(false);
+		expect(await emailMatchesBuyer(wallet.toLowerCase(), wallet)).toBe(false);
+		expect(await emailMatchesBuyer("session:abc", "session:abc")).toBe(false);
+		// Nor does an email-shaped buyerRef with no local part or no domain.
+		expect(await emailMatchesBuyer("@example.com", "@example.com")).toBe(false);
+		expect(await emailMatchesBuyer("jane@", "jane@")).toBe(false);
+	});
+
+	test("the shape check refuses no real address — plus-tags, subdomains, non-ASCII", async () => {
+		expect(
+			await emailMatchesBuyer(" Jane+Tag@Sub.Example.co.uk", "jane+tag@sub.example.co.uk"),
+		).toBe(true);
+		expect(await emailMatchesBuyer("jösé@münchen.de", "jösé@münchen.de")).toBe(true);
+	});
 });
 
 describe("the email throttle's bounds", () => {

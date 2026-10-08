@@ -137,6 +137,18 @@ export const E2E_STARTS_STACK = process.env["OTTA_E2E_START_STACK"] === "1";
 export const E2E_REQUIRES_SITE = process.env["OTTA_E2E_REQUIRE_SITE"] === "1";
 
 /**
+ * Have the global setup (`global-setup.ts`) seed the stack once before the run:
+ * the CMS content, the demo catalog's prices and stock, and paid orders (issue
+ * #378). Off by default, like booting the stack: seeding writes to whatever
+ * site is at `E2E_BASE_URL`. CI turns it on, and so should any run that starts
+ * from a fresh `.wrangler` state.
+ *
+ * The paid orders need the dev server started with `OTTA_E2E_STRIPE_OFFLINE=1`,
+ * which `playwright.config.ts` sets for a stack it boots itself.
+ */
+export const E2E_SEEDS = process.env["OTTA_E2E_SEED"] === "1";
+
+/**
  * Dev-only sign-in. §0.2 reaches for `/_emdash/api/setup/dev-bypass`, which
  * ALSO runs `applySeed(..., includeContent: true)` — re-seeding the site on
  * every spec is a side effect a read should not have (the repo's own seed
@@ -158,9 +170,11 @@ export const E2E_REQUIRES_SITE = process.env["OTTA_E2E_REQUIRE_SITE"] === "1";
  * handful of them. The row-dependent specs call {@link skipWithoutOrders}
  * instead: they state what they need, skip loudly when a run has no orders, and
  * FAIL under `OTTA_E2E_REQUIRE_SITE=1`, so a gate run cannot report green
- * because the fixtures were missing. A run that wants rows sets
- * `OTTA_E2E_SEED_ON_AUTH=1`, or seeds the stack once before the run — which is
- * what INC-20's own gate run did.
+ * because the fixtures were missing. A run that wants rows seeds the stack ONCE
+ * before the run: `OTTA_E2E_SEED=1` has the global setup do it (issue #378).
+ * `OTTA_E2E_SEED_ON_AUTH=1` still re-applies the CMS seed on every sign-in, but
+ * that seed holds no prices and no orders, so on its own it never produced the
+ * rows these specs need.
  */
 export const DEV_BYPASS_SIGNIN_PATH = "/_emdash/api/auth/dev-bypass";
 /** §0.2 verbatim — signs in AND applies the full seed. */
@@ -363,8 +377,9 @@ export const test = base.extend<{ adminPage: Page }>({
 export async function skipWithoutOrders(testInfo: TestInfo, rowCount: number): Promise<void> {
 	if (rowCount > 0) return;
 	const how =
-		"the stack has no orders, so this spec cannot exercise a row. Seed it " +
-		"(DIRECTOR-SPEC §0.2) or set OTTA_E2E_SEED_ON_AUTH=1 for this run.";
+		"the stack has no orders, so this spec cannot exercise a row. Set " +
+		"OTTA_E2E_SEED=1 for this run (the dev server must be started with " +
+		"OTTA_E2E_STRIPE_OFFLINE=1), or run sites/staging/scripts/seed-e2e-orders.ts.";
 	if (E2E_REQUIRES_SITE) throw new Error(`OTTA_E2E_REQUIRE_SITE=1 and ${how}`);
 	testInfo.skip(true, how);
 }
@@ -382,8 +397,8 @@ export async function skipWithoutOrders(testInfo: TestInfo, rowCount: number): P
 export async function skipWithoutProducts(testInfo: TestInfo, rowCount: number): Promise<void> {
 	if (rowCount > 0) return;
 	const how =
-		"the stack has no products, so this spec cannot exercise a row. Seed it " +
-		"(DIRECTOR-SPEC §0.2) or set OTTA_E2E_SEED_ON_AUTH=1 for this run.";
+		"the stack has no products, so this spec cannot exercise a row. Set " +
+		"OTTA_E2E_SEED=1 for this run, or run sites/staging/scripts/seed-demo-commerce.ts.";
 	if (E2E_REQUIRES_SITE) throw new Error(`OTTA_E2E_REQUIRE_SITE=1 and ${how}`);
 	testInfo.skip(true, how);
 }
@@ -436,17 +451,16 @@ export async function skipWithoutStockableProduct(testInfo: TestInfo): Promise<v
  * whole value of it. "No orders" and "orders, but none refundable" have
  * different causes and different fixes, and the first INC-20 gate run reported
  * the second as the first — which sent the reader to the seed, where nothing
- * was wrong. A local stack runs Stripe in offline mode, so it captures nothing
- * and every order's `remainingCents` is 0; the fix is a capture pass, not more
- * seeding.
+ * was wrong. Orders that were placed but never paid have captured nothing, so
+ * every one's `remainingCents` is 0; the fix is a PAID order, which the order
+ * seed makes (`seed-e2e-orders.ts`, issue #378).
  */
 export async function skipWithoutRefundableOrder(testInfo: TestInfo): Promise<void> {
 	const how =
-		"the stack has orders but none with money left to refund. A local service " +
-		"runs Stripe in offline mode (STRIPE_WEBHOOK_SECRET set, STRIPE_SECRET_KEY " +
-		"unset), which captures nothing — so no refund control renders on EITHER " +
-		"Orders screen. Run `sites/staging/scripts/capture-e2e-payments.ts` against " +
-		"the stack after seeding it.";
+		"the stack has orders but none with money left to refund, so no refund " +
+		"control renders. Only a PAID order has captured money: set OTTA_E2E_SEED=1 " +
+		"for this run (the dev server must be started with OTTA_E2E_STRIPE_OFFLINE=1), " +
+		"or run sites/staging/scripts/seed-e2e-orders.ts.";
 	if (E2E_REQUIRES_SITE) throw new Error(`OTTA_E2E_REQUIRE_SITE=1 and ${how}`);
 	testInfo.skip(true, how);
 }

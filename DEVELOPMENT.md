@@ -124,6 +124,13 @@ in-process leniency.
 - **pnpm** workspace + `catalog:` for shared version pins.
 - **tsdown** builds (ESM + DTS).
 - **vitest** for tests; **Playwright** for storefront e2e (`pnpm test:e2e`).
+  - **`OTTA_E2E_STRIPE_OFFLINE=1`** (issue #378) arms a dev-only offline Stripe gateway, so an
+    e2e stack with no Stripe account can create orders. Orders get an unpayable `pi_<orderId>`
+    handle and are paid only by a signed test webhook (`sites/staging/scripts/seed-e2e-orders.ts`,
+    which signs with the fixed secret `whsec_e2e_offline`). It works only under `astro dev`;
+    `astro build` refuses to run with it set. **Never expose such a dev server publicly:** with
+    the published webhook secret anyone can mark orders paid, and EmDash's dev-bypass signs
+    anyone in as admin. Bind it to loopback.
 - **oxfmt** formatting — **tabs**, run regularly.
 - **oxlint** type-aware for linting; keep it clean.
 - **TypeScript:** strict, `noUncheckedIndexedAccess`, `noImplicitOverride`,

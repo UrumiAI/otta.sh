@@ -28,6 +28,7 @@ import {
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { splitAstro, templateOf } from "./astro-source.js";
 import { viewSources } from "./theme-views.js";
+import { serve } from "./helpers/serve.js";
 import { cartErrorMessage } from "../src/lib/error-messages.js";
 import {
 	CHECKOUT_DRAFT_COOKIE,
@@ -38,6 +39,10 @@ import {
 	writeCheckoutDraft,
 	type CheckoutDraft,
 } from "../src/lib/checkout-draft.js";
+
+vi.mock("astro:middleware", () => ({
+	defineMiddleware: <T>(handler: T): T => handler,
+}));
 
 const stripeKey = vi.hoisted(() => ({ value: "pk_test_fake" as string | undefined }));
 vi.mock("../src/lib/stripe-config.js", () => ({
@@ -50,6 +55,7 @@ vi.mock("../src/lib/stripe-config.js", () => ({
 
 const { POST: PLACE_POST } = await import("../src/pages/checkout/place.js");
 const { POST: NEW_CART_POST } = await import("../src/pages/checkout/new-cart.js");
+const { onRequest } = await import("../src/middleware.js");
 
 afterEach(() => {
 	stripeKey.value = "pk_test_fake";
@@ -480,7 +486,7 @@ describe("applying a coupon keeps every typed value", () => {
 	test("a cross-site Apply is refused like any other place POST", async () => {
 		const h = harness({ ...FULL, intent: "apply-coupon", coupon: "X" }, PLACED);
 		(h.context.request.headers as Headers).set("origin", "https://evil.example");
-		const response = await PLACE_POST(h.context);
+		const response = await serve(onRequest, h.context, PLACE_POST);
 		expect(response.status).toBe(403);
 		expect(h.sets).toHaveLength(0);
 	});

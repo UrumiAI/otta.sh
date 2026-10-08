@@ -4,7 +4,7 @@
  *
  * The cards are the custom editor EmDash draws for a field whose `widget` is
  * `otta-console:pricing`. New stores get that field from the seed. An older
- * store does not have it, and EmDash 0.38's Content Types screen cannot set a
+ * store does not have it, and EmDash 1.0.1's Content Types screen cannot set a
  * field's widget — a JSON field added there would show EmDash's raw JSON box
  * instead of the cards, inviting commerce data into the CMS. So this script adds
  * it through EmDash's schema API, which does accept `widget`:
