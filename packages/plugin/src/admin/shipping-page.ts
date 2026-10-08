@@ -245,8 +245,10 @@ interface MethodDraft {
 interface RatesFilterForm {
 	/** The currency the level reads: as typed, or the store currency when blank. */
 	currency: string;
-	/** The store currency, as `fetchPage` read it — what "no filter" means. */
-	storeCurrency: string;
+	/** The store currency, as `fetchPage` read it — what "no filter" means.
+	 *  `null`: NOT READ on this render (the methods level skips the read when
+	 *  the operator typed a currency) — never a stand-in that looks read. */
+	storeCurrency: string | null;
 	/** The field was blank: `currency` follows the store currency. */
 	defaulted: boolean;
 	/** The store-currency read FAILED: `storeCurrency` is the never-saved USD
@@ -262,10 +264,18 @@ function currencyFromValues(values: Record<string, unknown>): RatesFilterForm {
 	const defaulted = currency === undefined || currency.length === 0;
 	return {
 		currency: defaulted ? DEFAULT_STORE_CURRENCY : currency,
-		storeCurrency: DEFAULT_STORE_CURRENCY,
+		storeCurrency: null,
 		defaulted,
 		storeCurrencyUnknown: false,
 	};
+}
+
+/** The "not read on this render" state, written UNCONDITIONALLY by a level that
+ *  skips the read — list-detail's rule: page context written in `fetchPage` is
+ *  overwritten, never merged with what a cursor carried back. */
+function markStoreCurrencyNotRead(filter: RatesFilterForm): void {
+	filter.storeCurrency = null;
+	filter.storeCurrencyUnknown = false;
 }
 
 /**
@@ -280,9 +290,10 @@ async function resolveStoreCurrency(
 	filter: RatesFilterForm,
 ): Promise<void> {
 	const read = await readStoreCurrencySoft(client, "shipping");
-	filter.storeCurrency = read ?? DEFAULT_STORE_CURRENCY;
+	const storeCurrency = read ?? DEFAULT_STORE_CURRENCY;
+	filter.storeCurrency = storeCurrency;
 	filter.storeCurrencyUnknown = read === undefined;
-	if (filter.defaulted) filter.currency = filter.storeCurrency;
+	if (filter.defaulted) filter.currency = storeCurrency;
 }
 
 /**
@@ -788,7 +799,7 @@ function methodsLevel() {
 			// operator typed needs no store-currency read at all (this level uses the
 			// store currency only as the blank field's default).
 			const [, methods] = await Promise.all([
-				filter.defaulted ? resolveStoreCurrency(client, filter) : undefined,
+				filter.defaulted ? resolveStoreCurrency(client, filter) : markStoreCurrencyNotRead(filter),
 				client.listMethods(zoneId),
 			]);
 			const items = await pricedMethods(client, methods, filter);
@@ -1323,6 +1334,8 @@ function ratesBlocks(
 	if (filter.storeCurrencyUnknown && filter.defaulted) {
 		blocks.push({ type: "context", text: STORE_CURRENCY_UNKNOWN_TEXT });
 	}
+	// The rates level always reads it; a `null` here would be a bug, and reads as
+	// "a filter is set" rather than hiding the way back.
 	if (filter.currency !== filter.storeCurrency) {
 		const summary = filterSummary([`currency: ${filter.currency}`]);
 		if (summary !== undefined) {

@@ -449,6 +449,8 @@ export function PricingStockEditor({ productId }: { productId: string }): React.
 			}
 			const record = result.product;
 			const read = storeCurrencyOf(result);
+			// What the current draft was seeded against, then what this read knows.
+			const seededStoreCurrency = knownStoreCurrency.current;
 			if (read !== "") knownStoreCurrency.current = read;
 			const storeCurrency = knownStoreCurrency.current;
 			setLoad({
@@ -467,7 +469,9 @@ export function PricingStockEditor({ productId }: { productId: string }): React.
 				setDraft(draftFromRecord(record, storeCurrency));
 				setTouched(new Set());
 			} else {
-				const merged = mergeDraft(previous, record, current, storeCurrency);
+				// An unknown store currency that became known is ADOPTED by a draft
+				// still on "" (not picked), and never overrides one the merchant picked.
+				const merged = mergeDraft(previous, record, current, seededStoreCurrency, storeCurrency);
 				setDraft(merged.draft);
 				if (merged.conflict) {
 					setTouched(new Set());
@@ -942,8 +946,9 @@ export function PricingStockEditor({ productId }: { productId: string }): React.
 										))}
 									</select>
 								</div>
-								{/* Keyed on the DRAFT: once a currency is picked the prompt goes. */}
-								{d.currency === "" && (
+								{/* Only while the store currency is really unknown (no read has
+								    carried one) AND nothing is picked. */}
+								{storeCurrency === "" && d.currency === "" && (
 									<span className="otta-pricing-hint" data-testid="store-currency-unknown">
 										Couldn't load your store currency — choose one.
 									</span>

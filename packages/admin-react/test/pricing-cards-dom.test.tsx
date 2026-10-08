@@ -528,6 +528,52 @@ test("a later re-read whose settings read failed keeps the store currency alread
 	expect(c.querySelector('[data-testid="store-currency-unknown"]')).toBeNull();
 });
 
+test("a currency picked before typing a price survives a re-read, and the price saves in it", async () => {
+	let moved = false;
+	apiFetch.mockImplementation((_url, init) => {
+		const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+		if (body["type"] === "otta_console_act") {
+			if ((body["action_id"] as string) === "products:restock") moved = true;
+			return Promise.resolve(
+				json({ ok: true, notice: { variant: "default", title: "Saved", description: "" } }),
+			);
+		}
+		return Promise.resolve(unpricedDetail("EUR", moved ? { onHand: 29 } : {}));
+	});
+	const c = await mountPanel();
+	await type(input(c, "Currency") as unknown as HTMLSelectElement, "JPY");
+	// A stock movement re-reads the product (store currency still EUR).
+	await type(input(c, "Add or remove stock"), "5");
+	await fire(button(c, "Add"), "click");
+	await flush();
+	expect(c.textContent).toContain("now 29 in stock");
+	expect((input(c, "Currency") as unknown as HTMLSelectElement).value).toBe("JPY");
+	await type(input(c, "Price"), "1500");
+	await fire(button(c, "Save pricing & stock"), "click");
+	await flush();
+	const save = writes().find((w) => w["action_id"] === "products:save");
+	expect(save?.["value"]).toMatchObject({ price: "1500", currency: "JPY" });
+});
+
+test("a later read that knows the store currency hides the prompt and adopts it while nothing is picked", async () => {
+	let moved = false;
+	apiFetch.mockImplementation((_url, init) => {
+		const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+		if (body["type"] === "otta_console_act") {
+			moved = true;
+			return Promise.resolve(json({ ok: true, notice: null }));
+		}
+		return Promise.resolve(moved ? unpricedDetail("EUR", { onHand: 29 }) : unpricedDetail(null));
+	});
+	const c = await mountPanel();
+	expect(c.querySelector('[data-testid="store-currency-unknown"]')).not.toBeNull();
+	await type(input(c, "Add or remove stock"), "5");
+	await fire(button(c, "Add"), "click");
+	await flush();
+	expect(c.querySelector('[data-testid="store-currency-unknown"]')).toBeNull();
+	expect((input(c, "Currency") as unknown as HTMLSelectElement).value).toBe("EUR");
+});
+
 test("after an initial failed read, picking a currency clears the prompt", async () => {
 	apiFetch.mockImplementation(() => Promise.resolve(unpricedDetail(null)));
 	const c = await mountPanel();

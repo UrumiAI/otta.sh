@@ -86,6 +86,36 @@ describe("the draft", () => {
 		expect(draftFromRecord(BASE, "EUR").currency).toBe(BASE.currency);
 	});
 
+	test("a currency PICKED on an unpriced product survives a re-read, even with the price still blank", () => {
+		const unpriced: ProductRecord = {
+			...BASE,
+			priceCents: null,
+			currency: null,
+			compareAtCents: null,
+			unitCostCents: null,
+		};
+		const picked = { ...draftFromRecord(unpriced, "EUR"), currency: "JPY" };
+		const { draft, conflict } = mergeDraft(unpriced, { ...unpriced, onHand: 99 }, picked, "EUR");
+		expect(conflict).toBe(false);
+		expect(draft.currency).toBe("JPY");
+		// Still not "dirty" on its own — nothing would be sent without a price.
+		expect(isDraftDirty(draftFromRecord(unpriced, "EUR"), picked)).toBe(false);
+	});
+
+	test("an unknown store currency that becomes known is adopted by a draft still on none, and never overrides a pick", () => {
+		const unpriced: ProductRecord = {
+			...BASE,
+			priceCents: null,
+			currency: null,
+			compareAtCents: null,
+			unitCostCents: null,
+		};
+		const untouched = draftFromRecord(unpriced, "");
+		expect(mergeDraft(unpriced, unpriced, untouched, "", "EUR").draft.currency).toBe("EUR");
+		const picked = { ...untouched, currency: "GBP" };
+		expect(mergeDraft(unpriced, unpriced, picked, "", "EUR").draft.currency).toBe("GBP");
+	});
+
 	test("the picker offers a saved code the table no longer lists, first, so the select has a matching option", () => {
 		expect(currencyChoicesWith("USD")).toBe(CURRENCY_CHOICES);
 		expect(currencyChoicesWith("XYZ")).toEqual(["XYZ", ...CURRENCY_CHOICES]);

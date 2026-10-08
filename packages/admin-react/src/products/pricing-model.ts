@@ -102,11 +102,18 @@ function canonical(field: DraftField, value: string, currency: string): string {
 	return units === null ? trimmed : formatMinorUnitsInput(units, currency);
 }
 
-function changedFields(saved: PricingDraft, draft: PricingDraft): DraftField[] {
+function changedFields(
+	saved: PricingDraft,
+	draft: PricingDraft,
+	opts: { lonePickedCurrency?: boolean } = {},
+): DraftField[] {
 	return (Object.keys(saved) as DraftField[]).filter((field) => {
-		// The currency only travels WITH a price: picked on its own for a product
-		// that has none, the save would send nothing, so it is not a change.
-		if (field === "currency" && draft.price.trim().length === 0) return false;
+		// For DIRTINESS the currency only travels WITH a price: picked on its own
+		// for a product that has none, the save would send nothing, so it is not a
+		// change. For a MERGE it is (`lonePickedCurrency`): the merchant chose it,
+		// and the price they type next means it.
+		if (field === "currency" && draft.price.trim().length === 0 && opts.lonePickedCurrency !== true)
+			return false;
 		// Nor is a weight or size typed before switching to digital: it is not sent.
 		if (draft.productKind === "digital" && SIZE_FIELDS.has(field)) return false;
 		return (
@@ -135,15 +142,28 @@ export function mergeDraft(
 	next: ProductRecord,
 	draft: PricingDraft,
 	storeCurrency: string = DEFAULT_STORE_CURRENCY,
+	/** The store currency the NEWER read carried (it can move, e.g. from unknown
+	 *  `""` to a value); defaults to the one the form was seeded with. */
+	nextStoreCurrency: string = storeCurrency,
 ): { draft: PricingDraft; conflict: boolean } {
 	const before = draftFromRecord(previous, storeCurrency);
-	const after = draftFromRecord(next, storeCurrency);
-	const mine = changedFields(before, draft);
+	const after = draftFromRecord(next, nextStoreCurrency);
+	// A currency the merchant PICKED on an unpriced product is theirs even with
+	// the price still blank: a re-read must not reset it to the store currency,
+	// or the price they type next would be saved in a currency they did not mean.
+	const mine = changedFields(before, draft, { lonePickedCurrency: previous.currency === null });
 	// A clash takes the store's value for THAT field; the merchant's other edits
 	// survive, so a conflict on the weight does not throw away a typed price.
 	const merged: Record<string, string> = { ...after };
 	let conflict = false;
 	for (const field of mine) {
+		// The picked currency of a product STILL unpriced cannot clash: the only
+		// "other side" is a moved store-currency default, which is not a value
+		// anyone saved. (Priced meanwhile ⇒ the ordinary comparison below.)
+		if (field === "currency" && next.currency === null) {
+			merged[field] = draft[field];
+			continue;
+		}
 		if (
 			canonical(field, before[field], before.currency) !==
 			canonical(field, after[field], after.currency)
