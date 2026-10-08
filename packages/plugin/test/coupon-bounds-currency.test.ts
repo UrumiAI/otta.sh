@@ -168,3 +168,71 @@ describe("createCoupon — a percentage coupon's currency goes with its bounds",
 		expect((await rules().createCoupon({ ...base, id: "c-plain", code: "PLAIN" })).ok).toBe(true);
 	});
 });
+
+describe("the rules client is the single source of the bounds-currency rules", () => {
+	test("a NEW cap on an unbound coupon without a currency throws the same typed refusal as create", async () => {
+		await seed(null);
+		await expect(
+			rules().updateCoupon("c-pct", { rateBps: 1000, capCents: 500, currency: null }),
+		).rejects.toMatchObject({
+			code: "INVALID_INPUT",
+			field: "currency",
+			reason: "is required on a percentage coupon with a cap or minimum spend",
+		});
+		expect((await stored())?.capCents).toBeNull();
+	});
+
+	test("a MINIMUM alone is enough to carry a currency, on create and on edit alike", async () => {
+		const created = await rules().createCoupon({
+			id: "c-min",
+			code: "MIN10",
+			type: "percentage",
+			rateBps: 1000,
+			minSubtotalCents: 3000,
+			currency: "JPY",
+		});
+		expect(created.ok).toBe(true);
+		await seed(null);
+		expect(
+			(
+				await rules().updateCoupon("c-pct", {
+					rateBps: 1000,
+					minSubtotalCents: 3000,
+					currency: "JPY",
+				})
+			).ok,
+		).toBe(true);
+		expect(await stored()).toMatchObject({ minSubtotalCents: 3000, currency: "JPY" });
+	});
+});
+
+describe("retireCoupon never leaves a bound coupon without its bounds", () => {
+	test("RACE: a bind (with its cap) landing between retire's read and write is kept — retire re-reads and retires the bound coupon", async () => {
+		await seed(null);
+		const { ctx, ran } = interleavedCtx(async () => {
+			const bound = await harness.stores.couponStore.update("c-pct", {
+				bindCurrency: currency("JPY"),
+				expectCurrency: null,
+				amountCents: null,
+				rateBps: 1000,
+				capCents: cents(300),
+				minSubtotalCents: null,
+				startsAt: null,
+				expiresAt: null,
+				maxUses: null,
+				maxUsesPerCustomer: null,
+			});
+			expect(bound.ok).toBe(true);
+		});
+		const retired = await rules(ctx).retireCoupon("c-pct");
+		expect(ran()).toBe(true);
+		expect(retired.ok).toBe(true);
+		// Without the precondition retire would have written cap null onto the JPY
+		// coupon: bound, with nothing in that currency.
+		expect(await stored()).toMatchObject({
+			currency: "JPY",
+			capCents: 300,
+			expiresAt: clock.now().toISOString(),
+		});
+	});
+});

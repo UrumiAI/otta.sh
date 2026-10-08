@@ -20,6 +20,7 @@
  */
 import {
 	SUPPORTED_CURRENCIES,
+	currencyInfo,
 	formatAmount,
 	formatMinorUnitsInput,
 	isSupportedCurrency,
@@ -63,7 +64,7 @@ export const CURRENCY_CHOICES: readonly string[] = [
 
 /** The picker's label for a code: `USD — US Dollar`. */
 export function currencyChoiceLabel(code: string): string {
-	const row = SUPPORTED_CURRENCIES.find((r) => r.code === code);
+	const row = currencyInfo(code);
 	if (row === undefined) return code;
 	const note = checkoutPaymentWarning(code) === null ? "" : ` (${NOT_YET_PAYABLE_AT_CHECKOUT})`;
 	return `${code} — ${row.name}${note}`;

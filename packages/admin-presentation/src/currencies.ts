@@ -94,6 +94,11 @@ export function isSupportedCurrency(code: string): code is SupportedCurrencyCode
 /** The table's minor-unit exponent for a supported code, or `undefined` for any
  *  other code — never a guess. A caller that must still handle an unlisted code
  *  (old data on a read path) decides its own fallback. */
+/** The table's row for a listed code (O(1)), or `undefined`. */
+export function currencyInfo(code: string): CurrencyInfo | undefined {
+	return BY_CODE.get(code);
+}
+
 export function currencyDigits(code: string): 0 | 2 | 3 | undefined {
 	return BY_CODE.get(code)?.digits;
 }

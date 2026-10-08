@@ -98,6 +98,7 @@ export { cents, currency, type Cents, type Currency } from "./money.js";
 export {
 	SUPPORTED_CURRENCIES,
 	currencyDigits,
+	currencyInfo,
 	inputMinorUnitDigits,
 	NOT_YET_PAYABLE_AT_CHECKOUT,
 	checkoutPaymentWarning,

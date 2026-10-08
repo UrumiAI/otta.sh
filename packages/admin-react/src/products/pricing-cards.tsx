@@ -669,6 +669,7 @@ export function PricingStockEditor({ productId }: { productId: string }): React.
 		Object.entries(allProblems).filter(([field]) => touched.has(field as DraftField)),
 	);
 	const currency = p.currency ?? d.currency;
+	const paymentWarning = checkoutPaymentWarning(currency);
 	const priced = p.priceCents !== null;
 	const sale = salePreview(d.price, d.compareAt, currency);
 	const margin = marginSummary(d.price, d.unitCost, currency);
@@ -925,9 +926,9 @@ export function PricingStockEditor({ productId }: { productId: string }): React.
 								</span>
 							</div>
 						)}
-						{checkoutPaymentWarning(currency) !== null && (
+						{paymentWarning !== null && (
 							<p className="otta-pricing-hint" data-testid="currency-payment-warning">
-								{checkoutPaymentWarning(currency)}
+								{paymentWarning}
 							</p>
 						)}
 						<div className="otta-pricing-field">

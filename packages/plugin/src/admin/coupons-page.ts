@@ -37,7 +37,8 @@ import {
 	NO_CURRENCY,
 	parseMinorUnitsInput,
 } from "./money-input.js";
-import { isIdToken } from "../commerce/commerce-input.js";
+import { isCommerceInputError, isIdToken } from "../commerce/commerce-input.js";
+import { COUPON_CURRENCY_REFUSAL } from "./coupon-currency-rules.js";
 import { idInputProblem } from "./id-input.js";
 import { isSupportedCurrency } from "@otta-sh/domain";
 import { formatBpsAsPercent, parsePercentToBps } from "./percent-input.js";
@@ -990,7 +991,14 @@ function detailBlocks(
 			["Discount", couponDiscountSummary(detail)],
 			["Type", couponTypeInputValue(detail.type)],
 			["Uses", couponUsesSummary(detail.usesCount, detail.maxUses)],
-			["Currency", detail.currency ?? "— (currency-agnostic)"],
+			[
+				"Currency",
+				detail.currency === null
+					? "— (currency-agnostic)"
+					: detail.type === "percentage"
+						? `${detail.currency} — applies only to carts in ${detail.currency}`
+						: detail.currency,
+			],
 			// THE LAST RAW WIRE TIMESTAMP IN THE CONSOLE, and the reason INC-13's
 			// rule had to ship as a separate assertion with this screen unwired
 			// from it. It reads `1 Jun 2026, 00:00 UTC` now, like every other
@@ -1190,41 +1198,46 @@ const BOUNDS_CURRENCY_UNNEEDED =
 const LEGACY_BOUNDS_HINT =
 	" — set before caps had a currency: what you type is ×100 in the cart currency's smallest unit (clear it and save to set a currency)";
 
+const LEGACY_BOUNDS_REFUSAL =
+	"This coupon's cap or minimum spend was set before they carried a currency, so one can't be added to them. Clear the cap and minimum spend and save, then set them again with a currency.";
+const STALE_FORM =
+	"This form is out of date — nothing was saved. Reload the coupon and make the change again.";
+
 /**
- * The currency a percentage coupon's cap and minimum spend are typed in, and
- * the currency this save BINDS to the coupon (`bind`, null when none).
- *
- *  - A coupon with a stored currency uses it; it never changes.
- *  - With none, a submitted bounds currency must be one the store supports. It
- *    is refused on a coupon whose cap / minimum were set BEFORE bounds carried a
- *    currency (`legacyBounds`): binding one would silently re-read those stored
- *    amounts in a different exponent.
- *  - With none submitted, amounts keep the hundredths scale a currency-less
- *    bound always had ({@link NO_CURRENCY}); whether that is allowed is the
- *    caller's {@link BOUNDS_CURRENCY_REQUIRED} check.
+ * The currency a percentage coupon's cap and minimum spend are PARSED in on
+ * this save, and the one SENT to the rules client: the coupon's own (the form's
+ * rendered watermark), else a currency typed beside them (parsed in only when
+ * the store supports it), else none — {@link NO_CURRENCY}, hundredths. Whether
+ * that currency may be bound, or is needed at all, is the RULES CLIENT's call
+ * (its typed refusals, `COUPON_CURRENCY_REFUSAL`); this screen only maps them
+ * to copy ({@link couponCurrencyRefusalCopy}).
  */
-function resolveBoundsCurrency(
+function boundsCurrency(
 	values: Record<string, unknown>,
-	stored: string | null,
-	legacyBounds: boolean,
-): { ok: true; currency: string; bind: string | null } | { ok: false; message: string } {
-	if (stored !== null) return { ok: true, currency: stored, bind: null };
+	rendered: string,
+): { parse: string; send: string | null } {
+	if (rendered !== "") return { parse: rendered, send: rendered };
 	const raw = (readString(values[BOUNDS_CURRENCY]) ?? "").trim().toUpperCase();
-	if (raw.length === 0) return { ok: true, currency: NO_CURRENCY, bind: null };
-	if (!/^[A-Z]{3}$/.test(raw) || !isSupportedCurrency(raw)) {
-		return {
-			ok: false,
-			message: unsupportedCurrencyMessage(raw),
-		};
+	if (raw.length === 0) return { parse: NO_CURRENCY, send: null };
+	return { parse: isSupportedCurrency(raw) ? raw : NO_CURRENCY, send: raw };
+}
+
+/** The screen's copy for a rules-client refusal of a coupon's currency, or
+ *  `undefined` for any other error (which is rethrown to the scaffold). */
+function couponCurrencyRefusalCopy(err: unknown, sent: string | null): string | undefined {
+	if (!isCommerceInputError(err) || err.field !== "currency") return undefined;
+	switch (err.reason) {
+		case COUPON_CURRENCY_REFUSAL.boundsNeedCurrency:
+			return BOUNDS_CURRENCY_REQUIRED;
+		case COUPON_CURRENCY_REFUSAL.currencyNeedsBounds:
+			return BOUNDS_CURRENCY_UNNEEDED;
+		case COUPON_CURRENCY_REFUSAL.legacyBounds:
+			return LEGACY_BOUNDS_REFUSAL;
+		case COUPON_CURRENCY_REFUSAL.unsupported:
+			return unsupportedCurrencyMessage(sent ?? "");
+		default:
+			return "Currency must be a 3-letter ISO-4217 code like USD.";
 	}
-	if (legacyBounds) {
-		return {
-			ok: false,
-			message:
-				"This coupon's cap or minimum spend was set before they carried a currency, so one can't be added to them. Clear the cap and minimum spend and save, then set them again with a currency.",
-		};
-	}
-	return { ok: true, currency: raw, bind: raw };
 }
 
 /**
@@ -1312,19 +1325,23 @@ function editCouponForm(detail: CouponSummaryWire): FormBlock {
 		label: "Edit spend and use limits",
 		initial_value: false,
 	});
-	// A percentage coupon whose cap / minimum predate bound currencies: they are
-	// read in hundredths, and no currency can be bound to it (see
-	// {@link resolveBoundsCurrency}), so it gets a hint and no currency field.
+	// A percentage coupon whose cap / minimum predate bound currencies: they keep
+	// their old reading, and the rules client refuses to bind a currency to it,
+	// so it gets a hint and no currency field.
 	const legacyBounds =
 		detail.type === "percentage" &&
 		detail.currency === null &&
 		(detail.capCents !== null || detail.minSubtotalCents !== null);
 	const legacyHint = legacyBounds ? LEGACY_BOUNDS_HINT : "";
+	// A BOUND percentage coupon's cap and minimum are amounts in its currency, so
+	// their labels name it, as "Amount off (JPY)" does for a fixed one.
+	const boundIn =
+		detail.type === "percentage" && detail.currency !== null ? `, ${detail.currency}` : "";
 	if (detail.type === "percentage") {
 		editFields.push(
 			limitField(
 				"cap",
-				`Discount cap (optional)${legacyHint}`,
+				`Discount cap (optional${boundIn})${legacyHint}`,
 				detail.capCents === null
 					? undefined
 					: formatMinorUnitsInput(detail.capCents, detail.currency ?? NO_CURRENCY),
@@ -1340,7 +1357,7 @@ function editCouponForm(detail: CouponSummaryWire): FormBlock {
 	editFields.push(
 		limitField(
 			"minSubtotal",
-			`Minimum spend (optional)${legacyHint}`,
+			`Minimum spend (optional${boundIn})${legacyHint}`,
 			detail.minSubtotalCents === null
 				? undefined
 				: formatMinorUnitsInput(detail.minSubtotalCents, detail.currency ?? NO_CURRENCY),
@@ -1707,9 +1724,7 @@ function parseEconomics(
 		// create whose currency is not yet usable is still read — in hundredths, as
 		// before — so an unreadable amount is reported first, as it always was.
 		const createCurrency =
-			mode === "create" && /^[A-Z]{3}$/.test(currencyRaw) && isSupportedCurrency(currencyRaw)
-				? currencyRaw
-				: null;
+			mode === "create" && isSupportedCurrency(currencyRaw) ? currencyRaw : null;
 		const amountCurrency = mode === "create" ? (createCurrency ?? NO_CURRENCY) : current.currency;
 		const amountCents = parseMinorUnitsInput(amountRaw, amountCurrency, { allowZero: false });
 		if (amountCents === null) {
@@ -1970,40 +1985,38 @@ function createCouponAction() {
 			}
 			// A percentage coupon's cap is an amount in its bounds currency.
 			const bounds =
-				type === "percentage"
-					? resolveBoundsCurrency(values, null, false)
-					: ({ ok: true, currency: NO_CURRENCY, bind: null } as const);
-			if (!bounds.ok) return err(bounds.message);
+				type === "percentage" ? boundsCurrency(values, "") : { parse: NO_CURRENCY, send: null };
 			const econ = parseEconomics(type, values, "create", {
 				...NO_CURRENT,
-				currency: bounds.currency,
+				currency: bounds.parse,
 			});
 			if (!econ.ok) return err(econ.message);
-			if (type === "percentage" && econ.capCents !== null && bounds.bind === null) {
-				return err(BOUNDS_CURRENCY_REQUIRED);
-			}
-			// A currency binds a percentage coupon ONLY with a cap: one typed with
-			// none would quietly restrict the coupon to that currency for good.
-			if (type === "percentage" && econ.capCents === null && bounds.bind !== null) {
-				return err(BOUNDS_CURRENCY_UNNEEDED);
-			}
 			// The five shared axes have no field on this form (§12.2) — a freshly
 			// created coupon is valid immediately, forever, unlimited, unrestricted.
-			const couponCurrency = type === "percentage" ? bounds.bind : econ.currency;
-			const result = await client.createCoupon({
-				id,
-				code,
-				type,
-				amountCents: econ.amountCents,
-				rateBps: econ.rateBps,
-				capCents: econ.capCents,
-				currency: couponCurrency,
-				minSubtotalCents: null,
-				startsAt: null,
-				expiresAt: null,
-				maxUses: null,
-				maxUsesPerCustomer: null,
-			});
+			// Whether a percentage coupon's currency is needed, or allowed, is the
+			// rules client's decision; its refusal comes back as this screen's copy.
+			const couponCurrency = type === "percentage" ? bounds.send : econ.currency;
+			let result: Awaited<ReturnType<AdminRulesSurface["createCoupon"]>>;
+			try {
+				result = await client.createCoupon({
+					id,
+					code,
+					type,
+					amountCents: econ.amountCents,
+					rateBps: econ.rateBps,
+					capCents: econ.capCents,
+					currency: couponCurrency,
+					minSubtotalCents: null,
+					startsAt: null,
+					expiresAt: null,
+					maxUses: null,
+					maxUsesPerCustomer: null,
+				});
+			} catch (e) {
+				const copy = couponCurrencyRefusalCopy(e, couponCurrency);
+				if (copy === undefined) throw e;
+				return err(copy);
+			}
 			// A SERVICE refusal keeps the draft too (a duplicate id is fixed by
 			// editing one field); success drops it, which is what returns the
 			// operator to the list. A collision says WHICH of the two was taken: the
@@ -2108,55 +2121,30 @@ function saveCouponAction() {
 		}
 		const err = (description: string) =>
 			showLeaf([code], { variant: "error", title: "Coupon not saved", description });
-		// THE STORED COUPON decides the currency its amounts are read in — read
-		// here, server-side, never taken from the form, so a tampered field cannot
-		// re-scale an amount.
-		const stored = await client.getCoupon(code);
-		if (stored === null || stored.id !== couponId) {
-			return showList(undefined, {
-				variant: "error",
-				title: "Coupon not found",
-				description: "This coupon no longer exists — it may have been deleted.",
-			});
-		}
-		// The watermark: the currency the form was rendered with. A mismatch means
-		// another admin bound one since — refuse before parsing anything. It can
-		// only ever cause this refusal (a tampered value is just a stale one);
-		// absent, the form predates the watermark and the client's 409 still
-		// guards the write.
+		// THE CURRENCY THE FORM WAS RENDERED WITH (empty: unbound) is the one its
+		// amounts are parsed in, and it is SENT as the edit's `currency`: the rules
+		// client compares it with the stored one, and the store re-checks it inside
+		// its compare-and-set, so a stale or tampered value can only be refused
+		// (409, "changed since you opened it") — it can never re-scale an amount
+		// that is then stored. A form without it predates the watermark: refused,
+		// to be reloaded, rather than parsed in a guessed currency.
 		const rendered = carried?.[RENDERED_CURRENCY];
-		if (rendered !== undefined && rendered !== (stored.currency ?? "")) {
-			return err(CURRENCY_MOVED);
-		}
-		const legacyBounds =
-			stored.currency === null && (stored.capCents !== null || stored.minSubtotalCents !== null);
+		if (rendered === undefined) return err(STALE_FORM);
 		const bounds =
 			type === "percentage"
-				? resolveBoundsCurrency(values, stored.currency, legacyBounds)
-				: ({ ok: true, currency: stored.currency ?? NO_CURRENCY, bind: null } as const);
-		if (!bounds.ok) return err(bounds.message);
+				? boundsCurrency(values, rendered)
+				: {
+						parse: rendered === "" ? NO_CURRENCY : rendered,
+						send: rendered === "" ? null : rendered,
+					};
 		// The coupon's current optional values, as the form itself carried them —
 		// the fallback that keeps a field which never reached this submit
 		// (a `condition`-hidden bound) at the value it was hiding.
-		const current = currentValues(carried, bounds.currency);
+		const current = currentValues(carried, bounds.parse);
 		const econ = parseEconomics(type, values, "edit", current);
 		if (!econ.ok) return err(econ.message);
 		const shared = parseSharedFields(values, current);
 		if (!shared.ok) return err(shared.message);
-		// A NEW cap or minimum on a percentage coupon needs its currency. One set
-		// before bounds carried a currency keeps working as it always did.
-		if (
-			type === "percentage" &&
-			stored.currency === null &&
-			bounds.bind === null &&
-			!legacyBounds &&
-			(econ.capCents !== null || shared.fields.minSubtotalCents !== null)
-		) {
-			return err(BOUNDS_CURRENCY_REQUIRED);
-		}
-		if (bounds.bind !== null && econ.capCents === null && shared.fields.minSubtotalCents === null) {
-			return err(BOUNDS_CURRENCY_UNNEEDED);
-		}
 		// EVERY editable key, explicitly — the inactive type's economics as
 		// explicit nulls (they are inapplicable-null by construction; type is
 		// immutable). Never rely on the wire's omit⇒null coercion.
@@ -2165,12 +2153,16 @@ function saveCouponAction() {
 			rateBps: econ.rateBps,
 			capCents: econ.capCents,
 			...shared.fields,
-			// The currency these amounts were parsed in (null: unbound, hundredths) —
-			// the client refuses the write if the stored coupon's has moved since,
-			// and a non-null one on an unbound coupon binds it.
-			currency: bounds.currency === NO_CURRENCY ? null : bounds.currency,
+			currency: bounds.send,
 		};
-		const result = await client.updateCoupon(couponId, edit);
+		let result: Awaited<ReturnType<AdminRulesSurface["updateCoupon"]>>;
+		try {
+			result = await client.updateCoupon(couponId, edit);
+		} catch (e) {
+			const copy = couponCurrencyRefusalCopy(e, bounds.send);
+			if (copy === undefined) throw e;
+			return err(copy);
+		}
 		return saveCouponOutcome(result, code, showLeaf, showList);
 	});
 }
