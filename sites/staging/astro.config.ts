@@ -13,6 +13,7 @@ import cloudflare from "@astrojs/cloudflare";
 import react from "@astrojs/react";
 import { defineConfig, fontProviders } from "astro/config";
 import emdash from "emdash/astro";
+import { parseExtraAllowedHosts } from "@otta-sh/plugin";
 import { parseDotEnv } from "./src/lib/dot-env.js";
 import { buildEmdashOptions } from "./src/emdash-options.js";
 import { assertDownloadsBucketPrivate } from "./src/lib/downloads-bucket.js";
@@ -58,6 +59,13 @@ function readDotEnv(name: string): string | undefined {
  */
 const egress = {
 	facilitatorUrl: process.env.X402_FACILITATOR_URL ?? readDotEnv("X402_FACILITATOR_URL"),
+	// OTTA_EXTRA_ALLOWED_HOSTS: comma-separated extra egress hostnames. Validated
+	// HERE so a typo fails the build loudly (parseExtraAllowedHosts throws naming
+	// the entry); the normalized list is what both the descriptor and the Vite
+	// define below receive, so they agree by construction.
+	extraAllowedHosts: parseExtraAllowedHosts(
+		process.env.OTTA_EXTRA_ALLOWED_HOSTS ?? readDotEnv("OTTA_EXTRA_ALLOWED_HOSTS"),
+	),
 };
 
 /**
@@ -262,6 +270,8 @@ export default defineConfig({
 			// undeclared, and `""` is what both the plugin's `typeof` guard and
 			// `hostnameOf` read as "this provider is unconfigured".
 			__OTTA_X402_FACILITATOR_URL__: JSON.stringify(egress.facilitatorUrl ?? ""),
+			// Validated extra egress hosts, comma-joined; "" when none (see `egress`).
+			__OTTA_EXTRA_ALLOWED_HOSTS__: JSON.stringify(egress.extraAllowedHosts.join(",")),
 		},
 		ssr: {
 			// UNCONDITIONAL: if @otta-sh/plugin is ever externalized the defines

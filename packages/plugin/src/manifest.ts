@@ -62,6 +62,61 @@ export interface InProcessEgressUrls {
 	/** The x402 facilitator's URL. Nothing calls it between ADR-0028 increments 2
 	 *  and 6; increment 6's `/verify` and `/settle` client uses it as a base URL. */
 	facilitatorUrl?: string | undefined;
+	/** Operator-supplied extra egress hostnames (`OTTA_EXTRA_ALLOWED_HOSTS`): a
+	 *  comma-separated string or an array. Each entry must be a plain DNS
+	 *  hostname ({@link normalizeExtraHost}); `resolveAllowedHosts` silently
+	 *  grants nothing for an invalid one (fail-closed) — the BUILD is what throws,
+	 *  via {@link parseExtraAllowedHosts}. */
+	extraAllowedHosts?: string | readonly string[] | undefined;
+}
+
+/** One DNS label: letters/digits/hyphens, not starting or ending with a hyphen. */
+const DNS_LABEL = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
+
+/** A trimmed, lowercased extra host if it is a plain DNS hostname, else
+ *  `undefined`. Accepts only dot-separated letter/digit/hyphen labels with at
+ *  least one dot. That alone rejects wildcards (`*`), schemes, ports, paths,
+ *  userinfo, IPv6 literals and bare `localhost`; additionally rejected are IPv4
+ *  literals (a purely numeric last label) and `*.localhost`. Never throws. */
+export function normalizeExtraHost(entry: string): string | undefined {
+	const host = entry.trim().toLowerCase();
+	if (host.length === 0 || host.length > 253) return undefined;
+	const labels = host.split(".");
+	if (labels.length < 2) return undefined;
+	if (!labels.every((label) => DNS_LABEL.test(label))) return undefined;
+	const tld = labels[labels.length - 1] ?? "";
+	if (/^[0-9]+$/.test(tld) || tld === "localhost") return undefined;
+	return host;
+}
+
+/** Split the raw `OTTA_EXTRA_ALLOWED_HOSTS` value into trimmed, non-empty entries
+ *  (not yet validated). */
+function splitExtraHosts(raw: string | readonly string[] | undefined): string[] {
+	if (raw === undefined) return [];
+	const parts = typeof raw === "string" ? raw.split(",") : raw;
+	return parts.map((part) => part.trim()).filter((part) => part.length > 0);
+}
+
+/**
+ * BUILD-TIME validator for `OTTA_EXTRA_ALLOWED_HOSTS`: returns the normalized,
+ * de-duplicated hostnames in given order, and THROWS naming the first bad
+ * entry — an operator typo should fail the build loudly rather than silently
+ * leave a host ungranted. Called from `sites/staging/astro.config.ts`;
+ * `resolveAllowedHosts` itself never throws.
+ */
+export function parseExtraAllowedHosts(raw: string | readonly string[] | undefined): string[] {
+	const out = new Set<string>();
+	for (const entry of splitExtraHosts(raw)) {
+		const host = normalizeExtraHost(entry);
+		if (host === undefined) {
+			throw new Error(
+				`OTTA_EXTRA_ALLOWED_HOSTS: invalid entry ${JSON.stringify(entry)}. Each entry must be a plain DNS hostname ` +
+					'like "api.example.com" (comma-separated; no wildcard, scheme, port, path, IP address or localhost).',
+			);
+		}
+		out.add(host);
+	}
+	return [...out];
 }
 
 /** A URL's hostname, or `undefined` for anything unparseable — including an
@@ -99,6 +154,13 @@ export function resolveAllowedHosts(egress: InProcessEgressUrls = {}): string[] 
 	const hosts = new Set<string>([STRIPE_API_HOST]);
 	const facilitator = hostnameOf(egress.facilitatorUrl);
 	if (facilitator !== undefined) hosts.add(facilitator);
+	// Operator extras, after the fixed hosts, in given order. Invalid entries
+	// grant nothing (fail-closed); the build-time `parseExtraAllowedHosts` is the
+	// loud path.
+	for (const entry of splitExtraHosts(egress.extraAllowedHosts)) {
+		const host = normalizeExtraHost(entry);
+		if (host !== undefined) hosts.add(host);
+	}
 	return [...hosts];
 }
 
@@ -114,6 +176,9 @@ export function resolveAllowedHosts(egress: InProcessEgressUrls = {}): string[] 
  * and unroutable-around.
  */
 declare const __OTTA_X402_FACILITATOR_URL__: string | undefined;
+/** Comma-separated `OTTA_EXTRA_ALLOWED_HOSTS`, validated at build time by
+ *  `parseExtraAllowedHosts` and baked beside the facilitator URL. */
+declare const __OTTA_EXTRA_ALLOWED_HOSTS__: string | undefined;
 
 /** The raw defines, before resolution. Not exported: every consumer must see
  *  {@link IN_PROCESS_EGRESS_URLS}, which agrees with `ALLOWED_HOSTS` by
@@ -121,6 +186,8 @@ declare const __OTTA_X402_FACILITATOR_URL__: string | undefined;
 const BAKED_EGRESS_URLS: InProcessEgressUrls = {
 	facilitatorUrl:
 		typeof __OTTA_X402_FACILITATOR_URL__ === "string" ? __OTTA_X402_FACILITATOR_URL__ : undefined,
+	extraAllowedHosts:
+		typeof __OTTA_EXTRA_ALLOWED_HOSTS__ === "string" ? __OTTA_EXTRA_ALLOWED_HOSTS__ : undefined,
 };
 
 /**
@@ -144,6 +211,7 @@ export function resolveInProcessEgress(egress: InProcessEgressUrls = {}): InProc
 	const grantable = (url: string | undefined): string | undefined =>
 		hostnameOf(url) === undefined ? undefined : url;
 	const facilitatorUrl = grantable(egress.facilitatorUrl);
+	// Extras are hosts, not URLs: no consumer holds them, so they are not echoed.
 	return facilitatorUrl !== undefined ? { facilitatorUrl } : {};
 }
 
