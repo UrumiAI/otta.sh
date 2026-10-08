@@ -103,6 +103,8 @@ import {
 	ORDER_STATE_MACHINE,
 	orderHasEmailRecipient,
 	orderId as toOrderId,
+	orderNumber,
+	orderNumberSearchText,
 	recordFulfillment as recordFulfillmentUseCase,
 	refundOrder as refundOrderUseCase,
 	resolveReconciliation as resolveReconciliationUseCase,
@@ -1040,6 +1042,7 @@ function isStateRow(row: OutboxEmail, state: OrderState): boolean {
 function toOrderSummaryWire(summary: OrderSummary): OrderSummaryWire {
 	return {
 		id: summary.id,
+		orderNumber: orderNumber(summary.id),
 		state: summary.state,
 		currency: summary.currency,
 		buyerRef: summary.buyerRef,
@@ -1058,6 +1061,7 @@ function toOrderSummaryWire(summary: OrderSummary): OrderSummaryWire {
 function toOrderDetailWire(order: Order): OrderDetailWire {
 	return {
 		id: order.id,
+		orderNumber: orderNumber(order.id),
 		state: order.state,
 		currency: order.currency,
 		paymentMethod: order.paymentMethod,
@@ -1247,7 +1251,10 @@ function toDomainFilter(filter: OrdersListFilter): OrderListFilter {
 	}
 	if (filter.to !== undefined && filter.to.length > 0) out.to = requireInstant("to", filter.to);
 	if (filter.search !== undefined && filter.search.length > 0) {
-		out.search = requireBoundedText("search", filter.search, 1, 200);
+		// An order number typed back as printed ("#3F9A2") searches as the id prefix it
+		// is (ADR-0033): the `#` comes off here, and the store's anchored, case-folded
+		// id arm does the rest — possibly matching several orders, which is the point.
+		out.search = orderNumberSearchText(requireBoundedText("search", filter.search, 1, 200));
 	}
 	return out;
 }

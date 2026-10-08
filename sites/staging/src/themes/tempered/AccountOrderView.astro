@@ -43,6 +43,10 @@ const { order, errorMessage, signedInAs } = Astro.props.model;
 			    shopper bought, and the receipt below says the rest. */}
 			<h1 class="account-order-title">{order.label}</h1>
 			<p class="account-order-state">
+				{/* The short number its emails carry (ADR-0033) — never the id. */}
+				{"Order "}
+				<span class="u-mono">{order.number}</span>
+				{" · "}
 				{order.state}
 				{order.placed !== null && (
 					<>

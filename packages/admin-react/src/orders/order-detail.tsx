@@ -1198,6 +1198,19 @@ export function OrderDetail({
 						["Total", formatAmount(order.totals.totalCents, order.totals.currency)],
 						["Placed", formatTimestamp(order.createdAt)],
 						["Payment", order.paymentMethod ?? "—"],
+						...(order.orderNumber !== undefined
+							? [
+									[
+										// The shopper's label for this order (ADR-0033) — what a buyer
+										// quotes from their email. Display only; the full id below is
+										// the identity.
+										"Order number",
+										<span key="number" data-testid="detail-order-number">
+											{order.orderNumber}
+										</span>,
+									] as const,
+								]
+							: []),
 						[
 							// §1.3: the full id remains obtainable, and on the React tier it
 							// is also COPYABLE — the affordance the Block Kit surface could

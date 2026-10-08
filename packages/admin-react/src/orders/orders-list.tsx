@@ -1031,6 +1031,18 @@ export function OrdersList({
 	// row is unique among the rows the operator can see. `shortIdsFor` is total
 	// and deterministic in the SET, so re-rendering cannot renumber the page.
 	const shortIds = React.useMemo(() => shortIdsFor(orders.map((o) => o.id)), [orders]);
+	// The order NUMBER is the identity cell's text (ADR-0033): the label the
+	// shopper reads off their email, so an operator and a buyer name an order the
+	// same way. It is only five characters, so two rows CAN share one; those rows
+	// also show their shortest-unique prefix (§1.3's rule, above) so no two rows on
+	// screen ever read the same.
+	const sharedNumbers = React.useMemo(() => {
+		const seen = new Map<string, number>();
+		for (const o of orders) {
+			if (o.orderNumber !== undefined) seen.set(o.orderNumber, (seen.get(o.orderNumber) ?? 0) + 1);
+		}
+		return new Set([...seen].filter(([, n]) => n > 1).map(([number]) => number));
+	}, [orders]);
 	const vocabulary = page?.vocabulary;
 	const statusAny = vocabulary?.statusAny ?? "any";
 	const periodLabel =
@@ -1730,7 +1742,12 @@ export function OrdersList({
 										}}
 										style={orderLinkStyle}
 									>
-										{prefix}
+										{order.orderNumber ?? prefix}
+										{order.orderNumber !== undefined && sharedNumbers.has(order.orderNumber) && (
+											<span data-testid="order-number-disambiguator" style={{ opacity: 0.72 }}>
+												{` ${prefix}`}
+											</span>
+										)}
 									</a>
 									<CopyIdButton id={order.id} testId="copy-order-id" revealOnRowHover />
 								</td>

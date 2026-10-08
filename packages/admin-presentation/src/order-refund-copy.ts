@@ -39,8 +39,8 @@ export const UNNAMED_REFUND_RECIPIENT = "this order's buyer";
  * SHARE, so a dialog naming only those is a dialog that cannot tell the operator
  * which of two candidates the money is about to leave. `shortIdFixed` is used
  * rather than `shortIdsFor` because a confirm renders against one record with no
- * candidate set in hand; at 8 characters it is a visible superset of the
- * 4-character prefix the operator just read in the list row.
+ * candidate set in hand; at 8 characters, upper-cased, it is a visible superset
+ * of the order number (`#` + 5 characters) the operator just read in the list row.
  *
  * QUOTES MARK UNTRUSTED INPUT, AND NOTHING ELSE (review round 3, finding 2).
  * `recipient` may be caller-supplied, unverified free text — this function
@@ -75,7 +75,9 @@ export function refundConfirmText(
 	const consequence = refundable
 		? "This sends the money back through Stripe and cannot be reversed."
 		: "This records a refund made out of band — it does not move money.";
-	const order = `Order #${shortIdFixed(orderId, SHORT_ID_CONFIRM_LEN)}`;
+	// Upper-cased, so it visibly EXTENDS the order number the list row printed
+	// ("#7E4CE" there, "#7E4CE728" here — ADR-0033).
+	const order = `Order #${shortIdFixed(orderId, SHORT_ID_CONFIRM_LEN).toUpperCase()}`;
 	const named =
 		recipient === UNNAMED_REFUND_RECIPIENT
 			? `${order} — refund ${amount} to ${recipient}? ${consequence}`

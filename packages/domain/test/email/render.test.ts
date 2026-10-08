@@ -315,10 +315,11 @@ describe("renderEmail customer-login-link", () => {
 	});
 });
 
-// The buyer never sees the order id (a UUID names nothing they bought): every
+// The buyer never sees the whole order id (a UUID names nothing they bought): every
 // order email names the order by its products — `orderLabel` over the lines
-// `buildOrderEmailData` already passes — in the subject AND both bodies. The id
-// stays in `data.orderId` for the dispatcher; it simply is not rendered.
+// `buildOrderEmailData` already passes — and by its short number (`orderNumber`,
+// ADR-0033), in the subject AND both bodies. The id stays in `data.orderId` for
+// the dispatcher; only its first five characters are rendered.
 describe("renderEmail names the order by its products, never its id", () => {
 	const ORDER_ID = "0b6f1c2e-9a4d-4e57-8f1a-3c2d1e0f9a8b";
 	const templates = [
@@ -360,16 +361,16 @@ describe("renderEmail names the order by its products, never its id", () => {
 			...data,
 			lines: [{ sku: "TEE-M", title: "Otta Tee", quantity: 3, unitPriceCents: 1500 }],
 		});
-		expect(rendered.subject).toBe("Order confirmed — Otta Tee × 3");
-		expect(rendered.text).toContain("Order: Otta Tee × 3");
+		expect(rendered.subject).toBe("Order confirmed #0B6F1 — Otta Tee × 3");
+		expect(rendered.text).toContain("Order #0B6F1: Otta Tee × 3");
 	});
 
 	test("no lines (or no usable titles) falls back to 'Your order', still without the id", () => {
 		const rendered = renderEmail("order-confirmation", { ...data, lines: [] });
-		expect(rendered.subject).toBe("Order confirmed — Your order");
+		expect(rendered.subject).toBe("Order confirmed #0B6F1 — Your order");
 		expect(rendered.text).not.toContain(ORDER_ID);
 		const malformed = renderEmail("order-confirmation", { ...data, lines: "not-an-array" });
-		expect(malformed.subject).toBe("Order confirmed — Your order");
+		expect(malformed.subject).toBe("Order confirmed #0B6F1 — Your order");
 	});
 
 	test("a title with CR/LF or control characters never breaks the subject onto two lines", () => {
@@ -377,7 +378,7 @@ describe("renderEmail names the order by its products, never its id", () => {
 			...data,
 			lines: [{ sku: "X", title: "Otta\r\nTee\u0000", quantity: 1, unitPriceCents: 100 }],
 		});
-		expect(rendered.subject).toBe("Order confirmed — Otta Tee");
+		expect(rendered.subject).toBe("Order confirmed #0B6F1 — Otta Tee");
 		// oxlint-disable-next-line no-control-regex -- asserting control characters are absent is the point
 		expect(rendered.subject).not.toMatch(/[\u0000-\u001f\u007f]/);
 	});
@@ -413,8 +414,8 @@ describe("renderEmail refund emails", () => {
 			noticeAmountCents: 600,
 			noticeCurrency: "USD",
 		});
-		// Named by its products (order-label-not-id); with no lines, "Your order".
-		expect(rendered.subject).toBe("Refund issued — Your order");
+		// Named by its number and products (ADR-0033); with no lines, "Your order".
+		expect(rendered.subject).toBe("Refund issued #ORD-1 — Your order");
 		// Neutral: it also announces a FULL refund on an order that cannot flip to
 		// refunded (a cancellation that lost the race to a shipment).
 		expect(rendered.text).toContain("We've issued a refund for your order.");
@@ -436,5 +437,71 @@ describe("renderEmail refund emails", () => {
 		});
 		expect(rendered.text).toContain("Your order has been refunded.");
 		expect(rendered.text).toContain("Refunded: [USD 2400]");
+	});
+});
+
+// The order NUMBER (ADR-0033): "#" + the id's first five characters, upper-cased —
+// the same `orderNumber` the storefront and the admin console print, so a buyer
+// quoting it to the merchant quotes what the console shows.
+describe("renderEmail carries the order number", () => {
+	const ORDER_ID = "3f9a2b1c-7d4e-4a5b-9c8d-0123456789ab";
+	const templates = [
+		"order-confirmation",
+		"order-processing",
+		"order-shipped",
+		"order-delivered",
+		"order-completed",
+		"order-cancelled",
+		"order-refunded",
+		"order-expired",
+		"order-late-payment-refunded",
+		"order-refund-issued",
+	] as const;
+	const data = {
+		orderId: ORDER_ID,
+		state: "paid",
+		currency: "USD",
+		totalCents: 1500,
+		noticeAmountCents: 1500,
+		noticeCurrency: "USD",
+		lines: [{ sku: "TEE-M", title: "Otta Tee", quantity: 1, unitPriceCents: 1500 }],
+	};
+
+	test.each(templates)("%s: the number is in the subject, text and HTML", (template) => {
+		const rendered = renderEmail(template, data);
+		expect(rendered.subject).toContain("#3F9A2 — Otta Tee");
+		expect(rendered.text).toContain("Order #3F9A2: Otta Tee");
+		expect(rendered.html).toContain("<strong>Order #3F9A2</strong><br>Otta Tee");
+		for (const part of [rendered.subject, rendered.text, rendered.html]) {
+			expect(part).not.toContain(ORDER_ID);
+		}
+	});
+
+	test("the confirmation subject reads template, number, products", () => {
+		expect(renderEmail("order-confirmation", data).subject).toBe(
+			"Order confirmed #3F9A2 — Otta Tee",
+		);
+	});
+
+	test("data without an order id still renders, named by its products alone", () => {
+		const { orderId: _omit, ...rest } = data;
+		const rendered = renderEmail("order-confirmation", rest);
+		expect(rendered.subject).toBe("Order confirmed — Otta Tee");
+		expect(rendered.text).toContain("Order: Otta Tee");
+		expect(rendered.text).not.toContain("#");
+		const notAString = renderEmail("order-confirmation", { ...data, orderId: 42 });
+		expect(notAString.subject).toBe("Order confirmed — Otta Tee");
+	});
+
+	test("a hostile id cannot break the subject or inject markup", () => {
+		const rendered = renderEmail("order-confirmation", { ...data, orderId: "<b>\r\nX" });
+		// oxlint-disable-next-line no-control-regex -- asserting control characters are absent is the point
+		expect(rendered.subject).not.toMatch(/[\u0000-\u001f\u007f]/);
+		expect(rendered.html).not.toContain("<b>");
+	});
+
+	test("the sign-in email has no order number", () => {
+		const rendered = renderEmail("customer-login-link", { loginUrl: "https://shop.test/x" });
+		expect(rendered.subject).not.toContain("#");
 	});
 });

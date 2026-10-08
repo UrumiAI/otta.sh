@@ -482,6 +482,13 @@ export interface OrderModel {
 	 * view prints this instead.
 	 */
 	orderLabel: string | null;
+	/**
+	 * The order's NUMBER ("#3F9A2", the plugin's `orderNumber`) — the short label
+	 * the order emails carry too, so a shopper can quote it. A display label built
+	 * from the id's first characters, never the id itself (ADR-0033). `null` ⇔ no
+	 * order.
+	 */
+	orderNumber: string | null;
 	/** The failure copy for the no-order arm (BUSY / not found / unavailable). */
 	failureMessage: string;
 	/**
@@ -565,6 +572,9 @@ export interface AccountVerifyModel {
 export interface AccountOrderRow {
 	/** The order's products (`orderLabel`), the link text. */
 	label: string;
+	/** The order's number ("#3F9A2", `orderNumber`) — the label its emails carry;
+	 *  never the id (ADR-0033). */
+	number: string;
 	href: string;
 	/** The order's status in words (`accountOrderStatus`) — what the order page
 	 *  says about it, list-sized: never "Awaiting payment" for an order that can
@@ -592,6 +602,8 @@ export interface AccountOrderModel {
 	order: {
 		/** The order's products (`orderLabel`) — the heading. No id: see `AccountOrderRow`. */
 		label: string;
+		/** The order's number ("#3F9A2", `orderNumber`), as in the list. */
+		number: string;
 		/** Status in words, as in the list (`accountOrderStatus`). */
 		state: string;
 		/** What the order page says about this state (`orderStamp`'s body — e.g.

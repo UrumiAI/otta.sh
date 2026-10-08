@@ -12,7 +12,12 @@
  * response is `private, no-store`, so neither a shared cache nor the back button
  * after logout can replay it.
  */
-import { ACCOUNT_ORDERS_ROUTE, orderLabel, type AccountOrdersResult } from "@otta-sh/plugin";
+import {
+	ACCOUNT_ORDERS_ROUTE,
+	orderLabel,
+	orderNumber,
+	type AccountOrdersResult,
+} from "@otta-sh/plugin";
 import { getPublicPluginApiRouteHandler } from "emdash/plugin-utils";
 import Storefront from "../../../layouts/Storefront.astro";
 import {
@@ -60,10 +65,13 @@ const rows =
 			/* Named by what was bought, never by the id (`orderLabel`); the id
 			   stays where a machine reads it — the href. */
 			label: orderLabel(order.lines),
+			/* Its short number, as its emails print it (ADR-0033) — a label from the
+			   id's first characters, never the id. */
+			number: orderNumber(order.id),
 			href: `/account/orders/${encodeURIComponent(order.id)}`,
 			state: accountOrderStatus(order, now),
 			/* To the minute: two orders of the same thing on one day must not
-			   read alike (QA2 A2). Never any part of the id. */
+			   read alike (QA2 A2). */
 			placed: orderPlacedAt(order.createdAt),
 			items: items === 1 ? "1 item" : `${items} items`,
 			total: orderMoney(order.totals.totalCents, order.totals.currency),

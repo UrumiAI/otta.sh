@@ -90,6 +90,9 @@ interface SeedOptions {
 	/** Becomes the buyerRef PREFIX, which is the `search` axis a case scopes its
 	 *  own rows with. */
 	tag: string;
+	/** An explicit order id — for the order-number cases, which need ids that
+	 *  share (or do not share) their first five characters. */
+	id?: string;
 	totalCents?: number;
 	state?: "pending" | "paid" | "processing";
 }
@@ -99,7 +102,7 @@ interface SeedOptions {
 async function seedOrder(options: SeedOptions): Promise<string> {
 	seq += 1;
 	const suffix = `${NS}-${String(seq)}`;
-	const id = `order-${suffix}`;
+	const id = options.id ?? `order-${suffix}`;
 	const total = options.totalCents ?? 1999;
 	await orderStore.createFromCart({
 		orderId: toOrderId(id),
@@ -208,6 +211,33 @@ describe("the console's read/write branch on the otta admin route", () => {
 		const result = await list({ search: `  ${tag}  ` });
 		expect(rowsOf(result)).toHaveLength(1);
 		expect(result["total"]).toBe(1);
+	});
+
+	test("the ORDER NUMBER is on every row, and searching it — # and all — finds every order that shares it", async () => {
+		// ADR-0033: the number is "#" + the id's first five characters, upper-cased.
+		// Five hex characters WILL collide eventually, so the search is a PREFIX
+		// search that may answer several orders — never a lookup that picks one.
+		const a = await seedOrder({ tag: "numbera", id: "fee1d111-0000-4000-8000-000000000001" });
+		const b = await seedOrder({ tag: "numberb", id: "fee1d222-0000-4000-8000-000000000002" });
+		const c = await seedOrder({ tag: "numberc", id: "fee1e333-0000-4000-8000-000000000003" });
+
+		const shared = rowsOf(await list({ search: "#FEE1D" }));
+		expect(shared.map((o) => o["id"]).toSorted()).toEqual([a, b].toSorted());
+		expect(shared.map((o) => o["orderNumber"])).toEqual(["#FEE1D", "#FEE1D"]);
+
+		// Without the #, lower-case, and as a longer prefix that tells the two apart.
+		expect(rowsOf(await list({ search: "fee1d" }))).toHaveLength(2);
+		expect(rowsOf(await list({ search: "#FEE1D1" })).map((o) => o["id"])).toEqual([a]);
+		// A neighbouring number is its own.
+		const other = rowsOf(await list({ search: "#fee1e" }));
+		expect(other.map((o) => o["id"])).toEqual([c]);
+		expect(other[0]?.["orderNumber"]).toBe("#FEE1E");
+
+		// The detail carries it too, beside the full id it was derived from.
+		const detail = await invoke({ type: READ, resource: "orders.detail", orderId: a });
+		const order = detail["order"] as Record<string, unknown>;
+		expect(order["id"]).toBe(a);
+		expect(order["orderNumber"]).toBe("#FEE1D");
 	});
 
 	test("the EXACT count is the whole filtered set even when it is larger than one page", async () => {

@@ -1366,7 +1366,7 @@ describe("the Orders detail copy is shared, and says what the Block Kit screen s
  */
 describe("refundConfirmText — the refund confirm's one sentence, exercised directly", () => {
 	const ORDER_ID = "7e4ce728-abcd-4000-8000-000000000000";
-	const SHORT_ORDER = `Order #${shortIdFixed(ORDER_ID, SHORT_ID_CONFIRM_LEN)}`;
+	const SHORT_ORDER = `Order #${shortIdFixed(ORDER_ID, SHORT_ID_CONFIRM_LEN).toUpperCase()}`;
 
 	test("names the order, the amount and the recipient, and states the Stripe consequence when refundable", () => {
 		expect(refundConfirmText(ORDER_ID, "$42.00", "avery@example.test", true)).toBe(

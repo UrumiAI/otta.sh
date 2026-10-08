@@ -13,6 +13,10 @@
 
 export interface OrderSummaryWire {
 	id: string;
+	/** The order NUMBER ("#3F9A2", the domain's `orderNumber`) — the same label the
+	 *  shopper sees on the order page and in every order email. A DISPLAY label,
+	 *  not a key: two orders can share one (ADR-0033), so nothing resolves by it. */
+	orderNumber: string;
 	state: string;
 	currency: string;
 	buyerRef: string;
@@ -104,6 +108,10 @@ export interface OrderCancellationWire {
 
 export interface OrderDetailWire {
 	id: string;
+	/** The order NUMBER ("#3F9A2", the domain's `orderNumber`) — the same label the
+	 *  shopper sees on the order page and in every order email. A DISPLAY label,
+	 *  not a key: two orders can share one (ADR-0033), so nothing resolves by it. */
+	orderNumber: string;
 	state: string;
 	currency: string;
 	paymentMethod: string | null;

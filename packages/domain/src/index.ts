@@ -293,6 +293,10 @@ export {
 	orderLabel,
 	type OrderLabelLine,
 } from "./orders/order-label.js";
+// The order NUMBER ("#3F9A2") — a display label from the id's first characters,
+// never a lookup key (ADR-0033). Shared by the emails and, through
+// `@otta-sh/plugin`, the storefront and the admin console.
+export { ORDER_NUMBER_LENGTH, orderNumber, orderNumberSearchText } from "./orders/order-number.js";
 // What an order's total is called ("Paid" / "Total") and what the ledger shows
 // refunded — shared by the order emails and, through `@otta-sh/plugin`, the
 // storefront's order pages.
