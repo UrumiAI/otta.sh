@@ -1722,6 +1722,67 @@ describe("admin Coupons console — detail/edit leaf (workerd sandbox)", () => {
 		expect(await stored("c-summer")).toMatchObject({ capCents: null, currency: "JPY" });
 	});
 
+	test("the form carries the currency it was RENDERED with: a coupon bound since is refused at submit, and nothing is written", async () => {
+		const state = makeCouponsState();
+		const summer = state.coupons.find((c) => c.id === "c-summer");
+		if (summer === undefined) throw new Error("fixture moved");
+		summer.capCents = null;
+		await boot(state);
+		// The form is rendered while the coupon is UNBOUND (watermark empty)…
+		const blocks = await openCoupon("SUMMER25");
+		expect(
+			decodeCarrier(formFor(blocks, "coupons:save")!.block_id as string)?.renderedCurrency,
+		).toBe("");
+		// …then another admin binds JPY with a cap of ¥500.
+		const current = await couponStore.findById("c-summer");
+		if (current === null) throw new Error("seed missing");
+		await couponStore.update("c-summer", {
+			bindCurrency: toCurrency("JPY"),
+			amountCents: null,
+			rateBps: current.rateBps,
+			capCents: toCents(500),
+			minSubtotalCents: null,
+			startsAt: current.startsAt,
+			expiresAt: current.expiresAt,
+			maxUses: current.maxUses,
+			maxUsesPerCustomer: current.maxUsesPerCustomer,
+		});
+		// The stale form's "5.00" (typed as an unbound, hundredths cap) is refused.
+		const refused = await submitForm(blocks, "coupons:save", {
+			ratePercent: "10.00",
+			expiresAt: "2026-09-01",
+			showLimits: true,
+			cap: "5.00",
+		});
+		expect(String(bannerOf(refused)?.description)).toMatch(/currency changed since you opened it/);
+		expect(await stored("c-summer")).toMatchObject({ capCents: 500, currency: "JPY" });
+	});
+
+	test("a TAMPERED watermark can only refuse — amounts are always read in the stored currency", async () => {
+		const state = makeCouponsState();
+		const five = state.coupons.find((c) => c.id === "c-five");
+		if (five === undefined) throw new Error("fixture moved");
+		five.currency = "JPY";
+		await boot(state);
+		const real = decodeCarrier(
+			formFor(await openCoupon("FIVEOFF"), "coupons:save")!.block_id as string,
+		)!;
+		const submit = (renderedCurrency: string) =>
+			sandbox!.invokeRoute("admin", {
+				type: "form_submit",
+				action_id: "coupons:save",
+				values: { ...FIVEOFF_PREFILL, amount: "600", minSubtotal: "3500" },
+				block_id: encodeCarrier("coupons:edit", { ...real, renderedCurrency }),
+			});
+		// Claiming USD (hundredths) does not re-scale "600": it is refused.
+		const refused = blocksOf(await submit("USD"));
+		expect(String(bannerOf(refused)?.description)).toMatch(/currency changed since you opened it/);
+		expect((await stored("c-five"))?.amountCents).toBe(500);
+		// The true watermark saves, read in the STORED currency: 600 yen.
+		await submit("JPY");
+		expect((await stored("c-five"))?.amountCents).toBe(600);
+	});
+
 	test("CLEAR semantics: blanking a pre-filled field saves it as an explicit null, and the reloaded detail shows it cleared", async () => {
 		const state = makeCouponsState();
 		await boot(state);

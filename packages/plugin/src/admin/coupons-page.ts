@@ -1163,6 +1163,10 @@ const LIMITS_TOGGLE = "showLimits";
  *  `500` is ¥500, not a hundredths figure); the coupon then applies only to
  *  carts in that currency, as a fixed-amount coupon does. */
 const BOUNDS_CURRENCY = "currency";
+/** The carrier key of the edit form's currency watermark (see `currentContext`). */
+const RENDERED_CURRENCY = "renderedCurrency";
+const CURRENCY_MOVED =
+	"This coupon's currency changed since you opened it, so its amounts were not saved. Check the coupon and enter them again.";
 const CREATE_CURRENCY_LABEL =
 	"Currency (ISO-4217) — a fixed amount's, or a percentage coupon's cap (the coupon then applies only to carts in it)";
 const BOUNDS_CURRENCY_LABEL =
@@ -1426,6 +1430,11 @@ function currentContext(detail: CouponSummaryWire): Record<string, string> {
 			: {}),
 		...(detail.startsAt !== null ? { curStartsAt: detail.startsAt } : {}),
 		...(detail.expiresAt !== null ? { curExpiresAt: detail.expiresAt } : {}),
+		// The currency this form was RENDERED with (empty: unbound) — a
+		// compare-only watermark, NEVER used to parse: amounts are read in the
+		// stored coupon's currency, fetched at submit. A save whose coupon's
+		// currency moved since this render is refused before anything is parsed.
+		[RENDERED_CURRENCY]: detail.currency ?? "",
 	};
 }
 
@@ -2091,6 +2100,15 @@ function saveCouponAction() {
 				description: "This coupon no longer exists — it may have been deleted.",
 			});
 		}
+		// The watermark: the currency the form was rendered with. A mismatch means
+		// another admin bound one since — refuse before parsing anything. It can
+		// only ever cause this refusal (a tampered value is just a stale one);
+		// absent, the form predates the watermark and the client's 409 still
+		// guards the write.
+		const rendered = carried?.[RENDERED_CURRENCY];
+		if (rendered !== undefined && rendered !== (stored.currency ?? "")) {
+			return err(CURRENCY_MOVED);
+		}
 		const legacyBounds =
 			stored.currency === null && (stored.capCents !== null || stored.minSubtotalCents !== null);
 		const bounds =
@@ -2163,8 +2181,7 @@ function saveCouponOutcome(
 		return showLeaf([code], {
 			variant: "error",
 			title: "Coupon not saved",
-			description:
-				"This coupon's currency changed since you opened it, so its amounts were not saved. Check the coupon and enter them again.",
+			description: CURRENCY_MOVED,
 		});
 	}
 	return showLeaf([code], {
