@@ -261,6 +261,15 @@ export interface UpdateCouponInput {
 	 *  cap or minimum spend, which are amounts in it). Ignored when the coupon
 	 *  already has one: a coupon's currency never changes. Absent ⇒ unchanged. */
 	bindCurrency?: Currency;
+	/**
+	 * PRECONDITION: the currency the caller read the coupon in — the one its
+	 * amounts were parsed in (`null`: unbound). Checked INSIDE the store's
+	 * compare-and-set against the document being replaced, so a concurrent bind
+	 * between the caller's read and this write is refused (`currency_moved`) and
+	 * nothing is written — never an amount parsed in hundredths landing on a
+	 * coupon that is now JPY. Absent ⇒ not checked.
+	 */
+	expectCurrency?: Currency | null;
 	amountCents: Cents | null;
 	rateBps: number | null;
 	capCents: Cents | null;
@@ -274,7 +283,9 @@ export interface UpdateCouponInput {
 /** Outcome of `CouponStore.update` — LWW (no `stale`, see the method doc). */
 export type UpdateCouponResult =
 	| { ok: true; coupon: CouponRecord }
-	| { ok: false; reason: "not_found" };
+	| { ok: false; reason: "not_found" }
+	/** `expectCurrency` no longer matches the stored coupon's currency. */
+	| { ok: false; reason: "currency_moved" };
 
 /** Outcome of `CouponStore.delete` — a referential guard on live redemptions. */
 export type DeleteCouponResult =

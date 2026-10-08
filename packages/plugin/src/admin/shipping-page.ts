@@ -1,4 +1,8 @@
-import { inputMinorUnitDigits } from "@otta-sh/admin-presentation";
+import {
+	checkoutPaymentLabelClause,
+	unsupportedCurrencyMessage,
+	withCheckoutPaymentWarning,
+} from "@otta-sh/admin-presentation";
 import {
 	COUNTRY_CODES,
 	DEFAULT_STORE_CURRENCY,
@@ -1464,7 +1468,7 @@ function editRateForm(zoneId: string, methodId: string, row: ShippingRateWire): 
 				{
 					type: "text_input",
 					action_id: "amount",
-					label: `Amount for ${row.currency} (${amountDecimalsHint(row.currency)})`,
+					label: `Amount for ${row.currency} (${moneyPrecisionPhrase(row.currency)}${checkoutPaymentLabelClause(row.currency)})`,
 					initial_value: formatMinorUnitsInput(row.amountCents, row.currency),
 				},
 				{
@@ -1927,7 +1931,7 @@ function createRateAction() {
 			return showList([zoneId, methodId], {
 				variant: "error",
 				title: "Rate not created",
-				description: `${currency} isn't a supported currency — use one your store prices in, like USD or EUR.`,
+				description: unsupportedCurrencyMessage(currency),
 			});
 		}
 		const amountCents = parseAmountInput(readString(values.amount) ?? "", currency);
@@ -1967,7 +1971,7 @@ function createRateNotice(result: RulesCreateResult<ShippingRateWire>, currency:
 		return {
 			variant: "default",
 			title: "Rate created",
-			description: `The ${currency} rate was added.`,
+			description: withCheckoutPaymentWarning(`The ${currency} rate was added.`, currency),
 		};
 	}
 	return {
@@ -2330,14 +2334,6 @@ function amountRefusal(currency: string): string {
 /** The free-shipping threshold refusal, its example in the currency's shape. */
 function thresholdRefusal(currency: string): string {
 	return `Free-shipping threshold must be 0 or a positive number like ${moneyInputExample("35.00", currency)}, or blank for none.`;
-}
-
-/** The rate edit field's decimals hint: `up to 2 decimals` (as it always read)
- *  for a two-decimal or unlisted currency, `whole units` for JPY, `up to 3
- *  decimals` for KWD. */
-function amountDecimalsHint(currency: string): string {
-	const digits = inputMinorUnitDigits(currency);
-	return digits === 0 ? "whole units" : `up to ${String(digits)} decimals`;
 }
 
 /** Display-format (with currency symbol) for the rate readout — falls back to

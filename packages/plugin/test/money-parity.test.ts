@@ -4,6 +4,8 @@ import {
 	DEFAULT_STORE_CURRENCY as ADMIN_DEFAULT_STORE_CURRENCY,
 	currencyDigits as adminCurrencyDigits,
 	isSupportedCurrency as adminIsSupported,
+	minorUnitDigits as adminMinorUnitDigits,
+	checkoutPaymentWarning,
 } from "@otta-sh/admin-presentation";
 import {
 	SUPPORTED_CURRENCIES as DOMAIN_CURRENCIES,
@@ -12,7 +14,9 @@ import {
 	currency as domainCurrency,
 	currencyDigits as domainCurrencyDigits,
 	isSupportedCurrency as domainIsSupported,
+	minorUnitDigits as domainMinorUnitDigits,
 } from "@otta-sh/domain";
+import { stripeRefusesCurrency } from "@otta-sh/payments-stripe";
 import { cents as pluginCents, currency as pluginCurrency } from "../src/presentation/money.js";
 
 /**
@@ -107,10 +111,36 @@ describe("currency table mirror parity (admin-presentation/currencies.ts ⇄ dom
 	});
 
 	test("the helpers agree on every listed code and on unlisted ones", () => {
-		const probes = [...DOMAIN_CURRENCIES.map((row) => row.code), "XYZ", "usd", "", "LKR", "UGX"];
+		const probes = [
+			...DOMAIN_CURRENCIES.map((row) => row.code),
+			"XYZ",
+			"usd",
+			"",
+			"LKR",
+			"UGX",
+			"ISK",
+			"ALL",
+			"CLF",
+		];
 		for (const code of probes) {
 			expect(adminIsSupported(code), code).toBe(domainIsSupported(code));
 			expect(adminCurrencyDigits(code), code).toBe(domainCurrencyDigits(code));
+			// The DISPLAY exponent (table → ICU → 2): the domain's refund flags and
+			// the admin's `formatMoney` must print one amount the same way.
+			expect(adminMinorUnitDigits(code), code).toBe(domainMinorUnitDigits(code));
 		}
+	});
+});
+
+describe("the admin's 'not yet payable at checkout' warning names exactly what Stripe refuses", () => {
+	test("for every listed currency, warned ⇔ refused by the live Stripe path", () => {
+		for (const row of DOMAIN_CURRENCIES) {
+			expect(checkoutPaymentWarning(row.code) !== null, row.code).toBe(
+				stripeRefusesCurrency(row.code),
+			);
+		}
+		expect(checkoutPaymentWarning("KWD")).toMatch(/not yet payable at checkout/);
+		expect(checkoutPaymentWarning("USD")).toBeNull();
+		expect(checkoutPaymentWarning("JPY")).toBeNull();
 	});
 });

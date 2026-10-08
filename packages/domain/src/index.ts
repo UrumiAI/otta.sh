@@ -4,6 +4,7 @@ export {
 	SUPPORTED_CURRENCIES,
 	currencyDigits,
 	isSupportedCurrency,
+	minorUnitDigits,
 	type CurrencyInfo,
 	type SupportedCurrencyCode,
 } from "./money/currencies.js";

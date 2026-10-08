@@ -1232,6 +1232,10 @@ describe("Settings: store currency", () => {
 		expect(rest).toEqual(rest.toSorted());
 		expect(options).toHaveLength(49);
 		expect(options[0]).toEqual({ value: "USD", label: "USD — US Dollar" });
+		// The shared label carries #438's one checkout warning, as the pricing picker does.
+		expect(options.find((o) => o.value === "KWD")?.label).toBe(
+			"KWD — Kuwaiti Dinar (not yet payable at checkout)",
+		);
 		const copy = contextTexts(blocks).join(" ");
 		expect(copy).toContain("new carts only");
 		// A product's or coupon's currency is fixed once set, so the copy says to

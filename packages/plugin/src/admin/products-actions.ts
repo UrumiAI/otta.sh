@@ -103,6 +103,7 @@ import {
 	parseOnHandWatermark,
 	parseStockQty as parseStockQtyShared,
 	unitWord,
+	unsupportedCurrencyMessage,
 } from "@otta-sh/admin-presentation";
 import { isProductTaxStatus } from "@otta-sh/domain";
 import {
@@ -329,8 +330,7 @@ function buildEditWire(
 			wire[key] = null; // explicit clear.
 			continue;
 		}
-		const rowCurrency = currency ?? (wire.price !== undefined ? wire.price.currency : undefined);
-		const amountCurrency = rowCurrency ?? NO_CURRENCY;
+		const amountCurrency = currency ?? NO_CURRENCY;
 		const minorUnits = parsePriceMinorUnits(trimmed, amountCurrency);
 		if (minorUnits === null) {
 			return {
@@ -338,14 +338,14 @@ function buildEditWire(
 				message: `${field === "compareAt" ? "Compare-at price" : "Unit cost"} must be a positive amount like ${moneyInputExample("29.99", amountCurrency)}, or blank to clear.`,
 			};
 		}
-		if (rowCurrency === undefined) {
+		if (currency === undefined) {
 			return {
 				ok: false,
 				message:
 					"Set the product's price and currency before adding a compare-at price or unit cost.",
 			};
 		}
-		wire[key] = { amount: minorUnits, currency: rowCurrency };
+		wire[key] = { amount: minorUnits, currency };
 	}
 
 	const productKind = readString(values.productKind);
@@ -496,7 +496,7 @@ const saveAction: ProductsAction = async (client, payload) => {
 		return applied({
 			variant: "error",
 			title: "Check the highlighted value",
-			description: `${unsupported} isn't a supported currency. Price the product in one of the currencies the store supports, like USD or EUR.`,
+			description: unsupportedCurrencyMessage(unsupported),
 		});
 	}
 	const key = deriveEditIdempotencyKey(productId, built.wire);

@@ -1106,17 +1106,21 @@ describe("admin Coupons console — list level (workerd sandbox)", () => {
 
 	test("a fixed KWD coupon is read in fils: '1.234' is 1234, a fourth decimal is refused", async () => {
 		await boot(makeCouponsState());
-		await sandbox!.invokeRoute("admin", {
-			type: "form_submit",
-			action_id: "coupons:create",
-			values: {
-				id: "qa-kwd",
-				code: "KWD1",
-				type: "fixed_amount",
-				amount: "1.234",
-				currency: "KWD",
-			},
-		});
+		const created = blocksOf(
+			await sandbox!.invokeRoute("admin", {
+				type: "form_submit",
+				action_id: "coupons:create",
+				values: {
+					id: "qa-kwd",
+					code: "KWD1",
+					type: "fixed_amount",
+					amount: "1.234",
+					currency: "KWD",
+				},
+			}),
+		);
+		// Priceable, not yet chargeable through Stripe: the merchant is told now.
+		expect(String(bannerOf(created)?.description)).toMatch(/not yet payable at checkout/);
 		const kwd = await stored("qa-kwd");
 		expect(kwd?.amountCents).toBe(1234);
 		expect(kwd?.currency).toBe("KWD");
@@ -1741,6 +1745,10 @@ describe("admin Coupons console — detail/edit leaf (workerd sandbox)", () => {
 		const blocks = await openCoupon("SUMMER25");
 		const byId = new Map(formFields(blocks, "coupons:save").map((f) => [f.action_id, f]));
 		expect(byId.get("cap")?.initial_value).toBe("20.00");
+		// It says what its amounts mean (×100, in the cart currency's smallest
+		// unit — yen for a JPY cart) and offers no currency field until cleared.
+		expect(String(byId.get("cap")?.label)).toMatch(/×100 in the cart currency's smallest unit/);
+		expect(byId.has("currency")).toBe(false);
 		await submitForm(blocks, "coupons:save", {
 			...SUMMER25_PREFILL,
 			showLimits: true,
@@ -1752,7 +1760,10 @@ describe("admin Coupons console — detail/edit leaf (workerd sandbox)", () => {
 		const refused = await submitForm(again, "coupons:save", {
 			...SUMMER25_PREFILL,
 			showLimits: true,
-			currency: "JPY", // a crafted submit — the form renders no such field
+			// A crafted submit — the form renders no such field — with the cap in
+			// whole yen, so it is the RULES CLIENT's legacy refusal that answers.
+			cap: "2500",
+			currency: "JPY",
 		});
 		expect(String(bannerOf(refused)?.description)).toMatch(/set before they carried a currency/);
 		expect((await stored("c-summer"))?.currency).toBeNull();
@@ -1834,9 +1845,82 @@ describe("admin Coupons console — detail/edit leaf (workerd sandbox)", () => {
 		const refused = blocksOf(await submit("USD"));
 		expect(String(bannerOf(refused)?.description)).toMatch(/currency changed since you opened it/);
 		expect((await stored("c-five"))?.amountCents).toBe(500);
+		// Claiming "unbound" (empty) is refused the same way.
+		expect(String(bannerOf(blocksOf(await submit("")))?.description)).toMatch(
+			/currency changed since you opened it/,
+		);
+		expect((await stored("c-five"))?.amountCents).toBe(500);
+		// A form with NO watermark (rendered before it existed) is refused, to be reloaded.
+		const { renderedCurrency: _gone, ...noWatermark } = real;
+		const stale = blocksOf(
+			await sandbox!.invokeRoute("admin", {
+				type: "form_submit",
+				action_id: "coupons:save",
+				values: { ...FIVEOFF_PREFILL, amount: "600", minSubtotal: "3500" },
+				block_id: encodeCarrier("coupons:edit", noWatermark),
+			}),
+		);
+		expect(String(bannerOf(stale)?.description)).toMatch(/form is out of date/);
+		expect((await stored("c-five"))?.amountCents).toBe(500);
 		// The true watermark saves, read in the STORED currency: 600 yen.
 		await submit("JPY");
 		expect((await stored("c-five"))?.amountCents).toBe(600);
+	});
+
+	test("a BOUND percentage coupon names its currency on the cap and minimum labels, and the detail says it applies only there", async () => {
+		const state = makeCouponsState();
+		const summer = state.coupons.find((c) => c.id === "c-summer");
+		if (summer === undefined) throw new Error("fixture moved");
+		summer.currency = "JPY";
+		summer.capCents = 500;
+		await boot(state);
+		const blocks = await openCoupon("SUMMER25");
+		const byId = new Map(formFields(blocks, "coupons:save").map((f) => [f.action_id, f]));
+		expect(byId.get("cap")?.label).toBe("Discount cap (optional, JPY)");
+		expect(byId.get("minSubtotal")?.label).toBe("Minimum spend (optional, JPY)");
+		expect(byId.get("cap")?.initial_value).toBe("500");
+		const fields = detailFields(blocks);
+		expect(fields.get("Currency")).toBe("JPY — applies only to carts in JPY");
+	});
+
+	test("a MINIMUM-ONLY bound coupon works like a cap-bound one: a minimum with a currency binds it", async () => {
+		const state = makeCouponsState();
+		const summer = state.coupons.find((c) => c.id === "c-summer");
+		if (summer === undefined) throw new Error("fixture moved");
+		summer.capCents = null;
+		await boot(state);
+		const blocks = await openCoupon("SUMMER25");
+		await submitForm(blocks, "coupons:save", {
+			ratePercent: "10.00",
+			expiresAt: "2026-09-01",
+			showLimits: true,
+			cap: "",
+			minSubtotal: "3000",
+			currency: "JPY",
+		});
+		expect(await stored("c-summer")).toMatchObject({
+			capCents: null,
+			minSubtotalCents: 3000,
+			currency: "JPY",
+		});
+	});
+
+	test("binding a THREE-decimal currency on EDIT shows the same 'not yet payable at checkout' warning a create does", async () => {
+		const state = makeCouponsState();
+		const summer = state.coupons.find((c) => c.id === "c-summer");
+		if (summer === undefined) throw new Error("fixture moved");
+		summer.capCents = null;
+		await boot(state);
+		const saved = await submitForm(await openCoupon("SUMMER25"), "coupons:save", {
+			ratePercent: "10.00",
+			expiresAt: "2026-09-01",
+			showLimits: true,
+			cap: "1.500",
+			currency: "KWD",
+		});
+		expect(bannerOf(saved)?.variant).toBe("default");
+		expect(String(bannerOf(saved)?.description)).toMatch(/not yet payable at checkout/);
+		expect(await stored("c-summer")).toMatchObject({ capCents: 1500, currency: "KWD" });
 	});
 
 	test("CLEAR semantics: blanking a pre-filled field saves it as an explicit null, and the reloaded detail shows it cleared", async () => {
@@ -2461,6 +2545,7 @@ describe("admin Coupons console — detail/edit leaf (workerd sandbox)", () => {
 				couponId: real.couponId!,
 				code: real.code!,
 				type: real.type!,
+				renderedCurrency: real.renderedCurrency!,
 				curExpiresAt: bogus,
 			});
 			const outcome = blocksOf(

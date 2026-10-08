@@ -55,10 +55,64 @@ function currencyFormat(
 	locale: string,
 	currencyCode: string,
 ): { format: Intl.NumberFormat; digits: number } {
+	// ONE construction per (locale, code) — for the console's and storefront's
+	// FIXED locales only. A storefront route passes the request's locale, which
+	// is client-supplied (any BCP-47 tag, private-use `en-x-…` included): caching
+	// those would let a caller grow this map without bound, so any other locale
+	// is built per call, as it always was. The map is also capped (cleared when
+	// full) as defence in depth. A pair that throws is never cached.
+	if (!CACHED_LOCALES.has(locale)) return buildCurrencyFormat(locale, currencyCode);
+	const key = `${locale}\u0000${currencyCode}`;
+	const cached = FORMATS.get(key);
+	if (cached !== undefined) return cached;
+	const built = buildCurrencyFormat(locale, currencyCode);
+	if (FORMATS.size >= FORMAT_CACHE_CAP) FORMATS.clear();
+	FORMATS.set(key, built);
+	return built;
+}
+
+/** The locales whose formatters are cached: the console's {@link MONEY_LOCALE}
+ *  and the storefront's default (`en`, the plugin's `STOREFRONT_LOCALE`). */
+const CACHED_LOCALES: ReadonlySet<string> = new Set(["en-US", "en"]);
+
+/** Upper bound on cached formatters (two locales × the codes actually seen). */
+export const FORMAT_CACHE_CAP = 256;
+
+const FORMATS = new Map<string, { format: Intl.NumberFormat; digits: number }>();
+
+/** ICU's default currency exponent per code, probed once (bounded: a branded
+ *  `Currency` is three letters). */
+const ICU_DEFAULT_DIGITS = new Map<string, number>();
+
+function icuDefaultDigits(currencyCode: string): number {
+	const known = ICU_DEFAULT_DIGITS.get(currencyCode);
+	if (known !== undefined) return known;
+	const digits =
+		new Intl.NumberFormat("en-US", { style: "currency", currency: currencyCode }).resolvedOptions()
+			.maximumFractionDigits ?? 2;
+	ICU_DEFAULT_DIGITS.set(currencyCode, digits);
+	return digits;
+}
+
+/** How many formatters are cached — for the bound's own test. */
+export function formatCacheSize(): number {
+	return FORMATS.size;
+}
+
+function buildCurrencyFormat(
+	locale: string,
+	currencyCode: string,
+): { format: Intl.NumberFormat; digits: number } {
 	const digits = minorUnitDigits(currencyCode);
-	const plain = new Intl.NumberFormat(locale, { style: "currency", currency: currencyCode });
-	if ((plain.resolvedOptions().maximumFractionDigits ?? 2) === digits) {
-		return { format: plain, digits };
+	// ICU's own exponent for the code decides whether the fraction digits need
+	// pinning. It is a property of the CURRENCY (CLDR's currency data), not the
+	// locale, so it is probed once per code — and a locale that is not cached
+	// builds exactly one formatter per call.
+	if (icuDefaultDigits(currencyCode) === digits) {
+		return {
+			format: new Intl.NumberFormat(locale, { style: "currency", currency: currencyCode }),
+			digits,
+		};
 	}
 	return {
 		format: new Intl.NumberFormat(locale, {

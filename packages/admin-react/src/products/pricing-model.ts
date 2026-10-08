@@ -34,7 +34,7 @@ import type { ProductRecord } from "../console-api.js";
  *  currency table, the familiar ten first and the rest by code (the order the
  *  Settings page's store-currency select uses too). Each is typed and stored in
  *  its own minor unit (JPY in whole yen, KWD in fils), so any of them prices
- *  correctly. */
+ *  correctly. The label (`currencyChoiceLabel`) carries #438's checkout warning. */
 export { CURRENCY_CHOICES, currencyChoiceLabel };
 
 /** Every input the panel owns, as the text in the field. */

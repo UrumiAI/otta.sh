@@ -91,6 +91,11 @@ export function isSupportedCurrency(code: string): code is SupportedCurrencyCode
 	return BY_CODE.has(code);
 }
 
+/** The table's row for a listed code (O(1)), or `undefined`. */
+export function currencyInfo(code: string): CurrencyInfo | undefined {
+	return BY_CODE.get(code);
+}
+
 /** The table's minor-unit exponent for a supported code, or `undefined` for any
  *  other code — never a guess. A caller that must still handle an unlisted code
  *  (old data on a read path) decides its own fallback. */
@@ -106,24 +111,79 @@ export function currencyDigits(code: string): 0 | 2 | 3 | undefined {
 export function minorUnitDigits(code: string): number {
 	const listed = currencyDigits(code);
 	if (listed !== undefined) return listed;
+	const known = ICU_DIGITS.get(code);
+	if (known !== undefined) return known;
+	let digits = 2;
 	try {
-		return (
+		digits =
 			new Intl.NumberFormat("en-US", { style: "currency", currency: code }).resolvedOptions()
-				.maximumFractionDigits ?? 2
-		);
+				.maximumFractionDigits ?? 2;
 	} catch {
-		return 2;
+		digits = 2;
 	}
+	ICU_DIGITS.set(code, digits);
+	return digits;
 }
+
+/** ICU's exponent per unlisted code, probed once (an `Intl.NumberFormat` is
+ *  costly to build, and the answer never changes within a process). */
+const ICU_DIGITS = new Map<string, number>();
 
 /**
  * The minor-unit exponent money is TYPED in (the admin's money inputs and their
  * copy): the table's for a listed code, and hundredths for ANY other code —
  * exactly the rule every input had before the table existed, so an amount in
- * an unlisted code (ALL, ISK, …) is typed, stored and sent to Stripe as it
+ * an unlisted code (ALL, ISK, …) is typed, stored and sent to the payment provider as it
  * always was. Deliberately NOT the display fallback: ICU's exponent for an
  * unlisted code is not what its stored integers mean.
  */
 export function inputMinorUnitDigits(code: string): number {
 	return currencyDigits(code) ?? 2;
+}
+
+/**
+ * The warning an admin screen shows beside a currency the store can price in
+ * but checkout cannot take payment in yet — the three-decimal currencies (KWD,
+ * BHD, OMR, JOD), whose smallest unit the payment path does not charge in (an
+ * order total need not be the multiple of 10 it needs). `null` for every other
+ * code. Vendor-neutral copy, as everything in core is; it mirrors the payment
+ * adapter's refusal for listed codes (pinned by
+ * `packages/plugin/test/money-parity.test.ts`). No behaviour hangs on it — it
+ * only tells the merchant before a buyer finds out at checkout.
+ */
+export function checkoutPaymentWarning(code: string): string | null {
+	return currencyDigits(code) === 3
+		? `${code} prices are not yet payable at checkout — a payment in ${code} will be refused.`
+		: null;
+}
+
+/** The short form for a picker option or field label: `(not yet payable at checkout)`. */
+export const NOT_YET_PAYABLE_AT_CHECKOUT = "not yet payable at checkout";
+
+/** The ONE label suffix for {@link checkoutPaymentWarning}'s currencies — a
+ *  picker option, a field label: ` (not yet payable at checkout)`, or `""`. */
+export function checkoutPaymentLabelSuffix(code: string): string {
+	return checkoutPaymentWarning(code) === null ? "" : ` (${NOT_YET_PAYABLE_AT_CHECKOUT})`;
+}
+
+/** The same warning as a clause INSIDE a label's own parentheses —
+ *  `Amount off (KWD; not yet payable at checkout)` — so a label that already
+ *  ends in `(…)` doesn't gain a second pair: `; not yet payable at checkout`, or `""`. */
+export function checkoutPaymentLabelClause(code: string): string {
+	return checkoutPaymentWarning(code) === null ? "" : `; ${NOT_YET_PAYABLE_AT_CHECKOUT}`;
+}
+
+/** The ONE notice form: `text`, followed by {@link checkoutPaymentWarning}
+ *  when `code` is one of its currencies (`text` unchanged otherwise, or with
+ *  no code). */
+export function withCheckoutPaymentWarning(text: string, code: string | null): string {
+	const warning = code === null ? null : checkoutPaymentWarning(code);
+	return warning === null ? text : `${text} ${warning}`;
+}
+
+/** The ONE refusal for a currency the store does not support, on every admin
+ *  screen that authors one (product price, shipping rate, coupon). Without a
+ *  code (none was typed), the sentence names none. */
+export function unsupportedCurrencyMessage(code?: string): string {
+	return `${code === undefined || code.length === 0 ? "That" : code} isn't a supported currency — use one your store prices in, like USD or EUR.`;
 }

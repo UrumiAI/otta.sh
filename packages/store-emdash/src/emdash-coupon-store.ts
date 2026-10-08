@@ -362,6 +362,11 @@ export class EmdashCouponStore implements CouponStore {
 			const current = await this.#coupons.getVersioned(couponId);
 			if (current === null) return casDone<UpdateCouponResult>({ ok: false, reason: "not_found" });
 			const doc = normalizeCouponDoc(current.value);
+			// Checked against THIS revision, inside the CAS: a bind that landed after
+			// the caller's read is seen here (or forces a retry that sees it).
+			if (input.expectCurrency !== undefined && (doc.currency ?? null) !== input.expectCurrency) {
+				return casDone<UpdateCouponResult>({ ok: false, reason: "currency_moved" });
+			}
 			const next: CouponDoc = {
 				...doc,
 				// A coupon's currency never changes; one with none may be given one.

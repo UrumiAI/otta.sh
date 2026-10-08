@@ -60,7 +60,7 @@
  * should be read as one.
  */
 import { inputMinorUnitDigits } from "./currencies.js";
-import { moneyInputExample } from "./money-input.js";
+import { moneyInputExample, moneyPrecisionPhrase } from "./money-input.js";
 import { fitBanner } from "./copy.js";
 import type { RowNoun, ZeroStateCopy } from "./list-outcome.js";
 
@@ -345,13 +345,9 @@ export const REFUND_AMOUNT_PRECISION =
  *  sentence for a two-decimal (or unlisted) currency, and the currency's own
  *  rule otherwise (JPY has no decimal places; KWD has three). */
 export function refundAmountPrecisionText(currencyCode: string): string {
-	const digits = inputMinorUnitDigits(currencyCode);
+	if (inputMinorUnitDigits(currencyCode) === 2) return REFUND_AMOUNT_PRECISION;
 	const example = moneyInputExample("19.99", currencyCode);
-	if (digits === 2) return REFUND_AMOUNT_PRECISION;
-	if (digits === 0) {
-		return `Use a whole number for a ${currencyCode} refund amount (e.g. ${example}). Nothing was changed.`;
-	}
-	return `Use at most ${String(digits)} decimal places for the refund amount (e.g. ${example}). Nothing was changed.`;
+	return `Use ${moneyPrecisionPhrase(currencyCode)} for the ${currencyCode} refund amount (e.g. ${example}). Nothing was changed.`;
 }
 
 /** True when an otherwise-plain amount has more decimal places than the
