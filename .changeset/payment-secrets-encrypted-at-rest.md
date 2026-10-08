@@ -21,6 +21,11 @@ Encrypt payment secrets at rest via EmDash secret settings (ADR-0032).
 - **Validate on read.** A stored value for one of the four keys that is empty, not a string,
   or not the shape the Settings form saves is `invalid`: never used, shown as "saved, but not
   valid", and the edge-token gate answers 503 for it (a never-set token still passes).
+- **Behaviour changes to note.** A stored edge token that is empty or malformed now refuses
+  Stripe webhooks with 503 instead of letting them through to the signature check (a token
+  that was never set still passes through). A key saved before Settings checked key formats,
+  if it does not match the format, now shows "saved, but not valid" and must be entered
+  again on Otta's Settings page before it is used.
 - **Fail closed.** New `readSecret` tells set, unset and unreadable apart. A key that cannot
   be decrypted reads as not configured; the webhook edge-token gate now answers 503
   `NOT_CONFIGURED` when its token is stored but unreadable (or the kv read fails) instead of

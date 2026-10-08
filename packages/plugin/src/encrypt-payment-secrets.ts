@@ -24,9 +24,9 @@
  *     With no encryption key, the host refuses BEFORE writing.
  *     In EmDash's sandboxed bridge a pre-1.0 copy can live outside the options
  *     table; its conditional write then never applies although nothing changed.
- *     When a re-read shows the same revision, the key is written with a plain
- *     `set` instead, which the bridge stores encrypted and which deletes that
- *     legacy copy (counted in the log line, never shown).
+ *     When a re-read shows the same revision, the options row is created with a
+ *     conditional write that applies only while it is still absent, which the
+ *     bridge stores encrypted and which deletes that legacy copy (counted in the log line, never shown).
  *  3. Read back and compare; then record the key's new revision in a progress
  *     record, so an unfinished run does not re-save the keys it already did.
  *  4. Delete `settings:x402FacilitatorSecret`, the retired x402 secret nothing
@@ -181,8 +181,15 @@ export async function encryptStoredPaymentSecrets(
 					return "retry";
 				}
 				// Same revision, yet the conditional write did not apply: the value
-				// lives outside the options table (a sandboxed pre-1.0 copy).
-				await kv.set(key, value);
+				// lives outside the options table (a sandboxed pre-1.0 copy). Create the
+				// options row only if it is STILL absent (expected revision `null`), so
+				// an operator's save at this moment is never overwritten; the bridge
+				// deletes the pre-1.0 copy when this applies.
+				const created = await cas(key, null, value);
+				if (!created.applied) {
+					reportOnce("conflict");
+					return "retry";
+				}
 				legacyReplaced += 1;
 			}
 

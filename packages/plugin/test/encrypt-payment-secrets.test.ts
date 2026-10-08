@@ -129,6 +129,8 @@ function fakeHost(seed: Record<string, unknown>, site = "https://shop.example"):
 			const current = raw.has(key) ? String(revisions.get(key) ?? 0) : null;
 			if (current !== expectedRevision) return { applied: false };
 			raw.set(key, encoded);
+			// The sandbox bridge deletes its pre-1.0 copy once the write applies.
+			legacy.delete(key);
 			return { applied: true, revision: bump(key) };
 		},
 	};
@@ -268,6 +270,18 @@ describe("a sandboxed pre-1.0 copy (outside the options table)", () => {
 			VALUES[STRIPE_SECRET_KEY_KEY],
 		);
 		expect(logged.join("\n")).toContain("1 legacy copies replaced");
+	});
+	test("an operator's save landing just before the replacement is never overwritten", async () => {
+		const host = fakeHost({});
+		host.legacy.set(STRIPE_SECRET_KEY_KEY, VALUES[STRIPE_SECRET_KEY_KEY]);
+		const fresh = "sk_test_SAVED_DURING_FALLBACK";
+		host.beforeCas.fn = (key, calls) => {
+			// Call 1 is the conditional re-save (does not apply: no options row);
+			// before call 2, the fallback, the operator saves a new key.
+			if (calls === 2 && key === STRIPE_SECRET_KEY_KEY) void host.ctx.kv.set(key, fresh);
+		};
+		expect(await encryptStoredPaymentSecrets(host.ctx)).toBe("retry");
+		expect(await readWriteOnlySecret(host.ctx, STRIPE_SECRET_KEY_KEY)).toBe(fresh);
 	});
 });
 
