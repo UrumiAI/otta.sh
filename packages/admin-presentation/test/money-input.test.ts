@@ -10,6 +10,7 @@
 import { describe, expect, test } from "vitest";
 import {
 	canonicalMoneyInput,
+	checkoutPaymentLabelClause,
 	checkoutPaymentLabelSuffix,
 	cents,
 	currency,
@@ -184,6 +185,9 @@ describe("the copy that states a currency's precision", () => {
 
 	test("one checkout-warning label suffix and notice form; an unsupported-currency message with or without a code", () => {
 		expect(checkoutPaymentLabelSuffix("KWD")).toBe(" (not yet payable at checkout)");
+		// Inside a label's own parentheses: one pair, never two.
+		expect(checkoutPaymentLabelClause("KWD")).toBe("; not yet payable at checkout");
+		expect(checkoutPaymentLabelClause("USD")).toBe("");
 		expect(checkoutPaymentLabelSuffix("USD")).toBe("");
 		expect(withCheckoutPaymentWarning("Saved.", "KWD")).toMatch(
 			/^Saved\. KWD prices are not yet payable at checkout/,

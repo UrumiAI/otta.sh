@@ -166,6 +166,13 @@ export function checkoutPaymentLabelSuffix(code: string): string {
 	return checkoutPaymentWarning(code) === null ? "" : ` (${NOT_YET_PAYABLE_AT_CHECKOUT})`;
 }
 
+/** The same warning as a clause INSIDE a label's own parentheses —
+ *  `Amount off (KWD; not yet payable at checkout)` — so a label that already
+ *  ends in `(…)` doesn't gain a second pair: `; not yet payable at checkout`, or `""`. */
+export function checkoutPaymentLabelClause(code: string): string {
+	return checkoutPaymentWarning(code) === null ? "" : `; ${NOT_YET_PAYABLE_AT_CHECKOUT}`;
+}
+
 /** The ONE notice form: `text`, followed by {@link checkoutPaymentWarning}
  *  when `code` is one of its currencies (`text` unchanged otherwise, or with
  *  no code). */

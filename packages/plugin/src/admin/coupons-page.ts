@@ -1,5 +1,5 @@
 import {
-	checkoutPaymentLabelSuffix,
+	checkoutPaymentLabelClause,
 	unsupportedCurrencyMessage,
 	withCheckoutPaymentWarning,
 } from "@otta-sh/admin-presentation";
@@ -1294,9 +1294,9 @@ function editCouponForm(detail: CouponSummaryWire): FormBlock {
 		editFields.push({
 			type: "text_input",
 			action_id: "amount",
-			label: `Amount off (${detail.currency ?? "?"})${
-				detail.currency === null ? "" : checkoutPaymentLabelSuffix(detail.currency)
-			}`,
+			label: `Amount off (${detail.currency ?? "?"}${
+				detail.currency === null ? "" : checkoutPaymentLabelClause(detail.currency)
+			})`,
 			...(detail.amountCents !== null
 				? {
 						initial_value: formatMinorUnitsInput(

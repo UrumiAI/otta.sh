@@ -1,5 +1,5 @@
 import {
-	checkoutPaymentLabelSuffix,
+	checkoutPaymentLabelClause,
 	unsupportedCurrencyMessage,
 	withCheckoutPaymentWarning,
 } from "@otta-sh/admin-presentation";
@@ -1391,7 +1391,7 @@ function editRateForm(zoneId: string, methodId: string, row: ShippingRateWire): 
 				{
 					type: "text_input",
 					action_id: "amount",
-					label: `Amount for ${row.currency} (${moneyPrecisionPhrase(row.currency)})${checkoutPaymentLabelSuffix(row.currency)}`,
+					label: `Amount for ${row.currency} (${moneyPrecisionPhrase(row.currency)}${checkoutPaymentLabelClause(row.currency)})`,
 					initial_value: formatMinorUnitsInput(row.amountCents, row.currency),
 				},
 				{

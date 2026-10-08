@@ -101,6 +101,7 @@ export {
 	currencyInfo,
 	inputMinorUnitDigits,
 	NOT_YET_PAYABLE_AT_CHECKOUT,
+	checkoutPaymentLabelClause,
 	checkoutPaymentLabelSuffix,
 	checkoutPaymentWarning,
 	withCheckoutPaymentWarning,
