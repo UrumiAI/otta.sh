@@ -3,7 +3,8 @@
  *
  * The Block Kit accordion sheet is mounted once, into `<head>`, and only ever
  * once — the console module is imported by EmDash's generated registry, and a
- * hot reload or a second import must not stack copies of it.
+ * hot reload or a second import must not stack copies of it (a hot reload
+ * refreshes the one copy's text).
  */
 import { afterEach, expect, test } from "vitest";
 
@@ -21,6 +22,17 @@ afterEach(() => {
 
 test("mounts the sheet into head once", () => {
 	mountBlockKitAccordionStyles(document);
+	mountBlockKitAccordionStyles(document);
+	const sheets = document.head.querySelectorAll(`#${BLOCK_KIT_ACCORDION_STYLE_ID}`);
+	expect(sheets).toHaveLength(1);
+	expect(sheets[0]?.textContent).toBe(BLOCK_KIT_ACCORDION_STYLES);
+});
+
+test("a re-mount (hot reload) refreshes a stale sheet instead of keeping it", () => {
+	const stale = document.createElement("style");
+	stale.id = BLOCK_KIT_ACCORDION_STYLE_ID;
+	stale.textContent = "/* an older revision */";
+	document.head.append(stale);
 	mountBlockKitAccordionStyles(document);
 	const sheets = document.head.querySelectorAll(`#${BLOCK_KIT_ACCORDION_STYLE_ID}`);
 	expect(sheets).toHaveLength(1);

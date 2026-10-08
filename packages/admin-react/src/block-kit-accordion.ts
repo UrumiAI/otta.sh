@@ -1,6 +1,7 @@
 /**
  * The look of the `otta` plugin's Block Kit accordions — the collapsible
- * sections on Reports, Settings, Tax and Shipping.
+ * sections on Reports, Settings, Tax, Shipping and Coupons (and any other
+ * `otta` Block Kit page that groups its content in them).
  *
  * WHY THIS LIVES IN THE CONSOLE. `@otta-sh/plugin` is `format: "standard"` and
  * speaks Block Kit only: it sends `{ type: "accordion", label, blocks }` and
@@ -21,27 +22,35 @@
  *   the sheet applies only while one of the `otta` plugin's own pages is open:
  *   other plugins' Block Kit pages, dashboard widgets and content-editor panels
  *   keep EmDash's look. `otta/` with its slash does not match `otta-console/`.
- * - ROOT — `[data-testid="collapsible"]`. Set by `@emdash-cms/blocks`'
- *   accordion renderer and by nothing else in the admin.
+ * - ROOT — `[data-testid="collapsible"]`, and only when it holds Kumo's
+ *   default trigger. The test id is set by `@emdash-cms/blocks`' accordion
+ *   renderer and by nothing else in the admin.
  * - TRIGGER / PANEL — Kumo's `data-kumo-part="default-trigger"` (its own
  *   styling hook) and Base UI's `aria-controls` → `id` pairing for the panel,
  *   plus Base UI's `data-panel-open`, `data-starting-style` and
  *   `data-ending-style` state attributes.
  *
- * If an EmDash upgrade renames any of these, the sheet stops matching and the
- * accordions fall back to Kumo's default: nothing breaks, it just looks plain.
+ * Every rule needs the test id AND the default trigger, so if an EmDash or
+ * Kumo upgrade renames either, the whole sheet stops matching at once and the
+ * accordions fall back to Kumo's default: nothing breaks, it just looks plain
+ * (no half-styled card around a blue-link trigger).
  *
  * THE DESIGN. Each accordion is a row on the admin's card surface (`base` on
  * the `elevated` page, `line` border, `radius-lg` — the same recipe as the
  * Reports stat cards), with a full-width trigger: the label in the default ink
- * at medium weight, the chevron on the trailing edge in the subtle ink, sitting
- * which darkens to the default ink on hover while the row takes a soft tint. Neighbouring accordions join
+ * at medium weight, the chevron on the trailing edge in the subtle ink, which
+ * darkens to the default ink when the row is hovered (pointer devices only, so
+ * a tap does not leave a sticky tint) or open. Neighbouring accordions join
  * into one grouped list (each block arrives in its own wrapper `div` inside a
  * `gap-4` column, hence the `:has()` selectors and the `-1rem - 1px` pull that
  * closes the gap and overlaps the shared border). An open row is divided from
  * its body by a hairline; the body loses Kumo's left rule. The panel's height
- * eases open and closed from Base UI's measured `--collapsible-panel-height`,
- * and both motions drop under `prefers-reduced-motion`. Every colour is a Kumo
+ * eases open and closed from Base UI's measured `--collapsible-panel-height`;
+ * the panel itself has no padding (its single content wrapper carries it), so
+ * that measurement is the full height and the ease ends without a jump. The
+ * chevron's turn is Kumo's `rotate` (Tailwind v4 compiles `rotate-180` to the
+ * `rotate` property, not `transform`), so that is what transitions. All
+ * motion drops under `prefers-reduced-motion`. Every colour is a Kumo
  * token, so the classic light theme and the dark mode both carry over; the
  * fallbacks are system colours for a shell without them.
  *
@@ -49,7 +58,7 @@
  * without `!important`.
  */
 
-/** The `id` of the injected `<style>` element; mounting twice is a no-op. */
+/** The `id` of the injected `<style>` element; mounting twice never stacks copies. */
 export const BLOCK_KIT_ACCORDION_STYLE_ID = "otta-block-kit-accordion";
 
 /** The sidebar link to the page being viewed, when that page is the `otta` plugin's. */
@@ -59,10 +68,12 @@ export const OTTA_CURRENT_PAGE_LINK =
 /** Matches only while one of the `otta` plugin's admin pages is open. */
 export const OTTA_PAGE_SCOPE = `:root:has(${OTTA_CURRENT_PAGE_LINK})`;
 
-const ROOT = `${OTTA_PAGE_SCOPE} [data-testid="collapsible"]`;
-const WRAPPER = 'div:has(> [data-testid="collapsible"])';
+/** A Block Kit accordion that still renders Kumo's default trigger. */
+const ACCORDION = '[data-testid="collapsible"]:has(> [data-kumo-part="default-trigger"])';
+const ROOT = `${OTTA_PAGE_SCOPE} ${ACCORDION}`;
+const WRAPPER = `div:has(> ${ACCORDION})`;
 const TRIGGER = `${ROOT} > [data-kumo-part="default-trigger"]`;
-const PANEL = `${ROOT} > [data-kumo-part="default-trigger"] + [id]`;
+const PANEL = `${TRIGGER} + [id]`;
 
 const BASE = "var(--color-kumo-base, Canvas)";
 const LINE = "var(--color-kumo-line, color-mix(in srgb, CanvasText 12%, transparent))";
@@ -81,11 +92,11 @@ ${ROOT} {
 	border-radius: ${RADIUS};
 	overflow: hidden;
 }
-${OTTA_PAGE_SCOPE} ${WRAPPER}:has(+ div > [data-testid="collapsible"]) > [data-testid="collapsible"] {
+${OTTA_PAGE_SCOPE} ${WRAPPER}:has(+ ${WRAPPER}) > ${ACCORDION} {
 	border-end-start-radius: 0;
 	border-end-end-radius: 0;
 }
-${OTTA_PAGE_SCOPE} ${WRAPPER} + div > [data-testid="collapsible"] {
+${OTTA_PAGE_SCOPE} ${WRAPPER} + div > ${ACCORDION} {
 	margin-block-start: calc(-1rem - 1px);
 	border-start-start-radius: 0;
 	border-start-end-radius: 0;
@@ -106,9 +117,6 @@ ${TRIGGER} {
 	background: transparent;
 	transition: background-color 120ms ease-out;
 }
-${TRIGGER}:hover {
-	background: color-mix(in srgb, ${TINT} 60%, transparent);
-}
 ${TRIGGER}:focus-visible {
 	outline: 2px solid ${FOCUS};
 	outline-offset: -2px;
@@ -120,26 +128,36 @@ ${TRIGGER} > svg {
 	block-size: 16px;
 	padding: 4px;
 	color: ${SUBTLE};
-	transition: transform 240ms ${EASE}, color 120ms ease-out;
-}
-${TRIGGER}:hover > svg {
-	color: ${INK};
+	transition: rotate 240ms ${EASE}, transform 240ms ${EASE}, color 120ms ease-out;
 }
 ${TRIGGER}[data-panel-open] {
 	box-shadow: inset 0 -1px 0 ${HAIRLINE};
 }
+${TRIGGER}[data-panel-open] > svg {
+	color: ${INK};
+}
+@media (hover: hover) {
+	${TRIGGER}:hover {
+		background: color-mix(in srgb, ${TINT} 60%, transparent);
+	}
+	${TRIGGER}:hover > svg {
+		color: ${INK};
+	}
+}
 ${PANEL} {
 	margin: 0;
-	padding: 16px 16px 20px;
+	padding: 0;
 	border-inline-start: 0;
 	overflow: hidden;
 	block-size: var(--collapsible-panel-height);
-	transition: block-size 240ms ${EASE}, padding-block 240ms ${EASE}, opacity 200ms ease-out;
+	transition: block-size 240ms ${EASE}, opacity 200ms ease-out;
+}
+${PANEL} > * {
+	padding: 16px 16px 20px;
 }
 ${PANEL}[data-starting-style],
 ${PANEL}[data-ending-style] {
 	block-size: 0;
-	padding-block: 0;
 	opacity: 0;
 }
 @media (prefers-reduced-motion: reduce) {
@@ -149,12 +167,19 @@ ${PANEL}[data-ending-style] {
 
 /**
  * Adds the sheet to `doc.head` once. Called at import time by `./admin.tsx`;
- * a document-less environment (the Worker, SSR, node tests) is skipped.
+ * a document-less environment (the Worker, SSR, node tests) is skipped. A
+ * second evaluation (a hot reload) refreshes the existing sheet's text rather
+ * than stacking a copy or keeping a stale one.
  */
 export function mountBlockKitAccordionStyles(
 	doc: Document | undefined = globalThis.document,
 ): void {
-	if (doc === undefined || doc.getElementById(BLOCK_KIT_ACCORDION_STYLE_ID) !== null) return;
+	if (doc === undefined) return;
+	const existing = doc.getElementById(BLOCK_KIT_ACCORDION_STYLE_ID);
+	if (existing !== null) {
+		existing.textContent = BLOCK_KIT_ACCORDION_STYLES;
+		return;
+	}
 	const style = doc.createElement("style");
 	style.id = BLOCK_KIT_ACCORDION_STYLE_ID;
 	style.textContent = BLOCK_KIT_ACCORDION_STYLES;

@@ -2,7 +2,7 @@
 "@otta-sh/admin-react": patch
 ---
 
-The collapsible sections on the store's Reports, Settings, Tax and Shipping pages get a clean,
+The collapsible sections on the store's Reports, Settings, Tax, Shipping and Coupons pages get a clean,
 grouped look. They used to render as a bare blue link with a chevron, with the open body hung
 off a grey left rule. Each one is now a full-width row on the admin's card surface — label in
 the default ink, chevron on the trailing edge that turns as the row opens, a soft hover tint, a
