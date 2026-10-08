@@ -233,9 +233,12 @@ export function isMethodFailure(token: string): boolean {
 export function placeFailurePath(token: string, selection: CheckoutUrlSelection): string {
 	const dropDestination = isDestinationFailure(token);
 	const dropMethod = dropDestination || isMethodFailure(token);
+	// A refusal for the REGION blames only the region: the country stays, so the
+	// review comes back with that country's state list (refused again, marked).
+	const keepCountry = token === "SHIPPING_REGION_CODE_REQUIRED";
 	return checkoutPath({
 		couponCode: isCouponFailure(token) ? undefined : selection.couponCode,
-		country: dropDestination ? undefined : selection.country,
+		country: dropDestination && !keepCountry ? undefined : selection.country,
 		region: dropDestination ? undefined : selection.region,
 		shippingMethodId: dropMethod ? undefined : selection.shippingMethodId,
 		error: token,

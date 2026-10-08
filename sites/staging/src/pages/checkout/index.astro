@@ -186,15 +186,7 @@ const destination = summary.selection.destination;
  *  asked for and refused — by the site or by the plugin — so the country stays
  *  chosen and its state/province list is offered (deliveryFieldValues). */
 const askedFor = deliveryFieldValues(destination, destinationRead);
-/** A PLACE refused for its region on a zoned page (the zones changed after the
- *  review priced it): the failure redirect dropped the destination from the URL,
- *  so the country comes back from the place form's own echo in the draft — the
- *  delivery block then shows that country's list, marked. */
-const placeRegionRefused = shownError === "SHIPPING_REGION_CODE_REQUIRED";
-const countryValue =
-	askedFor.country !== "" || !placeRegionRefused
-		? askedFor.country
-		: (draft?.values.country ?? "").trim().toUpperCase();
+const countryValue = askedFor.country;
 const regionValue = askedFor.region;
 
 /** The delivery block: an unlocked cart that ships, in a store with zones. */
@@ -318,7 +310,6 @@ const model: CheckoutModel = {
 	   the same reason). A country-level refusal ("we don't ship here") is not. */
 	regionRefused:
 		destinationError?.reason === "SHIPPING_REGION_CODE_REQUIRED" ||
-		placeRegionRefused ||
 		/* A state picked for the old country was dropped with the change: pick again. */
 		shownError === "REGION_LIST_UPDATED",
 	/* …and a COUNTRY-level refusal ("we don't ship there") marks the country. */

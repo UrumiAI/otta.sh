@@ -177,11 +177,13 @@ describe("placeFailurePath", () => {
 		},
 	);
 
-	test.each([
-		["INVALID_SHIPPING_ADDRESS"],
-		["SHIPPING_ZONE_NOT_MATCHED"],
-		["SHIPPING_REGION_CODE_REQUIRED"],
-	])(
+	test("a SHIPPING_REGION_CODE_REQUIRED failure blames only the REGION: the country stays (its list comes back), the region and method go", () => {
+		expect(placeFailurePath("SHIPPING_REGION_CODE_REQUIRED", SELECTION)).toBe(
+			"/checkout?coupon=CK-SAVE5&country=US&error=SHIPPING_REGION_CODE_REQUIRED",
+		);
+	});
+
+	test.each([["INVALID_SHIPPING_ADDRESS"], ["SHIPPING_ZONE_NOT_MATCHED"]])(
 		"a %s failure drops the DESTINATION and the method (a method means nothing outside its zone)",
 		(token) => {
 			expect(placeFailurePath(token, SELECTION)).toBe(`/checkout?coupon=CK-SAVE5&error=${token}`);

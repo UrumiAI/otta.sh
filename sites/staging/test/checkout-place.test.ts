@@ -1064,7 +1064,10 @@ describe("the delivery address at place (ADR-0021)", () => {
 
 	test.each([
 		["SHIPPING_ZONE_NOT_MATCHED", "/checkout?coupon=C&error=SHIPPING_ZONE_NOT_MATCHED"],
-		["SHIPPING_REGION_CODE_REQUIRED", "/checkout?coupon=C&error=SHIPPING_REGION_CODE_REQUIRED"],
+		[
+			"SHIPPING_REGION_CODE_REQUIRED",
+			"/checkout?coupon=C&country=US&error=SHIPPING_REGION_CODE_REQUIRED",
+		],
 		[
 			"SHIPPING_METHOD_NOT_IN_ZONE",
 			"/checkout?coupon=C&country=US&region=CA&error=SHIPPING_METHOD_NOT_IN_ZONE",

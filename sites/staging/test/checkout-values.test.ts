@@ -654,11 +654,11 @@ describe("the state/province pick list: a changed country is a round trip, never
 			{ ok: false, error: "SHIPPING_REGION_CODE_REQUIRED" },
 		);
 		const location = (await PLACE_POST(h.context)).headers.get("location")!;
-		expect(location).toBe("/checkout?error=SHIPPING_REGION_CODE_REQUIRED");
-		expect(h.draft()!.errors).toEqual({ region: "invalid" });
-		// The country comes back from the place form's echo (index.astro), so the
+		// The country stays in the URL — only the region is blamed — so the review
+		// re-asks the plugin for US, which refuses it for its state again: the
 		// delivery block shows the US list, marked.
-		expect(h.draft()!.values.country).toBe("US");
+		expect(location).toBe("/checkout?country=US&error=SHIPPING_REGION_CODE_REQUIRED");
+		expect(h.draft()!.errors).toEqual({ region: "invalid" });
 	});
 
 	test("a region the plugin REQUIRES at place (SHIPPING_REGION_CODE_REQUIRED) comes back with the field marked", async () => {
@@ -736,16 +736,53 @@ describe("the state/province pick list: a changed country is a round trip, never
 			PLACED,
 		);
 		expect((await PLACE_POST(h.context)).headers.get("location")).toBe(
-			"/checkout?error=REGION_ADDRESS_TOO_LONG",
+			"/checkout?error=ADDRESS_TOO_LONG_TO_KEEP",
 		);
 		expect(h.calls).toHaveLength(0);
 		// No draft is left to render stale values (or an old error's marks).
 		expect(h.draft()).toBeNull();
 		expect(h.deletes).toContain(CHECKOUT_DRAFT_COOKIE);
-		expect(cartErrorMessage("REGION_ADDRESS_TOO_LONG")).toMatch(/too long.*shorten/i);
+		expect(cartErrorMessage("ADDRESS_TOO_LONG_TO_KEEP")).toMatch(/too long.*shorten/i);
 	});
 
-	test("the delivery block: a state PICKED for the old country comes back marked 'pick again', never silently", async () => {
+	test.each([
+		["update-address", { intent: "update-address", country: "IN", regionCountry: "US" }],
+		["apply-coupon", { intent: "apply-coupon", coupon: "SAVE10" }],
+		["remove-coupon", { intent: "remove-coupon", couponCode: "SAVE10" }],
+	])(
+		"%s with an address too long to keep says so, and clears the OLDER draft",
+		async (_n, extra) => {
+			const h = harness({ ...FULL, ...LONG, country: "US", ...extra }, PLACED, {
+				cookies: {
+					[CHECKOUT_DRAFT_COOKIE]: JSON.stringify({ values: { name: "Old" }, errors: {} }),
+				},
+			});
+			const location = (await PLACE_POST(h.context)).headers.get("location")!;
+			expect(location).toContain("error=ADDRESS_TOO_LONG_TO_KEEP");
+			expect(h.calls).toHaveLength(0);
+			expect(h.draft()).toBeNull();
+		},
+	);
+
+	test("Update delivery with an address too long to keep says so (the chosen country rides the URL)", async () => {
+		const h = harness(
+			{
+				...FULL,
+				...LONG,
+				addressMode: "zoned",
+				country: "US",
+				intent: "update-delivery",
+				deliveryCountry: "DE",
+				fromCountry: "US",
+			},
+			PLACED,
+		);
+		expect((await PLACE_POST(h.context)).headers.get("location")).toBe(
+			"/checkout?country=DE&fromCountry=US&error=ADDRESS_TOO_LONG_TO_KEEP",
+		);
+	});
+
+	test("the delivery block: a NEW state picked from the old country's list comes back marked 'pick again', never silently", async () => {
 		const h = harness(
 			{
 				...FULL,
@@ -756,7 +793,7 @@ describe("the state/province pick list: a changed country is a round trip, never
 				fromRegion: "CA",
 				intent: "update-delivery",
 				deliveryCountry: "IN",
-				deliveryRegion: "CA",
+				deliveryRegion: "NY",
 				deliveryRegionCountry: "US",
 			},
 			PLACED,
@@ -814,9 +851,10 @@ describe("the state/province pick list: a changed country is a round trip, never
 		);
 		const response = await PLACE_POST(h.context);
 		// Canada has no "CA" subdivision anyway, but the rule does not depend on
-		// that: the list was rendered for the US. The dropped pick is said, not silent.
+		// that: the list was rendered for the US. "CA" is the PRICED region the old
+		// list showed preselected — not a pick — so there is nothing to explain.
 		expect(response.headers.get("location")).toBe(
-			"/checkout?country=CA&fromCountry=US&fromRegion=CA&error=REGION_LIST_UPDATED",
+			"/checkout?country=CA&fromCountry=US&fromRegion=CA",
 		);
 		expect(h.calls).toHaveLength(0);
 	});
@@ -997,13 +1035,8 @@ describe.each(viewSources("checkout").map((v) => [v.file, v] as const))(
 
 describe("/checkout on a ZONED page after a place refused for the region", () => {
 	const page = splitAstro(read("pages/checkout/index.astro")).frontmatter;
-	test("the delivery block keeps the country (from the place form's echo) and marks its state list", () => {
-		expect(page).toMatch(
-			/const placeRegionRefused = shownError === "SHIPPING_REGION_CODE_REQUIRED";/,
-		);
-		expect(page).toMatch(/draft\?\.values\.country/);
-		expect(page).toMatch(
-			/regionRefused:\s*destinationError\?\.reason === "SHIPPING_REGION_CODE_REQUIRED" \|\|\s*placeRegionRefused \|\|/,
-		);
+	test("the country comes back in the URL (placeFailurePath), never from a possibly stale draft", () => {
+		expect(page).not.toMatch(/draft\?\.values\.country/);
+		expect(page).toMatch(/const countryValue = askedFor\.country;/);
 	});
 });

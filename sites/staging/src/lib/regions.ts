@@ -13,7 +13,7 @@
  * picked for one country is never sent as another's: same-looking codes (`01`)
  * exist in many countries.
  */
-import { normalizeSubdivision } from "@otta-sh/plugin";
+import { normalizeSubdivision, SUBDIVISIONS } from "@otta-sh/plugin";
 import { subdivisionOptions } from "@otta-sh/plugin/subdivisions";
 import { byLabel } from "./countries.js";
 
@@ -71,9 +71,10 @@ export function regionChoice(country: string, value: string, locale: string): Re
 	return { country: code, options, selected: read.ok && read.code !== null ? read.code : "" };
 }
 
-/** Does `country` have subdivisions — i.e. is there a list to pick from? */
+/** Does `country` have subdivisions — i.e. is there a list to pick from? Read
+ *  off the codes table alone; the names are not loaded for it. */
 export function hasRegionList(country: string | undefined): boolean {
-	return subdivisionOptions((country ?? "").trim().toUpperCase()).length > 0;
+	return SUBDIVISIONS.has((country ?? "").trim().toUpperCase());
 }
 
 /** True when the form's region was picked from a list rendered for ANOTHER

@@ -77,7 +77,10 @@ test.describe("the state/province pick list (no client JS)", () => {
 		// India → Update: the round trip brings India's states, by name.
 		await country.selectOption("IN");
 		await Promise.all([
-			page.waitForURL(/\/checkout(\?|$)/, { waitUntil: "load" }),
+			page.waitForResponse(
+				(res) =>
+					new URL(res.url()).pathname === "/checkout/place" && res.request().method() === "POST",
+			),
 			form.locator('button[value="update-address"]').click(),
 		]);
 		const region = form.locator('select[name="region"]');
@@ -94,7 +97,10 @@ test.describe("the state/province pick list (no client JS)", () => {
 
 		await region.selectOption("KA");
 		await Promise.all([
-			page.waitForURL(/\/checkout(\?|$)/, { waitUntil: "load" }),
+			page.waitForResponse(
+				(res) =>
+					new URL(res.url()).pathname === "/checkout/place" && res.request().method() === "POST",
+			),
 			form.locator('button[value="update-address"]').click(),
 		]);
 		// The picked code is kept and shown as the selected NAME.
@@ -123,7 +129,10 @@ test.describe("the state/province pick list (no client JS)", () => {
 		// A country with no subdivisions: no region field at all.
 		await country.selectOption("AQ");
 		await Promise.all([
-			page.waitForURL(/\/checkout(\?|$)/, { waitUntil: "load" }),
+			page.waitForResponse(
+				(res) =>
+					new URL(res.url()).pathname === "/checkout/place" && res.request().method() === "POST",
+			),
 			form.locator('button[value="update-address"]').click(),
 		]);
 		await expect(form.locator('select[name="region"]')).toHaveCount(0);

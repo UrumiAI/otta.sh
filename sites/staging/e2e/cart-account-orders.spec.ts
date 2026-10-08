@@ -126,10 +126,17 @@ test.describe("cart → checkout → order → account, in the browser", () => {
 		const country = form.locator('select[name="country"]');
 		if ((await country.count()) > 0 && (await country.isVisible())) {
 			await country.selectOption("US");
+			// A REAL wait: the Update POST, its redirect, and the re-rendered page —
+			// which only it has — showing the US state list. No list ⇒ this fails.
 			await Promise.all([
-				page.waitForURL(/\/checkout/, { waitUntil: "load" }),
+				page.waitForResponse(
+					(res) =>
+						new URL(res.url()).pathname === "/checkout/place" && res.request().method() === "POST",
+				),
 				form.locator('button[value="update-address"]').click(),
 			]);
+			await page.waitForLoadState("load");
+			await expect(form.locator('select[name="region"] option[value="CA"]')).toHaveCount(1);
 		}
 		const region = form.locator('select[name="region"]');
 		if ((await region.count()) > 0 && (await region.isVisible())) await region.selectOption("CA");

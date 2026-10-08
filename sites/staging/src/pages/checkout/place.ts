@@ -96,9 +96,10 @@ const SHIPPING_REGION_CODE_REQUIRED = "SHIPPING_REGION_CODE_REQUIRED";
  *  was rendered, so the review comes back with the new country's list instead
  *  of placing (the region pick list has no client JS to swap it in place). */
 const REGION_LIST_UPDATED = "REGION_LIST_UPDATED";
-/** The site's own: a region must be (re)chosen, but the address is too long
- *  for the draft cookie to bring the typed values back with the list. */
-const REGION_ADDRESS_TOO_LONG = "REGION_ADDRESS_TOO_LONG";
+/** The site's own: a step that must come back with what was typed (Update,
+ *  Apply, Remove, a region to pick again) cannot, because the address is too
+ *  long for the draft cookie. Said plainly, with the stale cookie cleared. */
+const ADDRESS_TOO_LONG_TO_KEEP = "ADDRESS_TOO_LONG_TO_KEEP";
 
 /** ADR-0009's ship-to, as the form names them. The TYPED fields always decide
  *  all-or-nothing; `country` joins them only where the buyer types it too. */
@@ -267,13 +268,34 @@ async function place(context: APIContext): Promise<Response> {
 		error: string | undefined,
 		extra: { fields?: FieldErrors; coupon?: string | undefined } = {},
 	): Response => {
-		writeCheckoutDraft(context.cookies, {
+		const draft = {
 			values: draftValues,
 			errors: extra.fields ?? {},
 			...(error !== undefined ? { error } : {}),
 			...(extra.coupon !== undefined ? { coupon: extra.coupon } : {}),
-		});
+		};
+		// A draft too big for its cookie is not written — so an OLDER one must not
+		// stay behind to render stale values under this refusal.
+		if (checkoutDraftFits(draft)) writeCheckoutDraft(context.cookies, draft);
+		else clearCheckoutDraft(context.cookies);
 		return context.redirect(path, 303);
+	};
+	/** A redirect whose whole point is to come back WITH what was typed —
+	 *  Update, Apply, Remove. When the typed values cannot be kept it says so
+	 *  (ADDRESS_TOO_LONG_TO_KEEP) rather than showing an empty or older form. */
+	const refuseKeeping = (
+		build: (error: string | undefined) => string,
+		error: string | undefined,
+		extra: { fields?: FieldErrors } = {},
+	): Response => {
+		const fits = checkoutDraftFits({
+			values: draftValues,
+			errors: extra.fields ?? {},
+			...(error !== undefined ? { error } : {}),
+		});
+		return fits
+			? refuse(build(error), error, extra)
+			: refuse(build(ADDRESS_TOO_LONG_TO_KEEP), ADDRESS_TOO_LONG_TO_KEEP);
 	};
 
 	// The coupon the review priced, echoed by the form (#305). Read FIRST, so
@@ -321,8 +343,8 @@ async function place(context: APIContext): Promise<Response> {
 	const typedCoupon = readCouponCode(formString(form.get("coupon")));
 	const typedCode = typedCoupon.couponCode ?? typedCoupon.rejected?.code;
 	if (intent === "remove-coupon") {
-		return refuse(
-			checkoutPath({ ...selection, couponCode: undefined, error: staleToken }),
+		return refuseKeeping(
+			(error) => checkoutPath({ ...selection, couponCode: undefined, error }),
 			staleToken,
 			{ fields: staleMark },
 		);
@@ -335,8 +357,8 @@ async function place(context: APIContext): Promise<Response> {
 				{ fields: staleMark },
 			);
 		}
-		return refuse(
-			checkoutPath({ ...selection, couponCode: typedCode, error: staleToken }),
+		return refuseKeeping(
+			(error) => checkoutPath({ ...selection, couponCode: typedCode, error }),
 			staleToken,
 			{ fields: staleMark },
 		);
@@ -347,8 +369,8 @@ async function place(context: APIContext): Promise<Response> {
 		typedCode !== undefined &&
 		typedCode !== formString(form.get("refusedCoupon"))
 	) {
-		return refuse(
-			checkoutPath({ ...selection, couponCode: typedCode, error: staleToken }),
+		return refuseKeeping(
+			(error) => checkoutPath({ ...selection, couponCode: typedCode, error }),
 			staleToken,
 			{ fields: staleMark },
 		);
@@ -371,9 +393,14 @@ async function place(context: APIContext): Promise<Response> {
 		presentField(form, DELIVERY_REGION_COUNTRY_FIELD),
 		deliveryCountry,
 	);
+	// A PICK, not the priced region the old list showed preselected: a plain
+	// "Update delivery" after a country change just shows the new list.
+	const postedDeliveryRegion = formString(form.get("deliveryRegion"));
 	const deliveryStalePick =
 		deliveryListStale &&
-		formString(form.get("deliveryRegion")) !== undefined &&
+		postedDeliveryRegion !== undefined &&
+		postedDeliveryRegion.toUpperCase() !==
+			(formString(form.get("fromRegion")) ?? "").toUpperCase() &&
 		hasRegionList(deliveryCountry);
 	const delivery = {
 		country: deliveryCountry,
@@ -392,7 +419,7 @@ async function place(context: APIContext): Promise<Response> {
 			}))
 	) {
 		const token = deliveryStalePick ? REGION_LIST_UPDATED : undefined;
-		return refuse(deliveryUpdatePath(delivery, couponCode, token), token);
+		return refuseKeeping((error) => deliveryUpdatePath(delivery, couponCode, error), token);
 	}
 
 	// UPDATE ADDRESS — the address block's own country (a page with no delivery
@@ -401,7 +428,7 @@ async function place(context: APIContext): Promise<Response> {
 	// review with the new country's list, keeping everything typed. A region
 	// picked for the old country is dropped, never sent as the new one's.
 	if (intent === "update-address") {
-		return refuse(checkoutPath(selection), undefined);
+		return refuseKeeping((error) => checkoutPath({ ...selection, error }), undefined);
 	}
 	// No publishable key ⇒ NO ORDER (§1.7). The review page already hides the
 	// button, but this is the server-side half of that promise: creating an
@@ -472,8 +499,10 @@ async function place(context: APIContext): Promise<Response> {
 				{ fields: staleMark },
 			);
 		}
-		clearCheckoutDraft(context.cookies);
-		return context.redirect(checkoutPath({ ...selection, error: REGION_ADDRESS_TOO_LONG }), 303);
+		return refuse(
+			checkoutPath({ ...selection, error: ADDRESS_TOO_LONG_TO_KEEP }),
+			ADDRESS_TOO_LONG_TO_KEEP,
+		);
 	}
 
 	// The signed-in shopper's session, if any. The plugin route is cookie-blind

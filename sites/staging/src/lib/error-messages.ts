@@ -141,10 +141,11 @@ const MESSAGES: Record<string, string> = {
 	   the new country's list instead of placing. Nothing was placed. */
 	REGION_LIST_UPDATED:
 		"We've updated the state/province list for the country you chose — pick yours (or leave it blank if none applies), then continue.",
-	/* The site's own: a state/province must be (re)chosen, but the address was
-	   too long for the page to keep while it showed the list. */
-	REGION_ADDRESS_TOO_LONG:
-		"Your address was too long for us to keep while we updated the state/province list. Please shorten it, choose your state/province, and continue.",
+	/* The site's own: a step that must come back with what was typed (Update,
+	   Apply, Remove, a state/province to pick again) could not keep it — the
+	   address is too long for the page to carry between steps. */
+	ADDRESS_TOO_LONG_TO_KEEP:
+		"Your address was too long for us to keep between steps. Please shorten it and try again.",
 	INVALID_EMAIL: "That doesn't look like a valid email address — please check it and try again.",
 	ORDER_NOT_FOUND: "That order could not be found — please check the link you followed.",
 	/* Resuming a payment with the order's email (QA U-2): one generic sentence
