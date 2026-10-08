@@ -55,7 +55,7 @@ import {
 	ADD_STOCK_PLACEHOLDER,
 	COMPARE_AT_PLACEHOLDER,
 	CURRENCY_FIELD_LABEL,
-	CURRENCY_PLACEHOLDER,
+	DEFAULT_STORE_CURRENCY,
 	DISCARD_LABEL,
 	NO_CHANGES_TO_SAVE,
 	NO_TAX_CLASS,
@@ -1631,7 +1631,7 @@ export function PriceGroup({
 							placeholder={
 								storeCurrency === null
 									? "Choose a currency"
-									: (storeCurrency ?? CURRENCY_PLACEHOLDER)
+									: (storeCurrency ?? DEFAULT_STORE_CURRENCY)
 							}
 							value={values["currency"] ?? ""}
 							onChange={set("currency")}

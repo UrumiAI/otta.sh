@@ -488,6 +488,54 @@ test("when the store currency could not be read, nothing is preselected: the mer
 	expect(writes()[0]?.["value"]).toMatchObject({ price: "18.00", currency: "EUR" });
 });
 
+/** A detail answer for an UNPRICED product, carrying `storeCurrency` as given. */
+function unpricedDetail(storeCurrency: string | null, over: Partial<ProductRecord> = {}): Response {
+	return json({
+		ok: true,
+		product: {
+			...BASE,
+			priceCents: null,
+			currency: null,
+			compareAtCents: null,
+			unitCostCents: null,
+			...over,
+		},
+		taxClasses: [{ id: "standard", name: "Standard" }],
+		threshold: 5,
+		storeCurrency,
+		vocabulary: { statuses: [], kinds: [], any: "any", pageLimit: 25 },
+	});
+}
+
+test("a later re-read whose settings read failed keeps the store currency already loaded — no prompt", async () => {
+	let moved = false;
+	apiFetch.mockImplementation((_url, init) => {
+		const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+		if (body["type"] === "otta_console_act") {
+			moved = true;
+			return Promise.resolve(json({ ok: true, notice: null }));
+		}
+		// First read: EUR. Every read after the stock move: the settings read failed.
+		return Promise.resolve(moved ? unpricedDetail(null, { onHand: 29 }) : unpricedDetail("EUR"));
+	});
+	const c = await mountPanel();
+	expect((input(c, "Currency") as unknown as HTMLSelectElement).value).toBe("EUR");
+	await type(input(c, "Add or remove stock"), "5");
+	await fire(button(c, "Add"), "click");
+	await flush();
+	expect(c.textContent).toContain("now 29 in stock");
+	expect((input(c, "Currency") as unknown as HTMLSelectElement).value).toBe("EUR");
+	expect(c.querySelector('[data-testid="store-currency-unknown"]')).toBeNull();
+});
+
+test("after an initial failed read, picking a currency clears the prompt", async () => {
+	apiFetch.mockImplementation(() => Promise.resolve(unpricedDetail(null)));
+	const c = await mountPanel();
+	expect(c.querySelector('[data-testid="store-currency-unknown"]')).not.toBeNull();
+	await type(input(c, "Currency") as unknown as HTMLSelectElement, "GBP");
+	expect(c.querySelector('[data-testid="store-currency-unknown"]')).toBeNull();
+});
+
 test("Save reads the product first: it writes against the NEW watermark and keeps only the merchant's edits", async () => {
 	apiFetch.mockImplementation((_url, init) => {
 		const body = JSON.parse(String(init?.body)) as Record<string, unknown>;

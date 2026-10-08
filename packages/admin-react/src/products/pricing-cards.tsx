@@ -44,7 +44,6 @@ import { mintMovementNonce } from "./movement-nonce.js";
 import { forgetSummaries } from "./pricing-columns.js";
 import { usePricingStyles } from "./pricing-styles.js";
 import {
-	currencyChoicesFor,
 	currencyChoiceLabel,
 	draftFromRecord,
 	isDraftDirty,
@@ -62,6 +61,7 @@ import {
 import {
 	DEFAULT_STORE_CURRENCY,
 	DIGITAL_WITH_FILE,
+	currencyChoicesWith,
 	parseStockQty,
 	TAX_STATUS_HINT,
 	TAX_STATUS_OPTIONS,
@@ -341,6 +341,10 @@ export function PricingStockEditor({ productId }: { productId: string }): React.
 	draftRef.current = draft;
 	const recordRef = React.useRef<ProductRecord | null>(null);
 	recordRef.current = load.status === "ready" ? load.record : null;
+	/** The last store currency a read DID carry. A later read whose settings read
+	 *  failed must not wipe it: only a first load with no known value is
+	 *  "unknown". */
+	const knownStoreCurrency = React.useRef<string>("");
 	/** A stock movement the server accepted, waiting for the re-read that states
 	 *  the count it actually landed on. TAGGED WITH THAT RE-READ'S GENERATION: an
 	 *  earlier re-read still in flight (the one after a lost answer, say) may
@@ -444,12 +448,15 @@ export function PricingStockEditor({ productId }: { productId: string }): React.
 				return;
 			}
 			const record = result.product;
+			const read = storeCurrencyOf(result);
+			if (read !== "") knownStoreCurrency.current = read;
+			const storeCurrency = knownStoreCurrency.current;
 			setLoad({
 				status: "ready",
 				record,
 				taxClasses: result.taxClasses,
 				threshold: result.threshold,
-				storeCurrency: storeCurrencyOf(result),
+				storeCurrency,
 			});
 			// The merchant's own save, and a refusal that means the record moved,
 			// re-seed the form. Any other re-read (a CMS save, a stock movement, a
@@ -457,10 +464,10 @@ export function PricingStockEditor({ productId }: { productId: string }): React.
 			const current = draftRef.current;
 			const previous = recordRef.current;
 			if (reseed.current || current === null || previous === null) {
-				setDraft(draftFromRecord(record, storeCurrencyOf(result)));
+				setDraft(draftFromRecord(record, storeCurrency));
 				setTouched(new Set());
 			} else {
-				const merged = mergeDraft(previous, record, current, storeCurrencyOf(result));
+				const merged = mergeDraft(previous, record, current, storeCurrency);
 				setDraft(merged.draft);
 				if (merged.conflict) {
 					setTouched(new Set());
@@ -928,14 +935,15 @@ export function PricingStockEditor({ productId }: { productId: string }): React.
 												Choose a currency
 											</option>
 										)}
-										{currencyChoicesFor(d.currency).map((code) => (
+										{currencyChoicesWith(d.currency).map((code) => (
 											<option key={code} value={code}>
 												{currencyChoiceLabel(code)}
 											</option>
 										))}
 									</select>
 								</div>
-								{storeCurrency === "" && (
+								{/* Keyed on the DRAFT: once a currency is picked the prompt goes. */}
+								{d.currency === "" && (
 									<span className="otta-pricing-hint" data-testid="store-currency-unknown">
 										Couldn't load your store currency — choose one.
 									</span>

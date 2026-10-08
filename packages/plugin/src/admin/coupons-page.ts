@@ -35,7 +35,7 @@ import {
 } from "./money-input.js";
 import { isIdToken } from "../commerce/commerce-input.js";
 import { idInputProblem } from "./id-input.js";
-import { DEFAULT_STORE_CURRENCY, isSupportedCurrency } from "@otta-sh/domain";
+import { isSupportedCurrency } from "@otta-sh/domain";
 import { formatBpsAsPercent, parsePercentToBps } from "./percent-input.js";
 import {
 	asRecord,
@@ -194,16 +194,15 @@ type CouponsRenderState = {
 	draft?: CouponDraft;
 	/** The store currency, shown as the currency field's PLACEHOLDER (a hint,
 	 *  never a prefill: one field serves both types, and a percentage coupon
-	 *  without a cap must be able to leave it blank). Absent ⇒ "USD", as before. */
-	storeCurrency?: string;
+	 *  without a cap must be able to leave it blank). `undefined` ⇒ the read
+	 *  FAILED (`readStoreCurrencySoft`): no hint at all, and the screen says so —
+	 *  never a guessed "USD". */
+	storeCurrency: string | undefined;
 };
 
-/** The store currency for the create form's hint. SECONDARY: a failed read
- *  hints the never-saved default, the hint this form always had — a placeholder
- *  only, never a value that is saved — and never blocks the screen. */
-function storeCurrencyHint(client: AdminRulesSurface): Promise<string | undefined> {
-	return readStoreCurrencySoft(client, "coupons");
-}
+/** What the create screen says when the store currency could not be read. */
+const COUPON_STORE_CURRENCY_UNKNOWN =
+	"Couldn't load your store currency — enter the currency this coupon is in yourself.";
 
 /** The create form's seven fields exactly as they were submitted — see
  *  {@link CouponsRenderState}. `type` is a `select` value, so
@@ -613,6 +612,9 @@ function newCouponScreen(
 		// 108 chars ≤ 140 (§1 — the page-level line on this screen).
 		text: "ID, code, type and currency are fixed at creation — to change them, retire this coupon and issue a new code.",
 	});
+	if (storeCurrency === undefined) {
+		blocks.push({ type: "context", text: COUPON_STORE_CURRENCY_UNKNOWN });
+	}
 	blocks.push(createCouponForm(draft, storeCurrency));
 	return blocks;
 }
@@ -864,7 +866,7 @@ function createCouponForm(draft?: CouponDraft, storeCurrency?: string): FormBloc
 					// field for two values): a fixed amount's currency, or the
 					// currency a percentage coupon's cap is in.
 					label: CREATE_CURRENCY_LABEL,
-					placeholder: storeCurrency ?? DEFAULT_STORE_CURRENCY,
+					...(storeCurrency !== undefined ? { placeholder: storeCurrency } : {}),
 					...prefill(draft?.currency),
 				},
 				{
@@ -1949,7 +1951,11 @@ function createCouponAction() {
 				showList(
 					undefined,
 					{ variant: "error", title: "Coupon not created", description },
-					{ kind: "new-coupon", draft, storeCurrency: await storeCurrencyHint(client) },
+					{
+						kind: "new-coupon",
+						draft,
+						storeCurrency: await readStoreCurrencySoft(client, "coupons"),
+					},
 				);
 			const id = (readString(values.id) ?? "").trim();
 			const code = (readString(values.code) ?? "").trim();
@@ -2022,7 +2028,7 @@ function createCouponAction() {
 				: showList(undefined, createCouponNotice(result, code, clash), {
 						kind: "new-coupon",
 						draft,
-						storeCurrency: await storeCurrencyHint(client),
+						storeCurrency: await readStoreCurrencySoft(client, "coupons"),
 					});
 		},
 	);
@@ -2310,7 +2316,7 @@ function newCouponAction() {
 	return customAction<AdminRulesSurface, CouponsRenderState>(async ({ client, showList }) => {
 		return showList(undefined, undefined, {
 			kind: "new-coupon",
-			storeCurrency: await storeCurrencyHint(client),
+			storeCurrency: await readStoreCurrencySoft(client, "coupons"),
 		});
 	});
 }

@@ -1992,7 +1992,9 @@ describe("admin Shipping console — the currency filter defaults to the store c
 		await seedShipping();
 		await saveStoreCurrency("EUR");
 		const rates = await withSettingsUnreadable(() => openPath(["us", "standard"]));
-		expect(field(formFor(rates, "shipping:apply-filter"), "currency")?.initial_value).toBe("USD");
+		// The level READS in USD, but the field stays blank — the stand-in is not
+		// offered as if it were the operator's filter.
+		expect(field(formFor(rates, "shipping:apply-filter"), "currency")?.initial_value).toBe("");
 		// The USD rate is still read and shown.
 		expect(findBlocks(rates, "fields").some((b) => JSON.stringify(b).includes("USD"))).toBe(true);
 		expect(findBlocks(rates, "banner").some((b) => b.variant === "error")).toBe(false);
@@ -2013,6 +2015,29 @@ describe("admin Shipping console — the currency filter defaults to the store c
 		const healthy = await openPath(["us", "bare"]);
 		expect(field(formFor(healthy, "shipping:create-rate"), "currency")?.initial_value).toBe("EUR");
 		expect(contextTexts(healthy)).not.toContain(UNKNOWN_LINE);
+	});
+
+	test("an outage's USD stand-in is never prefilled into the filter, so an unedited Apply keeps it unknown", async () => {
+		await seedShipping();
+		await saveStoreCurrency("EUR");
+		const applied = await withSettingsUnreadable(async () => {
+			const opened = await openPath(["us", "bare"]);
+			const filterForm = formFor(opened, "shipping:apply-filter");
+			// The field is blank, not the guess.
+			expect(field(filterForm, "currency")?.initial_value).toBe("");
+			// Apply WITHOUT editing: the form submits what it shows.
+			return submitForm(
+				"shipping:apply-filter",
+				{ currency: String(field(filterForm, "currency")?.initial_value ?? "") },
+				filterForm?.block_id,
+			);
+		});
+		expect(contextTexts(applied)).toContain(UNKNOWN_LINE);
+		expect(field(formFor(applied, "shipping:create-rate"), "currency")?.initial_value).toBe("");
+		expect(field(formFor(applied, "shipping:apply-filter"), "currency")?.initial_value).toBe("");
+		// The methods level's price-currency field is blank too.
+		const methods = await withSettingsUnreadable(() => openPath(["us"]));
+		expect(field(formFor(methods, "shipping:apply-filter"), "currency")?.initial_value).toBe("");
 	});
 
 	test("a currency the operator typed is kept for the new rate even during an outage", async () => {

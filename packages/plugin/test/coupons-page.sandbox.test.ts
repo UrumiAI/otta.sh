@@ -28,6 +28,7 @@ import {
 	blocksOf,
 	buttons,
 	confirmOf,
+	contextTexts,
 	emptyActions,
 	fieldEntries,
 	findBlock,
@@ -719,7 +720,7 @@ describe("admin Coupons console — list level (workerd sandbox)", () => {
 		expect(refusedFields.get("currency")?.placeholder).toBe("INR");
 	});
 
-	test("a settings outage still opens the create screen, hinting USD", async () => {
+	test("a settings outage still opens the create screen, with no guessed hint and a line saying why", async () => {
 		await boot(makeCouponsState());
 		// Saved INR, so a USD hint can only come from the fallback.
 		const settings = new EmdashSettingsStore({ storage, clock: systemClock });
@@ -727,7 +728,11 @@ describe("admin Coupons console — list level (workerd sandbox)", () => {
 		const list = await loadList();
 		const screen = await withSettingsUnreadable(() => openNewCouponScreen(list));
 		const byId = new Map(formFields(screen, "coupons:create").map((f) => [f.action_id, f]));
-		expect(byId.get("currency")?.placeholder).toBe("USD");
+		expect(byId.get("currency")?.placeholder).toBeUndefined();
+		expect(byId.get("currency")?.initial_value).toBeUndefined();
+		expect(contextTexts(screen)).toContain(
+			"Couldn't load your store currency — enter the currency this coupon is in yourself.",
+		);
 	});
 
 	test("create (fixed_amount) stores EXACT integer minor units; the five shared axes are not on this form and land as explicit null", async () => {

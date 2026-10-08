@@ -40,7 +40,9 @@ export function cents<N extends number>(n: number extends N ? N : IntegerLiteral
 	return n as number as Cents;
 }
 
-const CURRENCY_PATTERN = /^[A-Z]{3}$/;
+/** ISO 4217's alphabetic SHAPE (three upper-case letters) — not membership in
+ *  the currency table. The one copy of the shape in the domain. */
+export const CURRENCY_PATTERN = /^[A-Z]{3}$/;
 
 export function currency(code: string): Currency {
 	if (!CURRENCY_PATTERN.test(code)) {

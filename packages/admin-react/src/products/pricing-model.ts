@@ -22,7 +22,6 @@ import {
 	CURRENCY_CHOICES,
 	DEFAULT_STORE_CURRENCY,
 	currencyChoiceLabel,
-	currencyChoicesWith,
 	formatAmount,
 	formatMinorUnitsInput,
 	isSupportedCurrency,
@@ -37,15 +36,6 @@ import type { ProductRecord } from "../console-api.js";
  *  its own minor unit (JPY in whole yen, KWD in fils), so any of them prices
  *  correctly. */
 export { CURRENCY_CHOICES, currencyChoiceLabel };
-
-/** The picker's options for a draft in `current` — the shared
- *  `currencyChoicesWith` (the Settings page's select uses it too): an off-table
- *  saved code is offered first so the `<select>` has a matching option; saving it
- *  is still refused ("Choose a supported currency"). `""` (nothing chosen) adds
- *  nothing. */
-export function currencyChoicesFor(current: string): readonly string[] {
-	return currencyChoicesWith(current);
-}
 
 /** Every input the panel owns, as the text in the field. */
 export interface PricingDraft {

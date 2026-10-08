@@ -1,3 +1,4 @@
+import { CURRENCY_PATTERN } from "../money/cents.js";
 import type { IdempotencyKey } from "../money/ids.js";
 import { sameTaxSettings, type TaxSettings } from "../pricing/tax-settings.js";
 
@@ -117,16 +118,13 @@ export function effectiveStoreCurrency(settings: Pick<OperationalSettings, "curr
 	return settings.currency ?? DEFAULT_STORE_CURRENCY;
 }
 
-/** ISO 4217's alphabetic shape — the read-side check (membership is the WRITE
- *  side's, in `updateSettings`). */
-const CURRENCY_CODE_SHAPE = /^[A-Z]{3}$/;
-
 /**
- * A stored store currency, read back: a shape-valid code, or `undefined` (never
+ * A stored store currency, read back: a shape-valid code (`CURRENCY_PATTERN`;
+ * membership is the WRITE side's, in `updateSettings`), or `undefined` (never
  * saved, or not a code at all). Shape, not table membership, on purpose: a read
  * path never refuses data a write accepted (currencies.ts), and a code the table
  * later drops still names the currency the operator chose.
  */
 export function readStoreCurrency(raw: unknown): string | undefined {
-	return typeof raw === "string" && CURRENCY_CODE_SHAPE.test(raw) ? raw : undefined;
+	return typeof raw === "string" && CURRENCY_PATTERN.test(raw) ? raw : undefined;
 }

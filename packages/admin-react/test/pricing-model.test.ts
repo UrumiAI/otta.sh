@@ -4,12 +4,12 @@
  * `pricing-model.ts` so it is proven here without a document; the DOM suite
  * only proves the wiring.
  */
+import { currencyChoicesWith } from "@otta-sh/admin-presentation";
 import { describe, expect, test } from "vitest";
 import type { ProductRecord } from "../src/console-api.js";
 import {
 	CURRENCY_CHOICES,
 	currencyChoiceLabel,
-	currencyChoicesFor,
 	draftFromRecord,
 	isDraftDirty,
 	marginSummary,
@@ -87,8 +87,10 @@ describe("the draft", () => {
 	});
 
 	test("the picker offers a saved code the table no longer lists, first, so the select has a matching option", () => {
-		expect(currencyChoicesFor("USD")).toBe(CURRENCY_CHOICES);
-		expect(currencyChoicesFor("XYZ")).toEqual(["XYZ", ...CURRENCY_CHOICES]);
+		expect(currencyChoicesWith("USD")).toBe(CURRENCY_CHOICES);
+		expect(currencyChoicesWith("XYZ")).toEqual(["XYZ", ...CURRENCY_CHOICES]);
+		// Nothing chosen yet adds nothing.
+		expect(currencyChoicesWith("")).toBe(CURRENCY_CHOICES);
 	});
 
 	test("a JPY product's amounts are WHOLE YEN, both ways: 1500 shows as 1500 and '1500' saves as 1500", () => {

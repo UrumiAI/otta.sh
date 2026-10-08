@@ -285,6 +285,17 @@ async function resolveStoreCurrency(
 	if (filter.defaulted) filter.currency = filter.storeCurrency;
 }
 
+/**
+ * What a filter FIELD shows. While the store currency is unknown and the field
+ * was left blank, it stays blank: prefilling the USD stand-in would let an
+ * unedited "Apply filters" submit it, turning the guess into a real USD filter
+ * (and a USD prefill on a new rate). Blank re-parses to `defaulted`, so the
+ * level keeps saying the store currency is unknown.
+ */
+function filterFieldValue(filter: RatesFilterForm): string {
+	return filter.storeCurrencyUnknown && filter.defaulted ? "" : filter.currency;
+}
+
 /** What a level says when the store currency could not be read (≤140). */
 const STORE_CURRENCY_UNKNOWN_TEXT =
 	"Couldn't load your store currency — showing USD. Reload to try again, or enter a currency.";
@@ -773,9 +784,11 @@ function methodsLevel() {
 		async fetchPage(client, path, filter) {
 			const zoneId = path[0];
 			if (zoneId === undefined) return { items: [], nextCursor: null };
-			// Independent reads, run together; pricing needs both.
+			// Independent reads, run together; pricing needs both. A currency the
+			// operator typed needs no store-currency read at all (this level uses the
+			// store currency only as the blank field's default).
 			const [, methods] = await Promise.all([
-				resolveStoreCurrency(client, filter),
+				filter.defaulted ? resolveStoreCurrency(client, filter) : undefined,
 				client.listMethods(zoneId),
 			]);
 			const items = await pricedMethods(client, methods, filter);
@@ -1018,7 +1031,7 @@ function methodCurrencyForm(zoneId: string, filter: MethodsFilterForm): FormBloc
 					type: "text_input",
 					action_id: "currency",
 					label: "Price currency (ISO-4217, e.g. USD)",
-					initial_value: filter.currency,
+					initial_value: filterFieldValue(filter),
 				},
 			],
 			submit: { label: "Apply filters", action_id: SHIPPING_ACTIONS.applyFilter },
@@ -1352,7 +1365,7 @@ function currencyFilterForm(zoneId: string, methodId: string, filter: RatesFilte
 					type: "text_input",
 					action_id: "currency",
 					label: "Currency (ISO-4217, e.g. USD)",
-					initial_value: filter.currency,
+					initial_value: filterFieldValue(filter),
 				},
 			],
 			// L-5 wants the standard verb phrase, not "Look up rate".
@@ -1394,7 +1407,7 @@ function createRateForm(zoneId: string, methodId: string, filter: RatesFilterFor
 					label: "Currency (ISO-4217, e.g. USD)",
 					// A store currency that could not be read is not GUESSED into a value
 					// that would be saved: the operator types it (the level says why).
-					initial_value: filter.storeCurrencyUnknown && filter.defaulted ? "" : filter.currency,
+					initial_value: filterFieldValue(filter),
 				},
 				{
 					type: "text_input",
