@@ -9,6 +9,7 @@ import {
 import {
 	EmdashCouponStore,
 	EmdashSettingsStore,
+	SETTINGS_COLLECTION,
 	type StorageAccess,
 	systemClock,
 	uuidIdGen,
@@ -716,6 +717,17 @@ describe("admin Coupons console — list level (workerd sandbox)", () => {
 			formFields(refused, "coupons:create").map((f) => [f.action_id, f]),
 		);
 		expect(refusedFields.get("currency")?.placeholder).toBe("INR");
+	});
+
+	test("a settings outage still opens the create screen, hinting USD", async () => {
+		await boot(makeCouponsState());
+		// Saved INR, so a USD hint can only come from the fallback.
+		const settings = new EmdashSettingsStore({ storage, clock: systemClock });
+		await settings.update({ currency: "INR" }, idempotencyKey("coupons-outage-currency"));
+		const list = await loadList();
+		const screen = await withSettingsUnreadable(() => openNewCouponScreen(list));
+		const byId = new Map(formFields(screen, "coupons:create").map((f) => [f.action_id, f]));
+		expect(byId.get("currency")?.placeholder).toBe("USD");
 	});
 
 	test("create (fixed_amount) stores EXACT integer minor units; the five shared axes are not on this form and land as explicit null", async () => {
@@ -2672,3 +2684,27 @@ describe("admin Coupons console — detail/edit leaf (workerd sandbox)", () => {
 		); // true-zero, unfiltered — the `empty` branch
 	});
 });
+
+/** Make ONLY the settings document unreadable for `body`, restoring it after —
+ *  the bridge resolves `storage[name]` fresh on every call. */
+async function withSettingsUnreadable<T>(body: () => Promise<T>): Promise<T> {
+	const real = storage[SETTINGS_COLLECTION];
+	if (real === undefined) throw new Error("no settings collection to fault-inject");
+	storage[SETTINGS_COLLECTION] = new Proxy(real, {
+		get(_holder, property) {
+			if (property === "get" || property === "getVersioned") {
+				return () => {
+					throw new Error("injected storage fault: settings unreadable");
+				};
+			}
+			const value = Reflect.get(real, property) as unknown;
+			if (typeof value !== "function") return value;
+			return (value as (...args: unknown[]) => unknown).bind(real);
+		},
+	}) as StorageAccess[string];
+	try {
+		return await body();
+	} finally {
+		storage[SETTINGS_COLLECTION] = real;
+	}
+}

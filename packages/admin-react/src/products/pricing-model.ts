@@ -41,6 +41,15 @@ export const DEFAULT_CURRENCY = "USD";
  *  correctly. */
 export { CURRENCY_CHOICES, currencyChoiceLabel };
 
+/** The picker's options for a draft in `current`: {@link CURRENCY_CHOICES}, plus
+ *  `current` first when the table does not list it (a saved store currency the
+ *  table later dropped) — so the `<select>` always has an option matching its
+ *  value, as the Settings page's select does. Saving it is still refused
+ *  ("Choose a supported currency"). */
+export function currencyChoicesFor(current: string): readonly string[] {
+	return CURRENCY_CHOICES.includes(current) ? CURRENCY_CHOICES : [current, ...CURRENCY_CHOICES];
+}
+
 /** Every input the panel owns, as the text in the field. */
 export interface PricingDraft {
 	readonly price: string;

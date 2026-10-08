@@ -2,6 +2,7 @@ import { cents as toCents, currency as toCurrency, idempotencyKey } from "@otta-
 import {
 	EmdashSettingsStore,
 	EmdashShippingRulesStore,
+	SETTINGS_COLLECTION,
 	systemClock,
 	type StorageAccess,
 } from "@otta-sh/store-emdash";
@@ -1986,4 +1987,38 @@ describe("admin Shipping console — the currency filter defaults to the store c
 			true,
 		);
 	});
+
+	test("a settings outage does not blank the rates level: the filter falls back to USD", async () => {
+		await seedShipping();
+		await saveStoreCurrency("EUR");
+		const rates = await withSettingsUnreadable(() => openPath(["us", "standard"]));
+		expect(field(formFor(rates, "shipping:apply-filter"), "currency")?.initial_value).toBe("USD");
+		// The USD rate is still read and shown.
+		expect(findBlocks(rates, "fields").some((b) => JSON.stringify(b).includes("USD"))).toBe(true);
+		expect(findBlocks(rates, "banner").some((b) => b.variant === "error")).toBe(false);
+	});
 });
+
+/** Make ONLY the settings document unreadable for `body`, restoring it after —
+ *  the bridge resolves `storage[name]` fresh on every call. */
+async function withSettingsUnreadable<T>(body: () => Promise<T>): Promise<T> {
+	const real = storage[SETTINGS_COLLECTION];
+	if (real === undefined) throw new Error("no settings collection to fault-inject");
+	storage[SETTINGS_COLLECTION] = new Proxy(real, {
+		get(_holder, property) {
+			if (property === "get" || property === "getVersioned") {
+				return () => {
+					throw new Error("injected storage fault: settings unreadable");
+				};
+			}
+			const value = Reflect.get(real, property) as unknown;
+			if (typeof value !== "function") return value;
+			return (value as (...args: unknown[]) => unknown).bind(real);
+		},
+	}) as StorageAccess[string];
+	try {
+		return await body();
+	} finally {
+		storage[SETTINGS_COLLECTION] = real;
+	}
+}

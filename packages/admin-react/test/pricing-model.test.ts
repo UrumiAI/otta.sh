@@ -9,6 +9,7 @@ import type { ProductRecord } from "../src/console-api.js";
 import {
 	CURRENCY_CHOICES,
 	currencyChoiceLabel,
+	currencyChoicesFor,
 	draftFromRecord,
 	isDraftDirty,
 	marginSummary,
@@ -83,6 +84,11 @@ describe("the draft", () => {
 		};
 		expect(draftFromRecord(unpriced, "EUR").currency).toBe("EUR");
 		expect(draftFromRecord(BASE, "EUR").currency).toBe(BASE.currency);
+	});
+
+	test("the picker offers a saved code the table no longer lists, first, so the select has a matching option", () => {
+		expect(currencyChoicesFor("USD")).toBe(CURRENCY_CHOICES);
+		expect(currencyChoicesFor("XYZ")).toEqual(["XYZ", ...CURRENCY_CHOICES]);
 	});
 
 	test("a JPY product's amounts are WHOLE YEN, both ways: 1500 shows as 1500 and '1500' saves as 1500", () => {

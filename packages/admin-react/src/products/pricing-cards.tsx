@@ -44,7 +44,7 @@ import { mintMovementNonce } from "./movement-nonce.js";
 import { forgetSummaries } from "./pricing-columns.js";
 import { usePricingStyles } from "./pricing-styles.js";
 import {
-	CURRENCY_CHOICES,
+	currencyChoicesFor,
 	currencyChoiceLabel,
 	DEFAULT_CURRENCY,
 	draftFromRecord,
@@ -920,7 +920,7 @@ export function PricingStockEditor({ productId }: { productId: string }): React.
 											set("currency")(event.target.value);
 										}}
 									>
-										{CURRENCY_CHOICES.map((code) => (
+										{currencyChoicesFor(d.currency).map((code) => (
 											<option key={code} value={code}>
 												{currencyChoiceLabel(code)}
 											</option>

@@ -512,3 +512,46 @@ test("the tax status select sits beside the tax class, marks the group changed, 
 		.filter((b) => b.type === "otta_console_act");
 	expect(writes.at(-1)?.value?.["taxStatus"]).toBe("none");
 });
+
+// Currency PR 2 (review B L-1): the unpriced product's currency HINT is the
+// store currency the detail read carried — a placeholder, never a prefill.
+test("an unpriced product's currency field hints the store currency, and USD when none was carried", async () => {
+	const unpriced = { priceCents: null, currency: null };
+	const withStore = (storeCurrency: string | undefined): Response => {
+		return new Response(
+			JSON.stringify({
+				data: {
+					ok: true,
+					product: { ...BASE, ...unpriced },
+					taxClasses: [],
+					threshold: THRESHOLD,
+					...(storeCurrency === undefined ? {} : { storeCurrency }),
+					vocabulary: {
+						statuses: [{ value: "any", label: "Any status" }],
+						kinds: [{ value: "physical", label: "Physical" }],
+						any: "any",
+						pageLimit: 25,
+					},
+				},
+			}),
+			{ status: 200, headers: { "Content-Type": "application/json" } },
+		);
+	};
+	for (const [carried, hint] of [
+		["EUR", "EUR"],
+		[undefined, "USD"],
+	] as const) {
+		apiFetch.mockImplementation(() => Promise.resolve(withStore(carried)));
+		const node = <ProductDetail productId="p_base" onBack={() => undefined} />;
+		mounted = await mount(node);
+		await mounted.rerender(node);
+		const input = mounted.container.querySelector<HTMLInputElement>(
+			'[data-testid="edit-currency"]',
+		);
+		expect(input, String(carried)).not.toBeNull();
+		expect(input?.placeholder).toBe(hint);
+		expect(input?.value).toBe("");
+		await mounted.unmount();
+		mounted = null;
+	}
+});

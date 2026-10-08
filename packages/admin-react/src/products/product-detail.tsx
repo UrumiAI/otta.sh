@@ -934,6 +934,7 @@ export function ProductDetail({
 						key="product"
 						product={p}
 						taxClasses={detail.taxClasses}
+						storeCurrency={detail.storeCurrency ?? null}
 						busy={busy}
 						savingPrice={acting === "products:save-price"}
 						priceReceipt={receipts.price}
@@ -1198,6 +1199,7 @@ export function ProductTabs({
 function ProductPanel({
 	product: p,
 	taxClasses,
+	storeCurrency,
 	busy,
 	savingPrice,
 	priceReceipt,
@@ -1208,6 +1210,8 @@ function ProductPanel({
 }: {
 	product: ProductRecord;
 	taxClasses: readonly { id: string; name: string }[];
+	/** The store currency the detail read carried (`null`: none). */
+	storeCurrency: string | null;
 	busy: boolean;
 	/** Only the price save reports in place so far; increment 3 extends the same
 	 *  treatment to identity and classification. */
@@ -1288,6 +1292,7 @@ function ProductPanel({
 					<PriceGroup
 						key={`price-${String(formKeys.price)}`}
 						product={p}
+						storeCurrency={storeCurrency}
 						busy={busy}
 						saving={savingPrice}
 						receipt={priceReceipt}
@@ -1537,6 +1542,7 @@ export function IdentityFields({
  */
 export function PriceGroup({
 	product: p,
+	storeCurrency = null,
 	busy,
 	saving,
 	receipt,
@@ -1544,6 +1550,9 @@ export function PriceGroup({
 	onSubmit,
 }: {
 	product: ProductRecord;
+	/** The store currency the detail read carried — the unpriced product's
+	 *  currency HINT (a placeholder; nothing is prefilled). `null` ⇒ "USD". */
+	storeCurrency?: string | null;
 	busy: boolean;
 	/** THIS save is the one in flight — not merely that some write is. */
 	saving: boolean;
@@ -1617,7 +1626,7 @@ export function PriceGroup({
 							className="otta-focusable"
 							data-testid="edit-currency"
 							style={fieldStyle(changed, "currency")}
-							placeholder={CURRENCY_PLACEHOLDER}
+							placeholder={storeCurrency ?? CURRENCY_PLACEHOLDER}
 							value={values["currency"] ?? ""}
 							onChange={set("currency")}
 						/>
