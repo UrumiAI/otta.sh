@@ -16,7 +16,7 @@
  */
 import type { AccountOrderWire } from "@otta-sh/plugin";
 import { resumeHref } from "./checkout-resume.js";
-import { countryName as countryNameIn } from "./countries.js";
+import { countryOptions } from "./countries.js";
 import { isOrderPayable } from "./pay-guard.js";
 import { SITE_LOCALE } from "./site-locale.js";
 
@@ -45,6 +45,12 @@ export function trackingHref(raw: string | null): string | null {
 		return null;
 	}
 	return url.protocol === "https:" || url.protocol === "http:" ? raw : null;
+}
+
+let countryNames: Map<string, string> | null = null;
+function countryName(code: string): string {
+	countryNames ??= new Map(countryOptions(SITE_LOCALE).map((c) => [c.code, c.label]));
+	return countryNames.get(code) ?? code;
 }
 
 export function accountOrderExtras(
@@ -80,7 +86,7 @@ export function accountOrderExtras(
 						[address.city, address.region, address.postalCode]
 							.filter((part): part is string => part !== null && part.length > 0)
 							.join(" "),
-						countryNameIn(address.country, SITE_LOCALE),
+						countryName(address.country),
 					],
 	};
 }

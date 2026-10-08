@@ -141,10 +141,6 @@ const MESSAGES: Record<string, string> = {
 	   the new country's list instead of placing. Nothing was placed. */
 	REGION_LIST_UPDATED:
 		"We've updated the state/province list for the country you chose — pick yours (or leave it blank if none applies), then continue.",
-	/* The site's own: this store needs a state/province for the country chosen
-	   (a shipping or tax zone is set by region there), and none was picked. */
-	REGION_REQUIRED:
-		"Choose your state/province from the list — this store needs it for that country.",
 	/* The site's own: a state/province must be (re)chosen, but the address was
 	   too long for the page to keep while it showed the list. */
 	REGION_ADDRESS_TOO_LONG:

@@ -206,9 +206,6 @@ export function fieldErrorCopy(
 	if (field === "region" && error === "stale") {
 		return "Pick your state/province again — the list changed with the country you chose.";
 	}
-	if (field === "region" && error === "missing") {
-		return "Choose your state/province — this store needs it for addresses in this country.";
-	}
 	if (error === "missing") {
 		return context.addressRequired === true
 			? "Fill this in."

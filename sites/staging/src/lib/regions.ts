@@ -15,7 +15,7 @@
  */
 import { normalizeSubdivision } from "@otta-sh/plugin";
 import { subdivisionOptions } from "@otta-sh/plugin/subdivisions";
-import { byLabel } from "./by-label.js";
+import { byLabel } from "./countries.js";
 
 /** The hidden field naming the country the place form's region list was
  *  rendered for (the address block without delivery). */

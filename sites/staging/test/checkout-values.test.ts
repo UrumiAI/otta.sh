@@ -24,7 +24,6 @@ import {
 	ORDER_ADDRESS_MAX_LENGTHS,
 	STOREFRONT_CHECKOUT_PLACE_ROUTE,
 	STOREFRONT_ORDER_ABANDON_ROUTE,
-	STOREFRONT_REGION_RULES_ROUTE,
 } from "@otta-sh/plugin";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { splitAstro, templateOf } from "./astro-source.js";
@@ -34,7 +33,6 @@ import { cartErrorMessage } from "../src/lib/error-messages.js";
 import {
 	CHECKOUT_DRAFT_COOKIE,
 	CHECKOUT_DRAFT_MAX_AGE_SECONDS,
-	checkoutDraftFits,
 	fieldErrorCopy,
 	readCheckoutDraft,
 	shownFieldErrors,
@@ -79,25 +77,12 @@ function harness(
 	opts: {
 		url?: string;
 		cookies?: Record<string, string>;
-		regionRequired?: string[];
-		regionRulesDown?: boolean;
 	} = {},
 ) {
 	const calls: Array<Record<string, unknown>> = [];
-	const ruleReads: number[] = [];
 	const handler = async (_id: string, _m: string, routePath: string, request: Request) => {
 		const route = routePath.replace(/^\//, "");
 		const body = (await request.json()) as Record<string, unknown>;
-		// The store's region rule (which countries need a region): its own read,
-		// not one of the commerce calls the tests count.
-		if (route === STOREFRONT_REGION_RULES_ROUTE) {
-			ruleReads.push(1);
-			if (opts.regionRulesDown === true) return { success: false };
-			return {
-				success: true,
-				data: { ok: true, regionRequiredCountries: opts.regionRequired ?? [] },
-			};
-		}
 		calls.push(body);
 		if (route === STOREFRONT_CHECKOUT_PLACE_ROUTE) return { success: true, data: reply };
 		// Start a new cart first stops the cart's unpaid order (QA2 X4) and clears
@@ -137,7 +122,7 @@ function harness(
 	} as unknown as APIContext;
 	const draft = (): CheckoutDraft | null =>
 		readCheckoutDraft({ get: (name) => (jar.has(name) ? { value: jar.get(name)! } : undefined) });
-	return { context, calls, sets, deletes, draft, ruleReads };
+	return { context, calls, sets, deletes, draft };
 }
 
 const KEY = "checkout:cart-existing";
@@ -637,89 +622,43 @@ describe("the state/province pick list: a changed country is a round trip, never
 		expect(h.draft()!.values.region).toBeUndefined();
 	});
 
-	// ── The store's rule: REGION REQUIRED iff some zone (shipping or tax) lists
-	//    a subdivision of the country; otherwise optional — never asked, never
-	//    marked. `regionRequired` is what the plugin's region-rules route answers.
-	describe.each([
-		["a region-level zone or tax rate for the US", ["US"], true],
-		["regions only for ANOTHER country (IN)", ["IN"], false],
-		["no region-level zones at all", [], false],
-	] as const)("store: %s", (_label, regionRequired, usRequired) => {
-		test("first pick of US, region blank", async () => {
-			const h = harness({ ...FULL, country: "US", regionCountry: "" }, PLACED, {
-				regionRequired: [...regionRequired],
-			});
-			const location = (await PLACE_POST(h.context)).headers.get("location");
-			if (usRequired) {
-				expect(location).toBe("/checkout?error=REGION_REQUIRED");
-				expect(h.calls).toHaveLength(0);
-				expect(h.draft()!.errors).toEqual({ region: "missing" });
-				expect(h.draft()!.values.country).toBe("US");
-			} else {
-				expect(location).toBe("/checkout/pay");
-				expect(h.calls).toHaveLength(1);
-			}
-		});
-
-		test("US with the list shown and the region left blank", async () => {
-			const h = harness({ ...FULL, country: "US", regionCountry: "US" }, PLACED, {
-				regionRequired: [...regionRequired],
-			});
-			const location = (await PLACE_POST(h.context)).headers.get("location");
-			expect(location).toBe(usRequired ? "/checkout?error=REGION_REQUIRED" : "/checkout/pay");
-			if (!usRequired) expect(h.draft()?.errors ?? {}).toEqual({});
-		});
-
-		test("a stale pick (KA for India, then US): re-asked with the explanation, whatever the rule", async () => {
-			const h = harness({ ...FULL, country: "US", region: "KA", regionCountry: "IN" }, PLACED, {
-				regionRequired: [...regionRequired],
-			});
-			expect((await PLACE_POST(h.context)).headers.get("location")).toBe(
-				"/checkout?error=REGION_LIST_UPDATED",
-			);
-			expect(h.calls).toHaveLength(0);
-			expect(h.draft()!.errors).toEqual({ region: "stale" });
-			expect(h.draft()!.values.region).toBeUndefined();
-		});
-
-		test("a picked region for the same country places", async () => {
-			const h = harness({ ...FULL, country: "US", region: "CA", regionCountry: "US" }, PLACED, {
-				regionRequired: [...regionRequired],
-			});
-			expect((await PLACE_POST(h.context)).headers.get("location")).toBe("/checkout/pay");
-		});
-	});
-
-	test("the rule is read at most once per request, and not at all when a region was given", async () => {
-		const blank = harness({ ...FULL, email: "ada@", country: "US", regionCountry: "US" }, PLACED, {
-			regionRequired: ["US"],
-		});
-		await PLACE_POST(blank.context);
-		expect(blank.ruleReads).toHaveLength(1);
-		const given = harness({ ...FULL, country: "US", region: "CA", regionCountry: "US" }, PLACED, {
-			regionRequired: ["US"],
-		});
-		await PLACE_POST(given.context);
-		expect(given.ruleReads).toHaveLength(0);
-	});
-
-	test("a required region joins the other errors in ONE round trip", async () => {
-		const h = harness(
-			{ ...FULL, email: "ada@", city: "", country: "US", regionCountry: "US" },
-			PLACED,
-			{
-				regionRequired: ["US"],
-			},
-		);
-		expect((await PLACE_POST(h.context)).headers.get("location")).toContain("error=INVALID_EMAIL");
-		expect(h.draft()!.errors).toEqual({ email: "invalid", city: "missing", region: "missing" });
-	});
-
-	test("a failed rule read leaves the region optional (the plugin still enforces zone matches)", async () => {
-		const h = harness({ ...FULL, country: "US", regionCountry: "US" }, PLACED, {
-			regionRulesDown: true,
-		});
+	// ── REQUIRED vs OPTIONAL. The store's rule — a region is required for a
+	//    country iff some zone (which carries shipping methods AND tax rates)
+	//    lists one of its subdivisions — is the PLUGIN's zone match
+	//    (SHIPPING_REGION_CODE_REQUIRED, proven in storefront-checkout.sandbox).
+	//    The site adds no rule of its own: a blank region is never bounced or
+	//    marked here, and the plugin's refusal is surfaced with the field marked.
+	test.each([
+		["a first pick of US", { regionCountry: "" }],
+		["US with its list shown", { regionCountry: "US" }],
+	])("a blank region on %s is never bounced or marked by the site", async (_label, extra) => {
+		const h = harness({ ...FULL, country: "US", ...extra }, PLACED);
 		expect((await PLACE_POST(h.context)).headers.get("location")).toBe("/checkout/pay");
+		expect(h.calls).toHaveLength(1);
+		expect(h.draft()?.errors ?? {}).toEqual({});
+	});
+
+	test("a stale pick (KA for India, then US): re-asked with the explanation", async () => {
+		const h = harness({ ...FULL, country: "US", region: "KA", regionCountry: "IN" }, PLACED);
+		expect((await PLACE_POST(h.context)).headers.get("location")).toBe(
+			"/checkout?error=REGION_LIST_UPDATED",
+		);
+		expect(h.calls).toHaveLength(0);
+		expect(h.draft()!.errors).toEqual({ region: "stale" });
+		expect(h.draft()!.values.region).toBeUndefined();
+	});
+
+	test("ZONED page: the plugin's SHIPPING_REGION_CODE_REQUIRED at place comes back in ONE trip, the region marked", async () => {
+		const h = harness(
+			{ ...FULL, addressMode: "zoned", country: "US", deliveryCountry: "US", fromCountry: "US" },
+			{ ok: false, error: "SHIPPING_REGION_CODE_REQUIRED" },
+		);
+		const location = (await PLACE_POST(h.context)).headers.get("location")!;
+		expect(location).toBe("/checkout?error=SHIPPING_REGION_CODE_REQUIRED");
+		expect(h.draft()!.errors).toEqual({ region: "invalid" });
+		// The country comes back from the place form's echo (index.astro), so the
+		// delivery block shows the US list, marked.
+		expect(h.draft()!.values.country).toBe("US");
 	});
 
 	test("a region the plugin REQUIRES at place (SHIPPING_REGION_CODE_REQUIRED) comes back with the field marked", async () => {
@@ -791,18 +730,6 @@ describe("the state/province pick list: a changed country is a round trip, never
 		city: "Ł".repeat(ORDER_ADDRESS_MAX_LENGTHS.city),
 	};
 
-	test("oversize address + a REQUIRED region: refused with a plain message, never placed, never a loop", async () => {
-		const form = { ...FULL, ...LONG, country: "US", regionCountry: "US" };
-		const { idempotencyKey: _key, regionCountry: _list, ...values } = form;
-		expect(checkoutDraftFits({ values, errors: {} })).toBe(false);
-		const h = harness(form, PLACED, { regionRequired: ["US"] });
-		expect((await PLACE_POST(h.context)).headers.get("location")).toBe(
-			"/checkout?error=REGION_ADDRESS_TOO_LONG",
-		);
-		expect(h.calls).toHaveLength(0);
-		expect(cartErrorMessage("REGION_ADDRESS_TOO_LONG")).toMatch(/too long.*shorten/i);
-	});
-
 	test("oversize address + a stale pick: refused with the plain message rather than silently dropping it", async () => {
 		const h = harness(
 			{ ...FULL, ...LONG, country: "IN", region: "CA", regionCountry: "US" },
@@ -810,6 +737,32 @@ describe("the state/province pick list: a changed country is a round trip, never
 		);
 		expect((await PLACE_POST(h.context)).headers.get("location")).toBe(
 			"/checkout?error=REGION_ADDRESS_TOO_LONG",
+		);
+		expect(h.calls).toHaveLength(0);
+		// No draft is left to render stale values (or an old error's marks).
+		expect(h.draft()).toBeNull();
+		expect(h.deletes).toContain(CHECKOUT_DRAFT_COOKIE);
+		expect(cartErrorMessage("REGION_ADDRESS_TOO_LONG")).toMatch(/too long.*shorten/i);
+	});
+
+	test("the delivery block: a state PICKED for the old country comes back marked 'pick again', never silently", async () => {
+		const h = harness(
+			{
+				...FULL,
+				addressMode: "zoned",
+				country: "US",
+				region: "CA",
+				fromCountry: "US",
+				fromRegion: "CA",
+				intent: "update-delivery",
+				deliveryCountry: "IN",
+				deliveryRegion: "CA",
+				deliveryRegionCountry: "US",
+			},
+			PLACED,
+		);
+		expect((await PLACE_POST(h.context)).headers.get("location")).toBe(
+			"/checkout?country=IN&fromCountry=US&fromRegion=CA&error=REGION_LIST_UPDATED",
 		);
 		expect(h.calls).toHaveLength(0);
 	});
@@ -861,9 +814,9 @@ describe("the state/province pick list: a changed country is a round trip, never
 		);
 		const response = await PLACE_POST(h.context);
 		// Canada has no "CA" subdivision anyway, but the rule does not depend on
-		// that: the list was rendered for the US.
+		// that: the list was rendered for the US. The dropped pick is said, not silent.
 		expect(response.headers.get("location")).toBe(
-			"/checkout?country=CA&fromCountry=US&fromRegion=CA",
+			"/checkout?country=CA&fromCountry=US&fromRegion=CA&error=REGION_LIST_UPDATED",
 		);
 		expect(h.calls).toHaveLength(0);
 	});
@@ -1050,7 +1003,7 @@ describe("/checkout on a ZONED page after a place refused for the region", () =>
 		);
 		expect(page).toMatch(/draft\?\.values\.country/);
 		expect(page).toMatch(
-			/regionRefused:\s*destinationError\?\.reason === "SHIPPING_REGION_CODE_REQUIRED" \|\| placeRegionRefused/,
+			/regionRefused:\s*destinationError\?\.reason === "SHIPPING_REGION_CODE_REQUIRED" \|\|\s*placeRegionRefused \|\|/,
 		);
 	});
 });

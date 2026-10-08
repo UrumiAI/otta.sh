@@ -7,7 +7,6 @@
 import { describe, expect, test, vi } from "vitest";
 import type { APIContext } from "astro";
 import { readCheckoutDraft } from "../src/lib/checkout-draft.js";
-import { STOREFRONT_REGION_RULES_ROUTE } from "@otta-sh/plugin";
 import { POST as PLACE_POST } from "../src/pages/checkout/place.js";
 
 vi.mock("../src/lib/stripe-config.js", () => ({
@@ -21,10 +20,6 @@ const SITE = "http://localhost:4321";
 function post(form: Record<string, string>) {
 	const calls: string[] = [];
 	const handler = async (_id: string, _method: string, routePath: string) => {
-		// The store's region rule is a config read, not the commerce call counted here.
-		if (routePath.replace(/^\//, "") === STOREFRONT_REGION_RULES_ROUTE) {
-			return { success: true, data: { ok: true, regionRequiredCountries: [] } };
-		}
 		calls.push(routePath);
 		return { success: false };
 	};

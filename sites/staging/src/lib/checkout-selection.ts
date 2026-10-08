@@ -272,7 +272,11 @@ function bounded(value: string | undefined): string | undefined {
  * dropped on a changed destination — apply unchanged. Only coarse codes and an
  * opaque method id: no personal data reaches the URL.
  */
-export function deliveryUpdatePath(fields: DeliveryFields, couponCode: string | undefined): string {
+export function deliveryUpdatePath(
+	fields: DeliveryFields,
+	couponCode: string | undefined,
+	error?: string,
+): string {
 	const params = new URLSearchParams();
 	const put = (key: string, value: string | undefined): void => {
 		if (value !== undefined) params.set(key, value);
@@ -285,6 +289,7 @@ export function deliveryUpdatePath(fields: DeliveryFields, couponCode: string | 
 	put(METHOD_PARAM, method !== undefined && METHOD_ID.test(method) ? method : undefined);
 	put(FROM_COUNTRY_PARAM, bounded(fields.fromCountry)?.toUpperCase());
 	put(FROM_REGION_PARAM, bounded(fields.fromRegion));
+	put("error", error);
 	const query = params.toString();
 	return query.length > 0 ? `/checkout?${query}` : "/checkout";
 }

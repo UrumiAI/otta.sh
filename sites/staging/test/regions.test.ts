@@ -8,8 +8,7 @@
 import { experimental_AstroContainer as AstroContainer } from "astro/container";
 import { beforeAll, describe, expect, test } from "vitest";
 import type { CheckoutSummaryView } from "@otta-sh/plugin";
-import { byLabel } from "../src/lib/by-label.js";
-import { countryOptions } from "../src/lib/countries.js";
+import { byLabel, countryOptions } from "../src/lib/countries.js";
 import { regionChoice, regionListIsStale } from "../src/lib/regions.js";
 import type { CheckoutModel } from "../src/themes/contract.js";
 import CheckoutView from "../src/themes/tempered/CheckoutView.astro";

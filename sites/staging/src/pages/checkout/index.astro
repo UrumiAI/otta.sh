@@ -67,7 +67,7 @@ import {
 	readDestinationParams,
 	readMethodParam,
 } from "../../lib/checkout-selection.js";
-import { countryOptions } from "../../lib/countries.js";
+import { countryName, countryOptions } from "../../lib/countries.js";
 import { regionChoice } from "../../lib/regions.js";
 import { SITE_LOCALE } from "../../lib/site-locale.js";
 import { cartErrorMessage } from "../../lib/error-messages.js";
@@ -207,7 +207,7 @@ const showDelivery = locked === null && summary.requiresShipping && summary.ship
 const showAddress = locked === null && (summary.requiresShipping || summary.addressRequired);
 /** Named in the same language the summary formatted the money in. */
 const countries = countryOptions(SITE_LOCALE);
-const countryName = (code: string): string => countries.find((c) => c.code === code)?.label ?? code;
+
 
 /** The state/province PICK LISTS (no client JS): rendered for the country the
  *  page knows — the delivery block's for the priced (or refused) country, the
@@ -317,14 +317,17 @@ const model: CheckoutModel = {
 	   of the country's codes, or not even code-shaped (the site's own check uses
 	   the same reason). A country-level refusal ("we don't ship here") is not. */
 	regionRefused:
-		destinationError?.reason === "SHIPPING_REGION_CODE_REQUIRED" || placeRegionRefused,
+		destinationError?.reason === "SHIPPING_REGION_CODE_REQUIRED" ||
+		placeRegionRefused ||
+		/* A state picked for the old country was dropped with the change: pick again. */
+		shownError === "REGION_LIST_UPDATED",
 	/* …and a COUNTRY-level refusal ("we don't ship there") marks the country. */
 	countryRefused:
 		destinationError !== null && destinationError.reason !== "SHIPPING_REGION_CODE_REQUIRED",
 	shippingError: shippingError !== null ? cartErrorMessage(shippingError.reason) : null,
 	noOptionsCopy: cartErrorMessage("SHIPPING_METHOD_REQUIRED"),
 	destination,
-	destinationName: destination !== null ? countryName(destination.country) : null,
+	destinationName: destination !== null ? countryName(destination.country, countries) : null,
 	destinationRegionName:
 		destination?.region != null ? subdivisionName(destination.country, destination.region) : null,
 	countryValue,
