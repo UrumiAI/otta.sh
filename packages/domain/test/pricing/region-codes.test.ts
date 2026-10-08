@@ -1,7 +1,6 @@
 import { describe, expect, test } from "vitest";
 import { COUNTRY_CODES, SUBDIVISIONS } from "../../src/pricing/iso-3166.generated.js";
 import {
-	countriesUsingRegions,
 	isCodeShapedRegion,
 	normalizeCountryCode,
 	normalizeSubdivision,
@@ -191,24 +190,5 @@ describe("REGION_CODE_PATTERN — the shape rule, for a form field's pattern", (
 			expect(anchored.test(code), code).toBe(false);
 			expect(isCodeShapedRegion(code), code).toBe(false);
 		}
-	});
-});
-
-describe("countriesUsingRegions — the store's 'region required' rule", () => {
-	test("a country is listed iff some zone lists one of its subdivisions", () => {
-		expect(
-			countriesUsingRegions([
-				{ regions: ["US-CA", "DE"] },
-				{ regions: ["in-ka", "IN-MH"] },
-				{ regions: ["FR"] },
-				{ regions: null },
-				{ regions: ["Bavaria", "XX-ZZ"] },
-			]),
-		).toEqual(["IN", "US"]);
-	});
-
-	test("no zones, or country-level zones only: nothing is required", () => {
-		expect(countriesUsingRegions([])).toEqual([]);
-		expect(countriesUsingRegions([{ regions: ["US", "DE"] }])).toEqual([]);
 	});
 });

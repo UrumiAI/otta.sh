@@ -90,23 +90,6 @@ export function parseZoneRegions(regions: unknown): { codes: string[]; invalid: 
 	return { codes, invalid };
 }
 
-/**
- * The countries whose addresses NEED a region: every country for which some
- * zone lists a subdivision code (`US-CA` ⇒ `US`). Zones are where both shipping
- * and tax rates hang, so a store that prices or taxes a country by region uses
- * regions for it; elsewhere a blank region is fine. Sorted, unique.
- */
-export function countriesUsingRegions(zones: ReadonlyArray<{ regions: unknown }>): string[] {
-	const countries = new Set<string>();
-	for (const zone of zones) {
-		for (const code of parseZoneRegions(zone.regions).codes) {
-			const dash = code.indexOf("-");
-			if (dash !== -1) countries.add(code.slice(0, dash));
-		}
-	}
-	return [...countries].toSorted();
-}
-
 export type ValidateZoneRegionsResult =
 	| { ok: true; codes: string[] | null }
 	| { ok: false; invalid: string[] };

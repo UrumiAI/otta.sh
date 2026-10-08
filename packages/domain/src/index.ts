@@ -73,7 +73,6 @@ export { quoteCommandFor, type PricedLine, type QuoteInput } from "./pricing/quo
 export { COUNTRY_CODES, SUBDIVISIONS } from "./pricing/iso-3166.generated.js";
 export { CURRENCY_CODES, isIsoCurrencyCode } from "./pricing/iso-4217.js";
 export {
-	countriesUsingRegions,
 	isCodeShapedRegion,
 	normalizeCountryCode,
 	normalizeSubdivision,
