@@ -34,5 +34,5 @@ field.
   and shows its state list, marked invalid, instead of resetting.
 - Names include CLDR's provisional ones (CN-HK, CN-MO, CN-NM, CN-TW), drop CLDR's
   footnote markers (`Île-de-France²`), and label same-named subdivisions with their code.
-  A theme that still prints a
-  typed region input posts no such field and behaves as before.
+- A theme that still prints a typed region input posts no `regionCountry` and behaves as
+  before.
