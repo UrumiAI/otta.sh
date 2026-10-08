@@ -1,7 +1,17 @@
 /**
- * The site's own middleware. It decides one thing: who may be served a stored
- * copy of a storefront page (ADR-0024).
+ * The site's own middleware. It decides two things: whether a state-changing
+ * request may reach a storefront route at all (the origin check, below), and
+ * who may be served a stored copy of a storefront page (ADR-0024).
  *
+ * THE ORIGIN CHECK (CSRF, ADR-0006; issue #376). Every non-safe request to a
+ * storefront route is refused with a 403 when it carries a present-but-foreign
+ * `Origin` — before any endpoint runs, reads a body or touches a cookie. The
+ * rule, its exemptions (`/_*`, the Stripe webhook) and the one refusal it
+ * answers with live in `lib/origin-guard.ts`. It used to be a call each
+ * endpoint made first; here it is default-deny, so a new endpoint cannot ship
+ * unguarded by forgetting it.
+ *
+ * THE CACHING RULE.
  * A page whose chrome draws the shopper's own state is PER-SHOPPER. For a theme
  * that opts into the chrome's cart-lines read (`ThemeModule.chrome.cartLines`)
  * or into the shopper's state (`chrome.shopperState`: the cart count and the
@@ -39,18 +49,29 @@
  * reads the options only once `next()` has returned, so the call after the page
  * is the one that counts. With no cache provider configured it is a no-op.
  *
- * SCOPE. Storefront GET/HEAD only. `/_emdash/*` (the admin and its API) and
+ * SCOPE of the caching rule. Storefront GET/HEAD only. `/_emdash/*` (the admin and its API) and
  * `/_astro/*`, `/_image` (assets) are passed straight through, as is every
  * write — with ONE exception that runs first: EmDash's public media route never
  * serves a key under `dl/`, where
  * paid downloads live (issue #376; `lib/media-deny.ts`). Paid files belong in
  * the private DOWNLOADS bucket, never MEDIA; this is the backstop for one put
  * in the wrong bucket by hand.
+ *
+ * ONE WRITE IS LOOKED AT, too (issue #405): a plugin-route write (POST, PUT or
+ * PATCH — any method but GET, HEAD, DELETE and OPTIONS) that attaches a
+ * download file has its key `head()`ed in the DOWNLOADS bucket before EmDash
+ * dispatches it, because the plugin cannot reach R2 and a key with no object
+ * would 404 every buyer (`lib/download-attach-guard.ts`). Every other write
+ * passes through.
  */
 import { CART_COOKIE_NAME, SESSION_COOKIE_NAME } from "@otta-sh/plugin";
 import { defineMiddleware } from "astro:middleware";
+import { env } from "virtual:emdash/env";
+import { attachBucketFrom, guardAttachDownload } from "./lib/download-attach-guard.js";
+import { UPLOAD_MIN_ROLE } from "./lib/download-upload.js";
 import { isPrivateDownloadMediaRequest } from "./lib/media-deny.js";
 import { PRIVATE_NO_STORE } from "./lib/no-store.js";
+import { rejectCrossOrigin } from "./lib/origin-guard.js";
 import { themeFor } from "./themes/registry.js";
 import { activeTheme } from "./themes/resolve.js";
 
@@ -78,7 +99,23 @@ function skipRouteCache(context: { cache?: { set(options: false): void } }): voi
 }
 
 export const onRequest = defineMiddleware(async (context, next) => {
+	// CSRF first: a refused write never reaches its endpoint.
+	const forbidden = rejectCrossOrigin(context);
+	if (forbidden !== null) return forbidden;
+
 	const { request, url, cookies } = context;
+	// Every method that can carry a body — the guard decides (it gates all but
+	// GET, HEAD, DELETE and OPTIONS, as EmDash's plugin route parses a JSON body
+	// for POST, PUT and PATCH alike).
+	const locals = context.locals as { user?: unknown; tokenScopes?: unknown };
+	const refused = await guardAttachDownload(
+		request,
+		url,
+		{ user: locals.user, tokenScopes: locals.tokenScopes },
+		UPLOAD_MIN_ROLE,
+		attachBucketFrom(env),
+	);
+	if (refused !== null) return refused;
 	if (request.method !== "GET" && request.method !== "HEAD") return next();
 	// Before the `/_` pass-through: the media route is under `/_emdash`. The same
 	// plain 404 EmDash answers for a key it does not have, and never stored.

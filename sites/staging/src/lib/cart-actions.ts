@@ -4,10 +4,11 @@
  * cookie (read + Set-Cookie via the descriptor shim) and the redirect;
  * the plugin routes own the cart logic as straight service proxies.
  *
- * CSRF: every /cart/* endpoint calls `rejectCrossOrigin` (origin-guard.ts)
- * FIRST — Astro's `security.checkOrigin` is force-disabled by the emdash
- * integration and its replacement layer covers only /_emdash/api/* routes
- * (ADR-0006) — plus the cart cookie's SameSite=Lax.
+ * CSRF: the site middleware's origin check (origin-guard.ts) refuses a
+ * cross-site POST before any /cart/* endpoint runs — Astro's
+ * `security.checkOrigin` is force-disabled by the emdash integration and its
+ * replacement layer covers only /_emdash/api/* routes (ADR-0006) — plus the
+ * cart cookie's SameSite=Lax.
  */
 import {
 	CART_COOKIE_NAME,

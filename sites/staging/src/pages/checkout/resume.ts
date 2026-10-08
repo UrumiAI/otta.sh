@@ -32,7 +32,6 @@ import {
 	resumeEmailPath,
 	resumeOutcome,
 } from "../../lib/checkout-resume.js";
-import { rejectCrossOrigin } from "../../lib/origin-guard.js";
 import { PRIVATE_NO_STORE } from "../../lib/no-store.js";
 import {
 	busyResponse,
@@ -86,9 +85,8 @@ async function resumeFromLink(context: APIContext): Promise<Response> {
 }
 
 async function resumeWithEmail(context: APIContext): Promise<Response> {
-	// CSRF FIRST: a cross-site form must not spend this order's guesses.
-	const forbidden = rejectCrossOrigin(context);
-	if (forbidden !== null) return forbidden;
+	// CSRF: src/middleware.ts has already refused a cross-site POST (ADR-0006),
+	// so a forged form cannot spend this order's guesses.
 	const form = await readFormBody(context.request);
 	if (form === null) return notAFormResponse();
 	const orderId = formString(form.get("order")) ?? "";

@@ -111,14 +111,51 @@ describe("the upgrade rule (no saved tax settings)", () => {
 		expect(q.breakdown.taxCents).toBe(240 + 100);
 	});
 
-	test("no rates at all ⇒ the new-store defaults: tax OFF, and no calculator is asked", async () => {
+	test("no rates and no outside calculator ⇒ the new-store defaults: tax OFF", async () => {
 		const empty = new InMemoryTaxRulesStore();
-		const calc = spy();
-		const q = await computeQuote({ ...deps, taxRules: empty, taxCalculator: calc }, physical);
+		const q = await computeQuote({ ...deps, taxRules: empty }, physical);
 		if (!q.ok) throw new Error(q.reason);
 		expect(q.taxSettings).toEqual(NEW_STORE_TAX_SETTINGS);
-		expect(calc.seen).toHaveLength(0);
 		expect(q.breakdown.taxCents).toBe(0);
+		expect(q.tax.calculatorId).toBe(TAX_DISABLED_CALCULATOR_ID);
+	});
+
+	test("no rates but an outside calculator registered ⇒ tax stays ON and the calculator is asked", async () => {
+		// The calculator replaces the rate table, so such a store has no rates; it
+		// charged tax before ADR-0031 and must keep charging it with nothing saved.
+		const empty = new InMemoryTaxRulesStore();
+		const seen: TaxRequest[] = [];
+		const calc: TaxCalculator = {
+			id: "acme.tax",
+			async calculate(req) {
+				seen.push(req);
+				return {
+					ok: true,
+					currency: req.currency,
+					lines: req.lines.map((l) => ({
+						lineId: l.lineId,
+						rateBps: 1000,
+						label: "VAT",
+						taxCents: cents(120),
+					})),
+					shipping: null,
+				};
+			},
+		};
+		const q = await computeQuote({ ...deps, taxRules: empty, taxCalculator: calc }, physical);
+		if (!q.ok) throw new Error(q.reason);
+		expect(q.taxSettings).toEqual(LEGACY_TAX_SETTINGS);
+		expect(seen.map((r) => r.purpose)).toEqual(["quote"]);
+		expect(q.tax.calculatorId).toBe("acme.tax");
+		expect(q.breakdown.taxCents).toBe(120);
+	});
+
+	test("an outside calculator does not override saved options that switch tax off", async () => {
+		await save({ ...NEW_STORE_TAX_SETTINGS });
+		const calc = spy();
+		const q = await computeQuote({ ...deps, taxCalculator: calc }, physical);
+		if (!q.ok) throw new Error(q.reason);
+		expect(calc.seen).toHaveLength(0);
 		expect(q.tax.calculatorId).toBe(TAX_DISABLED_CALCULATOR_ID);
 	});
 

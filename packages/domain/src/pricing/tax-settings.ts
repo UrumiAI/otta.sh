@@ -71,7 +71,11 @@ export const LEGACY_TAX_SETTINGS: TaxSettings = Object.freeze({
 /** The id a quote with tax switched off records — no calculator was asked. */
 export const TAX_DISABLED_CALCULATOR_ID = "otta.tax-disabled";
 
-/** The upgrade rule: a saved block wins; else rates exist ⇒ legacy; else a new store. */
+/**
+ * The upgrade rule: a saved block wins; else the store already charges tax ⇒
+ * legacy; else a new store. "Already charges tax" is: rates exist, OR an outside
+ * calculator is registered (ADR-0030 — such a store has no rates by design).
+ */
 export function effectiveTaxSettings(
 	saved: TaxSettings | undefined,
 	hasAnyRate: boolean,

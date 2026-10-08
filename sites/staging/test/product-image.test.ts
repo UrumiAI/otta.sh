@@ -12,7 +12,12 @@
 import { describe, expect, test } from "vitest";
 import { productImage, toCmsProductContent } from "../src/lib/products.js";
 
-/** Exactly what EmDash 0.38 stored for a PNG uploaded through the product editor. */
+/**
+ * Exactly what EmDash 0.38 stored for a PNG uploaded through the product editor.
+ * 1.0.1 keeps the shape (`src/media/normalize.ts` still strips `src` from a local
+ * value and keeps `meta.storageKey`); `src/media/types.ts` `MediaValue` adds
+ * optional `focalX` / `focalY`, which the URL never reads.
+ */
 const UPLOADED = {
 	id: "01M3Y5KWQD0EYKTQFAK66W55WC",
 	provider: "local",

@@ -131,9 +131,13 @@ function matchOffer(payment: X402DecodedPayment, against: X402Offer): X402MatchR
  * signature against are inputs we supply — the recipient gap #282 recorded
  * closes by construction rather than by a facilitator attesting it.
  *
- * WHAT IT DOES NOT DO. It does not check the amount or the time window against
- * an order or a clock (the domain does, Decision 5 step 4), and it holds no
- * state between calls beyond which offers and payments it minted.
+ * The one amount check it does make is in `verify` and `settle`: the signed
+ * `authorization.value` must equal the offer's amount exactly, or nothing is
+ * sent (`offer_mismatch`). The facilitator is not relied on for that.
+ *
+ * WHAT IT DOES NOT DO. It does not check the amount against an order, or the
+ * time window against a clock (the domain does, Decision 5 step 4), and it
+ * holds no state between calls beyond which offers and payments it minted.
  *
  * ONE INSTANCE PER REQUEST'S FLOW. `offer`, `verify` and `settle` must be called
  * on the same rail, with the very objects `offer` and `decode` returned: an
@@ -213,6 +217,18 @@ export function createX402Rail(options: X402RailOptions): X402Rail {
 		const parsed = parsedPaymentOf(payment);
 		const match = matchOffer(payment, against);
 		if (parsed === undefined || !match.ok) {
+			return { ok: false, cause: "offer_mismatch" } as const;
+		}
+		// The signed value must be exactly our amount, checked HERE rather than
+		// left to the facilitator (#405 item 1). The spec has the facilitator
+		// compare them, but one that accepted `value >= amount` would settle an
+		// overpayment the order then refuses: money moved, no paid order. The
+		// domain compares the amount too (Decision 5, step 4); this makes "never
+		// send a payment for another amount" the adapter's own guarantee, as the
+		// recipient already is. A string comparison is exact because both sides
+		// are canonical base 10: `centsToAtomic` prints BigInt's, and the decoder
+		// accepts no other form (no sign, no leading zero, no exponent).
+		if (parsed.authorization.value !== match.requirements.amount) {
 			return { ok: false, cause: "offer_mismatch" } as const;
 		}
 		const body = JSON.stringify({

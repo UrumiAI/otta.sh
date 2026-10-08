@@ -31,6 +31,7 @@ import {
 	type OutboundEmail,
 	type ProviderRequest,
 	readProviderJson,
+	type ProviderResponse,
 	sanitizeProviderDetail,
 	statusFailure,
 } from "./http-email-sender.js";
@@ -63,7 +64,7 @@ export class Smtp2goEmailSender extends HttpEmailSender {
 		};
 	}
 
-	protected async checkResponse(res: Response, message: OutboundEmail): Promise<void> {
+	protected async checkResponse(res: ProviderResponse, message: OutboundEmail): Promise<void> {
 		const parsed = await readProviderJson(res);
 		const data = dataOf(parsed);
 		if (!res.ok) {

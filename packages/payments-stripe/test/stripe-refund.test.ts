@@ -177,9 +177,11 @@ describe("StripePaymentGateway.refund (ADR-0008; offline mock transport)", () =>
 });
 
 /** A fetch that NEVER answers on its own — it settles only by rejecting when the
- *  request's abort signal fires, exactly as the platform `fetch` does. `answer`
- *  lets a test serve some calls (e.g. the pre-flight GET) and hang the rest.
- *  Every `init` is recorded so a test can assert the signal was passed. */
+ *  request's abort signal fires, as the platform `fetch` does on a trusted host.
+ *  The default transport sends NO signal (EmDash's sandbox RPC refuses one), so
+ *  there it never settles and only the transport's own race ends the wait.
+ *  `answer` lets a test serve some calls (e.g. the pre-flight GET) and hang the
+ *  rest. Every `init` is recorded so a test can assert what was passed. */
 function hangingFetch(
 	seen: RequestInit[],
 	answer: (url: string, init?: RequestInit) => Response | undefined = () => undefined,
@@ -335,7 +337,8 @@ describe("createStripeHttpTransport (default live transport; stub fetch — NO n
 			),
 		).toEqual({ ok: false, class: "retryable" });
 		expect(seen).toHaveLength(1);
-		expect(seen[0]?.signal).toBeInstanceOf(AbortSignal);
+		// No signal: the sandbox RPC refuses one; the transport's own race bounds it.
+		expect(seen[0]?.signal).toBeUndefined();
 	});
 
 	test("a hung refund CREATE is bounded by requestTimeoutMs and classifies ambiguous", async () => {
@@ -359,7 +362,8 @@ describe("createStripeHttpTransport (default live transport; stub fetch — NO n
 			),
 		).toEqual({ ok: false, class: "ambiguous" });
 		expect(seen).toHaveLength(1);
-		expect(seen[0]?.signal).toBeInstanceOf(AbortSignal);
+		// No signal: the sandbox RPC refuses one; the transport's own race bounds it.
+		expect(seen[0]?.signal).toBeUndefined();
 	});
 
 	test("the gateway's OWN requestTimeoutMs bounds its default transport — the settle webhook's refund cannot outlast Stripe's delivery timeout", async () => {
@@ -488,6 +492,6 @@ describe("createStripeHttpTransport (default live transport; stub fetch — NO n
 			reason: "UNVERIFIED",
 		});
 		expect(createSeen.map((init) => init.method)).toEqual(["GET", "POST"]);
-		for (const init of createSeen) expect(init.signal).toBeInstanceOf(AbortSignal);
+		for (const init of createSeen) expect(init.signal).toBeUndefined();
 	});
 });

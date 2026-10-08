@@ -132,6 +132,14 @@ const ACTION_SAVE = PRODUCTS_ACTIONS.custom("save");
  *  for every product write (ADR-0014 Decision 3, amended by ADR-0029 for the
  *  upload alone). */
 const ACTION_ATTACH_DOWNLOAD = PRODUCTS_ACTIONS.custom("attach-download");
+/** The attach write's action id, exported so the site that holds the
+ *  `DOWNLOADS` bucket can recognise the one write that names a key and check the
+ *  object exists before it is dispatched here (issue #405) — never a copied
+ *  literal that would silently stop matching. */
+export const ATTACH_DOWNLOAD_ACTION_ID: string = ACTION_ATTACH_DOWNLOAD;
+/** The title of every refusal of a download file's save — this action's own and
+ *  the site's bucket check's, so the card reads them as one. */
+export const DOWNLOAD_NOT_ATTACHED_TITLE = "This file wasn't attached";
 /** Restock stays DA-4: one-shot, no staging, no confirm. */
 const ACTION_RESTOCK = PRODUCTS_ACTIONS.custom("restock");
 /** The screen's ONE destructive act (DA-5's second exception: a removal is
@@ -475,6 +483,13 @@ const BYTE_COUNT = /^(0|[1-9][0-9]{0,15})$/;
  * is a stale refusal. A retry the card makes after a lost answer carries a
  * FRESH watermark, so the key alone cannot dedupe it: the card's re-read does
  * (it finds its own key already attached and writes nothing).
+ *
+ * WHETHER THE OBJECT EXISTS IS NOT CHECKED HERE: the plugin cannot reach R2.
+ * The site holding the `DOWNLOADS` binding checks it before this write is
+ * dispatched (ADR-0029's 2026-10-06 amendment; the reference site's
+ * `download-attach-guard.ts`, which matches {@link ATTACH_DOWNLOAD_ACTION_ID}),
+ * so a key with nothing behind it never reaches this action there. A site that
+ * hosts this plugin without that check keeps the gap.
  */
 const attachDownloadAction: ProductsAction = async (client, payload) => {
 	const productId = readString(payload["productId"]);
@@ -522,7 +537,7 @@ const attachDownloadAction: ProductsAction = async (client, payload) => {
 	if (result.reason === "invalid" && (result.field ?? "").startsWith("downloadAsset")) {
 		return applied({
 			variant: "error",
-			title: "This file wasn't attached",
+			title: DOWNLOAD_NOT_ATTACHED_TITLE,
 			description: downloadRefusal(result.field ?? "downloadAsset"),
 		});
 	}

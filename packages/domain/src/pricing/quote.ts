@@ -310,10 +310,17 @@ export async function computeQuote(
 	};
 }
 
-/** The saved tax options, or — nothing saved — the upgrade rule's answer. */
+/**
+ * The saved tax options, or — nothing saved — the upgrade rule's answer. A
+ * registered outside calculator counts as "this store already charges tax" just
+ * as a rate table does: such a store has no rates (the calculator replaces
+ * them), and before ADR-0031 its calculator priced every quote — reading it as a
+ * new store would switch tax off and silently stop asking the calculator.
+ */
 async function loadTaxSettings(deps: QuoteDeps): Promise<TaxSettings> {
 	const saved = deps.settings === undefined ? undefined : (await deps.settings.get()).tax;
 	if (saved !== undefined) return saved;
+	if (deps.taxCalculator !== undefined) return effectiveTaxSettings(undefined, true);
 	return effectiveTaxSettings(undefined, await deps.taxRules.hasAnyRate());
 }
 

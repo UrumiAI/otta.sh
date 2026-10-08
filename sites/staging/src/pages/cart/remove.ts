@@ -13,7 +13,6 @@ import {
 	routeDispatcher,
 	seeOther,
 } from "../../lib/cart-actions.js";
-import { rejectCrossOrigin } from "../../lib/origin-guard.js";
 import {
 	busyResponse,
 	dispatchOttaRoute,
@@ -24,11 +23,7 @@ import {
 } from "../../lib/otta-api.js";
 
 export const POST: APIRoute = async (context) => {
-	// CSRF first: emdash disables Astro's checkOrigin; the shim enforces
-	// its own origin check (origin-guard.ts, ADR-0006).
-	const forbidden = rejectCrossOrigin(context);
-	if (forbidden !== null) return forbidden;
-
+	// CSRF: src/middleware.ts has already refused a cross-site POST (ADR-0006).
 	const form = await readFormBody(context.request);
 	if (form === null) return notAFormResponse();
 	const lineId = formString(form.get("lineId"));

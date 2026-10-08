@@ -4,6 +4,8 @@ export default defineConfig({
 	test: {
 		name: "store-emdash",
 		include: ["test/**/*.test.ts"],
+		// Resets the storage guard's per-process heal state after every case.
+		setupFiles: ["./test/setup.ts"],
 		// Mirror the root config's guard so BOTH invocation paths (the aggregated
 		// root run AND `pnpm -C packages/store-emdash exec vitest`) serialize pg
 		// test FILES when Postgres is enabled: every pg file creates its own

@@ -3,9 +3,10 @@
  * magic-link login.
  *
  * What each group protects:
- *  - **CSRF first.** Every account POST runs `rejectCrossOrigin()` before it
- *    reads the body; a forged POST is asserted by "the dispatcher was never
- *    called", not merely by the 403. Login CSRF (planting an attacker's session
+ *  - **CSRF first.** The site middleware's origin check refuses a forged
+ *    account POST before the endpoint runs (served here through the
+ *    middleware); that is asserted by "the dispatcher was never called", not
+ *    merely by the 403. Login CSRF (planting an attacker's session
  *    in a victim's browser) is the reason the verify step is guarded too.
  *  - **No account oracle.** The link request 303s to the same generic notice
  *    whatever the plugin knows about the address.
@@ -32,7 +33,12 @@ import {
 	SESSION_COOKIE_NAME,
 } from "@otta-sh/plugin";
 import type { APIContext } from "astro";
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
+
+vi.mock("astro:middleware", () => ({
+	defineMiddleware: <T>(handler: T): T => handler,
+}));
+
 import {
 	ACCOUNT_HOME_PATH,
 	checkoutEmailNote,
@@ -50,6 +56,8 @@ import {
 	verifyFailureToken,
 } from "../src/lib/account.js";
 import { cartErrorMessage } from "../src/lib/error-messages.js";
+import { onRequest } from "../src/middleware.js";
+import { serve } from "./helpers/serve.js";
 import { GET as ACCOUNT_INDEX_GET } from "../src/pages/account/index.js";
 import { keepPrivate } from "../src/lib/no-store.js";
 import { POST as LOGIN_REQUEST_POST } from "../src/pages/account/login/request.js";
@@ -138,7 +146,7 @@ describe("POST /account/login/request", () => {
 		const { context } = makeContext("/account/login/request", { email: "a@example.com" }, handler, {
 			origin: "https://evil.example",
 		});
-		expect((await LOGIN_REQUEST_POST(context)).status).toBe(403);
+		expect((await serve(onRequest, context, LOGIN_REQUEST_POST)).status).toBe(403);
 		expect(calls).toHaveLength(0);
 	});
 
@@ -269,7 +277,7 @@ describe("POST /account/verify/confirm", () => {
 			handler,
 			{ origin: "https://evil.example" },
 		);
-		expect((await VERIFY_CONFIRM_POST(context)).status).toBe(403);
+		expect((await serve(onRequest, context, VERIFY_CONFIRM_POST)).status).toBe(403);
 		expect(calls).toHaveLength(0);
 		expect(cookieOps).toHaveLength(0);
 	});
@@ -407,7 +415,7 @@ describe("POST /account/logout", () => {
 			origin: "https://evil.example",
 			session: "sess-1",
 		});
-		expect((await LOGOUT_POST(context)).status).toBe(403);
+		expect((await serve(onRequest, context, LOGOUT_POST)).status).toBe(403);
 		expect(calls).toHaveLength(0);
 		expect(cookieOps).toHaveLength(0);
 	});

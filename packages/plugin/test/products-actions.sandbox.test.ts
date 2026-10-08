@@ -117,7 +117,12 @@ import {
 	STOCK_ON_HAND_CONTEXT,
 	removeStockConfirm,
 } from "@otta-sh/admin-presentation";
-import { deriveEditIdempotencyKey, PRODUCTS_ACTION_IDS } from "../src/admin/products-actions.js";
+import {
+	ATTACH_DOWNLOAD_ACTION_ID,
+	deriveEditIdempotencyKey,
+	DOWNLOAD_NOT_ATTACHED_TITLE,
+	PRODUCTS_ACTION_IDS,
+} from "../src/admin/products-actions.js";
 import { loadPluginInSandbox, type SandboxHandle } from "./sandbox/harness.js";
 import { storageBridge } from "./sandbox/storage-bridge.js";
 
@@ -1290,6 +1295,32 @@ describe("products:attach-download — saving an uploaded file's descriptor (iss
 		expect(result.notice?.title).toBe("This file wasn't attached");
 		expect(result.notice?.description).not.toMatch(/price/i);
 		expect((await readProduct(seeded.productId)).downloadAsset).toBeNull();
+	});
+
+	// The site's bucket check (issue #405) sends no `head()` for a key the save's
+	// own rule rejects and passes it on here instead — so THIS refusal is what
+	// stands between a junk key and the product. The same four shapes the site's
+	// guard test passes through.
+	test.each([
+		["another prefix", (id: string) => `uploads/${id}/${ULID}`],
+		["another product's key", () => `dl/someone-else/${ULID}`],
+		["no ULID", (id: string) => `dl/${id}/Field Guide.pdf`],
+		["a path climb", (id: string) => `dl/${id}/../someone-else/${ULID}`],
+	])("a junk key (%s) is refused as the file's, and nothing is saved", async (_label, keyFor) => {
+		const seeded = await seedProduct({ productKind: "digital", onHand: null });
+		const result = await act(
+			ATTACH_DOWNLOAD_ACTION_ID,
+			attachPayload(seeded, { key: keyFor(seeded.productId) }),
+		);
+		expect(result.notice).toEqual({
+			variant: "error",
+			title: DOWNLOAD_NOT_ATTACHED_TITLE,
+			description:
+				"The upload did not match this product. Upload the file again from this product's page.",
+		});
+		const row = await readProduct(seeded.productId);
+		expect(row.downloadAsset).toBeNull();
+		expect(row.updatedAt.toISOString()).toBe(seeded.updatedAt);
 	});
 
 	test("REPLACE ONLY: saving a product WITH a file as Physical is refused in honest words, and nothing moves", async () => {

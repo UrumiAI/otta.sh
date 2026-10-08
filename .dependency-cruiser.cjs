@@ -6,18 +6,16 @@ module.exports = {
 	forbidden: [
 		{
 			name: "domain-is-io-free",
-			// TODO(#291): this rule still names the deleted `service` package, in the
-			// comment below and in the last clause of `to.path`. Tracked separately.
 			comment:
 				"@otta-sh/domain imports nothing with IO — no pg/kysely/better-sqlite3/hono/http, " +
-				"and no dependency on adapter/service/plugin packages (DEVELOPMENT.md §3).",
+				"and no dependency on adapter/plugin packages (DEVELOPMENT.md §3).",
 			severity: "error",
 			from: { path: "^packages/domain/src" },
 			to: {
 				// Matches the forbidden module whether it resolves into node_modules
 				// (direct or pnpm-store path) or stays a bare specifier (pnpm strict
 				// isolation leaves undeclared imports unresolved).
-				path: "(node_modules/(pg|pg-pool|kysely|better-sqlite3|hono|node-fetch|undici)(/|$)|^(pg|pg-pool|kysely|better-sqlite3|hono|node-fetch|undici)(/|$)|^(node:)?(http|https)(/|$)|^packages/(store-[^/]+|service|plugin|payments-[^/]+)/)",
+				path: "(node_modules/(pg|pg-pool|kysely|better-sqlite3|hono|node-fetch|undici)(/|$)|^(pg|pg-pool|kysely|better-sqlite3|hono|node-fetch|undici)(/|$)|^(node:)?(http|https)(/|$)|^packages/(store-[^/]+|plugin|payments-[^/]+)/)",
 			},
 		},
 		{
@@ -206,21 +204,19 @@ module.exports = {
 				"its own caller. Nothing else caught the inversion — `plugin-is-sandbox-" +
 				"clean` admits store-emdash, this rule said nothing about the plugin, and " +
 				"the console rules bind neither package — so the cycle would have been " +
-				"a review catch rather than a build failure. Sibling adapters, the service " +
-				"and the payment packages are likewise named in all three spellings " +
+				"a review catch rather than a build failure. Sibling adapters and the " +
+				"payment packages are likewise named in all three spellings " +
 				"rather than in the packages clause alone, for the bare-specifier reason " +
 				"the plugin rule's comment sets out. Every case this rule and " +
 				"the plugin rule turn on are executed in " +
 				"packages/plugin/test/depcruise-boundary.test.ts.",
-			// TODO(#291): this rule still names the deleted `service` package, in the
-			// comment above and in three clauses of `to.path`. Tracked separately.
 			severity: "error",
 			from: { path: "^packages/store-emdash/src" },
 			to: {
 				// Both spellings, as above. The builtin half is the optional-`node:`
 				// form the plugin rule's comment explains — dependency-cruiser reports
 				// `from "node:fs"` under the bare name `fs`.
-				path: "(node_modules/(pg|pg-pool|kysely|better-sqlite3|workerd|hono|node-fetch|undici|axios|ws)(/|$)|node_modules/@otta-sh/((?!store-emdash(/|$))store-[^/]+|service|payments-[^/]+|admin-react|plugin)(/|$)|^(pg|pg-pool|kysely|better-sqlite3|workerd|hono|node-fetch|undici|axios|ws)(/|$)|^@otta-sh/((?!store-emdash(/|$))store-[^/]+|service|payments-[^/]+|admin-react|plugin)(/|$)|^(node:)?(fs|child_process|net|http|https|os|dgram|dns|tls|worker_threads|cluster|vm)(/|$)|^packages/(service|payments-[^/]+|admin-react|plugin)/|^packages/(?!store-emdash(/|$))store-[^/]+/)",
+				path: "(node_modules/(pg|pg-pool|kysely|better-sqlite3|workerd|hono|node-fetch|undici|axios|ws)(/|$)|node_modules/@otta-sh/((?!store-emdash(/|$))store-[^/]+|payments-[^/]+|admin-react|plugin)(/|$)|^(pg|pg-pool|kysely|better-sqlite3|workerd|hono|node-fetch|undici|axios|ws)(/|$)|^@otta-sh/((?!store-emdash(/|$))store-[^/]+|payments-[^/]+|admin-react|plugin)(/|$)|^(node:)?(fs|child_process|net|http|https|os|dgram|dns|tls|worker_threads|cluster|vm)(/|$)|^packages/(payments-[^/]+|admin-react|plugin)/|^packages/(?!store-emdash(/|$))store-[^/]+/)",
 			},
 		},
 		{

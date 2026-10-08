@@ -11,15 +11,29 @@
  *  - construct `ctx.http` exactly like em-dash's `createHttpAccess`
  *    (`context.ts:619-671`): reject any host not in `ALLOWED_HOSTS`
  *    (`isHostAllowed`, `context.ts:601-611` — exact-match or `*`/`*.sub`
- *    wildcard) BEFORE ever calling the real `fetch`.
+ *    wildcard) BEFORE ever calling the real `fetch`. Its ANSWER has the shape
+ *    EmDash 0.38's production Worker Loader bridge gave a sandboxed plugin: a
+ *    plain `{status, ok, headers, text(), json()}` with the body already
+ *    buffered, and NO `url` and NO `body` stream. 1.0.1's bridge returns a real
+ *    `Response` with both (`@emdash-cms/cloudflare@1.0.1`
+ *    `src/sandbox/wrapper.ts` `http.fetch`); the mirror keeps the leaner shape,
+ *    so a plugin that leans on either still fails here, in the sandbox suites.
  *  - bind `ctx.storage` to the document store `sandbox-storage.ts` hands over,
  *    when there is one. That module is the injection seam the harness replaces
  *    (see its own doc): a store cannot be built inside the isolate, so the
  *    suites inject one from outside. `storage` is capability-free — the host
  *    builds it on an always-available path and there is no capability string
  *    for it (ADR-0018) — so nothing about the declared two changes here.
- *  - no `content`/`media`/`users`/`email` on `ctx` at all — this plugin never
- *    declares those capabilities (sandbox-clean guard).
+ *  - no `media`/`users`/`email` on `ctx` at all — this plugin never declares
+ *    those capabilities (sandbox-clean guard).
+ *  - `content`: the REAL EmDash sandbox does provide it — the plugin declares
+ *    `content:read`, and `@emdash-cms/cloudflare`'s bridge serves `contentGet` /
+ *    `contentList`. On 0.38 it caught every D1 error and answered `null` / an
+ *    empty page; on 1.0.1 a failed read rejects (`src/sandbox/bridge.ts`).
+ *    This mirror has no CMS behind it, so the production entry omits `content`
+ *    (the `product-orphans` sweep leg then reports itself skipped), and a TEST
+ *    fixture may opt into `cmsWithoutTable`: the 0.38 bridge's answers over a
+ *    database whose `ec_products` query fails — the outage the sweep must survive.
  *
  * Otta does not depend on `~/em-dash`'s internal `packages/workerd`
  * package (DEVELOPMENT.md preamble — standalone repo); this file plus
@@ -31,6 +45,7 @@ import { ALLOWED_HOSTS } from "./manifest.js";
 import plugin from "./plugin.js";
 import { sandboxStorage } from "./sandbox-storage.js";
 import type {
+	ContentReadAccess,
 	CronAccess,
 	CronTaskInfo,
 	HttpAccess,
@@ -68,7 +83,22 @@ function createHttpAccess(allowedHosts: readonly string[]): HttpAccess {
 					`Plugin "otta" is not allowed to fetch from host "${hostname}". Allowed hosts: ${allowedHosts.join(", ")}`,
 				);
 			}
-			return globalThis.fetch(url, init);
+			const response = await globalThis.fetch(url, init);
+			const text = await response.text();
+			const headers: Record<string, string> = {};
+			response.headers.forEach((value, key) => {
+				headers[key] = value;
+			});
+			// The bridge's shape, not a `Response` (see the header). `HttpAccess`
+			// still says `Response` because em-dash's in-process `ctx.http` returns
+			// one; code that must run sandboxed uses only what both provide.
+			return {
+				status: response.status,
+				ok: response.status >= 200 && response.status < 300,
+				headers: new Headers(headers),
+				text: async () => text,
+				json: async () => JSON.parse(text) as unknown,
+			} as unknown as Response;
 		},
 	};
 }
@@ -165,7 +195,28 @@ export interface SandboxWorkerOptions {
 	 * `src/**\/testing/` that a suite boots through the harness's `entry` option.
 	 */
 	readonly testHooks?: boolean;
+	/**
+	 * TEST ONLY: hand `ctx.content` the EmDash 0.38 sandbox bridge's answers over a
+	 * CMS whose query fails — `contentGet` caught the D1 error and resolved `null`,
+	 * `contentList` resolved an empty page. That is what a lost binding or a
+	 * missing `ec_products` table looked like to a sandboxed plugin on 0.38, and the
+	 * strictest case: it reads exactly like a deletion. On 1.0.1 both reads REJECT
+	 * instead (`@emdash-cms/cloudflare@1.0.1` `src/sandbox/bridge.ts`: `contentGet`
+	 * retries once on the raw binding and lets that error out, `contentList` does
+	 * not catch), as the trusted path does.
+	 */
+	readonly cmsWithoutTable?: boolean;
 }
+
+/** The bridge's swallow-to-null content answers (see `cmsWithoutTable`). */
+const SWALLOWED_CMS: ContentReadAccess = {
+	async get() {
+		return null;
+	},
+	async list() {
+		return { items: [], hasMore: false };
+	},
+};
 
 export function createSandboxWorker(
 	pluginDef: SandboxedPlugin,
@@ -192,6 +243,7 @@ export function createSandboxWorker(
 				// Omitted rather than set to `undefined` when there is no store, so a
 				// bundle without one has the exact context shape it had before.
 				...(storage === undefined ? {} : { storage }),
+				...(options.cmsWithoutTable === true ? { content: SWALLOWED_CMS } : {}),
 			};
 
 			try {

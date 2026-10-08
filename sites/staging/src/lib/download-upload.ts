@@ -16,16 +16,21 @@
  *     (`products:attach-download`), where the domain validates it again. This
  *     endpoint writes NO product: the plugin stays the only writer of commerce
  *     truth, and the descriptor's switch is the one moment the file changes.
+ *     The site's middleware `head()`s the descriptor's key before that save
+ *     reaches the plugin (`download-attach-guard.ts`, issue #405).
  *
  * ── Who may upload ───────────────────────────────────────────────────────────
  * A signed-in EmDash user (`locals.user`, which EmDash's auth middleware sets
  * on storefront paths from the admin session cookie) whose role holds
  * `plugins:manage` — ADMIN, the role the `otta` admin route itself requires. A
  * lower role could only orphan bytes: the save that would attach them is
- * refused. A request authenticated by an API token (`locals.tokenScopes`) is
- * refused outright: this is a console action. Before any of that, the page
- * runs the site's per-route origin guard (`rejectCrossOrigin`, as every write
- * route on this base does). The request must also carry `X-EmDash-Request: 1`,
+ * refused. An API token cannot authenticate here at all: `/otta-admin/*` is a
+ * public route to EmDash's auth middleware, which reads only the session cookie
+ * on it and never a Bearer token, so a token request has no `locals.user` and
+ * is refused as not signed in (pinned against the installed EmDash in
+ * `download-upload.test.ts`, issue #405). Before any of that, the site
+ * middleware's origin check refuses a cross-origin write (as on every write
+ * route of this base). The request must also carry `X-EmDash-Request: 1`,
  * the custom header EmDash's own authenticated API demands: a cross-site form
  * cannot set it, so it holds even if the origin check were ever loosened.
  *
@@ -70,8 +75,8 @@ import { PRIVATE_NO_STORE } from "./no-store.js";
 import { BUSY_RETRY_AFTER_SECONDS } from "./otta-api.js";
 
 /** The route's path prefix. Not under `/_` (EmDash guards only its own
- *  `/_emdash` paths), so the page guards its own origin with `rejectCrossOrigin`
- *  first. */
+ *  `/_emdash` paths), so the site middleware's origin check guards it before
+ *  the page runs. */
 export const DOWNLOAD_UPLOAD_PATH_PREFIX = "/otta-admin/downloads/";
 
 /** The upload URL for one product. */
@@ -273,10 +278,6 @@ function declaredFilename(headers: Headers): string | null {
 
 export interface UploadDeps {
 	readonly user: UploadUser | undefined;
-	/** The request was authenticated by an API or OAuth token
-	 *  (`locals.tokenScopes` set), not by an admin session. Refused: the upload
-	 *  is a console action, and a token's scopes say nothing about it. */
-	readonly tokenAuthenticated: boolean;
 	readonly bucket: UploadBucket | undefined;
 	readonly lookup: (productId: string, user: UploadUser) => Promise<ProductLookup>;
 	/** Milliseconds since the epoch — the key's ULID timestamp. */
@@ -299,13 +300,6 @@ export async function handleDownloadUpload(
 ): Promise<Response> {
 	if (request.headers.get("X-EmDash-Request") !== "1") {
 		return refuse(403, "CSRF_REJECTED", "Missing required header.");
-	}
-	if (deps.tokenAuthenticated) {
-		return refuse(
-			403,
-			"TOKEN_NOT_ACCEPTED",
-			"Download files are uploaded from the admin, signed in — not with an API token.",
-		);
 	}
 	const { user } = deps;
 	if (user === undefined) {

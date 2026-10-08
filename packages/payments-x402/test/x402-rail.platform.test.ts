@@ -31,10 +31,12 @@ function bridgeSetup() {
  * The rail on each platform's `ctx.http.fetch` (ADR-0028 Decision 8, amended
  * after increment 6's review).
  *
- * EmDash's Cloudflare Worker Loader bridge (`@emdash-cms/cloudflare@0.38.0`,
- * `dist/runner-CQpZcxVz.mjs:997-1007`) returns a plain object with no `url` and
- * no `body`, and carries `init` over RPC, where an `AbortSignal` cannot travel.
- * The rail must sell there, not just under a real `Response`.
+ * EmDash 0.38's Cloudflare Worker Loader bridge returned a plain object with no
+ * `url` and no `body`, and refused an `AbortSignal` in `init` over RPC. 1.0.1's
+ * returns a real `Response` and silently drops a signal
+ * (`@emdash-cms/cloudflare@1.0.1` `src/sandbox/wrapper.ts` `http.fetch`). The
+ * fake keeps the 0.38 shape as the leanest case: the rail must sell there, not
+ * just under a real `Response`.
  */
 describe("X402Rail under the Worker Loader bridge's response shape", () => {
 	test("a valid /verify is valid — no url is not a redirect", async () => {

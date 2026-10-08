@@ -72,10 +72,11 @@ the key.
 
 The deploy runbook for this site lives in the root [`DEPLOYMENT.md`](../../DEPLOYMENT.md):
 resource creation, the build/deploy ordering, first boot + claim, and failed-first-boot
-recovery are §2; the `global_fetch_strictly_public` ⇒ D1-`session`-off pairing invariant is
-§2.4; the secrets & tokens checklist is §3. There is one deployable, so the only Worker
-secrets are `EMDASH_ENCRYPTION_KEY` (required before first boot) and the optional
-`OTTA_WH_TOKEN` webhook edge gate — every payment and email credential is provisioned in the
+recovery are §2; why D1 `session` is `"primary-first"` (not `"auto"`), and why
+`global_fetch_strictly_public` must never return beside it, are §2.4; the secrets & tokens
+checklist is §3. There is one deployable, so the only Worker secrets are
+`EMDASH_ENCRYPTION_KEY` (required before first boot) and the optional `OTTA_WH_TOKEN` webhook
+edge gate — every payment and email credential is provisioned in the
 admin console's **Settings** page instead.
 
 ## Notes

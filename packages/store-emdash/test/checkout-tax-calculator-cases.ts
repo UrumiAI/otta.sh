@@ -10,7 +10,6 @@ import {
 	createOrderFromCart,
 	currency,
 	idempotencyKey,
-	NEW_STORE_TAX_SETTINGS,
 	readOrderTaxSnapshot,
 	type CreateOrderDeps,
 	type TaxCalculator,
@@ -76,14 +75,6 @@ export function checkoutTaxCalculatorCases(bound: BoundStorage): void {
 			...orders.createDeps,
 			couponStore: coupons.store,
 			taxCalculator,
-			// PR 2a: an outside calculator is asked only with tax switched on.
-			settings: {
-				get: async () => ({
-					holdTtlMinutes: 15,
-					lowStockThreshold: 5,
-					tax: { ...NEW_STORE_TAX_SETTINGS, enabled: true },
-				}),
-			},
 		};
 		const command = {
 			cartId,
@@ -130,6 +121,8 @@ export function checkoutTaxCalculatorCases(bound: BoundStorage): void {
 			v: 1,
 			calculatorId: "acme.tax",
 			pricesIncludeTax: false,
+			// ADR-0031: no shipping zone matched (this store has none), so not located.
+			located: false,
 			lines: [
 				{
 					lineIndex: 0,

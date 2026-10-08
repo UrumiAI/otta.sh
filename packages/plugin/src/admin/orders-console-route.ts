@@ -47,6 +47,7 @@
  * G5 APPLIES UNCHANGED: every response here is HTTP 200 with an outcome in the
  * body. A refusal is a value.
  */
+import { toWellFormedText } from "@otta-sh/domain";
 import {
 	type AdminOrdersSurface,
 	type CustomerContextWire,
@@ -400,9 +401,28 @@ export function operatorName(
 	user: { name?: string | null; email?: string | null } | undefined,
 ): string | undefined {
 	const name = user?.name?.trim() ?? "";
-	if (name.length > 0) return name.slice(0, 200);
+	if (name.length > 0) return clipOperatorText(name);
 	const email = user?.email?.trim() ?? "";
-	return email.length > 0 ? email.slice(0, 200) : undefined;
+	return email.length > 0 ? clipOperatorText(email) : undefined;
+}
+
+/** The orders client's bound on a recorded operator (`requireBoundedText(…, 200)`),
+ *  counted in UTF-16 code units as it counts them. */
+const OPERATOR_MAX = 200;
+
+/**
+ * At most {@link OPERATOR_MAX} code units, cut on a code-point boundary: a plain
+ * `slice` through an emoji left a lone surrogate, which the orders client refuses
+ * as ill-formed text — failing the operator's action (#415). Any lone surrogate
+ * the host itself handed over is repaired to U+FFFD for the same reason.
+ */
+function clipOperatorText(text: string): string {
+	let out = "";
+	for (const char of toWellFormedText(text)) {
+		if (out.length + char.length > OPERATOR_MAX) break;
+		out += char;
+	}
+	return out;
 }
 
 /**

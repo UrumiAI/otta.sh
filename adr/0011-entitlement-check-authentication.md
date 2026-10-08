@@ -170,3 +170,14 @@ own scope rules above are unchanged.
 
 The Consequences bullet on the wire break and the Decision's note on the download route's
 `sessionToken` describe the route as it was before this amendment.
+
+**What the order-state check cannot see (noted 2026-10-06, issue #405).** The gate reads
+Otta's order state, so money that leaves without moving it keeps the download open until it is
+recorded in the admin. A refund made in the Stripe dashboard stays open until the operator
+starts the refund in Money → Refunds, whose pre-flight finds it and flags the order, and then
+uses Mark refunded. A chargeback stays open with no console action to close it: Otta acts on no
+`charge.dispute.*` event, the pre-flight does not count a dispute as a refund, and Mark
+refunded is refused while the ledger shows the money captured. A cancellation whose refund came
+back unverified leaves the order uncancelled until that refund is confirmed in Money → Refunds,
+which finishes the cancel and revokes; Mark refunded is refused until then. A partial refund
+keeps access by design.

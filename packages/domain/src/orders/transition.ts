@@ -701,14 +701,17 @@ export function buildOrderEmailData(order: Order, toState: OrderState): Record<s
 		// rows the order page does. Whether shipping and tax were calculated at all
 		// is read off the method snapshot exactly as the order page reads it (the
 		// plugin's `orderTotalsFlags`): shipping follows the method, tax follows the
-		// zone. Uncalculated renders "Not calculated", never "$0.00".
+		// zone — or the tax snapshot's `located` (ADR-0031: a digital cart taxed at
+		// the shop base address has no shipping zone). Uncalculated renders "Not
+		// calculated", never "$0.00".
 		subtotalCents: order.totals.subtotal,
 		discountCents: order.totals.discount,
 		shippingCents: order.totals.shipping,
 		taxCents: order.totals.tax,
 		appliedCouponCode: order.totals.appliedCouponCode,
 		shippingCalculated: snapshotField(order.totals.shippingMethodSnapshot, "methodId", true),
-		taxCalculated: snapshotField(order.totals.shippingMethodSnapshot, "zoneId", false),
+		taxCalculated:
+			snapshotField(order.totals.shippingMethodSnapshot, "zoneId", false) || taxLocated(order),
 		// ADR-0031: prices entered WITH tax — the tax is inside the subtotal, so the
 		// email says so rather than reading as one more row to add.
 		...(pricedWithTaxIncluded(order) ? { taxIncluded: true } : {}),
@@ -787,6 +790,13 @@ function snapshotField(snapshot: unknown, key: "zoneId" | "methodId", nonEmpty: 
 	if (snapshot === null || typeof snapshot !== "object") return false;
 	const value = (snapshot as Record<string, unknown>)[key];
 	return typeof value === "string" && (!nonEmpty || value.length > 0);
+}
+
+/** Whether the order's frozen tax snapshot says a tax location matched a zone
+ *  (ADR-0031). A snapshot written before the field reads as not located. */
+function taxLocated(order: Order): boolean {
+	const snapshot = readOrderTaxSnapshot(order.totals.taxBreakdown);
+	return snapshot?.v === 1 && snapshot.located === true;
 }
 
 /** Whether the order's frozen tax snapshot says prices were entered with tax (ADR-0031). */
