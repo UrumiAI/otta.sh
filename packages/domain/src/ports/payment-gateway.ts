@@ -185,10 +185,10 @@ export type RefundFailureReason =
  * REPLAY sends, which is precisely what keeps a provider's idempotent replay
  * byte-identical (Stripe rejects a same-key retry whose body drifted).
  *
- * Deliberately NO money here: prices would drag the repo's hundredths-scale
- * minor-unit convention into a free-text field with no currency exponent
- * attached — see `STRIPE_UNSUPPORTED_CURRENCIES`. Quantity + title is what a
- * goods description needs.
+ * Deliberately NO money here: prices would drag the repo's minor-unit
+ * convention (each currency's own exponent, `money/currencies.ts`) into a
+ * free-text field with no currency exponent attached. Quantity + title is what
+ * a goods description needs.
  */
 export interface CreateIntentLine {
 	/** The product title snapshotted onto the order line at purchase time. */

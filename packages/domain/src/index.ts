@@ -1,5 +1,13 @@
 // Public barrel of @otta-sh/domain — ports, use-cases, and branded types.
 export { cents, currency, money, type Cents, type Currency, type Money } from "./money/cents.js";
+export {
+	SUPPORTED_CURRENCIES,
+	currencyDigits,
+	currencyInfo,
+	isSupportedCurrency,
+	type CurrencyInfo,
+	type SupportedCurrencyCode,
+} from "./money/currencies.js";
 // Phase 6 pricing engines (pure, IO-free): the totals pipeline + its components.
 export { divRoundHalfUp } from "./pricing/round.js";
 export { allocateCents } from "./pricing/allocate.js";
