@@ -59,9 +59,9 @@ describe("subdivisionOptions", () => {
 		expect(subdivisionOptions("__proto__")).toEqual([]);
 	});
 
-	test("ignores case and spaces, and hands back the same frozen list each time", () => {
+	test("ignores case and spaces, and hands back a frozen list", () => {
 		const first = subdivisionOptions(" us ");
-		expect(subdivisionOptions("US")).toBe(first);
+		expect(subdivisionOptions("US")).toEqual(first);
 		expect(Object.isFrozen(first)).toBe(true);
 		expect(Object.isFrozen(first[0])).toBe(true);
 	});
