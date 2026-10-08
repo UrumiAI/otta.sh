@@ -159,7 +159,7 @@ export class PluginBridge extends WorkerEntrypoint {
 		const { capabilities, allowedHosts } = this.ctx.props;
 		return sandboxHttpFetch(url, init, { capabilities, allowedHosts });
 	}
-	// EmDash's PluginBridge.emailSend, its body verbatim (bridge.ts:1253).
+	// EmDash's PluginBridge.emailSend, its body verbatim (bridge.ts:1928, @emdash-cms/cloudflare 1.0.1).
 	async emailSend(message) {
 ${emailSend}
 	}

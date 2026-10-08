@@ -1400,7 +1400,7 @@ export function emailStatusLine(status: EmailSendingStatus): string {
 		case "confirmed":
 			return "Email: sent via EmDash's email provider. The from-address, SPF and DKIM are set in that provider.";
 		case "unconfirmed":
-			return "Email: provider not confirmed — nothing sent through it since setup or its last refusal. Without one, order emails wait 72 h, then are skipped; sign-in links are not sent. See docs/email-providers.md.";
+			return "Email: provider not confirmed — nothing sent through it since setup or a refusal. Without one, order emails wait up to 72 h, then are skipped; sign-in links are not sent. See docs/email-providers.md.";
 		case "unavailable":
 			return "Email: no EmDash email provider. Order emails wait up to 72 h, then are skipped; sign-in links are not sent. See docs/email-providers.md.";
 	}
