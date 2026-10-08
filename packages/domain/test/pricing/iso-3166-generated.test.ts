@@ -152,6 +152,17 @@ describe("the generator's subdivision names", () => {
 		]);
 	});
 
+	test("accepts provisional names, strips footnote markers, and refuses any other attribute", () => {
+		const names = subdivisionNames(
+			`<subdivision type="cnhk" draft="provisional">Hong Kong</subdivision><subdivision type="fridf">Île-de-France²</subdivision>`,
+		);
+		expect(names.get("cnhk")).toBe("Hong Kong");
+		expect(names.get("fridf")).toBe("Île-de-France");
+		expect(() =>
+			subdivisionNames(`<subdivision type="usca" alt="short">Calif.</subdivision>`),
+		).toThrow(/unsupported attributes/);
+	});
+
 	test("refuses a name the packed module could not carry, or a subdivision named twice", () => {
 		expect(() => subdivisionNames(`<subdivision type="usca">A|B</subdivision>`)).toThrow();
 		expect(() => subdivisionNames(`<subdivision type="usca"> A</subdivision>`)).toThrow();

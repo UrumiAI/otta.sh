@@ -192,15 +192,31 @@ export function decodeXmlText(text: string): string {
 	});
 }
 
+/** CLDR's disambiguation markers (`Tartu²`, `Île-de-France²`): superscript
+ *  digits at the end of a name, meant for translators, never for shoppers. */
+const FOOTNOTE_MARKER = /[\u00b9\u00b2\u00b3\u2070\u2074-\u2079]+$/u;
+
+/** The attributes a subdivision name may carry. A confirmed name has none; a
+ *  `draft="provisional"` (or `contributed`) one is CLDR's best English name and is
+ *  used. Anything else — an `alt=` variant, an unknown attribute — throws, so a
+ *  future CLDR release can never drop or double a name silently. */
+const ACCEPTED_ATTRIBUTES = /^(?:\s+draft="(?:provisional|contributed)")?$/;
+
 /** Every `<subdivision type="usca">California</subdivision>` of a CLDR
  *  `common/subdivisions/<locale>.xml`, comments ignored: `usca` → `California`.
- *  A name is one line of trimmed text without the `|` the module joins on. */
+ *  A name is one line of trimmed text without the `|` the module joins on, and
+ *  without a trailing footnote marker. */
 export function subdivisionNames(xml: string): Map<string, string> {
 	const body = xml.replace(/<!--[\s\S]*?-->/g, " ");
 	const names = new Map<string, string>();
-	for (const match of body.matchAll(/<subdivision type="([a-z0-9]+)">([^<]*)<\/subdivision>/g)) {
-		const [, id = "", raw = ""] = match;
-		const name = decodeXmlText(raw);
+	for (const match of body.matchAll(
+		/<subdivision type="([a-z0-9]+)"([^>]*)>([^<]*)<\/subdivision>/g,
+	)) {
+		const [, id = "", attributes = "", raw = ""] = match;
+		if (!ACCEPTED_ATTRIBUTES.test(attributes)) {
+			throw new Error(`subdivision ${id} has unsupported attributes:${attributes}`);
+		}
+		const name = decodeXmlText(raw).replace(FOOTNOTE_MARKER, "");
 		if (name.length === 0 || name !== name.trim() || /[|\n\r\t]/.test(name)) {
 			throw new Error(`subdivision ${id} has an unusable name: ${JSON.stringify(name)}`);
 		}
@@ -234,10 +250,18 @@ export function generateSubdivisionNames(input: {
 	);
 	lines.push("export const SUBDIVISION_NAMES: Readonly<Record<string, string>> = {");
 	for (const country of [...byCountry.keys()].toSorted()) {
-		const pairs = (byCountry.get(country) ?? []).flatMap((suffix) => {
+		const named = (byCountry.get(country) ?? []).flatMap((suffix) => {
 			const name = names.get(`${country}${suffix}`.toLowerCase());
-			return name === undefined ? [] : [`${suffix} ${name}`];
+			return name === undefined ? [] : [{ suffix, name }];
 		});
+		// Two of a country's subdivisions sharing a name (CLDR told them apart only
+		// by the footnote marker stripped above) are labelled with their codes, so
+		// no pick list offers the same words twice.
+		const count = new Map<string, number>();
+		for (const { name } of named) count.set(name, (count.get(name) ?? 0) + 1);
+		const pairs = named.map(({ suffix, name }) =>
+			(count.get(name) ?? 0) > 1 ? `${suffix} ${name} (${suffix})` : `${suffix} ${name}`,
+		);
 		if (pairs.length > 0) lines.push(`\t${country}: ${JSON.stringify(pairs.join("|"))},`);
 	}
 	lines.push("};");

@@ -234,6 +234,31 @@ describe("the Tempered review, rendered", () => {
 		expect(html).toMatch(/Delivering to United States\s*, New York/);
 	});
 
+	test("the delivery block after the PLUGIN refused plain US (a US-CA zone): US kept, its list shown and marked", async () => {
+		const html = await render(
+			model(
+				{
+					showDelivery: true,
+					countryValue: "US",
+					regionValue: "",
+					deliveryRegions: regionChoice("US", "", "en-US"),
+					destinationError:
+						"Choose your state/province from the list, or leave it blank if your country doesn't use one.",
+				},
+				{
+					requiresShipping: true,
+					shipping: { status: "address_needed", options: [], noOptions: false },
+				},
+			),
+		);
+		expect(html).toMatch(/<option value="US" selected>United States<\/option>/);
+		const open = /<select[^>]*name="deliveryRegion"[^>]*>/.exec(html)?.[0] ?? "";
+		expect(open).toContain('aria-invalid="true"');
+		expect(open).toContain('aria-describedby="delivery-error region-note"');
+		expect(html).toContain('id="delivery-error"');
+		expect(regionSelect(html, "deliveryRegion")).toMatch(/<option value="CA">California<\/option>/);
+	});
+
 	test("the delivery block for a country without subdivisions shows no region field", async () => {
 		const html = await render(
 			model(

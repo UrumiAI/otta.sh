@@ -165,6 +165,28 @@ export function readDestinationParams(url: URL): DestinationRead {
 	return { destination: { country, region: region.toUpperCase() }, methodDropped };
 }
 
+/**
+ * What the delivery block's country and region fields show: the destination the
+ * totals were priced for; else the one the site refused by shape (so a typo can
+ * be fixed); else the one the buyer ASKED for and the PLUGIN refused — a US
+ * store with a state-level zone refuses plain `US` (SHIPPING_REGION_CODE_REQUIRED)
+ * — so the country stays chosen and its state/province list is shown. Without
+ * that last step the page asked for a state from a list it did not print.
+ */
+export function deliveryFieldValues(
+	priced: { country: string; region: string | null } | null,
+	read: DestinationRead,
+): { country: string; region: string } {
+	if (priced !== null) return { country: priced.country, region: priced.region ?? "" };
+	if (read.rejected !== undefined) {
+		return { country: read.rejected.country, region: read.rejected.region };
+	}
+	if (read.destination !== undefined) {
+		return { country: read.destination.country, region: read.destination.region ?? "" };
+	}
+	return { country: "", region: "" };
+}
+
 /** The plugin's own id bound: printable ASCII, no whitespace, 1–200. */
 const METHOD_ID = /^[\x21-\x7e]{1,200}$/;
 

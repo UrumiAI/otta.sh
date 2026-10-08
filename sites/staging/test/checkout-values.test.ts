@@ -628,18 +628,38 @@ describe("the state/province pick list: a changed country is a round trip, never
 		expect(h.draft()!.values.region).toBeUndefined();
 	});
 
-	test("the first choice of a country, with no region picked, places straight away — no extra round trip", async () => {
+	test("the first choice of a country WITH subdivisions re-asks once, its list shown and marked (no-JS first-time buyer)", async () => {
 		const h = harness({ ...FULL, country: "US", regionCountry: "" }, PLACED);
+		expect((await PLACE_POST(h.context)).headers.get("location")).toBe(
+			"/checkout?error=REGION_LIST_UPDATED",
+		);
+		expect(h.calls).toHaveLength(0);
+		expect(h.draft()!.values).toMatchObject({ email: "ada@example.com", country: "US" });
+		expect(h.draft()!.errors).toEqual({ region: "invalid" });
+	});
+
+	test("once the list matches the country, leaving the region blank places (it stays optional)", async () => {
+		const h = harness({ ...FULL, country: "US", regionCountry: "US" }, PLACED);
 		expect((await PLACE_POST(h.context)).headers.get("location")).toBe("/checkout/pay");
-		expect(h.calls).toHaveLength(1);
 		const address = h.calls[0]!["shippingAddress"] as Record<string, string>;
-		expect(address["country"]).toBe("US");
 		expect(address["region"]).toBeUndefined();
 	});
 
-	test("a changed country WITHOUT subdivisions places straight away, without the old region", async () => {
-		// Antarctica has no ISO 3166-2 subdivisions: there is no list to show.
+	test("a region posted for ANOTHER country is re-asked, never dropped and placed — even for a country without subdivisions", async () => {
+		// Hidden US, country AQ, region CA: main refused the region; the order must
+		// not quietly go through without it either.
 		const h = harness({ ...OWN, country: "AQ" }, PLACED);
+		expect((await PLACE_POST(h.context)).headers.get("location")).toBe(
+			"/checkout?error=REGION_LIST_UPDATED",
+		);
+		expect(h.calls).toHaveLength(0);
+		expect(h.draft()!.values.region).toBeUndefined();
+		expect(h.draft()!.errors).toEqual({});
+	});
+
+	test("a changed country WITHOUT subdivisions and no region places straight away", async () => {
+		// Antarctica has no ISO 3166-2 subdivisions: there is no list to show.
+		const h = harness({ ...FULL, country: "AQ", regionCountry: "US" }, PLACED);
 		expect((await PLACE_POST(h.context)).headers.get("location")).toBe("/checkout/pay");
 		expect(h.calls).toHaveLength(1);
 		const address = h.calls[0]!["shippingAddress"] as Record<string, string>;

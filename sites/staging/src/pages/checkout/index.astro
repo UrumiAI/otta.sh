@@ -61,6 +61,7 @@ import {
 	shownFieldErrors,
 } from "../../lib/checkout-draft.js";
 import {
+	deliveryFieldValues,
 	isCouponFailure,
 	readCouponParam,
 	readDestinationParams,
@@ -182,9 +183,12 @@ const destinationError = summary.selectionErrors.destination ?? destinationRead.
 /** The destination the totals were priced for, or null. */
 const destination = summary.selection.destination;
 /** What the delivery block's fields show: the priced destination, else what was
- *  typed and refused (so a typo can be fixed). */
-const countryValue = destination?.country ?? destinationRead.rejected?.country ?? "";
-const regionValue = destination?.region ?? destinationRead.rejected?.region ?? "";
+ *  asked for and refused — by the site or by the plugin — so the country stays
+ *  chosen and its state/province list is offered (deliveryFieldValues). */
+const { country: countryValue, region: regionValue } = deliveryFieldValues(
+	destination,
+	destinationRead,
+);
 
 /** The delivery block: an unlocked cart that ships, in a store with zones. */
 const showDelivery = locked === null && summary.requiresShipping && summary.shipping.status !== "no_zones";

@@ -470,7 +470,8 @@ describe.each(REVIEW_VIEWS)("/checkout — delivery (ADR-0021) — %s", (_label,
 		expect(select).toContain('form="checkout-place"');
 		const region = /<select[^>]*name="deliveryRegion"[^>]*>/.exec(DELIVERY)?.[0] ?? "";
 		expect(region).toContain('form="checkout-place"');
-		expect(region).toContain('aria-describedby="region-note"');
+		expect(region).toContain("aria-invalid={destinationError !== null}");
+		expect(region).toContain('"delivery-error region-note" : "region-note"');
 		expect(DELIVERY).toMatch(/State \/ province/);
 		expect(DELIVERY).toMatch(
 			/<input[^>]*type="hidden"[^>]*name="fromCountry"[^>]*form="checkout-place"/,

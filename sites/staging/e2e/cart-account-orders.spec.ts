@@ -119,11 +119,19 @@ test.describe("cart → checkout → order → account, in the browser", () => {
 			const field = form.locator(`input[name="${name}"]`);
 			if ((await field.count()) > 0 && (await field.isVisible())) await field.fill(value);
 		}
+		// The state/province is a pick list rendered for the page's country (no
+		// client JS): a newly chosen country's list arrives with Update, which keeps
+		// everything typed — and placing without it re-asks once with the list.
 		const country = form.locator('select[name="country"]');
-		if ((await country.count()) > 0 && (await country.isVisible()))
+		if ((await country.count()) > 0 && (await country.isVisible())) {
 			await country.selectOption("US");
-		const region = form.locator('input[name="region"]');
-		if ((await region.count()) > 0 && (await region.isVisible())) await region.fill("CA");
+			await Promise.all([
+				page.waitForURL(/\/checkout/, { waitUntil: "load" }),
+				form.locator('button[value="update-address"]').click(),
+			]);
+		}
+		const region = form.locator('select[name="region"]');
+		if ((await region.count()) > 0 && (await region.isVisible())) await region.selectOption("CA");
 
 		await Promise.all([
 			page.waitForURL((url) => url.pathname !== "/checkout", { waitUntil: "load" }),

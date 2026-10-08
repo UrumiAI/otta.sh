@@ -362,17 +362,23 @@ async function place(context: APIContext): Promise<Response> {
 	if (intent === "update-address") {
 		return refuse(checkoutPath(selection), undefined);
 	}
-	// And the safety net: a place whose country changed after a region was
-	// PICKED from the old country's list comes back with the new country's list
-	// to choose from, rather than placing without the region the buyer meant to
-	// give. With no region picked it places as before — the region is optional,
-	// and a first choice of country must not cost every buyer an extra round trip.
+	// And the safety net. The state/province list on the page belongs to the
+	// country it was rendered for — "" before any was chosen, with no list at all.
+	// A place whose country has changed since then never goes ahead blind: when
+	// the new country HAS subdivisions, the review comes back once with its list
+	// shown (and marked), so a buyer always sees it before an order is placed —
+	// a first-time no-JS buyer included. When a region was posted for another
+	// country, it comes back too (it never silently loses the region and places,
+	// as main refused such a region rather than placing). After that one round
+	// trip the list matches the country and the region stays optional.
 	if (
 		addressListStale &&
-		formString(form.get("region")) !== undefined &&
-		subdivisionOptions(addressCountry ?? "").length > 0
+		(formString(form.get("region")) !== undefined ||
+			subdivisionOptions(addressCountry ?? "").length > 0)
 	) {
-		return refuse(checkoutPath({ ...selection, error: REGION_LIST_UPDATED }), REGION_LIST_UPDATED);
+		return refuse(checkoutPath({ ...selection, error: REGION_LIST_UPDATED }), REGION_LIST_UPDATED, {
+			fields: subdivisionOptions(addressCountry ?? "").length > 0 ? { region: "invalid" } : {},
+		});
 	}
 
 	// No publishable key ⇒ NO ORDER (§1.7). The review page already hides the
