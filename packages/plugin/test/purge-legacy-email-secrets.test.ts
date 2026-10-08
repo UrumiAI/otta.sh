@@ -12,6 +12,7 @@ import {
 	LEGACY_EMAIL_SECRET_KEYS,
 	purgeLegacyEmailSecrets,
 	resetLegacyEmailPurgeForTesting,
+	UNCONFIRMED_RECHECK_MS,
 } from "../src/email/purge-legacy-email-secrets.js";
 import {
 	PAYMENT_SECRET_KEYS,
@@ -103,11 +104,8 @@ describe("purgeLegacyEmailSecrets", () => {
 			[LEGACY_EMAIL_PURGE_MARKER_KEY]: "2026-10-07T00:00:00Z",
 		});
 		expect(await purgeLegacyEmailSecrets(restored.ctx)).toBe(false);
-		expect(restored.calls).toEqual([
-			`get ${EMAIL_TRANSPORT_UNAVAILABLE_KEY}`,
-			`get ${EMAIL_LAST_SENT_KEY}`,
-			`get ${LEGACY_EMAIL_PURGE_MARKER_KEY}`,
-		]);
+		// r3 S4: the marker first, so a purged store pays one read per isolate.
+		expect(restored.calls).toEqual([`get ${LEGACY_EMAIL_PURGE_MARKER_KEY}`]);
 		expect(restored.kv.has("settings:emailApiKey")).toBe(true);
 	});
 
@@ -159,15 +157,21 @@ describe("purgeLegacyEmailSecrets", () => {
 		});
 
 		test("`ctx.email` there but no send confirmed yet (a sandboxed host with no provider looks like this) ⇒ keys kept, retried next tick", async () => {
-			const { ctx, kv } = makeCtx(UNCONFIRMED);
-			expect(await purgeLegacyEmailSecrets(ctx)).toBe(false);
-			expect(await purgeLegacyEmailSecrets(ctx)).toBe(false);
+			const { ctx, kv, calls } = makeCtx(UNCONFIRMED);
+			const t0 = Date.now();
+			expect(await purgeLegacyEmailSecrets(ctx, t0)).toBe(false);
 			for (const key of LEGACY_EMAIL_SECRET_KEYS) expect(kv.has(key), key).toBe(true);
 			expect(kv.has(LEGACY_EMAIL_PURGE_MARKER_KEY)).toBe(false);
 
-			// The first send goes through the host's provider: the next tick purges.
-			kv.set(EMAIL_LAST_SENT_KEY, new Date().toISOString());
-			expect(await purgeLegacyEmailSecrets(ctx)).toBe(true);
+			// r3 F1: the "not confirmed" answer is trusted for a while — the next ticks
+			// in this isolate make no kv call at all.
+			calls.length = 0;
+			kv.set(EMAIL_LAST_SENT_KEY, new Date(t0 + 1).toISOString());
+			expect(await purgeLegacyEmailSecrets(ctx, t0 + UNCONFIRMED_RECHECK_MS - 1)).toBe(false);
+			expect(calls).toEqual([]);
+
+			// The first send has gone through the host's provider: the next look purges.
+			expect(await purgeLegacyEmailSecrets(ctx, t0 + UNCONFIRMED_RECHECK_MS)).toBe(true);
 			for (const key of LEGACY_EMAIL_SECRET_KEYS) expect(kv.has(key), key).toBe(false);
 		});
 

@@ -15,9 +15,11 @@
  * one kv read for this (and none after that, in the same isolate).
  *
  * COST: it runs outside the tick's query budget (`cron/index.ts`). With no
- * `ctx.email`: nothing. Until a send is confirmed: the two status reads per tick.
- * Then one marker read per site per isolate, plus four deletes and one write
- * once — well inside the host's slack on Workers Free.
+ * `ctx.email`: nothing. Otherwise the marker read first (a purged store stops
+ * there, once per site per isolate); until a send is confirmed, that and the two
+ * status reads at most once per {@link UNCONFIRMED_RECHECK_MS} per isolate — not
+ * every tick, so an idle store with no provider stays cheap. Then four deletes
+ * and one write, once — well inside the host's slack on Workers Free.
  *
  * THE MARKER IS WRITTEN ONLY AFTER EVERY DELETE SUCCEEDED, so a kv failure part
  * way through is retried on a later tick. It never throws: a failed purge must
@@ -27,6 +29,7 @@
  * A SEPARATE, DROPPABLE CHANGE: this is the point of no return for a rollback to
  * a build that still sent through those providers.
  */
+import { TRANSPORT_UNAVAILABLE_RETRY_MS } from "@otta-sh/domain";
 import type { PluginContext } from "../types.js";
 import { emailSendingStatus } from "./ctx-email-sender.js";
 
@@ -48,9 +51,17 @@ export const LEGACY_EMAIL_PURGE_MARKER_KEY = "state:legacyEmailSecretsPurged";
  */
 const doneInIsolate = new Set<string>();
 
-/** TESTS ONLY: forget which sites this isolate already purged. */
+/** How long an "not confirmed yet" answer is trusted before the next look — the
+ *  "no provider" record's own window (PR #418 review r3, F1). */
+export const UNCONFIRMED_RECHECK_MS = TRANSPORT_UNAVAILABLE_RETRY_MS;
+
+/** Per site: when this isolate may next look, after a "not confirmed yet". */
+const nextLookAt = new Map<string, number>();
+
+/** TESTS ONLY: forget which sites this isolate already purged or looked at. */
 export function resetLegacyEmailPurgeForTesting(): void {
 	doneInIsolate.clear();
+	nextLookAt.clear();
 }
 
 /**
@@ -59,17 +70,26 @@ export function resetLegacyEmailPurgeForTesting(): void {
  * provider confirmed yet, or a kv failure left the marker unset for a later
  * retry).
  */
-export async function purgeLegacyEmailSecrets(ctx: PluginContext): Promise<boolean> {
+export async function purgeLegacyEmailSecrets(
+	ctx: PluginContext,
+	nowMs: number = Date.now(),
+): Promise<boolean> {
 	const site = ctx.site?.url ?? "";
 	if (doneInIsolate.has(site)) return false;
+	// No provider at all (trusted mode): nothing to confirm, not even a read.
+	if (ctx.email === undefined) return false;
+	if (nowMs < (nextLookAt.get(site) ?? 0)) return false;
 	try {
-		// Never before a host provider has delivered: until then a rollback must
-		// still find its keys. Fail-soft inside: unreadable ⇒ not confirmed ⇒ wait.
-		if ((await emailSendingStatus(ctx)) !== "confirmed") return false;
 		// A string marker (what the purge writes) means done; `null` or `undefined`
 		// (a host's "missing") means not yet.
 		if (typeof (await ctx.kv.get<unknown>(LEGACY_EMAIL_PURGE_MARKER_KEY)) === "string") {
 			doneInIsolate.add(site);
+			return false;
+		}
+		// Never before a host provider has delivered: until then a rollback must
+		// still find its keys. Fail-soft inside: unreadable ⇒ not confirmed ⇒ wait.
+		if ((await emailSendingStatus(ctx, nowMs)) !== "confirmed") {
+			nextLookAt.set(site, nowMs + UNCONFIRMED_RECHECK_MS);
 			return false;
 		}
 		for (const key of LEGACY_EMAIL_SECRET_KEYS) await ctx.kv.delete(key);

@@ -331,7 +331,7 @@ describe("Settings: how a key field renders", () => {
 			{ type: "page_load", page: "/settings" },
 		);
 		expect(paymentsLabel(unconfirmed.blocks)).toBe(
-			"Payments & email — Stripe test · webhook set · email ?",
+			"Payments & email — Stripe test · webhook set · email TBC",
 		);
 
 		const live = await invoke(makeCtx({ [STRIPE_SECRET_KEY_KEY]: SK_LIVE }).ctx, {
@@ -374,7 +374,7 @@ describe("Settings: how a key field renders", () => {
 			page: "/settings",
 		});
 		const idleText = contextTexts(idle.blocks).join("\n");
-		expect(idleText).toContain("Email: EmDash email provider not confirmed");
+		expect(idleText).toContain("Email: provider not confirmed");
 		expect(idleText).not.toContain("sent via EmDash");
 		expect(idleText).toContain("docs/email-providers.md");
 		// A sandboxed host always hands over `ctx.email`; once it has answered "no

@@ -1400,7 +1400,7 @@ export function emailStatusLine(status: EmailSendingStatus): string {
 		case "confirmed":
 			return "Email: sent via EmDash's email provider. The from-address, SPF and DKIM are set in that provider.";
 		case "unconfirmed":
-			return "Email: EmDash email provider not confirmed — no email has gone through one yet. Without one, order emails wait up to 72 h, then are skipped; sign-in links are not sent. See docs/email-providers.md.";
+			return "Email: provider not confirmed — nothing sent through it since setup or its last refusal. Without one, order emails wait 72 h, then are skipped; sign-in links are not sent. See docs/email-providers.md.";
 		case "unavailable":
 			return "Email: no EmDash email provider. Order emails wait up to 72 h, then are skipped; sign-in links are not sent. See docs/email-providers.md.";
 	}
@@ -1461,8 +1461,8 @@ function plainSettingsForm(plain: Map<string, string>): FormBlock {
  *  SECURITY: "set" and the Stripe mode (from the key's prefix) are FACTS ABOUT a
  *  key, not any part of it; no value is in scope here. The longest render
  *  ("no Stripe key"/"Stripe key set" · "webhook set" · "email set") is exactly
- *  the X-11 60-character budget. "email ?" (a provider not yet confirmed by a
- *  send, PR #418 review) is shorter than "email set". */
+ *  the X-11 60-character budget. "email TBC" (a provider not yet confirmed by a
+ *  send, PR #418 review) is the same width as "email set". */
 function paymentsGroupLabel(
 	state: Map<string, SecretRenderState>,
 	emailStatus: EmailSendingStatus,
@@ -1480,7 +1480,7 @@ function paymentsGroupLabel(
 		emailStatus === "confirmed"
 			? "email set"
 			: emailStatus === "unconfirmed"
-				? "email ?"
+				? "email TBC"
 				: "no email";
 	return valueLabel("Payments & email", [stripePart, webhookPart, emailPart]);
 }

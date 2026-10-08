@@ -40,8 +40,8 @@ DKIM and any key belong to it. The outbox and its at-least-once delivery are unc
   confirmed yet, or no provider (the last two with a pointer to `docs/email-providers.md`).
 - **Inline sends need a second.** The inline order email starts a send only with at least
   `MIN_INLINE_SEND_MS` (1 s) of its wait left; otherwise the row goes back untried and
-  uncounted for the cron, so a send started too late can never time out, be delivered
-  anyway, and be repeated.
+  uncounted for the cron, so a send is never started with too little time left to finish. A
+  slower provider can still time out; that is bounded by the attempt cap.
 - **Cron budget.** The `order-emails` leg's entry cost is one kv read (was up to three), and
   one email unit is 13 calls (was 14), so the Workers Paid email batch is 13 (was 12).
 

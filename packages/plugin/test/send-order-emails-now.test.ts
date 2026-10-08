@@ -37,6 +37,7 @@ import {
 } from "../src/email/send-order-emails-now.js";
 import { SETTLE_REQUEST_BUDGET_MS, settleDeadline } from "../src/settle-deadline.js";
 import {
+	EMAIL_LAST_SENT_KEY,
 	EMAIL_TRANSPORT_UNAVAILABLE_KEY,
 	LOGIN_EMAIL_TIMEOUT_MS,
 } from "../src/email/ctx-email-sender.js";
@@ -45,6 +46,7 @@ import {
 	makeInProcessCommerce,
 	type InProcessCommerceHarness,
 } from "./helpers/in-process-commerce.js";
+import { STORE_DISPLAY_NAME_KEY } from "../src/email/email-render-context.js";
 import { runUnderFakeTime } from "./helpers/run-under-fake-time.js";
 
 const FAR = "2099-01-01T00:00:00.000Z";
@@ -56,6 +58,7 @@ beforeEach(async () => {
 	else await harness.reset();
 	// kv outlives `reset()`: forget any "no email provider" answer a case recorded.
 	await harness.ctx.kv.delete(EMAIL_TRANSPORT_UNAVAILABLE_KEY);
+	await harness.ctx.kv.delete(EMAIL_LAST_SENT_KEY);
 });
 
 afterEach(() => {
@@ -390,6 +393,48 @@ describe("a send never outlives the wait", () => {
 		expect(result).toEqual({ configured: true, sent: [], skipped: [] });
 		// No attempt spent: the cron's claim is this row's FIRST counted attempt.
 		expect(await cronView(id)).toMatchObject({ attempts: 1, timeouts: 0 });
+	});
+
+	test("r3 S2: the floor is checked again AFTER the sender's kv reads — a build that eats the margin sends nothing, uncounted", async () => {
+		const id = await seedOrder("ord-slow-build", true);
+		let clock = 0;
+		const deadline = settleDeadline(() => clock);
+		const { orderStore } = harness.stores;
+		const realClaim = orderStore.claimNextEmailForOrder.bind(orderStore);
+		vi.spyOn(orderStore, "claimNextEmailForOrder").mockImplementation(async (...args) => {
+			const row = await realClaim(...args);
+			// `canSend` still sees 1.1 s left…
+			clock += ORDER_EMAIL_INLINE_DEADLINE_MS - (MIN_INLINE_SEND_MS + 100);
+			return row;
+		});
+		const { ctx, messages } = withEmail();
+		// …but building the sender (its kv reads) takes 200 ms of it.
+		const realGet = ctx.kv.get.bind(ctx.kv);
+		ctx.kv = {
+			...ctx.kv,
+			get: async <T>(key: string) => {
+				if (key === STORE_DISPLAY_NAME_KEY) clock += 200;
+				return realGet<T>(key);
+			},
+		};
+
+		const result = await sendOrderEmailsNow(ctx, harness.stores, id, { deadline });
+
+		expect(messages).toHaveLength(0);
+		expect(result.sent).toEqual([]);
+		expect(await cronView(id)).toMatchObject({ attempts: 1, timeouts: 0 });
+	});
+
+	test("r3 F5: a delivered inline send records `state:emailLastSentAt` through the real path", async () => {
+		const id = await seedOrder("ord-records-sent", true);
+		const { ctx, messages } = withEmail();
+		expect(await harness.ctx.kv.get(EMAIL_LAST_SENT_KEY)).toBeNull();
+
+		await sendOrderEmailsNow(ctx, harness.stores, id);
+		await new Promise<void>((resolve) => setTimeout(resolve, 0)); // the un-awaited write
+
+		expect(messages).toHaveLength(1);
+		expect(typeof (await harness.ctx.kv.get(EMAIL_LAST_SENT_KEY))).toBe("string");
 	});
 
 	test("with less than MIN_INLINE_SEND_MS of the request left, nothing is even claimed", async () => {

@@ -3219,8 +3219,8 @@ accordion   block_id settings:payments
                        a key not stored answers "No <key> was stored — nothing was removed."
                context "The settings below are shown as saved. x402 payments are not
                         available yet. These settings are kept for when they are."
-               context "Email: sent via EmDash's email provider. …" | "Email: EmDash email
-                        provider not confirmed — …" | "Email: no EmDash
+               context "Email: sent via EmDash's email provider. …" | "Email: provider not
+                        confirmed — …" | "Email: no EmDash
                         email provider. Order emails wait up to 72 h, then are skipped;
                         sign-in links are not sent. See docs/email-providers.md."
                                                           ← ADR-0031: `ctx.email` present?

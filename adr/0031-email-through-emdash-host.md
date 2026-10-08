@@ -89,7 +89,12 @@ Facts verified against emdash 0.38.0 (installed):
    `settings:emailSmtp2goApiKey` and their save generations) are no longer read. A cron
    tick purges them once, behind a marker key, but only after the host's provider has
    accepted a send: until then a rollback to the earlier build still finds them (PR #418
-   review).
+   review). Known limit: on a sandboxed host, an installed plugin whose `email:beforeSend`
+   hook CANCELS otta's message makes `send()` resolve before EmDash checks for a provider,
+   so that counts as a confirmed send and the purge can run with no provider selected (the
+   cancelled order email is marked sent as well). Only an admin installing such a plugin
+   can cause it; a buyer cannot. Trusted mode is unaffected (`ctx.email` exists only once
+   a provider is selected).
 6. **Old email is not sent (user decision, 2026-10-07).** An outbox row older than 72 hours
    (`OUTBOX_EMAIL_MAX_AGE_MS`, from when it was enqueued) is completed WITHOUT a send when
    the dispatcher claims it: terminal (`skipped`), no attempt spent, for every template.
