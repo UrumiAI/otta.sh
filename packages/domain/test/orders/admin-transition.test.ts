@@ -1,5 +1,7 @@
 import {
 	adminNextStates,
+	isLegacyPaymentMethod,
+	LEGACY_PAYMENT_METHODS,
 	manualPaymentAllowed,
 	markRefundedAllowed,
 	markRefundedRefusal,
@@ -131,7 +133,7 @@ describe("Mark refunded is offered only where no money is left to return through
 			markRefundedAllowed({ ...stripePaid, reconciliationFlag: "amount mismatch" }, CAPTURED),
 		).toBe(false);
 	});
-	test("a LEGACY method with no provider entry (a hand-seeded x402 order) keeps Mark refunded", () => {
+	test("a NAMED legacy method (a hand-seeded x402 order) keeps Mark refunded", () => {
 		// x402 is gone from `PaymentMethod`, but an order placed before its removal
 		// still stores it. No provider can return that money, so it is OUTSIDE Otta:
 		// the operator refunds it and Mark refunded records it, as before.
@@ -142,4 +144,21 @@ describe("Mark refunded is offered only where no money is left to return through
 		// And it still cannot be marked paid by hand.
 		expect(manualPaymentAllowed(legacy.paymentMethod)).toBe(false);
 	});
+	test("the legacy list is NAMED: x402 only", () => {
+		expect(Object.keys(LEGACY_PAYMENT_METHODS)).toEqual(["x402"]);
+		expect(isLegacyPaymentMethod("x402")).toBe(true);
+		for (const m of ["stripe", "Stripe", "bogus", "", "toString", "__proto__"]) {
+			expect(isLegacyPaymentMethod(m), m).toBe(false);
+		}
+	});
+	test.each(["Stripe", "bogus", "toString"])(
+		"an UNKNOWN stored method (%s) with captured money fails CLOSED: Mark refunded is refused",
+		(method) => {
+			const unknown = { ...stripePaid, paymentMethod: method as unknown as PaymentMethod };
+			expect(markRefundedRefusal(unknown, CAPTURED)).toBe("REFUND_THROUGH_MONEY");
+			expect(markRefundedAllowed(unknown, CAPTURED)).toBe(false);
+			expect(adminNextStates(unknown, CAPTURED)).not.toContain("refunded");
+			expect(manualPaymentAllowed(unknown.paymentMethod)).toBe(false);
+		},
+	);
 });

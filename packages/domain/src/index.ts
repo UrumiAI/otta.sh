@@ -325,6 +325,8 @@ export {
 	TRANSPORT_UNAVAILABLE_RETRY_MS,
 	UNTRIED_RETRY_MS,
 	adminNextStates,
+	isLegacyPaymentMethod,
+	LEGACY_PAYMENT_METHODS,
 	manualPaymentAllowed,
 	markRefundedAllowed,
 	markRefundedRefusal,

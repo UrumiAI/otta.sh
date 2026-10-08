@@ -94,7 +94,7 @@ export function refundConfirmText(
 export function refundCapabilityText(
 	refundable: boolean,
 	paymentMethod: string | null,
-	legacyPaymentMethod: boolean,
+	legacyPaymentMethod = false,
 ): string {
 	if (refundable) {
 		return `Paid via ${paymentMethod ?? "the payment provider"} — refunding here issues a REAL refund through Stripe and money moves back to the buyer.`;

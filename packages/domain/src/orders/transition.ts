@@ -155,15 +155,41 @@ const PAYMENT_METHOD_SETTLEMENT: Readonly<Record<PaymentMethod, "gateway" | "off
 };
 
 /**
- * A per-method table's entry for a STORED method, read as a `string` rather than
- * trusted as a `PaymentMethod`: an order placed before a method was removed (a
- * legacy x402 order) still carries it. `undefined` when the table has no entry.
+ * The payment methods Otta REMOVED that older orders may still store, by name,
+ * with how each one's money was confirmed and goes back. A NAMED list, never an
+ * open fallback: a stored method that is neither current nor listed here (a typo,
+ * "Stripe", a hand-seeded value) fails CLOSED everywhere it is looked up — it
+ * could be money a provider still holds (QA2 M4).
+ *
+ * x402 (HTTP 402, USDC on Base) was confirmed by its gateway and could not
+ * refund automatically: its money goes back OUTSIDE Otta, and Mark refunded or a
+ * recorded refund is how the admin says so.
  */
-function entryForStored<V>(
+export const LEGACY_PAYMENT_METHODS: Readonly<
+	Record<string, { refunds: "outside"; settlement: "gateway" }>
+> = Object.freeze({
+	x402: Object.freeze({ refunds: "outside", settlement: "gateway" }),
+});
+
+/** True iff `stored` names a REMOVED method from {@link LEGACY_PAYMENT_METHODS}.
+ *  Read as a `string`: a legacy order carries a method the type no longer has. */
+export function isLegacyPaymentMethod(stored: string): boolean {
+	return Object.hasOwn(LEGACY_PAYMENT_METHODS, stored);
+}
+
+/**
+ * A per-method fact for a STORED method: from the current table when the method
+ * is a `PaymentMethod`, else from its {@link LEGACY_PAYMENT_METHODS} entry, else
+ * `undefined` — an unknown method, which every caller treats as fail-closed.
+ */
+function factForStored<V>(
 	table: Readonly<Record<PaymentMethod, V>>,
 	stored: string,
+	legacy: (entry: { refunds: "outside"; settlement: "gateway" }) => V,
 ): V | undefined {
-	return Object.hasOwn(table, stored) ? (table as Readonly<Record<string, V>>)[stored] : undefined;
+	if (Object.hasOwn(table, stored)) return (table as Readonly<Record<string, V>>)[stored];
+	const entry = isLegacyPaymentMethod(stored) ? LEGACY_PAYMENT_METHODS[stored] : undefined;
+	return entry === undefined ? undefined : legacy(entry);
 }
 
 /**
@@ -175,8 +201,9 @@ function entryForStored<V>(
  */
 export function manualPaymentAllowed(method: PaymentMethod | null): boolean {
 	if (method === null) return false;
-	// A legacy method no longer in the type has no entry ⇒ not offline.
-	return entryForStored(PAYMENT_METHOD_SETTLEMENT, method) === "offline";
+	// A legacy method is settled by its (removed) gateway; an unknown one has no
+	// entry. Neither is offline.
+	return factForStored(PAYMENT_METHOD_SETTLEMENT, method, (e) => e.settlement) === "offline";
 }
 
 /**
@@ -193,12 +220,12 @@ const PAYMENT_METHOD_REFUNDS: Readonly<Record<PaymentMethod, "provider" | "outsi
 /**
  * How a STORED method's money goes back. The stored value is read as a `string`,
  * not trusted as a `PaymentMethod`: an order placed before a method was removed
- * (a legacy x402 order) still carries it. A method with no entry has no provider
- * Otta can refund through, so it is `outside` — the operator returns the money
- * and Mark refunded records it, as it did while that method existed.
+ * (a legacy x402 order) still carries it, and its {@link LEGACY_PAYMENT_METHODS}
+ * entry says `outside`. A method that is neither current nor named legacy is
+ * `undefined`: NOT outside, so Mark refunded goes through the captured-money check.
  */
-function refundRouteOf(stored: string): "provider" | "outside" {
-	return entryForStored(PAYMENT_METHOD_REFUNDS, stored) ?? "outside";
+function refundRouteOf(stored: string): "provider" | "outside" | undefined {
+	return factForStored(PAYMENT_METHOD_REFUNDS, stored, (e) => e.refunds);
 }
 
 /** The two ledgers Mark refunded is decided from. */

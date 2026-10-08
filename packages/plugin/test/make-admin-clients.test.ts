@@ -260,6 +260,43 @@ describe("makeAdminClients wires the payment gateways into admin refunds", () =>
 		expect(requests).toEqual([]);
 	});
 
+	test("an UNKNOWN stored method (not current, not a named legacy one) fails closed: 409, nothing ledgered", async () => {
+		const ctx = withKv({ ...harness.ctx, http: stripeHttp() }, {});
+		const { orders } = await makeAdminClients(ctx);
+		for (const method of ["Stripe", "bogus", "toString"]) {
+			const id = await seedPaidOrder(method as unknown as PaymentMethod);
+			expect(await orders.getRefunds(id), method).toMatchObject({
+				refundable: false,
+				legacyPaymentMethod: false,
+			});
+			expect(
+				await orders.refundOrder(
+					id,
+					{ amountCents: 500, currency: "USD", refundedBy: "ops@example.test" },
+					{ idempotencyKey: `${id}-r1` },
+				),
+				method,
+			).toEqual({ ok: false, status: 409, reason: "REFUND_GATEWAY_UNAVAILABLE" });
+			expect(await harness.stores.orderStore.listRefunds(toOrderId(id))).toEqual([]);
+		}
+		expect(requests).toEqual([]);
+	});
+
+	test("cancelling a PAID legacy x402 order refuses like an unrefundable gateway: nothing moves", async () => {
+		const ctx = withKv({ ...harness.ctx, http: stripeHttp() }, {});
+		const { orders } = await makeAdminClients(ctx);
+		const id = await seedPaidOrder("x402" as unknown as PaymentMethod);
+		expect(
+			await orders.cancelOrder(
+				id,
+				{ reason: "customer_request", cancelledBy: "ops@example.test" },
+				{ idempotencyKey: `${id}-c1` },
+			),
+		).toEqual({ ok: false, status: 409, reason: "REFUND_NOT_AUTOMATIC" });
+		expect(await harness.stores.orderStore.listRefunds(toOrderId(id))).toEqual([]);
+		expect(requests).toEqual([]);
+	});
+
 	test("a ceiling refusal never reaches Stripe", async () => {
 		const ctx = withKv(
 			{ ...harness.ctx, http: stripeHttp() },

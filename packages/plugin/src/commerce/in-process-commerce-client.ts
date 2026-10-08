@@ -57,6 +57,7 @@ import {
 	createCart,
 	createOrderFromCart,
 	currency as toCurrency,
+	isLegacyPaymentMethod,
 	deactivateProductCommerce,
 	deactivateProductVariant,
 	email as toEmail,
@@ -1118,14 +1119,8 @@ export class InProcessCommerceClient implements CommerceClient {
 						},
 						{ sessionToken: opts.sessionToken, buyerRef: input.buyerRef },
 					);
-		// Issue #382: a fact about the STRIPE account, so it binds a Stripe
-		// checkout only. A kv read, made before the
-		// domain's same-key short-circuit (which lives inside the use-case); a
-		// replay short-circuits before the domain looks at it. Stripe is the only
-		// method today, so only the `=== "stripe"` half is always true: it is the
-		// gateway seam a second method would pass through without inheriting
-		// Stripe's address rule. `#addressRequired()` is a real kv read and must stay.
-		const addressRequired = input.paymentMethod === "stripe" && (await this.#addressRequired());
+		// Issue #382: the Stripe account's address rule (Stripe is the only method), a kv read.
+		const addressRequired = await this.#addressRequired();
 		const result = await createOrderFromCart(this.#createOrderDeps, {
 			cartId: input.cartId,
 			idempotencyKey: toIdempotencyKey(idempotencyKey),
@@ -1252,7 +1247,10 @@ export class InProcessCommerceClient implements CommerceClient {
 			!Number.isFinite(deadline) ||
 			deadline <= this.#stores.clock.now().getTime() ||
 			order.cartId === null ||
-			order.paymentMethod === null
+			order.paymentMethod === null ||
+			// A method Otta removed (a pending x402 order from before): no gateway can
+			// take its payment, so it is not payable — never a replay that throws.
+			isLegacyPaymentMethod(order.paymentMethod)
 		) {
 			return { ok: false, reason: "ORDER_NOT_PAYABLE" };
 		}

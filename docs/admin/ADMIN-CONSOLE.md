@@ -3215,7 +3215,6 @@ accordion   block_id settings:payments
                                                          → clear-payment-secret {secret}
                      ← a removal notice names where to find the key again; a Remove on
                        a key not stored answers "No <key> was stored — nothing was removed."
-               context "The settings below are shown as saved."
                context "Email: sent via EmDash's email provider. …" | "Email: provider not
                         confirmed — …" | "Email: no EmDash
                         email provider. Order emails wait up to 72 h, then are skipped;

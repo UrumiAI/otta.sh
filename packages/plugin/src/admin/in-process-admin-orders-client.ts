@@ -99,6 +99,7 @@ import {
 	getOrderCustomerContext,
 	getOrderTimeline,
 	idempotencyKey as toIdempotencyKey,
+	isLegacyPaymentMethod,
 	listOrderNotes,
 	ORDER_STATE_MACHINE,
 	orderHasEmailRecipient,
@@ -186,20 +187,6 @@ const DEFAULT_LIMIT = 25;
 const MAX_REFUND_AMOUNT_CENTS = 1_000_000_000_000;
 
 /**
- * The payment methods Otta has today. A `Record` over every `PaymentMethod`, so a
- * new method has to be added here too. It tells a CURRENT method (a missing
- * gateway is a deployment that is not configured: fail closed) from a LEGACY one
- * an older order still stores (no gateway can ever exist: record only).
- */
-const CURRENT_PAYMENT_METHODS: Readonly<Record<PaymentMethod, true>> = { stripe: true };
-
-/** Whether a STORED method is one Otta no longer supports (see above). Read as a
- *  string: a legacy order carries a method the type no longer has. */
-function isLegacyPaymentMethod(stored: string): boolean {
-	return !Object.hasOwn(CURRENT_PAYMENT_METHODS, stored);
-}
-
-/**
  * A record-only gateway for a LEGACY order: one whose stored payment method Otta
  * no longer supports (an x402 order placed before its removal). That method's
  * money can only go back outside Otta, so the refund use-case takes its manual
@@ -265,13 +252,17 @@ export class InProcessAdminOrdersClient implements AdminOrdersSurface {
 	/**
 	 * The gateway a refund on an order paid by `method` goes through. A CURRENT
 	 * method gets its wired gateway, or `undefined` when none is wired (the refund
-	 * POST's `409 REFUND_GATEWAY_UNAVAILABLE`). A LEGACY method — stored on an older
-	 * order, no longer a `PaymentMethod` — gets a record-only stand-in, so the admin
-	 * can still record the refund they made outside Otta, as before the removal.
+	 * POST's `409 REFUND_GATEWAY_UNAVAILABLE`). A NAMED legacy method (the domain's
+	 * `LEGACY_PAYMENT_METHODS`: an x402 order from before its removal) gets a
+	 * record-only stand-in, so the admin can still record the refund they made
+	 * outside Otta. Any other stored method is unknown and fails closed: `undefined`.
 	 */
 	#refundGatewayFor(method: PaymentMethod | null): PaymentGateway | undefined {
 		if (method === null) return undefined;
-		return isLegacyPaymentMethod(method) ? recordOnlyLegacyGateway(method) : this.#gateways[method];
+		if (isLegacyPaymentMethod(method)) return recordOnlyLegacyGateway(method);
+		// Own keys only: an unknown stored method ("bogus", even "toString") has no
+		// gateway, and the refund POST answers it 409 like an unconfigured one.
+		return Object.hasOwn(this.#gateways, method) ? this.#gateways[method] : undefined;
 	}
 
 	/**
@@ -581,10 +572,9 @@ export class InProcessAdminOrdersClient implements AdminOrdersSurface {
 		const order = await this.#stores.orderStore.getById(oid);
 		// The order's own gateway, or null — the domain refuses a refund it cannot
 		// issue (`REFUND_NOT_AUTOMATIC`) rather than cancelling with the money kept.
-		const gateway =
-			order === null || order.paymentMethod === null
-				? null
-				: (this.#gateways[order.paymentMethod] ?? null);
+		// Resolved like a refund's: a legacy method's record-only stand-in is not
+		// refundable, so a paid legacy order is refused exactly as with no gateway.
+		const gateway = order === null ? null : (this.#refundGatewayFor(order.paymentMethod) ?? null);
 		const res = await cancelOrderWithRefund(
 			{
 				orderStore: this.#stores.orderStore,
