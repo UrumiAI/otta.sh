@@ -68,6 +68,10 @@ import {
 	STOREFRONT_SHOPPER_STATE_ROUTE,
 } from "./storefront/shopper-state-route.js";
 import {
+	createRegionRulesHandler,
+	STOREFRONT_REGION_RULES_ROUTE,
+} from "./storefront/region-rules-route.js";
+import {
 	createAfterDeleteHandler,
 	createAfterPublishHandler,
 	createAfterSaveHandler,
@@ -236,6 +240,13 @@ const plugin: SandboxedPlugin = {
 		[ACCOUNT_ME_ROUTE]: { handler: createAccountMeHandler() as never, public: true },
 		[STOREFRONT_SHOPPER_STATE_ROUTE]: {
 			handler: createShopperStateHandler() as never,
+			public: true,
+		},
+		// Which countries need a state/province at checkout (zones listing a
+		// subdivision code). PUBLIC for the same reason as the routes above: the
+		// site's place handler reads it through the public dispatcher.
+		[STOREFRONT_REGION_RULES_ROUTE]: {
+			handler: createRegionRulesHandler() as never,
 			public: true,
 		},
 		// Phase 7 (§6): the SINGLE `admin` dispatch route em-dash's admin shell

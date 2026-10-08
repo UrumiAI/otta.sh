@@ -936,6 +936,14 @@ describe("storefront/checkout/summary — the buyer's selection (workerd sandbox
 describe("storefront/checkout/summary — the zone derived from the destination (workerd sandbox)", () => {
 	useShippingRules(seedZoneFixture, removeZoneFixture);
 
+	test("storefront/checkout/region-rules: the countries some zone lists at region level (US-CA ⇒ US), and nothing else", async () => {
+		const result = resultOf(
+			await sandboxHandle.invokeRoute("storefront/checkout/region-rules", {}),
+		);
+		// The fixture's zones: US (country), US-CA (region, carries the CA tax rate), DE (country).
+		expect(result).toEqual({ ok: true, regionRequiredCountries: ["US"] });
+	});
+
 	type Totals = Record<string, { money: { amount: number } | null; label: string }>;
 	const totalsOf = (result: Record<string, unknown>) => result["totals"] as Totals;
 

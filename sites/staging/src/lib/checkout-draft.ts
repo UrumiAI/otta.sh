@@ -46,8 +46,10 @@ export type DraftField = "email" | DraftAddressField;
 export const DRAFT_FIELDS: readonly DraftField[] = ["email", ...DRAFT_ADDRESS_FIELDS];
 
 /** Why a field was refused. */
-export type DraftFieldError = "missing" | "too_long" | "invalid";
-const FIELD_ERRORS: ReadonlySet<string> = new Set(["missing", "too_long", "invalid"]);
+/** `stale`: a region picked from the list of a country the buyer has since
+ *  changed — dropped, so it must be picked again from this country's list. */
+export type DraftFieldError = "missing" | "too_long" | "invalid" | "stale";
+const FIELD_ERRORS: ReadonlySet<string> = new Set(["missing", "too_long", "invalid", "stale"]);
 
 export interface CheckoutDraft {
 	values: Partial<Record<DraftField, string>>;
@@ -137,7 +139,7 @@ export function writeCheckoutDraft(cookies: DraftCookieWriter, draft: CheckoutDr
 /** The cookie value a draft is stored as — whitelisted and bounded — or `null`
  *  when it cannot be stored (not a draft, or over the cookie budget). The one
  *  rule `writeCheckoutDraft` and `checkoutDraftFits` share. */
-export function serializeDraft(draft: CheckoutDraft): string | null {
+function serializeDraft(draft: CheckoutDraft): string | null {
 	const candidate = clean(draft);
 	if (candidate === null) return null;
 	const json = JSON.stringify(candidate);
@@ -201,6 +203,12 @@ export function fieldErrorCopy(
 		return `Too long — use at most ${max} characters.`;
 	}
 	if (field === "email") return "Enter an email address like name@example.com.";
+	if (field === "region" && error === "stale") {
+		return "Pick your state/province again — the list changed with the country you chose.";
+	}
+	if (field === "region" && error === "missing") {
+		return "Choose your state/province — this store needs it for addresses in this country.";
+	}
 	if (error === "missing") {
 		return context.addressRequired === true
 			? "Fill this in."

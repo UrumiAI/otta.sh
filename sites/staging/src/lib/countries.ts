@@ -9,6 +9,7 @@
  * all the plugin reads.
  */
 import { COUNTRY_CODES } from "@otta-sh/plugin";
+import { byLabel } from "./by-label.js";
 
 export interface CountryOption {
 	code: string;
@@ -23,9 +24,31 @@ export interface RegionNames {
 const displayNames = (locale: string): RegionNames =>
 	new Intl.DisplayNames([locale], { type: "region" });
 
+/** The default-named lists, per locale: the names are fixed data, so each
+ *  list is built and sorted once. (A caller passing its own `makeNames` — a
+ *  test — always gets a fresh one.) */
+const byLocale = new Map<string, readonly CountryOption[]>();
+
 export function countryOptions(
 	locale: string,
-	makeNames: (locale: string) => RegionNames = displayNames,
+	makeNames?: (locale: string) => RegionNames,
+): readonly CountryOption[] {
+	if (makeNames !== undefined) return buildCountryOptions(locale, makeNames);
+	const cached = byLocale.get(locale);
+	if (cached !== undefined) return cached;
+	const built = Object.freeze(buildCountryOptions(locale, displayNames));
+	byLocale.set(locale, built);
+	return built;
+}
+
+/** A country code in `locale`'s words — the cached list's label, else the code. */
+export function countryName(code: string, locale: string): string {
+	return countryOptions(locale).find((c) => c.code === code)?.label ?? code;
+}
+
+function buildCountryOptions(
+	locale: string,
+	makeNames: (locale: string) => RegionNames,
 ): CountryOption[] {
 	let names: RegionNames | null;
 	try {
@@ -41,27 +64,4 @@ export function countryOptions(
 		}
 	};
 	return [...COUNTRY_CODES].map((code) => ({ code, label: label(code) })).toSorted(byLabel(locale));
-}
-
-/**
- * The one ordering of a pick list's options: by label, in `locale`'s collation
- * (as `localeCompare(…, locale)`), equal labels comparing 0. A locale the
- * runtime refuses falls back to plain code-unit order rather than throwing.
- * Shared by the country and the state/province lists.
- */
-export function byLabel(locale: string): (a: { label: string }, b: { label: string }) => number {
-	let collator: Intl.Collator | null;
-	try {
-		collator = new Intl.Collator(locale);
-	} catch {
-		collator = null;
-	}
-	return (a, b) =>
-		collator !== null
-			? collator.compare(a.label, b.label)
-			: a.label < b.label
-				? -1
-				: a.label > b.label
-					? 1
-					: 0;
 }

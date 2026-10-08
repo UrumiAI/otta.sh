@@ -409,6 +409,9 @@ export interface CheckoutModel {
 	 *  from the plugin or the site's shape check): mark the delivery region
 	 *  field invalid. False for a country-level refusal. */
 	regionRefused: boolean;
+	/** The destination was refused for its COUNTRY (not shipped to, not a
+	 *  country): mark the delivery country select invalid. */
+	countryRefused: boolean;
 	/** `destination.region` in words ("California"), or null — none, or no name. */
 	destinationRegionName: string | null;
 	/**

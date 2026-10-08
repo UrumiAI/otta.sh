@@ -26,11 +26,16 @@ field.
 - **A region is never sent for the wrong country.** Each list echoes the country it was
   rendered for (`deliveryRegionCountry`, `regionCountry`); when the posted country
   differs, the old region is dropped. A region picked from another
-  country's list, for a country with its own list, is re-asked (`REGION_LIST_UPDATED`,
-  marked together with any other field errors) rather than placed; for a country without
-  subdivisions it is just dropped. A blank region stays optional and is never re-asked;
-  where a region-level zone needs one, the plugin's `SHIPPING_REGION_CODE_REQUIRED` brings
-  the review back with that country's list, marked.
+  country's list is never dropped silently: the field is marked "pick again" beside any
+  other error, with `REGION_LIST_UPDATED` when nothing else is wrong; for a country without
+  subdivisions it is just dropped.
+- **Region required iff the store uses regions for the country.** A country some zone lists
+  at region level (zones carry both shipping methods and tax rates, e.g. `US-CA`, `IN-KA`)
+  needs a state/province; placing without one re-asks with the list shown and the field
+  marked (`REGION_REQUIRED`). Anywhere else the region is optional and never asked for.
+  New public route `storefront/checkout/region-rules` (`STOREFRONT_REGION_RULES_ROUTE`)
+  answers those countries (codes only), read at most once per place; domain
+  `countriesUsingRegions(zones)`.
 - **Zoned stores keep the chosen country.** When the plugin refuses a destination (a
   store with a `US-CA` zone refuses plain `US`), the delivery block keeps the country
   and shows its state list, marked invalid, instead of resetting.

@@ -185,10 +185,17 @@ const destination = summary.selection.destination;
 /** What the delivery block's fields show: the priced destination, else what was
  *  asked for and refused — by the site or by the plugin — so the country stays
  *  chosen and its state/province list is offered (deliveryFieldValues). */
-const { country: countryValue, region: regionValue } = deliveryFieldValues(
-	destination,
-	destinationRead,
-);
+const askedFor = deliveryFieldValues(destination, destinationRead);
+/** A PLACE refused for its region on a zoned page (the zones changed after the
+ *  review priced it): the failure redirect dropped the destination from the URL,
+ *  so the country comes back from the place form's own echo in the draft — the
+ *  delivery block then shows that country's list, marked. */
+const placeRegionRefused = shownError === "SHIPPING_REGION_CODE_REQUIRED";
+const countryValue =
+	askedFor.country !== "" || !placeRegionRefused
+		? askedFor.country
+		: (draft?.values.country ?? "").trim().toUpperCase();
+const regionValue = askedFor.region;
 
 /** The delivery block: an unlocked cart that ships, in a store with zones. */
 const showDelivery = locked === null && summary.requiresShipping && summary.shipping.status !== "no_zones";
@@ -309,7 +316,11 @@ const model: CheckoutModel = {
 	/* The REGION is what was refused — missing where a zone needs it, not one
 	   of the country's codes, or not even code-shaped (the site's own check uses
 	   the same reason). A country-level refusal ("we don't ship here") is not. */
-	regionRefused: destinationError?.reason === "SHIPPING_REGION_CODE_REQUIRED",
+	regionRefused:
+		destinationError?.reason === "SHIPPING_REGION_CODE_REQUIRED" || placeRegionRefused,
+	/* …and a COUNTRY-level refusal ("we don't ship there") marks the country. */
+	countryRefused:
+		destinationError !== null && destinationError.reason !== "SHIPPING_REGION_CODE_REQUIRED",
 	shippingError: shippingError !== null ? cartErrorMessage(shippingError.reason) : null,
 	noOptionsCopy: cartErrorMessage("SHIPPING_METHOD_REQUIRED"),
 	destination,

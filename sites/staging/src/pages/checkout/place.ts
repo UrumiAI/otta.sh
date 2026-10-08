@@ -31,7 +31,9 @@
 import {
 	checkoutIdempotencyKey,
 	STOREFRONT_CHECKOUT_PLACE_ROUTE,
+	STOREFRONT_REGION_RULES_ROUTE,
 	type CheckoutPlaceRouteResult,
+	type RegionRulesResult,
 } from "@otta-sh/plugin";
 import type { APIContext, APIRoute } from "astro";
 import { currentSessionToken } from "../../lib/account.js";
@@ -96,6 +98,19 @@ const SHIPPING_REGION_CODE_REQUIRED = "SHIPPING_REGION_CODE_REQUIRED";
  *  was rendered, so the review comes back with the new country's list instead
  *  of placing (the region pick list has no client JS to swap it in place). */
 const REGION_LIST_UPDATED = "REGION_LIST_UPDATED";
+/** The site's own: this store needs a region for the country chosen (a zone
+ *  lists one of its subdivisions) and none was given. */
+const REGION_REQUIRED = "REGION_REQUIRED";
+/** The site's own: a region must be (re)chosen, but the address is too long
+ *  for the draft cookie to bring the typed values back with the list. */
+const REGION_ADDRESS_TOO_LONG = "REGION_ADDRESS_TOO_LONG";
+
+/** `path` with `?error=` set (a redirect that had no token of its own). */
+function withErrorToken(path: string, token: string): string {
+	const url = new URL(path, "http://x");
+	url.searchParams.set("error", token);
+	return url.pathname + url.search;
+}
 
 /** ADR-0009's ship-to, as the form names them. The TYPED fields always decide
  *  all-or-nothing; `country` joins them only where the buyer types it too. */
@@ -247,29 +262,74 @@ async function place(context: APIContext): Promise<Response> {
 		!zoned && regionListIsStale(presentField(form, REGION_COUNTRY_FIELD), addressCountry);
 	if (addressListStale) delete draftValues.region;
 	// A region the buyer PICKED from another country's list, for a country that
-	// has a list of its own: it is re-asked (REGION_LIST_UPDATED, below), never
-	// dropped and placed. A country without subdivisions has nothing to pick —
-	// the stale region is just dropped — and a blank region is never re-asked
-	// or marked: outside a region-level zone it is optional (where a zone needs
-	// it, the plugin refuses SHIPPING_REGION_CODE_REQUIRED and the review comes
-	// back with that country's list, the field marked).
+	// has a list of its own. It is dropped — and never silently: every redirect
+	// below marks the field ("pick again") and, when nothing else is wrong, says
+	// why (REGION_LIST_UPDATED). A country without subdivisions has nothing to
+	// pick; its stale region is just dropped.
 	const staleRegionPicked =
 		addressListStale &&
 		formString(form.get("region")) !== undefined &&
 		hasRegionList(addressCountry);
-	const reAskFields: FieldErrors = staleRegionPicked ? { region: "invalid" } : {};
+	/** Off for the explicit Update, which asked for the new list. */
+	let markStaleRegion = staleRegionPicked;
 	const refuse = (
-		path: string,
-		error: string | undefined,
+		pathIn: string,
+		errorIn: string | undefined,
 		extra: { fields?: FieldErrors; coupon?: string | undefined } = {},
 	): Response => {
+		let path = pathIn;
+		let error = errorIn;
+		let fields = extra.fields ?? {};
+		if (markStaleRegion && fields.region === undefined) {
+			fields = { ...fields, region: "stale" };
+			if (error === undefined) {
+				error = REGION_LIST_UPDATED;
+				path = withErrorToken(path, REGION_LIST_UPDATED);
+			}
+		}
 		writeCheckoutDraft(context.cookies, {
 			values: draftValues,
-			errors: extra.fields ?? {},
+			errors: fields,
 			...(error !== undefined ? { error } : {}),
 			...(extra.coupon !== undefined ? { coupon: extra.coupon } : {}),
 		});
 		return context.redirect(path, 303);
+	};
+
+	// REGION REQUIRED (the store's rule): a country some zone lists a subdivision
+	// for — zones carry both shipping methods and tax rates — needs a region; any
+	// other country's region is optional and is never asked for or marked. Read
+	// at most once per request, and only when a blank region could need it. A
+	// failed read leaves the region optional; the plugin still refuses a
+	// zone-matched address without one.
+	let regionRules: Promise<ReadonlySet<string>> | undefined;
+	const regionRequiredCountries = (): Promise<ReadonlySet<string>> =>
+		(regionRules ??= dispatchOttaRoute<RegionRulesResult>(
+			routeDispatcher(context),
+			STOREFRONT_REGION_RULES_ROUTE,
+			{},
+			context.url,
+		).then(
+			(result) =>
+				new Set(
+					result !== null && !isBusyResult(result) && result.ok
+						? result.regionRequiredCountries
+						: [],
+				),
+		));
+	/** The region field's mark at place time, beside every other error. */
+	const regionMark = async (): Promise<FieldErrors> => {
+		if (staleRegionPicked) return { region: "stale" };
+		const country = (addressCountry ?? "").toUpperCase();
+		if (
+			zoned ||
+			!COUNTRY_CODES.has(country) ||
+			formString(form.get("region")) !== undefined ||
+			!hasRegionList(country)
+		) {
+			return {};
+		}
+		return (await regionRequiredCountries()).has(country) ? { region: "missing" } : {};
 	};
 
 	// The coupon the review priced, echoed by the form (#305). Read FIRST, so
@@ -372,6 +432,7 @@ async function place(context: APIContext): Promise<Response> {
 	// review with the new country's list, keeping everything typed. A region
 	// picked for the old country is dropped, never sent as the new one's.
 	if (intent === "update-address") {
+		markStaleRegion = false;
 		return refuse(checkoutPath(selection), undefined);
 	}
 	// No publishable key ⇒ NO ORDER (§1.7). The review page already hides the
@@ -397,7 +458,7 @@ async function place(context: APIContext): Promise<Response> {
 		// is checked here too, so every field that needs fixing is marked at once.
 		const address = readShippingAddress(form, zoned, { dropRegion: addressListStale });
 		return refuse(placeFailurePath(INVALID_EMAIL, selection), INVALID_EMAIL, {
-			fields: { email: "invalid", ...(address.ok ? {} : address.fields), ...reAskFields },
+			fields: { email: "invalid", ...(address.ok ? {} : address.fields), ...(await regionMark()) },
 		});
 	}
 
@@ -419,23 +480,27 @@ async function place(context: APIContext): Promise<Response> {
 				? checkoutPath({ ...selection, error: shipping.error })
 				: placeFailurePath(shipping.error, selection),
 			shipping.error,
-			{ fields: { ...shipping.fields, ...reAskFields } },
+			{ fields: { ...shipping.fields, ...(await regionMark()) } },
 		);
 	}
 
-	// The re-ask, AFTER the checks above so that every field to fix is marked in
-	// one round trip: a region picked from another country's list comes back with
-	// this country's list instead of being placed (see `staleRegionPicked`). Only
-	// when the typed values can come back — an address too long for the draft
-	// cookie is not saved, and re-asking it would return an EMPTY form, again and
-	// again; then it places without the stale region.
-	if (
-		staleRegionPicked &&
-		checkoutDraftFits({ values: draftValues, errors: reAskFields, error: REGION_LIST_UPDATED })
-	) {
-		return refuse(checkoutPath({ ...selection, error: REGION_LIST_UPDATED }), REGION_LIST_UPDATED, {
-			fields: reAskFields,
-		});
+	// The re-ask, AFTER the checks above so every field to fix is marked in one
+	// round trip: a region picked from another country's list (pick again), or
+	// a blank one this store requires (choose one) comes back with this
+	// country's list instead of being placed. If the typed values cannot come
+	// back — an address too long for the draft cookie — the refusal says so
+	// plainly rather than returning an empty form that asks again forever, or
+	// placing without the region.
+	const mark = await regionMark();
+	if (mark.region !== undefined) {
+		const token = mark.region === "stale" ? REGION_LIST_UPDATED : REGION_REQUIRED;
+		if (checkoutDraftFits({ values: draftValues, errors: mark, error: token })) {
+			return refuse(checkoutPath({ ...selection, error: token }), token, { fields: mark });
+		}
+		return refuse(
+			checkoutPath({ ...selection, error: REGION_ADDRESS_TOO_LONG }),
+			REGION_ADDRESS_TOO_LONG,
+		);
 	}
 
 	// The signed-in shopper's session, if any. The plugin route is cookie-blind

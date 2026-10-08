@@ -116,7 +116,9 @@ of **every** ISO 3166-2 subdivision of the chosen country, at all levels, exactl
 validation accepts (GB lists 221: nations and council areas; FR lists regions and
 departments). Matching stays exact (no hierarchy), so **a merchant must set region zones at
 the level buyers pick from**: a `GB-ENG` zone does not cover a buyer who picks `GB-KEC`, and
-`FR-IDF` does not cover `FR-75C`.
+`FR-IDF` does not cover `FR-75C`. The region is REQUIRED at checkout exactly for the
+countries some zone lists at region level (zones carry both shipping methods and tax rates);
+elsewhere it is optional and never asked for.
 
 ## Consequences
 

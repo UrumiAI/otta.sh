@@ -52,6 +52,7 @@ const {
 	refusedCouponCode,
 	destinationError,
 	regionRefused,
+	countryRefused,
 	shippingError,
 	noOptionsCopy,
 	destination,
@@ -265,6 +266,8 @@ const {
 									form="checkout-place"
 									autocomplete="country"
 									required
+									aria-invalid={countryRefused}
+									aria-describedby={countryRefused ? "delivery-error" : undefined}
 								>
 									<option value="">Choose a country…</option>
 									{countries.map((option) => (
@@ -285,7 +288,7 @@ const {
 										form="checkout-place"
 										autocomplete="address-level1"
 										aria-invalid={regionRefused}
-										aria-describedby={regionRefused ? "delivery-error region-note" : "region-note"}
+										aria-describedby={regionRefused && destinationError !== null ? "delivery-error region-note" : "region-note"}
 									>
 										<option value="">Choose a state / province…</option>
 										{deliveryRegions.options.map((option) => (

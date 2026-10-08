@@ -121,7 +121,8 @@ test.describe("cart → checkout → order → account, in the browser", () => {
 		}
 		// The state/province is a pick list rendered for the page's country (no
 		// client JS): a newly chosen country's list arrives with Update, which keeps
-		// everything typed — and placing without it re-asks once with the list.
+		// everything typed. (A blank region places on a store with no region-level
+		// zones; this one picks California anyway, as a buyer would.)
 		const country = form.locator('select[name="country"]');
 		if ((await country.count()) > 0 && (await country.isVisible())) {
 			await country.selectOption("US");

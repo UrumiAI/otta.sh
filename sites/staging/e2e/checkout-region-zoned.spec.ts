@@ -15,8 +15,8 @@
  * zone), so the specs after it still see a store with no zones. It adds a
  * product to a new cart and places an order (offline Stripe gateway).
  */
+import { admin, adminHeaders, everything, formBlockId, pathToken } from "./admin-rules.js";
 import {
-	E2E_BASE_URL,
 	expect,
 	skipWithoutPlaceButton,
 	skipWithoutPurchasableProduct,
@@ -26,47 +26,6 @@ import {
 
 const ZONE = "e2e-us-ca";
 const METHOD = "e2e-us-ca-std";
-const ADMIN = `${E2E_BASE_URL}/_emdash/api/plugins/otta/admin`;
-
-type Block = Record<string, unknown>;
-
-async function adminHeaders(): Promise<Record<string, string>> {
-	const res = await fetch(`${E2E_BASE_URL}/_emdash/api/auth/dev-bypass`, { redirect: "manual" });
-	const cookie = res.headers
-		.getSetCookie()
-		.map((c) => c.split(";", 1)[0])
-		.join("; ");
-	return { Cookie: cookie, "Content-Type": "application/json", "X-EmDash-Request": "1" };
-}
-
-async function admin(headers: Record<string, string>, body: unknown): Promise<Block[]> {
-	const res = await fetch(ADMIN, { method: "POST", headers, body: JSON.stringify(body) });
-	expect(res.ok, `admin ${JSON.stringify(body).slice(0, 120)} → HTTP ${res.status}`).toBe(true);
-	const envelope = (await res.json()) as { data?: { blocks?: Block[] } };
-	return envelope.data?.blocks ?? [];
-}
-
-/** Every object in a block tree (forms, buttons, groups' children…). */
-function everything(node: unknown, out: Block[] = []): Block[] {
-	if (Array.isArray(node)) for (const item of node) everything(item, out);
-	else if (node !== null && typeof node === "object") {
-		out.push(node as Block);
-		for (const value of Object.values(node)) everything(value, out);
-	}
-	return out;
-}
-
-/** The `block_id` of the form whose submit is `actionId` — where the zone/method context rides. */
-function formBlockId(blocks: Block[], actionId: string): unknown {
-	const form = everything(blocks).find(
-		(b) => b["type"] === "form" && (b["submit"] as Block | undefined)?.["action_id"] === actionId,
-	);
-	return form?.["block_id"];
-}
-
-const pathToken = (path: string[]): string =>
-	Buffer.from(JSON.stringify(path)).toString("base64url");
-
 test.use({ javaScriptEnabled: false });
 
 test.describe("the state/province pick list on a store with a state-level zone (no client JS)", () => {

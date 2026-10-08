@@ -33,6 +33,7 @@ import {
 	STOREFRONT_CHECKOUT_PLACE_ROUTE,
 	STOREFRONT_ORDER_ABANDON_ROUTE,
 	type CheckoutSummaryRouteResult,
+	STOREFRONT_REGION_RULES_ROUTE,
 } from "@otta-sh/plugin";
 import { checkoutEntryRedirect } from "../src/lib/checkout-redirect.js";
 import {
@@ -125,6 +126,11 @@ function makeHandler(
 	const calls: HandlerCall[] = [];
 	const handler = async (_id: string, _method: string, routePath: string, request: Request) => {
 		const route = routePath.replace(/^\//, "");
+		// The store's region rule is a config READ, not a commerce call: answered
+		// "no region-level zones", and not counted (region tests: checkout-values).
+		if (route === STOREFRONT_REGION_RULES_ROUTE) {
+			return { success: true, data: { ok: true, regionRequiredCountries: [] } };
+		}
 		calls.push({ route, body: (await request.json()) as Record<string, unknown> });
 		if (route === STOREFRONT_CHECKOUT_PLACE_ROUTE) return { success: true, data: placeResult };
 		if (route === STOREFRONT_ORDER_ABANDON_ROUTE) {

@@ -8,7 +8,8 @@
 import { experimental_AstroContainer as AstroContainer } from "astro/container";
 import { beforeAll, describe, expect, test } from "vitest";
 import type { CheckoutSummaryView } from "@otta-sh/plugin";
-import { byLabel, countryOptions } from "../src/lib/countries.js";
+import { byLabel } from "../src/lib/by-label.js";
+import { countryOptions } from "../src/lib/countries.js";
 import { regionChoice, regionListIsStale } from "../src/lib/regions.js";
 import type { CheckoutModel } from "../src/themes/contract.js";
 import CheckoutView from "../src/themes/tempered/CheckoutView.astro";
@@ -126,6 +127,7 @@ describe("the Tempered review, rendered", () => {
 			destinationName: null,
 			destinationRegionName: null,
 			regionRefused: false,
+			countryRefused: false,
 			countryValue: "",
 			regionValue: "",
 			countries,
@@ -279,6 +281,7 @@ describe("the Tempered review, rendered", () => {
 					deliveryRegions: regionChoice("US", "NY", "en-US"),
 					destinationError: "We don't ship to this address.",
 					regionRefused: false,
+					countryRefused: true,
 				},
 				{
 					requiresShipping: true,
@@ -289,6 +292,10 @@ describe("the Tempered review, rendered", () => {
 		const open = /<select[^>]*name="deliveryRegion"[^>]*>/.exec(html)?.[0] ?? "";
 		expect(open).not.toContain('aria-invalid="true"');
 		expect(open).toContain('aria-describedby="region-note"');
+		// …the COUNTRY is what was refused, so the country select is marked.
+		const country = /<select[^>]*name="deliveryCountry"[^>]*>/.exec(html)?.[0] ?? "";
+		expect(country).toContain('aria-invalid="true"');
+		expect(country).toContain('aria-describedby="delivery-error"');
 	});
 
 	test("the delivery block for a country without subdivisions shows no region field", async () => {
