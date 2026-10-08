@@ -3,6 +3,7 @@
 "@otta-sh/plugin": minor
 "@otta-sh/admin-react": minor
 "@otta-sh/admin-presentation": minor
+"@otta-sh/store-emdash": minor
 ---
 
 Orders now have a shopper-facing **order number** — `"#"` + the first five characters of
@@ -33,3 +34,9 @@ upper-cased and hex only, to their shortest-unique prefix; the refund confirm na
 first 12 hex digits. It drops `shortIdFixed` and `SHORT_ID_CONFIRM_LEN` (and the plugin's
 scaffold re-exports of them), which nothing uses any more. `orderNumber` is required on the
 React console's order types.
+
+`@otta-sh/store-emdash`'s order search (and the domain's in-memory store) reads a search
+typed as an order number — `#` + five or more hex digits, the id's own hyphens allowed —
+as an id prefix in the ID arm only; the buyer-reference and sku arms keep matching the
+text as typed. The stored search key is unchanged, so no data moves. The order-store
+contract pins it.
