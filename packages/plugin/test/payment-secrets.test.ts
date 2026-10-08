@@ -29,9 +29,12 @@ import type { StorageAccess, StorageCollection } from "@otta-sh/store-emdash";
 import {
 	constantTimeEquals,
 	EMAIL_API_KEY_KEY,
+	ENCRYPTED_PAYMENT_SECRET_KEYS,
 	PAYMENT_SECRET_KEYS,
+	PAYMENT_SECRET_SETTINGS_SCHEMA,
 	SMTP2GO_API_KEY_KEY,
 	readPaymentSecrets,
+	readSecret,
 	readWriteOnlySecret,
 	STRIPE_SECRET_KEY_KEY,
 	STRIPE_WEBHOOK_SECRET_KEY,
@@ -48,6 +51,7 @@ import {
 	SETTINGS_SCHEMA,
 } from "../src/admin/settings-form.js";
 import { COMMERCE_STORAGE_COLLECTIONS } from "../src/commerce/commerce-storage.js";
+import { edgeTokenGate } from "../src/edge-token.js";
 import type { PluginContext } from "../src/types.js";
 
 const req = { method: "POST", url: "/route", headers: {} };
@@ -299,6 +303,73 @@ describe("the webhook edge token (INC-C1b)", () => {
 	});
 });
 
+function request(headers: Record<string, string>) {
+	return { method: "POST", url: "/", headers };
+}
+
+describe("encrypted at rest (ADR-0032)", () => {
+	test("the four payment credentials are declared `secret`, by their settings name", () => {
+		expect(ENCRYPTED_PAYMENT_SECRET_KEYS).toEqual([
+			STRIPE_SECRET_KEY_KEY,
+			STRIPE_WEBHOOK_SECRET_KEY,
+			WEBHOOK_EDGE_TOKEN_KEY,
+			X402_FACILITATOR_API_KEY_KEY,
+		]);
+		expect(Object.keys(PAYMENT_SECRET_SETTINGS_SCHEMA).toSorted()).toEqual(
+			ENCRYPTED_PAYMENT_SECRET_KEYS.map((key) => key.slice("settings:".length)).toSorted(),
+		);
+		for (const field of Object.values(PAYMENT_SECRET_SETTINGS_SCHEMA)) {
+			expect(field.type).toBe("secret");
+		}
+	});
+
+	test("the email keys are not in it — they are being removed, not migrated", () => {
+		expect(ENCRYPTED_PAYMENT_SECRET_KEYS).not.toContain(EMAIL_API_KEY_KEY);
+		expect(ENCRYPTED_PAYMENT_SECRET_KEYS).not.toContain(SMTP2GO_API_KEY_KEY);
+	});
+
+	test("readSecret tells set, unset and UNREADABLE apart — and carries nothing from the error", async () => {
+		const { ctx } = makeCtx(
+			{ [STRIPE_SECRET_KEY_KEY]: "sk_test_x", [STRIPE_WEBHOOK_SECRET_KEY]: "" },
+			new Set([WEBHOOK_EDGE_TOKEN_KEY]),
+		);
+		expect(await readSecret(ctx, STRIPE_SECRET_KEY_KEY)).toEqual({
+			state: "set",
+			value: "sk_test_x",
+		});
+		expect(await readSecret(ctx, STRIPE_WEBHOOK_SECRET_KEY)).toEqual({ state: "unset" });
+		expect(await readSecret(ctx, X402_FACILITATOR_API_KEY_KEY)).toEqual({ state: "unset" });
+		expect(await readSecret(ctx, WEBHOOK_EDGE_TOKEN_KEY)).toEqual({ state: "unreadable" });
+	});
+
+	test("a key the host cannot DECRYPT reads as not configured — never a fallback value", async () => {
+		// EmDash 1.0.1 rejects the read (`PluginSettingEncryptionError`); every
+		// consumer gets `undefined`, which is "Stripe not configured" downstream.
+		const { ctx } = makeCtx({}, new Set(ENCRYPTED_PAYMENT_SECRET_KEYS));
+		const secrets = await readPaymentSecrets(ctx);
+		expect(secrets.stripeSecretKey).toBeUndefined();
+		expect(secrets.stripeWebhookSecret).toBeUndefined();
+		expect(secrets.webhookEdgeToken).toBeUndefined();
+		expect(secrets.x402FacilitatorSecret).toBeUndefined();
+	});
+
+	test("the edge-token gate: unset passes, UNREADABLE is unavailable, set compares", async () => {
+		const unset = makeCtx().ctx;
+		expect(await edgeTokenGate(unset, request({}))).toBe("accept");
+
+		const unreadable = makeCtx({}, new Set([WEBHOOK_EDGE_TOKEN_KEY])).ctx;
+		expect(await edgeTokenGate(unreadable, request({}))).toBe("unavailable");
+		expect(await edgeTokenGate(unreadable, request({ "x-otta-wh-token": "anything" }))).toBe(
+			"unavailable",
+		);
+
+		const set = makeCtx({ [WEBHOOK_EDGE_TOKEN_KEY]: "tok" }).ctx;
+		expect(await edgeTokenGate(set, request({}))).toBe("reject");
+		expect(await edgeTokenGate(set, request({ "x-otta-wh-token": "nope" }))).toBe("reject");
+		expect(await edgeTokenGate(set, request({ "x-otta-wh-token": "tok" }))).toBe("accept");
+	});
+});
+
 describe("constantTimeEquals", () => {
 	// WHY NOT `===`: string equality returns at the first differing byte, so the
 	// time it takes leaks how much of a guess was right, one character per
@@ -443,6 +514,63 @@ describe("Settings provisioning of the payment/email secrets (write-only)", () =
 		// The screen must still be usable — a kv blip must not lock an operator out
 		// of the very form they would use to re-provision.
 		expect(collectFields(res).some((f) => f["action_id"] === "stripeSecretKey")).toBe(true);
+	});
+
+	test("a key that cannot be READ says so on its field, keeps Remove, and Remove works", async () => {
+		const { ctx, kv } = makeCtx(
+			{ [STRIPE_SECRET_KEY_KEY]: "sk_test_UNREADABLE_NEVER_RENDER" },
+			new Set([STRIPE_SECRET_KEY_KEY]),
+		);
+		const page = await createSettingsFormHandler()(
+			{ input: { type: "page_load" }, request: req },
+			ctx,
+		);
+		const whole = JSON.stringify(page);
+		expect(whole).not.toContain("sk_test_UNREADABLE_NEVER_RENDER");
+		const field = collectFields(page).find((f) => f["action_id"] === "stripeSecretKey");
+		expect(field?.["label"]).toBe("Stripe secret key — saved, but cannot be read");
+		expect(whole).toContain("EMDASH_ENCRYPTION_KEY");
+		expect(whole).toContain("Remove Stripe secret key");
+
+		await createSettingsFormHandler()(
+			{
+				input: { action_id: "clear-payment-secret", value: { secret: "stripeSecretKey" } },
+				request: req,
+			},
+			ctx,
+		);
+		expect(kv.has(STRIPE_SECRET_KEY_KEY)).toBe(false);
+	});
+
+	test("a save the host REFUSES (no encryption key) says so and keeps the stored key", async () => {
+		const { ctx, kv } = makeCtx({ [STRIPE_WEBHOOK_SECRET_KEY]: "whsec_OLD_KEPT" });
+		const refusing: PluginContext = {
+			...ctx,
+			kv: {
+				...ctx.kv,
+				set: () =>
+					Promise.reject(
+						Object.assign(new Error("Plugin secret settings require EMDASH_ENCRYPTION_KEY"), {
+							code: "PLUGIN_SETTING_ENCRYPTION_KEY_MISSING",
+						}),
+					),
+			},
+		};
+		const res = await createSettingsFormHandler()(
+			{
+				input: {
+					action_id: "save-stripe-webhook-secret",
+					values: { stripeWebhookSecret: "whsec_NEW_NEVER_RENDER" },
+				},
+				request: req,
+			},
+			refusing,
+		);
+		const whole = JSON.stringify(res);
+		expect(whole).toContain("Stripe webhook signing secret not saved");
+		expect(whole).toContain("EMDASH_ENCRYPTION_KEY");
+		expect(whole).not.toContain("whsec_NEW_NEVER_RENDER");
+		expect(kv.get(STRIPE_WEBHOOK_SECRET_KEY)).toBe("whsec_OLD_KEPT");
 	});
 
 	test("no payment secret sneaks into the DECLARED settings schema", () => {

@@ -41,7 +41,7 @@ import {
 } from "../storefront/login-link.js";
 import {
 	EMAIL_API_KEY_KEY,
-	readWriteOnlySecret,
+	readSecret,
 	SMTP2GO_API_KEY_KEY,
 	STRIPE_SECRET_KEY_KEY,
 	STRIPE_WEBHOOK_SECRET_KEY,
@@ -432,6 +432,11 @@ export const PAYMENT_SECRET_ACTION_IDS: ReadonlySet<string> = new Set(
 interface SecretRenderState {
 	set: boolean;
 	gen: number;
+	/** ADR-0032: a value IS stored but could not be read — on EmDash 1.0.1, a
+	 *  ciphertext this site cannot decrypt. Rendered as its own state (the
+	 *  field label says so and Remove stays available); counted as not set
+	 *  everywhere else, since nothing can use it. */
+	unreadable?: true;
 	/** U-8: test or live, for the Stripe secret key only — read from the key's
 	 *  prefix, which says which Stripe mode checkout runs in and nothing about
 	 *  the key itself. `undefined` for every other secret, or a Stripe key saved
@@ -440,22 +445,28 @@ interface SecretRenderState {
 }
 
 /** Read the render state for every payment secret. FAIL-CLOSED per secret
- *  (`readWriteOnlySecret` swallows a rejection to `undefined`), so a kv outage
- *  renders "not set" — an honest understatement that still leaves the form
- *  usable — rather than throwing out of the page load. */
+ *  (`readSecret` turns a rejection into `"unreadable"`, never a throw), so a kv
+ *  outage or a key this site cannot decrypt renders "saved, but cannot be
+ *  read" and leaves the form usable, rather than throwing out of the page
+ *  load. */
 async function readPaymentSecretState(ctx: PluginContext): Promise<Map<string, SecretRenderState>> {
 	const entries = await Promise.all(
 		PAYMENT_SECRET_FIELDS.map(async (spec) => {
-			const [value, gen] = await Promise.all([
-				readWriteOnlySecret(ctx, spec.kvKey),
+			const [read, gen] = await Promise.all([
+				readSecret(ctx, spec.kvKey),
 				readSaveGen(ctx, spec.genKey),
 			]);
+			const value = read.state === "set" ? read.value : undefined;
 			const mode =
 				spec.kvKey === STRIPE_SECRET_KEY_KEY && value !== undefined
 					? stripeKeyMode(value)
 					: undefined;
 			const state: SecretRenderState =
-				mode === undefined ? { set: value !== undefined, gen } : { set: true, gen, mode };
+				read.state === "unreadable"
+					? { set: false, gen, unreadable: true }
+					: mode === undefined
+						? { set: value !== undefined, gen }
+						: { set: true, gen, mode };
 			return [spec.kvKey, state] as const;
 		}),
 	);
@@ -605,7 +616,8 @@ export interface SettingsSchema {
 }
 
 /** `admin.settingsSchema` (§5.3) — the source-of-truth field shapes a manifest
- *  generator reads. Only kv- and service-tier fields; NO `secret` field. */
+ *  generator reads. Only kv- and service-tier fields; the payment credentials'
+ *  `secret` fields live in `PAYMENT_SECRET_SETTINGS_SCHEMA` (ADR-0032). */
 export const SETTINGS_SCHEMA: SettingsSchema = {
 	storeDisplayName: {
 		type: "string",
@@ -765,7 +777,22 @@ export function createSettingsFormHandler(): RouteHandler<SettingsFormInput> {
 						toast: { message: `${secretSpec.noun} not saved`, type: "error" },
 					} satisfies BlockResponse;
 				}
-				await ctx.kv.set(secretSpec.kvKey, checked.value);
+				// ADR-0032: the host encrypts this write, and refuses it BEFORE storing
+				// anything when it has no usable EMDASH_ENCRYPTION_KEY. Say so; the key
+				// already stored (if any) stays. The error itself is never shown.
+				try {
+					await ctx.kv.set(secretSpec.kvKey, checked.value);
+				} catch {
+					const page = await renderPage(ctx, client, {
+						variant: "error",
+						title: `${secretSpec.noun} not saved`,
+						description: `The ${lowerFirst(secretSpec.noun)} could not be stored encrypted. Check that EMDASH_ENCRYPTION_KEY is set on this site, then save it again. Nothing was saved.`,
+					});
+					return {
+						...page,
+						toast: { message: `${secretSpec.noun} not saved`, type: "error" },
+					} satisfies BlockResponse;
+				}
 				await bumpSaveGen(ctx, secretSpec.genKey);
 				// Issue #382: a new Stripe key may be another account — read its
 				// country NOW, so the answer is cached before the first checkout
@@ -820,8 +847,9 @@ export function createSettingsFormHandler(): RouteHandler<SettingsFormInput> {
 				return { ...page, toast: { message: "Key not removed", type: "error" } };
 			}
 			// Nothing stored: say so rather than claim a removal (a second click, or
-			// a page left open while someone else removed it).
-			if ((await readWriteOnlySecret(ctx, spec.kvKey)) === undefined) {
+			// a page left open while someone else removed it). A stored value this
+			// site cannot read (ADR-0032) IS stored, and removing it is the way out.
+			if ((await readSecret(ctx, spec.kvKey)).state === "unset") {
 				const page = await renderPage(ctx, client, {
 					variant: "default",
 					title: `No ${lowerFirst(spec.noun)} was stored — nothing was removed.`,
@@ -1456,9 +1484,13 @@ function paymentsGroup(
 			...PAYMENT_SECRET_FIELDS.flatMap((spec) => {
 				const secret = state.get(spec.kvKey);
 				const help: Block = { type: "context", text: spec.shapeHelp };
-				const form = secretForm(spec, secret?.set === true, secret?.gen ?? 0);
+				const unreadable = secret?.unreadable === true;
+				const form = secretForm(spec, secret?.set === true, secret?.gen ?? 0, unreadable);
 				const blocks: Block[] =
-					secret?.set === true ? [help, form, removeSecretActions(spec)] : [help, form];
+					secret?.set === true || unreadable
+						? [help, form, removeSecretActions(spec)]
+						: [help, form];
+				if (unreadable) blocks.push({ type: "context", text: UNREADABLE_SECRET_HELP });
 				// Issue #382: what the stored key's account is — read-only.
 				const country =
 					spec.kvKey === STRIPE_SECRET_KEY_KEY ? stripeAccountLine(stripeAccount) : null;
@@ -1623,7 +1655,13 @@ function paymentsGroupLabel(
  *  `block_id` on a real save and force the mount-only input to remount
  *  blank. The label's "— set" / "— not set" is a prop, not a prefill: it
  *  updates without a remount. */
-function secretForm(spec: SecretFieldSpec, set: boolean, gen: number): FormBlock {
+function secretForm(
+	spec: SecretFieldSpec,
+	set: boolean,
+	gen: number,
+	unreadable = false,
+): FormBlock {
+	const status = unreadable ? "saved, but cannot be read" : set ? "set" : "not set";
 	return carriedForm({
 		namespace: `settings:${spec.actionId}`,
 		context: { gen: String(gen) },
@@ -1633,7 +1671,7 @@ function secretForm(spec: SecretFieldSpec, set: boolean, gen: number): FormBlock
 				{
 					type: "secret_input",
 					action_id: spec.fieldId,
-					label: `${spec.label} — ${set ? "set" : "not set"}`,
+					label: `${spec.label} — ${status}`,
 					placeholder: set ? "Set — leave blank to keep it, or enter a new one" : spec.hint,
 				},
 			],
@@ -1641,6 +1679,11 @@ function secretForm(spec: SecretFieldSpec, set: boolean, gen: number): FormBlock
 		},
 	});
 }
+
+/** ADR-0032 — under a key that is stored but cannot be decrypted. Says what
+ *  to check and the way out; names nothing about the key. */
+const UNREADABLE_SECRET_HELP =
+	"This key is saved encrypted, but this site cannot decrypt it, so it is not used. Check that EMDASH_ENCRYPTION_KEY is the key it was saved with, or enter the key again.";
 
 /** U-8 — the Remove button under a SET key, behind a confirm that says what
  *  stops working. */

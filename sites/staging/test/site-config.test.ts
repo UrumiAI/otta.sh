@@ -29,7 +29,9 @@ import { readFileSync } from "node:fs";
 import {
 	COMMERCE_STORAGE_COLLECTIONS,
 	COMMERCE_STORAGE_COLLECTION_NAMES,
+	ENCRYPTED_PAYMENT_SECRET_KEYS,
 	PAYMENT_SECRET_KEYS,
+	PAYMENT_SECRET_SETTINGS_SCHEMA,
 	SMTP2GO_API_HOSTS,
 	STRIPE_API_HOST,
 	COUPONS_PAGE,
@@ -79,6 +81,22 @@ describe("ottaPluginDescriptor", () => {
 		// SMTP2GO's send hosts — see the exact-set block below for the configured
 		// cases.
 		expect(descriptor.allowedHosts).toEqual(BASELINE_HOSTS);
+	});
+
+	test("declares every payment credential `secret`, so EmDash encrypts it at rest (ADR-0032)", () => {
+		// EmDash encrypts a `settings:*` kv value ONLY when this schema declares its
+		// field `type: "secret"`. Dropping a field here silently stores that
+		// credential as plain text again, and nothing in the plugin can see it.
+		expect(descriptor.settingsSchema).toEqual(PAYMENT_SECRET_SETTINGS_SCHEMA);
+		for (const key of ENCRYPTED_PAYMENT_SECRET_KEYS) {
+			const name = key.slice("settings:".length);
+			expect(descriptor.settingsSchema?.[name]?.type, name).toBe("secret");
+		}
+		// Every declared field is one of those secrets: nothing readable-back rides
+		// in this schema (EmDash would render it in its own settings form).
+		expect(Object.keys(descriptor.settingsSchema ?? {}).toSorted()).toEqual(
+			ENCRYPTED_PAYMENT_SECRET_KEYS.map((key) => key.slice("settings:".length)).toSorted(),
+		);
 	});
 
 	test("registers NO field widget — the CMS is not a commerce editor (PR 1b)", () => {

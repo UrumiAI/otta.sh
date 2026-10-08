@@ -524,9 +524,11 @@ describe("(v) an UNSET edge token passes through — but never disables the HMAC
 });
 
 describe("(vii) the new secret is fail-closed and leaks nothing", () => {
-	test("a kv read that REJECTS degrades the token gate to pass-through, never a throw", async () => {
-		// Fail-closed for this key means "cannot prove the operator set one", and
-		// the HMAC below is what still stands between a forgery and a settlement.
+	test("a kv read that REJECTS refuses with 503 NOT_CONFIGURED, settles nothing, never throws", async () => {
+		// ADR-0032: a rejected read of the token is a token that IS stored but cannot
+		// be read (on EmDash 1.0.1, e.g. a ciphertext this site cannot decrypt). The
+		// operator turned the gate on; a read failure must not turn it off, so the
+		// delivery is refused as "not configured" and Stripe retries it later.
 		const failingCtx: PluginContext = {
 			...harness.ctx,
 			kv: {
@@ -539,8 +541,11 @@ describe("(vii) the new secret is fail-closed and leaks nothing", () => {
 		};
 		await harness.ctx.kv.set(STRIPE_WEBHOOK_SECRET_KEY, WEBHOOK_SECRET);
 		await seedPendingOrder("ord-kvfail");
-		const res = await invoke(await signedDelivery("ord-kvfail"), {}, { ctx: failingCtx });
-		expect(res).toEqual({ ok: true, status: 200 });
+		const { settle, calls } = recordingSettle();
+		const res = await invoke(await signedDelivery("ord-kvfail"), {}, { ctx: failingCtx, settle });
+		expect(res).toEqual({ ok: false, status: 503, reason: "NOT_CONFIGURED" });
+		expect(calls).toHaveLength(0);
+		expect(await orderState("ord-kvfail")).toBe("pending");
 	});
 
 	test("a kv OUTAGE on the signing secret is 503 NOT_CONFIGURED, not a false 400", async () => {

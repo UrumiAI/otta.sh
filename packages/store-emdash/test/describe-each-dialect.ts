@@ -67,6 +67,8 @@ type HostDb = Parameters<typeof runMigrations>[0];
 /** One migrated database, its collections, and how to empty and close it. */
 interface DialectDb {
 	storage: StorageAccess;
+	/** The migrated host database itself, for suites that assert raw rows. */
+	db: HostDb;
 	/** Empty the storage table, keeping the schema (and its triggers) intact. */
 	reset(): Promise<void>;
 	close(): Promise<void>;
@@ -76,6 +78,8 @@ interface DialectDb {
 export interface DialectStorage {
 	/** The injected `StorageAccess`, keyed exactly as the layout was. */
 	readonly storage: StorageAccess;
+	/** The migrated host database, for suites that assert raw rows. */
+	readonly db: HostDb;
 	/** One collection, typed to the document it holds. */
 	collection<T>(name: string): StorageCollection<T>;
 }
@@ -133,6 +137,7 @@ export async function makeSqliteStorage(layout: StorageLayout): Promise<DialectD
 	}) as HostDb;
 	await runMigrations(db);
 	return {
+		db,
 		storage: buildStorage(db, layout),
 		async reset() {
 			// SQLite has no TRUNCATE; the DELETE leaves the revision triggers in place.
@@ -208,6 +213,7 @@ export async function makePgStorage(layout: StorageLayout, poolMax = 12): Promis
 	}
 
 	return {
+		db,
 		storage: buildStorage(db, layout),
 		async reset() {
 			// TRUNCATE, not DROP: the 077 revision trigger lives on this table and
@@ -259,6 +265,9 @@ function makeContext(dialect: "sqlite" | "postgres"): DialectContext {
 			return {
 				get storage() {
 					return current().storage;
+				},
+				get db() {
+					return current().db;
 				},
 				collection<T>(name: string): StorageCollection<T> {
 					return collectionOf<T>(current().storage, name);

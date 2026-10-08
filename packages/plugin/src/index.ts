@@ -228,6 +228,11 @@ export {
 	constantTimeEquals,
 	emailApiKeyFromKv,
 	EMAIL_API_KEY_KEY,
+	ENCRYPTED_PAYMENT_SECRET_KEYS,
+	PAYMENT_SECRET_SETTINGS_SCHEMA,
+	readSecret,
+	type SecretRead,
+	type SecretSettingFieldSpec,
 	type PaymentSecretKey,
 	type PaymentSecrets,
 	PAYMENT_SECRET_KEYS,
@@ -243,6 +248,15 @@ export {
 	x402FacilitatorSecretFromKv,
 	X402_FACILITATOR_API_KEY_KEY,
 } from "./payment-secrets.js";
+// ADR-0032 — the one-time re-save of stored payment keys through EmDash's
+// encrypted settings path (run by the sweep's cron tick).
+export {
+	encryptStoredPaymentSecrets,
+	type EncryptPaymentSecretsOutcome,
+	PAYMENT_SECRETS_ENCRYPTED_MARKER_KEY,
+	PAYMENT_SECRETS_ENCRYPTED_MARKER_VALUE,
+	resetPaymentSecretEncryptionForTesting,
+} from "./encrypt-payment-secrets.js";
 // INC-C5 — email dispatch and the x402 wiring, in-process. Both are
 // exported so a deploying site can name the kv settings keys it provisions
 // (`settings:emailFrom`, `settings:x402PayTo`, `settings:x402Accepts`) without

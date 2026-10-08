@@ -22,8 +22,9 @@
  */
 import {
 	constantTimeEquals,
+	readSecret,
 	WEBHOOK_EDGE_TOKEN_HEADER,
-	webhookEdgeTokenFromKv,
+	WEBHOOK_EDGE_TOKEN_KEY,
 } from "./payment-secrets.js";
 import type { PluginContext, SandboxedRequest } from "./types.js";
 
@@ -75,25 +76,29 @@ export function header(request: SandboxedRequest, name: string): string | undefi
 }
 
 /**
- * `true` when the request may proceed.
+ * Whether the request may proceed: `"accept"`, `"reject"` (401), or
+ * `"unavailable"` (503 — a token is stored but cannot be read).
  *
- * Three outcomes, and the middle one is the subtle one:
- *  - token UNSET (never provisioned, empty, or kv unreadable — `readWriteOnlySecret`
- *    folds all three to `undefined`) ⇒ PASS THROUGH. The route's cryptographic
- *    anchor still applies.
+ * Four outcomes, and the middle two are the subtle ones:
+ *  - token UNSET (never provisioned, or empty) ⇒ PASS THROUGH. The route's
+ *    cryptographic anchor still applies.
+ *  - token stored but UNREADABLE (the kv read rejected — on EmDash 1.0.1 that
+ *    includes a stored token this site cannot decrypt, ADR-0032) ⇒ UNAVAILABLE.
+ *    An operator turned the gate on; a read failure must not turn it off.
  *  - token SET, header absent ⇒ reject. No comparison is attempted; the absence
  *    of a header is not a secret and leaks nothing by short-circuiting.
  *  - token SET, header present ⇒ CONSTANT-TIME compare (`constantTimeEquals`),
  *    never `===`, which returns at the first differing byte and would leak the
  *    token one character at a time through response latency.
  */
-export async function edgeTokenAccepted(
+export async function edgeTokenGate(
 	ctx: PluginContext,
 	request: SandboxedRequest,
-): Promise<boolean> {
-	const expected = await webhookEdgeTokenFromKv(ctx);
-	if (expected === undefined) return true;
+): Promise<"accept" | "reject" | "unavailable"> {
+	const expected = await readSecret(ctx, WEBHOOK_EDGE_TOKEN_KEY);
+	if (expected.state === "unset") return "accept";
+	if (expected.state === "unreadable") return "unavailable";
 	const provided = header(request, WEBHOOK_EDGE_TOKEN_HEADER);
-	if (provided === undefined) return false;
-	return constantTimeEquals(provided, expected);
+	if (provided === undefined) return "reject";
+	return constantTimeEquals(provided, expected.value) ? "accept" : "reject";
 }

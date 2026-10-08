@@ -82,6 +82,10 @@ Each is quoted as ADR-0002 wrote it, and each is **rejected — pre-launch, no u
 
 ### 2. The Stripe-secret trust widening, recorded
 
+> **Storage superseded by [ADR-0032](./0032-payment-secrets-are-encrypted-at-rest.md)
+> (2026-10-08):** the Stripe secret key, Stripe webhook signing secret, webhook edge token and
+> x402 facilitator key are now encrypted at rest. The in-process widening below still stands.
+
 This is the one genuine loss, and it is recorded rather than minimised.
 
 Before the fold-in, the payment and email credentials were environment variables on a

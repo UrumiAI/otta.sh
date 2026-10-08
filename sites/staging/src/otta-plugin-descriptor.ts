@@ -24,6 +24,7 @@ import {
 	OTTA_PLUGIN_CAPABILITIES,
 	OTTA_PLUGIN_ID,
 	OTTA_PLUGIN_VERSION,
+	PAYMENT_SECRET_SETTINGS_SCHEMA,
 } from "@otta-sh/plugin";
 
 /** The descriptor's own storage shape, so the widening below is expressed once. */
@@ -123,5 +124,11 @@ export function ottaPluginDescriptor(options: OttaPluginDescriptorOptions = {}):
 		// products/tax/shipping/coupons routes are network:request proxies and
 		// ctx.kv is always-available.
 		adminPages: [REPORTS_PAGE, SETTINGS_PAGE, TAX_PAGE, SHIPPING_PAGE, COUPONS_PAGE],
+		// ADR-0032: the payment credentials, declared `secret` so EmDash encrypts
+		// them at rest under EMDASH_ENCRYPTION_KEY. The plugin's Settings page stays
+		// where they are entered; declaring a schema also makes EmDash list a
+		// Settings gear for the plugin, whose form writes the same encrypted keys.
+		// Copied, not shared: the descriptor type wants a mutable record.
+		settingsSchema: { ...PAYMENT_SECRET_SETTINGS_SCHEMA },
 	};
 }
