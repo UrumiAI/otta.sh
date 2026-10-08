@@ -17,3 +17,12 @@ ignored duplicate was the one marked "applies to shipping", shipping tax disappe
 other applying rate in the zone is flagged) or moves to another class's flagged rate (it
 was the last flagged rate, so it named the shipping tax class). Line-item tax is unchanged. `getRate` returns the rate that applies. The contract harness gains
 `seedUncheckedRate`, and the in-memory store a matching test seam.
+
+**BREAKING for out-of-tree `TaxRulesStore` adapters and contract harnesses:**
+- `createRate` must refuse a rate id that is already live (in any class) with an error
+  whose `code` is `TAX_RATE_ID_COLLISION` (the in-memory store now does too), and a
+  second rate for one (class, zone) with `TaxRateDuplicateError`.
+- `listRatesForZone` must list by rate id ascending (the in-memory store now does).
+- `UpdateTaxRateInput.appliesToShipping` is optional: omitted means unchanged, applied
+  inside the adapter's compare-and-set.
+- `TaxRulesStoreHarness` gains a required `seedUncheckedRate(rate)`.

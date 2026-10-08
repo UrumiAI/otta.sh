@@ -44,7 +44,6 @@
  */
 import {
 	appliedTaxRate,
-	isTaxRateDuplicateError,
 	TaxRateDuplicateError,
 	taxRateSlotOccupant,
 	type Clock,
@@ -237,48 +236,14 @@ export class EmdashTaxRulesStore implements TaxRulesStore {
 	 * that the embed is compare-and-set against. Two racing creates for one slot
 	 * both read revision R; one embed lands, the other's compare-and-set at R
 	 * refuses, its retry re-reads the document, finds the winner in the slot and
-	 * throws {@link TaxRateDuplicateError}. A refused create then gives its id
-	 * claim back — compare-and-delete at the revision it last wrote, so it can never
-	 * take away a claim a concurrent create of the same id has adopted since.
+	 * throws {@link TaxRateDuplicateError}. A refused create deliberately KEEPS its
+	 * id claim: releasing it could race a same-id create that adopted it. The claim
+	 * is then an orphan like any other (see the header) — misleading no reader and
+	 * adopted by the next create of that id, in any class.
 	 */
 	async createRate(input: CreateTaxRateInput): Promise<TaxRate> {
-		// The revision of the claim THIS create last wrote (claimed or re-asserted).
-		const claim: { revision: string | null } = { revision: null };
-		try {
-			return await this.#createRate(input, claim);
-		} catch (err) {
-			if (isTaxRateDuplicateError(err) && claim.revision !== null) {
-				// Give the id back — but ONLY the claim this create wrote: the delete is
-				// compare-and-set at that exact revision, so a concurrent create of the SAME
-				// id that has since adopted the claim (and re-asserted it, moving the
-				// revision) keeps it. Refused ⇒ somebody else owns it now; leave it.
-				// The refusal is the answer; a release that fails must not replace it. A
-				// claim left behind is an orphan, which the next create of the id takes over.
-				try {
-					// …and never while the class holds the id: a same-id create that took the
-					// claim over from this one in flight, re-asserted, and landed, needs it.
-					const holder = await this.#classes.get(input.taxClassId);
-					if (holder === null || normalizeTaxClassDoc(holder).rates[input.id] === undefined) {
-						await this.#rateOwners.compareAndDelete(input.id, claim.revision);
-					}
-				} catch (releaseErr) {
-					console.warn(
-						`[otta] tax rate ${input.id}: could not release its id claim after a duplicate refusal (left as a self-healing orphan)`,
-						releaseErr,
-					);
-				}
-			}
-			throw err;
-		}
-	}
-
-	async #createRate(
-		input: CreateTaxRateInput,
-		claim: { revision: string | null },
-	): Promise<TaxRate> {
 		const now = this.#clock.now().toISOString();
 		let claimRevision = await this.#claimRateId(input.id, input.taxClassId, now);
-		claim.revision = claimRevision;
 		const rate: TaxRateDoc = {
 			rateId: input.id,
 			zoneId: input.zoneId,
@@ -298,12 +263,10 @@ export class EmdashTaxRulesStore implements TaxRulesStore {
 				throw new TaxRateIdCollisionError(input.id, taken?.taxClassId ?? "a concurrent create");
 			}
 			claimRevision = reasserted.revision;
-			claim.revision = claimRevision;
 			const held = await this.#heldClass(input.taxClassId);
 			// A concurrent create of the SAME id landed here after this one claimed: the
 			// id is live, so this is an id collision — never an embed over that rate (the
-			// map key is the id) and never a duplicate refusal whose release would take
-			// the live rate's claim away.
+			// rates map is keyed by id).
 			if (held?.doc.rates[input.id] !== undefined) {
 				throw new TaxRateIdCollisionError(input.id, input.taxClassId);
 			}
@@ -397,7 +360,8 @@ export class EmdashTaxRulesStore implements TaxRulesStore {
 			const next: TaxRateDoc = {
 				...found.rate,
 				rateBps: input.rateBps,
-				appliesToShipping: input.appliesToShipping,
+				// Omitted ⇒ unchanged: the value read in THIS attempt, under its CAS.
+				appliesToShipping: input.appliesToShipping ?? found.rate.appliesToShipping,
 			};
 			const written = await this.#classes.compareAndSet(
 				found.held.doc.taxClassId,

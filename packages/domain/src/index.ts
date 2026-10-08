@@ -148,6 +148,7 @@ export type {
 export {
 	appliedTaxRate,
 	effectiveTaxRates,
+	hasTaxRateDuplicateCode,
 	isTaxRateDuplicateError,
 	shadowedTaxRates,
 	TaxRateDuplicateError,

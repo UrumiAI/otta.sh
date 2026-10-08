@@ -94,7 +94,12 @@ export class InMemoryTaxRulesStore implements TaxRulesStore {
 	}
 
 	async listRatesForZone(zoneId: string): Promise<TaxRate[]> {
-		return [...this.#rates.values()].filter((r) => r.zoneId === zoneId).map((r) => ({ ...r }));
+		// By id, as the emdash store lists: the built-in reads "the last
+		// shipping-flagged rate" off this order.
+		return [...this.#rates.values()]
+			.filter((r) => r.zoneId === zoneId)
+			.toSorted((a, b) => (a.id < b.id ? -1 : 1))
+			.map((r) => ({ ...r }));
 	}
 
 	async hasAnyRate(): Promise<boolean> {
@@ -113,7 +118,7 @@ export class InMemoryTaxRulesStore implements TaxRulesStore {
 			return { ok: false, reason: "stale", current: { ...rate } };
 		}
 		rate.rateBps = input.rateBps;
-		rate.appliesToShipping = input.appliesToShipping;
+		rate.appliesToShipping = input.appliesToShipping ?? rate.appliesToShipping;
 		return { ok: true, rate: { ...rate } };
 	}
 

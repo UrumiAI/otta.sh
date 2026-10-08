@@ -874,18 +874,13 @@ function rateGroupId(rateId: string): PlainBlockId {
 function rateEditForm(classId: string, row: TaxRateRow): FormBlock {
 	// An IGNORED duplicate taxes nothing — shipping included — so its form has no
 	// shipping toggle that could read as "on" (its stored flag is shown read-only by
-	// `duplicateBlocks`). The save then keeps the flag the store holds AT SAVE TIME —
-	// read fresh, never echoed from this render — so a stale tab cannot turn
-	// shipping tax back on. `zoneId` (immutable) is carried so the save can read it.
+	// `duplicateBlocks`). Its save sends no flag at all, which the store applies as
+	// "unchanged" inside its compare-and-set — so a stale tab cannot turn shipping
+	// tax back on, and nothing is read first.
 	const ignored = row.appliedInstead !== undefined;
 	return carriedForm({
 		namespace: "tax:rate-save",
-		context: {
-			classId,
-			rateId: row.id,
-			expectedRateBps: String(row.rateBps),
-			...(ignored ? { zoneId: row.zoneId } : {}),
-		},
+		context: { classId, rateId: row.id, expectedRateBps: String(row.rateBps) },
 		form: {
 			type: "form",
 			fields: [
@@ -1455,7 +1450,8 @@ function createRateAction() {
 	});
 }
 
-function createRateNotice(
+/** @internal Exported for its unit test only. */
+export function createRateNotice(
 	result: RulesCreateResult<TaxRateWire>,
 	id: string,
 	classId: string,
@@ -1466,6 +1462,13 @@ function createRateNotice(
 			variant: "default",
 			title: "Tax rate created",
 			description: `Rate "${id}" was added.`,
+		};
+	}
+	if (result.duplicateTaxRate === null) {
+		return {
+			variant: "error",
+			title: "Tax rate not created",
+			description: `Class "${classId}" already has a rate for zone "${zoneId}". A class can have one rate per zone — edit that rate instead, or delete it first.`,
 		};
 	}
 	if (result.duplicateTaxRate !== undefined) {
@@ -1522,19 +1525,11 @@ function saveRateAction() {
 				description: TAX_PERCENT_HINT,
 			});
 		}
-		// An ignored duplicate's form has no toggle: keep the flag the store holds NOW
-		// (see `rateEditForm`), so nothing rendered earlier can re-enable it.
-		const toggled = readBoolean(values.appliesToShipping);
-		const zoneId = carried?.zoneId;
-		const appliesToShipping =
-			toggled ??
-			(zoneId === undefined
-				? false
-				: ((await client.listTaxRates(zoneId)).find((r) => r.id === rateId)?.appliesToShipping ??
-					false));
+		// No toggle in the form (an ignored duplicate's) ⇒ no flag sent ⇒ unchanged.
+		const appliesToShipping = readBoolean(values.appliesToShipping);
 		const result = await client.updateTaxRate(rateId, {
 			rateBps: bps,
-			appliesToShipping,
+			...(appliesToShipping !== undefined ? { appliesToShipping } : {}),
 			expectedRateBps,
 		});
 		return showList([classId], saveRateNotice(result));

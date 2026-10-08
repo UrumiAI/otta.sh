@@ -301,7 +301,18 @@ export function taxRulesStoreContract(
 			});
 			expect((await store.listRatesForZone("z-us")).map((r) => r.id)).toEqual(["r1"]);
 			expect(await store.countRatesByClass("standard")).toBe(1);
-			// The refused id was never kept: it is free for a rate in another slot.
+			// The refused id is still free — in another class (a leftover claim, if the
+			// adapter keeps one, is adopted) …
+			await store.createRate({
+				id: "r2",
+				taxClassId: "reduced",
+				zoneId: "z-us",
+				rateBps: 500,
+				appliesToShipping: false,
+			});
+			expect((await store.getRate("reduced", "z-us"))?.id).toBe("r2");
+			expect(await store.deleteRate("r2")).toEqual({ ok: true });
+			// … or in another slot of the same class.
 			const elsewhere = await store.createRate({
 				id: "r2",
 				taxClassId: "standard",
@@ -330,6 +341,45 @@ export function taxRulesStoreContract(
 			// Nothing moved: r1 is where it was, unchanged and alone.
 			expect(await store.getRate("standard", "z-us")).toMatchObject({ id: "r1", rateBps: 725 });
 			expect(await store.listRatesForZone("z-eu")).toEqual([]);
+		});
+
+		test("listRatesForZone lists by rate id ascending, whatever the creation order", async () => {
+			const { store } = await makeStore();
+			for (const [id, taxClassId] of [
+				["r-c", "reduced"],
+				["r-a", "zero"],
+				["r-b", "standard"],
+			] as const) {
+				await store.createRate({
+					id,
+					taxClassId,
+					zoneId: "z-us",
+					rateBps: 500,
+					appliesToShipping: true,
+				});
+			}
+			expect((await store.listRatesForZone("z-us")).map((r) => r.id)).toEqual([
+				"r-a",
+				"r-b",
+				"r-c",
+			]);
+		});
+
+		test("updateRate with appliesToShipping OMITTED leaves the flag as stored, inside the CAS", async () => {
+			const { store } = await makeStore();
+			await store.createRate({
+				id: "r1",
+				taxClassId: "standard",
+				zoneId: "z-us",
+				rateBps: 725,
+				appliesToShipping: true,
+			});
+			const res = await store.updateRate("r1", { rateBps: 800 }, 725);
+			expect(res.ok && res.rate).toMatchObject({ rateBps: 800, appliesToShipping: true });
+			// A flag changed in between (another tab) is kept, not reverted.
+			await store.updateRate("r1", { rateBps: 800, appliesToShipping: false }, 800);
+			const again = await store.updateRate("r1", { rateBps: 900 }, 800);
+			expect(again.ok && again.rate).toMatchObject({ rateBps: 900, appliesToShipping: false });
 		});
 
 		test("the same class in another zone, or another class in the same zone, is not a duplicate", async () => {

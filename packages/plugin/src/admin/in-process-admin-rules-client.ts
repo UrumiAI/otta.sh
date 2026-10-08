@@ -32,10 +32,10 @@
  *
  * FULL-REPLACE EDITS HAVE REQUIRED-NULLABLE KEYS, and this tier enforces them
  * even though no zod schema stands in front of it. `ShippingZoneEdit.regions`,
- * `ShippingRateEdit.minSubtotalCents` and `TaxRateEdit.appliesToShipping` are
- * REQUIRED on the wire precisely so an omitted key is a 400 rather than a silent
- * wipe of the zone's match list / the free-shipping threshold / the shipping-tax
- * behaviour. `undefined` therefore never means "leave unchanged" here: a missing
+ * `ShippingRateEdit.minSubtotalCents` are REQUIRED on the wire precisely so an
+ * omitted key is a 400 rather than a silent wipe of the zone's match list / the
+ * free-shipping threshold. (`TaxRateEdit.appliesToShipping` is different: a
+ * boolean has no "clear", so omitted means unchanged, applied in the store's CAS.) `undefined` therefore never means "leave unchanged" here: a missing
  * key is refused, and only an explicit `null` clears.
  *
  * COUPON IDENTITY IS IMMUTABLE and its economics cannot be blanked. `CouponEdit`
@@ -96,6 +96,7 @@ import {
 	isCouponCodeConflictError,
 	isCouponIdCollisionError,
 	isIsoCurrencyCode,
+	hasTaxRateDuplicateCode,
 	isTaxRateDuplicateError,
 	parseCouponInstant,
 	parseZoneRegions,
@@ -515,7 +516,8 @@ export class InProcessAdminRulesClient implements AdminRulesSurface {
 	}
 
 	/** CAS edit on the money-bearing `rateBps` (`expectedRateBps` is the rate the
-	 *  admin read). `appliesToShipping` is the required full-replace key. */
+	 *  admin read). `appliesToShipping` omitted ⇒ unchanged (applied in the store's
+	 *  CAS — the ignored-duplicate form omits it); present ⇒ must be a boolean. */
 	async updateTaxRate(
 		rateId: string,
 		edit: TaxRateEdit,
@@ -523,13 +525,17 @@ export class InProcessAdminRulesClient implements AdminRulesSurface {
 		requireIdToken("rateId", rateId);
 		requireBps("rateBps", edit.rateBps, MAX_TAX_RATE_BPS);
 		requireBps("expectedRateBps", edit.expectedRateBps);
-		requireFullReplaceKey("appliesToShipping", edit);
-		if (typeof edit.appliesToShipping !== "boolean") {
+		if (edit.appliesToShipping !== undefined && typeof edit.appliesToShipping !== "boolean") {
 			throw new CommerceInputError("appliesToShipping", "must be a boolean");
 		}
 		const res = await this.#stores.taxRules.updateRate(
 			rateId,
-			{ rateBps: edit.rateBps, appliesToShipping: edit.appliesToShipping },
+			{
+				rateBps: edit.rateBps,
+				...(edit.appliesToShipping !== undefined
+					? { appliesToShipping: edit.appliesToShipping }
+					: {}),
+			},
 			edit.expectedRateBps,
 		);
 		if (res.ok) return { ok: true, value: toTaxRateWire(res.rate) };
@@ -1024,9 +1030,11 @@ export async function createOrRefuse<T>(write: () => Promise<T>): Promise<RulesC
 				duplicateTaxRate: { id: err.existingRateId, rateBps: err.existingRateBps },
 			};
 		}
-		// The code without the fields it promises: still a duplicate, but nothing to
-		// name — the generic 409, never a half-filled refusal.
-		if (hasErrorCode(err, "TAX_RATE_DUPLICATE")) return { ok: false, status: CREATE_CONFLICT };
+		// The code without the fields it promises: still a duplicate SLOT, but there
+		// is nothing verified to name.
+		if (hasTaxRateDuplicateCode(err)) {
+			return { ok: false, status: CREATE_CONFLICT, duplicateTaxRate: null };
+		}
 		if (
 			isShippingZoneIdCollisionError(err) ||
 			isShippingMethodIdCollisionError(err) ||
@@ -1043,10 +1051,6 @@ export async function createOrRefuse<T>(write: () => Promise<T>): Promise<RulesC
 		}
 		throw err;
 	}
-}
-
-function hasErrorCode(err: unknown, code: string): boolean {
-	return typeof err === "object" && err !== null && (err as { code?: unknown }).code === code;
 }
 
 // ── the input bounds the request schemas used to hold ─────────────────────

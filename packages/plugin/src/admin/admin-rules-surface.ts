@@ -128,7 +128,13 @@ export interface CouponsListResult {
  *  already in that slot, so the console can point the merchant at it. */
 export type RulesCreateResult<T> =
 	| { ok: true; value: T }
-	| { ok: false; status: number; duplicateTaxRate?: { id: string; rateBps: number } };
+	| {
+			ok: false;
+			status: number;
+			/** The rate already in the slot; `null` when the store said "duplicate"
+			 *  without naming it. */
+			duplicateTaxRate?: { id: string; rateBps: number } | null;
+	  };
 
 /** LWW-update outcome (zones, methods, coupons) — no `stale` (no CAS). */
 export type RulesUpdateResult<T> =
@@ -226,11 +232,12 @@ export interface TaxRateInput {
 	rateBps: number;
 	appliesToShipping?: boolean;
 }
-/** Full-replace edit — `appliesToShipping` is REQUIRED (an omitted key is
- *  refused, so an edit can never silently flip the shipping-tax behavior). */
+/** Rate edit. `appliesToShipping` OMITTED ⇒ left unchanged — applied by the
+ *  store inside its compare-and-set, so an edit can never silently flip (or
+ *  re-apply a stale) shipping-tax behaviour; an explicit value replaces it. */
 export interface TaxRateEdit {
 	rateBps: number;
-	appliesToShipping: boolean;
+	appliesToShipping?: boolean;
 	/** The money-bearing CAS token — the rate the admin read on the detail. */
 	expectedRateBps: number;
 }

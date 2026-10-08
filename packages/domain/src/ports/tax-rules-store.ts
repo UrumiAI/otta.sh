@@ -53,10 +53,13 @@ export interface TaxRulesStore {
 	countRatesByClass(id: TaxClassId): Promise<number>;
 
 	/**
-	 * Mint a rate. ONE RATE PER `(taxClassId, zoneId)` (see `tax-rate-uniqueness.ts`):
-	 * a create for a slot that already holds a rate throws `TaxRateDuplicateError`
-	 * naming that rate, and writes nothing. Atomic against a concurrent create for
-	 * the same slot — of any number of racing creates, exactly one succeeds.
+	 * Mint a rate. Refusals, checked in this order, each writing nothing:
+	 *  - the id is a LIVE rate's (in any class) → throws an error with code
+	 *    `TAX_RATE_ID_COLLISION`;
+	 *  - ONE RATE PER `(taxClassId, zoneId)` (see `tax-rate-uniqueness.ts`): the slot
+	 *    already holds a rate → throws `TaxRateDuplicateError` naming that rate.
+	 * Atomic against a concurrent create for the same slot — of any number of racing
+	 * creates, exactly one succeeds. Out-of-tree adapters must implement both.
 	 */
 	createRate(input: CreateTaxRateInput): Promise<TaxRate>;
 	/**
@@ -68,7 +71,8 @@ export interface TaxRulesStore {
 	/** Every tax rate in a zone — the checkout read that builds the pipeline's
 	 *  `taxRatesByClass` map and identifies the shipping tax class. Surviving
 	 *  duplicates are ALL listed (the admin flags them); the checkout reduces them
-	 *  with `effectiveTaxRates`. */
+	 *  with `effectiveTaxRates`. ORDERED BY RATE ID ascending (code-unit order):
+	 *  the built-in reads "the last shipping-flagged rate" off this order. */
 	listRatesForZone(zoneId: string): Promise<TaxRate[]>;
 	/**
 	 * Whether ANY rate exists, in any zone or class (PR 2a). The tax settings'
@@ -130,7 +134,9 @@ export interface TaxRulesStore {
 export interface UpdateTaxRateInput {
 	/** Integer basis points, 0–10000 (0%–100%). */
 	rateBps: number;
-	appliesToShipping: boolean;
+	/** Omitted ⇒ LEFT UNCHANGED — applied to the value the store holds inside the
+	 *  same compare-and-set, so it can never re-apply a value read earlier. */
+	appliesToShipping?: boolean;
 }
 
 /** Outcome of `updateRate` — a discriminated union so the caller renders each

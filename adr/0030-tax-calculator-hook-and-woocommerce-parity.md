@@ -132,8 +132,9 @@ no priority, compound flag, postcode or city that could tell two such rates apar
   that class's one document, so the slot check reads the same document, at the same
   revision, that the embed is compare-and-set against. Of N concurrent creates for one
   slot, one embed lands; every other compare-and-set refuses, and its retry re-reads,
-  finds the winner and is refused as a duplicate. A refused create gives its id claim
-  back. The race is proven on Postgres by `rules-cas-race.pg.test.ts` (24 creates × 12
+  finds the winner and is refused as a duplicate. A refused create keeps its id claim
+  (releasing it could race a same-id create that adopted it); the orphan misleads no
+  reader and is adopted by the next create of that id, in any class. The race is proven on Postgres by `rules-cas-race.pg.test.ts` (24 creates × 12
   loops, for one slot, for many zones of one class, and for an undeclared class). The
   contract's concurrent-create case runs on every backend, but SQLite and D1 serialise
   writes, so there it proves the logic, not the race.
@@ -155,6 +156,6 @@ no priority, compound flag, postcode or city that could tell two such rates apar
   the ignored row is labelled `duplicate — ignored` and opens with `Duplicate: only <id>
   applies …` (the applying row: `Applies to <zone>. Duplicate <id> is ignored.`; table
   rows: `duplicate: only <id> applies` / `applies; duplicate <id> ignored`). The ignored
-  row shows no shipping toggle, since its flag does nothing; saving it keeps the stored
-  flag. Both rows stay editable and deletable, so the merchant deletes the one they
+  row shows its stored shipping flag read-only, as not applied, and no toggle; its save
+  sends no flag, which the store applies as "unchanged" inside its compare-and-set. Both rows stay editable and deletable, so the merchant deletes the one they
   don't want.

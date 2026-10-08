@@ -281,11 +281,10 @@ describe.skipIf(!PG_ENABLED)("rules CAS race: a retried loser re-verifies [postg
  * read the class document at the same revision and find the slot empty, so the
  * slot check alone would let every one through; it is the embed's compare-and-set
  * on that one document that admits exactly one, and each loser's retry re-reads,
- * finds the winner, and is refused as a duplicate. A refused create must also give
- * its id claim back.
+ * finds the winner, and is refused as a duplicate. A refused id resolves to nothing.
  */
 describe.skipIf(!PG_ENABLED)("tax-rate createRate one-per-(class, zone) race [postgres]", () => {
-	test("N concurrent creates for one slot: exactly ONE lands, N-1 are duplicates, no claim leaks", async () => {
+	test("N concurrent creates for one slot: exactly ONE lands, N-1 are duplicates", async () => {
 		const fx = await freshTax(N + 4);
 		try {
 			const store = fx.harness.store;
@@ -319,10 +318,12 @@ describe.skipIf(!PG_ENABLED)("tax-rate createRate one-per-(class, zone) race [po
 				// The slot holds the winner and nothing else …
 				expect((await store.listRatesForZone("z-us")).map((r) => r.id)).toEqual([won[0]?.id]);
 				expect(await store.countRatesByClass("standard")).toBe(1);
-				// … and no refused create kept its id claim.
-				for (const id of ids.filter((candidate) => candidate !== won[0]?.id)) {
-					expect(await fx.harness.rateOwners.get(id), `loop ${String(loop)}: ${id}`).toBeNull();
-				}
+				// … and a refused id (its claim left as an orphan) resolves to nothing.
+				const refusedId = ids.find((candidate) => candidate !== won[0]?.id) ?? "";
+				expect(
+					await store.updateRate(refusedId, { rateBps: 1 }, 700),
+					`loop ${String(loop)}: ${refusedId}`,
+				).toEqual({ ok: false, reason: "not_found" });
 				await store.deleteRate(won[0]?.id ?? "");
 			}
 			expect(fx.maxFor("createTaxRate")).toBeLessThanOrEqual(CAS_MAX_ATTEMPTS);
@@ -417,8 +418,7 @@ describe.skipIf(!PG_ENABLED)("tax-rate createRate: neighbouring races [postgres]
 
 /**
  * The same-id twin of the slot race: a crowd creates ONE id, half into an occupied
- * slot (refused as duplicates, each giving back only a claim it wrote itself, and
- * never while the class holds the id) and half into free slots of the same class.
+ * slot (refused as duplicates, which keep their claims) and half into free slots of the same class.
  *
  * What is guaranteed is the store's documented one (header: the claim is the fast
  * path, not the definition of existence): a rate that landed is ALWAYS reachable by

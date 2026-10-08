@@ -833,7 +833,7 @@ describeEachDialect("EmdashTaxRulesStore crash seams", (ctx) => {
 		expect(await plain.store.deleteRate("r1")).toEqual({ ok: true });
 	});
 
-	test("(dup-race) a refused create's release never takes the claim a concurrent create of the SAME id adopted", async () => {
+	test("(dup-race) a refused create never takes away the claim a concurrent create of the SAME id adopted", async () => {
 		const raw = bound.storage;
 		const plain = makeTaxRulesHarness(raw);
 		await plain.store.createRate({
@@ -846,7 +846,7 @@ describeEachDialect("EmdashTaxRulesStore crash seams", (ctx) => {
 
 		// A: "r2" into the OCCUPIED slot. It claims "r2", re-asserts the claim, and is held
 		// just before it reads the class document — the read that will refuse it. So
-		// its WHOLE release (any read it makes, and the delete) comes after B below.
+		// everything A does after refusing comes after B below.
 		const heldRead = parkBeforeRead(raw["tax_classes"] ?? never(), "standard");
 		const refusing = makeTaxRulesHarness(raw, {
 			storageForStore: withCollection(raw, "tax_classes", heldRead.collection),
@@ -861,8 +861,8 @@ describeEachDialect("EmdashTaxRulesStore crash seams", (ctx) => {
 
 		// B: "r2" into a FREE slot of the same class. It adopts A's claim (re-asserting it)
 		// and is held just before its embed — the window where the claim is B's but the
-		// class does not hold "r2" yet, which is exactly what a read-then-delete release
-		// would mistake for an orphan.
+		// class does not hold "r2" yet, which a releasing refusal would mistake for an
+		// orphan (the refusal now keeps its claim instead).
 		const heldEmbed = parkCall(
 			raw["tax_classes"] ?? never(),
 			(call) => call.method === "compareAndSet",
@@ -888,7 +888,7 @@ describeEachDialect("EmdashTaxRulesStore crash seams", (ctx) => {
 		expect((await plain.store.getRate("standard", "z-eu"))?.id).toBe("r2");
 	});
 
-	test("(dup) a failed claim release never masks the duplicate refusal; the orphan is taken over later", async () => {
+	test("(dup) a refused create's leftover claim misleads no reader, and the id is adopted later — in any class", async () => {
 		const raw = bound.storage;
 		const plain = makeTaxRulesHarness(raw);
 		await plain.store.createRate({
@@ -899,12 +899,8 @@ describeEachDialect("EmdashTaxRulesStore crash seams", (ctx) => {
 			appliesToShipping: false,
 		});
 
-		const crashed = failCall(raw["tax_rate_owners"] ?? never(), isRelease, { mode: "instead" });
-		const wounded = makeTaxRulesHarness(raw, {
-			storageForStore: withCollection(raw, "tax_rate_owners", crashed.collection),
-		});
 		const err = await settleOne(
-			wounded.store.createRate({
+			plain.store.createRate({
 				id: "r2",
 				taxClassId: "standard",
 				zoneId: "z-us",
@@ -912,9 +908,8 @@ describeEachDialect("EmdashTaxRulesStore crash seams", (ctx) => {
 				appliesToShipping: false,
 			}),
 		);
-		// The merchant is told WHY, not that storage hiccupped.
 		expect(err).toMatchObject({ code: "TAX_RATE_DUPLICATE", existingRateId: "r1" });
-		// The release did not run, so the claim is an orphan …
+		// A refused create keeps its claim (no release that could race), so it is an orphan …
 		expect(await plain.rateOwners.get("r2")).not.toBeNull();
 		// … which misleads no reader and strands no id.
 		expect(
@@ -925,12 +920,13 @@ describeEachDialect("EmdashTaxRulesStore crash seams", (ctx) => {
 		});
 		await plain.store.createRate({
 			id: "r2",
-			taxClassId: "standard",
-			zoneId: "z-eu",
+			taxClassId: "reduced",
+			zoneId: "z-us",
 			rateBps: 2000,
 			appliesToShipping: false,
 		});
-		expect((await plain.store.getRate("standard", "z-eu"))?.id).toBe("r2");
+		expect((await plain.store.getRate("reduced", "z-us"))?.id).toBe("r2");
+		expect(await plain.rateOwners.get("r2")).toMatchObject({ taxClassId: "reduced" });
 	});
 });
 

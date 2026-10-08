@@ -89,19 +89,14 @@ export function appliedTaxRate<R extends TaxRateSlotted>(
 
 /**
  * The rate already in the slot a new rate `input` would take — the one a create
- * must be refused over — or null when the slot is free. `input`'s own id is
- * skipped (a rate never occupies its own slot against itself). Both stores call
- * this, so they refuse exactly the same creates.
+ * must be refused over — or null when the slot is free. Both stores call this
+ * (after refusing a live id), so they refuse exactly the same creates.
  */
 export function taxRateSlotOccupant<R extends TaxRateSlotted>(
 	rates: readonly R[],
 	input: TaxRateSlotted,
 ): R | null {
-	return appliedTaxRate(
-		rates.filter((r) => r.id !== input.id),
-		input.taxClassId,
-		input.zoneId,
-	);
+	return appliedTaxRate(rates, input.taxClassId, input.zoneId);
 }
 
 /**
@@ -154,11 +149,20 @@ export class TaxRateDuplicateError extends Error {
  * or forged) is never trusted to name a rate.
  */
 export function isTaxRateDuplicateError(err: unknown): err is TaxRateDuplicateError {
-	if (typeof err !== "object" || err === null) return false;
-	const e = err as { code?: unknown; existingRateId?: unknown; existingRateBps?: unknown };
+	if (!hasTaxRateDuplicateCode(err)) return false;
+	const e = err as { existingRateId?: unknown; existingRateBps?: unknown };
+	return typeof e.existingRateId === "string" && typeof e.existingRateBps === "number";
+}
+
+/**
+ * The one code discriminator: anything carrying `TAX_RATE_DUPLICATE`, whether or
+ * not it carries the fields that name the rate ({@link isTaxRateDuplicateError}).
+ * A caller that only knows "the slot is taken" still refuses as a duplicate.
+ */
+export function hasTaxRateDuplicateCode(err: unknown): boolean {
 	return (
-		e.code === "TAX_RATE_DUPLICATE" &&
-		typeof e.existingRateId === "string" &&
-		typeof e.existingRateBps === "number"
+		typeof err === "object" &&
+		err !== null &&
+		(err as { code?: unknown }).code === "TAX_RATE_DUPLICATE"
 	);
 }
