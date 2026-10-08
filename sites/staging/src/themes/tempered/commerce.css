@@ -1050,6 +1050,9 @@
 [data-theme-id] .account-orders-name-cell {
 	display: flex;
 	flex-direction: column;
+	/* Start, not the default stretch: the link stays as wide as its text, the
+	   click target it always had. */
+	align-items: flex-start;
 	gap: 0.125rem;
 	min-width: 0;
 }
