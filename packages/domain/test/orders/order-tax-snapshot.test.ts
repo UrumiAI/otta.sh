@@ -29,6 +29,16 @@ describe("readOrderTaxSnapshot", () => {
 		expect(readOrderTaxSnapshot({ ...v1, shipping: null })).toEqual({ ...v1, shipping: null });
 	});
 
+	test("`located` (ADR-0032) round-trips; a v1 snapshot written before it reads without it", () => {
+		const located = { ...v1, located: true };
+		expect(readOrderTaxSnapshot(JSON.parse(JSON.stringify(located)))).toEqual(located);
+		expect(readOrderTaxSnapshot({ ...v1, located: false })).toEqual({ ...v1, located: false });
+		const old = readOrderTaxSnapshot(v1);
+		expect(old).toEqual(v1);
+		expect(old !== null && old.v === 1 && "located" in old).toBe(false);
+		expect(readOrderTaxSnapshot({ ...v1, located: "yes" })).toBeNull();
+	});
+
 	test("the legacy shape (the golden INR order on main) reads as v0, rate and label null", () => {
 		const legacy = {
 			lines: [

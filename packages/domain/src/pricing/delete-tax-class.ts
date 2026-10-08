@@ -1,10 +1,13 @@
 import type { ProductCommerceStore } from "../ports/product-commerce-store.js";
+import type { SettingsStore } from "../ports/settings-store.js";
 import type { TaxClassId } from "./types.js";
 import type { TaxRulesStore } from "../ports/tax-rules-store.js";
 
 export interface DeleteTaxClassDeps {
 	taxRules: TaxRulesStore;
 	productCommerce: ProductCommerceStore;
+	/** The tax options, which may name the class as the fixed shipping tax class. */
+	settings: SettingsStore;
 }
 
 /**
@@ -14,13 +17,15 @@ export interface DeleteTaxClassDeps {
  * store's own-grain rate guard), each carrying the referencing `count` so the
  * admin surface can render an HONEST refusal ("N products/rates reference this
  * class") instead of a bare boolean (Increment 3 closeout); `not_found` is an
- * unknown id.
+ * unknown id. `in_use_by_settings` (ADR-0032): the tax options name the class as
+ * the fixed shipping tax class.
  */
 export type DeleteTaxClassResult =
 	| { ok: true }
 	| { ok: false; reason: "not_found" }
 	| { ok: false; reason: "in_use_by_products"; count: number }
-	| { ok: false; reason: "in_use_by_rates"; count: number };
+	| { ok: false; reason: "in_use_by_rates"; count: number }
+	| { ok: false; reason: "in_use_by_settings" };
 
 /**
  * Delete a tax class from the registry with a DELETE-IN-USE guard spanning both
@@ -67,6 +72,13 @@ export async function deleteTaxClass(
 	const productRefs = await deps.productCommerce.countByTaxClass(id);
 	if (productRefs > 0) {
 		return { ok: false, reason: "in_use_by_products", count: productRefs };
+	}
+	// ADR-0032: the saved tax options' fixed shipping tax class. Read-then-delete like
+	// the product guard (same accepted window); a class that goes missing anyway is
+	// covered at read time — the built-in falls back to "based on cart items".
+	const shippingClass = (await deps.settings.get()).tax?.shippingTaxClass;
+	if (shippingClass?.kind === "fixed" && shippingClass.taxClassId === id) {
+		return { ok: false, reason: "in_use_by_settings" };
 	}
 	const res = await deps.taxRules.deleteClass(id);
 	if (res.ok) return { ok: true };

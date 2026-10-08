@@ -62,6 +62,8 @@ export interface ProductDetailWire {
 	priceCents: number | null;
 	currency: string | null;
 	taxClass: string | null;
+	/** PR 2b: the product's tax status — `taxable` | `shipping_only` | `none`. */
+	taxStatus: string;
 	/** Increment 2 slice 5: compare-at / was-price (shares the product currency;
 	 *  display-only). Both halves null ⇒ unset. */
 	compareAtCents: number | null;
@@ -156,6 +158,8 @@ export interface ProductEditWire {
 	sku?: string;
 	price?: { amount: number; currency: string };
 	taxClass?: string | null;
+	/** PR 2b: `taxable` | `shipping_only` | `none`; anything else is refused. */
+	taxStatus?: string;
 	/** Increment 2 slice 5: compare-at / cost — money (integer minor units +
 	 *  ISO-4217), null to CLEAR. Must share the product's price currency (the
 	 *  service/domain enforce it; a mismatch is a per-field error). */
