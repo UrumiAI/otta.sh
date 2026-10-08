@@ -411,15 +411,17 @@ order of appearance in a deployment's life:
   order within about a minute). Orders placed before this change have no recorded intent and
   are not cancelled.
 
-> **Live Stripe is TWO-DECIMAL currencies only.** Otta stores money as integer minor units
-> at hundredths scale everywhere, while Stripe expects `amount` in each currency's own
-> smallest unit. For **zero-decimal** currencies (JPY, KRW, CLP, VND, BIF, DJF, GNF, KMF,
-> MGA, PYG, RWF, UGX, VUV, XAF, XOF, XPF) that would charge the buyer **100×**, and for
-> **three-decimal** ones (BHD, JOD, KWD, OMR, TND) it is the mirror error — so the live
-> `createIntent` **refuses them before any network call** with `PAYMENT_INTENT_FAILED`
-> (provider code `unsupported_currency`). Do not price a catalog in those currencies on a
-> deployment that takes Stripe payments. Lifting this needs an exponent-aware money
-> boundary, not an adapter tweak — the deny-list is `STRIPE_UNSUPPORTED_CURRENCIES` in
+> **Live Stripe currencies.** Otta stores each amount in its currency's own minor unit (the
+> currency table, `packages/domain/src/money/currencies.ts`), and the Stripe adapter maps it to
+> Stripe's `amount` per <https://docs.stripe.com/currencies>: two- and zero-decimal currencies
+> (USD, EUR, JPY, KRW, VND, CLP, …) go out unchanged; **ISK** goes out ×100 (Stripe's
+> two-decimal representation), and amounts Stripe reports back are converted the same way;
+> HUF and TWD charge as two-decimal. **Three-decimal currencies (BHD, JOD, KWD, OMR) are still
+> refused** on the live path before any network call (`PAYMENT_INTENT_FAILED`, provider code
+> `unsupported_currency`), because Stripe needs those amounts in multiples of 10 and an order
+> total need not be one — they can be priced and displayed, not charged through Stripe. A code
+> outside the table keeps its old treatment (Stripe's zero-/three-decimal codes refused, others
+> passed through). The mapping is `stripeAmountFactor` in
 > `packages/payments-stripe/src/index.ts`.
 
 > **x402 does not take payments yet.** The old receipt-forwarding settle route

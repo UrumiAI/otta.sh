@@ -89,6 +89,13 @@ domain is a build-breaking bug, not a code-review nit.
 - **Money is integer minor units. Never floats.** Amounts are branded integer types (e.g.
   `Cents`) carrying an explicit currency; a `number` that reaches a money field is a type
   error. No float ever touches a price, tax, or total.
+- **A minor unit is the currency's own.** The exponent comes from ONE table,
+  `packages/domain/src/money/currencies.ts` (ISO 4217: USD 2, JPY 0, KWD 3; mirrored, and
+  pinned identical by a test, in `packages/admin-presentation/src/currencies.ts`). Money
+  inputs, display, refund flags and the Stripe amount mapping all read it, so `1500` typed
+  for JPY is stored as 1500 and shown as ¥1,500. To support another currency, add a row there
+  (its header says how). Merchant-typed currencies must be in the table; stored data in any
+  shape-valid code still loads.
 - **Idempotency lives in the domain.** Every command carries an `idempotencyKey`; the store
   enforces once-only. Dedupe in the domain/store, never only in the HTTP client — and test
   the replay case.

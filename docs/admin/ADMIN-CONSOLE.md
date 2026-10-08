@@ -1568,11 +1568,13 @@ paragraph is deleted, not relocated.
 Each rule is enforced twice — by the screen first, so the draft survives (DA-3a-i), and by the
 in-process rules client, so no caller of the surface can store the value:
 
-- **Currency (ISO-4217).** A currency an operator TYPES — a new shipping rate's, a new
-  fixed-amount coupon's — must be a member of `@otta-sh/domain`'s `CURRENCY_CODES`, not merely
-  three upper-case letters (`XYZ` used to save). Static data, not the host's ICU; a Node-only test
-  fails on drift against `Intl.supportedValuesOf("currency")`. Create paths only: a stored code
-  is never refused on read or edit.
+- **Currency (supported set).** A currency an operator TYPES — a new shipping rate's, a new
+  fixed-amount coupon's, a product's first price — must be in the store's currency table
+  (`@otta-sh/domain`'s `SUPPORTED_CURRENCIES`, `packages/domain/src/money/currencies.ts`), not
+  merely three upper-case letters (`XYZ` used to save). Amounts are then typed in that
+  currency's own minor unit (JPY `1500` is ¥1,500; KWD takes three decimals). Static data, not
+  the host's ICU. Create paths only: a stored code is never refused on read or edit, and a
+  product priced in an unlisted code before the table existed stays editable.
 - **Tax rate ≤ 100%.** `rateBps` 0–10000, the port's documented range; the console used to accept
   (and advertise) 1000%. Coupon percentages keep the wider wire bound — the pricing math clamps a
   discount to the subtotal.
