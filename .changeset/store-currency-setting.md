@@ -17,8 +17,8 @@ as before: USD carts and USD admin defaults. No migration.
 Admin: Settings → Store gets a "Store currency" select (the familiar ten first, then by code —
 `CURRENCY_CHOICES`/`currencyChoiceLabel`, now shared from `@otta-sh/admin-presentation`) with
 copy that changing it affects new carts only, and that it should be decided before pricing
-(a product's or coupon's currency can't be changed). A spent cart's replacement follows a SAVED
-store currency. The unpriced product's currency picker and price-edit hint, the shipping rate
+(a product's or coupon's currency can't be changed). A spent cart's replacement is in the currency
+the request names, else the SAVED store currency, else the spent cart's. The unpriced product's currency picker and price-edit hint, the shipping rate
 filter / new-rate currency and the coupon form's currency hint follow it.
 
 **For out-of-tree `AdminRulesSurface` implementations:** the interface gains

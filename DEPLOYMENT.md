@@ -448,7 +448,9 @@ order of appearance in a deployment's life:
 > products and coupons (fixed-amount, and percentage coupons with a cap or minimum spend) in
 > another currency can't be bought or used in new carts (`CURRENCY_MISMATCH` at checkout), and
 > they can't be moved to the new currency. Shipping rates are per currency, so add rates in the
-> new one. A spent cart's replacement follows a saved store currency too.
+> new one. A spent cart's replacement is in the currency the storefront names, else the saved
+> store currency, else the spent cart's. If the admin cannot read the store currency, it never
+> guesses one into a saved value: the product picker and a new shipping rate ask you to choose.
 > The admin's defaults follow it: an unpriced product's currency picker, the shipping rate
 > filter and new-rate currency, and the coupon form's currency hint.
 

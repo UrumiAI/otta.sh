@@ -456,8 +456,9 @@ export interface ProductDetailPayload {
 	readonly product: ProductRecord;
 	readonly taxClasses: readonly TaxClass[];
 	readonly threshold: number | null;
-	/** The effective store currency an unpriced product's picker starts on;
-	 *  `null` (or absent, from an older plugin) when it could not be read. */
+	/** The effective store currency an unpriced product's picker starts on (USD
+	 *  when never saved). `null`: the settings read FAILED — preselect nothing and
+	 *  ask. Absent (an older plugin): USD, as before. */
 	readonly storeCurrency?: string | null;
 	readonly vocabulary: ProductsVocabulary;
 }

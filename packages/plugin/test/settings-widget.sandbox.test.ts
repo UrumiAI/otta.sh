@@ -1357,7 +1357,10 @@ describe("Settings: store currency", () => {
 		assertBlockContract(blocks, { screen: "settings", level: "list" });
 		const banner = findBlocks(blocks, "banner").find((b) => b.variant === "error");
 		expect(String(banner?.title)).toBe("Settings changed by someone else");
-		expect(String(banner?.description)).toMatch(/Nothing was saved\.$/);
+		// One sentence, then the next — no run-on.
+		expect(String(banner?.description)).toBe(
+			"Settings were changed by someone else while this save was in flight — reload and try again. Nothing was saved.",
+		);
 		expect(toastOf(outcome)).toEqual({
 			message: "Settings changed by someone else",
 			type: "error",
@@ -1398,10 +1401,51 @@ describe("Settings: store currency", () => {
 		const blocks = blocksOf(outcome);
 		assertBlockContract(blocks, { screen: "settings", level: "list" });
 		const banner = findBlocks(blocks, "banner").find((b) => b.variant === "error");
-		expect(String(banner?.title)).toBe("Store currency not saved");
+		expect(String(banner?.title)).toBe("Store currency couldn't be confirmed");
 		expect(String(banner?.description)).toBe(
-			"The save could not be confirmed — reload to see the current store currency.",
+			"The save couldn't be confirmed — reload to check the store currency.",
 		);
-		expect(toastOf(outcome)).toEqual({ message: "Store currency not saved", type: "error" });
+		expect(`${String(banner?.title)} ${String(banner?.description)}`).not.toMatch(/not saved/i);
+		expect(toastOf(outcome)).toEqual({
+			message: "Store currency couldn't be confirmed",
+			type: "error",
+		});
+	});
+
+	test("an operational save the store cannot confirm says to reload — it never claims nothing was saved", async () => {
+		await resetOperationalSettings();
+		sandbox = await loadPluginInSandbox({ allowedHosts: [], storage: true });
+		const handle = sandbox;
+		const { storage } = await storageBridge();
+		const real = storage[SETTINGS_MUTATIONS_COLLECTION];
+		if (real === undefined) throw new Error("no settings_mutations collection to fault-inject");
+		storage[SETTINGS_MUTATIONS_COLLECTION] = new Proxy(real, {
+			get(_holder, property) {
+				if (property === "compareAndSet") {
+					return () => {
+						throw new Error("injected storage fault: settings unwritable");
+					};
+				}
+				const value = Reflect.get(real, property) as unknown;
+				if (typeof value !== "function") return value;
+				return (value as (...args: unknown[]) => unknown).bind(real);
+			},
+		}) as StorageAccess[string];
+		let outcome: unknown;
+		try {
+			outcome = await handle.invokeRoute("admin", {
+				type: "form_submit",
+				action_id: "save-operational",
+				values: { holdTtlMinutes: "45", lowStockThreshold: "20" },
+				idempotencyKey: "k-op-unavailable-1",
+			});
+		} finally {
+			storage[SETTINGS_MUTATIONS_COLLECTION] = real;
+		}
+		const banner = findBlocks(blocksOf(outcome), "banner").find((b) => b.variant === "error");
+		expect(String(banner?.title)).toBe("Settings couldn't be confirmed");
+		expect(String(banner?.description)).toBe(
+			"The save couldn't be confirmed — reload to check the current values.",
+		);
 	});
 });

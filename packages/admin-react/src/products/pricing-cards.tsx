@@ -46,7 +46,6 @@ import { usePricingStyles } from "./pricing-styles.js";
 import {
 	currencyChoicesFor,
 	currencyChoiceLabel,
-	DEFAULT_CURRENCY,
 	draftFromRecord,
 	isDraftDirty,
 	marginSummary,
@@ -61,6 +60,7 @@ import {
 	type PricingDraft,
 } from "./pricing-model.js";
 import {
+	DEFAULT_STORE_CURRENCY,
 	DIGITAL_WITH_FILE,
 	parseStockQty,
 	TAX_STATUS_HINT,
@@ -912,14 +912,22 @@ export function PricingStockEditor({ productId }: { productId: string }): React.
 						{!priced && (
 							<div className="otta-pricing-field">
 								<LabelRow htmlFor={id("currency")}>Currency</LabelRow>
-								<div className="otta-pricing-input">
+								<div className="otta-pricing-input" data-invalid={shown.currency !== undefined}>
 									<select
 										id={id("currency")}
 										value={d.currency}
+										aria-invalid={shown.currency !== undefined}
 										onChange={(event) => {
 											set("currency")(event.target.value);
 										}}
 									>
+										{/* The store currency could not be read: nothing is preselected
+										    — a guess here would be saved for good. */}
+										{d.currency === "" && (
+											<option value="" disabled>
+												Choose a currency
+											</option>
+										)}
 										{currencyChoicesFor(d.currency).map((code) => (
 											<option key={code} value={code}>
 												{currencyChoiceLabel(code)}
@@ -927,6 +935,14 @@ export function PricingStockEditor({ productId }: { productId: string }): React.
 										))}
 									</select>
 								</div>
+								{storeCurrency === "" && (
+									<span className="otta-pricing-hint" data-testid="store-currency-unknown">
+										Couldn't load your store currency — choose one.
+									</span>
+								)}
+								{shown.currency !== undefined && (
+									<span className="otta-pricing-error">{shown.currency}</span>
+								)}
 								<span className="otta-pricing-hint">
 									Can't be changed once the product is priced.
 								</span>
@@ -1406,8 +1422,14 @@ export function PricingStockEditor({ productId }: { productId: string }): React.
  *  field's `widget: "otta-console:pricing"`. */
 export const PRICING_FIELD_WIDGET = "pricing";
 
-/** The store currency a detail read carried, or USD — what the picker always
- *  started on — when the read had none (the settings read failed). */
+/**
+ * What an unpriced product's picker starts on, from the detail read:
+ *  - a code — the effective store currency (USD for a store that never saved one);
+ *  - `""` — the read FAILED (`storeCurrency: null`): nothing is preselected, and
+ *    the merchant must choose, because a guessed currency would be saved for good;
+ *  - USD when the field is absent (an older plugin), what the picker always did.
+ */
 function storeCurrencyOf(result: ProductDetailPayload): string {
-	return result.storeCurrency ?? DEFAULT_CURRENCY;
+	if (result.storeCurrency === null) return "";
+	return result.storeCurrency ?? DEFAULT_STORE_CURRENCY;
 }

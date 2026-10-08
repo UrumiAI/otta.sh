@@ -1,6 +1,7 @@
 import { inputMinorUnitDigits } from "@otta-sh/admin-presentation";
 import {
 	COUNTRY_CODES,
+	DEFAULT_STORE_CURRENCY,
 	isSupportedCurrency,
 	parseZoneRegions,
 	validateZoneRegionsInput,
@@ -22,6 +23,7 @@ import type {
 	TableBlock,
 } from "../types.js";
 import { makeAdminClients } from "./make-admin-clients.js";
+import { readStoreCurrencySoft } from "./store-currency-read.js";
 import {
 	type AdminRulesSurface,
 	type RulesCasUpdateResult,
@@ -134,7 +136,7 @@ import {
  * A rate is keyed by (methodId, currency), so a price cannot be read without
  * naming a currency: the methods level therefore carries the SAME currency
  * filter its rates level already had, defaulting to the STORE currency (the
- * Settings page's; USD for a store that never saved one — `DEFAULT_RATE_CURRENCY`),
+ * Settings page's; USD for a store that never saved one — `DEFAULT_STORE_CURRENCY`),
  * and states that currency ONCE in the level's context line rather than per
  * row (G1). The two filters are independent — drilling in re-opens the rates
  * level at its own default, as every level's filter already resets on a
@@ -247,11 +249,10 @@ interface RatesFilterForm {
 	storeCurrency: string;
 	/** The field was blank: `currency` follows the store currency. */
 	defaulted: boolean;
+	/** The store-currency read FAILED: `storeCurrency` is the never-saved USD
+	 *  stand-in, the levels say so, and a new rate's currency is not prefilled. */
+	storeCurrencyUnknown: boolean;
 }
-
-/** The store currency of a store that never saved one, and the filter's
- *  fallback when the settings read fails (the default this screen always had). */
-const DEFAULT_RATE_CURRENCY = "USD";
 
 /** Read the currency filter off a submitted filter form — shared by the
  *  methods and rates levels so the two can never disagree about what an empty
@@ -260,31 +261,33 @@ function currencyFromValues(values: Record<string, unknown>): RatesFilterForm {
 	const currency = readString(values.currency)?.trim().toUpperCase();
 	const defaulted = currency === undefined || currency.length === 0;
 	return {
-		currency: defaulted ? DEFAULT_RATE_CURRENCY : currency,
-		storeCurrency: DEFAULT_RATE_CURRENCY,
+		currency: defaulted ? DEFAULT_STORE_CURRENCY : currency,
+		storeCurrency: DEFAULT_STORE_CURRENCY,
 		defaulted,
+		storeCurrencyUnknown: false,
 	};
 }
 
 /**
  * Fill in the store currency (and, for a blank field, the filter currency) —
  * one keyed settings read per render. SECONDARY and contained: a failed read
- * falls back to USD, this screen's default before the setting existed, rather
- * than blanking a level whose rates are still readable.
+ * does not blank a level whose rates are still readable. The FILTER falls back
+ * to USD (and the level says so), but `storeCurrencyUnknown` keeps a new rate's
+ * currency from being prefilled with a guess.
  */
 async function resolveStoreCurrency(
 	client: AdminRulesSurface,
 	filter: RatesFilterForm,
 ): Promise<void> {
-	let storeCurrency = DEFAULT_RATE_CURRENCY;
-	try {
-		storeCurrency = await client.getStoreCurrency();
-	} catch (err) {
-		console.error("[otta] admin shipping store-currency read failed:", err);
-	}
-	filter.storeCurrency = storeCurrency;
-	if (filter.defaulted) filter.currency = storeCurrency;
+	const read = await readStoreCurrencySoft(client, "shipping");
+	filter.storeCurrency = read ?? DEFAULT_STORE_CURRENCY;
+	filter.storeCurrencyUnknown = read === undefined;
+	if (filter.defaulted) filter.currency = filter.storeCurrency;
 }
+
+/** What a level says when the store currency could not be read (≤140). */
+const STORE_CURRENCY_UNKNOWN_TEXT =
+	"Couldn't load your store currency — showing USD. Reload to try again, or enter a currency.";
 
 /** ISO-4217's shape. Not a membership test — the service owns the real code
  *  list; this only separates "a currency the store may not price in" from
@@ -770,8 +773,11 @@ function methodsLevel() {
 		async fetchPage(client, path, filter) {
 			const zoneId = path[0];
 			if (zoneId === undefined) return { items: [], nextCursor: null };
-			await resolveStoreCurrency(client, filter);
-			const methods = await client.listMethods(zoneId);
+			// Independent reads, run together; pricing needs both.
+			const [, methods] = await Promise.all([
+				resolveStoreCurrency(client, filter),
+				client.listMethods(zoneId),
+			]);
 			const items = await pricedMethods(client, methods, filter);
 			// SECONDARY and contained, like the price reads: the zone is read only for
 			// its legacy-regions warning, and losing it must not blank the level.
@@ -958,6 +964,9 @@ function methodsBlocks(
 	// G5: a rejected filter is a banner inside a 200, never a refused render —
 	// the method list is unaffected by it and stays on screen, editable.
 	if (filter.invalid) blocks.push(noticeBanner(BAD_CURRENCY_NOTICE));
+	if (filter.storeCurrencyUnknown && filter.defaulted) {
+		blocks.push({ type: "context", text: STORE_CURRENCY_UNKNOWN_TEXT });
+	}
 
 	if (methods.length === 0) {
 		blocks.push(
@@ -1298,6 +1307,9 @@ function ratesBlocks(
 	if (notice !== undefined) blocks.push(noticeBanner(notice));
 
 	blocks.push(currencyFilterForm(zoneId, methodId, filter));
+	if (filter.storeCurrencyUnknown && filter.defaulted) {
+		blocks.push({ type: "context", text: STORE_CURRENCY_UNKNOWN_TEXT });
+	}
 	if (filter.currency !== filter.storeCurrency) {
 		const summary = filterSummary([`currency: ${filter.currency}`]);
 		if (summary !== undefined) {
@@ -1380,7 +1392,9 @@ function createRateForm(zoneId: string, methodId: string, filter: RatesFilterFor
 					type: "text_input",
 					action_id: "currency",
 					label: "Currency (ISO-4217, e.g. USD)",
-					initial_value: filter.currency,
+					// A store currency that could not be read is not GUESSED into a value
+					// that would be saved: the operator types it (the level says why).
+					initial_value: filter.storeCurrencyUnknown && filter.defaulted ? "" : filter.currency,
 				},
 				{
 					type: "text_input",

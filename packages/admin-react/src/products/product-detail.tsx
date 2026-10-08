@@ -934,7 +934,7 @@ export function ProductDetail({
 						key="product"
 						product={p}
 						taxClasses={detail.taxClasses}
-						storeCurrency={detail.storeCurrency ?? null}
+						storeCurrency={detail.storeCurrency}
 						busy={busy}
 						savingPrice={acting === "products:save-price"}
 						priceReceipt={receipts.price}
@@ -1210,8 +1210,9 @@ function ProductPanel({
 }: {
 	product: ProductRecord;
 	taxClasses: readonly { id: string; name: string }[];
-	/** The store currency the detail read carried (`null`: none). */
-	storeCurrency: string | null;
+	/** The store currency the detail read carried: `null` when the read failed,
+	 *  absent from an older plugin. */
+	storeCurrency: string | null | undefined;
 	busy: boolean;
 	/** Only the price save reports in place so far; increment 3 extends the same
 	 *  treatment to identity and classification. */
@@ -1542,7 +1543,7 @@ export function IdentityFields({
  */
 export function PriceGroup({
 	product: p,
-	storeCurrency = null,
+	storeCurrency,
 	busy,
 	saving,
 	receipt,
@@ -1551,8 +1552,9 @@ export function PriceGroup({
 }: {
 	product: ProductRecord;
 	/** The store currency the detail read carried — the unpriced product's
-	 *  currency HINT (a placeholder; nothing is prefilled). `null` ⇒ "USD". */
-	storeCurrency?: string | null;
+	 *  currency HINT (a placeholder; nothing is prefilled). `null` (the read
+	 *  failed) ⇒ no hint, never a guess; absent ⇒ "USD", as before. */
+	storeCurrency?: string | null | undefined;
 	busy: boolean;
 	/** THIS save is the one in flight — not merely that some write is. */
 	saving: boolean;
@@ -1626,7 +1628,11 @@ export function PriceGroup({
 							className="otta-focusable"
 							data-testid="edit-currency"
 							style={fieldStyle(changed, "currency")}
-							placeholder={storeCurrency ?? CURRENCY_PLACEHOLDER}
+							placeholder={
+								storeCurrency === null
+									? "Choose a currency"
+									: (storeCurrency ?? CURRENCY_PLACEHOLDER)
+							}
 							value={values["currency"] ?? ""}
 							onChange={set("currency")}
 						/>

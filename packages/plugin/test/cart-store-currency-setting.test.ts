@@ -172,9 +172,6 @@ describe("a new cart's currency follows the store currency setting", () => {
 		if (collection === undefined) throw new Error("no settings collection to fault-inject");
 		const realGet = collection["get"];
 		const realGetVersioned = collection["getVersioned"];
-		const fault = (): never => {
-			throw new Error("injected storage fault: settings unreadable");
-		};
 		collection["get"] = fault;
 		collection["getVersioned"] = fault;
 		try {
@@ -198,3 +195,8 @@ describe("a new cart's currency follows the store currency setting", () => {
 		}
 	});
 });
+
+/** The injected fault for the settings-outage case. */
+function fault(): never {
+	throw new Error("injected storage fault: settings unreadable");
+}

@@ -1,11 +1,13 @@
 import { describe, expect, test } from "vitest";
 import {
 	SUPPORTED_CURRENCIES as ADMIN_CURRENCIES,
+	DEFAULT_STORE_CURRENCY as ADMIN_DEFAULT_STORE_CURRENCY,
 	currencyDigits as adminCurrencyDigits,
 	isSupportedCurrency as adminIsSupported,
 } from "@otta-sh/admin-presentation";
 import {
 	SUPPORTED_CURRENCIES as DOMAIN_CURRENCIES,
+	DEFAULT_STORE_CURRENCY as DOMAIN_DEFAULT_STORE_CURRENCY,
 	cents as domainCents,
 	currency as domainCurrency,
 	currencyDigits as domainCurrencyDigits,
@@ -98,6 +100,10 @@ describe("money mirror parity (plugin/presentation/money.ts ⇄ domain/money/cen
 describe("currency table mirror parity (admin-presentation/currencies.ts ⇄ domain/money/currencies.ts)", () => {
 	test("the two tables are identical, row for row and in order", () => {
 		expect(ADMIN_CURRENCIES).toEqual(DOMAIN_CURRENCIES);
+	});
+
+	test("the never-saved store currency is the same in both", () => {
+		expect(ADMIN_DEFAULT_STORE_CURRENCY).toBe(DOMAIN_DEFAULT_STORE_CURRENCY);
 	});
 
 	test("the helpers agree on every listed code and on unlisted ones", () => {

@@ -179,8 +179,9 @@ export interface ProductsConsoleDetailPayload {
 	/** Secondary (E-1): `null` costs the `Low` band and nothing else. */
 	readonly threshold: number | null;
 	/** The effective store currency — what an UNPRICED product's currency picker
-	 *  starts on. From the same settings read as `threshold`; `null` when that
-	 *  read failed (the picker then starts on USD, as it always did). */
+	 *  starts on (USD for a store that never saved one). From the same settings
+	 *  read as `threshold`. `null` means that read FAILED — distinct from
+	 *  never-saved: the picker then preselects nothing and asks for a choice. */
 	readonly storeCurrency: string | null;
 	readonly vocabulary: ProductsConsoleVocabulary;
 }

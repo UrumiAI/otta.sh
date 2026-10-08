@@ -16,6 +16,7 @@ import type {
 	TabPanel,
 } from "../types.js";
 import { makeAdminClients } from "./make-admin-clients.js";
+import { readStoreCurrencySoft } from "./store-currency-read.js";
 import {
 	type AdminRulesSurface,
 	type CouponEdit,
@@ -34,7 +35,7 @@ import {
 } from "./money-input.js";
 import { isIdToken } from "../commerce/commerce-input.js";
 import { idInputProblem } from "./id-input.js";
-import { isSupportedCurrency } from "@otta-sh/domain";
+import { DEFAULT_STORE_CURRENCY, isSupportedCurrency } from "@otta-sh/domain";
 import { formatBpsAsPercent, parsePercentToBps } from "./percent-input.js";
 import {
 	asRecord,
@@ -198,14 +199,10 @@ type CouponsRenderState = {
 };
 
 /** The store currency for the create form's hint. SECONDARY: a failed read
- *  hints "USD", the hint this form always had, and never blocks the screen. */
-async function storeCurrencyHint(client: AdminRulesSurface): Promise<string | undefined> {
-	try {
-		return await client.getStoreCurrency();
-	} catch (err) {
-		console.error("[otta] admin coupons store-currency read failed:", err);
-		return undefined;
-	}
+ *  hints the never-saved default, the hint this form always had — a placeholder
+ *  only, never a value that is saved — and never blocks the screen. */
+function storeCurrencyHint(client: AdminRulesSurface): Promise<string | undefined> {
+	return readStoreCurrencySoft(client, "coupons");
 }
 
 /** The create form's seven fields exactly as they were submitted — see
@@ -867,7 +864,7 @@ function createCouponForm(draft?: CouponDraft, storeCurrency?: string): FormBloc
 					// field for two values): a fixed amount's currency, or the
 					// currency a percentage coupon's cap is in.
 					label: CREATE_CURRENCY_LABEL,
-					placeholder: storeCurrency ?? "USD",
+					placeholder: storeCurrency ?? DEFAULT_STORE_CURRENCY,
 					...prefill(draft?.currency),
 				},
 				{

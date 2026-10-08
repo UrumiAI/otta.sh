@@ -20,7 +20,9 @@
  */
 import {
 	CURRENCY_CHOICES,
+	DEFAULT_STORE_CURRENCY,
 	currencyChoiceLabel,
+	currencyChoicesWith,
 	formatAmount,
 	formatMinorUnitsInput,
 	isSupportedCurrency,
@@ -29,11 +31,6 @@ import {
 } from "@otta-sh/admin-presentation";
 import type { ProductRecord } from "../console-api.js";
 
-/** The currency an unpriced product starts in when the store currency could
- *  not be read — and what a store that never saved one has (the plugin's
- *  `effectiveStoreCurrency`). The loaded store currency wins over it. */
-export const DEFAULT_CURRENCY = "USD";
-
 /** Offered when a product has no price yet: EVERY currency in the shared
  *  currency table, the familiar ten first and the rest by code (the order the
  *  Settings page's store-currency select uses too). Each is typed and stored in
@@ -41,13 +38,13 @@ export const DEFAULT_CURRENCY = "USD";
  *  correctly. */
 export { CURRENCY_CHOICES, currencyChoiceLabel };
 
-/** The picker's options for a draft in `current`: {@link CURRENCY_CHOICES}, plus
- *  `current` first when the table does not list it (a saved store currency the
- *  table later dropped) — so the `<select>` always has an option matching its
- *  value, as the Settings page's select does. Saving it is still refused
- *  ("Choose a supported currency"). */
+/** The picker's options for a draft in `current` — the shared
+ *  `currencyChoicesWith` (the Settings page's select uses it too): an off-table
+ *  saved code is offered first so the `<select>` has a matching option; saving it
+ *  is still refused ("Choose a supported currency"). `""` (nothing chosen) adds
+ *  nothing. */
 export function currencyChoicesFor(current: string): readonly string[] {
-	return CURRENCY_CHOICES.includes(current) ? CURRENCY_CHOICES : [current, ...CURRENCY_CHOICES];
+	return currencyChoicesWith(current);
 }
 
 /** Every input the panel owns, as the text in the field. */
@@ -80,10 +77,11 @@ function countText(n: number | null): string {
 }
 
 /** `storeCurrency` is what an UNPRICED product's picker starts on: the store
- *  currency the detail read carried, {@link DEFAULT_CURRENCY} when it had none. */
+ *  currency the detail read carried, the never-saved `DEFAULT_STORE_CURRENCY`
+ *  when it had none, and `""` (nothing chosen) when the read failed. */
 export function draftFromRecord(
 	p: ProductRecord,
-	storeCurrency: string = DEFAULT_CURRENCY,
+	storeCurrency: string = DEFAULT_STORE_CURRENCY,
 ): PricingDraft {
 	const currency = p.currency ?? storeCurrency;
 	return {
@@ -146,7 +144,7 @@ export function mergeDraft(
 	previous: ProductRecord,
 	next: ProductRecord,
 	draft: PricingDraft,
-	storeCurrency: string = DEFAULT_CURRENCY,
+	storeCurrency: string = DEFAULT_STORE_CURRENCY,
 ): { draft: PricingDraft; conflict: boolean } {
 	const before = draftFromRecord(previous, storeCurrency);
 	const after = draftFromRecord(next, storeCurrency);

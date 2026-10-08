@@ -1996,8 +1996,42 @@ describe("admin Shipping console — the currency filter defaults to the store c
 		// The USD rate is still read and shown.
 		expect(findBlocks(rates, "fields").some((b) => JSON.stringify(b).includes("USD"))).toBe(true);
 		expect(findBlocks(rates, "banner").some((b) => b.variant === "error")).toBe(false);
+		// …and the level SAYS it is showing USD because the store currency is unknown.
+		expect(contextTexts(rates)).toContain(UNKNOWN_LINE);
+	});
+
+	test("a settings outage never guesses a NEW rate's currency: the field is left empty, with the reason", async () => {
+		await seedShipping();
+		await saveStoreCurrency("EUR");
+		const bare = await withSettingsUnreadable(() => openPath(["us", "bare"]));
+		expect(field(formFor(bare, "shipping:create-rate"), "currency")?.initial_value).toBe("");
+		expect(contextTexts(bare)).toContain(UNKNOWN_LINE);
+		// The methods level says so too.
+		const methods = await withSettingsUnreadable(() => openPath(["us"]));
+		expect(contextTexts(methods)).toContain(UNKNOWN_LINE);
+		// With the read back, the default is the store currency again, and no such line.
+		const healthy = await openPath(["us", "bare"]);
+		expect(field(formFor(healthy, "shipping:create-rate"), "currency")?.initial_value).toBe("EUR");
+		expect(contextTexts(healthy)).not.toContain(UNKNOWN_LINE);
+	});
+
+	test("a currency the operator typed is kept for the new rate even during an outage", async () => {
+		await seedShipping();
+		const bare = await withSettingsUnreadable(async () => {
+			const opened = await openPath(["us", "bare"]);
+			return submitForm(
+				"shipping:apply-filter",
+				{ currency: "GBP" },
+				formFor(opened, "shipping:apply-filter")?.block_id,
+			);
+		});
+		expect(field(formFor(bare, "shipping:create-rate"), "currency")?.initial_value).toBe("GBP");
+		expect(contextTexts(bare)).not.toContain(UNKNOWN_LINE);
 	});
 });
+
+const UNKNOWN_LINE =
+	"Couldn't load your store currency — showing USD. Reload to try again, or enter a currency.";
 
 /** Make ONLY the settings document unreadable for `body`, restoring it after —
  *  the bridge resolves `storage[name]` fresh on every call. */

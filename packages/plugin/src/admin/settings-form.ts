@@ -4,7 +4,7 @@ import {
 	readBackgroundWork,
 	validateBackgroundWork,
 } from "../cron/background-work-setting.js";
-import { CURRENCY_CHOICES, currencyChoiceLabel } from "@otta-sh/admin-presentation";
+import { currencyChoiceLabel, currencyChoicesWith } from "@otta-sh/admin-presentation";
 import { effectiveStoreCurrency, isSupportedCurrency, MAX_HOLD_TTL_MINUTES } from "@otta-sh/domain";
 import { emailSendingStatus, type EmailSendingStatus } from "../email/ctx-email-sender.js";
 import { STORE_DISPLAY_NAME_KEY } from "../email/email-render-context.js";
@@ -839,13 +839,18 @@ export function createSettingsFormHandler(): RouteHandler<SettingsFormInput> {
 			const result = await client.updateSettings({ currency: code }, { idempotencyKey: key });
 			if (!result.ok) {
 				if (result.reason === "superseded") {
-					return refuse("Settings changed by someone else", `${result.message} Nothing was saved.`);
+					return refuse(
+						"Settings changed by someone else",
+						`${asSentence(result.message)} Nothing was saved.`,
+					);
 				}
+				// UNAVAILABLE: nothing is known about whether it applied, so the copy
+				// never claims it was not saved.
 				return result.reason === "validation"
 					? refuse("Store currency not saved", unsupported)
 					: refuse(
-							"Store currency not saved",
-							"The save could not be confirmed — reload to see the current store currency.",
+							"Store currency couldn't be confirmed",
+							"The save couldn't be confirmed — reload to check the store currency.",
 						);
 			}
 			const page = await renderPage(ctx, client, {
@@ -919,8 +924,18 @@ export function createSettingsFormHandler(): RouteHandler<SettingsFormInput> {
 				// The domain checks the same bounds as `checkOperationalValues`, so a
 				// refusal here is a backstop — still worded with the field's name, not
 				// the domain's identifier.
-				return superseded
-					? refuse("Settings changed by someone else", `${result.message} Nothing was saved.`)
+				if (superseded) {
+					return refuse(
+						"Settings changed by someone else",
+						`${asSentence(result.message)} Nothing was saved.`,
+					);
+				}
+				// UNAVAILABLE: whether it applied is unknown — never claim "not saved".
+				return result.reason === "unavailable"
+					? refuse(
+							"Settings couldn't be confirmed",
+							"The save couldn't be confirmed — reload to check the current values.",
+						)
 					: refuse("Settings not saved", `${namedForOperator(result.message)} Nothing was saved.`);
 			}
 			return {
@@ -1077,6 +1092,14 @@ function namedForOperator(message: string): string {
 	let named = message;
 	for (const spec of OPERATIONAL_FIELDS) named = named.replaceAll(spec.id, spec.name);
 	return /[.!?]$/.test(named) ? named : `${named}.`;
+}
+
+/** A client message as a sentence: capitalised, ending in a full stop — so a
+ *  sentence appended after it does not run on. */
+function asSentence(message: string): string {
+	const text = message.trim();
+	const capital = text.charAt(0).toUpperCase() + text.slice(1);
+	return /[.!?]$/.test(capital) ? capital : `${capital}.`;
 }
 
 /** The receipt for an accepted save: what is now in force, in words. */
@@ -1279,9 +1302,7 @@ function storeCurrencyBlocks(persisted: OperationalSettingsWire | undefined): Bl
 		];
 	}
 	const current = effectiveStoreCurrency(persisted);
-	const codes = CURRENCY_CHOICES.includes(current)
-		? CURRENCY_CHOICES
-		: [current, ...CURRENCY_CHOICES];
+	const codes = currencyChoicesWith(current);
 	return [
 		...STORE_CURRENCY_CONTEXT,
 		carriedForm({

@@ -517,7 +517,7 @@ test("the tax status select sits beside the tax class, marks the group changed, 
 // store currency the detail read carried — a placeholder, never a prefill.
 test("an unpriced product's currency field hints the store currency, and USD when none was carried", async () => {
 	const unpriced = { priceCents: null, currency: null };
-	const withStore = (storeCurrency: string | undefined): Response => {
+	const withStore = (storeCurrency: string | null | undefined): Response => {
 		return new Response(
 			JSON.stringify({
 				data: {
@@ -540,6 +540,8 @@ test("an unpriced product's currency field hints the store currency, and USD whe
 	for (const [carried, hint] of [
 		["EUR", "EUR"],
 		[undefined, "USD"],
+		// The read FAILED: no guessed currency, a prompt instead.
+		[null, "Choose a currency"],
 	] as const) {
 		apiFetch.mockImplementation(() => Promise.resolve(withStore(carried)));
 		const node = <ProductDetail productId="p_base" onBack={() => undefined} />;

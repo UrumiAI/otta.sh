@@ -35,3 +35,22 @@ export function currencyChoiceLabel(code: string): string {
 	const row = SUPPORTED_CURRENCIES.find((r) => r.code === code);
 	return row === undefined ? code : `${code} — ${row.name}`;
 }
+
+/**
+ * The store currency of a store that never saved one — the admin surfaces'
+ * copy of the domain's `DEFAULT_STORE_CURRENCY` (they cannot import the domain;
+ * `packages/plugin/test/money-parity.test.ts` pins the two equal).
+ */
+export const DEFAULT_STORE_CURRENCY = "USD";
+
+/**
+ * A picker's options when it must show `current`: {@link CURRENCY_CHOICES}, with
+ * `current` prepended when the table does not list it (a saved code the table
+ * later dropped) so the select always has an option matching its value. An
+ * empty `current` (nothing chosen yet) adds nothing.
+ */
+export function currencyChoicesWith(current: string): readonly string[] {
+	return current === "" || CURRENCY_CHOICES.includes(current)
+		? CURRENCY_CHOICES
+		: [current, ...CURRENCY_CHOICES];
+}
