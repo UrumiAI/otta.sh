@@ -25,6 +25,7 @@ field.
   re-exports `normalizeSubdivision`.
 - **A region is never sent for the wrong country.** Each list echoes the country it was
   rendered for (`deliveryRegionCountry`, `regionCountry`); when the posted country
-  differs, the old region is dropped, and a place after a country change comes back with
-  the new list (`REGION_LIST_UPDATED`) instead of placing. A theme that still prints a
+  differs, the old region is dropped, and a place after a country change with a region
+  already picked comes back with the new list (`REGION_LIST_UPDATED`) instead of placing.
+  With no region picked it places as before. A theme that still prints a
   typed region input posts no such field and behaves as before.

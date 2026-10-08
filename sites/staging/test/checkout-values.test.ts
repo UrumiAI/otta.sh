@@ -628,12 +628,13 @@ describe("the state/province pick list: a changed country is a round trip, never
 		expect(h.draft()!.values.region).toBeUndefined();
 	});
 
-	test("the first choice of a country (the list was rendered for none) shows its list before placing", async () => {
+	test("the first choice of a country, with no region picked, places straight away — no extra round trip", async () => {
 		const h = harness({ ...FULL, country: "US", regionCountry: "" }, PLACED);
-		expect((await PLACE_POST(h.context)).headers.get("location")).toBe(
-			"/checkout?error=REGION_LIST_UPDATED",
-		);
-		expect(h.calls).toHaveLength(0);
+		expect((await PLACE_POST(h.context)).headers.get("location")).toBe("/checkout/pay");
+		expect(h.calls).toHaveLength(1);
+		const address = h.calls[0]!["shippingAddress"] as Record<string, string>;
+		expect(address["country"]).toBe("US");
+		expect(address["region"]).toBeUndefined();
 	});
 
 	test("a changed country WITHOUT subdivisions places straight away, without the old region", async () => {

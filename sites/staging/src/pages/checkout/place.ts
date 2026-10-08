@@ -362,10 +362,16 @@ async function place(context: APIContext): Promise<Response> {
 	if (intent === "update-address") {
 		return refuse(checkoutPath(selection), undefined);
 	}
-	// And the safety net, as for delivery: a place whose country changed since
-	// the list was rendered comes back with the new country's list to choose
-	// from, rather than placing without a choice the buyer never saw.
-	if (addressListStale && subdivisionOptions(addressCountry ?? "").length > 0) {
+	// And the safety net: a place whose country changed after a region was
+	// PICKED from the old country's list comes back with the new country's list
+	// to choose from, rather than placing without the region the buyer meant to
+	// give. With no region picked it places as before — the region is optional,
+	// and a first choice of country must not cost every buyer an extra round trip.
+	if (
+		addressListStale &&
+		formString(form.get("region")) !== undefined &&
+		subdivisionOptions(addressCountry ?? "").length > 0
+	) {
 		return refuse(checkoutPath({ ...selection, error: REGION_LIST_UPDATED }), REGION_LIST_UPDATED);
 	}
 
