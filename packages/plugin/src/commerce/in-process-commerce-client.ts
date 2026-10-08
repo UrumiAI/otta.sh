@@ -577,9 +577,10 @@ export class InProcessCommerceClient implements CommerceClient {
 	 *
 	 * The settings read is paid only on that path, once per cart (a cart is created
 	 * once and then carries its own currency for life — nothing rewrites it; the
-	 * spent-cart replacement, `replaceCart`, follows a SAVED store currency too). It is the same keyed singleton read the hold TTL makes on every
-	 * cart read, and read per call for the same reason (`#liveCartDeps`): a cached
-	 * value would keep creating carts in the old currency after a save.
+	 * spent-cart replacement, `replaceCart`, follows a SAVED store currency too).
+	 * It is the same keyed singleton read the hold TTL makes on every cart read,
+	 * and read per call for the same reason (`#liveCartDeps`): a cached value
+	 * would keep creating carts in the old currency after a save.
 	 *
 	 * A failed settings read FAILS the create, deliberately: falling back to USD
 	 * would silently mint wrong-currency carts in a store that saved another one,
@@ -592,20 +593,30 @@ export class InProcessCommerceClient implements CommerceClient {
 		return { cartId };
 	}
 
-	/** The domain's `replaceSpentCart`, which owns every rule (checked out, order
-	 *  finished) and derives the key — never here and never by the caller. */
-	async replaceCart(spentCartId: string): Promise<ReplaceCartResult> {
+	/**
+	 * The domain's `replaceSpentCart`, which owns every rule (checked out, order
+	 * finished) and derives the key — never here and never by the caller.
+	 *
+	 * The replacement's currency, in order: `currency` when the caller names one
+	 * (a theme that creates carts in an explicit currency keeps it), else the store
+	 * currency the operator SAVED (after a switch, a returning shopper's new cart
+	 * follows it rather than stranding them at CURRENCY_MISMATCH), else the spent
+	 * cart's — so a store that never saved one behaves exactly as before. Not
+	 * `effectiveStoreCurrency`: never-saved must not turn a GBP cart's replacement
+	 * into USD. The settings read is LAZY — made only once the spent cart has
+	 * validated, and never when a currency is named — so a refusal stays typed.
+	 */
+	async replaceCart(spentCartId: string, currency?: string): Promise<ReplaceCartResult> {
 		requireIdToken("cartId", spentCartId);
-		// The SAVED store currency, not `effectiveStoreCurrency`: a replacement is a
-		// new cart, so after a switch it follows the setting (otherwise a returning
-		// shopper gets an old-currency cart that cannot check out). A store that
-		// never saved one keeps the spent cart's currency, exactly as before — which
-		// matters for a theme that creates carts in an explicit currency.
-		const saved = (await this.#stores.settingsStore.get()).currency;
+		if (currency !== undefined) requireCurrencyCode("currency", currency);
 		return replaceSpentCart(
 			{ ...this.#cartDeps, orderStore: this.#stores.orderStore },
 			spentCartId,
-			saved === undefined ? undefined : toCurrency(saved),
+			async () => {
+				if (currency !== undefined) return toCurrency(currency);
+				const saved = (await this.#stores.settingsStore.get()).currency;
+				return saved === undefined ? undefined : toCurrency(saved);
+			},
 		);
 	}
 

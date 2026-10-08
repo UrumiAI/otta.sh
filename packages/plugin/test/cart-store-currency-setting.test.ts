@@ -17,6 +17,7 @@ import {
 	idempotencyKey,
 	orderId as toOrderId,
 } from "@otta-sh/domain";
+import { SETTINGS_COLLECTION } from "@otta-sh/store-emdash";
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "vitest";
 import {
 	makeInProcessCommerce,
@@ -142,5 +143,58 @@ describe("a new cart's currency follows the store currency setting", () => {
 		if (!first.ok || !again.ok) throw new Error("replace refused");
 		expect(again.cartId).toBe(first.cartId);
 		expect(await cartCurrency(first.cartId)).toBe("EUR");
+	});
+
+	test("replacement precedence: an explicit currency beats the saved store currency, which beats the spent cart's", async () => {
+		const spentForExplicit = await spentCart("prec-explicit", "USD");
+		const spentForSaved = await spentCart("prec-saved", "USD");
+		await setStoreCurrency("EUR");
+		const explicit = await h.client.replaceCart(spentForExplicit, "GBP");
+		const saved = await h.client.replaceCart(spentForSaved);
+		if (!explicit.ok || !saved.ok) throw new Error("replace refused");
+		expect(await cartCurrency(explicit.cartId)).toBe("GBP");
+		expect(await cartCurrency(saved.cartId)).toBe("EUR");
+	});
+
+	test("an explicit malformed replacement currency is refused", async () => {
+		const spent = await spentCart("prec-bad", "USD");
+		await expect(h.client.replaceCart(spent, "gbp")).rejects.toThrow();
+	});
+
+	test("with the settings unreadable, refusals stay typed and an explicit currency still replaces", async () => {
+		const spent = await spentCart("outage", "USD");
+		const { cartId: active } = await h.client.createCart("USD");
+		// The stores bind the collection object at construction, so the fault goes ON
+		// that object (its read methods), and is taken off again in `finally`.
+		const collection = (h.ctx.storage as unknown as Record<string, Record<string, unknown>>)[
+			SETTINGS_COLLECTION
+		];
+		if (collection === undefined) throw new Error("no settings collection to fault-inject");
+		const realGet = collection["get"];
+		const realGetVersioned = collection["getVersioned"];
+		const fault = (): never => {
+			throw new Error("injected storage fault: settings unreadable");
+		};
+		collection["get"] = fault;
+		collection["getVersioned"] = fault;
+		try {
+			expect(await h.client.replaceCart("no-such-cart")).toEqual({
+				ok: false,
+				reason: "CART_NOT_FOUND",
+			});
+			expect(await h.client.replaceCart(active)).toEqual({
+				ok: false,
+				reason: "CART_NOT_CHECKED_OUT",
+			});
+			// A valid spent cart with no named currency needs the read, and fails loudly.
+			await expect(h.client.replaceCart(spent)).rejects.toThrow(/settings unreadable/);
+			// Naming one costs no read.
+			const named = await h.client.replaceCart(spent, "GBP");
+			if (!named.ok) throw new Error(named.reason);
+			expect(named.ok).toBe(true);
+		} finally {
+			collection["get"] = realGet;
+			collection["getVersioned"] = realGetVersioned;
+		}
 	});
 });

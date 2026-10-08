@@ -319,8 +319,11 @@ export interface CommerceClient {
 	 * the cart that replaces it. Refused `CART_NOT_FOUND`, `CART_NOT_CHECKED_OUT`, or
 	 * `ORDER_NOT_FINISHED` (no order, or one still pending — its payment may still
 	 * happen).
+	 *
+	 * The replacement's currency: `currency` when named, else the store currency
+	 * the operator saved, else the spent cart's.
 	 */
-	replaceCart(spentCartId: string): Promise<ReplaceCartResult>;
+	replaceCart(spentCartId: string, currency?: string): Promise<ReplaceCartResult>;
 	/** The effective cart-hold window in whole minutes — the admin's saved
 	 *  `holdTtlMinutes` (or its default), which every add/adjust stamps and every
 	 *  read measures against (issue #127). For shopper-facing copy. */
