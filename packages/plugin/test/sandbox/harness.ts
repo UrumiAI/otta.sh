@@ -12,7 +12,7 @@
  * `manifest.ts` is never mutated in `src/` — this harness copies the whole
  * `src/` tree into a scratch dir and overwrites ONLY the copy's
  * `manifest.ts` with the test's `allowedHosts` (and the in-process
- * `emailApiUrl`/`facilitatorUrl` egress) before bundling (plan §6 step 1 /
+ * `facilitatorUrl` egress) before bundling (plan §6 step 1 /
  * §8 Risk 5), so `pnpm build`'s real package output is never test-specific.
  *
  * `sandbox-storage.ts` is overwritten the same way when — and ONLY when — a boot
@@ -41,9 +41,10 @@ import {
 	type InProcessEgressUrls,
 	resolveAllowedHosts,
 	resolveInProcessEgress,
-	SMTP2GO_API_HOSTS,
 	STRIPE_API_HOST,
 } from "../../src/manifest.js";
+import type { EmailMessage } from "../../src/types.js";
+import { emailBridge, sandboxEmailSource, type EmailBridge } from "./email-bridge.js";
 import { sandboxStorageSource, storageBridge } from "./storage-bridge.js";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -138,16 +139,26 @@ export interface SandboxOptions {
 	allowedHosts: string[];
 	/**
 	 * Baked into the bundled plugin as `IN_PROCESS_EGRESS_URLS` — the in-process
-	 * email-provider and x402-facilitator endpoints (INC-C5). Both default to
-	 * absent, which is the fail-closed "this provider is not configured" state:
-	 * the email sweep reports `skipped` and no x402 gateway is wired.
+	 * x402-facilitator endpoint (INC-C5). Defaults to absent, the fail-closed
+	 * "not configured" state: no x402 gateway is wired.
 	 *
-	 * A suite that sets one of these is responsible for putting the matching host
-	 * in `allowedHosts` too — production derives the allowlist from these values,
-	 * this harness takes the allowlist verbatim.
+	 * A suite that sets it is responsible for putting the matching host in
+	 * `allowedHosts` too — production derives the allowlist from this value, this
+	 * harness takes the allowlist verbatim.
 	 */
-	emailApiUrl?: string;
 	facilitatorUrl?: string;
+	/**
+	 * Wire an EmDash email provider behind `ctx.email` that RECORDS every message
+	 * (ADR-0031; default: no). Without it the boot is a host with no provider
+	 * selected: `ctx.email` is there (the capability is declared) and its `send`
+	 * rejects "Email is not configured", as the host's sandbox bridge does. The
+	 * recorded messages are {@link SandboxHandle.sentEmails}.
+	 *
+	 * Like `storage`, the recorder is reached over a loopback bridge the isolate
+	 * calls with `fetch` directly — the HOST's side, not plugin egress — so it is
+	 * opt-in, and a suite that also sets `globalOutbound` must forward to it.
+	 */
+	email?: boolean;
 	/** Worker entry module, relative to `src/` (default the production
 	 *  `sandbox-entry.ts`). Test fixtures under `src/**\/testing/` (e.g. the
 	 *  scaffold's `admin/scaffold/testing/geo-entry.ts`) can be booted through
@@ -185,6 +196,12 @@ export interface SandboxHandle {
 	): Promise<InvocationOutcome>;
 	/** Raw access for asserting on plain HTTP behavior (e.g. unknown routes). */
 	rawFetch(pathname: string, init?: RequestInit): Promise<Response>;
+	/** Every message the plugin handed `ctx.email` this boot, in order. Empty
+	 *  unless the boot set `email: true`. */
+	sentEmails(): readonly EmailMessage[];
+	/** The email bridge's base URL (for a `globalOutbound` stub to forward to),
+	 *  or `undefined` without `email: true`. */
+	readonly emailBridgeUrl: string | undefined;
 	close(): Promise<void>;
 }
 
@@ -285,12 +302,9 @@ function manifestSource(options: SandboxOptions): string {
 	return [
 		'export const OTTA_PLUGIN_ID = "otta";',
 		'export const OTTA_PLUGIN_VERSION = "0.1.0";',
-		'export const OTTA_PLUGIN_CAPABILITIES = ["content:read", "network:request"];',
+		'export const OTTA_PLUGIN_CAPABILITIES = ["content:read", "network:request", "email:send"];',
 		`export const ALLOWED_HOSTS = ${JSON.stringify(options.allowedHosts)};`,
-		// The SMTP2GO send hosts, a constant the email-provider setting reads.
-		`export const SMTP2GO_API_HOSTS = ${JSON.stringify(SMTP2GO_API_HOSTS)};`,
-		// INC-C5: the email sender and the x402 wiring read their endpoints from
-		// here, the same build-time constant `ALLOWED_HOSTS` is derived from in
+		// INC-C5: the x402 wiring reads its endpoint from here, the same build-time constant `ALLOWED_HOSTS` is derived from in
 		// production. Absent ⇒ that provider is unconfigured (fail-closed).
 		//
 		// ROUTED THROUGH THE REAL RESOLVER (review round 2, B5), not baked verbatim.
@@ -301,10 +315,7 @@ function manifestSource(options: SandboxOptions): string {
 		// http arm it used to select — the unparseable-define behavior stays
 		// unit-pinned in `manifest-override.test.ts`.
 		`export const IN_PROCESS_EGRESS_URLS = ${JSON.stringify(
-			resolveInProcessEgress({
-				emailApiUrl: options.emailApiUrl,
-				facilitatorUrl: options.facilitatorUrl,
-			}),
+			resolveInProcessEgress({ facilitatorUrl: options.facilitatorUrl }),
 		)};`,
 		"",
 	].join("\n");
@@ -422,6 +433,17 @@ export async function loadPluginInSandbox(options: SandboxOptions): Promise<Sand
 		);
 	}
 
+	// The host's email provider, the same way — only for a boot that asked for one.
+	let mail: EmailBridge | undefined;
+	if (options.email === true) {
+		mail = await emailBridge();
+		await writeFile(
+			path.join(srcDir, "sandbox-email.ts"),
+			sandboxEmailSource(mail.baseUrl),
+			"utf8",
+		);
+	}
+
 	const entryRel = options.entry ?? "sandbox-entry.ts";
 	const distDir = path.join(workDir, "dist");
 	await build({
@@ -511,8 +533,11 @@ export async function loadPluginInSandbox(options: SandboxOptions): Promise<Sand
 		invokeHook: (name, event) => invoke("hook", name, event),
 		invokeRoute: (name, input, request) => invoke("route", name, { input, request }),
 		rawFetch: (pathname, init) => fetch(`${baseUrl}${pathname}`, init),
+		sentEmails: () => [...(mail?.messages ?? [])],
+		emailBridgeUrl: mail?.baseUrl,
 		async close() {
 			child.kill();
+			await mail?.close();
 			await new Promise<void>((resolve) => {
 				if (child.exitCode !== null || child.signalCode !== null) {
 					resolve();

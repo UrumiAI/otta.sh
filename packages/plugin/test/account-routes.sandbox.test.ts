@@ -16,14 +16,13 @@
  *
  * WHAT IS DRIVEN THROUGH THE SANDBOX: the whole login, the path a shopper
  * takes (issue #306). The plugin's own `login/request` route issues the
- * challenge AND emails the link through `CtxHttpEmailSender` over `ctx.http`;
- * the email lands on a recording stub standing in for the provider; the link
- * is read back out of that mail and redeemed through the plugin's own
- * `login/verify` route. Every session below was minted that way.
+ * challenge AND emails the link through `CtxEmailSender` over the host's
+ * `ctx.email` (ADR-0031); the message lands on the harness's recording EmDash
+ * email provider; the link is read back out of that mail and redeemed through
+ * the plugin's own `login/verify` route. Every session below was minted that way.
  *
- * EGRESS IS ASSERTED BY CONSTRUCTION: the ONLY allowed host is the email stub,
- * and the bundle's baked email URL points at it — so the stub's recorded
- * requests are the plugin's entire egress, and every one of them must be a mail.
+ * NO EGRESS, ASSERTED BY CONSTRUCTION: the ONLY allowed host is a recording
+ * stub, and it must see no request at all — email is not `ctx.http` traffic.
  *
  * ── Platform-verified deviation from plan §4's session-cookie wording ──────
  * The bearer session token is threaded as route input (the theme's first-party
@@ -46,6 +45,7 @@ import {
 } from "@otta-sh/store-emdash";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import { OTTA_PLUGIN_CAPABILITIES } from "../src/manifest.js";
+import type { EmailMessage } from "../src/types.js";
 import { startStubHttpServer, type StubHttpServer } from "./helpers/stub-http-server.js";
 import { loadPluginInSandbox, type SandboxHandle } from "./sandbox/harness.js";
 import { storageBridge } from "./sandbox/storage-bridge.js";
@@ -54,8 +54,6 @@ import { storageBridge } from "./sandbox/storage-bridge.js";
  *  process-scoped and shared by every sandbox suite in this process. */
 const NS = "acct";
 
-/** The provider endpoint the bundle's email URL is baked to. */
-const EMAIL_PATH = "/email/send";
 /** The operator's configured sign-in page (`settings:loginLinkUrl`) — the ONLY
  *  place the emailed link may point. */
 const SITE = "https://shop.example.test";
@@ -74,21 +72,16 @@ let orderStore: EmdashOrderStore;
 beforeAll(async () => {
 	({ storage } = await storageBridge());
 	stub = await startStubHttpServer();
-	stub.respondWith("POST", (req) =>
-		req.url === EMAIL_PATH
-			? { status: 202, body: { queued: true } }
-			: { status: 404, body: { error: "unexpected path" } },
-	);
 	orderStore = new EmdashOrderStore({
 		storage,
 		inventory: new EmdashInventoryStore({ storage, idGen: uuidIdGen, clock: systemClock }),
 		idGen: uuidIdGen,
 		clock: systemClock,
 	});
-	// The email stub is the ONLY allowed host — see the module doc's egress note.
+	// The stub is the ONLY allowed host — see the module doc's egress note.
 	sandbox = await loadPluginInSandbox({
 		allowedHosts: [stub.host],
-		emailApiUrl: `${stub.baseUrl}${EMAIL_PATH}`,
+		email: true,
 		storage: true,
 	});
 }, 300_000);
@@ -98,24 +91,11 @@ afterAll(async () => {
 	await stub?.close();
 });
 
-interface CapturedMail {
-	to: string;
-	/** The template name rides as a Resend tag (`ctx-http-email-sender.ts`). */
-	tags: Array<{ name: string; value: string }>;
-	text: string;
-	html: string;
-	idempotencyKey: string;
-}
+type CapturedMail = EmailMessage;
 
-/** Every login mail the provider stub received for `to`, in order. */
+/** Every login mail the host's email provider received for `to`, in order. */
 function mailsTo(to: string): CapturedMail[] {
-	return stub.requests
-		.filter((req) => req.method === "POST" && req.url === EMAIL_PATH)
-		.map((req) => ({
-			...(req.body as Omit<CapturedMail, "idempotencyKey">),
-			idempotencyKey: String(req.headers["idempotency-key"] ?? ""),
-		}))
-		.filter((mail) => mail.to === to);
+	return sandbox.sentEmails().filter((mail) => mail.to === to);
 }
 
 /** The link in a mail's plain-text body, split into what the verify page reads. */
@@ -235,12 +215,14 @@ describe("the magic-link login, end to end (workerd sandbox)", () => {
 		const mails = mailsTo(email);
 		expect(mails).toHaveLength(1);
 		const mail = mails[0];
-		expect(mail?.tags).toEqual([{ name: "template", value: "customer-login-link" }]);
+		// The sign-in email (`customer-login-link`), as EmDash's `EmailMessage`.
+		expect(Object.keys(mail ?? {}).toSorted()).toEqual(["html", "subject", "text", "to"]);
+		expect(mail?.subject).toMatch(/sign-in link/i);
 		const { url, challengeId, token } = linkIn(mail);
 		// The link is the CONFIGURED page — not the (spoofed) host the request named.
 		expect(`${url.origin}${url.pathname}`).toBe(VERIFY_PAGE);
 		expect(mail?.text).not.toContain("attacker.example");
-		expect(mail?.idempotencyKey).toBe(`login:${challengeId}`);
+		expect(mail?.html).toContain(challengeId);
 
 		const first = await verify(challengeId, token);
 		expect(first.ok).toBe(true);
@@ -293,9 +275,9 @@ describe("the magic-link login, end to end (workerd sandbox)", () => {
 		).toEqual(expected);
 	}, 120_000);
 
-	test("every request the plugin made went to the email provider", () => {
-		expect(stub.requests.length).toBeGreaterThan(0);
-		for (const req of stub.requests) expect(`${req.method} ${req.url}`).toBe(`POST ${EMAIL_PATH}`);
+	test("the mails went through ctx.email: the plugin made no ctx.http request at all", () => {
+		expect(sandbox.sentEmails().length).toBeGreaterThan(0);
+		expect(stub.requests).toEqual([]);
 	});
 });
 
@@ -332,10 +314,13 @@ describe("storefront account pages (workerd sandbox)", () => {
 		expect(badToken).toEqual({ result: { ok: false, redirectTo: "/account/login" } });
 	});
 
-	test("the account pages add no new capability beyond network:request/allowedHosts", () => {
-		// ADR-0005 holds in practice: the login mail goes out over `ctx.http`, and the
-		// plugin declares no email:send — exactly the two capabilities. (`ctx.storage` needs
-		// none: the host builds it ungated, ADR-0018.)
-		expect([...OTTA_PLUGIN_CAPABILITIES]).toEqual(["content:read", "network:request"]);
+	test("the account pages add no capability beyond the manifest's three", () => {
+		// ADR-0031: the login mail goes out through `ctx.email` (`email:send`).
+		// (`ctx.storage` needs none: the host builds it ungated, ADR-0018.)
+		expect([...OTTA_PLUGIN_CAPABILITIES]).toEqual([
+			"content:read",
+			"network:request",
+			"email:send",
+		]);
 	});
 });

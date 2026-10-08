@@ -2531,6 +2531,7 @@ export class EmdashOrderStore implements OrderStore {
 						attempts: claimed.attempts,
 						timeouts: claimed.timeouts ?? 0,
 						notice: claimed.notice ?? null,
+						createdAt: claimed.createdAt,
 					})
 				: CAS_RETRY;
 		});

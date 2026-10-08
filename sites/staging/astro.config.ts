@@ -32,17 +32,17 @@ function readDotEnv(name: string): string | undefined {
 }
 
 /**
- * THE IN-PROCESS EGRESS URLS — resolved ONCE, here (review round 3, B1).
+ * THE IN-PROCESS EGRESS URL — resolved ONCE, here (review round 3, B1).
  *
- * These are two URLs and two consumers. The plugin BUNDLE reads them as Vite
- * defines (`manifest.ts`: `__OTTA_EMAIL_API_URL__`,
- * `__OTTA_X402_FACILITATOR_URL__`) to decide whether to build an `EmailSender` and
- * a facilitator client at all. The registered DESCRIPTOR needs the same two values
- * to put their hosts on `allowedHosts` — and `allowedHosts` is the one ADR-0006
- * gate that still bites in trusted mode. Feed only the defines and you get a
- * bundle that sends email to a host the gate refuses: every send fails, rows
- * reschedule and park `failed`, and the cron leg reports `count: 0` instead of the
- * honest `skipped`. So one const, both consumers.
+ * One URL and two consumers. The plugin BUNDLE reads it as a Vite define
+ * (`manifest.ts`: `__OTTA_X402_FACILITATOR_URL__`) to decide whether to build a
+ * facilitator client at all. The registered DESCRIPTOR needs the same value to
+ * put its host on `allowedHosts` — and `allowedHosts` is the one ADR-0006 gate
+ * that still bites in trusted mode. Feed only the define and you get a bundle
+ * that calls a host the gate refuses. So one const, both consumers.
+ *
+ * NO EMAIL URL. Email goes through EmDash's `ctx.email` (ADR-0031): install and
+ * select an EmDash email provider; otta grants itself no email host.
  *
  * URLS, NEVER SECRETS. The API credentials that ride them live in write-only
  * plugin kv (the `settings:` keys `payment-secrets.ts` owns), provisioned through
@@ -52,14 +52,11 @@ function readDotEnv(name: string): string | undefined {
  *
  * UNSET IS THE DEFAULT AND IT IS FAIL-CLOSED, not broken: the define bakes `""`,
  * which `hostnameOf` yields no host for, so `resolveInProcessEgress` reports the
- * provider unconfigured and `resolveAllowedHosts` grants nothing for it. Staging
- * today sets neither, so its allowlist is the constant part alone — Stripe's API
- * host and SMTP2GO's send hosts. Email then goes out only if the store picks
- * SMTP2GO in Settings; setting `EMAIL_API_URL` at build time turns on the
- * Resend-shaped sender.
+ * facilitator unconfigured and `resolveAllowedHosts` grants nothing for it.
+ * Staging today sets none, so its allowlist is the constant part alone —
+ * Stripe's API host.
  */
 const egress = {
-	emailApiUrl: process.env.EMAIL_API_URL ?? readDotEnv("EMAIL_API_URL"),
 	facilitatorUrl: process.env.X402_FACILITATOR_URL ?? readDotEnv("X402_FACILITATOR_URL"),
 };
 
@@ -259,12 +256,11 @@ export default defineConfig({
 			// bakes "", which that module reads as undefined; baking `undefined`
 			// would leave the identifier undeclared in the worker bundle.
 			__OTTA_STRIPE_PUBLIC_KEY__: JSON.stringify(stripePublishableKey ?? ""),
-			// The two in-process egress URLs, from the SAME `egress` const that
-			// decides what the descriptor allowlists (see its note above). ALWAYS a
-			// string, like the Stripe key: baking `undefined` would leave the
-			// identifier undeclared, and `""` is what both the plugin's `typeof`
-			// guard and `hostnameOf` read as "this provider is unconfigured".
-			__OTTA_EMAIL_API_URL__: JSON.stringify(egress.emailApiUrl ?? ""),
+			// The in-process egress URL, from the SAME `egress` const that decides
+			// what the descriptor allowlists (see its note above). ALWAYS a string,
+			// like the Stripe key: baking `undefined` would leave the identifier
+			// undeclared, and `""` is what both the plugin's `typeof` guard and
+			// `hostnameOf` read as "this provider is unconfigured".
 			__OTTA_X402_FACILITATOR_URL__: JSON.stringify(egress.facilitatorUrl ?? ""),
 		},
 		ssr: {

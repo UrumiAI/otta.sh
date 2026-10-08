@@ -903,6 +903,10 @@ export interface OutboxEmail {
 	 *  dispatcher renders the notice's template, with its own payload, instead of
 	 *  `toState`'s. `null` on every state-transition row. */
 	notice: OrderNoticeInput | null;
+	/** When the row was enqueued (ISO). The dispatcher completes a row older than
+	 *  `OUTBOX_EMAIL_MAX_AGE_MS` without sending it (ADR-0031). OPTIONAL so an
+	 *  adapter written before it still compiles; such a row is never expired. */
+	createdAt?: string;
 }
 
 /** A line to snapshot into `order_items` — price + title already resolved from
