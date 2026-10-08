@@ -25,40 +25,32 @@ import { startDeadline, type CallDeadline } from "./deadline.js";
 export const DEFAULT_TOLERANCE_SECONDS = 300;
 
 /**
- * HOW OUR MINOR UNITS BECOME STRIPE'S `amount`, per currency.
- *
- * Otta stores every amount in its currency's ISO 4217 minor unit, read from the
- * currency table (`@otta-sh/domain`'s `currencyDigits`): cents for USD, whole yen
- * for JPY, fils for KWD. Stripe's `amount` is "the currency's minor unit" too,
- * with exceptions this map encodes. Read on 2026-10-08 from
- * <https://docs.stripe.com/currencies> ("Specify amounts in API requests",
- * "Zero-decimal currencies", "Special cases"):
- *  - two-decimal (the default): `1099` charges 10.99 USD — OUR AMOUNT, UNCHANGED.
- *  - zero-decimal: "the charge and the amount are the same … to charge 500 JPY,
- *    provide an amount value of 500" — our whole-unit amount, UNCHANGED.
- *  - ISK and UGX: "transitioned to a zero-decimal currency, but backward
- *    compatibility requires you to represent it as a two-decimal value, where
- *    the decimal amount is always 00 … to charge 5 ISK, provide an amount value
- *    of 500" — our whole-krónur amount × 100 on the way out, ÷ 100 on the way
- *    back.
- *  - HUF and TWD: "you can charge two-decimal amounts"; the divisible-by-100 rule
- *    is for manual PAYOUTS, which this adapter never makes — two-decimal, as
- *    ISO 4217 has them, so UNCHANGED.
- *  - three-decimal (BHD, JOD, KWD, OMR, TND): Stripe wants thousandths whose last
- *    digit is 0 (multiples of 10), and an Otta total (tax, discount allocation)
- *    can land on any fils. Rounding money is not this adapter's call, so these
- *    stay REFUSED on the live path; they remain priceable and displayable.
- * The zero-/three-decimal code lists below are the ones this adapter's former
- * deny-list carried from the same page (the docs' rendered list itself is not
- * in the Markdown the CLI returns, so it was not re-read verbatim on that date).
- *
- * WHAT IS REFUSED (fail closed, before any network call — a wrong charge is
- * never retryable): a three-decimal currency; a listed currency whose table
- * exponent disagrees with how Stripe treats it (no such row today — the adapter
- * tests check every row); and, for a code OUTSIDE the table (old data), exactly
- * what was refused before the table existed — Stripe's zero- and three-decimal
- * sets — while any other unlisted code passes through as the two-decimal amount
- * it always was.
+ * WHICH CURRENCIES THE LIVE PATH CHARGES. Otta stores each amount in its
+ * currency's minor unit from the currency table (`@otta-sh/domain`'s
+ * `currencyDigits`: cents for USD, whole yen for JPY, fils for KWD) and sends it
+ * to Stripe UNCHANGED. Per <https://docs.stripe.com/currencies> (read
+ * 2026-10-08; "Specify amounts in API requests", "Zero-decimal currencies",
+ * "Special cases") that is exactly Stripe's `amount` for:
+ *  - two-decimal currencies (`1099` charges 10.99 USD) — including HUF and TWD,
+ *    whose divisible-by-100 rule is for manual PAYOUTS, which this adapter never
+ *    makes;
+ *  - zero-decimal currencies ("to charge 500 JPY, provide an amount value of 500").
+ * It is NOT for, so the live path REFUSES (fail closed, before any network call
+ * — a wrong charge is never retryable):
+ *  - three-decimal currencies (BHD, JOD, KWD, OMR, TND): Stripe wants
+ *    thousandths in multiples of 10, and an Otta total (tax, discount
+ *    allocation) can land on any fils. Rounding money is not this adapter's
+ *    call; they stay priceable and displayable;
+ *  - a LISTED currency whose table exponent Stripe does not treat the same way
+ *    (none today; the adapter tests check every row) — notably ISK/UGX, which
+ *    Stripe takes as two-decimal values ending in 00 even though ISO gives them
+ *    0 digits: neither is in the table, so neither reaches this rule;
+ *  - for a code OUTSIDE the table, exactly what was refused before the table
+ *    existed: Stripe's zero- and three-decimal sets. Every other unlisted code
+ *    (ISK included) passes through as the two-decimal amount it always was.
+ * The zero-/three-decimal lists are the ones this adapter's former deny-list
+ * carried from the same page (its rendered list is not in the Markdown the docs
+ * CLI returns, so it was not re-read verbatim on that date).
  */
 export const STRIPE_ZERO_DECIMAL_CURRENCIES: ReadonlySet<string> = new Set([
 	"BIF",
@@ -88,49 +80,24 @@ export const STRIPE_THREE_DECIMAL_CURRENCIES: ReadonlySet<string> = new Set([
 	"TND",
 ]);
 
-/** Zero-decimal currencies Stripe still takes as a two-decimal `amount` ending
- *  in `00` ("Special cases"). UGX is also in Stripe's zero-decimal list; this
- *  set wins for it. */
-export const STRIPE_HUNDREDFOLD_CURRENCIES: ReadonlySet<string> = new Set(["ISK", "UGX"]);
+/** Zero-decimal by ISO, but a two-decimal `amount` ending in `00` at Stripe
+ *  ("Special cases"). A listed row in one of these would be mis-scaled. */
+const STRIPE_TWO_DECIMAL_REPRESENTED: ReadonlySet<string> = new Set(["ISK", "UGX"]);
 
 /**
- * Stripe `amount` per one of OUR minor units of `code` — `1` (send our amount
- * as is) or `100` (ISK: whole krónur go out as hundredths) — or `null` when the
- * live path refuses the currency. See {@link STRIPE_ZERO_DECIMAL_CURRENCIES}'s
- * block for every rule and its source.
+ * True when the live path refuses `code` — our stored minor units are not
+ * Stripe's `amount` for it. See {@link STRIPE_ZERO_DECIMAL_CURRENCIES}'s block
+ * for every rule and its source.
  */
-export function stripeAmountFactor(code: string): 1 | 100 | null {
+export function stripeRefusesCurrency(code: string): boolean {
 	const upper = code.toUpperCase();
+	const zero = STRIPE_ZERO_DECIMAL_CURRENCIES.has(upper);
+	const three = STRIPE_THREE_DECIMAL_CURRENCIES.has(upper);
 	const digits = currencyDigits(upper);
-	if (digits === undefined) {
-		// Not in the table: exactly the pre-table behaviour.
-		return STRIPE_ZERO_DECIMAL_CURRENCIES.has(upper) || STRIPE_THREE_DECIMAL_CURRENCIES.has(upper)
-			? null
-			: 1;
-	}
-	if (digits === 3) return null;
-	if (digits === 0) {
-		if (STRIPE_HUNDREDFOLD_CURRENCIES.has(upper)) return 100;
-		return STRIPE_ZERO_DECIMAL_CURRENCIES.has(upper) ? 1 : null;
-	}
-	// Two-decimal in the table: Stripe must agree, or the scale is unknown.
-	return STRIPE_ZERO_DECIMAL_CURRENCIES.has(upper) ||
-		STRIPE_THREE_DECIMAL_CURRENCIES.has(upper) ||
-		STRIPE_HUNDREDFOLD_CURRENCIES.has(upper)
-		? null
-		: 1;
-}
-
-/**
- * A Stripe `amount` in `code` back in OUR minor units, or `null` when it is not
- * a whole number of them (an ISK amount not ending in `00`, which Stripe says it
- * never produces). A currency the live path refuses is returned unchanged — no
- * live charge exists in it, and it is what this adapter always reported.
- */
-export function fromStripeAmount(code: string, amount: number): number | null {
-	const factor = stripeAmountFactor(code);
-	if (factor === null || factor === 1) return amount;
-	return amount % factor === 0 ? amount / factor : null;
+	if (digits === undefined) return zero || three; // not listed: as before the table
+	if (digits === 0) return !zero || STRIPE_TWO_DECIMAL_REPRESENTED.has(upper);
+	if (digits === 2) return zero || three || STRIPE_TWO_DECIMAL_REPRESENTED.has(upper);
+	return true; // three-decimal
 }
 
 /**
@@ -638,23 +605,14 @@ export class StripePaymentGateway implements PaymentGateway {
 	 *     `Idempotency-Key`. An errored create with UNKNOWN fate (network / timeout)
 	 *     surfaces as `UNVERIFIED` — re-check before retrying, never a clean failure.
 	 *
-	 * Amounts cross in BOTH directions through the mapping `createIntent` charges
-	 * with ({@link stripeAmountFactor}): `input.amount` goes out in Stripe's unit,
-	 * and the pre-flight's figures and the created refund come back in ours. A
-	 * currency that mapping refuses is refused here too, as `TERMINAL`, before any
-	 * call — no live charge can exist in it.
+	 * `input.amount` is passed to Stripe unchanged, as `createIntent` charges it;
+	 * its safety rests on the {@link stripeRefusesCurrency} gate there — no
+	 * live-paid order can exist in a refused currency, so no refund can reach one
+	 * whose minor unit is not Stripe's `amount`.
 	 */
 	async refund(input: RefundInput): Promise<RefundResult> {
 		if (this.#secretKey === undefined || this.#transport === undefined) {
 			return { ok: false, reason: "UNSUPPORTED" };
-		}
-		// The same currency mapping `createIntent` charges with. A currency it
-		// refuses has no live charge to refund, and no exact Stripe amount: refuse
-		// before any call (a definite, non-retryable answer).
-		const factor = stripeAmountFactor(input.currency);
-		const stripeAmount = factor === null ? null : input.amount * factor;
-		if (factor === null || stripeAmount === null || !Number.isSafeInteger(stripeAmount)) {
-			return { ok: false, reason: "TERMINAL" };
 		}
 		const pre = await this.#transport.readRefundedAmount({
 			providerRef: input.providerRef,
@@ -663,12 +621,7 @@ export class StripePaymentGateway implements PaymentGateway {
 		if (!pre.ok) {
 			return { ok: false, reason: pre.class === "retryable" ? "RETRYABLE" : "TERMINAL" };
 		}
-		// Stripe's figures in OUR minor units. For ISK they are whole krónur × 100;
-		// should one ever not be, the conversion leans toward refusing — refunded
-		// rounds UP, captured DOWN — so a stray remainder can only make the
-		// pre-flight more cautious, never let a refund through. Factor 1 is exact.
-		const amountRefunded = Math.ceil(pre.view.amountRefunded / factor);
-		const amountCaptured = Math.floor(pre.view.amountCaptured / factor);
+		const { amountRefunded, amountCaptured } = pre.view;
 		if (amountRefunded > input.priorRefunded || amountRefunded + input.amount > amountCaptured) {
 			// The figures go back with the refusal: they are what tells the domain a
 			// payment refunded IN FULL in the dashboard from a partial one.
@@ -685,7 +638,7 @@ export class StripePaymentGateway implements PaymentGateway {
 		}
 		const created = await this.#transport.createRefund({
 			providerRef: input.providerRef,
-			amountCents: stripeAmount,
+			amountCents: input.amount,
 			idempotencyKey: input.idempotencyKey,
 			secretKey: this.#secretKey,
 		});
@@ -693,16 +646,10 @@ export class StripePaymentGateway implements PaymentGateway {
 			if (created.class === "ambiguous") return { ok: false, reason: "UNVERIFIED" };
 			return { ok: false, reason: created.class === "retryable" ? "RETRYABLE" : "TERMINAL" };
 		}
-		// Back in our minor units. A refund Stripe CREATED but whose amount is not a
-		// whole number of ours cannot be recorded truthfully — it is reported
-		// UNVERIFIED (re-check before anything else), never as a clean failure that
-		// would invite a second refund.
-		const refunded = created.amountCents % factor === 0 ? created.amountCents / factor : null;
-		if (refunded === null) return { ok: false, reason: "UNVERIFIED" };
 		return {
 			ok: true,
 			refundRef: created.refundId,
-			amount: cents(refunded),
+			amount: cents(created.amountCents),
 			currency: toCurrency(created.currency.toUpperCase()),
 		};
 	}
@@ -763,11 +710,10 @@ export class StripePaymentGateway implements PaymentGateway {
 	 * it as `customer`. Every other account sends no Customer and the same intent
 	 * body as before.
 	 *
-	 * **The amount is mapped per currency** ({@link stripeAmountFactor}): two- and
-	 * zero-decimal currencies go out unchanged (our minor unit IS Stripe's), ISK
-	 * ×100, and a currency with no exact mapping — three-decimal (KWD, BHD, OMR,
-	 * JOD, TND), or one the table and Stripe disagree on — is rejected TERMINALLY
-	 * before any network call. Offline is not gated.
+	 * **The amount goes out unchanged** — our minor unit IS Stripe's for every
+	 * currency the live path takes. One {@link stripeRefusesCurrency} refuses
+	 * (three-decimal, or a minor unit Stripe treats differently) is rejected
+	 * TERMINALLY before any network call. Offline is not gated.
 	 *
 	 * Note (accepted, not engineered around): Stripe expires idempotency keys after
 	 * ~24 h, so a retry past that window mints a SECOND PaymentIntent for the same
@@ -776,23 +722,19 @@ export class StripePaymentGateway implements PaymentGateway {
 	 */
 	async createIntent(input: CreateIntentInput): Promise<PaymentIntentHandle> {
 		if (this.#secretKey !== undefined && this.#transport !== undefined) {
-			// FAIL CLOSED before the network: our amount is in the currency table's
-			// minor unit, Stripe's `amount` in ITS unit for the currency
-			// ({@link stripeAmountFactor}). Where no exact mapping exists
-			// (three-decimal, or an exponent Stripe disagrees with) a pass-through
-			// would charge the wrong amount, and a wrong charge is never retryable.
-			const factor = stripeAmountFactor(input.currency);
-			const stripeAmount = factor === null ? null : input.amount * factor;
-			if (stripeAmount === null || !Number.isSafeInteger(stripeAmount)) {
+			// FAIL CLOSED before the network where our minor unit is not Stripe's
+			// `amount` (three-decimal, or a currency Stripe scales differently): the
+			// pass-through below would charge a wrong amount, never retryable.
+			if (stripeRefusesCurrency(input.currency)) {
 				throw new PaymentIntentError({
 					gateway: this.id,
 					retryable: false,
 					providerCode: "unsupported_currency",
 					message:
-						`live Stripe payments are not supported in "${input.currency}": its minor unit ` +
-						`has no exact Stripe amount (three-decimal currencies need multiples of 10, ` +
-						`which an order total need not be), so the charge is refused rather than ` +
-						`mis-scaled or rounded`,
+						`live Stripe payments are not supported in "${input.currency}": its stored ` +
+						`minor unit is not Stripe's amount for it (three-decimal currencies need ` +
+						`multiples of 10, which an order total need not be), so the charge is refused ` +
+						`rather than mis-scaled or rounded`,
 				});
 			}
 			const shipping = toStripeShipping(input.shipTo);
@@ -844,9 +786,9 @@ export class StripePaymentGateway implements PaymentGateway {
 			const customer = customerRef ?? undefined;
 			const request: StripeCreatePaymentIntentInput = {
 				orderId: input.orderId,
-				// Integer minor units in Stripe's unit for the currency — our amount
-				// unchanged for every currency but ISK (×100), never a float.
-				amountCents: stripeAmount,
+				// Integer minor units, straight through — no float math, ever. Sound only
+				// because every currency whose minor unit is not Stripe's was rejected above.
+				amountCents: input.amount,
 				currency: input.currency.toLowerCase(),
 				idempotencyKey: input.idempotencyKey,
 				secretKey: this.#secretKey,
@@ -1058,17 +1000,12 @@ function normalizeEvent(event: unknown): ConfirmationResult {
 	) {
 		return { ok: false, reason: "MALFORMED" };
 	}
-	// Stripe's amount back in OUR minor units (ISK ÷ 100; every other currency as
-	// is). One that is not a whole number of ours is passed through UNCONVERTED:
-	// it cannot equal the order total, so settlement raises its amount-mismatch
-	// anomaly instead of this event being dropped as malformed.
-	const ours = fromStripeAmount(cur, amount) ?? amount;
 	return {
 		ok: true,
 		outcome: e.type === SUCCEEDED ? "succeeded" : "failed",
 		orderId: toOrderId(orderRef),
 		providerRef,
-		amount: cents(ours),
+		amount: cents(amount),
 		currency: toCurrency(cur.toUpperCase()),
 		dedupeKey: e.id,
 		gateway: "stripe",

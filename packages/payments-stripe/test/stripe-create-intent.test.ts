@@ -12,11 +12,10 @@ import { describe, expect, test } from "vitest";
 import {
 	createStripeHttpTransport,
 	IN_FLIGHT_BUDGET_MS,
-	STRIPE_HUNDREDFOLD_CURRENCIES,
 	STRIPE_THREE_DECIMAL_CURRENCIES,
 	STRIPE_ZERO_DECIMAL_CURRENCIES,
 	StripePaymentGateway,
-	stripeAmountFactor,
+	stripeRefusesCurrency,
 	type StripeCreatePaymentIntentInput,
 	type StripeCreatePaymentIntentResult,
 	type StripeCreateRefundResult,
@@ -90,13 +89,12 @@ describe("StripePaymentGateway.createIntent — the OFFLINE path is unchanged", 
 	});
 });
 
-describe("StripePaymentGateway.createIntent — the LIVE path maps each currency to Stripe's unit, and FAILS CLOSED where it cannot", () => {
-	// Otta's amounts are in each currency's ISO 4217 minor unit (the currency
-	// table: whole yen for JPY, fils for KWD). Stripe's `amount` is in ITS unit for
-	// the currency (https://docs.stripe.com/currencies): the same for two- and
-	// zero-decimal currencies, ×100 for ISK, and thousandths in multiples of 10
-	// for three-decimal ones — which an order total need not be, so those are
-	// refused before the network. A wrong charge is not a retryable condition.
+describe("StripePaymentGateway.createIntent — the LIVE path sends our minor units unchanged, and FAILS CLOSED where they are not Stripe's", () => {
+	// Otta's amounts are in each currency's minor unit from the currency table
+	// (whole yen for JPY, fils for KWD). Stripe's `amount` is the same unit for
+	// two- and zero-decimal currencies (https://docs.stripe.com/currencies), so
+	// those go out unchanged; three-decimal ones need multiples of 10, which an
+	// order total need not be, so they are refused before the network.
 
 	async function liveIntent(code: string, amount: number): Promise<StripeCreatePaymentIntentInput> {
 		const transport = new MockTransport();
@@ -130,10 +128,10 @@ describe("StripePaymentGateway.createIntent — the LIVE path maps each currency
 		}
 	});
 
-	test("ISK (Stripe special case) goes out ×100 — whole krónur as a two-decimal amount ending 00", async () => {
-		const sent = await liveIntent("ISK", 5);
-		expect(sent.amountCents).toBe(500);
-		expect(sent.currency).toBe("isk");
+	test("ISK is NOT in the table and behaves exactly as before it: hundredths, sent unchanged", async () => {
+		expect(isSupportedCurrency("ISK")).toBe(false);
+		expect(stripeRefusesCurrency("ISK")).toBe(false);
+		expect((await liveIntent("ISK", 150_000)).amountCents).toBe(150_000);
 	});
 
 	test("HUF and TWD (Stripe special cases for PAYOUTS only) are two-decimal: sent unchanged", async () => {
@@ -150,8 +148,9 @@ describe("StripePaymentGateway.createIntent — the LIVE path maps each currency
 			if (isSupportedCurrency(code)) continue;
 			await refused(code);
 		}
-		// LKR: a two-decimal code outside the table, which went live before it.
+		// LKR / ALL: codes outside the table, which went live before it.
 		expect((await liveIntent("LKR", 2500)).amountCents).toBe(2500);
+		expect((await liveIntent("ALL", 2500)).amountCents).toBe(2500);
 	});
 
 	test("ordinary exponent-2 currencies still go live, byte-for-byte unchanged", async () => {
@@ -169,23 +168,16 @@ describe("StripePaymentGateway.createIntent — the LIVE path maps each currency
 		expect([...STRIPE_THREE_DECIMAL_CURRENCIES].toSorted()).toEqual(
 			"BHD JOD KWD OMR TND".split(" "),
 		);
-		expect([...STRIPE_HUNDREDFOLD_CURRENCIES].toSorted()).toEqual(["ISK", "UGX"]);
 	});
 
-	test("EVERY row of the currency table maps to an exact Stripe amount, or is a three-decimal refusal", () => {
+	test("EVERY row of the currency table is either charged unchanged or a three-decimal refusal", () => {
 		// Adding a currency to the table lands here: a row whose exponent Stripe
-		// treats differently fails until this adapter knows the mapping.
+		// treats differently is refused (and fails this test) until this adapter
+		// knows how to scale it.
 		for (const row of SUPPORTED_CURRENCIES) {
-			const factor = stripeAmountFactor(row.code);
-			if (row.digits === 3) {
-				expect(factor, row.code).toBeNull();
-			} else if (STRIPE_HUNDREDFOLD_CURRENCIES.has(row.code)) {
-				expect(row.digits, row.code).toBe(0);
-				expect(factor, row.code).toBe(100);
-			} else {
-				expect(factor, row.code).toBe(1);
-				expect(STRIPE_ZERO_DECIMAL_CURRENCIES.has(row.code), row.code).toBe(row.digits === 0);
-			}
+			expect(stripeRefusesCurrency(row.code), row.code).toBe(row.digits === 3);
+			if (row.digits === 0)
+				expect(STRIPE_ZERO_DECIMAL_CURRENCIES.has(row.code), row.code).toBe(true);
 		}
 	});
 });
