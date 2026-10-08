@@ -51,6 +51,7 @@ const {
 	couponError,
 	refusedCouponCode,
 	destinationError,
+	regionRefused,
 	shippingError,
 	noOptionsCopy,
 	destination,
@@ -283,8 +284,8 @@ const {
 										name="deliveryRegion"
 										form="checkout-place"
 										autocomplete="address-level1"
-										aria-invalid={destinationError !== null}
-										aria-describedby={destinationError !== null ? "delivery-error region-note" : "region-note"}
+										aria-invalid={regionRefused}
+										aria-describedby={regionRefused ? "delivery-error region-note" : "region-note"}
 									>
 										<option value="">Choose a state / province…</option>
 										{deliveryRegions.options.map((option) => (

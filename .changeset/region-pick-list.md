@@ -25,13 +25,17 @@ field.
   re-exports `normalizeSubdivision`.
 - **A region is never sent for the wrong country.** Each list echoes the country it was
   rendered for (`deliveryRegionCountry`, `regionCountry`); when the posted country
-  differs, the old region is dropped. A place whose country changed since its list was
-  rendered (including a first choice of country) comes back once with the new list shown
-  and marked (`REGION_LIST_UPDATED`) when that country has subdivisions or a region was
-  posted for another country, so no order is placed before the buyer has seen the list.
+  differs, the old region is dropped. A region picked from another
+  country's list, for a country with its own list, is re-asked (`REGION_LIST_UPDATED`,
+  marked together with any other field errors) rather than placed; for a country without
+  subdivisions it is just dropped. A blank region stays optional and is never re-asked;
+  where a region-level zone needs one, the plugin's `SHIPPING_REGION_CODE_REQUIRED` brings
+  the review back with that country's list, marked.
 - **Zoned stores keep the chosen country.** When the plugin refuses a destination (a
   store with a `US-CA` zone refuses plain `US`), the delivery block keeps the country
   and shows its state list, marked invalid, instead of resetting.
+- The list is every ISO 3166-2 subdivision at all levels (GB: 221), so merchants must set
+  region zones at the level buyers pick from (ADR-0021 amendment).
 - Names include CLDR's provisional ones (CN-HK, CN-MO, CN-NM, CN-TW), drop CLDR's
   footnote markers (`Île-de-France²`), and label same-named subdivisions with their code.
 - A theme that still prints a typed region input posts no `regionCountry` and behaves as

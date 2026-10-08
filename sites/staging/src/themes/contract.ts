@@ -405,6 +405,10 @@ export interface CheckoutModel {
 	countryValue: string;
 	regionValue: string;
 	countries: readonly CountryOption[];
+	/** The destination was refused for its REGION (SHIPPING_REGION_CODE_REQUIRED,
+	 *  from the plugin or the site's shape check): mark the delivery region
+	 *  field invalid. False for a country-level refusal. */
+	regionRefused: boolean;
 	/** `destination.region` in words ("California"), or null — none, or no name. */
 	destinationRegionName: string | null;
 	/**

@@ -629,14 +629,62 @@ describe("the state/province pick list: a changed country is a round trip, never
 		expect(h.draft()!.values.region).toBeUndefined();
 	});
 
-	test("the first choice of a country WITH subdivisions re-asks once, its list shown and marked (no-JS first-time buyer)", async () => {
+	test("the first choice of a country, region left blank, places — a blank optional region is never re-asked or marked", async () => {
 		const h = harness({ ...FULL, country: "US", regionCountry: "" }, PLACED);
+		expect((await PLACE_POST(h.context)).headers.get("location")).toBe("/checkout/pay");
+		expect(h.calls).toHaveLength(1);
+		const address = h.calls[0]!["shippingAddress"] as Record<string, string>;
+		expect(address["country"]).toBe("US");
+		expect(address["region"]).toBeUndefined();
+	});
+
+	test("a region the plugin REQUIRES (SHIPPING_REGION_CODE_REQUIRED) comes back with the field marked", async () => {
+		const h = harness(
+			{ ...FULL, country: "US", regionCountry: "" },
+			{
+				ok: false,
+				error: "SHIPPING_REGION_CODE_REQUIRED",
+			},
+		);
+		const location = (await PLACE_POST(h.context)).headers.get("location")!;
+		expect(location).toContain("error=SHIPPING_REGION_CODE_REQUIRED");
+		expect(h.draft()!.errors).toEqual({ region: "invalid" });
+		expect(h.draft()!.values.country).toBe("US");
+	});
+
+	test("a region posted for ANOTHER country with a list of its own is re-asked, never dropped and placed", async () => {
+		const h = harness({ ...OWN, country: "IN" }, PLACED);
 		expect((await PLACE_POST(h.context)).headers.get("location")).toBe(
 			"/checkout?error=REGION_LIST_UPDATED",
 		);
 		expect(h.calls).toHaveLength(0);
-		expect(h.draft()!.values).toMatchObject({ email: "ada@example.com", country: "US" });
+		expect(h.draft()!.values.region).toBeUndefined();
 		expect(h.draft()!.errors).toEqual({ region: "invalid" });
+	});
+
+	test("a stale region for a country WITHOUT subdivisions is dropped and the order placed — nothing to pick", async () => {
+		const h = harness({ ...OWN, country: "AQ" }, PLACED);
+		expect((await PLACE_POST(h.context)).headers.get("location")).toBe("/checkout/pay");
+		expect(h.calls).toHaveLength(1);
+		const address = h.calls[0]!["shippingAddress"] as Record<string, string>;
+		expect(address["country"]).toBe("AQ");
+		expect(address["region"]).toBeUndefined();
+	});
+
+	test("the re-ask comes AFTER the other checks: a bad email and a stale region are marked in ONE round trip", async () => {
+		const h = harness({ ...OWN, country: "IN", email: "ada@", city: "" }, PLACED);
+		const location = (await PLACE_POST(h.context)).headers.get("location")!;
+		expect(location).toContain("error=INVALID_EMAIL");
+		expect(h.calls).toHaveLength(0);
+		expect(h.draft()!.errors).toEqual({ email: "invalid", city: "missing", region: "invalid" });
+		expect(h.draft()!.values.region).toBeUndefined();
+	});
+
+	test("a partial address and a stale region are marked together too", async () => {
+		const h = harness({ ...OWN, country: "IN", city: "" }, PLACED);
+		const location = (await PLACE_POST(h.context)).headers.get("location")!;
+		expect(location).toContain("error=INVALID_SHIPPING_ADDRESS");
+		expect(h.draft()!.errors).toEqual({ city: "missing", region: "invalid" });
 	});
 
 	test("an address too long for the draft cookie is never re-asked: the order can still be placed", async () => {
@@ -648,13 +696,8 @@ describe("the state/province pick list: a changed country is a round trip, never
 			line2: "Ł".repeat(ORDER_ADDRESS_MAX_LENGTHS.line2),
 			city: "Ł".repeat(ORDER_ADDRESS_MAX_LENGTHS.city),
 		};
-		// Non-ASCII, so the URL-encoded cookie is several times its length.
-		const form = {
-			...FULL,
-			...long,
-			country: "US",
-			regionCountry: "",
-		};
+		// A region picked for the US, then India chosen: the case that re-asks.
+		const form = { ...FULL, ...long, country: "IN", region: "CA", regionCountry: "US" };
 		const { idempotencyKey: _key, regionCountry: _list, ...values } = form;
 		expect(checkoutDraftFits({ values, errors: {} })).toBe(false);
 		for (const attempt of [1, 2]) {
@@ -662,38 +705,10 @@ describe("the state/province pick list: a changed country is a round trip, never
 			expect((await PLACE_POST(h.context)).headers.get("location"), `attempt ${attempt}`).toBe(
 				"/checkout/pay",
 			);
-			expect(h.calls).toHaveLength(1);
-			expect((h.calls[0]!["shippingAddress"] as Record<string, string>)["country"]).toBe("US");
+			const address = h.calls[0]!["shippingAddress"] as Record<string, string>;
+			expect(address["country"]).toBe("IN");
+			expect(address["region"]).toBeUndefined();
 		}
-	});
-
-	test("once the list matches the country, leaving the region blank places (it stays optional)", async () => {
-		const h = harness({ ...FULL, country: "US", regionCountry: "US" }, PLACED);
-		expect((await PLACE_POST(h.context)).headers.get("location")).toBe("/checkout/pay");
-		const address = h.calls[0]!["shippingAddress"] as Record<string, string>;
-		expect(address["region"]).toBeUndefined();
-	});
-
-	test("a region posted for ANOTHER country is re-asked, never dropped and placed — even for a country without subdivisions", async () => {
-		// Hidden US, country AQ, region CA: main refused the region; the order must
-		// not quietly go through without it either.
-		const h = harness({ ...OWN, country: "AQ" }, PLACED);
-		expect((await PLACE_POST(h.context)).headers.get("location")).toBe(
-			"/checkout?error=REGION_LIST_UPDATED",
-		);
-		expect(h.calls).toHaveLength(0);
-		expect(h.draft()!.values.region).toBeUndefined();
-		expect(h.draft()!.errors).toEqual({});
-	});
-
-	test("a changed country WITHOUT subdivisions and no region places straight away", async () => {
-		// Antarctica has no ISO 3166-2 subdivisions: there is no list to show.
-		const h = harness({ ...FULL, country: "AQ", regionCountry: "US" }, PLACED);
-		expect((await PLACE_POST(h.context)).headers.get("location")).toBe("/checkout/pay");
-		expect(h.calls).toHaveLength(1);
-		const address = h.calls[0]!["shippingAddress"] as Record<string, string>;
-		expect(address["country"]).toBe("AQ");
-		expect(address["region"]).toBeUndefined();
 	});
 
 	test("an unchanged country places with the picked code, exactly as a typed one was sent", async () => {

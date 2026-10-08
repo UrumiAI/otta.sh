@@ -123,10 +123,9 @@ export interface DraftCookieWriter {
  * existed, rather than a form that looks whole and is not.
  */
 export function writeCheckoutDraft(cookies: DraftCookieWriter, draft: CheckoutDraft): void {
-	if (!checkoutDraftFits(draft)) return;
-	const candidate = clean(draft);
-	if (candidate === null) return;
-	cookies.set(CHECKOUT_DRAFT_COOKIE, JSON.stringify(candidate), {
+	const value = serializeDraft(draft);
+	if (value === null) return;
+	cookies.set(CHECKOUT_DRAFT_COOKIE, value, {
 		httpOnly: true,
 		secure: true,
 		sameSite: "strict",
@@ -135,14 +134,21 @@ export function writeCheckoutDraft(cookies: DraftCookieWriter, draft: CheckoutDr
 	});
 }
 
+/** The cookie value a draft is stored as — whitelisted and bounded — or `null`
+ *  when it cannot be stored (not a draft, or over the cookie budget). The one
+ *  rule `writeCheckoutDraft` and `checkoutDraftFits` share. */
+export function serializeDraft(draft: CheckoutDraft): string | null {
+	const candidate = clean(draft);
+	if (candidate === null) return null;
+	const json = JSON.stringify(candidate);
+	return encodeURIComponent(json).length <= COOKIE_BUDGET ? json : null;
+}
+
 /** Would `writeCheckoutDraft` actually store this draft? False when it is over
  *  the cookie budget — a caller whose next step depends on the typed values
  *  coming back (a re-render that asks again) must not rely on them then. */
 export function checkoutDraftFits(draft: CheckoutDraft): boolean {
-	const candidate = clean(draft);
-	return (
-		candidate !== null && encodeURIComponent(JSON.stringify(candidate)).length <= COOKIE_BUDGET
-	);
+	return serializeDraft(draft) !== null;
 }
 
 export function readCheckoutDraft(cookies: CookieReader): CheckoutDraft | null {

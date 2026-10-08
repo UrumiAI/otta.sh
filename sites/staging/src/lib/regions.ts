@@ -15,6 +15,7 @@
  */
 import { normalizeSubdivision } from "@otta-sh/plugin";
 import { subdivisionOptions } from "@otta-sh/plugin/subdivisions";
+import { byLabel } from "./countries.js";
 
 /** The hidden field naming the country the place form's region list was
  *  rendered for (the address block without delivery). */
@@ -41,26 +42,38 @@ export interface RegionChoice {
 	selected: string;
 }
 
-function collator(locale: string): Intl.Collator | null {
-	try {
-		return new Intl.Collator(locale);
-	} catch {
-		return null;
-	}
+/** Sorted lists, per country and locale: the names are fixed data, so each
+ *  list is decoded and sorted once. Keys are only real countries (a code with
+ *  no subdivisions is never stored) times the site's locale(s). */
+const sorted = new Map<string, readonly RegionOption[]>();
+
+function optionsFor(country: string, locale: string): readonly RegionOption[] {
+	const key = `${country}\u0000${locale}`;
+	const cached = sorted.get(key);
+	if (cached !== undefined) return cached;
+	const subdivisions = subdivisionOptions(country);
+	if (subdivisions.length === 0) return [];
+	const options = Object.freeze(
+		subdivisions
+			.map((option) => Object.freeze({ code: option.code, label: option.name }))
+			.toSorted(byLabel(locale)),
+	);
+	sorted.set(key, options);
+	return options;
 }
 
 /** The pick list for `country`, with `value` (a stored or typed region) preselected. */
 export function regionChoice(country: string, value: string, locale: string): RegionChoice {
 	const code = country.trim().toUpperCase();
-	const compare = collator(locale);
-	const options = subdivisionOptions(code)
-		.map((option) => ({ code: option.code, label: option.name }))
-		.toSorted((a, b) =>
-			compare !== null ? compare.compare(a.label, b.label) : a.label < b.label ? -1 : 1,
-		);
+	const options = optionsFor(code, locale);
 	if (options.length === 0) return { country: code, options: [], selected: "" };
 	const read = normalizeSubdivision(code, value);
 	return { country: code, options, selected: read.ok && read.code !== null ? read.code : "" };
+}
+
+/** Does `country` have subdivisions — i.e. is there a list to pick from? */
+export function hasRegionList(country: string | undefined): boolean {
+	return subdivisionOptions((country ?? "").trim().toUpperCase()).length > 0;
 }
 
 /** True when the form's region was picked from a list rendered for ANOTHER

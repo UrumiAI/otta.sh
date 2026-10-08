@@ -8,7 +8,7 @@
 import { experimental_AstroContainer as AstroContainer } from "astro/container";
 import { beforeAll, describe, expect, test } from "vitest";
 import type { CheckoutSummaryView } from "@otta-sh/plugin";
-import { countryOptions } from "../src/lib/countries.js";
+import { byLabel, countryOptions } from "../src/lib/countries.js";
 import { regionChoice, regionListIsStale } from "../src/lib/regions.js";
 import type { CheckoutModel } from "../src/themes/contract.js";
 import CheckoutView from "../src/themes/tempered/CheckoutView.astro";
@@ -51,6 +51,15 @@ describe("regionChoice", () => {
 
 	test("an unknown locale still sorts (and never throws)", () => {
 		expect(regionChoice("IN", "KA", "not a locale!").selected).toBe("KA");
+	});
+});
+
+describe("the sorted list is cached per country and locale", () => {
+	test("the same list object comes back, and equal labels compare 0", () => {
+		expect(regionChoice("GB", "", "en-US").options).toBe(regionChoice("gb", "x", "en-US").options);
+		expect(byLabel("en-US")({ label: "A" }, { label: "A" })).toBe(0);
+		expect(byLabel("not a locale!")({ label: "A" }, { label: "A" })).toBe(0);
+		expect(byLabel("not a locale!")({ label: "A" }, { label: "B" })).toBe(-1);
 	});
 });
 
@@ -116,6 +125,7 @@ describe("the Tempered review, rendered", () => {
 			destination: null,
 			destinationName: null,
 			destinationRegionName: null,
+			regionRefused: false,
 			countryValue: "",
 			regionValue: "",
 			countries,
@@ -244,6 +254,7 @@ describe("the Tempered review, rendered", () => {
 					deliveryRegions: regionChoice("US", "", "en-US"),
 					destinationError:
 						"Choose your state/province from the list, or leave it blank if your country doesn't use one.",
+					regionRefused: true,
 				},
 				{
 					requiresShipping: true,
@@ -257,6 +268,27 @@ describe("the Tempered review, rendered", () => {
 		expect(open).toContain('aria-describedby="delivery-error region-note"');
 		expect(html).toContain('id="delivery-error"');
 		expect(regionSelect(html, "deliveryRegion")).toMatch(/<option value="CA">California<\/option>/);
+	});
+
+	test("a COUNTRY-level refusal (we don't ship there) does not mark the state list invalid", async () => {
+		const html = await render(
+			model(
+				{
+					showDelivery: true,
+					countryValue: "US",
+					deliveryRegions: regionChoice("US", "NY", "en-US"),
+					destinationError: "We don't ship to this address.",
+					regionRefused: false,
+				},
+				{
+					requiresShipping: true,
+					shipping: { status: "address_needed", options: [], noOptions: false },
+				},
+			),
+		);
+		const open = /<select[^>]*name="deliveryRegion"[^>]*>/.exec(html)?.[0] ?? "";
+		expect(open).not.toContain('aria-invalid="true"');
+		expect(open).toContain('aria-describedby="region-note"');
 	});
 
 	test("the delivery block for a country without subdivisions shows no region field", async () => {

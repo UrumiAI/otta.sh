@@ -306,6 +306,10 @@ const model: CheckoutModel = {
 			? cartErrorMessage(couponError.reason)
 			: (placeCouponError?.message ?? null),
 	destinationError: destinationError !== null ? cartErrorMessage(destinationError.reason) : null,
+	/* The REGION is what was refused — missing where a zone needs it, not one
+	   of the country's codes, or not even code-shaped (the site's own check uses
+	   the same reason). A country-level refusal ("we don't ship here") is not. */
+	regionRefused: destinationError?.reason === "SHIPPING_REGION_CODE_REQUIRED",
 	shippingError: shippingError !== null ? cartErrorMessage(shippingError.reason) : null,
 	noOptionsCopy: cartErrorMessage("SHIPPING_METHOD_REQUIRED"),
 	destination,

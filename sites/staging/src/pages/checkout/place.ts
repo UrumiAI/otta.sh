@@ -73,9 +73,9 @@ import {
 	readFormBody,
 } from "../../lib/otta-api.js";
 import { COUNTRY_CODES, isCodeShapedRegion, ORDER_ADDRESS_MAX_LENGTHS } from "@otta-sh/plugin";
-import { subdivisionOptions } from "@otta-sh/plugin/subdivisions";
 import {
 	DELIVERY_REGION_COUNTRY_FIELD,
+	hasRegionList,
 	REGION_COUNTRY_FIELD,
 	regionListIsStale,
 } from "../../lib/regions.js";
@@ -239,11 +239,25 @@ async function place(context: APIContext): Promise<Response> {
 	// rendered for (`regionCountry`, see UPDATE ADDRESS below). Once the country
 	// has changed, a region picked from that list is dropped — from the draft
 	// every redirect writes, and from the address placed.
+	// A zoned store's review carries the destination it priced as hidden
+	// fields (see readShippingAddress).
+	const zoned = formString(form.get("addressMode")) === "zoned";
 	const addressCountry = formString(form.get("country"));
 	const addressListStale =
-		formString(form.get("addressMode")) !== "zoned" &&
-		regionListIsStale(presentField(form, REGION_COUNTRY_FIELD), addressCountry);
+		!zoned && regionListIsStale(presentField(form, REGION_COUNTRY_FIELD), addressCountry);
 	if (addressListStale) delete draftValues.region;
+	// A region the buyer PICKED from another country's list, for a country that
+	// has a list of its own: it is re-asked (REGION_LIST_UPDATED, below), never
+	// dropped and placed. A country without subdivisions has nothing to pick —
+	// the stale region is just dropped — and a blank region is never re-asked
+	// or marked: outside a region-level zone it is optional (where a zone needs
+	// it, the plugin refuses SHIPPING_REGION_CODE_REQUIRED and the review comes
+	// back with that country's list, the field marked).
+	const staleRegionPicked =
+		addressListStale &&
+		formString(form.get("region")) !== undefined &&
+		hasRegionList(addressCountry);
+	const reAskFields: FieldErrors = staleRegionPicked ? { region: "invalid" } : {};
 	const refuse = (
 		path: string,
 		error: string | undefined,
@@ -272,9 +286,6 @@ async function place(context: APIContext): Promise<Response> {
 	// echoed as a hidden field; forwarded only when present. The zone is NEVER
 	// read: the plugin derives it from the address (ADR-0021).
 	const shippingMethodId = formString(form.get("shippingMethodId"));
-	// A zoned store's review carries the destination it priced as hidden
-	// fields (see readShippingAddress).
-	const zoned = formString(form.get("addressMode")) === "zoned";
 	// What a failure redirect may carry back — never an address field: only the
 	// coupon, the method and, from a zoned page, the coarse destination.
 	const selection: CheckoutUrlSelection = {
@@ -363,33 +374,6 @@ async function place(context: APIContext): Promise<Response> {
 	if (intent === "update-address") {
 		return refuse(checkoutPath(selection), undefined);
 	}
-	// And the safety net. The state/province list on the page belongs to the
-	// country it was rendered for — "" before any was chosen, with no list at all.
-	// A place whose country has changed since then never goes ahead blind: when
-	// the new country HAS subdivisions, the review comes back once with its list
-	// shown (and marked), so a buyer always sees it before an order is placed —
-	// a first-time no-JS buyer included. When a region was posted for another
-	// country, it comes back too (it never silently loses the region and places,
-	// as main refused such a region rather than placing). After that one round
-	// trip the list matches the country and the region stays optional.
-	//
-	// Only when the typed values can come back: an address too long for the
-	// draft cookie is not saved, so a re-ask would return an EMPTY form whose
-	// next submit is re-asked again — the order could never be placed. Then it
-	// places (the stale region is still dropped, below).
-	const reAskFields: FieldErrors =
-		subdivisionOptions(addressCountry ?? "").length > 0 ? { region: "invalid" } : {};
-	if (
-		addressListStale &&
-		(formString(form.get("region")) !== undefined ||
-			subdivisionOptions(addressCountry ?? "").length > 0) &&
-		checkoutDraftFits({ values: draftValues, errors: reAskFields, error: REGION_LIST_UPDATED })
-	) {
-		return refuse(checkoutPath({ ...selection, error: REGION_LIST_UPDATED }), REGION_LIST_UPDATED, {
-			fields: reAskFields,
-		});
-	}
-
 	// No publishable key ⇒ NO ORDER (§1.7). The review page already hides the
 	// button, but this is the server-side half of that promise: creating an
 	// order would hold stock for 15 minutes against a payment that structurally
@@ -413,7 +397,7 @@ async function place(context: APIContext): Promise<Response> {
 		// is checked here too, so every field that needs fixing is marked at once.
 		const address = readShippingAddress(form, zoned, { dropRegion: addressListStale });
 		return refuse(placeFailurePath(INVALID_EMAIL, selection), INVALID_EMAIL, {
-			fields: { email: "invalid", ...(address.ok ? {} : address.fields) },
+			fields: { email: "invalid", ...(address.ok ? {} : address.fields), ...reAskFields },
 		});
 	}
 
@@ -435,8 +419,23 @@ async function place(context: APIContext): Promise<Response> {
 				? checkoutPath({ ...selection, error: shipping.error })
 				: placeFailurePath(shipping.error, selection),
 			shipping.error,
-			{ fields: shipping.fields },
+			{ fields: { ...shipping.fields, ...reAskFields } },
 		);
+	}
+
+	// The re-ask, AFTER the checks above so that every field to fix is marked in
+	// one round trip: a region picked from another country's list comes back with
+	// this country's list instead of being placed (see `staleRegionPicked`). Only
+	// when the typed values can come back — an address too long for the draft
+	// cookie is not saved, and re-asking it would return an EMPTY form, again and
+	// again; then it places without the stale region.
+	if (
+		staleRegionPicked &&
+		checkoutDraftFits({ values: draftValues, errors: reAskFields, error: REGION_LIST_UPDATED })
+	) {
+		return refuse(checkoutPath({ ...selection, error: REGION_LIST_UPDATED }), REGION_LIST_UPDATED, {
+			fields: reAskFields,
+		});
 	}
 
 	// The signed-in shopper's session, if any. The plugin route is cookie-blind

@@ -876,6 +876,10 @@ A count or total is **"available"** only when it is already a field on the wire 
 reads, or already in memory from a read the render performs anyway. It is **not** available if
 fetching it means a per-row request. Concretely:
 
+- **Zone regions must be set at the level buyers pick from.** The storefront offers every
+  ISO 3166-2 subdivision of a country, all levels (GB: 221 entries), and matching is exact with
+  no hierarchy — a `GB-ENG` zone does not cover a buyer who picks a council area. List the codes
+  your buyers will choose (ADR-0021, amended 2026-10-08).
 - `ShippingZoneWire` is `{id, name, regions}` — **no method count**
   (`admin-rules-client.ts:22-27`). With `limit: 200` a `us — United States · 3 methods` label would
   cost up to 200 extra `ctx.http` round trips per render. The correct label is
