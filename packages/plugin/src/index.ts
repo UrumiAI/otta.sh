@@ -463,11 +463,6 @@ export { COUNTRY_CODES, isCodeShapedRegion, REGION_CODE_PATTERN } from "@otta-sh
 // names live in `@otta-sh/plugin/subdivisions`). The routes still validate
 // every region themselves.
 export { normalizeSubdivision } from "@otta-sh/domain";
-// Which countries need a region at checkout (zones listing a subdivision code).
-export {
-	STOREFRONT_REGION_RULES_ROUTE,
-	type RegionRulesResult,
-} from "./storefront/region-rules-route.js";
 // The shopper-facing name of an order — its products, never its id. The site
 // names an order on its confirmation and account pages; the order emails name
 // it through the same function in the domain, so the site takes THAT one rather

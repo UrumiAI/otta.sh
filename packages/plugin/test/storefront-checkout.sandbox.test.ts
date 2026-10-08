@@ -936,14 +936,6 @@ describe("storefront/checkout/summary — the buyer's selection (workerd sandbox
 describe("storefront/checkout/summary — the zone derived from the destination (workerd sandbox)", () => {
 	useShippingRules(seedZoneFixture, removeZoneFixture);
 
-	test("storefront/checkout/region-rules: the countries some zone lists at region level (US-CA ⇒ US), and nothing else", async () => {
-		const result = resultOf(
-			await sandboxHandle.invokeRoute("storefront/checkout/region-rules", {}),
-		);
-		// The fixture's zones: US (country), US-CA (region, carries the CA tax rate), DE (country).
-		expect(result).toEqual({ ok: true, regionRequiredCountries: ["US"] });
-	});
-
 	type Totals = Record<string, { money: { amount: number } | null; label: string }>;
 	const totalsOf = (result: Record<string, unknown>) => result["totals"] as Totals;
 
@@ -2088,6 +2080,13 @@ describe("storefront/checkout/place success path (workerd sandbox, Stripe stubbe
 			return (await storedOrder(orderId)).totals;
 		}
 
+		test("a store with NO zones never needs a region: a US address without one places", async () => {
+			const placed = await placeCart(await seedThreeLineCart(), { shippingAddress: SHIP_TO });
+			expect(placed, JSON.stringify(placed)).toMatchObject({ ok: true });
+			const order = await storedOrder(placed["orderId"] as string);
+			expect(JSON.stringify(order)).not.toContain("SHIPPING_REGION_CODE_REQUIRED");
+		});
+
 		test("a coupon is redeemed WITH the order: summary total, place total, order total and Stripe amount are the SAME discounted figure", async () => {
 			await seedCoupon({ id: `${NS}-place-once`, code: "CK-PLACE-ONCE", amount: 500 });
 			const cartId = await seedThreeLineCart();
@@ -2439,6 +2438,17 @@ describe("storefront/checkout/place success path (workerd sandbox, Stripe stubbe
 			const order = await storedOrder(placed["orderId"] as string);
 			expect(order.totals.tax).toBe(218);
 			expect((order.totals.shippingMethodSnapshot as { zoneId: string }).zoneId).toBe(P2.CA);
+		});
+
+		test("a physical cart in a STATE-zoned store (a US-CA zone, which also carries the CA tax rate) cannot place a US address without a region", async () => {
+			// The store's rule — region required iff some zone lists one of the
+			// country's subdivisions — is this zone match; the site adds none.
+			expect(SHIP_TO).not.toHaveProperty("region");
+			await expectRefusedAtPlace(
+				await p2Cart(),
+				{ shippingAddress: SHIP_TO, shippingMethodId: P2.US_STD },
+				"SHIPPING_REGION_CODE_REQUIRED",
+			);
 		});
 
 		test("(US, XX) is the typed SHIPPING_REGION_CODE_REQUIRED — no order, no intent", async () => {
