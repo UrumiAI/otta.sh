@@ -46,6 +46,8 @@ export default defineConfig({
 	 */
 	noExternal: [
 		"@otta-sh/domain",
+		// Its own subpath: matched as an exact id, so it is listed too.
+		"@otta-sh/domain/subdivision-names",
 		"@otta-sh/payments-stripe",
 		"@otta-sh/payments-x402",
 		"@otta-sh/store-emdash",
