@@ -102,18 +102,11 @@ function canonical(field: DraftField, value: string, currency: string): string {
 	return units === null ? trimmed : formatMinorUnitsInput(units, currency);
 }
 
-function changedFields(
-	saved: PricingDraft,
-	draft: PricingDraft,
-	opts: { lonePickedCurrency?: boolean } = {},
-): DraftField[] {
+function changedFields(saved: PricingDraft, draft: PricingDraft): DraftField[] {
 	return (Object.keys(saved) as DraftField[]).filter((field) => {
-		// For DIRTINESS the currency only travels WITH a price: picked on its own
-		// for a product that has none, the save would send nothing, so it is not a
-		// change. For a MERGE it is (`lonePickedCurrency`): the merchant chose it,
-		// and the price they type next means it.
-		if (field === "currency" && draft.price.trim().length === 0 && opts.lonePickedCurrency !== true)
-			return false;
+		// The currency only travels WITH a price: picked on its own for a product
+		// that has none, the save would send nothing, so it is not a change.
+		if (field === "currency" && draft.price.trim().length === 0) return false;
 		// Nor is a weight or size typed before switching to digital: it is not sent.
 		if (draft.productKind === "digital" && SIZE_FIELDS.has(field)) return false;
 		return (
@@ -128,6 +121,46 @@ export function isDraftDirty(saved: PricingDraft, draft: PricingDraft): boolean 
 }
 
 /**
+ * THE CURRENCY RULES for a re-read under a form the merchant may have used.
+ * One table, in order (`mergeDraft` applies it; the tests run every row):
+ *
+ *  | the newer record  | merchant                        | the draft's currency            |
+ *  |-------------------|---------------------------------|---------------------------------|
+ *  | PRICED meanwhile  | no price typed                  | the stored one, silently        |
+ *  | PRICED meanwhile  | price typed, other currency     | the stored one, and a CONFLICT  |
+ *  | PRICED meanwhile  | price typed, same currency      | unchanged                       |
+ *  | still unpriced    | picked a currency (`picked`)    | unchanged — theirs              |
+ *  | still unpriced    | typed a price (under any shown) | unchanged — they priced in it,  |
+ *  |                   |                                 | even "" (the choose-one gate)   |
+ *  | still unpriced    | neither                         | the newer store currency        |
+ *
+ * A stored currency is fixed once set, so the first three rows are not a
+ * choice. Below them, a store-currency default that MOVED (the operator
+ * switched it, or an unknown one became known) never rewrites a currency the
+ * merchant picked or priced against — that would save their amount in a
+ * currency they did not mean.
+ */
+export function resolveDraftCurrency(args: {
+	draft: PricingDraft;
+	/** Set only by a UI pick of the currency select. */
+	picked: boolean;
+	next: ProductRecord;
+	/** The store currency the newer read carried (`""`: still unknown). */
+	nextStoreCurrency: string;
+}): { currency: string; conflict: boolean } {
+	const { draft, picked, next, nextStoreCurrency } = args;
+	const priceTyped = draft.price.trim().length > 0;
+	if (next.currency !== null) {
+		return {
+			currency: next.currency,
+			conflict: priceTyped && draft.currency !== next.currency,
+		};
+	}
+	if (picked || priceTyped) return { currency: draft.currency, conflict: false };
+	return { currency: nextStoreCurrency, conflict: false };
+}
+
+/**
  * A re-read the merchant did not ask for (a CMS save, a stock movement, a
  * refusal that declined a value) lands a NEWER record under a form they may
  * have typed into. Only the fields THEY changed survive it; every other field
@@ -135,35 +168,32 @@ export function isDraftDirty(saved: PricingDraft, draft: PricingDraft): boolean 
  * else's change under the fresh watermark. A field they changed that ALSO
  * changed in the store is a conflict: the store's value wins FOR THAT FIELD and
  * the merchant is told, because neither edit can be assumed to be the one they
- * want; their other edits stay.
+ * want; their other edits stay. The CURRENCY follows its own table
+ * ({@link resolveDraftCurrency}).
  */
 export function mergeDraft(
 	previous: ProductRecord,
 	next: ProductRecord,
 	draft: PricingDraft,
-	storeCurrency: string = DEFAULT_STORE_CURRENCY,
-	/** The store currency the NEWER read carried (it can move, e.g. from unknown
-	 *  `""` to a value); defaults to the one the form was seeded with. */
-	nextStoreCurrency: string = storeCurrency,
+	opts: {
+		/** The store currency the form was seeded with. */
+		storeCurrency?: string;
+		/** The store currency the NEWER read carried; defaults to `storeCurrency`. */
+		nextStoreCurrency?: string;
+		/** The merchant picked the currency in the UI. */
+		currencyPicked?: boolean;
+	} = {},
 ): { draft: PricingDraft; conflict: boolean } {
+	const storeCurrency = opts.storeCurrency ?? DEFAULT_STORE_CURRENCY;
+	const nextStoreCurrency = opts.nextStoreCurrency ?? storeCurrency;
 	const before = draftFromRecord(previous, storeCurrency);
 	const after = draftFromRecord(next, nextStoreCurrency);
-	// A currency the merchant PICKED on an unpriced product is theirs even with
-	// the price still blank: a re-read must not reset it to the store currency,
-	// or the price they type next would be saved in a currency they did not mean.
-	const mine = changedFields(before, draft, { lonePickedCurrency: previous.currency === null });
+	const mine = changedFields(before, draft).filter((field) => field !== "currency");
 	// A clash takes the store's value for THAT field; the merchant's other edits
 	// survive, so a conflict on the weight does not throw away a typed price.
 	const merged: Record<string, string> = { ...after };
 	let conflict = false;
 	for (const field of mine) {
-		// The picked currency of a product STILL unpriced cannot clash: the only
-		// "other side" is a moved store-currency default, which is not a value
-		// anyone saved. (Priced meanwhile ⇒ the ordinary comparison below.)
-		if (field === "currency" && next.currency === null) {
-			merged[field] = draft[field];
-			continue;
-		}
 		if (
 			canonical(field, before[field], before.currency) !==
 			canonical(field, after[field], after.currency)
@@ -171,7 +201,14 @@ export function mergeDraft(
 			conflict = true;
 		} else merged[field] = draft[field];
 	}
-	return { draft: merged as unknown as PricingDraft, conflict };
+	const currency = resolveDraftCurrency({
+		draft,
+		picked: opts.currencyPicked === true,
+		next,
+		nextStoreCurrency,
+	});
+	merged["currency"] = currency.currency;
+	return { draft: merged as unknown as PricingDraft, conflict: conflict || currency.conflict };
 }
 
 function money(value: string, currency: string): number | null | "invalid" {

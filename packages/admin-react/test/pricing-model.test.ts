@@ -86,7 +86,8 @@ describe("the draft", () => {
 		expect(draftFromRecord(BASE, "EUR").currency).toBe(BASE.currency);
 	});
 
-	test("a currency PICKED on an unpriced product survives a re-read, even with the price still blank", () => {
+	// THE CURRENCY TABLE (`resolveDraftCurrency`), every row through `mergeDraft`.
+	describe("a re-read's currency rules", () => {
 		const unpriced: ProductRecord = {
 			...BASE,
 			priceCents: null,
@@ -94,26 +95,126 @@ describe("the draft", () => {
 			compareAtCents: null,
 			unitCostCents: null,
 		};
-		const picked = { ...draftFromRecord(unpriced, "EUR"), currency: "JPY" };
-		const { draft, conflict } = mergeDraft(unpriced, { ...unpriced, onHand: 99 }, picked, "EUR");
-		expect(conflict).toBe(false);
-		expect(draft.currency).toBe("JPY");
-		// Still not "dirty" on its own — nothing would be sent without a price.
-		expect(isDraftDirty(draftFromRecord(unpriced, "EUR"), picked)).toBe(false);
-	});
+		type Row = {
+			name: string;
+			/** The store currency the form was seeded with ("" = unknown). */
+			seeded: string;
+			/** The draft's currency and price when the re-read lands. */
+			currency: string;
+			price: string;
+			picked: boolean;
+			/** The newer record, and the store currency its read carried. */
+			next: ProductRecord;
+			nextStore: string;
+			want: { currency: string; conflict: boolean };
+		};
+		const rows: Row[] = [
+			{
+				name: "1. a picked currency is theirs: a moved default never changes it (no price yet)",
+				seeded: "EUR",
+				currency: "JPY",
+				price: "",
+				picked: true,
+				next: unpriced,
+				nextStore: "GBP",
+				want: { currency: "JPY", conflict: false },
+			},
+			{
+				name: "2. a price typed under the SHOWN default is priced in it: a store switch to EUR keeps USD",
+				seeded: "USD",
+				currency: "USD",
+				price: "24.99",
+				picked: false,
+				next: unpriced,
+				nextStore: "EUR",
+				want: { currency: "USD", conflict: false },
+			},
+			{
+				name: "3a. unknown store currency + a typed price: a later-known default is NOT adopted — the gate stays",
+				seeded: "",
+				currency: "",
+				price: "18",
+				picked: false,
+				next: unpriced,
+				nextStore: "EUR",
+				want: { currency: "", conflict: false },
+			},
+			{
+				name: "3b. unknown store currency, nothing typed or picked: the now-known default is adopted",
+				seeded: "",
+				currency: "",
+				price: "",
+				picked: false,
+				next: unpriced,
+				nextStore: "EUR",
+				want: { currency: "EUR", conflict: false },
+			},
+			{
+				name: "neither picked nor priced: a moved default is followed",
+				seeded: "USD",
+				currency: "USD",
+				price: "",
+				picked: false,
+				next: unpriced,
+				nextStore: "EUR",
+				want: { currency: "EUR", conflict: false },
+			},
+			{
+				name: "4a. PRICED elsewhere, no price typed: the stored currency, silently — even over a pick",
+				seeded: "EUR",
+				currency: "JPY",
+				price: "",
+				picked: true,
+				next: { ...unpriced, priceCents: 1500, currency: "GBP" },
+				nextStore: "EUR",
+				want: { currency: "GBP", conflict: false },
+			},
+			{
+				name: "4b. PRICED elsewhere in another currency, price typed: the stored currency, and a conflict",
+				seeded: "EUR",
+				currency: "EUR",
+				price: "18",
+				picked: false,
+				next: { ...unpriced, priceCents: 1500, currency: "GBP" },
+				nextStore: "EUR",
+				want: { currency: "GBP", conflict: true },
+			},
+		];
+		test.each(rows)("$name", (row) => {
+			const draft = {
+				...draftFromRecord(unpriced, row.seeded),
+				currency: row.currency,
+				price: row.price,
+			};
+			const merged = mergeDraft(unpriced, row.next, draft, {
+				storeCurrency: row.seeded,
+				nextStoreCurrency: row.nextStore,
+				currencyPicked: row.picked,
+			});
+			expect(merged.draft.currency).toBe(row.want.currency);
+			expect(merged.conflict).toBe(row.want.conflict);
+		});
 
-	test("an unknown store currency that becomes known is adopted by a draft still on none, and never overrides a pick", () => {
-		const unpriced: ProductRecord = {
-			...BASE,
-			priceCents: null,
-			currency: null,
-			compareAtCents: null,
-			unitCostCents: null,
-		};
-		const untouched = draftFromRecord(unpriced, "");
-		expect(mergeDraft(unpriced, unpriced, untouched, "", "EUR").draft.currency).toBe("EUR");
-		const picked = { ...untouched, currency: "GBP" };
-		expect(mergeDraft(unpriced, unpriced, picked, "", "EUR").draft.currency).toBe("GBP");
+		test("4a. priced elsewhere with no typed price: an unrelated edit (the SKU) survives with no conflict", () => {
+			const draft = { ...draftFromRecord(unpriced, "EUR"), sku: "NEW-SKU" };
+			const merged = mergeDraft(
+				unpriced,
+				{ ...unpriced, priceCents: 1500, currency: "GBP" },
+				draft,
+				{
+					storeCurrency: "EUR",
+				},
+			);
+			expect(merged.conflict).toBe(false);
+			expect(merged.draft.sku).toBe("NEW-SKU");
+			expect(merged.draft.currency).toBe("GBP");
+		});
+
+		test("5. isDraftDirty is unchanged: a lone pick is not unsaved work", () => {
+			const saved = draftFromRecord(unpriced, "EUR");
+			expect(isDraftDirty(saved, { ...saved, currency: "JPY" })).toBe(false);
+			expect(isDraftDirty(saved, { ...saved, currency: "JPY", price: "1500" })).toBe(true);
+		});
 	});
 
 	test("the picker offers a saved code the table no longer lists, first, so the select has a matching option", () => {

@@ -574,6 +574,32 @@ test("a later read that knows the store currency hides the prompt and adopts it 
 	expect((input(c, "Currency") as unknown as HTMLSelectElement).value).toBe("EUR");
 });
 
+test("a price typed under the shown default keeps that currency when a re-read brings a switched store currency", async () => {
+	let moved = false;
+	apiFetch.mockImplementation((_url, init) => {
+		const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+		if (body["type"] === "otta_console_act") {
+			if ((body["action_id"] as string) === "products:restock") moved = true;
+			return Promise.resolve(
+				json({ ok: true, notice: { variant: "default", title: "Saved", description: "" } }),
+			);
+		}
+		// The operator switched the store currency to EUR between the two reads.
+		return Promise.resolve(moved ? unpricedDetail("EUR", { onHand: 29 }) : unpricedDetail("USD"));
+	});
+	const c = await mountPanel();
+	await type(input(c, "Price"), "24.99");
+	await type(input(c, "Add or remove stock"), "5");
+	await fire(button(c, "Add"), "click");
+	await flush();
+	expect(c.textContent).toContain("now 29 in stock");
+	expect((input(c, "Currency") as unknown as HTMLSelectElement).value).toBe("USD");
+	await fire(button(c, "Save pricing & stock"), "click");
+	await flush();
+	const save = writes().find((w) => w["action_id"] === "products:save");
+	expect(save?.["value"]).toMatchObject({ price: "24.99", currency: "USD" });
+});
+
 test("after an initial failed read, picking a currency clears the prompt", async () => {
 	apiFetch.mockImplementation(() => Promise.resolve(unpricedDetail(null)));
 	const c = await mountPanel();

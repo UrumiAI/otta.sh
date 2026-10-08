@@ -346,6 +346,9 @@ export function PricingStockEditor({ productId }: { productId: string }): React.
 	 *  failed must not wipe it: only a first load with no known value is
 	 *  "unknown". */
 	const knownStoreCurrency = React.useRef<string>("");
+	/** The merchant picked the currency in the select — set ONLY by that pick,
+	 *  cleared when the form is re-seeded. Rule 1 of `resolveDraftCurrency`. */
+	const currencyPicked = React.useRef(false);
 	/** A stock movement the server accepted, waiting for the re-read that states
 	 *  the count it actually landed on. TAGGED WITH THAT RE-READ'S GENERATION: an
 	 *  earlier re-read still in flight (the one after a lost answer, say) may
@@ -469,10 +472,14 @@ export function PricingStockEditor({ productId }: { productId: string }): React.
 			if (reseed.current || current === null || previous === null) {
 				setDraft(draftFromRecord(record, storeCurrency));
 				setTouched(new Set());
+				currencyPicked.current = false;
 			} else {
-				// An unknown store currency that became known is ADOPTED by a draft
-				// still on "" (not picked), and never overrides one the merchant picked.
-				const merged = mergeDraft(previous, record, current, seededStoreCurrency, storeCurrency);
+				// The currency follows `resolveDraftCurrency`'s table.
+				const merged = mergeDraft(previous, record, current, {
+					storeCurrency: seededStoreCurrency,
+					nextStoreCurrency: storeCurrency,
+					currencyPicked: currencyPicked.current,
+				});
 				setDraft(merged.draft);
 				if (merged.conflict) {
 					setTouched(new Set());
@@ -730,7 +737,10 @@ export function PricingStockEditor({ productId }: { productId: string }): React.
 				if (isFailure(fresh)) return fresh;
 				const latest = fresh.product;
 				latestRecord = latest;
-				const merged = mergeDraft(p, latest, draftRef.current ?? d, storeCurrency);
+				const merged = mergeDraft(p, latest, draftRef.current ?? d, {
+					storeCurrency,
+					currencyPicked: currencyPicked.current,
+				});
 				setLoad({
 					status: "ready",
 					record: latest,
@@ -931,6 +941,7 @@ export function PricingStockEditor({ productId }: { productId: string }): React.
 										value={d.currency}
 										aria-invalid={shown.currency !== undefined}
 										onChange={(event) => {
+											currencyPicked.current = true;
 											set("currency")(event.target.value);
 										}}
 									>
