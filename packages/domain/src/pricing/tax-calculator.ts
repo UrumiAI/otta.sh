@@ -10,6 +10,7 @@
  * returns are authoritative and are never recomputed from the rate.
  */
 import type { Cents, Currency } from "../money/cents.js";
+import type { ProductTaxStatus } from "../ports/product-commerce-store.js";
 import type { TaxClassId } from "./types.js";
 
 /** How long an outside calculator may take before the checkout is refused. */
@@ -36,24 +37,39 @@ export interface TaxRequestLine {
 	/** The line's DISCOUNTED amount — the tax base. */
 	amountCents: Cents;
 	taxClassId: TaxClassId;
-	/** WooCommerce's product tax status. Always "taxable" until settings land. */
-	taxStatus: "taxable" | "shipping_only" | "none";
+	/**
+	 * WooCommerce's product tax status (PR 2b). Only a `taxable` line may carry
+	 * tax: a non-zero tax on any other line is refused (`TAX_UNAVAILABLE`).
+	 * `shipping_only` still counts toward a "based on cart items" shipping class.
+	 */
+	taxStatus: ProductTaxStatus;
+	/** Whether this line is shipped (a physical good) — WooCommerce's `needs_shipping`. */
+	requiresShipping: boolean;
 }
 
 export interface TaxRequest {
 	/** "quote" for a review; "order" when an order is about to be placed. */
 	purpose: "quote" | "order";
 	currency: Currency;
-	/** Whether entered prices include tax. Always false until settings land. */
+	/**
+	 * Whether entered prices include tax (ADR-0032): each line's `amountCents` is
+	 * then a GROSS amount and its tax is the part already inside it. Shipping is
+	 * always entered without tax, whatever this says.
+	 */
 	pricesIncludeTax: boolean;
 	lines: readonly TaxRequestLine[];
-	/** The chosen shipping charge; null when no method is chosen or none applies. */
+	/** The chosen shipping charge; null when no method is chosen or none applies,
+	 *  and also when the chosen method is not taxable (PR 2b). */
 	shipping: { amountCents: Cents; methodId: string } | null;
-	/** The shop's address — null: there is no shop address setting yet. */
+	/** The shop's base address from the tax settings, or null when none is set. */
 	origin: TaxAddress | null;
-	/** Where the order ships; null for a cart that ships nothing or has no address yet. */
+	/**
+	 * The TAX location: the ship-to, or the shop's base address when the settings
+	 * say "based on shop base address" or the cart is digital-only (ADR-0032);
+	 * null when there is none.
+	 */
 	destination: TaxAddress | null;
-	/** The shipping zone Otta matched, informational for outside calculators. */
+	/** The zone the tax location matched, informational for outside calculators. */
 	zoneId: string | null;
 }
 

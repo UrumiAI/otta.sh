@@ -109,6 +109,8 @@ export interface UpdateShippingZoneInput {
 export interface UpdateShippingMethodInput {
 	name: string;
 	type: ShippingMethodType;
+	/** Whether the method's charge is taxed (PR 2b); `undefined` PRESERVES it. */
+	taxable?: boolean;
 }
 
 export interface UpdateShippingRateInput {
@@ -170,6 +172,11 @@ export interface ShippingMethod {
 	zoneId: string;
 	name: string;
 	type: ShippingMethodType;
+	/**
+	 * Whether the method's charge is taxed (PR 2b; WooCommerce's method tax
+	 * status). A method stored before the flag existed reads `true`.
+	 */
+	taxable: boolean;
 }
 
 export interface CreateShippingMethodInput {
@@ -177,6 +184,8 @@ export interface CreateShippingMethodInput {
 	zoneId: string;
 	name: string;
 	type: ShippingMethodType;
+	/** Default `true`. */
+	taxable?: boolean;
 }
 
 export interface ShippingRate {

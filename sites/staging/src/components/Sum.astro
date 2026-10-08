@@ -41,6 +41,9 @@ interface Props extends HTMLAttributes<"div"> {
 	/** Overrides the derived footnote, for a page with something more specific
 	 *  to say. `null` suppresses it; omitted leaves the derivation alone. */
 	footnote?: string | null;
+	/** "Includes $3.00 tax" when prices are shown with tax (ADR-0032). Plain
+	 *  text: it carries merchant tax labels, so it is only ever an escaped text node. */
+	taxNote?: string | null;
 }
 
 const {
@@ -49,6 +52,7 @@ const {
 	totalLabel = "Total",
 	excludesUncalculated = false,
 	footnote,
+	taxNote = null,
 	class: className,
 	...rest
 } = Astro.props;
@@ -87,6 +91,7 @@ const note = footnote !== undefined ? footnote : uncalculatedFootnote(rows, excl
 			)
 		}
 	</div>
+	{taxNote !== null && taxNote !== "" && <p class="foot">{taxNote}</p>}
 	{note !== null && note !== undefined && note !== "" && <p class="foot">{note}</p>}
 </div>
 

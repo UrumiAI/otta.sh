@@ -58,7 +58,15 @@
  * validates it; the SQL adapter validates nothing either. A store that re-validated would
  * be a second, drifting copy of a rule the domain owns.
  */
-import type { Clock, IdempotencyKey, OperationalSettings, SettingsStore } from "@otta-sh/domain";
+import {
+	type Clock,
+	type IdempotencyKey,
+	type OperationalSettings,
+	SettingsPreconditionFailedError,
+	type SettingsStore,
+	type SettingsUpdateOptions,
+	settingsUpdateAllowed,
+} from "@otta-sh/domain";
 import {
 	CAS_RETRY,
 	casDone,
@@ -134,14 +142,26 @@ export class EmdashSettingsStore implements SettingsStore {
 		return toOperationalSettings(await this.#settings.get(SETTINGS_DOC_ID));
 	}
 
-	/** Claim the key with the patch, apply the patch, then record what it applied. */
+	/**
+	 * Claim the key with the patch, apply the patch, then record what it applied.
+	 *
+	 * **A guarded update (`options.ifTax`)** checks its condition against the exact
+	 * state each write would replace: once before the claim is created (a failure
+	 * creates no claim, so nothing is recorded), and again by the creator on every
+	 * compare-and-set attempt, against the base it just read and is about to CAS on.
+	 * A peer write that lands in between moves the revision, the CAS loses, the
+	 * re-read sees the peer's value, and the condition refuses — never a clobber. A
+	 * non-creator completion needs no re-check: it writes only at `decidedRevision`,
+	 * the very state the creator checked before claiming.
+	 */
 	async update(
 		patch: Partial<OperationalSettings>,
 		idempotencyKey: IdempotencyKey,
+		options?: SettingsUpdateOptions,
 	): Promise<OperationalSettings> {
-		const held = await this.#holdClaim(idempotencyKey, toPatchDoc(patch));
+		const held = await this.#holdClaim(idempotencyKey, toPatchDoc(patch), options);
 		if (held.claim.value.result !== null) return held.claim.value.result;
-		return this.#settle(idempotencyKey, held.created);
+		return this.#settle(idempotencyKey, held.created, options);
 	}
 
 	/**
@@ -157,11 +177,14 @@ export class EmdashSettingsStore implements SettingsStore {
 	async #holdClaim(
 		idempotencyKey: string,
 		patch: SettingsMutationDoc["patch"],
+		options: SettingsUpdateOptions | undefined,
 	): Promise<HeldClaim> {
 		return this.#cas<HeldClaim>("claimSettingsMutation", async () => {
 			const held = await this.#mutations.getVersioned(idempotencyKey);
 			if (held !== null) return casDone({ claim: held, created: false });
 			const base = await this.#settings.getVersioned(SETTINGS_DOC_ID);
+			const seen = toOperationalSettings(base?.value ?? null);
+			if (!settingsUpdateAllowed(seen, options)) throw new SettingsPreconditionFailedError(seen);
 			const value: SettingsMutationDoc = {
 				patch,
 				// The read and this create are two statements, so the pin can be stale the
@@ -191,7 +214,11 @@ export class EmdashSettingsStore implements SettingsStore {
 	 * Every attempt re-reads the claim, because a peer may have landed it (its result is
 	 * then the answer for everyone) or marked it superseded.
 	 */
-	async #settle(idempotencyKey: string, created: boolean): Promise<OperationalSettings> {
+	async #settle(
+		idempotencyKey: string,
+		created: boolean,
+		options: SettingsUpdateOptions | undefined,
+	): Promise<OperationalSettings> {
 		// What this call has already committed, so a lost STAMP is retried without
 		// re-deciding — and without being mistaken for a stale completion on the way back.
 		let landed: Landed | undefined;
@@ -231,6 +258,14 @@ export class EmdashSettingsStore implements SettingsStore {
 			// stamp was lost.
 			if (base !== null && sameSettings(current, next)) {
 				return this.#stamp(idempotencyKey, claim, { value: next, revision: null }, now);
+			}
+
+			// The guard, re-checked by the creator against the base this attempt CASes on.
+			// A refusal is terminal for the key: the claim is marked superseded, so a later
+			// replay refuses too rather than applying a decision that no longer holds.
+			if (created && !settingsUpdateAllowed(current, options)) {
+				await this.#markSuperseded(idempotencyKey, claim, now);
+				throw new SettingsPreconditionFailedError(current);
 			}
 
 			// The pin: a caller that did not decide this mutation may write only at the
@@ -304,7 +339,11 @@ export class EmdashSettingsStore implements SettingsStore {
 	}
 }
 
-/** Two settings are the same when both fields are. */
+/** Two settings are the same when every field is (the tax block by value). */
 function sameSettings(a: OperationalSettings, b: OperationalSettings): boolean {
-	return a.holdTtlMinutes === b.holdTtlMinutes && a.lowStockThreshold === b.lowStockThreshold;
+	return (
+		a.holdTtlMinutes === b.holdTtlMinutes &&
+		a.lowStockThreshold === b.lowStockThreshold &&
+		JSON.stringify(a.tax ?? null) === JSON.stringify(b.tax ?? null)
+	);
 }
