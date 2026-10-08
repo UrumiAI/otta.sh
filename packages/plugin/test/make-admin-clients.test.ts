@@ -16,7 +16,7 @@
  * what this fake observes. The same path is driven inside workerd, against a
  * Stripe API stub, in `orders-actions.sandbox.test.ts`.
  */
-import { orderId as toOrderId } from "@otta-sh/domain";
+import { orderId as toOrderId, type PaymentMethod } from "@otta-sh/domain";
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "vitest";
 import { makeAdminClients } from "../src/admin/make-admin-clients.js";
 import { STRIPE_SECRET_KEY_KEY, STRIPE_WEBHOOK_SECRET_KEY } from "../src/payment-secrets.js";
@@ -112,7 +112,7 @@ describe("makeAdminClients wires the payment gateways into admin refunds", () =>
 		};
 	}
 
-	async function seedPaidOrder(): Promise<string> {
+	async function seedPaidOrder(paymentMethod?: PaymentMethod): Promise<string> {
 		seq += 1;
 		const id = `mac-o-${String(seq)}`;
 		await sharedTierSeeders({
@@ -125,6 +125,7 @@ describe("makeAdminClients wires the payment gateways into admin refunds", () =>
 		}).order({
 			orderId: id,
 			buyerRef: `${id}@example.test`,
+			...(paymentMethod !== undefined ? { paymentMethod } : {}),
 			captured: { amountCents: 1500, providerRef: `pi_${id.replaceAll("-", "_")}` },
 		});
 		return id;
@@ -207,6 +208,50 @@ describe("makeAdminClients wires the payment gateways into admin refunds", () =>
 		).toEqual({ ok: false, status: 409, reason: "REFUND_GATEWAY_UNAVAILABLE" });
 		expect(requests).toEqual([]);
 		expect(await harness.stores.orderStore.listRefunds(toOrderId(id))).toEqual([]);
+	});
+
+	test("a LEGACY x402 order (a method Otta no longer supports) is record-only: the refund is ledgered as manual, with no egress", async () => {
+		// x402 is gone from `PaymentMethod`, but an order paid before its removal
+		// still stores it. Before the removal its gateway was `refundable: false`,
+		// so the admin could record the refund made outside Otta; that must hold.
+		const ctx = withKv({ ...harness.ctx, http: stripeHttp() }, {});
+		const { orders } = await makeAdminClients(ctx);
+		const id = await seedPaidOrder("x402" as unknown as PaymentMethod);
+
+		expect(await orders.getRefunds(id)).toMatchObject({
+			refundable: false,
+			paymentMethod: "x402",
+			remainingCents: 1500,
+		});
+		expect(
+			await orders.refundOrder(
+				id,
+				{ amountCents: 500, currency: "USD", refundedBy: "ops@example.test" },
+				{ idempotencyKey: `${id}-r1` },
+			),
+		).toMatchObject({ ok: true, recorded: true, duplicate: false, fullyRefunded: false });
+		const [row] = (await orders.getRefunds(id))?.refunds ?? [];
+		expect(row).toMatchObject({
+			kind: "manual",
+			gateway: "x402",
+			refundRef: null,
+			amountCents: 500,
+			status: "recorded",
+		});
+		expect(requests).toEqual([]);
+
+		// A STRIPE order on the same unconfigured deployment still fails closed: the
+		// stand-in is only for a method Otta no longer has.
+		const stripeId = await seedPaidOrder("stripe");
+		expect(
+			await orders.refundOrder(
+				stripeId,
+				{ amountCents: 500, currency: "USD", refundedBy: "ops@example.test" },
+				{ idempotencyKey: `${stripeId}-r1` },
+			),
+		).toEqual({ ok: false, status: 409, reason: "REFUND_GATEWAY_UNAVAILABLE" });
+		expect(await harness.stores.orderStore.listRefunds(toOrderId(stripeId))).toEqual([]);
+		expect(requests).toEqual([]);
 	});
 
 	test("a ceiling refusal never reaches Stripe", async () => {

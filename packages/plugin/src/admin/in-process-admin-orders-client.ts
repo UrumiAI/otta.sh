@@ -185,6 +185,36 @@ const DEFAULT_LIMIT = 25;
  *  the real ceiling is computed from captured payments below. */
 const MAX_REFUND_AMOUNT_CENTS = 1_000_000_000_000;
 
+/**
+ * The payment methods Otta has today. A `Record` over every `PaymentMethod`, so a
+ * new method has to be added here too. It tells a CURRENT method (a missing
+ * gateway is a deployment that is not configured: fail closed) from a LEGACY one
+ * an older order still stores (no gateway can ever exist: record only).
+ */
+const CURRENT_PAYMENT_METHODS: Readonly<Record<PaymentMethod, true>> = { stripe: true };
+
+/**
+ * A record-only gateway for a LEGACY order: one whose stored payment method Otta
+ * no longer supports (an x402 order placed before its removal). That method's
+ * money can only go back outside Otta, so the refund use-case takes its manual
+ * path (`refundable: false`) and ledgers the refund under the stored method. It
+ * can do nothing else: every verb answers that it is unsupported.
+ */
+function recordOnlyLegacyGateway(stored: string): PaymentGateway {
+	return {
+		// The stored value, not a current `PaymentMethod`: the ledger row keeps the
+		// method the order was paid with.
+		id: stored as PaymentMethod,
+		refundable: false,
+		createIntent(): Promise<never> {
+			return Promise.reject(new Error(`payment method "${stored}" is no longer supported`));
+		},
+		verifyConfirmation: () => Promise.resolve({ ok: false, reason: "UNKNOWN_EVENT" }),
+		refund: () => Promise.resolve({ ok: false, reason: "UNSUPPORTED" }),
+		cancelIntent: () => Promise.resolve({ ok: false, reason: "UNSUPPORTED" }),
+	};
+}
+
 export interface InProcessAdminOrdersClientOptions extends InProcessCommerceStoresOptions {
 	gateways?: Partial<Record<PaymentMethod, PaymentGateway>>;
 	/** The inline order-email attempt's options — a deploy passes none (the bundle's
@@ -224,6 +254,21 @@ export class InProcessAdminOrdersClient implements AdminOrdersSurface {
 		this.#ctx = ctx;
 		this.#orderEmails = options.orderEmails ?? {};
 		this.#now = options.now ?? Date.now;
+	}
+
+	/**
+	 * The gateway a refund on an order paid by `method` goes through. A CURRENT
+	 * method gets its wired gateway, or `undefined` when none is wired (the refund
+	 * POST's `409 REFUND_GATEWAY_UNAVAILABLE`). A LEGACY method — stored on an older
+	 * order, no longer a `PaymentMethod` — gets a record-only stand-in, so the admin
+	 * can still record the refund they made outside Otta, as before the removal.
+	 */
+	#refundGatewayFor(method: PaymentMethod | null): PaymentGateway | undefined {
+		if (method === null) return undefined;
+		// Read as the stored STRING: a legacy order carries a method the type no longer has.
+		const stored: string = method;
+		if (Object.hasOwn(CURRENT_PAYMENT_METHODS, stored)) return this.#gateways[method];
+		return recordOnlyLegacyGateway(stored);
 	}
 
 	/**
@@ -693,8 +738,9 @@ export class InProcessAdminOrdersClient implements AdminOrdersSurface {
 		// The gateway's HONEST capability (ADR-0008): `refundable` true ⇒ money moves
 		// via the provider; false ⇒ the admin records a manual/off-platform refund.
 		// Never a button that silently no-ops — and with no gateway composed for the
-		// order's method, false is the truth rather than a placeholder.
-		const gateway = order.paymentMethod === null ? undefined : this.#gateways[order.paymentMethod];
+		// order's method, false is the truth rather than a placeholder. A legacy
+		// method resolves to its record-only stand-in: false, the same answer.
+		const gateway = this.#refundGatewayFor(order.paymentMethod);
 		return {
 			refunds: refunds.map(toRefundWire),
 			currency: order.totals.currency,
@@ -714,8 +760,9 @@ export class InProcessAdminOrdersClient implements AdminOrdersSurface {
 	 * The `Idempotency-Key` is REQUIRED — a refund is ADDITIVE, so two deliberate
 	 * refunds must not collapse and there is no safe content-only fallback
 	 * (mirrors restock). The order lookup comes next, then the gateway: an order
-	 * whose method has no gateway in the injected map lands on the route's own
-	 * `409 REFUND_GATEWAY_UNAVAILABLE`. Otherwise the domain use-case decides —
+	 * whose CURRENT method has no gateway in the injected map lands on the route's
+	 * own `409 REFUND_GATEWAY_UNAVAILABLE`, and a LEGACY method Otta no longer
+	 * supports is record-only (see `#refundGatewayFor`). Otherwise the domain use-case decides —
 	 * a `refundable` gateway issues at the provider (reserve → issue → finalize),
 	 * a non-refundable one records a manual, off-platform refund.
 	 */
@@ -745,7 +792,7 @@ export class InProcessAdminOrdersClient implements AdminOrdersSurface {
 		const oid = toOrderId(orderId);
 		const order = await this.#stores.orderStore.getById(oid);
 		if (order === null) return { ok: false, status: 404, reason: "ORDER_NOT_FOUND" };
-		const gateway = order.paymentMethod === null ? undefined : this.#gateways[order.paymentMethod];
+		const gateway = this.#refundGatewayFor(order.paymentMethod);
 		if (gateway === undefined) {
 			// No gateway wired for the order's method — cannot even record a refund
 			// against it (the domain needs a gateway to declare capability).

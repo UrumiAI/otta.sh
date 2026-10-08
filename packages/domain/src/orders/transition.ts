@@ -155,6 +155,18 @@ const PAYMENT_METHOD_SETTLEMENT: Readonly<Record<PaymentMethod, "gateway" | "off
 };
 
 /**
+ * A per-method table's entry for a STORED method, read as a `string` rather than
+ * trusted as a `PaymentMethod`: an order placed before a method was removed (a
+ * legacy x402 order) still carries it. `undefined` when the table has no entry.
+ */
+function entryForStored<V>(
+	table: Readonly<Record<PaymentMethod, V>>,
+	stored: string,
+): V | undefined {
+	return Object.hasOwn(table, stored) ? (table as Readonly<Record<string, V>>)[stored] : undefined;
+}
+
+/**
  * True iff an admin may mark an order paid by `method` BY HAND — only a method
  * declared `offline`. FAILS CLOSED: a gateway method is paid when its gateway says
  * so (the settle path's `markPaid`), and an order with NO method on file (`null`, a
@@ -163,13 +175,8 @@ const PAYMENT_METHOD_SETTLEMENT: Readonly<Record<PaymentMethod, "gateway" | "off
  */
 export function manualPaymentAllowed(method: PaymentMethod | null): boolean {
 	if (method === null) return false;
-	// Read as the stored STRING: a legacy order may carry a method no longer in
-	// the type (an x402 order from before its removal). No entry ⇒ not offline.
-	const stored: string = method;
-	return (
-		Object.hasOwn(PAYMENT_METHOD_SETTLEMENT, stored) &&
-		(PAYMENT_METHOD_SETTLEMENT as Readonly<Record<string, string>>)[stored] === "offline"
-	);
+	// A legacy method no longer in the type has no entry ⇒ not offline.
+	return entryForStored(PAYMENT_METHOD_SETTLEMENT, method) === "offline";
 }
 
 /**
@@ -191,9 +198,7 @@ const PAYMENT_METHOD_REFUNDS: Readonly<Record<PaymentMethod, "provider" | "outsi
  * and Mark refunded records it, as it did while that method existed.
  */
 function refundRouteOf(stored: string): "provider" | "outside" {
-	return Object.hasOwn(PAYMENT_METHOD_REFUNDS, stored)
-		? (PAYMENT_METHOD_REFUNDS as Readonly<Record<string, "provider" | "outside">>)[stored]!
-		: "outside";
+	return entryForStored(PAYMENT_METHOD_REFUNDS, stored) ?? "outside";
 }
 
 /** The two ledgers Mark refunded is decided from. */
