@@ -31,6 +31,7 @@
  * changes merge independently.
  */
 import type { PluginContext } from "../types.js";
+import type { LegacyEmailPurgeOutcome } from "../email/purge-legacy-email-secrets.js";
 
 /** Exactly the keys removed. */
 export const LEGACY_X402_SETTING_KEYS = [
@@ -67,7 +68,7 @@ export function resetLegacyX402PurgeForTesting(): void {
  */
 export async function purgeLegacyX402Settings(
 	ctx: PluginContext,
-): Promise<"purged" | "attempted" | "idle"> {
+): Promise<LegacyEmailPurgeOutcome> {
 	const site = ctx.site?.url ?? "";
 	if (doneInIsolate.has(site)) return "idle";
 	let deleting = false;
