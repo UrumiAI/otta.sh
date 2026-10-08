@@ -26,10 +26,7 @@ import type { EmailDeliverEvent, PluginContext, SandboxedPlugin } from "emdash/p
 
 // Types from emdash, for reference:
 // interface EmailDeliverEvent { message: EmailMessage; source: string } // source "otta" for otta's mail
-// interface EmailMessage {
-//   to: string; cc?: string[]; replyTo?: string; // cc and replyTo: optional, since emdash 1.0
-//   subject: string; text: string; html?: string;
-// }
+// interface EmailMessage { to: string; cc?: string[]; replyTo?: string; subject: string; text: string; html?: string }
 
 // The slice of PluginContext the handler uses. Tests can then pass a plain { kv, http } object.
 export interface DeliverContext {
@@ -85,10 +82,13 @@ are write-only in the admin and are never echoed back.
 
 ## Register and select it
 
-1. Add the descriptor to the site's EmDash config, next to otta's:
+1. Add the descriptor to the `plugins` array of the site's EmDash config, after the otta
+   descriptors already there. `@otta-sh/plugin` exports no descriptor; each site writes its
+   own (the staging site's are in `sites/staging/src/emdash-options.ts`):
    ```ts
    import { httpEmailProvider } from "your-email-provider";
-   emdash({ plugins: [ottaPluginDescriptor({ egress }), httpEmailProvider()] });
+   // ottaDescriptors: the otta descriptors your config already lists
+   emdash({ plugins: [...ottaDescriptors, httpEmailProvider()] });
    ```
 2. In the EmDash admin, open the plugin under **Extensions** and fill in its settings. Plugins
    from the config are active by default.
