@@ -1,5 +1,10 @@
-import { cents as toCents, currency as toCurrency } from "@otta-sh/domain";
-import { EmdashShippingRulesStore, systemClock, type StorageAccess } from "@otta-sh/store-emdash";
+import { cents as toCents, currency as toCurrency, idempotencyKey } from "@otta-sh/domain";
+import {
+	EmdashSettingsStore,
+	EmdashShippingRulesStore,
+	systemClock,
+	type StorageAccess,
+} from "@otta-sh/store-emdash";
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "vitest";
 import { decodeCarrier } from "../src/admin/scaffold/carrier.js";
 import { decodePath, encodePath } from "../src/admin/scaffold/index.js";
@@ -1925,5 +1930,60 @@ describe("admin Shipping console — regions are ISO codes (ADR-0021, workerd sa
 			expect(bannerOf(fixed)?.variant).toBe("default");
 			expect((await shippingRules.getZone("legacy"))?.regions).toEqual(["US", "DE"]);
 		});
+	});
+});
+
+// Currency PR 2: the rate currency the methods and rates levels start on (and
+// the new-rate form prefills) is the STORE currency — USD until one is saved.
+describe("admin Shipping console — the currency filter defaults to the store currency (workerd sandbox)", () => {
+	async function saveStoreCurrency(code: string): Promise<void> {
+		const settings = new EmdashSettingsStore({ storage, clock: systemClock });
+		await settings.update({ currency: code }, idempotencyKey(`ship-store-currency-${code}`));
+	}
+
+	test("never saved: the rates level and the new-rate form start on USD, with no filter summary", async () => {
+		await seedShipping();
+		const opened = await openPath(["us", "standard"]);
+		expect(field(formFor(opened, "shipping:apply-filter"), "currency")?.initial_value).toBe("USD");
+		const bare = await openPath(["us", "bare"]);
+		expect(field(formFor(bare, "shipping:create-rate"), "currency")?.initial_value).toBe("USD");
+		expect(findBlocks(bare, "section").some((b) => String(b.text).includes("currency:"))).toBe(
+			false,
+		);
+	});
+
+	test("saved EUR: both levels read in EUR by default, the new-rate form prefills EUR, and USD is now a filter", async () => {
+		await seedShipping({
+			rates: [
+				...DEFAULT_RATES,
+				{ methodId: "standard", currency: "EUR", amountCents: 1200, minSubtotalCents: null },
+			],
+		});
+		await saveStoreCurrency("EUR");
+
+		const rates = await openPath(["us", "standard"]);
+		expect(field(formFor(rates, "shipping:apply-filter"), "currency")?.initial_value).toBe("EUR");
+		expect(findBlocks(rates, "fields").some((b) => JSON.stringify(b).includes("EUR"))).toBe(true);
+		// The default is not a filter, so there is nothing to clear.
+		expect(findBlocks(rates, "section").some((b) => String(b.text).includes("currency:"))).toBe(
+			false,
+		);
+
+		const bare = await openPath(["us", "bare"]);
+		expect(field(formFor(bare, "shipping:create-rate"), "currency")?.initial_value).toBe("EUR");
+
+		const methods = await openPath(["us"]);
+		expect(contextTexts(methods).some((t) => t.includes("Prices in EUR"))).toBe(true);
+
+		// Asking for USD explicitly is now a narrowing away from the default.
+		const usd = await submitForm(
+			"shipping:apply-filter",
+			{ currency: "USD" },
+			formFor(rates, "shipping:apply-filter")?.block_id,
+		);
+		expect(field(formFor(usd, "shipping:apply-filter"), "currency")?.initial_value).toBe("USD");
+		expect(findBlocks(usd, "section").some((b) => String(b.text).includes("currency: USD"))).toBe(
+			true,
+		);
 	});
 });

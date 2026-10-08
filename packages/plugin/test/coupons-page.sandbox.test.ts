@@ -6,7 +6,13 @@ import {
 	idempotencyKey,
 	orderId,
 } from "@otta-sh/domain";
-import { EmdashCouponStore, type StorageAccess, uuidIdGen } from "@otta-sh/store-emdash";
+import {
+	EmdashCouponStore,
+	EmdashSettingsStore,
+	type StorageAccess,
+	systemClock,
+	uuidIdGen,
+} from "@otta-sh/store-emdash";
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "vitest";
 import { couponStatus, couponUsesSummary } from "../src/admin/coupons-page.js";
 import {
@@ -677,6 +683,39 @@ describe("admin Coupons console — list level (workerd sandbox)", () => {
 		]) {
 			expect(byId.has(removed)).toBe(false);
 		}
+	});
+
+	// Currency PR 2: the currency field HINTS the store currency — a placeholder,
+	// never a prefill (one field serves both types, and a percentage coupon with no
+	// cap must be able to leave it blank).
+	test("the create form's currency field hints the store currency: USD until one is saved, then the saved one — never prefilled", async () => {
+		await boot(makeCouponsState());
+		const before = new Map(
+			formFields(await openNewCouponScreen(), "coupons:create").map((f) => [f.action_id, f]),
+		);
+		expect(before.get("currency")?.placeholder).toBe("USD");
+		expect(before.get("currency")?.initial_value).toBeUndefined();
+
+		const settings = new EmdashSettingsStore({ storage, clock: systemClock });
+		await settings.update({ currency: "INR" }, idempotencyKey("coupons-store-currency"));
+		const after = new Map(
+			formFields(await openNewCouponScreen(), "coupons:create").map((f) => [f.action_id, f]),
+		);
+		expect(after.get("currency")?.placeholder).toBe("INR");
+		expect(after.get("currency")?.initial_value).toBeUndefined();
+
+		// A refused create re-renders the screen with the same hint.
+		const refused = blocksOf(
+			await sandbox!.invokeRoute("admin", {
+				type: "form_submit",
+				action_id: "coupons:create",
+				values: { id: "", code: "", type: "Fixed amount off" },
+			}),
+		);
+		const refusedFields = new Map(
+			formFields(refused, "coupons:create").map((f) => [f.action_id, f]),
+		);
+		expect(refusedFields.get("currency")?.placeholder).toBe("INR");
 	});
 
 	test("create (fixed_amount) stores EXACT integer minor units; the five shared axes are not on this form and land as explicit null", async () => {

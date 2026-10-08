@@ -133,7 +133,8 @@ import {
  *
  * A rate is keyed by (methodId, currency), so a price cannot be read without
  * naming a currency: the methods level therefore carries the SAME currency
- * filter its rates level already had, defaulting to `DEFAULT_RATE_CURRENCY`,
+ * filter its rates level already had, defaulting to the STORE currency (the
+ * Settings page's; USD for a store that never saved one — `DEFAULT_RATE_CURRENCY`),
  * and states that currency ONCE in the level's context line rather than per
  * row (G1). The two filters are independent — drilling in re-opens the rates
  * level at its own default, as every level's filter already resets on a
@@ -231,13 +232,25 @@ interface MethodDraft {
 
 /** The rates level's filter: a currency narrow that ALWAYS has a value (no
  *  "unfiltered" state exists — see the module doc's rates-identity note).
- *  Defaults to `"USD"`. The methods level carries the same shape, for the same
- *  reason: a rate is keyed by (methodId, currency), so neither level can name
- *  a price without naming a currency. */
+ *  Defaults to the store currency. The methods level carries the same shape, for
+ *  the same reason: a rate is keyed by (methodId, currency), so neither level can
+ *  name a price without naming a currency.
+ *
+ *  `filterFromValues` is synchronous and the store currency is a read, so a blank
+ *  field parses to `defaulted` and `fetchPage` resolves it
+ *  ({@link resolveStoreCurrency}) — writing BOTH fields unconditionally, as the
+ *  engine asks of page context written there. */
 interface RatesFilterForm {
+	/** The currency the level reads: as typed, or the store currency when blank. */
 	currency: string;
+	/** The store currency, as `fetchPage` read it — what "no filter" means. */
+	storeCurrency: string;
+	/** The field was blank: `currency` follows the store currency. */
+	defaulted: boolean;
 }
 
+/** The store currency of a store that never saved one, and the filter's
+ *  fallback when the settings read fails (the default this screen always had). */
 const DEFAULT_RATE_CURRENCY = "USD";
 
 /** Read the currency filter off a submitted filter form — shared by the
@@ -245,9 +258,32 @@ const DEFAULT_RATE_CURRENCY = "USD";
  *  or whitespace value means (it means the default, never `""`). */
 function currencyFromValues(values: Record<string, unknown>): RatesFilterForm {
 	const currency = readString(values.currency)?.trim().toUpperCase();
+	const defaulted = currency === undefined || currency.length === 0;
 	return {
-		currency: currency !== undefined && currency.length > 0 ? currency : DEFAULT_RATE_CURRENCY,
+		currency: defaulted ? DEFAULT_RATE_CURRENCY : currency,
+		storeCurrency: DEFAULT_RATE_CURRENCY,
+		defaulted,
 	};
+}
+
+/**
+ * Fill in the store currency (and, for a blank field, the filter currency) —
+ * one keyed settings read per render. SECONDARY and contained: a failed read
+ * falls back to USD, this screen's default before the setting existed, rather
+ * than blanking a level whose rates are still readable.
+ */
+async function resolveStoreCurrency(
+	client: AdminRulesSurface,
+	filter: RatesFilterForm,
+): Promise<void> {
+	let storeCurrency = DEFAULT_RATE_CURRENCY;
+	try {
+		storeCurrency = await client.getStoreCurrency();
+	} catch (err) {
+		console.error("[otta] admin shipping store-currency read failed:", err);
+	}
+	filter.storeCurrency = storeCurrency;
+	if (filter.defaulted) filter.currency = storeCurrency;
 }
 
 /** ISO-4217's shape. Not a membership test — the service owns the real code
@@ -268,16 +304,15 @@ const CURRENCY_CODE_SHAPE = /^[A-Z]{3}$/;
  * already correctly attributed, and silently substituting a default there
  * would turn a typo into a wrong answer rather than an error.
  */
-interface MethodsFilterForm {
-	/** Trimmed and upper-cased; the default when the field was blank. */
-	currency: string;
-	/** `currency` is not a 3-letter ISO-4217 shape. */
+interface MethodsFilterForm extends RatesFilterForm {
+	/** `currency` is not a 3-letter ISO-4217 shape (never, when defaulted: the
+	 *  store currency always is one). */
 	invalid: boolean;
 }
 
 function methodsFilterFromValues(values: Record<string, unknown>): MethodsFilterForm {
-	const { currency } = currencyFromValues(values);
-	return { currency, invalid: !CURRENCY_CODE_SHAPE.test(currency) };
+	const filter = currencyFromValues(values);
+	return { ...filter, invalid: !CURRENCY_CODE_SHAPE.test(filter.currency) };
 }
 
 const BAD_CURRENCY_NOTICE: Notice = {
@@ -735,6 +770,7 @@ function methodsLevel() {
 		async fetchPage(client, path, filter) {
 			const zoneId = path[0];
 			if (zoneId === undefined) return { items: [], nextCursor: null };
+			await resolveStoreCurrency(client, filter);
 			const methods = await client.listMethods(zoneId);
 			const items = await pricedMethods(client, methods, filter);
 			// SECONDARY and contained, like the price reads: the zone is read only for
@@ -1231,6 +1267,7 @@ function ratesLevel() {
 		async fetchPage(client, path, filter) {
 			const methodId = path[1];
 			if (methodId === undefined) return { items: [], nextCursor: null };
+			await resolveStoreCurrency(client, filter);
 			const rate = await client.getRate(methodId, filter.currency);
 			return { items: rate === null ? [] : [rate], nextCursor: null };
 		},
@@ -1261,7 +1298,7 @@ function ratesBlocks(
 	if (notice !== undefined) blocks.push(noticeBanner(notice));
 
 	blocks.push(currencyFilterForm(zoneId, methodId, filter));
-	if (filter.currency !== DEFAULT_RATE_CURRENCY) {
+	if (filter.currency !== filter.storeCurrency) {
 		const summary = filterSummary([`currency: ${filter.currency}`]);
 		if (summary !== undefined) {
 			const clearButton: ButtonElement = {

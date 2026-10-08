@@ -104,6 +104,7 @@ export {
 	type CurrencyInfo,
 	type SupportedCurrencyCode,
 } from "./currencies.js";
+export { CURRENCY_CHOICES, currencyChoiceLabel } from "./currency-choices.js";
 export {
 	DATE_LOCALE,
 	DAY_MS,

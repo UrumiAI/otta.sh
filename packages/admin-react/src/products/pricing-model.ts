@@ -19,7 +19,8 @@
  * leaving the browser.
  */
 import {
-	SUPPORTED_CURRENCIES,
+	CURRENCY_CHOICES,
+	currencyChoiceLabel,
 	formatAmount,
 	formatMinorUnitsInput,
 	isSupportedCurrency,
@@ -28,42 +29,17 @@ import {
 } from "@otta-sh/admin-presentation";
 import type { ProductRecord } from "../console-api.js";
 
-/** The currency an unpriced product starts in. There is no store-wide
- *  currency setting; the merchant can pick another before the first save. */
+/** The currency an unpriced product starts in when the store currency could
+ *  not be read — and what a store that never saved one has (the plugin's
+ *  `effectiveStoreCurrency`). The loaded store currency wins over it. */
 export const DEFAULT_CURRENCY = "USD";
 
-/** The currencies offered first, in this order — the list the picker showed
- *  before the currency table existed, kept at the top so it reads as it did. */
-const LEADING_CHOICES: readonly string[] = [
-	"USD",
-	"EUR",
-	"GBP",
-	"CAD",
-	"AUD",
-	"NZD",
-	"INR",
-	"SGD",
-	"CHF",
-	"SEK",
-];
-
 /** Offered when a product has no price yet: EVERY currency in the shared
- *  currency table (`@otta-sh/admin-presentation`'s `SUPPORTED_CURRENCIES`, the
- *  copy of the domain's), the familiar ten first and the rest by code. Each is
- *  typed and stored in its own minor unit (JPY in whole yen, KWD in fils), so
- *  any of them prices correctly. */
-export const CURRENCY_CHOICES: readonly string[] = [
-	...LEADING_CHOICES,
-	...SUPPORTED_CURRENCIES.map((row) => row.code)
-		.filter((code) => !LEADING_CHOICES.includes(code))
-		.toSorted(),
-];
-
-/** The picker's label for a code: `USD — US Dollar`. */
-export function currencyChoiceLabel(code: string): string {
-	const row = SUPPORTED_CURRENCIES.find((r) => r.code === code);
-	return row === undefined ? code : `${code} — ${row.name}`;
-}
+ *  currency table, the familiar ten first and the rest by code (the order the
+ *  Settings page's store-currency select uses too). Each is typed and stored in
+ *  its own minor unit (JPY in whole yen, KWD in fils), so any of them prices
+ *  correctly. */
+export { CURRENCY_CHOICES, currencyChoiceLabel };
 
 /** Every input the panel owns, as the text in the field. */
 export interface PricingDraft {
@@ -94,8 +70,13 @@ function countText(n: number | null): string {
 	return n === null ? "" : String(n);
 }
 
-export function draftFromRecord(p: ProductRecord): PricingDraft {
-	const currency = p.currency ?? DEFAULT_CURRENCY;
+/** `storeCurrency` is what an UNPRICED product's picker starts on: the store
+ *  currency the detail read carried, {@link DEFAULT_CURRENCY} when it had none. */
+export function draftFromRecord(
+	p: ProductRecord,
+	storeCurrency: string = DEFAULT_CURRENCY,
+): PricingDraft {
+	const currency = p.currency ?? storeCurrency;
 	return {
 		price: moneyText(p.priceCents, currency),
 		currency,
@@ -156,9 +137,10 @@ export function mergeDraft(
 	previous: ProductRecord,
 	next: ProductRecord,
 	draft: PricingDraft,
+	storeCurrency: string = DEFAULT_CURRENCY,
 ): { draft: PricingDraft; conflict: boolean } {
-	const before = draftFromRecord(previous);
-	const after = draftFromRecord(next);
+	const before = draftFromRecord(previous, storeCurrency);
+	const after = draftFromRecord(next, storeCurrency);
 	const mine = changedFields(before, draft);
 	// A clash takes the store's value for THAT field; the merchant's other edits
 	// survive, so a conflict on the weight does not throw away a typed price.

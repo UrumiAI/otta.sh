@@ -345,6 +345,11 @@ export interface AdminRulesSurface {
 	/** The tax options in force (ADR-0032) — the saved block, or the upgrade
 	 *  rule's answer when none is saved (`saved: false`). */
 	getTaxSettings(): Promise<TaxSettingsRead>;
+
+	/** The effective store currency — the saved one, or USD for a store that never
+	 *  saved one. What the shipping-rate filter and the coupon create form start
+	 *  on; it decides nothing about an existing rate or coupon. */
+	getStoreCurrency(): Promise<string>;
 	/**
 	 * Replace the tax options whole. `expected` is the {@link taxSettingsDigest} of
 	 * the options the form was loaded with: options that changed since are `stale`

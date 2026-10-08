@@ -559,6 +559,24 @@ describe("the console's Pricing & inventory branch on the otta admin route", () 
 		expect(result["threshold"]).toBe(THRESHOLD);
 	});
 
+	test("products.detail carries the effective store currency from the same settings read: USD until one is saved", async () => {
+		const seeded = await seedProduct({ term: "storecurrency" });
+		const read = async (): Promise<Record<string, unknown>> =>
+			invoke({ type: READ, resource: "products.detail", productId: seeded.productId });
+		// Never saved — what the picker always started on.
+		expect((await read())["storeCurrency"]).toBe("USD");
+		const settings = new EmdashSettingsStore({ storage, clock: systemClock });
+		await settings.update({ currency: "EUR" }, idempotencyKey(`${NS}-store-currency`));
+		try {
+			const result = await read();
+			expect(result["storeCurrency"]).toBe("EUR");
+			// The threshold rides the same read, unchanged.
+			expect(result["threshold"]).toBe(THRESHOLD);
+		} finally {
+			await settings.update({ currency: "USD" }, idempotencyKey(`${NS}-store-currency-back`));
+		}
+	});
+
 	test("an unknown product is a refusal with copy, at HTTP 200 (G5)", async () => {
 		const result = await invoke({
 			type: READ,

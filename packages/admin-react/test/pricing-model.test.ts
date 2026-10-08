@@ -73,6 +73,18 @@ describe("the draft", () => {
 		expect(draft.currency).toBe("USD");
 	});
 
+	test("an unpriced product starts on the store currency when the detail read carried one; a priced one keeps its own", () => {
+		const unpriced: ProductRecord = {
+			...BASE,
+			priceCents: null,
+			currency: null,
+			compareAtCents: null,
+			unitCostCents: null,
+		};
+		expect(draftFromRecord(unpriced, "EUR").currency).toBe("EUR");
+		expect(draftFromRecord(BASE, "EUR").currency).toBe(BASE.currency);
+	});
+
 	test("a JPY product's amounts are WHOLE YEN, both ways: 1500 shows as 1500 and '1500' saves as 1500", () => {
 		const jpy: ProductRecord = {
 			...BASE,

@@ -421,6 +421,35 @@ test("an unpriced product asks for a price and saves it in the currency the merc
 	expect(writes()[0]?.["value"]).toMatchObject({ price: "18.00", currency: "EUR" });
 });
 
+test("an unpriced product's currency starts on the store currency the detail read carried, and saves in it", async () => {
+	const unpriced = { priceCents: null, currency: null, compareAtCents: null, unitCostCents: null };
+	apiFetch.mockImplementation((_url, init) => {
+		const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+		if (body["type"] === "otta_console_act") {
+			return Promise.resolve(
+				json({ ok: true, notice: { variant: "default", title: "Saved", description: "" } }),
+			);
+		}
+		return Promise.resolve(
+			json({
+				ok: true,
+				product: { ...BASE, ...unpriced },
+				taxClasses: [{ id: "standard", name: "Standard" }],
+				threshold: 5,
+				storeCurrency: "JPY",
+				vocabulary: { statuses: [], kinds: [], any: "any", pageLimit: 25 },
+			}),
+		);
+	});
+	const c = await mountPanel();
+	const currency = input(c, "Currency") as unknown as HTMLSelectElement;
+	expect(currency.value).toBe("JPY");
+	await type(input(c, "Price"), "1500");
+	await fire(button(c, "Save pricing & stock"), "click");
+	await flush();
+	expect(writes()[0]?.["value"]).toMatchObject({ price: "1500", currency: "JPY" });
+});
+
 test("Save reads the product first: it writes against the NEW watermark and keeps only the merchant's edits", async () => {
 	apiFetch.mockImplementation((_url, init) => {
 		const body = JSON.parse(String(init?.body)) as Record<string, unknown>;

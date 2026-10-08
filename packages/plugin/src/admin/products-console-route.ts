@@ -81,6 +81,7 @@ import {
 	PRODUCTS_STATUS_OPTIONS,
 	filterFormFromValues,
 	readLowStockThreshold,
+	readProductSettings,
 	readTaxClasses,
 	resolveStockContext,
 	toClientFilter,
@@ -177,6 +178,10 @@ export interface ProductsConsoleDetailPayload {
 	readonly taxClasses: readonly TaxClassWire[];
 	/** Secondary (E-1): `null` costs the `Low` band and nothing else. */
 	readonly threshold: number | null;
+	/** The effective store currency — what an UNPRICED product's currency picker
+	 *  starts on. From the same settings read as `threshold`; `null` when that
+	 *  read failed (the picker then starts on USD, as it always did). */
+	readonly storeCurrency: string | null;
 	readonly vocabulary: ProductsConsoleVocabulary;
 }
 
@@ -342,15 +347,16 @@ async function consoleDetail(
 	if (product === null) return NOT_FOUND;
 	// E-1, unchanged for the React tier: two best-effort reads, run together,
 	// each degrading on its own rather than failing the screen.
-	const [taxClasses, threshold] = await Promise.all([
+	const [taxClasses, { threshold, storeCurrency }] = await Promise.all([
 		readTaxClasses(client.products),
-		readLowStockThreshold(client.settings),
+		readProductSettings(client.settings),
 	]);
 	return {
 		ok: true,
 		product,
 		taxClasses,
 		threshold,
+		storeCurrency,
 		vocabulary: PRODUCTS_CONSOLE_VOCABULARY,
 	};
 }

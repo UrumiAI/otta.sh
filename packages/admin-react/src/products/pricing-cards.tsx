@@ -33,6 +33,7 @@ import {
 	performAction,
 	PRODUCTS_ACT_SUBJECT,
 	type ActPayload,
+	type ProductDetailPayload,
 	type ProductRecord,
 	type Result,
 	type TaxClass,
@@ -45,6 +46,7 @@ import { usePricingStyles } from "./pricing-styles.js";
 import {
 	CURRENCY_CHOICES,
 	currencyChoiceLabel,
+	DEFAULT_CURRENCY,
 	draftFromRecord,
 	isDraftDirty,
 	marginSummary,
@@ -114,6 +116,8 @@ type Loaded = {
 	readonly record: ProductRecord;
 	readonly taxClasses: readonly TaxClass[];
 	readonly threshold: number | null;
+	/** The store currency an unpriced product's picker starts on. */
+	readonly storeCurrency: string;
 };
 
 type LoadState =
@@ -445,6 +449,7 @@ export function PricingStockEditor({ productId }: { productId: string }): React.
 				record,
 				taxClasses: result.taxClasses,
 				threshold: result.threshold,
+				storeCurrency: storeCurrencyOf(result),
 			});
 			// The merchant's own save, and a refusal that means the record moved,
 			// re-seed the form. Any other re-read (a CMS save, a stock movement, a
@@ -452,10 +457,10 @@ export function PricingStockEditor({ productId }: { productId: string }): React.
 			const current = draftRef.current;
 			const previous = recordRef.current;
 			if (reseed.current || current === null || previous === null) {
-				setDraft(draftFromRecord(record));
+				setDraft(draftFromRecord(record, storeCurrencyOf(result)));
 				setTouched(new Set());
 			} else {
-				const merged = mergeDraft(previous, record, current);
+				const merged = mergeDraft(previous, record, current, storeCurrencyOf(result));
 				setDraft(merged.draft);
 				if (merged.conflict) {
 					setTouched(new Set());
@@ -645,7 +650,7 @@ export function PricingStockEditor({ productId }: { productId: string }): React.
 		);
 	}
 
-	const { record: p, taxClasses, threshold } = load;
+	const { record: p, taxClasses, threshold, storeCurrency } = load;
 	if (p.deletedAt !== null) {
 		return (
 			<Card title="Pricing & stock">
@@ -658,7 +663,7 @@ export function PricingStockEditor({ productId }: { productId: string }): React.
 	}
 
 	const d = draft as PricingDraft;
-	const saved = draftFromRecord(p);
+	const saved = draftFromRecord(p, storeCurrency);
 	const dirty = isDraftDirty(saved, d);
 	unsaved.current = dirty;
 	const allProblems = validateDraft(d, p);
@@ -712,12 +717,15 @@ export function PricingStockEditor({ productId }: { productId: string }): React.
 				if (isFailure(fresh)) return fresh;
 				const latest = fresh.product;
 				latestRecord = latest;
-				const merged = mergeDraft(p, latest, draftRef.current ?? d);
+				const merged = mergeDraft(p, latest, draftRef.current ?? d, storeCurrency);
 				setLoad({
 					status: "ready",
 					record: latest,
 					taxClasses: fresh.taxClasses,
 					threshold: fresh.threshold,
+					// The currency the form was seeded with stays: re-seeding the
+					// picker mid-save would change what the merchant is saving.
+					storeCurrency,
 				});
 				setDraft(merged.draft);
 				if (merged.conflict) return "conflict" as const;
@@ -1397,3 +1405,9 @@ export function PricingStockEditor({ productId }: { productId: string }): React.
 /** The field editor EmDash discovers on the admin module (`fields`), named by a
  *  field's `widget: "otta-console:pricing"`. */
 export const PRICING_FIELD_WIDGET = "pricing";
+
+/** The store currency a detail read carried, or USD — what the picker always
+ *  started on — when the read had none (the settings read failed). */
+function storeCurrencyOf(result: ProductDetailPayload): string {
+	return result.storeCurrency ?? DEFAULT_CURRENCY;
+}
