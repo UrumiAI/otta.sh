@@ -32,6 +32,7 @@ import { afterAll, afterEach, beforeEach, describe, expect, test, vi } from "vit
 import {
 	ORDER_EMAIL_INLINE_DEADLINE_MS,
 	ORDER_EMAIL_INLINE_TIMEOUT_MS,
+	MIN_INLINE_SEND_MS,
 	sendOrderEmailsNow,
 } from "../src/email/send-order-emails-now.js";
 import { SETTLE_REQUEST_BUDGET_MS, settleDeadline } from "../src/settle-deadline.js";
@@ -338,9 +339,10 @@ describe("the budget runs from request start", () => {
 
 describe("a send never outlives the wait", () => {
 	test("when the claim and reads used most of the wait, the send's timeout is the remainder", async () => {
-		// The wait is 5 s on the injected clock; the claim "takes" 4.8 s of it. The
-		// send must then be cut off at ~200 ms — not the 3 s ceiling, which would run
-		// 2.8 s past the point the request stopped waiting.
+		// The wait is 5 s on the injected clock; the claim "takes" all but 1.2 s of it.
+		// The send must then be cut off at ~1.2 s — not the 3 s ceiling, which would
+		// run past the point the request stopped waiting.
+		const left = MIN_INLINE_SEND_MS + 200;
 		const id = await seedOrder("ord-late-send", true);
 		let clock = 0;
 		const deadline = settleDeadline(() => clock);
@@ -348,7 +350,7 @@ describe("a send never outlives the wait", () => {
 		const realClaim = orderStore.claimNextEmailForOrder.bind(orderStore);
 		vi.spyOn(orderStore, "claimNextEmailForOrder").mockImplementation(async (...args) => {
 			const row = await realClaim(...args);
-			clock += ORDER_EMAIL_INLINE_DEADLINE_MS - 200;
+			clock += ORDER_EMAIL_INLINE_DEADLINE_MS - left;
 			return row;
 		});
 		// A provider that never answers: only the sender's own timer ends the send.
@@ -357,11 +359,52 @@ describe("a send never outlives the wait", () => {
 
 		await sendOrderEmailsNow(ctx, harness.stores, id, { deadline });
 
-		expect(performance.now() - started).toBeLessThan(ORDER_EMAIL_INLINE_TIMEOUT_MS / 2);
+		const took = performance.now() - started;
+		expect(took).toBeGreaterThanOrEqual(left - 50);
+		expect(took).toBeLessThan(ORDER_EMAIL_INLINE_TIMEOUT_MS - 500);
 		// `ctx.email` has no idempotency key, so the timed-out send may have gone: it
 		// is a COUNTED attempt (ADR-0031), backed off for the cron.
 		expect(await dueNow(id)).toBeNull();
 		expect(await cronView(id)).toMatchObject({ attempts: 2, timeouts: 0 });
+	});
+
+	test("PR #418 review: with ~100 ms of the wait left, NO send starts — the row goes back untried and uncounted", async () => {
+		// A send started this late would time out, be delivered anyway (a race, not an
+		// abort), count as an attempt, and be sent AGAIN by the cron — a duplicate
+		// confirmation nothing can drop. Below `MIN_INLINE_SEND_MS` it is the cron's.
+		const id = await seedOrder("ord-too-late-send", true);
+		let clock = 0;
+		const deadline = settleDeadline(() => clock);
+		const { orderStore } = harness.stores;
+		const realClaim = orderStore.claimNextEmailForOrder.bind(orderStore);
+		vi.spyOn(orderStore, "claimNextEmailForOrder").mockImplementation(async (...args) => {
+			const row = await realClaim(...args);
+			clock += ORDER_EMAIL_INLINE_DEADLINE_MS - 100;
+			return row;
+		});
+		const { ctx, messages } = withEmail();
+
+		const result = await sendOrderEmailsNow(ctx, harness.stores, id, { deadline });
+
+		expect(messages).toHaveLength(0);
+		expect(result).toEqual({ configured: true, sent: [], skipped: [] });
+		// No attempt spent: the cron's claim is this row's FIRST counted attempt.
+		expect(await cronView(id)).toMatchObject({ attempts: 1, timeouts: 0 });
+	});
+
+	test("with less than MIN_INLINE_SEND_MS of the request left, nothing is even claimed", async () => {
+		const id = await seedOrder("ord-short-wait", true);
+		vi.spyOn(console, "warn").mockImplementation(() => {});
+		const claim = vi.spyOn(harness.stores.orderStore, "claimNextEmailForOrder");
+		const { ctx, messages } = withEmail();
+
+		await sendOrderEmailsNow(ctx, harness.stores, id, {
+			deadline: deadlineAfter(SETTLE_REQUEST_BUDGET_MS - (MIN_INLINE_SEND_MS - 1)),
+		});
+
+		expect(claim).not.toHaveBeenCalled();
+		expect(messages).toHaveLength(0);
+		expect(await cronView(id)).toMatchObject({ attempts: 1 });
 	});
 
 	test("an inline timeout is a COUNTED attempt — even from an injected sender", async () => {

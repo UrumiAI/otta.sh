@@ -101,6 +101,17 @@ export const ORDER_EMAIL_INLINE_DEADLINE_MS = 5_000;
  */
 export const ORDER_EMAIL_INLINE_LEASE_MS = 60_000;
 
+/**
+ * The least of the wait a send must still have to START (PR #418 review, item 2).
+ *
+ * A send is raced, not aborted: one started with ~150 ms left times out, keeps
+ * going and is delivered — and its timeout is a COUNTED attempt the cron then
+ * repeats, with no idempotency key to drop the duplicate (ADR-0031). Below this
+ * much, the row is handed back untried and uncounted (`canSend`), and the cron
+ * sends it with its full allowance. The sweep's own floor is `MIN_SEND_MS`.
+ */
+export const MIN_INLINE_SEND_MS = 1_000;
+
 /** The stores the inline dispatch reads — the route's own, so the settle and the
  *  send see one set of stores and one clock.
  *
@@ -175,7 +186,8 @@ export async function sendOrderEmailsNow(
 
 	const deadline = options.deadline ?? settleDeadline();
 	const waitMs = Math.min(ORDER_EMAIL_INLINE_DEADLINE_MS, deadline.remainingMs());
-	if (waitMs <= 0) {
+	// Too little left to START a send (`MIN_INLINE_SEND_MS`): claim nothing at all.
+	if (waitMs < MIN_INLINE_SEND_MS) {
 		console.warn(
 			`[otta] inline order email for ${orderId} skipped: the settle used the request's time budget; the cron sweep will take it`,
 		);
@@ -218,6 +230,9 @@ export async function sendOrderEmailsNow(
 			leaseMs: ORDER_EMAIL_INLINE_LEASE_MS,
 			onlyUnattempted: true,
 			shouldContinue: () => !expired,
+			// Asked after the claim and the reads, just before the send: too little of
+			// the wait left and the row goes back untried, its attempt not counted.
+			canSend: () => !expired && waitEndsAt - deadline.now() >= MIN_INLINE_SEND_MS,
 			// Only what was sent while the request was still waiting is reported.
 			onSent: (row) => {
 				if (!expired) sent.push(row);
