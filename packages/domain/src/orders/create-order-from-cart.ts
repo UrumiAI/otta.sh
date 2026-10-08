@@ -37,6 +37,7 @@ import { snapshotOrderLine } from "./line-snapshot.js";
 import type { Order, OrderAddress, PaymentMethod } from "./model.js";
 import { normalizeOrderAddress, type OrderAddressInput } from "./order-address.js";
 import { buildOrderTaxSnapshot } from "./order-tax-snapshot.js";
+import { gatewayForStored } from "./payment-methods.js";
 
 /** 15 minutes — the checkout hold TTL (§9 decision 5), configurable. */
 export const DEFAULT_CHECKOUT_TTL_MS = 15 * 60 * 1000;
@@ -152,7 +153,7 @@ export async function createOrderFromCart(
 	deps: CreateOrderDeps,
 	command: CreateOrderCommand,
 ): Promise<CreateOrderFromCartResult> {
-	const gateway = deps.gateways[command.paymentMethod];
+	const gateway = gatewayForStored(deps.gateways, command.paymentMethod);
 	if (gateway === undefined) {
 		throw new Error(`no payment gateway configured for method "${command.paymentMethod}"`);
 	}
@@ -171,10 +172,10 @@ export async function createOrderFromCart(
 		// success for an order this cart has nothing to do with. Checked before the
 		// state branch: a paid order is no more this cart's than a pending one.
 		if (already.cartId !== command.cartId) return { ok: false, reason: "IDEMPOTENCY_KEY_REUSED" };
-		// Nor of a request for ANOTHER method: an order placed with a method Otta
-		// removed (a legacy x402 order) must never be handed this gateway's intent.
-		if (already.paymentMethod !== gateway.id)
+		// Nor of a request for ANOTHER method (see `storedUnderAnotherMethod`).
+		if (storedUnderAnotherMethod(already, gateway)) {
 			return { ok: false, reason: "IDEMPOTENCY_KEY_REUSED" };
+		}
 		if (already.state !== "pending") {
 			// Already left the checkout window: nothing to pay for (see the helper).
 			// A dead order's coupon use is re-freed here too — the self-heal for a
@@ -559,7 +560,7 @@ async function finalizeOrder(
 	// winner's order. That order is not this cart's — adopting its holds is
 	// harmless but stamping it on THIS cart (step 3) would check out a cart that
 	// was never ordered. Refuse before anything moves; the winner owns its order.
-	if (order.cartId !== command.cartId) {
+	if (order.cartId !== command.cartId || storedUnderAnotherMethod(order, ctx.gateway)) {
 		await ctx.onForeignOrder();
 		return { ok: false, reason: "IDEMPOTENCY_KEY_REUSED" };
 	}
@@ -592,6 +593,16 @@ async function finalizeOrder(
 		logIntentFailure(err, order.id);
 		return { ok: false, reason: intentFailureReason(err) };
 	}
+}
+
+/**
+ * True iff an order found under this key was placed with a DIFFERENT method than
+ * the gateway about to be asked for an intent — a legacy x402 order replayed as a
+ * Stripe checkout must never get a Stripe intent. A `null` method (a historical
+ * order) is not "another method": it keeps the replay it always had.
+ */
+function storedUnderAnotherMethod(order: Order, gateway: PaymentGateway): boolean {
+	return order.paymentMethod !== null && order.paymentMethod !== gateway.id;
 }
 
 /**

@@ -16,7 +16,12 @@
  * what this fake observes. The same path is driven inside workerd, against a
  * Stripe API stub, in `orders-actions.sandbox.test.ts`.
  */
-import { orderId as toOrderId, type PaymentMethod } from "@otta-sh/domain";
+import {
+	cents,
+	currency as toCurrency,
+	orderId as toOrderId,
+	type PaymentMethod,
+} from "@otta-sh/domain";
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "vitest";
 import { makeAdminClients } from "../src/admin/make-admin-clients.js";
 import { STRIPE_SECRET_KEY_KEY, STRIPE_WEBHOOK_SECRET_KEY } from "../src/payment-secrets.js";
@@ -279,6 +284,43 @@ describe("makeAdminClients wires the payment gateways into admin refunds", () =>
 			).toEqual({ ok: false, status: 409, reason: "REFUND_GATEWAY_UNAVAILABLE" });
 			expect(await harness.stores.orderStore.listRefunds(toOrderId(id))).toEqual([]);
 		}
+		expect(requests).toEqual([]);
+	});
+
+	test("a legacy x402 order whose money a CURRENT provider (Stripe) captured is NOT record-only: 409", async () => {
+		const ctx = withKv({ ...harness.ctx, http: stripeHttp() }, {});
+		const { orders } = await makeAdminClients(ctx);
+		seq += 1;
+		const id = `mac-o-${String(seq)}`;
+		await sharedTierSeeders({
+			orderStore: harness.stores.orderStore,
+			addressStore: harness.stores.addressStore,
+			sessionStore: harness.stores.sessionStore,
+			shippingRules: harness.stores.shippingRules,
+			couponStore: harness.stores.couponStore,
+			taxRules: harness.stores.taxRules,
+		}).order({
+			orderId: id,
+			buyerRef: `${id}@example.test`,
+			paymentMethod: "x402" as unknown as PaymentMethod,
+		});
+		await harness.stores.orderStore.markPaid(toOrderId(id));
+		await harness.stores.orderStore.recordPayment({
+			orderId: toOrderId(id),
+			gateway: "stripe",
+			providerRef: `pi_${id.replaceAll("-", "_")}`,
+			amount: cents(1500),
+			currency: toCurrency("USD"),
+			status: "succeeded",
+		});
+		expect(
+			await orders.refundOrder(
+				id,
+				{ amountCents: 500, currency: "USD", refundedBy: "ops@example.test" },
+				{ idempotencyKey: `${id}-r1` },
+			),
+		).toEqual({ ok: false, status: 409, reason: "REFUND_GATEWAY_UNAVAILABLE" });
+		expect(await harness.stores.orderStore.listRefunds(toOrderId(id))).toEqual([]);
 		expect(requests).toEqual([]);
 	});
 

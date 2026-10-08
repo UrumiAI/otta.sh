@@ -63,6 +63,7 @@ import {
 	getCart,
 	getProductCommerce,
 	idempotencyKey as toIdempotencyKey,
+	isCurrentPaymentMethod,
 	InvalidProductFieldError,
 	isEmailTransportUnavailableError,
 	isProductLive,
@@ -1247,9 +1248,10 @@ export class InProcessCommerceClient implements CommerceClient {
 			deadline <= this.#stores.clock.now().getTime() ||
 			order.cartId === null ||
 			order.paymentMethod === null ||
-			// No gateway wired for the stored method (unconfigured, removed like x402,
-			// or unknown): nothing can take the payment. Own keys only ("toString").
-			!Object.hasOwn(this.#createOrderDeps.gateways, order.paymentMethod)
+			// A stored method that is not a current one (removed like x402, or unknown):
+			// no gateway can ever take it. A current method whose gateway did not
+			// resolve (kv down) still falls through and throws, retryable, as before.
+			!isCurrentPaymentMethod(order.paymentMethod)
 		) {
 			return { ok: false, reason: "ORDER_NOT_PAYABLE" };
 		}

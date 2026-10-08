@@ -77,7 +77,7 @@ afterEach(() => vi.restoreAllMocks());
 describe("purgeLegacyEmailSecrets", () => {
 	test("deletes exactly the two email keys and their save generations, and nothing else", async () => {
 		const { ctx, kv } = makeCtx(STORED);
-		expect(await purgeLegacyEmailSecrets(ctx)).toBe(true);
+		expect(await purgeLegacyEmailSecrets(ctx)).toBe("purged");
 		for (const key of LEGACY_EMAIL_SECRET_KEYS) expect(kv.has(key), key).toBe(false);
 		for (const key of [...PAYMENT_SECRET_KEYS, "settings:storeDisplayName"]) {
 			expect(kv.has(key), key).toBe(true);
@@ -93,7 +93,7 @@ describe("purgeLegacyEmailSecrets", () => {
 		const first = makeCtx(STORED);
 		await purgeLegacyEmailSecrets(first.ctx);
 		first.calls.length = 0;
-		expect(await purgeLegacyEmailSecrets(first.ctx)).toBe(false);
+		expect(await purgeLegacyEmailSecrets(first.ctx)).toBe("idle");
 		expect(first.calls).toEqual([]);
 
 		resetLegacyEmailPurgeForTesting(); // a fresh isolate
@@ -101,7 +101,7 @@ describe("purgeLegacyEmailSecrets", () => {
 			...STORED,
 			[LEGACY_EMAIL_PURGE_MARKER_KEY]: "2026-10-07T00:00:00Z",
 		});
-		expect(await purgeLegacyEmailSecrets(restored.ctx)).toBe(false);
+		expect(await purgeLegacyEmailSecrets(restored.ctx)).toBe("idle");
 		// r3 S4: the marker first, so a purged store pays one read per isolate.
 		expect(restored.calls).toEqual([`get ${LEGACY_EMAIL_PURGE_MARKER_KEY}`]);
 		expect(restored.kv.has("settings:emailApiKey")).toBe(true);
@@ -110,11 +110,11 @@ describe("purgeLegacyEmailSecrets", () => {
 	test("a kv failure part way leaves the marker unset, never throws, and is retried", async () => {
 		vi.spyOn(console, "warn").mockImplementation(() => {});
 		const failing = makeCtx(STORED, "settings:emailSmtp2goApiKey");
-		expect(await purgeLegacyEmailSecrets(failing.ctx)).toBe(false);
+		expect(await purgeLegacyEmailSecrets(failing.ctx)).toBe("attempted");
 		expect(failing.kv.has(LEGACY_EMAIL_PURGE_MARKER_KEY)).toBe(false);
 
 		const healthy = makeCtx(Object.fromEntries(failing.kv));
-		expect(await purgeLegacyEmailSecrets(healthy.ctx)).toBe(true);
+		expect(await purgeLegacyEmailSecrets(healthy.ctx)).toBe("purged");
 		for (const key of LEGACY_EMAIL_SECRET_KEYS) expect(healthy.kv.has(key), key).toBe(false);
 	});
 
@@ -126,13 +126,13 @@ describe("purgeLegacyEmailSecrets", () => {
 				...a.ctx,
 				site: { name: "A", url: "https://a.example", locale: "en" },
 			}),
-		).toBe(true);
+		).toBe("purged");
 		expect(
 			await purgeLegacyEmailSecrets({
 				...b.ctx,
 				site: { name: "B", url: "https://b.example", locale: "en" },
 			}),
-		).toBe(true);
+		).toBe("purged");
 		for (const key of LEGACY_EMAIL_SECRET_KEYS) expect(b.kv.has(key), key).toBe(false);
 	});
 
@@ -141,14 +141,14 @@ describe("purgeLegacyEmailSecrets", () => {
 		const get = ctx.kv.get.bind(ctx.kv);
 		ctx.kv.get = async <T>(key: string) =>
 			key === LEGACY_EMAIL_PURGE_MARKER_KEY ? (undefined as T) : get<T>(key);
-		expect(await purgeLegacyEmailSecrets(ctx)).toBe(true);
+		expect(await purgeLegacyEmailSecrets(ctx)).toBe("purged");
 		expect(kv.has("settings:emailApiKey")).toBe(false);
 	});
 
 	describe("PR #418 review: only once a host email provider has delivered (rollback stays possible)", () => {
 		test("no `ctx.email` (trusted, no provider selected) ⇒ keys kept, not even a kv read", async () => {
 			const { ctx, kv, calls } = makeCtx(STORED, undefined, { email: false });
-			expect(await purgeLegacyEmailSecrets(ctx)).toBe(false);
+			expect(await purgeLegacyEmailSecrets(ctx)).toBe("idle");
 			expect(calls).toEqual([]);
 			for (const key of LEGACY_EMAIL_SECRET_KEYS) expect(kv.has(key), key).toBe(true);
 			expect(kv.has(LEGACY_EMAIL_PURGE_MARKER_KEY)).toBe(false);
@@ -157,7 +157,7 @@ describe("purgeLegacyEmailSecrets", () => {
 		test("`ctx.email` there but no send confirmed yet (a sandboxed host with no provider looks like this) ⇒ keys kept, retried next tick", async () => {
 			const { ctx, kv, calls } = makeCtx(UNCONFIRMED);
 			const t0 = Date.now();
-			expect(await purgeLegacyEmailSecrets(ctx, t0)).toBe(false);
+			expect(await purgeLegacyEmailSecrets(ctx, t0)).toBe("idle");
 			for (const key of LEGACY_EMAIL_SECRET_KEYS) expect(kv.has(key), key).toBe(true);
 			expect(kv.has(LEGACY_EMAIL_PURGE_MARKER_KEY)).toBe(false);
 
@@ -165,11 +165,11 @@ describe("purgeLegacyEmailSecrets", () => {
 			// in this isolate make no kv call at all.
 			calls.length = 0;
 			kv.set(EMAIL_LAST_SENT_KEY, new Date(t0 + 1).toISOString());
-			expect(await purgeLegacyEmailSecrets(ctx, t0 + UNCONFIRMED_RECHECK_MS - 1)).toBe(false);
+			expect(await purgeLegacyEmailSecrets(ctx, t0 + UNCONFIRMED_RECHECK_MS - 1)).toBe("idle");
 			expect(calls).toEqual([]);
 
 			// The first send has gone through the host's provider: the next look purges.
-			expect(await purgeLegacyEmailSecrets(ctx, t0 + UNCONFIRMED_RECHECK_MS)).toBe(true);
+			expect(await purgeLegacyEmailSecrets(ctx, t0 + UNCONFIRMED_RECHECK_MS)).toBe("purged");
 			for (const key of LEGACY_EMAIL_SECRET_KEYS) expect(kv.has(key), key).toBe(false);
 		});
 
@@ -179,7 +179,7 @@ describe("purgeLegacyEmailSecrets", () => {
 				[EMAIL_LAST_SENT_KEY]: "2026-10-01T00:00:00.000Z",
 				[EMAIL_TRANSPORT_UNAVAILABLE_KEY]: "2026-10-02T00:00:00.000Z",
 			});
-			expect(await purgeLegacyEmailSecrets(ctx)).toBe(false);
+			expect(await purgeLegacyEmailSecrets(ctx)).toBe("idle");
 			expect(kv.has("settings:emailApiKey")).toBe(true);
 		});
 
@@ -190,7 +190,7 @@ describe("purgeLegacyEmailSecrets", () => {
 				if (key === EMAIL_LAST_SENT_KEY) throw new Error("kv down");
 				return get<T>(key);
 			};
-			expect(await purgeLegacyEmailSecrets(ctx)).toBe(false);
+			expect(await purgeLegacyEmailSecrets(ctx)).toBe("idle");
 			expect(kv.has("settings:emailApiKey")).toBe(true);
 		});
 	});

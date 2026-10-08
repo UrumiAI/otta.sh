@@ -94,9 +94,11 @@ import {
 	adminNextStates,
 	appendOrderNote,
 	cancelOrderWithRefund,
+	capturedOnlyThroughLegacy,
 	emailTemplateForState,
 	computeRefundCeiling,
 	getOrderCustomerContext,
+	gatewayForStored,
 	getOrderTimeline,
 	idempotencyKey as toIdempotencyKey,
 	isLegacyPaymentMethod,
@@ -254,15 +256,25 @@ export class InProcessAdminOrdersClient implements AdminOrdersSurface {
 	 * method gets its wired gateway, or `undefined` when none is wired (the refund
 	 * POST's `409 REFUND_GATEWAY_UNAVAILABLE`). A NAMED legacy method (the domain's
 	 * `LEGACY_PAYMENT_METHODS`: an x402 order from before its removal) gets a
-	 * record-only stand-in, so the admin can still record the refund they made
-	 * outside Otta. Any other stored method is unknown and fails closed: `undefined`.
+	 * record-only stand-in — but only while every captured payment came through a
+	 * legacy method too (`capturedOnlyThroughLegacy`, Mark refunded's rule): money a
+	 * current provider captured is not recorded away. Anything else: `undefined`.
 	 */
-	#refundGatewayFor(method: PaymentMethod | null): PaymentGateway | undefined {
-		if (method === null) return undefined;
-		// The wired gateway first (own keys only: "toString" is no gateway), then the
-		// legacy list — the domain's `factForStored` order. Anything else: 409.
-		if (Object.hasOwn(this.#gateways, method)) return this.#gateways[method];
-		return isLegacyPaymentMethod(method) ? recordOnlyLegacyGateway(method) : undefined;
+	#refundGatewayFor(
+		method: PaymentMethod | null,
+		payments: readonly { status: string; gateway?: string }[],
+	): PaymentGateway | undefined {
+		const wired = gatewayForStored(this.#gateways, method);
+		if (wired !== undefined || method === null || !isLegacyPaymentMethod(method)) return wired;
+		return capturedOnlyThroughLegacy(payments) ? recordOnlyLegacyGateway(method) : undefined;
+	}
+
+	/** {@link #refundGatewayFor} for an order, reading its payments only for a
+	 *  legacy method — a current method's path reads nothing more than before. */
+	async #refundGatewayForOrder(order: Order): Promise<PaymentGateway | undefined> {
+		const legacy = order.paymentMethod !== null && isLegacyPaymentMethod(order.paymentMethod);
+		const payments = legacy ? await this.#stores.orderStore.getCapturedPayments(order.id) : [];
+		return this.#refundGatewayFor(order.paymentMethod, payments);
 	}
 
 	/**
@@ -574,7 +586,7 @@ export class InProcessAdminOrdersClient implements AdminOrdersSurface {
 		// issue (`REFUND_NOT_AUTOMATIC`) rather than cancelling with the money kept.
 		// Resolved like a refund's: a legacy method's record-only stand-in is not
 		// refundable, so a paid legacy order is refused exactly as with no gateway.
-		const gateway = order === null ? null : (this.#refundGatewayFor(order.paymentMethod) ?? null);
+		const gateway = order === null ? null : ((await this.#refundGatewayForOrder(order)) ?? null);
 		const res = await cancelOrderWithRefund(
 			{
 				orderStore: this.#stores.orderStore,
@@ -733,7 +745,7 @@ export class InProcessAdminOrdersClient implements AdminOrdersSurface {
 		// Never a button that silently no-ops — and with no gateway composed for the
 		// order's method, false is the truth rather than a placeholder. A legacy
 		// method resolves to its record-only stand-in: false, the same answer.
-		const gateway = this.#refundGatewayFor(order.paymentMethod);
+		const gateway = this.#refundGatewayFor(order.paymentMethod, payments);
 		return {
 			refunds: refunds.map(toRefundWire),
 			currency: order.totals.currency,
@@ -787,7 +799,7 @@ export class InProcessAdminOrdersClient implements AdminOrdersSurface {
 		const oid = toOrderId(orderId);
 		const order = await this.#stores.orderStore.getById(oid);
 		if (order === null) return { ok: false, status: 404, reason: "ORDER_NOT_FOUND" };
-		const gateway = this.#refundGatewayFor(order.paymentMethod);
+		const gateway = await this.#refundGatewayForOrder(order);
 		if (gateway === undefined) {
 			// No gateway wired for the order's method — cannot even record a refund
 			// against it (the domain needs a gateway to declare capability).

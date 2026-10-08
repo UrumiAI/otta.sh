@@ -325,15 +325,12 @@ export {
 	TRANSPORT_UNAVAILABLE_RETRY_MS,
 	UNTRIED_RETRY_MS,
 	adminNextStates,
-	isLegacyPaymentMethod,
-	LEGACY_PAYMENT_METHODS,
 	manualPaymentAllowed,
 	markRefundedAllowed,
 	markRefundedRefusal,
 	transitionOrder,
 	transitionOrderAsAdmin,
 	unrefundedCapturedCents,
-	type LegacyMethodFacts,
 	type RefundLedgerFacts,
 	type TransitionOrderAsAdminFailure,
 	type TransitionOrderAsAdminResult,
@@ -344,6 +341,14 @@ export {
 	type TransitionOrderDeps,
 	type TransitionOrderResult,
 } from "./orders/transition.js";
+export {
+	capturedOnlyThroughLegacy,
+	gatewayForStored,
+	isCurrentPaymentMethod,
+	isLegacyPaymentMethod,
+	LEGACY_PAYMENT_METHODS,
+	type LegacyMethodFacts,
+} from "./orders/payment-methods.js";
 export {
 	resolveUnverifiedRefund,
 	type ResolveFollowUp,

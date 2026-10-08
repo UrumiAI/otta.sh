@@ -17,6 +17,12 @@ import {
 import type { OrderStore, OutboxEmail } from "../ports/order-store.js";
 import type { Order, OrderState, PaymentMethod } from "./model.js";
 import { orderTotalLabel } from "./order-total-label.js";
+import {
+	capturedOnlyThroughLegacy,
+	isLegacyPaymentMethod,
+	LEGACY_PAYMENT_METHODS,
+	type LegacyMethodFacts,
+} from "./payment-methods.js";
 import { PROVIDER_REFUNDED_FLAG_PREFIX } from "./provider-refunded-flag.js";
 import { readOrderTaxSnapshot } from "./order-tax-snapshot.js";
 import { sumFinalizedRefunds } from "./refund-order.js";
@@ -155,33 +161,6 @@ const PAYMENT_METHOD_SETTLEMENT: Readonly<Record<PaymentMethod, "gateway" | "off
 };
 
 /**
- * The payment methods Otta REMOVED that older orders may still store, by name,
- * with how each one's money was confirmed and goes back. A NAMED list, never an
- * open fallback: a stored method that is neither current nor listed here (a typo,
- * "Stripe", a hand-seeded value) fails CLOSED everywhere it is looked up — it
- * could be money a provider still holds (QA2 M4).
- *
- * x402 (HTTP 402, USDC on Base) was confirmed by its gateway and could not
- * refund automatically: its money goes back OUTSIDE Otta, and Mark refunded or a
- * recorded refund is how the admin says so.
- */
-/** What a removed method declared, kept for the orders that still store it. */
-export interface LegacyMethodFacts {
-	refunds: "outside";
-	settlement: "gateway";
-}
-
-export const LEGACY_PAYMENT_METHODS: Readonly<Record<string, LegacyMethodFacts>> = Object.freeze({
-	x402: Object.freeze({ refunds: "outside", settlement: "gateway" }),
-});
-
-/** True iff `stored` names a REMOVED method from {@link LEGACY_PAYMENT_METHODS}.
- *  Read as a `string`: a legacy order carries a method the type no longer has. */
-export function isLegacyPaymentMethod(stored: string): boolean {
-	return Object.hasOwn(LEGACY_PAYMENT_METHODS, stored);
-}
-
-/**
  * A per-method fact for a STORED method: from the current table when the method
  * is a `PaymentMethod`, else from its {@link LEGACY_PAYMENT_METHODS} entry, else
  * `undefined` — an unknown method, which every caller treats as fail-closed.
@@ -273,10 +252,7 @@ export function markRefundedRefusal(
 	if (
 		order.paymentMethod !== null &&
 		refundRouteOf(order.paymentMethod) === "outside" &&
-		facts.payments.every(
-			(p) =>
-				p.status !== "succeeded" || (p.gateway !== undefined && isLegacyPaymentMethod(p.gateway)),
-		)
+		capturedOnlyThroughLegacy(facts.payments)
 	) {
 		return null;
 	}

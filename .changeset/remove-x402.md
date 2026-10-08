@@ -38,9 +38,11 @@ removal from published API.
   `409 REFUND_GATEWAY_UNAVAILABLE`. The admin refunds summary (`RefundsSummaryWire`) gains
   `legacyPaymentMethod: boolean`, true for a legacy order. Mark refunded's legacy shortcut
   holds only while every captured payment also came through a legacy method. A same-key
-  checkout replay of an order stored under another method is refused `IDEMPOTENCY_KEY_REUSED`
-  (no intent is minted), and resuming a pending order whose method has no wired gateway
-  (legacy, unknown, or Stripe unconfigured) answers `ORDER_NOT_PAYABLE` instead of throwing.
+  checkout replay of an order stored under another (non-null) method is refused
+  `IDEMPOTENCY_KEY_REUSED` (no intent is minted), and resuming a pending order whose stored
+  method is not a current one (legacy or unknown) answers `ORDER_NOT_PAYABLE`. A Stripe order
+  whose gateway does not resolve still fails as before. The domain gains `isCurrentPaymentMethod`,
+  `gatewayForStored` and `capturedOnlyThroughLegacy`.
 - `@otta-sh/admin-presentation`: the "paid on-chain (x402)" refund-capability sentence is gone.
   `refundCapabilityText` takes an optional third argument, `legacyPaymentMethod` (default
   `false`); when it is true the panel reads "Paid with a payment method Otta no longer supports. Refunds are record-only:

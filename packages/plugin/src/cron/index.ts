@@ -250,21 +250,7 @@ export function createCronHandler(options: CommerceSweepOptions = {}): HookHandl
 		// query budget, so they never pile onto one tick: a tick whose email purge
 		// issued any delete (even one that then failed) leaves the x402 purge to the
 		// next tick.
-		const kv = ctx.kv;
-		let emailPurgeDeleted = false;
-		await purgeLegacyEmailSecrets({
-			...ctx,
-			kv: {
-				get: <T>(key: string) => kv.get<T>(key),
-				set: (key, value) => kv.set(key, value),
-				delete: (key) => {
-					emailPurgeDeleted = true;
-					return kv.delete(key);
-				},
-				list: (prefix) => kv.list(prefix),
-			},
-		});
-		if (!emailPurgeDeleted) await purgeLegacyX402Settings(ctx);
+		if ((await purgeLegacyEmailSecrets(ctx)) === "idle") await purgeLegacyX402Settings(ctx);
 		return await runCommerceSweeps(ctx, name, { ...options, tickClock, startedAtMs });
 	};
 }

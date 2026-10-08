@@ -289,6 +289,28 @@ describe("createOrderFromCart", () => {
 		expect(h.stripeGw.intentCalls).toEqual([]);
 	});
 
+	test("a same-key replay of an order with NO method on file (a historical order) keeps its replay", async () => {
+		await h.seedDigital({ productId: "d1", sku: "DIG-1", priceCents: 900, title: "Ebook" });
+		const cartId = await h.cartWith([{ sku: "DIG-1", productId: "d1", qty: 1, kind: "digital" }]);
+		const usd = (await h.cartStore.get(cartId))!.currency;
+		await h.orderStore.createFromCart({
+			orderId: brandOrderId("historical-null-method"),
+			cartId,
+			currency: usd,
+			idempotencyKey: idempotencyKey("checkout:historical"),
+			holdExpiresAt: "2099-01-01T00:00:00.000Z",
+			buyerRef: "buyer@example.com",
+			paymentMethod: null,
+			lines: [],
+			totals: { subtotal: cents(900), total: cents(900), currency: usd },
+		});
+
+		const res = await createOrderFromCart(h.createDeps, cmd(cartId, "checkout:historical"));
+		// As before this check existed: the replay returns the order and asks for the intent.
+		expect(res.ok && res.order.id).toBe("historical-null-method");
+		expect(h.stripeGw.intentCalls).toHaveLength(1);
+	});
+
 	test("the mismatch is refused even once the key's order has left pending (a PAID order is still not this cart's)", async () => {
 		await h.seedDigital({ productId: "d1", sku: "DIG-1", priceCents: 900, title: "Ebook" });
 		const oldCart = await h.cartWith([{ sku: "DIG-1", productId: "d1", qty: 1, kind: "digital" }]);
