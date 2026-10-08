@@ -264,7 +264,7 @@ describe("field errors — shown only for the error the URL names", () => {
 		);
 		expect(fieldErrorCopy("country", "invalid")).toBe("Choose a country from the list.");
 		expect(fieldErrorCopy("region", "invalid")).toBe(
-			"Use a state/province code, e.g. CA — or leave it blank.",
+			"Choose a state/province from the list — or leave it blank.",
 		);
 	});
 });
@@ -570,6 +570,148 @@ describe("updating the delivery keeps every typed value", () => {
 	});
 });
 
+describe("the state/province pick list: a changed country is a round trip, never a stale region", () => {
+	/** The address block of a page WITHOUT the delivery block: its own country
+	 *  select, Update, and the list's country echoed as `regionCountry`. */
+	const OWN = { ...FULL, country: "US", region: "CA", regionCountry: "US" };
+
+	test("Update posts the details form: every typed value is kept in the draft, nothing is placed, no error", async () => {
+		const h = harness({ ...OWN, intent: "update-address", couponCode: "SAVE10" }, PLACED);
+		const response = await PLACE_POST(h.context);
+		expect(response.status).toBe(303);
+		expect(response.headers.get("location")).toBe("/checkout?coupon=SAVE10");
+		expectNoPersonalDataIn(response.headers.get("location")!);
+		expect(h.calls).toHaveLength(0);
+		expect(h.draft()!.values).toEqual({
+			email: "ada@example.com",
+			...ADDRESS,
+			country: "US",
+			region: "CA",
+		});
+		expect(h.draft()!.errors).toEqual({});
+	});
+
+	test("Update works before the email is filled in — it is not a place", async () => {
+		const h = harness({ ...OWN, email: "", intent: "update-address" }, PLACED);
+		expect((await PLACE_POST(h.context)).headers.get("location")).toBe("/checkout");
+		expect(h.calls).toHaveLength(0);
+	});
+
+	test("Update after changing the country keeps everything typed EXCEPT the old country's region", async () => {
+		const h = harness({ ...OWN, country: "IN", intent: "update-address" }, PLACED);
+		await PLACE_POST(h.context);
+		expect(h.calls).toHaveLength(0);
+		expect(h.draft()!.values).toMatchObject({
+			country: "IN",
+			name: ADDRESS.name,
+			city: ADDRESS.city,
+		});
+		expect(h.draft()!.values.region).toBeUndefined();
+	});
+
+	test("a code that exists in BOTH countries is still dropped: it was picked from the other list", async () => {
+		// SG-01 and FR-01 are both real; "01" picked for Singapore is not Ain.
+		const h = harness(
+			{ ...OWN, country: "FR", region: "01", regionCountry: "SG", intent: "update-address" },
+			PLACED,
+		);
+		await PLACE_POST(h.context);
+		expect(h.draft()!.values.region).toBeUndefined();
+	});
+
+	test("placing after a country change comes back with the new list instead of placing", async () => {
+		const h = harness({ ...OWN, country: "IN" }, PLACED);
+		const response = await PLACE_POST(h.context);
+		expect(response.headers.get("location")).toBe("/checkout?error=REGION_LIST_UPDATED");
+		expect(h.calls).toHaveLength(0);
+		expect(h.draft()!.values).toMatchObject({ email: "ada@example.com", country: "IN" });
+		expect(h.draft()!.values.region).toBeUndefined();
+	});
+
+	test("the first choice of a country (the list was rendered for none) shows its list before placing", async () => {
+		const h = harness({ ...FULL, country: "US", regionCountry: "" }, PLACED);
+		expect((await PLACE_POST(h.context)).headers.get("location")).toBe(
+			"/checkout?error=REGION_LIST_UPDATED",
+		);
+		expect(h.calls).toHaveLength(0);
+	});
+
+	test("a changed country WITHOUT subdivisions places straight away, without the old region", async () => {
+		// Antarctica has no ISO 3166-2 subdivisions: there is no list to show.
+		const h = harness({ ...OWN, country: "AQ" }, PLACED);
+		expect((await PLACE_POST(h.context)).headers.get("location")).toBe("/checkout/pay");
+		expect(h.calls).toHaveLength(1);
+		const address = h.calls[0]!["shippingAddress"] as Record<string, string>;
+		expect(address["country"]).toBe("AQ");
+		expect(address["region"]).toBeUndefined();
+	});
+
+	test("an unchanged country places with the picked code, exactly as a typed one was sent", async () => {
+		const h = harness(OWN, PLACED);
+		expect((await PLACE_POST(h.context)).headers.get("location")).toBe("/checkout/pay");
+		const address = h.calls[0]!["shippingAddress"] as Record<string, string>;
+		expect(address).toMatchObject({ country: "US", region: "CA" });
+	});
+
+	test("a form without regionCountry (a theme still printing a typed region) behaves as before", async () => {
+		const h = harness({ ...FULL, country: "US", region: "us-ca" }, PLACED);
+		expect((await PLACE_POST(h.context)).headers.get("location")).toBe("/checkout/pay");
+		const address = h.calls[0]!["shippingAddress"] as Record<string, string>;
+		expect(address["region"]).toBe("us-ca");
+	});
+
+	test("applying a coupon after a country change does not carry the old region into the draft", async () => {
+		const h = harness({ ...OWN, country: "IN", intent: "apply-coupon", coupon: "SAVE10" }, PLACED);
+		await PLACE_POST(h.context);
+		expect(h.draft()!.values.region).toBeUndefined();
+	});
+
+	test("the delivery block: a region picked for the old country never rides the new destination", async () => {
+		const h = harness(
+			{
+				...FULL,
+				addressMode: "zoned",
+				country: "US",
+				region: "CA",
+				fromCountry: "US",
+				fromRegion: "CA",
+				intent: "update-delivery",
+				deliveryCountry: "CA",
+				deliveryRegion: "CA",
+				deliveryRegionCountry: "US",
+			},
+			PLACED,
+		);
+		const response = await PLACE_POST(h.context);
+		// Canada has no "CA" subdivision anyway, but the rule does not depend on
+		// that: the list was rendered for the US.
+		expect(response.headers.get("location")).toBe(
+			"/checkout?country=CA&fromCountry=US&fromRegion=CA",
+		);
+		expect(h.calls).toHaveLength(0);
+	});
+
+	test("the delivery block: the same country keeps its picked region", async () => {
+		const h = harness(
+			{
+				...FULL,
+				addressMode: "zoned",
+				country: "US",
+				fromCountry: "US",
+				fromRegion: "",
+				intent: "update-delivery",
+				deliveryCountry: "US",
+				deliveryRegion: "NY",
+				deliveryRegionCountry: "US",
+			},
+			PLACED,
+		);
+		expect((await PLACE_POST(h.context)).headers.get("location")).toBe(
+			"/checkout?country=US&region=NY&fromCountry=US",
+		);
+	});
+});
+
 describe("Enter in a details field — its own hidden default button (intent=enter)", () => {
 	test.each(viewSources("checkout").map((v) => [v.file, v] as const))(
 		"%s: a hidden intent=enter submit comes BEFORE Apply, out of the tab order and hidden from assistive tech",
@@ -655,7 +797,8 @@ describe("/checkout reads the draft back", () => {
 
 	test("typed values win over the account's email; the fields get the draft's values", () => {
 		expect(page).toMatch(/emailValue: draft\?\.values\.email \?\? accountEmail \?\? ""/);
-		expect(page).toMatch(/addressValues: draftAddressValues\(draft\)/);
+		expect(page).toMatch(/const addressValues = draftAddressValues\(draft\);/);
+		expect(page).toMatch(/^\taddressValues,$/m);
 		expect(page).toMatch(
 			/fieldErrors: shownFieldErrors\(draft, shownError, \{\s*addressRequired: summary\.paymentAccountNeedsAddress,?\s*\}\)/,
 		);
@@ -687,13 +830,14 @@ describe.each(viewSources("checkout").map((v) => [v.file, v] as const))(
 			expect(input).toContain("aria-invalid={fieldErrors.email !== undefined}");
 		});
 
-		test("the country select and the region input are filled from the draft too", () => {
+		test("the country select and the region pick list are filled from the draft too", () => {
 			expect(body).toMatch(/selected=\{option\.code === addressValues\.country\}/);
-			const region = /<input[^>]*name="region"[^>]*autocomplete="address-level1"[^>]*>/g;
-			const typed = [...body.matchAll(region)]
-				.map((m) => m[0])
-				.find((m) => !m.includes("delivery-region"));
-			expect(typed).toContain("value={addressValues.region}");
+			// The region is the page's pick list for the draft's country, its
+			// stored/typed code preselected (lib/regions.ts reads `us-ca` as CA).
+			const region = /<select[^>]*name="region"[^>]*>[\s\S]*?<\/select>/.exec(body)?.[0] ?? "";
+			expect(region).toContain('autocomplete="address-level1"');
+			expect(region).toContain("aria-invalid={fieldErrors.region !== undefined}");
+			expect(region).toMatch(/selected=\{option\.code === addressRegions\.selected\}/);
 		});
 
 		test("the refused code rides as a hidden refusedCoupon, from the page's model", () => {

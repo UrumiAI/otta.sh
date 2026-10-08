@@ -1217,3 +1217,15 @@
 		gap: 2.5rem;
 	}
 }
+
+/* The address block's country select and its Update button (the state /
+   province list is re-rendered on the server — no client JS). */
+[data-theme-id] .checkout-country-row {
+	display: flex;
+	gap: 0.5rem;
+	min-width: 0;
+}
+[data-theme-id] .checkout-country-row select {
+	flex: 1;
+	min-width: 0;
+}

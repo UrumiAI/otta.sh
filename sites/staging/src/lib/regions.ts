@@ -1,0 +1,74 @@
+/**
+ * The state/province PICK LIST (ADR-0021): a `<select>` of the chosen
+ * country's ISO 3166-2 subdivisions, named in English (CLDR, via the plugin)
+ * and sorted for the buyer's locale. The VALUE is the bare code the address
+ * has always stored (`CA`), so nothing downstream changes, and the plugin still
+ * validates every region it is sent.
+ *
+ * NO CLIENT JS (the review is a plain form): the list is rendered on the
+ * SERVER for the country the page knows. Changing the country takes a round
+ * trip — the form's Update button — and the page comes back with that
+ * country's list and everything typed kept (the draft cookie). The list's own
+ * country rides along as a hidden field (`REGION_COUNTRY_FIELD`), so a region
+ * picked for one country is never sent as another's: same-looking codes (`01`)
+ * exist in many countries.
+ */
+import { normalizeSubdivision, subdivisionOptions } from "@otta-sh/plugin";
+
+/** The hidden field naming the country the place form's region list was
+ *  rendered for (the address block without delivery). */
+export const REGION_COUNTRY_FIELD = "regionCountry";
+/** The same, for the delivery block's list. */
+export const DELIVERY_REGION_COUNTRY_FIELD = "deliveryRegionCountry";
+
+export interface RegionOption {
+	code: string;
+	label: string;
+}
+
+/** What a view needs to print one region pick list. */
+export interface RegionChoice {
+	/** The country the list belongs to — echoed as the hidden field above. ""
+	 *  when no country is chosen yet. */
+	country: string;
+	/** Its subdivisions, `{code, label}`, sorted by label. EMPTY ⇒ the view
+	 *  shows no region field (no country yet, or one without subdivisions). */
+	options: readonly RegionOption[];
+	/** The code to preselect: `value` read as one of `country`'s codes (`ca`,
+	 *  `US-CA` and `CA` are all `CA`), else "" — a value that is not one of them
+	 *  selects nothing rather than inventing an option. */
+	selected: string;
+}
+
+function collator(locale: string): Intl.Collator | null {
+	try {
+		return new Intl.Collator(locale);
+	} catch {
+		return null;
+	}
+}
+
+/** The pick list for `country`, with `value` (a stored or typed region) preselected. */
+export function regionChoice(country: string, value: string, locale: string): RegionChoice {
+	const code = country.trim().toUpperCase();
+	const compare = collator(locale);
+	const options = subdivisionOptions(code)
+		.map((option) => ({ code: option.code, label: option.name }))
+		.toSorted((a, b) =>
+			compare !== null ? compare.compare(a.label, b.label) : a.label < b.label ? -1 : 1,
+		);
+	if (options.length === 0) return { country: code, options: [], selected: "" };
+	const read = normalizeSubdivision(code, value);
+	return { country: code, options, selected: read.ok && read.code !== null ? read.code : "" };
+}
+
+/** True when the form's region was picked from a list rendered for ANOTHER
+ *  country than the one now posted — so it must not be sent as this one's.
+ *  `listCountry` undefined (a view without the hidden field) never differs. */
+export function regionListIsStale(
+	listCountry: string | undefined,
+	country: string | undefined,
+): boolean {
+	if (listCountry === undefined) return false;
+	return listCountry.trim().toUpperCase() !== (country ?? "").trim().toUpperCase();
+}

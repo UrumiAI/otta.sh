@@ -1,0 +1,29 @@
+---
+"@otta-sh/domain": minor
+"@otta-sh/plugin": minor
+---
+
+The checkout's state/province is a pick list of the chosen country's ISO 3166-2
+subdivisions, shown by name, instead of a free-text code field. It works with no
+JavaScript: the list is rendered on the server for the country the page knows, and
+changing the country takes a round trip (the delivery block's "Update delivery", or a new
+Update button beside the address block's own country) that comes back with that
+country's list and everything typed kept. A country without subdivisions shows no region
+field.
+
+- **Same stored codes.** The option values are the bare codes the address always stored
+  (`CA`), so stored addresses and orders need no migration, and the plugin's routes
+  validate every region exactly as before (`MX-CA` or `ON` for a US address is still
+  refused). An old stored or typed form (`us-ca`, `US-CA`) renders as the selected option.
+- **New: English subdivision names.** The CLDR 48.2 generator now also reads the vendored
+  `common/subdivisions/en.xml` and writes `iso-3166-names.generated.ts` (pinned byte for
+  byte like the codes module; the codes module itself is unchanged). `@otta-sh/domain`
+  exports `subdivisionOptions(country)` and `subdivisionName(country, code)`, which decode
+  one country at a time on demand; `@otta-sh/plugin` re-exports them with
+  `normalizeSubdivision`. The names live in their own module, so the sandbox entry does
+  not carry them.
+- **A region is never sent for the wrong country.** Each list echoes the country it was
+  rendered for (`deliveryRegionCountry`, `regionCountry`); when the posted country
+  differs, the old region is dropped, and a place after a country change comes back with
+  the new list (`REGION_LIST_UPDATED`) instead of placing. A theme that still prints a
+  typed region input posts no such field and behaves as before.

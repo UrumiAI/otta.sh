@@ -71,7 +71,17 @@ import {
 	notAFormResponse,
 	readFormBody,
 } from "../../lib/otta-api.js";
-import { COUNTRY_CODES, isCodeShapedRegion, ORDER_ADDRESS_MAX_LENGTHS } from "@otta-sh/plugin";
+import {
+	COUNTRY_CODES,
+	isCodeShapedRegion,
+	ORDER_ADDRESS_MAX_LENGTHS,
+	subdivisionOptions,
+} from "@otta-sh/plugin";
+import {
+	DELIVERY_REGION_COUNTRY_FIELD,
+	REGION_COUNTRY_FIELD,
+	regionListIsStale,
+} from "../../lib/regions.js";
 
 /** The site's own token for a form-level email reject — never reaches the
  *  service, which would happily accept the value (`schemas.ts` has no regex). */
@@ -85,6 +95,10 @@ const CHECKOUT_STALE = "CHECKOUT_STALE";
 const COUPON_ALREADY_APPLIED = "COUPON_ALREADY_APPLIED";
 
 const SHIPPING_REGION_CODE_REQUIRED = "SHIPPING_REGION_CODE_REQUIRED";
+/** The site's own: the address's country changed since its state/province list
+ *  was rendered, so the review comes back with the new country's list instead
+ *  of placing (the region pick list has no client JS to swap it in place). */
+const REGION_LIST_UPDATED = "REGION_LIST_UPDATED";
 
 /** ADR-0009's ship-to, as the form names them. The TYPED fields always decide
  *  all-or-nothing; `country` joins them only where the buyer types it too. */
@@ -126,10 +140,14 @@ type AddressResult =
  * not two letters is INVALID_SHIPPING_ADDRESS, a region that is not a code
  * SHIPPING_REGION_CODE_REQUIRED. Whether they are REAL codes is the plugin's.
  */
-function readShippingAddress(form: FormData, zoned: boolean): AddressResult {
+function readShippingAddress(
+	form: FormData,
+	zoned: boolean,
+	options: { dropRegion?: boolean } = {},
+): AddressResult {
 	const typed = TYPED_ADDRESS_FIELDS.map((field) => [field, formString(form.get(field))] as const);
 	const country = formString(form.get("country"));
-	const region = formString(form.get("region"));
+	const region = options.dropRegion === true ? undefined : formString(form.get("region"));
 	const counted = zoned ? typed : [...typed, ["country", country] as const];
 	const filled = counted.filter(([, value]) => value !== undefined);
 	if (filled.length === 0) return { ok: true, address: undefined };
@@ -185,6 +203,13 @@ function readShippingAddress(form: FormData, zoned: boolean): AddressResult {
 	return { ok: true, address };
 }
 
+/** A hidden field's raw value, or `undefined` when the form does not carry it
+ *  at all — `""` (no country chosen yet) is a value here, unlike `formString`. */
+function presentField(form: FormData, name: string): string | undefined {
+	const value = form.get(name);
+	return typeof value === "string" ? value : undefined;
+}
+
 /** The required ship-to fields the buyer left blank — for the plugin's
  *  MISSING_SHIPPING_ADDRESS, which names none. */
 function blankRequiredFields(form: FormData, zoned: boolean): FieldErrors {
@@ -213,6 +238,15 @@ async function place(context: APIContext): Promise<Response> {
 	// What the buyer typed, kept across every refusal below (QA U-1) — in the
 	// draft cookie, never in the redirect URL (see lib/checkout-draft.ts).
 	const draftValues = draftValuesFromForm(form);
+	// The address block's state/province list belongs to the country it was
+	// rendered for (`regionCountry`, see UPDATE ADDRESS below). Once the country
+	// has changed, a region picked from that list is dropped — from the draft
+	// every redirect writes, and from the address placed.
+	const addressCountry = formString(form.get("country"));
+	const addressListStale =
+		formString(form.get("addressMode")) !== "zoned" &&
+		regionListIsStale(presentField(form, REGION_COUNTRY_FIELD), addressCountry);
+	if (addressListStale) delete draftValues.region;
 	const refuse = (
 		path: string,
 		error: string | undefined,
@@ -298,9 +332,16 @@ async function place(context: APIContext): Promise<Response> {
 	// submit (Enter in a field goes through Apply, the form's default button)
 	// whose delivery fields differ from the ones the totals were priced with is
 	// re-priced, never placed at the old price.
+	//
+	// The region PICK LIST is rendered for one country (`deliveryRegionCountry`):
+	// a region picked from it is never sent for another country the buyer has
+	// since chosen — the same code (`01`) means a different place there.
+	const deliveryCountry = formString(form.get("deliveryCountry"));
 	const delivery = {
-		country: formString(form.get("deliveryCountry")),
-		region: formString(form.get("deliveryRegion")),
+		country: deliveryCountry,
+		region: regionListIsStale(presentField(form, DELIVERY_REGION_COUNTRY_FIELD), deliveryCountry)
+			? undefined
+			: formString(form.get("deliveryRegion")),
 		method: formString(form.get("deliveryMethod")),
 		fromCountry: formString(form.get("fromCountry")),
 		fromRegion: formString(form.get("fromRegion")),
@@ -315,6 +356,21 @@ async function place(context: APIContext): Promise<Response> {
 			}))
 	) {
 		return refuse(deliveryUpdatePath(delivery, couponCode), undefined);
+	}
+
+	// UPDATE ADDRESS — the address block's own country (a page with no delivery
+	// block). Its state/province list is rendered for the country the page knew
+	// (`regionCountry`); the Update button beside the country re-renders the
+	// review with the new country's list, keeping everything typed. A region
+	// picked for the old country is dropped, never sent as the new one's.
+	if (intent === "update-address") {
+		return refuse(checkoutPath(selection), undefined);
+	}
+	// And the safety net, as for delivery: a place whose country changed since
+	// the list was rendered comes back with the new country's list to choose
+	// from, rather than placing without a choice the buyer never saw.
+	if (addressListStale && subdivisionOptions(addressCountry ?? "").length > 0) {
+		return refuse(checkoutPath({ ...selection, error: REGION_LIST_UPDATED }), REGION_LIST_UPDATED);
 	}
 
 	// No publishable key ⇒ NO ORDER (§1.7). The review page already hides the
@@ -338,7 +394,7 @@ async function place(context: APIContext): Promise<Response> {
 		// logs — the exact exposure ADR-0012 §6 argues against for the client
 		// secret. They travel in the draft cookie instead (QA U-1), and the address
 		// is checked here too, so every field that needs fixing is marked at once.
-		const address = readShippingAddress(form, zoned);
+		const address = readShippingAddress(form, zoned, { dropRegion: addressListStale });
 		return refuse(placeFailurePath(INVALID_EMAIL, selection), INVALID_EMAIL, {
 			fields: { email: "invalid", ...(address.ok ? {} : address.fields) },
 		});
@@ -355,7 +411,7 @@ async function place(context: APIContext): Promise<Response> {
 		return refuse(placeFailurePath(CHECKOUT_STALE, selection), CHECKOUT_STALE);
 	}
 
-	const shipping = readShippingAddress(form, zoned);
+	const shipping = readShippingAddress(form, zoned, { dropRegion: addressListStale });
 	if (!shipping.ok) {
 		return refuse(
 			shipping.partial

@@ -89,7 +89,6 @@ describe.each(REVIEW_VIEWS)("the /checkout form contract — %s", (_label, { sou
 		["line1", "address-line1"],
 		["line2", "address-line2"],
 		["city", "address-level2"],
-		["region", "address-level1"],
 		["postalCode", "postal-code"],
 		["phone", "tel"],
 	];
@@ -108,34 +107,42 @@ describe.each(REVIEW_VIEWS)("the /checkout form contract — %s", (_label, { sou
 	 *  `ORDER_ADDRESS_MAX_LENGTHS` each one reads. The region too (QA U-14): its
 	 *  old code-shaped maxlength of 6 silently cut "Illinois" to "Illino"; the
 	 *  code SHAPE is the pattern's job, asserted below, never a truncation's. */
-	const BOUNDED: ReadonlyArray<string> = [
-		"name",
-		"line1",
-		"line2",
-		"city",
-		"region",
-		"postalCode",
-		"phone",
-	];
+	const BOUNDED: ReadonlyArray<string> = ["name", "line1", "line2", "city", "postalCode", "phone"];
 
-	test("every region input says what it wants instead of cutting the text short (QA U-14)", () => {
-		// Either name: fix/checkout-resume-and-values renames the delivery form's
-		// region input `deliveryRegion`; the rule holds for both inputs either way.
-		const regions = [...VIEW.matchAll(/<input[^>]*name="(?:region|deliveryRegion)"[^>]*>/g)]
-			.map((m) => m[0])
-			.filter((tag) => !tag.includes('type="hidden"'));
-		expect(regions).toHaveLength(2);
-		for (const region of regions) {
-			expect(region).not.toMatch(/maxlength="\d+"/);
-			expect(region).toContain("maxlength={ORDER_ADDRESS_MAX_LENGTHS.region}");
-			// A name ("Illinois") is refused at the field by the pattern, and the
-			// browser's message quotes the title — which names the code to type. The
-			// pattern IS the domain's shape rule (QA2 N6), not a copy that can drift.
-			expect(region).toContain("pattern={REGION_CODE_PATTERN}");
-			expect(region).toMatch(/title="[^"]*code[^"]*IL[^"]*"/);
-			expect(region).toContain('autocapitalize="characters"');
-			expect(region).toContain('spellcheck="false"');
+	test("every region field is a PICK LIST of codes, never free text — the stored values are unchanged", () => {
+		// The state/province is chosen from the country's subdivisions (names shown,
+		// bare codes posted — what a typed code was normalised to before), so the
+		// old typed-code rules (QA U-14's maxlength, the pattern and its title) have
+		// nothing left to guard. Each list is server-rendered for one country.
+		expect(VIEW).not.toMatch(/<input(?![^>]*type="hidden")[^>]*name="(?:region|deliveryRegion)"/);
+		const lists = [
+			...VIEW.matchAll(/<select[^>]*name="(region|deliveryRegion)"[^>]*>([\s\S]*?)<\/select>/g),
+		];
+		expect(lists.map((m) => m[1]).toSorted()).toEqual(["deliveryRegion", "region"]);
+		for (const [list] of lists) {
+			expect(list).toContain('autocomplete="address-level1"');
+			// Blank first: a country whose addresses use no region leaves it blank.
+			expect(list).toMatch(/<option value="">[^<]+<\/option>/);
+			expect(list).toContain("<option value={option.code}");
+			expect(list).toContain("{option.label}");
 		}
+	});
+
+	test("each region list echoes the country it was rendered for, and is printed only when it has options", () => {
+		expect(VIEW).toMatch(
+			/<input[^>]*type="hidden"[^>]*name="deliveryRegionCountry"[^>]*form="checkout-place"[^>]*value=\{deliveryRegions\.country\}/,
+		);
+		expect(VIEW).toMatch(
+			/<input type="hidden" name="regionCountry" value=\{addressRegions\.country\} \/>/,
+		);
+		expect(VIEW).toContain("deliveryRegions.options.length > 0");
+		expect(VIEW).toContain("addressRegions.options.length > 0");
+	});
+
+	test("the address block's own country has an Update submit that never places and skips validation", () => {
+		expect(VIEW).toMatch(
+			/<button[^>]*type="submit"[^>]*name="intent"[^>]*value="update-address"[^>]*formnovalidate/,
+		);
 	});
 
 	test.each(BOUNDED)(
@@ -458,14 +465,13 @@ describe.each(REVIEW_VIEWS)("/checkout — delivery (ADR-0021) — %s", (_label,
 		expect(VIEW).toMatch(/showDelivery && \(\s*<div class="checkout-delivery" id="delivery">/);
 	});
 
-	test("it asks for a country (select) and a region CODE, echoes the priced destination as fromCountry/fromRegion — all owned by the place form", () => {
+	test("it asks for a country (select) and a region (a pick list of codes), echoes the priced destination as fromCountry/fromRegion — all owned by the place form", () => {
 		const select = /<select[^>]*name="deliveryCountry"[^>]*>/.exec(DELIVERY)?.[0] ?? "";
 		expect(select).toContain('form="checkout-place"');
-		const region = /<input[^>]*name="deliveryRegion"[^>]*>/.exec(DELIVERY)?.[0] ?? "";
-		expect(region).toContain("maxlength={ORDER_ADDRESS_MAX_LENGTHS.region}");
-		expect(region).toContain("pattern={REGION_CODE_PATTERN}");
+		const region = /<select[^>]*name="deliveryRegion"[^>]*>/.exec(DELIVERY)?.[0] ?? "";
 		expect(region).toContain('form="checkout-place"');
-		expect(DELIVERY).toMatch(/State\/province code/);
+		expect(region).toContain('aria-describedby="region-note"');
+		expect(DELIVERY).toMatch(/State \/ province/);
 		expect(DELIVERY).toMatch(
 			/<input[^>]*type="hidden"[^>]*name="fromCountry"[^>]*form="checkout-place"/,
 		);

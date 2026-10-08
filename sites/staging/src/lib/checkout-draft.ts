@@ -191,7 +191,7 @@ export function fieldErrorCopy(
 			: "Fill this in, or leave the whole address blank.";
 	}
 	if (field === "country") return "Choose a country from the list.";
-	if (field === "region") return "Use a state/province code, e.g. CA — or leave it blank.";
+	if (field === "region") return "Choose a state/province from the list — or leave it blank.";
 	return "Check this field.";
 }
 

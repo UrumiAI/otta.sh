@@ -142,11 +142,20 @@ test.describe("checkout in the browser", () => {
 		}
 		// Only where the buyer types them: on a zoned store they are the hidden
 		// destination the review priced.
+		// The state/province is a pick list rendered for the page's country (no
+		// client JS): a newly chosen country's list arrives with Update, which
+		// keeps everything typed.
 		const country = form.locator('select[name="country"]');
-		if ((await country.count()) > 0 && (await country.isVisible()))
+		if ((await country.count()) > 0 && (await country.isVisible())) {
 			await country.selectOption("US");
-		const region = form.locator('input[name="region"]');
-		if ((await region.count()) > 0 && (await region.isVisible())) await region.fill("CA");
+			await Promise.all([
+				page.waitForURL(/\/checkout/, { waitUntil: "load" }),
+				form.locator('button[value="update-address"]').click(),
+			]);
+			await expect(form.locator('input[name="email"]')).not.toHaveValue("");
+		}
+		const region = form.locator('select[name="region"]');
+		if ((await region.count()) > 0 && (await region.isVisible())) await region.selectOption("CA");
 
 		const before = page.url();
 		// Placed by pressing ENTER in the email field, not by clicking: the place

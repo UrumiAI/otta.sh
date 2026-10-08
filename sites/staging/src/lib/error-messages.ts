@@ -46,7 +46,7 @@ const SELECTION_MESSAGES = {
 	// digital-only review has no address block), but the words stay true for
 	// an API caller's digital order with a bad region too.
 	SHIPPING_REGION_CODE_REQUIRED:
-		"Enter your state/province code (e.g. CA), or leave it blank if your country doesn't use one.",
+		"Choose your state/province from the list, or leave it blank if your country doesn't use one.",
 	SHIPPING_METHOD_NOT_IN_ZONE: "Delivery options changed for your address — please choose again.",
 	SHIPPING_METHOD_REQUIRED: "There are no delivery options for this address.",
 	// For API callers: no page of this site sends a method for a cart with
@@ -136,6 +136,11 @@ const MESSAGES: Record<string, string> = {
 		"Enter your name and address to continue — Stripe accounts in India need them to take your payment.",
 	/* …and INVALID_SHIPPING_ADDRESS there: the same check, without "delivery". */
 	BUYER_ADDRESS_INVALID: "Please check your address — some fields are missing or too long.",
+	/* The site's own: the address's country changed after its state/province
+	   list was rendered (no client JS swaps it), so the review came back with
+	   the new country's list instead of placing. Nothing was placed. */
+	REGION_LIST_UPDATED:
+		"We've updated the state/province list for the country you chose — pick yours (or leave it blank if none applies), then continue.",
 	INVALID_EMAIL: "That doesn't look like a valid email address — please check it and try again.",
 	ORDER_NOT_FOUND: "That order could not be found — please check the link you followed.",
 	/* Resuming a payment with the order's email (QA U-2): one generic sentence

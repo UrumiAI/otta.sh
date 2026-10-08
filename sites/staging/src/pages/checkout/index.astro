@@ -44,6 +44,7 @@
 import {
 	CART_COOKIE_NAME,
 	STOREFRONT_CHECKOUT_SUMMARY_ROUTE,
+	subdivisionName,
 	type CheckoutSummaryRouteResult,
 } from "@otta-sh/plugin";
 import { getPublicPluginApiRouteHandler } from "emdash/plugin-utils";
@@ -66,6 +67,7 @@ import {
 	readMethodParam,
 } from "../../lib/checkout-selection.js";
 import { countryOptions } from "../../lib/countries.js";
+import { regionChoice } from "../../lib/regions.js";
 import { SITE_LOCALE } from "../../lib/site-locale.js";
 import { cartErrorMessage } from "../../lib/error-messages.js";
 import { checkoutFootnote } from "../../lib/totals.js";
@@ -196,6 +198,14 @@ const showAddress = locked === null && (summary.requiresShipping || summary.addr
 const countries = countryOptions(SITE_LOCALE);
 const countryName = (code: string): string => countries.find((c) => c.code === code)?.label ?? code;
 
+/** The state/province PICK LISTS (no client JS): rendered for the country the
+ *  page knows — the delivery block's for the priced (or refused) country, the
+ *  address block's for the draft's — with the stored/typed code preselected.
+ *  Another country's list is one Update away. */
+const addressValues = draftAddressValues(draft);
+const deliveryRegions = regionChoice(countryValue, regionValue, SITE_LOCALE);
+const addressRegions = regionChoice(addressValues.country, addressValues.region, SITE_LOCALE);
+
 /** The option the totals were priced with — stated beside the submit, so the
  *  method charged is on the page even if a radio was changed without Update. */
 const chosenOption =
@@ -293,9 +303,13 @@ const model: CheckoutModel = {
 	noOptionsCopy: cartErrorMessage("SHIPPING_METHOD_REQUIRED"),
 	destination,
 	destinationName: destination !== null ? countryName(destination.country) : null,
+	destinationRegionName:
+		destination?.region != null ? subdivisionName(destination.country, destination.region) : null,
 	countryValue,
 	regionValue,
 	countries,
+	deliveryRegions,
+	addressRegions,
 	showDelivery,
 	showAddress,
 	chosenOption,
@@ -305,7 +319,7 @@ const model: CheckoutModel = {
 	   restated (§10). */
 	notConfiguredLead: cartErrorMessage("STRIPE_NOT_CONFIGURED"),
 	emailValue: draft?.values.email ?? accountEmail ?? "",
-	addressValues: draftAddressValues(draft),
+	addressValues,
 	/* Issue #382: on an India Stripe account the address may not be left blank,
 	   so a missing field says only to fill it in. (A zoned delivery still gets
 	   the older copy — unchanged here, flagged as a follow-up.) */
