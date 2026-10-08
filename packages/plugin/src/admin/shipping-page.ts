@@ -1348,7 +1348,7 @@ function createRateForm(zoneId: string, methodId: string, filter: RatesFilterFor
 				{
 					type: "text_input",
 					action_id: "amount",
-					label: "Amount (up to 2 decimals, e.g. 4.99 — 0 is allowed)",
+					label: "Amount (in the rate currency's decimals, e.g. 4.99 — 0 is allowed)",
 					placeholder: "4.99",
 				},
 				{

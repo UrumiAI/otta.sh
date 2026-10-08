@@ -36,9 +36,16 @@ Price in 49 currencies, each in its own minor unit, from one currency table.
 - **Percentage coupons bind their bounds to a currency.** A NEW cap or minimum spend on a
   percentage coupon requires a currency (create form, or once on edit for a coupon with none;
   `CouponEdit.currency`, `UpdateCouponInput.bindCurrency`); the coupon then applies only to
-  carts in it, refused with `COUPON_CURRENCY_MISMATCH` like a fixed-amount coupon. A
-  percentage coupon with a cap or minimum and no currency, written earlier, behaves exactly as
-  before. Coupon edits read amounts in the STORED coupon's currency.
+  carts in it, refused with `COUPON_CURRENCY_MISMATCH` like a fixed-amount coupon. A currency
+  is accepted on a percentage coupon only WITH a cap or minimum spend, and a bound coupon stays
+  bound once they are cleared. A percentage coupon with a cap or minimum and no currency,
+  written earlier, behaves exactly as before (and cannot be bound). Coupon edits read amounts in
+  the STORED coupon's currency and send it back: an edit whose coupon's currency changed
+  meanwhile is refused (409) rather than re-read.
+- **Coupon refusal order.** `validateCoupon` now checks the coupon's currency BEFORE its
+  minimum spend and use limit, so a coupon in another currency is reported as
+  `COUPON_CURRENCY_MISMATCH` rather than `COUPON_MIN_SUBTOTAL` / `COUPON_EXHAUSTED` (fixed and
+  bound percentage coupons alike).
 - **Stripe charges zero-decimal currencies.** `STRIPE_UNSUPPORTED_CURRENCIES` is replaced by
   `stripeRefusesCurrency` (plus `STRIPE_ZERO_DECIMAL_CURRENCIES` /
   `STRIPE_THREE_DECIMAL_CURRENCIES`): amounts still go out unchanged, and JPY, KRW, VND and CLP

@@ -764,6 +764,17 @@ export class InProcessAdminRulesClient implements AdminRulesSurface {
 				"is required on a percentage coupon with a cap or minimum spend",
 			);
 		}
+		// …and only then: a currency on one with neither would restrict it to
+		// that currency's carts for nothing (it can never be unbound).
+		if (
+			type === "percentage" &&
+			capCents === null &&
+			minSubtotalCents === null &&
+			input.currency !== undefined &&
+			input.currency !== null
+		) {
+			throw new CommerceInputError("currency", "is only needed with a cap or minimum spend");
+		}
 		return createOrRefuse(async () => {
 			const coupon = await this.#stores.couponStore.create({
 				id: input.id,
@@ -811,16 +822,43 @@ export class InProcessAdminRulesClient implements AdminRulesSurface {
 
 		const existing = await this.#stores.couponStore.findById(couponId);
 		if (existing === null) return { ok: false, reason: "not_found" };
-		// A currency is only ever BOUND, never changed: to a percentage coupon that
-		// has none, whose new cap / minimum spend are amounts in it.
-		const bind = edit.currency ?? null;
-		if (bind !== null) {
-			requireAuthoredCurrency("currency", bind);
-			if (existing.currency !== null && existing.currency !== bind) {
-				throw new CommerceInputError("currency", "cannot be changed");
+		if (
+			(existing.type === "fixed_amount" && amountCents === null) ||
+			(existing.type === "percentage" && rateBps === null)
+		) {
+			// The route's 400, as the HTTP client renders it. NOT a rejection: this is
+			// ported route behaviour rather than a boundary shape check, so both tiers
+			// answer it identically and a shared case can pin it.
+			return { ok: false, reason: "error", status: 400 };
+		}
+		// `currency`, when sent, is the currency the edit's amounts were PARSED in
+		// (null: an unbound coupon's, in hundredths). It is compared with the
+		// stored one so an edit read against a coupon whose currency has moved
+		// since — another admin bound one — is refused (409) rather than its
+		// amounts re-read in a different exponent. On an unbound coupon a
+		// currency BINDS it; a set currency never changes.
+		const sent = edit.currency;
+		const hadBounds = existing.capCents !== null || existing.minSubtotalCents !== null;
+		let bind: string | null = null;
+		if (sent !== undefined) {
+			if (existing.currency !== null) {
+				if (sent !== existing.currency) return { ok: false, reason: "error", status: 409 };
+			} else if (sent !== null) {
+				requireAuthoredCurrency("currency", sent);
+				if (hadBounds) {
+					// Binding would re-read a cap / minimum written in hundredths.
+					throw new CommerceInputError(
+						"currency",
+						"cannot be bound to a coupon whose cap or minimum spend predate currencies",
+					);
+				}
+				if (capCents === null && minSubtotalCents === null) {
+					// It would restrict the coupon to one currency for nothing.
+					throw new CommerceInputError("currency", "is only needed with a cap or minimum spend");
+				}
+				bind = sent;
 			}
 		}
-		const hadBounds = existing.capCents !== null || existing.minSubtotalCents !== null;
 		if (
 			existing.type === "percentage" &&
 			existing.currency === null &&
@@ -832,18 +870,9 @@ export class InProcessAdminRulesClient implements AdminRulesSurface {
 			// that rule keeps working exactly as it did.
 			return { ok: false, reason: "error", status: 400 };
 		}
-		if (
-			(existing.type === "fixed_amount" && amountCents === null) ||
-			(existing.type === "percentage" && rateBps === null)
-		) {
-			// The route's 400, as the HTTP client renders it. NOT a rejection: this is
-			// ported route behaviour rather than a boundary shape check, so both tiers
-			// answer it identically and a shared case can pin it.
-			return { ok: false, reason: "error", status: 400 };
-		}
 
 		const res = await this.#stores.couponStore.update(couponId, {
-			...(bind !== null && existing.currency === null ? { bindCurrency: toCurrency(bind) } : {}),
+			...(bind !== null ? { bindCurrency: toCurrency(bind) } : {}),
 			amountCents: amountCents === null ? null : toCents(amountCents),
 			rateBps,
 			capCents: capCents === null ? null : toCents(capCents),

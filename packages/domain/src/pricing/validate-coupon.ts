@@ -51,6 +51,15 @@ export function validateCoupon(
 		const expires = parseCouponInstant(record.expiresAt);
 		if (expires === null || now >= expires) return { ok: false, reason: "COUPON_NOT_ACTIVE" };
 	}
+	// CURRENCY BEFORE THE MINIMUM. A coupon denominated in another currency (a
+	// fixed amount, or a percentage coupon's bound cap / minimum) is refused for
+	// THAT reason: comparing its minimum with this cart's subtotal would compare
+	// amounts in two currencies and could misreport it as "spend more". Fixed
+	// coupons are always denominated; an unbound percentage coupon applies to any
+	// cart, exactly as it always did.
+	if (record.currency !== null && record.currency !== ctx.currency) {
+		return { ok: false, reason: "COUPON_CURRENCY_MISMATCH" };
+	}
 	if (record.minSubtotalCents !== null && ctx.subtotalCents < record.minSubtotalCents) {
 		return { ok: false, reason: "COUPON_MIN_SUBTOTAL" };
 	}
@@ -61,9 +70,6 @@ export function validateCoupon(
 	if (record.type === "fixed_amount") {
 		if (record.amountCents === null || record.currency === null) {
 			throw new Error(`fixed_amount coupon ${record.code} is missing amount/currency`);
-		}
-		if (record.currency !== ctx.currency) {
-			return { ok: false, reason: "COUPON_CURRENCY_MISMATCH" };
 		}
 		return {
 			ok: true,
@@ -79,13 +85,6 @@ export function validateCoupon(
 	// percentage
 	if (record.rateBps === null) {
 		throw new Error(`percentage coupon ${record.code} is missing rateBps`);
-	}
-	// A cap / minimum spend bound to a currency is an amount IN that currency's
-	// minor unit, so the coupon applies only to carts in it — the same refusal a
-	// fixed-amount coupon gives. No bound currency (no bounds, or a coupon written
-	// before bounds carried one) applies to any cart, exactly as it always did.
-	if (record.currency !== null && record.currency !== ctx.currency) {
-		return { ok: false, reason: "COUPON_CURRENCY_MISMATCH" };
 	}
 	return {
 		ok: true,

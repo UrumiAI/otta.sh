@@ -140,3 +140,25 @@ describe("validateCoupon — a percentage coupon's cap / minimum spend are bound
 		);
 	});
 });
+
+describe("validateCoupon — the currency is checked BEFORE the minimum spend", () => {
+	test("a coupon in another currency is refused as a currency mismatch, never as 'spend more' (fixed and bound percentage)", () => {
+		const EUR = currency("EUR");
+		const small = { now: NOW, subtotalCents: cents(100), currency: EUR };
+		const fixed: CouponRecord = { ...record({}), minSubtotalCents: cents(5000) };
+		expect(validateCoupon(fixed, small)).toEqual({ ok: false, reason: "COUPON_CURRENCY_MISMATCH" });
+		const pct: CouponRecord = {
+			...fixed,
+			type: "percentage",
+			amountCents: null,
+			rateBps: 1000,
+			currency: currency("JPY"),
+		};
+		expect(validateCoupon(pct, small)).toEqual({ ok: false, reason: "COUPON_CURRENCY_MISMATCH" });
+		// In its own currency the minimum still applies.
+		expect(validateCoupon(fixed, { ...small, currency: USD })).toEqual({
+			ok: false,
+			reason: "COUPON_MIN_SUBTOTAL",
+		});
+	});
+});

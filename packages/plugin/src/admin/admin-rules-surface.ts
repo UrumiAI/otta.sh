@@ -244,9 +244,12 @@ export interface CouponInput {
 	maxUsesPerCustomer?: number | null;
 }
 /** Coupon edit — `id`/`code`/`type` are immutable identity/kind and are NOT
- *  sent. `currency` is sent ONLY to bind one to a percentage coupon that has
- *  none (its new cap / minimum spend are amounts in it); a set currency never
- *  changes, and re-defining it is refused. */
+ *  sent. `currency`, when sent, is the currency the edit's amounts were parsed
+ *  in (`null`: an unbound coupon's, in hundredths): a write whose currency no
+ *  longer matches the stored coupon's is refused (409). On a percentage coupon
+ *  with none, a currency BINDS it — allowed only with a cap or minimum spend,
+ *  and never on one whose bounds predate currencies. A set currency never
+ *  changes; a bound coupon stays bound even once its bounds are cleared. */
 export interface CouponEdit {
 	currency?: string | null;
 	amountCents?: number | null;
