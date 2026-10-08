@@ -412,17 +412,33 @@ order of appearance in a deployment's life:
   are not cancelled.
 
 > **Live Stripe currencies.** Otta stores each amount in its currency's own minor unit (the
-> currency table, `packages/domain/src/money/currencies.ts`), and the Stripe adapter maps it to
-> Stripe's `amount` per <https://docs.stripe.com/currencies>: two- and zero-decimal currencies
-> (USD, EUR, JPY, KRW, VND, CLP, …) go out unchanged; **ISK** goes out ×100 (Stripe's
-> two-decimal representation), and amounts Stripe reports back are converted the same way;
-> HUF and TWD charge as two-decimal. **Three-decimal currencies (BHD, JOD, KWD, OMR) are still
-> refused** on the live path before any network call (`PAYMENT_INTENT_FAILED`, provider code
-> `unsupported_currency`), because Stripe needs those amounts in multiples of 10 and an order
-> total need not be one — they can be priced and displayed, not charged through Stripe. A code
-> outside the table keeps its old treatment (Stripe's zero-/three-decimal codes refused, others
-> passed through). The mapping is `stripeAmountFactor` in
+> currency table, `packages/domain/src/money/currencies.ts`) and sends it to Stripe unchanged,
+> which is Stripe's `amount` (<https://docs.stripe.com/currencies>) for two- and zero-decimal
+> currencies: USD, EUR, … and now JPY, KRW, VND and CLP; HUF and TWD charge as two-decimal.
+> **Three-decimal currencies (BHD, JOD, KWD, OMR) are still refused** on the live path before
+> any network call (`PAYMENT_INTENT_FAILED`, provider code `unsupported_currency`), because
+> Stripe needs those amounts in multiples of 10 and an order total need not be one — they can
+> be priced and displayed, not charged through Stripe. A code outside the table (ISK included)
+> keeps its old treatment: typed in hundredths, Stripe's zero-/three-decimal codes refused,
+> others passed through. The rule is `stripeRefusesCurrency` in
 > `packages/payments-stripe/src/index.ts`.
+>
+> **Upgrading to the currency table — check before you deploy:**
+>
+> - **JPY, KRW, VND, CLP** amounts typed in the admin on an earlier version were stored **×100**
+>   (a price typed `1500` was stored as 150000 and shown as ¥150,000). Live Stripe refused these
+>   currencies, so such products were never purchasable; after the upgrade they are, at the
+>   stored value. Check and re-enter every product price, shipping rate and fixed coupon in
+>   those currencies first (the edit form now shows the stored figure, e.g. `150000`).
+> - **HUF, IDR, COP, PKR** now display with ISO 4217's 2 decimals (ICU used 0). Amounts typed in
+>   the admin were always stored in hundredths, so they now read correctly; amounts written in
+>   whole units by another program (an import, a script) will read 100× smaller.
+> - **Currency membership is enforced on the admin screens only** (a product's first price, new
+>   shipping rates and coupons). Programmatic writes — the CMS product sync, the variant price
+>   edit — still check only the code's shape.
+> - **Percentage coupons**: a NEW cap or minimum spend now needs a currency (the coupon then
+>   applies only to carts in it). Existing percentage coupons with a cap or minimum and no
+>   currency keep working exactly as before.
 
 > **x402 does not take payments yet.** The old receipt-forwarding settle route
 > (`entitlements/x402/settle`) is retired, and nothing settles an x402 payment until the

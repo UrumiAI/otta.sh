@@ -4,40 +4,50 @@
 "@otta-sh/plugin": minor
 "@otta-sh/payments-stripe": minor
 "@otta-sh/admin-react": minor
+"@otta-sh/store-emdash": patch
 ---
 
-Price in 50 currencies, each in its own minor unit, from one currency table.
+Price in 49 currencies, each in its own minor unit, from one currency table.
 
 - **One table.** `@otta-sh/domain` exports `SUPPORTED_CURRENCIES` (code, ISO 4217 digits,
-  symbol, name — USD, EUR, GBP, JPY, INR, … KWD, ISK), `isSupportedCurrency`, `currencyDigits`,
-  `currencyInfo` and the `SupportedCurrencyCode` type, from `src/money/currencies.ts`, whose
-  header says how to add a currency. `@otta-sh/admin-presentation` carries an identical copy
-  (plus `minorUnitDigits`), pinned row-for-row by a parity test. A test compares every row's
-  exponent with ICU, with a commented list of the ISO-vs-CLDR divergences (COP, HUF, IDR, PKR:
-  the table follows ISO's 2).
+  English name — USD, EUR, GBP, JPY, INR, … KWD), `isSupportedCurrency`, `currencyDigits` and
+  the `SupportedCurrencyCode` type, from `src/money/currencies.ts`, whose header says how to
+  add a currency. `@otta-sh/admin-presentation` carries an identical copy (plus
+  `minorUnitDigits` for display and `inputMinorUnitDigits` for input), pinned row-for-row by
+  a parity test. A test compares every row's exponent with ICU, with a commented list of the
+  ISO-vs-CLDR divergences (COP, HUF, IDR, PKR: the table follows ISO's 2). ISK is
+  deliberately not listed: its stored amounts are hundredths.
 - **Money inputs follow the currency (the bug).** `parseMinorUnitsInput(input, currency, opts)`,
   `formatMinorUnitsInput(minor, currency)` and `canonicalMoneyInput(input, currency)` now take
-  the currency (BREAKING signature change) and read up to its digits: JPY `"1500"` is 1500, not
-  150000; KWD `"1.234"` is 1234. Two-decimal currencies parse and format exactly as before.
-  Product price, compare-at and cost; shipping rate and threshold; fixed coupon amount and
-  minimum spend (percentage-coupon caps keep hundredths); the React pricing cards and the
-  refund amount all pass their currency. Refusal copy names the currency's own precision.
+  the currency (BREAKING signature change; `NO_CURRENCY` names an amount with none) and read
+  up to its digits: JPY `"1500"` is 1500, not 150000; KWD `"1.234"` is 1234. Two-decimal
+  currencies, and every code outside the table, parse and format exactly as before
+  (hundredths). Product prices, shipping rates and thresholds, coupon amounts, caps and
+  minimum spends, the React pricing cards and the refund amount all pass their currency;
+  `moneyInputExample` gives refusal copy an example in the currency's own shape.
 - **Display reads the same table.** `formatMoney`, `majorUnits` and the provider-refund flag
   use the table's digits for a listed code (ICU's for any other code, as before). Output is
-  unchanged wherever ICU agrees; for HUF/IDR/COP/PKR it now shows the two ISO decimals instead
-  of rounding them away.
+  unchanged wherever ICU agrees; HUF/IDR/COP/PKR now show their two ISO decimals.
 - **Supported set at the admin's write boundary.** A new shipping rate's or coupon's currency
-  and a product's first price currency must be in the table ("XYZ isn't a supported currency");
-  this replaces the ISO membership list (`CURRENCY_CODES` / `isIsoCurrencyCode` are removed).
-  Stored rows in any shape-valid code still load, render and — for a product already priced in
-  one — stay editable.
-- **Stripe maps amounts per currency** (`stripeAmountFactor`, from docs.stripe.com/currencies):
-  two- and zero-decimal currencies (JPY, KRW, VND, CLP) are sent unchanged and now go live; ISK
-  is sent ×100 and read back ÷100 (intent, webhook, refund pre-flight and refund);
-  three-decimal currencies (KWD, BHD, OMR, JOD) are still refused with `unsupported_currency`,
-  and refunds in a refused currency are `TERMINAL` before any call. A code outside the table is
-  treated as before. `STRIPE_UNSUPPORTED_CURRENCIES` is replaced by
-  `STRIPE_ZERO_DECIMAL_CURRENCIES`, `STRIPE_THREE_DECIMAL_CURRENCIES`,
-  `STRIPE_HUNDREDFOLD_CURRENCIES`, `stripeAmountFactor` and `fromStripeAmount`.
+  and a product's first price currency must be in the table ("XYZ isn't a supported
+  currency"); this replaces the ISO membership list (`CURRENCY_CODES` / `isIsoCurrencyCode`
+  are removed). Programmatic writes check only the shape. Stored rows in any shape-valid code
+  still load, render and — for a product already priced in one — stay editable.
+- **Percentage coupons bind their bounds to a currency.** A NEW cap or minimum spend on a
+  percentage coupon requires a currency (create form, or once on edit for a coupon with none;
+  `CouponEdit.currency`, `UpdateCouponInput.bindCurrency`); the coupon then applies only to
+  carts in it, refused with `COUPON_CURRENCY_MISMATCH` like a fixed-amount coupon. A
+  percentage coupon with a cap or minimum and no currency, written earlier, behaves exactly as
+  before. Coupon edits read amounts in the STORED coupon's currency.
+- **Stripe charges zero-decimal currencies.** `STRIPE_UNSUPPORTED_CURRENCIES` is replaced by
+  `stripeRefusesCurrency` (plus `STRIPE_ZERO_DECIMAL_CURRENCIES` /
+  `STRIPE_THREE_DECIMAL_CURRENCIES`): amounts still go out unchanged, and JPY, KRW, VND and CLP
+  now go live (whole units are Stripe's amount); three-decimal currencies (KWD, BHD, OMR, JOD)
+  are still refused with `unsupported_currency`; a code outside the table is treated as before.
 - **React console.** The first-pricing currency picker offers every table currency (the
   familiar ten first, labelled `USD — US Dollar`); USD stays the default.
+
+**Upgrade notes.** JPY/KRW/VND/CLP amounts typed in the admin on an earlier version were stored
+×100 and become purchasable at that stored value — check and re-enter them before upgrading.
+HUF/IDR/COP/PKR now display at ISO's two decimals. Currency membership is enforced on the admin
+screens only. See DEPLOYMENT.md.

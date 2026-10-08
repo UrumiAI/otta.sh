@@ -1574,7 +1574,10 @@ in-process rules client, so no caller of the surface can store the value:
   merely three upper-case letters (`XYZ` used to save). Amounts are then typed in that
   currency's own minor unit (JPY `1500` is ¥1,500; KWD takes three decimals). Static data, not
   the host's ICU. Create paths only: a stored code is never refused on read or edit, and a
-  product priced in an unlisted code before the table existed stays editable.
+  product priced in an unlisted code before the table existed stays editable (a code outside
+  the table is typed in hundredths, as before). A percentage coupon's cap and minimum spend
+  are amounts too: setting either needs a currency (bound to the coupon, which then applies
+  only to carts in it); a percentage coupon whose bounds predate this keeps working unchanged.
 - **Tax rate ≤ 100%.** `rateBps` 0–10000, the port's documented range; the console used to accept
   (and advertise) 1000%. Coupon percentages keep the wider wire bound — the pricing math clamps a
   discount to the subtotal.

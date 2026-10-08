@@ -95,7 +95,8 @@ domain is a build-breaking bug, not a code-review nit.
   inputs, display, refund flags and the Stripe amount mapping all read it, so `1500` typed
   for JPY is stored as 1500 and shown as ¥1,500. To support another currency, add a row there
   (its header says how). Merchant-typed currencies must be in the table; stored data in any
-  shape-valid code still loads.
+  shape-valid code still loads, and a code outside the table is typed in hundredths, as
+  before the table existed.
 - **Idempotency lives in the domain.** Every command carries an `idempotencyKey`; the store
   enforces once-only. Dedupe in the domain/store, never only in the HTTP client — and test
   the replay case.
