@@ -3,8 +3,8 @@
 "@otta-sh/domain": minor
 ---
 
-The Stripe payment adapter HMACs with WebCrypto instead of `node:crypto`, so they can be
-loaded inside the workerd sandbox (fold-in INC-C1). Both packages are constructed
+The Stripe payment adapter HMACs with WebCrypto instead of `node:crypto`, so it can be
+loaded inside the workerd sandbox (fold-in INC-C1). The adapter is constructed
 in-process by the plugin, and the plugin's sandbox-clean rule bans `node:` imports — but
 `payments-stripe` opened with `import { createHmac,
 timingSafeEqual } from "node:crypto"`, which is unavailable in the isolate. This is a
