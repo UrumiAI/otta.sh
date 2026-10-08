@@ -56,9 +56,9 @@ Price in 49 currencies, each in its own minor unit, from one currency table.
 - **React console.** The first-pricing currency picker offers every table currency (the
   familiar ten first, labelled `USD — US Dollar`); USD stays the default.
 - **Three-decimal currencies are flagged in the admin.** KWD, BHD, OMR and JOD can be priced but
-  not charged through Stripe yet: the picker labels them "(not yet payable via Stripe)", the
+  not charged through Stripe yet: the picker labels them "(not yet payable at checkout)", the
   pricing card, shipping-rate and coupon screens warn when one is used
-  (`stripePaymentWarning`). The domain now exports `minorUnitDigits` (display digits: table →
+  (`checkoutPaymentWarning`). The domain now exports `minorUnitDigits` (display digits: table →
   ICU → 2); `formatMoney` caches its formatters per locale and currency. See ADR-0033.
 
 **Upgrade notes.** JPY/KRW/VND/CLP amounts typed in the admin on an earlier version were stored

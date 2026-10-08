@@ -61,7 +61,7 @@ import {
 import {
 	DIGITAL_WITH_FILE,
 	parseStockQty,
-	stripePaymentWarning,
+	checkoutPaymentWarning,
 	TAX_STATUS_HINT,
 	TAX_STATUS_OPTIONS,
 } from "@otta-sh/admin-presentation";
@@ -925,9 +925,9 @@ export function PricingStockEditor({ productId }: { productId: string }): React.
 								</span>
 							</div>
 						)}
-						{stripePaymentWarning(currency) !== null && (
+						{checkoutPaymentWarning(currency) !== null && (
 							<p className="otta-pricing-hint" data-testid="currency-payment-warning">
-								{stripePaymentWarning(currency)}
+								{checkoutPaymentWarning(currency)}
 							</p>
 						)}
 						<div className="otta-pricing-field">

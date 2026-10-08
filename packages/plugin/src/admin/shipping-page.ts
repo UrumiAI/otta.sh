@@ -1,7 +1,7 @@
 import {
-	inputMinorUnitDigits,
-	NOT_YET_PAYABLE_VIA_STRIPE,
-	stripePaymentWarning,
+	checkoutPaymentWarning,
+	NOT_YET_PAYABLE_AT_CHECKOUT,
+	unsupportedCurrencyMessage,
 } from "@otta-sh/admin-presentation";
 import {
 	COUNTRY_CODES,
@@ -1391,8 +1391,8 @@ function editRateForm(zoneId: string, methodId: string, row: ShippingRateWire): 
 				{
 					type: "text_input",
 					action_id: "amount",
-					label: `Amount for ${row.currency} (${amountDecimalsHint(row.currency)})${
-						stripePaymentWarning(row.currency) === null ? "" : ` — ${NOT_YET_PAYABLE_VIA_STRIPE}`
+					label: `Amount for ${row.currency} (${moneyPrecisionPhrase(row.currency)})${
+						checkoutPaymentWarning(row.currency) === null ? "" : ` — ${NOT_YET_PAYABLE_AT_CHECKOUT}`
 					}`,
 					initial_value: formatMinorUnitsInput(row.amountCents, row.currency),
 				},
@@ -1856,7 +1856,7 @@ function createRateAction() {
 			return showList([zoneId, methodId], {
 				variant: "error",
 				title: "Rate not created",
-				description: `${currency} isn't a supported currency — use one your store prices in, like USD or EUR.`,
+				description: unsupportedCurrencyMessage(currency),
 			});
 		}
 		const amountCents = parseAmountInput(readString(values.amount) ?? "", currency);
@@ -2256,24 +2256,16 @@ function amountRefusal(currency: string): string {
 	return `Amount must be 0 or a positive number like ${moneyInputExample("4.99", currency)} (${moneyPrecisionPhrase(currency)}).`;
 }
 
-/** `text` followed by the warning that `currency` cannot be charged through
- *  Stripe yet (KWD, BHD, OMR, JOD), or `text` unchanged for any other currency. */
+/** `text` followed by the warning that `currency` cannot be paid at
+ *  checkout yet (KWD, BHD, OMR, JOD), or `text` unchanged for any other currency. */
 function withPaymentWarning(text: string, currency: string): string {
-	const warning = stripePaymentWarning(currency);
+	const warning = checkoutPaymentWarning(currency);
 	return warning === null ? text : `${text} ${warning}`;
 }
 
 /** The free-shipping threshold refusal, its example in the currency's shape. */
 function thresholdRefusal(currency: string): string {
 	return `Free-shipping threshold must be 0 or a positive number like ${moneyInputExample("35.00", currency)}, or blank for none.`;
-}
-
-/** The rate edit field's decimals hint: `up to 2 decimals` (as it always read)
- *  for a two-decimal or unlisted currency, `whole units` for JPY, `up to 3
- *  decimals` for KWD. */
-function amountDecimalsHint(currency: string): string {
-	const digits = inputMinorUnitDigits(currency);
-	return digits === 0 ? "whole units" : `up to ${String(digits)} decimals`;
 }
 
 /** Display-format (with currency symbol) for the rate readout — falls back to

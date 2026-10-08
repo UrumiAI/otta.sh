@@ -24,8 +24,8 @@ import {
 	formatMinorUnitsInput,
 	isSupportedCurrency,
 	moneyInputExample,
-	NOT_YET_PAYABLE_VIA_STRIPE,
-	stripePaymentWarning,
+	NOT_YET_PAYABLE_AT_CHECKOUT,
+	checkoutPaymentWarning,
 	parseMinorUnitsInput,
 } from "@otta-sh/admin-presentation";
 import type { ProductRecord } from "../console-api.js";
@@ -65,7 +65,7 @@ export const CURRENCY_CHOICES: readonly string[] = [
 export function currencyChoiceLabel(code: string): string {
 	const row = SUPPORTED_CURRENCIES.find((r) => r.code === code);
 	if (row === undefined) return code;
-	const note = stripePaymentWarning(code) === null ? "" : ` (${NOT_YET_PAYABLE_VIA_STRIPE})`;
+	const note = checkoutPaymentWarning(code) === null ? "" : ` (${NOT_YET_PAYABLE_AT_CHECKOUT})`;
 	return `${code} — ${row.name}${note}`;
 }
 

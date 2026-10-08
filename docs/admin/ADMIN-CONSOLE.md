@@ -1578,8 +1578,8 @@ in-process rules client, so no caller of the surface can store the value:
   the table is typed in hundredths, as before). A percentage coupon's cap and minimum spend
   are amounts too: setting either needs a currency (bound to the coupon, which then applies
   only to carts in it); a percentage coupon whose bounds predate this keeps working unchanged
-  (its cap and minimum read in hundredths of the cart currency, and no currency can be bound to
-  it). A currency is accepted on a percentage coupon only WITH a cap or minimum spend, and once
+  (the amount typed is ×100 and applied in the cart currency's smallest unit, as before
+  currencies; a currency can be set only after its cap and minimum are cleared). A currency is accepted on a percentage coupon only WITH a cap or minimum spend, and once
   bound it stays: clearing both bounds later leaves the coupon applying only to carts in that
   currency. An edit names the currency its amounts were read in; one whose coupon's currency
   changed meanwhile is refused rather than re-read.

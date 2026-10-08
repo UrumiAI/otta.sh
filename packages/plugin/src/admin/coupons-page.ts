@@ -1,4 +1,8 @@
-import { NOT_YET_PAYABLE_VIA_STRIPE, stripePaymentWarning } from "@otta-sh/admin-presentation";
+import {
+	checkoutPaymentWarning,
+	NOT_YET_PAYABLE_AT_CHECKOUT,
+	unsupportedCurrencyMessage,
+} from "@otta-sh/admin-presentation";
 import { parseCouponInstant } from "@otta-sh/domain";
 import { formatMoney } from "../presentation/format-money.js";
 import { cents as toCents, currency as toCurrency } from "../presentation/money.js";
@@ -1179,9 +1183,12 @@ const BOUNDS_CURRENCY_REQUIRED =
 const BOUNDS_CURRENCY_UNNEEDED =
 	"A percentage coupon needs a currency only with a cap or minimum spend — leave the currency blank, or set one of them.";
 /** The cap / minimum-spend label suffix on a coupon whose bounds predate
- *  bound currencies: they are, and stay, hundredths of the cart currency. */
+ *  bound currencies. They keep the rule they were written under: the amount
+ *  typed (up to two decimals) is ×100 and applied in the cart currency's
+ *  smallest unit — cents for USD, but yen for JPY. Clearing both and saving is
+ *  how such a coupon gets a currency. */
 const LEGACY_BOUNDS_HINT =
-	" — in hundredths of the cart currency (set before caps carried a currency)";
+	" — set before caps had a currency: what you type is ×100 in the cart currency's smallest unit (clear it and save to set a currency)";
 
 /**
  * The currency a percentage coupon's cap and minimum spend are typed in, and
@@ -1207,14 +1214,14 @@ function resolveBoundsCurrency(
 	if (!/^[A-Z]{3}$/.test(raw) || !isSupportedCurrency(raw)) {
 		return {
 			ok: false,
-			message: `${raw} isn't a supported currency — use one your store prices in, like USD or EUR.`,
+			message: unsupportedCurrencyMessage(raw),
 		};
 	}
 	if (legacyBounds) {
 		return {
 			ok: false,
 			message:
-				"This coupon's cap or minimum spend was set before they carried a currency, so one can't be added now. Create a new coupon to set a currency.",
+				"This coupon's cap or minimum spend was set before they carried a currency, so one can't be added to them. Clear the cap and minimum spend and save, then set them again with a currency.",
 		};
 	}
 	return { ok: true, currency: raw, bind: raw };
@@ -1268,8 +1275,8 @@ function editCouponForm(detail: CouponSummaryWire): FormBlock {
 			type: "text_input",
 			action_id: "amount",
 			label: `Amount off (${detail.currency ?? "?"})${
-				detail.currency !== null && stripePaymentWarning(detail.currency) !== null
-					? ` — ${NOT_YET_PAYABLE_VIA_STRIPE}`
+				detail.currency !== null && checkoutPaymentWarning(detail.currency) !== null
+					? ` — ${NOT_YET_PAYABLE_AT_CHECKOUT}`
 					: ""
 			}`,
 			...(detail.amountCents !== null
@@ -1719,7 +1726,7 @@ function parseEconomics(
 			if (createCurrency === null) {
 				return {
 					ok: false,
-					message: `${currencyRaw} isn't a supported currency — use one your store prices in, like USD or EUR.`,
+					message: unsupportedCurrencyMessage(currencyRaw),
 				};
 			}
 			currency = createCurrency;
@@ -2052,7 +2059,7 @@ function createCouponNotice(
 	currency: string | null = null,
 ): Notice {
 	if (result.ok) {
-		const warning = currency === null ? null : stripePaymentWarning(currency);
+		const warning = currency === null ? null : checkoutPaymentWarning(currency);
 		return {
 			variant: "default",
 			title: "Coupon created",

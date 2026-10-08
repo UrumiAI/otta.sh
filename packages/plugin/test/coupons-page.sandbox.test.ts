@@ -1064,7 +1064,7 @@ describe("admin Coupons console — list level (workerd sandbox)", () => {
 			}),
 		);
 		// Priceable, not yet chargeable through Stripe: the merchant is told now.
-		expect(String(bannerOf(created)?.description)).toMatch(/not yet payable via Stripe/);
+		expect(String(bannerOf(created)?.description)).toMatch(/not yet payable at checkout/);
 		const kwd = await stored("qa-kwd");
 		expect(kwd?.amountCents).toBe(1234);
 		expect(kwd?.currency).toBe("KWD");
@@ -1689,6 +1689,10 @@ describe("admin Coupons console — detail/edit leaf (workerd sandbox)", () => {
 		const blocks = await openCoupon("SUMMER25");
 		const byId = new Map(formFields(blocks, "coupons:save").map((f) => [f.action_id, f]));
 		expect(byId.get("cap")?.initial_value).toBe("20.00");
+		// It says what its amounts mean (×100, in the cart currency's smallest
+		// unit — yen for a JPY cart) and offers no currency field until cleared.
+		expect(String(byId.get("cap")?.label)).toMatch(/×100 in the cart currency's smallest unit/);
+		expect(byId.has("currency")).toBe(false);
 		await submitForm(blocks, "coupons:save", {
 			...SUMMER25_PREFILL,
 			showLimits: true,

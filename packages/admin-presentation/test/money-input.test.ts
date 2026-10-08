@@ -26,6 +26,7 @@ import {
 	REFUND_AMOUNT_PRECISION,
 	refundAmountPrecisionText,
 } from "../src/index.js";
+import { FORMAT_CACHE_CAP, formatCacheSize } from "../src/format-money.js";
 
 /** Intl separates a code from the number with a NO-BREAK SPACE; the
  *  assertions below are about digits, so they compare with a plain one. */
@@ -175,7 +176,7 @@ describe("the copy that states a currency's precision", () => {
 		expect(hasExcessDecimals("7", "JPY")).toBe(false);
 		expect(refundAmountPrecisionText("USD")).toBe(REFUND_AMOUNT_PRECISION);
 		expect(refundAmountPrecisionText("JPY")).toMatch(/whole number/);
-		expect(refundAmountPrecisionText("KWD")).toMatch(/at most 3 decimal places/);
+		expect(refundAmountPrecisionText("KWD")).toMatch(/up to three decimal places/);
 	});
 
 	test("one example builder: the two-decimal example as typed for USD, reshaped for JPY and KWD", () => {
@@ -183,5 +184,28 @@ describe("the copy that states a currency's precision", () => {
 		expect(moneyInputExample("35.00", "JPY")).toBe("3500");
 		expect(moneyInputExample("9.50", "KWD")).toBe("9.500");
 		expect(moneyInputExample("4.99", NO_CURRENCY)).toBe("4.99");
+	});
+});
+
+describe("formatMoney's formatter cache is bounded", () => {
+	test("1,000 client-chosen locales cache nothing; output is unchanged", () => {
+		const before = formatCacheSize();
+		for (let n = 0; n < 1000; n++) {
+			expect(formatMoney(cents(1999), currency("USD"), `en-x-${String(n)}`)).toBe(
+				formatMoney(cents(1999), currency("USD"), "en-US"),
+			);
+		}
+		// At most the one fixed-locale (en-US) formatter the comparison itself adds.
+		expect(formatCacheSize()).toBeLessThanOrEqual(before + 1);
+		expect(formatCacheSize()).toBeLessThanOrEqual(FORMAT_CACHE_CAP);
+	});
+
+	test("the fixed locales are cached, and the cache never exceeds its cap", () => {
+		for (let n = 0; n < 26 * 26; n++) {
+			const code = `X${String.fromCharCode(65 + Math.floor(n / 26))}${String.fromCharCode(65 + (n % 26))}`;
+			formatMoney(cents(1), currency(code), "en-US");
+			expect(formatCacheSize()).toBeLessThanOrEqual(FORMAT_CACHE_CAP);
+		}
+		expect(plain(formatMoney(cents(1999), currency("USD"), "en-US"))).toBe("$19.99");
 	});
 });

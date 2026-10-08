@@ -128,7 +128,7 @@ const ICU_DIGITS = new Map<string, number>();
  * The minor-unit exponent money is TYPED in (the admin's money inputs and their
  * copy): the table's for a listed code, and hundredths for ANY other code —
  * exactly the rule every input had before the table existed, so an amount in
- * an unlisted code (ALL, ISK, …) is typed, stored and sent to Stripe as it
+ * an unlisted code (ALL, ISK, …) is typed, stored and sent to the payment provider as it
  * always was. Deliberately NOT the display fallback: ICU's exponent for an
  * unlisted code is not what its stored integers mean.
  */
@@ -138,18 +138,25 @@ export function inputMinorUnitDigits(code: string): number {
 
 /**
  * The warning an admin screen shows beside a currency the store can price in
- * but the Stripe live path cannot CHARGE yet — the three-decimal currencies
- * (KWD, BHD, OMR, JOD): Stripe wants their amounts in multiples of 10 fils,
- * and an order total need not be one. `null` for every other code. Mirrors
- * `@otta-sh/payments-stripe`'s `stripeRefusesCurrency` for listed codes
- * (pinned by `packages/plugin/test/money-parity.test.ts`); no behaviour hangs on
- * it — it only tells the merchant before a buyer finds out at checkout.
+ * but checkout cannot take payment in yet — the three-decimal currencies (KWD,
+ * BHD, OMR, JOD), whose smallest unit the payment path does not charge in (an
+ * order total need not be the multiple of 10 it needs). `null` for every other
+ * code. Vendor-neutral copy, as everything in core is; it mirrors the payment
+ * adapter's refusal for listed codes (pinned by
+ * `packages/plugin/test/money-parity.test.ts`). No behaviour hangs on it — it
+ * only tells the merchant before a buyer finds out at checkout.
  */
-export function stripePaymentWarning(code: string): string | null {
+export function checkoutPaymentWarning(code: string): string | null {
 	return currencyDigits(code) === 3
-		? `${code} prices are not yet payable via Stripe — checkout will refuse a card payment in ${code}.`
+		? `${code} prices are not yet payable at checkout — a payment in ${code} will be refused.`
 		: null;
 }
 
-/** The short form for a picker option or field label: `(not yet payable via Stripe)`. */
-export const NOT_YET_PAYABLE_VIA_STRIPE = "not yet payable via Stripe";
+/** The short form for a picker option or field label: `(not yet payable at checkout)`. */
+export const NOT_YET_PAYABLE_AT_CHECKOUT = "not yet payable at checkout";
+
+/** The ONE refusal for a currency the store does not support, on every admin
+ *  screen that authors one (product price, shipping rate, coupon). */
+export function unsupportedCurrencyMessage(code: string): string {
+	return `${code} isn't a supported currency — use one your store prices in, like USD or EUR.`;
+}

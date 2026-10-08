@@ -364,7 +364,7 @@ export class EmdashCouponStore implements CouponStore {
 			const doc = normalizeCouponDoc(current.value);
 			// Checked against THIS revision, inside the CAS: a bind that landed after
 			// the caller's read is seen here (or forces a retry that sees it).
-			if (input.expectCurrency !== undefined && doc.currency !== input.expectCurrency) {
+			if (input.expectCurrency !== undefined && (doc.currency ?? null) !== input.expectCurrency) {
 				return casDone<UpdateCouponResult>({ ok: false, reason: "currency_moved" });
 			}
 			const next: CouponDoc = {

@@ -55,18 +55,35 @@ function currencyFormat(
 	locale: string,
 	currencyCode: string,
 ): { format: Intl.NumberFormat; digits: number } {
-	// ONE construction per (locale, code): every money cell on a page formats
-	// through here, and an `Intl.NumberFormat` is far costlier to build than to
-	// use. A pair that throws is not cached, so it throws again next time.
+	// ONE construction per (locale, code) — for the console's and storefront's
+	// FIXED locales only. A storefront route passes the request's locale, which
+	// is client-supplied (any BCP-47 tag, private-use `en-x-…` included): caching
+	// those would let a caller grow this map without bound, so any other locale
+	// is built per call, as it always was. The map is also capped (cleared when
+	// full) as defence in depth. A pair that throws is never cached.
+	if (!CACHED_LOCALES.has(locale)) return buildCurrencyFormat(locale, currencyCode);
 	const key = `${locale}\u0000${currencyCode}`;
 	const cached = FORMATS.get(key);
 	if (cached !== undefined) return cached;
 	const built = buildCurrencyFormat(locale, currencyCode);
+	if (FORMATS.size >= FORMAT_CACHE_CAP) FORMATS.clear();
 	FORMATS.set(key, built);
 	return built;
 }
 
+/** The locales whose formatters are cached: the console's {@link MONEY_LOCALE}
+ *  and the storefront's default (`en`, the plugin's `STOREFRONT_LOCALE`). */
+const CACHED_LOCALES: ReadonlySet<string> = new Set(["en-US", "en"]);
+
+/** Upper bound on cached formatters (two locales × the codes actually seen). */
+export const FORMAT_CACHE_CAP = 256;
+
 const FORMATS = new Map<string, { format: Intl.NumberFormat; digits: number }>();
+
+/** How many formatters are cached — for the bound's own test. */
+export function formatCacheSize(): number {
+	return FORMATS.size;
+}
 
 function buildCurrencyFormat(
 	locale: string,

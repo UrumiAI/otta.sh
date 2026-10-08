@@ -103,6 +103,7 @@ import {
 	parseOnHandWatermark,
 	parseStockQty as parseStockQtyShared,
 	unitWord,
+	unsupportedCurrencyMessage,
 } from "@otta-sh/admin-presentation";
 import { isProductTaxStatus } from "@otta-sh/domain";
 import {
@@ -329,7 +330,9 @@ function buildEditWire(
 			wire[key] = null; // explicit clear.
 			continue;
 		}
-		const rowCurrency = currency ?? (wire.price !== undefined ? wire.price.currency : undefined);
+		// The row currency: a price in this submit was refused above unless it had
+		// one, so the submitted code is the only source.
+		const rowCurrency = currency;
 		const amountCurrency = rowCurrency ?? NO_CURRENCY;
 		const minorUnits = parsePriceMinorUnits(trimmed, amountCurrency);
 		if (minorUnits === null) {
@@ -496,7 +499,7 @@ const saveAction: ProductsAction = async (client, payload) => {
 		return applied({
 			variant: "error",
 			title: "Check the highlighted value",
-			description: `${unsupported} isn't a supported currency. Price the product in one of the currencies the store supports, like USD or EUR.`,
+			description: unsupportedCurrencyMessage(unsupported),
 		});
 	}
 	const key = deriveEditIdempotencyKey(productId, built.wire);

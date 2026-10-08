@@ -4,7 +4,7 @@ import {
 	currencyDigits as adminCurrencyDigits,
 	isSupportedCurrency as adminIsSupported,
 	minorUnitDigits as adminMinorUnitDigits,
-	stripePaymentWarning,
+	checkoutPaymentWarning,
 } from "@otta-sh/admin-presentation";
 import {
 	SUPPORTED_CURRENCIES as DOMAIN_CURRENCIES,
@@ -126,15 +126,15 @@ describe("currency table mirror parity (admin-presentation/currencies.ts ⇄ dom
 	});
 });
 
-describe("the admin's 'not yet payable via Stripe' warning names exactly what Stripe refuses", () => {
+describe("the admin's 'not yet payable at checkout' warning names exactly what Stripe refuses", () => {
 	test("for every listed currency, warned ⇔ refused by the live Stripe path", () => {
 		for (const row of DOMAIN_CURRENCIES) {
-			expect(stripePaymentWarning(row.code) !== null, row.code).toBe(
+			expect(checkoutPaymentWarning(row.code) !== null, row.code).toBe(
 				stripeRefusesCurrency(row.code),
 			);
 		}
-		expect(stripePaymentWarning("KWD")).toMatch(/not yet payable via Stripe/);
-		expect(stripePaymentWarning("USD")).toBeNull();
-		expect(stripePaymentWarning("JPY")).toBeNull();
+		expect(checkoutPaymentWarning("KWD")).toMatch(/not yet payable at checkout/);
+		expect(checkoutPaymentWarning("USD")).toBeNull();
+		expect(checkoutPaymentWarning("JPY")).toBeNull();
 	});
 });
