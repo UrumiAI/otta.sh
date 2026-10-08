@@ -457,7 +457,12 @@ export { STOREFRONT_LOCALE } from "./storefront/route-input.js";
 // ADR-0021: the ISO 3166 codes (CLDR) and the one region SHAPE rule, for a
 // site that builds the country picker and pre-checks a typed region code the
 // way the routes do. Membership is still the domain's call.
-export { COUNTRY_CODES, isCodeShapedRegion, REGION_CODE_PATTERN } from "@otta-sh/domain";
+export {
+	COUNTRY_CODES,
+	isCodeShapedRegion,
+	REGION_CODE_PATTERN,
+	SUBDIVISIONS,
+} from "@otta-sh/domain";
 // The rule that reads a typed or stored region as one of a country's codes, so
 // the site can pre-select a stored code in its state/province pick list (whose
 // names live in `@otta-sh/plugin/subdivisions`). The routes still validate
