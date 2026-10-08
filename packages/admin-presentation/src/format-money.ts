@@ -55,6 +55,23 @@ function currencyFormat(
 	locale: string,
 	currencyCode: string,
 ): { format: Intl.NumberFormat; digits: number } {
+	// ONE construction per (locale, code): every money cell on a page formats
+	// through here, and an `Intl.NumberFormat` is far costlier to build than to
+	// use. A pair that throws is not cached, so it throws again next time.
+	const key = `${locale}\u0000${currencyCode}`;
+	const cached = FORMATS.get(key);
+	if (cached !== undefined) return cached;
+	const built = buildCurrencyFormat(locale, currencyCode);
+	FORMATS.set(key, built);
+	return built;
+}
+
+const FORMATS = new Map<string, { format: Intl.NumberFormat; digits: number }>();
+
+function buildCurrencyFormat(
+	locale: string,
+	currencyCode: string,
+): { format: Intl.NumberFormat; digits: number } {
 	const digits = minorUnitDigits(currencyCode);
 	const plain = new Intl.NumberFormat(locale, { style: "currency", currency: currencyCode });
 	if ((plain.resolvedOptions().maximumFractionDigits ?? 2) === digits) {

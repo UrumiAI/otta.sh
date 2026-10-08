@@ -122,3 +122,30 @@ export function isSupportedCurrency(code: string): code is SupportedCurrencyCode
 export function currencyDigits(code: string): 0 | 2 | 3 | undefined {
 	return BY_CODE.get(code)?.digits;
 }
+
+/**
+ * The minor-unit exponent money is DISPLAYED in: the table's for a listed code;
+ * for any other code (old data) the runtime's ICU exponent it always rendered
+ * with, and 2 when ICU cannot say. Never throws. Mirrored — and pinned equal by
+ * `money-parity.test.ts` — by `@otta-sh/admin-presentation`'s `minorUnitDigits`,
+ * which `formatMoney` reads, so an operator flag and a screen agree.
+ */
+export function minorUnitDigits(code: string): number {
+	const listed = currencyDigits(code);
+	if (listed !== undefined) return listed;
+	const known = ICU_DIGITS.get(code);
+	if (known !== undefined) return known;
+	let digits = 2;
+	try {
+		digits =
+			new Intl.NumberFormat("en-US", { style: "currency", currency: code }).resolvedOptions()
+				.maximumFractionDigits ?? 2;
+	} catch {
+		digits = 2;
+	}
+	ICU_DIGITS.set(code, digits);
+	return digits;
+}
+
+/** ICU's exponent per unlisted code, probed once. */
+const ICU_DIGITS = new Map<string, number>();

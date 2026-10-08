@@ -174,10 +174,16 @@ describe("StripePaymentGateway.createIntent — the LIVE path sends our minor un
 		// Adding a currency to the table lands here: a row whose exponent Stripe
 		// treats differently is refused (and fails this test) until this adapter
 		// knows how to scale it.
+		// docs.stripe.com/currencies "Special cases": zero-decimal by ISO, but a
+		// two-decimal amount ending in 00 at Stripe. A table row naming one would be
+		// sent 100× too small, so none may be listed until the adapter scales it.
+		const twoDecimalAtStripe = new Set(["ISK", "UGX"]);
 		for (const row of SUPPORTED_CURRENCIES) {
 			expect(stripeRefusesCurrency(row.code), row.code).toBe(row.digits === 3);
-			if (row.digits === 0)
+			if (row.digits === 0) {
 				expect(STRIPE_ZERO_DECIMAL_CURRENCIES.has(row.code), row.code).toBe(true);
+				expect(twoDecimalAtStripe.has(row.code), row.code).toBe(false);
+			}
 		}
 	});
 });

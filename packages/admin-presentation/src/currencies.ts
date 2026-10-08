@@ -106,15 +106,23 @@ export function currencyDigits(code: string): 0 | 2 | 3 | undefined {
 export function minorUnitDigits(code: string): number {
 	const listed = currencyDigits(code);
 	if (listed !== undefined) return listed;
+	const known = ICU_DIGITS.get(code);
+	if (known !== undefined) return known;
+	let digits = 2;
 	try {
-		return (
+		digits =
 			new Intl.NumberFormat("en-US", { style: "currency", currency: code }).resolvedOptions()
-				.maximumFractionDigits ?? 2
-		);
+				.maximumFractionDigits ?? 2;
 	} catch {
-		return 2;
+		digits = 2;
 	}
+	ICU_DIGITS.set(code, digits);
+	return digits;
 }
+
+/** ICU's exponent per unlisted code, probed once (an `Intl.NumberFormat` is
+ *  costly to build, and the answer never changes within a process). */
+const ICU_DIGITS = new Map<string, number>();
 
 /**
  * The minor-unit exponent money is TYPED in (the admin's money inputs and their
@@ -127,3 +135,21 @@ export function minorUnitDigits(code: string): number {
 export function inputMinorUnitDigits(code: string): number {
 	return currencyDigits(code) ?? 2;
 }
+
+/**
+ * The warning an admin screen shows beside a currency the store can price in
+ * but the Stripe live path cannot CHARGE yet — the three-decimal currencies
+ * (KWD, BHD, OMR, JOD): Stripe wants their amounts in multiples of 10 fils,
+ * and an order total need not be one. `null` for every other code. Mirrors
+ * `@otta-sh/payments-stripe`'s `stripeRefusesCurrency` for listed codes
+ * (pinned by `packages/plugin/test/money-parity.test.ts`); no behaviour hangs on
+ * it — it only tells the merchant before a buyer finds out at checkout.
+ */
+export function stripePaymentWarning(code: string): string | null {
+	return currencyDigits(code) === 3
+		? `${code} prices are not yet payable via Stripe — checkout will refuse a card payment in ${code}.`
+		: null;
+}
+
+/** The short form for a picker option or field label: `(not yet payable via Stripe)`. */
+export const NOT_YET_PAYABLE_VIA_STRIPE = "not yet payable via Stripe";

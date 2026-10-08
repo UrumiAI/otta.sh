@@ -1,3 +1,4 @@
+import { NOT_YET_PAYABLE_VIA_STRIPE, stripePaymentWarning } from "@otta-sh/admin-presentation";
 import { parseCouponInstant } from "@otta-sh/domain";
 import { formatMoney } from "../presentation/format-money.js";
 import { cents as toCents, currency as toCurrency } from "../presentation/money.js";
@@ -384,9 +385,10 @@ export function couponStatus(
  * M-2 ("stated once, not per row"): what that rule forbids is a `Currency`
  * COLUMN, and a currency in the header would be the worse option here, since
  * coupons genuinely mix currencies across rows and `Min spend (USD)` becomes a
- * lie the first time a EUR coupon lands. A percentage coupon carries no
- * currency at all, so its floor renders as the same plain exact decimal its
- * cap already does — no invented symbol.
+ * lie the first time a EUR coupon lands. A percentage coupon whose floor is
+ * bound to a currency renders it in that currency, like a fixed one; one
+ * written before bounds carried a currency renders the same plain exact
+ * decimal (hundredths) its cap does — no invented symbol.
  */
 function couponMinSpendSummary(
 	c: Pick<CouponSummaryWire, "minSubtotalCents" | "currency">,
@@ -396,8 +398,9 @@ function couponMinSpendSummary(
 }
 
 /** Display-format minor units: symbol-bearing when the coupon carries a
- *  currency; a PLAIN exact decimal when it does not (percentage coupons are
- *  currency-agnostic); a `CUR amount` fallback if the branding constructors
+ *  currency (a fixed coupon always; a percentage coupon once its bounds are
+ *  bound); a PLAIN exact hundredths decimal when it does not (an unbound
+ *  percentage coupon); a `CUR amount` fallback if the branding constructors
  *  reject the wire value (never throws into the render path). */
 function formatCentsForDisplay(minorUnits: number, currencyCode: string | null): string {
 	if (currencyCode === null) return formatMinorUnitsInput(minorUnits, NO_CURRENCY);
@@ -1264,7 +1267,11 @@ function editCouponForm(detail: CouponSummaryWire): FormBlock {
 		editFields.push({
 			type: "text_input",
 			action_id: "amount",
-			label: `Amount off (${detail.currency ?? "?"})`,
+			label: `Amount off (${detail.currency ?? "?"})${
+				detail.currency !== null && stripePaymentWarning(detail.currency) !== null
+					? ` — ${NOT_YET_PAYABLE_VIA_STRIPE}`
+					: ""
+			}`,
 			...(detail.amountCents !== null
 				? {
 						initial_value: formatMinorUnitsInput(
@@ -1975,6 +1982,7 @@ function createCouponAction() {
 			}
 			// The five shared axes have no field on this form (§12.2) — a freshly
 			// created coupon is valid immediately, forever, unlimited, unrestricted.
+			const couponCurrency = type === "percentage" ? bounds.bind : econ.currency;
 			const result = await client.createCoupon({
 				id,
 				code,
@@ -1982,7 +1990,7 @@ function createCouponAction() {
 				amountCents: econ.amountCents,
 				rateBps: econ.rateBps,
 				capCents: econ.capCents,
-				currency: type === "percentage" ? bounds.bind : econ.currency,
+				currency: couponCurrency,
 				minSubtotalCents: null,
 				startsAt: null,
 				expiresAt: null,
@@ -1997,7 +2005,7 @@ function createCouponAction() {
 				!result.ok && result.status === 409 ? await couponCollision(client, id, code) : undefined;
 			const clash = collision === undefined ? undefined : { kind: collision, id };
 			return result.ok
-				? showList(undefined, createCouponNotice(result, code))
+				? showList(undefined, createCouponNotice(result, code, undefined, couponCurrency))
 				: showList(undefined, createCouponNotice(result, code, clash), {
 						kind: "new-coupon",
 						draft,
@@ -2041,12 +2049,16 @@ function createCouponNotice(
 	result: RulesCreateResult<unknown>,
 	code: string,
 	clash?: { kind: CouponCollision; id: string },
+	currency: string | null = null,
 ): Notice {
 	if (result.ok) {
+		const warning = currency === null ? null : stripePaymentWarning(currency);
 		return {
 			variant: "default",
 			title: "Coupon created",
-			description: `"${code}" was added and is live per its validity window.`,
+			description: `"${code}" was added and is live per its validity window.${
+				warning === null ? "" : ` ${warning}`
+			}`,
 		};
 	}
 	return {

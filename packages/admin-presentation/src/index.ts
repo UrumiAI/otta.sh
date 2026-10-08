@@ -99,6 +99,8 @@ export {
 	SUPPORTED_CURRENCIES,
 	currencyDigits,
 	inputMinorUnitDigits,
+	NOT_YET_PAYABLE_VIA_STRIPE,
+	stripePaymentWarning,
 	isSupportedCurrency,
 	minorUnitDigits,
 	type CurrencyInfo,

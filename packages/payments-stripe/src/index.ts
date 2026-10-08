@@ -42,9 +42,11 @@ export const DEFAULT_TOLERANCE_SECONDS = 300;
  *    allocation) can land on any fils. Rounding money is not this adapter's
  *    call; they stay priceable and displayable;
  *  - a LISTED currency whose table exponent Stripe does not treat the same way
- *    (none today; the adapter tests check every row) — notably ISK/UGX, which
- *    Stripe takes as two-decimal values ending in 00 even though ISO gives them
- *    0 digits: neither is in the table, so neither reaches this rule;
+ *    (none today). ISK/UGX — ISO 0 digits, but Stripe takes them as two-decimal
+ *    values ending in 00 — are the known trap: neither is in the table, and the
+ *    adapter's every-row test fails if a zero-digit row ever names one, since
+ *    this predicate would pass UGX (it is in Stripe's zero-decimal list) through
+ *    100× too small;
  *  - for a code OUTSIDE the table, exactly what was refused before the table
  *    existed: Stripe's zero- and three-decimal sets. Every other unlisted code
  *    (ISK included) passes through as the two-decimal amount it always was.
@@ -80,10 +82,6 @@ export const STRIPE_THREE_DECIMAL_CURRENCIES: ReadonlySet<string> = new Set([
 	"TND",
 ]);
 
-/** Zero-decimal by ISO, but a two-decimal `amount` ending in `00` at Stripe
- *  ("Special cases"). A listed row in one of these would be mis-scaled. */
-const STRIPE_TWO_DECIMAL_REPRESENTED: ReadonlySet<string> = new Set(["ISK", "UGX"]);
-
 /**
  * True when the live path refuses `code` — our stored minor units are not
  * Stripe's `amount` for it. See {@link STRIPE_ZERO_DECIMAL_CURRENCIES}'s block
@@ -95,8 +93,8 @@ export function stripeRefusesCurrency(code: string): boolean {
 	const three = STRIPE_THREE_DECIMAL_CURRENCIES.has(upper);
 	const digits = currencyDigits(upper);
 	if (digits === undefined) return zero || three; // not listed: as before the table
-	if (digits === 0) return !zero || STRIPE_TWO_DECIMAL_REPRESENTED.has(upper);
-	if (digits === 2) return zero || three || STRIPE_TWO_DECIMAL_REPRESENTED.has(upper);
+	if (digits === 0) return !zero;
+	if (digits === 2) return zero || three;
 	return true; // three-decimal
 }
 

@@ -1050,17 +1050,21 @@ describe("admin Coupons console — list level (workerd sandbox)", () => {
 
 	test("a fixed KWD coupon is read in fils: '1.234' is 1234, a fourth decimal is refused", async () => {
 		await boot(makeCouponsState());
-		await sandbox!.invokeRoute("admin", {
-			type: "form_submit",
-			action_id: "coupons:create",
-			values: {
-				id: "qa-kwd",
-				code: "KWD1",
-				type: "fixed_amount",
-				amount: "1.234",
-				currency: "KWD",
-			},
-		});
+		const created = blocksOf(
+			await sandbox!.invokeRoute("admin", {
+				type: "form_submit",
+				action_id: "coupons:create",
+				values: {
+					id: "qa-kwd",
+					code: "KWD1",
+					type: "fixed_amount",
+					amount: "1.234",
+					currency: "KWD",
+				},
+			}),
+		);
+		// Priceable, not yet chargeable through Stripe: the merchant is told now.
+		expect(String(bannerOf(created)?.description)).toMatch(/not yet payable via Stripe/);
 		const kwd = await stored("qa-kwd");
 		expect(kwd?.amountCents).toBe(1234);
 		expect(kwd?.currency).toBe("KWD");

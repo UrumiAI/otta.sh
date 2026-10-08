@@ -24,6 +24,8 @@ import {
 	formatMinorUnitsInput,
 	isSupportedCurrency,
 	moneyInputExample,
+	NOT_YET_PAYABLE_VIA_STRIPE,
+	stripePaymentWarning,
 	parseMinorUnitsInput,
 } from "@otta-sh/admin-presentation";
 import type { ProductRecord } from "../console-api.js";
@@ -62,7 +64,9 @@ export const CURRENCY_CHOICES: readonly string[] = [
 /** The picker's label for a code: `USD — US Dollar`. */
 export function currencyChoiceLabel(code: string): string {
 	const row = SUPPORTED_CURRENCIES.find((r) => r.code === code);
-	return row === undefined ? code : `${code} — ${row.name}`;
+	if (row === undefined) return code;
+	const note = stripePaymentWarning(code) === null ? "" : ` (${NOT_YET_PAYABLE_VIA_STRIPE})`;
+	return `${code} — ${row.name}${note}`;
 }
 
 /** Every input the panel owns, as the text in the field. */

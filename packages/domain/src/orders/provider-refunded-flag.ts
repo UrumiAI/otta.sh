@@ -5,30 +5,13 @@
  * order (QA2 M4, ADR-0026 amended 2026-10-03). Its own module so `refund-order.ts`
  * and `transition.ts`, which already imports from it, share it without a cycle.
  */
-import { currencyDigits } from "../money/currencies.js";
+import { minorUnitDigits } from "../money/currencies.js";
 
 export const PROVIDER_REFUNDED_FLAG_PREFIX = "Provider shows this payment fully refunded";
 
 /** The start of the flag for a PARTIAL provider refund: informational only — it
  *  never unlocks Mark refunded, because money is still held. */
 export const PROVIDER_PARTLY_REFUNDED_FLAG_PREFIX = "Not refunded in full";
-
-/** The currency's minor-unit digits: the currency table's (`money/currencies.ts`
- *  — JPY 0, USD 2, BHD 3), the same exponent the admin parses and displays
- *  with; for a code outside the table (an order stored before it), ICU's own
- *  table as before, and 2 when ICU cannot say. */
-function minorUnitDigits(currency: string): number {
-	const listed = currencyDigits(currency);
-	if (listed !== undefined) return listed;
-	try {
-		return (
-			new Intl.NumberFormat("en-US", { style: "currency", currency }).resolvedOptions()
-				.maximumFractionDigits ?? 2
-		);
-	} catch {
-		return 2;
-	}
-}
 
 /** Integer minor units as a plain decimal with the currency code ("3.50 USD",
  *  "1500 JPY", "1.234 BHD"), for an operator-facing flag. Integer string math,
