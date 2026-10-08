@@ -1,6 +1,22 @@
 import { describe, expect, test } from "vitest";
 import { idempotencyKey } from "../money/ids.js";
-import { DEFAULT_OPERATIONAL_SETTINGS, type SettingsStore } from "../ports/settings-store.js";
+import {
+	DEFAULT_OPERATIONAL_SETTINGS,
+	isSettingsPreconditionFailedError,
+	type SettingsStore,
+} from "../ports/settings-store.js";
+import type { TaxSettings } from "../pricing/tax-settings.js";
+
+const SAMPLE_TAX: TaxSettings = {
+	enabled: true,
+	pricesIncludeTax: true,
+	basedOn: "base",
+	baseAddress: { country: "GB", region: null },
+	shippingTaxClass: { kind: "fixed", taxClassId: "reduced" },
+	roundAtSubtotal: true,
+	displayCart: "incl",
+	totalsDisplay: "single",
+};
 
 export interface SettingsStoreHarness {
 	store: SettingsStore;
@@ -47,6 +63,73 @@ export function settingsStoreContract(
 			const replay = await store.update({ holdTtlMinutes: 30 }, idempotencyKey("k1"));
 			expect(replay).toEqual(first);
 			expect((await store.get()).holdTtlMinutes).toBe(99);
+		});
+
+		// PR 2a: the `tax` block rides in the same singleton. Absent means "never saved",
+		// which is what the upgrade rule keys on — never a default block.
+		test("tax is absent until saved, and an update without it never writes one", async () => {
+			const { store } = await makeStore();
+			expect((await store.get()).tax).toBeUndefined();
+			await store.update({ holdTtlMinutes: 30 }, idempotencyKey("k1"));
+			expect((await store.get()).tax).toBeUndefined();
+		});
+
+		test("the tax block round-trips whole, and a later partial update keeps it", async () => {
+			const { store } = await makeStore();
+			const result = await store.update({ tax: SAMPLE_TAX }, idempotencyKey("k1"));
+			expect(result.tax).toEqual(SAMPLE_TAX);
+			expect((await store.get()).tax).toEqual(SAMPLE_TAX);
+			await store.update({ lowStockThreshold: 3 }, idempotencyKey("k2"));
+			expect((await store.get()).tax).toEqual(SAMPLE_TAX);
+			const changed = { ...SAMPLE_TAX, enabled: false };
+			await store.update({ tax: changed }, idempotencyKey("k3"));
+			expect((await store.get()).tax).toEqual(changed);
+			// A same-key replay returns its recorded result and does not clobber.
+			expect((await store.update({ tax: SAMPLE_TAX }, idempotencyKey("k1"))).tax).toEqual(
+				SAMPLE_TAX,
+			);
+			expect((await store.get()).tax).toEqual(changed);
+		});
+
+		// Review 2a B2: a write conditional on the tax block, checked atomically with
+		// the write — the first-rate pin ("only if never saved") and the admin save
+		// ("only if still what the form loaded") ride on it.
+		test("ifTax: null applies only while no tax block is saved", async () => {
+			const { store } = await makeStore();
+			const pinned = await store.update({ tax: SAMPLE_TAX }, idempotencyKey("pin"), {
+				ifTax: null,
+			});
+			expect(pinned.tax).toEqual(SAMPLE_TAX);
+			const changed = { ...SAMPLE_TAX, enabled: false };
+			const refused = await store
+				.update({ tax: changed }, idempotencyKey("pin-2"), { ifTax: null })
+				.then(
+					() => undefined,
+					(err: unknown) => err,
+				);
+			expect(isSettingsPreconditionFailedError(refused), String(refused)).toBe(true);
+			if (isSettingsPreconditionFailedError(refused)) {
+				expect(refused.current.tax).toEqual(SAMPLE_TAX);
+			}
+			expect((await store.get()).tax).toEqual(SAMPLE_TAX);
+		});
+
+		test("ifTax: a block applies only while that block is the one saved", async () => {
+			const { store } = await makeStore();
+			await store.update({ tax: SAMPLE_TAX }, idempotencyKey("k1"));
+			const next = { ...SAMPLE_TAX, roundAtSubtotal: false };
+			const stale = { ...SAMPLE_TAX, displayCart: "excl" as const };
+			await expect(
+				store.update({ tax: next }, idempotencyKey("k2"), { ifTax: stale }),
+			).rejects.toSatisfy(isSettingsPreconditionFailedError);
+			expect((await store.get()).tax).toEqual(SAMPLE_TAX);
+			// Nothing was recorded for the refused key: the same key, now guarded on
+			// the block that IS saved, applies.
+			const applied = await store.update({ tax: next }, idempotencyKey("k2"), {
+				ifTax: SAMPLE_TAX,
+			});
+			expect(applied.tax).toEqual(next);
+			expect((await store.get()).tax).toEqual(next);
 		});
 	});
 }

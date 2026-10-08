@@ -114,6 +114,9 @@ import {
 	tabUnsavedLabel,
 	taxClassLabel,
 	taxClassOptions,
+	taxStatusLabel,
+	TAX_STATUS_HINT,
+	TAX_STATUS_OPTIONS,
 	unitCostFieldLabel,
 	type ProductSection,
 } from "@otta-sh/admin-presentation";
@@ -1240,6 +1243,7 @@ function ProductPanel({
 							formatOptionalAmount(p.unitCostCents, p.unitCostCurrency),
 						],
 						[PRODUCT_FIELD_LABELS.taxClass, taxClassLabel(p.taxClass, taxClasses)],
+						[PRODUCT_FIELD_LABELS.taxStatus, taxStatusLabel(p.taxStatus)],
 						[PRODUCT_FIELD_LABELS.kind, p.productKind],
 						[PRODUCT_FIELD_LABELS.weight, p.weightGrams === null ? ABSENT : String(p.weightGrams)],
 						[PRODUCT_FIELD_LABELS.dimensions, dimensionsSummary(p.lengthMm, p.widthMm, p.heightMm)],
@@ -1720,12 +1724,13 @@ export function ShippingGroup({
 		() => ({
 			productKind: p.productKind,
 			taxClass: p.taxClass ?? NO_TAX_CLASS,
+			taxStatus: p.taxStatus ?? "taxable",
 			weightGrams: numberInput(p.weightGrams),
 			lengthMm: numberInput(p.lengthMm),
 			widthMm: numberInput(p.widthMm),
 			heightMm: numberInput(p.heightMm),
 		}),
-		[p.productKind, p.taxClass, p.weightGrams, p.lengthMm, p.widthMm, p.heightMm],
+		[p.productKind, p.taxClass, p.taxStatus, p.weightGrams, p.lengthMm, p.widthMm, p.heightMm],
 	);
 	// Owned here for the same reason Identity's is — see that group's note on the
 	// container/view split; the six values never leave the form that holds them.
@@ -1803,6 +1808,24 @@ export function ShippingFields({
 						}}
 					>
 						{taxClassOptions(p.taxClass, taxClasses).map((option) => (
+							<option key={option.value} value={option.value}>
+								{option.label}
+							</option>
+						))}
+					</select>
+				</Field>
+				<Field label={PRODUCT_FIELD_LABELS.taxStatus}>
+					<select
+						className="otta-focusable"
+						data-testid="edit-tax-status"
+						title={TAX_STATUS_HINT}
+						style={fieldStyle(changed, "taxStatus")}
+						value={values["taxStatus"] ?? "taxable"}
+						onChange={(event) => {
+							set("taxStatus")(event.target.value);
+						}}
+					>
+						{TAX_STATUS_OPTIONS.map((option) => (
 							<option key={option.value} value={option.value}>
 								{option.label}
 							</option>

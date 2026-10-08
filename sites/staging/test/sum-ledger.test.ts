@@ -378,3 +378,31 @@ describe("Ledger — the Download link is a big enough target (WCAG 2.2 SC 2.5.8
 		expect(rule).toMatch(/display:\s*inline-flex/);
 	});
 });
+
+describe("Sum — tax labels are merchant text, rendered escaped (ADR-0032)", () => {
+	const HOSTILE = `<img src=x onerror=alert(1)>VAT`;
+
+	test("an itemized tax row's label is an escaped text node, never markup", async () => {
+		const html = await sum({
+			rows: [{ label: HOSTILE, amount: money("$2.00") }],
+			total: money("$12.00"),
+		});
+		expect(html).not.toContain("<img");
+		expect(html).toContain("&lt;img");
+	});
+
+	test("the 'includes' note is printed under the total, escaped", async () => {
+		const html = await sum({
+			rows: [{ label: "Subtotal", amount: money("$12.00") }],
+			total: money("$12.00"),
+			taxNote: `Includes $2.00 ${HOSTILE}`,
+		});
+		expect(html).toContain("Includes $2.00 &lt;img");
+		expect(html).not.toContain("<img");
+	});
+
+	test("no note by default", async () => {
+		const html = await sum({ rows: [], total: money("$1.00") });
+		expect(html).not.toContain("Includes");
+	});
+});

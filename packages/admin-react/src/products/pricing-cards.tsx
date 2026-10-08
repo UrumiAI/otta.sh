@@ -58,7 +58,12 @@ import {
 	type DraftProblems,
 	type PricingDraft,
 } from "./pricing-model.js";
-import { DIGITAL_WITH_FILE, parseStockQty } from "@otta-sh/admin-presentation";
+import {
+	DIGITAL_WITH_FILE,
+	parseStockQty,
+	TAX_STATUS_HINT,
+	TAX_STATUS_OPTIONS,
+} from "@otta-sh/admin-presentation";
 
 /** What EmDash hands a plugin field editor. Declared structurally: this
  *  package does not depend on `@emdash-cms/admin`. `onChange` is never called —
@@ -1215,6 +1220,29 @@ export function PricingStockEditor({ productId }: { productId: string }): React.
 									)}
 								</select>
 							</div>
+						</div>
+						<div className="otta-pricing-field">
+							<LabelRow htmlFor={id("tax-status")}>Tax status</LabelRow>
+							<div className="otta-pricing-input">
+								<select
+									id={id("tax-status")}
+									data-testid="otta-tax-status"
+									aria-describedby={id("tax-status-hint")}
+									value={d.taxStatus}
+									onChange={(event) => {
+										set("taxStatus")(event.target.value);
+									}}
+								>
+									{TAX_STATUS_OPTIONS.map((o) => (
+										<option key={o.value} value={o.value}>
+											{o.label}
+										</option>
+									))}
+								</select>
+							</div>
+							<span id={id("tax-status-hint")} className="otta-pricing-hint">
+								{TAX_STATUS_HINT}
+							</span>
 						</div>
 						{d.productKind !== "digital" && (
 							<>

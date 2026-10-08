@@ -53,6 +53,7 @@ describe("the draft", () => {
 			sku: "OTTA-TEE",
 			productKind: "physical",
 			taxClass: "standard",
+			taxStatus: "taxable",
 			weightGrams: "200",
 			lengthMm: "",
 			widthMm: "",
@@ -276,11 +277,18 @@ describe("the save", () => {
 			unitCost: "12.50",
 			productKind: "physical",
 			taxClass: "standard",
+			taxStatus: "taxable",
 			weightGrams: "200",
 			lengthMm: "",
 			widthMm: "",
 			heightMm: "",
 		});
+	});
+
+	test("the tax status rides with the save; a record without one reads taxable (PR 2b)", () => {
+		expect(draftFromRecord({ ...BASE, taxStatus: "none" }).taxStatus).toBe("none");
+		const draft = { ...draftFromRecord(BASE), taxStatus: "shipping_only" };
+		expect(savePayload(BASE, draft).taxStatus).toBe("shipping_only");
 	});
 
 	test("a cleared compare-at is sent BLANK, which is how the plugin clears it", () => {
