@@ -1,5 +1,8 @@
 # 0008. Order refunds are an append-only ledger + a gateway `refund` port method (Stripe real, x402 record-only)
 
+- Note (2026-10-08): x402 was removed from Otta ([ADR-0028](./0028-x402-content-gate-verifies-and-settles-through-the-facilitator.md)
+  is withdrawn); the record-only path below now serves any gateway that cannot refund, such as Stripe with
+  no secret key. Where this record says x402, read that.
 - Status: accepted — second-expert concurrence **with conditions**, all three incorporated in the
   2026-07-23 amendment: (1) refund-time provider pre-flight (never issue blind), (2) ceiling bound
   to `min(Σ captured, total)`, (3) the Stripe-stub → first-live-API reality stated and scoped

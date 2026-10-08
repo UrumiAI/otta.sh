@@ -1,7 +1,16 @@
 # 0028. The x402 content gate answers 402 itself and settles through the facilitator's `/verify` and `/settle`
 
-- Status: accepted
+- Status: Withdrawn (x402 removed)
 - Date: 2026-10-05
+- Withdrawn: 2026-10-08. The product owner decided to remove x402 from Otta entirely: the
+  `@otta-sh/payments-x402` package, the `X402Rail` port, the gateway wiring, the Settings fields,
+  the facilitator egress and `X402_FACILITATOR_URL`. The content gate was never built; only its
+  early increments (the port, the adapter and the retired receipt route) existed, and none was
+  released. The rest of this record is kept unchanged as history and no longer describes the
+  code. What stays, because Stripe and the generic paths use it: the rule that an order whose
+  `buyerRef` is not an email address has no email recipient (Decision 7), the receipt binding
+  in `settleOrder`, and the dormant `"outside"` refund category. A one-time purge deletes the
+  x402 settings earlier builds stored in plugin kv.
 - Amended: 2026-10-06. The product owner answered the draft's two open questions (Decisions 5 and
   8), and review rounds 1 and 2 reshaped the flow and the plan. The changes are listed at the end
   of this record.

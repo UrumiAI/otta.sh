@@ -1,6 +1,9 @@
 # 0026. Admin order actions never claim money that did not move
 
 - Status: accepted
+- Note (2026-10-08): x402 was removed from Otta ([ADR-0028](./0028-x402-content-gate-verifies-and-settles-through-the-facilitator.md)
+  is withdrawn). Where this record names x402, read it as a method that returns money outside Otta;
+  none is declared today, and the `"outside"` category stays in the domain as a dormant seam.
 - Date: 2026-10-02
 - Decided by: the maintainer, 2026-10-02 (QA findings T1-3, T1-4, T1-6)
 - Refines: the Phase-5 order state machine, as the admin console applies it. Amends no earlier
