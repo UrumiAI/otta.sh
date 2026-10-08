@@ -23,7 +23,7 @@ preserves every invariant.
   its capacity — ceiling arbitration always precedes issuance (proven by
   gateway-interleaved concurrency races). ACTIVE = every non-`voided` row (finalized +
   held reservations); the `→ refunded` flip counts FINALIZED (`recorded`) rows
-  only. The manual/record-only path (x402) stays the one-shot atomic
+  only. The manual/record-only path (a `refundable:false` gateway) stays the one-shot atomic
   `recordRefund` (reserve+finalize collapsed). `UNIQUE(idempotency_key)` is the
   once-only backstop; the frozen order snapshot is never touched. A FULL refund
   drives `→ refunded` through the existing `#flipAndEnqueue` choke point; a partial
@@ -31,20 +31,20 @@ preserves every invariant.
   "issued-but-unrecorded" residual records a loud `REFUND_UNRECORDED` anomaly with
   the provider refundRef + a reconciliation flag and returns a DISTINCT reason —
   never a silent drop.
-- **Stripe = real, x402 = honest.** The Stripe adapter gains a live outbound
+- **Stripe = real, record-only = honest.** The Stripe adapter gains a live outbound
   transport seam: a mandatory refund-time pre-flight reads `amount_refunded` and
   **fails closed** (`PROVIDER_ALREADY_REFUNDED`) before issuing, then
   `refunds.create` passes our key as Stripe's native `Idempotency-Key`, with an
   explicit live-error taxonomy (retryable / terminal / ambiguous-timeout →
-  "unverified, re-check"). `secretKey` unset ⇒ `refundable:false`. x402 declares
-  `refundable:false` and records a manual, out-of-band refund. Contract-tested
+  "unverified, re-check"). `secretKey` unset ⇒ `refundable:false`, and a `refundable:false`
+  gateway records a manual, out-of-band refund. Contract-tested
   offline via an injected mock transport.
 - **Admin surface:** issuing a refund is an idempotency-keyed write on the order,
   and the order detail reads the ledger back with the ceiling, the remaining
   refundable amount and the gateway's honest capability flag.
 - **Plugin:** a Refunds section on the admin order detail — the ledger, remaining
   refundable, a money-input refund form whose framing is honest per gateway
-  (real Stripe refund vs record-a-manual x402/off-platform refund), and refreshed
+  (real Stripe refund vs record-a-manual off-platform refund), and refreshed
   cancel/reconciliation copy now that a real refund path exists.
 
 Deferred per the ADR: no auto-restock, no line-level refunds, no inbound

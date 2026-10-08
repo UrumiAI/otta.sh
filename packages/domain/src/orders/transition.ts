@@ -163,7 +163,13 @@ const PAYMENT_METHOD_SETTLEMENT: Readonly<Record<PaymentMethod, "gateway" | "off
  */
 export function manualPaymentAllowed(method: PaymentMethod | null): boolean {
 	if (method === null) return false;
-	return PAYMENT_METHOD_SETTLEMENT[method] === "offline";
+	// Read as the stored STRING: a legacy order may carry a method no longer in
+	// the type (an x402 order from before its removal). No entry ⇒ not offline.
+	const stored: string = method;
+	return (
+		Object.hasOwn(PAYMENT_METHOD_SETTLEMENT, stored) &&
+		(PAYMENT_METHOD_SETTLEMENT as Readonly<Record<string, string>>)[stored] === "offline"
+	);
 }
 
 /**
@@ -176,6 +182,19 @@ export function manualPaymentAllowed(method: PaymentMethod | null): boolean {
 const PAYMENT_METHOD_REFUNDS: Readonly<Record<PaymentMethod, "provider" | "outside">> = {
 	stripe: "provider",
 };
+
+/**
+ * How a STORED method's money goes back. The stored value is read as a `string`,
+ * not trusted as a `PaymentMethod`: an order placed before a method was removed
+ * (a legacy x402 order) still carries it. A method with no entry has no provider
+ * Otta can refund through, so it is `outside` — the operator returns the money
+ * and Mark refunded records it, as it did while that method existed.
+ */
+function refundRouteOf(stored: string): "provider" | "outside" {
+	return Object.hasOwn(PAYMENT_METHOD_REFUNDS, stored)
+		? (PAYMENT_METHOD_REFUNDS as Readonly<Record<string, "provider" | "outside">>)[stored]!
+		: "outside";
+}
 
 /** The two ledgers Mark refunded is decided from. */
 export interface RefundLedgerFacts {
@@ -211,7 +230,7 @@ export function markRefundedRefusal(
 	if (facts.refunds.some((r) => r.status === "reserved" || r.status === "unverified")) {
 		return "REFUND_IN_FLIGHT";
 	}
-	if (order.paymentMethod !== null && PAYMENT_METHOD_REFUNDS[order.paymentMethod] === "outside") {
+	if (order.paymentMethod !== null && refundRouteOf(order.paymentMethod) === "outside") {
 		return null;
 	}
 	if (unrefundedCapturedCents(facts) === 0) return null;
@@ -706,7 +725,7 @@ async function refundedTotal(
 /**
  * Whether an order has an email recipient, decided from the order alone (no read):
  * a linked customer has one, and a guest has one only when its `buyerRef` is an
- * email address — a wallet id such as `wallet:0x…` is not. `false` is final: {@link resolveRecipient} will skip every row of
+ * email address — a hand-seeded or legacy buyerRef without `@` is not. `false` is final: {@link resolveRecipient} will skip every row of
  * the order. `true` is the drain's to confirm — a linked customer whose record is
  * gone falls back to the `buyerRef`. A caller that must report an email's fate
  * before any row is claimed (the admin console) asks this.
@@ -731,7 +750,7 @@ async function resolveRecipient(
 	}
 	// Guest order: the email captured at checkout (buyerRef), branded as it was
 	// accepted there and not re-normalized here. A buyerRef that is not an email
-	// address at all (a wallet id, say) is no recipient.
+	// address at all (a hand-seeded or legacy buyerRef without `@`) is no recipient.
 	return isEmailAddress(order.buyerRef) ? (order.buyerRef as Email) : null;
 }
 

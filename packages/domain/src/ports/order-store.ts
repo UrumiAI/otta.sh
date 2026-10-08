@@ -587,7 +587,7 @@ export interface OrderStore {
 	/**
 	 * Complete a claimed row as SKIPPED: terminal, and never sent. For a row the
 	 * dispatcher will not send because the order has no email recipient — its
-	 * `buyerRef` is a wallet id (`wallet:0x…`, say), not an address. It is its own outcome rather than {@link markEmailSent} so that
+	 * `buyerRef` is not an address (a hand-seeded or legacy buyerRef without `@`). It is its own outcome rather than {@link markEmailSent} so that
 	 * nothing reads an email that never went as delivered: an admin write reports
 	 * whether its email went (ADR-0026). Nor is it an attempt or a failure — the
 	 * attempt the claim counted is taken back off, as {@link releaseEmailClaim} does.

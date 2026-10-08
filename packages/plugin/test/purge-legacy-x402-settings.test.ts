@@ -52,6 +52,7 @@ const STORED = {
 	"settings:x402FacilitatorApiKey": "fac_LIVE_KEY_0000000000",
 	"settings:x402FacilitatorApiKeyGen": 3,
 	"settings:x402FacilitatorSecret": "legacy_LIVE_SECRET_0000",
+	"settings:x402FacilitatorSecretGen": 2,
 	[STRIPE_SECRET_KEY_KEY]: "sk_test_keep",
 	[STRIPE_WEBHOOK_SECRET_KEY]: "whsec_keep",
 	[WEBHOOK_EDGE_TOKEN_KEY]: "edge_keep",
@@ -63,7 +64,7 @@ beforeEach(() => resetLegacyX402PurgeForTesting());
 afterEach(() => vi.restoreAllMocks());
 
 describe("purgeLegacyX402Settings", () => {
-	test("deletes exactly the five x402 keys, and nothing else", async () => {
+	test("deletes exactly the six x402 keys, and nothing else", async () => {
 		const { ctx, kv } = makeCtx(STORED);
 		expect(await purgeLegacyX402Settings(ctx)).toBe(true);
 		for (const key of LEGACY_X402_SETTING_KEYS) expect(kv.has(key), key).toBe(false);
@@ -86,6 +87,7 @@ describe("purgeLegacyX402Settings", () => {
 			"settings:x402FacilitatorApiKey",
 			"settings:x402FacilitatorApiKeyGen",
 			"settings:x402FacilitatorSecret",
+			"settings:x402FacilitatorSecretGen",
 		]);
 		// None is a key anything still provisions.
 		for (const key of LEGACY_X402_SETTING_KEYS) {

@@ -12,8 +12,8 @@
  *  - `queued`       — it did not (the provider failed, or the wait ran out); the
  *                     cron retries it automatically;
  *  - `unconfigured` — this bundle has no email provider, so nothing will be sent;
- *  - `no-recipient` — the order has no email address (its `buyerRef`
- *                     is a wallet id, say), so nothing was or will be sent;
+ *  - `no-recipient` — the order has no email address (its `buyerRef` is
+ *                     a hand-seeded or legacy buyerRef without `@`), so nothing was or will be sent;
  *  - absent         — the write enqueued no email (a replay, or Mark refunded).
  *
  * Driven over a REAL document store through `InProcessAdminOrdersClient`, with the
@@ -46,7 +46,7 @@ import {
 
 const USD = toCurrency("USD");
 const FAR = "2099-01-01T00:00:00.000Z";
-/** A buyer whose reference is a wallet id, not an email address. */
+/** A buyer whose reference is a hand-seeded or legacy buyerRef without `@`, not an email address. */
 const WALLET_BUYER = {
 	buyerRef: "wallet:0x1111111111111111111111111111111111111111",
 	paymentMethod: "stripe",

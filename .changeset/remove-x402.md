@@ -24,6 +24,6 @@ removal from published API.
   x402 facilitator key, destination wallet or networks fields.
 - A cron tick deletes the x402 settings earlier builds stored in plugin kv
   (`settings:x402PayTo`, `settings:x402Accepts`, `settings:x402FacilitatorApiKey` and its
-  generation, `settings:x402FacilitatorSecret`), once per store.
+  generation, `settings:x402FacilitatorSecret` and its generation), once per store.
 - `@otta-sh/admin-presentation`: the "paid on-chain (x402)" refund-capability sentence is gone;
   the record-only copy for a gateway that cannot refund is unchanged.

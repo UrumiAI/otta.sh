@@ -5,6 +5,7 @@ import {
 	markRefundedRefusal,
 	PROVIDER_REFUNDED_FLAG_PREFIX,
 	unrefundedCapturedCents,
+	type PaymentMethod,
 } from "@otta-sh/domain";
 import { describe, expect, test } from "vitest";
 
@@ -129,5 +130,16 @@ describe("Mark refunded is offered only where no money is left to return through
 		expect(
 			markRefundedAllowed({ ...stripePaid, reconciliationFlag: "amount mismatch" }, CAPTURED),
 		).toBe(false);
+	});
+	test("a LEGACY method with no provider entry (a hand-seeded x402 order) keeps Mark refunded", () => {
+		// x402 is gone from `PaymentMethod`, but an order placed before its removal
+		// still stores it. No provider can return that money, so it is OUTSIDE Otta:
+		// the operator refunds it and Mark refunded records it, as before.
+		const legacy = { ...stripePaid, paymentMethod: "x402" as unknown as PaymentMethod };
+		expect(markRefundedRefusal(legacy, CAPTURED)).toBeNull();
+		expect(markRefundedAllowed(legacy, CAPTURED)).toBe(true);
+		expect(adminNextStates(legacy, CAPTURED)).toContain("refunded");
+		// And it still cannot be marked paid by hand.
+		expect(manualPaymentAllowed(legacy.paymentMethod)).toBe(false);
 	});
 });

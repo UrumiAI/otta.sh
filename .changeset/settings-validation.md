@@ -12,7 +12,7 @@ Admin Settings checks what it saves and says what it holds (QA U-8).
   label says "— set" or "— not set", and a set key has a **Remove** button behind a confirm
   (new action `clear-payment-secret`, value `{ secret: <field id> }`).
 - **The Payments & email label states the truth**: Stripe test/live (from the key prefix),
-  webhook set or not, email set or not. The optional x402 and edge keys no longer read
+  webhook set or not, email set or not. The optional edge key no longer reads
   as missing.
 - **Checkout settings are all-or-nothing.** A blank, signed, fractional, non-numeric or
   out-of-range hold time or low-stock threshold is refused by name and nothing is saved —

@@ -298,8 +298,7 @@ function manifestSource(options: SandboxOptions): string {
 		// `resolveInProcessEgress` applies was never exercised: a suite could hand
 		// the isolate a URL no `allowedHosts` entry covers and every assertion would
 		// still pass. INC-D3a dropped the resolver's mode argument along with the
-		// http arm it used to select — the unparseable-define behavior stays
-		// unit-pinned in `manifest-override.test.ts`.
+		// http arm it used to select.
 		`export const IN_PROCESS_EGRESS_URLS = ${JSON.stringify(resolveInProcessEgress({}))};`,
 		"",
 	].join("\n");

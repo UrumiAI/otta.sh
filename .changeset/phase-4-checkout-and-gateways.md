@@ -8,8 +8,7 @@ Phase 4 — checkout + payment gateways.
 
 - `@otta-sh/domain`: the immutable order model (price+title snapshot) and the
   Phase-4 ports — `OrderStore`, `EntitlementStore`, `PaymentEventStore`, and one
-  `PaymentGateway` seam fitting both Stripe (async webhook) and x402
-  (synchronous page-gate). Use-cases: `createOrderFromCart` (snapshot from
+  `PaymentGateway` seam (Stripe's async webhook). Use-cases: `createOrderFromCart` (snapshot from
   `product_commerce`, `order_totals` stub, order-row-before-adoption ordering,
   guarded `held→adopted` flip, cart `checked_out` flip; digital lines reserve
   nothing), `settleOrder` (verify→dedupe→transition→commit-or-grant; amount
@@ -23,9 +22,6 @@ Phase 4 — checkout + payment gateways.
 - `@otta-sh/payments-stripe` (new): raw-body HMAC-verifying Stripe adapter + the
   offline fake-Stripe driver `signStripeWebhook`. The webhook secret comes from
   the host environment only, never the wire.
-- `@otta-sh/payments-x402` (new): page-gate adapter that re-verifies the facilitator
-  receipt SERVER-SIDE via an injected `X402Facilitator` (never trusting the
-  plugin) + an offline HMAC facilitator. `transaction` is the dedupe key.
 - `@otta-sh/plugin`: sandbox-clean PUBLIC entitlement-gated download route, which
   checks the entitlement before serving a byte. **The Stripe webhook cannot be a
   plugin route** — EmDash's sandboxed-route bridge JSON-parses the request body
@@ -54,11 +50,6 @@ Review-round hardening (settle-path defect family):
 - Stripe webhook verification enforces a configurable **freshness window** on
   the signed `t` (default 300s, injectable Clock) and checks **all** `v1`
   signatures (secret rotation).
-- The x402 adapter rejects a receipt settled on a network outside the
-  gateway's `accepts`, and the facilitator swap-in point documents the
-  load-bearing production requirements (attest amount + recipient; the
-  amount==`order_totals.total` check and tx-hash dedupe are what bind a
-  receipt to an order — `orderId` is never on-chain-attestable).
 
 Review round G (second review):
 
@@ -78,9 +69,6 @@ Review round G (second review):
 - Settle short-circuits **terminal states before the amount check**, so a
   mismatched-amount stray duplicate on an already-paid order no-ops instead of
   recording a false `AMOUNT_MISMATCH` anomaly.
-- Wiring x402 **fails closed**: the only facilitator that can be wired is the
-  offline test one, so enabling it is an explicit opt-in that warns loudly it
-  is not production-safe.
 
 Known deferrals (Phase 5+): Stripe `createIntent` offline stub; the entitlement
 check's buyerRef enumeration oracle (closed by Phase-5 claim tokens; marked

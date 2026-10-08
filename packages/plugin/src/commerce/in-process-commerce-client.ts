@@ -1121,7 +1121,9 @@ export class InProcessCommerceClient implements CommerceClient {
 		// Issue #382: a fact about the STRIPE account, so it binds a Stripe
 		// checkout only. A kv read, made before the
 		// domain's same-key short-circuit (which lives inside the use-case); a
-		// replay short-circuits before the domain looks at it.
+		// replay short-circuits before the domain looks at it. Stripe is the only
+		// method today, so the check is always true: it is the gateway seam a second
+		// method would pass through without inheriting Stripe's address rule.
 		const addressRequired = input.paymentMethod === "stripe" && (await this.#addressRequired());
 		const result = await createOrderFromCart(this.#createOrderDeps, {
 			cartId: input.cartId,

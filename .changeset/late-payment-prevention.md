@@ -31,7 +31,7 @@ rare.
   `Idempotency-Key`, path-escaped id) bounded by the new `DEFAULT_CANCEL_TIMEOUT_MS` (3 s,
   `cancelTimeoutMs` on the transport, capped at each call by `requestTimeoutMs`); `payment_intent_unexpected_state` is `not_cancellable`;
   no secret key is `UNSUPPORTED`. `StripeTransport.cancelPaymentIntent` is optional, so existing
-  transport seams keep compiling. `X402PaymentGateway.cancelIntent` answers `UNSUPPORTED`.
+  transport seams keep compiling.
   `FakePaymentGateway` gains `cancelIntent`, `cancelCalls` and `setCancelResult`.
 - **Store:** `EmdashOrderStore` keeps `paymentIntents` on the order document with an indexed,
   derived `intentCancelDueAt` (both absent on existing documents).

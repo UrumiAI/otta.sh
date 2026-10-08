@@ -17,7 +17,6 @@ deployments such as staging were not affected.
   `ambiguous` on a refund create. Idempotency keys are unchanged, and nothing is retried.
 - **Bodies.** A body read that loses the race has its reader cancelled. An answer that arrives
   late is discarded with its body cancelled. A body nobody read is cancelled when the call ends.
-  The x402 rail already sent no signal; it now also stops reading at its timeout.
 - **New option: `trustedHost` (default `false`).** It is on `createStripeHttpTransport`,
   `StripePaymentGateway` and `fetchStripeAccountCountry`. When set, a
   signal goes back in `init`, aborted at the same deadline, so a timed-out request's socket is

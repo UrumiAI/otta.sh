@@ -41,7 +41,7 @@ export interface EmailRecipientContractOptions {
 
 const USD = currency("USD");
 
-/** A buyer reference that is a wallet id, not an email address. */
+/** A hand-seeded buyer reference without `@`, not an email address. */
 const WALLET_BUYER_REF = "wallet:0x1111111111111111111111111111111111111111";
 
 function orderInput(id: string, overrides: Partial<CreateOrderInput> = {}): CreateOrderInput {
@@ -147,8 +147,8 @@ const NO_RECIPIENT_TEMPLATES: readonly {
 /**
  * "The order's email recipient, or none" (ADR-0028 Decision 7, increment 4).
  *
- * An order whose `buyerRef` is not an email address — a
- * `wallet:0x…` reference, say — has no email recipient, and no email is ever sent
+ * An order whose `buyerRef` is not an email address — a hand-seeded or legacy buyerRef without `@` — has
+ * no email recipient, and no email is ever sent
  * for it. The decision is made in ONE place, the drain's recipient resolution, so it
  * covers every row the outbox can hold. Such a row is completed as SKIPPED: its own
  * terminal outcome, never recorded as sent (ADR-0026 — a write reports whether its

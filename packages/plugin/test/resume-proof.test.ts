@@ -25,7 +25,7 @@ describe("emailMatchesBuyer", () => {
 	});
 
 	test("a buyerRef that is not an email never matches — not even itself (issue #405 item 2)", async () => {
-		// A wallet-id buyerRef is public: typing it back proves nothing about who
+		// A buyerRef without `@` may be public: typing it back proves nothing about who
 		// placed the order.
 		const wallet = "wallet:0x52908400098527886E0F7030069857D2E4169EE7";
 		expect(await emailMatchesBuyer(wallet, wallet)).toBe(false);
