@@ -31,14 +31,15 @@ removal from published API.
 - Orders placed with x402 before its removal still store `paymentMethod: "x402"`.
   `@otta-sh/domain` names it in the new `LEGACY_PAYMENT_METHODS` (with `isLegacyPaymentMethod`):
   its money goes back outside Otta, so Mark refunded can close such an order. A stored method
-  that is neither current nor named there fails closed. In the admin, a legacy order's refunds
-  are record-only: the refund action records a manual refund (ledgered under `x402`, no money
-  moves), and cancelling a paid one is refused as `REFUND_NOT_AUTOMATIC`. A Stripe order with no
+  that is neither current nor named there fails closed. In the admin, a legacy order whose money came
+  only through x402 is record-only: the refund action records a manual refund (ledgered under
+  `x402`, no money moves), and cancelling a paid one is refused as `REFUND_NOT_AUTOMATIC`. If
+  Stripe captured its money instead, it refunds through Stripe like any Stripe order. A Stripe order with no
   Stripe gateway configured, and an order with an unknown method, still answer
   `409 REFUND_GATEWAY_UNAVAILABLE`. The admin refunds summary (`RefundsSummaryWire`) gains
-  `legacyPaymentMethod: boolean`, true for a legacy order. Mark refunded's legacy shortcut
+  `legacyPaymentMethod: boolean`, true for a record-only legacy order. Mark refunded's legacy shortcut
   holds only while every captured payment also came through a legacy method. A same-key
-  checkout replay of an order stored under another (non-null) method is refused
+  checkout replay of a pending order stored under another (non-null) method is refused
   `IDEMPOTENCY_KEY_REUSED` (no intent is minted), and resuming a pending order whose stored
   method is not a current one (legacy or unknown) answers `ORDER_NOT_PAYABLE`. A Stripe order
   whose gateway does not resolve still fails as before. The domain gains `isCurrentPaymentMethod`,

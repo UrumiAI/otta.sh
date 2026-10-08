@@ -172,7 +172,8 @@ export async function createOrderFromCart(
 		// success for an order this cart has nothing to do with. Checked before the
 		// state branch: a paid order is no more this cart's than a pending one.
 		if (already.cartId !== command.cartId) return { ok: false, reason: "IDEMPOTENCY_KEY_REUSED" };
-		// Nor of a request for ANOTHER method (see `storedUnderAnotherMethod`).
+		// Nor, while it is pending, of a request for ANOTHER method (see
+		// `storedUnderAnotherMethod`).
 		if (storedUnderAnotherMethod(already, gateway)) {
 			return { ok: false, reason: "IDEMPOTENCY_KEY_REUSED" };
 		}
@@ -596,13 +597,16 @@ async function finalizeOrder(
 }
 
 /**
- * True iff an order found under this key was placed with a DIFFERENT method than
- * the gateway about to be asked for an intent — a legacy x402 order replayed as a
- * Stripe checkout must never get a Stripe intent. A `null` method (a historical
- * order) is not "another method": it keeps the replay it always had.
+ * True iff a PENDING order found under this key was placed with a DIFFERENT method
+ * than the gateway about to be asked for an intent — a legacy x402 order replayed
+ * as a Stripe checkout must never get a Stripe intent. Only a pending order would
+ * get one: a paid, expired or cancelled order replays as it always did (no
+ * intent). A `null` method (a historical order) is not "another method" either.
  */
 function storedUnderAnotherMethod(order: Order, gateway: PaymentGateway): boolean {
-	return order.paymentMethod !== null && order.paymentMethod !== gateway.id;
+	return (
+		order.state === "pending" && order.paymentMethod !== null && order.paymentMethod !== gateway.id
+	);
 }
 
 /**

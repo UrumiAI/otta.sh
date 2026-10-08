@@ -41,6 +41,14 @@ export function isLegacyPaymentMethod(stored: string): boolean {
 	return Object.hasOwn(LEGACY_PAYMENT_METHODS, stored);
 }
 
+/** A named legacy method's declared fact, or `undefined` for any other value. */
+export function legacyFact<K extends keyof LegacyMethodFacts>(
+	stored: string,
+	field: K,
+): LegacyMethodFacts[K] | undefined {
+	return isLegacyPaymentMethod(stored) ? LEGACY_PAYMENT_METHODS[stored]?.[field] : undefined;
+}
+
 /**
  * The gateway wired for a stored method: only a current method's OWN key with a
  * defined value (`{ stripe: undefined }` is no gateway). A legacy, unknown or

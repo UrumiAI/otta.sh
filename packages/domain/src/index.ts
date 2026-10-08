@@ -347,6 +347,7 @@ export {
 	isCurrentPaymentMethod,
 	isLegacyPaymentMethod,
 	LEGACY_PAYMENT_METHODS,
+	legacyFact,
 	type LegacyMethodFacts,
 } from "./orders/payment-methods.js";
 export {

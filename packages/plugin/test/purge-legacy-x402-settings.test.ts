@@ -74,7 +74,7 @@ afterEach(() => vi.restoreAllMocks());
 describe("purgeLegacyX402Settings", () => {
 	test("deletes exactly the six x402 keys, and nothing else", async () => {
 		const { ctx, kv } = makeCtx(STORED);
-		expect(await purgeLegacyX402Settings(ctx)).toBe(true);
+		expect(await purgeLegacyX402Settings(ctx)).toBe("purged");
 		for (const key of LEGACY_X402_SETTING_KEYS) expect(kv.has(key), key).toBe(false);
 		for (const key of [
 			STRIPE_SECRET_KEY_KEY,
@@ -105,7 +105,7 @@ describe("purgeLegacyX402Settings", () => {
 
 	test("a store that never had x402 settings is a safe no-op that still completes", async () => {
 		const { ctx, kv } = makeCtx({ "settings:storeDisplayName": "Keep" });
-		expect(await purgeLegacyX402Settings(ctx)).toBe(true);
+		expect(await purgeLegacyX402Settings(ctx)).toBe("purged");
 		expect(kv.get("settings:storeDisplayName")).toBe("Keep");
 		expect(typeof kv.get(LEGACY_X402_PURGE_MARKER_KEY)).toBe("string");
 	});
@@ -114,7 +114,7 @@ describe("purgeLegacyX402Settings", () => {
 		const first = makeCtx(STORED);
 		await purgeLegacyX402Settings(first.ctx);
 		first.calls.length = 0;
-		expect(await purgeLegacyX402Settings(first.ctx)).toBe(false);
+		expect(await purgeLegacyX402Settings(first.ctx)).toBe("idle");
 		expect(first.calls).toEqual([]);
 
 		resetLegacyX402PurgeForTesting(); // a fresh isolate
@@ -122,7 +122,7 @@ describe("purgeLegacyX402Settings", () => {
 			...STORED,
 			[LEGACY_X402_PURGE_MARKER_KEY]: "2026-10-07T00:00:00Z",
 		});
-		expect(await purgeLegacyX402Settings(restored.ctx)).toBe(false);
+		expect(await purgeLegacyX402Settings(restored.ctx)).toBe("idle");
 		// The marker first, so a purged store pays one read per isolate.
 		expect(restored.calls).toEqual([`get ${LEGACY_X402_PURGE_MARKER_KEY}`]);
 		expect(restored.kv.has("settings:x402PayTo")).toBe(true);
@@ -131,11 +131,11 @@ describe("purgeLegacyX402Settings", () => {
 	test("a kv failure part way leaves the marker unset, never throws, and is retried", async () => {
 		vi.spyOn(console, "warn").mockImplementation(() => {});
 		const failing = makeCtx(STORED, "settings:x402FacilitatorApiKey");
-		expect(await purgeLegacyX402Settings(failing.ctx)).toBe(false);
+		expect(await purgeLegacyX402Settings(failing.ctx)).toBe("attempted");
 		expect(failing.kv.has(LEGACY_X402_PURGE_MARKER_KEY)).toBe(false);
 
 		const healthy = makeCtx(Object.fromEntries(failing.kv));
-		expect(await purgeLegacyX402Settings(healthy.ctx)).toBe(true);
+		expect(await purgeLegacyX402Settings(healthy.ctx)).toBe("purged");
 		for (const key of LEGACY_X402_SETTING_KEYS) expect(healthy.kv.has(key), key).toBe(false);
 	});
 
@@ -145,7 +145,7 @@ describe("purgeLegacyX402Settings", () => {
 		ctx.kv.get = async () => {
 			throw new Error("kv down");
 		};
-		expect(await purgeLegacyX402Settings(ctx)).toBe(false);
+		expect(await purgeLegacyX402Settings(ctx)).toBe("idle");
 		expect(kv.has("settings:x402PayTo")).toBe(true);
 	});
 
@@ -154,7 +154,7 @@ describe("purgeLegacyX402Settings", () => {
 		const get = ctx.kv.get.bind(ctx.kv);
 		ctx.kv.get = async <T>(key: string) =>
 			key === LEGACY_X402_PURGE_MARKER_KEY ? (undefined as T) : get<T>(key);
-		expect(await purgeLegacyX402Settings(ctx)).toBe(true);
+		expect(await purgeLegacyX402Settings(ctx)).toBe("purged");
 		expect(kv.has("settings:x402PayTo")).toBe(false);
 	});
 
@@ -176,7 +176,7 @@ describe("purgeLegacyX402Settings", () => {
 			inFlight -= 1;
 			return del(key);
 		};
-		expect(await purgeLegacyX402Settings(ctx)).toBe(true);
+		expect(await purgeLegacyX402Settings(ctx)).toBe("purged");
 		expect(peak).toBe(LEGACY_X402_SETTING_KEYS.length);
 		expect(calls.at(-1)).toBe(`set ${LEGACY_X402_PURGE_MARKER_KEY}`);
 	});

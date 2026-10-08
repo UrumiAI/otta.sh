@@ -287,9 +287,8 @@ describe("makeAdminClients wires the payment gateways into admin refunds", () =>
 		expect(requests).toEqual([]);
 	});
 
-	test("a legacy x402 order whose money a CURRENT provider (Stripe) captured is NOT record-only: 409", async () => {
-		const ctx = withKv({ ...harness.ctx, http: stripeHttp() }, {});
-		const { orders } = await makeAdminClients(ctx);
+	/** A legacy x402 order whose money Stripe captured. */
+	async function seedLegacyPaidThroughStripe(): Promise<string> {
 		seq += 1;
 		const id = `mac-o-${String(seq)}`;
 		await sharedTierSeeders({
@@ -312,6 +311,39 @@ describe("makeAdminClients wires the payment gateways into admin refunds", () =>
 			amount: cents(1500),
 			currency: toCurrency("USD"),
 			status: "succeeded",
+		});
+		return id;
+	}
+
+	test("a legacy x402 order whose money STRIPE captured refunds through Stripe — never record-only", async () => {
+		const orders = await configuredOrders();
+		const id = await seedLegacyPaidThroughStripe();
+
+		expect(await orders.getRefunds(id)).toMatchObject({
+			paymentMethod: "x402",
+			refundable: true,
+			legacyPaymentMethod: false,
+		});
+		expect(
+			await orders.refundOrder(
+				id,
+				{ amountCents: 500, currency: "USD", refundedBy: "ops@example.test" },
+				{ idempotencyKey: `${id}-r1` },
+			),
+		).toMatchObject({ ok: true, recorded: true, duplicate: false });
+		const [row] = (await orders.getRefunds(id))?.refunds ?? [];
+		expect(row).toMatchObject({ kind: "gateway", gateway: "stripe", amountCents: 500 });
+		expect(requests.filter((r) => r.method === "POST")).toHaveLength(1);
+	});
+
+	test("...and with Stripe NOT configured it is 409, not a record-only refund", async () => {
+		const ctx = withKv({ ...harness.ctx, http: stripeHttp() }, {});
+		const { orders } = await makeAdminClients(ctx);
+		const id = await seedLegacyPaidThroughStripe();
+
+		expect(await orders.getRefunds(id)).toMatchObject({
+			refundable: false,
+			legacyPaymentMethod: false,
 		});
 		expect(
 			await orders.refundOrder(

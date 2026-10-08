@@ -19,8 +19,8 @@ import type { Order, OrderState, PaymentMethod } from "./model.js";
 import { orderTotalLabel } from "./order-total-label.js";
 import {
 	capturedOnlyThroughLegacy,
-	isLegacyPaymentMethod,
-	LEGACY_PAYMENT_METHODS,
+	isCurrentPaymentMethod,
+	legacyFact,
 	type LegacyMethodFacts,
 } from "./payment-methods.js";
 import { PROVIDER_REFUNDED_FLAG_PREFIX } from "./provider-refunded-flag.js";
@@ -162,7 +162,7 @@ const PAYMENT_METHOD_SETTLEMENT: Readonly<Record<PaymentMethod, "gateway" | "off
 
 /**
  * A per-method fact for a STORED method: from the current table when the method
- * is a `PaymentMethod`, else from its {@link LEGACY_PAYMENT_METHODS} entry, else
+ * is a `PaymentMethod`, else from its `LEGACY_PAYMENT_METHODS` entry, else
  * `undefined` — an unknown method, which every caller treats as fail-closed.
  */
 function factForStored<K extends keyof LegacyMethodFacts, V>(
@@ -170,8 +170,7 @@ function factForStored<K extends keyof LegacyMethodFacts, V>(
 	stored: string,
 	field: K,
 ): V | LegacyMethodFacts[K] | undefined {
-	if (Object.hasOwn(table, stored)) return (table as Readonly<Record<string, V>>)[stored];
-	return isLegacyPaymentMethod(stored) ? LEGACY_PAYMENT_METHODS[stored]?.[field] : undefined;
+	return isCurrentPaymentMethod(stored) ? table[stored] : legacyFact(stored, field);
 }
 
 /**
@@ -202,7 +201,7 @@ const PAYMENT_METHOD_REFUNDS: Readonly<Record<PaymentMethod, "provider" | "outsi
 /**
  * How a STORED method's money goes back. The stored value is read as a `string`,
  * not trusted as a `PaymentMethod`: an order placed before a method was removed
- * (a legacy x402 order) still carries it, and its {@link LEGACY_PAYMENT_METHODS}
+ * (a legacy x402 order) still carries it, and its `LEGACY_PAYMENT_METHODS`
  * entry says `outside`. A method that is neither current nor named legacy is
  * `undefined`: NOT outside, so Mark refunded goes through the captured-money check.
  */

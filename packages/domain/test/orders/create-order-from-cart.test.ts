@@ -289,6 +289,29 @@ describe("createOrderFromCart", () => {
 		expect(h.stripeGw.intentCalls).toEqual([]);
 	});
 
+	test("a same-key replay of a PAID legacy x402 order replays as before: the order, and no intent", async () => {
+		await h.seedDigital({ productId: "d1", sku: "DIG-1", priceCents: 900, title: "Ebook" });
+		const cartId = await h.cartWith([{ sku: "DIG-1", productId: "d1", qty: 1, kind: "digital" }]);
+		const usd = (await h.cartStore.get(cartId))!.currency;
+		await h.orderStore.createFromCart({
+			orderId: brandOrderId("legacy-x402-paid"),
+			cartId,
+			currency: usd,
+			idempotencyKey: idempotencyKey("checkout:legacy-paid"),
+			holdExpiresAt: "2099-01-01T00:00:00.000Z",
+			buyerRef: "buyer@example.com",
+			paymentMethod: "x402" as unknown as PaymentMethod,
+			lines: [],
+			totals: { subtotal: cents(900), total: cents(900), currency: usd },
+		});
+		await h.orderStore.markPaid(brandOrderId("legacy-x402-paid"));
+
+		const res = await createOrderFromCart(h.createDeps, cmd(cartId, "checkout:legacy-paid"));
+		expect(res.ok && res.order.id).toBe("legacy-x402-paid");
+		expect(res.ok && res.intent.clientAction).toEqual({ kind: "none" });
+		expect(h.stripeGw.intentCalls).toEqual([]);
+	});
+
 	test("a same-key replay of an order with NO method on file (a historical order) keeps its replay", async () => {
 		await h.seedDigital({ productId: "d1", sku: "DIG-1", priceCents: 900, title: "Ebook" });
 		const cartId = await h.cartWith([{ sku: "DIG-1", productId: "d1", qty: 1, kind: "digital" }]);

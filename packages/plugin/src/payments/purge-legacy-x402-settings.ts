@@ -59,28 +59,34 @@ export function resetLegacyX402PurgeForTesting(): void {
 }
 
 /**
- * Purge the legacy x402 settings unless that already happened. Resolves `true`
- * when this call deleted them, `false` otherwise (already done, or a kv failure
- * left the marker unset for a later retry).
+ * Purge the legacy x402 settings unless that already happened. Resolves the same
+ * shape as the email purge (`LegacyEmailPurgeOutcome`): `purged` when this call
+ * deleted them, `attempted` when a kv failure stopped it part way (the marker is
+ * unset, so a later tick retries), `idle` when it deleted nothing (already done,
+ * or the marker read failed).
  */
-export async function purgeLegacyX402Settings(ctx: PluginContext): Promise<boolean> {
+export async function purgeLegacyX402Settings(
+	ctx: PluginContext,
+): Promise<"purged" | "attempted" | "idle"> {
 	const site = ctx.site?.url ?? "";
-	if (doneInIsolate.has(site)) return false;
+	if (doneInIsolate.has(site)) return "idle";
+	let deleting = false;
 	try {
 		// A string marker (what the purge writes) means done; `null` or `undefined`
 		// (a host's "missing") means not yet.
 		if (typeof (await ctx.kv.get<unknown>(LEGACY_X402_PURGE_MARKER_KEY)) === "string") {
 			doneInIsolate.add(site);
-			return false;
+			return "idle";
 		}
+		deleting = true;
 		// Independent keys: deleted together. Any rejection skips the marker below.
 		await Promise.all(LEGACY_X402_SETTING_KEYS.map((key) => ctx.kv.delete(key)));
 		await ctx.kv.set(LEGACY_X402_PURGE_MARKER_KEY, new Date().toISOString());
 		doneInIsolate.add(site);
-		return true;
+		return "purged";
 	} catch {
 		// Names nothing about any value; retried on a later tick.
 		console.warn("[otta] could not purge the legacy x402 settings yet; will retry");
-		return false;
+		return deleting ? "attempted" : "idle";
 	}
 }
