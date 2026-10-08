@@ -42,14 +42,17 @@ const UUID_HYPHENS_AFTER = [20, 16, 12, 8] as const;
 
 /**
  * The id-prefix a search typed as an order number stands for (`"#3F9A2"` →
- * `"3f9a2"`, `"#ABCDEF123"` → `"abcdef12-3"`), or `null` when the search is not one
- * (no `#`, a non-hex character, or fewer than {@link ORDER_NUMBER_LENGTH} digits).
+ * `"3f9a2"`, `"#ABCDEF123"` or `"#abcdef12-3"` → `"abcdef12-3"`), or `null` when the
+ * search is not one (no `#`, a non-hex character other than `-`, or fewer than
+ * {@link ORDER_NUMBER_LENGTH} hex digits).
  *
  * Only the store's ID arm reads this; the buyer and sku arms keep matching the text
  * as typed, `#` and all, so a sku spelled `#12345` is still found.
  */
 export function orderNumberIdPrefix(search: string): string | null {
-	const match = TYPED_ORDER_NUMBER.exec(search.trim());
+	// The id's own hyphens may be typed too (`#3f9a2b1c-7d4e`): dropped before the
+	// hex check, and put back in the UUID's places below.
+	const match = TYPED_ORDER_NUMBER.exec(search.trim().replaceAll("-", ""));
 	const digits = match?.[1]?.toLowerCase();
 	if (digits === undefined) return null;
 	let prefix = digits;

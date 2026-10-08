@@ -47,10 +47,13 @@ describe("orderNumberIdPrefix — the one matcher", () => {
 		const id = "abcdef12-3000-4000-8000-000000000001";
 		expect(orderNumberIdPrefix("#ABCDEF123")).toBe("abcdef12-3");
 		expect(orderNumberIdPrefix(`#${id.replaceAll("-", "")}`)).toBe(id);
+		// Typed with the id's own hyphens, it reads the same.
+		expect(orderNumberIdPrefix("#abcdef12-3")).toBe("abcdef12-3");
+		expect(orderNumberIdPrefix(`#${id}`)).toBe(id);
 	});
 
 	test("anything else is not a number", () => {
-		for (const s of ["#3F9A", "3F9A2", "#", "#TEE-BLK", "jo@example.com", "TEE#12345"]) {
+		for (const s of ["#3F9A", "#3F-9A", "3F9A2", "#", "#TEE-BLK", "jo@example.com", "TEE#12345"]) {
 			expect(orderNumberIdPrefix(s)).toBeNull();
 		}
 	});

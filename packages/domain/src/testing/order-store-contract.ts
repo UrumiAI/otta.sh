@@ -876,6 +876,29 @@ export function orderStoreContract(
 			expect(upper.orders.map((o) => o.id)).toEqual(["ord-7e4ce728"]);
 		});
 
+		test("a search typed as an ORDER NUMBER reads the id arm as its id prefix; the buyer and sku arms stay literal (ADR-0033)", async () => {
+			const h = await makeHarness();
+			const byId = "3f9a2b1c-7d4e-4a5b-9c8d-0123456789ab";
+			await seedLinedOrder(h.store, { id: byId, skus: ["SKU-A"], buyerRef: "a@x.com" });
+			// The literal text, `#` and all, still reaches the sku and buyer arms.
+			const bySku = "b0000000-0000-4000-8000-000000000001";
+			await seedLinedOrder(h.store, { id: bySku, skus: ["#3F9A2"], buyerRef: "b@x.com" });
+			const byRef = "c0000000-0000-4000-8000-000000000002";
+			await seedLinedOrder(h.store, { id: byRef, skus: ["SKU-C"], buyerRef: "#3f9a2@x.com" });
+			// The `#`-less digits are NOT a buyer or sku search: only the id arm is rewritten.
+			const neither = "d0000000-0000-4000-8000-000000000003";
+			await seedLinedOrder(h.store, { id: neither, skus: ["3F9A2"], buyerRef: "3f9a2@x.com" });
+
+			const number = await h.store.listOrders({ search: "#3F9A2" }, { limit: 25 });
+			expect(number.orders.map((o) => o.id).toSorted()).toEqual([byId, bySku, byRef].toSorted());
+			expect(await h.store.countOrders({ search: "#3F9A2" })).toBe(3);
+			// A longer number — hex only, or with the id's own hyphens — finds just its order.
+			for (const typed of ["#3F9A2B1C7D", "#3f9a2b1c-7d4e"]) {
+				const one = await h.store.listOrders({ search: typed }, { limit: 25 });
+				expect(one.orders.map((o) => o.id)).toEqual([byId]);
+			}
+		});
+
 		test("listOrders search matches a buyer_ref PREFIX, case-folded on both sides", async () => {
 			const h = await makeHarness();
 			await h.seedOrder(summaryRow({ id: "ord-a", buyerRef: "Buyer@Example.com" }));
