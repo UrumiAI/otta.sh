@@ -11,7 +11,12 @@
  * Every case goes through the CLIENT over a real document store, with the
  * setting written through the real settings store the admin form saves to.
  */
-import { idempotencyKey } from "@otta-sh/domain";
+import {
+	cents,
+	currency as toCurrency,
+	idempotencyKey,
+	orderId as toOrderId,
+} from "@otta-sh/domain";
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "vitest";
 import {
 	makeInProcessCommerce,
@@ -98,5 +103,44 @@ describe("a new cart's currency follows the store currency setting", () => {
 		const { cartId } = await h.client.createCart();
 		const added = await h.client.addCartLine(cartId, "SKU-EUR", "prod-eur", 1, "add-eur");
 		expect(added.ok).toBe(true);
+	});
+
+	/** A cart in `currency`, checked out into a PAID order — a spent cart. */
+	async function spentCart(tag: string, currency: string): Promise<string> {
+		const { cartId } = await h.client.createCart(currency);
+		const id = toOrderId(`ord-sc-${tag}`);
+		await h.stores.orderStore.createFromCart({
+			orderId: id,
+			cartId,
+			currency: toCurrency(currency),
+			idempotencyKey: idempotencyKey(`sc-spent-${tag}`),
+			holdExpiresAt: "2099-01-01T00:00:00.000Z",
+			buyerRef: "spent@example.test",
+			paymentMethod: "stripe",
+			lines: [],
+			totals: { subtotal: cents(0), total: cents(0), currency: toCurrency(currency) },
+		});
+		await h.stores.orderStore.markPaid(id);
+		await h.stores.cartStore.checkout(cartId, id);
+		return cartId;
+	}
+
+	test("never saved: a spent cart's replacement keeps the spent cart's currency (today's behaviour)", async () => {
+		for (const currency of ["USD", "GBP"]) {
+			const spent = await spentCart(`never-${currency}`, currency);
+			const replaced = await h.client.replaceCart(spent);
+			if (!replaced.ok) throw new Error(replaced.reason);
+			expect(await cartCurrency(replaced.cartId)).toBe(currency);
+		}
+	});
+
+	test("saved EUR: a spent USD cart's replacement is in EUR, and racers still converge", async () => {
+		const spent = await spentCart("saved-eur", "USD");
+		await setStoreCurrency("EUR");
+		const first = await h.client.replaceCart(spent);
+		const again = await h.client.replaceCart(spent);
+		if (!first.ok || !again.ok) throw new Error("replace refused");
+		expect(again.cartId).toBe(first.cartId);
+		expect(await cartCurrency(first.cartId)).toBe("EUR");
 	});
 });

@@ -576,10 +576,14 @@ export class InProcessCommerceClient implements CommerceClient {
 	 * the default this surface always applied.
 	 *
 	 * The settings read is paid only on that path, once per cart (a cart is created
-	 * once and then carries its own currency for life — nothing here, or anywhere,
-	 * rewrites it). It is the same keyed singleton read the hold TTL makes on every
+	 * once and then carries its own currency for life — nothing rewrites it; the
+	 * spent-cart replacement, `replaceCart`, follows a SAVED store currency too). It is the same keyed singleton read the hold TTL makes on every
 	 * cart read, and read per call for the same reason (`#liveCartDeps`): a cached
 	 * value would keep creating carts in the old currency after a save.
+	 *
+	 * A failed settings read FAILS the create, deliberately: falling back to USD
+	 * would silently mint wrong-currency carts in a store that saved another one,
+	 * and every later cart operation reads the same document anyway (hold TTL).
 	 */
 	async createCart(currency?: string): Promise<{ cartId: string }> {
 		if (currency !== undefined) requireCurrencyCode("currency", currency);
@@ -592,9 +596,16 @@ export class InProcessCommerceClient implements CommerceClient {
 	 *  finished) and derives the key — never here and never by the caller. */
 	async replaceCart(spentCartId: string): Promise<ReplaceCartResult> {
 		requireIdToken("cartId", spentCartId);
+		// The SAVED store currency, not `effectiveStoreCurrency`: a replacement is a
+		// new cart, so after a switch it follows the setting (otherwise a returning
+		// shopper gets an old-currency cart that cannot check out). A store that
+		// never saved one keeps the spent cart's currency, exactly as before — which
+		// matters for a theme that creates carts in an explicit currency.
+		const saved = (await this.#stores.settingsStore.get()).currency;
 		return replaceSpentCart(
 			{ ...this.#cartDeps, orderStore: this.#stores.orderStore },
 			spentCartId,
+			saved === undefined ? undefined : toCurrency(saved),
 		);
 	}
 

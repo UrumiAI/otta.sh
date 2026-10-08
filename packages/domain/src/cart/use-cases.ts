@@ -105,8 +105,11 @@ export interface ReplaceSpentCartDeps extends CartDeps {
  * makes a create key: the same spent cart always has the same replacement, so two
  * requests racing to replace it converge on one cart. Cart ids are bearer secrets,
  * so a spent cart's id grants access to the cart that replaces it — exactly as it
- * already grants access to the spent cart itself. The replacement is in the spent
- * cart's currency.
+ * already grants access to the spent cart itself. The replacement is in
+ * `currency` when the caller names one (the store currency the operator SAVED),
+ * else in the spent cart's currency — so a store that never saved one keeps
+ * today's behaviour. Racers converge regardless: the first create under the key
+ * wins.
  *
  * Refused, in order: `CART_NOT_FOUND` (no such cart), `CART_NOT_CHECKED_OUT` (an
  * active cart needs no replacing, and rotating it would orphan its lines), and
@@ -118,6 +121,7 @@ export interface ReplaceSpentCartDeps extends CartDeps {
 export async function replaceSpentCart(
 	deps: ReplaceSpentCartDeps,
 	spentCartId: string,
+	currency?: Currency,
 ): Promise<ReplaceSpentCartResult> {
 	const spent = await deps.cartStore.get(spentCartId);
 	if (spent === null) return { ok: false, reason: "CART_NOT_FOUND" };
@@ -128,7 +132,7 @@ export async function replaceSpentCart(
 		return { ok: false, reason: "ORDER_NOT_FINISHED" };
 	}
 	const cartId = await deps.cartStore.create(
-		spent.currency,
+		currency ?? spent.currency,
 		brandIdempotencyKey(`rotate:${spentCartId}`),
 	);
 	return { ok: true, cartId };
