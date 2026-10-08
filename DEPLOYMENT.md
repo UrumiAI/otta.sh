@@ -26,8 +26,8 @@ staging-only.
 
 > **Status honesty.** The commerce layer is feature-complete: catalog, inventory, cart,
 > checkout, orders, customers with magic-link auth, Stripe payments (x402 planned), tax,
-> shipping, discounts, entitlements, reporting, and settings (the magic-link email needs the
-> email API and a sign-in page URL, §3 Email). The reference **storefront** covers
+> shipping, discounts, entitlements, reporting, and settings (the magic-link email needs an
+> EmDash email provider and a sign-in page URL, §3 Email). The reference **storefront** covers
 > catalog, cart and **card checkout**: `/checkout`, the Stripe pay page (`/checkout/pay`) and
 > the order confirmation page (`/orders/<orderId>`) are built (ADR-0012), and so are the
 > customer account pages (`/account/login`, `/account/verify`, `/account/orders`). Paid
@@ -53,7 +53,7 @@ Three rules hold. Everything else in this guide is a consequence of them.
   empty `/products` page right after first boot is **healthy, not a failed boot**.
 - **Secrets model.** There is one deployable, so there is one place secrets can live — and
   two stores inside it (§3). Two are **Worker secrets** (`wrangler secret put`):
-  `EMDASH_ENCRYPTION_KEY` and `OTTA_WH_TOKEN`. Every payment and email **credential** is
+  `EMDASH_ENCRYPTION_KEY` and `OTTA_WH_TOKEN`. Every payment **credential** is
   provisioned by the operator in the admin console's **Settings** page and held in
   **write-only plugin `kv`** under `settings:*` — persisted only on a non-empty submit,
   never rendered back into a block, read through a fail-closed reader. Nothing
@@ -177,7 +177,7 @@ expired holds and queued emails drain at the Free pace (§5).
 4. **Build the site.** The Cloudflare adapter reads `wrangler.local.jsonc` at **build**
    time (`astro.config.ts` passes it as `configPath`), so the build, not the deploy, is
    where your Worker name, D1, and R2 config becomes real. Commerce runs in-process, so
-   there is no service URL to bake in; the optional email and x402 provider URLs are read
+   there is no service URL to bake in; the optional x402 facilitator URL is read
    here too (§4):
 
    ```bash
@@ -262,7 +262,7 @@ cannot be retried in place:
 > ([ADR-0020](./adr/0020-one-deployable-plugin-owns-commerce-truth.md)), and nothing the
 > Worker fetches today (§4) is on `workers.dev`. One consequence of running without it: a
 > fetch to a hostname on the site's **own zone** is routed to that zone's origin, not back
-> through Cloudflare, so never point `EMAIL_API_URL` or `X402_FACILITATOR_URL` at the site's
+> through Cloudflare, so never point `X402_FACILITATOR_URL` at the site's
 > own zone.
 >
 > D1 `session` in `sites/staging/src/emdash-options.ts` is **`"primary-first"`**: every
@@ -319,7 +319,7 @@ order of appearance in a deployment's life:
 | Stripe webhook signing secret | admin Settings (`settings:stripeWebhookSecret`) | for Stripe payments — **together with the secret key** (see below) | before enabling Stripe |
 | Stripe secret key | admin Settings (`settings:stripeSecretKey`) | for Stripe payments — **together with the webhook secret** (see below) | before enabling Stripe |
 | x402 pay-to + facilitator credential | admin Settings | for x402 | see the x402 box |
-| Email API key + from-address (with the `EMAIL_API_URL` build-time value, §4) | admin Settings (from-address in `settings:emailFrom`) | optional | when wiring real email |
+| Email provider (from-address, SPF, DKIM, its own key) | an **EmDash email provider plugin**, selected in EmDash Settings > Email — not otta | optional | when wiring real email |
 
 - **`EMDASH_ENCRYPTION_KEY`** — generate with `npx emdash secrets generate`; never committed,
   never echoed into logs; **back it up in a password manager** (it protects the CMS's
@@ -433,36 +433,36 @@ order of appearance in a deployment's life:
 > edit. The pay-to address and the accepted-networks list (default `eip155:8453`) are
 > configuration, not credentials, and live alongside it in Settings.
 
-- **Email** — with no configured provider (no email API URL baked in for Resend, no SMTP2GO
-  key in Settings) there is **no sender at all**:
-  nothing is logged or delivered, and the cron sweep's `order-emails` leg reports `skipped`
-  whenever an email is due, rather than draining the outbox (`packages/plugin/src/email/ctx-http-email-sender.ts`).
-  With a sender, a settled payment's **order confirmation goes out inline** from the settle
-  route, and an admin's status move, fulfilment, cancel or refund sends its email inline from
-  the console write (best-effort, a few seconds at most); the `order-emails` leg is the backstop
-  that delivers anything those attempts missed, on its next run
-  ([ADR-0005](./adr/0005-transactional-email-transport.md), 2026-10-02;
-  [ADR-0026](./adr/0026-admin-order-actions-never-claim-money-that-did-not-move.md)). With no
-  sender the console says so on every such write instead of claiming the buyer was emailed.
-  Only the API URL is build-time (`EMAIL_API_URL`, §4 — it also seeds `allowedHosts`); the
-  API key is a write-only Settings credential, and the from-address ("Order email
-  from-address", `settings:emailFrom`) is a readable Settings field. Unset, it falls back to
-  `no-reply@otta.local` — a dev-only default that a local mail catcher accepts and no real
-  provider will send from. The Settings save refuses a from-address that is malformed,
-  carries a control character, has an IP-literal or single-label domain, or sits under a
-  reserved name: `.local`, `.localhost`, `.test`, `.example`, `.invalid`, `.internal`,
-  `.onion`, `.alt`, `example.com` / `.net` / `.org` or `home.arpa`. An internationalized
-  domain is entered in its `xn--` form. A from-address saved before this release that the
-  check refuses (e.g. a reserved domain, an unquoted comma in the name, an IP literal or a
-  Unicode domain) still sends, and is logged once per isolate (`settings:emailFrom is not a
-  deliverable address`); it must be fixed or cleared before the payment settings form will
-  save again. **Magic-link login mail** goes out through the same sender, and only once Settings
-  → "Sign-in page address" (`settings:loginLinkUrl`) holds the absolute URL of the storefront's
-  `/account/verify` page — the emailed link points there and never at the request's origin.
-  The save requires `https://` (plain `http://` only for `localhost`, `127.0.0.1` or `[::1]`),
-  because the link carries a sign-in token.
-  With no email API URL or no sign-in page URL, `requestLoginLink` answers the same generic
-  success, issues nothing, and logs once server-side. For the reference site, set it to
+- **Email** — otta sends every email through the EmDash host's `ctx.email`
+  ([ADR-0031](./adr/0031-email-through-emdash-host.md)). otta ships no email provider and
+  holds no email credential: **install and select an EmDash email provider** — for example
+  `cloudflareEmail({ from })` with a `send_email` binding, or your own small provider plugin
+  (`docs/email-providers.md`). The from-address, SPF, DKIM and any API key belong to that
+  provider. In `astro dev` EmDash's console provider is active and captured mail is readable
+  at `/_emdash/api/dev/emails`.
+  With **no provider** nothing is sent and nothing is lost: the order emails wait in the
+  outbox **without spending attempts** (the cron sweep's `order-emails` leg reports `skipped`),
+  the console says "no email provider" on every write that would have emailed, and Settings →
+  "Payments & email" says so on one line. When a provider is selected the queue goes out —
+  only email enqueued in the last **72 hours**; anything older is completed unsent, with no
+  attempt spent, so buyers never get days-old status mail. On a sandboxed host, allow up
+  to 5 minutes after selecting a provider: until the host's last "no provider" answer
+  lapses, order emails stay queued and a sign-in request sends nothing. With a provider, a settled payment's **order confirmation goes
+  out inline** from the settle route, and an admin's status move, fulfilment, cancel or refund
+  sends its email inline from the console write (best-effort, a few seconds at most); the
+  `order-emails` leg is the backstop that delivers anything those attempts missed, on its next
+  run ([ADR-0005](./adr/0005-transactional-email-transport.md), 2026-10-02;
+  [ADR-0026](./adr/0026-admin-order-actions-never-claim-money-that-did-not-move.md)).
+  Delivery is **at-least-once**: `ctx.email` takes no idempotency key, so a send that timed
+  out may have been delivered; each timeout counts as one of the row's five attempts, which
+  bounds duplicates. **Magic-link login mail** goes out through the same pipeline, and only
+  once Settings → "Sign-in page address" (`settings:loginLinkUrl`) holds the absolute URL of
+  the storefront's `/account/verify` page — the emailed link points there and never at the
+  request's origin. The save requires `https://` (plain `http://` only for `localhost`,
+  `127.0.0.1` or `[::1]`), because the link carries a sign-in token, and that token now passes
+  through the site's email hooks and provider, so treat them as trusted code.
+  With no provider or no sign-in page URL, `requestLoginLink` answers the same generic
+  success and logs once server-side. For the reference site, set it to
   `https://<your-site>/account/verify`. **Order emails link to the order page** through the
   same setting: its origin plus `/orders/<order id>`, the page a shopper is sent to after
   checkout (a bearer link — anyone holding it sees the order's public view, which carries no
@@ -471,82 +471,16 @@ order of appearance in a deployment's life:
   site's own links are root-absolute), and the URL is **https**. An `http:` URL is used only
   for `localhost`, `127.0.0.1` or `[::1]` (local development); any other http URL gives no
   order link, because a bearer link must not travel in clear text. Unset or invalid, order
-  emails go out with no link; it is never taken from a request's `Host`. The sign-in email (and the sign-off of every order email) names the
-  store from Settings → "Store display name" (`settings:storeDisplayName`); unset, it is
-  left out. The sign-in email states the link's real lifetime (15 minutes). Order
-  emails list the order's own line snapshot, totals and ship-to, with money formatted as the
-  storefront formats it.
+  emails go out with no link; it is never taken from a request's `Host`. The sign-in email
+  (and the sign-off of every order email) names the store from Settings → "Store display name"
+  (`settings:storeDisplayName`), else the EmDash site name. The sign-in email states the
+  link's real lifetime (15 minutes). Order emails list the order's own line snapshot, totals
+  and ship-to, with money formatted as the storefront formats it.
 
-> **Email provider: Resend (default) or SMTP2GO.** Settings → "Payments & email" →
-> "Email provider" picks which one the store sends through. Resend is the default, so a
-> store that never sets it behaves as before. Each provider has its **own** key field
-> ("Resend API key (email)" and "SMTP2GO API key (email)"), and a key is only ever sent to
-> its own provider. Switching is safe in either order; while the chosen provider has no
-> usable setup (SMTP2GO with no key, Resend with no `EMAIL_API_URL`) the store sends and
-> claims nothing, so no outbox attempt is spent.
->
-> **Resend.** The sender posts Resend's `POST /emails` body exactly (bearer
-> auth, `Idempotency-Key` = the outbox row id, the template name as a `template` tag) to the
-> build's `EMAIL_API_URL`. To reach real inboxes:
->
-> 1. Build with `EMAIL_API_URL=https://api.resend.com/emails` (§4 — this also grants
->    `api.resend.com` in `allowedHosts`).
-> 2. Add and verify your sending domain in Resend (its SPF and DKIM DNS records); a DMARC
->    record with `p=none` is recommended to start. Without a verified domain Resend only sends
->    from `onboarding@resend.dev`, and only to the Resend account owner's own address.
-> 3. In admin Settings, save the Resend API key (it starts `re_`; with Resend configured the
->    save refuses any other shape) and a from-address on that verified domain —
->    `orders@yourdomain.com` or `Your Shop <orders@yourdomain.com>`.
-> 4. Set "Sign-in page address" to the public `https://<your-site>/account/verify` URL — a
->    localhost or http URL in a customer's inbox is a dead link. Order emails link to
->    `https://<your-site>/orders/<id>` from the same setting, and set "Store display name"
->    so the sign-in email names your store.
->
-> Resend's free tier is 3,000 emails/month and 100/day. A refused send throws with Resend's
-> own error name and message (never the request). **Only the login route logs it today**:
-> a refused order email is retried and eventually parked `failed` in the outbox with no log
-> line, so check Resend's dashboard when order mail goes missing. Resend's testing-mode
-> refusal quotes the account owner's address, which can therefore appear in that log.
->
-> Resend dedupes on `Idempotency-Key` for 24 hours, and answers **409** when a retry reuses
-> a key with a *different* body — for example after the from-address was changed while a row
-> was waiting to be retried. Such a row is refused on every retry and parks as `failed`.
->
-> Another provider needs its own adapter behind the `EmailSender` port; pointing
-> `EMAIL_API_URL` at a non-Resend API is not supported.
->
-> **SMTP2GO.** The sender posts SMTP2GO's `POST /v3/email/send` body (`sender`, `to` as a
-> list, `subject`, `html_body`, `text_body`) with the key in `X-Smtp2go-Api-Key`. Its hosts — `api.smtp2go.com` and the
-> regional `us-api`, `eu-api` and `au-api.smtp2go.com` — are granted in every build (§4), so
-> SMTP2GO needs **no** `EMAIL_API_URL` and no rebuild. To reach real inboxes:
->
-> 1. In SMTP2GO, go to **Sending → Verified Senders** and add your sending domain. Publish
->    the DNS records it lists (the DKIM and return-path CNAMEs) and wait until it shows as
->    verified. Until then SMTP2GO refuses every send from that domain.
-> 2. Go to **Sending → API Keys** and add a key for this store. In the key's permissions,
->    allow **only** sending email (the `/email/send` endpoint) — the store never needs
->    anything else, so a leaked key cannot read your account or change its settings.
-> 3. In admin Settings → "Payments & email", save the key in "SMTP2GO API key (email)" (it
->    starts `api-`; the field refuses any other shape). Then set "Email provider" to SMTP2GO,
->    "SMTP2GO region" (Global unless your account is tied to the US, EU or AU region) and a
->    from-address on the verified domain, and save the payment settings.
-> 4. Set "Sign-in page address" and "Store display name" as for Resend (step 4 above).
->
-> **SMTP2GO can refuse a send with HTTP 200.** An unverified sender domain, for one, comes
-> back as `200` with `data.failed: 1` and the reason in `data.failures`. The sender treats any
-> answer without `data.succeeded ≥ 1` and `data.failed = 0` as a failed send, and its error
-> carries SMTP2GO's reason and `request_id` (sanitized and cut to 200 characters, never the
-> key or the recipient), for example "From header sender domain not verified". The row is
-> retried and eventually parked `failed`, as with any refusal.
->
-> **SMTP2GO has no idempotency key, so dedupe does not hold for it.** Resend dedupes a
-> retried send on its `Idempotency-Key`; SMTP2GO does not. With SMTP2GO, "once" rests on the
-> outbox's claim alone: a send SMTP2GO accepted but whose answer was lost (a timeout after
-> acceptance, a body read cut off by the timeout, a tick cut off before the row was marked
-> sent) is sent again. To bound that, every SMTP2GO timeout counts as one of the row's
-> attempts (Resend timeouts do not), so a buyer gets at most one copy per attempt — rarely
-> more than one in practice. Find a message in SMTP2GO's activity log by recipient and time,
-> or by the `request_id` a refusal quotes.
+> **Upgrading a store that used the built-in email senders.** The email API key, from-address,
+> provider and region settings are gone, and a build-time email URL is ignored. Until an
+> EmDash email provider is selected the store's email waits in the outbox. Configure the
+> sender address and domain records in the provider instead.
 
 ## 4. Egress and `allowedHosts`
 
@@ -557,18 +491,20 @@ allowlist (capability `network:request`). That allowlist is resolved at **build*
 | Host | When |
 |---|---|
 | `api.stripe.com` | always |
-| `api.smtp2go.com`, `us-api.smtp2go.com`, `eu-api.smtp2go.com`, `au-api.smtp2go.com` | always — a store chooses SMTP2GO and its region in Settings, which cannot widen this build-time list |
-| the email API host | when an email API URL is configured (the Resend-shaped sender) |
 | the x402 facilitator host | when a facilitator URL is configured |
 
-The two URLs are `EMAIL_API_URL` and `X402_FACILITATOR_URL`, read by
-`sites/staging/astro.config.ts` from `process.env`, falling back to `sites/staging/.env`.
-Set them in the shell or in `sites/staging/.env` **before** building (§2.1 step 4); unset,
-the provider is simply unconfigured and no host is granted for it.
+No email host: email is not plugin egress. It goes through the host's `ctx.email`
+(capability `email:send`, [ADR-0031](./adr/0031-email-through-emdash-host.md)), and the
+EmDash email provider makes its own requests under its own allowlist.
+
+The URL is `X402_FACILITATOR_URL`, read by `sites/staging/astro.config.ts` from
+`process.env`, falling back to `sites/staging/.env`. Set it in the shell or in
+`sites/staging/.env` **before** building (§2.1 step 4); unset, the facilitator is simply
+unconfigured and no host is granted for it.
 
 Stripe traffic goes through the same gate: `@otta-sh/payments-stripe` would default its
 transport to `globalThis.fetch`, but the plugin constructs the live gateway with
-`ctx.http.fetch` (`packages/plugin/src/payments/stripe-wiring.ts`), like the email sender —
+`ctx.http.fetch` (`packages/plugin/src/payments/stripe-wiring.ts`) —
 so the allowlist is the perimeter for `api.stripe.com` too. This
 closes the caveat recorded in
 [ADR-0020](./adr/0020-one-deployable-plugin-owns-commerce-truth.md) §2.
@@ -697,26 +633,19 @@ A leg the budget did not reach is listed as deferred and runs on a later tick �
 failure, and a backlog (say, hundreds of expired holds after an outage) drains over several
 ticks. Five deferrals in a row of the same leg log a warning.
 
-**Order emails: a timeout is retried later, and only counts once it keeps happening.** Each send
-gets at most 5 s, or what is left of the outbox's share of the tick, whichever is sooner — and
-that limit covers the whole send, including the host resolving the provider's address; 5 s is
-long enough for a slow-but-working provider to deliver. Just before sending, the sweep checks the
-time again (the claim and the order reads take time of their own); with too little left it hands
-the email back untried, due again in 30 s (so a short tick cannot keep one email at the head of
-the queue). A send the tick had to give **less** than the full 5 s and that then times out is
-the sweep's doing, not the provider's: it is handed back due at once, uncounted, with nothing
-recorded against it. A send that **times out with the full 5 s** is handed back **without
-counting an attempt** and backed off — retried after 1 minute, then 2, 4, 8, up to 15 — so it moves
-behind other queued emails instead of holding the head of the queue; if the provider did deliver
-after all, the retry carries the same `Idempotency-Key` and the provider dedupes it. After **ten**
-timeouts on one email the sweep logs `[otta] cron sweep order-emails: the email provider has
-timed out N times …` with `console.error` (alert on it), and from then on each timeout counts as
-a failed attempt, so the email is eventually parked `failed` with the reason "provider kept
-timing out". A genuine provider failure (a non-2xx answer or a network error) always counts, and
-an email is parked `failed` after five attempts. There is
-no admin action to re-queue a parked email yet (a follow-up); until there is, a parked
-email is a provider or configuration problem to fix at the provider, and the customer will not
-receive that message.
+**Order emails: every timeout counts as an attempt.** Each send gets at most 5 s, or what is
+left of the outbox's share of the tick, whichever is sooner — and that limit covers the whole
+send, including building the sender; 5 s is long enough for a slow-but-working provider to
+deliver. Just before sending, the sweep checks the time again (the claim and the order reads take
+time of their own); with too little left it hands the email back untried, due again in 30 s (so a
+short tick cannot keep one email at the head of the queue). A send that **times out** counts as
+an attempt and is retried on a later tick: `ctx.email` has no idempotency key, so the provider may
+have delivered it, and counting it bounds the duplicates a slow provider can cause
+([ADR-0031](./adr/0031-email-through-emdash-host.md)). A provider failure counts the same way,
+and an email is parked `failed` after five attempts. With **no email provider selected** the
+email is handed back without counting an attempt, due again in 5 minutes. There is no admin
+action to re-queue a parked email yet (a follow-up); until there is, a parked email is a provider
+or configuration problem to fix at the provider, and the customer will not receive that message.
 
 **The plan this assumes.** Cloudflare caps one Worker invocation at **50 D1 queries and 50
 subrequests on Workers Free** (1000 queries and 10,000 subrequests on Workers Paid; see
@@ -725,9 +654,10 @@ Cloudflare's [D1 limits](https://developers.cloudflare.com/d1/platform/limits/) 
 that runs the sweep also runs EmDash's own executor, scheduled publishing, cleanup and heartbeat,
 so by default the sweep keeps itself to 30. Measured on the document store (each storage or kv
 call counted once, `cron-leg-costs.test.ts`): an idle tick is **8 queries**; a tick where the
-scans come due adds about 17–20 more; one email is about **14** (the claim, the order, the
-provider, key and from-address reads, the request, marking it sent), plus 1–3 once per tick
-that has an email due, to resolve the email provider, one hold expired about
+scans come due adds about 17–20 more; one email is about **12** (the claim, the order, the
+store-name and sign-in-page reads, the send, marking it sent), plus 1 once per tick that
+has an email due, to check the host has not just answered "no email provider", one hold
+expired about
 **20** with its list on Free, one order expired **13** for a one-line order (22 before the
 QA2 fix; a three-line order 23, was 40), one order whose hold bookkeeping needs completing
 about 7 plus 7 per extra line. A closed day's first rollup heal costs two calls per order
@@ -879,4 +809,5 @@ reviewed tip, so a new one fails CI first).
 | An expired order is flagged `late payment … automatic refund failed (…) — refund it manually` | Stripe definitively refused the automatic refund (or it would exceed the order total). Refund in Stripe or the admin console, then resolve the flag |
 | An expired order is flagged `settle on expired` and nothing was refunded | The Stripe secret key is not set (so the settle route cannot refund), or it is a cancelled order with no audit evidence it was unpaid — refund in Stripe and resolve the flag |
 | Sweeps never run | Nothing has bootstrapped the schedule, or the runtime wired no cron executor — check that the site's Cron Trigger is present and load `/products` or a product page once (§5) |
-| An outbound call to Stripe or the email provider never leaves | The host is not in the build-time `allowedHosts` allowlist (§4) — rebuild and redeploy |
+| An outbound call to Stripe never leaves | The host is not in the build-time `allowedHosts` allowlist (§4) — rebuild and redeploy |
+| Order or sign-in emails never arrive, the outbox keeps them `pending` | No EmDash email provider is selected (Settings → "Payments & email" says so) — install and select one (§3 Email) |

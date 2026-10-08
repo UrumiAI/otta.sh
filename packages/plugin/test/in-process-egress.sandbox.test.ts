@@ -1,9 +1,15 @@
 /**
- * INC-C5 revision (review A2/B6) — the two in-process egress adapters, driven
- * inside REAL workerd, with their URLs BAKED INTO THE SCRATCH MANIFEST.
+ * INC-C5 revision (review A2/B6) — the plugin's outbound adapters, driven inside
+ * REAL workerd, with the facilitator URL BAKED INTO THE SCRATCH MANIFEST.
  *
- * WHY THIS FILE EXISTS. INC-C5 added `emailApiUrl`/`facilitatorUrl` to the
- * sandbox harness and then never set either, so `CtxHttpEmailSender.send` and
+ * EMAIL IS NOT EGRESS ANY MORE (ADR-0031). It goes through the host's
+ * `ctx.email`; the email half of this file now pins exactly that: with a
+ * provider wired the order email reaches it and NOTHING reaches the network,
+ * and with none the leg reports `skipped` and nothing goes anywhere. The history
+ * below is kept for the x402 half.
+ *
+ * WHY THIS FILE EXISTS. INC-C5 added the email and facilitator URLs to the
+ * sandbox harness and then never set either, so the (since removed) email sender and
  * the x402 facilitator call had never once run inside an isolate:
  * every sandbox assertion was about the UNCONFIGURED arm, which is the arm where
  * neither adapter is constructed at all. The property only the sandbox can prove
@@ -60,12 +66,8 @@ const DAY_MS = 24 * 60 * 60 * 1000;
  *  placeholder like "0xshop" would arm no gateway and make every x402 case
  *  below pass for the wrong reason. */
 const PAY_TO = "0x00000000000000000000000000000000000000a1";
-const EMAIL_FROM = "orders@egress.otta.sh";
 
-/** The two paths the stub answers on. Distinct so a single responder can say
- *  which adapter it heard from — and so an assertion about "the email call"
- *  cannot be satisfied by the facilitator call. */
-const EMAIL_PATH = "/email/send";
+/** The path the stub answers on. */
 const FACILITATOR_PATH = "/x402/verify";
 
 let stub: StubHttpServer;
@@ -146,7 +148,7 @@ async function configure(sandbox: SandboxHandle): Promise<void> {
 	const saved = await sandbox.invokeRoute("admin", {
 		type: "form_submit",
 		action_id: "save-payment-settings",
-		values: { emailFrom: EMAIL_FROM, x402PayTo: PAY_TO, x402Accepts: "eip155:8453" },
+		values: { x402PayTo: PAY_TO, x402Accepts: "eip155:8453" },
 	});
 	if ("error" in saved) throw new Error(saved.error);
 }
@@ -216,25 +218,21 @@ beforeAll(async () => {
 				body: { valid: true, orderId: asked.orderId, transaction: asked.transaction },
 			};
 		}
-		if (req.url === EMAIL_PATH) return { status: 202, body: { queued: true } };
 		return { status: 404, body: { error: "unexpected path" } };
 	});
 
-	const egress = {
-		emailApiUrl: `${stub.baseUrl}${EMAIL_PATH}`,
-		facilitatorUrl: `${stub.baseUrl}${FACILITATOR_PATH}`,
-	};
+	const egress = { facilitatorUrl: `${stub.baseUrl}${FACILITATOR_PATH}` };
 	[granted, refused] = await Promise.all([
 		loadPluginInSandbox({
 			// The stub's host IS granted — production derives exactly this from the
-			// same two URLs.
+			// same URL. An EmDash email provider is wired behind `ctx.email`.
 			allowedHosts: [stub.host],
 			storage: true,
+			email: true,
 			...egress,
 		}),
 		loadPluginInSandbox({
-			// SAME baked URLs, host NOT granted. Everything else is identical, so a
-			// difference in outcome can only be the gate.
+			// SAME baked URL, host NOT granted, and NO email provider selected.
 			allowedHosts: ["not-the-stub.invalid"],
 			storage: true,
 			...egress,
@@ -250,43 +248,34 @@ afterAll(async () => {
 	await stub?.close();
 });
 
-describe("the email adapter, inside workerd", () => {
-	test("a baked email URL on a granted host actually reaches the provider", async () => {
-		const orderId = await placePaidOrder("granted");
-		const before = postsTo(EMAIL_PATH);
+describe("order email through ctx.email, inside workerd (ADR-0031)", () => {
+	test("with an EmDash provider wired the order email reaches it, and no email touches the network", async () => {
+		await placePaidOrder("granted");
+		const before = stub.requests.length;
 
 		const leg = await tick(granted);
-		// NOT `skipped`: a sender was built, which only happens when the bundle
-		// carries an email URL.
 		expect(leg.skipped).toBeUndefined();
 		expect(leg.count).toBeGreaterThanOrEqual(1);
 
-		const sends = stub.requests.filter((req) => req.method === "POST" && req.url === EMAIL_PATH);
-		expect(sends.length).toBeGreaterThan(before);
-		const sent = sends[sends.length - 1];
-		if (sent === undefined) throw new Error("no recorded send");
-		// The from-address came out of kv, written through the Settings form — the
-		// whole configuration path, end to end, inside the isolate.
-		expect(sent.body).toMatchObject({ from: EMAIL_FROM, to: "buyer-granted@example.test" });
-		// THE IDEMPOTENCY HEADER IS THE OUTBOX ROW ID. Losing it is a silent
-		// duplicate-email bug, so it is asserted on the wire and not in a unit test
-		// of the sender alone.
-		expect(sent.headers["idempotency-key"]).toBeTruthy();
-		void orderId;
+		const mail = granted.sentEmails().find((m) => m.to === "buyer-granted@example.test");
+		if (mail === undefined) throw new Error("no message reached the provider");
+		// EmDash's `EmailMessage`, exactly: no `from` (the provider owns it).
+		expect(Object.keys(mail).toSorted()).toEqual(["html", "subject", "text", "to"]);
+		expect(mail.text).toContain("Egress Widget × 1 — $19.99");
+		// THE ASSERTION THAT MATTERS: no request went out over `ctx.http` at all.
+		expect(stub.requests.length).toBe(before);
 	}, 300_000);
 
-	test("the same baked URL is REFUSED when its host is not in allowedHosts", async () => {
+	test("with NO provider selected the leg reports skipped, and nothing goes anywhere", async () => {
 		await placePaidOrder("refused");
-		const before = postsTo(EMAIL_PATH);
+		const before = stub.requests.length;
 
 		const leg = await tick(refused);
-		// A sender WAS built — the URL is baked — so this is not the `skipped` arm.
-		// The send itself is refused by `ctx.http`, the dispatcher's per-row catch
-		// leaves the row unsent, and the leg honestly reports nothing drained.
-		expect(leg.skipped).toBeUndefined();
-		expect(leg.count).toBe(0);
-		// THE ASSERTION THAT MATTERS: the provider heard nothing at all.
-		expect(postsTo(EMAIL_PATH)).toBe(before);
+		// The host's sandbox bridge says "Email is not configured": the row goes back
+		// uncounted and the leg honestly reports the configuration.
+		expect(leg).toMatchObject({ count: 0, skipped: true });
+		expect(refused.sentEmails()).toEqual([]);
+		expect(stub.requests.length).toBe(before);
 	}, 300_000);
 });
 

@@ -542,6 +542,26 @@ export interface QuoteBreakdownWire {
 	taxCents: number;
 	totalCents: number;
 	appliedCouponCode: string | null;
+	/** How the tax was charged and is to be shown (ADR-0032). Absent ⇒ today's
+	 *  single "Tax" row with prices as entered. */
+	tax?: QuoteTaxWire;
+}
+
+/** The tax display facts of a quote or order (ADR-0032). */
+export interface QuoteTaxWire {
+	/** Tax switched on in the store's settings. */
+	enabled: boolean;
+	/** A tax location matched a zone — the tax was really calculated. */
+	located: boolean;
+	/** Prices (not shipping) were entered with tax: the line tax is inside `subtotalCents`. */
+	pricesIncludeTax: boolean;
+	displayCart: "excl" | "incl";
+	totalsDisplay: "itemized" | "single";
+	/** The tax on the lines (`taxCents` minus the shipping tax). */
+	lineTaxCents: number;
+	/** The tax per label (lines and shipping together), in first-seen order. Labels
+	 *  are the merchant's or a calculator's text: render them escaped, never as HTML. */
+	itemized: Array<{ label: string; amountCents: number }>;
 }
 
 /** The quote rejections: the cart pre-checks run before `computeQuote`, plus
@@ -634,8 +654,15 @@ export interface PublicOrderWire {
 	/** `shippingZoneId` / `shippingMethodId` are read off the order's shipping
 	 *  snapshot: opaque merchant config ids, never buyer data. They are the only
 	 *  evidence on the wire of WHAT the totals were priced with — the method
-	 *  decides whether shipping was calculated, the zone whether tax was. */
-	totals: QuoteBreakdownWire & { shippingZoneId: string | null; shippingMethodId: string | null };
+	 *  decides whether shipping was calculated, the zone whether tax was.
+	 *  `taxLocated: true` (ADR-0032) says tax was calculated for a place WITHOUT a
+	 *  shipping zone — a digital cart taxed at the shop base address. Absent on
+	 *  every other order, which keeps the zone rule. */
+	totals: QuoteBreakdownWire & {
+		shippingZoneId: string | null;
+		shippingMethodId: string | null;
+		taxLocated?: true;
+	};
 	lines: OrderLineWire[];
 	fulfillment: {
 		carrier: string;
@@ -804,6 +831,8 @@ export interface OrderSummaryWire {
 		appliedCouponCode: string | null;
 		shippingZoneId: string | null;
 		shippingMethodId: string | null;
+		/** As on {@link PublicOrderWire.totals}: tax calculated with no shipping zone. */
+		taxLocated?: true;
 	};
 	lines: OrderLineWire[];
 }

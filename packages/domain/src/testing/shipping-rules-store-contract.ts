@@ -186,6 +186,59 @@ export function shippingRulesStoreContract(
 			expect((await store.getMethod("m-flat"))?.type).toBe("free_shipping");
 		});
 
+		test("a method is taxable unless created otherwise (PR 2b)", async () => {
+			const { store } = await makeStore();
+			await store.createZone({ id: "z-us", name: "US", regions: null });
+			const plain = await store.createMethod({
+				id: "m-plain",
+				zoneId: "z-us",
+				name: "Flat",
+				type: "flat_rate",
+			});
+			const untaxed = await store.createMethod({
+				id: "m-untaxed",
+				zoneId: "z-us",
+				name: "Courier",
+				type: "flat_rate",
+				taxable: false,
+			});
+			expect(plain.taxable).toBe(true);
+			expect(untaxed.taxable).toBe(false);
+			expect((await store.getMethod("m-plain"))?.taxable).toBe(true);
+			expect((await store.getMethod("m-untaxed"))?.taxable).toBe(false);
+			expect((await store.listMethods("z-us")).map((m) => [m.id, m.taxable])).toEqual(
+				expect.arrayContaining([
+					["m-plain", true],
+					["m-untaxed", false],
+				]),
+			);
+		});
+
+		test("updateMethod sets `taxable`, PRESERVES it when absent, and replays idempotently", async () => {
+			const { store } = await makeStore();
+			await store.createZone({ id: "z-us", name: "US", regions: null });
+			await store.createMethod({ id: "m-flat", zoneId: "z-us", name: "Flat", type: "flat_rate" });
+			const off = { name: "Flat", type: "flat_rate" as const, taxable: false };
+			const first = await store.updateMethod("m-flat", off);
+			const replay = await store.updateMethod("m-flat", off);
+			expect(first.ok && first.method.taxable).toBe(false);
+			expect(replay.ok && replay.method).toEqual(first.ok && first.method);
+			const renamed = await store.updateMethod("m-flat", { name: "Renamed", type: "flat_rate" });
+			expect(renamed.ok && renamed.method.taxable).toBe(false);
+			const renamedAgain = await store.updateMethod("m-flat", {
+				name: "Renamed",
+				type: "flat_rate",
+			});
+			expect(renamedAgain.ok && renamedAgain.method).toEqual(renamed.ok && renamed.method);
+			const on = await store.updateMethod("m-flat", {
+				name: "Renamed",
+				type: "flat_rate",
+				taxable: true,
+			});
+			expect(on.ok && on.method.taxable).toBe(true);
+			expect((await store.getMethod("m-flat"))?.taxable).toBe(true);
+		});
+
 		test("deleteMethod is forbidden while a rate still references it (in_use_by_rates)", async () => {
 			const { store } = await makeStore();
 			await seedZoneMethodRate(store);

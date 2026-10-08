@@ -162,7 +162,6 @@ export {
 	IN_PROCESS_EGRESS_URLS,
 	type InProcessEgressUrls,
 	resolveAllowedHosts,
-	SMTP2GO_API_HOSTS,
 	STRIPE_API_HOST,
 	OTTA_PLUGIN_CAPABILITIES,
 	OTTA_PLUGIN_ID,
@@ -226,8 +225,6 @@ export {
 // restating the key strings.
 export {
 	constantTimeEquals,
-	emailApiKeyFromKv,
-	EMAIL_API_KEY_KEY,
 	type PaymentSecretKey,
 	type PaymentSecrets,
 	PAYMENT_SECRET_KEYS,
@@ -243,35 +240,16 @@ export {
 	x402FacilitatorSecretFromKv,
 	X402_FACILITATOR_API_KEY_KEY,
 } from "./payment-secrets.js";
-// INC-C5 — email dispatch and the x402 wiring, in-process. Both are
-// exported so a deploying site can name the kv settings keys it provisions
-// (`settings:emailFrom`, `settings:x402PayTo`, `settings:x402Accepts`) without
-// restating the strings, and so a suite can build either adapter directly.
+// Email goes through the EmDash host's `ctx.email` (ADR-0031): the plugin's one
+// sender, exported so a suite or a site can build it directly.
 export {
-	CtxHttpEmailSender,
-	DEFAULT_EMAIL_FROM,
-	EMAIL_FROM_KEY,
+	CtxEmailSender,
+	type CtxEmailSenderOptions,
 	makeEmailSender,
-	type CtxHttpEmailSenderOptions,
-	type EmailSenderEgress,
-} from "./email/ctx-http-email-sender.js";
-// The "Email provider" choice (Resend-shaped default, or SMTP2GO) and the
-// SMTP2GO sender, so a deploying site can name the kv keys it provisions.
-export {
-	DEFAULT_EMAIL_PROVIDER,
-	DEFAULT_SMTP2GO_REGION,
-	EMAIL_PROVIDER_KEY,
-	EMAIL_PROVIDERS,
-	type EmailProviderId,
-	SMTP2GO_REGION_KEY,
-	SMTP2GO_REGIONS,
-	type Smtp2goRegion,
-} from "./email/email-provider.js";
-export { EmailProviderError, type EmailProviderErrorKind } from "./email/http-email-sender.js";
-export {
-	Smtp2goEmailSender,
-	type Smtp2goEmailSenderOptions,
-} from "./email/smtp2go-email-sender.js";
+} from "./email/ctx-email-sender.js";
+// INC-C5 — the x402 wiring, in-process, exported so a deploying site can name
+// the kv settings keys it provisions (`settings:x402PayTo`,
+// `settings:x402Accepts`) without restating the strings.
 export {
 	DEFAULT_X402_ACCEPTS,
 	wireX402Gateway,
@@ -463,6 +441,7 @@ export {
 	stripeClientSecret,
 	type CheckoutAmountView,
 	type CheckoutLineView,
+	type CheckoutTaxRowView,
 	type CheckoutTotalsView,
 	type CouponSelectionReason,
 	type DestinationSelectionReason,
@@ -527,6 +506,7 @@ export {
 	type ResumeProof,
 	type PublicOrderWire,
 	type QuoteBreakdownWire,
+	type QuoteTaxWire,
 	type QuoteDestinationWire,
 	type QuoteFailureReason,
 	type QuoteRequestWire,

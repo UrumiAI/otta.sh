@@ -1,6 +1,7 @@
 packages:
   - "packages/*"
   - "sites/*"
+  - "examples/*"
 
 # There are no `emdash` overrides any more. The host used to be a locally built
 # merge of upstream `main` and its then-open conditional-write PR, vendored as
@@ -23,7 +24,24 @@ packages:
 # If pins are ever reintroduced they must never float — no `^`, no `~` — so the
 # host only moves when the manifests (and `host-pin.test.ts`) move with it. And
 # they have to live here: pnpm 11 ignores `pnpm.overrides` in package.json
-# without warning.
+# without warning. The `overrides:` block below holds only security pins for
+# transitive packages, none of them `emdash`.
+
+overrides:
+  # Security pins (Dependabot). Exact, never floating — see the note above. Each
+  # names its advisories and when to drop it.
+  # oxfmt@0.58.0 pins tinypool EXACTLY at 2.1.0 (GHSA-5gmw-xhrv-c9v3,
+  # GHSA-85c8-ppgw-ccpr; fixed 2.1.2). Drop once the oxfmt catalog pin is >= ^0.67.0.
+  "oxfmt>tinypool": 2.1.2
+  # miniflare pins undici EXACTLY (4.x -> 7.28.0, 5.x-alpha -> 7.29.0), below the
+  # fixes in 7.29.1 (GHSA-rfgv-xxqx-mfg5, GHSA-w293-vg96-wgc3, GHSA-4cwx-7wf7-3272
+  # and others). Drop once the wrangler/miniflare/vitest-plugin train ships >= 7.29.1.
+  "miniflare>undici": 7.29.1
+  # sharp < 0.35.5 (GHSA-wq5f-xc86-pv6w, GHSA-rgj7-g3m4-5g8c, GHSA-f88m-g3jw-g9cj).
+  # Every miniflare release pins sharp exactly (4.x 0.34.5, 5.x 0.35.4); unscoped
+  # because astro's optional `^0.35.4` and sites/staging's `^0.35.4` would
+  # otherwise keep the locked 0.35.4 copy. Drop once miniflare pins >= 0.35.5.
+  sharp: 0.35.5
 
 allowBuilds:
   better-sqlite3: true

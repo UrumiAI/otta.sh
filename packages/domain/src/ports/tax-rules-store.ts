@@ -70,6 +70,12 @@ export interface TaxRulesStore {
 	 *  duplicates are ALL listed (the admin flags them); the checkout reduces them
 	 *  with `effectiveTaxRates`. */
 	listRatesForZone(zoneId: string): Promise<TaxRate[]>;
+	/**
+	 * Whether ANY rate exists, in any zone or class (PR 2a). The tax settings'
+	 * upgrade rule reads it: a store that never saved tax options and has rates
+	 * keeps today's behaviour (`effectiveTaxSettings`).
+	 */
+	hasAnyRate(): Promise<boolean>;
 
 	/**
 	 * Guarded EDIT of a tax rate's money-bearing config (admin-UX Increment 3 —

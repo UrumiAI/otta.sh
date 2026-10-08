@@ -28,9 +28,10 @@ import type { ProductCommerceStore } from "../ports/product-commerce-store.js";
 import { isProductLive } from "../product-commerce/sellable.js";
 import type { ShippingRulesStore } from "../ports/shipping-rules-store.js";
 import type { TaxRulesStore } from "../ports/tax-rules-store.js";
-import { computeQuote } from "../pricing/quote.js";
+import { computeQuote, type QuoteTax } from "../pricing/quote.js";
 import { type PricedLine, quoteCommandFor } from "../pricing/quote-input.js";
-import type { TaxCalculator, TaxResult } from "../pricing/tax-calculator.js";
+import type { SettingsStore } from "../ports/settings-store.js";
+import type { TaxCalculator } from "../pricing/tax-calculator.js";
 import type { CreateOrderFailure } from "./errors.js";
 import { snapshotOrderLine } from "./line-snapshot.js";
 import type { Order, OrderAddress, PaymentMethod } from "./model.js";
@@ -51,6 +52,8 @@ export interface CreateOrderDeps {
 	couponStore: CouponStore;
 	/** A registered outside tax calculator (ADR-0030); absent ⇒ the built-in. */
 	taxCalculator?: TaxCalculator;
+	/** The store's tax options (ADR-0032); absent ⇒ nothing saved (the upgrade rule). */
+	settings?: Pick<SettingsStore, "get">;
 	clock: Clock;
 	idGen: IdGen;
 	/** Payment adapters keyed by method — the buyer's chosen gateway is resolved here. */
@@ -291,6 +294,7 @@ export async function createOrderFromCart(
 			qty: line.qty,
 			taxClass: pc.taxClass,
 			productKind: pc.productKind,
+			taxStatus: pc.taxStatus,
 		};
 		lines.push(
 			snapshotOrderLine({
@@ -321,6 +325,7 @@ export async function createOrderFromCart(
 			couponStore: deps.couponStore,
 			clock: deps.clock,
 			...(deps.taxCalculator !== undefined ? { taxCalculator: deps.taxCalculator } : {}),
+			...(deps.settings !== undefined ? { settings: deps.settings } : {}),
 		},
 		quoteCommandFor({
 			currency,
@@ -408,6 +413,7 @@ export async function createOrderFromCart(
 			lines,
 			breakdown,
 			tax: quote.tax,
+			taxLocated: quote.taxLocated,
 			couponRecord: quote.couponRecord,
 			shippingMethodSnapshot,
 			shippingAddress,
@@ -476,7 +482,9 @@ interface FinalizeContext {
 	lines: CreateOrderLineInput[];
 	breakdown: TotalsBreakdown;
 	/** The calculator's validated answer, frozen as the order's tax snapshot. */
-	tax: { calculatorId: string; result: TaxResult };
+	tax: QuoteTax;
+	/** The quote's `taxLocated`, frozen into the snapshot (ADR-0032). */
+	taxLocated: boolean;
 	couponRecord: CouponRecord | null;
 	/** What priced the shipping and tax (ADR-0021 Decision 7); null when no zone
 	 *  matched (no zones configured, or nothing ships). */
@@ -539,7 +547,7 @@ async function finalizeOrder(
 			appliedCouponCode: breakdown.appliedCouponCode ?? null,
 			shippingMethodSnapshot: ctx.shippingMethodSnapshot,
 			// ADR-0030: the typed v1 snapshot, written once, never recomputed.
-			taxBreakdown: buildOrderTaxSnapshot(breakdown, ctx.tax),
+			taxBreakdown: buildOrderTaxSnapshot(breakdown, ctx.tax, ctx.taxLocated),
 		},
 	});
 	// Issue #133, race twin of the I1 cart check: a same-key call for ANOTHER cart

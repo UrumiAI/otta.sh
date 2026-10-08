@@ -26,6 +26,8 @@ export interface ShippingMethodWire {
 	name: string;
 	/** 'flat_rate' | 'free_shipping'. */
 	type: string;
+	/** Whether the method's charge is taxed (PR 2b). */
+	taxable: boolean;
 }
 
 export interface ShippingRateWire {
@@ -163,6 +165,8 @@ export type TaxClassDeleteResult =
 	| { ok: false; reason: "not_found" }
 	| { ok: false; reason: "in_use_by_products"; count: number }
 	| { ok: false; reason: "in_use_by_rates"; count: number }
+	/** The tax options use the class as the fixed shipping tax class (ADR-0032). */
+	| { ok: false; reason: "in_use_by_settings" }
 	| { ok: false; reason: "error"; status: number };
 
 // -- Input shapes -------------------------------------------------------------
@@ -183,10 +187,14 @@ export interface ShippingMethodInput {
 	id: string;
 	name: string;
 	type: string;
+	/** Default `true` (PR 2b). */
+	taxable?: boolean;
 }
 export interface ShippingMethodEdit {
 	name: string;
 	type: string;
+	/** Absent PRESERVES the stored flag (PR 2b). */
+	taxable?: boolean;
 }
 export interface ShippingRateInput {
 	currency: string;
@@ -333,6 +341,19 @@ export interface AdminRulesSurface {
 	updateTaxRate(rateId: string, edit: TaxRateEdit): Promise<RulesCasUpdateResult<TaxRateWire>>;
 	deleteTaxRate(rateId: string): Promise<RulesDeleteResult>;
 
+	/** The tax options in force (ADR-0032) — the saved block, or the upgrade
+	 *  rule's answer when none is saved (`saved: false`). */
+	getTaxSettings(): Promise<TaxSettingsRead>;
+	/**
+	 * Replace the tax options whole. `expected` is the {@link taxSettingsDigest} of
+	 * the options the form was loaded with: options that changed since are `stale`
+	 * (a value compare-and-set, like the tax rate's), never overwritten.
+	 */
+	updateTaxSettings(
+		next: unknown,
+		opts: { expected: string; idempotencyKey: string },
+	): Promise<TaxSettingsUpdateResult>;
+
 	// -- Coupons ---------------------------------------------------------------
 
 	/**
@@ -371,3 +392,48 @@ export type CouponRetireResult =
 			};
 	  }
 	| { ok: false; reason: "not_found" | "already_ended" };
+
+/** The tax options as the admin reads them (ADR-0032). */
+export interface TaxSettingsRead {
+	settings: TaxSettingsWire;
+	/** false ⇒ nothing saved yet: `settings` is the upgrade rule's answer. */
+	saved: boolean;
+	/** Whether the store has any tax rate — tax off with rates gets a notice. */
+	hasRates: boolean;
+}
+
+export type TaxSettingsUpdateResult =
+	| { ok: true; settings: TaxSettingsWire }
+	| { ok: false; reason: "invalid"; field: string; message: string }
+	| { ok: false; reason: "stale"; current: TaxSettingsWire };
+
+/** The domain's `TaxSettings`, as the wire spells it. */
+export interface TaxSettingsWire {
+	enabled: boolean;
+	pricesIncludeTax: boolean;
+	basedOn: "shipping" | "base";
+	baseAddress: { country: string; region: string | null } | null;
+	shippingTaxClass:
+		| { kind: "inherit" }
+		| { kind: "legacy" }
+		| { kind: "fixed"; taxClassId: string };
+	roundAtSubtotal: boolean;
+	displayCart: "excl" | "incl";
+	totalsDisplay: "itemized" | "single";
+}
+
+/** A stable fingerprint of a tax options block — the edit guard's token. Every
+ *  field in one fixed order, so two equal blocks always agree. */
+export function taxSettingsDigest(s: TaxSettingsWire): string {
+	const cls = s.shippingTaxClass;
+	return JSON.stringify([
+		s.enabled,
+		s.pricesIncludeTax,
+		s.basedOn,
+		s.baseAddress === null ? null : [s.baseAddress.country, s.baseAddress.region],
+		cls.kind === "fixed" ? [cls.kind, cls.taxClassId] : [cls.kind],
+		s.roundAtSubtotal,
+		s.displayCart,
+		s.totalsDisplay,
+	]);
+}

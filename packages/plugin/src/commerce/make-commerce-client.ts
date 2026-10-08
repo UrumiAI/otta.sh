@@ -24,8 +24,7 @@
  * every call. Any route that can take a payment or send mail comes through here.
  */
 
-import { makeLoginEmailSender } from "../email/ctx-http-email-sender.js";
-import { IN_PROCESS_EGRESS_URLS } from "../manifest.js";
+import { makeLoginEmailSender } from "../email/ctx-email-sender.js";
 import { resolvePaymentGateways } from "../payments/resolve-payment-gateways.js";
 import { checkoutRequiresBuyerAddress } from "../payments/stripe-account-country.js";
 import type { CommerceClient } from "../product-commerce/commerce-client.js";
@@ -61,11 +60,10 @@ export async function makeCommerceClient(ctx: PluginContext): Promise<CommerceCl
 		// absent ⇒ the built-in rate table.
 		...(taxCalculator !== undefined ? { taxCalculator } : {}),
 		// Lazy: only the login request sends mail, and building the sender reads kv.
-		// `undefined` when no provider is usable (Resend with no email API URL,
-		// SMTP2GO with no key, an unreadable provider choice) — the unconfigured arm. The
-		// LOGIN sender, with its short ceiling: the send is awaited inline.
-		resolveEmailSender: () =>
-			makeLoginEmailSender(ctx, { apiUrl: IN_PROCESS_EGRESS_URLS.emailApiUrl }),
+		// `undefined` when the host has no EmDash email provider (`ctx.email` absent)
+		// — the unconfigured arm. The LOGIN sender, with its short ceiling: the send
+		// is awaited inline.
+		resolveEmailSender: () => makeLoginEmailSender(ctx),
 		// Lazy too: only "Start a new cart" that actually cancelled an order uses it
 		// (QA2 X4). Built with the cancel's own short, fixed bound — not checkout's.
 		resolveWithdrawGateways: () =>

@@ -24,6 +24,12 @@ import {
 	type TaxRateWire,
 } from "./admin-rules-surface.js";
 import { idInputProblem } from "./id-input.js";
+import {
+	optionsButtonBlock,
+	saveOptionsAction,
+	showOptionsAction,
+	taxOffBanner,
+} from "./tax-options-screen.js";
 import { formatBpsAsPercent, parsePercentToBps } from "./percent-input.js";
 import {
 	asRecord,
@@ -99,6 +105,12 @@ const ACTION_SHOW_NEW_RATE = TAX_ACTIONS.custom("show-new-rate");
 /** Leave either create screen — re-lists the level the operator came from
  *  (the path rides in the button's own `value`, L-6). */
 const ACTION_CANCEL_NEW = TAX_ACTIONS.custom("cancel-new");
+/** ADR-0032: the "Tax options" drill-in and its save. */
+const OPTIONS_ACTIONS = {
+	show: TAX_ACTIONS.custom("show-options"),
+	save: TAX_ACTIONS.custom("save-options"),
+	back: ACTION_CANCEL_NEW,
+};
 
 /**
  * The action ids the admin-route dispatcher recognizes as belonging to the
@@ -116,6 +128,8 @@ export const TAX_ACTION_IDS: ReadonlySet<string> = TAX_ACTIONS.actionIds(
 	"delete-rate",
 	"show-new-rate",
 	"cancel-new",
+	"show-options",
+	"save-options",
 );
 
 /** The em-dash BlockInteraction envelope this page consumes (the scaffold's
@@ -237,14 +251,22 @@ export function createTaxPageHandler(): RouteHandler<TaxPageInput> {
 			[ACTION_DELETE_RATE]: deleteRateAction(),
 			[ACTION_SHOW_NEW_RATE]: showNewRateAction(),
 			[ACTION_CANCEL_NEW]: cancelNewAction(),
+			[OPTIONS_ACTIONS.show]: showOptionsAction(OPTIONS_ACTIONS),
+			[OPTIONS_ACTIONS.save]: saveOptionsAction(OPTIONS_ACTIONS),
 		},
 	});
 }
 
 // -- level 0: the tax classes registry ----------------------------------------
 
+/** The registry's one "page": the classes, and the "tax is off" banner if any. */
+interface ClassesPageBundle {
+	classes: TaxClassWire[];
+	taxOff: Block | null;
+}
+
 function taxClassesLevel() {
-	return listLevel<AdminRulesSurface, Record<string, never>, TaxClassWire, TaxRenderState>({
+	return listLevel<AdminRulesSurface, Record<string, never>, ClassesPageBundle, TaxRenderState>({
 		// The registry has no service-side pagination (`GET /admin/tax/classes`
 		// returns the full list) — `limit` is unused by `fetchPage` (kept for the
 		// level's shape) and `nextCursor` is always `null`. Deliberately above
@@ -253,11 +275,12 @@ function taxClassesLevel() {
 		limit: 200,
 		filterFromValues: () => ({}),
 		async fetchPage(client) {
-			const classes = await client.listTaxClasses();
-			return { items: classes, nextCursor: null };
+			const [classes, read] = await Promise.all([client.listTaxClasses(), client.getTaxSettings()]);
+			return { items: [{ classes, taxOff: taxOffBanner(read) }], nextCursor: null };
 		},
 		render({ actions, items, nextToken, notice, renderState }) {
-			return classesBlocks(actions, items, nextToken, notice, renderState);
+			const bundle = items[0] ?? { classes: [], taxOff: null };
+			return classesBlocks(actions, bundle, nextToken, notice, renderState);
 		},
 		onError: () => classesFailClosed(),
 	});
@@ -274,7 +297,7 @@ function taxClassesLevel() {
  */
 function classesBlocks(
 	actions: ScreenActions,
-	classes: TaxClassWire[],
+	{ classes, taxOff }: ClassesPageBundle,
 	nextToken: string | undefined,
 	notice: Notice | undefined,
 	renderState: TaxRenderState | undefined,
@@ -287,8 +310,12 @@ function classesBlocks(
 			text: "A tax class is a rate group; products and rates reference one by id.",
 		},
 		createActionBlock("tax:create-class-action", ACTION_SHOW_NEW_CLASS, "New tax class"),
+		// ADR-0032: the store's tax options, one drill-in away.
+		optionsButtonBlock(OPTIONS_ACTIONS),
 	];
 	if (notice !== undefined) blocks.push(noticeBanner(notice));
+	// ADR-0032: rates but tax off — say so where the rates are managed.
+	if (taxOff !== null) blocks.push(taxOff);
 	// No filter block: this level has no filter fields (L-2, count 0).
 
 	const accordionBranch = nextToken === undefined && classes.length <= REGISTRY_ACCORDION_LIMIT;
@@ -1298,6 +1325,14 @@ function deleteClassNotice(result: TaxClassDeleteResult): Notice {
 			variant: "error",
 			title: "Class not deleted",
 			description: `${result.count} product${result.count === 1 ? "" : "s"} still reference${result.count === 1 ? "s" : ""} this class — clear those references first, then retry.`,
+		};
+	}
+	if (result.reason === "in_use_by_settings") {
+		return {
+			variant: "error",
+			title: "Class not deleted",
+			description:
+				"Tax options use this class as the shipping tax class — choose another shipping tax class in Tax options first, then retry.",
 		};
 	}
 	if (result.reason === "in_use_by_rates") {
