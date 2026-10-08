@@ -124,6 +124,16 @@ export function currencyDigits(code: string): 0 | 2 | 3 | undefined {
 }
 
 /**
+ * Whether checkout can take payment in `code` — false for the table's
+ * three-decimal currencies, whose smallest unit the payment path does not charge
+ * in (an order total need not be the multiple of 10 it needs). The admin
+ * surfaces' `checkoutPaymentWarning` mirrors it (pinned by `money-parity.test.ts`).
+ */
+export function isCheckoutPayableCurrency(code: string): boolean {
+	return currencyDigits(code) !== 3;
+}
+
+/**
  * The minor-unit exponent money is DISPLAYED in: the table's for a listed code;
  * for any other code (old data) the runtime's ICU exponent it always rendered
  * with, and 2 when ICU cannot say. Never throws. Mirrored — and pinned equal by

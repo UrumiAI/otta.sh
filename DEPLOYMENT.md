@@ -442,21 +442,21 @@ order of appearance in a deployment's life:
 
 > **Store currency.** Settings → Store → "Store currency" is the currency a **new** cart is
 > created in (the storefront names none, so it is every shopper's cart). A store that never
-> saves it keeps USD, exactly as before the setting existed — no migration. A currency checkout
-> can't take payment in yet (BHD, JOD, KWD, OMR) can't be chosen, and saving the select
-> unchanged writes nothing. Changing it affects
-> new carts only: carts already open keep their currency. **Decide it before pricing the
-> catalogue.** A product's currency is fixed once it is priced, and a coupon's at creation, so
-> products and coupons (fixed-amount, and percentage coupons with a cap or minimum spend) in
-> another currency can't be bought or used in new carts (`CURRENCY_MISMATCH` at checkout), and
-> they can't be moved to the new currency. Shipping rates are per currency, so add rates in the
-> new one. A spent cart's replacement is in the currency the storefront names, else the saved
-> store currency, else the spent cart's: **a theme that sends `currency` with `replacesCartId`
-> keeps that currency; omit it to follow the store currency.** If the admin cannot read the
-> store currency, it never guesses one into a saved value: the product picker, a new shipping
-> rate and the coupon form ask you to choose.
-> The admin's defaults follow it: an unpriced product's currency picker, the shipping rate
-> filter and new-rate currency, and the coupon form's currency hint.
+> saves it keeps USD, exactly as before the setting existed — no migration. Three-decimal
+> currencies (see the currency table) can't be the store currency, because checkout can't take
+> payment in them yet; saving the select unchanged writes nothing. Changing it affects new carts
+> only: carts already open keep their currency. **Decide it before pricing the catalogue.** A
+> product's currency is fixed once it is priced, and a coupon's at creation, so products and
+> coupons (fixed-amount, and percentage coupons with a cap or minimum spend) in another currency
+> can't be bought or used in new carts (`CURRENCY_MISMATCH` at checkout), and they can't be
+> moved to the new currency. Shipping rates are per currency, so add rates in the new one. A
+> spent cart's replacement is in the currency the storefront names, else the saved store
+> currency, else the spent cart's: **a theme that sends `currency` with `replacesCartId` keeps
+> that currency; omit it to follow the store currency.** If the admin cannot read the store
+> currency, it never guesses one into a saved value: the product picker, a new shipping rate and
+> the coupon form ask you to choose. The admin's defaults follow it: an unpriced product's
+> currency picker, the shipping rate filter and new-rate currency, and the coupon form's
+> currency hint.
 
 > **x402 does not take payments yet.** The old receipt-forwarding settle route
 > (`entitlements/x402/settle`) is retired, and nothing settles an x402 payment until the

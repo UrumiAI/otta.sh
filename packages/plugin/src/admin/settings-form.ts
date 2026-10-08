@@ -4,12 +4,13 @@ import {
 	readBackgroundWork,
 	validateBackgroundWork,
 } from "../cron/background-work-setting.js";
+import { currencyChoiceLabel, currencyChoicesWith } from "@otta-sh/admin-presentation";
 import {
-	checkoutPaymentWarning,
-	currencyChoiceLabel,
-	currencyChoicesWith,
-} from "@otta-sh/admin-presentation";
-import { effectiveStoreCurrency, isSupportedCurrency, MAX_HOLD_TTL_MINUTES } from "@otta-sh/domain";
+	effectiveStoreCurrency,
+	isCheckoutPayableCurrency,
+	isSupportedCurrency,
+	MAX_HOLD_TTL_MINUTES,
+} from "@otta-sh/domain";
 import { emailSendingStatus, type EmailSendingStatus } from "../email/ctx-email-sender.js";
 import { STORE_DISPLAY_NAME_KEY } from "../email/email-render-context.js";
 import { isPlausiblePayTo, X402_ACCEPTS_KEY, X402_PAYTO_KEY } from "../payments/x402-wiring.js";
@@ -550,7 +551,8 @@ export function createSettingsFormHandler(): RouteHandler<SettingsFormInput> {
 		client: ReportingSettingsSurface,
 		notice?: Notice,
 		paymentRefusal?: PaymentRefusal,
-	): Promise<BlockResponse> => renderSettingsPage(ctx, client, notice, paymentRefusal);
+		settings?: OperationalSettingsWire,
+	): Promise<BlockResponse> => renderSettingsPage(ctx, client, notice, paymentRefusal, settings);
 	return async (routeCtx, ctx) => {
 		const input = routeCtx.input;
 		const action = typeof input.action_id === "string" ? input.action_id : "load";
@@ -834,32 +836,33 @@ export function createSettingsFormHandler(): RouteHandler<SettingsFormInput> {
 				const page = await renderPage(ctx, client, { variant: "error", title, description });
 				return { ...page, toast: { message: title, type: "error" } } satisfies BlockResponse;
 			};
-			const unsupported = `${code.length > 0 ? code : "That"} isn't a supported currency — choose one from the list. Nothing was changed.`;
-			if (!isSupportedCurrency(code)) return refuse("Store currency not saved", unsupported);
-			// Saving the select UNCHANGED writes nothing — in particular a store that
-			// never saved one stays never-saved (USD by the upgrade rule, not by a
-			// stored "USD"). Only a real change writes. A failed read cannot tell, so
-			// it falls through to the write, which is what the operator asked for.
+			// Saving the select UNCHANGED writes nothing — checked FIRST, so a stored
+			// code the table (or checkout) no longer accepts can still be "saved" as
+			// is. A store that never saved one stays never-saved (USD by the upgrade
+			// rule, not by a stored "USD"). A failed read cannot tell, so it falls
+			// through to the write, which is what the operator asked for.
 			const current = await client.getSettings().catch(() => undefined);
 			if (current !== undefined && effectiveStoreCurrency(current) === code) {
-				const page = await renderPage(ctx, client, {
-					variant: "default",
-					title: "Nothing changed",
-					description: `The store currency is already ${currencyChoiceLabel(code)}.`,
-				});
+				const page = await renderPage(
+					ctx,
+					client,
+					{
+						variant: "default",
+						title: "Nothing changed",
+						description: `The store currency is already ${currencyChoiceLabel(code)}.`,
+					},
+					undefined,
+					current,
+				);
 				return {
 					...page,
 					toast: { message: "Nothing changed", type: "success" },
 				} satisfies BlockResponse;
 			}
-			// A currency checkout cannot take payment in yet (three-decimal) cannot be
-			// the store currency: every new cart would be unpayable.
-			if (checkoutPaymentWarning(code) !== null) {
-				return refuse(
-					"Store currency not saved",
-					`${code} can't be the store currency yet — payments in ${code} aren't supported at checkout. Nothing was changed.`,
-				);
-			}
+			const unsupported = `${code.length > 0 ? code : "That"} isn't a supported currency — choose one from the list. Nothing was changed.`;
+			if (!isSupportedCurrency(code)) return refuse("Store currency not saved", unsupported);
+			// A currency checkout can't take payment in is refused by the DOMAIN
+			// (`StoreCurrencyNotPayableError`, so every writer gets it); worded here.
 			const key =
 				typeof input.idempotencyKey === "string" && input.idempotencyKey.length > 0
 					? input.idempotencyKey
@@ -874,6 +877,12 @@ export function createSettingsFormHandler(): RouteHandler<SettingsFormInput> {
 				}
 				// UNAVAILABLE: nothing is known about whether it applied, so the copy
 				// never claims it was not saved.
+				if (result.code === "store_currency_not_payable") {
+					return refuse(
+						"Store currency not saved",
+						`${code} can't be the store currency yet — payments in ${code} aren't supported at checkout. Nothing was changed.`,
+					);
+				}
 				return result.reason === "validation"
 					? refuse("Store currency not saved", unsupported)
 					: refuse(
@@ -1010,12 +1019,14 @@ async function renderSettingsPage(
 	client: ReportingSettingsSurface,
 	notice?: Notice,
 	paymentRefusal?: PaymentRefusal,
+	/** A settings read the caller already made on this request — reused, not repeated. */
+	alreadyRead?: OperationalSettingsWire,
 ): Promise<BlockResponse> {
 	const state = await readPageState(ctx);
 	try {
 		// Nothing was attempted on this path, so what the form shows and what the
 		// label states are the same read (see `persisted` in `buildSettingsBlocks`).
-		const settings = await client.getSettings();
+		const settings = alreadyRead ?? (await client.getSettings());
 		return {
 			blocks: buildSettingsBlocks({
 				...state,
@@ -1330,7 +1341,12 @@ function storeCurrencyBlocks(persisted: OperationalSettingsWire | undefined): Bl
 		];
 	}
 	const current = effectiveStoreCurrency(persisted);
-	const codes = currencyChoicesWith(current);
+	// A currency checkout can't take payment in can't be CHOSEN (the domain
+	// refuses it), so it is not offered — unless it is the one already saved,
+	// which the select must still be able to show.
+	const codes = currencyChoicesWith(current).filter(
+		(code) => code === current || isCheckoutPayableCurrency(code),
+	);
 	return [
 		...STORE_CURRENCY_CONTEXT,
 		carriedForm({

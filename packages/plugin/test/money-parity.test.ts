@@ -2,6 +2,7 @@ import { describe, expect, test } from "vitest";
 import {
 	SUPPORTED_CURRENCIES as ADMIN_CURRENCIES,
 	DEFAULT_STORE_CURRENCY as ADMIN_DEFAULT_STORE_CURRENCY,
+	checkoutPaymentWarning as adminCheckoutPaymentWarning,
 	currencyDigits as adminCurrencyDigits,
 	isSupportedCurrency as adminIsSupported,
 	minorUnitDigits as adminMinorUnitDigits,
@@ -10,6 +11,7 @@ import {
 import {
 	SUPPORTED_CURRENCIES as DOMAIN_CURRENCIES,
 	DEFAULT_STORE_CURRENCY as DOMAIN_DEFAULT_STORE_CURRENCY,
+	isCheckoutPayableCurrency as domainIsCheckoutPayable,
 	cents as domainCents,
 	currency as domainCurrency,
 	currencyDigits as domainCurrencyDigits,
@@ -104,6 +106,12 @@ describe("money mirror parity (plugin/presentation/money.ts ⇄ domain/money/cen
 describe("currency table mirror parity (admin-presentation/currencies.ts ⇄ domain/money/currencies.ts)", () => {
 	test("the two tables are identical, row for row and in order", () => {
 		expect(ADMIN_CURRENCIES).toEqual(DOMAIN_CURRENCIES);
+	});
+
+	test("the admin's checkout warning and the domain's payability agree on every listed code", () => {
+		for (const { code } of DOMAIN_CURRENCIES) {
+			expect(adminCheckoutPaymentWarning(code) === null, code).toBe(domainIsCheckoutPayable(code));
+		}
 	});
 
 	test("the never-saved store currency is the same in both", () => {

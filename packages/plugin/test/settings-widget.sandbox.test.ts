@@ -1230,12 +1230,16 @@ describe("Settings: store currency", () => {
 		]);
 		const rest = options.slice(10).map((o) => o.value);
 		expect(rest).toEqual(rest.toSorted());
-		expect(options).toHaveLength(49);
+		// Every table currency checkout can take payment in — the three-decimal
+		// ones can't be chosen as the store currency, so they are not offered.
+		expect(options).toHaveLength(45);
+		for (const code of ["BHD", "JOD", "KWD", "OMR"]) {
+			expect(
+				options.some((o) => o.value === code),
+				code,
+			).toBe(false);
+		}
 		expect(options[0]).toEqual({ value: "USD", label: "USD — US Dollar" });
-		// The shared label carries #438's one checkout warning, as the pricing picker does.
-		expect(options.find((o) => o.value === "KWD")?.label).toBe(
-			"KWD — Kuwaiti Dinar (not yet payable at checkout)",
-		);
 		const copy = contextTexts(blocks).join(" ");
 		expect(copy).toContain("new carts only");
 		// A product's or coupon's currency is fixed once set, so the copy says to
@@ -1351,6 +1355,52 @@ describe("Settings: store currency", () => {
 			);
 		}
 		expect(await storedDoc()).toBeNull();
+	});
+
+	test("a saved code that can no longer be chosen is still shown (with its warning) and can be saved unchanged", async () => {
+		await resetOperationalSettings();
+		const { storage } = await storageBridge();
+		// Written straight to the store (no use-case), as data saved before a rule changed.
+		const settings = new EmdashSettingsStore({ storage, clock: systemClock });
+		await settings.update({ currency: "KWD" }, idempotencyKey("sc-legacy-kwd"));
+		sandbox = await loadPluginInSandbox({ allowedHosts: [], storage: true });
+		const loaded = blocksOf(
+			await sandbox.invokeRoute("admin", { type: "page_load", page: "/settings" }),
+		);
+		const select = field(formFor(loaded, "save-store-currency"), "currency");
+		expect(select?.initial_value).toBe("KWD");
+		const options = select?.options as Array<{ value: string; label: string }>;
+		// The shared label carries #438's one checkout warning, as the pricing picker does.
+		expect(options.find((o) => o.value === "KWD")?.label).toBe(
+			"KWD — Kuwaiti Dinar (not yet payable at checkout)",
+		);
+		expect(options.some((o) => o.value === "BHD")).toBe(false);
+		const before = await storedDoc();
+		const outcome = await sandbox.invokeRoute("admin", {
+			type: "form_submit",
+			action_id: "save-store-currency",
+			values: { currency: "KWD" },
+			idempotencyKey: "k-sc-legacy-kwd",
+		});
+		expect(String(findBlocks(blocksOf(outcome), "banner")[0]?.title)).toBe("Nothing changed");
+		expect(await storedDoc()).toEqual(before);
+	});
+
+	test('an off-table stored code saved unchanged is "Nothing changed", not refused', async () => {
+		await resetOperationalSettings();
+		const { storage } = await storageBridge();
+		const settings = new EmdashSettingsStore({ storage, clock: systemClock });
+		await settings.update({ currency: "XYZ" }, idempotencyKey("sc-legacy-xyz"));
+		sandbox = await loadPluginInSandbox({ allowedHosts: [], storage: true });
+		const outcome = await sandbox.invokeRoute("admin", {
+			type: "form_submit",
+			action_id: "save-store-currency",
+			values: { currency: "XYZ" },
+			idempotencyKey: "k-sc-legacy-xyz",
+		});
+		const banner = findBlocks(blocksOf(outcome), "banner")[0];
+		expect(String(banner?.title)).toBe("Nothing changed");
+		expect(String(banner?.description)).toBe("The store currency is already XYZ.");
 	});
 
 	test("a code outside the table is refused by name, and nothing is written", async () => {

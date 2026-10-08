@@ -3,6 +3,7 @@ export { cents, currency, money, type Cents, type Currency, type Money } from ".
 export {
 	SUPPORTED_CURRENCIES,
 	currencyDigits,
+	isCheckoutPayableCurrency,
 	isSupportedCurrency,
 	minorUnitDigits,
 	type CurrencyInfo,
@@ -705,6 +706,7 @@ export {
 	getSettings,
 	InvalidSettingsError,
 	MAX_HOLD_TTL_MINUTES,
+	StoreCurrencyNotPayableError,
 	updateSettings,
 } from "./settings/use-cases.js";
 export type { AttemptThrottle } from "./ports/attempt-throttle.js";

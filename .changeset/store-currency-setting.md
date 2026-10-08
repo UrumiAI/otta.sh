@@ -8,7 +8,8 @@
 
 Store currency setting. `OperationalSettings` gains an optional `currency` (an ISO 4217 code
 from the currency table, checked by `updateSettings`; absent means never saved) and
-`effectiveStoreCurrency` (never saved ⇒ `"USD"`), persisted in the same settings document as
+`effectiveStoreCurrency` (never saved ⇒ `"USD"`); `updateSettings` also refuses a three-decimal store currency checkout can't take payment in
+(`StoreCurrencyNotPayableError`, via the new `isCheckoutPayableCurrency`), persisted in the same settings document as
 the hold time, threshold and tax block — saving one never drops another. A cart created without
 a currency (the storefront's `ensureCartId`) is now in the store currency; an explicit currency
 still wins, and existing carts keep theirs. A store that never saves the setting behaves exactly

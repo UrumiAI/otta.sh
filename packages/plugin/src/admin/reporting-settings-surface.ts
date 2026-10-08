@@ -107,6 +107,10 @@ export type UpdateSettingsResult =
 			reason?: UpdateSettingsFailureReason;
 			/** The HTTP status, on the HTTP tier only. Never synthesized elsewhere. */
 			status?: number;
+			/** Which validation refusal, when a screen words it itself:
+			 *  `store_currency_not_payable` — a store currency checkout can't take
+			 *  payment in (the domain's `StoreCurrencyNotPayableError`). */
+			code?: "store_currency_not_payable";
 			message: string;
 	  };
 

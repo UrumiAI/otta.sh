@@ -74,6 +74,7 @@ import {
 	getTopProductsReport,
 	idempotencyKey as toIdempotencyKey,
 	InvalidSettingsError,
+	StoreCurrencyNotPayableError,
 	updateSettings as updateSettingsUseCase,
 	type OperationalSettings,
 	type ReportInterval,
@@ -251,6 +252,14 @@ export class InProcessReportingSettingsClient implements ReportingSettingsSurfac
 			);
 			return { ok: true, settings: toSettingsWire(settings) };
 		} catch (err) {
+			if (err instanceof StoreCurrencyNotPayableError) {
+				return {
+					ok: false,
+					reason: "validation",
+					code: "store_currency_not_payable",
+					message: err.message,
+				};
+			}
 			if (err instanceof InvalidSettingsError) {
 				// THE MESSAGE IS THE POINT of this arm: it names the field and the
 				// bound, and the form renders it inline beside the input.
