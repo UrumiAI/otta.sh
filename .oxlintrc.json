@@ -10,17 +10,6 @@
 	},
 	"overrides": [
 		{
-			"files": ["packages/plugin/src/manifest.ts"],
-			"rules": {
-				"no-underscore-dangle": [
-					"error",
-					{
-						"allow": ["__OTTA_EMAIL_API_URL__"]
-					}
-				]
-			}
-		},
-		{
 			"files": ["packages/plugin/src/payments/stripe-wiring.ts"],
 			"rules": {
 				"no-underscore-dangle": [

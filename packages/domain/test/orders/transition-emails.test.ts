@@ -14,11 +14,14 @@ import {
 } from "@otta-sh/domain";
 import {
 	EmailSendTimeoutError,
+	EmailTransportUnavailableError,
 	type EmailSender,
 	isEmailSendTimeoutError,
+	isEmailTransportUnavailableError,
 	MAX_UNCOUNTED_TIMEOUTS,
 	TIMEOUT_BACKOFF_BASE_MS,
 	TIMEOUT_BACKOFF_MAX_MS,
+	TRANSPORT_UNAVAILABLE_RETRY_MS,
 	UNTRIED_RETRY_MS,
 } from "@otta-sh/domain";
 import {
@@ -279,6 +282,47 @@ describe("dispatchOrderEmails: what does NOT count as an attempt", () => {
 		// …the next run, same moment, sends ord-2 rather than retrying ord-1 first.
 		expect(await dispatchOrderEmails({ orderStore: store, emailSender: sender, clock })).toBe(1);
 		expect(sender.countByTemplate("order-confirmation", "ord-2")).toBe(1);
+	});
+
+	test("no email provider (EmailTransportUnavailableError): the row is released, no attempt used, the drain stops", async () => {
+		const { store, clock } = await paidOrder();
+		const noProvider: EmailSender = {
+			send: () => Promise.reject(new EmailTransportUnavailableError()),
+		};
+		let unavailable = 0;
+		for (let n = 0; n < 15; n++) {
+			expect(
+				await dispatchOrderEmails(
+					{ orderStore: store, emailSender: noProvider, clock },
+					{ maxAttempts: 3, onTransportUnavailable: () => unavailable++ },
+				),
+			).toBe(0);
+			clock.advance(TRANSPORT_UNAVAILABLE_RETRY_MS);
+		}
+		expect(unavailable).toBe(15);
+		// However often: never counted, never timed out, never parked.
+		expect(store.outboxEntry("ord-1")).toMatchObject({
+			status: "pending",
+			attempts: 0,
+			timeouts: 0,
+		});
+		// Backed off: not due again until the provider back-off has passed.
+		await dispatchOrderEmails({ orderStore: store, emailSender: noProvider, clock });
+		const lease = new Date(clock.now().getTime() + 60_000).toISOString();
+		expect(await store.claimNextEmail(clock.now().toISOString(), lease)).toBeNull();
+		// Once a provider is there, the same row goes out on its first counted attempt.
+		clock.advance(TRANSPORT_UNAVAILABLE_RETRY_MS);
+		const sender = new FakeEmailSender();
+		expect(await dispatchOrderEmails({ orderStore: store, emailSender: sender, clock })).toBe(1);
+		expect(sender.countByTemplate("order-confirmation", "ord-1")).toBe(1);
+		expect(store.outboxEntry("ord-1")).toMatchObject({ status: "sent", attempts: 1 });
+	});
+
+	test("the no-provider error is recognised structurally, across a bridge", () => {
+		expect(isEmailTransportUnavailableError(new EmailTransportUnavailableError())).toBe(true);
+		expect(isEmailTransportUnavailableError({ name: "EmailTransportUnavailableError" })).toBe(true);
+		expect(isEmailTransportUnavailableError(new Error("no provider"))).toBe(false);
+		expect(isEmailTransportUnavailableError(null)).toBe(false);
 	});
 
 	test("a send the CALLER cut short (less than its full cap) is not the provider's fault: due now, no timeout recorded", async () => {

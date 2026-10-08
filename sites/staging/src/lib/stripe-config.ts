@@ -2,7 +2,7 @@
  * The build-time Stripe publishable key (ADR-0012 decision 4).
  *
  * Baked into the bundle by a Vite `define` in `astro.config.ts`, resolved
- * exactly like the egress URL there (`EMAIL_API_URL`): shell env → `sites/staging/.env` → absent. Changing
+ * from shell env → `sites/staging/.env` → absent. Changing
  * it is a rebuild + redeploy. It is baked rather than read from wrangler `vars`
  * at runtime because `test/wrangler-config.test.ts` forbids any `vars` key
  * matching `/SECRET|KEY|TOKEN|PASSWORD/i` — a guard worth keeping — and a

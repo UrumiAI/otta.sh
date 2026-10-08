@@ -249,8 +249,12 @@ describe("the tick's time budget", () => {
 		expect(clock.elapsed()).toBeLessThanOrEqual(SWEEP_TICK_BUDGET_MS);
 		// Not starved by the hang either.
 		expect(outcome(summary, "expire-holds").deferred).toBeUndefined();
-		// And the timed-out row was handed back UNCOUNTED, not spent.
-		for (const entry of await outboxOf(`${suffix}-1`)) expect(entry.attempts).toBe(0);
+		// ADR-0031: `ctx.email` has no idempotency key, so a timed-out send may have
+		// gone — it is COUNTED (one attempt), never an uncounted timeout.
+		for (const entry of await outboxOf(`${suffix}-1`)) {
+			expect(entry.attempts).toBe(1);
+			expect(entry.timeouts ?? 0).toBe(0);
+		}
 	}, 120_000);
 
 	test("a slow-but-working provider (2 s a send) DELIVERS — the send cap leaves room for it", async () => {
@@ -279,7 +283,7 @@ describe("the tick's time budget", () => {
 		for (const entry of entries) expect(entry.status).toBe("sent");
 	}, 120_000);
 
-	test("a 2 s provider whose sends the TICK cuts short (outbox not leading, little time left) never gains timeouts", async () => {
+	test("a 2 s provider whose sends the TICK cuts short is COUNTED per send, never as uncounted timeouts (ADR-0031)", async () => {
 		const suffix = `cutshort-${crypto.randomUUID()}`;
 		await placePaidOrder(`${suffix}-1`);
 		const clock = new SimulatedClock();
@@ -311,10 +315,12 @@ describe("the tick's time budget", () => {
 		}
 		expect(given.length).toBeGreaterThan(0);
 		for (const timeout of given) expect(timeout).toBeLessThan(SWEEP_EMAIL_SEND_TIMEOUT_MS);
+		// ADR-0031: a cut-short send may still have been delivered, and no provider
+		// can dedupe its retry — each one spends an attempt (bounded by maxAttempts),
+		// and nothing is recorded as an uncounted timeout.
 		for (const entry of await outboxOf(`${suffix}-1`)) {
 			expect(entry.timeouts ?? 0).toBe(0);
-			expect(entry.attempts).toBe(0);
-			expect(entry.status).toBe("pending");
+			expect(entry.attempts).toBe(given.length);
 		}
 		// Drain it with a full tick so later cases start clean.
 		await runCommerceSweeps(context(storage), SWEEP_TASK_NAME, baseOptions());
@@ -343,11 +349,12 @@ describe("the tick's time budget", () => {
 			await runCommerceSweeps(context(storage), SWEEP_TASK_NAME, options);
 		}
 		for (const entry of await outboxOf(`${suffix}-b`)) expect(entry.status).toBe("sent");
-		// The stuck one is backed off and still unparked, its timeout recorded.
+		// The stuck one is backed off and still unparked. ADR-0031: its timeout is a
+		// COUNTED attempt (it may have been delivered), not an uncounted timeout.
 		for (const entry of await outboxOf(`${suffix}-a`)) {
 			expect(entry.status).toBe("pending");
-			expect(entry.attempts).toBe(0);
-			expect(entry.timeouts).toBe(1);
+			expect(entry.attempts).toBe(1);
+			expect(entry.timeouts ?? 0).toBe(0);
 		}
 	}, 120_000);
 
@@ -370,9 +377,11 @@ describe("the tick's time budget", () => {
 		const summary = await runCommerceSweeps(context(storage), SWEEP_TASK_NAME, options);
 		expect(Date.now() - started).toBeLessThan(3000);
 		expect(outcome(summary, "order-emails").count).toBe(0);
+		// ADR-0031: the cut-off send is a counted attempt; the row is backed off, not
+		// parked.
 		for (const entry of await outboxOf(`${suffix}-1`)) {
 			expect(entry.status).toBe("pending");
-			expect(entry.attempts).toBe(0);
+			expect(entry.attempts).toBe(1);
 		}
 	}, 120_000);
 
@@ -449,9 +458,10 @@ describe("the query budget is an operational setting (Background work per minute
 			timeMs: SWEEP_TICK_BUDGET_MS,
 			queries: 600,
 			expiryBatch: 18,
-			// 12 since the email unit counts the real sender's build (four kv reads)
-			// and the per-tick provider resolve (up to three): it was 15 at 12/unit.
-			emailBatch: 12,
+			// 13: the email unit is 13 calls (the real sender's build is two kv reads and
+			// its first delivered send one "last sent" write, ADR-0031 / PR #418 review);
+			// it was 12 while the build read four and the provider resolve three.
+			emailBatch: 13,
 		});
 	}, 120_000);
 

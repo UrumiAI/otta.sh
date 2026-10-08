@@ -40,6 +40,7 @@ import {
 	sku as toSku,
 	type EmailSender,
 	type SendEmailInput,
+	TRANSPORT_UNAVAILABLE_RETRY_MS,
 } from "@otta-sh/domain";
 import { FixedClock } from "@otta-sh/domain/testing";
 import {
@@ -446,18 +447,14 @@ describe("the four ported sweeps", () => {
 		expect(again?.updatedAt).toBe(firstUpdatedAt);
 	}, 180_000);
 
-	test("order-emails reports SKIPPED while no sender is wired, and drains the outbox once one is", async () => {
-		// Since INC-C5 there IS an `EmailSender` over `ctx.http` — but this sandbox
-		// bakes no `IN_PROCESS_EGRESS_URLS.emailApiUrl`, so `makeEmailSender`
-		// fail-closes to `undefined` and the leg reports the same `skipped` for a
-		// DIFFERENT reason than when this line was written: the deployment is
-		// unconfigured, not the code unbuilt. A silent no-op would be
-		// indistinguishable from an empty outbox, so the leg says so.
-		// `in-process-egress.sandbox.test.ts` covers the CONFIGURED arm, where the
-		// URL is baked into the scratch manifest and its host is in `allowedHosts`.
-		// A row is due FIRST: the leg asks "is any row due?" before it resolves the
-		// provider, so with an empty outbox it is idle, not `skipped` — `skipped` is
-		// the report for work that cannot be sent.
+	test("order-emails reports SKIPPED while no EmDash email provider is wired, and drains the outbox once one is", async () => {
+		// ADR-0031: email is the host's `ctx.email`. A sandboxed host always hands it
+		// over (the plugin declares `email:send`), and with no provider selected its
+		// `send` rejects "Email is not configured" — which is what this boot is (no
+		// `email: true`). The dispatcher then releases the row UNCOUNTED, backed off,
+		// and the leg reports `skipped`: a silent no-op would be indistinguishable
+		// from an empty outbox. A row is due FIRST: with an empty outbox the leg is
+		// idle, not `skipped` — `skipped` is the report for work that cannot be sent.
 		const suffix = "emails";
 		const placed = await placeOrder(suffix, {
 			at: new Date(Date.now() - HOUR_MS),
@@ -466,6 +463,25 @@ describe("the four ported sweeps", () => {
 		// `markPaid` enqueues the outbox row the dispatcher drains.
 		await stores().orderStore.markPaid(toOrderId(placed.id));
 		expect(leg(await tick(), "order-emails")).toMatchObject({ count: 0, skipped: true });
+		// No attempt spent: either this tick claimed the row and released it uncounted,
+		// or an earlier tick in this boot already heard "no provider" and the leg
+		// skipped before claiming (the recorded answer, ADR-0031).
+		const later = new Date(Date.now() + TRANSPORT_UNAVAILABLE_RETRY_MS + 60_000).toISOString();
+		const released = await stores().orderStore.claimNextEmailForOrder(
+			toOrderId(placed.id),
+			later,
+			later,
+		);
+		// The claim above counts its own attempt: 1 means none was spent before it.
+		// (It stays leased until `later`, out of every other case's way.)
+		expect(released).toMatchObject({ attempts: 1, timeouts: 0 });
+
+		// A second paid order, due now, for the drain below.
+		const second = await placeOrder(`${suffix}-2`, {
+			at: new Date(Date.now() - HOUR_MS),
+			holdExpiresAt: new Date(Date.now() + DAY_MS).toISOString(),
+		});
+		await stores().orderStore.markPaid(toOrderId(second.id));
 
 		// And with one injected, over the SAME real store, the leg is a real drain.
 		const sent: SendEmailInput[] = [];

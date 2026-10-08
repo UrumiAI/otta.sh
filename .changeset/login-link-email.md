@@ -4,8 +4,7 @@
 ---
 
 Customer login works again: `storefront/account/login/request` emails the magic link
-(issue #306). The link goes out through `CtxHttpEmailSender` over `ctx.http`, using the
-same egress and `allowedHosts` entry as the order emails.
+(issue #306). The link goes out through the same email sender as the order emails.
 
 - **The link comes from config, never from the request.** Settings gains a required
   "Sign-in link page" field (`settings:loginLinkUrl`): the absolute http(s) URL of the
@@ -20,7 +19,7 @@ same egress and `allowedHosts` entry as the order emails.
   throttled, and whether the provider accepted the mail. A throttled request sends
   nothing, and the token appears only inside the emailed link, never in a reply or a
   log.
-- With no email API URL in the build, a login request also answers the same generic
+- With no email provider, a login request also answers the same generic
   success, issues no challenge, and logs once that login email is unconfigured.
 - The login email's send is bounded by `LOGIN_EMAIL_TIMEOUT_MS` (3 s) rather than the
   30 s order-email ceiling, because it is awaited inline and a throttled request skips

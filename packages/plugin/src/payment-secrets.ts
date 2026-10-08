@@ -1,5 +1,5 @@
 /**
- * The payment/email SECRETS the folded-in commerce layer needs (work order 02,
+ * The payment SECRETS the folded-in commerce layer needs (work order 02,
  * INC-C3), held in WRITE-ONLY plugin kv.
  *
  * WHY THIS MODULE EXISTS. Until the fold-in these values were service
@@ -15,14 +15,15 @@
  * |------------------------------------|---------------------------|----------------------------|
  * | `settings:stripeSecretKey`         | `STRIPE_SECRET_KEY`       | `service/src/stripe-wiring.ts:7`  |
  * | `settings:stripeWebhookSecret`     | `STRIPE_WEBHOOK_SECRET`   | `service/src/stripe-wiring.ts:6`  |
- * | `settings:emailApiKey`             | `EMAIL_API_KEY`           | `service/src/index.ts:79`         |
  *
- * WHAT IS DELIBERATELY NOT HERE. The service's non-secret companions —
- * `EMAIL_API_URL`, `EMAIL_FROM`, `STOREFRONT_BASE_URL` — are configuration, not
- * credentials. A write-only key is the wrong home for a value an operator has to
- * be able to read back and check, and `EMAIL_API_URL` also has to be known at
- * BUILD time to seed `allowedHosts`, which kv cannot do. They stay outside this
- * module.
+ * WHAT IS DELIBERATELY NOT HERE. The service's non-secret companion —
+ * `STOREFRONT_BASE_URL` — is configuration, not a credential. A write-only key
+ * is the wrong home for a value an operator has to be able to read back and
+ * check. It stays outside this module.
+ *
+ * NO EMAIL CREDENTIAL. Email goes through the EmDash host's `ctx.email`
+ * (ADR-0031); the provider holds its own credentials. The email keys earlier
+ * builds stored here are no longer read.
  *
  * SANDBOX-CLEAN. No IO, no host import, no `node:` — `ctx.kv` only, which
  * em-dash provides ungated (no capability, no storage declaration).
@@ -41,22 +42,6 @@ export const STRIPE_SECRET_KEY_KEY = "settings:stripeSecretKey";
  *  (`service/src/stripe-wiring.ts:33-35`). */
 export const STRIPE_WEBHOOK_SECRET_KEY = "settings:stripeWebhookSecret";
 
-/** `EMAIL_API_KEY` — the bearer credential `HttpEmailSender` attaches
- *  (`service/src/index.ts:79`, `service/src/worker.ts:235-239`). Absent ⇒ the
- *  sender still posts, unauthenticated, which the provider will reject — the
- *  honest failure. */
-export const EMAIL_API_KEY_KEY = "settings:emailApiKey";
-
-/**
- * The SMTP2GO API key — sent as `X-Smtp2go-Api-Key` when the store's "Email
- * provider" is SMTP2GO (`email/email-provider.ts`). Its OWN slot, not
- * {@link EMAIL_API_KEY_KEY}: the sender reads only the chosen provider's slot,
- * so switching provider can never send one provider's key to the other. Absent
- * ⇒ an SMTP2GO store is unconfigured: nothing is claimed or sent.
- * (Not a renamed service env var: the service never spoke SMTP2GO.)
- */
-export const SMTP2GO_API_KEY_KEY = "settings:emailSmtp2goApiKey";
-
 /**
  * The shared EDGE token the calling site attaches to a webhook it forwards
  * (`X-Otta-Wh-Token`), checked by `webhooks/stripe/settle` BEFORE it reads any
@@ -72,7 +57,7 @@ export const SMTP2GO_API_KEY_KEY = "settings:emailSmtp2goApiKey";
  * un-provisioned deploy degrades to "HMAC only" rather than to "nothing works"
  * — and never to "nothing is checked".
  *
- * NAMING. The four keys above are camelCase because each is a service env var
+ * NAMING. The keys above are camelCase because each is a service env var
  * transliterated. This one is spelled `settings:otta-wh-token` verbatim at the
  * operator's instruction; it names no env var, so there is nothing to
  * transliterate from. The header it is compared against is `X-Otta-Wh-Token`.
@@ -98,8 +83,6 @@ export const WEBHOOK_EDGE_TOKEN_HEADER = "X-Otta-Wh-Token";
 export const PAYMENT_SECRET_KEYS = [
 	STRIPE_SECRET_KEY_KEY,
 	STRIPE_WEBHOOK_SECRET_KEY,
-	EMAIL_API_KEY_KEY,
-	SMTP2GO_API_KEY_KEY,
 	WEBHOOK_EDGE_TOKEN_KEY,
 ] as const;
 
@@ -141,13 +124,12 @@ export async function readWriteOnlySecret(
 	}
 }
 
-/** Every payment/email secret, read together. Each field is `undefined` when
+/** Every payment secret, read together. Each field is `undefined` when
  *  that secret is unset, empty, or unreadable — the three cases a consumer must
  *  treat identically. */
 export interface PaymentSecrets {
 	stripeSecretKey: string | undefined;
 	stripeWebhookSecret: string | undefined;
-	emailApiKey: string | undefined;
 	/** The `X-Otta-Wh-Token` edge token. `undefined` is MEANINGFUL here and only
 	 *  here: it means the token gate is off (pass-through), not that the route is
 	 *  disabled — see {@link WEBHOOK_EDGE_TOKEN_KEY}. */
@@ -155,26 +137,24 @@ export interface PaymentSecrets {
 }
 
 /**
- * Read all four in one round trip.
+ * Read all three in one round trip.
  *
  * `Promise.all` over INDEPENDENTLY fail-closed reads, deliberately: each
  * `readWriteOnlySecret` already absorbs its own rejection, so a Stripe kv blip
  * degrades Stripe and nothing else. Wrapping raw `ctx.kv.get` calls in a single
- * `Promise.all` would instead reject the whole batch and disarm email along with
- * it.
+ * `Promise.all` would instead reject the whole batch.
  *
  * NOT used by the settle route, on purpose: that route reads the edge token
  * FIRST and ALONE, and only reads the webhook secret after the token gate has
  * passed (INC-C1b test iii). Batching them here would read both every time.
  */
 export async function readPaymentSecrets(ctx: PluginContext): Promise<PaymentSecrets> {
-	const [stripeSecretKey, stripeWebhookSecret, emailApiKey, webhookEdgeToken] = await Promise.all([
+	const [stripeSecretKey, stripeWebhookSecret, webhookEdgeToken] = await Promise.all([
 		readWriteOnlySecret(ctx, STRIPE_SECRET_KEY_KEY),
 		readWriteOnlySecret(ctx, STRIPE_WEBHOOK_SECRET_KEY),
-		readWriteOnlySecret(ctx, EMAIL_API_KEY_KEY),
 		readWriteOnlySecret(ctx, WEBHOOK_EDGE_TOKEN_KEY),
 	]);
-	return { stripeSecretKey, stripeWebhookSecret, emailApiKey, webhookEdgeToken };
+	return { stripeSecretKey, stripeWebhookSecret, webhookEdgeToken };
 }
 
 /** The Stripe webhook signing secret, by name — INC-C1b's settle route reads
@@ -187,11 +167,6 @@ export async function stripeWebhookSecretFromKv(ctx: PluginContext): Promise<str
 /** The Stripe API secret key, by name. */
 export async function stripeSecretKeyFromKv(ctx: PluginContext): Promise<string | undefined> {
 	return readWriteOnlySecret(ctx, STRIPE_SECRET_KEY_KEY);
-}
-
-/** The email provider's API key, by name. */
-export async function emailApiKeyFromKv(ctx: PluginContext): Promise<string | undefined> {
-	return readWriteOnlySecret(ctx, EMAIL_API_KEY_KEY);
 }
 
 /** The `X-Otta-Wh-Token` edge token, by name — the settle route's FIRST read and,

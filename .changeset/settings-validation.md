@@ -4,16 +4,15 @@
 
 Admin Settings checks what it saves and says what it holds (QA U-8).
 
-- **Payment and email keys are trimmed and shape-checked.** The Stripe secret key must start
+- **Payment keys are trimmed and shape-checked.** The Stripe secret key must start
   `sk_live_`/`sk_test_` (or restricted `rk_live_`/`rk_test_`), the webhook signing secret
-  `whsec_`, and the email API key `re_` when the build's email endpoint is Resend; any other
-  key must be one line with no spaces. A wrong shape is refused naming the field, never the
+  `whsec_`; any other key must be one line with no spaces. A wrong shape is refused naming the field, never the
   value, and the key already stored stays.
 - **Key fields are password inputs** (`secret_input`, always empty, no `has_value`). Each
   label says "— set" or "— not set", and a set key has a **Remove** button behind a confirm
   (new action `clear-payment-secret`, value `{ secret: <field id> }`).
 - **The Payments & email label states the truth**: Stripe test/live (from the key prefix),
-  webhook set or not, email key set or not. The optional x402 and edge keys no longer read
+  webhook set or not, email set or not. The optional x402 and edge keys no longer read
   as missing.
 - **Checkout settings are all-or-nothing.** A blank, signed, fractional, non-numeric or
   out-of-range hold time or low-stock threshold is refused by name and nothing is saved —

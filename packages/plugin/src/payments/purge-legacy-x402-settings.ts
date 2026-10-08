@@ -15,7 +15,7 @@
  * Nothing else is touched: never a Stripe, email or edge-token key.
  *
  * COST: it runs outside the sweep tick's query budget (`cron/index.ts`). The
- * marker is read first, so a purged store pays one kv read per isolate
+ * marker is read first, so a purged store pays one kv read per site per isolate
  * and none after that in the same isolate. A store that never had x402 settings
  * pays five idempotent deletes and one write, once.
  *
@@ -40,12 +40,17 @@ export const LEGACY_X402_SETTING_KEYS = [
 /** Set once the purge has completed. */
 export const LEGACY_X402_PURGE_MARKER_KEY = "state:legacyX402SettingsPurged";
 
-/** Set once this isolate has seen the store purged: no later tick reads kv for it. */
-let doneInIsolate = false;
+/**
+ * The sites this isolate has already seen purged, by site URL (`ctx.site.url`;
+ * "" where the host gives none): no later tick reads kv for them. Per site, not
+ * one flag, in case an isolate ever serves more than one site's plugin kv — as
+ * the email purge does.
+ */
+const doneInIsolate = new Set<string>();
 
-/** TESTS ONLY: forget that this isolate already purged. */
+/** TESTS ONLY: forget which sites this isolate already purged. */
 export function resetLegacyX402PurgeForTesting(): void {
-	doneInIsolate = false;
+	doneInIsolate.clear();
 }
 
 /**
@@ -54,17 +59,18 @@ export function resetLegacyX402PurgeForTesting(): void {
  * left the marker unset for a later retry).
  */
 export async function purgeLegacyX402Settings(ctx: PluginContext): Promise<boolean> {
-	if (doneInIsolate) return false;
+	const site = ctx.site?.url ?? "";
+	if (doneInIsolate.has(site)) return false;
 	try {
 		// A string marker (what the purge writes) means done; `null` or `undefined`
 		// (a host's "missing") means not yet.
 		if (typeof (await ctx.kv.get<unknown>(LEGACY_X402_PURGE_MARKER_KEY)) === "string") {
-			doneInIsolate = true;
+			doneInIsolate.add(site);
 			return false;
 		}
 		for (const key of LEGACY_X402_SETTING_KEYS) await ctx.kv.delete(key);
 		await ctx.kv.set(LEGACY_X402_PURGE_MARKER_KEY, new Date().toISOString());
-		doneInIsolate = true;
+		doneInIsolate.add(site);
 		return true;
 	} catch {
 		// Names nothing about any value; retried on a later tick.

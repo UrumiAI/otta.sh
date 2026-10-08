@@ -159,10 +159,7 @@ export {
 } from "./admin/admin-rules-surface.js";
 export {
 	ALLOWED_HOSTS,
-	IN_PROCESS_EGRESS_URLS,
-	type InProcessEgressUrls,
 	resolveAllowedHosts,
-	SMTP2GO_API_HOSTS,
 	STRIPE_API_HOST,
 	OTTA_PLUGIN_CAPABILITIES,
 	OTTA_PLUGIN_ID,
@@ -226,8 +223,6 @@ export {
 // restating the key strings.
 export {
 	constantTimeEquals,
-	emailApiKeyFromKv,
-	EMAIL_API_KEY_KEY,
 	type PaymentSecretKey,
 	type PaymentSecrets,
 	PAYMENT_SECRET_KEYS,
@@ -241,34 +236,13 @@ export {
 	WEBHOOK_EDGE_TOKEN_KEY,
 	webhookEdgeTokenFromKv,
 } from "./payment-secrets.js";
-// INC-C5 — email dispatch, in-process. Exported so a deploying site can name the
-// kv settings key it provisions (`settings:emailFrom`) without restating the
-// string, and so a suite can build the adapter directly.
+// Email goes through the EmDash host's `ctx.email` (ADR-0031): the plugin's one
+// sender, exported so a suite or a site can build it directly.
 export {
-	CtxHttpEmailSender,
-	DEFAULT_EMAIL_FROM,
-	EMAIL_FROM_KEY,
+	CtxEmailSender,
+	type CtxEmailSenderOptions,
 	makeEmailSender,
-	type CtxHttpEmailSenderOptions,
-	type EmailSenderEgress,
-} from "./email/ctx-http-email-sender.js";
-// The "Email provider" choice (Resend-shaped default, or SMTP2GO) and the
-// SMTP2GO sender, so a deploying site can name the kv keys it provisions.
-export {
-	DEFAULT_EMAIL_PROVIDER,
-	DEFAULT_SMTP2GO_REGION,
-	EMAIL_PROVIDER_KEY,
-	EMAIL_PROVIDERS,
-	type EmailProviderId,
-	SMTP2GO_REGION_KEY,
-	SMTP2GO_REGIONS,
-	type Smtp2goRegion,
-} from "./email/email-provider.js";
-export { EmailProviderError, type EmailProviderErrorKind } from "./email/http-email-sender.js";
-export {
-	Smtp2goEmailSender,
-	type Smtp2goEmailSenderOptions,
-} from "./email/smtp2go-email-sender.js";
+} from "./email/ctx-email-sender.js";
 // INC-C1b — the PUBLIC Stripe webhook settle route. The constant and the result
 // shape are exported because the calling site has to name the route and
 // reconstruct Stripe's expected status from the response.

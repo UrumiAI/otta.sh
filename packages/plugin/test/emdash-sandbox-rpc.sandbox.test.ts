@@ -1,7 +1,8 @@
 /**
  * EmDash's REAL sandbox runner path, in real `workerd`: does each piece of the
- * plugin's egress — Stripe and the email senders — reach the host through
- * `ctx.http.fetch` when the plugin runs SANDBOXED?
+ * plugin's egress — Stripe — reach the host through `ctx.http.fetch`, and
+ * does its email reach the host through `ctx.email` (ADR-0031), when the plugin
+ * runs SANDBOXED?
  *
  * In EmDash's sandboxed mode (`@emdash-cms/cloudflare` 1.0.1 `src/sandbox/runner.ts`)
  * a plugin runs in a Worker Loader isolate, and its `ctx.http.fetch(url, init)`
@@ -22,18 +23,23 @@
  * - a `PluginBridge` whose `httpFetch` is EmDash's (`src/sandbox/bridge.ts`,
  *   `PluginBridge.httpFetch`): the props' capabilities and allowed hosts handed
  *   to the REAL `sandboxHttpFetch`, with no runner fetch callback (the runner
- *   passes one only when the site configures `httpFetch`). (The
- *   rest of EmDash's bridge needs D1; only `httpFetch` is under test, and the
- *   probe gives Stripe its fake secrets through an in-isolate kv.)
+ *   passes one only when the site configures `httpFetch`); and whose `emailSend`
+ *   body IS EmDash's own (`PluginBridge.emailSend`), lifted verbatim from the
+ *   installed source (the module itself needs D1 and the host package to load),
+ *   over the same module-level `emailSendCallback` it reads. So the "no provider"
+ *   refusal the plugin receives is EmDash's real text, through the real RPC: if
+ *   EmDash rewords it, this suite fails. (The rest of EmDash's bridge needs D1;
+ *   the probe gives Stripe its fake secrets through an in-isolate kv.)
  * - the host's only outbound is a recording stub, so nothing reaches a real
  *   Stripe or email provider. Every secret is a fake.
  *
  * MEASURED (workerd 1.20260710, EmDash 0.38): the RPC REFUSED an `AbortSignal`
  * in `init` — `DataCloneError: AbortSignal serialization is not enabled.` — so
- * a Stripe transport or email sender that put `AbortSignal.timeout(...)` in
- * `init` failed every call in sandboxed mode. They now race their own deadline
- * instead, and a signal travels only when the composition root says the host
- * is trusted (in-process).
+ * a Stripe transport that put `AbortSignal.timeout(...)` in `init` failed every
+ * call in sandboxed mode. It now races its own deadline instead, and a signal
+ * travels only when the composition root says the host is trusted (in-process).
+ * (Email no longer goes through `ctx.http`: it is `ctx.email`, which carries no
+ * signal at all.)
  *
  * MEASURED (workerd 1.20260710, EmDash 1.0.1): the wrapper never forwards
  * `init.signal` — it is DROPPED silently, so the call goes through, and even an
@@ -65,11 +71,12 @@ import {
 	waitUntilReady,
 	WORKERD_BIN,
 } from "./sandbox/harness.js";
-import { EMAIL_HOST, PROBE_HOST, SMTP2GO_HOST, STRIPE_HOST } from "./sandbox/emdash-rpc-probe.js";
+import { EMDASH_SANDBOX_NOT_CONFIGURED_MESSAGE } from "../src/email/ctx-email-sender.js";
+import { PROBE_HOST, STRIPE_HOST } from "./sandbox/emdash-rpc-probe.js";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 /** The probe plugin's `allowedHosts`: every host its routes reach. */
-const ALLOWED = [PROBE_HOST, STRIPE_HOST, EMAIL_HOST, SMTP2GO_HOST];
+const ALLOWED = [PROBE_HOST, STRIPE_HOST];
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 /** The runner's own compatibility date for a loaded plugin (`src/sandbox/runner.ts`, 1.0.1). */
 const RUNNER_COMPATIBILITY_DATE = "2026-04-01";
@@ -93,10 +100,6 @@ function answerNow(where: string): { status: number; body: unknown } {
 			return { status: 200, body: { id: "pi_sandbox_1", status: "canceled" } };
 		case `GET ${STRIPE_HOST}/v1/account`:
 			return { status: 200, body: { id: "acct_sandbox", country: "IN" } };
-		case `POST ${EMAIL_HOST}/emails`:
-			return { status: 200, body: { id: "em_sandbox_1" } };
-		case `POST ${SMTP2GO_HOST}/v3/email/send`:
-			return { status: 200, body: { data: { succeeded: 1, failed: 0 } } };
 		default:
 			return { status: 404, body: { error: `no stub for ${where}` } };
 	}
@@ -109,9 +112,11 @@ function answerNow(where: string): { status: number; body: unknown } {
 function emdashSandboxSources(): {
 	wrapper: string;
 	bridgeHttp: string;
+	bridge: string;
 	pluginTypes: string;
 	httpWire: string;
 } {
+	// (`bridge` is read as text: see `emailSendBody`.)
 	const fromStore = createRequire(path.resolve(HERE, "../../store-emdash/package.json"));
 	const cloudflareRoot = path.resolve(
 		path.dirname(fromStore.resolve("@emdash-cms/cloudflare")),
@@ -129,21 +134,40 @@ function emdashSandboxSources(): {
 	return {
 		wrapper: path.join(cloudflareRoot, "src/sandbox/wrapper.ts"),
 		bridgeHttp: path.join(cloudflareRoot, "src/sandbox/bridge-http.ts"),
+		bridge: path.join(cloudflareRoot, "src/sandbox/bridge.ts"),
 		pluginTypes: path.join(emdashRoot, "src/plugins/types.ts"),
 		httpWire: fromCloudflare.resolve("emdash/internal/plugins/http-wire"),
 	};
 }
 
-function hostSource(sources: ReturnType<typeof emdashSandboxSources>, pluginCode: string): string {
+/** The body of EmDash's `PluginBridge.emailSend`, from the installed source: plain
+ *  JavaScript (its only types are in the signature), reading `this.ctx.props` and
+ *  the module-level `emailSendCallback`. */
+async function emailSendBody(bridgePath: string): Promise<string> {
+	const source = await readFile(bridgePath, "utf8");
+	const body = /async emailSend\([\s\S]*?\): Promise<void> \{\n([\s\S]*?)\n\t\}\n/.exec(
+		source,
+	)?.[1];
+	if (body === undefined) throw new Error(`EmDash's emailSend not found in ${bridgePath}`);
+	return body;
+}
+
+function hostSource(
+	sources: ReturnType<typeof emdashSandboxSources>,
+	pluginCode: string,
+	emailSend: string,
+): string {
 	return `
 import { WorkerEntrypoint } from "cloudflare:workers";
 import { generatePluginWrapper } from ${JSON.stringify(sources.wrapper)};
 import { sandboxHttpFetch } from ${JSON.stringify(sources.bridgeHttp)};
+// EmDash's own module-level provider callback (bridge.ts), set per request below.
+let emailSendCallback = null;
 
 const MANIFEST = {
 	id: "probe",
 	version: "1.0.0",
-	capabilities: ["network:request"],
+	capabilities: ["network:request", "email:send"],
 	allowedHosts: ${JSON.stringify(ALLOWED)},
 	storage: {},
 };
@@ -157,14 +181,30 @@ export class PluginBridge extends WorkerEntrypoint {
 		const { capabilities, allowedHosts } = this.ctx.props;
 		return sandboxHttpFetch(url, init, { capabilities, allowedHosts });
 	}
+	// EmDash's PluginBridge.emailSend, its body verbatim (bridge.ts:1928, @emdash-cms/cloudflare 1.0.1).
+	async emailSend(message) {
+${emailSend}
+	}
 	async log() {}
 }
+
+/** What a wired provider received (input.provider === "recording"). */
+const DELIVERED = [];
 
 export default {
 	async fetch(request, env, ctx) {
 		const route = new URL(request.url).pathname.match(/^\\/route\\/(.+)$/)?.[1];
 		if (route === undefined) return new Response("ready");
+		if (route === "__delivered") return Response.json({ result: DELIVERED });
 		const input = await request.json();
+		// EmDash's own switch (setEmailSendCallback): a callback when a provider is
+		// wired, none otherwise.
+		emailSendCallback =
+			input?.provider === "recording"
+				? async (message) => {
+						DELIVERED.push(message);
+					}
+				: null;
 		const bridge = ctx.exports.PluginBridge({
 			props: {
 				pluginId: MANIFEST.id,
@@ -237,7 +277,11 @@ describe("EmDash's sandbox runner: ctx.http.fetch over the PluginBridge RPC (rea
 			noExternal: [/^@otta-sh\//],
 		});
 		const pluginCode = await readFile(path.join(workDir, "probe/emdash-rpc-probe.mjs"), "utf8");
-		await writeFile(path.join(workDir, "host.js"), hostSource(sources, pluginCode), "utf8");
+		await writeFile(
+			path.join(workDir, "host.js"),
+			hostSource(sources, pluginCode, await emailSendBody(sources.bridge)),
+			"utf8",
+		);
 		await build({
 			entry: [path.join(workDir, "host.js")],
 			outDir: path.join(workDir, "dist"),
@@ -388,17 +432,30 @@ describe("EmDash's sandbox runner: ctx.http.fetch over the PluginBridge RPC (rea
 		expect(seen()).toEqual([`GET ${STRIPE_HOST}/v1/account`]);
 	});
 
-	test("the Resend sender reaches the host (its dedupe key travels)", async () => {
+	test("ctx.email: with a provider wired, the order email reaches it through the RPC, and no request leaves", async () => {
 		stub.requests.length = 0;
-		expect(await route("email", { provider: "resend" })).toBe("sent");
-		expect(seen()).toEqual([`POST ${EMAIL_HOST}/emails`]);
-		expect(stub.requests[0]?.headers["idempotency-key"]).toBe("outbox_row_1");
+		expect(await route("email", { provider: "recording" })).toBe("sent");
+		const delivered = (await route("__delivered")) as Array<Record<string, unknown>>;
+		expect(delivered.at(-1)).toMatchObject({ to: "buyer@example.test" });
+		expect(Object.keys(delivered.at(-1) ?? {}).toSorted()).toEqual([
+			"html",
+			"subject",
+			"text",
+			"to",
+		]);
+		expect(stub.requests).toHaveLength(0);
 	});
 
-	test("the SMTP2GO sender reaches the host", async () => {
-		stub.requests.length = 0;
-		expect(await route("email", { provider: "smtp2go" })).toBe("sent");
-		expect(seen()).toEqual([`POST ${SMTP2GO_HOST}/v3/email/send`]);
+	test("ctx.email: with NO provider, EmDash's real refusal crosses the RPC and is recognised exactly", async () => {
+		// The pin against an EmDash rewording (ADR-0031): the text comes from
+		// EmDash's own bridge, not from this repo.
+		const raw = JSON.parse(String(await route("rawEmail"))) as {
+			message: unknown;
+			recognised: unknown;
+		};
+		expect(raw.recognised).toBe(true);
+		expect(raw.message).toBe(EMDASH_SANDBOX_NOT_CONFIGURED_MESSAGE);
+		expect(await route("email")).toBe("unavailable");
 	});
 
 	// `trustedHost` puts a signal in init. Under 0.38's runner that failed every
@@ -416,12 +473,6 @@ describe("EmDash's sandbox runner: ctx.http.fetch over the PluginBridge RPC (rea
 			`GET ${STRIPE_HOST}/v1/payment_intents/pi_sandbox_1?expand[]=latest_charge`,
 			`POST ${STRIPE_HOST}/v1/refunds`,
 		]);
-	});
-
-	test("trustedHost under the sandbox runner: the email send still reaches the host (signal dropped)", async () => {
-		stub.requests.length = 0;
-		expect(await route("email", { provider: "resend", trustedHost: true })).toBe("sent");
-		expect(seen()).toEqual([`POST ${EMAIL_HOST}/emails`]);
 	});
 
 	// A LATE answer under the runner. Nothing can abort the request (no signal
@@ -478,24 +529,6 @@ describe("EmDash's sandbox runner: ctx.http.fetch over the PluginBridge RPC (rea
 				expect(
 					stub.requests.find((r) => r.url === "/v1/payment_intents")?.headers["idempotency-key"],
 				).toBe("pi_slow_1");
-			} finally {
-				delays.clear();
-				await sleep(1_300);
-			}
-		});
-
-		test("a Resend send answered late is an EmailSendTimeoutError at the bound; its key travelled", async () => {
-			stub.requests.length = 0;
-			delays.set(`POST ${EMAIL_HOST}/emails`, 1_500);
-			try {
-				const started = Date.now();
-				expect(
-					await route("email", { provider: "resend", timeoutMs: 300, key: "outbox_row_slow" }),
-				).toBe("threw EmailSendTimeoutError: email send abandoned after 300 ms");
-				expect(Date.now() - started).toBeLessThan(1_000);
-				expect(stub.requests.find((r) => r.url === "/emails")?.headers["idempotency-key"]).toBe(
-					"outbox_row_slow",
-				);
 			} finally {
 				delays.clear();
 				await sleep(1_300);

@@ -41,7 +41,12 @@ const DRAIN_CLOCK = { now: () => new Date("2099-01-01T00:00:00.000Z") };
 
 /** Drain every due outbox row through the real dispatcher into `sender`. */
 function drain(h: RefundOrderHarness, sender: FakeEmailSender): Promise<number> {
-	return dispatchOrderEmails({ orderStore: h.orderStore, emailSender: sender, clock: DRAIN_CLOCK });
+	// The far-future "now" is a stand-in for "everything is due", not elapsed time,
+	// so the 72 h age limit (ADR-0031) is lifted here.
+	return dispatchOrderEmails(
+		{ orderStore: h.orderStore, emailSender: sender, clock: DRAIN_CLOCK },
+		{ maxAgeMs: Number.POSITIVE_INFINITY },
+	);
 }
 
 /** Build a `seedPaidOrder` over any `OrderStore` — adapter-agnostic (createFromCart

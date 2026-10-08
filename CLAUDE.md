@@ -34,7 +34,8 @@ These are build-breaking, not code-review nits (see `DEVELOPMENT.md` for the ful
   widgets, not React — the discriminator is `format` (`format: "native"` may declare
   `adminEntry`; a `format: "standard"` descriptor that declares `adminEntry` throws at build
   time), and `@otta-sh/plugin` registers `format: "standard"` and stays Block Kit; the plugin's
-  **only** egress is `ctx.http` + `allowedHosts`, and commerce truth lives in `ctx.storage`.
+  **only** egress is `ctx.http` + `allowedHosts` (email is host-mediated: `ctx.email`, ADR-0031),
+  and commerce truth lives in `ctx.storage`.
 
 ## Toolchain & the edit loop
 

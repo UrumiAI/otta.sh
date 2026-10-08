@@ -15,7 +15,6 @@ import type { PluginDescriptor } from "emdash";
 import {
 	COMMERCE_STORAGE_COLLECTIONS,
 	COUPONS_PAGE,
-	type InProcessEgressUrls,
 	REPORTS_PAGE,
 	resolveAllowedHosts,
 	SETTINGS_PAGE,
@@ -58,20 +57,13 @@ function commerceStorage(): DescriptorStorage {
 	return COMMERCE_STORAGE_COLLECTIONS as unknown as DescriptorStorage;
 }
 
-/** INC-C3 — what the egress allowlist depends on. */
-export interface OttaPluginDescriptorOptions {
-	/** Deployment-supplied in-process egress URL (the email provider).
-	 *  Absent ⇒ no host granted for it. */
-	egress?: InProcessEgressUrls;
-}
-
-export function ottaPluginDescriptor(options: OttaPluginDescriptorOptions = {}): PluginDescriptor {
+export function ottaPluginDescriptor(): PluginDescriptor {
 	return {
 		id: OTTA_PLUGIN_ID,
 		version: OTTA_PLUGIN_VERSION,
 		format: "standard",
 		entrypoint: "@otta-sh/plugin/plugin",
-		// EXACTLY the manifest's two capabilities — never more (the
+		// EXACTLY the manifest's three capabilities — never more (the
 		// sandbox-clean contract, pinned by the plugin's own guard test).
 		capabilities: [...OTTA_PLUGIN_CAPABILITIES],
 		// The egress allowlist — resolved by the plugin's own `resolveAllowedHosts`
@@ -79,13 +71,12 @@ export function ottaPluginDescriptor(options: OttaPluginDescriptorOptions = {}):
 		// two different answers.
 		//
 		// The commerce service is gone (INC-D3a), so the calls it used to make are
-		// the plugin's own: the list is Stripe's API host plus the
-		// email host if the deployment supplied one, and no service host
-		// appears at all. The CREDENTIALS for those calls are never baked in here:
-		// they live in write-only plugin kv (`settings:stripe*`,
-		// `settings:emailApiKey`), provisioned
+		// the plugin's own: the list is Stripe's API host, and no service host
+		// appears at all. No email host: email goes through `ctx.email`
+		// (ADR-0031). The CREDENTIALS for those calls are never baked in here:
+		// they live in write-only plugin kv (`settings:stripe*`), provisioned
 		// through the admin Settings form.
-		allowedHosts: resolveAllowedHosts(options.egress),
+		allowedHosts: resolveAllowedHosts(),
 		// THIS DECLARATION IS THE SCHEMA. `ctx.storage.collectionOf(name)` throws
 		// "storage collection '<name>' is not declared" for anything missing from
 		// it, so an omission here is not a degraded query, it is a dead commerce

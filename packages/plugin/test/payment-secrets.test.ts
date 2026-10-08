@@ -1,5 +1,5 @@
 /**
- * INC-C3 — the payment/email secrets the folded-in commerce layer needs, held
+ * INC-C3 — the payment secrets the folded-in commerce layer needs, held
  * in WRITE-ONLY plugin kv, plus the Settings provisioning surface for them.
  *
  * WHERE THE NAMES COME FROM. Every key below is the in-process equivalent of an
@@ -7,16 +7,17 @@
  * folded into the plugin) used to read — nothing is invented:
  *  - `settings:stripeSecretKey`        ← `STRIPE_SECRET_KEY`
  *  - `settings:stripeWebhookSecret`    ← `STRIPE_WEBHOOK_SECRET`
- *  - `settings:emailApiKey`            ← `EMAIL_API_KEY`
  *
- * The service's NON-secret companions (`EMAIL_API_URL`, `EMAIL_FROM`,
- * `STOREFRONT_BASE_URL`) are deliberately NOT
+ * No email credential: email goes through the EmDash host's `ctx.email`
+ * (ADR-0031), and its provider holds its own.
+ *
+ * The service's NON-secret companion (`STOREFRONT_BASE_URL`) is deliberately NOT
  * here: this increment is the secret tier only, and a write-only key is the
  * wrong home for a value that has to be readable back into a form.
  *
  * FAIL-CLOSED IS THE POINT (not decoration). Every reader swallows a kv
  * REJECTION to `undefined`, so a kv outage degrades to "not configured" (no
- * gateway wired, no email sent, no signature accepted) rather than throwing
+ * gateway wired, no signature accepted) rather than throwing
  * out of a hook, and never to an empty string that a downstream
  * `!== undefined` check would read as "configured".
  */
@@ -24,9 +25,7 @@ import { describe, expect, test } from "vitest";
 import type { StorageAccess, StorageCollection } from "@otta-sh/store-emdash";
 import {
 	constantTimeEquals,
-	EMAIL_API_KEY_KEY,
 	PAYMENT_SECRET_KEYS,
-	SMTP2GO_API_KEY_KEY,
 	readPaymentSecrets,
 	readWriteOnlySecret,
 	STRIPE_SECRET_KEY_KEY,
@@ -98,11 +97,10 @@ function makeCtx(
 	return { ctx, kv };
 }
 
-describe("the payment/email secret kv keys", () => {
+describe("the payment secret kv keys", () => {
 	test("each key is the service env var it replaces, in this repo's settings:* convention", () => {
 		expect(STRIPE_SECRET_KEY_KEY).toBe("settings:stripeSecretKey");
 		expect(STRIPE_WEBHOOK_SECRET_KEY).toBe("settings:stripeWebhookSecret");
-		expect(EMAIL_API_KEY_KEY).toBe("settings:emailApiKey");
 	});
 
 	test("the INC-C1b edge token key and header are pinned by name", () => {
@@ -113,21 +111,18 @@ describe("the payment/email secret kv keys", () => {
 		expect(WEBHOOK_EDGE_TOKEN_HEADER).toBe("X-Otta-Wh-Token");
 	});
 
-	test("PAYMENT_SECRET_KEYS is EXACTLY those five — a sixth needs a deliberate edit here", () => {
+	test("PAYMENT_SECRET_KEYS is EXACTLY those three — a fourth needs a deliberate edit here", () => {
 		// Exact set, not containment: this list drives the Settings provisioning
 		// forms and the no-echo pins below, so an accidentally-added key would
 		// otherwise ship an unreviewed secret surface, and an accidentally-dropped
 		// one would silently stop being provisionable.
 		expect([...PAYMENT_SECRET_KEYS].toSorted()).toEqual(
-			[
-				EMAIL_API_KEY_KEY,
-				// SMTP2GO's own slot (ADR-0005, 2026-10-05): never shared with Resend's.
-				SMTP2GO_API_KEY_KEY,
-				STRIPE_SECRET_KEY_KEY,
-				STRIPE_WEBHOOK_SECRET_KEY,
-				WEBHOOK_EDGE_TOKEN_KEY,
-			].toSorted(),
+			[STRIPE_SECRET_KEY_KEY, STRIPE_WEBHOOK_SECRET_KEY, WEBHOOK_EDGE_TOKEN_KEY].toSorted(),
 		);
+	});
+
+	test("no email credential is provisionable: email goes through ctx.email (ADR-0031)", () => {
+		for (const key of PAYMENT_SECRET_KEYS) expect(key).not.toMatch(/email/i);
 	});
 
 	test("INC-C1b's dependency: settings:stripeWebhookSecret specifically exists", () => {
@@ -193,13 +188,11 @@ describe("readPaymentSecrets is fail-closed PER SECRET", () => {
 		const { ctx } = makeCtx({
 			[STRIPE_SECRET_KEY_KEY]: "sk_test_abc",
 			[STRIPE_WEBHOOK_SECRET_KEY]: "whsec_abc",
-			[EMAIL_API_KEY_KEY]: "email_key_abc",
 			[WEBHOOK_EDGE_TOKEN_KEY]: "edge_abc",
 		});
 		await expect(readPaymentSecrets(ctx)).resolves.toEqual({
 			stripeSecretKey: "sk_test_abc",
 			stripeWebhookSecret: "whsec_abc",
-			emailApiKey: "email_key_abc",
 			webhookEdgeToken: "edge_abc",
 		});
 	});
@@ -209,25 +202,24 @@ describe("readPaymentSecrets is fail-closed PER SECRET", () => {
 		await expect(readPaymentSecrets(ctx)).resolves.toEqual({
 			stripeSecretKey: undefined,
 			stripeWebhookSecret: undefined,
-			emailApiKey: undefined,
 			webhookEdgeToken: undefined,
 		});
 	});
 
 	test("ONE failing key degrades only itself — the others still resolve", async () => {
-		// `Promise.all` over four reads would reject the whole batch on one
-		// failure; the per-secret catch is what keeps a Stripe kv blip from also
-		// disarming email.
+		// `Promise.all` over the reads would reject the whole batch on one
+		// failure; the per-secret catch is what keeps one key's kv blip from also
+		// disarming the others.
 		const { ctx } = makeCtx(
 			{
 				[STRIPE_SECRET_KEY_KEY]: "sk_test_abc",
-				[EMAIL_API_KEY_KEY]: "email_key_abc",
+				[STRIPE_WEBHOOK_SECRET_KEY]: "whsec_abc",
 			},
 			new Set([STRIPE_SECRET_KEY_KEY]),
 		);
 		const secrets = await readPaymentSecrets(ctx);
 		expect(secrets.stripeSecretKey).toBeUndefined();
-		expect(secrets.emailApiKey).toBe("email_key_abc");
+		expect(secrets.stripeWebhookSecret).toBe("whsec_abc");
 	});
 
 	test("EVERY key failing still resolves (a total kv outage is not a throw)", async () => {
@@ -235,7 +227,6 @@ describe("readPaymentSecrets is fail-closed PER SECRET", () => {
 		await expect(readPaymentSecrets(ctx)).resolves.toEqual({
 			stripeSecretKey: undefined,
 			stripeWebhookSecret: undefined,
-			emailApiKey: undefined,
 			webhookEdgeToken: undefined,
 		});
 	});
@@ -320,7 +311,7 @@ describe("constantTimeEquals", () => {
  * the two connection tokens (`service-token-kv-wiring.test.ts`): persist only on
  * a non-empty submit, never render the value back into any block or toast.
  */
-describe("Settings provisioning of the payment/email secrets (write-only)", () => {
+describe("Settings provisioning of the payment secrets (write-only)", () => {
 	const CASES = [
 		["save-stripe-secret-key", "stripeSecretKey", STRIPE_SECRET_KEY_KEY, "sk_live_NEVER_RENDER"],
 		[
@@ -329,7 +320,6 @@ describe("Settings provisioning of the payment/email secrets (write-only)", () =
 			STRIPE_WEBHOOK_SECRET_KEY,
 			"whsec_NEVER_RENDER",
 		],
-		["save-email-api-key", "emailApiKey", EMAIL_API_KEY_KEY, "email_NEVER_RENDER"],
 		[
 			"save-webhook-edge-token",
 			"webhookEdgeToken",

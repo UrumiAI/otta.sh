@@ -104,9 +104,11 @@
  *  - an email SEND is the one unit whose length someone else decides, so the
  *    whole send is raced against a timer at `SWEEP_EMAIL_SEND_TIMEOUT_MS` or at
  *    what is left of the leg, whichever is sooner, and the time is checked once
- *    more just before it. A send cut off either way is handed back WITHOUT
- *    counting an attempt (`releaseEmailClaim`): a timeout is not a provider
- *    failure, and a row must never be parked `failed` for our own deadline;
+ *    more just before it. A send left too little time is handed back untried
+ *    and uncounted (`releaseEmailClaim`). A send that STARTED and timed out —
+ *    at the full cap or at what the tick had left — counts as an attempt
+ *    (`countTimeoutsAsAttempts`, ADR-0031): `ctx.email` has no idempotency key,
+ *    so it may have been delivered, and counting bounds the duplicates;
  *  - each leg may use only a SHARE of the tick (never less than one unit of its own
  *    work), so a hung provider or a backlog cannot take it all — and a leg its share
  *    stopped gets a SECOND PASS on whatever the tick has left once every leg has had
@@ -157,7 +159,6 @@ import {
 	expireOrdersBatch,
 	finishCancellationRestock,
 	idempotencyKey as toIdempotencyKey,
-	isEmailSendTimeoutError,
 	orderId as toOrderId,
 	productId as toProductId,
 	retryLatePaymentRefunds,
@@ -166,6 +167,7 @@ import {
 	type EmailSender,
 	type OrderId,
 	type OrderState,
+	type OutboxEmail,
 } from "@otta-sh/domain";
 import {
 	CARTS_COLLECTION,
@@ -190,15 +192,14 @@ import {
 	type InProcessCommerceStores,
 } from "../commerce/in-process-commerce-stores.js";
 import {
+	countTimeoutsAsAttempts,
+	EMAIL_AVAILABILITY_READS,
 	EMAIL_SENDER_BUILD_READS,
-	EMAIL_TRANSPORT_RESOLVE_READS,
-	type EmailTransport,
+	EMAIL_SENT_RECORD_WRITES,
+	emailSendingAvailable,
 	makeEmailSender,
-	resolveEmailTransport,
-} from "../email/ctx-http-email-sender.js";
-import { providerDedupesRetries } from "../email/email-provider.js";
-import { countTimeoutsAsAttempts } from "../email/http-email-sender.js";
-import { IN_PROCESS_EGRESS_URLS } from "../manifest.js";
+} from "../email/ctx-email-sender.js";
+import { logExpiredEmails } from "../email/expired-emails.js";
 import {
 	boundedRefundStripeOptions,
 	type BoundedRefundStripeOptions,
@@ -326,10 +327,10 @@ export const STARVING_TICKS = 3 * AGING_TICKS;
  * the provider call (`headroom`), and allowed past the ceiling once the call has
  * happened (`allowCommit`), so an action is never repeated for want of its record.
  *  - An email, from just before the send: the refund-total and recipient reads (two),
- *    building the sender (up to `EMAIL_SENDER_BUILD_READS` kv reads, four, on the
- *    first send), the request (one), and marking it sent (three: the read, the
- *    write, the locator) — ten. `cron-leg-costs.test.ts` measures it with the
- *    REAL sender construction for both providers.
+ *    building the sender (`EMAIL_SENDER_BUILD_READS` kv reads, two, on the first
+ *    send), the send (one), its "last sent" record (`EMAIL_SENT_RECORD_WRITES`, one
+ *    kv write, also on the first send), and marking it sent (three: the read, the write, the locator) —
+ *    nine. `cron-leg-costs.test.ts` measures it with the REAL sender construction.
  *  - A withdrawal: the cancel and, when Stripe refuses it, the read-back (two
  *    subrequests), the intent's resolution (two) and, on a last attempt, the
  *    give-up flag (two) — six; its record is the last four.
@@ -339,7 +340,8 @@ export const STARVING_TICKS = 3 * AGING_TICKS;
  * already made — no second refund.
  */
 const EMAIL_RECORD_CALLS = 3;
-export const EMAIL_SEND_AND_RECORD_CALLS = 2 + EMAIL_SENDER_BUILD_READS + 1 + EMAIL_RECORD_CALLS;
+export const EMAIL_SEND_AND_RECORD_CALLS =
+	2 + EMAIL_SENDER_BUILD_READS + 1 + EMAIL_SENT_RECORD_WRITES + EMAIL_RECORD_CALLS;
 const CANCEL_CALL_AND_RECORD_CALLS = 6;
 const CANCEL_RECORD_CALLS = 4;
 
@@ -429,15 +431,9 @@ export function legStartCalls(leg: SweepLeg, queryBudget: number): number {
  * out is the sweep's doing, not the provider's: it is handed back due at once,
  * with no backoff and no timeout recorded.
  *
- * A send that times out is NOT a failed attempt (`EmailSendTimeoutError`) on a
- * provider that dedupes retries (Resend's `Idempotency-Key`): the
- * row is handed back uncounted, with a forward backoff (one minute, doubling to
- * fifteen) so it falls behind the other due rows; after ten such timeouts the
- * sweep reports it (`console.error`) and further timeouts count as attempts, so a
- * provider that never answers in time does eventually park the row, with the
- * reason "provider kept timing out". On a provider WITHOUT an idempotency key
- * (SMTP2GO) every timeout is a counted attempt instead (`countTimeoutsAsAttempts`):
- * the provider may have delivered, so duplicates stop at the row's `maxAttempts`.
+ * A send that times out is a COUNTED attempt (`countTimeoutsAsAttempts`):
+ * `ctx.email` carries no idempotency key, so the provider may have delivered and
+ * duplicates stop at the row's `maxAttempts` (ADR-0031).
  */
 export const SWEEP_EMAIL_SEND_TIMEOUT_MS = 5_000;
 
@@ -624,12 +620,12 @@ export const LEG_QUERY_COSTS: Record<SweepLeg, { readonly entry: number; readonl
 		// The claim (its page, the read and the write: three), the order read, and then
 		// EMAIL_SEND_AND_RECORD_CALLS: the
 		// reads before the send, building the real sender (up to four kv reads, the
-		// first send), the request, and marking it sent. QA3 saw 13-14 a tick with its due
+		// first send), the request, its "last sent" record, and marking it sent. QA3 saw 13-14 a tick with its due
 		// check; 8 counted only an injected sender, and the ceiling then fell after the
-		// send — the duplicate emails of N2.
-		// entry: resolving the store's email provider once per tick (one kv read for
-		// Resend, three for SMTP2GO: `EMAIL_TRANSPORT_RESOLVE_READS`).
-		"order-emails": { entry: EMAIL_TRANSPORT_RESOLVE_READS, unit: 4 + EMAIL_SEND_AND_RECORD_CALLS },
+		// send — the duplicate emails of N2. entry: whether the host has an email
+		// provider — `ctx.email`, plus one kv read of the "no provider" record
+		// (`EMAIL_AVAILABILITY_READS`).
+		"order-emails": { entry: EMAIL_AVAILABILITY_READS, unit: 4 + EMAIL_SEND_AND_RECORD_CALLS },
 		"expire-holds": { entry: 2, unit: 14 },
 		// The flip, the email locator, the rollup delta, the batched hold release and
 		// the intent stamp: 13 for a one-line order (QA2 M2; it was 22). A bigger order
@@ -730,7 +726,7 @@ function expireHoldsEntry(expiryBatch: number): number {
  * Free (30): 1 hold, 1 order, 1 email a tick (QA2 M2: a bite of 2 holds made the
  * hold leg's list alone 6 calls, and it could not start behind the money legs'
  * due checks — a second unit never fits a Free tick anyway). Paid (600): 18
- * holds/orders, 15 emails — the time budget, not the count, usually ends a Paid
+ * holds/orders, 13 emails — the time budget, not the count, usually ends a Paid
  * tick first.
  */
 export function batchesFor(queryBudget: number): {
@@ -890,11 +886,10 @@ export interface CommerceSweepSummary {
 
 export interface CommerceSweepOptions {
 	/**
-	 * The outbox's sender — an OVERRIDE since INC-C5, not the only source. Left
-	 * unset, the tick builds the in-process `CtxHttpEmailSender` from the context
-	 * and this bundle's email API URL; a suite sets it to pin the outbox against a
-	 * fake without any egress. Neither one existing (no injection, no configured
-	 * provider) makes the `order-emails` leg report `skipped` whenever an email is
+	 * The outbox's sender — an OVERRIDE, not the only source. Left unset, the tick
+	 * builds the `CtxEmailSender` over the host's `ctx.email`; a suite sets it to
+	 * pin the outbox against a fake. Neither one existing (no injection, no
+	 * EmDash email provider) makes the `order-emails` leg report `skipped` whenever an email is
 	 * due, rather than pretend to drain an outbox — a silent no-op here would look
 	 * exactly like an empty one.
 	 */
@@ -950,9 +945,9 @@ export interface CommerceSweepOptions {
 	readonly emailBatchLimit?: number;
 	/**
 	 * Builds the outbox's sender, given the per-send timeout to apply at each send.
-	 * Default: the in-process `CtxHttpEmailSender` over `ctx.http`, when this bundle
-	 * carries an email API URL. A suite injects one to model a slow provider that
-	 * honours the abort. Ignored when `emailSender` is set.
+	 * Default: the `CtxEmailSender` over `ctx.email`, when the host has an email
+	 * provider. A suite injects one to model a slow provider. Ignored when
+	 * `emailSender` is set.
 	 */
 	/**
 	 * The payment gateways a provider-facing leg uses — an OVERRIDE, either a map
@@ -1326,43 +1321,25 @@ export async function runCommerceSweeps(
 
 	// ── the legs ──────────────────────────────────────────────────────────────
 
-	// An injected sender (a suite) needs no provider. Otherwise the store's email
-	// provider is resolved INSIDE the leg's body — after its due check and its
-	// budget gate, under its charge — at most ONCE per tick (the second pass reuses
-	// it), and handed to the sender build so it is not read again. Its reads are the
-	// leg's `entry` cost in `LEG_QUERY_COSTS`, which `canStart` keeps room for, so a
-	// busy tick DEFERS the leg (and it ages) rather than reaching a read the ceiling
-	// refuses. (Review of #383: resolved before the gate, a refused read was
-	// swallowed by the fail-soft readers into "no provider" — `skipped`, which
-	// cleared the leg's wait on every busy tick, so order emails could starve.)
-	// Should a read be refused anyway, `run` sees `wasRefused` and reports the
-	// ceiling stop, never `skipped`. An idle outbox pays only the due check.
-	// Unresolvable (no URL for Resend, no SMTP2GO key, a failed or unknown provider
-	// read) ⇒ `skipped`: nothing is claimed, so no attempt is spent.
+	// An injected sender (a suite) needs no provider. Otherwise the host's email
+	// provider is `ctx.email` (ADR-0031): absent ⇒ `skipped`, nothing claimed, no
+	// attempt spent. A sandboxed host always has `ctx.email` and says "no provider"
+	// on a send instead: the dispatcher releases that row uncounted, the leg reports
+	// `skipped` all the same (`onTransportUnavailable`), and the sender records the
+	// answer, so the next ticks skip BEFORE claiming (`emailSendingAvailable`, one
+	// kv read — the leg's entry cost) until the record lapses and one send retries.
 	const injectedSender =
 		options.emailSender !== undefined || options.emailSenderFactory !== undefined;
-	let transportP: Promise<EmailTransport | undefined> | undefined;
 	const orderEmailsLeg = async (): Promise<void> => {
 		await run(
 			"order-emails",
 			async (legBudget) => {
-				let transport: EmailTransport | undefined;
-				if (!injectedSender) {
-					transportP ??= resolveEmailTransport(ctx, {
-						apiUrl: IN_PROCESS_EGRESS_URLS.emailApiUrl,
-					});
-					transport = await transportP;
-					if (transport === undefined) return { count: 0, skipped: true };
+				if (!injectedSender && !(await emailSendingAvailable(ctx))) {
+					return { count: 0, skipped: true };
 				}
-				const outbox = outboxSender(ctx, options, legBudget, transport);
-				if (outbox === undefined) return { count: 0, skipped: true };
-				// No idempotency key (SMTP2GO): a timeout — the sender's or the sweep's
-				// own timer — is a COUNTED attempt, so a slow but accepting provider is
-				// not re-sent the same email on every tick. Outermost, over the timer.
-				const provider =
-					transport !== undefined && !providerDedupesRetries(transport.provider)
-						? countTimeoutsAsAttempts(outbox)
-						: outbox;
+				const provider = outboxSender(ctx, options, legBudget);
+				if (provider === undefined) return { count: 0, skipped: true };
+				let unavailable = false;
 				// A delivered email is RECORDED, whatever the ceiling says (QA3 N2).
 				const emailSender: EmailSender = {
 					async send(input) {
@@ -1382,6 +1359,8 @@ export async function runCommerceSweeps(
 				const orderStore = countClaims(stores.orderStore, () => {
 					claimed++;
 				});
+				// Rows the 72 h cap completed unsent: logged once per tick below (ADR-0031).
+				const expired: OutboxEmail[] = [];
 				const count = await dispatchOrderEmails(
 					{
 						orderStore,
@@ -1407,6 +1386,12 @@ export async function runCommerceSweeps(
 							if (!ok) legBudget.stopped = true;
 							return ok;
 						},
+						onTransportUnavailable: () => {
+							unavailable = true;
+						},
+						onExpired: (row) => {
+							expired.push(row);
+						},
 						// Alertable: past ten timeouts a provider is not slow but not working,
 						// and from here each timeout counts toward parking the row.
 						onRepeatedTimeouts: (row) => {
@@ -1419,6 +1404,10 @@ export async function runCommerceSweeps(
 					},
 				);
 				noteUnits("order-emails", claimed, legBudget);
+				logExpiredEmails("cron sweep order-emails", expired);
+				// The host has no email provider (sandboxed: learned from the send). The
+				// row went back uncounted; report the configuration, not "sent 0".
+				if (unavailable && count === 0) return { count: 0, skipped: true };
 				// "More left": the budget stopped it with a claim still to try, or every
 				// claim the batch allowed found a row. The second can also mean the outbox
 				// emptied on exactly the last claim — reported `incomplete` then, harmlessly,
@@ -2118,8 +2107,8 @@ function recordingCancels(
 /**
  * The outbox's sender, or `undefined` when this deployment has none.
  *
- * Built LAZILY, on the first send: building reads two kv values (the API key, the
- * from-address), and an empty outbox — the usual minute — should not pay them.
+ * Built LAZILY, on the first send: building reads two kv values (the store name,
+ * the sign-in page), and an empty outbox — the usual minute — should not pay them.
  * The per-send timeout is asked AT EACH SEND: what is left of the leg when that
  * send starts, capped at `SWEEP_EMAIL_SEND_TIMEOUT_MS` and never below 1 ms (a
  * zero would mean "no timeout" to some transports).
@@ -2128,20 +2117,11 @@ function outboxSender(
 	ctx: PluginContext,
 	options: CommerceSweepOptions,
 	legBudget: LegBudget,
-	transport: EmailTransport | undefined,
 ): EmailSender | undefined {
 	if (options.emailSender !== undefined) return options.emailSender;
-	const apiUrl = IN_PROCESS_EGRESS_URLS.emailApiUrl;
-	// Reached only once the leg has resolved the store's transport; the build reuses
-	// it rather than reading the provider again.
 	const factory =
 		options.emailSenderFactory ??
-		((requestTimeoutMs: () => number) =>
-			makeEmailSender(
-				ctx,
-				{ apiUrl },
-				{ requestTimeoutMs, ...(transport !== undefined ? { transport } : {}) },
-			));
+		((requestTimeoutMs: () => number) => makeEmailSender(ctx, { requestTimeoutMs }));
 	const timeoutMs = (): number =>
 		Math.max(1, Math.min(SWEEP_EMAIL_SEND_TIMEOUT_MS, legBudget.remainingMs()));
 	let built: Promise<EmailSender | undefined> | undefined;
@@ -2153,46 +2133,41 @@ function outboxSender(
 		if (sender === undefined) throw new Error("email sender is not configured");
 		await sender.send(input);
 	};
-	return {
+	// A timeout — the sender's own or the timer below — is a COUNTED attempt:
+	// `ctx.email` has no idempotency key, so the email may have gone (ADR-0031).
+	const counted = countTimeoutsAsAttempts({
 		/**
-		 * The WHOLE send is raced against a timer — not only the request and body
-		 * read the sender's own deadline covers (`send-deadline.ts`). Everything
-		 * before the request (building the sender's kv reads, and the host's
-		 * `ctx.http.fetch` resolving the provider's address over DNS-over-HTTPS)
-		 * can hang too. If the timer wins it is a TIMEOUT: the row goes back
-		 * uncounted, and should the provider deliver late after all, the retry's
-		 * `Idempotency-Key` (the outbox row id) lets it dedupe.
+		 * The WHOLE send is raced against a timer, not only the host call the
+		 * sender itself bounds: building the sender reads kv, which can hang too.
 		 */
 		async send(input) {
 			const limitMs = timeoutMs();
-			// Given LESS than the full cap (the tick was short of time): a timeout then
-			// is ours, not the provider's — handed back due at once, uncounted, with
-			// no backoff and no timeout recorded against the row.
-			const cutShort = limitMs < SWEEP_EMAIL_SEND_TIMEOUT_MS;
 			let timer: ReturnType<typeof setTimeout> | undefined;
 			const deadline = new Promise<never>((_resolve, reject) => {
-				timer = setTimeout(() => reject(new EmailSendTimeoutError(limitMs, { cutShort })), limitMs);
+				timer = setTimeout(() => reject(new EmailSendTimeoutError(limitMs)), limitMs);
 			});
 			const sending = attempt(input);
 			// The losing side of the race must not surface as an unhandled rejection.
 			sending.catch(() => undefined);
 			try {
 				await Promise.race([sending, deadline]);
-			} catch (err) {
-				// The sender's own abort fires with the same limit; whichever side wins,
-				// it is one timeout, carrying whether the allowance was the full one.
-				if (isEmailSendTimeoutError(err)) {
-					throw new EmailSendTimeoutError(limitMs, { cutShort });
-				}
-				// The tick's query ceiling refused a call inside the send (building the
-				// sender reads kv): that is the sweep's own limit, never the provider's
-				// failure — handed back due at once, uncounted, like a send cut short.
-				if (isSweepQueryCeilingError(err)) {
-					throw new EmailSendTimeoutError(limitMs, { cutShort: true });
-				}
-				throw err;
 			} finally {
 				clearTimeout(timer);
+			}
+		},
+	});
+	return {
+		async send(input) {
+			try {
+				await counted.send(input);
+			} catch (err) {
+				// The tick's query ceiling refused a call inside the send (building the
+				// sender reads kv): the sweep's own limit, before anything was sent —
+				// handed back due at once, UNCOUNTED, as a send cut short.
+				if (isSweepQueryCeilingError(err)) {
+					throw new EmailSendTimeoutError(timeoutMs(), { cutShort: true });
+				}
+				throw err;
 			}
 		},
 	};
@@ -2213,7 +2188,11 @@ function logOutcome(outcome: Omit<SweepLegOutcome, "queries">): void {
 	if (outcome.skipped === true) {
 		if (!loggedSkipped.has(outcome.leg)) {
 			loggedSkipped.add(outcome.leg);
-			console.log(`[otta] cron sweep ${outcome.leg} skipped — not wired on this deployment`);
+			console.log(
+				outcome.leg === "order-emails"
+					? "[otta] cron sweep order-emails skipped — no EmDash email provider is selected (ADR-0031)"
+					: `[otta] cron sweep ${outcome.leg} skipped — not wired on this deployment`,
+			);
 		}
 		return;
 	}

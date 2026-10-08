@@ -3189,27 +3189,26 @@ accordion   block_id settings:payments
             ← U-8: states what card checkout and email have: "Stripe test" | "Stripe
               live" (from the key's prefix) | "Stripe key set" (an unchecked legacy
               value) | "no Stripe key"; "webhook set" | "no webhook"; "email set" |
-              "no email". The optional edge key states its status on its own
-              field. Longest render is exactly 60 (X-11).
+              "no email" (ADR-0031: whether the host hands over `ctx.email`). The optional edge key states its status on its
+              own field. Longest render is exactly 60 (X-11).
             default_open FALSE
             └─ context "Keys are never shown once saved. Leave a field blank to keep the
                         key you saved before."                                    (≤200)
                per credential: context (the expected shape, e.g. "Starts with sk_live_ or
                      sk_test_ …"), then its form:
-               form × 4, one per credential, each cf{"settings:<actionId>",
+               form × 3, one per credential, each cf{"settings:<actionId>",
                      {gen:"<save generation>"}}                          ← AMENDED (INC-09)
                      secret_input "Stripe secret key — set|not set"
                                                          → save-stripe-secret-key
                      secret_input "Stripe webhook signing secret — …"
                                                          → save-stripe-webhook-secret
-                     secret_input "Email provider API key — …"  → save-email-api-key
                      secret_input "Stripe webhook edge token (optional) — …"
                                                          → save-webhook-edge-token
                      placeholder  set: "Set — leave blank to keep it, or enter a new one"
                                   not set: the shape to paste ("sk_live_… or sk_test_…")
                      ← U-8: always empty, NO `has_value`, NO `initial_value`. Saved TRIMMED,
-                       after a shape check (sk_/rk_ live|test, whsec_, re_ when the email
-                       endpoint is Resend, else one line with no spaces); a wrong shape is
+                       after a shape check (sk_/rk_ live|test, whsec_, else one line with no
+                       spaces); a wrong shape is
                        refused naming the field, never echoing the value.
                actions (only under a SET key)
                      button "Remove <noun>" danger, confirm states what stops working
@@ -3217,6 +3216,11 @@ accordion   block_id settings:payments
                      ← a removal notice names where to find the key again; a Remove on
                        a key not stored answers "No <key> was stored — nothing was removed."
                context "The settings below are shown as saved."
+               context "Email: sent via EmDash's email provider. …" | "Email: provider not
+                        confirmed — …" | "Email: no EmDash
+                        email provider. Order emails wait up to 72 h, then are skipped;
+                        sign-in links are not sent. See docs/email-providers.md."
+                                                          ← ADR-0031: `ctx.email` present?
                banner alert (cond) a stored http sign-in page saved before the https
                      rule: "The links in sign-in emails point to an http page, so their
                      tokens travel unencrypted when clicked — change this address to https. …"
@@ -3224,8 +3228,6 @@ accordion   block_id settings:payments
                      names every field, and the form keeps what was typed (J6) — a
                      sign-in URL without any user:pw@ part
                form  cf{"settings:save-payment-settings", {…}}   ← prefilled from kv
-                     text_input "Order email from-address"
-                                        placeholder "Your Shop <orders@yourdomain.com>"
                      text_input "Sign-in page address (your storefront's /account/verify page)"
                                         placeholder "https://shop.example/account/verify"
                                         ← U-8: https://, or http:// on localhost only

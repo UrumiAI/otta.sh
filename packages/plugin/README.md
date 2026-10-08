@@ -4,7 +4,8 @@ The EmDash plugin: the storefront routes, the sync hooks, the Block Kit admin
 screens — and, increasingly, commerce itself. Sandbox-clean by construction, which
 is the constraint everything below is shaped by: no DB driver, no `node:` builtin,
 no host import, one declared egress (`ctx.http` plus `allowedHosts`), and exactly
-two declared capabilities.
+three declared capabilities (`content:read`, `network:request`, and `email:send` for the
+host's `ctx.email`, ADR-0031).
 
 ## The commerce transport
 
@@ -23,7 +24,7 @@ when fully configured, and a method with no gateway fails loudly rather than min
 descriptor's declared collections and injects on every invocation. It needs no
 capability: the host builds it on an always-available path and there is no
 `storage` capability string to declare (ADR-0018), so the declared capabilities
-stay exactly `content:read` and `network:request`.
+stay exactly `content:read`, `network:request` and `email:send`.
 
 Three bindings, one shape (`StorageAccess`, the adapters' own structural port):
 
@@ -57,10 +58,10 @@ as the retryable error it is — a caller has to be able to see that.
 
 One gap in the in-process transport is still open, and stays listed here until it closes.
 (The other, "`requestLoginLink` dispatches no mail", closed with issue #306: the magic link
-is emailed through `CtxHttpEmailSender` over `ctx.http`, pointing at the sign-in page the
-operator saves in Settings (`settings:loginLinkUrl`, required; never the request's origin).
-With no email API URL in the build, or no sign-in link URL, it still answers the same
-generic success, issues nothing, and logs once server-side.)
+is emailed through `CtxEmailSender` over the EmDash host's `ctx.email` (ADR-0031), pointing
+at the sign-in page the operator saves in Settings (`settings:loginLinkUrl`, required; never
+the request's origin). With no EmDash email provider, or no sign-in link URL, it still
+answers the same generic success and logs once server-side.)
 
 - **The checkout hold ignores the hold TTL setting.** The Settings page's "Cart hold
   TTL (minutes)" field (`holdTtlMinutes` in the settings aggregate; there is no

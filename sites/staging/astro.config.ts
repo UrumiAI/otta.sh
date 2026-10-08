@@ -4,9 +4,9 @@
  * Modeled on em-dash's `templates/starter-cloudflare/astro.config.mjs`
  * (no Access / Images / Stream / sandbox), plus the trusted Otta plugin
  * descriptor (ADR-0006). Commerce runs IN-PROCESS in this Worker: there is no
- * separate service to point at, and the only build-time URL left is the
- * optional egress endpoint below (the email provider), which is
- * baked into the bundle AND fed to the descriptor's allowlist from one const.
+ * separate service to point at, and no build-time egress URL is left — the
+ * plugin's allowlist is Stripe's API host alone, and email goes through EmDash's
+ * `ctx.email` (ADR-0031).
  */
 import { existsSync, readFileSync } from "node:fs";
 import cloudflare from "@astrojs/cloudflare";
@@ -32,37 +32,7 @@ function readDotEnv(name: string): string | undefined {
 }
 
 /**
- * THE IN-PROCESS EGRESS URL — resolved ONCE, here (review round 3, B1).
- *
- * This is one URL and two consumers. The plugin BUNDLE reads it as a Vite
- * define (`manifest.ts`: `__OTTA_EMAIL_API_URL__`) to decide whether to build an
- * `EmailSender` at all. The registered DESCRIPTOR needs the same value
- * to put its host on `allowedHosts` — and `allowedHosts` is the one ADR-0006
- * gate that still bites in trusted mode. Feed only the defines and you get a
- * bundle that sends email to a host the gate refuses: every send fails, rows
- * reschedule and park `failed`, and the cron leg reports `count: 0` instead of the
- * honest `skipped`. So one const, both consumers.
- *
- * URLS, NEVER SECRETS. The API credentials that ride them live in write-only
- * plugin kv (the `settings:` keys `payment-secrets.ts` owns), provisioned through
- * the admin Settings form — which is what keeps wrangler-config.test.ts's
- * /SECRET|KEY|TOKEN|PASSWORD/i ban on `vars` intact and unroutable-around, and
- * why site-config.test.ts can assert this file names none of them.
- *
- * UNSET IS THE DEFAULT AND IT IS FAIL-CLOSED, not broken: the define bakes `""`,
- * which `hostnameOf` yields no host for, so `resolveInProcessEgress` reports the
- * provider unconfigured and `resolveAllowedHosts` grants nothing for it. Staging
- * today sets neither, so its allowlist is the constant part alone — Stripe's API
- * host and SMTP2GO's send hosts. Email then goes out only if the store picks
- * SMTP2GO in Settings; setting `EMAIL_API_URL` at build time turns on the
- * Resend-shaped sender.
- */
-const egress = {
-	emailApiUrl: process.env.EMAIL_API_URL ?? readDotEnv("EMAIL_API_URL"),
-};
-
-/**
- * The Stripe publishable key (ADR-0012 decision 4), resolved the same way.
+ * The Stripe publishable key (ADR-0012 decision 4): shell env, then `.env`.
  * Absent ⇒ `undefined` ⇒ the define below bakes `""` ⇒ `/checkout` renders
  * review + totals but says "Card payment isn't set up on this store yet." and
  * creates NO order. PRESENT but malformed ⇒ `resolveStripePublishableKey`
@@ -104,7 +74,7 @@ const selectedWranglerConfig = localWranglerConfig ?? "wrangler.jsonc";
 assertWranglerSessionPairing(
 	readFileSync(new URL(selectedWranglerConfig, import.meta.url), "utf8"),
 	selectedWranglerConfig,
-	(buildEmdashOptions(egress).database as { config?: { session?: unknown } }).config,
+	(buildEmdashOptions().database as { config?: { session?: unknown } }).config,
 );
 assertDownloadsBucketPrivate(
 	readFileSync(new URL(selectedWranglerConfig, import.meta.url), "utf8"),
@@ -240,7 +210,7 @@ export default defineConfig({
 	// `astro dev` with OTTA_E2E_STRIPE_OFFLINE=1, for the e2e suite's order seed
 	// (issue #378). An integration because only a hook can see the command; see
 	// src/lib/e2e-stripe-offline.ts.
-	integrations: [react(), emdash(buildEmdashOptions(egress)), devStripeOfflineIntegration()],
+	integrations: [react(), emdash(buildEmdashOptions()), devStripeOfflineIntegration()],
 	// CSRF: Astro's `security.checkOrigin` does NOT protect the storefront's
 	// endpoints — the emdash integration force-injects `checkOrigin: false`
 	// and its replacement layer covers only /_emdash/api/* routes. The
@@ -249,25 +219,19 @@ export default defineConfig({
 	// ourselves (pinned by the site-config test) so nothing regresses if emdash
 	// stops overriding.
 	vite: {
-		// Build-time globals the @otta-sh/plugin bundle reads through `typeof`
-		// guards (manifest.ts, src/lib/stripe-config.ts).
+		// Build-time globals the worker bundle reads through `typeof` guards
+		// (src/lib/stripe-config.ts).
 		define: {
 			// The Stripe publishable key for /checkout/pay's Payment Element
 			// (src/lib/stripe-config.ts). ALWAYS a string — an unconfigured store
 			// bakes "", which that module reads as undefined; baking `undefined`
 			// would leave the identifier undeclared in the worker bundle.
 			__OTTA_STRIPE_PUBLIC_KEY__: JSON.stringify(stripePublishableKey ?? ""),
-			// The in-process egress URL, from the SAME `egress` const that
-			// decides what the descriptor allowlists (see its note above). ALWAYS a
-			// string, like the Stripe key: baking `undefined` would leave the
-			// identifier undeclared, and `""` is what both the plugin's `typeof`
-			// guard and `hostnameOf` read as "this provider is unconfigured".
-			__OTTA_EMAIL_API_URL__: JSON.stringify(egress.emailApiUrl ?? ""),
 		},
 		ssr: {
-			// UNCONDITIONAL: if @otta-sh/plugin is ever externalized the defines
-			// above silently never apply and the bundle resolves every egress URL
-			// as unconfigured. (It is also consumed as TS
+			// UNCONDITIONAL: if @otta-sh/plugin is ever externalized the build-time
+			// defines it reads (`__OTTA_DEV_STRIPE_OFFLINE__`, baked by the e2e
+			// integration) silently never apply. (It is also consumed as TS
 			// source via its workspace `"."`/`"./plugin"` exports, which
 			// requires bundling anyway.)
 			//

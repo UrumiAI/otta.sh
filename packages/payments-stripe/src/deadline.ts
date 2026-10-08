@@ -32,10 +32,8 @@
  * set it under the sandbox runner: 0.38's RPC refused the signal and every call
  * failed; 1.0.1's wrapper drops it, so it would release nothing there.
  *
- * TWIN of `@otta-sh/plugin`'s `src/email/send-deadline.ts` (the package graph
- * keeps them apart: this package cannot import the plugin, and the domain stays
- * IO-free). Keep
- * them in step: a fix to one is very likely owed to the other.
+ * The plugin's email twin went with the HTTP email senders (ADR-0031):
+ * `ctx.email` takes no signal, and `CtxEmailSender` races the host call alone.
  */
 
 /** What a call's own bound rejects with. Never leaves the transport: every
