@@ -110,23 +110,34 @@ test.describe("the state/province pick list on a store with a state-level zone (
 			action_id: "shipping:open",
 			values: { target: pathToken([ZONE]) },
 		});
+		// The method's create form is a drill-in behind the level's promoted
+		// "New shipping method" button, whose value carries the zone.
+		const newMethod = everything(methods).find(
+			(b) => b["action_id"] === "shipping:open-create-method",
+		);
+		const createMethod = await admin(headers, {
+			type: "block_action",
+			action_id: "shipping:open-create-method",
+			value: newMethod?.["value"],
+		});
 		await admin(headers, {
 			type: "form_submit",
 			action_id: "shipping:create-method",
 			values: { id: METHOD, name: "California Standard", type: "flat_rate" },
-			block_id: formBlockId(methods, "shipping:create-method"),
+			block_id: formBlockId(createMethod, "shipping:create-method"),
 		});
 		const rates = await admin(headers, {
 			type: "form_submit",
 			action_id: "shipping:open",
 			values: { target: pathToken([ZONE, METHOD]) },
 		});
-		await admin(headers, {
+		const rated = await admin(headers, {
 			type: "form_submit",
 			action_id: "shipping:create-rate",
 			values: { currency: "USD", amount: "5.00", minSubtotal: "" },
 			block_id: formBlockId(rates, "shipping:create-rate"),
 		});
+		expect(JSON.stringify(rated), "the USD rate was not created").toContain("USD");
 
 		// ── A cart ─────────────────────────────────────────────────────────────
 		await page.goto("/products");
