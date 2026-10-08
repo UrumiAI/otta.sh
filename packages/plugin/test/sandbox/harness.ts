@@ -300,9 +300,7 @@ function manifestSource(options: SandboxOptions): string {
 		// still pass. INC-D3a dropped the resolver's mode argument along with the
 		// http arm it used to select — the unparseable-define behavior stays
 		// unit-pinned in `manifest-override.test.ts`.
-		`export const IN_PROCESS_EGRESS_URLS = ${JSON.stringify(
-			resolveInProcessEgress({}),
-		)};`,
+		`export const IN_PROCESS_EGRESS_URLS = ${JSON.stringify(resolveInProcessEgress({}))};`,
 		"",
 	].join("\n");
 }
