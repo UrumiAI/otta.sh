@@ -3,6 +3,7 @@ import type { CouponStore } from "../ports/coupon-store.js";
 import type { InventoryStore } from "../ports/inventory-store.js";
 import type { OrderId } from "../money/ids.js";
 import type { OrderStore } from "../ports/order-store.js";
+import type { UnitBackoff } from "../sweep/backoff.js";
 import {
 	listLimitFor,
 	mayContinue,
@@ -53,6 +54,19 @@ export interface ExpireOrdersBatchOptions extends SweepBatchOptions {
 	 * that does not withdraw intents would otherwise never expire such an order.
 	 */
 	readonly excludeIntentDue?: boolean;
+	/**
+	 * Review round 3, B I4: orders whose flip threw wait here before they are tried
+	 * again, and the call reads past them — it lists that many more candidates and
+	 * leaves the waiting ones out (a pre-listed `due` is filtered the same way). So
+	 * `limit` orders that fail every time cannot hold the head of the list and starve
+	 * the orders behind them. The caller keeps it across calls (the scheduled sweep
+	 * holds one per process). Default: none, so a failed order is listed again next
+	 * call, as before. It holds starvation back only up to a bound (fewer always-
+	 * failing orders than its cap and than about 60 × `limit`; see `UnitBackoff`),
+	 * and the call reads past at most its cap, so size the cap to what the list can
+	 * afford (`UnitBackoff.setMaxEntries`).
+	 */
+	readonly backoff?: UnitBackoff;
 }
 
 /**
@@ -76,19 +90,41 @@ export async function expireOrdersBatch(
 	at?: Date,
 	options: ExpireOrdersBatchOptions = {},
 ): Promise<SweepBatchResult> {
-	const now = (at ?? deps.clock.now()).toISOString();
-	const ids =
+	const instant = at ?? deps.clock.now();
+	const now = instant.toISOString();
+	const { backoff } = options;
+	const waiting = backoff?.waiting(instant.getTime()) ?? new Set<string>();
+	const listed =
 		options.due ??
 		(await deps.orderStore.listExpirable(now, {
-			...listLimitFor(options),
+			...listLimitFor(options, waiting.size),
 			...(options.excludeIntentDue === true ? { excludeIntentDue: true } : {}),
 		}));
+	const ids = waiting.size === 0 ? listed : listed.filter((id) => !waiting.has(id));
 	let expired = 0;
 	let attempted = 0;
 	for (const id of ids) {
 		if (!mayContinue(options, attempted)) return { count: expired, drained: false };
 		attempted++;
-		const won = await deps.orderStore.expireWithOrder(id, now);
+		// ONE ORDER IS ONE UNIT (review round 2, A R2-A1): a throw from one order's
+		// flip or release is logged and the batch moves on, so it can neither end the
+		// tick early nor leave the orders after it holding their stock. Nothing is
+		// lost by catching: an order whose flip threw is still `pending` and listed
+		// again (after its back-off, when there is one); one whose release threw is
+		// `expired` with its release intent still outstanding (the document store
+		// records it with the flip), which the hold-intent sweeper completes. An error
+		// that stops the whole call (`stopsBatch`: the tick's query ceiling) is not
+		// one order's failure, so it is rethrown (review round 3, A I2).
+		let won: Awaited<ReturnType<OrderStore["expireWithOrder"]>>;
+		try {
+			won = await deps.orderStore.expireWithOrder(id, now);
+		} catch (err) {
+			if (options.stopsBatch?.(err) === true) throw err;
+			backoff?.failed(id, instant.getTime());
+			logUnitFailure(`expiring order ${id}`, err);
+			continue;
+		}
+		backoff?.succeeded(id);
 		if (won === null) continue; // someone else won the transition (paid/cancelled/expired)
 		expired++;
 		const { order } = won;
@@ -101,7 +137,12 @@ export async function expireOrdersBatch(
 				line.reservationId === null ? [] : [line.reservationId],
 			);
 			if (reservationIds.length > 0) {
-				await deps.inventoryStore.releaseAdoptedMany(reservationIds, order.id);
+				try {
+					await deps.inventoryStore.releaseAdoptedMany(reservationIds, order.id);
+				} catch (err) {
+					if (options.stopsBatch?.(err) === true) throw err;
+					logUnitFailure(`releasing the holds of expired order ${order.id}`, err);
+				}
 			}
 		}
 		// Review I2: free the coupon too — symmetric with the inventory release.
@@ -113,8 +154,89 @@ export async function expireOrdersBatch(
 		// the plugin's coupon sweeper releases any redemption whose order is
 		// `expired` as the retry, which also covers an order whose stamp is missing.
 		if (order.totals.appliedCouponCode !== null) {
-			await deps.couponStore.releaseByOrder(order.id);
+			try {
+				await deps.couponStore.releaseByOrder(order.id);
+			} catch (err) {
+				if (options.stopsBatch?.(err) === true) throw err;
+				logUnitFailure(`releasing the coupon of expired order ${order.id}`, err);
+			}
 		}
 	}
 	return { count: expired, drained: true };
+}
+
+/** One order's step failed; the batch goes on. */
+function logUnitFailure(step: string, err: unknown): void {
+	console.error(`[domain] order expiry: ${step} failed; the batch continues`, {
+		error: describeErrorForLog(err),
+	});
+}
+
+/** Longest message kept in a log line. */
+const LOG_MESSAGE_MAX = 160;
+/** Longest input the scrubber reads (review round 3 polish, P-1): the message is
+ *  cut to this BEFORE it is scrubbed, so the work per log line is bounded whatever
+ *  a driver puts in its message. */
+const SCRUB_INPUT_MAX = 1024;
+
+/**
+ * An error as a log line may carry it (review round 3, B I5): its `name`, a
+ * string or numeric `code`, and a SHORT message with every quoted run and
+ * anything shaped like an email replaced. Today's storage and domain errors carry
+ * no stored values, but an adapter's driver message may quote one (a row's
+ * text, a key), and this line goes to the worker log.
+ */
+function describeErrorForLog(err: unknown): {
+	name: string;
+	code?: string;
+	message: string;
+} {
+	const name = err instanceof Error ? err.name : typeof err;
+	const rawCode =
+		typeof err === "object" && err !== null ? (err as { code?: unknown }).code : undefined;
+	const code =
+		typeof rawCode === "string" || typeof rawCode === "number"
+			? scrub(String(rawCode)).slice(0, 32)
+			: undefined;
+	const message = scrub(err instanceof Error ? err.message : String(err));
+	return {
+		name: scrub(name).slice(0, 64),
+		...(code === undefined ? {} : { code }),
+		message: message.length > LOG_MESSAGE_MAX ? `${message.slice(0, LOG_MESSAGE_MAX)}…` : message,
+	};
+}
+
+/**
+ * Linear in its input, which is cut to {@link SCRUB_INPUT_MAX} first (review round
+ * 3 polish, P-1: the unbounded email pattern backtracked quadratically on a long
+ * run with no space, `@` or `<>`; 100k characters took seconds, a stalled tick).
+ */
+function scrub(text: string): string {
+	return (
+		cutAtWord(text)
+			// Quoted runs: the usual place a driver puts a value.
+			.replace(/"[^"]*"|'[^']*'|`[^`]*`/g, "<value>")
+			// A quote left open (or opened before the cut) runs to the end.
+			.replace(/["'`][^"'`]*$/, "<value>")
+			// Email-shaped text, with bounded repeats (RFC 5321's local and domain
+			// limits) so it cannot backtrack quadratically.
+			.replace(/[^\s@<>]{1,64}@[^\s@<>]{1,255}/g, "<value>")
+			// Control characters, lone surrogates and the like: printable text only.
+			.replace(/[^\x20-\x7E]/g, "?")
+	);
+}
+
+/**
+ * The text cut to {@link SCRUB_INPUT_MAX}, with a word the cut splits redacted
+ * whole (final verify, F-1): an email that straddles the cut has lost its `@`, so
+ * the email rule cannot see it, and scrubbing shortens what comes before, which
+ * would bring it into the logged 160. A scan back to the last whitespace, not a
+ * `\S*$` regex, so it stays linear.
+ */
+function cutAtWord(text: string): string {
+	if (text.length <= SCRUB_INPUT_MAX) return text;
+	const cut = text.slice(0, SCRUB_INPUT_MAX);
+	let end = cut.length;
+	while (end > 0 && !/\s/.test(cut.charAt(end - 1))) end--;
+	return `${cut.slice(0, end)}<value>`;
 }

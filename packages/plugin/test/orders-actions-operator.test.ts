@@ -15,6 +15,7 @@
  * The surface is stubbed to observe what each write asks for; the domain and the
  * in-process client are pinned over a real store elsewhere.
  */
+import { isWellFormedText } from "@otta-sh/domain";
 import { describe, expect, test } from "vitest";
 import type {
 	AdminOrdersSurface,
@@ -101,6 +102,24 @@ describe("operatorName — who the host says is signed in", () => {
 		expect(operatorName({ name: null, email: "ada@example.test" })).toBe("ada@example.test");
 		expect(operatorName(undefined)).toBeUndefined();
 		expect(operatorName({ name: null, email: "" })).toBeUndefined();
+	});
+
+	// #415: a 200-code-unit cut through an emoji left a lone surrogate, which the
+	// orders client then refuses as ill-formed text — the operator's action failed.
+	test("a long name is cut at 200 code units without splitting a surrogate pair", () => {
+		const name = `${"a".repeat(199)}\u{1F600}tail`;
+		const cut = operatorName({ name })!;
+		expect(cut).toBe("a".repeat(199));
+		expect(isWellFormedText(cut)).toBe(true);
+		const emoji = "\u{1F600}".repeat(150);
+		const all = operatorName({ name: emoji })!;
+		expect(all.length).toBe(200);
+		expect(isWellFormedText(all)).toBe(true);
+		expect(operatorName({ email: `${"e".repeat(199)}\u{1F600}` })).toBe("e".repeat(199));
+	});
+
+	test("a host name holding a lone surrogate is repaired, not passed on", () => {
+		expect(operatorName({ name: "Ada\uD800" })).toBe("Ada\uFFFD");
 	});
 });
 

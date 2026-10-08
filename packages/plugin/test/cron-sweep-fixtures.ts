@@ -103,15 +103,17 @@ export function sweepContext(
 }
 
 /**
- * The CMS half of a sweep context: the host's `ctx.content`, answering as EmDash 0.38
- * does on either path (`mode`):
- *  - `trusted` (in-process `createContentAccess`): `get` is `findById` — `WHERE id = ?
- *    AND deleted_at IS NULL` — so a TRASHED and a permanently deleted document both
- *    come back `null`, a document in any status comes back as itself, and a failed
- *    read REJECTS; `list` likewise;
- *  - `bridge` (the sandbox bridge, `@emdash-cms/cloudflare` `contentGet` /
+ * The CMS half of a sweep context: the host's `ctx.content`, answering on either
+ * path (`mode`):
+ *  - `trusted` (in-process `createContentAccess`, EmDash 0.38 and 1.0.1): `get` is
+ *    `findById` — `WHERE id = ? AND deleted_at IS NULL` — so a TRASHED and a
+ *    permanently deleted document both come back `null`, a document in any status
+ *    comes back as itself, and a failed read REJECTS; `list` likewise;
+ *  - `bridge` (EmDash 0.38's sandbox bridge, `@emdash-cms/cloudflare` `contentGet` /
  *    `contentList`): the same reads, but every database error is CAUGHT and answered
- *    `null` / an empty page — indistinguishable from a deletion.
+ *    `null` / an empty page — indistinguishable from a deletion. 1.0.1's bridge
+ *    rejects a failed read instead, like `trusted`; this mode keeps the 0.38
+ *    swallow because it is the stricter case for the sweep.
  * `outage` fails every read (rejecting, or swallowed to null/empty on the bridge).
  *
  * Not a mock of a database this repo owns: the commerce documents stay real SQLite.

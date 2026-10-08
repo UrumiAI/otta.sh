@@ -80,6 +80,10 @@ describe("the migrated D1 schema", () => {
 			"emdash__plugin_storage_revision_update",
 			"emdash_options_revision_insert",
 			"emdash_options_revision_update",
+			// EmDash 1.0.1's `081_redirect_write_guards` revisions the redirects table
+			// the same way; listed so a host release that adds or drops a revision
+			// trigger still fails here and is looked at.
+			"emdash_redirect_revision_update",
 		]);
 	});
 

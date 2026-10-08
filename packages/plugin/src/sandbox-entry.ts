@@ -12,11 +12,12 @@
  *    (`context.ts:619-671`): reject any host not in `ALLOWED_HOSTS`
  *    (`isHostAllowed`, `context.ts:601-611` — exact-match or `*`/`*.sub`
  *    wildcard) BEFORE ever calling the real `fetch`. Its ANSWER has the shape
- *    the production Worker Loader bridge gives a sandboxed plugin
- *    (`@emdash-cms/cloudflare@0.38.0`, `dist/runner-CQpZcxVz.mjs:997-1007`): a
+ *    EmDash 0.38's production Worker Loader bridge gave a sandboxed plugin: a
  *    plain `{status, ok, headers, text(), json()}` with the body already
- *    buffered, and NO `url` and NO `body` stream — so a plugin that leans on
- *    either fails here, in the sandbox suites, rather than only in production.
+ *    buffered, and NO `url` and NO `body` stream. 1.0.1's bridge returns a real
+ *    `Response` with both (`@emdash-cms/cloudflare@1.0.1`
+ *    `src/sandbox/wrapper.ts` `http.fetch`); the mirror keeps the leaner shape,
+ *    so a plugin that leans on either still fails here, in the sandbox suites.
  *  - bind `ctx.storage` to the document store `sandbox-storage.ts` hands over,
  *    when there is one. That module is the injection seam the harness replaces
  *    (see its own doc): a store cannot be built inside the isolate, so the
@@ -30,11 +31,12 @@
  *    those capabilities (sandbox-clean guard).
  *  - `content`: the REAL EmDash sandbox does provide it — the plugin declares
  *    `content:read`, and `@emdash-cms/cloudflare`'s bridge serves `contentGet` /
- *    `contentList`, catching every D1 error and answering `null` / an empty page.
+ *    `contentList`. On 0.38 it caught every D1 error and answered `null` / an
+ *    empty page; on 1.0.1 a failed read rejects (`src/sandbox/bridge.ts`).
  *    This mirror has no CMS behind it, so the production entry omits `content`
  *    (the `product-orphans` sweep leg then reports itself skipped), and a TEST
- *    fixture may opt into `cmsWithoutTable`: the bridge's answers over a database
- *    whose `ec_products` query fails — the outage the sweep must survive.
+ *    fixture may opt into `cmsWithoutTable`: the 0.38 bridge's answers over a
+ *    database whose `ec_products` query fails — the outage the sweep must survive.
  *
  * Otta does not depend on `~/em-dash`'s internal `packages/workerd`
  * package (DEVELOPMENT.md preamble — standalone repo); this file plus
@@ -213,11 +215,14 @@ export interface SandboxWorkerOptions {
 	 */
 	readonly testHooks?: boolean;
 	/**
-	 * TEST ONLY: hand `ctx.content` the EmDash sandbox bridge's answers over a CMS
-	 * whose query fails — `contentGet` catches the D1 error and resolves `null`,
-	 * `contentList` resolves an empty page (`@emdash-cms/cloudflare` 0.38,
-	 * `bridge.ts`). Exactly what a lost binding or a missing `ec_products` table
-	 * looks like to a sandboxed plugin.
+	 * TEST ONLY: hand `ctx.content` the EmDash 0.38 sandbox bridge's answers over a
+	 * CMS whose query fails — `contentGet` caught the D1 error and resolved `null`,
+	 * `contentList` resolved an empty page. That is what a lost binding or a
+	 * missing `ec_products` table looked like to a sandboxed plugin on 0.38, and the
+	 * strictest case: it reads exactly like a deletion. On 1.0.1 both reads REJECT
+	 * instead (`@emdash-cms/cloudflare@1.0.1` `src/sandbox/bridge.ts`: `contentGet`
+	 * retries once on the raw binding and lets that error out, `contentList` does
+	 * not catch), as the trusted path does.
 	 */
 	readonly cmsWithoutTable?: boolean;
 }

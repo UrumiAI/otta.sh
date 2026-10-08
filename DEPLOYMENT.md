@@ -226,7 +226,7 @@ expired holds and queued emails drain at the Free pace (§5).
 
    **A store created before 2026-10-01** has no `pricing` field on its products collection, and
    the Pricing & stock cards draw on that field. Add it once with the script below — **not** in
-   Admin › Content Types, which in EmDash 0.38 cannot attach the cards to a field: a JSON field
+   Admin › Content Types, which in EmDash 1.0.1 cannot attach the cards to a field: a JSON field
    added there shows EmDash's raw JSON box instead, where commerce data must never be typed.
    The script places the field after Images, re-binds a hand-made one, and is safe to re-run:
 
@@ -279,7 +279,7 @@ cannot be retried in place:
 > (dashboard or REST API); until it is, every query goes to the primary anyway.
 >
 > **The old pairing invariant is moot, but its rule stands:** the flag blocks the request the
-> D1 Sessions API makes to route queries (emdash issue #1273). With EmDash 0.38 the symptom
+> D1 Sessions API makes to route queries (emdash issue #1273). With EmDash 1.0.1 the symptom
 > is a **~5 s stall on the first session query of every new isolate**; EmDash's hang guard
 > then turns sessions off for that isolate, silently, and a **write caught in flight**
 > (placing an order, a cart change, the Stripe webhook settle) **may be rejected** with a
@@ -576,7 +576,7 @@ live product across 128 seeded cases:
 
 That is seeded PRNGs and one independent-failure model, not a proof. A host that returned `null`
 for one specific live document on every read, while other reads succeeded, would be
-indistinguishable from a deletion; nothing in EmDash 0.38 is known to do this. The tombstone is final, so
+indistinguishable from a deletion; nothing in EmDash 1.0.1 is known to do this. The tombstone is final, so
 a live product ever struck out that way sells again only once it is duplicated in the CMS (a new
 id, and its pricing re-entered).
 
@@ -785,6 +785,17 @@ overlap can count one event twice) until a reconcile covering it runs, and
 the scheduled reconcile reaches a day only once it has closed. So after a rollback past such a
 release, or a rollout that overlapped versions, treat today's report figures as provisional
 until then. Orders, stock and payments are unaffected — only the reporting rollup is.
+
+**Upgrading the EmDash host (0.38 → 1.0.1).** The host runs its own schema migrations on the
+**first request** after the deploy, with no separate step: EmDash 1.0.1 adds
+`078_menu_item_translation_groups` through `089_auto_seed_completion` on top of 0.38's
+`077_plugin_storage_revisions`. Most of them are **not reversible**, so rolling the Worker back
+to 0.38 afterwards does not roll the database back. **Before deploying, take a D1 backup** —
+note a Time Travel bookmark (`wrangler d1 time-travel info <database>`) or export the database
+(`wrangler d1 export <database> --remote --output=<file>.sql`) — so a failed upgrade can be
+restored with `wrangler d1 time-travel restore <database> --bookmark=<bookmark>`. The same holds
+for any later host release that adds migrations (`sites/staging/test/host-pin.test.ts` pins the
+reviewed tip, so a new one fails CI first).
 
 ## 6. Troubleshooting
 
