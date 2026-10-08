@@ -25,6 +25,7 @@ import {
 	STRIPE_WEBHOOK_SECRET_KEY,
 	WEBHOOK_EDGE_TOKEN_KEY,
 	X402_FACILITATOR_API_KEY_KEY,
+	X402_LEGACY_FACILITATOR_SECRET_KEY,
 	type PluginContext,
 } from "@otta-sh/plugin";
 import Database from "better-sqlite3";
@@ -266,5 +267,45 @@ describe("payment keys at rest, through this site's descriptor (ADR-0032)", () =
 		expect((await readPaymentSecrets(hostCtx(rotated))).stripeSecretKey).toBe(
 			VALUES[STRIPE_SECRET_KEY_KEY],
 		);
+	});
+
+	test("a WRONG key with mixed rows changes nothing; the right key then finishes and purges the retired x402 secret", async () => {
+		const repo = new OptionsRepository(db);
+		// An earlier build's plain rows, the webhook secret already encrypted under
+		// key A, and the retired x402 secret.
+		for (const [key, value] of Object.entries(VALUES)) {
+			await repo.set(`plugin:${OTTA_PLUGIN_ID}:${key}`, value);
+		}
+		await hostCtx(keyA).kv.set(STRIPE_WEBHOOK_SECRET_KEY, VALUES[STRIPE_WEBHOOK_SECRET_KEY]);
+		await repo.set(
+			`plugin:${OTTA_PLUGIN_ID}:${X402_LEGACY_FACILITATOR_SECRET_KEY}`,
+			"retired_hmac",
+		);
+		const before = await rawDump();
+
+		const wrong = await resolvePluginEncryptionKeys({ EMDASH_ENCRYPTION_KEY: generateKey() });
+		expect(await encryptStoredPaymentSecrets(hostCtx(wrong))).toBe("retry");
+		expect(await rawDump()).toBe(before);
+
+		resetPaymentSecretEncryptionForTesting();
+		const ctx = hostCtx(keyA);
+		expect(await encryptStoredPaymentSecrets(ctx)).toBe("encrypted");
+		const dump = await rawDump();
+		for (const value of Object.values(VALUES)) expect(dump).not.toContain(value);
+		expect(dump).not.toContain("retired_hmac");
+		expect(await rawValue(X402_LEGACY_FACILITATOR_SECRET_KEY)).toBeUndefined();
+		for (const key of ENCRYPTED_PAYMENT_SECRET_KEYS) {
+			expect(await readSecret(ctx, key)).toEqual({ state: "set", value: VALUES[key] });
+		}
+	});
+
+	test("a malformed value saved outside Otta's form (EmDash's own settings) is refused on read", async () => {
+		const ctx = hostCtx(keyA);
+		await ctx.kv.set(WEBHOOK_EDGE_TOKEN_KEY, "");
+		await ctx.kv.set(STRIPE_SECRET_KEY_KEY, "not-a-stripe-key");
+		expect(isEncryptedPluginSetting(await rawValue(WEBHOOK_EDGE_TOKEN_KEY))).toBe(true);
+		expect(await readSecret(ctx, WEBHOOK_EDGE_TOKEN_KEY)).toEqual({ state: "invalid" });
+		expect(await readSecret(ctx, STRIPE_SECRET_KEY_KEY)).toEqual({ state: "invalid" });
+		expect((await readPaymentSecrets(ctx)).stripeSecretKey).toBeUndefined();
 	});
 });

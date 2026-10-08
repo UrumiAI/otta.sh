@@ -44,15 +44,25 @@ path — so no new write path or crypto is needed.
    all other settings are unchanged. The email keys are not included: they are being removed
    (ADR-0031's email change), not migrated.
 2. **Re-save stored values once.** The cron tick runs `encryptStoredPaymentSecrets` once per
-   site: for each key, `getVersioned`, then `compareAndSet` at that revision with the same
-   value (one statement that replaces the row with its envelope), then read back. A marker
-   (`state:paymentSecretsEncrypted`, naming the key set) is written only after every key read
-   back equal. It is idempotent, safe to interrupt (the row always holds the old form or the
-   new one), never overwrites a key saved in between, and logs a fixed line, never a value.
-3. **Fail closed.** A key that cannot be read is never used and never replaced by anything
-   else. `readSecret` reports it as `unreadable`; payment readers treat it as not configured;
-   the webhook edge-token gate answers 503 instead of passing through; the Settings page says
-   "saved, but cannot be read" and keeps Remove; a save the host refuses says so.
+   site. It first reads ALL four keys (`getVersioned`) and writes nothing if any read fails,
+   so a wrong key can never re-encrypt a working plain key while a ciphertext it cannot open
+   exists. Then, per key, `compareAndSet` at the preflight revision with the same value (one
+   statement that replaces the row with its envelope) and a read-back; each finished key's
+   revision is recorded, so an unfinished run does not redo it. A conditional write that does
+   not apply although the revision is unchanged (a sandboxed bridge's pre-1.0 copy outside
+   the options table) is redone as a plain `set`, which the bridge stores encrypted while
+   deleting that copy. Last, the retired x402 secret (`settings:x402FacilitatorSecret`) is
+   deleted, and the marker (`state:paymentSecretsEncrypted`, naming the key set) is written.
+   Idempotent, safe to interrupt, never overwrites a key saved in between, logs fixed lines
+   and counts, never a value. If every key is still plain, a wrong key cannot be detected:
+   the key set at that tick is the key they are saved under.
+3. **Fail closed, and validate on read.** A key that cannot be read, or whose stored value is
+   empty, not a string, or not the shape Otta's Settings form saves (the same checks), is
+   never used and never replaced by anything else. `readSecret` reports `unreadable` or
+   `invalid`; payment readers treat both as not configured; the webhook edge-token gate
+   answers 503 instead of passing through (a never-set token still passes through); the
+   Settings page says "saved, but cannot be read" or "saved, but not valid" and keeps Remove;
+   a save the host refuses says so.
 4. **`EMDASH_ENCRYPTION_KEY` is required** and documented as such in `DEPLOYMENT.md`, with
    what loss and rotation mean.
 
@@ -67,8 +77,14 @@ path — so no new write path or crypto is needed.
 - Losing `EMDASH_ENCRYPTION_KEY` loses these four keys (they must be entered again). A missing
   key stops Stripe payments and webhooks until it is set — deliberately.
 - Declaring a settings schema makes EmDash show a Settings gear for the plugin; its form writes
-  the same encrypted keys without Otta's shape checks. Otta's Settings page remains where they
-  are entered.
+  the same encrypted keys without Otta's shape checks. It is kept (product decision); validate
+  on read means a value it stores in the wrong shape is refused rather than used. Otta's
+  Settings page remains where they are entered.
+- In TRUSTED mode the plugin cannot see the sandbox's pre-1.0 `_plugin_storage` `__kv` rows,
+  so a copy left there by an earlier sandboxed deployment of the same database is not removed
+  by the re-save. Otta has only run trusted, so none is expected.
+- After a key rotation the re-save does not repeat; the old key stays listed until the four
+  keys are entered again.
 - Encryption depends on the site descriptor. A site that drops `settingsSchema` stores these
   keys as plain values again, and the plugin cannot detect it; the site-config test is the
   guard.

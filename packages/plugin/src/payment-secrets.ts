@@ -49,6 +49,12 @@
  * `"unreadable"` — never as a value, and never by falling back to anything.
  */
 
+import {
+	checkOpaqueToken,
+	checkStripeSecretKey,
+	checkStripeWebhookSecret,
+	type SecretShapeCheck,
+} from "./payment-secret-shapes.js";
 import type { PluginContext } from "./types.js";
 
 /** `STRIPE_SECRET_KEY` — makes `createIntent` call Stripe's live
@@ -223,24 +229,41 @@ export const PAYMENT_SECRET_SETTINGS_SCHEMA: Readonly<Record<string, SecretSetti
 };
 
 /**
- * What one secret read found. `"unreadable"` is a value IS stored but could not
- * be read — a rejected kv read, which on EmDash 1.0.1 includes a stored
- * ciphertext this site cannot decrypt. It carries nothing about the value or the
- * error.
+ * What one secret read found. It carries nothing about the value or the error.
+ *  - `"unreadable"`: a value IS stored but the kv read rejected — on EmDash
+ *    1.0.1 that includes a stored ciphertext this site cannot decrypt.
+ *  - `"invalid"`: a value IS stored, for one of the four encrypted payment keys,
+ *    but it is empty, not a string, or not the shape Otta's Settings form would
+ *    have saved (ADR-0032 "validate on read"). EmDash's own plugin-settings form
+ *    can write these keys without Otta's checks; such a value is never used.
  */
 export type SecretRead =
 	| { readonly state: "set"; readonly value: string }
 	| { readonly state: "unset" }
-	| { readonly state: "unreadable" };
+	| { readonly state: "unreadable" }
+	| { readonly state: "invalid" };
 
 /**
- * Read one write-only secret and say WHICH of the three it is. Most consumers
- * want {@link readWriteOnlySecret}, which folds "unset" and "unreadable"
- * together; a caller for whom absence means "allow" (the edge token gate) must
- * tell them apart, because an unreadable secret is not an absent one.
+ * The shape check each encrypted payment key must pass ON READ — the same check
+ * the Settings form runs on save — and the stored value must be exactly the
+ * trimmed value that check returns. Keys absent here (the email keys) keep the
+ * older rule: an empty or non-string value reads as unset.
+ */
+const READ_SHAPE_CHECKS: Readonly<Record<string, (raw: string) => SecretShapeCheck>> = {
+	[STRIPE_SECRET_KEY_KEY]: checkStripeSecretKey,
+	[STRIPE_WEBHOOK_SECRET_KEY]: checkStripeWebhookSecret,
+	[WEBHOOK_EDGE_TOKEN_KEY]: checkOpaqueToken,
+	[X402_FACILITATOR_API_KEY_KEY]: checkOpaqueToken,
+};
+
+/**
+ * Read one write-only secret and say WHICH of the four it is. Most consumers
+ * want {@link readWriteOnlySecret}, which folds everything but `"set"` together;
+ * a caller for whom absence means "allow" (the edge token gate) must tell them
+ * apart, because an unreadable or invalid secret is not an absent one.
  *
- * An empty string and a non-string are "unset", exactly as before. The caught
- * error is dropped entirely — see {@link readWriteOnlySecret}.
+ * Never set (no stored value) is `"unset"`, exactly as before. The caught error
+ * is dropped entirely — see {@link readWriteOnlySecret}.
  */
 export async function readSecret(ctx: PluginContext, key: string): Promise<SecretRead> {
 	let value: unknown;
@@ -249,9 +272,16 @@ export async function readSecret(ctx: PluginContext, key: string): Promise<Secre
 	} catch {
 		return { state: "unreadable" };
 	}
-	return typeof value === "string" && value.length > 0
-		? { state: "set", value }
-		: { state: "unset" };
+	if (value === null || value === undefined) return { state: "unset" };
+	const check = READ_SHAPE_CHECKS[key];
+	if (check === undefined) {
+		return typeof value === "string" && value.length > 0
+			? { state: "set", value }
+			: { state: "unset" };
+	}
+	if (typeof value !== "string") return { state: "invalid" };
+	const checked = check(value);
+	return checked.ok && checked.value === value ? { state: "set", value } : { state: "invalid" };
 }
 
 /**

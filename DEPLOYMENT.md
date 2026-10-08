@@ -330,8 +330,18 @@ order of appearance in a deployment's life:
   (`settings:otta-wh-token`) and the x402 facilitator key (ADR-0032). The site's Otta
   descriptor must keep its `settingsSchema` for that to happen. Other plugin settings, the
   email keys and order data are **not** encrypted with it.
-  - **Where it is read:** EmDash reads it from `process.env` (on Workers, the Worker secret
-    via `nodejs_compat`). For local development, export it in the dev server's shell.
+  - **Enter these keys on Otta's Settings page only.** Declaring them makes EmDash also show
+    a Settings gear for the plugin under Plugins; its form stores whatever is typed, without
+    Otta's checks. Otta checks every stored key's shape when it reads it: an empty or
+    malformed value is never used (payments refuse, the webhook route answers 503) and
+    Otta's Settings page shows "saved, but not valid" until it is entered again there.
+  - **Where it is read:** EmDash reads it from `process.env`. On Workers that is the Worker
+    secret (`nodejs_compat` populates `process.env`). **Local development (`astro dev`):**
+    put `EMDASH_ENCRYPTION_KEY=<key>` in `sites/staging/.env` (gitignored; generate a
+    separate dev key). Exporting it in the shell does **not** work: the dev Worker runs in
+    workerd, which does not inherit the shell environment. (A `.dev.vars` file would also be
+    read, but it is not gitignored in this repo — use `.env`.) The Playwright stack and CI's
+    e2e job use a throwaway test key (`playwright.config.ts`).
   - **Missing:** saving any of those four keys fails, and a key already saved encrypted
     cannot be read. Payments then refuse as "not configured", the webhook route answers
     503 (Stripe retries it), and Settings shows the key as "saved, but cannot be read".
@@ -340,10 +350,16 @@ order of appearance in a deployment's life:
     Settings (or remove it there).
   - **Rotating:** put the new key first and keep the old one after it, comma-separated
     (`EMDASH_ENCRYPTION_KEY=<new>,<old>`). New saves use the new key; both still decrypt.
-    Re-save the four keys in Settings, then drop the old key.
+    Keep the old key listed until all four keys have been entered again in Settings (they
+    are write-only, so each must be copied again from Stripe or its provider), then drop
+    it. The one-time upgrade re-save below does not repeat for a rotation.
   - **Upgrading a site that already has these keys saved:** the first cron tick after the
     deploy re-saves them encrypted, once (it needs the key set; until then it retries and
-    logs one warning naming `EMDASH_ENCRYPTION_KEY`). Earlier backups and D1 Time Travel
+    logs one warning naming `EMDASH_ENCRYPTION_KEY`). It first reads every key and changes
+    nothing if any cannot be read, so a wrong key cannot strand a working one — but if every
+    key is still unencrypted, whichever key is set at that tick is the key they are saved
+    under, so set the right one before deploying. The same run deletes the retired x402
+    secret (`settings:x402FacilitatorSecret`) and logs counts only. Earlier backups and D1 Time Travel
     history still hold the earlier copies until they age out, so rotate a live Stripe key
     after the upgrade.
 

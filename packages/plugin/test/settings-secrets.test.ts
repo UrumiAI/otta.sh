@@ -340,13 +340,15 @@ describe("Settings: how a key field renders", () => {
 			"Payments & email — Stripe live · no webhook · no email",
 		);
 
-		// A key stored before shapes were checked still reads as set, without a mode.
+		// ADR-0032 validate-on-read: a stored key that is not a Stripe secret key's
+		// shape (saved before shapes were checked, or outside Otta's form) is never
+		// used, so the label does not claim one.
 		const legacy = await invoke(makeCtx({ [STRIPE_SECRET_KEY_KEY]: "legacy-unchecked" }).ctx, {
 			type: "page_load",
 			page: "/settings",
 		});
 		expect(paymentsLabel(legacy.blocks)).toBe(
-			"Payments & email — Stripe key set · no webhook · no email",
+			"Payments & email — no Stripe key · no webhook · no email",
 		);
 	});
 

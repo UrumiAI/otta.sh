@@ -247,6 +247,7 @@ export {
 	webhookEdgeTokenFromKv,
 	x402FacilitatorSecretFromKv,
 	X402_FACILITATOR_API_KEY_KEY,
+	X402_LEGACY_FACILITATOR_SECRET_KEY,
 } from "./payment-secrets.js";
 // ADR-0032 — the one-time re-save of stored payment keys through EmDash's
 // encrypted settings path (run by the sweep's cron tick).
@@ -255,6 +256,7 @@ export {
 	type EncryptPaymentSecretsOutcome,
 	PAYMENT_SECRETS_ENCRYPTED_MARKER_KEY,
 	PAYMENT_SECRETS_ENCRYPTED_MARKER_VALUE,
+	PAYMENT_SECRETS_ENCRYPTION_PROGRESS_KEY,
 	resetPaymentSecretEncryptionForTesting,
 } from "./encrypt-payment-secrets.js";
 // INC-C5 — email dispatch and the x402 wiring, in-process. Both are

@@ -80,11 +80,13 @@ export function header(request: SandboxedRequest, name: string): string | undefi
  * `"unavailable"` (503 — a token is stored but cannot be read).
  *
  * Four outcomes, and the middle two are the subtle ones:
- *  - token UNSET (never provisioned, or empty) ⇒ PASS THROUGH. The route's
+ *  - token UNSET (never provisioned) ⇒ PASS THROUGH. The route's
  *    cryptographic anchor still applies.
  *  - token stored but UNREADABLE (the kv read rejected — on EmDash 1.0.1 that
- *    includes a stored token this site cannot decrypt, ADR-0032) ⇒ UNAVAILABLE.
- *    An operator turned the gate on; a read failure must not turn it off.
+ *    includes a stored token this site cannot decrypt) or INVALID (empty or
+ *    malformed, e.g. saved through EmDash's own settings form) ⇒ UNAVAILABLE
+ *    (ADR-0032). A stored token means the gate was turned on; a bad read must
+ *    not turn it off.
  *  - token SET, header absent ⇒ reject. No comparison is attempted; the absence
  *    of a header is not a secret and leaks nothing by short-circuiting.
  *  - token SET, header present ⇒ CONSTANT-TIME compare (`constantTimeEquals`),
@@ -97,7 +99,7 @@ export async function edgeTokenGate(
 ): Promise<"accept" | "reject" | "unavailable"> {
 	const expected = await readSecret(ctx, WEBHOOK_EDGE_TOKEN_KEY);
 	if (expected.state === "unset") return "accept";
-	if (expected.state === "unreadable") return "unavailable";
+	if (expected.state === "unreadable" || expected.state === "invalid") return "unavailable";
 	const provided = header(request, WEBHOOK_EDGE_TOKEN_HEADER);
 	if (provided === undefined) return "reject";
 	return constantTimeEquals(provided, expected.value) ? "accept" : "reject";

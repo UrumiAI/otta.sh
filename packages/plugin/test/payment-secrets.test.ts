@@ -163,8 +163,10 @@ describe("the payment/email secret kv keys", () => {
 
 describe("readWriteOnlySecret is fail-closed", () => {
 	test("returns the stored value when set", async () => {
-		const { ctx } = makeCtx({ [STRIPE_SECRET_KEY_KEY]: "sk_test_abc" });
-		await expect(readWriteOnlySecret(ctx, STRIPE_SECRET_KEY_KEY)).resolves.toBe("sk_test_abc");
+		const { ctx } = makeCtx({ [STRIPE_SECRET_KEY_KEY]: "sk_test_abc0123456789" });
+		await expect(readWriteOnlySecret(ctx, STRIPE_SECRET_KEY_KEY)).resolves.toBe(
+			"sk_test_abc0123456789",
+		);
 	});
 
 	test("an UNSET key is undefined (never null, never '')", async () => {
@@ -215,15 +217,15 @@ describe("readWriteOnlySecret is fail-closed", () => {
 describe("readPaymentSecrets is fail-closed PER SECRET", () => {
 	test("reads every secret that is set", async () => {
 		const { ctx } = makeCtx({
-			[STRIPE_SECRET_KEY_KEY]: "sk_test_abc",
-			[STRIPE_WEBHOOK_SECRET_KEY]: "whsec_abc",
+			[STRIPE_SECRET_KEY_KEY]: "sk_test_abc0123456789",
+			[STRIPE_WEBHOOK_SECRET_KEY]: "whsec_abc0123456789",
 			[EMAIL_API_KEY_KEY]: "email_key_abc",
 			[X402_FACILITATOR_API_KEY_KEY]: "x402_abc",
 			[WEBHOOK_EDGE_TOKEN_KEY]: "edge_abc",
 		});
 		await expect(readPaymentSecrets(ctx)).resolves.toEqual({
-			stripeSecretKey: "sk_test_abc",
-			stripeWebhookSecret: "whsec_abc",
+			stripeSecretKey: "sk_test_abc0123456789",
+			stripeWebhookSecret: "whsec_abc0123456789",
 			emailApiKey: "email_key_abc",
 			x402FacilitatorSecret: "x402_abc",
 			webhookEdgeToken: "edge_abc",
@@ -330,16 +332,44 @@ describe("encrypted at rest (ADR-0032)", () => {
 
 	test("readSecret tells set, unset and UNREADABLE apart — and carries nothing from the error", async () => {
 		const { ctx } = makeCtx(
-			{ [STRIPE_SECRET_KEY_KEY]: "sk_test_x", [STRIPE_WEBHOOK_SECRET_KEY]: "" },
+			{ [STRIPE_SECRET_KEY_KEY]: "sk_test_0123456789" },
 			new Set([WEBHOOK_EDGE_TOKEN_KEY]),
 		);
 		expect(await readSecret(ctx, STRIPE_SECRET_KEY_KEY)).toEqual({
 			state: "set",
-			value: "sk_test_x",
+			value: "sk_test_0123456789",
 		});
 		expect(await readSecret(ctx, STRIPE_WEBHOOK_SECRET_KEY)).toEqual({ state: "unset" });
 		expect(await readSecret(ctx, X402_FACILITATOR_API_KEY_KEY)).toEqual({ state: "unset" });
 		expect(await readSecret(ctx, WEBHOOK_EDGE_TOKEN_KEY)).toEqual({ state: "unreadable" });
+	});
+
+	test.each([
+		["an empty edge token", WEBHOOK_EDGE_TOKEN_KEY, ""],
+		["an edge token with spaces round it", WEBHOOK_EDGE_TOKEN_KEY, " tok "],
+		["a two-line edge token", WEBHOOK_EDGE_TOKEN_KEY, "a\nb"],
+		["a malformed Stripe key", STRIPE_SECRET_KEY_KEY, "not-a-stripe-key"],
+		["a publishable key in the secret slot", STRIPE_SECRET_KEY_KEY, "pk_test_0123456789"],
+		["an empty webhook secret", STRIPE_WEBHOOK_SECRET_KEY, ""],
+		["a webhook secret without whsec_", STRIPE_WEBHOOK_SECRET_KEY, "secret_0123456789"],
+		["a non-string facilitator key", X402_FACILITATOR_API_KEY_KEY, 42],
+	])("validate on read: %s is INVALID, never used", async (_label, key, stored) => {
+		const { ctx } = makeCtx({ [key]: stored });
+		expect(await readSecret(ctx, key)).toEqual({ state: "invalid" });
+		expect(await readWriteOnlySecret(ctx, key)).toBeUndefined();
+	});
+
+	test("validate on read leaves the email keys' older rule alone (empty is unset)", async () => {
+		const { ctx } = makeCtx({ [EMAIL_API_KEY_KEY]: "" });
+		expect(await readSecret(ctx, EMAIL_API_KEY_KEY)).toEqual({ state: "unset" });
+	});
+
+	test("the edge-token gate: a stored EMPTY or malformed token is unavailable (503), never off", async () => {
+		for (const stored of ["", " tok", 7]) {
+			const { ctx } = makeCtx({ [WEBHOOK_EDGE_TOKEN_KEY]: stored });
+			expect(await edgeTokenGate(ctx, request({}))).toBe("unavailable");
+			expect(await edgeTokenGate(ctx, request({ "x-otta-wh-token": "tok" }))).toBe("unavailable");
+		}
 	});
 
 	test("a key the host cannot DECRYPT reads as not configured — never a fallback value", async () => {
@@ -571,6 +601,20 @@ describe("Settings provisioning of the payment/email secrets (write-only)", () =
 		expect(whole).toContain("EMDASH_ENCRYPTION_KEY");
 		expect(whole).not.toContain("whsec_NEW_NEVER_RENDER");
 		expect(kv.get(STRIPE_WEBHOOK_SECRET_KEY)).toBe("whsec_OLD_KEPT");
+	});
+
+	test("a key saved MALFORMED (outside Otta's form) says so, keeps Remove, and is never used", async () => {
+		const { ctx } = makeCtx({ [STRIPE_SECRET_KEY_KEY]: "not-a-stripe-key" });
+		const page = await createSettingsFormHandler()(
+			{ input: { type: "page_load" }, request: req },
+			ctx,
+		);
+		const whole = JSON.stringify(page);
+		const field = collectFields(page).find((f) => f["action_id"] === "stripeSecretKey");
+		expect(field?.["label"]).toBe("Stripe secret key — saved, but not valid");
+		expect(whole).toContain("Enter it again here");
+		expect(whole).toContain("Remove Stripe secret key");
+		expect(whole).not.toContain("not-a-stripe-key");
 	});
 
 	test("no payment secret sneaks into the DECLARED settings schema", () => {

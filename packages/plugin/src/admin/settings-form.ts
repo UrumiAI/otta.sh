@@ -437,6 +437,10 @@ interface SecretRenderState {
 	 *  field label says so and Remove stays available); counted as not set
 	 *  everywhere else, since nothing can use it. */
 	unreadable?: true;
+	/** ADR-0032: a value IS stored but is empty or malformed (e.g. written
+	 *  through EmDash's own plugin-settings form). Never used; treated like
+	 *  `unreadable` here, with its own message. */
+	invalid?: true;
 	/** U-8: test or live, for the Stripe secret key only — read from the key's
 	 *  prefix, which says which Stripe mode checkout runs in and nothing about
 	 *  the key itself. `undefined` for every other secret, or a Stripe key saved
@@ -464,9 +468,11 @@ async function readPaymentSecretState(ctx: PluginContext): Promise<Map<string, S
 			const state: SecretRenderState =
 				read.state === "unreadable"
 					? { set: false, gen, unreadable: true }
-					: mode === undefined
-						? { set: value !== undefined, gen }
-						: { set: true, gen, mode };
+					: read.state === "invalid"
+						? { set: false, gen, invalid: true }
+						: mode === undefined
+							? { set: value !== undefined, gen }
+							: { set: true, gen, mode };
 			return [spec.kvKey, state] as const;
 		}),
 	);
@@ -1484,13 +1490,19 @@ function paymentsGroup(
 			...PAYMENT_SECRET_FIELDS.flatMap((spec) => {
 				const secret = state.get(spec.kvKey);
 				const help: Block = { type: "context", text: spec.shapeHelp };
-				const unreadable = secret?.unreadable === true;
-				const form = secretForm(spec, secret?.set === true, secret?.gen ?? 0, unreadable);
+				const problem: SecretProblem | undefined =
+					secret?.unreadable === true
+						? "unreadable"
+						: secret?.invalid === true
+							? "invalid"
+							: undefined;
+				const form = secretForm(spec, secret?.set === true, secret?.gen ?? 0, problem);
 				const blocks: Block[] =
-					secret?.set === true || unreadable
+					secret?.set === true || problem !== undefined
 						? [help, form, removeSecretActions(spec)]
 						: [help, form];
-				if (unreadable) blocks.push({ type: "context", text: UNREADABLE_SECRET_HELP });
+				if (problem !== undefined)
+					blocks.push({ type: "context", text: SECRET_PROBLEM_HELP[problem] });
 				// Issue #382: what the stored key's account is — read-only.
 				const country =
 					spec.kvKey === STRIPE_SECRET_KEY_KEY ? stripeAccountLine(stripeAccount) : null;
@@ -1659,9 +1671,16 @@ function secretForm(
 	spec: SecretFieldSpec,
 	set: boolean,
 	gen: number,
-	unreadable = false,
+	problem?: SecretProblem,
 ): FormBlock {
-	const status = unreadable ? "saved, but cannot be read" : set ? "set" : "not set";
+	const status =
+		problem === "unreadable"
+			? "saved, but cannot be read"
+			: problem === "invalid"
+				? "saved, but not valid"
+				: set
+					? "set"
+					: "not set";
 	return carriedForm({
 		namespace: `settings:${spec.actionId}`,
 		context: { gen: String(gen) },
@@ -1680,10 +1699,17 @@ function secretForm(
 	});
 }
 
-/** ADR-0032 — under a key that is stored but cannot be decrypted. Says what
- *  to check and the way out; names nothing about the key. */
-const UNREADABLE_SECRET_HELP =
-	"This key is saved encrypted, but this site cannot decrypt it, so it is not used. Check that EMDASH_ENCRYPTION_KEY is the key it was saved with, or enter the key again.";
+/** ADR-0032 — why a stored key is not used. */
+type SecretProblem = "unreadable" | "invalid";
+
+/** ADR-0032 — under a key that is stored but not used. Says what to check and
+ *  the way out; names nothing about the key. */
+const SECRET_PROBLEM_HELP: Readonly<Record<SecretProblem, string>> = {
+	unreadable:
+		"This key is saved encrypted, but this site cannot decrypt it, so it is not used. Check that EMDASH_ENCRYPTION_KEY is the key it was saved with, or enter the key again here.",
+	invalid:
+		"This key is saved, but it is empty or not in the expected format (it may have been saved outside these Otta settings), so it is not used. Enter it again here, or remove it.",
+};
 
 /** U-8 — the Remove button under a SET key, behind a confirm that says what
  *  stops working. */

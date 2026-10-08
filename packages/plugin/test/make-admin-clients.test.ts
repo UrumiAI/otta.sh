@@ -145,7 +145,10 @@ describe("makeAdminClients wires the payment gateways into admin refunds", () =>
 	test("with Stripe configured, a console refund goes to Stripe over ctx.http ONCE, carrying its idempotency key", async () => {
 		const ctx = withKv(
 			{ ...harness.ctx, http: stripeHttp() },
-			{ [STRIPE_SECRET_KEY_KEY]: "sk_test_MAC", [STRIPE_WEBHOOK_SECRET_KEY]: "whsec_MAC" },
+			{
+				[STRIPE_SECRET_KEY_KEY]: "sk_test_MAC0123456789",
+				[STRIPE_WEBHOOK_SECRET_KEY]: "whsec_MAC0123456789",
+			},
 		);
 		const { orders } = await makeAdminClients(ctx);
 		const id = await seedPaidOrder();
@@ -212,7 +215,10 @@ describe("makeAdminClients wires the payment gateways into admin refunds", () =>
 	test("a ceiling refusal never reaches Stripe", async () => {
 		const ctx = withKv(
 			{ ...harness.ctx, http: stripeHttp() },
-			{ [STRIPE_SECRET_KEY_KEY]: "sk_test_MAC", [STRIPE_WEBHOOK_SECRET_KEY]: "whsec_MAC" },
+			{
+				[STRIPE_SECRET_KEY_KEY]: "sk_test_MAC0123456789",
+				[STRIPE_WEBHOOK_SECRET_KEY]: "whsec_MAC0123456789",
+			},
 		);
 		const { orders } = await makeAdminClients(ctx);
 		const id = await seedPaidOrder();
@@ -230,7 +236,10 @@ describe("makeAdminClients wires the payment gateways into admin refunds", () =>
 	async function configuredOrders() {
 		const ctx = withKv(
 			{ ...harness.ctx, http: stripeHttp() },
-			{ [STRIPE_SECRET_KEY_KEY]: "sk_test_MAC", [STRIPE_WEBHOOK_SECRET_KEY]: "whsec_MAC" },
+			{
+				[STRIPE_SECRET_KEY_KEY]: "sk_test_MAC0123456789",
+				[STRIPE_WEBHOOK_SECRET_KEY]: "whsec_MAC0123456789",
+			},
 		);
 		return (await makeAdminClients(ctx)).orders;
 	}

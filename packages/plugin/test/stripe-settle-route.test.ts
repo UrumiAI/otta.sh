@@ -514,12 +514,16 @@ describe("(v) an UNSET edge token passes through — but never disables the HMAC
 		expect(await orderState("ord-passthrough-bad")).toBe("pending");
 	});
 
-	test("an EMPTY stored token is 'unset', not 'the empty string is the password'", async () => {
+	test("an EMPTY stored token is INVALID: 503, never 'unset' and never 'the empty string is the password'", async () => {
+		// ADR-0032 validate-on-read: Otta's form never stores "", so a stored empty
+		// token came from somewhere else (EmDash's own settings form). A stored
+		// token means the gate was turned on; it must not silently turn off.
 		await harness.ctx.kv.set(WEBHOOK_EDGE_TOKEN_KEY, "");
 		await harness.ctx.kv.set(STRIPE_WEBHOOK_SECRET_KEY, WEBHOOK_SECRET);
 		await seedPendingOrder("ord-emptytok");
 		const res = await invoke(await signedDelivery("ord-emptytok"));
-		expect(res).toEqual({ ok: true, status: 200 });
+		expect(res).toEqual({ ok: false, status: 503, reason: "NOT_CONFIGURED" });
+		expect(await orderState("ord-emptytok")).toBe("pending");
 	});
 });
 
