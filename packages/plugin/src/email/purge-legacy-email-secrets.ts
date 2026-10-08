@@ -88,6 +88,11 @@ export async function purgeLegacyEmailSecrets(
 		}
 		// Never before a host provider has delivered: until then a rollback must
 		// still find its keys. Fail-soft inside: unreadable ⇒ not confirmed ⇒ wait.
+		//
+		// ONE GAP, ACCEPTED: an `email:beforeSend` hook that cancels a send makes the
+		// host resolve it as sent, so `emailLastSentAt` (and with it `confirmed` and
+		// this purge) can happen with nothing delivered. Cancelling every send is a
+		// deliberate site choice, not a missing provider.
 		if ((await emailSendingStatus(ctx, nowMs)) !== "confirmed") {
 			nextLookAt.set(site, nowMs + UNCONFIRMED_RECHECK_MS);
 			return false;
