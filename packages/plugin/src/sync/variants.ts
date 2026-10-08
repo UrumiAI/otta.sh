@@ -44,6 +44,7 @@
  * draft-only save can leave `updatedAt` frozen, and the resurrect half of the
  * presence axis applies only on a STRICTLY NEWER watermark.
  */
+import { isWellFormedText, toWellFormedText } from "@otta-sh/domain";
 import type {
 	ProductVariantSummaryWire,
 	ProductVariantWire,
@@ -205,7 +206,9 @@ export function parseVariantName(value: unknown): { title: string | null } | { p
 	if (typeof value !== "string") {
 		return { problem: `\`${VARIANT_NAME_SUBFIELD}\` is ${typeof value}, not a string` };
 	}
-	const title = value.trim();
+	// Repaired, as the product title is (see `parseProductTitle`): CMS text this
+	// hook cannot refuse, so a lone surrogate or NUL becomes U+FFFD.
+	const title = toWellFormedText(value.trim());
 	if (title.length === 0) return { title: null };
 	if (title.length > NAME_MAX_LENGTH) {
 		return {
@@ -259,6 +262,15 @@ export function parseVariantRepeater(rows: readonly unknown[]): ParsedRepeater {
 			continue;
 		}
 		const variantKey = rawKey.trim();
+		// An IDENTIFIER, so refused rather than repaired (review R3-B X1): a repaired
+		// key would be a different variant from the one the CMS names. Only this row
+		// is skipped; the commerce boundary would otherwise refuse the whole sync.
+		if (!isWellFormedText(variantKey)) {
+			problems.push(
+				`row ${index}'s \`${VARIANT_KEY_SUBFIELD}\` holds a broken character (an unpaired surrogate or NUL) — the row declares no variant`,
+			);
+			continue;
+		}
 		if (seen.has(variantKey)) {
 			problems.push(
 				`row ${index} REUSES the variant key "${variantKey}" already declared by an earlier row — only the first row's name is synced`,

@@ -10,11 +10,15 @@
  * whose `url` differs from the one it asked for as a redirect (Decision 8). By
  * default the fake answers from the URL it was asked, as `fetch` does.
  *
- * `{ bridge: true }` answers the way EmDash's Cloudflare Worker Loader bridge
- * does (`@emdash-cms/cloudflare@0.38.0`, `dist/runner-CQpZcxVz.mjs:997-1007`):
- * a plain `{status, ok, headers, text(), json()}` with no `url` and no `body`.
- * And because that bridge sends `init` over RPC, where an `AbortSignal` cannot
- * be serialised, bridge mode throws a `DataCloneError` for any `init.signal`.
+ * `{ bridge: true }` answers the way EmDash 0.38's Cloudflare Worker Loader
+ * bridge did: a plain `{status, ok, headers, text(), json()}` with no `url` and
+ * no `body`. That is still the leanest shape the adapter must accept, though
+ * 1.0.1's bridge returns a real `Response` with both
+ * (`@emdash-cms/cloudflare@1.0.1` `src/sandbox/wrapper.ts` `http.fetch`).
+ * Bridge mode also throws a
+ * `DataCloneError` for any `init.signal`: it models 0.38's refusal to serialise
+ * an `AbortSignal` over RPC, the strictest behaviour (1.0.1's wrapper drops the
+ * signal silently instead). Otta must not depend on a signal either way.
  */
 
 export const FAKE_FACILITATOR_URL = "https://facilitator.test/x402";

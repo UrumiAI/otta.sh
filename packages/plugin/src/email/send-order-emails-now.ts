@@ -52,6 +52,7 @@
  */
 import {
 	dispatchOrderEmailsForOrder,
+	EmailSendTimeoutError,
 	type Clock,
 	type CustomerStore,
 	type EmailSender,
@@ -100,6 +101,17 @@ export const ORDER_EMAIL_INLINE_DEADLINE_MS = 5_000;
  * inline send is rescheduled to, so the next cron tick past it retries it.
  */
 export const ORDER_EMAIL_INLINE_LEASE_MS = 60_000;
+
+/**
+ * The least of the wait a send must still have to START (PR #418 review, item 2).
+ *
+ * A send is raced, not aborted: one started with ~150 ms left times out, keeps
+ * going and is delivered — and its timeout is a COUNTED attempt the cron then
+ * repeats, with no idempotency key to drop the duplicate (ADR-0031). Below this
+ * much, the row is handed back untried and uncounted (`canSend`), and the cron
+ * sends it with its full allowance. The sweep's own floor is `MIN_SEND_MS`.
+ */
+export const MIN_INLINE_SEND_MS = 1_000;
 
 /** The stores the inline dispatch reads — the route's own, so the settle and the
  *  send see one set of stores and one clock.
@@ -175,7 +187,8 @@ export async function sendOrderEmailsNow(
 
 	const deadline = options.deadline ?? settleDeadline();
 	const waitMs = Math.min(ORDER_EMAIL_INLINE_DEADLINE_MS, deadline.remainingMs());
-	if (waitMs <= 0) {
+	// Too little left to START a send (`MIN_INLINE_SEND_MS`): claim nothing at all.
+	if (waitMs < MIN_INLINE_SEND_MS) {
 		console.warn(
 			`[otta] inline order email for ${orderId} skipped: the settle used the request's time budget; the cron sweep will take it`,
 		);
@@ -190,10 +203,14 @@ export async function sendOrderEmailsNow(
 		Math.max(1, Math.min(ORDER_EMAIL_INLINE_TIMEOUT_MS, waitEndsAt - deadline.now()));
 
 	// No idempotency key on `ctx.email`: a timeout is a COUNTED attempt, so a slow
-	// but accepting provider is not re-sent the same email every time. Outermost.
-	const emailSender = countTimeoutsAsAttempts(
-		options.emailSender ?? lazySender(ctx, sendTimeoutMs),
-	);
+	// but accepting provider is not re-sent the same email every time — outermost
+	// around the send. The built-on-first-send sender checks the floor again AFTER
+	// its kv reads (r3 S2), outside that wrapper, so the real send never starts with
+	// under `MIN_INLINE_SEND_MS` left.
+	const emailSender =
+		options.emailSender === undefined
+			? lazySender(ctx, sendTimeoutMs, () => waitEndsAt - deadline.now() >= MIN_INLINE_SEND_MS)
+			: countTimeoutsAsAttempts(options.emailSender);
 	// A sandboxed host with no provider answers the first send (`ctx.email` is
 	// always present there): the row goes back uncounted and nothing was sent.
 	let unavailable = false;
@@ -218,6 +235,9 @@ export async function sendOrderEmailsNow(
 			leaseMs: ORDER_EMAIL_INLINE_LEASE_MS,
 			onlyUnattempted: true,
 			shouldContinue: () => !expired,
+			// Asked after the claim and the reads, just before the send: too little of
+			// the wait left and the row goes back untried, its attempt not counted.
+			canSend: () => !expired && waitEndsAt - deadline.now() >= MIN_INLINE_SEND_MS,
 			// Only what was sent while the request was still waiting is reported.
 			onSent: (row) => {
 				if (!expired) sent.push(row);
@@ -270,8 +290,17 @@ export async function sendOrderEmailsNow(
  * this context can send (`ctx.email` is there), so a row is never claimed for a
  * sender that cannot exist. `timeoutMs` is a FUNCTION the sender asks at each send, so every
  * per-request abort is what is left of the wait when that send starts.
+ *
+ * `enoughLeft` is asked once the sender is built: the build's kv reads take time
+ * of their own, after the dispatcher's `canSend`. Too little left and the send is
+ * not started — a CUT-SHORT timeout, which the dispatcher hands back uncounted. It
+ * sits outside {@link countTimeoutsAsAttempts}, which wraps only the real send.
  */
-function lazySender(ctx: PluginContext, timeoutMs: () => number): EmailSender {
+function lazySender(
+	ctx: PluginContext,
+	timeoutMs: () => number,
+	enoughLeft: () => boolean,
+): EmailSender {
 	let built: Promise<EmailSender | undefined> | undefined;
 	return {
 		async send(input) {
@@ -280,7 +309,8 @@ function lazySender(ctx: PluginContext, timeoutMs: () => number): EmailSender {
 			// Unreachable while `emailSendingConfigured` and `makeEmailSender` agree; a
 			// throw here is a failed send, rescheduled for the cron like any other.
 			if (sender === undefined) throw new Error("email sender is not configured");
-			await sender.send(input);
+			if (!enoughLeft()) throw new EmailSendTimeoutError(0, { cutShort: true });
+			await countTimeoutsAsAttempts(sender).send(input);
 		},
 	};
 }

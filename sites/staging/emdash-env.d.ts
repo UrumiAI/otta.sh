@@ -3,7 +3,7 @@
 
 /// <reference types="emdash/locals" />
 
-import type { ContentBylineCredit, TaxonomyTerm } from "emdash";
+import type { BylineSummary, ContentBylineCredit, TaxonomyTerm } from "emdash";
 
 export interface Product {
   id: string;
@@ -11,12 +11,13 @@ export interface Product {
   status: string;
   title: string;
   description?: string;
-  images?: { id: string; src?: string; alt?: string; width?: number; height?: number; filename?: string; mimeType?: string; blurhash?: string; dominantColor?: string; provider?: string; previewUrl?: string; meta?: Record<string, unknown>; darkVariant?: { id: string; src?: string; alt?: string; width?: number; height?: number; filename?: string; mimeType?: string; blurhash?: string; dominantColor?: string; provider?: string; previewUrl?: string; meta?: Record<string, unknown> } };
+  images?: { id: string; src?: string; alt?: string; width?: number; height?: number; filename?: string; mimeType?: string; blurhash?: string; dominantColor?: string; focalX?: number; focalY?: number; provider?: string; previewUrl?: string; meta?: Record<string, unknown>; darkVariant?: { id: string; src?: string; alt?: string; width?: number; height?: number; filename?: string; mimeType?: string; blurhash?: string; dominantColor?: string; focalX?: number; focalY?: number; provider?: string; previewUrl?: string; meta?: Record<string, unknown> } };
   pricing?: unknown;
   variants?: { "key": string; "name": string }[];
   createdAt: Date;
   updatedAt: Date;
   publishedAt: Date | null;
+  byline?: BylineSummary | null;
   bylines?: ContentBylineCredit[];
   terms?: Record<string, TaxonomyTerm[]>;
 }

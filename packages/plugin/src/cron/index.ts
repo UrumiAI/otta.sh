@@ -58,9 +58,10 @@ import {
  *  rows contending on the same documents.
  *
  *  Splitting would NOT buy isolation from a slow leg either, which is the obvious
- *  reason to want it: EmDash 0.38's executor claims due rows and invokes their hooks
- *  ONE AFTER ANOTHER in a single scheduled event, each under its own timeout, and a
- *  timed-out hook is only raced, never cancelled — it keeps running unobserved. Twelve
+ *  reason to want it: EmDash 1.0.1's executor (`src/plugins/cron.ts`, `tick`) claims
+ *  due rows and invokes their hooks ONE AFTER ANOTHER in a single scheduled event,
+ *  each under its own timeout, and a timed-out hook is only raced, never cancelled
+ *  (`src/plugins/hooks.ts`, `executeWithTimeout`) — it keeps running unobserved. Twelve
  *  tasks could therefore hold the event for twelve timeouts back to back. One task
  *  with its own time budget (`SWEEP_TICK_BUDGET_MS`) stops cleanly instead. */
 export const SWEEP_TASK_NAME = "commerce-sweeps";
@@ -90,7 +91,7 @@ export const SWEEP_SCHEDULE = "* * * * *";
  *
  * FIFTEEN SECONDS, raised from the default so that one email send of a
  * slow-but-working provider fits inside a tick (`SWEEP_EMAIL_SEND_TIMEOUT_MS`,
- * 5 s, under a 9.5 s budget). The cost, accepted: EmDash 0.38's executor runs due
+ * 5 s, under a 9.5 s budget). The cost, accepted: EmDash 1.0.1's executor runs due
  * tasks one after another in a single scheduled event, so a long tick delays any
  * OTHER plugin's task due in the same minute by up to this much. That is
  * acceptable because the tick budgets itself well inside it (it ends at 9.5 s,

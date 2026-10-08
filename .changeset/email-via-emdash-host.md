@@ -35,10 +35,15 @@ DKIM and any key belong to it. The outbox and its at-least-once delivery are unc
   parks a row `failed` sooner. The 3 s
   sign-in and inline ceilings and the 5 s sweep ceiling are unchanged.
 - **Settings.** The email API key, SMTP2GO key, from-address, email provider and SMTP2GO
-  region fields are removed. "Payments & email" shows one line: sent via EmDash's provider, or
-  no provider (with a pointer to `docs/email-providers.md`).
+  region fields are removed. "Payments & email" shows one line in three states: sent via
+  EmDash's provider (a send has gone through it, `state:emailLastSentAt`), provider not
+  confirmed yet, or no provider (the last two with a pointer to `docs/email-providers.md`).
+- **Inline sends need a second.** The inline order email starts a send only with at least
+  `MIN_INLINE_SEND_MS` (1 s) of its wait left; otherwise the row goes back untried and
+  uncounted for the cron, so a send is never started with too little time left to finish. A
+  slower provider can still time out; that is bounded by the attempt cap.
 - **Cron budget.** The `order-emails` leg's entry cost is one kv read (was up to three), and
-  one email unit is 12 calls (was 14), so the Workers Paid email batch is 15 (was 12).
+  one email unit is 13 calls (was 14), so the Workers Paid email batch is 13 (was 12).
 
 **Breaking (`@otta-sh/plugin`), removed from the package root:** `CtxHttpEmailSender`,
 `CtxHttpEmailSenderOptions`, `EmailSenderEgress`, `DEFAULT_EMAIL_FROM`, `EMAIL_FROM_KEY`,

@@ -458,9 +458,10 @@ describe("the query budget is an operational setting (Background work per minute
 			timeMs: SWEEP_TICK_BUDGET_MS,
 			queries: 600,
 			expiryBatch: 18,
-			// 15: the email unit is 12 calls (the real sender's build is two kv reads,
-			// ADR-0031); it was 12 while the build read four and the provider resolve three.
-			emailBatch: 15,
+			// 13: the email unit is 13 calls (the real sender's build is two kv reads and
+			// its first delivered send one "last sent" write, ADR-0031 / PR #418 review);
+			// it was 12 while the build read four and the provider resolve three.
+			emailBatch: 13,
 		});
 	}, 120_000);
 

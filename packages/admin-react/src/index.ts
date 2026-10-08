@@ -127,7 +127,7 @@ export function createPlugin(_options: Record<string, unknown> = {}): ResolvedPl
 			pages: [...OTTA_CONSOLE_ADMIN_PAGES],
 			// The products editor's Pricing & stock cards: a React field editor
 			// (`./admin.tsx`'s `fields.pricing`), declared in the manifest for
-			// completeness (ADR-0014, amendment 2026-10-01). EmDash 0.38's Content
+			// completeness (ADR-0014, amendment 2026-10-01). EmDash 1.0.1's Content
 			// Types screen cannot bind a widget; the seed and
 			// `sites/staging/scripts/add-pricing-field.ts` do.
 			fieldWidgets: OTTA_CONSOLE_FIELD_WIDGETS.map((widget) => ({

@@ -8,11 +8,12 @@ import {
 } from "../src/index.js";
 
 // EmDash's sandbox runner hands a plugin's `ctx.http.fetch(url, init)` to the
-// host over Workers RPC, which structured-clones `init` — and workerd refuses an
-// `AbortSignal` there (`DataCloneError: AbortSignal serialization is not
-// enabled.`, measured in `packages/plugin/test/emdash-sandbox-rpc.sandbox.test.ts`).
-// So by default the live transport must put NO signal in `init`, and bound every
-// call with its own race instead. Only a trusted (in-process) host may opt back
+// host over Workers RPC. On EmDash 0.38 workerd refused an `AbortSignal` there
+// (`DataCloneError: AbortSignal serialization is not enabled.`); on 1.0.1 the
+// wrapper drops it silently, so the abort never reaches the host fetch (both
+// measured in `packages/plugin/test/emdash-sandbox-rpc.sandbox.test.ts`). Either
+// way the racing deadline is the only bound: by default the live transport puts
+// NO signal in `init`, and bounds every call with its own race instead. Only a trusted (in-process) host may opt back
 // in to a signal, so a timed-out request's socket is released.
 //
 // Offline throughout: no call here leaves the process; the secret is a fake.

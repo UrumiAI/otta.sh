@@ -312,6 +312,7 @@ describe("Settings: how a key field renders", () => {
 				{
 					[STRIPE_SECRET_KEY_KEY]: SK_TEST,
 					[STRIPE_WEBHOOK_SECRET_KEY]: WHSEC,
+					"state:emailLastSentAt": new Date().toISOString(),
 				},
 				{ email: true },
 			).ctx,
@@ -319,6 +320,18 @@ describe("Settings: how a key field renders", () => {
 		);
 		expect(paymentsLabel(testMode.blocks)).toBe(
 			"Payments & email — Stripe test · webhook set · email set",
+		);
+
+		// PR #418 review: `ctx.email` with nothing sent through it yet is NOT "set".
+		const unconfirmed = await invoke(
+			makeCtx(
+				{ [STRIPE_SECRET_KEY_KEY]: SK_TEST, [STRIPE_WEBHOOK_SECRET_KEY]: WHSEC },
+				{ email: true },
+			).ctx,
+			{ type: "page_load", page: "/settings" },
+		);
+		expect(paymentsLabel(unconfirmed.blocks)).toBe(
+			"Payments & email — Stripe test · webhook set · email TBC",
 		);
 
 		const live = await invoke(makeCtx({ [STRIPE_SECRET_KEY_KEY]: SK_LIVE }).ctx, {
@@ -339,7 +352,7 @@ describe("Settings: how a key field renders", () => {
 		);
 	});
 
-	test("one email status line: via EmDash, or no provider with a pointer to the guide (ADR-0031)", async () => {
+	test("one email status line in three states: via EmDash, not confirmed, or no provider (ADR-0031, PR #418 review)", async () => {
 		const none = await invoke(makeCtx().ctx, { type: "page_load", page: "/settings" });
 		const noneText = contextTexts(none.blocks).join("\n");
 		expect(noneText).toContain(
@@ -347,13 +360,23 @@ describe("Settings: how a key field renders", () => {
 		);
 		expect(noneText).not.toContain("queued");
 		expect(noneText).toContain("docs/email-providers.md");
-		const via = await invoke(makeCtx({}, { email: true }).ctx, {
-			type: "page_load",
-			page: "/settings",
-		});
+		const via = await invoke(
+			makeCtx({ "state:emailLastSentAt": new Date().toISOString() }, { email: true }).ctx,
+			{ type: "page_load", page: "/settings" },
+		);
 		const viaText = contextTexts(via.blocks).join("\n");
 		expect(viaText).toContain("sent via EmDash");
 		expect(viaText).not.toContain("docs/email-providers.md");
+		// A sandboxed host ALWAYS hands over `ctx.email`: with nothing sent through it
+		// yet, the line must not reassure — it says "not confirmed" and points at the guide.
+		const idle = await invoke(makeCtx({}, { email: true }).ctx, {
+			type: "page_load",
+			page: "/settings",
+		});
+		const idleText = contextTexts(idle.blocks).join("\n");
+		expect(idleText).toContain("Email: provider not confirmed");
+		expect(idleText).not.toContain("sent via EmDash");
+		expect(idleText).toContain("docs/email-providers.md");
 		// A sandboxed host always hands over `ctx.email`; once it has answered "no
 		// email provider" the line says so (ADR-0031).
 		const answered = await invoke(

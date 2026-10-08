@@ -71,17 +71,30 @@ Facts verified against emdash 0.38.0 (installed):
    retry; with no idempotency key that would multiply duplicates, so a slow provider now
    parks a row `failed` after five timed-out sends — including a send the sweep itself
    cut short because the tick was running out of time (it may have been delivered too).
+   An inline send starts only with at least 1 s of its wait left (`MIN_INLINE_SEND_MS`,
+   the sweep's `MIN_SEND_MS` counterpart); otherwise the row is released untried and
+   uncounted for the cron, so a near-zero allowance never turns into a delivered "timeout"
+   that is then repeated (PR #418 review).
    `onRepeatedTimeouts` therefore no longer fires for the plugin's sender. The uncounted-timeout path in the
    domain stays for other callers; the plugin no longer uses it. A query-ceiling refusal
    while building the sender (before any send) is still released uncounted.
 4. **The extension point is EmDash's.** otta adds no provider registry of its own. A store
    that wants a provider EmDash does not ship writes a small EmDash email-provider plugin;
    `docs/email-providers.md`, an example and a test helper are the supported path. The
-   admin Settings screen shows one line: "sent via EmDash's email provider", or "no EmDash
-   email provider … see docs/email-providers.md".
+   admin Settings screen shows one line in three states: "sent via EmDash's email
+   provider" once the host has accepted a send (`state:emailLastSentAt`, newer than any
+   "no provider" answer), "provider not confirmed" until then, or "no EmDash email
+   provider"; the last two point at docs/email-providers.md.
 5. **Stale credentials.** The keys earlier builds stored (`settings:emailApiKey`,
-   `settings:emailSmtp2goApiKey` and their save generations) are no longer read. The first
-   cron tick purges them once, behind a marker key (a separate commit; it ships).
+   `settings:emailSmtp2goApiKey` and their save generations) are no longer read. A cron
+   tick purges them once, behind a marker key, but only after the host's provider has
+   accepted a send: until then a rollback to the earlier build still finds them (PR #418
+   review). Known limit: on a sandboxed host, an installed plugin whose `email:beforeSend`
+   hook CANCELS otta's message makes `send()` resolve before EmDash checks for a provider,
+   so that counts as a confirmed send and the purge can run with no provider selected (the
+   cancelled order email is marked sent as well). Only an admin installing such a plugin
+   can cause it; a buyer cannot. Trusted mode is unaffected (`ctx.email` exists only once
+   a provider is selected).
 6. **Old email is not sent (user decision, 2026-10-07).** An outbox row older than 72 hours
    (`OUTBOX_EMAIL_MAX_AGE_MS`, from when it was enqueued) is completed WITHOUT a send when
    the dispatcher claims it: terminal (`skipped`), no attempt spent, for every template.
@@ -99,7 +112,8 @@ Facts verified against emdash 0.38.0 (installed):
 - In a sandboxed host the plugin cannot tell "no provider" until it sends. Until the first
   refused send (and again once each 5-minute record lapses) one outbox row is claimed and
   released uncounted, or one sign-in request mints a challenge (spending a throttle slot)
-  before its send is refused; the Settings line reads as configured until then. The
+  before its send is refused; the Settings line reads "provider not confirmed" until a send
+  goes through. The
   `order-emails` leg pays one kv read per tick with an email due to check the record.
   After an operator selects a provider on a sandboxed host, allow up to 5 minutes for the
   record to lapse: until then order emails stay queued and a sign-in request sends nothing

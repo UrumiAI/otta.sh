@@ -586,9 +586,10 @@ describe("Settings admin form (workerd sandbox)", () => {
 
 		// U-8: the group's label states what card checkout and email have — the
 		// Stripe mode comes from the key's prefix, never any more of it. Email is
-		// `ctx.email` (ADR-0031), which a sandboxed host always hands over.
+		// `ctx.email` (ADR-0031), which a sandboxed host always hands over — so with
+		// nothing sent through it yet it is "email TBC", never "set" (PR #418 review).
 		expect(groupLabels(blocks).get("settings:payments")).toBe(
-			"Payments & email — Stripe live · webhook set · email set",
+			"Payments & email — Stripe live · webhook set · email TBC",
 		);
 	});
 
@@ -935,8 +936,9 @@ describe("Settings admin form (workerd sandbox)", () => {
 		expect(labels.get("settings:payments")).toBe(
 			// U-8: card checkout and email, stated — the optional x402 and edge
 			// credentials no longer read as missing pieces. Email is the host's
-			// `ctx.email` (ADR-0031), always present in a sandboxed boot.
-			"Payments & email — no Stripe key · no webhook · email set",
+			// `ctx.email` (ADR-0031), always present in a sandboxed boot, and
+			// "email TBC" until a send has gone through it (PR #418 review).
+			"Payments & email — no Stripe key · no webhook · email TBC",
 		);
 		for (const label of labels.values()) expect(label.length).toBeLessThanOrEqual(60);
 
@@ -983,7 +985,7 @@ describe("Settings admin form (workerd sandbox)", () => {
 		// lost the "no " prefix that makes the list read as MISSING rather than
 		// as present.
 		expect(groupLabels(savedKey).get("settings:payments")).toBe(
-			"Payments & email — Stripe test · no webhook · email set",
+			"Payments & email — Stripe test · no webhook · email TBC",
 		);
 
 		// …and a later page load agrees, so the label is reporting kv, not the
@@ -994,7 +996,7 @@ describe("Settings admin form (workerd sandbox)", () => {
 			await sandbox.invokeRoute("admin", { type: "page_load", page: "/settings" }),
 		);
 		expect(groupLabels(reloaded).get("settings:payments")).toBe(
-			"Payments & email — Stripe test · no webhook · email set",
+			"Payments & email — Stripe test · no webhook · email TBC",
 		);
 
 		// SECURITY PIN: no part of the secret value appears in any of these

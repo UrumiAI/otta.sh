@@ -68,6 +68,11 @@ export {
 } from "./emdash-coupon-store.js";
 export { systemClock } from "./clock.js";
 export { collectionOf } from "./collection-of.js";
+export {
+	IllFormedIdError,
+	isIllFormedIdError,
+	UNMETERED_COLLECTION,
+} from "./well-formed-storage.js";
 export { EmdashCartStore, type EmdashCartStoreOptions } from "./emdash-cart-store.js";
 export {
 	EmdashOrderStore,

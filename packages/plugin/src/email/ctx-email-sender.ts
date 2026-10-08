@@ -62,6 +62,11 @@ export const LOGIN_EMAIL_TIMEOUT_MS = 3_000;
  *  page (for the storefront origin). The cron's query budget counts them. */
 export const EMAIL_SENDER_BUILD_READS = 2;
 
+/** The kv write the FIRST delivered send of a sender adds after the host call:
+ *  the "last sent" record ({@link markEmailSent}). The cron's query budget counts
+ *  it, like {@link EMAIL_SENDER_BUILD_READS}. */
+export const EMAIL_SENT_RECORD_WRITES = 1;
+
 export interface CtxEmailSenderOptions {
 	/** The host's email access — `ctx.email`. */
 	email: EmailAccess;
@@ -76,6 +81,9 @@ export interface CtxEmailSenderOptions {
 	/** Told when the host answered "no email provider" — {@link makeEmailSender}
 	 *  records it ({@link markEmailTransportUnavailable}). */
 	onUnavailable?: (() => Promise<void>) | undefined;
+	/** Told when the host ACCEPTED a send — {@link makeEmailSender} records it
+	 *  ({@link markEmailSent}). Started, not awaited. */
+	onSent?: (() => Promise<void>) | undefined;
 }
 
 /** Renders with the storefront's money, the store name and the order link, and
@@ -86,9 +94,12 @@ export class CtxEmailSender implements EmailSender {
 	readonly #storeName: string | undefined;
 	readonly #storefrontOrigin: string | undefined;
 	readonly #onUnavailable: (() => Promise<void>) | undefined;
+	readonly #onSent: (() => Promise<void>) | undefined;
+	#sentRecorded = false;
 
 	constructor(options: CtxEmailSenderOptions) {
 		this.#onUnavailable = options.onUnavailable;
+		this.#onSent = options.onSent;
 		this.#email = options.email;
 		this.#timeoutMs = options.requestTimeoutMs ?? DEFAULT_EMAIL_TIMEOUT_MS;
 		this.#storeName = options.storeName;
@@ -135,6 +146,15 @@ export class CtxEmailSender implements EmailSender {
 			throw err;
 		} finally {
 			clearTimeout(timer);
+		}
+		// Only a send the host answered in time: proof a provider is working. NOT
+		// awaited: the email has gone, so a slow or hung kv write must never turn it
+		// into a timeout (a counted attempt, a duplicate). Started here, so a query
+		// budget counts it with this send; fail-soft, so nothing is left to reject.
+		// Once per sender (one per tick or request): a timestamp, not a log.
+		if (!this.#sentRecorded) {
+			this.#sentRecorded = true;
+			void this.#onSent?.().catch(() => undefined);
 		}
 	}
 }
@@ -228,6 +248,75 @@ export async function emailSendingAvailable(
 export const EMAIL_AVAILABILITY_READS = 1;
 
 /**
+ * When the host last ACCEPTED a send (readable kv, an ISO time) — PR #418 review.
+ *
+ * A sandboxed host always hands over `ctx.email`, and the "no provider" record
+ * ({@link EMAIL_TRANSPORT_UNAVAILABLE_KEY}) lapses after 5 minutes, so neither
+ * says a provider WORKS. This does: the Settings line only says "sent via
+ * EmDash's email provider" once it is newer than any "no provider" answer, and
+ * the legacy-credential purge waits for it. Plain kv, written fail-soft by the
+ * first delivered send of each sender — once per tick or request
+ * ({@link EMAIL_SENT_RECORD_WRITES}).
+ */
+export const EMAIL_LAST_SENT_KEY = "state:emailLastSentAt";
+
+/** Record that the host accepted a send, now. Never throws. */
+export async function markEmailSent(ctx: PluginContext, nowMs: number = Date.now()): Promise<void> {
+	try {
+		await ctx.kv.set(EMAIL_LAST_SENT_KEY, new Date(nowMs).toISOString());
+	} catch {
+		// Fail-soft: the email went; only the confirmation waits for the next send.
+	}
+}
+
+/**
+ * What is known about the host's email provider:
+ *  - `unavailable` — none: `ctx.email` is absent, or the host said "no provider"
+ *    in the last {@link TRANSPORT_UNAVAILABLE_RETRY_MS};
+ *  - `unconfirmed` — `ctx.email` is there, but no send has gone through it since
+ *    the last "no provider" answer (or ever). A sandboxed host with no provider
+ *    looks exactly like this until a send is refused;
+ *  - `confirmed` — the host accepted a send, more recently than any "no provider".
+ *
+ * Two kv reads when `ctx.email` is there, none when it is not. Fail-soft: an
+ * unreadable record reads as absent, so the answer errs toward `unconfirmed`.
+ */
+export type EmailSendingStatus = "unavailable" | "unconfirmed" | "confirmed";
+
+export async function emailSendingStatus(
+	ctx: PluginContext,
+	nowMs: number = Date.now(),
+): Promise<EmailSendingStatus> {
+	if (!emailSendingConfigured(ctx)) return "unavailable";
+	const [unavailableAt, lastSentAt] = await Promise.all([
+		readIsoMs(ctx, EMAIL_TRANSPORT_UNAVAILABLE_KEY),
+		readIsoMs(ctx, EMAIL_LAST_SENT_KEY),
+	]);
+	if (
+		unavailableAt !== undefined &&
+		unavailableAt <= nowMs &&
+		nowMs - unavailableAt < TRANSPORT_UNAVAILABLE_RETRY_MS
+	) {
+		return "unavailable";
+	}
+	if (lastSentAt === undefined) return "unconfirmed";
+	return unavailableAt === undefined || lastSentAt >= unavailableAt ? "confirmed" : "unconfirmed";
+}
+
+/** A kv ISO time as epoch ms; `undefined` when missing, malformed or unreadable. */
+async function readIsoMs(ctx: PluginContext, key: string): Promise<number | undefined> {
+	let at: unknown;
+	try {
+		at = await ctx.kv.get<unknown>(key);
+	} catch {
+		return undefined;
+	}
+	if (typeof at !== "string") return undefined;
+	const ms = Date.parse(at);
+	return Number.isFinite(ms) ? ms : undefined;
+}
+
+/**
  * Build the sender for a context, or `undefined` when the host has no email
  * provider (`ctx.email` absent). Reads the store name (falling back to the
  * EmDash site name) and the sign-in page (fail-soft: unreadable ⇒ no name, no
@@ -250,6 +339,7 @@ export async function makeEmailSender(
 		storeName: storeName ?? storeNameFrom(ctx.site?.name),
 		storefrontOrigin: storefrontOriginOf(signInPageUrl),
 		onUnavailable: () => markEmailTransportUnavailable(ctx),
+		onSent: () => markEmailSent(ctx),
 		...(options.requestTimeoutMs !== undefined
 			? { requestTimeoutMs: options.requestTimeoutMs }
 			: {}),

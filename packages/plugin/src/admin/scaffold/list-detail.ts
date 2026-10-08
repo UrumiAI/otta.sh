@@ -9,7 +9,7 @@ import type {
 	PluginContext,
 	RouteHandler,
 } from "../../types.js";
-import { isCommerceInputError } from "../../commerce/commerce-input.js";
+import { ILL_FORMED_TEXT_REASON, isCommerceInputError } from "../../commerce/commerce-input.js";
 import type { ScreenActions } from "./actions.js";
 import { failClosedResponse, noticeBanner, type Notice } from "./banner.js";
 import { carriedFields, type CarriedContext, decodeCarrier } from "./carrier.js";
@@ -460,6 +460,9 @@ function humanReason(reason: string): string {
 	// reason (ADR-0025) gets the console's create-screen wording.
 	if (reason === "must be printable ASCII with no whitespace") {
 		return "can only use plain letters, digits and punctuation — no spaces or accented characters";
+	}
+	if (reason === ILL_FORMED_TEXT_REASON) {
+		return "contains a character that cannot be saved (a broken emoji or an invisible NUL) — retype it";
 	}
 	if (reason === "must be printable ASCII") {
 		return "can only use plain letters, digits and punctuation — no accented letters or symbols";

@@ -5,7 +5,7 @@ import {
 	validateBackgroundWork,
 } from "../cron/background-work-setting.js";
 import { MAX_HOLD_TTL_MINUTES } from "@otta-sh/domain";
-import { emailSendingAvailable } from "../email/ctx-email-sender.js";
+import { emailSendingStatus, type EmailSendingStatus } from "../email/ctx-email-sender.js";
 import { STORE_DISPLAY_NAME_KEY } from "../email/email-render-context.js";
 import { isPlausiblePayTo, X402_ACCEPTS_KEY, X402_PAYTO_KEY } from "../payments/x402-wiring.js";
 import {
@@ -363,9 +363,9 @@ interface SettingsPageState {
 	/** Issue #382: the Stripe account's country — the cache, read afresh from
 	 *  Stripe only when it holds nothing usable for the stored key. */
 	stripeAccount: StripeAccountCountryStatus;
-	/** Whether the EmDash host hands this plugin an email pipeline (`ctx.email`,
-	 *  ADR-0031) — not a read. */
-	emailAvailable: boolean;
+	/** What is known about the EmDash host's email provider (`ctx.email`, ADR-0031):
+	 *  none, not yet confirmed by a send, or confirmed — two kv reads. */
+	emailStatus: EmailSendingStatus;
 }
 
 /** Read the three non-secret payment/email settings. FAIL-SOFT per key, for the
@@ -395,33 +395,28 @@ async function readPlainSettings(ctx: PluginContext): Promise<Map<string, string
  * budget, the Stripe account and whether email is available: six concurrent reads.
  */
 async function readPageState(ctx: PluginContext): Promise<SettingsPageState> {
-	const [
-		displayName,
-		paymentSecrets,
-		plainSettings,
-		backgroundWork,
-		stripeAccount,
-		emailAvailable,
-	] = await Promise.all([
-		// FAIL-SOFT alongside the rest (INC-C3): the display name is cosmetic, and
-		// a kv blip on it must not deny the operator the secret forms below.
-		ctx.kv.get<string>(STORE_DISPLAY_NAME_KEY).catch(() => null),
-		readPaymentSecretState(ctx),
-		readPlainSettings(ctx),
-		// Fail-soft inside (a kv blip reads as the default), and the SAME read the
-		// sweep makes, so the form shows the budget the next tick will use.
-		readBackgroundWork(ctx),
-		// Never throws. The ONE place besides the key's save that may ask
-		// Stripe: only when nothing usable is cached for the stored key (never
-		// cached, or an unknown answer past its back-off), so checkout never has to.
-		readStripeAccountCountry(ctx),
-		// ADR-0031: `ctx.email`, and no recent "no email provider" answer.
-		emailSendingAvailable(ctx),
-	]);
+	const [displayName, paymentSecrets, plainSettings, backgroundWork, stripeAccount, emailStatus] =
+		await Promise.all([
+			// FAIL-SOFT alongside the rest (INC-C3): the display name is cosmetic, and
+			// a kv blip on it must not deny the operator the secret forms below.
+			ctx.kv.get<string>(STORE_DISPLAY_NAME_KEY).catch(() => null),
+			readPaymentSecretState(ctx),
+			readPlainSettings(ctx),
+			// Fail-soft inside (a kv blip reads as the default), and the SAME read the
+			// sweep makes, so the form shows the budget the next tick will use.
+			readBackgroundWork(ctx),
+			// Never throws. The ONE place besides the key's save that may ask
+			// Stripe: only when nothing usable is cached for the stored key (never
+			// cached, or an unknown answer past its back-off), so checkout never has to.
+			readStripeAccountCountry(ctx),
+			// ADR-0031: `ctx.email`, no recent "no email provider" answer, and whether a
+			// send has gone through it since (PR #418 review: three states).
+			emailSendingStatus(ctx),
+		]);
 	return {
 		backgroundWork,
 		stripeAccount,
-		emailAvailable,
+		emailStatus,
 		plainSettings,
 		displayName: displayName ?? "",
 		paymentSecrets,
@@ -1082,7 +1077,7 @@ function buildSettingsBlocks(args: {
 	plainSettings: Map<string, string>;
 	backgroundWork: number;
 	stripeAccount: StripeAccountCountryStatus;
-	emailAvailable: boolean;
+	emailStatus: EmailSendingStatus;
 	notice?: Notice;
 	paymentRefusal?: PaymentRefusal;
 }): Block[] {
@@ -1101,7 +1096,7 @@ function buildSettingsBlocks(args: {
 			args.paymentSecrets,
 			args.plainSettings,
 			args.stripeAccount,
-			args.emailAvailable,
+			args.emailStatus,
 			args.paymentRefusal,
 		),
 	);
@@ -1309,13 +1304,13 @@ function paymentsGroup(
 	state: Map<string, SecretRenderState>,
 	plain: Map<string, string>,
 	stripeAccount: StripeAccountCountryStatus,
-	emailAvailable: boolean,
+	emailStatus: EmailSendingStatus,
 	refusal?: PaymentRefusal,
 ): AccordionBlock {
 	return {
 		type: "accordion",
 		block_id: "settings:payments",
-		label: paymentsGroupLabel(state, emailAvailable),
+		label: paymentsGroupLabel(state, emailStatus),
 		default_open: false,
 		blocks: [
 			{
@@ -1341,7 +1336,7 @@ function paymentsGroup(
 				type: "context",
 				text: "The settings below are shown as saved. x402 payments are not available yet. These settings are kept for when they are.",
 			},
-			{ type: "context", text: emailStatusLine(emailAvailable) },
+			{ type: "context", text: emailStatusLine(emailStatus) },
 			...legacySignInWarning(plain.get(LOGIN_LINK_URL_KEY) ?? ""),
 			// A refused save states each rule in full beside the form, and the form
 			// keeps what was typed (J6).
@@ -1392,16 +1387,23 @@ function stripeAccountLine(found: StripeAccountCountryStatus): string | null {
 }
 
 /**
- * ADR-0031 — the one email line: emails go through the EmDash host's email
- * provider, or there is none: order emails wait (72 h at most, then are skipped)
- * and sign-in links are not sent. A sandboxed host always hands over `ctx.email`,
- * so there a missing provider shows on this line once a send has been refused and
- * recorded (`emailSendingAvailable`), for 5 minutes.
+ * ADR-0031 — the one email line, in three states (PR #418 review):
+ *  - `confirmed`: the host's provider has accepted a send since any "no provider";
+ *  - `unconfirmed`: `ctx.email` is there but nothing has gone through it yet. A
+ *    sandboxed host ALWAYS hands over `ctx.email`, so an idle store with no
+ *    provider looks like this — it must not read as reassurance;
+ *  - `unavailable`: no provider: order emails wait (72 h at most, then are
+ *    skipped) and sign-in links are not sent.
  */
-export function emailStatusLine(emailAvailable: boolean): string {
-	return emailAvailable
-		? "Email: sent via EmDash's email provider. The from-address, SPF and DKIM are set in that provider."
-		: "Email: no EmDash email provider. Order emails wait up to 72 h, then are skipped; sign-in links are not sent. See docs/email-providers.md.";
+export function emailStatusLine(status: EmailSendingStatus): string {
+	switch (status) {
+		case "confirmed":
+			return "Email: sent via EmDash's email provider. The from-address, SPF and DKIM are set in that provider.";
+		case "unconfirmed":
+			return "Email: provider not confirmed — nothing sent through it since setup or a refusal. Without one, order emails wait up to 72 h, then are skipped; sign-in links are not sent. See docs/email-providers.md.";
+		case "unavailable":
+			return "Email: no EmDash email provider. Order emails wait up to 72 h, then are skipped; sign-in links are not sent. See docs/email-providers.md.";
+	}
 }
 
 /** A refused payment-settings save: every rule broken, and what was typed. */
@@ -1459,10 +1461,11 @@ function plainSettingsForm(plain: Map<string, string>): FormBlock {
  *  SECURITY: "set" and the Stripe mode (from the key's prefix) are FACTS ABOUT a
  *  key, not any part of it; no value is in scope here. The longest render
  *  ("no Stripe key"/"Stripe key set" · "webhook set" · "email set") is exactly
- *  the X-11 60-character budget. */
+ *  the X-11 60-character budget. "email TBC" (a provider not yet confirmed by a
+ *  send, PR #418 review) is the same width as "email set". */
 function paymentsGroupLabel(
 	state: Map<string, SecretRenderState>,
-	emailAvailable: boolean,
+	emailStatus: EmailSendingStatus,
 ): string {
 	const stripe = state.get(STRIPE_SECRET_KEY_KEY);
 	const stripePart =
@@ -1473,7 +1476,12 @@ function paymentsGroupLabel(
 				: `Stripe ${stripe.mode}`;
 	const webhookPart =
 		state.get(STRIPE_WEBHOOK_SECRET_KEY)?.set === true ? "webhook set" : "no webhook";
-	const emailPart = emailAvailable ? "email set" : "no email";
+	const emailPart =
+		emailStatus === "confirmed"
+			? "email set"
+			: emailStatus === "unconfirmed"
+				? "email TBC"
+				: "no email";
 	return valueLabel("Payments & email", [stripePart, webhookPart, emailPart]);
 }
 
