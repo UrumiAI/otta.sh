@@ -22,63 +22,60 @@ export interface CurrencyInfo {
 	readonly code: string;
 	/** ISO 4217 minor-unit exponent: amounts are stored in units of 10^-digits. */
 	readonly digits: 0 | 2 | 3;
-	/** A short display symbol (CLDR's narrow symbol where it has one). */
-	readonly symbol: string;
 	/** English display name. */
 	readonly name: string;
 }
 
 export const SUPPORTED_CURRENCIES = [
-	{ code: "AED", digits: 2, symbol: "AED", name: "United Arab Emirates Dirham" },
-	{ code: "ARS", digits: 2, symbol: "$", name: "Argentine Peso" },
-	{ code: "AUD", digits: 2, symbol: "$", name: "Australian Dollar" },
-	{ code: "BDT", digits: 2, symbol: "৳", name: "Bangladeshi Taka" },
-	{ code: "BHD", digits: 3, symbol: "BHD", name: "Bahraini Dinar" },
-	{ code: "BRL", digits: 2, symbol: "R$", name: "Brazilian Real" },
-	{ code: "CAD", digits: 2, symbol: "$", name: "Canadian Dollar" },
-	{ code: "CHF", digits: 2, symbol: "CHF", name: "Swiss Franc" },
-	{ code: "CLP", digits: 0, symbol: "$", name: "Chilean Peso" },
-	{ code: "CNY", digits: 2, symbol: "¥", name: "Chinese Yuan" },
-	{ code: "COP", digits: 2, symbol: "$", name: "Colombian Peso" },
-	{ code: "CZK", digits: 2, symbol: "Kč", name: "Czech Koruna" },
-	{ code: "DKK", digits: 2, symbol: "kr", name: "Danish Krone" },
-	{ code: "EGP", digits: 2, symbol: "E£", name: "Egyptian Pound" },
-	{ code: "EUR", digits: 2, symbol: "€", name: "Euro" },
-	{ code: "GBP", digits: 2, symbol: "£", name: "British Pound" },
-	{ code: "HKD", digits: 2, symbol: "$", name: "Hong Kong Dollar" },
-	{ code: "HUF", digits: 2, symbol: "Ft", name: "Hungarian Forint" },
-	{ code: "IDR", digits: 2, symbol: "Rp", name: "Indonesian Rupiah" },
-	{ code: "ILS", digits: 2, symbol: "₪", name: "Israeli New Shekel" },
-	{ code: "INR", digits: 2, symbol: "₹", name: "Indian Rupee" },
-	{ code: "ISK", digits: 0, symbol: "kr", name: "Icelandic Króna" },
-	{ code: "JOD", digits: 3, symbol: "JOD", name: "Jordanian Dinar" },
-	{ code: "JPY", digits: 0, symbol: "¥", name: "Japanese Yen" },
-	{ code: "KES", digits: 2, symbol: "KES", name: "Kenyan Shilling" },
-	{ code: "KRW", digits: 0, symbol: "₩", name: "South Korean Won" },
-	{ code: "KWD", digits: 3, symbol: "KWD", name: "Kuwaiti Dinar" },
-	{ code: "MAD", digits: 2, symbol: "MAD", name: "Moroccan Dirham" },
-	{ code: "MXN", digits: 2, symbol: "$", name: "Mexican Peso" },
-	{ code: "MYR", digits: 2, symbol: "RM", name: "Malaysian Ringgit" },
-	{ code: "NGN", digits: 2, symbol: "₦", name: "Nigerian Naira" },
-	{ code: "NOK", digits: 2, symbol: "kr", name: "Norwegian Krone" },
-	{ code: "NZD", digits: 2, symbol: "$", name: "New Zealand Dollar" },
-	{ code: "OMR", digits: 3, symbol: "OMR", name: "Omani Rial" },
-	{ code: "PEN", digits: 2, symbol: "PEN", name: "Peruvian Sol" },
-	{ code: "PHP", digits: 2, symbol: "₱", name: "Philippine Peso" },
-	{ code: "PKR", digits: 2, symbol: "Rs", name: "Pakistani Rupee" },
-	{ code: "PLN", digits: 2, symbol: "zł", name: "Polish Zloty" },
-	{ code: "QAR", digits: 2, symbol: "QAR", name: "Qatari Riyal" },
-	{ code: "RON", digits: 2, symbol: "lei", name: "Romanian Leu" },
-	{ code: "SAR", digits: 2, symbol: "SAR", name: "Saudi Riyal" },
-	{ code: "SEK", digits: 2, symbol: "kr", name: "Swedish Krona" },
-	{ code: "SGD", digits: 2, symbol: "$", name: "Singapore Dollar" },
-	{ code: "THB", digits: 2, symbol: "฿", name: "Thai Baht" },
-	{ code: "TRY", digits: 2, symbol: "₺", name: "Turkish Lira" },
-	{ code: "TWD", digits: 2, symbol: "$", name: "New Taiwan Dollar" },
-	{ code: "UAH", digits: 2, symbol: "₴", name: "Ukrainian Hryvnia" },
-	{ code: "USD", digits: 2, symbol: "$", name: "US Dollar" },
-	{ code: "VND", digits: 0, symbol: "₫", name: "Vietnamese Dong" },
-	{ code: "ZAR", digits: 2, symbol: "R", name: "South African Rand" },
+	{ code: "AED", digits: 2, name: "United Arab Emirates Dirham" },
+	{ code: "ARS", digits: 2, name: "Argentine Peso" },
+	{ code: "AUD", digits: 2, name: "Australian Dollar" },
+	{ code: "BDT", digits: 2, name: "Bangladeshi Taka" },
+	{ code: "BHD", digits: 3, name: "Bahraini Dinar" },
+	{ code: "BRL", digits: 2, name: "Brazilian Real" },
+	{ code: "CAD", digits: 2, name: "Canadian Dollar" },
+	{ code: "CHF", digits: 2, name: "Swiss Franc" },
+	{ code: "CLP", digits: 0, name: "Chilean Peso" },
+	{ code: "CNY", digits: 2, name: "Chinese Yuan" },
+	{ code: "COP", digits: 2, name: "Colombian Peso" },
+	{ code: "CZK", digits: 2, name: "Czech Koruna" },
+	{ code: "DKK", digits: 2, name: "Danish Krone" },
+	{ code: "EGP", digits: 2, name: "Egyptian Pound" },
+	{ code: "EUR", digits: 2, name: "Euro" },
+	{ code: "GBP", digits: 2, name: "British Pound" },
+	{ code: "HKD", digits: 2, name: "Hong Kong Dollar" },
+	{ code: "HUF", digits: 2, name: "Hungarian Forint" },
+	{ code: "IDR", digits: 2, name: "Indonesian Rupiah" },
+	{ code: "ILS", digits: 2, name: "Israeli New Shekel" },
+	{ code: "INR", digits: 2, name: "Indian Rupee" },
+	{ code: "JOD", digits: 3, name: "Jordanian Dinar" },
+	{ code: "JPY", digits: 0, name: "Japanese Yen" },
+	{ code: "KES", digits: 2, name: "Kenyan Shilling" },
+	{ code: "KRW", digits: 0, name: "South Korean Won" },
+	{ code: "KWD", digits: 3, name: "Kuwaiti Dinar" },
+	{ code: "MAD", digits: 2, name: "Moroccan Dirham" },
+	{ code: "MXN", digits: 2, name: "Mexican Peso" },
+	{ code: "MYR", digits: 2, name: "Malaysian Ringgit" },
+	{ code: "NGN", digits: 2, name: "Nigerian Naira" },
+	{ code: "NOK", digits: 2, name: "Norwegian Krone" },
+	{ code: "NZD", digits: 2, name: "New Zealand Dollar" },
+	{ code: "OMR", digits: 3, name: "Omani Rial" },
+	{ code: "PEN", digits: 2, name: "Peruvian Sol" },
+	{ code: "PHP", digits: 2, name: "Philippine Peso" },
+	{ code: "PKR", digits: 2, name: "Pakistani Rupee" },
+	{ code: "PLN", digits: 2, name: "Polish Zloty" },
+	{ code: "QAR", digits: 2, name: "Qatari Riyal" },
+	{ code: "RON", digits: 2, name: "Romanian Leu" },
+	{ code: "SAR", digits: 2, name: "Saudi Riyal" },
+	{ code: "SEK", digits: 2, name: "Swedish Krona" },
+	{ code: "SGD", digits: 2, name: "Singapore Dollar" },
+	{ code: "THB", digits: 2, name: "Thai Baht" },
+	{ code: "TRY", digits: 2, name: "Turkish Lira" },
+	{ code: "TWD", digits: 2, name: "New Taiwan Dollar" },
+	{ code: "UAH", digits: 2, name: "Ukrainian Hryvnia" },
+	{ code: "USD", digits: 2, name: "US Dollar" },
+	{ code: "VND", digits: 0, name: "Vietnamese Dong" },
+	{ code: "ZAR", digits: 2, name: "South African Rand" },
 ] as const satisfies readonly CurrencyInfo[];
 
 /** The code of a currency in {@link SUPPORTED_CURRENCIES}. */
@@ -94,11 +91,6 @@ export function isSupportedCurrency(code: string): code is SupportedCurrencyCode
 	return BY_CODE.has(code);
 }
 
-/** The row for a supported code, or `undefined`. */
-export function currencyInfo(code: string): CurrencyInfo | undefined {
-	return BY_CODE.get(code);
-}
-
 /** The table's minor-unit exponent for a supported code, or `undefined` for any
  *  other code — never a guess. A caller that must still handle an unlisted code
  *  (old data on a read path) decides its own fallback. */
@@ -107,11 +99,9 @@ export function currencyDigits(code: string): 0 | 2 | 3 | undefined {
 }
 
 /**
- * The minor-unit exponent an admin money boundary uses for `code` — display
- * (`formatMoney`), the money text inputs, and their round trip all read THIS,
- * so they cannot disagree. The table wins for a listed code; any other code
- * (old data) keeps the runtime's ICU exponent it always rendered with, and 2
- * when ICU cannot say (an unknown code). Never throws.
+ * The minor-unit exponent money is DISPLAYED in (`formatMoney`, `majorUnits`):
+ * the table's for a listed code; for any other code (old data) the runtime's
+ * ICU exponent it always rendered with, and 2 when ICU cannot say. Never throws.
  */
 export function minorUnitDigits(code: string): number {
 	const listed = currencyDigits(code);
@@ -124,4 +114,16 @@ export function minorUnitDigits(code: string): number {
 	} catch {
 		return 2;
 	}
+}
+
+/**
+ * The minor-unit exponent money is TYPED in (the admin's money inputs and their
+ * copy): the table's for a listed code, and hundredths for ANY other code —
+ * exactly the rule every input had before the table existed, so an amount in
+ * an unlisted code (ALL, ISK, …) is typed, stored and sent to Stripe as it
+ * always was. Deliberately NOT the display fallback: ICU's exponent for an
+ * unlisted code is not what its stored integers mean.
+ */
+export function inputMinorUnitDigits(code: string): number {
+	return currencyDigits(code) ?? 2;
 }

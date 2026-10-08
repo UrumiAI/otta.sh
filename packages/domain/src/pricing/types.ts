@@ -31,6 +31,14 @@ export interface PercentageCoupon {
 	bps: number;
 	/** Optional `maxDiscountCents`; null = uncapped. */
 	capCents: Cents | null;
+	/**
+	 * The currency the cap (and the record's minimum spend) is denominated in —
+	 * set when either is, so the coupon applies only to carts in it (a mismatch
+	 * is rejected, as for a fixed-amount coupon). Absent/null: no bound currency —
+	 * a coupon with no cap or minimum, or one written before bounds carried one,
+	 * which applies to any cart exactly as it always did.
+	 */
+	currency?: Currency | null;
 }
 
 export type Coupon = FixedAmountCoupon | PercentageCoupon;

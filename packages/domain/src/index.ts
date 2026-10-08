@@ -3,7 +3,6 @@ export { cents, currency, money, type Cents, type Currency, type Money } from ".
 export {
 	SUPPORTED_CURRENCIES,
 	currencyDigits,
-	currencyInfo,
 	isSupportedCurrency,
 	type CurrencyInfo,
 	type SupportedCurrencyCode,

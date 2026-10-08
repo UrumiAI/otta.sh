@@ -98,3 +98,45 @@ describe("validateCoupon — FAILS CLOSED on a bound it cannot read", () => {
 		expect(validateCoupon(record({}), { ...ctx, now: "garbage" }).ok).toBe(false);
 	});
 });
+
+describe("validateCoupon — a percentage coupon's cap / minimum spend are bound to its currency", () => {
+	const JPY = currency("JPY");
+	function percentage(over: Partial<CouponRecord>): CouponRecord {
+		return {
+			...record({}),
+			code: "TENOFF",
+			type: "percentage",
+			amountCents: null,
+			rateBps: 1000,
+			capCents: cents(500),
+			currency: null,
+			minSubtotalCents: cents(3000),
+			...over,
+		};
+	}
+
+	test("bound to JPY: applies to a JPY cart (bounds in whole yen), refused for a USD cart like a fixed coupon", () => {
+		const jpy = percentage({ currency: JPY });
+		const ok = validateCoupon(jpy, { now: NOW, subtotalCents: cents(5000), currency: JPY });
+		expect(ok).toEqual({
+			ok: true,
+			coupon: { type: "percentage", code: "TENOFF", bps: 1000, capCents: 500, currency: "JPY" },
+		});
+		expect(validateCoupon(jpy, ctx)).toEqual({ ok: false, reason: "COUPON_CURRENCY_MISMATCH" });
+	});
+
+	test("LEGACY: one with a cap and minimum but NO currency applies to any cart, amounts as stored — as before", () => {
+		const legacy = percentage({ currency: null });
+		for (const cur of [USD, currency("JPY"), currency("EUR")]) {
+			expect(
+				validateCoupon(legacy, { now: NOW, subtotalCents: cents(5000), currency: cur }),
+			).toEqual({
+				ok: true,
+				coupon: { type: "percentage", code: "TENOFF", bps: 1000, capCents: 500 },
+			});
+		}
+		expect(validateCoupon(legacy, { now: NOW, subtotalCents: cents(2999), currency: USD })).toEqual(
+			{ ok: false, reason: "COUPON_MIN_SUBTOTAL" },
+		);
+	});
+});

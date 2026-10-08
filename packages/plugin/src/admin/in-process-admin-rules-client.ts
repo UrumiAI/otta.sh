@@ -751,6 +751,19 @@ export class InProcessAdminRulesClient implements AdminRulesSurface {
 		if (input.currency !== undefined && input.currency !== null) {
 			requireAuthoredCurrency("currency", input.currency);
 		}
+		// A percentage coupon's cap and minimum spend are AMOUNTS: in the coupon's
+		// currency's minor unit, so one is required with either (the coupon then
+		// applies only to carts in it). One with neither needs none.
+		if (
+			type === "percentage" &&
+			(capCents !== null || minSubtotalCents !== null) &&
+			(input.currency === undefined || input.currency === null)
+		) {
+			throw new CommerceInputError(
+				"currency",
+				"is required on a percentage coupon with a cap or minimum spend",
+			);
+		}
 		return createOrRefuse(async () => {
 			const coupon = await this.#stores.couponStore.create({
 				id: input.id,
@@ -798,6 +811,27 @@ export class InProcessAdminRulesClient implements AdminRulesSurface {
 
 		const existing = await this.#stores.couponStore.findById(couponId);
 		if (existing === null) return { ok: false, reason: "not_found" };
+		// A currency is only ever BOUND, never changed: to a percentage coupon that
+		// has none, whose new cap / minimum spend are amounts in it.
+		const bind = edit.currency ?? null;
+		if (bind !== null) {
+			requireAuthoredCurrency("currency", bind);
+			if (existing.currency !== null && existing.currency !== bind) {
+				throw new CommerceInputError("currency", "cannot be changed");
+			}
+		}
+		const hadBounds = existing.capCents !== null || existing.minSubtotalCents !== null;
+		if (
+			existing.type === "percentage" &&
+			existing.currency === null &&
+			bind === null &&
+			!hadBounds &&
+			(capCents !== null || minSubtotalCents !== null)
+		) {
+			// A NEW cap / minimum needs its currency. A coupon whose bounds predate
+			// that rule keeps working exactly as it did.
+			return { ok: false, reason: "error", status: 400 };
+		}
 		if (
 			(existing.type === "fixed_amount" && amountCents === null) ||
 			(existing.type === "percentage" && rateBps === null)
@@ -809,6 +843,7 @@ export class InProcessAdminRulesClient implements AdminRulesSurface {
 		}
 
 		const res = await this.#stores.couponStore.update(couponId, {
+			...(bind !== null && existing.currency === null ? { bindCurrency: toCurrency(bind) } : {}),
 			amountCents: amountCents === null ? null : toCents(amountCents),
 			rateBps,
 			capCents: capCents === null ? null : toCents(capCents),

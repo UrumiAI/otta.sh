@@ -18,7 +18,10 @@ import {
 	hasExcessDecimals,
 	majorUnits,
 	minorUnitDigits,
+	inputMinorUnitDigits,
+	moneyInputExample,
 	moneyPrecisionPhrase,
+	NO_CURRENCY,
 	parseMinorUnitsInput,
 	REFUND_AMOUNT_PRECISION,
 	refundAmountPrecisionText,
@@ -28,7 +31,7 @@ import {
  *  assertions below are about digits, so they compare with a plain one. */
 const plain = (s: string): string => s.replace(/\u00a0/g, " ");
 
-const parse = (input: string, code: string | null, allowZero = true): number | null =>
+const parse = (input: string, code: string, allowZero = true): number | null =>
 	parseMinorUnitsInput(input, code, { allowZero });
 
 describe("parseMinorUnitsInput — the accept/reject matrix by exponent", () => {
@@ -75,16 +78,29 @@ describe("parseMinorUnitsInput — the accept/reject matrix by exponent", () => 
 		expect(parse("9".repeat(400), "USD")).toBeNull();
 	});
 
-	test("no currency (a percentage coupon's cap) keeps the hundredths scale", () => {
-		expect(parse("20", null)).toBe(2000);
-		expect(parse("20.5", null)).toBe(2050);
-		expect(parse("20.505", null)).toBeNull();
+	test("no currency (a legacy percentage coupon's cap) keeps the hundredths scale", () => {
+		expect(parse("20", NO_CURRENCY)).toBe(2000);
+		expect(parse("20.5", NO_CURRENCY)).toBe(2050);
+		expect(parse("20.505", NO_CURRENCY)).toBeNull();
 	});
 
-	test("a code outside the table reads in the runtime's own exponent — as it always displayed", () => {
-		// LKR: two decimals in ICU. UGX: zero (and not in the table).
-		expect(parse("15.50", "LKR")).toBe(1550);
-		expect(parse("1500", "UGX")).toBe(1500);
+	test("a code OUTSIDE the table is typed in hundredths, exactly as before the table — whatever ICU says", () => {
+		// ALL and ISK: ICU displays them with 0 decimals, but every amount ever
+		// typed in them was stored ×100 (and Stripe takes them as two-decimal), so
+		// input must keep that meaning. LKR: two decimals either way.
+		for (const code of ["ALL", "ISK", "UGX", "LKR"]) {
+			expect(parse("1500.00", code), code).toBe(150_000);
+			expect(parse("15.5", code), code).toBe(1550);
+			expect(parse("15.505", code), code).toBeNull();
+			expect(formatMinorUnitsInput(150_000, code), code).toBe("1500.00");
+			expect(canonicalMoneyInput("1500", code), code).toBe("1500.00");
+			expect(hasExcessDecimals("7.001", code), code).toBe(true);
+			expect(hasExcessDecimals("7.01", code), code).toBe(false);
+			expect(refundAmountPrecisionText(code), code).toBe(REFUND_AMOUNT_PRECISION);
+			expect(moneyPrecisionPhrase(code), code).toBe("up to two decimal places");
+			expect(moneyInputExample("19.99", code), code).toBe("19.99");
+			expect(inputMinorUnitDigits(code), code).toBe(2);
+		}
 	});
 });
 
@@ -101,7 +117,7 @@ describe("formatMinorUnitsInput — the inverse, in the currency's exponent", ()
 	});
 
 	test("format ∘ parse is the identity, for every exponent", () => {
-		for (const code of ["JPY", "KRW", "USD", "EUR", "KWD", "BHD", "ISK", "HUF"]) {
+		for (const code of ["JPY", "KRW", "USD", "EUR", "KWD", "BHD", "ISK", "ALL", "HUF"]) {
 			for (const units of [0, 1, 9, 10, 99, 100, 999, 1000, 1500, 15_505, 1_000_000]) {
 				expect(parse(formatMinorUnitsInput(units, code), code), `${code} ${String(units)}`).toBe(
 					units,
@@ -139,19 +155,19 @@ describe("display reads the SAME exponent the inputs parse with", () => {
 		expect(minorUnitDigits("LKR")).toBe(2);
 		expect(minorUnitDigits("UGX")).toBe(0);
 		expect(plain(formatAmount(1500, "UGX"))).toBe("UGX 1,500");
+		expect(plain(formatAmount(150_000, "ISK"))).toBe("ISK 150,000");
 	});
 });
 
 describe("the copy that states a currency's precision", () => {
 	test("two decimals reads as it always did; zero and three say their own rule", () => {
 		expect(moneyPrecisionPhrase("USD")).toBe("up to two decimal places");
-		expect(moneyPrecisionPhrase(null)).toBe("up to two decimal places");
+		expect(moneyPrecisionPhrase(NO_CURRENCY)).toBe("up to two decimal places");
 		expect(moneyPrecisionPhrase("JPY")).toBe("whole numbers only");
 		expect(moneyPrecisionPhrase("KWD")).toBe("up to three decimal places");
 	});
 
 	test("the refund form's excess-decimals check and sentence follow the order's currency", () => {
-		expect(hasExcessDecimals("7.001")).toBe(true);
 		expect(hasExcessDecimals("7.001", "USD")).toBe(true);
 		expect(hasExcessDecimals("7.001", "KWD")).toBe(false);
 		expect(hasExcessDecimals("7.0001", "KWD")).toBe(true);
@@ -160,5 +176,12 @@ describe("the copy that states a currency's precision", () => {
 		expect(refundAmountPrecisionText("USD")).toBe(REFUND_AMOUNT_PRECISION);
 		expect(refundAmountPrecisionText("JPY")).toMatch(/whole number/);
 		expect(refundAmountPrecisionText("KWD")).toMatch(/at most 3 decimal places/);
+	});
+
+	test("one example builder: the two-decimal example as typed for USD, reshaped for JPY and KWD", () => {
+		expect(moneyInputExample("19.99", "USD")).toBe("19.99");
+		expect(moneyInputExample("35.00", "JPY")).toBe("3500");
+		expect(moneyInputExample("9.50", "KWD")).toBe("9.500");
+		expect(moneyInputExample("4.99", NO_CURRENCY)).toBe("4.99");
 	});
 });

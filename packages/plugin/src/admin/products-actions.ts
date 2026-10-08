@@ -100,7 +100,6 @@ import {
 	NO_TAX_CLASS,
 	PRODUCT_DELETED_SINCE_LOADED,
 	PRODUCT_NOT_FOUND_TITLE,
-	minorUnitDigits,
 	parseOnHandWatermark,
 	parseStockQty as parseStockQtyShared,
 	unitWord,
@@ -112,7 +111,12 @@ import {
 	type RestockResult,
 	type StockRemovalResult,
 } from "./admin-products-surface.js";
-import { moneyPrecisionPhrase, parseMinorUnitsInput } from "./money-input.js";
+import {
+	moneyInputExample,
+	moneyPrecisionPhrase,
+	NO_CURRENCY,
+	parseMinorUnitsInput,
+} from "./money-input.js";
 import { readString, screenActions, type Notice } from "./scaffold/index.js";
 
 /** This screen's namespaced action ids. */
@@ -261,24 +265,6 @@ function parseOnHand(value: unknown): number | null {
 
 type BuildEditResult = { ok: true; wire: ProductEditWire } | { ok: false; message: string };
 
-/** The example amount a price refusal quotes, in the currency's own shape —
- *  `19.99` for a two-decimal currency (the wording this copy always had),
- *  `1500` for JPY, `19.990` for KWD. */
-function priceExample(currency: string): string {
-	return exampleAmount("19", "99", currency);
-}
-
-/** The compare-at / unit-cost refusal's example (`29.99` for two decimals). */
-function compareAtExample(currency: string): string {
-	return exampleAmount("29", "99", currency);
-}
-
-function exampleAmount(major: string, minor: string, currency: string): string {
-	const digits = minorUnitDigits(currency);
-	if (digits === 0) return `${major}00`;
-	return `${major}.${minor.padEnd(digits, "0").slice(0, digits)}`;
-}
-
 /**
  * Assemble a validated {@link ProductEditWire} from ONE of the three split
  * forms' submitted values — whichever submitted, since a stateless submit only
@@ -306,23 +292,26 @@ function buildEditWire(
 	if (sku !== undefined && sku.length > 0) wire.sku = sku;
 
 	// The row currency (shared by price / compare-at / cost). Parsed ONCE so all
-	// three money fields agree by construction — and resolved BEFORE any amount
-	// is parsed, because the currency's exponent decides what "1500" means.
+	// three money fields agree by construction — and each amount is read in its
+	// exponent, because the currency decides what "1500" means. With no usable
+	// currency an amount is still read (in hundredths, the pre-table rule) so an
+	// unreadable amount is reported FIRST, in the order it always was.
 	const currencyStr = readString(values.currency)?.trim().toUpperCase();
 	const currency =
 		currencyStr !== undefined && /^[A-Z]{3}$/.test(currencyStr) ? currencyStr : undefined;
 
 	const priceStr = readString(values.price)?.trim();
 	if (priceStr !== undefined && priceStr.length > 0) {
-		if (currency === undefined) {
-			return { ok: false, message: "Currency must be a 3-letter ISO-4217 code like USD." };
-		}
-		const minorUnits = parsePriceMinorUnits(priceStr, currency);
+		const priceCurrency = currency ?? NO_CURRENCY;
+		const minorUnits = parsePriceMinorUnits(priceStr, priceCurrency);
 		if (minorUnits === null) {
 			return {
 				ok: false,
-				message: `Price must be a positive amount like ${priceExample(currency)} (${moneyPrecisionPhrase(currency)}).`,
+				message: `Price must be a positive amount like ${moneyInputExample("19.99", priceCurrency)} (${moneyPrecisionPhrase(priceCurrency)}).`,
 			};
+		}
+		if (currency === undefined) {
+			return { ok: false, message: "Currency must be a 3-letter ISO-4217 code like USD." };
 		}
 		wire.price = { amount: minorUnits, currency };
 	}
@@ -341,18 +330,19 @@ function buildEditWire(
 			continue;
 		}
 		const rowCurrency = currency ?? (wire.price !== undefined ? wire.price.currency : undefined);
+		const amountCurrency = rowCurrency ?? NO_CURRENCY;
+		const minorUnits = parsePriceMinorUnits(trimmed, amountCurrency);
+		if (minorUnits === null) {
+			return {
+				ok: false,
+				message: `${field === "compareAt" ? "Compare-at price" : "Unit cost"} must be a positive amount like ${moneyInputExample("29.99", amountCurrency)}, or blank to clear.`,
+			};
+		}
 		if (rowCurrency === undefined) {
 			return {
 				ok: false,
 				message:
 					"Set the product's price and currency before adding a compare-at price or unit cost.",
-			};
-		}
-		const minorUnits = parsePriceMinorUnits(trimmed, rowCurrency);
-		if (minorUnits === null) {
-			return {
-				ok: false,
-				message: `${field === "compareAt" ? "Compare-at price" : "Unit cost"} must be a positive amount like ${compareAtExample(rowCurrency)}, or blank to clear.`,
 			};
 		}
 		wire[key] = { amount: minorUnits, currency: rowCurrency };

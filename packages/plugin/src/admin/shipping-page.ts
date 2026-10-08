@@ -1,4 +1,4 @@
-import { minorUnitDigits } from "@otta-sh/admin-presentation";
+import { inputMinorUnitDigits } from "@otta-sh/admin-presentation";
 import {
 	COUNTRY_CODES,
 	isSupportedCurrency,
@@ -35,6 +35,7 @@ import {
 import { idInputProblem } from "./id-input.js";
 import {
 	formatMinorUnitsInput,
+	moneyInputExample,
 	moneyPrecisionPhrase,
 	parseMinorUnitsInput,
 } from "./money-input.js";
@@ -1347,7 +1348,7 @@ function createRateForm(zoneId: string, methodId: string, filter: RatesFilterFor
 				{
 					type: "text_input",
 					action_id: "amount",
-					label: "Amount (in the currency's own decimals, e.g. 4.99 or ¥500 — 0 is allowed)",
+					label: "Amount (up to 2 decimals, e.g. 4.99 — 0 is allowed)",
 					placeholder: "4.99",
 				},
 				{
@@ -1868,8 +1869,7 @@ function createRateAction() {
 				return showList([zoneId, methodId], {
 					variant: "error",
 					title: "Rate not created",
-					description:
-						"Free-shipping threshold must be 0 or a positive number like 35.00, or blank for none.",
+					description: thresholdRefusal(currency),
 				});
 			}
 			if (await isFlatRateMethod(client, zoneId, methodId)) {
@@ -1937,8 +1937,7 @@ function saveRateAction() {
 				return showList([zoneId, methodId], {
 					variant: "error",
 					title: "Rate not saved",
-					description:
-						"Free-shipping threshold must be 0 or a positive number like 35.00, or blank for none.",
+					description: thresholdRefusal(currency),
 				});
 			}
 			if (await isFlatRateMethod(client, zoneId, methodId)) {
@@ -2248,19 +2247,19 @@ function parseAmountInput(input: string, currency: string): number | null {
 /** The refusal for an unreadable rate amount, in the currency's own shape —
  *  for a two-decimal currency, word for word what it always said. */
 function amountRefusal(currency: string): string {
-	const example = formatMinorUnitsInput(
-		parseMinorUnitsInput("4.99", currency, { allowZero: true }) ??
-			parseMinorUnitsInput("499", currency, { allowZero: true }) ??
-			499,
-		currency,
-	);
-	return `Amount must be 0 or a positive number like ${example} (${moneyPrecisionPhrase(currency)}).`;
+	return `Amount must be 0 or a positive number like ${moneyInputExample("4.99", currency)} (${moneyPrecisionPhrase(currency)}).`;
+}
+
+/** The free-shipping threshold refusal, its example in the currency's shape. */
+function thresholdRefusal(currency: string): string {
+	return `Free-shipping threshold must be 0 or a positive number like ${moneyInputExample("35.00", currency)}, or blank for none.`;
 }
 
 /** The rate edit field's decimals hint: `up to 2 decimals` (as it always read)
- *  for a two-decimal currency, `whole units` for JPY, `up to 3 decimals` for KWD. */
+ *  for a two-decimal or unlisted currency, `whole units` for JPY, `up to 3
+ *  decimals` for KWD. */
 function amountDecimalsHint(currency: string): string {
-	const digits = minorUnitDigits(currency);
+	const digits = inputMinorUnitDigits(currency);
 	return digits === 0 ? "whole units" : `up to ${String(digits)} decimals`;
 }
 

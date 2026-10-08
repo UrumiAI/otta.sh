@@ -141,6 +141,9 @@ export class InMemoryCouponStore implements CouponStore {
 	async update(couponId: string, input: UpdateCouponInput): Promise<UpdateCouponResult> {
 		const coupon = this.#coupons.get(couponId);
 		if (coupon === undefined) return { ok: false, reason: "not_found" };
+		if ((coupon.currency ?? null) === null && input.bindCurrency !== undefined) {
+			coupon.currency = input.bindCurrency;
+		}
 		coupon.amountCents = input.amountCents;
 		coupon.rateBps = input.rateBps;
 		coupon.capCents = input.capCents;

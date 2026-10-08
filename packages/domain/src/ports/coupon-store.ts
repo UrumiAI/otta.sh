@@ -224,7 +224,10 @@ export interface CouponRecord {
 	rateBps: number | null;
 	/** percentage only — optional cap. */
 	capCents: Cents | null;
-	/** fixed_amount only — the coupon's denominated currency. */
+	/** The coupon's denominated currency: REQUIRED for fixed_amount; for
+	 *  percentage, the currency its cap / minimum spend are in (set by the admin
+	 *  whenever either is — the coupon then applies only to carts in it), or null
+	 *  for one with no bounds or written before bounds carried a currency. */
 	currency: Currency | null;
 	minSubtotalCents: Cents | null;
 	startsAt: string | null;
@@ -254,6 +257,10 @@ export interface CreateCouponInput {
  *  kind), and `usesCount` is store-owned (moved only by redeem/release). Money
  *  stays branded `Cents`; a `number` in a money field is a compile error. */
 export interface UpdateCouponInput {
+	/** Bind a currency to a coupon that has NONE (a percentage coupon gaining a
+	 *  cap or minimum spend, which are amounts in it). Ignored when the coupon
+	 *  already has one: a coupon's currency never changes. Absent ⇒ unchanged. */
+	bindCurrency?: Currency;
 	amountCents: Cents | null;
 	rateBps: number | null;
 	capCents: Cents | null;

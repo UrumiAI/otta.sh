@@ -80,6 +80,13 @@ export function validateCoupon(
 	if (record.rateBps === null) {
 		throw new Error(`percentage coupon ${record.code} is missing rateBps`);
 	}
+	// A cap / minimum spend bound to a currency is an amount IN that currency's
+	// minor unit, so the coupon applies only to carts in it — the same refusal a
+	// fixed-amount coupon gives. No bound currency (no bounds, or a coupon written
+	// before bounds carried one) applies to any cart, exactly as it always did.
+	if (record.currency !== null && record.currency !== ctx.currency) {
+		return { ok: false, reason: "COUPON_CURRENCY_MISMATCH" };
+	}
 	return {
 		ok: true,
 		coupon: {
@@ -87,6 +94,7 @@ export function validateCoupon(
 			code: record.code,
 			bps: record.rateBps,
 			capCents: record.capCents,
+			...(record.currency !== null ? { currency: record.currency } : {}),
 		},
 	};
 }

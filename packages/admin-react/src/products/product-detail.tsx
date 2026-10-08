@@ -93,6 +93,7 @@ import {
 	dirtyGroupLabel,
 	dirtySectionLabels,
 	formatMinorUnitsInput,
+	NO_CURRENCY,
 	formatOptionalAmount,
 	formatTimestamp,
 	identityGroupLabel,
@@ -299,7 +300,7 @@ function canonicalPriceValues(
  *  because a blank compare-at CLEARS it and `0.00` would be a price of zero the
  *  domain refuses. */
 function moneyInput(minorUnits: number | null, currency: string | null): string {
-	return minorUnits === null ? "" : formatMinorUnitsInput(minorUnits, currency);
+	return minorUnits === null ? "" : formatMinorUnitsInput(minorUnits, currency ?? NO_CURRENCY);
 }
 
 /** The same, for a non-money integer (weight, dimensions), where blank means

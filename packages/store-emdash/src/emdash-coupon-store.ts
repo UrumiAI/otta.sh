@@ -364,6 +364,8 @@ export class EmdashCouponStore implements CouponStore {
 			const doc = normalizeCouponDoc(current.value);
 			const next: CouponDoc = {
 				...doc,
+				// A coupon's currency never changes; one with none may be given one.
+				currency: doc.currency ?? input.bindCurrency ?? null,
 				amountCents: input.amountCents,
 				rateBps: input.rateBps,
 				capCents: input.capCents,

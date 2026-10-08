@@ -59,7 +59,8 @@
  * `@otta-sh/admin-react` and stops being shared. It is a migration artefact and
  * should be read as one.
  */
-import { minorUnitDigits } from "./currencies.js";
+import { inputMinorUnitDigits } from "./currencies.js";
+import { moneyInputExample } from "./money-input.js";
 import { fitBanner } from "./copy.js";
 import type { RowNoun, ZeroStateCopy } from "./list-outcome.js";
 
@@ -341,22 +342,23 @@ export const REFUND_AMOUNT_PRECISION =
 	"Use at most 2 decimal places for the refund amount (e.g. 19.99). Nothing was changed.";
 
 /** {@link REFUND_AMOUNT_PRECISION} for the order's currency: word for word that
- *  sentence for a two-decimal currency, and the currency's own rule otherwise
- *  (JPY has no decimal places; KWD has three). */
+ *  sentence for a two-decimal (or unlisted) currency, and the currency's own
+ *  rule otherwise (JPY has no decimal places; KWD has three). */
 export function refundAmountPrecisionText(currencyCode: string): string {
-	const digits = minorUnitDigits(currencyCode);
+	const digits = inputMinorUnitDigits(currencyCode);
+	const example = moneyInputExample("19.99", currencyCode);
 	if (digits === 2) return REFUND_AMOUNT_PRECISION;
 	if (digits === 0) {
-		return `Use a whole number for a ${currencyCode} refund amount (e.g. 1999). Nothing was changed.`;
+		return `Use a whole number for a ${currencyCode} refund amount (e.g. ${example}). Nothing was changed.`;
 	}
-	return `Use at most ${String(digits)} decimal places for the refund amount (e.g. 19.${"9".repeat(digits)}). Nothing was changed.`;
+	return `Use at most ${String(digits)} decimal places for the refund amount (e.g. ${example}). Nothing was changed.`;
 }
 
 /** True when an otherwise-plain amount has more decimal places than the
- *  currency has (two when no currency is named — the original rule; any at all
- *  for a zero-decimal currency such as JPY). */
-export function hasExcessDecimals(input: string, currencyCode: string | null = null): boolean {
-	const digits = currencyCode === null ? 2 : minorUnitDigits(currencyCode);
+ *  currency's input allows (two for a two-decimal or unlisted currency — the
+ *  original rule; any at all for a zero-decimal currency such as JPY). */
+export function hasExcessDecimals(input: string, currencyCode: string): boolean {
+	const digits = inputMinorUnitDigits(currencyCode);
 	const m = /^\d+\.(\d+)$/.exec(input.trim());
 	return m !== null && (m[1] ?? "").length > digits;
 }

@@ -2,7 +2,6 @@ import { describe, expect, test } from "vitest";
 import {
 	SUPPORTED_CURRENCIES,
 	currencyDigits,
-	currencyInfo,
 	isSupportedCurrency,
 	type SupportedCurrencyCode,
 } from "../../src/index.js";
@@ -47,11 +46,14 @@ describe("the currency table", () => {
 		for (const row of SUPPORTED_CURRENCIES) expect([0, 2, 3], row.code).toContain(row.digits);
 	});
 
-	test("every row has a name and a symbol to show", () => {
-		for (const row of SUPPORTED_CURRENCIES) {
+	test("every row has a name to show", () => {
+		for (const row of SUPPORTED_CURRENCIES)
 			expect(row.name.trim().length, row.code).toBeGreaterThan(0);
-			expect(row.symbol.trim().length, row.code).toBeGreaterThan(0);
-		}
+	});
+
+	test("ISK is deliberately NOT listed — its stored amounts are hundredths (see the table's header)", () => {
+		expect(isSupportedCurrency("ISK")).toBe(false);
+		expect(currencyDigits("ISK")).toBeUndefined();
 	});
 
 	test("every row's digits matches the runtime's ICU data, except the commented ISO-vs-CLDR divergences", () => {
@@ -63,7 +65,7 @@ describe("the currency table", () => {
 
 	test("every listed divergence is still real and still in the table (no stale exceptions)", () => {
 		for (const code of Object.keys(ICU_DIVERGES_FROM_ISO)) {
-			const row = currencyInfo(code);
+			const row = SUPPORTED_CURRENCIES.find((r) => r.code === code);
 			expect(row, code).toBeDefined();
 			expect(icuDigits(code), code).not.toBe(row?.digits);
 		}
@@ -79,7 +81,6 @@ describe("the currency table", () => {
 			KRW: 0,
 			VND: 0,
 			CLP: 0,
-			ISK: 0,
 			KWD: 3,
 			BHD: 3,
 			OMR: 3,
@@ -100,7 +101,6 @@ describe("isSupportedCurrency / currencyDigits", () => {
 		for (const code of ["XYZ", "usd", " USD", "", "US", "LKR", "XDR", "BGN"]) {
 			expect(isSupportedCurrency(code), code).toBe(false);
 			expect(currencyDigits(code), code).toBeUndefined();
-			expect(currencyInfo(code), code).toBeUndefined();
 		}
 	});
 

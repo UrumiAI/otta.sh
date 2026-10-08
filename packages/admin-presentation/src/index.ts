@@ -79,8 +79,10 @@
  * public surface. `test/` here covers the package on its own terms.
  */
 export {
+	NO_CURRENCY,
 	canonicalMoneyInput,
 	formatMinorUnitsInput,
+	moneyInputExample,
 	moneyPrecisionPhrase,
 	parseMinorUnitsInput,
 } from "./money-input.js";
@@ -96,7 +98,7 @@ export { cents, currency, type Cents, type Currency } from "./money.js";
 export {
 	SUPPORTED_CURRENCIES,
 	currencyDigits,
-	currencyInfo,
+	inputMinorUnitDigits,
 	isSupportedCurrency,
 	minorUnitDigits,
 	type CurrencyInfo,

@@ -10,8 +10,8 @@
  * 1998.9999… for "19.99"). A Block Kit `number_input` hands back a JS float,
  * so money is a TEXT input parsed here instead. The scale is the CURRENCY's
  * minor-unit exponent from the currency table (`./currencies.ts`): hundredths
- * for USD/EUR, whole units for JPY, thousandths for KWD — so every caller
- * names the currency the amount is in.
+ * for USD/EUR, whole units for JPY, thousandths for KWD, and hundredths for any
+ * code outside the table — so every caller names the currency the amount is in.
  *
  * The ONE behavioral fork between consumers is whether ZERO is a valid
  * amount, so it is an explicit parameter rather than a second copy:
@@ -22,17 +22,15 @@
  *     `shippingRateBody`/`shippingRateUpdateBody` schemas use
  *     `nonnegative()`, not `positive()`).
  */
-import { minorUnitDigits } from "./currencies.js";
+import { inputMinorUnitDigits } from "./currencies.js";
 
 /**
- * The exponent an amount in `currencyCode` is typed and shown in. `null` is an
- * amount with NO currency of its own — a percentage coupon's cap and minimum
- * spend, which apply in whatever the cart is priced in — and keeps the
- * hundredths scale those fields have always used.
+ * The "currency" of an amount that has none of its own — a percentage coupon
+ * written before its cap and minimum spend carried a currency. It is read in
+ * hundredths, the pre-table rule, exactly like any code outside the table.
+ * Named so a caller says so on purpose rather than by passing a stray null.
  */
-function inputDigits(currencyCode: string | null): number {
-	return currencyCode === null ? 2 : minorUnitDigits(currencyCode);
-}
+export const NO_CURRENCY = "";
 
 /**
  * How many decimals an amount in `currencyCode` may carry, as the clause the
@@ -40,29 +38,42 @@ function inputDigits(currencyCode: string | null): number {
  * USD (the exact wording those messages always had), `"whole numbers only"` for
  * JPY, `"up to three decimal places"` for KWD.
  */
-export function moneyPrecisionPhrase(currencyCode: string | null): string {
-	const digits = inputDigits(currencyCode);
+export function moneyPrecisionPhrase(currencyCode: string): string {
+	const digits = inputMinorUnitDigits(currencyCode);
 	if (digits === 0) return "whole numbers only";
-	if (digits === 2) return "up to two decimal places";
 	if (digits === 3) return "up to three decimal places";
-	return `up to ${String(digits)} decimal places`;
+	return "up to two decimal places";
+}
+
+/**
+ * An example amount for refusal copy and placeholders, in the currency's own
+ * shape, from the two-decimal example the copy always used: `"19.99"` stays
+ * `"19.99"` for USD (and any unlisted code), becomes `"1999"` for JPY and
+ * `"19.990"` for KWD. THE one example builder, so every screen agrees.
+ */
+export function moneyInputExample(twoDecimalExample: string, currencyCode: string): string {
+	const [major = "0", minor = ""] = twoDecimalExample.split(".");
+	const digits = inputMinorUnitDigits(currencyCode);
+	if (digits === 0) return `${major}${minor}`;
+	return `${major}.${minor.padEnd(digits, "0").slice(0, digits)}`;
 }
 
 /** Returns integer minor units, or null for any non-conforming or
  *  out-of-range input (the caller surfaces a per-field message); never
  *  throws.
  *
- *  THE EXPONENT IS THE CURRENCY'S ({@link minorUnitDigits} — the same table
- *  `formatMoney` displays with): up to `digits` fractional digits are accepted
- *  and padded, so USD `"24.5"` → 2450, JPY `"1500"` → 1500 (a fraction is
- *  refused — there is no sub-yen unit), KWD `"1.234"` → 1234. A two-decimal
- *  currency parses exactly as it did before the table existed. */
+ *  THE EXPONENT IS THE CURRENCY'S ({@link inputMinorUnitDigits} — the table
+ *  `formatMoney` displays with, and hundredths for a code outside it): up to
+ *  `digits` fractional digits are accepted and padded, so USD `"24.5"` → 2450,
+ *  JPY `"1500"` → 1500 (a fraction is refused — there is no sub-yen unit), KWD
+ *  `"1.234"` → 1234. A two-decimal or unlisted currency parses exactly as it did
+ *  before the table existed. */
 export function parseMinorUnitsInput(
 	input: string,
-	currencyCode: string | null,
+	currencyCode: string,
 	opts: { allowZero: boolean },
 ): number | null {
-	const digits = inputDigits(currencyCode);
+	const digits = inputMinorUnitDigits(currencyCode);
 	const m = /^(\d+)(?:\.(\d+))?$/.exec(input.trim());
 	if (m === null) return null;
 	const fraction = m[2];
@@ -87,8 +98,8 @@ export function parseMinorUnitsInput(
  * WITHOUT a currency symbol — mirrors `formatMoney` being the one
  * symbol-bearing display boundary.
  */
-export function formatMinorUnitsInput(minorUnits: number, currencyCode: string | null): string {
-	const digits = inputDigits(currencyCode);
+export function formatMinorUnitsInput(minorUnits: number, currencyCode: string): string {
+	const digits = inputMinorUnitDigits(currencyCode);
 	const sign = minorUnits < 0 ? "-" : "";
 	const abs = Math.abs(minorUnits);
 	if (digits === 0) return `${sign}${String(abs)}`;
@@ -117,7 +128,7 @@ export function formatMinorUnitsInput(minorUnits: number, currencyCode: string |
  * is a legal amount belongs to the write (`allowZero`), not to the question of
  * whether the field moved.
  */
-export function canonicalMoneyInput(input: string, currencyCode: string | null): string {
+export function canonicalMoneyInput(input: string, currencyCode: string): string {
 	const units = parseMinorUnitsInput(input, currencyCode, { allowZero: true });
 	return units === null ? input.trim() : formatMinorUnitsInput(units, currencyCode);
 }

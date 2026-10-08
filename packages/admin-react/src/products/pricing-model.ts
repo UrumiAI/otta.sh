@@ -23,7 +23,7 @@ import {
 	formatAmount,
 	formatMinorUnitsInput,
 	isSupportedCurrency,
-	minorUnitDigits,
+	moneyInputExample,
 	parseMinorUnitsInput,
 } from "@otta-sh/admin-presentation";
 import type { ProductRecord } from "../console-api.js";
@@ -181,16 +181,6 @@ function money(value: string, currency: string): number | null | "invalid" {
 	return parseMinorUnitsInput(trimmed, currency, { allowZero: false }) ?? "invalid";
 }
 
-/** The example a money problem quotes, in the currency's own shape: `24.99`
- *  for a two-decimal currency (as the copy always read), `2499` for JPY,
- *  `24.990` for KWD. */
-function example(major: string, minor: string, currency: string): string {
-	const digits = minorUnitDigits(currency);
-	return digits === 0
-		? `${major}${minor}`
-		: `${major}.${minor.padEnd(digits, "0").slice(0, digits)}`;
-}
-
 /** Weight and size: hidden, unchecked and unsent for a digital product. */
 export const SIZE_FIELDS: ReadonlySet<DraftField> = new Set<DraftField>([
 	"weightGrams",
@@ -222,12 +212,13 @@ export function validateDraft(d: PricingDraft, p: ProductRecord): DraftProblems 
 	const price = money(d.price, currency);
 	const compareAt = money(d.compareAt, currency);
 	const unitCost = money(d.unitCost, currency);
-	if (price === "invalid") problems.price = `Enter a price like ${example("24", "99", currency)}`;
+	if (price === "invalid")
+		problems.price = `Enter a price like ${moneyInputExample("24.99", currency)}`;
 	if (compareAt === "invalid") {
-		problems.compareAt = `Enter a price like ${example("39", "99", currency)}`;
+		problems.compareAt = `Enter a price like ${moneyInputExample("39.99", currency)}`;
 	}
 	if (unitCost === "invalid") {
-		problems.unitCost = `Enter an amount like ${example("9", "50", currency)}`;
+		problems.unitCost = `Enter an amount like ${moneyInputExample("9.50", currency)}`;
 	}
 	if (price === null && (compareAt !== null || unitCost !== null)) {
 		problems.price = "Add a price first";

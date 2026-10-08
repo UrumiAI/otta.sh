@@ -243,9 +243,12 @@ export interface CouponInput {
 	maxUses?: number | null;
 	maxUsesPerCustomer?: number | null;
 }
-/** Coupon edit — `id`/`code`/`type`/`currency` are immutable identity/kind and
- *  are NOT sent (re-defining them is refused). */
+/** Coupon edit — `id`/`code`/`type` are immutable identity/kind and are NOT
+ *  sent. `currency` is sent ONLY to bind one to a percentage coupon that has
+ *  none (its new cap / minimum spend are amounts in it); a set currency never
+ *  changes, and re-defining it is refused. */
 export interface CouponEdit {
+	currency?: string | null;
 	amountCents?: number | null;
 	rateBps?: number | null;
 	capCents?: number | null;
