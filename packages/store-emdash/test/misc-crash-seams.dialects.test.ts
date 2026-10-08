@@ -30,7 +30,13 @@
  * gap. Their cases are the other half of that claim: a lost write leaves NOTHING, and
  * a landed one answers the retry correctly.
  */
-import { idempotencyKey, orderId, sku } from "@otta-sh/domain";
+import {
+	idempotencyKey,
+	isSettingsPreconditionFailedError,
+	orderId,
+	sku,
+	type TaxSettings,
+} from "@otta-sh/domain";
 import { expect, test } from "vitest";
 import {
 	ENTITLEMENT_LOOKUPS_COLLECTION,
@@ -56,6 +62,7 @@ import {
 	isClaimWrite,
 	isUpdateWrite,
 	nthCall,
+	parkCall,
 	withCollection,
 	type CallMatcher,
 	type FailMode,
@@ -77,6 +84,18 @@ const GRANT = {
 	source: "order_paid",
 	grantIdempotencyKey: idempotencyKey("g1"),
 } as const;
+
+/** A whole tax options block, as an admin save writes it. */
+const PEER_TAX: TaxSettings = {
+	enabled: true,
+	pricesIncludeTax: false,
+	basedOn: "shipping",
+	baseAddress: null,
+	shippingTaxClass: { kind: "inherit" },
+	roundAtSubtotal: false,
+	displayCart: "excl",
+	totalsDisplay: "itemized",
+};
 
 /** The seeded settings every settings seam starts from. */
 const SEEDED = { holdTtlMinutes: 20, lowStockThreshold: 7 };
@@ -269,6 +288,34 @@ describeEachDialect("misc crash seams", (ctx) => {
 			expect(terminal.currentRevision).toBe(before?.revision);
 		}
 		expect((await live.mutations.get("s1"))?.result).toBeNull();
+	});
+
+	test("a guarded write overtaken between its read and its write is refused, never a clobber", async () => {
+		// Review 2a B2: the first-rate pin writes "only if no tax block is saved". A
+		// peer's save that lands while the pin's write is in flight must win: the pin
+		// re-reads, finds a block, and writes nothing.
+		const live = healthy();
+		const parked = parkCall<SettingsDoc>(
+			bound.collection<SettingsDoc>(SETTINGS_COLLECTION),
+			(call) => call.method === "compareAndSet",
+		);
+		const racing = crashing(
+			withCollection(bound.storage, SETTINGS_COLLECTION, parked.collection),
+			live,
+		);
+		const pin = racing.settingsStore
+			.update({ tax: { ...PEER_TAX, enabled: false } }, idempotencyKey("pin"), { ifTax: null })
+			.then(
+				() => undefined,
+				(err: unknown) => err,
+			);
+		await parked.arrived;
+		await live.settingsStore.update({ tax: PEER_TAX }, idempotencyKey("admin-save"));
+		parked.release();
+
+		expect(isSettingsPreconditionFailedError(await pin)).toBe(true);
+		expect((await live.settingsStore.get()).tax).toEqual(PEER_TAX);
+		expect((await live.mutations.get("pin"))?.result).toBeNull();
 	});
 
 	test("a settings write that landed before the crash is recorded by the replay, not applied twice", async () => {

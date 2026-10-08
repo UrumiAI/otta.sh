@@ -273,7 +273,8 @@ export interface RefundsSummaryWire {
  *  - `sent`         — it went out;
  *  - `queued`       — it did not go yet (the provider failed or was slow); the
  *                     cron retries it automatically;
- *  - `unconfigured` — the store has no email provider, so it will not be sent;
+ *  - `unconfigured` — the host has no EmDash email provider, so it was not sent;
+ *                     it waits in the outbox until one is selected (ADR-0031);
  *  - `no-recipient` — the order has no email address to send to (an x402 buyer's
  *                     `x402:0x…` reference, ADR-0028 Decision 7), so it was not sent
  *                     and never will be — completed as skipped, not queued.

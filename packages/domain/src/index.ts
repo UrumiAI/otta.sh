@@ -30,7 +30,20 @@ export {
 	type QuoteDeps,
 	type QuoteFailure,
 	type QuoteResult,
+	type QuoteTax,
 } from "./pricing/quote.js";
+// ADR-0032: the store's tax options (WooCommerce's Tax tab).
+export {
+	effectiveTaxSettings,
+	LEGACY_TAX_SETTINGS,
+	NEW_STORE_TAX_SETTINGS,
+	parseTaxSettings,
+	readTaxSettings,
+	TAX_DISABLED_CALCULATOR_ID,
+	type ShippingTaxClassSetting,
+	type TaxBaseAddress,
+	type TaxSettings,
+} from "./pricing/tax-settings.js";
 // ADR-0030: the tax calculator hook, the built-in rate table, the order's frozen snapshot.
 export {
 	DEFAULT_TAX_CALCULATOR_TIMEOUT_MS,
@@ -237,8 +250,10 @@ export type {
 export {
 	EmailSendTimeoutError,
 	type EmailSendTimeoutLike,
+	EmailTransportUnavailableError,
 	isCutShortEmailTimeout,
 	isEmailSendTimeoutError,
+	isEmailTransportUnavailableError,
 	type EmailSender,
 	type EmailTemplate,
 	type SendEmailInput,
@@ -272,9 +287,8 @@ export {
 	ORDER_STATE_MACHINE,
 } from "./orders/state-machine.js";
 // Template rendering lives beside `buildOrderEmailData` and `EmailTemplate`
-// because BOTH `EmailSender` adapters now need it and they live in different
-// packages: the service's `HttpEmailSender` (deleted with the service) and the
-// plugin's `CtxHttpEmailSender` over `ctx.http` (INC-C5). It is a PURE function
+// because every `EmailSender` adapter needs it, and they live outside the domain:
+// today the plugin's `CtxEmailSender` over EmDash's `ctx.email` (ADR-0031). It is a PURE function
 // of a template + explicit data — no IO, no store reach-back — so it does not
 // widen the domain's purity contract by one byte.
 export {
@@ -307,6 +321,8 @@ export {
 	TIMEOUT_BACKOFF_MAX_MS,
 	TIMEOUT_FAILURE_REASON,
 	timeoutBackoffMs,
+	OUTBOX_EMAIL_MAX_AGE_MS,
+	TRANSPORT_UNAVAILABLE_RETRY_MS,
 	UNTRIED_RETRY_MS,
 	adminNextStates,
 	manualPaymentAllowed,
@@ -549,6 +565,7 @@ export {
 export type { Clock } from "./ports/clock.js";
 export type { IdGen } from "./ports/id-gen.js";
 export { commit, release, removeStock, reserve, restock } from "./inventory/use-cases.js";
+export { isProductTaxStatus, PRODUCT_TAX_STATUSES } from "./ports/product-commerce-store.js";
 export type {
 	DownloadAsset,
 	InventoryPolicy,
@@ -557,6 +574,7 @@ export type {
 	ProductCommerceUpdateResult,
 	ProductCommerceView,
 	ProductKind,
+	ProductTaxStatus,
 	ProductListCursor,
 	ProductListFilter,
 	ProductListPage,
@@ -653,8 +671,17 @@ export type {
 	TopProductsMetric,
 } from "./ports/reporting-store.js";
 export { REVENUE_COUNTING_STATES } from "./ports/reporting-store.js";
-export type { OperationalSettings, SettingsStore } from "./ports/settings-store.js";
-export { DEFAULT_OPERATIONAL_SETTINGS } from "./ports/settings-store.js";
+export type {
+	OperationalSettings,
+	SettingsStore,
+	SettingsUpdateOptions,
+} from "./ports/settings-store.js";
+export {
+	DEFAULT_OPERATIONAL_SETTINGS,
+	isSettingsPreconditionFailedError,
+	SettingsPreconditionFailedError,
+	settingsUpdateAllowed,
+} from "./ports/settings-store.js";
 export {
 	getLowStockReport,
 	getOrdersByStatusReport,

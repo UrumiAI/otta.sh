@@ -262,6 +262,25 @@ export interface DownloadAsset {
 export type InventoryPolicy = "deny";
 
 /**
+ * WooCommerce's product tax status (PR 2b, ADR-0032): `taxable` is taxed;
+ * `shipping_only` carries no tax itself but still counts when the shipping tax
+ * class is "based on cart items"; `none` carries no tax and does not count. A row
+ * written before the field existed reads `taxable` — what it was charged as.
+ */
+export type ProductTaxStatus = "taxable" | "shipping_only" | "none";
+
+/** The closed set, for boundaries that read an untyped value. */
+export const PRODUCT_TAX_STATUSES: readonly ProductTaxStatus[] = [
+	"taxable",
+	"shipping_only",
+	"none",
+];
+
+export function isProductTaxStatus(value: unknown): value is ProductTaxStatus {
+	return (PRODUCT_TAX_STATUSES as readonly unknown[]).includes(value);
+}
+
+/**
  * Branded upsert input (Phase 1 §7). `productId` is the CMS content id (the
  * link key, Phase 1 §4) and is required. Every other commercial field is
  * OPTIONAL for two reasons:
@@ -408,6 +427,11 @@ export interface UpdateProductCommerceFieldsInput {
 	 * PRESERVES the stored value.
 	 */
 	inventoryPolicy?: InventoryPolicy;
+	/**
+	 * The product's tax status (PR 2b). Admin-only, like `inventoryPolicy`: the
+	 * CMS-sync `upsert` has no such field. `undefined` PRESERVES.
+	 */
+	taxStatus?: ProductTaxStatus;
 }
 
 /**
@@ -454,6 +478,8 @@ export interface ProductCommerce {
 	/** References a `TaxClass.id` (the `TaxRulesStore` registry); null ⇒ the
 	 *  checkout pipeline treats the line as `"standard"`. */
 	taxClass: string | null;
+	/** WooCommerce's product tax status (PR 2b); `taxable` unless the admin says otherwise. */
+	taxStatus: ProductTaxStatus;
 	/** Optional compare-at / was-price (Increment 2 slice 5). Shares the
 	 *  product's price currency; display-only for now. Null until set. */
 	compareAtPrice: Money | null;

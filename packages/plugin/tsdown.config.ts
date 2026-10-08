@@ -7,7 +7,13 @@ export default defineConfig({
 	// `src/subdivisions.ts` (`@otta-sh/plugin/subdivisions`) carries the English
 	// subdivision names for a storefront's region pick list. Its own entry, so the
 	// names are emitted beside it and never into the chunk the sandbox entry loads.
-	entry: ["src/index.ts", "src/plugin.ts", "src/sandbox-entry.ts", "src/subdivisions.ts"],
+	entry: [
+		"src/index.ts",
+		"src/plugin.ts",
+		"src/sandbox-entry.ts",
+		"src/subdivisions.ts",
+		"src/testing.ts",
+	],
 	format: ["esm"],
 	/**
 	 * `build: true` — declaration emit goes through the TypeScript PROJECT, not

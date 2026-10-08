@@ -21,7 +21,8 @@
 		".": "./src/index.ts",
 		"./plugin": "./src/plugin.ts",
 		"./sandbox-entry": "./src/sandbox-entry.ts",
-		"./subdivisions": "./src/subdivisions.ts"
+		"./subdivisions": "./src/subdivisions.ts",
+		"./testing": "./src/testing.ts"
 	},
 	"publishConfig": {
 		"exports": {
@@ -40,6 +41,10 @@
 			"./subdivisions": {
 				"types": "./dist/subdivisions.d.mts",
 				"default": "./dist/subdivisions.mjs"
+			},
+			"./testing": {
+				"types": "./dist/testing.d.mts",
+				"default": "./dist/testing.mjs"
 			}
 		}
 	},

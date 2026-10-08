@@ -109,6 +109,9 @@ export interface ShippingMethodDoc {
 	readonly methodId: string;
 	readonly name: string;
 	readonly type: ShippingMethodType;
+	/** Whether the method's charge is taxed (PR 2b). OPTIONAL on the stored shape:
+	 *  a method from before the flag reads `true` ({@link normalizeMethodDoc}). */
+	readonly taxable?: boolean;
 	/** The method's rates, keyed by currency — the SQL's `(method, currency)` key. */
 	readonly rates: Readonly<Record<string, ShippingRateDoc>>;
 }
@@ -180,7 +183,7 @@ export function normalizeZoneDoc(doc: ShippingZoneDoc): ShippingZoneDoc {
 
 /** As {@link normalizeZoneDoc}, for one embedded method. */
 export function normalizeMethodDoc(doc: ShippingMethodDoc): ShippingMethodDoc {
-	return { ...doc, rates: doc.rates ?? {} };
+	return { ...doc, taxable: doc.taxable !== false, rates: doc.rates ?? {} };
 }
 
 /** As {@link normalizeZoneDoc}, for a tax class document. */
@@ -199,7 +202,13 @@ export function toShippingZone(doc: ShippingZoneDoc): ShippingZone {
 
 /** The method as the port returns it — the zone id comes from its holder. */
 export function toShippingMethod(zoneId: string, doc: ShippingMethodDoc): ShippingMethod {
-	return { id: doc.methodId, zoneId, name: doc.name, type: doc.type };
+	return {
+		id: doc.methodId,
+		zoneId,
+		name: doc.name,
+		type: doc.type,
+		taxable: doc.taxable !== false,
+	};
 }
 
 /** The rate as the port returns it, with money re-branded on the way out. */

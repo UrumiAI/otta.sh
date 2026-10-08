@@ -117,24 +117,36 @@ export function computePreTax(input: PreTaxInput): PreTaxTotals {
 	};
 }
 
-/** The request lines for a calculator: `lineId` is the line's index. */
-export function taxRequestLinesOf(preTax: PreTaxTotals): TaxRequestLine[] {
+/** The request lines for a calculator: `lineId` is the line's index. A line
+ *  that does not say whether it ships takes `cartRequiresShipping`. */
+export function taxRequestLinesOf(
+	preTax: PreTaxTotals,
+	cartRequiresShipping = true,
+): TaxRequestLine[] {
 	return preTax.lines.map((l, i) => ({
 		lineId: String(i),
 		quantity: l.qty,
 		unitPriceCents: l.unitPriceCents,
 		amountCents: preTax.discountedLineCents[i] as Cents,
 		taxClassId: l.taxClassId,
-		taxStatus: "taxable",
+		taxStatus: l.taxStatus ?? "taxable",
+		requiresShipping: l.requiresShipping ?? cartRequiresShipping,
 	}));
 }
 
 /**
  * Steps 6–9 from a VALIDATED calculator answer (`validateTaxResult`: one line
  * per request line, in request order). Tax = Σ line + shipping; total =
- * discounted subtotal + shipping + tax.
+ * discounted subtotal + shipping + tax — except when prices were entered WITH
+ * tax (ADR-0032): the line tax is already inside the discounted subtotal, so
+ * only the shipping tax is added (`totalCents` is what the buyer pays either way,
+ * and `taxCents` is still the whole tax).
  */
-export function assembleTotals(preTax: PreTaxTotals, tax: TaxResult): TotalsBreakdown {
+export function assembleTotals(
+	preTax: PreTaxTotals,
+	tax: TaxResult,
+	pricesIncludeTax = false,
+): TotalsBreakdown {
 	let perLineTax = 0;
 	const lineBreakdown: TotalsLineBreakdown[] = preTax.lines.map((l, i) => {
 		const taxCents = tax.lines[i]?.taxCents;
@@ -156,7 +168,9 @@ export function assembleTotals(preTax: PreTaxTotals, tax: TaxResult): TotalsBrea
 		discountCents: preTax.discountCents,
 		shippingCents: preTax.shippingCents,
 		taxCents: taxTotal,
-		totalCents: cents(discountedTotal + preTax.shippingCents + taxTotal),
+		totalCents: cents(
+			discountedTotal + preTax.shippingCents + (pricesIncludeTax ? shippingTax : taxTotal),
+		),
 		lineBreakdown,
 		shippingTaxCents: shippingTax,
 	};

@@ -87,6 +87,12 @@ import {
 	cents as toCents,
 	currency as toCurrency,
 	deleteTaxClass as deleteTaxClassUseCase,
+	effectiveTaxSettings,
+	idempotencyKey as toIdempotencyKey,
+	InvalidSettingsError,
+	isSettingsPreconditionFailedError,
+	parseTaxSettings,
+	updateSettings,
 	isCouponCodeConflictError,
 	isCouponIdCollisionError,
 	isIsoCurrencyCode,
@@ -103,6 +109,7 @@ import {
 	type ShippingZone,
 	type TaxClass,
 	type TaxRate,
+	type TaxSettings,
 } from "@otta-sh/domain";
 import {
 	CommerceInputError,
@@ -155,8 +162,11 @@ import type {
 	TaxClassWire,
 	TaxRateEdit,
 	TaxRateInput,
+	TaxSettingsRead,
+	TaxSettingsUpdateResult,
 	TaxRateWire,
 } from "./admin-rules-surface.js";
+import { taxSettingsDigest } from "./admin-rules-surface.js";
 
 /** The coupon-list page bounds (`couponsListQuery`: `min(1).max(100)`, default
  *  25). Mirrored, not imported — the service package goes away. */
@@ -192,16 +202,29 @@ const SHIPPING_METHOD_TYPES = [
 
 const COUPON_TYPES = ["fixed_amount", "percentage"] as const satisfies readonly CouponType[];
 
+export interface InProcessAdminRulesClientOptions extends InProcessCommerceStoresOptions {
+	/**
+	 * A site registered an outside tax calculator (`createOttaPlugin({ taxCalculator })`,
+	 * ADR-0030). With nothing saved, such a store already charges tax — the
+	 * calculator replaces the rate table, so it has no rates — and the upgrade rule
+	 * reads it like a store with rates (ADR-0032): tax on. Default `false`.
+	 */
+	hasOutsideTaxCalculator?: boolean;
+}
+
 export class InProcessAdminRulesClient implements AdminRulesSurface {
 	readonly #stores: InProcessCommerceStores;
+	readonly #hasOutsideTaxCalculator: boolean;
 
 	/**
 	 * Takes the whole context and constructs the adapters once per client, the
 	 * same request-scoped lifecycle the console pages already had. A context with
 	 * no document store fails HERE, at construction, naming what is missing.
 	 */
-	constructor(ctx: PluginContext, options: InProcessCommerceStoresOptions = {}) {
-		this.#stores = createInProcessCommerceStores(ctx, options);
+	constructor(ctx: PluginContext, options: InProcessAdminRulesClientOptions = {}) {
+		const { hasOutsideTaxCalculator = false, ...storeOptions } = options;
+		this.#stores = createInProcessCommerceStores(ctx, storeOptions);
+		this.#hasOutsideTaxCalculator = hasOutsideTaxCalculator;
 	}
 
 	// -- Shipping: zones -------------------------------------------------------
@@ -263,6 +286,7 @@ export class InProcessAdminRulesClient implements AdminRulesSurface {
 		requireIdToken("id", input.id);
 		requireBoundedText("name", input.name, 1, NAME_MAX);
 		const type = requireShippingMethodType(input.type);
+		const taxable = optionalTaxable(input.taxable);
 		return createOrRefuse(async () =>
 			toMethodWire(
 				await this.#stores.shippingRules.createMethod({
@@ -271,6 +295,7 @@ export class InProcessAdminRulesClient implements AdminRulesSurface {
 					zoneId,
 					name: input.name,
 					type,
+					...(taxable !== undefined ? { taxable } : {}),
 				}),
 			),
 		);
@@ -284,9 +309,11 @@ export class InProcessAdminRulesClient implements AdminRulesSurface {
 		requireIdToken("methodId", methodId);
 		requireBoundedText("name", edit.name, 1, NAME_MAX);
 		const type = requireShippingMethodType(edit.type);
+		const taxable = optionalTaxable(edit.taxable);
 		const res = await this.#stores.shippingRules.updateMethod(methodId, {
 			name: edit.name,
 			type,
+			...(taxable !== undefined ? { taxable } : {}),
 		});
 		return res.ok
 			? { ok: true, value: toMethodWire(res.method) }
@@ -444,11 +471,13 @@ export class InProcessAdminRulesClient implements AdminRulesSurface {
 			{
 				taxRules: this.#stores.taxRules,
 				productCommerce: this.#stores.productCommerce,
+				settings: this.#stores.settingsStore,
 			},
 			classId,
 		);
 		if (res.ok) return { ok: true };
 		if (res.reason === "not_found") return { ok: false, reason: "not_found" };
+		if (res.reason === "in_use_by_settings") return { ok: false, reason: "in_use_by_settings" };
 		if (res.reason === "in_use_by_products") {
 			return { ok: false, reason: "in_use_by_products", count: res.count };
 		}
@@ -468,6 +497,7 @@ export class InProcessAdminRulesClient implements AdminRulesSurface {
 		requireIdToken("taxClassId", input.taxClassId);
 		requireIdToken("zoneId", input.zoneId);
 		requireBps("rateBps", input.rateBps, MAX_TAX_RATE_BPS);
+		await this.#pinTaxSettings();
 		return createOrRefuse(async () =>
 			toTaxRateWire(
 				await this.#stores.taxRules.createRate({
@@ -510,8 +540,120 @@ export class InProcessAdminRulesClient implements AdminRulesSurface {
 	 *  shipping rate's. */
 	async deleteTaxRate(rateId: string): Promise<RulesDeleteResult> {
 		requireIdToken("rateId", rateId);
+		await this.#pinTaxSettings();
 		const res = await this.#stores.taxRules.deleteRate(rateId);
 		return res.ok ? { ok: true } : { ok: false, reason: "not_found" };
+	}
+
+	// -- Tax: options (ADR-0032) -------------------------------------------------
+
+	async getTaxSettings(): Promise<TaxSettingsRead> {
+		const [saved, hasRates] = await Promise.all([
+			this.#stores.settingsStore.get().then((s) => s.tax),
+			this.#stores.taxRules.hasAnyRate(),
+		]);
+		return {
+			settings: effectiveTaxSettings(saved, hasRates || this.#hasOutsideTaxCalculator),
+			saved: saved !== undefined,
+			hasRates,
+		};
+	}
+
+	/**
+	 * Replace the options whole, guarded on the VALUE the form loaded (`expected`,
+	 * the same compare-on-value as a tax rate's `expectedRateBps`, ABA accepted
+	 * for the same reason). Options already equal to `next` are answered `ok`
+	 * without a write, so a double submit is not reported stale.
+	 *
+	 * The guard is atomic: the write itself is conditional on the stored block
+	 * still being the one read here (`ifTax`, re-checked by the store on every
+	 * compare-and-set attempt), so a peer save — or a first-rate pin — landing
+	 * between this read and the write makes this save `stale`, never a clobber.
+	 * With nothing saved, the effective options come from "are there rates?";
+	 * every change to that (the first rate, the last rate deleted) writes a block
+	 * first, which fails the `ifTax: null` condition the same way.
+	 */
+	async updateTaxSettings(
+		next: unknown,
+		opts: { expected: string; idempotencyKey: string },
+	): Promise<TaxSettingsUpdateResult> {
+		requireBoundedText("idempotencyKey", opts.idempotencyKey, 1, 200);
+		const stored = (await this.#stores.settingsStore.get()).tax;
+		const current = stored ?? effectiveTaxSettings(undefined, await this.#chargesTaxAlready());
+		const currentDigest = taxSettingsDigest(current);
+		const parsed = parseTaxSettings(next);
+		if (!("field" in parsed) && taxSettingsDigest(parsed) === currentDigest) {
+			return { ok: true, settings: current };
+		}
+		if (currentDigest !== opts.expected) return { ok: false, reason: "stale", current };
+		// A fixed shipping tax class must name a class that exists: an unknown id
+		// would silently price shipping "based on cart items" instead.
+		if (!("field" in parsed) && parsed.shippingTaxClass.kind === "fixed") {
+			const { taxClassId } = parsed.shippingTaxClass;
+			const classes = await this.#stores.taxRules.listClasses();
+			if (!classes.some((c) => c.id === taxClassId)) {
+				return {
+					ok: false,
+					reason: "invalid",
+					field: "tax.shippingTaxClass",
+					message: `no tax class "${taxClassId}" exists`,
+				};
+			}
+		}
+		try {
+			const result = await updateSettings(
+				this.#stores.settingsStore,
+				{ tax: next as TaxSettings },
+				toIdempotencyKey(opts.idempotencyKey),
+				{ ifTax: stored ?? null },
+			);
+			return { ok: true, settings: result.tax ?? current };
+		} catch (err) {
+			if (err instanceof InvalidSettingsError) {
+				return { ok: false, reason: "invalid", field: err.field, message: err.message };
+			}
+			if (isSettingsPreconditionFailedError(err)) {
+				return { ok: false, reason: "stale", current: (await this.getTaxSettings()).settings };
+			}
+			throw err;
+		}
+	}
+
+	/**
+	 * The upgrade rule is decided by whether rates exist, so the first rate created
+	 * (or the last deleted) would flip a store with nothing saved between "new" and
+	 * "existing". Before either, a store with nothing saved has what it has NOW
+	 * written down — a new store stays a new store (tax off), an existing one keeps
+	 * its legacy behaviour.
+	 *
+	 * The write is conditional on nothing being saved (`ifTax: null`), checked by
+	 * the store atomically with the write: an admin save that lands first wins and
+	 * the pin writes nothing. Two racing pins write the same value, so each takes a
+	 * key of its own (a fixed key could be pinned forever to a revision that has
+	 * since moved, and refuse every later rate edit).
+	 */
+	/** The upgrade rule's input with nothing saved: rates exist, or an outside
+	 *  calculator is registered (it replaces the rates). Same rule as the quote's. */
+	async #chargesTaxAlready(): Promise<boolean> {
+		return this.#hasOutsideTaxCalculator || (await this.#stores.taxRules.hasAnyRate());
+	}
+
+	async #pinTaxSettings(): Promise<void> {
+		if ((await this.#stores.settingsStore.get()).tax !== undefined) return;
+		const chargesTax = await this.#chargesTaxAlready();
+		try {
+			await this.#stores.settingsStore.update(
+				{ tax: effectiveTaxSettings(undefined, chargesTax) },
+				toIdempotencyKey(
+					`tax-settings-pin-${this.#stores.clock.now().toISOString()}-${String(++pinSeq)}`,
+				),
+				{ ifTax: null },
+			);
+		} catch (err) {
+			// Something was saved since the read above — the saved block decides now.
+			if (isSettingsPreconditionFailedError(err)) return;
+			throw err;
+		}
 	}
 
 	// -- Coupons ---------------------------------------------------------------
@@ -754,7 +896,20 @@ function toZoneWire(zone: ShippingZone): ShippingZoneWire {
 }
 
 function toMethodWire(method: ShippingMethod): ShippingMethodWire {
-	return { id: method.id, zoneId: method.zoneId, name: method.name, type: method.type };
+	return {
+		id: method.id,
+		zoneId: method.zoneId,
+		name: method.name,
+		type: method.type,
+		taxable: method.taxable,
+	};
+}
+
+/** A method's `taxable` flag (PR 2b): absent, or a real boolean — never coerced. */
+function optionalTaxable(value: unknown): boolean | undefined {
+	if (value === undefined) return undefined;
+	if (typeof value !== "boolean") throw new CommerceInputError("taxable", "must be true or false");
+	return value;
 }
 
 /** Money on the wire is an integer minor `amountCents` plus its ISO-4217
@@ -772,6 +927,9 @@ function toRateWire(rate: ShippingRate): ShippingRateWire {
 function toTaxClassWire(cls: TaxClass): TaxClassWire {
 	return { id: cls.id, name: cls.name };
 }
+
+/** Disambiguates two pins in one isolate within one clock tick. */
+let pinSeq = 0;
 
 function toTaxRateWire(rate: TaxRate): TaxRateWire {
 	return {

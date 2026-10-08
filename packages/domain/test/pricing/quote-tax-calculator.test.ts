@@ -110,6 +110,7 @@ describe("computeQuote → TaxCalculator", () => {
 						amountCents: 3000,
 						taxClassId: "standard",
 						taxStatus: "taxable",
+						requiresShipping: true,
 					},
 					{
 						lineId: "1",
@@ -118,6 +119,7 @@ describe("computeQuote → TaxCalculator", () => {
 						amountCents: 999,
 						taxClassId: "reduced",
 						taxStatus: "taxable",
+						requiresShipping: true,
 					},
 				],
 				shipping: { amountCents: 500, methodId: "m" },
