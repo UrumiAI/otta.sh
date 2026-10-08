@@ -495,3 +495,95 @@ describe("createStripeHttpTransport (default live transport; stub fetch — NO n
 		for (const init of createSeen) expect(init.signal).toBeUndefined();
 	});
 });
+
+describe("StripePaymentGateway.refund — amounts cross the currency mapping in BOTH directions", () => {
+	// The same per-currency mapping createIntent charges with
+	// (`stripeAmountFactor`, from https://docs.stripe.com/currencies): unchanged
+	// for two- and zero-decimal currencies, ×100 for ISK on the way out and ÷100
+	// for every figure Stripe reports back; a currency the live path refuses is
+	// refused here too, before any call.
+
+	function gateway(transport: MockTransport): StripePaymentGateway {
+		return new StripePaymentGateway({ webhookSecret: WEBHOOK, secretKey: SK, transport });
+	}
+
+	test("JPY (zero-decimal): our whole-yen amount goes out unchanged and comes back unchanged", async () => {
+		const transport = new MockTransport();
+		transport.preflight = {
+			ok: true,
+			view: { amountRefunded: 0, amountCaptured: 1500, currency: "jpy" },
+		};
+		const res = await gateway(transport).refund(
+			refundInput({ currency: currency("JPY"), amount: cents(1500) }),
+		);
+		expect(transport.creates[0]?.amountCents).toBe(1500);
+		expect(res).toEqual({
+			ok: true,
+			refundRef: "re_123",
+			amount: 1500,
+			currency: "USD", // the mock echoes its scripted `usd`; the amount is the point
+		});
+	});
+
+	test("ISK (Stripe special case): sent ×100, Stripe's figures read back ÷100", async () => {
+		const transport = new MockTransport();
+		// 5000 krónur captured, 1000 already refunded — as Stripe reports them.
+		transport.preflight = {
+			ok: true,
+			view: { amountRefunded: 100_000, amountCaptured: 500_000, currency: "isk" },
+		};
+		const res = await gateway(transport).refund(
+			refundInput({ currency: currency("ISK"), amount: cents(4000), priorRefunded: cents(1000) }),
+		);
+		expect(transport.creates[0]?.amountCents).toBe(400_000);
+		expect(res.ok).toBe(true);
+		if (res.ok) expect(res.amount).toBe(4000);
+	});
+
+	test("ISK pre-flight compares in OUR units: a refund past the captured krónur is refused, with the figures in krónur", async () => {
+		const transport = new MockTransport();
+		transport.preflight = {
+			ok: true,
+			view: { amountRefunded: 0, amountCaptured: 500_000, currency: "isk" },
+		};
+		const res = await gateway(transport).refund(
+			refundInput({ currency: currency("ISK"), amount: cents(5001) }),
+		);
+		expect(res).toEqual({
+			ok: false,
+			reason: "PROVIDER_ALREADY_REFUNDED",
+			provider: { refunded: 0, captured: 5000 },
+		});
+		expect(transport.creates).toHaveLength(0);
+	});
+
+	test("an ISK refund Stripe reports in a non-whole amount is UNVERIFIED, never a clean failure", async () => {
+		const transport = new MockTransport();
+		transport.preflight = {
+			ok: true,
+			view: { amountRefunded: 0, amountCaptured: 500_000, currency: "isk" },
+		};
+		transport.create = { ok: true, refundId: "re_odd", amountCents: 12_345, currency: "isk" };
+		const res = await gateway(transport).refund(
+			refundInput({ currency: currency("ISK"), amount: cents(100) }),
+		);
+		expect(res).toEqual({ ok: false, reason: "UNVERIFIED" });
+	});
+
+	test("KWD (three-decimal) and an unlisted zero-decimal code are refused TERMINAL before any call", async () => {
+		for (const code of ["KWD", "XOF"]) {
+			const transport = new MockTransport();
+			const res = await gateway(transport).refund(refundInput({ currency: currency(code) }));
+			expect(res, code).toEqual({ ok: false, reason: "TERMINAL" });
+			expect(transport.reads, code).toHaveLength(0);
+			expect(transport.creates, code).toHaveLength(0);
+		}
+	});
+
+	test("USD is byte-identical: the amount goes out and comes back as is", async () => {
+		const transport = new MockTransport();
+		const res = await gateway(transport).refund(refundInput());
+		expect(transport.creates[0]?.amountCents).toBe(500);
+		expect(res.ok && res.amount).toBe(500);
+	});
+});

@@ -2,16 +2,21 @@ import {
 	cents,
 	currency,
 	idempotencyKey,
+	isSupportedCurrency,
 	orderId,
 	PaymentIntentError,
+	SUPPORTED_CURRENCIES,
 	type CreateIntentInput,
 } from "@otta-sh/domain";
 import { describe, expect, test } from "vitest";
 import {
 	createStripeHttpTransport,
 	IN_FLIGHT_BUDGET_MS,
-	STRIPE_UNSUPPORTED_CURRENCIES,
+	STRIPE_HUNDREDFOLD_CURRENCIES,
+	STRIPE_THREE_DECIMAL_CURRENCIES,
+	STRIPE_ZERO_DECIMAL_CURRENCIES,
 	StripePaymentGateway,
+	stripeAmountFactor,
 	type StripeCreatePaymentIntentInput,
 	type StripeCreatePaymentIntentResult,
 	type StripeCreateRefundResult,
@@ -85,66 +90,103 @@ describe("StripePaymentGateway.createIntent — the OFFLINE path is unchanged", 
 	});
 });
 
-describe("StripePaymentGateway.createIntent — the LIVE path FAILS CLOSED on non-exponent-2 currencies", () => {
-	// The repo's money convention is integer minor units at hundredths scale
-	// EVERYWHERE (see packages/plugin/src/admin/money-input.ts). Stripe wants
-	// ZERO-decimal currencies (JPY, KRW, …) in WHOLE units, so passing our
-	// hundredths integer through would charge the buyer 100×; three-decimal
-	// currencies (KWD, …) are the mirror hazard. Reject before the network — a
-	// wrong charge is not a retryable condition.
+describe("StripePaymentGateway.createIntent — the LIVE path maps each currency to Stripe's unit, and FAILS CLOSED where it cannot", () => {
+	// Otta's amounts are in each currency's ISO 4217 minor unit (the currency
+	// table: whole yen for JPY, fils for KWD). Stripe's `amount` is in ITS unit for
+	// the currency (https://docs.stripe.com/currencies): the same for two- and
+	// zero-decimal currencies, ×100 for ISK, and thousandths in multiples of 10
+	// for three-decimal ones — which an order total need not be, so those are
+	// refused before the network. A wrong charge is not a retryable condition.
 
-	test("a ZERO-decimal currency (JPY) throws a TERMINAL unsupported_currency error and never calls the transport", async () => {
+	async function liveIntent(code: string, amount: number): Promise<StripeCreatePaymentIntentInput> {
+		const transport = new MockTransport();
+		const gw = new StripePaymentGateway({ webhookSecret: WEBHOOK, secretKey: SK, transport });
+		await gw.createIntent(intentInput({ currency: currency(code), amount: cents(amount) }));
+		expect(transport.intents).toHaveLength(1);
+		return transport.intents[0] as StripeCreatePaymentIntentInput;
+	}
+
+	async function refused(code: string): Promise<void> {
 		const transport = new MockTransport();
 		const gw = new StripePaymentGateway({ webhookSecret: WEBHOOK, secretKey: SK, transport });
 		const err = (await gw
-			.createIntent(intentInput({ currency: currency("JPY"), amount: cents(1000) }))
+			.createIntent(intentInput({ currency: currency(code), amount: cents(1000) }))
 			.catch((e: unknown) => e)) as PaymentIntentError;
-		expect(err).toBeInstanceOf(PaymentIntentError);
+		expect(err, code).toBeInstanceOf(PaymentIntentError);
 		expect(err.retryable).toBe(false);
 		expect(err.providerCode).toBe("unsupported_currency");
 		expect(err.providerStatus).toBeUndefined();
-		expect(transport.intents, "nothing was sent to Stripe").toHaveLength(0);
-	});
+		expect(transport.intents, `${code}: nothing was sent to Stripe`).toHaveLength(0);
+	}
 
-	test("a THREE-decimal currency (KWD) is rejected the same way", async () => {
-		const transport = new MockTransport();
-		const gw = new StripePaymentGateway({ webhookSecret: WEBHOOK, secretKey: SK, transport });
-		const err = (await gw
-			.createIntent(intentInput({ currency: currency("KWD") }))
-			.catch((e: unknown) => e)) as PaymentIntentError;
-		expect(err).toBeInstanceOf(PaymentIntentError);
-		expect(err.retryable).toBe(false);
-		expect(err.providerCode).toBe("unsupported_currency");
-		expect(transport.intents).toHaveLength(0);
-	});
-
-	test("every currency on the deny-list is rejected; ordinary exponent-2 currencies still go live", async () => {
-		for (const denied of STRIPE_UNSUPPORTED_CURRENCIES) {
-			const transport = new MockTransport();
-			const gw = new StripePaymentGateway({ webhookSecret: WEBHOOK, secretKey: SK, transport });
-			await expect(
-				gw.createIntent(intentInput({ currency: currency(denied) })),
-			).rejects.toBeInstanceOf(PaymentIntentError);
-			expect(transport.intents).toHaveLength(0);
+	test("a ZERO-decimal currency (JPY) now goes live: our whole-yen amount IS Stripe's amount", async () => {
+		// ¥1500 is stored as 1500 and sent as 1500 ("to charge 500 JPY, provide an
+		// amount value of 500").
+		const sent = await liveIntent("JPY", 1500);
+		expect(sent.amountCents).toBe(1500);
+		expect(sent.currency).toBe("jpy");
+		for (const code of ["KRW", "VND", "CLP"]) {
+			expect((await liveIntent(code, 1500)).amountCents, code).toBe(1500);
 		}
+	});
+
+	test("ISK (Stripe special case) goes out ×100 — whole krónur as a two-decimal amount ending 00", async () => {
+		const sent = await liveIntent("ISK", 5);
+		expect(sent.amountCents).toBe(500);
+		expect(sent.currency).toBe("isk");
+	});
+
+	test("HUF and TWD (Stripe special cases for PAYOUTS only) are two-decimal: sent unchanged", async () => {
+		expect((await liveIntent("HUF", 1045)).amountCents).toBe(1045);
+		expect((await liveIntent("TWD", 80045)).amountCents).toBe(80045);
+	});
+
+	test("a THREE-decimal currency (KWD) is still refused before the network", async () => {
+		for (const code of ["KWD", "BHD", "OMR", "JOD"]) await refused(code);
+	});
+
+	test("a code outside the currency table keeps its old treatment: Stripe's zero-/three-decimal codes refused, others unchanged", async () => {
+		for (const code of [...STRIPE_ZERO_DECIMAL_CURRENCIES, ...STRIPE_THREE_DECIMAL_CURRENCIES]) {
+			if (isSupportedCurrency(code)) continue;
+			await refused(code);
+		}
+		// LKR: a two-decimal code outside the table, which went live before it.
+		expect((await liveIntent("LKR", 2500)).amountCents).toBe(2500);
+	});
+
+	test("ordinary exponent-2 currencies still go live, byte-for-byte unchanged", async () => {
 		for (const allowed of ["USD", "EUR", "GBP", "CAD", "AUD", "INR"]) {
-			const transport = new MockTransport();
-			const gw = new StripePaymentGateway({ webhookSecret: WEBHOOK, secretKey: SK, transport });
-			await gw.createIntent(intentInput({ currency: currency(allowed) }));
-			expect(transport.intents[0]?.currency).toBe(allowed.toLowerCase());
+			const sent = await liveIntent(allowed, 2500);
+			expect(sent.amountCents).toBe(2500);
+			expect(sent.currency).toBe(allowed.toLowerCase());
 		}
 	});
 
-	test("the deny-list covers Stripe's documented zero-decimal AND three-decimal sets", () => {
-		for (const code of "BIF CLP DJF GNF JPY KMF KRW MGA PYG RWF UGX VND VUV XAF XOF XPF".split(
-			" ",
-		)) {
-			expect(STRIPE_UNSUPPORTED_CURRENCIES.has(code), code).toBe(true);
+	test("Stripe's documented zero-decimal and three-decimal sets are the ones encoded", () => {
+		expect([...STRIPE_ZERO_DECIMAL_CURRENCIES].toSorted()).toEqual(
+			"BIF CLP DJF GNF JPY KMF KRW MGA PYG RWF UGX VND VUV XAF XOF XPF".split(" "),
+		);
+		expect([...STRIPE_THREE_DECIMAL_CURRENCIES].toSorted()).toEqual(
+			"BHD JOD KWD OMR TND".split(" "),
+		);
+		expect([...STRIPE_HUNDREDFOLD_CURRENCIES].toSorted()).toEqual(["ISK", "UGX"]);
+	});
+
+	test("EVERY row of the currency table maps to an exact Stripe amount, or is a three-decimal refusal", () => {
+		// Adding a currency to the table lands here: a row whose exponent Stripe
+		// treats differently fails until this adapter knows the mapping.
+		for (const row of SUPPORTED_CURRENCIES) {
+			const factor = stripeAmountFactor(row.code);
+			if (row.digits === 3) {
+				expect(factor, row.code).toBeNull();
+			} else if (STRIPE_HUNDREDFOLD_CURRENCIES.has(row.code)) {
+				expect(row.digits, row.code).toBe(0);
+				expect(factor, row.code).toBe(100);
+			} else {
+				expect(factor, row.code).toBe(1);
+				expect(STRIPE_ZERO_DECIMAL_CURRENCIES.has(row.code), row.code).toBe(row.digits === 0);
+			}
 		}
-		for (const code of "BHD JOD KWD OMR TND".split(" ")) {
-			expect(STRIPE_UNSUPPORTED_CURRENCIES.has(code), code).toBe(true);
-		}
-		expect(STRIPE_UNSUPPORTED_CURRENCIES.has("USD")).toBe(false);
 	});
 });
 

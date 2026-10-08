@@ -267,10 +267,12 @@ describe("StripePaymentGateway.createIntent — the OFFLINE path is UNCHANGED by
 		});
 	});
 
-	test("the exponent-2 currency gate still fires BEFORE any description work (nothing reaches Stripe)", async () => {
+	test("the unsupported-currency gate still fires BEFORE any description work (nothing reaches Stripe)", async () => {
+		// KWD, not JPY: a zero-decimal currency now maps exactly (whole yen are
+		// Stripe's unit) and goes live; a three-decimal one is still refused.
 		const transport = new MockTransport();
 		await expect(
-			liveGateway(transport).createIntent(intentInput({ currency: currency("JPY") })),
+			liveGateway(transport).createIntent(intentInput({ currency: currency("KWD") })),
 		).rejects.toBeInstanceOf(PaymentIntentError);
 		expect(transport.intents).toHaveLength(0);
 	});

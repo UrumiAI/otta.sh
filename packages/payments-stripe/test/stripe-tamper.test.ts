@@ -130,3 +130,42 @@ describe("StripePaymentGateway verifyConfirmation", () => {
 		expect(res).toEqual({ ok: false, reason: "INVALID_SIGNATURE" });
 	});
 });
+
+describe("StripePaymentGateway verifyConfirmation — the webhook amount comes back in OUR minor units", () => {
+	const gateway = new StripePaymentGateway({ webhookSecret: SECRET });
+
+	async function confirmed(amountCents: number, cur: string) {
+		const s = await signStripeWebhook(
+			{
+				eventId: "evt_cur",
+				type: "payment_intent.succeeded",
+				paymentIntentId: "pi_cur",
+				orderId: "ord-1",
+				amountCents,
+				currency: cur,
+			},
+			SECRET,
+		);
+		return gateway.verifyConfirmation({
+			kind: "webhook",
+			body: s.body,
+			headers: { "Stripe-Signature": s.signatureHeader },
+		});
+	}
+
+	test("JPY: Stripe's amount is whole yen, as ours", async () => {
+		const res = await confirmed(1500, "jpy");
+		expect(res.ok && res.amount).toBe(1500);
+	});
+
+	test("ISK: Stripe's two-decimal amount is divided back to whole krónur (settle compares it to the order total)", async () => {
+		const res = await confirmed(500_000, "isk");
+		expect(res.ok && res.amount).toBe(5000);
+		expect(res.ok && res.currency).toBe("ISK");
+	});
+
+	test("ISK not ending in 00 passes through unconverted — it cannot match a total, so settle flags it rather than the event being dropped", async () => {
+		const res = await confirmed(500_050, "isk");
+		expect(res.ok && res.amount).toBe(500_050);
+	});
+});
