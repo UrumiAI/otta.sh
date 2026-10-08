@@ -5,7 +5,6 @@
 		{ "path": "packages/admin-presentation" },
 		{ "path": "packages/store-emdash" },
 		{ "path": "packages/payments-stripe" },
-		{ "path": "packages/payments-x402" },
 		{ "path": "packages/plugin" },
 		{ "path": "packages/admin-react" }
 	]

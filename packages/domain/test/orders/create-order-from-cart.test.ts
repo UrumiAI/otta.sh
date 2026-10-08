@@ -26,12 +26,12 @@ const SHIP_TO: OrderAddressInput = {
 	phone: "+44 20 7946 0000",
 };
 
-function cmd(cartId: string, key = "k-order", method: "stripe" | "x402" = "stripe") {
+function cmd(cartId: string, key = "k-order") {
 	return {
 		cartId,
 		idempotencyKey: idempotencyKey(key),
 		buyerRef: "buyer@example.com",
-		paymentMethod: method,
+		paymentMethod: "stripe",
 	} as const;
 }
 

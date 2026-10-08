@@ -60,8 +60,8 @@ function commerceStorage(): DescriptorStorage {
 
 /** INC-C3 — what the egress allowlist depends on. */
 export interface OttaPluginDescriptorOptions {
-	/** Deployment-supplied in-process egress URLs (email provider, x402
-	 *  facilitator). Absent ⇒ no host granted for that provider. */
+	/** Deployment-supplied in-process egress URL (the email provider).
+	 *  Absent ⇒ no host granted for it. */
 	egress?: InProcessEgressUrls;
 }
 
@@ -79,11 +79,11 @@ export function ottaPluginDescriptor(options: OttaPluginDescriptorOptions = {}):
 		// two different answers.
 		//
 		// The commerce service is gone (INC-D3a), so the calls it used to make are
-		// the plugin's own: the list is Stripe's API host plus whichever of the
-		// email/facilitator hosts the deployment supplied, and no service host
+		// the plugin's own: the list is Stripe's API host plus the
+		// email host if the deployment supplied one, and no service host
 		// appears at all. The CREDENTIALS for those calls are never baked in here:
 		// they live in write-only plugin kv (`settings:stripe*`,
-		// `settings:emailApiKey`, `settings:x402FacilitatorApiKey`), provisioned
+		// `settings:emailApiKey`), provisioned
 		// through the admin Settings form.
 		allowedHosts: resolveAllowedHosts(options.egress),
 		// THIS DECLARATION IS THE SCHEMA. `ctx.storage.collectionOf(name)` throws

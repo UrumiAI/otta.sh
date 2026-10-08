@@ -49,15 +49,15 @@ export interface StagingEmdashOptions {
 }
 
 /**
- * @param egress THE IN-PROCESS EGRESS URLS, threaded rather than read from the
+ * @param egress THE IN-PROCESS EGRESS URL, threaded rather than read from the
  *   plugin's own resolver — and the omission was a real hole (review round 3,
- *   B1). The plugin bundle resolves `__OTTA_EMAIL_API_URL__` and
- *   `__OTTA_X402_FACILITATOR_URL__` from Vite defines (`manifest.ts`), and Vite
+ *   B1). The plugin bundle resolves `__OTTA_EMAIL_API_URL__`
+ *   from a Vite define (`manifest.ts`), and Vite
  *   substitutes defines when it bundles the WORKER; it does not touch
  *   `astro.config.ts`, which Node evaluates at config time, before any bundling.
  *   The DESCRIPTOR's `allowedHosts` is built HERE, in that Node pass. With no
- *   parameter for them the descriptor could never allowlist either host, so the
- *   first person to add one of those defines would ship a bundle holding a live
+ *   parameter for it the descriptor could never allowlist the host, so the
+ *   first person to add that define would ship a bundle holding a live
  *   `EmailSender` aimed at a host the gate refuses: every send fails, rows
  *   reschedule and park `failed`, and the sweep leg reports `count: 0` rather
  *   than the honest `skipped` — the exact failure `manifest.ts`'s

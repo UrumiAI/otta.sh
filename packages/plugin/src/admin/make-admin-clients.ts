@@ -55,7 +55,7 @@ export interface AdminClients {
  * `makeCommerceClient` uses (`resolvePaymentGateways`), so a console refund
  * reaches the provider checkout charged — over `ctx.http` — and a deployment with
  * no gateway for an order's method still answers `409 REFUND_GATEWAY_UNAVAILABLE`
- * (issue #303). A non-refundable gateway (x402) lets the console RECORD a manual,
+ * (issue #303). A non-refundable gateway lets the console RECORD a manual,
  * off-platform refund.
  *
  * The clients construct every commerce adapter over `ctx.storage`, so a context

@@ -655,9 +655,8 @@ export const LEG_QUERY_COSTS: Record<SweepLeg, { readonly entry: number; readonl
 			entry: 2 + CONTENT_LIST_QUERIES,
 			unit: ORPHAN_ROW_READ_QUERIES + CONTENT_READ_QUERIES + PRODUCT_ORPHAN_DELETE_CALLS,
 		},
-		// entry: resolving the gateways (their kv reads: 2 for Stripe, up to 2 more
-		// with x402 configured; ADR-0028 increment 2 dropped x402's credential read,
-		// and the budget keeps that one as headroom) — once, and only when a unit
+		// entry: resolving the gateways (their kv reads: 2 for Stripe; the budget
+		// keeps the headroom a second gateway's reads once needed) — once, and only when a unit
 		// needs them. The due list is the leg's due check, charged before this (see
 		// `run`'s `isDue`).
 		// unit: one order's ledger read, the re-driven refund (the two Stripe

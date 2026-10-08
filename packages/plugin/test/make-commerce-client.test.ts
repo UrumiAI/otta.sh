@@ -20,7 +20,6 @@ import {
 	EMAIL_API_KEY_KEY,
 	STRIPE_SECRET_KEY_KEY,
 	STRIPE_WEBHOOK_SECRET_KEY,
-	X402_FACILITATOR_API_KEY_KEY,
 } from "../src/payment-secrets.js";
 import type { PluginContext } from "../src/types.js";
 import type { StorageAccess, StorageCollection } from "@otta-sh/store-emdash";
@@ -48,8 +47,8 @@ function makeUnusedStorage(): StorageAccess {
  * A RECORDING kv, not a null-returning stub.
  *
  * `ctx.kv` is a live CREDENTIAL store (`payment-secrets.ts`: the Stripe secret
- * key, the Stripe webhook secret, the email API key and the x402 facilitator
- * credential all live there under `settings:*`). A stub that simply answered
+ * key, the Stripe webhook secret and the email API key
+ * all live there under `settings:*`). A stub that simply answered
  * `null` would let an eager read at construction pass unnoticed — so every key
  * read is recorded, which keeps "building a client reads no credential" an
  * assertion rather than an assumption.
@@ -95,17 +94,13 @@ describe("makeCommerceClient", () => {
 			[STRIPE_SECRET_KEY_KEY]: "sk_test_READ",
 			[STRIPE_WEBHOOK_SECRET_KEY]: "whsec_READ",
 			[EMAIL_API_KEY_KEY]: "email_NEVER_READ",
-			[X402_FACILITATOR_API_KEY_KEY]: "x402_NEVER_READ",
 		});
 		const client = await makeCommerceClient(ctx);
 		expect(client).toBeInstanceOf(InProcessCommerceClient);
-		// Stripe (`stripe-wiring.ts`) has no build-time gate the way x402's
-		// facilitator URL does, so resolving whether it is configured means
-		// reading BOTH its kv keys on every construction — that is the two reads
-		// below, in the order `stripeGatewayFromCtx` issues them. The x402 wiring
-		// still short-circuits on an unconfigured facilitator URL BEFORE it
-		// touches kv, so neither `EMAIL_API_KEY_KEY` nor
-		// `X402_FACILITATOR_API_KEY_KEY` is read here.
+		// Stripe (`stripe-wiring.ts`) has no build-time gate, so resolving whether
+		// it is configured means reading BOTH its kv keys on every construction —
+		// that is the two reads below, in the order `stripeGatewayFromCtx` issues
+		// them. `EMAIL_API_KEY_KEY` is not read here.
 		expect(kvReads).toEqual([STRIPE_SECRET_KEY_KEY, STRIPE_WEBHOOK_SECRET_KEY]);
 	});
 

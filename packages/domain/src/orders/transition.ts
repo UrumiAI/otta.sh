@@ -141,7 +141,7 @@ async function applyTransition(
 
 /**
  * How each payment method's money is confirmed: by its GATEWAY (Stripe's
- * `payment_intent.succeeded`, x402's facilitator verify) or OFFLINE, by a person
+ * `payment_intent.succeeded`) or OFFLINE, by a person
  * who saw the money arrive.
  *
  * A `Record` over every `PaymentMethod` on purpose: a new method (a "bank
@@ -150,7 +150,6 @@ async function applyTransition(
  */
 const PAYMENT_METHOD_SETTLEMENT: Readonly<Record<PaymentMethod, "gateway" | "offline">> = {
 	stripe: "gateway",
-	x402: "gateway",
 };
 
 /**
@@ -167,14 +166,13 @@ export function manualPaymentAllowed(method: PaymentMethod | null): boolean {
 
 /**
  * How each payment method's money goes BACK: through its PROVIDER (a Stripe refund,
- * which Money → Refunds issues and records on the ledger) or OUTSIDE Otta (x402
- * cannot refund automatically; the operator sends the money and records it). A
+ * which Money → Refunds issues and records on the ledger) or OUTSIDE Otta (a method
+ * that cannot refund automatically; the operator sends the money and records it). A
  * `Record` over every method, like {@link PAYMENT_METHOD_SETTLEMENT}, so a new
  * method must say which it is.
  */
 const PAYMENT_METHOD_REFUNDS: Readonly<Record<PaymentMethod, "provider" | "outside">> = {
 	stripe: "provider",
-	x402: "outside",
 };
 
 /** The two ledgers Mark refunded is decided from. */
@@ -224,7 +222,7 @@ export function markRefundedRefusal(
  * May an admin MARK this order refunded — a status move that moves no money? Only
  * where that cannot hide money still held (QA2 M4: a shipped Stripe order with
  * $6.50 captured was closed as "refunded" and its buyer's page said so):
- *  - its method returns money OUTSIDE Otta (x402), so a refund made there is
+ *  - its method returns money OUTSIDE Otta, so a refund made there is
  *    exactly what this records; or
  *  - the ledger shows NOTHING left to refund through the provider; or
  *  - the provider itself reported the payment refunded IN FULL — the flag
@@ -393,8 +391,7 @@ export interface DispatchOrderEmailsOptions {
 	onSent?: (row: OutboxEmail) => void;
 	/**
 	 * Told about every row the drain SKIPPED — completed with no send because the
-	 * order has no email recipient (an x402 gate buyer's `x402:0x…` reference,
-	 * ADR-0028 Decision 7) — after it is marked skipped. Never told about a row it
+	 * order has no email recipient (a `buyerRef` that is not an email address) — after it is marked skipped. Never told about a row it
 	 * sent, and a skipped row is never passed to `onSent` or counted as sent, so a
 	 * caller can say "no email was sent, and none will be" rather than "queued".
 	 */
@@ -658,8 +655,7 @@ async function refundedTotal(
 /**
  * Whether an order has an email recipient, decided from the order alone (no read):
  * a linked customer has one, and a guest has one only when its `buyerRef` is an
- * email address — an x402 gate buyer's `x402:0x…` wallet is not (ADR-0028
- * Decision 7). `false` is final: {@link resolveRecipient} will skip every row of
+ * email address — a wallet id such as `wallet:0x…` is not. `false` is final: {@link resolveRecipient} will skip every row of
  * the order. `true` is the drain's to confirm — a linked customer whose record is
  * gone falls back to the `buyerRef`. A caller that must report an email's fate
  * before any row is claimed (the admin console) asks this.
@@ -684,7 +680,7 @@ async function resolveRecipient(
 	}
 	// Guest order: the email captured at checkout (buyerRef), branded as it was
 	// accepted there and not re-normalized here. A buyerRef that is not an email
-	// address at all — an x402 gate buyer's `x402:0x…` payer wallet — is no recipient.
+	// address at all (a wallet id, say) is no recipient.
 	return isEmailAddress(order.buyerRef) ? (order.buyerRef as Email) : null;
 }
 

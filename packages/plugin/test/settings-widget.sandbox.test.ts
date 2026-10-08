@@ -105,7 +105,6 @@ const ALL_SUBMIT_IDS = [
 	"save-stripe-secret-key",
 	"save-stripe-webhook-secret",
 	"save-email-api-key",
-	"save-x402-facilitator-secret",
 	"save-webhook-edge-token",
 	"save-payment-settings",
 ];
@@ -555,7 +554,6 @@ describe("Settings admin form (workerd sandbox)", () => {
 				["whsec_", "NEVERRENDER0000000000"].join(""),
 			],
 			["save-email-api-key", "emailApiKey", "re_NEVER_RENDER_0000000000"],
-			["save-x402-facilitator-secret", "x402FacilitatorSecret", "qa-x402-NEVER-RENDER"],
 			["save-webhook-edge-token", "webhookEdgeToken", "qa-wh-token-NEVER-RENDER"],
 		] as const;
 
@@ -594,10 +592,10 @@ describe("Settings admin form (workerd sandbox)", () => {
 	});
 
 	/**
-	 * INC-C5 — the NON-SECRET in-process settings (`emailFrom`, `x402PayTo`,
-	 * `x402Accepts`). These are READ BACK, unlike the secrets in the same
+	 * INC-C5 — the NON-SECRET in-process settings (`emailFrom`,
+	 * `loginLinkUrl`). These are READ BACK, unlike the secrets in the same
 	 * group — that difference is the tier, and it is deliberate: an operator
-	 * must be able to see which wallet they are being paid at.
+	 * must be able to see which from-address their customers see.
 	 */
 	test("INC-C5: the non-secret in-process settings can be SET and are READ BACK (secrets are not)", async () => {
 		sandbox = await loadPluginInSandbox({ allowedHosts: [], storage: true });
@@ -608,17 +606,13 @@ describe("Settings admin form (workerd sandbox)", () => {
 		);
 		const freshForm = formFor(fresh, "save-payment-settings");
 		expect(freshForm, "expected a form submitting save-payment-settings").toBeDefined();
-		expect(field(freshForm, "x402PayTo")?.["initial_value"]).toBe("");
+		expect(field(freshForm, "emailFrom")?.["initial_value"]).toBe("");
 
-		const PAY_TO = "0x00000000000000000000000000000000000000a1";
+		const LOGIN_LINK = "https://boutique.example/account/verify";
 		await sandbox.invokeRoute("admin", {
 			type: "form_submit",
 			action_id: "save-payment-settings",
-			values: {
-				emailFrom: "orders@shop.otta.sh",
-				x402PayTo: PAY_TO,
-				x402Accepts: "eip155:8453, eip155:1",
-			},
+			values: { emailFrom: "orders@shop.otta.sh", loginLinkUrl: LOGIN_LINK },
 		});
 
 		const loaded = blocksOf(
@@ -627,23 +621,22 @@ describe("Settings admin form (workerd sandbox)", () => {
 		assertBlockContract(loaded, { screen: "settings", level: "list" });
 		const form = formFor(loaded, "save-payment-settings");
 		expect(field(form, "emailFrom")?.["initial_value"]).toBe("orders@shop.otta.sh");
-		expect(field(form, "x402PayTo")?.["initial_value"]).toBe(PAY_TO);
-		expect(field(form, "x402Accepts")?.["initial_value"]).toBe("eip155:8453, eip155:1");
+		expect(field(form, "loginLinkUrl")?.["initial_value"]).toBe(LOGIN_LINK);
 	});
 
 	test("INC-C5: a PARTIAL submit leaves untouched settings alone — absent is not empty", async () => {
 		// The save path only writes fields PRESENT as strings in the submit —
 		// an absent field is skipped entirely, never coerced to `""` and
 		// written unconditionally, because ONE submit that happens to omit
-		// `x402PayTo` (a partial dispatch, a field the operator never focused)
-		// must not silently blank the destination wallet.
+		// `loginLinkUrl` (a partial dispatch, a field the operator never focused)
+		// must not silently blank the sign-in page address.
 		sandbox = await loadPluginInSandbox({ allowedHosts: [], storage: true });
 
-		const PAY_TO = "0x00000000000000000000000000000000000000a1";
+		const LOGIN_LINK = "https://boutique.example/account/verify";
 		await sandbox.invokeRoute("admin", {
 			type: "form_submit",
 			action_id: "save-payment-settings",
-			values: { emailFrom: "orders@shop.otta.sh", x402PayTo: PAY_TO, x402Accepts: "eip155:8453" },
+			values: { emailFrom: "orders@shop.otta.sh", loginLinkUrl: LOGIN_LINK },
 		});
 
 		// A submit carrying ONLY the from-address.
@@ -658,37 +651,36 @@ describe("Settings admin form (workerd sandbox)", () => {
 		);
 		const form = formFor(after, "save-payment-settings");
 		expect(field(form, "emailFrom")?.["initial_value"]).toBe("hello@shop.otta.sh");
-		// The two the submit never mentioned are UNCHANGED, not blanked.
-		expect(field(form, "x402PayTo")?.["initial_value"]).toBe(PAY_TO);
-		expect(field(form, "x402Accepts")?.["initial_value"]).toBe("eip155:8453");
+		// The one the submit never mentioned is UNCHANGED, not blanked.
+		expect(field(form, "loginLinkUrl")?.["initial_value"]).toBe(LOGIN_LINK);
 
 		// A PRESENT empty string is still an instruction, and still honoured:
 		// this is the operator clearing the box, which must remain possible.
 		await sandbox.invokeRoute("admin", {
 			type: "form_submit",
 			action_id: "save-payment-settings",
-			values: { emailFrom: "hello@shop.otta.sh", x402PayTo: "", x402Accepts: "" },
+			values: { emailFrom: "hello@shop.otta.sh", loginLinkUrl: "" },
 		});
 		const cleared = blocksOf(
 			await sandbox.invokeRoute("admin", { type: "page_load", page: "/settings" }),
 		);
-		expect(field(formFor(cleared, "save-payment-settings"), "x402PayTo")?.["initial_value"]).toBe(
-			"",
-		);
+		expect(
+			field(formFor(cleared, "save-payment-settings"), "loginLinkUrl")?.["initial_value"],
+		).toBe("");
 	});
 
-	test("INC-C5: a payTo that is not a wallet address is REFUSED and nothing is saved", async () => {
+	test("INC-C5: a sign-in page address that is not a URL is REFUSED and nothing is saved", async () => {
 		sandbox = await loadPluginInSandbox({ allowedHosts: [], storage: true });
 
 		const refused = await sandbox.invokeRoute("admin", {
 			type: "form_submit",
 			action_id: "save-payment-settings",
-			values: { emailFrom: "orders@shop.otta.sh", x402PayTo: "my-wallet", x402Accepts: "" },
+			values: { emailFrom: "orders@shop.otta.sh", loginLinkUrl: "/account/verify" },
 		});
 		const blocks = blocksOf(refused);
 		// The whole screen comes back (S-5a: never a terminal receipt with no form).
 		expectAllRealFormsPresent(blocks);
-		expect(JSON.stringify(refused)).toContain("not a wallet address");
+		expect(JSON.stringify(refused)).toContain("sign-in page address");
 
 		// ATOMIC: the valid sibling field was not saved either, so the operator
 		// is never left guessing which half of their submit landed.
@@ -697,13 +689,13 @@ describe("Settings admin form (workerd sandbox)", () => {
 		);
 		const form = formFor(after, "save-payment-settings");
 		expect(field(form, "emailFrom")?.["initial_value"]).toBe("");
-		expect(field(form, "x402PayTo")?.["initial_value"]).toBe("");
+		expect(field(form, "loginLinkUrl")?.["initial_value"]).toBe("");
 	});
 
 	// Issue #306: the sign-in link page. Setting and validation adapted from #325
 	// by @stephanedemotte. The emailed link points here and ONLY here, so a
 	// relative path, a non-http(s) scheme or a URL carrying credentials is
-	// refused whole, like a bad payTo.
+	// refused whole.
 	test("#306: the sign-in link URL is SET, READ BACK, and validated on save", async () => {
 		sandbox = await loadPluginInSandbox({ allowedHosts: [], storage: true });
 
@@ -747,7 +739,7 @@ describe("Settings admin form (workerd sandbox)", () => {
 		expect(field(after, "loginLinkUrl")?.["initial_value"]).toBe(
 			"https://boutique.example/account/verify",
 		);
-		// ATOMIC, like payTo: the valid sibling in a refused submit did not land.
+		// ATOMIC: the valid sibling in a refused submit did not land.
 		expect(field(after, "emailFrom")?.["initial_value"]).toBe("");
 	});
 
@@ -928,8 +920,8 @@ describe("Settings admin form (workerd sandbox)", () => {
 		expect(labels.get("settings:store")).toBe("Store — no display name");
 		expect(labels.get("settings:checkout")).toBe("Checkout & holds — 15 min hold · low stock at 5");
 		expect(labels.get("settings:payments")).toBe(
-			// U-8: card checkout and email, stated — the optional x402 and edge
-			// credentials no longer read as missing pieces.
+			// U-8: card checkout and email, stated — the optional edge
+			// credential no longer reads as missing pieces.
 			"Payments & email — no Stripe key · no webhook · no email",
 		);
 		for (const label of labels.values()) expect(label.length).toBeLessThanOrEqual(60);

@@ -12,8 +12,8 @@
  *  - `queued`       — it did not (the provider failed, or the wait ran out); the
  *                     cron retries it automatically;
  *  - `unconfigured` — this bundle has no email provider, so nothing will be sent;
- *  - `no-recipient` — the order has no email address (an x402 buyer's `x402:0x…`
- *                     reference, ADR-0028 Decision 7), so nothing was or will be sent;
+ *  - `no-recipient` — the order has no email address (its `buyerRef`
+ *                     is a wallet id, say), so nothing was or will be sent;
  *  - absent         — the write enqueued no email (a replay, or Mark refunded).
  *
  * Driven over a REAL document store through `InProcessAdminOrdersClient`, with the
@@ -46,10 +46,10 @@ import {
 
 const USD = toCurrency("USD");
 const FAR = "2099-01-01T00:00:00.000Z";
-/** An x402 gate buyer (ADR-0028 Decision 7): a wallet reference, no email address. */
-const X402_BUYER = {
-	buyerRef: "x402:0x1111111111111111111111111111111111111111",
-	paymentMethod: "x402",
+/** A buyer whose reference is a wallet id, not an email address. */
+const WALLET_BUYER = {
+	buyerRef: "wallet:0x1111111111111111111111111111111111111111",
+	paymentMethod: "stripe",
 } as const;
 
 let harness: InProcessCommerceHarness;
@@ -68,7 +68,7 @@ afterAll(async () => {
  *  confirmation, exactly as a settlement does. */
 async function seedPaid(
 	id: string,
-	buyer: { buyerRef: string; paymentMethod: "stripe" | "x402" } = {
+	buyer: { buyerRef: string; paymentMethod: "stripe" } = {
 		buyerRef: "buyer@example.com",
 		paymentMethod: "stripe",
 	},
@@ -472,8 +472,8 @@ describe("the console is told the truth when the email did not go", () => {
 		expect(sender.sends).toHaveLength(0);
 	});
 
-	test("an order with no email address (an x402 buyer) reports no-recipient — never queued — and sends nothing", async () => {
-		const id = await seedPaid("ord-x402", X402_BUYER);
+	test("an order with no email address (a wallet-id buyer) reports no-recipient — never queued — and sends nothing", async () => {
+		const id = await seedPaid("ord-wallet", WALLET_BUYER);
 		const sender = new FakeEmailSender();
 		const orders = adminClient({ emailSender: sender });
 		expect(await orders.transitionOrder(id, "processing", { idempotencyKey: "k" })).toEqual({
@@ -497,7 +497,7 @@ describe("the console is told the truth when the email did not go", () => {
 	});
 
 	test("no-recipient is answered before the time budget and the provider check — never queued or unconfigured", async () => {
-		const spent = await seedPaid("ord-x402-late", X402_BUYER);
+		const spent = await seedPaid("ord-wallet-late", WALLET_BUYER);
 		let calls = 0;
 		const late = new InProcessAdminOrdersClient(harness.ctx, {
 			gateways,
@@ -515,7 +515,7 @@ describe("the console is told the truth when the email did not go", () => {
 		// spy may carry an earlier case's calls, so only this order's are checked.)
 		expect(warn.mock.calls.flat().join(" ")).not.toContain(spent);
 
-		const bare = await seedPaid("ord-x402-unconfigured", X402_BUYER);
+		const bare = await seedPaid("ord-wallet-unconfigured", WALLET_BUYER);
 		const unconfigured = adminClient({ egress: {} });
 		expect(await unconfigured.transitionOrder(bare, "processing", { idempotencyKey: "k" })).toEqual(
 			{ ok: true, transitioned: true, email: "no-recipient" },
@@ -578,12 +578,12 @@ describe("the console is told the truth when the email did not go", () => {
 		errors.mockRestore();
 
 		// A write that holds its order makes no read for the check at all.
-		const x402 = await seedPaid("ord-busy-x402", X402_BUYER);
+		const wallet = await seedPaid("ord-busy-wallet", WALLET_BUYER);
 		const moves = new InProcessAdminOrdersClient(ordersReadFailsAfterWrite(), {
 			gateways,
 			orderEmails: { emailSender: new FakeEmailSender() },
 		});
-		expect(await moves.transitionOrder(x402, "processing", { idempotencyKey: "k" })).toEqual({
+		expect(await moves.transitionOrder(wallet, "processing", { idempotencyKey: "k" })).toEqual({
 			ok: true,
 			transitioned: true,
 			email: "no-recipient",

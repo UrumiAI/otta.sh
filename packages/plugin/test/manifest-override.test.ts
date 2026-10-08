@@ -6,7 +6,7 @@
  * INC-D3a retired the http/in-process mode branch: there is ONE list now, the
  * commerce service is gone, and `resolveAllowedHosts` no longer takes a mode
  * or a service base URL — it is always Stripe's API host plus whichever of the
- * deployment-supplied email/facilitator URLs parse to a hostname. `ALLOWED_HOSTS`
+ * deployment-supplied email URL parses to a hostname. `ALLOWED_HOSTS`
  * is that in-process list, not the (now-deleted) service host.
  */
 import { describe, expect, test } from "vitest";
@@ -30,15 +30,13 @@ const sorted = (hosts: readonly string[]): string[] => [...hosts].toSorted();
 
 describe("resolveAllowedHosts — the egress set, EXACTLY", () => {
 	const EMAIL = "https://api.email.example.com/v1/send";
-	const FACILITATOR = "https://facilitator.example.com";
 
 	test("with nothing configured, EXACTLY the Stripe API host and SMTP2GO's send hosts", () => {
 		// Stripe is the one host the in-process plugin always talks to itself
 		// (`paymentIntents.create` / refunds). SMTP2GO's hosts are granted too,
 		// because the store chooses SMTP2GO at runtime and kv cannot widen the
-		// gate. The Resend-shaped email URL and the facilitator are
-		// deployment-supplied, so an unconfigured deployment gets no egress for
-		// them — absent, never a wildcard.
+		// gate. The Resend-shaped email URL is deployment-supplied, so an
+		// unconfigured deployment gets no egress for it — absent, never a wildcard.
 		expect(resolveAllowedHosts()).toEqual(BASELINE);
 		expect(resolveAllowedHosts({})).toEqual(BASELINE);
 	});
@@ -54,11 +52,9 @@ describe("resolveAllowedHosts — the egress set, EXACTLY", () => {
 		});
 	});
 
-	test("EXACTLY Stripe + email + facilitator once both are configured", () => {
-		const hosts = resolveAllowedHosts({ emailApiUrl: EMAIL, facilitatorUrl: FACILITATOR });
-		expect(sorted(hosts)).toEqual(
-			sorted([...BASELINE, "api.email.example.com", "facilitator.example.com"]),
-		);
+	test("EXACTLY Stripe + SMTP2GO + the email host once the email URL is configured", () => {
+		const hosts = resolveAllowedHosts({ emailApiUrl: EMAIL });
+		expect(sorted(hosts)).toEqual(sorted([...BASELINE, "api.email.example.com"]));
 	});
 
 	test("STRIPE_API_HOST is the API host, never the browser-side Stripe.js host", () => {
@@ -82,18 +78,13 @@ describe("resolveAllowedHosts — the egress set, EXACTLY", () => {
 	});
 
 	test("duplicate hosts collapse — the list is a SET, not a bag", () => {
-		expect(
-			resolveAllowedHosts({
-				emailApiUrl: "https://api.stripe.com/mail",
-				facilitatorUrl: "https://api.stripe.com/x402",
-			}),
-		).toEqual(BASELINE);
+		expect(resolveAllowedHosts({ emailApiUrl: "https://api.stripe.com/mail" })).toEqual(BASELINE);
 	});
 });
 
 describe("ALLOWED_HOSTS / IN_PROCESS_EGRESS_URLS — the resolved constants for THIS bundle", () => {
 	test("this un-defined build (no bundler define) resolves to the baseline allowlist", () => {
-		// vitest bundles without `__OTTA_EMAIL_API_URL__` / `__OTTA_X402_FACILITATOR_URL__`,
+		// vitest bundles without `__OTTA_EMAIL_API_URL__`,
 		// so the module-level constants must reflect an unconfigured deployment.
 		expect(ALLOWED_HOSTS).toEqual(BASELINE);
 		expect(IN_PROCESS_EGRESS_URLS).toEqual({});
@@ -106,13 +97,9 @@ describe("ALLOWED_HOSTS / IN_PROCESS_EGRESS_URLS — the resolved constants for 
 
 describe("resolveInProcessEgress — the CONSUMERS see the same URLs the gate grants", () => {
 	const EMAIL = "https://api.email.example.com/v1/send";
-	const FACILITATOR = "https://facilitator.example.com";
 
-	test("passes baked URLs through unchanged when both parse", () => {
-		expect(resolveInProcessEgress({ emailApiUrl: EMAIL, facilitatorUrl: FACILITATOR })).toEqual({
-			emailApiUrl: EMAIL,
-			facilitatorUrl: FACILITATOR,
-		});
+	test("passes a baked URL through unchanged when it parses", () => {
+		expect(resolveInProcessEgress({ emailApiUrl: EMAIL })).toEqual({ emailApiUrl: EMAIL });
 	});
 
 	test("an UNPARSEABLE define grants no host, so it resolves to no egress either", () => {
@@ -123,13 +110,9 @@ describe("resolveInProcessEgress — the CONSUMERS see the same URLs the gate gr
 		expect(
 			resolveInProcessEgress({
 				emailApiUrl: "api.email.example.com", // no scheme ⇒ not a URL
-				facilitatorUrl: "not a url at all",
 			}),
 		).toEqual({});
-		// And the valid sibling still survives on its own.
-		expect(resolveInProcessEgress({ emailApiUrl: "", facilitatorUrl: FACILITATOR })).toEqual({
-			facilitatorUrl: FACILITATOR,
-		});
+		expect(resolveInProcessEgress({ emailApiUrl: "" })).toEqual({});
 	});
 
 	test("every host the resolved egress names is a host the gate grants", () => {
@@ -138,17 +121,16 @@ describe("resolveInProcessEgress — the CONSUMERS see the same URLs the gate gr
 		// ALLOWED_HOSTS. One resolver, so the gate and every caller cannot
 		// disagree by construction.
 		const bakes = [
-			{ emailApiUrl: EMAIL, facilitatorUrl: FACILITATOR },
-			{ emailApiUrl: "api.email.example.com", facilitatorUrl: "not a url at all" },
-			{ emailApiUrl: "", facilitatorUrl: FACILITATOR },
+			{ emailApiUrl: EMAIL },
+			{ emailApiUrl: "api.email.example.com" },
+			{ emailApiUrl: "" },
 		];
 		for (const baked of bakes) {
 			const granted = resolveAllowedHosts(baked);
 			const resolved = resolveInProcessEgress(baked);
-			for (const url of [resolved.emailApiUrl, resolved.facilitatorUrl]) {
-				if (url === undefined) continue;
-				expect(granted).toContain(new URL(url).hostname);
-			}
+			const url = resolved.emailApiUrl;
+			if (url === undefined) continue;
+			expect(granted).toContain(new URL(url).hostname);
 		}
 	});
 });

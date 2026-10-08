@@ -247,8 +247,7 @@ export class InProcessAdminOrdersClient implements AdminOrdersSurface {
 	 * the store does, within its bounded wait. The write has already committed by the
 	 * time this runs.
 	 *
-	 * An order with NO email recipient (an x402 buyer's `x402:0x…` reference, ADR-0028
-	 * Decision 7) is answered `no-recipient` first — before the provider check, the
+	 * An order with NO email recipient (its `buyerRef` is not an email address) is answered `no-recipient` first — before the provider check, the
 	 * time budget and the claim — because nothing about it depends on them: no email
 	 * was sent and none ever will be. Asked any later, a spent budget or a missing
 	 * provider would report it `queued` or `unconfigured`. Its rows are left to the

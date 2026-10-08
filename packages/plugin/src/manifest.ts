@@ -64,22 +64,18 @@ export const SMTP2GO_API_HOSTS = {
 } as const;
 
 /**
- * The deployment-supplied halves of the in-process allowlist.
+ * The deployment-supplied part of the in-process allowlist.
  *
- * Both are URLs, not hostnames, because that is the shape the values already
- * have: the service derives its email host from `EMAIL_API_URL`
- * (`service/src/index.ts:74`). Neither has a sensible default — there is no
- * canonical email provider, and no default x402 facilitator (ADR-0028 Decision 8:
- * the deployer picks it) — so an absent value grants no host rather than
+ * A URL, not a hostname, because that is the shape the value already has: the
+ * service derives its email host from `EMAIL_API_URL`
+ * (`service/src/index.ts:74`). It has no sensible default — there is no
+ * canonical email provider — so an absent value grants no host rather than
  * guessing one.
  */
 export interface InProcessEgressUrls {
 	/** Where `HttpEmailSender` posts; the in-process equivalent of
 	 *  `EMAIL_API_URL`. */
 	emailApiUrl?: string | undefined;
-	/** The x402 facilitator's URL. Nothing calls it between ADR-0028 increments 2
-	 *  and 6; increment 6's `/verify` and `/settle` client uses it as a base URL. */
-	facilitatorUrl?: string | undefined;
 }
 
 /** A URL's hostname, or `undefined` for anything unparseable — including an
@@ -105,7 +101,7 @@ function hostnameOf(url: string | undefined): string | undefined {
  *
  * There is ONE list now (INC-D3a): the commerce service is gone, and the calls
  * it used to make are the plugin's own — Stripe's API, the email provider's
- * API, the x402 facilitator. No service host appears here at all; that is the
+ * API. No service host appears here at all; that is the
  * fold-in, visible in one line. The constant part is Stripe's API host and
  * SMTP2GO's four send hosts ({@link SMTP2GO_API_HOSTS}); the rest comes from
  * the deployment's egress URLs.
@@ -115,15 +111,13 @@ function hostnameOf(url: string | undefined): string | undefined {
  */
 export function resolveAllowedHosts(egress: InProcessEgressUrls = {}): string[] {
 	const hosts = new Set<string>([STRIPE_API_HOST, ...Object.values(SMTP2GO_API_HOSTS)]);
-	for (const url of [egress.emailApiUrl, egress.facilitatorUrl]) {
-		const host = hostnameOf(url);
-		if (host !== undefined) hosts.add(host);
-	}
+	const emailHost = hostnameOf(egress.emailApiUrl);
+	if (emailHost !== undefined) hosts.add(emailHost);
 	return [...hosts];
 }
 
 /**
- * Compile-time override hooks for the two deployment-supplied egress URLs: a
+ * Compile-time override hook for the deployment-supplied egress URL: a
  * Vite `define` a deploying site bakes into the plugin bundle, behind a `typeof`
  * guard so the undeclared global is safe in the plain tsdown dist, this
  * package's vitest run and the sandbox harness.
@@ -134,15 +128,12 @@ export function resolveAllowedHosts(egress: InProcessEgressUrls = {}): string[] 
  * and unroutable-around.
  */
 declare const __OTTA_EMAIL_API_URL__: string | undefined;
-declare const __OTTA_X402_FACILITATOR_URL__: string | undefined;
 
 /** The raw defines, before resolution. Not exported: every consumer must see
  *  {@link IN_PROCESS_EGRESS_URLS}, which agrees with `ALLOWED_HOSTS` by
  *  construction. */
 const BAKED_EGRESS_URLS: InProcessEgressUrls = {
 	emailApiUrl: typeof __OTTA_EMAIL_API_URL__ === "string" ? __OTTA_EMAIL_API_URL__ : undefined,
-	facilitatorUrl:
-		typeof __OTTA_X402_FACILITATOR_URL__ === "string" ? __OTTA_X402_FACILITATOR_URL__ : undefined,
 };
 
 /**
@@ -167,11 +158,7 @@ export function resolveInProcessEgress(egress: InProcessEgressUrls = {}): InProc
 	const grantable = (url: string | undefined): string | undefined =>
 		hostnameOf(url) === undefined ? undefined : url;
 	const emailApiUrl = grantable(egress.emailApiUrl);
-	const facilitatorUrl = grantable(egress.facilitatorUrl);
-	return {
-		...(emailApiUrl !== undefined ? { emailApiUrl } : {}),
-		...(facilitatorUrl !== undefined ? { facilitatorUrl } : {}),
-	};
+	return emailApiUrl !== undefined ? { emailApiUrl } : {};
 }
 
 /** The in-process egress URLs this bundle may actually use. Absent or

@@ -102,10 +102,10 @@ describe("sandbox-clean guard: the checkout feature widens NOTHING (ADR-0012)", 
 	// Stripe's SERVER-SIDE API (`STRIPE_API_HOST`, always granted — it is a
 	// constant, not a deployment-supplied define) and SMTP2GO's four send-API
 	// hosts (`SMTP2GO_API_HOSTS`, always granted because a store picks SMTP2GO in
-	// Settings, which cannot widen a build-time list — ADR-0005), plus whatever
-	// email/x402 hosts a deployment's build-time defines resolve to. Neither
-	// define is set in this vitest run, so the allowlist is exactly those five.
-	test("ALLOWED_HOSTS holds exactly Stripe's API host and SMTP2GO's four send hosts in this build (no email/x402 define is set)", () => {
+	// Settings, which cannot widen a build-time list — ADR-0005), plus
+	// the email host a deployment's build-time define resolves to. It is not set
+	// in this vitest run, so the allowlist is exactly those five.
+	test("ALLOWED_HOSTS holds exactly Stripe's API host and SMTP2GO's four send hosts in this build (no email define is set)", () => {
 		expect(ALLOWED_HOSTS).toEqual([
 			STRIPE_API_HOST,
 			"api.smtp2go.com",

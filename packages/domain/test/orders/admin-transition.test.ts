@@ -18,7 +18,7 @@ const CAPTURED = { payments: [{ amount: 1000, status: "succeeded" }], refunds: [
 
 describe("adminNextStates", () => {
 	test("a pending order is offered neither paid nor a bare cancelled", () => {
-		for (const paymentMethod of ["stripe", "x402", null] as const) {
+		for (const paymentMethod of ["stripe", null] as const) {
 			expect(
 				adminNextStates({ state: "pending", paymentMethod, reconciliationFlag: null }, NOTHING),
 			).toEqual(["expired"]);
@@ -50,7 +50,6 @@ describe("adminNextStates", () => {
 describe("manualPaymentAllowed", () => {
 	test("fails closed: no method is declared offline, and no method on file is not one", () => {
 		expect(manualPaymentAllowed("stripe")).toBe(false);
-		expect(manualPaymentAllowed("x402")).toBe(false);
 		expect(manualPaymentAllowed(null)).toBe(false);
 	});
 });
@@ -130,9 +129,5 @@ describe("Mark refunded is offered only where no money is left to return through
 		expect(
 			markRefundedAllowed({ ...stripePaid, reconciliationFlag: "amount mismatch" }, CAPTURED),
 		).toBe(false);
-	});
-
-	test("a method that returns money outside Otta (x402) keeps Mark refunded", () => {
-		expect(markRefundedAllowed({ ...stripePaid, paymentMethod: "x402" }, CAPTURED)).toBe(true);
 	});
 });

@@ -5,7 +5,7 @@
  *  - the Otta plugin descriptor is standard-format, entrypoint
  *    `@otta-sh/plugin/plugin`, capabilities EXACTLY the manifest's, and its
  *    allowedHosts is exactly the in-process egress list — Stripe's API host
- *    plus whichever of the email/facilitator hosts the deployment supplied
+ *    plus the email host if the deployment supplied one
  *    (the egress gate that holds even in trusted mode — ADR-0006);
  *  - NO `sandboxed:` / `sandboxRunner:` keys (a LOADER-consuming sandbox
  *    runner is the Workers-Paid cost pivot this deployment avoids);
@@ -18,8 +18,8 @@
  *    layer covering only /_emdash/api/* routes, so the real storefront
  *    CSRF pin is origin-middleware.test.ts (see ADR-0006);
  *  - `vite.ssr.noExternal` contains "@otta-sh/plugin" UNCONDITIONALLY: if the
- *    plugin is externalized the `__OTTA_EMAIL_API_URL__` /
- *    `__OTTA_X402_FACILITATOR_URL__` defines silently never apply and every
+ *    plugin is externalized the `__OTTA_EMAIL_API_URL__`
+ *    define silently never applies and every
  *    ctx.http call fails against allowedHosts at runtime. It also contains
  *    "@otta-sh/admin-react", whose workspace exports are TS/TSX source;
  *  - and, since INC-19, ADR-0014's SECOND descriptor `otta-console` — its own
@@ -75,7 +75,7 @@ describe("ottaPluginDescriptor", () => {
 
 	test("allowedHosts is exactly the in-process egress list (the baseline alone, unconfigured)", () => {
 		// INC-D3a: there is no commerce service and no service host. With no
-		// email/facilitator URL supplied the list is the Stripe API host and
+		// email URL supplied the list is the Stripe API host and
 		// SMTP2GO's send hosts — see the exact-set block below for the configured
 		// cases.
 		expect(descriptor.allowedHosts).toEqual(BASELINE_HOSTS);
@@ -264,9 +264,9 @@ describe("ottaPluginDescriptor storage, EXACTLY (INC-D1)", () => {
  * ADR-0006 exists to keep minimal. Every assertion below therefore compares the
  * whole sorted array — never `toContain`, which would pass for either mistake.
  *
- * The email and facilitator hosts are DEPLOYMENT-SUPPLIED, not constants: there
- * is no canonical email provider and no default facilitator, so the descriptor
- * takes them as input and grants NOTHING when they are absent — see the
+ * The email host is DEPLOYMENT-SUPPLIED, not a constant: there
+ * is no canonical email provider, so the descriptor
+ * takes it as input and grants NOTHING when it is absent — see the
  * fail-closed cases. Stripe's API host is the one constant.
  */
 /** Order-insensitive EXACT comparison: `toEqual` on both sides sorted catches a
@@ -275,15 +275,10 @@ const sorted = (hosts: readonly string[] | undefined): string[] => [...(hosts ??
 
 describe("ottaPluginDescriptor allowedHosts, EXACTLY", () => {
 	const EMAIL = "https://api.email.example.com/v1/send";
-	const FACILITATOR = "https://facilitator.example.com";
 
-	test("EXACTLY Stripe + email + facilitator when both are supplied", () => {
-		const hosts = ottaPluginDescriptor({
-			egress: { emailApiUrl: EMAIL, facilitatorUrl: FACILITATOR },
-		}).allowedHosts;
-		expect(sorted(hosts)).toEqual(
-			sorted([...BASELINE_HOSTS, "api.email.example.com", "facilitator.example.com"]),
-		);
+	test("EXACTLY Stripe + SMTP2GO + email when the email URL is supplied", () => {
+		const hosts = ottaPluginDescriptor({ egress: { emailApiUrl: EMAIL } }).allowedHosts;
+		expect(sorted(hosts)).toEqual(sorted([...BASELINE_HOSTS, "api.email.example.com"]));
 	});
 
 	test("with nothing configured: EXACTLY the Stripe API host and SMTP2GO's send hosts", () => {
@@ -291,7 +286,7 @@ describe("ottaPluginDescriptor allowedHosts, EXACTLY", () => {
 	});
 
 	test("FAIL-CLOSED: an unparseable egress URL grants nothing and never throws", () => {
-		const options = { egress: { emailApiUrl: "not a url", facilitatorUrl: "" } };
+		const options = { egress: { emailApiUrl: "not a url" } };
 		expect(() => ottaPluginDescriptor(options)).not.toThrow();
 		expect(ottaPluginDescriptor(options).allowedHosts).toEqual(BASELINE_HOSTS);
 	});
@@ -303,8 +298,7 @@ describe("ottaPluginDescriptor allowedHosts, EXACTLY", () => {
 		// than the http arm merely going unused.
 		for (const hosts of [
 			ottaPluginDescriptor().allowedHosts,
-			ottaPluginDescriptor({ egress: { emailApiUrl: EMAIL, facilitatorUrl: FACILITATOR } })
-				.allowedHosts,
+			ottaPluginDescriptor({ egress: { emailApiUrl: EMAIL } }).allowedHosts,
 		]) {
 			expect(hosts).not.toContain("commerce.otta.internal");
 			expect(hosts).not.toContain("svc.example.com");
@@ -401,30 +395,27 @@ describe("buildEmdashOptions", () => {
 	});
 
 	/**
-	 * INC-D1 review round 3, B1 — the egress URLs reach the DESCRIPTOR, not only the
+	 * INC-D1 review round 3, B1 — the egress URL reaches the DESCRIPTOR, not only the
 	 * bundle's defines.
 	 *
-	 * `manifest.ts` resolves `__OTTA_EMAIL_API_URL__` / `__OTTA_X402_FACILITATOR_URL__`
-	 * from Vite defines to decide whether the bundle builds an `EmailSender` and a
-	 * facilitator client at all. `allowedHosts` decides whether those calls are
-	 * permitted. Before this parameter existed the second half was unreachable: the
-	 * descriptor structurally could not allowlist either host, so the first build to
-	 * set an egress define would ship a sender aimed at a host the gate refuses —
+	 * `manifest.ts` resolves `__OTTA_EMAIL_API_URL__`
+	 * from a Vite define to decide whether the bundle builds an `EmailSender` at
+	 * all. `allowedHosts` decides whether that call is permitted. Before this
+	 * parameter existed the second half was unreachable: the descriptor
+	 * structurally could not allowlist the host, so the first build to
+	 * set the egress define would ship a sender aimed at a host the gate refuses —
 	 * every send failing, rows rescheduling to `failed`, and the sweep leg reporting
 	 * `count: 0` instead of the honest `skipped`.
 	 */
-	test("threads the in-process egress URLs into the registered descriptor's allowlist", () => {
+	test("threads the in-process egress URL into the registered descriptor's allowlist", () => {
 		const hosts = buildEmdashOptions({
 			emailApiUrl: "https://api.email.example.com/v1/send",
-			facilitatorUrl: "https://facilitator.example.com",
 		}).plugins[0]?.allowedHosts;
-		expect(sorted(hosts)).toEqual(
-			sorted([...BASELINE_HOSTS, "api.email.example.com", "facilitator.example.com"]),
-		);
+		expect(sorted(hosts)).toEqual(sorted([...BASELINE_HOSTS, "api.email.example.com"]));
 	});
 
 	test("with no egress configured the allowlist is EXACTLY the baseline — fail-closed", () => {
-		// Staging today supplies neither URL, so this is the list it actually ships.
+		// Staging today supplies no URL, so this is the list it actually ships.
 		expect(buildEmdashOptions().plugins[0]?.allowedHosts).toEqual(BASELINE_HOSTS);
 	});
 
@@ -795,16 +786,16 @@ describe("astro.config", () => {
 	);
 
 	test(
-		"the two in-process egress URLs ride build-time defines, ALWAYS as strings",
+		"the in-process egress URL rides a build-time define, ALWAYS as a string",
 		async () => {
 			// INC-D3a retired the commerce-mode define along with the transport it
-			// selected; these two are what is left of the build-time surface the
-			// plugin bundle reads. Both must be PRESENT: an absent define leaves the
+			// selected; this one is what is left of the build-time surface the
+			// plugin bundle reads. It must be PRESENT: an absent define leaves the
 			// identifier undeclared in the worker bundle, and `""` is what both the
 			// `typeof` guard and `hostnameOf` read as "this provider is unconfigured".
 			const config = (await import("../astro.config.js")).default;
 			const define = config.vite?.define as Record<string, string>;
-			for (const name of ["__OTTA_EMAIL_API_URL__", "__OTTA_X402_FACILITATOR_URL__"]) {
+			for (const name of ["__OTTA_EMAIL_API_URL__"]) {
 				expect(Object.keys(define)).toContain(name);
 				expect(typeof JSON.parse(define[name] ?? "null")).toBe("string");
 			}
@@ -826,7 +817,7 @@ describe("astro.config", () => {
 	);
 
 	test(
-		"the baked egress URLs and the REGISTERED descriptor cannot disagree",
+		"the baked egress URL and the REGISTERED descriptor cannot disagree",
 		async () => {
 			// THE TIE IS PINNED IN THE SOURCE, NOT BY REBUILDING THE VALUE (review
 			// round 3, A3). `config.integrations` cannot answer this: `emdash()`
@@ -845,8 +836,8 @@ describe("astro.config", () => {
 				"string",
 			);
 			const args = (registration?.[1] ?? "").split(",").map((a) => a.trim());
-			// Argument 1 is the egress const, and it must be the same one the two
-			// egress defines are baked from (review round 3, B1). An omitted argument
+			// Argument 1 is the egress const, and it must be the same one the
+			// egress define is baked from (review round 3, B1). An omitted argument
 			// fails here as `undefined`.
 			const egressDefine =
 				/__OTTA_EMAIL_API_URL__:\s*JSON\.stringify\(([A-Za-z_$][\w$]*)\.emailApiUrl/.exec(source);
@@ -858,22 +849,6 @@ describe("astro.config", () => {
 				args[0],
 				"buildEmdashOptions must be passed the same egress const the defines bake",
 			).toBe(egressDefine?.[1]);
-			// BOTH egress defines, not just the email one: a future edit that split the
-			// facilitator URL onto a second const would leave its host un-allowlisted
-			// while this test stayed green (review round 4).
-			const facilitatorDefine =
-				/__OTTA_X402_FACILITATOR_URL__:\s*JSON\.stringify\(([A-Za-z_$][\w$]*)\.facilitatorUrl/.exec(
-					source,
-				);
-			expect(
-				facilitatorDefine?.[1],
-				"__OTTA_X402_FACILITATOR_URL__ must be baked from a named const",
-			).toBeTypeOf("string");
-			expect(
-				facilitatorDefine?.[1],
-				"both egress defines must come from the SAME const buildEmdashOptions is passed",
-			).toBe(args[0]);
-
 			// And the registered descriptor is the single in-process shape: storage
 			// declared, Stripe allowlisted, no service host anywhere.
 			const registered = buildEmdashOptions().plugins[0];

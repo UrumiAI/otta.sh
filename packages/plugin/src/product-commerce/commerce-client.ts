@@ -596,7 +596,7 @@ export interface ShippingAddressWire {
 
 export interface CheckoutRequestWire {
 	cartId: string;
-	paymentMethod: "stripe" | "x402";
+	paymentMethod: "stripe";
 	/** Email/session claim token (ADR-0004). Stored VERBATIM by the service —
 	 *  the site trims but never lowercases it. */
 	buyerRef: string;
@@ -612,7 +612,6 @@ export interface CheckoutRequestWire {
  *  plugin never inspects a client secret beyond handing it to the theme. */
 export type ClientActionWire =
 	| { kind: "stripe_client_secret"; clientSecret: string }
-	| { kind: "x402_challenge"; accepts: string[]; price: number; payTo: string }
 	| { kind: "none" };
 
 export interface PaymentIntentWire {

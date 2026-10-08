@@ -34,7 +34,7 @@
  *
  * TWIN of `@otta-sh/plugin`'s `src/email/send-deadline.ts` (the package graph
  * keeps them apart: this package cannot import the plugin, and the domain stays
- * IO-free; `@otta-sh/payments-x402`'s facilitator race is a third variant). Keep
+ * IO-free). Keep
  * them in step: a fix to one is very likely owed to the other.
  */
 

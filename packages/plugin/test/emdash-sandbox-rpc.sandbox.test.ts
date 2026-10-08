@@ -1,6 +1,6 @@
 /**
  * EmDash's REAL sandbox runner path, in real `workerd`: does each piece of the
- * plugin's egress — Stripe, x402, the email senders — reach the host through
+ * plugin's egress — Stripe and the email senders — reach the host through
  * `ctx.http.fetch` when the plugin runs SANDBOXED?
  *
  * In EmDash's sandboxed mode (`@emdash-cms/cloudflare` 1.0.1 `src/sandbox/runner.ts`)
@@ -26,7 +26,7 @@
  *   rest of EmDash's bridge needs D1; only `httpFetch` is under test, and the
  *   probe gives Stripe its fake secrets through an in-isolate kv.)
  * - the host's only outbound is a recording stub, so nothing reaches a real
- *   Stripe, facilitator or email provider. Every secret is a fake.
+ *   Stripe or email provider. Every secret is a fake.
  *
  * MEASURED (workerd 1.20260710, EmDash 0.38): the RPC REFUSED an `AbortSignal`
  * in `init` — `DataCloneError: AbortSignal serialization is not enabled.` — so
@@ -65,22 +65,42 @@ import {
 	waitUntilReady,
 	WORKERD_BIN,
 } from "./sandbox/harness.js";
-import {
-	EMAIL_HOST,
-	PROBE_HOST,
-	SMTP2GO_HOST,
-	STRIPE_HOST,
-	X402_HOST,
-} from "./sandbox/emdash-rpc-probe.js";
+import { EMAIL_HOST, PROBE_HOST, SMTP2GO_HOST, STRIPE_HOST } from "./sandbox/emdash-rpc-probe.js";
 
-/** `@otta-sh/payments-x402`'s `SPEC_PAYER` (the x402 spec's example payer). */
-const SPEC_PAYER = "0x857b06519E91e3A54538791bDbb0E22373e36b66";
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 /** The probe plugin's `allowedHosts`: every host its routes reach. */
-const ALLOWED = [PROBE_HOST, STRIPE_HOST, X402_HOST, EMAIL_HOST, SMTP2GO_HOST];
+const ALLOWED = [PROBE_HOST, STRIPE_HOST, EMAIL_HOST, SMTP2GO_HOST];
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 /** The runner's own compatibility date for a loaded plugin (`src/sandbox/runner.ts`, 1.0.1). */
 const RUNNER_COMPATIBILITY_DATE = "2026-04-01";
+
+/** What each stubbed host answers, by `METHOD host/path`. */
+function answerNow(where: string): { status: number; body: unknown } {
+	switch (where) {
+		case `GET ${PROBE_HOST}/ping`:
+			return { status: 200, body: { pong: true } };
+		case `GET ${STRIPE_HOST}/v1/payment_intents/pi_sandbox_1?expand[]=latest_charge`:
+		case `GET ${STRIPE_HOST}/v1/payment_intents/pi_sandbox_1?expand%5B%5D=latest_charge`:
+			return {
+				status: 200,
+				body: { latest_charge: { amount_refunded: 0, amount_captured: 1000, currency: "usd" } },
+			};
+		case `POST ${STRIPE_HOST}/v1/refunds`:
+			return { status: 200, body: { id: "re_sandbox_1", amount: 500, currency: "usd" } };
+		case `POST ${STRIPE_HOST}/v1/payment_intents`:
+			return { status: 200, body: { id: "pi_late_1", client_secret: "pi_late_1_secret_x" } };
+		case `POST ${STRIPE_HOST}/v1/payment_intents/pi_sandbox_1/cancel`:
+			return { status: 200, body: { id: "pi_sandbox_1", status: "canceled" } };
+		case `GET ${STRIPE_HOST}/v1/account`:
+			return { status: 200, body: { id: "acct_sandbox", country: "IN" } };
+		case `POST ${EMAIL_HOST}/emails`:
+			return { status: 200, body: { id: "em_sandbox_1" } };
+		case `POST ${SMTP2GO_HOST}/v3/email/send`:
+			return { status: 200, body: { data: { succeeded: 1, failed: 0 } } };
+		default:
+			return { status: 404, body: { error: `no stub for ${where}` } };
+	}
+}
 
 /**
  * `@emdash-cms/cloudflare` is not this package's dependency; `@otta-sh/store-emdash`
@@ -304,35 +324,6 @@ describe("EmDash's sandbox runner: ctx.http.fetch over the PluginBridge RPC (rea
 		return delayMs === undefined ? answerNow(where) : { ...answerNow(where), delayMs };
 	}
 
-	function answerNow(where: string): { status: number; body: unknown } {
-		switch (where) {
-			case `GET ${PROBE_HOST}/ping`:
-				return { status: 200, body: { pong: true } };
-			case `GET ${STRIPE_HOST}/v1/payment_intents/pi_sandbox_1?expand[]=latest_charge`:
-			case `GET ${STRIPE_HOST}/v1/payment_intents/pi_sandbox_1?expand%5B%5D=latest_charge`:
-				return {
-					status: 200,
-					body: { latest_charge: { amount_refunded: 0, amount_captured: 1000, currency: "usd" } },
-				};
-			case `POST ${STRIPE_HOST}/v1/refunds`:
-				return { status: 200, body: { id: "re_sandbox_1", amount: 500, currency: "usd" } };
-			case `POST ${STRIPE_HOST}/v1/payment_intents`:
-				return { status: 200, body: { id: "pi_late_1", client_secret: "pi_late_1_secret_x" } };
-			case `POST ${STRIPE_HOST}/v1/payment_intents/pi_sandbox_1/cancel`:
-				return { status: 200, body: { id: "pi_sandbox_1", status: "canceled" } };
-			case `GET ${STRIPE_HOST}/v1/account`:
-				return { status: 200, body: { id: "acct_sandbox", country: "IN" } };
-			case `POST ${X402_HOST}/x402/verify`:
-				return { status: 200, body: { isValid: true, payer: SPEC_PAYER } };
-			case `POST ${EMAIL_HOST}/emails`:
-				return { status: 200, body: { id: "em_sandbox_1" } };
-			case `POST ${SMTP2GO_HOST}/v3/email/send`:
-				return { status: 200, body: { data: { succeeded: 1, failed: 0 } } };
-			default:
-				return { status: 404, body: { error: `no stub for ${where}` } };
-		}
-	}
-
 	function seen(): string[] {
 		return stub.requests.map(
 			(r) => `${r.method} ${String(r.headers.host)}${r.url.replaceAll("%5B%5D", "[]")}`,
@@ -395,12 +386,6 @@ describe("EmDash's sandbox runner: ctx.http.fetch over the PluginBridge RPC (rea
 			country: "IN",
 		});
 		expect(seen()).toEqual([`GET ${STRIPE_HOST}/v1/account`]);
-	});
-
-	test("x402 /verify through the rail reaches the facilitator host", async () => {
-		stub.requests.length = 0;
-		expect(JSON.parse(String(await route("x402Verify")))).toMatchObject({ outcome: "valid" });
-		expect(seen()).toEqual([`POST ${X402_HOST}/x402/verify`]);
 	});
 
 	test("the Resend sender reaches the host (its dedupe key travels)", async () => {

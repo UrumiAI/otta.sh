@@ -10,7 +10,7 @@ export interface PaymentGatewayContractOptions {
 
 /**
  * The shared *settlement* behavioral spec (§7): verify → dedupe → settle →
- * commit/grant. Run against the fake gateway first, then the real Stripe and x402
+ * commit/grant. Run against the fake gateway first, then the real Stripe
  * adapters (each supplies its own confirm-minting; the settle orchestration is
  * identical). Proves the wire→port fidelity of every gateway converging on one
  * settle path.

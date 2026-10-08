@@ -115,7 +115,7 @@ describe("wrangler.jsonc", () => {
 		// The flag existed only so the Worker's fetch to the commerce service on
 		// *.workers.dev left Cloudflare instead of being stubbed 404. That service
 		// is gone (ADR-0020): the plugin's egress is api.stripe.com plus the
-		// deployment's email and x402 hosts (DEPLOYMENT.md §4), none of them on
+		// deployment's email host (DEPLOYMENT.md §4), none of them on
 		// workers.dev, and the site makes no fetch of its own. It must not come
 		// back while D1 sessions are on — the pairing guard in site-config.test.ts.
 		expect(flags).not.toContain("global_fetch_strictly_public");

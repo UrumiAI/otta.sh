@@ -4,8 +4,8 @@
  * Modeled on em-dash's `templates/starter-cloudflare/astro.config.mjs`
  * (no Access / Images / Stream / sandbox), plus the trusted Otta plugin
  * descriptor (ADR-0006). Commerce runs IN-PROCESS in this Worker: there is no
- * separate service to point at, and the only build-time URLs left are the two
- * optional egress endpoints below (email provider, x402 facilitator), which are
+ * separate service to point at, and the only build-time URL left is the
+ * optional egress endpoint below (the email provider), which is
  * baked into the bundle AND fed to the descriptor's allowlist from one const.
  */
 import { existsSync, readFileSync } from "node:fs";
@@ -32,13 +32,12 @@ function readDotEnv(name: string): string | undefined {
 }
 
 /**
- * THE IN-PROCESS EGRESS URLS — resolved ONCE, here (review round 3, B1).
+ * THE IN-PROCESS EGRESS URL — resolved ONCE, here (review round 3, B1).
  *
- * These are two URLs and two consumers. The plugin BUNDLE reads them as Vite
- * defines (`manifest.ts`: `__OTTA_EMAIL_API_URL__`,
- * `__OTTA_X402_FACILITATOR_URL__`) to decide whether to build an `EmailSender` and
- * a facilitator client at all. The registered DESCRIPTOR needs the same two values
- * to put their hosts on `allowedHosts` — and `allowedHosts` is the one ADR-0006
+ * This is one URL and two consumers. The plugin BUNDLE reads it as a Vite
+ * define (`manifest.ts`: `__OTTA_EMAIL_API_URL__`) to decide whether to build an
+ * `EmailSender` at all. The registered DESCRIPTOR needs the same value
+ * to put its host on `allowedHosts` — and `allowedHosts` is the one ADR-0006
  * gate that still bites in trusted mode. Feed only the defines and you get a
  * bundle that sends email to a host the gate refuses: every send fails, rows
  * reschedule and park `failed`, and the cron leg reports `count: 0` instead of the
@@ -60,7 +59,6 @@ function readDotEnv(name: string): string | undefined {
  */
 const egress = {
 	emailApiUrl: process.env.EMAIL_API_URL ?? readDotEnv("EMAIL_API_URL"),
-	facilitatorUrl: process.env.X402_FACILITATOR_URL ?? readDotEnv("X402_FACILITATOR_URL"),
 };
 
 /**
@@ -259,13 +257,12 @@ export default defineConfig({
 			// bakes "", which that module reads as undefined; baking `undefined`
 			// would leave the identifier undeclared in the worker bundle.
 			__OTTA_STRIPE_PUBLIC_KEY__: JSON.stringify(stripePublishableKey ?? ""),
-			// The two in-process egress URLs, from the SAME `egress` const that
+			// The in-process egress URL, from the SAME `egress` const that
 			// decides what the descriptor allowlists (see its note above). ALWAYS a
 			// string, like the Stripe key: baking `undefined` would leave the
 			// identifier undeclared, and `""` is what both the plugin's `typeof`
 			// guard and `hostnameOf` read as "this provider is unconfigured".
 			__OTTA_EMAIL_API_URL__: JSON.stringify(egress.emailApiUrl ?? ""),
-			__OTTA_X402_FACILITATOR_URL__: JSON.stringify(egress.facilitatorUrl ?? ""),
 		},
 		ssr: {
 			// UNCONDITIONAL: if @otta-sh/plugin is ever externalized the defines

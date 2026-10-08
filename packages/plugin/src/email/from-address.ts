@@ -7,7 +7,7 @@
  * reserved name can never be verified. Saving one used to produce a screen that
  * said "saved" and an outbox whose every send was refused on a cron tick nobody
  * watches. Refusing at save time puts the failure in front of the operator, the
- * same way the save already refuses a bad payTo or sign-in link URL.
+ * same way the save already refuses a bad sign-in link URL.
  *
  * WHAT IT CANNOT KNOW: whether the domain IS verified with the provider. That
  * refusal is the provider's, and it arrives as a send error naming the reason

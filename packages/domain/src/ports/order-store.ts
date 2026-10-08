@@ -176,8 +176,8 @@ export interface OrderStore {
 	/**
 	 * Record a refund in the append-only ledger with the ceiling enforced
 	 * ATOMICALLY (ADR-0008), as a one-shot **finalized** (`status:"recorded"`)
-	 * row — the MANUAL/record-only path, where no gateway leg exists (x402 /
-	 * no-secret). The gateway path must NOT use this: it goes through the
+	 * row — the MANUAL/record-only path, where no gateway leg exists (no
+	 * Stripe secret). The gateway path must NOT use this: it goes through the
 	 * **reserve-before-issue** pair (`reserveRefund` → gateway → `finalizeRefund`)
 	 * so ceiling arbitration always precedes issuance. The whole operation runs
 	 * in ONE transaction that FIRST locks the `orders` row (a guarded touch — the
@@ -586,9 +586,8 @@ export interface OrderStore {
 	markEmailSent(id: string, now: string): Promise<void>;
 	/**
 	 * Complete a claimed row as SKIPPED: terminal, and never sent. For a row the
-	 * dispatcher will not send because the order has no email recipient — an x402
-	 * gate buyer's `buyerRef` is a wallet (`x402:0x…`), not an address (ADR-0028
-	 * Decision 7). It is its own outcome rather than {@link markEmailSent} so that
+	 * dispatcher will not send because the order has no email recipient — its
+	 * `buyerRef` is a wallet id (`wallet:0x…`, say), not an address. It is its own outcome rather than {@link markEmailSent} so that
 	 * nothing reads an email that never went as delivered: an admin write reports
 	 * whether its email went (ADR-0026). Nor is it an attempt or a failure — the
 	 * attempt the claim counted is taken back off, as {@link releaseEmailClaim} does.
@@ -1280,7 +1279,7 @@ export interface CapturedPayment {
 
 /** A refund row (ADR-0008). `kind:"gateway"` carries the provider `refundRef`
  *  (money actually moved); `kind:"manual"` has `refundRef:null` (an out-of-band
- *  return the admin recorded — x402's honest degraded path). `status` is the
+ *  return the admin recorded — the honest degraded path). `status` is the
  *  row's reserve-before-issue lifecycle — see {@link RefundStatus}. */
 export interface RefundRecord {
 	/** Why the money went back — see {@link RefundPurpose}. ABSENT on a row written

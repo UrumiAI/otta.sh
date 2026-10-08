@@ -8,7 +8,7 @@
  * reserved name like `.local` can never be verified — so an operator who saved
  * one got a screen that said "saved" and an outbox whose every send was refused
  * on a cron tick nobody watches. The save now refuses it, all-or-nothing, the way
- * it already refuses a bad payTo or sign-in link URL.
+ * it already refuses a bad sign-in link URL.
  *
  * WHAT IT CANNOT CHECK: whether the domain is verified with the provider. That
  * refusal is the provider's, and arrives as a diagnosable send error
@@ -208,7 +208,7 @@ describe("Settings: saving the from-address", () => {
 		expect(text).toContain("Nothing was saved");
 		expect(text).toContain("from-address");
 		// Names the field and the rule, never the rejected value — the same
-		// no-echo rule as the payTo and sign-in link refusals.
+		// no-echo rule as the sign-in link refusal.
 		expect(text).not.toContain("otta.local");
 		// It does not claim a verification this check cannot perform.
 		expect(text).not.toMatch(/verified/iu);

@@ -1,6 +1,5 @@
 ---
 "@otta-sh/payments-stripe": minor
-"@otta-sh/payments-x402": minor
 "@otta-sh/domain": minor
 ---
 

@@ -49,7 +49,7 @@ import { getTaxCalculator } from "./tax-calculator-slot.js";
 export async function makeCommerceClient(ctx: PluginContext): Promise<CommerceClient> {
 	// The payment gateways the service used to wire from env are resolved HERE,
 	// because resolving them is asynchronous (kv) and the client's constructor is
-	// not: x402 (INC-C5) and Stripe, the method storefront checkout actually uses
+	// not: Stripe, the method storefront checkout actually uses
 	// (`PAYMENT_METHOD` in `checkout-routes.ts`). An unconfigured one is omitted
 	// from the map, which the domain refuses loudly rather than minting an
 	// unpayable order. `resolvePaymentGateways` is shared with `makeAdminClients`,

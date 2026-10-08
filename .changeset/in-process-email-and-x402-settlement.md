@@ -1,6 +1,5 @@
 ---
 "@otta-sh/domain": minor
-"@otta-sh/payments-x402": minor
 "@otta-sh/plugin": minor
 ---
 

@@ -54,7 +54,7 @@ export {
 	type OrderTaxSnapshotV0,
 	type OrderTaxSnapshotV1,
 } from "./orders/order-tax-snapshot.js";
-// ADR-0028 Decision 1: one quote command for checkout, the order and the x402 gate.
+// ADR-0028 Decision 1: one quote command for checkout and the order.
 export { quoteCommandFor, type PricedLine, type QuoteInput } from "./pricing/quote-input.js";
 // ADR-0021: ISO 3166 codes (CLDR) and the zone derived from the address.
 export { COUNTRY_CODES, SUBDIVISIONS } from "./pricing/iso-3166.generated.js";
@@ -380,26 +380,7 @@ export {
 	type RefundFailureReason,
 	type RefundInput,
 	type RefundResult,
-	type X402Proof,
 } from "./ports/payment-gateway.js";
-export type {
-	X402DecodedPayment,
-	X402DecodeResult,
-	X402MalformedDetail,
-	X402MatchResult,
-	X402MismatchField,
-	X402NotOfferedDetail,
-	X402Offer,
-	X402OfferResult,
-	X402OpaquePayload,
-	X402PaymentRequired,
-	X402PaymentRequirements,
-	X402Rail,
-	X402SettleResult,
-	X402UnavailableCause,
-	X402UnconfirmedCause,
-	X402VerifyResult,
-} from "./ports/x402-rail.js";
 export type {
 	CancellationReason,
 	CancellationRefund,

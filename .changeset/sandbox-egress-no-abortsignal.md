@@ -1,6 +1,5 @@
 ---
 "@otta-sh/payments-stripe": patch
-"@otta-sh/payments-x402": patch
 "@otta-sh/plugin": patch
 ---
 

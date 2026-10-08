@@ -16,21 +16,13 @@
  * | `settings:stripeSecretKey`         | `STRIPE_SECRET_KEY`       | `service/src/stripe-wiring.ts:7`  |
  * | `settings:stripeWebhookSecret`     | `STRIPE_WEBHOOK_SECRET`   | `service/src/stripe-wiring.ts:6`  |
  * | `settings:emailApiKey`             | `EMAIL_API_KEY`           | `service/src/index.ts:79`         |
- * | `settings:x402FacilitatorApiKey`   | `X402_FACILITATOR_SECRET` | nothing yet (†)                   |
- *
- * (†) INC-C5 CHANGED WHAT THAT LAST ROW MEANS, SO IT ALSO CHANGED THE KEY — see
- * its own doc below. It is no longer an offline HMAC secret; it is the bearer
- * credential for the facilitator. Since ADR-0028 increment 2 nothing reads it:
- * the receipt-forwarding facilitator call that did is retired, and increment
- * 6's `/verify` and `/settle` client is its next reader.
  *
  * WHAT IS DELIBERATELY NOT HERE. The service's non-secret companions —
- * `EMAIL_API_URL`, `EMAIL_FROM`, `X402_PAYTO`, `X402_ACCEPTS`,
- * `STOREFRONT_BASE_URL` — are configuration, not credentials. A write-only key
- * is the wrong home for a value an operator has to be able to read back and
- * check, and two of them (`EMAIL_API_URL`, and any future facilitator URL) also
- * have to be known at BUILD time to seed `allowedHosts`, which kv cannot do.
- * They stay outside this module.
+ * `EMAIL_API_URL`, `EMAIL_FROM`, `STOREFRONT_BASE_URL` — are configuration, not
+ * credentials. A write-only key is the wrong home for a value an operator has to
+ * be able to read back and check, and `EMAIL_API_URL` also has to be known at
+ * BUILD time to seed `allowedHosts`, which kv cannot do. They stay outside this
+ * module.
  *
  * SANDBOX-CLEAN. No IO, no host import, no `node:` — `ctx.kv` only, which
  * em-dash provides ungated (no capability, no storage declaration).
@@ -64,46 +56,6 @@ export const EMAIL_API_KEY_KEY = "settings:emailApiKey";
  * (Not a renamed service env var: the service never spoke SMTP2GO.)
  */
 export const SMTP2GO_API_KEY_KEY = "settings:emailSmtp2goApiKey";
-
-/**
- * The x402 facilitator CREDENTIAL — a bearer token for the facilitator API.
- * Until ADR-0028 increment 2 `createHttpFacilitator` attached it when it asked a
- * facilitator to verify a receipt; that call is retired, and nothing reads this
- * key until increment 6's `/verify` and `/settle` client (ADR-0028 Decision 8:
- * no credential, or `Authorization: Bearer <this key>`).
- *
- * ⚠ ITS MEANING CHANGED AT INC-C5, SO THE KEY MOVED. Under INC-C3
- * `settings:x402FacilitatorSecret` was the in-process rename of the service's
- * `X402_FACILITATOR_SECRET`: the SHARED HMAC secret `createTestFacilitator`
- * signs and verifies with, a value that is never transmitted and whose leak is
- * forge-a-settlement severity. In-process there is no offline facilitator, and
- * the configured value is meant for the WIRE, as `Authorization: Bearer …` to
- * the facilitator host.
- *
- * WHY A NEW KEY AND NOT A RE-DOCUMENTED ONE (review round 2, A5). Re-documenting
- * would have left an operator who provisioned under the INC-C3 meaning holding a
- * forge-a-settlement HMAC secret that this increment would transmit to a third
- * party — a silent downgrade that no release note can undo, because nothing
- * forces the operator to act. A different key name IS the forcing function: the
- * old value is never read again, and the field reads as unset until someone
- * provisions a credential that was minted to be sent. The legacy key is deleted
- * opportunistically on the next save of this field (`settings-form.ts`) so the
- * orphaned secret does not linger in kv.
- *
- * The SERVICE's own offline facilitator keeps reading its own
- * `X402_FACILITATOR_SECRET` environment variable, which was never this key.
- */
-export const X402_FACILITATOR_API_KEY_KEY = "settings:x402FacilitatorApiKey";
-
-/**
- * The INC-C3 key this replaced. Exported for exactly one purpose: the settings
- * form deletes it when the facilitator credential is next saved. Nothing reads
- * it as a credential, and nothing ever should — see
- * {@link X402_FACILITATOR_API_KEY_KEY}. It is deliberately NOT in
- * {@link PAYMENT_SECRET_KEYS}: that list drives the provisioning form and the
- * no-echo pins, and this key is neither provisioned nor rendered.
- */
-export const X402_LEGACY_FACILITATOR_SECRET_KEY = "settings:x402FacilitatorSecret";
 
 /**
  * The shared EDGE token the calling site attaches to a webhook it forwards
@@ -140,15 +92,14 @@ export const WEBHOOK_EDGE_TOKEN_HEADER = "X-Otta-Wh-Token";
 
 /**
  * The complete set, in one place, so the Settings provisioning forms and the
- * no-echo test pins are driven from the same list rather than five hand-kept
- * copies. Adding a sixth secret means editing this and nothing else.
+ * no-echo test pins are driven from the same list rather than hand-kept
+ * copies. Adding a secret means editing this and nothing else.
  */
 export const PAYMENT_SECRET_KEYS = [
 	STRIPE_SECRET_KEY_KEY,
 	STRIPE_WEBHOOK_SECRET_KEY,
 	EMAIL_API_KEY_KEY,
 	SMTP2GO_API_KEY_KEY,
-	X402_FACILITATOR_API_KEY_KEY,
 	WEBHOOK_EDGE_TOKEN_KEY,
 ] as const;
 
@@ -197,7 +148,6 @@ export interface PaymentSecrets {
 	stripeSecretKey: string | undefined;
 	stripeWebhookSecret: string | undefined;
 	emailApiKey: string | undefined;
-	x402FacilitatorSecret: string | undefined;
 	/** The `X-Otta-Wh-Token` edge token. `undefined` is MEANINGFUL here and only
 	 *  here: it means the token gate is off (pass-through), not that the route is
 	 *  disabled — see {@link WEBHOOK_EDGE_TOKEN_KEY}. */
@@ -205,39 +155,26 @@ export interface PaymentSecrets {
 }
 
 /**
- * Read all five in one round trip.
+ * Read all four in one round trip.
  *
- * `Promise.all` over five INDEPENDENTLY fail-closed reads, deliberately: each
+ * `Promise.all` over INDEPENDENTLY fail-closed reads, deliberately: each
  * `readWriteOnlySecret` already absorbs its own rejection, so a Stripe kv blip
  * degrades Stripe and nothing else. Wrapping raw `ctx.kv.get` calls in a single
- * `Promise.all` would instead reject the whole batch and disarm email and x402
- * along with it.
+ * `Promise.all` would instead reject the whole batch and disarm email along with
+ * it.
  *
  * NOT used by the settle route, on purpose: that route reads the edge token
  * FIRST and ALONE, and only reads the webhook secret after the token gate has
  * passed (INC-C1b test iii). Batching them here would read both every time.
  */
 export async function readPaymentSecrets(ctx: PluginContext): Promise<PaymentSecrets> {
-	const [
-		stripeSecretKey,
-		stripeWebhookSecret,
-		emailApiKey,
-		x402FacilitatorSecret,
-		webhookEdgeToken,
-	] = await Promise.all([
+	const [stripeSecretKey, stripeWebhookSecret, emailApiKey, webhookEdgeToken] = await Promise.all([
 		readWriteOnlySecret(ctx, STRIPE_SECRET_KEY_KEY),
 		readWriteOnlySecret(ctx, STRIPE_WEBHOOK_SECRET_KEY),
 		readWriteOnlySecret(ctx, EMAIL_API_KEY_KEY),
-		readWriteOnlySecret(ctx, X402_FACILITATOR_API_KEY_KEY),
 		readWriteOnlySecret(ctx, WEBHOOK_EDGE_TOKEN_KEY),
 	]);
-	return {
-		stripeSecretKey,
-		stripeWebhookSecret,
-		emailApiKey,
-		x402FacilitatorSecret,
-		webhookEdgeToken,
-	};
+	return { stripeSecretKey, stripeWebhookSecret, emailApiKey, webhookEdgeToken };
 }
 
 /** The Stripe webhook signing secret, by name — INC-C1b's settle route reads
@@ -255,12 +192,6 @@ export async function stripeSecretKeyFromKv(ctx: PluginContext): Promise<string 
 /** The email provider's API key, by name. */
 export async function emailApiKeyFromKv(ctx: PluginContext): Promise<string | undefined> {
 	return readWriteOnlySecret(ctx, EMAIL_API_KEY_KEY);
-}
-
-/** The x402 facilitator's bearer credential, by name (INC-C5 — see
- *  {@link X402_FACILITATOR_API_KEY_KEY} for what this key does and does not mean). */
-export async function x402FacilitatorSecretFromKv(ctx: PluginContext): Promise<string | undefined> {
-	return readWriteOnlySecret(ctx, X402_FACILITATOR_API_KEY_KEY);
 }
 
 /** The `X-Otta-Wh-Token` edge token, by name — the settle route's FIRST read and,

@@ -27,8 +27,8 @@ type VerifiedSuccess = Extract<ConfirmationResult, { ok: true }>;
 
 /**
  * The gateway-agnostic settlement use-case (§5): **verify → dedupe → transition →
- * commit-or-grant**. Both Stripe (webhook bytes) and x402 (page-gate proof)
- * converge here.
+ * commit-or-grant**. Every gateway's verified confirmation
+ * converges here.
  *
  * 1. `gateway.verifyConfirmation(raw)` — a reject (bad signature / unknown /
  *    malformed) is a typed failure (HTTP 400). All crypto is adapter-side.
@@ -43,10 +43,10 @@ type VerifiedSuccess = Extract<ConfirmationResult, { ok: true }>;
  *    blind-trusting the dedupe row.
  * 2b. A duplicate whose recorded row names a **different** order is the opposite
  *    case and is TERMINAL (`RECEIPT_REBOUND` + anomaly, nothing moved): one
- *    settlement consumes one payment. This is the tx-hash binding
- *    `@otta-sh/payments-x402`'s header calls load-bearing — `proof.orderId` is
- *    never on-chain-attestable, so the amount equality in step 3 is not on its
- *    own enough to stop one receipt from settling a second, same-priced order.
+ *    settlement consumes one payment. This is the receipt binding:
+ *    a confirmation's order id is the caller's claim, so the amount equality in
+ *    step 3 is not on its own enough to stop one receipt from settling a
+ *    second, same-priced order.
  * 3. Amount + currency MUST equal `order_totals.total` — mismatch ⇒ reject +
  *    record anomaly (§9 Risk 3); no auto-refund. Checked only while the order
  *    can still settle: a terminal order short-circuits FIRST (review G6), so a
@@ -67,7 +67,7 @@ type VerifiedSuccess = Extract<ConfirmationResult, { ok: true }>;
  *    holds the `pending → cancelled` flip) and the gateway can refund, the payment
  *    is refunded once under a key derived from it, the flag resolved and the buyer
  *    notified — instead of sitting in the reconciliation queue while the buyer is
- *    out of pocket. A gateway that cannot refund (x402, Stripe with no secret key),
+ *    out of pocket. A gateway that cannot refund (Stripe with no secret key),
  *    or an order with no such evidence, keeps the manual flag above. A TRANSIENT
  *    refund failure answers `LATE_PAYMENT_REFUND_RETRYABLE` so the provider
  *    redelivers, and schedules a sweep retry (`retryLatePaymentRefunds`) for when
@@ -102,9 +102,9 @@ export async function settleOrder(
 		now,
 	);
 
-	// 2b. THE TX-HASH BINDING, enforced rather than assumed. For x402 the dedupe
-	// key IS the on-chain `transaction`, and `proof.orderId` is never
-	// on-chain-attestable — so without this, a receipt already bound to order A,
+	// 2b. THE RECEIPT BINDING, enforced rather than assumed. The dedupe key names
+	// one payment, and the order id a confirmation carries is only the caller's
+	// claim — so without this, a receipt already bound to order A,
 	// resubmitted naming a same-priced order B, would sail past the amount check
 	// and settle B off one payment. (`recordPayment`'s globally-unique
 	// `provider_ref` then silently swallows the second ledger row, so the second
@@ -326,7 +326,7 @@ async function applyPaidSideEffects(
 				productId: line.productId,
 				sku: line.sku,
 				buyerRef: order.buyerRef,
-				source: conf.gateway === "x402" ? "x402" : "order_paid",
+				source: "order_paid",
 				// Deterministic grant-once key per (order, sku): replay grants nothing.
 				grantIdempotencyKey: idempotencyKey(`ent:${order.id}:${line.sku}`),
 			});

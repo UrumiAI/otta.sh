@@ -26,7 +26,7 @@ const FIXTURES: readonly string[] = [
 	"a_b-c@d-e.example",
 	"1234567890@example.com",
 	// Ones the site refuses — included so the property is checked on both sides.
-	"x402:0x1111111111111111111111111111111111111111",
+	"wallet:0x1111111111111111111111111111111111111111",
 	"jo@",
 	"asdf",
 	"a@b",

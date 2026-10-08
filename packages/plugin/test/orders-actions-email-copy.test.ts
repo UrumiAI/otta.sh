@@ -8,7 +8,7 @@
  * "emailed" only when it was sent, "queued and will be retried automatically" when it
  * was not yet (no time promise: the cron's retry can be backed off), "no email" when
  * the store has no provider, and "no email address" when the order has none to send
- * to (an x402 buyer, ADR-0028 Decision 7) — never "queued" for an email that will
+ * to (a wallet-id buyer) — never "queued" for an email that will
  * never go. The inline send itself is pinned over a
  * real store in `admin-order-emails-inline.test.ts`.
  */

@@ -75,7 +75,7 @@ describeEachDialect("misc document model", (ctx) => {
 			productId: null,
 			sku: SKU,
 			buyerRef: "Buyer@Example.com",
-			source: "x402",
+			source: "order_paid",
 			grantIdempotencyKey: idempotencyKey("grant-key-2"),
 		});
 		expect(await h.lookups.count()).toBe(2);

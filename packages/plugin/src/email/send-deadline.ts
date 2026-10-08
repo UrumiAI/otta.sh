@@ -26,7 +26,7 @@
  *
  * TWIN of `@otta-sh/payments-stripe`'s `src/deadline.ts` (the package graph
  * keeps them apart: Stripe cannot import the plugin, and the domain stays
- * IO-free; `@otta-sh/payments-x402`'s facilitator race is a third variant).
+ * IO-free).
  * Keep them in step: a fix to one is very likely owed to the other.
  *
  * THE COST, and the opt-in that removes it. With no signal the host is never

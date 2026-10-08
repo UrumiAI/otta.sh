@@ -7,9 +7,8 @@
  * hold the cart the order was made from, a session whose customer owns the
  * order, or the order's email.
  *
- * Only an EMAIL is a secret worth asking for. `buyerRef` is not always one: an
- * x402 order's will be the paying wallet (`x402:0x…`), which anyone can read
- * off the chain. So a buyerRef that is not shaped like an address never
+ * Only an EMAIL is a secret worth asking for. `buyerRef` is not always one: it can
+ * be a public wallet id, say. So a buyerRef that is not shaped like an address never
  * matches, nor does a typed value that is not one (issue #405 item 2); such an
  * order resumes by its cart or its owner's session only. The shape is the
  * domain's own rule (`isEmailAddress`: one `@`, something on each side).
@@ -72,7 +71,7 @@ async function digest(value: string): Promise<Uint8Array> {
 
 /** Is `typed` the order's `buyerRef`? Never true unless BOTH are email
  *  addresses — so never for a blank `typed`, and never for an order whose
- *  buyerRef is public (an x402 wallet). Leaving early there tells a guesser only
+ *  buyerRef is public (a wallet id). Leaving early there tells a guesser only
  *  that the buyerRef is not an email, which the order's payment method already
  *  says. */
 export async function emailMatchesBuyer(typed: string, buyerRef: string): Promise<boolean> {

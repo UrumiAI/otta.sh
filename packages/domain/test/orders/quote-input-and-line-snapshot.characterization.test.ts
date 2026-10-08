@@ -20,7 +20,7 @@ import { makeOrderHarness, type OrderHarness } from "./fake-harness.js";
  * CHARACTERIZATION, NOT SPECIFICATION (ADR-0028, increment 3).
  *
  * The increment extracts the quote-input and line-snapshot helpers out of
- * `createOrderFromCart` so the x402 gate can build the same quote and the same
+ * `createOrderFromCart` so any other caller can build the same quote and the same
  * order lines. It is a pure refactor, and this file is the proof: it was written
  * and its golden file recorded BEFORE the extraction, against the code as it then
  * stood, and it must pass unchanged after.

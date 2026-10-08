@@ -17,8 +17,8 @@ export interface SnapshotLine extends PricedLine {
  * The order line snapshot (§4; ADR-0028 Decision 5 step 6): the price, currency,
  * title and fulfilment kind frozen onto `order_items` at purchase, so a later
  * product edit never rewrites the order. This is the ONLY mapping from a product
- * row to an order line — a cart checkout and an x402 gate order both go through
- * it, so they freeze the same fields in the same shape.
+ * row to an order line — every order goes through it, so they freeze the same
+ * fields in the same shape.
  *
  * A physical line adopts its hold; a digital line carries none (§6), whatever
  * the caller passed.
