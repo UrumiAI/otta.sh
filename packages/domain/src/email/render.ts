@@ -547,12 +547,16 @@ const ORDER_COPY: Record<
 /**
  * The order's number from the email data's `orderId`, or `null` when the data
  * carries none (it crossed the outbox's JSON boundary, so it is read defensively —
- * an email without a number still names the order by its products). Folded onto
- * one line like any other value bound for a subject.
+ * an email without a number still names the order by its products). `orderNumber`
+ * runs on the RAW id, exactly as on the page and the console, so the three can
+ * never disagree; only its OUTPUT is then folded onto one line, like any other
+ * value bound for a subject (a real id has nothing to fold).
  */
 function numberOf(orderId: unknown): string | null {
-	const id = oneLine(str(orderId) ?? "");
-	return id.length > 0 ? orderNumber(id) : null;
+	const id = str(orderId);
+	if (id === undefined || id.length === 0) return null;
+	const number = oneLine(orderNumber(id));
+	return number.length > 1 ? number : null;
 }
 
 /** "Order confirmed #3F9A2 — Otta Tee": the template's subject, the order's number,

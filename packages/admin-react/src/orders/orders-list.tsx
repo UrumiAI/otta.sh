@@ -52,9 +52,10 @@ import {
 	formatTimestamp,
 	listOutcome,
 	maskBuyerEmail,
+	idMatchesOrderNumber,
+	orderNumberCells,
 	orderStateCell,
-	shortIdFixed,
-	shortIdsFor,
+	typedOrderNumberDigits,
 } from "@otta-sh/admin-presentation";
 import * as React from "react";
 import {
@@ -446,10 +447,12 @@ export interface OrdersChrome {
  */
 function BuyerReference({
 	buyerRef,
-	prefix,
+	orderNumber,
 }: {
 	buyerRef: string;
-	prefix: string;
+	/** The row's identity cell as displayed ("#7E4CE"), so the toggle's name
+	 *  matches what a sighted operator reads in the same row. */
+	orderNumber: string;
 }): React.ReactElement {
 	const [revealed, setRevealed] = React.useState(false);
 	const valueId = `${React.useId()}-buyer`;
@@ -464,7 +467,7 @@ function BuyerReference({
 				revealed={revealed}
 				onToggle={() => setRevealed((open) => !open)}
 				controls={valueId}
-				what={`buyer email for order #${prefix}`}
+				what={`buyer email for order ${orderNumber}`}
 				testId="buyer-email-toggle"
 			/>
 		</>
@@ -1027,35 +1030,15 @@ export function OrdersList({
 	}, [refreshStop]);
 
 	const orders = page?.orders ?? [];
-	// §1.3: computed over EXACTLY the array being rendered, so the prefix in a
-	// row is unique among the rows the operator can see. `shortIdsFor` is total
-	// and deterministic in the SET, so re-rendering cannot renumber the page.
-	const shortIds = React.useMemo(() => shortIdsFor(orders.map((o) => o.id)), [orders]);
-	// The order NUMBER is the identity cell's text (ADR-0033): the label the
-	// shopper reads off their email, so an operator and a buyer name an order the
-	// same way. It is only five characters, so two rows CAN share one; those rows
-	// EXTEND it, upper-cased, to their shortest-unique prefix ("#FEE1D" + "1") so
-	// no two rows on screen read the same, and the whole cell is itself a number
-	// the search accepts.
-	const tieBreakers = React.useMemo(
-		() =>
-			shortIdsFor(
-				orders.map((o) => o.id),
-				ORDER_NUMBER_DIGITS,
-			),
-		[orders],
-	);
-	const sharedNumbers = React.useMemo(() => {
-		const seen = new Map<string, number>();
-		for (const o of orders) {
-			if (o.orderNumber !== undefined) seen.set(o.orderNumber, (seen.get(o.orderNumber) ?? 0) + 1);
-		}
-		return new Set([...seen].filter(([, n]) => n > 1).map(([number]) => number));
-	}, [orders]);
-	// ADR-0033: an order number is a label, not a key, and five characters can be
-	// shared. When the operator searched by one and it answers several orders, say
-	// so before they act on the first row — confirm by buyer, date and total.
-	const numberMatches = orderNumberMatchesNote(applied.search, page?.total ?? orders.length);
+	// The identity cell (ADR-0033): the order NUMBER the shopper reads off their
+	// email, extended upper-cased with hex only on rows that share one, so no two
+	// rows read the same and every cell is itself a number the search accepts.
+	// Computed over EXACTLY the rows rendered (§1.3), deterministic in the set.
+	const numberCells = React.useMemo(() => orderNumberCells(orders), [orders]);
+	// An order number is a label, not a key, and five characters can be shared.
+	// When the operator searched by one and it answers several orders, say so
+	// before they act on the first row — confirm by buyer, date and total.
+	const numberMatches = orderNumberMatchesNote(applied.search, orders);
 	const vocabulary = page?.vocabulary;
 	const statusAny = vocabulary?.statusAny ?? "any";
 	const periodLabel =
@@ -1649,7 +1632,7 @@ export function OrdersList({
 					onActivateRow={onOpen}
 				>
 					{orders.map((order) => {
-						const prefix = shortIds.get(order.id) ?? shortIdFixed(order.id);
+						const cell = numberCells.get(order.id) ?? { number: `#${order.id}`, extension: "" };
 						return (
 							<tr
 								key={order.id}
@@ -1724,7 +1707,10 @@ export function OrdersList({
 									  screens cannot drift back apart on this rule. An email is
 									  MASKED until this row's Show is pressed (issue #377) — see
 									  `BuyerReference`. */}
-									<BuyerReference buyerRef={order.buyerRef} prefix={prefix} />
+									<BuyerReference
+										buyerRef={order.buyerRef}
+										orderNumber={cell.number + cell.extension}
+									/>
 								</td>
 								<td className="otta-td">
 									{order.state === PILLED_ORDER_STATE ? (
@@ -1765,10 +1751,10 @@ export function OrdersList({
 										}}
 										style={orderLinkStyle}
 									>
-										{order.orderNumber ?? prefix}
-										{order.orderNumber !== undefined && sharedNumbers.has(order.orderNumber) && (
+										{cell.number}
+										{cell.extension !== "" && (
 											<span data-testid="order-number-disambiguator" style={{ opacity: 0.72 }}>
-												{(tieBreakers.get(order.id) ?? "").slice(ORDER_NUMBER_DIGITS).toUpperCase()}
+												{cell.extension}
 											</span>
 										)}
 									</a>
@@ -1885,20 +1871,20 @@ export function OrdersList({
 	);
 }
 
-/** How many characters of the id an order number shows — the domain's
- *  `ORDER_NUMBER_LENGTH` (ADR-0033). The server computes the number itself; this
- *  is only how far a colliding row's tie-breaker starts past it. */
-const ORDER_NUMBER_DIGITS = 5;
-
-/** A search spelled the way an order number is printed: `#`, then hex. */
-const TYPED_ORDER_NUMBER = /^#[0-9a-f]+$/i;
-
 /**
- * The note for a search by order number that answered more than one order, or
- * `null` (not a number-shaped search, or one match or none). Exported for tests.
+ * The note for a search typed as an order number (`#` + at least
+ * `ORDER_NUMBER_LENGTH` hex digits) whose rows include more than one order with
+ * that id prefix, or `null`. Only id-prefix matches are counted — a buyer whose
+ * email happens to start with the same letters is not "another order with this
+ * number" — and only over the rows loaded. Exported for tests.
  */
-export function orderNumberMatchesNote(search: string | undefined, count: number): string | null {
-	const typed = search?.trim() ?? "";
-	if (!TYPED_ORDER_NUMBER.test(typed) || count <= 1) return null;
-	return `${typed.toUpperCase()} matches ${String(count)} orders. An order number can be shared — confirm the buyer, date and total before acting.`;
+export function orderNumberMatchesNote(
+	search: string | undefined,
+	orders: readonly { readonly id: string }[],
+): string | null {
+	const digits = typedOrderNumberDigits(search);
+	if (digits === null) return null;
+	const count = orders.filter((o) => idMatchesOrderNumber(o.id, digits)).length;
+	if (count <= 1) return null;
+	return `#${digits.toUpperCase()} matches ${String(count)} orders. An order number can be shared — confirm the buyer, date and total before acting.`;
 }

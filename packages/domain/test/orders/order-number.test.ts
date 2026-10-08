@@ -43,6 +43,15 @@ describe("orderNumberSearchText", () => {
 		expect(orderNumberSearchText("#3f9")).toBe("3f9");
 	});
 
+	test("a number long enough to cross a UUID hyphen gets the hyphen back", () => {
+		const id = "fee1d111-0abc-4def-8000-000000000001";
+		const typed = `#${id.replaceAll("-", "").slice(0, 10).toUpperCase()}`;
+		expect(orderNumberSearchText(typed)).toBe("FEE1D111-0A");
+		expect(id.startsWith(orderNumberSearchText(typed).toLowerCase())).toBe(true);
+		expect(orderNumberSearchText("#FEE1D111")).toBe("FEE1D111");
+		expect(orderNumberSearchText(`#${id.replaceAll("-", "")}`).toLowerCase()).toBe(id);
+	});
+
 	test("leaves everything else alone", () => {
 		expect(orderNumberSearchText("3F9A2")).toBe("3F9A2");
 		expect(orderNumberSearchText("jo@example.com")).toBe("jo@example.com");

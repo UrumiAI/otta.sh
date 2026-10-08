@@ -1,5 +1,6 @@
 import { describe, expect, test } from "vitest";
 import type { EmailTemplate } from "../../src/ports/email-sender.js";
+import { orderNumber } from "../../src/orders/order-number.js";
 import {
 	customerSafeCancellationCopy,
 	renderEmail as renderWith,
@@ -498,6 +499,13 @@ describe("renderEmail carries the order number", () => {
 		// oxlint-disable-next-line no-control-regex -- asserting control characters are absent is the point
 		expect(rendered.subject).not.toMatch(/[\u0000-\u001f\u007f]/);
 		expect(rendered.html).not.toContain("<b>");
+	});
+
+	test("the number is orderNumber of the RAW id — the same as every other surface", () => {
+		for (const id of [ORDER_ID, crypto.randomUUID(), "ord-1"]) {
+			const rendered = renderEmail("order-confirmation", { ...data, orderId: id });
+			expect(rendered.subject).toBe(`Order confirmed ${orderNumber(id)} — Otta Tee`);
+		}
 	});
 
 	test("the sign-in email has no order number", () => {

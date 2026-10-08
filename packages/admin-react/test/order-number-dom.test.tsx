@@ -126,9 +126,27 @@ test("two rows sharing a number also show what tells them apart", async () => {
 	);
 });
 
-test("a row without a number keeps the short id it always showed", async () => {
+test("a row without a number still prints in the number's format", async () => {
 	const container = await mountList();
-	expect(link(container, LEGACY).textContent).toBe("7e4c");
+	expect(link(container, LEGACY).textContent).toBe("#7E4CE");
+});
+
+test("a tie-breaker is hex only — never the UUID's hyphen — so the cell stays searchable", async () => {
+	// Two ids that agree through their first EIGHT characters: the unique prefix
+	// crosses the hyphen at position 8.
+	const DEEP_A = "abcdef12-3000-4000-8000-000000000001";
+	const DEEP_B = "abcdef12-4000-4000-8000-000000000002";
+	respond({
+		ok: true,
+		orders: [row(DEEP_A, "#ABCDE"), row(DEEP_B, "#ABCDE")],
+		nextCursor: null,
+		vocabulary: VOCABULARY,
+	});
+	const node = <OrdersList onOpen={() => undefined} />;
+	mounted = await mount(node);
+	await mounted.rerender(node);
+	expect(link(mounted.container, DEEP_A).textContent).toBe("#ABCDEF123");
+	expect(link(mounted.container, DEEP_B).textContent).toBe("#ABCDEF124");
 });
 
 function detail(orderNumber: string | undefined): DetailPayload {
@@ -200,14 +218,19 @@ test("the identity column is headed Order, not a second #", async () => {
 });
 
 test("a search by number that answers several orders says so; one answer, or another search, does not", () => {
-	expect(orderNumberMatchesNote("#fee1d", 2)).toBe(
+	const twins = [{ id: TWIN_A }, { id: TWIN_B }, { id: SOLO }];
+	expect(orderNumberMatchesNote("#fee1d", twins)).toBe(
 		"#FEE1D matches 2 orders. An order number can be shared — confirm the buyer, date and total before acting.",
 	);
-	expect(orderNumberMatchesNote(" #FEE1D ", 3)).toMatch(/^#FEE1D matches 3 orders\./);
-	expect(orderNumberMatchesNote("#FEE1D", 1)).toBeNull();
-	expect(orderNumberMatchesNote("fee1d", 2)).toBeNull();
-	expect(orderNumberMatchesNote("jo@example.com", 5)).toBeNull();
-	expect(orderNumberMatchesNote(undefined, 5)).toBeNull();
+	expect(orderNumberMatchesNote(" #FEE1D ", twins)).toMatch(/^#FEE1D matches 2 orders\./);
+	// Only ID-prefix matches count: a row found by its buyer reference is not
+	// another order with this number.
+	expect(orderNumberMatchesNote("#FEE1D", [{ id: TWIN_A }, { id: SOLO }])).toBeNull();
+	// Shorter than a number is a prefix hunt, not a number.
+	expect(orderNumberMatchesNote("#FEE1", twins)).toBeNull();
+	expect(orderNumberMatchesNote("fee1d", twins)).toBeNull();
+	expect(orderNumberMatchesNote("jo@example.com", twins)).toBeNull();
+	expect(orderNumberMatchesNote(undefined, twins)).toBeNull();
 });
 
 test("the note renders above the rows when the applied search is a shared number", async () => {

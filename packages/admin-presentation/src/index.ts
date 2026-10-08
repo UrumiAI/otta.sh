@@ -100,6 +100,15 @@ export {
 	startOfDay,
 } from "./datetime.js";
 export { SHORT_ID_CONFIRM_LEN, SHORT_ID_MIN, shortIdFixed, shortIdsFor } from "./short-id.js";
+// The order NUMBER on the console (ADR-0033): tie-breakers for shared numbers and
+// the matcher for a search typed as one.
+export {
+	idMatchesOrderNumber,
+	ORDER_NUMBER_LENGTH,
+	orderNumberCells,
+	typedOrderNumberDigits,
+	type OrderNumberCell,
+} from "./order-number.js";
 export {
 	ORDER_STATE_SET,
 	ORDER_STATES,
