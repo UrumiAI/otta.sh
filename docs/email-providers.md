@@ -15,7 +15,7 @@ in `src/plugin.ts`, and change the request body to your API's shape. Run `pnpm i
 add `{ "path": "<your-folder>" }` to the root `tsconfig.json` references so `pnpm typecheck`
 covers it.
 
-## The hook (emdash 0.38)
+## The hook (emdash 1.0)
 
 A provider registers one **exclusive** `email:deliver` hook and declares the
 `hooks.email-transport:register` capability. Without that capability, EmDash skips the hook
@@ -26,7 +26,10 @@ import type { EmailDeliverEvent, PluginContext, SandboxedPlugin } from "emdash/p
 
 // Types from emdash, for reference:
 // interface EmailDeliverEvent { message: EmailMessage; source: string } // source "otta" for otta's mail
-// interface EmailMessage { to: string; subject: string; text: string; html?: string }
+// interface EmailMessage {
+//   to: string; cc?: string[]; replyTo?: string; // cc and replyTo: optional, since emdash 1.0
+//   subject: string; text: string; html?: string;
+// }
 
 // The slice of PluginContext the handler uses. Tests can then pass a plain { kv, http } object.
 export interface DeliverContext {
@@ -70,8 +73,9 @@ The message has no `from` and no idempotency key. Your plugin supplies the sende
 - **Egress is declared, https only.** Call the API with `ctx.http.fetch` (`network:request`
   capability), and list its **exact** hostname in `allowedHosts`, never a wildcard. Keep the
   URL in code, not in an admin setting, so settings cannot redirect your key.
-- **Raw transports.** If you build MIME or SMTP headers yourself, reject CR/LF in `to` and
-  `subject`, and a `to` containing `,` or `;`. A JSON body, as in the template, is safe.
+- **Raw transports.** If you build MIME or SMTP headers yourself, reject CR/LF in `to`,
+  `subject`, `replyTo` and every `cc` entry, and require each of `to`, `replyTo` and every
+  `cc` entry to be one bare address (no `,` or `;`). A JSON body, as in the template, is safe.
 
 ## Settings and secrets
 
