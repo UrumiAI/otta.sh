@@ -39,9 +39,9 @@ Price in 49 currencies, each in its own minor unit, from one currency table.
   carts in it, refused with `COUPON_CURRENCY_MISMATCH` like a fixed-amount coupon. A currency
   is accepted on a percentage coupon only WITH a cap or minimum spend, and a bound coupon stays
   bound once they are cleared. A percentage coupon with a cap or minimum and no currency,
-  written earlier, behaves exactly as before (and cannot be bound). Coupon edits read amounts in
-  the STORED coupon's currency and send it back: an edit whose coupon's currency changed
-  meanwhile is refused (409) rather than re-read. The check runs inside the store's
+  written earlier, behaves exactly as before (and cannot be bound). Coupon edits parse amounts in
+  the currency the form was rendered with and send it back; the rules client refuses (409) an
+  edit whose coupon's currency changed meanwhile, rather than re-reading it. The check runs inside the store's
   compare-and-set (`UpdateCouponInput.expectCurrency`, refusal `currency_moved`), so a bind
   racing an edit can never land the edit's amounts in the other currency.
 - **Coupon refusal order.** `validateCoupon` now checks the coupon's currency BEFORE its
