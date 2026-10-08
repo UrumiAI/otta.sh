@@ -47,7 +47,7 @@
  * G5 APPLIES UNCHANGED: every response here is HTTP 200 with an outcome in the
  * body. A refusal is a value.
  */
-import { toWellFormedText } from "@otta-sh/domain";
+import { orderNumberIdPrefix, toWellFormedText } from "@otta-sh/domain";
 import {
 	type AdminOrdersSurface,
 	type CustomerContextWire,
@@ -199,6 +199,9 @@ export interface ConsoleListPayload {
 	 * rows one page from where it meant to be — the safe direction.
 	 */
 	readonly cursorRejected?: true;
+	/** The search was typed as an order number (`orderNumberIdPrefix`, ADR-0033):
+	 *  the console shows that numbers can be shared. ABSENT otherwise. */
+	readonly searchedByNumber?: true;
 	readonly vocabulary: ConsoleVocabulary;
 }
 
@@ -313,10 +316,16 @@ async function consoleList(
 		limit: PAGE_LIMIT,
 		...(cursor !== undefined && cursor.length > 0 ? { cursor } : {}),
 	});
+	const search = readFilter(input.filter).search;
 	return {
 		ok: true,
 		orders: page.orders,
 		nextCursor: page.nextCursor,
+		// ADR-0033: the search was an order number (the domain's one matcher), so
+		// the console says numbers can be shared. Absent otherwise.
+		...(search !== undefined && orderNumberIdPrefix(search) !== null
+			? { searchedByNumber: true as const }
+			: {}),
 		...(page.total !== undefined ? { total: page.total } : {}),
 		// FORWARDED, NEVER RE-DERIVED: only the client can see the service's own
 		// refusal code, and only it knows whether the rows below came from the

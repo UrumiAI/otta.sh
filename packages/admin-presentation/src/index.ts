@@ -99,16 +99,12 @@ export {
 	formatTimestamp,
 	startOfDay,
 } from "./datetime.js";
-export { SHORT_ID_CONFIRM_LEN, SHORT_ID_MIN, shortIdFixed, shortIdsFor } from "./short-id.js";
-// The order NUMBER on the console (ADR-0033): tie-breakers for shared numbers and
-// the matcher for a search typed as one.
+export { SHORT_ID_MIN, shortIdsFor } from "./short-id.js";
+// The order NUMBER on the console (ADR-0033): tie-breakers for rows that share
+// one, and the refund confirm's label.
 export {
-	idMatchesOrderNumber,
 	ORDER_CONFIRM_DIGITS,
-	ORDER_NUMBER_LENGTH,
 	orderConfirmLabel,
-	orderNumberSearchText,
-	typedOrderNumberDigits,
 	withOrderNumberCells,
 	type OrderNumberCell,
 } from "./order-number.js";

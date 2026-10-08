@@ -84,6 +84,7 @@ function documentMarkup(): string {
 function listRow(id: string, buyerRef: string) {
 	return {
 		id,
+		orderNumber: `#${id.slice(0, 5).toUpperCase()}`,
 		state: "paid",
 		currency: "USD",
 		buyerRef,
@@ -299,6 +300,7 @@ function detail(buyerRef: string, options: { verified?: boolean } = {}): DetailP
 		ok: true,
 		order: {
 			id: ORDER_ID,
+			orderNumber: `#${ORDER_ID.slice(0, 5).toUpperCase()}`,
 			state: "paid",
 			currency: CUR,
 			paymentMethod: "card",

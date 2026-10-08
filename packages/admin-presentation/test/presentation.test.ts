@@ -50,7 +50,6 @@ import {
 	RETRYING_LABEL,
 	RETRY_LABEL,
 	SCAN_FURTHER,
-	SHORT_ID_CONFIRM_LEN,
 	SHORT_ID_MIN,
 	TERMINAL_ORDER_STATES,
 	UNNAMED_REFUND_RECIPIENT,
@@ -104,7 +103,6 @@ import {
 	removeStockConfirm,
 	rowCountLine,
 	shippingGroupLabel,
-	shortIdFixed,
 	shortIdsFor,
 	startOfDay,
 	statusLabel,
@@ -288,37 +286,6 @@ describe("short ids (§1.3) — the property is CROSS-SURFACE", () => {
 		expect(shortIdsFor(ids, 2).get(ids[0] as string)).toBe("7e4c");
 		expect(shortIdsFor(ids, 8).get(ids[0] as string)).toBe("7e4ce728");
 		expect(shortIdsFor(ids, Number.NaN).get(ids[0] as string)).toBe("7e4c");
-	});
-
-	test("THE LOAD-BEARING ONE: a row prefix is a startsWith prefix of the confirm prefix", () => {
-		// The React list row, the Block Kit row and the picker all show a
-		// computed prefix; a refund confirm shows the fixed 8. An operator must
-		// be able to see at a glance that they are the same order. That is only
-		// true because the fixed length is longer than the floor, and it must
-		// stay true for every id on a page — including colliding ones.
-		const page = [
-			"7e4ce728-0000-4000-8000-000000000001",
-			"7e4ce728-1111-4000-8000-000000000002", // agrees with the first for 8 chars
-			"91b02f13-0000-4000-8000-000000000003",
-			"91b02f14-0000-4000-8000-000000000004",
-		];
-		const prefixes = shortIdsFor(page);
-		for (const id of page) {
-			const row = prefixes.get(id) as string;
-			const confirm = shortIdFixed(id, SHORT_ID_CONFIRM_LEN);
-			// Either the row prefix is inside the confirm's 8, or the page held two
-			// ids agreeing on 8 characters and the row prefix is the longer of the
-			// two — in which case the confirm is a prefix of IT. Both directions
-			// keep the two visually matchable; a pair that shares neither would not.
-			expect(
-				row.startsWith(confirm) || confirm.startsWith(row),
-				`${row} and ${confirm} do not line up`,
-			).toBe(true);
-		}
-	});
-
-	test("the two lengths keep their relationship", () => {
-		expect(SHORT_ID_CONFIRM_LEN).toBeGreaterThan(SHORT_ID_MIN);
 	});
 
 	test("duplicates and short ids are total, not special cases", () => {

@@ -94,6 +94,8 @@ interface SeedOptions {
 	/** An explicit order id — for the order-number cases, which need ids that
 	 *  share (or do not share) their first five characters. */
 	id?: string;
+	/** An explicit line sku (default `SKU-<suffix>`). */
+	sku?: string;
 	totalCents?: number;
 	state?: "pending" | "paid" | "processing";
 }
@@ -116,7 +118,7 @@ async function seedOrder(options: SeedOptions): Promise<string> {
 		lines: [
 			{
 				productId: toProductId(`prod-${suffix}`),
-				sku: toSku(`SKU-${suffix.toUpperCase()}`),
+				sku: toSku(options.sku ?? `SKU-${suffix.toUpperCase()}`),
 				title: "Linen apron",
 				unitPrice: cents(total),
 				currency: currency("USD"),
@@ -277,6 +279,23 @@ describe("the console's read/write branch on the otta admin route", () => {
 				expect(rowsOf(await list({ search: digits })).map((o) => o["id"])).toEqual([id]);
 			}
 		}
+	});
+
+	test("a number-shaped search rewrites ONLY the id arm: a sku spelled `#12345` is still found", async () => {
+		const bySku = await seedOrder({
+			tag: "hashsku",
+			id: "dd000000-0000-4000-8000-000000000001",
+			sku: "#12345",
+		});
+		const byId = await seedOrder({ tag: "hashid", id: "12345aaa-0000-4000-8000-000000000002" });
+		const found = rowsOf(await list({ search: "#12345" }))
+			.map((o) => o["id"])
+			.toSorted();
+		expect(found).toEqual([byId, bySku].toSorted());
+		const result = await list({ search: "#12345" });
+		expect(result["total"]).toBe(2);
+		expect(result["searchedByNumber"]).toBe(true);
+		expect((await list({ search: "hashsku" }))["searchedByNumber"]).toBeUndefined();
 	});
 
 	test("the EXACT count is the whole filtered set even when it is larger than one page", async () => {

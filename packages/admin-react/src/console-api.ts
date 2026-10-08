@@ -55,8 +55,8 @@ export interface OrderSummary {
 	readonly id: string;
 	/** The order NUMBER ("#3F9A2"), computed by the server with the domain's
 	 *  `orderNumber` — the label the shopper sees. A display label, never a key
-	 *  (ADR-0033). Optional: a payload without it renders the short id instead. */
-	readonly orderNumber?: string;
+	 *  (ADR-0033). */
+	readonly orderNumber: string;
 	readonly state: string;
 	readonly currency: string;
 	readonly buyerRef: string;
@@ -119,8 +119,8 @@ export interface OrderDetail {
 	readonly id: string;
 	/** The order NUMBER ("#3F9A2"), computed by the server with the domain's
 	 *  `orderNumber` — the label the shopper sees. A display label, never a key
-	 *  (ADR-0033). Optional: a payload without it renders the short id instead. */
-	readonly orderNumber?: string;
+	 *  (ADR-0033). */
+	readonly orderNumber: string;
 	readonly state: string;
 	readonly currency: string;
 	readonly paymentMethod: string | null;
@@ -262,6 +262,8 @@ export interface ListPayload {
 	readonly ok: true;
 	readonly orders: readonly OrderSummary[];
 	readonly nextCursor: string | null;
+	/** The search was an order number (ADR-0033); absent otherwise. */
+	readonly searchedByNumber?: true;
 	/** The service's exact count of the filtered set (INC-23). Optional because
 	 *  a service older than the field omits it, and `formatAmount`'s rule
 	 *  applies to counts too: absent is not zero. */

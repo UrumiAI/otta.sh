@@ -340,6 +340,7 @@ const PAGE_FOUR = token({ pos: { createdAt: "2026-03-02T11:00:00.000Z", id: "o-7
 function order(id: string) {
 	return {
 		id,
+		orderNumber: `#${id.slice(0, 5).toUpperCase()}`,
 		state: "paid",
 		currency: "USD",
 		buyerRef: `buyer-${id}`,

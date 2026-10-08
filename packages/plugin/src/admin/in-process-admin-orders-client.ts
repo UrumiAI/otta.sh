@@ -145,7 +145,6 @@ import {
 	type InProcessCommerceStores,
 	type InProcessCommerceStoresOptions,
 } from "../commerce/in-process-commerce-stores.js";
-import { orderNumberSearchText } from "@otta-sh/admin-presentation";
 import { isRetryableStorageBusy } from "@otta-sh/store-emdash";
 import {
 	sendOrderEmailsNow,
@@ -1251,11 +1250,7 @@ function toDomainFilter(filter: OrdersListFilter): OrderListFilter {
 	}
 	if (filter.to !== undefined && filter.to.length > 0) out.to = requireInstant("to", filter.to);
 	if (filter.search !== undefined && filter.search.length > 0) {
-		// An order number typed back as printed ("#3F9A2") searches as the id prefix it
-		// is (ADR-0033) — the console's own matcher, so its note and this query agree.
-		// The store's anchored, case-folded id arm does the rest, possibly matching
-		// several orders, which is the point.
-		out.search = orderNumberSearchText(requireBoundedText("search", filter.search, 1, 200));
+		out.search = requireBoundedText("search", filter.search, 1, 200);
 	}
 	return out;
 }

@@ -81,6 +81,7 @@ export interface SeedOrderSummaryRow {
 	reconciliationFlag?: string | null;
 }
 import { emailTemplateForState, isLegalOrderTransition } from "../orders/state-machine.js";
+import { orderNumberIdPrefix } from "../orders/order-number.js";
 
 /** Descending code-unit string comparison (`>` first) — the SAME plain code-unit
  *  ordering the keyset predicate + from/to filters use, so the admin-list fake is
@@ -881,7 +882,9 @@ export class InMemoryOrderStore implements OrderStore {
 			// sides, matching the SQL (whose bare-LIKE case behaviour differs between
 			// pg and SQLite).
 			const needle = filter.search.toLowerCase();
-			const byId = o.id.toLowerCase().startsWith(needle);
+			// ADR-0033: only the ID arm reads a typed order number as the id prefix
+			// it stands for; the buyer and sku arms match the text as typed.
+			const byId = o.id.toLowerCase().startsWith(orderNumberIdPrefix(needle) ?? needle);
 			const byRef = o.buyerRef.toLowerCase().includes(needle);
 			// `some` over the order's OWN line snapshots — the fake's stand-in for the
 			// adapter's correlated EXISTS over `order_items`, and an existence test

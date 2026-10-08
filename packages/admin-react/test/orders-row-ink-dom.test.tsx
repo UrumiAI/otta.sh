@@ -35,6 +35,7 @@ let mounted: Mounted | null = null;
 function order(id: string, state: string, totalCents: number, currency = "USD") {
 	return {
 		id,
+		orderNumber: `#${id.slice(0, 5).toUpperCase()}`,
 		state,
 		currency,
 		buyerRef: `buyer_${id}`,
@@ -392,6 +393,7 @@ function respondWithOneOrder(identity: {
 							createdAt: "2026-03-04T10:15:00.000Z",
 							totalCents: 4200,
 							reconciliationFlag: null,
+							orderNumber: `#${identity.id.slice(0, 5).toUpperCase()}`,
 							...identity,
 						},
 					],

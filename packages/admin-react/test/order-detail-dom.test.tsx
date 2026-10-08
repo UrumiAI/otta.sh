@@ -125,6 +125,7 @@ function detailFor(state: string, refunds: RefundsSummary | null = CAPTURED): De
 		ok: true,
 		order: {
 			id: ORDER_ID,
+			orderNumber: "#7E4CE",
 			state,
 			currency: CUR,
 			paymentMethod: "card",

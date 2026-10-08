@@ -1,4 +1,4 @@
-import { ORDER_NUMBER_LENGTH, orderNumber } from "@otta-sh/domain";
+import { ORDER_NUMBER_LENGTH, orderNumber, orderNumberIdPrefix } from "@otta-sh/domain";
 import { describe, expect, test } from "vitest";
 
 // The order NUMBER: the id's first five characters, upper-cased, behind a `#`.
@@ -34,5 +34,24 @@ describe("orderNumber", () => {
 		// (almost) 200 numbers. A generous floor keeps this from ever flaking.
 		const numbers = new Set(Array.from({ length: 200 }, () => orderNumber(crypto.randomUUID())));
 		expect(numbers.size).toBeGreaterThan(190);
+	});
+});
+
+describe("orderNumberIdPrefix — the one matcher", () => {
+	test("# + at least five hex digits is a number; it stands for that id prefix", () => {
+		expect(orderNumberIdPrefix("#3F9A2")).toBe("3f9a2");
+		expect(orderNumberIdPrefix(" #3f9a2b ")).toBe("3f9a2b");
+	});
+
+	test("a number that crosses a UUID hyphen gets it back", () => {
+		const id = "abcdef12-3000-4000-8000-000000000001";
+		expect(orderNumberIdPrefix("#ABCDEF123")).toBe("abcdef12-3");
+		expect(orderNumberIdPrefix(`#${id.replaceAll("-", "")}`)).toBe(id);
+	});
+
+	test("anything else is not a number", () => {
+		for (const s of ["#3F9A", "3F9A2", "#", "#TEE-BLK", "jo@example.com", "TEE#12345"]) {
+			expect(orderNumberIdPrefix(s)).toBeNull();
+		}
 	});
 });

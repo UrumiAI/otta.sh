@@ -57,6 +57,7 @@ const PRODUCTS_VOCABULARY = {
 function order(id: string, customer: string) {
 	return {
 		id,
+		orderNumber: `#${id.slice(0, 5).toUpperCase()}`,
 		state: "paid",
 		currency: "USD",
 		buyerRef: `buyer-${id}`,

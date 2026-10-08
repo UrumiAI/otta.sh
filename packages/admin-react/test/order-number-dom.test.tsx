@@ -21,7 +21,7 @@ vi.mock("emdash/plugin-utils", async (importOriginal) => {
 	return { ...actual, apiFetch };
 });
 
-const { OrdersList, orderNumberMatchesNote } = await import("../src/orders/orders-list.js");
+const { OrdersList, ORDER_NUMBER_SHARED_NOTE } = await import("../src/orders/orders-list.js");
 const { OrderDetail } = await import("../src/orders/order-detail.js");
 type DetailPayload = import("../src/console-api.js").DetailPayload;
 
@@ -35,10 +35,10 @@ const VOCABULARY = {
 	pageLimit: 25,
 };
 
-function row(id: string, orderNumber: string | undefined) {
+function row(id: string, orderNumber: string) {
 	return {
 		id,
-		...(orderNumber !== undefined ? { orderNumber } : {}),
+		orderNumber,
 		state: "paid",
 		currency: "USD",
 		buyerRef: `buyer_${id}@example.test`,
@@ -53,7 +53,6 @@ function row(id: string, orderNumber: string | undefined) {
 const SOLO = "3f9a2b1c-7d4e-4a5b-9c8d-0123456789ab";
 const TWIN_A = "fee1d111-0000-4000-8000-000000000001";
 const TWIN_B = "fee1d222-0000-4000-8000-000000000002";
-const LEGACY = "7e4ce728-0000-4000-8000-000000000000";
 
 let mounted: Mounted | null = null;
 
@@ -80,12 +79,7 @@ afterEach(async () => {
 async function mountList(): Promise<HTMLElement> {
 	respond({
 		ok: true,
-		orders: [
-			row(SOLO, "#3F9A2"),
-			row(TWIN_A, "#FEE1D"),
-			row(TWIN_B, "#FEE1D"),
-			row(LEGACY, undefined),
-		],
+		orders: [row(SOLO, "#3F9A2"), row(TWIN_A, "#FEE1D"), row(TWIN_B, "#FEE1D")],
 		nextCursor: null,
 		vocabulary: VOCABULARY,
 	});
@@ -126,11 +120,6 @@ test("two rows sharing a number also show what tells them apart", async () => {
 	);
 });
 
-test("a row without a number still prints in the number's format", async () => {
-	const container = await mountList();
-	expect(link(container, LEGACY).textContent).toBe("#7E4CE");
-});
-
 test("a tie-breaker is hex only — never the UUID's hyphen — so the cell stays searchable", async () => {
 	// Two ids that agree through their first EIGHT characters: the unique prefix
 	// crosses the hyphen at position 8.
@@ -149,12 +138,12 @@ test("a tie-breaker is hex only — never the UUID's hyphen — so the cell stay
 	expect(link(mounted.container, DEEP_B).textContent).toBe("#ABCDEF124");
 });
 
-function detail(orderNumber: string | undefined): DetailPayload {
+function detail(orderNumber: string): DetailPayload {
 	return {
 		ok: true,
 		order: {
 			id: SOLO,
-			...(orderNumber !== undefined ? { orderNumber } : {}),
+			orderNumber,
 			state: "paid",
 			currency: "USD",
 			paymentMethod: "card",
@@ -204,12 +193,6 @@ test("the detail names the order number beside its full id", async () => {
 	expect(container.textContent).toContain("Order number");
 });
 
-test("a detail without a number has no number row, and still its full id", async () => {
-	const container = await showDetail(detail(undefined));
-	expect(container.querySelector('[data-testid="detail-order-number"]')).toBe(null);
-	expect(container.querySelector('[data-testid="detail-full-id"]')?.textContent).toBe(SOLO);
-});
-
 test("the identity column is headed Order, not a second #", async () => {
 	const container = await mountList();
 	const headers = [...container.querySelectorAll("th")].map((th) => th.textContent?.trim());
@@ -217,34 +200,25 @@ test("the identity column is headed Order, not a second #", async () => {
 	expect(headers).not.toContain("Order #");
 });
 
-test("a search by number that answers several orders says so; one answer, or another search, does not", () => {
-	const twins = [{ id: TWIN_A }, { id: TWIN_B }, { id: SOLO }];
-	expect(orderNumberMatchesNote("#fee1d", twins)).toBe(
-		"More than one order has the number #FEE1D. An order number can be shared — confirm the buyer, date and total before acting.",
+test("the note shows whenever the server read the search as an order number — and only then", async () => {
+	for (const searchedByNumber of [true, false]) {
+		await mounted?.unmount();
+		mounted = null;
+		respond({
+			ok: true,
+			orders: [row(TWIN_A, "#FEE1D")],
+			nextCursor: null,
+			total: 1,
+			...(searchedByNumber ? { searchedByNumber: true } : {}),
+			vocabulary: VOCABULARY,
+		});
+		const node = <OrdersList onOpen={() => undefined} initialFilter={{ search: "#FEE1D" }} />;
+		mounted = await mount(node);
+		await mounted.rerender(node);
+		const note = mounted.container.querySelector('[data-testid="orders-number-shared-note"]');
+		expect(note?.textContent ?? null).toBe(searchedByNumber ? ORDER_NUMBER_SHARED_NOTE : null);
+	}
+	expect(ORDER_NUMBER_SHARED_NOTE).toBe(
+		"Order numbers can be shared. Confirm the buyer, date and total.",
 	);
-	// It states no count: the server's total also counts buyer and sku matches.
-	expect(orderNumberMatchesNote(" #FEE1D ", twins)).not.toMatch(/\d+ orders/);
-	// Only ID-prefix matches count: a row found by its buyer reference is not
-	// another order with this number.
-	expect(orderNumberMatchesNote("#FEE1D", [{ id: TWIN_A }, { id: SOLO }])).toBeNull();
-	// Shorter than a number is a prefix hunt, not a number.
-	expect(orderNumberMatchesNote("#FEE1", twins)).toBeNull();
-	expect(orderNumberMatchesNote("fee1d", twins)).toBeNull();
-	expect(orderNumberMatchesNote("jo@example.com", twins)).toBeNull();
-	expect(orderNumberMatchesNote(undefined, twins)).toBeNull();
-});
-
-test("the note renders above the rows when the applied search is a shared number", async () => {
-	respond({
-		ok: true,
-		orders: [row(TWIN_A, "#FEE1D"), row(TWIN_B, "#FEE1D")],
-		nextCursor: null,
-		total: 2,
-		vocabulary: VOCABULARY,
-	});
-	const node = <OrdersList onOpen={() => undefined} initialFilter={{ search: "#FEE1D" }} />;
-	mounted = await mount(node);
-	await mounted.rerender(node);
-	const note = mounted.container.querySelector('[data-testid="orders-number-matches-note"]');
-	expect(note?.textContent).toMatch(/^More than one order has the number #FEE1D\./);
 });

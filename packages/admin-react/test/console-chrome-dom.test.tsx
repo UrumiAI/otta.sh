@@ -79,6 +79,7 @@ const ORDERS_LIST: ListPayload = {
 	orders: [
 		{
 			id: "7e4ce728",
+			orderNumber: "#7E4CE",
 			state: "paid",
 			currency: "USD",
 			buyerRef: "buyer@example.test",
@@ -98,6 +99,7 @@ const ORDER_DETAIL: DetailPayload = {
 	ok: true,
 	order: {
 		id: "7e4ce728",
+		orderNumber: "#7E4CE",
 		state: "paid",
 		currency: "USD",
 		paymentMethod: "card",
