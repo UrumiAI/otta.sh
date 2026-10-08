@@ -69,6 +69,12 @@ export {
 	type NormalizeSubdivisionResult,
 	type ValidateZoneRegionsResult,
 } from "./pricing/region-codes.js";
+// The storefront's state/province pick list: names for display, codes unchanged.
+export {
+	subdivisionName,
+	subdivisionOptions,
+	type SubdivisionOption,
+} from "./pricing/subdivision-names.js";
 export {
 	resolveShippingZone,
 	type ZoneDestination,

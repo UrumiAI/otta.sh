@@ -974,6 +974,10 @@ describe("storefront/checkout/summary — the zone derived from the destination 
 
 	test.each([
 		[{ country: "US", region: "XX" }, "SHIPPING_REGION_CODE_REQUIRED"],
+		// Real subdivisions of ANOTHER country: the pick list only offers the
+		// address's own, and the server still refuses anything else.
+		[{ country: "US", region: "ON" }, "SHIPPING_REGION_CODE_REQUIRED"],
+		[{ country: "US", region: "MX-CA" }, "SHIPPING_REGION_CODE_REQUIRED"],
 		[{ country: "US" }, "SHIPPING_REGION_CODE_REQUIRED"],
 		[{ country: "JP" }, "SHIPPING_ZONE_NOT_MATCHED"],
 		[{ country: "ZZ" }, "INVALID_SHIPPING_ADDRESS"],
@@ -2436,6 +2440,17 @@ describe("storefront/checkout/place success path (workerd sandbox, Stripe stubbe
 				"SHIPPING_REGION_CODE_REQUIRED",
 			);
 		});
+
+		test.each(["ON", "MX-CA"])(
+			"(US, %s) — another country's subdivision — is refused at place: no order, no intent",
+			async (region) => {
+				await expectRefusedAtPlace(
+					await p2Cart(),
+					{ shippingAddress: { ...SHIP_TO, region }, shippingMethodId: P2.US_STD },
+					"SHIPPING_REGION_CODE_REQUIRED",
+				);
+			},
+		);
 
 		test("(DE, Bavaria) is INVALID_INPUT before any order or intent exists", async () => {
 			const cartId = await p2Cart();

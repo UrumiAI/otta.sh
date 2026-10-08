@@ -16,3 +16,6 @@ sites/staging/emdash-env.d.ts
 # byte by a test (ADR-0021). The generator owns its layout; formatting it would
 # make `pnpm format` and the generator fight over the file.
 packages/domain/src/pricing/iso-3166.generated.ts
+
+# Written by the same generator — the English subdivision names (pick list).
+packages/domain/src/pricing/iso-3166-names.generated.ts
