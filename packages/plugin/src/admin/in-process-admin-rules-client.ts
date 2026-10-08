@@ -873,6 +873,10 @@ export class InProcessAdminRulesClient implements AdminRulesSurface {
 
 		const res = await this.#stores.couponStore.update(couponId, {
 			...(bind !== null ? { bindCurrency: toCurrency(bind) } : {}),
+			// The check above read the coupon OUTSIDE the store's compare-and-set; this
+			// precondition repeats it INSIDE, against the revision actually replaced,
+			// so a bind landing between that read and this write is refused too.
+			...(sent !== undefined ? { expectCurrency: existing.currency } : {}),
 			amountCents: amountCents === null ? null : toCents(amountCents),
 			rateBps,
 			capCents: capCents === null ? null : toCents(capCents),
@@ -882,8 +886,9 @@ export class InProcessAdminRulesClient implements AdminRulesSurface {
 			maxUses,
 			maxUsesPerCustomer,
 		});
-		return res.ok
-			? { ok: true, value: toCouponWire(res.coupon) }
+		if (res.ok) return { ok: true, value: toCouponWire(res.coupon) };
+		return res.reason === "currency_moved"
+			? { ok: false, reason: "error", status: 409 }
 			: { ok: false, reason: "not_found" };
 	}
 

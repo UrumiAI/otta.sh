@@ -3,9 +3,10 @@
  * must answer like the Block Kit screen whoever calls it. In-process over a real
  * document store (no mocks), as `coupon-retire.test.ts` is.
  */
-import { cents, type Clock } from "@otta-sh/domain";
+import { cents, currency, type Clock } from "@otta-sh/domain";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { InProcessAdminRulesClient } from "../src/admin/in-process-admin-rules-client.js";
+import type { PluginContext, StorageAccess } from "../src/types.js";
 import {
 	makeInProcessCommerce,
 	type InProcessCommerceHarness,
@@ -22,8 +23,40 @@ afterEach(async () => {
 	await harness.close();
 });
 
-function rules(): InProcessAdminRulesClient {
-	return new InProcessAdminRulesClient(harness.ctx, { clock });
+function rules(ctx: PluginContext = harness.ctx): InProcessAdminRulesClient {
+	return new InProcessAdminRulesClient(ctx, { clock });
+}
+
+/** `ctx` whose coupon writes run `before` once, just ahead of the FIRST
+ *  compare-and-set — a concurrent write landing between the client's read and
+ *  its write. */
+function interleavedCtx(before: () => Promise<void>): { ctx: PluginContext; ran: () => boolean } {
+	const raw = harness.ctx.storage as StorageAccess;
+	let ran = false;
+	const storage = new Proxy(raw, {
+		get(target, name, receiver) {
+			const collection = Reflect.get(target, name, receiver) as unknown;
+			if (name !== "coupons" || typeof collection !== "object" || collection === null) {
+				return collection;
+			}
+			return new Proxy(collection, {
+				get(inner, method, innerReceiver) {
+					const value = Reflect.get(inner, method, innerReceiver) as unknown;
+					if (method !== "compareAndSet" || typeof value !== "function") {
+						return typeof value === "function" ? value.bind(inner) : value;
+					}
+					return async (...args: unknown[]) => {
+						if (!ran) {
+							ran = true;
+							await before();
+						}
+						return (value as (...a: unknown[]) => unknown).apply(inner, args);
+					};
+				},
+			});
+		},
+	});
+	return { ctx: { ...harness.ctx, storage }, ran: () => ran };
 }
 
 /** An unbound percentage coupon, optionally with a cap written before bounds
@@ -67,6 +100,34 @@ describe("updateCoupon — the currency an edit's amounts were parsed in", () =>
 		expect(
 			(await rules().updateCoupon("c-pct", { rateBps: 1000, capCents: 600, currency: "JPY" })).ok,
 		).toBe(true);
+	});
+
+	test("RACE: a bind landing between the client's read and its write refuses the write (409) — the check runs inside the store's CAS", async () => {
+		await seed(null);
+		// A read the coupon UNBOUND and binds EUR with a €5.00 cap (500 cents).
+		// Just before A's write, B binds JPY with a ¥300 cap.
+		const { ctx, ran } = interleavedCtx(async () => {
+			const bound = await harness.stores.couponStore.update("c-pct", {
+				bindCurrency: currency("JPY"),
+				expectCurrency: null,
+				amountCents: null,
+				rateBps: 1000,
+				capCents: cents(300),
+				minSubtotalCents: null,
+				startsAt: null,
+				expiresAt: null,
+				maxUses: null,
+				maxUsesPerCustomer: null,
+			});
+			expect(bound.ok).toBe(true);
+		});
+		expect(
+			await rules(ctx).updateCoupon("c-pct", { rateBps: 1000, capCents: 500, currency: "EUR" }),
+		).toEqual({ ok: false, reason: "error", status: 409 });
+		expect(ran()).toBe(true);
+		// A's 500 never landed on the JPY coupon (it would have meant ¥500): the
+		// store's own precondition (expect unbound) refused it inside the CAS.
+		expect(await stored()).toMatchObject({ capCents: 300, currency: "JPY" });
 	});
 
 	test("refuses to bind a currency to a coupon whose cap predates currencies (it would re-read it)", async () => {
