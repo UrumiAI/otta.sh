@@ -71,12 +71,8 @@ import {
 	notAFormResponse,
 	readFormBody,
 } from "../../lib/otta-api.js";
-import {
-	COUNTRY_CODES,
-	isCodeShapedRegion,
-	ORDER_ADDRESS_MAX_LENGTHS,
-	subdivisionOptions,
-} from "@otta-sh/plugin";
+import { COUNTRY_CODES, isCodeShapedRegion, ORDER_ADDRESS_MAX_LENGTHS } from "@otta-sh/plugin";
+import { subdivisionOptions } from "@otta-sh/plugin/subdivisions";
 import {
 	DELIVERY_REGION_COUNTRY_FIELD,
 	REGION_COUNTRY_FIELD,

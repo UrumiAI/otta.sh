@@ -13,7 +13,8 @@
  * picked for one country is never sent as another's: same-looking codes (`01`)
  * exist in many countries.
  */
-import { normalizeSubdivision, subdivisionOptions } from "@otta-sh/plugin";
+import { normalizeSubdivision } from "@otta-sh/plugin";
+import { subdivisionOptions } from "@otta-sh/plugin/subdivisions";
 
 /** The hidden field naming the country the place form's region list was
  *  rendered for (the address block without delivery). */

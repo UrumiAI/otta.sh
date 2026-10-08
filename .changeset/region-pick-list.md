@@ -17,11 +17,12 @@ field.
   refused). An old stored or typed form (`us-ca`, `US-CA`) renders as the selected option.
 - **New: English subdivision names.** The CLDR 48.2 generator now also reads the vendored
   `common/subdivisions/en.xml` and writes `iso-3166-names.generated.ts` (pinned byte for
-  byte like the codes module; the codes module itself is unchanged). `@otta-sh/domain`
-  exports `subdivisionOptions(country)` and `subdivisionName(country, code)`, which decode
-  one country at a time on demand; `@otta-sh/plugin` re-exports them with
-  `normalizeSubdivision`. The names live in their own module, so the sandbox entry does
-  not carry them.
+  byte like the codes module; the codes module itself is unchanged). They are reached
+  only through new subpaths — `@otta-sh/domain/subdivision-names` and
+  `@otta-sh/plugin/subdivisions` (`subdivisionOptions(country)`,
+  `subdivisionName(country, code)`, decoded one country at a time on demand) — so neither
+  package's main entry nor the plugin's sandbox entry carries them. `@otta-sh/plugin` also
+  re-exports `normalizeSubdivision`.
 - **A region is never sent for the wrong country.** Each list echoes the country it was
   rendered for (`deliveryRegionCountry`, `regionCountry`); when the posted country
   differs, the old region is dropped, and a place after a country change comes back with

@@ -168,6 +168,31 @@ describe("emitted plugin bundle carries no un-bundled workspace or host import",
 		expect(names).toContain("sandbox-entry.mjs");
 	});
 
+	test("the subdivision NAMES ride only the `subdivisions` entry, never what the sandbox loads", () => {
+		// ~70 KB of English names exist for a storefront's region pick list. The
+		// sandbox entry — and the main entry — must not grow by them: follow each
+		// entry's relative imports and look for a name only the names module holds.
+		const byFile = new Map(emitted.map((e) => [e.file, e.source]));
+		const closure = (entry: string): string[] => {
+			const seen = new Set<string>();
+			const visit = (file: string): void => {
+				if (seen.has(file)) return;
+				seen.add(file);
+				const source = byFile.get(file) ?? "";
+				for (const m of source.matchAll(/(?:from|import)\s*\(?\s*["']\.\/([^"']+\.mjs)["']/g)) {
+					visit(m[1]!);
+				}
+			};
+			visit(entry);
+			return [...seen];
+		};
+		const carriesNames = (file: string): boolean => (byFile.get(file) ?? "").includes("Karnataka");
+		expect(closure("subdivisions.mjs").some(carriesNames)).toBe(true);
+		for (const entry of ["sandbox-entry.mjs", "plugin.mjs", "index.mjs"]) {
+			expect(closure(entry).filter(carriesNames), entry).toEqual([]);
+		}
+	});
+
 	test("NO bare @otta-sh/domain or @otta-sh/store-emdash import survives", () => {
 		for (const { file, specifiers } of emitted) {
 			expect(specifiers, file).not.toContain("@otta-sh/domain");
