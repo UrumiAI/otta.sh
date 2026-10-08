@@ -123,9 +123,9 @@ export interface DraftCookieWriter {
  * existed, rather than a form that looks whole and is not.
  */
 export function writeCheckoutDraft(cookies: DraftCookieWriter, draft: CheckoutDraft): void {
+	if (!checkoutDraftFits(draft)) return;
 	const candidate = clean(draft);
 	if (candidate === null) return;
-	if (encodeURIComponent(JSON.stringify(candidate)).length > COOKIE_BUDGET) return;
 	cookies.set(CHECKOUT_DRAFT_COOKIE, JSON.stringify(candidate), {
 		httpOnly: true,
 		secure: true,
@@ -133,6 +133,16 @@ export function writeCheckoutDraft(cookies: DraftCookieWriter, draft: CheckoutDr
 		path: DRAFT_PATH,
 		maxAge: CHECKOUT_DRAFT_MAX_AGE_SECONDS,
 	});
+}
+
+/** Would `writeCheckoutDraft` actually store this draft? False when it is over
+ *  the cookie budget — a caller whose next step depends on the typed values
+ *  coming back (a re-render that asks again) must not rely on them then. */
+export function checkoutDraftFits(draft: CheckoutDraft): boolean {
+	const candidate = clean(draft);
+	return (
+		candidate !== null && encodeURIComponent(JSON.stringify(candidate)).length <= COOKIE_BUDGET
+	);
 }
 
 export function readCheckoutDraft(cookies: CookieReader): CheckoutDraft | null {

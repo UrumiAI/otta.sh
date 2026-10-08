@@ -44,6 +44,7 @@ import {
 } from "../../lib/cart-actions.js";
 import { checkoutStashTotal, setCheckoutCookie } from "../../lib/checkout-cookie.js";
 import {
+	checkoutDraftFits,
 	clearCheckoutDraft,
 	draftValuesFromForm,
 	writeCheckoutDraft,
@@ -371,13 +372,21 @@ async function place(context: APIContext): Promise<Response> {
 	// country, it comes back too (it never silently loses the region and places,
 	// as main refused such a region rather than placing). After that one round
 	// trip the list matches the country and the region stays optional.
+	//
+	// Only when the typed values can come back: an address too long for the
+	// draft cookie is not saved, so a re-ask would return an EMPTY form whose
+	// next submit is re-asked again — the order could never be placed. Then it
+	// places (the stale region is still dropped, below).
+	const reAskFields: FieldErrors =
+		subdivisionOptions(addressCountry ?? "").length > 0 ? { region: "invalid" } : {};
 	if (
 		addressListStale &&
 		(formString(form.get("region")) !== undefined ||
-			subdivisionOptions(addressCountry ?? "").length > 0)
+			subdivisionOptions(addressCountry ?? "").length > 0) &&
+		checkoutDraftFits({ values: draftValues, errors: reAskFields, error: REGION_LIST_UPDATED })
 	) {
 		return refuse(checkoutPath({ ...selection, error: REGION_LIST_UPDATED }), REGION_LIST_UPDATED, {
-			fields: subdivisionOptions(addressCountry ?? "").length > 0 ? { region: "invalid" } : {},
+			fields: reAskFields,
 		});
 	}
 

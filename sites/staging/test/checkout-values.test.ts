@@ -33,6 +33,7 @@ import { cartErrorMessage } from "../src/lib/error-messages.js";
 import {
 	CHECKOUT_DRAFT_COOKIE,
 	CHECKOUT_DRAFT_MAX_AGE_SECONDS,
+	checkoutDraftFits,
 	fieldErrorCopy,
 	readCheckoutDraft,
 	shownFieldErrors,
@@ -636,6 +637,34 @@ describe("the state/province pick list: a changed country is a round trip, never
 		expect(h.calls).toHaveLength(0);
 		expect(h.draft()!.values).toMatchObject({ email: "ada@example.com", country: "US" });
 		expect(h.draft()!.errors).toEqual({ region: "invalid" });
+	});
+
+	test("an address too long for the draft cookie is never re-asked: the order can still be placed", async () => {
+		// The draft would not be saved (over the cookie budget), so a re-ask would
+		// come back EMPTY and every later submit would be re-asked again (review R2-1).
+		const long = {
+			name: "Ł".repeat(ORDER_ADDRESS_MAX_LENGTHS.name),
+			line1: "Ł".repeat(ORDER_ADDRESS_MAX_LENGTHS.line1),
+			line2: "Ł".repeat(ORDER_ADDRESS_MAX_LENGTHS.line2),
+			city: "Ł".repeat(ORDER_ADDRESS_MAX_LENGTHS.city),
+		};
+		// Non-ASCII, so the URL-encoded cookie is several times its length.
+		const form = {
+			...FULL,
+			...long,
+			country: "US",
+			regionCountry: "",
+		};
+		const { idempotencyKey: _key, regionCountry: _list, ...values } = form;
+		expect(checkoutDraftFits({ values, errors: {} })).toBe(false);
+		for (const attempt of [1, 2]) {
+			const h = harness(form, PLACED);
+			expect((await PLACE_POST(h.context)).headers.get("location"), `attempt ${attempt}`).toBe(
+				"/checkout/pay",
+			);
+			expect(h.calls).toHaveLength(1);
+			expect((h.calls[0]!["shippingAddress"] as Record<string, string>)["country"]).toBe("US");
+		}
 	});
 
 	test("once the list matches the country, leaving the region blank places (it stays optional)", async () => {
