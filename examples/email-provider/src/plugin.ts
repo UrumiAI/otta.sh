@@ -43,7 +43,8 @@ export async function deliver(event: EmailDeliverEvent, ctx: DeliverContext): Pr
 	// Name the setting, never the value.
 	if (!SAFE_KEY.test(apiKey))
 		throw new Error(`email provider: "${API_KEY}" has invalid characters`);
-	const { to, subject, text, html } = event.message;
+	// `cc` and `replyTo` are optional (EmDash 1.0); JSON.stringify drops them when absent.
+	const { to, cc, replyTo, subject, text, html } = event.message;
 	const host = new URL(EMAIL_API_URL).host;
 
 	let response: Response;
@@ -53,7 +54,7 @@ export async function deliver(event: EmailDeliverEvent, ctx: DeliverContext): Pr
 		response = await http.fetch(EMAIL_API_URL, {
 			method: "POST",
 			headers: { "content-type": "application/json", authorization: `Bearer ${apiKey}` },
-			body: JSON.stringify({ from, to, subject, text, html }),
+			body: JSON.stringify({ from, to, cc, replyTo, subject, text, html }),
 		});
 	} catch (error) {
 		// oxlint-disable-next-line preserve-caught-error -- a fetch error can quote the request's headers (the key)

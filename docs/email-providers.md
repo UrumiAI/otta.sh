@@ -93,6 +93,16 @@ are write-only in the admin and are never echoed back.
    yours explicitly. Until a provider is selected, order emails wait up to 72 hours and are
    then skipped, not sent, so a late setup does not mail stale receipts. Sign-in links are not
    sent at all; the buyer asks for a new one.
+4. Check otta's **Settings → Payments & email**. Its email line has three states:
+   - **"email set"**: "sent via EmDash's email provider". An email has gone through it.
+   - **"email TBC"**: "provider not confirmed". Nothing has been sent through it since setup
+     or since the host last refused a send. A sandboxed host looks like this even with no
+     provider, so place a test order or request a sign-in link to confirm it.
+   - **"no email"**: "no EmDash email provider". Order emails wait up to 72 h, then are
+     skipped.
+
+   Email API keys that older otta builds stored are deleted only after the first email goes
+   through your provider, so a rollback still works until then.
 
 ## Test it
 

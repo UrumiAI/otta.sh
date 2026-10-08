@@ -75,6 +75,16 @@ describe("example email provider", () => {
 		});
 	});
 
+	test("forwards EmDash 1.0's optional cc and replyTo when the message has them", async () => {
+		const { ctx, calls } = stubContext(reply(202));
+		const message = { ...event.message, cc: ["ops@example.net"], replyTo: "help@example.net" };
+		await deliver({ ...event, message }, ctx);
+		expect(JSON.parse(String(calls[0]?.init?.body))).toEqual({
+			from: "shop@example.net",
+			...message,
+		});
+	});
+
 	test("throws on non-2xx, naming status and host but never the key or the body", async () => {
 		const { ctx } = stubContext(reply(401));
 		const err = await failure(deliver(event, ctx));

@@ -11,6 +11,10 @@
 /** emdash `EmailMessage`: what `ctx.email.send` takes and `email:deliver` receives. */
 export interface TestEmailMessage {
 	to: string;
+	/** Additional visible recipients (emdash 1.0). */
+	cc?: string[];
+	/** Where replies go instead of the sender (emdash 1.0). */
+	replyTo?: string;
 	subject: string;
 	text: string;
 	html?: string;
