@@ -48,6 +48,7 @@ import {
 	draftFromRecord,
 	isDraftDirty,
 	marginSummary,
+	currencyChangeText,
 	mergeDraft,
 	SIZE_FIELDS,
 	salePreview,
@@ -56,6 +57,7 @@ import {
 	validateDraft,
 	type DraftField,
 	type DraftProblems,
+	type CurrencyChange,
 	type PricingDraft,
 } from "./pricing-model.js";
 import {
@@ -483,10 +485,7 @@ export function PricingStockEditor({ productId }: { productId: string }): React.
 				setDraft(merged.draft);
 				if (merged.conflict) {
 					setTouched(new Set());
-					setSaveStatus({
-						tone: "fail",
-						text: "Someone else changed this product while you were editing. The latest values are shown — check them and save again.",
-					});
+					setSaveStatus({ tone: "fail", text: conflictText(merged.currencyChange) });
 				}
 			}
 			reseed.current = false;
@@ -732,6 +731,8 @@ export function PricingStockEditor({ productId }: { productId: string }): React.
 		// merchant's own edits on top of it (`mergeDraft`), and writes against that
 		// fresh watermark. A field changed on both sides stops the save and says so.
 		let latestRecord: ProductRecord = p;
+		/** The currency move a conflicting read reported, if that was the conflict. */
+		let saveConflict: CurrencyChange | undefined;
 		void fetchProductDetail(productId)
 			.then((fresh): Result<ActPayload> | "conflict" | "invalid" | Promise<Result<ActPayload>> => {
 				if (isFailure(fresh)) return fresh;
@@ -751,7 +752,10 @@ export function PricingStockEditor({ productId }: { productId: string }): React.
 					storeCurrency,
 				});
 				setDraft(merged.draft);
-				if (merged.conflict) return "conflict" as const;
+				if (merged.conflict) {
+					saveConflict = merged.currencyChange;
+					return "conflict" as const;
+				}
 				// The merge can bring in another writer's values; check the result
 				// as a whole before it goes anywhere (the plugin re-checks it too).
 				if (Object.keys(validateDraft(merged.draft, latest)).length > 0) return "invalid" as const;
@@ -781,10 +785,7 @@ export function PricingStockEditor({ productId }: { productId: string }): React.
 				}
 				if (result === "conflict") {
 					setTouched(new Set());
-					setSaveStatus({
-						tone: "fail",
-						text: "Someone else changed this product while you were editing. The latest values are shown — check them and save again.",
-					});
+					setSaveStatus({ tone: "fail", text: conflictText(saveConflict) });
 					return;
 				}
 				if (isFailure(result)) {
@@ -959,9 +960,8 @@ export function PricingStockEditor({ productId }: { productId: string }): React.
 										))}
 									</select>
 								</div>
-								{/* Only while the store currency is really unknown (no read has
-								    carried one) AND nothing is picked. */}
-								{storeCurrency === "" && d.currency === "" && (
+								{/* Whenever no currency is chosen — the only way the draft gets "". */}
+								{d.currency === "" && (
 									<span className="otta-pricing-hint" data-testid="store-currency-unknown">
 										Couldn't load your store currency — choose one.
 									</span>
@@ -1463,4 +1463,11 @@ export const PRICING_FIELD_WIDGET = "pricing";
 function storeCurrencyOf(result: ProductDetailPayload): string {
 	if (result.storeCurrency === null) return "";
 	return result.storeCurrency ?? DEFAULT_STORE_CURRENCY;
+}
+
+/** The conflict banner: what moved when it was the currency, else the general one. */
+function conflictText(change: CurrencyChange | undefined): string {
+	return change === undefined
+		? "Someone else changed this product while you were editing. The latest values are shown — check them and save again."
+		: currencyChangeText(change);
 }

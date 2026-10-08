@@ -574,7 +574,7 @@ test("a later read that knows the store currency hides the prompt and adopts it 
 	expect((input(c, "Currency") as unknown as HTMLSelectElement).value).toBe("EUR");
 });
 
-test("a price typed under the shown default keeps that currency when a re-read brings a switched store currency", async () => {
+test("a price typed under the shown default: a re-read with a switched store currency is a conflict that says so, and the currency stays", async () => {
 	let moved = false;
 	apiFetch.mockImplementation((_url, init) => {
 		const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
@@ -593,7 +593,13 @@ test("a price typed under the shown default keeps that currency when a re-read b
 	await fire(button(c, "Add"), "click");
 	await flush();
 	expect(c.textContent).toContain("now 29 in stock");
+	// The default moved under typed money: frozen to USD, and the merchant is TOLD.
 	expect((input(c, "Currency") as unknown as HTMLSelectElement).value).toBe("USD");
+	expect(c.textContent).toContain(
+		"This product's currency is now EUR — your amounts were entered in USD. Check them before saving.",
+	);
+	expect((input(c, "Price") as HTMLInputElement).value).toBe("24.99");
+	// Having seen it, a save goes through in what they entered.
 	await fire(button(c, "Save pricing & stock"), "click");
 	await flush();
 	const save = writes().find((w) => w["action_id"] === "products:save");
