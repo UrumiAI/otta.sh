@@ -1234,7 +1234,17 @@ describe("Settings: store currency", () => {
 		expect(options[0]).toEqual({ value: "USD", label: "USD — US Dollar" });
 		const copy = contextTexts(blocks).join(" ");
 		expect(copy).toContain("new carts only");
-		expect(copy).toContain("can't be used in new carts until priced in it");
+		// A product's or coupon's currency is fixed once set, so the copy says to
+		// decide first — never "reprice them" (review B M-1).
+		expect(copy).toContain("Set it before pricing");
+		expect(copy).toContain("can't be bought in new carts or changed to it");
+		expect(copy).toContain("Add shipping rates in it");
+		// §1's 140-character context budget, for this group's two lines.
+		const currencyLines = contextTexts(blocks).filter(
+			(line) => line.startsWith("Store currency:") || line.startsWith("Set it before pricing"),
+		);
+		expect(currencyLines).toHaveLength(2);
+		for (const line of currencyLines) expect(line.length).toBeLessThanOrEqual(140);
 		// Rendering it wrote nothing: the store still has no currency saved.
 		expect((await storedDoc())?.["currency"]).toBeUndefined();
 		// The Store group's label and the other groups are as they were.
@@ -1320,5 +1330,78 @@ describe("Settings: store currency", () => {
 			"The store currency could not be loaded right now. Reload to try again — the rest of this page still works.",
 		);
 		expect(formFor(blocks, "save-display")).toBeDefined();
+	});
+
+	test("a superseded currency save says someone else changed the settings, and writes nothing", async () => {
+		const storage = await resetOperationalSettings();
+		const key = "k-sc-superseded-1";
+		const mutations = collectionOf<SettingsMutationDoc>(storage, SETTINGS_MUTATIONS_COLLECTION);
+		const seeded = await mutations.compareAndSet(key, null, {
+			patch: { currency: "EUR" },
+			decidedRevision: "some-other-writer-already-decided-this",
+			createdAt: new Date().toISOString(),
+			result: null,
+			appliedRevision: null,
+			appliedAt: null,
+			supersededAt: null,
+		});
+		if (!seeded.applied) throw new Error("fixture setup lost a compare-and-set");
+		sandbox = await loadPluginInSandbox({ allowedHosts: [], storage: true });
+		const outcome = await sandbox.invokeRoute("admin", {
+			type: "form_submit",
+			action_id: "save-store-currency",
+			values: { currency: "EUR" },
+			idempotencyKey: key,
+		});
+		const blocks = blocksOf(outcome);
+		assertBlockContract(blocks, { screen: "settings", level: "list" });
+		const banner = findBlocks(blocks, "banner").find((b) => b.variant === "error");
+		expect(String(banner?.title)).toBe("Settings changed by someone else");
+		expect(String(banner?.description)).toMatch(/Nothing was saved\.$/);
+		expect(toastOf(outcome)).toEqual({
+			message: "Settings changed by someone else",
+			type: "error",
+		});
+		expect((await storedDoc())?.["currency"]).toBeUndefined();
+	});
+
+	test("a currency save the store cannot confirm says to reload — it never claims nothing was saved", async () => {
+		await resetOperationalSettings();
+		sandbox = await loadPluginInSandbox({ allowedHosts: [], storage: true });
+		const handle = sandbox;
+		const { storage } = await storageBridge();
+		const real = storage[SETTINGS_MUTATIONS_COLLECTION];
+		if (real === undefined) throw new Error("no settings_mutations collection to fault-inject");
+		storage[SETTINGS_MUTATIONS_COLLECTION] = new Proxy(real, {
+			get(_holder, property) {
+				if (property === "compareAndSet") {
+					return () => {
+						throw new Error("injected storage fault: settings unwritable");
+					};
+				}
+				const value = Reflect.get(real, property) as unknown;
+				if (typeof value !== "function") return value;
+				return (value as (...args: unknown[]) => unknown).bind(real);
+			},
+		}) as StorageAccess[string];
+		let outcome: unknown;
+		try {
+			outcome = await handle.invokeRoute("admin", {
+				type: "form_submit",
+				action_id: "save-store-currency",
+				values: { currency: "EUR" },
+				idempotencyKey: "k-sc-unavailable-1",
+			});
+		} finally {
+			storage[SETTINGS_MUTATIONS_COLLECTION] = real;
+		}
+		const blocks = blocksOf(outcome);
+		assertBlockContract(blocks, { screen: "settings", level: "list" });
+		const banner = findBlocks(blocks, "banner").find((b) => b.variant === "error");
+		expect(String(banner?.title)).toBe("Store currency not saved");
+		expect(String(banner?.description)).toBe(
+			"The save could not be confirmed — reload to see the current store currency.",
+		);
+		expect(toastOf(outcome)).toEqual({ message: "Store currency not saved", type: "error" });
 	});
 });

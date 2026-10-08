@@ -443,9 +443,12 @@ order of appearance in a deployment's life:
 > **Store currency.** Settings → Store → "Store currency" is the currency a **new** cart is
 > created in (the storefront names none, so it is every shopper's cart). A store that never
 > saves it keeps USD, exactly as before the setting existed — no migration. Changing it affects
-> new carts only: carts already open keep their currency. Products, shipping rates and
-> fixed-amount coupons priced in another currency can't be bought or used in those new carts
-> (`CURRENCY_MISMATCH`) until they are priced in the new one — price them first, then switch.
+> new carts only: carts already open keep their currency. **Decide it before pricing the
+> catalogue.** A product's currency is fixed once it is priced, and a coupon's at creation, so
+> products and coupons (fixed-amount, and percentage coupons with a cap or minimum spend) in
+> another currency can't be bought or used in new carts (`CURRENCY_MISMATCH` at checkout), and
+> they can't be moved to the new currency. Shipping rates are per currency, so add rates in the
+> new one. A spent cart's replacement follows a saved store currency too.
 > The admin's defaults follow it: an unpriced product's currency picker, the shipping rate
 > filter and new-rate currency, and the coupon form's currency hint.
 

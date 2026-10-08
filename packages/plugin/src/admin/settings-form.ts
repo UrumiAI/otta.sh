@@ -1254,7 +1254,7 @@ const STORE_CURRENCY_CONTEXT: readonly Block[] = [
 	},
 	{
 		type: "context",
-		text: "Products, shipping rates and fixed-amount coupons priced in another currency can't be used in new carts until priced in it.",
+		text: "Set it before pricing: products and coupons in another currency can't be bought in new carts or changed to it. Add shipping rates in it.",
 	},
 ];
 

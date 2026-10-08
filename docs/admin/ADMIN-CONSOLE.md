@@ -3181,8 +3181,12 @@ accordion   block_id settings:store
                      submit "Save display name"          → save-display
                context "Store currency: new carts are created in it. Changing it affects
                         new carts only — carts already open keep theirs."         (≤140)
-               context "Products, shipping rates and fixed-amount coupons priced in another
-                        currency can't be used in new carts until priced in it."  (≤140)
+               context "Set it before pricing: products and coupons in another currency
+                        can't be bought in new carts or changed to it. Add shipping
+                        rates in it."                                             (≤140)
+                     ← a product's or coupon's currency (fixed or cap/min-bound
+                       percentage) can never be changed, so the copy says to decide
+                       first; only shipping rates can be added in the new currency.
                form  cf{"settings:currency", {currency}}                         ← S-4
                      select  "Store currency"   initial_value <saved code> | "USD"
                      ← the currency table, the familiar ten first then by code, labels
