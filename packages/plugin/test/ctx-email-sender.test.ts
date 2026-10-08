@@ -34,8 +34,10 @@ import {
 	CtxEmailSender,
 	EMDASH_PIPELINE_NOT_CONFIGURED_MESSAGE,
 	EMDASH_SANDBOX_NOT_CONFIGURED_MESSAGE,
+	EMAIL_LAST_SENT_KEY,
 	EMAIL_TRANSPORT_UNAVAILABLE_KEY,
 	emailSendingAvailable,
+	emailSendingStatus,
 	emailSendingConfigured,
 	isEmailNotConfiguredError,
 	LOGIN_EMAIL_TIMEOUT_MS,
@@ -194,6 +196,94 @@ describe("a sandboxed host's 'no provider' answer is remembered (ADR-0031)", () 
 		const failing = ctxWith({ send: async () => undefined });
 		failing.kv.get = () => Promise.reject(new Error("kv down"));
 		expect(await emailSendingAvailable(failing)).toBe(true);
+	});
+});
+
+/** Let the un-awaited "last sent" write settle. */
+const settle = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
+
+describe("PR #418 review: a delivered send is recorded, and the status has three states", () => {
+	test("a send the host accepts records `state:emailLastSentAt`", async () => {
+		const kv = new Map<string, unknown>();
+		const ctx = ctxWith({ send: async () => undefined }, kv);
+		await (await makeEmailSender(ctx))!.send(INPUT);
+		await settle();
+		expect(typeof kv.get(EMAIL_LAST_SENT_KEY)).toBe("string");
+	});
+
+	test("a failed, refused or timed-out send records nothing", async () => {
+		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+		for (const send of [
+			() => Promise.reject(new Error("provider said no")),
+			notConfigured,
+			() => new Promise<void>(() => {}),
+		]) {
+			const kv = new Map<string, unknown>();
+			const ctx = ctxWith({ send }, kv);
+			const pending = rejectionOf(
+				(await makeEmailSender(ctx, { requestTimeoutMs: 10 }))!.send(INPUT),
+			);
+			await vi.advanceTimersByTimeAsync(10);
+			expect(await pending).toBeDefined();
+			expect(kv.has(EMAIL_LAST_SENT_KEY)).toBe(false);
+		}
+	});
+
+	test("a failing record write never fails the send (the email went)", async () => {
+		const ctx = ctxWith({ send: async () => undefined });
+		ctx.kv.set = () => Promise.reject(new Error("kv down"));
+		const sender = await makeEmailSender(ctx);
+		expect(await rejectionOf(sender!.send(INPUT))).toBeUndefined();
+		await settle();
+	});
+
+	test("unavailable: no ctx.email, or a fresh 'no provider' answer", async () => {
+		expect(await emailSendingStatus(ctxWith())).toBe("unavailable");
+		const now = Date.parse("2026-10-08T12:00:00.000Z");
+		const ctx = ctxWith(
+			{ send: async () => undefined },
+			new Map([
+				[EMAIL_LAST_SENT_KEY, "2026-10-08T11:00:00.000Z"],
+				[EMAIL_TRANSPORT_UNAVAILABLE_KEY, new Date(now - 1_000).toISOString()],
+			]),
+		);
+		expect(await emailSendingStatus(ctx, now)).toBe("unavailable");
+	});
+
+	test("unconfirmed: ctx.email there (an idle sandboxed host always looks so) but nothing sent through it yet", async () => {
+		expect(await emailSendingStatus(ctxWith({ send: notConfigured }))).toBe("unconfirmed");
+	});
+
+	test("unconfirmed: the last send is OLDER than a lapsed 'no provider' answer", async () => {
+		const now = Date.parse("2026-10-08T12:00:00.000Z");
+		const ctx = ctxWith(
+			{ send: async () => undefined },
+			new Map([
+				[EMAIL_LAST_SENT_KEY, "2026-10-08T10:00:00.000Z"],
+				[EMAIL_TRANSPORT_UNAVAILABLE_KEY, "2026-10-08T11:00:00.000Z"],
+			]),
+		);
+		expect(await emailSendingStatus(ctx, now)).toBe("unconfirmed");
+	});
+
+	test("confirmed: a send went through, more recently than any 'no provider' answer", async () => {
+		const now = Date.parse("2026-10-08T12:00:00.000Z");
+		const ctx = ctxWith(
+			{ send: async () => undefined },
+			new Map([
+				[EMAIL_TRANSPORT_UNAVAILABLE_KEY, "2026-10-08T10:00:00.000Z"],
+				[EMAIL_LAST_SENT_KEY, "2026-10-08T11:00:00.000Z"],
+			]),
+		);
+		expect(await emailSendingStatus(ctx, now)).toBe("confirmed");
+	});
+
+	test("unreadable or garbage records err toward unconfirmed (fail-soft)", async () => {
+		const garbage = ctxWith({ send: async () => undefined }, new Map([[EMAIL_LAST_SENT_KEY, 42]]));
+		expect(await emailSendingStatus(garbage)).toBe("unconfirmed");
+		const failing = ctxWith({ send: async () => undefined });
+		failing.kv.get = () => Promise.reject(new Error("kv down"));
+		expect(await emailSendingStatus(failing)).toBe("unconfirmed");
 	});
 });
 

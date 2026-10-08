@@ -67,6 +67,7 @@ import {
 import {
 	EMAIL_AVAILABILITY_READS,
 	EMAIL_SENDER_BUILD_READS,
+	EMAIL_SENT_RECORD_WRITES,
 	emailSendingAvailable,
 	makeEmailSender,
 } from "../src/email/ctx-email-sender.js";
@@ -327,7 +328,7 @@ describe("one real unit of each leg fits its LEG_QUERY_COSTS estimate", () => {
 			expect(LEG_QUERY_COSTS["order-emails"].entry).toBe(EMAIL_AVAILABILITY_READS);
 		});
 
-		test("building the sender and its send fit EMAIL_SENDER_BUILD_READS + 1", async () => {
+		test("building the sender and its send fit EMAIL_SENDER_BUILD_READS + 1 + EMAIL_SENT_RECORD_WRITES", async () => {
 			const { ctx } = countedEmailContext(seed);
 			const used = await cost(async () => {
 				const sender = await makeEmailSender(ctx);
@@ -338,7 +339,7 @@ describe("one real unit of each leg fits its LEG_QUERY_COSTS estimate", () => {
 					idempotencyKey: "row_cost",
 				});
 			});
-			expect(used).toBe(EMAIL_SENDER_BUILD_READS + 1);
+			expect(used).toBe(EMAIL_SENDER_BUILD_READS + 1 + EMAIL_SENT_RECORD_WRITES);
 		});
 
 		test("one real unit — claim, reads, the first send with its build, the mark — fits the unit", async () => {

@@ -193,6 +193,7 @@ import {
 	countTimeoutsAsAttempts,
 	EMAIL_AVAILABILITY_READS,
 	EMAIL_SENDER_BUILD_READS,
+	EMAIL_SENT_RECORD_WRITES,
 	emailSendingAvailable,
 	makeEmailSender,
 } from "../email/ctx-email-sender.js";
@@ -325,9 +326,9 @@ export const STARVING_TICKS = 3 * AGING_TICKS;
  * happened (`allowCommit`), so an action is never repeated for want of its record.
  *  - An email, from just before the send: the refund-total and recipient reads (two),
  *    building the sender (`EMAIL_SENDER_BUILD_READS` kv reads, two, on the first
- *    send), the send (one), and marking it sent (three: the read, the write, the
- *    locator) — eight. `cron-leg-costs.test.ts` measures it with the REAL sender
- *    construction.
+ *    send), the send (one), its "last sent" record (`EMAIL_SENT_RECORD_WRITES`, one
+ *    kv write, also on the first send), and marking it sent (three: the read, the write, the locator) —
+ *    nine. `cron-leg-costs.test.ts` measures it with the REAL sender construction.
  *  - A withdrawal: the cancel and, when Stripe refuses it, the read-back (two
  *    subrequests), the intent's resolution (two) and, on a last attempt, the
  *    give-up flag (two) — six; its record is the last four.
@@ -337,7 +338,8 @@ export const STARVING_TICKS = 3 * AGING_TICKS;
  * already made — no second refund.
  */
 const EMAIL_RECORD_CALLS = 3;
-export const EMAIL_SEND_AND_RECORD_CALLS = 2 + EMAIL_SENDER_BUILD_READS + 1 + EMAIL_RECORD_CALLS;
+export const EMAIL_SEND_AND_RECORD_CALLS =
+	2 + EMAIL_SENDER_BUILD_READS + 1 + EMAIL_SENT_RECORD_WRITES + EMAIL_RECORD_CALLS;
 const CANCEL_CALL_AND_RECORD_CALLS = 6;
 const CANCEL_RECORD_CALLS = 4;
 
@@ -616,7 +618,7 @@ export const LEG_QUERY_COSTS: Record<SweepLeg, { readonly entry: number; readonl
 		// The claim (its page, the read and the write: three), the order read, and then
 		// EMAIL_SEND_AND_RECORD_CALLS: the
 		// reads before the send, building the real sender (up to four kv reads, the
-		// first send), the request, and marking it sent. QA3 saw 13-14 a tick with its due
+		// first send), the request, its "last sent" record, and marking it sent. QA3 saw 13-14 a tick with its due
 		// check; 8 counted only an injected sender, and the ceiling then fell after the
 		// send — the duplicate emails of N2. entry: whether the host has an email
 		// provider — `ctx.email`, plus one kv read of the "no provider" record
@@ -694,7 +696,7 @@ function expireHoldsEntry(expiryBatch: number): number {
  * Free (30): 1 hold, 1 order, 1 email a tick (QA2 M2: a bite of 2 holds made the
  * hold leg's list alone 6 calls, and it could not start behind the money legs'
  * due checks — a second unit never fits a Free tick anyway). Paid (600): 18
- * holds/orders, 15 emails — the time budget, not the count, usually ends a Paid
+ * holds/orders, 13 emails — the time budget, not the count, usually ends a Paid
  * tick first.
  */
 export function batchesFor(queryBudget: number): {
