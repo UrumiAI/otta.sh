@@ -4,7 +4,11 @@ import {
 	readBackgroundWork,
 	validateBackgroundWork,
 } from "../cron/background-work-setting.js";
-import { currencyChoiceLabel, currencyChoicesWith } from "@otta-sh/admin-presentation";
+import {
+	checkoutPaymentWarning,
+	currencyChoiceLabel,
+	currencyChoicesWith,
+} from "@otta-sh/admin-presentation";
 import { effectiveStoreCurrency, isSupportedCurrency, MAX_HOLD_TTL_MINUTES } from "@otta-sh/domain";
 import { emailSendingStatus, type EmailSendingStatus } from "../email/ctx-email-sender.js";
 import { STORE_DISPLAY_NAME_KEY } from "../email/email-render-context.js";
@@ -832,6 +836,30 @@ export function createSettingsFormHandler(): RouteHandler<SettingsFormInput> {
 			};
 			const unsupported = `${code.length > 0 ? code : "That"} isn't a supported currency — choose one from the list. Nothing was changed.`;
 			if (!isSupportedCurrency(code)) return refuse("Store currency not saved", unsupported);
+			// Saving the select UNCHANGED writes nothing — in particular a store that
+			// never saved one stays never-saved (USD by the upgrade rule, not by a
+			// stored "USD"). Only a real change writes. A failed read cannot tell, so
+			// it falls through to the write, which is what the operator asked for.
+			const current = await client.getSettings().catch(() => undefined);
+			if (current !== undefined && effectiveStoreCurrency(current) === code) {
+				const page = await renderPage(ctx, client, {
+					variant: "default",
+					title: "Nothing changed",
+					description: `The store currency is already ${currencyChoiceLabel(code)}.`,
+				});
+				return {
+					...page,
+					toast: { message: "Nothing changed", type: "success" },
+				} satisfies BlockResponse;
+			}
+			// A currency checkout cannot take payment in yet (three-decimal) cannot be
+			// the store currency: every new cart would be unpayable.
+			if (checkoutPaymentWarning(code) !== null) {
+				return refuse(
+					"Store currency not saved",
+					`${code} can't be the store currency yet — payments in ${code} aren't supported at checkout. Nothing was changed.`,
+				);
+			}
 			const key =
 				typeof input.idempotencyKey === "string" && input.idempotencyKey.length > 0
 					? input.idempotencyKey

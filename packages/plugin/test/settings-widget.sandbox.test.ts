@@ -1300,6 +1300,59 @@ describe("Settings: store currency", () => {
 		expect((await settings.get()).tax).toEqual(SAMPLE_TAX);
 	});
 
+	test("saving the select unchanged writes nothing — a never-saved store stays never-saved", async () => {
+		await resetOperationalSettings();
+		sandbox = await loadPluginInSandbox({ allowedHosts: [], storage: true });
+		const outcome = await sandbox.invokeRoute("admin", {
+			type: "form_submit",
+			action_id: "save-store-currency",
+			values: { currency: "USD" },
+			idempotencyKey: "k-sc-unchanged-1",
+		});
+		const blocks = blocksOf(outcome);
+		assertBlockContract(blocks, { screen: "settings", level: "list" });
+		const banner = findBlocks(blocks, "banner")[0];
+		expect(String(banner?.title)).toBe("Nothing changed");
+		expect(String(banner?.description)).toBe("The store currency is already USD — US Dollar.");
+		// No settings document at all, so `currency` is still absent (never saved).
+		expect(await storedDoc()).toBeNull();
+
+		// A saved currency resubmitted unchanged is a no-op too.
+		const { storage } = await storageBridge();
+		const settings = new EmdashSettingsStore({ storage, clock: systemClock });
+		await settings.update({ currency: "EUR" }, idempotencyKey("sc-unchanged-seed"));
+		const before = await storedDoc();
+		const again = await sandbox.invokeRoute("admin", {
+			type: "form_submit",
+			action_id: "save-store-currency",
+			values: { currency: "EUR" },
+			idempotencyKey: "k-sc-unchanged-2",
+		});
+		expect(String(findBlocks(blocksOf(again), "banner")[0]?.title)).toBe("Nothing changed");
+		expect(await storedDoc()).toEqual(before);
+	});
+
+	test("a currency checkout can't take payment in is refused as the store currency, and nothing is written", async () => {
+		await resetOperationalSettings();
+		sandbox = await loadPluginInSandbox({ allowedHosts: [], storage: true });
+		for (const code of ["KWD", "BHD"]) {
+			const outcome = await sandbox.invokeRoute("admin", {
+				type: "form_submit",
+				action_id: "save-store-currency",
+				values: { currency: code },
+				idempotencyKey: `k-sc-unpayable-${code}`,
+			});
+			const blocks = blocksOf(outcome);
+			assertBlockContract(blocks, { screen: "settings", level: "list" });
+			const banner = findBlocks(blocks, "banner").find((b) => b.variant === "error");
+			expect(String(banner?.title), code).toBe("Store currency not saved");
+			expect(String(banner?.description), code).toBe(
+				`${code} can't be the store currency yet — payments in ${code} aren't supported at checkout. Nothing was changed.`,
+			);
+		}
+		expect(await storedDoc()).toBeNull();
+	});
+
 	test("a code outside the table is refused by name, and nothing is written", async () => {
 		await resetOperationalSettings();
 		sandbox = await loadPluginInSandbox({ allowedHosts: [], storage: true });

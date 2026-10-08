@@ -1304,8 +1304,17 @@ function ratesLevel() {
 		async fetchPage(client, path, filter) {
 			const methodId = path[1];
 			if (methodId === undefined) return { items: [], nextCursor: null };
-			await resolveStoreCurrency(client, filter);
-			const rate = await client.getRate(methodId, filter.currency);
+			// A typed currency does not depend on the store currency (still read, for
+			// "Clear filters"), so the two reads run together; a blank one does.
+			if (filter.defaulted) {
+				await resolveStoreCurrency(client, filter);
+				const rate = await client.getRate(methodId, filter.currency);
+				return { items: rate === null ? [] : [rate], nextCursor: null };
+			}
+			const [, rate] = await Promise.all([
+				resolveStoreCurrency(client, filter),
+				client.getRate(methodId, filter.currency),
+			]);
 			return { items: rate === null ? [] : [rate], nextCursor: null };
 		},
 		render({ path, filter, items, notice }) {

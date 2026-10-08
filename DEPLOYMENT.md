@@ -442,7 +442,9 @@ order of appearance in a deployment's life:
 
 > **Store currency.** Settings → Store → "Store currency" is the currency a **new** cart is
 > created in (the storefront names none, so it is every shopper's cart). A store that never
-> saves it keeps USD, exactly as before the setting existed — no migration. Changing it affects
+> saves it keeps USD, exactly as before the setting existed — no migration. A currency checkout
+> can't take payment in yet (BHD, JOD, KWD, OMR) can't be chosen, and saving the select
+> unchanged writes nothing. Changing it affects
 > new carts only: carts already open keep their currency. **Decide it before pricing the
 > catalogue.** A product's currency is fixed once it is priced, and a coupon's at creation, so
 > products and coupons (fixed-amount, and percentage coupons with a cap or minimum spend) in

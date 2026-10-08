@@ -19,7 +19,9 @@ Admin: Settings → Store gets a "Store currency" select (the familiar ten first
 copy that changing it affects new carts only, and that it should be decided before pricing
 (a product's or coupon's currency can't be changed). The unpriced product's currency picker and
 price-edit hint, the shipping rate filter / new-rate currency and the coupon form's currency hint
-follow it; when the admin cannot read the store currency it guesses none.
+follow it; when the admin cannot read the store currency it guesses none. A currency checkout
+can't take payment in yet is refused as the store currency, and saving the select unchanged
+writes nothing (a never-saved store stays never-saved).
 
 **Storefront / theme authors:** `storefront/cart/create` now honours `currency` alongside
 `replacesCartId` (it used to be ignored there). A spent cart's replacement is in the currency

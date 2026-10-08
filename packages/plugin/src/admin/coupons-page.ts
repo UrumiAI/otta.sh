@@ -213,7 +213,7 @@ type CouponsRenderState = {
 
 /** What the create screen says when the store currency could not be read. */
 const COUPON_STORE_CURRENCY_UNKNOWN =
-	"Couldn't load your store currency — enter the currency this coupon is in yourself.";
+	"Couldn't load your store currency — if this coupon needs a currency, enter it yourself.";
 
 /** The create form's seven fields exactly as they were submitted — see
  *  {@link CouponsRenderState}. `type` is a `select` value, so

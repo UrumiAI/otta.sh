@@ -731,7 +731,7 @@ describe("admin Coupons console — list level (workerd sandbox)", () => {
 		expect(byId.get("currency")?.placeholder).toBeUndefined();
 		expect(byId.get("currency")?.initial_value).toBeUndefined();
 		expect(contextTexts(screen)).toContain(
-			"Couldn't load your store currency — enter the currency this coupon is in yourself.",
+			"Couldn't load your store currency — if this coupon needs a currency, enter it yourself.",
 		);
 	});
 
