@@ -1076,6 +1076,7 @@ export class InMemoryOrderStore implements OrderStore {
 			attempts: row.attempts,
 			timeouts: row.timeouts,
 			notice: row.notice === null ? null : { ...row.notice },
+			createdAt: row.createdAt,
 		};
 	}
 

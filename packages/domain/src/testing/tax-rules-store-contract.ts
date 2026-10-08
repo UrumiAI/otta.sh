@@ -25,6 +25,17 @@ export function taxRulesStoreContract(
 	opts: TaxRulesStoreContractOptions,
 ): void {
 	describe(`taxRulesStoreContract [${opts.dialect}]`, () => {
+		test("hasAnyRate: false on an empty store, true once any rate exists, false after the last is deleted", async () => {
+			const { store } = await makeStore();
+			expect(await store.hasAnyRate()).toBe(false);
+			await store.createClass({ id: "standard", name: "Standard" });
+			expect(await store.hasAnyRate()).toBe(false);
+			await seedRate(store);
+			expect(await store.hasAnyRate()).toBe(true);
+			await store.deleteRate("r1");
+			expect(await store.hasAnyRate()).toBe(false);
+		});
+
 		test("create + list tax classes", async () => {
 			const { store } = await makeStore();
 			await store.createClass({ id: "standard", name: "Standard" });

@@ -54,6 +54,7 @@ export interface PricingDraft {
 	readonly sku: string;
 	readonly productKind: string;
 	readonly taxClass: string;
+	readonly taxStatus: string;
 	readonly weightGrams: string;
 	readonly lengthMm: string;
 	readonly widthMm: string;
@@ -82,6 +83,7 @@ export function draftFromRecord(p: ProductRecord): PricingDraft {
 		sku: p.sku ?? "",
 		productKind: p.productKind,
 		taxClass: p.taxClass ?? "",
+		taxStatus: p.taxStatus ?? "taxable",
 		weightGrams: countText(p.weightGrams),
 		lengthMm: countText(p.lengthMm),
 		widthMm: countText(p.widthMm),
@@ -266,6 +268,7 @@ export function savePayload(p: ProductRecord, d: PricingDraft): Record<string, s
 		unitCost: canonical("unitCost", d.unitCost),
 		productKind: d.productKind,
 		taxClass: d.taxClass,
+		taxStatus: d.taxStatus,
 		// Blank keeps what is stored — for a digital product, whose weight and size
 		// are hidden, that is exactly what should happen.
 		weightGrams: d.productKind === "digital" ? "" : d.weightGrams.trim(),

@@ -1,6 +1,9 @@
 # 0005. The commerce service sends transactional email directly
 
-- Status: accepted
+- Status: accepted, **transport superseded by [ADR-0031](./0031-email-through-emdash-host.md)
+  (2026-10-07)**: email now goes through the EmDash host's `ctx.email`; otta ships no email
+  provider. The outbox and its delivery semantics below still stand; the transport, provider
+  and credential text is history.
 - Date: 2026-07-11
 - Refines: ADR-0002 (the plugin→service direction; host-agnostic service)
 

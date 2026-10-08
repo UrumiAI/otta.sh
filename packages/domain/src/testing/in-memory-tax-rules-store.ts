@@ -79,6 +79,10 @@ export class InMemoryTaxRulesStore implements TaxRulesStore {
 		return [...this.#rates.values()].filter((r) => r.zoneId === zoneId).map((r) => ({ ...r }));
 	}
 
+	async hasAnyRate(): Promise<boolean> {
+		return this.#rates.size > 0;
+	}
+
 	/** Optimistic CAS on `rateBps` (port doc): not_found → stale → apply. */
 	async updateRate(
 		id: string,

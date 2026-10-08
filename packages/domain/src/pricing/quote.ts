@@ -2,6 +2,7 @@ import { type Cents, cents, type Currency } from "../money/cents.js";
 import { ORDER_ADDRESS_MAX_LENGTHS } from "../orders/order-address.js";
 import type { Clock } from "../ports/clock.js";
 import type { CouponRecord, CouponStore } from "../ports/coupon-store.js";
+import type { SettingsStore } from "../ports/settings-store.js";
 import type { ShippingRulesStore } from "../ports/shipping-rules-store.js";
 import type { TaxRulesStore } from "../ports/tax-rules-store.js";
 import {
@@ -11,6 +12,11 @@ import {
 	taxRequestLinesOf,
 } from "./compute-totals.js";
 import { createRateTableCalculator } from "./rate-table-calculator.js";
+import {
+	effectiveTaxSettings,
+	TAX_DISABLED_CALCULATOR_ID,
+	type TaxSettings,
+} from "./tax-settings.js";
 import { normalizeCountryCode, normalizeSubdivision } from "./region-codes.js";
 import {
 	DEFAULT_TAX_CALCULATOR_TIMEOUT_MS,
@@ -39,6 +45,11 @@ export interface QuoteDeps {
 	taxCalculator?: TaxCalculator;
 	/** Defaults to {@link DEFAULT_TAX_CALCULATOR_TIMEOUT_MS}. */
 	taxCalculatorTimeoutMs?: number;
+	/**
+	 * Where the store's tax options are read (ADR-0032). Absent ⇒ "nothing saved",
+	 * so the upgrade rule applies (`effectiveTaxSettings`).
+	 */
+	settings?: Pick<SettingsStore, "get">;
 }
 
 /** Why the quote is being made — passed to the calculator as `purpose`. */
@@ -72,6 +83,13 @@ export interface QuoteCommand {
 	couponCode?: string;
 }
 
+/** The tax part of a quote: who priced it, the answer, and whether prices included it. */
+export interface QuoteTax {
+	calculatorId: string;
+	result: TaxResult;
+	pricesIncludeTax: boolean;
+}
+
 export type QuoteFailure =
 	/** The destination's country is not an ISO 3166-1 alpha-2 code. */
 	| "INVALID_SHIPPING_ADDRESS"
@@ -102,7 +120,11 @@ export type QuoteResult =
 			 *  the shipping and the tax. */
 			destination: ZoneResolution;
 			/** The calculator's validated answer, for the order's frozen snapshot. */
-			tax: { calculatorId: string; result: TaxResult };
+			tax: QuoteTax;
+			/** The tax options this quote was priced under (after the upgrade rule). */
+			taxSettings: TaxSettings;
+			/** Whether a tax location matched a zone — false ⇒ the tax was not located. */
+			taxLocated: boolean;
 	  }
 	| { ok: false; reason: QuoteFailure };
 
@@ -162,6 +184,9 @@ export async function computeQuote(
 	//    absent ⇒ the zero-shipping synthetic method (no method chosen — the
 	//    pipeline still runs, never the naive Phase-4 stub sum).
 	let shippingMethod: RulesSnapshot["shippingMethod"];
+	// Whether the chosen method's charge is taxed at all (PR 2b; WooCommerce's
+	// `is_taxable()`). The zero-shipping synthetic method has nothing to tax.
+	let shippingTaxable = false;
 	if (command.methodId !== undefined && command.methodId !== "") {
 		if (resolution.status === "not_required") {
 			return { ok: false, reason: "SHIPPING_METHOD_NOT_APPLICABLE" };
@@ -183,6 +208,7 @@ export async function computeQuote(
 			amountCents: rate.amountCents,
 			minSubtotalCents: rate.minSubtotalCents,
 		};
+		shippingTaxable = method.taxable !== false;
 	} else {
 		shippingMethod = {
 			zoneId: zoneId ?? "",
@@ -218,24 +244,118 @@ export async function computeQuote(
 	});
 
 	// 7. Tax — the ONE calculator call (ADR-0030), after every refusal above,
-	//    so a refused quote never costs a paid outside call.
+	//    so a refused quote never costs a paid outside call. The store's tax
+	//    options (ADR-0032) decide whether it is asked at all and for where.
+	const taxSettings = await loadTaxSettings(deps);
+	const lines = taxRequestLinesOf(preTax, command.requiresShipping);
+	if (!taxSettings.enabled) {
+		const tax: QuoteTax = {
+			calculatorId: TAX_DISABLED_CALCULATOR_ID,
+			pricesIncludeTax: false,
+			result: {
+				ok: true,
+				currency: command.currency,
+				lines: lines.map((l) => ({
+					lineId: l.lineId,
+					rateBps: 0,
+					label: "Tax",
+					taxCents: cents(0),
+				})),
+				shipping: null,
+			},
+		};
+		const breakdown = assembleTotals(preTax, tax.result);
+		return {
+			ok: true,
+			breakdown,
+			couponRecord,
+			destination: resolution,
+			tax,
+			taxSettings,
+			taxLocated: false,
+		};
+	}
+	const located = await taxLocationOf(deps, taxSettings, command.requiresShipping, zones, {
+		address: taxDestination,
+		zoneId,
+	});
+	const base = taxSettings.baseAddress;
 	const request = freezeRequest({
 		purpose: context.purpose,
 		currency: command.currency,
-		pricesIncludeTax: false,
-		lines: taxRequestLinesOf(preTax),
-		shipping:
-			shippingMethod.methodId === ""
-				? null
-				: { amountCents: preTax.shippingCents, methodId: shippingMethod.methodId },
-		origin: null,
-		destination: taxDestination,
-		zoneId,
+		pricesIncludeTax: taxSettings.pricesIncludeTax,
+		lines,
+		// A method that is not taxable is asked about as no shipping at all: the
+		// built-in then taxes none, and an outside calculator that taxes it anyway
+		// is refused by the validator (fail-closed).
+		shipping: shippingTaxable
+			? { amountCents: preTax.shippingCents, methodId: shippingMethod.methodId }
+			: null,
+		origin: base === null ? null : { ...base, postalCode: null, city: null },
+		destination: located.address,
+		zoneId: located.zoneId,
 	});
-	const tax = await calculateTax(deps, request, preTax);
-	if (tax === null) return { ok: false, reason: "TAX_UNAVAILABLE" };
-	const breakdown = assembleTotals(preTax, tax.result);
-	return { ok: true, breakdown, couponRecord, destination: resolution, tax };
+	const calculated = await calculateTax(deps, request, preTax, taxSettings);
+	if (calculated === null) return { ok: false, reason: "TAX_UNAVAILABLE" };
+	const tax: QuoteTax = { ...calculated, pricesIncludeTax: taxSettings.pricesIncludeTax };
+	const breakdown = assembleTotals(preTax, tax.result, tax.pricesIncludeTax);
+	return {
+		ok: true,
+		breakdown,
+		couponRecord,
+		destination: resolution,
+		tax,
+		taxSettings,
+		taxLocated: located.zoneId !== null,
+	};
+}
+
+/**
+ * The saved tax options, or — nothing saved — the upgrade rule's answer. A
+ * registered outside calculator counts as "this store already charges tax" just
+ * as a rate table does: such a store has no rates (the calculator replaces
+ * them), and before ADR-0032 its calculator priced every quote — reading it as a
+ * new store would switch tax off and silently stop asking the calculator.
+ */
+async function loadTaxSettings(deps: QuoteDeps): Promise<TaxSettings> {
+	const saved = deps.settings === undefined ? undefined : (await deps.settings.get()).tax;
+	if (saved !== undefined) return saved;
+	if (deps.taxCalculator !== undefined) return effectiveTaxSettings(undefined, true);
+	return effectiveTaxSettings(undefined, await deps.taxRules.hasAnyRate());
+}
+
+interface TaxLocation {
+	address: TaxAddress | null;
+	zoneId: string | null;
+}
+
+/**
+ * Where tax is charged (ADR-0032): the shop's base address for a digital-only
+ * cart, or when the settings say "based on shop base address"; otherwise the
+ * ship-to and the zone it already matched. With NO base address set, a
+ * digital-only cart stays unlocated — and so untaxed, exactly as before — and
+ * "base" falls back to the ship-to. A base address no zone matches is located
+ * nowhere: no rate ⇒ 0%, never a refusal.
+ */
+async function taxLocationOf(
+	deps: QuoteDeps,
+	settings: TaxSettings,
+	requiresShipping: boolean,
+	zonesRead: Awaited<ReturnType<ShippingRulesStore["listZones"]>>,
+	shipTo: TaxLocation,
+): Promise<TaxLocation> {
+	const base = settings.baseAddress;
+	const useBase = base !== null && (!requiresShipping || settings.basedOn === "base");
+	if (!useBase) return requiresShipping ? shipTo : { address: null, zoneId: null };
+	const zones = requiresShipping ? zonesRead : await deps.shippingRules.listZones();
+	const matched = resolveShippingZone(zones, {
+		requiresShipping: true,
+		destination: { country: base.country, region: base.region },
+	});
+	return {
+		address: { country: base.country, region: base.region, postalCode: null, city: null },
+		zoneId: matched.status === "matched" ? matched.zoneId : null,
+	};
 }
 
 /** Trimmed text, `null` when absent/blank, `false` when over `max` (the order address's bounds). */
@@ -265,10 +385,14 @@ async function calculateTax(
 	deps: QuoteDeps,
 	request: TaxRequest,
 	preTax: PreTaxTotals,
+	settings: TaxSettings,
 ): Promise<{ calculatorId: string; result: TaxResult } | null> {
 	const outside = deps.taxCalculator;
 	if (outside === undefined) {
-		const builtIn = createRateTableCalculator(deps.taxRules);
+		const builtIn = createRateTableCalculator(deps.taxRules, {
+			shippingTaxClass: settings.shippingTaxClass,
+			roundAtSubtotal: settings.roundAtSubtotal,
+		});
 		const result = validateTaxResult(request, await builtIn.calculate(request), {
 			boundTaxToAmount: false,
 		});
@@ -302,7 +426,7 @@ async function calculateTax(
 		if (result === null) return refuse(id, "answered invalidly");
 		// A tax that is safe on its own may still overflow the ORDER total, which
 		// `assembleTotals` would throw on — refuse it here instead.
-		if (!Number.isSafeInteger(orderTotalOf(preTax, result))) {
+		if (!Number.isSafeInteger(orderTotalOf(preTax, result, request.pricesIncludeTax))) {
 			return refuse(id, "answered a tax that overflows the order total");
 		}
 		return { calculatorId: id, result };
@@ -312,8 +436,11 @@ async function calculateTax(
 }
 
 /** `assembleTotals`' grand total, as an unchecked number. */
-function orderTotalOf(preTax: PreTaxTotals, result: TaxResult): number {
-	const tax = result.lines.reduce((sum, l) => sum + l.taxCents, result.shipping?.taxCents ?? 0);
+function orderTotalOf(preTax: PreTaxTotals, result: TaxResult, pricesIncludeTax: boolean): number {
+	const shippingTax = result.shipping?.taxCents ?? 0;
+	const tax = pricesIncludeTax
+		? shippingTax
+		: result.lines.reduce((sum, l) => sum + l.taxCents, shippingTax);
 	return preTax.subtotalCents - preTax.discountCents + preTax.shippingCents + tax;
 }
 

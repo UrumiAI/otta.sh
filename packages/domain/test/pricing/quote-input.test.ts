@@ -27,8 +27,8 @@ const digital: PricedLine = {
 describe("quoteCommandFor", () => {
 	test("a line's tax base is price × qty at its class, standard when it names none", () => {
 		expect(quoteCommandFor({ currency: USD, lines: [physical, digital] }).lines).toEqual([
-			{ unitPriceCents: 1500, qty: 2, taxClassId: "standard" },
-			{ unitPriceCents: 999, qty: 1, taxClassId: "reduced" },
+			{ unitPriceCents: 1500, qty: 2, taxClassId: "standard", requiresShipping: true },
+			{ unitPriceCents: 999, qty: 1, taxClassId: "reduced", requiresShipping: false },
 		]);
 	});
 

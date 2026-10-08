@@ -219,6 +219,8 @@ interface MethodDraft {
 	id: string;
 	name: string;
 	type: string;
+	/** The "Charge tax on this method" toggle — restated, as `ackFirstZone` is. */
+	taxable?: boolean;
 }
 
 /** The rates level's filter: a currency narrow that ALWAYS has a value (no
@@ -1000,7 +1002,7 @@ function methodTypeLabel(type: string): string {
 function methodAccordion(zoneId: string, method: MethodRow): AccordionBlock {
 	return {
 		type: "accordion",
-		label: `${methodPriceLabel(method.price)} — ${method.name} · ${method.id} · ${methodTypeLabel(method.type)}`,
+		label: `${methodPriceLabel(method.price)} — ${method.name} · ${method.id} · ${methodTypeLabel(method.type)}${method.taxable === false ? " · not taxed" : ""}`,
 		default_open: false,
 		block_id: `ship:method:${zoneId}:${method.id}`,
 		blocks: [
@@ -1061,6 +1063,21 @@ function methodTypeField(actionId: string, type: string): FormBlock["fields"][nu
 	};
 }
 
+/**
+ * "Charge tax on this method" (PR 2b; WooCommerce's method tax status). Off ⇒
+ * the shipping charge is never taxed, whatever the tax options say. The state is
+ * DECLARED (F-6b/X-24): an untouched toggle is otherwise absent from `values`,
+ * and a save without it PRESERVES the stored flag.
+ */
+function methodTaxableField(taxable: boolean): FormBlock["fields"][number] {
+	return {
+		type: "toggle",
+		action_id: "taxable",
+		label: "Charge tax on this method",
+		initial_value: taxable,
+	};
+}
+
 function editMethodForm(zoneId: string, method: ShippingMethodWire): FormBlock {
 	return carriedForm({
 		namespace: "ship:method-save",
@@ -1070,6 +1087,7 @@ function editMethodForm(zoneId: string, method: ShippingMethodWire): FormBlock {
 			fields: [
 				{ type: "text_input", action_id: "name", label: "Name", initial_value: method.name },
 				methodTypeField("type", method.type),
+				methodTaxableField(method.taxable),
 			],
 			submit: { label: "Save method", action_id: ACTION_SAVE_METHOD },
 		},
@@ -1136,6 +1154,7 @@ function createMethodForm(zoneId: string, draft?: MethodDraft): FormBlock {
 					...prefill(draft?.name),
 				},
 				methodTypeField("type", type),
+				methodTaxableField(draft?.taxable ?? true),
 			],
 			submit: { label: "Add method", action_id: ACTION_CREATE_METHOD },
 		},
@@ -1607,12 +1626,14 @@ function createMethodAction() {
 			const name = (readString(values.name) ?? "").trim();
 			const typed = readString(values.type) ?? "";
 			const type = methodTypeFromInput(typed);
+			const taxable = readBoolean(values.taxable);
 			// EVERY refusal below re-renders the create screen with what was typed
 			// (DA-3a-i) — see ShippingRenderState.
 			const draft: MethodDraft = {
 				id: readString(values.id) ?? "",
 				name: readString(values.name) ?? "",
 				type: typed,
+				...(taxable !== undefined ? { taxable } : {}),
 			};
 			if (id.length === 0 || name.length === 0 || type === undefined) {
 				return showList(
@@ -1633,7 +1654,12 @@ function createMethodAction() {
 					{ kind: "new-method", draft },
 				);
 			}
-			const result = await client.createMethod(zoneId, { id, name, type });
+			const result = await client.createMethod(zoneId, {
+				id,
+				name,
+				type,
+				...(taxable !== undefined ? { taxable } : {}),
+			});
 			const notice = createMethodNotice(result, id, name);
 			return result.ok
 				? showList([zoneId], notice)
@@ -1674,6 +1700,7 @@ function saveMethodAction() {
 		const values = input.values ?? {};
 		const name = (readString(values.name) ?? "").trim();
 		const type = methodTypeFromInput(readString(values.type) ?? "");
+		const taxable = readBoolean(values.taxable);
 		if (name.length === 0 || type === undefined) {
 			return showList([zoneId], {
 				variant: "error",
@@ -1688,7 +1715,11 @@ function saveMethodAction() {
 			type === "flat_rate"
 				? (await client.listMethods(zoneId)).find((m) => m.id === methodId)?.type
 				: undefined;
-		const result = await client.updateMethod(methodId, { name, type });
+		const result = await client.updateMethod(methodId, {
+			name,
+			type,
+			...(taxable !== undefined ? { taxable } : {}),
+		});
 		if (result.ok && before === "free_shipping") {
 			return showList([zoneId], {
 				// A `Notice` is default|error only; the TITLE carries the consequence.
