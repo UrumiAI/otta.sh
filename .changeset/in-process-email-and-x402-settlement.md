@@ -35,10 +35,10 @@ dedupe hinge and `refundable = false` (ADR-0008) are all unchanged.
   `verifyConfirmation` as a retryable `X402FacilitatorUnavailableError`, so a
   five-second blip cannot become a permanent refusal for a buyer whose USDC has
   already moved.
-- `@otta-sh/plugin`: adds `CtxHttpEmailSender` (+ `makeEmailSender`, likewise
+- `@otta-sh/plugin`: adds an in-process order-email sender (`makeEmailSender`,
   timeout-bounded) and the x402 wiring (`wireX402Gateway` /
-  `x402GatewayFromCtx`), both reaching their provider only via `ctx.http` +
-  `allowedHosts`. Adds the PUBLIC `entitlements/x402/settle` route — the
+  `x402GatewayFromCtx`, reaching the facilitator only via `ctx.http` +
+  `allowedHosts`; email goes through the host's `ctx.email`, ADR-0031). Adds the PUBLIC `entitlements/x402/settle` route — the
   in-process entitlement grant, behind the SAME two layers the Stripe webhook
   route uses — the shared edge token
   (`settings:otta-wh-token`, pass-through when unset) as a cheap outer gate, then
@@ -46,14 +46,14 @@ dedupe hinge and `refundable = false` (ADR-0008) are all unchanged.
   verify through the configured facilitator, and the on-chain `transaction` must
   not already be bound to a different order. Answers
   200 / 400 / 401 / 404 / 503 with no order body (ADR-0010). Adds the Settings fields
-  for the three non-secret keys (`settings:emailFrom`, `settings:x402PayTo`,
+  for the non-secret keys (`settings:x402PayTo`,
   `settings:x402Accepts`), with `payTo` shape-gated at BOTH ends
   (`isPlausiblePayTo` on read, an atomic refusal on write) because that kv tier
   has no CAS and the value is where the buyer's money goes. `IN_PROCESS_EGRESS_URLS`
   is now resolved through the same commerce-mode gate the allowlist uses, so a
   consumer can no longer egress to a host `allowedHosts` refuses. The cron
   sweep's `order-emails` leg builds its own sender (the injected one becomes an
-  override) and reports `skipped` when no email URL was baked in. Secrets stay in
+  override) and reports `skipped` when no email provider is configured. Secrets stay in
   write-only kv; every kv read is fail-soft and every missing-config path yields
   no sender / no gateway rather than an unverified settlement.
 

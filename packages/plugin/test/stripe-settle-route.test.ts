@@ -50,7 +50,7 @@ import {
 	type SendOrderEmailsNowOptions,
 } from "../src/email/send-order-emails-now.js";
 import { SETTLE_REQUEST_BUDGET_MS } from "../src/settle-deadline.js";
-import type { PluginContext } from "../src/types.js";
+import type { EmailMessage, PluginContext } from "../src/types.js";
 import { chargeRefundedEvent, signedStripeEvent } from "./helpers/signed-stripe-event.js";
 import {
 	makeInProcessCommerce,
@@ -881,15 +881,11 @@ describe("(x) the paid order's confirmation goes out with the settlement, best-e
 		expect(await cronWouldClaim("ord-mail-slow")).toMatchObject({ attempts: 1 }); // untouched
 	});
 
-	test("no email API URL in this build: nothing is sent, no egress, still 200 — the row waits for the cron", async () => {
+	test("no EmDash email provider (ctx.email absent): nothing is sent, no egress, still 200 — the row waits for the cron", async () => {
 		await harness.ctx.kv.set(STRIPE_WEBHOOK_SECRET_KEY, WEBHOOK_SECRET);
 		await seedPendingOrder("ord-mail-unconfigured");
 
-		const res = await invoke(
-			await signedDelivery("ord-mail-unconfigured"),
-			{},
-			{ orderEmails: { egress: {} } },
-		);
+		const res = await invoke(await signedDelivery("ord-mail-unconfigured"), {}, {});
 
 		expect(res).toEqual({ ok: true, status: 200 });
 		expect(harness.egressAttempts()).toBe(0);
@@ -897,22 +893,49 @@ describe("(x) the paid order's confirmation goes out with the settlement, best-e
 		expect(await cronWouldClaim("ord-mail-unconfigured")).toMatchObject({ attempts: 1 });
 	});
 
-	test("a configured URL whose egress fails (the real CtxHttpEmailSender over ctx.http) still answers 200", async () => {
-		// The harness's ctx.http rejects every request — standing in for a provider
-		// outage on the REAL sender path, not a fake.
+	test("a provider whose send fails (the real CtxEmailSender over ctx.email) still answers 200", async () => {
+		// The host's email pipeline rejects — standing in for a provider outage on the
+		// REAL sender path, not a fake.
 		await harness.ctx.kv.set(STRIPE_WEBHOOK_SECRET_KEY, WEBHOOK_SECRET);
 		await seedPendingOrder("ord-mail-egress");
 		vi.spyOn(console, "error").mockImplementation(() => {});
+		let sends = 0;
+		const ctx: PluginContext = {
+			...harness.ctx,
+			email: {
+				send: () => {
+					sends += 1;
+					return Promise.reject(new Error("provider outage"));
+				},
+			},
+		};
 
-		const res = await invoke(
-			await signedDelivery("ord-mail-egress"),
-			{},
-			{ orderEmails: { egress: { apiUrl: "https://mail.example.test/send" } } },
-		);
+		const res = await invoke(await signedDelivery("ord-mail-egress"), {}, { ctx });
 
 		expect(res).toEqual({ ok: true, status: 200 });
-		expect(harness.egressAttempts()).toBe(1);
+		expect(sends).toBe(1);
+		expect(harness.egressAttempts()).toBe(0);
 		expect(await cronWouldClaim("ord-mail-egress")).toMatchObject({ attempts: 2 });
+	});
+
+	test("a configured provider (the real CtxEmailSender over ctx.email) delivers the confirmation inline", async () => {
+		await harness.ctx.kv.set(STRIPE_WEBHOOK_SECRET_KEY, WEBHOOK_SECRET);
+		await seedPendingOrder("ord-mail-ok");
+		const messages: EmailMessage[] = [];
+		const ctx: PluginContext = {
+			...harness.ctx,
+			email: {
+				send: async (message) => {
+					messages.push(message);
+				},
+			},
+		};
+
+		const res = await invoke(await signedDelivery("ord-mail-ok"), {}, { ctx });
+
+		expect(res).toEqual({ ok: true, status: 200 });
+		expect(messages).toHaveLength(1);
+		expect(await cronWouldClaim("ord-mail-ok")).toBeNull();
 	});
 
 	test("a refused settle sends nothing", async () => {

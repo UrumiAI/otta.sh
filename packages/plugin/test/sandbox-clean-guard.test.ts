@@ -93,26 +93,24 @@ describe("sandbox-clean guard: no direct network egress in plugin src (S4)", () 
  * an unstated assumption a future edit can quietly violate.
  */
 describe("sandbox-clean guard: the checkout feature widens NOTHING (ADR-0012)", () => {
-	test("capabilities are still exactly content:read + network:request", () => {
-		expect([...OTTA_PLUGIN_CAPABILITIES]).toEqual(["content:read", "network:request"]);
+	test("capabilities are exactly content:read + network:request + email:send (ADR-0031)", () => {
+		// email:send is the host's email pipeline, not egress: it widens no host.
+		expect([...OTTA_PLUGIN_CAPABILITIES]).toEqual([
+			"content:read",
+			"network:request",
+			"email:send",
+		]);
 	});
 
 	// INC-D3a: the commerce service is gone, and with it the one host this
 	// suite used to pin. In-process, the plugin's own baseline egress is
 	// Stripe's SERVER-SIDE API (`STRIPE_API_HOST`, always granted — it is a
-	// constant, not a deployment-supplied define) and SMTP2GO's four send-API
-	// hosts (`SMTP2GO_API_HOSTS`, always granted because a store picks SMTP2GO in
-	// Settings, which cannot widen a build-time list — ADR-0005), plus whatever
-	// email/x402 hosts a deployment's build-time defines resolve to. Neither
-	// define is set in this vitest run, so the allowlist is exactly those five.
-	test("ALLOWED_HOSTS holds exactly Stripe's API host and SMTP2GO's four send hosts in this build (no email/x402 define is set)", () => {
-		expect(ALLOWED_HOSTS).toEqual([
-			STRIPE_API_HOST,
-			"api.smtp2go.com",
-			"us-api.smtp2go.com",
-			"eu-api.smtp2go.com",
-			"au-api.smtp2go.com",
-		]);
+	// constant, not a deployment-supplied define), plus whatever x402 host a
+	// deployment's build-time define resolves to. No email host (ADR-0031: email
+	// is `ctx.email`). The define is not set in this vitest run, so the allowlist
+	// is exactly Stripe's API host.
+	test("ALLOWED_HOSTS holds exactly Stripe's API host in this build (no x402 define is set)", () => {
+		expect(ALLOWED_HOSTS).toEqual([STRIPE_API_HOST]);
 	});
 
 	test("js.stripe.com is NOT in allowedHosts — browser→Stripe is not plugin egress, even though api.stripe.com legitimately is", () => {
