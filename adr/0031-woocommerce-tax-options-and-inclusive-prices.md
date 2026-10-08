@@ -77,8 +77,8 @@ pay must not change silently (user decision 4).
 ## Consequences
 
 - Parity is checked against an independent WooCommerce 11.1.2 answer key
-  (`test/pricing/woo-oracle-parity.test.ts`, 33 in-scope scenarios of 39; the six skipped
-  are product tax status, method taxable and shop-page display). Two divergences remain, by
+  (`test/pricing/woo-oracle-parity.test.ts`, 37 in-scope scenarios of 39 since PR 2b; the
+  two skipped are shop-page display). Two divergences remain, by
   choice: **RD-07** — rounding at subtotal, WooCommerce rounds the grand total once from
   unrounded parts (725) while its tax total says 120; Otta keeps
   `subtotal − discount + shipping + tax = total` exact (724). **Coupon cents** — Otta
@@ -102,11 +102,34 @@ pay must not change silently (user decision 4).
 - An outside calculator's answer is bounded by the 1000% rate cap: `amount × 10` for an
   amount entered without tax and for shipping; for a line entered with tax, the tax inside
   the gross at that rate, `ceil(G × 100000 / 110000)`, so the net can never go negative.
-- Follow-ups, not built: product tax status and shipping-method taxable (PR 2b); shop-page
-  price display; hiding the tax row when tax is off; per-line prices with/without tax on the
+- Follow-ups, not built: shop-page price display; hiding the tax row when tax is off; per-line prices with/without tax on the
   review table and the cart page; postcode/city matching, priority/compound rates, CSV;
   customer tax-exempt; adjusting inclusive prices for non-base buyers; finer rate
   precision; buyer-location tax for digital goods; WooCommerce-style coupon allocation (per
   unit, highest price first — EX-08); itemized tax rows on the order pages, the emails and
   the admin order detail; marking a tax-inclusive order on the admin order detail (its
-  subtotal is the gross, and nothing there says the tax is included).
+  subtotal is the gross, and nothing there says the tax is included); recording each line's
+  tax status in the frozen order tax record (PR 2b left the record's shape unchanged).
+
+## Addendum (PR 2b): product tax status and shipping-method taxable
+
+- **Product tax status** — `ProductCommerce.taxStatus`: `taxable` | `shipping_only` |
+  `none`, WooCommerce's `tax_status`. Set in admin only (both product editors), like
+  `inventoryPolicy`; the CMS sync never writes it. A product stored before the field reads
+  `taxable`, with no migration. Only a `taxable` line is taxed by the built-in: the others
+  get 0 (display rate 0) and are left out of the at-subtotal class groups, so they never
+  absorb an allocated cent; with prices entered with tax their gross is their net.
+- For "based on cart items", `taxable` and `shipping_only` lines that ship count; `none`
+  and digital lines do not (WooCommerce `is_shipping_taxable`). "Shipping only" is allowed
+  on a digital product and behaves like "None" there. A fixed class ignores the items; the
+  `legacy` rule is unchanged, so a legacy store still taxes shipping on an all-`none` cart.
+- **Method taxable** — `ShippingMethod.taxable` (default `true`; an older method reads
+  `true`), a toggle on the Shipping page. An untaxed method is sent to the calculator as
+  `shipping: null`, in every shipping-tax-class mode.
+- **Outside calculators** — a non-zero tax on a `shipping_only`/`none` line, or on shipping
+  that was not asked about, is refused (`TAX_UNAVAILABLE`), never silently zeroed. The rule
+  also holds for the built-in.
+- The quote command carries a line's `taxStatus` only when it is not `taxable`, so every
+  existing golden is byte-identical. The order tax snapshot's shape is unchanged.
+- The admin product edit's idempotency key covers the tax status, so two saves at one
+  watermark that differ only in status are never one replay.

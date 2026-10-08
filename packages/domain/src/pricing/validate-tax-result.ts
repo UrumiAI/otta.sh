@@ -24,8 +24,11 @@ import {
  * `ceil(G × 100000 / 110000)`, which is below G, so the net can never go
  * negative — shipping is always entered without tax and keeps `amount × 10`
  * (exact integers throughout); a rate that is not an integer in
- * [0, 1000%]; a bad label; a NON-ZERO shipping line when no shipping was asked
- * about (a zero one is dropped); a total that is not a safe integer.
+ * [0, 1000%]; a bad label; a NON-ZERO tax on a line whose product is not
+ * taxable (`shipping_only` or `none`, PR 2b — never silently zeroed); a NON-ZERO
+ * shipping line when no shipping was asked about (a zero one is dropped — this
+ * also covers a method that is not taxable, sent as no shipping); a total that is
+ * not a safe integer. The untaxed-line rule holds for the built-in too.
  *
  * `boundTaxToAmount: false` is for the built-in only, which must charge exactly
  * what main charged for any stored rate (its display rate is capped instead).
@@ -53,11 +56,13 @@ export function validateTaxResult(
 
 	let total = 0;
 	const lines: Array<{ lineId: string } & TaxLine> = [];
-	for (const { lineId, amountCents } of request.lines) {
+	for (const { lineId, amountCents, taxStatus } of request.lines) {
 		const line = byId.get(lineId);
 		if (line === undefined || exceedsBound(line.taxCents, amountCents, request.pricesIncludeTax)) {
 			return null;
 		}
+		// A product that is not taxable carries no tax (PR 2b).
+		if (taxStatus !== "taxable" && !Object.is(line.taxCents, 0)) return null;
 		total += line.taxCents;
 		lines.push({ lineId, ...line });
 	}

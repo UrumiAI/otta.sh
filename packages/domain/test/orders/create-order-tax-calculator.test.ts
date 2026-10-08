@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { cents, idempotencyKey } from "../../src/index.js";
+import { cents, idempotencyKey, productId } from "../../src/index.js";
 import { createOrderFromCart } from "../../src/orders/create-order-from-cart.js";
 import { readOrderTaxSnapshot } from "../../src/orders/order-tax-snapshot.js";
 import type { TaxCalculator, TaxRequest } from "../../src/pricing/tax-calculator.js";
@@ -167,5 +167,45 @@ describe("createOrderFromCart → TaxCalculator", () => {
 				shipping: null,
 			},
 		});
+	});
+});
+
+describe("createOrderFromCart → product tax status (PR 2b)", () => {
+	test("a 'none' product: line tax 0 in the totals and the v1 snapshot; shipping still taxed (legacy)", async () => {
+		const row = await h.productCommerce.getByProductId(productId("p1"));
+		if (row === null) throw new Error("no seeded row");
+		const edited = await h.productCommerce.updateCommerceFields(
+			{ productId: productId("p1"), taxStatus: "none" },
+			idempotencyKey("status-none"),
+			row.updatedAt.toISOString(),
+		);
+		expect(edited.ok && edited.product.taxStatus).toBe("none");
+		const cartId = await h.cartWith([{ sku: "SKU-1", productId: "p1", qty: 2, kind: "physical" }]);
+		const res = await createOrderFromCart(h.createDeps, command(cartId));
+		expect(res.ok).toBe(true);
+		if (!res.ok) return;
+		const snapshot = readOrderTaxSnapshot(res.order.totals.taxBreakdown);
+		if (snapshot?.v !== 1) throw new Error("expected a v1 snapshot");
+		expect(snapshot.lines.map((l) => l.taxCents)).toEqual([0]);
+		// Nothing saved + rates ⇒ legacy: shipping keeps its tax, 500 @10% = 50.
+		expect(snapshot.shipping?.taxCents).toBe(50);
+		expect(res.order.totals.tax).toBe(50);
+	});
+
+	test("a method that is not taxable: no shipping tax on the order", async () => {
+		const updated = await h.shippingRules.updateMethod("m", {
+			name: "Flat",
+			type: "flat_rate",
+			taxable: false,
+		});
+		expect(updated.ok && updated.method.taxable).toBe(false);
+		const cartId = await h.cartWith([{ sku: "SKU-1", productId: "p1", qty: 2, kind: "physical" }]);
+		const res = await createOrderFromCart(h.createDeps, command(cartId));
+		expect(res.ok).toBe(true);
+		if (!res.ok) return;
+		const snapshot = readOrderTaxSnapshot(res.order.totals.taxBreakdown);
+		if (snapshot?.v !== 1) throw new Error("expected a v1 snapshot");
+		expect(snapshot.shipping).toBeNull();
+		expect(res.order.totals.tax).toBe(250);
 	});
 });

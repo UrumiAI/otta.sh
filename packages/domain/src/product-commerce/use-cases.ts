@@ -13,6 +13,7 @@ import type {
 	UpsertProductCommerceInput,
 	UpsertProductVariantInput,
 } from "../ports/product-commerce-store.js";
+import { isProductTaxStatus } from "../ports/product-commerce-store.js";
 import { validateDownloadAsset } from "./download-asset.js";
 import { InvalidProductFieldError } from "./errors.js";
 
@@ -201,6 +202,12 @@ export async function updateProductCommerceFields(
 				"price, compare-at, and cost must all use the same currency",
 			);
 		}
+	}
+	if (input.taxStatus !== undefined && !isProductTaxStatus(input.taxStatus)) {
+		throw new InvalidProductFieldError(
+			"taxStatus",
+			'taxStatus must be "taxable", "shipping_only" or "none"',
+		);
 	}
 	const dims = [
 		["weightGrams", input.weightGrams],

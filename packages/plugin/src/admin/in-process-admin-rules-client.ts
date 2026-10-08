@@ -286,6 +286,7 @@ export class InProcessAdminRulesClient implements AdminRulesSurface {
 		requireIdToken("id", input.id);
 		requireBoundedText("name", input.name, 1, NAME_MAX);
 		const type = requireShippingMethodType(input.type);
+		const taxable = optionalTaxable(input.taxable);
 		return createOrRefuse(async () =>
 			toMethodWire(
 				await this.#stores.shippingRules.createMethod({
@@ -294,6 +295,7 @@ export class InProcessAdminRulesClient implements AdminRulesSurface {
 					zoneId,
 					name: input.name,
 					type,
+					...(taxable !== undefined ? { taxable } : {}),
 				}),
 			),
 		);
@@ -307,9 +309,11 @@ export class InProcessAdminRulesClient implements AdminRulesSurface {
 		requireIdToken("methodId", methodId);
 		requireBoundedText("name", edit.name, 1, NAME_MAX);
 		const type = requireShippingMethodType(edit.type);
+		const taxable = optionalTaxable(edit.taxable);
 		const res = await this.#stores.shippingRules.updateMethod(methodId, {
 			name: edit.name,
 			type,
+			...(taxable !== undefined ? { taxable } : {}),
 		});
 		return res.ok
 			? { ok: true, value: toMethodWire(res.method) }
@@ -892,7 +896,20 @@ function toZoneWire(zone: ShippingZone): ShippingZoneWire {
 }
 
 function toMethodWire(method: ShippingMethod): ShippingMethodWire {
-	return { id: method.id, zoneId: method.zoneId, name: method.name, type: method.type };
+	return {
+		id: method.id,
+		zoneId: method.zoneId,
+		name: method.name,
+		type: method.type,
+		taxable: method.taxable,
+	};
+}
+
+/** A method's `taxable` flag (PR 2b): absent, or a real boolean — never coerced. */
+function optionalTaxable(value: unknown): boolean | undefined {
+	if (value === undefined) return undefined;
+	if (typeof value !== "boolean") throw new CommerceInputError("taxable", "must be true or false");
+	return value;
 }
 
 /** Money on the wire is an integer minor `amountCents` plus its ISO-4217

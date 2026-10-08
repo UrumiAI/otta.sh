@@ -87,6 +87,8 @@ export function applyRateTable(
 		taxCents,
 	});
 	const taxes = lineTaxes(request, rateOf, options.roundAtSubtotal === true);
+	// An untaxed line (PR 2b) shows a 0% rate: it is charged none.
+	const untaxed = (classId: TaxClassId): TaxLine => ({ ...lineOf(classId, cents(0)), rateBps: 0 });
 	const shippingClass = shippingTaxClassOf(request, table, labels, options.shippingTaxClass);
 	const shipping: TaxLine | null =
 		shippingClass !== null && request.shipping !== null
@@ -97,10 +99,20 @@ export function applyRateTable(
 		currency: request.currency,
 		lines: request.lines.map((l, i) => ({
 			lineId: l.lineId,
-			...lineOf(l.taxClassId, taxes[i] as Cents),
+			...(isTaxed(l) ? lineOf(l.taxClassId, taxes[i] as Cents) : untaxed(l.taxClassId)),
 		})),
 		shipping,
 	};
+}
+
+/**
+ * Only a `taxable` line carries tax (WooCommerce's product tax status, PR 2b):
+ * a `shipping_only` or `none` line gets 0, and is left out of the at-subtotal
+ * class groups so it never absorbs an allocated cent. With prices entered with
+ * tax, its gross is simply its net.
+ */
+function isTaxed(line: TaxRequest["lines"][number]): boolean {
+	return line.taxStatus === "taxable";
 }
 
 /**
@@ -122,7 +134,9 @@ function lineTaxes(
 ): Cents[] {
 	const inclusive = request.pricesIncludeTax;
 	if (!roundAtSubtotal) {
-		return request.lines.map((l) => taxOn(l.amountCents, rateOf(l.taxClassId), inclusive));
+		return request.lines.map((l) =>
+			isTaxed(l) ? taxOn(l.amountCents, rateOf(l.taxClassId), inclusive) : cents(0),
+		);
 	}
 	return taxRoundedAtSubtotal(request, rateOf, inclusive);
 }
@@ -141,6 +155,7 @@ function taxRoundedAtSubtotal(
 ): Cents[] {
 	const classes = new Map<TaxClassId, number[]>();
 	request.lines.forEach((l, i) => {
+		if (!isTaxed(l)) return;
 		const group = classes.get(l.taxClassId);
 		if (group === undefined) classes.set(l.taxClassId, [i]);
 		else group.push(i);

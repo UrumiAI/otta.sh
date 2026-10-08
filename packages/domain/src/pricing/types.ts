@@ -7,6 +7,7 @@
  */
 
 import type { Cents, Currency } from "../money/cents.js";
+import type { ProductTaxStatus } from "../ports/product-commerce-store.js";
 
 /** A tax class identifier, e.g. `"standard" | "reduced" | "zero" | "digital"`. */
 export type TaxClassId = string;
@@ -74,6 +75,8 @@ export interface TotalsLineInput {
 	taxClassId: TaxClassId;
 	/** Whether the line ships; absent ⇒ the cart's `requiresShipping`. */
 	requiresShipping?: boolean;
+	/** The product's tax status (PR 2b); absent ⇒ `taxable`. */
+	taxStatus?: ProductTaxStatus;
 }
 
 export interface TotalsInput {

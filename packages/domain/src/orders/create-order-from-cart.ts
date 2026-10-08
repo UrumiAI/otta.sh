@@ -294,6 +294,7 @@ export async function createOrderFromCart(
 			qty: line.qty,
 			taxClass: pc.taxClass,
 			productKind: pc.productKind,
+			taxStatus: pc.taxStatus,
 		};
 		lines.push(
 			snapshotOrderLine({

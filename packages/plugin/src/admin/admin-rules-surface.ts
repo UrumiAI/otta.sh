@@ -26,6 +26,8 @@ export interface ShippingMethodWire {
 	name: string;
 	/** 'flat_rate' | 'free_shipping'. */
 	type: string;
+	/** Whether the method's charge is taxed (PR 2b). */
+	taxable: boolean;
 }
 
 export interface ShippingRateWire {
@@ -180,10 +182,14 @@ export interface ShippingMethodInput {
 	id: string;
 	name: string;
 	type: string;
+	/** Default `true` (PR 2b). */
+	taxable?: boolean;
 }
 export interface ShippingMethodEdit {
 	name: string;
 	type: string;
+	/** Absent PRESERVES the stored flag (PR 2b). */
+	taxable?: boolean;
 }
 export interface ShippingRateInput {
 	currency: string;

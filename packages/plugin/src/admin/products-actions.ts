@@ -103,6 +103,7 @@ import {
 	parseStockQty as parseStockQtyShared,
 	unitWord,
 } from "@otta-sh/admin-presentation";
+import { isProductTaxStatus } from "@otta-sh/domain";
 import {
 	type AdminProductsSurface,
 	type ProductEditWire,
@@ -346,6 +347,16 @@ function buildEditWire(
 		wire.taxClass = trimmed.length === 0 || trimmed === NO_TAX_CLASS ? null : trimmed;
 	}
 
+	// taxStatus (PR 2b): a closed set, re-checked here because the payload is
+	// operator-round-tripped; absent or blank ⇒ preserve.
+	const taxStatus = readString(values.taxStatus)?.trim();
+	if (taxStatus !== undefined && taxStatus.length > 0) {
+		if (!isProductTaxStatus(taxStatus)) {
+			return { ok: false, message: 'Tax status must be "taxable", "shipping_only" or "none".' };
+		}
+		wire.taxStatus = taxStatus;
+	}
+
 	// weight/dims: blank ⇒ preserve (omit); present ⇒ a non-negative whole number.
 	const numericFields = ["weightGrams", "lengthMm", "widthMm", "heightMm"] as const;
 	for (const field of numericFields) {
@@ -376,7 +387,7 @@ function buildEditWire(
  *  once-only store, silently drop the second write. Whoever adds one must
  *  distinguish the cases here (an absent sentinel, not `null`) rather than
  *  assume this holds. */
-function deriveEditIdempotencyKey(productId: string, wire: ProductEditWire): string {
+export function deriveEditIdempotencyKey(productId: string, wire: ProductEditWire): string {
 	const canonical = JSON.stringify([
 		productId,
 		wire.expectedUpdatedAt,
@@ -391,6 +402,9 @@ function deriveEditIdempotencyKey(productId: string, wire: ProductEditWire): str
 		wire.widthMm ?? null,
 		wire.heightMm ?? null,
 		wire.productKind ?? null,
+		// PR 2b: without it, two saves at one watermark that differ only in tax
+		// status share a key, and the second is answered as the first's replay.
+		wire.taxStatus ?? null,
 	]);
 	return `${productId}:edit:${fnv1a(canonical, 0x811c9dc5)}${fnv1a(canonical, 0x01234567)}`;
 }
