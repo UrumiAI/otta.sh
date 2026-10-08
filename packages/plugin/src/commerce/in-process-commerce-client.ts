@@ -58,6 +58,7 @@ import {
 	createOrderFromCart,
 	currency as toCurrency,
 	deactivateProductCommerce,
+	effectiveStoreCurrency,
 	deactivateProductVariant,
 	email as toEmail,
 	getCart,
@@ -186,10 +187,6 @@ import {
 	type InProcessCommerceStores,
 	type InProcessCommerceStoresOptions,
 } from "./in-process-commerce-stores.js";
-
-/** The currency a cart gets when the caller names none — the same default this
- *  surface has always applied. */
-const DEFAULT_CURRENCY = "USD";
 
 /**
  * The stores' own options plus the payment gateways.
@@ -572,9 +569,22 @@ export class InProcessCommerceClient implements CommerceClient {
 		return (await this.#stores.settingsStore.get()).holdTtlMinutes;
 	}
 
+	/**
+	 * A new, empty cart. An explicit `currency` wins (shape-checked, as always);
+	 * with none, the cart is in the STORE currency — the operator's saved setting,
+	 * or USD for a store that never saved one (`effectiveStoreCurrency`), which is
+	 * the default this surface always applied.
+	 *
+	 * The settings read is paid only on that path, once per cart (a cart is created
+	 * once and then carries its own currency for life — nothing here, or anywhere,
+	 * rewrites it). It is the same keyed singleton read the hold TTL makes on every
+	 * cart read, and read per call for the same reason (`#liveCartDeps`): a cached
+	 * value would keep creating carts in the old currency after a save.
+	 */
 	async createCart(currency?: string): Promise<{ cartId: string }> {
 		if (currency !== undefined) requireCurrencyCode("currency", currency);
-		const cartId = await createCart(this.#cartDeps, toCurrency(currency ?? DEFAULT_CURRENCY));
+		const chosen = currency ?? effectiveStoreCurrency(await this.#stores.settingsStore.get());
+		const cartId = await createCart(this.#cartDeps, toCurrency(chosen));
 		return { cartId };
 	}
 
