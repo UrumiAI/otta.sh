@@ -64,6 +64,7 @@ import {
 	getProductCommerce,
 	idempotencyKey as toIdempotencyKey,
 	InvalidProductFieldError,
+	isEmailTransportUnavailableError,
 	isProductLive,
 	listCustomerOrders,
 	listProductCommerceByIds,
@@ -200,7 +201,7 @@ export interface InProcessCommerceClientOptions extends InProcessCommerceStoresO
 	gateways?: Partial<Record<PaymentMethod, PaymentGateway>>;
 	/**
 	 * The mail egress the login link goes out through — resolved LAZILY, because
-	 * building the real one reads kv (the API key, the from-address) and only the
+	 * building the real one reads kv (the store name, the sign-in page) and only the
 	 * login request needs it; every other route builds a client too and must not
 	 * pay those reads. Absent, or resolving to `undefined`, means this deployment
 	 * has no email configured: a login request still answers the same generic
@@ -765,8 +766,8 @@ export class InProcessCommerceClient implements CommerceClient {
 		if (sender === undefined) {
 			warnOnce(
 				"login-email-unconfigured",
-				"[otta] login email is not configured (Resend needs an email API URL in this build; " +
-					"SMTP2GO needs its API key saved in Settings): login links are not being sent",
+				"[otta] login email is not configured (no EmDash email provider is selected; " +
+					"see docs/email-providers.md): login links are not being sent",
 			);
 			return { ok: true };
 		}
@@ -789,18 +790,30 @@ export class InProcessCommerceClient implements CommerceClient {
 			await sender.send({
 				to: address,
 				template: "customer-login-link",
-				// The link ONLY: the token travels nowhere a template or a provider
-				// log could print it on its own. Beside it, the lifetime the email
-				// states — the TTL the verifier was built with (QA U-3).
+				// The link ONLY: the token is in no field of its own. But the link IS
+				// the email: through `ctx.email` it reaches every plugin's email hooks
+				// and the site's provider, whose logs may keep it (ADR-0031, amending
+				// ADR-0004). Beside it, the lifetime the email states — the TTL the
+				// verifier was built with (QA U-3).
 				data: {
 					loginUrl: loginLinkUrl(verifyPageUrl, issued.challengeId, issued.token),
 					expiresInMinutes: Math.round(LOGIN_LINK_TTL_MS / 60_000),
 				},
-				// The challenge, not the token: one challenge is one email, so a
-				// retried send dedupes provider-side.
+				// The challenge, not the token: a correlation id that never carries
+				// the secret.
 				idempotencyKey: `login:${issued.challengeId}`,
 			});
 		} catch (err) {
+			// A sandboxed host with no EmDash email provider answers here, not above
+			// (it always hands over `ctx.email`): a deployment fact, said once.
+			if (isEmailTransportUnavailableError(err)) {
+				warnOnce(
+					"login-email-unconfigured",
+					"[otta] login email is not configured (no EmDash email provider is selected; " +
+						"see docs/email-providers.md): login links are not being sent",
+				);
+				return { ok: true };
+			}
 			// The message, never the error object: a transport error is free to
 			// quote the request it failed on.
 			console.error(

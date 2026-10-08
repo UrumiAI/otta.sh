@@ -94,11 +94,11 @@ describe("the ceiling inside a provider unit never repeats the provider call", (
 			const start = new Date();
 			await placePaidOrderOwingCommit(storage, "mail", start);
 			const sent: SendEmailInput[] = [];
-			// The real sender, as the budget sees it: building it reads the API key and the
-			// from-address (two kv calls, once), and each send is one subrequest.
+			// The real sender, as the budget sees it: building it reads the store name and
+			// the sign-in page (two kv calls, once), and each send is one host call.
 			const realSender = async (_timeout: () => number, counted: PluginContext) => {
-				await counted.kv.get("email-api-key");
-				await counted.kv.get("email-from");
+				await counted.kv.get("store-name");
+				await counted.kv.get("sign-in-page");
 				return {
 					async send(input: SendEmailInput) {
 						await counted.kv.get("the-request");

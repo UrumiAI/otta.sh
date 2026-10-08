@@ -17,7 +17,6 @@ import { InProcessCommerceClient } from "../src/commerce/in-process-commerce-cli
 import { MISSING_STORAGE_MESSAGE } from "../src/commerce/in-process-commerce-stores.js";
 import { makeCommerceClient } from "../src/commerce/make-commerce-client.js";
 import {
-	EMAIL_API_KEY_KEY,
 	STRIPE_SECRET_KEY_KEY,
 	STRIPE_WEBHOOK_SECRET_KEY,
 	X402_FACILITATOR_API_KEY_KEY,
@@ -48,7 +47,7 @@ function makeUnusedStorage(): StorageAccess {
  * A RECORDING kv, not a null-returning stub.
  *
  * `ctx.kv` is a live CREDENTIAL store (`payment-secrets.ts`: the Stripe secret
- * key, the Stripe webhook secret, the email API key and the x402 facilitator
+ * key, the Stripe webhook secret and the x402 facilitator
  * credential all live there under `settings:*`). A stub that simply answered
  * `null` would let an eager read at construction pass unnoticed — so every key
  * read is recorded, which keeps "building a client reads no credential" an
@@ -94,7 +93,8 @@ describe("makeCommerceClient", () => {
 		const { ctx, kvReads } = makeCtx({
 			[STRIPE_SECRET_KEY_KEY]: "sk_test_READ",
 			[STRIPE_WEBHOOK_SECRET_KEY]: "whsec_READ",
-			[EMAIL_API_KEY_KEY]: "email_NEVER_READ",
+			// A key an earlier build stored (ADR-0031 retired it): never read.
+			"settings:emailApiKey": "email_NEVER_READ",
 			[X402_FACILITATOR_API_KEY_KEY]: "x402_NEVER_READ",
 		});
 		const client = await makeCommerceClient(ctx);
@@ -104,8 +104,8 @@ describe("makeCommerceClient", () => {
 		// reading BOTH its kv keys on every construction — that is the two reads
 		// below, in the order `stripeGatewayFromCtx` issues them. The x402 wiring
 		// still short-circuits on an unconfigured facilitator URL BEFORE it
-		// touches kv, so neither `EMAIL_API_KEY_KEY` nor
-		// `X402_FACILITATOR_API_KEY_KEY` is read here.
+		// touches kv, and the login email sender is built lazily, so neither the
+		// retired email key nor `X402_FACILITATOR_API_KEY_KEY` is read here.
 		expect(kvReads).toEqual([STRIPE_SECRET_KEY_KEY, STRIPE_WEBHOOK_SECRET_KEY]);
 	});
 
