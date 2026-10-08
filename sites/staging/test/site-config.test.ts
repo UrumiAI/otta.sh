@@ -825,6 +825,8 @@ describe("astro.config", () => {
 			const define = config.vite?.define as Record<string, string>;
 			expect(Object.keys(define)).toContain("__OTTA_X402_FACILITATOR_URL__");
 			expect(typeof JSON.parse(define["__OTTA_X402_FACILITATOR_URL__"] ?? "null")).toBe("string");
+			expect(Object.keys(define)).toContain("__OTTA_EXTRA_ALLOWED_HOSTS__");
+			expect(typeof JSON.parse(define["__OTTA_EXTRA_ALLOWED_HOSTS__"] ?? "null")).toBe("string");
 			expect(Object.keys(define).filter((name) => /EMAIL/.test(name))).toEqual([]);
 		},
 		CONFIG_IMPORT_TIMEOUT_MS,

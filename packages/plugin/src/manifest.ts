@@ -77,7 +77,8 @@ const DNS_LABEL = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
  *  `undefined`. Accepts only dot-separated letter/digit/hyphen labels with at
  *  least one dot. That alone rejects wildcards (`*`), schemes, ports, paths,
  *  userinfo, IPv6 literals and bare `localhost`; additionally rejected are IPv4
- *  literals (a purely numeric last label) and `*.localhost`. Never throws. */
+ *  literals (a decimal or `0x` hex last label), `*.localhost`, and anything a URL
+ *  parser would not accept unchanged. Never throws. */
 export function normalizeExtraHost(entry: string): string | undefined {
 	const host = entry.trim().toLowerCase();
 	if (host.length === 0 || host.length > 253) return undefined;
@@ -85,7 +86,16 @@ export function normalizeExtraHost(entry: string): string | undefined {
 	if (labels.length < 2) return undefined;
 	if (!labels.every((label) => DNS_LABEL.test(label))) return undefined;
 	const tld = labels[labels.length - 1] ?? "";
-	if (/^[0-9]+$/.test(tld) || tld === "localhost") return undefined;
+	// WHATWG "ends in a number": a decimal or 0x-hex last label makes a URL parser
+	// read the whole host as an IPv4 address (`0x7f.0.0.0x1` is 127.0.0.1).
+	if (/^(?:[0-9]+|0x[0-9a-f]*)$/.test(tld) || tld === "localhost") return undefined;
+	// Finally require that a URL parser accepts the host exactly as written, so what
+	// is granted is what emdash will compare (rejects IDNA-invalid `xn--` labels).
+	try {
+		if (new URL(`https://${host}`).hostname !== host) return undefined;
+	} catch {
+		return undefined;
+	}
 	return host;
 }
 

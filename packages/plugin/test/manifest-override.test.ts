@@ -194,6 +194,13 @@ describe("extraAllowedHosts (OTTA_EXTRA_ALLOWED_HOSTS)", () => {
 		["trailing dot", "example.com."],
 		["underscore", "a_b.example.com"],
 		["whitespace inside", "a b.example.com"],
+		["hex IPv4 (127.0.0.1)", "0x7f.0.0.0x1"],
+		["mixed hex IPv4 (1.2.3.4)", "1.2.3.0x4"],
+		["two-label hex IPv4", "0x7f.0x1"],
+		["hex last label", "a.0x10"],
+		["empty-hex last label", "a.b.c.0x"],
+		["single-hex IPv4 form", "0x7f000001.0x0"],
+		["IDNA-invalid xn-- label", "xn--localhost.com"],
 	])("REJECTED (%s): %s", (_why, entry) => {
 		expect(normalizeExtraHost(entry)).toBeUndefined();
 		// resolveAllowedHosts stays fail-closed and never throws...

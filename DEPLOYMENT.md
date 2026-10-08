@@ -512,9 +512,13 @@ DNS hostname: letters, digits and hyphens in dot-separated labels, with at least
 A wildcard (`*`, `*.example.com`), an IPv4/IPv6 literal, `localhost`, or anything with a
 scheme, port, path or userinfo **fails the build** with an error naming the entry, so a
 typo is loud rather than silently ungranted. The capability stays `network:request`
-(never `network:request:unrestricted`). Private and loopback addresses remain blocked by
-EmDash's SSRF protection and the Worker's `global_fetch_strictly_public` flag no matter
-what is listed here.
+(never `network:request:unrestricted`). Private, loopback and metadata addresses are
+blocked by EmDash's SSRF validation alone (the Worker deliberately runs without
+`global_fetch_strictly_public`, §2.4), no matter what is listed here. Listing a host means
+trusting its DNS: EmDash validates the resolved IP and `fetch` then resolves again (a
+DNS-rebinding window), and no platform flag backs this up. Allowlisted hosts, extras
+included, also become allowed image sources in the plugin admin UI (EmDash behaviour for
+`network:request`, already true for Stripe).
 
 Stripe traffic goes through the same gate: `@otta-sh/payments-stripe` would default its
 transport to `globalThis.fetch`, but the plugin constructs the live gateway with
@@ -526,7 +530,8 @@ closes the caveat recorded in
 All of these are third-party hosts on the public internet. The Worker runs without
 `global_fetch_strictly_public` (§2.4), so a URL on the site's **own** Cloudflare zone would
 reach that zone's origin directly, skipping its Workers routes and security settings — keep
-both URLs off the site's zone.
+every allowlisted host (the facilitator and each `OTTA_EXTRA_ALLOWED_HOSTS` entry) off the
+site's zone.
 
 Because it is build-time, adding a provider means a rebuild and redeploy — a Settings edit
 alone cannot widen it. That is deliberate: the allowlist is the perimeter, and an operator
