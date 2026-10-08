@@ -339,15 +339,19 @@ export interface PublicOrderView {
  * Backward-compatible: a snapshot is only ever written together with a method,
  * so every older order that carries a zone also carries a method.
  *
+ * ADR-0031 adds one more piece of evidence for TAX: `taxLocated` (off the order's
+ * frozen tax snapshot), for tax calculated at a place with no shipping zone — a
+ * digital-only cart taxed at the shop base address. Absent on older orders.
+ *
  * Exported for the account's order page (QA U-5), whose wire carries the same two
  * ids, so "Not calculated" is decided by ONE rule wherever an order is shown.
  */
 export function orderTotalsFlags(
-	totals: Pick<PublicOrderWire["totals"], "shippingZoneId" | "shippingMethodId">,
+	totals: Pick<PublicOrderWire["totals"], "shippingZoneId" | "shippingMethodId" | "taxLocated">,
 ): Pick<CheckoutTotalsOptions, "shippingSelected" | "taxZoneSelected"> {
 	return {
 		shippingSelected: totals.shippingMethodId !== null,
-		taxZoneSelected: totals.shippingZoneId !== null,
+		taxZoneSelected: totals.shippingZoneId !== null || totals.taxLocated === true,
 	};
 }
 

@@ -654,8 +654,15 @@ export interface PublicOrderWire {
 	/** `shippingZoneId` / `shippingMethodId` are read off the order's shipping
 	 *  snapshot: opaque merchant config ids, never buyer data. They are the only
 	 *  evidence on the wire of WHAT the totals were priced with — the method
-	 *  decides whether shipping was calculated, the zone whether tax was. */
-	totals: QuoteBreakdownWire & { shippingZoneId: string | null; shippingMethodId: string | null };
+	 *  decides whether shipping was calculated, the zone whether tax was.
+	 *  `taxLocated: true` (ADR-0031) says tax was calculated for a place WITHOUT a
+	 *  shipping zone — a digital cart taxed at the shop base address. Absent on
+	 *  every other order, which keeps the zone rule. */
+	totals: QuoteBreakdownWire & {
+		shippingZoneId: string | null;
+		shippingMethodId: string | null;
+		taxLocated?: true;
+	};
 	lines: OrderLineWire[];
 	fulfillment: {
 		carrier: string;
@@ -824,6 +831,8 @@ export interface OrderSummaryWire {
 		appliedCouponCode: string | null;
 		shippingZoneId: string | null;
 		shippingMethodId: string | null;
+		/** As on {@link PublicOrderWire.totals}: tax calculated with no shipping zone. */
+		taxLocated?: true;
 	};
 	lines: OrderLineWire[];
 }

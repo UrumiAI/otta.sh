@@ -1567,14 +1567,23 @@ function quoteTaxWire(quote: Extract<DomainQuoteResult, { ok: true }>): QuoteTax
  * An order priced with tax-INCLUSIVE prices carries that fact from its frozen
  * snapshot, so its pages show the subtotal net and the rows still sum to the
  * total. Every other order keeps today's single "Tax" row (no `tax` key).
+ *
+ * Tax calculated for a place with no shipping zone (ADR-0031: a digital cart
+ * taxed at the shop base address) adds `taxLocated: true`, so the order's pages
+ * show the tax charged rather than "Not calculated". A snapshot written before
+ * `located` existed adds nothing — the zone rule decides, as before.
  */
-function orderTaxWire(order: Order): { tax?: QuoteTaxWire } {
+function orderTaxWire(order: Order): { tax?: QuoteTaxWire; taxLocated?: true } {
 	const snapshot = readOrderTaxSnapshot(order.totals.taxBreakdown);
-	if (snapshot === null || snapshot.v !== 1 || !snapshot.pricesIncludeTax) return {};
+	if (snapshot === null || snapshot.v !== 1) return {};
+	const located = snapshot.located === true;
+	const flag = located ? { taxLocated: true as const } : {};
+	if (!snapshot.pricesIncludeTax) return flag;
 	return {
+		...flag,
 		tax: {
 			enabled: true,
-			located: true,
+			located: shippingZoneIdOf(order.totals.shippingMethodSnapshot) !== null || located,
 			pricesIncludeTax: true,
 			displayCart: "excl",
 			totalsDisplay: "single",

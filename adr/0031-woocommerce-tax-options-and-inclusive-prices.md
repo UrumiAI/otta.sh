@@ -89,6 +89,10 @@ pay must not change silently (user decision 4).
 - No existing store's charges change: the domain and plugin goldens keep every money
   figure (the INR case's shipping tax stays 882). They gain `requiresShipping` on quote
   lines; rate-less stores' snapshots record `otta.tax-disabled`.
+- An order taxed at the shop base address with no shipping zone (a digital-only cart) records
+  `located: true` on its v1 tax snapshot, so its pages and emails show the tax charged rather
+  than "Not calculated". v1 snapshots written without the field read as not located (the
+  shipping-zone rule, as before); the version stays 1 because the field is optional.
 - With prices shown the other way from how they were entered and a coupon applied, the
   subtotal and discount split the line tax pro rata, because tax is known only on the
   discounted lines; the rows still sum exactly.

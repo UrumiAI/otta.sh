@@ -412,6 +412,7 @@ export async function createOrderFromCart(
 			lines,
 			breakdown,
 			tax: quote.tax,
+			taxLocated: quote.taxLocated,
 			couponRecord: quote.couponRecord,
 			shippingMethodSnapshot,
 			shippingAddress,
@@ -481,6 +482,8 @@ interface FinalizeContext {
 	breakdown: TotalsBreakdown;
 	/** The calculator's validated answer, frozen as the order's tax snapshot. */
 	tax: QuoteTax;
+	/** The quote's `taxLocated`, frozen into the snapshot (ADR-0031). */
+	taxLocated: boolean;
 	couponRecord: CouponRecord | null;
 	/** What priced the shipping and tax (ADR-0021 Decision 7); null when no zone
 	 *  matched (no zones configured, or nothing ships). */
@@ -543,7 +546,7 @@ async function finalizeOrder(
 			appliedCouponCode: breakdown.appliedCouponCode ?? null,
 			shippingMethodSnapshot: ctx.shippingMethodSnapshot,
 			// ADR-0030: the typed v1 snapshot, written once, never recomputed.
-			taxBreakdown: buildOrderTaxSnapshot(breakdown, ctx.tax),
+			taxBreakdown: buildOrderTaxSnapshot(breakdown, ctx.tax, ctx.taxLocated),
 		},
 	});
 	// Issue #133, race twin of the I1 cart check: a same-key call for ANOTHER cart

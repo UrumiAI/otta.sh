@@ -13,6 +13,15 @@ export interface OrderTaxSnapshotV1 {
 	/** Which calculator priced it: `otta.rate-table`, or a registered one's id. */
 	calculatorId: string;
 	pricesIncludeTax: boolean;
+	/**
+	 * The tax was really calculated for a place (ADR-0031): a tax location matched
+	 * a zone — the shipping zone, or the shop base address for a digital-only cart
+	 * or a "based on the shop" store, which leaves the order with no shipping zone.
+	 * Written by every order since; ABSENT on a v1 snapshot written before it, which
+	 * reads as not located, so those orders keep deciding "was tax calculated?" off
+	 * the shipping zone alone, exactly as before.
+	 */
+	located?: boolean;
 	/** One per order line, in order-line order (`lineIndex` indexes `order.lines`). */
 	lines: Array<{ lineIndex: number; taxClassId: string; taxableCents: Cents } & TaxLine>;
 	shipping: ({ taxableCents: Cents } & TaxLine) | null;
@@ -39,11 +48,14 @@ export type OrderTaxSnapshot = OrderTaxSnapshotV1 | OrderTaxSnapshotV0;
 export function buildOrderTaxSnapshot(
 	breakdown: TotalsBreakdown,
 	tax: { calculatorId: string; result: TaxResult; pricesIncludeTax?: boolean },
+	/** The quote's `taxLocated`: a tax location matched a zone. */
+	located: boolean,
 ): OrderTaxSnapshotV1 {
 	return {
 		v: 1,
 		calculatorId: tax.calculatorId,
 		pricesIncludeTax: tax.pricesIncludeTax === true,
+		located,
 		lines: breakdown.lineBreakdown.map((line, lineIndex) => {
 			const answered = tax.result.lines[lineIndex];
 			if (answered === undefined) throw new RangeError(`no tax line for line ${String(lineIndex)}`);
@@ -82,8 +94,10 @@ export function readOrderTaxSnapshot(raw: unknown): OrderTaxSnapshot | null {
 }
 
 function readV1(raw: Record<string, unknown>): OrderTaxSnapshotV1 | null {
-	const { calculatorId, pricesIncludeTax, lines, shipping } = raw;
+	const { calculatorId, pricesIncludeTax, located, lines, shipping } = raw;
 	if (typeof calculatorId !== "string" || typeof pricesIncludeTax !== "boolean") return null;
+	// Optional: a snapshot from before the field omits it (read as not located).
+	if (located !== undefined && typeof located !== "boolean") return null;
 	if (!Array.isArray(lines)) return null;
 	const out: OrderTaxSnapshotV1["lines"] = [];
 	for (const item of lines as unknown[]) {
@@ -100,7 +114,14 @@ function readV1(raw: Record<string, unknown>): OrderTaxSnapshotV1 | null {
 		ship = taxedOf(shipping);
 		if (ship === null) return null;
 	}
-	return { v: 1, calculatorId, pricesIncludeTax, lines: out, shipping: ship };
+	return {
+		v: 1,
+		calculatorId,
+		pricesIncludeTax,
+		...(located !== undefined ? { located } : {}),
+		lines: out,
+		shipping: ship,
+	};
 }
 
 function taxedOf(item: Record<string, unknown>): ({ taxableCents: Cents } & TaxLine) | null {
