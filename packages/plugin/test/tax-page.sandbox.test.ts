@@ -103,6 +103,10 @@ const DEFAULT_RATES: RateFixture[] = [
 	{ id: "std-eu", taxClassId: "standard", zoneId: "eu", rateBps: 2000, appliesToShipping: true },
 ];
 
+function zoneIdOf(i: number): string {
+	return i === 0 ? "us" : `z${String(i)}`;
+}
+
 /** `n` rates for `standard`, ONE PER ZONE — a class holds one rate per (class,
  *  zone), so a class with many rates is a class with many zones. Rate `r0` sits in
  *  "United States" (`us`); `r{i}` in zone `z{i}` ("Zone {i}"). */
@@ -110,7 +114,6 @@ function ratesAcrossZones(
 	n: number,
 	rate: (i: number) => Pick<RateFixture, "rateBps" | "appliesToShipping">,
 ): Pick<RulesFixture, "zones" | "rates"> {
-	const zoneIdOf = (i: number) => (i === 0 ? "us" : `z${String(i)}`);
 	return {
 		zones: Array.from({ length: n }, (_, i) =>
 			i === 0

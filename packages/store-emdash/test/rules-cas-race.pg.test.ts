@@ -320,7 +320,7 @@ describe.skipIf(!PG_ENABLED)("tax-rate createRate one-per-(class, zone) race [po
 				expect((await store.listRatesForZone("z-us")).map((r) => r.id)).toEqual([won[0]?.id]);
 				expect(await store.countRatesByClass("standard")).toBe(1);
 				// … and no refused create kept its id claim.
-				for (const id of ids.filter((id) => id !== won[0]?.id)) {
+				for (const id of ids.filter((candidate) => candidate !== won[0]?.id)) {
 					expect(await fx.harness.rateOwners.get(id), `loop ${String(loop)}: ${id}`).toBeNull();
 				}
 				await store.deleteRate(won[0]?.id ?? "");
