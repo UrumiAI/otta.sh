@@ -7,6 +7,7 @@
  * |---|---|
  * | `DELETE FROM tax_classes … WHERE NOT EXISTS (tax_rates)` | the same emptiness test, read from the document being deleted and committed with `compareAndDelete` at that revision — so a `createRate` landing in between makes the delete refuse and the retry answer `in_use_by_rates` |
  * | `tax_rates.id` PRIMARY KEY | `tax_rate_owners/{rateId}`, claimed create-if-absent |
+ * | (no SQL equivalent — the SQL never had it) one rate per `(tax_class_id, zone_id)` | checked against the class document the embed is guarded on, so two racing creates for one slot cannot both land |
  * | `SELECT count(*) … WHERE tax_class_id = ?` | the size of the class document's own `rates` map |
  * | `UPDATE tax_rates SET … WHERE id = ? AND rate_bps = :expected` | the same expected-value comparison inside the class document's compare-and-set |
  * | `ORDER BY id` on `listRatesForZone` / `listClasses` | sorted in code — ordering needs a declared index, and this store declares none |
@@ -42,6 +43,9 @@
  * next create of that id.
  */
 import {
+	appliedTaxRate,
+	isTaxRateDuplicateError,
+	TaxRateDuplicateError,
 	type Clock,
 	type CreateTaxClassInput,
 	type CreateTaxRateInput,
@@ -226,8 +230,25 @@ export class EmdashTaxRulesStore implements TaxRulesStore {
 	 * revision it read, which is what closes the interleaving that would otherwise
 	 * leave a money-bearing rate embedded with no claim — a rate no admin could edit
 	 * or delete.
+	 *
+	 * ONE RATE PER (class, zone). Every rate of a class lives in that class's one
+	 * document, so the slot check reads the same document — at the same revision —
+	 * that the embed is compare-and-set against. Two racing creates for one slot
+	 * both read revision R; one embed lands, the other's compare-and-set at R
+	 * refuses, its retry re-reads the document, finds the winner in the slot and
+	 * throws {@link TaxRateDuplicateError}. A refused create then gives its id
+	 * claim back, so the id is free again.
 	 */
 	async createRate(input: CreateTaxRateInput): Promise<TaxRate> {
+		try {
+			return await this.#createRate(input);
+		} catch (err) {
+			if (isTaxRateDuplicateError(err)) await this.#releaseRateClaim(input.id, input.taxClassId);
+			throw err;
+		}
+	}
+
+	async #createRate(input: CreateTaxRateInput): Promise<TaxRate> {
 		const now = this.#clock.now().toISOString();
 		let claimRevision = await this.#claimRateId(input.id, input.taxClassId, now);
 		const rate: TaxRateDoc = {
@@ -250,6 +271,17 @@ export class EmdashTaxRulesStore implements TaxRulesStore {
 			}
 			claimRevision = reasserted.revision;
 			const held = await this.#heldClass(input.taxClassId);
+			const occupant =
+				held === null
+					? null
+					: appliedTaxRate(
+							ratesOf(held.doc)
+								.filter((r) => r.rateId !== input.id)
+								.map((r) => toTaxRate(input.taxClassId, r)),
+							input.taxClassId,
+							input.zoneId,
+						);
+			if (occupant !== null) throw new TaxRateDuplicateError(occupant);
 			if (held === null) {
 				const written = await this.#classes.compareAndSet(input.taxClassId, null, {
 					taxClassId: input.taxClassId,
@@ -271,15 +303,16 @@ export class EmdashTaxRulesStore implements TaxRulesStore {
 	}
 
 	/**
-	 * The `(class, zone)` read. The SQL had no unique index on that pair, so more
-	 * than one rate can match; the lowest rate id wins, which makes the answer
-	 * deterministic where `SELECT … LIMIT 1` was not.
+	 * The `(class, zone)` read. `createRate` now refuses a second rate for a slot,
+	 * but duplicates written before that can survive; the one returned is the one
+	 * that APPLIES (`appliedTaxRate`, the greatest id) — the rate the checkout
+	 * charges, where this used to answer the lowest id.
 	 */
 	async getRate(taxClassId: TaxClassId, zoneId: string): Promise<TaxRate | null> {
 		const doc = await this.#classes.get(taxClassId);
 		if (doc === null) return null;
-		const match = ratesOf(normalizeTaxClassDoc(doc)).find((rate) => rate.zoneId === zoneId);
-		return match === undefined ? null : toTaxRate(taxClassId, match);
+		const rates = ratesOf(normalizeTaxClassDoc(doc)).map((rate) => toTaxRate(taxClassId, rate));
+		return appliedTaxRate(rates, taxClassId, zoneId);
 	}
 
 	/**

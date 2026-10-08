@@ -120,8 +120,13 @@ export interface CouponsListResult {
 // renders as GENERIC copy, never a raw HTTP status/URL.
 
 /** Create outcome — success carries the created row; a failure carries the
- *  status the console keys its GENERIC copy off (never rendered raw). */
-export type RulesCreateResult<T> = { ok: true; value: T } | { ok: false; status: number };
+ *  status the console keys its GENERIC copy off (never rendered raw).
+ *  `duplicateTaxRate` rides a 409 from `createTaxRate` when the refusal was the
+ *  one-rate-per-(class, zone) rule rather than a taken id: it names the rate
+ *  already in that slot, so the console can point the merchant at it. */
+export type RulesCreateResult<T> =
+	| { ok: true; value: T }
+	| { ok: false; status: number; duplicateTaxRate?: { id: string; rateBps: number } };
 
 /** LWW-update outcome (zones, methods, coupons) — no `stale` (no CAS). */
 export type RulesUpdateResult<T> =

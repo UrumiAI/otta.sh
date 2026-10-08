@@ -90,6 +90,7 @@ import {
 	isCouponCodeConflictError,
 	isCouponIdCollisionError,
 	isIsoCurrencyCode,
+	isTaxRateDuplicateError,
 	parseCouponInstant,
 	parseZoneRegions,
 	type CouponListCursor,
@@ -856,6 +857,14 @@ async function createOrRefuse<T>(write: () => Promise<T>): Promise<RulesCreateRe
 	try {
 		return { ok: true, value: await write() };
 	} catch (err) {
+		// One tax rate per (class, zone): a 409 that NAMES the rate already there.
+		if (isTaxRateDuplicateError(err)) {
+			return {
+				ok: false,
+				status: CREATE_CONFLICT,
+				duplicateTaxRate: { id: err.existingRateId, rateBps: err.existingRateBps },
+			};
+		}
 		if (
 			isShippingZoneIdCollisionError(err) ||
 			isShippingMethodIdCollisionError(err) ||

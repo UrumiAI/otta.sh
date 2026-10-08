@@ -91,9 +91,9 @@ off, prices entered with or without tax, calculate by shipping or shop address, 
 shipping tax class rule, rounding at subtotal, display with or without tax, product tax
 status, taxable shipping methods) come in the next change, on top of this hook.
 Differences that remain and are pinned, not fixed, here: zones are shipping zones
-matched by country and subdivision only; with duplicate (class, zone) rates the highest
-id wins at checkout; the shipping tax class is the class of the last shipping-flagged
-rate.
+matched by country and subdivision only; the shipping tax class is the class of the
+last shipping-flagged rate. (Duplicate (class, zone) rates were pinned here too; they
+are now refused — see the amendment below.)
 
 ## Consequences
 
@@ -114,3 +114,33 @@ rate.
   page shows the order's total). Follow-up: send the postcode on the review once the
   address is known.
 - `TotalsBreakdown` is unchanged, so emails, pages and reports read the same totals.
+
+## Amendment (2026-10-08): one rate per (class, zone)
+
+Two rates for one class in one zone used to be accepted, and then resolved differently:
+checkout charged the highest id, `getRate` answered the lowest, and the admin listed
+both with no sign that one was ignored. A duplicate is now defined by the model's own
+key — **same tax class and same zone**. Nothing else matters, because the rate table has
+no priority, compound flag, postcode or city that could tell two such rates apart.
+
+- **Refused at the store.** `TaxRulesStore.createRate` throws `TaxRateDuplicateError`
+  (code `TAX_RATE_DUPLICATE`) naming the rate already in the slot, and writes nothing.
+  The admin shows: `Class "standard" already has a rate for "United States": "std-us"
+  (7.25%) …`. A rate's class and zone cannot be edited, so `updateRate` can never make a
+  duplicate.
+- **Race-safe without transactions (ADR-0019).** Every rate of a class is embedded in
+  that class's one document, so the slot check reads the same document, at the same
+  revision, that the embed is compare-and-set against. Of N concurrent creates for one
+  slot, one embed lands; every other compare-and-set refuses, and its retry re-reads,
+  finds the winner and is refused as a duplicate. A refused create gives its id claim
+  back. Proven on Postgres by `rules-cas-race.pg.test.ts` (24 creates × 12 loops) and on
+  every backend by the contract's concurrent-create case.
+- **Existing duplicates are kept, never deleted.** One rule resolves them everywhere,
+  in `@otta-sh/domain` (`effectiveTaxRates`, `appliedTaxRate`, `shadowedTaxRates`):
+  **the greatest rate id applies; the others are ignored entirely.** That is the rate
+  checkout already charged, so no price changes. The one difference: an ignored rate's
+  "applies to shipping" flag no longer taxes shipping (it used to, at the winner's rate)
+  — "ignored" now means ignored. `getRate` answers the same rate.
+- **The admin flags them.** The class's rates page shows a warning naming each pair, and
+  each row says `duplicate: only <id> applies` or `applies (duplicate <id> ignored)`.
+  Both rows stay editable and deletable, so the merchant deletes the one they don't want.

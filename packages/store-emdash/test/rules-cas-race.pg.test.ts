@@ -274,3 +274,65 @@ describe.skipIf(!PG_ENABLED)("rules CAS race: a retried loser re-verifies [postg
 		}
 	}, 180_000);
 });
+
+/**
+ * One rate per (class, zone), under a real race: N admins each create a rate —
+ * every one with its OWN id — for the same class and zone at once. All of them
+ * read the class document at the same revision and find the slot empty, so the
+ * slot check alone would let every one through; it is the embed's compare-and-set
+ * on that one document that admits exactly one, and each loser's retry re-reads,
+ * finds the winner, and is refused as a duplicate. A refused create must also give
+ * its id claim back.
+ */
+describe.skipIf(!PG_ENABLED)("tax-rate createRate one-per-(class, zone) race [postgres]", () => {
+	test("N concurrent creates for one slot: exactly ONE lands, N-1 are duplicates, no claim leaks", async () => {
+		const fx = await freshTax(N + 4);
+		try {
+			const store = fx.harness.store;
+			await store.createClass({ id: "standard", name: "Standard" });
+
+			for (let loop = 0; loop < LOOPS; loop++) {
+				const ids = Array.from({ length: N }, (_unused, i) => `l${String(loop)}-r${String(i)}`);
+				const settled = await Promise.allSettled(
+					ids.map((id, i) =>
+						store.createRate({
+							id,
+							taxClassId: "standard",
+							zoneId: "z-us",
+							rateBps: 700 + i,
+							appliesToShipping: false,
+						}),
+					),
+				);
+
+				const won = settled.flatMap((r) => (r.status === "fulfilled" ? [r.value] : []));
+				expect(won, `loop ${String(loop)}: exactly one create lands`).toHaveLength(1);
+				const lost = settled.flatMap((r) => (r.status === "rejected" ? [r.reason] : []));
+				expect(lost, `loop ${String(loop)}: N-1 refusals`).toHaveLength(N - 1);
+				for (const reason of lost) {
+					expect(reason, `loop ${String(loop)}: refused as a duplicate`).toMatchObject({
+						code: "TAX_RATE_DUPLICATE",
+						existingRateId: won[0]?.id,
+					});
+				}
+
+				// The slot holds the winner and nothing else …
+				expect((await store.listRatesForZone("z-us")).map((r) => r.id)).toEqual([won[0]?.id]);
+				expect(await store.countRatesByClass("standard")).toBe(1);
+				// … and no refused create kept its id claim.
+				for (const id of ids.filter((id) => id !== won[0]?.id)) {
+					expect(await fx.harness.rateOwners.get(id), `loop ${String(loop)}: ${id}`).toBeNull();
+				}
+				await store.deleteRate(won[0]?.id ?? "");
+			}
+			expect(fx.maxFor("createTaxRate")).toBeLessThanOrEqual(CAS_MAX_ATTEMPTS);
+			console.log(
+				`[rules-cas-race] tax createRate slot race: max CAS attempts ${String(
+					fx.maxFor("createTaxRate"),
+				)}`,
+			);
+		} finally {
+			await fx.close();
+		}
+	}, 180_000);
+});

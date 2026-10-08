@@ -52,11 +52,23 @@ export interface TaxRulesStore {
 	 */
 	countRatesByClass(id: TaxClassId): Promise<number>;
 
+	/**
+	 * Mint a rate. ONE RATE PER `(taxClassId, zoneId)` (see `tax-rate-uniqueness.ts`):
+	 * a create for a slot that already holds a rate throws `TaxRateDuplicateError`
+	 * naming that rate, and writes nothing. Atomic against a concurrent create for
+	 * the same slot — of any number of racing creates, exactly one succeeds.
+	 */
 	createRate(input: CreateTaxRateInput): Promise<TaxRate>;
-	/** The rate for a (class, zone), or null (⇒ treated as 0 bps by the engine). */
+	/**
+	 * The rate that APPLIES for a (class, zone), or null (⇒ treated as 0 bps by the
+	 * engine). Where duplicates written before the one-per-slot rule survive, that is
+	 * the one `appliedTaxRate` picks — the same rate the checkout charges.
+	 */
 	getRate(taxClassId: TaxClassId, zoneId: string): Promise<TaxRate | null>;
 	/** Every tax rate in a zone — the checkout read that builds the pipeline's
-	 *  `taxRatesByClass` map and identifies the shipping tax class. */
+	 *  `taxRatesByClass` map and identifies the shipping tax class. Surviving
+	 *  duplicates are ALL listed (the admin flags them); the checkout reduces them
+	 *  with `effectiveTaxRates`. */
 	listRatesForZone(zoneId: string): Promise<TaxRate[]>;
 
 	/**
@@ -64,7 +76,8 @@ export interface TaxRulesStore {
 	 * the tax/shipping admin's missing UPDATE capability). Only the RATE
 	 * (`rateBps`) and the shipping-tax flag (`appliesToShipping`) are editable; a
 	 * rate's `(taxClassId, zoneId)` identity is immutable (re-pointing a rate at a
-	 * different class/zone is a create+delete, not an edit).
+	 * different class/zone is a create+delete, not an edit) — which is also why an
+	 * edit can never make a duplicate, and why a surviving duplicate stays editable.
 	 *
 	 * OPTIMISTIC COMPARE-AND-SET on the money-bearing `rate_bps` (`expectedRateBps`
 	 * = the rate the admin read on the detail): the atomic UPDATE is conditioned on

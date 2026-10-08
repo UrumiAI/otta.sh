@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import type { TaxRulesStore } from "../ports/tax-rules-store.js";
+import type { TaxRate, TaxRulesStore } from "../ports/tax-rules-store.js";
 
 async function seedRate(store: TaxRulesStore): Promise<void> {
 	await store.createRate({
@@ -13,6 +13,11 @@ async function seedRate(store: TaxRulesStore): Promise<void> {
 
 export interface TaxRulesStoreHarness {
 	store: TaxRulesStore;
+	/**
+	 * Store a rate WITHOUT the one-per-(class, zone) check — the duplicates a store
+	 * may still hold from before the rule. Only the legacy-duplicate cases use it.
+	 */
+	seedUncheckedRate(rate: TaxRate): Promise<void>;
 }
 
 export interface TaxRulesStoreContractOptions {
@@ -248,6 +253,202 @@ export function taxRulesStoreContract(
 			expect(await store.deleteRate("r1")).toEqual({ ok: true });
 			expect(await store.deleteRate("r1")).toEqual({ ok: false, reason: "not_found" });
 			expect(await store.deleteRate("never")).toEqual({ ok: false, reason: "not_found" });
+		});
+
+		// -- one rate per (class, zone) ----------------------------------------------
+
+		test("createRate refuses a second rate for the same (class, zone), naming the existing one", async () => {
+			const { store } = await makeStore();
+			await store.createClass({ id: "standard", name: "Standard" });
+			await seedRate(store);
+			const err = await store
+				.createRate({
+					id: "r2",
+					taxClassId: "standard",
+					zoneId: "z-us",
+					rateBps: 900,
+					appliesToShipping: true,
+				})
+				.then(
+					() => null,
+					(e: unknown) => e,
+				);
+			expect(err).toMatchObject({
+				code: "TAX_RATE_DUPLICATE",
+				taxClassId: "standard",
+				zoneId: "z-us",
+				existingRateId: "r1",
+				existingRateBps: 725,
+			});
+			// Nothing was written: the existing rate is untouched and alone in its slot.
+			expect(await store.getRate("standard", "z-us")).toEqual({
+				id: "r1",
+				taxClassId: "standard",
+				zoneId: "z-us",
+				rateBps: 725,
+				appliesToShipping: false,
+			});
+			expect((await store.listRatesForZone("z-us")).map((r) => r.id)).toEqual(["r1"]);
+			expect(await store.countRatesByClass("standard")).toBe(1);
+			// The refused id was never kept: it is free for a rate in another slot.
+			const elsewhere = await store.createRate({
+				id: "r2",
+				taxClassId: "standard",
+				zoneId: "z-eu",
+				rateBps: 2000,
+				appliesToShipping: false,
+			});
+			expect(elsewhere.zoneId).toBe("z-eu");
+			expect(
+				await store.updateRate("r2", { rateBps: 1900, appliesToShipping: false }, 2000),
+			).toMatchObject({ ok: true });
+		});
+
+		test("the same class in another zone, or another class in the same zone, is not a duplicate", async () => {
+			const { store } = await makeStore();
+			await seedRate(store);
+			await store.createRate({
+				id: "r2",
+				taxClassId: "standard",
+				zoneId: "z-eu",
+				rateBps: 2000,
+				appliesToShipping: false,
+			});
+			await store.createRate({
+				id: "r3",
+				taxClassId: "reduced",
+				zoneId: "z-us",
+				rateBps: 500,
+				appliesToShipping: false,
+			});
+			expect((await store.listRatesForZone("z-us")).map((r) => r.id).toSorted()).toEqual([
+				"r1",
+				"r3",
+			]);
+		});
+
+		test("once the slot's rate is deleted, a new rate for that slot can be created", async () => {
+			const { store } = await makeStore();
+			await seedRate(store);
+			expect(await store.deleteRate("r1")).toEqual({ ok: true });
+			await store.createRate({
+				id: "r2",
+				taxClassId: "standard",
+				zoneId: "z-us",
+				rateBps: 800,
+				appliesToShipping: false,
+			});
+			expect((await store.getRate("standard", "z-us"))?.id).toBe("r2");
+		});
+
+		test("concurrent creates for one (class, zone): exactly one succeeds, the rest are duplicates", async () => {
+			const { store } = await makeStore();
+			await store.createClass({ id: "standard", name: "Standard" });
+			const crowd = 8;
+			const settled = await Promise.allSettled(
+				Array.from({ length: crowd }, (_unused, i) =>
+					store.createRate({
+						id: `race-${String(i)}`,
+						taxClassId: "standard",
+						zoneId: "z-us",
+						rateBps: 700 + i,
+						appliesToShipping: false,
+					}),
+				),
+			);
+			const won = settled.filter((r) => r.status === "fulfilled");
+			expect(won).toHaveLength(1);
+			for (const lost of settled.filter((r) => r.status === "rejected")) {
+				expect(lost.reason).toMatchObject({ code: "TAX_RATE_DUPLICATE" });
+			}
+			const listed = await store.listRatesForZone("z-us");
+			expect(listed).toHaveLength(1);
+			expect(listed[0]?.id).toBe(won[0]?.status === "fulfilled" ? won[0].value.id : undefined);
+			expect(await store.countRatesByClass("standard")).toBe(1);
+		});
+
+		test("updateRate keeps a rate in its slot, so an edit never makes a duplicate", async () => {
+			const { store } = await makeStore();
+			await seedRate(store);
+			await store.createRate({
+				id: "r2",
+				taxClassId: "standard",
+				zoneId: "z-eu",
+				rateBps: 2000,
+				appliesToShipping: false,
+			});
+			const res = await store.updateRate("r2", { rateBps: 725, appliesToShipping: true }, 2000);
+			expect(res.ok && { classId: res.rate.taxClassId, zoneId: res.rate.zoneId }).toEqual({
+				classId: "standard",
+				zoneId: "z-eu",
+			});
+			expect((await store.listRatesForZone("z-us")).map((r) => r.id)).toEqual(["r1"]);
+		});
+
+		// -- duplicates stored before the rule: kept, resolved, editable, deletable ---
+
+		test("legacy duplicates: the greatest id applies; both are listed; neither is deleted", async () => {
+			const { store, seedUncheckedRate } = await makeStore();
+			await store.createClass({ id: "standard", name: "Standard" });
+			await seedUncheckedRate({
+				id: "dup-b",
+				taxClassId: "standard",
+				zoneId: "z-us",
+				rateBps: 900,
+				appliesToShipping: false,
+			});
+			await seedUncheckedRate({
+				id: "dup-a",
+				taxClassId: "standard",
+				zoneId: "z-us",
+				rateBps: 700,
+				appliesToShipping: true,
+			});
+			expect((await store.getRate("standard", "z-us"))?.id).toBe("dup-b");
+			expect((await store.listRatesForZone("z-us")).map((r) => r.id).toSorted()).toEqual([
+				"dup-a",
+				"dup-b",
+			]);
+			expect(await store.countRatesByClass("standard")).toBe(2);
+			// A third create into the slot is refused, naming the rate that applies.
+			await expect(
+				store.createRate({
+					id: "dup-c",
+					taxClassId: "standard",
+					zoneId: "z-us",
+					rateBps: 100,
+					appliesToShipping: false,
+				}),
+			).rejects.toMatchObject({ code: "TAX_RATE_DUPLICATE", existingRateId: "dup-b" });
+		});
+
+		test("legacy duplicates stay editable and deletable — the merchant is never trapped", async () => {
+			const { store, seedUncheckedRate } = await makeStore();
+			await seedUncheckedRate({
+				id: "dup-a",
+				taxClassId: "standard",
+				zoneId: "z-us",
+				rateBps: 700,
+				appliesToShipping: false,
+			});
+			await seedUncheckedRate({
+				id: "dup-b",
+				taxClassId: "standard",
+				zoneId: "z-us",
+				rateBps: 900,
+				appliesToShipping: false,
+			});
+			// Either one can be edited (the ignored one too) …
+			expect(
+				await store.updateRate("dup-a", { rateBps: 750, appliesToShipping: false }, 700),
+			).toMatchObject({ ok: true });
+			expect(
+				await store.updateRate("dup-b", { rateBps: 950, appliesToShipping: false }, 900),
+			).toMatchObject({ ok: true });
+			// … and deleting the one that applies hands the slot to the survivor.
+			expect(await store.deleteRate("dup-b")).toEqual({ ok: true });
+			expect(await store.getRate("standard", "z-us")).toMatchObject({ id: "dup-a", rateBps: 750 });
+			expect((await store.listRatesForZone("z-us")).map((r) => r.id)).toEqual(["dup-a"]);
 		});
 	});
 }

@@ -11,6 +11,7 @@ import type {
 	UpdateTaxRateInput,
 	UpdateTaxRateResult,
 } from "../ports/tax-rules-store.js";
+import { appliedTaxRate, TaxRateDuplicateError } from "../pricing/tax-rate-uniqueness.js";
 
 /** IO-free `TaxRulesStore` fake — the first adapter to pass the contract. */
 export class InMemoryTaxRulesStore implements TaxRulesStore {
@@ -56,7 +57,14 @@ export class InMemoryTaxRulesStore implements TaxRulesStore {
 		return count;
 	}
 
+	/** One rate per (class, zone) — single-threaded, so the check IS atomic here. */
 	async createRate(input: CreateTaxRateInput): Promise<TaxRate> {
+		const existing = appliedTaxRate(
+			[...this.#rates.values()].filter((r) => r.id !== input.id),
+			input.taxClassId,
+			input.zoneId,
+		);
+		if (existing !== null) throw new TaxRateDuplicateError(existing);
 		const rate: TaxRate = {
 			id: input.id,
 			taxClassId: input.taxClassId,
@@ -69,10 +77,8 @@ export class InMemoryTaxRulesStore implements TaxRulesStore {
 	}
 
 	async getRate(taxClassId: string, zoneId: string): Promise<TaxRate | null> {
-		for (const r of this.#rates.values()) {
-			if (r.taxClassId === taxClassId && r.zoneId === zoneId) return { ...r };
-		}
-		return null;
+		const applied = appliedTaxRate([...this.#rates.values()], taxClassId, zoneId);
+		return applied === null ? null : { ...applied };
 	}
 
 	async listRatesForZone(zoneId: string): Promise<TaxRate[]> {
@@ -93,6 +99,15 @@ export class InMemoryTaxRulesStore implements TaxRulesStore {
 		rate.rateBps = input.rateBps;
 		rate.appliesToShipping = input.appliesToShipping;
 		return { ok: true, rate: { ...rate } };
+	}
+
+	/**
+	 * TEST SEAM: store a rate WITHOUT the one-per-slot check — the shape of data
+	 * written before the rule existed, which the contract's legacy-duplicate cases
+	 * need on every adapter.
+	 */
+	seedUncheckedRate(rate: TaxRate): void {
+		this.#rates.set(rate.id, { ...rate });
 	}
 
 	/** Leaf delete — idempotent no-op for an unknown id. */

@@ -5507,6 +5507,34 @@ export function adminRulesReportingClientContract(tier: CommerceClientTier): voi
 			).rejects.toMatchObject({ code: "INVALID_INPUT", field: "code" });
 		});
 
+		test("one tax rate per (class, zone): a second create is a 409 NAMING the existing rate, and writes nothing", async () => {
+			await client.createZone({ id: "uniq-z", name: "Uniq" });
+			await client.createZone({ id: "uniq-z2", name: "Uniq 2" });
+			await client.createTaxClass({ id: "uniq-c", name: "Uniq" });
+			const first = { id: "uniq-t1", taxClassId: "uniq-c", zoneId: "uniq-z", rateBps: 725 };
+			expect((await client.createTaxRate(first)).ok).toBe(true);
+			expect(
+				await client.createTaxRate({
+					...first,
+					id: "uniq-t2",
+					rateBps: 900,
+					appliesToShipping: true,
+				}),
+			).toEqual({ ok: false, status: 409, duplicateTaxRate: { id: "uniq-t1", rateBps: 725 } });
+			expect((await client.listTaxRates("uniq-z")).map((r) => r.id)).toEqual(["uniq-t1"]);
+			// Another zone, or another class, is not a duplicate — and the refused id is free.
+			expect((await client.createTaxRate({ ...first, id: "uniq-t2", zoneId: "uniq-z2" })).ok).toBe(
+				true,
+			);
+			// An edit cannot move a rate into another slot, so it is never refused as one.
+			const edited = await client.updateTaxRate("uniq-t2", {
+				rateBps: 725,
+				appliesToShipping: true,
+				expectedRateBps: 725,
+			});
+			expect(edited.ok && edited.value.zoneId).toBe("uniq-z2");
+		});
+
 		test("a tax rate above 100% (10000 bps) is refused on create and on edit", async () => {
 			await client.createZone({ id: "cap-z", name: "Cap" });
 			await client.createTaxClass({ id: "cap-c", name: "Cap" });
