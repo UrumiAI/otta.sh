@@ -24,6 +24,14 @@ describe("withOrderNumberCells", () => {
 		expect(cells[0]).toEqual({ number: "#FEE1D", extension: "1" });
 	});
 
+	test("ids whose number holds a '-' still get distinct cells", () => {
+		const cells = withOrderNumberCells([
+			{ id: "ord-10", orderNumber: "#ORD-1" },
+			{ id: "ord-11", orderNumber: "#ORD-1" },
+		]).map((r) => text(r.cell));
+		expect(cells).toEqual(["#ORD-10", "#ORD-11"]);
+	});
+
 	test("a tie-breaker that runs past the first hyphen is hex only", () => {
 		const cells = withOrderNumberCells([
 			{ id: "abcdef12-3000-4000-8000-000000000001", orderNumber: "#ABCDE" },

@@ -30,18 +30,23 @@ export function withOrderNumberCells<
 	O extends { readonly id: string; readonly orderNumber: string },
 >(orders: readonly O[]): Array<{ readonly order: O; readonly cell: OrderNumberCell }> {
 	const groups = new Map<string, O[]>();
-	for (const o of orders) groups.set(o.orderNumber, [...(groups.get(o.orderNumber) ?? []), o]);
+	for (const o of orders) {
+		const group = groups.get(o.orderNumber);
+		if (group === undefined) groups.set(o.orderNumber, [o]);
+		else group.push(o);
+	}
 	const extensions = new Map<string, string>();
 	for (const [number, group] of groups) {
 		if (group.length < 2) continue;
-		const digits = number.length - 1;
-		const unique = shortIdsFor(
-			group.map((o) => hexOf(o.id)),
-			digits,
-		);
-		for (const o of group) {
-			extensions.set(o.id, (unique.get(hexOf(o.id)) ?? "").slice(digits).toUpperCase());
-		}
+		// Length and slice on the SAME hyphen-free string, so an id whose number holds
+		// a `-` (`ord-10`, `ord-11` → `#ORD-1`) still extends past it.
+		const shown = number.slice(1).replaceAll("-", "").length;
+		const hex = group.map((o) => hexOf(o.id));
+		const unique = shortIdsFor(hex, shown);
+		group.forEach((o, i) => {
+			const own = hex[i] ?? "";
+			extensions.set(o.id, (unique.get(own) ?? own).slice(shown).toUpperCase());
+		});
 	}
 	return orders.map((order) => ({
 		order,
