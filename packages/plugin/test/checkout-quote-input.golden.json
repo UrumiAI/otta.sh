@@ -58,6 +58,7 @@
 				"v": 1,
 				"calculatorId": "otta.rate-table",
 				"pricesIncludeTax": false,
+				"located": true,
 				"lines": [
 					{
 						"lineIndex": 0,
@@ -230,6 +231,7 @@
 				"v": 1,
 				"calculatorId": "otta.tax-disabled",
 				"pricesIncludeTax": false,
+				"located": false,
 				"lines": [
 					{
 						"lineIndex": 0,
@@ -408,6 +410,7 @@
 				"v": 1,
 				"calculatorId": "otta.rate-table",
 				"pricesIncludeTax": false,
+				"located": false,
 				"lines": [
 					{
 						"lineIndex": 0,
@@ -538,6 +541,7 @@
 				"v": 1,
 				"calculatorId": "otta.tax-disabled",
 				"pricesIncludeTax": false,
+				"located": false,
 				"lines": [
 					{
 						"lineIndex": 0,
@@ -682,6 +686,7 @@
 				"v": 1,
 				"calculatorId": "otta.rate-table",
 				"pricesIncludeTax": false,
+				"located": true,
 				"lines": [
 					{
 						"lineIndex": 0,
@@ -895,6 +900,7 @@
 				"v": 1,
 				"calculatorId": "otta.tax-disabled",
 				"pricesIncludeTax": false,
+				"located": false,
 				"lines": [
 					{
 						"lineIndex": 0,
