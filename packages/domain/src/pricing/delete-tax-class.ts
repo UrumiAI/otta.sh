@@ -17,7 +17,7 @@ export interface DeleteTaxClassDeps {
  * store's own-grain rate guard), each carrying the referencing `count` so the
  * admin surface can render an HONEST refusal ("N products/rates reference this
  * class") instead of a bare boolean (Increment 3 closeout); `not_found` is an
- * unknown id. `in_use_by_settings` (ADR-0031): the tax options name the class as
+ * unknown id. `in_use_by_settings` (ADR-0032): the tax options name the class as
  * the fixed shipping tax class.
  */
 export type DeleteTaxClassResult =
@@ -73,7 +73,7 @@ export async function deleteTaxClass(
 	if (productRefs > 0) {
 		return { ok: false, reason: "in_use_by_products", count: productRefs };
 	}
-	// ADR-0031: the saved tax options' fixed shipping tax class. Read-then-delete like
+	// ADR-0032: the saved tax options' fixed shipping tax class. Read-then-delete like
 	// the product guard (same accepted window); a class that goes missing anyway is
 	// covered at read time — the built-in falls back to "based on cart items".
 	const shippingClass = (await deps.settings.get()).tax?.shippingTaxClass;

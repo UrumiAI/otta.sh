@@ -104,7 +104,7 @@ const ACTION_SHOW_NEW_RATE = TAX_ACTIONS.custom("show-new-rate");
 /** Leave either create screen — re-lists the level the operator came from
  *  (the path rides in the button's own `value`, L-6). */
 const ACTION_CANCEL_NEW = TAX_ACTIONS.custom("cancel-new");
-/** ADR-0031: the "Tax options" drill-in and its save. */
+/** ADR-0032: the "Tax options" drill-in and its save. */
 const OPTIONS_ACTIONS = {
 	show: TAX_ACTIONS.custom("show-options"),
 	save: TAX_ACTIONS.custom("save-options"),
@@ -303,11 +303,11 @@ function classesBlocks(
 			text: "A tax class is a rate group; products and rates reference one by id.",
 		},
 		createActionBlock("tax:create-class-action", ACTION_SHOW_NEW_CLASS, "New tax class"),
-		// ADR-0031: the store's tax options, one drill-in away.
+		// ADR-0032: the store's tax options, one drill-in away.
 		optionsButtonBlock(OPTIONS_ACTIONS),
 	];
 	if (notice !== undefined) blocks.push(noticeBanner(notice));
-	// ADR-0031: rates but tax off — say so where the rates are managed.
+	// ADR-0032: rates but tax off — say so where the rates are managed.
 	if (taxOff !== null) blocks.push(taxOff);
 	// No filter block: this level has no filter fields (L-2, count 0).
 

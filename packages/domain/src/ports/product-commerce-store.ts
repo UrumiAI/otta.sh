@@ -262,7 +262,7 @@ export interface DownloadAsset {
 export type InventoryPolicy = "deny";
 
 /**
- * WooCommerce's product tax status (PR 2b, ADR-0031): `taxable` is taxed;
+ * WooCommerce's product tax status (PR 2b, ADR-0032): `taxable` is taxed;
  * `shipping_only` carries no tax itself but still counts when the shipping tax
  * class is "based on cart items"; `none` carries no tax and does not count. A row
  * written before the field existed reads `taxable` — what it was charged as.

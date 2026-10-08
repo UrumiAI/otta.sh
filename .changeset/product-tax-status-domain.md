@@ -2,7 +2,7 @@
 "@otta-sh/domain": minor
 ---
 
-Product tax status and shipping-method taxable (ADR-0031 addendum, PR 2b).
+Product tax status and shipping-method taxable (ADR-0032 addendum, PR 2b).
 `ProductCommerce.taxStatus` (`ProductTaxStatus`: `taxable` | `shipping_only` | `none`) is
 new, set through `UpdateProductCommerceFieldsInput.taxStatus` only (the CMS-sync upsert has
 no such field); `isProductTaxStatus` and `PRODUCT_TAX_STATUSES` are exported.

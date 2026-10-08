@@ -82,7 +82,7 @@ export interface OperationalSettings {
 	/** Default low-stock threshold (non-negative integer). */
 	lowStockThreshold: number;
 	/**
-	 * The tax options (PR 2a, ADR-0031), replaced WHOLE by an update. ABSENT means
+	 * The tax options (PR 2a, ADR-0032), replaced WHOLE by an update. ABSENT means
 	 * never saved — the upgrade rule (`effectiveTaxSettings`) decides what that
 	 * means — so `get()` never fills it with a default.
 	 */

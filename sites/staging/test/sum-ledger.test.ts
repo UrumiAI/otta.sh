@@ -379,7 +379,7 @@ describe("Ledger — the Download link is a big enough target (WCAG 2.2 SC 2.5.8
 	});
 });
 
-describe("Sum — tax labels are merchant text, rendered escaped (ADR-0031)", () => {
+describe("Sum — tax labels are merchant text, rendered escaped (ADR-0032)", () => {
 	const HOSTILE = `<img src=x onerror=alert(1)>VAT`;
 
 	test("an itemized tax row's label is an escaped text node, never markup", async () => {

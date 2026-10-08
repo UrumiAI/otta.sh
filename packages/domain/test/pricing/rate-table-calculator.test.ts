@@ -155,7 +155,7 @@ describe("createRateTableCalculator (otta.rate-table)", () => {
  * Review 2a B4: a fixed shipping tax class that does not exist (never did, or was
  * deleted since) must not silently stop shipping tax. The built-in falls back to
  * "based on cart items" — the class the cart's own lines pick — which taxes
- * shipping whenever a shipping line's class has a flagged rate (ADR-0031).
+ * shipping whenever a shipping line's class has a flagged rate (ADR-0032).
  */
 describe("a fixed shipping tax class that no longer exists", () => {
 	const rates = [

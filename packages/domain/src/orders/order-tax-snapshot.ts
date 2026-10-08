@@ -14,7 +14,7 @@ export interface OrderTaxSnapshotV1 {
 	calculatorId: string;
 	pricesIncludeTax: boolean;
 	/**
-	 * The tax was really calculated for a place (ADR-0031): a tax location matched
+	 * The tax was really calculated for a place (ADR-0032): a tax location matched
 	 * a zone — the shipping zone, or the shop base address for a digital-only cart
 	 * or a "based on the shop" store, which leaves the order with no shipping zone.
 	 * Written by every order since; ABSENT on a v1 snapshot written before it, which

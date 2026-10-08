@@ -88,7 +88,7 @@ export interface CheckoutTaxRowView {
 
 export interface CheckoutTotalsView {
 	/** Subtotal, discount and shipping are shown with or without tax as the store's
-	 *  display setting says (ADR-0031); the rows always sum to `total`. */
+	 *  display setting says (ADR-0032); the rows always sum to `total`. */
 	subtotal: CheckoutAmountView;
 	discount: CheckoutAmountView;
 	shipping: CheckoutAmountView;
@@ -339,7 +339,7 @@ export interface PublicOrderView {
  * Backward-compatible: a snapshot is only ever written together with a method,
  * so every older order that carries a zone also carries a method.
  *
- * ADR-0031 adds one more piece of evidence for TAX: `taxLocated` (off the order's
+ * ADR-0032 adds one more piece of evidence for TAX: `taxLocated` (off the order's
  * frozen tax snapshot), for tax calculated at a place with no shipping zone — a
  * digital-only cart taxed at the shop base address. Absent on older orders.
  *

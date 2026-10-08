@@ -73,7 +73,7 @@ export const SETTINGS_COLLECTIONS: Readonly<Record<string, SettingsCollectionInd
 export interface SettingsDoc {
 	readonly holdTtlMinutes: number;
 	readonly lowStockThreshold: number;
-	/** The tax options (ADR-0031). Absent on every document written before PR 2a —
+	/** The tax options (ADR-0032). Absent on every document written before PR 2a —
 	 *  and on any store that never saved them: that is "never saved", not "off". */
 	readonly tax?: TaxSettings;
 	readonly updatedAt: string;

@@ -76,7 +76,7 @@ describe("orderSumRows — the totals rows, by the order page's own rule", () =>
 		expect(byLabel.get("Tax")?.amount.label).toBe("$0.00");
 	});
 
-	test("ADR-0031: a digital order taxed at the shop base address shows the tax it was charged", () => {
+	test("ADR-0032: a digital order taxed at the shop base address shows the tax it was charged", () => {
 		const totals = buildCheckoutTotals(
 			{ ...BREAKDOWN, subtotalCents: 5000, taxCents: 1000, totalCents: 6000 },
 			{

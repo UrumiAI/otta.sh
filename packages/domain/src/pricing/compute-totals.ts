@@ -138,7 +138,7 @@ export function taxRequestLinesOf(
  * Steps 6–9 from a VALIDATED calculator answer (`validateTaxResult`: one line
  * per request line, in request order). Tax = Σ line + shipping; total =
  * discounted subtotal + shipping + tax — except when prices were entered WITH
- * tax (ADR-0031): the line tax is already inside the discounted subtotal, so
+ * tax (ADR-0032): the line tax is already inside the discounted subtotal, so
  * only the shipping tax is added (`totalCents` is what the buyer pays either way,
  * and `taxCents` is still the whole tax).
  */

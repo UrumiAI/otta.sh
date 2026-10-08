@@ -160,7 +160,7 @@ export type TaxClassDeleteResult =
 	| { ok: false; reason: "not_found" }
 	| { ok: false; reason: "in_use_by_products"; count: number }
 	| { ok: false; reason: "in_use_by_rates"; count: number }
-	/** The tax options use the class as the fixed shipping tax class (ADR-0031). */
+	/** The tax options use the class as the fixed shipping tax class (ADR-0032). */
 	| { ok: false; reason: "in_use_by_settings" }
 	| { ok: false; reason: "error"; status: number };
 
@@ -336,7 +336,7 @@ export interface AdminRulesSurface {
 	updateTaxRate(rateId: string, edit: TaxRateEdit): Promise<RulesCasUpdateResult<TaxRateWire>>;
 	deleteTaxRate(rateId: string): Promise<RulesDeleteResult>;
 
-	/** The tax options in force (ADR-0031) — the saved block, or the upgrade
+	/** The tax options in force (ADR-0032) — the saved block, or the upgrade
 	 *  rule's answer when none is saved (`saved: false`). */
 	getTaxSettings(): Promise<TaxSettingsRead>;
 	/**
@@ -388,7 +388,7 @@ export type CouponRetireResult =
 	  }
 	| { ok: false; reason: "not_found" | "already_ended" };
 
-/** The tax options as the admin reads them (ADR-0031). */
+/** The tax options as the admin reads them (ADR-0032). */
 export interface TaxSettingsRead {
 	settings: TaxSettingsWire;
 	/** false ⇒ nothing saved yet: `settings` is the upgrade rule's answer. */

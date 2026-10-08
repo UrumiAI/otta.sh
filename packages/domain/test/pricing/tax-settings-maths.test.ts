@@ -10,7 +10,7 @@ import type { TaxRequest, TaxRequestLine } from "../../src/pricing/tax-calculato
 import type { TaxRate } from "../../src/ports/tax-rules-store.js";
 
 /**
- * PR 2a maths (SPEC §4, ADR-0031): prices entered with tax, rounding at
+ * PR 2a maths (SPEC §4, ADR-0032): prices entered with tax, rounding at
  * subtotal, and WooCommerce's "shipping tax class based on cart items" rule.
  * Shipping costs are ALWAYS entered without tax (woo-facts-verified Q1).
  */

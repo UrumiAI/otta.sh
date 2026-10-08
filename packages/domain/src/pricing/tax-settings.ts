@@ -1,5 +1,5 @@
 /**
- * The store's tax options (PR 2a, ADR-0031) — WooCommerce core's Tax tab, minus
+ * The store's tax options (PR 2a, ADR-0032) — WooCommerce core's Tax tab, minus
  * what Otta has no data for yet (billing address; shop-page display). Stored
  * whole as the `tax` block of the operational settings; ABSENT means "never
  * saved", which is what the upgrade rule keys on.

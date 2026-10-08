@@ -121,7 +121,7 @@ export function checkoutTaxCalculatorCases(bound: BoundStorage): void {
 			v: 1,
 			calculatorId: "acme.tax",
 			pricesIncludeTax: false,
-			// ADR-0031: no shipping zone matched (this store has none), so not located.
+			// ADR-0032: no shipping zone matched (this store has none), so not located.
 			located: false,
 			lines: [
 				{

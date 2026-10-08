@@ -1556,7 +1556,7 @@ function serializeOrderSummary(order: Order): OrderSummaryWire {
 	};
 }
 
-/** The quote's tax display facts (ADR-0031): settings, location, and the tax per label. */
+/** The quote's tax display facts (ADR-0032): settings, location, and the tax per label. */
 function quoteTaxWire(quote: Extract<DomainQuoteResult, { ok: true }>): QuoteTaxWire {
 	const { result } = quote.tax;
 	const itemized: QuoteTaxWire["itemized"] = [];
@@ -1582,7 +1582,7 @@ function quoteTaxWire(quote: Extract<DomainQuoteResult, { ok: true }>): QuoteTax
  * snapshot, so its pages show the subtotal net and the rows still sum to the
  * total. Every other order keeps today's single "Tax" row (no `tax` key).
  *
- * Tax calculated for a place with no shipping zone (ADR-0031: a digital cart
+ * Tax calculated for a place with no shipping zone (ADR-0032: a digital cart
  * taxed at the shop base address) adds `taxLocated: true`, so the order's pages
  * show the tax charged rather than "Not calculated". A snapshot written before
  * `located` existed adds nothing — the zone rule decides, as before.

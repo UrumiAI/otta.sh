@@ -60,7 +60,7 @@ export function mulDivRoundHalfUp(a: number, b: number, denominator: number): nu
 /**
  * `round_half_up(a × b / d)` for ANY positive integer `d` — the even-denominator
  * restriction of {@link mulDivRoundHalfUp} cannot serve `10000 + bps`, which is
- * odd for an odd rate (prices entered with tax, ADR-0031). Computed as
+ * odd for an odd rate (prices entered with tax, ADR-0032). Computed as
  * `floor((2ab + d) / 2d)` in BigInt, so it is exact at every magnitude.
  */
 export function mulDivRoundHalfUpAny(a: number, b: number, denominator: number): number {
@@ -80,7 +80,7 @@ export function mulDivRoundHalfUpAny(a: number, b: number, denominator: number):
 
 /**
  * `round_half_down(a × b / d)` for any positive integer `d`: an exact half rounds
- * DOWN — WooCommerce's tax rounding for prices entered with tax (ADR-0031).
+ * DOWN — WooCommerce's tax rounding for prices entered with tax (ADR-0032).
  * `floor((2ab + d − 1) / 2d)` in BigInt.
  */
 export function mulDivRoundHalfDownAny(a: number, b: number, denominator: number): number {

@@ -29,7 +29,7 @@ describe("readOrderTaxSnapshot", () => {
 		expect(readOrderTaxSnapshot({ ...v1, shipping: null })).toEqual({ ...v1, shipping: null });
 	});
 
-	test("`located` (ADR-0031) round-trips; a v1 snapshot written before it reads without it", () => {
+	test("`located` (ADR-0032) round-trips; a v1 snapshot written before it reads without it", () => {
 		const located = { ...v1, located: true };
 		expect(readOrderTaxSnapshot(JSON.parse(JSON.stringify(located)))).toEqual(located);
 		expect(readOrderTaxSnapshot({ ...v1, located: false })).toEqual({ ...v1, located: false });

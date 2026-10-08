@@ -47,7 +47,7 @@ beforeEach(async () => {
 		"2026-01-01T00:00:00.000Z",
 	);
 	// Deliberately NO tax settings saved and NO rates: a store whose calculator
-	// replaces the rate table. ADR-0031 reads it as already charging tax (tax on),
+	// replaces the rate table. ADR-0032 reads it as already charging tax (tax on),
 	// so every case below runs on the default a real such store has.
 });
 
@@ -116,7 +116,7 @@ describe("createOttaPlugin({ taxCalculator })", () => {
 		expect(calc.seen.map((r) => r.purpose)).toEqual(["quote"]);
 	});
 
-	test("no rates and nothing saved: the calculator is still asked and tax charged (ADR-0031 upgrade rule)", async () => {
+	test("no rates and nothing saved: the calculator is still asked and tax charged (ADR-0032 upgrade rule)", async () => {
 		expect((await h.stores.settingsStore.get()).tax).toBeUndefined();
 		expect(await h.stores.taxRules.hasAnyRate()).toBe(false);
 		const { createOttaPlugin, makeCommerceClient, makeAdminClients } = await load();

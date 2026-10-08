@@ -1173,7 +1173,7 @@ function bannerTitles(blocks: readonly LooseBlock[]): string[] {
 	return blocks.filter((b) => b.type === "banner").map((b) => String(b.title));
 }
 
-describe("admin Tax console — tax options (PR 2a, ADR-0031)", () => {
+describe("admin Tax console — tax options (PR 2a, ADR-0032)", () => {
 	/** A whole, valid options block with tax on — what a save writes. */
 	const TAX_ON = {
 		enabled: true,
@@ -1389,7 +1389,7 @@ describe("admin Tax console — assertBlockContract (§15 V-3)", () => {
 	test("assertBlockContract holds on every rendered shape this screen produces", async () => {
 		await seedRules();
 		assertBlockContract(await loadClasses(), { screen: "tax", level: "list" });
-		// ADR-0031: the Tax options drill-in, fresh and after a refusal.
+		// ADR-0032: the Tax options drill-in, fresh and after a refusal.
 		const options = await clickButton("tax:show-options", undefined);
 		assertBlockContract(options, { screen: "tax", level: "list" });
 		assertBlockContract(

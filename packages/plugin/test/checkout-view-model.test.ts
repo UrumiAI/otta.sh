@@ -410,7 +410,7 @@ describe("buildOrderView — honest zeros on the ORDER's own totals", () => {
 		expect(free.totals.shipping.money).toEqual({ amount: 0, currency: "USD", formatted: "$0.00" });
 	});
 
-	test("ADR-0031: a digital order taxed at the shop base address (no zone, `taxLocated`) shows its tax", () => {
+	test("ADR-0032: a digital order taxed at the shop base address (no zone, `taxLocated`) shows its tax", () => {
 		const view = buildOrderView(
 			order({ taxCents: 1000, totalCents: 6000, taxLocated: true }),
 			LOCALE,
@@ -421,7 +421,7 @@ describe("buildOrderView — honest zeros on the ORDER's own totals", () => {
 		expect(view.totals.shipping).toEqual({ money: null, label: NOT_CALCULATED_LABEL });
 	});
 
-	test("an order without `taxLocated` (every order before ADR-0031's fix) keeps the zone rule", () => {
+	test("an order without `taxLocated` (every order before ADR-0032's fix) keeps the zone rule", () => {
 		const view = buildOrderView(order({ taxCents: 0 }), LOCALE);
 		expect(view.totals.tax).toEqual({ money: null, label: NOT_CALCULATED_LABEL });
 	});

@@ -122,7 +122,7 @@ describe("the upgrade rule (no saved tax settings)", () => {
 
 	test("no rates but an outside calculator registered ⇒ tax stays ON and the calculator is asked", async () => {
 		// The calculator replaces the rate table, so such a store has no rates; it
-		// charged tax before ADR-0031 and must keep charging it with nothing saved.
+		// charged tax before ADR-0032 and must keep charging it with nothing saved.
 		const empty = new InMemoryTaxRulesStore();
 		const seen: TaxRequest[] = [];
 		const calc: TaxCalculator = {

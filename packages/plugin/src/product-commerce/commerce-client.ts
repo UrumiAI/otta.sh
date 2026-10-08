@@ -542,12 +542,12 @@ export interface QuoteBreakdownWire {
 	taxCents: number;
 	totalCents: number;
 	appliedCouponCode: string | null;
-	/** How the tax was charged and is to be shown (ADR-0031). Absent ⇒ today's
+	/** How the tax was charged and is to be shown (ADR-0032). Absent ⇒ today's
 	 *  single "Tax" row with prices as entered. */
 	tax?: QuoteTaxWire;
 }
 
-/** The tax display facts of a quote or order (ADR-0031). */
+/** The tax display facts of a quote or order (ADR-0032). */
 export interface QuoteTaxWire {
 	/** Tax switched on in the store's settings. */
 	enabled: boolean;
@@ -655,7 +655,7 @@ export interface PublicOrderWire {
 	 *  snapshot: opaque merchant config ids, never buyer data. They are the only
 	 *  evidence on the wire of WHAT the totals were priced with — the method
 	 *  decides whether shipping was calculated, the zone whether tax was.
-	 *  `taxLocated: true` (ADR-0031) says tax was calculated for a place WITHOUT a
+	 *  `taxLocated: true` (ADR-0032) says tax was calculated for a place WITHOUT a
 	 *  shipping zone — a digital cart taxed at the shop base address. Absent on
 	 *  every other order, which keeps the zone rule. */
 	totals: QuoteBreakdownWire & {

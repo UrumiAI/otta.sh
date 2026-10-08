@@ -77,7 +77,7 @@ export function validateTaxResult(
 			// No shipping was asked about: a zero line says nothing and is dropped.
 			if (line.taxCents !== 0) return null;
 		} else {
-			// Shipping is always entered without tax (ADR-0031).
+			// Shipping is always entered without tax (ADR-0032).
 			if (exceedsBound(line.taxCents, request.shipping.amountCents, false)) return null;
 			shipping = line;
 			total += line.taxCents;

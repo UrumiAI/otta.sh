@@ -46,7 +46,7 @@ export interface QuoteDeps {
 	/** Defaults to {@link DEFAULT_TAX_CALCULATOR_TIMEOUT_MS}. */
 	taxCalculatorTimeoutMs?: number;
 	/**
-	 * Where the store's tax options are read (ADR-0031). Absent ⇒ "nothing saved",
+	 * Where the store's tax options are read (ADR-0032). Absent ⇒ "nothing saved",
 	 * so the upgrade rule applies (`effectiveTaxSettings`).
 	 */
 	settings?: Pick<SettingsStore, "get">;
@@ -245,7 +245,7 @@ export async function computeQuote(
 
 	// 7. Tax — the ONE calculator call (ADR-0030), after every refusal above,
 	//    so a refused quote never costs a paid outside call. The store's tax
-	//    options (ADR-0031) decide whether it is asked at all and for where.
+	//    options (ADR-0032) decide whether it is asked at all and for where.
 	const taxSettings = await loadTaxSettings(deps);
 	const lines = taxRequestLinesOf(preTax, command.requiresShipping);
 	if (!taxSettings.enabled) {
@@ -314,7 +314,7 @@ export async function computeQuote(
  * The saved tax options, or — nothing saved — the upgrade rule's answer. A
  * registered outside calculator counts as "this store already charges tax" just
  * as a rate table does: such a store has no rates (the calculator replaces
- * them), and before ADR-0031 its calculator priced every quote — reading it as a
+ * them), and before ADR-0032 its calculator priced every quote — reading it as a
  * new store would switch tax off and silently stop asking the calculator.
  */
 async function loadTaxSettings(deps: QuoteDeps): Promise<TaxSettings> {
@@ -330,7 +330,7 @@ interface TaxLocation {
 }
 
 /**
- * Where tax is charged (ADR-0031): the shop's base address for a digital-only
+ * Where tax is charged (ADR-0032): the shop's base address for a digital-only
  * cart, or when the settings say "based on shop base address"; otherwise the
  * ship-to and the zone it already matched. With NO base address set, a
  * digital-only cart stays unlocated — and so untaxed, exactly as before — and

@@ -1,5 +1,5 @@
 /**
- * ADR-0031, end to end through the in-process client: a digital-only cart taxed
+ * ADR-0032, end to end through the in-process client: a digital-only cart taxed
  * at the shop base address. The checkout review shows the tax; after the order
  * is placed its public read must say the same — the order has no shipping zone
  * (nothing ships), so the wire carries `taxLocated` off the order's frozen tax

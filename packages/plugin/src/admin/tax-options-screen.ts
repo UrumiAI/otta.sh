@@ -1,5 +1,5 @@
 /**
- * The Tax console's "Tax options" screen (PR 2a, ADR-0031) — WooCommerce's Tax
+ * The Tax console's "Tax options" screen (PR 2a, ADR-0032) — WooCommerce's Tax
  * tab: tax on/off, prices entered with or without tax, what tax is based on, the
  * shop's base address, the shipping tax class, rounding, and how cart and
  * checkout show tax. A drill-in from the classes registry, like the create
@@ -76,7 +76,7 @@ export function taxOffBanner(read: Pick<TaxSettingsRead, "settings" | "hasRates"
 
 /**
  * "Based on shop base address" with no base address set (review 2a B5): the quote
- * then taxes by the customer's shipping address (ADR-0031 §5). Said on the screen
+ * then taxes by the customer's shipping address (ADR-0032 §5). Said on the screen
  * rather than left silent; `null` when it does not apply.
  */
 function missingBaseAddressNote(current: TaxSettingsWire): Block | null {

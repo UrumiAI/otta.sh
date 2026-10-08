@@ -1,5 +1,5 @@
 /**
- * ADR-0031's upgrade rule on the admin side, for a store with an outside tax
+ * ADR-0032's upgrade rule on the admin side, for a store with an outside tax
  * calculator (ADR-0030): such a store has no rates — the calculator replaces the
  * table — yet already charges tax, so with nothing saved it must read as tax ON,
  * exactly as the quote does. Otherwise the options screen shows "off" and the

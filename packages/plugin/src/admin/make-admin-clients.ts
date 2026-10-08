@@ -67,7 +67,7 @@ export interface AdminClients {
  */
 export function makeAdminClients(ctx: PluginContext): Promise<AdminClients> {
 	const products = new InProcessAdminProductsClient(ctx);
-	// ADR-0031: a registered outside calculator reads as "already charges tax".
+	// ADR-0032: a registered outside calculator reads as "already charges tax".
 	const rules = new InProcessAdminRulesClient(ctx, {
 		hasOutsideTaxCalculator: getTaxCalculator() !== undefined,
 	});

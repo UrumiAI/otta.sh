@@ -52,7 +52,7 @@ export interface TaxRequest {
 	purpose: "quote" | "order";
 	currency: Currency;
 	/**
-	 * Whether entered prices include tax (ADR-0031): each line's `amountCents` is
+	 * Whether entered prices include tax (ADR-0032): each line's `amountCents` is
 	 * then a GROSS amount and its tax is the part already inside it. Shipping is
 	 * always entered without tax, whatever this says.
 	 */
@@ -65,7 +65,7 @@ export interface TaxRequest {
 	origin: TaxAddress | null;
 	/**
 	 * The TAX location: the ship-to, or the shop's base address when the settings
-	 * say "based on shop base address" or the cart is digital-only (ADR-0031);
+	 * say "based on shop base address" or the cart is digital-only (ADR-0032);
 	 * null when there is none.
 	 */
 	destination: TaxAddress | null;

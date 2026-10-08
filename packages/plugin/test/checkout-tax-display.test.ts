@@ -3,7 +3,7 @@ import type { QuoteBreakdownWire, QuoteTaxWire } from "../src/product-commerce/c
 import { buildCheckoutTotals } from "../src/storefront/checkout-view-model.js";
 
 /**
- * PR 2a (ADR-0031): the cart & checkout tax display — prices shown with or
+ * PR 2a (ADR-0032): the cart & checkout tax display — prices shown with or
  * without tax, tax totals itemized or as one row. Every row still sums to the
  * total the buyer pays.
  */

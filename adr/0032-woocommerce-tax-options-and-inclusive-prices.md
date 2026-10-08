@@ -1,4 +1,4 @@
-# 0031. The store's tax options follow WooCommerce core, and an existing store keeps today's tax
+# 0032. The store's tax options follow WooCommerce core, and an existing store keeps today's tax
 
 - Status: proposed
 - Date: 2026-10-07

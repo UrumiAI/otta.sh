@@ -52,7 +52,7 @@ export interface CreateOrderDeps {
 	couponStore: CouponStore;
 	/** A registered outside tax calculator (ADR-0030); absent ⇒ the built-in. */
 	taxCalculator?: TaxCalculator;
-	/** The store's tax options (ADR-0031); absent ⇒ nothing saved (the upgrade rule). */
+	/** The store's tax options (ADR-0032); absent ⇒ nothing saved (the upgrade rule). */
 	settings?: Pick<SettingsStore, "get">;
 	clock: Clock;
 	idGen: IdGen;
@@ -483,7 +483,7 @@ interface FinalizeContext {
 	breakdown: TotalsBreakdown;
 	/** The calculator's validated answer, frozen as the order's tax snapshot. */
 	tax: QuoteTax;
-	/** The quote's `taxLocated`, frozen into the snapshot (ADR-0031). */
+	/** The quote's `taxLocated`, frozen into the snapshot (ADR-0032). */
 	taxLocated: boolean;
 	couponRecord: CouponRecord | null;
 	/** What priced the shipping and tax (ADR-0021 Decision 7); null when no zone

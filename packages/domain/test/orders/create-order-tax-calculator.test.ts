@@ -110,7 +110,7 @@ describe("createOrderFromCart → TaxCalculator", () => {
 			v: 1,
 			calculatorId: "otta.rate-table",
 			pricesIncludeTax: false,
-			// ADR-0031: the zone matched, so the tax was calculated for a place.
+			// ADR-0032: the zone matched, so the tax was calculated for a place.
 			located: true,
 			lines: [
 				{

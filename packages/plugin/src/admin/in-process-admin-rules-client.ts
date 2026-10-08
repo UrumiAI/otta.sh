@@ -207,7 +207,7 @@ export interface InProcessAdminRulesClientOptions extends InProcessCommerceStore
 	 * A site registered an outside tax calculator (`createOttaPlugin({ taxCalculator })`,
 	 * ADR-0030). With nothing saved, such a store already charges tax — the
 	 * calculator replaces the rate table, so it has no rates — and the upgrade rule
-	 * reads it like a store with rates (ADR-0031): tax on. Default `false`.
+	 * reads it like a store with rates (ADR-0032): tax on. Default `false`.
 	 */
 	hasOutsideTaxCalculator?: boolean;
 }
@@ -545,7 +545,7 @@ export class InProcessAdminRulesClient implements AdminRulesSurface {
 		return res.ok ? { ok: true } : { ok: false, reason: "not_found" };
 	}
 
-	// -- Tax: options (ADR-0031) -------------------------------------------------
+	// -- Tax: options (ADR-0032) -------------------------------------------------
 
 	async getTaxSettings(): Promise<TaxSettingsRead> {
 		const [saved, hasRates] = await Promise.all([

@@ -32,7 +32,7 @@ export {
 	type QuoteResult,
 	type QuoteTax,
 } from "./pricing/quote.js";
-// ADR-0031: the store's tax options (WooCommerce's Tax tab).
+// ADR-0032: the store's tax options (WooCommerce's Tax tab).
 export {
 	effectiveTaxSettings,
 	LEGACY_TAX_SETTINGS,

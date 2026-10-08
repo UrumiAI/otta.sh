@@ -12,7 +12,7 @@ import { describe, expect, test } from "vitest";
 import { makeOrderHarness } from "./fake-harness.js";
 
 /**
- * ADR-0031: a digital-only cart is taxed at the shop base address. It has no
+ * ADR-0032: a digital-only cart is taxed at the shop base address. It has no
  * shipping zone (nothing ships), so "was tax calculated?" cannot be read off the
  * shipping snapshot: the order's tax snapshot records `located`, and the email
  * reads it — the tax charged is shown, never "Not calculated".

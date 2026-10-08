@@ -193,7 +193,7 @@ describe("absent totals components", () => {
 		expect(rendered.text).toContain("Tax: [USD 0]");
 	});
 
-	test("ADR-0031: an order priced with tax-inclusive prices says the tax is included", () => {
+	test("ADR-0032: an order priced with tax-inclusive prices says the tax is included", () => {
 		const rendered = renderEmail(
 			"order-confirmation",
 			{ ...bare, taxCalculated: true, taxCents: 200, taxIncluded: true },
