@@ -36,6 +36,7 @@
  * declared there, once. This module holds no transport of its own.
  */
 import type { PluginAdminExports } from "emdash";
+import { mountBlockKitAccordionStyles } from "./block-kit-accordion.js";
 import { OrdersScreen } from "./orders/orders-screen.js";
 import { PRICING_COLUMNS } from "./products/pricing-columns.js";
 import { PRICING_FIELD_WIDGET, PricingStockField } from "./products/pricing-cards.js";
@@ -67,3 +68,7 @@ export const pages = {
 export const fields = { [PRICING_FIELD_WIDGET]: PricingStockField };
 
 export const contentListColumns = PRICING_COLUMNS;
+
+// The `otta` plugin's Block Kit accordions (Reports, Settings, Tax, Shipping)
+// take their look from this module — see `./block-kit-accordion.ts` for why.
+mountBlockKitAccordionStyles();
