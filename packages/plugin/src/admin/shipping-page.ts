@@ -1,7 +1,7 @@
 import {
-	checkoutPaymentWarning,
-	NOT_YET_PAYABLE_AT_CHECKOUT,
+	checkoutPaymentLabelSuffix,
 	unsupportedCurrencyMessage,
+	withCheckoutPaymentWarning,
 } from "@otta-sh/admin-presentation";
 import {
 	COUNTRY_CODES,
@@ -1391,9 +1391,7 @@ function editRateForm(zoneId: string, methodId: string, row: ShippingRateWire): 
 				{
 					type: "text_input",
 					action_id: "amount",
-					label: `Amount for ${row.currency} (${moneyPrecisionPhrase(row.currency)})${
-						checkoutPaymentWarning(row.currency) === null ? "" : ` — ${NOT_YET_PAYABLE_AT_CHECKOUT}`
-					}`,
+					label: `Amount for ${row.currency} (${moneyPrecisionPhrase(row.currency)})${checkoutPaymentLabelSuffix(row.currency)}`,
 					initial_value: formatMinorUnitsInput(row.amountCents, row.currency),
 				},
 				{
@@ -1896,7 +1894,7 @@ function createRateNotice(result: RulesCreateResult<ShippingRateWire>, currency:
 		return {
 			variant: "default",
 			title: "Rate created",
-			description: withPaymentWarning(`The ${currency} rate was added.`, currency),
+			description: withCheckoutPaymentWarning(`The ${currency} rate was added.`, currency),
 		};
 	}
 	return {
@@ -2254,13 +2252,6 @@ function parseAmountInput(input: string, currency: string): number | null {
  *  for a two-decimal currency, word for word what it always said. */
 function amountRefusal(currency: string): string {
 	return `Amount must be 0 or a positive number like ${moneyInputExample("4.99", currency)} (${moneyPrecisionPhrase(currency)}).`;
-}
-
-/** `text` followed by the warning that `currency` cannot be paid at
- *  checkout yet (KWD, BHD, OMR, JOD), or `text` unchanged for any other currency. */
-function withPaymentWarning(text: string, currency: string): string {
-	const warning = checkoutPaymentWarning(currency);
-	return warning === null ? text : `${text} ${warning}`;
 }
 
 /** The free-shipping threshold refusal, its example in the currency's shape. */

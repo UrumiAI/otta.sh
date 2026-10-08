@@ -10,6 +10,7 @@
 import { describe, expect, test } from "vitest";
 import {
 	canonicalMoneyInput,
+	checkoutPaymentLabelSuffix,
 	cents,
 	currency,
 	formatAmount,
@@ -25,6 +26,8 @@ import {
 	parseMinorUnitsInput,
 	REFUND_AMOUNT_PRECISION,
 	refundAmountPrecisionText,
+	unsupportedCurrencyMessage,
+	withCheckoutPaymentWarning,
 } from "../src/index.js";
 import { FORMAT_CACHE_CAP, formatCacheSize } from "../src/format-money.js";
 
@@ -177,6 +180,18 @@ describe("the copy that states a currency's precision", () => {
 		expect(refundAmountPrecisionText("USD")).toBe(REFUND_AMOUNT_PRECISION);
 		expect(refundAmountPrecisionText("JPY")).toMatch(/whole number/);
 		expect(refundAmountPrecisionText("KWD")).toMatch(/up to three decimal places/);
+	});
+
+	test("one checkout-warning label suffix and notice form; an unsupported-currency message with or without a code", () => {
+		expect(checkoutPaymentLabelSuffix("KWD")).toBe(" (not yet payable at checkout)");
+		expect(checkoutPaymentLabelSuffix("USD")).toBe("");
+		expect(withCheckoutPaymentWarning("Saved.", "KWD")).toMatch(
+			/^Saved\. KWD prices are not yet payable at checkout/,
+		);
+		expect(withCheckoutPaymentWarning("Saved.", "USD")).toBe("Saved.");
+		expect(withCheckoutPaymentWarning("Saved.", null)).toBe("Saved.");
+		expect(unsupportedCurrencyMessage("XYZ")).toMatch(/^XYZ isn't a supported currency/);
+		expect(unsupportedCurrencyMessage()).toMatch(/^That isn't a supported currency/);
 	});
 
 	test("one example builder: the two-decimal example as typed for USD, reshaped for JPY and KWD", () => {

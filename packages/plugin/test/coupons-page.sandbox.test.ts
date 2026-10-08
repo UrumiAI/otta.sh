@@ -1849,6 +1849,24 @@ describe("admin Coupons console — detail/edit leaf (workerd sandbox)", () => {
 		});
 	});
 
+	test("binding a THREE-decimal currency on EDIT shows the same 'not yet payable at checkout' warning a create does", async () => {
+		const state = makeCouponsState();
+		const summer = state.coupons.find((c) => c.id === "c-summer");
+		if (summer === undefined) throw new Error("fixture moved");
+		summer.capCents = null;
+		await boot(state);
+		const saved = await submitForm(await openCoupon("SUMMER25"), "coupons:save", {
+			ratePercent: "10.00",
+			expiresAt: "2026-09-01",
+			showLimits: true,
+			cap: "1.500",
+			currency: "KWD",
+		});
+		expect(bannerOf(saved)?.variant).toBe("default");
+		expect(String(bannerOf(saved)?.description)).toMatch(/not yet payable at checkout/);
+		expect(await stored("c-summer")).toMatchObject({ capCents: 1500, currency: "KWD" });
+	});
+
 	test("CLEAR semantics: blanking a pre-filled field saves it as an explicit null, and the reloaded detail shows it cleared", async () => {
 		const state = makeCouponsState();
 		await boot(state);

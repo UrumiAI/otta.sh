@@ -80,6 +80,20 @@ export const FORMAT_CACHE_CAP = 256;
 
 const FORMATS = new Map<string, { format: Intl.NumberFormat; digits: number }>();
 
+/** ICU's default currency exponent per code, probed once (bounded: a branded
+ *  `Currency` is three letters). */
+const ICU_DEFAULT_DIGITS = new Map<string, number>();
+
+function icuDefaultDigits(currencyCode: string): number {
+	const known = ICU_DEFAULT_DIGITS.get(currencyCode);
+	if (known !== undefined) return known;
+	const digits =
+		new Intl.NumberFormat("en-US", { style: "currency", currency: currencyCode }).resolvedOptions()
+			.maximumFractionDigits ?? 2;
+	ICU_DEFAULT_DIGITS.set(currencyCode, digits);
+	return digits;
+}
+
 /** How many formatters are cached — for the bound's own test. */
 export function formatCacheSize(): number {
 	return FORMATS.size;
@@ -90,9 +104,15 @@ function buildCurrencyFormat(
 	currencyCode: string,
 ): { format: Intl.NumberFormat; digits: number } {
 	const digits = minorUnitDigits(currencyCode);
-	const plain = new Intl.NumberFormat(locale, { style: "currency", currency: currencyCode });
-	if ((plain.resolvedOptions().maximumFractionDigits ?? 2) === digits) {
-		return { format: plain, digits };
+	// ICU's own exponent for the code decides whether the fraction digits need
+	// pinning. It is a property of the CURRENCY (CLDR's currency data), not the
+	// locale, so it is probed once per code — and a locale that is not cached
+	// builds exactly one formatter per call.
+	if (icuDefaultDigits(currencyCode) === digits) {
+		return {
+			format: new Intl.NumberFormat(locale, { style: "currency", currency: currencyCode }),
+			digits,
+		};
 	}
 	return {
 		format: new Intl.NumberFormat(locale, {

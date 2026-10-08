@@ -330,10 +330,7 @@ function buildEditWire(
 			wire[key] = null; // explicit clear.
 			continue;
 		}
-		// The row currency: a price in this submit was refused above unless it had
-		// one, so the submitted code is the only source.
-		const rowCurrency = currency;
-		const amountCurrency = rowCurrency ?? NO_CURRENCY;
+		const amountCurrency = currency ?? NO_CURRENCY;
 		const minorUnits = parsePriceMinorUnits(trimmed, amountCurrency);
 		if (minorUnits === null) {
 			return {
@@ -341,14 +338,14 @@ function buildEditWire(
 				message: `${field === "compareAt" ? "Compare-at price" : "Unit cost"} must be a positive amount like ${moneyInputExample("29.99", amountCurrency)}, or blank to clear.`,
 			};
 		}
-		if (rowCurrency === undefined) {
+		if (currency === undefined) {
 			return {
 				ok: false,
 				message:
 					"Set the product's price and currency before adding a compare-at price or unit cost.",
 			};
 		}
-		wire[key] = { amount: minorUnits, currency: rowCurrency };
+		wire[key] = { amount: minorUnits, currency };
 	}
 
 	const productKind = readString(values.productKind);

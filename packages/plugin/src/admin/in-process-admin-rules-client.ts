@@ -121,6 +121,7 @@ import {
 	requireCurrencyCode,
 	requireIdToken,
 	requireNonNegativeInteger,
+	UNSUPPORTED_CURRENCY_REASON,
 } from "../commerce/commerce-input.js";
 import {
 	isShippingMethodIdCollisionError,
@@ -910,11 +911,11 @@ export class InProcessAdminRulesClient implements AdminRulesSurface {
 	async retireCoupon(couponId: string): Promise<CouponRetireResult> {
 		requireIdToken("couponId", couponId);
 		// The write replaces the economics with the values just READ, so it is
-		// conditioned on the coupon's currency still being the one read: a bind
-		// that lands in between (a percentage coupon gaining a currency WITH its
-		// cap) would otherwise be kept while its cap was written back as null — a
-		// bound coupon with no bounds, a state create and edit both refuse. Such a
-		// write is refused by the store and retire simply re-reads and retries.
+		// conditioned on the coupon's currency still being the one read. A bind that
+		// lands in between (a percentage coupon gaining a currency WITH a new cap)
+		// would otherwise be a LOST UPDATE: retire would overwrite that new cap with
+		// the stale null it read. The store refuses such a write (`currency_moved`)
+		// and retire re-reads and retries, keeping the bind's cap.
 		for (let attempt = 0; attempt < RETIRE_ATTEMPTS; attempt++) {
 			const current = await this.#stores.couponStore.findById(couponId);
 			if (current === null) return { ok: false, reason: "not_found" };
@@ -1142,7 +1143,7 @@ function requireFullReplaceKey(field: string, edit: object): void {
 function requireAuthoredCurrency(field: string, value: string): void {
 	requireCurrencyCode(field, value);
 	if (!isSupportedCurrency(value)) {
-		throw new CommerceInputError(field, COUPON_CURRENCY_REFUSAL.unsupported);
+		throw new CommerceInputError(field, UNSUPPORTED_CURRENCY_REASON);
 	}
 }
 

@@ -91,14 +91,14 @@ export function isSupportedCurrency(code: string): code is SupportedCurrencyCode
 	return BY_CODE.has(code);
 }
 
-/** The table's minor-unit exponent for a supported code, or `undefined` for any
- *  other code — never a guess. A caller that must still handle an unlisted code
- *  (old data on a read path) decides its own fallback. */
 /** The table's row for a listed code (O(1)), or `undefined`. */
 export function currencyInfo(code: string): CurrencyInfo | undefined {
 	return BY_CODE.get(code);
 }
 
+/** The table's minor-unit exponent for a supported code, or `undefined` for any
+ *  other code — never a guess. A caller that must still handle an unlisted code
+ *  (old data on a read path) decides its own fallback. */
 export function currencyDigits(code: string): 0 | 2 | 3 | undefined {
 	return BY_CODE.get(code)?.digits;
 }
@@ -160,8 +160,23 @@ export function checkoutPaymentWarning(code: string): string | null {
 /** The short form for a picker option or field label: `(not yet payable at checkout)`. */
 export const NOT_YET_PAYABLE_AT_CHECKOUT = "not yet payable at checkout";
 
+/** The ONE label suffix for {@link checkoutPaymentWarning}'s currencies — a
+ *  picker option, a field label: ` (not yet payable at checkout)`, or `""`. */
+export function checkoutPaymentLabelSuffix(code: string): string {
+	return checkoutPaymentWarning(code) === null ? "" : ` (${NOT_YET_PAYABLE_AT_CHECKOUT})`;
+}
+
+/** The ONE notice form: `text`, followed by {@link checkoutPaymentWarning}
+ *  when `code` is one of its currencies (`text` unchanged otherwise, or with
+ *  no code). */
+export function withCheckoutPaymentWarning(text: string, code: string | null): string {
+	const warning = code === null ? null : checkoutPaymentWarning(code);
+	return warning === null ? text : `${text} ${warning}`;
+}
+
 /** The ONE refusal for a currency the store does not support, on every admin
- *  screen that authors one (product price, shipping rate, coupon). */
-export function unsupportedCurrencyMessage(code: string): string {
-	return `${code} isn't a supported currency — use one your store prices in, like USD or EUR.`;
+ *  screen that authors one (product price, shipping rate, coupon). Without a
+ *  code (none was typed), the sentence names none. */
+export function unsupportedCurrencyMessage(code?: string): string {
+	return `${code === undefined || code.length === 0 ? "That" : code} isn't a supported currency — use one your store prices in, like USD or EUR.`;
 }

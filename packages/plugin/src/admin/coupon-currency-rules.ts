@@ -12,11 +12,13 @@
  *    for nothing (a cap OR a minimum is enough, on create and on edit alike).
  *  - {@link COUPON_CURRENCY_REFUSAL.legacyBounds}: binding a currency to a
  *    coupon whose cap / minimum predate currencies would silently re-read them.
- *  - {@link COUPON_CURRENCY_REFUSAL.unsupported}: not in the currency table.
+ *
+ * A code that is not in the currency table at all is refused with the generic
+ * `UNSUPPORTED_CURRENCY_REASON` (`commerce/commerce-input.ts`), shared with the
+ * shipping screens.
  */
 export const COUPON_CURRENCY_REFUSAL = {
 	boundsNeedCurrency: "is required on a percentage coupon with a cap or minimum spend",
 	currencyNeedsBounds: "is only needed with a cap or minimum spend",
 	legacyBounds: "cannot be bound to a coupon whose cap or minimum spend predate currencies",
-	unsupported: "must be a currency the store supports",
 } as const;

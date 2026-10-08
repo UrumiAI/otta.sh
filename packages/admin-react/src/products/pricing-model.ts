@@ -25,8 +25,7 @@ import {
 	formatMinorUnitsInput,
 	isSupportedCurrency,
 	moneyInputExample,
-	NOT_YET_PAYABLE_AT_CHECKOUT,
-	checkoutPaymentWarning,
+	checkoutPaymentLabelSuffix,
 	parseMinorUnitsInput,
 } from "@otta-sh/admin-presentation";
 import type { ProductRecord } from "../console-api.js";
@@ -66,8 +65,7 @@ export const CURRENCY_CHOICES: readonly string[] = [
 export function currencyChoiceLabel(code: string): string {
 	const row = currencyInfo(code);
 	if (row === undefined) return code;
-	const note = checkoutPaymentWarning(code) === null ? "" : ` (${NOT_YET_PAYABLE_AT_CHECKOUT})`;
-	return `${code} — ${row.name}${note}`;
+	return `${code} — ${row.name}${checkoutPaymentLabelSuffix(code)}`;
 }
 
 /** Every input the panel owns, as the text in the field. */

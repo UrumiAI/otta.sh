@@ -1,7 +1,7 @@
 import {
-	checkoutPaymentWarning,
-	NOT_YET_PAYABLE_AT_CHECKOUT,
+	checkoutPaymentLabelSuffix,
 	unsupportedCurrencyMessage,
+	withCheckoutPaymentWarning,
 } from "@otta-sh/admin-presentation";
 import { parseCouponInstant } from "@otta-sh/domain";
 import { formatMoney } from "../presentation/format-money.js";
@@ -37,7 +37,12 @@ import {
 	NO_CURRENCY,
 	parseMinorUnitsInput,
 } from "./money-input.js";
-import { isCommerceInputError, isIdToken } from "../commerce/commerce-input.js";
+import {
+	CURRENCY_SHAPE_REASON,
+	isCommerceInputError,
+	isIdToken,
+	UNSUPPORTED_CURRENCY_REASON,
+} from "../commerce/commerce-input.js";
 import { COUPON_CURRENCY_REFUSAL } from "./coupon-currency-rules.js";
 import { idInputProblem } from "./id-input.js";
 import { isSupportedCurrency } from "@otta-sh/domain";
@@ -1233,10 +1238,12 @@ function couponCurrencyRefusalCopy(err: unknown, sent: string | null): string | 
 			return BOUNDS_CURRENCY_UNNEEDED;
 		case COUPON_CURRENCY_REFUSAL.legacyBounds:
 			return LEGACY_BOUNDS_REFUSAL;
-		case COUPON_CURRENCY_REFUSAL.unsupported:
-			return unsupportedCurrencyMessage(sent ?? "");
-		default:
+		case UNSUPPORTED_CURRENCY_REASON:
+			return sent === null ? unsupportedCurrencyMessage() : unsupportedCurrencyMessage(sent);
+		case CURRENCY_SHAPE_REASON:
 			return "Currency must be a 3-letter ISO-4217 code like USD.";
+		default:
+			return "The currency could not be accepted — check it and try again. Nothing was changed.";
 	}
 }
 
@@ -1288,9 +1295,7 @@ function editCouponForm(detail: CouponSummaryWire): FormBlock {
 			type: "text_input",
 			action_id: "amount",
 			label: `Amount off (${detail.currency ?? "?"})${
-				detail.currency !== null && checkoutPaymentWarning(detail.currency) !== null
-					? ` — ${NOT_YET_PAYABLE_AT_CHECKOUT}`
-					: ""
+				detail.currency === null ? "" : checkoutPaymentLabelSuffix(detail.currency)
 			}`,
 			...(detail.amountCents !== null
 				? {
@@ -1461,10 +1466,12 @@ function currentContext(detail: CouponSummaryWire): Record<string, string> {
 			: {}),
 		...(detail.startsAt !== null ? { curStartsAt: detail.startsAt } : {}),
 		...(detail.expiresAt !== null ? { curExpiresAt: detail.expiresAt } : {}),
-		// The currency this form was RENDERED with (empty: unbound) — a
-		// compare-only watermark, NEVER used to parse: amounts are read in the
-		// stored coupon's currency, fetched at submit. A save whose coupon's
-		// currency moved since this render is refused before anything is parsed.
+		// The currency this form was RENDERED with (empty: unbound). The save
+		// PARSES the amounts in it and sends it as the edit's `currency`; that is
+		// safe only because the rules client refuses (409) a currency that no
+		// longer matches the stored one AND the store re-checks it
+		// (`expectCurrency`) inside its compare-and-set. Neither check may be
+		// removed while amounts are parsed in this carried value.
 		[RENDERED_CURRENCY]: detail.currency ?? "",
 	};
 }
@@ -1594,10 +1601,13 @@ type ParsedEconomics =
  * because {@link resolveBound} preserves them byte for byte.
  */
 interface CurrentValues {
-	/** The currency this save reads amounts in: the STORED coupon's (read
-	 *  server-side, never taken from the form), a percentage coupon's newly
-	 *  chosen bounds currency, or {@link NO_CURRENCY} — a percentage coupon with
-	 *  none, whose bounds keep the hundredths scale they always had. */
+	/** The currency this save parses amounts in: the form's RENDERED currency
+	 *  (the watermark), a percentage coupon's newly chosen bounds currency, or
+	 *  {@link NO_CURRENCY} — a percentage coupon with none, whose bounds keep the
+	 *  hundredths scale they always had. Safe only because the rules client
+	 *  409s a currency that no longer matches the stored one and the store
+	 *  re-checks it (`expectCurrency`) in its compare-and-set; do not remove
+	 *  those checks. */
 	currency: string;
 	cap: string;
 	minSubtotal: string;
@@ -1720,7 +1730,8 @@ function parseEconomics(
 			};
 		}
 		// The amount is read in the coupon's currency: the one typed beside it on
-		// CREATE (when it is one the store supports), the STORED one on EDIT. A
+		// CREATE (when it is one the store supports), the form's rendered one on
+		// EDIT (checked against the stored one by the client and the store). A
 		// create whose currency is not yet usable is still read — in hundredths, as
 		// before — so an unreadable amount is reported first, as it always was.
 		const createCurrency =
@@ -2072,13 +2083,13 @@ function createCouponNotice(
 	currency: string | null = null,
 ): Notice {
 	if (result.ok) {
-		const warning = currency === null ? null : checkoutPaymentWarning(currency);
 		return {
 			variant: "default",
 			title: "Coupon created",
-			description: `"${code}" was added and is live per its validity window.${
-				warning === null ? "" : ` ${warning}`
-			}`,
+			description: withCheckoutPaymentWarning(
+				`"${code}" was added and is live per its validity window.`,
+				currency,
+			),
 		};
 	}
 	return {
@@ -2133,10 +2144,7 @@ function saveCouponAction() {
 		const bounds =
 			type === "percentage"
 				? boundsCurrency(values, rendered)
-				: {
-						parse: rendered === "" ? NO_CURRENCY : rendered,
-						send: rendered === "" ? null : rendered,
-					};
+				: { parse: rendered, send: rendered === "" ? null : rendered };
 		// The coupon's current optional values, as the form itself carried them —
 		// the fallback that keeps a field which never reached this submit
 		// (a `condition`-hidden bound) at the value it was hiding.
@@ -2163,7 +2171,10 @@ function saveCouponAction() {
 			if (copy === undefined) throw e;
 			return err(copy);
 		}
-		return saveCouponOutcome(result, code, showLeaf, showList);
+		// A currency BOUND by this save (an unbound coupon's new bounds) gets the
+		// same checkout warning a create gives.
+		const bound = rendered === "" ? bounds.send : null;
+		return saveCouponOutcome(result, code, showLeaf, showList, bound);
 	});
 }
 
@@ -2172,13 +2183,16 @@ function saveCouponOutcome(
 	code: string,
 	showLeaf: CustomActionApi<AdminRulesSurface>["showLeaf"],
 	showList: CustomActionApi<AdminRulesSurface>["showList"],
+	boundCurrency: string | null = null,
 ) {
 	if (result.ok) {
 		return showLeaf([code], {
 			variant: "default",
 			title: "Coupon saved",
-			description:
+			description: withCheckoutPaymentWarning(
 				"Every field was replaced with the submitted values (last write wins). Orders already placed keep their snapshotted discount.",
+				boundCurrency,
+			),
 		});
 	}
 	if (result.reason === "not_found") {
