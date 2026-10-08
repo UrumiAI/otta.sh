@@ -833,6 +833,61 @@ describeEachDialect("EmdashTaxRulesStore crash seams", (ctx) => {
 		expect(await plain.store.deleteRate("r1")).toEqual({ ok: true });
 	});
 
+	test("(dup-race) a refused create's release never takes the claim a concurrent create of the SAME id adopted", async () => {
+		const raw = bound.storage;
+		const plain = makeTaxRulesHarness(raw);
+		await plain.store.createRate({
+			id: "r1",
+			taxClassId: "standard",
+			zoneId: "z-us",
+			rateBps: 725,
+			appliesToShipping: false,
+		});
+
+		// A: "r2" into the OCCUPIED slot. It claims "r2", re-asserts the claim, and is held
+		// just before it reads the class document — the read that will refuse it. So
+		// its WHOLE release (any read it makes, and the delete) comes after B below.
+		const heldRead = parkBeforeRead(raw["tax_classes"] ?? never(), "standard");
+		const refusing = makeTaxRulesHarness(raw, {
+			storageForStore: withCollection(raw, "tax_classes", heldRead.collection),
+		}).store.createRate({
+			id: "r2",
+			taxClassId: "standard",
+			zoneId: "z-us",
+			rateBps: 900,
+			appliesToShipping: false,
+		});
+		await heldRead.arrived;
+
+		// B: "r2" into a FREE slot of the same class. It adopts A's claim (re-asserting it)
+		// and is held just before its embed — the window where the claim is B's but the
+		// class does not hold "r2" yet, which is exactly what a read-then-delete release
+		// would mistake for an orphan.
+		const heldEmbed = parkCall(
+			raw["tax_classes"] ?? never(),
+			(call) => call.method === "compareAndSet",
+		);
+		const creating = makeTaxRulesHarness(raw, {
+			storageForStore: withCollection(raw, "tax_classes", heldEmbed.collection),
+		}).store.createRate({
+			id: "r2",
+			taxClassId: "standard",
+			zoneId: "z-eu",
+			rateBps: 2000,
+			appliesToShipping: false,
+		});
+		await heldEmbed.arrived;
+
+		heldRead.release();
+		expect(await settleOne(refusing)).toMatchObject({ code: "TAX_RATE_DUPLICATE" });
+		heldEmbed.release();
+		expect((await creating).zoneId).toBe("z-eu");
+
+		// B's claim survived A's release: the rate is reachable with no healing needed.
+		expect(await plain.rateOwners.get("r2")).toMatchObject({ taxClassId: "standard" });
+		expect((await plain.store.getRate("standard", "z-eu"))?.id).toBe("r2");
+	});
+
 	test("(dup) a failed claim release never masks the duplicate refusal; the orphan is taken over later", async () => {
 		const raw = bound.storage;
 		const plain = makeTaxRulesHarness(raw);

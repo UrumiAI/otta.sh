@@ -5,6 +5,7 @@ import {
 	isTaxRateDuplicateError,
 	shadowedTaxRates,
 	TaxRateDuplicateError,
+	taxRateSlotOccupant,
 	type TaxRate,
 } from "../../src/index.js";
 import { rateTableOf } from "../../src/pricing/rate-table-calculator.js";
@@ -106,6 +107,24 @@ describe("one tax rate per (class, zone) — the rule", () => {
 		expect(table.ratesByClass.get("standard")).toBe(2000);
 	});
 
+	test("taxRateSlotOccupant: the applying rate in the input's slot, never the input's own id", () => {
+		const rates = [
+			rate("a", "standard", "z", 700),
+			rate("b", "standard", "z", 900),
+			rate("c", "zero", "z"),
+		];
+		expect(taxRateSlotOccupant(rates, { id: "new", taxClassId: "standard", zoneId: "z" })?.id).toBe(
+			"b",
+		);
+		expect(taxRateSlotOccupant(rates, { id: "b", taxClassId: "standard", zoneId: "z" })?.id).toBe(
+			"a",
+		);
+		expect(
+			taxRateSlotOccupant(rates, { id: "new", taxClassId: "standard", zoneId: "y" }),
+		).toBeNull();
+		expect(taxRateSlotOccupant([], { id: "new", taxClassId: "standard", zoneId: "z" })).toBeNull();
+	});
+
 	test("the duplicate error names the existing rate and is recognised structurally", () => {
 		const err = new TaxRateDuplicateError(rate("std-us", "standard", "z-us", 725));
 		expect(err).toMatchObject({
@@ -116,8 +135,30 @@ describe("one tax rate per (class, zone) — the rule", () => {
 			existingRateBps: 725,
 		});
 		expect(isTaxRateDuplicateError(err)).toBe(true);
-		// A plain object with the code (as it would cross a sandbox bridge) passes too.
-		expect(isTaxRateDuplicateError({ code: "TAX_RATE_DUPLICATE" })).toBe(true);
+		// A plain object with the code AND the fields (as it would cross a sandbox
+		// bridge) passes; one that only claims the code is not trusted to name a rate.
+		expect(
+			isTaxRateDuplicateError({
+				code: "TAX_RATE_DUPLICATE",
+				existingRateId: "std-us",
+				existingRateBps: 725,
+			}),
+		).toBe(true);
+		expect(isTaxRateDuplicateError({ code: "TAX_RATE_DUPLICATE" })).toBe(false);
+		expect(
+			isTaxRateDuplicateError({
+				code: "TAX_RATE_DUPLICATE",
+				existingRateId: 1,
+				existingRateBps: 725,
+			}),
+		).toBe(false);
+		expect(
+			isTaxRateDuplicateError({
+				code: "TAX_RATE_DUPLICATE",
+				existingRateId: "x",
+				existingRateBps: "725",
+			}),
+		).toBe(false);
 		expect(isTaxRateDuplicateError(new Error("x"))).toBe(false);
 		expect(isTaxRateDuplicateError(null)).toBe(false);
 	});

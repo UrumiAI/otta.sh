@@ -414,3 +414,54 @@ describe.skipIf(!PG_ENABLED)("tax-rate createRate: neighbouring races [postgres]
 		}
 	}, 180_000);
 });
+
+/**
+ * The same-id twin of the slot race: a crowd creates ONE id, half into an occupied
+ * slot (refused as duplicates, each giving its claim back) and half into free slots
+ * of the same class. Whatever wins, a rate that landed must keep its claim: a
+ * refused create may release only the claim revision it wrote itself.
+ */
+describe.skipIf(!PG_ENABLED)(
+	"tax-rate createRate: refused releases vs same-id creates [postgres]",
+	() => {
+		test("a landed rate always keeps its id claim", async () => {
+			const fx = await freshTax(N + 4);
+			try {
+				const store = fx.harness.store;
+				await store.createClass({ id: "standard", name: "Standard" });
+				await store.createRate({
+					id: "occupant",
+					taxClassId: "standard",
+					zoneId: "z-taken",
+					rateBps: 725,
+					appliesToShipping: false,
+				});
+				for (let loop = 0; loop < LOOPS; loop++) {
+					const id = `same-${String(loop)}`;
+					await Promise.allSettled(
+						Array.from({ length: N }, (_unused, i) =>
+							store.createRate({
+								id,
+								taxClassId: "standard",
+								zoneId: i % 2 === 0 ? "z-taken" : `z-free-${String(loop)}-${String(i)}`,
+								rateBps: 700 + i,
+								appliesToShipping: false,
+							}),
+						),
+					);
+					const doc = await fx.harness.classes.get("standard");
+					const landed = Object.keys(doc?.rates ?? {}).includes(id);
+					const owner = await fx.harness.rateOwners.get(id);
+					if (landed) {
+						expect(owner, `loop ${String(loop)}: landed rate kept its claim`).toMatchObject({
+							taxClassId: "standard",
+						});
+						await store.deleteRate(id);
+					}
+				}
+			} finally {
+				await fx.close();
+			}
+		}, 180_000);
+	},
+);

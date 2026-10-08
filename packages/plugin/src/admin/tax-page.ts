@@ -1,4 +1,4 @@
-import { shadowedTaxRates } from "@otta-sh/domain";
+import { appliedTaxRate, shadowedTaxRates } from "@otta-sh/domain";
 import type {
 	AccordionBlock,
 	ActionsBlock,
@@ -180,6 +180,8 @@ interface TaxRateRow extends TaxRateWire {
 	appliedInstead?: string;
 	/** Set on the rate that applies when ignored duplicates share its slot. */
 	ignoredDuplicates?: string[];
+	/** On that applying rate: the duplicate that would apply if it were deleted. */
+	nextIfDeleted?: { id: string; rateBps: number; appliesToShipping: boolean };
 }
 
 /** The rates level's own filter: an OPTIONAL zone-id narrow. Unset ⇒ every
@@ -616,11 +618,31 @@ function flagDuplicates(rows: TaxRateRow[]): TaxRateRow[] {
 	for (const [ignoredId, applied] of shadowed) {
 		ignoredBy.set(applied.id, [...(ignoredBy.get(applied.id) ?? []), ignoredId]);
 	}
+	const byId = new Map(rows.map((r) => [r.id, r]));
 	return rows.map((row) => {
 		const applied = shadowed.get(row.id);
 		if (applied !== undefined) return { ...row, appliedInstead: applied.id };
 		const ignored = ignoredBy.get(row.id);
-		return ignored === undefined ? row : { ...row, ignoredDuplicates: ignored.toSorted() };
+		if (ignored === undefined) return row;
+		// The same rule, over what would be left: who takes over if this one goes.
+		const next = appliedTaxRate(
+			ignored.flatMap((id) => byId.get(id) ?? []),
+			row.taxClassId,
+			row.zoneId,
+		);
+		return {
+			...row,
+			ignoredDuplicates: ignored.toSorted(),
+			...(next === null
+				? {}
+				: {
+						nextIfDeleted: {
+							id: next.id,
+							rateBps: next.rateBps,
+							appliesToShipping: next.appliesToShipping,
+						},
+					}),
+		};
 	});
 }
 
@@ -798,22 +820,45 @@ function duplicateStatus(row: TaxRateRow): string | undefined {
 	return undefined;
 }
 
-/** The sentence a duplicate's accordion body opens with; `undefined` for an ordinary rate. */
-function duplicateNote(row: TaxRateRow): Block | undefined {
+/** What an IGNORED duplicate's stored shipping flag reads as: shown, never as active. */
+function ignoredShippingText(row: TaxRateRow): string {
+	return `${row.appliesToShipping ? "yes" : "no"} (not applied — duplicate ignored)`;
+}
+
+/** "Deleting this makes <dup> apply: <rate>, shipping <yes/no>" — on the applying rate. */
+function nextIfDeletedText(row: TaxRateRow): string | undefined {
+	const next = row.nextIfDeleted;
+	if (next === undefined) return undefined;
+	return `Deleting this makes ${next.id} apply: ${formatBpsAsPercent(next.rateBps)}%, shipping ${next.appliesToShipping ? "yes" : "no"}.`;
+}
+
+/**
+ * The lines a duplicate's body opens with — the SAME in the accordion and the
+ * detail leaf; `[]` for an ordinary rate. The ignored rate shows its stored
+ * shipping flag read-only, as not applied; the applying rate says which
+ * duplicate takes over if it is deleted.
+ */
+function duplicateBlocks(row: TaxRateRow): Block[] {
 	const zone = row.zoneName ?? row.zoneId;
 	if (row.appliedInstead !== undefined) {
-		return {
-			type: "context",
-			text: `Duplicate: only ${row.appliedInstead} applies to ${zone} for this class, so this rate taxes nothing — not goods, not shipping. Delete the one you don't want.`,
-		};
+		return [
+			{
+				type: "context",
+				text: `Duplicate: only ${row.appliedInstead} applies to ${zone}, so this rate taxes nothing (goods or shipping). Delete the one you don't want.`,
+			},
+			{ type: "fields", fields: [{ label: "Shipping", value: ignoredShippingText(row) }] },
+		];
 	}
 	if (row.ignoredDuplicates !== undefined) {
-		return {
-			type: "context",
-			text: `Applies to ${zone}. Duplicate ${row.ignoredDuplicates.join(", ")} is ignored.`,
-		};
+		const next = nextIfDeletedText(row);
+		return [
+			{
+				type: "context",
+				text: `Applies to ${zone}. Duplicate ${row.ignoredDuplicates.join(", ")} is ignored.${next === undefined ? "" : ` ${next}`}`,
+			},
+		];
 	}
-	return undefined;
+	return [];
 }
 
 function rateGroupId(rateId: string): PlainBlockId {
@@ -827,10 +872,11 @@ function rateGroupId(rateId: string): PlainBlockId {
  *  changed it loses the CAS and the reload shows the fresh value with a
  *  "reload" notice, never a silent clobber. */
 function rateEditForm(classId: string, row: TaxRateRow): FormBlock {
-	// An IGNORED duplicate taxes nothing — shipping included — so it shows no
-	// shipping toggle that could read as "on". Its stored flag rides in the carrier
-	// instead and is saved back unchanged, so editing the rate never silently
-	// clears it (it takes effect again if this becomes the rate that applies).
+	// An IGNORED duplicate taxes nothing — shipping included — so its form has no
+	// shipping toggle that could read as "on" (its stored flag is shown read-only by
+	// `duplicateBlocks`). The save then keeps the flag the store holds AT SAVE TIME —
+	// read fresh, never echoed from this render — so a stale tab cannot turn
+	// shipping tax back on. `zoneId` (immutable) is carried so the save can read it.
 	const ignored = row.appliedInstead !== undefined;
 	return carriedForm({
 		namespace: "tax:rate-save",
@@ -838,7 +884,7 @@ function rateEditForm(classId: string, row: TaxRateRow): FormBlock {
 			classId,
 			rateId: row.id,
 			expectedRateBps: String(row.rateBps),
-			...(ignored ? { keptAppliesToShipping: String(row.appliesToShipping) } : {}),
+			...(ignored ? { zoneId: row.zoneId } : {}),
 		},
 		form: {
 			type: "form",
@@ -874,7 +920,7 @@ function rateDeleteActions(classId: string, row: TaxRateRow) {
 		value: { classId, rateId: row.id },
 		confirm: {
 			title: `Delete tax rate ${row.id}?`,
-			text: "In-flight carts recompute their tax without this rate. Orders already placed are unaffected — they snapshot the tax charged at purchase time.",
+			text: `${nextIfDeletedText(row) === undefined ? "" : `${nextIfDeletedText(row) ?? ""} `}In-flight carts recompute their tax without this rate. Orders already placed are unaffected — they snapshot the tax charged at purchase time.`,
 			confirm: "Yes, delete",
 			deny: "Keep it",
 			style: "danger",
@@ -908,17 +954,12 @@ function rateRow(classId: string, row: TaxRateRow): AccordionBlock {
 			: row.appliesToShipping
 				? "also shipping"
 				: "goods only";
-	const note = duplicateNote(row);
 	return {
 		type: "accordion",
 		block_id: rateGroupId(row.id),
 		label: `${percent}% — ${row.zoneName ?? row.zoneId} · ${row.id} · ${appliesLabel}`,
 		default_open: false,
-		blocks: [
-			...(note === undefined ? [] : [note]),
-			rateEditForm(classId, row),
-			rateDeleteActions(classId, row),
-		],
+		blocks: [...duplicateBlocks(row), rateEditForm(classId, row), rateDeleteActions(classId, row)],
 	};
 }
 
@@ -946,7 +987,12 @@ function ratesTable(
 				id: r.id,
 				zone: r.zoneName ?? r.zoneId,
 				rate: `${formatBpsAsPercent(r.rateBps)}%${status === undefined ? "" : ` (${status})`}`,
-				appliesToShipping: r.appliesToShipping ? "yes" : "—",
+				appliesToShipping:
+					r.appliedInstead !== undefined
+						? ignoredShippingText(r)
+						: r.appliesToShipping
+							? "yes"
+							: "—",
 			};
 		}),
 		page_action_id: actions.page, // never fires: this registry has no service-side pagination
@@ -1131,6 +1177,7 @@ function rateDetailBlocks(
 	if (notice !== undefined) blocks.push(noticeBanner(notice));
 	const duplicates = duplicatesBanner([row]);
 	if (duplicates !== undefined) blocks.push(duplicates);
+	blocks.push(...duplicateBlocks(row));
 	blocks.push({
 		type: "context",
 		text: "Deleting only affects future carts — orders already placed keep the tax they were charged at purchase time.",
@@ -1401,12 +1448,7 @@ function createRateAction() {
 			rateBps: bps,
 			appliesToShipping,
 		});
-		// The zone's name is read only for the duplicate refusal's copy.
-		const zoneLabel =
-			!result.ok && result.duplicateTaxRate !== undefined
-				? await zoneLabelOf(client, zoneId)
-				: zoneId;
-		const notice = createRateNotice(result, id, classId, zoneLabel);
+		const notice = createRateNotice(result, id, classId, zoneId);
 		return result.ok
 			? showList([classId], notice)
 			: showList([classId], notice, { kind: "new-rate", draft });
@@ -1417,7 +1459,7 @@ function createRateNotice(
 	result: RulesCreateResult<TaxRateWire>,
 	id: string,
 	classId: string,
-	zoneLabel: string,
+	zoneId: string,
 ): Notice {
 	if (result.ok) {
 		return {
@@ -1431,7 +1473,7 @@ function createRateNotice(
 		return {
 			variant: "error",
 			title: "Tax rate not created",
-			description: `Class "${classId}" already has a rate for ${zoneLabel}: "${existing.id}" (${formatBpsAsPercent(existing.rateBps)}%). A class can have one rate per zone — edit "${existing.id}" instead, or delete it first.`,
+			description: `Class "${classId}" already has a rate for zone "${zoneId}": "${existing.id}" (${formatBpsAsPercent(existing.rateBps)}%). A class can have one rate per zone — edit "${existing.id}" instead, or delete it first.`,
 		};
 	}
 	return {
@@ -1442,16 +1484,6 @@ function createRateNotice(
 				? `A tax rate with the ID "${id}" already exists — rate IDs are unique across every class, so choose another.`
 				: `Could not create "${id}" — check the rate ID isn't already in use and the zone id is correct, then try again.`,
 	};
-}
-
-/** A zone's name for a refusal's copy; its id when the name can't be read. */
-async function zoneLabelOf(client: AdminRulesSurface, zoneId: string): Promise<string> {
-	try {
-		const name = (await client.listZones()).find((z) => z.id === zoneId)?.name;
-		return name === undefined ? `zone "${zoneId}"` : `"${name}"`;
-	} catch {
-		return `zone "${zoneId}"`;
-	}
 }
 
 // -- custom action: open the "New tax rate" create screen ---------------------
@@ -1490,11 +1522,16 @@ function saveRateAction() {
 				description: TAX_PERCENT_HINT,
 			});
 		}
-		// An ignored duplicate's form has no toggle: its stored flag comes back from
-		// the carrier, untouched (see `rateEditForm`).
-		const kept = carried?.keptAppliesToShipping;
+		// An ignored duplicate's form has no toggle: keep the flag the store holds NOW
+		// (see `rateEditForm`), so nothing rendered earlier can re-enable it.
+		const toggled = readBoolean(values.appliesToShipping);
+		const zoneId = carried?.zoneId;
 		const appliesToShipping =
-			readBoolean(values.appliesToShipping) ?? (kept === undefined ? false : kept === "true");
+			toggled ??
+			(zoneId === undefined
+				? false
+				: ((await client.listTaxRates(zoneId)).find((r) => r.id === rateId)?.appliesToShipping ??
+					false));
 		const result = await client.updateTaxRate(rateId, {
 			rateBps: bps,
 			appliesToShipping,

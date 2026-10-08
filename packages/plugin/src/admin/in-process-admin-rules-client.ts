@@ -1011,7 +1011,8 @@ const CREATE_PARENT_MISSING = 404;
  * writes anything (or after it has given its claim back), which is the whole
  * licence for answering rather than rejecting; any other throw propagates.
  */
-async function createOrRefuse<T>(write: () => Promise<T>): Promise<RulesCreateResult<T>> {
+/** @internal Exported for its unit test only. */
+export async function createOrRefuse<T>(write: () => Promise<T>): Promise<RulesCreateResult<T>> {
 	try {
 		return { ok: true, value: await write() };
 	} catch (err) {
@@ -1023,6 +1024,9 @@ async function createOrRefuse<T>(write: () => Promise<T>): Promise<RulesCreateRe
 				duplicateTaxRate: { id: err.existingRateId, rateBps: err.existingRateBps },
 			};
 		}
+		// The code without the fields it promises: still a duplicate, but nothing to
+		// name — the generic 409, never a half-filled refusal.
+		if (hasErrorCode(err, "TAX_RATE_DUPLICATE")) return { ok: false, status: CREATE_CONFLICT };
 		if (
 			isShippingZoneIdCollisionError(err) ||
 			isShippingMethodIdCollisionError(err) ||
@@ -1039,6 +1043,10 @@ async function createOrRefuse<T>(write: () => Promise<T>): Promise<RulesCreateRe
 		}
 		throw err;
 	}
+}
+
+function hasErrorCode(err: unknown, code: string): boolean {
+	return typeof err === "object" && err !== null && (err as { code?: unknown }).code === code;
 }
 
 // ── the input bounds the request schemas used to hold ─────────────────────

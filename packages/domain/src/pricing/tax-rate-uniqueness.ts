@@ -47,15 +47,19 @@ function slotKey(rate: TaxRateSlotted): string {
 	return JSON.stringify([rate.taxClassId, rate.zoneId]);
 }
 
-/** The applied rate of each slot present in `rates`, keyed by slot. */
-function winnersBySlot<R extends TaxRateSlotted>(rates: readonly R[]): Map<string, R> {
+/** The applied rate of each slot present in `rates`, keyed by slot, plus each
+ *  rate's key (computed once, in input order). */
+function winnersBySlot<R extends TaxRateSlotted>(
+	rates: readonly R[],
+): { winners: Map<string, R>; keys: string[] } {
 	const winners = new Map<string, R>();
-	for (const rate of rates) {
+	const keys = rates.map((rate) => {
 		const key = slotKey(rate);
 		const current = winners.get(key);
 		if (current === undefined || outranks(rate, current)) winners.set(key, rate);
-	}
-	return winners;
+		return key;
+	});
+	return { winners, keys };
 }
 
 /**
@@ -65,8 +69,8 @@ function winnersBySlot<R extends TaxRateSlotted>(rates: readonly R[]): Map<strin
  * WHICH rate wins.
  */
 export function effectiveTaxRates<R extends TaxRateSlotted>(rates: readonly R[]): R[] {
-	const winners = winnersBySlot(rates);
-	return rates.filter((rate) => winners.get(slotKey(rate)) === rate);
+	const { winners, keys } = winnersBySlot(rates);
+	return rates.filter((rate, i) => winners.get(keys[i] ?? "") === rate);
 }
 
 /** The rate that applies for one `(taxClassId, zoneId)` among `rates`, or null. */
@@ -75,8 +79,29 @@ export function appliedTaxRate<R extends TaxRateSlotted>(
 	taxClassId: TaxClassId,
 	zoneId: string,
 ): R | null {
-	const inSlot = rates.filter((r) => r.taxClassId === taxClassId && r.zoneId === zoneId);
-	return winnersBySlot(inSlot).values().next().value ?? null;
+	let applied: R | null = null;
+	for (const rate of rates) {
+		if (rate.taxClassId !== taxClassId || rate.zoneId !== zoneId) continue;
+		if (applied === null || outranks(rate, applied)) applied = rate;
+	}
+	return applied;
+}
+
+/**
+ * The rate already in the slot a new rate `input` would take — the one a create
+ * must be refused over — or null when the slot is free. `input`'s own id is
+ * skipped (a rate never occupies its own slot against itself). Both stores call
+ * this, so they refuse exactly the same creates.
+ */
+export function taxRateSlotOccupant<R extends TaxRateSlotted>(
+	rates: readonly R[],
+	input: TaxRateSlotted,
+): R | null {
+	return appliedTaxRate(
+		rates.filter((r) => r.id !== input.id),
+		input.taxClassId,
+		input.zoneId,
+	);
 }
 
 /**
@@ -86,10 +111,10 @@ export function appliedTaxRate<R extends TaxRateSlotted>(
 export function shadowedTaxRates<R extends TaxRateSlotted>(
 	rates: readonly R[],
 ): ReadonlyMap<string, R> {
-	const winners = winnersBySlot(rates);
+	const { winners, keys } = winnersBySlot(rates);
 	const shadowed = new Map<string, R>();
-	for (const rate of rates) {
-		const winner = winners.get(slotKey(rate));
+	for (const [i, rate] of rates.entries()) {
+		const winner = winners.get(keys[i] ?? "");
 		if (winner !== undefined && winner !== rate) shadowed.set(rate.id, winner);
 	}
 	return shadowed;
@@ -123,11 +148,17 @@ export class TaxRateDuplicateError extends Error {
 	}
 }
 
-/** Structural test for {@link TaxRateDuplicateError}. */
+/**
+ * Structural test for {@link TaxRateDuplicateError} — the code AND the fields a
+ * caller reads off it, so an object that only claims the code (across a bridge,
+ * or forged) is never trusted to name a rate.
+ */
 export function isTaxRateDuplicateError(err: unknown): err is TaxRateDuplicateError {
+	if (typeof err !== "object" || err === null) return false;
+	const e = err as { code?: unknown; existingRateId?: unknown; existingRateBps?: unknown };
 	return (
-		typeof err === "object" &&
-		err !== null &&
-		(err as { code?: unknown }).code === "TAX_RATE_DUPLICATE"
+		e.code === "TAX_RATE_DUPLICATE" &&
+		typeof e.existingRateId === "string" &&
+		typeof e.existingRateBps === "number"
 	);
 }

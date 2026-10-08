@@ -315,6 +315,23 @@ export function taxRulesStoreContract(
 			).toMatchObject({ ok: true });
 		});
 
+		test("a rate id is unique store-wide: a create reusing a live id is refused, in any slot", async () => {
+			const { store } = await makeStore();
+			await seedRate(store);
+			for (const slot of [
+				{ taxClassId: "standard", zoneId: "z-us" },
+				{ taxClassId: "standard", zoneId: "z-eu" },
+				{ taxClassId: "reduced", zoneId: "z-us" },
+			]) {
+				await expect(
+					store.createRate({ id: "r1", ...slot, rateBps: 900, appliesToShipping: false }),
+				).rejects.toMatchObject({ code: "TAX_RATE_ID_COLLISION" });
+			}
+			// Nothing moved: r1 is where it was, unchanged and alone.
+			expect(await store.getRate("standard", "z-us")).toMatchObject({ id: "r1", rateBps: 725 });
+			expect(await store.listRatesForZone("z-eu")).toEqual([]);
+		});
+
 		test("the same class in another zone, or another class in the same zone, is not a duplicate", async () => {
 			const { store } = await makeStore();
 			await seedRate(store);

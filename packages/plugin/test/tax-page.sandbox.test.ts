@@ -30,6 +30,8 @@ import {
 	buttons,
 	contextTexts,
 	field,
+	confirmOf,
+	fieldEntries,
 	fieldIds,
 	findBlock,
 	findBlocks,
@@ -37,6 +39,7 @@ import {
 	group,
 	groupBlocks,
 	openGroupIds,
+	tableRows,
 	type LooseBlock,
 } from "./helpers/blocks.js";
 import { loadPluginInSandbox, type SandboxHandle } from "./sandbox/harness.js";
@@ -1528,7 +1531,7 @@ describe("admin Tax console — one rate per (class, zone) (workerd sandbox)", (
 		expect(banner?.variant).toBe("error");
 		expect(String(banner?.title)).toBe("Tax rate not created");
 		expect(String(banner?.description)).toBe(
-			'Class "standard" already has a rate for "United States": "std-us" (7.25%). A class can have one rate per zone — edit "std-us" instead, or delete it first.',
+			'Class "standard" already has a rate for zone "us": "std-us" (7.25%). A class can have one rate per zone — edit "std-us" instead, or delete it first.',
 		);
 		// The typing is kept, and the store holds exactly what it held.
 		expect(formInitialValues(refused, "tax:create-rate")).toMatchObject({
@@ -1570,10 +1573,10 @@ describe("admin Tax console — one rate per (class, zone) (workerd sandbox)", (
 		// The label flags it (inside the label budget); the body says which applies.
 		expect(String(group(blocks, "tax:rate:std-us")?.label)).toContain("duplicate — ignored");
 		expect(contextTexts(groupBlocks(blocks, "tax:rate:std-us"))).toContain(
-			"Duplicate: only std-us-b applies to United States for this class, so this rate taxes nothing — not goods, not shipping. Delete the one you don't want.",
+			"Duplicate: only std-us-b applies to United States, so this rate taxes nothing (goods or shipping). Delete the one you don't want.",
 		);
 		expect(contextTexts(groupBlocks(blocks, "tax:rate:std-us-b"))).toContain(
-			"Applies to United States. Duplicate std-us is ignored.",
+			"Applies to United States. Duplicate std-us is ignored. Deleting this makes std-us apply: 7.25%, shipping no.",
 		);
 		// The rest of the class is not flagged.
 		expect(String(group(blocks, "tax:rate:std-eu")?.label)).not.toContain("duplicate");
@@ -1651,6 +1654,10 @@ describe("admin Tax console — one rate per (class, zone) (workerd sandbox)", (
 		const blocks = await openClass("standard");
 		const ignoredForm = formFor(groupBlocks(blocks, "tax:rate:std-us"), "tax:save-rate");
 		expect(fieldIds(ignoredForm)).not.toContain("appliesToShipping");
+		// The stored flag is SHOWN, read-only, as not applied — never hidden, never "active".
+		expect(fieldEntries(groupBlocks(blocks, "tax:rate:std-us"))).toContain(
+			"Shipping=yes (not applied — duplicate ignored)",
+		);
 		// The rate that applies keeps its toggle, showing its own (off) flag.
 		const appliedForm = formFor(groupBlocks(blocks, "tax:rate:std-us-b"), "tax:save-rate");
 		expect(field(appliedForm, "appliesToShipping")?.initial_value).toBe(false);
@@ -1661,5 +1668,93 @@ describe("admin Tax console — one rate per (class, zone) (workerd sandbox)", (
 		expect(await findRate("us", "std-us")).toMatchObject({ rateBps: 800, appliesToShipping: true });
 		// Still ignored at checkout: shipping is not taxed by it.
 		expect(await checkoutRateBps("us")).toBe(900);
+	});
+
+	test("a stale tab can never turn an ignored duplicate's shipping tax back on", async () => {
+		await seedRules({
+			rates: [
+				{
+					id: "std-us",
+					taxClassId: "standard",
+					zoneId: "us",
+					rateBps: 725,
+					appliesToShipping: true,
+				},
+			],
+		});
+		await seedLegacyRate({
+			id: "std-us-b",
+			taxClassId: "standard",
+			zoneId: "us",
+			rateBps: 900,
+			appliesToShipping: false,
+		});
+		// Tab 1 renders the ignored row while its stored flag is ON …
+		const stale = group(await openClass("standard"), "tax:rate:std-us")!;
+		// … tab 2 then turns it OFF.
+		expect(
+			await taxRules.updateRate("std-us", { rateBps: 725, appliesToShipping: false }, 725),
+		).toMatchObject({ ok: true });
+		// Tab 1 saves a rate edit: the flag stays what the store holds NOW.
+		const saved = await submitForm([stale], "tax:save-rate", { ratePercent: "7.5" });
+		expect(bannerOf(saved)?.variant).toBe("default");
+		expect(await findRate("us", "std-us")).toMatchObject({
+			rateBps: 750,
+			appliesToShipping: false,
+		});
+	});
+
+	test("the applying rate says who takes over if it is deleted — in its body, its delete confirm and its detail leaf", async () => {
+		await seedRules({
+			rates: [
+				{
+					id: "std-us",
+					taxClassId: "standard",
+					zoneId: "us",
+					rateBps: 725,
+					appliesToShipping: true,
+				},
+			],
+		});
+		await seedLegacyRate({
+			id: "std-us-b",
+			taxClassId: "standard",
+			zoneId: "us",
+			rateBps: 900,
+			appliesToShipping: false,
+		});
+		const takeover = "Deleting this makes std-us apply: 7.25%, shipping yes.";
+		const body = groupBlocks(await openClass("standard"), "tax:rate:std-us-b");
+		expect(contextTexts(body).some((t) => t.includes(takeover))).toBe(true);
+		const del = buttons(body).find((b) => b.action_id === "tax:delete-rate");
+		expect(String(confirmOf(del).text)).toContain(takeover);
+		const detail = await clickButton("tax:open", { target: encodePath(["standard", "std-us-b"]) });
+		expect(contextTexts(detail).some((t) => t.includes(takeover))).toBe(true);
+		// The ignored row's detail leaf shows its flag the same way the accordion does.
+		const ignoredDetail = await clickButton("tax:open", {
+			target: encodePath(["standard", "std-us"]),
+		});
+		expect(fieldEntries(ignoredDetail)).toContain("Shipping=yes (not applied — duplicate ignored)");
+		expect(fieldIds(formFor(ignoredDetail, "tax:save-rate"))).not.toContain("appliesToShipping");
+		assertBlockContract(detail, { screen: "tax", level: "list" });
+		assertBlockContract(ignoredDetail, { screen: "tax", level: "list" });
+	});
+
+	test("the table view (past 25 rates) shows an ignored duplicate's shipping flag as not applied", async () => {
+		const spread = ratesAcrossZones(26, () => ({ rateBps: 1000, appliesToShipping: false }));
+		await seedRules(spread);
+		// r0 sits in "us"; add an ignored duplicate of it with shipping ON (its id sorts
+		// below "r0", so r0 keeps applying).
+		await seedLegacyRate({
+			id: "a-old",
+			taxClassId: "standard",
+			zoneId: "us",
+			rateBps: 500,
+			appliesToShipping: true,
+		});
+		const blocks = await openClass("standard");
+		const row = tableRows(blocks).find((r) => r.id === "a-old");
+		expect(row?.appliesToShipping).toBe("yes (not applied — duplicate ignored)");
+		expect(String(row?.rate)).toContain("duplicate: only r0 applies");
 	});
 });

@@ -11,7 +11,11 @@ import type {
 	UpdateTaxRateInput,
 	UpdateTaxRateResult,
 } from "../ports/tax-rules-store.js";
-import { appliedTaxRate, TaxRateDuplicateError } from "../pricing/tax-rate-uniqueness.js";
+import {
+	appliedTaxRate,
+	TaxRateDuplicateError,
+	taxRateSlotOccupant,
+} from "../pricing/tax-rate-uniqueness.js";
 
 /** IO-free `TaxRulesStore` fake — the first adapter to pass the contract. */
 export class InMemoryTaxRulesStore implements TaxRulesStore {
@@ -57,13 +61,21 @@ export class InMemoryTaxRulesStore implements TaxRulesStore {
 		return count;
 	}
 
-	/** One rate per (class, zone) — single-threaded, so the check IS atomic here. */
+	/**
+	 * A rate id is unique store-wide, and a (class, zone) holds one rate — checked
+	 * in that order, as the emdash adapter does (id claim, then slot). Single-
+	 * threaded, so both checks ARE atomic here.
+	 */
 	async createRate(input: CreateTaxRateInput): Promise<TaxRate> {
-		const existing = appliedTaxRate(
-			[...this.#rates.values()].filter((r) => r.id !== input.id),
-			input.taxClassId,
-			input.zoneId,
-		);
+		const taken = this.#rates.get(input.id);
+		if (taken !== undefined) {
+			// The emdash adapter's `TaxRateIdCollisionError`, by its structural code.
+			throw Object.assign(
+				new Error(`tax rate id ${input.id} is already held by class ${taken.taxClassId}`),
+				{ code: "TAX_RATE_ID_COLLISION", rateId: input.id, heldBy: taken.taxClassId },
+			);
+		}
+		const existing = taxRateSlotOccupant([...this.#rates.values()], input);
 		if (existing !== null) throw new TaxRateDuplicateError(existing);
 		const rate: TaxRate = {
 			id: input.id,

@@ -151,6 +151,7 @@ export {
 	isTaxRateDuplicateError,
 	shadowedTaxRates,
 	TaxRateDuplicateError,
+	taxRateSlotOccupant,
 	type TaxRateSlotted,
 } from "./pricing/tax-rate-uniqueness.js";
 export type {
