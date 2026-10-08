@@ -41,7 +41,9 @@ Price in 49 currencies, each in its own minor unit, from one currency table.
   bound once they are cleared. A percentage coupon with a cap or minimum and no currency,
   written earlier, behaves exactly as before (and cannot be bound). Coupon edits read amounts in
   the STORED coupon's currency and send it back: an edit whose coupon's currency changed
-  meanwhile is refused (409) rather than re-read.
+  meanwhile is refused (409) rather than re-read. The check runs inside the store's
+  compare-and-set (`UpdateCouponInput.expectCurrency`, refusal `currency_moved`), so a bind
+  racing an edit can never land the edit's amounts in the other currency.
 - **Coupon refusal order.** `validateCoupon` now checks the coupon's currency BEFORE its
   minimum spend and use limit, so a coupon in another currency is reported as
   `COUPON_CURRENCY_MISMATCH` rather than `COUPON_MIN_SUBTOTAL` / `COUPON_EXHAUSTED` (fixed and
@@ -53,6 +55,11 @@ Price in 49 currencies, each in its own minor unit, from one currency table.
   are still refused with `unsupported_currency`; a code outside the table is treated as before.
 - **React console.** The first-pricing currency picker offers every table currency (the
   familiar ten first, labelled `USD — US Dollar`); USD stays the default.
+- **Three-decimal currencies are flagged in the admin.** KWD, BHD, OMR and JOD can be priced but
+  not charged through Stripe yet: the picker labels them "(not yet payable via Stripe)", the
+  pricing card, shipping-rate and coupon screens warn when one is used
+  (`stripePaymentWarning`). The domain now exports `minorUnitDigits` (display digits: table →
+  ICU → 2); `formatMoney` caches its formatters per locale and currency. See ADR-0033.
 
 **Upgrade notes.** JPY/KRW/VND/CLP amounts typed in the admin on an earlier version were stored
 ×100 and become purchasable at that stored value — check and re-enter them before upgrading.
