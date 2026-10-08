@@ -832,6 +832,51 @@ describeEachDialect("EmdashTaxRulesStore crash seams", (ctx) => {
 		expect((await plain.store.getRate("reduced", "z-us"))?.rateBps).toBe(600);
 		expect(await plain.store.deleteRate("r1")).toEqual({ ok: true });
 	});
+
+	test("(dup) a failed claim release never masks the duplicate refusal; the orphan is taken over later", async () => {
+		const raw = bound.storage;
+		const plain = makeTaxRulesHarness(raw);
+		await plain.store.createRate({
+			id: "r1",
+			taxClassId: "standard",
+			zoneId: "z-us",
+			rateBps: 725,
+			appliesToShipping: false,
+		});
+
+		const crashed = failCall(raw["tax_rate_owners"] ?? never(), isRelease, { mode: "instead" });
+		const wounded = makeTaxRulesHarness(raw, {
+			storageForStore: withCollection(raw, "tax_rate_owners", crashed.collection),
+		});
+		const err = await settleOne(
+			wounded.store.createRate({
+				id: "r2",
+				taxClassId: "standard",
+				zoneId: "z-us",
+				rateBps: 900,
+				appliesToShipping: false,
+			}),
+		);
+		// The merchant is told WHY, not that storage hiccupped.
+		expect(err).toMatchObject({ code: "TAX_RATE_DUPLICATE", existingRateId: "r1" });
+		// The release did not run, so the claim is an orphan …
+		expect(await plain.rateOwners.get("r2")).not.toBeNull();
+		// … which misleads no reader and strands no id.
+		expect(
+			await plain.store.updateRate("r2", { rateBps: 1, appliesToShipping: false }, 900),
+		).toEqual({
+			ok: false,
+			reason: "not_found",
+		});
+		await plain.store.createRate({
+			id: "r2",
+			taxClassId: "standard",
+			zoneId: "z-eu",
+			rateBps: 2000,
+			appliesToShipping: false,
+		});
+		expect((await plain.store.getRate("standard", "z-eu"))?.id).toBe("r2");
+	});
 });
 
 /** A collection the layout declares is always present; this is the type narrowing. */

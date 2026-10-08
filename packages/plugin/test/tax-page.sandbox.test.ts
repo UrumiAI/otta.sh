@@ -1503,6 +1503,7 @@ async function checkoutRateBps(zoneId: string): Promise<number | undefined> {
 				amountCents: cents(10_000),
 				taxClassId: "standard",
 				taxStatus: "taxable",
+				requiresShipping: true,
 			},
 		],
 		shipping: null,
@@ -1569,7 +1570,7 @@ describe("admin Tax console — one rate per (class, zone) (workerd sandbox)", (
 		// The label flags it (inside the label budget); the body says which applies.
 		expect(String(group(blocks, "tax:rate:std-us")?.label)).toContain("duplicate — ignored");
 		expect(contextTexts(groupBlocks(blocks, "tax:rate:std-us"))).toContain(
-			"Duplicate: only std-us-b applies to United States for this class. Delete the one you don't want.",
+			"Duplicate: only std-us-b applies to United States for this class, so this rate taxes nothing — not goods, not shipping. Delete the one you don't want.",
 		);
 		expect(contextTexts(groupBlocks(blocks, "tax:rate:std-us-b"))).toContain(
 			"Applies to United States. Duplicate std-us is ignored.",
@@ -1625,5 +1626,40 @@ describe("admin Tax console — one rate per (class, zone) (workerd sandbox)", (
 		expect(detail.some((b) => b.type === "header" && b.text === "Tax rate — std-us")).toBe(true);
 		expect(String(bannerOf(detail)?.description)).toContain('only "std-us-b" applies');
 		assertBlockContract(detail, { screen: "tax", level: "list" });
+	});
+
+	test("an ignored duplicate shows no shipping toggle, and saving it keeps its stored flag", async () => {
+		// The IGNORED rate ("std-us") is the shipping-flagged one.
+		await seedRules({
+			rates: [
+				{
+					id: "std-us",
+					taxClassId: "standard",
+					zoneId: "us",
+					rateBps: 725,
+					appliesToShipping: true,
+				},
+			],
+		});
+		await seedLegacyRate({
+			id: "std-us-b",
+			taxClassId: "standard",
+			zoneId: "us",
+			rateBps: 900,
+			appliesToShipping: false,
+		});
+		const blocks = await openClass("standard");
+		const ignoredForm = formFor(groupBlocks(blocks, "tax:rate:std-us"), "tax:save-rate");
+		expect(fieldIds(ignoredForm)).not.toContain("appliesToShipping");
+		// The rate that applies keeps its toggle, showing its own (off) flag.
+		const appliedForm = formFor(groupBlocks(blocks, "tax:rate:std-us-b"), "tax:save-rate");
+		expect(field(appliedForm, "appliesToShipping")?.initial_value).toBe(false);
+
+		const row = group(blocks, "tax:rate:std-us")!;
+		const saved = await submitForm([row], "tax:save-rate", { ratePercent: "8" });
+		expect(bannerOf(saved)?.variant).toBe("default");
+		expect(await findRate("us", "std-us")).toMatchObject({ rateBps: 800, appliesToShipping: true });
+		// Still ignored at checkout: shipping is not taxed by it.
+		expect(await checkoutRateBps("us")).toBe(900);
 	});
 });

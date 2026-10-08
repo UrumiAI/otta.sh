@@ -336,3 +336,81 @@ describe.skipIf(!PG_ENABLED)("tax-rate createRate one-per-(class, zone) race [po
 		}
 	}, 180_000);
 });
+
+/**
+ * The two neighbours of the slot race. Concurrent creates for DIFFERENT zones of one
+ * class all write the same class document, so every one but the first loses its
+ * revision at least once — and must then succeed on retry, not be refused. And when
+ * the class has never been declared, the first embed is a create-if-absent of the
+ * class document itself: exactly one of a crowd for one slot may land there too.
+ */
+describe.skipIf(!PG_ENABLED)("tax-rate createRate: neighbouring races [postgres]", () => {
+	test("N concurrent creates for N DIFFERENT zones of one class all land", async () => {
+		const fx = await freshTax(N + 4);
+		try {
+			const store = fx.harness.store;
+			await store.createClass({ id: "standard", name: "Standard" });
+			for (let loop = 0; loop < LOOPS; loop++) {
+				const settled = await Promise.allSettled(
+					Array.from({ length: N }, (_unused, i) =>
+						store.createRate({
+							id: `l${String(loop)}-z${String(i)}`,
+							taxClassId: "standard",
+							zoneId: `z-${String(i)}`,
+							rateBps: 700 + i,
+							appliesToShipping: false,
+						}),
+					),
+				);
+				const rejected = settled.flatMap((r) => (r.status === "rejected" ? [r.reason] : []));
+				expect(rejected, `loop ${String(loop)}: no create refused`).toEqual([]);
+				expect(await store.countRatesByClass("standard")).toBe(N);
+				for (let i = 0; i < N; i++) await store.deleteRate(`l${String(loop)}-z${String(i)}`);
+			}
+			expect(fx.maxFor("createTaxRate")).toBeLessThanOrEqual(CAS_MAX_ATTEMPTS);
+			console.log(
+				`[rules-cas-race] tax createRate many-zones: max CAS attempts ${String(
+					fx.maxFor("createTaxRate"),
+				)}`,
+			);
+		} finally {
+			await fx.close();
+		}
+	}, 180_000);
+
+	test("N concurrent creates for one slot of an UNDECLARED class: exactly one lands", async () => {
+		const fx = await freshTax(N + 4);
+		try {
+			const store = fx.harness.store;
+			for (let loop = 0; loop < LOOPS; loop++) {
+				const classId = `undeclared-${String(loop)}`;
+				const settled = await Promise.allSettled(
+					Array.from({ length: N }, (_unused, i) =>
+						store.createRate({
+							id: `u${String(loop)}-r${String(i)}`,
+							taxClassId: classId,
+							zoneId: "z-us",
+							rateBps: 700 + i,
+							appliesToShipping: false,
+						}),
+					),
+				);
+				const won = settled.flatMap((r) => (r.status === "fulfilled" ? [r.value] : []));
+				expect(won, `loop ${String(loop)}: exactly one create lands`).toHaveLength(1);
+				for (const r of settled) {
+					if (r.status === "rejected") {
+						expect(r.reason).toMatchObject({
+							code: "TAX_RATE_DUPLICATE",
+							existingRateId: won[0]?.id,
+						});
+					}
+				}
+				expect(await store.countRatesByClass(classId)).toBe(1);
+				// Still undeclared: the document exists only to hold the rate.
+				expect((await store.listClasses()).map((c) => c.id)).not.toContain(classId);
+			}
+		} finally {
+			await fx.close();
+		}
+	}, 180_000);
+});

@@ -243,7 +243,18 @@ export class EmdashTaxRulesStore implements TaxRulesStore {
 		try {
 			return await this.#createRate(input);
 		} catch (err) {
-			if (isTaxRateDuplicateError(err)) await this.#releaseRateClaim(input.id, input.taxClassId);
+			if (isTaxRateDuplicateError(err)) {
+				// The refusal is the answer; a release that fails must not replace it. A
+				// claim left behind is an orphan, which the next create of the id takes over.
+				try {
+					await this.#releaseRateClaim(input.id, input.taxClassId);
+				} catch (releaseErr) {
+					console.warn(
+						`[otta] tax rate ${input.id}: could not release its id claim after a duplicate refusal (left as a self-healing orphan)`,
+						releaseErr,
+					);
+				}
+			}
 			throw err;
 		}
 	}

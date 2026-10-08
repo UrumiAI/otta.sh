@@ -9,7 +9,11 @@ for a class and zone that already has one, throwing the new `TaxRateDuplicateErr
 
 Duplicates already stored are kept and resolved by one rule, exported for every reader:
 `effectiveTaxRates`, `appliedTaxRate` and `shadowedTaxRates` — the greatest rate id
-applies, which is the rate checkout already charged. The built-in rate table now ignores
-an ignored duplicate entirely, so its "applies to shipping" flag no longer taxes shipping
-on its own. `getRate` returns the rate that applies. The contract harness gains
+applies, which is the rate checkout already charged on goods.
+
+**Behaviour change (stores that already hold duplicate rates):** the built-in rate table
+ignores an ignored duplicate entirely, including its "applies to shipping" flag. Where the
+ignored duplicate was the one marked "applies to shipping", shipping tax disappears (no
+other applying rate in the zone is flagged) or moves to another class's flagged rate (it
+was the last flagged rate, so it named the shipping tax class). Line-item tax is unchanged. `getRate` returns the rate that applies. The contract harness gains
 `seedUncheckedRate`, and the in-memory store a matching test seam.

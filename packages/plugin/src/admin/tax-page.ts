@@ -804,7 +804,7 @@ function duplicateNote(row: TaxRateRow): Block | undefined {
 	if (row.appliedInstead !== undefined) {
 		return {
 			type: "context",
-			text: `Duplicate: only ${row.appliedInstead} applies to ${zone} for this class. Delete the one you don't want.`,
+			text: `Duplicate: only ${row.appliedInstead} applies to ${zone} for this class, so this rate taxes nothing — not goods, not shipping. Delete the one you don't want.`,
 		};
 	}
 	if (row.ignoredDuplicates !== undefined) {
@@ -827,9 +827,19 @@ function rateGroupId(rateId: string): PlainBlockId {
  *  changed it loses the CAS and the reload shows the fresh value with a
  *  "reload" notice, never a silent clobber. */
 function rateEditForm(classId: string, row: TaxRateRow): FormBlock {
+	// An IGNORED duplicate taxes nothing — shipping included — so it shows no
+	// shipping toggle that could read as "on". Its stored flag rides in the carrier
+	// instead and is saved back unchanged, so editing the rate never silently
+	// clears it (it takes effect again if this becomes the rate that applies).
+	const ignored = row.appliedInstead !== undefined;
 	return carriedForm({
 		namespace: "tax:rate-save",
-		context: { classId, rateId: row.id, expectedRateBps: String(row.rateBps) },
+		context: {
+			classId,
+			rateId: row.id,
+			expectedRateBps: String(row.rateBps),
+			...(ignored ? { keptAppliesToShipping: String(row.appliesToShipping) } : {}),
+		},
 		form: {
 			type: "form",
 			fields: [
@@ -839,12 +849,16 @@ function rateEditForm(classId: string, row: TaxRateRow): FormBlock {
 					label: "Rate (%)",
 					initial_value: formatBpsAsPercent(row.rateBps),
 				},
-				{
-					type: "toggle",
-					action_id: "appliesToShipping",
-					label: "Applies to shipping",
-					initial_value: row.appliesToShipping, // F-6b/X-24: REQUIRED — toggle is mount-only
-				},
+				...(ignored
+					? []
+					: [
+							{
+								type: "toggle" as const,
+								action_id: "appliesToShipping",
+								label: "Applies to shipping",
+								initial_value: row.appliesToShipping, // F-6b/X-24: REQUIRED — toggle is mount-only
+							},
+						]),
 			],
 			submit: { label: "Save rate", action_id: ACTION_SAVE_RATE },
 		},
@@ -1476,7 +1490,11 @@ function saveRateAction() {
 				description: TAX_PERCENT_HINT,
 			});
 		}
-		const appliesToShipping = readBoolean(values.appliesToShipping) ?? false;
+		// An ignored duplicate's form has no toggle: its stored flag comes back from
+		// the carrier, untouched (see `rateEditForm`).
+		const kept = carried?.keptAppliesToShipping;
+		const appliesToShipping =
+			readBoolean(values.appliesToShipping) ?? (kept === undefined ? false : kept === "true");
 		const result = await client.updateTaxRate(rateId, {
 			rateBps: bps,
 			appliesToShipping,

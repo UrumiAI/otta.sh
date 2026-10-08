@@ -20,9 +20,14 @@ import type { TaxClassId } from "./types.js";
  * "Greatest" is plain code-unit string order (`a < b`), the order the store lists
  * rates in. It is not arbitrary: checkout has always let the last-listed rate of a
  * class overwrite the earlier ones, so this is exactly the rate existing stores
- * were already being charged — the rule changes no price. What it does change is
- * that an ignored rate is ignored ENTIRELY, its "applies to shipping" flag
- * included, so a merchant reading "only X applies" in the admin is told the truth.
+ * were already charging on GOODS — no line-item price changes. An ignored rate is
+ * ignored ENTIRELY, its "applies to shipping" flag included, so a merchant reading
+ * "only X applies" in the admin is told the truth. That part IS a behaviour change
+ * for a store that already holds duplicates where the ignored one was marked
+ * "applies to shipping": its shipping tax can disappear (no other applying rate in
+ * the zone is flagged) or move to another class's flagged rate (the shipping tax
+ * class was the last flagged rate, and that was the ignored one). Deleting the
+ * duplicate the merchant doesn't want resolves it either way.
  */
 
 /** The fields that place a rate in its slot — all a rate-like row needs here. */

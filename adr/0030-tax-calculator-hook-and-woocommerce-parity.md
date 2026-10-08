@@ -133,14 +133,28 @@ no priority, compound flag, postcode or city that could tell two such rates apar
   revision, that the embed is compare-and-set against. Of N concurrent creates for one
   slot, one embed lands; every other compare-and-set refuses, and its retry re-reads,
   finds the winner and is refused as a duplicate. A refused create gives its id claim
-  back. Proven on Postgres by `rules-cas-race.pg.test.ts` (24 creates × 12 loops) and on
-  every backend by the contract's concurrent-create case.
+  back. The race is proven on Postgres by `rules-cas-race.pg.test.ts` (24 creates × 12
+  loops, for one slot, for many zones of one class, and for an undeclared class). The
+  contract's concurrent-create case runs on every backend, but SQLite and D1 serialise
+  writes, so there it proves the logic, not the race.
 - **Existing duplicates are kept, never deleted.** One rule resolves them everywhere,
   in `@otta-sh/domain` (`effectiveTaxRates`, `appliedTaxRate`, `shadowedTaxRates`):
-  **the greatest rate id applies; the others are ignored entirely.** That is the rate
-  checkout already charged, so no price changes. The one difference: an ignored rate's
-  "applies to shipping" flag no longer taxes shipping (it used to, at the winner's rate)
-  — "ignored" now means ignored. `getRate` answers the same rate.
+  **the greatest rate id applies; the others are ignored entirely.** On goods that is the
+  rate checkout already charged, so no line-item tax changes. `getRate` answers the same
+  rate.
+- **Behaviour change — shipping tax, for stores that already hold duplicates.** "Ignored"
+  includes the ignored rate's "applies to shipping" flag. Where the ignored duplicate was
+  the one marked "applies to shipping", shipping tax changes on the next quote: it
+  **disappears** if no applying rate in the zone is flagged, or it **moves to another
+  class's flagged rate** (the shipping tax class was the last flagged rate, and that was
+  the ignored one), which can be higher or lower. Placed orders keep their tax snapshot.
+  Chosen deliberately (user decision, 2026-10-08) so the admin's "only X applies" is true
+  everywhere; the admin flags every such duplicate, and deleting the one the merchant does
+  not want resolves it.
 - **The admin flags them.** The class's rates page shows a warning naming each pair, and
-  each row says `duplicate: only <id> applies` or `applies (duplicate <id> ignored)`.
-  Both rows stay editable and deletable, so the merchant deletes the one they don't want.
+  the ignored row is labelled `duplicate — ignored` and opens with `Duplicate: only <id>
+  applies …` (the applying row: `Applies to <zone>. Duplicate <id> is ignored.`; table
+  rows: `duplicate: only <id> applies` / `applies; duplicate <id> ignored`). The ignored
+  row shows no shipping toggle, since its flag does nothing; saving it keeps the stored
+  flag. Both rows stay editable and deletable, so the merchant deletes the one they
+  don't want.

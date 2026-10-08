@@ -92,6 +92,20 @@ describe("one tax rate per (class, zone) — the rule", () => {
 		expect(flagged.shippingTaxClassId).toBe("standard");
 	});
 
+	test("an ignored flagged duplicate no longer names the shipping class — another class's flagged rate does", async () => {
+		// r1 (reduced, ships) < s1 (standard, ships, IGNORED) < s2 (standard, applies, no ship).
+		// Main named "standard" (s1 was the last flagged rate) and taxed shipping at s2's
+		// 20%; now s1 is ignored, so the last flagged APPLYING rate is r1: reduced, 5%.
+		const table = rateTableOf([
+			rate("r1", "reduced", "z", 500, true),
+			rate("s1", "standard", "z", 700, true),
+			rate("s2", "standard", "z", 2000, false),
+		]);
+		expect(table.shippingTaxable).toBe(true);
+		expect(table.shippingTaxClassId).toBe("reduced");
+		expect(table.ratesByClass.get("standard")).toBe(2000);
+	});
+
 	test("the duplicate error names the existing rate and is recognised structurally", () => {
 		const err = new TaxRateDuplicateError(rate("std-us", "standard", "z-us", 725));
 		expect(err).toMatchObject({
