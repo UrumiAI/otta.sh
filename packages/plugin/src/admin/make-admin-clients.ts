@@ -18,6 +18,7 @@
  * outright rather than leaving a check that could not fail.
  */
 
+import { getTaxCalculator } from "../commerce/tax-calculator-slot.js";
 import { resolvePaymentGateways } from "../payments/resolve-payment-gateways.js";
 import type { PluginContext } from "../types.js";
 import type { AdminOrdersSurface } from "./admin-orders-surface.js";
@@ -66,7 +67,10 @@ export interface AdminClients {
  */
 export function makeAdminClients(ctx: PluginContext): Promise<AdminClients> {
 	const products = new InProcessAdminProductsClient(ctx);
-	const rules = new InProcessAdminRulesClient(ctx);
+	// ADR-0031: a registered outside calculator reads as "already charges tax".
+	const rules = new InProcessAdminRulesClient(ctx, {
+		hasOutsideTaxCalculator: getTaxCalculator() !== undefined,
+	});
 	const reporting = new InProcessReportingSettingsClient(ctx);
 	return resolvePaymentGateways(ctx).then((gateways) => ({
 		products,

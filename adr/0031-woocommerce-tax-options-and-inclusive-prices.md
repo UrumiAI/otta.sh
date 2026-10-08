@@ -31,9 +31,10 @@ pay must not change silently (user decision 4).
    rates keeps charging, rather than `enabled: "true"` reading as tax off.
 2. **Defaults and the upgrade rule.** A new store gets WooCommerce's defaults: tax off,
    prices without tax, shipping address, based on cart items, per-line rounding, excl,
-   itemized. With nothing saved, `effectiveTaxSettings` decides: any rate exists ⇒
-   `LEGACY_TAX_SETTINGS` (on, `legacy` shipping class, one "Tax" row: exactly today);
-   none ⇒ the new-store defaults. The first rate created, or the last deleted, on a store
+   itemized. With nothing saved, `effectiveTaxSettings` decides: any rate exists, or an
+   outside calculator is registered (ADR-0030; it replaces the rates, so such a store has
+   none) ⇒ `LEGACY_TAX_SETTINGS` (on, `legacy` shipping class, one "Tax" row: exactly
+   today); neither ⇒ the new-store defaults. The quote and the admin apply the same rule. The first rate created, or the last deleted, on a store
    with nothing saved first writes its current options down, so adding or removing rates
    can never flip a store between the two. That write is conditional on nothing being
    saved, checked by the settings store atomically with the write (see 8), so it never
@@ -91,8 +92,9 @@ pay must not change silently (user decision 4).
 - With prices shown the other way from how they were entered and a coupon applied, the
   subtotal and discount split the line tax pro rata, because tax is known only on the
   discounted lines; the rows still sum exactly.
-- A site that registered an outside calculator (ADR-0030) on a store with no rates must
-  switch tax on.
+- A site that registered an outside calculator (ADR-0030) on a store with no rates and
+  nothing saved keeps charging through it: the registration counts as "already charges
+  tax". Saving tax off afterwards switches it off, as for any store.
 - An outside calculator's answer is bounded by the 1000% rate cap: `amount × 10` for an
   amount entered without tax and for shipping; for a line entered with tax, the tax inside
   the gross at that rate, `ceil(G × 100000 / 110000)`, so the net can never go negative.

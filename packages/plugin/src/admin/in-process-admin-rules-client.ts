@@ -202,16 +202,29 @@ const SHIPPING_METHOD_TYPES = [
 
 const COUPON_TYPES = ["fixed_amount", "percentage"] as const satisfies readonly CouponType[];
 
+export interface InProcessAdminRulesClientOptions extends InProcessCommerceStoresOptions {
+	/**
+	 * A site registered an outside tax calculator (`createOttaPlugin({ taxCalculator })`,
+	 * ADR-0030). With nothing saved, such a store already charges tax — the
+	 * calculator replaces the rate table, so it has no rates — and the upgrade rule
+	 * reads it like a store with rates (ADR-0031): tax on. Default `false`.
+	 */
+	hasOutsideTaxCalculator?: boolean;
+}
+
 export class InProcessAdminRulesClient implements AdminRulesSurface {
 	readonly #stores: InProcessCommerceStores;
+	readonly #hasOutsideTaxCalculator: boolean;
 
 	/**
 	 * Takes the whole context and constructs the adapters once per client, the
 	 * same request-scoped lifecycle the console pages already had. A context with
 	 * no document store fails HERE, at construction, naming what is missing.
 	 */
-	constructor(ctx: PluginContext, options: InProcessCommerceStoresOptions = {}) {
-		this.#stores = createInProcessCommerceStores(ctx, options);
+	constructor(ctx: PluginContext, options: InProcessAdminRulesClientOptions = {}) {
+		const { hasOutsideTaxCalculator = false, ...storeOptions } = options;
+		this.#stores = createInProcessCommerceStores(ctx, storeOptions);
+		this.#hasOutsideTaxCalculator = hasOutsideTaxCalculator;
 	}
 
 	// -- Shipping: zones -------------------------------------------------------
@@ -536,7 +549,7 @@ export class InProcessAdminRulesClient implements AdminRulesSurface {
 			this.#stores.taxRules.hasAnyRate(),
 		]);
 		return {
-			settings: effectiveTaxSettings(saved, hasRates),
+			settings: effectiveTaxSettings(saved, hasRates || this.#hasOutsideTaxCalculator),
 			saved: saved !== undefined,
 			hasRates,
 		};
@@ -562,8 +575,7 @@ export class InProcessAdminRulesClient implements AdminRulesSurface {
 	): Promise<TaxSettingsUpdateResult> {
 		requireBoundedText("idempotencyKey", opts.idempotencyKey, 1, 200);
 		const stored = (await this.#stores.settingsStore.get()).tax;
-		const current =
-			stored ?? effectiveTaxSettings(undefined, await this.#stores.taxRules.hasAnyRate());
+		const current = stored ?? effectiveTaxSettings(undefined, await this.#chargesTaxAlready());
 		const currentDigest = taxSettingsDigest(current);
 		const parsed = parseTaxSettings(next);
 		if (!("field" in parsed) && taxSettingsDigest(parsed) === currentDigest) {
@@ -602,12 +614,18 @@ export class InProcessAdminRulesClient implements AdminRulesSurface {
 	 * key of its own (a fixed key could be pinned forever to a revision that has
 	 * since moved, and refuse every later rate edit).
 	 */
+	/** The upgrade rule's input with nothing saved: rates exist, or an outside
+	 *  calculator is registered (it replaces the rates). Same rule as the quote's. */
+	async #chargesTaxAlready(): Promise<boolean> {
+		return this.#hasOutsideTaxCalculator || (await this.#stores.taxRules.hasAnyRate());
+	}
+
 	async #pinTaxSettings(): Promise<void> {
 		if ((await this.#stores.settingsStore.get()).tax !== undefined) return;
-		const hasAnyRate = await this.#stores.taxRules.hasAnyRate();
+		const chargesTax = await this.#chargesTaxAlready();
 		try {
 			await this.#stores.settingsStore.update(
-				{ tax: effectiveTaxSettings(undefined, hasAnyRate) },
+				{ tax: effectiveTaxSettings(undefined, chargesTax) },
 				toIdempotencyKey(
 					`tax-settings-pin-${this.#stores.clock.now().toISOString()}-${String(++pinSeq)}`,
 				),
