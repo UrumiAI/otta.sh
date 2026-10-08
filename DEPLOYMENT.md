@@ -440,6 +440,15 @@ order of appearance in a deployment's life:
 >   applies only to carts in it). Existing percentage coupons with a cap or minimum and no
 >   currency keep working exactly as before.
 
+> **Store currency.** Settings → Store → "Store currency" is the currency a **new** cart is
+> created in (the storefront names none, so it is every shopper's cart). A store that never
+> saves it keeps USD, exactly as before the setting existed — no migration. Changing it affects
+> new carts only: carts already open keep their currency. Products, shipping rates and
+> fixed-amount coupons priced in another currency can't be bought or used in those new carts
+> (`CURRENCY_MISMATCH`) until they are priced in the new one — price them first, then switch.
+> The admin's defaults follow it: an unpriced product's currency picker, the shipping rate
+> filter and new-rate currency, and the coupon form's currency hint.
+
 > **x402 does not take payments yet.** The old receipt-forwarding settle route
 > (`entitlements/x402/settle`) is retired, and nothing settles an x402 payment until the
 > content gate in [ADR-0028](./adr/0028-x402-content-gate-verifies-and-settles-through-the-facilitator.md)

@@ -3179,6 +3179,22 @@ accordion   block_id settings:store
             └─ form  cf{"settings:store", {displayName}}                         ← S-4
                      text_input  "Store display name"   initial_value <kv value>
                      submit "Save display name"          → save-display
+               context "Store currency: new carts are created in it. Changing it affects
+                        new carts only — carts already open keep theirs."         (≤140)
+               context "Products, shipping rates and fixed-amount coupons priced in another
+                        currency can't be used in new carts until priced in it."  (≤140)
+               form  cf{"settings:currency", {currency}}                         ← S-4
+                     select  "Store currency"   initial_value <saved code> | "USD"
+                     ← the currency table, the familiar ten first then by code, labels
+                       "USD — US Dollar" (`CURRENCY_CHOICES`, shared with the React
+                       pricing picker). Never saved ⇒ USD, what every cart had before.
+                       A code outside the table is refused by name; nothing is saved.
+                       Saves ONE field into the settings document: the hold time, the
+                       threshold and the tax block are untouched.
+                     submit "Save store currency"        → save-store-currency
+               ← the display-name form stays the group's index-0 child. When the
+                 settings read failed the currency form is replaced by a context line
+                 ("The store currency could not be loaded right now…"), E-1.
 accordion   block_id settings:checkout
             label "Checkout & holds — 15 min hold · low stock at 5"
                   |  "Checkout & holds — not loaded"   ← when the secondary read failed:
