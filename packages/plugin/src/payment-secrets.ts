@@ -34,8 +34,27 @@
  *
  * SANDBOX-CLEAN. No IO, no host import, no `node:` — `ctx.kv` only, which
  * em-dash provides ungated (no capability, no storage declaration).
+ *
+ * ENCRYPTED AT REST (ADR-0032). The four payment credentials in
+ * {@link ENCRYPTED_PAYMENT_SECRET_KEYS} are declared `type: "secret"` in the
+ * plugin's `admin.settingsSchema` ({@link PAYMENT_SECRET_SETTINGS_SCHEMA}, which
+ * the site's plugin descriptor declares). EmDash 1.0.1 routes every
+ * `ctx.kv` `settings:*` call through its settings layer, which encrypts a
+ * declared secret with AES-GCM under `EMDASH_ENCRYPTION_KEY` on write and
+ * decrypts it on read — so this module's reads and the Settings form's writes
+ * are unchanged code, and the plaintext never reaches the options table. A
+ * value saved before the declaration is re-saved once through the same path
+ * (`encrypt-payment-secrets.ts`). When the host cannot decrypt (key missing,
+ * changed or wrong), its read REJECTS, which {@link readSecret} reports as
+ * `"unreadable"` — never as a value, and never by falling back to anything.
  */
 
+import {
+	checkOpaqueToken,
+	checkStripeSecretKey,
+	checkStripeWebhookSecret,
+	type SecretShapeCheck,
+} from "./payment-secret-shapes.js";
 import type { PluginContext } from "./types.js";
 
 /** `STRIPE_SECRET_KEY` — makes `createIntent` call Stripe's live
@@ -155,6 +174,117 @@ export const PAYMENT_SECRET_KEYS = [
 export type PaymentSecretKey = (typeof PAYMENT_SECRET_KEYS)[number];
 
 /**
+ * The payment credentials stored ENCRYPTED at rest (ADR-0032): each is declared
+ * `type: "secret"` in {@link PAYMENT_SECRET_SETTINGS_SCHEMA}. The two email keys
+ * are deliberately absent — they are being removed outright (ADR-0031's email
+ * change), not migrated.
+ */
+export const ENCRYPTED_PAYMENT_SECRET_KEYS = [
+	STRIPE_SECRET_KEY_KEY,
+	STRIPE_WEBHOOK_SECRET_KEY,
+	WEBHOOK_EDGE_TOKEN_KEY,
+	X402_FACILITATOR_API_KEY_KEY,
+] as const;
+
+/** One `admin.settingsSchema` secret field, in EmDash's own shape
+ *  (`SecretSettingField`, emdash 1.0.1 `plugins/types.ts`). Mirrored, not
+ *  imported: this package has no EmDash dependency (ADR-0018). */
+export interface SecretSettingFieldSpec {
+	readonly type: "secret";
+	readonly label: string;
+	readonly description: string;
+}
+
+const MANAGED_IN_OTTA = "Managed on the Otta Settings page; saved encrypted.";
+
+/**
+ * The `admin.settingsSchema` the deploying site's Otta descriptor MUST declare
+ * (`sites/staging/src/otta-plugin-descriptor.ts`, pinned by its site-config
+ * test). Keyed by the setting's name — the `ctx.kv` key without its
+ * `settings:` prefix — because that is how EmDash's settings layer matches a
+ * stored key to its field. Declaring a field `secret` is what makes EmDash
+ * encrypt it; a site that omits this keeps storing these values as plain text.
+ */
+export const PAYMENT_SECRET_SETTINGS_SCHEMA: Readonly<Record<string, SecretSettingFieldSpec>> = {
+	stripeSecretKey: {
+		type: "secret",
+		label: "Stripe secret key",
+		description: MANAGED_IN_OTTA,
+	},
+	stripeWebhookSecret: {
+		type: "secret",
+		label: "Stripe webhook signing secret",
+		description: MANAGED_IN_OTTA,
+	},
+	"otta-wh-token": {
+		type: "secret",
+		label: "Webhook edge token",
+		description: MANAGED_IN_OTTA,
+	},
+	x402FacilitatorApiKey: {
+		type: "secret",
+		label: "x402 facilitator API key",
+		description: MANAGED_IN_OTTA,
+	},
+};
+
+/**
+ * What one secret read found. It carries nothing about the value or the error.
+ *  - `"unreadable"`: a value IS stored but the kv read rejected — on EmDash
+ *    1.0.1 that includes a stored ciphertext this site cannot decrypt.
+ *  - `"invalid"`: a value IS stored, for one of the four encrypted payment keys,
+ *    but it is empty, not a string, or not the shape Otta's Settings form would
+ *    have saved (ADR-0032 "validate on read"). EmDash's own plugin-settings form
+ *    can write these keys without Otta's checks; such a value is never used.
+ */
+export type SecretRead =
+	| { readonly state: "set"; readonly value: string }
+	| { readonly state: "unset" }
+	| { readonly state: "unreadable" }
+	| { readonly state: "invalid" };
+
+/**
+ * The shape check each encrypted payment key must pass ON READ — the same check
+ * the Settings form runs on save — and the stored value must be exactly the
+ * trimmed value that check returns. Keys absent here (the email keys) keep the
+ * older rule: an empty or non-string value reads as unset.
+ */
+const READ_SHAPE_CHECKS: Readonly<Record<string, (raw: string) => SecretShapeCheck>> = {
+	[STRIPE_SECRET_KEY_KEY]: checkStripeSecretKey,
+	[STRIPE_WEBHOOK_SECRET_KEY]: checkStripeWebhookSecret,
+	[WEBHOOK_EDGE_TOKEN_KEY]: checkOpaqueToken,
+	[X402_FACILITATOR_API_KEY_KEY]: checkOpaqueToken,
+};
+
+/**
+ * Read one write-only secret and say WHICH of the four it is. Most consumers
+ * want {@link readWriteOnlySecret}, which folds everything but `"set"` together;
+ * a caller for whom absence means "allow" (the edge token gate) must tell them
+ * apart, because an unreadable or invalid secret is not an absent one.
+ *
+ * Never set (no stored value) is `"unset"`, exactly as before. The caught error
+ * is dropped entirely — see {@link readWriteOnlySecret}.
+ */
+export async function readSecret(ctx: PluginContext, key: string): Promise<SecretRead> {
+	let value: unknown;
+	try {
+		value = await ctx.kv.get<unknown>(key);
+	} catch {
+		return { state: "unreadable" };
+	}
+	if (value === null || value === undefined) return { state: "unset" };
+	const check = READ_SHAPE_CHECKS[key];
+	if (check === undefined) {
+		return typeof value === "string" && value.length > 0
+			? { state: "set", value }
+			: { state: "unset" };
+	}
+	if (typeof value !== "string") return { state: "invalid" };
+	const checked = check(value);
+	return checked.ok && checked.value === value ? { state: "set", value } : { state: "invalid" };
+}
+
+/**
  * Read one write-only secret from plugin kv — FAIL-CLOSED, three ways.
  *
  * This is `serviceTokenFromKv`'s shape (`manifest.ts`), generalized over the
@@ -182,12 +312,8 @@ export async function readWriteOnlySecret(
 	ctx: PluginContext,
 	key: string,
 ): Promise<string | undefined> {
-	try {
-		const value = await ctx.kv.get<unknown>(key);
-		return typeof value === "string" && value.length > 0 ? value : undefined;
-	} catch {
-		return undefined;
-	}
+	const read = await readSecret(ctx, key);
+	return read.state === "set" ? read.value : undefined;
 }
 
 /** Every payment/email secret, read together. Each field is `undefined` when

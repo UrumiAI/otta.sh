@@ -44,6 +44,7 @@
  * first isolate after a deploy at the cost of one write, and an unchanged one
  * costs a read per isolate — not a write per minute.
  */
+import { encryptStoredPaymentSecrets } from "../encrypt-payment-secrets.js";
 import type { CronEvent, CronTaskInfo, HookHandler, PluginContext } from "../types.js";
 import type { PluginLifecycleEvent } from "../types.js";
 import {
@@ -243,6 +244,8 @@ export function createCronHandler(options: CommerceSweepOptions = {}): HookHandl
 		const name = typeof event?.name === "string" ? event.name : "";
 		if (name !== SWEEP_TASK_NAME) return { task: name, skipped: true };
 		await bootstrapSweepTask(ctx);
+		// Once per site, never throws: see encrypt-payment-secrets.ts (ADR-0032).
+		await encryptStoredPaymentSecrets(ctx);
 		return await runCommerceSweeps(ctx, name, { ...options, tickClock, startedAtMs });
 	};
 }

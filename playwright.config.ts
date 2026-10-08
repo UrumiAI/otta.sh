@@ -34,6 +34,16 @@ type WebServer = Extract<
 >[number];
 
 /**
+ * A THROWAWAY `EMDASH_ENCRYPTION_KEY` for the stack this config boots, and for
+ * nothing else (ADR-0032). The seeded setup saves a Stripe webhook secret
+ * through Settings, and EmDash refuses to store a declared secret without an
+ * encryption key. It protects only the disposable local `.wrangler` state of an
+ * e2e run, so it is fine in the repo; never use it for a real site. A key already
+ * in the environment wins.
+ */
+const E2E_TEST_ENCRYPTION_KEY = "emdash_enc_v1_cugE5mpPbewXCXUpUxvpscThKOCTYMxr1Ro8lVSc_Ps";
+
+/**
  * DIRECTOR-SPEC §0.2 — opt-in, because booting a dev server is not something a
  * bare `pnpm test:e2e` should do.
  *
@@ -112,6 +122,12 @@ const stack: WebServer[] = [
 			// offline gateway never hands Stripe a real client secret. A key already
 			// in the environment wins.
 			STRIPE_PUBLIC_KEY: process.env["STRIPE_PUBLIC_KEY"] ?? "pk_test_e2eplaceholder",
+			// ADR-0032: payment keys are stored encrypted, so the dev Worker needs a
+			// key. `astro dev` runs the Worker in workerd, which does NOT inherit this
+			// process's environment: wrangler copies it in only when
+			// CLOUDFLARE_INCLUDE_PROCESS_ENV is "true" (and there is no `.dev.vars`).
+			EMDASH_ENCRYPTION_KEY: process.env["EMDASH_ENCRYPTION_KEY"] ?? E2E_TEST_ENCRYPTION_KEY,
+			CLOUDFLARE_INCLUDE_PROCESS_ENV: "true",
 		},
 	},
 ];

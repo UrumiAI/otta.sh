@@ -17,8 +17,8 @@ import { STRIPE_SECRET_KEY_KEY, STRIPE_WEBHOOK_SECRET_KEY } from "../src/payment
 import { devStripeOfflineEnabled, stripeGatewayFromCtx } from "../src/payments/stripe-wiring.js";
 import type { PluginContext } from "../src/types.js";
 
-const SECRET_KEY = "sk_test_abc123";
-const WEBHOOK_SECRET = "whsec_abc123";
+const SECRET_KEY = "sk_test_abc1234567890";
+const WEBHOOK_SECRET = "whsec_abc1234567890";
 
 function makeCtx(
 	seed: Record<string, unknown> = {},

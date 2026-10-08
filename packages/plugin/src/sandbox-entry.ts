@@ -42,6 +42,7 @@
  * simulation.
  */
 import { ALLOWED_HOSTS } from "./manifest.js";
+import { ENCRYPTED_PAYMENT_SECRET_KEYS } from "./payment-secrets.js";
 import plugin from "./plugin.js";
 import { sandboxStorage } from "./sandbox-storage.js";
 import type {
@@ -110,18 +111,55 @@ function createHttpAccess(allowedHosts: readonly string[]): HttpAccess {
  * here it is an in-memory Map scoped to this worker boot. Module-scoped (not
  * per-request) so a value written by one route invocation is readable by the
  * next within the same worker — matching the host's persistence contract.
- * NON-SECRET display prefs only (§5); no secret is ever written here.
+ * It has the host's conditional pair (`getVersioned`/`compareAndSet`, with a
+ * per-key counter as the revision) but NOT its encryption: EmDash encrypts
+ * declared secrets on its side of the bridge (ADR-0032), which this mirror does
+ * not reproduce — the raw-row proofs live where a real EmDash runs.
  */
-function createKvAccess(store: Map<string, unknown>): KvAccess {
+function createKvAccess(
+	store: Map<string, unknown>,
+	revisions: Map<string, number>,
+	unreadable: ReadonlySet<string> = new Set(),
+): KvAccess {
+	// Mirrors EmDash 1.0.1's rejection when a stored secret cannot be decrypted
+	// (`PluginSettingEncryptionError`, `PLUGIN_SETTING_DECRYPTION_FAILED`) — only
+	// when a test entry asks for it (`unreadableSecrets`).
+	const refuse = (key: string): void => {
+		if (unreadable.has(key) && store.has(key)) {
+			throw Object.assign(new Error("Plugin secret setting could not be decrypted"), {
+				name: "PluginSettingEncryptionError",
+				code: "PLUGIN_SETTING_DECRYPTION_FAILED",
+			});
+		}
+	};
+	const bump = (key: string): string => {
+		const next = (revisions.get(key) ?? 0) + 1;
+		revisions.set(key, next);
+		return String(next);
+	};
 	return {
 		async get<T>(key: string): Promise<T | null> {
+			refuse(key);
 			return store.has(key) ? (store.get(key) as T) : null;
 		},
 		async set(key: string, value: unknown): Promise<void> {
 			store.set(key, value);
+			bump(key);
 		},
 		async delete(key: string): Promise<boolean> {
+			revisions.delete(key);
 			return store.delete(key);
+		},
+		async getVersioned<T>(key: string): Promise<{ value: T; revision: string } | null> {
+			refuse(key);
+			if (!store.has(key)) return null;
+			return { value: store.get(key) as T, revision: String(revisions.get(key) ?? 0) };
+		},
+		async compareAndSet(key: string, expectedRevision: string | null, value: unknown) {
+			const current = store.has(key) ? String(revisions.get(key) ?? 0) : null;
+			if (current !== expectedRevision) return { applied: false } as const;
+			store.set(key, value);
+			return { applied: true, revision: bump(key) } as const;
 		},
 		async list(prefix?: string): Promise<Array<{ key: string; value: unknown }>> {
 			const out: Array<{ key: string; value: unknown }> = [];
@@ -206,6 +244,12 @@ export interface SandboxWorkerOptions {
 	 * not catch), as the trusted path does.
 	 */
 	readonly cmsWithoutTable?: boolean;
+	/**
+	 * TEST ONLY: every stored encrypted payment key reads as EmDash 1.0.1 reports
+	 * a ciphertext it cannot decrypt — the read rejects (ADR-0032). Proves the
+	 * readers refuse rather than fall back, inside workerd.
+	 */
+	readonly unreadableSecrets?: boolean;
 }
 
 /** The bridge's swallow-to-null content answers (see `cmsWithoutTable`). */
@@ -226,6 +270,10 @@ export function createSandboxWorker(
 	// invocation is readable by the next within the same worker — matching the
 	// host's persistence contract.
 	const kvStore = new Map<string, unknown>();
+	const kvRevisions = new Map<string, number>();
+	const unreadableKeys: ReadonlySet<string> = new Set(
+		options.unreadableSecrets === true ? ENCRYPTED_PAYMENT_SECRET_KEYS : [],
+	);
 	// Boot-scoped for the same reason kv is: a task registered by one invocation is
 	// still registered for the next within this worker.
 	const cronTasks = new Map<string, CronTaskInfo>();
@@ -238,7 +286,7 @@ export function createSandboxWorker(
 			const url = new URL(request.url);
 			const ctx: PluginContext = {
 				http: createHttpAccess(ALLOWED_HOSTS),
-				kv: createKvAccess(kvStore),
+				kv: createKvAccess(kvStore, kvRevisions, unreadableKeys),
 				cron: createCronAccess(cronTasks),
 				// Omitted rather than set to `undefined` when there is no store, so a
 				// bundle without one has the exact context shape it had before.

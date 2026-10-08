@@ -56,7 +56,9 @@ Three rules hold. Everything else in this guide is a consequence of them.
   `EMDASH_ENCRYPTION_KEY` and `OTTA_WH_TOKEN`. Every payment and email **credential** is
   provisioned by the operator in the admin console's **Settings** page and held in
   **write-only plugin `kv`** under `settings:*` — persisted only on a non-empty submit,
-  never rendered back into a block, read through a fail-closed reader. Nothing
+  never rendered back into a block, read through a fail-closed reader. The Stripe secret
+  key, the Stripe webhook signing secret, the webhook edge token and the x402 facilitator
+  key are **encrypted at rest** with `EMDASH_ENCRYPTION_KEY` (ADR-0032). Nothing
   secret-shaped ever goes in a tracked `wrangler.jsonc` (pinned by the site's config tests,
   which reject any `vars` key matching `/SECRET|KEY|TOKEN|PASSWORD/i`).
 
@@ -321,9 +323,45 @@ order of appearance in a deployment's life:
 | x402 pay-to + facilitator credential | admin Settings | for x402 | see the x402 box |
 | Email API key + from-address (with the `EMAIL_API_URL` build-time value, §4) | admin Settings (from-address in `settings:emailFrom`) | optional | when wiring real email |
 
-- **`EMDASH_ENCRYPTION_KEY`** — generate with `npx emdash secrets generate`; never committed,
-  never echoed into logs; **back it up in a password manager** (it protects the CMS's
-  encrypted data — losing it strands that data).
+- **`EMDASH_ENCRYPTION_KEY`** — **required.** Generate with `npx emdash secrets generate`;
+  never committed, never echoed into logs; **back it up in a password manager**. EmDash
+  encrypts plugin settings declared `secret` with it (AES-GCM), and Otta declares four: the
+  Stripe secret key, the Stripe webhook signing secret, the webhook edge token
+  (`settings:otta-wh-token`) and the x402 facilitator key (ADR-0032). The site's Otta
+  descriptor must keep its `settingsSchema` for that to happen. Other plugin settings, the
+  email keys and order data are **not** encrypted with it.
+  - **Enter these keys on Otta's Settings page only.** Declaring them makes EmDash also show
+    a Settings gear for the plugin under Plugins; its form stores whatever is typed, without
+    Otta's checks. Otta checks every stored key's shape when it reads it: an empty or
+    malformed value is never used (payments refuse, the webhook route answers 503) and
+    Otta's Settings page shows "saved, but not valid" until it is entered again there.
+  - **Where it is read:** EmDash reads it from `process.env`. On Workers that is the Worker
+    secret (`nodejs_compat` populates `process.env`). **Local development (`astro dev`):**
+    put `EMDASH_ENCRYPTION_KEY=<key>` in `sites/staging/.env` (gitignored; generate a
+    separate dev key). Exporting it in the shell does **not** work: the dev Worker runs in
+    workerd, which does not inherit the shell environment. (A `.dev.vars` file would also be
+    read, but it is not gitignored in this repo — use `.env`.) The Playwright stack and CI's
+    e2e job use a throwaway test key (`playwright.config.ts`).
+  - **Missing:** saving any of those four keys fails, and a key already saved encrypted
+    cannot be read. Payments then refuse as "not configured", the webhook route answers
+    503 (Stripe retries it), and Settings shows the key as "saved, but cannot be read".
+    Nothing falls back to an unencrypted copy.
+  - **Lost:** the four keys cannot be recovered. Set a new key, then enter each key again in
+    Settings (or remove it there).
+  - **Rotating:** put the new key first and keep the old one after it, comma-separated
+    (`EMDASH_ENCRYPTION_KEY=<new>,<old>`). New saves use the new key; both still decrypt.
+    Keep the old key listed until all four keys have been entered again in Settings (they
+    are write-only, so each must be copied again from Stripe or its provider), then drop
+    it. The one-time upgrade re-save below does not repeat for a rotation.
+  - **Upgrading a site that already has these keys saved:** the first cron tick after the
+    deploy re-saves them encrypted, once (it needs the key set; until then it retries and
+    logs one warning naming `EMDASH_ENCRYPTION_KEY`). It first reads every key and changes
+    nothing if any cannot be read, so a wrong key cannot strand a working one — but if every
+    key is still unencrypted, whichever key is set at that tick is the key they are saved
+    under, so set the right one before deploying. The same run deletes the retired x402
+    secret (`settings:x402FacilitatorSecret`) and logs counts only. Earlier backups and D1 Time Travel
+    history still hold the earlier copies until they age out, so rotate a live Stripe key
+    after the upgrade.
 
 > **The Stripe webhook endpoint is public by design, and permanently site-owned.**
 > Stripe delivers to `POST /webhooks/stripe` on the site (`sites/staging/src/pages/webhooks/stripe.ts`)
@@ -345,7 +383,9 @@ order of appearance in a deployment's life:
 > opens a store. Provision the same value on both halves — `wrangler secret put
 > OTTA_WH_TOKEN` on the site and the matching field in admin Settings. Unset on the plugin
 > side, the gate **passes through** (degrading to "cryptographic anchor only", never to
-> "nothing works" and never to "nothing is checked"); set on the plugin side but unset on
+> "nothing works" and never to "nothing is checked"); saved on the plugin side but
+> unreadable (no usable `EMDASH_ENCRYPTION_KEY`), the route answers **503** and Stripe
+> retries — the gate never opens because a read failed; set on the plugin side but unset on
 > the site, **every delivery 401s** — that is the dangerous direction, and the reason the
 > endpoint replays the 401 into Stripe's dashboard rather than swallowing it.
 
