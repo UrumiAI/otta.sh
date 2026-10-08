@@ -12,9 +12,9 @@
  * so two orders WILL eventually share a number (even odds somewhere past ~1,200
  * orders). It is a DISPLAY label, derived on read and never stored: nothing resolves
  * an order by its number alone. The id stays the identity everywhere a machine reads
- * it (URLs, Stripe metadata, idempotency keys, the outbox). The admin search finds
- * orders by it as an id PREFIX ({@link orderNumberSearchText}), and may return
- * several; the console then tells them apart by the full id.
+ * it (URLs, Stripe metadata, idempotency keys, the outbox). The admin search reads a
+ * typed number as an id PREFIX and may return several — that matcher, and the
+ * console's tie-breakers, live in `@otta-sh/admin-presentation`'s `order-number.ts`.
  *
  * ONE FUNCTION, so the storefront, the emails and the admin console print the same
  * order the same way. The storefront and the admin wire reach it through
@@ -32,32 +32,4 @@ export const ORDER_NUMBER_LENGTH = 5;
 /** The order number for an order id: `"#"` + its first five characters, upper-cased. */
 export function orderNumber(orderId: string): string {
 	return `#${orderId.slice(0, ORDER_NUMBER_LENGTH).toUpperCase()}`;
-}
-
-/** An order number as an operator types it back: a `#`, then hex. */
-const TYPED_ORDER_NUMBER = /^#[0-9a-f]+$/iu;
-
-/** Where a UUID's `-` falls, counted in hex digits before it. */
-const UUID_HYPHENS_AFTER = [8, 12, 16, 20] as const;
-
-/**
- * An admin search string with an order number's `#` taken off, so `"#3F9A2"` finds
- * the orders whose id starts `3f9a2` (the store's id arm is an anchored, case-folded
- * prefix, so the rest already works). A number long enough to cross a UUID hyphen —
- * the console's tie-breaker extends a shared number with hex only (`#FEE1D111A`) —
- * gets the hyphens back in the UUID's places, so it still prefixes the stored id.
- * Anything else is returned unchanged — an email or a sku is not touched, and a
- * bare `"3F9A2"` already searches.
- *
- * ACCEPTED EDGE: a search that is literally `#` + hex (`"#BEEF"`) is read as an
- * order number, so a sku or an email local part spelled that way is found by
- * searching without the `#` instead. No real id starts with `#`.
- */
-export function orderNumberSearchText(search: string): string {
-	if (!TYPED_ORDER_NUMBER.test(search)) return search;
-	let digits = search.slice(1);
-	for (const at of UUID_HYPHENS_AFTER.toReversed()) {
-		if (digits.length > at) digits = `${digits.slice(0, at)}-${digits.slice(at)}`;
-	}
-	return digits;
 }

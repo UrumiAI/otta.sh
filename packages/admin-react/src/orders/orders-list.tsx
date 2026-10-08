@@ -53,9 +53,9 @@ import {
 	listOutcome,
 	maskBuyerEmail,
 	idMatchesOrderNumber,
-	orderNumberCells,
 	orderStateCell,
 	typedOrderNumberDigits,
+	withOrderNumberCells,
 } from "@otta-sh/admin-presentation";
 import * as React from "react";
 import {
@@ -1034,7 +1034,7 @@ export function OrdersList({
 	// email, extended upper-cased with hex only on rows that share one, so no two
 	// rows read the same and every cell is itself a number the search accepts.
 	// Computed over EXACTLY the rows rendered (§1.3), deterministic in the set.
-	const numberCells = React.useMemo(() => orderNumberCells(orders), [orders]);
+	const numberedRows = React.useMemo(() => withOrderNumberCells(orders), [orders]);
 	// An order number is a label, not a key, and five characters can be shared.
 	// When the operator searched by one and it answers several orders, say so
 	// before they act on the first row — confirm by buyer, date and total.
@@ -1631,8 +1631,7 @@ export function OrdersList({
 					headers={["Placed", "Customer", "Status", "Order", <EndHeader label="Total" />]}
 					onActivateRow={onOpen}
 				>
-					{orders.map((order) => {
-						const cell = numberCells.get(order.id) ?? { number: `#${order.id}`, extension: "" };
+					{numberedRows.map(({ order, cell }) => {
 						return (
 							<tr
 								key={order.id}
@@ -1873,10 +1872,11 @@ export function OrdersList({
 
 /**
  * The note for a search typed as an order number (`#` + at least
- * `ORDER_NUMBER_LENGTH` hex digits) whose rows include more than one order with
- * that id prefix, or `null`. Only id-prefix matches are counted — a buyer whose
- * email happens to start with the same letters is not "another order with this
- * number" — and only over the rows loaded. Exported for tests.
+ * `ORDER_NUMBER_LENGTH` hex digits — the same matcher the server reads the search
+ * with) when the loaded rows hold more than one order with that id prefix, or
+ * `null`. It states no count: the server's total also counts orders found by
+ * buyer or sku, so it is not the number of orders sharing this number. Exported
+ * for tests.
  */
 export function orderNumberMatchesNote(
 	search: string | undefined,
@@ -1884,7 +1884,6 @@ export function orderNumberMatchesNote(
 ): string | null {
 	const digits = typedOrderNumberDigits(search);
 	if (digits === null) return null;
-	const count = orders.filter((o) => idMatchesOrderNumber(o.id, digits)).length;
-	if (count <= 1) return null;
-	return `#${digits.toUpperCase()} matches ${String(count)} orders. An order number can be shared — confirm the buyer, date and total before acting.`;
+	if (orders.filter((o) => idMatchesOrderNumber(o.id, digits)).length <= 1) return null;
+	return `More than one order has the number #${digits.toUpperCase()}. An order number can be shared — confirm the buyer, date and total before acting.`;
 }

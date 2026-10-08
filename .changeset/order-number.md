@@ -2,7 +2,7 @@
 "@otta-sh/domain": minor
 "@otta-sh/plugin": minor
 "@otta-sh/admin-react": minor
-"@otta-sh/admin-presentation": patch
+"@otta-sh/admin-presentation": minor
 ---
 
 Orders now have a shopper-facing **order number** — `"#"` + the first five characters of
@@ -17,5 +17,12 @@ order ids are random v4 UUIDs, so the prefix is spread out, but five hex charact
 collide eventually. The admin search accepts a number as typed (`#3F9A2`, any case) and
 answers every order whose id starts with it; a search by number that answers several orders
 says so, and two console rows sharing a number extend it, upper-cased, to their
-shortest-unique prefix (`#FEE1D1`). The list's "Order #" column is now "Order". The refund confirm's 8-character prefix is upper-cased so
-it visibly extends the number. No order id, storage format or migration changes.
+shortest-unique prefix (`#FEE1D1`). The list's "Order #" column is now "Order". No order id, storage format or migration changes.
+
+`@otta-sh/admin-presentation` gains the console's order-number helpers
+(`withOrderNumberCells`, `typedOrderNumberDigits`, `orderNumberSearchText`,
+`orderConfirmLabel`, `ORDER_NUMBER_LENGTH`): a row the wire sent without a number
+prints `#` + its upper-cased prefix; a shared number's tie-breaker is hex only, and the
+search accepts it — a typed number long enough to cross a UUID hyphen gets the hyphen
+back, so the stored id and its search key are unchanged. A typed number is `#` + at
+least five hex digits. The refund confirm names the first 12 hex digits.

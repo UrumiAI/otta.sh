@@ -220,9 +220,10 @@ test("the identity column is headed Order, not a second #", async () => {
 test("a search by number that answers several orders says so; one answer, or another search, does not", () => {
 	const twins = [{ id: TWIN_A }, { id: TWIN_B }, { id: SOLO }];
 	expect(orderNumberMatchesNote("#fee1d", twins)).toBe(
-		"#FEE1D matches 2 orders. An order number can be shared — confirm the buyer, date and total before acting.",
+		"More than one order has the number #FEE1D. An order number can be shared — confirm the buyer, date and total before acting.",
 	);
-	expect(orderNumberMatchesNote(" #FEE1D ", twins)).toMatch(/^#FEE1D matches 2 orders\./);
+	// It states no count: the server's total also counts buyer and sku matches.
+	expect(orderNumberMatchesNote(" #FEE1D ", twins)).not.toMatch(/\d+ orders/);
 	// Only ID-prefix matches count: a row found by its buyer reference is not
 	// another order with this number.
 	expect(orderNumberMatchesNote("#FEE1D", [{ id: TWIN_A }, { id: SOLO }])).toBeNull();
@@ -245,5 +246,5 @@ test("the note renders above the rows when the applied search is a shared number
 	mounted = await mount(node);
 	await mounted.rerender(node);
 	const note = mounted.container.querySelector('[data-testid="orders-number-matches-note"]');
-	expect(note?.textContent).toMatch(/^#FEE1D matches 2 orders\./);
+	expect(note?.textContent).toMatch(/^More than one order has the number #FEE1D\./);
 });

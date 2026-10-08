@@ -104,9 +104,12 @@ export { SHORT_ID_CONFIRM_LEN, SHORT_ID_MIN, shortIdFixed, shortIdsFor } from ".
 // the matcher for a search typed as one.
 export {
 	idMatchesOrderNumber,
+	ORDER_CONFIRM_DIGITS,
 	ORDER_NUMBER_LENGTH,
-	orderNumberCells,
+	orderConfirmLabel,
+	orderNumberSearchText,
 	typedOrderNumberDigits,
+	withOrderNumberCells,
 	type OrderNumberCell,
 } from "./order-number.js";
 export {

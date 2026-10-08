@@ -222,14 +222,14 @@ test.describe("the migrated Orders console", () => {
 			const text = adminPage.getByTestId("otta-confirm-text");
 			await expect(text).toBeVisible();
 
-			// THE ASSERTION. D4/§1.3: the confirm names the order FIRST, by an
-			// 8-character prefix, upper-cased so it visibly extends the order number
-			// (ADR-0033) — never the full uuid, and never nothing at all.
+			// THE ASSERTION. D4/§1.3: the confirm names the order FIRST, by its first
+			// 12 hex digits, upper-cased so it visibly extends the order number and
+			// any tie-breaker (ADR-0033) — never the full uuid, never nothing at all.
 			// Amount and buyer are the two attributes a repeat customer's orders
 			// share, so a dialog naming only those cannot tell the operator which
 			// order the money is about to leave.
 			const body = (await text.textContent()) ?? "";
-			expect(body).toContain(`Order #${orderId.slice(0, 8).toUpperCase()}`);
+			expect(body).toContain(`Order #${orderId.replaceAll("-", "").slice(0, 12).toUpperCase()}`);
 			expect(body).not.toContain(orderId);
 			expect(body.length).toBeLessThanOrEqual(200);
 
