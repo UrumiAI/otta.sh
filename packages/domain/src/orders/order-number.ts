@@ -33,32 +33,39 @@ export function orderNumber(orderId: string): string {
 	return `#${orderId.slice(0, ORDER_NUMBER_LENGTH).toUpperCase()}`;
 }
 
-/** A search typed as an order number: `#`, then at least a number's worth of hex
- *  (the id's own hyphens allowed inside, removed before this check). */
-const TYPED_ORDER_NUMBER = new RegExp(`^#([0-9a-f]{${String(ORDER_NUMBER_LENGTH)},})$`, "i");
+/**
+ * A search typed as an order number: an optional leading `Order` (any case, then an
+ * optional `:` and spaces), then `#`, then hex in which a `-` may only sit BETWEEN two
+ * hex digits, then optional trailing `.`, `:`, `,` or `;`. At least
+ * {@link ORDER_NUMBER_LENGTH} hex digits are required.
+ */
+const TYPED_ORDER_NUMBER = /^(?:order\s*:?\s*)?#([0-9a-f]+(?:-[0-9a-f]+)*)[.:,;]*$/i;
 
 /** Where a UUID's `-` falls, counted in hex digits before it — so a long number the
  *  console printed hex-only still prefixes the stored, hyphenated id. */
 const UUID_HYPHENS_AFTER = [20, 16, 12, 8] as const;
 
 /**
- * The id-prefix a search typed as an order number stands for (`"#3F9A2"` →
- * `"3f9a2"`, `"#ABCDEF123"` or `"#abcdef12-3"` → `"abcdef12-3"`), or `null` when the
- * search is not one. ONLY a search starting with `#` is: every other search is
- * matched literally, on every arm, exactly as before ADR-0033.
+ * The id-prefix a search typed as an order number stands for, or `null` when the
+ * search is not one. Accepted forms (the caller passes the search already trimmed —
+ * the admin client trims it once, for every arm):
+ *
+ *  - `#3F9A2` → `3f9a2`; any case;
+ *  - a longer number, hex only or with the id's own hyphens between digits:
+ *    `#ABCDEF123` or `#abcdef12-3` → `abcdef12-3` (hyphens go back in the UUID's places);
+ *  - with a leading `Order`, `Order:` or `Order#` and trailing punctuation, as pasted
+ *    from an email: `Order #3F9A2:`, `Order#3F9A2`, `Order: #3F9A2.`
+ *
+ * Not a number, so matched literally: anything without that leading `#` (`3F9A2`,
+ * `-#12345`), fewer than five hex digits, a `-` right after `#` or at the end
+ * (`#-12345`, `#12345-`), or any other character.
  *
  * Only the store's ID arm reads this; the buyer and sku arms keep matching the text
- * as typed, `#` and all, so a sku spelled `#12345` is still found. The caller passes
- * the search already trimmed (the admin client trims it once, for every arm).
+ * as typed, `#` and all, so a sku spelled `#12345` is still found.
  */
 export function orderNumberIdPrefix(search: string): string | null {
-	// "Order #3F9A2" pasted from an email reads as "#3F9A2". The `#` must LEAD the
-	// search before any hyphen is dropped, so "-#12345" stays literal.
-	const typed = search.replace(/^order\s+(?=#)/i, "");
-	if (!typed.startsWith("#")) return null;
-	const match = TYPED_ORDER_NUMBER.exec(typed.replaceAll("-", ""));
-	const digits = match?.[1]?.toLowerCase();
-	if (digits === undefined) return null;
+	const digits = TYPED_ORDER_NUMBER.exec(search)?.[1]?.replaceAll("-", "").toLowerCase();
+	if (digits === undefined || digits.length < ORDER_NUMBER_LENGTH) return null;
 	let prefix = digits;
 	for (const at of UUID_HYPHENS_AFTER) {
 		if (prefix.length > at) prefix = `${prefix.slice(0, at)}-${prefix.slice(at)}`;

@@ -51,9 +51,18 @@ describe("orderNumberIdPrefix — the one matcher", () => {
 		expect(orderNumberIdPrefix(`#${id}`)).toBe(id);
 	});
 
-	test('an "Order #3F9A2" paste reads as the number', () => {
-		expect(orderNumberIdPrefix("Order #3F9A2")).toBe("3f9a2");
-		expect(orderNumberIdPrefix("order  #3f9a2b")).toBe("3f9a2b");
+	test('an "Order #3F9A2" paste reads as the number, with or without ":" and trailing punctuation', () => {
+		for (const typed of [
+			"Order #3F9A2",
+			"order  #3f9a2",
+			"Order #3F9A2:",
+			"Order#3F9A2",
+			"Order: #3F9A2",
+			"Order: #3F9A2.",
+			"#3F9A2,",
+		]) {
+			expect(orderNumberIdPrefix(typed), typed).toBe("3f9a2");
+		}
 	});
 
 	test("only a search starting with # is a number; everything else is literal", () => {
@@ -68,7 +77,11 @@ describe("orderNumberIdPrefix — the one matcher", () => {
 			"TEE#12345",
 			" #3F9A2",
 			"-#12345",
+			"#-12345",
+			"#12345-",
+			"#12--345",
 			"Order 3F9A2",
+			"Orders #3F9A2",
 		]) {
 			expect(orderNumberIdPrefix(s)).toBeNull();
 		}

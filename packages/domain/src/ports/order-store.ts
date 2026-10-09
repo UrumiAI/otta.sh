@@ -1025,9 +1025,11 @@ export interface OrderListFilter {
 	 * screen unsearchable. A whole id is its own prefix, so the previous
 	 * exact-match behaviour survives as a special case. The id half is ANCHORED on
 	 * purpose: an unanchored id match would surface arbitrary rows on any hex
-	 * fragment. A search typed as an order number (`orderNumberIdPrefix`: `#` +
-	 * five or more hex digits) is read by the ID ARM ONLY as the id prefix it
-	 * stands for; the buyer and sku arms still match the text as typed.
+	 * fragment. A search typed as an order number (`orderNumberIdPrefix`: an
+	 * optional leading `Order`/`Order:`, then `#`, then five or more hex digits with
+	 * `-` only between digits, then optional trailing `.:,;`) is read by the ID ARM
+	 * ONLY as the id prefix it stands for; the buyer and sku arms still match the
+	 * text as typed, and every other search is literal on every arm.
 	 *
 	 * WHY A PREFIX ON THE BUYER REF, RATHER THAN AN EXACT MATCH. It holds the
 	 * customer's email, and an operator arrives with what they can read off a

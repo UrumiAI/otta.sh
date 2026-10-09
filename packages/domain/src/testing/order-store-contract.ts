@@ -893,10 +893,22 @@ export function orderStoreContract(
 			expect(number.orders.map((o) => o.id).toSorted()).toEqual([byId, bySku, byRef].toSorted());
 			expect(await h.store.countOrders({ search: "#3F9A2" })).toBe(3);
 			// A longer number — hex only, or with the id's own hyphens — finds just its order.
-			for (const typed of ["#3F9A2B1C7D", "#3f9a2b1c-7d4e"]) {
+			for (const typed of [
+				"#3F9A2B1C7D",
+				"#3f9a2b1c-7d4e",
+				"Order #3F9A2B1C:",
+				"Order#3F9A2B1C",
+				"Order: #3F9A2B1C",
+			]) {
 				const one = await h.store.listOrders({ search: typed }, { limit: 25 });
-				expect(one.orders.map((o) => o.id)).toEqual([byId]);
+				expect(
+					one.orders.map((o) => o.id),
+					typed,
+				).toEqual([byId]);
 			}
+			// A hyphen right after `#` is not a number: matched literally, it finds nothing.
+			const literal = await h.store.listOrders({ search: "#-3F9A2" }, { limit: 25 });
+			expect(literal.orders).toHaveLength(0);
 		});
 
 		test("listOrders search matches a buyer_ref PREFIX, case-folded on both sides", async () => {
