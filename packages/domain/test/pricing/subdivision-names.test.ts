@@ -6,7 +6,11 @@ import { subdivisionName, subdivisionOptions } from "../../src/pricing/subdivisi
 describe("subdivisionOptions", () => {
 	test("lists a country's subdivisions with their English names, by code", () => {
 		const us = subdivisionOptions("US");
-		expect(us.find((o) => o.code === "CA")).toEqual({ code: "CA", name: "California" });
+		expect(us.find((o) => o.code === "CA")).toEqual({
+			code: "CA",
+			name: "California",
+			parent: null,
+		});
 		const codes = us.map((o) => o.code);
 		expect(codes).toEqual(codes.toSorted());
 		expect(subdivisionOptions("in").find((o) => o.code === "KA")?.name).toBe("Karnataka");
@@ -57,6 +61,18 @@ describe("subdivisionOptions", () => {
 		expect(subdivisionOptions("ZZ")).toEqual([]);
 		expect(subdivisionOptions("")).toEqual([]);
 		expect(subdivisionOptions("__proto__")).toEqual([]);
+	});
+
+	test("names each subdivision's containing one (CLDR), for grouping the levels", () => {
+		const es = subdivisionOptions("ES");
+		expect(es.find((o) => o.code === "TF")).toEqual({
+			code: "TF",
+			name: "Santa Cruz de Tenerife",
+			parent: "CN",
+		});
+		expect(es.find((o) => o.code === "CN")?.parent).toBeNull();
+		expect(subdivisionOptions("GB").find((o) => o.code === "BFS")?.parent).toBe("NIR");
+		expect(subdivisionOptions("US").every((o) => o.parent === null)).toBe(true);
 	});
 
 	test("ignores case and spaces, and hands back a frozen list", () => {

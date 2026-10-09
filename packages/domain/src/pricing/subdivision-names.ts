@@ -12,7 +12,7 @@
  * Pure: no IO.
  */
 import { SUBDIVISION_NAMES } from "./iso-3166-names.generated.js";
-import { SUBDIVISIONS } from "./iso-3166.generated.js";
+import { SUBDIVISION_PARENTS, SUBDIVISIONS } from "./iso-3166.generated.js";
 import { normalizeSubdivision } from "./region-codes.js";
 
 export interface SubdivisionOption {
@@ -20,6 +20,10 @@ export interface SubdivisionOption {
 	readonly code: string;
 	/** Its English name (`California`), or the code when CLDR names none. */
 	readonly name: string;
+	/** The bare code of the subdivision directly containing it (CLDR
+	 *  containment: `CN` for Spain's `TF`), or `null` at the top level — for a
+	 *  pick list that groups a country's levels. */
+	readonly parent: string | null;
 }
 
 const NONE: readonly SubdivisionOption[] = Object.freeze([]);
@@ -40,9 +44,13 @@ export function subdivisionOptions(country: string): readonly SubdivisionOption[
 		names.set(pair.slice(0, space), pair.slice(space + 1));
 	}
 	return Object.freeze(
-		[...suffixes]
-			.toSorted()
-			.map((suffix) => Object.freeze({ code: suffix, name: names.get(suffix) ?? suffix })),
+		[...suffixes].toSorted().map((suffix) =>
+			Object.freeze({
+				code: suffix,
+				name: names.get(suffix) ?? suffix,
+				parent: SUBDIVISION_PARENTS.get(`${code}-${suffix}`)?.slice(code.length + 1) ?? null,
+			}),
+		),
 	);
 }
 
