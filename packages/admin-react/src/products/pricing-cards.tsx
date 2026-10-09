@@ -134,7 +134,12 @@ type LoadState =
 	  }
 	| ({ readonly status: "ready" } & Loaded);
 
-type Status = { readonly tone: "ok" | "fail" | "muted"; readonly text: string } | null;
+type Status = {
+	readonly tone: "ok" | "fail" | "muted";
+	readonly text: string;
+	/** A store-default-moved conflict: the currency a "Keep …" button confirms. */
+	readonly keep?: string;
+} | null;
 
 type StockActionId = "products:restock" | "products:remove-stock";
 
@@ -486,7 +491,7 @@ export function PricingStockEditor({ productId }: { productId: string }): React.
 				setDraft(merged.draft);
 				if (merged.conflict) {
 					setTouched(new Set());
-					setSaveStatus({ tone: "fail", text: conflictText(merged) });
+					setSaveStatus(conflictStatus(merged));
 				}
 			}
 			reseed.current = false;
@@ -791,7 +796,7 @@ export function PricingStockEditor({ productId }: { productId: string }): React.
 				}
 				if (result === "conflict") {
 					setTouched(new Set());
-					setSaveStatus({ tone: "fail", text: conflictText(saveConflict) });
+					setSaveStatus(conflictStatus(saveConflict));
 					return;
 				}
 				if (isFailure(result)) {
@@ -1398,6 +1403,22 @@ export function PricingStockEditor({ productId }: { productId: string }): React.
 						<>
 							{saveStatus.tone === "ok" && <Icon d={CHECK} />}
 							{saveStatus.text}
+							{saveStatus.keep !== undefined && (
+								<>
+									{" "}
+									<button
+										type="button"
+										className="otta-pricing-btn"
+										onClick={() => {
+											// Confirms the shown currency, exactly as a pick would.
+											currencyPicked.current = true;
+											setSaveStatus(null);
+										}}
+									>
+										Keep {saveStatus.keep}
+									</button>
+								</>
+							)}
 						</>
 					) : dirty ? (
 						<>
@@ -1469,6 +1490,15 @@ export const PRICING_FIELD_WIDGET = "pricing";
 function storeCurrencyOf(result: ProductDetailPayload): string {
 	if (result.storeCurrency === null) return "";
 	return result.storeCurrency ?? DEFAULT_STORE_CURRENCY;
+}
+
+/** The conflict status, with a "Keep …" offer when the store default moved
+ *  under a currency the merchant can keep. */
+function conflictStatus(facts: ConflictFacts): NonNullable<Status> {
+	const change = facts.currencyChange;
+	const keep =
+		change?.kind === "store_default_moved" && change.from !== "" ? change.from : undefined;
+	return { tone: "fail", text: conflictText(facts), ...(keep !== undefined ? { keep } : {}) };
 }
 
 /** What a conflicting merge reported. */

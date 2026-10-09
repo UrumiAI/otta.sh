@@ -615,6 +615,31 @@ test("a price typed under the shown default: a re-read with a switched store cur
 	expect(save?.["value"]).toMatchObject({ price: "24.98", currency: "EUR" });
 });
 
+test("a store-default-moved banner offers Keep USD, and the next save goes through in USD", async () => {
+	let reads = 0;
+	apiFetch.mockImplementation((_url, init) => {
+		const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+		if (body["type"] === "otta_console_act") {
+			return Promise.resolve(
+				json({ ok: true, notice: { variant: "default", title: "Saved", description: "" } }),
+			);
+		}
+		reads += 1;
+		return Promise.resolve(unpricedDetail(reads === 1 ? "USD" : "EUR"));
+	});
+	const c = await mountPanel();
+	await type(input(c, "Price"), "24.99");
+	await fire(button(c, "Save pricing & stock"), "click");
+	await flush();
+	expect(c.textContent).toContain(STORE_MOVED_USD_EUR);
+	await fire(button(c, "Keep USD"), "click");
+	expect(c.textContent).not.toContain(STORE_MOVED_USD_EUR);
+	await fire(button(c, "Save pricing & stock"), "click");
+	await flush();
+	const save = writes().find((w) => w["action_id"] === "products:save");
+	expect(save?.["value"]).toMatchObject({ price: "24.99", currency: "USD" });
+});
+
 test("the read-before-save uses the FRESH store currency: a switch since the form loaded blocks the save", async () => {
 	let reads = 0;
 	apiFetch.mockImplementation((_url, init) => {
