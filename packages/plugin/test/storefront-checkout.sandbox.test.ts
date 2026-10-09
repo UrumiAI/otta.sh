@@ -947,6 +947,17 @@ describe("storefront/checkout/summary — the zone derived from the destination 
 		expect(result["storeCountry"]).toBe("US");
 	});
 
+	test("storeCountry is never a country the store does not ship to: a zone without methods (first by id) is skipped", async () => {
+		const rules = new EmdashShippingRulesStore({ storage, clock: systemClock });
+		const JP = `${NS}-p2-aa-jp`;
+		await rules.createZone({ id: JP, name: "Japan (tax only)", regions: ["JP"] });
+		try {
+			expect((await summary({ cartId: await p2Cart() }))["storeCountry"]).toBe("US");
+		} finally {
+			await rules.deleteZone(JP);
+		}
+	});
+
 	test("a state of a country SHIPPED to only by state is refused for its region (blames: region); a tax-only state zone, or a country nobody serves, is not", async () => {
 		const rules = new EmdashShippingRulesStore({ storage, clock: systemClock });
 		const ON = `${NS}-p2-ca-on`;

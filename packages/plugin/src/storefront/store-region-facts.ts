@@ -2,10 +2,11 @@
  * What the checkout review needs to know about where the STORE is and how its
  * zones use regions — read once per review render, codes only:
  *
- *  - `storeCountry`: the country the review preselects for a buyer who has not
- *    chosen one, so its state/province list renders on first load with no JS.
- *    The tax options' base address country if set; else the country of the
- *    first zone's first code (zones in store order); else none.
+ *  - `storeCountry`: the country the review preselects on a fresh visit, so its
+ *    state/province list renders on first load with no JS — always one the
+ *    store ships to: the tax options' base country when a zone with methods
+ *    serves it, else the first such zone's country (store order); with zones
+ *    but none that ships, none; with no zones at all, the base country.
  *  - `regionZoneCountries`: countries some zone WITH SHIPPING METHODS lists at
  *    REGION level (`US-CA` ⇒ `US`). A destination refused
  *    SHIPPING_ZONE_NOT_MATCHED in such a country, with a region given, is
@@ -28,30 +29,33 @@ export async function readStoreRegionFacts(ctx: PluginContext): Promise<StoreReg
 		stores.settingsStore.get(),
 		stores.shippingRules.listZones(),
 	]);
-	const regionZoneCountries = new Set<string>();
-	let firstZoneCountry: string | null = null;
-	const regionZones: Array<{ id: string; countries: string[] }> = [];
-	for (const zone of zones) {
-		const countries: string[] = [];
-		for (const code of parseZoneRegions(zone.regions).codes) {
-			const country = code.slice(0, 2);
-			firstZoneCountry ??= country;
-			if (code.includes("-")) countries.push(country);
-		}
-		if (countries.length > 0) regionZones.push({ id: zone.id, countries });
-	}
-	// Only the region-level zones are asked for their methods: one read each.
-	const shipping = await Promise.all(
-		regionZones.map(async (zone) => ({
-			...zone,
+	// Each zone's codes, and whether it SHIPS (has a method) — one read a zone.
+	const read = await Promise.all(
+		zones.map(async (zone) => ({
+			codes: parseZoneRegions(zone.regions).codes,
 			ships: (await stores.shippingRules.listMethods(zone.id)).length > 0,
 		})),
 	);
-	for (const zone of shipping) {
-		if (zone.ships) for (const country of zone.countries) regionZoneCountries.add(country);
+	const regionZoneCountries = new Set<string>();
+	const shippedCountries: string[] = [];
+	for (const zone of read) {
+		if (!zone.ships) continue;
+		for (const code of zone.codes) {
+			const country = code.slice(0, 2);
+			if (!shippedCountries.includes(country)) shippedCountries.push(country);
+			if (code.includes("-")) regionZoneCountries.add(country);
+		}
 	}
+	const base = settings.tax?.baseAddress?.country ?? null;
 	return {
-		storeCountry: settings.tax?.baseAddress?.country ?? firstZoneCountry,
+		// A country the store SHIPS to: its own base country when a shipping zone
+		// serves it, else the first shipping zone's. With zones but none that
+		// ships, none — never a country the delivery block would refuse. With no
+		// zones at all (no delivery block; an address-only page), the base country.
+		storeCountry:
+			base !== null && shippedCountries.includes(base)
+				? base
+				: (shippedCountries[0] ?? (zones.length === 0 ? base : null)),
 		regionZoneCountries,
 	};
 }
