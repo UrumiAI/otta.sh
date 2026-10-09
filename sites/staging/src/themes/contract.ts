@@ -420,6 +420,11 @@ export interface CheckoutModel {
 	 * field `hidden` (`data-region-field`). Print it as a
 	 * `<select name="deliveryRegion">` with a blank first option, and mark the
 	 * country select `data-region-target` for the optional script (ADR-0034).
+	 * REQUIRED beside it: the hidden `deliveryRegionCountry` =
+	 * `deliveryRegions.country` (`autocomplete="off"`,
+	 * `data-region-list-for="<the select's id>"`) — the country the list was
+	 * drawn for, so the server never prices a state code under another country
+	 * (CA is California and Cádiz). Pinned per theme by checkout-theme.test.ts.
 	 * A view that still prints a typed region input keeps working (the codes
 	 * are the same).
 	 */
@@ -427,7 +432,9 @@ export interface CheckoutModel {
 	/** The same for the address block's own country (a page without the
 	 *  delivery block): the subdivisions of `addressValues.country`. Offer an
 	 *  `intent=update-address` submit beside the country (`data-region-update`,
-	 *  hidden by the script). */
+	 *  hidden by the script). REQUIRED with it: the hidden `regionCountry` =
+	 *  `addressRegions.country` (`autocomplete="off"`, `data-region-list-for`),
+	 *  as for the delivery list. */
 	addressRegions: RegionChoice;
 	showDelivery: boolean;
 	showAddress: boolean;

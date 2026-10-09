@@ -242,6 +242,15 @@ test.describe("the state/province pick list (no client JS)", () => {
 			await country.selectOption("US");
 			await expect(region).toBeVisible();
 			await expect(region).toHaveValue("CA");
+			// A USED autofill never carries over a MANUAL country change: the card
+			// filled US/CA; the buyer then picks Spain — nothing selected, never Cádiz.
+			await country.selectOption("ES");
+			await expect(region.locator('option[value="CA"]')).toHaveText("Cádiz");
+			await expect(region).toHaveValue("");
+			await expect(hint).toHaveValue("");
+			await country.selectOption("US");
+			await expect(region.locator('option[value="CA"]')).toHaveText("California");
+			await region.selectOption("CA");
 
 			await form.locator('input[name="email"]').fill("region-js@example.test");
 			await form.locator('input[name="name"]').fill("Cal Buyer");

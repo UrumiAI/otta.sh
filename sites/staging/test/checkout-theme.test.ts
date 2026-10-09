@@ -138,12 +138,14 @@ describe.each(REVIEW_VIEWS)("the /checkout form contract — %s", (_label, { sou
 		expect(VIEW).toMatch(/value="update-address"\s+formnovalidate\s+data-region-update/);
 		// The ADDRESS block records which country its list was drawn for (the
 		// script keeps it in step); the delivery block needs no such record.
+		// THEME CONTRACT (contract.ts): every view that prints a region list prints
+		// the country it was drawn for beside it, never restorable by the browser.
 		expect(VIEW).toMatch(
-			/name="regionCountry"\s+value=\{addressRegions\.country\}\s+data-region-list-for="address-region"/,
+			/name="regionCountry"\s+autocomplete="off"\s+value=\{addressRegions\.country\}\s+data-region-list-for="address-region"/,
 		);
 		// …and so does the delivery block's (a state code never carries over).
 		expect(VIEW).toMatch(
-			/name="deliveryRegionCountry"\s+form="checkout-place"\s+value=\{deliveryRegions\.country\}\s+data-region-list-for="delivery-region"/,
+			/name="deliveryRegionCountry"\s+form="checkout-place"\s+autocomplete="off"\s+value=\{deliveryRegions\.country\}\s+data-region-list-for="delivery-region"/,
 		);
 		expect(VIEW).not.toMatch(/name="deliveryRegionSelected"/);
 		// Each list has an autofill catcher: never posted (no name), out of the

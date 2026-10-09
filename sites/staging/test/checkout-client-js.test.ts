@@ -497,14 +497,14 @@ describe("ADR-0034 — the checkout's region script is exactly what it says", ()
 	const script = readFileSync(path.resolve(SRC_DIR, "../public/scripts/region-picker.js"), "utf8");
 
 	test("ONE external, first-party <script src>: no inline code", () => {
-		const tags = [...component.matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script>/g)];
+		const tags = [...component.matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script[^>]*>/gi)];
 		expect(tags).toHaveLength(1);
 		expect(tags[0]![1]).toMatch(/\bsrc="\/scripts\/region-picker\.js"/);
 		expect(tags[0]![2]!.trim()).toBe("");
 	});
 
 	test("small, frameworkless, and only about the region list", () => {
-		expect(script.split("\n").length).toBeLessThanOrEqual(60);
+		expect(script.split("\n").length).toBeLessThanOrEqual(65);
 		expect(script).not.toMatch(/\bimport\b|\brequire\(/);
 		// It reads one first-party endpoint and nothing else.
 		expect([...script.matchAll(/fetch\(/g)]).toHaveLength(1);
