@@ -66,12 +66,18 @@ function isLetter(c: number): boolean {
 	return (c >= 65 && c <= 90) || (c >= 97 && c <= 122);
 }
 
+/** XML with every `<!-- … -->` comment replaced by a space — the one comment
+ *  rule both CLDR readers below share. */
+export function stripXmlComments(xml: string): string {
+	return xml.replace(/<!--[\s\S]*?-->/g, " ");
+}
+
 /** Every id in the `idStatus='regular'` block of `type`, ranges expanded. */
 export function regularIds(xml: string, type: "region" | "subdivision"): string[] {
 	const open = new RegExp(`<id type='${type}' idStatus='regular'>([\\s\\S]*?)</id>`);
 	const match = open.exec(xml);
 	if (match === null) throw new Error(`no regular ${type} block`);
-	const body = (match[1] ?? "").replace(/<!--[\s\S]*?-->/g, " ");
+	const body = stripXmlComments(match[1] ?? "");
 	return body
 		.split(/\s+/)
 		.filter((token) => token.length > 0)
@@ -207,7 +213,7 @@ const ACCEPTED_ATTRIBUTES = /^(?:\s+draft="(?:provisional|contributed)")?$/;
  *  A name is one line of trimmed text without the `|` the module joins on, and
  *  without a trailing footnote marker. */
 export function subdivisionNames(xml: string): Map<string, string> {
-	const body = xml.replace(/<!--[\s\S]*?-->/g, " ");
+	const body = stripXmlComments(xml);
 	const names = new Map<string, string>();
 	for (const match of body.matchAll(
 		/<subdivision type="([a-z0-9]+)"([^>]*)>([^<]*)<\/subdivision>/g,

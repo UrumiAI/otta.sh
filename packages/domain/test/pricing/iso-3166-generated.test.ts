@@ -8,6 +8,7 @@ import {
 	generateIso3166,
 	generateSubdivisionNames,
 	regularIds,
+	stripXmlComments,
 	subdivisionNames,
 } from "../../scripts/generate-iso-3166.js";
 
@@ -138,6 +139,10 @@ describe("the generator's subdivision names", () => {
 		);
 		expect(() => decodeXmlText("a &nbsp; b")).toThrow();
 		expect(() => decodeXmlText("a & b")).toThrow();
+	});
+
+	test("one comment rule serves both readers", () => {
+		expect(stripXmlComments("a<!-- x\n y -->b<!--z-->c")).toBe("a b c");
 	});
 
 	test("reads each subdivision element and ignores commented-out ones", () => {
