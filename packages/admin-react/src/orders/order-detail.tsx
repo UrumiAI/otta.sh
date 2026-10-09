@@ -181,12 +181,6 @@ export function checkRefundInput(
 		};
 	}
 
-	// ADR-0033's amendment: KWD, BHD, OMR and JOD are paid back in steps of
-	// 0.010 (or the whole remainder) — the payment path takes nothing finer.
-	if (!isRefundableIncrement(parsed, remainingCents, currency)) {
-		return { ok: false, refusal: { message: refundIncrementText(currency), field: "amount" } };
-	}
-
 	if (parsed > remainingCents) {
 		return {
 			ok: false,
@@ -198,6 +192,12 @@ export function checkRefundInput(
 				field: "amount",
 			},
 		};
+	}
+	// ADR-0033's amendment, AFTER the ceiling (an amount that is too high is told
+	// so first): KWD, BHD, OMR and JOD are paid back in steps of 0.010, or the
+	// whole remainder. The domain refuses the same (`AMOUNT_NOT_PAYMENT_INCREMENT`).
+	if (!isRefundableIncrement(parsed, remainingCents, currency)) {
+		return { ok: false, refusal: { message: refundIncrementText(currency), field: "amount" } };
 	}
 	return { ok: true, amountCents: parsed };
 }

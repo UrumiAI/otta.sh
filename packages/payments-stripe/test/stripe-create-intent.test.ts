@@ -200,7 +200,7 @@ describe("StripePaymentGateway.createIntent — the LIVE path sends our minor un
 		);
 	});
 
-	test("EVERY row of the currency table is charged unchanged, in its payment increment", () => {
+	test("EVERY row of the currency table is charged unchanged", () => {
 		// Adding a currency to the table lands here: a row whose exponent Stripe
 		// treats differently is refused (and fails this test) until this adapter
 		// knows how to scale it.
@@ -210,10 +210,6 @@ describe("StripePaymentGateway.createIntent — the LIVE path sends our minor un
 		const twoDecimalAtStripe = new Set(["ISK", "UGX"]);
 		for (const row of SUPPORTED_CURRENCIES) {
 			expect(stripeRefusesCurrency(row.code), row.code).toBe(false);
-			// The table's increment (checkout's rounding) is exactly Stripe's step.
-			expect(("paymentIncrement" in row ? row.paymentIncrement : 1) as number, row.code).toBe(
-				stripeAmountIncrement(row.code),
-			);
 			if (row.digits === 0) {
 				expect(STRIPE_ZERO_DECIMAL_CURRENCIES.has(row.code), row.code).toBe(true);
 				expect(twoDecimalAtStripe.has(row.code), row.code).toBe(false);

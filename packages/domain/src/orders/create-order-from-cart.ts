@@ -2,6 +2,7 @@ import type { Currency } from "../money/cents.js";
 import type { CustomerId, IdempotencyKey, OrderId } from "../money/ids.js";
 import type { CouponRecord } from "../ports/coupon-store.js";
 import type { TotalsBreakdown } from "../pricing/types.js";
+import { roundingEntry } from "../pricing/payment-rounding.js";
 import {
 	orderId as brandOrderId,
 	productId as brandProductId,
@@ -545,7 +546,7 @@ async function finalizeOrder(
 			shipping: breakdown.shippingCents,
 			tax: breakdown.taxCents,
 			// ADR-0033's amendment: only an increment currency's breakdown has it.
-			...(breakdown.roundingCents !== undefined ? { rounding: breakdown.roundingCents } : {}),
+			...roundingEntry("rounding", breakdown.roundingCents),
 			appliedCouponCode: breakdown.appliedCouponCode ?? null,
 			shippingMethodSnapshot: ctx.shippingMethodSnapshot,
 			// ADR-0030: the typed v1 snapshot, written once, never recomputed.

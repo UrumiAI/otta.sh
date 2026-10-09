@@ -714,6 +714,14 @@ describe("each refund refusal names the field it is about", () => {
 		expect(check.refusal.message).toBe(refundIncrementText("KWD"));
 		expect(check.refusal.message).toMatch(/steps of 0\.010/);
 		expect(checkRefundInput("1.230", "ops", 5000, "KWD")).toEqual({ ok: true, amountCents: 1230 });
+		// Over the remainder AND off-step: "too high" comes first (the more useful answer).
+		const over = checkRefundInput("99.999", "ops", 5000, "KWD");
+		expect(over.ok).toBe(false);
+		if (!over.ok) {
+			expect(over.refusal.message).toBe(
+				refundTooHighInline(formatAmount(99999, "KWD"), formatAmount(5000, "KWD")),
+			);
+		}
 		// An older order's odd remainder can still be refunded whole.
 		expect(checkRefundInput("1.234", "ops", 1234, "KWD")).toEqual({ ok: true, amountCents: 1234 });
 		// Every other currency: any minor-unit amount, as before.

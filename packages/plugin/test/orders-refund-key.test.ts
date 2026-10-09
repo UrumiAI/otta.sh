@@ -32,6 +32,7 @@ import {
 	type OrdersActionPayload,
 	type OrdersActionResult,
 } from "../src/admin/orders-actions.js";
+import { refundIncrementText } from "@otta-sh/admin-presentation";
 import type { AdminOrdersSurface, RefundsSummaryWire } from "../src/admin/admin-orders-surface.js";
 
 const ORDER_ID = "order-refund-key-1";
@@ -276,45 +277,25 @@ describe("the refund idempotency key (F-2a)", () => {
 });
 
 describe("a refund the order's currency cannot be paid back in (ADR-0033 amendment)", () => {
-	/** The recorder, but its ledger is in KWD: 5.000 captured. */
-	function kwdRecorder(): Recorder {
+	test("the domain's AMOUNT_NOT_PAYMENT_INCREMENT is worded with the currency's step", async () => {
 		const rec = recorder();
 		const usdRefunds = rec.client.getRefunds.bind(rec.client);
 		rec.client.getRefunds = async (orderId: string) => {
 			const summary = await usdRefunds(orderId);
-			return summary === null
-				? null
-				: {
-						...summary,
-						currency: "KWD",
-						capturedTotalCents: 5000,
-						ceilingCents: 5000,
-						remainingCents: 5000,
-					};
+			return summary === null ? null : { ...summary, currency: "KWD" };
 		};
-		return rec;
-	}
-
-	test("KWD 1.234 is refused before the client is asked; 1.230 goes through", async () => {
-		const rec = kwdRecorder();
+		rec.client.refundOrder = (_orderId, _refund, opts) => {
+			rec.keys.push(opts.idempotencyKey);
+			return Promise.resolve({
+				ok: false as const,
+				status: 400,
+				reason: "AMOUNT_NOT_PAYMENT_INCREMENT",
+			});
+		};
 		const refused = await refund(rec.client, { ...payloadFor("1234", "0"), currency: "KWD" });
 		expect(refused.notice?.variant).toBe("error");
-		expect(refused.notice?.description).toMatch(/steps of 0\.010/);
-		expect(rec.keys).toEqual([]);
-		const sent = await refund(rec.client, { ...payloadFor("1230", "0"), currency: "KWD" });
-		expect(sent.notice?.variant).toBe("default");
-		expect(rec.keys).toEqual([`admin-refund:${ORDER_ID}:1230:0`]);
-	});
-
-	test("the WHOLE remainder is refundable whatever it is (an order placed before rounding)", async () => {
-		const rec = recorder();
-		const usdRefunds = rec.client.getRefunds.bind(rec.client);
-		rec.client.getRefunds = async (orderId: string) => {
-			const summary = await usdRefunds(orderId);
-			return summary === null ? null : { ...summary, currency: "KWD", remainingCents: 1234 };
-		};
-		const sent = await refund(rec.client, { ...payloadFor("1234", "0"), currency: "KWD" });
-		expect(sent.notice?.variant).toBe("default");
+		expect(refused.notice?.title).toBe("Not refunded");
+		expect(refused.notice?.description).toBe(refundIncrementText("KWD"));
 		expect(rec.keys).toEqual([`admin-refund:${ORDER_ID}:1234:0`]);
 	});
 });

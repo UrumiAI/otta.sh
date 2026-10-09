@@ -25,6 +25,7 @@ export { computeLineTax } from "./pricing/tax.js";
 export { computeCouponDiscount } from "./pricing/coupon.js";
 export { resolveShippingRate } from "./pricing/shipping.js";
 export { computeTotals } from "./pricing/compute-totals.js";
+export { payableTotal, roundingEntry } from "./pricing/payment-rounding.js";
 export { CouponCurrencyMismatchError } from "./pricing/errors.js";
 export {
 	CouponCodeConflictError,

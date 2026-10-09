@@ -113,6 +113,7 @@ import {
 	type QuoteResult as DomainQuoteResult,
 	readOrderTaxSnapshot,
 	type ZoneResolution,
+	roundingEntry,
 } from "@otta-sh/domain";
 import type {
 	AbandonCartOrderResult,
@@ -1094,9 +1095,7 @@ export class InProcessCommerceClient implements CommerceClient {
 				shippingCents: breakdown.shippingCents,
 				taxCents: breakdown.taxCents,
 				totalCents: breakdown.totalCents,
-				...(breakdown.roundingCents !== undefined
-					? { roundingCents: breakdown.roundingCents }
-					: {}),
+				...roundingEntry("roundingCents", breakdown.roundingCents),
 				appliedCouponCode: breakdown.appliedCouponCode ?? null,
 				tax: quoteTaxWire(quote),
 			},
@@ -1592,10 +1591,10 @@ function serializeOrderSummary(order: Order): OrderSummaryWire {
 	};
 }
 
-/** The order's payment rounding on the wire (ADR-0033's amendment): only when the
- *  order carries one, so every other order's wire is unchanged. */
+/** The order's payment rounding on the wire (ADR-0033's amendment), by the
+ *  domain's presence rule (`roundingEntry`): every other order's wire is unchanged. */
 function roundingWire(order: Order): { roundingCents?: number } {
-	return order.totals.rounding !== undefined ? { roundingCents: order.totals.rounding } : {};
+	return roundingEntry("roundingCents", order.totals.rounding);
 }
 
 /** The quote's tax display facts (ADR-0032): settings, location, and the tax per label. */
