@@ -1317,6 +1317,7 @@ describe("GET /checkout entry guard (§1.7)", () => {
 				lines: [],
 				totals: {} as never,
 				idempotencyKey: "checkout:cart-1",
+				storeCountry: null,
 				hasUnpricedLines: false,
 				selection: { couponCode: null, shippingMethodId: null, destination: null },
 				selectionErrors: {},

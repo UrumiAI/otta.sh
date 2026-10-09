@@ -42,9 +42,6 @@ const SELECTION_MESSAGES = {
 	SHIPPING_RATE_NOT_FOUND: "That delivery option isn't available for this order's currency.",
 	// #305 part 2 (ADR-0021): the zone is derived from the address.
 	SHIPPING_ZONE_NOT_MATCHED: "We don't ship to this address.",
-	/* The site's own copy for SHIPPING_ZONE_NOT_MATCHED when the plugin blames
-	   the region: other states/provinces of that country are served. */
-	SHIPPING_REGION_NOT_SERVED: "We don't ship to this state/province.",
 	// Neutral about delivery: the site shows it only for a cart that ships (a
 	// digital-only review has no address block), but the words stay true for
 	// an API caller's digital order with a bad region too.
@@ -142,6 +139,9 @@ const MESSAGES: Record<string, string> = {
 	/* The site's own: the address's country changed after its state/province
 	   list was rendered (without the optional script), so the review came back with
 	   the new country's list instead of placing. Nothing was placed. */
+	/* The site's own copy for SHIPPING_ZONE_NOT_MATCHED when the plugin blames
+	   the region: other states/provinces of that country are served. */
+	SHIPPING_REGION_NOT_SERVED: "We don't ship to this state/province.",
 	REGION_LIST_UPDATED:
 		"We've updated the state/province list for the country you chose — pick yours (or leave it blank if none applies), then continue.",
 	/* The site's own: a step that must come back with what was typed (Update,
