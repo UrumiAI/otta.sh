@@ -23,7 +23,7 @@ import {
  * CHARACTERIZATION, NOT SPECIFICATION (ADR-0028, increment 3).
  *
  * Checkout's quote input moves into a domain helper shared with
- * `createOrderFromCart` and, later, the x402 gate. The move is a pure refactor,
+ * `createOrderFromCart` and any other caller. The move is a pure refactor,
  * and this file is half of the proof (the domain's
  * `quote-input-and-line-snapshot.characterization.test.ts` is the other half):
  * it was written and recorded BEFORE the extraction and must pass unchanged

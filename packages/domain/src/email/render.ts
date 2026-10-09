@@ -536,7 +536,7 @@ const ORDER_COPY: Record<
 	// A refund announced on its own (QA T1-6): an admin partial refund, or a
 	// cancellation's FULL refund on an order that shipped before it could be
 	// cancelled. So the body is neutral about HOW MUCH — the figure is on the
-	// `Refunded: X` line — and about HOW: a manual (x402) refund goes to a wallet, not
+	// `Refunded: X` line — and about HOW: a manual refund may go anywhere, not
 	// "to your original payment method".
 	"order-refund-issued": {
 		subject: "Refund issued",

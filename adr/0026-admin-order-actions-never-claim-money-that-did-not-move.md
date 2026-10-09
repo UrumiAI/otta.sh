@@ -1,6 +1,12 @@
 # 0026. Admin order actions never claim money that did not move
 
 - Status: accepted
+- Note (2026-10-08): x402 was removed from Otta ([ADR-0028](./0028-x402-content-gate-verifies-and-settles-through-the-facilitator.md)
+  is withdrawn). Where this record names x402, read it as a method that returns money outside Otta.
+  No current method does. The one live `"outside"` case is a legacy order that still stores
+  `paymentMethod: "x402"`: the domain names it in `LEGACY_PAYMENT_METHODS` (refunds `outside`,
+  settlement `gateway`), so Mark refunded can close it. Any other stored method that is neither
+  current nor named there fails closed and goes through the captured-money check.
 - Date: 2026-10-02
 - Decided by: the maintainer, 2026-10-02 (QA findings T1-3, T1-4, T1-6)
 - Refines: the Phase-5 order state machine, as the admin console applies it. Amends no earlier

@@ -83,7 +83,7 @@ export const UNKNOWN_ACTION: ConsoleFailure = {
  * ran out, or the host aborted a transaction as retryable). Distinct from the
  * screens' generic "unavailable" copy, which sends an operator looking for an
  * outage. `retryable: true` rides on the wire — the same flag every Otta busy
- * shape carries (storefront `BUSY`, download, webhook and x402 settle) — for any
+ * shape carries (storefront `BUSY`, download and webhook) — for any
  * consumer that wants to branch on it; the React console needs only the copy.
  * The copy is careful not to claim nothing changed — for a multi-step action
  * only the step that gave up is known clean.

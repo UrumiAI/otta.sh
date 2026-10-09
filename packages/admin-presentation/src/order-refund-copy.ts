@@ -88,14 +88,21 @@ export function refundConfirmText(
 }
 
 /** The honest per-gateway capability copy (ADR-0008), each ≤200 (§1): Stripe
- *  moves money; x402 / no-secret is record-only, and says why. Takes primitives
- *  rather than a summary object so this module stays free of wire types. */
-export function refundCapabilityText(refundable: boolean, paymentMethod: string | null): string {
+ *  moves money; no-secret is record-only, and says why; a LEGACY method (the
+ *  server's `legacyPaymentMethod`: stored on an older order, no longer supported
+ *  — an x402 order) is record-only for good, and says that instead. Takes
+ *  primitives rather than a summary object so this module stays free of wire
+ *  types. */
+export function refundCapabilityText(
+	refundable: boolean,
+	paymentMethod: string | null,
+	legacyPaymentMethod = false,
+): string {
 	if (refundable) {
 		return `Paid via ${paymentMethod ?? "the payment provider"} — refunding here issues a REAL refund through Stripe and money moves back to the buyer.`;
 	}
-	if (paymentMethod === "x402") {
-		return "Paid on-chain (x402), which cannot be reversed and has no signing wallet — refunds here are RECORD-ONLY. Send the return yourself, then record it here.";
+	if (legacyPaymentMethod) {
+		return "Paid with a payment method Otta no longer supports. Refunds are record-only: return the money outside Otta, then record it here.";
 	}
 	return "Automatic refunds are unavailable for this order — refunds here are RECORD-ONLY. Issue it through your payment provider, then record it here.";
 }

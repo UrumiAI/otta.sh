@@ -73,7 +73,7 @@ describe("createOrderFromCart — a live createIntent failure (PAYMENT_INTENT_FA
 	beforeEach(async () => {
 		h = makeOrderHarness();
 		gw = new ScriptedGateway({ id: "stripe" });
-		h.createDeps.gateways = { stripe: gw, x402: h.x402Gw };
+		h.createDeps.gateways = { stripe: gw };
 		await h.seedPhysical({
 			productId: "p1",
 			sku: "SKU-1",

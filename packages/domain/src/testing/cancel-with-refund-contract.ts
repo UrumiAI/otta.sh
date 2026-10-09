@@ -914,10 +914,10 @@ export function cancelWithRefundContract(
 			expect((await h.orderStore.getById(id))?.state).toBe("paid");
 		});
 
-		test("money a gateway cannot return automatically (x402) is refused — nothing recorded, nothing cancelled", async () => {
+		test("money a gateway cannot return automatically (refundable:false) is refused — nothing recorded, nothing cancelled", async () => {
 			const h = await makeHarness();
-			const id = await seedOrder(h, "cxl-x402", { gateway: "x402" });
-			const gw = new FakePaymentGateway({ id: "x402" });
+			const id = await seedOrder(h, "cxl-norefund", { gateway: "stripe" });
+			const gw = new FakePaymentGateway({ id: "stripe", refundable: false });
 			expect(await cancelWith(h, gw, id)).toEqual({ ok: false, reason: "REFUND_NOT_AUTOMATIC" });
 			// And with no gateway wired at all, the same.
 			expect(await cancelWith(h, null, id)).toEqual({ ok: false, reason: "REFUND_NOT_AUTOMATIC" });

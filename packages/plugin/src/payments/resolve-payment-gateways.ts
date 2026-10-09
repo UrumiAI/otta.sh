@@ -9,20 +9,18 @@
  * same deployment took live Stripe payments. Resolving both maps here means the
  * two roots cannot disagree about which gateways a deployment has.
  *
- * Each gateway resolves independently to `undefined` on an unconfigured
- * deployment and is simply omitted from the map; the domain refuses a method
- * with no gateway loudly (checkout) and the admin client answers `409
- * REFUND_GATEWAY_UNAVAILABLE` (refunds) — fail-closed either way. Both gateways
- * reach their provider only through `ctx.http` (the sandbox rule): x402's
- * facilitator host is granted by `allowedHosts`, and `api.stripe.com` is the
- * constant entry `resolveAllowedHosts` always grants.
+ * A gateway resolves to `undefined` on an unconfigured deployment and is simply
+ * omitted from the map; the domain refuses a method with no gateway loudly
+ * (checkout) and the admin client answers `409 REFUND_GATEWAY_UNAVAILABLE`
+ * (refunds) — fail-closed either way. Stripe reaches its provider only through
+ * `ctx.http` (the sandbox rule): `api.stripe.com` is the constant entry
+ * `resolveAllowedHosts` always grants. The map stays keyed by `PaymentMethod`
+ * so a future gateway slots in beside it.
  */
 
 import type { PaymentGateway, PaymentMethod } from "@otta-sh/domain";
-import { IN_PROCESS_EGRESS_URLS } from "../manifest.js";
 import type { PluginContext } from "../types.js";
 import { stripeGatewayFromCtx, type StripeGatewayOptions } from "./stripe-wiring.js";
-import { x402GatewayFromCtx } from "./x402-wiring.js";
 
 export type PaymentGateways = Partial<Record<PaymentMethod, PaymentGateway>>;
 
@@ -30,12 +28,6 @@ export async function resolvePaymentGateways(
 	ctx: PluginContext,
 	options: StripeGatewayOptions = {},
 ): Promise<PaymentGateways> {
-	const [x402, stripe] = await Promise.all([
-		x402GatewayFromCtx(ctx, { facilitatorUrl: IN_PROCESS_EGRESS_URLS.facilitatorUrl }),
-		stripeGatewayFromCtx(ctx, options),
-	]);
-	return {
-		...(x402 === undefined ? {} : { x402 }),
-		...(stripe === undefined ? {} : { stripe }),
-	};
+	const stripe = await stripeGatewayFromCtx(ctx, options);
+	return stripe === undefined ? {} : { stripe };
 }

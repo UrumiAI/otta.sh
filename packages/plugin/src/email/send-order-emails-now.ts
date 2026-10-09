@@ -152,7 +152,7 @@ export interface SendOrderEmailsNowOptions {
  * either — the conservative direction for a caller reporting it.
  *
  * `skipped` lists every row this attempt completed WITHOUT a send because the order
- * has no email recipient (an x402 buyer's `x402:0x…` reference, ADR-0028 Decision 7).
+ * has no email recipient (its `buyerRef` is not an email address).
  * Such a row is done: it was not sent and never will be, so a caller must not call it
  * queued.
  */

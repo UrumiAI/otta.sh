@@ -1,10 +1,13 @@
 import {
 	adminNextStates,
+	isLegacyPaymentMethod,
+	LEGACY_PAYMENT_METHODS,
 	manualPaymentAllowed,
 	markRefundedAllowed,
 	markRefundedRefusal,
 	PROVIDER_REFUNDED_FLAG_PREFIX,
 	unrefundedCapturedCents,
+	type PaymentMethod,
 } from "@otta-sh/domain";
 import { describe, expect, test } from "vitest";
 
@@ -18,7 +21,7 @@ const CAPTURED = { payments: [{ amount: 1000, status: "succeeded" }], refunds: [
 
 describe("adminNextStates", () => {
 	test("a pending order is offered neither paid nor a bare cancelled", () => {
-		for (const paymentMethod of ["stripe", "x402", null] as const) {
+		for (const paymentMethod of ["stripe", null] as const) {
 			expect(
 				adminNextStates({ state: "pending", paymentMethod, reconciliationFlag: null }, NOTHING),
 			).toEqual(["expired"]);
@@ -50,7 +53,6 @@ describe("adminNextStates", () => {
 describe("manualPaymentAllowed", () => {
 	test("fails closed: no method is declared offline, and no method on file is not one", () => {
 		expect(manualPaymentAllowed("stripe")).toBe(false);
-		expect(manualPaymentAllowed("x402")).toBe(false);
 		expect(manualPaymentAllowed(null)).toBe(false);
 	});
 });
@@ -131,8 +133,55 @@ describe("Mark refunded is offered only where no money is left to return through
 			markRefundedAllowed({ ...stripePaid, reconciliationFlag: "amount mismatch" }, CAPTURED),
 		).toBe(false);
 	});
-
-	test("a method that returns money outside Otta (x402) keeps Mark refunded", () => {
-		expect(markRefundedAllowed({ ...stripePaid, paymentMethod: "x402" }, CAPTURED)).toBe(true);
+	test("a NAMED legacy method (a hand-seeded x402 order) keeps Mark refunded", () => {
+		// x402 is gone from `PaymentMethod`, but an order placed before its removal
+		// still stores it. No provider can return that money, so it is OUTSIDE Otta:
+		// the operator refunds it and Mark refunded records it, as before.
+		const legacy = { ...stripePaid, paymentMethod: "x402" as unknown as PaymentMethod };
+		const viaX402 = {
+			payments: [{ amount: 1000, status: "succeeded", gateway: "x402" }],
+			refunds: [],
+		};
+		expect(markRefundedRefusal(legacy, viaX402)).toBeNull();
+		expect(markRefundedAllowed(legacy, viaX402)).toBe(true);
+		expect(adminNextStates(legacy, viaX402)).toContain("refunded");
+		expect(markRefundedAllowed(legacy, NOTHING)).toBe(true);
+		// And it still cannot be marked paid by hand.
+		expect(manualPaymentAllowed(legacy.paymentMethod)).toBe(false);
 	});
+	test("a legacy order whose captured money came through a CURRENT provider (Stripe) is refused while it is held", () => {
+		const legacy = { ...stripePaid, paymentMethod: "x402" as unknown as PaymentMethod };
+		const viaStripe = {
+			payments: [{ amount: 1000, status: "succeeded", gateway: "stripe" }],
+			refunds: [],
+		};
+		expect(markRefundedRefusal(legacy, viaStripe)).toBe("REFUND_THROUGH_MONEY");
+		expect(adminNextStates(legacy, viaStripe)).not.toContain("refunded");
+		// A payment with no gateway on file is not taken as legacy either.
+		expect(markRefundedRefusal(legacy, CAPTURED)).toBe("REFUND_THROUGH_MONEY");
+		// Once it is refunded back through the ledger, nothing is held.
+		expect(
+			markRefundedAllowed(legacy, {
+				...viaStripe,
+				refunds: [{ amount: 1000, status: "recorded" }],
+			}),
+		).toBe(true);
+	});
+	test("the legacy list is NAMED: x402 only", () => {
+		expect(Object.keys(LEGACY_PAYMENT_METHODS)).toEqual(["x402"]);
+		expect(isLegacyPaymentMethod("x402")).toBe(true);
+		for (const m of ["stripe", "Stripe", "bogus", "", "toString", "__proto__"]) {
+			expect(isLegacyPaymentMethod(m), m).toBe(false);
+		}
+	});
+	test.each(["Stripe", "bogus", "toString"])(
+		"an UNKNOWN stored method (%s) with captured money fails CLOSED: Mark refunded is refused",
+		(method) => {
+			const unknown = { ...stripePaid, paymentMethod: method as unknown as PaymentMethod };
+			expect(markRefundedRefusal(unknown, CAPTURED)).toBe("REFUND_THROUGH_MONEY");
+			expect(markRefundedAllowed(unknown, CAPTURED)).toBe(false);
+			expect(adminNextStates(unknown, CAPTURED)).not.toContain("refunded");
+			expect(manualPaymentAllowed(unknown.paymentMethod)).toBe(false);
+		},
+	);
 });

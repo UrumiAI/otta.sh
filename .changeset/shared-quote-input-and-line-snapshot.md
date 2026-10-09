@@ -12,8 +12,8 @@ A pure refactor: no quote, total or stored order changes.
   none), `requiresShipping` iff any line is physical, and the destination,
   method and coupon only when given. `createOrderFromCart` now builds its quote
   with it, and maps each product row to its order line through one internal
-  `snapshotOrderLine`, so the x402 gate can price and snapshot a product exactly
-  as a cart checkout does, and a field the pricing pipeline gains is added in
+  `snapshotOrderLine`, so any other checkout path can price and snapshot a product
+  exactly as a cart checkout does, and a field the pricing pipeline gains is added in
   one place.
 - `@otta-sh/plugin`: the checkout review (`quoteCheckout`) builds its quote with
   the same `quoteCommandFor`, so the review and the order are the same quote by

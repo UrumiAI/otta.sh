@@ -614,7 +614,11 @@ export function RefundsPanel({
 				*/}
 				{refundMode !== "empty" && (
 					<p style={{ fontSize: 12, opacity: 0.8 }} data-testid="refund-capability">
-						{refundCapabilityText(refunds.refundable, refunds.paymentMethod)}
+						{refundCapabilityText(
+							refunds.refundable,
+							refunds.paymentMethod,
+							refunds.legacyPaymentMethod === true,
+						)}
 					</p>
 				)}
 

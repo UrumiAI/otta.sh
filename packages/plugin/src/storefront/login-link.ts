@@ -33,8 +33,8 @@ export const LOGIN_LINK_TTL_MS = DEFAULT_CHALLENGE_TTL_MS;
  *  placeholder the Settings field suggests. */
 export const ACCOUNT_VERIFY_PATH = "/account/verify";
 
-/** The operator's sign-in link page. Readable kv, like the x402 wallet: an
- *  operator must be able to see where links point. */
+/** The operator's sign-in link page. Readable kv: an operator must be able to
+ *  see where links point. */
 export const LOGIN_LINK_URL_KEY = "settings:loginLinkUrl";
 
 /**

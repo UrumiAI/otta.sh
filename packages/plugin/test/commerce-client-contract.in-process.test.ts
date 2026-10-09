@@ -93,15 +93,15 @@ function inProcessTier(): CommerceClientTier {
 	 */
 	const clock = new FixedClock(new Date());
 	/**
-	 * The PROVIDER stand-ins, one per method, with the real adapters' honest
-	 * capabilities: Stripe can move money back (`refundable: true`), x402 cannot, so
-	 * a refund against an x402 order is recorded manually. Composed into the
-	 * storefront client and the admin orders client through the same `gateways`
-	 * option production's composition roots pass.
+	 * The PROVIDER stand-in with the real adapter's honest capability: Stripe can
+	 * move money back (`refundable: true`). The manual-refund case flips it to
+	 * `false` for its own duration (Stripe with no secret key looks like that), so a
+	 * refund is recorded manually. Composed into the storefront client and the
+	 * admin orders client through the same `gateways` option production's
+	 * composition roots pass.
 	 */
 	const stripeGateway = new FakePaymentGateway({ id: "stripe" });
-	const x402Gateway = new FakePaymentGateway({ id: "x402" });
-	const gateways = { stripe: stripeGateway, x402: x402Gateway };
+	const gateways = { stripe: stripeGateway };
 
 	function clientOrThrow(): CommerceClient {
 		if (client === undefined) throw new Error("tier not set up");
@@ -173,9 +173,9 @@ function inProcessTier(): CommerceClientTier {
 		},
 		payments: {
 			method: "stripe",
-			manualRefundMethod: "x402",
+			setRefundable: (refundable) => stripeGateway.setRefundable(refundable),
 			providerIntentCalls() {
-				return [stripeGateway, x402Gateway].flatMap((gateway) =>
+				return [stripeGateway].flatMap((gateway) =>
 					gateway.intentCalls.map((call) => ({
 						gateway: gateway.id,
 						orderId: call.orderId,
@@ -186,7 +186,7 @@ function inProcessTier(): CommerceClientTier {
 				);
 			},
 			providerRefundCalls() {
-				return [stripeGateway, x402Gateway].flatMap((gateway) =>
+				return [stripeGateway].flatMap((gateway) =>
 					gateway.refundCalls.map((call) => ({
 						gateway: gateway.id,
 						orderId: call.orderId,
@@ -612,14 +612,12 @@ describe("in-process commerce: what is deliberately not wired yet", () => {
 		// It quotes, so the only thing missing is the gateway.
 		expect((await client.quoteCheckout({ cartId })).ok).toBe(true);
 
-		for (const paymentMethod of ["stripe", "x402"] as const) {
-			await expect(
-				client.createOrder(
-					{ cartId, paymentMethod, buyerRef: "buyer@example.test" },
-					`no-gateway-${paymentMethod}`,
-				),
-			).rejects.toThrow(/no payment gateway configured/);
-		}
+		await expect(
+			client.createOrder(
+				{ cartId, paymentMethod: "stripe", buyerRef: "buyer@example.test" },
+				"no-gateway-stripe",
+			),
+		).rejects.toThrow(/no payment gateway configured/);
 
 		// The cart is untouched: still active (not checked out), still naming no order,
 		// its line still holding the SAME reservation. A refusal that consumed the

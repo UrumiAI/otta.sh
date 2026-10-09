@@ -97,6 +97,7 @@ import {
 	priceGroupLabel,
 	pricePendingLine,
 	priceSavedNotice,
+	refundCapabilityText,
 	refundConfirmText,
 	refundTooHighText,
 	removeStockConfirm,
@@ -1569,5 +1570,27 @@ describe("the tax status hint", () => {
 	test("'Shipping only' ties the item's class to shipping tax only under 'Based on cart items'", () => {
 		expect(TAX_STATUS_HINT).toContain("when the shipping tax class is 'Based on cart items'");
 		expect(TAX_STATUS_HINT).not.toContain("still sets the shipping tax");
+	});
+});
+
+describe("refundCapabilityText — the refund panel's capability line", () => {
+	test("Stripe, the record-only fallback and a missing method keep their exact words", () => {
+		expect(refundCapabilityText(true, "stripe", false)).toBe(
+			"Paid via stripe — refunding here issues a REAL refund through Stripe and money moves back to the buyer.",
+		);
+		const recordOnly =
+			"Automatic refunds are unavailable for this order — refunds here are RECORD-ONLY. Issue it through your payment provider, then record it here.";
+		expect(refundCapabilityText(false, "stripe", false)).toBe(recordOnly);
+		expect(refundCapabilityText(false, null, false)).toBe(recordOnly);
+	});
+
+	test("a LEGACY method (the server flags an x402 order) says Otta no longer supports it, within budget", () => {
+		const text = refundCapabilityText(false, "x402", true);
+		expect(text).toBe(
+			"Paid with a payment method Otta no longer supports. Refunds are record-only: return the money outside Otta, then record it here.",
+		);
+		expect(text.length).toBeLessThanOrEqual(200);
+		// The words follow the server's flag, not the method's name.
+		expect(refundCapabilityText(false, "x402", false)).not.toContain("no longer supports");
 	});
 });

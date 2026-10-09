@@ -217,7 +217,7 @@ export interface ArrangedOrder {
 	unitPrice?: CommerceMoney;
 	quantity?: number;
 	/** The method the order was placed with. Defaults to `stripe`. */
-	paymentMethod?: "stripe" | "x402";
+	paymentMethod?: "stripe";
 	/**
 	 * A SETTLED payment for the order, in the order's currency: the order is
 	 * flipped `pending → paid` and one `succeeded` payment row is recorded under
@@ -336,14 +336,15 @@ export interface CommerceClientTierClock {
  */
 export interface CommerceClientTierPayments {
 	/** The method whose gateway this tier composes. */
-	readonly method: "stripe" | "x402";
+	readonly method: "stripe";
 	/**
-	 * OPTIONAL: a method whose gateway the tier ALSO composes and which declares
-	 * `refundable: false` (x402), so a refund against it is RECORDED as a manual,
-	 * off-platform refund and never sent to a provider. Absent ⇒ the manual-refund
-	 * case skips, saying so in its name.
+	 * OPTIONAL: flips the composed gateway's `refundable` capability. The
+	 * manual-refund case sets it `false` for its own duration, so a refund is
+	 * RECORDED as a manual, off-platform refund and never sent to a provider (what
+	 * Stripe with no secret key does), then restores `true`. Absent ⇒ the
+	 * manual-refund case skips, saying so in its name.
 	 */
-	readonly manualRefundMethod?: "x402";
+	readonly setRefundable?: (refundable: boolean) => void;
 	/**
 	 * Every refund call the tier's composed gateways have received, oldest first
 	 * and across cases (a case filters by its own idempotency key, which is
@@ -2556,9 +2557,9 @@ export function storefrontCommerceClientContract(tier: CommerceClientTier): void
 		);
 
 		test.skipIf(tier.payments === undefined)(
-			"an order whose buyerRef is NOT an email cannot be resumed by typing the buyerRef back — it is public (an x402 wallet), so it proves nothing (issue #405 item 2; SKIPPED where the tier composes no payment gateway)",
+			"an order whose buyerRef is NOT an email cannot be resumed by typing the buyerRef back — it is public (a wallet id), so it proves nothing (issue #405 item 2; SKIPPED where the tier composes no payment gateway)",
 			async () => {
-				const wallet = "x402:0x52908400098527886E0F7030069857D2E4169EE7";
+				const wallet = "wallet:0x52908400098527886E0F7030069857D2E4169EE7";
 				const placed = await placeResumable("wallet", wallet);
 				const before = tier.payments?.providerIntentCalls?.().length ?? 0;
 				expect(await client.resumeOrderPayment(placed.orderId, { email: wallet })).toEqual({
@@ -3419,13 +3420,10 @@ export function adminOrdersProductsClientContract(tier: CommerceClientTier): voi
 				}),
 			).toEqual({ ok: false, status: 409, reason: "USE_CANCEL" });
 
-			// No order is marked paid by hand (QA T1-3, ADR-0026): not a card order and not
-			// an x402 one. (The no-method case — the refusal failing CLOSED — cannot be
+			// No order is marked paid by hand (QA T1-3, ADR-0026): not a card order.
+			// (The no-method case — the refusal failing CLOSED — cannot be
 			// arranged on this surface; the domain's orderTransitionContract pins it.)
-			for (const [id, paymentMethod] of [
-				["adm-o-trans-card", "stripe"],
-				["adm-o-trans-x402", "x402"],
-			] as const) {
+			for (const [id, paymentMethod] of [["adm-o-trans-card", "stripe"]] as const) {
 				await tier.arrange.order({ orderId: id, buyerRef: `${id}@example.test`, paymentMethod });
 				expect(await orders.transitionOrder(id, "paid", { idempotencyKey: `${id}-1` })).toEqual({
 					ok: false,
@@ -3885,6 +3883,7 @@ export function adminOrdersProductsClientContract(tier: CommerceClientTier): voi
 				// between a provider button and "record a manual refund" (ADR-0008), and
 				// neither state is faked here.
 				refundable: tier.payments !== undefined,
+				legacyPaymentMethod: false,
 			});
 
 			expect(await orders.getRefunds("adm-o-missing")).toBeNull();
@@ -4120,48 +4119,55 @@ export function adminOrdersProductsClientContract(tier: CommerceClientTier): voi
 			},
 		);
 
-		test.skipIf(tier.payments?.manualRefundMethod === undefined)(
+		test.skipIf(tier.payments?.setRefundable === undefined)(
 			"(non-refundable gateway composed) a MANUAL refund is recorded without any provider call (SKIPPED where the tier composes no such gateway)",
 			async () => {
-				const method = tier.payments?.manualRefundMethod ?? "x402";
-				await tier.arrange.order({
-					orderId: "adm-o-refman",
-					buyerRef: "refman@example.test",
-					paymentMethod: method,
-					captured: { amountCents: 1500, providerRef: "0xadm-o-refman" },
-				});
-				// The gateway's HONEST capability: it cannot move money back, so the panel
-				// offers "record a manual refund" — and recording one must still work.
-				expect(await orders.getRefunds("adm-o-refman")).toMatchObject({
-					paymentMethod: method,
-					refundable: false,
-					remainingCents: 1500,
-				});
+				const method = tier.payments?.method ?? "stripe";
+				// Stripe with no secret key declares `refundable: false`: the same gateway,
+				// flipped for this case only.
+				tier.payments?.setRefundable?.(false);
+				try {
+					await tier.arrange.order({
+						orderId: "adm-o-refman",
+						buyerRef: "refman@example.test",
+						paymentMethod: method,
+						captured: { amountCents: 1500, providerRef: "pi_adm_o_refman" },
+					});
+					// The gateway's HONEST capability: it cannot move money back, so the panel
+					// offers "record a manual refund" — and recording one must still work.
+					expect(await orders.getRefunds("adm-o-refman")).toMatchObject({
+						paymentMethod: method,
+						refundable: false,
+						remainingCents: 1500,
+					});
 
-				expect(
-					await orders.refundOrder(
-						"adm-o-refman",
-						{ amountCents: 1500, currency: "USD", refundedBy: "ops@example.test" },
-						{ idempotencyKey: "adm-o-refman-1" },
-					),
-				).toEqual({
-					ok: true,
-					recorded: true,
-					duplicate: false,
-					fullyRefunded: true,
-					email: NO_EMAIL_PROVIDER,
-				});
-				expect(providerCallsFor("adm-o-refman-1")).toEqual([]);
-				const after = await orders.getRefunds("adm-o-refman");
-				expect(after?.refunds).toHaveLength(1);
-				expect(after?.refunds[0]).toMatchObject({
-					kind: "manual",
-					gateway: method,
-					status: "recorded",
-					refundRef: null,
-					amountCents: 1500,
-				});
-				expect(after).toMatchObject({ refundedTotalCents: 1500, remainingCents: 0 });
+					expect(
+						await orders.refundOrder(
+							"adm-o-refman",
+							{ amountCents: 1500, currency: "USD", refundedBy: "ops@example.test" },
+							{ idempotencyKey: "adm-o-refman-1" },
+						),
+					).toEqual({
+						ok: true,
+						recorded: true,
+						duplicate: false,
+						fullyRefunded: true,
+						email: NO_EMAIL_PROVIDER,
+					});
+					expect(providerCallsFor("adm-o-refman-1")).toEqual([]);
+					const after = await orders.getRefunds("adm-o-refman");
+					expect(after?.refunds).toHaveLength(1);
+					expect(after?.refunds[0]).toMatchObject({
+						kind: "manual",
+						gateway: method,
+						status: "recorded",
+						refundRef: null,
+						amountCents: 1500,
+					});
+					expect(after).toMatchObject({ refundedTotalCents: 1500, remainingCents: 0 });
+				} finally {
+					tier.payments?.setRefundable?.(true);
+				}
 			},
 		);
 

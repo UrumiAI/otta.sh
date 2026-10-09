@@ -777,7 +777,7 @@ export function orderStoreContract(
 					state: "shipped",
 					currency: "EUR",
 					buyerRef: "Jane@Example.com",
-					paymentMethod: "x402",
+					paymentMethod: "stripe",
 					customerId: "cust-1",
 					createdAt: "2026-07-10T01:00:00.000Z",
 					totalCents: 4200,
@@ -791,7 +791,7 @@ export function orderStoreContract(
 			expect(s.state).toBe("shipped");
 			expect(s.currency).toBe("EUR");
 			expect(s.buyerRef).toBe("Jane@Example.com");
-			expect(s.paymentMethod).toBe("x402");
+			expect(s.paymentMethod).toBe("stripe");
 			expect(s.customerId).toBe("cust-1");
 			expect(s.createdAt).toBe("2026-07-10T01:00:00.000Z");
 			expect(s.total).toBe(4200);

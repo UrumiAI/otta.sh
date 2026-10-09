@@ -195,7 +195,11 @@ describe("a replay costs one order read: the sender is built lazily", () => {
 	});
 
 	test("an order with no email address ⇒ its row is reported skipped, and no sender is built", async () => {
-		const id = await seedOrder("ord-x402", true, "x402:0x1111111111111111111111111111111111111111");
+		const id = await seedOrder(
+			"ord-wallet",
+			true,
+			"wallet:0x1111111111111111111111111111111111111111",
+		);
 		const { ctx, messages } = withEmail();
 		const kvGet = vi.spyOn(ctx.kv, "get");
 

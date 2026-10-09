@@ -8,7 +8,7 @@ Mark refunded can no longer close an order that still holds captured money, and 
 status moves record who made them (QA round 2, M4 and the History "—").
 
 - **`transitionOrderAsAdmin` refuses `→ refunded` with `REFUND_THROUGH_MONEY`** unless
-  `markRefundedAllowed` holds: the method returns money outside Otta (x402), the ledger
+  `markRefundedAllowed` holds: the method returns money outside Otta, the ledger
   shows nothing left to refund (`unrefundedCapturedCents`: succeeded payments less every
   non-voided refund), or the order carries the provider's own word that the payment was
   already refunded. `adminNextStates(order, ledger)` now takes the ledger and offers
