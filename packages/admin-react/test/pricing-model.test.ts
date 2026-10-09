@@ -330,7 +330,7 @@ describe("the draft", () => {
 
 		test("the banners say what changed", () => {
 			expect(currencyChangeText({ kind: "priced_elsewhere", from: "JPY", to: "GBP" })).toBe(
-				"This product was priced in GBP by someone else — the amounts you entered in JPY were cleared; enter them again in GBP.",
+				"This product was priced in GBP by someone else — the amounts you entered in JPY were replaced with its saved ones — check every amount in GBP before saving.",
 			);
 			expect(currencyChangeText({ kind: "store_default_moved", from: "USD", to: "EUR" })).toBe(
 				"Your store currency is now EUR — this product will be priced in USD unless you choose EUR. Pick the currency to confirm, then save.",

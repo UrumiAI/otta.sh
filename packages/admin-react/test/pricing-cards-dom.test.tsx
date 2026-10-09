@@ -669,7 +669,7 @@ test("priced elsewhere in KWD at save: the USD amounts typed are cleared, and th
 	await flush();
 	expect(writes().some((w) => w["action_id"] === "products:save")).toBe(false);
 	expect(c.textContent).toContain(
-		"This product was priced in KWD by someone else — the amounts you entered in USD were cleared; enter them again in KWD.",
+		"This product was priced in KWD by someone else — the amounts you entered in USD were replaced with its saved ones — check every amount in KWD before saving.",
 	);
 	expect((input(c, "Cost per item") as HTMLInputElement).value).toBe("");
 	// Saving again (now against the priced record) sends no cost — never 9.50 as KWD.

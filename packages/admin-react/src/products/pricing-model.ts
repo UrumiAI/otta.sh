@@ -181,7 +181,7 @@ export function resolveDraftCurrency(args: {
 export function currencyChangeText(change: CurrencyChange): string {
 	if (change.kind === "priced_elsewhere") {
 		const entered = change.from === "" ? "" : ` in ${change.from}`;
-		return `This product was priced in ${change.to} by someone else — the amounts you entered${entered} were cleared; enter them again in ${change.to}.`;
+		return `This product was priced in ${change.to} by someone else — the amounts you entered${entered} were replaced with its saved ones — check every amount in ${change.to} before saving.`;
 	}
 	return change.from === ""
 		? `Your store currency is now ${change.to} — choose this product's currency, then save.`
