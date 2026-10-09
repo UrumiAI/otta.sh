@@ -51,8 +51,10 @@ the admin console (list rows and detail, sent on the admin wire as `orderNumber`
     each cell is itself a searchable number; the detail shows the full id beside the number;
   - the refund confirm names the first 12 hex digits (`#7E4CE728ABCD`), a superset of the
     number and of any realistic tie-breaker.
-- A search spelled `#` + five or more hex digits is read as an order number, so a sku or
-  email local part spelled that way is found by searching without the `#`.
+- A search of five or more hex digits (`#` optional) is read as an order number by the
+  ID arm only; the sku and buyer arms keep the literal text, `#` included, so a sku or
+  email spelled that way is still found. The "can be shared" hint shows only when a
+  returned row matched by id prefix.
 - **It reveals part of the id.** The number shows 20 of the id's 122 random bits, in
   places (an email subject, a support ticket) the full id never went. The order page is a
   bearer link on the full id and stays safe on the remaining ~102 bits; nothing resolves

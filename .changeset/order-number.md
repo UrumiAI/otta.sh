@@ -32,8 +32,8 @@ buyer, date and total."
 `ORDER_CONFIRM_DIGITS` and the `OrderNumberCell` type: rows sharing a number extend it,
 upper-cased and hex only, to their shortest-unique prefix; the refund confirm names the
 first 12 hex digits. It drops `shortIdFixed` and `SHORT_ID_CONFIRM_LEN` (and the plugin's
-scaffold re-exports of them), which nothing uses any more. `orderNumber` is required on the
-React console's order types.
+scaffold re-exports of them), which nothing uses any more. `orderNumber` is OPTIONAL on the
+React console's order types, with a client-side fallback (`orderNumberOf`).
 
 `@otta-sh/store-emdash`'s order search (and the domain's in-memory store) reads a search
 typed as an order number — `#` + five or more hex digits, the id's own hyphens allowed —
