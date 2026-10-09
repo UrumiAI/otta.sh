@@ -26,4 +26,10 @@
  * other reason should take the package import and drop the shim path; when the
  * last caller has, these files go.
  */
-export { formatMinorUnitsInput, parseMinorUnitsInput } from "@otta-sh/admin-presentation";
+export {
+	formatMinorUnitsInput,
+	moneyInputExample,
+	moneyPrecisionPhrase,
+	NO_CURRENCY,
+	parseMinorUnitsInput,
+} from "@otta-sh/admin-presentation";

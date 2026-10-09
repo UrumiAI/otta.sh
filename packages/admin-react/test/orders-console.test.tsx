@@ -52,10 +52,12 @@ const {
 	REFUNDS_GROUP_EMPTY_LABEL,
 	REFUND_AMOUNT_INVALID,
 	REFUND_AMOUNT_PRECISION,
+	refundAmountPrecisionText,
 	RETRYING_LABEL,
 	RETRY_LABEL,
 	formatAmount,
 	reconciliationAlertSentence,
+	refundIncrementText,
 	refundTooHighInline,
 	refundsGroupLabel,
 } = await import("@otta-sh/admin-presentation");
@@ -704,6 +706,28 @@ describe("each refund refusal names the field it is about", () => {
 		);
 	});
 
+	test("a three-decimal refund not in steps of 0.010 is about the amount — unless it is the whole remainder (ADR-0035 amendment)", () => {
+		const check = checkRefundInput("1.234", "ops", 5000, "KWD");
+		expect(check.ok).toBe(false);
+		if (check.ok) return;
+		expect(check.refusal.field).toBe("amount");
+		expect(check.refusal.message).toBe(refundIncrementText("KWD"));
+		expect(check.refusal.message).toMatch(/steps of 0\.010/);
+		expect(checkRefundInput("1.230", "ops", 5000, "KWD")).toEqual({ ok: true, amountCents: 1230 });
+		// Over the remainder AND off-step: "too high" comes first (the more useful answer).
+		const over = checkRefundInput("99.999", "ops", 5000, "KWD");
+		expect(over.ok).toBe(false);
+		if (!over.ok) {
+			expect(over.refusal.message).toBe(
+				refundTooHighInline(formatAmount(99999, "KWD"), formatAmount(5000, "KWD")),
+			);
+		}
+		// An older order's odd remainder can still be refunded whole.
+		expect(checkRefundInput("1.234", "ops", 1234, "KWD")).toEqual({ ok: true, amountCents: 1234 });
+		// Every other currency: any minor-unit amount, as before.
+		expect(checkRefundInput("0.01", "ops", 4500, "USD")).toEqual({ ok: true, amountCents: 1 });
+	});
+
 	test("a blank `refunded by` is not refused — the server records the signed-in operator (QA round 2)", () => {
 		const check = checkRefundInput("19.99", "   ", 4500, "USD");
 		expect(check).toEqual({ ok: true, amountCents: 1999 });
@@ -715,6 +739,17 @@ describe("each refund refusal names the field it is about", () => {
 		if (check.ok) return;
 		expect(check.refusal.field).toBe("amount");
 		expect(check.refusal.message).toBe(REFUND_AMOUNT_PRECISION);
+	});
+
+	test("a JPY refund is read in WHOLE YEN — '1500' is 1500, and a fraction of a yen says so", () => {
+		expect(checkRefundInput("1500", "ops", 4500, "JPY")).toEqual({ ok: true, amountCents: 1500 });
+		const fraction = checkRefundInput("15.5", "ops", 4500, "JPY");
+		expect(fraction.ok).toBe(false);
+		if (fraction.ok) return;
+		expect(fraction.refusal.message).toBe(refundAmountPrecisionText("JPY"));
+		// Over the remainder is judged in yen too: 5000 > 4500.
+		const over = checkRefundInput("5000", "ops", 4500, "JPY");
+		expect(over.ok).toBe(false);
 	});
 
 	test("a valid refund parses to exact minor units and refuses nothing", () => {

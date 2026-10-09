@@ -39,7 +39,9 @@
  * key is refused, and only an explicit `null` clears.
  *
  * COUPON IDENTITY IS IMMUTABLE and its economics cannot be blanked. `CouponEdit`
- * omits id/code/type/currency. The "a `fixed_amount` coupon cannot lose its
+ * omits id/code/type; its optional `currency` is the currency the edit's
+ * amounts were parsed in (checked against the stored one, inside the store's
+ * compare-and-set) and, on an unbound percentage coupon, the one it binds. The "a `fixed_amount` coupon cannot lose its
  * `amountCents`, a `percentage` coupon cannot lose its `rateBps`" rule lived ONLY
  * in the service route (issue #75 — before that it lived only in the plugin's own
  * form parser, so a direct API caller could blank a live coupon), so
@@ -87,6 +89,7 @@ import {
 	cents as toCents,
 	currency as toCurrency,
 	deleteTaxClass as deleteTaxClassUseCase,
+	effectiveStoreCurrency,
 	effectiveTaxSettings,
 	idempotencyKey as toIdempotencyKey,
 	InvalidSettingsError,
@@ -95,8 +98,8 @@ import {
 	updateSettings,
 	isCouponCodeConflictError,
 	isCouponIdCollisionError,
-	isIsoCurrencyCode,
 	isTaxRateDuplicateError,
+	isSupportedCurrency,
 	parseCouponInstant,
 	parseZoneRegions,
 	type CouponListCursor,
@@ -112,6 +115,7 @@ import {
 	type TaxRate,
 	type TaxSettings,
 } from "@otta-sh/domain";
+import { COUPON_CURRENCY_REFUSAL } from "./coupon-currency-rules.js";
 import {
 	CommerceInputError,
 	isIdToken,
@@ -119,6 +123,7 @@ import {
 	requireCurrencyCode,
 	requireIdToken,
 	requireNonNegativeInteger,
+	UNSUPPORTED_CURRENCY_REASON,
 } from "../commerce/commerce-input.js";
 import {
 	isShippingMethodIdCollisionError,
@@ -552,6 +557,13 @@ export class InProcessAdminRulesClient implements AdminRulesSurface {
 		return res.ok ? { ok: true } : { ok: false, reason: "not_found" };
 	}
 
+	// -- Store currency ------------------------------------------------------------
+
+	/** One keyed settings read; never-saved is USD (`effectiveStoreCurrency`). */
+	async getStoreCurrency(): Promise<string> {
+		return effectiveStoreCurrency(await this.#stores.settingsStore.get());
+	}
+
 	// -- Tax: options (ADR-0032) -------------------------------------------------
 
 	async getTaxSettings(): Promise<TaxSettingsRead> {
@@ -758,6 +770,27 @@ export class InProcessAdminRulesClient implements AdminRulesSurface {
 		if (input.currency !== undefined && input.currency !== null) {
 			requireAuthoredCurrency("currency", input.currency);
 		}
+		// A percentage coupon's cap and minimum spend are AMOUNTS: in the coupon's
+		// currency's minor unit, so one is required with either (the coupon then
+		// applies only to carts in it). One with neither needs none.
+		if (
+			type === "percentage" &&
+			(capCents !== null || minSubtotalCents !== null) &&
+			(input.currency === undefined || input.currency === null)
+		) {
+			throw new CommerceInputError("currency", COUPON_CURRENCY_REFUSAL.boundsNeedCurrency);
+		}
+		// …and only then: a currency on one with neither would restrict it to
+		// that currency's carts for nothing (it can never be unbound).
+		if (
+			type === "percentage" &&
+			capCents === null &&
+			minSubtotalCents === null &&
+			input.currency !== undefined &&
+			input.currency !== null
+		) {
+			throw new CommerceInputError("currency", COUPON_CURRENCY_REFUSAL.currencyNeedsBounds);
+		}
 		return createOrRefuse(async () => {
 			const coupon = await this.#stores.couponStore.create({
 				id: input.id,
@@ -814,8 +847,49 @@ export class InProcessAdminRulesClient implements AdminRulesSurface {
 			// answer it identically and a shared case can pin it.
 			return { ok: false, reason: "error", status: 400 };
 		}
+		// `currency`, when sent, is the currency the edit's amounts were PARSED in
+		// (null: an unbound coupon's, in hundredths). It is compared with the
+		// stored one so an edit read against a coupon whose currency has moved
+		// since — another admin bound one — is refused (409) rather than its
+		// amounts re-read in a different exponent. On an unbound coupon a
+		// currency BINDS it; a set currency never changes.
+		const sent = edit.currency;
+		const hadBounds = existing.capCents !== null || existing.minSubtotalCents !== null;
+		let bind: string | null = null;
+		if (sent !== undefined) {
+			if (existing.currency !== null) {
+				if (sent !== existing.currency) return { ok: false, reason: "error", status: 409 };
+			} else if (sent !== null) {
+				requireAuthoredCurrency("currency", sent);
+				if (hadBounds) {
+					// Binding would re-read a cap / minimum written in hundredths.
+					throw new CommerceInputError("currency", COUPON_CURRENCY_REFUSAL.legacyBounds);
+				}
+				if (capCents === null && minSubtotalCents === null) {
+					// It would restrict the coupon to one currency for nothing.
+					throw new CommerceInputError("currency", COUPON_CURRENCY_REFUSAL.currencyNeedsBounds);
+				}
+				bind = sent;
+			}
+		}
+		if (
+			existing.type === "percentage" &&
+			existing.currency === null &&
+			bind === null &&
+			!hadBounds &&
+			(capCents !== null || minSubtotalCents !== null)
+		) {
+			// A NEW cap / minimum needs its currency — the same typed refusal create
+			// gives. A coupon whose bounds predate that rule keeps working as it did.
+			throw new CommerceInputError("currency", COUPON_CURRENCY_REFUSAL.boundsNeedCurrency);
+		}
 
 		const res = await this.#stores.couponStore.update(couponId, {
+			...(bind !== null ? { bindCurrency: toCurrency(bind) } : {}),
+			// The check above read the coupon OUTSIDE the store's compare-and-set; this
+			// precondition repeats it INSIDE, against the revision actually replaced,
+			// so a bind landing between that read and this write is refused too.
+			...(sent !== undefined ? { expectCurrency: existing.currency } : {}),
 			amountCents: amountCents === null ? null : toCents(amountCents),
 			rateBps,
 			capCents: capCents === null ? null : toCents(capCents),
@@ -825,8 +899,9 @@ export class InProcessAdminRulesClient implements AdminRulesSurface {
 			maxUses,
 			maxUsesPerCustomer,
 		});
-		return res.ok
-			? { ok: true, value: toCouponWire(res.coupon) }
+		if (res.ok) return { ok: true, value: toCouponWire(res.coupon) };
+		return res.reason === "currency_moved"
+			? { ok: false, reason: "error", status: 409 }
 			: { ok: false, reason: "not_found" };
 	}
 
@@ -850,42 +925,55 @@ export class InProcessAdminRulesClient implements AdminRulesSurface {
 	 */
 	async retireCoupon(couponId: string): Promise<CouponRetireResult> {
 		requireIdToken("couponId", couponId);
-		const current = await this.#stores.couponStore.findById(couponId);
-		if (current === null) return { ok: false, reason: "not_found" };
-		const now = this.#stores.clock.now();
-		const at = now.getTime();
-		// An UNREADABLE bound is handled by design. The window fields are free text
-		// (≤64 chars; older rows predate the write check), so a stored bound may not
-		// parse. An unreadable EXPIRY reads as not-yet-ended, so retire replaces it
-		// with a real instant (which is what the operator asked for); an unreadable
-		// START is not "in the future", so it is kept as stored — retire changes only
-		// the bound it must. Checkout already treats either as "not active".
-		const expires = current.expiresAt === null ? null : parseCouponInstant(current.expiresAt);
-		if (expires !== null && expires <= at) {
-			return { ok: false, reason: "already_ended" };
+		// The write replaces the economics with the values just READ, so it is
+		// conditioned on the coupon's currency still being the one read. A bind that
+		// lands in between (a percentage coupon gaining a currency WITH a new cap)
+		// would otherwise be a LOST UPDATE: retire would overwrite that new cap with
+		// the stale null it read. The store refuses such a write (`currency_moved`)
+		// and retire re-reads and retries, keeping the bind's cap.
+		for (let attempt = 0; attempt < RETIRE_ATTEMPTS; attempt++) {
+			const current = await this.#stores.couponStore.findById(couponId);
+			if (current === null) return { ok: false, reason: "not_found" };
+			const now = this.#stores.clock.now();
+			const at = now.getTime();
+			// An UNREADABLE bound is handled by design. The window fields are free text
+			// (≤64 chars; older rows predate the write check), so a stored bound may not
+			// parse. An unreadable EXPIRY reads as not-yet-ended, so retire replaces it
+			// with a real instant (which is what the operator asked for); an unreadable
+			// START is not "in the future", so it is kept as stored — retire changes only
+			// the bound it must. Checkout already treats either as "not active".
+			const expires = current.expiresAt === null ? null : parseCouponInstant(current.expiresAt);
+			if (expires !== null && expires <= at) {
+				return { ok: false, reason: "already_ended" };
+			}
+			const starts = current.startsAt === null ? null : parseCouponInstant(current.startsAt);
+			const futureStart = starts !== null && starts > at;
+			const retiredAt = now.toISOString();
+			const res = await this.#stores.couponStore.update(couponId, {
+				expectCurrency: current.currency,
+				amountCents: current.amountCents,
+				rateBps: current.rateBps,
+				capCents: current.capCents,
+				minSubtotalCents: current.minSubtotalCents,
+				startsAt: futureStart ? null : current.startsAt,
+				expiresAt: retiredAt,
+				maxUses: current.maxUses,
+				maxUsesPerCustomer: current.maxUsesPerCustomer,
+			});
+			if (!res.ok && res.reason === "currency_moved") continue;
+			if (!res.ok) return { ok: false, reason: "not_found" };
+			return {
+				ok: true,
+				value: {
+					coupon: toCouponWire(res.coupon),
+					retiredAt,
+					previous: { startsAt: current.startsAt, expiresAt: current.expiresAt },
+				},
+			};
 		}
-		const starts = current.startsAt === null ? null : parseCouponInstant(current.startsAt);
-		const futureStart = starts !== null && starts > at;
-		const retiredAt = now.toISOString();
-		const res = await this.#stores.couponStore.update(couponId, {
-			amountCents: current.amountCents,
-			rateBps: current.rateBps,
-			capCents: current.capCents,
-			minSubtotalCents: current.minSubtotalCents,
-			startsAt: futureStart ? null : current.startsAt,
-			expiresAt: retiredAt,
-			maxUses: current.maxUses,
-			maxUsesPerCustomer: current.maxUsesPerCustomer,
-		});
-		if (!res.ok) return { ok: false, reason: "not_found" };
-		return {
-			ok: true,
-			value: {
-				coupon: toCouponWire(res.coupon),
-				retiredAt,
-				previous: { startsAt: current.startsAt, expiresAt: current.expiresAt },
-			},
-		};
+		// A currency can be bound once and never changes, so a second read already
+		// sees the final one; running out of attempts means something else is wrong.
+		throw new Error(`retireCoupon(${couponId}): the coupon's currency kept moving`);
 	}
 
 	/** Idempotent delete, guarded by live redemptions (`in_use_by_redemptions`) —
@@ -1051,6 +1139,9 @@ export async function createOrRefuse<T>(write: () => Promise<T>): Promise<RulesC
 	}
 }
 
+/** Retire re-reads after a refused write; a currency moves at most once. */
+const RETIRE_ATTEMPTS = 3;
+
 // ── the input bounds the request schemas used to hold ─────────────────────
 
 /**
@@ -1070,14 +1161,16 @@ function requireFullReplaceKey(field: string, edit: object): void {
 
 /**
  * A currency a merchant AUTHORS (a new rate's, a new coupon's): the shape, then
- * ISO-4217 membership (`@otta-sh/domain`'s `isIsoCurrencyCode`). Create paths
- * only — reads and edits name a currency that already exists, and refusing a
- * stored code on read would strand a row written before this rule.
+ * membership of the store's currency table (`@otta-sh/domain`'s
+ * `isSupportedCurrency` — the currencies whose minor unit every money boundary
+ * knows). Create paths only — reads and edits name a currency that already
+ * exists, and refusing a stored code on read would strand a row written before
+ * this rule.
  */
 function requireAuthoredCurrency(field: string, value: string): void {
 	requireCurrencyCode(field, value);
-	if (!isIsoCurrencyCode(value)) {
-		throw new CommerceInputError(field, "must be an ISO-4217 currency in current use");
+	if (!isSupportedCurrency(value)) {
+		throw new CommerceInputError(field, UNSUPPORTED_CURRENCY_REASON);
 	}
 }
 

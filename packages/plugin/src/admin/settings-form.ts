@@ -4,7 +4,8 @@ import {
 	readBackgroundWork,
 	validateBackgroundWork,
 } from "../cron/background-work-setting.js";
-import { MAX_HOLD_TTL_MINUTES } from "@otta-sh/domain";
+import { currencyChoiceLabel, currencyChoicesWith } from "@otta-sh/admin-presentation";
+import { effectiveStoreCurrency, isSupportedCurrency, MAX_HOLD_TTL_MINUTES } from "@otta-sh/domain";
 import { emailSendingStatus, type EmailSendingStatus } from "../email/ctx-email-sender.js";
 import { STORE_DISPLAY_NAME_KEY } from "../email/email-render-context.js";
 import {
@@ -60,6 +61,10 @@ import { carriedForm, noticeBanner, type Notice } from "./scaffold/index.js";
  *    plugin's own store — no HTTP hop, no token — and its validation rejection
  *    is surfaced INLINE (never swallowed), read from the structural `reason`
  *    rather than from an HTTP status the in-process tier does not have.
+ *  - the store currency (also in the "Store" group, below the display name)
+ *    saves through the same client into the same settings document — one
+ *    field, so it never touches the hold time, the threshold or the tax block.
+ *    It decides the currency NEW carts are created in (`createCart`).
  *  - the write-only payment/email credentials ("Payments & email" group) save
  *    into write-only plugin kv, one key per secret ({@link PAYMENT_SECRET_FIELDS}).
  *  - "Background work per minute" (in "Checkout & holds", beside the hold TTL)
@@ -103,6 +108,9 @@ export { STORE_DISPLAY_NAME_KEY };
 
 /** The "Background work per minute" form's submit — a kv save. */
 const SAVE_BACKGROUND_WORK_ACTION = "save-background-work";
+
+/** The "Store currency" form's submit — a settings-store save. */
+const SAVE_STORE_CURRENCY_ACTION = "save-store-currency";
 
 /** Current save generation for a token key, defaulting to 0 when never saved.
  *  FAIL-SOFT (INC-C3): a kv read that REJECTS degrades to 0 rather than taking
@@ -424,6 +432,7 @@ export const SETTINGS_ACTION_IDS: ReadonlySet<string> = new Set([
 	"save-display",
 	"save-operational",
 	SAVE_BACKGROUND_WORK_ACTION,
+	SAVE_STORE_CURRENCY_ACTION,
 	// INC-C3: the payment secrets, from the one table that also builds
 	// their forms — so a new secret is routable the moment it is declared.
 	...PAYMENT_SECRET_FIELDS.map((spec) => spec.actionId),
@@ -488,7 +497,8 @@ export function createSettingsFormHandler(): RouteHandler<SettingsFormInput> {
 		client: ReportingSettingsSurface,
 		notice?: Notice,
 		paymentRefusal?: PaymentRefusal,
-	): Promise<BlockResponse> => renderSettingsPage(ctx, client, notice, paymentRefusal);
+		settings?: OperationalSettingsWire,
+	): Promise<BlockResponse> => renderSettingsPage(ctx, client, notice, paymentRefusal, settings);
 	return async (routeCtx, ctx) => {
 		const input = routeCtx.input;
 		const action = typeof input.action_id === "string" ? input.action_id : "load";
@@ -735,6 +745,74 @@ export function createSettingsFormHandler(): RouteHandler<SettingsFormInput> {
 			} satisfies BlockResponse;
 		}
 
+		// -- store currency: the currency new carts are created in -----------------------
+		// A settings-store save of ONE field, so it never touches the hold time, the
+		// threshold or the tax block (the store merges a partial patch). The select
+		// offers only table codes; a forged value is refused here by name and again
+		// by the domain (`updateSettings` checks `isSupportedCurrency`).
+		if (action === SAVE_STORE_CURRENCY_ACTION) {
+			const raw = input.values?.currency;
+			const code = typeof raw === "string" ? raw.trim() : "";
+			const refuse = async (title: string, description: string): Promise<BlockResponse> => {
+				const page = await renderPage(ctx, client, { variant: "error", title, description });
+				return { ...page, toast: { message: title, type: "error" } } satisfies BlockResponse;
+			};
+			// Saving the select UNCHANGED writes nothing — checked FIRST, so a stored
+			// code the table (or checkout) no longer accepts can still be "saved" as
+			// is. A store that never saved one stays never-saved (USD by the upgrade
+			// rule, not by a stored "USD"). A failed read cannot tell, so it falls
+			// through to the write, which is what the operator asked for.
+			const current = await client.getSettings().catch(() => undefined);
+			if (current !== undefined && effectiveStoreCurrency(current) === code) {
+				const page = await renderPage(
+					ctx,
+					client,
+					{
+						variant: "default",
+						title: "Nothing changed",
+						description: `The store currency is already ${currencyChoiceLabel(code)}.`,
+					},
+					undefined,
+					current,
+				);
+				return {
+					...page,
+					toast: { message: "Nothing changed", type: "success" },
+				} satisfies BlockResponse;
+			}
+			const unsupported = `${code.length > 0 ? code : "That"} isn't a supported currency — choose one from the list. Nothing was changed.`;
+			if (!isSupportedCurrency(code)) return refuse("Store currency not saved", unsupported);
+			const key =
+				typeof input.idempotencyKey === "string" && input.idempotencyKey.length > 0
+					? input.idempotencyKey
+					: `settings-currency-${Date.now()}`;
+			const result = await client.updateSettings({ currency: code }, { idempotencyKey: key });
+			if (!result.ok) {
+				if (result.reason === "superseded") {
+					return refuse(
+						"Settings changed by someone else",
+						`${asSentence(result.message)} Nothing was saved.`,
+					);
+				}
+				if (result.reason === "validation") return refuse("Store currency not saved", unsupported);
+				// UNAVAILABLE: nothing is known about whether it applied, so the copy
+				// never claims it was not saved.
+				return refuse(
+					"Store currency couldn't be confirmed",
+					"The save couldn't be confirmed — reload to check the store currency.",
+				);
+			}
+			const page = await renderPage(ctx, client, {
+				variant: "default",
+				title: "Store currency saved",
+				description: `New carts are created in ${currencyChoiceLabel(code)}. Carts already open keep their currency.`,
+			});
+			return {
+				...page,
+				toast: { message: "Store currency saved", type: "success" },
+			} satisfies BlockResponse;
+		}
+
 		// -- operational settings: hold time and low-stock threshold --------------------
 		// U-8: ALL-OR-NOTHING, like the payment settings. Every present value is
 		// checked here first — a value that is not a whole number in range is
@@ -795,8 +873,18 @@ export function createSettingsFormHandler(): RouteHandler<SettingsFormInput> {
 				// The domain checks the same bounds as `checkOperationalValues`, so a
 				// refusal here is a backstop — still worded with the field's name, not
 				// the domain's identifier.
-				return superseded
-					? refuse("Settings changed by someone else", `${result.message} Nothing was saved.`)
+				if (superseded) {
+					return refuse(
+						"Settings changed by someone else",
+						`${asSentence(result.message)} Nothing was saved.`,
+					);
+				}
+				// UNAVAILABLE: whether it applied is unknown — never claim "not saved".
+				return result.reason === "unavailable"
+					? refuse(
+							"Settings couldn't be confirmed",
+							"The save couldn't be confirmed — reload to check the current values.",
+						)
 					: refuse("Settings not saved", `${namedForOperator(result.message)} Nothing was saved.`);
 			}
 			return {
@@ -843,12 +931,14 @@ async function renderSettingsPage(
 	client: ReportingSettingsSurface,
 	notice?: Notice,
 	paymentRefusal?: PaymentRefusal,
+	/** A settings read the caller already made on this request — reused, not repeated. */
+	alreadyRead?: OperationalSettingsWire,
 ): Promise<BlockResponse> {
 	const state = await readPageState(ctx);
 	try {
 		// Nothing was attempted on this path, so what the form shows and what the
 		// label states are the same read (see `persisted` in `buildSettingsBlocks`).
-		const settings = await client.getSettings();
+		const settings = alreadyRead ?? (await client.getSettings());
 		return {
 			blocks: buildSettingsBlocks({
 				...state,
@@ -955,6 +1045,14 @@ function namedForOperator(message: string): string {
 	return /[.!?]$/.test(named) ? named : `${named}.`;
 }
 
+/** A client message as a sentence: capitalised, ending in a full stop — so a
+ *  sentence appended after it does not run on. */
+function asSentence(message: string): string {
+	const text = message.trim();
+	const capital = text.charAt(0).toUpperCase() + text.slice(1);
+	return /[.!?]$/.test(capital) ? capital : `${capital}.`;
+}
+
 /** The receipt for an accepted save: what is now in force, in words. */
 function savedOperationalSentence(settings: OperationalSettingsWire): string {
 	const minutes = settings.holdTtlMinutes === 1 ? "minute" : "minutes";
@@ -1016,7 +1114,7 @@ function buildSettingsBlocks(args: {
 	];
 	if (args.notice !== undefined) blocks.push(noticeBanner(args.notice));
 	blocks.push(
-		storeGroup(args.displayName),
+		storeGroup(args.displayName, args.persisted),
 		checkoutGroup(args.settings, args.persisted, args.backgroundWork),
 		paymentsGroup(
 			args.paymentSecrets,
@@ -1089,7 +1187,10 @@ function checkoutGroupLabel(persisted: OperationalSettingsWire | undefined): str
 	]);
 }
 
-function storeGroup(displayName: string): AccordionBlock {
+function storeGroup(
+	displayName: string,
+	persisted: OperationalSettingsWire | undefined,
+): AccordionBlock {
 	return {
 		type: "accordion",
 		block_id: "settings:store",
@@ -1111,8 +1212,67 @@ function storeGroup(displayName: string): AccordionBlock {
 					submit: { label: "Save display name", action_id: "save-display" },
 				},
 			}),
+			// AFTER the display-name form, so that form stays this group's index-0
+			// child (see `buildSettingsBlocks` on mount-only forms).
+			...storeCurrencyBlocks(persisted),
 		],
 	};
+}
+
+/** What changing the store currency does — and does not — change. Two lines,
+ *  each inside §1's 140-character context budget. */
+const STORE_CURRENCY_CONTEXT: readonly Block[] = [
+	{
+		type: "context",
+		text: "Store currency: new carts are created in it. Changing it affects new carts only — carts already open keep theirs.",
+	},
+	{
+		type: "context",
+		text: "Set it before pricing: products and coupons in another currency can't be bought in new carts or changed to it. Add shipping rates in it.",
+	},
+];
+
+/**
+ * "Store currency" — a select over the currency table, in the pricing picker's
+ * order (the familiar ten first, then by code; labels `USD — US Dollar`),
+ * prefilled with the EFFECTIVE value: the saved code, or USD for a store that
+ * never saved one. A saved code the table no longer lists is offered as its own
+ * row, so the form never shows a choice that is not what is stored (X-23).
+ *
+ * Reads the same `getSettings()` the "Checkout & holds" group does; when that
+ * read failed there is no value to prefill, and a context line says so rather
+ * than offering USD as if it were stored (E-1: the rest of the page works).
+ */
+function storeCurrencyBlocks(persisted: OperationalSettingsWire | undefined): Block[] {
+	if (persisted === undefined) {
+		return [
+			{
+				type: "context",
+				text: "The store currency could not be loaded right now. Reload to try again — the rest of this page still works.",
+			},
+		];
+	}
+	const current = effectiveStoreCurrency(persisted);
+	const codes = currencyChoicesWith(current);
+	return [
+		...STORE_CURRENCY_CONTEXT,
+		carriedForm({
+			namespace: "settings:currency",
+			form: {
+				type: "form",
+				fields: [
+					{
+						type: "select",
+						action_id: "currency",
+						label: "Store currency",
+						options: codes.map((code) => ({ value: code, label: currencyChoiceLabel(code) })),
+						initial_value: current,
+					},
+				],
+				submit: { label: "Save store currency", action_id: SAVE_STORE_CURRENCY_ACTION },
+			},
+		}),
+	];
 }
 
 /** What the choice means, in the operator's terms. */

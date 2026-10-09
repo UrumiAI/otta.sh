@@ -1568,11 +1568,21 @@ paragraph is deleted, not relocated.
 Each rule is enforced twice — by the screen first, so the draft survives (DA-3a-i), and by the
 in-process rules client, so no caller of the surface can store the value:
 
-- **Currency (ISO-4217).** A currency an operator TYPES — a new shipping rate's, a new
-  fixed-amount coupon's — must be a member of `@otta-sh/domain`'s `CURRENCY_CODES`, not merely
-  three upper-case letters (`XYZ` used to save). Static data, not the host's ICU; a Node-only test
-  fails on drift against `Intl.supportedValuesOf("currency")`. Create paths only: a stored code
-  is never refused on read or edit.
+- **Currency (supported set).** A currency an operator TYPES — a new shipping rate's, a new
+  fixed-amount coupon's, a product's first price — must be in the store's currency table
+  (`@otta-sh/domain`'s `SUPPORTED_CURRENCIES`, `packages/domain/src/money/currencies.ts`), not
+  merely three upper-case letters (`XYZ` used to save). Amounts are then typed in that
+  currency's own minor unit (JPY `1500` is ¥1,500; KWD takes three decimals). Static data, not
+  the host's ICU. Create paths only: a stored code is never refused on read or edit, and a
+  product priced in an unlisted code before the table existed stays editable (a code outside
+  the table is typed in hundredths, as before). A percentage coupon's cap and minimum spend
+  are amounts too: setting either needs a currency (bound to the coupon, which then applies
+  only to carts in it); a percentage coupon whose bounds predate this keeps working unchanged
+  (the amount typed is ×100 and applied in the cart currency's smallest unit, as before
+  currencies; a currency can be set only after its cap and minimum are cleared). A currency is accepted on a percentage coupon only WITH a cap or minimum spend, and once
+  bound it stays: clearing both bounds later leaves the coupon applying only to carts in that
+  currency. An edit names the currency its amounts were read in; one whose coupon's currency
+  changed meanwhile is refused rather than re-read.
 - **Tax rate ≤ 100%.** `rateBps` 0–10000, the port's documented range; the console used to accept
   (and advertise) 1000%. Coupon percentages keep the wider wire bound — the pricing math clamps a
   discount to the subtotal.
@@ -3169,6 +3179,26 @@ accordion   block_id settings:store
             └─ form  cf{"settings:store", {displayName}}                         ← S-4
                      text_input  "Store display name"   initial_value <kv value>
                      submit "Save display name"          → save-display
+               context "Store currency: new carts are created in it. Changing it affects
+                        new carts only — carts already open keep theirs."         (≤140)
+               context "Set it before pricing: products and coupons in another currency
+                        can't be bought in new carts or changed to it. Add shipping
+                        rates in it."                                             (≤140)
+                     ← a product's or coupon's currency (fixed or cap/min-bound
+                       percentage) can never be changed, so the copy says to decide
+                       first; only shipping rates can be added in the new currency.
+               form  cf{"settings:currency", {currency}}                         ← S-4
+                     select  "Store currency"   initial_value <saved code> | "USD"
+                     ← the currency table, the familiar ten first then by code, labels
+                       "USD — US Dollar" (`CURRENCY_CHOICES`, shared with the React
+                       pricing picker). Never saved ⇒ USD, what every cart had before.
+                       A code outside the table is refused by name; nothing is saved.
+                       Saves ONE field into the settings document: the hold time, the
+                       threshold and the tax block are untouched.
+                     submit "Save store currency"        → save-store-currency
+               ← the display-name form stays the group's index-0 child. When the
+                 settings read failed the currency form is replaced by a context line
+                 ("The store currency could not be loaded right now…"), E-1.
 accordion   block_id settings:checkout
             label "Checkout & holds — 15 min hold · low stock at 5"
                   |  "Checkout & holds — not loaded"   ← when the secondary read failed:

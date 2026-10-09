@@ -34,6 +34,22 @@ describe("computeCouponDiscount", () => {
 		expect(() => computeCouponDiscount(cents(1000), USD, c)).toThrow(CouponCurrencyMismatchError);
 	});
 
+	test("a percentage coupon bound to a currency rejects another cart currency (the same error a fixed one throws); unbound applies anywhere", () => {
+		const bound: Coupon = {
+			type: "percentage",
+			code: "TEN",
+			bps: 1000,
+			capCents: cents(500),
+			currency: currency("JPY"),
+		};
+		expect(() => computeCouponDiscount(cents(10_000), USD, bound)).toThrow(
+			CouponCurrencyMismatchError,
+		);
+		expect(computeCouponDiscount(cents(10_000), currency("JPY"), bound)).toBe(500);
+		const unbound: Coupon = { type: "percentage", code: "TEN", bps: 1000, capCents: cents(500) };
+		expect(computeCouponDiscount(cents(10_000), USD, unbound)).toBe(500);
+	});
+
 	test("percentage applies bps to subtotal, capped by maxDiscountCents", () => {
 		// 10% (1000 bps) of $500.00 = $50.00, capped at $20.00 ⇒ 2000, not 5000.
 		const capped: Coupon = { type: "percentage", code: "TEN", bps: 1000, capCents: cents(2000) };

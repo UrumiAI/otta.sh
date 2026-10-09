@@ -44,7 +44,7 @@
  * after, which is what rule (a) asks for.
  */
 import type { OperationalSettings, TaxSettings } from "@otta-sh/domain";
-import { DEFAULT_OPERATIONAL_SETTINGS, readTaxSettings } from "@otta-sh/domain";
+import { DEFAULT_OPERATIONAL_SETTINGS, readStoreCurrency, readTaxSettings } from "@otta-sh/domain";
 
 /** Collection name: the settings singleton. */
 export const SETTINGS_COLLECTION = "settings";
@@ -76,6 +76,9 @@ export interface SettingsDoc {
 	/** The tax options (ADR-0032). Absent on every document written before PR 2a —
 	 *  and on any store that never saved them: that is "never saved", not "off". */
 	readonly tax?: TaxSettings;
+	/** The store currency. Absent on every document written before it existed —
+	 *  and on any store that never saved one: that is "never saved" (USD). */
+	readonly currency?: string;
 	readonly updatedAt: string;
 }
 
@@ -85,6 +88,7 @@ export interface SettingsPatchDoc {
 	readonly lowStockThreshold?: number;
 	/** Replaces the whole tax block. */
 	readonly tax?: TaxSettings;
+	readonly currency?: string;
 }
 
 /**
@@ -118,13 +122,20 @@ export interface SettingsMutationDoc {
 
 /** Drop the keys a caller left undefined, so the stored intent says what it meant. */
 export function toPatchDoc(patch: Partial<OperationalSettings>): SettingsPatchDoc {
-	const doc: { holdTtlMinutes?: number; lowStockThreshold?: number; tax?: TaxSettings } = {};
+	const doc: {
+		holdTtlMinutes?: number;
+		lowStockThreshold?: number;
+		tax?: TaxSettings;
+		currency?: string;
+	} = {};
 	if (patch.holdTtlMinutes !== undefined) doc.holdTtlMinutes = patch.holdTtlMinutes;
 	if (patch.lowStockThreshold !== undefined) doc.lowStockThreshold = patch.lowStockThreshold;
 	// Re-read through the domain's reader, so the stored block has exactly its fields
 	// in one key order (the no-op check compares blocks by value).
 	const tax = readTaxSettings(patch.tax);
 	if (tax !== undefined) doc.tax = tax;
+	const currency = readStoreCurrency(patch.currency);
+	if (currency !== undefined) doc.currency = currency;
 	return doc;
 }
 
@@ -137,12 +148,13 @@ export function toPatchDoc(patch: Partial<OperationalSettings>): SettingsPatchDo
  */
 export function toOperationalSettings(doc: SettingsDoc | null): OperationalSettings {
 	if (doc === null) return { ...DEFAULT_OPERATIONAL_SETTINGS };
-	return withTax(
+	return withOptional(
 		{
 			holdTtlMinutes: doc.holdTtlMinutes ?? DEFAULT_OPERATIONAL_SETTINGS.holdTtlMinutes,
 			lowStockThreshold: doc.lowStockThreshold ?? DEFAULT_OPERATIONAL_SETTINGS.lowStockThreshold,
 		},
 		readTaxSettings(doc.tax),
+		readStoreCurrency(doc.currency),
 	);
 }
 
@@ -159,16 +171,23 @@ export function mergeSettings(
 	base: OperationalSettings,
 	patch: SettingsPatchDoc,
 ): OperationalSettings {
-	return withTax(
+	return withOptional(
 		{
 			holdTtlMinutes: patch.holdTtlMinutes ?? base.holdTtlMinutes,
 			lowStockThreshold: patch.lowStockThreshold ?? base.lowStockThreshold,
 		},
 		patch.tax ?? base.tax,
+		patch.currency ?? base.currency,
 	);
 }
 
-/** The settings with `tax` only when there is one: absent stays absent. */
-function withTax(settings: OperationalSettings, tax: TaxSettings | undefined): OperationalSettings {
-	return tax === undefined ? settings : { ...settings, tax };
+/** The settings with `tax` and `currency` only when there is one: absent stays
+ *  absent (each is "never saved" when missing, never a default). */
+function withOptional(
+	settings: OperationalSettings,
+	tax: TaxSettings | undefined,
+	currency: string | undefined,
+): OperationalSettings {
+	const out: OperationalSettings = tax === undefined ? settings : { ...settings, tax };
+	return currency === undefined ? out : { ...out, currency };
 }

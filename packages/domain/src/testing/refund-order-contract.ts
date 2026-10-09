@@ -29,6 +29,8 @@ export interface RefundOrderHarness {
 		totalCents: number;
 		capturedCents?: number;
 		gateway?: PaymentMethod;
+		/** The order's currency (default USD). */
+		currency?: string;
 	}): Promise<OrderId>;
 }
 
@@ -52,12 +54,13 @@ function drain(h: RefundOrderHarness, sender: FakeEmailSender): Promise<number> 
 /** Build a `seedPaidOrder` over any `OrderStore` — adapter-agnostic (createFromCart
  *  → markPaid → recordPayment), so the fake/sqlite/pg all seed identically. */
 export function buildRefundSeed(store: OrderStore): RefundOrderHarness["seedPaidOrder"] {
-	return async ({ id, totalCents, capturedCents, gateway = "stripe" }) => {
+	return async ({ id, totalCents, capturedCents, gateway = "stripe", currency = "USD" }) => {
 		const oid = toOrderId(id);
+		const code = toCurrency(currency);
 		await store.createFromCart({
 			orderId: oid,
 			cartId: null,
-			currency: USD,
+			currency: code,
 			idempotencyKey: idempotencyKey(`seed-${id}`),
 			holdExpiresAt: "2026-07-10T00:15:00.000Z",
 			buyerRef: "buyer@example.com",
@@ -68,14 +71,14 @@ export function buildRefundSeed(store: OrderStore): RefundOrderHarness["seedPaid
 					sku: sku("SKU-1"),
 					title: "Widget",
 					unitPrice: cents(totalCents),
-					currency: USD,
+					currency: code,
 					quantity: 1,
 					// Digital ⇒ no reservation needed, so no inventory store to wire.
 					fulfillmentKind: "digital",
 					reservationId: null,
 				},
 			],
-			totals: { subtotal: cents(totalCents), total: cents(totalCents), currency: USD },
+			totals: { subtotal: cents(totalCents), total: cents(totalCents), currency: code },
 		});
 		await store.markPaid(oid);
 		await store.recordPayment({
@@ -83,7 +86,7 @@ export function buildRefundSeed(store: OrderStore): RefundOrderHarness["seedPaid
 			gateway,
 			providerRef: `pi_${id}`,
 			amount: cents(capturedCents ?? totalCents),
-			currency: USD,
+			currency: code,
 			status: "succeeded",
 		});
 		return oid;
@@ -193,6 +196,54 @@ export function refundOrderContract(
 			});
 			expect(res).toEqual({ ok: false, reason: "REFUND_EXCEEDS_TOTAL" });
 			expect(await h.orderStore.listRefunds(id)).toHaveLength(0);
+		});
+
+		test("a KWD refund not in steps of 0.010 is AMOUNT_NOT_PAYMENT_INCREMENT before anything is reserved — unless it is the whole remainder or over it (ADR-0035 amendment)", async () => {
+			const h = await makeHarness();
+			const KWD = toCurrency("KWD");
+			const id = await h.seedPaidOrder({ id: "ord-kwd", totalCents: 5000, currency: "KWD" });
+			const gw = new FakePaymentGateway({ id: "stripe" });
+			const refund = (amount: number, key: string) =>
+				refundOrder({ orderStore: h.orderStore }, gw, {
+					orderId: id,
+					amount: cents(amount),
+					currency: KWD,
+					refundedBy: "admin",
+					idempotencyKey: idempotencyKey(key),
+				});
+			expect(await refund(1234, "rf-kwd-off")).toEqual({
+				ok: false,
+				reason: "AMOUNT_NOT_PAYMENT_INCREMENT",
+			});
+			expect(gw.refundCalls).toHaveLength(0);
+			expect(await h.orderStore.listRefunds(id)).toHaveLength(0);
+			// Over the remainder: the ceiling's "too high" wins over the step.
+			expect(await refund(5001, "rf-kwd-over")).toEqual({
+				ok: false,
+				reason: "REFUND_EXCEEDS_TOTAL",
+			});
+			const step = await refund(1230, "rf-kwd-step");
+			expect(step.ok).toBe(true);
+			// An older order's odd remainder (1.234, placed before rounding) is refundable WHOLE.
+			const id2 = await h.seedPaidOrder({ id: "ord-kwd-odd", totalCents: 1234, currency: "KWD" });
+			const whole = await refundOrder({ orderStore: h.orderStore }, gw, {
+				orderId: id2,
+				amount: cents(1234),
+				currency: KWD,
+				refundedBy: "admin",
+				idempotencyKey: idempotencyKey("rf-kwd-whole"),
+			});
+			expect(whole.ok && whole.fullyRefunded).toBe(true);
+			// A USD refund of any minor-unit amount is unaffected.
+			const usd = await h.seedPaidOrder({ id: "ord-usd-any", totalCents: 1000 });
+			const any = await refundOrder({ orderStore: h.orderStore }, gw, {
+				orderId: usd,
+				amount: cents(1),
+				currency: USD,
+				refundedBy: "admin",
+				idempotencyKey: idempotencyKey("rf-usd-any"),
+			});
+			expect(any.ok).toBe(true);
 		});
 
 		test("a short capture binds the ceiling at captured (REFUND_EXCEEDS_CAPTURED past it)", async () => {

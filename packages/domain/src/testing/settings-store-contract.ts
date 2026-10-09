@@ -91,6 +91,66 @@ export function settingsStoreContract(
 			expect((await store.get()).tax).toEqual(changed);
 		});
 
+		// The store currency rides in the same singleton, with the same rule as the
+		// tax block: absent means "never saved" (`effectiveStoreCurrency` decides),
+		// so `get()` never fills it, and no other update ever writes one.
+		test("currency is absent until saved, and an update without it never writes one", async () => {
+			const { store } = await makeStore();
+			expect((await store.get()).currency).toBeUndefined();
+			await store.update({ holdTtlMinutes: 30 }, idempotencyKey("k1"));
+			await store.update({ tax: SAMPLE_TAX }, idempotencyKey("k2"));
+			const after = await store.get();
+			expect(after.currency).toBeUndefined();
+			expect("currency" in after).toBe(false);
+		});
+
+		test("currency round-trips, a later update replaces it, and a partial update keeps it", async () => {
+			const { store } = await makeStore();
+			const result = await store.update({ currency: "EUR" }, idempotencyKey("k1"));
+			expect(result).toEqual({ holdTtlMinutes: 15, lowStockThreshold: 5, currency: "EUR" });
+			expect(await store.get()).toEqual({
+				holdTtlMinutes: 15,
+				lowStockThreshold: 5,
+				currency: "EUR",
+			});
+			await store.update({ lowStockThreshold: 3 }, idempotencyKey("k2"));
+			expect((await store.get()).currency).toBe("EUR");
+			await store.update({ currency: "JPY" }, idempotencyKey("k3"));
+			expect((await store.get()).currency).toBe("JPY");
+			// A same-key replay returns its recorded result and does not clobber.
+			expect((await store.update({ currency: "EUR" }, idempotencyKey("k1"))).currency).toBe("EUR");
+			expect((await store.get()).currency).toBe("JPY");
+		});
+
+		test("saving the currency keeps the tax block, and saving the tax block keeps the currency", async () => {
+			const { store } = await makeStore();
+			await store.update({ tax: SAMPLE_TAX }, idempotencyKey("k1"));
+			await store.update({ currency: "GBP" }, idempotencyKey("k2"));
+			expect(await store.get()).toEqual({
+				holdTtlMinutes: 15,
+				lowStockThreshold: 5,
+				tax: SAMPLE_TAX,
+				currency: "GBP",
+			});
+			const changed = { ...SAMPLE_TAX, enabled: false };
+			await store.update({ tax: changed }, idempotencyKey("k3"), { ifTax: SAMPLE_TAX });
+			expect(await store.get()).toEqual({
+				holdTtlMinutes: 15,
+				lowStockThreshold: 5,
+				tax: changed,
+				currency: "GBP",
+			});
+		});
+
+		test("ifTax guards a currency update too: refused while the tax block differs, nothing written", async () => {
+			const { store } = await makeStore();
+			await store.update({ tax: SAMPLE_TAX }, idempotencyKey("k1"));
+			await expect(
+				store.update({ currency: "EUR" }, idempotencyKey("k2"), { ifTax: null }),
+			).rejects.toSatisfy(isSettingsPreconditionFailedError);
+			expect((await store.get()).currency).toBeUndefined();
+		});
+
 		// Review 2a B2: a write conditional on the tax block, checked atomically with
 		// the write — the first-rate pin ("only if never saved") and the admin save
 		// ("only if still what the form loaded") ride on it.

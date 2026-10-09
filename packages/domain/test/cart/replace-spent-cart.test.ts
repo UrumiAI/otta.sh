@@ -108,4 +108,55 @@ describe("replaceSpentCart", () => {
 			reason: "CART_NOT_CHECKED_OUT",
 		});
 	});
+
+	// Store currency (Currency PR 2): the replacement's currency comes from an
+	// optional resolver, called only once the spent cart has validated.
+	test("a resolver's currency wins over the spent cart's; undefined keeps the spent cart's", async () => {
+		const eurSpent = await spent("res-eur", "paid", currency("EUR"));
+		const toGbp = await replaceSpentCart(deps(), eurSpent, async () => currency("GBP"));
+		if (!toGbp.ok) throw new Error(toGbp.reason);
+		expect((await h.cartStore.get(toGbp.cartId))?.currency).toBe("GBP");
+
+		const usdSpent = await spent("res-none", "paid");
+		const kept = await replaceSpentCart(deps(), usdSpent, async () => undefined);
+		if (!kept.ok) throw new Error(kept.reason);
+		expect((await h.cartStore.get(kept.cartId))?.currency).toBe("USD");
+	});
+
+	test("the resolver is never called for a refusal — a refusal stays typed even if it would throw", async () => {
+		let calls = 0;
+		const throwing = async (): Promise<never> => {
+			calls += 1;
+			throw new Error("settings unreadable");
+		};
+		expect(await replaceSpentCart(deps(), "no-such-cart", throwing)).toEqual({
+			ok: false,
+			reason: "CART_NOT_FOUND",
+		});
+		const active = await h.cartStore.create(USD);
+		expect(await replaceSpentCart(deps(), active, throwing)).toEqual({
+			ok: false,
+			reason: "CART_NOT_CHECKED_OUT",
+		});
+		const pending = await spent("res-pending", "pending");
+		expect(await replaceSpentCart(deps(), pending, throwing)).toEqual({
+			ok: false,
+			reason: "ORDER_NOT_FINISHED",
+		});
+		expect(calls).toBe(0);
+	});
+
+	test("racers converge on ONE replacement even when their resolvers answer different currencies", async () => {
+		const cartId = await spent("res-race", "paid");
+		const racing = await Promise.all([
+			replaceSpentCart(deps(), cartId, async () => currency("EUR")),
+			replaceSpentCart(deps(), cartId, async () => currency("JPY")),
+			replaceSpentCart(deps(), cartId),
+		]);
+		const ids = racing.map((r) => (r.ok ? r.cartId : r.reason));
+		expect(new Set(ids).size).toBe(1);
+		// A later ask, whatever it resolves, gets that same cart.
+		const later = await replaceSpentCart(deps(), cartId, async () => currency("GBP"));
+		expect(later.ok && later.cartId).toBe(ids[0]);
+	});
 });

@@ -339,11 +339,13 @@ export class EmdashSettingsStore implements SettingsStore {
 	}
 }
 
-/** Two settings are the same when every field is (the tax block by value). */
+/** Two settings are the same when every field is (the tax block by value). A
+ *  field this misses would make an update of it a silent no-op. */
 function sameSettings(a: OperationalSettings, b: OperationalSettings): boolean {
 	return (
 		a.holdTtlMinutes === b.holdTtlMinutes &&
 		a.lowStockThreshold === b.lowStockThreshold &&
+		a.currency === b.currency &&
 		JSON.stringify(a.tax ?? null) === JSON.stringify(b.tax ?? null)
 	);
 }
