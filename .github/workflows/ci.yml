@@ -9,7 +9,6 @@ on:
       - "docs/**"
   pull_request:
     # A change that touches only prose runs nothing: no job reads these files.
-    # (A changeset `.md` always travels with code, so that code still triggers.)
     paths-ignore:
       - "**/*.md"
       - "adr/**"

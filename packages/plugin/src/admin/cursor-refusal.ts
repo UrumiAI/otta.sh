@@ -24,7 +24,7 @@
  * silent: the wrong branch still returns rows.
  *
  * IT MATCHES THE VALUE, NEVER THE PROSE. `error` is a stable wire code the
- * routes emit deliberately (the changeset that added the gate says as much);
+ * routes emit deliberately (the PR that added the gate says as much);
  * anything human-readable in a body is not a contract.
  */
 
