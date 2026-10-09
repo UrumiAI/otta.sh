@@ -45,7 +45,6 @@
 import {
 	appliedTaxRate,
 	TaxRateDuplicateError,
-	taxRateSlotOccupant,
 	type Clock,
 	type CreateTaxClassInput,
 	type CreateTaxRateInput,
@@ -273,9 +272,10 @@ export class EmdashTaxRulesStore implements TaxRulesStore {
 			const occupant =
 				held === null
 					? null
-					: taxRateSlotOccupant(
+					: appliedTaxRate(
 							ratesOf(held.doc).map((r) => toTaxRate(input.taxClassId, r)),
-							input,
+							input.taxClassId,
+							input.zoneId,
 						);
 			if (occupant !== null) throw new TaxRateDuplicateError(occupant);
 			if (held === null) {

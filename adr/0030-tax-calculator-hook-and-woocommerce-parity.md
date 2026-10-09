@@ -156,6 +156,7 @@ no priority, compound flag, postcode or city that could tell two such rates apar
   the ignored row is labelled `duplicate — ignored` and opens with `Duplicate: only <id>
   applies …` (the applying row: `Applies to <zone>. Duplicate <id> is ignored.`; table
   rows: `duplicate: only <id> applies` / `applies; duplicate <id> ignored`). The ignored
-  row shows its stored shipping flag read-only, as not applied, and no toggle; its save
+  row keeps an editable shipping toggle labelled "only if this rate becomes the active
+  one", so the survivor can be fixed before the other is deleted; a toggle left as shown
   sends no flag, which the store applies as "unchanged" inside its compare-and-set. Both rows stay editable and deletable, so the merchant deletes the one they
   don't want.

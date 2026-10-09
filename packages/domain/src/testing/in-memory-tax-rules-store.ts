@@ -11,11 +11,7 @@ import type {
 	UpdateTaxRateInput,
 	UpdateTaxRateResult,
 } from "../ports/tax-rules-store.js";
-import {
-	appliedTaxRate,
-	TaxRateDuplicateError,
-	taxRateSlotOccupant,
-} from "../pricing/tax-rate-uniqueness.js";
+import { appliedTaxRate, TaxRateDuplicateError } from "../pricing/tax-rate-uniqueness.js";
 
 /** IO-free `TaxRulesStore` fake — the first adapter to pass the contract. */
 export class InMemoryTaxRulesStore implements TaxRulesStore {
@@ -75,7 +71,7 @@ export class InMemoryTaxRulesStore implements TaxRulesStore {
 				{ code: "TAX_RATE_ID_COLLISION", rateId: input.id, heldBy: taken.taxClassId },
 			);
 		}
-		const existing = taxRateSlotOccupant([...this.#rates.values()], input);
+		const existing = appliedTaxRate([...this.#rates.values()], input.taxClassId, input.zoneId);
 		if (existing !== null) throw new TaxRateDuplicateError(existing);
 		const rate: TaxRate = {
 			id: input.id,

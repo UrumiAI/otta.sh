@@ -96,7 +96,6 @@ import {
 	isCouponCodeConflictError,
 	isCouponIdCollisionError,
 	isIsoCurrencyCode,
-	hasTaxRateDuplicateCode,
 	isTaxRateDuplicateError,
 	parseCouponInstant,
 	parseZoneRegions,
@@ -1022,18 +1021,16 @@ export async function createOrRefuse<T>(write: () => Promise<T>): Promise<RulesC
 	try {
 		return { ok: true, value: await write() };
 	} catch (err) {
-		// One tax rate per (class, zone): a 409 that NAMES the rate already there.
+		// One tax rate per (class, zone): a 409 that NAMES the rate already there. No
+		// rate was written (the store may keep an orphan id claim, adopted by the next
+		// create of that id). The store runs in this isolate — no bridge — so the
+		// error always carries the fields that name the rate.
 		if (isTaxRateDuplicateError(err)) {
 			return {
 				ok: false,
 				status: CREATE_CONFLICT,
 				duplicateTaxRate: { id: err.existingRateId, rateBps: err.existingRateBps },
 			};
-		}
-		// The code without the fields it promises: still a duplicate SLOT, but there
-		// is nothing verified to name.
-		if (hasTaxRateDuplicateCode(err)) {
-			return { ok: false, status: CREATE_CONFLICT, duplicateTaxRate: null };
 		}
 		if (
 			isShippingZoneIdCollisionError(err) ||

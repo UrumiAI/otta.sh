@@ -2,11 +2,9 @@ import { describe, expect, test } from "vitest";
 import {
 	appliedTaxRate,
 	effectiveTaxRates,
-	hasTaxRateDuplicateCode,
 	isTaxRateDuplicateError,
 	shadowedTaxRates,
 	TaxRateDuplicateError,
-	taxRateSlotOccupant,
 	type TaxRate,
 } from "../../src/index.js";
 import { rateTableOf } from "../../src/pricing/rate-table-calculator.js";
@@ -108,21 +106,6 @@ describe("one tax rate per (class, zone) — the rule", () => {
 		expect(table.ratesByClass.get("standard")).toBe(2000);
 	});
 
-	test("taxRateSlotOccupant: the applying rate in the input's slot, or null", () => {
-		const rates = [
-			rate("a", "standard", "z", 700),
-			rate("b", "standard", "z", 900),
-			rate("c", "zero", "z"),
-		];
-		expect(taxRateSlotOccupant(rates, { id: "new", taxClassId: "standard", zoneId: "z" })?.id).toBe(
-			"b",
-		);
-		expect(
-			taxRateSlotOccupant(rates, { id: "new", taxClassId: "standard", zoneId: "y" }),
-		).toBeNull();
-		expect(taxRateSlotOccupant([], { id: "new", taxClassId: "standard", zoneId: "z" })).toBeNull();
-	});
-
 	test("the duplicate error names the existing rate and is recognised structurally", () => {
 		const err = new TaxRateDuplicateError(rate("std-us", "standard", "z-us", 725));
 		expect(err).toMatchObject({
@@ -143,9 +126,6 @@ describe("one tax rate per (class, zone) — the rule", () => {
 			}),
 		).toBe(true);
 		expect(isTaxRateDuplicateError({ code: "TAX_RATE_DUPLICATE" })).toBe(false);
-		// … but it still carries the duplicate CODE: the slot is taken, unnamed.
-		expect(hasTaxRateDuplicateCode({ code: "TAX_RATE_DUPLICATE" })).toBe(true);
-		expect(hasTaxRateDuplicateCode({ code: "TAX_RATE_ID_COLLISION" })).toBe(false);
 		expect(
 			isTaxRateDuplicateError({
 				code: "TAX_RATE_DUPLICATE",

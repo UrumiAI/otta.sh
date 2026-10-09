@@ -131,9 +131,8 @@ export type RulesCreateResult<T> =
 	| {
 			ok: false;
 			status: number;
-			/** The rate already in the slot; `null` when the store said "duplicate"
-			 *  without naming it. */
-			duplicateTaxRate?: { id: string; rateBps: number } | null;
+			/** The rate already in the slot, when that was the refusal. */
+			duplicateTaxRate?: { id: string; rateBps: number };
 	  };
 
 /** LWW-update outcome (zones, methods, coupons) — no `stale` (no CAS). */

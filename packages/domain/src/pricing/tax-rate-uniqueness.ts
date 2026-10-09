@@ -88,18 +88,6 @@ export function appliedTaxRate<R extends TaxRateSlotted>(
 }
 
 /**
- * The rate already in the slot a new rate `input` would take — the one a create
- * must be refused over — or null when the slot is free. Both stores call this
- * (after refusing a live id), so they refuse exactly the same creates.
- */
-export function taxRateSlotOccupant<R extends TaxRateSlotted>(
-	rates: readonly R[],
-	input: TaxRateSlotted,
-): R | null {
-	return appliedTaxRate(rates, input.taxClassId, input.zoneId);
-}
-
-/**
  * Every IGNORED duplicate, mapped to the rate that applies in its slot instead.
  * Empty when `rates` holds no duplicates — the admin's "duplicate: only X applies".
  */
@@ -154,12 +142,7 @@ export function isTaxRateDuplicateError(err: unknown): err is TaxRateDuplicateEr
 	return typeof e.existingRateId === "string" && typeof e.existingRateBps === "number";
 }
 
-/**
- * The one code discriminator: anything carrying `TAX_RATE_DUPLICATE`, whether or
- * not it carries the fields that name the rate ({@link isTaxRateDuplicateError}).
- * A caller that only knows "the slot is taken" still refuses as a duplicate.
- */
-export function hasTaxRateDuplicateCode(err: unknown): boolean {
+function hasTaxRateDuplicateCode(err: unknown): boolean {
 	return (
 		typeof err === "object" &&
 		err !== null &&

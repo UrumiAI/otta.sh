@@ -167,6 +167,10 @@ interface RateDraft {
 	zoneId: string;
 	ratePercent: string;
 	appliesToShipping: boolean;
+	/** Set when the create was refused as a duplicate: the rate already in the
+	 *  slot. The create screen words the refusal itself, because it holds the
+	 *  zones list — so the notice names the zone without another read. */
+	duplicateOf?: { id: string; rateBps: number };
 }
 
 /** A tax rate ROW as this screen renders it: the wire shape plus the zone's
@@ -846,7 +850,6 @@ function duplicateBlocks(row: TaxRateRow): Block[] {
 				type: "context",
 				text: `Duplicate: only ${row.appliedInstead} applies to ${zone}, so this rate taxes nothing (goods or shipping). Delete the one you don't want.`,
 			},
-			{ type: "fields", fields: [{ label: "Shipping", value: ignoredShippingText(row) }] },
 		];
 	}
 	if (row.ignoredDuplicates !== undefined) {
@@ -872,15 +875,21 @@ function rateGroupId(rateId: string): PlainBlockId {
  *  changed it loses the CAS and the reload shows the fresh value with a
  *  "reload" notice, never a silent clobber. */
 function rateEditForm(classId: string, row: TaxRateRow): FormBlock {
-	// An IGNORED duplicate taxes nothing — shipping included — so its form has no
-	// shipping toggle that could read as "on" (its stored flag is shown read-only by
-	// `duplicateBlocks`). Its save sends no flag at all, which the store applies as
-	// "unchanged" inside its compare-and-set — so a stale tab cannot turn shipping
-	// tax back on, and nothing is read first.
+	// The flag this form SHOWED rides in the carrier: a save whose toggle still
+	// reads that value sends no flag, which the store applies as "unchanged" inside
+	// its compare-and-set — so an untouched toggle in a stale tab never reverts a
+	// change made since. An IGNORED duplicate keeps an editable toggle (so the
+	// merchant can fix it before deleting the rate that applies), labelled as
+	// taking effect only once this rate is the one that applies.
 	const ignored = row.appliedInstead !== undefined;
 	return carriedForm({
 		namespace: "tax:rate-save",
-		context: { classId, rateId: row.id, expectedRateBps: String(row.rateBps) },
+		context: {
+			classId,
+			rateId: row.id,
+			expectedRateBps: String(row.rateBps),
+			shownAppliesToShipping: String(row.appliesToShipping),
+		},
 		form: {
 			type: "form",
 			fields: [
@@ -890,16 +899,14 @@ function rateEditForm(classId: string, row: TaxRateRow): FormBlock {
 					label: "Rate (%)",
 					initial_value: formatBpsAsPercent(row.rateBps),
 				},
-				...(ignored
-					? []
-					: [
-							{
-								type: "toggle" as const,
-								action_id: "appliesToShipping",
-								label: "Applies to shipping",
-								initial_value: row.appliesToShipping, // F-6b/X-24: REQUIRED — toggle is mount-only
-							},
-						]),
+				{
+					type: "toggle",
+					action_id: "appliesToShipping",
+					label: ignored
+						? "Applies to shipping — only if this rate becomes the active one"
+						: "Applies to shipping",
+					initial_value: row.appliesToShipping, // F-6b/X-24: REQUIRED — toggle is mount-only
+				},
 			],
 			submit: { label: "Save rate", action_id: ACTION_SAVE_RATE },
 		},
@@ -907,6 +914,7 @@ function rateEditForm(classId: string, row: TaxRateRow): FormBlock {
 }
 
 function rateDeleteActions(classId: string, row: TaxRateRow) {
+	const takeover = nextIfDeletedText(row);
 	const button: ButtonElement = {
 		type: "button",
 		action_id: ACTION_DELETE_RATE,
@@ -915,7 +923,7 @@ function rateDeleteActions(classId: string, row: TaxRateRow) {
 		value: { classId, rateId: row.id },
 		confirm: {
 			title: `Delete tax rate ${row.id}?`,
-			text: `${nextIfDeletedText(row) === undefined ? "" : `${nextIfDeletedText(row) ?? ""} `}In-flight carts recompute their tax without this rate. Orders already placed are unaffected — they snapshot the tax charged at purchase time.`,
+			text: `${takeover === undefined ? "" : `${takeover} `}In-flight carts recompute their tax without this rate. Orders already placed are unaffected — they snapshot the tax charged at purchase time.`,
 			confirm: "Yes, delete",
 			deny: "Keep it",
 			style: "danger",
@@ -1044,7 +1052,17 @@ function newRateScreen(
 		{ type: "header", text: `New tax rate — ${classId}` },
 		backButton(ACTION_CANCEL_NEW, "← Back to tax rates", [classId]),
 	];
-	if (notice !== undefined) blocks.push(noticeBanner(notice));
+	const duplicateOf = draft?.duplicateOf;
+	const shown =
+		notice ??
+		(duplicateOf === undefined || draft === undefined
+			? undefined
+			: duplicateRateNotice(
+					classId,
+					zones.find((z) => z.id === draft.zoneId)?.name ?? draft.zoneId,
+					duplicateOf,
+				));
+	if (shown !== undefined) blocks.push(noticeBanner(shown));
 	blocks.push(
 		zones.length === 0
 			? {
@@ -1170,8 +1188,7 @@ function rateDetailBlocks(
 		backButton(actions.back, "← Back to tax rates", [classId, row.id]),
 	];
 	if (notice !== undefined) blocks.push(noticeBanner(notice));
-	const duplicates = duplicatesBanner([row]);
-	if (duplicates !== undefined) blocks.push(duplicates);
+	// The duplicate's own note, once (the class-level banner is for the list).
 	blocks.push(...duplicateBlocks(row));
 	blocks.push({
 		type: "context",
@@ -1443,40 +1460,40 @@ function createRateAction() {
 			rateBps: bps,
 			appliesToShipping,
 		});
-		const notice = createRateNotice(result, id, classId, zoneId);
+		if (!result.ok && result.duplicateTaxRate !== undefined) {
+			// Worded by the create screen, which has the zone's name in hand.
+			return showList([classId], undefined, {
+				kind: "new-rate",
+				draft: { ...draft, duplicateOf: result.duplicateTaxRate },
+			});
+		}
+		const notice = createRateNotice(result, id);
 		return result.ok
 			? showList([classId], notice)
 			: showList([classId], notice, { kind: "new-rate", draft });
 	});
 }
 
-/** @internal Exported for its unit test only. */
-export function createRateNotice(
-	result: RulesCreateResult<TaxRateWire>,
-	id: string,
+/** The one-rate-per-(class, zone) refusal; `zoneLabel` is the zone's name (its id
+ *  when the name is not in the list). @internal Exported for its unit test. */
+export function duplicateRateNotice(
 	classId: string,
-	zoneId: string,
+	zoneLabel: string,
+	existing: { id: string; rateBps: number },
 ): Notice {
+	return {
+		variant: "error",
+		title: "Tax rate not created",
+		description: `Class "${classId}" already has a rate for "${zoneLabel}": "${existing.id}" (${formatBpsAsPercent(existing.rateBps)}%). A class can have one rate per zone — edit "${existing.id}" instead, or delete it first.`,
+	};
+}
+
+function createRateNotice(result: RulesCreateResult<TaxRateWire>, id: string): Notice {
 	if (result.ok) {
 		return {
 			variant: "default",
 			title: "Tax rate created",
 			description: `Rate "${id}" was added.`,
-		};
-	}
-	if (result.duplicateTaxRate === null) {
-		return {
-			variant: "error",
-			title: "Tax rate not created",
-			description: `Class "${classId}" already has a rate for zone "${zoneId}". A class can have one rate per zone — edit that rate instead, or delete it first.`,
-		};
-	}
-	if (result.duplicateTaxRate !== undefined) {
-		const existing = result.duplicateTaxRate;
-		return {
-			variant: "error",
-			title: "Tax rate not created",
-			description: `Class "${classId}" already has a rate for zone "${zoneId}": "${existing.id}" (${formatBpsAsPercent(existing.rateBps)}%). A class can have one rate per zone — edit "${existing.id}" instead, or delete it first.`,
 		};
 	}
 	return {
@@ -1525,8 +1542,13 @@ function saveRateAction() {
 				description: TAX_PERCENT_HINT,
 			});
 		}
-		// No toggle in the form (an ignored duplicate's) ⇒ no flag sent ⇒ unchanged.
-		const appliesToShipping = readBoolean(values.appliesToShipping);
+		// A toggle still at the value the form showed ⇒ no flag sent ⇒ unchanged (see
+		// `rateEditForm`); only a toggle the merchant moved is sent.
+		const toggled = readBoolean(values.appliesToShipping);
+		const appliesToShipping =
+			toggled === undefined || String(toggled) === carried?.shownAppliesToShipping
+				? undefined
+				: toggled;
 		const result = await client.updateTaxRate(rateId, {
 			rateBps: bps,
 			...(appliesToShipping !== undefined ? { appliesToShipping } : {}),

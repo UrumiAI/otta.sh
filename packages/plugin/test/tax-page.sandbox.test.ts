@@ -31,7 +31,6 @@ import {
 	contextTexts,
 	field,
 	confirmOf,
-	fieldEntries,
 	fieldIds,
 	findBlock,
 	findBlocks,
@@ -1531,7 +1530,7 @@ describe("admin Tax console — one rate per (class, zone) (workerd sandbox)", (
 		expect(banner?.variant).toBe("error");
 		expect(String(banner?.title)).toBe("Tax rate not created");
 		expect(String(banner?.description)).toBe(
-			'Class "standard" already has a rate for zone "us": "std-us" (7.25%). A class can have one rate per zone — edit "std-us" instead, or delete it first.',
+			'Class "standard" already has a rate for "United States": "std-us" (7.25%). A class can have one rate per zone — edit "std-us" instead, or delete it first.',
 		);
 		// The typing is kept, and the store holds exactly what it held.
 		expect(formInitialValues(refused, "tax:create-rate")).toMatchObject({
@@ -1627,11 +1626,13 @@ describe("admin Tax console — one rate per (class, zone) (workerd sandbox)", (
 			target: encodePath(["standard", "std-us"]),
 		});
 		expect(detail.some((b) => b.type === "header" && b.text === "Tax rate — std-us")).toBe(true);
-		expect(String(bannerOf(detail)?.description)).toContain('only "std-us-b" applies');
+		expect(contextTexts(detail).some((t) => t.startsWith("Duplicate: only std-us-b applies"))).toBe(
+			true,
+		);
 		assertBlockContract(detail, { screen: "tax", level: "list" });
 	});
 
-	test("an ignored duplicate shows no shipping toggle, and saving it keeps its stored flag", async () => {
+	test("an ignored duplicate keeps an editable toggle that says when it applies; an untouched save keeps the flag, a moved one changes it", async () => {
 		// The IGNORED rate ("std-us") is the shipping-flagged one.
 		await seedRules({
 			rates: [
@@ -1653,21 +1654,30 @@ describe("admin Tax console — one rate per (class, zone) (workerd sandbox)", (
 		});
 		const blocks = await openClass("standard");
 		const ignoredForm = formFor(groupBlocks(blocks, "tax:rate:std-us"), "tax:save-rate");
-		expect(fieldIds(ignoredForm)).not.toContain("appliesToShipping");
-		// The stored flag is SHOWN, read-only, as not applied — never hidden, never "active".
-		expect(fieldEntries(groupBlocks(blocks, "tax:rate:std-us"))).toContain(
-			"Shipping=yes (not applied — duplicate ignored)",
-		);
+		const toggle = field(ignoredForm, "appliesToShipping");
+		expect(toggle?.label).toBe("Applies to shipping — only if this rate becomes the active one");
+		expect(toggle?.initial_value).toBe(true);
 		// The rate that applies keeps its toggle, showing its own (off) flag.
 		const appliedForm = formFor(groupBlocks(blocks, "tax:rate:std-us-b"), "tax:save-rate");
 		expect(field(appliedForm, "appliesToShipping")?.initial_value).toBe(false);
 
 		const row = group(blocks, "tax:rate:std-us")!;
-		const saved = await submitForm([row], "tax:save-rate", { ratePercent: "8" });
+		// Untouched toggle (the form posts its shown value): only the rate changes.
+		const saved = await submitForm([row], "tax:save-rate", {
+			ratePercent: "8",
+			appliesToShipping: true,
+		});
 		expect(bannerOf(saved)?.variant).toBe("default");
 		expect(await findRate("us", "std-us")).toMatchObject({ rateBps: 800, appliesToShipping: true });
 		// Still ignored at checkout: shipping is not taxed by it.
 		expect(await checkoutRateBps("us")).toBe(900);
+		// Moving the toggle fixes the survivor before the other rate is deleted.
+		const fresh = group(await openClass("standard"), "tax:rate:std-us")!;
+		await submitForm([fresh], "tax:save-rate", { ratePercent: "8", appliesToShipping: false });
+		expect(await findRate("us", "std-us")).toMatchObject({
+			rateBps: 800,
+			appliesToShipping: false,
+		});
 	});
 
 	test("a stale tab can never turn an ignored duplicate's shipping tax back on", async () => {
@@ -1695,8 +1705,12 @@ describe("admin Tax console — one rate per (class, zone) (workerd sandbox)", (
 		expect(
 			await taxRules.updateRate("std-us", { rateBps: 725, appliesToShipping: false }, 725),
 		).toMatchObject({ ok: true });
-		// Tab 1 saves a rate edit: the flag stays what the store holds NOW.
-		const saved = await submitForm([stale], "tax:save-rate", { ratePercent: "7.5" });
+		// Tab 1 saves a rate edit with its toggle untouched (still showing ON): the flag
+		// stays what the store holds NOW.
+		const saved = await submitForm([stale], "tax:save-rate", {
+			ratePercent: "7.5",
+			appliesToShipping: true,
+		});
 		expect(bannerOf(saved)?.variant).toBe("default");
 		expect(await findRate("us", "std-us")).toMatchObject({
 			rateBps: 750,
@@ -1730,12 +1744,18 @@ describe("admin Tax console — one rate per (class, zone) (workerd sandbox)", (
 		expect(String(confirmOf(del).text)).toContain(takeover);
 		const detail = await clickButton("tax:open", { target: encodePath(["standard", "std-us-b"]) });
 		expect(contextTexts(detail).some((t) => t.includes(takeover))).toBe(true);
-		// The ignored row's detail leaf shows its flag the same way the accordion does.
+		// The ignored row's detail leaf: the same labelled toggle, and the duplicate
+		// message ONCE (no list banner on top of its own note).
 		const ignoredDetail = await clickButton("tax:open", {
 			target: encodePath(["standard", "std-us"]),
 		});
-		expect(fieldEntries(ignoredDetail)).toContain("Shipping=yes (not applied — duplicate ignored)");
-		expect(fieldIds(formFor(ignoredDetail, "tax:save-rate"))).not.toContain("appliesToShipping");
+		expect(field(formFor(ignoredDetail, "tax:save-rate"), "appliesToShipping")?.label).toBe(
+			"Applies to shipping — only if this rate becomes the active one",
+		);
+		expect(bannerOf(ignoredDetail)).toBeUndefined();
+		expect(
+			contextTexts(ignoredDetail).filter((t) => t.startsWith("Duplicate: only std-us-b applies")),
+		).toHaveLength(1);
 		assertBlockContract(detail, { screen: "tax", level: "list" });
 		assertBlockContract(ignoredDetail, { screen: "tax", level: "list" });
 	});

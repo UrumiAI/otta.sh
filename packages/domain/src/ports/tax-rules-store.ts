@@ -59,7 +59,10 @@ export interface TaxRulesStore {
 	 *  - ONE RATE PER `(taxClassId, zoneId)` (see `tax-rate-uniqueness.ts`): the slot
 	 *    already holds a rate → throws `TaxRateDuplicateError` naming that rate.
 	 * Atomic against a concurrent create for the same slot — of any number of racing
-	 * creates, exactly one succeeds. Out-of-tree adapters must implement both.
+	 * creates, exactly one succeeds. Out-of-tree adapters must implement both. A
+	 * refused duplicate writes no rate, but an adapter that claims ids first (the
+	 * emdash store) may leave an ORPHAN id claim, which no read follows and the next
+	 * create of that id adopts.
 	 */
 	createRate(input: CreateTaxRateInput): Promise<TaxRate>;
 	/**
