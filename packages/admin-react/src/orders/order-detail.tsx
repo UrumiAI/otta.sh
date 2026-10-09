@@ -54,6 +54,7 @@ import {
 	ORDERS_BACK_LABEL,
 	ORDER_LINES_EMPTY,
 	ORDER_LINES_SNAPSHOT_NOTE,
+	PRICES_INCLUDED_TAX,
 	REFUNDS_GROUP_EMPTY_LABEL,
 	REFUNDS_UNAVAILABLE,
 	REFUND_ADDITIVE_NOTE,
@@ -1333,7 +1334,15 @@ export function OrderDetail({
 							{ORDER_LINES_SNAPSHOT_NOTE}
 						</p>
 
-						<div style={{ marginBlockStart: 16, maxInlineSize: 360 }}>
+						<div
+							style={{ marginBlockStart: 16, maxInlineSize: 360 }}
+							{...(order.totals.pricesIncludeTax === true
+								? {
+										role: "group",
+										"aria-describedby": "detail-prices-include-tax",
+									}
+								: {})}
+						>
 							<Table
 								testId="detail-totals"
 								caption="Totals"
@@ -1348,6 +1357,15 @@ export function OrderDetail({
 									</tr>
 								))}
 							</Table>
+							{order.totals.pricesIncludeTax === true ? (
+								<p
+									id="detail-prices-include-tax"
+									data-testid="detail-prices-include-tax"
+									style={{ fontSize: 12, opacity: 0.7 }}
+								>
+									{PRICES_INCLUDED_TAX}
+								</p>
+							) : null}
 						</div>
 
 						<div style={{ marginBlockStart: 16 }}>
