@@ -282,6 +282,30 @@ describe("ottaPluginDescriptor allowedHosts, EXACTLY", () => {
 
 	test("with nothing configured: EXACTLY the Stripe API host", () => {
 		expect(ottaPluginDescriptor().allowedHosts).toEqual(BASELINE_HOSTS);
+		expect(ottaPluginDescriptor({ egress: { extraAllowedHosts: "" } }).allowedHosts).toEqual(
+			BASELINE_HOSTS,
+		);
+	});
+
+	test("OTTA_EXTRA_ALLOWED_HOSTS extras are granted after the fixed hosts", () => {
+		const hosts = ottaPluginDescriptor({
+			egress: {
+				facilitatorUrl: FACILITATOR,
+				extraAllowedHosts: ["Api.Example.org", "b.example.net"],
+			},
+		}).allowedHosts;
+		expect(hosts).toEqual([
+			...BASELINE_HOSTS,
+			"facilitator.example.com",
+			"api.example.org",
+			"b.example.net",
+		]);
+	});
+
+	test("an invalid extra grants nothing (fail-closed, never throws)", () => {
+		const options = { egress: { extraAllowedHosts: "*,127.0.0.1,localhost" } };
+		expect(() => ottaPluginDescriptor(options)).not.toThrow();
+		expect(ottaPluginDescriptor(options).allowedHosts).toEqual(BASELINE_HOSTS);
 	});
 
 	test("FAIL-CLOSED: an unparseable egress URL grants nothing and never throws", () => {
@@ -409,6 +433,12 @@ describe("buildEmdashOptions", () => {
 			facilitatorUrl: "https://facilitator.example.com",
 		}).plugins[0]?.allowedHosts;
 		expect(sorted(hosts)).toEqual(sorted([...BASELINE_HOSTS, "facilitator.example.com"]));
+	});
+
+	test("threads extraAllowedHosts into the registered descriptor's allowlist", () => {
+		const hosts = buildEmdashOptions({ extraAllowedHosts: "x.example.com" }).plugins[0]
+			?.allowedHosts;
+		expect(hosts).toEqual([...BASELINE_HOSTS, "x.example.com"]);
 	});
 
 	test("with no egress configured the allowlist is EXACTLY the baseline — fail-closed", () => {
@@ -795,6 +825,8 @@ describe("astro.config", () => {
 			const define = config.vite?.define as Record<string, string>;
 			expect(Object.keys(define)).toContain("__OTTA_X402_FACILITATOR_URL__");
 			expect(typeof JSON.parse(define["__OTTA_X402_FACILITATOR_URL__"] ?? "null")).toBe("string");
+			expect(Object.keys(define)).toContain("__OTTA_EXTRA_ALLOWED_HOSTS__");
+			expect(typeof JSON.parse(define["__OTTA_EXTRA_ALLOWED_HOSTS__"] ?? "null")).toBe("string");
 			expect(Object.keys(define).filter((name) => /EMAIL/.test(name))).toEqual([]);
 		},
 		CONFIG_IMPORT_TIMEOUT_MS,

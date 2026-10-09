@@ -15,7 +15,7 @@
 				"no-underscore-dangle": [
 					"error",
 					{
-						"allow": ["__OTTA_X402_FACILITATOR_URL__"]
+						"allow": ["__OTTA_X402_FACILITATOR_URL__", "__OTTA_EXTRA_ALLOWED_HOSTS__"]
 					}
 				]
 			}

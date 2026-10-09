@@ -492,6 +492,7 @@ allowlist (capability `network:request`). That allowlist is resolved at **build*
 |---|---|
 | `api.stripe.com` | always |
 | the x402 facilitator host | when a facilitator URL is configured |
+| each host in `OTTA_EXTRA_ALLOWED_HOSTS` | when set (see below) |
 
 No email host: email is not plugin egress. It goes through the host's `ctx.email`
 (capability `email:send`, [ADR-0031](./adr/0031-email-through-emdash-host.md)), and the
@@ -501,6 +502,23 @@ The URL is `X402_FACILITATOR_URL`, read by `sites/staging/astro.config.ts` from
 `process.env`, falling back to `sites/staging/.env`. Set it in the shell or in
 `sites/staging/.env` **before** building (§2.1 step 4); unset, the facilitator is simply
 unconfigured and no host is granted for it.
+
+**Extra hosts: `OTTA_EXTRA_ALLOWED_HOSTS`.** A comma-separated list of hostnames to add to
+the allowlist, read like the facilitator URL (shell env, then `sites/staging/.env`, at
+**build** time), e.g. `OTTA_EXTRA_ALLOWED_HOSTS=api.example.com,hooks.example.org`.
+Entries are trimmed and lowercased, empty entries are dropped, duplicates collapse, and
+the order is stable (Stripe, facilitator, then extras as given). Each entry must be a plain
+DNS hostname: letters, digits and hyphens in dot-separated labels, with at least one dot.
+A wildcard (`*`, `*.example.com`), an IPv4/IPv6 literal, `localhost`, or anything with a
+scheme, port, path or userinfo **fails the build** with an error naming the entry, so a
+typo is loud rather than silently ungranted. The capability stays `network:request`
+(never `network:request:unrestricted`). Private, loopback and metadata addresses are
+blocked by EmDash's SSRF validation alone (the Worker deliberately runs without
+`global_fetch_strictly_public`, §2.4), no matter what is listed here. Listing a host means
+trusting its DNS: EmDash validates the resolved IP and `fetch` then resolves again (a
+DNS-rebinding window), and no platform flag backs this up. Allowlisted hosts, extras
+included, also become allowed image sources in the plugin admin UI (EmDash behaviour for
+`network:request`, already true for Stripe).
 
 Stripe traffic goes through the same gate: `@otta-sh/payments-stripe` would default its
 transport to `globalThis.fetch`, but the plugin constructs the live gateway with
@@ -512,7 +530,8 @@ closes the caveat recorded in
 All of these are third-party hosts on the public internet. The Worker runs without
 `global_fetch_strictly_public` (§2.4), so a URL on the site's **own** Cloudflare zone would
 reach that zone's origin directly, skipping its Workers routes and security settings — keep
-both URLs off the site's zone.
+every allowlisted host (the facilitator and each `OTTA_EXTRA_ALLOWED_HOSTS` entry) off the
+site's zone.
 
 Because it is build-time, adding a provider means a rebuild and redeploy — a Settings edit
 alone cannot widen it. That is deliberate: the allowlist is the perimeter, and an operator
