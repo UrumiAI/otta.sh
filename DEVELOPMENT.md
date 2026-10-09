@@ -149,9 +149,8 @@ in-process leniency.
 - **TypeScript:** strict, `noUncheckedIndexedAccess`, `noImplicitOverride`,
   `verbatimModuleSyntax`. Internal imports use `.js` extensions; type-only imports use
   `import type`.
-- **Changesets** once packages publish. Backwards compat matters pre-1.0: prefer additive
-  changes; a break needs a bump + a changeset that calls it out. **Migrations are
-  forward-only.**
+- Backwards compat matters pre-1.0: prefer additive changes; a break is called out in the
+  PR description. **Migrations are forward-only.**
 
 ## 7. The edit loop
 
@@ -160,8 +159,7 @@ Same cadence as EmDash:
 - `lint` (quick) after every edit.
 - `typecheck` after each round of edits.
 - `format` regularly.
-- Before a PR: **tests pass, lint clean, formatted, changeset added** if a published
-  package changed.
+- Before a PR: **tests pass, lint clean, formatted.**
 
 ## 8. Scope discipline
 
