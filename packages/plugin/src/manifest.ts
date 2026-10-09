@@ -136,7 +136,7 @@ export function parseExtraAllowedHosts(raw: string | readonly string[] | undefin
  * it used to make is the plugin's own — Stripe's API. No service host appears
  * here at all; that is the fold-in, visible in one line. The constant part is
  * Stripe's API host; anything else comes from the deployment's egress
- * ({@link InProcessEgressUrls}, none today). No email host: email goes through
+ * ({@link InProcessEgressUrls}; only `OTTA_EXTRA_ALLOWED_HOSTS` today). No email host: email goes through
  * `ctx.email` (ADR-0031), never `ctx.http`.
  *
  * The result is a SET: duplicates collapse, and order is insertion order so the
@@ -174,8 +174,9 @@ const BAKED_EGRESS_URLS: InProcessEgressUrls = {
  * is (review round 2, A3): a value that would grant no host is dropped —
  * unconfigured, which every consumer already handles — so "a consumer never
  * holds a URL whose host is not granted" is true by construction rather than
- * by every caller remembering. No URL is deployment-supplied today, so this
- * resolves to `{}`.
+ * by every caller remembering. No URL is deployment-supplied today: the only
+ * operator input, `extraAllowedHosts`, carries hosts, not URLs, and is consumed
+ * by {@link resolveAllowedHosts} alone, so this always resolves to `{}`.
  */
 export function resolveInProcessEgress(_egress: InProcessEgressUrls = {}): InProcessEgressUrls {
 	// Extras are hosts, not URLs: no consumer holds them, so they are not echoed.

@@ -18,8 +18,9 @@ removal from published API.
 - `@otta-sh/plugin`: removed `wireX402Gateway`, `x402GatewayFromCtx`, `X402_PAYTO_KEY`,
   `X402_ACCEPTS_KEY`, `DEFAULT_X402_ACCEPTS`, `X402_FACILITATOR_API_KEY_KEY`,
   `x402FacilitatorSecretFromKv` and the `x402Gateway` types. `InProcessEgressUrls` no
-  longer has `facilitatorUrl` (it has no fields now, kept for operator-supplied hosts), so a
-  caller that still passes one compiles and the value is ignored. The
+  longer has `facilitatorUrl`; its only field is `extraAllowedHosts`
+  (`OTTA_EXTRA_ALLOWED_HOSTS`), so a caller that still passes `facilitatorUrl` no longer
+  type-checks. The
   `__OTTA_X402_FACILITATOR_URL__` build define is gone: the facilitator host is no longer on
   `allowedHosts`, which is now Stripe's API host alone. The egress
   plumbing itself (`InProcessEgressUrls`, `IN_PROCESS_EGRESS_URLS`, `resolveAllowedHosts`,

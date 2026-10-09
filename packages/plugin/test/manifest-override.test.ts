@@ -6,7 +6,7 @@
  * INC-D3a retired the http/in-process mode branch: there is ONE list now, the
  * commerce service is gone, and `resolveAllowedHosts` no longer takes a mode
  * or a service base URL — it is always Stripe's API host plus whatever the
- * deployment's egress supplies (nothing today). ADR-0031 removed every email
+ * deployment's egress supplies (only `OTTA_EXTRA_ALLOWED_HOSTS` today). ADR-0031 removed every email
  * host: email goes through `ctx.email`, never `ctx.http`.
  */
 import { describe, expect, test } from "vitest";
@@ -74,6 +74,10 @@ describe("resolveInProcessEgress — the CONSUMERS see the same URLs the gate gr
 	test("with nothing configured a consumer is handed no egress URL", () => {
 		expect(resolveInProcessEgress()).toEqual({});
 		expect(resolveInProcessEgress({})).toEqual({});
+	});
+
+	test("extras are hosts, not URLs: a consumer is never handed them", () => {
+		expect(resolveInProcessEgress({ extraAllowedHosts: "x.example.com" })).toEqual({});
 	});
 });
 
