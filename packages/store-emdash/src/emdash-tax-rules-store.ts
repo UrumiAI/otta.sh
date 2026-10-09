@@ -25,7 +25,7 @@
  *
  * ## The money CAS
  *
- * `updateRate`'s guard is `expectedRateBps`, a VALUE rather than a version (the
+ * `updateRate`'s guard is `expected` (rate and flag), VALUES rather than a version (the
  * port's documented ABA acceptance). Because the value lives in a document shared
  * with the class's other rates, a lost revision race is retried by RE-READING and
  * RE-COMPARING, never by re-submitting the decision: a caller that lost a real edit
@@ -53,6 +53,7 @@ import {
 	type TaxClass,
 	type TaxClassId,
 	type TaxRate,
+	type TaxRateExpectation,
 	type TaxRulesStore,
 	type UpdateTaxClassInput,
 	type UpdateTaxClassResult,
@@ -335,15 +336,14 @@ export class EmdashTaxRulesStore implements TaxRulesStore {
 	}
 
 	/**
-	 * The money CAS (port doc, and this file's header): `expectedRateBps` is
+	 * The money CAS (port doc, and this file's header): `expected` is
 	 * compared on EVERY attempt, so a lost revision re-reads and re-decides rather
 	 * than re-submitting a decision taken against a value that has moved.
 	 */
 	async updateRate(
 		id: string,
 		input: UpdateTaxRateInput,
-		expectedRateBps: number,
-		expectedAppliesToShipping?: boolean,
+		expected: TaxRateExpectation,
 	): Promise<UpdateTaxRateResult> {
 		return this.#cas<UpdateTaxRateResult>("updateTaxRate", async () => {
 			const found = await this.#findRate(id);
@@ -351,10 +351,19 @@ export class EmdashTaxRulesStore implements TaxRulesStore {
 				return casDone<UpdateTaxRateResult>({ ok: false, reason: "not_found" });
 			}
 			// The guard, re-evaluated against what this attempt just read.
+			// Already exactly what was asked: an idempotent replay, nothing to write.
 			if (
-				found.rate.rateBps !== expectedRateBps ||
-				(expectedAppliesToShipping !== undefined &&
-					found.rate.appliesToShipping !== expectedAppliesToShipping)
+				found.rate.rateBps === input.rateBps &&
+				found.rate.appliesToShipping === input.appliesToShipping
+			) {
+				return casDone<UpdateTaxRateResult>({
+					ok: true,
+					rate: toTaxRate(found.held.doc.taxClassId, found.rate),
+				});
+			}
+			if (
+				found.rate.rateBps !== expected.rateBps ||
+				found.rate.appliesToShipping !== expected.appliesToShipping
 			) {
 				return casDone<UpdateTaxRateResult>({
 					ok: false,

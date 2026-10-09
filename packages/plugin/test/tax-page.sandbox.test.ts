@@ -1044,11 +1044,17 @@ describe("admin Tax console — rates level (workerd sandbox)", () => {
 		// still says 725) — someone else's edit lands in between, exactly the race
 		// the watermark exists to catch (DA-2a). Written through the store's own CAS,
 		// so the concurrent edit is as real as the one it is about to beat.
-		await taxRules.updateRate("std-us", { rateBps: 900, appliesToShipping: false }, 725);
+		await taxRules.updateRate(
+			"std-us",
+			{ rateBps: 900, appliesToShipping: false },
+			{ rateBps: 725, appliesToShipping: false },
+		);
 		const after = await sandbox.invokeRoute("admin", {
 			type: "form_submit",
 			action_id: "tax:save-rate",
-			values: { ratePercent: "9.00", appliesToShipping: false },
+			// A DIFFERENT edit (9.50) from the stale form: submitting exactly what the
+			// concurrent edit wrote would be an idempotent replay, and fine.
+			values: { ratePercent: "9.50", appliesToShipping: false },
 			block_id: form.block_id,
 		});
 		const blocks = blocksOf(after);
@@ -1703,7 +1709,11 @@ describe("admin Tax console — one rate per (class, zone) (workerd sandbox)", (
 		const stale = group(await openClass("standard"), "tax:rate:std-us")!;
 		// … tab 2 then turns it OFF.
 		expect(
-			await taxRules.updateRate("std-us", { rateBps: 725, appliesToShipping: false }, 725),
+			await taxRules.updateRate(
+				"std-us",
+				{ rateBps: 725, appliesToShipping: false },
+				{ rateBps: 725, appliesToShipping: true },
+			),
 		).toMatchObject({ ok: true });
 		// Tab 1 saves a rate edit with its toggle untouched (still showing ON): it is
 		// told to reload, and nothing it sent is applied.
@@ -1716,6 +1726,15 @@ describe("admin Tax console — one rate per (class, zone) (workerd sandbox)", (
 			rateBps: 725,
 			appliesToShipping: false,
 		});
+	});
+
+	test("a double-submitted flag-only change says 'Rate saved' both times", async () => {
+		await seedRules();
+		const form = group(await openClass("standard"), "tax:rate:std-us")!;
+		const values = { ratePercent: "7.25", appliesToShipping: true };
+		expect(bannerOf(await submitForm([form], "tax:save-rate", values))?.title).toBe("Rate saved");
+		expect(bannerOf(await submitForm([form], "tax:save-rate", values))?.title).toBe("Rate saved");
+		expect(await findRate("us", "std-us")).toMatchObject({ rateBps: 725, appliesToShipping: true });
 	});
 
 	test("a flag-only conflict on an ordinary rate is a reload, never a silent revert or a false 'saved'", async () => {

@@ -1543,12 +1543,11 @@ function saveRateAction() {
 		}
 		// The flag the form shows, and the flag it loaded as the CAS expectation (see
 		// `rateEditForm`): a flag changed elsewhere since is `stale`, never reverted.
-		const loaded = carried?.expectedAppliesToShipping;
 		const appliesToShipping = readBoolean(values.appliesToShipping) ?? false;
 		const result = await client.updateTaxRate(rateId, {
 			rateBps: bps,
 			appliesToShipping,
-			...(loaded === undefined ? {} : { expectedAppliesToShipping: loaded === "true" }),
+			expectedAppliesToShipping: carried?.expectedAppliesToShipping === "true",
 			expectedRateBps,
 		});
 		return showList([classId], saveRateNotice(result));

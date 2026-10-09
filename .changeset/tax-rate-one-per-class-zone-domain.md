@@ -23,6 +23,8 @@ was the last flagged rate, so it named the shipping tax class). Line-item tax is
   whose `code` is `TAX_RATE_ID_COLLISION` (the in-memory store now does too), and a
   second rate for one (class, zone) with `TaxRateDuplicateError`.
 - `listRatesForZone` must list by rate id ascending (the in-memory store now does).
-- `updateRate` takes an optional 4th argument, `expectedAppliesToShipping`: when given,
-  the compare-and-set also requires the stored flag to equal it (`stale` otherwise).
+- `updateRate(id, input, expected)` now takes a REQUIRED expectation object
+  `{ rateBps, appliesToShipping }` (was `expectedRateBps: number`): the compare-and-set
+  must check both, answering `stale` on either mismatch, and a replay where the row
+  already equals `input` is an idempotent `ok` (it used to be `stale`).
 - `TaxRulesStoreHarness` gains a required `seedUncheckedRate(rate)`.

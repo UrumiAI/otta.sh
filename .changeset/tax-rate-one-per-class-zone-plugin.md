@@ -17,4 +17,7 @@ deleting the one you don't want resolves it. Orders already placed are unaffecte
 
 Tax rate edits are now also guarded on the "applies to shipping" flag: a tab that loaded
 before another tab changed the flag gets the "changed since you loaded it — reload" notice
-instead of reverting it.
+instead of reverting it. Submitting the same edit twice is "Rate saved" both times.
+
+`TaxRateEdit` gains a required `expectedAppliesToShipping` (the flag the editor loaded);
+`InProcessAdminRulesClient.updateTaxRate` refuses an edit without a boolean one.

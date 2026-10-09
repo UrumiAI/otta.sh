@@ -236,9 +236,9 @@ export interface TaxRateInput {
 export interface TaxRateEdit {
 	rateBps: number;
 	appliesToShipping: boolean;
-	/** The flag the form LOADED with; given ⇒ part of the CAS (a changed flag is
-	 *  `stale`, never reverted). */
-	expectedAppliesToShipping?: boolean;
+	/** The flag the form LOADED with — part of the CAS with `expectedRateBps` (a
+	 *  flag changed since is `stale`, never reverted). Required. */
+	expectedAppliesToShipping: boolean;
 	/** The money-bearing CAS token — the rate the admin read on the detail. */
 	expectedRateBps: number;
 }

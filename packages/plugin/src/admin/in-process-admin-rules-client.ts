@@ -515,9 +515,9 @@ export class InProcessAdminRulesClient implements AdminRulesSurface {
 	}
 
 	/** CAS edit on the money-bearing `rateBps` (`expectedRateBps` is the rate the
-	 *  admin read). `appliesToShipping` is the required full-replace key; when
-	 *  `expectedAppliesToShipping` (the flag the form loaded) is given, the store's
-	 *  CAS compares it too, so a stale tab gets `stale` instead of reverting it. */
+	 *  admin read) AND on the flag (`expectedAppliesToShipping`, the flag it loaded),
+	 *  so a stale tab gets `stale` instead of reverting either. `appliesToShipping`
+	 *  is the required full-replace key. */
 	async updateTaxRate(
 		rateId: string,
 		edit: TaxRateEdit,
@@ -529,17 +529,14 @@ export class InProcessAdminRulesClient implements AdminRulesSurface {
 		if (typeof edit.appliesToShipping !== "boolean") {
 			throw new CommerceInputError("appliesToShipping", "must be a boolean");
 		}
-		if (
-			edit.expectedAppliesToShipping !== undefined &&
-			typeof edit.expectedAppliesToShipping !== "boolean"
-		) {
+		requireFullReplaceKey("expectedAppliesToShipping", edit);
+		if (typeof edit.expectedAppliesToShipping !== "boolean") {
 			throw new CommerceInputError("expectedAppliesToShipping", "must be a boolean");
 		}
 		const res = await this.#stores.taxRules.updateRate(
 			rateId,
 			{ rateBps: edit.rateBps, appliesToShipping: edit.appliesToShipping },
-			edit.expectedRateBps,
-			edit.expectedAppliesToShipping,
+			{ rateBps: edit.expectedRateBps, appliesToShipping: edit.expectedAppliesToShipping },
 		);
 		if (res.ok) return { ok: true, value: toTaxRateWire(res.rate) };
 		if (res.reason === "not_found") return { ok: false, reason: "not_found" };

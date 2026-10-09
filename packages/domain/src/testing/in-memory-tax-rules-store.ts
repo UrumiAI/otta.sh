@@ -5,6 +5,7 @@ import type {
 	DeleteTaxRateResult,
 	TaxClass,
 	TaxRate,
+	TaxRateExpectation,
 	TaxRulesStore,
 	UpdateTaxClassInput,
 	UpdateTaxClassResult,
@@ -106,15 +107,16 @@ export class InMemoryTaxRulesStore implements TaxRulesStore {
 	async updateRate(
 		id: string,
 		input: UpdateTaxRateInput,
-		expectedRateBps: number,
-		expectedAppliesToShipping?: boolean,
+		expected: TaxRateExpectation,
 	): Promise<UpdateTaxRateResult> {
 		const rate = this.#rates.get(id);
 		if (rate === undefined) return { ok: false, reason: "not_found" };
+		if (rate.rateBps === input.rateBps && rate.appliesToShipping === input.appliesToShipping) {
+			return { ok: true, rate: { ...rate } }; // idempotent replay
+		}
 		if (
-			rate.rateBps !== expectedRateBps ||
-			(expectedAppliesToShipping !== undefined &&
-				rate.appliesToShipping !== expectedAppliesToShipping)
+			rate.rateBps !== expected.rateBps ||
+			rate.appliesToShipping !== expected.appliesToShipping
 		) {
 			return { ok: false, reason: "stale", current: { ...rate } };
 		}

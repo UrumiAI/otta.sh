@@ -97,10 +97,10 @@ export interface TaxRulesStore {
 	 * `rate_bps = expectedRateBps`, so a concurrent admin edit that already moved
 	 * the rate surfaces as `stale` (carrying the current row to reload) rather than
 	 * silently CLOBBERING a rate change — a wrong tax rate is a money-affecting
-	 * regression, so `rate_bps` is CAS-guarded (CLAUDE.md money discipline). A
-	 * blind replay of an applied edit is therefore reported `stale`, never
-	 * double-applied (once-only under replay). `appliesToShipping` rides along
-	 * last-writer-wins within the winning update (a boolean flag, not money).
+	 * regression, so `rate_bps` is CAS-guarded (CLAUDE.md money discipline), and so
+	 * is the `appliesToShipping` flag (`expected.appliesToShipping`). A replay of an
+	 * applied edit — the row ALREADY holds exactly the requested values — is an
+	 * idempotent success (nothing written, never double-applied).
 	 *
 	 * ABA ACCEPTED (PR #71 review, reviewer A finding 1): the CAS token is the
 	 * VALUE, not a version — if admin A reads 500, admin B edits 500→600 and then
@@ -113,17 +113,15 @@ export interface TaxRulesStore {
 	 * version/`updated_at` column (the #67 `expectedUpdatedAt` precedent) via a
 	 * forward-only migration — not a redesign of this port.
 	 *  - unknown `id` → `not_found` (no row minted; an edit is not a create).
-	 *  - `rate_bps != expectedRateBps` → `stale`, carrying the current row.
-	 *  - `expectedAppliesToShipping` given and `!=` the stored flag → `stale` too:
-	 *    the admin form sends the flag it SHOWED, so a tab that loaded before
-	 *    another tab changed the flag is told to reload instead of reverting it.
+	 *  - the row already equals `input` → `ok` (idempotent replay; nothing written).
+	 *  - `rate_bps` or the flag `!=` `expected` → `stale`, carrying the current row
+	 *    (a tab that loaded before another changed either is told to reload).
 	 *  - otherwise → applies + returns the updated row.
 	 */
 	updateRate(
 		id: string,
 		input: UpdateTaxRateInput,
-		expectedRateBps: number,
-		expectedAppliesToShipping?: boolean,
+		expected: TaxRateExpectation,
 	): Promise<UpdateTaxRateResult>;
 
 	/**
@@ -136,6 +134,12 @@ export interface TaxRulesStore {
 	 * treats the class as 0 bps — `computeTotals`' `taxRatesByClass[id] ?? 0`).
 	 */
 	deleteRate(id: string): Promise<DeleteTaxRateResult>;
+}
+
+/** What the editor READ — `updateRate`'s compare-and-set token, both fields. */
+export interface TaxRateExpectation {
+	rateBps: number;
+	appliesToShipping: boolean;
 }
 
 export interface UpdateTaxRateInput {

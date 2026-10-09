@@ -123,7 +123,11 @@ describe.skipIf(!PG_ENABLED)("tax-rate updateRate CAS race [postgres]", () => {
 
 				const results = await Promise.all(
 					Array.from({ length: N }, (_unused, i) =>
-						store.updateRate(id, { rateBps: 800 + i, appliesToShipping: false }, 725),
+						store.updateRate(
+							id,
+							{ rateBps: 800 + i, appliesToShipping: false },
+							{ rateBps: 725, appliesToShipping: false },
+						),
 					),
 				);
 
@@ -245,7 +249,11 @@ describe.skipIf(!PG_ENABLED)("rules CAS race: a retried loser re-verifies [postg
 				});
 
 				const edits = Array.from({ length: N }, (_unused, i) =>
-					store.updateRate(id, { rateBps: 900 + i, appliesToShipping: false }, 725),
+					store.updateRate(
+						id,
+						{ rateBps: 900 + i, appliesToShipping: false },
+						{ rateBps: 725, appliesToShipping: false },
+					),
 				);
 				// The contention that is NOT about money: same document, no rate touched.
 				const renames = Array.from({ length: N }, (_unused, i) =>
@@ -321,7 +329,11 @@ describe.skipIf(!PG_ENABLED)("tax-rate createRate one-per-(class, zone) race [po
 				// … and a refused id (its claim left as an orphan) resolves to nothing.
 				const refusedId = ids.find((candidate) => candidate !== won[0]?.id) ?? "";
 				expect(
-					await store.updateRate(refusedId, { rateBps: 1, appliesToShipping: false }, 700),
+					await store.updateRate(
+						refusedId,
+						{ rateBps: 1, appliesToShipping: false },
+						{ rateBps: 700, appliesToShipping: false },
+					),
 					`loop ${String(loop)}: ${refusedId}`,
 				).toEqual({ ok: false, reason: "not_found" });
 				await store.deleteRate(won[0]?.id ?? "");
@@ -482,7 +494,7 @@ describe.skipIf(!PG_ENABLED)(
 						await store.updateRate(
 							id,
 							{ rateBps: won[0].rateBps, appliesToShipping: false },
-							won[0].rateBps,
+							{ rateBps: won[0].rateBps, appliesToShipping: false },
 						),
 						`loop ${String(loop)}: landed rate reachable`,
 					).toMatchObject({ ok: true });

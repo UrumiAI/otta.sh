@@ -138,6 +138,7 @@ export type {
 	DeleteTaxRateResult,
 	TaxClass,
 	TaxRate,
+	TaxRateExpectation,
 	TaxRulesStore,
 	UpdateTaxClassInput,
 	UpdateTaxClassResult,

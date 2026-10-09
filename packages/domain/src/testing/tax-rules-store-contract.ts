@@ -206,7 +206,11 @@ export function taxRulesStoreContract(
 		test("updateRate applies a new rate + flag when the CAS matches", async () => {
 			const { store } = await makeStore();
 			await seedRate(store);
-			const res = await store.updateRate("r1", { rateBps: 825, appliesToShipping: true }, 725);
+			const res = await store.updateRate(
+				"r1",
+				{ rateBps: 825, appliesToShipping: true },
+				{ rateBps: 725, appliesToShipping: false },
+			);
 			expect(res.ok).toBe(true);
 			if (!res.ok) return;
 			expect(res.rate.rateBps).toBe(825);
@@ -216,7 +220,11 @@ export function taxRulesStoreContract(
 
 		test("updateRate is not_found for an unknown id (an edit never mints a row)", async () => {
 			const { store } = await makeStore();
-			const res = await store.updateRate("nope", { rateBps: 100, appliesToShipping: false }, 0);
+			const res = await store.updateRate(
+				"nope",
+				{ rateBps: 100, appliesToShipping: false },
+				{ rateBps: 0, appliesToShipping: false },
+			);
 			expect(res).toEqual({ ok: false, reason: "not_found" });
 		});
 
@@ -224,10 +232,18 @@ export function taxRulesStoreContract(
 			const { store } = await makeStore();
 			await seedRate(store);
 			// A first edit wins, moving rate_bps 725 → 900.
-			const first = await store.updateRate("r1", { rateBps: 900, appliesToShipping: false }, 725);
+			const first = await store.updateRate(
+				"r1",
+				{ rateBps: 900, appliesToShipping: false },
+				{ rateBps: 725, appliesToShipping: false },
+			);
 			expect(first.ok).toBe(true);
 			// A second editor still holding the stale 725 is refused, carrying the fresh row.
-			const second = await store.updateRate("r1", { rateBps: 1000, appliesToShipping: false }, 725);
+			const second = await store.updateRate(
+				"r1",
+				{ rateBps: 1000, appliesToShipping: false },
+				{ rateBps: 725, appliesToShipping: false },
+			);
 			expect(second.ok).toBe(false);
 			if (second.ok) return;
 			expect(second.reason).toBe("stale");
@@ -235,14 +251,32 @@ export function taxRulesStoreContract(
 			expect(second.current.rateBps).toBe(900); // unchanged by the losing edit
 		});
 
-		test("updateRate replay: a blind retry with the same expected is stale, never double-applied", async () => {
+		test("updateRate replay: a blind retry of an applied edit is an idempotent ok, never double-applied", async () => {
 			const { store } = await makeStore();
 			await seedRate(store);
-			const first = await store.updateRate("r1", { rateBps: 800, appliesToShipping: false }, 725);
-			expect(first.ok).toBe(true);
-			const replay = await store.updateRate("r1", { rateBps: 800, appliesToShipping: false }, 725);
-			expect(replay.ok).toBe(false); // once-only under replay
+			const edit = { rateBps: 800, appliesToShipping: false };
+			const read = { rateBps: 725, appliesToShipping: false };
+			expect((await store.updateRate("r1", edit, read)).ok).toBe(true);
+			const replay = await store.updateRate("r1", edit, read);
+			expect(replay.ok && replay.rate).toMatchObject({ rateBps: 800, appliesToShipping: false });
 			expect((await store.getRate("standard", "z-us"))?.rateBps).toBe(800);
+			// A DIFFERENT edit against the same stale read is still refused.
+			expect(
+				await store.updateRate("r1", { rateBps: 900, appliesToShipping: false }, read),
+			).toMatchObject({
+				ok: false,
+				reason: "stale",
+			});
+		});
+
+		test("a double-submitted flag-only change is ok both times, not a false stale", async () => {
+			const { store } = await makeStore();
+			await seedRate(store);
+			const edit = { rateBps: 725, appliesToShipping: true };
+			const read = { rateBps: 725, appliesToShipping: false };
+			expect((await store.updateRate("r1", edit, read)).ok).toBe(true);
+			const again = await store.updateRate("r1", edit, read);
+			expect(again.ok && again.rate).toMatchObject({ rateBps: 725, appliesToShipping: true });
 		});
 
 		// -- deleteRate: leaf delete + snapshot/recompute invariant --------------
@@ -322,7 +356,11 @@ export function taxRulesStoreContract(
 			});
 			expect(elsewhere.zoneId).toBe("z-eu");
 			expect(
-				await store.updateRate("r2", { rateBps: 1900, appliesToShipping: false }, 2000),
+				await store.updateRate(
+					"r2",
+					{ rateBps: 1900, appliesToShipping: false },
+					{ rateBps: 2000, appliesToShipping: false },
+				),
 			).toMatchObject({ ok: true });
 		});
 
@@ -375,13 +413,16 @@ export function taxRulesStoreContract(
 				appliesToShipping: true,
 			});
 			// Another tab turns the flag off; the rate is unchanged.
-			await store.updateRate("r1", { rateBps: 725, appliesToShipping: false }, 725, true);
+			await store.updateRate(
+				"r1",
+				{ rateBps: 725, appliesToShipping: false },
+				{ rateBps: 725, appliesToShipping: true },
+			);
 			// A tab that loaded (725, true) now saves a rate edit with the flag it showed.
 			const stale = await store.updateRate(
 				"r1",
 				{ rateBps: 800, appliesToShipping: true },
-				725,
-				true,
+				{ rateBps: 725, appliesToShipping: true },
 			);
 			expect(stale).toMatchObject({
 				ok: false,
@@ -396,8 +437,7 @@ export function taxRulesStoreContract(
 			const ok = await store.updateRate(
 				"r1",
 				{ rateBps: 800, appliesToShipping: false },
-				725,
-				false,
+				{ rateBps: 725, appliesToShipping: false },
 			);
 			expect(ok.ok && ok.rate).toMatchObject({ rateBps: 800, appliesToShipping: false });
 		});
@@ -475,7 +515,11 @@ export function taxRulesStoreContract(
 				rateBps: 2000,
 				appliesToShipping: false,
 			});
-			const res = await store.updateRate("r2", { rateBps: 725, appliesToShipping: true }, 2000);
+			const res = await store.updateRate(
+				"r2",
+				{ rateBps: 725, appliesToShipping: true },
+				{ rateBps: 2000, appliesToShipping: false },
+			);
 			expect(res.ok && { classId: res.rate.taxClassId, zoneId: res.rate.zoneId }).toEqual({
 				classId: "standard",
 				zoneId: "z-eu",
@@ -538,10 +582,18 @@ export function taxRulesStoreContract(
 			});
 			// Either one can be edited (the ignored one too) …
 			expect(
-				await store.updateRate("dup-a", { rateBps: 750, appliesToShipping: false }, 700),
+				await store.updateRate(
+					"dup-a",
+					{ rateBps: 750, appliesToShipping: false },
+					{ rateBps: 700, appliesToShipping: false },
+				),
 			).toMatchObject({ ok: true });
 			expect(
-				await store.updateRate("dup-b", { rateBps: 950, appliesToShipping: false }, 900),
+				await store.updateRate(
+					"dup-b",
+					{ rateBps: 950, appliesToShipping: false },
+					{ rateBps: 900, appliesToShipping: false },
+				),
 			).toMatchObject({ ok: true });
 			// … and deleting the one that applies hands the slot to the survivor.
 			expect(await store.deleteRate("dup-b")).toEqual({ ok: true });
