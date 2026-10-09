@@ -1196,7 +1196,7 @@ describe("Settings: store currency", () => {
 		const rest = options.slice(10).map((o) => o.value);
 		expect(rest).toEqual(rest.toSorted());
 		// Every table currency — the three-decimal ones included, since checkout
-		// rounds their total to the payment increment (ADR-0033 amendment).
+		// rounds their total to the payment increment (ADR-0035 amendment).
 		expect(options).toHaveLength(49);
 		for (const code of ["BHD", "JOD", "KWD", "OMR"]) {
 			expect(
@@ -1301,7 +1301,7 @@ describe("Settings: store currency", () => {
 		expect(await storedDoc()).toEqual(before);
 	});
 
-	test("a three-decimal currency (KWD, BHD) can be the store currency — checkout rounds its total (ADR-0033 amendment)", async () => {
+	test("a three-decimal currency (KWD, BHD) can be the store currency — checkout rounds its total (ADR-0035 amendment)", async () => {
 		await resetOperationalSettings();
 		sandbox = await loadPluginInSandbox({ allowedHosts: [], storage: true });
 		for (const code of ["KWD", "BHD"]) {

@@ -551,7 +551,7 @@ async function finalizeOrder(
 			discount: breakdown.discountCents,
 			shipping: breakdown.shippingCents,
 			tax: breakdown.taxCents,
-			// ADR-0033's amendment: only an increment currency's breakdown has it.
+			// ADR-0035's amendment: only an increment currency's breakdown has it.
 			...roundingEntry("rounding", breakdown.roundingCents),
 			appliedCouponCode: breakdown.appliedCouponCode ?? null,
 			shippingMethodSnapshot: ctx.shippingMethodSnapshot,

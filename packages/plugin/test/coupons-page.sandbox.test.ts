@@ -1119,7 +1119,7 @@ describe("admin Coupons console — list level (workerd sandbox)", () => {
 				},
 			}),
 		);
-		// Payable at checkout now (ADR-0033 amendment): the plain created notice.
+		// Payable at checkout now (ADR-0035 amendment): the plain created notice.
 		expect(String(bannerOf(created)?.description)).toBe(
 			'"KWD1" was added and is live per its validity window.',
 		);

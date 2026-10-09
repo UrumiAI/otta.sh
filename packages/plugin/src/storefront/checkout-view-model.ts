@@ -100,7 +100,7 @@ export interface CheckoutTotalsView {
 	/** "Includes $3.00 tax" under the total when prices are shown with tax. Plain text. */
 	taxIncludedNote: string | null;
 	/**
-	 * The "Rounding" row (ADR-0033's amendment): the total rounded to its
+	 * The "Rounding" row (ADR-0035's amendment): the total rounded to its
 	 * currency's payment increment, SIGNED (`−KWD 0.003`, `+KWD 0.002`). Present
 	 * only when the rounding is non-zero; absent for every other total, whose
 	 * view is unchanged. Shown even while shipping or tax is uncalculated: the

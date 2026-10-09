@@ -1,11 +1,11 @@
-# 0033. One currency table decides each currency's minor unit
+# 0035. One currency table decides each currency's minor unit
 
 - Status: accepted
 - Date: 2026-10-08
 - Relates to: DEVELOPMENT.md §4 (money is integer minor units),
   [ADR-0012](./0012-storefront-checkout-loads-stripe-elements-in-the-browser.md) (Stripe live
   path), PR #438.
-- Numbered 0033 because 0031 is the email ADR and 0032 the tax-options ADR.
+- Numbered 0035 because 0031 is the email ADR, 0032 the tax-options ADR, 0033 the order-number ADR (#443) and 0034 is reserved for the checkout region-list ADR (#446); first drafted as 0033 on its branch.
 
 ## Context
 

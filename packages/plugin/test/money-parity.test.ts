@@ -134,7 +134,7 @@ describe("currency table mirror parity (admin-presentation/currencies.ts ⇄ dom
 	});
 });
 
-describe("every listed currency is payable at checkout, in the steps Stripe takes (ADR-0033 amendment)", () => {
+describe("every listed currency is payable at checkout, in the steps Stripe takes (ADR-0035 amendment)", () => {
 	test("the live Stripe path refuses no listed currency", () => {
 		for (const row of DOMAIN_CURRENCIES) {
 			expect(stripeRefusesCurrency(row.code), row.code).toBe(false);

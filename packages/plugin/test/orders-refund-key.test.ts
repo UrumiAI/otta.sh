@@ -277,7 +277,7 @@ describe("the refund idempotency key (F-2a)", () => {
 	});
 });
 
-describe("a refund the order's currency cannot be paid back in (ADR-0033 amendment)", () => {
+describe("a refund the order's currency cannot be paid back in (ADR-0035 amendment)", () => {
 	test("the domain's AMOUNT_NOT_PAYMENT_INCREMENT is worded with the currency's step", async () => {
 		const rec = recorder();
 		const usdRefunds = rec.client.getRefunds.bind(rec.client);

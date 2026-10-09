@@ -17,7 +17,7 @@ export type Cents = number & { readonly [CentsBrand]: true };
 declare const SignedCentsBrand: unique symbol;
 /**
  * A SIGNED integer number of minor units — an adjustment, never a price or a
- * total: today only the checkout's rounding line (ADR-0033's amendment), which
+ * total: today only the checkout's rounding line (ADR-0035's amendment), which
  * is negative when the final total rounds down. `Cents` stays non-negative; a
  * `SignedCents` is not assignable to it, so an adjustment can never be stored as
  * an amount by accident. `signedCents()` is the only way to mint one.

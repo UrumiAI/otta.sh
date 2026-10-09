@@ -571,7 +571,7 @@ describe("lockedCheckoutPhase — what a cart that already became an order may o
 	});
 });
 
-describe("buildCheckoutTotals — the payment rounding row (ADR-0033 amendment)", () => {
+describe("buildCheckoutTotals — the payment rounding row (ADR-0035 amendment)", () => {
 	const KWD = {
 		currency: "KWD",
 		subtotalCents: 1234,

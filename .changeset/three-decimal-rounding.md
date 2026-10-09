@@ -7,7 +7,7 @@
 "@otta-sh/payments-stripe": minor
 ---
 
-Three-decimal currencies (BHD, JOD, KWD, OMR) are payable at checkout (ADR-0033 amendment).
+Three-decimal currencies (BHD, JOD, KWD, OMR) are payable at checkout (ADR-0035 amendment).
 The currency table gains an optional `paymentIncrement` (10 for those four; mirrored in
 `@otta-sh/admin-presentation`, read through `currencyPaymentIncrement`). For such a currency
 the totals pipeline rounds only the FINAL total half-up to the increment and records the signed

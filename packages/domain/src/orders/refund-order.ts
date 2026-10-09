@@ -82,7 +82,7 @@ export type RefundOrderFailure =
 	| "INVALID_AMOUNT"
 	/** The refund currency does not match the order's currency. */
 	| "CURRENCY_MISMATCH"
-	/** ADR-0033 amendment: in a currency with a payment increment (KWD, BHD, OMR,
+	/** ADR-0035 amendment: in a currency with a payment increment (KWD, BHD, OMR,
 	 *  JOD: 10), a NEW refund must be a multiple of it, or the order's whole
 	 *  remaining refundable amount (an order placed before checkout rounded its
 	 *  total may hold any remainder). Refused before anything is reserved. */
@@ -349,7 +349,7 @@ async function refundOnLedger(
 	const kind = gateway.refundable ? "gateway" : "manual";
 	const payments = known?.payments ?? (await deps.orderStore.getCapturedPayments(cmd.orderId));
 
-	// ADR-0033 amendment: a new refund in an increment currency is a multiple of
+	// ADR-0035 amendment: a new refund in an increment currency is a multiple of
 	// it, or exactly the remaining capacity. An amount OVER the remainder falls
 	// through to the reservation's ceiling refusal — "too high" is the more useful
 	// answer. A resume re-issues a reservation that already passed this. Every

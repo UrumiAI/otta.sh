@@ -446,7 +446,7 @@ test("every figure column on the detail is end-aligned, header and cells togethe
 	expect(columnAlignment(ledger, 0)).toEqual(["end", "end"]);
 });
 
-// ── the payment rounding row (ADR-0033 amendment) ───────────────────────────
+// ── the payment rounding row (ADR-0035 amendment) ───────────────────────────
 
 /** `detailFor` priced in KWD with a payment rounding on its totals. */
 function kwdDetail(roundingCents: number | undefined): DetailPayload {

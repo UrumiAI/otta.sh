@@ -11,7 +11,7 @@ import { beforeEach, describe, expect, test } from "vitest";
 import { makeOrderHarness, type OrderHarness } from "./fake-harness.js";
 
 /**
- * ADR-0033's amendment, end to end through the order: a KWD order's total is
+ * ADR-0035's amendment, end to end through the order: a KWD order's total is
  * rounded to its payment increment (0.010) when it is created, the rounding is
  * frozen on the order, the payment intent asks for the rounded total, settlement
  * accepts exactly that amount, and the order email shows a signed "Rounding" row.

@@ -262,7 +262,7 @@ export interface OrderTotals {
 	tax: Cents;
 	total: Cents;
 	/**
-	 * The checkout's payment rounding (ADR-0033's amendment), signed minor units:
+	 * The checkout's payment rounding (ADR-0035's amendment), signed minor units:
 	 * `total` minus the exact sum of the parts. Written only for an order in a
 	 * currency with a payment increment (KWD, BHD, OMR, JOD); absent on every
 	 * other order and on every order placed before it existed — read as 0.

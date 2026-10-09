@@ -40,7 +40,7 @@ export const DEFAULT_TOLERANCE_SECONDS = 300;
  *    amount divisible by 10 (docs.stripe.com/currencies, "Three-decimal
  *    currencies"). That rule is why the currency table gives these four a
  *    `paymentIncrement` of 10 and checkout rounds their final total to it
- *    (ADR-0033's amendment); {@link stripeAmountIncrement} re-checks it here, so
+ *    (ADR-0035's amendment); {@link stripeAmountIncrement} re-checks it here, so
  *    an amount that is not a multiple of 10 is refused before any network call.
  * It is NOT for, so the live path REFUSES (fail closed, before any network call
  * — a wrong charge is never retryable):

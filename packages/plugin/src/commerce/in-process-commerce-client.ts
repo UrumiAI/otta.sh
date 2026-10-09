@@ -1592,7 +1592,7 @@ function serializeOrderSummary(order: Order): OrderSummaryWire {
 	};
 }
 
-/** The order's payment rounding on the wire (ADR-0033's amendment), by the
+/** The order's payment rounding on the wire (ADR-0035's amendment), by the
  *  domain's presence rule (`roundingEntry`): every other order's wire is unchanged. */
 function roundingWire(order: Order): { roundingCents?: number } {
 	return roundingEntry("roundingCents", order.totals.rounding);

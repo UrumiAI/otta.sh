@@ -198,7 +198,7 @@ export function refundOrderContract(
 			expect(await h.orderStore.listRefunds(id)).toHaveLength(0);
 		});
 
-		test("a KWD refund not in steps of 0.010 is AMOUNT_NOT_PAYMENT_INCREMENT before anything is reserved — unless it is the whole remainder or over it (ADR-0033 amendment)", async () => {
+		test("a KWD refund not in steps of 0.010 is AMOUNT_NOT_PAYMENT_INCREMENT before anything is reserved — unless it is the whole remainder or over it (ADR-0035 amendment)", async () => {
 			const h = await makeHarness();
 			const KWD = toCurrency("KWD");
 			const id = await h.seedPaidOrder({ id: "ord-kwd", totalCents: 5000, currency: "KWD" });

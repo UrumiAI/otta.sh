@@ -63,7 +63,7 @@ describe("orderSumRows — the totals rows, by the order page's own rule", () =>
 		expect(byLabel.get("Discount")?.fallback).toBe("No coupon applied");
 	});
 
-	test("a rounded KWD order adds a signed Rounding row after the tax; a USD order does not (ADR-0033 amendment)", () => {
+	test("a rounded KWD order adds a signed Rounding row after the tax; a USD order does not (ADR-0035 amendment)", () => {
 		const flags = {
 			locale: "en",
 			...orderTotalsFlags({ shippingZoneId: "z1", shippingMethodId: "m1" }),

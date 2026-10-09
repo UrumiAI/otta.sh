@@ -91,7 +91,7 @@ export function mulDivRoundHalfDownAny(a: number, b: number, denominator: number
 
 /**
  * `amount` rounded half-up to the nearest multiple of `increment`: the checkout's
- * payment rounding (ADR-0033's amendment — KWD 1.234 → 1.230, 1.235 → 1.240).
+ * payment rounding (ADR-0035's amendment — KWD 1.234 → 1.230, 1.235 → 1.240).
  * `amount` a non-negative safe integer, `increment` a positive safe integer.
  * Computed in `BigInt` as `floor((2·amount + increment) / (2·increment)) ·
  * increment`, so it is exact at every magnitude and for an odd increment. The

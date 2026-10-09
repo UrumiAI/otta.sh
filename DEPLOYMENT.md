@@ -411,7 +411,7 @@ order of appearance in a deployment's life:
 > currency table, `packages/domain/src/money/currencies.ts`) and sends it to Stripe unchanged,
 > which is Stripe's `amount` (<https://docs.stripe.com/currencies>) for two- and zero-decimal
 > currencies: USD, EUR, … and now JPY, KRW, VND and CLP; HUF and TWD charge as two-decimal.
-> **Three-decimal currencies (BHD, JOD, KWD, OMR) are payable** (ADR-0033 amendment). Stripe
+> **Three-decimal currencies (BHD, JOD, KWD, OMR) are payable** (ADR-0035 amendment). Stripe
 > takes their thousandths only in multiples of 10, so checkout rounds the order's **final
 > total** half-up to 0.010 and shows the difference as a signed "Rounding" row (at most
 > ±0.005); line prices, discounts, shipping and tax stay exact. The rounded total is what is

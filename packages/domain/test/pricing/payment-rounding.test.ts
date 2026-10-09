@@ -12,7 +12,7 @@ import { describe, expect, test } from "vitest";
 import { roundHalfUpToMultiple } from "../../src/pricing/round.js";
 
 /**
- * ADR-0033's amendment: a currency with a payment increment (KWD, BHD, OMR, JOD:
+ * ADR-0035's amendment: a currency with a payment increment (KWD, BHD, OMR, JOD:
  * 10 minor units) has its FINAL total rounded half-up to it, the difference shown
  * as `roundingCents`; every part stays exact, and every other currency's
  * breakdown is exactly what it always was.

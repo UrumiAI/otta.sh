@@ -169,7 +169,7 @@ export function assembleTotals(
 	const exactTotal = cents(
 		discountedTotal + preTax.shippingCents + (pricesIncludeTax ? shippingTax : taxTotal),
 	);
-	// Step 10 (ADR-0033's amendment): only the FINAL total is rounded, and only
+	// Step 10 (ADR-0035's amendment): only the FINAL total is rounded, and only
 	// for a currency with a payment increment; every part above stays exact.
 	const totalCents = cents(payableTotal(exactTotal, preTax.currency));
 

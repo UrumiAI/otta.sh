@@ -706,7 +706,7 @@ describe("each refund refusal names the field it is about", () => {
 		);
 	});
 
-	test("a three-decimal refund not in steps of 0.010 is about the amount — unless it is the whole remainder (ADR-0033 amendment)", () => {
+	test("a three-decimal refund not in steps of 0.010 is about the amount — unless it is the whole remainder (ADR-0035 amendment)", () => {
 		const check = checkRefundInput("1.234", "ops", 5000, "KWD");
 		expect(check.ok).toBe(false);
 		if (check.ok) return;

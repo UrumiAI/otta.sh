@@ -2,7 +2,7 @@ import { currencyPaymentIncrement } from "../money/currencies.js";
 import { roundHalfUpToMultiple } from "./round.js";
 
 /**
- * The checkout's payment rounding (ADR-0033 amendment), in ONE place.
+ * The checkout's payment rounding (ADR-0035 amendment), in ONE place.
  *
  * THE PRESENCE RULE, everywhere a rounding travels: it EXISTS for a quote or
  * order in a currency with a payment increment (KWD, BHD, OMR, JOD) — 0 included,

@@ -43,7 +43,7 @@ export interface OrderTotalsWire {
 	shippingCents: number;
 	taxCents: number;
 	totalCents: number;
-	/** The payment rounding (ADR-0033's amendment), SIGNED minor units — present
+	/** The payment rounding (ADR-0035's amendment), SIGNED minor units — present
 	 *  only on an order in a currency with a payment increment. */
 	roundingCents?: number;
 	appliedCouponCode: string | null;

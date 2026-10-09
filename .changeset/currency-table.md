@@ -56,7 +56,7 @@ Price in 49 currencies, each in its own minor unit, from one currency table.
 - **React console.** The first-pricing currency picker offers every table currency (the
   familiar ten first, labelled `USD — US Dollar`); USD stays the default.
 - **Display digits.** The domain now exports `minorUnitDigits` (display digits: table → ICU →
-  2); `formatMoney` caches its formatters per locale and currency. See ADR-0033.
+  2); `formatMoney` caches its formatters per locale and currency. See ADR-0035.
 
 **Upgrade notes.** JPY/KRW/VND/CLP amounts typed in the admin on an earlier version were stored
 ×100 and become purchasable at that stored value — check and re-enter them before upgrading.

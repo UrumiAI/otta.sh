@@ -396,7 +396,7 @@ describe("the draft", () => {
 		expect(CURRENCY_CHOICES).toContain("KWD");
 		expect(new Set(CURRENCY_CHOICES).size).toBe(CURRENCY_CHOICES.length);
 		expect(currencyChoiceLabel("JPY")).toBe("JPY — Japanese Yen");
-		// Payable at checkout now (its total is rounded — ADR-0033 amendment): no warning.
+		// Payable at checkout now (its total is rounded — ADR-0035 amendment): no warning.
 		expect(currencyChoiceLabel("KWD")).toBe("KWD — Kuwaiti Dinar");
 	});
 

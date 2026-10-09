@@ -133,7 +133,7 @@ export function orderStoreContract(
 			expect(order.totals.tax).toBe(0);
 		});
 
-		test("persists the payment rounding when given, and reads an order without it with no rounding (ADR-0033 amendment)", async () => {
+		test("persists the payment rounding when given, and reads an order without it with no rounding (ADR-0035 amendment)", async () => {
 			const { store } = await makeHarness();
 			const KWD = currency("KWD");
 			await store.createFromCart(

@@ -194,7 +194,7 @@ export function checkRefundInput(
 			},
 		};
 	}
-	// ADR-0033's amendment, AFTER the ceiling (an amount that is too high is told
+	// ADR-0035's amendment, AFTER the ceiling (an amount that is too high is told
 	// so first): KWD, BHD, OMR and JOD are paid back in steps of 0.010, or the
 	// whole remainder. The domain refuses the same (`AMOUNT_NOT_PAYMENT_INCREMENT`).
 	if (!isRefundableIncrement(parsed, remainingCents, currency)) {
@@ -1062,7 +1062,7 @@ export function OrderDetail({
 		],
 		["Shipping", formatAmount(order.totals.shippingCents, totalsCur)],
 		["Tax", formatAmount(order.totals.taxCents, totalsCur)],
-		// ADR-0033's amendment: the total rounded to its currency's payment
+		// ADR-0035's amendment: the total rounded to its currency's payment
 		// increment, SIGNED — only on an order that has a non-zero one.
 		...(rounding !== undefined && rounding !== 0
 			? [

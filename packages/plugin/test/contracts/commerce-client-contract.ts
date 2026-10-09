@@ -917,7 +917,7 @@ export function storefrontCommerceClientContract(tier: CommerceClientTier): void
 			expect(quoted.breakdown.totalCents).toBe(3000);
 		});
 
-		test("a KWD cart quotes its total ROUNDED to 0.010 with a signed roundingCents; the order and its public read carry the same (ADR-0033 amendment)", async () => {
+		test("a KWD cart quotes its total ROUNDED to 0.010 with a signed roundingCents; the order and its public read carry the same (ADR-0035 amendment)", async () => {
 			// A title too: an order snapshots it, so a product without one is unpriced.
 			const productId = await tier.arrange.product({
 				productId: "prod-for-SKU-KWD-ROUND",

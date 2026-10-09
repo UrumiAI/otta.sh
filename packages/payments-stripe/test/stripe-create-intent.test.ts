@@ -95,7 +95,7 @@ describe("StripePaymentGateway.createIntent — the LIVE path sends our minor un
 	// (whole yen for JPY, fils for KWD). Stripe's `amount` is the same unit for
 	// two- and zero-decimal currencies (https://docs.stripe.com/currencies), so
 	// those go out unchanged; three-decimal ones too, but only as multiples of 10
-	// (checkout rounds their total to it — ADR-0033's amendment), so any other
+	// (checkout rounds their total to it — ADR-0035's amendment), so any other
 	// amount is refused before the network.
 
 	async function liveIntent(code: string, amount: number): Promise<StripeCreatePaymentIntentInput> {

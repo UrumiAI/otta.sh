@@ -81,7 +81,7 @@ describe("settings use-cases (over the in-memory fake)", () => {
 	);
 
 	test.each(["BHD", "JOD", "KWD", "OMR"])(
-		"updateSettings accepts %s as the store currency — checkout rounds its total to the payment increment (ADR-0033 amendment)",
+		"updateSettings accepts %s as the store currency — checkout rounds its total to the payment increment (ADR-0035 amendment)",
 		async (code) => {
 			const store = new InMemorySettingsStore();
 			expect((await updateSettings(store, { currency: code }, idempotencyKey("k1"))).currency).toBe(

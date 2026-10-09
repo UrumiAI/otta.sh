@@ -114,7 +114,7 @@ export interface TotalsBreakdown {
 	shippingTaxCents: Cents;
 	appliedCouponCode?: string;
 	/**
-	 * The payment rounding (ADR-0033's amendment): `totalCents` minus the exact
+	 * The payment rounding (ADR-0035's amendment): `totalCents` minus the exact
 	 * total the parts sum to, signed, `|rounding| ≤ increment / 2`. PRESENT ONLY
 	 * for a currency with a `paymentIncrement` (KWD, BHD, OMR, JOD — 0 when the
 	 * exact total already was a multiple of it); ABSENT for every other currency,

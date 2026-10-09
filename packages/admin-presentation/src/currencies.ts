@@ -30,7 +30,7 @@ export interface CurrencyInfo {
 	 * minor-unit amount (an increment of 1). The three-decimal currencies carry
 	 * 10 — payments in them are taken in multiples of 0.010, not 0.001 — so
 	 * checkout rounds an order's FINAL total half-up to a multiple of it and
-	 * shows the difference as its own "Rounding" line (ADR-0033 amendment).
+	 * shows the difference as its own "Rounding" line (ADR-0035 amendment).
 	 */
 	readonly paymentIncrement?: number;
 }
