@@ -13,7 +13,14 @@
  * It puts the store back afterwards: the rate, the class and the zone it
  * creates through the plugin's admin route are deleted.
  */
-import { admin, adminHeaders, everything, formBlockId, pathToken } from "./admin-rules.js";
+import {
+	addOneToCart,
+	admin,
+	adminHeaders,
+	everything,
+	formBlockId,
+	pathToken,
+} from "./admin-rules.js";
 import { expect, skipWithoutPurchasableProduct, skipWithoutSite, test } from "./harness.js";
 
 const ZONE = "e2e-tax-us-ca";
@@ -138,5 +145,35 @@ test.describe("the state/province pick list on a store with only a state-level t
 		await expect(
 			page.getByText(/There are no delivery options for this address/).first(),
 		).toBeVisible();
+	});
+
+	test.describe("with JavaScript (ADR-0034)", () => {
+		test.use({ javaScriptEnabled: true });
+
+		test("the store country's list is there at first render, and follows a changed country at once", async ({
+			page,
+		}, testInfo) => {
+			await skipWithoutSite(testInfo);
+			await page.route(/js\.stripe\.com/, (route) => route.abort());
+			await addOneToCart(page, () => skipWithoutPurchasableProduct(testInfo));
+			await page.goto("/checkout");
+			const delivery = page.locator("#delivery");
+			const country = delivery.locator('select[name="deliveryCountry"]');
+			const region = delivery.locator('select[name="deliveryRegion"]');
+			const update = delivery.locator('button[value="update-delivery"]');
+			await expect(country).toHaveValue("US");
+			await expect(region.locator('option[value="CA"]')).toHaveText("California");
+			const before = page.url();
+			await country.selectOption("IN");
+			await expect(region.locator('option[value="KA"]')).toHaveText("Karnataka");
+			await expect(region.locator('option[value="CA"]')).toHaveCount(0);
+			await country.selectOption("US");
+			await expect(region.locator('option[value="CA"]')).toHaveText("California");
+			expect(page.url(), "the list swapped without a navigation").toBe(before);
+			await region.selectOption("CA");
+			await Promise.all([page.waitForURL(/region=CA/, { waitUntil: "load" }), update.click()]);
+			await expect(region).toHaveValue("CA");
+			await expect(page.getByText(/Delivering to United States, California/)).toBeVisible();
+		});
 	});
 });

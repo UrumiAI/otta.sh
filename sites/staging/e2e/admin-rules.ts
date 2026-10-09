@@ -45,3 +45,31 @@ export function formBlockId(blocks: Block[], actionId: string): unknown {
 
 export const pathToken = (path: string[]): string =>
 	Buffer.from(JSON.stringify(path)).toString("base64url");
+
+/** Put one purchasable product in a new cart (the page's own cart cookie). */
+export async function addOneToCart(
+	page: import("@playwright/test").Page,
+	skip: () => Promise<void>,
+): Promise<void> {
+	await page.goto("/products");
+	const hrefs = [
+		...new Set(
+			await page
+				.locator('a[href^="/products/"]')
+				.evaluateAll((links) => links.map((link) => link.getAttribute("href") ?? "")),
+		),
+	].filter((href) => /^\/products\/[^/?#]+$/.test(href));
+	const addToCart = page.locator('form[action="/cart/add"] button[type="submit"]');
+	for (const href of hrefs.slice(0, 12)) {
+		await page.goto(href);
+		if ((await addToCart.count()) > 0 && (await addToCart.first().isEnabled())) {
+			await Promise.all([
+				page.waitForResponse((res) => new URL(res.url()).pathname === "/cart/add"),
+				addToCart.first().click(),
+			]);
+			await page.waitForLoadState("load");
+			return;
+		}
+	}
+	await skip();
+}

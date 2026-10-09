@@ -1229,3 +1229,10 @@
 	flex: 1;
 	min-width: 0;
 }
+
+/* A region field for a country with no subdivisions is in the page but hidden
+   (the optional script fills and shows it when the country changes); its
+   `display: flex` above must not override `hidden`. */
+[data-theme-id] .checkout-field[hidden] {
+	display: none;
+}

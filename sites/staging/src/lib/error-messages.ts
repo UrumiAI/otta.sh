@@ -140,7 +140,7 @@ const MESSAGES: Record<string, string> = {
 	/* …and INVALID_SHIPPING_ADDRESS there: the same check, without "delivery". */
 	BUYER_ADDRESS_INVALID: "Please check your address — some fields are missing or too long.",
 	/* The site's own: the address's country changed after its state/province
-	   list was rendered (no client JS swaps it), so the review came back with
+	   list was rendered (without the optional script), so the review came back with
 	   the new country's list instead of placing. Nothing was placed. */
 	REGION_LIST_UPDATED:
 		"We've updated the state/province list for the country you chose — pick yours (or leave it blank if none applies), then continue.",

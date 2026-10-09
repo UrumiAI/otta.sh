@@ -21,6 +21,7 @@ import {
 	skipWithoutSite,
 	test,
 } from "./harness.js";
+import { addOneToCart } from "./admin-rules.js";
 
 const MAX_PRODUCTS_TRIED = 12;
 
@@ -65,8 +66,8 @@ test.describe("the state/province pick list (no client JS)", () => {
 			testInfo.skip(true, "a store with zones: the address block has no country of its own");
 		}
 
-		// No country yet: no region field.
-		await expect(form.locator('select[name="region"]')).toHaveCount(0);
+		// No country yet: no region field (in the page, hidden — the script fills it).
+		await expect(form.locator('select[name="region"]')).toBeHidden();
 
 		await form.locator('input[name="email"]').fill("region-e2e@example.test");
 		await form.locator('input[name="name"]').fill("Asha Rao");
@@ -135,7 +136,54 @@ test.describe("the state/province pick list (no client JS)", () => {
 			),
 			form.locator('button[value="update-address"]').click(),
 		]);
-		await expect(form.locator('select[name="region"]')).toHaveCount(0);
+		await expect(form.locator('select[name="region"]')).toBeHidden();
 		await expect(country).toHaveValue("AQ");
+	});
+
+	test.describe("with JavaScript (ADR-0034)", () => {
+		test.use({ javaScriptEnabled: true });
+
+		test("the list follows the country at once — no Update, no round trip — and the order places", async ({
+			page,
+		}, testInfo) => {
+			await skipWithoutSite(testInfo);
+			await page.route(/js\.stripe\.com/, (route) => route.abort());
+			await addOneToCart(page, () => skipWithoutPurchasableProduct(testInfo));
+			await page.goto("/checkout");
+			const form = page.locator("form#checkout-place");
+			const country = form.locator('select[name="country"]');
+			if ((await country.count()) === 0) {
+				testInfo.skip(true, "a store with zones: the address block has no country of its own");
+			}
+			const region = form.locator('select[name="region"]');
+			// The no-JS Update is hidden by the script.
+			await expect(form.locator('button[value="update-address"]')).toBeHidden();
+			const before = page.url();
+			await country.selectOption("IN");
+			await expect(region).toBeVisible();
+			await expect(region.locator('option[value="KA"]')).toHaveText("Karnataka");
+			await country.selectOption("AQ");
+			await expect(region).toBeHidden();
+			await country.selectOption("US");
+			await expect(region.locator('option[value="CA"]')).toHaveText("California");
+			await expect(region.locator('option[value="KA"]')).toHaveCount(0);
+			expect(page.url(), "the list swapped without a navigation").toBe(before);
+			await region.selectOption("CA");
+
+			await form.locator('input[name="email"]').fill("region-js@example.test");
+			await form.locator('input[name="name"]').fill("Cal Buyer");
+			await form.locator('input[name="line1"]').fill("1 Market St");
+			await form.locator('input[name="city"]').fill("San Francisco");
+			await form.locator('input[name="postalCode"]').fill("94105");
+			const submit = form.locator('button[type="submit"]:not([value])');
+			if ((await submit.count()) === 0) {
+				await skipWithoutPlaceButton(testInfo, "no Continue to payment button");
+			}
+			await Promise.all([
+				page.waitForURL((url) => url.pathname !== "/checkout", { waitUntil: "load" }),
+				submit.click(),
+			]);
+			expect(new URL(page.url()).pathname, `landed on ${page.url()}`).toBe("/checkout/pay");
+		});
 	});
 });

@@ -15,7 +15,14 @@
  * zone), so the specs after it still see a store with no zones. It adds a
  * product to a new cart and places an order (offline Stripe gateway).
  */
-import { admin, adminHeaders, everything, formBlockId, pathToken } from "./admin-rules.js";
+import {
+	addOneToCart,
+	admin,
+	adminHeaders,
+	everything,
+	formBlockId,
+	pathToken,
+} from "./admin-rules.js";
 import {
 	expect,
 	skipWithoutPlaceButton,
@@ -176,5 +183,47 @@ test.describe("the state/province pick list on a store with a state-level zone (
 			submit.click(),
 		]);
 		expect(new URL(page.url()).pathname, `landed on ${page.url()}`).toBe("/checkout/pay");
+	});
+
+	test.describe("with JavaScript (ADR-0034)", () => {
+		test.use({ javaScriptEnabled: true });
+
+		test("the store country's list is there at first render, and follows a changed country at once", async ({
+			page,
+		}, testInfo) => {
+			await skipWithoutSite(testInfo);
+			await page.route(/js\.stripe\.com/, (route) => route.abort());
+			await addOneToCart(page, () => skipWithoutPurchasableProduct(testInfo));
+			await page.goto("/checkout");
+			const delivery = page.locator("#delivery");
+			const country = delivery.locator('select[name="deliveryCountry"]');
+			const region = delivery.locator('select[name="deliveryRegion"]');
+			const update = delivery.locator('button[value="update-delivery"]');
+			await expect(country).toHaveValue("US");
+			await expect(region.locator('option[value="CA"]')).toHaveText("California");
+			const before = page.url();
+			await country.selectOption("IN");
+			await expect(region.locator('option[value="KA"]')).toHaveText("Karnataka");
+			await expect(region.locator('option[value="CA"]')).toHaveCount(0);
+			await country.selectOption("US");
+			await expect(region.locator('option[value="CA"]')).toHaveText("California");
+			expect(page.url(), "the list swapped without a navigation").toBe(before);
+			await region.selectOption("CA");
+			await Promise.all([page.waitForURL(/region=CA/, { waitUntil: "load" }), update.click()]);
+			await expect(region).toHaveValue("CA");
+			await expect(page.getByText(/Delivering to United States, California/)).toBeVisible();
+
+			const form = page.locator("form#checkout-place");
+			await form.locator('input[name="email"]').fill(`zoned-js-${Date.now()}@example.test`);
+			await form.locator('input[name="name"]').fill("Cal Buyer");
+			await form.locator('input[name="line1"]').fill("1 Market St");
+			await form.locator('input[name="city"]').fill("San Francisco");
+			await form.locator('input[name="postalCode"]').fill("94105");
+			await Promise.all([
+				page.waitForURL((url) => url.pathname !== "/checkout", { waitUntil: "load" }),
+				form.locator('button[type="submit"]:not([value])').click(),
+			]);
+			expect(new URL(page.url()).pathname, `landed on ${page.url()}`).toBe("/checkout/pay");
+		});
 	});
 });

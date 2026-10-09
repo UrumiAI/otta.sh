@@ -5,11 +5,13 @@
  * country with subdivisions and not at all for one without. Rendered with the
  * Container API (no client JS: the server output IS the page).
  */
+import type { APIContext } from "astro";
 import { experimental_AstroContainer as AstroContainer } from "astro/container";
 import { beforeAll, describe, expect, test } from "vitest";
 import type { CheckoutSummaryView } from "@otta-sh/plugin";
 import { byLabel, countryOptions } from "../src/lib/countries.js";
-import { regionChoice, regionListIsStale } from "../src/lib/regions.js";
+import { regionChoice, regionOutsideCountry } from "../src/lib/regions.js";
+import { GET as REGIONS_GET } from "../src/pages/checkout/regions.js";
 import type { CheckoutModel } from "../src/themes/contract.js";
 import CheckoutView from "../src/themes/tempered/CheckoutView.astro";
 
@@ -63,15 +65,27 @@ describe("the sorted list is cached per country and locale", () => {
 	});
 });
 
-describe("regionListIsStale", () => {
-	test("only when the form carries the list's country and the posted country differs", () => {
-		expect(regionListIsStale(undefined, "US")).toBe(false);
-		expect(regionListIsStale("US", "us")).toBe(false);
-		expect(regionListIsStale("US", "IN")).toBe(true);
-		expect(regionListIsStale("", "US")).toBe(true);
-		expect(regionListIsStale("US", undefined)).toBe(true);
+describe("regionOutsideCountry — the one region rule", () => {
+	test("a code that is not one of the country's subdivisions", () => {
+		expect(regionOutsideCountry("US", "ON")).toBe(true);
+		expect(regionOutsideCountry("US", "MX-CA")).toBe(true);
+		expect(regionOutsideCountry("AQ", "CA")).toBe(true);
+		expect(regionOutsideCountry("FR", "ZZ")).toBe(true);
+	});
+	test("is not: one of the country's own (any form), blank, an unknown country, or free text", () => {
+		expect(regionOutsideCountry("US", "CA")).toBe(false);
+		expect(regionOutsideCountry("us", "us-ca")).toBe(false);
+		expect(regionOutsideCountry("US", "")).toBe(false);
+		expect(regionOutsideCountry("US", undefined)).toBe(false);
+		expect(regionOutsideCountry("ZZ", "CA")).toBe(false);
+		expect(regionOutsideCountry(undefined, "CA")).toBe(false);
+		expect(regionOutsideCountry("US", "California")).toBe(false);
 	});
 });
+
+/** The opening tag of the field wrapping the region select `id`. */
+const fieldOf = (html: string, id: string): string =>
+	new RegExp(`(<div[^>]*data-region-field[^>]*>)\\s*<label[^>]*for="${id}"`).exec(html)?.[1] ?? "";
 
 /** One rendered `<select name=…>`, options and all, or "". */
 const regionSelect = (html: string, name: string): string =>
@@ -178,7 +192,12 @@ describe("the Tempered review, rendered", () => {
 		expect(list).toMatch(/<option value="KA" selected>Karnataka<\/option>/);
 		expect(list).toMatch(/<option value="MH">Maharashtra<\/option>/);
 		expect(list.match(/ selected/g)).toHaveLength(1);
-		expect(html).toMatch(/<input type="hidden" name="regionCountry" value="IN">/);
+		// The country select names its list for the optional script (ADR-0034),
+		// and the list's field is shown.
+		expect(html).toMatch(
+			/<select[^>]*id="address-country"[^>]*data-region-target="address-region"/,
+		);
+		expect(fieldOf(html, "address-region")).not.toMatch(/\bhidden\b/);
 		// No free-text region anywhere.
 		expect(html).not.toMatch(/<input[^>]*name="region"/);
 	});
@@ -188,22 +207,19 @@ describe("the Tempered review, rendered", () => {
 		expect(list).toMatch(/<option value="CA" selected>California<\/option>/);
 	});
 
-	test("a country WITHOUT subdivisions: no region field at all, the country still echoed", async () => {
+	test("a country WITHOUT subdivisions: the region field is HIDDEN and empty (the script fills it on a change)", async () => {
 		const html = await render(model(addressWith("AQ", "")));
-		expect(regionSelect(html, "region")).toBe("");
-		expect(html).not.toContain('for="address-region"');
-		expect(html).toMatch(/<input type="hidden" name="regionCountry" value="AQ">/);
+		expect(fieldOf(html, "address-region")).toMatch(/\bhidden\b/);
+		expect(regionSelect(html, "region").match(/<option /g)).toHaveLength(1);
 	});
 
-	test("no country yet: no region field, an Update button beside the country, regionCountry empty", async () => {
+	test("no country yet: the region field hidden, and a no-JS Update beside the country (the script hides it)", async () => {
 		const html = await render(model({}));
-		expect(regionSelect(html, "region")).toBe("");
-		// Astro prints an empty value as a bare `value`, which posts "" — present, unlike
-		// a form without the field (a theme that predates the pick list).
-		expect(html).toMatch(/<input type="hidden" name="regionCountry" value(="")?>/);
+		expect(fieldOf(html, "address-region")).toMatch(/\bhidden\b/);
 		expect(html).toMatch(
-			/<button type="submit" class="u-btn u-btn-ghost" name="intent" value="update-address" formnovalidate>/,
+			/<button type="submit" class="u-btn u-btn-ghost" name="intent" value="update-address" formnovalidate data-region-update>/,
 		);
+		expect(html).toMatch(/id="country-note" data-region-update/);
 		expect(html).toMatch(/<select[^>]*aria-describedby="country-note"/);
 	});
 
@@ -239,7 +255,7 @@ describe("the Tempered review, rendered", () => {
 		expect(list).toContain('form="checkout-place"');
 		expect(list).toMatch(/<option value="NY" selected>New York<\/option>/);
 		expect(html).toMatch(
-			/<input type="hidden" name="deliveryRegionCountry" form="checkout-place" value="US">/,
+			/<select[^>]*name="deliveryCountry"[^>]*data-region-target="delivery-region"/,
 		);
 		// The address block's line names the region, not just its code.
 		expect(html).toMatch(/Delivering to United States\s*, New York/);
@@ -291,9 +307,6 @@ describe("the Tempered review, rendered", () => {
 		expect(open).toContain('aria-invalid="true"');
 		expect(open).toContain('aria-describedby="checkout-error region-note"');
 		expect(html).toMatch(/id="checkout-error"[^>]*>[\s\S]*updated the state\/province list/);
-		expect(html).toMatch(
-			/<input type="hidden" name="deliveryRegionSelected" form="checkout-place" value(="")?>/,
-		);
 	});
 
 	test("a COUNTRY-level refusal (we don't ship there) does not mark the state list invalid", async () => {
@@ -336,7 +349,29 @@ describe("the Tempered review, rendered", () => {
 				},
 			),
 		);
-		expect(regionSelect(html, "deliveryRegion")).toBe("");
-		expect(html).not.toContain('name="deliveryRegionCountry"');
+		expect(fieldOf(html, "delivery-region")).toMatch(/\bhidden\b/);
+		expect(regionSelect(html, "deliveryRegion").match(/<option /g)).toHaveLength(1);
+	});
+});
+
+describe("GET /checkout/regions — the optional script's one data source (ADR-0034)", () => {
+	const get = async (q: string) => {
+		const response = await REGIONS_GET({
+			url: new URL(`http://x/checkout/regions${q}`),
+		} as unknown as APIContext);
+		return { response, body: (await response.json()) as Array<{ code: string; label: string }> };
+	};
+
+	test("a country's options, named and sorted — exactly the server-rendered list", async () => {
+		const { response, body } = await get("?country=us");
+		expect(response.headers.get("content-type")).toContain("application/json");
+		expect(body).toEqual(regionChoice("US", "", "en-US").options);
+		expect(body).toContainEqual({ code: "CA", label: "California" });
+	});
+
+	test("no subdivisions, an unknown country, or none at all: []", async () => {
+		for (const q of ["?country=AQ", "?country=ZZ", "", "?country=<script>"]) {
+			expect((await get(q)).body, q).toEqual([]);
+		}
 	});
 });

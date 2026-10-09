@@ -23,12 +23,13 @@ field.
   `subdivisionName(country, code)`, decoded one country at a time on demand) — so neither
   package's main entry nor the plugin's sandbox entry carries them. `@otta-sh/plugin` also
   re-exports `normalizeSubdivision`.
-- **A region is never sent for the wrong country.** Each list echoes the country it was
-  rendered for (`deliveryRegionCountry`, `regionCountry`); when the posted country
-  differs, the old region is dropped. A region picked from another
-  country's list is never dropped silently: the field is marked "pick again" beside any
-  other error, with `REGION_LIST_UPDATED` when nothing else is wrong; for a country without
-  subdivisions it is just dropped.
+- **One region rule, and an optional script (ADR-0034).** A posted region that is not one
+  of the posted country's subdivisions is dropped and asked for again (`REGION_LIST_UPDATED`,
+  field marked), keeping the buyer's country. With JavaScript, the review's one first-party
+  script (`/scripts/region-picker.js`, from `GET /checkout/regions`) swaps the list as the
+  country changes and hides the no-JS Update; without it, Update does the same on the server.
+  The store's country is preselected only on a fresh visit; a failed place keeps the
+  buyer's country.
 - **Region required iff the store uses regions for the country** — the plugin's zone match,
   unchanged: a physical cart whose country some zone lists at region level (zones carry
   shipping methods and tax rates) is refused `SHIPPING_REGION_CODE_REQUIRED` without one,

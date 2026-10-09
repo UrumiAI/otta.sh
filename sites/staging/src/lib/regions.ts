@@ -5,23 +5,18 @@
  * has always stored (`CA`), so nothing downstream changes, and the plugin still
  * validates every region it is sent.
  *
- * NO CLIENT JS (the review is a plain form): the list is rendered on the
- * SERVER for the country the page knows. Changing the country takes a round
- * trip — the form's Update button — and the page comes back with that
- * country's list and everything typed kept (the draft cookie). The list's own
- * country rides along as a hidden field (`REGION_COUNTRY_FIELD`), so a region
- * picked for one country is never sent as another's: same-looking codes (`01`)
- * exist in many countries.
+ * The list is rendered on the SERVER for the country the page knows, and the
+ * page works without JavaScript: changing the country takes a round trip (the
+ * form's Update button) that comes back with that country's list and everything
+ * typed kept (the draft cookie). The optional script (ADR-0034,
+ * `public/scripts/region-picker.js`) swaps the list in place from
+ * `/checkout/regions` instead. Either way the server applies ONE rule
+ * (`regionOutsideCountry`): a region that is not one of the posted country's is
+ * dropped and asked for again.
  */
-import { normalizeSubdivision, SUBDIVISIONS } from "@otta-sh/plugin";
+import { COUNTRY_CODES, isCodeShapedRegion, normalizeSubdivision } from "@otta-sh/plugin";
 import { subdivisionOptions } from "@otta-sh/plugin/subdivisions";
 import { byLabel } from "./countries.js";
-
-/** The hidden field naming the country the place form's region list was
- *  rendered for (the address block without delivery). */
-export const REGION_COUNTRY_FIELD = "regionCountry";
-/** The same, for the delivery block's list. */
-export const DELIVERY_REGION_COUNTRY_FIELD = "deliveryRegionCountry";
 
 export interface RegionOption {
 	code: string;
@@ -71,19 +66,20 @@ export function regionChoice(country: string, value: string, locale: string): Re
 	return { country: code, options, selected: read.ok && read.code !== null ? read.code : "" };
 }
 
-/** Does `country` have subdivisions — i.e. is there a list to pick from? Read
- *  off the codes table alone; the names are not loaded for it. */
-export function hasRegionList(country: string | undefined): boolean {
-	return SUBDIVISIONS.has((country ?? "").trim().toUpperCase());
-}
-
-/** True when the form's region was picked from a list rendered for ANOTHER
- *  country than the one now posted — so it must not be sent as this one's.
- *  `listCountry` undefined (a view without the hidden field) never differs. */
-export function regionListIsStale(
-	listCountry: string | undefined,
+/**
+ * THE ONE REGION RULE: true when `region` is a code (`ON`, `us-ca`) but not one
+ * of `country`'s subdivisions — typically picked from the list of a country the
+ * buyer has since changed. Such a region is dropped and asked for again, with
+ * the buyer's country kept. Blank, an unknown country, or a value that is not
+ * even code-shaped (a theme's typed input, refused by its own path) are not this
+ * rule's business.
+ */
+export function regionOutsideCountry(
 	country: string | undefined,
+	region: string | undefined,
 ): boolean {
-	if (listCountry === undefined) return false;
-	return listCountry.trim().toUpperCase() !== (country ?? "").trim().toUpperCase();
+	const code = (country ?? "").trim().toUpperCase();
+	const value = (region ?? "").trim();
+	if (value === "" || !COUNTRY_CODES.has(code) || !isCodeShapedRegion(value)) return false;
+	return !normalizeSubdivision(code, value).ok;
 }

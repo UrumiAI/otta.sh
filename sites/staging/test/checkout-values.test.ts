@@ -322,8 +322,10 @@ describe("POST /checkout/place — a refusal keeps every typed value", () => {
 	});
 
 	test("the plugin's region refusal is named on the region too", async () => {
+		// (A region that IS one of the country's, refused by the plugin — e.g. a
+		// zone that needs another state; one outside the country never reaches it.)
 		const h = harness(
-			{ ...FULL, region: "ZZ" },
+			{ ...FULL, country: "US", region: "CA" },
 			{
 				ok: false,
 				reason: "SHIPPING_REGION_CODE_REQUIRED",
@@ -575,8 +577,8 @@ describe("updating the delivery keeps every typed value", () => {
 
 describe("the state/province pick list: a changed country is a round trip, never a stale region", () => {
 	/** The address block of a page WITHOUT the delivery block: its own country
-	 *  select, Update, and the list's country echoed as `regionCountry`. */
-	const OWN = { ...FULL, country: "US", region: "CA", regionCountry: "US" };
+	 *  select and its Update (the one region rule judges the posted pair). */
+	const OWN = { ...FULL, country: "US", region: "CA" };
 
 	test("Update posts the details form: every typed value is kept in the draft, nothing is placed, no error", async () => {
 		const h = harness({ ...OWN, intent: "update-address", couponCode: "SAVE10" }, PLACED);
@@ -612,14 +614,14 @@ describe("the state/province pick list: a changed country is a round trip, never
 		expect(h.draft()!.values.region).toBeUndefined();
 	});
 
-	test("a code that exists in BOTH countries is still dropped: it was picked from the other list", async () => {
-		// SG-01 and FR-01 are both real; "01" picked for Singapore is not Ain.
-		const h = harness(
-			{ ...OWN, country: "FR", region: "01", regionCountry: "SG", intent: "update-address" },
-			PLACED,
-		);
+	test("a code that is ALSO one of the new country's is kept — and visible: the new list shows it selected", async () => {
+		// The one rule judges the posted region against the posted country only:
+		// "01" is a real FR code (Ain), so it stays — and the review shows "Ain"
+		// selected, where a buyer without the script sees and changes it.
+		const h = harness({ ...OWN, country: "FR", region: "01", intent: "update-address" }, PLACED);
 		await PLACE_POST(h.context);
-		expect(h.draft()!.values.region).toBeUndefined();
+		expect(h.draft()!.values.region).toBe("01");
+		expect(h.draft()!.errors).toEqual({});
 	});
 
 	// ── REQUIRED vs OPTIONAL. The store's rule — a region is required for a
@@ -675,12 +677,14 @@ describe("the state/province pick list: a changed country is a round trip, never
 		expect(h.draft()!.values.country).toBe("US");
 	});
 
-	test("a stale region for a country WITHOUT subdivisions is dropped and the order placed — nothing to pick", async () => {
+	test("a region posted for a country WITHOUT subdivisions is dropped and asked again — never placed silently", async () => {
 		const h = harness({ ...OWN, country: "AQ" }, PLACED);
-		expect((await PLACE_POST(h.context)).headers.get("location")).toBe("/checkout/pay");
-		const address = h.calls[0]!["shippingAddress"] as Record<string, string>;
-		expect(address["country"]).toBe("AQ");
-		expect(address["region"]).toBeUndefined();
+		expect((await PLACE_POST(h.context)).headers.get("location")).toBe(
+			"/checkout?error=REGION_LIST_UPDATED",
+		);
+		expect(h.calls).toHaveLength(0);
+		expect(h.draft()!.values).toMatchObject({ country: "AQ" });
+		expect(h.draft()!.values.region).toBeUndefined();
 	});
 
 	test("a stale pick alongside other errors: marked 'pick again' in the SAME round trip", async () => {
@@ -726,24 +730,22 @@ describe("the state/province pick list: a changed country is a round trip, never
 		expect(h.draft()!.values.region).toBeUndefined();
 	});
 
-	test("the delivery block: a state carried over from a REFUSED destination is not a pick (deliveryRegionSelected)", async () => {
-		// The page showed US with NY preselected from a refused `?region=NY`
-		// (fromRegion is "" — nothing was priced); the buyer only changed country.
+	test("the delivery block: a state that IS the new country's rides on (the one rule judges the posted pair)", async () => {
 		const h = harness(
 			{
 				...FULL,
 				addressMode: "zoned",
 				intent: "update-delivery",
-				deliveryCountry: "CA",
+				deliveryCountry: "US",
 				deliveryRegion: "NY",
-				deliveryRegionCountry: "US",
-				deliveryRegionSelected: "NY",
 				fromCountry: "",
 				fromRegion: "",
 			},
 			PLACED,
 		);
-		expect((await PLACE_POST(h.context)).headers.get("location")).toBe("/checkout?country=CA");
+		expect((await PLACE_POST(h.context)).headers.get("location")).toBe(
+			"/checkout?country=US&region=NY",
+		);
 	});
 
 	/** Non-ASCII at every field's bound: the URL-encoded draft is far over the cookie budget. */
@@ -869,16 +871,14 @@ describe("the state/province pick list: a changed country is a round trip, never
 				intent: "update-delivery",
 				deliveryCountry: "CA",
 				deliveryRegion: "CA",
-				deliveryRegionCountry: "US",
 			},
 			PLACED,
 		);
 		const response = await PLACE_POST(h.context);
-		// Canada has no "CA" subdivision anyway, but the rule does not depend on
-		// that: the list was rendered for the US. "CA" is the PRICED region the old
-		// list showed preselected — not a pick — so there is nothing to explain.
+		// "CA" (California) is not one of Canada's: dropped, and the Canadian list
+		// comes back marked — the country kept.
 		expect(response.headers.get("location")).toBe(
-			"/checkout?country=CA&fromCountry=US&fromRegion=CA",
+			"/checkout?country=CA&fromCountry=US&fromRegion=CA&error=REGION_LIST_UPDATED",
 		);
 		expect(h.calls).toHaveLength(0);
 	});
@@ -1064,16 +1064,25 @@ describe("/checkout on a ZONED page after a place refused for the region", () =>
 		// The buyer's own choice (URL / priced destination) wins; only a buyer who
 		// chose NOTHING starts on the store's country.
 		expect(page).toMatch(/const countryValue =\s*askedFor\.country !== ""/);
-		expect(page).toMatch(/summary\.storeCountry \?\? ""/);
+		expect(page).toMatch(/storeCountry \?\? ""/);
 	});
 });
 
 describe("/checkout: the store's country is preselected only for a buyer who chose none", () => {
 	const page = splitAstro(read("pages/checkout/index.astro")).frontmatter;
-	test("the address block keeps a draft's country, and preselects only where the address is required", () => {
-		expect(page).toMatch(/draftAddress\.country === ""/);
-		expect(page).toMatch(/summary\.addressRequired/);
-		expect(page).toMatch(/country: summary\.storeCountry/);
+	test("ONLY a truly fresh visit (no draft, no ?country, no ?error) starts on the store's country", () => {
+		expect(page).toMatch(
+			/const freshVisit = draft === null && error === null && !Astro\.url\.searchParams\.has\("country"\);/,
+		);
+		expect(page).toMatch(/const storeCountry = freshVisit \? summary\.storeCountry : null;/);
+		// The address block: only where the address is required (a country alone
+		// would make an optional blank address partial).
+		expect(page).toMatch(/summary\.addressRequired && storeCountry !== null/);
+		expect(page).toMatch(/country: storeCountry/);
+	});
+	test("a REGION_LIST_UPDATED for a country refused outright says only the country's refusal", () => {
+		expect(page).toMatch(/!\(shownErrorToken === "REGION_LIST_UPDATED" && countryRefused\)/);
+		expect(page).toMatch(/\(shownError === "REGION_LIST_UPDATED" && !countryRefused\)/);
 	});
 	test("a refusal the delivery block states is not repeated at the top (said ONCE)", () => {
 		expect(page).toMatch(/shownErrorToken !== destinationError\?\.reason/);

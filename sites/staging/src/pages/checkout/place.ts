@@ -73,12 +73,7 @@ import {
 	readFormBody,
 } from "../../lib/otta-api.js";
 import { COUNTRY_CODES, isCodeShapedRegion, ORDER_ADDRESS_MAX_LENGTHS } from "@otta-sh/plugin";
-import {
-	DELIVERY_REGION_COUNTRY_FIELD,
-	hasRegionList,
-	REGION_COUNTRY_FIELD,
-	regionListIsStale,
-} from "../../lib/regions.js";
+import { regionOutsideCountry } from "../../lib/regions.js";
 
 /** The site's own token for a form-level email reject — never reaches the
  *  service, which would happily accept the value (`schemas.ts` has no regex). */
@@ -204,13 +199,6 @@ function readShippingAddress(
 	return { ok: true, address };
 }
 
-/** A hidden field's raw value, or `undefined` when the form does not carry it
- *  at all — `""` (no country chosen yet) is a value here, unlike `formString`. */
-function presentField(form: FormData, name: string): string | undefined {
-	const value = form.get(name);
-	return typeof value === "string" ? value : undefined;
-}
-
 /** The required ship-to fields the buyer left blank — for the plugin's
  *  MISSING_SHIPPING_ADDRESS, which names none. */
 function blankRequiredFields(form: FormData, zoned: boolean): FieldErrors {
@@ -239,30 +227,25 @@ async function place(context: APIContext): Promise<Response> {
 	// What the buyer typed, kept across every refusal below (QA U-1) — in the
 	// draft cookie, never in the redirect URL (see lib/checkout-draft.ts).
 	const draftValues = draftValuesFromForm(form);
-	// The address block's state/province list belongs to the country it was
-	// rendered for (`regionCountry`, see UPDATE ADDRESS below). Once the country
-	// has changed, a region picked from that list is dropped — from the draft
-	// every redirect writes, and from the address placed.
 	// A zoned store's review carries the destination it priced as hidden
 	// fields (see readShippingAddress).
 	const zoned = formString(form.get("addressMode")) === "zoned";
+	// THE ONE REGION RULE (both blocks; the delivery block's below): a region
+	// that is a code, but not one of the POSTED country's subdivisions — picked
+	// from the list of a country the buyer has since changed — is dropped, and
+	// the review asks again with that country's list shown and the field marked.
+	// The buyer's country is kept. Never silently: every redirect below carries
+	// the mark, and REGION_LIST_UPDATED says why when nothing else is wrong.
+	// (With the optional script the list follows the country as it changes, so
+	// this is the no-JS path.)
 	const addressCountry = formString(form.get("country"));
-	const addressListStale =
-		!zoned && regionListIsStale(presentField(form, REGION_COUNTRY_FIELD), addressCountry);
-	if (addressListStale) delete draftValues.region;
-	// A region the buyer PICKED from another country's list, for a country that
-	// has a list of its own. It is dropped — and never silently: every redirect
-	// below marks the field ("pick again") and, when nothing else is wrong, says
-	// why (REGION_LIST_UPDATED). A country without subdivisions has nothing to
-	// pick; its stale region is just dropped.
-	const staleRegionPicked =
-		addressListStale &&
-		formString(form.get("region")) !== undefined &&
-		hasRegionList(addressCountry);
-	/** The mark every redirect below carries for a dropped pick, and the token
+	const regionMismatch =
+		!zoned && regionOutsideCountry(addressCountry, formString(form.get("region")));
+	if (regionMismatch) delete draftValues.region;
+	/** The mark every redirect below carries for a dropped region, and the token
 	 *  one with no refusal of its own carries to say why. */
-	const staleMark: FieldErrors = staleRegionPicked ? { region: "stale" } : {};
-	const staleToken = staleRegionPicked ? REGION_LIST_UPDATED : undefined;
+	const staleMark: FieldErrors = regionMismatch ? { region: "stale" } : {};
+	const staleToken = regionMismatch ? REGION_LIST_UPDATED : undefined;
 	const refuse = (
 		path: string,
 		error: string | undefined,
@@ -382,32 +365,15 @@ async function place(context: APIContext): Promise<Response> {
 	// whose delivery fields differ from the ones the totals were priced with is
 	// re-priced, never placed at the old price.
 	//
-	// The region PICK LIST is rendered for one country (`deliveryRegionCountry`):
-	// a region picked from it is never sent for another country the buyer has
-	// since chosen — the same code (`01`) means a different place there.
-	// Never silently, either: a region the buyer PICKED there, for a country
-	// with a list of its own, comes back with REGION_LIST_UPDATED and the
-	// state list marked ("pick again").
+	// The one region rule, for the delivery block: a region that is not one of
+	// the chosen country's is dropped, and the review comes back with that
+	// country's list marked (REGION_LIST_UPDATED).
 	const deliveryCountry = formString(form.get("deliveryCountry"));
-	const deliveryListStale = regionListIsStale(
-		presentField(form, DELIVERY_REGION_COUNTRY_FIELD),
-		deliveryCountry,
-	);
-	// A PICK, not the state the old list showed preselected (the priced one, or
-	// one carried over from a refused destination — `deliveryRegionSelected`;
-	// `fromRegion` for a page that predates it): a plain "Update delivery" after
-	// a country change just shows the new list.
 	const postedDeliveryRegion = formString(form.get("deliveryRegion"));
-	const shownDeliveryRegion =
-		presentField(form, "deliveryRegionSelected") ?? formString(form.get("fromRegion")) ?? "";
-	const deliveryStalePick =
-		deliveryListStale &&
-		postedDeliveryRegion !== undefined &&
-		postedDeliveryRegion.toUpperCase() !== shownDeliveryRegion.trim().toUpperCase() &&
-		hasRegionList(deliveryCountry);
+	const deliveryMismatch = regionOutsideCountry(deliveryCountry, postedDeliveryRegion);
 	const delivery = {
 		country: deliveryCountry,
-		region: deliveryListStale ? undefined : formString(form.get("deliveryRegion")),
+		region: deliveryMismatch ? undefined : postedDeliveryRegion,
 		method: formString(form.get("deliveryMethod")),
 		fromCountry: formString(form.get("fromCountry")),
 		fromRegion: formString(form.get("fromRegion")),
@@ -421,16 +387,14 @@ async function place(context: APIContext): Promise<Response> {
 				method: shippingMethodId,
 			}))
 	) {
-		const token = deliveryStalePick ? REGION_LIST_UPDATED : undefined;
+		const token = deliveryMismatch ? REGION_LIST_UPDATED : undefined;
 		return refuseKeeping((error) => deliveryUpdatePath(delivery, couponCode, error), token);
 	}
 
 	// UPDATE ADDRESS — the address block's own country (a page with no delivery
-	// block). Its state/province list is rendered for the country the page knew
-	// (`regionCountry`); the Update button beside the country re-renders the
-	// review with the new country's list, keeping everything typed. A region
-	// picked for the old country is dropped, never sent as the new one's — and
-	// never silently: the new list comes back marked "pick again".
+	// block), for a buyer without the script: re-renders the review with the
+	// chosen country's list, keeping everything typed. A region that is not one
+	// of that country's is dropped and marked (the one rule above).
 	if (intent === "update-address") {
 		return refuseKeeping((error) => checkoutPath({ ...selection, error }), staleToken, {
 			fields: staleMark,
@@ -459,7 +423,7 @@ async function place(context: APIContext): Promise<Response> {
 		// logs — the exact exposure ADR-0012 §6 argues against for the client
 		// secret. They travel in the draft cookie instead (QA U-1), and the address
 		// is checked here too, so every field that needs fixing is marked at once.
-		const address = readShippingAddress(form, zoned, { dropRegion: addressListStale });
+		const address = readShippingAddress(form, zoned, { dropRegion: regionMismatch });
 		return refuse(placeFailurePath(INVALID_EMAIL, selection), INVALID_EMAIL, {
 			fields: { email: "invalid", ...(address.ok ? {} : address.fields), ...staleMark },
 		});
@@ -478,7 +442,7 @@ async function place(context: APIContext): Promise<Response> {
 		});
 	}
 
-	const shipping = readShippingAddress(form, zoned, { dropRegion: addressListStale });
+	const shipping = readShippingAddress(form, zoned, { dropRegion: regionMismatch });
 	if (!shipping.ok) {
 		return refuse(
 			shipping.partial
@@ -497,7 +461,7 @@ async function place(context: APIContext): Promise<Response> {
 	// and the review comes back with the list shown and the field marked. If the
 	// typed values cannot come back — an address too long for the draft cookie —
 	// the refusal says so plainly, with no draft left to render stale values.
-	if (staleRegionPicked) {
+	if (regionMismatch) {
 		if (checkoutDraftFits({ values: draftValues, errors: staleMark, error: REGION_LIST_UPDATED })) {
 			return refuse(
 				checkoutPath({ ...selection, error: REGION_LIST_UPDATED }),

@@ -1,0 +1,12 @@
+---
+/**
+ * The checkout's ONE client script (ADR-0034, which amends ADR-0012's fence):
+ * progressive enhancement for the state/province pick list. An EXTERNAL,
+ * first-party file (`public/scripts/region-picker.js`) — no inline code, no
+ * framework — so the review keeps working, unchanged, without it.
+ * `checkout-client-js.test.ts` names exactly this pair:
+ * `checkout/index.astro → RegionPicker.astro`.
+ */
+---
+
+<script is:inline type="module" src="/scripts/region-picker.js"></script>

@@ -128,15 +128,19 @@ describe.each(REVIEW_VIEWS)("the /checkout form contract — %s", (_label, { sou
 		}
 	});
 
-	test("each region list echoes the country it was rendered for, and is printed only when it has options", () => {
-		expect(VIEW).toMatch(
-			/<input[^>]*type="hidden"[^>]*name="deliveryRegionCountry"[^>]*form="checkout-place"[^>]*value=\{deliveryRegions\.country\}/,
+	test("each region list is wired for the optional script, and hidden while it has no options", () => {
+		// ADR-0034: each country select names its list; the list's field hides
+		// while empty; the no-JS-only Update controls are marked for the script.
+		expect(VIEW).toMatch(/name="deliveryCountry"[\s\S]{0,120}data-region-target="delivery-region"/);
+		expect(VIEW).toMatch(/name="country"\s+data-region-target="address-region"/);
+		expect(VIEW).toContain("data-region-field hidden={deliveryRegions.options.length === 0}");
+		expect(VIEW).toContain("data-region-field hidden={addressRegions.options.length === 0}");
+		expect(VIEW).toMatch(/value="update-address"\s+formnovalidate\s+data-region-update/);
+		// No hidden echo of the list's country any more: the server judges the
+		// posted country/region pair (lib/regions.ts, regionOutsideCountry).
+		expect(VIEW).not.toMatch(
+			/name="(?:regionCountry|deliveryRegionCountry|deliveryRegionSelected)"/,
 		);
-		expect(VIEW).toMatch(
-			/<input type="hidden" name="regionCountry" value=\{addressRegions\.country\} \/>/,
-		);
-		expect(VIEW).toContain("deliveryRegions.options.length > 0");
-		expect(VIEW).toContain("addressRegions.options.length > 0");
 	});
 
 	test("the address block's own country has an Update submit that never places and skips validation", () => {

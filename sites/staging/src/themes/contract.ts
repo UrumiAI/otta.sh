@@ -416,19 +416,18 @@ export interface CheckoutModel {
 	destinationRegionName: string | null;
 	/**
 	 * The delivery block's state/province PICK LIST: the subdivisions of
-	 * `countryValue`, `regionValue` preselected. Empty `options` ⇒ print no
-	 * region field (no country yet, or one without subdivisions). Print it as a
-	 * `<select name="deliveryRegion">` with a blank first option, and echo
-	 * `deliveryRegions.country` as the hidden `deliveryRegionCountry` beside it,
-	 * so a region picked for one country is never sent as another's. A view that
-	 * still prints a typed region input keeps working (the codes are the same).
+	 * `countryValue`, `regionValue` preselected. Empty `options` ⇒ print the
+	 * field `hidden` (`data-region-field`). Print it as a
+	 * `<select name="deliveryRegion">` with a blank first option, and mark the
+	 * country select `data-region-target` for the optional script (ADR-0034).
+	 * A view that still prints a typed region input keeps working (the codes
+	 * are the same).
 	 */
 	deliveryRegions: RegionChoice;
 	/** The same for the address block's own country (a page without the
-	 *  delivery block): the subdivisions of `addressValues.country`. Echo
-	 *  `addressRegions.country` as the hidden `regionCountry` whenever the
-	 *  country select is printed, even with no list (`""` before a country is
-	 *  chosen), and offer an `intent=update-address` submit beside the country. */
+	 *  delivery block): the subdivisions of `addressValues.country`. Offer an
+	 *  `intent=update-address` submit beside the country (`data-region-update`,
+	 *  hidden by the script). */
 	addressRegions: RegionChoice;
 	showDelivery: boolean;
 	showAddress: boolean;
