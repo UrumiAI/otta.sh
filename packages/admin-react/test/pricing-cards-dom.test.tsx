@@ -640,6 +640,49 @@ test("a store-default-moved banner offers Keep USD, and the next save goes throu
 	expect(save?.["value"]).toMatchObject({ price: "24.99", currency: "USD" });
 });
 
+test("priced elsewhere in KWD at save: the USD amounts typed are cleared, and the next save sends no cost", async () => {
+	let reads = 0;
+	apiFetch.mockImplementation((_url, init) => {
+		const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+		if (body["type"] === "otta_console_act") {
+			return Promise.resolve(
+				json({ ok: true, notice: { variant: "default", title: "Saved", description: "" } }),
+			);
+		}
+		reads += 1;
+		// Mount: unpriced (USD store). Every later read: priced by someone else in
+		// KWD at 12.500, with no unit cost.
+		return Promise.resolve(
+			reads === 1
+				? unpricedDetail("USD")
+				: unpricedDetail("USD", {
+						priceCents: 12_500,
+						currency: "KWD",
+						updatedAt: "2026-07-02T00:00:00.000Z",
+					}),
+		);
+	});
+	const c = await mountPanel();
+	await type(input(c, "Price"), "24.99");
+	await type(input(c, "Cost per item"), "9.50");
+	await fire(button(c, "Save pricing & stock"), "click");
+	await flush();
+	expect(writes().some((w) => w["action_id"] === "products:save")).toBe(false);
+	expect(c.textContent).toContain(
+		"This product was priced in KWD by someone else — the amounts you entered in USD were cleared; enter them again in KWD.",
+	);
+	expect((input(c, "Cost per item") as HTMLInputElement).value).toBe("");
+	// Saving again (now against the priced record) sends no cost — never 9.50 as KWD.
+	await type(input(c, "Price"), "13.000");
+	await fire(button(c, "Save pricing & stock"), "click");
+	await flush();
+	const save = writes().find((w) => w["action_id"] === "products:save");
+	expect(save).toBeDefined();
+	const value = save?.["value"] as Record<string, unknown>;
+	expect(value["unitCost"] ?? "").toBe("");
+	expect(value["price"]).toBe("13.000");
+});
+
 test("the read-before-save uses the FRESH store currency: a switch since the form loaded blocks the save", async () => {
 	let reads = 0;
 	apiFetch.mockImplementation((_url, init) => {

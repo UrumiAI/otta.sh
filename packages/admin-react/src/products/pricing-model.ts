@@ -139,7 +139,9 @@ export interface CurrencyChange {
  *     follows the fresh record — its stored currency if priced, else the fresh
  *     store currency (`""` while unknown). No conflict.
  *  2. Priced elsewhere in another currency, money typed: the currency becomes
- *     the stored one (it is fixed) and it is a conflict that says so.
+ *     the stored one (it is fixed), every money field takes the fresh value
+ *     (the typed amounts were in another currency — `mergeDraft` drops them),
+ *     and it is a conflict that says so.
  *  3. Unpriced, money typed, NOT picked, and the fresh store currency is not
  *     the draft's (including `""` → known): the draft keeps its currency and it
  *     is a conflict until the merchant PICKS a currency — so a save made after
@@ -178,8 +180,8 @@ export function resolveDraftCurrency(args: {
 /** The banner for a {@link CurrencyChange}: what changed, and what to do. */
 export function currencyChangeText(change: CurrencyChange): string {
 	if (change.kind === "priced_elsewhere") {
-		const entered = change.from === "" ? "with no currency chosen" : `in ${change.from}`;
-		return `This product was priced in ${change.to} by someone else — your amounts were entered ${entered}. Check every amount before saving.`;
+		const entered = change.from === "" ? "" : ` in ${change.from}`;
+		return `This product was priced in ${change.to} by someone else — the amounts you entered${entered} were cleared; enter them again in ${change.to}.`;
 	}
 	return change.from === ""
 		? `Your store currency is now ${change.to} — choose this product's currency, then save.`
@@ -250,6 +252,12 @@ export function mergeDraft(
 		freshStoreCurrency,
 	});
 	merged["currency"] = currency.currency;
+	// Priced elsewhere in another currency: every amount the merchant typed was
+	// entered in a currency the product no longer has, so EVERY money field takes
+	// the fresh record's value — kept, a typed "9.50" would be saved as 9.500 KWD.
+	if (currency.change?.kind === "priced_elsewhere") {
+		for (const field of MONEY_FIELDS) merged[field] = after[field];
+	}
 	const result = { draft: merged as unknown as PricingDraft };
 	return currency.change === null
 		? { ...result, conflict: fieldClash }

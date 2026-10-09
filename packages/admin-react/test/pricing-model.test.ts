@@ -300,14 +300,23 @@ describe("the draft", () => {
 			expect(merged.currencyChange).toEqual(row.want.change);
 		});
 
-		test("rule 2 keeps the merchant's non-clashing amounts (the typed cost stays, for them to check)", () => {
-			const draft = { ...draftFromRecord(unpriced, "EUR"), currency: "JPY", unitCost: "800" };
-			const merged = mergeDraft(unpriced, pricedIn("USD"), draft, {
-				storeCurrency: "EUR",
-				currencyPicked: true,
+		test('rule 2 clears EVERY typed amount: price + cost typed in USD, priced elsewhere in KWD with no cost → cost ""', () => {
+			const draft = { ...draftFromRecord(unpriced, "USD"), price: "24.99", unitCost: "9.50" };
+			const merged = mergeDraft(unpriced, { ...pricedIn("KWD"), priceCents: 12_500 }, draft, {
+				storeCurrency: "USD",
 			});
-			expect(merged.draft.unitCost).toBe("800");
-			expect(merged.fieldClash).toBe(false);
+			expect(merged.draft.currency).toBe("KWD");
+			expect(merged.draft.unitCost).toBe(""); // never 9.50 read as KWD
+			expect(merged.draft.compareAt).toBe("");
+			expect(merged.draft.price).toBe("12.500"); // the stored price, in KWD's own digits
+			// Non-money edits still merge as before.
+			const withSku = mergeDraft(
+				unpriced,
+				pricedIn("KWD"),
+				{ ...draft, sku: "MINE-1" },
+				{ storeCurrency: "USD" },
+			);
+			expect(withSku.draft.sku).toBe("MINE-1");
 		});
 
 		test("a field clash AND a currency conflict are both reported", () => {
@@ -321,7 +330,7 @@ describe("the draft", () => {
 
 		test("the banners say what changed", () => {
 			expect(currencyChangeText({ kind: "priced_elsewhere", from: "JPY", to: "GBP" })).toBe(
-				"This product was priced in GBP by someone else — your amounts were entered in JPY. Check every amount before saving.",
+				"This product was priced in GBP by someone else — the amounts you entered in JPY were cleared; enter them again in GBP.",
 			);
 			expect(currencyChangeText({ kind: "store_default_moved", from: "USD", to: "EUR" })).toBe(
 				"Your store currency is now EUR — this product will be priced in USD unless you choose EUR. Pick the currency to confirm, then save.",
