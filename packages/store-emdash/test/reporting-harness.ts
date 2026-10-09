@@ -23,10 +23,7 @@ import {
 	idempotencyKey,
 	productId as brandProductId,
 	sku as brandSku,
-	type Cents,
-	type Currency,
 	type OrderState,
-	type ProductId,
 } from "@otta-sh/domain";
 import type { ReportingStoreHarness } from "@otta-sh/domain/testing";
 import { FixedClock } from "@otta-sh/domain/testing";
@@ -474,14 +471,4 @@ function normalizedDaily(
 /** The clock's instant as an ISO string — spelled once. */
 function doc0(clock: FixedClock): string {
 	return clock.now().toISOString();
-}
-
-/** The money shapes a suite asserts against, branded once. */
-export function usd(amount: number): { currency: Currency; amount: Cents } {
-	return { currency: toCurrency("USD"), amount: cents(amount) };
-}
-
-/** A product id, branded for a seed. */
-export function pid(raw: string): ProductId {
-	return brandProductId(raw);
 }
