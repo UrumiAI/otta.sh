@@ -1,7 +1,11 @@
 import { describe, expect, test } from "vitest";
 import { SUBDIVISIONS } from "../../src/pricing/iso-3166.generated.js";
 import { normalizeSubdivision } from "../../src/pricing/region-codes.js";
-import { subdivisionName, subdivisionOptions } from "../../src/pricing/subdivision-names.js";
+import {
+	subdivisionDataVersion,
+	subdivisionName,
+	subdivisionOptions,
+} from "../../src/pricing/subdivision-names.js";
 
 describe("subdivisionOptions", () => {
 	test("lists a country's subdivisions with their English names, by code", () => {
@@ -80,6 +84,13 @@ describe("subdivisionOptions", () => {
 		expect(subdivisionOptions("US")).toEqual(first);
 		expect(Object.isFrozen(first)).toBe(true);
 		expect(Object.isFrozen(first[0])).toBe(true);
+	});
+});
+
+describe("subdivisionDataVersion", () => {
+	test("a stable 8-hex fingerprint of the generated data", () => {
+		expect(subdivisionDataVersion()).toMatch(/^[0-9a-f]{8}$/);
+		expect(subdivisionDataVersion()).toBe(subdivisionDataVersion());
 	});
 });
 

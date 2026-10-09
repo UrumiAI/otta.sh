@@ -100,6 +100,15 @@ describe("computeQuote derives the zone from the destination", () => {
 		expect(madrid).toMatchObject({ ok: true, breakdown: { taxCents: 630 } });
 	});
 
+	test("Canary Islands picked where only Tenerife is zoned → SHIPPING_REGION_CODE_REQUIRED, never ES 21%", async () => {
+		await seedZone({ id: "z-es", regions: ["ES"], taxBps: 2100 });
+		await seedZone({ id: "z-es-tf", regions: ["ES-TF"], taxBps: 0 });
+		expect(await quote({ destination: { country: "ES", region: "CN" } })).toEqual({
+			ok: false,
+			reason: "SHIPPING_REGION_CODE_REQUIRED",
+		});
+	});
+
 	test("the US-CA happy path: 3000 + 599 + 7.25% (217.5 → 218, half-up) = 3817", async () => {
 		await seedZone({ id: "z-us", regions: ["US"], taxBps: 0 });
 		await seedZone({

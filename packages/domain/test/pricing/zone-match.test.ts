@@ -153,10 +153,33 @@ describe("resolveShippingZone", () => {
 			);
 		});
 
-		test("containment never runs upwards: a child zone does not cover its parent", () => {
-			expect(resolveShippingZone([zone("z-tf", ["ES-TF"])], physical("ES", "CN"))).toEqual({
-				status: "unmatched",
-			});
+		test("a pick CONTAINING a zoned subdivision is asked to be more specific — never matched to the country", () => {
+			const required = (country: string) => ({ status: "region_code_required", country });
+			// [ES 21%, ES-TF 0%]: "Canary Islands" could be Tenerife or Las Palmas.
+			expect(resolveShippingZone([ES, zone("z-tf", ["ES-TF"])], physical("ES", "CN"))).toEqual(
+				required("ES"),
+			);
+			// [GB, GB-BFS]: "Northern Ireland" could be Belfast.
+			expect(
+				resolveShippingZone(
+					[zone("z-gb", ["GB"]), zone("z-bfs", ["GB-BFS"])],
+					physical("GB", "NIR"),
+				),
+			).toEqual(required("GB"));
+			// No country zone at all: asked, not refused.
+			expect(resolveShippingZone([zone("z-tf", ["ES-TF"])], physical("ES", "CN"))).toEqual(
+				required("ES"),
+			);
+		});
+
+		test("…but a zone on the pick itself, or on a subdivision containing it, still matches", () => {
+			const TF = zone("z-tf", ["ES-TF"]);
+			expect(resolveShippingZone([ES, ES_CN, TF], physical("ES", "CN"))).toEqual(
+				matched("z-es-cn", "ES-CN"),
+			);
+			expect(resolveShippingZone([ES, TF], physical("ES", "TF"))).toEqual(matched("z-tf", "ES-TF"));
+			// A sibling's zone does not make Las Palmas ask again: GC falls to ES.
+			expect(resolveShippingZone([ES, TF], physical("ES", "GC"))).toEqual(matched("z-es", "ES"));
 		});
 
 		test("a blank region still asks for one when only a parent is zoned", () => {

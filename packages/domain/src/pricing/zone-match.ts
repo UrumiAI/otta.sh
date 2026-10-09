@@ -7,7 +7,10 @@
  * (Santa Cruz de Tenerife) tries `ES-TF` → `ES-CN` (Canary Islands) → `ES`,
  * and `GB-BFS` → `GB-NIR` → `GB`: a zone on the child beats one on its
  * parent, which beats one on the country. Codes themselves are exact (case
- * aside) — a zone never covers a code it does not list or contain. Pure: no IO.
+ * aside) — a zone never covers a code it does not list or contain. A pick that
+ * no zone covers but that CONTAINS a zoned subdivision (Canary Islands, with
+ * only Tenerife zoned) is asked to be more specific (`region_code_required`),
+ * never matched to the country. Pure: no IO.
  */
 import type { ShippingZone } from "../ports/shipping-rules-store.js";
 import { parseZoneRegions, subdivisionAncestors } from "./region-codes.js";
@@ -28,7 +31,8 @@ export type ZoneResolution =
 	| { status: "address_needed" }
 	/** Zones exist and the address matches none of them. */
 	| { status: "unmatched" }
-	/** A zone lists a subdivision of this country, and the address has no region. */
+	/** A zone lists a subdivision of this country, and the address has no region
+	 *  — or only one that CONTAINS a zoned subdivision (pick a more specific one). */
 	| { status: "region_code_required"; country: string }
 	| {
 			status: "matched";
@@ -60,16 +64,28 @@ export function resolveShippingZone(
 	}
 
 	const own = destination.region === null ? null : `${country}-${destination.region}`;
-	const candidates = own === null ? [country] : [own, ...subdivisionAncestors(own), country];
-	for (const code of candidates) {
-		const ids = parsed
+	const match = (code: string): ZoneResolution | null => {
+		const [winner, ...rest] = parsed
 			.filter((z) => z.codes.includes(code))
 			.map((z) => z.id)
 			.toSorted();
-		const [winner, ...rest] = ids;
-		if (winner !== undefined) {
-			return { status: "matched", zoneId: winner, matchedRegion: code, ambiguousWith: rest };
+		return winner === undefined
+			? null
+			: { status: "matched", zoneId: winner, matchedRegion: code, ambiguousWith: rest };
+	};
+	if (own !== null) {
+		for (const code of [own, ...subdivisionAncestors(own)]) {
+			const found = match(code);
+			if (found !== null) return found;
+		}
+		// The blank-region rule one level down: the pick CONTAINS a zoned
+		// subdivision (Canary Islands, with zones on Tenerife and Las Palmas), so
+		// which zone applies depends on where inside it the address is. Ask for
+		// the more specific one — never fall to the country's zone (silently the
+		// wrong tax) or refuse.
+		if (parsed.some((z) => z.codes.some((code) => subdivisionAncestors(code).includes(own)))) {
+			return { status: "region_code_required", country };
 		}
 	}
-	return { status: "unmatched" };
+	return match(country) ?? { status: "unmatched" };
 }

@@ -63,3 +63,28 @@ export function subdivisionName(country: string, code: string): string | null {
 	const bare = read.code;
 	return subdivisionOptions(country).find((option) => option.code === bare)?.name ?? null;
 }
+
+let dataVersion: string | undefined;
+
+/**
+ * A short fingerprint of the names and the containment (FNV-1a, 8 hex
+ * digits), computed once: changes whenever the generated data does. A
+ * storefront puts it in the URL of a cached list (`/checkout/regions?…&v=`),
+ * so a data refresh is never served stale from a cache.
+ */
+export function subdivisionDataVersion(): string {
+	if (dataVersion !== undefined) return dataVersion;
+	let hash = 0x811c9dc5;
+	const feed = (text: string): void => {
+		for (let i = 0; i < text.length; i += 1) {
+			hash ^= text.charCodeAt(i);
+			hash = Math.imul(hash, 0x01000193) >>> 0;
+		}
+	};
+	for (const country of Object.keys(SUBDIVISION_NAMES).toSorted()) {
+		feed(`${country}=${SUBDIVISION_NAMES[country] ?? ""};`);
+	}
+	for (const [child, parent] of SUBDIVISION_PARENTS) feed(`${child}>${parent};`);
+	dataVersion = hash.toString(16).padStart(8, "0");
+	return dataVersion;
+}
