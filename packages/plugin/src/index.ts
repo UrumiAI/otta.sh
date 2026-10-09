@@ -243,7 +243,7 @@ export {
 	WEBHOOK_EDGE_TOKEN_KEY,
 	webhookEdgeTokenFromKv,
 } from "./payment-secrets.js";
-// ADR-0034 — the one-time re-save of stored payment keys through EmDash's
+// ADR-0036 — the one-time re-save of stored payment keys through EmDash's
 // encrypted settings path (run by the sweep's cron tick).
 export {
 	encryptStoredPaymentSecrets,

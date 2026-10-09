@@ -1,5 +1,5 @@
 /**
- * ADR-0034 — the one-time re-save of stored payment keys through EmDash's
+ * ADR-0036 — the one-time re-save of stored payment keys through EmDash's
  * encrypted settings path (`src/encrypt-payment-secrets.ts`).
  *
  * The kv here is a FAKE HOST that keeps a RAW row per key and behaves the way

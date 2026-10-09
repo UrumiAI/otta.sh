@@ -276,7 +276,7 @@ function request(headers: Record<string, string>) {
 	return { method: "POST", url: "/", headers };
 }
 
-describe("encrypted at rest (ADR-0034)", () => {
+describe("encrypted at rest (ADR-0036)", () => {
 	test("the three payment credentials are declared `secret`, by their settings name", () => {
 		expect(ENCRYPTED_PAYMENT_SECRET_KEYS).toEqual([
 			STRIPE_SECRET_KEY_KEY,

@@ -1,5 +1,5 @@
 /**
- * ADR-0034 under workerd: the payment keys are READ inside the isolate through
+ * ADR-0036 under workerd: the payment keys are READ inside the isolate through
  * the same fail-closed readers after the one-time re-save, and a key the host
  * cannot decrypt is refused rather than used.
  *
@@ -89,7 +89,7 @@ async function boot(entry?: string): Promise<SandboxHandle> {
 	return handle;
 }
 
-describe("encrypted payment keys under workerd (ADR-0034)", () => {
+describe("encrypted payment keys under workerd (ADR-0036)", () => {
 	test("after the cron tick's re-save, the settle route still reads both keys", async () => {
 		sandbox = await boot();
 		const ticked = await sandbox.invokeHook("cron", {

@@ -82,7 +82,7 @@ describe("ottaPluginDescriptor", () => {
 		expect(descriptor.allowedHosts).toEqual(BASELINE_HOSTS);
 	});
 
-	test("declares every payment credential `secret`, so EmDash encrypts it at rest (ADR-0034)", () => {
+	test("declares every payment credential `secret`, so EmDash encrypts it at rest (ADR-0036)", () => {
 		// EmDash encrypts a `settings:*` kv value ONLY when this schema declares its
 		// field `type: "secret"`. Dropping a field here silently stores that
 		// credential as plain text again, and nothing in the plugin can see it.
@@ -809,9 +809,8 @@ describe("astro.config", () => {
 	test(
 		"no storefront theme list is baked into the build: the admin offers no theme choice",
 		async () => {
-			// ADR-0024's amendment of 2026-10-02: the store ships one theme (Tempered), and
-			// the admin's Themes screen and Settings "Store theme" radio — the only
-			// readers of this define — are gone with it.
+			// ADR-0024's amendment of 2026-10-02: the store ships one theme (Tempered) and
+			// the admin offers no theme choice, so nothing reads this define.
 			const config = (await import("../astro.config.js")).default;
 			const define = config.vite?.define as Record<string, string>;
 			expect(Object.keys(define)).not.toContain("__OTTA_STORE_THEMES__");

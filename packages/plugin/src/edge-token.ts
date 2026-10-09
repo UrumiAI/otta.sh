@@ -82,7 +82,7 @@ export function header(request: SandboxedRequest, name: string): string | undefi
  *  - token stored but UNREADABLE (the kv read rejected — on EmDash 1.0.1 that
  *    includes a stored token this site cannot decrypt) or INVALID (empty or
  *    malformed, e.g. saved through EmDash's own settings form) ⇒ UNAVAILABLE
- *    (ADR-0034). A stored token means the gate was turned on; a bad read must
+ *    (ADR-0036). A stored token means the gate was turned on; a bad read must
  *    not turn it off.
  *  - token SET, header absent ⇒ reject. No comparison is attempted; the absence
  *    of a header is not a secret and leaks nothing by short-circuiting.

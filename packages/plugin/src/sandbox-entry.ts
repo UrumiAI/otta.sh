@@ -132,7 +132,7 @@ function createHttpAccess(allowedHosts: readonly string[]): HttpAccess {
  * next within the same worker — matching the host's persistence contract.
  * It has the host's conditional pair (`getVersioned`/`compareAndSet`, with a
  * per-key counter as the revision) but NOT its encryption: EmDash encrypts
- * declared secrets on its side of the bridge (ADR-0034), which this mirror does
+ * declared secrets on its side of the bridge (ADR-0036), which this mirror does
  * not reproduce — the raw-row proofs live where a real EmDash runs.
  */
 function createKvAccess(
@@ -265,7 +265,7 @@ export interface SandboxWorkerOptions {
 	readonly cmsWithoutTable?: boolean;
 	/**
 	 * TEST ONLY: every stored encrypted payment key reads as EmDash 1.0.1 reports
-	 * a ciphertext it cannot decrypt — the read rejects (ADR-0034). Proves the
+	 * a ciphertext it cannot decrypt — the read rejects (ADR-0036). Proves the
 	 * readers refuse rather than fall back, inside workerd.
 	 */
 	readonly unreadableSecrets?: boolean;

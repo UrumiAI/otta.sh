@@ -9,7 +9,6 @@ on:
       - "docs/**"
   pull_request:
     # A change that touches only prose runs nothing: no job reads these files.
-    # (A changeset `.md` always travels with code, so that code still triggers.)
     paths-ignore:
       - "**/*.md"
       - "adr/**"
@@ -155,7 +154,7 @@ jobs:
       OTTA_E2E_START_STACK: "1"
       OTTA_E2E_REQUIRE_SITE: "1"
       OTTA_E2E_SEED: "1"
-      # ADR-0034: a THROWAWAY encryption key for this job's disposable dev stack
+      # ADR-0036: a THROWAWAY encryption key for this job's disposable dev stack
       # (the seed saves a webhook secret, which EmDash stores encrypted). Same
       # value as playwright.config.ts's default; never a real site's key.
       EMDASH_ENCRYPTION_KEY: emdash_enc_v1_cugE5mpPbewXCXUpUxvpscThKOCTYMxr1Ro8lVSc_Ps

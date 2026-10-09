@@ -1,6 +1,6 @@
 /**
  * Re-save the payment credentials an earlier build stored, ONCE, so they are
- * encrypted at rest (ADR-0034).
+ * encrypted at rest (ADR-0036).
  *
  * Declaring a field `type: "secret"` makes EmDash encrypt every NEW write to it,
  * and its read path still accepts a value stored before the declaration. So a

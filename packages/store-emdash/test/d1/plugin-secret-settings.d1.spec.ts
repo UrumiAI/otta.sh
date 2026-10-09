@@ -1,5 +1,5 @@
 /** `plugin-secret-settings-cases.ts` on **D1** — the raw `options` rows of
- *  EmDash's encrypted plugin settings (ADR-0034); only the database differs. */
+ *  EmDash's encrypted plugin settings (ADR-0036); only the database differs. */
 import { pluginSecretSettingsCases } from "../plugin-secret-settings-cases.js";
 import { useD1Storage } from "./describe-d1.js";
 

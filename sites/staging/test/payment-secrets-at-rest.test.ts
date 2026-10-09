@@ -1,5 +1,5 @@
 /**
- * ADR-0034, end to end over a REAL host layer: Otta's own write path (the
+ * ADR-0036, end to end over a REAL host layer: Otta's own write path (the
  * Settings form), read path (`readPaymentSecrets`) and one-time migration
  * (`encryptStoredPaymentSecrets`), running on EmDash 1.0.1's settings layer with
  * the `settingsSchema` THIS SITE's descriptor declares, over a migrated SQLite
@@ -163,7 +163,7 @@ async function rawValue(key: string): Promise<unknown> {
 	return value === undefined ? undefined : JSON.parse(value);
 }
 
-describe("payment keys at rest, through this site's descriptor (ADR-0034)", () => {
+describe("payment keys at rest, through this site's descriptor (ADR-0036)", () => {
 	test("the Settings form saves every payment key as ciphertext; the readers get the value", async () => {
 		const ctx = hostCtx(keyA);
 		const handler = createSettingsFormHandler();

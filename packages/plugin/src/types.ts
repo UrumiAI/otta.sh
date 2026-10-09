@@ -69,7 +69,7 @@ export interface HttpAccess {
  * `types.ts:159-162`). SECRETS MUST NEVER be written here (§5). Method is
  * `set` (not `put`) — verified against em-dash.
  *
- * AMENDED BY ADR-0034: the three payment credentials ARE written here, under
+ * AMENDED BY ADR-0036: the three payment credentials ARE written here, under
  * `settings:*` keys the site's descriptor declares `type: "secret"`, which
  * EmDash 1.0.1 encrypts at rest (`payment-secrets.ts`). EmDash 1.0.1's kv also
  * has the conditional pair below (emdash `plugins/types.ts` `KVAccess`); they
@@ -1034,7 +1034,7 @@ export interface BlockResponse {
 /** A single `admin.settingsSchema` field descriptor (em-dash
  *  `manifest-schema.ts:156-190`) for Otta's own readable-back settings. The
  *  payment credentials' `secret` fields are declared separately, in
- *  `payment-secrets.ts` `PAYMENT_SECRET_SETTINGS_SCHEMA` (ADR-0034). */
+ *  `payment-secrets.ts` `PAYMENT_SECRET_SETTINGS_SCHEMA` (ADR-0036). */
 export interface SettingsFieldSpec {
 	type: "string" | "number" | "boolean";
 	label: string;
