@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { describe, expect, test } from "vitest";
 import { cents, currency } from "../../src/money/cents.js";
 import { allocateCents } from "../../src/pricing/allocate.js";
+import { computeTotals } from "../../src/pricing/compute-totals.js";
 import { applyRateTable, rateTableOf } from "../../src/pricing/rate-table-calculator.js";
 import type { TaxRequest } from "../../src/pricing/tax-calculator.js";
 import type { ShippingTaxClassSetting } from "../../src/pricing/tax-settings.js";
@@ -168,16 +169,48 @@ describe("coupon cent distribution — Otta vs WooCommerce (reported, not change
 		// Inputs and WooCommerce's answer come from the oracle itself, not retyped numbers.
 		const s = ORACLE.find((o) => o.id === "EX-08");
 		if (!s) throw new Error("EX-08 missing from the oracle");
-		const lineSubtotals = s.inputs.items.map((i) => i.unit_cents * i.qty);
-		expect(lineSubtotals).toEqual([2000, 2000]);
-		expect(s.inputs.coupon).toEqual({ type: "fixed_cart", amount_cents: 1000 });
-		// WooCommerce: per unit, highest unit price first, so the 2000 line carries 334.
+		const coupon = s.inputs.coupon as { type: string; amount_cents: number };
+		expect(coupon.type).toBe("fixed_cart");
+		// WooCommerce splits a fixed_cart coupon equally per unit (333 a unit), then gives the
+		// leftover cent(s) to the highest unit price first: 334 on the 2000 line, 666 on the rest.
 		expect(s.expected.lines.map((l) => l.discount)).toEqual([334, 666]);
-		// Otta (deliberate, ADR-0032): the DISCOUNTED subtotal 3000 is split pro rata over
-		// the line subtotals by largest remainder (1500/1500), so the discount is 500/500.
-		const after = allocateCents(cents(4000 - 1000), lineSubtotals);
-		const discounts = lineSubtotals.map((l, i) => l - (after[i] ?? 0));
-		expect(discounts).toEqual([500, 500]);
-		expect(discounts.reduce((a, b) => a + b, 0)).toBe(1000);
+		expect(s.expected.total_tax).toBe(247);
+		expect(s.expected.grand_total).toBe(3247);
+		// Otta (deliberate, ADR-0032, issue #424), through the production pipeline: the
+		// discounted subtotal is split pro rata over the line subtotals by largest remainder.
+		const [first, second] = s.inputs.items;
+		const b = computeTotals({
+			currency: currency("USD"),
+			lines: s.inputs.items.map((i) => ({
+				unitPriceCents: cents(i.unit_cents),
+				qty: i.qty,
+				taxClassId: "standard",
+			})),
+			coupon: {
+				type: "fixed_amount",
+				code: "EX08",
+				amountCents: cents(coupon.amount_cents),
+				currency: currency("USD"),
+			},
+			rules: {
+				shippingMethod: {
+					zoneId: "z",
+					methodId: "m",
+					type: "flat_rate",
+					amountCents: cents(0),
+					minSubtotalCents: null,
+				},
+				taxRatesByClass: { standard: s.inputs.tax_classes[""]?.rate_bps ?? 0 },
+				shippingTaxable: false,
+				shippingTaxClassId: "standard",
+			},
+		});
+		const subtotals = [first, second].map((i) => (i ? i.unit_cents * i.qty : 0));
+		const discounts = b.lineBreakdown.map((l, i) => (subtotals[i] ?? 0) - l.discountedCents);
+		expect(discounts).toEqual([500, 500]); // WooCommerce: 334/666, a 166-cent gap per line
+		expect(discounts.reduce((x, y) => x + y, 0)).toBe(coupon.amount_cents);
+		// Both lines are taxed on 1500 at 8.25% (123.75 → 124 each): 248 and 3248, not 247 and 3247.
+		expect(b.taxCents).toBe(248);
+		expect(b.totalCents).toBe(3248);
 	});
 });
