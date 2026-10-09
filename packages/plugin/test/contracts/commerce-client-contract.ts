@@ -5512,6 +5512,85 @@ export function adminRulesReportingClientContract(tier: CommerceClientTier): voi
 			).rejects.toMatchObject({ code: "INVALID_INPUT", field: "code" });
 		});
 
+		test("one tax rate per (class, zone): a second create is a 409 NAMING the existing rate, and writes nothing", async () => {
+			await client.createZone({ id: "uniq-z", name: "Uniq" });
+			await client.createZone({ id: "uniq-z2", name: "Uniq 2" });
+			await client.createTaxClass({ id: "uniq-c", name: "Uniq" });
+			const first = { id: "uniq-t1", taxClassId: "uniq-c", zoneId: "uniq-z", rateBps: 725 };
+			expect((await client.createTaxRate(first)).ok).toBe(true);
+			expect(
+				await client.createTaxRate({
+					...first,
+					id: "uniq-t2",
+					rateBps: 900,
+					appliesToShipping: true,
+				}),
+			).toEqual({ ok: false, status: 409, duplicateTaxRate: { id: "uniq-t1", rateBps: 725 } });
+			expect((await client.listTaxRates("uniq-z")).map((r) => r.id)).toEqual(["uniq-t1"]);
+			// Another zone, or another class, is not a duplicate — and the refused id is free.
+			expect((await client.createTaxRate({ ...first, id: "uniq-t2", zoneId: "uniq-z2" })).ok).toBe(
+				true,
+			);
+			// An edit cannot move a rate into another slot, so it is never refused as one.
+			const edited = await client.updateTaxRate("uniq-t2", {
+				rateBps: 725,
+				appliesToShipping: true,
+				expectedRateBps: 725,
+				expectedAppliesToShipping: false,
+			});
+			expect(edited.ok && edited.value.zoneId).toBe("uniq-z2");
+		});
+
+		test("a tax rate edit is CAS-guarded on the shipping flag too: a mismatch is stale, a non-boolean is refused, a replay is ok", async () => {
+			await client.createZone({ id: "flag-z", name: "Flag" });
+			await client.createTaxClass({ id: "flag-c", name: "Flag" });
+			expect(
+				(
+					await client.createTaxRate({
+						id: "flag-t",
+						taxClassId: "flag-c",
+						zoneId: "flag-z",
+						rateBps: 725,
+					})
+				).ok,
+			).toBe(true);
+			// The flag is OFF; an editor that loaded it ON is stale, and nothing changes.
+			const stale = await client.updateTaxRate("flag-t", {
+				rateBps: 800,
+				appliesToShipping: true,
+				expectedRateBps: 725,
+				expectedAppliesToShipping: true,
+			});
+			expect(stale).toMatchObject({
+				ok: false,
+				reason: "stale",
+				current: { appliesToShipping: false },
+			});
+			expect((await client.listTaxRates("flag-z"))[0]).toMatchObject({
+				rateBps: 725,
+				appliesToShipping: false,
+			});
+			// A non-boolean (or missing) expectation is refused before anything is read.
+			await expect(
+				client.updateTaxRate("flag-t", {
+					rateBps: 800,
+					appliesToShipping: true,
+					expectedRateBps: 725,
+					expectedAppliesToShipping: "false" as unknown as boolean,
+				}),
+			).rejects.toMatchObject({ code: "INVALID_INPUT", field: "expectedAppliesToShipping" });
+			// Applied once, then replayed verbatim (a double submit): both ok, applied once.
+			const edit = {
+				rateBps: 725,
+				appliesToShipping: true,
+				expectedRateBps: 725,
+				expectedAppliesToShipping: false,
+			};
+			expect((await client.updateTaxRate("flag-t", edit)).ok).toBe(true);
+			const replay = await client.updateTaxRate("flag-t", edit);
+			expect(replay.ok && replay.value).toMatchObject({ rateBps: 725, appliesToShipping: true });
+		});
+
 		test("a tax rate above 100% (10000 bps) is refused on create and on edit", async () => {
 			await client.createZone({ id: "cap-z", name: "Cap" });
 			await client.createTaxClass({ id: "cap-c", name: "Cap" });
@@ -5526,6 +5605,7 @@ export function adminRulesReportingClientContract(tier: CommerceClientTier): voi
 					rateBps: 15_000,
 					appliesToShipping: false,
 					expectedRateBps: 10_000,
+					expectedAppliesToShipping: false,
 				}),
 			).rejects.toMatchObject({ code: "INVALID_INPUT", field: "rateBps" });
 		});
@@ -5676,12 +5756,14 @@ export function adminRulesReportingClientContract(tier: CommerceClientTier): voi
 				rateBps: 825,
 				appliesToShipping: false,
 				expectedRateBps: 725,
+				expectedAppliesToShipping: false,
 			});
 			expect(ok.ok && ok.value.rateBps).toBe(825);
 			const stale = await client.updateTaxRate("t1", {
 				rateBps: 900,
 				appliesToShipping: false,
 				expectedRateBps: 725,
+				expectedAppliesToShipping: false,
 			});
 			expect(stale.ok === false && stale.reason).toBe("stale");
 			expect(
@@ -5689,6 +5771,7 @@ export function adminRulesReportingClientContract(tier: CommerceClientTier): voi
 					rateBps: 1,
 					appliesToShipping: false,
 					expectedRateBps: 0,
+					expectedAppliesToShipping: false,
 				}),
 			).toEqual({
 				ok: false,

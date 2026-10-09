@@ -506,7 +506,11 @@ describeEachDialect("EmdashTaxRulesStore crash seams", (ctx) => {
 		expect(await plain.store.getRate("standard", "z-us")).toBeNull();
 		expect(await plain.store.countRatesByClass("standard")).toBe(0);
 		expect(
-			await plain.store.updateRate("r1", { rateBps: 1, appliesToShipping: false }, 725),
+			await plain.store.updateRate(
+				"r1",
+				{ rateBps: 1, appliesToShipping: false },
+				{ rateBps: 725, appliesToShipping: false },
+			),
 		).toEqual({ ok: false, reason: "not_found" });
 		expect(await plain.store.deleteRate("r1")).toEqual({ ok: false, reason: "not_found" });
 		// The class is childless, so it is still deletable.
@@ -617,10 +621,20 @@ describeEachDialect("EmdashTaxRulesStore crash seams", (ctx) => {
 		const slow = makeTaxRulesHarness(raw, {
 			storageForStore: withCollection(raw, "tax_classes", parked.collection),
 		}).store;
-		const a = slow.updateRate("r1", { rateBps: 1000, appliesToShipping: false }, 725);
+		const a = slow.updateRate(
+			"r1",
+			{ rateBps: 1000, appliesToShipping: false },
+			{ rateBps: 725, appliesToShipping: false },
+		);
 		await parked.arrived;
 		expect(
-			(await plain.store.updateRate("r1", { rateBps: 900, appliesToShipping: false }, 725)).ok,
+			(
+				await plain.store.updateRate(
+					"r1",
+					{ rateBps: 900, appliesToShipping: false },
+					{ rateBps: 725, appliesToShipping: false },
+				)
+			).ok,
 		).toBe(true);
 		parked.release();
 
@@ -723,7 +737,11 @@ describeEachDialect("EmdashTaxRulesStore crash seams", (ctx) => {
 		expect((await plain.rateOwners.get("r1"))?.taxClassId).toBe("reduced");
 		expect((await plain.store.getRate("reduced", "z-us"))?.rateBps).toBe(500);
 		expect(
-			await plain.store.updateRate("r1", { rateBps: 600, appliesToShipping: false }, 500),
+			await plain.store.updateRate(
+				"r1",
+				{ rateBps: 600, appliesToShipping: false },
+				{ rateBps: 500, appliesToShipping: false },
+			),
 		).toMatchObject({ ok: true });
 	});
 
@@ -770,7 +788,11 @@ describeEachDialect("EmdashTaxRulesStore crash seams", (ctx) => {
 		// The id-keyed edit is the path that heals the claim, because it is the path that
 		// needs it: the `(class, zone)` read above never consults one.
 		expect(
-			await plain.store.updateRate("r1", { rateBps: 2100, appliesToShipping: false }, 2000),
+			await plain.store.updateRate(
+				"r1",
+				{ rateBps: 2100, appliesToShipping: false },
+				{ rateBps: 2000, appliesToShipping: false },
+			),
 		).toMatchObject({ ok: true });
 		expect((await plain.rateOwners.get("r1"))?.taxClassId).toBe("standard");
 		const err = await settleOne(
@@ -800,7 +822,11 @@ describeEachDialect("EmdashTaxRulesStore crash seams", (ctx) => {
 		expect(await plain.rateOwners.delete("r1")).toBe(true);
 
 		expect(
-			await plain.store.updateRate("r1", { rateBps: 825, appliesToShipping: false }, 725),
+			await plain.store.updateRate(
+				"r1",
+				{ rateBps: 825, appliesToShipping: false },
+				{ rateBps: 725, appliesToShipping: false },
+			),
 		).toMatchObject({ ok: true });
 		expect((await plain.rateOwners.get("r1"))?.taxClassId).toBe("standard");
 		expect((await plain.store.getRate("standard", "z-us"))?.rateBps).toBe(825);
@@ -825,12 +851,112 @@ describeEachDialect("EmdashTaxRulesStore crash seams", (ctx) => {
 		const edited = await plain.store.updateRate(
 			"r1",
 			{ rateBps: 600, appliesToShipping: false },
-			500,
+			{ rateBps: 500, appliesToShipping: false },
 		);
 		expect(edited).toMatchObject({ ok: true });
 		expect((await plain.rateOwners.get("r1"))?.taxClassId).toBe("reduced");
 		expect((await plain.store.getRate("reduced", "z-us"))?.rateBps).toBe(600);
 		expect(await plain.store.deleteRate("r1")).toEqual({ ok: true });
+	});
+
+	test("(dup-race) a refused create never takes away the claim a concurrent create of the SAME id adopted", async () => {
+		const raw = bound.storage;
+		const plain = makeTaxRulesHarness(raw);
+		await plain.store.createRate({
+			id: "r1",
+			taxClassId: "standard",
+			zoneId: "z-us",
+			rateBps: 725,
+			appliesToShipping: false,
+		});
+
+		// A: "r2" into the OCCUPIED slot. It claims "r2", re-asserts the claim, and is held
+		// just before it reads the class document — the read that will refuse it. So
+		// everything A does after refusing comes after B below.
+		const heldRead = parkBeforeRead(raw["tax_classes"] ?? never(), "standard");
+		const refusing = makeTaxRulesHarness(raw, {
+			storageForStore: withCollection(raw, "tax_classes", heldRead.collection),
+		}).store.createRate({
+			id: "r2",
+			taxClassId: "standard",
+			zoneId: "z-us",
+			rateBps: 900,
+			appliesToShipping: false,
+		});
+		await heldRead.arrived;
+
+		// B: "r2" into a FREE slot of the same class. It adopts A's claim (re-asserting it)
+		// and is held just before its embed — the window where the claim is B's but the
+		// class does not hold "r2" yet, which a releasing refusal would mistake for an
+		// orphan (the refusal now keeps its claim instead).
+		const heldEmbed = parkCall(
+			raw["tax_classes"] ?? never(),
+			(call) => call.method === "compareAndSet",
+		);
+		const creating = makeTaxRulesHarness(raw, {
+			storageForStore: withCollection(raw, "tax_classes", heldEmbed.collection),
+		}).store.createRate({
+			id: "r2",
+			taxClassId: "standard",
+			zoneId: "z-eu",
+			rateBps: 2000,
+			appliesToShipping: false,
+		});
+		await heldEmbed.arrived;
+
+		heldRead.release();
+		expect(await settleOne(refusing)).toMatchObject({ code: "TAX_RATE_DUPLICATE" });
+		heldEmbed.release();
+		expect((await creating).zoneId).toBe("z-eu");
+
+		// B's claim survived A's release: the rate is reachable with no healing needed.
+		expect(await plain.rateOwners.get("r2")).toMatchObject({ taxClassId: "standard" });
+		expect((await plain.store.getRate("standard", "z-eu"))?.id).toBe("r2");
+	});
+
+	test("(dup) a refused create's leftover claim misleads no reader, and the id is adopted later — in any class", async () => {
+		const raw = bound.storage;
+		const plain = makeTaxRulesHarness(raw);
+		await plain.store.createRate({
+			id: "r1",
+			taxClassId: "standard",
+			zoneId: "z-us",
+			rateBps: 725,
+			appliesToShipping: false,
+		});
+
+		const err = await settleOne(
+			plain.store.createRate({
+				id: "r2",
+				taxClassId: "standard",
+				zoneId: "z-us",
+				rateBps: 900,
+				appliesToShipping: false,
+			}),
+		);
+		expect(err).toMatchObject({ code: "TAX_RATE_DUPLICATE", existingRateId: "r1" });
+		// A refused create keeps its claim (no release that could race), so it is an orphan …
+		expect(await plain.rateOwners.get("r2")).not.toBeNull();
+		// … which misleads no reader and strands no id.
+		expect(
+			await plain.store.updateRate(
+				"r2",
+				{ rateBps: 1, appliesToShipping: false },
+				{ rateBps: 900, appliesToShipping: false },
+			),
+		).toEqual({
+			ok: false,
+			reason: "not_found",
+		});
+		await plain.store.createRate({
+			id: "r2",
+			taxClassId: "reduced",
+			zoneId: "z-us",
+			rateBps: 2000,
+			appliesToShipping: false,
+		});
+		expect((await plain.store.getRate("reduced", "z-us"))?.id).toBe("r2");
+		expect(await plain.rateOwners.get("r2")).toMatchObject({ taxClassId: "reduced" });
 	});
 });
 

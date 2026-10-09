@@ -118,7 +118,9 @@ describe("checkout pipeline (Phase 6): totals reflect coupon/shipping/tax", () =
 		if (!res.ok) return;
 		const before = { ...res.order.totals };
 
-		// Edit the rules AFTER the order exists — a new shipping rate, a new tax rate.
+		// Edit the rules AFTER the order exists — a new shipping rate, a new tax rate
+		// (replacing the old one: a (class, zone) holds one rate).
+		await h.taxRules.deleteRate("t-std");
 		await h.shippingRules.createRate({
 			methodId: "m-flat",
 			currency: USD,

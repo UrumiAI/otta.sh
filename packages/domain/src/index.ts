@@ -138,12 +138,22 @@ export type {
 	DeleteTaxRateResult,
 	TaxClass,
 	TaxRate,
+	TaxRateExpectation,
 	TaxRulesStore,
 	UpdateTaxClassInput,
 	UpdateTaxClassResult,
 	UpdateTaxRateInput,
 	UpdateTaxRateResult,
 } from "./ports/tax-rules-store.js";
+// One tax rate per (class, zone): the refusal, and the rule for duplicates written before it.
+export {
+	appliedTaxRate,
+	effectiveTaxRates,
+	isTaxRateDuplicateError,
+	shadowedTaxRates,
+	TaxRateDuplicateError,
+	type TaxRateSlotted,
+} from "./pricing/tax-rate-uniqueness.js";
 export type {
 	CouponListCursor,
 	CouponListFilter,

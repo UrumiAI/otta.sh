@@ -4,9 +4,11 @@
  * express are made against (an orphaned id claim, a class document holding rates
  * for a class nobody declared).
  *
- * There is no seeding surface here, and deliberately so: both contracts build
- * their state through the ports, so a fixture that wrote documents directly
- * could never drift from what the stores really produce.
+ * There is one seeding surface here, and only one: `seedUncheckedRate`, which
+ * writes a tax rate the way a store did before it refused a second rate per
+ * (class, zone) — the legacy duplicates the port no longer lets anyone create.
+ * Everything else builds its state through the ports, so a fixture that wrote
+ * documents directly could never drift from what the stores really produce.
  */
 import { FixedClock } from "@otta-sh/domain/testing";
 import type { ShippingRulesStoreHarness, TaxRulesStoreHarness } from "@otta-sh/domain/testing";
@@ -96,10 +98,35 @@ export function makeTaxRulesHarness(
 		onCasAttempts: options.onCasAttempts,
 		maxListPages: options.maxListPages,
 	});
+	const classes = collectionOf<TaxClassDoc>(storage, TAX_CLASSES_COLLECTION);
+	const rateOwners = collectionOf<TaxRateOwnerDoc>(storage, TAX_RATE_OWNERS_COLLECTION);
 	return {
 		clock,
 		store,
-		classes: collectionOf<TaxClassDoc>(storage, TAX_CLASSES_COLLECTION),
-		rateOwners: collectionOf<TaxRateOwnerDoc>(storage, TAX_RATE_OWNERS_COLLECTION),
+		classes,
+		rateOwners,
+		// The documents exactly as `createRate` lays them out (claim + embed), minus
+		// its one-per-slot check.
+		async seedUncheckedRate(rate) {
+			const held = await classes.get(rate.taxClassId);
+			await classes.put(rate.taxClassId, {
+				taxClassId: rate.taxClassId,
+				name: held?.name ?? null,
+				rates: {
+					...held?.rates,
+					[rate.id]: {
+						rateId: rate.id,
+						zoneId: rate.zoneId,
+						rateBps: rate.rateBps,
+						appliesToShipping: rate.appliesToShipping,
+					},
+				},
+			});
+			await rateOwners.put(rate.id, {
+				rateId: rate.id,
+				taxClassId: rate.taxClassId,
+				claimedAt: clock.now().toISOString(),
+			});
+		},
 	};
 }
