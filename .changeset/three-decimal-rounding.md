@@ -15,8 +15,7 @@ difference as `TotalsBreakdown.roundingCents` (new `SignedCents` brand, `signedC
 prices, discounts, shipping and tax stay exact. Orders persist it as an optional
 `OrderTotals.rounding`; orders written before it carry none (= 0). The quote and order wires
 carry `roundingCents` only when the order has one; the checkout view model adds an optional
-`rounding` row (signed, only when non-zero, and held back on a live quote while shipping or
-tax is uncalculated), and the order emails, the staging site's
+`rounding` row (signed, only when non-zero, so the rows always add up to the rounded total), and the order emails, the staging site's
 checkout and order pages and the admin order detail show "Rounding". Every other currency is
 unchanged: no field, no row, the same totals, emails and Stripe requests.
 

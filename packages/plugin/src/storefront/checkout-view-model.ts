@@ -103,9 +103,9 @@ export interface CheckoutTotalsView {
 	 * The "Rounding" row (ADR-0033's amendment): the total rounded to its
 	 * currency's payment increment, SIGNED (`−KWD 0.003`, `+KWD 0.002`). Present
 	 * only when the rounding is non-zero; absent for every other total, whose
-	 * view is unchanged. Also absent on a `provisional` quote while
-	 * `totalExcludesUncalculated` (shipping or tax not calculated yet); an order
-	 * always shows it. The theme shows it after the tax rows, before the total.
+	 * view is unchanged. Shown even while shipping or tax is uncalculated: the
+	 * total is already rounded, so the row is what makes the rows add up to it.
+	 * The theme shows it after the tax rows, before the total.
 	 */
 	rounding?: CheckoutAmountView;
 	total: CheckoutAmountView;
@@ -121,11 +121,6 @@ export interface CheckoutTotalsOptions {
 	shippingSelected: boolean;
 	/** Did the caller pass a tax zone to the quote? */
 	taxZoneSelected: boolean;
-	/** A live checkout QUOTE, whose total may still change (the buyer has not
-	 *  chosen shipping yet): its "Rounding" row is held back while shipping or tax
-	 *  is uncalculated. Absent for an ORDER, whose total is final — its rounding
-	 *  row is always shown, so the rows sum to what was charged. */
-	provisional?: boolean;
 }
 
 function money(amount: number, currencyCode: Currency, locale: string): CartMoneyWire {
@@ -196,7 +191,6 @@ export function buildCheckoutTotals(
 		}
 	}
 
-	const totalExcludesUncalculated = !options.shippingSelected || !taxComputed;
 	return {
 		subtotal: computed(shown?.subtotal ?? breakdown.subtotalCents, code, locale),
 		discount: hasDiscount
@@ -208,16 +202,14 @@ export function buildCheckoutTotals(
 		tax: taxView,
 		taxRows,
 		taxIncludedNote,
-		// Not on a live quote while shipping or tax is uncalculated: the rounding of
-		// a partial total would change once they are, so the row waits for it.
-		...(breakdown.roundingCents !== undefined &&
-		breakdown.roundingCents !== 0 &&
-		!(options.provisional === true && totalExcludesUncalculated)
+		// Wherever there is one, uncalculated parts or not: the total shown is
+		// already rounded, so this row is what makes the rows add up to it.
+		...(breakdown.roundingCents !== undefined && breakdown.roundingCents !== 0
 			? { rounding: signedComputed(breakdown.roundingCents, code, locale) }
 			: {}),
 		total: computed(breakdown.totalCents, code, locale),
 		appliedCouponCode: breakdown.appliedCouponCode,
-		totalExcludesUncalculated,
+		totalExcludesUncalculated: !options.shippingSelected || !taxComputed,
 	};
 }
 

@@ -598,14 +598,15 @@ describe("buildCheckoutTotals — the payment rounding row (ADR-0033 amendment)"
 		expect(totals.rounding?.label).toContain("0.006");
 	});
 
-	test("a live quote holds the row back while shipping or tax is uncalculated; an order never does", () => {
-		const uncalculated = { locale: LOCALE, shippingSelected: false, taxZoneSelected: true };
-		const quote = buildCheckoutTotals(KWD, { ...uncalculated, provisional: true });
-		expect(quote.totalExcludesUncalculated).toBe(true);
-		expect(Object.hasOwn(quote, "rounding")).toBe(false);
-		expect(buildCheckoutTotals(KWD, { ...flags, provisional: true }).rounding?.label).toMatch(/^−/);
-		// An order's total is final: its rows still sum to what was charged.
-		expect(buildCheckoutTotals(KWD, uncalculated).rounding?.label).toMatch(/^−/);
+	test("a digital-only KWD quote (no shipping, no tax calculated) still shows the row — the rows add up to the rounded total", () => {
+		const totals = buildCheckoutTotals(KWD, {
+			locale: LOCALE,
+			shippingSelected: false,
+			taxZoneSelected: false,
+		});
+		expect(totals.totalExcludesUncalculated).toBe(true);
+		expect(totals.rounding?.label).toMatch(/^−.*0\.004/);
+		expect(totals.total.money?.amount).toBe(1230);
 	});
 
 	test("a zero rounding, and a breakdown with none, add no row at all", () => {

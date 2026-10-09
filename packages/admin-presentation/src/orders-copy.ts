@@ -356,6 +356,9 @@ export function refundAmountPrecisionText(currencyCode: string): string {
  * or the WHOLE remaining amount, whatever it is (an order placed before checkout
  * rounded its total may hold a remainder of any size). Every other currency has
  * no increment, so any amount passes and the refund form behaves as it always did.
+ *
+ * A PRE-CHECK only: the deciding rule is the domain's `refundOrder`, which refuses
+ * the same amounts with `AMOUNT_NOT_PAYMENT_INCREMENT` for every caller.
  */
 export function isRefundableIncrement(
 	amountCents: number,

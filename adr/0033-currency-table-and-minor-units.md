@@ -78,8 +78,9 @@ Decision 5 is replaced. BHD, JOD, KWD and OMR are payable at checkout.
    are byte-identical to before. The order's totals snapshot stores it as an optional
    `rounding`; an order written before it has none and reads as 0. Every carrier spreads it
    with one helper, `roundingEntry`. Only what a person reads drops a 0: the Rounding row of a
-   page, an email and the admin's order detail. A live checkout quote also holds the row back
-   while shipping or tax is not yet calculated; an order always shows it.
+   page, an email and the admin's order detail. A non-zero row is shown wherever it exists,
+   even while shipping or tax is uncalculated: the total shown is already rounded, so the row
+   is what makes the rows add up to it.
 4. **The rounded total is the charged total.** The payment intent asks for it, settlement
    compares the payment with it, and revenue reports sum it. Pages, emails and the admin's
    order detail show a "Rounding" row, signed (`−KWD 0.004`), only when it is non-zero.

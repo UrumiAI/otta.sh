@@ -538,8 +538,6 @@ export function createCheckoutSummaryRouteHandler(): RouteHandler<CheckoutSummar
 					// method is a COMPUTED zero); tax iff a zone matched (ADR-0021).
 					shippingSelected: methodSelected,
 					taxZoneSelected: status === "matched",
-					// A live quote: its rounding row waits for shipping and tax.
-					provisional: true,
 				}),
 				idempotencyKey: checkoutIdempotencyKey(cart.cartId),
 				hasUnpricedLines: !pricing.allLinesPriced,
