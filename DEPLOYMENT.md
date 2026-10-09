@@ -487,14 +487,30 @@ deployment-supplied hosts are the operator extras below.
 the allowlist, read from the shell env, then `sites/staging/.env`, at
 **build** time, e.g. `OTTA_EXTRA_ALLOWED_HOSTS=api.example.com,hooks.example.org`.
 Entries are trimmed and lowercased, empty entries are dropped, duplicates collapse, and
-the order is stable (Stripe, then extras as given). Each entry must be a plain
-DNS hostname: letters, digits and hyphens in dot-separated labels, with at least one dot.
-A wildcard (`*`, `*.example.com`), an IPv4/IPv6 literal, `localhost`, or anything with a
-scheme, port, path or userinfo **fails the build** with an error naming the entry, so a
-typo is loud rather than silently ungranted. The capability stays `network:request`
-(never `network:request:unrestricted`). Private, loopback and metadata addresses are
-blocked by EmDash's SSRF validation alone (the Worker deliberately runs without
-`global_fetch_strictly_public`, §2.4), no matter what is listed here. Listing a host means
+the order is stable (Stripe, then extras as given). Each entry must be a public DNS hostname:
+letters, digits and hyphens in dot-separated labels, with at least one dot. These **fail the
+build** with an error naming every refused entry, so a typo is loud rather than silently
+ungranted:
+
+- a wildcard (`*`, `*.example.com`), or anything with a scheme, port, path or userinfo;
+- an IPv4 literal (including hex forms such as `0x7f.0.0.1`) or an IPv6 literal;
+- a single-label name (`localhost`, `intranet`);
+- `localhost`, `local`, `internal`, `localdomain`, `home.arpa` and `lan`, and any name
+  under them (`app.localhost`, `printer.local`, `metadata.google.internal`,
+  `localhost.localdomain`, `nas.lan`);
+- the wildcard-IP DNS services `nip.io`, `sslip.io` and `xip.io` and any name under them
+  (`127.0.0.1.nip.io`);
+- any Stripe host other than `api.stripe.com`, above all `js.stripe.com`, which is loaded
+  by the buyer's browser and is never plugin egress
+  ([ADR-0012](./adr/0012-storefront-checkout-loads-stripe-elements-in-the-browser.md) §3).
+  Listing `api.stripe.com` itself is a harmless no-op: it is always granted.
+
+This is a **build-time sanity check against obvious mistakes, not SSRF protection**: any
+public name can resolve to a private address. The capability stays `network:request`
+(never `network:request:unrestricted`), and the runtime protection is EmDash's egress
+check, which validates the resolved IP and blocks private, loopback and metadata addresses
+whatever is listed here (the Worker deliberately runs without
+`global_fetch_strictly_public`, §2.4). Listing a host means
 trusting its DNS: EmDash validates the resolved IP and `fetch` then resolves again (a
 DNS-rebinding window), and no platform flag backs this up. Allowlisted hosts, extras
 included, also become allowed image sources in the plugin admin UI (EmDash behaviour for
