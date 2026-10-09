@@ -1,3 +1,4 @@
+import { unsupportedCurrencyMessage } from "@otta-sh/admin-presentation";
 import { parseCouponInstant } from "@otta-sh/domain";
 import { formatMoney } from "../presentation/format-money.js";
 import { cents as toCents, currency as toCurrency } from "../presentation/money.js";
@@ -16,6 +17,7 @@ import type {
 	TabPanel,
 } from "../types.js";
 import { makeAdminClients } from "./make-admin-clients.js";
+import { readStoreCurrencySoft } from "./store-currency-read.js";
 import {
 	type AdminRulesSurface,
 	type CouponEdit,
@@ -25,10 +27,22 @@ import {
 	type RulesDeleteResult,
 	type RulesUpdateResult,
 } from "./admin-rules-surface.js";
-import { formatMinorUnitsInput, parseMinorUnitsInput } from "./money-input.js";
-import { isIdToken } from "../commerce/commerce-input.js";
+import {
+	formatMinorUnitsInput,
+	moneyInputExample,
+	moneyPrecisionPhrase,
+	NO_CURRENCY,
+	parseMinorUnitsInput,
+} from "./money-input.js";
+import {
+	CURRENCY_SHAPE_REASON,
+	isCommerceInputError,
+	isIdToken,
+	UNSUPPORTED_CURRENCY_REASON,
+} from "../commerce/commerce-input.js";
+import { COUPON_CURRENCY_REFUSAL } from "./coupon-currency-rules.js";
 import { idInputProblem } from "./id-input.js";
-import { isIsoCurrencyCode } from "@otta-sh/domain";
+import { isSupportedCurrency } from "@otta-sh/domain";
 import { formatBpsAsPercent, parsePercentToBps } from "./percent-input.js";
 import {
 	asRecord,
@@ -182,7 +196,20 @@ const NONE = "none";
  * be reconstructed from cents that were never derived. Within-request only —
  * nothing is stored, and it reaches the client only as `initial_value`.
  */
-type CouponsRenderState = { kind: "new-coupon"; draft?: CouponDraft };
+type CouponsRenderState = {
+	kind: "new-coupon";
+	draft?: CouponDraft;
+	/** The store currency, shown as the currency field's PLACEHOLDER (a hint,
+	 *  never a prefill: one field serves both types, and a percentage coupon
+	 *  without a cap must be able to leave it blank). `undefined` ⇒ the read
+	 *  FAILED (`readStoreCurrencySoft`): no hint at all, and the screen says so —
+	 *  never a guessed "USD". */
+	storeCurrency: string | undefined;
+};
+
+/** What the create screen says when the store currency could not be read. */
+const COUPON_STORE_CURRENCY_UNKNOWN =
+	"Couldn't load your store currency — if this coupon needs a currency, enter it yourself.";
 
 /** The create form's seven fields exactly as they were submitted — see
  *  {@link CouponsRenderState}. `type` is a `select` value, so
@@ -251,9 +278,10 @@ export function createCouponsPageHandler(): RouteHandler<CouponsPageInput> {
 /**
  * One-line discount summary, rendered honestly: fixed_amount through the
  * symbol-bearing money formatter in the coupon's own currency; percentage as
- * the EXACT bps-derived percent with a currency-AGNOSTIC cap (a percentage
- * coupon has no currency, so its cap renders as a plain decimal — no invented
- * symbol); unset economics say "(unset)" instead of a garbage "null off"; an
+ * the EXACT bps-derived percent with its cap in the coupon's bound currency
+ * when it has one (a percentage coupon written before bounds carried a
+ * currency renders its cap as a plain decimal — no invented symbol); unset
+ * economics say "(unset)" instead of a garbage "null off"; an
  * unknown type renders verbatim rather than guessing its arithmetic.
  */
 export function couponDiscountSummary(
@@ -265,7 +293,8 @@ export function couponDiscountSummary(
 	}
 	if (c.type === "percentage") {
 		if (c.rateBps === null) return "percentage (unset)";
-		const cap = c.capCents === null ? "" : ` (cap ${formatCentsForDisplay(c.capCents, null)})`;
+		const cap =
+			c.capCents === null ? "" : ` (cap ${formatCentsForDisplay(c.capCents, c.currency)})`;
 		return `${formatBpsAsPercent(c.rateBps)}% off${cap}`;
 	}
 	return c.type;
@@ -376,9 +405,10 @@ export function couponStatus(
  * M-2 ("stated once, not per row"): what that rule forbids is a `Currency`
  * COLUMN, and a currency in the header would be the worse option here, since
  * coupons genuinely mix currencies across rows and `Min spend (USD)` becomes a
- * lie the first time a EUR coupon lands. A percentage coupon carries no
- * currency at all, so its floor renders as the same plain exact decimal its
- * cap already does — no invented symbol.
+ * lie the first time a EUR coupon lands. A percentage coupon whose floor is
+ * bound to a currency renders it in that currency, like a fixed one; one
+ * written before bounds carried a currency renders the same plain exact
+ * decimal (hundredths) its cap does — no invented symbol.
  */
 function couponMinSpendSummary(
 	c: Pick<CouponSummaryWire, "minSubtotalCents" | "currency">,
@@ -388,15 +418,16 @@ function couponMinSpendSummary(
 }
 
 /** Display-format minor units: symbol-bearing when the coupon carries a
- *  currency; a PLAIN exact decimal when it does not (percentage coupons are
- *  currency-agnostic); a `CUR amount` fallback if the branding constructors
+ *  currency (a fixed coupon always; a percentage coupon once its bounds are
+ *  bound); a PLAIN exact hundredths decimal when it does not (an unbound
+ *  percentage coupon); a `CUR amount` fallback if the branding constructors
  *  reject the wire value (never throws into the render path). */
 function formatCentsForDisplay(minorUnits: number, currencyCode: string | null): string {
-	if (currencyCode === null) return formatMinorUnitsInput(minorUnits);
+	if (currencyCode === null) return formatMinorUnitsInput(minorUnits, NO_CURRENCY);
 	try {
 		return formatMoney(toCents(minorUnits), toCurrency(currencyCode), "en-US");
 	} catch {
-		return `${currencyCode} ${formatMinorUnitsInput(minorUnits)}`;
+		return `${currencyCode} ${formatMinorUnitsInput(minorUnits, currencyCode)}`;
 	}
 }
 
@@ -478,7 +509,9 @@ function couponsBlocks(
 	notice: Notice | undefined,
 	renderState: CouponsRenderState | undefined,
 ): Block[] {
-	if (renderState?.kind === "new-coupon") return newCouponScreen(renderState.draft, notice);
+	if (renderState?.kind === "new-coupon") {
+		return newCouponScreen(renderState.draft, notice, renderState.storeCurrency);
+	}
 	// ONE part for the screen's one authored filter field (L-3).
 	const activeFilters = [filter.search !== undefined && `code: ${filter.search}`];
 	const summary = filterSummary(activeFilters);
@@ -571,7 +604,11 @@ function createCouponButton(): ActionsBlock {
  * The banner sits ABOVE the form on purpose: it is a refusal ("Coupon not
  * created"), and it explains the values the form below has just put back.
  */
-function newCouponScreen(draft: CouponDraft | undefined, notice: Notice | undefined): Block[] {
+function newCouponScreen(
+	draft: CouponDraft | undefined,
+	notice: Notice | undefined,
+	storeCurrency: string | undefined,
+): Block[] {
 	const blocks: Block[] = [
 		{ type: "header", text: "New coupon", block_id: "coupons:new:hdr" },
 		// No path: this screen belongs to the ROOT list, and the cancel verb
@@ -584,7 +621,10 @@ function newCouponScreen(draft: CouponDraft | undefined, notice: Notice | undefi
 		// 108 chars ≤ 140 (§1 — the page-level line on this screen).
 		text: "ID, code, type and currency are fixed at creation — to change them, retire this coupon and issue a new code.",
 	});
-	blocks.push(createCouponForm(draft));
+	if (storeCurrency === undefined) {
+		blocks.push({ type: "context", text: COUPON_STORE_CURRENCY_UNKNOWN });
+	}
+	blocks.push(createCouponForm(draft, storeCurrency));
 	return blocks;
 }
 
@@ -779,7 +819,7 @@ function couponTypeInputValue(type: string): string {
 	return COUPON_TYPE_CHOICES.find((c) => c.type === type)?.value ?? type;
 }
 
-function createCouponForm(draft?: CouponDraft): FormBlock {
+function createCouponForm(draft?: CouponDraft, storeCurrency?: string): FormBlock {
 	const typeOptions: SelectOption[] = COUPON_TYPE_CHOICES.map(({ value }) => ({
 		value,
 		label: value,
@@ -831,9 +871,11 @@ function createCouponForm(draft?: CouponDraft): FormBlock {
 				{
 					type: "text_input",
 					action_id: "currency",
-					label: "Currency (ISO-4217)",
-					placeholder: "USD",
-					condition: { field: "type", eq: FIXED_AMOUNT_VALUE },
+					// ONE currency field for both types (a `condition` cannot show a
+					// field for two values): a fixed amount's currency, or the
+					// currency a percentage coupon's cap is in.
+					label: CREATE_CURRENCY_LABEL,
+					...(storeCurrency !== undefined ? { placeholder: storeCurrency } : {}),
 					...prefill(draft?.currency),
 				},
 				{
@@ -973,7 +1015,14 @@ function detailBlocks(
 			["Discount", couponDiscountSummary(detail)],
 			["Type", couponTypeInputValue(detail.type)],
 			["Uses", couponUsesSummary(detail.usesCount, detail.maxUses)],
-			["Currency", detail.currency ?? "— (currency-agnostic)"],
+			[
+				"Currency",
+				detail.currency === null
+					? "— (currency-agnostic)"
+					: detail.type === "percentage"
+						? `${detail.currency} — applies only to carts in ${detail.currency}`
+						: detail.currency,
+			],
 			// THE LAST RAW WIRE TIMESTAMP IN THE CONSOLE, and the reason INC-13's
 			// rule had to ship as a separate assertion with this screen unwired
 			// from it. It reads `1 Jun 2026, 00:00 UTC` now, like every other
@@ -1148,6 +1197,75 @@ function editGroup(detail: CouponSummaryWire): Block {
  *  saving one half silently nulls the other. See {@link editCouponForm}. */
 const LIMITS_TOGGLE = "showLimits";
 
+/** A percentage coupon's bounds currency field: the currency its cap and
+ *  minimum spend are amounts in. Required when either is set (a JPY cap of
+ *  `500` is ¥500, not a hundredths figure); the coupon then applies only to
+ *  carts in that currency, as a fixed-amount coupon does. */
+const BOUNDS_CURRENCY = "currency";
+/** The carrier key of the edit form's currency watermark (see `currentContext`). */
+const RENDERED_CURRENCY = "renderedCurrency";
+const CURRENCY_MOVED =
+	"This coupon's currency changed since you opened it, so its amounts were not saved. Check the coupon and enter them again.";
+const CREATE_CURRENCY_LABEL =
+	"Currency (ISO-4217) — a fixed amount's, or a percentage coupon's cap (the coupon then applies only to carts in it)";
+const BOUNDS_CURRENCY_LABEL =
+	"Currency of the cap and minimum spend (e.g. USD) — the coupon then applies only to carts in it, and stays so even if both are later cleared";
+const BOUNDS_CURRENCY_REQUIRED =
+	"A discount cap or minimum spend is an amount — enter the currency it is in (like USD) in the currency field.";
+const BOUNDS_CURRENCY_UNNEEDED =
+	"A percentage coupon needs a currency only with a cap or minimum spend — leave the currency blank, or set one of them.";
+/** The cap / minimum-spend label suffix on a coupon whose bounds predate
+ *  bound currencies. They keep the rule they were written under: the amount
+ *  typed (up to two decimals) is ×100 and applied in the cart currency's
+ *  smallest unit — cents for USD, but yen for JPY. Clearing both and saving is
+ *  how such a coupon gets a currency. */
+const LEGACY_BOUNDS_HINT =
+	" — set before caps had a currency: what you type is ×100 in the cart currency's smallest unit (clear it and save to set a currency)";
+
+const LEGACY_BOUNDS_REFUSAL =
+	"This coupon's cap or minimum spend was set before they carried a currency, so one can't be added to them. Clear the cap and minimum spend and save, then set them again with a currency.";
+const STALE_FORM =
+	"This form is out of date — nothing was saved. Reload the coupon and make the change again.";
+
+/**
+ * The currency a percentage coupon's cap and minimum spend are PARSED in on
+ * this save, and the one SENT to the rules client: the coupon's own (the form's
+ * rendered watermark), else a currency typed beside them (parsed in only when
+ * the store supports it), else none — {@link NO_CURRENCY}, hundredths. Whether
+ * that currency may be bound, or is needed at all, is the RULES CLIENT's call
+ * (its typed refusals, `COUPON_CURRENCY_REFUSAL`); this screen only maps them
+ * to copy ({@link couponCurrencyRefusalCopy}).
+ */
+function boundsCurrency(
+	values: Record<string, unknown>,
+	rendered: string,
+): { parse: string; send: string | null } {
+	if (rendered !== "") return { parse: rendered, send: rendered };
+	const raw = (readString(values[BOUNDS_CURRENCY]) ?? "").trim().toUpperCase();
+	if (raw.length === 0) return { parse: NO_CURRENCY, send: null };
+	return { parse: isSupportedCurrency(raw) ? raw : NO_CURRENCY, send: raw };
+}
+
+/** The screen's copy for a rules-client refusal of a coupon's currency, or
+ *  `undefined` for any other error (which is rethrown to the scaffold). */
+function couponCurrencyRefusalCopy(err: unknown, sent: string | null): string | undefined {
+	if (!isCommerceInputError(err) || err.field !== "currency") return undefined;
+	switch (err.reason) {
+		case COUPON_CURRENCY_REFUSAL.boundsNeedCurrency:
+			return BOUNDS_CURRENCY_REQUIRED;
+		case COUPON_CURRENCY_REFUSAL.currencyNeedsBounds:
+			return BOUNDS_CURRENCY_UNNEEDED;
+		case COUPON_CURRENCY_REFUSAL.legacyBounds:
+			return LEGACY_BOUNDS_REFUSAL;
+		case UNSUPPORTED_CURRENCY_REASON:
+			return sent === null ? unsupportedCurrencyMessage() : unsupportedCurrencyMessage(sent);
+		case CURRENCY_SHAPE_REASON:
+			return "Currency must be a 3-letter ISO-4217 code like USD.";
+		default:
+			return "The currency could not be accepted — check it and try again. Nothing was changed.";
+	}
+}
+
 /**
  * The full-replace edit form. Three properties carry this screen's safety.
  *
@@ -1197,7 +1315,12 @@ function editCouponForm(detail: CouponSummaryWire): FormBlock {
 			action_id: "amount",
 			label: `Amount off (${detail.currency ?? "?"})`,
 			...(detail.amountCents !== null
-				? { initial_value: formatMinorUnitsInput(detail.amountCents) }
+				? {
+						initial_value: formatMinorUnitsInput(
+							detail.amountCents,
+							detail.currency ?? NO_CURRENCY,
+						),
+					}
 				: {}),
 		});
 	} else {
@@ -1224,20 +1347,42 @@ function editCouponForm(detail: CouponSummaryWire): FormBlock {
 		label: "Edit spend and use limits",
 		initial_value: false,
 	});
+	// A percentage coupon whose cap / minimum predate bound currencies: they keep
+	// their old reading, and the rules client refuses to bind a currency to it,
+	// so it gets a hint and no currency field.
+	const legacyBounds =
+		detail.type === "percentage" &&
+		detail.currency === null &&
+		(detail.capCents !== null || detail.minSubtotalCents !== null);
+	const legacyHint = legacyBounds ? LEGACY_BOUNDS_HINT : "";
+	// A BOUND percentage coupon's cap and minimum are amounts in its currency, so
+	// their labels name it, as "Amount off (JPY)" does for a fixed one.
+	const boundIn =
+		detail.type === "percentage" && detail.currency !== null ? `, ${detail.currency}` : "";
 	if (detail.type === "percentage") {
 		editFields.push(
 			limitField(
 				"cap",
-				"Discount cap (optional)",
-				detail.capCents === null ? undefined : formatMinorUnitsInput(detail.capCents),
+				`Discount cap (optional${boundIn})${legacyHint}`,
+				detail.capCents === null
+					? undefined
+					: formatMinorUnitsInput(detail.capCents, detail.currency ?? NO_CURRENCY),
 			),
 		);
+		// A percentage coupon with no bound currency yet: setting a cap or a
+		// minimum spend needs one (they are amounts in it). One that already has
+		// one keeps it — a coupon's currency never changes.
+		if (detail.currency === null && !legacyBounds) {
+			editFields.push(limitField(BOUNDS_CURRENCY, BOUNDS_CURRENCY_LABEL, undefined));
+		}
 	}
 	editFields.push(
 		limitField(
 			"minSubtotal",
-			"Minimum spend (optional)",
-			detail.minSubtotalCents === null ? undefined : formatMinorUnitsInput(detail.minSubtotalCents),
+			`Minimum spend (optional${boundIn})${legacyHint}`,
+			detail.minSubtotalCents === null
+				? undefined
+				: formatMinorUnitsInput(detail.minSubtotalCents, detail.currency ?? NO_CURRENCY),
 		),
 	);
 	editFields.push(
@@ -1338,6 +1483,13 @@ function currentContext(detail: CouponSummaryWire): Record<string, string> {
 			: {}),
 		...(detail.startsAt !== null ? { curStartsAt: detail.startsAt } : {}),
 		...(detail.expiresAt !== null ? { curExpiresAt: detail.expiresAt } : {}),
+		// The currency this form was RENDERED with (empty: unbound). The save
+		// PARSES the amounts in it and sends it as the edit's `currency`; that is
+		// safe only because the rules client refuses (409) a currency that no
+		// longer matches the stored one AND the store re-checks it
+		// (`expectCurrency`) inside its compare-and-set. Neither check may be
+		// removed while amounts are parsed in this carried value.
+		[RENDERED_CURRENCY]: detail.currency ?? "",
 	};
 }
 
@@ -1466,6 +1618,14 @@ type ParsedEconomics =
  * because {@link resolveBound} preserves them byte for byte.
  */
 interface CurrentValues {
+	/** The currency this save parses amounts in: the form's RENDERED currency
+	 *  (the watermark), a percentage coupon's newly chosen bounds currency, or
+	 *  {@link NO_CURRENCY} — a percentage coupon with none, whose bounds keep the
+	 *  hundredths scale they always had. Safe only because the rules client
+	 *  409s a currency that no longer matches the stored one and the store
+	 *  re-checks it (`expectCurrency`) in its compare-and-set; do not remove
+	 *  those checks. */
+	currency: string;
 	cap: string;
 	minSubtotal: string;
 	maxUses: string;
@@ -1477,6 +1637,7 @@ interface CurrentValues {
 /** No carried current at all — the CREATE form, which has none of these fields
  *  and whose absent keys therefore mean "unset", exactly as before. */
 const NO_CURRENT: CurrentValues = {
+	currency: NO_CURRENCY,
 	cap: "",
 	minSubtotal: "",
 	maxUses: "",
@@ -1485,10 +1646,14 @@ const NO_CURRENT: CurrentValues = {
 	expiresAt: null,
 };
 
-function currentValues(carried: Readonly<Record<string, string>> | undefined): CurrentValues {
+function currentValues(
+	carried: Readonly<Record<string, string>> | undefined,
+	currency: string,
+): CurrentValues {
 	return {
-		cap: carriedMoneyInput(carried?.curCap),
-		minSubtotal: carriedMoneyInput(carried?.curMinSubtotal),
+		currency,
+		cap: carriedMoneyInput(carried?.curCap, currency),
+		minSubtotal: carriedMoneyInput(carried?.curMinSubtotal, currency),
 		maxUses: carriedCount(carried?.curMaxUses),
 		maxUsesPerCustomer: carriedCount(carried?.curMaxUsesPerCustomer),
 		startsAt: carriedInstant(carried?.curStartsAt),
@@ -1500,9 +1665,9 @@ function currentValues(carried: Readonly<Record<string, string>> | undefined): C
  *  round-trips through the operator's browser, so anything that is not a plain
  *  non-negative integer reads as "no current value" rather than being trusted
  *  into a money field. */
-function carriedMoneyInput(raw: string | undefined): string {
+function carriedMoneyInput(raw: string | undefined, currency: string): string {
 	const count = carriedCount(raw);
-	return count === "" ? "" : formatMinorUnitsInput(Number.parseInt(count, 10));
+	return count === "" ? "" : formatMinorUnitsInput(Number.parseInt(count, 10), currency);
 }
 
 /** Carried whole count, or `""` for absent/untrusted. */
@@ -1581,12 +1746,19 @@ function parseEconomics(
 				message: "Leave the percentage-only fields (rate, cap) blank for a fixed-amount coupon.",
 			};
 		}
-		const amountCents = parseMinorUnitsInput(amountRaw, { allowZero: false });
+		// The amount is read in the coupon's currency: the one typed beside it on
+		// CREATE (when it is one the store supports), the form's rendered one on
+		// EDIT (checked against the stored one by the client and the store). A
+		// create whose currency is not yet usable is still read — in hundredths, as
+		// before — so an unreadable amount is reported first, as it always was.
+		const createCurrency =
+			mode === "create" && isSupportedCurrency(currencyRaw) ? currencyRaw : null;
+		const amountCurrency = mode === "create" ? (createCurrency ?? NO_CURRENCY) : current.currency;
+		const amountCents = parseMinorUnitsInput(amountRaw, amountCurrency, { allowZero: false });
 		if (amountCents === null) {
 			return {
 				ok: false,
-				message:
-					"Amount off must be a positive number like 5.00 (up to two decimal places) — a fixed-amount coupon cannot leave it unset.",
+				message: `Amount off must be a positive number like ${moneyInputExample("5.00", amountCurrency)} (${moneyPrecisionPhrase(amountCurrency)}) — a fixed-amount coupon cannot leave it unset.`,
 			};
 		}
 		let currency: string | null = null;
@@ -1594,23 +1766,22 @@ function parseEconomics(
 			if (!/^[A-Z]{3}$/.test(currencyRaw)) {
 				return { ok: false, message: "Currency must be a 3-letter ISO-4217 code like USD." };
 			}
-			if (!isIsoCurrencyCode(currencyRaw)) {
+			if (createCurrency === null) {
 				return {
 					ok: false,
-					message: `${currencyRaw} is not an ISO-4217 currency — use the code your store prices in, like USD or EUR.`,
+					message: unsupportedCurrencyMessage(currencyRaw),
 				};
 			}
-			currency = currencyRaw;
+			currency = createCurrency;
 		}
 		return { ok: true, amountCents, rateBps: null, capCents: null, currency };
 	}
 
 	// percentage
-	if (amountRaw.length > 0 || (mode === "create" && currencyRaw.length > 0)) {
+	if (amountRaw.length > 0) {
 		return {
 			ok: false,
-			message:
-				"Leave the fixed-amount-only fields (amount, currency) blank for a percentage coupon.",
+			message: "Leave the fixed-amount-only field (amount) blank for a percentage coupon.",
 		};
 	}
 	const rateBps = parsePercentToBps(rateRaw);
@@ -1623,11 +1794,13 @@ function parseEconomics(
 	}
 	let capCents: number | null = null;
 	if (capRaw.length > 0) {
-		capCents = parseMinorUnitsInput(capRaw, { allowZero: false });
+		// In the coupon's bounds currency (`current.currency`, resolved by the
+		// caller); with none, the hundredths a currency-less cap always had.
+		capCents = parseMinorUnitsInput(capRaw, current.currency, { allowZero: false });
 		if (capCents === null) {
 			return {
 				ok: false,
-				message: "Discount cap must be a positive number like 20.00, or blank for no cap.",
+				message: `Discount cap must be a positive number like ${moneyInputExample("20.00", current.currency)}, or blank for no cap.`,
 			};
 		}
 	}
@@ -1656,11 +1829,11 @@ function parseSharedFields(values: Record<string, unknown>, current: CurrentValu
 	const minSubtotalRaw = submittedOr(values, "minSubtotal", current.minSubtotal, disclosed);
 	let minSubtotalCents: number | null = null;
 	if (minSubtotalRaw.length > 0) {
-		minSubtotalCents = parseMinorUnitsInput(minSubtotalRaw, { allowZero: true });
+		minSubtotalCents = parseMinorUnitsInput(minSubtotalRaw, current.currency, { allowZero: true });
 		if (minSubtotalCents === null) {
 			return {
 				ok: false,
-				message: "Minimum spend must be a number like 35.00, or blank for none.",
+				message: `Minimum spend must be a number like ${moneyInputExample("35.00", current.currency)}, or blank for none.`,
 			};
 		}
 	}
@@ -1808,11 +1981,15 @@ function createCouponAction() {
 			// (DA-3a-i): the operator fixes the one field that was wrong instead of
 			// retyping seven. Raw text, exactly as submitted — see CouponsRenderState.
 			const draft = couponDraft(values);
-			const err = (description: string) =>
+			const err = async (description: string) =>
 				showList(
 					undefined,
 					{ variant: "error", title: "Coupon not created", description },
-					{ kind: "new-coupon", draft },
+					{
+						kind: "new-coupon",
+						draft,
+						storeCurrency: await readStoreCurrencySoft(client, "coupons"),
+					},
 				);
 			const id = (readString(values.id) ?? "").trim();
 			const code = (readString(values.code) ?? "").trim();
@@ -1838,24 +2015,40 @@ function createCouponAction() {
 			if (type === undefined) {
 				return err("Choose a valid coupon type.");
 			}
-			const econ = parseEconomics(type, values, "create", NO_CURRENT);
+			// A percentage coupon's cap is an amount in its bounds currency.
+			const bounds =
+				type === "percentage" ? boundsCurrency(values, "") : { parse: NO_CURRENCY, send: null };
+			const econ = parseEconomics(type, values, "create", {
+				...NO_CURRENT,
+				currency: bounds.parse,
+			});
 			if (!econ.ok) return err(econ.message);
 			// The five shared axes have no field on this form (§12.2) — a freshly
 			// created coupon is valid immediately, forever, unlimited, unrestricted.
-			const result = await client.createCoupon({
-				id,
-				code,
-				type,
-				amountCents: econ.amountCents,
-				rateBps: econ.rateBps,
-				capCents: econ.capCents,
-				currency: econ.currency,
-				minSubtotalCents: null,
-				startsAt: null,
-				expiresAt: null,
-				maxUses: null,
-				maxUsesPerCustomer: null,
-			});
+			// Whether a percentage coupon's currency is needed, or allowed, is the
+			// rules client's decision; its refusal comes back as this screen's copy.
+			const couponCurrency = type === "percentage" ? bounds.send : econ.currency;
+			let result: Awaited<ReturnType<AdminRulesSurface["createCoupon"]>>;
+			try {
+				result = await client.createCoupon({
+					id,
+					code,
+					type,
+					amountCents: econ.amountCents,
+					rateBps: econ.rateBps,
+					capCents: econ.capCents,
+					currency: couponCurrency,
+					minSubtotalCents: null,
+					startsAt: null,
+					expiresAt: null,
+					maxUses: null,
+					maxUsesPerCustomer: null,
+				});
+			} catch (e) {
+				const copy = couponCurrencyRefusalCopy(e, couponCurrency);
+				if (copy === undefined) throw e;
+				return err(copy);
+			}
 			// A SERVICE refusal keeps the draft too (a duplicate id is fixed by
 			// editing one field); success drops it, which is what returns the
 			// operator to the list. A collision says WHICH of the two was taken: the
@@ -1868,6 +2061,7 @@ function createCouponAction() {
 				: showList(undefined, createCouponNotice(result, code, clash), {
 						kind: "new-coupon",
 						draft,
+						storeCurrency: await readStoreCurrencySoft(client, "coupons"),
 					});
 		},
 	);
@@ -1956,10 +2150,23 @@ function saveCouponAction() {
 		}
 		const err = (description: string) =>
 			showLeaf([code], { variant: "error", title: "Coupon not saved", description });
+		// THE CURRENCY THE FORM WAS RENDERED WITH (empty: unbound) is the one its
+		// amounts are parsed in, and it is SENT as the edit's `currency`: the rules
+		// client compares it with the stored one, and the store re-checks it inside
+		// its compare-and-set, so a stale or tampered value can only be refused
+		// (409, "changed since you opened it") — it can never re-scale an amount
+		// that is then stored. A form without it predates the watermark: refused,
+		// to be reloaded, rather than parsed in a guessed currency.
+		const rendered = carried?.[RENDERED_CURRENCY];
+		if (rendered === undefined) return err(STALE_FORM);
+		const bounds =
+			type === "percentage"
+				? boundsCurrency(values, rendered)
+				: { parse: rendered, send: rendered === "" ? null : rendered };
 		// The coupon's current optional values, as the form itself carried them —
 		// the fallback that keeps a field which never reached this submit
 		// (a `condition`-hidden bound) at the value it was hiding.
-		const current = currentValues(carried);
+		const current = currentValues(carried, bounds.parse);
 		const econ = parseEconomics(type, values, "edit", current);
 		if (!econ.ok) return err(econ.message);
 		const shared = parseSharedFields(values, current);
@@ -1972,8 +2179,16 @@ function saveCouponAction() {
 			rateBps: econ.rateBps,
 			capCents: econ.capCents,
 			...shared.fields,
+			currency: bounds.send,
 		};
-		const result = await client.updateCoupon(couponId, edit);
+		let result: Awaited<ReturnType<AdminRulesSurface["updateCoupon"]>>;
+		try {
+			result = await client.updateCoupon(couponId, edit);
+		} catch (e) {
+			const copy = couponCurrencyRefusalCopy(e, bounds.send);
+			if (copy === undefined) throw e;
+			return err(copy);
+		}
 		return saveCouponOutcome(result, code, showLeaf, showList);
 	});
 }
@@ -1997,6 +2212,13 @@ function saveCouponOutcome(
 			variant: "error",
 			title: "Coupon not found",
 			description: "This coupon no longer exists — it may have been deleted.",
+		});
+	}
+	if (result.status === 409) {
+		return showLeaf([code], {
+			variant: "error",
+			title: "Coupon not saved",
+			description: CURRENCY_MOVED,
 		});
 	}
 	return showLeaf([code], {
@@ -2100,8 +2322,11 @@ function retireCouponAction() {
 /** INC-14's promoted button, and E-2's empty-state button — one verb, because
  *  they are one act. No draft: nothing has been typed yet. */
 function newCouponAction() {
-	return customAction<AdminRulesSurface, CouponsRenderState>(async ({ showList }) => {
-		return showList(undefined, undefined, { kind: "new-coupon" });
+	return customAction<AdminRulesSurface, CouponsRenderState>(async ({ client, showList }) => {
+		return showList(undefined, undefined, {
+			kind: "new-coupon",
+			storeCurrency: await readStoreCurrencySoft(client, "coupons"),
+		});
 	});
 }
 
