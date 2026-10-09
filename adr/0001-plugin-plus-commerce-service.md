@@ -67,7 +67,7 @@ CMS content became a **second writer**, and any publish reverted whatever the co
 edited — pinned for months as the store contract's `KNOWN GAP (F4)` case.
 
 The widget, its `commerce` seed field and its validator were removed in
-["one home per field"](../plans/archive/one-home-per-field.md) PR 1b. Commercial fields now have
+["one home per field"](https://github.com/UrumiAI/otta.sh/blob/527f7526bbb61ed95b75b793e94e4399a7c50be0/plans/archive/one-home-per-field.md) PR 1b. Commercial fields now have
 exactly one home, `product_commerce`, edited only from the admin's **Pricing & inventory**
 page. The CMS owns content — title, description, images, slug — and the sync hooks became
 lifecycle-only apart from one permanent projection: `product_commerce.title`, a derived

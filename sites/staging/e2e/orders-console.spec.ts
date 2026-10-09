@@ -38,8 +38,8 @@ const ORDERS = MIGRATED_SCREENS.find((screen) => screen.path === "/orders");
 
 /** Written at the outputDir ROOT rather than under the per-test directory:
  *  `preserveOutput: "failures-only"` sweeps the latter on a pass, and these
- *  shots are required evidence for a PASSING run (DIRECTOR-SPEC §4). §0.4's
- *  1440x2200 viewport comes from the project config; nothing here passes
+ *  shots are required evidence for a PASSING run (CLAUDE.md: a UI change
+ *  attaches a screenshot to its PR). The 1440x2200 viewport comes from the project config; nothing here passes
  *  `fullPage`, which truncates these pages. */
 const SHOT_DIR = `${REPO_ROOT}/node_modules/.playwright-artifacts`;
 

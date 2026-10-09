@@ -149,7 +149,7 @@ a **gap** — build the listing, report the gap.
 ---
 
 **Precedence — against the plan.** Where this document and
-[`plans/archive/admin-ui-density-cleanup.md`](../../plans/archive/admin-ui-density-cleanup.md) disagree on
+[`plans/archive/admin-ui-density-cleanup.md`](https://github.com/UrumiAI/otta.sh/blob/527f7526bbb61ed95b75b793e94e4399a7c50be0/plans/archive/admin-ui-density-cleanup.md) disagree on
 *visual structure*, this document wins. Where they disagree on *scope* (which increment ships
 what), the plan wins — **except** for the three plan items withdrawn in §0.1 A, which are
 withdrawn outright and have been struck from the plan in the same commit as this revision.
@@ -3584,7 +3584,7 @@ row you are claiming. And do not claim one verified because it "reads right".
 
 The order the programme was actually run in. It was **not** a suggestion; step 2 was a gate. (The
 plan's increment numbers map on as 3 · 3a · 5 · 5-last — see
-[`plans/archive/admin-ui-density-cleanup.md`](../../plans/archive/admin-ui-density-cleanup.md), whose own screen
+[`plans/archive/admin-ui-density-cleanup.md`](https://github.com/UrumiAI/otta.sh/blob/527f7526bbb61ed95b75b793e94e4399a7c50be0/plans/archive/admin-ui-density-cleanup.md), whose own screen
 counts predate ADR-0015 and were not updated with it.)
 
 | Step | What | Concurrency |

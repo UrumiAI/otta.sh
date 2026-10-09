@@ -254,13 +254,9 @@ cannot be retried in place:
 ### 2.4 D1 sessions (`"primary-first"`) and `global_fetch_strictly_public`
 
 > The site's `wrangler.jsonc` does **not** carry the `global_fetch_strictly_public`
-> compatibility flag (issue #375). It was there so the site's calls to a commerce-service
-> Worker on `*.workers.dev` were not blocked and stubbed 404; that service is gone
-> ([ADR-0020](./adr/0020-one-deployable-plugin-owns-commerce-truth.md)), and nothing the
-> Worker fetches today (§4) is on `workers.dev`. One consequence of running without it: a
-> fetch to a hostname on the site's **own zone** is routed to that zone's origin, not back
-> through Cloudflare, so never add an egress host on the site's
-> own zone.
+> compatibility flag (issue #375). One consequence of running without it: a fetch to a
+> hostname on the site's **own zone** is routed to that zone's origin, not back through
+> Cloudflare, so never add an egress host on the site's own zone.
 >
 > D1 `session` in `sites/staging/src/emdash-options.ts` is **`"primary-first"`**: every
 > request EmDash has not authenticated — every shopper — and every write and cron run starts

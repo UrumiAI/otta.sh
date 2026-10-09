@@ -4,8 +4,7 @@
  *
  * Both surfaces render INSIDE EmDash's own screens — the product editor's
  * main column and the collection list — so they read the admin's Kumo CSS
- * custom properties, as the Themes screen does (`../themes/themes-styles.ts`),
- * and look native in light and dark mode. Every read has a theme-neutral
+ * custom properties and look native in light and dark mode. Every read has a theme-neutral
  * fallback (a system colour or an alpha grey), so outside the admin the panel
  * degrades to the console's usual look rather than to invisible text.
  *
