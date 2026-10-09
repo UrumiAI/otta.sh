@@ -215,39 +215,17 @@ test.describe("the state/province pick list (no client JS)", () => {
 			await country.selectOption("US");
 			await expect(region).toHaveValue("");
 
-			// SIMULATED AUTOFILL: an address card sets the country, then the state
-			// (into the catcher field the browser fills) — the state is picked from
-			// the new list by NAME, whichever lands first.
-			const hint = form.locator('[data-region-autofill="address-region"]');
-			await country.selectOption("IN");
-			// (Set as autofill sets it: the value, then a change event.)
-			await hint.evaluate((el) => ((el as HTMLInputElement).value = "karnataka"));
-			await hint.dispatchEvent("change");
-			await expect(region).toHaveValue("KA");
-			// …and by CODE, set before the country's list arrives.
-			await hint.evaluate((el) => ((el as HTMLInputElement).value = "ca"));
-			await country.selectOption("US");
-			await expect(region).toHaveValue("CA");
-			await expect(form.locator('input[name="regionCountry"]')).toHaveValue("US");
-			// Autofill OVER an existing pick: the catcher changed, so it wins.
-			await hint.evaluate((el) => ((el as HTMLInputElement).value = "new york"));
-			await hint.dispatchEvent("change");
-			await expect(region).toHaveValue("NY");
-			// Autofill while the region field is HIDDEN (a country without
-			// subdivisions): the catcher still takes it, and the next country picks it.
-			await country.selectOption("AQ");
-			await expect(region).toBeHidden();
-			await hint.evaluate((el) => ((el as HTMLInputElement).value = "California"));
-			await hint.dispatchEvent("change");
-			await country.selectOption("US");
-			await expect(region).toBeVisible();
-			await expect(region).toHaveValue("CA");
-			// A USED autofill never carries over a MANUAL country change: the card
-			// filled US/CA; the buyer then picks Spain — nothing selected, never Cádiz.
-			await country.selectOption("ES");
+			// AUTOFILL-STYLE country change (the browser sets the country and a
+			// state at once, firing change): the state picked on the old list is
+			// never carried over — Spain's list starts empty, never on Cádiz.
+			await region.selectOption("CA");
+			await country.evaluate((el) => {
+				(el as HTMLSelectElement).value = "ES";
+				el.dispatchEvent(new Event("change", { bubbles: true }));
+			});
 			await expect(region.locator('option[value="CA"]')).toHaveText("Cádiz");
 			await expect(region).toHaveValue("");
-			await expect(hint).toHaveValue("");
+			await expect(form.locator('input[name="regionCountry"]')).toHaveValue("ES");
 			await country.selectOption("US");
 			await expect(region.locator('option[value="CA"]')).toHaveText("California");
 			await region.selectOption("CA");

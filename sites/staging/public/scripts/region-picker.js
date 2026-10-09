@@ -5,19 +5,6 @@ const showUpdate = (show) => updaters.forEach((el) => (el.hidden = !show));
 const listOf = (country) => document.getElementById(country.dataset.regionTarget ?? "");
 const byFor = (attr, id) => document.querySelector(`[${attr}="${id}"]`);
 
-// A state code NEVER carries over to another country (CA is Cádiz in Spain). The autofill
-// catcher picks only with a value not yet applied; else the list keeps its own (same country).
-function pick(select, keep) {
-	const hint = byFor("data-region-autofill", select.id);
-	const fresh = hint && hint.value !== (hint.dataset.applied ?? "") ? hint.value : "";
-	const want = (fresh || keep || "").trim().toLowerCase();
-	const hit = [...select.options].find(
-		(o) => o.value !== "" && (o.value.toLowerCase() === want || o.text.toLowerCase() === want),
-	);
-	select.value = hit?.value ?? "";
-	if (hint && hit && fresh) hint.dataset.applied = hint.value; // until the list arrives, wait
-}
-
 async function fill(country) {
 	const select = listOf(country);
 	if (!select) return true;
@@ -33,9 +20,11 @@ async function fill(country) {
 		return (showUpdate(true), false);
 	}
 	if (country.value !== wanted) return true; // a newer change owns the list
-	const keep = select.dataset.regionCountry === wanted ? select.value : null;
+	// A state code NEVER carries over to another country (CA is Cádiz in Spain): a
+	// new country's list starts empty; a refill for the same country keeps its pick.
+	const keep = select.dataset.regionCountry === wanted ? select.value : "";
 	select.replaceChildren(select.options[0], ...options.map((o) => new Option(o.label, o.code)));
-	pick(select, keep);
+	select.value = options.some((o) => o.code === keep) ? keep : "";
 	select.dataset.regionCountry = wanted;
 	const record = byFor("data-region-list-for", select.id); // the list's country (server)
 	if (record) record.value = wanted;
@@ -45,17 +34,7 @@ async function fill(country) {
 }
 
 const countries = [...document.querySelectorAll("select[data-region-target]")];
-countries.forEach((country) =>
-	country.addEventListener("change", () => {
-		const hint = byFor("data-region-autofill", country.dataset.regionTarget);
-		if (hint && hint.value === (hint.dataset.applied ?? "")) hint.value = hint.dataset.applied = "";
-		void fill(country);
-	}),
-);
-for (const hint of document.querySelectorAll("[data-region-autofill]")) {
-	const select = document.getElementById(hint.dataset.regionAutofill);
-	hint.addEventListener("change", () => select && pick(select, select.value));
-}
+countries.forEach((country) => country.addEventListener("change", () => void fill(country)));
 Promise.all(
 	countries.map((c) => (listOf(c)?.dataset.regionCountry === c.value ? true : fill(c))),
 ).then((ok) => showUpdate(!ok.every(Boolean)));

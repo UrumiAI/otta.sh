@@ -216,15 +216,6 @@ describe("the Tempered review, rendered", () => {
 
 	test("a country WITHOUT subdivisions: the region field is HIDDEN and empty (the script fills it on a change)", async () => {
 		const html = await render(model(addressWith("AQ", "")));
-		// The autofill catcher is NOT inside that hidden field — browsers do not
-		// fill display:none — but visually hidden beside it, unnamed, untabbable.
-		const field = html.indexOf('<label class="u-label" for="address-region"');
-		const fieldEnd = html.indexOf("</div>", html.indexOf("</select>", field));
-		const catcher = html.indexOf('data-region-autofill="address-region"');
-		expect(catcher).toBeGreaterThan(fieldEnd);
-		const tag = /<input[^>]*data-region-autofill="address-region"[^>]*>/.exec(html)?.[0] ?? "";
-		expect(tag).toContain('class="u-sr-only"');
-		expect(tag).not.toMatch(/\shidden\b|\sname=/);
 		expect(fieldOf(html, "address-region")).toMatch(/\bhidden\b/);
 		expect(regionSelect(html, "region").match(/<option /g)).toHaveLength(1);
 	});

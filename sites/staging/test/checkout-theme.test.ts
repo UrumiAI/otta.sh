@@ -148,15 +148,12 @@ describe.each(REVIEW_VIEWS)("the /checkout form contract — %s", (_label, { sou
 			/name="deliveryRegionCountry"\s+form="checkout-place"\s+autocomplete="off"\s+value=\{deliveryRegions\.country\}\s+data-region-list-for="delivery-region"/,
 		);
 		expect(VIEW).not.toMatch(/name="deliveryRegionSelected"/);
-		// Each list has an autofill catcher: never posted (no name), out of the
-		// tab order and hidden from assistive tech.
-		for (const id of ["address-region", "delivery-region"]) {
-			const hint =
-				new RegExp(`<input[^>]*data-region-autofill="${id}"[^>]*>`).exec(VIEW)?.[0] ?? "";
-			expect(hint, id).toContain('autocomplete="address-level1"');
-			expect(hint, id).toContain('tabindex="-1"');
-			expect(hint, id).toContain('aria-hidden="true"');
-			expect(hint, id).not.toMatch(/\sname=/);
+		// No hidden autofill catcher: the region select itself carries
+		// autocomplete="address-level1" and is autofilled natively.
+		expect(VIEW).not.toContain("data-region-autofill");
+		for (const name of ["region", "deliveryRegion"]) {
+			const list = new RegExp(`<select[^>]*name="${name}"[^>]*>`).exec(VIEW)?.[0] ?? "";
+			expect(list, name).toContain('autocomplete="address-level1"');
 		}
 	});
 
