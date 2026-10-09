@@ -30,9 +30,11 @@ the admin console (list rows and detail, sent on the admin wire as `orderNumber`
   unchanged; there is no migration.
 - It is a **display label, never a lookup key**. Nothing resolves an order by its number
   alone. URLs, Stripe metadata, idempotency keys and the outbox keep the full id.
-- The admin search accepts it as printed: a search starting with `#`, then five or more
-  hex digits (the id's own hyphens allowed), is a number — one matcher, the domain's
-  `orderNumberIdPrefix`. It rewrites ONLY the store's anchored, case-folded id-prefix arm
+- The admin search accepts it as printed: an optional leading `Order` (`Order:`,
+  `Order#`), then `#`, then five or more hex digits (a `-` only between digits), then
+  optional trailing `.`, `:`, `,` or `;` — so `#3F9A2`, `Order #3F9A2:` and
+  `#abcdef12-3` are numbers, while `3F9A2`, `-#12345` and `#-12345` are not. One
+  matcher, the domain's `orderNumberIdPrefix`. It rewrites ONLY the store's anchored, case-folded id-prefix arm
   (the `#` comes off; a number long enough to cross a UUID hyphen gets it back). The buyer
   and sku arms still match the text as typed, so a sku spelled `#12345` is still found,
   and every search without a `#` is matched literally, exactly as before. The search is
