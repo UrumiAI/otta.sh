@@ -271,6 +271,31 @@ describe("the Tempered review, rendered", () => {
 		expect(regionSelect(html, "deliveryRegion")).toMatch(/<option value="CA">California<\/option>/);
 	});
 
+	test("REGION_LIST_UPDATED: the marked state list is described by the page-level notice that IS on the page", async () => {
+		const html = await render(
+			model(
+				{
+					showDelivery: true,
+					countryValue: "US",
+					deliveryRegions: regionChoice("US", "", "en-US"),
+					errorMessage: "We've updated the state/province list for the country you chose.",
+					regionRefused: true,
+				},
+				{
+					requiresShipping: true,
+					shipping: { status: "address_needed", options: [], noOptions: false },
+				},
+			),
+		);
+		const open = /<select[^>]*name="deliveryRegion"[^>]*>/.exec(html)?.[0] ?? "";
+		expect(open).toContain('aria-invalid="true"');
+		expect(open).toContain('aria-describedby="checkout-error region-note"');
+		expect(html).toMatch(/id="checkout-error"[^>]*>[\s\S]*updated the state\/province list/);
+		expect(html).toMatch(
+			/<input type="hidden" name="deliveryRegionSelected" form="checkout-place" value(="")?>/,
+		);
+	});
+
 	test("a COUNTRY-level refusal (we don't ship there) does not mark the state list invalid", async () => {
 		const html = await render(
 			model(

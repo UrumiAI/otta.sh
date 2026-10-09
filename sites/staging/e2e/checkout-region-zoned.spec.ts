@@ -129,12 +129,20 @@ test.describe("the state/province pick list on a store with a state-level zone (
 		await expect(delivery).toBeVisible();
 		const country = delivery.locator('select[name="deliveryCountry"]');
 		const update = delivery.locator('button[value="update-delivery"]');
+		const region = delivery.locator('select[name="deliveryRegion"]');
+
+		// A FIRST-TIME buyer (no country chosen, no JS): the store's own country —
+		// its only zone's, US — is preselected, and its state list is ALREADY on
+		// the page: no Update needed to see it.
+		await expect(country).toHaveValue("US");
+		await expect(region).toBeVisible();
+		await expect(region.locator('option[value="CA"]')).toHaveText("California");
+		await expect(region).not.toHaveAttribute("aria-invalid", "true");
 
 		await country.selectOption("US");
 		await Promise.all([page.waitForURL(/country=US/, { waitUntil: "load" }), update.click()]);
 		// Refused without a state — and the state list is RIGHT THERE, US kept.
 		await expect(country).toHaveValue("US");
-		const region = delivery.locator('select[name="deliveryRegion"]');
 		await expect(region).toBeVisible();
 		await expect(region).toHaveAttribute("aria-invalid", "true");
 		await expect(region.locator('option[value="CA"]')).toHaveText("California");

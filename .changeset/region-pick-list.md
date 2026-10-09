@@ -34,6 +34,11 @@ field.
   shipping methods and tax rates) is refused `SHIPPING_REGION_CODE_REQUIRED` without one,
   and the review comes back with the list shown and the field marked. Elsewhere the region
   is optional and the site never asks for it.
+- **The store's country comes first.** The checkout summary gains `storeCountry` (the tax
+  options' base country, else the first zone's), and the review preselects it for a buyer
+  who has chosen no country, so its state/province list renders on first load with no
+  JS. A refusal for an unserved state of a country served by state carries
+  `selectionErrors.destination.blames: "region"` ("We don't ship to this state/province").
 - **Zoned stores keep the chosen country.** When the plugin refuses a destination (a
   store with a `US-CA` zone refuses plain `US`), the delivery block keeps the country
   and shows its state list, marked invalid, instead of resetting.

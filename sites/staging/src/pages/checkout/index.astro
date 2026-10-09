@@ -179,6 +179,10 @@ const couponValue =
 const shippingError = summary.selectionErrors.shippingMethod ?? null;
 /** A refused destination — by the plugin, or by the shape check above. */
 const destinationError = summary.selectionErrors.destination ?? destinationRead.rejected ?? null;
+/** "We don't ship there" for a STATE: other states of that country are served
+ *  (the plugin says so with `blames: "region"`), so the state list is marked,
+ *  not the country. */
+const regionNotServed = summary.selectionErrors.destination?.blames === "region";
 
 /** The destination the totals were priced for, or null. */
 const destination = summary.selection.destination;
@@ -186,7 +190,6 @@ const destination = summary.selection.destination;
  *  asked for and refused — by the site or by the plugin — so the country stays
  *  chosen and its state/province list is offered (deliveryFieldValues). */
 const askedFor = deliveryFieldValues(destination, destinationRead);
-const countryValue = askedFor.country;
 const regionValue = askedFor.region;
 
 /** The delivery block: an unlocked cart that ships, in a store with zones. */
@@ -205,7 +208,19 @@ const countries = countryOptions(SITE_LOCALE);
  *  page knows — the delivery block's for the priced (or refused) country, the
  *  address block's for the draft's — with the stored/typed code preselected.
  *  Another country's list is one Update away. */
-const addressValues = draftAddressValues(draft);
+/** A buyer who has chosen NO country (none in the URL, the priced destination
+ *  or the draft) starts on the STORE's (`summary.storeCountry`), so its state
+ *  list is on the page from the first render — no JS, no Update. A buyer from
+ *  elsewhere picks their country and presses Update. A country the buyer chose
+ *  is never replaced. The address block preselects only where the address is
+ *  required: an optional one must stay blank-able (a country alone is a
+ *  partial address). */
+const countryValue = askedFor.country !== "" ? askedFor.country : (showDelivery ? summary.storeCountry ?? "" : "");
+const draftAddress = draftAddressValues(draft);
+const addressValues =
+	draftAddress.country === "" && !showDelivery && summary.addressRequired && summary.storeCountry !== null
+		? { ...draftAddress, country: summary.storeCountry }
+		: draftAddress;
 const deliveryRegions = regionChoice(countryValue, regionValue, SITE_LOCALE);
 const addressRegions = regionChoice(addressValues.country, addressValues.region, SITE_LOCALE);
 
@@ -283,7 +298,11 @@ const shownErrorToken =
 const model: CheckoutModel = {
 	summary,
 	errorMessage:
-		shownErrorToken !== null && placeCouponError === null
+		shownErrorToken !== null &&
+		placeCouponError === null &&
+		/* Said ONCE: a place refused for the region keeps the country in the URL,
+		   so the summary refuses it again and the delivery block says it. */
+		shownErrorToken !== destinationError?.reason
 			? cartErrorMessage(shownErrorToken)
 			: null,
 	checkedOut,
@@ -304,17 +323,25 @@ const model: CheckoutModel = {
 		couponError !== null
 			? cartErrorMessage(couponError.reason)
 			: (placeCouponError?.message ?? null),
-	destinationError: destinationError !== null ? cartErrorMessage(destinationError.reason) : null,
+	destinationError:
+		destinationError === null
+			? null
+			: regionNotServed
+				? cartErrorMessage("SHIPPING_REGION_NOT_SERVED")
+				: cartErrorMessage(destinationError.reason),
 	/* The REGION is what was refused — missing where a zone needs it, not one
 	   of the country's codes, or not even code-shaped (the site's own check uses
 	   the same reason). A country-level refusal ("we don't ship here") is not. */
 	regionRefused:
 		destinationError?.reason === "SHIPPING_REGION_CODE_REQUIRED" ||
+		regionNotServed ||
 		/* A state picked for the old country was dropped with the change: pick again. */
 		shownError === "REGION_LIST_UPDATED",
 	/* …and a COUNTRY-level refusal ("we don't ship there") marks the country. */
 	countryRefused:
-		destinationError !== null && destinationError.reason !== "SHIPPING_REGION_CODE_REQUIRED",
+		destinationError !== null &&
+		destinationError.reason !== "SHIPPING_REGION_CODE_REQUIRED" &&
+		!regionNotServed,
 	shippingError: shippingError !== null ? cartErrorMessage(shippingError.reason) : null,
 	noOptionsCopy: cartErrorMessage("SHIPPING_METHOD_REQUIRED"),
 	destination,

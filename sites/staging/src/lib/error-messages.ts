@@ -42,6 +42,9 @@ const SELECTION_MESSAGES = {
 	SHIPPING_RATE_NOT_FOUND: "That delivery option isn't available for this order's currency.",
 	// #305 part 2 (ADR-0021): the zone is derived from the address.
 	SHIPPING_ZONE_NOT_MATCHED: "We don't ship to this address.",
+	/* The site's own copy for SHIPPING_ZONE_NOT_MATCHED when the plugin blames
+	   the region: other states/provinces of that country are served. */
+	SHIPPING_REGION_NOT_SERVED: "We don't ship to this state/province.",
 	// Neutral about delivery: the site shows it only for a cart that ships (a
 	// digital-only review has no address block), but the words stay true for
 	// an API caller's digital order with a bad region too.

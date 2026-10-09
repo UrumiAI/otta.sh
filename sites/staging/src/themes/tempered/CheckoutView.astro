@@ -85,7 +85,7 @@ const {
 <div class="checkout-steps"><StepTrack current="details" /></div>
 <h1 class="checkout-title">Checkout</h1>
 
-{errorMessage !== null && <div class="checkout-notice-slot"><Notice>{errorMessage}</Notice></div>}
+{errorMessage !== null && <div class="checkout-notice-slot" id="checkout-error"><Notice>{errorMessage}</Notice></div>}
 
 {
 	locked?.otherEmailNotice != null && (
@@ -288,7 +288,13 @@ const {
 										form="checkout-place"
 										autocomplete="address-level1"
 										aria-invalid={regionRefused}
-										aria-describedby={regionRefused && destinationError !== null ? "delivery-error region-note" : "region-note"}
+										aria-describedby={
+											regionRefused && destinationError !== null
+												? "delivery-error region-note"
+												: regionRefused && errorMessage !== null
+													? "checkout-error region-note"
+													: "region-note"
+										}
 									>
 										<option value="">Choose a state / province…</option>
 										{deliveryRegions.options.map((option) => (
@@ -303,6 +309,14 @@ const {
 										name="deliveryRegionCountry"
 										form="checkout-place"
 										value={deliveryRegions.country}
+									/>
+									{/* …and the state it showed selected, so place.ts can tell a
+									    state the buyer PICKED from one the page preselected. */}
+									<input
+										type="hidden"
+										name="deliveryRegionSelected"
+										form="checkout-place"
+										value={deliveryRegions.selected}
 									/>
 									<span class="checkout-note" id="region-note">
 										Leave blank if your address doesn't use one. Changed the country? Select Update

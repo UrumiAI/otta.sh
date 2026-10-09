@@ -472,8 +472,13 @@ describe.each(REVIEW_VIEWS)("/checkout — delivery (ADR-0021) — %s", (_label,
 		expect(region).toContain('form="checkout-place"');
 		// Marked only when the REGION was refused, never for a country-level one.
 		expect(region).toContain("aria-invalid={regionRefused}");
-		expect(region).toContain(
-			'regionRefused && destinationError !== null ? "delivery-error region-note" : "region-note"',
+		// The error text it points at is ON the page: the delivery notice, else
+		// the page-level one (REGION_LIST_UPDATED).
+		expect(DELIVERY).toMatch(
+			/regionRefused && destinationError !== null\s*\?\s*"delivery-error region-note"/,
+		);
+		expect(DELIVERY).toMatch(
+			/regionRefused && errorMessage !== null\s*\?\s*"checkout-error region-note"/,
 		);
 		// A COUNTRY-level refusal marks the country select instead.
 		expect(select).toContain("aria-invalid={countryRefused}");

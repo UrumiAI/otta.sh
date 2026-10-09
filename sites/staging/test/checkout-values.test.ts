@@ -716,10 +716,34 @@ describe("the state/province pick list: a changed country is a round trip, never
 		expect(h.draft()!.errors).toEqual({ region: "stale" });
 	});
 
-	test("the explicit Update does not mark the region it was asked to refresh", async () => {
+	test("the explicit Update with a stale pick brings the new list back marked 'pick again' — never silent", async () => {
 		const h = harness({ ...OWN, country: "IN", intent: "update-address" }, PLACED);
-		expect((await PLACE_POST(h.context)).headers.get("location")).toBe("/checkout");
-		expect(h.draft()!.errors).toEqual({});
+		expect((await PLACE_POST(h.context)).headers.get("location")).toBe(
+			"/checkout?error=REGION_LIST_UPDATED",
+		);
+		expect(h.calls).toHaveLength(0);
+		expect(h.draft()!.errors).toEqual({ region: "stale" });
+		expect(h.draft()!.values.region).toBeUndefined();
+	});
+
+	test("the delivery block: a state carried over from a REFUSED destination is not a pick (deliveryRegionSelected)", async () => {
+		// The page showed US with NY preselected from a refused `?region=NY`
+		// (fromRegion is "" — nothing was priced); the buyer only changed country.
+		const h = harness(
+			{
+				...FULL,
+				addressMode: "zoned",
+				intent: "update-delivery",
+				deliveryCountry: "CA",
+				deliveryRegion: "NY",
+				deliveryRegionCountry: "US",
+				deliveryRegionSelected: "NY",
+				fromCountry: "",
+				fromRegion: "",
+			},
+			PLACED,
+		);
+		expect((await PLACE_POST(h.context)).headers.get("location")).toBe("/checkout?country=CA");
 	});
 
 	/** Non-ASCII at every field's bound: the URL-encoded draft is far over the cookie budget. */
@@ -965,7 +989,7 @@ describe("/checkout reads the draft back", () => {
 
 	test("typed values win over the account's email; the fields get the draft's values", () => {
 		expect(page).toMatch(/emailValue: draft\?\.values\.email \?\? accountEmail \?\? ""/);
-		expect(page).toMatch(/const addressValues = draftAddressValues\(draft\);/);
+		expect(page).toMatch(/const draftAddress = draftAddressValues\(draft\);/);
 		expect(page).toMatch(/^\taddressValues,$/m);
 		expect(page).toMatch(
 			/fieldErrors: shownFieldErrors\(draft, shownError, \{\s*addressRequired: summary\.paymentAccountNeedsAddress,?\s*\}\)/,
@@ -1037,6 +1061,28 @@ describe("/checkout on a ZONED page after a place refused for the region", () =>
 	const page = splitAstro(read("pages/checkout/index.astro")).frontmatter;
 	test("the country comes back in the URL (placeFailurePath), never from a possibly stale draft", () => {
 		expect(page).not.toMatch(/draft\?\.values\.country/);
-		expect(page).toMatch(/const countryValue = askedFor\.country;/);
+		// The buyer's own choice (URL / priced destination) wins; only a buyer who
+		// chose NOTHING starts on the store's country.
+		expect(page).toMatch(/const countryValue =\s*askedFor\.country !== ""/);
+		expect(page).toMatch(/summary\.storeCountry \?\? ""/);
+	});
+});
+
+describe("/checkout: the store's country is preselected only for a buyer who chose none", () => {
+	const page = splitAstro(read("pages/checkout/index.astro")).frontmatter;
+	test("the address block keeps a draft's country, and preselects only where the address is required", () => {
+		expect(page).toMatch(/draftAddress\.country === ""/);
+		expect(page).toMatch(/summary\.addressRequired/);
+		expect(page).toMatch(/country: summary\.storeCountry/);
+	});
+	test("a refusal the delivery block states is not repeated at the top (said ONCE)", () => {
+		expect(page).toMatch(/shownErrorToken !== destinationError\?\.reason/);
+	});
+	test("a state the store does not serve marks the STATE, with its own words", () => {
+		expect(page).toMatch(/summary\.selectionErrors\.destination\?\.blames === "region"/);
+		expect(page).toMatch(/cartErrorMessage\("SHIPPING_REGION_NOT_SERVED"\)/);
+		expect(cartErrorMessage("SHIPPING_REGION_NOT_SERVED")).toBe(
+			"We don't ship to this state/province.",
+		);
 	});
 });

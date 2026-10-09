@@ -393,14 +393,17 @@ async function place(context: APIContext): Promise<Response> {
 		presentField(form, DELIVERY_REGION_COUNTRY_FIELD),
 		deliveryCountry,
 	);
-	// A PICK, not the priced region the old list showed preselected: a plain
-	// "Update delivery" after a country change just shows the new list.
+	// A PICK, not the state the old list showed preselected (the priced one, or
+	// one carried over from a refused destination — `deliveryRegionSelected`;
+	// `fromRegion` for a page that predates it): a plain "Update delivery" after
+	// a country change just shows the new list.
 	const postedDeliveryRegion = formString(form.get("deliveryRegion"));
+	const shownDeliveryRegion =
+		presentField(form, "deliveryRegionSelected") ?? formString(form.get("fromRegion")) ?? "";
 	const deliveryStalePick =
 		deliveryListStale &&
 		postedDeliveryRegion !== undefined &&
-		postedDeliveryRegion.toUpperCase() !==
-			(formString(form.get("fromRegion")) ?? "").toUpperCase() &&
+		postedDeliveryRegion.toUpperCase() !== shownDeliveryRegion.trim().toUpperCase() &&
 		hasRegionList(deliveryCountry);
 	const delivery = {
 		country: deliveryCountry,
@@ -426,9 +429,12 @@ async function place(context: APIContext): Promise<Response> {
 	// block). Its state/province list is rendered for the country the page knew
 	// (`regionCountry`); the Update button beside the country re-renders the
 	// review with the new country's list, keeping everything typed. A region
-	// picked for the old country is dropped, never sent as the new one's.
+	// picked for the old country is dropped, never sent as the new one's — and
+	// never silently: the new list comes back marked "pick again".
 	if (intent === "update-address") {
-		return refuseKeeping((error) => checkoutPath({ ...selection, error }), undefined);
+		return refuseKeeping((error) => checkoutPath({ ...selection, error }), staleToken, {
+			fields: staleMark,
+		});
 	}
 	// No publishable key ⇒ NO ORDER (§1.7). The review page already hides the
 	// button, but this is the server-side half of that promise: creating an
