@@ -12,10 +12,22 @@
  *
  * THE GUARD, two halves, both here so no adapter has to remember either:
  *
- * - **WRITES REPAIR.** `put`, `compareAndSet` and `updateIf`'s `set` pass the
- *   document through `repairIllFormedText` (each offending code unit becomes
- *   U+FFFD) and log the collection, a short hash of the id, and the path (keys
- *   that may be shopper text appear as `(key #n)`). Repair, NOT refusal, at this
+ * - **WRITES REPAIR, ON POSTGRES.** `put`, `compareAndSet` and `updateIf`'s `set`
+ *   pass the document through `repairIllFormedText` (each offending code unit
+ *   becomes U+FFFD) and log the collection, a short hash of the id, and the path
+ *   (keys that may be shopper text appear as `(key #n)`). Only on Postgres
+ *   (#447): SQLite and D1 read such text fine, and there a repair could RE-KEY a
+ *   legacy document — `inventory` and `sku_owners` are keyed by the raw sku a
+ *   product stores, and SQLite keeps that raw id forever, so a product whose
+ *   `sku` field was repaired would point at a row that does not exist. On
+ *   Postgres the driver already folded every such id to U+FFFD on the way in, so
+ *   the repaired field is exactly the id's spelling. Elsewhere the write stores
+ *   the text as given and logs the same line. The guard cannot see the dialect
+ *   (the host's collections expose no database handle), so it ASKS, once per
+ *   collection and only when a write first carries such text: `get("\u0000")`,
+ *   which Postgres refuses (22021) and SQLite and D1 answer `null`. A probe that
+ *   fails any other way proves nothing, so that write repairs, as before, and the
+ *   next one asks again. Repair, NOT refusal, at this
  *   layer, deliberately: a refusal here would make a document that ALREADY holds
  *   such text — written before this guard — unwritable forever, and an order that
  *   can never be expired or paid holds its stock for good, which is the outage
@@ -218,6 +230,9 @@ interface HealState {
 	 * without consulting the cool-down (review round 2, A R2-A2).
 	 */
 	generation: number;
+	/** Whether writes to this store must be repaired (it is Postgres); unknown until
+	 *  a write first carries ill-formed text (see {@link repairsWrites}). */
+	repairsWrites?: boolean;
 }
 
 /**
@@ -403,10 +418,51 @@ async function readHealing<R>(
 	}
 }
 
-/** The document with its ill-formed text repaired (the same reference when clean). */
-function repairedForWrite<T>(collection: string, id: string, data: T): T {
+/**
+ * Whether this store is Postgres, whose `jsonb` cannot read a lone surrogate or
+ * U+0000 — the one dialect a write must repair for (see the module doc). Asked by
+ * the cheapest read that tells them apart: Postgres refuses U+0000 in a bound
+ * parameter (22021), SQLite and D1 look the id up and find nothing. Remembered
+ * per collection once known; an inconclusive probe answers "repair" (the
+ * behaviour before #447) and is asked again next time.
+ */
+async function repairsWrites(
+	target: StorageCollection<unknown>,
+	state: HealState,
+): Promise<boolean> {
+	if (state.repairsWrites !== undefined) return state.repairsWrites;
+	try {
+		await target.get("\u0000");
+		state.repairsWrites = false;
+	} catch (err) {
+		if (!isNulParameterError(err)) return true;
+		state.repairsWrites = true;
+	}
+	return state.repairsWrites;
+}
+
+/**
+ * The document as it should be stored: on Postgres with its ill-formed text
+ * repaired, elsewhere as given (see the module doc) — the same reference when
+ * clean, and logged either way, since it is a boundary gap.
+ */
+async function writableData<T>(
+	target: StorageCollection<unknown>,
+	state: HealState,
+	collection: string,
+	id: string,
+	data: T,
+): Promise<T> {
 	const path = findIllFormedText(data);
 	if (path === null) return data;
+	if (!(await repairsWrites(target, state))) {
+		console.warn(
+			`[otta] storage: ${collection}/${idTag(id)} was written with a lone surrogate or U+0000 ` +
+				`at '${path || "(root)"}' — stored as given (this store reads it, and a repair could ` +
+				"re-key a legacy id); the caller's boundary should have refused it",
+		);
+		return data;
+	}
 	warnRepaired(collection, id, path, "on write — the caller's boundary should have refused it");
 	return repairLogged(collection, id, data);
 }
@@ -494,6 +550,9 @@ export function guardWellFormed<T>(
 		state.running = walk;
 		return walk;
 	};
+	/** `data` as this store should hold it (see {@link writableData}). */
+	const writable = <D>(id: string, data: D): Promise<D> =>
+		writableData(healTarget(), state, collection, id, data);
 	const coolingDown = (): boolean =>
 		state.coolUntil !== undefined && settings.now() < state.coolUntil;
 	const armCoolDown = (): void => {
@@ -526,10 +585,9 @@ export function guardWellFormed<T>(
 		delete: (id) => addressing(id, () => inner.delete(id), false),
 		compareAndDelete: (id, expectedRevision) =>
 			addressing(id, () => inner.compareAndDelete(id, expectedRevision), { applied: false }),
-		put: (id, data) => creating(id, () => inner.put(id, repairedForWrite(collection, id, data))),
+		put: (id, data) => creating(id, async () => inner.put(id, await writable(id, data))),
 		compareAndSet: (id, expectedRevision, data) => {
-			const write = () =>
-				inner.compareAndSet(id, expectedRevision, repairedForWrite(collection, id, data));
+			const write = async () => inner.compareAndSet(id, expectedRevision, await writable(id, data));
 			// A null revision is create-if-absent; a revision names a row that exists.
 			return expectedRevision === null
 				? creating(id, write)
@@ -546,17 +604,17 @@ export function guardWellFormed<T>(
 		// Update-only: it never inserts, so its id addresses an existing row.
 		updateIf: (id, args) => {
 			const where = repairedWhere(args.where);
-			const guarded = {
-				...args,
-				...(where === undefined ? {} : { where }),
-				...(args.set === undefined ? {} : { set: repairedForWrite(collection, id, args.set) }),
-			};
 			// The row being updated is the likeliest unreadable one, so it is healed
 			// first; a second failure means another row in scope, so the walk runs.
 			return addressing(
 				id,
-				() =>
-					readHealing(
+				async () => {
+					const guarded = {
+						...args,
+						...(where === undefined ? {} : { where }),
+						...(args.set === undefined ? {} : { set: await writable(id, args.set) }),
+					};
+					return readHealing(
 						() =>
 							retryAfterHeal(
 								() => inner.updateIf(id, guarded),
@@ -566,7 +624,8 @@ export function guardWellFormed<T>(
 						healAll,
 						coolingDown,
 						armCoolDown,
-					),
+					);
+				},
 				{ applied: false },
 			);
 		},
