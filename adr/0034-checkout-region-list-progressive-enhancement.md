@@ -26,7 +26,7 @@ rule for where it cannot.
 1. **`/checkout` may load exactly one script**: `public/scripts/region-picker.js`, through
    `src/components/RegionPicker.astro`. It is external and first-party (no inline code — so a
    future CSP needs only `script-src 'self'`), has no framework and no imports, and stays
-   under 45 lines. `checkout-client-js.test.ts` names exactly the pair
+   under 65 lines. `checkout-client-js.test.ts` names exactly the pair
    `checkout/index.astro → RegionPicker.astro` and checks the script's shape.
 2. **Progressive enhancement only.** When a country select changes, the script refills its
    state/province list from `GET /checkout/regions?country=XX` (the same server-built list,
@@ -37,7 +37,10 @@ rule for where it cannot.
    country the list was drawn for in step. The region select itself carries
    `autocomplete="address-level1"`, so browsers autofill it natively; a lost autofilled
    state is safe (the buyer picks it, and zoned stores re-ask), a wrong one is not. On any failure the no-JS page comes back, Update
-   included. Every mutation stays a server-rendered `<form method="POST">` → 303, and the
+   included. *(Amended 2026-10-09.)* It also builds the list's `<optgroup>`s (a country with
+   nested subdivisions, from each option's `group`) and keeps the delivery list's
+   `required` / `aria-required` in step with the country (the server lists the countries
+   that need a region in `data-region-required`). Every mutation stays a server-rendered `<form method="POST">` → 303, and the
    checkout is fully functional without JavaScript.
 3. **One server rule for both blocks**, plus one record on the address block. If a posted
    region is a code but not one of the posted country's subdivisions, it is dropped and the
@@ -45,8 +48,10 @@ rule for where it cannot.
    buyer's country. The address block (whose country the buyer types in, with no delivery
    re-pricing) also posts which country its list was drawn for (`regionCountry`, kept in
    step by the script): a region posted from another country's list is asked again even
-   when the code exists in both (GA is Georgia and Goa), and a no-JS buyer who never saw
-   the new country's list is shown it once — the region stays optional after that.
+   when the code exists in both (GA is Georgia and Goa). A no-JS buyer who never saw the
+   new country's list and left the region blank is NOT sent back to see it *(amended
+   2026-10-09)*: the address-only page has no delivery block, so nothing prices or taxes
+   by its region and the round trip only cost a page.
 4. **Nothing else.** No other page, component or behaviour gains client JS under this record;
    `js.stripe.com` stays the only third-party origin, and `allowedHosts` is untouched.
 

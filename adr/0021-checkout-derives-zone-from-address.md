@@ -47,8 +47,9 @@ named "the address is a record, not a pricing input" as a deliberate, temporary 
    notice ships in `THIRD_PARTY_NOTICES` inside the published `@otta-sh/domain` and
    `@otta-sh/plugin` tarballs (the plugin bundles the domain); `scripts/` is not published.
    Matching ignores case and surrounding spaces, uses **exact codes only — no hierarchy**
-   (`FR-IDF` does not cover `FR-75C`), and the **most specific** zone wins: an exact
-   subdivision beats its country. Legacy non-code regions stay stored as they are (no
+   (`FR-IDF` does not cover `FR-75C`) *(superseded 2026-10-09: containing subdivisions are
+   tried too — see the region pick list amendment below)*, and the **most specific** zone
+   wins: an exact subdivision beats its country. Legacy non-code regions stay stored as they are (no
    migration) and never match; the admin refuses non-codes from now on.
 3. **Regions are codes everywhere — checked in two layers.** The route parsers and the site
    check SHAPE only (a two-letter country; a region matching `^([A-Za-z]{2}-)?[A-Za-z0-9]{1,3}$`),
@@ -111,14 +112,23 @@ named "the address is a record, not a pricing input" as a deliberate, temporary 
     The summary's fallback re-quotes are bounded at four quotes (five product reads) including the
     preselect. On the locked page `readyToPlace` is `phase === "payable"` and nothing is quoted.
 
-*(Amended 2026-10-08, region pick list.)* The storefront's state/province field is a pick list
-of **every** ISO 3166-2 subdivision of the chosen country, at all levels, exactly the codes
-validation accepts (GB lists 221: nations and council areas; FR lists regions and
-departments). Matching stays exact (no hierarchy), so **a merchant must set region zones at
-the level buyers pick from**: a `GB-ENG` zone does not cover a buyer who picks `GB-KEC`, and
-`FR-IDF` does not cover `FR-75C`. The region is REQUIRED at checkout exactly for the
-countries some zone lists at region level (zones carry both shipping methods and tax rates);
-elsewhere it is optional and never asked for.
+*(Amended 2026-10-08, region pick list; matching amended 2026-10-09.)* The storefront's
+state/province field is a pick list of **every** ISO 3166-2 subdivision of the chosen country, at
+all levels, exactly the codes validation accepts (GB lists 221: nations and council areas; FR
+lists regions and departments). Because a merchant cannot control which level a buyer picks,
+matching now **falls back through the subdivisions containing the buyer's** (CLDR's
+`common/supplemental/subdivisions.xml` containment, vendored and generated into
+`SUBDIVISION_PARENTS` like the codes): the region, then each subdivision containing it (nearest
+first), then the country. `ES-TF` (Santa Cruz de Tenerife) tries `ES-TF` → `ES-CN` (Canary
+Islands) → `ES`; `GB-BFS` → `GB-NIR` → `GB`; `FR-75C` → `FR-IDF` → `FR`. Most specific still
+wins — a zone on the child beats one on its parent — and containment never runs upwards (an
+`ES-TF` zone does not cover a buyer who picks `ES-CN`). Tax follows the matched zone, so shipping
+and tax agree. Codes stored before this keep matching as they did, and a zone can be set at
+either level. The region is REQUIRED at checkout exactly for the countries some zone lists at
+region level (zones carry both shipping methods and tax rates); a buyer who picks any
+subdivision, including a child of the zoned one, satisfies it. Elsewhere the region is optional
+and never asked for. This supersedes "exact codes only — no hierarchy" in Decision 2 and
+"subdivision hierarchy" under Alternatives rejected.
 
 ## Consequences
 

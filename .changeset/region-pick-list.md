@@ -29,7 +29,8 @@ field.
   script (`/scripts/region-picker.js`, from `GET /checkout/regions`) swaps the list as the
   country changes and hides the no-JS Update; without it, Update does the same on the server.
   The store's country is preselected only on a fresh visit; a failed place keeps the
-  buyer's country.
+  buyer's country. A no-JS buyer on the address-only page who changes country and leaves
+  the region blank places without a round trip (nothing there prices by region).
 - **Region required iff the store uses regions for the country** — the plugin's zone match,
   unchanged: a physical cart whose country some zone lists at region level (zones carry
   shipping methods and tax rates) is refused `SHIPPING_REGION_CODE_REQUIRED` without one,
@@ -38,13 +39,22 @@ field.
 - **The store's country comes first.** The checkout summary gains `storeCountry` (the tax
   options' base country, else the first zone's), and the review preselects it for a buyer
   who has chosen no country, so its state/province list renders on first load with no
-  JS. A refusal for an unserved state of a country served by state carries
+  JS. It is read only on such a fresh visit (`null` when a destination was asked for), so
+  a normal review render adds one zone read at most.
+- **Required, and said so.** The summary gains `regionRequiredCountries` (countries some
+  zone lists at region level); the delivery block's state/province select is `required`
+  with `aria-required="true"` for those, and the script keeps it in step. A refusal for an unserved state of a country served by state carries
   `selectionErrors.destination.blames: "region"` ("We don't ship to this state/province").
 - **Zoned stores keep the chosen country.** When the plugin refuses a destination (a
   store with a `US-CA` zone refuses plain `US`), the delivery block keeps the country
   and shows its state list, marked invalid, instead of resetting.
-- The list is every ISO 3166-2 subdivision at all levels (GB: 221), so merchants must set
-  region zones at the level buyers pick from (ADR-0021 amendment).
+- **Zone matching falls back through containing subdivisions.** The list is every ISO 3166-2
+  subdivision at all levels (GB: 221), so the zone match now tries the buyer's region, then
+  each subdivision containing it, then the country: `ES-TF` → `ES-CN` → `ES`, `GB-BFS` →
+  `GB-NIR` → `GB` (ADR-0021 amendment). The generator reads CLDR's vendored containment
+  (`common/supplemental/subdivisions.xml`) into `SUBDIVISION_PARENTS`. Most specific still wins.
+  Countries with nested subdivisions (GB, ES, FR, IT, …) show their list grouped by the
+  containing subdivision (`<optgroup>`).
 - Names include CLDR's provisional ones (CN-HK, CN-MO, CN-NM, CN-TW), drop CLDR's
   footnote markers (`Île-de-France²`), and label same-named subdivisions with their code.
 - A theme that still prints a typed region input posts no `regionCountry` and behaves as

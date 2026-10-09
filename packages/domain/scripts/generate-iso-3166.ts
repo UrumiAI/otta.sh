@@ -182,7 +182,9 @@ function containmentByCountry(
 	const groups = new Map<string, Map<string, string[]>>();
 	for (const [child, parent] of parents) {
 		if (!known(child) || !known(parent) || child.slice(0, 2) !== parent.slice(0, 2)) {
-			throw new Error(`containment ${parent} ⊃ ${child} is not two regular subdivisions of one country`);
+			throw new Error(
+				`containment ${parent} ⊃ ${child} is not two regular subdivisions of one country`,
+			);
 		}
 		const seen = new Set([child]);
 		for (let at = parents.get(child); at !== undefined; at = parents.get(at)) {
