@@ -46,7 +46,9 @@ type VerifiedSuccess = Extract<ConfirmationResult, { ok: true }>;
  *    settlement consumes one payment. This is the receipt binding:
  *    a confirmation's order id is the caller's claim, so the amount equality in
  *    step 3 is not on its own enough to stop one receipt from settling a
- *    second, same-priced order.
+ *    second, same-priced order. A duplicate whose bound order cannot be read
+ *    back is refused the same way (fail closed, #448): only a PROVEN same-order
+ *    binding re-drives.
  * 3. Amount + currency MUST equal `order_totals.total` — mismatch ⇒ reject +
  *    record anomaly (§9 Risk 3); no auto-refund. Checked only while the order
  *    can still settle: a terminal order short-circuits FIRST (review G6), so a
@@ -110,9 +112,15 @@ export async function settleOrder(
 	// `provider_ref` then silently swallows the second ledger row, so the second
 	// settle would not even be visible in the ledger.) The lookup runs ONLY on the
 	// duplicate arm: a first delivery costs exactly what it always did.
+	//
+	// FAIL CLOSED (#448): a duplicate whose bound order cannot be read back has an
+	// UNPROVEN binding, and only a proven same-order binding may re-drive. So a
+	// missing read-back is refused exactly like a rebind — never waved through as
+	// "probably the same order". No adapter deletes a dedupe row, so this arm is a
+	// store inconsistency, and it is recorded as loudly as one.
 	if (!claimed) {
 		const boundTo = await deps.paymentEventStore.orderForDedupeKey(conf.dedupeKey);
-		if (boundTo !== null && boundTo !== conf.orderId) {
+		if (boundTo !== conf.orderId) {
 			// The attempt is the alert-worthy fact, so it is recorded against the
 			// order it was AIMED at. The detail names the order that legitimately owns
 			// the receipt; neither is a credential.
@@ -120,7 +128,10 @@ export async function settleOrder(
 				orderId: conf.orderId,
 				gateway: conf.gateway,
 				kind: "RECEIPT_REBOUND",
-				detail: `confirmation dedupe key is already recorded against order ${boundTo}`,
+				detail:
+					boundTo === null
+						? "confirmation dedupe key is already recorded, but its bound order could not be read back"
+						: `confirmation dedupe key is already recorded against order ${boundTo}`,
 				now,
 			});
 			return { ok: false, reason: "RECEIPT_REBOUND" };
