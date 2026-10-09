@@ -287,7 +287,7 @@ describe("shipping tax class — WooCommerce 'based on cart items' (woo-facts-ve
 
 	test("non-Latin scripts keep their code-unit order: Devanagari vowel signs are not stripped", () => {
 		// U+0915 U+0930 "कर" vs U+0915 U+093E U+0930 "कार": the vowel sign U+093E is a
-		// mark (\\p{M}) but not a Latin accent, so "कर" (0930 < 093E) still sorts first.
+		// mark (\p{M}) but not a Latin accent, so "कर" (0930 < 093E) still sorts first.
 		const pick = (x: string, y: string): string =>
 			inheritShippingTaxClass(
 				[line("0", 1, "z-x"), line("1", 1, "a-y")],
