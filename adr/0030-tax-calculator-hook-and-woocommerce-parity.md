@@ -143,24 +143,24 @@ no priority, compound flag, postcode or city that could tell two such rates apar
   writes, so there it proves the logic, not the race.
 - **Existing duplicates are kept, never deleted.** One rule resolves them everywhere,
   in `@otta-sh/domain` (`effectiveTaxRates`, `appliedTaxRate`, `shadowedTaxRates`):
-  **the greatest rate id applies; the others are ignored entirely.** On goods that is the
+  **the greatest rate id applies; the others' rates are ignored** (their shipping flag
+  still counts — see below). On goods that is the
   rate checkout already charged, so no line-item tax changes. `getRate` answers the same
   rate.
-- **Behaviour change — shipping tax, for stores that already hold duplicates.** "Ignored"
-  includes the ignored rate's "applies to shipping" flag. Where the ignored duplicate was
-  the one marked "applies to shipping", shipping tax changes on the next quote: it
-  **disappears** if no applying rate in the zone is flagged, or it **moves to another
-  class's flagged rate** (the shipping tax class was the last flagged rate, and that was
-  the ignored one), which can be higher or lower. Placed orders keep their tax snapshot.
-  Chosen deliberately (user decision, 2026-10-08) so the admin's "only X applies" is true
-  everywhere; the admin flags every such duplicate, and deleting the one the merchant does
-  not want resolves it.
+- **Shipping tax, for stores that already hold duplicates — unchanged (issue #447).**
+  An ignored duplicate's RATE is never charged, but its "applies to shipping" flag still
+  counts: the default shipping tax class rule reads the flag across every rate in the
+  zone, duplicates included, exactly as checkout did before duplicates were refused, and
+  shipping is taxed at the class's applied rate. (The first cut of this amendment ignored
+  the flag too, so a store whose ignored duplicate was the flagged one saw its shipping
+  tax disappear or move to another class; #447 reverted that to keep totals unchanged.)
+  The "fixed" and "inherit" rules read the applied rate's own flag, as they always did.
 - **The admin flags them.** The class's rates page shows a warning naming each pair, and
   the ignored row is labelled `duplicate — ignored` and opens with `Duplicate: only <id>
   applies …` (the applying row: `Applies to <zone>. Duplicate <id> is ignored.`; table
   rows: `duplicate: only <id> applies` / `applies; duplicate <id> ignored`). The ignored
-  row keeps an editable shipping toggle labelled "only if this rate becomes the active
-  one", so the survivor can be fixed before the other is deleted. Every rate form sends
+  row keeps an editable shipping toggle labelled "can still tax shipping while this
+  duplicate exists" (issue #447). Every rate form sends
   the flag it shows plus the flag it loaded, and the store's compare-and-set checks both
   the rate and the flag, so a stale tab is told to reload instead of reverting a change. Both rows stay editable and deletable, so the merchant deletes the one they
   don't want.

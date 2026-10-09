@@ -824,9 +824,10 @@ function duplicateStatus(row: TaxRateRow): string | undefined {
 	return undefined;
 }
 
-/** What an IGNORED duplicate's stored shipping flag reads as: shown, never as active. */
+/** What an IGNORED duplicate's stored shipping flag reads as. Its rate is never
+ *  charged, but its flag still counts toward the zone's shipping tax (issue #447). */
 function ignoredShippingText(row: TaxRateRow): string {
-	return `${row.appliesToShipping ? "yes" : "no"} (not applied — duplicate ignored)`;
+	return row.appliesToShipping ? "yes (duplicate — can still tax shipping)" : "no (duplicate)";
 }
 
 /** "Deleting this makes <dup> apply: <rate>, shipping <yes/no>" — on the applying rate. */
@@ -838,8 +839,8 @@ function nextIfDeletedText(row: TaxRateRow): string | undefined {
 
 /**
  * The lines a duplicate's body opens with — the SAME in the accordion and the
- * detail leaf; `[]` for an ordinary rate. The ignored rate shows its stored
- * shipping flag read-only, as not applied; the applying rate says which
+ * detail leaf; `[]` for an ordinary rate. The ignored rate says its rate is
+ * not charged but its shipping flag still counts; the applying rate says which
  * duplicate takes over if it is deleted.
  */
 function duplicateBlocks(row: TaxRateRow): Block[] {
@@ -848,7 +849,7 @@ function duplicateBlocks(row: TaxRateRow): Block[] {
 		return [
 			{
 				type: "context",
-				text: `Duplicate: only ${row.appliedInstead} applies to ${zone}, so this rate taxes nothing (goods or shipping). Delete the one you don't want.`,
+				text: `Duplicate: only ${row.appliedInstead} applies to ${zone}; its shipping setting still counts. Delete the one you don't want.`,
 			},
 		];
 	}
@@ -878,8 +879,8 @@ function rateEditForm(classId: string, row: TaxRateRow): FormBlock {
 	// The flag this form LOADED rides in the carrier beside the rate, and the save
 	// sends both as the store's compare-and-set expectation — so a tab that loaded
 	// before another changed either is told to reload, never reverts it. An IGNORED
-	// duplicate keeps an editable toggle (so the merchant can fix it before deleting
-	// the rate that applies), labelled as taking effect only once it applies.
+	// duplicate keeps an editable toggle: its flag still counts toward the zone's
+	// shipping tax (issue #447), and the label says so.
 	const ignored = row.appliedInstead !== undefined;
 	return carriedForm({
 		namespace: "tax:rate-save",
@@ -902,7 +903,7 @@ function rateEditForm(classId: string, row: TaxRateRow): FormBlock {
 					type: "toggle",
 					action_id: "appliesToShipping",
 					label: ignored
-						? "Applies to shipping — only if this rate becomes the active one"
+						? "Applies to shipping — can still tax shipping while this duplicate exists"
 						: "Applies to shipping",
 					initial_value: row.appliesToShipping, // F-6b/X-24: REQUIRED — toggle is mount-only
 				},

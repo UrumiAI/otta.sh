@@ -1578,7 +1578,7 @@ describe("admin Tax console — one rate per (class, zone) (workerd sandbox)", (
 		// The label flags it (inside the label budget); the body says which applies.
 		expect(String(group(blocks, "tax:rate:std-us")?.label)).toContain("duplicate — ignored");
 		expect(contextTexts(groupBlocks(blocks, "tax:rate:std-us"))).toContain(
-			"Duplicate: only std-us-b applies to United States, so this rate taxes nothing (goods or shipping). Delete the one you don't want.",
+			"Duplicate: only std-us-b applies to United States; its shipping setting still counts. Delete the one you don't want.",
 		);
 		expect(contextTexts(groupBlocks(blocks, "tax:rate:std-us-b"))).toContain(
 			"Applies to United States. Duplicate std-us is ignored. Deleting this makes std-us apply: 7.25%, shipping no.",
@@ -1661,7 +1661,9 @@ describe("admin Tax console — one rate per (class, zone) (workerd sandbox)", (
 		const blocks = await openClass("standard");
 		const ignoredForm = formFor(groupBlocks(blocks, "tax:rate:std-us"), "tax:save-rate");
 		const toggle = field(ignoredForm, "appliesToShipping");
-		expect(toggle?.label).toBe("Applies to shipping — only if this rate becomes the active one");
+		expect(toggle?.label).toBe(
+			"Applies to shipping — can still tax shipping while this duplicate exists",
+		);
 		expect(toggle?.initial_value).toBe(true);
 		// The rate that applies keeps its toggle, showing its own (off) flag.
 		const appliedForm = formFor(groupBlocks(blocks, "tax:rate:std-us-b"), "tax:save-rate");
@@ -1810,7 +1812,7 @@ describe("admin Tax console — one rate per (class, zone) (workerd sandbox)", (
 			target: encodePath(["standard", "std-us"]),
 		});
 		expect(field(formFor(ignoredDetail, "tax:save-rate"), "appliesToShipping")?.label).toBe(
-			"Applies to shipping — only if this rate becomes the active one",
+			"Applies to shipping — can still tax shipping while this duplicate exists",
 		);
 		expect(bannerOf(ignoredDetail)).toBeUndefined();
 		expect(
@@ -1820,7 +1822,7 @@ describe("admin Tax console — one rate per (class, zone) (workerd sandbox)", (
 		assertBlockContract(ignoredDetail, { screen: "tax", level: "list" });
 	});
 
-	test("the table view (past 25 rates) shows an ignored duplicate's shipping flag as not applied", async () => {
+	test("the table view (past 25 rates) shows an ignored duplicate's shipping flag as still counting", async () => {
 		const spread = ratesAcrossZones(26, () => ({ rateBps: 1000, appliesToShipping: false }));
 		await seedRules(spread);
 		// r0 sits in "us"; add an ignored duplicate of it with shipping ON (its id sorts
@@ -1834,7 +1836,7 @@ describe("admin Tax console — one rate per (class, zone) (workerd sandbox)", (
 		});
 		const blocks = await openClass("standard");
 		const row = tableRows(blocks).find((r) => r.id === "a-old");
-		expect(row?.appliesToShipping).toBe("yes (not applied — duplicate ignored)");
+		expect(row?.appliesToShipping).toBe("yes (duplicate — can still tax shipping)");
 		expect(String(row?.rate)).toContain("duplicate: only r0 applies");
 	});
 });
