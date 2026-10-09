@@ -33,8 +33,9 @@ export function orderNumber(orderId: string): string {
 	return `#${orderId.slice(0, ORDER_NUMBER_LENGTH).toUpperCase()}`;
 }
 
-/** A search typed as an order number: `#`, then at least a number's worth of hex. */
-const TYPED_ORDER_NUMBER = new RegExp(`^#([0-9a-f]{${String(ORDER_NUMBER_LENGTH)},})$`, "i");
+/** A search typed as an order number: an optional `#`, then at least a number's
+ *  worth of hex. */
+const TYPED_ORDER_NUMBER = new RegExp(`^#?([0-9a-f]{${String(ORDER_NUMBER_LENGTH)},})$`, "i");
 
 /** Where a UUID's `-` falls, counted in hex digits before it — so a long number the
  *  console printed hex-only still prefixes the stored, hyphenated id. */
@@ -43,8 +44,11 @@ const UUID_HYPHENS_AFTER = [20, 16, 12, 8] as const;
 /**
  * The id-prefix a search typed as an order number stands for (`"#3F9A2"` →
  * `"3f9a2"`, `"#ABCDEF123"` or `"#abcdef12-3"` → `"abcdef12-3"`), or `null` when the
- * search is not one (no `#`, a non-hex character other than `-`, or fewer than
- * {@link ORDER_NUMBER_LENGTH} hex digits).
+ * search is not one (a non-hex character other than `-`, or fewer than
+ * {@link ORDER_NUMBER_LENGTH} hex digits). The `#` is optional: a long tie-breaker
+ * typed without it (`ABCDEF123`) still finds its order. A bare hex word
+ * (`facade`) therefore also reads as a number in the ID arm — harmless, since that
+ * arm only gains the UUID's hyphens.
  *
  * Only the store's ID arm reads this; the buyer and sku arms keep matching the text
  * as typed, `#` and all, so a sku spelled `#12345` is still found.

@@ -43,6 +43,11 @@ describe("orderNumberIdPrefix — the one matcher", () => {
 		expect(orderNumberIdPrefix(" #3f9a2b ")).toBe("3f9a2b");
 	});
 
+	test("the # is optional: bare hex of a number's length reads the same", () => {
+		expect(orderNumberIdPrefix("3F9A2")).toBe("3f9a2");
+		expect(orderNumberIdPrefix("ABCDEF123")).toBe("abcdef12-3");
+	});
+
 	test("a number that crosses a UUID hyphen gets it back", () => {
 		const id = "abcdef12-3000-4000-8000-000000000001";
 		expect(orderNumberIdPrefix("#ABCDEF123")).toBe("abcdef12-3");
@@ -53,7 +58,7 @@ describe("orderNumberIdPrefix — the one matcher", () => {
 	});
 
 	test("anything else is not a number", () => {
-		for (const s of ["#3F9A", "#3F-9A", "3F9A2", "#", "#TEE-BLK", "jo@example.com", "TEE#12345"]) {
+		for (const s of ["#3F9A", "#3F-9A", "3F9A", "#", "#TEE-BLK", "jo@example.com", "TEE#12345"]) {
 			expect(orderNumberIdPrefix(s)).toBeNull();
 		}
 	});
