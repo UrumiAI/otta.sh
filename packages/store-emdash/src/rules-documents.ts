@@ -139,6 +139,13 @@ export interface TaxRateDoc {
 	readonly zoneId: string;
 	/** Integer basis points. The money-bearing field `updateRate` CAS-guards. */
 	readonly rateBps: number;
+	/**
+	 * The exact rate in integer millionths (0.0001%, #425), ONLY for a rate finer
+	 * than a basis point — then it is the rate and `rateBps` its half-up rounding.
+	 * A document written before #425 never has it and reads as `rateBps × 100`:
+	 * the read-time upgrade (as `ShippingMethodDoc.taxable`); nothing is rewritten.
+	 */
+	readonly ratePpm?: number;
 	readonly appliesToShipping: boolean;
 }
 
@@ -233,6 +240,7 @@ export function toTaxRate(taxClassId: TaxClassId, doc: TaxRateDoc): TaxRate {
 		taxClassId,
 		zoneId: doc.zoneId,
 		rateBps: doc.rateBps,
+		...(doc.ratePpm === undefined ? {} : { ratePpm: doc.ratePpm }),
 		appliesToShipping: doc.appliesToShipping,
 	};
 }

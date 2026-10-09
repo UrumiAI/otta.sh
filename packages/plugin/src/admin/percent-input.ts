@@ -45,3 +45,40 @@ export function formatBpsAsPercent(bps: number): string {
 	const fracStr = frac < 10 ? `0${frac}` : String(frac);
 	return `${bps < 0 ? "-" : ""}${major}.${fracStr}`;
 }
+
+/** Millionths in 1% — a rate in `ratePpm` (#425) is `percent × 10_000`. */
+const PPM_PER_PERCENT = 10_000;
+
+/**
+ * A TAX rate's percent, to WooCommerce's precision (#425): up to FOUR decimal
+ * places (0.0001% = one millionth, `WC_Tax::format_tax_rate`), parsed into
+ * integer MILLIONTHS with the same exact string math as
+ * {@link parsePercentToBps} — never a float. Bounded at 1000% like it; null for
+ * anything else, never throws.
+ *   "8.875" → 88750, "7.25" → 72500, "0.0001" → 1, "8.87501" → null.
+ */
+export function parsePercentToPpm(input: string): number | null {
+	const m = /^(\d+)(?:\.(\d{1,4}))?$/.exec(input.trim());
+	if (m === null) return null;
+	const major = Number.parseInt(m[1] ?? "", 10);
+	const minor = Number.parseInt((m[2] ?? "").padEnd(4, "0"), 10);
+	if (!Number.isSafeInteger(major)) return null;
+	const ppm = major * PPM_PER_PERCENT + minor;
+	return Number.isSafeInteger(ppm) && ppm >= 0 && ppm <= 100_000 * 100 ? ppm : null;
+}
+
+/**
+ * Integer millionths back to a percent string (no "%"), integer math only. At
+ * least two decimals, and the finer digits only when there are any — so a
+ * whole-bps rate reads exactly as {@link formatBpsAsPercent} wrote it ("7.25"),
+ * and 88750 reads "8.875".
+ */
+export function formatPpmAsPercent(ppm: number): string {
+	const abs = Math.abs(ppm);
+	const frac = abs % PPM_PER_PERCENT;
+	const major = (abs - frac) / PPM_PER_PERCENT;
+	const digits = String(frac)
+		.padStart(4, "0")
+		.replace(/0{1,2}$/, "");
+	return `${ppm < 0 ? "-" : ""}${major}.${digits}`;
+}

@@ -22,7 +22,12 @@ export interface OrderTaxSnapshotV1 {
 	 * the shipping zone alone, exactly as before.
 	 */
 	located?: boolean;
-	/** One per order line, in order-line order (`lineIndex` indexes `order.lines`). */
+	/**
+	 * One per order line, in order-line order (`lineIndex` indexes `order.lines`).
+	 * A line (and `shipping`) taxed at a rate finer than a basis point also records
+	 * that exact rate as `ratePpm` (#425, `TaxLine`); `rateBps` keeps its meaning,
+	 * so a snapshot written before — which never has `ratePpm` — reads unchanged.
+	 */
 	lines: Array<{ lineIndex: number; taxClassId: string; taxableCents: Cents } & TaxLine>;
 	shipping: ({ taxableCents: Cents } & TaxLine) | null;
 }
@@ -64,6 +69,7 @@ export function buildOrderTaxSnapshot(
 				taxClassId: line.taxClassId,
 				taxableCents: line.discountedCents,
 				rateBps: answered.rateBps,
+				...ratePpmOf(answered),
 				label: answered.label,
 				taxCents: answered.taxCents,
 			};
@@ -74,6 +80,7 @@ export function buildOrderTaxSnapshot(
 				: {
 						taxableCents: breakdown.shippingCents,
 						rateBps: tax.result.shipping.rateBps,
+						...ratePpmOf(tax.result.shipping),
 						label: tax.result.shipping.label,
 						taxCents: tax.result.shipping.taxCents,
 					},
@@ -124,13 +131,21 @@ function readV1(raw: Record<string, unknown>): OrderTaxSnapshotV1 | null {
 	};
 }
 
+/** A line's exact rate (#425), only when it has one: a snapshot of a whole-bps
+ *  rate — and every snapshot written before #425 — carries no `ratePpm` key. */
+function ratePpmOf(line: TaxLine): { ratePpm?: number } {
+	return line.ratePpm === undefined ? {} : { ratePpm: line.ratePpm };
+}
+
 function taxedOf(item: Record<string, unknown>): ({ taxableCents: Cents } & TaxLine) | null {
-	const { taxableCents, rateBps, label, taxCents } = item;
+	const { taxableCents, rateBps, ratePpm, label, taxCents } = item;
 	if (!isCount(taxableCents) || !isCount(rateBps) || !isCount(taxCents)) return null;
+	if (ratePpm !== undefined && !isCount(ratePpm)) return null;
 	if (typeof label !== "string") return null;
 	return {
 		taxableCents: taxableCents as Cents,
 		rateBps,
+		...(ratePpm === undefined ? {} : { ratePpm }),
 		label,
 		taxCents: taxCents as Cents,
 	};
