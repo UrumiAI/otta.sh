@@ -23,11 +23,14 @@ import { makePgStorage, PG_ENABLED } from "./describe-each-dialect.js";
 const AT = "2026-07-10T00:00:00.000Z";
 
 /**
- * The hand-set attempt budget every shape here is held to — deliberately tighter
+ * The hand-set attempt budget the CAS steps here are held to — deliberately tighter
  * than `CAS_MAX_ATTEMPTS`, so raising the package ceiling can never turn a passing
  * shape green by accident. The bound is a property of the coupon: a retry happens
  * only when a DIFFERENT redemption committed, and for a capped coupon that is
- * bounded by the headroom left.
+ * bounded by the headroom left. The same-key wait (`redeemAwait`) is not held to it:
+ * non-owners POLL while the owner holds the bump lease, so its count tracks the
+ * owner's latency, not a CAS retry (see "concurrent redeem() sharing the same idempotency
+ * key redeems exactly once").
  */
 const CAS_ATTEMPT_BUDGET = 8;
 
@@ -49,6 +52,8 @@ interface Fixture {
 	maxAttempts(): number;
 	/** The deepest retry spent by ONE named step — `redeem` is the counter itself. */
 	maxAttemptsFor(operation: string): number;
+	/** Every step name that reported a retry depth. */
+	operations(): ReadonlySet<string>;
 	reset(): Promise<void>;
 	close(): Promise<void>;
 }
@@ -91,6 +96,7 @@ async function fresh(poolMax: number): Promise<Fixture> {
 		coupons: harness.coupons,
 		maxAttempts: () => deepest,
 		maxAttemptsFor: (operation) => perOperation.get(operation) ?? 0,
+		operations: () => new Set(perOperation.keys()),
 		reset: () => db.reset(),
 		close: () => db.close(),
 	};
@@ -216,7 +222,18 @@ describe.skipIf(!PG_ENABLED)("coupon no-over-redeem [postgres]", () => {
 			// count at one, so the COUNTER never contends. What the crowd costs is reads,
 			// which is the bounded wait and not a write.
 			expect(fx.maxAttemptsFor("redeem")).toBeLessThanOrEqual(COUNTER_DEPTH_BUDGET);
-			expect(fx.maxAttempts()).toBeLessThanOrEqual(CAS_ATTEMPT_BUDGET);
+			// Non-owners that arrive while the owner holds the bump lease POLL the key
+			// (`redeemAwait`, jittered backoff): that count tracks how long the owner takes
+			// under load, not CAS contention, so the 8-attempt budget does not apply to it.
+			// It is bounded by the store's own wait patience (CAS_MAX_ATTEMPTS polls, about
+			// 0.5–1 s): a waiter that runs out throws StorageContentionError and fails the
+			// Promise.all above (issue #441 tracks that patience vs. the 10 s lease).
+			// Pin the step names (a late arrival may read the finished state and never
+			// wait, so `redeemAwait` can be absent), so any new step on this path must get
+			// its own bound here.
+			expect([...fx.operations()].filter((op) => op !== "redeem" && op !== "redeemAwait")).toEqual(
+				[],
+			);
 		} finally {
 			await fx.close();
 		}
@@ -301,6 +318,11 @@ describe.skipIf(!PG_ENABLED)("coupon no-over-redeem [postgres]", () => {
 				const record = await fx.harness.redemptions.get(`c1:${shared}`);
 				expect(record?.state, label).toBe("applied");
 				expect(fx.maxAttemptsFor("redeem"), label).toBeLessThanOrEqual(COUNTER_DEPTH_BUDGET);
+				// Same step-name pin as the single-key test: a new step must get its own bound.
+				expect(
+					[...fx.operations()].filter((op) => op !== "redeem" && op !== "redeemAwait"),
+					label,
+				).toEqual([]);
 				expect(await fx.harness.redemptions.count({ couponId: "c1", holdsUse: "yes" }), label).toBe(
 					1 + PEERS,
 				);
