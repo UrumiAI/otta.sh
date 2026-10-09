@@ -939,6 +939,35 @@ describe("storefront/checkout/summary — the zone derived from the destination 
 	type Totals = Record<string, { money: { amount: number } | null; label: string }>;
 	const totalsOf = (result: Record<string, unknown>) => result["totals"] as Totals;
 
+	test("storeCountry: with no tax base address, the first zone's (by id: the US-CA zone ⇒ US) — what the review preselects", async () => {
+		const result = await summary({ cartId: await p2Cart() });
+		expect(result["storeCountry"]).toBe("US");
+	});
+
+	test("a state of a country served only BY STATE is refused for its region (blames: region); a country nobody serves is not", async () => {
+		const rules = new EmdashShippingRulesStore({ storage, clock: systemClock });
+		const ON = `${NS}-p2-ca-on`;
+		await rules.createZone({ id: ON, name: "Ontario", regions: ["CA-ON"] });
+		try {
+			const quebec = await summary({
+				cartId: await p2Cart(),
+				destination: { country: "CA", region: "QC" },
+			});
+			expect(quebec["selectionErrors"]).toEqual({
+				destination: { reason: "SHIPPING_ZONE_NOT_MATCHED", blames: "region" },
+			});
+			const japan = await summary({
+				cartId: await p2Cart(),
+				destination: { country: "JP", region: "13" },
+			});
+			expect(japan["selectionErrors"]).toEqual({
+				destination: { reason: "SHIPPING_ZONE_NOT_MATCHED" },
+			});
+		} finally {
+			await rules.deleteZone(ON);
+		}
+	});
+
 	test("B1: (US, CA) matches US-CA over US; its ONE option is preselected; 3000 + 599 + 218 = $38.17", async () => {
 		const cartId = await p2Cart();
 
