@@ -95,6 +95,7 @@ const PAGE_THREE = token({
 function order(id: string) {
 	return {
 		id,
+		orderNumber: `#${id.slice(0, 5).toUpperCase()}`,
 		state: "paid",
 		currency: "USD",
 		buyerRef: `buyer-${id}`,

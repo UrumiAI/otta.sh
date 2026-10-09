@@ -13,7 +13,18 @@ shippingRulesStoreContract(async () => ({ store: new InMemoryShippingRulesStore(
 	dialect: "fake",
 });
 
-taxRulesStoreContract(async () => ({ store: new InMemoryTaxRulesStore() }), { dialect: "fake" });
+taxRulesStoreContract(
+	async () => {
+		const store = new InMemoryTaxRulesStore();
+		return {
+			store,
+			async seedUncheckedRate(rate) {
+				store.seedUncheckedRate(rate);
+			},
+		};
+	},
+	{ dialect: "fake" },
+);
 
 couponStoreContract(
 	async () => {

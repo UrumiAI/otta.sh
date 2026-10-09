@@ -421,8 +421,10 @@ export const ORDERS_BACK_LABEL = "← Back to orders";
  *  mid-string fragment such as `example.com` finds nothing. This label used to
  *  say nothing about that, on the theory that the email forgave any fragment;
  *  QA searched a domain, got "No orders match", and read it as a broken search.
- *  `start of` is the two words that prevent it. */
-export const ORDERS_SEARCH_LABEL = "Search by start of order ID or buyer email, or exact SKU";
+ *  `start of` is the two words that prevent it. An order number is searched WITH
+ *  its `#` (ADR-0033) — the leading example (`#3F9A2`) says so within the §1
+ *  label budget. */
+export const ORDERS_SEARCH_LABEL = "Search: #3F9A2, start of order ID or buyer email, exact SKU";
 
 /** The fulfilment form. `Ship date (optional, UTC)` states the zone in the
  *  LABEL because the control is a bare `<input type="date">` that shows none —

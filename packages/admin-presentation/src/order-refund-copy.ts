@@ -16,7 +16,7 @@
  * Decision 3). Pure string work, no IO, no wire types — the signatures take
  * primitives precisely so this module never learns what an order looks like.
  */
-import { SHORT_ID_CONFIRM_LEN, shortIdFixed } from "./short-id.js";
+import { orderConfirmLabel } from "./order-number.js";
 
 /** `confirm.text`'s hard budget (§1): exactly two sentences, ≤200 characters. */
 const CONFIRM_BUDGET = 200;
@@ -37,10 +37,10 @@ export const UNNAMED_REFUND_RECIPIENT = "this order's buyer";
  * THE ORDER COMES FIRST, and it is the reason this function takes an id at all
  * (D4). Amount and recipient are the two attributes a repeat customer's orders
  * SHARE, so a dialog naming only those is a dialog that cannot tell the operator
- * which of two candidates the money is about to leave. `shortIdFixed` is used
- * rather than `shortIdsFor` because a confirm renders against one record with no
- * candidate set in hand; at 8 characters it is a visible superset of the
- * 4-character prefix the operator just read in the list row.
+ * which of two candidates the money is about to leave. A confirm renders against
+ * one record with no candidate set in hand, so it names a FIXED 12 hex digits
+ * (`orderConfirmLabel`, ADR-0033): a visible superset of the order number and of
+ * any tie-breaker the list row printed beside it.
  *
  * QUOTES MARK UNTRUSTED INPUT, AND NOTHING ELSE (review round 3, finding 2).
  * `recipient` may be caller-supplied, unverified free text — this function
@@ -75,7 +75,9 @@ export function refundConfirmText(
 	const consequence = refundable
 		? "This sends the money back through Stripe and cannot be reversed."
 		: "This records a refund made out of band — it does not move money.";
-	const order = `Order #${shortIdFixed(orderId, SHORT_ID_CONFIRM_LEN)}`;
+	// It visibly EXTENDS the order number the list row printed, and any
+	// tie-breaker beside it ("#7E4CE" there, "#7E4CEABCD400" here — ADR-0033).
+	const order = `Order ${orderConfirmLabel(orderId)}`;
 	const named =
 		recipient === UNNAMED_REFUND_RECIPIENT
 			? `${order} — refund ${amount} to ${recipient}? ${consequence}`

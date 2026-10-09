@@ -96,6 +96,7 @@ import {
 	isCouponCodeConflictError,
 	isCouponIdCollisionError,
 	isIsoCurrencyCode,
+	isTaxRateDuplicateError,
 	parseCouponInstant,
 	parseZoneRegions,
 	type CouponListCursor,
@@ -514,7 +515,9 @@ export class InProcessAdminRulesClient implements AdminRulesSurface {
 	}
 
 	/** CAS edit on the money-bearing `rateBps` (`expectedRateBps` is the rate the
-	 *  admin read). `appliesToShipping` is the required full-replace key. */
+	 *  admin read) AND on the flag (`expectedAppliesToShipping`, the flag it loaded),
+	 *  so a stale tab gets `stale` instead of reverting either. `appliesToShipping`
+	 *  is the required full-replace key. */
 	async updateTaxRate(
 		rateId: string,
 		edit: TaxRateEdit,
@@ -526,10 +529,14 @@ export class InProcessAdminRulesClient implements AdminRulesSurface {
 		if (typeof edit.appliesToShipping !== "boolean") {
 			throw new CommerceInputError("appliesToShipping", "must be a boolean");
 		}
+		requireFullReplaceKey("expectedAppliesToShipping", edit);
+		if (typeof edit.expectedAppliesToShipping !== "boolean") {
+			throw new CommerceInputError("expectedAppliesToShipping", "must be a boolean");
+		}
 		const res = await this.#stores.taxRules.updateRate(
 			rateId,
 			{ rateBps: edit.rateBps, appliesToShipping: edit.appliesToShipping },
-			edit.expectedRateBps,
+			{ rateBps: edit.expectedRateBps, appliesToShipping: edit.expectedAppliesToShipping },
 		);
 		if (res.ok) return { ok: true, value: toTaxRateWire(res.rate) };
 		if (res.reason === "not_found") return { ok: false, reason: "not_found" };
@@ -1010,10 +1017,22 @@ const CREATE_PARENT_MISSING = 404;
  * writes anything (or after it has given its claim back), which is the whole
  * licence for answering rather than rejecting; any other throw propagates.
  */
-async function createOrRefuse<T>(write: () => Promise<T>): Promise<RulesCreateResult<T>> {
+/** @internal Exported for its unit test only. */
+export async function createOrRefuse<T>(write: () => Promise<T>): Promise<RulesCreateResult<T>> {
 	try {
 		return { ok: true, value: await write() };
 	} catch (err) {
+		// One tax rate per (class, zone): a 409 that NAMES the rate already there. No
+		// rate was written (the store may keep an orphan id claim, adopted by the next
+		// create of that id). The store runs in this isolate — no bridge — so the
+		// error always carries the fields that name the rate.
+		if (isTaxRateDuplicateError(err)) {
+			return {
+				ok: false,
+				status: CREATE_CONFLICT,
+				duplicateTaxRate: { id: err.existingRateId, rateBps: err.existingRateBps },
+			};
+		}
 		if (
 			isShippingZoneIdCollisionError(err) ||
 			isShippingMethodIdCollisionError(err) ||
