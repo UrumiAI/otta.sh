@@ -116,6 +116,8 @@ describe("createOrderFromCart → TaxCalculator", () => {
 				{
 					lineIndex: 0,
 					taxClassId: "standard",
+					// #427: the product's tax status, frozen with the line.
+					taxStatus: "taxable",
 					taxableCents: 2500,
 					rateBps: 1000,
 					label: "Standard rate",
@@ -171,6 +173,32 @@ describe("createOrderFromCart → TaxCalculator", () => {
 });
 
 describe("createOrderFromCart → product tax status (PR 2b)", () => {
+	test("#427: a replay with the same idempotency key returns the byte-identical snapshot", async () => {
+		const cartId = await h.cartWith([{ sku: "SKU-1", productId: "p1", qty: 2, kind: "physical" }]);
+		const first = await createOrderFromCart(h.createDeps, command(cartId));
+		if (!first.ok) throw new Error("first create failed");
+		// The product's status changes after the order: the frozen line must not.
+		const row = await h.productCommerce.getByProductId(productId("p1"));
+		if (row === null) throw new Error("no seeded row");
+		await h.productCommerce.updateCommerceFields(
+			{ productId: productId("p1"), taxStatus: "none" },
+			idempotencyKey("status-after"),
+			row.updatedAt.toISOString(),
+		);
+		const replay = await createOrderFromCart(h.createDeps, command(cartId));
+		if (!replay.ok) throw new Error("replay failed");
+		expect(replay.order.id).toBe(first.order.id);
+		expect(JSON.stringify(replay.order.totals.taxBreakdown)).toBe(
+			JSON.stringify(first.order.totals.taxBreakdown),
+		);
+		const stored = await h.orderStore.getById(first.order.id);
+		expect(JSON.stringify(stored?.totals.taxBreakdown)).toBe(
+			JSON.stringify(first.order.totals.taxBreakdown),
+		);
+		const snapshot = readOrderTaxSnapshot(stored?.totals.taxBreakdown);
+		expect(snapshot?.v === 1 && snapshot.lines[0]?.taxStatus).toBe("taxable");
+	});
+
 	test("a 'none' product: line tax 0 in the totals and the v1 snapshot; shipping still taxed (legacy)", async () => {
 		const row = await h.productCommerce.getByProductId(productId("p1"));
 		if (row === null) throw new Error("no seeded row");
@@ -187,6 +215,8 @@ describe("createOrderFromCart → product tax status (PR 2b)", () => {
 		const snapshot = readOrderTaxSnapshot(res.order.totals.taxBreakdown);
 		if (snapshot?.v !== 1) throw new Error("expected a v1 snapshot");
 		expect(snapshot.lines.map((l) => l.taxCents)).toEqual([0]);
+		// #427: the order remembers WHY the line carried no tax.
+		expect(snapshot.lines.map((l) => l.taxStatus)).toEqual(["none"]);
 		// Nothing saved + rates ⇒ legacy: shipping keeps its tax, 500 @10% = 50.
 		expect(snapshot.shipping?.taxCents).toBe(50);
 		expect(res.order.totals.tax).toBe(50);

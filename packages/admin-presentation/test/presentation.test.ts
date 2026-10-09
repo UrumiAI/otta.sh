@@ -112,6 +112,7 @@ import {
 	taxClassLabel,
 	taxClassOptions,
 	TAX_STATUS_HINT,
+	orderLineTaxStatusNote,
 } from "../src/index.js";
 
 const USD = currency("USD");
@@ -1592,5 +1593,16 @@ describe("refundCapabilityText — the refund panel's capability line", () => {
 		expect(text.length).toBeLessThanOrEqual(200);
 		// The words follow the server's flag, not the method's name.
 		expect(refundCapabilityText(false, "x402", false)).not.toContain("no longer supports");
+	});
+});
+
+describe("an order line's frozen tax status (#427)", () => {
+	test("only an untaxed status is marked, in the product form's own words", () => {
+		expect(orderLineTaxStatusNote("shipping_only")).toBe("Tax: Shipping only");
+		expect(orderLineTaxStatusNote("none")).toBe("Tax: None");
+		// Taxable is the ordinary case: no marker.
+		expect(orderLineTaxStatusNote("taxable")).toBeNull();
+		// Unknown (an order from before it was recorded) is never guessed.
+		expect(orderLineTaxStatusNote(undefined)).toBeNull();
 	});
 });

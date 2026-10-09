@@ -107,6 +107,7 @@ import {
 	orderHasEmailRecipient,
 	orderId as toOrderId,
 	orderNumber,
+	readOrderTaxSnapshot,
 	recordFulfillment as recordFulfillmentUseCase,
 	refundOrder as refundOrderUseCase,
 	resolveReconciliation as resolveReconciliationUseCase,
@@ -1129,6 +1130,7 @@ function toOrderSummaryWire(summary: OrderSummary): OrderSummaryWire {
  *  at checkout, ADR-0009, and is read off the order rather than the live address
  *  book). */
 function toOrderDetailWire(order: Order): OrderDetailWire {
+	const taxStatusOf = frozenLineTaxStatuses(order);
 	return {
 		id: order.id,
 		orderNumber: orderNumber(order.id),
@@ -1157,15 +1159,32 @@ function toOrderDetailWire(order: Order): OrderDetailWire {
 			// ship-to country NEXT TO the priced zone. No matching/validation.
 			shippingZoneId: shippingZoneIdOf(order.totals.shippingMethodSnapshot),
 		},
-		lines: order.lines.map((l) => ({
-			sku: l.sku,
-			title: l.title,
-			unitPriceCents: l.unitPrice,
-			currency: l.currency,
-			quantity: l.quantity,
-			fulfillmentKind: l.fulfillmentKind,
-		})),
+		lines: order.lines.map((l, index) => {
+			const taxStatus = taxStatusOf.get(index);
+			return {
+				sku: l.sku,
+				title: l.title,
+				unitPriceCents: l.unitPrice,
+				currency: l.currency,
+				quantity: l.quantity,
+				fulfillmentKind: l.fulfillmentKind,
+				...(taxStatus !== undefined ? { taxStatus } : {}),
+			};
+		}),
 	};
+}
+
+/** #427: each line's tax status as FROZEN in the order's tax snapshot, keyed by
+ *  line index. A line whose snapshot predates the field — or a legacy / missing
+ *  snapshot — has no entry: unknown, never guessed as "taxable". */
+function frozenLineTaxStatuses(order: Order): Map<number, string> {
+	const out = new Map<number, string>();
+	const snapshot = readOrderTaxSnapshot(order.totals.taxBreakdown);
+	if (snapshot?.v !== 1) return out;
+	for (const line of snapshot.lines) {
+		if (line.taxStatus !== undefined) out.set(line.lineIndex, line.taxStatus);
+	}
+	return out;
 }
 
 /** `shippingZoneIdOf`'s twin: read the zone id off the opaque method snapshot

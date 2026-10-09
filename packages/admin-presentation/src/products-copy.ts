@@ -672,6 +672,14 @@ export function taxStatusLabel(taxStatus: string | undefined): string {
 	return TAX_STATUS_OPTIONS.find((o) => o.value === value)?.label ?? value;
 }
 
+/** #427: the marker an order line wears for the tax status FROZEN with it —
+ *  only when the line was not ordinarily taxed. `null` for "taxable" and for an
+ *  unknown status (an order from before it was recorded), which is never guessed. */
+export function orderLineTaxStatusNote(taxStatus: string | undefined): string | null {
+	if (taxStatus === undefined || taxStatus === "taxable") return null;
+	return `Tax: ${taxStatusLabel(taxStatus)}`;
+}
+
 /** The `Dimensions (mm, LxWxH)` cell. A partially-measured product shows which
  *  axis is missing (`120 x ? x 40`) rather than a single dash that would hide
  *  the two figures somebody did record. */
