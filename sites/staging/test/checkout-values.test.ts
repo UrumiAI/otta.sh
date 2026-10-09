@@ -636,17 +636,12 @@ describe("the state/province pick list: a changed country is a round trip, never
 		expect(h.calls).toHaveLength(1);
 	});
 
-	test("a no-JS FIRST choice of a country with subdivisions shows its list ONCE (nothing marked), then places", async () => {
-		const first = harness({ ...FULL, country: "US", regionCountry: "" }, PLACED);
-		expect((await PLACE_POST(first.context)).headers.get("location")).toBe(
-			"/checkout?error=REGION_LIST_UPDATED",
-		);
-		expect(first.calls).toHaveLength(0);
-		expect(first.draft()!.errors).toEqual({});
-		expect(first.draft()!.values.country).toBe("US");
-		// The re-rendered page drew the US list: the same blank region now places.
-		const second = harness({ ...FULL, country: "US", regionCountry: "US" }, PLACED);
-		expect((await PLACE_POST(second.context)).headers.get("location")).toBe("/checkout/pay");
+	test("a no-JS change to a country with subdivisions, region left blank, PLACES: no round trip just to offer an optional list", async () => {
+		// The address-only page has no delivery block, so nothing prices or taxes by
+		// its region: the buyer is not sent back to see the new country's list.
+		const h = harness({ ...FULL, country: "US", regionCountry: "" }, PLACED);
+		expect((await PLACE_POST(h.context)).headers.get("location")).toBe("/checkout/pay");
+		expect(h.calls).toHaveLength(1);
 	});
 
 	test("a code valid in BOTH countries but picked from the OLD list (GA: Georgia, then India's Goa) is asked again", async () => {

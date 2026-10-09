@@ -429,6 +429,14 @@ export interface CheckoutModel {
 	 * are the same).
 	 */
 	deliveryRegions: RegionChoice;
+	/** The store needs a region for `deliveryRegions.country` (some zone lists
+	 *  one of its subdivisions; the plugin refuses a blank one): print the
+	 *  delivery select `required` with `aria-required="true"`. */
+	deliveryRegionRequired: boolean;
+	/** Every country the store needs a region for (`summary.regionRequiredCountries`),
+	 *  space-joined on the delivery select as `data-region-required`, so the
+	 *  optional script keeps `required` in step as the country changes. */
+	regionRequiredCountries: readonly string[];
 	/** The same for the address block's own country (a page without the
 	 *  delivery block): the subdivisions of `addressValues.country`. Offer an
 	 *  `intent=update-address` submit beside the country (`data-region-update`,

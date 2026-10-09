@@ -4,6 +4,16 @@ const updaters = document.querySelectorAll("[data-region-update]");
 const showUpdate = (show) => updaters.forEach((el) => (el.hidden = !show));
 const listOf = (country) => document.getElementById(country.dataset.regionTarget ?? "");
 const byFor = (attr, id) => document.querySelector(`[${attr}="${id}"]`);
+// Options in their <optgroup>s (`group`: the top-level subdivision's name), in order.
+const grouped = (options) =>
+	options.reduce((out, o) => {
+		if (!o.group) return [...out, new Option(o.label, o.code)];
+		let g = out.at(-1);
+		if (g?.label !== o.group || g.tagName !== "OPTGROUP")
+			out.push((g = document.createElement("optgroup")));
+		g.label = o.group;
+		return (g.append(new Option(o.label, o.code)), out);
+	}, []);
 
 async function fill(country) {
 	const select = listOf(country);
@@ -27,13 +37,22 @@ async function fill(country) {
 	// A state code NEVER carries over to another country (CA is Cádiz in Spain): a
 	// new country's list starts empty; a refill for the same country keeps its pick.
 	const keep = select.dataset.regionCountry === wanted ? select.value : "";
-	select.replaceChildren(select.options[0], ...options.map((o) => new Option(o.label, o.code)));
+	select.replaceChildren(select.options[0], ...grouped(options));
 	select.value = options.some((o) => o.code === keep) ? keep : "";
 	select.dataset.regionCountry = wanted;
 	const record = byFor("data-region-list-for", select.id); // the list's country (server)
 	if (record) record.value = wanted;
 	select.removeAttribute("aria-invalid");
-	select.closest("[data-region-field]")?.toggleAttribute("hidden", options.length === 0);
+	// Required only where the store zones this country by region (the server's list).
+	const need =
+		options.length > 0 && (select.dataset.regionRequired ?? "").split(" ").includes(wanted);
+	select.required = need;
+	if (need) select.setAttribute("aria-required", "true");
+	else select.removeAttribute("aria-required");
+	const field = select.closest("[data-region-field]");
+	field?.querySelectorAll("[data-region-req]").forEach((el) => (el.hidden = !need));
+	field?.querySelectorAll("[data-region-optional]").forEach((el) => (el.hidden = need));
+	field?.toggleAttribute("hidden", options.length === 0);
 	return true;
 }
 

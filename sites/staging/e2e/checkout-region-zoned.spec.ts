@@ -145,6 +145,9 @@ test.describe("the state/province pick list on a store with a state-level zone (
 		await expect(region).toBeVisible();
 		await expect(region.locator('option[value="CA"]')).toHaveText("California");
 		await expect(region).not.toHaveAttribute("aria-invalid", "true");
+		// The store zones the US by state, so its state is REQUIRED — and says so.
+		await expect(region).toHaveAttribute("required", "");
+		await expect(region).toHaveAttribute("aria-required", "true");
 
 		await country.selectOption("US");
 		await Promise.all([page.waitForURL(/country=US/, { waitUntil: "load" }), update.click()]);
@@ -228,11 +231,16 @@ test.describe("the state/province pick list on a store with a state-level zone (
 			await expect(country).toHaveValue("US");
 			await expect(region.locator('option[value="CA"]')).toHaveText("California");
 			const before = page.url();
+			await expect(region).toHaveAttribute("aria-required", "true");
 			await country.selectOption("IN");
 			await expect(region.locator('option[value="KA"]')).toHaveText("Karnataka");
 			await expect(region.locator('option[value="CA"]')).toHaveCount(0);
+			// No zone lists an Indian state: the list is optional there.
+			await expect(region).not.toHaveAttribute("required", "");
+			await expect(region).not.toHaveAttribute("aria-required", "true");
 			await country.selectOption("US");
 			await expect(region.locator('option[value="CA"]')).toHaveText("California");
+			await expect(region).toHaveAttribute("required", "");
 			expect(page.url(), "the list swapped without a navigation").toBe(before);
 			await region.selectOption("CA");
 			await Promise.all([page.waitForURL(/region=CA/, { waitUntil: "load" }), update.click()]);

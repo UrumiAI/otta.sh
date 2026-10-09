@@ -1,6 +1,6 @@
 /**
  * GET /checkout/regions?country=US — one country's state/province options
- * (`[{ code, label }]`, named and sorted for the site's locale), for the
+ * (`[{ code, label, group? }]`, named, grouped and sorted for the site's locale), for the
  * checkout's optional region script (ADR-0034). The same list the page renders
  * server-side (lib/regions.ts); an unknown country, or one without
  * subdivisions, is `[]`. Public, fixed data: no cookie read, cacheable.

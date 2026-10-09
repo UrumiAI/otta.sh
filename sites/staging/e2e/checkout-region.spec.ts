@@ -139,8 +139,7 @@ test.describe("the state/province pick list (no client JS)", () => {
 		await expect(form.locator('select[name="region"]')).toBeHidden();
 		await expect(country).toHaveValue("AQ");
 
-		// A no-JS buyer who picks India and continues WITHOUT Update never saw
-		// its list: it is shown once, nothing marked, nothing placed.
+		// India's list, through Update (the no-JS way to see it).
 		const placeSubmit = form.locator('button[type="submit"]:not([value])');
 		const placed = () =>
 			page.waitForResponse(
@@ -148,8 +147,7 @@ test.describe("the state/province pick list (no client JS)", () => {
 					new URL(res.url()).pathname === "/checkout/place" && res.request().method() === "POST",
 			);
 		await country.selectOption("IN");
-		await Promise.all([placed(), placeSubmit.click()]);
-		await page.waitForURL(/error=REGION_LIST_UPDATED/, { waitUntil: "load" });
+		await Promise.all([placed(), form.locator('button[value="update-address"]').click()]);
 		await expect(region).toBeVisible();
 		await expect(region.locator('option[value="GA"]')).toHaveText("Goa");
 		await expect(region).not.toHaveAttribute("aria-invalid", "true");
@@ -165,6 +163,14 @@ test.describe("the state/province pick list (no client JS)", () => {
 		await expect(region).toHaveValue("");
 		await expect(region.locator('option[value="GA"]')).toHaveText("Georgia");
 		await expect(region).toHaveAttribute("aria-invalid", "true");
+
+		// A no-JS buyer who changes to a country whose list they never saw, and
+		// leaves the region blank, is NOT sent back just to see it: nothing on this
+		// address-only page prices by region, so it places.
+		await country.selectOption("IN");
+		const [last] = await Promise.all([placed(), placeSubmit.click()]);
+		expect(last.status()).toBe(303);
+		expect(last.headers()["location"] ?? "").not.toContain("REGION_LIST_UPDATED");
 	});
 
 	test.describe("with JavaScript (ADR-0034)", () => {
@@ -227,6 +233,16 @@ test.describe("the state/province pick list (no client JS)", () => {
 			await expect(region.locator('option[value="CA"]')).toHaveText("Cádiz");
 			await expect(region).toHaveValue("");
 			await expect(form.locator('input[name="regionCountry"]')).toHaveValue("ES");
+			// More than one level: the script builds the same <optgroup>s the server
+			// renders — Tenerife under the Canary Islands, Belfast under Northern Ireland.
+			await expect(
+				region.locator('optgroup[label="Canary Islands"] option[value="TF"]'),
+			).toHaveText("Santa Cruz de Tenerife");
+			await country.selectOption("GB");
+			await expect(
+				region.locator('optgroup[label="Northern Ireland"] option[value="BFS"]'),
+			).toHaveText("Belfast");
+			await expect(region.locator("optgroup")).toHaveCount(4);
 			await country.selectOption("US");
 			await expect(region.locator('option[value="CA"]')).toHaveText("California");
 			await region.selectOption("CA");

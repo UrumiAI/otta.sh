@@ -232,6 +232,11 @@ const addressValues =
 		? { ...draftAddress, country: storeCountry }
 		: draftAddress;
 const deliveryRegions = regionChoice(countryValue, regionValue, SITE_LOCALE);
+/** The store prices or taxes this country by region (a zone lists one of its
+ *  subdivisions), so the plugin refuses a blank one: the select says so. */
+const regionRequiredCountries = summary.regionRequiredCountries;
+const deliveryRegionRequired =
+	deliveryRegions.options.length > 0 && regionRequiredCountries.includes(deliveryRegions.country);
 const addressRegions = regionChoice(addressValues.country, addressValues.region, SITE_LOCALE);
 
 /** The option the totals were priced with — stated beside the submit, so the
@@ -363,6 +368,8 @@ const model: CheckoutModel = {
 	regionValue,
 	countries,
 	deliveryRegions,
+	deliveryRegionRequired,
+	regionRequiredCountries,
 	addressRegions,
 	showDelivery,
 	showAddress,

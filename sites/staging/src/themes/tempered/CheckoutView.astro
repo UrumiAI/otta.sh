@@ -27,7 +27,11 @@
  * country select names its list (`data-region-target`), the list's field is
  * `data-region-field` (hidden while the country has no subdivisions), and the
  * no-JS-only Update controls and hints are `data-region-update`. A country with
- * no subdivisions shows no region field. Values the buyer typed
+ * no subdivisions shows no region field. A country with nested subdivisions
+ * (GB, Spain) shows them in `<optgroup>`s. The delivery list is `required` for
+ * a country the store zones by region (`data-region-required` lists them, so
+ * the script keeps `required`, `data-region-req` and `data-region-optional` in
+ * step). Values the buyer typed
  * before a refused place come back from the page's draft (`addressValues`,
  * `emailValue`), with `fieldErrors` printed beside the fields they name.
  *
@@ -64,6 +68,8 @@ const {
 	countryValue,
 	countries,
 	deliveryRegions,
+	deliveryRegionRequired,
+	regionRequiredCountries,
 	addressRegions,
 	showDelivery,
 	showAddress,
@@ -283,7 +289,7 @@ const {
 							</label>
 							<div class="checkout-field" data-region-field hidden={deliveryRegions.options.length === 0}>
 								<label class="u-label" for="delivery-region">
-									State / province
+									State / province<span class="checkout-req" data-region-req hidden={!deliveryRegionRequired}>required</span>
 								</label>
 								<select
 									id="delivery-region"
@@ -291,6 +297,9 @@ const {
 									data-region-country={deliveryRegions.country}
 									form="checkout-place"
 									autocomplete="address-level1"
+									required={deliveryRegionRequired}
+									aria-required={deliveryRegionRequired ? "true" : undefined}
+									data-region-required={regionRequiredCountries.join(" ")}
 									aria-invalid={regionRefused}
 									aria-describedby={
 										regionRefused && destinationError !== null
@@ -301,14 +310,19 @@ const {
 									}
 								>
 									<option value="">Choose a state / province…</option>
-									{deliveryRegions.options.map((option) => (
-										<option value={option.code} selected={option.code === deliveryRegions.selected}>
-											{option.label}
-										</option>
-									))}
+									{deliveryRegions.groups.map((group) => {
+										const options = group.options.map((option) => (
+											<option value={option.code} selected={option.code === deliveryRegions.selected}>
+												{option.label}
+											</option>
+										));
+										return group.label === null ? options : <optgroup label={group.label}>{options}</optgroup>;
+									})}
 								</select>
 								<span class="checkout-note" id="region-note">
-									Leave blank if your address doesn't use one.
+									<span data-region-optional hidden={deliveryRegionRequired}>
+										Leave blank if your address doesn't use one.
+									</span>
 									<span data-region-update>
 										Changed the country? Select Update delivery to see its list.
 									</span>
@@ -657,11 +671,14 @@ const {
 													aria-describedby={fieldErrors.region !== undefined ? "region-error" : undefined}
 												>
 													<option value="">Choose a state / province…</option>
-													{addressRegions.options.map((option) => (
-														<option value={option.code} selected={option.code === addressRegions.selected}>
-															{option.label}
-														</option>
-													))}
+													{addressRegions.groups.map((group) => {
+														const options = group.options.map((option) => (
+															<option value={option.code} selected={option.code === addressRegions.selected}>
+																{option.label}
+															</option>
+														));
+														return group.label === null ? options : <optgroup label={group.label}>{options}</optgroup>;
+													})}
 												</select>
 												{/* The country this list was rendered for: a region posted under
 												    another country is asked again (place.ts). The script keeps it

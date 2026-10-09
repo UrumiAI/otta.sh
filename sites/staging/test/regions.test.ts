@@ -10,10 +10,13 @@ import { experimental_AstroContainer as AstroContainer } from "astro/container";
 import { beforeAll, describe, expect, test } from "vitest";
 import type { CheckoutSummaryView } from "@otta-sh/plugin";
 import { byLabel, countryOptions } from "../src/lib/countries.js";
+import { subdivisionOptions } from "@otta-sh/plugin/subdivisions";
 import { regionChoice, regionOutsideCountry, regionToDropSilently } from "../src/lib/regions.js";
 import { GET as REGIONS_GET } from "../src/pages/checkout/regions.js";
 import type { CheckoutModel } from "../src/themes/contract.js";
 import CheckoutView from "../src/themes/tempered/CheckoutView.astro";
+
+const subdivisionCount = (country: string): number => subdivisionOptions(country).length;
 
 describe("regionChoice", () => {
 	test("a country with subdivisions: every one, by NAME, the code as the value", () => {
@@ -46,13 +49,62 @@ describe("regionChoice", () => {
 	);
 
 	test("a country without subdivisions, no country, or a non-country: no list at all", () => {
-		expect(regionChoice("AQ", "", "en-US")).toEqual({ country: "AQ", options: [], selected: "" });
-		expect(regionChoice("", "CA", "en-US")).toEqual({ country: "", options: [], selected: "" });
+		expect(regionChoice("AQ", "", "en-US")).toEqual({
+			country: "AQ",
+			options: [],
+			groups: [],
+			selected: "",
+		});
+		expect(regionChoice("", "CA", "en-US")).toEqual({
+			country: "",
+			options: [],
+			groups: [],
+			selected: "",
+		});
 		expect(regionChoice("ZZ", "CA", "en-US").options).toEqual([]);
 	});
 
 	test("an unknown locale still sorts (and never throws)", () => {
 		expect(regionChoice("IN", "KA", "not a locale!").selected).toBe("KA");
+	});
+});
+
+describe("a country with more than one level is grouped by its top level", () => {
+	test("Spain: each community an <optgroup> — itself first, then its provinces; every level pickable", () => {
+		const es = regionChoice("ES", "TF", "en-US");
+		expect(es.selected).toBe("TF");
+		const canaries = es.groups.find((g) => g.label === "Canary Islands");
+		expect(canaries?.options.map((o) => o.code)).toEqual(["CN", "GC", "TF"]);
+		expect(canaries?.options[2]).toEqual({
+			code: "TF",
+			label: "Santa Cruz de Tenerife",
+			group: "Canary Islands",
+		});
+		// Groups sorted by label; the flat list is the groups in order.
+		const labels = es.groups.flatMap((g) => (g.label === null ? [] : [g.label]));
+		expect(labels).toEqual([...labels].toSorted((a, b) => a.localeCompare(b, "en-US")));
+		expect(es.options).toEqual(es.groups.flatMap((g) => g.options));
+		expect(es.options).toHaveLength(subdivisionCount("ES"));
+	});
+
+	test("GB: the four nations are the groups; Belfast sits under Northern Ireland", () => {
+		const gb = regionChoice("GB", "", "en-US");
+		expect(gb.groups.map((g) => g.label)).toEqual([
+			"England",
+			"Northern Ireland",
+			"Scotland",
+			"Wales",
+		]);
+		expect(gb.groups[1]?.options[0]).toMatchObject({ code: "NIR", label: "Northern Ireland" });
+		expect(gb.groups[1]?.options.some((o) => o.code === "BFS")).toBe(true);
+		expect(gb.options).toHaveLength(221);
+	});
+
+	test("a one-level country is one ungrouped run (no group on any option)", () => {
+		const us = regionChoice("US", "", "en-US");
+		expect(us.groups).toHaveLength(1);
+		expect(us.groups[0]?.label).toBeNull();
+		expect(us.options.every((o) => o.group === undefined)).toBe(true);
 	});
 });
 
@@ -152,6 +204,8 @@ describe("the Tempered review, rendered", () => {
 			regionValue: "",
 			countries,
 			deliveryRegions: regionChoice("", "", "en-US"),
+			deliveryRegionRequired: false,
+			regionRequiredCountries: [],
 			addressRegions: regionChoice("", "", "en-US"),
 			showDelivery: false,
 			showAddress: true,
@@ -342,6 +396,56 @@ describe("the Tempered review, rendered", () => {
 		expect(country).toContain('aria-describedby="delivery-error"');
 	});
 
+	test("a country with nested subdivisions renders <optgroup>s: Tenerife under the Canary Islands", async () => {
+		const html = await render(
+			model(
+				{
+					showDelivery: true,
+					countryValue: "ES",
+					deliveryRegions: regionChoice("ES", "TF", "en-US"),
+					destination: { country: "ES", region: "TF" },
+				},
+				{ requiresShipping: true, shipping: { status: "matched", options: [], noOptions: false } },
+			),
+		);
+		const list = regionSelect(html, "deliveryRegion");
+		expect(list).toMatch(
+			/<optgroup label="Canary Islands">\s*<option value="CN">Canary Islands<\/option>\s*<option value="GC">Las Palmas<\/option>\s*<option value="TF" selected>Santa Cruz de Tenerife<\/option>\s*<\/optgroup>/,
+		);
+		expect(list.match(/ selected/g)).toHaveLength(1);
+	});
+
+	test("REQUIRED where the store zones the country by region: required, aria-required, the marker shown and the 'leave blank' hint hidden", async () => {
+		const delivery = (required: boolean) =>
+			model(
+				{
+					showDelivery: true,
+					countryValue: "US",
+					deliveryRegions: regionChoice("US", "", "en-US"),
+					deliveryRegionRequired: required,
+					regionRequiredCountries: ["ES", "US"],
+				},
+				{
+					requiresShipping: true,
+					shipping: { status: "address_needed", options: [], noOptions: false },
+				},
+			);
+		const html = await render(delivery(true));
+		const open = /<select[^>]*name="deliveryRegion"[^>]*>/.exec(html)?.[0] ?? "";
+		expect(open).toMatch(/\srequired[\s>]/);
+		expect(open).toContain('aria-required="true"');
+		expect(open).toContain('data-region-required="ES US"');
+		expect(html).toMatch(/<span class="checkout-req" data-region-req>required<\/span>/);
+		expect(html).toMatch(/<span data-region-optional hidden>/);
+
+		const optional = await render(delivery(false));
+		const openOptional = /<select[^>]*name="deliveryRegion"[^>]*>/.exec(optional)?.[0] ?? "";
+		expect(openOptional).not.toMatch(/\srequired[\s>]/);
+		expect(openOptional).not.toContain("aria-required");
+		expect(optional).toMatch(/<span class="checkout-req" data-region-req hidden>required<\/span>/);
+		expect(optional).toMatch(/<span data-region-optional>\s*Leave blank/);
+	});
+
 	test("the delivery block for a country without subdivisions shows no region field", async () => {
 		const html = await render(
 			model(
@@ -375,6 +479,16 @@ describe("GET /checkout/regions — the optional script's one data source (ADR-0
 		expect(response.headers.get("content-type")).toContain("application/json");
 		expect(body).toEqual(regionChoice("US", "", "en-US").options);
 		expect(body).toContainEqual({ code: "CA", label: "California" });
+	});
+
+	test("a country with nested subdivisions: each option names its <optgroup> (group), in display order", async () => {
+		const { body } = await getRegions("?country=ES");
+		expect(body).toEqual(regionChoice("ES", "", "en-US").options);
+		expect(body).toContainEqual({
+			code: "TF",
+			label: "Santa Cruz de Tenerife",
+			group: "Canary Islands",
+		});
 	});
 
 	test("no subdivisions, an unknown country, or none at all: []", async () => {

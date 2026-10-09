@@ -244,7 +244,7 @@ async function place(context: APIContext): Promise<Response> {
 	// (`regionCountry`; the script keeps it in step). A list drawn for ANOTHER
 	// country than the one posted, where this one has subdivisions, was never
 	// shown for it: a region posted from it is re-asked even if the code exists
-	// here too (GA is Georgia and Goa), and a blank one is shown its list once.
+	// here too (GA is Georgia and Goa). A blank one places (see below).
 	// (A view without the field posts none: only the one rule applies.)
 	const listCountry = form.get("regionCountry");
 	const listUnseen =
@@ -510,16 +510,11 @@ async function place(context: APIContext): Promise<Response> {
 			ADDRESS_TOO_LONG_TO_KEEP,
 		);
 	}
-	// A blank region for a country whose list the buyer never saw (a no-JS
-	// first choice): shown once, nothing marked — it stays optional after that.
-	// (An address too long to keep would come back empty and ask forever: it
-	// places instead.)
-	if (
-		listUnseen &&
-		checkoutDraftFits({ values: draftValues, errors: {}, error: REGION_LIST_UPDATED })
-	) {
-		return refuse(checkoutPath({ ...selection, error: REGION_LIST_UPDATED }), REGION_LIST_UPDATED);
-	}
+	// A BLANK region for a country whose list the buyer never saw (a no-JS
+	// change of country) places as it is: on this address-only page nothing
+	// prices or taxes by region (no delivery block ⇒ no zone reads it), so the
+	// region is optional and a round trip just to offer it would cost every such
+	// buyer one more page. A region posted FROM the unseen list is re-asked above.
 
 	// The signed-in shopper's session, if any. The plugin route is cookie-blind
 	// (ADR-0003), so the page reads its own cookie and passes the bearer on; the
