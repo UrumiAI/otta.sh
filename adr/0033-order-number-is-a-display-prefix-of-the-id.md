@@ -30,8 +30,8 @@ the admin console (list rows and detail, sent on the admin wire as `orderNumber`
   unchanged; there is no migration.
 - It is a **display label, never a lookup key**. Nothing resolves an order by its number
   alone. URLs, Stripe metadata, idempotency keys and the outbox keep the full id.
-- The admin search accepts it as typed: `#` + at least five hex digits (`"#3F9A2"`) is a
-  number — one matcher, the domain's `orderNumberIdPrefix`. It rewrites ONLY the store's
+- The admin search accepts it as typed: at least five hex digits, `#` optional
+  (`"#3F9A2"`, `"3F9A2"`), is a number — one matcher, the domain's `orderNumberIdPrefix`. It rewrites ONLY the store's
   anchored, case-folded id-prefix arm (the `#` comes off; a number long enough to cross a
   UUID hyphen gets it back); the buyer and sku arms still match the text as typed, so a
   sku spelled `#12345` is still found. It may answer **several** orders.

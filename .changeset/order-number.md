@@ -21,7 +21,7 @@ console rows sharing a number extend it, upper-cased, to their
 shortest-unique prefix (`#FEE1D1`). The list's "Order #" column is now "Order". No order id, storage format or migration changes.
 
 `@otta-sh/domain` exports `orderNumber`, `ORDER_NUMBER_LENGTH` and `orderNumberIdPrefix`
-(the one matcher: `#` + five or more hex digits). A search typed as a number rewrites only
+(the one matcher: an optional `#` + five or more hex digits). A search typed as a number rewrites only
 the store's id-prefix arm — the `#` comes off, and a number long enough to cross a UUID
 hyphen gets the hyphen back, so the stored id and its search key are unchanged; the buyer
 and sku arms still match the text as typed. The admin list payload gains
@@ -40,3 +40,7 @@ typed as an order number — `#` + five or more hex digits, the id's own hyphens
 as an id prefix in the ID arm only; the buyer-reference and sku arms keep matching the
 text as typed. The stored search key is unchanged, so no data moves. The order-store
 contract pins it.
+
+The console reads a row's number through `orderNumberOf`, which falls back to the domain's
+rule when a server older than the field sent none (the plugin and the console publish
+separately).
