@@ -135,6 +135,7 @@ import {
 	type RefundOrderFailure,
 	type RefundRecord,
 	type ResolveFollowUp,
+	readOrderTaxSnapshot,
 } from "@otta-sh/domain";
 import {
 	CommerceInputError,
@@ -1156,6 +1157,8 @@ function toOrderDetailWire(order: Order): OrderDetailWire {
 			// the totals' method snapshot so the console can render the captured
 			// ship-to country NEXT TO the priced zone. No matching/validation.
 			shippingZoneId: shippingZoneIdOf(order.totals.shippingMethodSnapshot),
+			// #421: what the order's own frozen snapshot recorded, never today's setting.
+			...(pricesIncludeTaxOf(order.totals.taxBreakdown) ? { pricesIncludeTax: true as const } : {}),
 		},
 		lines: order.lines.map((l) => ({
 			sku: l.sku,
@@ -1166,6 +1169,13 @@ function toOrderDetailWire(order: Order): OrderDetailWire {
 			fulfillmentKind: l.fulfillmentKind,
 		})),
 	};
+}
+
+/** Whether the order's frozen v1 tax snapshot recorded tax-inclusive prices. Any
+ *  other snapshot (none, v0, malformed) is false — never guessed. */
+function pricesIncludeTaxOf(taxBreakdown: unknown): boolean {
+	const snapshot = readOrderTaxSnapshot(taxBreakdown);
+	return snapshot?.v === 1 && snapshot.pricesIncludeTax;
 }
 
 /** `shippingZoneIdOf`'s twin: read the zone id off the opaque method snapshot

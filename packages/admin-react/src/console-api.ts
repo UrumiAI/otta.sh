@@ -86,6 +86,8 @@ export interface OrderTotals {
 	readonly totalCents: number;
 	readonly appliedCouponCode: string | null;
 	readonly shippingZoneId?: string | null;
+	/** Present (true) only when the order's frozen tax snapshot recorded tax-inclusive prices. */
+	readonly pricesIncludeTax?: boolean;
 }
 
 export interface ShippingAddress {

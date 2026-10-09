@@ -48,6 +48,10 @@ export interface OrderTotalsWire {
 	 *  DISPLAY-ONLY: rendered next to the captured ship-to country so a human can
 	 *  spot a "domestic zone / foreign country" mismatch — no matching/validation. */
 	shippingZoneId?: string | null;
+	/** True only when the order's FROZEN tax snapshot (ADR-0030) recorded that prices
+	 *  were entered tax-inclusive. ABSENT for every other order (no snapshot, an
+	 *  old-shape one, or tax-exclusive prices) — never guessed from current settings. */
+	pricesIncludeTax?: true;
 }
 
 /** The immutable shipping-address snapshot captured on an order at checkout

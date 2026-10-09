@@ -37,6 +37,7 @@ vi.mock("emdash/plugin-utils", async (importOriginal) => {
 const { OrderDetail, REFUND_RECIPIENT_MAX_LEN } = await import("../src/orders/order-detail.js");
 const {
 	ABSENT,
+	PRICES_INCLUDE_TAX,
 	UNNAMED_REFUND_RECIPIENT,
 	fit,
 	formatAmount,
@@ -1103,4 +1104,23 @@ test("an invalid refund amount marks its input without a shorthand/longhand styl
 	} finally {
 		errors.mockRestore();
 	}
+});
+
+// ── #421: the order's own frozen snapshot says prices included tax ───────────
+
+test("an order whose snapshot recorded tax-inclusive prices says so under the totals", async () => {
+	const base = detailFor("paid", CAPTURED);
+	if (!base.ok) throw new Error("fixture");
+	const view = await show({
+		...base,
+		order: { ...base.order, totals: { ...base.order.totals, pricesIncludeTax: true } },
+	});
+	expect(one(view, '[data-testid="detail-prices-include-tax"]').textContent).toBe(
+		PRICES_INCLUDE_TAX,
+	);
+});
+
+test("an order without the record shows no such label", async () => {
+	const view = await show(detailFor("paid", CAPTURED));
+	expect(view.container.querySelector('[data-testid="detail-prices-include-tax"]')).toBeNull();
 });

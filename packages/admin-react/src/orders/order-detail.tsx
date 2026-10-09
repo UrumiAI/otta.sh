@@ -54,6 +54,7 @@ import {
 	ORDERS_BACK_LABEL,
 	ORDER_LINES_EMPTY,
 	ORDER_LINES_SNAPSHOT_NOTE,
+	PRICES_INCLUDE_TAX,
 	REFUNDS_GROUP_EMPTY_LABEL,
 	REFUNDS_UNAVAILABLE,
 	REFUND_ADDITIVE_NOTE,
@@ -1323,6 +1324,11 @@ export function OrderDetail({
 									</tr>
 								))}
 							</Table>
+							{order.totals.pricesIncludeTax === true ? (
+								<p data-testid="detail-prices-include-tax" style={{ fontSize: 12, opacity: 0.7 }}>
+									{PRICES_INCLUDE_TAX}
+								</p>
+							) : null}
 						</div>
 
 						<div style={{ marginBlockStart: 16 }}>
