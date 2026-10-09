@@ -947,6 +947,11 @@ describe("storefront/checkout/summary — the zone derived from the destination 
 		expect(result["storeCountry"]).toBe("US");
 	});
 
+	test("an address-only (digital) review preselects the tax BASE country only — never a shipping zone's", async () => {
+		// No base address is set in this fixture, so: none, though zones serve the US.
+		expect((await summary({ cartId: await p2Cart("digital") }))["storeCountry"]).toBeNull();
+	});
+
 	test("storeCountry is never a country the store does not ship to: a zone without methods (first by id) is skipped", async () => {
 		const rules = new EmdashShippingRulesStore({ storage, clock: systemClock });
 		const JP = `${NS}-p2-aa-jp`;

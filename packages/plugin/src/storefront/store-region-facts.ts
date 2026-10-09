@@ -5,8 +5,8 @@
  *  - `storeCountry`: the country the review preselects on a fresh visit, so its
  *    state/province list renders on first load with no JS — always one the
  *    store ships to: the tax options' base country when a zone with methods
- *    serves it, else the first such zone's country (store order); with zones
- *    but none that ships, none; with no zones at all, the base country.
+ *    serves it, else the first such zone's country (store order), else none.
+ *  - `baseCountry`: for an address-only (billing) page, the base country only.
  *  - `regionZoneCountries`: countries some zone WITH SHIPPING METHODS lists at
  *    REGION level (`US-CA` ⇒ `US`). A destination refused
  *    SHIPPING_ZONE_NOT_MATCHED in such a country, with a region given, is
@@ -19,7 +19,10 @@ import { createInProcessCommerceStores } from "../commerce/in-process-commerce-s
 import type { PluginContext } from "../types.js";
 
 export interface StoreRegionFacts {
+	/** For the DELIVERY block: a country the store ships to (see below). */
 	storeCountry: string | null;
+	/** For an address-only page (billing): the tax options' base country, or none. */
+	baseCountry: string | null;
 	regionZoneCountries: ReadonlySet<string>;
 }
 
@@ -49,13 +52,11 @@ export async function readStoreRegionFacts(ctx: PluginContext): Promise<StoreReg
 	const base = settings.tax?.baseAddress?.country ?? null;
 	return {
 		// A country the store SHIPS to: its own base country when a shipping zone
-		// serves it, else the first shipping zone's. With zones but none that
-		// ships, none — never a country the delivery block would refuse. With no
-		// zones at all (no delivery block; an address-only page), the base country.
+		// serves it, else the first shipping zone's; else none — never a country
+		// the delivery block would refuse.
 		storeCountry:
-			base !== null && shippedCountries.includes(base)
-				? base
-				: (shippedCountries[0] ?? (zones.length === 0 ? base : null)),
+			base !== null && shippedCountries.includes(base) ? base : (shippedCountries[0] ?? null),
+		baseCountry: base,
 		regionZoneCountries,
 	};
 }

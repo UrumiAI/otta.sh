@@ -228,10 +228,11 @@ interface CheckoutSummaryViewBase {
 	selectionErrors: CheckoutSelectionErrors;
 	/** Whether any line ships. */
 	requiresShipping: boolean;
-	/** The store's own country — the tax options' base country, else its first
-	 *  zone's — for the review to preselect when the buyer has chosen none, so
-	 *  that country's state/province list renders on first load. `null` when
-	 *  the store has neither. */
+	/** The country the review preselects on a fresh visit, so its state list
+	 *  renders on first load. For the delivery block, one the store SHIPS to (its
+	 *  base country when a zone with methods serves it, else the first such
+	 *  zone's); for an address-only page, the tax options' base country. `null`
+	 *  when there is none. */
 	storeCountry: string | null;
 	shipping: CheckoutShippingView;
 	/** The page must collect an address: a physical cart in a zoned store, or
@@ -460,6 +461,7 @@ export function createCheckoutSummaryRouteHandler(): RouteHandler<CheckoutSummar
 			// the region blame (never the review), so it degrades to "nothing known".
 			const regionFacts = readStoreRegionFacts(ctx).catch(() => ({
 				storeCountry: null,
+				baseCountry: null,
 				regionZoneCountries: new Set<string>(),
 			}));
 			let quote = await quoteWith(selection);
@@ -574,7 +576,12 @@ export function createCheckoutSummaryRouteHandler(): RouteHandler<CheckoutSummar
 				},
 				selectionErrors,
 				requiresShipping: quote.requiresShipping,
-				storeCountry: (await regionFacts).storeCountry,
+				// The delivery block (a cart that ships, in a zoned store) starts on a
+				// country the store ships to; an address-only page on its base country.
+				storeCountry:
+					quote.requiresShipping && status !== "no_zones"
+						? (await regionFacts).storeCountry
+						: (await regionFacts).baseCountry,
 				shipping,
 				addressRequired:
 					(quote.requiresShipping && status !== "no_zones") || paymentAccountNeedsAddress,
