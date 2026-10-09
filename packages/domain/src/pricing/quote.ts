@@ -78,6 +78,13 @@ export interface QuoteCommand {
 		postalCode?: string | null;
 		city?: string | null;
 	};
+	/**
+	 * Where the BUYER is (#426): a country and an optional region code. Read only
+	 * for a cart that ships nothing, under "based on the customer's billing
+	 * address" — it is then the tax location, validated with the ship-to's rules.
+	 * Anywhere else it is ignored entirely: never validated, never priced by.
+	 */
+	billingLocation?: { country: string; region?: string | null };
 	/** The selected shipping method; absent ⇒ zero shipping (no method chosen). */
 	methodId?: string;
 	couponCode?: string;
@@ -125,6 +132,9 @@ export type QuoteResult =
 			taxSettings: TaxSettings;
 			/** Whether a tax location matched a zone — false ⇒ the tax was not located. */
 			taxLocated: boolean;
+			/** The buyer's billing location, when it was the tax location (#426) —
+			 *  normalised codes, for the order's frozen snapshot. ABSENT otherwise. */
+			billingLocation?: { country: string; region: string | null };
 	  }
 	| { ok: false; reason: QuoteFailure };
 
@@ -275,10 +285,18 @@ export async function computeQuote(
 			taxLocated: false,
 		};
 	}
-	const located = await taxLocationOf(deps, taxSettings, command.requiresShipping, zones, {
-		address: taxDestination,
-		zoneId,
-	});
+	// #426: the buyer's billing location, when it decides the tax. Refused HERE,
+	// after the coupon, because only the tax options say whether it is read.
+	const billing = billingLocationOf(command, taxSettings);
+	if (billing !== null && !billing.ok) return { ok: false, reason: billing.reason };
+	const located = await taxLocationOf(
+		deps,
+		taxSettings,
+		command.requiresShipping,
+		zones,
+		{ address: taxDestination, zoneId },
+		billing?.location ?? null,
+	);
 	const base = taxSettings.baseAddress;
 	const request = freezeRequest({
 		purpose: context.purpose,
@@ -307,6 +325,7 @@ export async function computeQuote(
 		tax,
 		taxSettings,
 		taxLocated: located.zoneId !== null,
+		...(billing !== null ? { billingLocation: billing.location } : {}),
 	};
 }
 
@@ -329,13 +348,41 @@ interface TaxLocation {
 	zoneId: string | null;
 }
 
+/** A country and region code, normalised. */
+interface CodedLocation {
+	country: string;
+	region: string | null;
+}
+
+/**
+ * The buyer's billing location when it decides the tax (#426): a cart that
+ * ships nothing, under "based on the customer's billing address", that was
+ * given one — normalised with the ship-to's rules and refused with its reasons.
+ * `null` ⇒ not read at all (any other cart or option, or none given).
+ */
+function billingLocationOf(
+	command: QuoteCommand,
+	settings: TaxSettings,
+): { ok: true; location: CodedLocation } | { ok: false; reason: QuoteFailure } | null {
+	const given = command.billingLocation;
+	if (command.requiresShipping || settings.basedOn !== "billing" || given === undefined) {
+		return null;
+	}
+	const country = normalizeCountryCode(given.country);
+	if (country === null) return { ok: false, reason: "INVALID_SHIPPING_ADDRESS" };
+	const region = normalizeSubdivision(country, given.region);
+	if (!region.ok) return { ok: false, reason: "SHIPPING_REGION_CODE_REQUIRED" };
+	return { ok: true, location: { country, region: region.code } };
+}
+
 /**
  * Where tax is charged (ADR-0032): the shop's base address for a digital-only
  * cart, or when the settings say "based on shop base address"; otherwise the
  * ship-to and the zone it already matched. With NO base address set, a
  * digital-only cart stays unlocated — and so untaxed, exactly as before — and
  * "base" falls back to the ship-to. A base address no zone matches is located
- * nowhere: no rate ⇒ 0%, never a refusal.
+ * nowhere: no rate ⇒ 0%, never a refusal. A digital-only cart's `billing`
+ * location (#426), when there is one, comes first, under the same rules.
  */
 async function taxLocationOf(
 	deps: QuoteDeps,
@@ -343,17 +390,29 @@ async function taxLocationOf(
 	requiresShipping: boolean,
 	zonesRead: Awaited<ReturnType<ShippingRulesStore["listZones"]>>,
 	shipTo: TaxLocation,
+	billing: CodedLocation | null,
 ): Promise<TaxLocation> {
+	// Only a cart that ships nothing has a billing location (`billingLocationOf`),
+	// and such a cart read no zones yet.
+	if (billing !== null) return locatedAt(await deps.shippingRules.listZones(), billing);
 	const base = settings.baseAddress;
 	const useBase = base !== null && (!requiresShipping || settings.basedOn === "base");
 	if (!useBase) return requiresShipping ? shipTo : { address: null, zoneId: null };
 	const zones = requiresShipping ? zonesRead : await deps.shippingRules.listZones();
+	return locatedAt(zones, base);
+}
+
+/** A coded location as the tax location: the zone it matches, if any. */
+function locatedAt(
+	zones: Awaited<ReturnType<ShippingRulesStore["listZones"]>>,
+	at: CodedLocation,
+): TaxLocation {
 	const matched = resolveShippingZone(zones, {
 		requiresShipping: true,
-		destination: { country: base.country, region: base.region },
+		destination: { country: at.country, region: at.region },
 	});
 	return {
-		address: { country: base.country, region: base.region, postalCode: null, city: null },
+		address: { country: at.country, region: at.region, postalCode: null, city: null },
 		zoneId: matched.status === "matched" ? matched.zoneId : null,
 	};
 }

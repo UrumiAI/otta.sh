@@ -257,6 +257,9 @@ function optionsForm(
 	const pricesOptions = yesNo("Yes, I enter prices with tax", "No, I enter prices without tax");
 	const basedOnOptions: SelectOption[] = [
 		{ label: "Customer shipping address", value: "shipping" },
+		// #426: digital-only carts taxed where the buyer is (the checkout then asks
+		// for their country); a cart that ships is still taxed by its ship-to.
+		{ label: "Customer billing address (digital-only orders)", value: "billing" },
 		{ label: "Shop base address", value: "base" },
 	];
 	const displayOptions = yesNo("Including tax", "Excluding tax");

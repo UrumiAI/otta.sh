@@ -22,9 +22,26 @@ export interface OrderTaxSnapshotV1 {
 	 * the shipping zone alone, exactly as before.
 	 */
 	located?: boolean;
+	/**
+	 * The address the tax was charged for, when it is not one the order already
+	 * holds (#426): the buyer's billing location, for a cart that shipped nothing
+	 * under "based on the customer's billing address". ABSENT otherwise — the
+	 * tax location is then the order's ship-to or the shop's base address, as
+	 * before — and on every snapshot written before it.
+	 */
+	taxAddress?: OrderTaxAddress;
 	/** One per order line, in order-line order (`lineIndex` indexes `order.lines`). */
 	lines: Array<{ lineIndex: number; taxClassId: string; taxableCents: Cents } & TaxLine>;
 	shipping: ({ taxableCents: Cents } & TaxLine) | null;
+}
+
+/** Where an order's tax was charged, frozen with it (#426). */
+export interface OrderTaxAddress {
+	basis: "billing";
+	/** ISO 3166-1 alpha-2. */
+	country: string;
+	/** ISO 3166-2 subdivision suffix, or null. */
+	region: string | null;
 }
 
 /** An order written before ADR-0030: amounts only — no rate, label or calculator. */
@@ -50,12 +67,23 @@ export function buildOrderTaxSnapshot(
 	tax: { calculatorId: string; result: TaxResult; pricesIncludeTax?: boolean },
 	/** The quote's `taxLocated`: a tax location matched a zone. */
 	located: boolean,
+	/** The quote's `billingLocation`, when the buyer's location was the tax location. */
+	billingLocation?: { country: string; region: string | null },
 ): OrderTaxSnapshotV1 {
 	return {
 		v: 1,
 		calculatorId: tax.calculatorId,
 		pricesIncludeTax: tax.pricesIncludeTax === true,
 		located,
+		...(billingLocation !== undefined
+			? {
+					taxAddress: {
+						basis: "billing" as const,
+						country: billingLocation.country,
+						region: billingLocation.region,
+					},
+				}
+			: {}),
 		lines: breakdown.lineBreakdown.map((line, lineIndex) => {
 			const answered = tax.result.lines[lineIndex];
 			if (answered === undefined) throw new RangeError(`no tax line for line ${String(lineIndex)}`);
@@ -94,10 +122,12 @@ export function readOrderTaxSnapshot(raw: unknown): OrderTaxSnapshot | null {
 }
 
 function readV1(raw: Record<string, unknown>): OrderTaxSnapshotV1 | null {
-	const { calculatorId, pricesIncludeTax, located, lines, shipping } = raw;
+	const { calculatorId, pricesIncludeTax, located, taxAddress, lines, shipping } = raw;
 	if (typeof calculatorId !== "string" || typeof pricesIncludeTax !== "boolean") return null;
 	// Optional: a snapshot from before the field omits it (read as not located).
 	if (located !== undefined && typeof located !== "boolean") return null;
+	const address = taxAddress === undefined ? undefined : readTaxAddress(taxAddress);
+	if (address === null) return null;
 	if (!Array.isArray(lines)) return null;
 	const out: OrderTaxSnapshotV1["lines"] = [];
 	for (const item of lines as unknown[]) {
@@ -119,9 +149,19 @@ function readV1(raw: Record<string, unknown>): OrderTaxSnapshotV1 | null {
 		calculatorId,
 		pricesIncludeTax,
 		...(located !== undefined ? { located } : {}),
+		...(address !== undefined ? { taxAddress: address } : {}),
 		lines: out,
 		shipping: ship,
 	};
+}
+
+function readTaxAddress(raw: unknown): OrderTaxAddress | null {
+	if (!isRecord(raw) || raw["basis"] !== "billing" || typeof raw["country"] !== "string") {
+		return null;
+	}
+	const region = raw["region"];
+	if (region !== null && typeof region !== "string") return null;
+	return { basis: "billing", country: raw["country"], region };
 }
 
 function taxedOf(item: Record<string, unknown>): ({ taxableCents: Cents } & TaxLine) | null {

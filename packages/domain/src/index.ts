@@ -63,6 +63,7 @@ export {
 export { validateTaxResult } from "./pricing/validate-tax-result.js";
 export {
 	readOrderTaxSnapshot,
+	type OrderTaxAddress,
 	type OrderTaxSnapshot,
 	type OrderTaxSnapshotV0,
 	type OrderTaxSnapshotV1,

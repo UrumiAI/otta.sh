@@ -133,3 +133,25 @@ pay must not change silently (user decision 4).
   existing golden is byte-identical. The order tax snapshot's shape is unchanged.
 - The admin product edit's idempotency key covers the tax status, so two saves at one
   watermark that differ only in status are never one replay.
+
+## Addendum (#426): tax based on the customer's billing address, for digital-only carts
+
+- `basedOn` gains `billing` — WooCommerce's "Customer billing address"
+  (`woocommerce_tax_based_on` = `billing`), which reverses decision 5's "billing address is
+  not offered". No store gets it unless an admin saves it: the defaults and the upgrade rule
+  are unchanged, so every existing store keeps today's behaviour exactly.
+- Otta collects a billing LOCATION (country and optional region code), and only for a cart
+  that ships nothing — the checkout's existing zero-JS "where" block, shown with no delivery
+  options. Under `billing` such a cart is taxed at that location; with none given it falls
+  back to the base address (decision 5, as before). A location no zone matches gets 0%,
+  never a refusal; a malformed one is refused with the ship-to's reasons. A cart that ships
+  is still taxed by its ship-to, its only address (WooCommerce's checkout likewise bills to
+  the ship-to unless told otherwise). Under `shipping` or `base` the location is ignored
+  entirely — never validated, never priced by.
+- The review quote and the order are taxed at the same location: the review prices the
+  location the page sent (`destination`, for a cart that ships nothing), and the place form
+  echoes it as the order's `billingLocation`. A buyer address sent for another reason (issue
+  #382) is not used as the billing location, because the review was not priced for it.
+- The order's v1 tax snapshot gains an optional `taxAddress: { basis: "billing", country,
+  region }`. It is written only when the billing location was the tax location; every other
+  order's snapshot is unchanged, and older snapshots read without it.

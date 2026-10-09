@@ -61,6 +61,7 @@ import {
 	type CheckoutUrlSelection,
 } from "../../lib/checkout-selection.js";
 import { ORDER_PLACED_OTHER_EMAIL } from "../../lib/checkout-review.js";
+import { billingLocationFromForm, TAX_LOCATION_FIELD } from "../../lib/checkout-location.js";
 import { isPlausibleEmail, normalizeBuyerRef } from "../../lib/email.js";
 import { STRIPE_PUBLISHABLE_KEY } from "../../lib/stripe-config.js";
 import {
@@ -366,6 +367,18 @@ async function place(context: APIContext): Promise<Response> {
 		);
 	}
 
+	// #426: the buyer's location the review was priced for, on a page that asked
+	// for it (a cart that ships nothing, taxed where the buyer is). The same
+	// hidden echo as a zoned page's destination; sent as the order's
+	// `billingLocation`, never as a ship-to.
+	const billingLocation = zoned
+		? billingLocationFromForm({
+				taxLocation: formString(form.get(TAX_LOCATION_FIELD)),
+				country: formString(form.get("country")),
+				region: formString(form.get("region")),
+			})
+		: undefined;
+
 	// The signed-in shopper's session, if any. The plugin route is cookie-blind
 	// (ADR-0003), so the page reads its own cookie and passes the bearer on; the
 	// PLUGIN decides what it means — the order is theirs from birth only when this
@@ -385,6 +398,7 @@ async function place(context: APIContext): Promise<Response> {
 			...(couponCode !== undefined ? { couponCode } : {}),
 			...(shippingMethodId !== undefined ? { shippingMethodId } : {}),
 			...(shipping.address !== undefined ? { shippingAddress: shipping.address } : {}),
+			...(billingLocation !== undefined ? { billingLocation } : {}),
 		},
 		context.url,
 	);

@@ -480,6 +480,11 @@ export function requireDestination(destination: {
 	}
 }
 
+/** #426: a buyer's coarse location — code SHAPES only, like a destination's. */
+export function requireBillingLocation(location: { country: string; region?: string }): void {
+	requireCodeShapes("billingLocation", location.country, location.region);
+}
+
 function requireCodeShapes(prefix: string, country: string, region: string | undefined): void {
 	if (!COUNTRY_SHAPE.test(country.trim())) {
 		fail(`${prefix}.country`, "must be an ISO 3166-1 alpha-2 code");

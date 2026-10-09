@@ -982,6 +982,54 @@ describe("the coupon at place", () => {
 });
 
 /**
+ * #426: a cart that ships nothing, in a store taxing it where the buyer is. The
+ * review priced the buyer's location; the place form echoes it as hidden fields
+ * beside a `taxLocation=buyer` marker, and the order gets it as
+ * `billingLocation` — never as a ship-to.
+ */
+describe("the buyer's location at place (#426)", () => {
+	const BUYER = { ...VALID_FORM, addressMode: "zoned", taxLocation: "buyer" };
+
+	test("the priced location is sent as billingLocation, with no ship-to", async () => {
+		const { handler, calls } = makeHandler();
+		await PLACE_POST(makeContext({ ...BUYER, country: "de" }, handler).context);
+		expect(calls[0]!.body["billingLocation"]).toEqual({ country: "DE" });
+		expect(calls[0]!.body).not.toHaveProperty("shippingAddress");
+
+		const withRegion = makeHandler();
+		await PLACE_POST(
+			makeContext({ ...BUYER, country: "US", region: "CA" }, withRegion.handler).context,
+		);
+		expect(withRegion.calls[0]!.body["billingLocation"]).toEqual({ country: "US", region: "CA" });
+	});
+
+	test("no location priced yet ⇒ none sent (the shop's base address taxes, as on the review)", async () => {
+		const { handler, calls } = makeHandler();
+		await PLACE_POST(makeContext(BUYER, handler).context);
+		expect(calls).toHaveLength(1);
+		expect(calls[0]!.body).not.toHaveProperty("billingLocation");
+	});
+
+	test("a country picked but not applied is re-priced, never placed at the old price", async () => {
+		const { handler, calls } = makeHandler();
+		const response = await PLACE_POST(
+			makeContext({ ...BUYER, deliveryCountry: "DE" }, handler).context,
+		);
+		expect(response.headers.get("location")).toBe("/checkout?country=DE");
+		expect(calls).toHaveLength(0);
+	});
+
+	test("a delivery page (no marker) never sends one", async () => {
+		const { handler, calls } = makeHandler();
+		await PLACE_POST(
+			makeContext({ ...VALID_FORM, addressMode: "zoned", country: "US", region: "CA" }, handler)
+				.context,
+		);
+		expect(calls[0]!.body).not.toHaveProperty("billingLocation");
+	});
+});
+
+/**
  * #305 part 2 (ADR-0021): the delivery address at place, and the page it came
  * from. On a ZONED store's page the country/region are HIDDEN — the destination
  * the review priced — and only the typed fields decide all-or-nothing; on a

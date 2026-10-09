@@ -39,6 +39,28 @@ describe("readOrderTaxSnapshot", () => {
 		expect(readOrderTaxSnapshot({ ...v1, located: "yes" })).toBeNull();
 	});
 
+	test("`taxAddress` (#426: the billing location a digital order was taxed at) round-trips", () => {
+		const billed = {
+			...v1,
+			located: true,
+			taxAddress: { basis: "billing", country: "DE", region: null },
+		};
+		expect(readOrderTaxSnapshot(JSON.parse(JSON.stringify(billed)))).toEqual(billed);
+		const withRegion = { ...v1, taxAddress: { basis: "billing", country: "US", region: "CA" } };
+		expect(readOrderTaxSnapshot(withRegion)).toEqual(withRegion);
+		const old = readOrderTaxSnapshot(v1);
+		expect(old !== null && "taxAddress" in old).toBe(false);
+		for (const bad of [
+			"DE",
+			{ basis: "shipping", country: "DE", region: null },
+			{ basis: "billing", country: 7, region: null },
+			{ basis: "billing", country: "DE" },
+			{ basis: "billing", country: "DE", region: 1 },
+		]) {
+			expect(readOrderTaxSnapshot({ ...v1, taxAddress: bad })).toBeNull();
+		}
+	});
+
 	test("the legacy shape (the golden INR order on main) reads as v0, rate and label null", () => {
 		const legacy = {
 			lines: [

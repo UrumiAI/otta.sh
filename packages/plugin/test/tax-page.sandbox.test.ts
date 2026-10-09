@@ -1272,6 +1272,26 @@ describe("admin Tax console — tax options (PR 2a, ADR-0032)", () => {
 		});
 	});
 
+	test("#426: 'customer billing address' is offered, and saving it stores `billing`", async () => {
+		await seedRules({ rates: [] });
+		const blocks = await openOptions();
+		const options = field(formFor(blocks, "tax:save-options"), "basedOn")?.options as
+			| Array<{ value: string }>
+			| undefined;
+		expect(options?.map((o) => o.value)).toEqual(["shipping", "billing", "base"]);
+		await submitForm(blocks, "tax:save-options", {
+			...untouched(blocks),
+			enabled: true,
+			basedOn: "billing",
+			baseCountry: "GB",
+			baseRegion: "",
+		});
+		expect((await settingsStore.get()).tax).toMatchObject({
+			basedOn: "billing",
+			baseAddress: { country: "GB", region: null },
+		});
+	});
+
 	test("an invalid base address is refused on the options screen, with the typing kept — nothing is saved", async () => {
 		await seedRules({ rates: [] });
 		const blocks = await openOptions();

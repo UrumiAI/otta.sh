@@ -108,6 +108,15 @@ export interface CreateOrderCommand {
 	 * rules alone.
 	 */
 	addressRequired?: boolean;
+	/**
+	 * Where the buyer is (#426): a country and an optional region code — the
+	 * SAME location the checkout review was quoted for. It decides the tax only
+	 * for a cart that ships nothing, in a store taxing "based on the customer's
+	 * billing address"; anywhere else it is ignored. Absent ⇒ none: the shop's
+	 * base address taxes, as before — even when a buyer address came along
+	 * (issue #382), because the review the buyer approved was priced without it.
+	 */
+	billingLocation?: { country: string; region?: string | null };
 }
 
 export type CreateOrderFromCartResult =
@@ -346,6 +355,7 @@ export async function createOrderFromCart(
 							city: shippingAddress.city,
 						}
 					: undefined,
+			billingLocation: command.billingLocation,
 			methodId: command.shippingMethodId,
 			couponCode: command.couponCode,
 		}),
@@ -420,6 +430,7 @@ export async function createOrderFromCart(
 			breakdown,
 			tax: quote.tax,
 			taxLocated: quote.taxLocated,
+			...(quote.billingLocation !== undefined ? { billingLocation: quote.billingLocation } : {}),
 			couponRecord: quote.couponRecord,
 			shippingMethodSnapshot,
 			shippingAddress,
@@ -491,6 +502,8 @@ interface FinalizeContext {
 	tax: QuoteTax;
 	/** The quote's `taxLocated`, frozen into the snapshot (ADR-0032). */
 	taxLocated: boolean;
+	/** The quote's `billingLocation` (#426), frozen into the snapshot. */
+	billingLocation?: { country: string; region: string | null };
 	couponRecord: CouponRecord | null;
 	/** What priced the shipping and tax (ADR-0021 Decision 7); null when no zone
 	 *  matched (no zones configured, or nothing ships). */
@@ -553,7 +566,7 @@ async function finalizeOrder(
 			appliedCouponCode: breakdown.appliedCouponCode ?? null,
 			shippingMethodSnapshot: ctx.shippingMethodSnapshot,
 			// ADR-0030: the typed v1 snapshot, written once, never recomputed.
-			taxBreakdown: buildOrderTaxSnapshot(breakdown, ctx.tax, ctx.taxLocated),
+			taxBreakdown: buildOrderTaxSnapshot(breakdown, ctx.tax, ctx.taxLocated, ctx.billingLocation),
 		},
 	});
 	// Issue #133, race twin of the I1 cart check: a same-key call for ANOTHER cart

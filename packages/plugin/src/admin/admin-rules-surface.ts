@@ -419,7 +419,7 @@ export type TaxSettingsUpdateResult =
 export interface TaxSettingsWire {
 	enabled: boolean;
 	pricesIncludeTax: boolean;
-	basedOn: "shipping" | "base";
+	basedOn: "shipping" | "billing" | "base";
 	baseAddress: { country: string; region: string | null } | null;
 	shippingTaxClass:
 		| { kind: "inherit" }
