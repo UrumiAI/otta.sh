@@ -30,11 +30,13 @@ the admin console (list rows and detail, sent on the admin wire as `orderNumber`
   unchanged; there is no migration.
 - It is a **display label, never a lookup key**. Nothing resolves an order by its number
   alone. URLs, Stripe metadata, idempotency keys and the outbox keep the full id.
-- The admin search accepts it as typed: at least five hex digits, `#` optional
-  (`"#3F9A2"`, `"3F9A2"`), is a number — one matcher, the domain's `orderNumberIdPrefix`. It rewrites ONLY the store's
-  anchored, case-folded id-prefix arm (the `#` comes off; a number long enough to cross a
-  UUID hyphen gets it back); the buyer and sku arms still match the text as typed, so a
-  sku spelled `#12345` is still found. It may answer **several** orders.
+- The admin search accepts it as printed: a search starting with `#`, then five or more
+  hex digits (the id's own hyphens allowed), is a number — one matcher, the domain's
+  `orderNumberIdPrefix`. It rewrites ONLY the store's anchored, case-folded id-prefix arm
+  (the `#` comes off; a number long enough to cross a UUID hyphen gets it back). The buyer
+  and sku arms still match the text as typed, so a sku spelled `#12345` is still found,
+  and every search without a `#` is matched literally, exactly as before. The search is
+  trimmed once, for every arm. It may answer **several** orders.
 
 ## Consequences
 
@@ -44,17 +46,11 @@ the admin console (list rows and detail, sent on the admin wire as `orderNumber`
   only has to tell a shopper's *own* orders apart and give support a short search term:
   - the admin search returns every order with that prefix, and the operator confirms by
     buyer, date or total — never by the number alone;
-  - a search typed as a number always shows "Order numbers can be shared. Confirm the
-    buyer, date and total." above the rows;
   - two rows sharing a number on one console page extend it, upper-cased and hex only, to
-    their shortest-unique prefix (`#FEE1D1`, `#FEE1D2`), so no two rows read the same and
-    each cell is itself a searchable number; the detail shows the full id beside the number;
+    their shortest-unique prefix (`#FEE1D1`, `#FEE1D2`), so no two rows read the same and,
+    for UUID ids, each cell is itself a searchable number; the detail shows the full id;
   - the refund confirm names the first 12 hex digits (`#7E4CE728ABCD`), a superset of the
     number and of any realistic tie-breaker.
-- A search of five or more hex digits (`#` optional) is read as an order number by the
-  ID arm only; the sku and buyer arms keep the literal text, `#` included, so a sku or
-  email spelled that way is still found. The "can be shared" hint shows only when a
-  returned row matched by id prefix.
 - **It reveals part of the id.** The number shows 20 of the id's 122 random bits, in
   places (an email subject, a support ticket) the full id never went. The order page is a
   bearer link on the full id and stays safe on the remaining ~102 bits; nothing resolves

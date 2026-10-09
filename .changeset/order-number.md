@@ -16,17 +16,16 @@ gains `orderNumber` on list rows and the detail.
 It is a display label derived on read, never stored and never a lookup key (ADR-0033):
 order ids are random v4 UUIDs, so the prefix is spread out, but five hex characters will
 collide eventually. The admin search accepts a number as typed (`#3F9A2`, any case) and
-answers every order whose id starts with it, with a hint that numbers can be shared; two
+answers every order whose id starts with it; two
 console rows sharing a number extend it, upper-cased, to their
 shortest-unique prefix (`#FEE1D1`). The list's "Order #" column is now "Order". No order id, storage format or migration changes.
 
 `@otta-sh/domain` exports `orderNumber`, `ORDER_NUMBER_LENGTH` and `orderNumberIdPrefix`
-(the one matcher: an optional `#` + five or more hex digits). A search typed as a number rewrites only
+(the one matcher: `#` + five or more hex digits). A search typed as a number rewrites only
 the store's id-prefix arm — the `#` comes off, and a number long enough to cross a UUID
 hyphen gets the hyphen back, so the stored id and its search key are unchanged; the buyer
-and sku arms still match the text as typed. The admin list payload gains
-`searchedByNumber`, and the console then shows "Order numbers can be shared. Confirm the
-buyer, date and total."
+and sku arms still match the text as typed, and a search without `#` is matched literally
+as before. The admin client trims the search once, for every arm.
 
 `@otta-sh/admin-presentation` gains `withOrderNumberCells`, `orderConfirmLabel`,
 `ORDER_CONFIRM_DIGITS` and the `OrderNumberCell` type: rows sharing a number extend it,
