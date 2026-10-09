@@ -1,0 +1,32 @@
+---
+"@otta-sh/domain": minor
+"@otta-sh/store-emdash": minor
+"@otta-sh/plugin": minor
+"@otta-sh/admin-presentation": minor
+"@otta-sh/admin-react": minor
+"@otta-sh/payments-stripe": minor
+---
+
+Three-decimal currencies (BHD, JOD, KWD, OMR) are payable at checkout (ADR-0033 amendment).
+The currency table gains an optional `paymentIncrement` (10 for those four; mirrored in
+`@otta-sh/admin-presentation`, read through `currencyPaymentIncrement`). For such a currency
+the totals pipeline rounds only the FINAL total half-up to the increment and records the signed
+difference as `TotalsBreakdown.roundingCents` (new `SignedCents` brand, `signedCents()`); line
+prices, discounts, shipping and tax stay exact. Orders persist it as an optional
+`OrderTotals.rounding`; orders written before it carry none (= 0). The quote and order wires
+carry `roundingCents` only when the order has one; the checkout view model adds an optional
+`rounding` row (signed, only when non-zero), and the order emails, the staging site's
+checkout and order pages and the admin order detail show "Rounding". Every other currency is
+unchanged: no field, no row, the same totals, emails and Stripe requests.
+
+Refunds in these currencies must be multiples of 0.010 or the whole remaining amount; the
+admin refund form and its server action refuse anything else (`isRefundableIncrement`,
+`refundIncrementText`). The Stripe adapter now charges the four codes (amounts sent
+unchanged), and refuses before any network call an intent (`unsupported_amount`) or refund
+(`TERMINAL`) not a multiple of 10 in Stripe's three-decimal set (`stripeAmountIncrement`).
+
+**Removed** (no listed currency is unpayable now): `isCheckoutPayableCurrency`,
+`StoreCurrencyNotPayableError` and the `store_currency_not_payable` settings refusal, and
+`checkoutPaymentWarning` / `checkoutPaymentLabelSuffix` / `checkoutPaymentLabelClause` /
+`withCheckoutPaymentWarning` / `NOT_YET_PAYABLE_AT_CHECKOUT`. The Settings store-currency
+select offers every listed currency again.
