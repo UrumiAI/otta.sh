@@ -1087,7 +1087,7 @@ const refundOrderAction: OrdersAction = async (client, payload, operator) => {
 			// and the residual is the one `refund-order.ts` names — a `refunded`
 			// order, which the download route refuses on. A revoke that THROWS
 			// propagates, so the operator sees a failure and clicks again.
-			await client.refundOrder(
+			const replay = await client.refundOrder(
 				orderId,
 				{
 					amountCents: ownRecorded.amountCents,
@@ -1096,6 +1096,14 @@ const refundOrderAction: OrdersAction = async (client, payload, operator) => {
 				},
 				{ idempotencyKey: ownRecorded.idempotencyKey },
 			);
+			// The operator still sees ALREADY_REFUNDED, but a refused replay is a revoke
+			// that did not finish — leave a trace. Status and the typed reason code only:
+			// no order id, key, name or amount.
+			if (!replay.ok) {
+				console.warn(
+					`[otta] refund replay refused (status ${String(replay.status)}, reason ${replay.reason ?? "none"}); download access may not have been revoked`,
+				);
+			}
 			return applied(ALREADY_REFUNDED);
 		}
 		// The genuinely CONCURRENT case: the ledger moved between the confirm being
