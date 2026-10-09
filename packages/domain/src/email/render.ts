@@ -255,6 +255,8 @@ function lineItems(lines: unknown, currency: string | undefined, money: Money): 
  *    is a real "$0.00"), "Discount" for a discount with no code, and the page's
  *    "No coupon applied" when there is neither. The amount is UNSIGNED, as on
  *    the page — the row's name says it comes off.
+ *  - a "Rounding" row, SIGNED (`−KWD 0.003`), only for an order whose total was
+ *    rounded to its currency's payment increment (ADR-0033's amendment).
  *  - shipping and tax read {@link EMAIL_NOT_CALCULATED_LABEL} whenever their flag
  *    (`shippingCalculated` / `taxCalculated`, derived exactly as the page's
  *    `orderTotalsFlags`) is not set — whatever the amount, as on the page. (An
@@ -288,6 +290,12 @@ function totalsBlock(data: Record<string, unknown>, money: Money, isRefund: bool
 		data["taxIncluded"] === true ? "Tax (included in prices)" : "Tax",
 		calculated(data["taxCents"], data["taxCalculated"], currency, money),
 	);
+	// ADR-0033's amendment: the payment rounding, signed, only when the order has one.
+	const rounding = data["roundingCents"];
+	if (typeof rounding === "number" && rounding !== 0) {
+		const magnitude = money(Math.abs(rounding), currency);
+		if (magnitude !== null) push("Rounding", `${rounding < 0 ? "−" : "+"}${magnitude}`);
+	}
 	const totalLabel = isRefund ? "Order total" : orderTotalLabel(str(data["state"]) ?? "");
 	push(totalLabel, money(data["totalCents"], currency));
 	// A state email sent after a partial refund (QA round 2): "Paid: $10.00" alone

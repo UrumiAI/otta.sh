@@ -1,9 +1,18 @@
 // Public barrel of @otta-sh/domain — ports, use-cases, and branded types.
-export { cents, currency, money, type Cents, type Currency, type Money } from "./money/cents.js";
+export {
+	cents,
+	currency,
+	money,
+	signedCents,
+	type Cents,
+	type Currency,
+	type Money,
+	type SignedCents,
+} from "./money/cents.js";
 export {
 	SUPPORTED_CURRENCIES,
 	currencyDigits,
-	isCheckoutPayableCurrency,
+	currencyPaymentIncrement,
 	isSupportedCurrency,
 	minorUnitDigits,
 	type CurrencyInfo,
@@ -16,6 +25,7 @@ export { computeLineTax } from "./pricing/tax.js";
 export { computeCouponDiscount } from "./pricing/coupon.js";
 export { resolveShippingRate } from "./pricing/shipping.js";
 export { computeTotals } from "./pricing/compute-totals.js";
+export { payableTotal, roundingEntry } from "./pricing/payment-rounding.js";
 export { CouponCurrencyMismatchError } from "./pricing/errors.js";
 export {
 	CouponCodeConflictError,
@@ -706,7 +716,6 @@ export {
 	getSettings,
 	InvalidSettingsError,
 	MAX_HOLD_TTL_MINUTES,
-	StoreCurrencyNotPayableError,
 	updateSettings,
 } from "./settings/use-cases.js";
 export type { AttemptThrottle } from "./ports/attempt-throttle.js";

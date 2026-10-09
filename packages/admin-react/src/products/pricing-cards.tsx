@@ -66,7 +66,6 @@ import {
 	DIGITAL_WITH_FILE,
 	currencyChoicesWith,
 	parseStockQty,
-	checkoutPaymentWarning,
 	TAX_STATUS_HINT,
 	TAX_STATUS_OPTIONS,
 } from "@otta-sh/admin-presentation";
@@ -697,7 +696,6 @@ export function PricingStockEditor({ productId }: { productId: string }): React.
 		Object.entries(allProblems).filter(([field]) => touched.has(field as DraftField)),
 	);
 	const currency = p.currency ?? d.currency;
-	const paymentWarning = checkoutPaymentWarning(currency);
 	const priced = p.priceCents !== null;
 	const sale = salePreview(d.price, d.compareAt, currency);
 	const margin = marginSummary(d.price, d.unitCost, currency);
@@ -986,11 +984,6 @@ export function PricingStockEditor({ productId }: { productId: string }): React.
 									Can't be changed once the product is priced.
 								</span>
 							</div>
-						)}
-						{paymentWarning !== null && (
-							<p className="otta-pricing-hint" data-testid="currency-payment-warning">
-								{paymentWarning}
-							</p>
 						)}
 						<div className="otta-pricing-field">
 							<MoneyInput

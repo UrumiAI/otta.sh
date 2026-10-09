@@ -1,8 +1,4 @@
-import {
-	checkoutPaymentLabelClause,
-	unsupportedCurrencyMessage,
-	withCheckoutPaymentWarning,
-} from "@otta-sh/admin-presentation";
+import { unsupportedCurrencyMessage } from "@otta-sh/admin-presentation";
 import {
 	COUNTRY_CODES,
 	DEFAULT_STORE_CURRENCY,
@@ -1477,7 +1473,7 @@ function editRateForm(zoneId: string, methodId: string, row: ShippingRateWire): 
 				{
 					type: "text_input",
 					action_id: "amount",
-					label: `Amount for ${row.currency} (${moneyPrecisionPhrase(row.currency)}${checkoutPaymentLabelClause(row.currency)})`,
+					label: `Amount for ${row.currency} (${moneyPrecisionPhrase(row.currency)})`,
 					initial_value: formatMinorUnitsInput(row.amountCents, row.currency),
 				},
 				{
@@ -1980,7 +1976,7 @@ function createRateNotice(result: RulesCreateResult<ShippingRateWire>, currency:
 		return {
 			variant: "default",
 			title: "Rate created",
-			description: withCheckoutPaymentWarning(`The ${currency} rate was added.`, currency),
+			description: `The ${currency} rate was added.`,
 		};
 	}
 	return {

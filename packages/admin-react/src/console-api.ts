@@ -79,6 +79,9 @@ export interface OrderTotals {
 	readonly shippingCents: number;
 	readonly taxCents: number;
 	readonly totalCents: number;
+	/** The payment rounding, SIGNED minor units (ADR-0033's amendment); only on an
+	 *  order in a currency with a payment increment. */
+	readonly roundingCents?: number;
 	readonly appliedCouponCode: string | null;
 	readonly shippingZoneId?: string | null;
 }

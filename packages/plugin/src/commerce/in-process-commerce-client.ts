@@ -113,6 +113,7 @@ import {
 	type QuoteResult as DomainQuoteResult,
 	readOrderTaxSnapshot,
 	type ZoneResolution,
+	roundingEntry,
 } from "@otta-sh/domain";
 import type {
 	AbandonCartOrderResult,
@@ -1094,6 +1095,7 @@ export class InProcessCommerceClient implements CommerceClient {
 				shippingCents: breakdown.shippingCents,
 				taxCents: breakdown.taxCents,
 				totalCents: breakdown.totalCents,
+				...roundingEntry("roundingCents", breakdown.roundingCents),
 				appliedCouponCode: breakdown.appliedCouponCode ?? null,
 				tax: quoteTaxWire(quote),
 			},
@@ -1577,6 +1579,7 @@ function serializeOrderSummary(order: Order): OrderSummaryWire {
 			shippingCents: order.totals.shipping,
 			taxCents: order.totals.tax,
 			totalCents: order.totals.total,
+			...roundingWire(order),
 			// The same evidence the public wire carries (`serializePublicOrder`), so
 			// the account pages apply the order page's "Not calculated" rule.
 			appliedCouponCode: order.totals.appliedCouponCode,
@@ -1586,6 +1589,12 @@ function serializeOrderSummary(order: Order): OrderSummaryWire {
 		},
 		lines: serializeOrderLines(order),
 	};
+}
+
+/** The order's payment rounding on the wire (ADR-0033's amendment), by the
+ *  domain's presence rule (`roundingEntry`): every other order's wire is unchanged. */
+function roundingWire(order: Order): { roundingCents?: number } {
+	return roundingEntry("roundingCents", order.totals.rounding);
 }
 
 /** The quote's tax display facts (ADR-0032): settings, location, and the tax per label. */
@@ -1667,6 +1676,7 @@ function serializePublicOrder(
 			shippingCents: order.totals.shipping,
 			taxCents: order.totals.tax,
 			totalCents: order.totals.total,
+			...roundingWire(order),
 			appliedCouponCode: order.totals.appliedCouponCode,
 			shippingZoneId: shippingZoneIdOf(order.totals.shippingMethodSnapshot),
 			shippingMethodId: shippingMethodIdOf(order.totals.shippingMethodSnapshot),

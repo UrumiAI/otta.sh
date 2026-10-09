@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { cents, currency } from "../money/cents.js";
+import { cents, currency, signedCents } from "../money/cents.js";
 import {
 	customerId,
 	idempotencyKey,
@@ -131,6 +131,45 @@ export function orderStoreContract(
 			expect(order.totals.discount).toBe(0);
 			expect(order.totals.shipping).toBe(0);
 			expect(order.totals.tax).toBe(0);
+		});
+
+		test("persists the payment rounding when given, and reads an order without it with no rounding (ADR-0033 amendment)", async () => {
+			const { store } = await makeHarness();
+			const KWD = currency("KWD");
+			await store.createFromCart(
+				physicalInput({
+					currency: KWD,
+					lines: [
+						{
+							productId: productId("p1"),
+							sku: sku("SKU-1"),
+							title: "Widget",
+							unitPrice: cents(1234),
+							currency: KWD,
+							quantity: 1,
+							fulfillmentKind: "physical",
+							reservationId: reservationId("res-1"),
+						},
+					],
+					totals: {
+						subtotal: cents(1234),
+						total: cents(1230),
+						rounding: signedCents(-4),
+						currency: KWD,
+					},
+				}),
+			);
+			const rounded = await store.getById(orderId("ord-1"));
+			expect(rounded?.totals.total).toBe(1230);
+			expect(rounded?.totals.rounding).toBe(-4);
+			// An order written without one (every other currency, every older order)
+			// reads back with no `rounding` key at all — not a 0, not a null.
+			await store.createFromCart(
+				physicalInput({ orderId: orderId("ord-2"), idempotencyKey: idempotencyKey("key-2") }),
+			);
+			const plain = await store.getById(orderId("ord-2"));
+			expect(plain?.totals.total).toBe(1500);
+			expect(Object.hasOwn(plain?.totals ?? {}, "rounding")).toBe(false);
 		});
 
 		test("creates an order with multiple distinct-sku lines; all persist and reload", async () => {

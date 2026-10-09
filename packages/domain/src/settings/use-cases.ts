@@ -4,7 +4,7 @@ import type {
 	SettingsStore,
 	SettingsUpdateOptions,
 } from "../ports/settings-store.js";
-import { isCheckoutPayableCurrency, isSupportedCurrency } from "../money/currencies.js";
+import { isSupportedCurrency } from "../money/currencies.js";
 import { parseTaxSettings } from "../pricing/tax-settings.js";
 
 /**
@@ -24,25 +24,6 @@ export class InvalidSettingsError extends Error {
 		super(message);
 		this.name = "InvalidSettingsError";
 		this.field = field;
-	}
-}
-
-/**
- * A store currency checkout cannot take payment in (`isCheckoutPayableCurrency`
- * — the three-decimal codes). An {@link InvalidSettingsError} on `currency`, with
- * a structural `code` so an admin can word it.
- */
-export class StoreCurrencyNotPayableError extends InvalidSettingsError {
-	/** Structural discriminator — survives a sandbox bridge, unlike `instanceof`. */
-	readonly code = "STORE_CURRENCY_NOT_PAYABLE";
-	readonly currency: string;
-	constructor(currency: string) {
-		super(
-			"currency",
-			`${currency} can't be the store currency: checkout can't take payment in it yet`,
-		);
-		this.name = "StoreCurrencyNotPayableError";
-		this.currency = currency;
 	}
 }
 
@@ -88,8 +69,6 @@ export async function updateSettings(
 				`currency must be a supported ISO 4217 code like USD or EUR, got ${String(v)}`,
 			);
 		}
-		// Every new cart would be unpayable: checked HERE so every writer gets it.
-		if (!isCheckoutPayableCurrency(v)) throw new StoreCurrencyNotPayableError(v);
 	}
 	if ("tax" in patch) {
 		const tax = parseTaxSettings(patch.tax);

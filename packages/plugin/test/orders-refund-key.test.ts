@@ -32,6 +32,7 @@ import {
 	type OrdersActionPayload,
 	type OrdersActionResult,
 } from "../src/admin/orders-actions.js";
+import { refundIncrementText } from "@otta-sh/admin-presentation";
 import type { AdminOrdersSurface, RefundsSummaryWire } from "../src/admin/admin-orders-surface.js";
 
 const ORDER_ID = "order-refund-key-1";
@@ -272,5 +273,29 @@ describe("the refund idempotency key (F-2a)", () => {
 		rec.voidedKeys = [`admin-refund:${ORDER_ID}:300:0`, `admin-refund:${ORDER_ID}:5000:0`];
 		await refund(rec.client, payloadFor("500", "0"));
 		expect(rec.keys).toEqual([`admin-refund:${ORDER_ID}:500:0`]);
+	});
+});
+
+describe("a refund the order's currency cannot be paid back in (ADR-0033 amendment)", () => {
+	test("the domain's AMOUNT_NOT_PAYMENT_INCREMENT is worded with the currency's step", async () => {
+		const rec = recorder();
+		const usdRefunds = rec.client.getRefunds.bind(rec.client);
+		rec.client.getRefunds = async (orderId: string) => {
+			const summary = await usdRefunds(orderId);
+			return summary === null ? null : { ...summary, currency: "KWD" };
+		};
+		rec.client.refundOrder = (_orderId, _refund, opts) => {
+			rec.keys.push(opts.idempotencyKey);
+			return Promise.resolve({
+				ok: false as const,
+				status: 400,
+				reason: "AMOUNT_NOT_PAYMENT_INCREMENT",
+			});
+		};
+		const refused = await refund(rec.client, { ...payloadFor("1234", "0"), currency: "KWD" });
+		expect(refused.notice?.variant).toBe("error");
+		expect(refused.notice?.title).toBe("Not refunded");
+		expect(refused.notice?.description).toBe(refundIncrementText("KWD"));
+		expect(rec.keys).toEqual([`admin-refund:${ORDER_ID}:1234:0`]);
 	});
 });

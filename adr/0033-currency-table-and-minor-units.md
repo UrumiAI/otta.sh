@@ -37,7 +37,7 @@ the mismatch. In effect, only two-decimal currencies worked.
 5. **Three-decimal currencies (BHD, JOD, KWD, OMR) are refused at Stripe.** Stripe wants their
    amounts in multiples of 10, and an order total need not be one. Rounding money is a
    separate decision. They stay priceable and displayable, and the admin warns that they
-   cannot be charged through Stripe yet.
+   cannot be charged through Stripe yet. *Superseded by the amendment below.*
 6. **A percentage coupon's cap and minimum spend are bound to a currency.** They are amounts,
    so setting either requires a currency. The coupon then applies only to carts in that
    currency, and stays bound once both are cleared. A currency is accepted only together
@@ -51,4 +51,49 @@ the mismatch. In effect, only two-decimal currencies worked.
   Stripe every-row tests.
 - Upgrade: JPY/KRW/VND/CLP amounts typed earlier were stored ×100 and become chargeable at that
   value (DEPLOYMENT.md). HUF/IDR/COP/PKR display gains its two decimals.
-- A store-wide currency setting and three-decimal Stripe charges are follow-ups.
+- A store-wide currency setting and three-decimal Stripe charges are follow-ups. Both are done:
+  the store currency setting (#439), and three-decimal charges by the amendment below.
+
+## Amendment (2026-10-09): three-decimal currencies are payable — the final total is rounded
+
+Decision 5 is replaced. BHD, JOD, KWD and OMR are payable at checkout.
+
+1. **The table names a payment increment.** A row may carry `paymentIncrement` (minor units):
+   the smallest amount a payment in that currency can be. The four three-decimal rows carry
+   10 (0.010); every other row has none, meaning any minor-unit amount. The admin mirror
+   carries the same field and the parity test compares it, and pins it equal to Stripe's own
+   step for every row. The name is vendor-neutral.
+2. **Only the final total is rounded.** After tax, `assembleTotals` rounds the total half-up
+   to the increment (`roundHalfUpToMultiple`, BigInt) and records the difference as a signed
+   `roundingCents` (`SignedCents`, a separate brand: `Cents` stays non-negative). One
+   function, `payableTotal`, computes the charged total for both the totals pipeline and the
+   quote's overflow fence. Line
+   prices, discounts, shipping and tax stay exact. `|rounding| ≤ increment / 2`, and
+   `subtotal − discount + shipping + tax + rounding = total` (with tax-inclusive prices, the
+   shipping tax alone is added, as before). This is cash rounding, as Swiss and Nordic
+   receipts do it.
+3. **The field exists only where it applies.** `roundingCents` is present on a quote or order
+   in an increment currency (0 when the exact total was already a multiple), and absent for
+   every other currency, so their quotes, orders, wires, emails, Stripe requests and reports
+   are byte-identical to before. The order's totals snapshot stores it as an optional
+   `rounding`; an order written before it has none and reads as 0. Every carrier spreads it
+   with one helper, `roundingEntry`. Only what a person reads drops a 0: the Rounding row of a
+   page, an email and the admin's order detail. A non-zero row is shown wherever it exists,
+   even while shipping or tax is uncalculated: the total shown is already rounded, so the row
+   is what makes the rows add up to it.
+4. **The rounded total is the charged total.** The payment intent asks for it, settlement
+   compares the payment with it, and revenue reports sum it. Pages, emails and the admin's
+   order detail show a "Rounding" row, signed (`−KWD 0.004`), only when it is non-zero.
+5. **Refunds are multiples of the increment**, or the whole remaining amount (an order placed
+   before this change may hold any remainder — on a non-Stripe gateway; Stripe never took one).
+   The domain's `refundOrder` refuses anything else with `AMOUNT_NOT_PAYMENT_INCREMENT` before
+   reserving, so every caller gets the same answer; an amount over the remainder is still the
+   ceiling's refusal. The React refund form checks the same rule first. The Stripe adapter also
+   refuses, before any network call, an intent (`unsupported_amount`) or refund (`TERMINAL`)
+   whose amount is not a multiple of 10 in Stripe's three-decimal set. It never rounds.
+   An exact total of 1–4 fils rounds to 0 and takes the existing zero-total path.
+6. **The "not yet payable" machinery is removed**: `isCheckoutPayableCurrency`,
+   `StoreCurrencyNotPayableError`, `checkoutPaymentWarning` and its label helpers. No listed
+   currency is unpayable now. A future currency with a payment rule gets an increment, not a
+   refusal. TND, which Stripe also takes in steps of 10, is not in the table and keeps its
+   unlisted-code refusal.

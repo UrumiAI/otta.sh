@@ -1230,14 +1230,14 @@ describe("Settings: store currency", () => {
 		]);
 		const rest = options.slice(10).map((o) => o.value);
 		expect(rest).toEqual(rest.toSorted());
-		// Every table currency checkout can take payment in — the three-decimal
-		// ones can't be chosen as the store currency, so they are not offered.
-		expect(options).toHaveLength(45);
+		// Every table currency — the three-decimal ones included, since checkout
+		// rounds their total to the payment increment (ADR-0033 amendment).
+		expect(options).toHaveLength(49);
 		for (const code of ["BHD", "JOD", "KWD", "OMR"]) {
 			expect(
 				options.some((o) => o.value === code),
 				code,
-			).toBe(false);
+			).toBe(true);
 		}
 		expect(options[0]).toEqual({ value: "USD", label: "USD — US Dollar" });
 		const copy = contextTexts(blocks).join(" ");
@@ -1336,7 +1336,7 @@ describe("Settings: store currency", () => {
 		expect(await storedDoc()).toEqual(before);
 	});
 
-	test("a currency checkout can't take payment in is refused as the store currency, and nothing is written", async () => {
+	test("a three-decimal currency (KWD, BHD) can be the store currency — checkout rounds its total (ADR-0033 amendment)", async () => {
 		await resetOperationalSettings();
 		sandbox = await loadPluginInSandbox({ allowedHosts: [], storage: true });
 		for (const code of ["KWD", "BHD"]) {
@@ -1344,20 +1344,15 @@ describe("Settings: store currency", () => {
 				type: "form_submit",
 				action_id: "save-store-currency",
 				values: { currency: code },
-				idempotencyKey: `k-sc-unpayable-${code}`,
+				idempotencyKey: `k-sc-three-decimal-${code}`,
 			});
-			const blocks = blocksOf(outcome);
-			assertBlockContract(blocks, { screen: "settings", level: "list" });
-			const banner = findBlocks(blocks, "banner").find((b) => b.variant === "error");
-			expect(String(banner?.title), code).toBe("Store currency not saved");
-			expect(String(banner?.description), code).toBe(
-				`${code} can't be the store currency yet — payments in ${code} aren't supported at checkout. Nothing was changed.`,
-			);
+			assertBlockContract(blocksOf(outcome), { screen: "settings", level: "list" });
+			expect(toastOf(outcome), code).toEqual({ message: "Store currency saved", type: "success" });
+			expect((await storedDoc())?.["currency"], code).toBe(code);
 		}
-		expect(await storedDoc()).toBeNull();
 	});
 
-	test("a saved code that can no longer be chosen is still shown (with its warning) and can be saved unchanged", async () => {
+	test("a saved three-decimal code is shown, every three-decimal code is offered, and it saves unchanged", async () => {
 		await resetOperationalSettings();
 		const { storage } = await storageBridge();
 		// Written straight to the store (no use-case), as data saved before a rule changed.
@@ -1370,11 +1365,14 @@ describe("Settings: store currency", () => {
 		const select = field(formFor(loaded, "save-store-currency"), "currency");
 		expect(select?.initial_value).toBe("KWD");
 		const options = select?.options as Array<{ value: string; label: string }>;
-		// The shared label carries #438's one checkout warning, as the pricing picker does.
-		expect(options.find((o) => o.value === "KWD")?.label).toBe(
-			"KWD — Kuwaiti Dinar (not yet payable at checkout)",
-		);
-		expect(options.some((o) => o.value === "BHD")).toBe(false);
+		// The shared label, as the pricing picker shows it — no checkout warning now.
+		expect(options.find((o) => o.value === "KWD")?.label).toBe("KWD — Kuwaiti Dinar");
+		for (const code of ["BHD", "JOD", "OMR"]) {
+			expect(
+				options.some((o) => o.value === code),
+				code,
+			).toBe(true);
+		}
 		const before = await storedDoc();
 		const outcome = await sandbox.invokeRoute("admin", {
 			type: "form_submit",

@@ -1119,8 +1119,10 @@ describe("admin Coupons console — list level (workerd sandbox)", () => {
 				},
 			}),
 		);
-		// Priceable, not yet chargeable through Stripe: the merchant is told now.
-		expect(String(bannerOf(created)?.description)).toMatch(/not yet payable at checkout/);
+		// Payable at checkout now (ADR-0033 amendment): the plain created notice.
+		expect(String(bannerOf(created)?.description)).toBe(
+			'"KWD1" was added and is live per its validity window.',
+		);
 		const kwd = await stored("qa-kwd");
 		expect(kwd?.amountCents).toBe(1234);
 		expect(kwd?.currency).toBe("KWD");
@@ -1905,7 +1907,7 @@ describe("admin Coupons console — detail/edit leaf (workerd sandbox)", () => {
 		});
 	});
 
-	test("binding a THREE-decimal currency on EDIT shows the same 'not yet payable at checkout' warning a create does", async () => {
+	test("binding a THREE-decimal currency on EDIT saves with the plain notice a create gives", async () => {
 		const state = makeCouponsState();
 		const summer = state.coupons.find((c) => c.id === "c-summer");
 		if (summer === undefined) throw new Error("fixture moved");
@@ -1919,7 +1921,9 @@ describe("admin Coupons console — detail/edit leaf (workerd sandbox)", () => {
 			currency: "KWD",
 		});
 		expect(bannerOf(saved)?.variant).toBe("default");
-		expect(String(bannerOf(saved)?.description)).toMatch(/not yet payable at checkout/);
+		expect(String(bannerOf(saved)?.description)).toBe(
+			"Every field was replaced with the submitted values (last write wins). Orders already placed keep their snapshotted discount.",
+		);
 		expect(await stored("c-summer")).toMatchObject({ capCents: 1500, currency: "KWD" });
 	});
 

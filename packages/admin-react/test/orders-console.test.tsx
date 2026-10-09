@@ -57,6 +57,7 @@ const {
 	RETRY_LABEL,
 	formatAmount,
 	reconciliationAlertSentence,
+	refundIncrementText,
 	refundTooHighInline,
 	refundsGroupLabel,
 } = await import("@otta-sh/admin-presentation");
@@ -703,6 +704,28 @@ describe("each refund refusal names the field it is about", () => {
 		expect(check.refusal.message).toBe(
 			refundTooHighInline(formatAmount(9999, "USD"), formatAmount(4500, "USD")),
 		);
+	});
+
+	test("a three-decimal refund not in steps of 0.010 is about the amount — unless it is the whole remainder (ADR-0033 amendment)", () => {
+		const check = checkRefundInput("1.234", "ops", 5000, "KWD");
+		expect(check.ok).toBe(false);
+		if (check.ok) return;
+		expect(check.refusal.field).toBe("amount");
+		expect(check.refusal.message).toBe(refundIncrementText("KWD"));
+		expect(check.refusal.message).toMatch(/steps of 0\.010/);
+		expect(checkRefundInput("1.230", "ops", 5000, "KWD")).toEqual({ ok: true, amountCents: 1230 });
+		// Over the remainder AND off-step: "too high" comes first (the more useful answer).
+		const over = checkRefundInput("99.999", "ops", 5000, "KWD");
+		expect(over.ok).toBe(false);
+		if (!over.ok) {
+			expect(over.refusal.message).toBe(
+				refundTooHighInline(formatAmount(99999, "KWD"), formatAmount(5000, "KWD")),
+			);
+		}
+		// An older order's odd remainder can still be refunded whole.
+		expect(checkRefundInput("1.234", "ops", 1234, "KWD")).toEqual({ ok: true, amountCents: 1234 });
+		// Every other currency: any minor-unit amount, as before.
+		expect(checkRefundInput("0.01", "ops", 4500, "USD")).toEqual({ ok: true, amountCents: 1 });
 	});
 
 	test("a blank `refunded by` is not refused — the server records the signed-in operator (QA round 2)", () => {

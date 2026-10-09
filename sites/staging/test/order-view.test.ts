@@ -63,6 +63,35 @@ describe("orderSumRows — the totals rows, by the order page's own rule", () =>
 		expect(byLabel.get("Discount")?.fallback).toBe("No coupon applied");
 	});
 
+	test("a rounded KWD order adds a signed Rounding row after the tax; a USD order does not (ADR-0033 amendment)", () => {
+		const flags = {
+			locale: "en",
+			...orderTotalsFlags({ shippingZoneId: "z1", shippingMethodId: "m1" }),
+		};
+		const kwd = orderSumRows(
+			buildCheckoutTotals(
+				{
+					...BREAKDOWN,
+					currency: "KWD",
+					subtotalCents: 1234,
+					totalCents: 1230,
+					roundingCents: -4,
+				},
+				flags,
+			),
+		);
+		expect(kwd.map((row) => row.label)).toEqual([
+			"Subtotal",
+			"Discount",
+			"Shipping",
+			"Tax",
+			"Rounding",
+		]);
+		expect(kwd.at(-1)?.amount.label).toMatch(/^−.*0\.004/);
+		const usd = orderSumRows(buildCheckoutTotals({ ...BREAKDOWN }, flags));
+		expect(usd.map((row) => row.label)).toEqual(["Subtotal", "Discount", "Shipping", "Tax"]);
+	});
+
 	test("a priced method and zone print their real figures, even a zero", () => {
 		const totals = buildCheckoutTotals(
 			{ ...BREAKDOWN },
