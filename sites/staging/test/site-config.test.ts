@@ -286,11 +286,7 @@ describe("ottaPluginDescriptor allowedHosts, EXACTLY", () => {
 				extraAllowedHosts: ["Api.Example.org", "b.example.net"],
 			},
 		}).allowedHosts;
-		expect(hosts).toEqual([
-			...BASELINE_HOSTS,
-			"api.example.org",
-			"b.example.net",
-		]);
+		expect(hosts).toEqual([...BASELINE_HOSTS, "api.example.org", "b.example.net"]);
 	});
 
 	test("an invalid extra grants nothing (fail-closed, never throws)", () => {

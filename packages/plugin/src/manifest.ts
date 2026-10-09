@@ -126,7 +126,6 @@ export function parseExtraAllowedHosts(raw: string | readonly string[] | undefin
 	}
 	return [...out];
 }
-}
 
 /**
  * The plugin's egress allowlist — the host's `ctx.http.fetch` rejects any host

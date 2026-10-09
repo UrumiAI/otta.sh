@@ -83,12 +83,7 @@ describe("extraAllowedHosts (OTTA_EXTRA_ALLOWED_HOSTS)", () => {
 			resolveAllowedHosts({
 				extraAllowedHosts: "b.example.org, A.Example.com ,c-d.example.net",
 			}),
-		).toEqual([
-			"api.stripe.com",
-			"b.example.org",
-			"a.example.com",
-			"c-d.example.net",
-		]);
+		).toEqual(["api.stripe.com", "b.example.org", "a.example.com", "c-d.example.net"]);
 	});
 
 	test("accepts an array, trims, lowercases, drops empty entries", () => {
