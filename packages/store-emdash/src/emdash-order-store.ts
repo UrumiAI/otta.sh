@@ -1462,13 +1462,14 @@ export class EmdashOrderStore implements OrderStore {
 			total += term.sign * (await this.#orders.count(term.where));
 		}
 		if (search === undefined) return total;
+		const idArm = idArmOf(search);
 		for (const doc of await this.#ordersMatchingSku(
 			search,
 			filter,
 			null,
 			Number.POSITIVE_INFINITY,
 		)) {
-			if (!matchesSearchArms(doc, search)) total++;
+			if (!matchesSearchArms(doc, search, idArm)) total++;
 		}
 		return total;
 	}
@@ -2875,11 +2876,8 @@ function orderListDimensions(filter: OrderListFilter, search: string | undefined
 }
 
 /** True when a document satisfies either INDEXED search arm — the sku arm's overlap test. */
-function matchesSearchArms(doc: OrderDoc, search: string): boolean {
-	return (
-		(doc.searchKey ?? "").startsWith(idArmOf(search)) ||
-		(doc.buyerRefLower ?? "").startsWith(search)
-	);
+function matchesSearchArms(doc: OrderDoc, search: string, idArm: string): boolean {
+	return (doc.searchKey ?? "").startsWith(idArm) || (doc.buyerRefLower ?? "").startsWith(search);
 }
 
 /**
