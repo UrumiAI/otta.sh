@@ -104,7 +104,6 @@ import {
 	orderHasEmailRecipient,
 	orderId as toOrderId,
 	orderNumber,
-	orderNumberIdPrefix,
 	recordFulfillment as recordFulfillmentUseCase,
 	refundOrder as refundOrderUseCase,
 	resolveReconciliation as resolveReconciliationUseCase,
@@ -975,13 +974,6 @@ export class InProcessAdminOrdersClient implements AdminOrdersSurface {
 			nextCursor:
 				result.nextCursor === null ? null : encodeOrderCursor(result.nextCursor, filter, limit),
 			total,
-			// From the filter these rows were ACTUALLY read with (a cursor's own, when
-			// one was honoured), and only when a returned row matched BY ID PREFIX — a
-			// sku or email search that merely looks like hex ("10001") gets no
-			// shared-number hint (ADR-0033).
-			...(searchedByNumber(filter.search, result.orders)
-				? { searchedByNumber: true as const }
-				: {}),
 		};
 	}
 }
@@ -1257,8 +1249,10 @@ function toDomainFilter(filter: OrdersListFilter): OrderListFilter {
 		out.from = requireInstant("from", filter.from);
 	}
 	if (filter.to !== undefined && filter.to.length > 0) out.to = requireInstant("to", filter.to);
-	if (filter.search !== undefined && filter.search.length > 0) {
-		out.search = requireBoundedText("search", filter.search, 1, 200);
+	// Trimmed ONCE, here, so every arm — id, buyer, sku — sees the same text.
+	const search = filter.search?.trim();
+	if (search !== undefined && search.length > 0) {
+		out.search = requireBoundedText("search", search, 1, 200);
 	}
 	return out;
 }
@@ -1504,11 +1498,4 @@ function fromBase64Url(token: string): Uint8Array {
 	const out = new Uint8Array(bin.length);
 	for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
 	return out;
-}
-
-/** Was the search an order number that at least one of these rows matched by id
- *  prefix (ADR-0033)? */
-function searchedByNumber(search: string | undefined, rows: readonly OrderSummary[]): boolean {
-	const prefix = search === undefined ? null : orderNumberIdPrefix(search);
-	return prefix !== null && rows.some((row) => row.id.toLowerCase().startsWith(prefix));
 }

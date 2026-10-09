@@ -37,7 +37,9 @@ function hexOf(id: string): string {
  * Every order on a page, paired with its identity cell. A number no other row
  * shares prints as sent. Rows that share one extend it, upper-cased, to their
  * shortest prefix that is unique WITHIN THAT GROUP, with the id's `-` removed — so
- * the cell is hex only and the admin search accepts it as a number.
+ * the cell is hex only and — for UUID ids — the admin search accepts it as a number
+ * (a non-UUID id, such as a test's `ord-10`, still gets a distinct cell, but its
+ * hyphen-free extension is not guaranteed to search back).
  */
 export function withOrderNumberCells<
 	O extends { readonly id: string; readonly orderNumber?: string | undefined },

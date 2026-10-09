@@ -199,9 +199,6 @@ export interface ConsoleListPayload {
 	 * rows one page from where it meant to be — the safe direction.
 	 */
 	readonly cursorRejected?: true;
-	/** The search was typed as an order number (`orderNumberIdPrefix`, ADR-0033):
-	 *  the console shows that numbers can be shared. ABSENT otherwise. */
-	readonly searchedByNumber?: true;
 	readonly vocabulary: ConsoleVocabulary;
 }
 
@@ -320,9 +317,6 @@ async function consoleList(
 		ok: true,
 		orders: page.orders,
 		nextCursor: page.nextCursor,
-		// ADR-0033: forwarded from the client, which read it off the filter these
-		// rows were found by (a cursor's own, when one was honoured).
-		...(page.searchedByNumber === true ? { searchedByNumber: true as const } : {}),
 		...(page.total !== undefined ? { total: page.total } : {}),
 		// FORWARDED, NEVER RE-DERIVED: only the client can see the service's own
 		// refusal code, and only it knows whether the rows below came from the

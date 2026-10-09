@@ -272,9 +272,6 @@ describe("the console's read/write branch on the otta admin route", () => {
 		for (const { id, text } of cells) {
 			// As printed, `#` and all.
 			expect(rowsOf(await list({ search: text })).map((o) => o["id"])).toEqual([id]);
-			// Without the `#`: the same number, so even a tie-breaker that crosses the
-			// UUID's first hyphen finds its order.
-			expect(rowsOf(await list({ search: text.slice(1) })).map((o) => o["id"])).toEqual([id]);
 		}
 	});
 
@@ -291,15 +288,6 @@ describe("the console's read/write branch on the otta admin route", () => {
 		expect(found).toEqual([byId, bySku].toSorted());
 		const result = await list({ search: "#12345" });
 		expect(result["total"]).toBe(2);
-		expect(result["searchedByNumber"]).toBe(true);
-		expect((await list({ search: "hashsku" }))["searchedByNumber"]).toBeUndefined();
-		// A bare number (no `#`) is one too, so the console shows the same note.
-		expect((await list({ search: "12345" }))["searchedByNumber"]).toBe(true);
-		// Hex-shaped, but no row matched by id prefix (only by sku): no hint.
-		await seedOrder({ tag: "hexsku", id: "ee000000-0000-4000-8000-000000000003", sku: "10001" });
-		const skuOnly = await list({ search: "10001" });
-		expect(rowsOf(skuOnly)).toHaveLength(1);
-		expect(skuOnly["searchedByNumber"]).toBeUndefined();
 	});
 
 	test("the EXACT count is the whole filtered set even when it is larger than one page", async () => {

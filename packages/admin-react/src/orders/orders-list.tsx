@@ -211,8 +211,6 @@ export interface OrdersResponse {
 	readonly nextCursor: string | null;
 	/** INC-23's exact filtered-set count, when the service reports one. */
 	readonly total: number | undefined;
-	/** The search was an order number (the server's `searchedByNumber`, ADR-0033). */
-	readonly searchedByNumber?: boolean;
 	readonly vocabulary: Vocabulary;
 }
 
@@ -769,7 +767,6 @@ export function OrdersList({
 							orders: result.orders,
 							nextCursor: result.nextCursor,
 							total: result.total,
-							searchedByNumber: result.searchedByNumber === true,
 							vocabulary: result.vocabulary,
 						},
 						nextCursor: result.nextCursor,
@@ -973,7 +970,6 @@ export function OrdersList({
 						orders: result.orders,
 						nextCursor: result.nextCursor,
 						total: result.total,
-						searchedByNumber: result.searchedByNumber === true,
 						vocabulary: result.vocabulary,
 					},
 					arrival,
@@ -1037,10 +1033,6 @@ export function OrdersList({
 	// rows read the same and every cell is itself a number the search accepts.
 	// Computed over EXACTLY the rows rendered (§1.3), deterministic in the set.
 	const numberedRows = React.useMemo(() => withOrderNumberCells(orders), [orders]);
-	// An order number is a label, not a key, and five characters can be shared
-	// (ADR-0033). When the server read the search as one, say so before the
-	// operator acts on the first row.
-	const searchedByNumber = page?.searchedByNumber === true;
 	const vocabulary = page?.vocabulary;
 	const statusAny = vocabulary?.statusAny ?? "any";
 	const periodLabel =
@@ -1615,16 +1607,6 @@ export function OrdersList({
 				</p>
 			)}
 
-			{outcome.kind === "rows" && answerVisible && searchedByNumber && (
-				<p
-					data-testid="orders-number-shared-note"
-					role="note"
-					style={{ fontSize: 13, marginBlockEnd: 12 }}
-				>
-					{ORDER_NUMBER_SHARED_NOTE}
-				</p>
-			)}
-
 			{outcome.kind === "rows" && answerVisible && (
 				<Table
 					testId="orders-table"
@@ -1871,7 +1853,3 @@ export function OrdersList({
 		</div>
 	);
 }
-
-/** Shown above the rows whenever the search was an order number (ADR-0033). */
-export const ORDER_NUMBER_SHARED_NOTE =
-	"Order numbers can be shared. Confirm the buyer, date and total.";

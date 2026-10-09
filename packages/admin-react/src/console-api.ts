@@ -264,8 +264,6 @@ export interface ListPayload {
 	readonly ok: true;
 	readonly orders: readonly OrderSummary[];
 	readonly nextCursor: string | null;
-	/** The search was an order number (ADR-0033); absent otherwise. */
-	readonly searchedByNumber?: true;
 	/** The service's exact count of the filtered set (INC-23). Optional because
 	 *  a service older than the field omits it, and `formatAmount`'s rule
 	 *  applies to counts too: absent is not zero. */

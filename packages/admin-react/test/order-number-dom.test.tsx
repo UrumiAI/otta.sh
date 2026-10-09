@@ -21,7 +21,7 @@ vi.mock("emdash/plugin-utils", async (importOriginal) => {
 	return { ...actual, apiFetch };
 });
 
-const { OrdersList, ORDER_NUMBER_SHARED_NOTE } = await import("../src/orders/orders-list.js");
+const { OrdersList } = await import("../src/orders/orders-list.js");
 const { OrderDetail } = await import("../src/orders/order-detail.js");
 type DetailPayload = import("../src/console-api.js").DetailPayload;
 
@@ -198,29 +198,6 @@ test("the identity column is headed Order, not a second #", async () => {
 	const headers = [...container.querySelectorAll("th")].map((th) => th.textContent?.trim());
 	expect(headers).toContain("Order");
 	expect(headers).not.toContain("Order #");
-});
-
-test("the note shows whenever the server read the search as an order number — and only then", async () => {
-	for (const searchedByNumber of [true, false]) {
-		await mounted?.unmount();
-		mounted = null;
-		respond({
-			ok: true,
-			orders: [row(TWIN_A, "#FEE1D")],
-			nextCursor: null,
-			total: 1,
-			...(searchedByNumber ? { searchedByNumber: true } : {}),
-			vocabulary: VOCABULARY,
-		});
-		const node = <OrdersList onOpen={() => undefined} initialFilter={{ search: "#FEE1D" }} />;
-		mounted = await mount(node);
-		await mounted.rerender(node);
-		const note = mounted.container.querySelector('[data-testid="orders-number-shared-note"]');
-		expect(note?.textContent ?? null).toBe(searchedByNumber ? ORDER_NUMBER_SHARED_NOTE : null);
-	}
-	expect(ORDER_NUMBER_SHARED_NOTE).toBe(
-		"Order numbers can be shared. Confirm the buyer, date and total.",
-	);
 });
 
 test("version skew: a row or detail from a server older than the field still shows its number", async () => {
