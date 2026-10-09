@@ -1044,6 +1044,23 @@
 	overflow-wrap: anywhere;
 }
 
+/* The name cell stacks the products over the order's short number (ADR-0033):
+   the number is a code, so the data face, and muted — it identifies, the
+   title names. */
+[data-theme-id] .account-orders-name-cell {
+	display: flex;
+	flex-direction: column;
+	/* Start, not the default stretch: the link stays as wide as its text, the
+	   click target it always had. */
+	align-items: flex-start;
+	gap: 0.125rem;
+	min-width: 0;
+}
+[data-theme-id] .account-orders-number {
+	color: var(--u-mute);
+	font-size: 0.8125rem;
+}
+
 [data-theme-id] .account-orders-state,
 [data-theme-id] .account-orders-date,
 [data-theme-id] .account-orders-items {

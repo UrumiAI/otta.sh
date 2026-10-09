@@ -41,9 +41,8 @@ export interface EmailRecipientContractOptions {
 
 const USD = currency("USD");
 
-/** An x402 gate buyer's reference (ADR-0028 Decision 7): the payer wallet, not an
- *  email address. */
-const X402_BUYER_REF = "x402:0x1111111111111111111111111111111111111111";
+/** A hand-seeded buyer reference without `@`, not an email address. */
+const WALLET_BUYER_REF = "wallet:0x1111111111111111111111111111111111111111";
 
 function orderInput(id: string, overrides: Partial<CreateOrderInput> = {}): CreateOrderInput {
 	return {
@@ -52,8 +51,8 @@ function orderInput(id: string, overrides: Partial<CreateOrderInput> = {}): Crea
 		currency: USD,
 		idempotencyKey: idempotencyKey(`key-${id}`),
 		holdExpiresAt: "2099-01-01T00:00:00.000Z",
-		buyerRef: X402_BUYER_REF,
-		paymentMethod: "x402",
+		buyerRef: WALLET_BUYER_REF,
+		paymentMethod: "stripe",
 		lines: [
 			{
 				productId: productId(`p-${id}`),
@@ -119,14 +118,12 @@ function claimWindow(h: EmailRecipientHarness): { now: string; lease: string } {
 const LATER = "2099-01-01T00:00:00.000Z";
 
 /**
- * Every order email that can fire for an x402 gate order, and how the order gets
- * there. ADR-0028 Decision 7 lists eight; `order-shipped` and `order-delivered` are
- * reachable too (an operator may move a paid order through processing → shipped →
- * delivered — `adminNextStates` offers each step), so they are listed as well. The
- * only order template missing is none: this is every `EmailTemplate` but
- * `customer-login-link`, which is not an order email.
+ * Every order email that can fire for an order with no email recipient, and how
+ * the order gets there. This is every `EmailTemplate` but `customer-login-link`,
+ * which is not an order email (an operator may move a paid order through
+ * processing → shipped → delivered — `adminNextStates` offers each step).
  */
-const X402_REACHABLE_TEMPLATES: readonly {
+const NO_RECIPIENT_TEMPLATES: readonly {
 	template: EmailTemplate;
 	path: readonly OrderState[];
 	notice?: OrderNotice;
@@ -140,18 +137,18 @@ const X402_REACHABLE_TEMPLATES: readonly {
 	{ template: "order-expired", path: ["expired"] },
 	{ template: "order-refunded", path: ["paid", "refunded"] },
 	// ADR-0026's notice for a refund announced on its own (a manual refund recorded
-	// in Money → Refunds, which is how an x402 refund is recorded).
+	// in Money → Refunds).
 	{ template: "order-refund-issued", path: ["paid"], notice: "refund-issued" },
-	// ADR-0022's notice. Unreachable for x402, which cannot refund automatically, but
-	// covered: the decision is the recipient's, never the template's.
+	// ADR-0022's notice: covered too — the decision is the recipient's, never the
+	// template's.
 	{ template: "order-late-payment-refunded", path: ["expired"], notice: "late-payment-refunded" },
 ];
 
 /**
  * "The order's email recipient, or none" (ADR-0028 Decision 7, increment 4).
  *
- * An order whose `buyerRef` is not an email address — an x402 gate buyer's
- * `x402:0x…` wallet reference — has no email recipient, and no email is ever sent
+ * An order whose `buyerRef` is not an email address — a hand-seeded or legacy buyerRef without `@` — has
+ * no email recipient, and no email is ever sent
  * for it. The decision is made in ONE place, the drain's recipient resolution, so it
  * covers every row the outbox can hold. Such a row is completed as SKIPPED: its own
  * terminal outcome, never recorded as sent (ADR-0026 — a write reports whether its
@@ -165,12 +162,12 @@ export function emailRecipientContract(
 	opts: EmailRecipientContractOptions,
 ): void {
 	describe(`emailRecipientContract [${opts.dialect}]`, () => {
-		// -- one case per template that can fire for an x402 order ----------------
+		// -- one case per template that can fire for an order with no recipient ----------------
 
-		for (const { template, path, notice } of X402_REACHABLE_TEMPLATES) {
+		for (const { template, path, notice } of NO_RECIPIENT_TEMPLATES) {
 			test(`${template} is skipped, never sent, for an order with no email recipient`, async () => {
 				const h = await makeHarness();
-				const id = await seed(h, "ord-x402");
+				const id = await seed(h, "ord-wallet");
 				await driveTo(h, id, path);
 				if (notice !== undefined) {
 					expect(
@@ -195,7 +192,7 @@ export function emailRecipientContract(
 			});
 		}
 
-		test("any buyerRef that is not an email address yields no recipient, not only an x402 one", async () => {
+		test("any buyerRef that is not an email address yields no recipient, not only a wallet one", async () => {
 			const h = await makeHarness();
 			const id = await seed(h, "ord-no-at", { buyerRef: "wallet-without-an-at-sign" });
 			await driveTo(h, id, ["paid"]);
@@ -313,12 +310,12 @@ export function emailRecipientContract(
 
 		test("the drain reports a skipped row through onSkipped — never onSent — and does not count it", async () => {
 			const h = await makeHarness();
-			const x402 = await seed(h, "ord-x402");
+			const wallet = await seed(h, "ord-wallet");
 			const card = await seed(h, "ord-card", {
 				buyerRef: "buyer@example.com",
 				paymentMethod: "stripe",
 			});
-			await driveTo(h, x402, ["paid"]);
+			await driveTo(h, wallet, ["paid"]);
 			await driveTo(h, card, ["paid"]);
 
 			const skipped: OutboxEmail[] = [];
@@ -330,8 +327,8 @@ export function emailRecipientContract(
 				onSkipped: (row: OutboxEmail) => skipped.push(row),
 				onSent: (row: OutboxEmail) => sent.push(row),
 			};
-			expect(await dispatchOrderEmailsForOrder(deps, x402, options)).toBe(0);
-			expect(skipped.map((r) => [r.orderId, r.toState])).toEqual([[x402, "paid"]]);
+			expect(await dispatchOrderEmailsForOrder(deps, wallet, options)).toBe(0);
+			expect(skipped.map((r) => [r.orderId, r.toState])).toEqual([[wallet, "paid"]]);
 			expect(sent).toEqual([]);
 
 			expect(await dispatchOrderEmailsForOrder(deps, card, options)).toBe(1);

@@ -123,7 +123,11 @@ describe.skipIf(!PG_ENABLED)("tax-rate updateRate CAS race [postgres]", () => {
 
 				const results = await Promise.all(
 					Array.from({ length: N }, (_unused, i) =>
-						store.updateRate(id, { rateBps: 800 + i, appliesToShipping: false }, 725),
+						store.updateRate(
+							id,
+							{ rateBps: 800 + i, appliesToShipping: false },
+							{ rateBps: 725, appliesToShipping: false },
+						),
 					),
 				);
 
@@ -245,7 +249,11 @@ describe.skipIf(!PG_ENABLED)("rules CAS race: a retried loser re-verifies [postg
 				});
 
 				const edits = Array.from({ length: N }, (_unused, i) =>
-					store.updateRate(id, { rateBps: 900 + i, appliesToShipping: false }, 725),
+					store.updateRate(
+						id,
+						{ rateBps: 900 + i, appliesToShipping: false },
+						{ rateBps: 725, appliesToShipping: false },
+					),
 				);
 				// The contention that is NOT about money: same document, no rate touched.
 				const renames = Array.from({ length: N }, (_unused, i) =>
@@ -274,3 +282,231 @@ describe.skipIf(!PG_ENABLED)("rules CAS race: a retried loser re-verifies [postg
 		}
 	}, 180_000);
 });
+
+/**
+ * One rate per (class, zone), under a real race: N admins each create a rate —
+ * every one with its OWN id — for the same class and zone at once. All of them
+ * read the class document at the same revision and find the slot empty, so the
+ * slot check alone would let every one through; it is the embed's compare-and-set
+ * on that one document that admits exactly one, and each loser's retry re-reads,
+ * finds the winner, and is refused as a duplicate. A refused id resolves to nothing.
+ */
+describe.skipIf(!PG_ENABLED)("tax-rate createRate one-per-(class, zone) race [postgres]", () => {
+	test("N concurrent creates for one slot: exactly ONE lands, N-1 are duplicates", async () => {
+		const fx = await freshTax(N + 4);
+		try {
+			const store = fx.harness.store;
+			await store.createClass({ id: "standard", name: "Standard" });
+
+			for (let loop = 0; loop < LOOPS; loop++) {
+				const ids = Array.from({ length: N }, (_unused, i) => `l${String(loop)}-r${String(i)}`);
+				const settled = await Promise.allSettled(
+					ids.map((id, i) =>
+						store.createRate({
+							id,
+							taxClassId: "standard",
+							zoneId: "z-us",
+							rateBps: 700 + i,
+							appliesToShipping: false,
+						}),
+					),
+				);
+
+				const won = settled.flatMap((r) => (r.status === "fulfilled" ? [r.value] : []));
+				expect(won, `loop ${String(loop)}: exactly one create lands`).toHaveLength(1);
+				const lost = settled.flatMap((r) => (r.status === "rejected" ? [r.reason] : []));
+				expect(lost, `loop ${String(loop)}: N-1 refusals`).toHaveLength(N - 1);
+				for (const reason of lost) {
+					expect(reason, `loop ${String(loop)}: refused as a duplicate`).toMatchObject({
+						code: "TAX_RATE_DUPLICATE",
+						existingRateId: won[0]?.id,
+					});
+				}
+
+				// The slot holds the winner and nothing else …
+				expect((await store.listRatesForZone("z-us")).map((r) => r.id)).toEqual([won[0]?.id]);
+				expect(await store.countRatesByClass("standard")).toBe(1);
+				// … and a refused id (its claim left as an orphan) resolves to nothing.
+				const refusedId = ids.find((candidate) => candidate !== won[0]?.id) ?? "";
+				expect(
+					await store.updateRate(
+						refusedId,
+						{ rateBps: 1, appliesToShipping: false },
+						{ rateBps: 700, appliesToShipping: false },
+					),
+					`loop ${String(loop)}: ${refusedId}`,
+				).toEqual({ ok: false, reason: "not_found" });
+				await store.deleteRate(won[0]?.id ?? "");
+			}
+			expect(fx.maxFor("createTaxRate")).toBeLessThanOrEqual(CAS_MAX_ATTEMPTS);
+			console.log(
+				`[rules-cas-race] tax createRate slot race: max CAS attempts ${String(
+					fx.maxFor("createTaxRate"),
+				)}`,
+			);
+		} finally {
+			await fx.close();
+		}
+	}, 180_000);
+});
+
+/**
+ * The two neighbours of the slot race. Concurrent creates for DIFFERENT zones of one
+ * class all write the same class document, so every one but the first loses its
+ * revision at least once — and must then succeed on retry, not be refused. And when
+ * the class has never been declared, the first embed is a create-if-absent of the
+ * class document itself: exactly one of a crowd for one slot may land there too.
+ */
+describe.skipIf(!PG_ENABLED)("tax-rate createRate: neighbouring races [postgres]", () => {
+	test("N concurrent creates for N DIFFERENT zones of one class all land", async () => {
+		const fx = await freshTax(N + 4);
+		try {
+			const store = fx.harness.store;
+			await store.createClass({ id: "standard", name: "Standard" });
+			for (let loop = 0; loop < LOOPS; loop++) {
+				const settled = await Promise.allSettled(
+					Array.from({ length: N }, (_unused, i) =>
+						store.createRate({
+							id: `l${String(loop)}-z${String(i)}`,
+							taxClassId: "standard",
+							zoneId: `z-${String(i)}`,
+							rateBps: 700 + i,
+							appliesToShipping: false,
+						}),
+					),
+				);
+				const rejected = settled.flatMap((r) => (r.status === "rejected" ? [r.reason] : []));
+				expect(rejected, `loop ${String(loop)}: no create refused`).toEqual([]);
+				expect(await store.countRatesByClass("standard")).toBe(N);
+				for (let i = 0; i < N; i++) await store.deleteRate(`l${String(loop)}-z${String(i)}`);
+			}
+			expect(fx.maxFor("createTaxRate")).toBeLessThanOrEqual(CAS_MAX_ATTEMPTS);
+			console.log(
+				`[rules-cas-race] tax createRate many-zones: max CAS attempts ${String(
+					fx.maxFor("createTaxRate"),
+				)}`,
+			);
+		} finally {
+			await fx.close();
+		}
+	}, 180_000);
+
+	test("N concurrent creates for one slot of an UNDECLARED class: exactly one lands", async () => {
+		const fx = await freshTax(N + 4);
+		try {
+			const store = fx.harness.store;
+			for (let loop = 0; loop < LOOPS; loop++) {
+				const classId = `undeclared-${String(loop)}`;
+				const settled = await Promise.allSettled(
+					Array.from({ length: N }, (_unused, i) =>
+						store.createRate({
+							id: `u${String(loop)}-r${String(i)}`,
+							taxClassId: classId,
+							zoneId: "z-us",
+							rateBps: 700 + i,
+							appliesToShipping: false,
+						}),
+					),
+				);
+				const won = settled.flatMap((r) => (r.status === "fulfilled" ? [r.value] : []));
+				expect(won, `loop ${String(loop)}: exactly one create lands`).toHaveLength(1);
+				for (const r of settled) {
+					if (r.status === "rejected") {
+						expect(r.reason).toMatchObject({
+							code: "TAX_RATE_DUPLICATE",
+							existingRateId: won[0]?.id,
+						});
+					}
+				}
+				expect(await store.countRatesByClass(classId)).toBe(1);
+				// Still undeclared: the document exists only to hold the rate.
+				expect((await store.listClasses()).map((c) => c.id)).not.toContain(classId);
+			}
+		} finally {
+			await fx.close();
+		}
+	}, 180_000);
+});
+
+/**
+ * The same-id twin of the slot race: a crowd creates ONE id, half into an occupied
+ * slot (refused as duplicates, which keep their claims) and half into free slots of the same class.
+ *
+ * What is guaranteed is the store's documented one (header: the claim is the fast
+ * path, not the definition of existence): a rate that landed is ALWAYS reachable by
+ * id — `updateRate` finds it, healing its claim if a peer's in-flight takeover left
+ * it claimless — and it landed exactly once. How often healing was needed is
+ * reported, not asserted: it is the pre-existing takeover window (a same-id create
+ * adopting a claim whose owner has re-asserted but not yet embedded).
+ */
+describe.skipIf(!PG_ENABLED)(
+	"tax-rate createRate: refused releases vs same-id creates [postgres]",
+	() => {
+		test("a landed rate is always reachable by id, and lands once", async () => {
+			const fx = await freshTax(N + 4);
+			let healed = 0;
+			try {
+				const store = fx.harness.store;
+				await store.createClass({ id: "standard", name: "Standard" });
+				await store.createRate({
+					id: "occupant",
+					taxClassId: "standard",
+					zoneId: "z-taken",
+					rateBps: 725,
+					appliesToShipping: false,
+				});
+				for (let loop = 0; loop < LOOPS; loop++) {
+					const id = `same-${String(loop)}`;
+					const settled = await Promise.allSettled(
+						Array.from({ length: N }, (_unused, i) =>
+							store.createRate({
+								id,
+								taxClassId: "standard",
+								zoneId: i % 2 === 0 ? "z-taken" : `z-free-${String(loop)}-${String(i)}`,
+								rateBps: 700 + i,
+								appliesToShipping: false,
+							}),
+						),
+					);
+					const won = settled.flatMap((r) => (r.status === "fulfilled" ? [r.value] : []));
+					for (const r of settled) {
+						if (r.status === "rejected") {
+							expect(["TAX_RATE_DUPLICATE", "TAX_RATE_ID_COLLISION"]).toContain(
+								(r.reason as { code?: unknown }).code,
+							);
+						}
+					}
+					expect(
+						won.length,
+						`loop ${String(loop)}: at most one create of one id lands`,
+					).toBeLessThanOrEqual(1);
+					const doc = await fx.harness.classes.get("standard");
+					const stored = doc?.rates[id];
+					if (won[0] === undefined) {
+						expect(stored, `loop ${String(loop)}: nothing landed`).toBeUndefined();
+						continue;
+					}
+					// The rate stored is the winner's — never overwritten by a later same-id create.
+					expect(stored).toMatchObject({ zoneId: won[0].zoneId, rateBps: won[0].rateBps });
+					if ((await fx.harness.rateOwners.get(id)) === null) healed++;
+					// Reachable by id (healing if needed), and its claim is then in place.
+					expect(
+						await store.updateRate(
+							id,
+							{ rateBps: won[0].rateBps, appliesToShipping: false },
+							{ rateBps: won[0].rateBps, appliesToShipping: false },
+						),
+						`loop ${String(loop)}: landed rate reachable`,
+					).toMatchObject({ ok: true });
+					expect(await fx.harness.rateOwners.get(id)).toMatchObject({ taxClassId: "standard" });
+					await store.deleteRate(id);
+				}
+				console.log(
+					`[rules-cas-race] same-id crowd: claims healed ${String(healed)}/${String(LOOPS)}`,
+				);
+			} finally {
+				await fx.close();
+			}
+		}, 180_000);
+	},
+);

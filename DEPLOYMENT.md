@@ -25,18 +25,16 @@ staging-only.
 > Workers deployment is coming soon.
 
 > **Status honesty.** The commerce layer is feature-complete: catalog, inventory, cart,
-> checkout, orders, customers with magic-link auth, Stripe payments (x402 planned), tax,
+> checkout, orders, customers with magic-link auth, Stripe payments, tax,
 > shipping, discounts, entitlements, reporting, and settings (the magic-link email needs an
 > EmDash email provider and a sign-in page URL, §3 Email). The reference **storefront** covers
 > catalog, cart and **card checkout**: `/checkout`, the Stripe pay page (`/checkout/pay`) and
 > the order confirmation page (`/orders/<orderId>`) are built (ADR-0012), and so are the
 > customer account pages (`/account/login`, `/account/verify`, `/account/orders`). Paid
 > digital downloads are built too (issue #376): the merchant attaches a file to a digital
-> product in the admin, and a buyer downloads it from the order page. One page surface is not
-> built yet: the x402 payment gate (issue #27). Deploying today gives you a browsable
+> product in the admin, and a buyer downloads it from the order page. Deploying today gives you a browsable
 > catalog, carts with real inventory holds, magic-link customer accounts, digital downloads,
-> and a Stripe card purchase end-to-end once Stripe is configured (§3). When #27 closes, this
-> banner shrinks to a version note.
+> and a Stripe card purchase end-to-end once Stripe is configured (§3).
 
 ## 1. Universal contracts
 
@@ -177,8 +175,7 @@ expired holds and queued emails drain at the Free pace (§5).
 4. **Build the site.** The Cloudflare adapter reads `wrangler.local.jsonc` at **build**
    time (`astro.config.ts` passes it as `configPath`), so the build, not the deploy, is
    where your Worker name, D1, and R2 config becomes real. Commerce runs in-process, so
-   there is no service URL to bake in; the optional x402 facilitator URL is read
-   here too (§4):
+   there is no service URL to bake in, and no egress URL either (§4):
 
    ```bash
    pnpm --filter @otta-sh/site-staging build
@@ -262,7 +259,7 @@ cannot be retried in place:
 > ([ADR-0020](./adr/0020-one-deployable-plugin-owns-commerce-truth.md)), and nothing the
 > Worker fetches today (§4) is on `workers.dev`. One consequence of running without it: a
 > fetch to a hostname on the site's **own zone** is routed to that zone's origin, not back
-> through Cloudflare, so never point `X402_FACILITATOR_URL` at the site's
+> through Cloudflare, so never add an egress host on the site's
 > own zone.
 >
 > D1 `session` in `sites/staging/src/emdash-options.ts` is **`"primary-first"`**: every
@@ -318,7 +315,6 @@ order of appearance in a deployment's life:
 | `OTTA_WH_TOKEN` | Worker secret **+** admin Settings (same value, both halves) | optional outer gate on the settle routes | with the Stripe webhook secret |
 | Stripe webhook signing secret | admin Settings (`settings:stripeWebhookSecret`) | for Stripe payments — **together with the secret key** (see below) | before enabling Stripe |
 | Stripe secret key | admin Settings (`settings:stripeSecretKey`) | for Stripe payments — **together with the webhook secret** (see below) | before enabling Stripe |
-| x402 pay-to + facilitator credential | admin Settings | for x402 | see the x402 box |
 | Email provider (from-address, SPF, DKIM, its own key) | an **EmDash email provider plugin**, selected in EmDash Settings > Email — not otta | optional | when wiring real email |
 
 - **`EMDASH_ENCRYPTION_KEY`** — generate with `npx emdash secrets generate`; never committed,
@@ -422,17 +418,6 @@ order of appearance in a deployment's life:
 > boundary, not an adapter tweak — the deny-list is `STRIPE_UNSUPPORTED_CURRENCIES` in
 > `packages/payments-stripe/src/index.ts`.
 
-> **x402 does not take payments yet.** The old receipt-forwarding settle route
-> (`entitlements/x402/settle`) is retired, and nothing settles an x402 payment until the
-> content gate in [ADR-0028](./adr/0028-x402-content-gate-verifies-and-settles-through-the-facilitator.md)
-> ships. The settings below still save, so a deployment can be configured ahead of it. The
-> facilitator credential is meant to go **on the wire** as `Authorization: Bearer …` to the
-> facilitator host, so provision a credential that was minted to be sent. The facilitator
-> host must be in the plugin's `allowedHosts` — it is seeded at **build** time from the
-> site's Astro config, not from `kv`, so changing facilitators is a rebuild, not a settings
-> edit. The pay-to address and the accepted-networks list (default `eip155:8453`) are
-> configuration, not credentials, and live alongside it in Settings.
-
 - **Email** — otta sends every email through the EmDash host's `ctx.email`
   ([ADR-0031](./adr/0031-email-through-emdash-host.md)). otta ships no email provider and
   holds no email credential: **install and select an EmDash email provider** — for example
@@ -491,16 +476,11 @@ allowlist (capability `network:request`). That allowlist is resolved at **build*
 | Host | When |
 |---|---|
 | `api.stripe.com` | always |
-| the x402 facilitator host | when a facilitator URL is configured |
 
 No email host: email is not plugin egress. It goes through the host's `ctx.email`
 (capability `email:send`, [ADR-0031](./adr/0031-email-through-emdash-host.md)), and the
-EmDash email provider makes its own requests under its own allowlist.
-
-The URL is `X402_FACILITATOR_URL`, read by `sites/staging/astro.config.ts` from
-`process.env`, falling back to `sites/staging/.env`. Set it in the shell or in
-`sites/staging/.env` **before** building (§2.1 step 4); unset, the facilitator is simply
-unconfigured and no host is granted for it.
+EmDash email provider makes its own requests under its own allowlist. No other host is
+deployment-supplied, so there is no egress URL to set at build time.
 
 Stripe traffic goes through the same gate: `@otta-sh/payments-stripe` would default its
 transport to `globalThis.fetch`, but the plugin constructs the live gateway with
@@ -509,12 +489,12 @@ so the allowlist is the perimeter for `api.stripe.com` too. This
 closes the caveat recorded in
 [ADR-0020](./adr/0020-one-deployable-plugin-owns-commerce-truth.md) §2.
 
-All of these are third-party hosts on the public internet. The Worker runs without
+It is a third-party host on the public internet. The Worker runs without
 `global_fetch_strictly_public` (§2.4), so a URL on the site's **own** Cloudflare zone would
 reach that zone's origin directly, skipping its Workers routes and security settings — keep
-both URLs off the site's zone.
+any egress host off the site's zone.
 
-Because it is build-time, adding a provider means a rebuild and redeploy — a Settings edit
+Because it is build-time, adding a host means a rebuild and redeploy — a Settings edit
 alone cannot widen it. That is deliberate: the allowlist is the perimeter, and an operator
 editing a text field should not be able to move it.
 
@@ -610,7 +590,7 @@ only a share of the tick, never less than one unit of its own work; a leg its sh
 gets a second go on whatever the other legs left. **No leg is starved**: a leg passed over for
 three ticks in a row with work goes to the head of the next tick (right behind
 `cancel-intents`), and one passed over for nine goes ahead of even that, once — on Free a hold
-expiry or a stock-commit completion does not fit behind an intent cancel at all. A tick that did work logs one
+expiry does not fit behind an intent cancel at all. A tick that did work logs one
 line naming what each leg spent:
 
 ```

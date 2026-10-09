@@ -108,8 +108,8 @@ describe("refundOrder revokes the order's entitlements on a FULL refund", () => 
 	});
 
 	test("a full MANUAL refund (a non-refundable gateway records it) revokes too", async () => {
-		const order = await paidDigital("o1", h.x402Gw);
-		const res = await refund(order, order.totals.total, "r1", h.x402Gw);
+		const order = await paidDigital("o1", h.manualGw);
+		const res = await refund(order, order.totals.total, "r1", h.manualGw);
 		expect(res.ok && res.fullyRefunded).toBe(true);
 		expect(await entitled(order.id)).toBe(false);
 	});

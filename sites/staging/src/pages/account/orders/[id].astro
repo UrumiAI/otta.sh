@@ -15,6 +15,7 @@ import {
 	ACCOUNT_ORDER_ROUTE,
 	buildCheckoutTotals,
 	orderLabel,
+	orderNumber,
 	orderTotalLabel,
 	orderTotalsFlags,
 	type AccountOrderResult,
@@ -117,6 +118,8 @@ if (order !== null) {
 	});
 	detail = {
 		label,
+		/* The short number its emails carry (ADR-0033), never the id. */
+		number: orderNumber(order.id),
 		state: accountOrderStatus(order, now),
 		stateNote: stamp?.body ?? null,
 		placed: orderPlacedAt(order.createdAt),

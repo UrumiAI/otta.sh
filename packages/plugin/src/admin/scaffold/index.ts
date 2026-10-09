@@ -41,9 +41,9 @@
  *     `clearFiltersButton`.
  *   - `Notice`/`noticeBanner(...)`/`failClosedResponse(...)` — consistent
  *     banner + fail-closed rendering.
- *   - `shortIdsFor(...)` / `shortIdFixed(...)` — the UUID display rule (D4): an
+ *   - `shortIdsFor(...)` — the UUID display rule (D4): an
  *     opaque id renders as a git-style shortest-unique prefix, never in full in
- *     a list row. Every screen showing a uuid uses these two, so the prefix an
+ *     a list row. Every screen showing a uuid uses it, so the prefix an
  *     operator learns on one surface means the same thing on the next.
  *   - `formatTimestamp(...)` / `formatDate(...)` / `formatDay(...)`, plus the
  *     day-bounds helpers (`dayOf`, `startOfDay`, `endOfDay`) — the console's ONE
@@ -127,4 +127,4 @@ export {
 	type ListCursor,
 	type NavPath,
 } from "./nav.js";
-export { shortIdFixed, shortIdsFor, SHORT_ID_CONFIRM_LEN, SHORT_ID_MIN } from "./short-id.js";
+export { shortIdsFor, SHORT_ID_MIN } from "./short-id.js";

@@ -264,7 +264,7 @@ function emailSentence(email: InlineEmailStatus | undefined): string {
 		case "unconfigured":
 			return " No email was sent — this store has no email provider set up.";
 		case "no-recipient":
-			// An x402 buyer (ADR-0028 Decision 7): a wallet, no address — and nothing queued.
+			// A buyerRef that is not an email address (a hand-seeded or legacy buyerRef without `@`) — and nothing queued.
 			return " No email was sent — this order has no email address.";
 		default:
 			return "";

@@ -21,7 +21,7 @@ const ACCEPTED: readonly [string, string][] = [
 ];
 
 const REFUSED: readonly [string, string][] = [
-	["an x402 wallet reference", "x402:0x1111111111111111111111111111111111111111"],
+	["a wallet reference", "wallet:0x1111111111111111111111111111111111111111"],
 	["no domain", "a@"],
 	["no local part", "@b"],
 	["two @", "a@b@c"],
@@ -47,12 +47,12 @@ describe("isEmailAddress", () => {
 });
 
 describe("orderHasEmailRecipient", () => {
-	test("a guest with an email buyerRef has one; a guest with an x402 ref has none", () => {
+	test("a guest with an email buyerRef has one; a guest with a wallet ref has none", () => {
 		expect(orderHasEmailRecipient({ customerId: null, buyerRef: "buyer@example.com" })).toBe(true);
 		expect(
 			orderHasEmailRecipient({
 				customerId: null,
-				buyerRef: "x402:0x1111111111111111111111111111111111111111",
+				buyerRef: "wallet:0x1111111111111111111111111111111111111111",
 			}),
 		).toBe(false);
 	});

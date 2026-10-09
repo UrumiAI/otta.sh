@@ -3,9 +3,9 @@
  * RE-EXPORTED from `@otta-sh/admin-presentation` since INC-20.
  *
  * WHY THIS ONE HAD TO MOVE, specifically. §1.3's guarantee is a relationship
- * BETWEEN surfaces: the prefix an operator reads in a list row must be a
- * `startsWith` prefix of the one the confirm dialog names, so `#7e4c` and
- * `#7e4ce728` are visibly the same order. INC-20 adds a React Orders screen
+ * BETWEEN surfaces: what an operator reads in a list row must line up with what
+ * the confirm dialog names (now the order number and a 12-hex-digit label,
+ * ADR-0033). INC-20 adds a React Orders screen
  * beside the Block Kit one, and the two render the same page of orders — a
  * second implementation of "shortest unique prefix, floored at 4" could give a
  * different answer for the same set and there would be no test able to catch
@@ -27,9 +27,4 @@
  * other reason should take the package import and drop the shim path; when the
  * last caller has, these files go.
  */
-export {
-	SHORT_ID_CONFIRM_LEN,
-	SHORT_ID_MIN,
-	shortIdFixed,
-	shortIdsFor,
-} from "@otta-sh/admin-presentation";
+export { SHORT_ID_MIN, shortIdsFor } from "@otta-sh/admin-presentation";

@@ -32,9 +32,9 @@ export interface QuoteInput {
  * The quote command for these lines (ADR-0028 Decision 1).
  *
  * ONE builder, so that the checkout review, the order `createOrderFromCart`
- * places, and the x402 gate's price are the same quote of the same lines: a
+ * places are the same quote of the same lines: a
  * field the pricing pipeline gains (a tax profile, say) is added here once and
- * reaches all three, rather than to one of three copies. A line's tax base is
+ * reaches both, rather than to one of two copies. A line's tax base is
  * its price × qty at its tax class (`"standard"` when the row names none), and
  * the order ships iff any line is physical (ADR-0021 Decision 5).
  *

@@ -43,6 +43,7 @@
  */
 import {
 	orderLabel,
+	orderNumber,
 	orderTotalLabel,
 	STOREFRONT_ORDER_ROUTE,
 	type OrderRouteResult,
@@ -312,6 +313,10 @@ const label =
 	order === null
 		? null
 		: orderLabel(order.lines.map((line) => ({ title: line.title, quantity: line.qty })));
+/** The order's short NUMBER ("#3F9A2") — the same `orderNumber` its emails and the
+ *  merchant's console print, so a shopper can quote it (ADR-0033). A display
+ *  label from the id's first characters; the id itself is never printed. */
+const number = order === null ? null : orderNumber(order.id);
 
 /**
  * The model. Everything the view prints is decided above — including the
@@ -323,6 +328,7 @@ const model: OrderModel = {
 	order,
 	stamp,
 	orderLabel: label,
+	orderNumber: number,
 	failureMessage: cartErrorMessage(outcome.failure ?? "SERVICE_UNAVAILABLE"),
 	/* The tracker never says Payment is completed on an order nobody paid. */
 	progress: state === null ? null : orderProgress(state),

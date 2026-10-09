@@ -54,30 +54,13 @@ export const STRIPE_API_HOST = "api.stripe.com";
 /**
  * The deployment-supplied half of the in-process allowlist.
  *
- * A URL, not a hostname. There is no default x402 facilitator (ADR-0028
- * Decision 8: the deployer picks it), so an absent value grants no host rather
- * than guessing one. (No email URL: email goes through `ctx.email`, ADR-0031.)
+ * EMPTY TODAY: operator-supplied egress plugs in here (a field, resolved by
+ * {@link resolveAllowedHosts} and baked through {@link BAKED_EGRESS_URLS}).
+ * There is no email URL — email goes through `ctx.email` (ADR-0031) — and an
+ * absent value always grants no host rather than guessing one.
  */
 export interface InProcessEgressUrls {
-	/** The x402 facilitator's URL. Nothing calls it between ADR-0028 increments 2
-	 *  and 6; increment 6's `/verify` and `/settle` client uses it as a base URL. */
-	facilitatorUrl?: string | undefined;
-}
-
-/** A URL's hostname, or `undefined` for anything unparseable — including an
- *  empty define, a bare hostname with no scheme, and outright garbage. Never
- *  throws: this runs at module load, where a throw takes the whole plugin down —
- *  the descriptor never registers and every route 500s — and an ungrantable host
- *  must degrade to "no egress for that provider" — a refused fetch — not to a boot
- *  failure and not to a widened gate. */
-function hostnameOf(url: string | undefined): string | undefined {
-	if (url === undefined || url.length === 0) return undefined;
-	try {
-		const { hostname } = new URL(url);
-		return hostname.length > 0 ? hostname : undefined;
-	} catch {
-		return undefined;
-	}
+	// Operator-supplied egress hosts plug in here.
 }
 
 /**
@@ -85,66 +68,40 @@ function hostnameOf(url: string | undefined): string | undefined {
  * not in this list (plan §5) — as a pure function so it is testable without a
  * bundler.
  *
- * There is ONE list now (INC-D3a): the commerce service is gone, and the calls
- * it used to make are the plugin's own — Stripe's API and the x402
- * facilitator. No service host appears here at all; that is the fold-in,
- * visible in one line. The constant part is Stripe's API host; the facilitator
- * comes from the deployment's egress URL. No email host: email goes through
+ * There is ONE list now (INC-D3a): the commerce service is gone, and the call
+ * it used to make is the plugin's own — Stripe's API. No service host appears
+ * here at all; that is the fold-in, visible in one line. The constant part is
+ * Stripe's API host; anything else comes from the deployment's egress
+ * ({@link InProcessEgressUrls}, none today). No email host: email goes through
  * `ctx.email` (ADR-0031), never `ctx.http`.
  *
  * The result is a SET: duplicates collapse, and order is insertion order so the
  * list is stable across builds.
  */
-export function resolveAllowedHosts(egress: InProcessEgressUrls = {}): string[] {
+export function resolveAllowedHosts(_egress: InProcessEgressUrls = {}): string[] {
 	const hosts = new Set<string>([STRIPE_API_HOST]);
-	const facilitator = hostnameOf(egress.facilitatorUrl);
-	if (facilitator !== undefined) hosts.add(facilitator);
 	return [...hosts];
 }
 
-/**
- * Compile-time override hook for the deployment-supplied egress URL: a
- * Vite `define` a deploying site bakes into the plugin bundle, behind a `typeof`
- * guard so the undeclared global is safe in the plain tsdown dist, this
- * package's vitest run and the sandbox harness.
- *
- * A URL, never a secret — the credential that rides it lives in
- * write-only kv (`payment-secrets.ts`), which is what keeps
- * `wrangler-config.test.ts`'s /SECRET|KEY|TOKEN|PASSWORD/i ban on `vars` intact
- * and unroutable-around.
- */
-declare const __OTTA_X402_FACILITATOR_URL__: string | undefined;
-
-/** The raw defines, before resolution. Not exported: every consumer must see
+/** The raw defines, before resolution — none today (see
+ *  {@link InProcessEgressUrls}). Not exported: every consumer must see
  *  {@link IN_PROCESS_EGRESS_URLS}, which agrees with `ALLOWED_HOSTS` by
- *  construction. */
-const BAKED_EGRESS_URLS: InProcessEgressUrls = {
-	facilitatorUrl:
-		typeof __OTTA_X402_FACILITATOR_URL__ === "string" ? __OTTA_X402_FACILITATOR_URL__ : undefined,
-};
+ *  construction. A deployment-supplied value is a Vite `define` behind a
+ *  `typeof` guard, so the undeclared global is safe in the plain tsdown dist,
+ *  this package's vitest run and the sandbox harness — and it is never a
+ *  secret: credentials live in write-only kv (`payment-secrets.ts`). */
+const BAKED_EGRESS_URLS: InProcessEgressUrls = {};
 
 /**
- * The egress URLs a CONSUMER may use, resolved by the SAME predicate the
- * allowlist is (review round 2, A3).
- *
- * `resolveAllowedHosts` funnels every URL through {@link hostnameOf} and grants
- * NOTHING for one that does not parse — a bare hostname, an empty define,
- * outright garbage. A resolver that passed the string through verbatim would
- * hand a consumer exactly such a URL and reproduce the symptom this function
- * exists to make impossible: a client is built and every call is refused by the
- * gate. So one that yields no host is
- * dropped — unconfigured, which every consumer already handles.
- *
- * Resolving once, here, makes "a consumer never holds a URL whose host is not
- * granted" true by construction rather than by every caller remembering.
+ * The egress URLs a CONSUMER may use, resolved by the SAME rules the allowlist
+ * is (review round 2, A3): a value that would grant no host is dropped —
+ * unconfigured, which every consumer already handles — so "a consumer never
+ * holds a URL whose host is not granted" is true by construction rather than
+ * by every caller remembering. No URL is deployment-supplied today, so this
+ * resolves to `{}`.
  */
-export function resolveInProcessEgress(egress: InProcessEgressUrls = {}): InProcessEgressUrls {
-	/** The URL, or `undefined` when `resolveAllowedHosts` would grant no host for
-	 *  it — the two decisions made by one predicate, so they cannot disagree. */
-	const grantable = (url: string | undefined): string | undefined =>
-		hostnameOf(url) === undefined ? undefined : url;
-	const facilitatorUrl = grantable(egress.facilitatorUrl);
-	return facilitatorUrl !== undefined ? { facilitatorUrl } : {};
+export function resolveInProcessEgress(_egress: InProcessEgressUrls = {}): InProcessEgressUrls {
+	return {};
 }
 
 /** The in-process egress URLs this bundle may actually use. Absent or

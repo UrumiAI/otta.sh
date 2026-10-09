@@ -18,7 +18,7 @@ generic failure or a host 500.
   the exported `RenderGuardFailure` type, so consumers matching on `error` see
   the new member. **Additive on the wire, but an exhaustive `switch` over a
   route result's `error` must handle `"BUSY"`.**
-- `webhooks/stripe/settle` and `x402/settle` return `status: 503,
+- `webhooks/stripe/settle` returns `status: 503,
   reason: "BUSY", retryable: true` rather than throwing (a distinct member of
   each result union). Stripe retries a 503, and a redelivery
   is replay-safe: the domain dedupes on the event id / receipt (tested, including

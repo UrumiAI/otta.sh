@@ -4,9 +4,9 @@
  * Modeled on em-dash's `templates/starter-cloudflare/astro.config.mjs`
  * (no Access / Images / Stream / sandbox), plus the trusted Otta plugin
  * descriptor (ADR-0006). Commerce runs IN-PROCESS in this Worker: there is no
- * separate service to point at, and the only build-time URLs left are the two
- * optional egress endpoints below (email provider, x402 facilitator), which are
- * baked into the bundle AND fed to the descriptor's allowlist from one const.
+ * separate service to point at. Deployment-supplied egress goes in the `egress`
+ * const below, which is baked into the bundle AND fed to the descriptor's
+ * allowlist from one place — empty today.
  */
 import { existsSync, readFileSync } from "node:fs";
 import cloudflare from "@astrojs/cloudflare";
@@ -32,33 +32,27 @@ function readDotEnv(name: string): string | undefined {
 }
 
 /**
- * THE IN-PROCESS EGRESS URL — resolved ONCE, here (review round 3, B1).
+ * THE IN-PROCESS EGRESS — resolved ONCE, here (review round 3, B1).
  *
- * One URL and two consumers. The plugin BUNDLE reads it as a Vite define
- * (`manifest.ts`: `__OTTA_X402_FACILITATOR_URL__`) to decide whether to build a
- * facilitator client at all. The registered DESCRIPTOR needs the same value to
- * put its host on `allowedHosts` — and `allowedHosts` is the one ADR-0006 gate
- * that still bites in trusted mode. Feed only the define and you get a bundle
- * that calls a host the gate refuses. So one const, both consumers.
+ * One value and two consumers. The plugin BUNDLE reads it through Vite defines
+ * (`manifest.ts`), and the registered DESCRIPTOR needs the same value to put its
+ * hosts on `allowedHosts` — the one ADR-0006 gate that still bites in trusted
+ * mode. Feed only the defines and you get a bundle that calls a host the gate
+ * refuses. So one const, both consumers. Operator-supplied egress plugs in here.
  *
  * NO EMAIL URL. Email goes through EmDash's `ctx.email` (ADR-0031): install and
  * select an EmDash email provider; otta grants itself no email host.
  *
- * URLS, NEVER SECRETS. The API credentials that ride them live in write-only
- * plugin kv (the `settings:` keys `payment-secrets.ts` owns), provisioned through
- * the admin Settings form — which is what keeps wrangler-config.test.ts's
- * /SECRET|KEY|TOKEN|PASSWORD/i ban on `vars` intact and unroutable-around, and
- * why site-config.test.ts can assert this file names none of them.
+ * NEVER SECRETS. API credentials live in write-only plugin kv (the `settings:`
+ * keys `payment-secrets.ts` owns), provisioned through the admin Settings form —
+ * which is what keeps wrangler-config.test.ts's /SECRET|KEY|TOKEN|PASSWORD/i ban
+ * on `vars` intact and unroutable-around, and why site-config.test.ts can assert
+ * this file names none of them.
  *
- * UNSET IS THE DEFAULT AND IT IS FAIL-CLOSED, not broken: the define bakes `""`,
- * which `hostnameOf` yields no host for, so `resolveInProcessEgress` reports the
- * facilitator unconfigured and `resolveAllowedHosts` grants nothing for it.
- * Staging today sets none, so its allowlist is the constant part alone —
- * Stripe's API host.
+ * EMPTY TODAY, so staging's allowlist is the constant part alone — Stripe's API
+ * host.
  */
-const egress = {
-	facilitatorUrl: process.env.X402_FACILITATOR_URL ?? readDotEnv("X402_FACILITATOR_URL"),
-};
+const egress = {};
 
 /**
  * The Stripe publishable key (ADR-0012 decision 4), resolved the same way.
@@ -256,17 +250,13 @@ export default defineConfig({
 			// bakes "", which that module reads as undefined; baking `undefined`
 			// would leave the identifier undeclared in the worker bundle.
 			__OTTA_STRIPE_PUBLIC_KEY__: JSON.stringify(stripePublishableKey ?? ""),
-			// The in-process egress URL, from the SAME `egress` const that decides
-			// what the descriptor allowlists (see its note above). ALWAYS a string,
-			// like the Stripe key: baking `undefined` would leave the identifier
-			// undeclared, and `""` is what both the plugin's `typeof` guard and
-			// `hostnameOf` read as "this provider is unconfigured".
-			__OTTA_X402_FACILITATOR_URL__: JSON.stringify(egress.facilitatorUrl ?? ""),
+			// In-process egress defines, from the SAME `egress` const that decides
+			// what the descriptor allowlists (see its note above) — none today.
 		},
 		ssr: {
 			// UNCONDITIONAL: if @otta-sh/plugin is ever externalized the defines
-			// above silently never apply and the bundle resolves every egress URL
-			// as unconfigured. (It is also consumed as TS
+			// it reads (the egress defines above, `__OTTA_DEV_STRIPE_OFFLINE__`)
+			// silently never apply. (It is also consumed as TS
 			// source via its workspace `"."`/`"./plugin"` exports, which
 			// requires bundling anyway.)
 			//

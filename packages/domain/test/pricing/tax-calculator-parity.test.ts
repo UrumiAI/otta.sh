@@ -14,6 +14,7 @@ import { applyRateTable, rateTableOf } from "../../src/pricing/rate-table-calcul
 import { resolveShippingRate } from "../../src/pricing/shipping.js";
 import { computeLineTax } from "../../src/pricing/tax.js";
 import type { TaxRequest } from "../../src/pricing/tax-calculator.js";
+import { effectiveTaxRates } from "../../src/pricing/tax-rate-uniqueness.js";
 import type { TotalsBreakdown, TotalsInput, TotalsLineBreakdown } from "../../src/pricing/types.js";
 
 /**
@@ -121,7 +122,10 @@ describe("rate-table parity with main's arithmetic (property)", () => {
 		fc.assert(
 			fc.property(cartArb, ({ lines, zoneRates, coupon, shippingMethod }) => {
 				const rates = zoneRates.map((r, i) => ({ ...r, id: `r${i}`, zoneId: "z" }));
-				const rules = { shippingMethod, ...legacyRateMap(rates) };
+				// The generator puts several rates in one class (one zone): duplicates a store
+				// may still hold from before it refused them. Main's map is the oracle over the
+				// rates that APPLY — one per (class, zone), the greatest id (ADR-0030 amendment).
+				const rules = { shippingMethod, ...legacyRateMap(effectiveTaxRates(rates)) };
 				const input: TotalsInput = {
 					currency: USD,
 					lines,

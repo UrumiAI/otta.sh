@@ -8,6 +8,7 @@ import {
 	type Order,
 	type OrderId,
 	type OrderStore,
+	PROVIDER_REFUNDED_FLAG_PREFIX,
 	refundOrder,
 	resolveUnverifiedRefund,
 	settleOrder,
@@ -103,8 +104,8 @@ describe("every full-refund path revokes download access", () => {
 	// -- Mark refunded -----------------------------------------------------------
 	//
 	// A manual Mark refunded records money returned OUTSIDE Otta, and is allowed only
-	// when nothing is left for the provider to return (x402's money always goes back
-	// outside Otta). It closes the order `refunded` — a full refund by definition.
+	// when nothing is left for the provider to return (here: the provider itself
+	// reported the payment refunded, which flags the order). It closes the order `refunded` — a full refund by definition.
 
 	describe("Mark refunded", () => {
 		function mark(order: Order, key: string, store: EntitlementStore = h.entitlementStore) {
@@ -114,15 +115,23 @@ describe("every full-refund path revokes download access", () => {
 			);
 		}
 
+		/** A paid digital order the provider reported refunded in full (the refund was
+		 *  made in its dashboard): the one state in which Mark refunded is allowed. */
+		async function providerRefunded(key: string): Promise<Order> {
+			const order = await paidDigital(key);
+			await h.orderStore.flagReconciliation(order.id, `${PROVIDER_REFUNDED_FLAG_PREFIX} — test`);
+			return order;
+		}
+
 		test("marking an order refunded revokes its entitlement", async () => {
-			const order = await paidDigital("o1", h.x402Gw);
+			const order = await providerRefunded("o1");
 			const res = await mark(order, "m1");
 			expect(res.ok && res.order.state).toBe("refunded");
 			expect(await entitled(order.id)).toBe(false);
 		});
 
 		test("a replay of Mark refunded has no double effect", async () => {
-			const order = await paidDigital("o1", h.x402Gw);
+			const order = await providerRefunded("o1");
 			await mark(order, "m1");
 			const replay = await mark(order, "m1");
 			expect(replay.ok && !replay.transitioned).toBe(true);
@@ -130,7 +139,7 @@ describe("every full-refund path revokes download access", () => {
 		});
 
 		test("a crash after the flip, before the revoke, is healed by the replay", async () => {
-			const order = await paidDigital("o1", h.x402Gw);
+			const order = await providerRefunded("o1");
 			await expect(mark(order, "m1", failingFirst(1))).rejects.toThrow("crash before revoke");
 			expect((await h.orderStore.getById(order.id))?.state).toBe("refunded");
 			expect(await entitled(order.id)).toBe(true);
@@ -139,13 +148,13 @@ describe("every full-refund path revokes download access", () => {
 		});
 
 		test("a move that is not to refunded, and a refused Mark refunded, leave it entitled", async () => {
-			const x402 = await paidDigital("o1", h.x402Gw);
+			const flagged = await providerRefunded("o1");
 			const moved = await transitionOrderAsAdmin(
 				{ orderStore: h.orderStore, entitlementStore: h.entitlementStore },
-				{ orderId: x402.id, toState: "processing", idempotencyKey: idempotencyKey("p1") },
+				{ orderId: flagged.id, toState: "processing", idempotencyKey: idempotencyKey("p1") },
 			);
 			expect(moved.ok).toBe(true);
-			expect(await entitled(x402.id)).toBe(true);
+			expect(await entitled(flagged.id)).toBe(true);
 
 			// A card order whose money the provider still holds: Money → Refunds, not this.
 			const card = await paidDigital("o2");
@@ -238,10 +247,15 @@ describe("every full-refund path revokes download access", () => {
 	// why this path needs its own revoke.
 
 	describe("cancel with refund", () => {
-		function cancel(order: Order, key: string, store: EntitlementStore = h.entitlementStore) {
+		function cancel(
+			order: Order,
+			key: string,
+			store: EntitlementStore = h.entitlementStore,
+			gateway: FakePaymentGateway = h.stripeGw,
+		) {
 			return cancelOrderWithRefund(
 				{ orderStore: h.orderStore, inventoryStore: h.inventory, entitlementStore: store },
-				order.paymentMethod === "x402" ? h.x402Gw : h.stripeGw,
+				gateway,
 				{
 					orderId: order.id,
 					reason: "customer_request",
@@ -352,10 +366,10 @@ describe("every full-refund path revokes download access", () => {
 			expect(await entitled(card.id)).toBe(true);
 			h.stripeGw.clearRefundResult();
 
-			const x402 = await paidDigital("o2", h.x402Gw);
-			const manual = await cancel(x402, "c2");
+			const noRefund = await paidDigital("o2", h.manualGw);
+			const manual = await cancel(noRefund, "c2", h.entitlementStore, h.manualGw);
 			expect(!manual.ok && manual.reason).toBe("REFUND_NOT_AUTOMATIC");
-			expect(await entitled(x402.id)).toBe(true);
+			expect(await entitled(noRefund.id)).toBe(true);
 		});
 
 		test("confirming a cancellation's unverified refund revokes, whatever the cancel then does", async () => {

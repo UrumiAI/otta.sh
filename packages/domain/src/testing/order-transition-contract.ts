@@ -463,7 +463,7 @@ export function orderTransitionContract(
 
 		// -- the admin's status moves (transitionOrderAsAdmin) -------------------
 
-		for (const method of ["stripe", "x402", null] as const) {
+		for (const method of ["stripe", null] as const) {
 			test(`the admin cannot mark a ${String(method)} order paid — no offline method exists to settle by hand`, async () => {
 				// Fails CLOSED: only a payment method DECLARED offline may be marked paid by
 				// hand, and none is today. A gateway order is settled by its gateway; an
@@ -517,8 +517,8 @@ export function orderTransitionContract(
 		// that still held captured money the ledger never returned, and the buyer's
 		// page then said "refunded". Refused in the domain unless nothing is left
 		// to refund through the provider, the provider itself reported the payment
-		// refunded, or the method returns money outside Otta.
-		async function capture(h: OrderTransitionHarness, id: OrderId, gateway: "stripe" | "x402") {
+		// refunded.
+		async function capture(h: OrderTransitionHarness, id: OrderId, gateway: "stripe") {
 			await h.store.recordPayment({
 				orderId: id,
 				gateway,
@@ -616,14 +616,6 @@ export function orderTransitionContract(
 			await drive(h, id, "paid");
 			await capture(h, id, "stripe");
 			await h.store.flagReconciliation(id, `${PROVIDER_REFUNDED_FLAG_PREFIX} — test`);
-			expect(await adminDrive(h, id, "refunded")).toMatchObject({ ok: true, transitioned: true });
-		});
-
-		test("Mark refunded is allowed for a method that returns money outside Otta (x402)", async () => {
-			const h = await makeHarness();
-			const id = await seed(h, { paymentMethod: "x402" });
-			await drive(h, id, "paid");
-			await capture(h, id, "x402");
 			expect(await adminDrive(h, id, "refunded")).toMatchObject({ ok: true, transitioned: true });
 		});
 

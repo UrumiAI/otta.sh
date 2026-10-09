@@ -206,7 +206,6 @@ describe("admin route dispatch (workerd sandbox)", () => {
 		for (const actionId of [
 			"save-stripe-secret-key",
 			"save-stripe-webhook-secret",
-			"save-x402-facilitator-secret",
 			"save-webhook-edge-token",
 		]) {
 			const form = formFor(blocks, actionId);

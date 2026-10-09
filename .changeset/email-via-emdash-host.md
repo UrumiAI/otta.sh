@@ -9,8 +9,7 @@ provider (for example `cloudflareEmail` with a `send_email` binding); the from-a
 DKIM and any key belong to it. The outbox and its at-least-once delivery are unchanged.
 
 - **New capability `email:send`.** The plugin declares `content:read`, `network:request` and
-  `email:send`. `allowedHosts` is now `api.stripe.com` plus the x402 facilitator when
-  configured — no email host.
+  `email:send`. `allowedHosts` is now `api.stripe.com` — no email host.
 - **One sender.** `CtxEmailSender` renders as before (storefront money, the order link, the
   store name — "Store display name", else the EmDash site name) and calls `ctx.email.send`.
 - **No provider fails closed and spends nothing.** Trusted: `ctx.email` is absent, the cron

@@ -4,7 +4,7 @@ import type { IdempotencyKey, OrderId, ProductId, Sku } from "../money/ids.js";
 export type EntitlementState = "active" | "revoked";
 
 /** How an entitlement was granted (§6). */
-export type EntitlementSource = "order_paid" | "x402";
+export type EntitlementSource = "order_paid";
 
 export interface Entitlement {
 	id: string;
@@ -36,8 +36,8 @@ export interface EntitlementQuery {
 }
 
 /**
- * The `EntitlementStore` port (Phase 4 §6). Shared machinery for both
- * digital-via-Stripe and x402. Grant is idempotent under `grantIdempotencyKey`
+ * The `EntitlementStore` port (Phase 4 §6). Shared machinery for
+ * digital-via-Stripe. Grant is idempotent under `grantIdempotencyKey`
  * UNIQUE; check authorizes delivery — the file is never served without an active
  * row.
  */
