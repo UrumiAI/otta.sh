@@ -971,10 +971,12 @@ export function PricingStockEditor({ productId }: { productId: string }): React.
 										))}
 									</select>
 								</div>
-								{/* Whenever no currency is chosen — the only way the draft gets "". */}
+								{/* Whenever no currency is chosen; the load-failure wording only while it is still unknown. */}
 								{d.currency === "" && (
 									<span className="otta-pricing-hint" data-testid="store-currency-unknown">
-										Couldn't load your store currency — choose one.
+										{storeCurrency === ""
+											? "Couldn't load your store currency — choose one."
+											: "Choose a currency."}
 									</span>
 								)}
 								{shown.currency !== undefined && (
