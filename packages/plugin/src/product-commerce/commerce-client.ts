@@ -307,6 +307,8 @@ export interface CommerceClient {
 	// ── Phase 3 group E: cart (plan §6) ────────────────────────────────────
 	// Hand-rolled like the wire types above: these modules declare no runtime
 	// dependency on @otta-sh/domain, which is what keeps them sandbox-clean. ──
+	/** A new cart in `currency`, or — when none is named — in the store currency
+	 *  (the operator's saved setting; USD for a store that never saved one). */
 	createCart(currency?: string): Promise<{ cartId: string }>;
 	/**
 	 * The replacement for a SPENT cart — one checked out into an order that is no
@@ -317,8 +319,11 @@ export interface CommerceClient {
 	 * the cart that replaces it. Refused `CART_NOT_FOUND`, `CART_NOT_CHECKED_OUT`, or
 	 * `ORDER_NOT_FINISHED` (no order, or one still pending — its payment may still
 	 * happen).
+	 *
+	 * The replacement's currency: `currency` when named, else the store currency
+	 * the operator saved, else the spent cart's.
 	 */
-	replaceCart(spentCartId: string): Promise<ReplaceCartResult>;
+	replaceCart(spentCartId: string, currency?: string): Promise<ReplaceCartResult>;
 	/** The effective cart-hold window in whole minutes — the admin's saved
 	 *  `holdTtlMinutes` (or its default), which every add/adjust stamps and every
 	 *  read measures against (issue #127). For shopper-facing copy. */
@@ -541,6 +546,10 @@ export interface QuoteBreakdownWire {
 	shippingCents: number;
 	taxCents: number;
 	totalCents: number;
+	/** The payment rounding (ADR-0035's amendment), SIGNED minor units: present only
+	 *  for a currency with a payment increment (KWD, BHD, OMR, JOD); then
+	 *  `totalCents` is the rounded total and the rows sum to it with this added. */
+	roundingCents?: number;
 	appliedCouponCode: string | null;
 	/** How the tax was charged and is to be shown (ADR-0032). Absent ⇒ today's
 	 *  single "Tax" row with prices as entered. */
@@ -800,6 +809,10 @@ export interface OrderTotalsWire {
 	shippingCents: number;
 	taxCents: number;
 	totalCents: number;
+	/** The payment rounding (ADR-0035's amendment), SIGNED minor units: present only
+	 *  for a currency with a payment increment (KWD, BHD, OMR, JOD); then
+	 *  `totalCents` is the rounded total and the rows sum to it with this added. */
+	roundingCents?: number;
 }
 
 export interface OrderLineWire {
