@@ -180,5 +180,4 @@ describe("coupon cent distribution — Otta vs WooCommerce (reported, not change
 		expect(discounts).toEqual([500, 500]);
 		expect(discounts.reduce((a, b) => a + b, 0)).toBe(1000);
 	});
-
 });
