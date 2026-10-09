@@ -165,9 +165,20 @@ describe("coupon cent distribution — Otta vs WooCommerce (reported, not change
 	});
 
 	test("EX-08 (fixed 1000 over 2000 + 2×1000): WooCommerce 334/666; Otta 500/500", () => {
-		const lineSubtotals = [2000, 2000];
+		// Inputs and WooCommerce's answer come from the oracle itself, not retyped numbers.
+		const s = ORACLE.find((o) => o.id === "EX-08");
+		if (!s) throw new Error("EX-08 missing from the oracle");
+		const lineSubtotals = s.inputs.items.map((i) => i.unit_cents * i.qty);
+		expect(lineSubtotals).toEqual([2000, 2000]);
+		expect(s.inputs.coupon).toEqual({ type: "fixed_cart", amount_cents: 1000 });
+		// WooCommerce: per unit, highest unit price first, so the 2000 line carries 334.
+		expect(s.expected.lines.map((l) => l.discount)).toEqual([334, 666]);
+		// Otta (deliberate, ADR-0032): the DISCOUNTED subtotal 3000 is split pro rata over
+		// the line subtotals by largest remainder (1500/1500), so the discount is 500/500.
 		const after = allocateCents(cents(4000 - 1000), lineSubtotals);
-		// Otta allocates the DISCOUNTED subtotal 3000 pro rata → 1500/1500 ⇒ 500/500
-		expect(lineSubtotals.map((l, i) => l - (after[i] ?? 0))).toEqual([500, 500]);
+		const discounts = lineSubtotals.map((l, i) => l - (after[i] ?? 0));
+		expect(discounts).toEqual([500, 500]);
+		expect(discounts.reduce((a, b) => a + b, 0)).toBe(1000);
 	});
+
 });

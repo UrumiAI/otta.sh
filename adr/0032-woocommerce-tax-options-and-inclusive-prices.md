@@ -84,7 +84,7 @@ pay must not change silently (user decision 4).
   `subtotal − discount + shipping + tax = total` exact (724). **Coupon cents** — Otta
   allocates a coupon pro rata over line subtotals (unchanged); WooCommerce goes per unit,
   highest price first (EX-08: WooCommerce 334/666, Otta 500/500), which can move a cent of
-  tax between lines.
+  tax between lines. Kept by decision (issue #424, addendum below).
 
 - No existing store's charges change: the domain and plugin goldens keep every money
   figure (the INR case's shipping tax stays 882). They gain `requiresShipping` on quote
@@ -105,8 +105,7 @@ pay must not change silently (user decision 4).
 - Follow-ups, not built: shop-page price display; hiding the tax row when tax is off; per-line prices with/without tax on the
   review table and the cart page; postcode/city matching, priority/compound rates, CSV;
   customer tax-exempt; adjusting inclusive prices for non-base buyers; finer rate
-  precision; buyer-location tax for digital goods; WooCommerce-style coupon allocation (per
-  unit, highest price first — EX-08); itemized tax rows on the order pages, the emails and
+  precision; buyer-location tax for digital goods; itemized tax rows on the order pages, the emails and
   the admin order detail; marking a tax-inclusive order on the admin order detail (its
   subtotal is the gross, and nothing there says the tax is included); recording each line's
   tax status in the frozen order tax record (PR 2b left the record's shape unchanged).
@@ -133,3 +132,12 @@ pay must not change silently (user decision 4).
   existing golden is byte-identical. The order tax snapshot's shape is unchanged.
 - The admin product edit's idempotency key covers the tax status, so two saves at one
   watermark that differ only in status are never one replay.
+
+## Addendum (issue #424): coupon cent allocation stays pro rata
+
+Decided by the maintainer: Otta does not add WooCommerce's coupon allocation, not even as an option.
+
+- **Difference.** WooCommerce spreads a fixed-cart coupon per unit, highest unit price first. Otta takes the discounted subtotal and splits it over the line subtotals pro rata by largest remainder (`allocateCents`). In EX-08 (fixed 1000 over 2000 + 2x1000) WooCommerce discounts 334/666, Otta 500/500. With odd amounts a line's discount can differ by a cent or more, and so can its tax.
+- **Why Otta keeps it.** The rule predates the tax work (#416 left it unchanged). `allocateCents` makes the parts sum exactly to the total by construction, in integer arithmetic, with ties broken by input order, so the same cart always gives the same split and `subtotal - discount + shipping + tax = total` holds. A line's share is its proportion of the cart, whatever the unit count.
+- **Cost.** A merchant comparing per-line discount or tax with WooCommerce may see a cent or more of difference.
+- **Pinned** by the EX-08 test in `packages/domain/test/pricing/woo-oracle-parity.test.ts`, which asserts WooCommerce's 334/666 from the oracle and Otta's 500/500. Changing the rule must change that test on purpose.
