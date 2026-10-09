@@ -1,7 +1,9 @@
 ---
 /**
- * GET /checkout — the review step. Zero client JS (the whole page is a form
- * POST); the only JS on this site lives one step later, on /checkout/pay.
+ * GET /checkout — the review step. The whole page is a form POST and works
+ * without JavaScript; its ONE optional script (ADR-0034, `RegionPicker`) only
+ * swaps the state/province list as the country changes. Stripe's JS lives one
+ * step later, on /checkout/pay.
  *
  * One dispatch does everything: `storefront/checkout/summary` returns both the
  * line items (from the cart + commerce join) and the QUOTE's totals, which are
@@ -46,7 +48,9 @@ import {
 	STOREFRONT_CHECKOUT_SUMMARY_ROUTE,
 	type CheckoutSummaryRouteResult,
 } from "@otta-sh/plugin";
+import { subdivisionName } from "@otta-sh/plugin/subdivisions";
 import { getPublicPluginApiRouteHandler } from "emdash/plugin-utils";
+import RegionPicker from "../../components/RegionPicker.astro";
 import Storefront from "../../layouts/Storefront.astro";
 import { checkoutEmailNote, signedInEmail } from "../../lib/account.js";
 import { keepPrivate } from "../../lib/no-store.js";
@@ -60,12 +64,14 @@ import {
 	shownFieldErrors,
 } from "../../lib/checkout-draft.js";
 import {
+	deliveryFieldValues,
 	isCouponFailure,
 	readCouponParam,
 	readDestinationParams,
 	readMethodParam,
 } from "../../lib/checkout-selection.js";
-import { countryOptions } from "../../lib/countries.js";
+import { countryName, countryOptions } from "../../lib/countries.js";
+import { regionChoice } from "../../lib/regions.js";
 import { SITE_LOCALE } from "../../lib/site-locale.js";
 import { cartErrorMessage } from "../../lib/error-messages.js";
 import { checkoutFootnote } from "../../lib/totals.js";
@@ -176,13 +182,22 @@ const couponValue =
 const shippingError = summary.selectionErrors.shippingMethod ?? null;
 /** A refused destination — by the plugin, or by the shape check above. */
 const destinationError = summary.selectionErrors.destination ?? destinationRead.rejected ?? null;
+/** "We don't ship there" for a STATE: other states of that country are served
+ *  (the plugin says so with `blames: "region"`), so the state list is marked,
+ *  not the country. */
+const regionNotServed = summary.selectionErrors.destination?.blames === "region";
+const countryRefused =
+	destinationError !== null &&
+	destinationError.reason !== "SHIPPING_REGION_CODE_REQUIRED" &&
+	!regionNotServed;
 
 /** The destination the totals were priced for, or null. */
 const destination = summary.selection.destination;
 /** What the delivery block's fields show: the priced destination, else what was
- *  typed and refused (so a typo can be fixed). */
-const countryValue = destination?.country ?? destinationRead.rejected?.country ?? "";
-const regionValue = destination?.region ?? destinationRead.rejected?.region ?? "";
+ *  asked for and refused — by the site or by the plugin — so the country stays
+ *  chosen and its state/province list is offered (deliveryFieldValues). */
+const askedFor = deliveryFieldValues(destination, destinationRead);
+const regionValue = askedFor.region;
 
 /** The delivery block: an unlocked cart that ships, in a store with zones. */
 const showDelivery = locked === null && summary.requiresShipping && summary.shipping.status !== "no_zones";
@@ -194,7 +209,30 @@ const showDelivery = locked === null && summary.requiresShipping && summary.ship
 const showAddress = locked === null && (summary.requiresShipping || summary.addressRequired);
 /** Named in the same language the summary formatted the money in. */
 const countries = countryOptions(SITE_LOCALE);
-const countryName = (code: string): string => countries.find((c) => c.code === code)?.label ?? code;
+
+
+/** The state/province PICK LISTS (server-rendered; no JS needed): rendered for the country the
+ *  page knows — the delivery block's for the priced (or refused) country, the
+ *  address block's for the draft's — with the stored/typed code preselected.
+ *  Another country's list is one Update away. */
+/** A TRULY FRESH visit — no draft, no `?country=`, no `?error=` — starts on the
+ *  STORE's country (`summary.storeCountry`), so its state list is on the page
+ *  from the first render, JS or not. Anything else is the buyer's: a country
+ *  they chose is never replaced, one they left blank is never refilled, and a
+ *  refusal never falls back to the store's. The address block preselects only
+ *  where the address is required: an optional one must stay blank-able (a
+ *  country alone is a partial address). */
+const freshVisit = draft === null && error === null && !Astro.url.searchParams.has("country");
+const storeCountry = freshVisit ? summary.storeCountry : null;
+const countryValue =
+	askedFor.country !== "" ? askedFor.country : showDelivery ? (storeCountry ?? "") : "";
+const draftAddress = draftAddressValues(draft);
+const addressValues =
+	!showDelivery && summary.addressRequired && storeCountry !== null
+		? { ...draftAddress, country: storeCountry }
+		: draftAddress;
+const deliveryRegions = regionChoice(countryValue, regionValue, SITE_LOCALE);
+const addressRegions = regionChoice(addressValues.country, addressValues.region, SITE_LOCALE);
 
 /** The option the totals were priced with — stated beside the submit, so the
  *  method charged is on the page even if a radio was changed without Update. */
@@ -270,7 +308,14 @@ const shownErrorToken =
 const model: CheckoutModel = {
 	summary,
 	errorMessage:
-		shownErrorToken !== null && placeCouponError === null
+		shownErrorToken !== null &&
+		placeCouponError === null &&
+		/* Said ONCE: a place refused for the region keeps the country in the URL,
+		   so the summary refuses it again and the delivery block says it. */
+		shownErrorToken !== destinationError?.reason &&
+		/* A list update beside a refusal of the destination (the country refused,
+		   or a region REQUIRED): only that refusal is said — never "leave it blank". */
+		!(shownErrorToken === "REGION_LIST_UPDATED" && destinationError !== null)
 			? cartErrorMessage(shownErrorToken)
 			: null,
 	checkedOut,
@@ -291,14 +336,34 @@ const model: CheckoutModel = {
 		couponError !== null
 			? cartErrorMessage(couponError.reason)
 			: (placeCouponError?.message ?? null),
-	destinationError: destinationError !== null ? cartErrorMessage(destinationError.reason) : null,
+	destinationError:
+		destinationError === null
+			? null
+			: regionNotServed
+				? cartErrorMessage("SHIPPING_REGION_NOT_SERVED")
+				: cartErrorMessage(destinationError.reason),
+	/* The REGION is what was refused — missing where a zone needs it, not one
+	   of the country's codes, or not even code-shaped (the site's own check uses
+	   the same reason). A country-level refusal ("we don't ship here") is not. */
+	regionRefused:
+		destinationError?.reason === "SHIPPING_REGION_CODE_REQUIRED" ||
+		regionNotServed ||
+		/* A state picked for another country was dropped: pick again — unless
+		   the country itself is refused, which is then the only thing said. */
+		(shownError === "REGION_LIST_UPDATED" && !countryRefused),
+	/* …and a COUNTRY-level refusal ("we don't ship there") marks the country. */
+	countryRefused,
 	shippingError: shippingError !== null ? cartErrorMessage(shippingError.reason) : null,
 	noOptionsCopy: cartErrorMessage("SHIPPING_METHOD_REQUIRED"),
 	destination,
-	destinationName: destination !== null ? countryName(destination.country) : null,
+	destinationName: destination !== null ? countryName(destination.country, countries) : null,
+	destinationRegionName:
+		destination?.region != null ? subdivisionName(destination.country, destination.region) : null,
 	countryValue,
 	regionValue,
 	countries,
+	deliveryRegions,
+	addressRegions,
 	showDelivery,
 	showAddress,
 	chosenOption,
@@ -308,7 +373,7 @@ const model: CheckoutModel = {
 	   restated (§10). */
 	notConfiguredLead: cartErrorMessage("STRIPE_NOT_CONFIGURED"),
 	emailValue: draft?.values.email ?? accountEmail ?? "",
-	addressValues: draftAddressValues(draft),
+	addressValues,
 	/* Issue #382: on an India Stripe account the address may not be left blank,
 	   so a missing field says only to fill it in. (A zoned delivery still gets
 	   the older copy — unchanged here, flagged as a follow-up.) */
@@ -336,4 +401,6 @@ const model: CheckoutModel = {
 	    their responses' own `no-referrer` header (cart-actions.ts,
 	    `withoutReferrer`). Also sent as a response header (frontmatter). */}
 	<meta name="referrer" content="same-origin" slot="head" />
+	{/* ADR-0034: the optional state/province script — external, first-party. */}
+	<RegionPicker slot="head" />
 </Storefront>

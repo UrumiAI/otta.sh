@@ -2,7 +2,8 @@
 /**
  * Tempered's checkout review (docs/theme/TEMPERED.md §8): the step track, then
  * two panels — the details form left (~1.15fr), the order ledger + totals
- * right. Zero client JS: every control is a form.
+ * right. Every control is a form and works without JavaScript; the page's one
+ * optional script (ADR-0034) only swaps the state/province list.
  *
  * Presentation only: `src/pages/checkout/index.astro` reads the cart cookie and
  * the URL's coupon/destination/method, dispatches the summary, takes every
@@ -15,17 +16,24 @@
  * The coupon's field and buttons belong to the place form (`form=` attribute),
  * so Apply and Remove post the typed details with them and the review comes
  * back with every value kept (QA U-1). The delivery block's fields and Update
- * button belong to it the same way. Values the buyer typed
+ * button belong to it the same way.
+ *
+ * STATE / PROVINCE is a pick list of the country's subdivisions (names shown,
+ * codes posted), rendered on the server for the country the page knows. The
+ * page needs no JavaScript: a changed country takes a round trip ("Update
+ * delivery", or the address block's Update beside its country) that re-renders
+ * with that country's list and everything typed kept. The ONE client script on
+ * this page (ADR-0034, optional) swaps the list as the country changes: each
+ * country select names its list (`data-region-target`), the list's field is
+ * `data-region-field` (hidden while the country has no subdivisions), and the
+ * no-JS-only Update controls and hints are `data-region-update`. A country with
+ * no subdivisions shows no region field. Values the buyer typed
  * before a refused place come back from the page's draft (`addressValues`,
  * `emailValue`), with `fieldErrors` printed beside the fields they name.
  *
  * Styles: `commerce.css` (`checkout-*`).
  */
-import {
-	BUYER_REF_MAX,
-	ORDER_ADDRESS_MAX_LENGTHS,
-	REGION_CODE_PATTERN,
-} from "@otta-sh/plugin";
+import { BUYER_REF_MAX, ORDER_ADDRESS_MAX_LENGTHS } from "@otta-sh/plugin";
 import Ledger from "../../components/Ledger.astro";
 import Notice from "../../components/Notice.astro";
 import StepTrack from "../../components/StepTrack.astro";
@@ -46,13 +54,17 @@ const {
 	couponError,
 	refusedCouponCode,
 	destinationError,
+	regionRefused,
+	countryRefused,
 	shippingError,
 	noOptionsCopy,
 	destination,
 	destinationName,
+	destinationRegionName,
 	countryValue,
-	regionValue,
 	countries,
+	deliveryRegions,
+	addressRegions,
 	showDelivery,
 	showAddress,
 	chosenOption,
@@ -76,7 +88,7 @@ const {
 <div class="checkout-steps"><StepTrack current="details" /></div>
 <h1 class="checkout-title">Checkout</h1>
 
-{errorMessage !== null && <div class="checkout-notice-slot"><Notice>{errorMessage}</Notice></div>}
+{errorMessage !== null && <div class="checkout-notice-slot" id="checkout-error"><Notice>{errorMessage}</Notice></div>}
 
 {
 	locked?.otherEmailNotice != null && (
@@ -241,7 +253,9 @@ const {
 					<fieldset class="checkout-group">
 						<legend class="u-label checkout-head-label">Delivery</legend>
 						{destinationError !== null && (
-							<Notice>{destinationError}</Notice>
+							<div id="delivery-error">
+								<Notice>{destinationError}</Notice>
+							</div>
 						)}
 						{shippingError !== null && <Notice>{shippingError}</Notice>}
 						{summary.shipping.noOptions && (
@@ -253,8 +267,11 @@ const {
 								<select
 									name="deliveryCountry"
 									form="checkout-place"
+									data-region-target="delivery-region"
 									autocomplete="country"
 									required
+									aria-invalid={countryRefused}
+									aria-describedby={countryRefused ? "delivery-error" : undefined}
 								>
 									<option value="">Choose a country…</option>
 									{countries.map((option) => (
@@ -264,28 +281,54 @@ const {
 									))}
 								</select>
 							</label>
-							<div class="checkout-field">
+							<div class="checkout-field" data-region-field hidden={deliveryRegions.options.length === 0}>
 								<label class="u-label" for="delivery-region">
 									State / province
 								</label>
-								<input
-									type="text"
+								<select
 									id="delivery-region"
 									name="deliveryRegion"
+									data-region-country={deliveryRegions.country}
 									form="checkout-place"
 									autocomplete="address-level1"
-									maxlength={ORDER_ADDRESS_MAX_LENGTHS.region}
-									pattern={REGION_CODE_PATTERN}
-									title="The state or province code, e.g. IL for Illinois"
-									autocapitalize="characters"
-									spellcheck="false"
-									value={regionValue}
-									aria-describedby="region-note"
-								/>
+									aria-invalid={regionRefused}
+									aria-describedby={
+										regionRefused && destinationError !== null
+											? "delivery-error region-note"
+											: regionRefused && errorMessage !== null
+												? "checkout-error region-note"
+												: "region-note"
+									}
+								>
+									<option value="">Choose a state / province…</option>
+									{deliveryRegions.options.map((option) => (
+										<option value={option.code} selected={option.code === deliveryRegions.selected}>
+											{option.label}
+										</option>
+									))}
+								</select>
 								<span class="checkout-note" id="region-note">
-									State/province code, e.g. CA — leave blank if your country doesn't use one.
+									Leave blank if your address doesn't use one.
+									<span data-region-update>
+										Changed the country? Select Update delivery to see its list.
+									</span>
 								</span>
 							</div>
+							{/* The country the delivery list was drawn for: a state posted
+							    under another country is never priced (place.ts). */}
+							<input
+								type="hidden"
+								name="deliveryRegionCountry"
+								form="checkout-place"
+								autocomplete="off"
+								value={deliveryRegions.country}
+								data-region-list-for="delivery-region"
+							/>
+							{deliveryRegions.options.length === 0 && countryValue === "" && (
+								<p class="checkout-note" data-region-update>
+									Choose your country, then select Update delivery to pick your state or province.
+								</p>
+							)}
 						</div>
 						{/* The destination these options were priced for: a changed country or
 						    region drops a method chosen for the old one. */}
@@ -435,7 +478,7 @@ const {
 												)}
 												<p class="checkout-note checkout-group-note">
 													Delivering to {destinationName}
-													{destination.region !== null && <>, {destination.region}</>} —{" "}
+													{destination.region !== null && <>, {destinationRegionName ?? destination.region}</>} —{" "}
 													<a href="#delivery">change</a>
 												</p>
 											</>
@@ -561,44 +604,74 @@ const {
 												<label class="u-label" for="address-country">
 													Country{summary.addressRequired && <span class="checkout-req">required</span>}
 												</label>
-												<select
-													id="address-country"
-													name="country"
-													aria-required={summary.addressRequired ? "true" : undefined}
-													autocomplete="country"
-													aria-invalid={fieldErrors.country !== undefined}
-													aria-describedby={fieldErrors.country !== undefined ? "country-error" : undefined}
-												>
-													<option value="">Choose a country…</option>
-													{countries.map((option) => (
-														<option value={option.code} selected={option.code === addressValues.country}>
-															{option.label}
-														</option>
-													))}
-												</select>
+												<div class="checkout-country-row">
+													<select
+														id="address-country"
+														name="country"
+														data-region-target="address-region"
+														aria-required={summary.addressRequired ? "true" : undefined}
+														autocomplete="country"
+														aria-invalid={fieldErrors.country !== undefined}
+														aria-describedby={fieldErrors.country !== undefined ? "country-error country-note" : "country-note"}
+													>
+														<option value="">Choose a country…</option>
+														{countries.map((option) => (
+															<option value={option.code} selected={option.code === addressValues.country}>
+																{option.label}
+															</option>
+														))}
+													</select>
+													{/* Re-renders the review with the chosen country's state/province
+															list, keeping everything typed. Never places; `formnovalidate`,
+															like Apply. */}
+													<button
+														type="submit"
+														class="u-btn u-btn-ghost"
+														name="intent"
+														value="update-address"
+														formnovalidate
+														data-region-update
+													>
+														Update<span class="u-sr-only"> state / province list</span>
+													</button>
+												</div>
 												{fieldErrors.country !== undefined && (
 													<span class="checkout-field-error" id="country-error">
 														{fieldErrors.country}
 													</span>
 												)}
+												<span class="checkout-note" id="country-note" data-region-update>
+													Changed the country? Select Update to see its states or provinces.
+												</span>
 											</div>
-											<div class="checkout-field">
+											<div class="checkout-field" data-region-field hidden={addressRegions.options.length === 0}>
 												<label class="u-label" for="address-region">
-													State / province code
+													State / province
 												</label>
-												<input
-													type="text"
+												<select
 													id="address-region"
 													name="region"
+													data-region-country={addressRegions.country}
 													autocomplete="address-level1"
-													maxlength={ORDER_ADDRESS_MAX_LENGTHS.region}
-													pattern={REGION_CODE_PATTERN}
-													value={addressValues.region}
 													aria-invalid={fieldErrors.region !== undefined}
 													aria-describedby={fieldErrors.region !== undefined ? "region-error" : undefined}
-													title="The state or province code, e.g. IL for Illinois"
-													autocapitalize="characters"
-													spellcheck="false"
+												>
+													<option value="">Choose a state / province…</option>
+													{addressRegions.options.map((option) => (
+														<option value={option.code} selected={option.code === addressRegions.selected}>
+															{option.label}
+														</option>
+													))}
+												</select>
+												{/* The country this list was rendered for: a region posted under
+												    another country is asked again (place.ts). The script keeps it
+												    in step when it swaps the list. */}
+												<input
+													type="hidden"
+													name="regionCountry"
+													autocomplete="off"
+													value={addressRegions.country}
+													data-region-list-for="address-region"
 												/>
 												{fieldErrors.region !== undefined && (
 													<span class="checkout-field-error" id="region-error">

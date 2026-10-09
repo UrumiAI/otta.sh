@@ -1217,3 +1217,24 @@
 		gap: 2.5rem;
 	}
 }
+
+/* The address block's country select and its Update button (the state /
+   province list is re-rendered on the server — no client JS). */
+[data-theme-id] .checkout-country-row {
+	display: flex;
+	gap: 0.5rem;
+	min-width: 0;
+}
+[data-theme-id] .checkout-country-row select {
+	flex: 1;
+	min-width: 0;
+}
+
+/* A region field for a country with no subdivisions is in the page but hidden
+   (the optional script, ADR-0034, fills and shows it when the country
+   changes), and the script hides the no-JS-only Update controls: `hidden` must
+   win over their own `display` (flex / inline-flex) above. */
+[data-theme-id] [data-region-field][hidden],
+[data-theme-id] [data-region-update][hidden] {
+	display: none;
+}

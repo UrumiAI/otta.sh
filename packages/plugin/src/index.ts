@@ -458,6 +458,11 @@ export { STOREFRONT_LOCALE } from "./storefront/route-input.js";
 // site that builds the country picker and pre-checks a typed region code the
 // way the routes do. Membership is still the domain's call.
 export { COUNTRY_CODES, isCodeShapedRegion, REGION_CODE_PATTERN } from "@otta-sh/domain";
+// The rule that reads a typed or stored region as one of a country's codes, so
+// the site can pre-select a stored code in its state/province pick list (whose
+// names live in `@otta-sh/plugin/subdivisions`). The routes still validate
+// every region themselves.
+export { normalizeSubdivision } from "@otta-sh/domain";
 // The shopper-facing name of an order — its products, never its id. The site
 // names an order on its confirmation and account pages; the order emails name
 // it through the same function in the domain, so the site takes THAT one rather

@@ -282,7 +282,7 @@ describe("the boundary guard is not vacuous", () => {
 });
 
 describe("the motion budget (§2, §6, §11)", () => {
-	test("only the hold countdown ships client JavaScript", () => {
+	test("only the hold countdown and the checkout's region script (ADR-0034) ship client JavaScript", () => {
 		// "One countdown, one hover" is the whole budget. A component growing a
 		// script is a decision, not a detail. The countdown's script is
 		// `HoldClock` since the ribbon's markup and its script were split
@@ -294,7 +294,7 @@ describe("the motion budget (§2, §6, §11)", () => {
 		// it deliberately has no script without that sentence failing the test
 		// which guarantees it.
 		const withScripts = files.filter((name) => hasExecutableScript(source(name)));
-		expect(withScripts).toEqual(["HoldClock.astro"]);
+		expect(withScripts).toEqual(["HoldClock.astro", "RegionPicker.astro"]);
 	});
 
 	test("only the two ribbons animate, and each declares both sides of the rule", () => {

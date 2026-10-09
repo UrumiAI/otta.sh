@@ -83,6 +83,7 @@ import {
 	type UncalculatedReason,
 } from "./checkout-view-model.js";
 import { createCommerceLoader, renderGuard, type RenderGuardFailure } from "./pdp-route.js";
+import { readStoreRegionFacts } from "./store-region-facts.js";
 
 // ── Public route names ──────────────────────────────────────────────────
 /** The ONE summary route. There is deliberately no `storefront/checkout/quote`
@@ -183,8 +184,11 @@ export interface CheckoutSelectionErrors {
 	/** `code` is the code AS TYPED, so the page can put it back for correcting. */
 	coupon?: { code: string; reason: CouponSelectionReason };
 	shippingMethod?: { reason: ShippingSelectionReason };
-	/** The destination was refused (ADR-0021) — it and the method were dropped. */
-	destination?: { reason: DestinationSelectionReason };
+	/** The destination was refused (ADR-0021) — it and the method were dropped.
+	 *  `blames: "region"`: SHIPPING_ZONE_NOT_MATCHED for a state/province of a
+	 *  country whose OTHER states are served (a zone lists it at region level) —
+	 *  the region is what to change, not the country. */
+	destination?: { reason: DestinationSelectionReason; blames?: "region" };
 }
 
 /**
@@ -224,6 +228,12 @@ interface CheckoutSummaryViewBase {
 	selectionErrors: CheckoutSelectionErrors;
 	/** Whether any line ships. */
 	requiresShipping: boolean;
+	/** The country the review preselects on a fresh visit, so its state list
+	 *  renders on first load. For the delivery block, one the store SHIPS to (its
+	 *  base country when a zone with methods serves it, else the first such
+	 *  zone's); for an address-only page, the tax options' base country. `null`
+	 *  when there is none. */
+	storeCountry: string | null;
 	shipping: CheckoutShippingView;
 	/** The page must collect an address: a physical cart in a zoned store, or
 	 *  any cart when {@link paymentAccountNeedsAddress}. */
@@ -447,6 +457,13 @@ export function createCheckoutSummaryRouteHandler(): RouteHandler<CheckoutSummar
 			const selectionErrors: CheckoutSelectionErrors = {};
 			const quoteWith = (current: CheckoutSelection): Promise<QuoteResult> =>
 				client.quoteCheckout({ cartId: input.cartId, ...quoteSelection(current) });
+			// Read alongside the quote; a failed read only costs the preselect and
+			// the region blame (never the review), so it degrades to "nothing known".
+			const regionFacts = readStoreRegionFacts(ctx).catch(() => ({
+				storeCountry: null,
+				baseCountry: null,
+				regionZoneCountries: new Set<string>(),
+			}));
 			let quote = await quoteWith(selection);
 			while (!quote.ok) {
 				const reason = quote.reason;
@@ -454,7 +471,12 @@ export function createCheckoutSummaryRouteHandler(): RouteHandler<CheckoutSummar
 					selectionErrors.coupon = { code: selection.couponCode, reason };
 					selection = without(selection, "couponCode");
 				} else if (isDestinationSelectionReason(reason) && selection.destination !== undefined) {
-					selectionErrors.destination = { reason };
+					const asked = selection.destination;
+					const blamesRegion =
+						reason === "SHIPPING_ZONE_NOT_MATCHED" &&
+						(asked.region ?? "") !== "" &&
+						(await regionFacts).regionZoneCountries.has(asked.country.trim().toUpperCase());
+					selectionErrors.destination = blamesRegion ? { reason, blames: "region" } : { reason };
 					selection = without(selection, "destination", "shippingMethodId");
 				} else if (isShippingSelectionReason(reason) && selection.shippingMethodId !== undefined) {
 					selectionErrors.shippingMethod = { reason };
@@ -554,6 +576,12 @@ export function createCheckoutSummaryRouteHandler(): RouteHandler<CheckoutSummar
 				},
 				selectionErrors,
 				requiresShipping: quote.requiresShipping,
+				// The delivery block (a cart that ships, in a zoned store) starts on a
+				// country the store ships to; an address-only page on its base country.
+				storeCountry:
+					quote.requiresShipping && status !== "no_zones"
+						? (await regionFacts).storeCountry
+						: (await regionFacts).baseCountry,
 				shipping,
 				addressRequired:
 					(quote.requiresShipping && status !== "no_zones") || paymentAccountNeedsAddress,
@@ -613,6 +641,7 @@ function lockedSummary(
 		},
 		selectionErrors: {},
 		requiresShipping,
+		storeCountry: null,
 		// Nothing to choose: no options are read and none are offered. The
 		// order's method is stated by its totals.
 		shipping: { status, matchedRegion: null, noOptions: false, options: [] },

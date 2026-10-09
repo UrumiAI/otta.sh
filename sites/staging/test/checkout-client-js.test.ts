@@ -105,7 +105,7 @@ function componentClosure(entry: string): string[] {
 
 /**
  * WHERE CLIENT JAVASCRIPT IS ALLOWED TO REACH A PAGE — the whole list
- * (ADR-0012 decision 2, as amended 2026-07-28).
+ * (ADR-0012 decision 2, as amended 2026-07-28, and ADR-0034).
  *
  * A named allowlist rather than a predicate, so that widening it is a diff
  * someone has to write and defend. Each entry is `page → component`, relative
@@ -126,6 +126,11 @@ const PERMITTED_CLIENT_JS: ReadonlyArray<readonly [string, string]> = [
 	// renders; `HoldRibbon.astro` is markup only. Still one page, still one
 	// component, still exactly this pair.
 	[path.join("cart", "index.astro"), "HoldClock.astro"],
+	// ADR-0034 (supersedes ADR-0012 in part): the THIRD and last exception —
+	// the review's optional state/province script. One external, first-party
+	// file (`public/scripts/region-picker.js`, no inline code, no framework),
+	// pure progressive enhancement: the page works unchanged without it.
+	[path.join("checkout", "index.astro"), "RegionPicker.astro"],
 ];
 
 /** The dev styleguide renders every component in every state and 404s outside
@@ -217,7 +222,7 @@ describe("10a — the client-JS fence (ADR-0012 decision 2)", () => {
 			.filter((name) => name.endsWith(".astro"))
 			.filter((name) => hasExecutableScript(readFileSync(path.join(COMPONENTS_DIR, name), "utf8")))
 			.toSorted();
-		expect(scripted).toEqual(["HoldClock.astro"]);
+		expect(scripted).toEqual(["HoldClock.astro", "RegionPicker.astro"]);
 	});
 
 	test("the walk sees THROUGH the theme registry, into every view and the shared form", () => {
@@ -486,3 +491,24 @@ describe.each(viewCases("order"))(
 		});
 	},
 );
+
+describe("ADR-0034 — the checkout's region script is exactly what it says", () => {
+	const component = readFileSync(path.join(COMPONENTS_DIR, "RegionPicker.astro"), "utf8");
+	const script = readFileSync(path.resolve(SRC_DIR, "../public/scripts/region-picker.js"), "utf8");
+
+	test("ONE external, first-party <script src>: no inline code", () => {
+		const tags = [...component.matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script[^>]*>/gi)];
+		expect(tags).toHaveLength(1);
+		expect(tags[0]![1]).toMatch(/\bsrc="\/scripts\/region-picker\.js"/);
+		expect(tags[0]![2]!.trim()).toBe("");
+	});
+
+	test("small, frameworkless, and only about the region list", () => {
+		expect(script.split("\n").length).toBeLessThanOrEqual(45);
+		expect(script).not.toMatch(/\bimport\b|\brequire\(/);
+		// It reads one first-party endpoint and nothing else.
+		expect([...script.matchAll(/fetch\(/g)]).toHaveLength(1);
+		expect(script).toContain("/checkout/regions?country=");
+		expect(script).not.toMatch(/https?:\/\//);
+	});
+});

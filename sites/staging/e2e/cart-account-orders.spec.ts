@@ -119,11 +119,32 @@ test.describe("cart → checkout → order → account, in the browser", () => {
 			const field = form.locator(`input[name="${name}"]`);
 			if ((await field.count()) > 0 && (await field.isVisible())) await field.fill(value);
 		}
+		// The state/province is a pick list rendered for the page's country (no
+		// client JS): a newly chosen country's list arrives with Update, which keeps
+		// everything typed. (A blank region places on a store with no region-level
+		// zones; this one picks California anyway, as a buyer would.)
 		const country = form.locator('select[name="country"]');
-		if ((await country.count()) > 0 && (await country.isVisible()))
+		if ((await country.count()) > 0 && (await country.isVisible())) {
 			await country.selectOption("US");
-		const region = form.locator('input[name="region"]');
-		if ((await region.count()) > 0 && (await region.isVisible())) await region.fill("CA");
+			// With JS (the default here) the optional script swaps the list in place
+			// and hides Update (ADR-0034); without it, Update re-renders the page. A
+			// REAL wait either way: the US state list must appear, or this fails.
+			const update = form.locator('button[value="update-address"]');
+			if (await update.isVisible()) {
+				await Promise.all([
+					page.waitForResponse(
+						(res) =>
+							new URL(res.url()).pathname === "/checkout/place" &&
+							res.request().method() === "POST",
+					),
+					update.click(),
+				]);
+				await page.waitForLoadState("load");
+			}
+			await expect(form.locator('select[name="region"] option[value="CA"]')).toHaveCount(1);
+		}
+		const region = form.locator('select[name="region"]');
+		if ((await region.count()) > 0 && (await region.isVisible())) await region.selectOption("CA");
 
 		await Promise.all([
 			page.waitForURL((url) => url.pathname !== "/checkout", { waitUntil: "load" }),

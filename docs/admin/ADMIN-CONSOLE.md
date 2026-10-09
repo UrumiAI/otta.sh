@@ -2917,6 +2917,12 @@ level-1 `context` 268 → ≤200; the delete-blocked clause moves into DA-7's li
 
 ### 12.4 Shipping (`shipping-page.ts`) — three list levels
 
+> **Zone regions must be set at the level buyers pick from.** The storefront offers every
+> ISO 3166-2 subdivision of a country, all levels (GB: 221 entries), and matching is exact with
+> no hierarchy — a `GB-ENG` zone does not cover a buyer who picks a council area. List the codes
+> your buyers will choose. A country any zone lists at region level also makes the state/province
+> REQUIRED at checkout for that country (ADR-0021, amended 2026-10-08).
+
 Same per-row-accordion transformation as §12.3 at levels 0 and 1; level 2 is **exempt** (L-9a).
 
 ```

@@ -111,6 +111,15 @@ named "the address is a record, not a pricing input" as a deliberate, temporary 
     The summary's fallback re-quotes are bounded at four quotes (five product reads) including the
     preselect. On the locked page `readyToPlace` is `phase === "payable"` and nothing is quoted.
 
+*(Amended 2026-10-08, region pick list.)* The storefront's state/province field is a pick list
+of **every** ISO 3166-2 subdivision of the chosen country, at all levels, exactly the codes
+validation accepts (GB lists 221: nations and council areas; FR lists regions and
+departments). Matching stays exact (no hierarchy), so **a merchant must set region zones at
+the level buyers pick from**: a `GB-ENG` zone does not cover a buyer who picks `GB-KEC`, and
+`FR-IDF` does not cover `FR-75C`. The region is REQUIRED at checkout exactly for the
+countries some zone lists at region level (zones carry both shipping methods and tax rates);
+elsewhere it is optional and never asked for.
+
 ## Consequences
 
 - A delivery step (country, region code, method radios) is required on the review for a cart that

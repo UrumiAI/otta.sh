@@ -933,11 +933,66 @@ describe("storefront/checkout/summary — the buyer's selection (workerd sandbox
  * derived from it, tax follows it, the matched zone's options are offered, and
  * a lone priced option is preselected. See `P2_ZONES` for the fixture.
  */
+/** A summary's selection refusals. */
+const selectionErrorsOf = (result: Record<string, unknown>): unknown => result["selectionErrors"];
+
 describe("storefront/checkout/summary — the zone derived from the destination (workerd sandbox)", () => {
 	useShippingRules(seedZoneFixture, removeZoneFixture);
 
 	type Totals = Record<string, { money: { amount: number } | null; label: string }>;
 	const totalsOf = (result: Record<string, unknown>) => result["totals"] as Totals;
+
+	test("storeCountry: with no tax base address, the first zone's (by id: the US-CA zone ⇒ US) — what the review preselects", async () => {
+		const result = await summary({ cartId: await p2Cart() });
+		expect(result["storeCountry"]).toBe("US");
+	});
+
+	test("an address-only (digital) review preselects the tax BASE country only — never a shipping zone's", async () => {
+		// No base address is set in this fixture, so: none, though zones serve the US.
+		expect((await summary({ cartId: await p2Cart("digital") }))["storeCountry"]).toBeNull();
+	});
+
+	test("storeCountry is never a country the store does not ship to: a zone without methods (first by id) is skipped", async () => {
+		const rules = new EmdashShippingRulesStore({ storage, clock: systemClock });
+		const JP = `${NS}-p2-aa-jp`;
+		await rules.createZone({ id: JP, name: "Japan (tax only)", regions: ["JP"] });
+		try {
+			expect((await summary({ cartId: await p2Cart() }))["storeCountry"]).toBe("US");
+		} finally {
+			await rules.deleteZone(JP);
+		}
+	});
+
+	test("a state of a country SHIPPED to only by state is refused for its region (blames: region); a tax-only state zone, or a country nobody serves, is not", async () => {
+		const rules = new EmdashShippingRulesStore({ storage, clock: systemClock });
+		const ON = `${NS}-p2-ca-on`;
+		const ON_STD = `${NS}-p2-ca-on-std`;
+		await rules.createZone({ id: ON, name: "Ontario", regions: ["CA-ON"] });
+		try {
+			const cartId = await p2Cart();
+			// A state zone with NO methods (one that only carries a tax rate) ships
+			// nowhere: the refusal is about the country, in the country's words.
+			expect(
+				selectionErrorsOf(await summary({ cartId, destination: { country: "CA", region: "QC" } })),
+			).toEqual({
+				destination: { reason: "SHIPPING_ZONE_NOT_MATCHED" },
+			});
+			await rules.createMethod({ id: ON_STD, zoneId: ON, name: "Ontario Post", type: "flat_rate" });
+			expect(
+				selectionErrorsOf(await summary({ cartId, destination: { country: "CA", region: "QC" } })),
+			).toEqual({
+				destination: { reason: "SHIPPING_ZONE_NOT_MATCHED", blames: "region" },
+			});
+			expect(
+				selectionErrorsOf(await summary({ cartId, destination: { country: "JP", region: "13" } })),
+			).toEqual({
+				destination: { reason: "SHIPPING_ZONE_NOT_MATCHED" },
+			});
+			await rules.deleteMethod(ON_STD);
+		} finally {
+			await rules.deleteZone(ON);
+		}
+	});
 
 	test("B1: (US, CA) matches US-CA over US; its ONE option is preselected; 3000 + 599 + 218 = $38.17", async () => {
 		const cartId = await p2Cart();
@@ -974,6 +1029,10 @@ describe("storefront/checkout/summary — the zone derived from the destination 
 
 	test.each([
 		[{ country: "US", region: "XX" }, "SHIPPING_REGION_CODE_REQUIRED"],
+		// Real subdivisions of ANOTHER country: the pick list only offers the
+		// address's own, and the server still refuses anything else.
+		[{ country: "US", region: "ON" }, "SHIPPING_REGION_CODE_REQUIRED"],
+		[{ country: "US", region: "MX-CA" }, "SHIPPING_REGION_CODE_REQUIRED"],
 		[{ country: "US" }, "SHIPPING_REGION_CODE_REQUIRED"],
 		[{ country: "JP" }, "SHIPPING_ZONE_NOT_MATCHED"],
 		[{ country: "ZZ" }, "INVALID_SHIPPING_ADDRESS"],
@@ -2076,6 +2135,13 @@ describe("storefront/checkout/place success path (workerd sandbox, Stripe stubbe
 			return (await storedOrder(orderId)).totals;
 		}
 
+		test("a store with NO zones never needs a region: a US address without one places", async () => {
+			const placed = await placeCart(await seedThreeLineCart(), { shippingAddress: SHIP_TO });
+			expect(placed, JSON.stringify(placed)).toMatchObject({ ok: true });
+			const order = await storedOrder(placed["orderId"] as string);
+			expect(JSON.stringify(order)).not.toContain("SHIPPING_REGION_CODE_REQUIRED");
+		});
+
 		test("a coupon is redeemed WITH the order: summary total, place total, order total and Stripe amount are the SAME discounted figure", async () => {
 			await seedCoupon({ id: `${NS}-place-once`, code: "CK-PLACE-ONCE", amount: 500 });
 			const cartId = await seedThreeLineCart();
@@ -2429,6 +2495,17 @@ describe("storefront/checkout/place success path (workerd sandbox, Stripe stubbe
 			expect((order.totals.shippingMethodSnapshot as { zoneId: string }).zoneId).toBe(P2.CA);
 		});
 
+		test("a physical cart in a STATE-zoned store (a US-CA zone, which also carries the CA tax rate) cannot place a US address without a region", async () => {
+			// The store's rule — region required iff some zone lists one of the
+			// country's subdivisions — is this zone match; the site adds none.
+			expect(SHIP_TO).not.toHaveProperty("region");
+			await expectRefusedAtPlace(
+				await p2Cart(),
+				{ shippingAddress: SHIP_TO, shippingMethodId: P2.US_STD },
+				"SHIPPING_REGION_CODE_REQUIRED",
+			);
+		});
+
 		test("(US, XX) is the typed SHIPPING_REGION_CODE_REQUIRED — no order, no intent", async () => {
 			await expectRefusedAtPlace(
 				await p2Cart(),
@@ -2436,6 +2513,17 @@ describe("storefront/checkout/place success path (workerd sandbox, Stripe stubbe
 				"SHIPPING_REGION_CODE_REQUIRED",
 			);
 		});
+
+		test.each(["ON", "MX-CA"])(
+			"(US, %s) — another country's subdivision — is refused at place: no order, no intent",
+			async (region) => {
+				await expectRefusedAtPlace(
+					await p2Cart(),
+					{ shippingAddress: { ...SHIP_TO, region }, shippingMethodId: P2.US_STD },
+					"SHIPPING_REGION_CODE_REQUIRED",
+				);
+			},
+		);
 
 		test("(DE, Bavaria) is INVALID_INPUT before any order or intent exists", async () => {
 			const cartId = await p2Cart();

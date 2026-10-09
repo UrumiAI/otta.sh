@@ -165,6 +165,28 @@ export function readDestinationParams(url: URL): DestinationRead {
 	return { destination: { country, region: region.toUpperCase() }, methodDropped };
 }
 
+/**
+ * What the delivery block's country and region fields show: the destination the
+ * totals were priced for; else the one the site refused by shape (so a typo can
+ * be fixed); else the one the buyer ASKED for and the PLUGIN refused — a US
+ * store with a state-level zone refuses plain `US` (SHIPPING_REGION_CODE_REQUIRED)
+ * — so the country stays chosen and its state/province list is shown. Without
+ * that last step the page asked for a state from a list it did not print.
+ */
+export function deliveryFieldValues(
+	priced: { country: string; region: string | null } | null,
+	read: DestinationRead,
+): { country: string; region: string } {
+	if (priced !== null) return { country: priced.country, region: priced.region ?? "" };
+	if (read.rejected !== undefined) {
+		return { country: read.rejected.country, region: read.rejected.region };
+	}
+	if (read.destination !== undefined) {
+		return { country: read.destination.country, region: read.destination.region ?? "" };
+	}
+	return { country: "", region: "" };
+}
+
 /** The plugin's own id bound: printable ASCII, no whitespace, 1–200. */
 const METHOD_ID = /^[\x21-\x7e]{1,200}$/;
 
@@ -201,7 +223,7 @@ export function isMethodFailure(token: string): boolean {
 
 /**
  * Where a failed place sends the buyer. The part of the selection the failure
- * blames is DROPPED, so the review re-renders without it and with ONE notice
+ * blames is DROPPED (but never the buyer's country — see below), so the review re-renders without it and with ONE notice
  * (the error's) — keeping it would re-quote the same refusal and show it twice:
  * a coupon failure drops the coupon; a destination failure the destination and
  * the method; a method failure the method. Anything else keeps the whole
@@ -211,10 +233,17 @@ export function isMethodFailure(token: string): boolean {
 export function placeFailurePath(token: string, selection: CheckoutUrlSelection): string {
 	const dropDestination = isDestinationFailure(token);
 	const dropMethod = dropDestination || isMethodFailure(token);
+	// The buyer's COUNTRY always stays — never replaced by the store's: the
+	// review comes back with it chosen and its state list shown, and the
+	// summary states the refusal again beside the field it blames (the country
+	// for "we don't ship there", the region otherwise). The method goes.
 	return checkoutPath({
 		couponCode: isCouponFailure(token) ? undefined : selection.couponCode,
-		country: dropDestination ? undefined : selection.country,
-		region: dropDestination ? undefined : selection.region,
+		country: selection.country,
+		// Only a refusal OF THE REGION drops it; any other (an incomplete street
+		// address, a zone that does not match) keeps it, so a zoned order never
+		// loses its state silently.
+		region: token === "SHIPPING_REGION_CODE_REQUIRED" ? undefined : selection.region,
 		shippingMethodId: dropMethod ? undefined : selection.shippingMethodId,
 		error: token,
 	});
@@ -250,7 +279,11 @@ function bounded(value: string | undefined): string | undefined {
  * dropped on a changed destination — apply unchanged. Only coarse codes and an
  * opaque method id: no personal data reaches the URL.
  */
-export function deliveryUpdatePath(fields: DeliveryFields, couponCode: string | undefined): string {
+export function deliveryUpdatePath(
+	fields: DeliveryFields,
+	couponCode: string | undefined,
+	error?: string,
+): string {
 	const params = new URLSearchParams();
 	const put = (key: string, value: string | undefined): void => {
 		if (value !== undefined) params.set(key, value);
@@ -263,6 +296,7 @@ export function deliveryUpdatePath(fields: DeliveryFields, couponCode: string | 
 	put(METHOD_PARAM, method !== undefined && METHOD_ID.test(method) ? method : undefined);
 	put(FROM_COUNTRY_PARAM, bounded(fields.fromCountry)?.toUpperCase());
 	put(FROM_REGION_PARAM, bounded(fields.fromRegion));
+	put("error", error);
 	const query = params.toString();
 	return query.length > 0 ? `/checkout?${query}` : "/checkout";
 }

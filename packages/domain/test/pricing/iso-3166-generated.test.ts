@@ -2,10 +2,14 @@ import { readFileSync } from "node:fs";
 import { describe, expect, test } from "vitest";
 import {
 	CLDR_VERSION,
+	decodeXmlText,
 	EXCEPTIONALLY_RESERVED,
 	expandCldrRange,
 	generateIso3166,
+	generateSubdivisionNames,
 	regularIds,
+	stripXmlComments,
+	subdivisionNames,
 } from "../../scripts/generate-iso-3166.js";
 
 /**
@@ -34,6 +38,28 @@ describe("iso-3166.generated.ts", () => {
 		expect(read("src/pricing/iso-3166.generated.ts")).toBe(emitted);
 	});
 
+	test("iso-3166-names.generated.ts is exactly what the generator emits from the vendored CLDR XML", () => {
+		const emitted = generateSubdivisionNames({
+			regionXml: read(`${vendored}/validity/region.xml`),
+			subdivisionXml: read(`${vendored}/validity/subdivision.xml`),
+			namesXml: read(`${vendored}/subdivisions/en.xml`),
+			licenseText: read(`${vendored}/LICENSE`),
+		});
+		expect(read("src/pricing/iso-3166-names.generated.ts")).toBe(emitted);
+	});
+
+	test("the names module's header names the version, the source file and the licence", () => {
+		const header = read("src/pricing/iso-3166-names.generated.ts")
+			.split("\n")
+			.slice(0, 20)
+			.join("\n");
+		expect(header).toContain(`CLDR ${CLDR_VERSION}`);
+		expect(header).toContain("common/subdivisions/en.xml");
+		expect(header).toContain("GENERATED");
+		expect(header).toContain("do not edit");
+		expect(header).toContain("Unicode-3.0");
+	});
+
 	test("its header names the pinned CLDR version, the do-not-edit marker and the Unicode licence", () => {
 		const header = read("src/pricing/iso-3166.generated.ts").split("\n").slice(0, 20).join("\n");
 		expect(CLDR_VERSION).toBe("48.2");
@@ -51,7 +77,14 @@ describe("iso-3166.generated.ts", () => {
 		);
 		expect(read("THIRD_PARTY_NOTICES")).toContain(line);
 		expect(readFileSync(new URL("../plugin/THIRD_PARTY_NOTICES", root), "utf8")).toContain(line);
-		for (const file of ["src/pricing/iso-3166.generated.ts", "THIRD_PARTY_NOTICES"]) {
+		expect(
+			read("src/pricing/iso-3166-names.generated.ts").split("\n").slice(0, 20).join("\n"),
+		).toContain(line);
+		for (const file of [
+			"src/pricing/iso-3166.generated.ts",
+			"src/pricing/iso-3166-names.generated.ts",
+			"THIRD_PARTY_NOTICES",
+		]) {
 			expect(read(file)).not.toMatch(/Copyright © 1991-2024/);
 		}
 	});
@@ -66,6 +99,7 @@ describe("iso-3166.generated.ts", () => {
 		const notices = read("THIRD_PARTY_NOTICES");
 		expect(notices).toContain("UNICODE LICENSE V3");
 		expect(notices).toContain(`CLDR ${CLDR_VERSION}`);
+		expect(notices).toContain("common/subdivisions/en.xml");
 		const pkg = JSON.parse(read("package.json")) as { files: string[] };
 		expect(pkg.files).toContain("THIRD_PARTY_NOTICES");
 		// The vendored XML and the generator are dev-only (D14).
@@ -95,5 +129,52 @@ describe("the generator's CLDR parsing", () => {
 			</id>
 		</idValidity></supplementalData>`;
 		expect(regularIds(xml, "region")).toEqual(["AD", "AE", "AF"]);
+	});
+});
+
+describe("the generator's subdivision names", () => {
+	test("decodes the predefined entities and numeric references, and refuses anything else", () => {
+		expect(decodeXmlText("Trinity &amp; Tobago &#x41;&#66; &lt;&gt;&quot;&apos;")).toBe(
+			"Trinity & Tobago AB <>\"'",
+		);
+		expect(() => decodeXmlText("a &nbsp; b")).toThrow();
+		expect(() => decodeXmlText("a & b")).toThrow();
+	});
+
+	test("one comment rule serves both readers", () => {
+		expect(stripXmlComments("a<!-- x\n y -->b<!--z-->c<!--w--!>d")).toBe("a b c d");
+	});
+
+	test("reads each subdivision element and ignores commented-out ones", () => {
+		const xml = `<ldml><subdivisions>
+			<!-- <subdivision type="usxx">Gone</subdivision> -->
+			<subdivision type="usca">California</subdivision> <!-- note -->
+			<subdivision type="ttpos">Port of Spain &amp; Co</subdivision>
+		</subdivisions></ldml>`;
+		expect([...subdivisionNames(xml)]).toEqual([
+			["usca", "California"],
+			["ttpos", "Port of Spain & Co"],
+		]);
+	});
+
+	test("accepts provisional names, strips footnote markers, and refuses any other attribute", () => {
+		const names = subdivisionNames(
+			`<subdivision type="cnhk" draft="provisional">Hong Kong</subdivision><subdivision type="fridf">Île-de-France²</subdivision>`,
+		);
+		expect(names.get("cnhk")).toBe("Hong Kong");
+		expect(names.get("fridf")).toBe("Île-de-France");
+		expect(() =>
+			subdivisionNames(`<subdivision type="usca" alt="short">Calif.</subdivision>`),
+		).toThrow(/unsupported attributes/);
+	});
+
+	test("refuses a name the packed module could not carry, or a subdivision named twice", () => {
+		expect(() => subdivisionNames(`<subdivision type="usca">A|B</subdivision>`)).toThrow();
+		expect(() => subdivisionNames(`<subdivision type="usca"> A</subdivision>`)).toThrow();
+		expect(() =>
+			subdivisionNames(
+				`<subdivision type="usca">A</subdivision><subdivision type="usca">B</subdivision>`,
+			),
+		).toThrow();
 	});
 });

@@ -1063,8 +1063,14 @@ describe("the delivery address at place (ADR-0021)", () => {
 	});
 
 	test.each([
-		["SHIPPING_ZONE_NOT_MATCHED", "/checkout?coupon=C&error=SHIPPING_ZONE_NOT_MATCHED"],
-		["SHIPPING_REGION_CODE_REQUIRED", "/checkout?coupon=C&error=SHIPPING_REGION_CODE_REQUIRED"],
+		[
+			"SHIPPING_ZONE_NOT_MATCHED",
+			"/checkout?coupon=C&country=US&region=CA&error=SHIPPING_ZONE_NOT_MATCHED",
+		],
+		[
+			"SHIPPING_REGION_CODE_REQUIRED",
+			"/checkout?coupon=C&country=US&error=SHIPPING_REGION_CODE_REQUIRED",
+		],
 		[
 			"SHIPPING_METHOD_NOT_IN_ZONE",
 			"/checkout?coupon=C&country=US&region=CA&error=SHIPPING_METHOD_NOT_IN_ZONE",
@@ -1072,6 +1078,11 @@ describe("the delivery address at place (ADR-0021)", () => {
 		[
 			"MISSING_SHIPPING_ADDRESS",
 			"/checkout?coupon=C&country=US&region=CA&error=MISSING_SHIPPING_ADDRESS",
+		],
+		// A zoned order's incomplete street address keeps its state too.
+		[
+			"INVALID_SHIPPING_ADDRESS",
+			"/checkout?coupon=C&country=US&region=CA&error=INVALID_SHIPPING_ADDRESS",
 		],
 		["COUPON_NOT_FOUND", "/checkout?country=US&region=CA&method=m-1&error=COUPON_NOT_FOUND"],
 		[
@@ -1306,6 +1317,7 @@ describe("GET /checkout entry guard (§1.7)", () => {
 				lines: [],
 				totals: {} as never,
 				idempotencyKey: "checkout:cart-1",
+				storeCountry: null,
 				hasUnpricedLines: false,
 				selection: { couponCode: null, shippingMethodId: null, destination: null },
 				selectionErrors: {},
