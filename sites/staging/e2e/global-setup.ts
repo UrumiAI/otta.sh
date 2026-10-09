@@ -166,7 +166,9 @@ async function applyCmsSeed(): Promise<void> {
 				);
 			}
 			if (res.status >= 400) {
-				throw new Error(`seed: the CMS seed (setup dev-bypass) answered HTTP ${String(res.status)}.`);
+				throw new Error(
+					`seed: the CMS seed (setup dev-bypass) answered HTTP ${String(res.status)}.`,
+				);
 			}
 		},
 		{ attempts: CMS_SEED_ATTEMPTS, delayMs: CMS_SEED_RETRY_DELAY_MS },
