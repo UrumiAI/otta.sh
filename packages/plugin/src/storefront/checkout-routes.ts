@@ -83,7 +83,7 @@ import {
 	type UncalculatedReason,
 } from "./checkout-view-model.js";
 import { createCommerceLoader, renderGuard, type RenderGuardFailure } from "./pdp-route.js";
-import { readStoreRegionFacts } from "./store-region-facts.js";
+import { storeRegionFacts } from "./store-region-facts.js";
 
 // ── Public route names ──────────────────────────────────────────────────
 /** The ONE summary route. There is deliberately no `storefront/checkout/quote`
@@ -231,8 +231,14 @@ interface CheckoutSummaryViewBase {
 	 *  renders on first load. For the delivery block, one the store SHIPS to (its
 	 *  base country when a zone with methods serves it, else the first such
 	 *  zone's); for an address-only page, the tax options' base country. `null`
-	 *  when there is none. */
+	 *  when there is none, and whenever a destination was asked for (the review
+	 *  preselects only on a fresh visit, so it is not read then). */
 	storeCountry: string | null;
+	/** Countries whose state/province the delivery block must REQUIRE: some zone
+	 *  lists one of their subdivisions, so the plugin refuses a blank region
+	 *  (SHIPPING_REGION_CODE_REQUIRED). Any subdivision satisfies it, including
+	 *  one inside the zoned subdivision. Sorted; empty with no delivery block. */
+	regionRequiredCountries: string[];
 	shipping: CheckoutShippingView;
 	/** The page must collect an address: a physical cart in a zoned store, or
 	 *  any cart when {@link paymentAccountNeedsAddress}. */
@@ -456,13 +462,9 @@ export function createCheckoutSummaryRouteHandler(): RouteHandler<CheckoutSummar
 			const selectionErrors: CheckoutSelectionErrors = {};
 			const quoteWith = (current: CheckoutSelection): Promise<QuoteResult> =>
 				client.quoteCheckout({ cartId: input.cartId, ...quoteSelection(current) });
-			// Read alongside the quote; a failed read only costs the preselect and
-			// the region blame (never the review), so it degrades to "nothing known".
-			const regionFacts = readStoreRegionFacts(ctx).catch(() => ({
-				storeCountry: null,
-				baseCountry: null,
-				regionZoneCountries: new Set<string>(),
-			}));
+			// Lazy, each read at most once: only what this render shows is read
+			// (store-region-facts.ts), and a failed read degrades to "nothing known".
+			const regionFacts = storeRegionFacts(ctx);
 			let quote = await quoteWith(selection);
 			while (!quote.ok) {
 				const reason = quote.reason;
@@ -474,7 +476,7 @@ export function createCheckoutSummaryRouteHandler(): RouteHandler<CheckoutSummar
 					const blamesRegion =
 						reason === "SHIPPING_ZONE_NOT_MATCHED" &&
 						(asked.region ?? "") !== "" &&
-						(await regionFacts).regionZoneCountries.has(asked.country.trim().toUpperCase());
+						(await regionFacts.regionZoneCountries()).has(asked.country.trim().toUpperCase());
 					selectionErrors.destination = blamesRegion ? { reason, blames: "region" } : { reason };
 					selection = without(selection, "destination", "shippingMethodId");
 				} else if (isShippingSelectionReason(reason) && selection.shippingMethodId !== undefined) {
@@ -529,6 +531,8 @@ export function createCheckoutSummaryRouteHandler(): RouteHandler<CheckoutSummar
 
 			const methodSelected = selection.shippingMethodId !== undefined;
 			const status = quote.destination.status;
+			/** The review shows a delivery block: a cart that ships, in a zoned store. */
+			const deliveryBlock = quote.requiresShipping && status !== "no_zones";
 			// Issue #382: a kv read of the cached account country (Stripe is asked
 			// only when nothing usable is cached). The SAME answer `createOrder`
 			// enforces at place, so the form never under-asks.
@@ -575,12 +579,19 @@ export function createCheckoutSummaryRouteHandler(): RouteHandler<CheckoutSummar
 				},
 				selectionErrors,
 				requiresShipping: quote.requiresShipping,
-				// The delivery block (a cart that ships, in a zoned store) starts on a
-				// country the store ships to; an address-only page on its base country.
+				// Read only when the review can preselect it — a FRESH visit, with no
+				// destination asked for. The delivery block (a cart that ships, in a
+				// zoned store) starts on a country the store ships to; an address-only
+				// page on its base country.
 				storeCountry:
-					quote.requiresShipping && status !== "no_zones"
-						? (await regionFacts).storeCountry
-						: (await regionFacts).baseCountry,
+					input.selection.destination !== undefined
+						? null
+						: deliveryBlock
+							? await regionFacts.storeCountry()
+							: await regionFacts.baseCountry(),
+				regionRequiredCountries: deliveryBlock
+					? [...(await regionFacts.regionCountries())].toSorted()
+					: [],
 				shipping,
 				addressRequired:
 					(quote.requiresShipping && status !== "no_zones") || paymentAccountNeedsAddress,
@@ -641,6 +652,7 @@ function lockedSummary(
 		selectionErrors: {},
 		requiresShipping,
 		storeCountry: null,
+		regionRequiredCountries: [],
 		// Nothing to choose: no options are read and none are offered. The
 		// order's method is stated by its totals.
 		shipping: { status, matchedRegion: null, noOptions: false, options: [] },

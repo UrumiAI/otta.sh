@@ -994,6 +994,50 @@ describe("storefront/checkout/summary — the zone derived from the destination 
 		}
 	});
 
+	test("storeCountry is read only on a fresh visit: a review asked for a destination carries null", async () => {
+		const result = await summary({
+			cartId: await p2Cart(),
+			destination: { country: "US", region: "CA" },
+		});
+		expect(result["storeCountry"]).toBeNull();
+	});
+
+	test("regionRequiredCountries: every country a zone lists by region (the US-CA zone ⇒ US); none without a delivery block", async () => {
+		expect((await summary({ cartId: await p2Cart() }))["regionRequiredCountries"]).toEqual(["US"]);
+		expect((await summary({ cartId: await p2Cart("digital") }))["regionRequiredCountries"]).toEqual(
+			[],
+		);
+	});
+
+	test("Canary Islands: a Tenerife (ES-TF) destination matches an ES-CN zone through containment; a blank region is still required", async () => {
+		const rules = new EmdashShippingRulesStore({ storage, clock: systemClock });
+		const CN = `${NS}-p2-es-cn`;
+		const CN_STD = `${NS}-p2-es-cn-std`;
+		await rules.createZone({ id: CN, name: "Canary Islands", regions: ["ES-CN"] });
+		await rules.createMethod({ id: CN_STD, zoneId: CN, name: "Islas", type: "flat_rate" });
+		try {
+			const cartId = await p2Cart();
+			const tenerife = await summary({ cartId, destination: { country: "ES", region: "TF" } });
+			expect(tenerife, JSON.stringify(tenerife)).toMatchObject({
+				ok: true,
+				shipping: { status: "matched", matchedRegion: "ES-CN" },
+				selection: { destination: { country: "ES", region: "TF" } },
+				selectionErrors: {},
+			});
+			expect(tenerife["regionRequiredCountries"]).toEqual(["ES", "US"]);
+			expect(selectionErrorsOf(await summary({ cartId, destination: { country: "ES" } }))).toEqual({
+				destination: { reason: "SHIPPING_REGION_CODE_REQUIRED" },
+			});
+			// Madrid is not in the Canary Islands, and no ES zone serves it.
+			expect(
+				selectionErrorsOf(await summary({ cartId, destination: { country: "ES", region: "M" } })),
+			).toEqual({ destination: { reason: "SHIPPING_ZONE_NOT_MATCHED", blames: "region" } });
+		} finally {
+			await rules.deleteMethod(CN_STD);
+			await rules.deleteZone(CN);
+		}
+	});
+
 	test("B1: (US, CA) matches US-CA over US; its ONE option is preselected; 3000 + 599 + 218 = $38.17", async () => {
 		const cartId = await p2Cart();
 
