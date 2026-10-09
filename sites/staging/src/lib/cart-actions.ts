@@ -26,6 +26,28 @@ import { dispatchOttaRoute, isBusyResult, sameSitePath } from "./otta-api.js";
  *  (`RENDER_FAILED`, `OUT_OF_STOCK`, ...). */
 export const SERVICE_UNAVAILABLE = "SERVICE_UNAVAILABLE";
 
+/**
+ * Refusals that mean the COOKIE's cart is bad, so the cookie is dropped and the
+ * next add mints a fresh cart instead of failing forever:
+ * - `CART_NOT_FOUND` — the cookie names a cart that no longer exists;
+ * - `INVALID_CART_ID` — the cookie is not a cart-id token (the read route's guard);
+ * - `INVALID_INPUT` — on the write routes the plugin's input guard also checks the
+ *   cart id first, so a tampered cookie lands here. The other fields it guards
+ *   (sku, qty, line id, idempotency key) are validated or minted by the site's
+ *   own forms, so a legitimate shopper cannot reach it by any other route.
+ *
+ * Deliberately NOT here: transient or per-request refusals that leave the cart
+ * good (`OUT_OF_STOCK`, `QTY_TOO_LARGE`, `HOLD_EXPIRED`, `LINE_NOT_FOUND`,
+ * `LINE_CHECKED_OUT`, `SKU_MISMATCH`, `BUSY`, `RENDER_FAILED`,
+ * `SERVICE_UNAVAILABLE`) and `CART_CHECKED_OUT` (a pending order's cart is kept:
+ * its payment may still happen, and the cart page offers the way out).
+ */
+const BAD_CART_COOKIE_TOKENS: ReadonlySet<string> = new Set([
+	"CART_NOT_FOUND",
+	"INVALID_CART_ID",
+	"INVALID_INPUT",
+]);
+
 /** `/cart/add`'s pre-check tokens (item 3 — bogus SKU/productId rejection):
  *  a submitted `productId` that doesn't resolve to a live CMS entry, or one
  *  whose live product disagrees with the submitted `sku` / isn't
@@ -75,6 +97,12 @@ export function currentCartId(context: APIContext): string | undefined {
 
 export function clearCartCookie(context: APIContext): void {
 	context.cookies.delete(CART_COOKIE_NAME, { path: CART_COOKIE_PATH });
+}
+
+/** Drop the cart cookie when `token` says the cart it names is bad (see
+ *  {@link BAD_CART_COOKIE_TOKENS}); leave it for any other refusal. */
+export function clearCartCookieIfBad(context: APIContext, token: string): void {
+	if (BAD_CART_COOKIE_TOKENS.has(token)) clearCartCookie(context);
 }
 
 /** {@link ensureCartId}'s answer: a cart id, or WHY there is none — `busy`
