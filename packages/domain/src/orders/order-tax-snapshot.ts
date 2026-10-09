@@ -16,7 +16,8 @@ export interface OrderTaxSnapshotV1 {
 	/**
 	 * The tax was really calculated for a place (ADR-0032): a tax location matched
 	 * a zone — the shipping zone, or the shop base address for a digital-only cart
-	 * or a "based on the shop" store, which leaves the order with no shipping zone.
+	 * or a "based on the shop" store, which leaves the order with no shipping zone —
+	 * or an outside calculator charged tax with no zone at all (#436).
 	 * Written by every order since; ABSENT on a v1 snapshot written before it, which
 	 * reads as not located, so those orders keep deciding "was tax calculated?" off
 	 * the shipping zone alone, exactly as before.
@@ -48,7 +49,7 @@ export type OrderTaxSnapshot = OrderTaxSnapshotV1 | OrderTaxSnapshotV0;
 export function buildOrderTaxSnapshot(
 	breakdown: TotalsBreakdown,
 	tax: { calculatorId: string; result: TaxResult; pricesIncludeTax?: boolean },
-	/** The quote's `taxLocated`: a tax location matched a zone. */
+	/** The quote's `taxLocated`: a tax location matched a zone, or tax was charged without one. */
 	located: boolean,
 ): OrderTaxSnapshotV1 {
 	return {

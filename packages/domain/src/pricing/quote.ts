@@ -123,7 +123,10 @@ export type QuoteResult =
 			tax: QuoteTax;
 			/** The tax options this quote was priced under (after the upgrade rule). */
 			taxSettings: TaxSettings;
-			/** Whether a tax location matched a zone — false ⇒ the tax was not located. */
+			/** Whether tax was calculated for a place: a tax location matched a
+			 *  zone, or the calculator charged tax without one (an outside
+			 *  calculator answers for the address itself, #436). False ⇒ the tax
+			 *  was not located. The built-in charges nothing without a zone. */
 			taxLocated: boolean;
 	  }
 	| { ok: false; reason: QuoteFailure };
@@ -306,7 +309,7 @@ export async function computeQuote(
 		destination: resolution,
 		tax,
 		taxSettings,
-		taxLocated: located.zoneId !== null,
+		taxLocated: located.zoneId !== null || breakdown.taxCents > 0,
 	};
 }
 
