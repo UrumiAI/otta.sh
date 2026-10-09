@@ -791,9 +791,8 @@ describe("astro.config", () => {
 	test(
 		"no storefront theme list is baked into the build: the admin offers no theme choice",
 		async () => {
-			// ADR-0024's amendment of 2026-10-02: the store ships one theme (Tempered), and
-			// the admin's Themes screen and Settings "Store theme" radio — the only
-			// readers of this define — are gone with it.
+			// ADR-0024's amendment of 2026-10-02: the store ships one theme (Tempered) and
+			// the admin offers no theme choice, so nothing reads this define.
 			const config = (await import("../astro.config.js")).default;
 			const define = config.vite?.define as Record<string, string>;
 			expect(Object.keys(define)).not.toContain("__OTTA_STORE_THEMES__");

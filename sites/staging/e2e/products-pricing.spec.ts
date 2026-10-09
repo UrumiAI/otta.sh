@@ -11,7 +11,7 @@
  * Pricing & inventory page.
  *
  * IT WRITES. It prices and restocks the first product on the list, so point it
- * only at a local, seeded stack (DIRECTOR-SPEC §0.2).
+ * only at a local, seeded stack (`sites/staging/README.md`, "Local development").
  */
 import type { Page } from "@playwright/test";
 import {

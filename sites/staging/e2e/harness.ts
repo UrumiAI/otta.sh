@@ -46,7 +46,7 @@ import { fileURLToPath } from "node:url";
 import { expect, test as base, type Page, type TestInfo } from "@playwright/test";
 
 /**
- * DIRECTOR-SPEC §0.4. Playwright's `fullPage: true` truncates these pages, so
+ * The screenshot viewport. Playwright's `fullPage: true` truncates these pages, so
  * every shot is taken at an explicit viewport instead — and comparisons against
  * `audit/shots/` are only valid at the same size. Pinned by `harness.spec.ts`
  * against the resolved project config, not just declared here.
@@ -70,7 +70,8 @@ const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "::1", "[::1]"]);
 
 /** How the guard explains itself. One string, so the parse failure and the
  *  remote-host failure read the same and point at the same section. */
-const LOOPBACK_RULE = "The e2e harness never talks to a remote host: see DIRECTOR-SPEC §0.2/§0.3.";
+const LOOPBACK_RULE =
+	"The e2e harness never talks to a remote host: run it against a local stack (sites/staging/README.md, DEVELOPMENT.md §6).";
 
 export function assertLoopbackUrl(raw: string, label: string): string {
 	let host: string;
@@ -334,8 +335,8 @@ export async function skipWithoutSite(testInfo: TestInfo): Promise<void> {
 	if (await siteIsUp()) return;
 	const how =
 		`no staging site from THIS worktree (${REPO_ROOT}) at ${E2E_BASE_URL} — boot the ` +
-		`stack (DIRECTOR-SPEC §0.2) or set OTTA_E2E_START_STACK=1 to have Playwright boot ` +
-		`it. A server from another worktree on the same port does not count.`;
+		`stack (sites/staging/README.md, "Local development") or set OTTA_E2E_START_STACK=1 ` +
+		`to have Playwright boot it. A server from another worktree on the same port does not count.`;
 	if (E2E_REQUIRES_SITE) throw new Error(`OTTA_E2E_REQUIRE_SITE=1 and ${how}`);
 	testInfo.skip(true, how);
 }
