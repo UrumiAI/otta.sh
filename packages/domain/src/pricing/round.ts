@@ -56,3 +56,35 @@ export function mulDivRoundHalfUp(a: number, b: number, denominator: number): nu
 	const d = BigInt(denominator);
 	return Number((BigInt(a) * BigInt(b) + d / 2n) / d);
 }
+
+/**
+ * `round_half_up(a × b / d)` for ANY positive integer `d` — the even-denominator
+ * restriction of {@link mulDivRoundHalfUp} cannot serve `10000 + bps`, which is
+ * odd for an odd rate (prices entered with tax, ADR-0032). Computed as
+ * `floor((2ab + d) / 2d)` in BigInt, so it is exact at every magnitude.
+ */
+export function mulDivRoundHalfUpAny(a: number, b: number, denominator: number): number {
+	if (!Number.isSafeInteger(a) || a < 0 || !Number.isSafeInteger(b) || b < 0) {
+		throw new RangeError(
+			`mulDivRoundHalfUpAny requires non-negative integer factors, got ${String(a)}, ${String(b)}`,
+		);
+	}
+	if (!Number.isSafeInteger(denominator) || denominator <= 0) {
+		throw new RangeError(
+			`mulDivRoundHalfUpAny requires a positive integer denominator, got ${String(denominator)}`,
+		);
+	}
+	const d = BigInt(denominator);
+	return Number((2n * BigInt(a) * BigInt(b) + d) / (2n * d));
+}
+
+/**
+ * `round_half_down(a × b / d)` for any positive integer `d`: an exact half rounds
+ * DOWN — WooCommerce's tax rounding for prices entered with tax (ADR-0032).
+ * `floor((2ab + d − 1) / 2d)` in BigInt.
+ */
+export function mulDivRoundHalfDownAny(a: number, b: number, denominator: number): number {
+	mulDivRoundHalfUpAny(a, b, denominator); // the same argument checks
+	const d = BigInt(denominator);
+	return Number((2n * BigInt(a) * BigInt(b) + d - 1n) / (2n * d));
+}

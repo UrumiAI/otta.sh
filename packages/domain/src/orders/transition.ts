@@ -12,11 +12,19 @@ import {
 	type EmailSender,
 	isCutShortEmailTimeout,
 	isEmailSendTimeoutError,
+	isEmailTransportUnavailableError,
 } from "../ports/email-sender.js";
 import type { OrderStore, OutboxEmail } from "../ports/order-store.js";
 import type { Order, OrderState, PaymentMethod } from "./model.js";
 import { orderTotalLabel } from "./order-total-label.js";
+import {
+	capturedOnlyThroughLegacy,
+	isCurrentPaymentMethod,
+	legacyFact,
+	type LegacyMethodFacts,
+} from "./payment-methods.js";
 import { PROVIDER_REFUNDED_FLAG_PREFIX } from "./provider-refunded-flag.js";
+import { readOrderTaxSnapshot } from "./order-tax-snapshot.js";
 import { sumFinalizedRefunds } from "./refund-order.js";
 import { revokeOrderEntitlements } from "./revoke-entitlements.js";
 import {
@@ -141,7 +149,7 @@ async function applyTransition(
 
 /**
  * How each payment method's money is confirmed: by its GATEWAY (Stripe's
- * `payment_intent.succeeded`, x402's facilitator verify) or OFFLINE, by a person
+ * `payment_intent.succeeded`) or OFFLINE, by a person
  * who saw the money arrive.
  *
  * A `Record` over every `PaymentMethod` on purpose: a new method (a "bank
@@ -150,8 +158,20 @@ async function applyTransition(
  */
 const PAYMENT_METHOD_SETTLEMENT: Readonly<Record<PaymentMethod, "gateway" | "offline">> = {
 	stripe: "gateway",
-	x402: "gateway",
 };
+
+/**
+ * A per-method fact for a STORED method: from the current table when the method
+ * is a `PaymentMethod`, else from its `LEGACY_PAYMENT_METHODS` entry, else
+ * `undefined` — an unknown method, which every caller treats as fail-closed.
+ */
+function factForStored<K extends keyof LegacyMethodFacts, V>(
+	table: Readonly<Record<PaymentMethod, V>>,
+	stored: string,
+	field: K,
+): V | LegacyMethodFacts[K] | undefined {
+	return isCurrentPaymentMethod(stored) ? table[stored] : legacyFact(stored, field);
+}
 
 /**
  * True iff an admin may mark an order paid by `method` BY HAND — only a method
@@ -162,24 +182,38 @@ const PAYMENT_METHOD_SETTLEMENT: Readonly<Record<PaymentMethod, "gateway" | "off
  */
 export function manualPaymentAllowed(method: PaymentMethod | null): boolean {
 	if (method === null) return false;
-	return PAYMENT_METHOD_SETTLEMENT[method] === "offline";
+	// A legacy method is settled by its (removed) gateway; an unknown one has no
+	// entry. Neither is offline.
+	return factForStored(PAYMENT_METHOD_SETTLEMENT, method, "settlement") === "offline";
 }
 
 /**
  * How each payment method's money goes BACK: through its PROVIDER (a Stripe refund,
- * which Money → Refunds issues and records on the ledger) or OUTSIDE Otta (x402
- * cannot refund automatically; the operator sends the money and records it). A
+ * which Money → Refunds issues and records on the ledger) or OUTSIDE Otta (a method
+ * that cannot refund automatically; the operator sends the money and records it). A
  * `Record` over every method, like {@link PAYMENT_METHOD_SETTLEMENT}, so a new
  * method must say which it is.
  */
 const PAYMENT_METHOD_REFUNDS: Readonly<Record<PaymentMethod, "provider" | "outside">> = {
 	stripe: "provider",
-	x402: "outside",
 };
+
+/**
+ * How a STORED method's money goes back. The stored value is read as a `string`,
+ * not trusted as a `PaymentMethod`: an order placed before a method was removed
+ * (a legacy x402 order) still carries it, and its `LEGACY_PAYMENT_METHODS`
+ * entry says `outside`. A method that is neither current nor named legacy is
+ * `undefined`: NOT outside, so Mark refunded goes through the captured-money check.
+ */
+function refundRouteOf(stored: string): "provider" | "outside" | undefined {
+	return factForStored(PAYMENT_METHOD_REFUNDS, stored, "refunds");
+}
 
 /** The two ledgers Mark refunded is decided from. */
 export interface RefundLedgerFacts {
-	payments: readonly { amount: number; status: string }[];
+	/** `gateway`: the method the payment came through. Absent reads as NOT a
+	 *  legacy method (fail-closed: see {@link markRefundedRefusal}). */
+	payments: readonly { amount: number; status: string; gateway?: string }[];
 	refunds: readonly { amount: number; status: string }[];
 }
 
@@ -211,7 +245,14 @@ export function markRefundedRefusal(
 	if (facts.refunds.some((r) => r.status === "reserved" || r.status === "unverified")) {
 		return "REFUND_IN_FLIGHT";
 	}
-	if (order.paymentMethod !== null && PAYMENT_METHOD_REFUNDS[order.paymentMethod] === "outside") {
+	// The `outside` shortcut holds only while every captured payment came through a
+	// named legacy method too: money a current provider captured (a Stripe payment
+	// on an order that somehow stores x402) still goes through the check below.
+	if (
+		order.paymentMethod !== null &&
+		refundRouteOf(order.paymentMethod) === "outside" &&
+		capturedOnlyThroughLegacy(facts.payments)
+	) {
 		return null;
 	}
 	if (unrefundedCapturedCents(facts) === 0) return null;
@@ -224,7 +265,7 @@ export function markRefundedRefusal(
  * May an admin MARK this order refunded — a status move that moves no money? Only
  * where that cannot hide money still held (QA2 M4: a shipped Stripe order with
  * $6.50 captured was closed as "refunded" and its buyer's page said so):
- *  - its method returns money OUTSIDE Otta (x402), so a refund made there is
+ *  - its method returns money OUTSIDE Otta, so a refund made there is
  *    exactly what this records; or
  *  - the ledger shows NOTHING left to refund through the provider; or
  *  - the provider itself reported the payment refunded IN FULL — the flag
@@ -383,6 +424,16 @@ export interface DispatchOrderEmailsOptions {
 	 * as an attempt, so the row parks with reason "provider kept timing out".
 	 */
 	onRepeatedTimeouts?: (row: { id: string; orderId: OrderId; timeouts: number }) => void;
+	/** Rows older than this are completed unsent (`markEmailSkipped`, no attempt
+	 *  spent) and reported through `onExpired`. Default {@link OUTBOX_EMAIL_MAX_AGE_MS}. */
+	maxAgeMs?: number;
+	/** Told about every row the drain completed unsent because it was too old.
+	 *  Never passed to `onSent` or `onSkipped`. */
+	onExpired?: (row: OutboxEmail) => void;
+	/** Called when the transport reported no provider to send through
+	 *  (`EmailTransportUnavailableError`): the row went back uncounted and the
+	 *  drain stopped. Lets a caller report "not configured" rather than "sent 0". */
+	onTransportUnavailable?: () => void;
 	/** Uncounted timeouts a row is allowed. Default: {@link MAX_UNCOUNTED_TIMEOUTS}. */
 	maxUncountedTimeouts?: number;
 	/**
@@ -393,8 +444,7 @@ export interface DispatchOrderEmailsOptions {
 	onSent?: (row: OutboxEmail) => void;
 	/**
 	 * Told about every row the drain SKIPPED — completed with no send because the
-	 * order has no email recipient (an x402 gate buyer's `x402:0x…` reference,
-	 * ADR-0028 Decision 7) — after it is marked skipped. Never told about a row it
+	 * order has no email recipient (a `buyerRef` that is not an email address) — after it is marked skipped. Never told about a row it
 	 * sent, and a skipped row is never passed to `onSent` or counted as sent, so a
 	 * caller can say "no email was sent, and none will be" rather than "queued".
 	 */
@@ -437,6 +487,23 @@ export function timeoutBackoffMs(timeouts: number): number {
  */
 export const UNTRIED_RETRY_MS = 30_000;
 
+/**
+ * How long a row waits after the transport said it has no provider to send
+ * through (`EmailTransportUnavailableError`). Uncounted, like an untried row;
+ * longer, because a missing provider is an operator's fix, not a moment's.
+ */
+export const TRANSPORT_UNAVAILABLE_RETRY_MS = 5 * 60_000;
+
+/**
+ * The oldest an outbox email may be and still go out: 72 hours (a user decision,
+ * ADR-0031). A row claimed after that is completed WITHOUT a send — terminal, no
+ * attempt spent — so a store that had no email provider for days does not
+ * flood its buyers with stale "shipped" or "cancelled" mail the moment one is
+ * selected. Every template alike (a sign-in link never enters the outbox and
+ * expires on its own).
+ */
+export const OUTBOX_EMAIL_MAX_AGE_MS = 72 * 60 * 60 * 1000;
+
 /** The reason a row parked by repeated timeouts carries. */
 export const TIMEOUT_FAILURE_REASON = "provider kept timing out";
 
@@ -458,9 +525,10 @@ const DEFAULT_ORDER_BATCH_LIMIT = 10;
  * later tick (or parks it `failed` after `maxAttempts`) — durable retry WITHOUT
  * re-running the state transition itself. Note: claim is exactly-once but
  * delivery is only at-least-once — a crash after `send()` but before the row is
- * marked sent lets the lease lapse and the row be re-claimed and re-sent; dedup
- * to effectively-once relies on the provider's `Idempotency-Key` (§6,
- * `HttpEmailSender`). Returns the number of emails actually sent — a row skipped
+ * marked sent lets the lease lapse and the row be re-claimed and re-sent; with no
+ * idempotency key on EmDash's `ctx.email` such duplicates are bounded by
+ * `maxAttempts`, not deduped (ADR-0031). A row older than `maxAgeMs` (72 h) is
+ * completed unsent. Returns the number of emails actually sent — a row skipped
  * for want of a recipient (`markEmailSkipped`) is not one.
  */
 export async function dispatchOrderEmails(
@@ -524,6 +592,17 @@ async function drainOutbox(
 		if (options.shouldContinue !== undefined && !options.shouldContinue()) break;
 		const row = await claim(nowIso, leaseUntil);
 		if (row === null) break;
+
+		// Too old to send (ADR-0031): completed, never sent, no attempt spent.
+		const createdMs = row.createdAt === undefined ? Number.NaN : Date.parse(row.createdAt);
+		if (
+			Number.isFinite(createdMs) &&
+			now.getTime() - createdMs > (options.maxAgeMs ?? OUTBOX_EMAIL_MAX_AGE_MS)
+		) {
+			await deps.orderStore.markEmailSkipped(row.id, nowIso);
+			options.onExpired?.(row);
+			continue;
+		}
 
 		// A NOTICE row (`enqueueNotice`) renders its own template; every other row is
 		// a state email keyed by the state it announces. `toState` on a notice row is
@@ -601,6 +680,16 @@ async function drainOutbox(
 				sent++;
 			}
 		} catch (err) {
+			// No provider to send through (ADR-0031): nothing was sent and nothing is
+			// wrong with the row. Hand it back uncounted, backed off, and stop — every
+			// other row would meet the same answer.
+			if (isEmailTransportUnavailableError(err)) {
+				await deps.orderStore.releaseEmailClaim(row.id, {
+					retryAt: new Date(now.getTime() + TRANSPORT_UNAVAILABLE_RETRY_MS).toISOString(),
+				});
+				options.onTransportUnavailable?.();
+				break;
+			}
 			// A send cut off by the CALLER's timeout is not a failed attempt: hand the
 			// row back uncounted, and stop — the time is gone, and re-claiming the
 			// same row inside this drain would only time out again.
@@ -658,8 +747,7 @@ async function refundedTotal(
 /**
  * Whether an order has an email recipient, decided from the order alone (no read):
  * a linked customer has one, and a guest has one only when its `buyerRef` is an
- * email address — an x402 gate buyer's `x402:0x…` wallet is not (ADR-0028
- * Decision 7). `false` is final: {@link resolveRecipient} will skip every row of
+ * email address — a hand-seeded or legacy buyerRef without `@` is not. `false` is final: {@link resolveRecipient} will skip every row of
  * the order. `true` is the drain's to confirm — a linked customer whose record is
  * gone falls back to the `buyerRef`. A caller that must report an email's fate
  * before any row is claimed (the admin console) asks this.
@@ -684,7 +772,7 @@ async function resolveRecipient(
 	}
 	// Guest order: the email captured at checkout (buyerRef), branded as it was
 	// accepted there and not re-normalized here. A buyerRef that is not an email
-	// address at all — an x402 gate buyer's `x402:0x…` payer wallet — is no recipient.
+	// address at all (a hand-seeded or legacy buyerRef without `@`) is no recipient.
 	return isEmailAddress(order.buyerRef) ? (order.buyerRef as Email) : null;
 }
 
@@ -700,14 +788,20 @@ export function buildOrderEmailData(order: Order, toState: OrderState): Record<s
 		// rows the order page does. Whether shipping and tax were calculated at all
 		// is read off the method snapshot exactly as the order page reads it (the
 		// plugin's `orderTotalsFlags`): shipping follows the method, tax follows the
-		// zone. Uncalculated renders "Not calculated", never "$0.00".
+		// zone — or the tax snapshot's `located` (ADR-0032: a digital cart taxed at
+		// the shop base address has no shipping zone). Uncalculated renders "Not
+		// calculated", never "$0.00".
 		subtotalCents: order.totals.subtotal,
 		discountCents: order.totals.discount,
 		shippingCents: order.totals.shipping,
 		taxCents: order.totals.tax,
 		appliedCouponCode: order.totals.appliedCouponCode,
 		shippingCalculated: snapshotField(order.totals.shippingMethodSnapshot, "methodId", true),
-		taxCalculated: snapshotField(order.totals.shippingMethodSnapshot, "zoneId", false),
+		taxCalculated:
+			snapshotField(order.totals.shippingMethodSnapshot, "zoneId", false) || taxLocated(order),
+		// ADR-0032: prices entered WITH tax — the tax is inside the subtotal, so the
+		// email says so rather than reading as one more row to add.
+		...(pricedWithTaxIncluded(order) ? { taxIncluded: true } : {}),
 		// The order's line SNAPSHOT (title and unit price as bought), never the
 		// live product: an email sent after a rename still names what was paid for.
 		lines: order.lines.map((l) => ({
@@ -783,4 +877,17 @@ function snapshotField(snapshot: unknown, key: "zoneId" | "methodId", nonEmpty: 
 	if (snapshot === null || typeof snapshot !== "object") return false;
 	const value = (snapshot as Record<string, unknown>)[key];
 	return typeof value === "string" && (!nonEmpty || value.length > 0);
+}
+
+/** Whether the order's frozen tax snapshot says a tax location matched a zone
+ *  (ADR-0032). A snapshot written before the field reads as not located. */
+function taxLocated(order: Order): boolean {
+	const snapshot = readOrderTaxSnapshot(order.totals.taxBreakdown);
+	return snapshot?.v === 1 && snapshot.located === true;
+}
+
+/** Whether the order's frozen tax snapshot says prices were entered with tax (ADR-0032). */
+function pricedWithTaxIncluded(order: Order): boolean {
+	const snapshot = readOrderTaxSnapshot(order.totals.taxBreakdown);
+	return snapshot?.v === 1 && snapshot.pricesIncludeTax;
 }

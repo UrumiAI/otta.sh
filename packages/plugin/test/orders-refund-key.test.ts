@@ -99,6 +99,7 @@ function recorder(): Recorder {
 				remainingCents: CAPTURED_CENTS - state.refundedSoFar - state.inFlight,
 				paymentMethod: "stripe",
 				refundable: true,
+				legacyPaymentMethod: false,
 			});
 		},
 		refundOrder: (

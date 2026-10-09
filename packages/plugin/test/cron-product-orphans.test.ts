@@ -985,11 +985,11 @@ describe("scheduling and logging", () => {
 			const leg = summary.legs.find((entry) => entry.leg === "product-orphans");
 			expect(leg).toMatchObject({ ok: true, count: 0, skipped: true, queries: 0 });
 		}
-		const said = (leg: string): number =>
-			lines.filter((line) => line.includes(`${leg} skipped — not wired`)).length;
+		const said = (needle: string): number => lines.filter((line) => line.includes(needle)).length;
 		// One line each, over two ticks — the email outbox's line no longer silences it.
-		expect(said("product-orphans")).toBe(1);
-		expect(said("order-emails")).toBe(1);
+		// The outbox's line names the missing EmDash email provider (ADR-0031).
+		expect(said("product-orphans skipped — not wired")).toBe(1);
+		expect(said("order-emails skipped — no EmDash email provider")).toBe(1);
 		expect(await lifecycleOf("p-unwired")).toBe("live");
 	});
 });

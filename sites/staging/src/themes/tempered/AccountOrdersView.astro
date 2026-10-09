@@ -43,10 +43,14 @@ const { errorMessage, rows, signedInAs } = Astro.props.model;
 			{rows.map((row) => (
 				<li class="account-orders-row">
 					{/* Named by its products, not the order id — a shopper is never
-					    shown the UUID. The link is how they open it. */}
-					<a class="account-orders-name" href={row.href}>
-						{row.label}
-					</a>
+					    shown the UUID. The link is how they open it; the short
+					    number under it is the one its emails carry (ADR-0033). */}
+					<span class="account-orders-name-cell">
+						<a class="account-orders-name" href={row.href}>
+							{row.label}
+						</a>
+						<span class="account-orders-number u-mono">{row.number}</span>
+					</span>
 					<span class="account-orders-state">{row.state}</span>
 					{/* A <time> even when the date is unreadable would claim one; the
 					    cell stays, empty, so the columns still line up. */}

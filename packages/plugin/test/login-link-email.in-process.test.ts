@@ -1,11 +1,11 @@
 /**
  * The magic-link email (issue #306): `requestLoginLink` sends the link through
- * the plugin's email egress, and the answer a caller sees is IDENTICAL whatever
+ * the plugin's email sender, and the answer a caller sees is IDENTICAL whatever
  * happened behind it — a new address, a known one, a throttled one, an
  * unconfigured deployment, a provider that refused the mail.
  *
  * The email egress is a RECORDING FAKE (`FakeEmailSender`), injected where the
- * composition root injects the real `CtxHttpEmailSender`; the document store
+ * composition root injects the real `CtxEmailSender` (ADR-0031); the document store
  * underneath is real (the shared in-process harness), so the challenge the mail
  * carries is one the real verifier will redeem.
  *
@@ -179,8 +179,9 @@ describe("requestLoginLink on a deployment with NO email configured", () => {
 				String(call[0]).includes("login email is not configured"),
 			);
 			expect(unconfigured).toHaveLength(1);
-			// It names what each provider needs, not only the build URL.
-			expect(String(unconfigured[0]?.[0])).toContain("SMTP2GO needs its API key");
+			// It says what is missing (ADR-0031) and where the guide is.
+			expect(String(unconfigured[0]?.[0])).toContain("no EmDash email provider");
+			expect(String(unconfigured[0]?.[0])).toContain("docs/email-providers.md");
 			// No egress was attempted — there is no sender to attempt it.
 			expect(harness.egressAttempts()).toBe(0);
 		} finally {

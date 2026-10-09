@@ -113,7 +113,8 @@ in-process leniency.
   which replaced the duplicated Block Kit screens (ADR-0015);
   `@otta-sh/admin-presentation` holds the pure presentation primitives both surfaces share.
 - **Every capability is declared explicitly.** The plugin's only egress is `ctx.http` +
-  `allowedHosts`, and its state lives only in what the host injects — `ctx.storage` for
+  `allowedHosts` (email is not egress: it goes through the host's `ctx.email`, ADR-0031),
+  and its state lives only in what the host injects — `ctx.storage` for
   commerce truth (ADR-0018), `ctx.kv` for settings — nothing else. A test/CI check guards
   that the plugin has no other network or DB surface.
 - Any storefront/admin UI string is localized and RTL-safe (logical Tailwind classes),
@@ -132,7 +133,7 @@ in-process leniency.
     the published webhook secret anyone can mark orders paid, and EmDash's dev-bypass signs
     anyone in as admin. Bind it to loopback.
   - **`EMDASH_ENCRYPTION_KEY` in `sites/staging/.env`** (gitignored) for any `astro dev` where
-    payment keys are saved in Settings — they are stored encrypted (ADR-0032), and without a
+    payment keys are saved in Settings — they are stored encrypted (ADR-0034), and without a
     key every save is refused. Use a dev-only key (`npx emdash secrets generate`); a shell
     `export` does not reach the dev Worker. The Playwright stack sets a throwaway one itself.
     A local `astro build` copies `.env` values, including this key, into the gitignored

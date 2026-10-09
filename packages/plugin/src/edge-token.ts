@@ -2,11 +2,8 @@
  * The CHEAP OUTER GATE a public settlement route runs first.
  *
  * `webhooks/stripe/settle` (INC-C1b) introduced it and is its one caller today.
- * The x402 page-gate route that shared it, `entitlements/x402/settle`, was
- * retired by ADR-0028 increment 2; that ADR's `x402/pay` route reuses this gate
- * (Decision 11), so it stays here rather than inside the Stripe route — one
- * gate, one set of semantics, one place to get the constant-time comparison
- * right.
+ * It lives here rather than inside the Stripe route — one gate, one set of
+ * semantics, one place to get the constant-time comparison right.
  *
  * WHAT IT IS AND IS NOT. It is NOT the trust anchor of the route: a forged
  * Stripe webhook is stopped by the Stripe HMAC, verified unconditionally and not
@@ -85,7 +82,7 @@ export function header(request: SandboxedRequest, name: string): string | undefi
  *  - token stored but UNREADABLE (the kv read rejected — on EmDash 1.0.1 that
  *    includes a stored token this site cannot decrypt) or INVALID (empty or
  *    malformed, e.g. saved through EmDash's own settings form) ⇒ UNAVAILABLE
- *    (ADR-0032). A stored token means the gate was turned on; a bad read must
+ *    (ADR-0034). A stored token means the gate was turned on; a bad read must
  *    not turn it off.
  *  - token SET, header absent ⇒ reject. No comparison is attempted; the absence
  *    of a header is not a secret and leaks nothing by short-circuiting.

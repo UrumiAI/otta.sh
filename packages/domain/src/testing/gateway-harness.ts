@@ -75,7 +75,7 @@ const NOW = "2026-07-10T00:00:00.000Z";
 /**
  * Wire the in-memory stores + a gateway into a `PaymentGatewayHarness` so
  * `paymentGatewayContract` can drive `settleOrder` end-to-end against ANY gateway
- * (the fake, then the real Stripe / x402 adapters — the gateway only supplies
+ * (the fake, then the real Stripe adapter — the gateway only supplies
  * verify+mint; the settle orchestration is store-agnostic).
  */
 export function buildGatewayHarness(config: GatewayHarnessConfig): PaymentGatewayHarness {

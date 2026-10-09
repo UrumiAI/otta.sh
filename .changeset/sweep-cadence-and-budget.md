@@ -37,7 +37,7 @@ completer after them never ran.
   full cap that times out is not the provider's fault: due at once, nothing recorded. A TIMEOUT with the
   full cap is not counted either, but the row is backed off (1 min, doubling to 15) so it cannot stall
   the queue; after ten such timeouts the sweep logs `console.error` and further timeouts count,
-  eventually parking the row with reason "provider kept timing out". `CtxHttpEmailSender` reports its own abort as `EmailSendTimeoutError` and
+  eventually parking the row with reason "provider kept timing out". The email sender reports its own timeout as `EmailSendTimeoutError` and
   accepts `requestTimeoutMs` as a function, asked at each send; the sender is built lazily.
 - The three critical legs (`order-emails`, `expire-holds`, `expire-orders`) run first and take turns
   leading by minute; each may use only a share of the tick, never less than one unit of its own work.

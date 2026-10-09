@@ -77,8 +77,8 @@ export function email(value: string): Email {
 /**
  * {@link email}'s shape check alone, without normalizing or throwing: a single `@`
  * with non-empty local and domain parts, after trimming. The email dispatcher asks
- * it whether a guest order's `buyerRef` is an address at all — an x402 gate buyer's
- * is a wallet (`x402:0x…`), which has no `@` (ADR-0028 Decision 7).
+ * it whether a guest order's `buyerRef` is an address at all — a reference that is
+ * not an email (a hand-seeded or legacy buyerRef) has no `@`.
  */
 export function isEmailAddress(value: string): boolean {
 	const trimmed = value.trim();

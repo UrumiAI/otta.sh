@@ -58,6 +58,7 @@
 				"v": 1,
 				"calculatorId": "otta.rate-table",
 				"pricesIncludeTax": false,
+				"located": true,
 				"lines": [
 					{
 						"lineIndex": 0,
@@ -141,6 +142,7 @@
 				"v": 1,
 				"calculatorId": "otta.rate-table",
 				"pricesIncludeTax": false,
+				"located": true,
 				"lines": [
 					{
 						"lineIndex": 0,
@@ -190,12 +192,14 @@
 			{
 				"unitPriceCents": 49900,
 				"qty": 1,
-				"taxClassId": "gst18"
+				"taxClassId": "gst18",
+				"requiresShipping": true
 			},
 			{
 				"unitPriceCents": 19900,
 				"qty": 2,
-				"taxClassId": "standard"
+				"taxClassId": "standard",
+				"requiresShipping": false
 			}
 		],
 		"requiresShipping": true,
@@ -240,15 +244,16 @@
 			"shippingMethodSnapshot": null,
 			"taxBreakdown": {
 				"v": 1,
-				"calculatorId": "otta.rate-table",
+				"calculatorId": "otta.tax-disabled",
 				"pricesIncludeTax": false,
+				"located": false,
 				"lines": [
 					{
 						"lineIndex": 0,
 						"taxClassId": "standard",
 						"taxableCents": 2040,
 						"rateBps": 0,
-						"label": "standard",
+						"label": "Tax",
 						"taxCents": 0
 					}
 				],
@@ -294,15 +299,16 @@
 			"shippingMethodSnapshot": null,
 			"taxBreakdown": {
 				"v": 1,
-				"calculatorId": "otta.rate-table",
+				"calculatorId": "otta.tax-disabled",
 				"pricesIncludeTax": false,
+				"located": false,
 				"lines": [
 					{
 						"lineIndex": 0,
 						"taxClassId": "standard",
 						"taxableCents": 2040,
 						"rateBps": 0,
-						"label": "standard",
+						"label": "Tax",
 						"taxCents": 0
 					}
 				],
@@ -322,7 +328,8 @@
 			{
 				"unitPriceCents": 1200,
 				"qty": 2,
-				"taxClassId": "standard"
+				"taxClassId": "standard",
+				"requiresShipping": false
 			}
 		],
 		"requiresShipping": false,
@@ -383,6 +390,7 @@
 				"v": 1,
 				"calculatorId": "otta.rate-table",
 				"pricesIncludeTax": false,
+				"located": false,
 				"lines": [
 					{
 						"lineIndex": 0,
@@ -437,6 +445,7 @@
 				"v": 1,
 				"calculatorId": "otta.rate-table",
 				"pricesIncludeTax": false,
+				"located": false,
 				"lines": [
 					{
 						"lineIndex": 0,
@@ -463,7 +472,8 @@
 			{
 				"unitPriceCents": 999,
 				"qty": 3,
-				"taxClassId": "standard"
+				"taxClassId": "standard",
+				"requiresShipping": false
 			}
 		],
 		"requiresShipping": false,
@@ -502,15 +512,16 @@
 			"shippingMethodSnapshot": null,
 			"taxBreakdown": {
 				"v": 1,
-				"calculatorId": "otta.rate-table",
+				"calculatorId": "otta.tax-disabled",
 				"pricesIncludeTax": false,
+				"located": false,
 				"lines": [
 					{
 						"lineIndex": 0,
 						"taxClassId": "standard",
 						"taxableCents": 2500,
 						"rateBps": 0,
-						"label": "standard",
+						"label": "Tax",
 						"taxCents": 0
 					}
 				],
@@ -556,15 +567,16 @@
 			"shippingMethodSnapshot": null,
 			"taxBreakdown": {
 				"v": 1,
-				"calculatorId": "otta.rate-table",
+				"calculatorId": "otta.tax-disabled",
 				"pricesIncludeTax": false,
+				"located": false,
 				"lines": [
 					{
 						"lineIndex": 0,
 						"taxClassId": "standard",
 						"taxableCents": 2500,
 						"rateBps": 0,
-						"label": "standard",
+						"label": "Tax",
 						"taxCents": 0
 					}
 				],
@@ -584,7 +596,8 @@
 			{
 				"unitPriceCents": 2500,
 				"qty": 1,
-				"taxClassId": "standard"
+				"taxClassId": "standard",
+				"requiresShipping": false
 			}
 		],
 		"requiresShipping": false
@@ -648,6 +661,7 @@
 				"v": 1,
 				"calculatorId": "otta.rate-table",
 				"pricesIncludeTax": false,
+				"located": true,
 				"lines": [
 					{
 						"lineIndex": 0,
@@ -731,6 +745,7 @@
 				"v": 1,
 				"calculatorId": "otta.rate-table",
 				"pricesIncludeTax": false,
+				"located": true,
 				"lines": [
 					{
 						"lineIndex": 0,
@@ -780,12 +795,14 @@
 			{
 				"unitPriceCents": 1500,
 				"qty": 2,
-				"taxClassId": "standard"
+				"taxClassId": "standard",
+				"requiresShipping": true
 			},
 			{
 				"unitPriceCents": 999,
 				"qty": 1,
-				"taxClassId": "reduced"
+				"taxClassId": "reduced",
+				"requiresShipping": false
 			}
 		],
 		"requiresShipping": true,
@@ -831,15 +848,16 @@
 			"shippingMethodSnapshot": null,
 			"taxBreakdown": {
 				"v": 1,
-				"calculatorId": "otta.rate-table",
+				"calculatorId": "otta.tax-disabled",
 				"pricesIncludeTax": false,
+				"located": false,
 				"lines": [
 					{
 						"lineIndex": 0,
 						"taxClassId": "standard",
 						"taxableCents": 6000,
 						"rateBps": 0,
-						"label": "standard",
+						"label": "Tax",
 						"taxCents": 0
 					}
 				],
@@ -885,15 +903,16 @@
 			"shippingMethodSnapshot": null,
 			"taxBreakdown": {
 				"v": 1,
-				"calculatorId": "otta.rate-table",
+				"calculatorId": "otta.tax-disabled",
 				"pricesIncludeTax": false,
+				"located": false,
 				"lines": [
 					{
 						"lineIndex": 0,
 						"taxClassId": "standard",
 						"taxableCents": 6000,
 						"rateBps": 0,
-						"label": "standard",
+						"label": "Tax",
 						"taxCents": 0
 					}
 				],
@@ -913,7 +932,8 @@
 			{
 				"unitPriceCents": 1500,
 				"qty": 4,
-				"taxClassId": "standard"
+				"taxClassId": "standard",
+				"requiresShipping": true
 			}
 		],
 		"requiresShipping": true
@@ -961,15 +981,16 @@
 			"shippingMethodSnapshot": null,
 			"taxBreakdown": {
 				"v": 1,
-				"calculatorId": "otta.rate-table",
+				"calculatorId": "otta.tax-disabled",
 				"pricesIncludeTax": false,
+				"located": false,
 				"lines": [
 					{
 						"lineIndex": 0,
 						"taxClassId": "standard",
 						"taxableCents": 2500,
 						"rateBps": 0,
-						"label": "standard",
+						"label": "Tax",
 						"taxCents": 0
 					},
 					{
@@ -977,7 +998,7 @@
 						"taxClassId": "standard",
 						"taxableCents": 5000,
 						"rateBps": 0,
-						"label": "standard",
+						"label": "Tax",
 						"taxCents": 0
 					}
 				],
@@ -1035,15 +1056,16 @@
 			"shippingMethodSnapshot": null,
 			"taxBreakdown": {
 				"v": 1,
-				"calculatorId": "otta.rate-table",
+				"calculatorId": "otta.tax-disabled",
 				"pricesIncludeTax": false,
+				"located": false,
 				"lines": [
 					{
 						"lineIndex": 0,
 						"taxClassId": "standard",
 						"taxableCents": 2500,
 						"rateBps": 0,
-						"label": "standard",
+						"label": "Tax",
 						"taxCents": 0
 					},
 					{
@@ -1051,7 +1073,7 @@
 						"taxClassId": "standard",
 						"taxableCents": 5000,
 						"rateBps": 0,
-						"label": "standard",
+						"label": "Tax",
 						"taxCents": 0
 					}
 				],
@@ -1071,12 +1093,14 @@
 			{
 				"unitPriceCents": 2500,
 				"qty": 1,
-				"taxClassId": "standard"
+				"taxClassId": "standard",
+				"requiresShipping": true
 			},
 			{
 				"unitPriceCents": 2500,
 				"qty": 2,
-				"taxClassId": "standard"
+				"taxClassId": "standard",
+				"requiresShipping": true
 			}
 		],
 		"requiresShipping": true

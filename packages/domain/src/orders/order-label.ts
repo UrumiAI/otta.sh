@@ -46,9 +46,9 @@
  *    across retries for Stripe's idempotency — so it is left alone and differs
  *    from this on purpose.
  *  - It does not make two orders distinguishable. A buyer who orders the same
- *    product twice gets two emails with the same subject, and an email client
- *    may thread them. Accepted for now; adding the order date (or a short
- *    shopper-facing number) is a follow-up.
+ *    product twice would get two emails with the same label; the short order
+ *    NUMBER (`orderNumber`, "#3F9A2" — ADR-0033) printed beside it on every
+ *    customer surface is what tells them apart.
  *  - It is English. "and N more" / "Your order" are fixed strings; localising
  *    them needs a formatter (plural rules, word order), not a translated copy
  *    of this function.

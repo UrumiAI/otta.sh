@@ -1,6 +1,6 @@
 /**
  * Re-save the payment credentials an earlier build stored, ONCE, so they are
- * encrypted at rest (ADR-0032), and remove the retired x402 secret.
+ * encrypted at rest (ADR-0034).
  *
  * Declaring a field `type: "secret"` makes EmDash encrypt every NEW write to it,
  * and its read path still accepts a value stored before the declaration. So a
@@ -29,9 +29,13 @@
  *     bridge stores encrypted and which deletes that legacy copy (counted in the log line, never shown).
  *  3. Read back and compare; then record the key's new revision in a progress
  *     record, so an unfinished run does not re-save the keys it already did.
- *  4. Delete `settings:x402FacilitatorSecret`, the retired x402 secret nothing
- *     reads (ADR-0028), counted in the log line.
- *  5. Write the marker. Until then, every later tick resumes.
+ *  4. Write the marker. Until then, every later tick resumes.
+ *
+ * NO x402 KEY. x402 is gone; its stored keys (the facilitator API key and the
+ * older facilitator secret among them) are deleted by their own one-shot purge
+ * (`payments/purge-legacy-x402-settings.ts`), not re-saved here. This touches
+ * only {@link ENCRYPTED_PAYMENT_SECRET_KEYS}, so it neither reads nor writes an
+ * x402 key, whether or not one is still stored.
  *
  * It never throws and never logs a value or an error message — only fixed lines
  * and counts. A site without the `secret` declaration is not detectable from
@@ -42,10 +46,7 @@
  * sandbox's pre-1.0 storage, so a copy left there by an earlier SANDBOXED
  * deployment of the same database is not visible to the plugin at all.
  */
-import {
-	ENCRYPTED_PAYMENT_SECRET_KEYS,
-	X402_LEGACY_FACILITATOR_SECRET_KEY,
-} from "./payment-secrets.js";
+import { ENCRYPTED_PAYMENT_SECRET_KEYS } from "./payment-secrets.js";
 import type { PluginContext } from "./types.js";
 
 /** Set once every stored payment credential has been re-saved encrypted. The
@@ -204,16 +205,13 @@ export async function encryptStoredPaymentSecrets(
 			resaved += 1;
 		}
 
-		// 4. The retired x402 secret: nothing reads it, so it goes.
-		const retiredRemoved = (await kv.delete(X402_LEGACY_FACILITATOR_SECRET_KEY)) ? 1 : 0;
-
-		// 5. Done.
+		// 4. Done.
 		await kv.set(PAYMENT_SECRETS_ENCRYPTED_MARKER_KEY, PAYMENT_SECRETS_ENCRYPTED_MARKER_VALUE);
 		await kv.delete(PAYMENT_SECRETS_ENCRYPTION_PROGRESS_KEY);
 		doneInIsolate.add(site);
 		console.info(
 			`[otta] payment keys encrypted at rest: ${String(resaved)} re-saved, ` +
-				`${String(legacyReplaced)} legacy copies replaced, ${String(retiredRemoved)} retired keys removed`,
+				`${String(legacyReplaced)} legacy copies replaced`,
 		);
 		return "encrypted";
 	} catch (error) {

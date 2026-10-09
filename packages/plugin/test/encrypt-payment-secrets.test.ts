@@ -1,5 +1,5 @@
 /**
- * ADR-0032 — the one-time re-save of stored payment keys through EmDash's
+ * ADR-0034 — the one-time re-save of stored payment keys through EmDash's
  * encrypted settings path (`src/encrypt-payment-secrets.ts`).
  *
  * The kv here is a FAKE HOST that keeps a RAW row per key and behaves the way
@@ -25,8 +25,6 @@ import {
 	STRIPE_SECRET_KEY_KEY,
 	STRIPE_WEBHOOK_SECRET_KEY,
 	WEBHOOK_EDGE_TOKEN_KEY,
-	X402_FACILITATOR_API_KEY_KEY,
-	X402_LEGACY_FACILITATOR_SECRET_KEY,
 } from "../src/payment-secrets.js";
 import type { KvAccess, PluginContext } from "../src/types.js";
 
@@ -34,7 +32,6 @@ const VALUES: Record<string, string> = {
 	[STRIPE_SECRET_KEY_KEY]: "sk_test_MIGRATE_NEVER_LOG_1",
 	[STRIPE_WEBHOOK_SECRET_KEY]: "whsec_MIGRATE_NEVER_LOG_2",
 	[WEBHOOK_EDGE_TOKEN_KEY]: "edge_MIGRATE_NEVER_LOG_3",
-	[X402_FACILITATOR_API_KEY_KEY]: "x402_MIGRATE_NEVER_LOG_4",
 };
 
 interface Envelope {
@@ -204,22 +201,20 @@ describe("plain text → encrypted", () => {
 		for (const [key, value] of Object.entries(others)) expect(host.raw.get(key)).toBe(value);
 	});
 
-	test("removes the retired x402 secret, after the re-save, and logs only a count", async () => {
-		const host = fakeHost({
-			...VALUES,
-			[X402_LEGACY_FACILITATOR_SECRET_KEY]: "legacy_HMAC_NEVER_LOG",
-		});
+	test("leaves any x402 key alone, present or absent (its own purge deletes them)", async () => {
+		const x402 = {
+			"settings:x402FacilitatorApiKey": "x402_NEVER_LOG",
+			"settings:x402FacilitatorSecret": "legacy_HMAC_NEVER_LOG",
+		};
+		const host = fakeHost({ ...VALUES, ...x402 });
 		expect(await encryptStoredPaymentSecrets(host.ctx)).toBe("encrypted");
-		expect(host.raw.has(X402_LEGACY_FACILITATOR_SECRET_KEY)).toBe(false);
-		expect(logged.join("\n")).toContain("1 retired keys removed");
-		expect(logged.join("\n")).not.toContain("legacy_HMAC_NEVER_LOG");
-	});
+		for (const [key, value] of Object.entries(x402)) expect(host.raw.get(key)).toBe(value);
+		expect(logged.join("\n")).not.toContain("NEVER_LOG");
 
-	test("a failed run does NOT remove the retired x402 secret (it goes last)", async () => {
-		const host = fakeHost({ ...VALUES, [X402_LEGACY_FACILITATOR_SECRET_KEY]: "legacy_HMAC" });
-		host.keys.value = [];
-		expect(await encryptStoredPaymentSecrets(host.ctx)).toBe("retry");
-		expect(host.raw.get(X402_LEGACY_FACILITATOR_SECRET_KEY)).toBe("legacy_HMAC");
+		resetPaymentSecretEncryptionForTesting();
+		const without = fakeHost({ ...VALUES });
+		expect(await encryptStoredPaymentSecrets(without.ctx)).toBe("encrypted");
+		for (const key of Object.keys(x402)) expect(without.raw.has(key)).toBe(false);
 	});
 });
 
@@ -289,17 +284,18 @@ describe("progress across unfinished runs", () => {
 	test("keys already re-saved are not re-saved again while a later key keeps failing", async () => {
 		const host = fakeHost({ ...VALUES });
 		host.beforeCas.fn = (key) => {
-			if (key === ENCRYPTED_PAYMENT_SECRET_KEYS[2]) throw new Error("isolate evicted");
+			if (key === ENCRYPTED_PAYMENT_SECRET_KEYS[1]) throw new Error("isolate evicted");
 		};
 		expect(await encryptStoredPaymentSecrets(host.ctx)).toBe("retry");
-		expect(host.casCalls.n).toBe(3);
+		expect(host.casCalls.n).toBe(2);
 		expect(await encryptStoredPaymentSecrets(host.ctx)).toBe("retry");
 		// Second run: only the failing key was attempted again.
-		expect(host.casCalls.n).toBe(4);
+		expect(host.casCalls.n).toBe(3);
 
 		host.beforeCas.fn = () => {};
+		// Last run: the failing key and the one after it; never the first again.
 		expect(await encryptStoredPaymentSecrets(host.ctx)).toBe("encrypted");
-		expect(host.casCalls.n).toBe(6);
+		expect(host.casCalls.n).toBe(5);
 		expect(host.raw.has(PAYMENT_SECRETS_ENCRYPTION_PROGRESS_KEY)).toBe(false);
 	});
 });

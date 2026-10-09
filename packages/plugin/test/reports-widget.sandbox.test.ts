@@ -1037,8 +1037,9 @@ describe("Reports admin page (workerd sandbox)", () => {
 		// comes from `ctx.storage`: the capability vocabulary has no string for
 		// the document store. `ctx.storage` is granted by the descriptor's
 		// declared collections, not by a capability, so a plugin holding ALL of
-		// its commercial state still declares exactly these two.
-		expect(OTTA_PLUGIN_CAPABILITIES).toEqual(["content:read", "network:request"]);
+		// its commercial state still declares exactly these three (email:send is
+		// the host's email pipeline, ADR-0031 — not storage, not egress).
+		expect(OTTA_PLUGIN_CAPABILITIES).toEqual(["content:read", "network:request", "email:send"]);
 		expect(OTTA_PLUGIN_CAPABILITIES).not.toContain("network:request:unrestricted");
 		for (const cap of OTTA_PLUGIN_CAPABILITIES) {
 			expect(cap.startsWith("storage")).toBe(false);

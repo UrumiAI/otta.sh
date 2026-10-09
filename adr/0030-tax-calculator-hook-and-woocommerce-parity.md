@@ -91,9 +91,9 @@ off, prices entered with or without tax, calculate by shipping or shop address, 
 shipping tax class rule, rounding at subtotal, display with or without tax, product tax
 status, taxable shipping methods) come in the next change, on top of this hook.
 Differences that remain and are pinned, not fixed, here: zones are shipping zones
-matched by country and subdivision only; with duplicate (class, zone) rates the highest
-id wins at checkout; the shipping tax class is the class of the last shipping-flagged
-rate.
+matched by country and subdivision only; the shipping tax class is the class of the
+last shipping-flagged rate. (Duplicate (class, zone) rates were pinned here too; they
+are now refused — see the amendment below.)
 
 ## Consequences
 
@@ -114,3 +114,50 @@ rate.
   page shows the order's total). Follow-up: send the postcode on the review once the
   address is known.
 - `TotalsBreakdown` is unchanged, so emails, pages and reports read the same totals.
+
+## Amendment (2026-10-08): one rate per (class, zone)
+
+Two rates for one class in one zone used to be accepted, and then resolved differently:
+checkout charged the highest id, `getRate` answered the lowest, and the admin listed
+both with no sign that one was ignored. A duplicate is now defined by the model's own
+key — **same tax class and same zone**. Nothing else matters, because the rate table has
+no priority, compound flag, postcode or city that could tell two such rates apart.
+
+- **Refused at the store.** `TaxRulesStore.createRate` throws `TaxRateDuplicateError`
+  (code `TAX_RATE_DUPLICATE`) naming the rate already in the slot, and writes nothing.
+  The admin shows: `Class "standard" already has a rate for "United States": "std-us"
+  (7.25%) …`. A rate's class and zone cannot be edited, so `updateRate` can never make a
+  duplicate.
+- **Race-safe without transactions (ADR-0019).** Every rate of a class is embedded in
+  that class's one document, so the slot check reads the same document, at the same
+  revision, that the embed is compare-and-set against. Of N concurrent creates for one
+  slot, one embed lands; every other compare-and-set refuses, and its retry re-reads,
+  finds the winner and is refused as a duplicate. A refused create keeps its id claim
+  (releasing it could race a same-id create that adopted it); the orphan misleads no
+  reader and is adopted by the next create of that id, in any class. The race is proven on Postgres by `rules-cas-race.pg.test.ts` (24 creates × 12
+  loops, for one slot, for many zones of one class, and for an undeclared class). The
+  contract's concurrent-create case runs on every backend, but SQLite and D1 serialise
+  writes, so there it proves the logic, not the race.
+- **Existing duplicates are kept, never deleted.** One rule resolves them everywhere,
+  in `@otta-sh/domain` (`effectiveTaxRates`, `appliedTaxRate`, `shadowedTaxRates`):
+  **the greatest rate id applies; the others are ignored entirely.** On goods that is the
+  rate checkout already charged, so no line-item tax changes. `getRate` answers the same
+  rate.
+- **Behaviour change — shipping tax, for stores that already hold duplicates.** "Ignored"
+  includes the ignored rate's "applies to shipping" flag. Where the ignored duplicate was
+  the one marked "applies to shipping", shipping tax changes on the next quote: it
+  **disappears** if no applying rate in the zone is flagged, or it **moves to another
+  class's flagged rate** (the shipping tax class was the last flagged rate, and that was
+  the ignored one), which can be higher or lower. Placed orders keep their tax snapshot.
+  Chosen deliberately (user decision, 2026-10-08) so the admin's "only X applies" is true
+  everywhere; the admin flags every such duplicate, and deleting the one the merchant does
+  not want resolves it.
+- **The admin flags them.** The class's rates page shows a warning naming each pair, and
+  the ignored row is labelled `duplicate — ignored` and opens with `Duplicate: only <id>
+  applies …` (the applying row: `Applies to <zone>. Duplicate <id> is ignored.`; table
+  rows: `duplicate: only <id> applies` / `applies; duplicate <id> ignored`). The ignored
+  row keeps an editable shipping toggle labelled "only if this rate becomes the active
+  one", so the survivor can be fixed before the other is deleted. Every rate form sends
+  the flag it shows plus the flag it loaded, and the store's compare-and-set checks both
+  the rate and the flag, so a stale tab is told to reload instead of reverting a change. Both rows stay editable and deletable, so the merchant deletes the one they
+  don't want.

@@ -1,0 +1,10 @@
+{
+	"extends": "../../tsconfig.base.json",
+	"compilerOptions": {
+		"outDir": "dist/tsc",
+		"emitDeclarationOnly": true,
+		"rootDir": "."
+	},
+	"include": ["src", "test", "vitest.config.ts"],
+	"references": [{ "path": "../../packages/plugin" }]
+}

@@ -2,7 +2,7 @@ import plugin from "../../plugin.js";
 import { createSandboxWorker } from "../../sandbox-entry.js";
 
 /**
- * The workerd entry for the encrypted-payment-keys suite (ADR-0032): the REAL
+ * The workerd entry for the encrypted-payment-keys suite (ADR-0034): the REAL
  * plugin, served through the exact production sandbox bridge, with every stored
  * encrypted payment key reading the way EmDash 1.0.1 reports a ciphertext this
  * site cannot decrypt — the kv read rejects (`unreadableSecrets`). Writes still

@@ -119,7 +119,7 @@ const plugin: SandboxedPlugin = {
 		// `cron` carries NO capability requirement — the only gate is whether the
 		// runtime wired a cron executor — so a `format: "standard"` descriptor may
 		// declare it as it stands, and the declared capabilities stay exactly
-		// `content:read` + `network:request`. `plugin:activate` is the host's own
+		// `content:read` + `network:request` + `email:send`. `plugin:activate` is the host's own
 		// registration moment (an admin toggle, or a marketplace install); the tick
 		// re-affirms; the wrappers above cover the configured deployment that reaches
 		// neither.
@@ -217,8 +217,8 @@ const plugin: SandboxedPlugin = {
 			public: true,
 		},
 		// Phase 5 (§9): PUBLIC storefront account routes over the in-process
-		// commerce client. The login request emails its link over ctx.http (the
-		// email host in allowedHosts) — no new capability; the plugin holds no
+		// commerce client. The login request emails its link through the host's
+		// ctx.email (`email:send`, ADR-0031); the plugin holds no
 		// session state (the bearer token is threaded in as route input from the
 		// theme's first-party cookie layer — see account-routes.ts's platform note).
 		[ACCOUNT_LOGIN_REQUEST_ROUTE]: {

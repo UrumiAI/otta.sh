@@ -41,6 +41,7 @@ function request(over: Partial<TaxRequest> = {}): TaxRequest {
 				amountCents: cents(10_000),
 				taxClassId: "standard",
 				taxStatus: "taxable",
+				requiresShipping: true,
 			},
 			{
 				lineId: "1",
@@ -49,6 +50,7 @@ function request(over: Partial<TaxRequest> = {}): TaxRequest {
 				amountCents: cents(999),
 				taxClassId: "reduced",
 				taxStatus: "taxable",
+				requiresShipping: true,
 			},
 		],
 		shipping: { amountCents: cents(500), methodId: "m-1" },
@@ -146,5 +148,41 @@ describe("createRateTableCalculator (otta.rate-table)", () => {
 			],
 		);
 		expect((await calc(store)).lines.map((l) => l.label)).toEqual(["standard", "reduced"]);
+	});
+});
+
+/**
+ * Review 2a B4: a fixed shipping tax class that does not exist (never did, or was
+ * deleted since) must not silently stop shipping tax. The built-in falls back to
+ * "based on cart items" — the class the cart's own lines pick — which taxes
+ * shipping whenever a shipping line's class has a flagged rate (ADR-0032).
+ */
+describe("a fixed shipping tax class that no longer exists", () => {
+	const rates = [
+		{ id: "a", taxClassId: "standard", rateBps: 1000, appliesToShipping: true },
+		{ id: "b", taxClassId: "reduced", rateBps: 500, appliesToShipping: false },
+	];
+	const classes = [
+		{ id: "standard", name: "Standard" },
+		{ id: "reduced", name: "Reduced" },
+	];
+
+	test("falls back to 'based on cart items': shipping is taxed at the cart's class", async () => {
+		const { store } = storeWith(rates, classes);
+		const res = await createRateTableCalculator(store, {
+			shippingTaxClass: { kind: "fixed", taxClassId: "gone" },
+		}).calculate(request());
+		if (!res.ok) throw new Error("the built-in never refuses");
+		// A standard line ships ⇒ inherit picks standard, flagged at 10% ⇒ 50 on 500.
+		expect(res.shipping?.taxCents).toBe(50);
+	});
+
+	test("an existing fixed class is still used as set — even when it taxes nothing", async () => {
+		const { store } = storeWith(rates, classes);
+		const res = await createRateTableCalculator(store, {
+			shippingTaxClass: { kind: "fixed", taxClassId: "reduced" },
+		}).calculate(request());
+		if (!res.ok) throw new Error("the built-in never refuses");
+		expect(res.shipping).toBeNull();
 	});
 });

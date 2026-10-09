@@ -13,7 +13,7 @@ export const OTTA_PLUGIN_ID = "otta";
 export const OTTA_PLUGIN_VERSION = "0.1.0";
 
 /**
- * Sandbox-clean guard (DEVELOPMENT.md §5, plan §5): EXACTLY these two
+ * Sandbox-clean guard (DEVELOPMENT.md §5, plan §5): EXACTLY these three
  * capabilities, nothing else.
  *  - `content:read` — the minimum capability `content:afterSave` /
  *    `content:afterDelete` require to register (em-dash
@@ -24,13 +24,17 @@ export const OTTA_PLUGIN_VERSION = "0.1.0";
  *    never writes CMS content.
  *  - `network:request` — `ctx.http.fetch`, host-restricted via
  *    `allowedHosts`. No `network:request:unrestricted`.
+ *  - `email:send` — `ctx.email`, the host's email pipeline (ADR-0031). EmDash
+ *    owns email providers; the plugin grants itself no email host and holds no
+ *    email credential. Not `hooks.email-transport:register` (or its deprecated
+ *    alias `email:provide`): otta delivers nothing itself.
  * No `storage`/`kv`/db CAPABILITY — and not because the plugin holds no
  * commercial state: it holds all of it. `ctx.storage` is where commerce truth
  * lives (ADR-0018), and the host builds it on an always-available path with no
  * capability string in its vocabulary to declare, which is why owning that state
  * widens nothing here.
  */
-export const OTTA_PLUGIN_CAPABILITIES = ["content:read", "network:request"] as const;
+export const OTTA_PLUGIN_CAPABILITIES = ["content:read", "network:request", "email:send"] as const;
 
 /**
  * Stripe's SERVER-SIDE API host — the one egress the in-process plugin always
@@ -48,54 +52,15 @@ export const OTTA_PLUGIN_CAPABILITIES = ["content:read", "network:request"] as c
 export const STRIPE_API_HOST = "api.stripe.com";
 
 /**
- * SMTP2GO's send-API hosts, one per region: the global host and the three
- * regional ones (`/v3/email/send` on each). A store picks SMTP2GO and its
- * region in Settings (`email/email-provider.ts`), which is kv — and kv cannot
- * extend `allowedHosts`, a build-time list. So every region's host is granted
- * in every build, the way Stripe's API host is: a store that never chooses
- * SMTP2GO never calls them, and each one only accepts an SMTP2GO key.
- * Granting a new provider host is a change to this list and to ADR-0005.
- */
-export const SMTP2GO_API_HOSTS = {
-	global: "api.smtp2go.com",
-	us: "us-api.smtp2go.com",
-	eu: "eu-api.smtp2go.com",
-	au: "au-api.smtp2go.com",
-} as const;
-
-/**
- * The deployment-supplied halves of the in-process allowlist.
+ * The deployment-supplied half of the in-process allowlist.
  *
- * Both are URLs, not hostnames, because that is the shape the values already
- * have: the service derives its email host from `EMAIL_API_URL`
- * (`service/src/index.ts:74`). Neither has a sensible default — there is no
- * canonical email provider, and no default x402 facilitator (ADR-0028 Decision 8:
- * the deployer picks it) — so an absent value grants no host rather than
- * guessing one.
+ * EMPTY TODAY: operator-supplied egress plugs in here (a field, resolved by
+ * {@link resolveAllowedHosts} and baked through {@link BAKED_EGRESS_URLS}).
+ * There is no email URL — email goes through `ctx.email` (ADR-0031) — and an
+ * absent value always grants no host rather than guessing one.
  */
 export interface InProcessEgressUrls {
-	/** Where `HttpEmailSender` posts; the in-process equivalent of
-	 *  `EMAIL_API_URL`. */
-	emailApiUrl?: string | undefined;
-	/** The x402 facilitator's URL. Nothing calls it between ADR-0028 increments 2
-	 *  and 6; increment 6's `/verify` and `/settle` client uses it as a base URL. */
-	facilitatorUrl?: string | undefined;
-}
-
-/** A URL's hostname, or `undefined` for anything unparseable — including an
- *  empty define, a bare hostname with no scheme, and outright garbage. Never
- *  throws: this runs at module load, where a throw takes the whole plugin down —
- *  the descriptor never registers and every route 500s — and an ungrantable host
- *  must degrade to "no egress for that provider" — a refused fetch — not to a boot
- *  failure and not to a widened gate. */
-function hostnameOf(url: string | undefined): string | undefined {
-	if (url === undefined || url.length === 0) return undefined;
-	try {
-		const { hostname } = new URL(url);
-		return hostname.length > 0 ? hostname : undefined;
-	} catch {
-		return undefined;
-	}
+	// Operator-supplied egress hosts plug in here.
 }
 
 /**
@@ -103,75 +68,40 @@ function hostnameOf(url: string | undefined): string | undefined {
  * not in this list (plan §5) — as a pure function so it is testable without a
  * bundler.
  *
- * There is ONE list now (INC-D3a): the commerce service is gone, and the calls
- * it used to make are the plugin's own — Stripe's API, the email provider's
- * API, the x402 facilitator. No service host appears here at all; that is the
- * fold-in, visible in one line. The constant part is Stripe's API host and
- * SMTP2GO's four send hosts ({@link SMTP2GO_API_HOSTS}); the rest comes from
- * the deployment's egress URLs.
+ * There is ONE list now (INC-D3a): the commerce service is gone, and the call
+ * it used to make is the plugin's own — Stripe's API. No service host appears
+ * here at all; that is the fold-in, visible in one line. The constant part is
+ * Stripe's API host; anything else comes from the deployment's egress
+ * ({@link InProcessEgressUrls}, none today). No email host: email goes through
+ * `ctx.email` (ADR-0031), never `ctx.http`.
  *
  * The result is a SET: duplicates collapse, and order is insertion order so the
  * list is stable across builds.
  */
-export function resolveAllowedHosts(egress: InProcessEgressUrls = {}): string[] {
-	const hosts = new Set<string>([STRIPE_API_HOST, ...Object.values(SMTP2GO_API_HOSTS)]);
-	for (const url of [egress.emailApiUrl, egress.facilitatorUrl]) {
-		const host = hostnameOf(url);
-		if (host !== undefined) hosts.add(host);
-	}
+export function resolveAllowedHosts(_egress: InProcessEgressUrls = {}): string[] {
+	const hosts = new Set<string>([STRIPE_API_HOST]);
 	return [...hosts];
 }
 
-/**
- * Compile-time override hooks for the two deployment-supplied egress URLs: a
- * Vite `define` a deploying site bakes into the plugin bundle, behind a `typeof`
- * guard so the undeclared global is safe in the plain tsdown dist, this
- * package's vitest run and the sandbox harness.
- *
- * These are URLs, never secrets — the credentials that ride them live in
- * write-only kv (`payment-secrets.ts`), which is what keeps
- * `wrangler-config.test.ts`'s /SECRET|KEY|TOKEN|PASSWORD/i ban on `vars` intact
- * and unroutable-around.
- */
-declare const __OTTA_EMAIL_API_URL__: string | undefined;
-declare const __OTTA_X402_FACILITATOR_URL__: string | undefined;
-
-/** The raw defines, before resolution. Not exported: every consumer must see
+/** The raw defines, before resolution — none today (see
+ *  {@link InProcessEgressUrls}). Not exported: every consumer must see
  *  {@link IN_PROCESS_EGRESS_URLS}, which agrees with `ALLOWED_HOSTS` by
- *  construction. */
-const BAKED_EGRESS_URLS: InProcessEgressUrls = {
-	emailApiUrl: typeof __OTTA_EMAIL_API_URL__ === "string" ? __OTTA_EMAIL_API_URL__ : undefined,
-	facilitatorUrl:
-		typeof __OTTA_X402_FACILITATOR_URL__ === "string" ? __OTTA_X402_FACILITATOR_URL__ : undefined,
-};
+ *  construction. A deployment-supplied value is a Vite `define` behind a
+ *  `typeof` guard, so the undeclared global is safe in the plain tsdown dist,
+ *  this package's vitest run and the sandbox harness — and it is never a
+ *  secret: credentials live in write-only kv (`payment-secrets.ts`). */
+const BAKED_EGRESS_URLS: InProcessEgressUrls = {};
 
 /**
- * The egress URLs a CONSUMER may use, resolved by the SAME predicate the
- * allowlist is (review round 2, A3).
- *
- * `resolveAllowedHosts` funnels every URL through {@link hostnameOf} and grants
- * NOTHING for one that does not parse — a bare hostname, an empty define,
- * outright garbage. A resolver that passed the string through verbatim would
- * hand a consumer exactly such a URL and reproduce the symptom this function
- * exists to make impossible: a sender is built, every send is refused by the
- * gate, rows reschedule and eventually park `failed`, and the cron leg reports
- * `count: 0` instead of the honest `skipped`. So one that yields no host is
- * dropped — unconfigured, which every consumer already handles.
- *
- * Resolving once, here, makes "a consumer never holds a URL whose host is not
- * granted" true by construction rather than by every caller remembering.
+ * The egress URLs a CONSUMER may use, resolved by the SAME rules the allowlist
+ * is (review round 2, A3): a value that would grant no host is dropped —
+ * unconfigured, which every consumer already handles — so "a consumer never
+ * holds a URL whose host is not granted" is true by construction rather than
+ * by every caller remembering. No URL is deployment-supplied today, so this
+ * resolves to `{}`.
  */
-export function resolveInProcessEgress(egress: InProcessEgressUrls = {}): InProcessEgressUrls {
-	/** The URL, or `undefined` when `resolveAllowedHosts` would grant no host for
-	 *  it — the two decisions made by one predicate, so they cannot disagree. */
-	const grantable = (url: string | undefined): string | undefined =>
-		hostnameOf(url) === undefined ? undefined : url;
-	const emailApiUrl = grantable(egress.emailApiUrl);
-	const facilitatorUrl = grantable(egress.facilitatorUrl);
-	return {
-		...(emailApiUrl !== undefined ? { emailApiUrl } : {}),
-		...(facilitatorUrl !== undefined ? { facilitatorUrl } : {}),
-	};
+export function resolveInProcessEgress(_egress: InProcessEgressUrls = {}): InProcessEgressUrls {
+	return {};
 }
 
 /** The in-process egress URLs this bundle may actually use. Absent or

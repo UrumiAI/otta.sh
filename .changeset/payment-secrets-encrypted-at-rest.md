@@ -2,11 +2,11 @@
 "@otta-sh/plugin": minor
 ---
 
-Encrypt payment secrets at rest via EmDash secret settings (ADR-0032).
+Encrypt payment secrets at rest via EmDash secret settings (ADR-0034).
 
 - **Declared `secret`.** New export `PAYMENT_SECRET_SETTINGS_SCHEMA` declares the Stripe
-  secret key, the Stripe webhook signing secret, the webhook edge token and the x402
-  facilitator key as `type: "secret"`. A deploying site must put it in its Otta descriptor's
+  secret key, the Stripe webhook signing secret and the webhook edge token as
+  `type: "secret"`. A deploying site must put it in its Otta descriptor's
   `settingsSchema` (the reference site does); EmDash 1.0.1 then encrypts those `settings:*`
   values with `EMDASH_ENCRYPTION_KEY` on every write and decrypts them on read. The Settings
   page and the readers are unchanged `ctx.kv` calls. `EMDASH_ENCRYPTION_KEY` is now required.
@@ -14,11 +14,11 @@ Encrypt payment secrets at rest via EmDash secret settings (ADR-0032).
   the same path, once per site (`encryptStoredPaymentSecrets`, marker
   `state:paymentSecretsEncrypted`): a conditional write at the read revision, then a
   read-back, then the marker. Idempotent, safe to interrupt, never logs a value.
-- **Preflight, progress, cleanup.** The re-save reads all four keys first and writes nothing
+- **Preflight and progress.** The re-save reads all three keys first and writes nothing
   if any read fails (a wrong key cannot re-encrypt a working key), records per-key progress
-  so an unfinished run does not redo finished keys, replaces a sandboxed pre-1.0 copy, and
-  finally deletes the retired `settings:x402FacilitatorSecret`. It logs counts only.
-- **Validate on read.** A stored value for one of the four keys that is empty, not a string,
+  so an unfinished run does not redo finished keys, and replaces a sandboxed pre-1.0 copy. It
+  touches no x402 key (x402's own purge deletes those) and logs counts only.
+- **Validate on read.** A stored value for one of the three keys that is empty, not a string,
   or not the shape the Settings form saves is `invalid`: never used, shown as "saved, but not
   valid", and the edge-token gate answers 503 for it (a never-set token still passes).
 - **Behaviour changes to note.** A stored edge token that is empty or malformed now refuses

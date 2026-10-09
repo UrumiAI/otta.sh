@@ -60,6 +60,7 @@ import {
 	uuidIdGen,
 	type StorageAccess,
 } from "@otta-sh/store-emdash";
+import { withOrderNumberCells } from "@otta-sh/admin-presentation";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import { ORDERS_ACTION_IDS } from "../src/admin/orders-actions.js";
 import { loadPluginInSandbox, type SandboxHandle } from "./sandbox/harness.js";
@@ -90,6 +91,11 @@ interface SeedOptions {
 	/** Becomes the buyerRef PREFIX, which is the `search` axis a case scopes its
 	 *  own rows with. */
 	tag: string;
+	/** An explicit order id — for the order-number cases, which need ids that
+	 *  share (or do not share) their first five characters. */
+	id?: string;
+	/** An explicit line sku (default `SKU-<suffix>`). */
+	sku?: string;
 	totalCents?: number;
 	state?: "pending" | "paid" | "processing";
 }
@@ -99,7 +105,7 @@ interface SeedOptions {
 async function seedOrder(options: SeedOptions): Promise<string> {
 	seq += 1;
 	const suffix = `${NS}-${String(seq)}`;
-	const id = `order-${suffix}`;
+	const id = options.id ?? `order-${suffix}`;
 	const total = options.totalCents ?? 1999;
 	await orderStore.createFromCart({
 		orderId: toOrderId(id),
@@ -112,7 +118,7 @@ async function seedOrder(options: SeedOptions): Promise<string> {
 		lines: [
 			{
 				productId: toProductId(`prod-${suffix}`),
-				sku: toSku(`SKU-${suffix.toUpperCase()}`),
+				sku: toSku(options.sku ?? `SKU-${suffix.toUpperCase()}`),
 				title: "Linen apron",
 				unitPrice: cents(total),
 				currency: currency("USD"),
@@ -208,6 +214,80 @@ describe("the console's read/write branch on the otta admin route", () => {
 		const result = await list({ search: `  ${tag}  ` });
 		expect(rowsOf(result)).toHaveLength(1);
 		expect(result["total"]).toBe(1);
+	});
+
+	test("the ORDER NUMBER is on every row, and searching it — # and all — finds every order that shares it", async () => {
+		// ADR-0033: the number is "#" + the id's first five characters, upper-cased.
+		// Five hex characters WILL collide eventually, so the search is a PREFIX
+		// search that may answer several orders — never a lookup that picks one.
+		const a = await seedOrder({ tag: "numbera", id: "fee1d111-0000-4000-8000-000000000001" });
+		const b = await seedOrder({ tag: "numberb", id: "fee1d222-0000-4000-8000-000000000002" });
+		const c = await seedOrder({ tag: "numberc", id: "fee1e333-0000-4000-8000-000000000003" });
+
+		const shared = rowsOf(await list({ search: "#FEE1D" }));
+		expect(shared.map((o) => o["id"]).toSorted()).toEqual([a, b].toSorted());
+		expect(shared.map((o) => o["orderNumber"])).toEqual(["#FEE1D", "#FEE1D"]);
+
+		// Without the #, lower-case, and as a longer prefix that tells the two apart.
+		expect(rowsOf(await list({ search: "fee1d" }))).toHaveLength(2);
+		expect(rowsOf(await list({ search: "#FEE1D1" })).map((o) => o["id"])).toEqual([a]);
+		// A neighbouring number is its own.
+		const other = rowsOf(await list({ search: "#fee1e" }));
+		expect(other.map((o) => o["id"])).toEqual([c]);
+		expect(other[0]?.["orderNumber"]).toBe("#FEE1E");
+
+		// The detail carries it too, beside the full id it was derived from.
+		const detail = await invoke({ type: READ, resource: "orders.detail", orderId: a });
+		const order = detail["order"] as Record<string, unknown>;
+		expect(order["id"]).toBe(a);
+		expect(order["orderNumber"]).toBe("#FEE1D");
+	});
+
+	test("ROUND TRIP: every identity cell the console prints, typed back into search, finds exactly its order", async () => {
+		// ADR-0033. Cells come from the console's own `withOrderNumberCells`; the
+		// search goes through the real route. Two pairs share a number — one only to
+		// five characters, one through EIGHT (its tie-breaker crosses the UUID's
+		// hyphen and is printed hex-only).
+		const ids = [
+			"c0de1111-0000-4000-8000-000000000001",
+			"c0de1222-0000-4000-8000-000000000002",
+			"c0de2333-aaaa-4000-8000-000000000003",
+			"c0de2333-bbbb-4000-8000-000000000004",
+			"c0de3444-0000-4000-8000-000000000005",
+		];
+		for (const [i, id] of ids.entries()) await seedOrder({ tag: `roundtrip${String(i)}`, id });
+
+		const page = rowsOf(await list({ search: "c0de" })) as unknown as Array<{
+			id: string;
+			orderNumber: string;
+		}>;
+		expect(page.map((o) => o.id).toSorted()).toEqual(ids.toSorted());
+		const cells = withOrderNumberCells(page).map(({ order, cell }) => ({
+			id: order.id,
+			text: cell.number + cell.extension,
+		}));
+		expect(new Set(cells.map((c) => c.text)).size).toBe(ids.length);
+		expect(cells.find((c) => c.id === ids[2])?.text).toBe("#C0DE2333A");
+
+		for (const { id, text } of cells) {
+			// As printed, `#` and all.
+			expect(rowsOf(await list({ search: text })).map((o) => o["id"])).toEqual([id]);
+		}
+	});
+
+	test("a number-shaped search rewrites ONLY the id arm: a sku spelled `#12345` is still found", async () => {
+		const bySku = await seedOrder({
+			tag: "hashsku",
+			id: "dd000000-0000-4000-8000-000000000001",
+			sku: "#12345",
+		});
+		const byId = await seedOrder({ tag: "hashid", id: "12345aaa-0000-4000-8000-000000000002" });
+		const found = rowsOf(await list({ search: "#12345" }))
+			.map((o) => o["id"])
+			.toSorted();
+		expect(found).toEqual([byId, bySku].toSorted());
+		const result = await list({ search: "#12345" });
+		expect(result["total"]).toBe(2);
 	});
 
 	test("the EXACT count is the whole filtered set even when it is larger than one page", async () => {

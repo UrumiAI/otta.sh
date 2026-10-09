@@ -1,5 +1,5 @@
 /**
- * ADR-0032, end to end over a REAL host layer: Otta's own write path (the
+ * ADR-0034, end to end over a REAL host layer: Otta's own write path (the
  * Settings form), read path (`readPaymentSecrets`) and one-time migration
  * (`encryptStoredPaymentSecrets`), running on EmDash 1.0.1's settings layer with
  * the `settingsSchema` THIS SITE's descriptor declares, over a migrated SQLite
@@ -24,8 +24,6 @@ import {
 	STRIPE_SECRET_KEY_KEY,
 	STRIPE_WEBHOOK_SECRET_KEY,
 	WEBHOOK_EDGE_TOKEN_KEY,
-	X402_FACILITATOR_API_KEY_KEY,
-	X402_LEGACY_FACILITATOR_SECRET_KEY,
 	type PluginContext,
 } from "@otta-sh/plugin";
 import Database from "better-sqlite3";
@@ -45,12 +43,14 @@ type Keys = Awaited<ReturnType<typeof resolvePluginEncryptionKeys>>;
 
 const SCHEMA = ottaPluginDescriptor().settingsSchema ?? {};
 
+/** A leftover x402 key: not this migration's to touch. */
+const X402_LEGACY_KEY = "settings:x402FacilitatorSecret";
+
 /** Values in the shapes the Settings form accepts. */
 const VALUES: Record<string, string> = {
 	[STRIPE_SECRET_KEY_KEY]: "sk_test_ATREST_NEVER_IN_A_ROW",
 	[STRIPE_WEBHOOK_SECRET_KEY]: "whsec_ATREST_NEVER_IN_A_ROW",
 	[WEBHOOK_EDGE_TOKEN_KEY]: "edge_ATREST_NEVER_IN_A_ROW",
-	[X402_FACILITATOR_API_KEY_KEY]: "x402_ATREST_NEVER_IN_A_ROW",
 };
 
 /** The Settings form's action and field for each key. */
@@ -61,10 +61,6 @@ const FORM: Record<string, { action: string; field: string }> = {
 		field: "stripeWebhookSecret",
 	},
 	[WEBHOOK_EDGE_TOKEN_KEY]: { action: "save-webhook-edge-token", field: "webhookEdgeToken" },
-	[X402_FACILITATOR_API_KEY_KEY]: {
-		action: "save-x402-facilitator-secret",
-		field: "x402FacilitatorSecret",
-	},
 };
 
 function base64url(bytes: Uint8Array): string {
@@ -167,7 +163,7 @@ async function rawValue(key: string): Promise<unknown> {
 	return value === undefined ? undefined : JSON.parse(value);
 }
 
-describe("payment keys at rest, through this site's descriptor (ADR-0032)", () => {
+describe("payment keys at rest, through this site's descriptor (ADR-0034)", () => {
 	test("the Settings form saves every payment key as ciphertext; the readers get the value", async () => {
 		const ctx = hostCtx(keyA);
 		const handler = createSettingsFormHandler();
@@ -192,7 +188,6 @@ describe("payment keys at rest, through this site's descriptor (ADR-0032)", () =
 			stripeSecretKey: VALUES[STRIPE_SECRET_KEY_KEY],
 			stripeWebhookSecret: VALUES[STRIPE_WEBHOOK_SECRET_KEY],
 			webhookEdgeToken: VALUES[WEBHOOK_EDGE_TOKEN_KEY],
-			x402FacilitatorSecret: VALUES[X402_FACILITATOR_API_KEY_KEY],
 		});
 	});
 
@@ -269,18 +264,15 @@ describe("payment keys at rest, through this site's descriptor (ADR-0032)", () =
 		);
 	});
 
-	test("a WRONG key with mixed rows changes nothing; the right key then finishes and purges the retired x402 secret", async () => {
+	test("a WRONG key with mixed rows changes nothing; the right key then finishes and leaves x402 rows to their own purge", async () => {
 		const repo = new OptionsRepository(db);
 		// An earlier build's plain rows, the webhook secret already encrypted under
-		// key A, and the retired x402 secret.
+		// key A, and a leftover x402 secret (deleted by x402's own purge, not here).
 		for (const [key, value] of Object.entries(VALUES)) {
 			await repo.set(`plugin:${OTTA_PLUGIN_ID}:${key}`, value);
 		}
 		await hostCtx(keyA).kv.set(STRIPE_WEBHOOK_SECRET_KEY, VALUES[STRIPE_WEBHOOK_SECRET_KEY]);
-		await repo.set(
-			`plugin:${OTTA_PLUGIN_ID}:${X402_LEGACY_FACILITATOR_SECRET_KEY}`,
-			"retired_hmac",
-		);
+		await repo.set(`plugin:${OTTA_PLUGIN_ID}:${X402_LEGACY_KEY}`, "retired_hmac");
 		const before = await rawDump();
 
 		const wrong = await resolvePluginEncryptionKeys({ EMDASH_ENCRYPTION_KEY: generateKey() });
@@ -292,8 +284,7 @@ describe("payment keys at rest, through this site's descriptor (ADR-0032)", () =
 		expect(await encryptStoredPaymentSecrets(ctx)).toBe("encrypted");
 		const dump = await rawDump();
 		for (const value of Object.values(VALUES)) expect(dump).not.toContain(value);
-		expect(dump).not.toContain("retired_hmac");
-		expect(await rawValue(X402_LEGACY_FACILITATOR_SECRET_KEY)).toBeUndefined();
+		expect(await rawValue(X402_LEGACY_KEY)).toBe("retired_hmac");
 		for (const key of ENCRYPTED_PAYMENT_SECRET_KEYS) {
 			expect(await readSecret(ctx, key)).toEqual({ state: "set", value: VALUES[key] });
 		}

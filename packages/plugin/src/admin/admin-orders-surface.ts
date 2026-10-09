@@ -13,6 +13,10 @@
 
 export interface OrderSummaryWire {
 	id: string;
+	/** The order NUMBER ("#3F9A2", the domain's `orderNumber`) — the same label the
+	 *  shopper sees on the order page and in every order email. A DISPLAY label,
+	 *  not a key: two orders can share one (ADR-0033), so nothing resolves by it. */
+	orderNumber: string;
 	state: string;
 	currency: string;
 	buyerRef: string;
@@ -104,6 +108,10 @@ export interface OrderCancellationWire {
 
 export interface OrderDetailWire {
 	id: string;
+	/** The order NUMBER ("#3F9A2", the domain's `orderNumber`) — the same label the
+	 *  shopper sees on the order page and in every order email. A DISPLAY label,
+	 *  not a key: two orders can share one (ADR-0033), so nothing resolves by it. */
+	orderNumber: string;
 	state: string;
 	currency: string;
 	paymentMethod: string | null;
@@ -220,7 +228,7 @@ export interface CustomerContextWire {
 
 /** A refund row on the wire (ADR-0008). `kind` is "gateway" (money moved via the
  *  provider — `refundRef` set) or "manual" (an out-of-band return the admin
- *  recorded — `refundRef` null, x402's honest path). Money is integer minor
+ *  recorded — `refundRef` null, the record-only path). Money is integer minor
  *  units + ISO-4217 currency. */
 export interface RefundWire {
 	id: string;
@@ -265,6 +273,9 @@ export interface RefundsSummaryWire {
 	remainingCents: number;
 	paymentMethod: string | null;
 	refundable: boolean;
+	/** True when `paymentMethod` is one Otta no longer supports (a legacy x402
+	 *  order): its refunds are record-only for good, and the panel says so. */
+	legacyPaymentMethod: boolean;
 }
 
 /**
@@ -273,9 +284,10 @@ export interface RefundsSummaryWire {
  *  - `sent`         — it went out;
  *  - `queued`       — it did not go yet (the provider failed or was slow); the
  *                     cron retries it automatically;
- *  - `unconfigured` — the store has no email provider, so it will not be sent;
- *  - `no-recipient` — the order has no email address to send to (an x402 buyer's
- *                     `x402:0x…` reference, ADR-0028 Decision 7), so it was not sent
+ *  - `unconfigured` — the host has no EmDash email provider, so it was not sent;
+ *                     it waits in the outbox until one is selected (ADR-0031);
+ *  - `no-recipient` — the order has no email address to send to (its `buyerRef` is
+ *                     not an email address), so it was not sent
  *                     and never will be — completed as skipped, not queued.
  */
 export type InlineEmailStatus = "sent" | "queued" | "unconfigured" | "no-recipient";

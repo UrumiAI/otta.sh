@@ -11,16 +11,18 @@
  *    lands on after checkout, built from the operator's configured sign-in page
  *    URL — never from a request;
  *  - the store's name comes from the "Store display name" setting;
- *  - the body is still Resend's, exactly (from, to, subject, text, html, tags).
+ *  - the message handed to the host's `ctx.email` is exactly EmDash's
+ *    `EmailMessage` (to, subject, text, html) — no `from` (the provider owns it,
+ *    ADR-0031) — and nothing goes out over `ctx.http`.
  */
 import { EMAIL_NOT_CALCULATED_LABEL, type EmailTemplate } from "@otta-sh/domain";
 import { describe, expect, test } from "vitest";
 import { STORE_DISPLAY_NAME_KEY } from "../src/admin/settings-form.js";
 import {
-	CtxHttpEmailSender,
+	CtxEmailSender,
 	makeEmailSender,
 	makeLoginEmailSender,
-} from "../src/email/ctx-http-email-sender.js";
+} from "../src/email/ctx-email-sender.js";
 import {
 	orderPageUrl,
 	storefrontEmailMoney,
@@ -29,25 +31,21 @@ import {
 import { STOREFRONT_LOCALE } from "../src/index.js";
 import { NOT_CALCULATED_LABEL } from "../src/storefront/checkout-view-model.js";
 import { isSavableLoginLinkUrl, LOGIN_LINK_URL_KEY } from "../src/storefront/login-link.js";
-import type { PluginContext } from "../src/types.js";
+import type { EmailMessage, PluginContext } from "../src/types.js";
 
-interface Sent {
-	from: string;
-	to: string;
-	subject: string;
-	text: string;
-	html: string;
-	tags: unknown;
-}
+type Sent = EmailMessage & { html: string };
 
 function makeCtx(seed: Record<string, unknown> = {}): { ctx: PluginContext; sent: Sent[] } {
 	const kv = new Map<string, unknown>(Object.entries(seed));
 	const sent: Sent[] = [];
 	const ctx: PluginContext = {
 		http: {
-			fetch: (_url: string, init?: RequestInit) => {
-				sent.push(JSON.parse(String(init?.body)) as Sent);
-				return Promise.resolve(new Response("{}", { status: 200 }));
+			// Email never goes over `ctx.http` (ADR-0031).
+			fetch: () => Promise.reject(new Error("email must not use ctx.http")),
+		},
+		email: {
+			send: async (message) => {
+				sent.push({ ...message, html: message.html ?? "" });
 			},
 		},
 		kv: {
@@ -68,7 +66,6 @@ function makeCtx(seed: Record<string, unknown> = {}): { ctx: PluginContext; sent
 	return { ctx, sent };
 }
 
-const API_URL = "https://api.resend.com/emails";
 const ORDER_ID = "0b6f1c2e-9a4d-4e57-8f1a-3c2d1e0f9a8b";
 const ORDER_URL = `https://shop.example/orders/${ORDER_ID}`;
 
@@ -103,10 +100,8 @@ const ORDER_TEMPLATES: EmailTemplate[] = [
 ];
 
 function sender(ctx: PluginContext, extra: { storeName?: string; storefrontOrigin?: string } = {}) {
-	return new CtxHttpEmailSender({
-		fetch: ctx.http.fetch,
-		apiUrl: API_URL,
-		from: "Shop <orders@shop.example>",
+	return new CtxEmailSender({
+		email: ctx.email!,
 		storefrontOrigin: "https://shop.example",
 		...extra,
 	});
@@ -125,9 +120,9 @@ describe("order emails on the wire", () => {
 			});
 			const [mail] = sent;
 			expect(Object.keys(mail ?? {}).toSorted()).toEqual(
-				["from", "html", "subject", "tags", "text", "to"].toSorted(),
+				["html", "subject", "text", "to"].toSorted(),
 			);
-			expect(mail?.tags).toEqual([{ name: "template", value: template }]);
+			expect(mail?.to).toBe("buyer@example.com");
 			expect(mail?.text).toContain("Otta Mug × 1 — $100.00");
 			expect(mail?.text).toContain("Order total: $100.00");
 			expect(mail?.text).toContain(`Shipping: ${NOT_CALCULATED_LABEL}`);
@@ -183,11 +178,7 @@ describe("order emails on the wire", () => {
 
 	test("with no storefront URL configured there is no link", async () => {
 		const { ctx, sent } = makeCtx();
-		await new CtxHttpEmailSender({
-			fetch: ctx.http.fetch,
-			apiUrl: API_URL,
-			from: "a@shop.example",
-		}).send({
+		await new CtxEmailSender({ email: ctx.email! }).send({
 			to: "buyer@example.com" as never,
 			template: "order-confirmation",
 			data: usdOrder,
@@ -270,13 +261,11 @@ describe("the order page URL", () => {
 });
 
 describe("makeEmailSender reads the store's name and public URL from Settings", () => {
-	const egress = { apiUrl: API_URL };
-
 	test("order emails link to the origin of the configured sign-in page", async () => {
 		const { ctx, sent } = makeCtx({
 			[LOGIN_LINK_URL_KEY]: "https://shop.example/account/verify",
 		});
-		const s = await makeEmailSender(ctx, egress);
+		const s = await makeEmailSender(ctx);
 		await s?.send({
 			to: "buyer@example.com" as never,
 			template: "order-confirmation",
@@ -288,7 +277,7 @@ describe("makeEmailSender reads the store's name and public URL from Settings", 
 
 	test("an invalid stored sign-in URL gives no link at all (never a guess)", async () => {
 		const { ctx, sent } = makeCtx({ [LOGIN_LINK_URL_KEY]: "javascript:alert(1)" });
-		const s = await makeEmailSender(ctx, egress);
+		const s = await makeEmailSender(ctx);
 		await s?.send({
 			to: "buyer@example.com" as never,
 			template: "order-confirmation",
@@ -301,7 +290,7 @@ describe("makeEmailSender reads the store's name and public URL from Settings", 
 
 	test("the sign-in email names the store from 'Store display name'", async () => {
 		const { ctx, sent } = makeCtx({ [STORE_DISPLAY_NAME_KEY]: "Goa Coffee" });
-		const s = await makeLoginEmailSender(ctx, egress);
+		const s = await makeLoginEmailSender(ctx);
 		await s?.send({
 			to: "buyer@example.com" as never,
 			template: "customer-login-link",
@@ -314,5 +303,61 @@ describe("makeEmailSender reads the store's name and public URL from Settings", 
 		expect(sent[0]?.subject).toBe("Sign in to Goa Coffee");
 		expect(sent[0]?.text).toContain("expires in 15 minutes");
 		expect(sent[0]?.html).toContain(">Sign in to Goa Coffee</a>");
+		expect(sent[0]?.to).toBe("buyer@example.com");
+	});
+
+	test("with no 'Store display name' saved, the EmDash site name signs the email", async () => {
+		const { ctx, sent } = makeCtx();
+		const s = await makeEmailSender({
+			...ctx,
+			site: { name: "Goa Coffee", url: "https://shop.example", locale: "en" },
+		});
+		await s?.send({
+			to: "buyer@example.com" as never,
+			template: "customer-login-link",
+			data: {
+				loginUrl: "https://shop.example/account/verify?challenge=c&token=t",
+				expiresInMinutes: 15,
+			},
+			idempotencyKey: "login:c",
+		});
+		expect(sent[0]?.subject).toBe("Sign in to Goa Coffee");
+	});
+
+	test("the saved 'Store display name' wins over the site name", async () => {
+		const { ctx, sent } = makeCtx({ [STORE_DISPLAY_NAME_KEY]: "Tambdi Mati" });
+		const s = await makeEmailSender({
+			...ctx,
+			site: { name: "Goa Coffee", url: "https://shop.example", locale: "en" },
+		});
+		await s?.send({
+			to: "buyer@example.com" as never,
+			template: "customer-login-link",
+			data: {
+				loginUrl: "https://shop.example/account/verify?challenge=c&token=t",
+				expiresInMinutes: 15,
+			},
+			idempotencyKey: "login:c",
+		});
+		expect(sent[0]?.subject).toBe("Sign in to Tambdi Mati");
+	});
+
+	test("no EmDash email provider (ctx.email absent) ⇒ no sender at all, no kv read", async () => {
+		const { ctx } = makeCtx({ [STORE_DISPLAY_NAME_KEY]: "Goa Coffee" });
+		const { email: _none, ...noEmail } = ctx;
+		let reads = 0;
+		const counted: PluginContext = {
+			...noEmail,
+			kv: {
+				...noEmail.kv,
+				get: async <T>(key: string) => {
+					reads += 1;
+					return noEmail.kv.get<T>(key);
+				},
+			},
+		};
+		expect(await makeEmailSender(counted)).toBeUndefined();
+		expect(await makeLoginEmailSender(counted)).toBeUndefined();
+		expect(reads).toBe(0);
 	});
 });

@@ -79,7 +79,7 @@ to `tempered`. A theme setting can never take the storefront down.
 **5. The plugin still does not know which themes exist.** It serves JSON view models exactly as
 ADR-0003 says and hard-codes no theme id. The site owns `themes/manifest.ts` (pure `[{id, label}]`
 data, no `.astro` imports) and hands it to the plugin at build time through a Vite define,
-`__OTTA_STORE_THEMES__`, the same pattern as `__OTTA_EMAIL_API_URL__`. The plugin reads it behind a
+`__OTTA_STORE_THEMES__`, the same pattern as `__OTTA_EMAIL_API_URL__` (since removed: superseded by ADR-0031). The plugin reads it behind a
 `typeof` guard and a shape check. On a host that does not define it (the sandbox, other sites), no
 theme picker is rendered and `save-theme` is rejected.
 

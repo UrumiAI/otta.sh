@@ -76,6 +76,19 @@ describe("orderSumRows — the totals rows, by the order page's own rule", () =>
 		expect(byLabel.get("Tax")?.amount.label).toBe("$0.00");
 	});
 
+	test("ADR-0032: a digital order taxed at the shop base address shows the tax it was charged", () => {
+		const totals = buildCheckoutTotals(
+			{ ...BREAKDOWN, subtotalCents: 5000, taxCents: 1000, totalCents: 6000 },
+			{
+				locale: "en",
+				...orderTotalsFlags({ shippingZoneId: null, shippingMethodId: null, taxLocated: true }),
+			},
+		);
+		const byLabel = new Map(orderSumRows(totals).map((row) => [row.label, row]));
+		expect(byLabel.get("Tax")?.amount.label).toBe("$10.00");
+		expect(byLabel.get("Tax")?.amount.money).not.toBeNull();
+	});
+
 	test("an applied coupon names itself on the discount row", () => {
 		const totals = buildCheckoutTotals(
 			{ ...BREAKDOWN, discountCents: 500, totalCents: 1900, appliedCouponCode: "SAVE5" },

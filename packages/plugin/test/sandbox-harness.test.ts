@@ -19,24 +19,19 @@ import { SWEEP_TASK_NAME } from "../src/cron/index.js";
 import type { CommerceSweepSummary, SweepLegOutcome } from "../src/cron/index.js";
 import { loadPluginInSandbox, type SandboxHandle } from "./sandbox/harness.js";
 import { storageBridge } from "./sandbox/storage-bridge.js";
-import { startStubHttpServer, type StubHttpServer } from "./helpers/stub-http-server.js";
+import { STRIPE_API_HOST } from "../src/manifest.js";
+import { startStripeApiStub } from "./helpers/stripe-api-stub.js";
 
 let sandbox: SandboxHandle | undefined;
-let stub: StubHttpServer | undefined;
 
 afterEach(async () => {
 	await sandbox?.close();
 	sandbox = undefined;
-	await stub?.close();
-	stub = undefined;
 });
-
-const EMAIL_PATH = "/email/send";
-const EMAIL_FROM = "orders@harness.otta.sh";
 
 /** Places a paid order directly against the same storage the isolate's
  *  `ctx.storage` bridges to — the state the `order-emails` cron leg drains
- *  into a real `ctx.http` POST. Trimmed to what one send needs; the full
+ *  into `ctx.email`. Trimmed to what one send needs; the full
  *  domain-level behavior of this leg belongs to `in-process-egress.sandbox.test.ts`,
  *  not here. */
 async function placePaidOrder(storage: StorageAccess, suffix: string): Promise<void> {
@@ -113,61 +108,71 @@ describe("workerd-on-Node sandbox harness (plan §6 step 1)", () => {
 	});
 
 	test("ctx.http.fetch reaches a real granted host, and is rejected for a host NOT in allowedHosts", async () => {
-		// The commerce-service stub is gone along with the deployment it used to
-		// stand in for; the email adapter is now the simplest REAL egress this
-		// isolate still makes (INC-C5), driven by one cron tick over one paid
-		// order. This is the harness's own foundational proof that the ctx.http
-		// bridge it hands every other sandbox suite actually works and is gated —
-		// the exhaustive granted/refused matrix for both surviving egress
-		// adapters lives in `in-process-egress.sandbox.test.ts`, not here.
+		// Email no longer goes over `ctx.http` (ADR-0031), so the simplest REAL
+		// egress this isolate makes is Stripe's: saving the Stripe secret key reads
+		// the account's country (`GET /v1/account`, issue #382). Stripe's host is
+		// hard-coded, so the stub stands behind workerd's `globalOutbound`; the
+		// plugin's own allowlist check still runs first, against `api.stripe.com`.
+		// This is the harness's own foundational proof that the ctx.http bridge it
+		// hands every other sandbox suite actually works and is gated.
+		// The admin route builds its clients over `ctx.storage`, whose bridge the
+		// stub must forward to (it is the host's side, not plugin egress).
+		const bridge = await storageBridge();
+		const stripe = await startStripeApiStub({ forwardTo: [bridge.baseUrl] });
+		try {
+			const key = ["sk_test_", "HarnessFixture0000000000"].join("");
+			const save = (handle: SandboxHandle) =>
+				handle.invokeRoute("admin", {
+					type: "form_submit",
+					action_id: "save-stripe-secret-key",
+					values: { stripeSecretKey: key },
+				});
+
+			sandbox = await loadPluginInSandbox({
+				allowedHosts: [STRIPE_API_HOST],
+				storage: true,
+				globalOutbound: stripe.address,
+			});
+			expect(await save(sandbox)).not.toHaveProperty("error");
+			expect(stripe.requests.some((r) => r.method === "GET" && r.path === "/v1/account")).toBe(
+				true,
+			);
+			await sandbox.close();
+			stripe.reset();
+
+			// SAME request, host NOT granted this time — ctx.http.fetch must reject
+			// before any byte reaches the stub.
+			sandbox = await loadPluginInSandbox({
+				allowedHosts: ["definitely-not-the-stub.example"],
+				storage: true,
+				globalOutbound: stripe.address,
+			});
+			expect(await save(sandbox)).not.toHaveProperty("error");
+			expect(stripe.requests).toHaveLength(0);
+			expect(stripe.refused).toHaveLength(0);
+		} finally {
+			await stripe.close();
+		}
+	}, 180_000);
+
+	test("ctx.email reaches the boot's EmDash email provider; without one the send is refused as unconfigured", async () => {
+		// ADR-0031: the cron tick's order email goes to the host's `ctx.email`. With
+		// `email: true` the harness records it; without, the host's sandbox bridge
+		// says "Email is not configured" and the leg reports `skipped`.
 		const { storage } = await storageBridge();
 
-		stub = await startStubHttpServer();
-		stub.respondWith("POST", () => ({ status: 202, body: { queued: true } }));
-
-		sandbox = await loadPluginInSandbox({
-			allowedHosts: [stub.host],
-			storage: true,
-			emailApiUrl: `${stub.baseUrl}${EMAIL_PATH}`,
-		});
-		const configured = await sandbox.invokeRoute("admin", {
-			type: "form_submit",
-			action_id: "save-payment-settings",
-			values: { emailFrom: EMAIL_FROM },
-		});
-		if ("error" in configured) throw new Error(configured.error);
-
+		sandbox = await loadPluginInSandbox({ allowedHosts: [], storage: true, email: true });
 		await placePaidOrder(storage, "granted");
 		const granted = await tick(sandbox);
 		expect(granted.skipped).toBeUndefined();
 		expect(granted.count).toBeGreaterThanOrEqual(1);
-		expect(stub.requests.some((r) => r.method === "POST" && r.url === EMAIL_PATH)).toBe(true);
-
+		expect(sandbox.sentEmails().map((m) => m.to)).toContain("buyer-harness-granted@example.test");
 		await sandbox.close();
-		stub.requests.length = 0;
 
-		// SAME baked URL, host NOT granted this time — ctx.http.fetch must reject
-		// before any byte reaches the stub.
-		sandbox = await loadPluginInSandbox({
-			allowedHosts: ["definitely-not-the-stub.example"],
-			storage: true,
-			emailApiUrl: `${stub.baseUrl}${EMAIL_PATH}`,
-		});
-		const reconfigured = await sandbox.invokeRoute("admin", {
-			type: "form_submit",
-			action_id: "save-payment-settings",
-			values: { emailFrom: EMAIL_FROM },
-		});
-		if ("error" in reconfigured) throw new Error(reconfigured.error);
-
+		sandbox = await loadPluginInSandbox({ allowedHosts: [], storage: true });
 		await placePaidOrder(storage, "refused");
-		const refused = await tick(sandbox);
-		// A sender WAS built (the URL is baked) — the send itself is what ctx.http
-		// refuses, so the dispatcher's per-row catch leaves the row unsent rather
-		// than throwing the whole tick.
-		expect(refused.skipped).toBeUndefined();
-		expect(refused.count).toBe(0);
-		expect(stub.requests).toHaveLength(0);
+		expect(await tick(sandbox)).toMatchObject({ count: 0, skipped: true });
+		expect(sandbox.sentEmails()).toEqual([]);
 	}, 180_000);
 
 	test("the plugin registers NO Stripe webhook route — Stripe posts direct-to-service (review G1)", async () => {

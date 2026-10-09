@@ -23,7 +23,7 @@ pay step and Stripe refused it there.
 - **Enforced by the commerce client, for Stripe checkouts only.** `InProcessCommerceClient`
   takes a new `resolveAddressRequired` option, wired by `makeCommerceClient`. For a Stripe
   checkout, `createOrder` passes it to the domain as `addressRequired`, so an address-less
-  place is refused `MISSING_SHIPPING_ADDRESS`. x402 checkouts are not affected.
+  place is refused `MISSING_SHIPPING_ADDRESS`.
 - **The Stripe gateway creates the Customer.** Its `customerRequired` is answered from the
   same cache. For an India account, every PaymentIntent is preceded by
   `POST /v1/customers` (the order's name and address, Idempotency-Key

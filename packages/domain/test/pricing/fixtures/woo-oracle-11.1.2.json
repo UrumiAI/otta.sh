@@ -1,0 +1,2608 @@
+[
+	{
+		"id": "EX-01",
+		"title": "excl, single line, 1800",
+		"kind": "cart",
+		"inputs": {
+			"prices_include_tax": false,
+			"round_at_subtotal": false,
+			"shipping_tax_class_option": "inherit",
+			"tax_classes": {
+				"": {
+					"name": "Standard",
+					"rate_bps": 1800
+				}
+			},
+			"items": [
+				{
+					"unit_cents": 1000,
+					"qty": 1,
+					"tax_class": "",
+					"tax_status": "taxable",
+					"needs_shipping": true
+				}
+			],
+			"shipping": null,
+			"coupon": null
+		},
+		"expected": {
+			"lines": [
+				{
+					"discount": 0,
+					"line_tax": 180,
+					"line_tax_exact": 180,
+					"line_net_exact": 1000
+				}
+			],
+			"shipping_tax_class": null,
+			"shipping_cost": 0,
+			"shipping_tax": 0,
+			"items_net_total": 1000,
+			"total_tax": 180,
+			"grand_total": 1180
+		},
+		"ambiguous": false,
+		"woo_path": [
+			"CT:233 price*qty->cents (4dp)",
+			"TAX:181-230 calc_exclusive_tax price*rate/100, TAX:117 round 6dp",
+			"CT:677-680 line tax = sum(round_line_tax)",
+			"TR:84-89 round_line_tax -> wc_round_tax_total(v,0)",
+			"FMT:235-240 + CORE:1867-1875 + WC:545 mode HALF_UP when prices excl tax",
+			"CT:871 grand total NumberUtil::round(...,0) HALF_UP"
+		]
+	},
+	{
+		"id": "EX-02",
+		"title": "excl, single line, 2000, fractional tax",
+		"kind": "cart",
+		"inputs": {
+			"prices_include_tax": false,
+			"round_at_subtotal": false,
+			"shipping_tax_class_option": "inherit",
+			"tax_classes": {
+				"": {
+					"name": "Standard",
+					"rate_bps": 2000
+				}
+			},
+			"items": [
+				{
+					"unit_cents": 999,
+					"qty": 1,
+					"tax_class": "",
+					"tax_status": "taxable",
+					"needs_shipping": true
+				}
+			],
+			"shipping": null,
+			"coupon": null
+		},
+		"expected": {
+			"lines": [
+				{
+					"discount": 0,
+					"line_tax": 200,
+					"line_tax_exact": "199.8",
+					"line_net_exact": 999
+				}
+			],
+			"shipping_tax_class": null,
+			"shipping_cost": 0,
+			"shipping_tax": 0,
+			"items_net_total": 999,
+			"total_tax": 200,
+			"grand_total": 1199
+		},
+		"ambiguous": false,
+		"woo_path": [
+			"CT:233 price*qty->cents (4dp)",
+			"TAX:181-230 calc_exclusive_tax price*rate/100, TAX:117 round 6dp",
+			"CT:677-680 line tax = sum(round_line_tax)",
+			"TR:84-89 round_line_tax -> wc_round_tax_total(v,0)",
+			"FMT:235-240 + CORE:1867-1875 + WC:545 mode HALF_UP when prices excl tax",
+			"CT:871 grand total NumberUtil::round(...,0) HALF_UP"
+		]
+	},
+	{
+		"id": "EX-03",
+		"title": "excl, qty 3 x 333 at 825",
+		"kind": "cart",
+		"inputs": {
+			"prices_include_tax": false,
+			"round_at_subtotal": false,
+			"shipping_tax_class_option": "inherit",
+			"tax_classes": {
+				"": {
+					"name": "Standard",
+					"rate_bps": 825
+				}
+			},
+			"items": [
+				{
+					"unit_cents": 333,
+					"qty": 3,
+					"tax_class": "",
+					"tax_status": "taxable",
+					"needs_shipping": true
+				}
+			],
+			"shipping": null,
+			"coupon": null
+		},
+		"expected": {
+			"lines": [
+				{
+					"discount": 0,
+					"line_tax": 82,
+					"line_tax_exact": "82.4175",
+					"line_net_exact": 999
+				}
+			],
+			"shipping_tax_class": null,
+			"shipping_cost": 0,
+			"shipping_tax": 0,
+			"items_net_total": 999,
+			"total_tax": 82,
+			"grand_total": 1081
+		},
+		"ambiguous": false,
+		"woo_path": [
+			"CT:233 price*qty->cents (4dp)",
+			"TAX:181-230 calc_exclusive_tax price*rate/100, TAX:117 round 6dp",
+			"CT:677-680 line tax = sum(round_line_tax)",
+			"TR:84-89 round_line_tax -> wc_round_tax_total(v,0)",
+			"FMT:235-240 + CORE:1867-1875 + WC:545 mode HALF_UP when prices excl tax",
+			"CT:871 grand total NumberUtil::round(...,0) HALF_UP"
+		]
+	},
+	{
+		"id": "EX-04",
+		"title": "excl, three lines at 1800",
+		"kind": "cart",
+		"inputs": {
+			"prices_include_tax": false,
+			"round_at_subtotal": false,
+			"shipping_tax_class_option": "inherit",
+			"tax_classes": {
+				"": {
+					"name": "Standard",
+					"rate_bps": 1800
+				}
+			},
+			"items": [
+				{
+					"unit_cents": 1999,
+					"qty": 1,
+					"tax_class": "",
+					"tax_status": "taxable",
+					"needs_shipping": true
+				},
+				{
+					"unit_cents": 2499,
+					"qty": 1,
+					"tax_class": "",
+					"tax_status": "taxable",
+					"needs_shipping": true
+				},
+				{
+					"unit_cents": 550,
+					"qty": 1,
+					"tax_class": "",
+					"tax_status": "taxable",
+					"needs_shipping": true
+				}
+			],
+			"shipping": null,
+			"coupon": null
+		},
+		"expected": {
+			"lines": [
+				{
+					"discount": 0,
+					"line_tax": 360,
+					"line_tax_exact": "359.82",
+					"line_net_exact": 1999
+				},
+				{
+					"discount": 0,
+					"line_tax": 450,
+					"line_tax_exact": "449.82",
+					"line_net_exact": 2499
+				},
+				{
+					"discount": 0,
+					"line_tax": 99,
+					"line_tax_exact": 99,
+					"line_net_exact": 550
+				}
+			],
+			"shipping_tax_class": null,
+			"shipping_cost": 0,
+			"shipping_tax": 0,
+			"items_net_total": 5048,
+			"total_tax": 909,
+			"grand_total": 5957
+		},
+		"ambiguous": false,
+		"woo_path": [
+			"CT:233 price*qty->cents (4dp)",
+			"TAX:181-230 calc_exclusive_tax price*rate/100, TAX:117 round 6dp",
+			"CT:677-680 line tax = sum(round_line_tax)",
+			"TR:84-89 round_line_tax -> wc_round_tax_total(v,0)",
+			"FMT:235-240 + CORE:1867-1875 + WC:545 mode HALF_UP when prices excl tax",
+			"CT:871 grand total NumberUtil::round(...,0) HALF_UP"
+		]
+	},
+	{
+		"id": "EX-05",
+		"title": "excl, rate 0",
+		"kind": "cart",
+		"inputs": {
+			"prices_include_tax": false,
+			"round_at_subtotal": false,
+			"shipping_tax_class_option": "inherit",
+			"tax_classes": {
+				"": {
+					"name": "Standard",
+					"rate_bps": 0
+				}
+			},
+			"items": [
+				{
+					"unit_cents": 1500,
+					"qty": 1,
+					"tax_class": "",
+					"tax_status": "taxable",
+					"needs_shipping": true
+				}
+			],
+			"shipping": null,
+			"coupon": null
+		},
+		"expected": {
+			"lines": [
+				{
+					"discount": 0,
+					"line_tax": 0,
+					"line_tax_exact": 0,
+					"line_net_exact": 1500
+				}
+			],
+			"shipping_tax_class": null,
+			"shipping_cost": 0,
+			"shipping_tax": 0,
+			"items_net_total": 1500,
+			"total_tax": 0,
+			"grand_total": 1500
+		},
+		"ambiguous": false,
+		"woo_path": [
+			"CT:233 price*qty->cents (4dp)",
+			"TAX:181-230 calc_exclusive_tax price*rate/100, TAX:117 round 6dp",
+			"CT:677-680 line tax = sum(round_line_tax)",
+			"TR:84-89 round_line_tax -> wc_round_tax_total(v,0)",
+			"FMT:235-240 + CORE:1867-1875 + WC:545 mode HALF_UP when prices excl tax",
+			"CT:871 grand total NumberUtil::round(...,0) HALF_UP"
+		]
+	},
+	{
+		"id": "EX-06",
+		"title": "excl, exact half-cent tie rounds UP (75 x 18%)",
+		"kind": "cart",
+		"inputs": {
+			"prices_include_tax": false,
+			"round_at_subtotal": false,
+			"shipping_tax_class_option": "inherit",
+			"tax_classes": {
+				"": {
+					"name": "Standard",
+					"rate_bps": 1800
+				}
+			},
+			"items": [
+				{
+					"unit_cents": 75,
+					"qty": 1,
+					"tax_class": "",
+					"tax_status": "taxable",
+					"needs_shipping": true
+				}
+			],
+			"shipping": null,
+			"coupon": null
+		},
+		"expected": {
+			"lines": [
+				{
+					"discount": 0,
+					"line_tax": 14,
+					"line_tax_exact": "13.5",
+					"line_net_exact": 75
+				}
+			],
+			"shipping_tax_class": null,
+			"shipping_cost": 0,
+			"shipping_tax": 0,
+			"items_net_total": 75,
+			"total_tax": 14,
+			"grand_total": 89
+		},
+		"ambiguous": false,
+		"woo_path": [
+			"CT:233 price*qty->cents (4dp)",
+			"TAX:181-230 calc_exclusive_tax price*rate/100, TAX:117 round 6dp",
+			"CT:677-680 line tax = sum(round_line_tax)",
+			"TR:84-89 round_line_tax -> wc_round_tax_total(v,0)",
+			"FMT:235-240 + CORE:1867-1875 + WC:545 mode HALF_UP when prices excl tax",
+			"CT:871 grand total NumberUtil::round(...,0) HALF_UP"
+		]
+	},
+	{
+		"id": "EX-07",
+		"title": "excl, 10% percent coupon over two lines (Woo cent remainder)",
+		"kind": "cart",
+		"inputs": {
+			"prices_include_tax": false,
+			"round_at_subtotal": false,
+			"shipping_tax_class_option": "inherit",
+			"tax_classes": {
+				"": {
+					"name": "Standard",
+					"rate_bps": 1800
+				}
+			},
+			"items": [
+				{
+					"unit_cents": 1999,
+					"qty": 1,
+					"tax_class": "",
+					"tax_status": "taxable",
+					"needs_shipping": true
+				},
+				{
+					"unit_cents": 1001,
+					"qty": 2,
+					"tax_class": "",
+					"tax_status": "taxable",
+					"needs_shipping": true
+				}
+			],
+			"shipping": null,
+			"coupon": {
+				"type": "percent",
+				"amount": 10
+			}
+		},
+		"expected": {
+			"lines": [
+				{
+					"discount": 200,
+					"line_tax": 324,
+					"line_tax_exact": "323.82",
+					"line_net_exact": 1799
+				},
+				{
+					"discount": 200,
+					"line_tax": 324,
+					"line_tax_exact": "324.36",
+					"line_net_exact": 1802
+				}
+			],
+			"shipping_tax_class": null,
+			"shipping_cost": 0,
+			"shipping_tax": 0,
+			"items_net_total": 3601,
+			"total_tax": 648,
+			"grand_total": 4249
+		},
+		"ambiguous": false,
+		"woo_path": [
+			"CT:233 price*qty->cents (4dp)",
+			"TAX:181-230 calc_exclusive_tax price*rate/100, TAX:117 round 6dp",
+			"CT:677-680 line tax = sum(round_line_tax)",
+			"TR:84-89 round_line_tax -> wc_round_tax_total(v,0)",
+			"FMT:235-240 + CORE:1867-1875 + WC:545 mode HALF_UP when prices excl tax",
+			"CT:871 grand total NumberUtil::round(...,0) HALF_UP",
+			"CT:773-829 calculate_discounts; DISC:294-301 items sorted by unit price desc",
+			"DISC:362-417 percent: floor per line, cart-level wc_round_discount HALF_DOWN, remainder 1c at a time (DISC:564-590)",
+			"DISC:479-509 fixed_cart: absint(amount/units) per unit, recurse, then 1c remainder",
+			"CT:659 line total = price - discount, taxed after discount"
+		]
+	},
+	{
+		"id": "EX-08",
+		"title": "excl, fixed cart coupon 1000 over 3 units",
+		"kind": "cart",
+		"inputs": {
+			"prices_include_tax": false,
+			"round_at_subtotal": false,
+			"shipping_tax_class_option": "inherit",
+			"tax_classes": {
+				"": {
+					"name": "Standard",
+					"rate_bps": 825
+				}
+			},
+			"items": [
+				{
+					"unit_cents": 2000,
+					"qty": 1,
+					"tax_class": "",
+					"tax_status": "taxable",
+					"needs_shipping": true
+				},
+				{
+					"unit_cents": 1000,
+					"qty": 2,
+					"tax_class": "",
+					"tax_status": "taxable",
+					"needs_shipping": true
+				}
+			],
+			"shipping": null,
+			"coupon": {
+				"type": "fixed_cart",
+				"amount_cents": 1000
+			}
+		},
+		"expected": {
+			"lines": [
+				{
+					"discount": 334,
+					"line_tax": 137,
+					"line_tax_exact": "137.445",
+					"line_net_exact": 1666
+				},
+				{
+					"discount": 666,
+					"line_tax": 110,
+					"line_tax_exact": "110.055",
+					"line_net_exact": 1334
+				}
+			],
+			"shipping_tax_class": null,
+			"shipping_cost": 0,
+			"shipping_tax": 0,
+			"items_net_total": 3000,
+			"total_tax": 247,
+			"grand_total": 3247
+		},
+		"ambiguous": false,
+		"woo_path": [
+			"CT:233 price*qty->cents (4dp)",
+			"TAX:181-230 calc_exclusive_tax price*rate/100, TAX:117 round 6dp",
+			"CT:677-680 line tax = sum(round_line_tax)",
+			"TR:84-89 round_line_tax -> wc_round_tax_total(v,0)",
+			"FMT:235-240 + CORE:1867-1875 + WC:545 mode HALF_UP when prices excl tax",
+			"CT:871 grand total NumberUtil::round(...,0) HALF_UP",
+			"CT:773-829 calculate_discounts; DISC:294-301 items sorted by unit price desc",
+			"DISC:362-417 percent: floor per line, cart-level wc_round_discount HALF_DOWN, remainder 1c at a time (DISC:564-590)",
+			"DISC:479-509 fixed_cart: absint(amount/units) per unit, recurse, then 1c remainder",
+			"CT:659 line total = price - discount, taxed after discount"
+		]
+	},
+	{
+		"id": "IN-01",
+		"title": "incl, single line, 1800",
+		"kind": "cart",
+		"inputs": {
+			"prices_include_tax": true,
+			"round_at_subtotal": false,
+			"shipping_tax_class_option": "inherit",
+			"tax_classes": {
+				"": {
+					"name": "Standard",
+					"rate_bps": 1800
+				}
+			},
+			"items": [
+				{
+					"unit_cents": 1000,
+					"qty": 1,
+					"tax_class": "",
+					"tax_status": "taxable",
+					"needs_shipping": true
+				}
+			],
+			"shipping": null,
+			"coupon": null
+		},
+		"expected": {
+			"lines": [
+				{
+					"discount": 0,
+					"line_tax": 153,
+					"line_tax_exact": "152.542373",
+					"line_net_exact": "847.457627"
+				}
+			],
+			"shipping_tax_class": null,
+			"shipping_cost": 0,
+			"shipping_tax": 0,
+			"items_net_total": 847,
+			"total_tax": 153,
+			"grand_total": 1000,
+			"gross_items_after_discount": 1000
+		},
+		"ambiguous": false,
+		"woo_path": [
+			"CT:233",
+			"TAX:128-171 calc_inclusive_tax tax = price - price/(1+r)",
+			"CT:677-685 line tax = round_line_tax(tax); line net = gross - UNROUNDED tax",
+			"WC:545 mode HALF_DOWN when prices incl tax",
+			"TR:43-64 items_total = sum(NumberUtil::round(net)) HALF_UP",
+			"CT:871 grand total"
+		]
+	},
+	{
+		"id": "IN-02",
+		"title": "incl, 999 at 2000: tax tie 166.5 rounds DOWN, net 833",
+		"kind": "cart",
+		"inputs": {
+			"prices_include_tax": true,
+			"round_at_subtotal": false,
+			"shipping_tax_class_option": "inherit",
+			"tax_classes": {
+				"": {
+					"name": "Standard",
+					"rate_bps": 2000
+				}
+			},
+			"items": [
+				{
+					"unit_cents": 999,
+					"qty": 1,
+					"tax_class": "",
+					"tax_status": "taxable",
+					"needs_shipping": true
+				}
+			],
+			"shipping": null,
+			"coupon": null
+		},
+		"expected": {
+			"lines": [
+				{
+					"discount": 0,
+					"line_tax": 166,
+					"line_tax_exact": "166.5",
+					"line_net_exact": "832.5"
+				}
+			],
+			"shipping_tax_class": null,
+			"shipping_cost": 0,
+			"shipping_tax": 0,
+			"items_net_total": 833,
+			"total_tax": 166,
+			"grand_total": 999,
+			"gross_items_after_discount": 999
+		},
+		"ambiguous": false,
+		"woo_path": [
+			"CT:233",
+			"TAX:128-171 calc_inclusive_tax tax = price - price/(1+r)",
+			"CT:677-685 line tax = round_line_tax(tax); line net = gross - UNROUNDED tax",
+			"WC:545 mode HALF_DOWN when prices incl tax",
+			"TR:43-64 items_total = sum(NumberUtil::round(net)) HALF_UP",
+			"CT:871 grand total"
+		]
+	},
+	{
+		"id": "IN-03",
+		"title": "incl, qty 3 x 333 at 825",
+		"kind": "cart",
+		"inputs": {
+			"prices_include_tax": true,
+			"round_at_subtotal": false,
+			"shipping_tax_class_option": "inherit",
+			"tax_classes": {
+				"": {
+					"name": "Standard",
+					"rate_bps": 825
+				}
+			},
+			"items": [
+				{
+					"unit_cents": 333,
+					"qty": 3,
+					"tax_class": "",
+					"tax_status": "taxable",
+					"needs_shipping": true
+				}
+			],
+			"shipping": null,
+			"coupon": null
+		},
+		"expected": {
+			"lines": [
+				{
+					"discount": 0,
+					"line_tax": 76,
+					"line_tax_exact": "76.136259",
+					"line_net_exact": "922.863741"
+				}
+			],
+			"shipping_tax_class": null,
+			"shipping_cost": 0,
+			"shipping_tax": 0,
+			"items_net_total": 923,
+			"total_tax": 76,
+			"grand_total": 999,
+			"gross_items_after_discount": 999
+		},
+		"ambiguous": false,
+		"woo_path": [
+			"CT:233",
+			"TAX:128-171 calc_inclusive_tax tax = price - price/(1+r)",
+			"CT:677-685 line tax = round_line_tax(tax); line net = gross - UNROUNDED tax",
+			"WC:545 mode HALF_DOWN when prices incl tax",
+			"TR:43-64 items_total = sum(NumberUtil::round(net)) HALF_UP",
+			"CT:871 grand total"
+		]
+	},
+	{
+		"id": "IN-04",
+		"title": "incl, three lines at 1800",
+		"kind": "cart",
+		"inputs": {
+			"prices_include_tax": true,
+			"round_at_subtotal": false,
+			"shipping_tax_class_option": "inherit",
+			"tax_classes": {
+				"": {
+					"name": "Standard",
+					"rate_bps": 1800
+				}
+			},
+			"items": [
+				{
+					"unit_cents": 1999,
+					"qty": 1,
+					"tax_class": "",
+					"tax_status": "taxable",
+					"needs_shipping": true
+				},
+				{
+					"unit_cents": 2499,
+					"qty": 1,
+					"tax_class": "",
+					"tax_status": "taxable",
+					"needs_shipping": true
+				},
+				{
+					"unit_cents": 550,
+					"qty": 1,
+					"tax_class": "",
+					"tax_status": "taxable",
+					"needs_shipping": true
+				}
+			],
+			"shipping": null,
+			"coupon": null
+		},
+		"expected": {
+			"lines": [
+				{
+					"discount": 0,
+					"line_tax": 305,
+					"line_tax_exact": "304.932203",
+					"line_net_exact": "1694.067797"
+				},
+				{
+					"discount": 0,
+					"line_tax": 381,
+					"line_tax_exact": "381.20339",
+					"line_net_exact": "2117.79661"
+				},
+				{
+					"discount": 0,
+					"line_tax": 84,
+					"line_tax_exact": "83.898305",
+					"line_net_exact": "466.101695"
+				}
+			],
+			"shipping_tax_class": null,
+			"shipping_cost": 0,
+			"shipping_tax": 0,
+			"items_net_total": 4278,
+			"total_tax": 770,
+			"grand_total": 5048,
+			"gross_items_after_discount": 5048
+		},
+		"ambiguous": false,
+		"woo_path": [
+			"CT:233",
+			"TAX:128-171 calc_inclusive_tax tax = price - price/(1+r)",
+			"CT:677-685 line tax = round_line_tax(tax); line net = gross - UNROUNDED tax",
+			"WC:545 mode HALF_DOWN when prices incl tax",
+			"TR:43-64 items_total = sum(NumberUtil::round(net)) HALF_UP",
+			"CT:871 grand total"
+		]
+	},
+	{
+		"id": "IN-05",
+		"title": "incl, rate 0",
+		"kind": "cart",
+		"inputs": {
+			"prices_include_tax": true,
+			"round_at_subtotal": false,
+			"shipping_tax_class_option": "inherit",
+			"tax_classes": {
+				"": {
+					"name": "Standard",
+					"rate_bps": 0
+				}
+			},
+			"items": [
+				{
+					"unit_cents": 1500,
+					"qty": 1,
+					"tax_class": "",
+					"tax_status": "taxable",
+					"needs_shipping": true
+				}
+			],
+			"shipping": null,
+			"coupon": null
+		},
+		"expected": {
+			"lines": [
+				{
+					"discount": 0,
+					"line_tax": 0,
+					"line_tax_exact": 0,
+					"line_net_exact": 1500
+				}
+			],
+			"shipping_tax_class": null,
+			"shipping_cost": 0,
+			"shipping_tax": 0,
+			"items_net_total": 1500,
+			"total_tax": 0,
+			"grand_total": 1500,
+			"gross_items_after_discount": 1500
+		},
+		"ambiguous": false,
+		"woo_path": [
+			"CT:233",
+			"TAX:128-171 calc_inclusive_tax tax = price - price/(1+r)",
+			"CT:677-685 line tax = round_line_tax(tax); line net = gross - UNROUNDED tax",
+			"WC:545 mode HALF_DOWN when prices incl tax",
+			"TR:43-64 items_total = sum(NumberUtil::round(net)) HALF_UP",
+			"CT:871 grand total"
+		]
+	},
+	{
+		"id": "IN-06",
+		"title": "incl, 10% percent coupon over two lines",
+		"kind": "cart",
+		"inputs": {
+			"prices_include_tax": true,
+			"round_at_subtotal": false,
+			"shipping_tax_class_option": "inherit",
+			"tax_classes": {
+				"": {
+					"name": "Standard",
+					"rate_bps": 1800
+				}
+			},
+			"items": [
+				{
+					"unit_cents": 1999,
+					"qty": 1,
+					"tax_class": "",
+					"tax_status": "taxable",
+					"needs_shipping": true
+				},
+				{
+					"unit_cents": 1001,
+					"qty": 2,
+					"tax_class": "",
+					"tax_status": "taxable",
+					"needs_shipping": true
+				}
+			],
+			"shipping": null,
+			"coupon": {
+				"type": "percent",
+				"amount": 10
+			}
+		},
+		"expected": {
+			"lines": [
+				{
+					"discount": 200,
+					"line_tax": 274,
+					"line_tax_exact": "274.423729",
+					"line_net_exact": "1524.576271"
+				},
+				{
+					"discount": 200,
+					"line_tax": 275,
+					"line_tax_exact": "274.881356",
+					"line_net_exact": "1527.118644"
+				}
+			],
+			"shipping_tax_class": null,
+			"shipping_cost": 0,
+			"shipping_tax": 0,
+			"items_net_total": 3052,
+			"total_tax": 549,
+			"grand_total": 3601,
+			"gross_items_after_discount": 3601
+		},
+		"ambiguous": false,
+		"woo_path": [
+			"CT:233",
+			"TAX:128-171 calc_inclusive_tax tax = price - price/(1+r)",
+			"CT:677-685 line tax = round_line_tax(tax); line net = gross - UNROUNDED tax",
+			"WC:545 mode HALF_DOWN when prices incl tax",
+			"TR:43-64 items_total = sum(NumberUtil::round(net)) HALF_UP",
+			"CT:871 grand total",
+			"CT:773-829 calculate_discounts; DISC:294-301 items sorted by unit price desc",
+			"DISC:362-417 percent: floor per line, cart-level wc_round_discount HALF_DOWN, remainder 1c at a time (DISC:564-590)",
+			"DISC:479-509 fixed_cart: absint(amount/units) per unit, recurse, then 1c remainder",
+			"CT:659 line total = price - discount, taxed after discount"
+		]
+	},
+	{
+		"id": "IN-07",
+		"title": "incl, tax status none: gross kept, no tax",
+		"kind": "cart",
+		"inputs": {
+			"prices_include_tax": true,
+			"round_at_subtotal": false,
+			"shipping_tax_class_option": "inherit",
+			"tax_classes": {
+				"": {
+					"name": "Standard",
+					"rate_bps": 1800
+				}
+			},
+			"items": [
+				{
+					"unit_cents": 1180,
+					"qty": 1,
+					"tax_class": "",
+					"tax_status": "none",
+					"needs_shipping": true
+				}
+			],
+			"shipping": null,
+			"coupon": null
+		},
+		"expected": {
+			"lines": [
+				{
+					"discount": 0,
+					"line_tax": 0,
+					"line_tax_exact": 0,
+					"line_net_exact": 1180
+				}
+			],
+			"shipping_tax_class": null,
+			"shipping_cost": 0,
+			"shipping_tax": 0,
+			"items_net_total": 1180,
+			"total_tax": 0,
+			"grand_total": 1180,
+			"gross_items_after_discount": 1180
+		},
+		"ambiguous": false,
+		"woo_path": [
+			"CT:233",
+			"TAX:128-171 calc_inclusive_tax tax = price - price/(1+r)",
+			"CT:677-685 line tax = round_line_tax(tax); line net = gross - UNROUNDED tax",
+			"WC:545 mode HALF_DOWN when prices incl tax",
+			"TR:43-64 items_total = sum(NumberUtil::round(net)) HALF_UP",
+			"CT:871 grand total",
+			"CT:230,677 + PROD:1860-1869 only tax_status 'taxable' gets line tax"
+		]
+	},
+	{
+		"id": "RD-01",
+		"title": "excl, 3 x 0.99 at 1800, per line",
+		"kind": "cart",
+		"inputs": {
+			"prices_include_tax": false,
+			"round_at_subtotal": false,
+			"shipping_tax_class_option": "inherit",
+			"tax_classes": {
+				"": {
+					"name": "Standard",
+					"rate_bps": 1800
+				}
+			},
+			"items": [
+				{
+					"unit_cents": 99,
+					"qty": 1,
+					"tax_class": "",
+					"tax_status": "taxable",
+					"needs_shipping": true
+				},
+				{
+					"unit_cents": 99,
+					"qty": 1,
+					"tax_class": "",
+					"tax_status": "taxable",
+					"needs_shipping": true
+				},
+				{
+					"unit_cents": 99,
+					"qty": 1,
+					"tax_class": "",
+					"tax_status": "taxable",
+					"needs_shipping": true
+				}
+			],
+			"shipping": null,
+			"coupon": null
+		},
+		"expected": {
+			"lines": [
+				{
+					"discount": 0,
+					"line_tax": 18,
+					"line_tax_exact": "17.82",
+					"line_net_exact": 99
+				},
+				{
+					"discount": 0,
+					"line_tax": 18,
+					"line_tax_exact": "17.82",
+					"line_net_exact": 99
+				},
+				{
+					"discount": 0,
+					"line_tax": 18,
+					"line_tax_exact": "17.82",
+					"line_net_exact": 99
+				}
+			],
+			"shipping_tax_class": null,
+			"shipping_cost": 0,
+			"shipping_tax": 0,
+			"items_net_total": 297,
+			"total_tax": 54,
+			"grand_total": 351
+		},
+		"ambiguous": false,
+		"woo_path": [
+			"CT:233 price*qty->cents (4dp)",
+			"TAX:181-230 calc_exclusive_tax price*rate/100, TAX:117 round 6dp",
+			"CT:677-680 line tax = sum(round_line_tax)",
+			"TR:84-89 round_line_tax -> wc_round_tax_total(v,0)",
+			"FMT:235-240 + CORE:1867-1875 + WC:545 mode HALF_UP when prices excl tax",
+			"CT:871 grand total NumberUtil::round(...,0) HALF_UP"
+		]
+	},
+	{
+		"id": "RD-02",
+		"title": "excl, 3 x 0.99 at 1800, at subtotal",
+		"kind": "cart",
+		"inputs": {
+			"prices_include_tax": false,
+			"round_at_subtotal": true,
+			"shipping_tax_class_option": "inherit",
+			"tax_classes": {
+				"": {
+					"name": "Standard",
+					"rate_bps": 1800
+				}
+			},
+			"items": [
+				{
+					"unit_cents": 99,
+					"qty": 1,
+					"tax_class": "",
+					"tax_status": "taxable",
+					"needs_shipping": true
+				},
+				{
+					"unit_cents": 99,
+					"qty": 1,
+					"tax_class": "",
+					"tax_status": "taxable",
+					"needs_shipping": true
+				},
+				{
+					"unit_cents": 99,
+					"qty": 1,
+					"tax_class": "",
+					"tax_status": "taxable",
+					"needs_shipping": true
+				}
+			],
+			"shipping": null,
+			"coupon": null
+		},
+		"expected": {
+			"lines": [
+				{
+					"discount": 0,
+					"line_tax": "17.82",
+					"line_tax_exact": "17.82",
+					"line_net_exact": 99
+				},
+				{
+					"discount": 0,
+					"line_tax": "17.82",
+					"line_tax_exact": "17.82",
+					"line_net_exact": 99
+				},
+				{
+					"discount": 0,
+					"line_tax": "17.82",
+					"line_tax_exact": "17.82",
+					"line_net_exact": 99
+				}
+			],
+			"shipping_tax_class": null,
+			"shipping_cost": 0,
+			"shipping_tax": 0,
+			"items_net_total": 297,
+			"total_tax": 53,
+			"grand_total": 350
+		},
+		"ambiguous": false,
+		"woo_path": [
+			"CT:233 price*qty->cents (4dp)",
+			"TAX:181-230 calc_exclusive_tax price*rate/100, TAX:117 round 6dp",
+			"CT:677-680 line tax = sum(round_line_tax)",
+			"TR:84-89 round_line_tax -> wc_round_tax_total(v,0)",
+			"FMT:235-240 + CORE:1867-1875 + WC:545 mode HALF_UP when prices excl tax",
+			"CT:871 grand total NumberUtil::round(...,0) HALF_UP",
+			"TR:72-89 round_at_subtotal: round_line_tax/round_item_subtotal are no-ops",
+			"CT:872-875 items tax (units, unrounded) + NumberUtil::round(ship+fee tax, 2)",
+			"CART:579-582 set_total_tax -> wc_round_tax_total(v) at 2dp with tax mode",
+			"CT:871 grand total rounds the unrounded cents sum once, HALF_UP"
+		]
+	},
+	{
+		"id": "RD-03",
+		"title": "excl, 7 x 0.99 at 825, per line",
+		"kind": "cart",
+		"inputs": {
+			"prices_include_tax": false,
+			"round_at_subtotal": false,
+			"shipping_tax_class_option": "inherit",
+			"tax_classes": {
+				"": {
+					"name": "Standard",
+					"rate_bps": 825
+				}
+			},
+			"items": [
+				{
+					"unit_cents": 99,
+					"qty": 1,
+					"tax_class": "",
+					"tax_status": "taxable",
+					"needs_shipping": true
+				},
+				{
+					"unit_cents": 99,
+					"qty": 1,
+					"tax_class": "",
+					"tax_status": "taxable",
+					"needs_shipping": true
+				},
+				{
+					"unit_cents": 99,
+					"qty": 1,
+					"tax_class": "",
+					"tax_status": "taxable",
+					"needs_shipping": true
+				},
+				{
+					"unit_cents": 99,
+					"qty": 1,
+					"tax_class": "",
+					"tax_status": "taxable",
+					"needs_shipping": true
+				},
+				{
+					"unit_cents": 99,
+					"qty": 1,
+					"tax_class": "",
+					"tax_status": "taxable",
+					"needs_shipping": true
+				},
+				{
+					"unit_cents": 99,
+					"qty": 1,
+					"tax_class": "",
+					"tax_status": "taxable",
+					"needs_shipping": true
+				},
+				{
+					"unit_cents": 99,
+					"qty": 1,
+					"tax_class": "",
+					"tax_status": "taxable",
+					"needs_shipping": true
+				}
+			],
+			"shipping": null,
+			"coupon": null
+		},
+		"expected": {
+			"lines": [
+				{
+					"discount": 0,
+					"line_tax": 8,
+					"line_tax_exact": "8.1675",
+					"line_net_exact": 99
+				},
+				{
+					"discount": 0,
+					"line_tax": 8,
+					"line_tax_exact": "8.1675",
+					"line_net_exact": 99
+				},
+				{
+					"discount": 0,
+					"line_tax": 8,
+					"line_tax_exact": "8.1675",
+					"line_net_exact": 99
+				},
+				{
+					"discount": 0,
+					"line_tax": 8,
+					"line_tax_exact": "8.1675",
+					"line_net_exact": 99
+				},
+				{
+					"discount": 0,
+					"line_tax": 8,
+					"line_tax_exact": "8.1675",
+					"line_net_exact": 99
+				},
+				{
+					"discount": 0,
+					"line_tax": 8,
+					"line_tax_exact": "8.1675",
+					"line_net_exact": 99
+				},
+				{
+					"discount": 0,
+					"line_tax": 8,
+					"line_tax_exact": "8.1675",
+					"line_net_exact": 99
+				}
+			],
+			"shipping_tax_class": null,
+			"shipping_cost": 0,
+			"shipping_tax": 0,
+			"items_net_total": 693,
+			"total_tax": 56,
+			"grand_total": 749
+		},
+		"ambiguous": false,
+		"woo_path": [
+			"CT:233 price*qty->cents (4dp)",
+			"TAX:181-230 calc_exclusive_tax price*rate/100, TAX:117 round 6dp",
+			"CT:677-680 line tax = sum(round_line_tax)",
+			"TR:84-89 round_line_tax -> wc_round_tax_total(v,0)",
+			"FMT:235-240 + CORE:1867-1875 + WC:545 mode HALF_UP when prices excl tax",
+			"CT:871 grand total NumberUtil::round(...,0) HALF_UP"
+		]
+	},
+	{
+		"id": "RD-04",
+		"title": "excl, 7 x 0.99 at 825, at subtotal",
+		"kind": "cart",
+		"inputs": {
+			"prices_include_tax": false,
+			"round_at_subtotal": true,
+			"shipping_tax_class_option": "inherit",
+			"tax_classes": {
+				"": {
+					"name": "Standard",
+					"rate_bps": 825
+				}
+			},
+			"items": [
+				{
+					"unit_cents": 99,
+					"qty": 1,
+					"tax_class": "",
+					"tax_status": "taxable",
+					"needs_shipping": true
+				},
+				{
+					"unit_cents": 99,
+					"qty": 1,
+					"tax_class": "",
+					"tax_status": "taxable",
+					"needs_shipping": true
+				},
+				{
+					"unit_cents": 99,
+					"qty": 1,
+					"tax_class": "",
+					"tax_status": "taxable",
+					"needs_shipping": true
+				},
+				{
+					"unit_cents": 99,
+					"qty": 1,
+					"tax_class": "",
+					"tax_status": "taxable",
+					"needs_shipping": true
+				},
+				{
+					"unit_cents": 99,
+					"qty": 1,
+					"tax_class": "",
+					"tax_status": "taxable",
+					"needs_shipping": true
+				},
+				{
+					"unit_cents": 99,
+					"qty": 1,
+					"tax_class": "",
+					"tax_status": "taxable",
+					"needs_shipping": true
+				},
+				{
+					"unit_cents": 99,
+					"qty": 1,
+					"tax_class": "",
+					"tax_status": "taxable",
+					"needs_shipping": true
+				}
+			],
+			"shipping": null,
+			"coupon": null
+		},
+		"expected": {
+			"lines": [
+				{
+					"discount": 0,
+					"line_tax": "8.1675",
+					"line_tax_exact": "8.1675",
+					"line_net_exact": 99
+				},
+				{
+					"discount": 0,
+					"line_tax": "8.1675",
+					"line_tax_exact": "8.1675",
+					"line_net_exact": 99
+				},
+				{
+					"discount": 0,
+					"line_tax": "8.1675",
+					"line_tax_exact": "8.1675",
+					"line_net_exact": 99
+				},
+				{
+					"discount": 0,
+					"line_tax": "8.1675",
+					"line_tax_exact": "8.1675",
+					"line_net_exact": 99
+				},
+				{
+					"discount": 0,
+					"line_tax": "8.1675",
+					"line_tax_exact": "8.1675",
+					"line_net_exact": 99
+				},
+				{
+					"discount": 0,
+					"line_tax": "8.1675",
+					"line_tax_exact": "8.1675",
+					"line_net_exact": 99
+				},
+				{
+					"discount": 0,
+					"line_tax": "8.1675",
+					"line_tax_exact": "8.1675",
+					"line_net_exact": 99
+				}
+			],
+			"shipping_tax_class": null,
+			"shipping_cost": 0,
+			"shipping_tax": 0,
+			"items_net_total": 693,
+			"total_tax": 57,
+			"grand_total": 750
+		},
+		"ambiguous": false,
+		"woo_path": [
+			"CT:233 price*qty->cents (4dp)",
+			"TAX:181-230 calc_exclusive_tax price*rate/100, TAX:117 round 6dp",
+			"CT:677-680 line tax = sum(round_line_tax)",
+			"TR:84-89 round_line_tax -> wc_round_tax_total(v,0)",
+			"FMT:235-240 + CORE:1867-1875 + WC:545 mode HALF_UP when prices excl tax",
+			"CT:871 grand total NumberUtil::round(...,0) HALF_UP",
+			"TR:72-89 round_at_subtotal: round_line_tax/round_item_subtotal are no-ops",
+			"CT:872-875 items tax (units, unrounded) + NumberUtil::round(ship+fee tax, 2)",
+			"CART:579-582 set_total_tax -> wc_round_tax_total(v) at 2dp with tax mode",
+			"CT:871 grand total rounds the unrounded cents sum once, HALF_UP"
+		]
+	},
+	{
+		"id": "RD-05",
+		"title": "incl, 3 x 0.99 at 1800, per line",
+		"kind": "cart",
+		"inputs": {
+			"prices_include_tax": true,
+			"round_at_subtotal": false,
+			"shipping_tax_class_option": "inherit",
+			"tax_classes": {
+				"": {
+					"name": "Standard",
+					"rate_bps": 1800
+				}
+			},
+			"items": [
+				{
+					"unit_cents": 99,
+					"qty": 1,
+					"tax_class": "",
+					"tax_status": "taxable",
+					"needs_shipping": true
+				},
+				{
+					"unit_cents": 99,
+					"qty": 1,
+					"tax_class": "",
+					"tax_status": "taxable",
+					"needs_shipping": true
+				},
+				{
+					"unit_cents": 99,
+					"qty": 1,
+					"tax_class": "",
+					"tax_status": "taxable",
+					"needs_shipping": true
+				}
+			],
+			"shipping": null,
+			"coupon": null
+		},
+		"expected": {
+			"lines": [
+				{
+					"discount": 0,
+					"line_tax": 15,
+					"line_tax_exact": "15.101695",
+					"line_net_exact": "83.898305"
+				},
+				{
+					"discount": 0,
+					"line_tax": 15,
+					"line_tax_exact": "15.101695",
+					"line_net_exact": "83.898305"
+				},
+				{
+					"discount": 0,
+					"line_tax": 15,
+					"line_tax_exact": "15.101695",
+					"line_net_exact": "83.898305"
+				}
+			],
+			"shipping_tax_class": null,
+			"shipping_cost": 0,
+			"shipping_tax": 0,
+			"items_net_total": 252,
+			"total_tax": 45,
+			"grand_total": 297,
+			"gross_items_after_discount": 297
+		},
+		"ambiguous": false,
+		"woo_path": [
+			"CT:233",
+			"TAX:128-171 calc_inclusive_tax tax = price - price/(1+r)",
+			"CT:677-685 line tax = round_line_tax(tax); line net = gross - UNROUNDED tax",
+			"WC:545 mode HALF_DOWN when prices incl tax",
+			"TR:43-64 items_total = sum(NumberUtil::round(net)) HALF_UP",
+			"CT:871 grand total"
+		]
+	},
+	{
+		"id": "RD-06",
+		"title": "incl, 3 x 0.99 at 1800, at subtotal",
+		"kind": "cart",
+		"inputs": {
+			"prices_include_tax": true,
+			"round_at_subtotal": true,
+			"shipping_tax_class_option": "inherit",
+			"tax_classes": {
+				"": {
+					"name": "Standard",
+					"rate_bps": 1800
+				}
+			},
+			"items": [
+				{
+					"unit_cents": 99,
+					"qty": 1,
+					"tax_class": "",
+					"tax_status": "taxable",
+					"needs_shipping": true
+				},
+				{
+					"unit_cents": 99,
+					"qty": 1,
+					"tax_class": "",
+					"tax_status": "taxable",
+					"needs_shipping": true
+				},
+				{
+					"unit_cents": 99,
+					"qty": 1,
+					"tax_class": "",
+					"tax_status": "taxable",
+					"needs_shipping": true
+				}
+			],
+			"shipping": null,
+			"coupon": null
+		},
+		"expected": {
+			"lines": [
+				{
+					"discount": 0,
+					"line_tax": "15.101695",
+					"line_tax_exact": "15.101695",
+					"line_net_exact": "83.898305"
+				},
+				{
+					"discount": 0,
+					"line_tax": "15.101695",
+					"line_tax_exact": "15.101695",
+					"line_net_exact": "83.898305"
+				},
+				{
+					"discount": 0,
+					"line_tax": "15.101695",
+					"line_tax_exact": "15.101695",
+					"line_net_exact": "83.898305"
+				}
+			],
+			"shipping_tax_class": null,
+			"shipping_cost": 0,
+			"shipping_tax": 0,
+			"items_net_total": "251.694915",
+			"total_tax": 45,
+			"grand_total": 297,
+			"gross_items_after_discount": 297
+		},
+		"ambiguous": false,
+		"woo_path": [
+			"CT:233",
+			"TAX:128-171 calc_inclusive_tax tax = price - price/(1+r)",
+			"CT:677-685 line tax = round_line_tax(tax); line net = gross - UNROUNDED tax",
+			"WC:545 mode HALF_DOWN when prices incl tax",
+			"TR:43-64 items_total = sum(NumberUtil::round(net)) HALF_UP",
+			"CT:871 grand total",
+			"TR:72-89 round_at_subtotal: round_line_tax/round_item_subtotal are no-ops",
+			"CT:872-875 items tax (units, unrounded) + NumberUtil::round(ship+fee tax, 2)",
+			"CART:579-582 set_total_tax -> wc_round_tax_total(v) at 2dp with tax mode",
+			"CT:871 grand total rounds the unrounded cents sum once, HALF_UP"
+		]
+	},
+	{
+		"id": "RD-07",
+		"title": "excl at subtotal: grand total and total_tax disagree by 1 cent",
+		"kind": "cart",
+		"inputs": {
+			"prices_include_tax": false,
+			"round_at_subtotal": true,
+			"shipping_tax_class_option": "inherit",
+			"tax_classes": {
+				"": {
+					"name": "Standard",
+					"rate_bps": 2000
+				}
+			},
+			"items": [
+				{
+					"unit_cents": 102,
+					"qty": 1,
+					"tax_class": "",
+					"tax_status": "taxable",
+					"needs_shipping": true
+				}
+			],
+			"shipping": {
+				"cost_cents": 502,
+				"method_taxable": true,
+				"entered": "excluding tax"
+			},
+			"coupon": null
+		},
+		"expected": {
+			"lines": [
+				{
+					"discount": 0,
+					"line_tax": "20.4",
+					"line_tax_exact": "20.4",
+					"line_net_exact": 102
+				}
+			],
+			"shipping_tax_class": "",
+			"shipping_cost": 502,
+			"shipping_tax": "100.4",
+			"items_net_total": 102,
+			"total_tax": 120,
+			"grand_total": 725
+		},
+		"ambiguous": false,
+		"woo_path": [
+			"CT:233 price*qty->cents (4dp)",
+			"TAX:181-230 calc_exclusive_tax price*rate/100, TAX:117 round 6dp",
+			"CT:677-680 line tax = sum(round_line_tax)",
+			"TR:84-89 round_line_tax -> wc_round_tax_total(v,0)",
+			"FMT:235-240 + CORE:1867-1875 + WC:545 mode HALF_UP when prices excl tax",
+			"CT:871 grand total NumberUtil::round(...,0) HALF_UP",
+			"TR:72-89 round_at_subtotal: round_line_tax/round_item_subtotal are no-ops",
+			"CT:872-875 items tax (units, unrounded) + NumberUtil::round(ship+fee tax, 2)",
+			"CART:579-582 set_total_tax -> wc_round_tax_total(v) at 2dp with tax mode",
+			"CT:871 grand total rounds the unrounded cents sum once, HALF_UP",
+			"SM:316-327 add_rate -> TAX:584-642 get_shipping_tax_rates -> TAX:86-102 calc_shipping_tax (exclusive)",
+			"TAX:653-692 class from cart items; CART:1052-1062; PROD:1876-1878 is_shipping_taxable",
+			"CT:336-354 shipping tax *100 then round_item_subtotal (NumberUtil::round HALF_UP, NOT tax mode)"
+		]
+	},
+	{
+		"id": "RD-08",
+		"title": "incl at subtotal, half-cent sum rounds DOWN in total_tax",
+		"kind": "cart",
+		"inputs": {
+			"prices_include_tax": true,
+			"round_at_subtotal": true,
+			"shipping_tax_class_option": "inherit",
+			"tax_classes": {
+				"": {
+					"name": "Standard",
+					"rate_bps": 2000
+				}
+			},
+			"items": [
+				{
+					"unit_cents": 999,
+					"qty": 1,
+					"tax_class": "",
+					"tax_status": "taxable",
+					"needs_shipping": true
+				}
+			],
+			"shipping": null,
+			"coupon": null
+		},
+		"expected": {
+			"lines": [
+				{
+					"discount": 0,
+					"line_tax": "166.5",
+					"line_tax_exact": "166.5",
+					"line_net_exact": "832.5"
+				}
+			],
+			"shipping_tax_class": null,
+			"shipping_cost": 0,
+			"shipping_tax": 0,
+			"items_net_total": "832.5",
+			"total_tax": 166,
+			"grand_total": 999,
+			"gross_items_after_discount": 999
+		},
+		"ambiguous": true,
+		"woo_path": [
+			"CT:233",
+			"TAX:128-171 calc_inclusive_tax tax = price - price/(1+r)",
+			"CT:677-685 line tax = round_line_tax(tax); line net = gross - UNROUNDED tax",
+			"WC:545 mode HALF_DOWN when prices incl tax",
+			"TR:43-64 items_total = sum(NumberUtil::round(net)) HALF_UP",
+			"CT:871 grand total",
+			"TR:72-89 round_at_subtotal: round_line_tax/round_item_subtotal are no-ops",
+			"CT:872-875 items tax (units, unrounded) + NumberUtil::round(ship+fee tax, 2)",
+			"CART:579-582 set_total_tax -> wc_round_tax_total(v) at 2dp with tax mode",
+			"CT:871 grand total rounds the unrounded cents sum once, HALF_UP"
+		],
+		"ambiguous_detail": {
+			"field": "total_tax",
+			"candidates": [166, 167],
+			"preferred": 166,
+			"why": "total_tax = wc_round_tax_total(1.665, 2) HALF_DOWN. Decimal 1.665 -> 1.66; the double 1.665 is 1.66500000000000003553 > tie, so a pure-binary round gives 1.67. PHP round() pre-rounding (<=8.3) and the edge-case check (8.4, RFC to change it was declined) both give 1.66."
+		}
+	},
+	{
+		"id": "RD-09",
+		"title": "excl at subtotal, 4.5c tax: 0.045 rounded half-up at 2dp (AMBIGUOUS)",
+		"kind": "cart",
+		"inputs": {
+			"prices_include_tax": false,
+			"round_at_subtotal": true,
+			"shipping_tax_class_option": "inherit",
+			"tax_classes": {
+				"": {
+					"name": "Standard",
+					"rate_bps": 1800
+				}
+			},
+			"items": [
+				{
+					"unit_cents": 25,
+					"qty": 1,
+					"tax_class": "",
+					"tax_status": "taxable",
+					"needs_shipping": true
+				}
+			],
+			"shipping": null,
+			"coupon": null
+		},
+		"expected": {
+			"lines": [
+				{
+					"discount": 0,
+					"line_tax": "4.5",
+					"line_tax_exact": "4.5",
+					"line_net_exact": 25
+				}
+			],
+			"shipping_tax_class": null,
+			"shipping_cost": 0,
+			"shipping_tax": 0,
+			"items_net_total": 25,
+			"total_tax": 5,
+			"grand_total": 30
+		},
+		"ambiguous": true,
+		"woo_path": [
+			"CT:233 price*qty->cents (4dp)",
+			"TAX:181-230 calc_exclusive_tax price*rate/100, TAX:117 round 6dp",
+			"CT:677-680 line tax = sum(round_line_tax)",
+			"TR:84-89 round_line_tax -> wc_round_tax_total(v,0)",
+			"FMT:235-240 + CORE:1867-1875 + WC:545 mode HALF_UP when prices excl tax",
+			"CT:871 grand total NumberUtil::round(...,0) HALF_UP",
+			"TR:72-89 round_at_subtotal: round_line_tax/round_item_subtotal are no-ops",
+			"CT:872-875 items tax (units, unrounded) + NumberUtil::round(ship+fee tax, 2)",
+			"CART:579-582 set_total_tax -> wc_round_tax_total(v) at 2dp with tax mode",
+			"CT:871 grand total rounds the unrounded cents sum once, HALF_UP"
+		],
+		"ambiguous_detail": {
+			"field": "total_tax",
+			"candidates": [5, 4],
+			"preferred": 5,
+			"why": "total_tax = wc_round_tax_total(0.045, 2) HALF_UP. Decimal -> 0.05; the double 0.045 is 0.04499999999999999833 < tie, pure-binary gives 0.04. PHP gives 0.05."
+		}
+	},
+	{
+		"id": "RD-10",
+		"title": "incl at subtotal, 13.5c tax: 0.135 rounded half-down at 2dp (AMBIGUOUS)",
+		"kind": "cart",
+		"inputs": {
+			"prices_include_tax": true,
+			"round_at_subtotal": true,
+			"shipping_tax_class_option": "inherit",
+			"tax_classes": {
+				"": {
+					"name": "Standard",
+					"rate_bps": 2000
+				}
+			},
+			"items": [
+				{
+					"unit_cents": 81,
+					"qty": 1,
+					"tax_class": "",
+					"tax_status": "taxable",
+					"needs_shipping": true
+				}
+			],
+			"shipping": null,
+			"coupon": null
+		},
+		"expected": {
+			"lines": [
+				{
+					"discount": 0,
+					"line_tax": "13.5",
+					"line_tax_exact": "13.5",
+					"line_net_exact": "67.5"
+				}
+			],
+			"shipping_tax_class": null,
+			"shipping_cost": 0,
+			"shipping_tax": 0,
+			"items_net_total": "67.5",
+			"total_tax": 13,
+			"grand_total": 81,
+			"gross_items_after_discount": 81
+		},
+		"ambiguous": true,
+		"woo_path": [
+			"CT:233",
+			"TAX:128-171 calc_inclusive_tax tax = price - price/(1+r)",
+			"CT:677-685 line tax = round_line_tax(tax); line net = gross - UNROUNDED tax",
+			"WC:545 mode HALF_DOWN when prices incl tax",
+			"TR:43-64 items_total = sum(NumberUtil::round(net)) HALF_UP",
+			"CT:871 grand total",
+			"TR:72-89 round_at_subtotal: round_line_tax/round_item_subtotal are no-ops",
+			"CT:872-875 items tax (units, unrounded) + NumberUtil::round(ship+fee tax, 2)",
+			"CART:579-582 set_total_tax -> wc_round_tax_total(v) at 2dp with tax mode",
+			"CT:871 grand total rounds the unrounded cents sum once, HALF_UP"
+		],
+		"ambiguous_detail": {
+			"field": "total_tax",
+			"candidates": [13, 14],
+			"preferred": 13,
+			"why": "total_tax = wc_round_tax_total(0.135, 2) HALF_DOWN. Decimal -> 0.13; the double 0.135 is 0.13500000000000000888 > tie, pure-binary gives 0.14. PHP gives 0.13."
+		}
+	},
+	{
+		"id": "SH-01",
+		"title": "standard + reduced items -> shipping uses standard",
+		"kind": "cart",
+		"inputs": {
+			"prices_include_tax": false,
+			"round_at_subtotal": false,
+			"shipping_tax_class_option": "inherit",
+			"tax_classes": {
+				"": {
+					"name": "Standard",
+					"rate_bps": 825
+				},
+				"reduced-rate": {
+					"name": "Reduced rate",
+					"rate_bps": 500
+				}
+			},
+			"items": [
+				{
+					"unit_cents": 1000,
+					"qty": 1,
+					"tax_class": "",
+					"tax_status": "taxable",
+					"needs_shipping": true
+				},
+				{
+					"unit_cents": 1000,
+					"qty": 1,
+					"tax_class": "reduced-rate",
+					"tax_status": "taxable",
+					"needs_shipping": true
+				}
+			],
+			"shipping": {
+				"cost_cents": 999,
+				"method_taxable": true,
+				"entered": "excluding tax"
+			},
+			"coupon": null
+		},
+		"expected": {
+			"lines": [
+				{
+					"discount": 0,
+					"line_tax": 83,
+					"line_tax_exact": "82.5",
+					"line_net_exact": 1000
+				},
+				{
+					"discount": 0,
+					"line_tax": 50,
+					"line_tax_exact": 50,
+					"line_net_exact": 1000
+				}
+			],
+			"shipping_tax_class": "",
+			"shipping_cost": 999,
+			"shipping_tax": 82,
+			"items_net_total": 2000,
+			"total_tax": 215,
+			"grand_total": 3214
+		},
+		"ambiguous": false,
+		"woo_path": [
+			"CT:233 price*qty->cents (4dp)",
+			"TAX:181-230 calc_exclusive_tax price*rate/100, TAX:117 round 6dp",
+			"CT:677-680 line tax = sum(round_line_tax)",
+			"TR:84-89 round_line_tax -> wc_round_tax_total(v,0)",
+			"FMT:235-240 + CORE:1867-1875 + WC:545 mode HALF_UP when prices excl tax",
+			"CT:871 grand total NumberUtil::round(...,0) HALF_UP",
+			"SM:316-327 add_rate -> TAX:584-642 get_shipping_tax_rates -> TAX:86-102 calc_shipping_tax (exclusive)",
+			"TAX:653-692 class from cart items; CART:1052-1062; PROD:1876-1878 is_shipping_taxable",
+			"CT:336-354 shipping tax *100 then round_item_subtotal (NumberUtil::round HALF_UP, NOT tax mode)"
+		]
+	},
+	{
+		"id": "SH-02",
+		"title": "only reduced items -> shipping uses reduced",
+		"kind": "cart",
+		"inputs": {
+			"prices_include_tax": false,
+			"round_at_subtotal": false,
+			"shipping_tax_class_option": "inherit",
+			"tax_classes": {
+				"": {
+					"name": "Standard",
+					"rate_bps": 1800
+				},
+				"reduced-rate": {
+					"name": "Reduced rate",
+					"rate_bps": 500
+				}
+			},
+			"items": [
+				{
+					"unit_cents": 1000,
+					"qty": 1,
+					"tax_class": "reduced-rate",
+					"tax_status": "taxable",
+					"needs_shipping": true
+				}
+			],
+			"shipping": {
+				"cost_cents": 1050,
+				"method_taxable": true,
+				"entered": "excluding tax"
+			},
+			"coupon": null
+		},
+		"expected": {
+			"lines": [
+				{
+					"discount": 0,
+					"line_tax": 50,
+					"line_tax_exact": 50,
+					"line_net_exact": 1000
+				}
+			],
+			"shipping_tax_class": "reduced-rate",
+			"shipping_cost": 1050,
+			"shipping_tax": 53,
+			"items_net_total": 1000,
+			"total_tax": 103,
+			"grand_total": 2153
+		},
+		"ambiguous": false,
+		"woo_path": [
+			"CT:233 price*qty->cents (4dp)",
+			"TAX:181-230 calc_exclusive_tax price*rate/100, TAX:117 round 6dp",
+			"CT:677-680 line tax = sum(round_line_tax)",
+			"TR:84-89 round_line_tax -> wc_round_tax_total(v,0)",
+			"FMT:235-240 + CORE:1867-1875 + WC:545 mode HALF_UP when prices excl tax",
+			"CT:871 grand total NumberUtil::round(...,0) HALF_UP",
+			"SM:316-327 add_rate -> TAX:584-642 get_shipping_tax_rates -> TAX:86-102 calc_shipping_tax (exclusive)",
+			"TAX:653-692 class from cart items; CART:1052-1062; PROD:1876-1878 is_shipping_taxable",
+			"CT:336-354 shipping tax *100 then round_item_subtotal (NumberUtil::round HALF_UP, NOT tax mode)"
+		]
+	},
+	{
+		"id": "SH-03",
+		"title": "reduced + alcohol (no standard) -> alphabetical: Alcohol",
+		"kind": "cart",
+		"inputs": {
+			"prices_include_tax": false,
+			"round_at_subtotal": false,
+			"shipping_tax_class_option": "inherit",
+			"tax_classes": {
+				"": {
+					"name": "Standard",
+					"rate_bps": 1800
+				},
+				"reduced-rate": {
+					"name": "Reduced rate",
+					"rate_bps": 500
+				},
+				"alcohol": {
+					"name": "Alcohol",
+					"rate_bps": 2800
+				}
+			},
+			"items": [
+				{
+					"unit_cents": 1000,
+					"qty": 1,
+					"tax_class": "reduced-rate",
+					"tax_status": "taxable",
+					"needs_shipping": true
+				},
+				{
+					"unit_cents": 1000,
+					"qty": 1,
+					"tax_class": "alcohol",
+					"tax_status": "taxable",
+					"needs_shipping": true
+				}
+			],
+			"shipping": {
+				"cost_cents": 1000,
+				"method_taxable": true,
+				"entered": "excluding tax"
+			},
+			"coupon": null
+		},
+		"expected": {
+			"lines": [
+				{
+					"discount": 0,
+					"line_tax": 50,
+					"line_tax_exact": 50,
+					"line_net_exact": 1000
+				},
+				{
+					"discount": 0,
+					"line_tax": 280,
+					"line_tax_exact": 280,
+					"line_net_exact": 1000
+				}
+			],
+			"shipping_tax_class": "alcohol",
+			"shipping_cost": 1000,
+			"shipping_tax": 280,
+			"items_net_total": 2000,
+			"total_tax": 610,
+			"grand_total": 3610
+		},
+		"ambiguous": false,
+		"woo_path": [
+			"CT:233 price*qty->cents (4dp)",
+			"TAX:181-230 calc_exclusive_tax price*rate/100, TAX:117 round 6dp",
+			"CT:677-680 line tax = sum(round_line_tax)",
+			"TR:84-89 round_line_tax -> wc_round_tax_total(v,0)",
+			"FMT:235-240 + CORE:1867-1875 + WC:545 mode HALF_UP when prices excl tax",
+			"CT:871 grand total NumberUtil::round(...,0) HALF_UP",
+			"SM:316-327 add_rate -> TAX:584-642 get_shipping_tax_rates -> TAX:86-102 calc_shipping_tax (exclusive)",
+			"TAX:653-692 class from cart items; CART:1052-1062; PROD:1876-1878 is_shipping_taxable",
+			"CT:336-354 shipping tax *100 then round_item_subtotal (NumberUtil::round HALF_UP, NOT tax mode)"
+		]
+	},
+	{
+		"id": "SH-04",
+		"title": "no qualifying items (all tax status none) -> no shipping tax",
+		"kind": "cart",
+		"inputs": {
+			"prices_include_tax": false,
+			"round_at_subtotal": false,
+			"shipping_tax_class_option": "inherit",
+			"tax_classes": {
+				"": {
+					"name": "Standard",
+					"rate_bps": 1800
+				}
+			},
+			"items": [
+				{
+					"unit_cents": 1000,
+					"qty": 1,
+					"tax_class": "",
+					"tax_status": "none",
+					"needs_shipping": true
+				}
+			],
+			"shipping": {
+				"cost_cents": 1000,
+				"method_taxable": true,
+				"entered": "excluding tax"
+			},
+			"coupon": null
+		},
+		"expected": {
+			"lines": [
+				{
+					"discount": 0,
+					"line_tax": 0,
+					"line_tax_exact": 0,
+					"line_net_exact": 1000
+				}
+			],
+			"shipping_tax_class": null,
+			"shipping_cost": 1000,
+			"shipping_tax": 0,
+			"items_net_total": 1000,
+			"total_tax": 0,
+			"grand_total": 2000
+		},
+		"ambiguous": false,
+		"woo_path": [
+			"CT:233 price*qty->cents (4dp)",
+			"TAX:181-230 calc_exclusive_tax price*rate/100, TAX:117 round 6dp",
+			"CT:677-680 line tax = sum(round_line_tax)",
+			"TR:84-89 round_line_tax -> wc_round_tax_total(v,0)",
+			"FMT:235-240 + CORE:1867-1875 + WC:545 mode HALF_UP when prices excl tax",
+			"CT:871 grand total NumberUtil::round(...,0) HALF_UP",
+			"SM:316-327 add_rate -> TAX:584-642 get_shipping_tax_rates -> TAX:86-102 calc_shipping_tax (exclusive)",
+			"TAX:653-692 class from cart items; CART:1052-1062; PROD:1876-1878 is_shipping_taxable",
+			"CT:336-354 shipping tax *100 then round_item_subtotal (NumberUtil::round HALF_UP, NOT tax mode)",
+			"CT:230,677 + PROD:1860-1869 only tax_status 'taxable' gets line tax"
+		]
+	},
+	{
+		"id": "SH-05",
+		"title": "shipping-only item: no line tax, shipping taxed at its class",
+		"kind": "cart",
+		"inputs": {
+			"prices_include_tax": false,
+			"round_at_subtotal": false,
+			"shipping_tax_class_option": "inherit",
+			"tax_classes": {
+				"": {
+					"name": "Standard",
+					"rate_bps": 1800
+				},
+				"reduced-rate": {
+					"name": "Reduced rate",
+					"rate_bps": 500
+				}
+			},
+			"items": [
+				{
+					"unit_cents": 1000,
+					"qty": 1,
+					"tax_class": "reduced-rate",
+					"tax_status": "shipping",
+					"needs_shipping": true
+				},
+				{
+					"unit_cents": 500,
+					"qty": 1,
+					"tax_class": "",
+					"tax_status": "none",
+					"needs_shipping": true
+				}
+			],
+			"shipping": {
+				"cost_cents": 1000,
+				"method_taxable": true,
+				"entered": "excluding tax"
+			},
+			"coupon": null
+		},
+		"expected": {
+			"lines": [
+				{
+					"discount": 0,
+					"line_tax": 0,
+					"line_tax_exact": 0,
+					"line_net_exact": 1000
+				},
+				{
+					"discount": 0,
+					"line_tax": 0,
+					"line_tax_exact": 0,
+					"line_net_exact": 500
+				}
+			],
+			"shipping_tax_class": "reduced-rate",
+			"shipping_cost": 1000,
+			"shipping_tax": 50,
+			"items_net_total": 1500,
+			"total_tax": 50,
+			"grand_total": 2550
+		},
+		"ambiguous": false,
+		"woo_path": [
+			"CT:233 price*qty->cents (4dp)",
+			"TAX:181-230 calc_exclusive_tax price*rate/100, TAX:117 round 6dp",
+			"CT:677-680 line tax = sum(round_line_tax)",
+			"TR:84-89 round_line_tax -> wc_round_tax_total(v,0)",
+			"FMT:235-240 + CORE:1867-1875 + WC:545 mode HALF_UP when prices excl tax",
+			"CT:871 grand total NumberUtil::round(...,0) HALF_UP",
+			"SM:316-327 add_rate -> TAX:584-642 get_shipping_tax_rates -> TAX:86-102 calc_shipping_tax (exclusive)",
+			"TAX:653-692 class from cart items; CART:1052-1062; PROD:1876-1878 is_shipping_taxable",
+			"CT:336-354 shipping tax *100 then round_item_subtotal (NumberUtil::round HALF_UP, NOT tax mode)",
+			"CT:230,677 + PROD:1860-1869 only tax_status 'taxable' gets line tax"
+		]
+	},
+	{
+		"id": "SH-06",
+		"title": "taxable digital (standard) + physical reduced -> reduced",
+		"kind": "cart",
+		"inputs": {
+			"prices_include_tax": false,
+			"round_at_subtotal": false,
+			"shipping_tax_class_option": "inherit",
+			"tax_classes": {
+				"": {
+					"name": "Standard",
+					"rate_bps": 1800
+				},
+				"reduced-rate": {
+					"name": "Reduced rate",
+					"rate_bps": 500
+				}
+			},
+			"items": [
+				{
+					"unit_cents": 2000,
+					"qty": 1,
+					"tax_class": "",
+					"tax_status": "taxable",
+					"needs_shipping": false
+				},
+				{
+					"unit_cents": 1000,
+					"qty": 1,
+					"tax_class": "reduced-rate",
+					"tax_status": "taxable",
+					"needs_shipping": true
+				}
+			],
+			"shipping": {
+				"cost_cents": 1000,
+				"method_taxable": true,
+				"entered": "excluding tax"
+			},
+			"coupon": null
+		},
+		"expected": {
+			"lines": [
+				{
+					"discount": 0,
+					"line_tax": 360,
+					"line_tax_exact": 360,
+					"line_net_exact": 2000
+				},
+				{
+					"discount": 0,
+					"line_tax": 50,
+					"line_tax_exact": 50,
+					"line_net_exact": 1000
+				}
+			],
+			"shipping_tax_class": "reduced-rate",
+			"shipping_cost": 1000,
+			"shipping_tax": 50,
+			"items_net_total": 3000,
+			"total_tax": 460,
+			"grand_total": 4460
+		},
+		"ambiguous": false,
+		"woo_path": [
+			"CT:233 price*qty->cents (4dp)",
+			"TAX:181-230 calc_exclusive_tax price*rate/100, TAX:117 round 6dp",
+			"CT:677-680 line tax = sum(round_line_tax)",
+			"TR:84-89 round_line_tax -> wc_round_tax_total(v,0)",
+			"FMT:235-240 + CORE:1867-1875 + WC:545 mode HALF_UP when prices excl tax",
+			"CT:871 grand total NumberUtil::round(...,0) HALF_UP",
+			"SM:316-327 add_rate -> TAX:584-642 get_shipping_tax_rates -> TAX:86-102 calc_shipping_tax (exclusive)",
+			"TAX:653-692 class from cart items; CART:1052-1062; PROD:1876-1878 is_shipping_taxable",
+			"CT:336-354 shipping tax *100 then round_item_subtotal (NumberUtil::round HALF_UP, NOT tax mode)"
+		]
+	},
+	{
+		"id": "SH-07",
+		"title": "shipping method tax status none",
+		"kind": "cart",
+		"inputs": {
+			"prices_include_tax": false,
+			"round_at_subtotal": false,
+			"shipping_tax_class_option": "inherit",
+			"tax_classes": {
+				"": {
+					"name": "Standard",
+					"rate_bps": 1800
+				}
+			},
+			"items": [
+				{
+					"unit_cents": 1000,
+					"qty": 1,
+					"tax_class": "",
+					"tax_status": "taxable",
+					"needs_shipping": true
+				}
+			],
+			"shipping": {
+				"cost_cents": 1000,
+				"method_taxable": false,
+				"entered": "excluding tax"
+			},
+			"coupon": null
+		},
+		"expected": {
+			"lines": [
+				{
+					"discount": 0,
+					"line_tax": 180,
+					"line_tax_exact": 180,
+					"line_net_exact": 1000
+				}
+			],
+			"shipping_tax_class": null,
+			"shipping_cost": 1000,
+			"shipping_tax": 0,
+			"items_net_total": 1000,
+			"total_tax": 180,
+			"grand_total": 2180,
+			"note": "Woo never evaluates the class: add_rate skips tax when the method is not taxable (abstract-wc-shipping-method.php:320)"
+		},
+		"ambiguous": false,
+		"woo_path": [
+			"CT:233 price*qty->cents (4dp)",
+			"TAX:181-230 calc_exclusive_tax price*rate/100, TAX:117 round 6dp",
+			"CT:677-680 line tax = sum(round_line_tax)",
+			"TR:84-89 round_line_tax -> wc_round_tax_total(v,0)",
+			"FMT:235-240 + CORE:1867-1875 + WC:545 mode HALF_UP when prices excl tax",
+			"CT:871 grand total NumberUtil::round(...,0) HALF_UP",
+			"SM:316-327 add_rate -> TAX:584-642 get_shipping_tax_rates -> TAX:86-102 calc_shipping_tax (exclusive)",
+			"TAX:653-692 class from cart items; CART:1052-1062; PROD:1876-1878 is_shipping_taxable",
+			"CT:336-354 shipping tax *100 then round_item_subtotal (NumberUtil::round HALF_UP, NOT tax mode)"
+		]
+	},
+	{
+		"id": "SH-08",
+		"title": "incl store: shipping tax half-cent tie still rounds UP",
+		"kind": "cart",
+		"inputs": {
+			"prices_include_tax": true,
+			"round_at_subtotal": false,
+			"shipping_tax_class_option": "inherit",
+			"tax_classes": {
+				"": {
+					"name": "Standard",
+					"rate_bps": 1800
+				}
+			},
+			"items": [
+				{
+					"unit_cents": 1000,
+					"qty": 1,
+					"tax_class": "",
+					"tax_status": "taxable",
+					"needs_shipping": true
+				}
+			],
+			"shipping": {
+				"cost_cents": 75,
+				"method_taxable": true,
+				"entered": "excluding tax"
+			},
+			"coupon": null
+		},
+		"expected": {
+			"lines": [
+				{
+					"discount": 0,
+					"line_tax": 153,
+					"line_tax_exact": "152.542373",
+					"line_net_exact": "847.457627"
+				}
+			],
+			"shipping_tax_class": "",
+			"shipping_cost": 75,
+			"shipping_tax": 14,
+			"items_net_total": 847,
+			"total_tax": 167,
+			"grand_total": 1089,
+			"gross_items_after_discount": 1000
+		},
+		"ambiguous": false,
+		"woo_path": [
+			"CT:233",
+			"TAX:128-171 calc_inclusive_tax tax = price - price/(1+r)",
+			"CT:677-685 line tax = round_line_tax(tax); line net = gross - UNROUNDED tax",
+			"WC:545 mode HALF_DOWN when prices incl tax",
+			"TR:43-64 items_total = sum(NumberUtil::round(net)) HALF_UP",
+			"CT:871 grand total",
+			"SM:316-327 add_rate -> TAX:584-642 get_shipping_tax_rates -> TAX:86-102 calc_shipping_tax (exclusive)",
+			"TAX:653-692 class from cart items; CART:1052-1062; PROD:1876-1878 is_shipping_taxable",
+			"CT:336-354 shipping tax *100 then round_item_subtotal (NumberUtil::round HALF_UP, NOT tax mode)"
+		]
+	},
+	{
+		"id": "SH-09",
+		"title": "zero-rate class only -> shipping taxed at 0",
+		"kind": "cart",
+		"inputs": {
+			"prices_include_tax": false,
+			"round_at_subtotal": false,
+			"shipping_tax_class_option": "inherit",
+			"tax_classes": {
+				"": {
+					"name": "Standard",
+					"rate_bps": 1800
+				},
+				"zero-rate": {
+					"name": "Zero rate",
+					"rate_bps": 0
+				}
+			},
+			"items": [
+				{
+					"unit_cents": 1000,
+					"qty": 1,
+					"tax_class": "zero-rate",
+					"tax_status": "taxable",
+					"needs_shipping": true
+				}
+			],
+			"shipping": {
+				"cost_cents": 1000,
+				"method_taxable": true,
+				"entered": "excluding tax"
+			},
+			"coupon": null
+		},
+		"expected": {
+			"lines": [
+				{
+					"discount": 0,
+					"line_tax": 0,
+					"line_tax_exact": 0,
+					"line_net_exact": 1000
+				}
+			],
+			"shipping_tax_class": "zero-rate",
+			"shipping_cost": 1000,
+			"shipping_tax": 0,
+			"items_net_total": 1000,
+			"total_tax": 0,
+			"grand_total": 2000
+		},
+		"ambiguous": false,
+		"woo_path": [
+			"CT:233 price*qty->cents (4dp)",
+			"TAX:181-230 calc_exclusive_tax price*rate/100, TAX:117 round 6dp",
+			"CT:677-680 line tax = sum(round_line_tax)",
+			"TR:84-89 round_line_tax -> wc_round_tax_total(v,0)",
+			"FMT:235-240 + CORE:1867-1875 + WC:545 mode HALF_UP when prices excl tax",
+			"CT:871 grand total NumberUtil::round(...,0) HALF_UP",
+			"SM:316-327 add_rate -> TAX:584-642 get_shipping_tax_rates -> TAX:86-102 calc_shipping_tax (exclusive)",
+			"TAX:653-692 class from cart items; CART:1052-1062; PROD:1876-1878 is_shipping_taxable",
+			"CT:336-354 shipping tax *100 then round_item_subtotal (NumberUtil::round HALF_UP, NOT tax mode)"
+		]
+	},
+	{
+		"id": "SH-10",
+		"title": "excl, shipping 999 at 825, per line",
+		"kind": "cart",
+		"inputs": {
+			"prices_include_tax": false,
+			"round_at_subtotal": false,
+			"shipping_tax_class_option": "inherit",
+			"tax_classes": {
+				"": {
+					"name": "Standard",
+					"rate_bps": 825
+				}
+			},
+			"items": [
+				{
+					"unit_cents": 999,
+					"qty": 1,
+					"tax_class": "",
+					"tax_status": "taxable",
+					"needs_shipping": true
+				}
+			],
+			"shipping": {
+				"cost_cents": 999,
+				"method_taxable": true,
+				"entered": "excluding tax"
+			},
+			"coupon": null
+		},
+		"expected": {
+			"lines": [
+				{
+					"discount": 0,
+					"line_tax": 82,
+					"line_tax_exact": "82.4175",
+					"line_net_exact": 999
+				}
+			],
+			"shipping_tax_class": "",
+			"shipping_cost": 999,
+			"shipping_tax": 82,
+			"items_net_total": 999,
+			"total_tax": 164,
+			"grand_total": 2162
+		},
+		"ambiguous": false,
+		"woo_path": [
+			"CT:233 price*qty->cents (4dp)",
+			"TAX:181-230 calc_exclusive_tax price*rate/100, TAX:117 round 6dp",
+			"CT:677-680 line tax = sum(round_line_tax)",
+			"TR:84-89 round_line_tax -> wc_round_tax_total(v,0)",
+			"FMT:235-240 + CORE:1867-1875 + WC:545 mode HALF_UP when prices excl tax",
+			"CT:871 grand total NumberUtil::round(...,0) HALF_UP",
+			"SM:316-327 add_rate -> TAX:584-642 get_shipping_tax_rates -> TAX:86-102 calc_shipping_tax (exclusive)",
+			"TAX:653-692 class from cart items; CART:1052-1062; PROD:1876-1878 is_shipping_taxable",
+			"CT:336-354 shipping tax *100 then round_item_subtotal (NumberUtil::round HALF_UP, NOT tax mode)"
+		]
+	},
+	{
+		"id": "SH-11",
+		"title": "explicit shipping tax class option overrides items",
+		"kind": "cart",
+		"inputs": {
+			"prices_include_tax": false,
+			"round_at_subtotal": false,
+			"shipping_tax_class_option": "",
+			"tax_classes": {
+				"": {
+					"name": "Standard",
+					"rate_bps": 1800
+				},
+				"reduced-rate": {
+					"name": "Reduced rate",
+					"rate_bps": 500
+				}
+			},
+			"items": [
+				{
+					"unit_cents": 1000,
+					"qty": 1,
+					"tax_class": "reduced-rate",
+					"tax_status": "taxable",
+					"needs_shipping": true
+				}
+			],
+			"shipping": {
+				"cost_cents": 1000,
+				"method_taxable": true,
+				"entered": "excluding tax"
+			},
+			"coupon": null
+		},
+		"expected": {
+			"lines": [
+				{
+					"discount": 0,
+					"line_tax": 50,
+					"line_tax_exact": 50,
+					"line_net_exact": 1000
+				}
+			],
+			"shipping_tax_class": "",
+			"shipping_cost": 1000,
+			"shipping_tax": 180,
+			"items_net_total": 1000,
+			"total_tax": 230,
+			"grand_total": 2230
+		},
+		"ambiguous": false,
+		"woo_path": [
+			"CT:233 price*qty->cents (4dp)",
+			"TAX:181-230 calc_exclusive_tax price*rate/100, TAX:117 round 6dp",
+			"CT:677-680 line tax = sum(round_line_tax)",
+			"TR:84-89 round_line_tax -> wc_round_tax_total(v,0)",
+			"FMT:235-240 + CORE:1867-1875 + WC:545 mode HALF_UP when prices excl tax",
+			"CT:871 grand total NumberUtil::round(...,0) HALF_UP",
+			"SM:316-327 add_rate -> TAX:584-642 get_shipping_tax_rates -> TAX:86-102 calc_shipping_tax (exclusive)",
+			"TAX:653-692 class from cart items; CART:1052-1062; PROD:1876-1878 is_shipping_taxable",
+			"CT:336-354 shipping tax *100 then round_item_subtotal (NumberUtil::round HALF_UP, NOT tax mode)"
+		]
+	},
+	{
+		"id": "MX-01",
+		"title": "incl, standard 1800 + reduced 500 + zero lines + shipping",
+		"kind": "cart",
+		"inputs": {
+			"prices_include_tax": true,
+			"round_at_subtotal": false,
+			"shipping_tax_class_option": "inherit",
+			"tax_classes": {
+				"": {
+					"name": "Standard",
+					"rate_bps": 1800
+				},
+				"reduced-rate": {
+					"name": "Reduced rate",
+					"rate_bps": 500
+				},
+				"zero-rate": {
+					"name": "Zero rate",
+					"rate_bps": 0
+				}
+			},
+			"items": [
+				{
+					"unit_cents": 1180,
+					"qty": 1,
+					"tax_class": "",
+					"tax_status": "taxable",
+					"needs_shipping": true
+				},
+				{
+					"unit_cents": 1050,
+					"qty": 1,
+					"tax_class": "reduced-rate",
+					"tax_status": "taxable",
+					"needs_shipping": true
+				},
+				{
+					"unit_cents": 700,
+					"qty": 1,
+					"tax_class": "zero-rate",
+					"tax_status": "taxable",
+					"needs_shipping": true
+				}
+			],
+			"shipping": {
+				"cost_cents": 500,
+				"method_taxable": true,
+				"entered": "excluding tax"
+			},
+			"coupon": null
+		},
+		"expected": {
+			"lines": [
+				{
+					"discount": 0,
+					"line_tax": 180,
+					"line_tax_exact": 180,
+					"line_net_exact": 1000
+				},
+				{
+					"discount": 0,
+					"line_tax": 50,
+					"line_tax_exact": 50,
+					"line_net_exact": 1000
+				},
+				{
+					"discount": 0,
+					"line_tax": 0,
+					"line_tax_exact": 0,
+					"line_net_exact": 700
+				}
+			],
+			"shipping_tax_class": "",
+			"shipping_cost": 500,
+			"shipping_tax": 90,
+			"items_net_total": 2700,
+			"total_tax": 320,
+			"grand_total": 3520,
+			"gross_items_after_discount": 2930
+		},
+		"ambiguous": false,
+		"woo_path": [
+			"CT:233",
+			"TAX:128-171 calc_inclusive_tax tax = price - price/(1+r)",
+			"CT:677-685 line tax = round_line_tax(tax); line net = gross - UNROUNDED tax",
+			"WC:545 mode HALF_DOWN when prices incl tax",
+			"TR:43-64 items_total = sum(NumberUtil::round(net)) HALF_UP",
+			"CT:871 grand total",
+			"SM:316-327 add_rate -> TAX:584-642 get_shipping_tax_rates -> TAX:86-102 calc_shipping_tax (exclusive)",
+			"TAX:653-692 class from cart items; CART:1052-1062; PROD:1876-1878 is_shipping_taxable",
+			"CT:336-354 shipping tax *100 then round_item_subtotal (NumberUtil::round HALF_UP, NOT tax mode)"
+		]
+	},
+	{
+		"id": "DP-01",
+		"title": "wc_get_price_including_tax 9.99 at 2000",
+		"kind": "display_price_including_tax",
+		"inputs": {
+			"unit_cents": 999,
+			"qty": 1,
+			"rate_bps": 2000,
+			"prices_include_tax": false,
+			"round_at_subtotal": false
+		},
+		"expected": {
+			"price_including_tax_cents": 1199
+		},
+		"ambiguous": false,
+		"woo_path": [
+			"PFN:1535-1569 wc_get_price_including_tax: tax in currency units, wc_round_tax_total at 2dp, NumberUtil::round(line+tax, 2)"
+		]
+	},
+	{
+		"id": "DP-02",
+		"title": "wc_get_price_including_tax 0.99 x3 at 1800 (per line)",
+		"kind": "display_price_including_tax",
+		"inputs": {
+			"unit_cents": 99,
+			"qty": 3,
+			"rate_bps": 1800,
+			"prices_include_tax": false,
+			"round_at_subtotal": false
+		},
+		"expected": {
+			"price_including_tax_cents": 350
+		},
+		"ambiguous": false,
+		"woo_path": [
+			"PFN:1535-1569 wc_get_price_including_tax: tax in currency units, wc_round_tax_total at 2dp, NumberUtil::round(line+tax, 2)"
+		]
+	}
+]

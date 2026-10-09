@@ -53,8 +53,9 @@ Phase 5 plan §4 recommendation._
 ## Amended 2026-09-29 — the per-address throttle is a lockout lever; per-IP limiting is a launch prerequisite
 
 Issue #306 made the magic link actually send, in process: `storefront/account/login/request`
-issues the challenge and emails the link through `CtxHttpEmailSender` over `ctx.http`. The
-decision above is unchanged. Three consequences it did not state are recorded here.
+issues the challenge and emails the link through `CtxHttpEmailSender` over `ctx.http` (since
+2026-10-07, through EmDash's `ctx.email` — see the amendment at the end). The decision above
+is unchanged. Three consequences it did not state are recorded here.
 
 - **The link's destination is configuration, never the request.** The emailed link is the
   operator's saved sign-in page (`settings:loginLinkUrl`, an absolute http(s) URL with no
@@ -168,3 +169,16 @@ QA round 2 (X1, A2–A7, U-3). Identity and ownership rules above are unchanged.
 - **The sign-in email names the store** from "Store display name", else from the From address's
   display name; a bare From address still gives none. Its link is an inline-styled button with
   the URL kept as the fallback.
+
+## Amended 2026-10-07 — the sign-in link now passes through the site's email hooks and provider
+
+Email goes through the EmDash host's `ctx.email`
+([ADR-0031](./0031-email-through-emdash-host.md)). The sign-in link, which carries the bearer
+token, is part of the email, so it now reaches every installed plugin's `email:beforeSend` /
+`email:afterSend` hooks and the site's provider plugin, and a provider's delivery logs may keep
+it. The earlier promise that the token "travels nowhere a template or a provider log could
+print it" no longer holds: any of those can read the token and sign in as that customer within
+the link's 15 minutes. A site must treat every plugin with email hooks, and its provider, as
+trusted code (ADR-0031 §Consequences). EmDash's dev console provider prints and keeps the text
+(dev only). The 3 s cap, the throttle and the generic answer are unchanged. The sign-in email's
+store name now falls back to the EmDash site name (the From address is the provider's).

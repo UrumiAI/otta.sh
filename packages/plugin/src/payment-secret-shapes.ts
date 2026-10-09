@@ -1,12 +1,11 @@
 /**
- * The shapes the payment and email keys on the Settings screen must have
+ * The shapes the payment keys on the Settings screen must have
  * (U-8, QA 2026-10-02).
  *
  * WHY THE SAVE CHECKS A SHAPE. Every one of these keys used to be stored exactly
  * as typed. A publishable key pasted into the secret-key box, a webhook secret
- * with a trailing newline from a copy, or a Stripe key in the email box all
- * saved with "saved", and the failure surfaced later as a checkout or an email
- * that never worked, on a path the operator does not watch. Each check here is
+ * with a trailing newline from a copy, or a key in the wrong box all saved
+ * with "saved", and the failure surfaced later as a checkout that never worked, on a path the operator does not watch. Each check here is
  * the prefix (and alphabet) the provider issues, so it catches a wrong paste,
  * not a wrong account: a well-shaped key the provider rejects is still the
  * provider's answer to give.
@@ -82,52 +81,4 @@ export function checkStripeWebhookSecret(raw: string): SecretShapeCheck {
 		};
 	}
 	return base;
-}
-
-/** `re_` then letters, digits and underscores: a Resend API key. */
-const RESEND_API_KEY = /^re_[A-Za-z0-9_]{10,}$/;
-
-/** Is the configured email endpoint Resend's — the one provider DEPLOYMENT.md
- *  documents and `ctx-http-email-sender.ts` speaks? */
-export function isResendApiUrl(apiUrl: string | undefined): boolean {
-	if (apiUrl === undefined) return false;
-	try {
-		return new URL(apiUrl).hostname === "api.resend.com";
-	} catch {
-		return false;
-	}
-}
-
-/** `api-` then letters, digits, `_` and `-`: an SMTP2GO API key (its
- *  dashboard issues `api-` and a hex tail; the tail is checked loosely). */
-const SMTP2GO_API_KEY = /^api-[A-Za-z0-9_-]{8,}$/;
-
-/**
- * The key for the build's email URL (the Resend slot). When that URL is
- * Resend's the key must be a Resend key; any other endpoint (a local mail
- * catcher, a relay) only gets the one-line, no-spaces check, because this file
- * cannot know its format. An SMTP2GO key pasted here is refused with where it
- * belongs: the SMTP2GO API key field.
- */
-export function checkEmailApiKey(raw: string, emailApiUrl: string | undefined): SecretShapeCheck {
-	const base = opaque(raw);
-	if (!base.ok) return base;
-	if (isResendApiUrl(emailApiUrl) && !RESEND_API_KEY.test(base.value)) {
-		return {
-			ok: false,
-			problem: SMTP2GO_API_KEY.test(base.value)
-				? "must be a Resend API key, starting with re_ (an SMTP2GO key goes in the SMTP2GO API key field)"
-				: "must be a Resend API key, starting with re_",
-		};
-	}
-	return base;
-}
-
-/** The SMTP2GO API key: `api-…`, in its own slot. */
-export function checkSmtp2goApiKey(raw: string): SecretShapeCheck {
-	const base = opaque(raw);
-	if (!base.ok) return base;
-	return SMTP2GO_API_KEY.test(base.value)
-		? base
-		: { ok: false, problem: "must be an SMTP2GO API key, starting with api-" };
 }

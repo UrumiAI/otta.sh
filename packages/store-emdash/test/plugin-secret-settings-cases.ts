@@ -1,5 +1,5 @@
 /**
- * ADR-0032 — EmDash 1.0.1's encrypted plugin settings, asserted on the RAW
+ * ADR-0034 — EmDash 1.0.1's encrypted plugin settings, asserted on the RAW
  * `options` rows of a real database. Shared by the sqlite/Postgres suite
  * (`plugin-secret-settings.dialects.test.ts`) and the D1 suite
  * (`d1/plugin-secret-settings.d1.spec.ts`); only the database differs.
@@ -10,7 +10,7 @@
  * re-save at its revision replaces that row in place, and without the right
  * key nothing is written and nothing is read.
  *
- * THE FIELD NAMES ARE OTTA'S: the `settings:*` names of the four payment keys
+ * THE FIELD NAMES ARE OTTA'S: the `settings:*` names of the three payment keys
  * in `@otta-sh/plugin`'s `PAYMENT_SECRET_SETTINGS_SCHEMA`. They are restated
  * here because this package must not import the plugin; the site's
  * `site-config.test.ts` pins the plugin's schema to the deployed descriptor,
@@ -32,13 +32,12 @@ type Keys = Awaited<ReturnType<typeof resolvePluginEncryptionKeys>>;
 
 const PLUGIN_ID = "otta";
 
-/** Otta's four payment keys, by settings name, with sample values that must
+/** Otta's three payment keys, by settings name, with sample values that must
  *  never appear in a raw row once encrypted. */
 const SECRETS: Record<string, string> = {
 	stripeSecretKey: "sk_test_RAW_ROW_NEVER_1",
 	stripeWebhookSecret: "whsec_RAW_ROW_NEVER_2",
 	"otta-wh-token": "edge_RAW_ROW_NEVER_3",
-	x402FacilitatorApiKey: "x402_RAW_ROW_NEVER_4",
 };
 
 const SCHEMA = Object.fromEntries(
@@ -82,7 +81,7 @@ export function pluginSecretSettingsCases(getDb: () => HostDb): void {
 		await sql`DELETE FROM options WHERE name LIKE ${`plugin:${PLUGIN_ID}:%`}`.execute(getDb());
 	}
 
-	describe("EmDash secret plugin settings, on the raw options rows (ADR-0032)", () => {
+	describe("EmDash secret plugin settings, on the raw options rows (ADR-0034)", () => {
 		test("a declared secret is stored as an encrypted envelope; no raw row contains a value", async () => {
 			await clear();
 			const access = settings(await keysFor(generateKey()));

@@ -31,20 +31,47 @@ export interface SendEmailInput {
 	template: EmailTemplate;
 	/** Template-specific, validated by the caller. */
 	data: Record<string, unknown>;
-	/** = the outbox row id for status emails; adapters may use it for
-	 *  provider-side dedup too (Phase 5 §6). */
+	/** = the outbox row id for status emails, `login:<challenge>` for the sign-in
+	 *  email. A correlation id: the EmDash host's `ctx.email` carries no
+	 *  idempotency key, so delivery is at-least-once (ADR-0031). */
 	idempotencyKey: string;
 }
 
 /**
- * The `EmailSender` port (Phase 5 §6). Service-owned (not EmDash's
- * `email:send`), so most triggers — a Stripe webhook, an admin REST call —
- * originate service-side without a plugin round trip (§6 draft ADR). The
- * `FakeEmailSender` is the first adapter to pass the contract; a concrete
- * transactional-API / SMTP adapter swaps in behind this shape.
+ * The `EmailSender` port (Phase 5 §6). The plugin's one adapter renders the
+ * template and hands the message to the EmDash host's `ctx.email` (ADR-0031);
+ * the host's selected email provider delivers it. The `FakeEmailSender` is the
+ * contract's reference adapter.
  */
 export interface EmailSender {
 	send(input: SendEmailInput): Promise<void>;
+}
+
+/**
+ * The transport has no provider to hand the message to — nothing was sent, and
+ * nothing about the row is wrong (ADR-0031: the EmDash host has no email
+ * provider selected).
+ *
+ * `dispatchOrderEmails` releases the row WITHOUT counting the attempt, due again
+ * after `TRANSPORT_UNAVAILABLE_RETRY_MS`, and stops the drain: every other row
+ * would meet the same answer. The queue waits, intact, until a provider is
+ * configured.
+ */
+export class EmailTransportUnavailableError extends Error {
+	constructor(message = "no email provider is configured") {
+		super(message);
+		this.name = "EmailTransportUnavailableError";
+	}
+}
+
+/** Structural, not `instanceof`, like {@link isEmailSendTimeoutError}: an error
+ *  that crossed a bridge is a plain object on the other side. */
+export function isEmailTransportUnavailableError(err: unknown): boolean {
+	return (
+		typeof err === "object" &&
+		err !== null &&
+		(err as { name?: unknown }).name === "EmailTransportUnavailableError"
+	);
 }
 
 /**
@@ -54,12 +81,11 @@ export interface EmailSender {
  * there says nothing about the row (the provider was never given the time to
  * answer), so `dispatchOrderEmails` hands the row back WITHOUT counting the
  * attempt rather than spending one of the row's `maxAttempts` on it; a row that
- * only ever timed out is therefore never parked `failed` for that alone. If the
- * provider did deliver after all, the next try carries the same idempotency key
- * (the outbox row id), and a provider that HONOURS one (Resend) dedupes it. A
- * provider without an idempotency key cannot: its adapter must not let a timeout
- * pass as uncounted, or a slow-but-accepting provider is sent the same email on
- * every retry (the plugin's SMTP2GO path re-throws it as a counted failure).
+ * only ever timed out is therefore never parked `failed` for that alone. That is
+ * safe only where a retry cannot duplicate a delivered email. The EmDash host's
+ * `ctx.email` has no idempotency key, so the plugin re-throws every timeout as a
+ * COUNTED failure (`countTimeoutsAsAttempts`, ADR-0031): duplicates are bounded
+ * by the row's `maxAttempts`.
  */
 export class EmailSendTimeoutError extends Error {
 	readonly timeoutMs: number;

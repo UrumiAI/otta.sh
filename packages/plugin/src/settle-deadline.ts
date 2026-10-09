@@ -1,7 +1,5 @@
 /**
- * The ONE deadline a settle request runs under — `webhooks/stripe/settle`. (The
- * x402 page-gate route that shared it, `entitlements/x402/settle`, was retired
- * by ADR-0028 increment 2.)
+ * The ONE deadline a settle request runs under — `webhooks/stripe/settle`.
  *
  * WHY ONE, AND WHY FROM THE REQUEST'S START. Stripe treats a webhook delivery as
  * failed after ~10 s and sends it again. After verifying, a settle can do two slow

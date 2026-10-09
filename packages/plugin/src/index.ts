@@ -162,7 +162,6 @@ export {
 	IN_PROCESS_EGRESS_URLS,
 	type InProcessEgressUrls,
 	resolveAllowedHosts,
-	SMTP2GO_API_HOSTS,
 	STRIPE_API_HOST,
 	OTTA_PLUGIN_CAPABILITIES,
 	OTTA_PLUGIN_ID,
@@ -226,8 +225,6 @@ export {
 // restating the key strings.
 export {
 	constantTimeEquals,
-	emailApiKeyFromKv,
-	EMAIL_API_KEY_KEY,
 	ENCRYPTED_PAYMENT_SECRET_KEYS,
 	PAYMENT_SECRET_SETTINGS_SCHEMA,
 	readSecret,
@@ -245,11 +242,8 @@ export {
 	WEBHOOK_EDGE_TOKEN_HEADER,
 	WEBHOOK_EDGE_TOKEN_KEY,
 	webhookEdgeTokenFromKv,
-	x402FacilitatorSecretFromKv,
-	X402_FACILITATOR_API_KEY_KEY,
-	X402_LEGACY_FACILITATOR_SECRET_KEY,
 } from "./payment-secrets.js";
-// ADR-0032 — the one-time re-save of stored payment keys through EmDash's
+// ADR-0034 — the one-time re-save of stored payment keys through EmDash's
 // encrypted settings path (run by the sweep's cron tick).
 export {
 	encryptStoredPaymentSecrets,
@@ -259,44 +253,13 @@ export {
 	PAYMENT_SECRETS_ENCRYPTION_PROGRESS_KEY,
 	resetPaymentSecretEncryptionForTesting,
 } from "./encrypt-payment-secrets.js";
-// INC-C5 — email dispatch and the x402 wiring, in-process. Both are
-// exported so a deploying site can name the kv settings keys it provisions
-// (`settings:emailFrom`, `settings:x402PayTo`, `settings:x402Accepts`) without
-// restating the strings, and so a suite can build either adapter directly.
+// Email goes through the EmDash host's `ctx.email` (ADR-0031): the plugin's one
+// sender, exported so a suite or a site can build it directly.
 export {
-	CtxHttpEmailSender,
-	DEFAULT_EMAIL_FROM,
-	EMAIL_FROM_KEY,
+	CtxEmailSender,
+	type CtxEmailSenderOptions,
 	makeEmailSender,
-	type CtxHttpEmailSenderOptions,
-	type EmailSenderEgress,
-} from "./email/ctx-http-email-sender.js";
-// The "Email provider" choice (Resend-shaped default, or SMTP2GO) and the
-// SMTP2GO sender, so a deploying site can name the kv keys it provisions.
-export {
-	DEFAULT_EMAIL_PROVIDER,
-	DEFAULT_SMTP2GO_REGION,
-	EMAIL_PROVIDER_KEY,
-	EMAIL_PROVIDERS,
-	type EmailProviderId,
-	SMTP2GO_REGION_KEY,
-	SMTP2GO_REGIONS,
-	type Smtp2goRegion,
-} from "./email/email-provider.js";
-export { EmailProviderError, type EmailProviderErrorKind } from "./email/http-email-sender.js";
-export {
-	Smtp2goEmailSender,
-	type Smtp2goEmailSenderOptions,
-} from "./email/smtp2go-email-sender.js";
-export {
-	DEFAULT_X402_ACCEPTS,
-	wireX402Gateway,
-	X402_ACCEPTS_KEY,
-	X402_PAYTO_KEY,
-	x402GatewayFromCtx,
-	type WireX402Options,
-	type X402Egress,
-} from "./payments/x402-wiring.js";
+} from "./email/ctx-email-sender.js";
 // INC-C1b — the PUBLIC Stripe webhook settle route. The constant and the result
 // shape are exported because the calling site has to name the route and
 // reconstruct Stripe's expected status from the response.
@@ -479,6 +442,7 @@ export {
 	stripeClientSecret,
 	type CheckoutAmountView,
 	type CheckoutLineView,
+	type CheckoutTaxRowView,
 	type CheckoutTotalsView,
 	type CouponSelectionReason,
 	type DestinationSelectionReason,
@@ -500,6 +464,9 @@ export { COUNTRY_CODES, isCodeShapedRegion, REGION_CODE_PATTERN } from "@otta-sh
 // it through the same function in the domain, so the site takes THAT one rather
 // than a copy that could spell the same order differently.
 export { ORDER_LABEL_FALLBACK, orderLabel, type OrderLabelLine } from "@otta-sh/domain";
+// The order NUMBER ("#3F9A2") the site prints beside the label — the domain's one
+// function, the same the order emails and the admin console use (ADR-0033).
+export { ORDER_NUMBER_LENGTH, orderNumber } from "@otta-sh/domain";
 // "Paid" / "Total" for an order's figure — the domain's one rule, shared with the
 // order emails.
 export { orderTotalLabel } from "@otta-sh/domain";
@@ -543,6 +510,7 @@ export {
 	type ResumeProof,
 	type PublicOrderWire,
 	type QuoteBreakdownWire,
+	type QuoteTaxWire,
 	type QuoteDestinationWire,
 	type QuoteFailureReason,
 	type QuoteRequestWire,
