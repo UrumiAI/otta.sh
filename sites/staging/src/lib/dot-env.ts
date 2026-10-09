@@ -3,8 +3,7 @@
  * Astro does NOT load .env into process.env for the config module itself —
  * an .env-only value reached dist/server/.dev.vars but the define/allowedHosts
  * silently got the placeholder; measured on the since-retired
- * COMMERCE_SERVICE_URL, and just as true of today's
- * X402_FACILITATOR_URL). Vite's canonical `loadEnv` is not resolvable from
+ * COMMERCE_SERVICE_URL, and just as true of the Stripe publishable key). Vite's canonical `loadEnv` is not resolvable from
  * this package under pnpm isolation (vite is a transitive dep), so this is a
  * deliberately tiny, pure KEY=VALUE parser — no dotenv dependency.
  */

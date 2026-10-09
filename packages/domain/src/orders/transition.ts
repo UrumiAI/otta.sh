@@ -17,6 +17,12 @@ import {
 import type { OrderStore, OutboxEmail } from "../ports/order-store.js";
 import type { Order, OrderState, PaymentMethod } from "./model.js";
 import { orderTotalLabel } from "./order-total-label.js";
+import {
+	capturedOnlyThroughLegacy,
+	isCurrentPaymentMethod,
+	legacyFact,
+	type LegacyMethodFacts,
+} from "./payment-methods.js";
 import { roundingEntry } from "../pricing/payment-rounding.js";
 import { PROVIDER_REFUNDED_FLAG_PREFIX } from "./provider-refunded-flag.js";
 import { readOrderTaxSnapshot } from "./order-tax-snapshot.js";
@@ -144,7 +150,7 @@ async function applyTransition(
 
 /**
  * How each payment method's money is confirmed: by its GATEWAY (Stripe's
- * `payment_intent.succeeded`, x402's facilitator verify) or OFFLINE, by a person
+ * `payment_intent.succeeded`) or OFFLINE, by a person
  * who saw the money arrive.
  *
  * A `Record` over every `PaymentMethod` on purpose: a new method (a "bank
@@ -153,8 +159,20 @@ async function applyTransition(
  */
 const PAYMENT_METHOD_SETTLEMENT: Readonly<Record<PaymentMethod, "gateway" | "offline">> = {
 	stripe: "gateway",
-	x402: "gateway",
 };
+
+/**
+ * A per-method fact for a STORED method: from the current table when the method
+ * is a `PaymentMethod`, else from its `LEGACY_PAYMENT_METHODS` entry, else
+ * `undefined` — an unknown method, which every caller treats as fail-closed.
+ */
+function factForStored<K extends keyof LegacyMethodFacts, V>(
+	table: Readonly<Record<PaymentMethod, V>>,
+	stored: string,
+	field: K,
+): V | LegacyMethodFacts[K] | undefined {
+	return isCurrentPaymentMethod(stored) ? table[stored] : legacyFact(stored, field);
+}
 
 /**
  * True iff an admin may mark an order paid by `method` BY HAND — only a method
@@ -165,24 +183,38 @@ const PAYMENT_METHOD_SETTLEMENT: Readonly<Record<PaymentMethod, "gateway" | "off
  */
 export function manualPaymentAllowed(method: PaymentMethod | null): boolean {
 	if (method === null) return false;
-	return PAYMENT_METHOD_SETTLEMENT[method] === "offline";
+	// A legacy method is settled by its (removed) gateway; an unknown one has no
+	// entry. Neither is offline.
+	return factForStored(PAYMENT_METHOD_SETTLEMENT, method, "settlement") === "offline";
 }
 
 /**
  * How each payment method's money goes BACK: through its PROVIDER (a Stripe refund,
- * which Money → Refunds issues and records on the ledger) or OUTSIDE Otta (x402
- * cannot refund automatically; the operator sends the money and records it). A
+ * which Money → Refunds issues and records on the ledger) or OUTSIDE Otta (a method
+ * that cannot refund automatically; the operator sends the money and records it). A
  * `Record` over every method, like {@link PAYMENT_METHOD_SETTLEMENT}, so a new
  * method must say which it is.
  */
 const PAYMENT_METHOD_REFUNDS: Readonly<Record<PaymentMethod, "provider" | "outside">> = {
 	stripe: "provider",
-	x402: "outside",
 };
+
+/**
+ * How a STORED method's money goes back. The stored value is read as a `string`,
+ * not trusted as a `PaymentMethod`: an order placed before a method was removed
+ * (a legacy x402 order) still carries it, and its `LEGACY_PAYMENT_METHODS`
+ * entry says `outside`. A method that is neither current nor named legacy is
+ * `undefined`: NOT outside, so Mark refunded goes through the captured-money check.
+ */
+function refundRouteOf(stored: string): "provider" | "outside" | undefined {
+	return factForStored(PAYMENT_METHOD_REFUNDS, stored, "refunds");
+}
 
 /** The two ledgers Mark refunded is decided from. */
 export interface RefundLedgerFacts {
-	payments: readonly { amount: number; status: string }[];
+	/** `gateway`: the method the payment came through. Absent reads as NOT a
+	 *  legacy method (fail-closed: see {@link markRefundedRefusal}). */
+	payments: readonly { amount: number; status: string; gateway?: string }[];
 	refunds: readonly { amount: number; status: string }[];
 }
 
@@ -214,7 +246,14 @@ export function markRefundedRefusal(
 	if (facts.refunds.some((r) => r.status === "reserved" || r.status === "unverified")) {
 		return "REFUND_IN_FLIGHT";
 	}
-	if (order.paymentMethod !== null && PAYMENT_METHOD_REFUNDS[order.paymentMethod] === "outside") {
+	// The `outside` shortcut holds only while every captured payment came through a
+	// named legacy method too: money a current provider captured (a Stripe payment
+	// on an order that somehow stores x402) still goes through the check below.
+	if (
+		order.paymentMethod !== null &&
+		refundRouteOf(order.paymentMethod) === "outside" &&
+		capturedOnlyThroughLegacy(facts.payments)
+	) {
 		return null;
 	}
 	if (unrefundedCapturedCents(facts) === 0) return null;
@@ -227,7 +266,7 @@ export function markRefundedRefusal(
  * May an admin MARK this order refunded — a status move that moves no money? Only
  * where that cannot hide money still held (QA2 M4: a shipped Stripe order with
  * $6.50 captured was closed as "refunded" and its buyer's page said so):
- *  - its method returns money OUTSIDE Otta (x402), so a refund made there is
+ *  - its method returns money OUTSIDE Otta, so a refund made there is
  *    exactly what this records; or
  *  - the ledger shows NOTHING left to refund through the provider; or
  *  - the provider itself reported the payment refunded IN FULL — the flag
@@ -406,8 +445,7 @@ export interface DispatchOrderEmailsOptions {
 	onSent?: (row: OutboxEmail) => void;
 	/**
 	 * Told about every row the drain SKIPPED — completed with no send because the
-	 * order has no email recipient (an x402 gate buyer's `x402:0x…` reference,
-	 * ADR-0028 Decision 7) — after it is marked skipped. Never told about a row it
+	 * order has no email recipient (a `buyerRef` that is not an email address) — after it is marked skipped. Never told about a row it
 	 * sent, and a skipped row is never passed to `onSent` or counted as sent, so a
 	 * caller can say "no email was sent, and none will be" rather than "queued".
 	 */
@@ -710,8 +748,7 @@ async function refundedTotal(
 /**
  * Whether an order has an email recipient, decided from the order alone (no read):
  * a linked customer has one, and a guest has one only when its `buyerRef` is an
- * email address — an x402 gate buyer's `x402:0x…` wallet is not (ADR-0028
- * Decision 7). `false` is final: {@link resolveRecipient} will skip every row of
+ * email address — a hand-seeded or legacy buyerRef without `@` is not. `false` is final: {@link resolveRecipient} will skip every row of
  * the order. `true` is the drain's to confirm — a linked customer whose record is
  * gone falls back to the `buyerRef`. A caller that must report an email's fate
  * before any row is claimed (the admin console) asks this.
@@ -736,7 +773,7 @@ async function resolveRecipient(
 	}
 	// Guest order: the email captured at checkout (buyerRef), branded as it was
 	// accepted there and not re-normalized here. A buyerRef that is not an email
-	// address at all — an x402 gate buyer's `x402:0x…` payer wallet — is no recipient.
+	// address at all (a hand-seeded or legacy buyerRef without `@`) is no recipient.
 	return isEmailAddress(order.buyerRef) ? (order.buyerRef as Email) : null;
 }
 
@@ -759,7 +796,7 @@ export function buildOrderEmailData(order: Order, toState: OrderState): Record<s
 		discountCents: order.totals.discount,
 		shippingCents: order.totals.shipping,
 		taxCents: order.totals.tax,
-		// ADR-0033's amendment: the payment rounding, only when the email shows it
+		// ADR-0035's amendment: the payment rounding, only when the email shows it
 		// (non-zero) — every other order enqueues exactly the data it always did.
 		...roundingEntry(
 			"roundingCents",

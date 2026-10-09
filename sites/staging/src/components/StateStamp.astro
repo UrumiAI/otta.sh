@@ -29,6 +29,12 @@ interface Props extends HTMLAttributes<"div"> {
 	 */
 	orderLabel?: string | null;
 	/**
+	 * The order's NUMBER ("#3F9A2", `orderNumber`), built by the page — the short
+	 * label the order emails carry too (ADR-0033). A code, so it is set in the
+	 * data face (TEMPERED.md §1 rule 2), beside the products.
+	 */
+	orderNumber?: string | null;
+	/**
 	 * The confirmation page's h1; a gallery or a summary card uses h2.
 	 *
 	 * Named `level` rather than `as` to stay clear of Astro's polymorphic
@@ -59,6 +65,7 @@ const {
 	headline,
 	body = null,
 	orderLabel = null,
+	orderNumber = null,
 	level = "h1",
 	class: className,
 	/* The retired `reference` prop (it carried the order id), destructured only
@@ -72,6 +79,8 @@ const {
    heading level becomes a prop. */
 const Heading = level;
 const rule = RULES[state];
+const hasLabel = orderLabel !== null && orderLabel !== "";
+const hasNumber = orderNumber !== null && orderNumber !== "";
 ---
 
 <div class:list={["stamp", className]} data-state={rule} {...restProps(rest)}>
@@ -79,10 +88,11 @@ const rule = RULES[state];
 	<Heading class="headline">{headline}</Heading>
 	{body !== null && body !== "" && <p class="body">{body}</p>}
 	{
-		orderLabel !== null && orderLabel !== "" && (
+		(hasLabel || hasNumber) && (
 			<span class="order">
 				<span class="u-label">Order</span>
-				<span class="order-value">{orderLabel}</span>
+				{hasNumber && <span class="order-number u-mono">{orderNumber}</span>}
+				{hasLabel && <span class="order-value">{orderLabel}</span>}
 			</span>
 		)
 	}
@@ -139,6 +149,14 @@ const rule = RULES[state];
 		font-size: 0.875rem;
 		color: var(--u-ink);
 		overflow-wrap: anywhere;
+	}
+
+	/* The order number: a code, so the data face — the same ink as the title
+	   beside it, never louder. */
+	.order-number {
+		font-size: 0.875rem;
+		color: var(--u-ink);
+		white-space: nowrap;
 	}
 
 	/* Settled: ink, the same weight as the text around it. A paid order is not

@@ -47,7 +47,8 @@ export interface OrderHarness {
 	taxRules: InMemoryTaxRulesStore;
 	couponStore: InMemoryCouponStore;
 	stripeGw: FakePaymentGateway;
-	x402Gw: FakePaymentGateway;
+	/** A Stripe-id gateway that cannot refund (`refundable:false`): the manual / record-only path. */
+	manualGw: FakePaymentGateway;
 	createDeps: CreateOrderDeps;
 	cartDeps: CartDeps;
 	settleDeps: SettleDeps;
@@ -100,7 +101,7 @@ export function makeOrderHarness(): OrderHarness {
 	const taxRules = new InMemoryTaxRulesStore();
 	const couponStore = new InMemoryCouponStore({ idGen: new CountingIdGen("red"), clock });
 	const stripeGw = new FakePaymentGateway({ id: "stripe" });
-	const x402Gw = new FakePaymentGateway({ id: "x402" });
+	const manualGw = new FakePaymentGateway({ id: "stripe", refundable: false });
 
 	const cartDeps: CartDeps = { cartStore, inventoryStore: inventory, clock };
 	const createDeps: CreateOrderDeps = {
@@ -113,7 +114,7 @@ export function makeOrderHarness(): OrderHarness {
 		couponStore,
 		clock,
 		idGen: new CountingIdGen("order"),
-		gateways: { stripe: stripeGw, x402: x402Gw },
+		gateways: { stripe: stripeGw },
 	};
 	const settleDeps: SettleDeps = {
 		orderStore,
@@ -151,7 +152,7 @@ export function makeOrderHarness(): OrderHarness {
 		taxRules,
 		couponStore,
 		stripeGw,
-		x402Gw,
+		manualGw,
 		createDeps,
 		cartDeps,
 		settleDeps,

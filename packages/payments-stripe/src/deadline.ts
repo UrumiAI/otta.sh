@@ -32,10 +32,8 @@
  * set it under the sandbox runner: 0.38's RPC refused the signal and every call
  * failed; 1.0.1's wrapper drops it, so it would release nothing there.
  *
- * `@otta-sh/payments-x402`'s facilitator race is a variant of the same idea; keep
- * them in step: a fix to one is very likely owed to the other. (The plugin's
- * email twin went with the HTTP email senders, ADR-0031: `ctx.email` takes no
- * signal, and `CtxEmailSender` races the host call alone.)
+ * The plugin's email twin went with the HTTP email senders (ADR-0031):
+ * `ctx.email` takes no signal, and `CtxEmailSender` races the host call alone.
  */
 
 /** What a call's own bound rejects with. Never leaves the transport: every

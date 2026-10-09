@@ -18,14 +18,14 @@ export type PaymentAnomalyKind =
 	 *  dropped — and the order is flagged for manual reconciliation. */
 	| "REFUND_UNRECORDED"
 	/** A confirmation arrived whose dedupe key is already recorded against a
-	 *  DIFFERENT order — one on-chain payment (or one Stripe event) being aimed at
+	 *  DIFFERENT order — one payment (one Stripe event, say) being aimed at
 	 *  a second order. Terminally refused by `settleOrder`; recorded here because
 	 *  the ATTEMPT is the alert-worthy fact. */
 	| "RECEIPT_REBOUND";
 
 /**
  * The `PaymentEventStore` port (Phase 4 §5). Two jobs:
- *  1. **Dedupe** — a UNIQUE `dedupe_key` (Stripe event id / x402 receipt id):
+ *  1. **Dedupe** — a UNIQUE `dedupe_key` (Stripe event id):
  *     `dedupe` returns `true` only for the FIRST delivery; a duplicate returns
  *     `false`. The row is the received-events audit trail. NOTE: settlement does
  *     NOT short-circuit on a duplicate **of the same order** — a redelivery
@@ -53,10 +53,9 @@ export interface PaymentEventStore {
 	 *
 	 * WHY THE PORT NEEDS THIS. `dedupe`'s boolean says "a row already exists"; it
 	 * does not say WHOSE. That difference is the whole cross-order replay
-	 * question: for x402 the dedupe key IS the on-chain `transaction`, and
-	 * `proof.orderId` is never on-chain-attestable, so "one settlement consumes
-	 * one on-chain payment" is only true if a receipt already bound to order A is
-	 * refused when it is resubmitted naming order B. `settleOrder` asks this ONLY
+	 * question: the order id a confirmation carries is only the caller's claim,
+	 * so "one settlement consumes one payment" is only true if a receipt already
+	 * bound to order A is refused when it is resubmitted naming order B. `settleOrder` asks this ONLY
 	 * on the duplicate path, so the first delivery of every event still costs one
 	 * statement.
 	 */

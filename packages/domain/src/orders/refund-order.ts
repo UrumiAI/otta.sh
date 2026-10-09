@@ -225,7 +225,7 @@ export function sumFinalizedRefunds(refunds: RefundRecord[]): number {
  *     - ambiguous → `markRefundUnverified` (capacity HELD — the safe direction —
  *                   until a human re-checks the provider).
  *
- * The MANUAL path (`refundable:false` — x402 / no Stripe secret) has no gateway
+ * The MANUAL path (`refundable:false` — e.g. no Stripe secret) has no gateway
  * leg, so it stays the one-shot atomic `recordRefund` (insert finalized + flip),
  * which is reserve-and-finalize collapsed into one transaction.
  *

@@ -98,8 +98,7 @@ export const STOREFRONT_ORDER_RESUME_ROUTE = "storefront/order/resume";
  *  unpaid — from the cart id alone (the cookie is the possession proof). */
 export const STOREFRONT_ORDER_ABANDON_ROUTE = "storefront/order/abandon";
 
-/** The one payment method this slice offers. x402's `x402_challenge` client
- *  action is a second flow, out of scope (plan §7.2). */
+/** The one payment method checkout offers. */
 const PAYMENT_METHOD = "stripe" as const;
 
 export interface CheckoutSummaryRouteInput {

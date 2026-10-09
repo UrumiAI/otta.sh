@@ -107,7 +107,6 @@ const ALL_SUBMIT_IDS = [
 	"save-background-work",
 	"save-stripe-secret-key",
 	"save-stripe-webhook-secret",
-	"save-x402-facilitator-secret",
 	"save-webhook-edge-token",
 	"save-payment-settings",
 ];
@@ -556,7 +555,6 @@ describe("Settings admin form (workerd sandbox)", () => {
 				"stripeWebhookSecret",
 				["whsec_", "NEVERRENDER0000000000"].join(""),
 			],
-			["save-x402-facilitator-secret", "x402FacilitatorSecret", "qa-x402-NEVER-RENDER"],
 			["save-webhook-edge-token", "webhookEdgeToken", "qa-wh-token-NEVER-RENDER"],
 		] as const;
 
@@ -597,10 +595,10 @@ describe("Settings admin form (workerd sandbox)", () => {
 	});
 
 	/**
-	 * INC-C5 — the NON-SECRET in-process settings (`loginLinkUrl`, `x402PayTo`,
-	 * `x402Accepts`). These are READ BACK, unlike the secrets in the same
-	 * group — that difference is the tier, and it is deliberate: an operator
-	 * must be able to see which wallet they are being paid at.
+	 * INC-C5 — the NON-SECRET in-process setting (`loginLinkUrl`). It is READ
+	 * BACK, unlike the secrets in the same group — that difference is the tier,
+	 * and it is deliberate: an operator must be able to see which sign-in page
+	 * their customers are sent to.
 	 */
 	test("INC-C5: the non-secret in-process settings can be SET and are READ BACK (secrets are not)", async () => {
 		sandbox = await loadPluginInSandbox({ allowedHosts: [], storage: true });
@@ -611,17 +609,12 @@ describe("Settings admin form (workerd sandbox)", () => {
 		);
 		const freshForm = formFor(fresh, "save-payment-settings");
 		expect(freshForm, "expected a form submitting save-payment-settings").toBeDefined();
-		expect(field(freshForm, "x402PayTo")?.["initial_value"]).toBe("");
+		expect(field(freshForm, "loginLinkUrl")?.["initial_value"]).toBe("");
 
-		const PAY_TO = "0x00000000000000000000000000000000000000a1";
 		await sandbox.invokeRoute("admin", {
 			type: "form_submit",
 			action_id: "save-payment-settings",
-			values: {
-				loginLinkUrl: "https://shop.otta.sh/account/verify",
-				x402PayTo: PAY_TO,
-				x402Accepts: "eip155:8453, eip155:1",
-			},
+			values: { loginLinkUrl: "https://shop.otta.sh/account/verify" },
 		});
 
 		const loaded = blocksOf(
@@ -632,8 +625,6 @@ describe("Settings admin form (workerd sandbox)", () => {
 		expect(field(form, "loginLinkUrl")?.["initial_value"]).toBe(
 			"https://shop.otta.sh/account/verify",
 		);
-		expect(field(form, "x402PayTo")?.["initial_value"]).toBe(PAY_TO);
-		expect(field(form, "x402Accepts")?.["initial_value"]).toBe("eip155:8453, eip155:1");
 		// ADR-0031: no email from-address, provider or region field any more.
 		expect(field(form, "emailFrom")).toBeUndefined();
 	});
@@ -642,77 +633,51 @@ describe("Settings admin form (workerd sandbox)", () => {
 		// The save path only writes fields PRESENT as strings in the submit —
 		// an absent field is skipped entirely, never coerced to `""` and
 		// written unconditionally, because ONE submit that happens to omit
-		// `x402PayTo` (a partial dispatch, a field the operator never focused)
-		// must not silently blank the destination wallet.
+		// `loginLinkUrl` (a partial dispatch, a field the operator never focused)
+		// must not silently blank the sign-in page address.
 		sandbox = await loadPluginInSandbox({ allowedHosts: [], storage: true });
 
-		const PAY_TO = "0x00000000000000000000000000000000000000a1";
+		const LOGIN_LINK = "https://shop.otta.sh/account/verify";
 		await sandbox.invokeRoute("admin", {
 			type: "form_submit",
 			action_id: "save-payment-settings",
-			values: { x402PayTo: PAY_TO, x402Accepts: "eip155:8453" },
+			values: { loginLinkUrl: LOGIN_LINK },
 		});
 
-		// A submit carrying ONLY the sign-in page.
+		// A submit that never mentions the sign-in page.
 		await sandbox.invokeRoute("admin", {
 			type: "form_submit",
 			action_id: "save-payment-settings",
-			values: { loginLinkUrl: "https://shop.otta.sh/account/verify" },
+			values: {},
 		});
 
 		const after = blocksOf(
 			await sandbox.invokeRoute("admin", { type: "page_load", page: "/settings" }),
 		);
-		const form = formFor(after, "save-payment-settings");
-		expect(field(form, "loginLinkUrl")?.["initial_value"]).toBe(
-			"https://shop.otta.sh/account/verify",
+		// UNCHANGED, not blanked.
+		expect(field(formFor(after, "save-payment-settings"), "loginLinkUrl")?.["initial_value"]).toBe(
+			LOGIN_LINK,
 		);
-		// The two the submit never mentioned are UNCHANGED, not blanked.
-		expect(field(form, "x402PayTo")?.["initial_value"]).toBe(PAY_TO);
-		expect(field(form, "x402Accepts")?.["initial_value"]).toBe("eip155:8453");
 
 		// A PRESENT empty string is still an instruction, and still honoured:
 		// this is the operator clearing the box, which must remain possible.
 		await sandbox.invokeRoute("admin", {
 			type: "form_submit",
 			action_id: "save-payment-settings",
-			values: { x402PayTo: "", x402Accepts: "" },
+			values: { loginLinkUrl: "" },
 		});
 		const cleared = blocksOf(
 			await sandbox.invokeRoute("admin", { type: "page_load", page: "/settings" }),
 		);
-		expect(field(formFor(cleared, "save-payment-settings"), "x402PayTo")?.["initial_value"]).toBe(
-			"",
-		);
-	});
-
-	test("INC-C5: a payTo that is not a wallet address is REFUSED and nothing is saved", async () => {
-		sandbox = await loadPluginInSandbox({ allowedHosts: [], storage: true });
-
-		const refused = await sandbox.invokeRoute("admin", {
-			type: "form_submit",
-			action_id: "save-payment-settings",
-			values: { x402PayTo: "my-wallet", x402Accepts: "eip155:8453" },
-		});
-		const blocks = blocksOf(refused);
-		// The whole screen comes back (S-5a: never a terminal receipt with no form).
-		expectAllRealFormsPresent(blocks);
-		expect(JSON.stringify(refused)).toContain("not a wallet address");
-
-		// ATOMIC: the valid sibling field was not saved either, so the operator
-		// is never left guessing which half of their submit landed.
-		const after = blocksOf(
-			await sandbox.invokeRoute("admin", { type: "page_load", page: "/settings" }),
-		);
-		const form = formFor(after, "save-payment-settings");
-		expect(field(form, "x402Accepts")?.["initial_value"]).toBe("");
-		expect(field(form, "x402PayTo")?.["initial_value"]).toBe("");
+		expect(
+			field(formFor(cleared, "save-payment-settings"), "loginLinkUrl")?.["initial_value"],
+		).toBe("");
 	});
 
 	// Issue #306: the sign-in link page. Setting and validation adapted from #325
 	// by @stephanedemotte. The emailed link points here and ONLY here, so a
 	// relative path, a non-http(s) scheme or a URL carrying credentials is
-	// refused whole, like a bad payTo.
+	// refused whole.
 	test("#306: the sign-in link URL is SET, READ BACK, and validated on save", async () => {
 		sandbox = await loadPluginInSandbox({ allowedHosts: [], storage: true });
 
@@ -741,8 +706,10 @@ describe("Settings admin form (workerd sandbox)", () => {
 			const refused = await sandbox.invokeRoute("admin", {
 				type: "form_submit",
 				action_id: "save-payment-settings",
-				values: { x402Accepts: "eip155:8453", loginLinkUrl: bad },
+				values: { loginLinkUrl: bad },
 			});
+			// The whole screen comes back (S-5a: never a terminal receipt with no form).
+			expectAllRealFormsPresent(blocksOf(refused));
 			expect(JSON.stringify(refused)).toContain("Nothing was saved");
 			// The banner names the field and the shape, never the rejected value
 			// (the FORM keeps what was typed, so it can be corrected).
@@ -756,8 +723,6 @@ describe("Settings admin form (workerd sandbox)", () => {
 		expect(field(after, "loginLinkUrl")?.["initial_value"]).toBe(
 			"https://boutique.example/account/verify",
 		);
-		// ATOMIC, like payTo: the valid sibling in a refused submit did not land.
-		expect(field(after, "x402Accepts")?.["initial_value"]).toBe("");
 	});
 
 	test("U-8: the sign-in page refusal names the https rule, and http is accepted for this machine only", async () => {
@@ -937,10 +902,10 @@ describe("Settings admin form (workerd sandbox)", () => {
 		expect(labels.get("settings:store")).toBe("Store — no display name");
 		expect(labels.get("settings:checkout")).toBe("Checkout & holds — 15 min hold · low stock at 5");
 		expect(labels.get("settings:payments")).toBe(
-			// U-8: card checkout and email, stated — the optional x402 and edge
-			// credentials no longer read as missing pieces. Email is the host's
-			// `ctx.email` (ADR-0031), always present in a sandboxed boot, and
-			// "email TBC" until a send has gone through it (PR #418 review).
+			// U-8: card checkout and email, stated — the optional edge credential
+			// no longer reads as a missing piece. Email is the host's `ctx.email`
+			// (ADR-0031), always present in a sandboxed boot, and "email TBC" until
+			// a send has gone through it (PR #418 review).
 			"Payments & email — no Stripe key · no webhook · email TBC",
 		);
 		for (const label of labels.values()) expect(label.length).toBeLessThanOrEqual(60);

@@ -64,6 +64,7 @@ import {
 	getCart,
 	getProductCommerce,
 	idempotencyKey as toIdempotencyKey,
+	isCurrentPaymentMethod,
 	InvalidProductFieldError,
 	isEmailTransportUnavailableError,
 	isProductLive,
@@ -193,7 +194,7 @@ import {
  * The stores' own options plus the payment gateways.
  *
  * Gateways are PASSED IN rather than resolved here because resolving them is
- * asynchronous — the x402 wiring reads `payTo` and its networks from kv — and
+ * asynchronous — the Stripe wiring reads its keys from kv — and
  * this constructor is synchronous by design (a client is built per invocation
  * and must stay cheap). `makeCommerceClient` is already async, so it
  * is the natural place for that await; see `make-commerce-client.ts`.
@@ -296,9 +297,8 @@ export class InProcessCommerceClient implements CommerceClient {
 			settings: this.#stores.settingsStore,
 			clock: this.#stores.clock,
 			idGen: this.#stores.idGen,
-			// Whatever the composition root could wire, and nothing more. INC-C5 fills
-			// the `x402` slot (`payments/x402-wiring.ts`); `stripe`
-			// arrives with the rest of the payment topology. A method with no gateway
+			// Whatever the composition root could wire, and nothing more. `stripe` is
+			// wired by `payments/stripe-wiring.ts`. A method with no gateway
 			// here is still REFUSED by the domain, loudly, rather than minted as a
 			// silently unpayable order — which is why an empty map stays a correct
 			// default rather than something to paper over.
@@ -1153,11 +1153,8 @@ export class InProcessCommerceClient implements CommerceClient {
 						},
 						{ sessionToken: opts.sessionToken, buyerRef: input.buyerRef },
 					);
-		// Issue #382: a fact about the STRIPE account, so it binds a Stripe
-		// checkout only — x402 has no such rule. A kv read, made before the
-		// domain's same-key short-circuit (which lives inside the use-case); a
-		// replay short-circuits before the domain looks at it.
-		const addressRequired = input.paymentMethod === "stripe" && (await this.#addressRequired());
+		// Issue #382: the Stripe account's address rule (Stripe is the only method), a kv read.
+		const addressRequired = await this.#addressRequired();
 		const result = await createOrderFromCart(this.#createOrderDeps, {
 			cartId: input.cartId,
 			idempotencyKey: toIdempotencyKey(idempotencyKey),
@@ -1284,7 +1281,11 @@ export class InProcessCommerceClient implements CommerceClient {
 			!Number.isFinite(deadline) ||
 			deadline <= this.#stores.clock.now().getTime() ||
 			order.cartId === null ||
-			order.paymentMethod === null
+			order.paymentMethod === null ||
+			// A stored method that is not a current one (removed like x402, or unknown):
+			// no gateway can ever take it. A current method whose gateway did not
+			// resolve (kv down) still falls through and throws, retryable, as before.
+			!isCurrentPaymentMethod(order.paymentMethod)
 		) {
 			return { ok: false, reason: "ORDER_NOT_PAYABLE" };
 		}

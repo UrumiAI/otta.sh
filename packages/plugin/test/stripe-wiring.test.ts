@@ -3,8 +3,7 @@
  *
  * See `src/payments/stripe-wiring.ts`'s module doc for why BOTH
  * `settings:stripeSecretKey` and `settings:stripeWebhookSecret` are required
- * before a gateway is wired at all, mirroring `x402-wiring.test.ts`'s
- * fail-closed shape.
+ * before a gateway is wired at all (fail-closed).
  */
 import {
 	cents,

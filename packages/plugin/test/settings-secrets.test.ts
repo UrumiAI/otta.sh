@@ -32,9 +32,7 @@ import {
 	STRIPE_SECRET_KEY_KEY,
 	STRIPE_WEBHOOK_SECRET_KEY,
 	WEBHOOK_EDGE_TOKEN_KEY,
-	X402_FACILITATOR_API_KEY_KEY,
 } from "../src/payment-secrets.js";
-import { X402_PAYTO_KEY } from "../src/payments/x402-wiring.js";
 import { LOGIN_LINK_URL_KEY } from "../src/storefront/login-link.js";
 import type { PluginContext } from "../src/types.js";
 import { assertBlockContract } from "./helpers/block-contract.js";
@@ -125,12 +123,6 @@ function paymentsLabel(blocks: readonly LooseBlock[]): string {
 const SECRETS = [
 	["save-stripe-secret-key", "stripeSecretKey", STRIPE_SECRET_KEY_KEY, SK_TEST],
 	["save-stripe-webhook-secret", "stripeWebhookSecret", STRIPE_WEBHOOK_SECRET_KEY, WHSEC],
-	[
-		"save-x402-facilitator-secret",
-		"x402FacilitatorSecret",
-		X402_FACILITATOR_API_KEY_KEY,
-		"fac_0123456789",
-	],
 	["save-webhook-edge-token", "webhookEdgeToken", WEBHOOK_EDGE_TOKEN_KEY, "edge-0123456789"],
 ] as const;
 
@@ -222,13 +214,6 @@ describe("Settings: saving a payment key", () => {
 				STRIPE_WEBHOOK_SECRET_KEY,
 				SK_TEST,
 				/webhook signing secret/i,
-			],
-			[
-				"save-x402-facilitator-secret",
-				"x402FacilitatorSecret",
-				X402_FACILITATOR_API_KEY_KEY,
-				"two words",
-				/x402/,
 			],
 			[
 				"save-webhook-edge-token",
@@ -550,8 +535,6 @@ describe("Settings: review nits", () => {
 		const { ctx, kv } = makeCtx();
 		const typed = {
 			loginLinkUrl: "http://shop.otta.sh/account/verify",
-			x402PayTo: "my-wallet",
-			x402Accepts: "eip155:8453",
 		};
 		const outcome = await invoke(ctx, {
 			type: "form_submit",
@@ -561,21 +544,17 @@ describe("Settings: review nits", () => {
 		assertBlockContract(outcome.blocks, { screen: "settings", level: "list" });
 		const banner = findBlocks(outcome.blocks, "banner").find((b) => b.variant === "error");
 		const description = String(banner?.description);
-		expect(description).toContain("x402 destination wallet");
 		expect(description).toContain("sign-in page address");
 		expect(description).toContain("Nothing was saved");
 		// Each rule is stated in full beside the form.
 		const help = contextTexts(outcome.blocks).join("\n");
-		expect(help).toContain("0x followed by 40 hex characters");
 		expect(help).toContain("https://");
 		// J6: the form keeps exactly what was typed.
 		const form = formFor(outcome.blocks, "save-payment-settings");
 		for (const [fieldId, value] of Object.entries(typed)) {
 			expect(field(form, fieldId)?.initial_value, fieldId).toBe(value);
 		}
-		for (const key of [LOGIN_LINK_URL_KEY, X402_PAYTO_KEY]) {
-			expect(kv.has(key), key).toBe(false);
-		}
+		expect(kv.has(LOGIN_LINK_URL_KEY)).toBe(false);
 	});
 
 	test("a refused sign-in address is put back WITHOUT any user:pw@ credentials", async () => {

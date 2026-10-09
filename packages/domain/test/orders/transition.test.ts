@@ -8,8 +8,10 @@ import {
 	reservationId,
 	sku,
 	transitionOrder,
+	transitionOrderAsAdmin,
 	type CreateOrderInput,
 	type OrderState,
+	type PaymentMethod,
 } from "@otta-sh/domain";
 import { CountingIdGen, FixedClock, InMemoryOrderStore } from "@otta-sh/domain/testing";
 import { describe, expect, test } from "vitest";
@@ -165,5 +167,39 @@ describe("order state transition (5.1)", () => {
 		expect((await store.listForCustomer(customerId("cust-b"))).map((o) => o.id)).toEqual([
 			b.order.id,
 		]);
+	});
+});
+
+describe("a legacy order whose payment method no longer exists", () => {
+	test("a hand-seeded paid x402 order can still be closed with Mark refunded", async () => {
+		// An order placed before x402 was removed stores `paymentMethod: "x402"`.
+		// Nothing can refund it through a provider, so Mark refunded — recording a
+		// refund the operator made outside Otta — must stay open for it.
+		const { store } = harness();
+		const { order } = await store.createFromCart(
+			pending({ paymentMethod: "x402" as unknown as PaymentMethod }),
+		);
+		const paid = await transitionOrder(
+			{ orderStore: store },
+			{ orderId: order.id, toState: "paid", idempotencyKey: key(order.id, "paid") },
+		);
+		expect(paid.ok).toBe(true);
+		// Money captured and NOT returned through any provider — for a Stripe order
+		// this is exactly what refuses Mark refunded (REFUND_THROUGH_MONEY).
+		await store.recordPayment({
+			orderId: order.id,
+			gateway: "x402" as unknown as PaymentMethod,
+			providerRef: "0xlegacy-tx",
+			amount: cents(500),
+			currency: USD,
+			status: "succeeded",
+		});
+
+		const res = await transitionOrderAsAdmin(
+			{ orderStore: store },
+			{ orderId: order.id, toState: "refunded", idempotencyKey: key(order.id, "refunded") },
+		);
+		expect(res).toMatchObject({ ok: true });
+		expect((await store.getById(order.id))?.state).toBe("refunded");
 	});
 });

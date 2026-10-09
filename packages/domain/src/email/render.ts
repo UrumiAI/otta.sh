@@ -1,4 +1,5 @@
 import { orderLabel, type OrderLabelLine } from "../orders/order-label.js";
+import { orderNumber } from "../orders/order-number.js";
 import { orderTotalLabel } from "../orders/order-total-label.js";
 import type { EmailTemplate } from "../ports/email-sender.js";
 
@@ -72,13 +73,16 @@ export function renderEmail(
 	if (template === "customer-login-link") return renderLoginLink(data, context);
 
 	const money = moneyFormatter(context);
-	// The order is named by WHAT WAS BOUGHT, never by its id (`orderLabel`): the
-	// recipient is the buyer, and a UUID names nothing they bought. The id still
-	// travels in `data.orderId` — the dispatcher keys on it, and the caller builds
-	// the order page link from it — it is just not rendered as text.
+	// The order is named by WHAT WAS BOUGHT (`orderLabel`) and by its short NUMBER
+	// (`orderNumber`, "#3F9A2" — ADR-0033), never by the whole id: the recipient is
+	// the buyer, and a UUID names nothing they bought. The number is what tells two
+	// orders of the same product apart in an inbox. The id still travels in
+	// `data.orderId` — the dispatcher keys on it, and the caller builds the order
+	// page link from it.
 	const label = orderLabel(labelLines(data["lines"]));
+	const number = numberOf(data["orderId"]);
 	const copy = latePaymentCopyFor(template, str(data["state"])) ?? ORDER_COPY[template];
-	const subject = `${copy.subject} — ${label}`;
+	const subject = subjectLine(copy.subject, number, label);
 	// A refund email states its OWN figure first (`noticeAmountCents`, the refunded
 	// money): a late capture or a partial refund differs from the order total,
 	// which the summary below states under its own name. The ONE "amount refunded"
@@ -115,7 +119,7 @@ export function renderEmail(
 					html: paragraph(`<strong>Refunded: ${escapeHtml(refunded)}</strong>`),
 				},
 		asParagraph(tracking ?? cancellation),
-		{ text: `Order: ${label}`, html: paragraph(`<strong>${escapeHtml(label)}</strong>`) },
+		orderLine(number, label),
 		lineItems(data["lines"], str(data["currency"]), money),
 		totalsBlock(data, money, refunded !== null),
 		DELIVERY_TEMPLATES.has(template) ? addressBlock(data["shippingAddress"]) : null,
@@ -540,13 +544,47 @@ const ORDER_COPY: Record<
 	// A refund announced on its own (QA T1-6): an admin partial refund, or a
 	// cancellation's FULL refund on an order that shipped before it could be
 	// cancelled. So the body is neutral about HOW MUCH — the figure is on the
-	// `Refunded: X` line — and about HOW: a manual (x402) refund goes to a wallet, not
+	// `Refunded: X` line — and about HOW: a manual refund may go anywhere, not
 	// "to your original payment method".
 	"order-refund-issued": {
 		subject: "Refund issued",
 		body: "We've issued a refund for your order.",
 	},
 };
+
+/**
+ * The order's number from the email data's `orderId`, or `null` when the data
+ * carries none (it crossed the outbox's JSON boundary, so it is read defensively —
+ * an email without a number still names the order by its products). `orderNumber`
+ * runs on the RAW id, exactly as on the page and the console, so the three can
+ * never disagree; only its OUTPUT is then folded onto one line, like any other
+ * value bound for a subject (a real id has nothing to fold).
+ */
+function numberOf(orderId: unknown): string | null {
+	const id = str(orderId);
+	if (id === undefined || id.length === 0) return null;
+	const number = oneLine(orderNumber(id));
+	return number.length > 1 ? number : null;
+}
+
+/** "Order confirmed #3F9A2 — Otta Tee": the template's subject, the order's number,
+ *  then what was bought. English word order, fixed here as the rest of the copy is;
+ *  the composition lives in this one function, which is the seam a translated
+ *  subject table would replace. */
+function subjectLine(subject: string, number: string | null, label: string): string {
+	return number === null ? `${subject} — ${label}` : `${subject} ${number} — ${label}`;
+}
+
+/** "Order #3F9A2: Otta Tee" — the body's line naming the order. */
+function orderLine(number: string | null, label: string): Block {
+	if (number === null) {
+		return { text: `Order: ${label}`, html: paragraph(`<strong>${escapeHtml(label)}</strong>`) };
+	}
+	return {
+		text: `Order ${number}: ${label}`,
+		html: paragraph(`<strong>Order ${escapeHtml(number)}</strong><br>${escapeHtml(label)}`),
+	};
+}
 
 /** The email data's `lines` (built by `buildOrderEmailData`) read back as
  *  `orderLabel` input. Defensive for the same reason the money formatter is: the data

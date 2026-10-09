@@ -15,9 +15,8 @@ There is one implementation behind that port, `InProcessCommerceClient`: the
 domain's use-cases composed over the `@otta-sh/store-emdash` adapters, bound to the
 plugin's own document store. There is no service, no HTTP transport and no mode
 flag (ADR-0020). Any egress it makes goes over `ctx.http`; the composition root
-wires the payment gateways — Stripe (`src/payments/stripe-wiring.ts`) and x402
-(`src/payments/x402-wiring.ts`) — each only when fully configured, and a method
-with no gateway fails loudly rather than minting an order nobody can pay for.
+wires the payment gateway — Stripe (`src/payments/stripe-wiring.ts`) — only
+when fully configured, and a method with no gateway fails loudly rather than minting an order nobody can pay for.
 
 ### Where commerce truth lives
 

@@ -11,8 +11,8 @@ ADR-0026).
 - **`@otta-sh/domain`.** New use-case `transitionOrderAsAdmin`: `transitionOrder` plus three
   rules for a move made by hand.
   - `pending → paid` is refused with `MANUAL_PAYMENT_NOT_ALLOWED` unless the payment method is
-    declared offline. None is today, so the rule fails closed: Stripe, x402, and an order with
-    no method on file are all refused (`manualPaymentAllowed`).
+    declared offline. None is today, so the rule fails closed: Stripe and an order with no
+    method on file are both refused (`manualPaymentAllowed`).
   - Every bare `→ cancelled` is refused with `USE_CANCEL`: it would record no reason and release
     no stock hold. Cancel order is the one way to cancel; it does not refund a paid order.
   - `→ refunded` moves the state and enqueues no email, because a manual Mark refunded records a

@@ -18,6 +18,7 @@ import {
 	idempotencyKey as toIdempotencyKey,
 	orderId as toOrderId,
 	type OrderId,
+	PROVIDER_REFUNDED_FLAG_PREFIX,
 	productId as toProductId,
 	refundOrder as refundOrderUseCase,
 	sku as toSku,
@@ -37,7 +38,6 @@ const FAR = "2099-01-01T00:00:00.000Z";
 let harness: InProcessCommerceHarness;
 const gateways = {
 	stripe: new FakePaymentGateway({ id: "stripe" }),
-	x402: new FakePaymentGateway({ id: "x402" }),
 };
 
 beforeEach(async () => {
@@ -51,7 +51,7 @@ afterAll(async () => {
 
 /** A paid card order for one digital line, with its $15.00 captured and its
  *  entitlement granted under settlement's own key — the state `settleOrder` leaves. */
-async function seedPaidDigital(id: string, method: "stripe" | "x402" = "stripe"): Promise<OrderId> {
+async function seedPaidDigital(id: string): Promise<OrderId> {
 	const oid = toOrderId(id);
 	const sku = toSku(`DIG-${id}`);
 	await harness.stores.orderStore.createFromCart({
@@ -61,7 +61,7 @@ async function seedPaidDigital(id: string, method: "stripe" | "x402" = "stripe")
 		idempotencyKey: toIdempotencyKey(`seed-${id}`),
 		holdExpiresAt: FAR,
 		buyerRef: "buyer@example.com",
-		paymentMethod: method,
+		paymentMethod: "stripe",
 		lines: [
 			{
 				productId: toProductId(`prod-${id}`),
@@ -79,7 +79,7 @@ async function seedPaidDigital(id: string, method: "stripe" | "x402" = "stripe")
 	await harness.stores.orderStore.markPaid(oid);
 	await harness.stores.orderStore.recordPayment({
 		orderId: oid,
-		gateway: method,
+		gateway: "stripe",
 		providerRef: `pi_${id}`,
 		amount: cents(1500),
 		currency: USD,
@@ -128,8 +128,13 @@ describe("the admin refund revokes download access on a FULL refund only", () =>
 
 describe("the other full-refund paths revoke from the admin console too", () => {
 	test("Mark refunded revokes", async () => {
-		// x402 money goes back outside Otta, so Mark refunded is the way to record it.
-		const id = await seedPaidDigital("ord-mark", "x402");
+		// The provider reported the payment refunded in full (a refund made in its
+		// dashboard), the one state in which Mark refunded is the way to record it.
+		const id = await seedPaidDigital("ord-mark");
+		await harness.stores.orderStore.flagReconciliation(
+			toOrderId("ord-mark"),
+			`${PROVIDER_REFUNDED_FLAG_PREFIX} — test`,
+		);
 		const orders = new InProcessAdminOrdersClient(harness.ctx, { gateways });
 		const res = await orders.transitionOrder(id, "refunded", { idempotencyKey: "k-mark" });
 		expect(res).toMatchObject({ ok: true, transitioned: true });

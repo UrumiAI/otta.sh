@@ -100,9 +100,9 @@ describe("refundOrder — key reuse surfaced by the store's duplicate outcome (#
 
 	test("manual path: a record that finds the key recorded for a different amount is rejected", async () => {
 		const orderStore = makeStore();
-		const id = await seedPaid(orderStore, "ord-race-manual", "x402");
+		const id = await seedPaid(orderStore, "ord-race-manual", "stripe");
 		const key = idempotencyKey("rf-race-manual");
-		const gw = new FakePaymentGateway({ id: "x402" });
+		const gw = new FakePaymentGateway({ id: "stripe", refundable: false });
 		const first = await refundOrder({ orderStore }, gw, {
 			orderId: id,
 			amount: cents(300),
@@ -124,8 +124,8 @@ describe("refundOrder — key reuse surfaced by the store's duplicate outcome (#
 
 	test("a matching duplicate from the store is still the benign replay", async () => {
 		const orderStore = makeStore();
-		const id = await seedPaid(orderStore, "ord-race-same", "x402");
-		const gw = new FakePaymentGateway({ id: "x402" });
+		const id = await seedPaid(orderStore, "ord-race-same", "stripe");
+		const gw = new FakePaymentGateway({ id: "stripe", refundable: false });
 		const cmd = {
 			orderId: id,
 			amount: cents(300),

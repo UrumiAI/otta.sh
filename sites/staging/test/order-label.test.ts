@@ -138,3 +138,54 @@ describe("the account models carry no id for a view to print", () => {
 		expect(block("OrderModel")).toMatch(/\borderLabel: string \| null;/);
 	});
 });
+
+/**
+ * The order NUMBER (ADR-0033): "#" + the id's first five characters, upper-cased —
+ * the plugin's `orderNumber`, the same function the order emails and the admin
+ * console use. Every customer surface prints it beside the product label, so a
+ * shopper can quote it to the merchant. The PAGE builds it from the id; the VIEW
+ * prints only the model field — so the id guard above still holds for every view.
+ */
+describe("the order number", () => {
+	describe.each([
+		["orders/[orderId].astro", /orderNumber\(\s*order\.id\s*\)/],
+		["account/orders/index.astro", /number: orderNumber\(\s*order\.id\s*\)/],
+		["account/orders/[id].astro", /number: orderNumber\(\s*order\.id\s*\)/],
+	])("the page %s", (page, builds) => {
+		const source = read(`pages/${page}`);
+
+		test("builds it with the shared orderNumber — never its own slice of the id", () => {
+			const { frontmatter } = splitAstro(source);
+			expect(frontmatter).toMatch(/import \{[^}]*\borderNumber\b[^}]*\} from "@otta-sh\/plugin"/);
+			expect(frontmatter).toMatch(builds);
+			expect(frontmatter).not.toMatch(/\.id\.slice\(/);
+		});
+	});
+
+	describe.each(viewCases("order"))("the confirmation view %s", (_label, { source }) => {
+		test("hands the stamp the page's number", () => {
+			expect(templateOf(source)).toMatch(/<StateStamp[^>]*orderNumber=\{orderNumber\}/);
+		});
+	});
+
+	describe.each(viewCases("accountOrders"))("the account order list %s", (_label, { source }) => {
+		test("each row prints its number", () => {
+			expect(templateOf(source)).toMatch(/\{row\.number\}/);
+		});
+	});
+
+	describe.each(viewCases("accountOrder"))("the account order view %s", (_label, { source }) => {
+		test("the order prints its number", () => {
+			expect(templateOf(source)).toMatch(/\{order\.number\}/);
+		});
+	});
+
+	test("the models carry it as a string, beside the label", () => {
+		const contract = read("themes/contract.ts");
+		const block = (name: string): string =>
+			new RegExp(`export interface ${name} \\{[\\s\\S]*?\\n\\}`).exec(contract)?.[0] ?? "";
+		expect(block("OrderModel")).toMatch(/\borderNumber: string \| null;/);
+		expect(block("AccountOrderRow")).toMatch(/\bnumber: string;/);
+		expect(block("AccountOrderModel")).toMatch(/\bnumber: string;/);
+	});
+});

@@ -8,7 +8,6 @@ import { currencyChoiceLabel, currencyChoicesWith } from "@otta-sh/admin-present
 import { effectiveStoreCurrency, isSupportedCurrency, MAX_HOLD_TTL_MINUTES } from "@otta-sh/domain";
 import { emailSendingStatus, type EmailSendingStatus } from "../email/ctx-email-sender.js";
 import { STORE_DISPLAY_NAME_KEY } from "../email/email-render-context.js";
-import { isPlausiblePayTo, X402_ACCEPTS_KEY, X402_PAYTO_KEY } from "../payments/x402-wiring.js";
 import {
 	countryRequiresBuyerAddress,
 	readStripeAccountCountry,
@@ -32,8 +31,6 @@ import {
 	STRIPE_SECRET_KEY_KEY,
 	STRIPE_WEBHOOK_SECRET_KEY,
 	WEBHOOK_EDGE_TOKEN_KEY,
-	X402_FACILITATOR_API_KEY_KEY,
-	X402_LEGACY_FACILITATOR_SECRET_KEY,
 } from "../payment-secrets.js";
 import type {
 	AccordionBlock,
@@ -200,31 +197,7 @@ const PAYMENT_SECRET_FIELDS: readonly SecretFieldSpec[] = [
 			"Card orders stop being marked paid when Stripe reports a payment, until a new secret is saved.",
 	},
 	{
-		actionId: "save-x402-facilitator-secret",
-		fieldId: "x402FacilitatorSecret",
-		kvKey: X402_FACILITATOR_API_KEY_KEY,
-		genKey: "settings:x402FacilitatorApiKeyGen",
-		// INC-C5 renamed the FIELD, the kv key AND the generation key, because the
-		// meaning changed: in-process the value is the bearer credential the
-		// facilitator call SENDS, not the offline HMAC secret INC-C3's label
-		// described. An operator who provisioned under the old label holds a
-		// forge-a-settlement secret this increment would hand to a third-party
-		// host, so the old value must not be inherited — the new key names make
-		// the field read as unset until it is deliberately re-provisioned (review
-		// round 2, A5).
-		label: "x402 facilitator API key",
-		noun: "x402 facilitator API key",
-		hint: "Your x402 facilitator's API key",
-		check: checkOpaqueToken,
-		// ADR-0028 increment 2: nothing reads this key until the x402 content gate
-		// ships, so the copy must not claim a removal breaks anything today.
-		removeEffect:
-			"Nothing uses this key yet. x402 payments are not available until x402 support ships.",
-		shapeHelp: "Your x402 facilitator's API key: one line, no spaces.",
-		whereToFind: "your x402 facilitator's dashboard",
-	},
-	{
-		// INC-C1b. Not a renamed service env var like the three above — it is the
+		// INC-C1b. Not a renamed service env var like the two above — it is the
 		// shared edge token the site attaches (`X-Otta-Wh-Token`) to a Stripe
 		// webhook it forwards to the plugin's `webhooks/stripe/settle` route. It
 		// gets the identical write-only treatment because it is a shared secret,
@@ -259,23 +232,13 @@ function secretSpecByField(fieldId: unknown): SecretFieldSpec | undefined {
 export const CLEAR_PAYMENT_SECRET_ACTION = "clear-payment-secret";
 
 /**
- * INC-C5 — the NON-SECRET companions of the secrets above: the in-process
- * equivalents of the service's `X402_PAYTO` and `X402_ACCEPTS`
- * env vars.
+ * INC-C5 — the NON-SECRET companion of the secrets above: the sign-in page
+ * address.
  *
- * WHY THEY ARE A SEPARATE TABLE AND A SEPARATE FORM. They are a different TIER,
- * and the difference is visible: these are READ BACK into the field, because an
- * operator must be able to see which address they are being paid at and which
- * sign-in page their customers are sent to. A secret rendered back is a bug; a
- * configuration value NOT rendered back is also a bug. One form for all three
- * because they are saved together and none of them is independently useful —
- * and because the alternative, three more submit buttons, would make the group
- * unreadable.
- *
- * WHY THEY EXIST AT ALL (review A3/B5): INC-C3 shipped the four secrets without
- * them, which left `settings:x402PayTo` with no writer anywhere in the product.
- * `x402GatewayFromCtx` fail-closes without it, so x402 was inert in EVERY
- * deployment regardless of how it was provisioned.
+ * WHY A SEPARATE TABLE AND A SEPARATE FORM. It is a different TIER, and the
+ * difference is visible: it is READ BACK into the field, because an operator
+ * must be able to see which sign-in page their customers are sent to. A secret
+ * rendered back is a bug; a configuration value NOT rendered back is also a bug.
  */
 export const SAVE_PAYMENT_SETTINGS_ACTION = "save-payment-settings";
 
@@ -290,25 +253,13 @@ interface PlainSettingSpec {
 
 const PLAIN_PAYMENT_SETTINGS: readonly PlainSettingSpec[] = [
 	// Issue #306 — where the emailed sign-in link points, and the ONLY place it may
-	// point: required for customer login (unset ⇒ no link is sent). Read back for
-	// the same reason as the x402 wallet. Adapted from #325 by @stephanedemotte.
+	// point: required for customer login (unset ⇒ no link is sent). Read back so
+	// the operator can check it. Adapted from #325 by @stephanedemotte.
 	{
 		fieldId: "loginLinkUrl",
 		kvKey: LOGIN_LINK_URL_KEY,
 		label: "Sign-in page address (your storefront's /account/verify page)",
 		placeholder: "https://shop.example/account/verify",
-	},
-	{
-		fieldId: "x402PayTo",
-		kvKey: X402_PAYTO_KEY,
-		label: "x402 destination wallet",
-		placeholder: "0x… (the address buyers pay)",
-	},
-	{
-		fieldId: "x402Accepts",
-		kvKey: X402_ACCEPTS_KEY,
-		label: "x402 networks, comma-separated",
-		placeholder: "eip155:8453",
 	},
 ];
 
@@ -462,7 +413,7 @@ function joinNames(names: readonly string[]): string {
 }
 
 /** "Email API key" → "email API key" mid-sentence; a name that starts with a
- *  proper noun or a code ("Stripe…", "x402…") is left alone. */
+ *  proper noun ("Stripe…") is left alone. */
 function lowerFirst(noun: string): string {
 	return /^(Email|Webhook)\b/.test(noun) ? noun.charAt(0).toLowerCase() + noun.slice(1) : noun;
 }
@@ -671,20 +622,6 @@ export function createSettingsFormHandler(): RouteHandler<SettingsFormInput> {
 				if (secretSpec.kvKey === STRIPE_SECRET_KEY_KEY) {
 					await refreshStripeAccountCountry(ctx, { timeoutMs: STRIPE_ACCOUNT_READ_ON_SAVE_MS });
 				}
-				// A5. The INC-C3 key this credential moved OFF of holds a value with a
-				// different threat model (an offline HMAC secret, never transmitted)
-				// that nothing reads any more. Deleting it here — the one moment an
-				// operator is demonstrably re-provisioning this credential — keeps an
-				// orphaned forge-a-settlement secret from sitting in kv forever.
-				// Fail-soft: a kv that cannot delete must not fail a save that already
-				// succeeded.
-				if (secretSpec.kvKey === X402_FACILITATOR_API_KEY_KEY) {
-					try {
-						await ctx.kv.delete(X402_LEGACY_FACILITATOR_SECRET_KEY);
-					} catch {
-						// deliberately ignored — see above
-					}
-				}
 			}
 			const page = await renderPage(ctx, client, secretNotice(secretSpec, entered));
 			return {
@@ -736,22 +673,18 @@ export function createSettingsFormHandler(): RouteHandler<SettingsFormInput> {
 		}
 
 		// -- kv save path: the NON-secret payment/email settings (INC-C5) -----------
-		// ALL-OR-NOTHING. `payTo` is validated here, at the write end, because kv
-		// validates nothing itself and this value is the buyer's payment
-		// destination: a typo that is merely STORED would leave the operator with a
-		// screen that says "saved" and a checkout that silently never offers x402
-		// (`wireX402Gateway` fail-closes on the same predicate). Refusing the whole
-		// submit — rather than persisting the two valid siblings — means the
-		// operator never has to guess which half landed.
+		// ALL-OR-NOTHING. Every value is validated here, at the write end, because
+		// kv validates nothing itself. Refusing the whole submit — rather than
+		// persisting the valid siblings — means the operator never has to guess
+		// which half landed.
 		if (action === SAVE_PAYMENT_SETTINGS_ACTION) {
 			// ABSENT IS NOT EMPTY (review round 2, B3). A submit that carries no entry
 			// at all for a field is not an instruction to CLEAR that field — the host
 			// omits values for reasons that have nothing to do with intent (a field
 			// the operator never focused, a partial dispatch, a future block that
 			// stops echoing untouched inputs). Coercing absence to `""` and writing it
-			// unconditionally would silently blank `settings:x402PayTo`, which
-			// fail-closes x402 across the whole deployment with a screen that says
-			// "saved". A PRESENT empty string is still honoured: that is an operator
+			// unconditionally would silently blank the setting with a screen that
+			// says "saved". A PRESENT empty string is still honoured: that is an operator
 			// who cleared the box on purpose.
 			const submitted = new Map(
 				PLAIN_PAYMENT_SETTINGS.flatMap((spec) => {
@@ -763,13 +696,6 @@ export function createSettingsFormHandler(): RouteHandler<SettingsFormInput> {
 			// in one pass. Each names the FIELD and the SHAPE, never the rejected
 			// value (the form, not the banner, keeps what was typed).
 			const problems: Array<{ field: string; rule: string }> = [];
-			const payTo = submitted.get(X402_PAYTO_KEY) ?? "";
-			if (payTo.length > 0 && !isPlausiblePayTo(payTo)) {
-				problems.push({
-					field: "the x402 destination wallet",
-					rule: "The x402 destination wallet is not a wallet address (expected 0x followed by 40 hex characters, optionally CAIP-10 prefixed).",
-				});
-			}
 			// Issue #306: the sign-in link page must be an absolute URL with no
 			// credentials — the emailed token rides on it. U-8: and https, or http
 			// only on this machine, so that token never crosses a network in clear
@@ -811,7 +737,7 @@ export function createSettingsFormHandler(): RouteHandler<SettingsFormInput> {
 			const page = await renderPage(ctx, client, {
 				variant: "default",
 				title: "Payment settings saved",
-				description: "The sign-in page and x402 settings were saved.",
+				description: "The sign-in page address was saved.",
 			});
 			return {
 				...page,
@@ -1489,13 +1415,9 @@ function paymentsGroup(
 				if (country !== null) blocks.push({ type: "context", text: country });
 				return blocks;
 			}),
-			// INC-C5: the non-secret companions, LAST so the group still reads
-			// keys-first, and visibly a different kind of field — these prefill with
-			// what is stored.
-			{
-				type: "context",
-				text: "The settings below are shown as saved. x402 payments are not available yet. These settings are kept for when they are.",
-			},
+			// INC-C5: the non-secret companion, LAST so the group still reads
+			// keys-first. It prefills with what is stored, which says on its own that
+			// it is not a write-only key.
 			{ type: "context", text: emailStatusLine(emailStatus) },
 			...legacySignInWarning(plain.get(LOGIN_LINK_URL_KEY) ?? ""),
 			// A refused save states each rule in full beside the form, and the form
@@ -1613,10 +1535,10 @@ function plainSettingsForm(plain: Map<string, string>): FormBlock {
  *  "Payments & email — Stripe test · webhook set · email set".
  *
  *  The old label listed whichever of the five keys were missing, so a store with
- *  working card checkout and email read "no x402, edge" — two optional keys —
+ *  working card checkout and email read "no edge" — one optional key —
  *  as if something were broken. It now states the three that decide whether
- *  the store can take a card payment and send an email. The x402 and edge keys
- *  state their own status on their fields.
+ *  the store can take a card payment and send an email. The edge key
+ *  states its own status on its field.
  *
  *  SECURITY: "set" and the Stripe mode (from the key's prefix) are FACTS ABOUT a
  *  key, not any part of it; no value is in scope here. The longest render

@@ -124,7 +124,16 @@ export {
 	formatTimestamp,
 	startOfDay,
 } from "./datetime.js";
-export { SHORT_ID_CONFIRM_LEN, SHORT_ID_MIN, shortIdFixed, shortIdsFor } from "./short-id.js";
+export { SHORT_ID_MIN, shortIdsFor } from "./short-id.js";
+// The order NUMBER on the console (ADR-0033): tie-breakers for rows that share
+// one, and the refund confirm's label.
+export {
+	ORDER_CONFIRM_DIGITS,
+	orderConfirmLabel,
+	orderNumberOf,
+	withOrderNumberCells,
+	type OrderNumberCell,
+} from "./order-number.js";
 export {
 	ORDER_STATE_SET,
 	ORDER_STATES,

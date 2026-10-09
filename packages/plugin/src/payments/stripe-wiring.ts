@@ -1,9 +1,8 @@
 /**
  * Stripe payment gateway, in-process (work order 02 follow-up).
  *
- * WHAT WAS MISSING. `make-commerce-client.ts` wired `x402` into
- * `InProcessCommerceClient`'s `gateways` map (INC-C5) but never wired
- * `stripe` — `@otta-sh/payments-stripe` ships a complete `PaymentGateway`
+ * WHAT WAS MISSING. `make-commerce-client.ts` never wired `stripe` into
+ * `InProcessCommerceClient`'s `gateways` map — `@otta-sh/payments-stripe` ships a complete `PaymentGateway`
  * adapter (`StripePaymentGateway`) and `webhooks/stripe-settle-route.ts`
  * already constructs one to VERIFY inbound webhooks, but nothing ever
  * constructed one for `createOrder` to CREATE a PaymentIntent with. Every
@@ -23,8 +22,7 @@
  * mirror, a webhook verifier with no way to have created what it is
  * confirming — is a half-armed state worse than off: an order stuck holding
  * stock against a payment nothing can ever settle. Both configured, or no
- * gateway at all, exactly like `x402GatewayFromCtx` (`payments/x402-wiring.ts`)
- * refuses to arm on a partial config.
+ * gateway at all: it refuses to arm on a partial config.
  *
  * ONE DEV-ONLY EXCEPTION (issue #378), and it is not a relaxation of the rule
  * above. A local or CI e2e stack has no Stripe account, so with the rule as
@@ -51,7 +49,7 @@
  *
  * `api.stripe.com` needs no `allowedHosts` wiring here — it is the one
  * constant entry `resolveAllowedHosts` always grants (`manifest.ts`,
- * `STRIPE_API_HOST`), unlike x402's deployment-supplied facilitator URL.
+ * `STRIPE_API_HOST`), unlike a deployment-supplied URL.
  */
 
 import { StripePaymentGateway } from "@otta-sh/payments-stripe";
@@ -119,8 +117,7 @@ export function devStripeOfflineEnabled(): boolean {
 
 /**
  * Resolve the Stripe gateway for a context, or report `undefined` for
- * "Stripe is not configured on this deployment" — the same fail-closed shape
- * `x402GatewayFromCtx` uses. `createOrderFromCart` (`@otta-sh/domain`) refuses
+ * "Stripe is not configured on this deployment" — fail-closed. `createOrderFromCart` (`@otta-sh/domain`) refuses
  * a `paymentMethod` with no gateway before touching the cart, so an
  * unconfigured deployment gets a typed, loud refusal rather than a thrown
  * error.

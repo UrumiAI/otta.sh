@@ -135,7 +135,6 @@ export interface OrderHarnessShared {
 	notesStore: InMemoryOrderNotesStore;
 	emailSender: FakeEmailSender;
 	stripeGateway: FakePaymentGateway;
-	x402Gateway: FakePaymentGateway;
 	shippingRules: InMemoryShippingRulesStore;
 	taxRules: InMemoryTaxRulesStore;
 }
@@ -151,7 +150,6 @@ export interface OrderHarness {
 	readonly paymentEventStore: InMemoryPaymentEventStore;
 	readonly emailSender: FakeEmailSender;
 	readonly stripeGateway: FakePaymentGateway;
-	readonly x402Gateway: FakePaymentGateway;
 	readonly cartDeps: CartDeps;
 	readonly createDeps: CreateOrderDeps;
 	readonly settleDeps: SettleDeps;
@@ -209,7 +207,6 @@ function buildShared(): OrderHarnessShared {
 		notesStore: new InMemoryOrderNotesStore({ idGen: new CountingIdGen("note"), clock }),
 		emailSender: new FakeEmailSender(),
 		stripeGateway: new FakePaymentGateway({ id: "stripe" }),
-		x402Gateway: new FakePaymentGateway({ id: "x402" }),
 		shippingRules: new InMemoryShippingRulesStore(),
 		taxRules: new InMemoryTaxRulesStore(),
 	};
@@ -256,7 +253,6 @@ export function makeOrderHarness(
 		paymentEventStore,
 		emailSender,
 		stripeGateway,
-		x402Gateway,
 	} = shared;
 	let seq = 0;
 
@@ -271,7 +267,7 @@ export function makeOrderHarness(
 		couponStore,
 		clock,
 		idGen: uuidIdGen,
-		gateways: { stripe: stripeGateway, x402: x402Gateway },
+		gateways: { stripe: stripeGateway },
 	};
 	const settleDeps: SettleDeps = {
 		orderStore: store,
@@ -316,7 +312,6 @@ export function makeOrderHarness(
 		paymentEventStore,
 		emailSender,
 		stripeGateway,
-		x402Gateway,
 		cartDeps,
 		createDeps,
 		settleDeps,

@@ -83,6 +83,22 @@ describe("StateStamp — what it renders", () => {
 		expect(html).not.toContain("Reference");
 	});
 
+	test("prints the order NUMBER beside the label, in the data face (ADR-0033)", async () => {
+		// The number is a code — mono is for figures and codes (TEMPERED.md §1
+		// rule 2) — while the product label beside it stays in the body face.
+		const html = await stamp({ state: "paid", orderLabel: "Otta Tee", orderNumber: "#3F9A2" });
+		expect(html).toMatch(/class="order-number u-mono"[^>]*>#3F9A2<\/span>/);
+		expect(html).toMatch(/class="order-value"[^>]*>Otta Tee<\/span>/);
+		expect(html.indexOf("#3F9A2")).toBeLessThan(html.indexOf("Otta Tee"));
+	});
+
+	test("a number with no label still names the order", async () => {
+		const html = await stamp({ state: "paid", orderNumber: "#3F9A2" });
+		expect(html).toMatch(/>Order<\/span>/);
+		expect(html).toContain("#3F9A2");
+		expect(html).not.toContain("order-value");
+	});
+
 	test("omits the order row entirely when there is no label", async () => {
 		expect(await stamp({ state: "pending" })).not.toMatch(/>Order<\/span>/);
 	});

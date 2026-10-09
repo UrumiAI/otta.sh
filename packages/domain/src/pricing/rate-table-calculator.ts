@@ -3,6 +3,7 @@ import type { TaxRate, TaxRulesStore } from "../ports/tax-rules-store.js";
 import { allocateCents } from "./allocate.js";
 import { mulDivRoundHalfDownAny } from "./round.js";
 import { computeLineTax } from "./tax.js";
+import { effectiveTaxRates } from "./tax-rate-uniqueness.js";
 import {
 	isValidTaxLabel,
 	TAX_RATE_BPS_MAX,
@@ -39,17 +40,19 @@ export interface RateTableOptions {
 
 /**
  * The zone's rates as main has always read them: in the store's order (the
- * emdash store lists by id ascending), each rate overwrites its class — so with
- * duplicate (class, zone) rates the LAST listed wins — and the last
+ * emdash store lists by id ascending), each rate sets its class, and the last
  * shipping-flagged rate names the shipping tax class (default `standard`).
- * Pinned, not fixed, by PR 1: see the ADR's follow-ups.
+ * Duplicate (class, zone) rates written before the store refused them are
+ * reduced first to the one that applies (`effectiveTaxRates`: the greatest id —
+ * the rate the last-listed overwrite always charged), so an ignored duplicate is
+ * ignored entirely, its shipping flag included, exactly as the admin shows it.
  */
 export function rateTableOf(zoneRates: readonly TaxRate[]): RateTable {
 	const ratesByClass = new Map<TaxClassId, number>();
 	const shipsByClass = new Map<TaxClassId, boolean>();
 	let shippingTaxable = false;
 	let shippingTaxClassId: TaxClassId = "standard";
-	for (const r of zoneRates) {
+	for (const r of effectiveTaxRates(zoneRates)) {
 		ratesByClass.set(r.taxClassId, r.rateBps);
 		shipsByClass.set(r.taxClassId, r.appliesToShipping);
 		if (r.appliesToShipping) {

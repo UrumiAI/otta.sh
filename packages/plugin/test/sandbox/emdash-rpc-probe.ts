@@ -19,7 +19,6 @@ import {
 	type OrderId,
 } from "@otta-sh/domain";
 import { StripePaymentGateway } from "@otta-sh/payments-stripe";
-import { createX402Rail } from "@otta-sh/payments-x402";
 import { isEmailTransportUnavailableError } from "@otta-sh/domain";
 import { CtxEmailSender, isEmailNotConfiguredError } from "../../src/email/ctx-email-sender.js";
 import { STRIPE_SECRET_KEY_KEY, STRIPE_WEBHOOK_SECRET_KEY } from "../../src/payment-secrets.js";
@@ -30,21 +29,12 @@ import type { KvAccess, PluginContext } from "../../src/types.js";
 /** The hosts the probe plugin's manifest allows. */
 export const PROBE_HOST = "probe.example.com";
 export const STRIPE_HOST = "api.stripe.com";
-export const X402_HOST = "x402.example.com";
 
 const PROBE_URL = `https://${PROBE_HOST}/ping`;
 
 /** Fakes: never a real credential. */
 const FAKE_STRIPE_SECRET = "sk_test_sandbox_probe_fake";
 const FAKE_WEBHOOK_SECRET = "whsec_sandboxprobe_fake";
-
-/** `@otta-sh/payments-x402`'s `SPEC_PAYMENT_SIGNATURE_HEADER` and `SPEC_PAY_TO`
- *  (test/support/fixtures.ts — the x402 spec's own example, copied: that file is
- *  outside this package's root). Base Sepolia, 1¢. */
-const SPEC_PAYMENT_SIGNATURE_HEADER =
-	"eyJ4NDAyVmVyc2lvbiI6MiwicmVzb3VyY2UiOnsidXJsIjoiaHR0cHM6Ly9hcGkuZXhhbXBsZS5jb20vcHJlbWl1bS1kYXRhIiwiZGVzY3JpcHRpb24iOiJBY2Nlc3MgdG8gcHJlbWl1bSBtYXJrZXQgZGF0YSIsIm1pbWVUeXBlIjoiYXBwbGljYXRpb24vanNvbiJ9LCJhY2NlcHRlZCI6eyJzY2hlbWUiOiJleGFjdCIsIm5ldHdvcmsiOiJlaXAxNTU6ODQ1MzIiLCJhbW91bnQiOiIxMDAwMCIsImFzc2V0IjoiMHgwMzZDYkQ1Mzg0MmM1NDI2NjM0ZTc5Mjk1NDFlQzIzMThmM2RDRjdlIiwicGF5VG8iOiIweDIwOTY5M0JjNmFmYzBDNTMyOGJBMzZGYUYwM0M1MTRFRjMxMjI4N0MiLCJtYXhUaW1lb3V0U2Vjb25kcyI6NjAsImV4dHJhIjp7Im5hbWUiOiJVU0RDIiwidmVyc2lvbiI6IjIifX0sInBheWxvYWQiOnsic2lnbmF0dXJlIjoiMHgyZDZhNzU4OGQ2YWNjYTUwNWNiZjBkOWE0YTIyN2UwYzUyYzZjMzQwMDhjOGU4OTg2YTEyODMyNTk3NjQxNzM2MDhhMmNlNjQ5NjY0MmUzNzdkNmRhOGRiYmY1ODM2ZTliZDE1MDkyZjllY2FiMDVkZWQzZDYyOTNhZjE0OGI1NzFjIiwiYXV0aG9yaXphdGlvbiI6eyJmcm9tIjoiMHg4NTdiMDY1MTlFOTFlM0E1NDUzODc5MWJEYmIwRTIyMzczZTM2YjY2IiwidG8iOiIweDIwOTY5M0JjNmFmYzBDNTMyOGJBMzZGYUYwM0M1MTRFRjMxMjI4N0MiLCJ2YWx1ZSI6IjEwMDAwIiwidmFsaWRBZnRlciI6IjE3NDA2NzIwODkiLCJ2YWxpZEJlZm9yZSI6IjE3NDA2NzIxNTQiLCJub25jZSI6IjB4ZjM3NDY2MTNjMmQ5MjBiNWZkYWJjMDg1NmYyYWViMmQ0Zjg4ZWU2MDM3YjhjYzVkMDRhNzFhNDQ2MmYxMzQ4MCJ9fX0=";
-const SPEC_PAY_TO = "0x209693Bc6afc0C5328bA36FaF03C514EF312287C";
-const BASE_SEPOLIA = "eip155:84532";
 
 function describeError(err: unknown): string {
 	if (typeof err === "object" && err !== null) {
@@ -224,29 +214,6 @@ export default {
 							now: Date.parse("2026-10-07T00:00:00.000Z"),
 						}),
 					);
-				} catch (err) {
-					return describeError(err);
-				}
-			},
-		},
-		/** An x402 `/verify` through the rail, with `ctx.http.fetch` as its only egress. */
-		x402Verify: {
-			async handler(_route: RouteContext, ctx: PluginContext): Promise<string> {
-				try {
-					const rail = createX402Rail({
-						facilitatorUrl: `https://${X402_HOST}/x402`,
-						payTo: SPEC_PAY_TO,
-						networks: [BASE_SEPOLIA],
-						fetch: ctx.http.fetch,
-					});
-					const offered = rail.offer(
-						{ amount: cents(1), currency: currency("USD") },
-						"https://shop.example/x402/products/ebook",
-					);
-					if (!offered.ok) return `not offered: ${offered.detail}`;
-					const decoded = rail.decode(SPEC_PAYMENT_SIGNATURE_HEADER);
-					if (!decoded.ok) return `malformed: ${decoded.detail}`;
-					return JSON.stringify(await rail.verify(decoded.payment, offered.offer));
 				} catch (err) {
 					return describeError(err);
 				}
