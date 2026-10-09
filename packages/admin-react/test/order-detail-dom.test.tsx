@@ -37,7 +37,7 @@ vi.mock("emdash/plugin-utils", async (importOriginal) => {
 const { OrderDetail, REFUND_RECIPIENT_MAX_LEN } = await import("../src/orders/order-detail.js");
 const {
 	ABSENT,
-	PRICES_INCLUDE_TAX,
+	PRICES_INCLUDED_TAX,
 	UNNAMED_REFUND_RECIPIENT,
 	fit,
 	formatAmount,
@@ -1174,7 +1174,7 @@ test("an order whose snapshot recorded tax-inclusive prices says so under the to
 		order: { ...base.order, totals: { ...base.order.totals, pricesIncludeTax: true } },
 	});
 	const note = one(view, '[data-testid="detail-prices-include-tax"]');
-	expect(note.textContent).toBe(PRICES_INCLUDE_TAX);
+	expect(note.textContent).toBe(PRICES_INCLUDED_TAX);
 	expect(
 		table(view, "detail-totals").closest("[aria-describedby]")?.getAttribute("aria-describedby"),
 	).toBe(note.id);

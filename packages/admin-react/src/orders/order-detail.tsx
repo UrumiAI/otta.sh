@@ -54,7 +54,7 @@ import {
 	ORDERS_BACK_LABEL,
 	ORDER_LINES_EMPTY,
 	ORDER_LINES_SNAPSHOT_NOTE,
-	PRICES_INCLUDE_TAX,
+	PRICES_INCLUDED_TAX,
 	REFUNDS_GROUP_EMPTY_LABEL,
 	REFUNDS_UNAVAILABLE,
 	REFUND_ADDITIVE_NOTE,
@@ -1339,7 +1339,6 @@ export function OrderDetail({
 							{...(order.totals.pricesIncludeTax === true
 								? {
 										role: "group",
-										"aria-label": "Totals",
 										"aria-describedby": "detail-prices-include-tax",
 									}
 								: {})}
@@ -1364,7 +1363,7 @@ export function OrderDetail({
 									data-testid="detail-prices-include-tax"
 									style={{ fontSize: 12, opacity: 0.7 }}
 								>
-									{PRICES_INCLUDE_TAX}
+									{PRICES_INCLUDED_TAX}
 								</p>
 							) : null}
 						</div>

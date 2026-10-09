@@ -237,7 +237,7 @@ export {
 	refundTooHighInline,
 	refundTooHighText,
 	refundsGroupLabel,
-	PRICES_INCLUDE_TAX,
+	PRICES_INCLUDED_TAX,
 } from "./orders-copy.js";
 export {
 	LOW_STOCK_SUFFIX,
