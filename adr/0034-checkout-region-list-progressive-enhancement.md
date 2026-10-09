@@ -26,7 +26,7 @@ rule for where it cannot.
 1. **`/checkout` may load exactly one script**: `public/scripts/region-picker.js`, through
    `src/components/RegionPicker.astro`. It is external and first-party (no inline code — so a
    future CSP needs only `script-src 'self'`), has no framework and no imports, and stays
-   under 60 lines. `checkout-client-js.test.ts` names exactly the pair
+   under 65 lines. `checkout-client-js.test.ts` names exactly the pair
    `checkout/index.astro → RegionPicker.astro` and checks the script's shape.
 2. **Progressive enhancement only.** When a country select changes, the script refills its
    state/province list from `GET /checkout/regions?country=XX` (the same server-built list,
