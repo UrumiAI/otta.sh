@@ -8,6 +8,7 @@
  * only where they are imported — never into the code the sandbox entry loads.
  */
 export {
+	subdivisionDataVersion,
 	subdivisionName,
 	subdivisionOptions,
 	type SubdivisionOption,

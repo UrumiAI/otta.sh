@@ -1038,6 +1038,25 @@ describe("storefront/checkout/summary — the zone derived from the destination 
 		}
 	});
 
+	test("Canary Islands picked where only Tenerife is zoned: asked for the more specific region, never matched to a broader zone", async () => {
+		const rules = new EmdashShippingRulesStore({ storage, clock: systemClock });
+		const TF = `${NS}-p2-es-tf`;
+		const TF_STD = `${NS}-p2-es-tf-std`;
+		await rules.createZone({ id: TF, name: "Tenerife", regions: ["ES-TF"] });
+		await rules.createMethod({ id: TF_STD, zoneId: TF, name: "Tenerife Post", type: "flat_rate" });
+		try {
+			const cartId = await p2Cart();
+			expect(
+				selectionErrorsOf(await summary({ cartId, destination: { country: "ES", region: "CN" } })),
+			).toEqual({ destination: { reason: "SHIPPING_REGION_CODE_REQUIRED" } });
+			const tenerife = await summary({ cartId, destination: { country: "ES", region: "TF" } });
+			expect(tenerife).toMatchObject({ shipping: { status: "matched", matchedRegion: "ES-TF" } });
+		} finally {
+			await rules.deleteMethod(TF_STD);
+			await rules.deleteZone(TF);
+		}
+	});
+
 	test("B1: (US, CA) matches US-CA over US; its ONE option is preselected; 3000 + 599 + 218 = $38.17", async () => {
 		const cartId = await p2Cart();
 
