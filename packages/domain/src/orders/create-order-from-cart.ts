@@ -28,14 +28,16 @@ import type { ProductCommerceStore } from "../ports/product-commerce-store.js";
 import { isProductLive } from "../product-commerce/sellable.js";
 import type { ShippingRulesStore } from "../ports/shipping-rules-store.js";
 import type { TaxRulesStore } from "../ports/tax-rules-store.js";
-import { computeQuote } from "../pricing/quote.js";
+import { computeQuote, type QuoteTax } from "../pricing/quote.js";
 import { type PricedLine, quoteCommandFor } from "../pricing/quote-input.js";
-import type { TaxCalculator, TaxResult } from "../pricing/tax-calculator.js";
+import type { SettingsStore } from "../ports/settings-store.js";
+import type { TaxCalculator } from "../pricing/tax-calculator.js";
 import type { CreateOrderFailure } from "./errors.js";
 import { snapshotOrderLine } from "./line-snapshot.js";
 import type { Order, OrderAddress, PaymentMethod } from "./model.js";
 import { normalizeOrderAddress, type OrderAddressInput } from "./order-address.js";
 import { buildOrderTaxSnapshot } from "./order-tax-snapshot.js";
+import { gatewayForStored } from "./payment-methods.js";
 
 /** 15 minutes — the checkout hold TTL (§9 decision 5), configurable. */
 export const DEFAULT_CHECKOUT_TTL_MS = 15 * 60 * 1000;
@@ -51,6 +53,8 @@ export interface CreateOrderDeps {
 	couponStore: CouponStore;
 	/** A registered outside tax calculator (ADR-0030); absent ⇒ the built-in. */
 	taxCalculator?: TaxCalculator;
+	/** The store's tax options (ADR-0032); absent ⇒ nothing saved (the upgrade rule). */
+	settings?: Pick<SettingsStore, "get">;
 	clock: Clock;
 	idGen: IdGen;
 	/** Payment adapters keyed by method — the buyer's chosen gateway is resolved here. */
@@ -149,7 +153,7 @@ export async function createOrderFromCart(
 	deps: CreateOrderDeps,
 	command: CreateOrderCommand,
 ): Promise<CreateOrderFromCartResult> {
-	const gateway = deps.gateways[command.paymentMethod];
+	const gateway = gatewayForStored(deps.gateways, command.paymentMethod);
 	if (gateway === undefined) {
 		throw new Error(`no payment gateway configured for method "${command.paymentMethod}"`);
 	}
@@ -168,6 +172,11 @@ export async function createOrderFromCart(
 		// success for an order this cart has nothing to do with. Checked before the
 		// state branch: a paid order is no more this cart's than a pending one.
 		if (already.cartId !== command.cartId) return { ok: false, reason: "IDEMPOTENCY_KEY_REUSED" };
+		// Nor, while it is pending, of a request for ANOTHER method (see
+		// `storedUnderAnotherMethod`).
+		if (storedUnderAnotherMethod(already, gateway)) {
+			return { ok: false, reason: "IDEMPOTENCY_KEY_REUSED" };
+		}
 		if (already.state !== "pending") {
 			// Already left the checkout window: nothing to pay for (see the helper).
 			// A dead order's coupon use is re-freed here too — the self-heal for a
@@ -291,6 +300,7 @@ export async function createOrderFromCart(
 			qty: line.qty,
 			taxClass: pc.taxClass,
 			productKind: pc.productKind,
+			taxStatus: pc.taxStatus,
 		};
 		lines.push(
 			snapshotOrderLine({
@@ -321,6 +331,7 @@ export async function createOrderFromCart(
 			couponStore: deps.couponStore,
 			clock: deps.clock,
 			...(deps.taxCalculator !== undefined ? { taxCalculator: deps.taxCalculator } : {}),
+			...(deps.settings !== undefined ? { settings: deps.settings } : {}),
 		},
 		quoteCommandFor({
 			currency,
@@ -408,6 +419,7 @@ export async function createOrderFromCart(
 			lines,
 			breakdown,
 			tax: quote.tax,
+			taxLocated: quote.taxLocated,
 			couponRecord: quote.couponRecord,
 			shippingMethodSnapshot,
 			shippingAddress,
@@ -476,7 +488,9 @@ interface FinalizeContext {
 	lines: CreateOrderLineInput[];
 	breakdown: TotalsBreakdown;
 	/** The calculator's validated answer, frozen as the order's tax snapshot. */
-	tax: { calculatorId: string; result: TaxResult };
+	tax: QuoteTax;
+	/** The quote's `taxLocated`, frozen into the snapshot (ADR-0032). */
+	taxLocated: boolean;
 	couponRecord: CouponRecord | null;
 	/** What priced the shipping and tax (ADR-0021 Decision 7); null when no zone
 	 *  matched (no zones configured, or nothing ships). */
@@ -539,7 +553,7 @@ async function finalizeOrder(
 			appliedCouponCode: breakdown.appliedCouponCode ?? null,
 			shippingMethodSnapshot: ctx.shippingMethodSnapshot,
 			// ADR-0030: the typed v1 snapshot, written once, never recomputed.
-			taxBreakdown: buildOrderTaxSnapshot(breakdown, ctx.tax),
+			taxBreakdown: buildOrderTaxSnapshot(breakdown, ctx.tax, ctx.taxLocated),
 		},
 	});
 	// Issue #133, race twin of the I1 cart check: a same-key call for ANOTHER cart
@@ -547,7 +561,7 @@ async function finalizeOrder(
 	// winner's order. That order is not this cart's — adopting its holds is
 	// harmless but stamping it on THIS cart (step 3) would check out a cart that
 	// was never ordered. Refuse before anything moves; the winner owns its order.
-	if (order.cartId !== command.cartId) {
+	if (order.cartId !== command.cartId || storedUnderAnotherMethod(order, ctx.gateway)) {
 		await ctx.onForeignOrder();
 		return { ok: false, reason: "IDEMPOTENCY_KEY_REUSED" };
 	}
@@ -580,6 +594,19 @@ async function finalizeOrder(
 		logIntentFailure(err, order.id);
 		return { ok: false, reason: intentFailureReason(err) };
 	}
+}
+
+/**
+ * True iff a PENDING order found under this key was placed with a DIFFERENT method
+ * than the gateway about to be asked for an intent — a legacy x402 order replayed
+ * as a Stripe checkout must never get a Stripe intent. Only a pending order would
+ * get one: a paid, expired or cancelled order replays as it always did (no
+ * intent). A `null` method (a historical order) is not "another method" either.
+ */
+function storedUnderAnotherMethod(order: Order, gateway: PaymentGateway): boolean {
+	return (
+		order.state === "pending" && order.paymentMethod !== null && order.paymentMethod !== gateway.id
+	);
 }
 
 /**

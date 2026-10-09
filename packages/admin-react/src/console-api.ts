@@ -162,6 +162,9 @@ export interface RefundsSummary {
 	readonly remainingCents: number;
 	readonly paymentMethod: string | null;
 	readonly refundable: boolean;
+	/** The order's method is one Otta no longer supports: refunds are record-only
+	 *  for good. Absent from an older plugin ⇒ false. */
+	readonly legacyPaymentMethod?: boolean;
 }
 
 export interface TimelineEntry {
@@ -352,6 +355,8 @@ export interface ProductRecord {
 	readonly priceCents: number | null;
 	readonly currency: string | null;
 	readonly taxClass: string | null;
+	/** PR 2b: `taxable` | `shipping_only` | `none`; absent (an older plugin) ⇒ taxable. */
+	readonly taxStatus?: string;
 	readonly compareAtCents: number | null;
 	readonly compareAtCurrency: string | null;
 	readonly unitCostCents: number | null;

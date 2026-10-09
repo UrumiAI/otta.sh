@@ -1647,8 +1647,8 @@ export class EmdashOrderStore implements OrderStore {
 	}
 
 	/**
-	 * Complete a claimed entry as SKIPPED — the order has no email recipient (an x402
-	 * gate buyer, ADR-0028 Decision 7). Terminal like `sent`, so it leaves the due index
+	 * Complete a claimed entry as SKIPPED — the order has no email recipient (its
+	 * `buyerRef` is not an email address). Terminal like `sent`, so it leaves the due index
 	 * the same way, but `sentAt` stays null: nothing reads it as delivered. The attempt
 	 * the claim counted is taken back off, because no send was tried. Guarded like every
 	 * settle (`#updateOutboxEntry` writes only a `sending` entry), so a double skip, or a

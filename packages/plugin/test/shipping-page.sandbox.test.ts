@@ -986,7 +986,7 @@ describe("admin Shipping console — methods level, depth 1 (workerd sandbox)", 
 			groupBlocks(await openPath(["us"]), "ship:method:us:standard"),
 			"shipping:save-method",
 		);
-		expect(fieldIds(editForm)).toEqual(["name", "type"]);
+		expect(fieldIds(editForm)).toEqual(["name", "type", "taxable"]);
 		expect(carriedContext(editForm?.block_id)).toEqual({ zoneId: "us", methodId: "standard" });
 
 		const blocks = await submitForm(
@@ -1043,7 +1043,7 @@ describe("admin Shipping console — methods level, depth 1 (workerd sandbox)", 
 			await openNewMethodScreen(await openPath(["us"])),
 			"shipping:create-method",
 		);
-		expect(fieldIds(createForm)).toEqual(["id", "name", "type"]);
+		expect(fieldIds(createForm)).toEqual(["id", "name", "type", "taxable"]);
 		const blocks = await submitForm(
 			"shipping:create-method",
 			{ id: "express", name: "Express", type: "flat_rate" },
@@ -1055,6 +1055,7 @@ describe("admin Shipping console — methods level, depth 1 (workerd sandbox)", 
 			zoneId: "us",
 			name: "Express",
 			type: "flat_rate",
+			taxable: true,
 		});
 		expect(blocks.some((b) => b.type === "header" && b.text === "Shipping methods — us")).toBe(
 			true,
@@ -1086,7 +1087,79 @@ describe("admin Shipping console — methods level, depth 1 (workerd sandbox)", 
 			id: "bogus",
 			name: "Bogus",
 			type: "Flat rate",
+			taxable: true,
 		});
+	});
+
+	// -- PR 2b: "Charge tax on this method" -----------------------------------
+
+	test("the method toggle declares its state; switching it off is saved and shown on the row", async () => {
+		await seedShipping();
+		const editForm = formFor(
+			groupBlocks(await openPath(["us"]), "ship:method:us:standard"),
+			"shipping:save-method",
+		);
+		// F-6b/X-24: declared, or an untouched toggle is absent from `values`.
+		expect(field(editForm, "taxable")?.initial_value).toBe(true);
+		const blocks = await submitForm(
+			"shipping:save-method",
+			{ name: "Standard", type: "Flat rate", taxable: false },
+			editForm?.block_id,
+		);
+		expect(bannerOf(blocks)?.variant).toBe("default");
+		expect((await shippingRules.getMethod("standard"))?.taxable).toBe(false);
+		const row = group(blocks, "ship:method:us:standard");
+		expect(String(row?.label)).toContain("not taxed");
+		expect(
+			field(
+				formFor(groupBlocks(blocks, "ship:method:us:standard"), "shipping:save-method"),
+				"taxable",
+			)?.initial_value,
+		).toBe(false);
+	});
+
+	test("a save without the toggle in `values` PRESERVES the method's flag", async () => {
+		await seedShipping();
+		await shippingRules.updateMethod("standard", {
+			name: "Standard",
+			type: "flat_rate",
+			taxable: false,
+		});
+		const editForm = formFor(
+			groupBlocks(await openPath(["us"]), "ship:method:us:standard"),
+			"shipping:save-method",
+		);
+		await submitForm(
+			"shipping:save-method",
+			{ name: "Standard 2", type: "Flat rate" },
+			editForm?.block_id,
+		);
+		expect(await shippingRules.getMethod("standard")).toMatchObject({
+			name: "Standard 2",
+			taxable: false,
+		});
+	});
+
+	test("a new method can be created untaxed; a refusal restates the toggle", async () => {
+		await seedShipping();
+		const createForm = formFor(
+			await openNewMethodScreen(await openPath(["us"])),
+			"shipping:create-method",
+		);
+		expect(field(createForm, "taxable")?.initial_value).toBe(true);
+		const refused = await submitForm(
+			"shipping:create-method",
+			{ id: "", name: "Courier", type: "Flat rate", taxable: false },
+			createForm?.block_id,
+		);
+		expect(bannerOf(refused)?.variant).toBe("error");
+		expect(formInitialValues(refused, "shipping:create-method")).toMatchObject({ taxable: false });
+		await submitForm(
+			"shipping:create-method",
+			{ id: "courier", name: "Courier", type: "Flat rate", taxable: false },
+			createForm?.block_id,
+		);
+		expect((await shippingRules.getMethod("courier"))?.taxable).toBe(false);
 	});
 
 	// -- INC-14: the create action is a button above the data ------------------

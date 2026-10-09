@@ -3189,21 +3189,19 @@ accordion   block_id settings:payments
             ← U-8: states what card checkout and email have: "Stripe test" | "Stripe
               live" (from the key's prefix) | "Stripe key set" (an unchecked legacy
               value) | "no Stripe key"; "webhook set" | "no webhook"; "email set" |
-              "no email" (ADR-0031: whether the host hands over `ctx.email`). The optional x402 and edge keys state their status on their
-              own fields. Longest render is exactly 60 (X-11).
+              "no email" (ADR-0031: whether the host hands over `ctx.email`). The optional edge key states its status on its
+              own field. Longest render is exactly 60 (X-11).
             default_open FALSE
             └─ context "Keys are never shown once saved. Leave a field blank to keep the
                         key you saved before."                                    (≤200)
                per credential: context (the expected shape, e.g. "Starts with sk_live_ or
                      sk_test_ …"), then its form:
-               form × 4, one per credential, each cf{"settings:<actionId>",
+               form × 3, one per credential, each cf{"settings:<actionId>",
                      {gen:"<save generation>"}}                          ← AMENDED (INC-09)
                      secret_input "Stripe secret key — set|not set"
                                                          → save-stripe-secret-key
                      secret_input "Stripe webhook signing secret — …"
                                                          → save-stripe-webhook-secret
-                     secret_input "x402 facilitator API key — …"
-                                                         → save-x402-facilitator-secret
                      secret_input "Stripe webhook edge token (optional) — …"
                                                          → save-webhook-edge-token
                      placeholder  set: "Set — leave blank to keep it, or enter a new one"
@@ -3217,8 +3215,6 @@ accordion   block_id settings:payments
                                                          → clear-payment-secret {secret}
                      ← a removal notice names where to find the key again; a Remove on
                        a key not stored answers "No <key> was stored — nothing was removed."
-               context "The settings below are shown as saved. x402 payments are not
-                        available yet. These settings are kept for when they are."
                context "Email: sent via EmDash's email provider. …" | "Email: provider not
                         confirmed — …" | "Email: no EmDash
                         email provider. Order emails wait up to 72 h, then are skipped;
@@ -3234,8 +3230,6 @@ accordion   block_id settings:payments
                      text_input "Sign-in page address (your storefront's /account/verify page)"
                                         placeholder "https://shop.example/account/verify"
                                         ← U-8: https://, or http:// on localhost only
-                     text_input "x402 destination wallet"
-                     text_input "x402 networks, comma-separated"
                      submit "Save payment settings"          → save-payment-settings
 ```
 

@@ -107,7 +107,6 @@ admin console's **Settings** page instead.
   §2.1). Attaching a file from the admin is increment 4; until then a file is attached by
   writing the descriptor through the admin product edit and putting the object with
   `wrangler r2 object put`.
-- **Still a follow-up:** the x402 payment gate (designed to live at THIS Astro page layer).
 - **Customer account pages (issue #306, ADR-0004).** Magic-link sign-in:
   `/account/login` (email form → `POST /account/login/request` → the same generic
   "check your inbox" notice for every address), `/account/verify` (where the

@@ -284,7 +284,10 @@ function totalsBlock(data: Record<string, unknown>, money: Money, isRefund: bool
 		push("Discount", NO_COUPON_LABEL);
 	}
 	push("Shipping", calculated(data["shippingCents"], data["shippingCalculated"], currency, money));
-	push("Tax", calculated(data["taxCents"], data["taxCalculated"], currency, money));
+	push(
+		data["taxIncluded"] === true ? "Tax (included in prices)" : "Tax",
+		calculated(data["taxCents"], data["taxCalculated"], currency, money),
+	);
 	const totalLabel = isRefund ? "Order total" : orderTotalLabel(str(data["state"]) ?? "");
 	push(totalLabel, money(data["totalCents"], currency));
 	// A state email sent after a partial refund (QA round 2): "Paid: $10.00" alone
@@ -529,7 +532,7 @@ const ORDER_COPY: Record<
 	// A refund announced on its own (QA T1-6): an admin partial refund, or a
 	// cancellation's FULL refund on an order that shipped before it could be
 	// cancelled. So the body is neutral about HOW MUCH — the figure is on the
-	// `Refunded: X` line — and about HOW: a manual (x402) refund goes to a wallet, not
+	// `Refunded: X` line — and about HOW: a manual refund may go anywhere, not
 	// "to your original payment method".
 	"order-refund-issued": {
 		subject: "Refund issued",

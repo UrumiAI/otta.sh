@@ -699,7 +699,9 @@ describe("one real unit of each leg fits its LEG_QUERY_COSTS estimate", () => {
 			},
 		} as unknown as PluginContext;
 		const used = await cost(() => resolvePaymentGateways(ctx));
-		expect(used).toBeLessThanOrEqual(LEG_QUERY_COSTS["cancel-intents"].entry);
+		// Exactly Stripe's two secret reads: the entry is sized to it, no headroom.
+		expect(used).toBe(2);
+		expect(LEG_QUERY_COSTS["cancel-intents"].entry).toBe(used);
 	});
 
 	test("late-refunds entry: resolving the deployment's gateways (their secret reads)", async () => {
@@ -714,7 +716,9 @@ describe("one real unit of each leg fits its LEG_QUERY_COSTS estimate", () => {
 		} as unknown as PluginContext;
 		// The due list is the leg's due check, charged before the entry.
 		const used = await cost(() => resolvePaymentGateways(ctx));
-		expect(used).toBeLessThanOrEqual(LEG_QUERY_COSTS["late-refunds"].entry);
+		// Exactly Stripe's two secret reads: the entry is sized to it, no headroom.
+		expect(used).toBe(2);
+		expect(LEG_QUERY_COSTS["late-refunds"].entry).toBe(used);
 	});
 
 	test("product-orphans: one orphan's soft delete (the row's flip and its sku claim's release)", async () => {
@@ -785,22 +789,16 @@ describe("the cost table against the Workers Free preset (review of QA2 M2)", ()
 			needsHead.push(leg);
 			expect(fixed + own, `${leg} alone at the head`).toBeLessThanOrEqual(FREE);
 		}
-		// Measured: a hold expiry with its list (~20) and a stock-commit completion (~15)
-		// never fit behind a cancel. An order expiry (14 with its due check) and a stranded
-		// sku carry (12 with its cursor) do not fit behind the WORST cancel (a refused,
-		// read-back, given-up and flagged one: 7)...
-		expect(needsHead.toSorted()).toEqual([
-			"expire-holds",
-			"expire-orders",
-			"hold-intents",
-			// Its unit (12 since ADR-0031) plus the availability read (1). It is the
-			// FIRST leg, so the head is where it runs.
-			"order-emails",
-			"sku-transfers",
-		]);
+		// Measured: a hold expiry with its list (~20) never fits behind a cancel. Since
+		// the cancel's gateway entry is Stripe's two reads (not the five once sized for
+		// a second gateway), a whole worst cancel is 1 + 2 + 7 = 10, and every other
+		// leg's unit — an order expiry (14 with its due check), a stranded sku carry
+		// (12 with its cursor), the order emails (12 plus the availability read) — fits
+		// behind it.
+		expect(needsHead.toSorted()).toEqual(["expire-holds"]);
 		expect(SWEEP_LEGS[0]).toBe("order-emails");
-		// ...but they fit behind an ordinary one (5), which is every cancel but an
-		// intent's last failing attempt — for them the guard is a backstop, not the pace.
+		// And behind an ordinary one (5), too — for them the guard is a backstop, not
+		// the pace.
 		const ordinaryCancel = 1 + LEG_QUERY_COSTS["cancel-intents"].entry + ORDINARY_CANCEL_UNIT;
 		for (const leg of ["expire-orders", "sku-transfers"] as const) {
 			const own =

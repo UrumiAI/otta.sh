@@ -25,8 +25,8 @@ so the email waits for the next tick even after a payment has settled.
   claim step `claimNextEmail` already ran for each index candidate: one `getVersioned` of the
   order document and one compare-and-set, with no index walk. Contention on it is labelled
   `claimNextEmailForOrder`.
-- **`@otta-sh/plugin`.** After an ok settle, `webhooks/stripe/settle` and
-  `entitlements/x402/settle` call `sendOrderEmailsNow` for the order the settlement reports.
+- **`@otta-sh/plugin`.** After an ok settle, `webhooks/stripe/settle` calls
+  `sendOrderEmailsNow` for the order the settlement reports.
   The call is best-effort and cannot change the response. It runs outside the 503 mappings
   and never throws. It makes at most one COUNTED inline attempt per row, so redeliveries
   cannot spend the retry budget; the total budget (`maxAttempts`) is unchanged. A cut-short

@@ -283,6 +283,7 @@ export class EmdashShippingRulesStore implements ShippingRulesStore {
 			methodId: input.id,
 			name: input.name,
 			type: input.type,
+			taxable: input.taxable ?? true,
 			rates: {},
 		};
 		const embedded = await this.#cas<"embedded" | "no_zone">("createShippingMethod", async () => {
@@ -352,7 +353,12 @@ export class EmdashShippingRulesStore implements ShippingRulesStore {
 			if (found === null) {
 				return casDone<UpdateShippingMethodResult>({ ok: false, reason: "not_found" });
 			}
-			const next: ShippingMethodDoc = { ...found.method, name: input.name, type: input.type };
+			const next: ShippingMethodDoc = {
+				...found.method,
+				name: input.name,
+				type: input.type,
+				taxable: input.taxable ?? found.method.taxable ?? true,
+			};
 			const written = await this.#zones.compareAndSet(
 				found.zone.doc.zoneId,
 				found.zone.revision,

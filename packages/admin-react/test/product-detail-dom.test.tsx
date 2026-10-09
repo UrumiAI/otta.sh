@@ -484,3 +484,31 @@ test("the group that opens on arrival is the one the screen is named for", async
 	expect(identity?.open).toBe(false);
 	expect(shipping?.open).toBe(false);
 });
+
+test("the tax status select sits beside the tax class, marks the group changed, and is sent on save (PR 2b)", async () => {
+	const saved = { variant: "default", title: "Saved", description: "Updated." };
+	const container = await mountForWrites(() => actPayload(saved));
+	const select = container.querySelector<HTMLSelectElement>('[data-testid="edit-tax-status"]');
+	if (select === null) throw new Error("no tax status select");
+	expect(select.value).toBe("taxable");
+	expect([...select.options].map((o) => o.value)).toEqual(["taxable", "shipping_only", "none"]);
+	const setter = Object.getOwnPropertyDescriptor(window.HTMLSelectElement.prototype, "value")?.set;
+	await React.act(async () => {
+		setter?.call(select, "none");
+		select.dispatchEvent(new Event("change", { bubbles: true }));
+	});
+	expect(select.getAttribute("style") ?? "").not.toBe(
+		container.querySelector('[data-testid="edit-tax-class"]')?.getAttribute("style") ?? "",
+	);
+	const save = container.querySelector('[data-testid="save-shipping"]');
+	if (save === null) throw new Error("no shipping save control");
+	await fire(save, "click");
+	await mounted?.rerender(NODE);
+	const writes = apiFetch.mock.calls
+		.map(
+			([, init]) =>
+				JSON.parse(String(init?.body ?? "{}")) as { type?: string; value?: Record<string, string> },
+		)
+		.filter((b) => b.type === "otta_console_act");
+	expect(writes.at(-1)?.value?.["taxStatus"]).toBe("none");
+});

@@ -7,15 +7,11 @@
  * folded into the plugin) used to read — nothing is invented:
  *  - `settings:stripeSecretKey`        ← `STRIPE_SECRET_KEY`
  *  - `settings:stripeWebhookSecret`    ← `STRIPE_WEBHOOK_SECRET`
- *  - `settings:x402FacilitatorApiKey`  ← `X402_FACILITATOR_SECRET`
- *                                        RENAMED off `…FacilitatorSecret` at
- *                                        INC-C5: the value is now SENT, not
- *                                        used to verify (review round 2, A5).
  *
  * No email credential: email goes through the EmDash host's `ctx.email`
  * (ADR-0031), and its provider holds its own.
  *
- * The service's NON-secret companions (`X402_PAYTO`, `X402_ACCEPTS`, `STOREFRONT_BASE_URL`) are deliberately NOT
+ * The service's NON-secret companion (`STOREFRONT_BASE_URL`) is deliberately NOT
  * here: this increment is the secret tier only, and a write-only key is the
  * wrong home for a value that has to be readable back into a form.
  *
@@ -37,8 +33,6 @@ import {
 	WEBHOOK_EDGE_TOKEN_HEADER,
 	WEBHOOK_EDGE_TOKEN_KEY,
 	webhookEdgeTokenFromKv,
-	X402_FACILITATOR_API_KEY_KEY,
-	X402_LEGACY_FACILITATOR_SECRET_KEY,
 } from "../src/payment-secrets.js";
 import {
 	createSettingsFormHandler,
@@ -107,19 +101,6 @@ describe("the payment secret kv keys", () => {
 	test("each key is the service env var it replaces, in this repo's settings:* convention", () => {
 		expect(STRIPE_SECRET_KEY_KEY).toBe("settings:stripeSecretKey");
 		expect(STRIPE_WEBHOOK_SECRET_KEY).toBe("settings:stripeWebhookSecret");
-		// NOT `settings:x402FacilitatorSecret` — review round 2, A5. That key named
-		// an offline HMAC secret under INC-C3; the value this key holds is put ON
-		// THE WIRE to a third-party facilitator. A different name is the forcing
-		// function that stops an old provisioning from being silently inherited
-		// into a new threat model, so the two names are pinned APART on purpose.
-		expect(X402_FACILITATOR_API_KEY_KEY).toBe("settings:x402FacilitatorApiKey");
-		expect(X402_LEGACY_FACILITATOR_SECRET_KEY).toBe("settings:x402FacilitatorSecret");
-		expect(X402_FACILITATOR_API_KEY_KEY).not.toBe(X402_LEGACY_FACILITATOR_SECRET_KEY);
-	});
-
-	test("the LEGACY x402 key is not provisionable — it exists only to be deleted", () => {
-		// In PAYMENT_SECRET_KEYS it would render a field for a value nothing reads.
-		expect(PAYMENT_SECRET_KEYS).not.toContain(X402_LEGACY_FACILITATOR_SECRET_KEY);
 	});
 
 	test("the INC-C1b edge token key and header are pinned by name", () => {
@@ -130,18 +111,13 @@ describe("the payment secret kv keys", () => {
 		expect(WEBHOOK_EDGE_TOKEN_HEADER).toBe("X-Otta-Wh-Token");
 	});
 
-	test("PAYMENT_SECRET_KEYS is EXACTLY those four — a fifth needs a deliberate edit here", () => {
+	test("PAYMENT_SECRET_KEYS is EXACTLY those three — a fourth needs a deliberate edit here", () => {
 		// Exact set, not containment: this list drives the Settings provisioning
 		// forms and the no-echo pins below, so an accidentally-added key would
 		// otherwise ship an unreviewed secret surface, and an accidentally-dropped
 		// one would silently stop being provisionable.
 		expect([...PAYMENT_SECRET_KEYS].toSorted()).toEqual(
-			[
-				STRIPE_SECRET_KEY_KEY,
-				STRIPE_WEBHOOK_SECRET_KEY,
-				X402_FACILITATOR_API_KEY_KEY,
-				WEBHOOK_EDGE_TOKEN_KEY,
-			].toSorted(),
+			[STRIPE_SECRET_KEY_KEY, STRIPE_WEBHOOK_SECRET_KEY, WEBHOOK_EDGE_TOKEN_KEY].toSorted(),
 		);
 	});
 
@@ -212,13 +188,11 @@ describe("readPaymentSecrets is fail-closed PER SECRET", () => {
 		const { ctx } = makeCtx({
 			[STRIPE_SECRET_KEY_KEY]: "sk_test_abc",
 			[STRIPE_WEBHOOK_SECRET_KEY]: "whsec_abc",
-			[X402_FACILITATOR_API_KEY_KEY]: "x402_abc",
 			[WEBHOOK_EDGE_TOKEN_KEY]: "edge_abc",
 		});
 		await expect(readPaymentSecrets(ctx)).resolves.toEqual({
 			stripeSecretKey: "sk_test_abc",
 			stripeWebhookSecret: "whsec_abc",
-			x402FacilitatorSecret: "x402_abc",
 			webhookEdgeToken: "edge_abc",
 		});
 	});
@@ -228,25 +202,24 @@ describe("readPaymentSecrets is fail-closed PER SECRET", () => {
 		await expect(readPaymentSecrets(ctx)).resolves.toEqual({
 			stripeSecretKey: undefined,
 			stripeWebhookSecret: undefined,
-			x402FacilitatorSecret: undefined,
 			webhookEdgeToken: undefined,
 		});
 	});
 
 	test("ONE failing key degrades only itself — the others still resolve", async () => {
 		// `Promise.all` over the reads would reject the whole batch on one
-		// failure; the per-secret catch is what keeps a Stripe kv blip from also
-		// disarming x402.
+		// failure; the per-secret catch is what keeps one key's kv blip from also
+		// disarming the others.
 		const { ctx } = makeCtx(
 			{
 				[STRIPE_SECRET_KEY_KEY]: "sk_test_abc",
-				[X402_FACILITATOR_API_KEY_KEY]: "x402_abc",
+				[STRIPE_WEBHOOK_SECRET_KEY]: "whsec_abc",
 			},
 			new Set([STRIPE_SECRET_KEY_KEY]),
 		);
 		const secrets = await readPaymentSecrets(ctx);
 		expect(secrets.stripeSecretKey).toBeUndefined();
-		expect(secrets.x402FacilitatorSecret).toBe("x402_abc");
+		expect(secrets.stripeWebhookSecret).toBe("whsec_abc");
 	});
 
 	test("EVERY key failing still resolves (a total kv outage is not a throw)", async () => {
@@ -254,7 +227,6 @@ describe("readPaymentSecrets is fail-closed PER SECRET", () => {
 		await expect(readPaymentSecrets(ctx)).resolves.toEqual({
 			stripeSecretKey: undefined,
 			stripeWebhookSecret: undefined,
-			x402FacilitatorSecret: undefined,
 			webhookEdgeToken: undefined,
 		});
 	});
@@ -354,12 +326,6 @@ describe("Settings provisioning of the payment secrets (write-only)", () => {
 			WEBHOOK_EDGE_TOKEN_KEY,
 			"otta_edge_NEVER_RENDER",
 		],
-		[
-			"save-x402-facilitator-secret",
-			"x402FacilitatorSecret",
-			X402_FACILITATOR_API_KEY_KEY,
-			"x402_NEVER_RENDER",
-		],
 	] as const;
 
 	test("every payment-secret action id is routable (the dispatcher recognizes it)", () => {
@@ -447,7 +413,6 @@ describe("Settings provisioning of the payment secrets (write-only)", () => {
 				"stripeSecretKey",
 				"stripeWebhookSecret",
 				"emailApiKey",
-				"x402FacilitatorSecret",
 				"webhookEdgeToken",
 			]).not.toContain(name);
 		}

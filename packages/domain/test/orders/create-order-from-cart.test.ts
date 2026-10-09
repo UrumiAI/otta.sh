@@ -5,7 +5,9 @@ import {
 	customerId as brandCustomerId,
 	idempotencyKey,
 	money,
+	orderId as brandOrderId,
 	type OrderAddressInput,
+	type PaymentMethod,
 	productId as brandProductId,
 	type ProductCommerceStore,
 	sku as brandSku,
@@ -26,12 +28,12 @@ const SHIP_TO: OrderAddressInput = {
 	phone: "+44 20 7946 0000",
 };
 
-function cmd(cartId: string, key = "k-order", method: "stripe" | "x402" = "stripe") {
+function cmd(cartId: string, key = "k-order") {
 	return {
 		cartId,
 		idempotencyKey: idempotencyKey(key),
 		buyerRef: "buyer@example.com",
-		paymentMethod: method,
+		paymentMethod: "stripe",
 	} as const;
 }
 
@@ -264,6 +266,72 @@ describe("createOrderFromCart", () => {
 		// And the key's own cart can still replay it.
 		const replay = await createOrderFromCart(h.createDeps, cmd(oldCart, "checkout:old"));
 		expect(replay.ok && replay.order.id).toBe(first.order.id);
+	});
+
+	test("a same-key replay of an order stored under ANOTHER method (a legacy x402 order) is refused, and no intent is minted", async () => {
+		await h.seedDigital({ productId: "d1", sku: "DIG-1", priceCents: 900, title: "Ebook" });
+		const cartId = await h.cartWith([{ sku: "DIG-1", productId: "d1", qty: 1, kind: "digital" }]);
+		const usd = (await h.cartStore.get(cartId))!.currency;
+		await h.orderStore.createFromCart({
+			orderId: brandOrderId("legacy-x402"),
+			cartId,
+			currency: usd,
+			idempotencyKey: idempotencyKey("checkout:legacy"),
+			holdExpiresAt: "2099-01-01T00:00:00.000Z",
+			buyerRef: "buyer@example.com",
+			paymentMethod: "x402" as unknown as PaymentMethod,
+			lines: [],
+			totals: { subtotal: cents(900), total: cents(900), currency: usd },
+		});
+
+		const res = await createOrderFromCart(h.createDeps, cmd(cartId, "checkout:legacy"));
+		expect(res).toEqual({ ok: false, reason: "IDEMPOTENCY_KEY_REUSED" });
+		expect(h.stripeGw.intentCalls).toEqual([]);
+	});
+
+	test("a same-key replay of a PAID legacy x402 order replays as before: the order, and no intent", async () => {
+		await h.seedDigital({ productId: "d1", sku: "DIG-1", priceCents: 900, title: "Ebook" });
+		const cartId = await h.cartWith([{ sku: "DIG-1", productId: "d1", qty: 1, kind: "digital" }]);
+		const usd = (await h.cartStore.get(cartId))!.currency;
+		await h.orderStore.createFromCart({
+			orderId: brandOrderId("legacy-x402-paid"),
+			cartId,
+			currency: usd,
+			idempotencyKey: idempotencyKey("checkout:legacy-paid"),
+			holdExpiresAt: "2099-01-01T00:00:00.000Z",
+			buyerRef: "buyer@example.com",
+			paymentMethod: "x402" as unknown as PaymentMethod,
+			lines: [],
+			totals: { subtotal: cents(900), total: cents(900), currency: usd },
+		});
+		await h.orderStore.markPaid(brandOrderId("legacy-x402-paid"));
+
+		const res = await createOrderFromCart(h.createDeps, cmd(cartId, "checkout:legacy-paid"));
+		expect(res.ok && res.order.id).toBe("legacy-x402-paid");
+		expect(res.ok && res.intent.clientAction).toEqual({ kind: "none" });
+		expect(h.stripeGw.intentCalls).toEqual([]);
+	});
+
+	test("a same-key replay of an order with NO method on file (a historical order) keeps its replay", async () => {
+		await h.seedDigital({ productId: "d1", sku: "DIG-1", priceCents: 900, title: "Ebook" });
+		const cartId = await h.cartWith([{ sku: "DIG-1", productId: "d1", qty: 1, kind: "digital" }]);
+		const usd = (await h.cartStore.get(cartId))!.currency;
+		await h.orderStore.createFromCart({
+			orderId: brandOrderId("historical-null-method"),
+			cartId,
+			currency: usd,
+			idempotencyKey: idempotencyKey("checkout:historical"),
+			holdExpiresAt: "2099-01-01T00:00:00.000Z",
+			buyerRef: "buyer@example.com",
+			paymentMethod: null,
+			lines: [],
+			totals: { subtotal: cents(900), total: cents(900), currency: usd },
+		});
+
+		const res = await createOrderFromCart(h.createDeps, cmd(cartId, "checkout:historical"));
+		// As before this check existed: the replay returns the order and asks for the intent.
+		expect(res.ok && res.order.id).toBe("historical-null-method");
+		expect(h.stripeGw.intentCalls).toHaveLength(1);
 	});
 
 	test("the mismatch is refused even once the key's order has left pending (a PAID order is still not this cart's)", async () => {

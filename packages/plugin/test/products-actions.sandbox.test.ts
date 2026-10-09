@@ -119,6 +119,7 @@ import {
 } from "@otta-sh/admin-presentation";
 import {
 	ATTACH_DOWNLOAD_ACTION_ID,
+	deriveEditIdempotencyKey,
 	DOWNLOAD_NOT_ATTACHED_TITLE,
 	PRODUCTS_ACTION_IDS,
 } from "../src/admin/products-actions.js";
@@ -412,6 +413,58 @@ describe("the Pricing & inventory write path (workerd sandbox)", () => {
 		expect(row.heightMm).toBe(31);
 		expect(row.sku).toBe(seeded.sku);
 		expect(row.price).toEqual({ amount: 1999, currency: "USD" });
+	});
+
+	// -- PR 2b: the product's tax status -----------------------------------------
+
+	test("saving Shipping writes the tax status; an unknown value is refused and nothing is written", async () => {
+		const seeded = await seedProduct();
+		expect((await readProduct(seeded.productId)).taxStatus).toBe("taxable");
+		await act("products:save-shipping", {
+			...carrierFor(seeded),
+			productKind: "physical",
+			taxClass: "standard",
+			taxStatus: "shipping_only",
+		});
+		const row = await readProduct(seeded.productId);
+		expect(row.taxStatus).toBe("shipping_only");
+		expect(row.taxClass).toBe("standard");
+
+		const refused = await act("products:save-shipping", {
+			productId: seeded.productId,
+			expectedUpdatedAt: row.updatedAt.toISOString(),
+			taxStatus: "exempt",
+		});
+		expect(String(refused.notice?.description)).toContain("Tax status must be");
+		expect((await readProduct(seeded.productId)).updatedAt.toISOString()).toBe(
+			row.updatedAt.toISOString(),
+		);
+	});
+
+	test("two saves at ONE watermark that differ only in tax status are not one replay (deriveEditIdempotencyKey)", async () => {
+		const seeded = await seedProduct();
+		const base = { ...carrierFor(seeded), productKind: "physical", taxClass: "standard" };
+		await act("products:save-shipping", { ...base, taxStatus: "none" });
+		expect((await readProduct(seeded.productId)).taxStatus).toBe("none");
+		// A second tab, loaded at the same watermark, picks "Shipping only". Keyed
+		// without the status it would hash like the first save and be answered as
+		// that save's replay — reported done while nothing changed.
+		const second = await act("products:save-shipping", { ...base, taxStatus: "shipping_only" });
+		expect(second.recordMoved).toBe(true);
+		expect((await readProduct(seeded.productId)).taxStatus).toBe("none");
+	});
+
+	test("the edit key covers the tax status: a status-only edit gets its own key", () => {
+		const wire = { expectedUpdatedAt: "2026-10-07T00:00:00.000Z", taxClass: "standard" };
+		const keys = new Set(
+			[undefined, "taxable", "shipping_only", "none"].map((taxStatus) =>
+				deriveEditIdempotencyKey("p-1", {
+					...wire,
+					...(taxStatus !== undefined ? { taxStatus } : {}),
+				}),
+			),
+		);
+		expect(keys.size).toBe(4);
 	});
 
 	test("a non-integer measurement is refused at the boundary — nothing is written", async () => {

@@ -34,11 +34,11 @@ describeEachDialect("EmdashPaymentEventStore", (ctx) => {
 
 	test("the audit row is keyed by the dedupe key and records order, gateway and instant", async () => {
 		const h = harness();
-		await h.paymentEventStore.dedupe("evt_2", orderId("ord-7"), "x402", NOW);
+		await h.paymentEventStore.dedupe("evt_2", orderId("ord-7"), "stripe", NOW);
 		// The dedupe key IS the document id — that is the whole of the once-only.
 		expect(await h.events.get("evt_2")).toEqual({
 			orderId: "ord-7",
-			gateway: "x402",
+			gateway: "stripe",
 			receivedAt: NOW,
 		});
 	});
@@ -52,14 +52,14 @@ describeEachDialect("EmdashPaymentEventStore", (ctx) => {
 
 	test("orderForDedupeKey reports WHOSE row a dedupe key holds — that is the cross-order binding", async () => {
 		// `dedupe`'s boolean says a row exists; only this says which order it names,
-		// and for x402 (where the dedupe key IS the on-chain transaction) that is
-		// what stops one receipt from settling a second, same-priced order.
+		// and the order id a confirmation carries is only the caller's claim, so
+		// that is what stops one receipt from settling a second, same-priced order.
 		const h = harness();
 		expect(await h.paymentEventStore.orderForDedupeKey("evt_none")).toBeNull();
-		await h.paymentEventStore.dedupe("evt_owned", orderId("ord-9"), "x402", NOW);
+		await h.paymentEventStore.dedupe("evt_owned", orderId("ord-9"), "stripe", NOW);
 		expect(await h.paymentEventStore.orderForDedupeKey("evt_owned")).toBe("ord-9");
 		// A second claim does not rebind it.
-		await h.paymentEventStore.dedupe("evt_owned", orderId("ord-10"), "x402", NOW);
+		await h.paymentEventStore.dedupe("evt_owned", orderId("ord-10"), "stripe", NOW);
 		expect(await h.paymentEventStore.orderForDedupeKey("evt_owned")).toBe("ord-9");
 	});
 
@@ -121,7 +121,7 @@ describeEachDialect("EmdashPaymentEventStore", (ctx) => {
 		const h = harness();
 		const anomaly = {
 			orderId: orderId("ord-9"),
-			gateway: "x402",
+			gateway: "stripe",
 			kind: "REFUND_UNRECORDED",
 			detail: "refund rf_1 issued, ledger row not finalized",
 			now: NOW,

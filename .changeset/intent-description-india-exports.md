@@ -24,7 +24,7 @@ this — it depends on the Stripe **account's country**, not on our code shape.
   knowledge, how Stripe wants it expressed is adapter knowledge.
   - **For external implementers:** this is *source-compatible for anyone
     IMPLEMENTING `PaymentGateway`* — an implementer only consumes the input, so
-    `createIntent` keeps compiling untouched (verified: `payments-x402`, the
+    `createIntent` keeps compiling untouched (verified: the
     `FakePaymentGateway`, and the Postgres race-test gateways needed no change, and
     `paymentGatewayContract` is unmodified). It **is** a breaking change for code
     that **constructs** a `CreateIntentInput` — add `lines`. `lines` is required on

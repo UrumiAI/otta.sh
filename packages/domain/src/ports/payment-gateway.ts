@@ -5,16 +5,16 @@ import type { PaymentMethod } from "../orders/model.js";
 /**
  * The `PaymentGateway` port (Phase 4 §5). Pure types — NO pg / ctx / fetch. The
  * seam is drawn at **"raw provider signal → verified normalized settlement"**, so
- * one interface fits both Stripe (async webhook) and x402 (synchronous
- * page-gate): the domain `settleOrder` use-case is gateway-agnostic. All secrets
+ * one interface fits an async-webhook gateway like Stripe and any future
+ * gateway: the domain `settleOrder` use-case is gateway-agnostic. All secrets
  * / signature crypto live INSIDE the adapter, never in the domain.
  */
 export interface PaymentGateway {
 	readonly id: PaymentMethod;
 	/**
 	 * Whether this gateway can move money BACK (ADR-0008). Stripe is `true` (a
-	 * first-class idempotent `refunds.create`); x402 is `false` (on-chain
-	 * settlement is irreversible and the adapter holds no signing wallet). The
+	 * first-class idempotent `refunds.create`); a gateway that cannot
+	 * move money back (or has no credential to) is `false`. The
 	 * domain and admin UI **branch on this flag** — never a `try/catch` to
 	 * *discover* refundability at runtime. A Stripe adapter wired WITHOUT a
 	 * `secretKey` is effectively `false` (there is no credential to call the live
@@ -34,8 +34,7 @@ export interface PaymentGateway {
 	 */
 	createIntent(input: CreateIntentInput): Promise<PaymentIntentHandle>;
 	/**
-	 * Turn a RAW provider confirmation (webhook bytes+headers, or a page-gate
-	 * proof) into a normalized, cryptographically VERIFIED settlement — or reject.
+	 * Turn a RAW provider confirmation (webhook bytes+headers) into a normalized, cryptographically VERIFIED settlement — or reject.
 	 */
 	verifyConfirmation(raw: RawConfirmation): Promise<ConfirmationResult>;
 	/**
@@ -48,7 +47,7 @@ export interface PaymentGateway {
 	 * — issuing nothing — when provider-side refunds already exceed the caller's
 	 * `priorRefunded` view or this refund would push the provider past what it
 	 * captured; only then does it call `refunds.create`, passing `idempotencyKey`
-	 * as Stripe's native `Idempotency-Key`. x402 returns `{ ok:false, reason:
+	 * as Stripe's native `Idempotency-Key`. A gateway that cannot refund returns `{ ok:false, reason:
 	 * "UNSUPPORTED" }` (a capability statement, not a runtime error) — the caller
 	 * records a manual, out-of-band refund instead.
 	 */
@@ -74,8 +73,7 @@ export interface PaymentGateway {
 	 *
 	 * Stripe calls `POST /v1/payment_intents/{id}/cancel` with our
 	 * `idempotencyKey` as its native `Idempotency-Key`, under a short timeout. A
-	 * gateway that holds no standing intent to withdraw (x402's stateless
-	 * page-gate challenge), or no credential to call the provider with, answers
+	 * gateway that holds no standing intent to withdraw, or no credential to call the provider with, answers
 	 * `UNSUPPORTED`.
 	 */
 	cancelIntent(input: CancelIntentInput): Promise<CancelIntentResult>;
@@ -121,7 +119,7 @@ export interface RefundInput {
 	/**
 	 * The caller's (local ledger's) current Σ refunds for this order — the
 	 * pre-flight's reference for "have provider-side refunds already diverged past
-	 * what we recorded?" A gateway with no provider to ask (x402) ignores it.
+	 * what we recorded?" A gateway with no provider to ask ignores it.
 	 */
 	priorRefunded: Cents;
 	/** Every command carries one (CLAUDE.md); passed to Stripe as its native
@@ -133,7 +131,7 @@ export interface RefundInput {
  * The normalized result of a `refund` attempt (ADR-0008). A success carries the
  * provider refund id (`refundRef`) + the confirmed amount/currency. A failure is
  * a typed reason from the explicit live-error taxonomy:
- *  - `UNSUPPORTED` — the gateway cannot refund at all (x402): a capability
+ *  - `UNSUPPORTED` — the gateway cannot refund at all: a capability
  *    statement, never treat as retryable.
  *  - `PROVIDER_ALREADY_REFUNDED` — the refund-time pre-flight found provider-side
  *    refunds already exceed the local view (or this would over-refund): **nothing
@@ -177,8 +175,8 @@ export type RefundFailureReason =
  * The domain states WHAT was bought; how a given provider wants that expressed
  * (Stripe's plain-string `description`, its length limit, joining, truncation)
  * is ADAPTER knowledge and lives in the adapter. Keeping this structural is what
- * lets one port serve Stripe's `description`, a future PayPal `item_list`, and
- * x402 (which ignores it) without the domain learning any provider's format.
+ * lets one port serve Stripe's `description`, and a future PayPal `item_list`
+ * without the domain learning any provider's format.
  *
  * `title` is the order line's **purchase-time snapshot** (`OrderLine.title`),
  * never a live product read — so a later rename can never change what a same-key
@@ -298,7 +296,7 @@ export interface PaymentIntentErrorInput {
 /**
  * Thrown by {@link PaymentGateway.createIntent} when the provider refused or
  * could not be reached — a gateway-AGNOSTIC, IO-free error so the domain can
- * handle a live-provider failure without importing a Stripe (or x402) type. The
+ * handle a live-provider failure without importing a Stripe type. The
  * shape mirrors the `ReservationCommitLostError` precedent: a typed throw the
  * use-case catches by class, never a stringly-matched message.
  *
@@ -340,7 +338,7 @@ export class PaymentIntentError extends Error {
 
 export interface PaymentIntentHandle {
 	gateway: PaymentMethod;
-	/** `pi_…` (Stripe) or the x402 resource id. */
+	/** `pi_…` (Stripe). */
 	intentId: string;
 	clientAction: ClientAction;
 	/**
@@ -354,34 +352,13 @@ export interface PaymentIntentHandle {
 
 export type ClientAction =
 	| { kind: "stripe_client_secret"; clientSecret: string }
-	| { kind: "x402_challenge"; accepts: string[]; price: Cents; payTo: string }
 	| { kind: "none" };
 
-export type RawConfirmation =
-	| { kind: "webhook"; body: Uint8Array; headers: Record<string, string> }
-	| { kind: "page_gate"; proof: X402Proof };
-
-/**
- * The x402 page-gate proof forwarded from the Astro page layer to the service
- * (§6). Modeled on the real `@emdash-cms/x402` facilitator **SettleResponse**
- * (`{ success, transaction, network, payer }`), plus the order binding and the
- * amount the resource required. The x402 adapter **re-verifies server-side**
- * (never trusting the plugin's assertion, §9 Risk 2) before normalizing to a
- * `ConfirmationResult`; `transaction` (the on-chain tx hash) is the unique
- * settlement id used as the dedupe key.
- */
-export interface X402Proof {
-	orderId: OrderId;
-	/** On-chain settlement tx hash — unique per settlement → dedupe key. */
-	transaction: string;
-	network: string;
-	payer: string;
-	/** The atomic amount the gated resource required (for the equality check). */
-	amount: Cents;
-	currency: Currency;
-	/** Adapter-verifiable authenticity token (facilitator/test-secret signed). */
-	signature: string;
-}
+export type RawConfirmation = {
+	kind: "webhook";
+	body: Uint8Array;
+	headers: Record<string, string>;
+};
 
 export type ConfirmationResult =
 	| {
@@ -398,7 +375,7 @@ export type ConfirmationResult =
 			providerRef: string;
 			amount: Cents;
 			currency: Currency;
-			/** Stripe event id / x402 receipt id → `payment_events` UNIQUE. */
+			/** Stripe event id → `payment_events` UNIQUE. */
 			dedupeKey: string;
 			gateway: PaymentMethod;
 	  }

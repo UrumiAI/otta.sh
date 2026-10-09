@@ -30,7 +30,20 @@ export {
 	type QuoteDeps,
 	type QuoteFailure,
 	type QuoteResult,
+	type QuoteTax,
 } from "./pricing/quote.js";
+// ADR-0032: the store's tax options (WooCommerce's Tax tab).
+export {
+	effectiveTaxSettings,
+	LEGACY_TAX_SETTINGS,
+	NEW_STORE_TAX_SETTINGS,
+	parseTaxSettings,
+	readTaxSettings,
+	TAX_DISABLED_CALCULATOR_ID,
+	type ShippingTaxClassSetting,
+	type TaxBaseAddress,
+	type TaxSettings,
+} from "./pricing/tax-settings.js";
 // ADR-0030: the tax calculator hook, the built-in rate table, the order's frozen snapshot.
 export {
 	DEFAULT_TAX_CALCULATOR_TIMEOUT_MS,
@@ -54,7 +67,7 @@ export {
 	type OrderTaxSnapshotV0,
 	type OrderTaxSnapshotV1,
 } from "./orders/order-tax-snapshot.js";
-// ADR-0028 Decision 1: one quote command for checkout, the order and the x402 gate.
+// ADR-0028 Decision 1: one quote command for checkout and the order.
 export { quoteCommandFor, type PricedLine, type QuoteInput } from "./pricing/quote-input.js";
 // ADR-0021: ISO 3166 codes (CLDR) and the zone derived from the address.
 export { COUNTRY_CODES, SUBDIVISIONS } from "./pricing/iso-3166.generated.js";
@@ -329,6 +342,14 @@ export {
 	type TransitionOrderResult,
 } from "./orders/transition.js";
 export {
+	capturedOnlyThroughLegacy,
+	gatewayForStored,
+	isCurrentPaymentMethod,
+	isLegacyPaymentMethod,
+	LEGACY_PAYMENT_METHODS,
+	type LegacyMethodFacts,
+} from "./orders/payment-methods.js";
+export {
 	resolveUnverifiedRefund,
 	type ResolveFollowUp,
 	type ResolveUnverifiedRefundCommand,
@@ -383,26 +404,7 @@ export {
 	type RefundFailureReason,
 	type RefundInput,
 	type RefundResult,
-	type X402Proof,
 } from "./ports/payment-gateway.js";
-export type {
-	X402DecodedPayment,
-	X402DecodeResult,
-	X402MalformedDetail,
-	X402MatchResult,
-	X402MismatchField,
-	X402NotOfferedDetail,
-	X402Offer,
-	X402OfferResult,
-	X402OpaquePayload,
-	X402PaymentRequired,
-	X402PaymentRequirements,
-	X402Rail,
-	X402SettleResult,
-	X402UnavailableCause,
-	X402UnconfirmedCause,
-	X402VerifyResult,
-} from "./ports/x402-rail.js";
 export type {
 	CancellationReason,
 	CancellationRefund,
@@ -552,6 +554,7 @@ export {
 export type { Clock } from "./ports/clock.js";
 export type { IdGen } from "./ports/id-gen.js";
 export { commit, release, removeStock, reserve, restock } from "./inventory/use-cases.js";
+export { isProductTaxStatus, PRODUCT_TAX_STATUSES } from "./ports/product-commerce-store.js";
 export type {
 	DownloadAsset,
 	InventoryPolicy,
@@ -560,6 +563,7 @@ export type {
 	ProductCommerceUpdateResult,
 	ProductCommerceView,
 	ProductKind,
+	ProductTaxStatus,
 	ProductListCursor,
 	ProductListFilter,
 	ProductListPage,
@@ -656,8 +660,17 @@ export type {
 	TopProductsMetric,
 } from "./ports/reporting-store.js";
 export { REVENUE_COUNTING_STATES } from "./ports/reporting-store.js";
-export type { OperationalSettings, SettingsStore } from "./ports/settings-store.js";
-export { DEFAULT_OPERATIONAL_SETTINGS } from "./ports/settings-store.js";
+export type {
+	OperationalSettings,
+	SettingsStore,
+	SettingsUpdateOptions,
+} from "./ports/settings-store.js";
+export {
+	DEFAULT_OPERATIONAL_SETTINGS,
+	isSettingsPreconditionFailedError,
+	SettingsPreconditionFailedError,
+	settingsUpdateAllowed,
+} from "./ports/settings-store.js";
 export {
 	getLowStockReport,
 	getOrdersByStatusReport,

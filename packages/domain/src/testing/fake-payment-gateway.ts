@@ -12,7 +12,6 @@ import type {
 	RawConfirmation,
 	RefundInput,
 	RefundResult,
-	X402Proof,
 } from "../ports/payment-gateway.js";
 
 /** A test event the fake driver signs into a `webhook` RawConfirmation. */
@@ -30,14 +29,14 @@ const SIG_HEADER = "x-fake-signature";
 /**
  * IO-free `PaymentGateway` fake — drives `settleOrder`'s state machine and
  * `paymentGatewayContract` before any real adapter. Verification here is a
- * trivial shared-secret check (`x-fake-signature` header / `proof.signature`), not
+ * trivial shared-secret check (`x-fake-signature` header), not
  * real crypto: the byte-exact HMAC discipline is proven against the real Stripe
- * adapter (§8 step 4.6). Test helpers `webhook()` / `pageGate()` mint the raw
+ * adapter (§8 step 4.6). Test helper `webhook()` mints the raw
  * confirmations the domain then verifies.
  */
 export class FakePaymentGateway implements PaymentGateway {
 	readonly id: PaymentMethod;
-	readonly refundable: boolean;
+	private refundableFlag: boolean;
 	#secret: string;
 	/** Every `refund` call, in order — lets a contract assert a replay makes NO
 	 *  second gateway call (ADR-0008 idempotency). */
@@ -57,10 +56,20 @@ export class FakePaymentGateway implements PaymentGateway {
 
 	constructor(options: { id?: PaymentMethod; secret?: string; refundable?: boolean } = {}) {
 		this.id = options.id ?? "stripe";
-		// Default mirrors the real adapters: Stripe refundable, x402 not — a test
-		// can override (e.g. a Stripe adapter with no secretKey ⇒ refundable:false).
-		this.refundable = options.refundable ?? this.id !== "x402";
+		// Default mirrors the real adapter: Stripe refundable — a test can override
+		// (e.g. a Stripe adapter with no secretKey ⇒ refundable:false).
+		this.refundableFlag = options.refundable ?? true;
 		this.#secret = options.secret ?? "test-secret";
+	}
+
+	get refundable(): boolean {
+		return this.refundableFlag;
+	}
+
+	/** Flip the capability after construction — lets one suite exercise both the
+	 *  provider and the record-only (manual) refund path through ONE gateway. */
+	setRefundable(refundable: boolean): void {
+		this.refundableFlag = refundable;
 	}
 
 	/** Force the next (and subsequent) `refund` results — a typed failure to
@@ -81,15 +90,13 @@ export class FakePaymentGateway implements PaymentGateway {
 	}
 
 	/**
-	 * Mirrors the real adapters' capabilities: a Stripe-shaped fake cancels, an
-	 * x402-shaped one has no standing intent and answers `UNSUPPORTED` (exactly as
-	 * `X402PaymentGateway` does), unless a test forced an outcome.
+	 * Mirrors the real adapter's capabilities: a Stripe-shaped fake cancels,
+	 * unless a test forced an outcome.
 	 */
 	async cancelIntent(input: CancelIntentInput): Promise<CancelIntentResult> {
 		this.cancelCalls.push(input);
 		if (this.#cancelResult instanceof Error) throw this.#cancelResult;
 		if (this.#cancelResult !== undefined) return this.#cancelResult;
-		if (this.id === "x402") return { ok: false, reason: "UNSUPPORTED" };
 		return { ok: true, outcome: "cancelled" };
 	}
 
@@ -107,48 +114,32 @@ export class FakePaymentGateway implements PaymentGateway {
 
 	async createIntent(input: CreateIntentInput): Promise<PaymentIntentHandle> {
 		this.intentCalls.push(input);
-		const clientAction: ClientAction =
-			this.id === "x402"
-				? { kind: "x402_challenge", accepts: ["eip155:8453"], price: input.amount, payTo: "0xTEST" }
-				: { kind: "stripe_client_secret", clientSecret: `cs_test_${input.orderId}` };
+		const clientAction: ClientAction = {
+			kind: "stripe_client_secret",
+			clientSecret: `cs_test_${input.orderId}`,
+		};
 		return { gateway: this.id, intentId: `fake_${input.orderId}`, clientAction };
 	}
 
 	async verifyConfirmation(raw: RawConfirmation): Promise<ConfirmationResult> {
-		if (raw.kind === "webhook") {
-			if (raw.headers[SIG_HEADER] !== this.#secret)
-				return { ok: false, reason: "INVALID_SIGNATURE" };
-			let event: FakeGatewayEvent;
-			try {
-				event = JSON.parse(new TextDecoder().decode(raw.body)) as FakeGatewayEvent;
-			} catch {
-				return { ok: false, reason: "MALFORMED" };
-			}
-			if (typeof event.orderId !== "string" || typeof event.dedupeKey !== "string") {
-				return { ok: false, reason: "UNKNOWN_EVENT" };
-			}
-			return {
-				ok: true,
-				outcome: event.outcome,
-				orderId: brandOrderId(event.orderId),
-				providerRef: event.providerRef,
-				amount: cents(event.amount),
-				currency: currency(event.currency),
-				dedupeKey: event.dedupeKey,
-				gateway: this.id,
-			};
+		if (raw.headers[SIG_HEADER] !== this.#secret) return { ok: false, reason: "INVALID_SIGNATURE" };
+		let event: FakeGatewayEvent;
+		try {
+			event = JSON.parse(new TextDecoder().decode(raw.body)) as FakeGatewayEvent;
+		} catch {
+			return { ok: false, reason: "MALFORMED" };
 		}
-		// page_gate (x402): verify the proof signature server-side.
-		const proof = raw.proof;
-		if (proof.signature !== this.#secret) return { ok: false, reason: "INVALID_SIGNATURE" };
+		if (typeof event.orderId !== "string" || typeof event.dedupeKey !== "string") {
+			return { ok: false, reason: "UNKNOWN_EVENT" };
+		}
 		return {
 			ok: true,
-			outcome: "succeeded",
-			orderId: proof.orderId,
-			providerRef: proof.transaction,
-			amount: proof.amount,
-			currency: proof.currency,
-			dedupeKey: proof.transaction,
+			outcome: event.outcome,
+			orderId: brandOrderId(event.orderId),
+			providerRef: event.providerRef,
+			amount: cents(event.amount),
+			currency: currency(event.currency),
+			dedupeKey: event.dedupeKey,
 			gateway: this.id,
 		};
 	}
@@ -161,17 +152,6 @@ export class FakePaymentGateway implements PaymentGateway {
 			kind: "webhook",
 			body: new TextEncoder().encode(JSON.stringify(event)),
 			headers: { [SIG_HEADER]: opts.badSignature ? "wrong" : this.#secret },
-		};
-	}
-
-	/** Mint a page-gate raw confirmation from an x402 proof. */
-	pageGate(
-		proof: Omit<X402Proof, "signature">,
-		opts: { badSignature?: boolean } = {},
-	): RawConfirmation {
-		return {
-			kind: "page_gate",
-			proof: { ...proof, signature: opts.badSignature ? "wrong" : this.#secret },
 		};
 	}
 }

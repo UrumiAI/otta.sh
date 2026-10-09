@@ -23,8 +23,8 @@ construct the in-process clients unconditionally.
 
 and `resolveAllowedHosts` changes signature: `resolveAllowedHosts(mode,
 serviceBaseUrl, egress?)` becomes `resolveAllowedHosts(egress?)`. The allowlist
-is now Stripe's API host plus whichever of the deployment-supplied email and
-x402-facilitator URLs parse to a hostname. No commerce-service host can reach
+is now Stripe's API host plus whatever deployment-supplied egress parses to a
+hostname. No commerce-service host can reach
 the `ctx.http` egress gate any more, because there is no commerce service to
 reach.
 

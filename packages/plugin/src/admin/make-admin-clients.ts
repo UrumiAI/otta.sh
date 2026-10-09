@@ -18,6 +18,7 @@
  * outright rather than leaving a check that could not fail.
  */
 
+import { getTaxCalculator } from "../commerce/tax-calculator-slot.js";
 import { resolvePaymentGateways } from "../payments/resolve-payment-gateways.js";
 import type { PluginContext } from "../types.js";
 import type { AdminOrdersSurface } from "./admin-orders-surface.js";
@@ -55,7 +56,7 @@ export interface AdminClients {
  * `makeCommerceClient` uses (`resolvePaymentGateways`), so a console refund
  * reaches the provider checkout charged — over `ctx.http` — and a deployment with
  * no gateway for an order's method still answers `409 REFUND_GATEWAY_UNAVAILABLE`
- * (issue #303). A non-refundable gateway (x402) lets the console RECORD a manual,
+ * (issue #303). A non-refundable gateway lets the console RECORD a manual,
  * off-platform refund.
  *
  * The clients construct every commerce adapter over `ctx.storage`, so a context
@@ -66,7 +67,10 @@ export interface AdminClients {
  */
 export function makeAdminClients(ctx: PluginContext): Promise<AdminClients> {
 	const products = new InProcessAdminProductsClient(ctx);
-	const rules = new InProcessAdminRulesClient(ctx);
+	// ADR-0032: a registered outside calculator reads as "already charges tax".
+	const rules = new InProcessAdminRulesClient(ctx, {
+		hasOutsideTaxCalculator: getTaxCalculator() !== undefined,
+	});
 	const reporting = new InProcessReportingSettingsClient(ctx);
 	return resolvePaymentGateways(ctx).then((gateways) => ({
 		products,
