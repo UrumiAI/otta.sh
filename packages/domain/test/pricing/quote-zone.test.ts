@@ -87,6 +87,19 @@ describe("computeQuote derives the zone from the destination", () => {
 		});
 	});
 
+	test("Canary Islands: a Tenerife (ES-TF) address takes the ES-CN zone's 0%, not ES 21%", async () => {
+		await seedZone({ id: "z-es", regions: ["ES"], taxBps: 2100 });
+		await seedZone({ id: "z-es-cn", regions: ["ES-CN"], taxBps: 0 });
+		const tenerife = await quote({ destination: { country: "ES", region: "TF" } });
+		const madrid = await quote({ destination: { country: "ES", region: "M" } });
+		expect(tenerife).toMatchObject({
+			ok: true,
+			destination: { status: "matched", zoneId: "z-es-cn", matchedRegion: "ES-CN" },
+			breakdown: { taxCents: 0 },
+		});
+		expect(madrid).toMatchObject({ ok: true, breakdown: { taxCents: 630 } });
+	});
+
 	test("the US-CA happy path: 3000 + 599 + 7.25% (217.5 → 218, half-up) = 3817", async () => {
 		await seedZone({ id: "z-us", regions: ["US"], taxBps: 0 });
 		await seedZone({

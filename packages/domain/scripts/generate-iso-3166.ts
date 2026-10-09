@@ -1,13 +1,16 @@
 /**
  * Generates `src/pricing/iso-3166.generated.ts` from the vendored CLDR
- * validity XML (ADR-0021 Decision 2, D14), and `iso-3166-names.generated.ts`
+ * validity XML (ADR-0021 Decision 2, D14) — with each subdivision's PARENT from
+ * the same release's `common/supplemental/subdivisions.xml` containment (the
+ * Canary Islands contain Santa Cruz de Tenerife) — and `iso-3166-names.generated.ts`
  * — the English subdivision names the storefront's state/province pick list
  * shows — from the same release's `common/subdivisions/en.xml`.
  *
  *     node packages/domain/scripts/generate-iso-3166.ts
  *
  * To refresh the data for a new CLDR release: vendor that release's
- * `common/validity/{region,subdivision}.xml`, `common/subdivisions/en.xml` and `LICENSE` under
+ * `common/validity/{region,subdivision}.xml`, `common/subdivisions/en.xml`,
+ * `common/supplemental/subdivisions.xml` and `LICENSE` under
  * `scripts/cldr-<version>/`, bump {@link CLDR_VERSION}, re-run this script,
  * update `THIRD_PARTY_NOTICES`, and review the diff of the generated module.
  * `test/pricing/iso-3166-generated.test.ts` fails until the committed modules
@@ -142,15 +145,81 @@ function header(summary: string, licenseText: string): string[] {
 	];
 }
 
+/**
+ * Every `<subgroup type="escn" contains="esgc estf"/>` of CLDR's
+ * `common/supplemental/subdivisions.xml` whose type is a SUBDIVISION (lower
+ * case): child id → the id of the subdivision directly containing it
+ * (`esgc` → `escn`). A COUNTRY's subgroup (`type="ES"`) lists its top level and
+ * is not a parent. A child with two parents throws.
+ */
+export function subdivisionParents(xml: string): Map<string, string> {
+	const parents = new Map<string, string>();
+	for (const match of stripXmlComments(xml).matchAll(/<subgroup\b([^>]*?)\/?>/g)) {
+		const attributes = match[1] ?? "";
+		const type = /\btype="([A-Za-z0-9]+)"/.exec(attributes)?.[1];
+		const contains = /\bcontains="([^"]*)"/.exec(attributes)?.[1];
+		if (type === undefined || contains === undefined) {
+			throw new Error(`unsupported subgroup:${attributes}`);
+		}
+		if (type !== type.toLowerCase()) continue; // a country's own top level
+		for (const child of contains.split(/\s+/).filter((id) => id.length > 0)) {
+			if (parents.has(child)) throw new Error(`subdivision ${child} has two parents`);
+			parents.set(child, type);
+		}
+	}
+	return parents;
+}
+
+/** Per country, `PARENT:CHILD CHILD` for each subdivision containing others,
+ *  sorted, both ends checked against the regular codes and cycles refused. */
+function containmentByCountry(
+	byCountry: ReadonlyMap<string, readonly string[]>,
+	containmentXml: string,
+): Map<string, string[]> {
+	const parents = subdivisionParents(containmentXml);
+	const known = (id: string): boolean =>
+		byCountry.get(id.slice(0, 2).toUpperCase())?.includes(id.slice(2).toUpperCase()) === true;
+	const groups = new Map<string, Map<string, string[]>>();
+	for (const [child, parent] of parents) {
+		if (!known(child) || !known(parent) || child.slice(0, 2) !== parent.slice(0, 2)) {
+			throw new Error(`containment ${parent} ⊃ ${child} is not two regular subdivisions of one country`);
+		}
+		const seen = new Set([child]);
+		for (let at = parents.get(child); at !== undefined; at = parents.get(at)) {
+			if (seen.has(at)) throw new Error(`containment cycle through ${child}`);
+			seen.add(at);
+		}
+		const country = child.slice(0, 2).toUpperCase();
+		const byParent = groups.get(country) ?? new Map<string, string[]>();
+		const children = byParent.get(parent.slice(2).toUpperCase()) ?? [];
+		children.push(child.slice(2).toUpperCase());
+		byParent.set(parent.slice(2).toUpperCase(), children);
+		groups.set(country, byParent);
+	}
+	const out = new Map<string, string[]>();
+	for (const country of [...groups.keys()].toSorted()) {
+		const byParent = groups.get(country) ?? new Map<string, string[]>();
+		out.set(
+			country,
+			[...byParent.keys()]
+				.toSorted()
+				.map((parent) => `${parent}:${(byParent.get(parent) ?? []).toSorted().join(" ")}`),
+		);
+	}
+	return out;
+}
+
 export function generateIso3166(input: {
 	regionXml: string;
 	subdivisionXml: string;
+	containmentXml: string;
 	licenseText: string;
 }): string {
 	const { countries, byCountry } = collectCodes(input.regionXml, input.subdivisionXml);
+	const containment = containmentByCountry(byCountry, input.containmentXml);
 
 	const lines: string[] = header(
-		`ISO 3166 codes from Unicode CLDR ${CLDR_VERSION} (common/validity, idStatus="regular").`,
+		`ISO 3166 codes from Unicode CLDR ${CLDR_VERSION} (common/validity, idStatus="regular"; parents from common/supplemental/subdivisions.xml).`,
 		input.licenseText,
 	);
 	lines.push(
@@ -173,6 +242,29 @@ export function generateIso3166(input: {
 	lines.push("\t\tcountry,");
 	lines.push('\t\tnew Set(suffixes.split(" ")),');
 	lines.push("\t]),");
+	lines.push(");");
+	lines.push("");
+	lines.push(
+		'/** Per country, each subdivision that contains others, as `PARENT:CHILD CHILD`, joined by "|" (ES → "…|CN:GC TF|…"). */',
+	);
+	lines.push("const SUBDIVISION_CONTAINMENT: Readonly<Record<string, string>> = {");
+	for (const [country, groups] of containment) {
+		lines.push(`\t${country}: ${JSON.stringify(groups.join("|"))},`);
+	}
+	lines.push("};");
+	lines.push("");
+	lines.push(
+		"/** `CC-CHILD` → the `CC-PARENT` directly containing it (ES-TF → ES-CN, GB-BFS → GB-NIR). A top-level subdivision has no entry; a chain may be longer than one step. */",
+	);
+	lines.push("export const SUBDIVISION_PARENTS: ReadonlyMap<string, string> = new Map(");
+	lines.push("\tObject.entries(SUBDIVISION_CONTAINMENT).flatMap(([country, groups]) =>");
+	lines.push('\t\tgroups.split("|").flatMap((group) => {');
+	lines.push('\t\t\tconst [parent = "", children = ""] = group.split(":");');
+	lines.push(
+		'\t\t\treturn children.split(" ").map((child): [string, string] => [`${country}-${child}`, `${country}-${parent}`]);',
+	);
+	lines.push("\t\t}),");
+	lines.push("\t),");
 	lines.push(");");
 	lines.push("");
 	return lines.join("\n");
@@ -282,6 +374,7 @@ function main(): void {
 	const out = generateIso3166({
 		regionXml: read(`scripts/cldr-${CLDR_VERSION}/validity/region.xml`),
 		subdivisionXml: read(`scripts/cldr-${CLDR_VERSION}/validity/subdivision.xml`),
+		containmentXml: read(`scripts/cldr-${CLDR_VERSION}/supplemental/subdivisions.xml`),
 		licenseText: read(`scripts/cldr-${CLDR_VERSION}/LICENSE`),
 	});
 	writeFileSync(new URL("src/pricing/iso-3166.generated.ts", root), out);

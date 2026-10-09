@@ -2,12 +2,15 @@
  * The shipping/tax zone, derived from the ship-to address (ADR-0021).
  *
  * Nobody supplies a zone: it is the one whose ISO codes match the address.
- * Matching is EXACT (no subdivision hierarchy — `FR-IDF` does not cover
- * `FR-75C`) and MOST SPECIFIC first: a zone listing the address's own
- * `CC-SUB` beats one listing only `CC`. Pure: no IO.
+ * MOST SPECIFIC first: the address's own `CC-SUB`, then each subdivision
+ * containing it (CLDR containment, nearest first), then `CC`. So `ES-TF`
+ * (Santa Cruz de Tenerife) tries `ES-TF` → `ES-CN` (Canary Islands) → `ES`,
+ * and `GB-BFS` → `GB-NIR` → `GB`: a zone on the child beats one on its
+ * parent, which beats one on the country. Codes themselves are exact (case
+ * aside) — a zone never covers a code it does not list or contain. Pure: no IO.
  */
 import type { ShippingZone } from "../ports/shipping-rules-store.js";
-import { parseZoneRegions } from "./region-codes.js";
+import { parseZoneRegions, subdivisionAncestors } from "./region-codes.js";
 
 /** An address already normalised: a valid country, a real bare subdivision
  *  code or `null` (see `normalizeSubdivision`). */
@@ -30,7 +33,7 @@ export type ZoneResolution =
 	| {
 			status: "matched";
 			zoneId: string;
-			/** The code that matched: `US-CA` or `US`. */
+			/** The code that matched: `US-CA`, an ancestor (`ES-CN` for `ES-TF`), or `US`. */
 			matchedRegion: string;
 			/** Other zones that matched at the same specificity (a misconfiguration
 			 *  the admin refuses); empty in a healthy store. */
@@ -56,8 +59,8 @@ export function resolveShippingZone(
 		}
 	}
 
-	const candidates =
-		destination.region === null ? [country] : [`${country}-${destination.region}`, country];
+	const own = destination.region === null ? null : `${country}-${destination.region}`;
+	const candidates = own === null ? [country] : [own, ...subdivisionAncestors(own), country];
 	for (const code of candidates) {
 		const ids = parsed
 			.filter((z) => z.codes.includes(code))

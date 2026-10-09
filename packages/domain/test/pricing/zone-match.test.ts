@@ -4,7 +4,8 @@ import type { ShippingZone } from "../../src/ports/shipping-rules-store.js";
 import { resolveShippingZone } from "../../src/pricing/zone-match.js";
 
 /** ADR-0021 Decisions 2–4: the zone comes from the address only; most
- *  specific (exact subdivision) wins; exact codes, no hierarchy. */
+ *  specific wins — the subdivision, then each subdivision containing it (CLDR
+ *  containment, amended 2026-10-09), then the country. */
 const zone = (id: string, regions: unknown): ShippingZone => ({ id, name: id, regions });
 
 const US = zone("z-us", ["US"]);
@@ -95,9 +96,77 @@ describe("resolveShippingZone", () => {
 		expect(resolveShippingZone([US_CA], physical("US", "TX"))).toEqual({ status: "unmatched" });
 	});
 
-	test("exact codes only, no hierarchy: {FR-IDF} does not match FR/75C (Paris)", () => {
-		expect(resolveShippingZone([zone("z-idf", ["FR-IDF"])], physical("FR", "75C"))).toEqual({
-			status: "unmatched",
+	describe("a subdivision inside another (CLDR containment)", () => {
+		const ES = zone("z-es", ["ES"]);
+		const ES_CN = zone("z-es-cn", ["ES-CN"]);
+		const matched = (zoneId: string, matchedRegion: string) => ({
+			status: "matched",
+			zoneId,
+			matchedRegion,
+			ambiguousWith: [],
+		});
+
+		test("Canary Islands: Santa Cruz de Tenerife (TF) takes the ES-CN zone, not ES", () => {
+			expect(resolveShippingZone([ES, ES_CN], physical("ES", "TF"))).toEqual(
+				matched("z-es-cn", "ES-CN"),
+			);
+			expect(resolveShippingZone([ES_CN, ES], physical("ES", "GC"))).toEqual(
+				matched("z-es-cn", "ES-CN"),
+			);
+		});
+
+		test("the parent zone alone still serves its child (no ES zone: no refusal)", () => {
+			expect(resolveShippingZone([ES_CN], physical("ES", "TF"))).toEqual(
+				matched("z-es-cn", "ES-CN"),
+			);
+		});
+
+		test("a province outside the parent falls to the country, or nowhere", () => {
+			expect(resolveShippingZone([ES, ES_CN], physical("ES", "M"))).toEqual(matched("z-es", "ES"));
+			expect(resolveShippingZone([ES_CN], physical("ES", "M"))).toEqual({ status: "unmatched" });
+		});
+
+		test("Northern Ireland: Belfast (BFS) takes GB-NIR; England's councils take GB", () => {
+			const zones = [zone("z-gb", ["GB"]), zone("z-nir", ["GB-NIR"])];
+			expect(resolveShippingZone(zones, physical("GB", "BFS"))).toEqual(
+				matched("z-nir", "GB-NIR"),
+			);
+			expect(resolveShippingZone(zones, physical("GB", "NIR"))).toEqual(
+				matched("z-nir", "GB-NIR"),
+			);
+			expect(resolveShippingZone(zones, physical("GB", "KEC"))).toEqual(matched("z-gb", "GB"));
+		});
+
+		test("a zone on the child still wins over its parent's, whatever the list order", () => {
+			const TF = zone("z-tf", ["ES-TF"]);
+			for (const zones of [
+				[ES, ES_CN, TF],
+				[TF, ES_CN, ES],
+			]) {
+				expect(resolveShippingZone(zones, physical("ES", "TF"))).toEqual(matched("z-tf", "ES-TF"));
+				expect(resolveShippingZone(zones, physical("ES", "GC"))).toEqual(
+					matched("z-es-cn", "ES-CN"),
+				);
+			}
+		});
+
+		test("Paris (FR-75C) is in Île-de-France: an FR-IDF zone covers it", () => {
+			expect(resolveShippingZone([zone("z-idf", ["FR-IDF"])], physical("FR", "75C"))).toEqual(
+				matched("z-idf", "FR-IDF"),
+			);
+		});
+
+		test("containment never runs upwards: a child zone does not cover its parent", () => {
+			expect(resolveShippingZone([zone("z-tf", ["ES-TF"])], physical("ES", "CN"))).toEqual({
+				status: "unmatched",
+			});
+		});
+
+		test("a blank region still asks for one when only a parent is zoned", () => {
+			expect(resolveShippingZone([ES, ES_CN], physical("ES"))).toEqual({
+				status: "region_code_required",
+				country: "ES",
+			});
 		});
 	});
 

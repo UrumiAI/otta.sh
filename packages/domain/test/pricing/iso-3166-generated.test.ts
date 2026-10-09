@@ -10,6 +10,7 @@ import {
 	regularIds,
 	stripXmlComments,
 	subdivisionNames,
+	subdivisionParents,
 } from "../../scripts/generate-iso-3166.js";
 
 /**
@@ -33,6 +34,7 @@ describe("iso-3166.generated.ts", () => {
 		const emitted = generateIso3166({
 			regionXml: read(`${vendored}/validity/region.xml`),
 			subdivisionXml: read(`${vendored}/validity/subdivision.xml`),
+			containmentXml: read(`${vendored}/supplemental/subdivisions.xml`),
 			licenseText: read(`${vendored}/LICENSE`),
 		});
 		expect(read("src/pricing/iso-3166.generated.ts")).toBe(emitted);
@@ -100,6 +102,7 @@ describe("iso-3166.generated.ts", () => {
 		expect(notices).toContain("UNICODE LICENSE V3");
 		expect(notices).toContain(`CLDR ${CLDR_VERSION}`);
 		expect(notices).toContain("common/subdivisions/en.xml");
+		expect(notices).toContain("common/supplemental/subdivisions.xml");
 		const pkg = JSON.parse(read("package.json")) as { files: string[] };
 		expect(pkg.files).toContain("THIRD_PARTY_NOTICES");
 		// The vendored XML and the generator are dev-only (D14).
@@ -108,6 +111,30 @@ describe("iso-3166.generated.ts", () => {
 });
 
 describe("the generator's CLDR parsing", () => {
+	test("reads subdivision containment: child → parent, a country's own top level skipped", () => {
+		const xml = `<subdivisionContainment>
+			<subgroup type="ES" contains="esan escn"/>
+			<!-- <subgroup type="esxx" contains="esyy"/> -->
+			<subgroup type="escn" contains="esgc estf"/>
+		</subdivisionContainment>`;
+		expect([...subdivisionParents(xml)]).toEqual([
+			["esgc", "escn"],
+			["estf", "escn"],
+		]);
+	});
+
+	test("refuses a subdivision with two parents, rather than picking one", () => {
+		const xml = `<subgroup type="esan" contains="esgc"/><subgroup type="escn" contains="esgc"/>`;
+		expect(() => subdivisionParents(xml)).toThrow(/two parents/);
+	});
+
+	test("the vendored containment puts Tenerife in the Canary Islands and Belfast in Northern Ireland", () => {
+		const parents = subdivisionParents(read(`${vendored}/supplemental/subdivisions.xml`));
+		expect(parents.get("estf")).toBe("escn");
+		expect(parents.get("gbbfs")).toBe("gbnir");
+		expect(parents.get("frhdf")).toBeUndefined(); // a region: top level
+	});
+
 	test("expands a one-character range on the final character", () => {
 		expect(expandCldrRange("AC~G")).toEqual(["AC", "AD", "AE", "AF", "AG"]);
 		expect(expandCldrRange("bd10~3")).toEqual(["bd10", "bd11", "bd12", "bd13"]);

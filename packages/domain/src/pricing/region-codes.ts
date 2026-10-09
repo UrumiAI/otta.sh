@@ -13,7 +13,7 @@
  *  - {@link normalizeSubdivision} is MEMBERSHIP: the code must be a real
  *    subdivision of the address's country.
  */
-import { COUNTRY_CODES, SUBDIVISIONS } from "./iso-3166.generated.js";
+import { COUNTRY_CODES, SUBDIVISION_PARENTS, SUBDIVISIONS } from "./iso-3166.generated.js";
 
 /** A country code, uppercased, or `null` when it is not in `COUNTRY_CODES` (the
  *  officially assigned ISO 3166-1 alpha-2 codes, plus XK). */
@@ -59,6 +59,21 @@ export function normalizeSubdivision(
 	return SUBDIVISIONS.get(countryCode)?.has(bare) === true
 		? { ok: true, code: bare }
 		: { ok: false };
+}
+
+/**
+ * The subdivisions CONTAINING `CC-SUB` (CLDR containment), nearest first:
+ * `ES-TF` → `["ES-CN"]` (Santa Cruz de Tenerife is in the Canary Islands),
+ * `GB-BFS` → `["GB-NIR"]`. Empty for a top-level subdivision or a non-code.
+ * Canonical (upper-case, prefixed) input only.
+ */
+export function subdivisionAncestors(code: string): string[] {
+	const out: string[] = [];
+	for (let at = SUBDIVISION_PARENTS.get(code); at !== undefined; at = SUBDIVISION_PARENTS.get(at)) {
+		if (out.includes(at)) break; // the generator refuses cycles; never loop regardless
+		out.push(at);
+	}
+	return out;
 }
 
 /** One zone-region token → its canonical form (`US`, `US-CA`), or `null`. */
