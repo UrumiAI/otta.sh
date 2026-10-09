@@ -62,10 +62,21 @@ const BASELINE_HOSTS = [STRIPE_API_HOST];
 describe("ottaPluginDescriptor", () => {
 	const descriptor = ottaPluginDescriptor();
 
-	test("is a standard-format descriptor for the @otta-sh/plugin default export", () => {
+	test("is a standard-format descriptor for the @otta-sh/plugin TRUSTED entry", () => {
 		expect(descriptor.id).toBe(OTTA_PLUGIN_ID);
 		expect(descriptor.format).toBe("standard");
-		expect(descriptor.entrypoint).toBe("@otta-sh/plugin/plugin");
+		// Issue #447: staging registers in-process, so it loads the entry that
+		// opts in to `trustedHost` (a signal on every Stripe call), never the
+		// sandbox-safe default export.
+		expect(descriptor.entrypoint).toBe("@otta-sh/plugin/trusted");
+	});
+
+	test("the trusted entry is the plugin, with trustedHost on", async () => {
+		const trusted = (await import("@otta-sh/plugin/trusted")).default;
+		const plain = (await import("@otta-sh/plugin/plugin")).default;
+		expect(trusted).toBe(plain);
+		const { isTrustedHost } = await import("@otta-sh/plugin/trusted");
+		expect(isTrustedHost()).toBe(true);
 	});
 
 	test("capabilities are EXACTLY the manifest's (content:read, network:request, email:send)", () => {

@@ -1,7 +1,7 @@
 /**
  * The Otta plugin's TRUSTED (in-process) registration descriptor —
  * ADR-0006. A hand-written standard-format `PluginDescriptor`: em-dash's
- * integration generates `import def from "@otta-sh/plugin/plugin";
+ * integration generates `import def from "@otta-sh/plugin/trusted";
  * adaptSandboxEntry(def, {...this descriptor})` at build time, so the
  * plugin's `{hooks, routes}` default export runs in the host worker — but
  * `capabilities` and `allowedHosts` are STILL enforced by the
@@ -70,7 +70,10 @@ export function ottaPluginDescriptor(options: OttaPluginDescriptorOptions = {}):
 		id: OTTA_PLUGIN_ID,
 		version: OTTA_PLUGIN_VERSION,
 		format: "standard",
-		entrypoint: "@otta-sh/plugin/plugin",
+		// The TRUSTED entry (issue #447): the plugin's default export with
+		// `trustedHost` on, so a timed-out Stripe request is aborted at the
+		// socket. Right only because this registration is in-process.
+		entrypoint: "@otta-sh/plugin/trusted",
 		// EXACTLY the manifest's three capabilities — never more (the
 		// sandbox-clean contract, pinned by the plugin's own guard test).
 		capabilities: [...OTTA_PLUGIN_CAPABILITIES],
