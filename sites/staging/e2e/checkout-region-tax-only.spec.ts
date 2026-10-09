@@ -150,7 +150,7 @@ test.describe("the state/province pick list on a store with only a state-level t
 	test.describe("with JavaScript (ADR-0034)", () => {
 		test.use({ javaScriptEnabled: true });
 
-		test("the store country's list is there at first render, and follows a changed country at once", async ({
+		test("no country is preselected where the store ships nowhere; the list follows the country at once", async ({
 			page,
 		}, testInfo) => {
 			await skipWithoutSite(testInfo);
@@ -161,9 +161,13 @@ test.describe("the state/province pick list on a store with only a state-level t
 			const country = delivery.locator('select[name="deliveryCountry"]');
 			const region = delivery.locator('select[name="deliveryRegion"]');
 			const update = delivery.locator('button[value="update-delivery"]');
-			await expect(country).toHaveValue("US");
-			await expect(region.locator('option[value="CA"]')).toHaveText("California");
+			// A store that ships nowhere (its only zone carries a tax rate, no
+			// method) never preselects a country — not even its tax zone's.
+			await expect(country).toHaveValue("");
+			await expect(region).toBeHidden();
 			const before = page.url();
+			await country.selectOption("US");
+			await expect(region.locator('option[value="CA"]')).toHaveText("California");
 			await country.selectOption("IN");
 			await expect(region.locator('option[value="KA"]')).toHaveText("Karnataka");
 			await expect(region.locator('option[value="CA"]')).toHaveCount(0);

@@ -10,7 +10,7 @@ import { experimental_AstroContainer as AstroContainer } from "astro/container";
 import { beforeAll, describe, expect, test } from "vitest";
 import type { CheckoutSummaryView } from "@otta-sh/plugin";
 import { byLabel, countryOptions } from "../src/lib/countries.js";
-import { regionChoice, regionOutsideCountry } from "../src/lib/regions.js";
+import { regionChoice, regionOutsideCountry, regionToDropSilently } from "../src/lib/regions.js";
 import { GET as REGIONS_GET } from "../src/pages/checkout/regions.js";
 import type { CheckoutModel } from "../src/themes/contract.js";
 import CheckoutView from "../src/themes/tempered/CheckoutView.astro";
@@ -69,9 +69,16 @@ describe("regionOutsideCountry — the one region rule", () => {
 	test("a code that is not one of the country's subdivisions", () => {
 		expect(regionOutsideCountry("US", "ON")).toBe(true);
 		expect(regionOutsideCountry("US", "MX-CA")).toBe(true);
-		expect(regionOutsideCountry("AQ", "CA")).toBe(true);
 		expect(regionOutsideCountry("FR", "ZZ")).toBe(true);
 	});
+	test("a country WITHOUT subdivisions has nothing to pick: its leftover region is dropped silently", () => {
+		expect(regionOutsideCountry("AQ", "CA")).toBe(false);
+		expect(regionToDropSilently("AQ", "CA")).toBe(true);
+		expect(regionToDropSilently("AQ", "")).toBe(false);
+		expect(regionToDropSilently("US", "CA")).toBe(false);
+		expect(regionToDropSilently("ZZ", "CA")).toBe(false);
+	});
+
 	test("is not: one of the country's own (any form), blank, an unknown country, or free text", () => {
 		expect(regionOutsideCountry("US", "CA")).toBe(false);
 		expect(regionOutsideCountry("us", "us-ca")).toBe(false);

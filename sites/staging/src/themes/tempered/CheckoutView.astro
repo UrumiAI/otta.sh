@@ -288,6 +288,7 @@ const {
 								<select
 									id="delivery-region"
 									name="deliveryRegion"
+									data-region-country={deliveryRegions.country}
 									form="checkout-place"
 									autocomplete="address-level1"
 									aria-invalid={regionRefused}
@@ -640,6 +641,7 @@ const {
 												<select
 													id="address-region"
 													name="region"
+													data-region-country={addressRegions.country}
 													autocomplete="address-level1"
 													aria-invalid={fieldErrors.region !== undefined}
 													aria-describedby={fieldErrors.region !== undefined ? "region-error" : undefined}

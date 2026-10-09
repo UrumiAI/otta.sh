@@ -236,12 +236,14 @@ export function placeFailurePath(token: string, selection: CheckoutUrlSelection)
 	// The buyer's COUNTRY always stays — never replaced by the store's: the
 	// review comes back with it chosen and its state list shown, and the
 	// summary states the refusal again beside the field it blames (the country
-	// for "we don't ship there", the region otherwise). Only the region and the
-	// method go.
+	// for "we don't ship there", the region otherwise). The method goes.
 	return checkoutPath({
 		couponCode: isCouponFailure(token) ? undefined : selection.couponCode,
 		country: selection.country,
-		region: dropDestination ? undefined : selection.region,
+		// Only a refusal OF THE REGION drops it; any other (an incomplete street
+		// address, a zone that does not match) keeps it, so a zoned order never
+		// loses its state silently.
+		region: token === "SHIPPING_REGION_CODE_REQUIRED" ? undefined : selection.region,
 		shippingMethodId: dropMethod ? undefined : selection.shippingMethodId,
 		error: token,
 	});

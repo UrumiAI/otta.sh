@@ -313,8 +313,9 @@ const model: CheckoutModel = {
 		/* Said ONCE: a place refused for the region keeps the country in the URL,
 		   so the summary refuses it again and the delivery block says it. */
 		shownErrorToken !== destinationError?.reason &&
-		/* A list update for a country refused outright: only the country's refusal. */
-		!(shownErrorToken === "REGION_LIST_UPDATED" && countryRefused)
+		/* A list update beside a refusal of the destination (the country refused,
+		   or a region REQUIRED): only that refusal is said — never "leave it blank". */
+		!(shownErrorToken === "REGION_LIST_UPDATED" && destinationError !== null)
 			? cartErrorMessage(shownErrorToken)
 			: null,
 	checkedOut,

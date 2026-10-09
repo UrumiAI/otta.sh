@@ -1,33 +1,38 @@
-// ADR-0034: the checkout's ONE optional script. When a country select changes,
-// its state/province list (data-region-target) is refilled from
-// /checkout/regions, and the no-JS Update controls (data-region-update) hide.
-// Without it, Update does the same on the server; on any failure the page is
-// left as the server drew it, Update included.
+// ADR-0034: the checkout's ONE optional script. A country change refills its
+// state list (data-region-target) from /checkout/regions and hides the no-JS
+// Update (data-region-update); on any failure the no-JS page comes back.
 const updaters = document.querySelectorAll("[data-region-update]");
 const showUpdate = (show) => updaters.forEach((el) => (el.hidden = !show));
+const listOf = (country) => document.getElementById(country.dataset.regionTarget ?? "");
 
 async function fill(country) {
-	const select = document.getElementById(country.dataset.regionTarget ?? "");
-	if (!(select instanceof HTMLSelectElement)) return;
+	const select = listOf(country);
+	if (!(select instanceof HTMLSelectElement)) return true;
+	const wanted = country.value;
 	let options = [];
 	try {
-		if (country.value !== "") {
-			const res = await fetch(`/checkout/regions?country=${encodeURIComponent(country.value)}`);
+		if (wanted !== "") {
+			const res = await fetch(`/checkout/regions?country=${encodeURIComponent(wanted)}`);
 			if (!res.ok) throw new Error(String(res.status));
 			options = await res.json();
+			if (!Array.isArray(options)) throw new Error("not a list");
 		}
 	} catch {
-		showUpdate(true);
-		return;
+		return (showUpdate(true), false);
 	}
+	if (country.value !== wanted) return true; // a newer change owns the list
+	const keep = select.value; // e.g. an autofilled state that is this country's
 	select.replaceChildren(select.options[0], ...options.map((o) => new Option(o.label, o.code)));
-	select.value = "";
+	select.value = options.some((o) => String(o.code) === keep) ? keep : "";
+	select.dataset.regionCountry = wanted;
 	select.removeAttribute("aria-invalid");
-	const field = select.closest("[data-region-field]");
-	if (field instanceof HTMLElement) field.hidden = options.length === 0;
+	select.closest("[data-region-field]")?.toggleAttribute("hidden", options.length === 0);
+	return true;
 }
 
-document.querySelectorAll("select[data-region-target]").forEach((country) => {
-	country.addEventListener("change", () => void fill(country));
-});
-showUpdate(false);
+const countries = [...document.querySelectorAll("select[data-region-target]")];
+countries.forEach((country) => country.addEventListener("change", () => void fill(country)));
+// A restored form may show another country than its list: sync, then hide Update.
+Promise.all(
+	countries.map((c) => (listOf(c)?.dataset.regionCountry === c.value ? true : fill(c))),
+).then((ok) => showUpdate(!ok.every(Boolean)));

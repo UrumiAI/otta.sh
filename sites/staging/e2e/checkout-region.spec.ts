@@ -164,11 +164,21 @@ test.describe("the state/province pick list (no client JS)", () => {
 			await expect(region.locator('option[value="KA"]')).toHaveText("Karnataka");
 			await country.selectOption("AQ");
 			await expect(region).toBeHidden();
+			// A RACE: two changes before the first answer lands — the list ends up
+			// the LAST country's, never the earlier one's.
+			await country.selectOption("IN");
 			await country.selectOption("US");
 			await expect(region.locator('option[value="CA"]')).toHaveText("California");
 			await expect(region.locator('option[value="KA"]')).toHaveCount(0);
+			await page.waitForTimeout(300);
+			await expect(region.locator('option[value="KA"]')).toHaveCount(0);
 			expect(page.url(), "the list swapped without a navigation").toBe(before);
 			await region.selectOption("CA");
+			// AUTOFILL-ish: a refill for the same country keeps a state that is
+			// one of its own, rather than resetting it to blank.
+			await country.dispatchEvent("change");
+			await expect(region.locator('option[value="CA"]')).toHaveText("California");
+			await expect(region).toHaveValue("CA");
 
 			await form.locator('input[name="email"]').fill("region-js@example.test");
 			await form.locator('input[name="name"]').fill("Cal Buyer");

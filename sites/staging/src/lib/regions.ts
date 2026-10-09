@@ -81,5 +81,18 @@ export function regionOutsideCountry(
 	const code = (country ?? "").trim().toUpperCase();
 	const value = (region ?? "").trim();
 	if (value === "" || !COUNTRY_CODES.has(code) || !isCodeShapedRegion(value)) return false;
+	if (subdivisionOptions(code).length === 0) return false; // nothing to pick: regionToDropSilently
 	return !normalizeSubdivision(code, value).ok;
+}
+
+/** A region left over for a country WITHOUT subdivisions (a list it no longer
+ *  has): dropped SILENTLY — there is nothing to pick, so nothing to ask. */
+export function regionToDropSilently(
+	country: string | undefined,
+	region: string | undefined,
+): boolean {
+	const code = (country ?? "").trim().toUpperCase();
+	return (
+		(region ?? "").trim() !== "" && COUNTRY_CODES.has(code) && subdivisionOptions(code).length === 0
+	);
 }

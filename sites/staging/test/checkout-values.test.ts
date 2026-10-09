@@ -677,14 +677,12 @@ describe("the state/province pick list: a changed country is a round trip, never
 		expect(h.draft()!.values.country).toBe("US");
 	});
 
-	test("a region posted for a country WITHOUT subdivisions is dropped and asked again — never placed silently", async () => {
+	test("a leftover region for a country WITHOUT subdivisions is dropped silently, and the order places", async () => {
 		const h = harness({ ...OWN, country: "AQ" }, PLACED);
-		expect((await PLACE_POST(h.context)).headers.get("location")).toBe(
-			"/checkout?error=REGION_LIST_UPDATED",
-		);
-		expect(h.calls).toHaveLength(0);
-		expect(h.draft()!.values).toMatchObject({ country: "AQ" });
-		expect(h.draft()!.values.region).toBeUndefined();
+		expect((await PLACE_POST(h.context)).headers.get("location")).toBe("/checkout/pay");
+		const address = h.calls[0]!["shippingAddress"] as Record<string, string>;
+		expect(address["country"]).toBe("AQ");
+		expect(address["region"]).toBeUndefined();
 	});
 
 	test("a stale pick alongside other errors: marked 'pick again' in the SAME round trip", async () => {
@@ -1080,8 +1078,10 @@ describe("/checkout: the store's country is preselected only for a buyer who cho
 		expect(page).toMatch(/summary\.addressRequired && storeCountry !== null/);
 		expect(page).toMatch(/country: storeCountry/);
 	});
-	test("a REGION_LIST_UPDATED for a country refused outright says only the country's refusal", () => {
-		expect(page).toMatch(/!\(shownErrorToken === "REGION_LIST_UPDATED" && countryRefused\)/);
+	test("a REGION_LIST_UPDATED beside a destination refusal (country refused, region required) says only that refusal", () => {
+		expect(page).toMatch(
+			/!\(shownErrorToken === "REGION_LIST_UPDATED" && destinationError !== null\)/,
+		);
 		expect(page).toMatch(/\(shownError === "REGION_LIST_UPDATED" && !countryRefused\)/);
 	});
 	test("a refusal the delivery block states is not repeated at the top (said ONCE)", () => {

@@ -73,7 +73,7 @@ import {
 	readFormBody,
 } from "../../lib/otta-api.js";
 import { COUNTRY_CODES, isCodeShapedRegion, ORDER_ADDRESS_MAX_LENGTHS } from "@otta-sh/plugin";
-import { regionOutsideCountry } from "../../lib/regions.js";
+import { regionOutsideCountry, regionToDropSilently } from "../../lib/regions.js";
 
 /** The site's own token for a form-level email reject — never reaches the
  *  service, which would happily accept the value (`schemas.ts` has no regex). */
@@ -241,7 +241,11 @@ async function place(context: APIContext): Promise<Response> {
 	const addressCountry = formString(form.get("country"));
 	const regionMismatch =
 		!zoned && regionOutsideCountry(addressCountry, formString(form.get("region")));
-	if (regionMismatch) delete draftValues.region;
+	// …and a leftover region for a country with NO subdivisions goes silently.
+	const regionDropped =
+		regionMismatch ||
+		(!zoned && regionToDropSilently(addressCountry, formString(form.get("region"))));
+	if (regionDropped) delete draftValues.region;
 	/** The mark every redirect below carries for a dropped region, and the token
 	 *  one with no refusal of its own carries to say why. */
 	const staleMark: FieldErrors = regionMismatch ? { region: "stale" } : {};
@@ -373,7 +377,10 @@ async function place(context: APIContext): Promise<Response> {
 	const deliveryMismatch = regionOutsideCountry(deliveryCountry, postedDeliveryRegion);
 	const delivery = {
 		country: deliveryCountry,
-		region: deliveryMismatch ? undefined : postedDeliveryRegion,
+		region:
+			deliveryMismatch || regionToDropSilently(deliveryCountry, postedDeliveryRegion)
+				? undefined
+				: postedDeliveryRegion,
 		method: formString(form.get("deliveryMethod")),
 		fromCountry: formString(form.get("fromCountry")),
 		fromRegion: formString(form.get("fromRegion")),
@@ -423,7 +430,7 @@ async function place(context: APIContext): Promise<Response> {
 		// logs — the exact exposure ADR-0012 §6 argues against for the client
 		// secret. They travel in the draft cookie instead (QA U-1), and the address
 		// is checked here too, so every field that needs fixing is marked at once.
-		const address = readShippingAddress(form, zoned, { dropRegion: regionMismatch });
+		const address = readShippingAddress(form, zoned, { dropRegion: regionDropped });
 		return refuse(placeFailurePath(INVALID_EMAIL, selection), INVALID_EMAIL, {
 			fields: { email: "invalid", ...(address.ok ? {} : address.fields), ...staleMark },
 		});
@@ -442,7 +449,7 @@ async function place(context: APIContext): Promise<Response> {
 		});
 	}
 
-	const shipping = readShippingAddress(form, zoned, { dropRegion: regionMismatch });
+	const shipping = readShippingAddress(form, zoned, { dropRegion: regionDropped });
 	if (!shipping.ok) {
 		return refuse(
 			shipping.partial
