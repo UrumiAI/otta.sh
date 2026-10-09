@@ -17,6 +17,7 @@ import {
 import type { OrderStore, OutboxEmail } from "../ports/order-store.js";
 import type { Order, OrderState, PaymentMethod } from "./model.js";
 import { orderTotalLabel } from "./order-total-label.js";
+import { roundingEntry } from "../pricing/payment-rounding.js";
 import { PROVIDER_REFUNDED_FLAG_PREFIX } from "./provider-refunded-flag.js";
 import { readOrderTaxSnapshot } from "./order-tax-snapshot.js";
 import { sumFinalizedRefunds } from "./refund-order.js";
@@ -758,6 +759,12 @@ export function buildOrderEmailData(order: Order, toState: OrderState): Record<s
 		discountCents: order.totals.discount,
 		shippingCents: order.totals.shipping,
 		taxCents: order.totals.tax,
+		// ADR-0033's amendment: the payment rounding, only when the email shows it
+		// (non-zero) — every other order enqueues exactly the data it always did.
+		...roundingEntry(
+			"roundingCents",
+			order.totals.rounding === 0 ? undefined : order.totals.rounding,
+		),
 		appliedCouponCode: order.totals.appliedCouponCode,
 		shippingCalculated: snapshotField(order.totals.shippingMethodSnapshot, "methodId", true),
 		taxCalculated:

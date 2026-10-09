@@ -51,15 +51,12 @@ Price in 49 currencies, each in its own minor unit, from one currency table.
 - **Stripe charges zero-decimal currencies.** `STRIPE_UNSUPPORTED_CURRENCIES` is replaced by
   `stripeRefusesCurrency` (plus `STRIPE_ZERO_DECIMAL_CURRENCIES` /
   `STRIPE_THREE_DECIMAL_CURRENCIES`): amounts still go out unchanged, and JPY, KRW, VND and CLP
-  now go live (whole units are Stripe's amount); three-decimal currencies (KWD, BHD, OMR, JOD)
-  are still refused with `unsupported_currency`; a code outside the table is treated as before.
+  now go live (whole units are Stripe's amount); a code outside the table is treated as before.
+  Three-decimal currencies are charged too — see the three-decimal rounding changeset.
 - **React console.** The first-pricing currency picker offers every table currency (the
   familiar ten first, labelled `USD — US Dollar`); USD stays the default.
-- **Three-decimal currencies are flagged in the admin.** KWD, BHD, OMR and JOD can be priced but
-  not charged through Stripe yet: the picker labels them "(not yet payable at checkout)", the
-  pricing card, shipping-rate and coupon screens warn when one is used
-  (`checkoutPaymentWarning`). The domain now exports `minorUnitDigits` (display digits: table →
-  ICU → 2); `formatMoney` caches its formatters per locale and currency. See ADR-0033.
+- **Display digits.** The domain now exports `minorUnitDigits` (display digits: table → ICU →
+  2); `formatMoney` caches its formatters per locale and currency. See ADR-0033.
 
 **Upgrade notes.** JPY/KRW/VND/CLP amounts typed in the admin on an earlier version were stored
 ×100 and become purchasable at that stored value — check and re-enter them before upgrading.

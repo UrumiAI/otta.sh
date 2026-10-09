@@ -6,7 +6,7 @@
  * integer basis points (`bps`, 0–10000 = 0%–100%), never a float.
  */
 
-import type { Cents, Currency } from "../money/cents.js";
+import type { Cents, Currency, SignedCents } from "../money/cents.js";
 import type { ProductTaxStatus } from "../ports/product-commerce-store.js";
 
 /** A tax class identifier, e.g. `"standard" | "reduced" | "zero" | "digital"`. */
@@ -113,4 +113,14 @@ export interface TotalsBreakdown {
 	lineBreakdown: ReadonlyArray<TotalsLineBreakdown>;
 	shippingTaxCents: Cents;
 	appliedCouponCode?: string;
+	/**
+	 * The payment rounding (ADR-0033's amendment): `totalCents` minus the exact
+	 * total the parts sum to, signed, `|rounding| ≤ increment / 2`. PRESENT ONLY
+	 * for a currency with a `paymentIncrement` (KWD, BHD, OMR, JOD — 0 when the
+	 * exact total already was a multiple of it); ABSENT for every other currency,
+	 * whose breakdown is exactly what it always was. With it,
+	 * `subtotal − discount + shipping + tax + rounding === total` (exclusive
+	 * prices; with tax-inclusive prices only the shipping tax is added).
+	 */
+	roundingCents?: SignedCents;
 }

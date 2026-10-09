@@ -15,6 +15,7 @@ import {
 	STRIPE_THREE_DECIMAL_CURRENCIES,
 	STRIPE_ZERO_DECIMAL_CURRENCIES,
 	StripePaymentGateway,
+	stripeAmountIncrement,
 	stripeRefusesCurrency,
 	type StripeCreatePaymentIntentInput,
 	type StripeCreatePaymentIntentResult,
@@ -93,8 +94,9 @@ describe("StripePaymentGateway.createIntent — the LIVE path sends our minor un
 	// Otta's amounts are in each currency's minor unit from the currency table
 	// (whole yen for JPY, fils for KWD). Stripe's `amount` is the same unit for
 	// two- and zero-decimal currencies (https://docs.stripe.com/currencies), so
-	// those go out unchanged; three-decimal ones need multiples of 10, which an
-	// order total need not be, so they are refused before the network.
+	// those go out unchanged; three-decimal ones too, but only as multiples of 10
+	// (checkout rounds their total to it — ADR-0033's amendment), so any other
+	// amount is refused before the network.
 
 	async function liveIntent(code: string, amount: number): Promise<StripeCreatePaymentIntentInput> {
 		const transport = new MockTransport();
@@ -139,8 +141,36 @@ describe("StripePaymentGateway.createIntent — the LIVE path sends our minor un
 		expect((await liveIntent("TWD", 80045)).amountCents).toBe(80045);
 	});
 
-	test("a THREE-decimal currency (KWD) is still refused before the network", async () => {
-		for (const code of ["KWD", "BHD", "OMR", "JOD"]) await refused(code);
+	test("a listed THREE-decimal currency (KWD, BHD, OMR, JOD) goes live: thousandths sent unchanged when a multiple of 10", async () => {
+		for (const code of ["KWD", "BHD", "OMR", "JOD"]) {
+			expect(stripeRefusesCurrency(code), code).toBe(false);
+			const sent = await liveIntent(code, 1230);
+			expect(sent.amountCents, code).toBe(1230);
+			expect(sent.currency, code).toBe(code.toLowerCase());
+		}
+	});
+
+	test("a three-decimal amount that is NOT a multiple of 10 is refused before the network (unsupported_amount)", async () => {
+		for (const code of ["KWD", "BHD", "OMR", "JOD"]) {
+			const transport = new MockTransport();
+			const gw = new StripePaymentGateway({ webhookSecret: WEBHOOK, secretKey: SK, transport });
+			const err = (await gw
+				.createIntent(intentInput({ currency: currency(code), amount: cents(1234) }))
+				.catch((e: unknown) => e)) as PaymentIntentError;
+			expect(err, code).toBeInstanceOf(PaymentIntentError);
+			expect(err.retryable).toBe(false);
+			expect(err.providerCode).toBe("unsupported_amount");
+			expect(err.providerStatus).toBeUndefined();
+			expect(transport.intents, `${code}: nothing was sent to Stripe`).toHaveLength(0);
+		}
+	});
+
+	test("the amount step is 10 for Stripe's three-decimal set and 1 for everything else", () => {
+		for (const code of STRIPE_THREE_DECIMAL_CURRENCIES)
+			expect(stripeAmountIncrement(code)).toBe(10);
+		for (const code of ["USD", "JPY", "EUR", "ISK", "kwd"]) {
+			expect(stripeAmountIncrement(code), code).toBe(code === "kwd" ? 10 : 1);
+		}
 	});
 
 	test("a code outside the currency table keeps its old treatment: Stripe's zero-/three-decimal codes refused, others unchanged", async () => {
@@ -170,7 +200,7 @@ describe("StripePaymentGateway.createIntent — the LIVE path sends our minor un
 		);
 	});
 
-	test("EVERY row of the currency table is either charged unchanged or a three-decimal refusal", () => {
+	test("EVERY row of the currency table is charged unchanged", () => {
 		// Adding a currency to the table lands here: a row whose exponent Stripe
 		// treats differently is refused (and fails this test) until this adapter
 		// knows how to scale it.
@@ -179,7 +209,7 @@ describe("StripePaymentGateway.createIntent — the LIVE path sends our minor un
 		// sent 100× too small, so none may be listed until the adapter scales it.
 		const twoDecimalAtStripe = new Set(["ISK", "UGX"]);
 		for (const row of SUPPORTED_CURRENCIES) {
-			expect(stripeRefusesCurrency(row.code), row.code).toBe(row.digits === 3);
+			expect(stripeRefusesCurrency(row.code), row.code).toBe(false);
 			if (row.digits === 0) {
 				expect(STRIPE_ZERO_DECIMAL_CURRENCIES.has(row.code), row.code).toBe(true);
 				expect(twoDecimalAtStripe.has(row.code), row.code).toBe(false);

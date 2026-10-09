@@ -89,6 +89,7 @@ import {
 	cents as toCents,
 	currency as toCurrency,
 	deleteTaxClass as deleteTaxClassUseCase,
+	effectiveStoreCurrency,
 	effectiveTaxSettings,
 	idempotencyKey as toIdempotencyKey,
 	InvalidSettingsError,
@@ -547,6 +548,13 @@ export class InProcessAdminRulesClient implements AdminRulesSurface {
 		await this.#pinTaxSettings();
 		const res = await this.#stores.taxRules.deleteRate(rateId);
 		return res.ok ? { ok: true } : { ok: false, reason: "not_found" };
+	}
+
+	// -- Store currency ------------------------------------------------------------
+
+	/** One keyed settings read; never-saved is USD (`effectiveStoreCurrency`). */
+	async getStoreCurrency(): Promise<string> {
+		return effectiveStoreCurrency(await this.#stores.settingsStore.get());
 	}
 
 	// -- Tax: options (ADR-0032) -------------------------------------------------

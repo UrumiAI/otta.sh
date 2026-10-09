@@ -88,3 +88,27 @@ export function mulDivRoundHalfDownAny(a: number, b: number, denominator: number
 	const d = BigInt(denominator);
 	return Number((2n * BigInt(a) * BigInt(b) + d - 1n) / (2n * d));
 }
+
+/**
+ * `amount` rounded half-up to the nearest multiple of `increment`: the checkout's
+ * payment rounding (ADR-0033's amendment — KWD 1.234 → 1.230, 1.235 → 1.240).
+ * `amount` a non-negative safe integer, `increment` a positive safe integer.
+ * Computed in `BigInt` as `floor((2·amount + increment) / (2·increment)) ·
+ * increment`, so it is exact at every magnitude and for an odd increment. The
+ * result is returned UNCHECKED — the caller brands it (`cents()` refuses a total
+ * past the safe-integer range).
+ */
+export function roundHalfUpToMultiple(amount: number, increment: number): number {
+	if (!Number.isSafeInteger(amount) || amount < 0) {
+		throw new RangeError(
+			`roundHalfUpToMultiple requires a non-negative integer amount, got ${String(amount)}`,
+		);
+	}
+	if (!Number.isSafeInteger(increment) || increment <= 0) {
+		throw new RangeError(
+			`roundHalfUpToMultiple requires a positive integer increment, got ${String(increment)}`,
+		);
+	}
+	const inc = BigInt(increment);
+	return Number(((2n * BigInt(amount) + inc) / (2n * inc)) * inc);
+}

@@ -100,17 +100,19 @@ export {
 	currencyDigits,
 	currencyInfo,
 	inputMinorUnitDigits,
-	NOT_YET_PAYABLE_AT_CHECKOUT,
-	checkoutPaymentLabelClause,
-	checkoutPaymentLabelSuffix,
-	checkoutPaymentWarning,
-	withCheckoutPaymentWarning,
+	currencyPaymentIncrement,
 	unsupportedCurrencyMessage,
 	isSupportedCurrency,
 	minorUnitDigits,
 	type CurrencyInfo,
 	type SupportedCurrencyCode,
 } from "./currencies.js";
+export {
+	CURRENCY_CHOICES,
+	DEFAULT_STORE_CURRENCY,
+	currencyChoiceLabel,
+	currencyChoicesWith,
+} from "./currency-choices.js";
 export {
 	DATE_LOCALE,
 	DAY_MS,
@@ -206,6 +208,8 @@ export {
 	REFUND_AMOUNT_PRECISION,
 	hasExcessDecimals,
 	refundAmountPrecisionText,
+	refundIncrementText,
+	isRefundableIncrement,
 	REFUND_BY_REQUIRED,
 	REFUND_PARTIAL_BANNER_TITLE,
 	REFUND_PARTIAL_GROUP_LABEL,

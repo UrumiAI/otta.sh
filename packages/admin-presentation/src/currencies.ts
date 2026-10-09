@@ -24,6 +24,15 @@ export interface CurrencyInfo {
 	readonly digits: 0 | 2 | 3;
 	/** English display name. */
 	readonly name: string;
+	/**
+	 * The smallest amount a payment in this currency can be, in minor units: a
+	 * charged total, and every refund, is a whole multiple of it. Absent ⇒ any
+	 * minor-unit amount (an increment of 1). The three-decimal currencies carry
+	 * 10 — payments in them are taken in multiples of 0.010, not 0.001 — so
+	 * checkout rounds an order's FINAL total half-up to a multiple of it and
+	 * shows the difference as its own "Rounding" line (ADR-0033 amendment).
+	 */
+	readonly paymentIncrement?: number;
 }
 
 export const SUPPORTED_CURRENCIES = [
@@ -31,7 +40,7 @@ export const SUPPORTED_CURRENCIES = [
 	{ code: "ARS", digits: 2, name: "Argentine Peso" },
 	{ code: "AUD", digits: 2, name: "Australian Dollar" },
 	{ code: "BDT", digits: 2, name: "Bangladeshi Taka" },
-	{ code: "BHD", digits: 3, name: "Bahraini Dinar" },
+	{ code: "BHD", digits: 3, name: "Bahraini Dinar", paymentIncrement: 10 },
 	{ code: "BRL", digits: 2, name: "Brazilian Real" },
 	{ code: "CAD", digits: 2, name: "Canadian Dollar" },
 	{ code: "CHF", digits: 2, name: "Swiss Franc" },
@@ -48,18 +57,18 @@ export const SUPPORTED_CURRENCIES = [
 	{ code: "IDR", digits: 2, name: "Indonesian Rupiah" },
 	{ code: "ILS", digits: 2, name: "Israeli New Shekel" },
 	{ code: "INR", digits: 2, name: "Indian Rupee" },
-	{ code: "JOD", digits: 3, name: "Jordanian Dinar" },
+	{ code: "JOD", digits: 3, name: "Jordanian Dinar", paymentIncrement: 10 },
 	{ code: "JPY", digits: 0, name: "Japanese Yen" },
 	{ code: "KES", digits: 2, name: "Kenyan Shilling" },
 	{ code: "KRW", digits: 0, name: "South Korean Won" },
-	{ code: "KWD", digits: 3, name: "Kuwaiti Dinar" },
+	{ code: "KWD", digits: 3, name: "Kuwaiti Dinar", paymentIncrement: 10 },
 	{ code: "MAD", digits: 2, name: "Moroccan Dirham" },
 	{ code: "MXN", digits: 2, name: "Mexican Peso" },
 	{ code: "MYR", digits: 2, name: "Malaysian Ringgit" },
 	{ code: "NGN", digits: 2, name: "Nigerian Naira" },
 	{ code: "NOK", digits: 2, name: "Norwegian Krone" },
 	{ code: "NZD", digits: 2, name: "New Zealand Dollar" },
-	{ code: "OMR", digits: 3, name: "Omani Rial" },
+	{ code: "OMR", digits: 3, name: "Omani Rial", paymentIncrement: 10 },
 	{ code: "PEN", digits: 2, name: "Peruvian Sol" },
 	{ code: "PHP", digits: 2, name: "Philippine Peso" },
 	{ code: "PKR", digits: 2, name: "Pakistani Rupee" },
@@ -142,43 +151,14 @@ export function inputMinorUnitDigits(code: string): number {
 }
 
 /**
- * The warning an admin screen shows beside a currency the store can price in
- * but checkout cannot take payment in yet — the three-decimal currencies (KWD,
- * BHD, OMR, JOD), whose smallest unit the payment path does not charge in (an
- * order total need not be the multiple of 10 it needs). `null` for every other
- * code. Vendor-neutral copy, as everything in core is; it mirrors the payment
- * adapter's refusal for listed codes (pinned by
- * `packages/plugin/test/money-parity.test.ts`). No behaviour hangs on it — it
- * only tells the merchant before a buyer finds out at checkout.
+ * The table's payment increment for `code` (its `paymentIncrement`, in minor
+ * units), or `undefined` when a payment in it may be any minor-unit amount.
+ * Mirrors `@otta-sh/domain`'s `currencyPaymentIncrement` (pinned equal by
+ * `packages/plugin/test/money-parity.test.ts`); the admin's refund entry reads
+ * it, since a refund is a multiple of it.
  */
-export function checkoutPaymentWarning(code: string): string | null {
-	return currencyDigits(code) === 3
-		? `${code} prices are not yet payable at checkout — a payment in ${code} will be refused.`
-		: null;
-}
-
-/** The short form for a picker option or field label: `(not yet payable at checkout)`. */
-export const NOT_YET_PAYABLE_AT_CHECKOUT = "not yet payable at checkout";
-
-/** The ONE label suffix for {@link checkoutPaymentWarning}'s currencies — a
- *  picker option, a field label: ` (not yet payable at checkout)`, or `""`. */
-export function checkoutPaymentLabelSuffix(code: string): string {
-	return checkoutPaymentWarning(code) === null ? "" : ` (${NOT_YET_PAYABLE_AT_CHECKOUT})`;
-}
-
-/** The same warning as a clause INSIDE a label's own parentheses —
- *  `Amount off (KWD; not yet payable at checkout)` — so a label that already
- *  ends in `(…)` doesn't gain a second pair: `; not yet payable at checkout`, or `""`. */
-export function checkoutPaymentLabelClause(code: string): string {
-	return checkoutPaymentWarning(code) === null ? "" : `; ${NOT_YET_PAYABLE_AT_CHECKOUT}`;
-}
-
-/** The ONE notice form: `text`, followed by {@link checkoutPaymentWarning}
- *  when `code` is one of its currencies (`text` unchanged otherwise, or with
- *  no code). */
-export function withCheckoutPaymentWarning(text: string, code: string | null): string {
-	const warning = code === null ? null : checkoutPaymentWarning(code);
-	return warning === null ? text : `${text} ${warning}`;
+export function currencyPaymentIncrement(code: string): number | undefined {
+	return BY_CODE.get(code)?.paymentIncrement;
 }
 
 /** The ONE refusal for a currency the store does not support, on every admin

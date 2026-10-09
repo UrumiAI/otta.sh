@@ -1,20 +1,23 @@
 import { describe, expect, test } from "vitest";
 import {
 	SUPPORTED_CURRENCIES as ADMIN_CURRENCIES,
+	DEFAULT_STORE_CURRENCY as ADMIN_DEFAULT_STORE_CURRENCY,
 	currencyDigits as adminCurrencyDigits,
+	currencyPaymentIncrement as adminPaymentIncrement,
 	isSupportedCurrency as adminIsSupported,
 	minorUnitDigits as adminMinorUnitDigits,
-	checkoutPaymentWarning,
 } from "@otta-sh/admin-presentation";
 import {
 	SUPPORTED_CURRENCIES as DOMAIN_CURRENCIES,
+	DEFAULT_STORE_CURRENCY as DOMAIN_DEFAULT_STORE_CURRENCY,
 	cents as domainCents,
 	currency as domainCurrency,
 	currencyDigits as domainCurrencyDigits,
+	currencyPaymentIncrement as domainPaymentIncrement,
 	isSupportedCurrency as domainIsSupported,
 	minorUnitDigits as domainMinorUnitDigits,
 } from "@otta-sh/domain";
-import { stripeRefusesCurrency } from "@otta-sh/payments-stripe";
+import { stripeAmountIncrement, stripeRefusesCurrency } from "@otta-sh/payments-stripe";
 import { cents as pluginCents, currency as pluginCurrency } from "../src/presentation/money.js";
 
 /**
@@ -104,6 +107,10 @@ describe("currency table mirror parity (admin-presentation/currencies.ts ⇄ dom
 		expect(ADMIN_CURRENCIES).toEqual(DOMAIN_CURRENCIES);
 	});
 
+	test("the never-saved store currency is the same in both", () => {
+		expect(ADMIN_DEFAULT_STORE_CURRENCY).toBe(DOMAIN_DEFAULT_STORE_CURRENCY);
+	});
+
 	test("the helpers agree on every listed code and on unlisted ones", () => {
 		const probes = [
 			...DOMAIN_CURRENCIES.map((row) => row.code),
@@ -122,19 +129,24 @@ describe("currency table mirror parity (admin-presentation/currencies.ts ⇄ dom
 			// The DISPLAY exponent (table → ICU → 2): the domain's refund flags and
 			// the admin's `formatMoney` must print one amount the same way.
 			expect(adminMinorUnitDigits(code), code).toBe(domainMinorUnitDigits(code));
+			expect(adminPaymentIncrement(code), code).toBe(domainPaymentIncrement(code));
 		}
 	});
 });
 
-describe("the admin's 'not yet payable at checkout' warning names exactly what Stripe refuses", () => {
-	test("for every listed currency, warned ⇔ refused by the live Stripe path", () => {
+describe("every listed currency is payable at checkout, in the steps Stripe takes (ADR-0033 amendment)", () => {
+	test("the live Stripe path refuses no listed currency", () => {
 		for (const row of DOMAIN_CURRENCIES) {
-			expect(checkoutPaymentWarning(row.code) !== null, row.code).toBe(
-				stripeRefusesCurrency(row.code),
-			);
+			expect(stripeRefusesCurrency(row.code), row.code).toBe(false);
 		}
-		expect(checkoutPaymentWarning("KWD")).toMatch(/not yet payable at checkout/);
-		expect(checkoutPaymentWarning("USD")).toBeNull();
-		expect(checkoutPaymentWarning("JPY")).toBeNull();
+	});
+
+	test("the table's payment increment is Stripe's amount step for every listed currency", () => {
+		for (const row of DOMAIN_CURRENCIES) {
+			expect(domainPaymentIncrement(row.code) ?? 1, row.code).toBe(stripeAmountIncrement(row.code));
+		}
+		expect(domainPaymentIncrement("KWD")).toBe(10);
+		expect(domainPaymentIncrement("USD")).toBeUndefined();
+		expect(domainPaymentIncrement("JPY")).toBeUndefined();
 	});
 });

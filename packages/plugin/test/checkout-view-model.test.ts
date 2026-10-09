@@ -570,3 +570,49 @@ describe("lockedCheckoutPhase — what a cart that already became an order may o
 		expect(lockedCheckoutPhase("some_future_state")).toBe("placed");
 	});
 });
+
+describe("buildCheckoutTotals — the payment rounding row (ADR-0033 amendment)", () => {
+	const KWD = {
+		currency: "KWD",
+		subtotalCents: 1234,
+		discountCents: 0,
+		shippingCents: 0,
+		taxCents: 0,
+		totalCents: 1230,
+		roundingCents: -4,
+		appliedCouponCode: null,
+	};
+	const flags = { locale: LOCALE, shippingSelected: true, taxZoneSelected: true };
+
+	test("a rounded-down KWD total gets a signed '−' row, its money keeping the sign", () => {
+		const totals = buildCheckoutTotals(KWD, flags);
+		expect(totals.rounding?.label).toMatch(/^−/);
+		expect(totals.rounding?.label).toContain("0.004");
+		expect(totals.rounding?.money?.amount).toBe(-4);
+		expect(totals.total.money?.amount).toBe(1230);
+	});
+
+	test("a rounded-up total gets a '+' row", () => {
+		const totals = buildCheckoutTotals({ ...KWD, totalCents: 1240, roundingCents: 6 }, flags);
+		expect(totals.rounding?.label).toMatch(/^\+/);
+		expect(totals.rounding?.label).toContain("0.006");
+	});
+
+	test("a digital-only KWD quote (no shipping, no tax calculated) still shows the row — the rows add up to the rounded total", () => {
+		const totals = buildCheckoutTotals(KWD, {
+			locale: LOCALE,
+			shippingSelected: false,
+			taxZoneSelected: false,
+		});
+		expect(totals.totalExcludesUncalculated).toBe(true);
+		expect(totals.rounding?.label).toMatch(/^−.*0\.004/);
+		expect(totals.total.money?.amount).toBe(1230);
+	});
+
+	test("a zero rounding, and a breakdown with none, add no row at all", () => {
+		expect(
+			Object.hasOwn(buildCheckoutTotals({ ...KWD, roundingCents: 0 }, flags), "rounding"),
+		).toBe(false);
+		expect(Object.hasOwn(buildCheckoutTotals(BREAKDOWN, flags), "rounding")).toBe(false);
+	});
+});

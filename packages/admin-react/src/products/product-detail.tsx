@@ -55,7 +55,7 @@ import {
 	ADD_STOCK_PLACEHOLDER,
 	COMPARE_AT_PLACEHOLDER,
 	CURRENCY_FIELD_LABEL,
-	CURRENCY_PLACEHOLDER,
+	DEFAULT_STORE_CURRENCY,
 	DISCARD_LABEL,
 	NO_CHANGES_TO_SAVE,
 	NO_TAX_CLASS,
@@ -934,6 +934,7 @@ export function ProductDetail({
 						key="product"
 						product={p}
 						taxClasses={detail.taxClasses}
+						storeCurrency={detail.storeCurrency}
 						busy={busy}
 						savingPrice={acting === "products:save-price"}
 						priceReceipt={receipts.price}
@@ -1198,6 +1199,7 @@ export function ProductTabs({
 function ProductPanel({
 	product: p,
 	taxClasses,
+	storeCurrency,
 	busy,
 	savingPrice,
 	priceReceipt,
@@ -1208,6 +1210,9 @@ function ProductPanel({
 }: {
 	product: ProductRecord;
 	taxClasses: readonly { id: string; name: string }[];
+	/** The store currency the detail read carried: `null` when the read failed,
+	 *  absent from an older plugin. */
+	storeCurrency: string | null | undefined;
 	busy: boolean;
 	/** Only the price save reports in place so far; increment 3 extends the same
 	 *  treatment to identity and classification. */
@@ -1288,6 +1293,7 @@ function ProductPanel({
 					<PriceGroup
 						key={`price-${String(formKeys.price)}`}
 						product={p}
+						storeCurrency={storeCurrency}
 						busy={busy}
 						saving={savingPrice}
 						receipt={priceReceipt}
@@ -1537,6 +1543,7 @@ export function IdentityFields({
  */
 export function PriceGroup({
 	product: p,
+	storeCurrency,
 	busy,
 	saving,
 	receipt,
@@ -1544,6 +1551,10 @@ export function PriceGroup({
 	onSubmit,
 }: {
 	product: ProductRecord;
+	/** The store currency the detail read carried — the unpriced product's
+	 *  currency HINT (a placeholder; nothing is prefilled). `null` (the read
+	 *  failed) ⇒ no hint, never a guess; absent ⇒ "USD", as before. */
+	storeCurrency?: string | null | undefined;
 	busy: boolean;
 	/** THIS save is the one in flight — not merely that some write is. */
 	saving: boolean;
@@ -1617,7 +1628,11 @@ export function PriceGroup({
 							className="otta-focusable"
 							data-testid="edit-currency"
 							style={fieldStyle(changed, "currency")}
-							placeholder={CURRENCY_PLACEHOLDER}
+							placeholder={
+								storeCurrency === null
+									? "Choose a currency"
+									: (storeCurrency ?? DEFAULT_STORE_CURRENCY)
+							}
 							value={values["currency"] ?? ""}
 							onChange={set("currency")}
 						/>

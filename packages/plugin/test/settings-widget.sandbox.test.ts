@@ -1,9 +1,12 @@
 import { OTTA_PLUGIN_CAPABILITIES, SETTINGS_SCHEMA } from "@otta-sh/plugin";
+import { idempotencyKey, type TaxSettings } from "@otta-sh/domain";
 import {
 	collectionOf,
+	EmdashSettingsStore,
 	SETTINGS_COLLECTION,
 	SETTINGS_DOC_ID,
 	SETTINGS_MUTATIONS_COLLECTION,
+	systemClock,
 	type SettingsMutationDoc,
 	type StorageAccess,
 } from "@otta-sh/store-emdash";
@@ -1171,5 +1174,383 @@ describe("Background work per minute (the sweep's query budget)", () => {
 			field(formFor(await settingsPage(), "save-background-work"), "backgroundWorkPerMinute")
 				?.initial_value,
 		).toBe("30");
+	});
+});
+
+// The store currency (Currency PR 2): a select in the Store group, saved into the
+// SAME settings document as the hold time, the threshold and the tax block — so
+// what it must never do is drop or change any of them.
+/** The raw settings document, or null when none is stored. */
+async function storedDoc(): Promise<Record<string, unknown> | null> {
+	const { storage } = await storageBridge();
+	return (await collectionOf(storage, SETTINGS_COLLECTION).get(SETTINGS_DOC_ID)) as Record<
+		string,
+		unknown
+	> | null;
+}
+
+describe("Settings: store currency", () => {
+	afterEach(async () => {
+		await resetOperationalSettings();
+	});
+
+	const SAMPLE_TAX: TaxSettings = {
+		enabled: true,
+		pricesIncludeTax: false,
+		basedOn: "shipping",
+		baseAddress: null,
+		shippingTaxClass: { kind: "legacy" },
+		roundAtSubtotal: false,
+		displayCart: "excl",
+		totalsDisplay: "itemized",
+	};
+
+	test("a store that never saved one shows USD, every table currency in the picker's order, and the new-carts-only warning", async () => {
+		await resetOperationalSettings();
+		sandbox = await loadPluginInSandbox({ allowedHosts: [], storage: true });
+		const blocks = blocksOf(
+			await sandbox.invokeRoute("admin", { type: "page_load", page: "/settings" }),
+		);
+		assertBlockContract(blocks, { screen: "settings", level: "list" });
+		const select = field(formFor(blocks, "save-store-currency"), "currency");
+		expect(select?.type).toBe("select");
+		expect(select?.initial_value).toBe("USD");
+		const options = select?.options as Array<{ value: string; label: string }>;
+		expect(options.slice(0, 10).map((o) => o.value)).toEqual([
+			"USD",
+			"EUR",
+			"GBP",
+			"CAD",
+			"AUD",
+			"NZD",
+			"INR",
+			"SGD",
+			"CHF",
+			"SEK",
+		]);
+		const rest = options.slice(10).map((o) => o.value);
+		expect(rest).toEqual(rest.toSorted());
+		// Every table currency — the three-decimal ones included, since checkout
+		// rounds their total to the payment increment (ADR-0033 amendment).
+		expect(options).toHaveLength(49);
+		for (const code of ["BHD", "JOD", "KWD", "OMR"]) {
+			expect(
+				options.some((o) => o.value === code),
+				code,
+			).toBe(true);
+		}
+		expect(options[0]).toEqual({ value: "USD", label: "USD — US Dollar" });
+		const copy = contextTexts(blocks).join(" ");
+		expect(copy).toContain("new carts only");
+		// A product's or coupon's currency is fixed once set, so the copy says to
+		// decide first — never "reprice them" (review B M-1).
+		expect(copy).toContain("Set it before pricing");
+		expect(copy).toContain("can't be bought in new carts or changed to it");
+		expect(copy).toContain("Add shipping rates in it");
+		// §1's 140-character context budget, for this group's two lines.
+		const currencyLines = contextTexts(blocks).filter(
+			(line) => line.startsWith("Store currency:") || line.startsWith("Set it before pricing"),
+		);
+		expect(currencyLines).toHaveLength(2);
+		for (const line of currencyLines) expect(line.length).toBeLessThanOrEqual(140);
+		// Rendering it wrote nothing: the store still has no currency saved.
+		expect((await storedDoc())?.["currency"]).toBeUndefined();
+		// The Store group's label and the other groups are as they were.
+		expect(groupLabels(blocks).get("settings:store")).toBe("Store — no display name");
+		expectAllRealFormsPresent(blocks);
+	});
+
+	test("saving a currency persists it alone — hold time, threshold and the tax block are untouched", async () => {
+		await resetOperationalSettings();
+		const { storage } = await storageBridge();
+		const settings = new EmdashSettingsStore({ storage, clock: systemClock });
+		await settings.update(
+			{ holdTtlMinutes: 40, lowStockThreshold: 9, tax: SAMPLE_TAX },
+			idempotencyKey(`sc-seed-${String(Date.now())}`),
+		);
+		sandbox = await loadPluginInSandbox({ allowedHosts: [], storage: true });
+
+		const outcome = await sandbox.invokeRoute("admin", {
+			type: "form_submit",
+			action_id: "save-store-currency",
+			values: { currency: "EUR" },
+			idempotencyKey: `k-sc-save-${String(Date.now())}`,
+		});
+		const blocks = blocksOf(outcome);
+		assertBlockContract(blocks, { screen: "settings", level: "list" });
+		expectAllRealFormsPresent(blocks);
+		expect(toastOf(outcome)).toEqual({ message: "Store currency saved", type: "success" });
+		const banner = findBlocks(blocks, "banner")[0];
+		expect(String(banner?.description)).toContain("EUR — Euro");
+		expect(field(formFor(blocks, "save-store-currency"), "currency")?.initial_value).toBe("EUR");
+		expect(groupLabels(blocks).get("settings:checkout")).toBe(
+			"Checkout & holds — 40 min hold · low stock at 9",
+		);
+		expect(await settings.get()).toEqual({
+			holdTtlMinutes: 40,
+			lowStockThreshold: 9,
+			tax: SAMPLE_TAX,
+			currency: "EUR",
+		});
+
+		// And the other way round: an operational save keeps the currency.
+		await sandbox.invokeRoute("admin", {
+			type: "form_submit",
+			action_id: "save-operational",
+			values: { holdTtlMinutes: "41", lowStockThreshold: "9" },
+			idempotencyKey: `k-sc-op-${String(Date.now())}`,
+		});
+		expect((await settings.get()).currency).toBe("EUR");
+		expect((await settings.get()).tax).toEqual(SAMPLE_TAX);
+	});
+
+	test("saving the select unchanged writes nothing — a never-saved store stays never-saved", async () => {
+		await resetOperationalSettings();
+		sandbox = await loadPluginInSandbox({ allowedHosts: [], storage: true });
+		const outcome = await sandbox.invokeRoute("admin", {
+			type: "form_submit",
+			action_id: "save-store-currency",
+			values: { currency: "USD" },
+			idempotencyKey: "k-sc-unchanged-1",
+		});
+		const blocks = blocksOf(outcome);
+		assertBlockContract(blocks, { screen: "settings", level: "list" });
+		const banner = findBlocks(blocks, "banner")[0];
+		expect(String(banner?.title)).toBe("Nothing changed");
+		expect(String(banner?.description)).toBe("The store currency is already USD — US Dollar.");
+		// No settings document at all, so `currency` is still absent (never saved).
+		expect(await storedDoc()).toBeNull();
+
+		// A saved currency resubmitted unchanged is a no-op too.
+		const { storage } = await storageBridge();
+		const settings = new EmdashSettingsStore({ storage, clock: systemClock });
+		await settings.update({ currency: "EUR" }, idempotencyKey("sc-unchanged-seed"));
+		const before = await storedDoc();
+		const again = await sandbox.invokeRoute("admin", {
+			type: "form_submit",
+			action_id: "save-store-currency",
+			values: { currency: "EUR" },
+			idempotencyKey: "k-sc-unchanged-2",
+		});
+		expect(String(findBlocks(blocksOf(again), "banner")[0]?.title)).toBe("Nothing changed");
+		expect(await storedDoc()).toEqual(before);
+	});
+
+	test("a three-decimal currency (KWD, BHD) can be the store currency — checkout rounds its total (ADR-0033 amendment)", async () => {
+		await resetOperationalSettings();
+		sandbox = await loadPluginInSandbox({ allowedHosts: [], storage: true });
+		for (const code of ["KWD", "BHD"]) {
+			const outcome = await sandbox.invokeRoute("admin", {
+				type: "form_submit",
+				action_id: "save-store-currency",
+				values: { currency: code },
+				idempotencyKey: `k-sc-three-decimal-${code}`,
+			});
+			assertBlockContract(blocksOf(outcome), { screen: "settings", level: "list" });
+			expect(toastOf(outcome), code).toEqual({ message: "Store currency saved", type: "success" });
+			expect((await storedDoc())?.["currency"], code).toBe(code);
+		}
+	});
+
+	test("a saved three-decimal code is shown, every three-decimal code is offered, and it saves unchanged", async () => {
+		await resetOperationalSettings();
+		const { storage } = await storageBridge();
+		// Written straight to the store (no use-case), as data saved before a rule changed.
+		const settings = new EmdashSettingsStore({ storage, clock: systemClock });
+		await settings.update({ currency: "KWD" }, idempotencyKey("sc-legacy-kwd"));
+		sandbox = await loadPluginInSandbox({ allowedHosts: [], storage: true });
+		const loaded = blocksOf(
+			await sandbox.invokeRoute("admin", { type: "page_load", page: "/settings" }),
+		);
+		const select = field(formFor(loaded, "save-store-currency"), "currency");
+		expect(select?.initial_value).toBe("KWD");
+		const options = select?.options as Array<{ value: string; label: string }>;
+		// The shared label, as the pricing picker shows it — no checkout warning now.
+		expect(options.find((o) => o.value === "KWD")?.label).toBe("KWD — Kuwaiti Dinar");
+		for (const code of ["BHD", "JOD", "OMR"]) {
+			expect(
+				options.some((o) => o.value === code),
+				code,
+			).toBe(true);
+		}
+		const before = await storedDoc();
+		const outcome = await sandbox.invokeRoute("admin", {
+			type: "form_submit",
+			action_id: "save-store-currency",
+			values: { currency: "KWD" },
+			idempotencyKey: "k-sc-legacy-kwd",
+		});
+		expect(String(findBlocks(blocksOf(outcome), "banner")[0]?.title)).toBe("Nothing changed");
+		expect(await storedDoc()).toEqual(before);
+	});
+
+	test('an off-table stored code saved unchanged is "Nothing changed", not refused', async () => {
+		await resetOperationalSettings();
+		const { storage } = await storageBridge();
+		const settings = new EmdashSettingsStore({ storage, clock: systemClock });
+		await settings.update({ currency: "XYZ" }, idempotencyKey("sc-legacy-xyz"));
+		sandbox = await loadPluginInSandbox({ allowedHosts: [], storage: true });
+		const outcome = await sandbox.invokeRoute("admin", {
+			type: "form_submit",
+			action_id: "save-store-currency",
+			values: { currency: "XYZ" },
+			idempotencyKey: "k-sc-legacy-xyz",
+		});
+		const banner = findBlocks(blocksOf(outcome), "banner")[0];
+		expect(String(banner?.title)).toBe("Nothing changed");
+		expect(String(banner?.description)).toBe("The store currency is already XYZ.");
+	});
+
+	test("a code outside the table is refused by name, and nothing is written", async () => {
+		await resetOperationalSettings();
+		sandbox = await loadPluginInSandbox({ allowedHosts: [], storage: true });
+		for (const bad of ["XYZ", "eur", "", "ISK"]) {
+			const outcome = await sandbox.invokeRoute("admin", {
+				type: "form_submit",
+				action_id: "save-store-currency",
+				values: { currency: bad },
+				idempotencyKey: `k-sc-bad-${bad}`,
+			});
+			const blocks = blocksOf(outcome);
+			assertBlockContract(blocks, { screen: "settings", level: "list" });
+			const banner = findBlocks(blocks, "banner").find((b) => b.variant === "error");
+			expect(String(banner?.title), bad).toBe("Store currency not saved");
+			expect(String(banner?.description), bad).toContain("isn't a supported currency");
+			expect(toastOf(outcome), bad).toEqual({ message: "Store currency not saved", type: "error" });
+			expect(field(formFor(blocks, "save-store-currency"), "currency")?.initial_value, bad).toBe(
+				"USD",
+			);
+		}
+		expect(await storedDoc()).toBeNull();
+	});
+
+	test("when the settings read fails, the currency form is replaced by a line — the display name still saves", async () => {
+		sandbox = await loadPluginInSandbox({ allowedHosts: [], storage: true });
+		const handle = sandbox;
+		const blocks = await withSettingsReadFailing(async () =>
+			blocksOf(await handle.invokeRoute("admin", { type: "page_load", page: "/settings" })),
+		);
+		expect(formFor(blocks, "save-store-currency")).toBeUndefined();
+		expect(contextTexts(blocks)).toContain(
+			"The store currency could not be loaded right now. Reload to try again — the rest of this page still works.",
+		);
+		expect(formFor(blocks, "save-display")).toBeDefined();
+	});
+
+	test("a superseded currency save says someone else changed the settings, and writes nothing", async () => {
+		const storage = await resetOperationalSettings();
+		const key = "k-sc-superseded-1";
+		const mutations = collectionOf<SettingsMutationDoc>(storage, SETTINGS_MUTATIONS_COLLECTION);
+		const seeded = await mutations.compareAndSet(key, null, {
+			patch: { currency: "EUR" },
+			decidedRevision: "some-other-writer-already-decided-this",
+			createdAt: new Date().toISOString(),
+			result: null,
+			appliedRevision: null,
+			appliedAt: null,
+			supersededAt: null,
+		});
+		if (!seeded.applied) throw new Error("fixture setup lost a compare-and-set");
+		sandbox = await loadPluginInSandbox({ allowedHosts: [], storage: true });
+		const outcome = await sandbox.invokeRoute("admin", {
+			type: "form_submit",
+			action_id: "save-store-currency",
+			values: { currency: "EUR" },
+			idempotencyKey: key,
+		});
+		const blocks = blocksOf(outcome);
+		assertBlockContract(blocks, { screen: "settings", level: "list" });
+		const banner = findBlocks(blocks, "banner").find((b) => b.variant === "error");
+		expect(String(banner?.title)).toBe("Settings changed by someone else");
+		// One sentence, then the next — no run-on.
+		expect(String(banner?.description)).toBe(
+			"Settings were changed by someone else while this save was in flight — reload and try again. Nothing was saved.",
+		);
+		expect(toastOf(outcome)).toEqual({
+			message: "Settings changed by someone else",
+			type: "error",
+		});
+		expect((await storedDoc())?.["currency"]).toBeUndefined();
+	});
+
+	test("a currency save the store cannot confirm says to reload — it never claims nothing was saved", async () => {
+		await resetOperationalSettings();
+		sandbox = await loadPluginInSandbox({ allowedHosts: [], storage: true });
+		const handle = sandbox;
+		const { storage } = await storageBridge();
+		const real = storage[SETTINGS_MUTATIONS_COLLECTION];
+		if (real === undefined) throw new Error("no settings_mutations collection to fault-inject");
+		storage[SETTINGS_MUTATIONS_COLLECTION] = new Proxy(real, {
+			get(_holder, property) {
+				if (property === "compareAndSet") {
+					return () => {
+						throw new Error("injected storage fault: settings unwritable");
+					};
+				}
+				const value = Reflect.get(real, property) as unknown;
+				if (typeof value !== "function") return value;
+				return (value as (...args: unknown[]) => unknown).bind(real);
+			},
+		}) as StorageAccess[string];
+		let outcome: unknown;
+		try {
+			outcome = await handle.invokeRoute("admin", {
+				type: "form_submit",
+				action_id: "save-store-currency",
+				values: { currency: "EUR" },
+				idempotencyKey: "k-sc-unavailable-1",
+			});
+		} finally {
+			storage[SETTINGS_MUTATIONS_COLLECTION] = real;
+		}
+		const blocks = blocksOf(outcome);
+		assertBlockContract(blocks, { screen: "settings", level: "list" });
+		const banner = findBlocks(blocks, "banner").find((b) => b.variant === "error");
+		expect(String(banner?.title)).toBe("Store currency couldn't be confirmed");
+		expect(String(banner?.description)).toBe(
+			"The save couldn't be confirmed — reload to check the store currency.",
+		);
+		expect(`${String(banner?.title)} ${String(banner?.description)}`).not.toMatch(/not saved/i);
+		expect(toastOf(outcome)).toEqual({
+			message: "Store currency couldn't be confirmed",
+			type: "error",
+		});
+	});
+
+	test("an operational save the store cannot confirm says to reload — it never claims nothing was saved", async () => {
+		await resetOperationalSettings();
+		sandbox = await loadPluginInSandbox({ allowedHosts: [], storage: true });
+		const handle = sandbox;
+		const { storage } = await storageBridge();
+		const real = storage[SETTINGS_MUTATIONS_COLLECTION];
+		if (real === undefined) throw new Error("no settings_mutations collection to fault-inject");
+		storage[SETTINGS_MUTATIONS_COLLECTION] = new Proxy(real, {
+			get(_holder, property) {
+				if (property === "compareAndSet") {
+					return () => {
+						throw new Error("injected storage fault: settings unwritable");
+					};
+				}
+				const value = Reflect.get(real, property) as unknown;
+				if (typeof value !== "function") return value;
+				return (value as (...args: unknown[]) => unknown).bind(real);
+			},
+		}) as StorageAccess[string];
+		let outcome: unknown;
+		try {
+			outcome = await handle.invokeRoute("admin", {
+				type: "form_submit",
+				action_id: "save-operational",
+				values: { holdTtlMinutes: "45", lowStockThreshold: "20" },
+				idempotencyKey: "k-op-unavailable-1",
+			});
+		} finally {
+			storage[SETTINGS_MUTATIONS_COLLECTION] = real;
+		}
+		const banner = findBlocks(blocksOf(outcome), "banner").find((b) => b.variant === "error");
+		expect(String(banner?.title)).toBe("Settings couldn't be confirmed");
+		expect(String(banner?.description)).toBe(
+			"The save couldn't be confirmed — reload to check the current values.",
+		);
 	});
 });

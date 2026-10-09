@@ -6,7 +6,14 @@ import {
 	idempotencyKey,
 	orderId,
 } from "@otta-sh/domain";
-import { EmdashCouponStore, type StorageAccess, uuidIdGen } from "@otta-sh/store-emdash";
+import {
+	EmdashCouponStore,
+	EmdashSettingsStore,
+	SETTINGS_COLLECTION,
+	type StorageAccess,
+	systemClock,
+	uuidIdGen,
+} from "@otta-sh/store-emdash";
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "vitest";
 import { couponStatus, couponUsesSummary } from "../src/admin/coupons-page.js";
 import {
@@ -21,6 +28,7 @@ import {
 	blocksOf,
 	buttons,
 	confirmOf,
+	contextTexts,
 	emptyActions,
 	fieldEntries,
 	findBlock,
@@ -679,6 +687,54 @@ describe("admin Coupons console — list level (workerd sandbox)", () => {
 		}
 	});
 
+	// Currency PR 2: the currency field HINTS the store currency — a placeholder,
+	// never a prefill (one field serves both types, and a percentage coupon with no
+	// cap must be able to leave it blank).
+	test("the create form's currency field hints the store currency: USD until one is saved, then the saved one — never prefilled", async () => {
+		await boot(makeCouponsState());
+		const before = new Map(
+			formFields(await openNewCouponScreen(), "coupons:create").map((f) => [f.action_id, f]),
+		);
+		expect(before.get("currency")?.placeholder).toBe("USD");
+		expect(before.get("currency")?.initial_value).toBeUndefined();
+
+		const settings = new EmdashSettingsStore({ storage, clock: systemClock });
+		await settings.update({ currency: "INR" }, idempotencyKey("coupons-store-currency"));
+		const after = new Map(
+			formFields(await openNewCouponScreen(), "coupons:create").map((f) => [f.action_id, f]),
+		);
+		expect(after.get("currency")?.placeholder).toBe("INR");
+		expect(after.get("currency")?.initial_value).toBeUndefined();
+
+		// A refused create re-renders the screen with the same hint.
+		const refused = blocksOf(
+			await sandbox!.invokeRoute("admin", {
+				type: "form_submit",
+				action_id: "coupons:create",
+				values: { id: "", code: "", type: "Fixed amount off" },
+			}),
+		);
+		const refusedFields = new Map(
+			formFields(refused, "coupons:create").map((f) => [f.action_id, f]),
+		);
+		expect(refusedFields.get("currency")?.placeholder).toBe("INR");
+	});
+
+	test("a settings outage still opens the create screen, with no guessed hint and a line saying why", async () => {
+		await boot(makeCouponsState());
+		// Saved INR, so a USD hint can only come from the fallback.
+		const settings = new EmdashSettingsStore({ storage, clock: systemClock });
+		await settings.update({ currency: "INR" }, idempotencyKey("coupons-outage-currency"));
+		const list = await loadList();
+		const screen = await withSettingsUnreadable(() => openNewCouponScreen(list));
+		const byId = new Map(formFields(screen, "coupons:create").map((f) => [f.action_id, f]));
+		expect(byId.get("currency")?.placeholder).toBeUndefined();
+		expect(byId.get("currency")?.initial_value).toBeUndefined();
+		expect(contextTexts(screen)).toContain(
+			"Couldn't load your store currency — if this coupon needs a currency, enter it yourself.",
+		);
+	});
+
 	test("create (fixed_amount) stores EXACT integer minor units; the five shared axes are not on this form and land as explicit null", async () => {
 		const state = makeCouponsState();
 		await boot(state);
@@ -1063,8 +1119,10 @@ describe("admin Coupons console — list level (workerd sandbox)", () => {
 				},
 			}),
 		);
-		// Priceable, not yet chargeable through Stripe: the merchant is told now.
-		expect(String(bannerOf(created)?.description)).toMatch(/not yet payable at checkout/);
+		// Payable at checkout now (ADR-0033 amendment): the plain created notice.
+		expect(String(bannerOf(created)?.description)).toBe(
+			'"KWD1" was added and is live per its validity window.',
+		);
 		const kwd = await stored("qa-kwd");
 		expect(kwd?.amountCents).toBe(1234);
 		expect(kwd?.currency).toBe("KWD");
@@ -1849,7 +1907,7 @@ describe("admin Coupons console — detail/edit leaf (workerd sandbox)", () => {
 		});
 	});
 
-	test("binding a THREE-decimal currency on EDIT shows the same 'not yet payable at checkout' warning a create does", async () => {
+	test("binding a THREE-decimal currency on EDIT saves with the plain notice a create gives", async () => {
 		const state = makeCouponsState();
 		const summer = state.coupons.find((c) => c.id === "c-summer");
 		if (summer === undefined) throw new Error("fixture moved");
@@ -1863,7 +1921,9 @@ describe("admin Coupons console — detail/edit leaf (workerd sandbox)", () => {
 			currency: "KWD",
 		});
 		expect(bannerOf(saved)?.variant).toBe("default");
-		expect(String(bannerOf(saved)?.description)).toMatch(/not yet payable at checkout/);
+		expect(String(bannerOf(saved)?.description)).toBe(
+			"Every field was replaced with the submitted values (last write wins). Orders already placed keep their snapshotted discount.",
+		);
 		expect(await stored("c-summer")).toMatchObject({ capCents: 1500, currency: "KWD" });
 	});
 
@@ -2718,3 +2778,27 @@ describe("admin Coupons console — detail/edit leaf (workerd sandbox)", () => {
 		); // true-zero, unfiltered — the `empty` branch
 	});
 });
+
+/** Make ONLY the settings document unreadable for `body`, restoring it after —
+ *  the bridge resolves `storage[name]` fresh on every call. */
+async function withSettingsUnreadable<T>(body: () => Promise<T>): Promise<T> {
+	const real = storage[SETTINGS_COLLECTION];
+	if (real === undefined) throw new Error("no settings collection to fault-inject");
+	storage[SETTINGS_COLLECTION] = new Proxy(real, {
+		get(_holder, property) {
+			if (property === "get" || property === "getVersioned") {
+				return () => {
+					throw new Error("injected storage fault: settings unreadable");
+				};
+			}
+			const value = Reflect.get(real, property) as unknown;
+			if (typeof value !== "function") return value;
+			return (value as (...args: unknown[]) => unknown).bind(real);
+		},
+	}) as StorageAccess[string];
+	try {
+		return await body();
+	} finally {
+		storage[SETTINGS_COLLECTION] = real;
+	}
+}

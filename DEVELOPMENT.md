@@ -97,6 +97,10 @@ domain is a build-breaking bug, not a code-review nit.
   (its header says how). Merchant-typed currencies must be in the table; stored data in any
   shape-valid code still loads, and a code outside the table is typed in hundredths, as
   before the table existed.
+- **Only the final total is ever rounded.** A currency whose row has a `paymentIncrement`
+  (KWD, BHD, OMR, JOD: 10) has its order total rounded half-up to it after tax; the signed
+  difference is `roundingCents` (`SignedCents` — `Cents` is never negative). Every part stays
+  exact, and a currency without an increment never gains the field (ADR-0033 amendment).
 - **Idempotency lives in the domain.** Every command carries an `idempotencyKey`; the store
   enforces once-only. Dedupe in the domain/store, never only in the HTTP client — and test
   the replay case.

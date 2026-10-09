@@ -916,6 +916,60 @@ export function storefrontCommerceClientContract(tier: CommerceClientTier): void
 			expect(quoted.breakdown.totalCents).toBe(3000);
 		});
 
+		test("a KWD cart quotes its total ROUNDED to 0.010 with a signed roundingCents; the order and its public read carry the same (ADR-0033 amendment)", async () => {
+			// A title too: an order snapshots it, so a product without one is unpriced.
+			const productId = await tier.arrange.product({
+				productId: "prod-for-SKU-KWD-ROUND",
+				sku: "SKU-KWD-ROUND",
+				title: "Dinar Widget",
+				price: { amount: 1234, currency: "KWD" },
+				onHand: 10,
+				idempotencyKey: "seed-SKU-KWD-ROUND",
+			});
+			const cartId = await tier.arrange.cart("KWD");
+			const added = await client.addCartLine(cartId, "SKU-KWD-ROUND", productId, 1, "kwd-round-1");
+			if (!added.ok) throw new Error("unreachable");
+
+			const quoted = await client.quoteCheckout({ cartId });
+			if (!quoted.ok) throw new Error(`quote failed: ${quoted.reason}`);
+			expect(quoted.breakdown.subtotalCents).toBe(1234);
+			expect(quoted.breakdown.roundingCents).toBe(-4);
+			expect(quoted.breakdown.totalCents).toBe(1230);
+
+			if (tier.payments === undefined) return;
+			const placed = await client.createOrder(
+				{ cartId, paymentMethod: tier.payments.method, buyerRef: "kwd@example.test" },
+				"kwd-round-order",
+			);
+			if (!placed.ok) throw new Error(`checkout failed: ${placed.reason}`);
+			expect(placed.order.totals.roundingCents).toBe(-4);
+			const read = await client.getPublicOrder(placed.order.id);
+			if (!read.ok) throw new Error("order vanished");
+			expect(read.order.totals.totalCents).toBe(1230);
+			expect(read.order.totals.roundingCents).toBe(-4);
+		});
+
+		test("a USD quote carries no roundingCents key at all", async () => {
+			const productId = await seedProduct({
+				sku: "SKU-USD-NOROUND",
+				onHand: 10,
+				price: { amount: 1234, currency: "USD" },
+			});
+			const cartId = await tier.arrange.cart("USD");
+			const added = await client.addCartLine(
+				cartId,
+				"SKU-USD-NOROUND",
+				productId,
+				1,
+				"usd-noround-1",
+			);
+			if (!added.ok) throw new Error("unreachable");
+			const quoted = await client.quoteCheckout({ cartId });
+			if (!quoted.ok) throw new Error(`quote failed: ${quoted.reason}`);
+			expect(quoted.breakdown.totalCents).toBe(1234);
+			expect(Object.hasOwn(quoted.breakdown, "roundingCents")).toBe(false);
+		});
+
 		// The guarantee this test has always made is unchanged — threading a
 		// productId must never make an unpriced row look purchasable — but the
 		// service now makes it EARLIER. Since the add endpoint's SKU guard, an

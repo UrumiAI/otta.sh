@@ -1,8 +1,4 @@
-import {
-	checkoutPaymentLabelClause,
-	unsupportedCurrencyMessage,
-	withCheckoutPaymentWarning,
-} from "@otta-sh/admin-presentation";
+import { unsupportedCurrencyMessage } from "@otta-sh/admin-presentation";
 import { parseCouponInstant } from "@otta-sh/domain";
 import { formatMoney } from "../presentation/format-money.js";
 import { cents as toCents, currency as toCurrency } from "../presentation/money.js";
@@ -21,6 +17,7 @@ import type {
 	TabPanel,
 } from "../types.js";
 import { makeAdminClients } from "./make-admin-clients.js";
+import { readStoreCurrencySoft } from "./store-currency-read.js";
 import {
 	type AdminRulesSurface,
 	type CouponEdit,
@@ -199,7 +196,20 @@ const NONE = "none";
  * be reconstructed from cents that were never derived. Within-request only —
  * nothing is stored, and it reaches the client only as `initial_value`.
  */
-type CouponsRenderState = { kind: "new-coupon"; draft?: CouponDraft };
+type CouponsRenderState = {
+	kind: "new-coupon";
+	draft?: CouponDraft;
+	/** The store currency, shown as the currency field's PLACEHOLDER (a hint,
+	 *  never a prefill: one field serves both types, and a percentage coupon
+	 *  without a cap must be able to leave it blank). `undefined` ⇒ the read
+	 *  FAILED (`readStoreCurrencySoft`): no hint at all, and the screen says so —
+	 *  never a guessed "USD". */
+	storeCurrency: string | undefined;
+};
+
+/** What the create screen says when the store currency could not be read. */
+const COUPON_STORE_CURRENCY_UNKNOWN =
+	"Couldn't load your store currency — if this coupon needs a currency, enter it yourself.";
 
 /** The create form's seven fields exactly as they were submitted — see
  *  {@link CouponsRenderState}. `type` is a `select` value, so
@@ -499,7 +509,9 @@ function couponsBlocks(
 	notice: Notice | undefined,
 	renderState: CouponsRenderState | undefined,
 ): Block[] {
-	if (renderState?.kind === "new-coupon") return newCouponScreen(renderState.draft, notice);
+	if (renderState?.kind === "new-coupon") {
+		return newCouponScreen(renderState.draft, notice, renderState.storeCurrency);
+	}
 	// ONE part for the screen's one authored filter field (L-3).
 	const activeFilters = [filter.search !== undefined && `code: ${filter.search}`];
 	const summary = filterSummary(activeFilters);
@@ -592,7 +604,11 @@ function createCouponButton(): ActionsBlock {
  * The banner sits ABOVE the form on purpose: it is a refusal ("Coupon not
  * created"), and it explains the values the form below has just put back.
  */
-function newCouponScreen(draft: CouponDraft | undefined, notice: Notice | undefined): Block[] {
+function newCouponScreen(
+	draft: CouponDraft | undefined,
+	notice: Notice | undefined,
+	storeCurrency: string | undefined,
+): Block[] {
 	const blocks: Block[] = [
 		{ type: "header", text: "New coupon", block_id: "coupons:new:hdr" },
 		// No path: this screen belongs to the ROOT list, and the cancel verb
@@ -605,7 +621,10 @@ function newCouponScreen(draft: CouponDraft | undefined, notice: Notice | undefi
 		// 108 chars ≤ 140 (§1 — the page-level line on this screen).
 		text: "ID, code, type and currency are fixed at creation — to change them, retire this coupon and issue a new code.",
 	});
-	blocks.push(createCouponForm(draft));
+	if (storeCurrency === undefined) {
+		blocks.push({ type: "context", text: COUPON_STORE_CURRENCY_UNKNOWN });
+	}
+	blocks.push(createCouponForm(draft, storeCurrency));
 	return blocks;
 }
 
@@ -800,7 +819,7 @@ function couponTypeInputValue(type: string): string {
 	return COUPON_TYPE_CHOICES.find((c) => c.type === type)?.value ?? type;
 }
 
-function createCouponForm(draft?: CouponDraft): FormBlock {
+function createCouponForm(draft?: CouponDraft, storeCurrency?: string): FormBlock {
 	const typeOptions: SelectOption[] = COUPON_TYPE_CHOICES.map(({ value }) => ({
 		value,
 		label: value,
@@ -856,7 +875,7 @@ function createCouponForm(draft?: CouponDraft): FormBlock {
 					// field for two values): a fixed amount's currency, or the
 					// currency a percentage coupon's cap is in.
 					label: CREATE_CURRENCY_LABEL,
-					placeholder: "USD",
+					...(storeCurrency !== undefined ? { placeholder: storeCurrency } : {}),
 					...prefill(draft?.currency),
 				},
 				{
@@ -1294,9 +1313,7 @@ function editCouponForm(detail: CouponSummaryWire): FormBlock {
 		editFields.push({
 			type: "text_input",
 			action_id: "amount",
-			label: `Amount off (${detail.currency ?? "?"}${
-				detail.currency === null ? "" : checkoutPaymentLabelClause(detail.currency)
-			})`,
+			label: `Amount off (${detail.currency ?? "?"})`,
 			...(detail.amountCents !== null
 				? {
 						initial_value: formatMinorUnitsInput(
@@ -1964,11 +1981,15 @@ function createCouponAction() {
 			// (DA-3a-i): the operator fixes the one field that was wrong instead of
 			// retyping seven. Raw text, exactly as submitted — see CouponsRenderState.
 			const draft = couponDraft(values);
-			const err = (description: string) =>
+			const err = async (description: string) =>
 				showList(
 					undefined,
 					{ variant: "error", title: "Coupon not created", description },
-					{ kind: "new-coupon", draft },
+					{
+						kind: "new-coupon",
+						draft,
+						storeCurrency: await readStoreCurrencySoft(client, "coupons"),
+					},
 				);
 			const id = (readString(values.id) ?? "").trim();
 			const code = (readString(values.code) ?? "").trim();
@@ -2036,10 +2057,11 @@ function createCouponAction() {
 				!result.ok && result.status === 409 ? await couponCollision(client, id, code) : undefined;
 			const clash = collision === undefined ? undefined : { kind: collision, id };
 			return result.ok
-				? showList(undefined, createCouponNotice(result, code, undefined, couponCurrency))
+				? showList(undefined, createCouponNotice(result, code))
 				: showList(undefined, createCouponNotice(result, code, clash), {
 						kind: "new-coupon",
 						draft,
+						storeCurrency: await readStoreCurrencySoft(client, "coupons"),
 					});
 		},
 	);
@@ -2080,16 +2102,12 @@ function createCouponNotice(
 	result: RulesCreateResult<unknown>,
 	code: string,
 	clash?: { kind: CouponCollision; id: string },
-	currency: string | null = null,
 ): Notice {
 	if (result.ok) {
 		return {
 			variant: "default",
 			title: "Coupon created",
-			description: withCheckoutPaymentWarning(
-				`"${code}" was added and is live per its validity window.`,
-				currency,
-			),
+			description: `"${code}" was added and is live per its validity window.`,
 		};
 	}
 	return {
@@ -2171,10 +2189,7 @@ function saveCouponAction() {
 			if (copy === undefined) throw e;
 			return err(copy);
 		}
-		// A currency BOUND by this save (an unbound coupon's new bounds) gets the
-		// same checkout warning a create gives.
-		const bound = rendered === "" ? bounds.send : null;
-		return saveCouponOutcome(result, code, showLeaf, showList, bound);
+		return saveCouponOutcome(result, code, showLeaf, showList);
 	});
 }
 
@@ -2183,16 +2198,13 @@ function saveCouponOutcome(
 	code: string,
 	showLeaf: CustomActionApi<AdminRulesSurface>["showLeaf"],
 	showList: CustomActionApi<AdminRulesSurface>["showList"],
-	boundCurrency: string | null = null,
 ) {
 	if (result.ok) {
 		return showLeaf([code], {
 			variant: "default",
 			title: "Coupon saved",
-			description: withCheckoutPaymentWarning(
+			description:
 				"Every field was replaced with the submitted values (last write wins). Orders already placed keep their snapshotted discount.",
-				boundCurrency,
-			),
 		});
 	}
 	if (result.reason === "not_found") {
@@ -2310,8 +2322,11 @@ function retireCouponAction() {
 /** INC-14's promoted button, and E-2's empty-state button — one verb, because
  *  they are one act. No draft: nothing has been typed yet. */
 function newCouponAction() {
-	return customAction<AdminRulesSurface, CouponsRenderState>(async ({ showList }) => {
-		return showList(undefined, undefined, { kind: "new-coupon" });
+	return customAction<AdminRulesSurface, CouponsRenderState>(async ({ client, showList }) => {
+		return showList(undefined, undefined, {
+			kind: "new-coupon",
+			storeCurrency: await readStoreCurrencySoft(client, "coupons"),
+		});
 	});
 }
 

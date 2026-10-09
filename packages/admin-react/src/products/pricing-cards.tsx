@@ -33,6 +33,7 @@ import {
 	performAction,
 	PRODUCTS_ACT_SUBJECT,
 	type ActPayload,
+	type ProductDetailPayload,
 	type ProductRecord,
 	type Result,
 	type TaxClass,
@@ -43,11 +44,12 @@ import { mintMovementNonce } from "./movement-nonce.js";
 import { forgetSummaries } from "./pricing-columns.js";
 import { usePricingStyles } from "./pricing-styles.js";
 import {
-	CURRENCY_CHOICES,
 	currencyChoiceLabel,
 	draftFromRecord,
 	isDraftDirty,
 	marginSummary,
+	currencyChangeText,
+	FIELD_CONFLICT_TEXT,
 	mergeDraft,
 	SIZE_FIELDS,
 	salePreview,
@@ -56,12 +58,14 @@ import {
 	validateDraft,
 	type DraftField,
 	type DraftProblems,
+	type CurrencyChange,
 	type PricingDraft,
 } from "./pricing-model.js";
 import {
+	DEFAULT_STORE_CURRENCY,
 	DIGITAL_WITH_FILE,
+	currencyChoicesWith,
 	parseStockQty,
-	checkoutPaymentWarning,
 	TAX_STATUS_HINT,
 	TAX_STATUS_OPTIONS,
 } from "@otta-sh/admin-presentation";
@@ -115,6 +119,8 @@ type Loaded = {
 	readonly record: ProductRecord;
 	readonly taxClasses: readonly TaxClass[];
 	readonly threshold: number | null;
+	/** The store currency an unpriced product's picker starts on. */
+	readonly storeCurrency: string;
 };
 
 type LoadState =
@@ -127,7 +133,12 @@ type LoadState =
 	  }
 	| ({ readonly status: "ready" } & Loaded);
 
-type Status = { readonly tone: "ok" | "fail" | "muted"; readonly text: string } | null;
+type Status = {
+	readonly tone: "ok" | "fail" | "muted";
+	readonly text: string;
+	/** A store-default-moved conflict: the currency a "Keep …" button confirms. */
+	readonly keep?: string;
+} | null;
 
 type StockActionId = "products:restock" | "products:remove-stock";
 
@@ -338,6 +349,13 @@ export function PricingStockEditor({ productId }: { productId: string }): React.
 	draftRef.current = draft;
 	const recordRef = React.useRef<ProductRecord | null>(null);
 	recordRef.current = load.status === "ready" ? load.record : null;
+	/** The last store currency a read DID carry. A later read whose settings read
+	 *  failed must not wipe it: only a first load with no known value is
+	 *  "unknown". */
+	const knownStoreCurrency = React.useRef<string>("");
+	/** The merchant picked the currency in the select — set ONLY by that pick,
+	 *  cleared when the form is re-seeded. Rule 1 of `resolveDraftCurrency`. */
+	const currencyPicked = React.useRef(false);
 	/** A stock movement the server accepted, waiting for the re-read that states
 	 *  the count it actually landed on. TAGGED WITH THAT RE-READ'S GENERATION: an
 	 *  earlier re-read still in flight (the one after a lost answer, say) may
@@ -441,11 +459,17 @@ export function PricingStockEditor({ productId }: { productId: string }): React.
 				return;
 			}
 			const record = result.product;
+			const read = storeCurrencyOf(result);
+			// What the current draft was seeded against, then what this read knows.
+			const seededStoreCurrency = knownStoreCurrency.current;
+			if (read !== "") knownStoreCurrency.current = read;
+			const storeCurrency = knownStoreCurrency.current;
 			setLoad({
 				status: "ready",
 				record,
 				taxClasses: result.taxClasses,
 				threshold: result.threshold,
+				storeCurrency,
 			});
 			// The merchant's own save, and a refusal that means the record moved,
 			// re-seed the form. Any other re-read (a CMS save, a stock movement, a
@@ -453,17 +477,20 @@ export function PricingStockEditor({ productId }: { productId: string }): React.
 			const current = draftRef.current;
 			const previous = recordRef.current;
 			if (reseed.current || current === null || previous === null) {
-				setDraft(draftFromRecord(record));
+				setDraft(draftFromRecord(record, storeCurrency));
 				setTouched(new Set());
+				currencyPicked.current = false;
 			} else {
-				const merged = mergeDraft(previous, record, current);
+				// The currency follows `resolveDraftCurrency`'s table.
+				const merged = mergeDraft(previous, record, current, {
+					storeCurrency: seededStoreCurrency,
+					freshStoreCurrency: storeCurrency,
+					currencyPicked: currencyPicked.current,
+				});
 				setDraft(merged.draft);
 				if (merged.conflict) {
 					setTouched(new Set());
-					setSaveStatus({
-						tone: "fail",
-						text: "Someone else changed this product while you were editing. The latest values are shown — check them and save again.",
-					});
+					setSaveStatus(conflictStatus(merged));
 				}
 			}
 			reseed.current = false;
@@ -646,7 +673,7 @@ export function PricingStockEditor({ productId }: { productId: string }): React.
 		);
 	}
 
-	const { record: p, taxClasses, threshold } = load;
+	const { record: p, taxClasses, threshold, storeCurrency } = load;
 	if (p.deletedAt !== null) {
 		return (
 			<Card title="Pricing & stock">
@@ -659,7 +686,7 @@ export function PricingStockEditor({ productId }: { productId: string }): React.
 	}
 
 	const d = draft as PricingDraft;
-	const saved = draftFromRecord(p);
+	const saved = draftFromRecord(p, storeCurrency);
 	const dirty = isDraftDirty(saved, d);
 	unsaved.current = dirty;
 	const allProblems = validateDraft(d, p);
@@ -669,7 +696,6 @@ export function PricingStockEditor({ productId }: { productId: string }): React.
 		Object.entries(allProblems).filter(([field]) => touched.has(field as DraftField)),
 	);
 	const currency = p.currency ?? d.currency;
-	const paymentWarning = checkoutPaymentWarning(currency);
 	const priced = p.priceCents !== null;
 	const sale = salePreview(d.price, d.compareAt, currency);
 	const margin = marginSummary(d.price, d.unitCost, currency);
@@ -709,20 +735,36 @@ export function PricingStockEditor({ productId }: { productId: string }): React.
 		// merchant's own edits on top of it (`mergeDraft`), and writes against that
 		// fresh watermark. A field changed on both sides stops the save and says so.
 		let latestRecord: ProductRecord = p;
+		/** The currency move a conflicting read reported, if that was the conflict. */
+		let saveConflict: ConflictFacts = {};
 		void fetchProductDetail(productId)
 			.then((fresh): Result<ActPayload> | "conflict" | "invalid" | Promise<Result<ActPayload>> => {
 				if (isFailure(fresh)) return fresh;
 				const latest = fresh.product;
 				latestRecord = latest;
-				const merged = mergeDraft(p, latest, draftRef.current ?? d);
+				// The FRESH store currency (or the last known one, if this read could
+				// not say): the currency rule runs again here, against what is true
+				// at save time — a store switch since the form loaded blocks the save.
+				const read = storeCurrencyOf(fresh);
+				if (read !== "") knownStoreCurrency.current = read;
+				const freshStoreCurrency = knownStoreCurrency.current;
+				const merged = mergeDraft(p, latest, draftRef.current ?? d, {
+					storeCurrency,
+					freshStoreCurrency,
+					currencyPicked: currencyPicked.current,
+				});
 				setLoad({
 					status: "ready",
 					record: latest,
 					taxClasses: fresh.taxClasses,
 					threshold: fresh.threshold,
+					storeCurrency: freshStoreCurrency,
 				});
 				setDraft(merged.draft);
-				if (merged.conflict) return "conflict" as const;
+				if (merged.conflict) {
+					saveConflict = merged;
+					return "conflict" as const;
+				}
 				// The merge can bring in another writer's values; check the result
 				// as a whole before it goes anywhere (the plugin re-checks it too).
 				if (Object.keys(validateDraft(merged.draft, latest)).length > 0) return "invalid" as const;
@@ -752,10 +794,7 @@ export function PricingStockEditor({ productId }: { productId: string }): React.
 				}
 				if (result === "conflict") {
 					setTouched(new Set());
-					setSaveStatus({
-						tone: "fail",
-						text: "Someone else changed this product while you were editing. The latest values are shown — check them and save again.",
-					});
+					setSaveStatus(conflictStatus(saveConflict));
 					return;
 				}
 				if (isFailure(result)) {
@@ -906,30 +945,45 @@ export function PricingStockEditor({ productId }: { productId: string }): React.
 						{!priced && (
 							<div className="otta-pricing-field">
 								<LabelRow htmlFor={id("currency")}>Currency</LabelRow>
-								<div className="otta-pricing-input">
+								<div className="otta-pricing-input" data-invalid={shown.currency !== undefined}>
 									<select
 										id={id("currency")}
 										value={d.currency}
+										aria-invalid={shown.currency !== undefined}
 										onChange={(event) => {
+											currencyPicked.current = true;
 											set("currency")(event.target.value);
 										}}
 									>
-										{CURRENCY_CHOICES.map((code) => (
+										{/* The store currency could not be read: nothing is preselected
+										    — a guess here would be saved for good. */}
+										{d.currency === "" && (
+											<option value="" disabled>
+												Choose a currency
+											</option>
+										)}
+										{currencyChoicesWith(d.currency).map((code) => (
 											<option key={code} value={code}>
 												{currencyChoiceLabel(code)}
 											</option>
 										))}
 									</select>
 								</div>
+								{/* Whenever no currency is chosen; the load-failure wording only while it is still unknown. */}
+								{d.currency === "" && (
+									<span className="otta-pricing-hint" data-testid="store-currency-unknown">
+										{storeCurrency === ""
+											? "Couldn't load your store currency — choose one."
+											: "Choose a currency."}
+									</span>
+								)}
+								{shown.currency !== undefined && (
+									<span className="otta-pricing-error">{shown.currency}</span>
+								)}
 								<span className="otta-pricing-hint">
 									Can't be changed once the product is priced.
 								</span>
 							</div>
-						)}
-						{paymentWarning !== null && (
-							<p className="otta-pricing-hint" data-testid="currency-payment-warning">
-								{paymentWarning}
-							</p>
 						)}
 						<div className="otta-pricing-field">
 							<MoneyInput
@@ -1344,6 +1398,22 @@ export function PricingStockEditor({ productId }: { productId: string }): React.
 						<>
 							{saveStatus.tone === "ok" && <Icon d={CHECK} />}
 							{saveStatus.text}
+							{saveStatus.keep !== undefined && (
+								<>
+									{" "}
+									<button
+										type="button"
+										className="otta-pricing-btn"
+										onClick={() => {
+											// Confirms the shown currency, exactly as a pick would.
+											currencyPicked.current = true;
+											setSaveStatus(null);
+										}}
+									>
+										Keep {saveStatus.keep}
+									</button>
+								</>
+							)}
 						</>
 					) : dirty ? (
 						<>
@@ -1404,3 +1474,35 @@ export function PricingStockEditor({ productId }: { productId: string }): React.
 /** The field editor EmDash discovers on the admin module (`fields`), named by a
  *  field's `widget: "otta-console:pricing"`. */
 export const PRICING_FIELD_WIDGET = "pricing";
+
+/**
+ * What an unpriced product's picker starts on, from the detail read:
+ *  - a code — the effective store currency (USD for a store that never saved one);
+ *  - `""` — the read FAILED (`storeCurrency: null`): nothing is preselected, and
+ *    the merchant must choose, because a guessed currency would be saved for good;
+ *  - USD when the field is absent (an older plugin), what the picker always did.
+ */
+function storeCurrencyOf(result: ProductDetailPayload): string {
+	if (result.storeCurrency === null) return "";
+	return result.storeCurrency ?? DEFAULT_STORE_CURRENCY;
+}
+
+/** The conflict status, with a "Keep …" offer when the store default moved
+ *  under a currency the merchant can keep. */
+function conflictStatus(facts: ConflictFacts): NonNullable<Status> {
+	const change = facts.currencyChange;
+	const keep =
+		change?.kind === "store_default_moved" && change.from !== "" ? change.from : undefined;
+	return { tone: "fail", text: conflictText(facts), ...(keep !== undefined ? { keep } : {}) };
+}
+
+/** What a conflicting merge reported. */
+type ConflictFacts = { readonly currencyChange?: CurrencyChange; readonly fieldClash?: boolean };
+
+/** The conflict banner: the currency message when the currency moved, the
+ *  general field-clash one when fields clashed — BOTH when both happened. */
+function conflictText(facts: ConflictFacts): string {
+	if (facts.currencyChange === undefined) return FIELD_CONFLICT_TEXT;
+	const currency = currencyChangeText(facts.currencyChange);
+	return facts.fieldClash === true ? `${FIELD_CONFLICT_TEXT} ${currency}` : currency;
+}

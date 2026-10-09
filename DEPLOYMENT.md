@@ -415,10 +415,15 @@ order of appearance in a deployment's life:
 > currency table, `packages/domain/src/money/currencies.ts`) and sends it to Stripe unchanged,
 > which is Stripe's `amount` (<https://docs.stripe.com/currencies>) for two- and zero-decimal
 > currencies: USD, EUR, … and now JPY, KRW, VND and CLP; HUF and TWD charge as two-decimal.
-> **Three-decimal currencies (BHD, JOD, KWD, OMR) are still refused** on the live path before
-> any network call (`PAYMENT_INTENT_FAILED`, provider code `unsupported_currency`), because
-> Stripe needs those amounts in multiples of 10 and an order total need not be one — they can
-> be priced and displayed, not charged through Stripe. A code outside the table (ISK included)
+> **Three-decimal currencies (BHD, JOD, KWD, OMR) are payable** (ADR-0033 amendment). Stripe
+> takes their thousandths only in multiples of 10, so checkout rounds the order's **final
+> total** half-up to 0.010 and shows the difference as a signed "Rounding" row (at most
+> ±0.005); line prices, discounts, shipping and tax stay exact. The rounded total is what is
+> charged, settled and reported. Refunds in these currencies are multiples of 0.010 (or the
+> whole remaining amount); Otta refuses anything else, whatever asks. An amount that is not a multiple
+> of 10 never reaches Stripe: the adapter refuses it before any network call (intent:
+> `unsupported_amount`; refund: rejected). No other currency changes: no rounding row, no new
+> field, identical Stripe requests. A code outside the table (ISK included)
 > keeps its old treatment: typed in hundredths, Stripe's zero-/three-decimal codes refused,
 > others passed through. The rule is `stripeRefusesCurrency` in
 > `packages/payments-stripe/src/index.ts`.
@@ -439,6 +444,24 @@ order of appearance in a deployment's life:
 > - **Percentage coupons**: a NEW cap or minimum spend now needs a currency (the coupon then
 >   applies only to carts in it). Existing percentage coupons with a cap or minimum and no
 >   currency keep working exactly as before.
+
+> **Store currency.** Settings → Store → "Store currency" is the currency a **new** cart is
+> created in (the storefront names none, so it is every shopper's cart). A store that never
+> saves it keeps USD, exactly as before the setting existed — no migration. Every currency in
+> the table can be the store currency (three-decimal ones included, with the rounding above);
+> saving the select unchanged writes nothing. Changing it affects new carts
+> only: carts already open keep their currency. **Decide it before pricing the catalogue.** A
+> product's currency is fixed once it is priced, and a coupon's at creation, so products and
+> coupons (fixed-amount, and percentage coupons with a cap or minimum spend) in another currency
+> can't be bought or used in new carts (`CURRENCY_MISMATCH` at checkout), and they can't be
+> moved to the new currency. Shipping rates are per currency, so add rates in the new one. A
+> spent cart's replacement is in the currency the storefront names, else the saved store
+> currency, else the spent cart's: **a theme that sends `currency` with `replacesCartId` keeps
+> that currency; omit it to follow the store currency.** If the admin cannot read the store
+> currency, it never guesses one into a saved value: the product picker, a new shipping rate and
+> the coupon form ask you to choose. The admin's defaults follow it: an unpriced product's
+> currency picker, the shipping rate filter and new-rate currency, and the coupon form's
+> currency hint.
 
 > **x402 does not take payments yet.** The old receipt-forwarding settle route
 > (`entitlements/x402/settle`) is retired, and nothing settles an x402 payment until the
