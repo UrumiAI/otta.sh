@@ -231,12 +231,14 @@ export interface TaxRateInput {
 	rateBps: number;
 	appliesToShipping?: boolean;
 }
-/** Rate edit. `appliesToShipping` OMITTED ⇒ left unchanged — applied by the
- *  store inside its compare-and-set, so an edit can never silently flip (or
- *  re-apply a stale) shipping-tax behaviour; an explicit value replaces it. */
+/** Full-replace edit — `appliesToShipping` is REQUIRED (an omitted key is
+ *  refused, so an edit can never silently flip the shipping-tax behavior). */
 export interface TaxRateEdit {
 	rateBps: number;
-	appliesToShipping?: boolean;
+	appliesToShipping: boolean;
+	/** The flag the form LOADED with; given ⇒ part of the CAS (a changed flag is
+	 *  `stale`, never reverted). */
+	expectedAppliesToShipping?: boolean;
 	/** The money-bearing CAS token — the rate the admin read on the detail. */
 	expectedRateBps: number;
 }

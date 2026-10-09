@@ -365,7 +365,7 @@ export function taxRulesStoreContract(
 			]);
 		});
 
-		test("updateRate with appliesToShipping OMITTED leaves the flag as stored, inside the CAS", async () => {
+		test("updateRate with expectedAppliesToShipping: a flag changed since the read is stale, never reverted", async () => {
 			const { store } = await makeStore();
 			await store.createRate({
 				id: "r1",
@@ -374,12 +374,32 @@ export function taxRulesStoreContract(
 				rateBps: 725,
 				appliesToShipping: true,
 			});
-			const res = await store.updateRate("r1", { rateBps: 800 }, 725);
-			expect(res.ok && res.rate).toMatchObject({ rateBps: 800, appliesToShipping: true });
-			// A flag changed in between (another tab) is kept, not reverted.
-			await store.updateRate("r1", { rateBps: 800, appliesToShipping: false }, 800);
-			const again = await store.updateRate("r1", { rateBps: 900 }, 800);
-			expect(again.ok && again.rate).toMatchObject({ rateBps: 900, appliesToShipping: false });
+			// Another tab turns the flag off; the rate is unchanged.
+			await store.updateRate("r1", { rateBps: 725, appliesToShipping: false }, 725, true);
+			// A tab that loaded (725, true) now saves a rate edit with the flag it showed.
+			const stale = await store.updateRate(
+				"r1",
+				{ rateBps: 800, appliesToShipping: true },
+				725,
+				true,
+			);
+			expect(stale).toMatchObject({
+				ok: false,
+				reason: "stale",
+				current: { appliesToShipping: false },
+			});
+			expect(await store.getRate("standard", "z-us")).toMatchObject({
+				rateBps: 725,
+				appliesToShipping: false,
+			});
+			// Matching both expectations applies.
+			const ok = await store.updateRate(
+				"r1",
+				{ rateBps: 800, appliesToShipping: false },
+				725,
+				false,
+			);
+			expect(ok.ok && ok.rate).toMatchObject({ rateBps: 800, appliesToShipping: false });
 		});
 
 		test("the same class in another zone, or another class in the same zone, is not a duplicate", async () => {

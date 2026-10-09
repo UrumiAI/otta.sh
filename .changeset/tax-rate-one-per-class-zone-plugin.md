@@ -14,3 +14,7 @@ counts, for goods and for shipping. If an ignored duplicate was the one marked "
 shipping", shipping tax may change: it disappears, or moves to another class's rate. The
 class's rates page flags every duplicate (the ignored row says its shipping setting applies only if it becomes the active rate), and
 deleting the one you don't want resolves it. Orders already placed are unaffected.
+
+Tax rate edits are now also guarded on the "applies to shipping" flag: a tab that loaded
+before another tab changed the flag gets the "changed since you loaded it — reload" notice
+instead of reverting it.

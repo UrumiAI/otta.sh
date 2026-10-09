@@ -23,6 +23,6 @@ was the last flagged rate, so it named the shipping tax class). Line-item tax is
   whose `code` is `TAX_RATE_ID_COLLISION` (the in-memory store now does too), and a
   second rate for one (class, zone) with `TaxRateDuplicateError`.
 - `listRatesForZone` must list by rate id ascending (the in-memory store now does).
-- `UpdateTaxRateInput.appliesToShipping` is optional: omitted means unchanged, applied
-  inside the adapter's compare-and-set.
+- `updateRate` takes an optional 4th argument, `expectedAppliesToShipping`: when given,
+  the compare-and-set also requires the stored flag to equal it (`stale` otherwise).
 - `TaxRulesStoreHarness` gains a required `seedUncheckedRate(rate)`.

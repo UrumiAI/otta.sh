@@ -102,19 +102,24 @@ export class InMemoryTaxRulesStore implements TaxRulesStore {
 		return this.#rates.size > 0;
 	}
 
-	/** Optimistic CAS on `rateBps` (port doc): not_found → stale → apply. */
+	/** Optimistic CAS on `rateBps` (+ the flag, when expected) (port doc). */
 	async updateRate(
 		id: string,
 		input: UpdateTaxRateInput,
 		expectedRateBps: number,
+		expectedAppliesToShipping?: boolean,
 	): Promise<UpdateTaxRateResult> {
 		const rate = this.#rates.get(id);
 		if (rate === undefined) return { ok: false, reason: "not_found" };
-		if (rate.rateBps !== expectedRateBps) {
+		if (
+			rate.rateBps !== expectedRateBps ||
+			(expectedAppliesToShipping !== undefined &&
+				rate.appliesToShipping !== expectedAppliesToShipping)
+		) {
 			return { ok: false, reason: "stale", current: { ...rate } };
 		}
 		rate.rateBps = input.rateBps;
-		rate.appliesToShipping = input.appliesToShipping ?? rate.appliesToShipping;
+		rate.appliesToShipping = input.appliesToShipping;
 		return { ok: true, rate: { ...rate } };
 	}
 

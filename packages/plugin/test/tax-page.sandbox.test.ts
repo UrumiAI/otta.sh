@@ -1705,17 +1705,35 @@ describe("admin Tax console — one rate per (class, zone) (workerd sandbox)", (
 		expect(
 			await taxRules.updateRate("std-us", { rateBps: 725, appliesToShipping: false }, 725),
 		).toMatchObject({ ok: true });
-		// Tab 1 saves a rate edit with its toggle untouched (still showing ON): the flag
-		// stays what the store holds NOW.
+		// Tab 1 saves a rate edit with its toggle untouched (still showing ON): it is
+		// told to reload, and nothing it sent is applied.
 		const saved = await submitForm([stale], "tax:save-rate", {
 			ratePercent: "7.5",
 			appliesToShipping: true,
 		});
-		expect(bannerOf(saved)?.variant).toBe("default");
+		expect(String(bannerOf(saved)?.title)).toMatch(/changed since you loaded it/);
 		expect(await findRate("us", "std-us")).toMatchObject({
-			rateBps: 750,
+			rateBps: 725,
 			appliesToShipping: false,
 		});
+	});
+
+	test("a flag-only conflict on an ordinary rate is a reload, never a silent revert or a false 'saved'", async () => {
+		await seedRules();
+		// Tab 1 loads std-us (7.25%, goods only) …
+		const stale = group(await openClass("standard"), "tax:rate:std-us")!;
+		// … tab 2 turns shipping ON without touching the rate.
+		const other = group(await openClass("standard"), "tax:rate:std-us")!;
+		await submitForm([other], "tax:save-rate", { ratePercent: "7.25", appliesToShipping: true });
+		expect(await findRate("us", "std-us")).toMatchObject({ rateBps: 725, appliesToShipping: true });
+		// Tab 1 edits the rate, its toggle still showing OFF.
+		const saved = await submitForm([stale], "tax:save-rate", {
+			ratePercent: "8",
+			appliesToShipping: false,
+		});
+		expect(bannerOf(saved)?.variant).toBe("error");
+		expect(String(bannerOf(saved)?.title)).toMatch(/changed since you loaded it/);
+		expect(await findRate("us", "std-us")).toMatchObject({ rateBps: 725, appliesToShipping: true });
 	});
 
 	test("the applying rate says who takes over if it is deleted — in its body, its delete confirm and its detail leaf", async () => {

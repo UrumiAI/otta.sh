@@ -875,12 +875,11 @@ function rateGroupId(rateId: string): PlainBlockId {
  *  changed it loses the CAS and the reload shows the fresh value with a
  *  "reload" notice, never a silent clobber. */
 function rateEditForm(classId: string, row: TaxRateRow): FormBlock {
-	// The flag this form SHOWED rides in the carrier: a save whose toggle still
-	// reads that value sends no flag, which the store applies as "unchanged" inside
-	// its compare-and-set — so an untouched toggle in a stale tab never reverts a
-	// change made since. An IGNORED duplicate keeps an editable toggle (so the
-	// merchant can fix it before deleting the rate that applies), labelled as
-	// taking effect only once this rate is the one that applies.
+	// The flag this form LOADED rides in the carrier beside the rate, and the save
+	// sends both as the store's compare-and-set expectation — so a tab that loaded
+	// before another changed either is told to reload, never reverts it. An IGNORED
+	// duplicate keeps an editable toggle (so the merchant can fix it before deleting
+	// the rate that applies), labelled as taking effect only once it applies.
 	const ignored = row.appliedInstead !== undefined;
 	return carriedForm({
 		namespace: "tax:rate-save",
@@ -888,7 +887,7 @@ function rateEditForm(classId: string, row: TaxRateRow): FormBlock {
 			classId,
 			rateId: row.id,
 			expectedRateBps: String(row.rateBps),
-			shownAppliesToShipping: String(row.appliesToShipping),
+			expectedAppliesToShipping: String(row.appliesToShipping),
 		},
 		form: {
 			type: "form",
@@ -1542,16 +1541,14 @@ function saveRateAction() {
 				description: TAX_PERCENT_HINT,
 			});
 		}
-		// A toggle still at the value the form showed ⇒ no flag sent ⇒ unchanged (see
-		// `rateEditForm`); only a toggle the merchant moved is sent.
-		const toggled = readBoolean(values.appliesToShipping);
-		const appliesToShipping =
-			toggled === undefined || String(toggled) === carried?.shownAppliesToShipping
-				? undefined
-				: toggled;
+		// The flag the form shows, and the flag it loaded as the CAS expectation (see
+		// `rateEditForm`): a flag changed elsewhere since is `stale`, never reverted.
+		const loaded = carried?.expectedAppliesToShipping;
+		const appliesToShipping = readBoolean(values.appliesToShipping) ?? false;
 		const result = await client.updateTaxRate(rateId, {
 			rateBps: bps,
-			...(appliesToShipping !== undefined ? { appliesToShipping } : {}),
+			appliesToShipping,
+			...(loaded === undefined ? {} : { expectedAppliesToShipping: loaded === "true" }),
 			expectedRateBps,
 		});
 		return showList([classId], saveRateNotice(result));

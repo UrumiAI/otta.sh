@@ -114,12 +114,16 @@ export interface TaxRulesStore {
 	 * forward-only migration — not a redesign of this port.
 	 *  - unknown `id` → `not_found` (no row minted; an edit is not a create).
 	 *  - `rate_bps != expectedRateBps` → `stale`, carrying the current row.
+	 *  - `expectedAppliesToShipping` given and `!=` the stored flag → `stale` too:
+	 *    the admin form sends the flag it SHOWED, so a tab that loaded before
+	 *    another tab changed the flag is told to reload instead of reverting it.
 	 *  - otherwise → applies + returns the updated row.
 	 */
 	updateRate(
 		id: string,
 		input: UpdateTaxRateInput,
 		expectedRateBps: number,
+		expectedAppliesToShipping?: boolean,
 	): Promise<UpdateTaxRateResult>;
 
 	/**
@@ -137,9 +141,7 @@ export interface TaxRulesStore {
 export interface UpdateTaxRateInput {
 	/** Integer basis points, 0–10000 (0%–100%). */
 	rateBps: number;
-	/** Omitted ⇒ LEFT UNCHANGED — applied to the value the store holds inside the
-	 *  same compare-and-set, so it can never re-apply a value read earlier. */
-	appliesToShipping?: boolean;
+	appliesToShipping: boolean;
 }
 
 /** Outcome of `updateRate` — a discriminated union so the caller renders each

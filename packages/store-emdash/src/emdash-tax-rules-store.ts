@@ -343,6 +343,7 @@ export class EmdashTaxRulesStore implements TaxRulesStore {
 		id: string,
 		input: UpdateTaxRateInput,
 		expectedRateBps: number,
+		expectedAppliesToShipping?: boolean,
 	): Promise<UpdateTaxRateResult> {
 		return this.#cas<UpdateTaxRateResult>("updateTaxRate", async () => {
 			const found = await this.#findRate(id);
@@ -350,7 +351,11 @@ export class EmdashTaxRulesStore implements TaxRulesStore {
 				return casDone<UpdateTaxRateResult>({ ok: false, reason: "not_found" });
 			}
 			// The guard, re-evaluated against what this attempt just read.
-			if (found.rate.rateBps !== expectedRateBps) {
+			if (
+				found.rate.rateBps !== expectedRateBps ||
+				(expectedAppliesToShipping !== undefined &&
+					found.rate.appliesToShipping !== expectedAppliesToShipping)
+			) {
 				return casDone<UpdateTaxRateResult>({
 					ok: false,
 					reason: "stale",
@@ -360,8 +365,7 @@ export class EmdashTaxRulesStore implements TaxRulesStore {
 			const next: TaxRateDoc = {
 				...found.rate,
 				rateBps: input.rateBps,
-				// Omitted ⇒ unchanged: the value read in THIS attempt, under its CAS.
-				appliesToShipping: input.appliesToShipping ?? found.rate.appliesToShipping,
+				appliesToShipping: input.appliesToShipping,
 			};
 			const written = await this.#classes.compareAndSet(
 				found.held.doc.taxClassId,

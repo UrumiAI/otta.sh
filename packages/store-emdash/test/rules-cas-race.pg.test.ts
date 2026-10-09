@@ -321,7 +321,7 @@ describe.skipIf(!PG_ENABLED)("tax-rate createRate one-per-(class, zone) race [po
 				// … and a refused id (its claim left as an orphan) resolves to nothing.
 				const refusedId = ids.find((candidate) => candidate !== won[0]?.id) ?? "";
 				expect(
-					await store.updateRate(refusedId, { rateBps: 1 }, 700),
+					await store.updateRate(refusedId, { rateBps: 1, appliesToShipping: false }, 700),
 					`loop ${String(loop)}: ${refusedId}`,
 				).toEqual({ ok: false, reason: "not_found" });
 				await store.deleteRate(won[0]?.id ?? "");
