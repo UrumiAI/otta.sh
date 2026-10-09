@@ -19,7 +19,7 @@ import {
 	createPlugin,
 } from "../src/index.js";
 import { OTTA_ADMIN_ROUTE } from "../src/console-api.js";
-import { pages } from "../src/admin.js";
+import { contentListColumns, fields, pages } from "../src/admin.js";
 
 /** The cast in `admin.tsx` (EmDash types `pages` as elements, the router calls
  *  them as components) makes the export opaque; read it back as a plain map. */
@@ -102,6 +102,20 @@ describe("the declared pages and the React components cannot drift", () => {
 			expect(page.path).toMatch(/^\/.+/);
 			expect(page.path).not.toBe("/");
 		}
+	});
+
+	test("Pricing & inventory is not a page: the editor's cards and the list columns replace it", () => {
+		// ADR-0014, amendment 2026-10-01. The sidebar offers no `/products` page;
+		// EmDash discovers the cards as the products collection's `pricing` field
+		// editor and the Price / Stock columns by collection, so neither needs an
+		// `admin.pages` entry.
+		expect(OTTA_CONSOLE_ADMIN_PAGES.map((page) => page.path)).not.toContain("/products");
+		expect(Object.keys(pageComponents)).not.toContain("/products");
+		expect(Object.keys(fields)).toEqual(["pricing"]);
+		expect(contentListColumns.map((c) => [c.id, c.collections])).toEqual([
+			["price", ["products"]],
+			["stock", ["products"]],
+		]);
 	});
 
 	test("no page collides with a screen ADR-0014 keeps on Block Kit permanently", () => {

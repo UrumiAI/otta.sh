@@ -18,13 +18,6 @@ import {
 	readOrderTab,
 	readOrdersFilter,
 } from "../src/orders/orders-screen.js";
-import {
-	PRODUCT_TAB_SLUGS,
-	productTabQuery,
-	productsFilterQuery,
-	readProductTab,
-	readProductsFilter,
-} from "../src/products/products-screen.js";
 
 describe("readOrdersFilter", () => {
 	it("reads an empty query as the default filter, not as an error", () => {
@@ -140,90 +133,9 @@ describe("ordersFilterQuery", () => {
 	});
 });
 
-describe("readProductsFilter", () => {
-	it("reads an empty query as the default filter", () => {
-		expect(readProductsFilter("")).toEqual({});
-	});
-
-	it("treats an empty value as absent", () => {
-		// The mirror of the same assertion on `readOrdersFilter` above: a status
-		// select never submits `""`, so an empty parameter is a stale or
-		// hand-edited link and must resolve to the default, not to a filter for
-		// the empty string.
-		expect(readProductsFilter("?status=&kind=&q=")).toEqual({});
-	});
-
-	it("reads each parameter the products list writes", () => {
-		// `status` carries the combined Status select's own value, not a word for
-		// it: `true`/`false`/`archived` is what the panel submits.
-		expect(readProductsFilter("?status=archived&kind=physical&low=1&q=mug")).toEqual({
-			status: "archived",
-			productKind: "physical",
-			lowStock: true,
-			search: "mug",
-		});
-		expect(readProductsFilter("?status=true").status).toBe("true");
-		expect(readProductsFilter("?status=false").status).toBe("false");
-		expect(readProductsFilter("?kind=digital").productKind).toBe("digital");
-	});
-
-	it("falls back to the default for a value the panel could not have submitted", () => {
-		// A URL is user input. `?status=banana&kind=nonsense` used to reach the
-		// service verbatim while both selects still read "any".
-		expect(readProductsFilter("?status=banana&kind=nonsense")).toEqual({});
-		expect(readProductsFilter("?status=active")).toEqual({});
-		expect(readProductsFilter("?kind=PHYSICAL")).toEqual({});
-		// The sentinel is the panel's word for "no constraint", never a filter.
-		expect(readProductsFilter("?status=any&kind=any")).toEqual({});
-		// One bad parameter costs that parameter and nothing else.
-		expect(readProductsFilter("?status=banana&kind=digital&low=1")).toEqual({
-			productKind: "digital",
-			lowStock: true,
-		});
-	});
-
-	it("reads the low-stock flag as on ONLY for the value it writes", () => {
-		// The flag is written as `low=1` or omitted, never as `low=0`. Everything
-		// else — an old `low=0`, a hand-typed `low=true`, a typo — is the default,
-		// which is off.
-		expect(readProductsFilter("?low=0").lowStock).toBeUndefined();
-		expect(readProductsFilter("?low=true").lowStock).toBeUndefined();
-		expect(readProductsFilter("?low=banana").lowStock).toBeUndefined();
-		expect(readProductsFilter("?low=1").lowStock).toBe(true);
-	});
-});
-
-describe("productsFilterQuery", () => {
-	it("writes nothing for the default filter", () => {
-		expect(productsFilterQuery("", {})).toBe("");
-	});
-
-	it("never writes the flag as off", () => {
-		expect(productsFilterQuery("", { lowStock: false })).toBe("");
-		expect(productsFilterQuery("", { lowStock: true })).toBe("low=1");
-	});
-
-	it("round-trips every field it wrote", () => {
-		const filter = {
-			status: "archived",
-			productKind: "digital",
-			lowStock: true,
-			search: "blue mug",
-		};
-		expect(readProductsFilter(`?${productsFilterQuery("", filter)}`)).toEqual(filter);
-	});
-
-	it("keeps the drill-in parameter and anything else it does not own", () => {
-		const params = new URLSearchParams(productsFilterQuery("?product=abc&low=1", {}));
-		expect(params.get("product")).toBe("abc");
-		expect(params.get("low")).toBeNull();
-	});
-});
-
 describe("the tab a link was shared from", () => {
 	it("lands on the first tab when no tab was named", () => {
 		expect(readOrderTab("")).toBe(0);
-		expect(readProductTab("")).toBe(0);
 	});
 
 	it("lands on the first tab when the slug is not one it knows", () => {
@@ -232,45 +144,38 @@ describe("the tab a link was shared from", () => {
 		expect(readOrderTab("?tab=nonsense")).toBe(0);
 		expect(readOrderTab("?tab=")).toBe(0);
 		expect(readOrderTab("?tab=MONEY")).toBe(0);
-		expect(readProductTab("?tab=nonsense")).toBe(0);
 	});
 
 	it("resolves a slug to its tab", () => {
 		expect(readOrderTab("?tab=money")).toBe(2);
 		expect(readOrderTab("?tab=history")).toBe(3);
-		expect(readProductTab("?tab=stock")).toBe(1);
 	});
 
 	it("names tabs by slug, never by index", () => {
 		// An index reorders silently the first time someone inserts a tab.
 		expect(orderTabQuery("", 2)).toBe("tab=money");
-		expect(productTabQuery("", 1)).toBe("tab=stock");
 	});
 
 	it("omits the parameter for the default tab", () => {
 		expect(orderTabQuery("", 0)).toBe("");
-		expect(productTabQuery("", 0)).toBe("");
 		expect(orderTabQuery("?tab=money", 0)).toBe("");
 	});
 
 	it("omits the parameter for a tab that does not exist", () => {
 		expect(orderTabQuery("?tab=money", 99)).toBe("");
-		expect(productTabQuery("", -1)).toBe("");
+		expect(orderTabQuery("", -1)).toBe("");
 	});
 
 	it("keeps the record id beside the tab — that is the point of the link", () => {
-		const params = new URLSearchParams(productTabQuery("?product=abc&q=mug", 1));
-		expect(params.get("product")).toBe("abc");
+		const params = new URLSearchParams(orderTabQuery("?order=abc&q=mug", 2));
+		expect(params.get("order")).toBe("abc");
 		expect(params.get("q")).toBe("mug");
-		expect(params.get("tab")).toBe("stock");
+		expect(params.get("tab")).toBe("money");
 	});
 
 	it("round-trips every slug it publishes", () => {
 		for (const [index] of ORDER_TAB_SLUGS.entries()) {
 			expect(readOrderTab(`?${orderTabQuery("", index)}`)).toBe(index);
-		}
-		for (const [index] of PRODUCT_TAB_SLUGS.entries()) {
-			expect(readProductTab(`?${productTabQuery("", index)}`)).toBe(index);
 		}
 	});
 });
@@ -358,10 +263,6 @@ describe("the page a link was shared from (the cursor)", () => {
 		// preserved in a link and reloaded later as though it were valid.
 		expect(ordersFilterQuery("?cursor=c2", { status: "paid" })).toBe("status=paid");
 		expect(ordersFilterQuery("?cursor=c2&status=paid", {})).toBe("");
-		expect(productsFilterQuery("?cursor=c2&low=1", {})).toBe("");
-		expect(new URLSearchParams(productsFilterQuery("?cursor=c2", { lowStock: true }))).toEqual(
-			new URLSearchParams("low=1"),
-		);
 	});
 
 	it("keeps the page across a tab change, which is not a page change", () => {

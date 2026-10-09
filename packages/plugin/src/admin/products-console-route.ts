@@ -91,12 +91,6 @@ import type { ReportingSettingsSurface } from "./reporting-settings-surface.js";
 import { isCommerceIdToken } from "../commerce/commerce-input.js";
 import { readString } from "./scaffold/index.js";
 
-/** The resources the console can read on this screen. One per SURFACE, not one
- *  per service endpoint: the detail fans out to three reads in PARALLEL, because
- *  a screen making three sequential round trips through this route would be
- *  slower than the one it replaced. */
-export type ProductsConsoleResource = "products.list" | "products.detail" | "products.summaries";
-
 /**
  * Everything the console needs to render the filter controls.
  *

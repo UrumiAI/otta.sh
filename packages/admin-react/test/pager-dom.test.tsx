@@ -49,7 +49,6 @@ vi.mock("emdash/plugin-utils", async (importOriginal) => {
 });
 
 const { OrdersScreen } = await import("../src/orders/orders-screen.js");
-const { ProductsScreen } = await import("../src/products/products-screen.js");
 const {
 	NEXT_AT_END_TITLE,
 	NEXT_RELEASES_SCAN_TITLE,
@@ -320,13 +319,6 @@ const VOCABULARY = {
 	pageLimit: 25,
 };
 
-const PRODUCTS_VOCABULARY = {
-	statuses: [{ value: "any", label: "Any status" }],
-	kinds: [{ value: "any", label: "Any kind" }],
-	any: "any",
-	pageLimit: 25,
-};
-
 /** Service-shaped opaque tokens: base64URL of `{pos, filter, limit}`, which is
  *  what the route emits and what an address therefore has to survive. */
 function token(payload: unknown): string {
@@ -349,21 +341,6 @@ function order(id: string) {
 		createdAt: "2026-01-01T00:00:00.000Z",
 		totalCents: 1234,
 		reconciliationFlag: null,
-	};
-}
-
-function product(productId: string) {
-	return {
-		productId,
-		sku: `SKU-${productId}`,
-		title: `Product ${productId}`,
-		priceCents: 900,
-		currency: "USD",
-		productKind: "physical",
-		active: true,
-		deletedAt: null,
-		onHand: 4,
-		createdAt: "2026-01-01T00:00:00.000Z",
 	};
 }
 
@@ -793,42 +770,6 @@ test("a refused deep link comes back as page one, with a stack to match", async 
 	expect(element(view, "orders-prev").getAttribute("title")).toBe(PREVIOUS_AT_START_TITLE);
 });
 
-test("products pages the same way, from the same stack", async () => {
-	serve((request) => {
-		const stock = { threshold: 5, unreadable: false, filterUnavailable: false };
-		const body = (products: readonly unknown[], nextCursor: string | null) =>
-			envelope({
-				ok: true,
-				products,
-				nextCursor,
-				total: 137,
-				stock,
-				vocabulary: PRODUCTS_VOCABULARY,
-			});
-		if (request.cursor === undefined) return body(ids("p", 1, 25).map(product), PAGE_TWO);
-		if (request.cursor === PAGE_TWO) return body(ids("p", 26, 50).map(product), PAGE_THREE);
-		return body(ids("p", 51, 75).map(product), PAGE_FOUR);
-	});
-	window.history.replaceState(null, "", "/products");
-	view = await mount(<ProductsScreen />);
-	await settle();
-
-	expect(position(view, "products")).toBe("Page 1 of 6");
-	await press(view, "products-next");
-	await settle();
-	expect(rowIds(view, "products-row")).toEqual(ids("p", 26, 50));
-	expect(position(view, "products")).toBe("Page 2 of 6");
-	expect(search().get("cursor")).toBe(PAGE_TWO);
-
-	asked = [];
-	await press(view, "products-prev");
-	await settle();
-	expect(asked[0]?.cursor).toBeUndefined();
-	expect(rowIds(view, "products-row")).toEqual(ids("p", 1, 25));
-	expect(position(view, "products")).toBe("Page 1 of 6");
-	expect(search().get("cursor")).toBeNull();
-});
-
 // ── the browser's own Back, and the pager ────────────────────────────────────
 
 /** A REAL traversal, not a hand-dispatched `popstate`: `happy-dom` resolves the
@@ -995,58 +936,6 @@ test("an unavailable control carries its reason where a screen reader will read 
 	expect(element(view, "orders-next").getAttribute("aria-describedby")).toBeNull();
 });
 
-test("products: a pager step keeps the banner a settings blip raised", async () => {
-	/*
-	 * THE SHARPEST DEFECT THE PAGER INTRODUCED, and the reason the latch rides on
-	 * the CONTINUATION rather than on the merge. `filterUnavailable` is page one's
-	 * answer to "was the low-stock filter ever applied to what you are looking
-	 * at"; every request carrying a cursor reports `false` by contract, because
-	 * the predicate rode inside the opaque token. Reading that `false` as an
-	 * answer drops the banner at the click of `Next` and starts captioning every
-	 * product in the catalog as low stock.
-	 */
-	serve((request) => {
-		const blind = { threshold: null, unreadable: false, filterUnavailable: true };
-		const seeing = { threshold: 5, unreadable: false, filterUnavailable: false };
-		return envelope(
-			request.cursor === undefined
-				? {
-						ok: true,
-						products: ids("p", 1, 25).map(product),
-						nextCursor: PAGE_TWO,
-						stock: blind,
-						vocabulary: PRODUCTS_VOCABULARY,
-					}
-				: {
-						ok: true,
-						products: ids("p", 26, 50).map(product),
-						nextCursor: PAGE_THREE,
-						// The contractual `false` plus a total for the WHOLE catalog — the
-						// pair that must not be believed on a continuation.
-						total: 137,
-						stock: seeing,
-						vocabulary: PRODUCTS_VOCABULARY,
-					},
-		);
-	});
-	window.history.replaceState(null, "", "/products?low=1");
-	view = await mount(<ProductsScreen />);
-	await settle();
-	expect(absent(view, "products-stock-degraded")).toBe(false);
-
-	await press(view, "products-next");
-	await settle();
-
-	// THE BANNER STANDS, page one's answer intact.
-	expect(rowIds(view, "products-row")).toEqual(ids("p", 26, 50));
-	expect(absent(view, "products-stock-degraded")).toBe(false);
-	// AND THE TOTAL IS STILL WITHHELD: 137 counts every product while the
-	// merchant asked for the low-stock ones, so neither the caption nor the page
-	// count may state it.
-	expect(element(view, "products-intro").textContent).not.toContain("137");
-	expect(position(view, "products")).toBe("Page 2 of —");
-});
-
 // ── what a request with NO cursor on the wire is ─────────────────────────────
 
 /** Page one, page two, and a THIRD answer for the page-one request the pager
@@ -1109,81 +998,6 @@ test("Previous onto an EMPTY page one gets the whole-collection words, not the p
 
 	expect(absent(view, "orders-empty")).toBe(false);
 	expect(absent(view, "orders-page-zero")).toBe(true);
-});
-
-/** Pages of products where the low-stock threshold can be made unreadable per
- *  request — the settings blip whose banner the latch exists for. */
-function serveProductsBlips(blindOn: (call: number, cursor: string | undefined) => boolean): void {
-	let call = 0;
-	serve((request) => {
-		call += 1;
-		const blind = blindOn(call, request.cursor);
-		return envelope({
-			ok: true,
-			products:
-				request.cursor === undefined ? ids("p", 1, 25).map(product) : ids("p", 26, 50).map(product),
-			nextCursor: request.cursor === undefined ? PAGE_TWO : PAGE_THREE,
-			...(blind ? {} : { total: 137 }),
-			stock: blind
-				? { threshold: null, unreadable: false, filterUnavailable: true }
-				: { threshold: 5, unreadable: false, filterUnavailable: false },
-			vocabulary: PRODUCTS_VOCABULARY,
-		});
-	});
-}
-
-test("products: Previous onto page one CLEARS a banner the blip has stopped causing", async () => {
-	// THE LATCH MUST BE ABLE TO END. A banner that only a filter change could
-	// dismiss would sit over a catalogue whose threshold has been readable for an
-	// hour, and the merchant has no way to tell a stale warning from a live one.
-	serveProductsBlips((call) => call === 1);
-	window.history.replaceState(null, "", "/products?low=1");
-	view = await mount(<ProductsScreen />);
-	await settle();
-	expect(absent(view, "products-stock-degraded")).toBe(false);
-
-	await press(view, "products-next");
-	await settle();
-	// Still latched across the continuation — the contractual `false` is not an
-	// answer.
-	expect(absent(view, "products-stock-degraded")).toBe(false);
-
-	await press(view, "products-prev");
-	await settle();
-
-	// PAGE ONE, ANSWERED AUTHORITATIVELY, and the threshold read fine this time.
-	expect(absent(view, "products-stock-degraded")).toBe(true);
-	// AND THE NOUN FOLLOWS THE LATCH (F29): the rows really are the low-stock
-	// ones now, so they are named as such, and the exact count comes back with
-	// them.
-	expect(element(view, "products-intro").textContent).toContain("137 low-stock products");
-});
-
-test("products: a blip ON the Previous request RAISES the banner", async () => {
-	// The same rule from the other side: page one may raise as well as clear, and
-	// a request that carried no cursor is page one.
-	serveProductsBlips((call) => call === 3);
-	window.history.replaceState(null, "", "/products?low=1");
-	view = await mount(<ProductsScreen />);
-	await settle();
-	expect(absent(view, "products-stock-degraded")).toBe(true);
-
-	await press(view, "products-next");
-	await settle();
-	expect(absent(view, "products-stock-degraded")).toBe(true);
-
-	await press(view, "products-prev");
-	await settle();
-
-	expect(absent(view, "products-stock-degraded")).toBe(false);
-	// AND THE NOUN GOES BACK TO THE PLAIN ONE (F29). These rows are every
-	// product, because the predicate never went out; calling twenty-five of them
-	// "low-stock products" is the exact mislabel that ruling exists to prevent,
-	// and it is what a latch read off a continuation produces here.
-	const intro = element(view, "products-intro").textContent ?? "";
-	expect(intro).toContain("25 products on this page");
-	expect(intro).not.toContain("low-stock");
-	expect(intro).not.toContain("137");
 });
 
 test("a deep link to the LAST page keeps its pager on screen", async () => {

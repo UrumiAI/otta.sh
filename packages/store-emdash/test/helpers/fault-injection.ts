@@ -149,9 +149,6 @@ export function withCollection(
 /** The VERSIONED reads — `getVersioned(id)`. A pin is one of these. */
 export const isVersionedRead: CallMatcher = (call) => call.method === "getVersioned";
 
-/** The index reads — `query(options)`. Matched on the method; a query has no id. */
-export const isQueryRead: CallMatcher = (call) => call.method === "query";
-
 /** A collection with one call held open, and the handles to observe and free it. */
 export interface ParkedCollection<T> {
 	readonly collection: StorageCollection<T>;

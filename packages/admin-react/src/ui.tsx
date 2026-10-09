@@ -28,11 +28,10 @@
  */
 import * as React from "react";
 
-export const HAIRLINE = "1px solid rgba(128, 128, 128, 0.35)";
+const HAIRLINE = "1px solid rgba(128, 128, 128, 0.35)";
 export const OK_ACCENT = "#2f855a";
 export const FAIL_ACCENT = "#c53030";
 export const WARN_ACCENT = "#b7791f";
-export const MUTED = "rgba(128, 128, 128, 0.6)";
 /**
  * THE LOOK OF A CONTROL THAT IS PRESENT BUT CANNOT BE USED.
  *

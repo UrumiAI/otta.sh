@@ -56,15 +56,13 @@ export const E2E_VIEWPORT = { width: 1440, height: 2200 } as const;
 /**
  * Loopback hostnames, and the guard that keeps every e2e endpoint on one.
  *
- * `PG_CONNECTION_STRING` is an ordinary deployment variable: a shell that has
- * been used to deploy or to tunnel exports it pointing at real infrastructure,
- * and this harness reads it. Nothing about "it is only a test run" stops an
- * inherited export from aiming the stack boot, or a dev-bypass POST, at
- * production. So the values are guarded rather than trusted, at module load,
- * where the failure is loud and precedes any request. `OTTA_E2E_BASE_URL` gets
- * the same treatment even though nothing but an e2e run sets it — the guard is
- * one line and a harness that trusts *some* of its endpoints is the one that
- * eventually trusts the wrong one.
+ * Nothing about "it is only a test run" stops an inherited export from aiming a
+ * dev-bypass POST at a real deployment. So every endpoint this harness resolves
+ * is guarded rather than trusted, at module load, where the failure is loud and
+ * precedes any request. `OTTA_E2E_BASE_URL` is the only one today, and it gets
+ * the guard even though nothing but an e2e run sets it — the guard is one line
+ * and a harness that trusts *some* of its endpoints is the one that eventually
+ * trusts the wrong one.
  */
 const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "::1", "[::1]"]);
 
@@ -116,18 +114,6 @@ export const E2E_BASE_URL = assertLoopbackUrl(
  * dangling: an environment variable that configures nothing is a trap for the
  * next reader, and the loopback guard below has one less endpoint to police.
  */
-
-/**
- * The LOCAL TEST database — container `urumi-pg-test`, port **55432**.
- *
- * Port 5432 on localhost is an SSH tunnel to PRODUCTION Azure Postgres (§0.3).
- * No config, script or command in this harness may name it; `harness.spec.ts`
- * greps this file and `playwright.config.ts` for it and fails on a hit.
- */
-export const E2E_PG_CONNECTION_STRING = assertLoopbackUrl(
-	process.env["PG_CONNECTION_STRING"] ?? "postgres://postgres:postgres@127.0.0.1:55432/otta",
-	"PG_CONNECTION_STRING",
-);
 
 /** Opt in to having Playwright boot the §0.2 stack itself (off by default: a
  *  bare `pnpm test:e2e` must not try to start a dev server). */
@@ -399,46 +385,6 @@ export async function skipWithoutProducts(testInfo: TestInfo, rowCount: number):
 	const how =
 		"the stack has no products, so this spec cannot exercise a row. Set " +
 		"OTTA_E2E_SEED=1 for this run, or run sites/staging/scripts/seed-demo-commerce.ts.";
-	if (E2E_REQUIRES_SITE) throw new Error(`OTTA_E2E_REQUIRE_SITE=1 and ${how}`);
-	testInfo.skip(true, how);
-}
-
-/**
- * Skip (or, under `OTTA_E2E_REQUIRE_SITE=1`, fail) when no product on the page
- * has a SKU.
- *
- * ITS OWN MESSAGE, and the first cut of the SKU spec borrowed
- * {@link skipWithoutProducts}'s — which was wrong in the way these helpers keep
- * being wrong: the stack had products, so "the stack has no products" sent the
- * reader to the seed, where nothing was broken. A catalog of "created but never
- * priced" rows is a REAL state (the CMS sync mints a `product_commerce` row for
- * every products document), and the fix is to price one, not to seed more.
- */
-export async function skipWithoutSku(testInfo: TestInfo): Promise<void> {
-	const how =
-		"the stack has products but none on the first page has a SKU, so there is " +
-		"no natural key to render or copy. Every row is a 'created but never " +
-		"priced' product — price one (DIRECTOR-SPEC §0.2's seed does) and it gains " +
-		"a SKU.";
-	if (E2E_REQUIRES_SITE) throw new Error(`OTTA_E2E_REQUIRE_SITE=1 and ${how}`);
-	testInfo.skip(true, how);
-}
-
-/**
- * Skip (or, under `OTTA_E2E_REQUIRE_SITE=1`, fail) when no product on the page
- * has an inventory record to move stock against.
- *
- * A DIFFERENT CAUSE AND A DIFFERENT FIX AGAIN. A product with no SKU, or with a
- * SKU that predates the seed-on-first-sku behaviour, renders a one-line
- * explanation in place of both stock forms — by design (D-7). A spec that needs
- * the forms must say THAT rather than "no products", which would send the reader
- * to the seed where nothing is wrong.
- */
-export async function skipWithoutStockableProduct(testInfo: TestInfo): Promise<void> {
-	const how =
-		"no product on the first page has an inventory record, so neither stock " +
-		"form renders. Seed the stack (DIRECTOR-SPEC §0.2), or price a product and " +
-		"give it a SKU so the service mints its stock row.";
 	if (E2E_REQUIRES_SITE) throw new Error(`OTTA_E2E_REQUIRE_SITE=1 and ${how}`);
 	testInfo.skip(true, how);
 }
