@@ -4,7 +4,6 @@ import {
 	idempotencyKey,
 	InvalidSettingsError,
 	readStoreCurrency,
-	StoreCurrencyNotPayableError,
 	updateSettings,
 } from "@otta-sh/domain";
 import { InMemorySettingsStore, settingsStoreContract } from "@otta-sh/domain/testing";
@@ -82,19 +81,12 @@ describe("settings use-cases (over the in-memory fake)", () => {
 	);
 
 	test.each(["BHD", "JOD", "KWD", "OMR"])(
-		"updateSettings refuses %s as the store currency — checkout can't take payment in it",
+		"updateSettings accepts %s as the store currency — checkout rounds its total to the payment increment (ADR-0033 amendment)",
 		async (code) => {
 			const store = new InMemorySettingsStore();
-			const refused = await updateSettings(store, { currency: code }, idempotencyKey("k1")).then(
-				() => undefined,
-				(err: unknown) => err,
+			expect((await updateSettings(store, { currency: code }, idempotencyKey("k1"))).currency).toBe(
+				code,
 			);
-			expect(refused).toBeInstanceOf(StoreCurrencyNotPayableError);
-			// Still an InvalidSettingsError on `currency`, for every existing caller.
-			expect(refused).toBeInstanceOf(InvalidSettingsError);
-			expect((refused as StoreCurrencyNotPayableError).field).toBe("currency");
-			expect((refused as StoreCurrencyNotPayableError).code).toBe("STORE_CURRENCY_NOT_PAYABLE");
-			expect((await getSettings(store)).currency).toBeUndefined();
 		},
 	);
 

@@ -1077,6 +1077,7 @@ function toOrderDetailWire(order: Order): OrderDetailWire {
 			shippingCents: order.totals.shipping,
 			taxCents: order.totals.tax,
 			totalCents: order.totals.total,
+			...(order.totals.rounding !== undefined ? { roundingCents: order.totals.rounding } : {}),
 			appliedCouponCode: order.totals.appliedCouponCode,
 			// ADR-0009 (admin display-only juxtaposition): the chosen zone, read off
 			// the totals' method snapshot so the console can render the captured

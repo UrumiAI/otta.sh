@@ -60,6 +60,8 @@ import {
 	REFUND_AMOUNT_INVALID,
 	hasExcessDecimals,
 	refundAmountPrecisionText,
+	refundIncrementText,
+	isRefundableIncrement,
 	REFUND_PARTIAL_GROUP_LABEL,
 	RESOLVE_RECONCILIATION_NOTE,
 	SHIPPING_ADDRESS_ABSENT,
@@ -177,6 +179,12 @@ export function checkRefundInput(
 				field: "amount",
 			},
 		};
+	}
+
+	// ADR-0033's amendment: KWD, BHD, OMR and JOD are paid back in steps of
+	// 0.010 (or the whole remainder) — the payment path takes nothing finer.
+	if (!isRefundableIncrement(parsed, remainingCents, currency)) {
+		return { ok: false, refusal: { message: refundIncrementText(currency), field: "amount" } };
 	}
 
 	if (parsed > remainingCents) {
@@ -1035,19 +1043,33 @@ export function OrderDetail({
 	const reasonLabels: ReadonlyMap<string, string> = new Map(
 		detail.vocabulary.cancellationReasons.map((r) => [r.value, r.label]),
 	);
-	const ladder: ReadonlyArray<readonly [string, number]> = [
-		["Subtotal", order.totals.subtotalCents],
+	const totalsCur = order.totals.currency;
+	const rounding = order.totals.roundingCents;
+	const ladder: ReadonlyArray<readonly [string, string]> = [
+		["Subtotal", formatAmount(order.totals.subtotalCents, totalsCur)],
 		// The coupon the order was priced with, as the merchant stored it (QA round
 		// 2: the detail showed "Discount $3.00" with no code).
 		[
 			order.totals.appliedCouponCode != null && order.totals.appliedCouponCode.length > 0
 				? `Discount · ${order.totals.appliedCouponCode}`
 				: "Discount",
-			order.totals.discountCents,
+			formatAmount(order.totals.discountCents, totalsCur),
 		],
-		["Shipping", order.totals.shippingCents],
-		["Tax", order.totals.taxCents],
-		["Total", order.totals.totalCents],
+		["Shipping", formatAmount(order.totals.shippingCents, totalsCur)],
+		["Tax", formatAmount(order.totals.taxCents, totalsCur)],
+		// ADR-0033's amendment: the total rounded to its currency's payment
+		// increment, SIGNED — only on an order that has a non-zero one.
+		...(rounding !== undefined && rounding !== 0
+			? [
+					[
+						"Rounding",
+						rounding > 0
+							? `+${formatAmount(rounding, totalsCur)}`
+							: formatAmount(rounding, totalsCur),
+					] as const,
+				]
+			: []),
+		["Total", formatAmount(order.totals.totalCents, totalsCur)],
 	];
 
 	const askRefund = (amountCents: number) => {
@@ -1307,7 +1329,7 @@ export function OrderDetail({
 									<tr key={label}>
 										<td className="otta-td">{label}</td>
 										<td className="otta-td otta-num" style={endCellStyle}>
-											{formatAmount(amount, order.totals.currency)}
+											{amount}
 										</td>
 									</tr>
 								))}

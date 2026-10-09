@@ -59,8 +59,8 @@
  * `@otta-sh/admin-react` and stops being shared. It is a migration artefact and
  * should be read as one.
  */
-import { inputMinorUnitDigits } from "./currencies.js";
-import { moneyInputExample, moneyPrecisionPhrase } from "./money-input.js";
+import { currencyPaymentIncrement, inputMinorUnitDigits } from "./currencies.js";
+import { formatMinorUnitsInput, moneyInputExample, moneyPrecisionPhrase } from "./money-input.js";
 import { fitBanner } from "./copy.js";
 import type { RowNoun, ZeroStateCopy } from "./list-outcome.js";
 
@@ -348,6 +348,30 @@ export function refundAmountPrecisionText(currencyCode: string): string {
 	if (inputMinorUnitDigits(currencyCode) === 2) return REFUND_AMOUNT_PRECISION;
 	const example = moneyInputExample("19.99", currencyCode);
 	return `Use ${moneyPrecisionPhrase(currencyCode)} for the ${currencyCode} refund amount (e.g. ${example}). Nothing was changed.`;
+}
+
+/**
+ * Whether `amountCents` is a refund amount the order's currency can be paid back
+ * in: a whole multiple of its payment increment (KWD, BHD, OMR, JOD: 10 — 0.010),
+ * or the WHOLE remaining amount, whatever it is (an order placed before checkout
+ * rounded its total may hold a remainder of any size). Every other currency has
+ * no increment, so any amount passes and the refund form behaves as it always did.
+ */
+export function isRefundableIncrement(
+	amountCents: number,
+	remainingCents: number,
+	currencyCode: string,
+): boolean {
+	const increment = currencyPaymentIncrement(currencyCode);
+	return increment === undefined || amountCents % increment === 0 || amountCents === remainingCents;
+}
+
+/** The refusal for a refund amount that is not a multiple of the currency's
+ *  payment increment (see {@link isRefundableIncrement}). */
+export function refundIncrementText(currencyCode: string): string {
+	const increment = currencyPaymentIncrement(currencyCode) ?? 1;
+	const step = formatMinorUnitsInput(increment, currencyCode);
+	return `${currencyCode} refunds go back in steps of ${step} — enter a multiple of ${step} (e.g. ${moneyInputExample("19.99", currencyCode)}), or refund the full remaining amount. Nothing was changed.`;
 }
 
 /** True when an otherwise-plain amount has more decimal places than the

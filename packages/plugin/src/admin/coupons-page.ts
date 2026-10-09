@@ -1,8 +1,4 @@
-import {
-	checkoutPaymentLabelClause,
-	unsupportedCurrencyMessage,
-	withCheckoutPaymentWarning,
-} from "@otta-sh/admin-presentation";
+import { unsupportedCurrencyMessage } from "@otta-sh/admin-presentation";
 import { parseCouponInstant } from "@otta-sh/domain";
 import { formatMoney } from "../presentation/format-money.js";
 import { cents as toCents, currency as toCurrency } from "../presentation/money.js";
@@ -1317,9 +1313,7 @@ function editCouponForm(detail: CouponSummaryWire): FormBlock {
 		editFields.push({
 			type: "text_input",
 			action_id: "amount",
-			label: `Amount off (${detail.currency ?? "?"}${
-				detail.currency === null ? "" : checkoutPaymentLabelClause(detail.currency)
-			})`,
+			label: `Amount off (${detail.currency ?? "?"})`,
 			...(detail.amountCents !== null
 				? {
 						initial_value: formatMinorUnitsInput(
@@ -2063,7 +2057,7 @@ function createCouponAction() {
 				!result.ok && result.status === 409 ? await couponCollision(client, id, code) : undefined;
 			const clash = collision === undefined ? undefined : { kind: collision, id };
 			return result.ok
-				? showList(undefined, createCouponNotice(result, code, undefined, couponCurrency))
+				? showList(undefined, createCouponNotice(result, code))
 				: showList(undefined, createCouponNotice(result, code, clash), {
 						kind: "new-coupon",
 						draft,
@@ -2108,16 +2102,12 @@ function createCouponNotice(
 	result: RulesCreateResult<unknown>,
 	code: string,
 	clash?: { kind: CouponCollision; id: string },
-	currency: string | null = null,
 ): Notice {
 	if (result.ok) {
 		return {
 			variant: "default",
 			title: "Coupon created",
-			description: withCheckoutPaymentWarning(
-				`"${code}" was added and is live per its validity window.`,
-				currency,
-			),
+			description: `"${code}" was added and is live per its validity window.`,
 		};
 	}
 	return {
@@ -2199,10 +2189,7 @@ function saveCouponAction() {
 			if (copy === undefined) throw e;
 			return err(copy);
 		}
-		// A currency BOUND by this save (an unbound coupon's new bounds) gets the
-		// same checkout warning a create gives.
-		const bound = rendered === "" ? bounds.send : null;
-		return saveCouponOutcome(result, code, showLeaf, showList, bound);
+		return saveCouponOutcome(result, code, showLeaf, showList);
 	});
 }
 
@@ -2211,16 +2198,13 @@ function saveCouponOutcome(
 	code: string,
 	showLeaf: CustomActionApi<AdminRulesSurface>["showLeaf"],
 	showList: CustomActionApi<AdminRulesSurface>["showList"],
-	boundCurrency: string | null = null,
 ) {
 	if (result.ok) {
 		return showLeaf([code], {
 			variant: "default",
 			title: "Coupon saved",
-			description: withCheckoutPaymentWarning(
+			description:
 				"Every field was replaced with the submitted values (last write wins). Orders already placed keep their snapshotted discount.",
-				boundCurrency,
-			),
 		});
 	}
 	if (result.reason === "not_found") {

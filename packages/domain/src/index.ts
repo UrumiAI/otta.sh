@@ -1,9 +1,18 @@
 // Public barrel of @otta-sh/domain — ports, use-cases, and branded types.
-export { cents, currency, money, type Cents, type Currency, type Money } from "./money/cents.js";
+export {
+	cents,
+	currency,
+	money,
+	signedCents,
+	type Cents,
+	type Currency,
+	type Money,
+	type SignedCents,
+} from "./money/cents.js";
 export {
 	SUPPORTED_CURRENCIES,
 	currencyDigits,
-	isCheckoutPayableCurrency,
+	currencyPaymentIncrement,
 	isSupportedCurrency,
 	minorUnitDigits,
 	type CurrencyInfo,
@@ -706,7 +715,6 @@ export {
 	getSettings,
 	InvalidSettingsError,
 	MAX_HOLD_TTL_MINUTES,
-	StoreCurrencyNotPayableError,
 	updateSettings,
 } from "./settings/use-cases.js";
 export type { AttemptThrottle } from "./ports/attempt-throttle.js";

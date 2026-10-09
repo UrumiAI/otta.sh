@@ -1,4 +1,5 @@
 import { type Cents, cents, type Currency } from "../money/cents.js";
+import { currencyPaymentIncrement } from "../money/currencies.js";
 import { ORDER_ADDRESS_MAX_LENGTHS } from "../orders/order-address.js";
 import type { Clock } from "../ports/clock.js";
 import type { CouponRecord, CouponStore } from "../ports/coupon-store.js";
@@ -18,6 +19,7 @@ import {
 	type TaxSettings,
 } from "./tax-settings.js";
 import { normalizeCountryCode, normalizeSubdivision } from "./region-codes.js";
+import { roundHalfUpToMultiple } from "./round.js";
 import {
 	DEFAULT_TAX_CALCULATOR_TIMEOUT_MS,
 	isValidCalculatorId,
@@ -441,7 +443,13 @@ function orderTotalOf(preTax: PreTaxTotals, result: TaxResult, pricesIncludeTax:
 	const tax = pricesIncludeTax
 		? shippingTax
 		: result.lines.reduce((sum, l) => sum + l.taxCents, shippingTax);
-	return preTax.subtotalCents - preTax.discountCents + preTax.shippingCents + tax;
+	const exact = preTax.subtotalCents - preTax.discountCents + preTax.shippingCents + tax;
+	// The total `assembleTotals` brands is the ROUNDED one for an increment
+	// currency, so the fence checks that too.
+	const increment = currencyPaymentIncrement(preTax.currency);
+	return increment === undefined || !Number.isSafeInteger(exact)
+		? exact
+		: roundHalfUpToMultiple(exact, increment);
 }
 
 function refuse(id: string, why: string): null {

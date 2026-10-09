@@ -3,7 +3,7 @@
  * card's first-price picker and the Block Kit Settings page's store-currency
  * select read the same list, so the two screens offer currencies identically.
  */
-import { SUPPORTED_CURRENCIES, checkoutPaymentLabelSuffix, currencyInfo } from "./currencies.js";
+import { SUPPORTED_CURRENCIES, currencyInfo } from "./currencies.js";
 
 /** The currencies offered first, in this order — the list the picker showed
  *  before the currency table existed, kept at the top so it reads as it did. */
@@ -29,14 +29,12 @@ export const CURRENCY_CHOICES: readonly string[] = [
 		.toSorted(),
 ];
 
-/** A picker's label for a code: `USD — US Dollar`, with the ONE checkout
- *  warning suffix for a currency checkout cannot take payment in yet
- *  (`KWD — Kuwaiti Dinar (not yet payable at checkout)`); the bare code for one
- *  the table does not list. */
+/** A picker's label for a code: `USD — US Dollar`; the bare code for one the
+ *  table does not list. */
 export function currencyChoiceLabel(code: string): string {
 	const row = currencyInfo(code);
 	if (row === undefined) return code;
-	return `${code} — ${row.name}${checkoutPaymentLabelSuffix(code)}`;
+	return `${code} — ${row.name}`;
 }
 
 /**

@@ -396,8 +396,8 @@ describe("the draft", () => {
 		expect(CURRENCY_CHOICES).toContain("KWD");
 		expect(new Set(CURRENCY_CHOICES).size).toBe(CURRENCY_CHOICES.length);
 		expect(currencyChoiceLabel("JPY")).toBe("JPY — Japanese Yen");
-		// Priceable but not chargeable through Stripe yet: the picker says so.
-		expect(currencyChoiceLabel("KWD")).toBe("KWD — Kuwaiti Dinar (not yet payable at checkout)");
+		// Payable at checkout now (its total is rounded — ADR-0033 amendment): no warning.
+		expect(currencyChoiceLabel("KWD")).toBe("KWD — Kuwaiti Dinar");
 	});
 
 	test("is dirty only when a value differs, and `32` vs `32.00` is not a difference", () => {

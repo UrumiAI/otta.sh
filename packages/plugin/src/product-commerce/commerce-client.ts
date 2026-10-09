@@ -546,6 +546,10 @@ export interface QuoteBreakdownWire {
 	shippingCents: number;
 	taxCents: number;
 	totalCents: number;
+	/** The payment rounding (ADR-0033's amendment), SIGNED minor units: present only
+	 *  for a currency with a payment increment (KWD, BHD, OMR, JOD); then
+	 *  `totalCents` is the rounded total and the rows sum to it with this added. */
+	roundingCents?: number;
 	appliedCouponCode: string | null;
 	/** How the tax was charged and is to be shown (ADR-0032). Absent ⇒ today's
 	 *  single "Tax" row with prices as entered. */
@@ -806,6 +810,10 @@ export interface OrderTotalsWire {
 	shippingCents: number;
 	taxCents: number;
 	totalCents: number;
+	/** The payment rounding (ADR-0033's amendment), SIGNED minor units: present only
+	 *  for a currency with a payment increment (KWD, BHD, OMR, JOD); then
+	 *  `totalCents` is the rounded total and the rows sum to it with this added. */
+	roundingCents?: number;
 }
 
 export interface OrderLineWire {

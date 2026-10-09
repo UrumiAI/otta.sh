@@ -268,11 +268,11 @@ describe("StripePaymentGateway.createIntent — the OFFLINE path is UNCHANGED by
 	});
 
 	test("the unsupported-currency gate still fires BEFORE any description work (nothing reaches Stripe)", async () => {
-		// KWD, not JPY: a zero-decimal currency now maps exactly (whole yen are
-		// Stripe's unit) and goes live; a three-decimal one is still refused.
+		// TND: three-decimal at Stripe and outside the currency table, so still
+		// refused (the listed three-decimal codes now go live — ADR-0033 amendment).
 		const transport = new MockTransport();
 		await expect(
-			liveGateway(transport).createIntent(intentInput({ currency: currency("KWD") })),
+			liveGateway(transport).createIntent(intentInput({ currency: currency("TND") })),
 		).rejects.toBeInstanceOf(PaymentIntentError);
 		expect(transport.intents).toHaveLength(0);
 	});

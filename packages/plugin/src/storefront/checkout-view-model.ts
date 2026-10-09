@@ -99,6 +99,13 @@ export interface CheckoutTotalsView {
 	taxRows: CheckoutTaxRowView[];
 	/** "Includes $3.00 tax" under the total when prices are shown with tax. Plain text. */
 	taxIncludedNote: string | null;
+	/**
+	 * The "Rounding" row (ADR-0033's amendment): the total rounded to its
+	 * currency's payment increment, SIGNED (`−KWD 0.003`, `+KWD 0.002`). Present
+	 * only when the rounding is non-zero; absent for every other total, whose
+	 * view is unchanged. The theme shows it after the tax rows, before the total.
+	 */
+	rounding?: CheckoutAmountView;
 	total: CheckoutAmountView;
 	appliedCouponCode: string | null;
 	/** true while shipping or tax was not computed — the theme's signal to
@@ -125,6 +132,18 @@ function money(amount: number, currencyCode: Currency, locale: string): CartMone
 function computed(amount: number, currencyCode: Currency, locale: string): CheckoutAmountView {
 	const value = money(amount, currencyCode, locale);
 	return { money: value, label: value.formatted };
+}
+
+/** A signed adjustment (the rounding row): the money keeps its sign, and the
+ *  label leads with `−` or `+` before the formatted magnitude. */
+function signedComputed(
+	amount: number,
+	currencyCode: Currency,
+	locale: string,
+): CheckoutAmountView {
+	const magnitude = money(Math.abs(amount), currencyCode, locale);
+	const formatted = `${amount < 0 ? "−" : "+"}${magnitude.formatted}`;
+	return { money: { ...magnitude, amount, formatted }, label: formatted };
 }
 
 function uncomputed(label: string): CheckoutAmountView {
@@ -181,6 +200,9 @@ export function buildCheckoutTotals(
 		tax: taxView,
 		taxRows,
 		taxIncludedNote,
+		...(breakdown.roundingCents !== undefined && breakdown.roundingCents !== 0
+			? { rounding: signedComputed(breakdown.roundingCents, code, locale) }
+			: {}),
 		total: computed(breakdown.totalCents, code, locale),
 		appliedCouponCode: breakdown.appliedCouponCode,
 		totalExcludesUncalculated: !options.shippingSelected || !taxComputed,

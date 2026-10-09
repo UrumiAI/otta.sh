@@ -71,6 +71,8 @@ import {
 	REFUND_TOO_HIGH_TITLE,
 	fit,
 	formatAmount as formatTotal,
+	isRefundableIncrement,
+	refundIncrementText,
 } from "@otta-sh/admin-presentation";
 import type {
 	AdminOrdersSurface,
@@ -1102,6 +1104,16 @@ const refundOrderAction: OrdersAction = async (client, payload, operator) => {
 		// drawn and this click. This is the ONLY window now checked server-side, and
 		// the surface's own pre-dialog validation cannot see it.
 		return applied(staleLedgerNotice(amountCents, live, liveCur));
+	}
+	// ADR-0033's amendment: an amount the order's currency cannot be paid back in
+	// (KWD, BHD, OMR, JOD: not a multiple of 0.010, and not the whole remainder)
+	// is refused before anything is sent — the console checks the same rule first.
+	if (!isRefundableIncrement(amountCents, live.remainingCents, liveCur)) {
+		return applied({
+			variant: "error",
+			title: "Not refunded",
+			description: refundIncrementText(liveCur),
+		});
 	}
 	const voidedAttempts = live.refunds.filter(
 		(r) =>

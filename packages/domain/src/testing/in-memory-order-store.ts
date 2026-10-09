@@ -181,6 +181,7 @@ export class InMemoryOrderStore implements OrderStore {
 			shipping: input.totals.shipping ?? cents(0),
 			tax: input.totals.tax ?? cents(0),
 			total: input.totals.total,
+			...(input.totals.rounding !== undefined ? { rounding: input.totals.rounding } : {}),
 			appliedCouponCode: input.totals.appliedCouponCode ?? null,
 			shippingMethodSnapshot: input.totals.shippingMethodSnapshot ?? null,
 			taxBreakdown: input.totals.taxBreakdown ?? null,

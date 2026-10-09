@@ -5,12 +5,7 @@ import {
 	validateBackgroundWork,
 } from "../cron/background-work-setting.js";
 import { currencyChoiceLabel, currencyChoicesWith } from "@otta-sh/admin-presentation";
-import {
-	effectiveStoreCurrency,
-	isCheckoutPayableCurrency,
-	isSupportedCurrency,
-	MAX_HOLD_TTL_MINUTES,
-} from "@otta-sh/domain";
+import { effectiveStoreCurrency, isSupportedCurrency, MAX_HOLD_TTL_MINUTES } from "@otta-sh/domain";
 import { emailSendingStatus, type EmailSendingStatus } from "../email/ctx-email-sender.js";
 import { STORE_DISPLAY_NAME_KEY } from "../email/email-render-context.js";
 import { isPlausiblePayTo, X402_ACCEPTS_KEY, X402_PAYTO_KEY } from "../payments/x402-wiring.js";
@@ -861,8 +856,6 @@ export function createSettingsFormHandler(): RouteHandler<SettingsFormInput> {
 			}
 			const unsupported = `${code.length > 0 ? code : "That"} isn't a supported currency — choose one from the list. Nothing was changed.`;
 			if (!isSupportedCurrency(code)) return refuse("Store currency not saved", unsupported);
-			// A currency checkout can't take payment in is refused by the DOMAIN
-			// (`StoreCurrencyNotPayableError`, so every writer gets it); worded here.
 			const key =
 				typeof input.idempotencyKey === "string" && input.idempotencyKey.length > 0
 					? input.idempotencyKey
@@ -873,12 +866,6 @@ export function createSettingsFormHandler(): RouteHandler<SettingsFormInput> {
 					return refuse(
 						"Settings changed by someone else",
 						`${asSentence(result.message)} Nothing was saved.`,
-					);
-				}
-				if (result.code === "store_currency_not_payable") {
-					return refuse(
-						"Store currency not saved",
-						`${code} can't be the store currency yet — payments in ${code} aren't supported at checkout. Nothing was changed.`,
 					);
 				}
 				if (result.reason === "validation") return refuse("Store currency not saved", unsupported);
@@ -1340,12 +1327,7 @@ function storeCurrencyBlocks(persisted: OperationalSettingsWire | undefined): Bl
 		];
 	}
 	const current = effectiveStoreCurrency(persisted);
-	// A currency checkout can't take payment in can't be CHOSEN (the domain
-	// refuses it), so it is not offered — unless it is the one already saved,
-	// which the select must still be able to show.
-	const codes = currencyChoicesWith(current).filter(
-		(code) => code === current || isCheckoutPayableCurrency(code),
-	);
+	const codes = currencyChoicesWith(current);
 	return [
 		...STORE_CURRENCY_CONTEXT,
 		carriedForm({

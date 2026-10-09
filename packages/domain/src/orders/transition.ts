@@ -758,6 +758,11 @@ export function buildOrderEmailData(order: Order, toState: OrderState): Record<s
 		discountCents: order.totals.discount,
 		shippingCents: order.totals.shipping,
 		taxCents: order.totals.tax,
+		// ADR-0033's amendment: the payment rounding, only when there was one — an
+		// order without it enqueues exactly the data it always did.
+		...(order.totals.rounding !== undefined && order.totals.rounding !== 0
+			? { roundingCents: order.totals.rounding }
+			: {}),
 		appliedCouponCode: order.totals.appliedCouponCode,
 		shippingCalculated: snapshotField(order.totals.shippingMethodSnapshot, "methodId", true),
 		taxCalculated:
