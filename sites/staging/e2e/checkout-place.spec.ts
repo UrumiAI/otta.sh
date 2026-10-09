@@ -148,16 +148,21 @@ test.describe("checkout in the browser", () => {
 		const country = form.locator('select[name="country"]');
 		if ((await country.count()) > 0 && (await country.isVisible())) {
 			await country.selectOption("US");
-			// A REAL wait: the Update POST, its redirect, and the re-rendered page —
-			// which only it has — showing the US state list. No list ⇒ this fails.
-			await Promise.all([
-				page.waitForResponse(
-					(res) =>
-						new URL(res.url()).pathname === "/checkout/place" && res.request().method() === "POST",
-				),
-				form.locator('button[value="update-address"]').click(),
-			]);
-			await page.waitForLoadState("load");
+			// With JS (the default here) the optional script swaps the list in place
+			// and hides Update (ADR-0034); without it, Update re-renders the page. A
+			// REAL wait either way: the US state list must appear, or this fails.
+			const update = form.locator('button[value="update-address"]');
+			if (await update.isVisible()) {
+				await Promise.all([
+					page.waitForResponse(
+						(res) =>
+							new URL(res.url()).pathname === "/checkout/place" &&
+							res.request().method() === "POST",
+					),
+					update.click(),
+				]);
+				await page.waitForLoadState("load");
+			}
 			await expect(form.locator('select[name="region"] option[value="CA"]')).toHaveCount(1);
 			await expect(form.locator('input[name="email"]')).not.toHaveValue("");
 		}
