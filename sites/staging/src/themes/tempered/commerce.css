@@ -1231,8 +1231,10 @@
 }
 
 /* A region field for a country with no subdivisions is in the page but hidden
-   (the optional script fills and shows it when the country changes); its
-   `display: flex` above must not override `hidden`. */
-[data-theme-id] .checkout-field[hidden] {
+   (the optional script, ADR-0034, fills and shows it when the country
+   changes), and the script hides the no-JS-only Update controls: `hidden` must
+   win over their own `display` (flex / inline-flex) above. */
+[data-theme-id] [data-region-field][hidden],
+[data-theme-id] [data-region-update][hidden] {
 	display: none;
 }

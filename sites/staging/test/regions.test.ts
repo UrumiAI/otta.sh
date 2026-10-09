@@ -354,16 +354,17 @@ describe("the Tempered review, rendered", () => {
 	});
 });
 
-describe("GET /checkout/regions — the optional script's one data source (ADR-0034)", () => {
-	const get = async (q: string) => {
-		const response = await REGIONS_GET({
-			url: new URL(`http://x/checkout/regions${q}`),
-		} as unknown as APIContext);
-		return { response, body: (await response.json()) as Array<{ code: string; label: string }> };
-	};
+/** GET /checkout/regions, called the way Astro calls it. */
+const getRegions = async (q: string) => {
+	const response = await REGIONS_GET({
+		url: new URL(`http://x/checkout/regions${q}`),
+	} as unknown as APIContext);
+	return { response, body: (await response.json()) as Array<{ code: string; label: string }> };
+};
 
+describe("GET /checkout/regions — the optional script's one data source (ADR-0034)", () => {
 	test("a country's options, named and sorted — exactly the server-rendered list", async () => {
-		const { response, body } = await get("?country=us");
+		const { response, body } = await getRegions("?country=us");
 		expect(response.headers.get("content-type")).toContain("application/json");
 		expect(body).toEqual(regionChoice("US", "", "en-US").options);
 		expect(body).toContainEqual({ code: "CA", label: "California" });
@@ -371,7 +372,7 @@ describe("GET /checkout/regions — the optional script's one data source (ADR-0
 
 	test("no subdivisions, an unknown country, or none at all: []", async () => {
 		for (const q of ["?country=AQ", "?country=ZZ", "", "?country=<script>"]) {
-			expect((await get(q)).body, q).toEqual([]);
+			expect((await getRegions(q)).body, q).toEqual([]);
 		}
 	});
 });

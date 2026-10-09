@@ -933,6 +933,9 @@ describe("storefront/checkout/summary — the buyer's selection (workerd sandbox
  * derived from it, tax follows it, the matched zone's options are offered, and
  * a lone priced option is preselected. See `P2_ZONES` for the fixture.
  */
+/** A summary's selection refusals. */
+const selectionErrorsOf = (result: Record<string, unknown>): unknown => result["selectionErrors"];
+
 describe("storefront/checkout/summary — the zone derived from the destination (workerd sandbox)", () => {
 	useShippingRules(seedZoneFixture, removeZoneFixture);
 
@@ -951,17 +954,22 @@ describe("storefront/checkout/summary — the zone derived from the destination 
 		await rules.createZone({ id: ON, name: "Ontario", regions: ["CA-ON"] });
 		try {
 			const cartId = await p2Cart();
-			const at = (r: Record<string, unknown>) => r["selectionErrors"];
 			// A state zone with NO methods (one that only carries a tax rate) ships
 			// nowhere: the refusal is about the country, in the country's words.
-			expect(at(await summary({ cartId, destination: { country: "CA", region: "QC" } }))).toEqual({
+			expect(
+				selectionErrorsOf(await summary({ cartId, destination: { country: "CA", region: "QC" } })),
+			).toEqual({
 				destination: { reason: "SHIPPING_ZONE_NOT_MATCHED" },
 			});
 			await rules.createMethod({ id: ON_STD, zoneId: ON, name: "Ontario Post", type: "flat_rate" });
-			expect(at(await summary({ cartId, destination: { country: "CA", region: "QC" } }))).toEqual({
+			expect(
+				selectionErrorsOf(await summary({ cartId, destination: { country: "CA", region: "QC" } })),
+			).toEqual({
 				destination: { reason: "SHIPPING_ZONE_NOT_MATCHED", blames: "region" },
 			});
-			expect(at(await summary({ cartId, destination: { country: "JP", region: "13" } }))).toEqual({
+			expect(
+				selectionErrorsOf(await summary({ cartId, destination: { country: "JP", region: "13" } })),
+			).toEqual({
 				destination: { reason: "SHIPPING_ZONE_NOT_MATCHED" },
 			});
 			await rules.deleteMethod(ON_STD);
