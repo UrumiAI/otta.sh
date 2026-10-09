@@ -150,7 +150,8 @@ async function askStripe(
 ): Promise<StripeAccountCountryStatus> {
 	const result = await fetchStripeAccountCountry({
 		secretKey,
-		fetch: (input, init) => ctx.http.fetch(String(input), init),
+		// Narrower bridge answer; the transport reads only members both have.
+		fetch: (input, init) => ctx.http.fetch(String(input), init) as Promise<Response>,
 		timeoutMs,
 	});
 	const checkedAt = new Date(now).toISOString();

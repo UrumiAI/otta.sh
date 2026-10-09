@@ -52,8 +52,16 @@ export interface ContentStateChangeEvent {
  *  (`test/sandbox-clean-guard.test.ts`) sees no bare fetch-invocation token
  *  in this declaration. */
 export interface HttpAccess {
-	fetch: (url: string, init?: RequestInit) => Promise<Response>;
+	fetch: (url: string, init?: RequestInit) => Promise<HttpResponse>;
 }
+
+/**
+ * What the sandbox bridge's `http.fetch` answers: a plain object with the body
+ * already buffered — no `url`, no `body` stream (EmDash 0.38's Worker Loader
+ * bridge; 1.0.1 returns a full `Response`, which satisfies this too). Code that
+ * must run sandboxed may use only these members.
+ */
+export type HttpResponse = Pick<Response, "status" | "ok" | "headers" | "text" | "json">;
 
 /**
  * Non-secret key/value store (em-dash `KVAccess`, `packages/core/src/plugins/
