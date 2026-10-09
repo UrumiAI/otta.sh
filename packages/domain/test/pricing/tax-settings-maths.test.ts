@@ -268,6 +268,23 @@ describe("shipping tax class — WooCommerce 'based on cart items' (woo-facts-ve
 		expect(first).toBe("a-one");
 	});
 
+	test("plain ASCII order is unchanged: punctuation, digits and letters compare by code unit", () => {
+		// Old comparator: lower-case, then code unit. "-" (0x2d) < "_" (0x5f); "1" (0x31) < "_".
+		const pick = (x: string, y: string): string =>
+			inheritShippingTaxClass(
+				[line("0", 1, "z-x"), line("1", 1, "a-y")],
+				new Map([
+					["z-x", x],
+					["a-y", y],
+				]),
+			) as string;
+		expect(pick("Reduced_rate", "Reduced-rate")).toBe("a-y");
+		expect(pick("Reduced-rate", "Reduced_rate")).toBe("z-x");
+		expect(pick("Tax_A", "Tax1")).toBe("a-y");
+		expect(pick("Tax1", "Tax_A")).toBe("z-x");
+		expect(pick("a~", "a0")).toBe("a-y");
+	});
+
 	test("several classes none of which is declared → standard (WooCommerce's fallback)", () => {
 		expect(inheritShippingTaxClass([line("0", 1, "x"), line("1", 1, "y")], new Map())).toBe(
 			"standard",

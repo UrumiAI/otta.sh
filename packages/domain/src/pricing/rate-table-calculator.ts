@@ -119,6 +119,16 @@ function isTaxed(line: TaxRequest["lines"][number]): boolean {
 }
 
 /**
+ * A class name's sort key: lower-cased with accents stripped, then compared by
+ * code unit. Only accents and case are ignored; the order of plain ASCII
+ * (punctuation, digits, letters) is exactly what a lower-case compare gave, and
+ * nothing depends on ICU or the host locale.
+ */
+function nameSortKey(name: string): string {
+	return name.normalize("NFD").replace(/\p{M}/gu, "").toLowerCase();
+}
+
+/**
  * One line's tax. Prices WITHOUT tax round half UP (main's maths). Prices WITH tax
  * round the tax inside the gross half DOWN — WooCommerce's `WC_TAX_ROUNDING_MODE`
  * for tax-inclusive stores (woo-oracle IN-02: 999 at 20% → 166), which is what
@@ -223,7 +233,7 @@ function shippingTaxClassOf(
  *  - one class ⇒ that class;
  *  - else the first by class NAME (WooCommerce's `ORDER BY name`) among the
  *    declared classes (`names`), falling back to `standard`. Names compare
- *    case- and accent-insensitively, as MySQL's default collation does; names equal
+ *    case- and accent-insensitively (approximately MySQL's default collation); names equal
  *    under that go to the lower id, so the pick never depends on listing order.
  */
 export function inheritShippingTaxClass(
@@ -238,11 +248,9 @@ export function inheritShippingTaxClass(
 	if (found.has("standard")) return "standard";
 	if (found.size === 1) return [...found][0] as TaxClassId;
 	const ordered = [...names].toSorted(([idA, a], [idB, b]) => {
-		// Base letters only (case and accents ignored), as MySQL's `_ai_ci` collation
-		// does; a fixed locale keeps the order the same on every host. Names equal
-		// under that fall back to the id (unique), so it is deterministic.
-		const byBase = a.localeCompare(b, "en", { sensitivity: "base" });
-		if (byBase !== 0) return byBase;
+		const ka = nameSortKey(a);
+		const kb = nameSortKey(b);
+		if (ka !== kb) return ka < kb ? -1 : 1;
 		return idA < idB ? -1 : idA > idB ? 1 : 0;
 	});
 	return ordered.find(([id]) => found.has(id))?.[0] ?? "standard";

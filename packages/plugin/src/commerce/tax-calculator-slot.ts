@@ -20,7 +20,9 @@ let registered: TaxCalculator | undefined;
 /**
  * Register the site's calculator. Re-registering one with the SAME id replaces
  * it: a dev server that re-evaluates the site's entry module builds a new
- * object while this module (a dependency) keeps its state. A DIFFERENT id
+ * object while this module (a dependency) keeps its state. Replacing with a
+ * different object logs a `console.warn` so the override is visible;
+ * re-registering the very same object stays silent. A DIFFERENT id
  * throws, so two entries can never silently race for which one prices orders.
  */
 export function setTaxCalculator(calculator: TaxCalculator): void {
