@@ -84,6 +84,7 @@ function documentMarkup(): string {
 function listRow(id: string, buyerRef: string) {
 	return {
 		id,
+		orderNumber: `#${id.slice(0, 5).toUpperCase()}`,
 		state: "paid",
 		currency: "USD",
 		buyerRef,
@@ -223,8 +224,11 @@ test("the toggle is a real, named, keyboard-reachable button that keeps focus ac
 	// buttons is "Show, Show, Show" to a screen reader; the order prefix tells
 	// them apart. It contains the visible word, so a voice-control user can
 	// say what they see.
+	// The order is named exactly as the row's identity cell displays it.
+	const shown = cell.closest("tr")?.querySelector('[data-testid="order-link"]')?.textContent ?? "";
+	expect(shown).toMatch(/^#/);
 	const label = toggle.getAttribute("aria-label") ?? "";
-	expect(label).toMatch(/^Show buyer email for order #ord_/);
+	expect(label).toBe(`Show buyer email for order ${shown}`);
 	expect(label).toContain(toggle.textContent ?? "");
 	// It names the element it discloses.
 	const controls = toggle.getAttribute("aria-controls") ?? "";
@@ -238,7 +242,7 @@ test("the toggle is a real, named, keyboard-reachable button that keeps focus ac
 	// toggle would drop a keyboard operator's focus to <body>.
 	expect(rowToggle(cell)).toBe(toggle);
 	expect(document.activeElement).toBe(toggle);
-	expect(toggle.getAttribute("aria-label")).toMatch(/^Hide buyer email for order #ord_/);
+	expect(toggle.getAttribute("aria-label")).toBe(`Hide buyer email for order ${shown}`);
 	expect(document.getElementById(controls)?.textContent).toBe(EMAIL);
 });
 
@@ -296,6 +300,7 @@ function detail(buyerRef: string, options: { verified?: boolean } = {}): DetailP
 		ok: true,
 		order: {
 			id: ORDER_ID,
+			orderNumber: `#${ORDER_ID.slice(0, 5).toUpperCase()}`,
 			state: "paid",
 			currency: CUR,
 			paymentMethod: "card",

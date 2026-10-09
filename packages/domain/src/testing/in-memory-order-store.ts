@@ -81,6 +81,7 @@ export interface SeedOrderSummaryRow {
 	reconciliationFlag?: string | null;
 }
 import { emailTemplateForState, isLegalOrderTransition } from "../orders/state-machine.js";
+import { orderNumberIdPrefix } from "../orders/order-number.js";
 
 /** Descending code-unit string comparison (`>` first) — the SAME plain code-unit
  *  ordering the keyset predicate + from/to filters use, so the admin-list fake is
@@ -861,7 +862,7 @@ export class InMemoryOrderStore implements OrderStore {
 	/** The ONE `OrderListFilter` predicate, shared by `listOrders` and
 	 *  `countOrders` (mirrors the Kysely adapter's single filter builder) — a
 	 *  count can never disagree with the list it captions. */
-	#matchesFilter(o: Order, filter: OrderListFilter): boolean {
+	#matchesFilter(o: Order, filter: OrderListFilter, idArm: string | undefined): boolean {
 		if (
 			filter.states !== undefined &&
 			filter.states.length > 0 &&
@@ -881,7 +882,9 @@ export class InMemoryOrderStore implements OrderStore {
 			// sides, matching the SQL (whose bare-LIKE case behaviour differs between
 			// pg and SQLite).
 			const needle = filter.search.toLowerCase();
-			const byId = o.id.toLowerCase().startsWith(needle);
+			// ADR-0033: only the ID arm reads a typed order number as the id prefix
+			// it stands for; the buyer and sku arms match the text as typed.
+			const byId = o.id.toLowerCase().startsWith(idArm ?? needle);
 			const byRef = o.buyerRef.toLowerCase().includes(needle);
 			// `some` over the order's OWN line snapshots — the fake's stand-in for the
 			// adapter's correlated EXISTS over `order_items`, and an existence test
@@ -905,8 +908,9 @@ export class InMemoryOrderStore implements OrderStore {
 
 	async countOrders(filter: OrderListFilter): Promise<number> {
 		let count = 0;
+		const idArm = idArmOf(filter);
 		for (const s of this.#orders.values()) {
-			if (this.#matchesFilter(s.order, filter)) count++;
+			if (this.#matchesFilter(s.order, filter, idArm)) count++;
 		}
 		return count;
 	}
@@ -918,11 +922,12 @@ export class InMemoryOrderStore implements OrderStore {
 		// buyer_ref-SUBSTRING / exact-line-sku `search`, same `limit + 1` next-page
 		// detection.
 		const cursor = page.cursor ?? null;
+		const idArm = idArmOf(filter);
 
 		const matched = [...this.#orders.values()]
 			.map((s) => s.order)
 			.filter((o) => {
-				if (!this.#matchesFilter(o, filter)) return false;
+				if (!this.#matchesFilter(o, filter, idArm)) return false;
 				// Keyset predicate: everything strictly "less than" the cursor position
 				// under `created_at DESC, id DESC`.
 				if (cursor !== null) {
@@ -1335,4 +1340,12 @@ function closeRestockPending(
 ): OrderCancellation {
 	const { restockPending: _closed, ...rest } = cancellation;
 	return { ...rest, restocked: cancellation.restocked === true || restocked };
+}
+
+/** The ID arm's needle for a filter's search, computed once per call: the id prefix
+ *  a typed order number stands for (ADR-0033), else the folded search itself. */
+function idArmOf(filter: OrderListFilter): string | undefined {
+	if (filter.search === undefined) return undefined;
+	const needle = filter.search.toLowerCase();
+	return orderNumberIdPrefix(needle) ?? needle;
 }

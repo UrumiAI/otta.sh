@@ -531,7 +531,7 @@ export function CopyIdButton({
  * element whose id it is handed, and the visible word changes with the state:
  * `aria-pressed` would make a screen reader say "Hide, pressed", which states
  * the same thing twice and backwards. The accessible name CONTAINS the visible
- * word (`Show buyer email for order #7e4c`), so a voice-control user can say
+ * word (`Show buyer email for order #7E4CE`), so a voice-control user can say
  * what they see and a screen-reader user moving down a column hears which row
  * each one belongs to, not "Show, Show, Show" — the reason `CopyIdButton`'s
  * label names its id.
@@ -562,7 +562,7 @@ export function RevealToggle({
 	onToggle: () => void;
 	/** The id of the element this discloses. */
 	controls: string;
-	/** What is revealed, and whose — read after the verb: `buyer email for order #7e4c`. */
+	/** What is revealed, and whose — read after the verb: `buyer email for order #7E4CE`. */
 	what: string;
 	showLabel?: string;
 	hideLabel?: string;

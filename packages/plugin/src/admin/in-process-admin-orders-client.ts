@@ -103,6 +103,7 @@ import {
 	ORDER_STATE_MACHINE,
 	orderHasEmailRecipient,
 	orderId as toOrderId,
+	orderNumber,
 	recordFulfillment as recordFulfillmentUseCase,
 	refundOrder as refundOrderUseCase,
 	resolveReconciliation as resolveReconciliationUseCase,
@@ -1040,6 +1041,7 @@ function isStateRow(row: OutboxEmail, state: OrderState): boolean {
 function toOrderSummaryWire(summary: OrderSummary): OrderSummaryWire {
 	return {
 		id: summary.id,
+		orderNumber: orderNumber(summary.id),
 		state: summary.state,
 		currency: summary.currency,
 		buyerRef: summary.buyerRef,
@@ -1058,6 +1060,7 @@ function toOrderSummaryWire(summary: OrderSummary): OrderSummaryWire {
 function toOrderDetailWire(order: Order): OrderDetailWire {
 	return {
 		id: order.id,
+		orderNumber: orderNumber(order.id),
 		state: order.state,
 		currency: order.currency,
 		paymentMethod: order.paymentMethod,
@@ -1246,8 +1249,10 @@ function toDomainFilter(filter: OrdersListFilter): OrderListFilter {
 		out.from = requireInstant("from", filter.from);
 	}
 	if (filter.to !== undefined && filter.to.length > 0) out.to = requireInstant("to", filter.to);
-	if (filter.search !== undefined && filter.search.length > 0) {
-		out.search = requireBoundedText("search", filter.search, 1, 200);
+	// Trimmed ONCE, here, so every arm — id, buyer, sku — sees the same text.
+	const search = filter.search?.trim();
+	if (search !== undefined && search.length > 0) {
+		out.search = requireBoundedText("search", search, 1, 200);
 	}
 	return out;
 }

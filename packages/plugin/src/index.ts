@@ -463,6 +463,9 @@ export { COUNTRY_CODES, isCodeShapedRegion, REGION_CODE_PATTERN } from "@otta-sh
 // it through the same function in the domain, so the site takes THAT one rather
 // than a copy that could spell the same order differently.
 export { ORDER_LABEL_FALLBACK, orderLabel, type OrderLabelLine } from "@otta-sh/domain";
+// The order NUMBER ("#3F9A2") the site prints beside the label — the domain's one
+// function, the same the order emails and the admin console use (ADR-0033).
+export { ORDER_NUMBER_LENGTH, orderNumber } from "@otta-sh/domain";
 // "Paid" / "Total" for an order's figure — the domain's one rule, shared with the
 // order emails.
 export { orderTotalLabel } from "@otta-sh/domain";

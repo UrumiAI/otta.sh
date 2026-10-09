@@ -9,7 +9,7 @@
  *
  *  - **Row click** (`ADDENDUM §H`), absent from stock Block Kit at every version
  *    through 0.31.1 and the complaint this effort opened on.
- *  - **The copy button §1.3 wants** — the row shows a git-style short prefix and
+ *  - **The copy button §1.3 wants** — the row shows the order number (ADR-0033) and
  *    the button copies the FULL id. On Block Kit a table cell is a scalar with no
  *    per-cell affordance; that was the accepted degradation and this is it
  *    being repaid.
@@ -53,8 +53,7 @@ import {
 	listOutcome,
 	maskBuyerEmail,
 	orderStateCell,
-	shortIdFixed,
-	shortIdsFor,
+	withOrderNumberCells,
 } from "@otta-sh/admin-presentation";
 import * as React from "react";
 import {
@@ -446,10 +445,12 @@ export interface OrdersChrome {
  */
 function BuyerReference({
 	buyerRef,
-	prefix,
+	orderNumber,
 }: {
 	buyerRef: string;
-	prefix: string;
+	/** The row's identity cell as displayed ("#7E4CE"), so the toggle's name
+	 *  matches what a sighted operator reads in the same row. */
+	orderNumber: string;
 }): React.ReactElement {
 	const [revealed, setRevealed] = React.useState(false);
 	const valueId = `${React.useId()}-buyer`;
@@ -464,7 +465,7 @@ function BuyerReference({
 				revealed={revealed}
 				onToggle={() => setRevealed((open) => !open)}
 				controls={valueId}
-				what={`buyer email for order #${prefix}`}
+				what={`buyer email for order ${orderNumber}`}
 				testId="buyer-email-toggle"
 			/>
 		</>
@@ -1027,10 +1028,11 @@ export function OrdersList({
 	}, [refreshStop]);
 
 	const orders = page?.orders ?? [];
-	// §1.3: computed over EXACTLY the array being rendered, so the prefix in a
-	// row is unique among the rows the operator can see. `shortIdsFor` is total
-	// and deterministic in the SET, so re-rendering cannot renumber the page.
-	const shortIds = React.useMemo(() => shortIdsFor(orders.map((o) => o.id)), [orders]);
+	// The identity cell (ADR-0033): the order NUMBER the shopper reads off their
+	// email, extended upper-cased with hex only on rows that share one, so no two
+	// rows read the same and every cell is itself a number the search accepts.
+	// Computed over EXACTLY the rows rendered (§1.3), deterministic in the set.
+	const numberedRows = React.useMemo(() => withOrderNumberCells(orders), [orders]);
 	const vocabulary = page?.vocabulary;
 	const statusAny = vocabulary?.statusAny ?? "any";
 	const periodLabel =
@@ -1610,11 +1612,10 @@ export function OrdersList({
 					testId="orders-table"
 					caption="Orders"
 					card
-					headers={["Placed", "Customer", "Status", "Order #", <EndHeader label="Total" />]}
+					headers={["Placed", "Customer", "Status", "Order", <EndHeader label="Total" />]}
 					onActivateRow={onOpen}
 				>
-					{orders.map((order) => {
-						const prefix = shortIds.get(order.id) ?? shortIdFixed(order.id);
+					{numberedRows.map(({ order, cell }) => {
 						return (
 							<tr
 								key={order.id}
@@ -1643,7 +1644,7 @@ export function OrdersList({
 										// column has no
 										// bound of its own under the table's `table-layout: auto`: one
 										// unbroken long token would otherwise widen this column and
-										// push every column to its right — Status, Order #, Total — off
+										// push every column to its right — Status, Order, Total — off
 										// the table card's `overflow-x: auto`, which the operator would
 										// then have to scroll sideways to find. `overflowWrap` IS THE
 										// LOAD-BEARING DECLARATION: it is what lets the browser satisfy
@@ -1689,7 +1690,10 @@ export function OrdersList({
 									  screens cannot drift back apart on this rule. An email is
 									  MASKED until this row's Show is pressed (issue #377) — see
 									  `BuyerReference`. */}
-									<BuyerReference buyerRef={order.buyerRef} prefix={prefix} />
+									<BuyerReference
+										buyerRef={order.buyerRef}
+										orderNumber={cell.number + cell.extension}
+									/>
 								</td>
 								<td className="otta-td">
 									{order.state === PILLED_ORDER_STATE ? (
@@ -1730,7 +1734,12 @@ export function OrdersList({
 										}}
 										style={orderLinkStyle}
 									>
-										{prefix}
+										{cell.number}
+										{cell.extension !== "" && (
+											<span data-testid="order-number-disambiguator" style={{ opacity: 0.72 }}>
+												{cell.extension}
+											</span>
+										)}
 									</a>
 									<CopyIdButton id={order.id} testId="copy-order-id" revealOnRowHover />
 								</td>

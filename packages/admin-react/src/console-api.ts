@@ -53,6 +53,11 @@ const ACT = "otta_console_act";
 
 export interface OrderSummary {
 	readonly id: string;
+	/** The order NUMBER ("#3F9A2"), computed by the server with the domain's
+	 *  `orderNumber` — the label the shopper sees. A display label, never a key
+	 *  (ADR-0033). Absent from a server older than the field: read it through
+	 *  `orderNumberOf`, never directly. */
+	readonly orderNumber?: string;
 	readonly state: string;
 	readonly currency: string;
 	readonly buyerRef: string;
@@ -113,6 +118,11 @@ export interface OrderCancellation {
 
 export interface OrderDetail {
 	readonly id: string;
+	/** The order NUMBER ("#3F9A2"), computed by the server with the domain's
+	 *  `orderNumber` — the label the shopper sees. A display label, never a key
+	 *  (ADR-0033). Absent from a server older than the field: read it through
+	 *  `orderNumberOf`, never directly. */
+	readonly orderNumber?: string;
 	readonly state: string;
 	readonly currency: string;
 	readonly paymentMethod: string | null;

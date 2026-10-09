@@ -57,6 +57,7 @@ const PRODUCTS_VOCABULARY = {
 function order(id: string, customer: string) {
 	return {
 		id,
+		orderNumber: `#${id.slice(0, 5).toUpperCase()}`,
 		state: "paid",
 		currency: "USD",
 		buyerRef: `buyer-${id}`,
@@ -727,7 +728,7 @@ test("products: a filter change and a stale Load more in one batch cannot pair u
  */
 test("a colliding id on page 2 lengthens the prefix a page-1 row already showed", async () => {
 	const ORIGINAL = "abcd0000-0000-4000-8000-000000000001";
-	const COLLIDING = "abcd9999-0000-4000-8000-000000000002";
+	const COLLIDING = "abcd0999-0000-4000-8000-000000000002";
 	serve((request) =>
 		envelope({
 			ok: true,
@@ -744,14 +745,16 @@ test("a colliding id on page 2 lengthens the prefix a page-1 row already showed"
 	const link = (id: string): HTMLElement | null =>
 		view?.container.querySelector<HTMLElement>(`[data-order-id="${id}"]`) ?? null;
 	// Unique among the two rows on screen at the floor length.
-	expect(link(ORIGINAL)?.textContent).toBe("abcd");
+	// A row with no server number prints in the number's format (ADR-0033):
+	// "#" + its shortest-unique prefix, at least five characters, upper-cased.
+	expect(link(ORIGINAL)?.textContent).toBe("#ABCD0");
 
 	await press(view, "orders-load-more");
 	await settle();
 	// The colliding id arrives, and BOTH extend by exactly the one character that
 	// separates them. The full id on the row never moved.
-	expect(link(ORIGINAL)?.textContent).toBe("abcd0");
-	expect(link(COLLIDING)?.textContent).toBe("abcd9");
+	expect(link(ORIGINAL)?.textContent).toBe("#ABCD00");
+	expect(link(COLLIDING)?.textContent).toBe("#ABCD09");
 	expect(link(ORIGINAL)?.getAttribute("href")).toBe(`?order=${encodeURIComponent(ORIGINAL)}`);
 });
 

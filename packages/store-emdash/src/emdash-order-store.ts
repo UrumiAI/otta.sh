@@ -120,6 +120,7 @@ import {
 	computeRefundCeiling,
 	emailTemplateForState,
 	isLegalOrderTransition,
+	orderNumberIdPrefix,
 	type CancellationRestockPending,
 	type OrderCancellation,
 	type CancelOrderInput,
@@ -1461,13 +1462,14 @@ export class EmdashOrderStore implements OrderStore {
 			total += term.sign * (await this.#orders.count(term.where));
 		}
 		if (search === undefined) return total;
+		const idArm = idArmOf(search);
 		for (const doc of await this.#ordersMatchingSku(
 			search,
 			filter,
 			null,
 			Number.POSITIVE_INFINITY,
 		)) {
-			if (!matchesSearchArms(doc, search)) total++;
+			if (!matchesSearchArms(doc, search, idArm)) total++;
 		}
 		return total;
 	}
@@ -2857,7 +2859,10 @@ function customerKeyArms(customer: OrderCustomerKey | undefined): WhereClause[] 
  */
 function searchArms(search: string | undefined): WhereClause[] | null {
 	if (search === undefined) return null;
-	return [{ searchKey: { startsWith: search } }, { buyerRefLower: { startsWith: search } }];
+	return [
+		{ searchKey: { startsWith: idArmOf(search) } },
+		{ buyerRefLower: { startsWith: search } },
+	];
 }
 
 /** The list predicate's OR dimensions, in a fixed order so list and count agree. */
@@ -2871,8 +2876,17 @@ function orderListDimensions(filter: OrderListFilter, search: string | undefined
 }
 
 /** True when a document satisfies either INDEXED search arm — the sku arm's overlap test. */
-function matchesSearchArms(doc: OrderDoc, search: string): boolean {
-	return (doc.searchKey ?? "").startsWith(search) || (doc.buyerRefLower ?? "").startsWith(search);
+function matchesSearchArms(doc: OrderDoc, search: string, idArm: string): boolean {
+	return (doc.searchKey ?? "").startsWith(idArm) || (doc.buyerRefLower ?? "").startsWith(search);
+}
+
+/**
+ * What the ID arm matches for a search: the id prefix a typed order number stands
+ * for (`"#3f9a2"` → `"3f9a2"`, ADR-0033), else the search itself. Only the id arm is
+ * rewritten — the buyer and sku arms match the text as typed, `#` and all.
+ */
+function idArmOf(search: string): string {
+	return orderNumberIdPrefix(search) ?? search;
 }
 
 /**

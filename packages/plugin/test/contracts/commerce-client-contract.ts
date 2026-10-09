@@ -3190,6 +3190,9 @@ export function adminOrdersProductsClientContract(tier: CommerceClientTier): voi
 			expect(page.orders).toEqual([
 				{
 					id: "adm-o-shape-1",
+					// The shopper-facing number (ADR-0033): "#" + the id's first five
+					// characters, upper-cased — a display label, never a key.
+					orderNumber: "#ADM-O",
 					state: "pending",
 					currency: "USD",
 					buyerRef: "shape@example.test",
@@ -3326,6 +3329,7 @@ export function adminOrdersProductsClientContract(tier: CommerceClientTier): voi
 			expect(read).toEqual({
 				order: {
 					id: "adm-o-detail",
+					orderNumber: "#ADM-O",
 					state: "pending",
 					currency: "USD",
 					paymentMethod: "stripe",
