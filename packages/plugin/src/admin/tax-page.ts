@@ -1528,7 +1528,15 @@ function saveRateAction() {
 		const classId = carried?.classId;
 		const rateId = carried?.rateId;
 		const expectedRateBpsRaw = carried?.expectedRateBps;
-		if (classId === undefined || rateId === undefined || expectedRateBpsRaw === undefined) {
+		// A form rendered before the flag joined the CAS carries no flag watermark:
+		// treated like a missing rate watermark (re-list), never as a guessed `false`.
+		const expectedFlagRaw = carried?.expectedAppliesToShipping;
+		if (
+			classId === undefined ||
+			rateId === undefined ||
+			expectedRateBpsRaw === undefined ||
+			expectedFlagRaw === undefined
+		) {
 			return showList();
 		}
 		const expectedRateBps = Number.parseInt(expectedRateBpsRaw, 10);
@@ -1547,7 +1555,7 @@ function saveRateAction() {
 		const result = await client.updateTaxRate(rateId, {
 			rateBps: bps,
 			appliesToShipping,
-			expectedAppliesToShipping: carried?.expectedAppliesToShipping === "true",
+			expectedAppliesToShipping: expectedFlagRaw === "true",
 			expectedRateBps,
 		});
 		return showList([classId], saveRateNotice(result));

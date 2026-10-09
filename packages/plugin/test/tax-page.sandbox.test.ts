@@ -22,7 +22,7 @@ import {
 } from "@otta-sh/store-emdash";
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "vitest";
 import { COMMERCE_STORAGE_COLLECTION_NAMES } from "../src/commerce/commerce-storage.js";
-import { decodeCarrier } from "../src/admin/scaffold/carrier.js";
+import { decodeCarrier, encodeCarrier } from "../src/admin/scaffold/carrier.js";
 import { encodePath } from "../src/admin/scaffold/nav.js";
 import { assertBlockContract } from "./helpers/block-contract.js";
 import {
@@ -1722,6 +1722,29 @@ describe("admin Tax console — one rate per (class, zone) (workerd sandbox)", (
 			appliesToShipping: true,
 		});
 		expect(String(bannerOf(saved)?.title)).toMatch(/changed since you loaded it/);
+		expect(await findRate("us", "std-us")).toMatchObject({
+			rateBps: 725,
+			appliesToShipping: false,
+		});
+	});
+
+	test("a save from a form rendered before the flag watermark existed re-lists, never a false 'stale' or a write", async () => {
+		await seedRules();
+		// The pre-deploy carrier: the rate watermark only, no `expectedAppliesToShipping`.
+		const oldBlockId = encodeCarrier("tax:rate-save", {
+			classId: "standard",
+			rateId: "std-us",
+			expectedRateBps: "725",
+		});
+		const after = blocksOf(
+			await sandbox.invokeRoute("admin", {
+				type: "form_submit",
+				action_id: "tax:save-rate",
+				values: { ratePercent: "8", appliesToShipping: true },
+				block_id: oldBlockId,
+			}),
+		);
+		expect(bannerOf(after)).toBeUndefined();
 		expect(await findRate("us", "std-us")).toMatchObject({
 			rateBps: 725,
 			appliesToShipping: false,
