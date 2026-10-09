@@ -55,6 +55,7 @@
 import { StripePaymentGateway } from "@otta-sh/payments-stripe";
 import { stripeSecretKeyFromKv, stripeWebhookSecretFromKv } from "../payment-secrets.js";
 import { checkoutRequiresBuyerAddress } from "./stripe-account-country.js";
+import { isTrustedHost } from "./trusted-host.js";
 import type { PluginContext } from "../types.js";
 
 /**
@@ -139,6 +140,9 @@ export async function stripeGatewayFromCtx(
 		secretKey,
 		webhookSecret,
 		fetch: toGlobalFetch(ctx.http.fetch),
+		// Issue #447: a signal in `init` only when the site said the host is
+		// in-process (`createOttaPlugin({ trustedHost: true })`), never in the sandbox.
+		...(isTrustedHost() ? { trustedHost: true } : {}),
 		...(options.requestTimeoutMs !== undefined
 			? { requestTimeoutMs: options.requestTimeoutMs }
 			: {}),
