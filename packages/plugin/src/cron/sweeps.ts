@@ -1517,26 +1517,35 @@ export async function runCommerceSweeps(
 			async (legBudget) => {
 				const limit = batchLeft("expire-orders", expiryLimit);
 				if (limit === 0) return { count: 0 };
-				return batchOutcome(
-					await expireOrdersBatch(
-						{
-							orderStore: stores.orderStore,
-							inventoryStore: stores.inventory,
-							couponStore: stores.couponStore,
-							clock: stores.clock,
-						},
-						now,
-						{
-							limit,
-							shouldContinue: legBudget.gate(0, LEG_QUERY_COSTS["expire-orders"].unit),
-							due: await expirableIds(),
-							backoff: expiryBackoff,
-							// The tick's query ceiling ends the leg; it is not one order failing.
-							stopsBatch: isSweepQueryCeilingError,
-						},
-					),
-					(count) => noteUnits("expire-orders", count, legBudget),
+				const result = await expireOrdersBatch(
+					{
+						orderStore: stores.orderStore,
+						inventoryStore: stores.inventory,
+						couponStore: stores.couponStore,
+						clock: stores.clock,
+					},
+					now,
+					{
+						limit,
+						shouldContinue: legBudget.gate(0, LEG_QUERY_COSTS["expire-orders"].unit),
+						due: await expirableIds(),
+						backoff: expiryBackoff,
+						// The tick's query ceiling ends the leg; it is not one order failing.
+						stopsBatch: isSweepQueryCeilingError,
+					},
 				);
+				// #447: every order this tick tried threw (each is logged and backing
+				// off). That is an outage, not an idle leg, so the LEG fails — its
+				// `ok: false` row and FAILED line are what alerting watches. One failing
+				// order among good ones does not fail it, and the back-off keeps a
+				// poison order from failing every tick: while it waits it is read past.
+				if (result.allFailed === true) {
+					throw new Error(
+						"every order the leg tried failed to expire; each is backing off (see the " +
+							"'expiring order' lines above)",
+					);
+				}
+				return batchOutcome(result, (count) => noteUnits("expire-orders", count, legBudget));
 			},
 			{ isDue: async () => (await expirableIds()).length > 0, cheapDueCheck: true },
 		);

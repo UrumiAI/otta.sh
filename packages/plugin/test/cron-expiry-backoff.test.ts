@@ -68,8 +68,12 @@ function poisonedOrders(
 	return { ...storage, [ORDERS_COLLECTION]: wrapped };
 }
 
+function legOf(summary: CommerceSweepSummary) {
+	return summary.legs.find((entry) => entry.leg === "expire-orders");
+}
+
 function expired(summary: CommerceSweepSummary): number | undefined {
-	return summary.legs.find((entry) => entry.leg === "expire-orders")?.count;
+	return legOf(summary)?.count;
 }
 
 test("two orders whose flip always fails cannot hold the bite: the order behind them expires next tick", async () => {
@@ -97,14 +101,48 @@ test("two orders whose flip always fails cannot hold the bite: the order behind 
 	const first = await tick(NOW);
 	expect(expired(first) ?? 0).toBe(0);
 	expect(error.mock.calls.filter((c) => /expiring order/.test(String(c[0])))).toHaveLength(2);
+	// #447: every order the leg tried threw, so the LEG failed — the row and line
+	// its alerting watches — instead of reading as a healthy tick with nothing done.
+	expect(legOf(first)).toMatchObject({ ok: false, count: 0 });
+	expect(legOf(first)?.error).toMatch(/every order the leg tried failed to expire/);
+	expect(error.mock.calls.some((c) => /cron sweep expire-orders FAILED/.test(String(c[0])))).toBe(
+		true,
+	);
 
+	// The failed orders back off, so the next tick reaches the one behind them, and
+	// a tick that made progress is healthy again.
 	const second = await tick(new Date(NOW.getTime() + MINUTE_MS));
 	expect(expired(second)).toBe(1);
+	expect(legOf(second)).toMatchObject({ ok: true });
 	const s = adapters(storage, NOW);
 	expect((await s.orderStore.getById(toOrderId("order-c")))?.state).toBe("expired");
 	expect((await s.orderStore.getById(toOrderId("order-a")))?.state).toBe("pending");
 	// Not tried again while they wait: no new failure lines.
 	expect(error.mock.calls.filter((c) => /expiring order/.test(String(c[0])))).toHaveLength(2);
+}, 120_000);
+
+test("one failing order among good ones: the leg made progress, so it stays ok (#447)", async () => {
+	const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
+	const createdAt = new Date(NOW.getTime() - 2 * HOUR_MS);
+	for (const [tag, lapsedMinutes] of [
+		["a", 50],
+		["b", 40],
+	] as const) {
+		await placeOrder(storage, tag, new Date(NOW.getTime() - lapsedMinutes * MINUTE_MS), createdAt);
+	}
+	const summary = await runCommerceSweeps(
+		sweepContext(poisonedOrders(new Set(["order-a"]))),
+		SWEEP_TASK_NAME,
+		{
+			cursors: memoryCursors(),
+			emailSender: recordingSender([]),
+			now: NOW,
+			expiryBatchLimit: 2,
+			expiryBackoff: new UnitBackoff(),
+		},
+	);
+	expect(legOf(summary)).toMatchObject({ ok: true, count: 1 });
+	expect(error.mock.calls.filter((c) => /expiring order/.test(String(c[0])))).toHaveLength(1);
 }, 120_000);
 
 test("the tick's query ceiling inside an order's flip ends the leg as the ceiling: no failure line, no back-off (polish P-2)", async () => {

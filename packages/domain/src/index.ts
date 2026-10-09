@@ -533,6 +533,7 @@ export {
 	expireOrders,
 	expireOrdersBatch,
 	type ExpireOrdersBatchOptions,
+	type ExpireOrdersBatchResult,
 	type ExpireOrdersDeps,
 } from "./orders/expire-orders.js";
 export { assertSweepLimit, type SweepBatchOptions, type SweepBatchResult } from "./sweep/batch.js";
