@@ -91,6 +91,7 @@ import type {
 	RefundPurpose,
 	RefundStatus,
 	ReservationId,
+	SignedCents,
 	Sku,
 } from "@otta-sh/domain";
 
@@ -254,6 +255,9 @@ export interface OrderTotalsDoc {
 	readonly shipping: Cents;
 	readonly tax: Cents;
 	readonly total: Cents;
+	/** The payment rounding (signed) — only on an order in a currency with a
+	 *  payment increment; absent on every other and every older order (= 0). */
+	readonly rounding?: SignedCents;
 	readonly appliedCouponCode: string | null;
 	readonly shippingMethodSnapshot: unknown | null;
 	readonly taxBreakdown: unknown | null;

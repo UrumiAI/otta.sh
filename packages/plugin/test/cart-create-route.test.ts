@@ -111,4 +111,20 @@ describe("storefront/cart/create — replacing a spent cart", () => {
 		const again = await create({ idempotencyKey: "rotate:anything" });
 		expect(first.ok && again.ok && first.cartId !== again.cartId).toBe(true);
 	});
+
+	test("a currency named alongside replacesCartId is the replacement's currency (a theme's explicit currency wins)", async () => {
+		const spent = await spentCart("named-currency");
+		const result = await create({ replacesCartId: spent, currency: "GBP" });
+		if (!result.ok || !("cartId" in result)) throw new Error("replace refused");
+		const read = await harness.client.getCart(result.cartId);
+		expect(read.ok && read.cart.currency).toBe("GBP");
+	});
+
+	test("a malformed currency alongside replacesCartId is refused before anything is replaced", async () => {
+		const spent = await spentCart("bad-currency");
+		expect(await create({ replacesCartId: spent, currency: "gbp" })).toEqual({
+			ok: false,
+			error: "INVALID_CURRENCY",
+		});
+	});
 });

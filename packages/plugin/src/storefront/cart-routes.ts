@@ -116,8 +116,10 @@ export interface CartCreateRouteInput {
 	 * Optional: the SPENT cart this one replaces (the cookie's cart, checked out
 	 * into a finished order). The plugin checks both and derives the idempotency key
 	 * itself, so the same spent cart always gets the same replacement; a caller can
-	 * never name a key. When present, `currency` is ignored — the replacement takes
-	 * the spent cart's.
+	 * never name a key. The replacement's currency, in order: `currency` when this
+	 * request names one, else the store currency the operator SAVED, else the spent
+	 * cart's (so a store that never saved one keeps today's behaviour). Racing
+	 * requests converge on the first replacement, whatever currency each named.
 	 */
 	replacesCartId?: unknown;
 }
@@ -261,7 +263,9 @@ export function createCartCreateRouteHandler(): RouteHandler<CartCreateRouteInpu
 				if (typeof replaces !== "string" || !isIdToken(replaces)) {
 					return { ok: false, error: "INVALID_INPUT" } as const;
 				}
-				const replaced = await (await makeCommerceClient(ctx)).replaceCart(replaces);
+				const replaced = await (
+					await makeCommerceClient(ctx)
+				).replaceCart(replaces, raw as string | undefined);
 				if (!replaced.ok) return { ok: false as const, reason: replaced.reason };
 				return {
 					ok: true as const,

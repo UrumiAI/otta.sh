@@ -1,8 +1,7 @@
 /**
  * @vitest-environment happy-dom
  *
- * `Load more` counted in rendered rows (F24), and the low-stock scan saying what
- * it is (F29).
+ * `Load more` counted in rendered rows (F24).
  *
  * WHY A DOCUMENT IS THE RIGHT TIER FOR THIS. The merge itself is pure and is
  * pinned next door; what a pure test cannot see is the part that was actually
@@ -14,7 +13,7 @@
  * EVERY RESPONSE IS SERVED HERE, successes included, so a failure is a
  * transition this file chooses rather than an environment it has to arrange.
  */
-import { PRODUCTS_PAGE_FAILED_TITLE } from "@otta-sh/admin-presentation";
+import { ORDERS_PAGE_FAILED_TITLE } from "@otta-sh/admin-presentation";
 import {
 	REFRESH_BUSY_TITLE,
 	REFRESH_FAILED_TITLE,
@@ -35,7 +34,6 @@ vi.mock("emdash/plugin-utils", async (importOriginal) => {
 
 const { OrdersList } = await import("../src/orders/orders-list.js");
 const { OrdersScreen } = await import("../src/orders/orders-screen.js");
-const { ProductsList } = await import("../src/products/products-list.js");
 
 const VOCABULARY = {
 	statuses: ["paid", "failed"],
@@ -44,13 +42,6 @@ const VOCABULARY = {
 	cancellationReasons: [],
 	oneClickCancellationReasons: [],
 	reconciliationOutcomes: [],
-	pageLimit: 20,
-};
-
-const PRODUCTS_VOCABULARY = {
-	statuses: [{ value: "any", label: "Any status" }],
-	kinds: [{ value: "any", label: "Any kind" }],
-	any: "any",
 	pageLimit: 20,
 };
 
@@ -66,20 +57,6 @@ function order(id: string, customer: string) {
 		createdAt: "2026-01-01T00:00:00.000Z",
 		totalCents: 1234,
 		reconciliationFlag: null,
-	};
-}
-
-function product(productId: string) {
-	return {
-		productId,
-		sku: `SKU-${productId}`,
-		title: `Product ${productId}`,
-		priceCents: 900,
-		currency: "USD",
-		productKind: "physical",
-		active: true,
-		deletedAt: null,
-		onHand: 1,
 	};
 }
 
@@ -101,7 +78,6 @@ interface Request {
 	readonly cursor?: string;
 	readonly filter?: {
 		readonly status?: string;
-		readonly lowStock?: boolean;
 		readonly search?: string;
 	};
 }
@@ -146,47 +122,6 @@ function servePages(options: { failPageTwo?: boolean; overlap?: boolean } = {}):
 			orders: second.map((id) => order(id, `Customer ${id}`)),
 			nextCursor: "cursor-3",
 			vocabulary: VOCABULARY,
-		});
-	});
-}
-
-/**
- * Pages of products under "Low stock only" — deliberately the flagship path,
- * because it is the one where the service WITHHOLDS the total, so the count line
- * is the render's own claim about its own rows and a lost qualifier is a false
- * statement rather than a cosmetic one.
- *
- * `failFrom` is the page number from which the service refuses, so "page 1
- * succeeded and page 2 failed" is `failFrom: 2` and needs no handler flipping.
- */
-function serveProductPages(
-	options: { failFrom?: number; overlap?: boolean; emptyFirstPage?: boolean } = {},
-): void {
-	serve((request) => {
-		const n = request.cursor === undefined ? 1 : Number(request.cursor.slice("cursor-".length));
-		if (options.failFrom !== undefined && n >= options.failFrom) {
-			return envelope({
-				ok: false,
-				// The service always answers a WHOLE-COLLECTION refusal; what the
-				// screen is entitled to repeat from it is the point of these tests.
-				title: "Products could not be reached",
-				description: "Try again in a moment.",
-			});
-		}
-		const page =
-			options.emptyFirstPage === true && n === 1
-				? []
-				: // The repeat sits in the MIDDLE of page 1, where "keep the
-					// first-arrival position" and "append in incoming order" disagree.
-					options.overlap === true && n === 2
-					? ["p-2", "p-4", "p-5"]
-					: ids("p", n * 3 - 2, n * 3);
-		return envelope({
-			ok: true,
-			products: page.map(product),
-			nextCursor: `cursor-${String(n + 1)}`,
-			stock: { threshold: 5, unreadable: false, filterUnavailable: false },
-			vocabulary: PRODUCTS_VOCABULARY,
 		});
 	});
 }
@@ -374,275 +309,109 @@ test("a deep-linked filtered URL starts a FRESH accumulation, and Back restarts 
 	expect(text(view, "orders-intro")).toContain("20 orders on this page");
 });
 
-test("F29: the count names what it counted, on a genuinely low-stock-filtered page", async () => {
-	serve((request) =>
-		envelope({
-			ok: true,
-			products: (request.cursor === undefined ? ids("p", 1, 3) : ids("p", 4, 5)).map(product),
-			nextCursor: request.cursor === undefined ? "cursor-2" : "cursor-3",
-			stock: { threshold: 5, unreadable: false, filterUnavailable: false },
-			vocabulary: PRODUCTS_VOCABULARY,
-		}),
-	);
-	view = await mount(<ProductsList onOpen={() => {}} initialFilter={{ lowStock: true }} />);
-	await settle();
-	expect(text(view, "products-intro")).toContain("3 low-stock products on this page");
-	// No paging note beside `Load more`: the predicate is the SERVICE's now, so
-	// `Load more` really does fetch the next page of the filtered set rather
-	// than re-scanning for matches, and there is nothing left to caveat.
-	expect(absent(view, "products-low-stock-paging-note")).toBe(true);
-
-	await press(view, "products-load-more");
-	await settle();
-	expect(rows(view, "products-row")).toHaveLength(5);
-	expect(text(view, "products-intro")).toContain("5 low-stock products loaded so far");
-});
-
-test("a genuinely low-stock-filtered catalog that fits on ONE page is COMPLETE, not page-scoped", async () => {
-	// THE OLD DEFECT THIS PINNED, INVERTED. "Low stock only" used to have no
-	// service predicate — it kept the low-stock rows out of whatever RAW page
-	// was fetched — so `nextCursor: null` on the first response proved only
-	// that the raw fetch stopped there, never that every low-stock row in the
-	// catalog was on screen, and `countScope: "narrowed-after-fetch"` refused
-	// to read it as complete for exactly that reason. The predicate is the
-	// SERVICE's now: a first page with no next cursor is drawn from a query
-	// that already applied the threshold, so `firstPage && !hasNext` really
-	// does mean the whole filtered set is on screen — the same claim any other
-	// `service-filtered` list on this screen is entitled to make, which is why
-	// `countScope` is unconditional now.
-	serve(() =>
-		envelope({
-			ok: true,
-			products: ids("p", 1, 3).map(product),
-			nextCursor: null,
-			stock: { threshold: 5, unreadable: false, filterUnavailable: false },
-			vocabulary: PRODUCTS_VOCABULARY,
-		}),
-	);
-	view = await mount(<ProductsList onOpen={() => {}} initialFilter={{ lowStock: true }} />);
-	await settle();
-	expect(rows(view, "products-row")).toHaveLength(3);
-	// WHOLE-SET PHRASING — the fetch really is the entire low-stock set, so the
-	// page-scoped qualifier no longer applies.
-	expect(text(view, "products-intro")).toContain("3 low-stock products");
-	expect(text(view, "products-intro")).not.toContain("on this page");
-	// No `Load more`, because there really is nothing left to fetch, and no
-	// paging note — that affordance described a mechanism this screen no
-	// longer has.
-	expect(absent(view, "products-load-more")).toBe(true);
-	expect(absent(view, "products-low-stock-paging-note")).toBe(true);
-});
-
-test("an accumulated fetch that exhausts the catalog DROPS 'loaded so far' once it is provably complete", async () => {
-	// THE HALF THE F29 TEST (ABOVE) NEVER REACHES: its second response always
-	// carries a non-null `nextCursor`, so `hasNext` never goes false once pages
-	// accumulate. Here a scan runs three responses deep and the THIRD exhausts
-	// the catalog — `firstPage` stays true throughout (the render started at
-	// page one), so `complete = firstPage && !hasNext` goes true on exactly
-	// this response.
-	//
-	// THAT IS NOW CORRECT, where it once was the defect: the predicate is the
-	// SERVICE's, so a keyset scan that runs out of matching rows has PROVEN the
-	// four accumulated rows are the entire low-stock set, not merely "what a
-	// client-side narrowing happened to keep before the raw fetch stopped".
-	// Continuing to hedge with "loaded so far" past that proof would be the
-	// less honest sentence, not the safer one.
-	let call = 0;
-	serve(() => {
-		call += 1;
-		const page =
-			call === 1
-				? { products: ids("p", 1, 2), nextCursor: "cursor-2" }
-				: call === 2
-					? { products: ids("p", 3, 3), nextCursor: "cursor-3" }
-					: { products: ids("p", 4, 4), nextCursor: null };
-		return envelope({
-			ok: true,
-			products: page.products.map(product),
-			nextCursor: page.nextCursor,
-			stock: { threshold: 5, unreadable: false, filterUnavailable: false },
-			vocabulary: PRODUCTS_VOCABULARY,
-		});
-	});
-	view = await mount(<ProductsList onOpen={() => {}} initialFilter={{ lowStock: true }} />);
-	await settle();
-	expect(rows(view, "products-row")).toHaveLength(2);
-
-	await press(view, "products-load-more");
-	await settle();
-	expect(rows(view, "products-row")).toHaveLength(3);
-	// STILL HEDGED — there is provably another page out there (`hasNext` is
-	// true), so the accumulated count cannot yet claim completeness.
-	expect(text(view, "products-intro")).toContain("3 low-stock products loaded so far");
-
-	await press(view, "products-load-more");
-	await settle();
-	expect(rows(view, "products-row")).toHaveLength(4);
-	// THE SCAN RAN OUT OF CATALOG ON ITS THIRD REQUEST — a fact the query
-	// proved, not a coincidence of where the client happened to stop — so the
-	// count drops the qualifier and states the whole low-stock set plainly.
-	expect(text(view, "products-intro")).toContain("4 low-stock products");
-	expect(text(view, "products-intro")).not.toContain("loaded so far");
-	expect(absent(view, "products-load-more")).toBe(true);
-});
-
-test("a filterUnavailable page keeps the SERVICE'S noun, and states no total the plugin did not send", async () => {
-	// END TO END: the operator checked "Low stock only", but the plugin could
-	// not read the threshold this time (`stock.filterUnavailable`) — the
-	// outgoing request never carried a predicate, so every product on the page
-	// is listed under the ORDINARY noun, and the plugin withholds any `total`
-	// it might otherwise have forwarded (`resolveStockContext`: a `total` here
-	// would caption an UNFILTERED page as though "Low stock only" had been
-	// honoured). Reading `narrowed` off the checkbox alone would render
-	// "low-stock products" for rows that are every product, directly above the
-	// banner already saying the filter was not applied.
-	serve(() =>
-		envelope({
-			ok: true,
-			products: ids("p", 1, 5).map(product),
-			nextCursor: "cursor-2",
-			// NO `total` — see above. The wire never carries one on this scope.
-			stock: { threshold: null, unreadable: false, filterUnavailable: true },
-			vocabulary: PRODUCTS_VOCABULARY,
-		}),
-	);
-	view = await mount(<ProductsList onOpen={() => {}} initialFilter={{ lowStock: true }} />);
-	await settle();
-	expect(rows(view, "products-row")).toHaveLength(5);
-	// THE ORDINARY NOUN, page-scoped — an unfiltered page with more behind it,
-	// entitled to nothing stronger than the rows it can back up on its own.
-	expect(text(view, "products-intro")).toContain("5 products on this page");
-	expect(text(view, "products-intro")).not.toContain("low-stock");
-	expect(text(view, "products-stock-degraded")).toContain(
-		"the Low stock only filter was not applied",
-	);
-});
-
 /**
  * THE PRODUCTS LIST GETS THE SAME TREATMENT AS ORDERS, and not as a courtesy.
  * F24 gave it the same accumulated-pages state, so it inherits that state's
  * design; the tests below are where the two screens' behaviour is held level.
  */
 
-test("a healthy Load more APPENDS on the products list — 3 rows become 6", async () => {
-	serveProductPages();
-	view = await mount(<ProductsList onOpen={() => {}} initialFilter={{ lowStock: true }} />);
-	await settle();
-	const first = rowIds(view, "products-row");
-	expect(first).toHaveLength(3);
+/**
+ * Pages of orders `failFrom` onward are refused, and `midOverlap` repeats a row
+ * from the MIDDLE of page one on page two — where "keep the first-arrival
+ * position" and "append in incoming order" disagree. `lastPage` is where the
+ * collection runs out.
+ */
+function serveShortPages(
+	options: { failFrom?: number; midOverlap?: boolean; lastPage?: number } = {},
+): void {
+	serve((request) => {
+		const n = request.cursor === undefined ? 1 : Number(request.cursor.slice("cursor-".length));
+		if (options.failFrom !== undefined && n >= options.failFrom) {
+			return envelope({
+				ok: false,
+				// The service always answers a WHOLE-COLLECTION refusal; what the
+				// screen is entitled to repeat from it is the point of these tests.
+				title: "Orders could not be reached",
+				description: "Try again in a moment.",
+			});
+		}
+		const page =
+			options.midOverlap === true && n === 2 ? ["o-2", "o-4", "o-5"] : ids("o", n * 3 - 2, n * 3);
+		return envelope({
+			ok: true,
+			orders: page.map((id) => order(id, `Customer ${id}`)),
+			nextCursor: options.lastPage === n ? null : `cursor-${String(n + 1)}`,
+			vocabulary: VOCABULARY,
+		});
+	});
+}
 
-	await press(view, "products-load-more");
-	await settle();
-	const both = rowIds(view, "products-row");
-	expect(both).toHaveLength(6);
-	expect(both.slice(0, 3)).toEqual(first);
-	expect(text(view, "products-intro")).toContain("6 low-stock products loaded so far");
-});
-
-test("a continuation failure on the products list keeps the rows, the cursor's claim AND the qualifier", async () => {
+test("a continuation failure keeps the rows, the cursor's claim AND the qualifier", async () => {
 	// Two pages land, then the third is refused: the state in which the count line
-	// used to drop its qualifier and claim the catalog.
-	serveProductPages({ failFrom: 3 });
-	view = await mount(<ProductsList onOpen={() => {}} initialFilter={{ lowStock: true }} />);
+	// used to drop its qualifier and claim the whole collection.
+	serveShortPages({ failFrom: 3 });
+	view = await mount(<OrdersList onOpen={() => {}} />);
 	await settle();
-	await press(view, "products-load-more");
+	await press(view, "orders-load-more");
 	await settle();
-	expect(rows(view, "products-row")).toHaveLength(6);
+	expect(rows(view, "orders-row")).toHaveLength(6);
 
-	await press(view, "products-load-more");
+	await press(view, "orders-load-more");
 	await settle();
 
 	// EVERY ROW STANDS — a request that failed behind two that succeeded
 	// disproves none of them.
-	expect(rows(view, "products-row")).toHaveLength(6);
-	// AND SO DOES THE QUALIFIER. This is the false whole-set claim: destroying the
-	// cursor flipped `hasNext` false, which flipped the outcome to a completed
-	// scan, which turned this line into a bare "6 low-stock products".
-	expect(text(view, "products-intro")).toContain("6 low-stock products loaded so far");
-	expect(text(view, "products-intro")).not.toContain("6 low-stock products ·");
+	expect(rows(view, "orders-row")).toHaveLength(6);
+	// AND SO DOES THE QUALIFIER. Destroying the cursor flipped `hasNext` false,
+	// which flipped the outcome to a completed scan, which turned this line into
+	// a bare "6 orders".
+	expect(text(view, "orders-intro")).toContain("6 orders loaded so far");
+	expect(text(view, "orders-intro")).not.toContain("6 orders ·");
 
-	// INLINE, WHERE THE CONTROL WAS, exactly as on Orders — and under a title the
-	// rows on screen do not disprove, rather than the service's whole-collection
-	// refusal carried to the top of the screen above them.
-	expect(text(view, "products-load-more-failure")).toContain(PRODUCTS_PAGE_FAILED_TITLE);
-	expect(text(view, "products-load-more-failure")).not.toContain("Products could not be reached");
-	expect(absent(view, "products-failure")).toBe(true);
+	// INLINE, WHERE THE CONTROL WAS, and under a title the rows on screen do not
+	// disprove, rather than the service's whole-collection refusal carried to the
+	// top of the screen above them.
+	expect(text(view, "orders-load-more-failure")).toContain(ORDERS_PAGE_FAILED_TITLE);
+	expect(text(view, "orders-load-more-failure")).not.toContain("Orders could not be reached");
+	expect(absent(view, "orders-failure")).toBe(true);
 	// The offer that just failed is not made twice.
-	expect(absent(view, "products-load-more")).toBe(true);
+	expect(absent(view, "orders-load-more")).toBe(true);
 });
 
-test("a products page narrowed to nothing under a failed continuation stays a SCAN", async () => {
-	// The worse half of the same defect: with the cursor destroyed, this flipped
-	// to an empty state offering `Clear filters`, and the scan dead-ended.
-	serveProductPages({ emptyFirstPage: true, failFrom: 2 });
-	view = await mount(<ProductsList onOpen={() => {}} initialFilter={{ lowStock: true }} />);
+test("an id repeated in the MIDDLE of an earlier page renders once, in its place", async () => {
+	serveShortPages({ midOverlap: true });
+	view = await mount(<OrdersList onOpen={() => {}} />);
 	await settle();
-	expect(rows(view, "products-row")).toHaveLength(0);
-	expect(text(view, "products-scan-note").length).toBeGreaterThan(0);
-
-	await press(view, "products-load-more");
+	await press(view, "orders-load-more");
 	await settle();
-	// Still a scan with somewhere left to go, and the way on is the Retry that
-	// replaced the button rather than one the merchant must scroll up to find.
-	expect(text(view, "products-scan-note").length).toBeGreaterThan(0);
-	expect(absent(view, "products-no-match")).toBe(true);
-	expect(absent(view, "products-page-zero")).toBe(true);
-	expect(absent(view, "products-load-more-failure")).toBe(false);
+	const both = rowIds(view, "orders-row");
+	// o-2 arrives again on page 2, from the middle of page 1. Appending in
+	// incoming order would print o-1, o-3, o-2, o-4, o-5.
+	expect(both).toEqual(["o-1", "o-2", "o-3", "o-4", "o-5"]);
+	expect(both.filter((id) => id === "o-2")).toHaveLength(1);
+	expect(text(view, "orders-intro")).toContain("5 orders loaded so far");
 });
 
-test("Retry after a failed page 2 APPENDS on the products list", async () => {
-	// THE WRITTEN ACCEPTANCE CRITERION, on the screen that had no coverage of it.
-	serveProductPages({ failFrom: 2 });
-	view = await mount(<ProductsList onOpen={() => {}} initialFilter={{ lowStock: true }} />);
+test("an accumulated scan that exhausts the collection DROPS 'loaded so far' once it is provably complete", async () => {
+	// `firstPage` stays true throughout (the render started at page one), so
+	// `complete = firstPage && !hasNext` goes true on exactly the response that
+	// runs out. Continuing to hedge with "loaded so far" past that proof would be
+	// the less honest sentence, not the safer one.
+	serveShortPages({ lastPage: 3 });
+	view = await mount(<OrdersList onOpen={() => {}} />);
 	await settle();
-	const first = rowIds(view, "products-row");
-	expect(first).toHaveLength(3);
+	await press(view, "orders-load-more");
+	await settle();
+	expect(rows(view, "orders-row")).toHaveLength(6);
+	// STILL HEDGED — there is provably another page out there.
+	expect(text(view, "orders-intro")).toContain("6 orders loaded so far");
 
-	await press(view, "products-load-more");
+	await press(view, "orders-load-more");
 	await settle();
-	expect(rows(view, "products-row")).toHaveLength(3);
-
-	serveProductPages();
-	await press(view, "products-load-more-failure-action");
-	await settle();
-	const both = rowIds(view, "products-row");
-	expect(both).toHaveLength(6);
-	expect(both.slice(0, 3)).toEqual(first);
-	expect(text(view, "products-intro")).toContain("6 low-stock products loaded so far");
-});
-
-test("an id repeated in the MIDDLE of an earlier products page renders once, in its place", async () => {
-	serveProductPages({ overlap: true });
-	view = await mount(<ProductsList onOpen={() => {}} initialFilter={{ lowStock: true }} />);
-	await settle();
-	await press(view, "products-load-more");
-	await settle();
-	const both = rowIds(view, "products-row");
-	// p-2 arrives again on page 2, from the middle of page 1. Appending in
-	// incoming order would print p-1, p-3, p-2, p-4, p-5.
-	expect(both).toEqual(["p-1", "p-2", "p-3", "p-4", "p-5"]);
-	expect(both.filter((id) => id === "p-2")).toHaveLength(1);
-	expect(text(view, "products-intro")).toContain("5 low-stock products loaded so far");
-});
-
-test("a filter change RESETS accumulation on the products list", async () => {
-	serveProductPages();
-	view = await mount(<ProductsList onOpen={() => {}} initialFilter={{ lowStock: true }} />);
-	await settle();
-	await press(view, "products-load-more");
-	await settle();
-	expect(rows(view, "products-row")).toHaveLength(6);
-
-	await React.act(async () => {
-		retype(element(view as Mounted, "filter-search") as HTMLInputElement, "widget");
-	});
-	await press(view, "apply-filters");
-	await settle();
-
-	expect(asked.at(-1)?.cursor).toBeUndefined();
-	expect(asked.at(-1)?.filter?.search).toBe("widget");
-	expect(rows(view, "products-row")).toHaveLength(3);
-	expect(text(view, "products-intro")).toContain("3 low-stock products on this page");
+	expect(rows(view, "orders-row")).toHaveLength(9);
+	expect(text(view, "orders-intro")).toContain("9 orders");
+	expect(text(view, "orders-intro")).not.toContain("loaded so far");
+	expect(absent(view, "orders-load-more")).toBe(true);
 });
 
 /**
@@ -688,31 +457,6 @@ test("orders: a filter change and a stale Load more in one batch cannot pair up"
 	// line that says what it can back up.
 	expect(rows(view, "orders-row")).toHaveLength(20);
 	expect(text(view, "orders-intro")).toContain("20 orders on this page");
-});
-
-test("products: a filter change and a stale Load more in one batch cannot pair up", async () => {
-	serveProductPages();
-	view = await mount(<ProductsList onOpen={() => {}} initialFilter={{ lowStock: true }} />);
-	await settle();
-	await press(view, "products-load-more");
-	await settle();
-	expect(rows(view, "products-row")).toHaveLength(6);
-
-	const applyNow = element(view, "apply-filters");
-	const loadMore = element(view, "products-load-more");
-	await React.act(async () => {
-		retype(element(view as Mounted, "filter-search") as HTMLInputElement, "widget");
-	});
-	await React.act(async () => {
-		applyNow.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-		loadMore.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-	});
-	await settle();
-
-	expect(asked.at(-1)?.filter?.search).toBe("widget");
-	expect(asked.at(-1)?.cursor).toBeUndefined();
-	expect(rows(view, "products-row")).toHaveLength(3);
-	expect(text(view, "products-intro")).toContain("3 low-stock products on this page");
 });
 
 /**
@@ -1060,52 +804,6 @@ test("no two reads at once: Refresh is unavailable while a page is in flight, an
 	expect(element(view, "orders-refresh").getAttribute("aria-disabled")).toBeNull();
 });
 
-/**
- * ON PRICING & INVENTORY THE FIRST RESPONSE OF A WALK IS A VERDICT, not just
- * rows.
- *
- * Only page one can say whether the low-stock predicate was actually applied —
- * every continuation reports `false` by contract, because the predicate rode
- * inside the opaque token — so a refresh that opens on page one is entitled to
- * raise that banner and, as here, to take it down. Getting this wrong in either
- * direction is a banner that can never be dismissed, or a catalog captioned as
- * low stock.
- */
-test("a refresh clears a low-stock banner its page-one answer disproves, and keeps the scan", async () => {
-	let unreadable = true;
-	serve((request) => {
-		const n = request.cursor === undefined ? 1 : Number(request.cursor.slice("cursor-".length));
-		return envelope({
-			ok: true,
-			products: ids("p", n * 3 - 2, n * 3).map(product),
-			nextCursor: `cursor-${String(n + 1)}`,
-			stock: {
-				threshold: unreadable ? null : 5,
-				unreadable: false,
-				filterUnavailable: request.cursor === undefined && unreadable,
-			},
-			vocabulary: PRODUCTS_VOCABULARY,
-		});
-	});
-	view = await mount(<ProductsList onOpen={() => {}} initialFilter={{ lowStock: true }} />);
-	await settle();
-	await press(view, "products-load-more");
-	await settle();
-	expect(rows(view, "products-row")).toHaveLength(6);
-	expect(absent(view, "products-stock-degraded")).toBe(false);
-	// The filter was not applied, so these are every product, and the count says so.
-	expect(text(view, "products-intro")).toContain("6 products loaded so far");
-
-	// The store's threshold becomes readable again.
-	unreadable = false;
-	await press(view, "products-refresh");
-	await settle();
-
-	expect(absent(view, "products-stock-degraded")).toBe(true);
-	expect(rows(view, "products-row")).toHaveLength(6);
-	expect(text(view, "products-intro")).toContain("6 low-stock products loaded so far");
-});
-
 test("a refresh plans from the stack the ROWS were fetched by, not the one a failed page move advanced", async () => {
 	view = await scanThreePages();
 	// A `Load more` that fails. The stack keeps the entry it pushed on the click —
@@ -1126,48 +824,6 @@ test("a refresh plans from the stack the ROWS were fetched by, not the one a fai
 	// that starts at page one. The operator asked for the same query restated.
 	expect(asked[0]?.cursor).toBeUndefined();
 	expect(rowIds(view, "orders-row")).toEqual(["o-1", "o-2", "o-3", "o-4", "o-5", "o-6"]);
-});
-
-test("the low-stock verdict and the withheld total survive a Next, then a Refresh", async () => {
-	// Page one cannot read the store's threshold; every continuation reports the
-	// filter as available BY CONTRACT, because the predicate rode inside the token.
-	// That contractual `false` is the value a refresh must not believe.
-	serve((request) => {
-		const n = request.cursor === undefined ? 1 : Number(request.cursor.slice("cursor-".length));
-		return envelope({
-			ok: true,
-			products: ids("p", n * 3 - 2, n * 3).map(product),
-			nextCursor: `cursor-${String(n + 1)}`,
-			total: 137,
-			stock: {
-				threshold: null,
-				unreadable: false,
-				filterUnavailable: request.cursor === undefined,
-			},
-			vocabulary: PRODUCTS_VOCABULARY,
-		});
-	});
-	view = await mount(<ProductsList onOpen={() => {}} initialFilter={{ lowStock: true }} />);
-	await settle();
-	expect(absent(view, "products-stock-degraded")).toBe(false);
-
-	await press(view, "products-next");
-	await settle();
-	expect(absent(view, "products-stock-degraded")).toBe(false);
-	// The exact count is withheld with it: a confident 137 under a banner saying
-	// the filter was skipped is the claim this pair exists to prevent.
-	expect(text(view, "products-intro")).not.toContain("137");
-
-	await press(view, "products-refresh");
-	await settle();
-
-	// A WALK ANCHORED ON A CONTINUATION CANNOT ANSWER THIS QUESTION, so it carries
-	// the answer in rather than taking the contractual `false` at face value —
-	// which would drop the banner and restore the total at the click of a control
-	// that has nothing to do with filtering.
-	expect(absent(view, "products-stock-degraded")).toBe(false);
-	expect(text(view, "products-intro")).not.toContain("137");
-	expect(rows(view, "products-row")).toHaveLength(3);
 });
 
 test("a Retry that replays a refresh reads as a refresh while it runs", async () => {

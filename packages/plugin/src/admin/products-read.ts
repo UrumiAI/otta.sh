@@ -23,6 +23,7 @@ import {
 import type { ReportingSettingsSurface } from "./reporting-settings-surface.js";
 import { readString } from "./scaffold/index.js";
 import { PRODUCT_KIND_LABELS } from "@otta-sh/admin-presentation";
+import { effectiveStoreCurrency } from "@otta-sh/domain";
 import type { SelectOption } from "../types.js";
 
 export const PAGE_LIMIT = 25;
@@ -148,17 +149,34 @@ export function readOnHand(p: ProductSummaryWire): number | null | undefined {
 export async function readLowStockThreshold(
 	client: ReportingSettingsSurface,
 ): Promise<number | null> {
+	return (await readProductSettings(client)).threshold;
+}
+
+/**
+ * What a product screen needs from the settings, from ONE settings read: the
+ * low-stock threshold (as {@link readLowStockThreshold} states it) and the
+ * effective store currency an unpriced product's currency picker starts on.
+ * Both are `null` when the read failed — secondary (E-1), never the screen.
+ */
+export async function readProductSettings(
+	client: ReportingSettingsSurface,
+): Promise<{ threshold: number | null; storeCurrency: string | null }> {
 	try {
-		const { lowStockThreshold } = await client.getSettings();
-		return Number.isSafeInteger(lowStockThreshold) && lowStockThreshold >= 0
-			? lowStockThreshold
-			: null;
+		const settings = await client.getSettings();
+		const { lowStockThreshold } = settings;
+		return {
+			threshold:
+				Number.isSafeInteger(lowStockThreshold) && lowStockThreshold >= 0
+					? lowStockThreshold
+					: null,
+			storeCurrency: effectiveStoreCurrency(settings),
+		};
 	} catch {
 		// A settings read is never allowed to take the screen with it (E-1) — and
 		// that holds for BOTH tiers since INC-B10c-ii. The in-process client throws
 		// a typed store error where the http one threw on a non-2xx; either way the
 		// `Low` band is what is lost, never the Products screen.
-		return null;
+		return { threshold: null, storeCurrency: null };
 	}
 }
 
