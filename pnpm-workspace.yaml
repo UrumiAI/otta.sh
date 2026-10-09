@@ -48,9 +48,8 @@ allowBuilds:
   # esbuild's postinstall only validates the preinstalled platform binary —
   # wrangler and the Astro toolchain (sites/staging) bundle through it.
   esbuild: true
-  # sharp: originally skipped for the service Worker (wrangler's optional
-  # image codec, nothing fed it images) — sites/staging's Astro/EmDash chain
-  # installs it as a real dependency, so the native build is allowed now.
+  # sharp: sites/staging's Astro/EmDash chain installs it as a real
+  # dependency (image processing), so its native build is allowed.
   sharp: true
   workerd: true
 
@@ -65,9 +64,6 @@ catalog:
   "@types/pg": ^8.20.0
   better-sqlite3: ^12.11.1
   "@types/better-sqlite3": ^7.6.13
-  zod: ^4.4.3
-  hono: ^4.12.29
-  "@hono/node-server": ^2.0.8
   dependency-cruiser: ^18.0.0
   # wrangler ^4.68 -> ^4.99 because `@emdash-cms/cloudflare` declares
   # `peerDependencies.wrangler >= 4.99.0`.
@@ -77,7 +73,6 @@ catalog:
   "@playwright/test": ^1.62.1
 
 minimumReleaseAgeExclude:
-  - hono@4.12.29
   # The D1 test tier's toolchain (`@cloudflare/vitest-plugin`), which pins its own
   # wrangler/miniflare exactly and therefore its own workerd — see the "D1 tier"
   # section of `packages/store-emdash/README.md`.

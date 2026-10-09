@@ -88,20 +88,10 @@ module.exports = {
 				"rule, which the carve-out does not touch. " +
 				"packages/plugin/test/depcruise-boundary.test.ts pins both halves: that " +
 				"package admitted, a second payments-* package still forbidden.\n\n" +
-				"FOURTH CHANGE (work order 02, INC-D3c): `service` is no longer named in " +
-				"any of the three clauses, because @otta-sh/service no longer EXISTS — " +
-				"INC-D3b deleted packages/service (and packages/store-postgres with it) " +
-				"once the service was folded into the plugin. A ban on a package that " +
-				"cannot be imported is a clause no fixture can exercise, so it rots " +
-				"silently: nothing would notice if it stopped matching, which is the same " +
-				"failure mode as the `^node:`-only builtin clause above. store-postgres " +
-				"was never named literally — it was caught by the " +
-				"`(?!store-emdash(/|$))store-[^/]+` lookahead, which is untouched and " +
-				"still bans every store-* but the one, so a store-postgres reintroduced " +
-				"tomorrow is forbidden on the day it is created. A reintroduced `service` " +
-				"package would NOT be, and that is deliberate: after the fold-in " +
-				"(ADR-0018) a second deployable is a decision that needs its own ADR, not " +
-				"something a lint rule should pre-judge on a name.",
+				"FOURTH CHANGE (INC-D3c): no clause names a `service` package, because " +
+				"none exists (ADR-0020). Any other store-* is still caught by the " +
+				"`(?!store-emdash(/|$))store-[^/]+` lookahead; a second deployable would " +
+				"need its own ADR, not a lint rule pre-judging it by name.",
 			severity: "error",
 			from: { path: "^packages/plugin/src" },
 			to: {
