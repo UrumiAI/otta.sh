@@ -307,16 +307,6 @@ const {
 										</option>
 									))}
 								</select>
-								{/* For browser autofill only (never posted; see the address block's). */}
-								<input
-									type="text"
-									class="u-sr-only"
-									tabindex="-1"
-									aria-hidden="true"
-									autocomplete="address-level1"
-									form="checkout-place"
-									data-region-autofill="delivery-region"
-								/>
 								<span class="checkout-note" id="region-note">
 									Leave blank if your address doesn't use one.
 									<span data-region-update>
@@ -324,6 +314,29 @@ const {
 									</span>
 								</span>
 							</div>
+							{/* OUTSIDE the field, which is display:none while the country has no
+							    subdivisions: browser autofill skips hidden fields. Visually
+							    hidden, out of the tab order and hidden from assistive tech;
+							    never posted (no name). The script picks the state it catches
+							    from the list of the country it belongs to. */}
+							<input
+								type="text"
+								class="u-sr-only"
+								tabindex="-1"
+								aria-hidden="true"
+								autocomplete="address-level1"
+								form="checkout-place"
+								data-region-autofill="delivery-region"
+							/>
+							{/* The country the delivery list was drawn for: a state posted
+							    under another country is never priced (place.ts). */}
+							<input
+								type="hidden"
+								name="deliveryRegionCountry"
+								form="checkout-place"
+								value={deliveryRegions.country}
+								data-region-list-for="delivery-region"
+							/>
 							{deliveryRegions.options.length === 0 && countryValue === "" && (
 								<p class="checkout-note" data-region-update>
 									Choose your country, then select Update delivery to pick your state or province.
@@ -672,23 +685,21 @@ const {
 													value={addressRegions.country}
 													data-region-list-for="address-region"
 												/>
-												{/* For browser autofill only (never posted): it catches the
-												    state an address card fills, which the script then picks
-												    from the new country's list. */}
-												<input
-													type="text"
-													class="u-sr-only"
-													tabindex="-1"
-													aria-hidden="true"
-													autocomplete="address-level1"
-													data-region-autofill="address-region"
-												/>
 												{fieldErrors.region !== undefined && (
 													<span class="checkout-field-error" id="region-error">
 														{fieldErrors.region}
 													</span>
 												)}
 											</div>
+											{/* Outside the (possibly hidden) field — see the delivery block's. */}
+											<input
+												type="text"
+												class="u-sr-only"
+												tabindex="-1"
+												aria-hidden="true"
+												autocomplete="address-level1"
+												data-region-autofill="address-region"
+											/>
 										</>
 									)}
 									<div class="checkout-field checkout-span2">

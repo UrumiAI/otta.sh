@@ -905,6 +905,49 @@ describe("the state/province pick list: a changed country is a round trip, never
 		expect(h.calls).toHaveLength(0);
 	});
 
+	test("the delivery block, no JS: US/California, then Spain WITHOUT Update, then Continue — re-asked, never Cádiz", async () => {
+		// CA is California in the US and Cádiz in Spain: the code never carries over.
+		const h = harness(
+			{
+				...FULL,
+				addressMode: "zoned",
+				country: "US",
+				region: "CA",
+				shippingMethodId: "m1",
+				fromCountry: "US",
+				fromRegion: "CA",
+				deliveryCountry: "ES",
+				deliveryRegion: "CA",
+				deliveryRegionCountry: "US",
+				deliveryMethod: "m1",
+			},
+			PLACED,
+		);
+		expect((await PLACE_POST(h.context)).headers.get("location")).toBe(
+			"/checkout?country=ES&method=m1&fromCountry=US&fromRegion=CA&error=REGION_LIST_UPDATED",
+		);
+		expect(h.calls).toHaveLength(0);
+	});
+
+	test("the delivery block: a carried-over code is dropped SILENTLY for a country without subdivisions", async () => {
+		const h = harness(
+			{
+				...FULL,
+				addressMode: "zoned",
+				intent: "update-delivery",
+				deliveryCountry: "AQ",
+				deliveryRegion: "CA",
+				deliveryRegionCountry: "US",
+				fromCountry: "US",
+				fromRegion: "CA",
+			},
+			PLACED,
+		);
+		expect((await PLACE_POST(h.context)).headers.get("location")).toBe(
+			"/checkout?country=AQ&fromCountry=US&fromRegion=CA",
+		);
+	});
+
 	test("the delivery block: the same country keeps its picked region", async () => {
 		const h = harness(
 			{

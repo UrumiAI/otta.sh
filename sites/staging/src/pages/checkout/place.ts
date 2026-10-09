@@ -388,7 +388,21 @@ async function place(context: APIContext): Promise<Response> {
 	// country's list marked (REGION_LIST_UPDATED).
 	const deliveryCountry = formString(form.get("deliveryCountry"));
 	const postedDeliveryRegion = formString(form.get("deliveryRegion"));
-	const deliveryMismatch = regionOutsideCountry(deliveryCountry, postedDeliveryRegion);
+	// …and a state code NEVER carries over to another country (CA is California
+	// in the US and Cádiz in Spain): a region posted from a list drawn for
+	// another country (`deliveryRegionCountry`, kept in step by the script; else
+	// the priced `fromCountry`) is dropped and asked for again, never priced.
+	const deliveryListRecord = form.get("deliveryRegionCountry");
+	const deliveryListCountry =
+		typeof deliveryListRecord === "string"
+			? deliveryListRecord
+			: (formString(form.get("fromCountry")) ?? "");
+	const deliveryCarried =
+		postedDeliveryRegion !== undefined &&
+		deliveryListCountry.trim() !== "" &&
+		deliveryListCountry.trim().toUpperCase() !== (deliveryCountry ?? "").toUpperCase();
+	const deliveryMismatch =
+		deliveryCarried || regionOutsideCountry(deliveryCountry, postedDeliveryRegion);
 	const delivery = {
 		country: deliveryCountry,
 		region:
@@ -408,7 +422,8 @@ async function place(context: APIContext): Promise<Response> {
 				method: shippingMethodId,
 			}))
 	) {
-		const token = deliveryMismatch ? REGION_LIST_UPDATED : undefined;
+		const token =
+			deliveryMismatch && hasRegionList(deliveryCountry) ? REGION_LIST_UPDATED : undefined;
 		return refuseKeeping((error) => deliveryUpdatePath(delivery, couponCode, error), token);
 	}
 

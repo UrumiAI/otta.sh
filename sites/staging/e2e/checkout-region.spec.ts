@@ -207,6 +207,14 @@ test.describe("the state/province pick list (no client JS)", () => {
 			await expect(region.locator('option[value="CA"]')).toHaveText("California");
 			await expect(region).toHaveValue("CA");
 
+			// A state code NEVER carries over: California picked, then Spain — the
+			// new list starts empty, never on Cádiz (also CA).
+			await country.selectOption("ES");
+			await expect(region.locator('option[value="CA"]')).toHaveText("Cádiz");
+			await expect(region).toHaveValue("");
+			await country.selectOption("US");
+			await expect(region).toHaveValue("");
+
 			// SIMULATED AUTOFILL: an address card sets the country, then the state
 			// (into the catcher field the browser fills) — the state is picked from
 			// the new list by NAME, whichever lands first.
@@ -221,6 +229,19 @@ test.describe("the state/province pick list (no client JS)", () => {
 			await country.selectOption("US");
 			await expect(region).toHaveValue("CA");
 			await expect(form.locator('input[name="regionCountry"]')).toHaveValue("US");
+			// Autofill OVER an existing pick: the catcher changed, so it wins.
+			await hint.evaluate((el) => ((el as HTMLInputElement).value = "new york"));
+			await hint.dispatchEvent("change");
+			await expect(region).toHaveValue("NY");
+			// Autofill while the region field is HIDDEN (a country without
+			// subdivisions): the catcher still takes it, and the next country picks it.
+			await country.selectOption("AQ");
+			await expect(region).toBeHidden();
+			await hint.evaluate((el) => ((el as HTMLInputElement).value = "California"));
+			await hint.dispatchEvent("change");
+			await country.selectOption("US");
+			await expect(region).toBeVisible();
+			await expect(region).toHaveValue("CA");
 
 			await form.locator('input[name="email"]').fill("region-js@example.test");
 			await form.locator('input[name="name"]').fill("Cal Buyer");

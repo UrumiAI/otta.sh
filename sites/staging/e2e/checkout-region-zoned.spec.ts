@@ -167,6 +167,30 @@ test.describe("the state/province pick list on a store with a state-level zone (
 		}
 		await expect(page.getByText(/Delivering to United States, California/)).toBeVisible();
 
+		// A state code NEVER carries over: Spain chosen WITHOUT Update, then
+		// Continue — CA would be Cádiz there. Re-asked with Spain's list, nothing
+		// picked, nothing placed.
+		await country.selectOption("ES");
+		const placeForm = page.locator("form#checkout-place");
+		await Promise.all([
+			page.waitForURL(/error=REGION_LIST_UPDATED/, { waitUntil: "load" }),
+			placeForm.locator('button[type="submit"]:not([value])').click(),
+		]);
+		await expect(country).toHaveValue("ES");
+		await expect(region.locator('option[value="CA"]')).toHaveText("Cádiz");
+		await expect(region).toHaveValue("");
+		expect(page.url()).not.toMatch(/region=CA/);
+		// Back to California, priced again.
+		await country.selectOption("US");
+		await Promise.all([page.waitForURL(/country=US/, { waitUntil: "load" }), update.click()]);
+		await region.selectOption("CA");
+		await Promise.all([page.waitForURL(/region=CA/, { waitUntil: "load" }), update.click()]);
+		if (!(await option.first().isChecked())) {
+			await option.first().check();
+			await Promise.all([page.waitForURL(/method=/, { waitUntil: "load" }), update.click()]);
+		}
+		await expect(page.getByText(/Delivering to United States, California/)).toBeVisible();
+
 		// ── Place ──────────────────────────────────────────────────────────────
 		const form = page.locator("form#checkout-place");
 		await form.locator('input[name="email"]').fill(`zoned-${Date.now()}@example.test`);

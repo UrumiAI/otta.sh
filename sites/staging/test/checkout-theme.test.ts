@@ -141,7 +141,11 @@ describe.each(REVIEW_VIEWS)("the /checkout form contract — %s", (_label, { sou
 		expect(VIEW).toMatch(
 			/name="regionCountry"\s+value=\{addressRegions\.country\}\s+data-region-list-for="address-region"/,
 		);
-		expect(VIEW).not.toMatch(/name="(?:deliveryRegionCountry|deliveryRegionSelected)"/);
+		// …and so does the delivery block's (a state code never carries over).
+		expect(VIEW).toMatch(
+			/name="deliveryRegionCountry"\s+form="checkout-place"\s+value=\{deliveryRegions\.country\}\s+data-region-list-for="delivery-region"/,
+		);
+		expect(VIEW).not.toMatch(/name="deliveryRegionSelected"/);
 		// Each list has an autofill catcher: never posted (no name), out of the
 		// tab order and hidden from assistive tech.
 		for (const id of ["address-region", "delivery-region"]) {

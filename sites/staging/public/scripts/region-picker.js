@@ -1,23 +1,26 @@
-// ADR-0034: the checkout's ONE optional script. A country change refills its
-// state list (data-region-target) from /checkout/regions and hides the no-JS
-// Update (data-region-update); on any failure the no-JS page comes back.
+// ADR-0034: the checkout's ONE optional script — a country change refills its state list
+// from /checkout/regions; no-JS Update hides; any failure brings the no-JS page back.
 const updaters = document.querySelectorAll("[data-region-update]");
 const showUpdate = (show) => updaters.forEach((el) => (el.hidden = !show));
 const listOf = (country) => document.getElementById(country.dataset.regionTarget ?? "");
 const byFor = (attr, id) => document.querySelector(`[${attr}="${id}"]`);
 
-// The state to keep: the list's own, else an autofilled one (by code or name).
-function pick(select) {
-	const want = (select.value || byFor("data-region-autofill", select.id)?.value || "").trim();
+// A state code NEVER carries over to another country (CA is Cádiz in Spain): after a change
+// only the autofill catcher may pick; within a country, its pick stays unless the catcher changed.
+function pick(select, keep) {
+	const hint = byFor("data-region-autofill", select.id);
+	const fresh = hint && (keep === null || hint.value !== hint.dataset.applied) ? hint.value : "";
+	const want = (fresh || keep || "").trim().toLowerCase();
 	const hit = [...select.options].find(
-		(o) => o.value !== "" && [o.value, o.text].some((v) => v.toLowerCase() === want.toLowerCase()),
+		(o) => o.value !== "" && (o.value.toLowerCase() === want || o.text.toLowerCase() === want),
 	);
 	select.value = hit?.value ?? "";
+	if (hint) hint.dataset.applied = hint.value;
 }
 
 async function fill(country) {
 	const select = listOf(country);
-	if (!(select instanceof HTMLSelectElement)) return true;
+	if (!select) return true;
 	const wanted = country.value;
 	let options = [];
 	try {
@@ -31,13 +34,12 @@ async function fill(country) {
 		return (showUpdate(true), false);
 	}
 	if (country.value !== wanted) return true; // a newer change owns the list
-	const keep = select.value;
+	const keep = select.dataset.regionCountry === wanted ? select.value : null;
 	select.replaceChildren(select.options[0], ...options.map((o) => new Option(o.label, o.code)));
-	select.value = keep;
-	pick(select);
+	pick(select, keep);
 	select.dataset.regionCountry = wanted;
 	const record = byFor("data-region-list-for", select.id); // the list's country, for the server
-	if (record instanceof HTMLInputElement) record.value = wanted;
+	if (record) record.value = wanted;
 	select.removeAttribute("aria-invalid");
 	select.closest("[data-region-field]")?.toggleAttribute("hidden", options.length === 0);
 	return true;
@@ -45,13 +47,10 @@ async function fill(country) {
 
 const countries = [...document.querySelectorAll("select[data-region-target]")];
 countries.forEach((country) => country.addEventListener("change", () => void fill(country)));
-document
-	.querySelectorAll("[data-region-autofill]")
-	.forEach((hint) =>
-		hint.addEventListener("change", () =>
-			pick(document.getElementById(hint.dataset.regionAutofill)),
-		),
-	);
+for (const hint of document.querySelectorAll("[data-region-autofill]")) {
+	const select = document.getElementById(hint.dataset.regionAutofill);
+	hint.addEventListener("change", () => select && pick(select, select.value));
+}
 // A restored form may show another country than its list: sync, then hide Update.
 Promise.all(
 	countries.map((c) => (listOf(c)?.dataset.regionCountry === c.value ? true : fill(c))),
