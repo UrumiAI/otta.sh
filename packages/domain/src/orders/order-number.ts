@@ -52,7 +52,11 @@ const UUID_HYPHENS_AFTER = [20, 16, 12, 8] as const;
  * the search already trimmed (the admin client trims it once, for every arm).
  */
 export function orderNumberIdPrefix(search: string): string | null {
-	const match = TYPED_ORDER_NUMBER.exec(search.replaceAll("-", ""));
+	// "Order #3F9A2" pasted from an email reads as "#3F9A2". The `#` must LEAD the
+	// search before any hyphen is dropped, so "-#12345" stays literal.
+	const typed = search.replace(/^order\s+(?=#)/i, "");
+	if (!typed.startsWith("#")) return null;
+	const match = TYPED_ORDER_NUMBER.exec(typed.replaceAll("-", ""));
 	const digits = match?.[1]?.toLowerCase();
 	if (digits === undefined) return null;
 	let prefix = digits;

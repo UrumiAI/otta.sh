@@ -51,6 +51,11 @@ describe("orderNumberIdPrefix — the one matcher", () => {
 		expect(orderNumberIdPrefix(`#${id}`)).toBe(id);
 	});
 
+	test('an "Order #3F9A2" paste reads as the number', () => {
+		expect(orderNumberIdPrefix("Order #3F9A2")).toBe("3f9a2");
+		expect(orderNumberIdPrefix("order  #3f9a2b")).toBe("3f9a2b");
+	});
+
 	test("only a search starting with # is a number; everything else is literal", () => {
 		for (const s of [
 			"3F9A2",
@@ -62,6 +67,8 @@ describe("orderNumberIdPrefix — the one matcher", () => {
 			"jo@example.com",
 			"TEE#12345",
 			" #3F9A2",
+			"-#12345",
+			"Order 3F9A2",
 		]) {
 			expect(orderNumberIdPrefix(s)).toBeNull();
 		}
