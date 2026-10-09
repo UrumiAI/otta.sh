@@ -51,7 +51,7 @@
  *     state the same field in the same words.
  */
 
-export { NAV_VERBS, screenActions, type ScreenActions } from "./actions.js";
+export { screenActions, type ScreenActions } from "./actions.js";
 export { failClosedResponse, noticeBanner, type FailClosedOptions, type Notice } from "./banner.js";
 // `DATE_LOCALE` is deliberately NOT re-exported: it is the module's own knob,
 // not a screen's, and a screen reaching for it would be building a second
@@ -127,4 +127,4 @@ export {
 	type ListCursor,
 	type NavPath,
 } from "./nav.js";
-export { shortIdsFor, SHORT_ID_MIN } from "./short-id.js";
+export { shortIdsFor } from "./short-id.js";

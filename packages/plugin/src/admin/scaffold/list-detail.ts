@@ -959,7 +959,6 @@ function withChildBlockLists(block: Block, lists: Block[][]): Block {
  */
 export {
 	CLEAR_FILTERS_LABEL,
-	NOTHING_ON_PAGE,
 	PAGE_SCOPED_SUFFIX,
 	PAGE_ZERO,
 	SCAN_FURTHER,
