@@ -2921,7 +2921,9 @@ level-1 `context` 268 → ≤200; the delete-blocked clause moves into DA-7's li
 > ISO 3166-2 subdivision of a country, all levels (GB: 221 entries). A buyer's pick matches the
 > zone listing it, else the zone listing the subdivision containing it, else the country's: a
 > `GB-NIR` zone covers a buyer who picks Belfast (`GB-BFS`), and an `ES-CN` zone covers both
-> Canary Islands provinces. A zone on the smaller subdivision wins over its parent's. A country
+> Canary Islands provinces. A zone on the smaller subdivision wins over its parent's. A buyer who
+> picks a larger subdivision containing a zoned one (Canary Islands, with only Tenerife zoned) is
+> asked to pick the more specific one, never charged the country zone's rates. A country
 > any zone lists at region level also makes the state/province REQUIRED at checkout for that
 > country (ADR-0021, amended 2026-10-08 and 2026-10-09).
 

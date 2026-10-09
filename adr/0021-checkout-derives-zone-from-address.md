@@ -121,12 +121,19 @@ matching now **falls back through the subdivisions containing the buyer's** (CLD
 `SUBDIVISION_PARENTS` like the codes): the region, then each subdivision containing it (nearest
 first), then the country. `ES-TF` (Santa Cruz de Tenerife) tries `ES-TF` → `ES-CN` (Canary
 Islands) → `ES`; `GB-BFS` → `GB-NIR` → `GB`; `FR-75C` → `FR-IDF` → `FR`. Most specific still
-wins — a zone on the child beats one on its parent — and containment never runs upwards (an
-`ES-TF` zone does not cover a buyer who picks `ES-CN`). Tax follows the matched zone, so shipping
-and tax agree. Codes stored before this keep matching as they did, and a zone can be set at
-either level. The region is REQUIRED at checkout exactly for the countries some zone lists at
-region level (zones carry both shipping methods and tax rates); a buyer who picks any
-subdivision, including a child of the zoned one, satisfies it. Elsewhere the region is optional
+wins — a zone on the child beats one on its parent. A zone on a child never covers its parent;
+instead, a pick that no zone covers but that CONTAINS a zoned subdivision (the buyer picks
+`ES-CN`, the store zones only `ES-TF` and `ES-GC`, or `GB-BFS` and the buyer picks `GB-NIR`) is
+refused `SHIPPING_REGION_CODE_REQUIRED` — the blank-region rule one level down — and the site
+asks for "the more specific state/province", whether or not a country zone exists. It is never
+matched to the country's zone, which would silently charge the wrong tax. Tax follows the
+matched zone, so shipping and tax agree. A zone can be set at either level. **Stored zones
+can match differently than before:** a buyer who picks a subdivision INSIDE a zoned one (Belfast,
+with a `GB-NIR` zone and a `GB` zone) used to fall to the country zone and now takes the parent
+zone, with its rates, tax and methods — a parent zone with no methods (tax only) now leaves
+such a buyer with no delivery option where the country zone used to offer one. The region is REQUIRED at checkout exactly for the countries some zone lists at
+region level (zones carry both shipping methods and tax rates); a buyer who picks a
+subdivision at or inside a zoned one, or one no zone touches, satisfies it. Elsewhere the region is optional
 and never asked for. This supersedes "exact codes only — no hierarchy" in Decision 2 and
 "subdivision hierarchy" under Alternatives rejected.
 

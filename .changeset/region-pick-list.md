@@ -53,6 +53,13 @@ field.
   each subdivision containing it, then the country: `ES-TF` → `ES-CN` → `ES`, `GB-BFS` →
   `GB-NIR` → `GB` (ADR-0021 amendment). The generator reads CLDR's vendored containment
   (`common/supplemental/subdivisions.xml`) into `SUBDIVISION_PARENTS`. Most specific still wins.
+  A pick that CONTAINS a zoned subdivision (Canary Islands, with only Tenerife zoned) is
+  refused `SHIPPING_REGION_CODE_REQUIRED` and asked for the more specific one — never matched
+  to the country's zone. **Behaviour change for existing zones:** a buyer inside a zoned
+  subdivision (Belfast, with `GB-NIR` and `GB` zones) used to match the country zone and now
+  matches the parent's — its rates, tax and methods (none, if that zone only carries tax).
+  `@otta-sh/plugin/subdivisions` also exports `subdivisionDataVersion()`, a fingerprint the
+  site sends as `/checkout/regions?…&v=` so the cached list follows a data refresh.
   Countries with nested subdivisions (GB, ES, FR, IT, …) show their list grouped by the
   containing subdivision (`<optgroup>`).
 - Names include CLDR's provisional ones (CN-HK, CN-MO, CN-NM, CN-TW), drop CLDR's

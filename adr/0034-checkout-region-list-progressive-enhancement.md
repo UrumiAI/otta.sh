@@ -26,7 +26,7 @@ rule for where it cannot.
 1. **`/checkout` may load exactly one script**: `public/scripts/region-picker.js`, through
    `src/components/RegionPicker.astro`. It is external and first-party (no inline code — so a
    future CSP needs only `script-src 'self'`), has no framework and no imports, and stays
-   under 65 lines. `checkout-client-js.test.ts` names exactly the pair
+   under 80 lines. `checkout-client-js.test.ts` names exactly the pair
    `checkout/index.astro → RegionPicker.astro` and checks the script's shape.
 2. **Progressive enhancement only.** When a country select changes, the script refills its
    state/province list from `GET /checkout/regions?country=XX` (the same server-built list,
@@ -40,7 +40,10 @@ rule for where it cannot.
    included. *(Amended 2026-10-09.)* It also builds the list's `<optgroup>`s (a country with
    nested subdivisions, from each option's `group`) and keeps the delivery list's
    `required` / `aria-required` in step with the country (the server lists the countries
-   that need a region in `data-region-required`). Every mutation stays a server-rendered `<form method="POST">` → 303, and the
+   that need a region in `data-region-required`); a list it empties, or fails to refill, is
+   never left required. It asks for `/checkout/regions?country=XX&v=<list version>` (the
+   data's fingerprint plus the list format), so the endpoint's one-day cache never serves a
+   list older than the page. Every mutation stays a server-rendered `<form method="POST">` → 303, and the
    checkout is fully functional without JavaScript.
 3. **One server rule for both blocks**, plus one record on the address block. If a posted
    region is a code but not one of the posted country's subdivisions, it is dropped and the
@@ -52,7 +55,13 @@ rule for where it cannot.
    new country's list and left the region blank is NOT sent back to see it *(amended
    2026-10-09)*: the address-only page has no delivery block, so nothing prices or taxes
    by its region and the round trip only cost a page.
-4. **Nothing else.** No other page, component or behaviour gains client JS under this record;
+4. **A known no-JS trade-off** *(2026-10-09)*: where the store needs a region, the delivery
+   select is `required`. A no-JS buyer who changes the country and then presses Continue (or
+   Enter) without Update is stopped by the browser on the OLD country's list when that list
+   is blank. The hint beside the list says to select Update delivery first; Update, Apply and
+   Remove are `formnovalidate`, so the way out is always there. Restructuring the form to
+   avoid it was judged not worth the complexity.
+5. **Nothing else.** No other page, component or behaviour gains client JS under this record;
    `js.stripe.com` stays the only third-party origin, and `allowedHosts` is untouched.
 
 ## Consequences
