@@ -250,6 +250,9 @@ const sumRows = [
 	// shown with tax (the total then carries an "includes" note). Labels are the
 	// merchant's text and render as escaped text, never HTML.
 	...totals.taxRows.map((row) => ({ label: row.label, amount: row.amount })),
+	// ADR-0035's amendment: the total rounded to its currency's payment increment
+	// (KWD, BHD, OMR, JOD), signed; only when non-zero.
+	...(totals.rounding !== undefined ? [{ label: "Rounding", amount: totals.rounding }] : []),
 ];
 /**
  * The model — every answer the view prints. The refusals arrive as COPY: the

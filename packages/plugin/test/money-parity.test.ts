@@ -1,5 +1,23 @@
 import { describe, expect, test } from "vitest";
-import { cents as domainCents, currency as domainCurrency } from "@otta-sh/domain";
+import {
+	SUPPORTED_CURRENCIES as ADMIN_CURRENCIES,
+	DEFAULT_STORE_CURRENCY as ADMIN_DEFAULT_STORE_CURRENCY,
+	currencyDigits as adminCurrencyDigits,
+	currencyPaymentIncrement as adminPaymentIncrement,
+	isSupportedCurrency as adminIsSupported,
+	minorUnitDigits as adminMinorUnitDigits,
+} from "@otta-sh/admin-presentation";
+import {
+	SUPPORTED_CURRENCIES as DOMAIN_CURRENCIES,
+	DEFAULT_STORE_CURRENCY as DOMAIN_DEFAULT_STORE_CURRENCY,
+	cents as domainCents,
+	currency as domainCurrency,
+	currencyDigits as domainCurrencyDigits,
+	currencyPaymentIncrement as domainPaymentIncrement,
+	isSupportedCurrency as domainIsSupported,
+	minorUnitDigits as domainMinorUnitDigits,
+} from "@otta-sh/domain";
+import { stripeAmountIncrement, stripeRefusesCurrency } from "@otta-sh/payments-stripe";
 import { cents as pluginCents, currency as pluginCurrency } from "../src/presentation/money.js";
 
 /**
@@ -74,5 +92,61 @@ describe("money mirror parity (plugin/presentation/money.ts ⇄ domain/money/cen
 		} else {
 			expect(plugin.error).toBe(domain.error);
 		}
+	});
+});
+
+/**
+ * The CURRENCY TABLE has the same mirror: `@otta-sh/domain`'s
+ * `money/currencies.ts` is canonical, `@otta-sh/admin-presentation`'s
+ * `currencies.ts` is its copy (the admin surfaces cannot import the domain).
+ * Deep equality here is what makes the pair ONE source of truth: a row added,
+ * removed or changed in one file and not the other fails this test.
+ */
+describe("currency table mirror parity (admin-presentation/currencies.ts ⇄ domain/money/currencies.ts)", () => {
+	test("the two tables are identical, row for row and in order", () => {
+		expect(ADMIN_CURRENCIES).toEqual(DOMAIN_CURRENCIES);
+	});
+
+	test("the never-saved store currency is the same in both", () => {
+		expect(ADMIN_DEFAULT_STORE_CURRENCY).toBe(DOMAIN_DEFAULT_STORE_CURRENCY);
+	});
+
+	test("the helpers agree on every listed code and on unlisted ones", () => {
+		const probes = [
+			...DOMAIN_CURRENCIES.map((row) => row.code),
+			"XYZ",
+			"usd",
+			"",
+			"LKR",
+			"UGX",
+			"ISK",
+			"ALL",
+			"CLF",
+		];
+		for (const code of probes) {
+			expect(adminIsSupported(code), code).toBe(domainIsSupported(code));
+			expect(adminCurrencyDigits(code), code).toBe(domainCurrencyDigits(code));
+			// The DISPLAY exponent (table → ICU → 2): the domain's refund flags and
+			// the admin's `formatMoney` must print one amount the same way.
+			expect(adminMinorUnitDigits(code), code).toBe(domainMinorUnitDigits(code));
+			expect(adminPaymentIncrement(code), code).toBe(domainPaymentIncrement(code));
+		}
+	});
+});
+
+describe("every listed currency is payable at checkout, in the steps Stripe takes (ADR-0035 amendment)", () => {
+	test("the live Stripe path refuses no listed currency", () => {
+		for (const row of DOMAIN_CURRENCIES) {
+			expect(stripeRefusesCurrency(row.code), row.code).toBe(false);
+		}
+	});
+
+	test("the table's payment increment is Stripe's amount step for every listed currency", () => {
+		for (const row of DOMAIN_CURRENCIES) {
+			expect(domainPaymentIncrement(row.code) ?? 1, row.code).toBe(stripeAmountIncrement(row.code));
+		}
+		expect(domainPaymentIncrement("KWD")).toBe(10);
+		expect(domainPaymentIncrement("USD")).toBeUndefined();
+		expect(domainPaymentIncrement("JPY")).toBeUndefined();
 	});
 });

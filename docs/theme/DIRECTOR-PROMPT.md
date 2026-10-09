@@ -76,7 +76,6 @@ Each increment's brief must require, and each PR must show:
 - No horizontal page scroll at 390px.
 - Visible keyboard focus on every new interactive element.
 - `pnpm lint`, `pnpm typecheck`, `pnpm test` green; `pnpm format` run.
-- A changeset if a published package changed (theme-only work usually means none).
 
 Screenshots go somewhere temporary, never committed — except the deliberate
 `docs/storefront.png` refresh in increment 7.

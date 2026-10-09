@@ -55,7 +55,7 @@ import {
 	ADD_STOCK_PLACEHOLDER,
 	COMPARE_AT_PLACEHOLDER,
 	CURRENCY_FIELD_LABEL,
-	CURRENCY_PLACEHOLDER,
+	DEFAULT_STORE_CURRENCY,
 	DISCARD_LABEL,
 	NO_CHANGES_TO_SAVE,
 	NO_TAX_CLASS,
@@ -93,6 +93,7 @@ import {
 	dirtyGroupLabel,
 	dirtySectionLabels,
 	formatMinorUnitsInput,
+	NO_CURRENCY,
 	formatOptionalAmount,
 	formatTimestamp,
 	identityGroupLabel,
@@ -284,11 +285,13 @@ export function changedPriceFields(
 function canonicalPriceValues(
 	values: Readonly<Record<string, string>>,
 ): Readonly<Record<string, string>> {
+	// Amounts are spelled in the row's own currency (JPY `1500` stays `1500`).
+	const currency = (values["currency"] ?? "").trim().toUpperCase();
 	return {
-		price: canonicalMoneyInput(values["price"] ?? ""),
-		currency: (values["currency"] ?? "").trim().toUpperCase(),
-		compareAt: canonicalMoneyInput(values["compareAt"] ?? ""),
-		unitCost: canonicalMoneyInput(values["unitCost"] ?? ""),
+		price: canonicalMoneyInput(values["price"] ?? "", currency),
+		currency,
+		compareAt: canonicalMoneyInput(values["compareAt"] ?? "", currency),
+		unitCost: canonicalMoneyInput(values["unitCost"] ?? "", currency),
 	};
 }
 
@@ -296,8 +299,8 @@ function canonicalPriceValues(
  *  never `0.00` — the blank-vs-zero distinction is load-bearing on this screen,
  *  because a blank compare-at CLEARS it and `0.00` would be a price of zero the
  *  domain refuses. */
-function moneyInput(minorUnits: number | null): string {
-	return minorUnits === null ? "" : formatMinorUnitsInput(minorUnits);
+function moneyInput(minorUnits: number | null, currency: string | null): string {
+	return minorUnits === null ? "" : formatMinorUnitsInput(minorUnits, currency ?? NO_CURRENCY);
 }
 
 /** The same, for a non-money integer (weight, dimensions), where blank means
@@ -931,6 +934,7 @@ export function ProductDetail({
 						key="product"
 						product={p}
 						taxClasses={detail.taxClasses}
+						storeCurrency={detail.storeCurrency}
 						busy={busy}
 						savingPrice={acting === "products:save-price"}
 						priceReceipt={receipts.price}
@@ -1195,6 +1199,7 @@ export function ProductTabs({
 function ProductPanel({
 	product: p,
 	taxClasses,
+	storeCurrency,
 	busy,
 	savingPrice,
 	priceReceipt,
@@ -1205,6 +1210,9 @@ function ProductPanel({
 }: {
 	product: ProductRecord;
 	taxClasses: readonly { id: string; name: string }[];
+	/** The store currency the detail read carried: `null` when the read failed,
+	 *  absent from an older plugin. */
+	storeCurrency: string | null | undefined;
 	busy: boolean;
 	/** Only the price save reports in place so far; increment 3 extends the same
 	 *  treatment to identity and classification. */
@@ -1285,6 +1293,7 @@ function ProductPanel({
 					<PriceGroup
 						key={`price-${String(formKeys.price)}`}
 						product={p}
+						storeCurrency={storeCurrency}
 						busy={busy}
 						saving={savingPrice}
 						receipt={priceReceipt}
@@ -1534,6 +1543,7 @@ export function IdentityFields({
  */
 export function PriceGroup({
 	product: p,
+	storeCurrency,
 	busy,
 	saving,
 	receipt,
@@ -1541,6 +1551,10 @@ export function PriceGroup({
 	onSubmit,
 }: {
 	product: ProductRecord;
+	/** The store currency the detail read carried — the unpriced product's
+	 *  currency HINT (a placeholder; nothing is prefilled). `null` (the read
+	 *  failed) ⇒ no hint, never a guess; absent ⇒ "USD", as before. */
+	storeCurrency?: string | null | undefined;
 	busy: boolean;
 	/** THIS save is the one in flight — not merely that some write is. */
 	saving: boolean;
@@ -1554,10 +1568,10 @@ export function PriceGroup({
 	// afterwards without anything resetting it.
 	const committed = React.useMemo(
 		() => ({
-			price: moneyInput(p.priceCents),
+			price: moneyInput(p.priceCents, p.currency),
 			currency: p.currency ?? "",
-			compareAt: moneyInput(p.compareAtCents),
-			unitCost: moneyInput(p.unitCostCents),
+			compareAt: moneyInput(p.compareAtCents, p.currency),
+			unitCost: moneyInput(p.unitCostCents, p.currency),
 		}),
 		[p.priceCents, p.currency, p.compareAtCents, p.unitCostCents],
 	);
@@ -1571,7 +1585,13 @@ export function PriceGroup({
 	// anything unparseable — neither has an amount to name.
 	const change = priceChangeSummary(
 		p.priceCents,
-		parseMinorUnitsInput(values["price"] ?? "", { allowZero: false }),
+		parseMinorUnitsInput(
+			values["price"] ?? "",
+			p.currency ?? (values["currency"] ?? "").trim().toUpperCase(),
+			{
+				allowZero: false,
+			},
+		),
 		p.currency,
 	);
 	const pendingLine = pricePendingLine(change);
@@ -1608,7 +1628,11 @@ export function PriceGroup({
 							className="otta-focusable"
 							data-testid="edit-currency"
 							style={fieldStyle(changed, "currency")}
-							placeholder={CURRENCY_PLACEHOLDER}
+							placeholder={
+								storeCurrency === null
+									? "Choose a currency"
+									: (storeCurrency ?? DEFAULT_STORE_CURRENCY)
+							}
 							value={values["currency"] ?? ""}
 							onChange={set("currency")}
 						/>

@@ -71,6 +71,7 @@ import {
 	REFUND_TOO_HIGH_TITLE,
 	fit,
 	formatAmount as formatTotal,
+	refundIncrementText,
 } from "@otta-sh/admin-presentation";
 import type {
 	AdminOrdersSurface,
@@ -1124,7 +1125,7 @@ const refundOrderAction: OrdersAction = async (client, payload, operator) => {
 	// The write was ATTEMPTED past this point, so every branch below is an outcome
 	// to read rather than an input to correct — and on `GATEWAY_UNVERIFIED` the
 	// outcome is UNKNOWN, which is why its copy says not to retry.
-	if (!result.ok) return applied(refundFailureNotice(result.reason));
+	if (!result.ok) return applied(refundFailureNotice(result.reason, liveCur));
 	if (result.duplicate) {
 		// A benign replay: the SAME amount against the SAME watermark, i.e. a
 		// double-click. A different amount would have produced a different key.
@@ -1302,8 +1303,17 @@ function followUpNotice(
 /** GENERIC, em-dash-correct notices for a refund failure — keyed off the service's
  *  typed reason, NEVER the raw status/URL. The ambiguous-timeout case is explicit:
  *  do NOT retry, re-check the provider first (ADR-0008 error taxonomy). */
-function refundFailureNotice(reason: string | undefined): Notice {
+function refundFailureNotice(reason: string | undefined, currency: string): Notice {
 	switch (reason) {
+		// ADR-0035 amendment: the DOMAIN's refusal of an amount the order's currency
+		// cannot be paid back in (KWD, BHD, OMR, JOD: not in steps of 0.010, and not
+		// the whole remainder). The console checks the same rule before sending.
+		case "AMOUNT_NOT_PAYMENT_INCREMENT":
+			return {
+				variant: "error",
+				title: "Not refunded",
+				description: refundIncrementText(currency),
+			};
 		case "REFUND_EXCEEDS_TOTAL":
 		case "REFUND_EXCEEDS_CAPTURED":
 			return {

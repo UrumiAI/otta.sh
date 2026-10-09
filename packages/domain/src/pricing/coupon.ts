@@ -10,6 +10,8 @@ import type { Coupon } from "./types.js";
  * - `fixed_amount`: `min(amountCents, subtotal)` — clamped so it never discounts
  *   past zero. Rejects a currency mismatch (§8 risk #7).
  * - `percentage`: `min(round_half_up(subtotal × bps / 10_000), capCents?, subtotal)`.
+ *   A percentage coupon whose cap/minimum is bound to a currency rejects a
+ *   mismatch the same way; one with no bound currency applies to any cart.
  *
  * The coupon is assumed already validated (dates, min-subtotal, exhaustion) by
  * the use-case; this function is only the arithmetic.
@@ -27,6 +29,9 @@ export function computeCouponDiscount(
 	}
 
 	// percentage
+	if (coupon.currency != null && coupon.currency !== cartCurrency) {
+		throw new CouponCurrencyMismatchError(coupon.code, coupon.currency, cartCurrency);
+	}
 	if (!Number.isSafeInteger(coupon.bps) || coupon.bps < 0) {
 		throw new RangeError(
 			`percentage coupon requires a non-negative integer bps, got ${String(coupon.bps)}`,

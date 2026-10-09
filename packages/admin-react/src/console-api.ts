@@ -84,6 +84,9 @@ export interface OrderTotals {
 	readonly shippingCents: number;
 	readonly taxCents: number;
 	readonly totalCents: number;
+	/** The payment rounding, SIGNED minor units (ADR-0035's amendment); only on an
+	 *  order in a currency with a payment increment. */
+	readonly roundingCents?: number;
 	readonly appliedCouponCode: string | null;
 	readonly shippingZoneId?: string | null;
 }
@@ -469,6 +472,10 @@ export interface ProductDetailPayload {
 	readonly product: ProductRecord;
 	readonly taxClasses: readonly TaxClass[];
 	readonly threshold: number | null;
+	/** The effective store currency an unpriced product's picker starts on (USD
+	 *  when never saved). `null`: the settings read FAILED — preselect nothing and
+	 *  ask. Absent (an older plugin): USD, as before. */
+	readonly storeCurrency?: string | null;
 	readonly vocabulary: ProductsVocabulary;
 }
 

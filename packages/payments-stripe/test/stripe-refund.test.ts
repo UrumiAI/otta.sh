@@ -86,6 +86,28 @@ describe("StripePaymentGateway.refund (ADR-0008; offline mock transport)", () =>
 		).toBe(true);
 	});
 
+	test("a three-decimal refund that is not a multiple of 10 is TERMINAL before any call — the pre-flight included", async () => {
+		const transport = new MockTransport();
+		const gw = new StripePaymentGateway({ webhookSecret: WEBHOOK, secretKey: SK, transport });
+		const res = await gw.refund(refundInput({ amount: cents(1234), currency: currency("KWD") }));
+		expect(res).toEqual({ ok: false, reason: "TERMINAL" });
+		expect(transport.reads).toHaveLength(0);
+		expect(transport.creates).toHaveLength(0);
+	});
+
+	test("a three-decimal refund in steps of 10 goes out unchanged", async () => {
+		const transport = new MockTransport();
+		transport.preflight = {
+			ok: true,
+			view: { amountRefunded: 0, amountCaptured: 5000, currency: "kwd" },
+		};
+		transport.create = { ok: true, refundId: "re_kwd", amountCents: 0, currency: "kwd" };
+		const gw = new StripePaymentGateway({ webhookSecret: WEBHOOK, secretKey: SK, transport });
+		const res = await gw.refund(refundInput({ amount: cents(1230), currency: currency("KWD") }));
+		expect(res).toEqual({ ok: true, refundRef: "re_kwd", amount: 1230, currency: "KWD" });
+		expect(transport.creates[0]?.amountCents).toBe(1230);
+	});
+
 	test("no secretKey ⇒ refund returns UNSUPPORTED (never a blind call)", async () => {
 		const gw = new StripePaymentGateway({ webhookSecret: WEBHOOK });
 		expect(await gw.refund(refundInput())).toEqual({ ok: false, reason: "UNSUPPORTED" });

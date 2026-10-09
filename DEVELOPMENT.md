@@ -89,6 +89,18 @@ domain is a build-breaking bug, not a code-review nit.
 - **Money is integer minor units. Never floats.** Amounts are branded integer types (e.g.
   `Cents`) carrying an explicit currency; a `number` that reaches a money field is a type
   error. No float ever touches a price, tax, or total.
+- **A minor unit is the currency's own.** The exponent comes from ONE table,
+  `packages/domain/src/money/currencies.ts` (ISO 4217: USD 2, JPY 0, KWD 3; mirrored, and
+  pinned identical by a test, in `packages/admin-presentation/src/currencies.ts`). Money
+  inputs, display, refund flags and the Stripe amount mapping all read it, so `1500` typed
+  for JPY is stored as 1500 and shown as ¥1,500. To support another currency, add a row there
+  (its header says how). Merchant-typed currencies must be in the table; stored data in any
+  shape-valid code still loads, and a code outside the table is typed in hundredths, as
+  before the table existed.
+- **Only the final total is ever rounded.** A currency whose row has a `paymentIncrement`
+  (KWD, BHD, OMR, JOD: 10) has its order total rounded half-up to it after tax; the signed
+  difference is `roundingCents` (`SignedCents` — `Cents` is never negative). Every part stays
+  exact, and a currency without an increment never gains the field (ADR-0035 amendment).
 - **Idempotency lives in the domain.** Every command carries an `idempotencyKey`; the store
   enforces once-only. Dedupe in the domain/store, never only in the HTTP client — and test
   the replay case.
@@ -137,9 +149,8 @@ in-process leniency.
 - **TypeScript:** strict, `noUncheckedIndexedAccess`, `noImplicitOverride`,
   `verbatimModuleSyntax`. Internal imports use `.js` extensions; type-only imports use
   `import type`.
-- **Changesets** once packages publish. Backwards compat matters pre-1.0: prefer additive
-  changes; a break needs a bump + a changeset that calls it out. **Migrations are
-  forward-only.**
+- Backwards compat matters pre-1.0: prefer additive changes; a break is called out in the
+  PR description. **Migrations are forward-only.**
 
 ## 7. The edit loop
 
@@ -148,8 +159,7 @@ Same cadence as EmDash:
 - `lint` (quick) after every edit.
 - `typecheck` after each round of edits.
 - `format` regularly.
-- Before a PR: **tests pass, lint clean, formatted, changeset added** if a published
-  package changed.
+- Before a PR: **tests pass, lint clean, formatted.**
 
 ## 8. Scope discipline
 
