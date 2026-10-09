@@ -38,8 +38,12 @@ export function orderNumber(orderId: string): string {
  * optional `:` and spaces), then `#`, then hex in which a `-` may only sit BETWEEN two
  * hex digits, then optional trailing `.`, `:`, `,` or `;`. At least
  * {@link ORDER_NUMBER_LENGTH} hex digits are required.
+ *
+ * Written so no two parts can match the same run of spaces (`\s*(?::\s*)?`, not
+ * `\s*:?\s*`): the ambiguous form backtracks quadratically on `"order"` + many spaces
+ * with no `#` (CodeQL js/polynomial-redos). Same language either way.
  */
-const TYPED_ORDER_NUMBER = /^(?:order\s*:?\s*)?#([0-9a-f]+(?:-[0-9a-f]+)*)[.:,;]*$/i;
+const TYPED_ORDER_NUMBER = /^(?:order\s*(?::\s*)?)?#([0-9a-f]+(?:-[0-9a-f]+)*)[.:,;]*$/i;
 
 /** Where a UUID's `-` falls, counted in hex digits before it — so a long number the
  *  console printed hex-only still prefixes the stored, hyphenated id. */

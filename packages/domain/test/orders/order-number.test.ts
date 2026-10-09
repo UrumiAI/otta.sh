@@ -86,4 +86,13 @@ describe("orderNumberIdPrefix — the one matcher", () => {
 			expect(orderNumberIdPrefix(s)).toBeNull();
 		}
 	});
+
+	test('"order" + a long run of spaces and no "#" answers at once (no polynomial backtracking)', () => {
+		const adversarial = `order${" ".repeat(50_000)}x`;
+		const started = performance.now();
+		expect(orderNumberIdPrefix(adversarial)).toBeNull();
+		expect(orderNumberIdPrefix(`order${" ".repeat(50_000)}:${" ".repeat(50_000)}x`)).toBeNull();
+		expect(performance.now() - started).toBeLessThan(250);
+		expect(orderNumberIdPrefix(`Order ${" ".repeat(1_000)}: #3F9A2`)).toBe("3f9a2");
+	});
 });
