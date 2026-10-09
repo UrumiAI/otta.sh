@@ -103,12 +103,6 @@ export {
 	type ConsoleFailure,
 };
 
-/** The resources the console can read. One per screen surface, not one per
- *  service endpoint: the detail fans out to five reads in parallel exactly as
- *  the Block Kit detail does, because a React screen making five sequential
- *  round trips through this route would be slower than the screen it replaces. */
-export type ConsoleResource = "orders.list" | "orders.detail";
-
 /** Everything the console needs to render the filter controls with the SAME
  *  vocabulary the Block Kit screen offers.
  *
