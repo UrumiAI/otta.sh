@@ -223,8 +223,8 @@ function shippingTaxClassOf(
  *  - one class ⇒ that class;
  *  - else the first by class NAME (WooCommerce's `ORDER BY name`) among the
  *    declared classes (`names`), falling back to `standard`. Names compare
- *    case-insensitively, as MySQL's default collation does; names equal but for
- *    case go to the lower id, so the pick never depends on listing order.
+ *    case- and accent-insensitively, as MySQL's default collation does; names equal
+ *    under that go to the lower id, so the pick never depends on listing order.
  */
 export function inheritShippingTaxClass(
 	lines: TaxRequest["lines"],
@@ -238,9 +238,11 @@ export function inheritShippingTaxClass(
 	if (found.has("standard")) return "standard";
 	if (found.size === 1) return [...found][0] as TaxClassId;
 	const ordered = [...names].toSorted(([idA, a], [idB, b]) => {
-		const la = a.toLowerCase();
-		const lb = b.toLowerCase();
-		if (la !== lb) return la < lb ? -1 : 1;
+		// Base letters only (case and accents ignored), as MySQL's `_ai_ci` collation
+		// does; a fixed locale keeps the order the same on every host. Names equal
+		// under that fall back to the id (unique), so it is deterministic.
+		const byBase = a.localeCompare(b, "en", { sensitivity: "base" });
+		if (byBase !== 0) return byBase;
 		return idA < idB ? -1 : idA > idB ? 1 : 0;
 	});
 	return ordered.find(([id]) => found.has(id))?.[0] ?? "standard";

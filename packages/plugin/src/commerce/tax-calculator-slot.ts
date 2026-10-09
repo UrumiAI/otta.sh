@@ -39,6 +39,11 @@ export function setTaxCalculator(calculator: TaxCalculator): void {
 			`a tax calculator ("${registered.id}") is already registered; register exactly one`,
 		);
 	}
+	if (registered !== undefined && registered !== calculator) {
+		// Not an error (a dev reload does this), but never silent: which calculator
+		// prices orders should be visible in the log.
+		console.warn(`[otta] tax calculator "${calculator.id}" replaced an already-registered one`);
+	}
 	registered = calculator;
 }
 

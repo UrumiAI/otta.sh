@@ -239,6 +239,35 @@ describe("shipping tax class — WooCommerce 'based on cart items' (woo-facts-ve
 		expect(inheritShippingTaxClass(lines, new Map([...tie].toReversed()))).toBe("a-one");
 	});
 
+	test('names compare accent-insensitively: "Éco" sorts with "Eco", before "Food"', () => {
+		const accented = new Map([
+			["z-food", "Food"],
+			["a-eco", "Éco"],
+		]);
+		const lines = [line("0", 1, "z-food"), line("1", 1, "a-eco")];
+		expect(inheritShippingTaxClass(lines, accented)).toBe("a-eco");
+		// "Éclair" vs "Eclat": base letters decide (i < t), not the accent code point.
+		const second = new Map([
+			["z-eclat", "Eclat"],
+			["a-eclair", "Éclair"],
+		]);
+		expect(
+			inheritShippingTaxClass([line("0", 1, "z-eclat"), line("1", 1, "a-eclair")], second),
+		).toBe("a-eclair");
+	});
+
+	test("names equal ignoring accent and case → deterministic whatever the insertion order", () => {
+		const tie = new Map([
+			["z-two", "Cafe"],
+			["a-one", "Café"],
+		]);
+		const lines = [line("0", 1, "z-two"), line("1", 1, "a-one")];
+		const first = inheritShippingTaxClass(lines, tie);
+		expect(inheritShippingTaxClass(lines, new Map([...tie].toReversed()))).toBe(first);
+		// The lower id breaks the tie (as for names equal but for case).
+		expect(first).toBe("a-one");
+	});
+
 	test("several classes none of which is declared → standard (WooCommerce's fallback)", () => {
 		expect(inheritShippingTaxClass([line("0", 1, "x"), line("1", 1, "y")], new Map())).toBe(
 			"standard",
