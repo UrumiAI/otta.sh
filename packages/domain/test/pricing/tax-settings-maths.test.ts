@@ -285,6 +285,21 @@ describe("shipping tax class — WooCommerce 'based on cart items' (woo-facts-ve
 		expect(pick("a~", "a0")).toBe("a-y");
 	});
 
+	test("non-Latin scripts keep their code-unit order: Devanagari vowel signs are not stripped", () => {
+		// U+0915 U+0930 "कर" vs U+0915 U+093E U+0930 "कार": the vowel sign U+093E is a
+		// mark (\\p{M}) but not a Latin accent, so "कर" (0930 < 093E) still sorts first.
+		const pick = (x: string, y: string): string =>
+			inheritShippingTaxClass(
+				[line("0", 1, "z-x"), line("1", 1, "a-y")],
+				new Map([
+					["z-x", x],
+					["a-y", y],
+				]),
+			) as string;
+		expect(pick("\u0915\u093E\u0930", "\u0915\u0930")).toBe("a-y");
+		expect(pick("\u0915\u0930", "\u0915\u093E\u0930")).toBe("z-x");
+	});
+
 	test("several classes none of which is declared → standard (WooCommerce's fallback)", () => {
 		expect(inheritShippingTaxClass([line("0", 1, "x"), line("1", 1, "y")], new Map())).toBe(
 			"standard",

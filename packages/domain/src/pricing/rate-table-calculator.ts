@@ -119,13 +119,19 @@ function isTaxed(line: TaxRequest["lines"][number]): boolean {
 }
 
 /**
- * A class name's sort key: lower-cased with accents stripped, then compared by
- * code unit. Only accents and case are ignored; the order of plain ASCII
+ * A class name's sort key: lower-cased with Latin combining accents (U+0300-U+036F)
+ * stripped and recomposed, then compared by code unit. Only Latin accents and
+ * case are ignored; other scripts (Devanagari vowel signs, Arabic harakat) keep
+ * their code-unit order; the order of plain ASCII
  * (punctuation, digits, letters) is exactly what a lower-case compare gave, and
  * nothing depends on ICU or the host locale.
  */
 function nameSortKey(name: string): string {
-	return name.normalize("NFD").replace(/\p{M}/gu, "").toLowerCase();
+	return name
+		.normalize("NFD")
+		.replace(/[\u0300-\u036f]/g, "")
+		.normalize("NFC")
+		.toLowerCase();
 }
 
 /**
