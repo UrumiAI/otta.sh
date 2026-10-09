@@ -58,6 +58,7 @@ import {
 	createOrderFromCart,
 	currency as toCurrency,
 	deactivateProductCommerce,
+	effectiveStoreCurrency,
 	deactivateProductVariant,
 	email as toEmail,
 	getCart,
@@ -113,6 +114,7 @@ import {
 	type QuoteResult as DomainQuoteResult,
 	readOrderTaxSnapshot,
 	type ZoneResolution,
+	roundingEntry,
 } from "@otta-sh/domain";
 import type {
 	AbandonCartOrderResult,
@@ -187,10 +189,6 @@ import {
 	type InProcessCommerceStores,
 	type InProcessCommerceStoresOptions,
 } from "./in-process-commerce-stores.js";
-
-/** The currency a cart gets when the caller names none — the same default this
- *  surface has always applied. */
-const DEFAULT_CURRENCY = "USD";
 
 /**
  * The stores' own options plus the payment gateways.
@@ -572,19 +570,54 @@ export class InProcessCommerceClient implements CommerceClient {
 		return (await this.#stores.settingsStore.get()).holdTtlMinutes;
 	}
 
+	/**
+	 * A new, empty cart. An explicit `currency` wins (shape-checked, as always);
+	 * with none, the cart is in the STORE currency — the operator's saved setting,
+	 * or USD for a store that never saved one (`effectiveStoreCurrency`), which is
+	 * the default this surface always applied.
+	 *
+	 * The settings read is paid only on that path, once per cart (a cart is created
+	 * once and then carries its own currency for life — nothing rewrites it; the
+	 * spent-cart replacement, `replaceCart`, follows a SAVED store currency too).
+	 * It is the same keyed singleton read the hold TTL makes on every cart read,
+	 * and read per call for the same reason (`#liveCartDeps`): a cached value
+	 * would keep creating carts in the old currency after a save.
+	 *
+	 * A failed settings read FAILS the create, deliberately: falling back to USD
+	 * would silently mint wrong-currency carts in a store that saved another one,
+	 * and every later cart operation reads the same document anyway (hold TTL).
+	 */
 	async createCart(currency?: string): Promise<{ cartId: string }> {
 		if (currency !== undefined) requireCurrencyCode("currency", currency);
-		const cartId = await createCart(this.#cartDeps, toCurrency(currency ?? DEFAULT_CURRENCY));
+		const chosen = currency ?? effectiveStoreCurrency(await this.#stores.settingsStore.get());
+		const cartId = await createCart(this.#cartDeps, toCurrency(chosen));
 		return { cartId };
 	}
 
-	/** The domain's `replaceSpentCart`, which owns every rule (checked out, order
-	 *  finished) and derives the key — never here and never by the caller. */
-	async replaceCart(spentCartId: string): Promise<ReplaceCartResult> {
+	/**
+	 * The domain's `replaceSpentCart`, which owns every rule (checked out, order
+	 * finished) and derives the key — never here and never by the caller.
+	 *
+	 * The replacement's currency, in order: `currency` when the caller names one
+	 * (a theme that creates carts in an explicit currency keeps it), else the store
+	 * currency the operator SAVED (after a switch, a returning shopper's new cart
+	 * follows it rather than stranding them at CURRENCY_MISMATCH), else the spent
+	 * cart's — so a store that never saved one behaves exactly as before. Not
+	 * `effectiveStoreCurrency`: never-saved must not turn a GBP cart's replacement
+	 * into USD. The settings read is LAZY — made only once the spent cart has
+	 * validated, and never when a currency is named — so a refusal stays typed.
+	 */
+	async replaceCart(spentCartId: string, currency?: string): Promise<ReplaceCartResult> {
 		requireIdToken("cartId", spentCartId);
+		if (currency !== undefined) requireCurrencyCode("currency", currency);
 		return replaceSpentCart(
 			{ ...this.#cartDeps, orderStore: this.#stores.orderStore },
 			spentCartId,
+			async () => {
+				if (currency !== undefined) return toCurrency(currency);
+				const saved = (await this.#stores.settingsStore.get()).currency;
+				return saved === undefined ? undefined : toCurrency(saved);
+			},
 		);
 	}
 
@@ -1062,6 +1095,7 @@ export class InProcessCommerceClient implements CommerceClient {
 				shippingCents: breakdown.shippingCents,
 				taxCents: breakdown.taxCents,
 				totalCents: breakdown.totalCents,
+				...roundingEntry("roundingCents", breakdown.roundingCents),
 				appliedCouponCode: breakdown.appliedCouponCode ?? null,
 				tax: quoteTaxWire(quote),
 			},
@@ -1546,6 +1580,7 @@ function serializeOrderSummary(order: Order): OrderSummaryWire {
 			shippingCents: order.totals.shipping,
 			taxCents: order.totals.tax,
 			totalCents: order.totals.total,
+			...roundingWire(order),
 			// The same evidence the public wire carries (`serializePublicOrder`), so
 			// the account pages apply the order page's "Not calculated" rule.
 			appliedCouponCode: order.totals.appliedCouponCode,
@@ -1555,6 +1590,12 @@ function serializeOrderSummary(order: Order): OrderSummaryWire {
 		},
 		lines: serializeOrderLines(order),
 	};
+}
+
+/** The order's payment rounding on the wire (ADR-0035's amendment), by the
+ *  domain's presence rule (`roundingEntry`): every other order's wire is unchanged. */
+function roundingWire(order: Order): { roundingCents?: number } {
+	return roundingEntry("roundingCents", order.totals.rounding);
 }
 
 /** The quote's tax display facts (ADR-0032): settings, location, and the tax per label. */
@@ -1636,6 +1677,7 @@ function serializePublicOrder(
 			shippingCents: order.totals.shipping,
 			taxCents: order.totals.tax,
 			totalCents: order.totals.total,
+			...roundingWire(order),
 			appliedCouponCode: order.totals.appliedCouponCode,
 			shippingZoneId: shippingZoneIdOf(order.totals.shippingMethodSnapshot),
 			shippingMethodId: shippingMethodIdOf(order.totals.shippingMethodSnapshot),
