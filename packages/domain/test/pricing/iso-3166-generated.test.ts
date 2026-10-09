@@ -142,7 +142,7 @@ describe("the generator's subdivision names", () => {
 	});
 
 	test("one comment rule serves both readers", () => {
-		expect(stripXmlComments("a<!-- x\n y -->b<!--z-->c")).toBe("a b c");
+		expect(stripXmlComments("a<!-- x\n y -->b<!--z-->c<!--w--!>d")).toBe("a b c d");
 	});
 
 	test("reads each subdivision element and ignores commented-out ones", () => {

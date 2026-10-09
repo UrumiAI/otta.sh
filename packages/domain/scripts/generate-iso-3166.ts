@@ -66,10 +66,11 @@ function isLetter(c: number): boolean {
 	return (c >= 65 && c <= 90) || (c >= 97 && c <= 122);
 }
 
-/** XML with every `<!-- … -->` comment replaced by a space — the one comment
- *  rule both CLDR readers below share. */
+/** XML with every `<!-- … -->` comment (and the `--!>` ending HTML parsers
+ *  also accept) replaced by a space — the one comment rule both CLDR readers
+ *  below share. */
 export function stripXmlComments(xml: string): string {
-	return xml.replace(/<!--[\s\S]*?-->/g, " ");
+	return xml.replace(/<!--[\s\S]*?--!?>/g, " ");
 }
 
 /** Every id in the `idStatus='regular'` block of `type`, ranges expanded. */
