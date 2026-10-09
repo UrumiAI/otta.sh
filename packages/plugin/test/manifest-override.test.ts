@@ -1,6 +1,6 @@
 /**
- * `resolveAllowedHosts` / `resolveInProcessEgress` — the plugin's egress
- * allowlist and the matching consumer-facing URLs, as pure functions so both
+ * `resolveAllowedHosts` / `parseExtraAllowedHosts` — the plugin's egress
+ * allowlist and its build-time validator, as pure functions so both
  * are unit-testable without a bundler (§5).
  *
  * INC-D3a retired the http/in-process mode branch: there is ONE list now, the
@@ -12,12 +12,10 @@
 import { describe, expect, test } from "vitest";
 import {
 	ALLOWED_HOSTS,
-	IN_PROCESS_EGRESS_URLS,
 	normalizeExtraHost,
 	OTTA_PLUGIN_CAPABILITIES,
 	parseExtraAllowedHosts,
 	resolveAllowedHosts,
-	resolveInProcessEgress,
 	STRIPE_API_HOST,
 } from "../src/manifest.js";
 
@@ -47,12 +45,11 @@ describe("resolveAllowedHosts — the egress set, EXACTLY", () => {
 	});
 });
 
-describe("ALLOWED_HOSTS / IN_PROCESS_EGRESS_URLS — the resolved constants for THIS bundle", () => {
+describe("ALLOWED_HOSTS — the resolved constant for THIS bundle", () => {
 	test("this un-defined build (no bundler define) resolves to the baseline allowlist", () => {
 		// vitest bundles without any egress define, so the module-level constants
 		// must reflect an unconfigured deployment.
 		expect(ALLOWED_HOSTS).toEqual(BASELINE);
-		expect(IN_PROCESS_EGRESS_URLS).toEqual({});
 	});
 
 	test("ALLOWED_HOSTS agrees with resolveAllowedHosts() called with no egress", () => {
@@ -67,17 +64,6 @@ describe("OTTA_PLUGIN_CAPABILITIES", () => {
 			"network:request",
 			"email:send",
 		]);
-	});
-});
-
-describe("resolveInProcessEgress — the CONSUMERS see the same URLs the gate grants", () => {
-	test("with nothing configured a consumer is handed no egress URL", () => {
-		expect(resolveInProcessEgress()).toEqual({});
-		expect(resolveInProcessEgress({})).toEqual({});
-	});
-
-	test("extras are hosts, not URLs: a consumer is never handed them", () => {
-		expect(resolveInProcessEgress({ extraAllowedHosts: "x.example.com" })).toEqual({});
 	});
 });
 
@@ -135,6 +121,20 @@ describe("extraAllowedHosts (OTTA_EXTRA_ALLOWED_HOSTS)", () => {
 		["empty-hex last label", "a.b.c.0x"],
 		["single-hex IPv4 form", "0x7f000001.0x0"],
 		["IDNA-invalid xn-- label", "xn--localhost.com"],
+		["localhost.localdomain", "localhost.localdomain"],
+		[".localdomain", "box.localdomain"],
+		[".local (mDNS)", "printer.local"],
+		[".internal", "metadata.google.internal"],
+		["home.arpa", "home.arpa"],
+		[".home.arpa", "router.home.arpa"],
+		[".lan", "nas.lan"],
+		["nip.io", "nip.io"],
+		["nip.io wildcard-IP name", "127.0.0.1.nip.io"],
+		["sslip.io wildcard-IP name", "10-0-0-1.sslip.io"],
+		["xip.io wildcard-IP name", "app.192.168.1.1.xip.io"],
+		["Stripe.js CDN (ADR-0012)", "js.stripe.com"],
+		["other Stripe host", "files.stripe.com"],
+		["bare Stripe domain", "stripe.com"],
 	])("REJECTED (%s): %s", (_why, entry) => {
 		expect(normalizeExtraHost(entry)).toBeUndefined();
 		// resolveAllowedHosts stays fail-closed and never throws...
@@ -145,8 +145,26 @@ describe("extraAllowedHosts (OTTA_EXTRA_ALLOWED_HOSTS)", () => {
 		);
 	});
 
-	test("the build-time error names the offending entry", () => {
-		expect(() => parseExtraAllowedHosts("good.example.com,*.bad.com")).toThrow(/"\*\.bad\.com"/);
+	test("the build-time error names every offending entry", () => {
+		expect(() => parseExtraAllowedHosts("good.example.com,*.bad.com,x.local")).toThrow(
+			/"\*\.bad\.com", "x\.local"/,
+		);
+	});
+
+	test("listing the built-in Stripe API host is a no-op, not an error", () => {
+		expect(parseExtraAllowedHosts("API.stripe.com")).toEqual(["api.stripe.com"]);
+		expect(resolveAllowedHosts({ extraAllowedHosts: "api.stripe.com" })).toEqual(BASELINE);
+	});
+
+	test("refused suffixes match whole labels only: look-alike public names pass", () => {
+		for (const host of [
+			"mylocal.com",
+			"internal.example.com",
+			"nip.io.example.com",
+			"notstripe.com",
+		]) {
+			expect(normalizeExtraHost(host)).toBe(host);
+		}
 	});
 
 	test("one invalid entry in the list does not widen or poison the valid ones in resolveAllowedHosts", () => {

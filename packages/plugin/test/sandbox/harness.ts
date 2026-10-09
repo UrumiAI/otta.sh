@@ -40,7 +40,6 @@ import { COMMERCE_STORAGE_COLLECTION_NAMES } from "../../src/commerce/commerce-s
 import {
 	type InProcessEgressUrls,
 	resolveAllowedHosts,
-	resolveInProcessEgress,
 	STRIPE_API_HOST,
 } from "../../src/manifest.js";
 import type { EmailMessage } from "../../src/types.js";
@@ -290,16 +289,6 @@ function manifestSource(options: SandboxOptions): string {
 		'export const OTTA_PLUGIN_VERSION = "0.1.0";',
 		'export const OTTA_PLUGIN_CAPABILITIES = ["content:read", "network:request", "email:send"];',
 		`export const ALLOWED_HOSTS = ${JSON.stringify(options.allowedHosts)};`,
-		// The resolved in-process egress, the same build-time constant `ALLOWED_HOSTS`
-		// is derived from in production. Empty today: no URL is deployment-supplied.
-		//
-		// ROUTED THROUGH THE REAL RESOLVER (review round 2, B5), not baked verbatim.
-		// Baking the raw options made the sandbox tier the ONE tier where the gate
-		// `resolveInProcessEgress` applies was never exercised: a suite could hand
-		// the isolate a URL no `allowedHosts` entry covers and every assertion would
-		// still pass. INC-D3a dropped the resolver's mode argument along with the
-		// http arm it used to select.
-		`export const IN_PROCESS_EGRESS_URLS = ${JSON.stringify(resolveInProcessEgress({}))};`,
 		"",
 	].join("\n");
 }

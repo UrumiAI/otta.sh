@@ -43,7 +43,7 @@ import {
 	createPlugin as createConsolePlugin,
 	OTTA_CONSOLE_ADMIN_PAGES,
 } from "@otta-sh/admin-react";
-import { describe, expect, test } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vitest";
 // `../e2e/registry.js`, NEVER `../e2e/harness.js`. The harness loopback-guards
 // its addresses at MODULE LOAD and imports `@playwright/test`, which threw
 // before a single assertion and redded the whole unit suite. The registry is
@@ -866,4 +866,45 @@ describe("astro.config", () => {
 		},
 		CONFIG_IMPORT_TIMEOUT_MS,
 	);
+
+	/**
+	 * BEHAVIOUR, not source text: the REAL config module, evaluated with
+	 * OTTA_EXTRA_ALLOWED_HOSTS in the shell env (which wins over `.env`). A fresh
+	 * module registry per test, so the env value is what the config reads.
+	 */
+	describe("OTTA_EXTRA_ALLOWED_HOSTS at config load", () => {
+		afterEach(() => {
+			vi.unstubAllEnvs();
+			vi.resetModules();
+		});
+
+		test(
+			"a refused entry makes loading the site config THROW, naming the entry",
+			async () => {
+				vi.stubEnv("OTTA_EXTRA_ALLOWED_HOSTS", "api.example.com, metadata.google.internal");
+				vi.resetModules();
+				await expect(import("../astro.config.js")).rejects.toThrow(
+					/OTTA_EXTRA_ALLOWED_HOSTS: invalid entry "metadata\.google\.internal"/,
+				);
+			},
+			CONFIG_IMPORT_TIMEOUT_MS,
+		);
+
+		test(
+			"valid entries load and are baked, normalized, into the define",
+			async () => {
+				vi.stubEnv(
+					"OTTA_EXTRA_ALLOWED_HOSTS",
+					" API.Example.com,hooks.example.org,api.example.com ",
+				);
+				vi.resetModules();
+				const config = (await import("../astro.config.js")).default;
+				const define = config.vite?.define as Record<string, string>;
+				expect(JSON.parse(define["__OTTA_EXTRA_ALLOWED_HOSTS__"] ?? "null")).toBe(
+					"api.example.com,hooks.example.org",
+				);
+			},
+			CONFIG_IMPORT_TIMEOUT_MS,
+		);
+	});
 });

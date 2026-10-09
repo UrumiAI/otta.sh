@@ -71,12 +71,46 @@ export interface InProcessEgressUrls {
 /** One DNS label: letters/digits/hyphens, not starting or ending with a hyphen. */
 const DNS_LABEL = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
 
+/**
+ * Names refused as an extra host, the name itself AND every subdomain: local and
+ * internal-only suffixes (RFC 6761 `localhost`, mDNS `local`, `home.arpa`, and
+ * the common `internal` / `localdomain` / `lan`), plus public wildcard-IP DNS
+ * services that resolve `10.0.0.1.nip.io`-style names to whatever IP is
+ * embedded, loopback and private ranges included.
+ *
+ * A BUILD-TIME SANITY CHECK against an obvious operator mistake, NOT SSRF
+ * protection: any public name can still resolve to a private address. The
+ * runtime perimeter is EmDash's egress check on the resolved IP.
+ */
+const REFUSED_SUFFIXES = [
+	"localhost",
+	"local",
+	"internal",
+	"localdomain",
+	"home.arpa",
+	"lan",
+	"nip.io",
+	"sslip.io",
+	"xip.io",
+] as const;
+
+/** Stripe's registrable domain. Of its hosts only {@link STRIPE_API_HOST} is
+ *  plugin egress (and it is always granted, so listing it is a no-op). Every
+ *  other Stripe host is refused — above all the browser-side Stripe.js CDN,
+ *  which ADR-0012 §3 says must never be plugin egress (the sandbox-clean guard
+ *  forbids spelling that host in this package, hence the domain rule). */
+const STRIPE_DOMAIN = "stripe.com";
+
+const isSameOrSubdomain = (host: string, domain: string): boolean =>
+	host === domain || host.endsWith(`.${domain}`);
+
 /** A trimmed, lowercased extra host if it is a plain DNS hostname, else
  *  `undefined`. Accepts only dot-separated letter/digit/hyphen labels with at
  *  least one dot. That alone rejects wildcards (`*`), schemes, ports, paths,
- *  userinfo, IPv6 literals and bare `localhost`; additionally rejected are IPv4
- *  literals (a decimal or `0x` hex last label), `*.localhost`, and anything a URL
- *  parser would not accept unchanged. Never throws. */
+ *  userinfo, IPv6 literals and single-label names (`localhost`, `intranet`);
+ *  additionally rejected are IPv4 literals (a decimal or `0x` hex last label),
+ *  {@link REFUSED_SUFFIXES}, Stripe hosts other than its API host, and anything
+ *  a URL parser would not accept unchanged. Never throws. */
 export function normalizeExtraHost(entry: string): string | undefined {
 	const host = entry.trim().toLowerCase();
 	if (host.length === 0 || host.length > 253) return undefined;
@@ -86,7 +120,9 @@ export function normalizeExtraHost(entry: string): string | undefined {
 	const tld = labels[labels.length - 1] ?? "";
 	// WHATWG "ends in a number": a decimal or 0x-hex last label makes a URL parser
 	// read the whole host as an IPv4 address (`0x7f.0.0.0x1` is 127.0.0.1).
-	if (/^(?:[0-9]+|0x[0-9a-f]*)$/.test(tld) || tld === "localhost") return undefined;
+	if (/^(?:[0-9]+|0x[0-9a-f]*)$/.test(tld)) return undefined;
+	if (REFUSED_SUFFIXES.some((suffix) => isSameOrSubdomain(host, suffix))) return undefined;
+	if (isSameOrSubdomain(host, STRIPE_DOMAIN) && host !== STRIPE_API_HOST) return undefined;
 	// Finally require that a URL parser accepts the host exactly as written, so what
 	// is granted is what emdash will compare (rejects IDNA-invalid `xn--` labels).
 	try {
@@ -97,34 +133,46 @@ export function normalizeExtraHost(entry: string): string | undefined {
 	return host;
 }
 
-/** Split the raw `OTTA_EXTRA_ALLOWED_HOSTS` value into trimmed, non-empty entries
- *  (not yet validated). */
-function splitExtraHosts(raw: string | readonly string[] | undefined): string[] {
-	if (raw === undefined) return [];
-	const parts = typeof raw === "string" ? raw.split(",") : raw;
-	return parts.map((part) => part.trim()).filter((part) => part.length > 0);
+/** Split the raw `OTTA_EXTRA_ALLOWED_HOSTS` value (comma-separated string or
+ *  array), drop empty entries, and normalize each: `valid` is the de-duplicated
+ *  hosts in given order, `invalid` the trimmed entries {@link normalizeExtraHost}
+ *  refused. The ONE parse path both the build check and the resolver use. */
+function classifyExtraHosts(raw: string | readonly string[] | undefined): {
+	valid: string[];
+	invalid: string[];
+} {
+	const valid = new Set<string>();
+	const invalid: string[] = [];
+	const parts = raw === undefined ? [] : typeof raw === "string" ? raw.split(",") : raw;
+	for (const part of parts) {
+		const entry = part.trim();
+		if (entry.length === 0) continue;
+		const host = normalizeExtraHost(entry);
+		if (host === undefined) invalid.push(entry);
+		else valid.add(host);
+	}
+	return { valid: [...valid], invalid };
 }
 
 /**
  * BUILD-TIME validator for `OTTA_EXTRA_ALLOWED_HOSTS`: returns the normalized,
- * de-duplicated hostnames in given order, and THROWS naming the first bad
+ * de-duplicated hostnames in given order, and THROWS naming every refused
  * entry — an operator typo should fail the build loudly rather than silently
  * leave a host ungranted. Called from `sites/staging/astro.config.ts`;
  * `resolveAllowedHosts` itself never throws.
  */
 export function parseExtraAllowedHosts(raw: string | readonly string[] | undefined): string[] {
-	const out = new Set<string>();
-	for (const entry of splitExtraHosts(raw)) {
-		const host = normalizeExtraHost(entry);
-		if (host === undefined) {
-			throw new Error(
-				`OTTA_EXTRA_ALLOWED_HOSTS: invalid entry ${JSON.stringify(entry)}. Each entry must be a plain DNS hostname ` +
-					'like "api.example.com" (comma-separated; no wildcard, scheme, port, path, IP address or localhost).',
-			);
-		}
-		out.add(host);
+	const { valid, invalid } = classifyExtraHosts(raw);
+	if (invalid.length > 0) {
+		throw new Error(
+			`OTTA_EXTRA_ALLOWED_HOSTS: invalid entry ${invalid.map((entry) => JSON.stringify(entry)).join(", ")}. ` +
+				'Each entry must be a public DNS hostname like "api.example.com" (comma-separated; no wildcard, ' +
+				"scheme, port, path, IP address, single-label name, localhost / .local / .internal / " +
+				".localdomain / .home.arpa / .lan name, nip.io / sslip.io / xip.io name, or Stripe host " +
+				"other than api.stripe.com).",
+		);
 	}
-	return [...out];
+	return valid;
 }
 
 /**
@@ -147,10 +195,7 @@ export function resolveAllowedHosts(egress: InProcessEgressUrls = {}): string[] 
 	// Operator extras, after the fixed hosts, in given order. Invalid entries
 	// grant nothing (fail-closed); the build-time `parseExtraAllowedHosts` is the
 	// loud path.
-	for (const entry of splitExtraHosts(egress.extraAllowedHosts)) {
-		const host = normalizeExtraHost(entry);
-		if (host !== undefined) hosts.add(host);
-	}
+	for (const host of classifyExtraHosts(egress.extraAllowedHosts).valid) hosts.add(host);
 	return [...hosts];
 }
 
@@ -162,31 +207,11 @@ export function resolveAllowedHosts(egress: InProcessEgressUrls = {}): string[] 
 declare const __OTTA_EXTRA_ALLOWED_HOSTS__: string | undefined;
 
 /** The raw defines, before resolution. Not exported: every consumer must see
- *  {@link IN_PROCESS_EGRESS_URLS}, which agrees with `ALLOWED_HOSTS` by
- *  construction. */
+ *  {@link ALLOWED_HOSTS}, resolved from it by {@link resolveAllowedHosts}. */
 const BAKED_EGRESS_URLS: InProcessEgressUrls = {
 	extraAllowedHosts:
 		typeof __OTTA_EXTRA_ALLOWED_HOSTS__ === "string" ? __OTTA_EXTRA_ALLOWED_HOSTS__ : undefined,
 };
-
-/**
- * The egress URLs a CONSUMER may use, resolved by the SAME rules the allowlist
- * is (review round 2, A3): a value that would grant no host is dropped —
- * unconfigured, which every consumer already handles — so "a consumer never
- * holds a URL whose host is not granted" is true by construction rather than
- * by every caller remembering. No URL is deployment-supplied today: the only
- * operator input, `extraAllowedHosts`, carries hosts, not URLs, and is consumed
- * by {@link resolveAllowedHosts} alone, so this always resolves to `{}`.
- */
-export function resolveInProcessEgress(_egress: InProcessEgressUrls = {}): InProcessEgressUrls {
-	// Extras are hosts, not URLs: no consumer holds them, so they are not echoed.
-	return {};
-}
-
-/** The in-process egress URLs this bundle may actually use. Absent or
- *  unparseable define ⇒ that provider is unconfigured (fail-closed). */
-export const IN_PROCESS_EGRESS_URLS: InProcessEgressUrls =
-	resolveInProcessEgress(BAKED_EGRESS_URLS);
 
 /**
  * The resolved allowlist for THIS bundle.
