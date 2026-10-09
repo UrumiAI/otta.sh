@@ -59,6 +59,8 @@
  * `@otta-sh/admin-react` and stops being shared. It is a migration artefact and
  * should be read as one.
  */
+import { currencyPaymentIncrement, inputMinorUnitDigits } from "./currencies.js";
+import { formatMinorUnitsInput, moneyInputExample, moneyPrecisionPhrase } from "./money-input.js";
 import { fitBanner } from "./copy.js";
 import type { RowNoun, ZeroStateCopy } from "./list-outcome.js";
 
@@ -167,7 +169,7 @@ export const SHIPPING_ADDRESS_ABSENT =
 
 /** Under the totals of an order whose frozen tax snapshot recorded tax-inclusive
  *  prices (#421). Never shown for an order without that record. */
-export const PRICES_INCLUDE_TAX = "Prices include tax";
+export const PRICES_INCLUDE_TAX = "Prices included tax (the Tax line is part of the subtotal)";
 
 /** A timeline that loaded and holds nothing yet. */
 export const TIMELINE_EMPTY = "No timeline activity yet.";
@@ -343,9 +345,49 @@ export const REFUND_AMOUNT_INVALID =
 export const REFUND_AMOUNT_PRECISION =
 	"Use at most 2 decimal places for the refund amount (e.g. 19.99). Nothing was changed.";
 
-/** True when an otherwise-plain amount has more than two decimal places. */
-export function hasExcessDecimals(input: string): boolean {
-	return /^\d+\.\d{3,}$/.test(input.trim());
+/** {@link REFUND_AMOUNT_PRECISION} for the order's currency: word for word that
+ *  sentence for a two-decimal (or unlisted) currency, and the currency's own
+ *  rule otherwise (JPY has no decimal places; KWD has three). */
+export function refundAmountPrecisionText(currencyCode: string): string {
+	if (inputMinorUnitDigits(currencyCode) === 2) return REFUND_AMOUNT_PRECISION;
+	const example = moneyInputExample("19.99", currencyCode);
+	return `Use ${moneyPrecisionPhrase(currencyCode)} for the ${currencyCode} refund amount (e.g. ${example}). Nothing was changed.`;
+}
+
+/**
+ * Whether `amountCents` is a refund amount the order's currency can be paid back
+ * in: a whole multiple of its payment increment (KWD, BHD, OMR, JOD: 10 — 0.010),
+ * or the WHOLE remaining amount, whatever it is (an order placed before checkout
+ * rounded its total may hold a remainder of any size). Every other currency has
+ * no increment, so any amount passes and the refund form behaves as it always did.
+ *
+ * A PRE-CHECK only: the deciding rule is the domain's `refundOrder`, which refuses
+ * the same amounts with `AMOUNT_NOT_PAYMENT_INCREMENT` for every caller.
+ */
+export function isRefundableIncrement(
+	amountCents: number,
+	remainingCents: number,
+	currencyCode: string,
+): boolean {
+	const increment = currencyPaymentIncrement(currencyCode);
+	return increment === undefined || amountCents % increment === 0 || amountCents === remainingCents;
+}
+
+/** The refusal for a refund amount that is not a multiple of the currency's
+ *  payment increment (see {@link isRefundableIncrement}). */
+export function refundIncrementText(currencyCode: string): string {
+	const increment = currencyPaymentIncrement(currencyCode) ?? 1;
+	const step = formatMinorUnitsInput(increment, currencyCode);
+	return `${currencyCode} refunds go back in steps of ${step} — enter a multiple of ${step} (e.g. ${moneyInputExample("19.99", currencyCode)}), or refund the full remaining amount. Nothing was changed.`;
+}
+
+/** True when an otherwise-plain amount has more decimal places than the
+ *  currency's input allows (two for a two-decimal or unlisted currency — the
+ *  original rule; any at all for a zero-decimal currency such as JPY). */
+export function hasExcessDecimals(input: string, currencyCode: string): boolean {
+	const digits = inputMinorUnitDigits(currencyCode);
+	const m = /^\d+\.(\d+)$/.exec(input.trim());
+	return m !== null && (m[1] ?? "").length > digits;
 }
 
 /** A refund with nobody recorded as issuing it. */

@@ -256,9 +256,15 @@ export interface CouponInput {
 	maxUses?: number | null;
 	maxUsesPerCustomer?: number | null;
 }
-/** Coupon edit — `id`/`code`/`type`/`currency` are immutable identity/kind and
- *  are NOT sent (re-defining them is refused). */
+/** Coupon edit — `id`/`code`/`type` are immutable identity/kind and are NOT
+ *  sent. `currency`, when sent, is the currency the edit's amounts were parsed
+ *  in (`null`: an unbound coupon's, in hundredths): a write whose currency no
+ *  longer matches the stored coupon's is refused (409). On a percentage coupon
+ *  with none, a currency BINDS it — allowed only with a cap or minimum spend,
+ *  and never on one whose bounds predate currencies. A set currency never
+ *  changes; a bound coupon stays bound even once its bounds are cleared. */
 export interface CouponEdit {
+	currency?: string | null;
 	amountCents?: number | null;
 	rateBps?: number | null;
 	capCents?: number | null;
@@ -352,6 +358,11 @@ export interface AdminRulesSurface {
 	/** The tax options in force (ADR-0032) — the saved block, or the upgrade
 	 *  rule's answer when none is saved (`saved: false`). */
 	getTaxSettings(): Promise<TaxSettingsRead>;
+
+	/** The effective store currency — the saved one, or USD for a store that never
+	 *  saved one. What the shipping-rate filter and the coupon create form start
+	 *  on; it decides nothing about an existing rate or coupon. */
+	getStoreCurrency(): Promise<string>;
 	/**
 	 * Replace the tax options whole. `expected` is the {@link taxSettingsDigest} of
 	 * the options the form was loaded with: options that changed since are `stale`

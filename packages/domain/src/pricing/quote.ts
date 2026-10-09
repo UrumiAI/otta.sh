@@ -18,6 +18,7 @@ import {
 	type TaxSettings,
 } from "./tax-settings.js";
 import { normalizeCountryCode, normalizeSubdivision } from "./region-codes.js";
+import { payableTotal } from "./payment-rounding.js";
 import {
 	DEFAULT_TAX_CALCULATOR_TIMEOUT_MS,
 	isValidCalculatorId,
@@ -441,7 +442,10 @@ function orderTotalOf(preTax: PreTaxTotals, result: TaxResult, pricesIncludeTax:
 	const tax = pricesIncludeTax
 		? shippingTax
 		: result.lines.reduce((sum, l) => sum + l.taxCents, shippingTax);
-	return preTax.subtotalCents - preTax.discountCents + preTax.shippingCents + tax;
+	const exact = preTax.subtotalCents - preTax.discountCents + preTax.shippingCents + tax;
+	// The total `assembleTotals` brands is the PAYABLE one (rounded for an
+	// increment currency), so the fence checks that same figure.
+	return Number.isSafeInteger(exact) ? payableTotal(exact, preTax.currency) : exact;
 }
 
 function refuse(id: string, why: string): null {

@@ -136,6 +136,7 @@ import {
 	type RefundRecord,
 	type ResolveFollowUp,
 	readOrderTaxSnapshot,
+	roundingEntry,
 } from "@otta-sh/domain";
 import {
 	CommerceInputError,
@@ -1152,6 +1153,7 @@ function toOrderDetailWire(order: Order): OrderDetailWire {
 			shippingCents: order.totals.shipping,
 			taxCents: order.totals.tax,
 			totalCents: order.totals.total,
+			...roundingEntry("roundingCents", order.totals.rounding),
 			appliedCouponCode: order.totals.appliedCouponCode,
 			// ADR-0009 (admin display-only juxtaposition): the chosen zone, read off
 			// the totals' method snapshot so the console can render the captured
@@ -1278,6 +1280,7 @@ function refundFailureStatus(reason: RefundOrderFailure): 400 | 404 | 409 | 502 
 			return 404;
 		case "EMPTY_REFUNDED_BY":
 		case "INVALID_AMOUNT":
+		case "AMOUNT_NOT_PAYMENT_INCREMENT":
 			return 400;
 		case "CURRENCY_MISMATCH":
 		case "NO_CAPTURED_PAYMENT":

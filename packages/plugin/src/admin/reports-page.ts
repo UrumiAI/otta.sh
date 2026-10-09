@@ -794,9 +794,40 @@ function rangeForm(range: ResolvedRange, interval: "day" | "week" | "month"): Fo
 }
 
 /** A tile's name without its currency and period — `Refunded (USD) — last 30
- *  days` → `Refunded` — for naming the cards that did not fit. */
-function tileName(label: string): string {
-	return (label.split("—")[0] ?? label).replace(/\s*\([^)]*\)\s*$/, "").trim();
+ *  days` → `Refunded` — for naming the cards that did not fit. Exported for its
+ *  own test only. */
+export function tileName(label: string): string {
+	return stripTrailingParenthetical(label.split("—")[0] ?? label).trim();
+}
+
+const WHITESPACE = /\s/;
+
+/**
+ * Drop a trailing `(…)` group — and the whitespace around it — from `text`.
+ *
+ * Exactly what `text.replace(/\s*\([^)]*\)\s*$/, "")` does, in linear time.
+ * That regex is unanchored on the left, so the engine retries it from every
+ * offset and each retry can scan to the end: quadratic on a long run of spaces
+ * or of `(` (CodeQL js/polynomial-redos). The match it finds is fully
+ * determined, so it is computed directly instead:
+ *
+ * - it must end the string, so it closes on the LAST `)` before any trailing
+ *   whitespace;
+ * - `[^)]*` cannot cross a `)`, so its `(` lies after the `)` before that one —
+ *   and the leftmost match takes the FIRST such `(`;
+ * - the leading `\s*` then reaches back over the whole whitespace run before it.
+ */
+function stripTrailingParenthetical(text: string): string {
+	let end = text.length;
+	while (end > 0 && WHITESPACE.test(text.charAt(end - 1))) end--;
+	if (end === 0 || text.charAt(end - 1) !== ")") return text;
+	const close = end - 1;
+	const previousClose = close === 0 ? -1 : text.lastIndexOf(")", close - 1);
+	const open = text.indexOf("(", previousClose + 1);
+	if (open === -1 || open > close) return text;
+	let start = open;
+	while (start > 0 && WHITESPACE.test(text.charAt(start - 1))) start--;
+	return text.slice(0, start);
 }
 
 /** `Orders, AOV and Refunded` — an English list. Kept here rather than in a

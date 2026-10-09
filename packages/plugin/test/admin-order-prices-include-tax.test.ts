@@ -78,19 +78,32 @@ async function seed(id: string, taxBreakdown: unknown) {
 	});
 	const admin = new InProcessAdminOrdersClient(harness.ctx, { gateways: {} });
 	const got = await admin.getOrder(id);
-	return got?.order.totals.pricesIncludeTax;
+	if (got === null) throw new Error("order not found");
+	return got.order.totals;
 }
 
 test("a snapshot that recorded tax-inclusive prices flags the order", async () => {
-	expect(await seed("o-incl", snapshot({ pricesIncludeTax: true }))).toBe(true);
+	expect((await seed("o-incl", snapshot({ pricesIncludeTax: true }))).pricesIncludeTax).toBe(true);
 });
 
-test("a snapshot that recorded tax-exclusive prices carries no flag", async () => {
-	expect(await seed("o-excl", snapshot({ pricesIncludeTax: false }))).toBeFalsy();
+test("a tax-exclusive snapshot leaves the field absent", async () => {
+	expect(await seed("o-excl", snapshot({ pricesIncludeTax: false }))).not.toHaveProperty(
+		"pricesIncludeTax",
+	);
 });
 
-test("no snapshot, an old-shape one, or one lacking the field carries no flag", async () => {
-	expect(await seed("o-none", null)).toBeFalsy();
-	expect(await seed("o-v0", { lines: [], shippingTaxCents: 0 })).toBeFalsy();
-	expect(await seed("o-nofield", snapshot({}))).toBeFalsy();
+test("no snapshot, an old-shape one, or one lacking the field leaves the field absent", async () => {
+	for (const [id, raw] of [
+		["o-none", null],
+		["o-v0", { lines: [], shippingTaxCents: 0 }],
+		["o-nofield", snapshot({})],
+	] as const) {
+		expect(await seed(id, raw)).not.toHaveProperty("pricesIncludeTax");
+	}
+});
+
+test("a corrupt snapshot (pricesIncludeTax as a string) is no label and no throw", async () => {
+	expect(await seed("o-corrupt", snapshot({ pricesIncludeTax: "true" }))).not.toHaveProperty(
+		"pricesIncludeTax",
+	);
 });

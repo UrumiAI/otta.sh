@@ -289,7 +289,15 @@ export function couponCustomerCapId(couponId: string, customerId: string): strin
  * mirror would otherwise read as refused while filtering as live.
  */
 export function normalizeCouponDoc(doc: CouponDoc): CouponDoc {
-	return { ...doc, usesCount: doc.usesCount ?? 0, lastRedeemedKey: doc.lastRedeemedKey ?? null };
+	return {
+		...doc,
+		// A document written without the key (an import, a seed, an older shape)
+		// has no currency — null, never `undefined`, so a comparison with an
+		// expected `null` (the edit precondition) holds instead of refusing forever.
+		currency: doc.currency ?? null,
+		usesCount: doc.usesCount ?? 0,
+		lastRedeemedKey: doc.lastRedeemedKey ?? null,
+	};
 }
 
 /**

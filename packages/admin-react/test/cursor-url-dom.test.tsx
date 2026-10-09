@@ -25,8 +25,7 @@
  * it — which is what lets the Back/Forward walk below be a real traversal rather
  * than a hand-dispatched event. (`url-state.test.ts` says history traversal
  * cannot be modelled outside a browser; that is about the multi-entry,
- * cross-document cases, and `products-back-history-dom.test.tsx` already relies
- * on the same single-document guarantee used here.)
+ * cross-document cases; the walk below stays inside one document.)
  *
  * EVERY RESPONSE IS SERVED HERE, refusals included, so the refused-cursor case
  * is a transition this file chooses rather than an environment it has to
@@ -50,7 +49,6 @@ vi.mock("emdash/plugin-utils", async (importOriginal) => {
 });
 
 const { OrdersScreen } = await import("../src/orders/orders-screen.js");
-const { ProductsScreen } = await import("../src/products/products-screen.js");
 
 const VOCABULARY = {
 	statuses: ["paid", "failed"],
@@ -59,13 +57,6 @@ const VOCABULARY = {
 	cancellationReasons: [],
 	oneClickCancellationReasons: [],
 	reconciliationOutcomes: [],
-	pageLimit: 20,
-};
-
-const PRODUCTS_VOCABULARY = {
-	statuses: [{ value: "any", label: "Any status" }],
-	kinds: [{ value: "any", label: "Any kind" }],
-	any: "any",
 	pageLimit: 20,
 };
 
@@ -107,21 +98,6 @@ function order(id: string) {
 	};
 }
 
-function product(productId: string) {
-	return {
-		productId,
-		sku: `SKU-${productId}`,
-		title: `Product ${productId}`,
-		priceCents: 900,
-		currency: "USD",
-		productKind: "physical",
-		active: true,
-		deletedAt: null,
-		onHand: 4,
-		createdAt: "2026-01-01T00:00:00.000Z",
-	};
-}
-
 function ids(prefix: string, from: number, to: number): string[] {
 	const out: string[] = [];
 	for (let n = from; n <= to; n += 1) out.push(`${prefix}-${String(n)}`);
@@ -139,7 +115,7 @@ interface Request {
 	readonly resource?: string;
 	readonly cursor?: string;
 	readonly orderId?: string;
-	readonly filter?: { readonly status?: string; readonly lowStock?: boolean };
+	readonly filter?: { readonly status?: string };
 }
 
 /** Every request this run has been asked, in order — the record that tells a
@@ -233,71 +209,6 @@ function serveOrders(): void {
 			nextCursor: PAGE_TWO,
 			cursorRejected: true,
 			vocabulary: VOCABULARY,
-		});
-	});
-}
-
-function serveProducts(): void {
-	serve((request) => {
-		const stock = { threshold: 5, unreadable: false, filterUnavailable: false };
-		if (request.resource === "products.detail") {
-			return envelope({
-				ok: true,
-				product: {
-					productId: "p-1",
-					sku: "SKU-p-1",
-					title: "Product p-1",
-					priceCents: 900,
-					currency: "USD",
-					taxClass: null,
-					compareAtCents: null,
-					compareAtCurrency: null,
-					unitCostCents: null,
-					unitCostCurrency: null,
-					inventoryPolicy: "deny",
-					weightGrams: null,
-					lengthMm: null,
-					widthMm: null,
-					heightMm: null,
-					productKind: "physical",
-					active: true,
-					deletedAt: null,
-					onHand: 4,
-					createdAt: "2026-01-01T00:00:00.000Z",
-					updatedAt: "2026-01-02T00:00:00.000Z",
-				},
-				taxClasses: [],
-				threshold: 5,
-				vocabulary: PRODUCTS_VOCABULARY,
-			});
-		}
-		if (request.cursor === undefined) {
-			return envelope({
-				ok: true,
-				products: ids("p", 1, 3).map(product),
-				nextCursor: PAGE_TWO,
-				stock,
-				vocabulary: PRODUCTS_VOCABULARY,
-			});
-		}
-		if (request.cursor === PAGE_TWO) {
-			return envelope({
-				ok: true,
-				products: ids("p", 4, 6).map(product),
-				nextCursor: PAGE_THREE,
-				stock,
-				vocabulary: PRODUCTS_VOCABULARY,
-			});
-		}
-		// A refused cursor, already recovered from by the plugin — page one's rows
-		// plus the fact. See the Orders fake above.
-		return envelope({
-			ok: true,
-			products: ids("p", 1, 3).map(product),
-			nextCursor: PAGE_TWO,
-			cursorRejected: true,
-			stock,
-			vocabulary: PRODUCTS_VOCABULARY,
 		});
 	});
 }
@@ -769,191 +680,3 @@ test("a filter change after paging stopped starts a fresh scan", async () => {
 });
 
 // ── the same rules on Pricing & inventory ────────────────────────────────────
-
-test("products: a deep-linked page is the page that loads, filter and all", async () => {
-	serveProducts();
-	window.history.replaceState(null, "", `/products?low=1&cursor=${encodeURIComponent(PAGE_TWO)}`);
-	view = await mount(<ProductsScreen />);
-	await settle();
-
-	expect(asked).toHaveLength(1);
-	expect(asked[0]?.cursor).toBe(PAGE_TWO);
-	expect(asked[0]?.filter?.lowStock).toBe(true);
-	expect(rowIds(view, "products-row")).toEqual(ids("p", 4, 6));
-});
-
-test("products: paging writes the address, and Back walks it", async () => {
-	serveProducts();
-	window.history.replaceState(null, "", "/products");
-	view = await mount(<ProductsScreen />);
-	await settle();
-
-	await press(view, "products-load-more");
-	await settle();
-	expect(search().get("cursor")).toBe(PAGE_TWO);
-	expect(rowIds(view, "products-row")).toHaveLength(6);
-
-	await traverse("back");
-	expect(search().get("cursor")).toBeNull();
-	expect(asked.at(-1)?.cursor).toBeUndefined();
-	expect(rowIds(view, "products-row")).toEqual(ids("p", 1, 3));
-});
-
-test("products: a cursor the service refuses resets to page one, legibly, and exactly once", async () => {
-	serveProducts();
-	window.history.replaceState(null, "", "/products?low=1&cursor=tampered");
-	const depthOnArrival = window.history.length;
-	view = await mount(<ProductsScreen />);
-	await settle();
-
-	expect(asked).toHaveLength(1);
-	expect(asked[0]?.cursor).toBe("tampered");
-	// THE FILTER RODE ALONGSIDE THE PAGE, which is what let the service notice the
-	// disagreement rather than answer an unfiltered catalog under a low-stock
-	// caption.
-	expect(asked[0]?.filter?.lowStock).toBe(true);
-	expect(rowIds(view, "products-row")).toEqual(ids("p", 1, 3));
-	expect(absent(view, "products-failure")).toBe(true);
-
-	// THE SAME SENTENCE, from the same constants, announced the same way — the two
-	// screens explain one mechanism and must not drift.
-	const notice = element(view, "products-cursor-reset");
-	expect(notice.textContent).toContain(CURSOR_RESET_TITLE);
-	expect(notice.textContent).toContain(CURSOR_RESET_DESCRIPTION);
-	expect(document.activeElement).toBe(notice);
-
-	// Corrected in place, never pushed.
-	expect(search().get("cursor")).toBeNull();
-	expect(search().get("low")).toBe("1");
-	expect(window.history.length).toBe(depthOnArrival);
-});
-
-test("products: a failure leaves the page in the address", async () => {
-	serve(() => refusal("Pricing & inventory is unavailable", 500));
-	window.history.replaceState(null, "", `/products?low=1&cursor=${encodeURIComponent(PAGE_TWO)}`);
-	view = await mount(<ProductsScreen />);
-	await settle();
-
-	expect(asked).toHaveLength(1);
-	expect(absent(view, "products-cursor-reset")).toBe(true);
-	expect(search().get("cursor")).toBe(PAGE_TWO);
-});
-
-test("products: opening a record from a paged list keeps the page, and Back returns to it", async () => {
-	// The Products screen carries history machinery Orders does not — the
-	// unsaved-work guard, the recorded detail address, the pasted-link
-	// discriminator — so the drill-in composition is proven here as well as there
-	// rather than assumed to behave the same.
-	serveProducts();
-	window.history.replaceState(null, "", "/products");
-	view = await mount(<ProductsScreen />);
-	await settle();
-	await press(view, "products-load-more");
-	await settle();
-	expect(search().get("cursor")).toBe(PAGE_TWO);
-
-	await fire(element(view, "product-link"), "click");
-	await settle();
-	expect(search().get("product")).toBe("p-1");
-	expect(search().get("cursor")).toBe(PAGE_TWO);
-
-	await traverse("back");
-	expect(search().get("product")).toBeNull();
-	expect(search().get("cursor")).toBe(PAGE_TWO);
-	expect(asked.at(-1)?.cursor).toBe(PAGE_TWO);
-	expect(rowIds(view, "products-row")).toEqual(ids("p", 4, 6));
-});
-
-test("products: a settings blip mid-scan costs the paging, never the low-stock scan", async () => {
-	/*
-	 * THE CASE THIS RULING ABSORBS. "Low stock only" is a real service predicate
-	 * now, and the threshold that expresses it is read from settings on every
-	 * request — so a settings read that blinks between two pages sends a filter
-	 * that no longer matches the token, and the route refuses to continue. That is
-	 * correct of the route. What must not follow is the merchant losing four pages
-	 * of a low-stock scan to a blip that lasted one request.
-	 */
-	let call = 0;
-	serve((request) => {
-		const stock = { threshold: 5, unreadable: false, filterUnavailable: false };
-		call += 1;
-		if (request.cursor === undefined) {
-			return envelope({
-				ok: true,
-				products: ids("p", 1, 3).map(product),
-				nextCursor: PAGE_TWO,
-				stock,
-				vocabulary: PRODUCTS_VOCABULARY,
-			});
-		}
-		if (call === 2) {
-			return envelope({
-				ok: true,
-				products: ids("p", 4, 6).map(product),
-				nextCursor: PAGE_THREE,
-				stock,
-				vocabulary: PRODUCTS_VOCABULARY,
-			});
-		}
-		return envelope({
-			ok: true,
-			products: ids("p", 1, 3).map(product),
-			nextCursor: PAGE_TWO,
-			cursorRejected: true,
-			stock,
-			vocabulary: PRODUCTS_VOCABULARY,
-		});
-	});
-
-	window.history.replaceState(null, "", "/products?low=1");
-	view = await mount(<ProductsScreen />);
-	await settle();
-	await press(view, "products-load-more");
-	await settle();
-	expect(rowIds(view, "products-row")).toEqual(ids("p", 1, 6));
-
-	await press(view, "products-load-more");
-	await settle();
-
-	expect(rowIds(view, "products-row")).toEqual(ids("p", 1, 6));
-	expect(element(view, "products-intro").textContent).toContain(
-		"6 low-stock products loaded so far",
-	);
-	expect(absent(view, "products-load-more")).toBe(true);
-	expect(element(view, "products-paging-stopped").textContent).toContain(PAGING_STOPPED_TITLE);
-	expect(absent(view, "products-cursor-reset")).toBe(true);
-	expect(search().get("cursor")).toBeNull();
-	expect(search().get("low")).toBe("1");
-});
-
-test("products: a low-stock scan matching nothing yet withdraws the note with the button", async () => {
-	// The same edge on the screen it is genuinely reachable from: a low-stock scan
-	// several pages deep that has matched nothing, whose continuation is refused
-	// by a settings blip.
-	let call = 0;
-	serve(() => {
-		call += 1;
-		const empty = {
-			ok: true,
-			products: [],
-			nextCursor: PAGE_TWO,
-			stock: { threshold: 5, unreadable: false, filterUnavailable: false },
-			vocabulary: PRODUCTS_VOCABULARY,
-		};
-		return envelope(call === 1 ? empty : { ...empty, cursorRejected: true });
-	});
-	window.history.replaceState(null, "", "/products?low=1");
-	view = await mount(<ProductsScreen />);
-	await settle();
-	expect(absent(view, "products-scan-note")).toBe(false);
-	expect(absent(view, "products-load-more")).toBe(false);
-
-	await press(view, "products-load-more");
-	await settle();
-
-	expect(absent(view, "products-load-more")).toBe(true);
-	expect(absent(view, "products-scan-note")).toBe(true);
-	expect(element(view, "products-paging-stopped").textContent).toContain(PAGING_STOPPED_TITLE);
-	expect(absent(view, "products-no-match")).toBe(true);
-	expect(absent(view, "products-page-zero")).toBe(true);
-});

@@ -92,6 +92,7 @@
  * renders by name. Re-introducing a server-side two-step confirm means WRITING
  * that check against the shape of the new flow, not restoring it.
  */
+import { isSupportedCurrency } from "@otta-sh/domain";
 import {
 	ADD_STOCK_INVALID_QTY,
 	DIGITAL_WITH_FILE_REASON,
@@ -102,6 +103,7 @@ import {
 	parseOnHandWatermark,
 	parseStockQty as parseStockQtyShared,
 	unitWord,
+	unsupportedCurrencyMessage,
 } from "@otta-sh/admin-presentation";
 import { isProductTaxStatus } from "@otta-sh/domain";
 import {
@@ -110,7 +112,12 @@ import {
 	type RestockResult,
 	type StockRemovalResult,
 } from "./admin-products-surface.js";
-import { parseMinorUnitsInput } from "./money-input.js";
+import {
+	moneyInputExample,
+	moneyPrecisionPhrase,
+	NO_CURRENCY,
+	parseMinorUnitsInput,
+} from "./money-input.js";
 import { readString, screenActions, type Notice } from "./scaffold/index.js";
 
 /** This screen's namespaced action ids. */
@@ -225,11 +232,12 @@ const applied = (notice: Notice | null, field?: "sku"): ProductsActionResult =>
 // (the domain's own `price > 0` invariant: a free product is "unpriced", not
 // priced at 0).
 
-/** Parse a merchant-entered decimal price into integer MINOR UNITS; null for
- *  any non-conforming or NON-POSITIVE input (never throws). Exported for its
- *  own unit test. */
-export function parsePriceMinorUnits(input: string): number | null {
-	return parseMinorUnitsInput(input, { allowZero: false });
+/** Parse a merchant-entered decimal price into integer MINOR UNITS of
+ *  `currency` (its exponent — JPY `"1500"` is 1500, USD `"15"` is 1500); null
+ *  for any non-conforming or NON-POSITIVE input (never throws). Exported for
+ *  its own unit test. */
+export function parsePriceMinorUnits(input: string, currency: string): number | null {
+	return parseMinorUnitsInput(input, currency, { allowZero: false });
 }
 
 /** Parse a merchant-entered stock quantity into a POSITIVE WHOLE number.
@@ -285,18 +293,22 @@ function buildEditWire(
 	if (sku !== undefined && sku.length > 0) wire.sku = sku;
 
 	// The row currency (shared by price / compare-at / cost). Parsed ONCE so all
-	// three money fields agree by construction.
+	// three money fields agree by construction — and each amount is read in its
+	// exponent, because the currency decides what "1500" means. With no usable
+	// currency an amount is still read (in hundredths, the pre-table rule) so an
+	// unreadable amount is reported FIRST, in the order it always was.
 	const currencyStr = readString(values.currency)?.trim().toUpperCase();
 	const currency =
 		currencyStr !== undefined && /^[A-Z]{3}$/.test(currencyStr) ? currencyStr : undefined;
 
 	const priceStr = readString(values.price)?.trim();
 	if (priceStr !== undefined && priceStr.length > 0) {
-		const minorUnits = parsePriceMinorUnits(priceStr);
+		const priceCurrency = currency ?? NO_CURRENCY;
+		const minorUnits = parsePriceMinorUnits(priceStr, priceCurrency);
 		if (minorUnits === null) {
 			return {
 				ok: false,
-				message: "Price must be a positive amount like 19.99 (up to two decimal places).",
+				message: `Price must be a positive amount like ${moneyInputExample("19.99", priceCurrency)} (${moneyPrecisionPhrase(priceCurrency)}).`,
 			};
 		}
 		if (currency === undefined) {
@@ -318,22 +330,22 @@ function buildEditWire(
 			wire[key] = null; // explicit clear.
 			continue;
 		}
-		const minorUnits = parsePriceMinorUnits(trimmed);
+		const amountCurrency = currency ?? NO_CURRENCY;
+		const minorUnits = parsePriceMinorUnits(trimmed, amountCurrency);
 		if (minorUnits === null) {
 			return {
 				ok: false,
-				message: `${field === "compareAt" ? "Compare-at price" : "Unit cost"} must be a positive amount like 29.99, or blank to clear.`,
+				message: `${field === "compareAt" ? "Compare-at price" : "Unit cost"} must be a positive amount like ${moneyInputExample("29.99", amountCurrency)}, or blank to clear.`,
 			};
 		}
-		const rowCurrency = currency ?? (wire.price !== undefined ? wire.price.currency : undefined);
-		if (rowCurrency === undefined) {
+		if (currency === undefined) {
 			return {
 				ok: false,
 				message:
 					"Set the product's price and currency before adding a compare-at price or unit cost.",
 			};
 		}
-		wire[key] = { amount: minorUnits, currency: rowCurrency };
+		wire[key] = { amount: minorUnits, currency };
 	}
 
 	const productKind = readString(values.productKind);
@@ -419,6 +431,35 @@ function fnv1a(input: string, seed: number): string {
 }
 
 /**
+ * The currency this edit would AUTHOR when it is not in the currency table
+ * (`@otta-sh/domain`'s `isSupportedCurrency`), or `null` when the edit is fine.
+ *
+ * MEMBERSHIP IS CHECKED ONLY FOR A NEW CURRENCY. A product priced before the
+ * table existed may sit in any shape-valid code, and its form re-submits that
+ * code with every save: refusing it would lock the merchant out of editing the
+ * product at all. So an unlisted code is allowed exactly when it is the one
+ * already stored (the store refuses re-currencying a priced product anyway), and
+ * the read that tells is made only in that rare case — a listed code costs
+ * nothing.
+ */
+async function unsupportedNewCurrency(
+	client: AdminProductsSurface,
+	productId: string,
+	wire: ProductEditWire,
+): Promise<string | null> {
+	const codes = new Set<string>();
+	for (const money of [wire.price, wire.compareAtPrice, wire.unitCost]) {
+		if (money !== undefined && money !== null && !isSupportedCurrency(money.currency)) {
+			codes.add(money.currency);
+		}
+	}
+	if (codes.size === 0) return null;
+	const stored = (await client.getProduct(productId))?.currency ?? null;
+	for (const code of codes) if (code !== stored) return code;
+	return null;
+}
+
+/**
  * The three split forms' Save handler (F-5a — one handler serves all three
  * submits). Reads `productId`/`expectedUpdatedAt` off the payload, validates,
  * then PATCHes under the optimistic-concurrency watermark.
@@ -448,6 +489,14 @@ const saveAction: ProductsAction = async (client, payload) => {
 			variant: "error",
 			title: "Check the highlighted value",
 			description: built.message,
+		});
+	}
+	const unsupported = await unsupportedNewCurrency(client, productId, built.wire);
+	if (unsupported !== null) {
+		return applied({
+			variant: "error",
+			title: "Check the highlighted value",
+			description: unsupportedCurrencyMessage(unsupported),
 		});
 	}
 	const key = deriveEditIdempotencyKey(productId, built.wire);

@@ -14,6 +14,24 @@
 declare const CentsBrand: unique symbol;
 export type Cents = number & { readonly [CentsBrand]: true };
 
+declare const SignedCentsBrand: unique symbol;
+/**
+ * A SIGNED integer number of minor units — an adjustment, never a price or a
+ * total: today only the checkout's rounding line (ADR-0035's amendment), which
+ * is negative when the final total rounds down. `Cents` stays non-negative; a
+ * `SignedCents` is not assignable to it, so an adjustment can never be stored as
+ * an amount by accident. `signedCents()` is the only way to mint one.
+ */
+export type SignedCents = number & { readonly [SignedCentsBrand]: true };
+
+/** Mint a {@link SignedCents}: any safe integer, negative included. */
+export function signedCents(n: number): SignedCents {
+	if (!Number.isSafeInteger(n)) {
+		throw new RangeError(`signedCents() requires a safe integer, got ${String(n)}`);
+	}
+	return n as SignedCents;
+}
+
 declare const CurrencyBrand: unique symbol;
 /** ISO-4217 alpha code (e.g. "USD"), branded. */
 export type Currency = string & { readonly [CurrencyBrand]: true };
@@ -40,7 +58,9 @@ export function cents<N extends number>(n: number extends N ? N : IntegerLiteral
 	return n as number as Cents;
 }
 
-const CURRENCY_PATTERN = /^[A-Z]{3}$/;
+/** ISO 4217's alphabetic SHAPE (three upper-case letters) — not membership in
+ *  the currency table. The one copy of the shape in the domain. */
+export const CURRENCY_PATTERN = /^[A-Z]{3}$/;
 
 export function currency(code: string): Currency {
 	if (!CURRENCY_PATTERN.test(code)) {
