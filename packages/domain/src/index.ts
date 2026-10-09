@@ -1,5 +1,23 @@
 // Public barrel of @otta-sh/domain — ports, use-cases, and branded types.
-export { cents, currency, money, type Cents, type Currency, type Money } from "./money/cents.js";
+export {
+	cents,
+	currency,
+	money,
+	signedCents,
+	type Cents,
+	type Currency,
+	type Money,
+	type SignedCents,
+} from "./money/cents.js";
+export {
+	SUPPORTED_CURRENCIES,
+	currencyDigits,
+	currencyPaymentIncrement,
+	isSupportedCurrency,
+	minorUnitDigits,
+	type CurrencyInfo,
+	type SupportedCurrencyCode,
+} from "./money/currencies.js";
 // Phase 6 pricing engines (pure, IO-free): the totals pipeline + its components.
 export { divRoundHalfUp } from "./pricing/round.js";
 export { allocateCents } from "./pricing/allocate.js";
@@ -7,6 +25,7 @@ export { computeLineTax } from "./pricing/tax.js";
 export { computeCouponDiscount } from "./pricing/coupon.js";
 export { resolveShippingRate } from "./pricing/shipping.js";
 export { computeTotals } from "./pricing/compute-totals.js";
+export { payableTotal, roundingEntry } from "./pricing/payment-rounding.js";
 export { CouponCurrencyMismatchError } from "./pricing/errors.js";
 export {
 	CouponCodeConflictError,
@@ -71,7 +90,6 @@ export {
 export { quoteCommandFor, type PricedLine, type QuoteInput } from "./pricing/quote-input.js";
 // ADR-0021: ISO 3166 codes (CLDR) and the zone derived from the address.
 export { COUNTRY_CODES, SUBDIVISIONS } from "./pricing/iso-3166.generated.js";
-export { CURRENCY_CODES, isIsoCurrencyCode } from "./pricing/iso-4217.js";
 export {
 	isCodeShapedRegion,
 	normalizeCountryCode,
@@ -681,6 +699,9 @@ export type {
 } from "./ports/settings-store.js";
 export {
 	DEFAULT_OPERATIONAL_SETTINGS,
+	DEFAULT_STORE_CURRENCY,
+	effectiveStoreCurrency,
+	readStoreCurrency,
 	isSettingsPreconditionFailedError,
 	SettingsPreconditionFailedError,
 	settingsUpdateAllowed,

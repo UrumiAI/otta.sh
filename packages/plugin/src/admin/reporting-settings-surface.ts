@@ -60,6 +60,9 @@ export interface LowStockWire {
 export interface OperationalSettingsWire {
 	holdTtlMinutes: number;
 	lowStockThreshold: number;
+	/** The SAVED store currency (ISO 4217). Absent when never saved — the store
+	 *  then creates USD carts, as it always did (`effectiveStoreCurrency`). */
+	currency?: string;
 }
 
 export interface DateRangeInput {
@@ -146,7 +149,7 @@ export interface ReportingSettingsSurface {
 	 *  `threshold` is omitted. */
 	getLowStock(threshold?: number): Promise<LowStockWire[]>;
 
-	/** The operational settings (hold TTL, low-stock threshold). */
+	/** The operational settings (hold TTL, low-stock threshold, store currency). */
 	getSettings(): Promise<OperationalSettingsWire>;
 
 	/** Apply a settings patch under `opts.idempotencyKey`. Returns a

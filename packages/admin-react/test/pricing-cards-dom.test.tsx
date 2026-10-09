@@ -421,6 +421,298 @@ test("an unpriced product asks for a price and saves it in the currency the merc
 	expect(writes()[0]?.["value"]).toMatchObject({ price: "18.00", currency: "EUR" });
 });
 
+test("an unpriced product's currency starts on the store currency the detail read carried, and saves in it", async () => {
+	const unpriced = { priceCents: null, currency: null, compareAtCents: null, unitCostCents: null };
+	apiFetch.mockImplementation((_url, init) => {
+		const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+		if (body["type"] === "otta_console_act") {
+			return Promise.resolve(
+				json({ ok: true, notice: { variant: "default", title: "Saved", description: "" } }),
+			);
+		}
+		return Promise.resolve(
+			json({
+				ok: true,
+				product: { ...BASE, ...unpriced },
+				taxClasses: [{ id: "standard", name: "Standard" }],
+				threshold: 5,
+				storeCurrency: "JPY",
+				vocabulary: { statuses: [], kinds: [], any: "any", pageLimit: 25 },
+			}),
+		);
+	});
+	const c = await mountPanel();
+	const currency = input(c, "Currency") as unknown as HTMLSelectElement;
+	expect(currency.value).toBe("JPY");
+	await type(input(c, "Price"), "1500");
+	await fire(button(c, "Save pricing & stock"), "click");
+	await flush();
+	expect(writes()[0]?.["value"]).toMatchObject({ price: "1500", currency: "JPY" });
+});
+
+test("when the store currency could not be read, nothing is preselected: the merchant must choose before a price saves", async () => {
+	const unpriced = { priceCents: null, currency: null, compareAtCents: null, unitCostCents: null };
+	apiFetch.mockImplementation((_url, init) => {
+		const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+		if (body["type"] === "otta_console_act") {
+			return Promise.resolve(
+				json({ ok: true, notice: { variant: "default", title: "Saved", description: "" } }),
+			);
+		}
+		return Promise.resolve(
+			json({
+				ok: true,
+				product: { ...BASE, ...unpriced },
+				taxClasses: [{ id: "standard", name: "Standard" }],
+				threshold: 5,
+				storeCurrency: null,
+				vocabulary: { statuses: [], kinds: [], any: "any", pageLimit: 25 },
+			}),
+		);
+	});
+	const c = await mountPanel();
+	const currency = input(c, "Currency") as unknown as HTMLSelectElement;
+	expect(currency.value).toBe("");
+	expect(c.querySelector('[data-testid="store-currency-unknown"]')?.textContent).toBe(
+		"Couldn't load your store currency — choose one.",
+	);
+	await type(input(c, "Price"), "18");
+	await fire(button(c, "Save pricing & stock"), "click");
+	await flush();
+	// Refused in the panel: nothing written, and the reason beside the picker.
+	expect(writes()).toHaveLength(0);
+	expect(c.textContent).toContain("Choose a supported currency");
+	await type(currency, "EUR");
+	await fire(button(c, "Save pricing & stock"), "click");
+	await flush();
+	expect(writes()[0]?.["value"]).toMatchObject({ price: "18.00", currency: "EUR" });
+});
+
+/** A detail answer for an UNPRICED product, carrying `storeCurrency` as given. */
+function unpricedDetail(storeCurrency: string | null, over: Partial<ProductRecord> = {}): Response {
+	return json({
+		ok: true,
+		product: {
+			...BASE,
+			priceCents: null,
+			currency: null,
+			compareAtCents: null,
+			unitCostCents: null,
+			...over,
+		},
+		taxClasses: [{ id: "standard", name: "Standard" }],
+		threshold: 5,
+		storeCurrency,
+		vocabulary: { statuses: [], kinds: [], any: "any", pageLimit: 25 },
+	});
+}
+
+test("a later re-read whose settings read failed keeps the store currency already loaded — no prompt", async () => {
+	let moved = false;
+	apiFetch.mockImplementation((_url, init) => {
+		const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+		if (body["type"] === "otta_console_act") {
+			moved = true;
+			return Promise.resolve(json({ ok: true, notice: null }));
+		}
+		// First read: EUR. Every read after the stock move: the settings read failed.
+		return Promise.resolve(moved ? unpricedDetail(null, { onHand: 29 }) : unpricedDetail("EUR"));
+	});
+	const c = await mountPanel();
+	expect((input(c, "Currency") as unknown as HTMLSelectElement).value).toBe("EUR");
+	await type(input(c, "Add or remove stock"), "5");
+	await fire(button(c, "Add"), "click");
+	await flush();
+	expect(c.textContent).toContain("now 29 in stock");
+	expect((input(c, "Currency") as unknown as HTMLSelectElement).value).toBe("EUR");
+	expect(c.querySelector('[data-testid="store-currency-unknown"]')).toBeNull();
+});
+
+test("a currency picked before typing a price survives a re-read, and the price saves in it", async () => {
+	let moved = false;
+	apiFetch.mockImplementation((_url, init) => {
+		const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+		if (body["type"] === "otta_console_act") {
+			if ((body["action_id"] as string) === "products:restock") moved = true;
+			return Promise.resolve(
+				json({ ok: true, notice: { variant: "default", title: "Saved", description: "" } }),
+			);
+		}
+		return Promise.resolve(unpricedDetail("EUR", moved ? { onHand: 29 } : {}));
+	});
+	const c = await mountPanel();
+	await type(input(c, "Currency") as unknown as HTMLSelectElement, "JPY");
+	// A stock movement re-reads the product (store currency still EUR).
+	await type(input(c, "Add or remove stock"), "5");
+	await fire(button(c, "Add"), "click");
+	await flush();
+	expect(c.textContent).toContain("now 29 in stock");
+	expect((input(c, "Currency") as unknown as HTMLSelectElement).value).toBe("JPY");
+	await type(input(c, "Price"), "1500");
+	await fire(button(c, "Save pricing & stock"), "click");
+	await flush();
+	const save = writes().find((w) => w["action_id"] === "products:save");
+	expect(save?.["value"]).toMatchObject({ price: "1500", currency: "JPY" });
+});
+
+test("a later read that knows the store currency hides the prompt and adopts it while nothing is picked", async () => {
+	let moved = false;
+	apiFetch.mockImplementation((_url, init) => {
+		const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+		if (body["type"] === "otta_console_act") {
+			moved = true;
+			return Promise.resolve(json({ ok: true, notice: null }));
+		}
+		return Promise.resolve(moved ? unpricedDetail("EUR", { onHand: 29 }) : unpricedDetail(null));
+	});
+	const c = await mountPanel();
+	expect(c.querySelector('[data-testid="store-currency-unknown"]')).not.toBeNull();
+	await type(input(c, "Add or remove stock"), "5");
+	await fire(button(c, "Add"), "click");
+	await flush();
+	expect(c.querySelector('[data-testid="store-currency-unknown"]')).toBeNull();
+	expect((input(c, "Currency") as unknown as HTMLSelectElement).value).toBe("EUR");
+});
+
+const STORE_MOVED_USD_EUR =
+	"Your store currency is now EUR — this product will be priced in USD unless you choose EUR. Pick the currency to confirm, then save.";
+
+test("a price typed under the shown default: a re-read with a switched store currency blocks the save until a currency is picked", async () => {
+	let moved = false;
+	apiFetch.mockImplementation((_url, init) => {
+		const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+		if (body["type"] === "otta_console_act") {
+			if ((body["action_id"] as string) === "products:restock") moved = true;
+			return Promise.resolve(
+				json({ ok: true, notice: { variant: "default", title: "Saved", description: "" } }),
+			);
+		}
+		// The operator switched the store currency to EUR between the two reads.
+		return Promise.resolve(moved ? unpricedDetail("EUR", { onHand: 29 }) : unpricedDetail("USD"));
+	});
+	const c = await mountPanel();
+	await type(input(c, "Price"), "24.99");
+	await type(input(c, "Add or remove stock"), "5");
+	await fire(button(c, "Add"), "click");
+	await flush();
+	expect(c.textContent).toContain("now 29 in stock");
+	// Frozen to USD, and the merchant is TOLD; the amount is kept.
+	expect((input(c, "Currency") as unknown as HTMLSelectElement).value).toBe("USD");
+	expect((input(c, "Price") as HTMLInputElement).value).toBe("24.99");
+	expect(c.textContent).toContain(STORE_MOVED_USD_EUR);
+	// A keystroke clears the banner, but the rule is re-evaluated at SAVE: blocked.
+	await type(input(c, "Price"), "24.98");
+	expect(c.textContent).not.toContain(STORE_MOVED_USD_EUR);
+	await fire(button(c, "Save pricing & stock"), "click");
+	await flush();
+	expect(writes().some((w) => w["action_id"] === "products:save")).toBe(false);
+	expect(c.textContent).toContain(STORE_MOVED_USD_EUR);
+	// Picking the currency confirms it; the save goes through in it.
+	await type(input(c, "Currency") as unknown as HTMLSelectElement, "EUR");
+	await fire(button(c, "Save pricing & stock"), "click");
+	await flush();
+	const save = writes().find((w) => w["action_id"] === "products:save");
+	expect(save?.["value"]).toMatchObject({ price: "24.98", currency: "EUR" });
+});
+
+test("a store-default-moved banner offers Keep USD, and the next save goes through in USD", async () => {
+	let reads = 0;
+	apiFetch.mockImplementation((_url, init) => {
+		const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+		if (body["type"] === "otta_console_act") {
+			return Promise.resolve(
+				json({ ok: true, notice: { variant: "default", title: "Saved", description: "" } }),
+			);
+		}
+		reads += 1;
+		return Promise.resolve(unpricedDetail(reads === 1 ? "USD" : "EUR"));
+	});
+	const c = await mountPanel();
+	await type(input(c, "Price"), "24.99");
+	await fire(button(c, "Save pricing & stock"), "click");
+	await flush();
+	expect(c.textContent).toContain(STORE_MOVED_USD_EUR);
+	await fire(button(c, "Keep USD"), "click");
+	expect(c.textContent).not.toContain(STORE_MOVED_USD_EUR);
+	await fire(button(c, "Save pricing & stock"), "click");
+	await flush();
+	const save = writes().find((w) => w["action_id"] === "products:save");
+	expect(save?.["value"]).toMatchObject({ price: "24.99", currency: "USD" });
+});
+
+test("priced elsewhere in KWD at save: the USD amounts typed are cleared, and the next save sends no cost", async () => {
+	let reads = 0;
+	apiFetch.mockImplementation((_url, init) => {
+		const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+		if (body["type"] === "otta_console_act") {
+			return Promise.resolve(
+				json({ ok: true, notice: { variant: "default", title: "Saved", description: "" } }),
+			);
+		}
+		reads += 1;
+		// Mount: unpriced (USD store). Every later read: priced by someone else in
+		// KWD at 12.500, with no unit cost.
+		return Promise.resolve(
+			reads === 1
+				? unpricedDetail("USD")
+				: unpricedDetail("USD", {
+						priceCents: 12_500,
+						currency: "KWD",
+						updatedAt: "2026-07-02T00:00:00.000Z",
+					}),
+		);
+	});
+	const c = await mountPanel();
+	await type(input(c, "Price"), "24.99");
+	await type(input(c, "Cost per item"), "9.50");
+	await fire(button(c, "Save pricing & stock"), "click");
+	await flush();
+	expect(writes().some((w) => w["action_id"] === "products:save")).toBe(false);
+	expect(c.textContent).toContain(
+		"This product was priced in KWD by someone else — the amounts you entered in USD were replaced with its saved ones — check every amount in KWD before saving.",
+	);
+	expect((input(c, "Cost per item") as HTMLInputElement).value).toBe("");
+	// Saving again (now against the priced record) sends no cost — never 9.50 as KWD.
+	await type(input(c, "Price"), "13.000");
+	await fire(button(c, "Save pricing & stock"), "click");
+	await flush();
+	const save = writes().find((w) => w["action_id"] === "products:save");
+	expect(save).toBeDefined();
+	const value = save?.["value"] as Record<string, unknown>;
+	expect(value["unitCost"] ?? "").toBe("");
+	expect(value["price"]).toBe("13.000");
+});
+
+test("the read-before-save uses the FRESH store currency: a switch since the form loaded blocks the save", async () => {
+	let reads = 0;
+	apiFetch.mockImplementation((_url, init) => {
+		const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+		if (body["type"] === "otta_console_act") {
+			return Promise.resolve(
+				json({ ok: true, notice: { variant: "default", title: "Saved", description: "" } }),
+			);
+		}
+		reads += 1;
+		// The first read (mount) says USD; the read-before-save says EUR.
+		return Promise.resolve(unpricedDetail(reads === 1 ? "USD" : "EUR"));
+	});
+	const c = await mountPanel();
+	await type(input(c, "Price"), "24.99");
+	await fire(button(c, "Save pricing & stock"), "click");
+	await flush();
+	expect(writes().some((w) => w["action_id"] === "products:save")).toBe(false);
+	expect(c.textContent).toContain(STORE_MOVED_USD_EUR);
+	expect((input(c, "Currency") as unknown as HTMLSelectElement).value).toBe("USD");
+});
+
+test("after an initial failed read, picking a currency clears the prompt", async () => {
+	apiFetch.mockImplementation(() => Promise.resolve(unpricedDetail(null)));
+	const c = await mountPanel();
+	expect(c.querySelector('[data-testid="store-currency-unknown"]')).not.toBeNull();
+	await type(input(c, "Currency") as unknown as HTMLSelectElement, "GBP");
+	expect(c.querySelector('[data-testid="store-currency-unknown"]')).toBeNull();
+});
+
 test("Save reads the product first: it writes against the NEW watermark and keeps only the merchant's edits", async () => {
 	apiFetch.mockImplementation((_url, init) => {
 		const body = JSON.parse(String(init?.body)) as Record<string, unknown>;

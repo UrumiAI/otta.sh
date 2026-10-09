@@ -243,7 +243,7 @@ export function priceBody(row: DemoRow, expectedUpdatedAt: string): Record<strin
 		productId: row.id,
 		expectedUpdatedAt,
 		sku: row.sku,
-		price: formatMinorUnitsInput(row.price.amount),
+		price: formatMinorUnitsInput(row.price.amount, row.price.currency),
 		currency: row.price.currency,
 	};
 }

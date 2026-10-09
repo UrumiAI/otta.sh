@@ -6,7 +6,14 @@ import {
 	idempotencyKey,
 	orderId,
 } from "@otta-sh/domain";
-import { EmdashCouponStore, type StorageAccess, uuidIdGen } from "@otta-sh/store-emdash";
+import {
+	EmdashCouponStore,
+	EmdashSettingsStore,
+	SETTINGS_COLLECTION,
+	type StorageAccess,
+	systemClock,
+	uuidIdGen,
+} from "@otta-sh/store-emdash";
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "vitest";
 import { couponStatus, couponUsesSummary } from "../src/admin/coupons-page.js";
 import {
@@ -21,6 +28,7 @@ import {
 	blocksOf,
 	buttons,
 	confirmOf,
+	contextTexts,
 	emptyActions,
 	fieldEntries,
 	findBlock,
@@ -657,7 +665,9 @@ describe("admin Coupons console — list level (workerd sandbox)", () => {
 		// value (R-17a) — QA saw `fixed_amount` there. `condition` compares against
 		// the same words.
 		expect(byId.get("amount")?.condition).toEqual({ field: "type", eq: "Fixed amount off" });
-		expect(byId.get("currency")?.condition).toEqual({ field: "type", eq: "Fixed amount off" });
+		// `currency` is SHARED by both types (a fixed amount's, or a percentage
+		// cap's), so it is the one field with no `condition`.
+		expect(byId.get("currency")?.condition).toBeUndefined();
 		expect(byId.get("ratePercent")?.condition).toEqual({ field: "type", eq: "Percentage off" });
 		expect(byId.get("cap")?.condition).toEqual({ field: "type", eq: "Percentage off" });
 		expect(byId.get("type")?.initial_value).toBe("Fixed amount off"); // R-12b
@@ -675,6 +685,54 @@ describe("admin Coupons console — list level (workerd sandbox)", () => {
 		]) {
 			expect(byId.has(removed)).toBe(false);
 		}
+	});
+
+	// Currency PR 2: the currency field HINTS the store currency — a placeholder,
+	// never a prefill (one field serves both types, and a percentage coupon with no
+	// cap must be able to leave it blank).
+	test("the create form's currency field hints the store currency: USD until one is saved, then the saved one — never prefilled", async () => {
+		await boot(makeCouponsState());
+		const before = new Map(
+			formFields(await openNewCouponScreen(), "coupons:create").map((f) => [f.action_id, f]),
+		);
+		expect(before.get("currency")?.placeholder).toBe("USD");
+		expect(before.get("currency")?.initial_value).toBeUndefined();
+
+		const settings = new EmdashSettingsStore({ storage, clock: systemClock });
+		await settings.update({ currency: "INR" }, idempotencyKey("coupons-store-currency"));
+		const after = new Map(
+			formFields(await openNewCouponScreen(), "coupons:create").map((f) => [f.action_id, f]),
+		);
+		expect(after.get("currency")?.placeholder).toBe("INR");
+		expect(after.get("currency")?.initial_value).toBeUndefined();
+
+		// A refused create re-renders the screen with the same hint.
+		const refused = blocksOf(
+			await sandbox!.invokeRoute("admin", {
+				type: "form_submit",
+				action_id: "coupons:create",
+				values: { id: "", code: "", type: "Fixed amount off" },
+			}),
+		);
+		const refusedFields = new Map(
+			formFields(refused, "coupons:create").map((f) => [f.action_id, f]),
+		);
+		expect(refusedFields.get("currency")?.placeholder).toBe("INR");
+	});
+
+	test("a settings outage still opens the create screen, with no guessed hint and a line saying why", async () => {
+		await boot(makeCouponsState());
+		// Saved INR, so a USD hint can only come from the fallback.
+		const settings = new EmdashSettingsStore({ storage, clock: systemClock });
+		await settings.update({ currency: "INR" }, idempotencyKey("coupons-outage-currency"));
+		const list = await loadList();
+		const screen = await withSettingsUnreadable(() => openNewCouponScreen(list));
+		const byId = new Map(formFields(screen, "coupons:create").map((f) => [f.action_id, f]));
+		expect(byId.get("currency")?.placeholder).toBeUndefined();
+		expect(byId.get("currency")?.initial_value).toBeUndefined();
+		expect(contextTexts(screen)).toContain(
+			"Couldn't load your store currency — if this coupon needs a currency, enter it yourself.",
+		);
 	});
 
 	test("create (fixed_amount) stores EXACT integer minor units; the five shared axes are not on this form and land as explicit null", async () => {
@@ -727,9 +785,10 @@ describe("admin Coupons console — list level (workerd sandbox)", () => {
 				code: "PCT7",
 				type: "percentage",
 				amount: "",
-				currency: "",
 				ratePercent: "7.25",
 				cap: "20.00",
+				// A cap is an amount: it names its currency.
+				currency: "USD",
 				// A devtools-crafted request could still send these — the handler
 				// must not read them (they are not on the real form).
 				minSubtotal: "50.00",
@@ -746,7 +805,7 @@ describe("admin Coupons console — list level (workerd sandbox)", () => {
 			amountCents: null,
 			rateBps: 725,
 			capCents: 2000,
-			currency: null,
+			currency: "USD",
 			minSubtotalCents: null,
 			startsAt: null,
 			expiresAt: null,
@@ -984,7 +1043,7 @@ describe("admin Coupons console — list level (workerd sandbox)", () => {
 		expect(await stored("qa-ete")).toBeNull();
 	});
 
-	test("a coupon currency that is not an ISO-4217 currency (XYZ) is refused on the create screen", async () => {
+	test("a coupon currency that is not a supported currency (XYZ) is refused on the create screen", async () => {
 		await boot(makeCouponsState());
 		const outcome = blocksOf(
 			await sandbox!.invokeRoute("admin", {
@@ -999,8 +1058,89 @@ describe("admin Coupons console — list level (workerd sandbox)", () => {
 				},
 			}),
 		);
-		expect(String(bannerOf(outcome)?.description)).toMatch(/XYZ is not an ISO-4217 currency/);
+		expect(String(bannerOf(outcome)?.description)).toMatch(/XYZ isn't a supported currency/);
 		expect(await stored("qa-xyz")).toBeNull();
+	});
+
+	test("a PERCENTAGE coupon's cap is an amount: it needs a currency, and is read in it (JPY '500' is ¥500)", async () => {
+		await boot(makeCouponsState());
+		const base = { type: "percentage", amount: "", currency: "", ratePercent: "10", cap: "500" };
+		const refused = blocksOf(
+			await sandbox!.invokeRoute("admin", {
+				type: "form_submit",
+				action_id: "coupons:create",
+				values: { id: "pct-nocur", code: "PCTNOCUR", ...base },
+			}),
+		);
+		expect(String(bannerOf(refused)?.description)).toMatch(/enter the currency it is in/);
+		expect(await stored("pct-nocur")).toBeNull();
+		await sandbox!.invokeRoute("admin", {
+			type: "form_submit",
+			action_id: "coupons:create",
+			values: { id: "pct-jpy", code: "PCTJPY", ...base, currency: "JPY" },
+		});
+		expect(await stored("pct-jpy")).toMatchObject({
+			capCents: 500,
+			currency: "JPY",
+			rateBps: 1000,
+		});
+		// With NO cap a percentage coupon needs no currency, and gets none.
+		await sandbox!.invokeRoute("admin", {
+			type: "form_submit",
+			action_id: "coupons:create",
+			values: { id: "pct-plain", code: "PCTPLAIN", ...base, cap: "" },
+		});
+		expect(await stored("pct-plain")).toMatchObject({ capCents: null, currency: null });
+		// …and a currency typed WITHOUT a cap is refused, never silently bound
+		// (it would restrict the coupon to that currency's carts for good).
+		const unneeded = blocksOf(
+			await sandbox!.invokeRoute("admin", {
+				type: "form_submit",
+				action_id: "coupons:create",
+				values: { id: "pct-eur", code: "PCTEUR", ...base, cap: "", currency: "EUR" },
+			}),
+		);
+		expect(String(bannerOf(unneeded)?.description)).toMatch(/needs a currency only with a cap/);
+		expect(await stored("pct-eur")).toBeNull();
+	});
+
+	test("a fixed KWD coupon is read in fils: '1.234' is 1234, a fourth decimal is refused", async () => {
+		await boot(makeCouponsState());
+		const created = blocksOf(
+			await sandbox!.invokeRoute("admin", {
+				type: "form_submit",
+				action_id: "coupons:create",
+				values: {
+					id: "qa-kwd",
+					code: "KWD1",
+					type: "fixed_amount",
+					amount: "1.234",
+					currency: "KWD",
+				},
+			}),
+		);
+		// Payable at checkout now (ADR-0035 amendment): the plain created notice.
+		expect(String(bannerOf(created)?.description)).toBe(
+			'"KWD1" was added and is live per its validity window.',
+		);
+		const kwd = await stored("qa-kwd");
+		expect(kwd?.amountCents).toBe(1234);
+		expect(kwd?.currency).toBe("KWD");
+		const refused = blocksOf(
+			await sandbox!.invokeRoute("admin", {
+				type: "form_submit",
+				action_id: "coupons:create",
+				values: {
+					id: "qa-kwd4",
+					code: "KWD4",
+					type: "fixed_amount",
+					amount: "1.2345",
+					currency: "KWD",
+				},
+			}),
+		);
+		expect(String(bannerOf(refused)?.description)).toMatch(/up to three decimal places/);
+		expect(await stored("qa-kwd4")).toBeNull();
 	});
 
 	test("a bare enum coupon type (a form rendered before the word values) still creates", async () => {
@@ -1098,7 +1238,7 @@ describe("admin Coupons console — list level (workerd sandbox)", () => {
 			code: "SUMMER26",
 			type: "percentage",
 			amount: "",
-			currency: "",
+			currency: "USD",
 			ratePercent: "ten percent",
 			cap: "20.00",
 		};
@@ -1113,6 +1253,7 @@ describe("admin Coupons console — list level (workerd sandbox)", () => {
 			type: "Percentage off", // the SELECT survives too, so `condition` still reveals the rate fields
 			ratePercent: "ten percent", // VERBATIM — never re-derived from a parse that failed
 			cap: "20.00",
+			currency: "USD",
 		});
 		// Fixing the one field and resubmitting creates the coupon.
 		const created = await submitForm(refused, "coupons:create", {
@@ -1578,6 +1719,212 @@ describe("admin Coupons console — detail/edit leaf (workerd sandbox)", () => {
 		const banner = bannerOf(outcome);
 		expect(banner?.variant).toBe("default");
 		expect(String(banner?.title)).toContain("saved");
+	});
+
+	test("a JPY coupon is edited in WHOLE YEN: the form shows 500 / 3500, and '600' saves as 600 — the carried currency decides", async () => {
+		const state = makeCouponsState();
+		const five = state.coupons.find((c) => c.id === "c-five");
+		if (five === undefined) throw new Error("fixture moved");
+		five.currency = "JPY";
+		await boot(state);
+		const blocks = await openCoupon("FIVEOFF");
+		const byId = new Map(formFields(blocks, "coupons:save").map((f) => [f.action_id, f]));
+		expect(byId.get("amount")?.initial_value).toBe("500");
+		expect(byId.get("minSubtotal")?.initial_value).toBe("3500");
+		await submitForm(blocks, "coupons:save", {
+			...FIVEOFF_PREFILL,
+			amount: "600",
+			minSubtotal: "3500",
+		});
+		expect(await stored("c-five")).toMatchObject({ amountCents: 600, minSubtotalCents: 3500 });
+	});
+
+	test("LEGACY: a percentage coupon whose cap predates bound currencies edits exactly as before — hundredths, no currency", async () => {
+		// SUMMER25: percentage, capCents 2000, currency null — written on an
+		// earlier version. Its cap is still read and written in hundredths.
+		const state = makeCouponsState();
+		await boot(state);
+		const blocks = await openCoupon("SUMMER25");
+		const byId = new Map(formFields(blocks, "coupons:save").map((f) => [f.action_id, f]));
+		expect(byId.get("cap")?.initial_value).toBe("20.00");
+		// It says what its amounts mean (×100, in the cart currency's smallest
+		// unit — yen for a JPY cart) and offers no currency field until cleared.
+		expect(String(byId.get("cap")?.label)).toMatch(/×100 in the cart currency's smallest unit/);
+		expect(byId.has("currency")).toBe(false);
+		await submitForm(blocks, "coupons:save", {
+			...SUMMER25_PREFILL,
+			showLimits: true,
+			cap: "25.00",
+		});
+		expect(await stored("c-summer")).toMatchObject({ capCents: 2500, currency: null });
+		// Binding a currency to it now would re-read those amounts — refused.
+		const again = await openCoupon("SUMMER25");
+		const refused = await submitForm(again, "coupons:save", {
+			...SUMMER25_PREFILL,
+			showLimits: true,
+			// A crafted submit — the form renders no such field — with the cap in
+			// whole yen, so it is the RULES CLIENT's legacy refusal that answers.
+			cap: "2500",
+			currency: "JPY",
+		});
+		expect(String(bannerOf(refused)?.description)).toMatch(/set before they carried a currency/);
+		expect((await stored("c-summer"))?.currency).toBeNull();
+	});
+
+	test("a percentage coupon with NO bounds gains a cap only with a currency, which is then bound to it", async () => {
+		const state = makeCouponsState();
+		const summer = state.coupons.find((c) => c.id === "c-summer");
+		if (summer === undefined) throw new Error("fixture moved");
+		summer.capCents = null;
+		await boot(state);
+		const blocks = await openCoupon("SUMMER25");
+		const prefill = { ratePercent: "10.00", expiresAt: "2026-09-01", showLimits: true, cap: "500" };
+		const refused = await submitForm(blocks, "coupons:save", prefill);
+		expect(String(bannerOf(refused)?.description)).toMatch(/enter the currency it is in/);
+		expect((await stored("c-summer"))?.capCents).toBeNull();
+		const again = await openCoupon("SUMMER25");
+		await submitForm(again, "coupons:save", { ...prefill, currency: "JPY" });
+		expect(await stored("c-summer")).toMatchObject({ capCents: 500, currency: "JPY" });
+		// Bound for good: clearing the cap keeps the currency (documented).
+		const third = await openCoupon("SUMMER25");
+		await submitForm(third, "coupons:save", { ...prefill, cap: "" });
+		expect(await stored("c-summer")).toMatchObject({ capCents: null, currency: "JPY" });
+	});
+
+	test("the form carries the currency it was RENDERED with: a coupon bound since is refused at submit, and nothing is written", async () => {
+		const state = makeCouponsState();
+		const summer = state.coupons.find((c) => c.id === "c-summer");
+		if (summer === undefined) throw new Error("fixture moved");
+		summer.capCents = null;
+		await boot(state);
+		// The form is rendered while the coupon is UNBOUND (watermark empty)…
+		const blocks = await openCoupon("SUMMER25");
+		expect(
+			decodeCarrier(formFor(blocks, "coupons:save")!.block_id as string)?.renderedCurrency,
+		).toBe("");
+		// …then another admin binds JPY with a cap of ¥500.
+		const current = await couponStore.findById("c-summer");
+		if (current === null) throw new Error("seed missing");
+		await couponStore.update("c-summer", {
+			bindCurrency: toCurrency("JPY"),
+			amountCents: null,
+			rateBps: current.rateBps,
+			capCents: toCents(500),
+			minSubtotalCents: null,
+			startsAt: current.startsAt,
+			expiresAt: current.expiresAt,
+			maxUses: current.maxUses,
+			maxUsesPerCustomer: current.maxUsesPerCustomer,
+		});
+		// The stale form's "5.00" (typed as an unbound, hundredths cap) is refused.
+		const refused = await submitForm(blocks, "coupons:save", {
+			ratePercent: "10.00",
+			expiresAt: "2026-09-01",
+			showLimits: true,
+			cap: "5.00",
+		});
+		expect(String(bannerOf(refused)?.description)).toMatch(/currency changed since you opened it/);
+		expect(await stored("c-summer")).toMatchObject({ capCents: 500, currency: "JPY" });
+	});
+
+	test("a TAMPERED watermark can only refuse — amounts are always read in the stored currency", async () => {
+		const state = makeCouponsState();
+		const five = state.coupons.find((c) => c.id === "c-five");
+		if (five === undefined) throw new Error("fixture moved");
+		five.currency = "JPY";
+		await boot(state);
+		const real = decodeCarrier(
+			formFor(await openCoupon("FIVEOFF"), "coupons:save")!.block_id as string,
+		)!;
+		const submit = (renderedCurrency: string) =>
+			sandbox!.invokeRoute("admin", {
+				type: "form_submit",
+				action_id: "coupons:save",
+				values: { ...FIVEOFF_PREFILL, amount: "600", minSubtotal: "3500" },
+				block_id: encodeCarrier("coupons:edit", { ...real, renderedCurrency }),
+			});
+		// Claiming USD (hundredths) does not re-scale "600": it is refused.
+		const refused = blocksOf(await submit("USD"));
+		expect(String(bannerOf(refused)?.description)).toMatch(/currency changed since you opened it/);
+		expect((await stored("c-five"))?.amountCents).toBe(500);
+		// Claiming "unbound" (empty) is refused the same way.
+		expect(String(bannerOf(blocksOf(await submit("")))?.description)).toMatch(
+			/currency changed since you opened it/,
+		);
+		expect((await stored("c-five"))?.amountCents).toBe(500);
+		// A form with NO watermark (rendered before it existed) is refused, to be reloaded.
+		const { renderedCurrency: _gone, ...noWatermark } = real;
+		const stale = blocksOf(
+			await sandbox!.invokeRoute("admin", {
+				type: "form_submit",
+				action_id: "coupons:save",
+				values: { ...FIVEOFF_PREFILL, amount: "600", minSubtotal: "3500" },
+				block_id: encodeCarrier("coupons:edit", noWatermark),
+			}),
+		);
+		expect(String(bannerOf(stale)?.description)).toMatch(/form is out of date/);
+		expect((await stored("c-five"))?.amountCents).toBe(500);
+		// The true watermark saves, read in the STORED currency: 600 yen.
+		await submit("JPY");
+		expect((await stored("c-five"))?.amountCents).toBe(600);
+	});
+
+	test("a BOUND percentage coupon names its currency on the cap and minimum labels, and the detail says it applies only there", async () => {
+		const state = makeCouponsState();
+		const summer = state.coupons.find((c) => c.id === "c-summer");
+		if (summer === undefined) throw new Error("fixture moved");
+		summer.currency = "JPY";
+		summer.capCents = 500;
+		await boot(state);
+		const blocks = await openCoupon("SUMMER25");
+		const byId = new Map(formFields(blocks, "coupons:save").map((f) => [f.action_id, f]));
+		expect(byId.get("cap")?.label).toBe("Discount cap (optional, JPY)");
+		expect(byId.get("minSubtotal")?.label).toBe("Minimum spend (optional, JPY)");
+		expect(byId.get("cap")?.initial_value).toBe("500");
+		const fields = detailFields(blocks);
+		expect(fields.get("Currency")).toBe("JPY — applies only to carts in JPY");
+	});
+
+	test("a MINIMUM-ONLY bound coupon works like a cap-bound one: a minimum with a currency binds it", async () => {
+		const state = makeCouponsState();
+		const summer = state.coupons.find((c) => c.id === "c-summer");
+		if (summer === undefined) throw new Error("fixture moved");
+		summer.capCents = null;
+		await boot(state);
+		const blocks = await openCoupon("SUMMER25");
+		await submitForm(blocks, "coupons:save", {
+			ratePercent: "10.00",
+			expiresAt: "2026-09-01",
+			showLimits: true,
+			cap: "",
+			minSubtotal: "3000",
+			currency: "JPY",
+		});
+		expect(await stored("c-summer")).toMatchObject({
+			capCents: null,
+			minSubtotalCents: 3000,
+			currency: "JPY",
+		});
+	});
+
+	test("binding a THREE-decimal currency on EDIT saves with the plain notice a create gives", async () => {
+		const state = makeCouponsState();
+		const summer = state.coupons.find((c) => c.id === "c-summer");
+		if (summer === undefined) throw new Error("fixture moved");
+		summer.capCents = null;
+		await boot(state);
+		const saved = await submitForm(await openCoupon("SUMMER25"), "coupons:save", {
+			ratePercent: "10.00",
+			expiresAt: "2026-09-01",
+			showLimits: true,
+			cap: "1.500",
+			currency: "KWD",
+		});
+		expect(bannerOf(saved)?.variant).toBe("default");
+		expect(String(bannerOf(saved)?.description)).toBe(
+			"Every field was replaced with the submitted values (last write wins). Orders already placed keep their snapshotted discount.",
+		);
+		expect(await stored("c-summer")).toMatchObject({ capCents: 1500, currency: "KWD" });
 	});
 
 	test("CLEAR semantics: blanking a pre-filled field saves it as an explicit null, and the reloaded detail shows it cleared", async () => {
@@ -2202,6 +2549,7 @@ describe("admin Coupons console — detail/edit leaf (workerd sandbox)", () => {
 				couponId: real.couponId!,
 				code: real.code!,
 				type: real.type!,
+				renderedCurrency: real.renderedCurrency!,
 				curExpiresAt: bogus,
 			});
 			const outcome = blocksOf(
@@ -2430,3 +2778,27 @@ describe("admin Coupons console — detail/edit leaf (workerd sandbox)", () => {
 		); // true-zero, unfiltered — the `empty` branch
 	});
 });
+
+/** Make ONLY the settings document unreadable for `body`, restoring it after —
+ *  the bridge resolves `storage[name]` fresh on every call. */
+async function withSettingsUnreadable<T>(body: () => Promise<T>): Promise<T> {
+	const real = storage[SETTINGS_COLLECTION];
+	if (real === undefined) throw new Error("no settings collection to fault-inject");
+	storage[SETTINGS_COLLECTION] = new Proxy(real, {
+		get(_holder, property) {
+			if (property === "get" || property === "getVersioned") {
+				return () => {
+					throw new Error("injected storage fault: settings unreadable");
+				};
+			}
+			const value = Reflect.get(real, property) as unknown;
+			if (typeof value !== "function") return value;
+			return (value as (...args: unknown[]) => unknown).bind(real);
+		},
+	}) as StorageAccess[string];
+	try {
+		return await body();
+	} finally {
+		storage[SETTINGS_COLLECTION] = real;
+	}
+}
