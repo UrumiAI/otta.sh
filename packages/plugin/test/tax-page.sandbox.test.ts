@@ -1822,7 +1822,84 @@ describe("admin Tax console — one rate per (class, zone) (workerd sandbox)", (
 		assertBlockContract(ignoredDetail, { screen: "tax", level: "list" });
 	});
 
-	test("the table view (past 25 rates) shows an ignored duplicate's shipping flag as still counting", async () => {
+	// Issue #447: only the "legacy" shipping tax class reads an ignored duplicate's
+	// shipping flag; "fixed" and "inherit" read the applied rate's alone, so there
+	// the admin must say the ignored rate taxes nothing.
+	async function useShippingTaxClass(
+		shippingTaxClass: { kind: "inherit" } | { kind: "fixed"; taxClassId: string },
+	): Promise<void> {
+		await settingsStore.update(
+			{
+				tax: {
+					enabled: true,
+					pricesIncludeTax: false,
+					basedOn: "shipping",
+					baseAddress: null,
+					shippingTaxClass,
+					roundAtSubtotal: false,
+					displayCart: "excl",
+					totalsDisplay: "itemized",
+				},
+			},
+			idempotencyKey(`shipping-class-${shippingTaxClass.kind}`),
+		);
+	}
+
+	test("under 'based on cart items', an ignored duplicate is shown as taxing nothing — shipping included", async () => {
+		await seedRules({
+			rates: [
+				{
+					id: "std-us",
+					taxClassId: "standard",
+					zoneId: "us",
+					rateBps: 725,
+					appliesToShipping: true,
+				},
+			],
+		});
+		await seedLegacyRate({
+			id: "std-us-b",
+			taxClassId: "standard",
+			zoneId: "us",
+			rateBps: 900,
+			appliesToShipping: false,
+		});
+		await useShippingTaxClass({ kind: "inherit" });
+		const blocks = await openClass("standard");
+		const body = groupBlocks(blocks, "tax:rate:std-us");
+		expect(contextTexts(body)).toContain(
+			"Duplicate: only std-us-b applies to United States, so this rate taxes nothing (goods or shipping). Delete the one you don't want.",
+		);
+		expect(field(formFor(body, "tax:save-rate"), "appliesToShipping")?.label).toBe(
+			"Applies to shipping — only if this rate becomes the active one",
+		);
+		const detail = await clickButton("tax:open", {
+			target: encodePath(["standard", "std-us"]),
+		});
+		expect(field(formFor(detail, "tax:save-rate"), "appliesToShipping")?.label).toBe(
+			"Applies to shipping — only if this rate becomes the active one",
+		);
+		assertBlockContract(blocks, { screen: "tax", level: "list" });
+		assertBlockContract(detail, { screen: "tax", level: "list" });
+	});
+
+	test("under a fixed shipping tax class, the table view shows an ignored duplicate's shipping flag as not applied", async () => {
+		const spread = ratesAcrossZones(26, () => ({ rateBps: 1000, appliesToShipping: false }));
+		await seedRules(spread);
+		await seedLegacyRate({
+			id: "a-old",
+			taxClassId: "standard",
+			zoneId: "us",
+			rateBps: 500,
+			appliesToShipping: true,
+		});
+		await useShippingTaxClass({ kind: "fixed", taxClassId: "standard" });
+		const blocks = await openClass("standard");
+		const row = tableRows(blocks).find((r) => r.id === "a-old");
+		expect(row?.appliesToShipping).toBe("yes (not applied — duplicate ignored)");
+	});
+
+	test("the table view (past 25 rates) shows an ignored duplicate's shipping flag as still counting (legacy shipping tax class)", async () => {
 		const spread = ratesAcrossZones(26, () => ({ rateBps: 1000, appliesToShipping: false }));
 		await seedRules(spread);
 		// r0 sits in "us"; add an ignored duplicate of it with shipping ON (its id sorts

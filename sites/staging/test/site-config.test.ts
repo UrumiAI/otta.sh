@@ -3,7 +3,7 @@
  * staging site. The descriptor builder and the emdash options are pure
  * modules precisely so this file can pin them:
  *  - the Otta plugin descriptor is standard-format, entrypoint
- *    `@otta-sh/plugin/plugin`, capabilities EXACTLY the manifest's, and its
+ *    `@otta-sh/plugin/trusted` (the plugin with `trustedHost` on), capabilities EXACTLY the manifest's, and its
  *    allowedHosts is exactly the in-process egress list — Stripe's API host
  *    plus whatever the deployment's egress supplies (nothing today) (the
  *    egress gate that holds even in trusted mode — ADR-0006);
@@ -75,7 +75,7 @@ describe("ottaPluginDescriptor", () => {
 		const trusted = (await import("@otta-sh/plugin/trusted")).default;
 		const plain = (await import("@otta-sh/plugin/plugin")).default;
 		expect(trusted).toBe(plain);
-		const { isTrustedHost } = await import("@otta-sh/plugin/trusted");
+		const { isTrustedHost } = await import("@otta-sh/plugin/testing");
 		expect(isTrustedHost()).toBe(true);
 	});
 

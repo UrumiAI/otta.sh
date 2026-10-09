@@ -42,7 +42,9 @@ the service they choose, not to core).
    before; only the display rate it reports is capped at 1000%.
 3. **Registration.** A site gives em-dash its own entry module containing
    `export default createOttaPlugin({ taxCalculator })` and points the descriptor's
-   `entrypoint` at it. That em-dash bundles a site-local entrypoint like the package
+   `entrypoint` at it. A site registered in-process should also pass `trustedHost: true`
+   there (issue #447): its own entry replaces `@otta-sh/plugin/trusted`, which is what
+   turns on the abort signal on Stripe calls. That em-dash bundles a site-local entrypoint like the package
    one was proven by a build spike, not by a committed test. em-dash imports the
    entrypoint from a generated virtual module, so a relative path does not resolve: the
    site must give an absolute path (for example

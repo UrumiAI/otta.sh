@@ -68,6 +68,8 @@ export interface TaxRequest {
 	 * after the abort is discarded either way. Present on every request Otta
 	 * makes to an outside calculator. NOT enumerable, so a calculator that
 	 * forwards the request as JSON does not send it (and a spread copy drops it).
+	 * An exception thrown by the calculator's own abort listener surfaces as that
+	 * calculator's uncaught error, not as a refusal.
 	 */
 	readonly signal?: AbortSignal;
 	currency: Currency;

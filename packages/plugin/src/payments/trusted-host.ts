@@ -15,6 +15,11 @@
  * signal in `init` either fails every call (0.38's RPC refuses to clone it) or
  * is dropped (1.0.1). So the default is `false`, and the sandbox entry — which
  * loads the default export — can never turn it on.
+ *
+ * PROCESS-WIDE AND STICKY. One module slot per isolate: the last
+ * `createOttaPlugin({ trustedHost })` wins and nothing resets it. Never load the
+ * trusted entry in the same isolate as a registration that must keep sandbox
+ * semantics.
  */
 
 let trusted = false;

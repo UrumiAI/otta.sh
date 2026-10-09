@@ -11,6 +11,4 @@
  */
 import { createOttaPlugin } from "./plugin.js";
 
-export { isTrustedHost } from "./payments/trusted-host.js";
-
 export default createOttaPlugin({ trustedHost: true });
