@@ -9,6 +9,10 @@ async function fill(country) {
 	const select = listOf(country);
 	if (!select) return true;
 	const wanted = country.value;
+	if (select.dataset.regionCountry !== wanted) {
+		select.replaceChildren(select.options[0]); // never pick from another country's list
+		select.dataset.regionCountry = "";
+	}
 	let options = [];
 	try {
 		if (wanted !== "") {

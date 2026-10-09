@@ -214,6 +214,7 @@ test.describe("the state/province pick list (no client JS)", () => {
 			await expect(region).toHaveValue("");
 			await country.selectOption("US");
 			await expect(region).toHaveValue("");
+			await expect(region.locator('option[value="CA"]')).toHaveText("California");
 
 			// AUTOFILL-STYLE country change (the browser sets the country and a
 			// state at once, firing change): the state picked on the old list is
