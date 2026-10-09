@@ -944,25 +944,27 @@ describe("storefront/checkout/summary — the zone derived from the destination 
 		expect(result["storeCountry"]).toBe("US");
 	});
 
-	test("a state of a country served only BY STATE is refused for its region (blames: region); a country nobody serves is not", async () => {
+	test("a state of a country SHIPPED to only by state is refused for its region (blames: region); a tax-only state zone, or a country nobody serves, is not", async () => {
 		const rules = new EmdashShippingRulesStore({ storage, clock: systemClock });
 		const ON = `${NS}-p2-ca-on`;
+		const ON_STD = `${NS}-p2-ca-on-std`;
 		await rules.createZone({ id: ON, name: "Ontario", regions: ["CA-ON"] });
 		try {
-			const quebec = await summary({
-				cartId: await p2Cart(),
-				destination: { country: "CA", region: "QC" },
-			});
-			expect(quebec["selectionErrors"]).toEqual({
-				destination: { reason: "SHIPPING_ZONE_NOT_MATCHED", blames: "region" },
-			});
-			const japan = await summary({
-				cartId: await p2Cart(),
-				destination: { country: "JP", region: "13" },
-			});
-			expect(japan["selectionErrors"]).toEqual({
+			const cartId = await p2Cart();
+			const at = (r: Record<string, unknown>) => r["selectionErrors"];
+			// A state zone with NO methods (one that only carries a tax rate) ships
+			// nowhere: the refusal is about the country, in the country's words.
+			expect(at(await summary({ cartId, destination: { country: "CA", region: "QC" } }))).toEqual({
 				destination: { reason: "SHIPPING_ZONE_NOT_MATCHED" },
 			});
+			await rules.createMethod({ id: ON_STD, zoneId: ON, name: "Ontario Post", type: "flat_rate" });
+			expect(at(await summary({ cartId, destination: { country: "CA", region: "QC" } }))).toEqual({
+				destination: { reason: "SHIPPING_ZONE_NOT_MATCHED", blames: "region" },
+			});
+			expect(at(await summary({ cartId, destination: { country: "JP", region: "13" } }))).toEqual({
+				destination: { reason: "SHIPPING_ZONE_NOT_MATCHED" },
+			});
+			await rules.deleteMethod(ON_STD);
 		} finally {
 			await rules.deleteZone(ON);
 		}
