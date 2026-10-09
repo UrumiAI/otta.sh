@@ -11,7 +11,13 @@ import { beforeAll, describe, expect, test } from "vitest";
 import type { CheckoutSummaryView } from "@otta-sh/plugin";
 import { byLabel, countryOptions } from "../src/lib/countries.js";
 import { subdivisionOptions } from "@otta-sh/plugin/subdivisions";
-import { regionChoice, regionOutsideCountry, regionToDropSilently } from "../src/lib/regions.js";
+import {
+	regionChoice,
+	regionContainsOthers,
+	regionListVersion,
+	regionOutsideCountry,
+	regionToDropSilently,
+} from "../src/lib/regions.js";
 import { GET as REGIONS_GET } from "../src/pages/checkout/regions.js";
 import type { CheckoutModel } from "../src/themes/contract.js";
 import CheckoutView from "../src/themes/tempered/CheckoutView.astro";
@@ -54,12 +60,14 @@ describe("regionChoice", () => {
 			options: [],
 			groups: [],
 			selected: "",
+			version: regionListVersion(),
 		});
 		expect(regionChoice("", "CA", "en-US")).toEqual({
 			country: "",
 			options: [],
 			groups: [],
 			selected: "",
+			version: regionListVersion(),
 		});
 		expect(regionChoice("ZZ", "CA", "en-US").options).toEqual([]);
 	});
@@ -105,6 +113,17 @@ describe("a country with more than one level is grouped by its top level", () =>
 		expect(us.groups).toHaveLength(1);
 		expect(us.groups[0]?.label).toBeNull();
 		expect(us.options.every((o) => o.group === undefined)).toBe(true);
+	});
+});
+
+describe("regionContainsOthers — when 'pick a more specific one' is the right words", () => {
+	test("a subdivision containing others; never a leaf, a one-level country or a non-code", () => {
+		expect(regionContainsOthers("ES", "CN")).toBe(true);
+		expect(regionContainsOthers("gb", "gb-nir")).toBe(true);
+		expect(regionContainsOthers("ES", "TF")).toBe(false);
+		expect(regionContainsOthers("US", "CA")).toBe(false);
+		expect(regionContainsOthers("ES", "")).toBe(false);
+		expect(regionContainsOthers("ES", "XX")).toBe(false);
 	});
 });
 

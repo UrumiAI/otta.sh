@@ -1156,4 +1156,9 @@ describe("/checkout: the store's country is preselected only for a buyer who cho
 			"We don't ship to this state/province.",
 		);
 	});
+	test("a region picked but containing zoned smaller ones asks for the more specific one, in its own words", () => {
+		expect(page).toMatch(/regionContainsOthers\(askedFor\.country, regionValue\)/);
+		expect(page).toMatch(/cartErrorMessage\("SHIPPING_REGION_TOO_BROAD"\)/);
+		expect(cartErrorMessage("SHIPPING_REGION_TOO_BROAD")).toMatch(/more specific state\/province/);
+	});
 });

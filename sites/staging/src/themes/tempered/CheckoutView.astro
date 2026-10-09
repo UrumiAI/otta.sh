@@ -295,6 +295,7 @@ const {
 									id="delivery-region"
 									name="deliveryRegion"
 									data-region-country={deliveryRegions.country}
+									data-region-version={deliveryRegions.version}
 									form="checkout-place"
 									autocomplete="address-level1"
 									required={deliveryRegionRequired}
@@ -324,7 +325,7 @@ const {
 										Leave blank if your address doesn't use one.
 									</span>
 									<span data-region-update>
-										Changed the country? Select Update delivery to see its list.
+										Changed the country? Select Update delivery first, to see its list before you continue.
 									</span>
 								</span>
 							</div>
@@ -666,6 +667,7 @@ const {
 													id="address-region"
 													name="region"
 													data-region-country={addressRegions.country}
+													data-region-version={addressRegions.version}
 													autocomplete="address-level1"
 													aria-invalid={fieldErrors.region !== undefined}
 													aria-describedby={fieldErrors.region !== undefined ? "region-error" : undefined}

@@ -71,7 +71,7 @@ import {
 	readMethodParam,
 } from "../../lib/checkout-selection.js";
 import { countryName, countryOptions } from "../../lib/countries.js";
-import { regionChoice } from "../../lib/regions.js";
+import { regionChoice, regionContainsOthers } from "../../lib/regions.js";
 import { SITE_LOCALE } from "../../lib/site-locale.js";
 import { cartErrorMessage } from "../../lib/error-messages.js";
 import { checkoutFootnote } from "../../lib/totals.js";
@@ -198,6 +198,11 @@ const destination = summary.selection.destination;
  *  chosen and its state/province list is offered (deliveryFieldValues). */
 const askedFor = deliveryFieldValues(destination, destinationRead);
 const regionValue = askedFor.region;
+/** The plugin asked for a region although one was picked: it contains smaller
+ *  ones the store zones (ADR-0021) — the buyer picks the one inside it. */
+const regionTooBroad =
+	destinationError?.reason === "SHIPPING_REGION_CODE_REQUIRED" &&
+	regionContainsOthers(askedFor.country, regionValue);
 
 /** The delivery block: an unlocked cart that ships, in a store with zones. */
 const showDelivery = locked === null && summary.requiresShipping && summary.shipping.status !== "no_zones";
@@ -346,7 +351,9 @@ const model: CheckoutModel = {
 			? null
 			: regionNotServed
 				? cartErrorMessage("SHIPPING_REGION_NOT_SERVED")
-				: cartErrorMessage(destinationError.reason),
+				: regionTooBroad
+					? cartErrorMessage("SHIPPING_REGION_TOO_BROAD")
+					: cartErrorMessage(destinationError.reason),
 	/* The REGION is what was refused — missing where a zone needs it, not one
 	   of the country's codes, or not even code-shaped (the site's own check uses
 	   the same reason). A country-level refusal ("we don't ship here") is not. */

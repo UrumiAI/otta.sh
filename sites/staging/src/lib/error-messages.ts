@@ -142,6 +142,11 @@ const MESSAGES: Record<string, string> = {
 	/* The site's own copy for SHIPPING_ZONE_NOT_MATCHED when the plugin blames
 	   the region: other states/provinces of that country are served. */
 	SHIPPING_REGION_NOT_SERVED: "We don't ship to this state/province.",
+	/* The site's own copy for SHIPPING_REGION_CODE_REQUIRED when the buyer DID
+	   pick one, but it contains smaller ones the store prices differently (the
+	   Canary Islands, with Tenerife zoned): pick the one inside it. */
+	SHIPPING_REGION_TOO_BROAD:
+		"Choose the more specific state/province your address is in — this store prices them separately.",
 	REGION_LIST_UPDATED:
 		"We've updated the state/province list for the country you chose — pick yours (or leave it blank if none applies), then continue.",
 	/* The site's own: a step that must come back with what was typed (Update,

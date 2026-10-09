@@ -15,7 +15,7 @@
  * dropped and asked for again.
  */
 import { COUNTRY_CODES, isCodeShapedRegion, normalizeSubdivision } from "@otta-sh/plugin";
-import { subdivisionOptions } from "@otta-sh/plugin/subdivisions";
+import { subdivisionDataVersion, subdivisionOptions } from "@otta-sh/plugin/subdivisions";
 import { byLabel } from "./countries.js";
 
 export interface RegionOption {
@@ -50,6 +50,10 @@ export interface RegionChoice {
 	 *  ungrouped; groups and the rest are sorted by label. Every level stays
 	 *  pickable (zones match through containment, ADR-0021). */
 	groups: readonly RegionGroup[];
+	/** What `/checkout/regions` serves, as a cache key: the data's fingerprint
+	 *  plus this file's list format. The script sends it as `&v=`, so a data
+	 *  refresh (or a format change) is never served from a day-old cache. */
+	version: string;
 	/** The code to preselect: `value` read as one of `country`'s codes (`ca`,
 	 *  `US-CA` and `CA` are all `CA`), else "" — a value that is not one of them
 	 *  selects nothing rather than inventing an option. */
@@ -133,17 +137,27 @@ function listFor(country: string, locale: string): RegionList {
 	return list;
 }
 
+/** Bump when the shape or order of a list changes without the data changing. */
+const LIST_FORMAT = "g1";
+
+/** See {@link RegionChoice.version}. */
+export function regionListVersion(): string {
+	return `${subdivisionDataVersion()}-${LIST_FORMAT}`;
+}
+
 /** The pick list for `country`, with `value` (a stored or typed region) preselected. */
 export function regionChoice(country: string, value: string, locale: string): RegionChoice {
 	const code = country.trim().toUpperCase();
 	const { options, groups } = listFor(code, locale);
-	if (options.length === 0) return { country: code, options, groups, selected: "" };
+	const version = regionListVersion();
+	if (options.length === 0) return { country: code, options, groups, selected: "", version };
 	const read = normalizeSubdivision(code, value);
 	return {
 		country: code,
 		options,
 		groups,
 		selected: read.ok && read.code !== null ? read.code : "",
+		version,
 	};
 }
 
@@ -181,4 +195,15 @@ export function regionToDropSilently(
 	return (
 		(region ?? "").trim() !== "" && COUNTRY_CODES.has(code) && subdivisionOptions(code).length === 0
 	);
+}
+
+/** Is `region` one of `country`'s subdivisions that CONTAINS others (Spain's
+ *  Canary Islands)? A store may zone the smaller ones, so the plugin can ask
+ *  for one of them (SHIPPING_REGION_CODE_REQUIRED for a region that was given). */
+export function regionContainsOthers(country: string, region: string): boolean {
+	const code = country.trim().toUpperCase();
+	const read = normalizeSubdivision(code, region);
+	if (!read.ok || read.code === null) return false;
+	const bare = read.code;
+	return subdivisionOptions(code).some((option) => option.parent === bare);
 }
