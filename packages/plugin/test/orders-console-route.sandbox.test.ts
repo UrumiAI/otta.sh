@@ -272,12 +272,9 @@ describe("the console's read/write branch on the otta admin route", () => {
 		for (const { id, text } of cells) {
 			// As printed, `#` and all.
 			expect(rowsOf(await list({ search: text })).map((o) => o["id"])).toEqual([id]);
-			// Without the `#`: a bare id prefix — for every cell that does not cross
-			// the UUID's first hyphen (only a 32-bit collision makes one that does).
-			const digits = text.slice(1);
-			if (digits.length <= 8) {
-				expect(rowsOf(await list({ search: digits })).map((o) => o["id"])).toEqual([id]);
-			}
+			// Without the `#`: the same number, so even a tie-breaker that crosses the
+			// UUID's first hyphen finds its order.
+			expect(rowsOf(await list({ search: text.slice(1) })).map((o) => o["id"])).toEqual([id]);
 		}
 	});
 
@@ -296,6 +293,8 @@ describe("the console's read/write branch on the otta admin route", () => {
 		expect(result["total"]).toBe(2);
 		expect(result["searchedByNumber"]).toBe(true);
 		expect((await list({ search: "hashsku" }))["searchedByNumber"]).toBeUndefined();
+		// A bare number (no `#`) is one too, so the console shows the same note.
+		expect((await list({ search: "12345" }))["searchedByNumber"]).toBe(true);
 	});
 
 	test("the EXACT count is the whole filtered set even when it is larger than one page", async () => {

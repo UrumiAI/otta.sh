@@ -77,6 +77,7 @@ import {
 	formatTimestamp,
 	maskBuyerEmail,
 	orderStateCell,
+	orderNumberOf,
 	parseMinorUnitsInput,
 	reconciliationAlertSentence,
 	reconciliationSummary,
@@ -1204,7 +1205,7 @@ export function OrderDetail({
 							// the identity.
 							"Order number",
 							<span key="number" data-testid="detail-order-number">
-								{order.orderNumber}
+								{orderNumberOf(order)}
 							</span>,
 						],
 						[

@@ -105,6 +105,7 @@ export { SHORT_ID_MIN, shortIdsFor } from "./short-id.js";
 export {
 	ORDER_CONFIRM_DIGITS,
 	orderConfirmLabel,
+	orderNumberOf,
 	withOrderNumberCells,
 	type OrderNumberCell,
 } from "./order-number.js";

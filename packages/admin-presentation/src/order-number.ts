@@ -2,9 +2,9 @@
  * The admin console's side of the order NUMBER (ADR-0033).
  *
  * The number itself ("#3F9A2") is the domain's `orderNumber`, computed by the server
- * and sent on every admin order row; this module never spells one. It only tells
- * apart rows on one page that SHARE a number, and names the order in the refund
- * confirm.
+ * and sent on every admin order row; this module spells one only for a row from an
+ * older server that sent none ({@link orderNumberOf}). It tells apart rows on one
+ * page that SHARE a number, and names the order in the refund confirm.
  */
 import { shortIdsFor } from "./short-id.js";
 
@@ -13,6 +13,19 @@ import { shortIdsFor } from "./short-id.js";
 export interface OrderNumberCell {
 	readonly number: string;
 	readonly extension: string;
+}
+
+/**
+ * A row's order number: the one the server sent, or — from a server published
+ * before the field existed (the plugin and the console ship separately) — the
+ * domain's `orderNumber` rule applied here: `#` + the id's first five characters,
+ * upper-cased. `@otta-sh/plugin`'s tests pin that this matches the domain.
+ */
+export function orderNumberOf(order: {
+	readonly id: string;
+	readonly orderNumber?: string | undefined;
+}): string {
+	return order.orderNumber ?? `#${order.id.slice(0, 5).toUpperCase()}`;
 }
 
 /** An id's characters as a number reads them: `-` removed, folded. */
@@ -27,12 +40,13 @@ function hexOf(id: string): string {
  * the cell is hex only and the admin search accepts it as a number.
  */
 export function withOrderNumberCells<
-	O extends { readonly id: string; readonly orderNumber: string },
+	O extends { readonly id: string; readonly orderNumber?: string | undefined },
 >(orders: readonly O[]): Array<{ readonly order: O; readonly cell: OrderNumberCell }> {
 	const groups = new Map<string, O[]>();
 	for (const o of orders) {
-		const group = groups.get(o.orderNumber);
-		if (group === undefined) groups.set(o.orderNumber, [o]);
+		const number = orderNumberOf(o);
+		const group = groups.get(number);
+		if (group === undefined) groups.set(number, [o]);
 		else group.push(o);
 	}
 	const extensions = new Map<string, string>();
@@ -50,7 +64,7 @@ export function withOrderNumberCells<
 	}
 	return orders.map((order) => ({
 		order,
-		cell: { number: order.orderNumber, extension: extensions.get(order.id) ?? "" },
+		cell: { number: orderNumberOf(order), extension: extensions.get(order.id) ?? "" },
 	}));
 }
 

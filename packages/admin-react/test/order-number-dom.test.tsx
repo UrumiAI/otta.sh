@@ -222,3 +222,27 @@ test("the note shows whenever the server read the search as an order number — 
 		"Order numbers can be shared. Confirm the buyer, date and total.",
 	);
 });
+
+test("version skew: a row or detail from a server older than the field still shows its number", async () => {
+	const OLD = "7e4ce728-0000-4000-8000-000000000000";
+	respond({
+		ok: true,
+		orders: [{ ...row(OLD, "#7E4CE"), orderNumber: undefined }],
+		nextCursor: null,
+		vocabulary: VOCABULARY,
+	});
+	const node = <OrdersList onOpen={() => undefined} />;
+	mounted = await mount(node);
+	await mounted.rerender(node);
+	expect(link(mounted.container, OLD).textContent).toBe("#7E4CE");
+	expect(mounted.container.textContent).not.toContain("undefined");
+	await mounted.unmount();
+	mounted = null;
+
+	const { orderNumber: _dropped, ...order } = detail("#3F9A2").order;
+	const container = await showDetail({ ...detail("#3F9A2"), order });
+	expect(container.querySelector('[data-testid="detail-order-number"]')?.textContent).toBe(
+		"#3F9A2",
+	);
+	expect(container.textContent).not.toContain("undefined");
+});
