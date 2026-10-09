@@ -366,6 +366,97 @@ export function couponStoreContract(
 			expect((await store.findById("c1"))?.maxUses).toBe(5);
 		});
 
+		test("update BINDS a currency to a coupon that has none, and never changes a set one", async () => {
+			const { store } = await makeStore();
+			const percentage = fixedCoupon({
+				id: "p1",
+				code: "TENOFF",
+				type: "percentage",
+				amountCents: null,
+				rateBps: 1000,
+				currency: null,
+			});
+			await store.create(percentage);
+			const bound = await store.update(
+				"p1",
+				updateInput({
+					amountCents: null,
+					rateBps: 1000,
+					capCents: cents(500),
+					bindCurrency: currency("JPY"),
+				}),
+			);
+			expect(bound.ok && bound.coupon.currency).toBe("JPY");
+			expect((await store.findById("p1"))?.currency).toBe("JPY");
+			// A second bind, and an edit with none, leave it as it is.
+			await store.update(
+				"p1",
+				updateInput({ amountCents: null, rateBps: 1000, bindCurrency: currency("EUR") }),
+			);
+			await store.update("p1", updateInput({ amountCents: null, rateBps: 1000 }));
+			expect((await store.findById("p1"))?.currency).toBe("JPY");
+			// A fixed coupon's currency is never rebound.
+			await store.create(fixedCoupon());
+			await store.update("c1", updateInput({ bindCurrency: currency("EUR") }));
+			expect((await store.findById("c1"))?.currency).toBe("USD");
+		});
+
+		test("update's expectCurrency PRECONDITION: a bind that lands between a caller's read and its write refuses that write, and nothing is written", async () => {
+			const { store } = await makeStore();
+			await store.create(
+				fixedCoupon({
+					id: "p1",
+					code: "TENOFF",
+					type: "percentage",
+					amountCents: null,
+					rateBps: 1000,
+					currency: null,
+				}),
+			);
+			// A reads the coupon UNBOUND and parses its cap "5.00" as 500 hundredths…
+			const readByA = await store.findById("p1");
+			expect(readByA?.currency).toBeNull();
+			// …B binds JPY with a ¥300 cap…
+			await store.update(
+				"p1",
+				updateInput({
+					amountCents: null,
+					rateBps: 1000,
+					capCents: cents(300),
+					bindCurrency: currency("JPY"),
+					expectCurrency: null,
+				}),
+			);
+			// …so A's write, still expecting unbound, is refused: no ¥500 cap.
+			expect(
+				await store.update(
+					"p1",
+					updateInput({
+						amountCents: null,
+						rateBps: 1000,
+						capCents: cents(500),
+						expectCurrency: null,
+					}),
+				),
+			).toEqual({ ok: false, reason: "currency_moved" });
+			expect(await store.findById("p1")).toMatchObject({ capCents: 300, currency: "JPY" });
+			// Expecting the stored currency writes; no expectation is unchecked.
+			expect(
+				(
+					await store.update(
+						"p1",
+						updateInput({
+							amountCents: null,
+							rateBps: 1000,
+							capCents: cents(400),
+							expectCurrency: currency("JPY"),
+						}),
+					)
+				).ok,
+			).toBe(true);
+			expect((await store.findById("p1"))?.capCents).toBe(400);
+		});
+
 		test("update is not_found for an unknown id (an edit never mints a coupon)", async () => {
 			const { store } = await makeStore();
 			expect(await store.update("nope", updateInput())).toEqual({ ok: false, reason: "not_found" });

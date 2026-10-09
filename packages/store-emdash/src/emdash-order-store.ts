@@ -177,6 +177,7 @@ import {
 	type ReconciliationFlagGuard,
 	type ResolveReconciliationInput,
 	type ResolveReconciliationStoreResult,
+	roundingEntry,
 } from "@otta-sh/domain";
 import {
 	CAS_RETRY,
@@ -1761,6 +1762,7 @@ export class EmdashOrderStore implements OrderStore {
 				shipping: input.totals.shipping ?? cents(0),
 				tax: input.totals.tax ?? cents(0),
 				total: input.totals.total,
+				...roundingEntry("rounding", input.totals.rounding),
 				appliedCouponCode: input.totals.appliedCouponCode ?? null,
 				shippingMethodSnapshot: input.totals.shippingMethodSnapshot ?? null,
 				taxBreakdown: input.totals.taxBreakdown ?? null,
@@ -3184,6 +3186,7 @@ function toOrder(doc: OrderDoc): Order {
 			shipping: doc.totals.shipping,
 			tax: doc.totals.tax,
 			total: doc.totals.total,
+			...roundingEntry("rounding", doc.totals.rounding),
 			appliedCouponCode: doc.totals.appliedCouponCode,
 			shippingMethodSnapshot: doc.totals.shippingMethodSnapshot,
 			taxBreakdown: doc.totals.taxBreakdown,
