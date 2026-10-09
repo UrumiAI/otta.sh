@@ -172,6 +172,8 @@ test.describe("the state/province pick list on a store with a state-level zone (
 		// picked, nothing placed.
 		await country.selectOption("ES");
 		const placeForm = page.locator("form#checkout-place");
+		// (The browser's own validation needs an email before Continue submits.)
+		await placeForm.locator('input[name="email"]').fill("carry-over@example.test");
 		await Promise.all([
 			page.waitForURL(/error=REGION_LIST_UPDATED/, { waitUntil: "load" }),
 			placeForm.locator('button[type="submit"]:not([value])').click(),
