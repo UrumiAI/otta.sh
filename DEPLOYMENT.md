@@ -420,7 +420,7 @@ order of appearance in a deployment's life:
 > total** half-up to 0.010 and shows the difference as a signed "Rounding" row (at most
 > ±0.005); line prices, discounts, shipping and tax stay exact. The rounded total is what is
 > charged, settled and reported. Refunds in these currencies are multiples of 0.010 (or the
-> whole remaining amount); the admin refuses anything else. An amount that is not a multiple
+> whole remaining amount); Otta refuses anything else, whatever asks. An amount that is not a multiple
 > of 10 never reaches Stripe: the adapter refuses it before any network call (intent:
 > `unsupported_amount`; refund: rejected). No other currency changes: no rounding row, no new
 > field, identical Stripe requests. A code outside the table (ISK included)
