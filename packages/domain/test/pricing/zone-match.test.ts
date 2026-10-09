@@ -12,6 +12,13 @@ const US = zone("z-us", ["US"]);
 const US_CA = zone("z-us-ca", ["US-CA"]);
 const DE = zone("z-de", ["DE"]);
 
+const matched = (zoneId: string, matchedRegion: string) => ({
+	status: "matched",
+	zoneId,
+	matchedRegion,
+	ambiguousWith: [],
+});
+
 const physical = (country: string, region: string | null = null) => ({
 	requiresShipping: true,
 	destination: { country, region },
@@ -99,12 +106,6 @@ describe("resolveShippingZone", () => {
 	describe("a subdivision inside another (CLDR containment)", () => {
 		const ES = zone("z-es", ["ES"]);
 		const ES_CN = zone("z-es-cn", ["ES-CN"]);
-		const matched = (zoneId: string, matchedRegion: string) => ({
-			status: "matched",
-			zoneId,
-			matchedRegion,
-			ambiguousWith: [],
-		});
 
 		test("Canary Islands: Santa Cruz de Tenerife (TF) takes the ES-CN zone, not ES", () => {
 			expect(resolveShippingZone([ES, ES_CN], physical("ES", "TF"))).toEqual(
@@ -128,12 +129,8 @@ describe("resolveShippingZone", () => {
 
 		test("Northern Ireland: Belfast (BFS) takes GB-NIR; England's councils take GB", () => {
 			const zones = [zone("z-gb", ["GB"]), zone("z-nir", ["GB-NIR"])];
-			expect(resolveShippingZone(zones, physical("GB", "BFS"))).toEqual(
-				matched("z-nir", "GB-NIR"),
-			);
-			expect(resolveShippingZone(zones, physical("GB", "NIR"))).toEqual(
-				matched("z-nir", "GB-NIR"),
-			);
+			expect(resolveShippingZone(zones, physical("GB", "BFS"))).toEqual(matched("z-nir", "GB-NIR"));
+			expect(resolveShippingZone(zones, physical("GB", "NIR"))).toEqual(matched("z-nir", "GB-NIR"));
 			expect(resolveShippingZone(zones, physical("GB", "KEC"))).toEqual(matched("z-gb", "GB"));
 		});
 
