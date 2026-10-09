@@ -148,7 +148,7 @@ describe("admin route dispatch (workerd sandbox)", () => {
 		if (typeof adminRoute === "function")
 			throw new Error("admin route registered as a bare handler, with no entry object");
 		expect(adminRoute).not.toHaveProperty("permission");
-		expect(Object.keys(adminRoute ?? {}).sort()).toEqual(["handler", "public"]);
+		expect(Object.keys(adminRoute ?? {}).toSorted()).toEqual(["handler", "public"]);
 	});
 
 	test("page_load /reports renders the Reports blocks over real in-process order/inventory data", async () => {
