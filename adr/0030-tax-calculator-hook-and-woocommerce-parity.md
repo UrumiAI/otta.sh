@@ -101,8 +101,11 @@ are now refused — see the amendment below.)
 - An outside calculator is called once per successful quote (a refused quote never
   reaches it) and once at order placement with `purpose: "order"`. A review page can
   quote twice (with and without a preselected method), so a checkout typically costs
-  2–3 calls. Answers are not reused across requests: the order call is the one a
-  provider records as a transaction, and reuse would need a shared cache.
+  2–3 calls. Answers are not reused across requests: reuse would need a shared cache.
+  Neither purpose COMMITS anything (issue #447): the `"order"` call comes before the
+  order exists, the checkout can still fail after it, and a retry under the same key
+  asks again. A calculator must not file a transaction on it; commit from the paid
+  order instead. A same-key replay of a created order does not ask at all.
 - A slow or broken calculator stops checkout with a clear message instead of charging
   the wrong tax.
 - Orders now say which calculator priced them and at what rate and label. A label is

@@ -48,7 +48,18 @@ export interface TaxRequestLine {
 }
 
 export interface TaxRequest {
-	/** "quote" for a review; "order" when an order is about to be placed. */
+	/**
+	 * "quote" for a review; "order" when an order is about to be placed.
+	 *
+	 * NEITHER COMMITS ANYTHING. An "order" request is asked BEFORE the order
+	 * exists, and the checkout can still fail after it answers (stock, coupon,
+	 * payment) — or be retried under the same idempotency key, which asks again
+	 * with the same request. A same-key replay of an order already created does
+	 * NOT ask at all: it returns the order as committed. So a calculator must not
+	 * record a filed transaction (e.g. an Avalara `SalesInvoice` commit) on
+	 * "order"; treat it as an estimate for a likely order, and commit from the
+	 * paid-order event instead.
+	 */
 	purpose: "quote" | "order";
 	currency: Currency;
 	/**
