@@ -307,6 +307,16 @@ const {
 										</option>
 									))}
 								</select>
+								{/* For browser autofill only (never posted; see the address block's). */}
+								<input
+									type="text"
+									class="u-sr-only"
+									tabindex="-1"
+									aria-hidden="true"
+									autocomplete="address-level1"
+									form="checkout-place"
+									data-region-autofill="delivery-region"
+								/>
 								<span class="checkout-note" id="region-note">
 									Leave blank if your address doesn't use one.
 									<span data-region-update>
@@ -653,6 +663,26 @@ const {
 														</option>
 													))}
 												</select>
+												{/* The country this list was rendered for: a region posted under
+												    another country is asked again (place.ts). The script keeps it
+												    in step when it swaps the list. */}
+												<input
+													type="hidden"
+													name="regionCountry"
+													value={addressRegions.country}
+													data-region-list-for="address-region"
+												/>
+												{/* For browser autofill only (never posted): it catches the
+												    state an address card fills, which the script then picks
+												    from the new country's list. */}
+												<input
+													type="text"
+													class="u-sr-only"
+													tabindex="-1"
+													aria-hidden="true"
+													autocomplete="address-level1"
+													data-region-autofill="address-region"
+												/>
 												{fieldErrors.region !== undefined && (
 													<span class="checkout-field-error" id="region-error">
 														{fieldErrors.region}

@@ -73,7 +73,7 @@ import {
 	readFormBody,
 } from "../../lib/otta-api.js";
 import { COUNTRY_CODES, isCodeShapedRegion, ORDER_ADDRESS_MAX_LENGTHS } from "@otta-sh/plugin";
-import { regionOutsideCountry, regionToDropSilently } from "../../lib/regions.js";
+import { hasRegionList, regionOutsideCountry, regionToDropSilently } from "../../lib/regions.js";
 
 /** The site's own token for a form-level email reject — never reaches the
  *  service, which would happily accept the value (`schemas.ts` has no regex). */
@@ -239,12 +239,26 @@ async function place(context: APIContext): Promise<Response> {
 	// (With the optional script the list follows the country as it changes, so
 	// this is the no-JS path.)
 	const addressCountry = formString(form.get("country"));
+	const postedRegion = formString(form.get("region"));
+	// The address block also says which country its list was rendered for
+	// (`regionCountry`; the script keeps it in step). A list drawn for ANOTHER
+	// country than the one posted, where this one has subdivisions, was never
+	// shown for it: a region posted from it is re-asked even if the code exists
+	// here too (GA is Georgia and Goa), and a blank one is shown its list once.
+	// (A view without the field posts none: only the one rule applies.)
+	const listCountry = form.get("regionCountry");
+	const listUnseen =
+		!zoned &&
+		typeof listCountry === "string" &&
+		listCountry.trim().toUpperCase() !== (addressCountry ?? "").toUpperCase() &&
+		hasRegionList(addressCountry);
 	const regionMismatch =
-		!zoned && regionOutsideCountry(addressCountry, formString(form.get("region")));
+		!zoned &&
+		(regionOutsideCountry(addressCountry, postedRegion) ||
+			(listUnseen && postedRegion !== undefined));
 	// …and a leftover region for a country with NO subdivisions goes silently.
 	const regionDropped =
-		regionMismatch ||
-		(!zoned && regionToDropSilently(addressCountry, formString(form.get("region"))));
+		regionMismatch || (!zoned && regionToDropSilently(addressCountry, postedRegion));
 	if (regionDropped) delete draftValues.region;
 	/** The mark every redirect below carries for a dropped region, and the token
 	 *  one with no refusal of its own carries to say why. */
@@ -480,6 +494,16 @@ async function place(context: APIContext): Promise<Response> {
 			checkoutPath({ ...selection, error: ADDRESS_TOO_LONG_TO_KEEP }),
 			ADDRESS_TOO_LONG_TO_KEEP,
 		);
+	}
+	// A blank region for a country whose list the buyer never saw (a no-JS
+	// first choice): shown once, nothing marked — it stays optional after that.
+	// (An address too long to keep would come back empty and ask forever: it
+	// places instead.)
+	if (
+		listUnseen &&
+		checkoutDraftFits({ values: draftValues, errors: {}, error: REGION_LIST_UPDATED })
+	) {
+		return refuse(checkoutPath({ ...selection, error: REGION_LIST_UPDATED }), REGION_LIST_UPDATED);
 	}
 
 	// The signed-in shopper's session, if any. The plugin route is cookie-blind

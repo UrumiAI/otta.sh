@@ -136,11 +136,22 @@ describe.each(REVIEW_VIEWS)("the /checkout form contract — %s", (_label, { sou
 		expect(VIEW).toContain("data-region-field hidden={deliveryRegions.options.length === 0}");
 		expect(VIEW).toContain("data-region-field hidden={addressRegions.options.length === 0}");
 		expect(VIEW).toMatch(/value="update-address"\s+formnovalidate\s+data-region-update/);
-		// No hidden echo of the list's country any more: the server judges the
-		// posted country/region pair (lib/regions.ts, regionOutsideCountry).
-		expect(VIEW).not.toMatch(
-			/name="(?:regionCountry|deliveryRegionCountry|deliveryRegionSelected)"/,
+		// The ADDRESS block records which country its list was drawn for (the
+		// script keeps it in step); the delivery block needs no such record.
+		expect(VIEW).toMatch(
+			/name="regionCountry"\s+value=\{addressRegions\.country\}\s+data-region-list-for="address-region"/,
 		);
+		expect(VIEW).not.toMatch(/name="(?:deliveryRegionCountry|deliveryRegionSelected)"/);
+		// Each list has an autofill catcher: never posted (no name), out of the
+		// tab order and hidden from assistive tech.
+		for (const id of ["address-region", "delivery-region"]) {
+			const hint =
+				new RegExp(`<input[^>]*data-region-autofill="${id}"[^>]*>`).exec(VIEW)?.[0] ?? "";
+			expect(hint, id).toContain('autocomplete="address-level1"');
+			expect(hint, id).toContain('tabindex="-1"');
+			expect(hint, id).toContain('aria-hidden="true"');
+			expect(hint, id).not.toMatch(/\sname=/);
+		}
 	});
 
 	test("the address block's own country has an Update submit that never places and skips validation", () => {

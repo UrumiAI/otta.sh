@@ -138,6 +138,33 @@ test.describe("the state/province pick list (no client JS)", () => {
 		]);
 		await expect(form.locator('select[name="region"]')).toBeHidden();
 		await expect(country).toHaveValue("AQ");
+
+		// A no-JS buyer who picks India and continues WITHOUT Update never saw
+		// its list: it is shown once, nothing marked, nothing placed.
+		const placeSubmit = form.locator('button[type="submit"]:not([value])');
+		const placed = () =>
+			page.waitForResponse(
+				(res) =>
+					new URL(res.url()).pathname === "/checkout/place" && res.request().method() === "POST",
+			);
+		await country.selectOption("IN");
+		await Promise.all([placed(), placeSubmit.click()]);
+		await page.waitForURL(/error=REGION_LIST_UPDATED/, { waitUntil: "load" });
+		await expect(region).toBeVisible();
+		await expect(region.locator('option[value="GA"]')).toHaveText("Goa");
+		await expect(region).not.toHaveAttribute("aria-invalid", "true");
+
+		// GA is Goa here and Georgia in the US: picked from India's list, then the
+		// country changed to the US and placed without Update — asked again, never
+		// sent as Georgia.
+		await region.selectOption("GA");
+		await country.selectOption("US");
+		await Promise.all([placed(), placeSubmit.click()]);
+		await page.waitForURL(/error=REGION_LIST_UPDATED/, { waitUntil: "load" });
+		await expect(country).toHaveValue("US");
+		await expect(region).toHaveValue("");
+		await expect(region.locator('option[value="GA"]')).toHaveText("Georgia");
+		await expect(region).toHaveAttribute("aria-invalid", "true");
 	});
 
 	test.describe("with JavaScript (ADR-0034)", () => {
@@ -179,6 +206,21 @@ test.describe("the state/province pick list (no client JS)", () => {
 			await country.dispatchEvent("change");
 			await expect(region.locator('option[value="CA"]')).toHaveText("California");
 			await expect(region).toHaveValue("CA");
+
+			// SIMULATED AUTOFILL: an address card sets the country, then the state
+			// (into the catcher field the browser fills) — the state is picked from
+			// the new list by NAME, whichever lands first.
+			const hint = form.locator('[data-region-autofill="address-region"]');
+			await country.selectOption("IN");
+			// (Set as autofill sets it: the value, then a change event.)
+			await hint.evaluate((el) => ((el as HTMLInputElement).value = "karnataka"));
+			await hint.dispatchEvent("change");
+			await expect(region).toHaveValue("KA");
+			// …and by CODE, set before the country's list arrives.
+			await hint.evaluate((el) => ((el as HTMLInputElement).value = "ca"));
+			await country.selectOption("US");
+			await expect(region).toHaveValue("CA");
+			await expect(form.locator('input[name="regionCountry"]')).toHaveValue("US");
 
 			await form.locator('input[name="email"]').fill("region-js@example.test");
 			await form.locator('input[name="name"]').fill("Cal Buyer");

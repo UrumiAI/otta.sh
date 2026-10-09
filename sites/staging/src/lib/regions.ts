@@ -85,6 +85,11 @@ export function regionOutsideCountry(
 	return !normalizeSubdivision(code, value).ok;
 }
 
+/** Does `country` have subdivisions — a list to pick from? */
+export function hasRegionList(country: string | undefined): boolean {
+	return subdivisionOptions((country ?? "").trim().toUpperCase()).length > 0;
+}
+
 /** A region left over for a country WITHOUT subdivisions (a list it no longer
  *  has): dropped SILENTLY — there is nothing to pick, so nothing to ask. */
 export function regionToDropSilently(

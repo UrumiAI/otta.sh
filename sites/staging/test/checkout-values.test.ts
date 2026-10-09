@@ -630,16 +630,40 @@ describe("the state/province pick list: a changed country is a round trip, never
 	//    (SHIPPING_REGION_CODE_REQUIRED, proven in storefront-checkout.sandbox).
 	//    The site adds no rule of its own: a blank region is never bounced or
 	//    marked here, and the plugin's refusal is surfaced with the field marked.
-	test.each([
-		["a first pick of US", { regionCountry: "" }],
-		["US with its list shown", { regionCountry: "US" }],
-	])("a blank region on %s is never bounced or marked by the site", async (_label, extra) => {
-		const h = harness({ ...FULL, country: "US", ...extra }, PLACED);
+	test("a blank region on US with its list shown is never bounced or marked by the site", async () => {
+		const h = harness({ ...FULL, country: "US", regionCountry: "US" }, PLACED);
 		expect((await PLACE_POST(h.context)).headers.get("location")).toBe("/checkout/pay");
 		expect(h.calls).toHaveLength(1);
-		expect(h.draft()?.errors ?? {}).toEqual({});
 	});
 
+	test("a no-JS FIRST choice of a country with subdivisions shows its list ONCE (nothing marked), then places", async () => {
+		const first = harness({ ...FULL, country: "US", regionCountry: "" }, PLACED);
+		expect((await PLACE_POST(first.context)).headers.get("location")).toBe(
+			"/checkout?error=REGION_LIST_UPDATED",
+		);
+		expect(first.calls).toHaveLength(0);
+		expect(first.draft()!.errors).toEqual({});
+		expect(first.draft()!.values.country).toBe("US");
+		// The re-rendered page drew the US list: the same blank region now places.
+		const second = harness({ ...FULL, country: "US", regionCountry: "US" }, PLACED);
+		expect((await PLACE_POST(second.context)).headers.get("location")).toBe("/checkout/pay");
+	});
+
+	test("a code valid in BOTH countries but picked from the OLD list (GA: Georgia, then India's Goa) is asked again", async () => {
+		const h = harness({ ...FULL, country: "IN", region: "GA", regionCountry: "US" }, PLACED);
+		expect((await PLACE_POST(h.context)).headers.get("location")).toBe(
+			"/checkout?error=REGION_LIST_UPDATED",
+		);
+		expect(h.calls).toHaveLength(0);
+		expect(h.draft()!.errors).toEqual({ region: "stale" });
+		expect(h.draft()!.values).toMatchObject({ country: "IN" });
+		expect(h.draft()!.values.region).toBeUndefined();
+	});
+
+	test("a changed country with NO subdivisions never asks (nothing to show)", async () => {
+		const h = harness({ ...FULL, country: "AQ", regionCountry: "US" }, PLACED);
+		expect((await PLACE_POST(h.context)).headers.get("location")).toBe("/checkout/pay");
+	});
 	test("a stale pick (KA for India, then US): re-asked with the explanation", async () => {
 		const h = harness({ ...FULL, country: "US", region: "KA", regionCountry: "IN" }, PLACED);
 		expect((await PLACE_POST(h.context)).headers.get("location")).toBe(

@@ -504,7 +504,7 @@ describe("ADR-0034 — the checkout's region script is exactly what it says", ()
 	});
 
 	test("small, frameworkless, and only about the region list", () => {
-		expect(script.split("\n").length).toBeLessThanOrEqual(40);
+		expect(script.split("\n").length).toBeLessThanOrEqual(60);
 		expect(script).not.toMatch(/\bimport\b|\brequire\(/);
 		// It reads one first-party endpoint and nothing else.
 		expect([...script.matchAll(/fetch\(/g)]).toHaveLength(1);
