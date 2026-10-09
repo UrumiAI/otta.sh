@@ -19,10 +19,10 @@ removal from published API.
   `X402_ACCEPTS_KEY`, `DEFAULT_X402_ACCEPTS`, `X402_FACILITATOR_API_KEY_KEY`,
   `x402FacilitatorSecretFromKv` and the `x402Gateway` types. `InProcessEgressUrls` no
   longer has `facilitatorUrl`; its only field is `extraAllowedHosts`
-  (`OTTA_EXTRA_ALLOWED_HOSTS`), so a caller that still passes `facilitatorUrl` no longer
-  type-checks. The
-  `__OTTA_X402_FACILITATOR_URL__` build define is gone: the facilitator host is no longer on
-  `allowedHosts`, which is now Stripe's API host alone. The egress
+  (`OTTA_EXTRA_ALLOWED_HOSTS`); an object literal still passing `facilitatorUrl` fails to
+  type-check, and the value is never read. The `__OTTA_X402_FACILITATOR_URL__` build define
+  is gone: the facilitator host is no longer on `allowedHosts`, which is Stripe's API host
+  plus any operator `OTTA_EXTRA_ALLOWED_HOSTS`. The egress
   plumbing itself (`InProcessEgressUrls`, `IN_PROCESS_EGRESS_URLS`, `resolveAllowedHosts`,
   `resolveInProcessEgress`) is kept for operator-supplied hosts. Settings no longer shows the
   x402 facilitator key, destination wallet or networks fields.

@@ -6,7 +6,7 @@
  * descriptor (ADR-0006). Commerce runs IN-PROCESS in this Worker: there is no
  * separate service to point at. Deployment-supplied egress goes in the `egress`
  * const below, which is baked into the bundle AND fed to the descriptor's
- * allowlist from one place — empty today.
+ * allowlist from one place — today only OTTA_EXTRA_ALLOWED_HOSTS.
  */
 import { existsSync, readFileSync } from "node:fs";
 import cloudflare from "@astrojs/cloudflare";
