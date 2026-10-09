@@ -14,6 +14,7 @@ import {
 	orderId as toOrderId,
 	productId as toProductId,
 	sku as toSku,
+	type OrderTaxSnapshotV1,
 } from "@otta-sh/domain";
 import { FakePaymentGateway } from "@otta-sh/domain/testing";
 import { afterAll, beforeEach, expect, test } from "vitest";
@@ -71,7 +72,9 @@ async function seed(id: string, taxBreakdown: unknown): Promise<string> {
 			subtotal: cents(2000),
 			total: cents(2000),
 			currency: USD,
-			taxBreakdown,
+			// The write port takes today's v1 shape; the older shapes here stand in
+			// for documents written by earlier code, so they are cast at this seam.
+			taxBreakdown: taxBreakdown as OrderTaxSnapshotV1 | null,
 		},
 	});
 	return id;
