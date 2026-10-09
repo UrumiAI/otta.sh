@@ -1,7 +1,0 @@
----
-"@otta-sh/domain": minor
----
-
-Removes the per-cart-line N+1 product-snapshot read on the checkout path by adding a single bulk store method and rewiring the caller to fetch once. Snapshot semantics are unchanged: an order line still snapshots price + title at purchase time, and every per-line null / price / currency / kind check is byte-for-byte identical.
-
-`ProductCommerceStore.getManyByProductId(productIds)` is the bulk companion to `getByProductId` — a raw row read returning the FULL `ProductCommerce` (title / taxClass / productKind included, unlike the narrower `listCommerceByIds` view) keyed by id in a `Map`. It applies no `deleted_at` / sku / price guards (the callers do their own per-line checks); missing ids are absent from the Map, duplicate input ids collapse, and there is no ordering guarantee. `createOrderFromCart` now fetches every priced line's projection in one call instead of one `getByProductId` per line, and an adapter is expected to serve it as a single read — an empty id list short-circuits without touching the store at all.
