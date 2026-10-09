@@ -120,126 +120,140 @@ export function isDraftDirty(saved: PricingDraft, draft: PricingDraft): boolean 
 	return changedFields(saved, draft).length > 0;
 }
 
-/** A currency move a re-read brought under money the merchant entered. */
+/** A currency move found under money the merchant entered. */
 export interface CurrencyChange {
+	/** `priced_elsewhere`: someone priced the product in another currency.
+	 *  `store_default_moved`: the store currency is no longer the one the
+	 *  merchant's amounts were entered against. */
+	readonly kind: "priced_elsewhere" | "store_default_moved";
 	/** The currency the merchant's amounts were entered in (`""`: none chosen). */
 	readonly from: string;
-	/** The product's effective currency now. */
+	/** The currency now in force: the product's, or the store's. */
 	readonly to: string;
 }
 
 /**
- * THE CURRENCY RULE for a re-read under a form the merchant may have used.
- *
- * "Money typed" means the merchant CHANGED a money field (price, compare-at,
- * unit cost) from the record they loaded — compared canonically, so a seeded
- * price does not count — or explicitly picked a currency.
- *  - No money typed: the currency follows the newer record — its stored
- *    currency if priced, else the newer store currency (`""` while unknown).
- *  - Money typed: the currency stays what the merchant saw. If the context they
- *    priced against moved under them — the product was priced elsewhere in
- *    another currency, or the default they were on moved (a store switch, or
- *    unknown becoming known) — it is a CONFLICT, reported with what changed:
- *    never a silent change of currency or amounts.
+ * THE CURRENCY RULE, evaluated STATELESSLY on every merge — the background
+ * re-read and the read-before-save alike — against the FRESH record:
+ *  1. No money typed (no money field changed, no currency picked): the currency
+ *     follows the fresh record — its stored currency if priced, else the fresh
+ *     store currency (`""` while unknown). No conflict.
+ *  2. Priced elsewhere in another currency, money typed: the currency becomes
+ *     the stored one (it is fixed) and it is a conflict that says so.
+ *  3. Unpriced, money typed, NOT picked, and the fresh store currency is not
+ *     the draft's (including `""` → known): the draft keeps its currency and it
+ *     is a conflict until the merchant PICKS a currency — so a save made after
+ *     the store currency moved can never silently price in the old default.
+ *  4. Unpriced and picked: the pick stands; never a store-default conflict.
  */
 export function resolveDraftCurrency(args: {
-	/** The draft as the merchant left it. */
 	draft: PricingDraft;
-	/** The draft the form was loaded with (`draftFromRecord(previous, …)`). */
-	before: PricingDraft;
-	previous: ProductRecord;
-	/** The store currency the form was seeded with. */
-	storeCurrency: string;
-	/** Set only by a UI pick of the currency select. */
+	/** A money field changed, or a currency was picked. */
+	moneyTyped: boolean;
+	/** The currency select was picked in the UI. */
 	picked: boolean;
-	next: ProductRecord;
-	/** The store currency the newer read carried (`""`: still unknown). */
-	nextStoreCurrency: string;
+	fresh: ProductRecord;
+	/** The fresh store currency (`""`: unknown, with no earlier known value). */
+	freshStoreCurrency: string;
 }): { currency: string; change: CurrencyChange | null } {
-	const { draft, before, previous, storeCurrency, picked, next, nextStoreCurrency } = args;
-	const moneyTyped =
-		picked ||
-		[...MONEY_FIELDS].some(
-			(field) =>
-				canonical(field, before[field], before.currency) !==
-				canonical(field, draft[field], draft.currency),
-		);
-	const shown = previous.currency ?? storeCurrency;
-	const now = next.currency ?? nextStoreCurrency;
-	if (!moneyTyped) return { currency: now, change: null };
-	// The merchant priced against `shown` (or a pick of their own). It is a
-	// change only when the context really moved AND it no longer matches their
-	// currency — and a pick is not undone by a moved DEFAULT, only by the product
-	// being priced elsewhere.
-	const moved =
-		now !== shown && now !== draft.currency && (draft.currency === shown || next.currency !== null);
-	return { currency: draft.currency, change: moved ? { from: draft.currency, to: now } : null };
+	const { draft, moneyTyped, picked, fresh, freshStoreCurrency } = args;
+	if (!moneyTyped) return { currency: fresh.currency ?? freshStoreCurrency, change: null };
+	if (fresh.currency !== null) {
+		return fresh.currency === draft.currency
+			? { currency: fresh.currency, change: null }
+			: {
+					currency: fresh.currency,
+					change: { kind: "priced_elsewhere", from: draft.currency, to: fresh.currency },
+				};
+	}
+	if (picked || draft.currency === freshStoreCurrency || freshStoreCurrency === "") {
+		return { currency: draft.currency, change: null };
+	}
+	return {
+		currency: draft.currency,
+		change: { kind: "store_default_moved", from: draft.currency, to: freshStoreCurrency },
+	};
 }
 
 /** The banner for a {@link CurrencyChange}: what changed, and what to do. */
 export function currencyChangeText(change: CurrencyChange): string {
+	if (change.kind === "priced_elsewhere") {
+		const entered = change.from === "" ? "with no currency chosen" : `in ${change.from}`;
+		return `This product was priced in ${change.to} by someone else — your amounts were entered ${entered}. Check every amount before saving.`;
+	}
 	return change.from === ""
-		? `This product's currency is now ${change.to} — choose its currency and check your amounts before saving.`
-		: `This product's currency is now ${change.to} — your amounts were entered in ${change.from}. Check them before saving.`;
+		? `Your store currency is now ${change.to} — choose this product's currency, then save.`
+		: `Your store currency is now ${change.to} — this product will be priced in ${change.from} unless you choose ${change.to}. Pick the currency to confirm, then save.`;
 }
+
+/** The ONE general field-clash banner. */
+export const FIELD_CONFLICT_TEXT =
+	"Someone else changed this product while you were editing. The latest values are shown — check them and save again.";
 
 /**
  * A re-read the merchant did not ask for (a CMS save, a stock movement, a
- * refusal that declined a value) lands a NEWER record under a form they may
- * have typed into. Only the fields THEY changed survive it; every other field
- * takes the newer value, so a save never writes a stale value back over someone
- * else's change under the fresh watermark. A field they changed that ALSO
- * changed in the store is a conflict: the store's value wins FOR THAT FIELD and
- * the merchant is told, because neither edit can be assumed to be the one they
- * want; their other edits stay. The CURRENCY follows {@link resolveDraftCurrency}.
+ * refusal that declined a value) — and the read-before-save — lands a FRESH
+ * record under a form they may have typed into. Only the fields THEY changed
+ * survive it; every other field takes the fresh value, so a save never writes a
+ * stale value back over someone else's change under the fresh watermark. A
+ * field they changed that ALSO changed in the store is a conflict: the store's
+ * value wins FOR THAT FIELD and the merchant is told, because neither edit can
+ * be assumed to be the one they want; their other edits stay. The CURRENCY
+ * follows {@link resolveDraftCurrency}.
+ *
+ * `currencyChange` (and `fieldClash`, telling whether a field clash ALSO
+ * happened, so both messages can show) is present only when the currency rule
+ * raised a conflict — every other result keeps its old shape.
  */
 export function mergeDraft(
 	previous: ProductRecord,
-	next: ProductRecord,
+	fresh: ProductRecord,
 	draft: PricingDraft,
 	opts: {
-		/** The store currency the form was seeded with. */
+		/** The store currency the form was seeded with (what `previous` showed). */
 		storeCurrency?: string;
-		/** The store currency the NEWER read carried; defaults to `storeCurrency`. */
-		nextStoreCurrency?: string;
+		/** The FRESH store currency; defaults to `storeCurrency`. */
+		freshStoreCurrency?: string;
 		/** The merchant picked the currency in the UI. */
 		currencyPicked?: boolean;
 	} = {},
-): { draft: PricingDraft; conflict: boolean; currencyChange?: CurrencyChange } {
+): {
+	draft: PricingDraft;
+	conflict: boolean;
+	currencyChange?: CurrencyChange;
+	fieldClash?: boolean;
+} {
 	const storeCurrency = opts.storeCurrency ?? DEFAULT_STORE_CURRENCY;
-	const nextStoreCurrency = opts.nextStoreCurrency ?? storeCurrency;
+	const freshStoreCurrency = opts.freshStoreCurrency ?? storeCurrency;
+	const picked = opts.currencyPicked === true;
 	const before = draftFromRecord(previous, storeCurrency);
-	const after = draftFromRecord(next, nextStoreCurrency);
-	const mine = changedFields(before, draft).filter((field) => field !== "currency");
+	const after = draftFromRecord(fresh, freshStoreCurrency);
+	const changed = changedFields(before, draft);
+	const mine = changed.filter((field) => field !== "currency");
 	// A clash takes the store's value for THAT field; the merchant's other edits
 	// survive, so a conflict on the weight does not throw away a typed price.
 	const merged: Record<string, string> = { ...after };
-	let conflict = false;
+	let fieldClash = false;
 	for (const field of mine) {
 		if (
 			canonical(field, before[field], before.currency) !==
 			canonical(field, after[field], after.currency)
 		) {
-			conflict = true;
+			fieldClash = true;
 		} else merged[field] = draft[field];
 	}
 	const currency = resolveDraftCurrency({
 		draft,
-		before,
-		previous,
-		storeCurrency,
-		picked: opts.currencyPicked === true,
-		next,
-		nextStoreCurrency,
+		moneyTyped: picked || mine.some((field) => MONEY_FIELDS.has(field)),
+		picked,
+		fresh,
+		freshStoreCurrency,
 	});
 	merged["currency"] = currency.currency;
-	return {
-		draft: merged as unknown as PricingDraft,
-		conflict: conflict || currency.change !== null,
-		// Present only when the currency moved, so existing callers see the shape
-		// they always did.
-		...(currency.change !== null ? { currencyChange: currency.change } : {}),
-	};
+	const result = { draft: merged as unknown as PricingDraft };
+	return currency.change === null
+		? { ...result, conflict: fieldClash }
+		: { ...result, conflict: true, currencyChange: currency.change, fieldClash };
 }
 
 function money(value: string, currency: string): number | null | "invalid" {

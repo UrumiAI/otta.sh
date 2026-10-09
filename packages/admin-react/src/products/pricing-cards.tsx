@@ -49,6 +49,7 @@ import {
 	isDraftDirty,
 	marginSummary,
 	currencyChangeText,
+	FIELD_CONFLICT_TEXT,
 	mergeDraft,
 	SIZE_FIELDS,
 	salePreview,
@@ -479,13 +480,13 @@ export function PricingStockEditor({ productId }: { productId: string }): React.
 				// The currency follows `resolveDraftCurrency`'s table.
 				const merged = mergeDraft(previous, record, current, {
 					storeCurrency: seededStoreCurrency,
-					nextStoreCurrency: storeCurrency,
+					freshStoreCurrency: storeCurrency,
 					currencyPicked: currencyPicked.current,
 				});
 				setDraft(merged.draft);
 				if (merged.conflict) {
 					setTouched(new Set());
-					setSaveStatus({ tone: "fail", text: conflictText(merged.currencyChange) });
+					setSaveStatus({ tone: "fail", text: conflictText(merged) });
 				}
 			}
 			reseed.current = false;
@@ -732,14 +733,21 @@ export function PricingStockEditor({ productId }: { productId: string }): React.
 		// fresh watermark. A field changed on both sides stops the save and says so.
 		let latestRecord: ProductRecord = p;
 		/** The currency move a conflicting read reported, if that was the conflict. */
-		let saveConflict: CurrencyChange | undefined;
+		let saveConflict: ConflictFacts = {};
 		void fetchProductDetail(productId)
 			.then((fresh): Result<ActPayload> | "conflict" | "invalid" | Promise<Result<ActPayload>> => {
 				if (isFailure(fresh)) return fresh;
 				const latest = fresh.product;
 				latestRecord = latest;
+				// The FRESH store currency (or the last known one, if this read could
+				// not say): the currency rule runs again here, against what is true
+				// at save time — a store switch since the form loaded blocks the save.
+				const read = storeCurrencyOf(fresh);
+				if (read !== "") knownStoreCurrency.current = read;
+				const freshStoreCurrency = knownStoreCurrency.current;
 				const merged = mergeDraft(p, latest, draftRef.current ?? d, {
 					storeCurrency,
+					freshStoreCurrency,
 					currencyPicked: currencyPicked.current,
 				});
 				setLoad({
@@ -747,13 +755,11 @@ export function PricingStockEditor({ productId }: { productId: string }): React.
 					record: latest,
 					taxClasses: fresh.taxClasses,
 					threshold: fresh.threshold,
-					// The currency the form was seeded with stays: re-seeding the
-					// picker mid-save would change what the merchant is saving.
-					storeCurrency,
+					storeCurrency: freshStoreCurrency,
 				});
 				setDraft(merged.draft);
 				if (merged.conflict) {
-					saveConflict = merged.currencyChange;
+					saveConflict = merged;
 					return "conflict" as const;
 				}
 				// The merge can bring in another writer's values; check the result
@@ -1465,9 +1471,13 @@ function storeCurrencyOf(result: ProductDetailPayload): string {
 	return result.storeCurrency ?? DEFAULT_STORE_CURRENCY;
 }
 
-/** The conflict banner: what moved when it was the currency, else the general one. */
-function conflictText(change: CurrencyChange | undefined): string {
-	return change === undefined
-		? "Someone else changed this product while you were editing. The latest values are shown — check them and save again."
-		: currencyChangeText(change);
+/** What a conflicting merge reported. */
+type ConflictFacts = { readonly currencyChange?: CurrencyChange; readonly fieldClash?: boolean };
+
+/** The conflict banner: the currency message when the currency moved, the
+ *  general field-clash one when fields clashed — BOTH when both happened. */
+function conflictText(facts: ConflictFacts): string {
+	if (facts.currencyChange === undefined) return FIELD_CONFLICT_TEXT;
+	const currency = currencyChangeText(facts.currencyChange);
+	return facts.fieldClash === true ? `${FIELD_CONFLICT_TEXT} ${currency}` : currency;
 }

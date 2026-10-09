@@ -88,8 +88,9 @@ describe("the draft", () => {
 		expect(draftFromRecord(BASE, "EUR").currency).toBe(BASE.currency);
 	});
 
-	// THE CURRENCY RULE (`resolveDraftCurrency`), every case through `mergeDraft`.
-	describe("a re-read's currency rule", () => {
+	// THE CURRENCY RULE (`resolveDraftCurrency`), stateless, every case through
+	// `mergeDraft` against the FRESH record.
+	describe("a merge's currency rule", () => {
 		const unpriced: ProductRecord = {
 			...BASE,
 			priceCents: null,
@@ -97,7 +98,7 @@ describe("the draft", () => {
 			compareAtCents: null,
 			unitCostCents: null,
 		};
-		const pricedElsewhere = (currency: string): ProductRecord => ({
+		const pricedIn = (currency: string): ProductRecord => ({
 			...unpriced,
 			priceCents: 1500,
 			currency,
@@ -107,142 +108,191 @@ describe("the draft", () => {
 			previous: ProductRecord;
 			/** The store currency the form was seeded with ("" = unknown). */
 			seeded: string;
-			/** What the merchant did to the loaded draft. */
 			edit: Partial<PricingDraft>;
 			picked: boolean;
-			next: ProductRecord;
-			nextStore: string;
-			want: { currency: string; conflict: boolean; change?: { from: string; to: string } };
+			fresh: ProductRecord;
+			freshStore: string;
+			want: {
+				currency: string;
+				conflict: boolean;
+				change?: { kind: "priced_elsewhere" | "store_default_moved"; from: string; to: string };
+			};
 		};
 		const rows: Row[] = [
-			// -- no money typed: follow the newer record, silently --
+			// Rule 1 — no money typed: follow the fresh record, no conflict.
 			{
-				name: "no money typed, store default moved: follows it",
+				name: "1. no money typed, store default moved: follows it",
 				previous: unpriced,
 				seeded: "USD",
 				edit: { sku: "X-1" },
 				picked: false,
-				next: unpriced,
-				nextStore: "EUR",
+				fresh: unpriced,
+				freshStore: "EUR",
 				want: { currency: "EUR", conflict: false },
 			},
 			{
-				name: "no money typed, unknown became known: adopts it",
+				name: "1. no money typed, unknown became known: adopts it",
 				previous: unpriced,
 				seeded: "",
 				edit: {},
 				picked: false,
-				next: unpriced,
-				nextStore: "EUR",
+				fresh: unpriced,
+				freshStore: "EUR",
 				want: { currency: "EUR", conflict: false },
 			},
 			{
-				name: "no money typed, priced elsewhere: takes the stored currency",
+				name: "1. no money typed, priced elsewhere: takes the stored currency",
 				previous: unpriced,
 				seeded: "EUR",
 				edit: { sku: "X-2" },
 				picked: false,
-				next: pricedElsewhere("GBP"),
-				nextStore: "EUR",
+				fresh: pricedIn("GBP"),
+				freshStore: "EUR",
 				want: { currency: "GBP", conflict: false },
 			},
 			{
-				name: "a SEEDED price is not typed money: a priced product follows its record",
-				previous: pricedElsewhere("GBP"),
+				name: "1. a SEEDED price is not typed money: a priced product follows its record",
+				previous: pricedIn("GBP"),
 				seeded: "EUR",
 				edit: { sku: "X-3" },
 				picked: false,
-				next: { ...pricedElsewhere("GBP"), onHand: 99 },
-				nextStore: "USD",
+				fresh: { ...pricedIn("GBP"), onHand: 99 },
+				freshStore: "USD",
 				want: { currency: "GBP", conflict: false },
 			},
-			// -- money typed: frozen, and a moved context is a conflict that says so --
+			// Rule 2 — priced elsewhere in another currency, money typed.
 			{
-				name: "money typed, priced elsewhere in another currency: conflict USD → GBP",
+				name: "2. price typed under USD, priced elsewhere in GBP: GBP, conflict",
 				previous: unpriced,
 				seeded: "USD",
 				edit: { price: "24.99" },
 				picked: false,
-				next: pricedElsewhere("GBP"),
-				nextStore: "USD",
-				want: { currency: "USD", conflict: true, change: { from: "USD", to: "GBP" } },
+				fresh: pricedIn("GBP"),
+				freshStore: "USD",
+				want: {
+					currency: "GBP",
+					conflict: true,
+					change: { kind: "priced_elsewhere", from: "USD", to: "GBP" },
+				},
 			},
 			{
-				name: "money typed under the default, store default moved: frozen USD, conflict USD → EUR",
+				name: "2. picked JPY + cost typed, priced elsewhere in USD: USD, conflict (cost never silently USD)",
 				previous: unpriced,
-				seeded: "USD",
-				edit: { price: "24.99" },
-				picked: false,
-				next: unpriced,
-				nextStore: "EUR",
-				want: { currency: "USD", conflict: true, change: { from: "USD", to: "EUR" } },
+				seeded: "EUR",
+				edit: { currency: "JPY", unitCost: "800" },
+				picked: true,
+				fresh: pricedIn("USD"),
+				freshStore: "EUR",
+				want: {
+					currency: "USD",
+					conflict: true,
+					change: { kind: "priced_elsewhere", from: "JPY", to: "USD" },
+				},
 			},
 			{
-				name: "a typed compare-at counts as money too",
+				name: "2. priced elsewhere in the SAME currency as typed: no conflict",
 				previous: unpriced,
-				seeded: "USD",
+				seeded: "GBP",
 				edit: { compareAt: "30.00" },
 				picked: false,
-				next: unpriced,
-				nextStore: "EUR",
-				want: { currency: "USD", conflict: true, change: { from: "USD", to: "EUR" } },
+				fresh: pricedIn("GBP"),
+				freshStore: "GBP",
+				want: { currency: "GBP", conflict: false },
+			},
+			// Rule 3 — unpriced, money typed, not picked, store default moved.
+			{
+				name: "3. price typed under USD, store now EUR: stays USD, conflict",
+				previous: unpriced,
+				seeded: "USD",
+				edit: { price: "24.99" },
+				picked: false,
+				fresh: unpriced,
+				freshStore: "EUR",
+				want: {
+					currency: "USD",
+					conflict: true,
+					change: { kind: "store_default_moved", from: "USD", to: "EUR" },
+				},
 			},
 			{
-				name: "a typed unit cost counts as money too",
+				name: "3. unit cost typed counts as money too",
 				previous: unpriced,
 				seeded: "USD",
 				edit: { unitCost: "9.50" },
 				picked: false,
-				next: unpriced,
-				nextStore: "EUR",
-				want: { currency: "USD", conflict: true, change: { from: "USD", to: "EUR" } },
+				fresh: unpriced,
+				freshStore: "EUR",
+				want: {
+					currency: "USD",
+					conflict: true,
+					change: { kind: "store_default_moved", from: "USD", to: "EUR" },
+				},
 			},
 			{
-				name: 'money typed while unknown, then known: frozen "" (the gate stays), conflict "" → EUR',
+				name: '3. typed while unknown, now known: stays "", conflict',
 				previous: unpriced,
 				seeded: "",
 				edit: { price: "18" },
 				picked: false,
-				next: unpriced,
-				nextStore: "EUR",
-				want: { currency: "", conflict: true, change: { from: "", to: "EUR" } },
+				fresh: unpriced,
+				freshStore: "EUR",
+				want: {
+					currency: "",
+					conflict: true,
+					change: { kind: "store_default_moved", from: "", to: "EUR" },
+				},
 			},
 			{
-				name: "money typed, context unchanged: frozen, no conflict",
+				name: "3. it is STATELESS: re-evaluated against the same fresh state, it is still a conflict",
+				previous: unpriced,
+				seeded: "EUR",
+				edit: { price: "24.99", currency: "USD" },
+				picked: false,
+				fresh: unpriced,
+				freshStore: "EUR",
+				want: {
+					currency: "USD",
+					conflict: true,
+					change: { kind: "store_default_moved", from: "USD", to: "EUR" },
+				},
+			},
+			{
+				name: "money typed, nothing moved: no conflict",
 				previous: unpriced,
 				seeded: "EUR",
 				edit: { price: "18" },
 				picked: false,
-				next: { ...unpriced, onHand: 99 },
-				nextStore: "EUR",
+				fresh: { ...unpriced, onHand: 99 },
+				freshStore: "EUR",
 				want: { currency: "EUR", conflict: false },
 			},
+			// Rule 4 — unpriced and picked: never a store-default conflict.
 			{
-				name: "a PICKED currency is money typed: a moved default neither changes it nor conflicts",
+				name: "4. picked JPY + price, store default moved: JPY stands, no conflict",
 				previous: unpriced,
 				seeded: "EUR",
-				edit: { currency: "JPY" },
+				edit: { currency: "JPY", price: "1500" },
 				picked: true,
-				next: unpriced,
-				nextStore: "GBP",
+				fresh: unpriced,
+				freshStore: "GBP",
 				want: { currency: "JPY", conflict: false },
 			},
 			{
-				name: "a picked currency, priced elsewhere in another: conflict JPY → GBP",
+				name: "4. picking the NEW store currency resolves rule 3",
 				previous: unpriced,
-				seeded: "EUR",
-				edit: { currency: "JPY" },
+				seeded: "USD",
+				edit: { currency: "EUR", price: "24.99" },
 				picked: true,
-				next: pricedElsewhere("GBP"),
-				nextStore: "EUR",
-				want: { currency: "JPY", conflict: true, change: { from: "JPY", to: "GBP" } },
+				fresh: unpriced,
+				freshStore: "EUR",
+				want: { currency: "EUR", conflict: false },
 			},
 		];
 		test.each(rows)("$name", (row) => {
 			const draft = { ...draftFromRecord(row.previous, row.seeded), ...row.edit };
-			const merged = mergeDraft(row.previous, row.next, draft, {
+			const merged = mergeDraft(row.previous, row.fresh, draft, {
 				storeCurrency: row.seeded,
-				nextStoreCurrency: row.nextStore,
+				freshStoreCurrency: row.freshStore,
 				currencyPicked: row.picked,
 			});
 			expect(merged.draft.currency).toBe(row.want.currency);
@@ -250,22 +300,34 @@ describe("the draft", () => {
 			expect(merged.currencyChange).toEqual(row.want.change);
 		});
 
-		test("money typed under a moved default: the typed amount is kept, never changed silently", () => {
-			const draft = { ...draftFromRecord(unpriced, "USD"), price: "24.99" };
-			const merged = mergeDraft(unpriced, unpriced, draft, {
-				storeCurrency: "USD",
-				nextStoreCurrency: "EUR",
+		test("rule 2 keeps the merchant's non-clashing amounts (the typed cost stays, for them to check)", () => {
+			const draft = { ...draftFromRecord(unpriced, "EUR"), currency: "JPY", unitCost: "800" };
+			const merged = mergeDraft(unpriced, pricedIn("USD"), draft, {
+				storeCurrency: "EUR",
+				currencyPicked: true,
 			});
-			expect(merged.draft.price).toBe("24.99");
-			expect(merged.draft.currency).toBe("USD");
+			expect(merged.draft.unitCost).toBe("800");
+			expect(merged.fieldClash).toBe(false);
 		});
 
-		test("the banner says what changed", () => {
-			expect(currencyChangeText({ from: "USD", to: "EUR" })).toBe(
-				"This product's currency is now EUR — your amounts were entered in USD. Check them before saving.",
+		test("a field clash AND a currency conflict are both reported", () => {
+			// Typed a price; someone else priced it (the price field clashes) in GBP.
+			const draft = { ...draftFromRecord(unpriced, "USD"), price: "24.99" };
+			const merged = mergeDraft(unpriced, pricedIn("GBP"), draft, { storeCurrency: "USD" });
+			expect(merged.conflict).toBe(true);
+			expect(merged.fieldClash).toBe(true);
+			expect(merged.currencyChange?.kind).toBe("priced_elsewhere");
+		});
+
+		test("the banners say what changed", () => {
+			expect(currencyChangeText({ kind: "priced_elsewhere", from: "JPY", to: "GBP" })).toBe(
+				"This product was priced in GBP by someone else — your amounts were entered in JPY. Check every amount before saving.",
 			);
-			expect(currencyChangeText({ from: "", to: "EUR" })).toBe(
-				"This product's currency is now EUR — choose its currency and check your amounts before saving.",
+			expect(currencyChangeText({ kind: "store_default_moved", from: "USD", to: "EUR" })).toBe(
+				"Your store currency is now EUR — this product will be priced in USD unless you choose EUR. Pick the currency to confirm, then save.",
+			);
+			expect(currencyChangeText({ kind: "store_default_moved", from: "", to: "EUR" })).toBe(
+				"Your store currency is now EUR — choose this product's currency, then save.",
 			);
 		});
 

@@ -574,7 +574,10 @@ test("a later read that knows the store currency hides the prompt and adopts it 
 	expect((input(c, "Currency") as unknown as HTMLSelectElement).value).toBe("EUR");
 });
 
-test("a price typed under the shown default: a re-read with a switched store currency is a conflict that says so, and the currency stays", async () => {
+const STORE_MOVED_USD_EUR =
+	"Your store currency is now EUR — this product will be priced in USD unless you choose EUR. Pick the currency to confirm, then save.";
+
+test("a price typed under the shown default: a re-read with a switched store currency blocks the save until a currency is picked", async () => {
 	let moved = false;
 	apiFetch.mockImplementation((_url, init) => {
 		const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
@@ -593,17 +596,45 @@ test("a price typed under the shown default: a re-read with a switched store cur
 	await fire(button(c, "Add"), "click");
 	await flush();
 	expect(c.textContent).toContain("now 29 in stock");
-	// The default moved under typed money: frozen to USD, and the merchant is TOLD.
+	// Frozen to USD, and the merchant is TOLD; the amount is kept.
 	expect((input(c, "Currency") as unknown as HTMLSelectElement).value).toBe("USD");
-	expect(c.textContent).toContain(
-		"This product's currency is now EUR — your amounts were entered in USD. Check them before saving.",
-	);
 	expect((input(c, "Price") as HTMLInputElement).value).toBe("24.99");
-	// Having seen it, a save goes through in what they entered.
+	expect(c.textContent).toContain(STORE_MOVED_USD_EUR);
+	// A keystroke clears the banner, but the rule is re-evaluated at SAVE: blocked.
+	await type(input(c, "Price"), "24.98");
+	expect(c.textContent).not.toContain(STORE_MOVED_USD_EUR);
+	await fire(button(c, "Save pricing & stock"), "click");
+	await flush();
+	expect(writes().some((w) => w["action_id"] === "products:save")).toBe(false);
+	expect(c.textContent).toContain(STORE_MOVED_USD_EUR);
+	// Picking the currency confirms it; the save goes through in it.
+	await type(input(c, "Currency") as unknown as HTMLSelectElement, "EUR");
 	await fire(button(c, "Save pricing & stock"), "click");
 	await flush();
 	const save = writes().find((w) => w["action_id"] === "products:save");
-	expect(save?.["value"]).toMatchObject({ price: "24.99", currency: "USD" });
+	expect(save?.["value"]).toMatchObject({ price: "24.98", currency: "EUR" });
+});
+
+test("the read-before-save uses the FRESH store currency: a switch since the form loaded blocks the save", async () => {
+	let reads = 0;
+	apiFetch.mockImplementation((_url, init) => {
+		const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+		if (body["type"] === "otta_console_act") {
+			return Promise.resolve(
+				json({ ok: true, notice: { variant: "default", title: "Saved", description: "" } }),
+			);
+		}
+		reads += 1;
+		// The first read (mount) says USD; the read-before-save says EUR.
+		return Promise.resolve(unpricedDetail(reads === 1 ? "USD" : "EUR"));
+	});
+	const c = await mountPanel();
+	await type(input(c, "Price"), "24.99");
+	await fire(button(c, "Save pricing & stock"), "click");
+	await flush();
+	expect(writes().some((w) => w["action_id"] === "products:save")).toBe(false);
+	expect(c.textContent).toContain(STORE_MOVED_USD_EUR);
+	expect((input(c, "Currency") as unknown as HTMLSelectElement).value).toBe("USD");
 });
 
 test("after an initial failed read, picking a currency clears the prompt", async () => {

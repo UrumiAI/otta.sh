@@ -875,20 +875,19 @@ export function createSettingsFormHandler(): RouteHandler<SettingsFormInput> {
 						`${asSentence(result.message)} Nothing was saved.`,
 					);
 				}
-				// UNAVAILABLE: nothing is known about whether it applied, so the copy
-				// never claims it was not saved.
 				if (result.code === "store_currency_not_payable") {
 					return refuse(
 						"Store currency not saved",
 						`${code} can't be the store currency yet — payments in ${code} aren't supported at checkout. Nothing was changed.`,
 					);
 				}
-				return result.reason === "validation"
-					? refuse("Store currency not saved", unsupported)
-					: refuse(
-							"Store currency couldn't be confirmed",
-							"The save couldn't be confirmed — reload to check the store currency.",
-						);
+				if (result.reason === "validation") return refuse("Store currency not saved", unsupported);
+				// UNAVAILABLE: nothing is known about whether it applied, so the copy
+				// never claims it was not saved.
+				return refuse(
+					"Store currency couldn't be confirmed",
+					"The save couldn't be confirmed — reload to check the store currency.",
+				);
 			}
 			const page = await renderPage(ctx, client, {
 				variant: "default",
