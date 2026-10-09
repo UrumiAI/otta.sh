@@ -408,10 +408,13 @@ async function calculateTax(
 	}
 	if (!isValidCalculatorId(id)) return refuse("<invalid id>", "has an invalid id");
 	let raw: unknown;
+	// Issue #447: the calculator's own IO can stop when Otta stops waiting.
+	const controller = new AbortController();
 	try {
 		raw = await withTimeout(
-			() => outside.calculate(request),
+			() => outside.calculate(withSignal(request, controller.signal)),
 			deps.taxCalculatorTimeoutMs ?? DEFAULT_TAX_CALCULATOR_TIMEOUT_MS,
+			controller,
 		);
 	} catch (err) {
 		return refuse(id, err === TIMED_OUT ? "timed out" : "threw");
@@ -451,11 +454,24 @@ function refuse(id: string, why: string): null {
 	return null;
 }
 
+/** A frozen copy of `request` carrying `signal` as a NON-enumerable property:
+ *  JSON and spreads leave it out (see `TaxRequest.signal`). */
+function withSignal(request: TaxRequest, signal: AbortSignal): TaxRequest {
+	const copy = { ...request };
+	Object.defineProperty(copy, "signal", { value: signal, enumerable: false });
+	return Object.freeze(copy);
+}
+
 const TIMED_OUT: unique symbol = Symbol("tax calculator timed out");
 
-/** Settles with `run()`'s outcome, or rejects with {@link TIMED_OUT} after `ms`;
- *  the timer is always cleared. A synchronous throw from `run` rejects too. */
-async function withTimeout<T>(run: () => Promise<T>, ms: number): Promise<T> {
+/** Settles with `run()`'s outcome, or rejects with {@link TIMED_OUT} after `ms`
+ *  and aborts `controller`; the timer is always cleared. A synchronous throw
+ *  from `run` rejects too. */
+async function withTimeout<T>(
+	run: () => Promise<T>,
+	ms: number,
+	controller: AbortController,
+): Promise<T> {
 	let timer: ReturnType<typeof setTimeout> | undefined;
 	try {
 		return await Promise.race([
@@ -469,7 +485,10 @@ async function withTimeout<T>(run: () => Promise<T>, ms: number): Promise<T> {
 				}
 			}),
 			new Promise<never>((_, reject) => {
-				timer = setTimeout(() => reject(TIMED_OUT), ms);
+				timer = setTimeout(() => {
+					controller.abort(new Error(`tax calculator timed out after ${String(ms)} ms`));
+					reject(TIMED_OUT);
+				}, ms);
 			}),
 		]);
 	} finally {
