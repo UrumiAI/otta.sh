@@ -6,8 +6,9 @@
  *  - `regionCountries` (one `listZones`): countries ANY zone lists at region
  *    level (`ES-CN` ⇒ `ES`). The domain refuses a blank region for exactly these
  *    (`SHIPPING_REGION_CODE_REQUIRED`), so the delivery block marks the
- *    state/province REQUIRED for them. Any subdivision satisfies it — a pick
- *    inside a zoned one (`ES-TF` in `ES-CN`) matches through containment.
+ *    state/province REQUIRED for them. It is satisfied by a subdivision at or
+ *    inside a zoned one (`ES-TF` in `ES-CN` matches through containment), or
+ *    one no zone touches; a pick CONTAINING a zoned one is asked again.
  *  - `storeCountry` (settings, zones and one `listMethods` a zone — only on a
  *    FRESH visit, the one time the review preselects): the country the review
  *    preselects so its state/province list renders on first load with no JS —

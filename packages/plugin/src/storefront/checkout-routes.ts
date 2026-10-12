@@ -236,8 +236,9 @@ interface CheckoutSummaryViewBase {
 	storeCountry: string | null;
 	/** Countries whose state/province the delivery block must REQUIRE: some zone
 	 *  lists one of their subdivisions, so the plugin refuses a blank region
-	 *  (SHIPPING_REGION_CODE_REQUIRED). Any subdivision satisfies it, including
-	 *  one inside the zoned subdivision. Sorted; empty with no delivery block. */
+	 *  (SHIPPING_REGION_CODE_REQUIRED). It is satisfied by a subdivision at or
+	 *  inside a zoned one, or one no zone touches. Sorted; empty with no
+	 *  delivery block. */
 	regionRequiredCountries: string[];
 	shipping: CheckoutShippingView;
 	/** The page must collect an address: a physical cart in a zoned store, or
