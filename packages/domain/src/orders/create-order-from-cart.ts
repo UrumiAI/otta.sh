@@ -25,7 +25,7 @@ import {
 	type PaymentGateway,
 	type PaymentIntentHandle,
 } from "../ports/payment-gateway.js";
-import type { ProductCommerceStore } from "../ports/product-commerce-store.js";
+import type { ProductCommerceStore, ProductTaxStatus } from "../ports/product-commerce-store.js";
 import { isProductLive } from "../product-commerce/sellable.js";
 import type { ShippingRulesStore } from "../ports/shipping-rules-store.js";
 import type { TaxRulesStore } from "../ports/tax-rules-store.js";
@@ -431,6 +431,8 @@ export async function createOrderFromCart(
 			breakdown,
 			tax: quote.tax,
 			taxLocated: quote.taxLocated,
+			// #427: what each line was asked as (`taxRequestLinesOf`'s default).
+			taxStatuses: pricedLines.map((l) => l.taxStatus ?? "taxable"),
 			...(quote.taxAddress !== undefined ? { taxAddress: quote.taxAddress } : {}),
 			couponRecord: quote.couponRecord,
 			shippingMethodSnapshot,
@@ -503,6 +505,8 @@ interface FinalizeContext {
 	tax: QuoteTax;
 	/** The quote's `taxLocated`, frozen into the snapshot (ADR-0032). */
 	taxLocated: boolean;
+	/** Each line's product tax status, frozen into the snapshot (#427). */
+	taxStatuses: readonly ProductTaxStatus[];
 	/** The quote's `taxAddress` (#426), frozen into the snapshot. */
 	taxAddress?: OrderTaxAddress;
 	couponRecord: CouponRecord | null;
@@ -569,7 +573,13 @@ async function finalizeOrder(
 			appliedCouponCode: breakdown.appliedCouponCode ?? null,
 			shippingMethodSnapshot: ctx.shippingMethodSnapshot,
 			// ADR-0030: the typed v1 snapshot, written once, never recomputed.
-			taxBreakdown: buildOrderTaxSnapshot(breakdown, ctx.tax, ctx.taxLocated, ctx.taxAddress),
+			taxBreakdown: buildOrderTaxSnapshot(
+				breakdown,
+				ctx.tax,
+				ctx.taxLocated,
+				ctx.taxStatuses,
+				ctx.taxAddress,
+			),
 		},
 	});
 	// Issue #133, race twin of the I1 cart check: a same-key call for ANOTHER cart

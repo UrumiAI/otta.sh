@@ -30,10 +30,12 @@ import {
 	EmailTransportUnavailableError,
 	isEmailSendTimeoutError,
 	renderEmail,
+	taxTotalsDisplayOf,
 	TRANSPORT_UNAVAILABLE_RETRY_MS,
 	type EmailSender,
 	type SendEmailInput,
 } from "@otta-sh/domain";
+import { EmdashSettingsStore, systemClock } from "@otta-sh/store-emdash";
 import { resolveLoginLinkUrl } from "../storefront/login-link.js";
 import { STOREFRONT_LOCALE } from "../storefront/route-input.js";
 import type { EmailAccess, PluginContext } from "../types.js";
@@ -58,9 +60,11 @@ export const DEFAULT_EMAIL_TIMEOUT_MS = 30_000;
  */
 export const LOGIN_EMAIL_TIMEOUT_MS = 3_000;
 
-/** The kv reads {@link makeEmailSender} makes: the store name and the sign-in
- *  page (for the storefront origin). The cron's query budget counts them. */
-export const EMAIL_SENDER_BUILD_READS = 2;
+/** The reads {@link makeEmailSender} makes for ORDER emails: the store name and
+ *  the sign-in page (for the storefront origin) from kv, and the tax options'
+ *  "Display tax totals" from the settings document (issue #422). The sign-in
+ *  sender skips the last. The cron's query budget counts them. */
+export const EMAIL_SENDER_BUILD_READS = 3;
 
 /** The kv write the FIRST delivered send of a sender adds after the host call:
  *  the "last sent" record ({@link markEmailSent}). The cron's query budget counts
@@ -78,6 +82,9 @@ export interface CtxEmailSenderOptions {
 	/** The storefront's public origin, for the order page link. Absent ⇒ order
 	 *  emails carry no link. */
 	storefrontOrigin?: string | undefined;
+	/** The store's "Display tax totals" (issue #422): `itemized` lists an order's
+	 *  tax rows. Absent ⇒ the single Tax row. */
+	taxTotalsDisplay?: "itemized" | "single" | undefined;
 	/** Told when the host answered "no email provider" — {@link makeEmailSender}
 	 *  records it ({@link markEmailTransportUnavailable}). */
 	onUnavailable?: (() => Promise<void>) | undefined;
@@ -93,6 +100,7 @@ export class CtxEmailSender implements EmailSender {
 	readonly #timeoutMs: number | (() => number);
 	readonly #storeName: string | undefined;
 	readonly #storefrontOrigin: string | undefined;
+	readonly #taxTotalsDisplay: "itemized" | "single" | undefined;
 	readonly #onUnavailable: (() => Promise<void>) | undefined;
 	readonly #onSent: (() => Promise<void>) | undefined;
 	#sentRecorded = false;
@@ -104,6 +112,7 @@ export class CtxEmailSender implements EmailSender {
 		this.#timeoutMs = options.requestTimeoutMs ?? DEFAULT_EMAIL_TIMEOUT_MS;
 		this.#storeName = options.storeName;
 		this.#storefrontOrigin = options.storefrontOrigin;
+		this.#taxTotalsDisplay = options.taxTotalsDisplay;
 	}
 
 	async send(input: SendEmailInput): Promise<void> {
@@ -112,6 +121,7 @@ export class CtxEmailSender implements EmailSender {
 			formatMoney: storefrontEmailMoney,
 			locale: STOREFRONT_LOCALE,
 			storeName: this.#storeName,
+			taxTotalsDisplay: this.#taxTotalsDisplay,
 			orderPageUrl:
 				input.template !== "customer-login-link" &&
 				typeof orderId === "string" &&
@@ -324,13 +334,19 @@ async function readIsoMs(ctx: PluginContext, key: string): Promise<number | unde
  */
 export async function makeEmailSender(
 	ctx: PluginContext,
-	options: { requestTimeoutMs?: number | (() => number) } = {},
+	options: {
+		requestTimeoutMs?: number | (() => number);
+		/** Read "Display tax totals" for order emails (default). The sign-in email
+		 *  has no totals, so its sender skips the read under its short ceiling. */
+		orderTotals?: boolean;
+	} = {},
 ): Promise<EmailSender | undefined> {
 	const email = ctx.email;
 	if (email === undefined) return undefined;
-	const [storeName, signInPageUrl] = await Promise.all([
+	const [storeName, signInPageUrl, taxTotalsDisplay] = await Promise.all([
 		ctx.kv.get<string>(STORE_DISPLAY_NAME_KEY).then(storeNameFrom, () => undefined),
 		resolveLoginLinkUrl(ctx),
+		options.orderTotals === false ? undefined : emailTaxTotalsDisplay(ctx),
 	]);
 	return new CtxEmailSender({
 		email,
@@ -338,6 +354,7 @@ export async function makeEmailSender(
 		// From line's display name used to give (QA2 U-3).
 		storeName: storeName ?? storeNameFrom(ctx.site?.name),
 		storefrontOrigin: storefrontOriginOf(signInPageUrl),
+		taxTotalsDisplay,
 		onUnavailable: () => markEmailTransportUnavailable(ctx),
 		onSent: () => markEmailSent(ctx),
 		...(options.requestTimeoutMs !== undefined
@@ -346,13 +363,33 @@ export async function makeEmailSender(
 	});
 }
 
+/**
+ * The store's "Display tax totals" for the order emails (issue #422), as the
+ * order pages read it (`taxTotalsDisplayOf`). FAIL-SOFT, like the store name: a
+ * context without the document store, or a read that fails, keeps the single Tax
+ * row — the total is right either way, and an email must not fail over a
+ * display preference.
+ */
+async function emailTaxTotalsDisplay(ctx: PluginContext): Promise<"itemized" | "single"> {
+	if (ctx.storage === undefined) return "single";
+	try {
+		const settings = await new EmdashSettingsStore({
+			storage: ctx.storage,
+			clock: systemClock,
+		}).get();
+		return taxTotalsDisplayOf(settings.tax);
+	} catch {
+		return "single";
+	}
+}
+
 /** {@link makeEmailSender} with the login ceiling — and `undefined` while the
  *  host is known to have no provider ({@link emailSendingAvailable}), so a sign-in
  *  request then mints no challenge and spends no throttle slot. (No outbox row
  *  behind it, so nothing to count: a failed or timed-out sign-in email is logged.) */
 export async function makeLoginEmailSender(ctx: PluginContext): Promise<EmailSender | undefined> {
 	if (!(await emailSendingAvailable(ctx))) return undefined;
-	return makeEmailSender(ctx, { requestTimeoutMs: LOGIN_EMAIL_TIMEOUT_MS });
+	return makeEmailSender(ctx, { requestTimeoutMs: LOGIN_EMAIL_TIMEOUT_MS, orderTotals: false });
 }
 
 /**

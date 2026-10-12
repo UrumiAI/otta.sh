@@ -138,7 +138,14 @@ export type QuoteResult =
 			tax: QuoteTax;
 			/** The tax options this quote was priced under (after the upgrade rule). */
 			taxSettings: TaxSettings;
-			/** Whether a tax location matched a zone — false ⇒ the tax was not located. */
+			/** Whether tax was calculated for a place: a tax location matched a
+			 *  zone, or the calculator charged tax without one (an outside
+			 *  calculator answers for the address itself, #436). False ⇒ the tax
+			 *  was not located. The built-in charges nothing without a zone.
+			 *  So `located` here means "a place resolved, or tax was charged": a
+			 *  zero-rated outside answer with no zone reads as not located. A future
+			 *  `TaxResult` field could let an outside calculator report "located"
+			 *  explicitly for such answers. */
 			taxLocated: boolean;
 			/** Under "based on the customer's billing address" (#426): which address
 			 *  the tax was charged for — the buyer's billing location, the shop's
@@ -339,7 +346,7 @@ export async function computeQuote(
 		destination: resolution,
 		tax,
 		taxSettings,
-		taxLocated: located.zoneId !== null,
+		taxLocated: located.zoneId !== null || breakdown.taxCents > 0,
 		...(taxSettings.basedOn === "billing" && located.address !== null
 			? {
 					taxAddress: {

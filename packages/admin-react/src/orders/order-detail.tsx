@@ -54,6 +54,7 @@ import {
 	ORDERS_BACK_LABEL,
 	ORDER_LINES_EMPTY,
 	ORDER_LINES_SNAPSHOT_NOTE,
+	PRICES_INCLUDED_TAX,
 	REFUNDS_GROUP_EMPTY_LABEL,
 	REFUNDS_UNAVAILABLE,
 	REFUND_ADDITIVE_NOTE,
@@ -78,6 +79,7 @@ import {
 	formatMinorUnitsInput,
 	formatTimestamp,
 	maskBuyerEmail,
+	orderLineTaxStatusNote,
 	orderStateCell,
 	orderNumberOf,
 	parseMinorUnitsInput,
@@ -361,6 +363,19 @@ function timelineDetail(entry: TimelineEntry, reasonLabels: ReadonlyMap<string, 
 	}
 	if (entry.kind === "reconciliation_resolved") return entry.outcome ?? "—";
 	return "—";
+}
+
+/** #427: a line frozen as not ordinarily taxed says so beside its title; a
+ *  taxable or unknown (pre-#427) line shows nothing. */
+function LineTaxStatusNote({ taxStatus }: { taxStatus: string | undefined }): React.ReactNode {
+	const note = orderLineTaxStatusNote(taxStatus);
+	if (note === null) return null;
+	return (
+		<span data-testid="detail-line-tax-status" style={{ fontSize: 12, opacity: 0.7 }}>
+			{" · "}
+			{note}
+		</span>
+	);
 }
 
 /** A tracking URL as a link — http(s) only, so a stored `javascript:` value can
@@ -1061,7 +1076,13 @@ export function OrderDetail({
 			formatAmount(order.totals.discountCents, totalsCur),
 		],
 		["Shipping", formatAmount(order.totals.shippingCents, totalsCur)],
-		["Tax", formatAmount(order.totals.taxCents, totalsCur)],
+		// Issue #422: one row per tax off the order's frozen snapshot — always
+		// itemized here, as WooCommerce's order screen is — else the single Tax row.
+		...(order.totals.taxRows !== undefined && order.totals.taxRows.length > 0
+			? order.totals.taxRows.map(
+					(row) => [row.label, formatAmount(row.amountCents, totalsCur)] as const,
+				)
+			: [["Tax", formatAmount(order.totals.taxCents, totalsCur)] as const]),
 		// #426: where that tax was charged, when the order recorded it.
 		...(order.totals.taxAddress !== undefined
 			? [["Tax location", taxLocationLabel(order.totals.taxAddress)] as const]
@@ -1317,7 +1338,10 @@ export function OrderDetail({
 									<td className="otta-td">
 										<code>{line.sku}</code>
 									</td>
-									<td className="otta-td">{line.title}</td>
+									<td className="otta-td">
+										{line.title}
+										<LineTaxStatusNote taxStatus={line.taxStatus} />
+									</td>
 									<td className="otta-td otta-num" style={endCellStyle}>
 										{line.quantity}
 									</td>
@@ -1337,14 +1361,24 @@ export function OrderDetail({
 							{ORDER_LINES_SNAPSHOT_NOTE}
 						</p>
 
-						<div style={{ marginBlockStart: 16, maxInlineSize: 360 }}>
+						<div
+							style={{ marginBlockStart: 16, maxInlineSize: 360 }}
+							{...(order.totals.pricesIncludeTax === true
+								? {
+										role: "group",
+										"aria-describedby": "detail-prices-include-tax",
+									}
+								: {})}
+						>
 							<Table
 								testId="detail-totals"
 								caption="Totals"
 								headers={["Line", <EndHeader label="Amount" />]}
 							>
-								{ladder.map(([label, amount]) => (
-									<tr key={label}>
+								{ladder.map(([label, amount], index) => (
+									// By position: a tax row's label is merchant text and may
+									// repeat another row's name.
+									<tr key={index}>
 										<td className="otta-td">{label}</td>
 										<td className="otta-td otta-num" style={endCellStyle}>
 											{amount}
@@ -1352,6 +1386,15 @@ export function OrderDetail({
 									</tr>
 								))}
 							</Table>
+							{order.totals.pricesIncludeTax === true ? (
+								<p
+									id="detail-prices-include-tax"
+									data-testid="detail-prices-include-tax"
+									style={{ fontSize: 12, opacity: 0.7 }}
+								>
+									{PRICES_INCLUDED_TAX}
+								</p>
+							) : null}
 						</div>
 
 						<div style={{ marginBlockStart: 16 }}>

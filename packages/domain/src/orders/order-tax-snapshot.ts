@@ -1,5 +1,7 @@
 import type { Cents } from "../money/cents.js";
+import { isProductTaxStatus, type ProductTaxStatus } from "../ports/product-commerce-store.js";
 import type { TaxLine, TaxResult } from "../pricing/tax-calculator.js";
+import { finerRatePpm } from "../pricing/tax-rate-precision.js";
 import type { TotalsBreakdown } from "../pricing/types.js";
 
 /**
@@ -16,7 +18,8 @@ export interface OrderTaxSnapshotV1 {
 	/**
 	 * The tax was really calculated for a place (ADR-0032): a tax location matched
 	 * a zone — the shipping zone, or the shop base address for a digital-only cart
-	 * or a "based on the shop" store, which leaves the order with no shipping zone.
+	 * or a "based on the shop" store, which leaves the order with no shipping zone —
+	 * or an outside calculator charged tax with no zone at all (#436).
 	 * Written by every order since; ABSENT on a v1 snapshot written before it, which
 	 * reads as not located, so those orders keep deciding "was tax calculated?" off
 	 * the shipping zone alone, exactly as before.
@@ -31,8 +34,27 @@ export interface OrderTaxSnapshotV1 {
 	 * and on every snapshot written before it.
 	 */
 	taxAddress?: OrderTaxAddress;
-	/** One per order line, in order-line order (`lineIndex` indexes `order.lines`). */
-	lines: Array<{ lineIndex: number; taxClassId: string; taxableCents: Cents } & TaxLine>;
+	/**
+	 * One per order line, in order-line order (`lineIndex` indexes `order.lines`).
+	 * A line (and `shipping`) taxed at a rate finer than a basis point also records
+	 * that exact rate as `ratePpm` (#425, `TaxLine`); `rateBps` keeps its meaning,
+	 * so a snapshot written before — which never has `ratePpm` — reads unchanged.
+	 */
+	lines: Array<
+		{
+			lineIndex: number;
+			taxClassId: string;
+			/**
+			 * The product's tax status at checkout (#427), so the order can still
+			 * explain why the line was or was not taxed after the product changes.
+			 * Written by every order since; ABSENT on a line written before it (or
+			 * holding a value this reader does not know), which reads as unknown —
+			 * never guessed as "taxable".
+			 */
+			taxStatus?: ProductTaxStatus;
+			taxableCents: Cents;
+		} & TaxLine
+	>;
 	shipping: ({ taxableCents: Cents } & TaxLine) | null;
 }
 
@@ -66,8 +88,10 @@ export type OrderTaxSnapshot = OrderTaxSnapshotV1 | OrderTaxSnapshotV0;
 export function buildOrderTaxSnapshot(
 	breakdown: TotalsBreakdown,
 	tax: { calculatorId: string; result: TaxResult; pricesIncludeTax?: boolean },
-	/** The quote's `taxLocated`: a tax location matched a zone. */
+	/** The quote's `taxLocated`: a tax location matched a zone, or tax was charged without one. */
 	located: boolean,
+	/** Each line's product tax status, as the calculator was asked (line order). */
+	taxStatuses: readonly ProductTaxStatus[],
 	/** The quote's `taxAddress` (#426), when it has one. */
 	taxAddress?: OrderTaxAddress,
 ): OrderTaxSnapshotV1 {
@@ -88,11 +112,17 @@ export function buildOrderTaxSnapshot(
 		lines: breakdown.lineBreakdown.map((line, lineIndex) => {
 			const answered = tax.result.lines[lineIndex];
 			if (answered === undefined) throw new RangeError(`no tax line for line ${String(lineIndex)}`);
+			const taxStatus = taxStatuses[lineIndex];
+			if (taxStatus === undefined) {
+				throw new RangeError(`no tax status for line ${String(lineIndex)}`);
+			}
 			return {
 				lineIndex,
 				taxClassId: line.taxClassId,
+				taxStatus,
 				taxableCents: line.discountedCents,
 				rateBps: answered.rateBps,
+				...ratePpmOf(answered),
 				label: answered.label,
 				taxCents: answered.taxCents,
 			};
@@ -103,6 +133,7 @@ export function buildOrderTaxSnapshot(
 				: {
 						taxableCents: breakdown.shippingCents,
 						rateBps: tax.result.shipping.rateBps,
+						...ratePpmOf(tax.result.shipping),
 						label: tax.result.shipping.label,
 						taxCents: tax.result.shipping.taxCents,
 					},
@@ -135,9 +166,20 @@ function readV1(raw: Record<string, unknown>): OrderTaxSnapshotV1 | null {
 		if (!isRecord(item) || !isCount(item["lineIndex"]) || typeof item["taxClassId"] !== "string") {
 			return null;
 		}
+		// Optional and display-only (#427): a line from before the field omits it,
+		// and a value this code does not know (a future status, read after a
+		// rollback) is DROPPED — the line reads as unknown — rather than nulling a
+		// snapshot the storefront, account pages and emails still lay tax out from.
+		const rawStatus = item["taxStatus"];
+		const taxStatus = isProductTaxStatus(rawStatus) ? rawStatus : undefined;
 		const line = taxedOf(item);
 		if (line === null) return null;
-		out.push({ lineIndex: item["lineIndex"], taxClassId: item["taxClassId"], ...line });
+		out.push({
+			lineIndex: item["lineIndex"],
+			taxClassId: item["taxClassId"],
+			...(taxStatus !== undefined ? { taxStatus } : {}),
+			...line,
+		});
 	}
 	let ship: OrderTaxSnapshotV1["shipping"] = null;
 	if (shipping !== null) {
@@ -156,6 +198,12 @@ function readV1(raw: Record<string, unknown>): OrderTaxSnapshotV1 | null {
 	};
 }
 
+/** A line's exact rate (#425), only when it has one: a snapshot of a whole-bps
+ *  rate — and every snapshot written before #425 — carries no `ratePpm` key. */
+function ratePpmOf(line: TaxLine): { ratePpm?: number } {
+	return line.ratePpm === undefined ? {} : { ratePpm: line.ratePpm };
+}
+
 function readTaxAddress(raw: unknown): OrderTaxAddress | null {
 	if (!isRecord(raw)) return null;
 	const { basis, country, region } = raw;
@@ -167,12 +215,16 @@ function readTaxAddress(raw: unknown): OrderTaxAddress | null {
 }
 
 function taxedOf(item: Record<string, unknown>): ({ taxableCents: Cents } & TaxLine) | null {
-	const { taxableCents, rateBps, label, taxCents } = item;
+	const { taxableCents, rateBps, ratePpm, label, taxCents } = item;
 	if (!isCount(taxableCents) || !isCount(rateBps) || !isCount(taxCents)) return null;
 	if (typeof label !== "string") return null;
+	// Only a consistent finer rate is part of the line (the store's own rule, #425);
+	// anything else under that key is ignored, as an unknown key always was.
+	const finer = finerRatePpm({ rateBps, ratePpm });
 	return {
 		taxableCents: taxableCents as Cents,
 		rateBps,
+		...(finer === undefined ? {} : { ratePpm: finer }),
 		label,
 		taxCents: taxCents as Cents,
 	};

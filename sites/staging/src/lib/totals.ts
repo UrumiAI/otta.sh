@@ -219,7 +219,12 @@ export function checkoutFootnote(
 			if (options.taxByBuyerLocation === true) {
 				return "Nothing in this order ships, so there's no delivery charge.";
 			}
-			return "Nothing in this order ships, so there's no delivery charge and no location-based tax.";
+			// A digital cart taxed at the shop base address (`tax.located`, #436)
+			// shows a real tax: only an UNcalculated tax may be called absent. The
+			// view model's uncalculated tax is always the one row labelled "Tax".
+			return uncalculatedNames(rows).includes("tax")
+				? "Nothing in this order ships, so there's no delivery charge and no location-based tax."
+				: "Nothing in this order ships, so there's no delivery charge.";
 		case "no_zones":
 		case null:
 			return uncalculatedFootnote(rows, excludesUncalculated);

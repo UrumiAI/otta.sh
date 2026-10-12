@@ -65,6 +65,7 @@ import {
 	getProductCommerce,
 	idempotencyKey as toIdempotencyKey,
 	isCurrentPaymentMethod,
+	itemizeTaxLines,
 	InvalidProductFieldError,
 	isEmailTransportUnavailableError,
 	isProductLive,
@@ -112,7 +113,11 @@ import {
 	type ProductVariantSummary,
 	type PricedLine,
 	type QuoteResult as DomainQuoteResult,
+	orderTaxRows,
 	readOrderTaxSnapshot,
+	RATE_TABLE_CALCULATOR_ID,
+	TAX_DISABLED_CALCULATOR_ID,
+	taxTotalsDisplayOf,
 	type ZoneResolution,
 	roundingEntry,
 } from "@otta-sh/domain";
@@ -907,7 +912,10 @@ export class InProcessCommerceClient implements CommerceClient {
 			customerId,
 		);
 		if (orders === null) return { ok: false, reason: "UNAUTHENTICATED" };
-		return { ok: true, orders: orders.map(serializeOrderSummary) };
+		// Wrapped, not passed as `map`'s callback: `map` would hand the index in as
+		// `taxTotalsDisplay`. The list shows no tax rows, so the default ("single")
+		// stands and no settings read is spent.
+		return { ok: true, orders: orders.map((order) => serializeOrderSummary(order)) };
 	}
 
 	async getMyAccount(sessionToken: string): Promise<AuthedResult<{ email: string }>> {
@@ -941,7 +949,7 @@ export class InProcessCommerceClient implements CommerceClient {
 		return {
 			ok: true,
 			order: {
-				...serializeOrderSummary(ledger.order),
+				...serializeOrderSummary(ledger.order, await this.#taxTotalsDisplayFor(ledger.order)),
 				latePayment: classifyLatePayment({
 					state: ledger.order.state,
 					events: ledger.events,
@@ -1270,8 +1278,19 @@ export class InProcessCommerceClient implements CommerceClient {
 					refunds: ledger.refunds,
 				}),
 				recordedRefundTotal(ledger.refunds),
+				await this.#taxTotalsDisplayFor(ledger.order),
 			),
 		};
+	}
+
+	/**
+	 * The store's "Display tax totals" for an order's page (issue #422) — read
+	 * only for an order that has rows to itemize, so an untaxed or older order's
+	 * read costs nothing more.
+	 */
+	async #taxTotalsDisplayFor(order: Order): Promise<"itemized" | "single"> {
+		if (orderTaxRows(order.totals) === null) return "single";
+		return taxTotalsDisplayOf((await this.#stores.settingsStore.get()).tax);
 	}
 
 	/**
@@ -1589,7 +1608,10 @@ function serializeOrderLines(order: Order): OrderLineWire[] {
 }
 
 /** The customer's own order, as their account pages read it. */
-function serializeOrderSummary(order: Order): OrderSummaryWire {
+function serializeOrderSummary(
+	order: Order,
+	taxTotalsDisplay: "itemized" | "single" = "single",
+): OrderSummaryWire {
 	return {
 		id: order.id,
 		state: order.state,
@@ -1610,7 +1632,7 @@ function serializeOrderSummary(order: Order): OrderSummaryWire {
 			appliedCouponCode: order.totals.appliedCouponCode,
 			shippingZoneId: shippingZoneIdOf(order.totals.shippingMethodSnapshot),
 			shippingMethodId: shippingMethodIdOf(order.totals.shippingMethodSnapshot),
-			...orderTaxWire(order),
+			...orderTaxWire(order, taxTotalsDisplay),
 		},
 		lines: serializeOrderLines(order),
 	};
@@ -1625,16 +1647,21 @@ function roundingWire(order: Order): { roundingCents?: number } {
 /** The quote's tax display facts (ADR-0032): settings, location, and the tax per label. */
 function quoteTaxWire(quote: Extract<DomainQuoteResult, { ok: true }>): QuoteTaxWire {
 	const { result } = quote.tax;
-	const itemized: QuoteTaxWire["itemized"] = [];
-	for (const line of [...result.lines, ...(result.shipping === null ? [] : [result.shipping])]) {
-		if (line.taxCents === 0) continue;
-		const row = itemized.find((r) => r.label === line.label);
-		if (row === undefined) itemized.push({ label: line.label, amountCents: line.taxCents });
-		else row.amountCents += line.taxCents;
-	}
+	// The grouping the order's rows use too (`orderTaxRows`, issue #422), so the
+	// order page shows the rows the checkout showed.
+	const itemized = itemizeTaxLines([
+		...result.lines,
+		...(result.shipping === null ? [] : [result.shipping]),
+	]);
 	return {
 		enabled: quote.taxSettings.enabled,
 		located: quote.taxLocated,
+		// Only an outside calculator is an estimate; omitted otherwise, so the
+		// built-in's quote wire is unchanged.
+		...(quote.tax.calculatorId !== RATE_TABLE_CALCULATOR_ID &&
+		quote.tax.calculatorId !== TAX_DISABLED_CALCULATOR_ID
+			? { estimate: true }
+			: {}),
 		pricesIncludeTax: quote.tax.pricesIncludeTax,
 		displayCart: quote.taxSettings.displayCart,
 		totalsDisplay: quote.taxSettings.totalsDisplay,
@@ -1646,29 +1673,55 @@ function quoteTaxWire(quote: Extract<DomainQuoteResult, { ok: true }>): QuoteTax
 /**
  * An order priced with tax-INCLUSIVE prices carries that fact from its frozen
  * snapshot, so its pages show the subtotal net and the rows still sum to the
- * total. Every other order keeps today's single "Tax" row (no `tax` key).
+ * total. With `totalsDisplay` "itemized" (the store's "Display tax totals",
+ * resolved by the caller — issue #422), an order whose snapshot itemizes
+ * (`orderTaxRows`) carries one row per tax. An order priced with tax switched off
+ * carries `tax.enabled: false` (no Tax row). Every other order keeps today's
+ * single "Tax" row (no `tax` key).
  *
  * Tax calculated for a place with no shipping zone (ADR-0032: a digital cart
  * taxed at the shop base address) adds `taxLocated: true`, so the order's pages
  * show the tax charged rather than "Not calculated". A snapshot written before
  * `located` existed adds nothing — the zone rule decides, as before.
  */
-function orderTaxWire(order: Order): { tax?: QuoteTaxWire; taxLocated?: true } {
+function orderTaxWire(
+	order: Order,
+	totalsDisplay: "itemized" | "single" = "single",
+): { tax?: QuoteTaxWire; taxLocated?: true } {
 	const snapshot = readOrderTaxSnapshot(order.totals.taxBreakdown);
 	if (snapshot === null || snapshot.v !== 1) return {};
+	// An order priced while tax was switched off says so from its own frozen
+	// calculator id (#420), so its pages hide the Tax row like the review did.
+	// Older snapshots carry other ids and keep today's single row. The zero-tax
+	// check keeps the row on any order that did charge tax, even if an outside
+	// calculator reused the id. `taxLocated` only matters while tax is on.
+	if (snapshot.calculatorId === TAX_DISABLED_CALCULATOR_ID && Number(order.totals.tax) === 0) {
+		return {
+			tax: {
+				enabled: false,
+				located: false,
+				pricesIncludeTax: false,
+				displayCart: "excl",
+				totalsDisplay: "single",
+				lineTaxCents: 0,
+				itemized: [],
+			},
+		};
+	}
 	const located = snapshot.located === true;
 	const flag = located ? { taxLocated: true as const } : {};
-	if (!snapshot.pricesIncludeTax) return flag;
+	const rows = totalsDisplay === "itemized" ? orderTaxRows(order.totals) : null;
+	if (!snapshot.pricesIncludeTax && rows === null) return flag;
 	return {
 		...flag,
 		tax: {
 			enabled: true,
 			located: shippingZoneIdOf(order.totals.shippingMethodSnapshot) !== null || located,
-			pricesIncludeTax: true,
+			pricesIncludeTax: snapshot.pricesIncludeTax,
 			displayCart: "excl",
-			totalsDisplay: "single",
+			totalsDisplay: rows === null ? "single" : "itemized",
 			lineTaxCents: snapshot.lines.reduce((sum, l) => sum + l.taxCents, 0),
-			itemized: [],
+			itemized: rows ?? [],
 		},
 	};
 }
@@ -1686,6 +1739,7 @@ function serializePublicOrder(
 	order: Order,
 	latePayment: LatePaymentStatus,
 	refundedCents: number,
+	taxTotalsDisplay: "itemized" | "single" = "single",
 ): PublicOrderWire {
 	return {
 		id: order.id,
@@ -1705,7 +1759,7 @@ function serializePublicOrder(
 			appliedCouponCode: order.totals.appliedCouponCode,
 			shippingZoneId: shippingZoneIdOf(order.totals.shippingMethodSnapshot),
 			shippingMethodId: shippingMethodIdOf(order.totals.shippingMethodSnapshot),
-			...orderTaxWire(order),
+			...orderTaxWire(order, taxTotalsDisplay),
 		},
 		lines: serializeOrderLines(order),
 		fulfillment: publicFulfillment(order),

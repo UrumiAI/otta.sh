@@ -342,6 +342,27 @@ describe("checkoutFootnote — the reason the total is incomplete, stated truthf
 		expect(note).not.toMatch(/set .* up/i);
 	});
 
+	// Issue #436: a digital cart taxed at the shop base address (`tax.located`)
+	// shows a real tax row; the footnote must not deny the tax right beside it.
+	test("digital_only with the tax calculated: no delivery charge, and no claim of no tax", () => {
+		const taxed = [shipping, { label: "Standard", amount: money("$10.00") }];
+		const note = checkoutFootnote("digital_only", taxed, true) ?? "";
+		expect(note).toMatch(/nothing in this order ships/i);
+		expect(note).toMatch(/no delivery charge/i);
+		expect(note).not.toMatch(/tax/i);
+	});
+
+	test("digital_only with the tax shown included (no tax row) still makes no claim of no tax", () => {
+		const note = checkoutFootnote("digital_only", [shipping], true) ?? "";
+		expect(note).not.toMatch(/tax/i);
+	});
+
+	test("UNCHANGED: digital_only with the tax not calculated keeps 'no location-based tax'", () => {
+		expect(checkoutFootnote("digital_only", rows, true)).toBe(
+			"Nothing in this order ships, so there's no delivery charge and no location-based tax.",
+		);
+	});
+
 	test("#426: digital_only on a review taxed where the buyer is never says 'no location-based tax'", () => {
 		const note = checkoutFootnote("digital_only", rows, true, { taxByBuyerLocation: true }) ?? "";
 		expect(note).toMatch(/nothing in this order ships/i);

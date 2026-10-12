@@ -900,7 +900,7 @@ describe("admin Tax console — rates level (workerd sandbox)", () => {
 		const after = await submitForm(opened, "tax:create-rate", {
 			id: "bad",
 			zoneId: "us",
-			ratePercent: "7.255",
+			ratePercent: "7.25555", // 5 decimals: finer than the 0.0001% a rate holds (#425)
 			appliesToShipping: false,
 		});
 		expect(await findRate("us", "bad")).toBeUndefined();
@@ -953,7 +953,7 @@ describe("admin Tax console — rates level (workerd sandbox)", () => {
 		const refused = await submitForm(screen, "tax:create-rate", {
 			id: "std-eu-b",
 			zoneId: "eu",
-			ratePercent: "7.255", // 3 decimals — refused at the plugin boundary
+			ratePercent: "7.25555", // 5 decimals — refused at the plugin boundary (#425 allows 4)
 			appliesToShipping: true,
 		});
 		expect(await findRate("eu", "std-eu-b")).toBeUndefined();
@@ -964,7 +964,7 @@ describe("admin Tax console — rates level (workerd sandbox)", () => {
 		expect(formInitialValues(refused, "tax:create-rate")).toEqual({
 			id: "std-eu-b",
 			zoneId: "eu", // the select survives — never silently reset to the first zone
-			ratePercent: "7.255", // VERBATIM: there are no bps to re-derive it from
+			ratePercent: "7.25555", // VERBATIM: there is no rate to re-derive it from
 			appliesToShipping: true, // X-24: a toggle is mount-only, so it must be restated
 		});
 		// Fixing the one field and resubmitting creates the rate and returns.
@@ -1860,5 +1860,148 @@ describe("admin Tax console — one rate per (class, zone) (workerd sandbox)", (
 		const row = tableRows(blocks).find((r) => r.id === "a-old");
 		expect(row?.appliesToShipping).toBe("yes (not applied — duplicate ignored)");
 		expect(String(row?.rate)).toContain("duplicate: only r0 applies");
+	});
+});
+
+// -- #425: rates finer than a basis point (8.875%) ------------------------------
+
+/** The standard-class line the CHECKOUT's built-in calculator answers for `amount`
+ *  in `zoneId`, over the same store the console writes. */
+async function checkoutLine(zoneId: string, amount: number) {
+	const answer = await createRateTableCalculator(taxRules).calculate({
+		purpose: "order",
+		currency: toCurrency("USD"),
+		pricesIncludeTax: false,
+		lines: [
+			{
+				lineId: "l1",
+				quantity: 1,
+				unitPriceCents: cents(amount),
+				amountCents: cents(amount),
+				taxClassId: "standard",
+				taxStatus: "taxable",
+				requiresShipping: true,
+			},
+		],
+		shipping: null,
+		origin: null,
+		destination: null,
+		zoneId,
+	});
+	return answer.ok ? answer.lines[0] : undefined;
+}
+
+describe("admin Tax console — 8.875% end to end (#425, workerd sandbox)", () => {
+	test("an 8.875% rate typed in the console is stored exactly, shown as 8.875%, and charged exactly at checkout", async () => {
+		await seedRules({ rates: DEFAULT_RATES.filter((r) => r.zoneId !== "us") });
+		const after = await submitForm(await openNewRateScreen("standard"), "tax:create-rate", {
+			id: "nyc",
+			zoneId: "us",
+			ratePercent: "8.875",
+			appliesToShipping: false,
+		});
+		expect(bannerOf(after)?.variant).toBe("default");
+		expect(await findRate("us", "nyc")).toEqual({
+			id: "nyc",
+			taxClassId: "standard",
+			zoneId: "us",
+			rateBps: 888,
+			ratePpm: 88_750,
+			appliesToShipping: false,
+		});
+		// The console shows the exact rate, in the label and in the edit form.
+		const row = group(await openClass("standard"), "tax:rate:nyc")!;
+		expect(String(row.label)).toMatch(/^8\.875% — United States/);
+		expect(field(formFor([row], "tax:save-rate"), "ratePercent")?.initial_value).toBe("8.875");
+		// $1,000.00 at 8.875% is $88.75 (8.88% would charge $88.80).
+		expect(await checkoutLine("us", 100_000)).toMatchObject({
+			rateBps: 888,
+			ratePpm: 88_750,
+			taxCents: 8875,
+		});
+	});
+
+	test("saving 8.875% over a whole-bps rate, then editing it again from its own form, compares the EXACT rate", async () => {
+		await seedRules();
+		const row = group(await openClass("standard"), "tax:rate:std-us")!;
+		const saved = await submitForm([row], "tax:save-rate", {
+			ratePercent: "8.875",
+			appliesToShipping: false,
+		});
+		expect(bannerOf(saved)?.title).toBe("Rate saved");
+		expect(await findRate("us", "std-us")).toMatchObject({ rateBps: 888, ratePpm: 88_750 });
+		// The fine rate's own form carries the exact watermark, so its edit is not stale.
+		const fine = group(await openClass("standard"), "tax:rate:std-us")!;
+		const again = await submitForm([fine], "tax:save-rate", {
+			ratePercent: "4.5",
+			appliesToShipping: false,
+		});
+		expect(bannerOf(again)?.title).toBe("Rate saved");
+		const back = await findRate("us", "std-us");
+		expect(back).toMatchObject({ rateBps: 450 });
+		expect(back).not.toHaveProperty("ratePpm");
+		expect(await checkoutLine("us", 100_000)).toMatchObject({ taxCents: 4500 });
+	});
+
+	test("a duplicate refusal names the existing rate's exact percent", async () => {
+		await seedRules({ rates: [] });
+		await taxRules.createRate({
+			id: "nyc",
+			taxClassId: "standard",
+			zoneId: "us",
+			rateBps: 888,
+			ratePpm: 88_750,
+			appliesToShipping: false,
+		});
+		const refused = await submitForm(await openNewRateScreen("standard"), "tax:create-rate", {
+			id: "nyc-2",
+			zoneId: "us",
+			ratePercent: "9",
+			appliesToShipping: false,
+		});
+		expect(String(bannerOf(refused)?.description)).toContain('"nyc" (8.875%)');
+	});
+
+	test("more than four decimal places is refused at the plugin boundary — nothing is written", async () => {
+		await seedRules();
+		const after = await submitForm(await openNewRateScreen("standard"), "tax:create-rate", {
+			id: "bad",
+			zoneId: "us",
+			ratePercent: "8.87501",
+			appliesToShipping: false,
+		});
+		expect(bannerOf(after)?.variant).toBe("error");
+		expect(String(bannerOf(after)?.description)).toMatch(/four decimal places/);
+		expect(await findRate("us", "bad")).toBeUndefined();
+	});
+
+	test("a rate stored before #425 (whole basis points, no ratePpm) reads, shows and charges exactly as before — and a read writes nothing", async () => {
+		await seedRules({ rates: [] });
+		await seedLegacyRate({
+			id: "std-us",
+			taxClassId: "standard",
+			zoneId: "us",
+			rateBps: 725,
+			appliesToShipping: false,
+		});
+		const classes = collectionOf<TaxClassDoc>(storage, TAX_CLASSES_COLLECTION);
+		const before = JSON.stringify(await classes.get("standard"));
+		const row = group(await openClass("standard"), "tax:rate:std-us")!;
+		expect(String(row.label)).toMatch(/^7\.25% — United States/);
+		expect(field(formFor([row], "tax:save-rate"), "ratePercent")?.initial_value).toBe("7.25");
+		expect(await findRate("us", "std-us")).toEqual({
+			id: "std-us",
+			taxClassId: "standard",
+			zoneId: "us",
+			rateBps: 725,
+			appliesToShipping: false,
+		});
+		expect(await checkoutLine("us", 100_000)).toEqual({
+			lineId: "l1",
+			rateBps: 725,
+			label: "Standard",
+			taxCents: 7250,
+		});
+		expect(JSON.stringify(await classes.get("standard"))).toBe(before);
 	});
 });

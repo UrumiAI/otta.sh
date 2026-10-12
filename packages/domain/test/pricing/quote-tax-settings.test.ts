@@ -349,3 +349,81 @@ describe("shipping tax class and rounding settings reach the built-in", () => {
 		expect(q.breakdown.lineBreakdown.map((l) => l.taxCents)).toEqual([40, 40, 39]);
 	});
 });
+
+/** An outside calculator charging `taxCents` on every line (#436). */
+function charging(taxCents: number): TaxCalculator {
+	return {
+		id: "acme.tax",
+		async calculate(req) {
+			return {
+				ok: true,
+				currency: req.currency,
+				lines: req.lines.map((l) => ({
+					lineId: l.lineId,
+					rateBps: taxCents === 0 ? 0 : 1000,
+					label: "VAT",
+					taxCents: cents(taxCents),
+				})),
+				shipping: null,
+			};
+		},
+	};
+}
+
+/**
+ * Issue #436: `taxLocated` says "tax was calculated for a place", which the
+ * checkout review and the order page read to show the tax rather than "Not
+ * calculated". An outside calculator answers for the ship-to itself — it needs
+ * no shipping zone — so a store with NO zones whose calculator charges tax is
+ * located. The built-in still needs a zone (no zone ⇒ no rate ⇒ 0).
+ */
+describe("located: an outside calculator that charges tax needs no shipping zone (#436)", () => {
+	const unzoned: QuoteCommand = {
+		currency: USD,
+		lines: [
+			{ unitPriceCents: cents(1200), qty: 1, taxClassId: "standard", requiresShipping: true },
+		],
+		requiresShipping: true,
+		destination: { country: "GB", region: null },
+	};
+
+	test("no zones + an outside calculator charging tax ⇒ located", async () => {
+		await save({ ...NEW_STORE_TAX_SETTINGS, enabled: true });
+		const empty = new InMemoryShippingRulesStore();
+		const q = await computeQuote(
+			{ ...deps, shippingRules: empty, taxCalculator: charging(120) },
+			unzoned,
+		);
+		if (!q.ok) throw new Error(q.reason);
+		expect(q.destination.status).toBe("no_zones");
+		expect(q.breakdown.taxCents).toBe(120);
+		expect(q.taxLocated).toBe(true);
+	});
+
+	test("UNCHANGED: no zones + an outside calculator charging nothing ⇒ not located", async () => {
+		await save({ ...NEW_STORE_TAX_SETTINGS, enabled: true });
+		const empty = new InMemoryShippingRulesStore();
+		const q = await computeQuote(
+			{ ...deps, shippingRules: empty, taxCalculator: charging(0) },
+			unzoned,
+		);
+		if (!q.ok) throw new Error(q.reason);
+		expect(q.taxLocated).toBe(false);
+	});
+
+	test("UNCHANGED: no zones + the built-in ⇒ no rate, not located", async () => {
+		await save({ ...NEW_STORE_TAX_SETTINGS, enabled: true });
+		const empty = new InMemoryShippingRulesStore();
+		const q = await computeQuote({ ...deps, shippingRules: empty }, unzoned);
+		if (!q.ok) throw new Error(q.reason);
+		expect(q.breakdown.taxCents).toBe(0);
+		expect(q.taxLocated).toBe(false);
+	});
+
+	test("UNCHANGED: a zone-matched ship-to is located", async () => {
+		await save({ ...NEW_STORE_TAX_SETTINGS, enabled: true });
+		const q = await computeQuote(deps, physical);
+		if (!q.ok) throw new Error(q.reason);
+		expect(q.taxLocated).toBe(true);
+	});
+});

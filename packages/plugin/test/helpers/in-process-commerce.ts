@@ -16,7 +16,14 @@
  * and a suite can assert on the count, which is what turns "sends no mail" from a
  * claim into a test.
  */
-import type { Clock, EmailSender, IdGen, PaymentGateway, PaymentMethod } from "@otta-sh/domain";
+import type {
+	Clock,
+	EmailSender,
+	IdGen,
+	PaymentGateway,
+	PaymentMethod,
+	TaxCalculator,
+} from "@otta-sh/domain";
 import { makeSqliteStorage } from "@otta-sh/store-emdash/testing";
 import { InProcessCommerceClient } from "../../src/commerce/in-process-commerce-client.js";
 import {
@@ -94,6 +101,9 @@ export interface MakeInProcessCommerceOptions {
 	/** An id source the caller controls, for a suite that pins whole documents
 	 *  byte for byte. Omitted ⇒ random UUIDs, which is what a deployment gets. */
 	idGen?: IdGen;
+	/** An outside tax calculator (ADR-0030), as a tax plugin would register one.
+	 *  Omitted ⇒ the built-in rate table, which is what a deployment gets. */
+	taxCalculator?: TaxCalculator;
 }
 
 export async function makeInProcessCommerce(
@@ -130,6 +140,7 @@ export async function makeInProcessCommerce(
 			...(options.resolveAddressRequired !== undefined
 				? { resolveAddressRequired: options.resolveAddressRequired }
 				: {}),
+			...(options.taxCalculator !== undefined ? { taxCalculator: options.taxCalculator } : {}),
 		}),
 		stores,
 		ctx,

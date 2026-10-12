@@ -401,6 +401,19 @@ describe("Sum — tax labels are merchant text, rendered escaped (ADR-0032)", ()
 		expect(html).not.toContain("<img");
 	});
 
+	test("the estimate note (#429) is its own line, apart from the 'includes' note", async () => {
+		const html = await sum({
+			rows: [{ label: "Subtotal", amount: money("$12.00") }],
+			total: money("$12.00"),
+			taxNote: "Includes $2.00 tax",
+			estimateNote: "Estimated tax — the final amount is shown on the payment page.",
+		});
+		const foots = [...html.matchAll(/<p class="foot"[^>]*>([^<]*)<\/p>/g)].map((m) => m[1]);
+		expect(foots).toContain("Includes $2.00 tax");
+		expect(foots).toContain("Estimated tax — the final amount is shown on the payment page.");
+		expect(html).not.toContain("tax Estimated");
+	});
+
 	test("no note by default", async () => {
 		const html = await sum({ rows: [], total: money("$1.00") });
 		expect(html).not.toContain("Includes");
