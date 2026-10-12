@@ -1442,6 +1442,27 @@ describe("admin Tax console — tax options (PR 2a, ADR-0032)", () => {
 		);
 		expect(contextTexts(await openOptions()).some((t) => note.test(t))).toBe(false);
 	});
+
+	// #467: the billing-address rule falls back to the base address too.
+	test("based on the billing address with no base address: the options screen warns", async () => {
+		await seedRules();
+		const note = /billing address, but no base address is set .* not taxed/;
+		await settingsStore.update(
+			{ tax: { ...TAX_ON, basedOn: "billing", baseAddress: null } },
+			idempotencyKey("billing-no-address"),
+		);
+		expect(contextTexts(await openOptions()).some((t) => note.test(t))).toBe(true);
+		await settingsStore.update(
+			{ tax: { ...TAX_ON, basedOn: "billing", baseAddress: { country: "GB", region: null } } },
+			idempotencyKey("billing-with-address"),
+		);
+		expect(contextTexts(await openOptions()).some((t) => note.test(t))).toBe(false);
+		await settingsStore.update(
+			{ tax: { ...TAX_ON, basedOn: "shipping", baseAddress: null } },
+			idempotencyKey("shipping-no-address"),
+		);
+		expect(contextTexts(await openOptions()).some((t) => note.test(t))).toBe(false);
+	});
 });
 
 describe("admin Tax console — assertBlockContract (§15 V-3)", () => {
