@@ -75,6 +75,8 @@ export interface OrderLine {
 	readonly currency: string;
 	readonly quantity: number;
 	readonly fulfillmentKind: string;
+	/** #427: the tax status frozen with the order; absent when it predates it. */
+	readonly taxStatus?: string;
 }
 
 export interface OrderTotals {

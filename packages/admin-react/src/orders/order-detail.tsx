@@ -79,6 +79,7 @@ import {
 	formatMinorUnitsInput,
 	formatTimestamp,
 	maskBuyerEmail,
+	orderLineTaxStatusNote,
 	orderStateCell,
 	orderNumberOf,
 	parseMinorUnitsInput,
@@ -362,6 +363,19 @@ function timelineDetail(entry: TimelineEntry, reasonLabels: ReadonlyMap<string, 
 	}
 	if (entry.kind === "reconciliation_resolved") return entry.outcome ?? "—";
 	return "—";
+}
+
+/** #427: a line frozen as not ordinarily taxed says so beside its title; a
+ *  taxable or unknown (pre-#427) line shows nothing. */
+function LineTaxStatusNote({ taxStatus }: { taxStatus: string | undefined }): React.ReactNode {
+	const note = orderLineTaxStatusNote(taxStatus);
+	if (note === null) return null;
+	return (
+		<span data-testid="detail-line-tax-status" style={{ fontSize: 12, opacity: 0.7 }}>
+			{" · "}
+			{note}
+		</span>
+	);
 }
 
 /** A tracking URL as a link — http(s) only, so a stored `javascript:` value can
@@ -1314,7 +1328,10 @@ export function OrderDetail({
 									<td className="otta-td">
 										<code>{line.sku}</code>
 									</td>
-									<td className="otta-td">{line.title}</td>
+									<td className="otta-td">
+										{line.title}
+										<LineTaxStatusNote taxStatus={line.taxStatus} />
+									</td>
 									<td className="otta-td otta-num" style={endCellStyle}>
 										{line.quantity}
 									</td>

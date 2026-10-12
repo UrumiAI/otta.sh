@@ -339,6 +339,7 @@ export {
 	taxClassLabel,
 	taxClassOptions,
 	taxStatusLabel,
+	orderLineTaxStatusNote,
 	unitCostFieldLabel,
 	type ProductSection,
 	type StockDegradation,

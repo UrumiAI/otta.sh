@@ -1184,3 +1184,31 @@ test("an order without the record shows no such label", async () => {
 	const view = await show(detailFor("paid", CAPTURED));
 	expect(view.container.querySelector('[data-testid="detail-prices-include-tax"]')).toBeNull();
 });
+
+// ── #427: each line's FROZEN tax status ──────────────────────────────────────
+
+test("a line frozen as not taxed or shipping-only is marked; a taxable or unknown one is not", async () => {
+	const base = detailFor("paid");
+	const [first] = base.order.lines;
+	if (first === undefined) throw new Error("fixture has no line");
+	const payload: DetailPayload = {
+		...base,
+		order: {
+			...base.order,
+			lines: [
+				{ ...first, taxStatus: "none" },
+				{ ...first, taxStatus: "shipping_only" },
+				{ ...first, taxStatus: "taxable" },
+				first,
+			],
+		},
+	};
+	const view = await show(payload);
+	const lines = table(view, "detail-lines");
+	const notes = bodyRows(lines).map(
+		(row) => row.querySelector('[data-testid="detail-line-tax-status"]')?.textContent ?? null,
+	);
+	expect(notes).toEqual([" · Tax: None", " · Tax: Shipping only", null, null]);
+	// The title stays its own text beside the marker.
+	expect(cellIn(lines, 3, 1).textContent).toBe("Linen apron");
+});

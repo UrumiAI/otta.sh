@@ -34,6 +34,10 @@ export interface OrderLineWire {
 	currency: string;
 	quantity: number;
 	fulfillmentKind: string;
+	/** #427: the product's tax status FROZEN with the order (`taxable` |
+	 *  `shipping_only` | `none`). Absent on an order from before it was recorded:
+	 *  unknown, never assumed taxable. */
+	taxStatus?: string;
 }
 
 export interface OrderTotalsWire {
