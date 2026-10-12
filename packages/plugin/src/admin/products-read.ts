@@ -232,9 +232,9 @@ export interface StockPageContext {
 	 * IT DESCRIBES ONE RESPONSE, NOT A SCAN. A continuation can only ever report
 	 * `false` (`resolveStockContext`'s doc says why), so a caller that
 	 * ACCUMULATES pages must carry the flag forward itself rather than take the
-	 * newest response's word for the rows above it — `nextPage` in
-	 * `products-list.tsx` is where that is done, and where the reason is
-	 * written down.
+	 * newest response's word for the rows above it — the
+	 * `carried` verdict on `PendingCursor` (`admin-react/src/accumulate.ts`) is
+	 * where that is done, and where the reason is written down.
 	 */
 	filterUnavailable: boolean;
 }
@@ -304,8 +304,8 @@ export interface StockPageResult {
  *     threshold, so a continuation of it is unfiltered too while reporting
  *     `false` here — correct for the one response, wrong for the accumulated
  *     rows. Only a caller that keeps the pages knows that, which is why
- *     `products-list.tsx`'s `nextPage` carries the flag forward and is where
- *     that half is pinned.
+ *     `PendingCursor.carried` in `admin-react/src/accumulate.ts` carries the
+ *     flag forward and is where that half is pinned.
  */
 export function resolveStockContext(
 	products: readonly ProductSummaryWire[],
