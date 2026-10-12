@@ -282,7 +282,8 @@ export function buildCheckoutLines(
  * The lines always sum to the shown subtotal: the amount the subtotal row moves
  * by (`shownAmounts`) is split across the lines by their tax (largest
  * remainder), which is each line's own tax whenever there is no coupon. A unit
- * price is its line's share over the quantity, rounded half up — exact at qty 1;
+ * price is its line's share over the quantity, rounded as the tax is (half down
+ * for prices entered with tax, half up otherwise) — exact at qty 1;
  * like WooCommerce's cart, unit × qty may differ from the line by a cent.
  *
  * Unchanged — the very same rows — when tax is off or not calculated yet, when
@@ -309,8 +310,12 @@ export function showCheckoutLinesTax(
 		const share: number = shares[i] ?? 0;
 		const unit = line.unitPrice?.amount ?? 0;
 		const total = line.lineTotal?.amount ?? 0;
-		// Half up of share / qty, in integers.
-		const unitShare = Math.floor((2 * share + line.qty) / (2 * line.qty));
+		// share / qty, rounded as the tax itself is (`taxOn`): half DOWN for the tax
+		// inside a price entered with tax, half up otherwise — so one unit shows what
+		// the PDP and the cart page show. In integers.
+		const unitShare = tax.pricesIncludeTax
+			? Math.floor((2 * share + line.qty - 1) / (2 * line.qty))
+			: Math.floor((2 * share + line.qty) / (2 * line.qty));
 		return {
 			...line,
 			unitPrice: money(unit + sign * unitShare, code, options.locale),

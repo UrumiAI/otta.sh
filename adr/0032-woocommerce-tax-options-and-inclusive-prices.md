@@ -172,9 +172,12 @@ pay must not change silently (user decision 4).
     splits the amount the subtotal row moves by across the lines by their tax, using
     largest remainder, so the lines always sum to the shown subtotal. Without a coupon,
     that is each line's own tax.
-  - A unit price is the line's share divided by the quantity, rounded half up. This is
-    exact at quantity 1. As in WooCommerce, unit × quantity can differ from the line by a
-    cent.
+  - A unit price is the line's share divided by the quantity, rounded the way the tax is
+    rounded: half down for prices entered with tax, half up otherwise. This is exact at
+    quantity 1. As in WooCommerce, unit × quantity can differ from the line by a cent.
+  - With an outside calculator registered (ADR-0030), checkout lines still follow the
+    quote's per-line tax, which is that calculator's answer. The cart page shows those
+    stores' prices as entered, because it never calls the calculator.
   - A store whose `displayCart` matches how its prices are entered (every default store),
     or whose tax is off, renders its lines byte for byte as before.
   - Placed-order pages and emails read the order's line snapshot, which records no
