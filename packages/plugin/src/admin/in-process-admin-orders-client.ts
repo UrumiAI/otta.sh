@@ -1172,6 +1172,7 @@ function toOrderDetailWire(order: Order): OrderDetailWire {
 			// #421: what the order's own frozen snapshot recorded, never today's setting.
 			...(pricesIncludeTaxOf(order.totals.taxBreakdown) ? { pricesIncludeTax: true as const } : {}),
 			...adminTaxRows(order),
+			...taxAddressEntry(order),
 		},
 		lines: order.lines.map((l, index) => {
 			const taxStatus = taxStatusOf.get(index);
@@ -1206,6 +1207,14 @@ function frozenLineTaxStatuses(order: Order): Map<number, string> {
 		if (line.taxStatus !== undefined) out.set(line.lineIndex, line.taxStatus);
 	}
 	return out;
+}
+
+/** #426: the order tax snapshot's `taxAddress`, when it has one. */
+function taxAddressEntry(order: Order): Pick<OrderDetailWire["totals"], "taxAddress"> {
+	const snapshot = readOrderTaxSnapshot(order.totals.taxBreakdown);
+	if (snapshot === null || snapshot.v !== 1 || snapshot.taxAddress === undefined) return {};
+	const { basis, country, region } = snapshot.taxAddress;
+	return { taxAddress: { basis, country, region } };
 }
 
 /** `shippingZoneIdOf`'s twin: read the zone id off the opaque method snapshot

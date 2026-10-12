@@ -405,6 +405,11 @@ export interface CheckoutModel {
 	regionValue: string;
 	countries: readonly CountryOption[];
 	showDelivery: boolean;
+	/** #426: the "where" block asks where the BUYER is (a cart that ships
+	 *  nothing, taxed there), not where the order goes: no delivery options, an
+	 *  optional country, and the place form echoes it with `taxLocation=buyer`.
+	 *  Only ever true alongside `showDelivery`. */
+	buyerLocation: boolean;
 	showAddress: boolean;
 	/** The method the totals were priced with, stated beside the submit. */
 	chosenOption: { label: string; price: string } | null;

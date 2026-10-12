@@ -68,6 +68,10 @@ export interface OrderTotalsWire {
 	 * or calculator text — render them escaped.
 	 */
 	taxRows?: Array<{ label: string; amountCents: number }>;
+	/** #426: where the order's tax was charged, off its frozen tax snapshot —
+	 *  present only on an order priced under "based on the customer's billing
+	 *  address" (`billing` = the buyer's self-declared location). */
+	taxAddress?: { basis: "billing" | "base" | "shipping"; country: string; region: string | null };
 }
 
 /** The immutable shipping-address snapshot captured on an order at checkout

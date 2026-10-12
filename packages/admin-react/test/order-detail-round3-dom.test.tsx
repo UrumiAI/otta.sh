@@ -283,6 +283,31 @@ test("the Discount row names the coupon the order was priced with", async () => 
 	expect(view.container.textContent).toContain("Discount · qa2admin2");
 });
 
+test("#426: an order taxed under 'based on billing' states where its tax was charged", async () => {
+	const payload = detailFor("paid");
+	const at = async (taxAddress: object) =>
+		(
+			await show({
+				...payload,
+				order: { ...payload.order, totals: { ...payload.order.totals, taxAddress } as never },
+			})
+		).container.textContent;
+	expect(await at({ basis: "billing", country: "DE", region: null })).toContain(
+		"Tax locationDE (buyer-declared)",
+	);
+	expect(await at({ basis: "base", country: "GB", region: null })).toContain(
+		"Tax locationGB (shop address)",
+	);
+	expect(await at({ basis: "shipping", country: "US", region: "CA" })).toContain(
+		"Tax locationUS-CA (ship-to)",
+	);
+});
+
+test("#426: an order without a recorded tax location shows no such row", async () => {
+	const view = await show(detailFor("paid"));
+	expect(view.container.textContent).not.toContain("Tax location");
+});
+
 test("a recorded fulfilment shows its tracking link", async () => {
 	const payload = detailFor("shipped");
 	const view = await show({

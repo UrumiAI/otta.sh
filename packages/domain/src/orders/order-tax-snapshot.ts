@@ -26,6 +26,15 @@ export interface OrderTaxSnapshotV1 {
 	 */
 	located?: boolean;
 	/**
+	 * Which address the tax was charged for (#426), written on every order priced
+	 * under "based on the customer's billing address": the buyer's self-declared
+	 * billing location, the shop's base address (a digital cart whose buyer gave
+	 * none), or the ship-to (a cart that ships). ABSENT under every other option —
+	 * those orders are snapshotted exactly as before — when no address was used,
+	 * and on every snapshot written before it.
+	 */
+	taxAddress?: OrderTaxAddress;
+	/**
 	 * One per order line, in order-line order (`lineIndex` indexes `order.lines`).
 	 * A line (and `shipping`) taxed at a rate finer than a basis point also records
 	 * that exact rate as `ratePpm` (#425, `TaxLine`); `rateBps` keeps its meaning,
@@ -47,6 +56,15 @@ export interface OrderTaxSnapshotV1 {
 		} & TaxLine
 	>;
 	shipping: ({ taxableCents: Cents } & TaxLine) | null;
+}
+
+/** Where an order's tax was charged, frozen with it (#426). */
+export interface OrderTaxAddress {
+	basis: "billing" | "base" | "shipping";
+	/** ISO 3166-1 alpha-2. */
+	country: string;
+	/** ISO 3166-2 subdivision suffix, or null. */
+	region: string | null;
 }
 
 /** An order written before ADR-0030: amounts only — no rate, label or calculator. */
@@ -74,12 +92,23 @@ export function buildOrderTaxSnapshot(
 	located: boolean,
 	/** Each line's product tax status, as the calculator was asked (line order). */
 	taxStatuses: readonly ProductTaxStatus[],
+	/** The quote's `taxAddress` (#426), when it has one. */
+	taxAddress?: OrderTaxAddress,
 ): OrderTaxSnapshotV1 {
 	return {
 		v: 1,
 		calculatorId: tax.calculatorId,
 		pricesIncludeTax: tax.pricesIncludeTax === true,
 		located,
+		...(taxAddress !== undefined
+			? {
+					taxAddress: {
+						basis: taxAddress.basis,
+						country: taxAddress.country,
+						region: taxAddress.region,
+					},
+				}
+			: {}),
 		lines: breakdown.lineBreakdown.map((line, lineIndex) => {
 			const answered = tax.result.lines[lineIndex];
 			if (answered === undefined) throw new RangeError(`no tax line for line ${String(lineIndex)}`);
@@ -125,10 +154,12 @@ export function readOrderTaxSnapshot(raw: unknown): OrderTaxSnapshot | null {
 }
 
 function readV1(raw: Record<string, unknown>): OrderTaxSnapshotV1 | null {
-	const { calculatorId, pricesIncludeTax, located, lines, shipping } = raw;
+	const { calculatorId, pricesIncludeTax, located, taxAddress, lines, shipping } = raw;
 	if (typeof calculatorId !== "string" || typeof pricesIncludeTax !== "boolean") return null;
 	// Optional: a snapshot from before the field omits it (read as not located).
 	if (located !== undefined && typeof located !== "boolean") return null;
+	const address = taxAddress === undefined ? undefined : readTaxAddress(taxAddress);
+	if (address === null) return null;
 	if (!Array.isArray(lines)) return null;
 	const out: OrderTaxSnapshotV1["lines"] = [];
 	for (const item of lines as unknown[]) {
@@ -161,6 +192,7 @@ function readV1(raw: Record<string, unknown>): OrderTaxSnapshotV1 | null {
 		calculatorId,
 		pricesIncludeTax,
 		...(located !== undefined ? { located } : {}),
+		...(address !== undefined ? { taxAddress: address } : {}),
 		lines: out,
 		shipping: ship,
 	};
@@ -170,6 +202,16 @@ function readV1(raw: Record<string, unknown>): OrderTaxSnapshotV1 | null {
  *  rate — and every snapshot written before #425 — carries no `ratePpm` key. */
 function ratePpmOf(line: TaxLine): { ratePpm?: number } {
 	return line.ratePpm === undefined ? {} : { ratePpm: line.ratePpm };
+}
+
+function readTaxAddress(raw: unknown): OrderTaxAddress | null {
+	if (!isRecord(raw)) return null;
+	const { basis, country, region } = raw;
+	if (basis !== "billing" && basis !== "base" && basis !== "shipping") return null;
+	// ISO 3166-1 alpha-2, as the quote normalised it.
+	if (typeof country !== "string" || !/^[A-Z]{2}$/.test(country)) return null;
+	if (region !== null && typeof region !== "string") return null;
+	return { basis, country, region };
 }
 
 function taxedOf(item: Record<string, unknown>): ({ taxableCents: Cents } & TaxLine) | null {

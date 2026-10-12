@@ -54,6 +54,7 @@ const {
 	regionValue,
 	countries,
 	showDelivery,
+	buyerLocation,
 	showAddress,
 	chosenOption,
 	notReadyCopy,
@@ -234,12 +235,23 @@ const {
 		    PLACE form (`form="checkout-place"`), so updating it posts everything
 		    typed below and keeps it (QA U-1). Its own names (`deliveryCountry`,
 		    `deliveryRegion`, `deliveryMethod`) never collide with the place
-		    form's priced echo. */}
+		    form's priced echo.
+		    #426: the same block asks where the BUYER is on a cart that ships
+		    nothing, in a store taxing it there (`buyerLocation`) — optional, and
+		    with no delivery options. */}
 		{
 			showDelivery && (
 				<div class="checkout-delivery" id="delivery">
 					<fieldset class="checkout-group">
-						<legend class="u-label checkout-head-label">Delivery</legend>
+						<legend class="u-label checkout-head-label">
+							{buyerLocation ? "Your location" : "Delivery"}
+						</legend>
+						{buyerLocation && (
+							<p class="checkout-note checkout-group-note">
+								Tax is charged where you are. Optional — without it, tax is worked out from the
+								shop's address.
+							</p>
+						)}
 						{destinationError !== null && (
 							<Notice>{destinationError}</Notice>
 						)}
@@ -254,7 +266,7 @@ const {
 									name="deliveryCountry"
 									form="checkout-place"
 									autocomplete="country"
-									required
+									required={!buyerLocation}
 								>
 									<option value="">Choose a country…</option>
 									{countries.map((option) => (
@@ -328,7 +340,7 @@ const {
 								value="update-delivery"
 								formnovalidate
 							>
-								Update delivery
+								{buyerLocation ? "Update location" : "Update delivery"}
 							</button>
 						</div>
 					</fieldset>
@@ -376,6 +388,11 @@ const {
 					{summary.selection.couponCode !== null && (
 						<input type="hidden" name="couponCode" value={summary.selection.couponCode} />
 					)}
+					{/* #426: this page asks where the BUYER is. The location its totals
+					    were priced for rides as the delivery block's fromCountry /
+					    fromRegion; place.ts reads them on a marked page and sends them
+					    as the order's `billingLocation`. */}
+					{buyerLocation && <input type="hidden" name="taxLocation" value="buyer" />}
 					{/* The method the totals were priced with. */}
 					{summary.selection.shippingMethodId !== null && (
 						<input
@@ -422,10 +439,12 @@ const {
 								<legend class="u-label checkout-head-label">
 									{summary.requiresShipping ? "Delivery address" : "Billing address"}
 								</legend>
-								{showDelivery ? (
+								{showDelivery && (!buyerLocation || destination !== null) ? (
 									<>
 										{/* The destination the review priced, as hidden fields: place.ts
-										    counts only the typed fields toward all-or-nothing here. */}
+										    counts only the typed fields toward all-or-nothing here. (#426:
+										    on a buyer-location page, only once a location is priced —
+										    until then the buyer types the country below.) */}
 										<input type="hidden" name="addressMode" value="zoned" />
 										{destination !== null && (
 											<>
@@ -434,7 +453,7 @@ const {
 													<input type="hidden" name="region" value={destination.region} />
 												)}
 												<p class="checkout-note checkout-group-note">
-													Delivering to {destinationName}
+													{buyerLocation ? "Billed in" : "Delivering to"} {destinationName}
 													{destination.region !== null && <>, {destination.region}</>} —{" "}
 													<a href="#delivery">change</a>
 												</p>
@@ -555,7 +574,7 @@ const {
 											</span>
 										)}
 									</div>
-									{!showDelivery && (
+									{!(showDelivery && (!buyerLocation || destination !== null)) && (
 										<>
 											<div class="checkout-field">
 												<label class="u-label" for="address-country">

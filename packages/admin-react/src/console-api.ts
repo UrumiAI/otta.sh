@@ -96,6 +96,13 @@ export interface OrderTotals {
 	/** One row per tax, adding up to `taxCents` (issue #422). Absent ⇒ the
 	 *  single Tax row (an older order, or a plugin before the field). */
 	readonly taxRows?: ReadonlyArray<{ readonly label: string; readonly amountCents: number }>;
+	/** #426: where the tax was charged; only on an order priced under "based on
+	 *  the customer's billing address". */
+	readonly taxAddress?: {
+		readonly basis: "billing" | "base" | "shipping";
+		readonly country: string;
+		readonly region: string | null;
+	};
 }
 
 export interface ShippingAddress {

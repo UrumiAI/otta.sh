@@ -172,6 +172,7 @@ import {
 	requireBoundedProductId,
 	requireBoundedText,
 	requireCurrencyCode,
+	requireBillingLocation,
 	requireDestination,
 	LOGIN_TOKEN_MAX,
 	BUYER_REF_MAX,
@@ -1073,6 +1074,17 @@ export class InProcessCommerceClient implements CommerceClient {
 			currency: cart.currency,
 			lines,
 			destination: input.destination,
+			// #426: for a cart that ships nothing the review's location is where the
+			// buyer is (the domain reads it for no other cart, and only when the
+			// store taxes "based on the customer's billing address").
+			...(input.destination !== undefined
+				? {
+						billingLocation: {
+							country: input.destination.country,
+							region: input.destination.region ?? null,
+						},
+					}
+				: {}),
 			methodId: input.shippingMethodId,
 			couponCode: input.couponCode,
 		});
@@ -1096,6 +1108,9 @@ export class InProcessCommerceClient implements CommerceClient {
 			requiresShipping,
 			destination: serializeDestination(quote.destination),
 			discountedSubtotalCents: breakdown.subtotalCents - breakdown.discountCents,
+			...(!requiresShipping && quote.taxSettings.enabled && quote.taxSettings.basedOn === "billing"
+				? { taxByBuyerLocation: true as const }
+				: {}),
 			breakdown: {
 				currency: breakdown.currency,
 				subtotalCents: breakdown.subtotalCents,
@@ -1145,6 +1160,7 @@ export class InProcessCommerceClient implements CommerceClient {
 		if (input.couponCode !== undefined)
 			requireBoundedText("couponCode", input.couponCode, 1, COUPON_CODE_MAX);
 		if (input.shippingAddress !== undefined) requireShippingAddress(input.shippingAddress);
+		if (input.billingLocation !== undefined) requireBillingLocation(input.billingLocation);
 		const customerId =
 			opts.sessionToken === undefined
 				? undefined
@@ -1173,6 +1189,14 @@ export class InProcessCommerceClient implements CommerceClient {
 			...(input.shippingMethodId !== undefined ? { shippingMethodId: input.shippingMethodId } : {}),
 			...(input.couponCode !== undefined ? { couponCode: input.couponCode } : {}),
 			...(input.shippingAddress !== undefined ? { shippingAddress: input.shippingAddress } : {}),
+			...(input.billingLocation !== undefined
+				? {
+						billingLocation: {
+							country: input.billingLocation.country,
+							region: input.billingLocation.region ?? null,
+						},
+					}
+				: {}),
 		});
 		if (!result.ok) return { ok: false, reason: result.reason };
 		return {
