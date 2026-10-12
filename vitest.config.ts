@@ -1,18 +1,19 @@
-import { readFileSync } from "node:fs";
 import { defineConfig } from "vitest/config";
 
-// The suite is pinned to the Node major in `.nvmrc`, the one CI runs (#478). On
-// Node 26 four tests fail: its newer URL parser accepts `xn--localhost.com`, and
-// its better-sqlite3 binds a lone surrogate as U+FFFD where SQLite's JSON
-// functions keep it raw, so a SQLite lookup by a legacy lone-surrogate value
-// misses its row. The second is a real difference for a SQLite store on Node 26,
-// tracked on #478, not a flaky test. `OTTA_ANY_NODE=1` runs anyway.
-const pinnedNode = readFileSync(new URL(".nvmrc", import.meta.url), "utf8").trim();
-const runningNode = process.versions.node.split(".")[0];
-if (runningNode !== pinnedNode && process.env.OTTA_ANY_NODE !== "1") {
+// Node 26 and later are refused (#478): four tests fail there. Its newer URL
+// parser accepts `xn--localhost.com`, and its better-sqlite3 binds a lone
+// surrogate as U+FFFD where SQLite's JSON functions keep it raw, so a SQLite
+// lookup by a legacy lone-surrogate value misses its row. Both are test-only:
+// better-sqlite3 is a devDependency, and production runs on Workers (D1) or
+// Postgres. CI runs the major in `.nvmrc`; 22 and 24 run without a word.
+// `OTTA_ANY_NODE=1` runs anyway (see DEVELOPMENT.md §6).
+const FIRST_REFUSED_NODE_MAJOR = 26;
+const runningNode = Number(process.versions.node.split(".")[0]);
+if (runningNode >= FIRST_REFUSED_NODE_MAJOR && process.env.OTTA_ANY_NODE !== "1") {
 	throw new Error(
-		`Otta's tests run on Node ${pinnedNode} (.nvmrc, as in CI); this is Node ` +
-			`${process.versions.node}. Switch with \`nvm use\`, or set OTTA_ANY_NODE=1 to run anyway.`,
+		`Otta's tests do not run on Node ${String(FIRST_REFUSED_NODE_MAJOR)} or later yet (this is ` +
+			`Node ${process.versions.node}); CI uses the major in .nvmrc. Switch with \`nvm use\`, ` +
+			"or set OTTA_ANY_NODE=1 to run anyway (four known failures, see #478).",
 	);
 }
 
