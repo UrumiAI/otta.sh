@@ -574,6 +574,9 @@ deployment-supplied hosts are the operator extras below.
 **Extra hosts: `OTTA_EXTRA_ALLOWED_HOSTS`.** A comma-separated list of hostnames to add to
 the allowlist, read from the shell env, then `sites/staging/.env`, at
 **build** time, e.g. `OTTA_EXTRA_ALLOWED_HOSTS=api.example.com,hooks.example.org`.
+Nothing in Otta calls an extra host today: the plugin's own `ctx.http` calls go to
+`api.stripe.com` only. The variable is for a deployment that adds code calling out through
+the plugin's `ctx.http` (a fork or a later integration); leave it unset otherwise.
 Entries are trimmed and lowercased, empty entries are dropped, duplicates collapse, and
 the order is stable (Stripe, then extras as given). Each entry must be a public DNS hostname:
 letters, digits and hyphens in dot-separated labels, with at least one dot. These **fail the
