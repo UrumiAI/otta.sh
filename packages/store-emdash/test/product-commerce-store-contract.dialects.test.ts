@@ -113,6 +113,40 @@ describeEachDialect("EmdashProductCommerceStore taxStatus on an older document",
 	});
 });
 
+describeEachDialect("EmdashProductCommerceStore corrupt taxStatus", (ctx) => {
+	const bound = ctx.useStorage(PRODUCT_COMMERCE_LAYOUT);
+
+	test("an edit that does not touch taxStatus writes the normalised value back", async () => {
+		const h = makeProductCommerceHarness(bound.storage);
+		const pid = productId("corrupt-ts");
+		await h.store.upsert(
+			{
+				productId: pid,
+				sku: sku("SKU-CORRUPT-TS"),
+				price: money(cents(900), currency("USD")),
+				productKind: "physical",
+			},
+			idempotencyKey("seed"),
+		);
+		const stored = await h.products.getVersioned(pid);
+		if (stored === null) throw new Error("seed wrote no document");
+		await h.products.compareAndSet(pid, stored.revision, {
+			...stored.value,
+			taxStatus: "NONE",
+		} as unknown as typeof stored.value);
+
+		const read = await h.store.getByProductId(pid);
+		expect(read?.taxStatus).toBe("taxable");
+		const res = await h.store.updateCommerceFields(
+			{ productId: pid, taxClass: "reduced" },
+			idempotencyKey("edit"),
+			read?.updatedAt.toISOString() ?? "",
+		);
+		expect(res.ok).toBe(true);
+		expect((await h.products.get(pid))?.taxStatus).toBe("taxable");
+	});
+});
+
 // A lone UTF-16 surrogate in a filename used to reach storage, where Postgres's jsonb
 // cast rejects it with an unmapped storage error while SQLite keeps it. The use-case
 // now refuses it by name before any write, on every dialect alike.

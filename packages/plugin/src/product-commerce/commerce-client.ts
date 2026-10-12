@@ -573,6 +573,12 @@ export interface QuoteTaxWire {
 	enabled: boolean;
 	/** A tax location matched a zone — the tax was really calculated. */
 	located: boolean;
+	/** A quote only: a calculator other than the built-ins (`otta.rate-table`,
+	 *  `otta.tax-disabled`) priced it, and the review sends it no postcode or city
+	 *  (the address is not typed yet; ADR-0030), so the order's tax may differ.
+	 *  Calculator-wide by design: it may label a base-address or digital-only quote
+	 *  that cannot differ, which errs on the safe side. Absent on an order's tax. */
+	estimate?: true;
 	/** Prices (not shipping) were entered with tax: the line tax is inside `subtotalCents`. */
 	pricesIncludeTax: boolean;
 	displayCart: "excl" | "incl";
