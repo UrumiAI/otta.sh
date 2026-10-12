@@ -109,6 +109,9 @@ export interface CheckoutTotalsView {
 	 */
 	rounding?: CheckoutAmountView;
 	total: CheckoutAmountView;
+	/** Set when an outside calculator priced the tax before the buyer's postcode is
+	 *  known (#429): the order's tax may differ. Plain text; null or absent otherwise. */
+	taxEstimateNote?: string | null;
 	appliedCouponCode: string | null;
 	/** true while shipping or tax was not computed — the theme's signal to
 	 *  caveat the total ("this total does not include shipping or tax"). */
@@ -204,6 +207,10 @@ export function buildCheckoutTotals(
 		tax: taxView,
 		taxRows,
 		taxIncludedNote,
+		taxEstimateNote:
+			taxComputed && tax?.estimate === true
+				? "Estimated tax — the final amount is shown on the payment page."
+				: null,
 		// Wherever there is one, uncalculated parts or not: the total shown is
 		// already rounded, so this row is what makes the rows add up to it.
 		...(breakdown.roundingCents !== undefined && breakdown.roundingCents !== 0

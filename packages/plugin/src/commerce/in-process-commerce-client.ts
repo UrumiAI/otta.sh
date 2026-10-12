@@ -113,6 +113,7 @@ import {
 	type PricedLine,
 	type QuoteResult as DomainQuoteResult,
 	readOrderTaxSnapshot,
+	RATE_TABLE_CALCULATOR_ID,
 	TAX_DISABLED_CALCULATOR_ID,
 	type ZoneResolution,
 	roundingEntry,
@@ -1612,6 +1613,12 @@ function quoteTaxWire(quote: Extract<DomainQuoteResult, { ok: true }>): QuoteTax
 	return {
 		enabled: quote.taxSettings.enabled,
 		located: quote.taxLocated,
+		// Only an outside calculator is an estimate; omitted otherwise, so the
+		// built-in's quote wire is unchanged.
+		...(quote.tax.calculatorId !== RATE_TABLE_CALCULATOR_ID &&
+		quote.tax.calculatorId !== TAX_DISABLED_CALCULATOR_ID
+			? { estimate: true }
+			: {}),
 		pricesIncludeTax: quote.tax.pricesIncludeTax,
 		displayCart: quote.taxSettings.displayCart,
 		totalsDisplay: quote.taxSettings.totalsDisplay,
