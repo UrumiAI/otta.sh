@@ -4,7 +4,7 @@
  * transient or about the request (out of stock, a bad quantity, busy, …).
  */
 import { describe, expect, test } from "vitest";
-import type { APIContext } from "astro";
+import type { APIContext, APIRoute } from "astro";
 import {
 	STOREFRONT_CART_LINE_ADD_ROUTE,
 	STOREFRONT_CART_LINE_REMOVE_ROUTE,
@@ -28,11 +28,9 @@ const KEEPS = [
 	"RENDER_FAILED",
 ] as const;
 
-type Shim = (context: APIContext) => Promise<Response>;
-
 const ROUTES: readonly {
 	name: string;
-	post: Shim;
+	post: APIRoute;
 	route: string;
 	form: Record<string, string>;
 }[] = [
