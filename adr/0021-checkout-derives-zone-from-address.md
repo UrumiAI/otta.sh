@@ -126,7 +126,9 @@ instead, a pick that no zone covers but that CONTAINS a zoned subdivision (the b
 `ES-CN`, the store zones only `ES-TF` and `ES-GC`, or `GB-BFS` and the buyer picks `GB-NIR`) is
 refused `SHIPPING_REGION_CODE_REQUIRED` — the blank-region rule one level down — and the site
 asks for "the more specific state/province", whether or not a country zone exists. It is never
-matched to the country's zone, which would silently charge the wrong tax. Tax follows the
+matched to the country's zone, which would silently charge the wrong tax. The store's base address
+(tax based on the shop base address, and digital-only carts) is never asked: a base region that
+contains a zoned subdivision falls back to its ancestor's or the country's zone, as before. Tax follows the
 matched zone, so shipping and tax agree. A zone can be set at either level. **Stored zones
 can match differently than before:** a buyer who picks a subdivision INSIDE a zoned one (Belfast,
 with a `GB-NIR` zone and a `GB` zone) used to fall to the country zone and now takes the parent
