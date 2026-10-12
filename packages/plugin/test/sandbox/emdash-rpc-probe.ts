@@ -114,7 +114,7 @@ export default {
 						? new StripePaymentGateway({
 								secretKey: FAKE_STRIPE_SECRET,
 								webhookSecret: FAKE_WEBHOOK_SECRET,
-								fetch: (url, init) => ctx.http.fetch(String(url), init),
+								fetch: (url, init) => ctx.http.fetch(String(url), init) as Promise<Response>,
 								trustedHost: true,
 							})
 						: await stripeGatewayFromCtx(withStripeKv(ctx));

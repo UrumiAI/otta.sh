@@ -68,7 +68,9 @@ import type { PluginContext } from "../types.js";
  * wider declared type, not to handle a shape that occurs.
  */
 function toGlobalFetch(fetchImpl: PluginContext["http"]["fetch"]): typeof fetch {
-	return (input, init) => fetchImpl(String(input), init);
+	// The answer is the bridge's narrower `HttpResponse`; the Stripe transport reads
+	// only members both have (`deadline.ts` `readJson` tolerates a missing `body`).
+	return (input, init) => fetchImpl(String(input), init) as Promise<Response>;
 }
 
 /** Per-caller tuning of the live gateway. */

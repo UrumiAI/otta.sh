@@ -108,16 +108,15 @@ function createHttpAccess(allowedHosts: readonly string[]): HttpAccess {
 			response.headers.forEach((value, key) => {
 				headers[key] = value;
 			});
-			// The bridge's shape, not a `Response` (see the header). `HttpAccess`
-			// still says `Response` because em-dash's in-process `ctx.http` returns
-			// one; code that must run sandboxed uses only what both provide.
+			// The bridge's shape, not a `Response` (see the header) — exactly
+			// `HttpResponse`, so no cast.
 			return {
 				status: response.status,
 				ok: response.status >= 200 && response.status < 300,
 				headers: new Headers(headers),
 				text: async () => text,
 				json: async () => JSON.parse(text) as unknown,
-			} as unknown as Response;
+			};
 		},
 	};
 }

@@ -531,6 +531,7 @@ export type {
 	Element,
 	FieldWidgetConfig,
 	HttpAccess,
+	HttpResponse,
 	KvAccess,
 	PluginContext,
 	SandboxedPlugin,

@@ -22,6 +22,8 @@
  * `test/wrangler-pairing.test.ts`.
  */
 
+import { parseWrangler } from "./wrangler-jsonc.js";
+
 /** The compatibility flag that breaks the D1 Sessions API. */
 export const STRICTLY_PUBLIC_FLAG = "global_fetch_strictly_public";
 
@@ -39,34 +41,6 @@ export function violatesPairing(flags: readonly string[], session: unknown): boo
 	return isSessionOn(session) && flags.includes(STRICTLY_PUBLIC_FLAG);
 }
 
-/**
- * JSONC → JSON: drops `//` and block comments OUTSIDE strings (a URL in a string
- * keeps its `//`), then trailing commas. Enough for a wrangler config; anything
- * wrangler itself would reject may throw here too.
- */
-function jsoncToJson(text: string): string {
-	let out = "";
-	let i = 0;
-	while (i < text.length) {
-		const ch = text[i];
-		if (ch === '"') {
-			let j = i + 1;
-			while (j < text.length && text[j] !== '"') j += text[j] === "\\" ? 2 : 1;
-			out += text.slice(i, j + 1);
-			i = j + 1;
-		} else if (ch === "/" && text[i + 1] === "/") {
-			while (i < text.length && text[i] !== "\n") i++;
-		} else if (ch === "/" && text[i + 1] === "*") {
-			const end = text.indexOf("*/", i + 2);
-			i = end === -1 ? text.length : end + 2;
-		} else {
-			out += ch;
-			i++;
-		}
-	}
-	return out.replace(/,(\s*[}\]])/g, "$1");
-}
-
 /** The string entries of a `compatibility_flags` value; anything else ⇒ none. */
 function stringFlags(flags: unknown): string[] {
 	return Array.isArray(flags)
@@ -74,26 +48,14 @@ function stringFlags(flags: unknown): string[] {
 		: [];
 }
 
+/** Parse for the flag checks: the shared reader, typed to what they read. */
+function parseWranglerFlags(wranglerText: string, fileName: string): WranglerShape {
+	return parseWrangler(wranglerText, fileName, "its compatibility_flags") as WranglerShape;
+}
+
 interface WranglerShape {
 	compatibility_flags?: unknown;
 	env?: unknown;
-}
-
-/** Parse the config's text — a leading UTF-8 BOM stripped (editors on Windows
- *  write one; JSON.parse rejects it) — wrapping any parse error so it names the
- *  file instead of a bare "Unexpected token". */
-function parseWrangler(wranglerText: string, fileName: string): WranglerShape {
-	const text = wranglerText.startsWith("\uFEFF") ? wranglerText.slice(1) : wranglerText;
-	try {
-		const parsed: unknown = JSON.parse(jsoncToJson(text));
-		return typeof parsed === "object" && parsed !== null ? (parsed as WranglerShape) : {};
-	} catch (error) {
-		throw new Error(
-			`${fileName} could not be parsed as JSONC while checking its compatibility_flags ` +
-				`(${error instanceof Error ? error.message : String(error)}).`,
-			{ cause: error },
-		);
-	}
 }
 
 /** The TOP-LEVEL `compatibility_flags` — parsed, so the flag's name in a comment
@@ -102,7 +64,7 @@ export function wranglerCompatibilityFlags(
 	wranglerText: string,
 	fileName = "wrangler config",
 ): string[] {
-	return stringFlags(parseWrangler(wranglerText, fileName).compatibility_flags);
+	return stringFlags(parseWranglerFlags(wranglerText, fileName).compatibility_flags);
 }
 
 /**
@@ -111,7 +73,7 @@ export function wranglerCompatibilityFlags(
  * `--env <name>`, so a flag hiding in one is as live as one at the top.
  */
 function flagScopes(wranglerText: string, fileName: string): { scope: string; flags: string[] }[] {
-	const config = parseWrangler(wranglerText, fileName);
+	const config = parseWranglerFlags(wranglerText, fileName);
 	const scopes = [{ scope: "", flags: stringFlags(config.compatibility_flags) }];
 	if (typeof config.env === "object" && config.env !== null) {
 		for (const [name, block] of Object.entries(config.env as Record<string, unknown>)) {
