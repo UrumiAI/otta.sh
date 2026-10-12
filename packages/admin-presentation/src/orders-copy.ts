@@ -167,6 +167,11 @@ export const REFUNDS_UNAVAILABLE =
 export const SHIPPING_ADDRESS_ABSENT =
 	"No shipping address captured — this order predates capture, or is digital-only. The profile book under Order is context only, never where this order shipped.";
 
+/** Under the totals of an order whose frozen tax snapshot recorded tax-inclusive
+ *  prices (#421). Never shown for an order without that record. Only item tax
+ *  sits inside the subtotal; shipping tax is added on top, so the copy says so. */
+export const PRICES_INCLUDED_TAX = "Prices included tax (item tax is already in the subtotal)";
+
 /** A timeline that loaded and holds nothing yet. */
 export const TIMELINE_EMPTY = "No timeline activity yet.";
 

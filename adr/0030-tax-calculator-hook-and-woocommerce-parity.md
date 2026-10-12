@@ -2,6 +2,7 @@
 
 - Status: accepted
 - Date: 2026-10-07
+- Updated: 2026-10-09 — the review tax from an outside calculator is labelled an estimate (issue #429)
 
 ## Context
 
@@ -111,8 +112,8 @@ are now refused — see the amendment below.)
 - Known limitation: the review page's quote sends only country and region, while the
   order sends the postcode and city too. A calculator that prices by postcode may
   therefore show one tax on the review page and charge another on the order (the pay
-  page shows the order's total). Follow-up: send the postcode on the review once the
-  address is known.
+  page shows the order's total). See the update below: the review now labels this tax
+  an estimate.
 - `TotalsBreakdown` is unchanged, so emails, pages and reports read the same totals.
 
 ## Amendment (2026-10-08): one rate per (class, zone)
@@ -161,3 +162,18 @@ no priority, compound flag, postcode or city that could tell two such rates apar
   the flag it shows plus the flag it loaded, and the store's compare-and-set checks both
   the rate and the flag, so a stale tab is told to reload instead of reverting a change. Both rows stay editable and deletable, so the merchant deletes the one they
   don't want.
+
+## Update (2026-10-09): the review's tax is labelled an estimate (issue #429)
+
+The postcode and city cannot reach the review quote: the review is a `GET /checkout`
+whose only address input is the URL, and ADR-0021 Decision 9 keeps every personal
+field out of it; the buyer types them below the delivery selector, after the quote.
+So the gap stays, and is now said out loud. A quote priced by any calculator other than
+the two built-ins (`otta.rate-table` and `otta.tax-disabled`) is flagged `estimate` on
+the wire, and the checkout totals show "Estimated tax — the final amount is shown on
+the payment page." on its own line. The flag is calculator-wide by design: it may label a
+quote that cannot differ (a base-address or digital-only cart), which errs on the safe
+side. The built-in rate table never shows it: its zone matching reads only country and
+region (`zone-match.ts` has no postcode or city), so its review tax equals the order's.
+The order page and the pay page show the order's own total and carry no such note. The
+order call is still the one that counts.

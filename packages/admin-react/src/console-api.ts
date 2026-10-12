@@ -75,6 +75,8 @@ export interface OrderLine {
 	readonly currency: string;
 	readonly quantity: number;
 	readonly fulfillmentKind: string;
+	/** #427: the tax status frozen with the order; absent when it predates it. */
+	readonly taxStatus?: string;
 }
 
 export interface OrderTotals {
@@ -89,6 +91,8 @@ export interface OrderTotals {
 	readonly roundingCents?: number;
 	readonly appliedCouponCode: string | null;
 	readonly shippingZoneId?: string | null;
+	/** Present (true) only when the order's frozen tax snapshot recorded tax-inclusive prices. */
+	readonly pricesIncludeTax?: true;
 }
 
 export interface ShippingAddress {

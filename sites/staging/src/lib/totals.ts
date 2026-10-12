@@ -213,7 +213,12 @@ export function checkoutFootnote(
 		case "method_needed":
 			return "This total doesn't include shipping yet — choose a delivery option above.";
 		case "digital_only":
-			return "Nothing in this order ships, so there's no delivery charge and no location-based tax.";
+			// A digital cart taxed at the shop base address (`tax.located`, #436)
+			// shows a real tax: only an UNcalculated tax may be called absent. The
+			// view model's uncalculated tax is always the one row labelled "Tax".
+			return uncalculatedNames(rows).includes("tax")
+				? "Nothing in this order ships, so there's no delivery charge and no location-based tax."
+				: "Nothing in this order ships, so there's no delivery charge.";
 		case "no_zones":
 		case null:
 			return uncalculatedFootnote(rows, excludesUncalculated);
