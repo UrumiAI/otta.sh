@@ -23,7 +23,7 @@
  */
 import { joinProduct } from "../catalog/join-product.js";
 import type { CmsProductContent } from "../catalog/join-product.js";
-import { withShopDisplayPrice } from "../catalog/shop-display.js";
+import { priceDisplayOrEntered, withShopDisplayPrice } from "../catalog/shop-display.js";
 import { makeCommerceClient } from "../commerce/make-commerce-client.js";
 import type { RouteHandler } from "../types.js";
 import { commerceLoaderFor, renderGuard, type RenderGuardFailure } from "./pdp-route.js";
@@ -98,13 +98,15 @@ export function createPlpRouteHandler(): RouteHandler<PlpRouteInput> {
 			const client = await makeCommerceClient(ctx);
 			const [commerceById, display] = await Promise.all([
 				commerceLoaderFor(client).loadMany(contents.map((content) => content.id)),
-				client.getShopPriceDisplay(),
+				// A failed read shows the stored prices rather than failing the page.
+				priceDisplayOrEntered(STOREFRONT_LIST_ROUTE, () => client.getShopPriceDisplay()),
 			]);
 
 			const items = contents.map((content) =>
 				buildProductViewModel(
 					withShopDisplayPrice(joinProduct(content, commerceById.get(content.id) ?? null), display),
 					locale,
+					display,
 				),
 			);
 			return { ok: true as const, items, query };

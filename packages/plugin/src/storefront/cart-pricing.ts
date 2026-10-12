@@ -26,7 +26,8 @@ import { formatMoney } from "../presentation/format-money.js";
 import { cents } from "../presentation/money.js";
 import type { Currency } from "../presentation/money.js";
 import type { CatalogProductCommerce } from "../catalog/commerce-view.js";
-import type { CartLineWire } from "../product-commerce/commerce-client.js";
+import { displayAmount, PRICES_AS_ENTERED } from "../catalog/shop-display.js";
+import type { CartLineWire, ShopPriceDisplayWire } from "../product-commerce/commerce-client.js";
 
 export interface CartMoneyWire {
 	amount: number;
@@ -75,6 +76,10 @@ export function buildCartPricing(
 	commerceById: Map<string, CatalogProductCommerce | null>,
 	cartCurrency: string,
 	locale: string,
+	/** How the lines show tax (`displayCart`, #423). Default: as entered — every
+	 *  line exactly as before. The checkout review passes nothing: it re-states its
+	 *  lines from the quote instead (`showCheckoutLinesTax`). */
+	display: ShopPriceDisplayWire = PRICES_AS_ENTERED,
 ): CartPricingWire {
 	let allLinesPriced = true;
 	let totalAmount = 0;
@@ -89,13 +94,19 @@ export function buildCartPricing(
 			return { lineId: line.lineId, unitPrice: null, lineTotal: null };
 		}
 
-		const lineAmount = commerce.price.amount * line.qty;
+		// The line is priced as a line (its tax rounded once), the unit as one unit
+		// — WooCommerce's cart does the same, so a unit × qty may differ by a cent.
+		const lineAmount = displayAmount(commerce, commerce.price, line.qty, display);
 		totalAmount += lineAmount;
 		totalCurrency = commerce.price.currency;
 
 		return {
 			lineId: line.lineId,
-			unitPrice: money(commerce.price.amount, commerce.price.currency, locale),
+			unitPrice: money(
+				displayAmount(commerce, commerce.price, 1, display),
+				commerce.price.currency,
+				locale,
+			),
 			lineTotal: money(lineAmount, commerce.price.currency, locale),
 		};
 	});

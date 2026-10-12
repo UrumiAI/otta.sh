@@ -135,6 +135,7 @@ const model: ShopModel = {
 				? (product.compareAtPrice?.formatted ?? null)
 				: null,
 		availability: product.availability,
+		...(product.price?.taxNote !== undefined ? { taxNote: product.price.taxNote } : {}),
 	})),
 	adminHref: "/_emdash/admin",
 };

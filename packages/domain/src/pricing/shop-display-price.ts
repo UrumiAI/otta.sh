@@ -26,8 +26,8 @@ import type { ProductTaxStatus } from "../ports/product-commerce-store.js";
 import type { SettingsStore } from "../ports/settings-store.js";
 import type { ShippingRulesStore } from "../ports/shipping-rules-store.js";
 import type { TaxRulesStore } from "../ports/tax-rules-store.js";
-import { applyRateTable, rateTableOf } from "./rate-table-calculator.js";
-import type { ShopTaxDisplay } from "./tax-settings.js";
+import { applyRateTable, type RateTable, rateTableOf } from "./rate-table-calculator.js";
+import type { ShopTaxDisplay, TaxSettings } from "./tax-settings.js";
 import type { TaxClassId } from "./types.js";
 import { resolveShippingZone } from "./zone-match.js";
 
@@ -68,13 +68,12 @@ export function shopDisplayPrice(display: ShopPriceDisplay, item: ShopDisplayIte
 	const quantity = item.quantity ?? 1;
 	const amount = cents(item.unitPriceCents * quantity);
 	if (display.mode === "entered") return amount;
-	const rates = Object.entries(display.ratesByClass).map(([taxClassId, rateBps], i) => ({
-		id: `shop-${i}`,
-		taxClassId,
-		zoneId: "shop-base",
-		rateBps,
-		appliesToShipping: false,
-	}));
+	// The rate table checkout reads, built straight from the base zone's rates.
+	const table: RateTable = {
+		ratesByClass: new Map(Object.entries(display.ratesByClass)),
+		shippingTaxable: false,
+		shippingTaxClassId: "standard",
+	};
 	const result = applyRateTable(
 		{
 			purpose: "quote",
@@ -96,7 +95,7 @@ export function shopDisplayPrice(display: ShopPriceDisplay, item: ShopDisplayIte
 			destination: null,
 			zoneId: "shop-base",
 		},
-		rateTableOf(rates),
+		table,
 		new Map(),
 		{ roundAtSubtotal: display.roundAtSubtotal },
 	);
@@ -120,9 +119,31 @@ export interface ShopPriceDisplayDeps {
  * rates. A store that never saved options shows prices as entered: both
  * upgrade-rule blocks (`effectiveTaxSettings`) leave `displayShop` absent.
  */
-export async function loadShopPriceDisplay(deps: ShopPriceDisplayDeps): Promise<ShopPriceDisplay> {
+export function loadShopPriceDisplay(deps: ShopPriceDisplayDeps): Promise<ShopPriceDisplay> {
+	return loadPriceDisplay(deps, (saved) => saved.displayShop);
+}
+
+/**
+ * The cart page's line prices (WooCommerce's `tax_display_cart`, the store's
+ * `displayCart`), for a shopper whose address is not known yet — at the shop base
+ * address, by the same rules as {@link loadShopPriceDisplay}. Shown the same way
+ * as entered (the default for every store) is "as entered": nothing to adjust.
+ */
+export function loadCartPriceDisplay(deps: ShopPriceDisplayDeps): Promise<ShopPriceDisplay> {
+	return loadPriceDisplay(deps, (saved) =>
+		saved.displayCart === (saved.pricesIncludeTax ? "incl" : "excl")
+			? undefined
+			: saved.displayCart,
+	);
+}
+
+async function loadPriceDisplay(
+	deps: ShopPriceDisplayDeps,
+	modeOf: (saved: TaxSettings) => ShopTaxDisplay | undefined,
+): Promise<ShopPriceDisplay> {
 	const saved = deps.settings === undefined ? undefined : (await deps.settings.get()).tax;
-	if (saved === undefined || saved.displayShop === undefined) return SHOP_PRICE_AS_ENTERED;
+	const mode = saved === undefined ? undefined : modeOf(saved);
+	if (saved === undefined || mode === undefined) return SHOP_PRICE_AS_ENTERED;
 	if (!saved.enabled || deps.hasOutsideTaxCalculator) return SHOP_PRICE_AS_ENTERED;
 	const base = saved.baseAddress;
 	if (base === null) return SHOP_PRICE_AS_ENTERED;
@@ -144,7 +165,7 @@ export async function loadShopPriceDisplay(deps: ShopPriceDisplayDeps): Promise<
 		}
 	}
 	return {
-		mode: saved.displayShop,
+		mode,
 		pricesIncludeTax: saved.pricesIncludeTax,
 		roundAtSubtotal: saved.roundAtSubtotal,
 		ratesByClass,

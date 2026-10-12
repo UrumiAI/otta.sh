@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, test } from "vitest";
 import { cents, currency } from "../../src/money/cents.js";
 import { idempotencyKey } from "../../src/money/ids.js";
 import {
+	loadCartPriceDisplay,
 	loadShopPriceDisplay,
 	SHOP_PRICE_AS_ENTERED,
 	type ShopPriceDisplay,
@@ -214,5 +215,69 @@ describe("loadShopPriceDisplay — what the store's options say to show", () => 
 	test("end to end: a 9.99 product in a 20% base zone shows 11.99 including tax", async () => {
 		await save(on);
 		expect(shopDisplayPrice(await load(), item(999))).toBe(1199);
+	});
+});
+
+describe("loadCartPriceDisplay — the cart page's lines follow displayCart (WooCommerce's tax_display_cart)", () => {
+	let settings: InMemorySettingsStore;
+	let taxRules: InMemoryTaxRulesStore;
+	let shippingRules: InMemoryShippingRulesStore;
+	let seq = 0;
+	const save = (tax: TaxSettings) => settings.update({ tax }, idempotencyKey(`c${++seq}`));
+	const load = (hasOutsideTaxCalculator = false) =>
+		loadCartPriceDisplay({ settings, taxRules, shippingRules, hasOutsideTaxCalculator });
+	const on: TaxSettings = {
+		...NEW_STORE_TAX_SETTINGS,
+		enabled: true,
+		baseAddress: { country: "GB", region: null },
+	};
+
+	beforeEach(async () => {
+		settings = new InMemorySettingsStore();
+		taxRules = new InMemoryTaxRulesStore();
+		shippingRules = new InMemoryShippingRulesStore();
+		await shippingRules.createZone({ id: "z-gb", name: "UK", regions: ["GB"] });
+		await taxRules.createClass({ id: "standard", name: "VAT" });
+		await taxRules.createRate({
+			id: "t-gb",
+			taxClassId: "standard",
+			zoneId: "z-gb",
+			rateBps: 2000,
+			appliesToShipping: false,
+		});
+	});
+
+	test("nothing saved: as entered", async () => {
+		expect(await load()).toEqual(SHOP_PRICE_AS_ENTERED);
+	});
+
+	test.each([
+		[false, "excl"],
+		[true, "incl"],
+	] as const)(
+		"prices entered with tax %s, shown %s (the same way): as entered",
+		async (incl, cart) => {
+			await save({ ...on, pricesIncludeTax: incl, displayCart: cart });
+			expect(await load()).toEqual(SHOP_PRICE_AS_ENTERED);
+		},
+	);
+
+	test("prices without tax shown including: the base zone's rates, independent of displayShop", async () => {
+		await save({ ...on, displayCart: "incl" });
+		expect(await load()).toEqual({
+			mode: "incl",
+			pricesIncludeTax: false,
+			roundAtSubtotal: false,
+			ratesByClass: { standard: 2000 },
+		});
+	});
+
+	test("tax off, no base address, or an outside calculator: as entered", async () => {
+		await save({ ...on, displayCart: "incl", enabled: false });
+		expect(await load()).toEqual(SHOP_PRICE_AS_ENTERED);
+		await save({ ...on, displayCart: "incl", baseAddress: null });
+		expect(await load()).toEqual(SHOP_PRICE_AS_ENTERED);
+		await save({ ...on, displayCart: "incl" });
+		expect(await load(true)).toEqual(SHOP_PRICE_AS_ENTERED);
 	});
 });

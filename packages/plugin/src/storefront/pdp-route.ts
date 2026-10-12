@@ -28,7 +28,7 @@ import { CommerceBatchLoader } from "../catalog/commerce-batch-loader.js";
 import { parseCommerceBatchItem } from "../catalog/commerce-view.js";
 import { joinProduct } from "../catalog/join-product.js";
 import { buildProductJsonLd } from "../catalog/product-json-ld.js";
-import { withShopDisplayPrice } from "../catalog/shop-display.js";
+import { priceDisplayOrEntered, withShopDisplayPrice } from "../catalog/shop-display.js";
 import type { CommerceClient } from "../product-commerce/commerce-client.js";
 import type { PluginContext, RouteHandler } from "../types.js";
 import { buildProductViewModel, type ProductViewModel } from "./product-view-model.js";
@@ -142,7 +142,8 @@ export function createPdpRouteHandler(): RouteHandler<PdpRouteInput> {
 			const [commerce, cartHoldMinutes, display] = await Promise.all([
 				commerceLoaderFor(client).load(content.id),
 				client.getCartHoldTtlMinutes(),
-				client.getShopPriceDisplay(),
+				// A failed read shows the stored price rather than failing the page.
+				priceDisplayOrEntered(STOREFRONT_PRODUCT_ROUTE, () => client.getShopPriceDisplay()),
 			]);
 			// null covers unsynced / soft-deleted / batch-omitted identically
 			// (§4.2): the page renders not-purchasable instead of 500ing. The
@@ -152,7 +153,7 @@ export function createPdpRouteHandler(): RouteHandler<PdpRouteInput> {
 
 			return {
 				ok: true as const,
-				product: buildProductViewModel(joined, locale),
+				product: buildProductViewModel(joined, locale, display),
 				jsonLd: buildProductJsonLd(joined),
 				cartHoldMinutes,
 			};

@@ -448,7 +448,12 @@ describe("storefront PLP route (workerd sandbox)", () => {
 			const result = await renderList({ items: [contentItem("plp-tax")], locale: "en-US" });
 
 			const [item] = result["items"] as Array<Record<string, unknown>>;
-			expect(item?.["price"]).toEqual({ amount: 1199, currency: "USD", formatted: "$11.99" });
+			expect(item?.["price"]).toEqual({
+				amount: 1199,
+				currency: "USD",
+				formatted: "$11.99",
+				taxNote: "incl",
+			});
 			expect(productCalls.queries).toHaveLength(1);
 		} finally {
 			await settings.update({ tax: on }, idempotencyKey("plp-tax-off"));

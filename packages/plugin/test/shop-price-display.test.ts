@@ -23,6 +23,8 @@ import { joinProduct, type CmsProductContent } from "../src/catalog/join-product
 import { withShopDisplayPrice } from "../src/catalog/shop-display.js";
 import { InProcessCommerceClient } from "../src/commerce/in-process-commerce-client.js";
 import { cents as plainCents, currency as plainCurrency } from "../src/presentation/money.js";
+import { createCartReadRouteHandler } from "../src/storefront/cart-routes.js";
+import { createCheckoutSummaryRouteHandler } from "../src/storefront/checkout-routes.js";
 import { createPdpRouteHandler } from "../src/storefront/pdp-route.js";
 import { createPlpRouteHandler } from "../src/storefront/plp-route.js";
 import type { SandboxedRouteContext } from "../src/types.js";
@@ -100,6 +102,7 @@ async function seedProduct(
 		expect(res.ok).toBe(true);
 	}
 	await store.activate(toProductId(id), idempotencyKey(`pub-${id}`), "2026-01-01T00:00:00.000Z");
+	await h.stores.inventory.seedOnHand(toSku(`SKU-${id}`), 50);
 }
 
 const content = (id: string): CmsProductContent => ({ id, title: `Product ${id}`, slug: id });
@@ -180,16 +183,16 @@ describe("the shop listing (storefront/list)", () => {
 	test("including tax: each product at its own class's rate; a non-taxable product as stored", async () => {
 		await saveTax(ON);
 		expect(await listPrices(["p-std", "p-red", "p-none"])).toEqual({
-			"p-std": { amount: 1199, currency: "GBP", formatted: "£11.99" },
-			"p-red": { amount: 1050, currency: "GBP", formatted: "£10.50" },
-			"p-none": { amount: 999, currency: "GBP", formatted: "£9.99" },
+			"p-std": { amount: 1199, currency: "GBP", formatted: "£11.99", taxNote: "incl" },
+			"p-red": { amount: 1050, currency: "GBP", formatted: "£10.50", taxNote: "incl" },
+			"p-none": { amount: 999, currency: "GBP", formatted: "£9.99", taxNote: "incl" },
 		});
 	});
 
 	test("prices entered with tax, shown excluding: the tax inside is taken out (half down)", async () => {
 		await saveTax({ ...ON, pricesIncludeTax: true, displayShop: "excl" });
 		expect(await listPrices(["p-std"])).toEqual({
-			"p-std": { amount: 833, currency: "GBP", formatted: "£8.33" },
+			"p-std": { amount: 833, currency: "GBP", formatted: "£8.33", taxNote: "excl" },
 		});
 	});
 
@@ -214,7 +217,12 @@ describe("the product page (storefront/product)", () => {
 			jsonLd: { offers?: { price?: unknown } };
 		};
 		expect(result.ok).toBe(true);
-		expect(result.product.price).toEqual({ amount: 1200, currency: "GBP", formatted: "£12.00" });
+		expect(result.product.price).toEqual({
+			amount: 1200,
+			currency: "GBP",
+			formatted: "£12.00",
+			taxNote: "incl",
+		});
 		expect(result.product.compareAtPrice).toEqual({
 			amount: 1800,
 			currency: "GBP",
@@ -261,5 +269,171 @@ describe("withShopDisplayPrice — the join, re-priced for display", () => {
 		const row = commerceRow();
 		withShopDisplayPrice(joinProduct(content("p1"), row), incl);
 		expect(row.price.amount).toBe(999);
+	});
+});
+
+// ── Review round 1 (#423): the cart and checkout lines follow displayCart ──
+
+interface Money {
+	amount: number;
+	formatted: string;
+}
+interface LineMoney {
+	unitPrice: Money | null;
+	lineTotal: Money | null;
+}
+
+async function cartWith(items: Array<[string, number]>): Promise<string> {
+	const { cartId } = await h.client.createCart("GBP");
+	for (const [id, qty] of items) {
+		const added = await h.client.addCartLine(cartId, `SKU-${id}`, id, qty, `add-${id}-${++seq}`);
+		expect(added.ok).toBe(true);
+	}
+	return cartId;
+}
+
+async function pdpPrice(id: string): Promise<{ amount: number; taxNote?: string }> {
+	const result = (await createPdpRouteHandler()(
+		routeCtx({ content: content(id), locale: "en-GB" }),
+		h.ctx,
+	)) as { ok: boolean; product: { price: { amount: number; taxNote?: string } } };
+	expect(result.ok).toBe(true);
+	return result.product.price;
+}
+
+async function cartLines(cartId: string): Promise<{ lines: LineMoney[]; total: Money | null }> {
+	const result = (await createCartReadRouteHandler()(
+		routeCtx({ cartId, locale: "en-GB" }),
+		h.ctx,
+	)) as {
+		ok: boolean;
+		pricing: { degraded: boolean; lines: LineMoney[]; total: Money | null };
+	};
+	expect(result.ok).toBe(true);
+	expect(result.pricing.degraded).toBe(false);
+	return result.pricing;
+}
+
+async function checkoutReview(
+	cartId: string,
+): Promise<{ lines: LineMoney[]; subtotal: number | undefined }> {
+	const result = (await createCheckoutSummaryRouteHandler()(
+		routeCtx({ cartId, locale: "en-GB", destination: { country: "GB" } }),
+		h.ctx,
+	)) as {
+		ok: boolean;
+		lines: LineMoney[];
+		totals: { subtotal: { money: Money | null } };
+	};
+	expect(result.ok).toBe(true);
+	return { lines: result.lines, subtotal: result.totals.subtotal.money?.amount };
+}
+
+describe("PDP, cart line and checkout line agree at qty 1 (displayShop = displayCart)", () => {
+	test.each([
+		// [prices entered with tax, display, shown]
+		[false, "incl", 1199],
+		[false, "excl", 999],
+		[true, "incl", 999],
+		[true, "excl", 833],
+	] as const)(
+		"prices entered with tax: %s, shown %s ⇒ %i everywhere",
+		async (incl, mode, shown) => {
+			await seedProduct("p-1", 999);
+			await saveTax({ ...ON, pricesIncludeTax: incl, displayShop: mode, displayCart: mode });
+			const cartId = await cartWith([["p-1", 1]]);
+
+			expect((await pdpPrice("p-1")).amount).toBe(shown);
+			const cart = await cartLines(cartId);
+			expect(cart.lines[0]?.unitPrice?.amount).toBe(shown);
+			expect(cart.lines[0]?.lineTotal?.amount).toBe(shown);
+			const review = await checkoutReview(cartId);
+			expect(review.lines[0]?.unitPrice?.amount).toBe(shown);
+			expect(review.lines[0]?.lineTotal?.amount).toBe(shown);
+			expect(review.subtotal).toBe(shown);
+		},
+	);
+});
+
+describe("cart and checkout lines — consistency and defaults", () => {
+	test("nothing saved: cart and checkout lines are the stored prices, byte for byte", async () => {
+		await seedProduct("p-1", 999);
+		const cartId = await cartWith([["p-1", 2]]);
+		const cart = await cartLines(cartId);
+		expect(cart.lines[0]).toMatchObject({
+			unitPrice: { amount: 999, currency: "GBP", formatted: "£9.99" },
+			lineTotal: { amount: 1998, currency: "GBP", formatted: "£19.98" },
+		});
+		expect(cart.total).toEqual({ amount: 1998, currency: "GBP", formatted: "£19.98" });
+		const review = await checkoutReview(cartId);
+		expect(review.lines[0]).toMatchObject({
+			unitPrice: { amount: 999, currency: "GBP", formatted: "£9.99" },
+			lineTotal: { amount: 1998, currency: "GBP", formatted: "£19.98" },
+		});
+	});
+
+	test("including tax over mixed classes and quantities: the lines sum to the shown subtotal and cart total", async () => {
+		await seedProduct("p-std", 99);
+		await seedProduct("p-red", 1001, { taxClass: "reduced" });
+		await saveTax({ ...ON, displayCart: "incl" });
+		const cartId = await cartWith([
+			["p-std", 3],
+			["p-red", 2],
+		]);
+
+		const cart = await cartLines(cartId);
+		// 297 + 20% = 297 + 59 (59.4); 2002 + 5% = 2002 + 100 (100.1).
+		// The cart does not promise a line order: compare as a set.
+		expect(cart.lines.map((l) => l.lineTotal?.amount ?? 0).toSorted((a, b) => a - b)).toEqual([
+			356, 2102,
+		]);
+		expect(cart.total?.amount).toBe(356 + 2102);
+
+		const review = await checkoutReview(cartId);
+		const sum = review.lines.reduce((n, l) => n + (l.lineTotal?.amount ?? 0), 0);
+		const bySku = Object.fromEntries(
+			(review.lines as Array<LineMoney & { sku: string }>).map((l) => [l.sku, l.lineTotal?.amount]),
+		);
+		expect(bySku).toEqual({ "SKU-p-std": 356, "SKU-p-red": 2102 });
+		expect(sum).toBe(review.subtotal);
+	});
+});
+
+describe("the price display read fails: pages fall back to prices as entered", () => {
+	function breakZones(): void {
+		const storage = h.ctx.storage as unknown as Record<string, unknown>;
+		const zones = storage["shipping_zones"] as object;
+		storage["shipping_zones"] = new Proxy(zones, {
+			get(target, property) {
+				if (property === "query" || property === "get") {
+					return () => Promise.reject(new Error("zones unavailable"));
+				}
+				return Reflect.get(target, property) as unknown;
+			},
+		});
+	}
+
+	test("PDP, PLP and the cart page still render, at the stored price", async () => {
+		await seedProduct("p-1", 999);
+		await saveTax({ ...ON, displayCart: "incl" });
+		const cartId = await cartWith([["p-1", 1]]);
+		breakZones();
+
+		expect(await pdpPrice("p-1")).toEqual({ amount: 999, currency: "GBP", formatted: "£9.99" });
+		expect(await listPrices(["p-1"])).toEqual({
+			"p-1": { amount: 999, currency: "GBP", formatted: "£9.99" },
+		});
+		expect((await cartLines(cartId)).lines[0]?.lineTotal?.amount).toBe(999);
+	});
+});
+
+describe("the product view model names the tax display when the merchant opted in", () => {
+	test("including tax ⇒ price.taxNote = incl; nothing saved ⇒ no taxNote key at all", async () => {
+		await seedProduct("p-1", 999);
+		expect(await pdpPrice("p-1")).not.toHaveProperty("taxNote");
+		await saveTax(ON);
+		expect(await pdpPrice("p-1")).toMatchObject({ amount: 1199, taxNote: "incl" });
+		await saveTax({ ...ON, displayShop: "excl" });
+		expect(await pdpPrice("p-1")).toMatchObject({ amount: 999, taxNote: "excl" });
 	});
 });

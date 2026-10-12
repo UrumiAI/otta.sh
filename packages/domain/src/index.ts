@@ -66,6 +66,7 @@ export {
 } from "./pricing/tax-settings.js";
 // #423: shop-page prices shown with or without tax (WooCommerce's tax_display_shop).
 export {
+	loadCartPriceDisplay,
 	loadShopPriceDisplay,
 	SHOP_PRICE_AS_ENTERED,
 	shopDisplayPrice,

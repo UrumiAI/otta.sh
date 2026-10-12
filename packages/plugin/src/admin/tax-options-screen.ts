@@ -237,6 +237,11 @@ function optionsScreen(
 	if (off !== null) blocks.push(off);
 	const baseNote = missingBaseAddressNote(current);
 	if (baseNote !== null) blocks.push(baseNote);
+	// The shop-price option's caveats: a Block Kit select carries no hint of its own.
+	blocks.push({
+		type: "context",
+		text: "Shop prices use the base address's rates. They show as entered if tax is off, no base address is set, or an outside tax calculator is used.",
+	});
 	blocks.push(optionsForm(ids, current, classes, draft));
 	return blocks;
 }
@@ -330,8 +335,7 @@ function optionsForm(
 				{
 					type: "select",
 					action_id: "displayShop",
-					label:
-						"Display prices in the shop (at the shop base address's rates; shown as entered while tax is off, with no base address, or with an outside tax calculator)",
+					label: "Display prices in the shop",
 					options: shopOptions,
 					...selected(shopOptions, d.displayShop),
 				},

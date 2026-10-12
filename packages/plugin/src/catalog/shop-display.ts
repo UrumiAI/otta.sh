@@ -1,23 +1,76 @@
 /**
- * Shop-page prices with or without tax (#423) — the join, re-priced for DISPLAY.
+ * Prices with or without tax for DISPLAY (#423): the shop pages (`displayShop`)
+ * and the cart page's lines (`displayCart`).
  *
- * The PDP and PLP apply this to the joined product before building the view
- * model and the JSON-LD, so the price, the was-price and the structured-data
- * offer all show the same figure. The arithmetic is the domain's
+ * The PDP and PLP apply {@link withShopDisplayPrice} to the joined product before
+ * building the view model and the JSON-LD, so the price, the was-price and the
+ * structured-data offer all show the same figure; the cart page prices its lines
+ * through {@link displayAmount}. The arithmetic is the domain's
  * `shopDisplayPrice` — the checkout's own rate-table maths — never a formula
- * here. Display only: the cart and checkout read the stored price, untouched.
+ * here. Display only: what checkout charges is the quote's, untouched.
  */
 import {
 	cents as domainCents,
 	currency as domainCurrency,
+	type ShopPriceDisplay,
 	shopDisplayPrice,
 } from "@otta-sh/domain";
-import { cents } from "../presentation/money.js";
+import { type Cents, cents } from "../presentation/money.js";
 import type { ShopPriceDisplayWire } from "../product-commerce/commerce-client.js";
 import type { CatalogProductCommerce } from "./commerce-view.js";
 import type { JoinedProduct } from "./join-product.js";
 
 type Money = CatalogProductCommerce["price"];
+
+/** Show the stored price, unchanged. */
+export const PRICES_AS_ENTERED: ShopPriceDisplayWire = Object.freeze({ mode: "entered" });
+
+// The hand-rolled wire type and the domain's must stay the same shape: a field
+// added to one and not the other fails the typecheck here.
+type Same<A, B> = [A] extends [B] ? ([B] extends [A] ? true : false) : false;
+type Assert<T extends true> = T;
+export type ShopPriceDisplayWireMatchesDomain = Assert<
+	Same<ShopPriceDisplayWire, ShopPriceDisplay>
+>;
+
+/**
+ * The price display, or — when reading it fails (a tax-rules or settings hiccup)
+ * — prices as entered, with a warning: a page that cannot work out the tax shows
+ * the stored price rather than failing.
+ */
+export async function priceDisplayOrEntered(
+	route: string,
+	read: () => Promise<ShopPriceDisplayWire>,
+): Promise<ShopPriceDisplayWire> {
+	try {
+		return await read();
+	} catch (err) {
+		console.warn(`[otta] ${route} price display unavailable; showing prices as entered:`, err);
+		return PRICES_AS_ENTERED;
+	}
+}
+
+/** `quantity` units of a product at `money`, as `display` shows them. */
+export function displayAmount(
+	commerce: Pick<CatalogProductCommerce, "taxClass" | "taxStatus">,
+	money: Money,
+	quantity: number,
+	display: ShopPriceDisplayWire,
+): Cents {
+	if (display.mode === "entered") return cents<number>(money.amount * quantity);
+	// The two `Cents` brands are deliberately not cross-assignable (presentation/
+	// money.ts): re-minted on the way in and on the way out.
+	return cents<number>(
+		shopDisplayPrice(display, {
+			currency: domainCurrency(money.currency),
+			unitPriceCents: domainCents<number>(money.amount),
+			quantity,
+			// Read exactly as checkout reads the row (`quoteCommandFor`).
+			taxClassId: commerce.taxClass ?? "standard",
+			taxStatus: commerce.taxStatus ?? "taxable",
+		}),
+	);
+}
 
 /** `joined` with its prices as the shop shows them; the same object when nothing changes. */
 export function withShopDisplayPrice(
@@ -26,19 +79,9 @@ export function withShopDisplayPrice(
 ): JoinedProduct {
 	const commerce = joined.commerce;
 	if (display.mode === "entered" || commerce === null) return joined;
-	// The two `Cents` brands are deliberately not cross-assignable (presentation/
-	// money.ts): re-minted on the way in and on the way out.
 	const shown = (money: Money): Money => ({
 		currency: money.currency,
-		amount: cents<number>(
-			shopDisplayPrice(display, {
-				currency: domainCurrency(money.currency),
-				unitPriceCents: domainCents<number>(money.amount),
-				// Read exactly as checkout reads the row (`quoteCommandFor`).
-				taxClassId: commerce.taxClass ?? "standard",
-				taxStatus: commerce.taxStatus ?? "taxable",
-			}),
-		),
+		amount: displayAmount(commerce, money, 1, display),
 	});
 	return {
 		...joined,

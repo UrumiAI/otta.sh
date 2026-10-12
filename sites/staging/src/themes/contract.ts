@@ -172,6 +172,9 @@ export interface ShopCard {
 	 */
 	was: string | null;
 	availability: AvailabilityToken | null;
+	/** Whether `price` includes tax (#423) — the view model's `price.taxNote`,
+	 *  present only when the merchant chose how shop prices show tax. */
+	taxNote?: "incl" | "excl";
 }
 
 export interface NoticeCopy {
@@ -213,6 +216,9 @@ export interface ProductPurchase {
 	 *  — off the view model's `compareAtPrice`, which is null unless it is above
 	 *  the price. A view strikes it beside `priceFormatted`. */
 	compareAtFormatted: string | null;
+	/** Whether the price includes tax (#423) — the view model's `price.taxNote`,
+	 *  present only when the merchant chose how shop prices show tax. */
+	taxNote?: "incl" | "excl";
 	/** Strike the price: not in stock (degraded is never "purchasable"). */
 	priceStruck: boolean;
 	availability: AvailabilityToken | null;

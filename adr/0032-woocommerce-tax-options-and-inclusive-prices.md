@@ -155,5 +155,28 @@ pay must not change silently (user decision 4).
   registered (ADR-0030). An outside calculator is asked once per quote with a real cart.
   It is never asked once per product on a listing render, because that would put a paid,
   rate-limited and possibly slow outside call on every page view.
-- **What is affected.** The PDP and PLP price, the PDP was-price and the PDP JSON-LD offer
-  all use the shown figure. Cart, checkout and orders read the stored price as before.
+- **What is affected.** The PDP and PLP price and the PDP was-price use the shown figure.
+  The view model's `price.taxNote` (`incl`/`excl`) is present only then, so the theme prints
+  "incl. tax" or "excl. tax" only for a store that opted in. If the display read fails, the
+  page falls back to prices as entered and logs a warning; the page never fails.
+- **JSON-LD.** The PDP offer carries the shown figure. When the display is `incl`, the offer
+  price always includes VAT, which is what search engines expect for consumer prices in
+  VAT regions. When it is `excl`, the offer carries the price without tax, matching the page
+  (Google asks that structured data match the visible price). As entered, the offer is the
+  stored price, as before.
+- **Cart and checkout lines (review round 1).** These follow `displayCart`, WooCommerce's
+  `tax_display_cart`, not just the totals rows.
+  - The cart page has no address yet. It prices lines at the shop base address with
+    `shopDisplayPrice`, and its total is the sum of the shown lines.
+  - The checkout review uses the quote's own per-line tax (`QuoteTaxWire.lineTaxes`). It
+    splits the amount the subtotal row moves by across the lines by their tax, using
+    largest remainder, so the lines always sum to the shown subtotal. Without a coupon,
+    that is each line's own tax.
+  - A unit price is the line's share divided by the quantity, rounded half up. This is
+    exact at quantity 1. As in WooCommerce, unit × quantity can differ from the line by a
+    cent.
+  - A store whose `displayCart` matches how its prices are entered (every default store),
+    or whose tax is off, renders its lines byte for byte as before.
+  - Placed-order pages and emails read the order's line snapshot, which records no
+    per-line tax, so their lines are unchanged.
+- What is charged (the quote and the order) is unchanged.

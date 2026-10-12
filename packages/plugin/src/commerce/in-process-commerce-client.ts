@@ -70,6 +70,7 @@ import {
 	isProductLive,
 	listCustomerOrders,
 	listProductCommerceByIds,
+	loadCartPriceDisplay,
 	loadShopPriceDisplay,
 	listProductVariants,
 	money,
@@ -419,12 +420,21 @@ export class InProcessCommerceClient implements CommerceClient {
 	 * — so such a store's pages show prices as entered.
 	 */
 	async getShopPriceDisplay(): Promise<ShopPriceDisplayWire> {
-		return loadShopPriceDisplay({
+		return loadShopPriceDisplay(this.#priceDisplayDeps());
+	}
+
+	/** The cart page's line prices (`displayCart`), by the same rules (#423). */
+	async getCartPriceDisplay(): Promise<ShopPriceDisplayWire> {
+		return loadCartPriceDisplay(this.#priceDisplayDeps());
+	}
+
+	#priceDisplayDeps() {
+		return {
 			settings: this.#stores.settingsStore,
 			taxRules: this.#stores.taxRules,
 			shippingRules: this.#stores.shippingRules,
 			hasOutsideTaxCalculator: this.#taxCalculator !== undefined,
-		});
+		};
 	}
 
 	// ── variants ────────────────────────────────────────────────────────────
@@ -1634,6 +1644,8 @@ function quoteTaxWire(quote: Extract<DomainQuoteResult, { ok: true }>): QuoteTax
 		displayCart: quote.taxSettings.displayCart,
 		totalsDisplay: quote.taxSettings.totalsDisplay,
 		lineTaxCents: result.lines.reduce((sum, l) => sum + l.taxCents, 0),
+		// In request order, which is the cart's line order (`quoteCheckout`).
+		lineTaxes: result.lines.map((l) => l.taxCents),
 		itemized,
 	};
 }
