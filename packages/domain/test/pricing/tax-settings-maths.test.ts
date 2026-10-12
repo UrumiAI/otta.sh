@@ -300,6 +300,27 @@ describe("shipping tax class — WooCommerce 'based on cart items' (woo-facts-ve
 		expect(pick("\u0915\u0930", "\u0915\u093E\u0930")).toBe("z-x");
 	});
 
+	test("non-Latin letters that share Latin's combining range keep their order: Cyrillic й, Greek tonos, Devanagari nukta", () => {
+		const pick = (x: string, y: string): string =>
+			inheritShippingTaxClass(
+				[line("0", 1, "z-x"), line("1", 1, "a-y")],
+				new Map([
+					["z-x", x],
+					["a-y", y],
+				]),
+			) as string;
+		// "й" (U+0439) sorts after "и" (U+0438), as before; it is not folded into "и".
+		expect(pick("\u0439", "\u0438")).toBe("a-y");
+		expect(pick("\u0438", "\u0439")).toBe("z-x");
+		// Greek "ά" (U+03AC) sorts before "α" (U+03B1), as before; tonos is not stripped.
+		expect(pick("\u03B1", "\u03AC")).toBe("a-y");
+		expect(pick("\u03AC", "\u03B1")).toBe("z-x");
+		// Devanagari "ख़" (U+0959) sorts after "ख" + nukta (U+0916 U+093C), as before;
+		// it is not decomposed.
+		expect(pick("\u0959", "\u0916\u093C")).toBe("a-y");
+		expect(pick("\u0916\u093C", "\u0959")).toBe("z-x");
+	});
+
 	test("several classes none of which is declared → standard (WooCommerce's fallback)", () => {
 		expect(inheritShippingTaxClass([line("0", 1, "x"), line("1", 1, "y")], new Map())).toBe(
 			"standard",

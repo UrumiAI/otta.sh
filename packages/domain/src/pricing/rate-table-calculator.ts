@@ -119,18 +119,22 @@ function isTaxed(line: TaxRequest["lines"][number]): boolean {
 }
 
 /**
- * A class name's sort key: lower-cased with Latin combining accents (U+0300-U+036F)
- * stripped and recomposed, then compared by code unit. Only Latin accents and
- * case are ignored; other scripts (Devanagari vowel signs, Arabic harakat) keep
- * their code-unit order; the order of plain ASCII
- * (punctuation, digits, letters) is exactly what a lower-case compare gave, and
- * nothing depends on ICU or the host locale.
+ * A class name's sort key: lower-cased, with accents removed from Latin letters
+ * only, then compared by code unit. A precomposed Latin letter (U+00C0-U+024F,
+ * U+1E00-U+1EFF) folds to its ASCII base when it decomposes to an ASCII letter
+ * plus combining diacritics, and combining diacritics that directly follow an
+ * ASCII letter are dropped. Nothing else is normalised, so plain ASCII and every
+ * other script (Cyrillic й, Greek tonos, Devanagari nukta letters, CJK) keep
+ * exactly the order a lower-case code-unit compare gave before, with no
+ * dependence on ICU or the host locale.
  */
 function nameSortKey(name: string): string {
 	return name
-		.normalize("NFD")
-		.replace(/[\u0300-\u036f]/g, "")
-		.normalize("NFC")
+		.replace(/[\u00C0-\u024F\u1E00-\u1EFF]/g, (ch) => {
+			const d = ch.normalize("NFD");
+			return /^[A-Za-z][\u0300-\u036F]+$/.test(d) ? (d[0] as string) : ch;
+		})
+		.replace(/([A-Za-z])[\u0300-\u036F]+/g, "$1")
 		.toLowerCase();
 }
 
