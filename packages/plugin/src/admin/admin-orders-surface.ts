@@ -463,6 +463,14 @@ export type AddNoteResult =
 	| { ok: true; appended: boolean; note: OrderNoteWire }
 	| { ok: false; status: number };
 
+/** POST revoke-downloads (issue #447). `revoked: false` on an `ok` is the
+ *  idempotent replay: access was already closed by this action. A refusal
+ *  carries the domain's reason: `ORDER_NOT_FOUND`, `NO_DOWNLOADS` (no digital
+ *  line), or `INVALID_INPUT`. */
+export type RevokeDownloadAccessResult =
+	| { ok: true; revoked: boolean }
+	| { ok: false; status: number; reason: string };
+
 /** Why the admin transition was refused — the domain's `TransitionOrderAsAdminFailure`,
  *  restated here as a closed union (this module imports no domain type, MOD-4), so a
  *  caller comparing against it is checked by the compiler and the in-process client
@@ -744,4 +752,14 @@ export interface AdminOrdersSurface {
 		note: { author: string; body: string },
 		opts: { idempotencyKey: string },
 	): Promise<AddNoteResult>;
+
+	/** Close an order's download access by hand — the path for a dispute or
+	 *  chargeback, which moves no order state (issue #447). Revokes every grant the
+	 *  order made and records `revokedBy` on a note in History. Idempotent under
+	 *  `idempotencyKey`; the order's state and money are untouched. */
+	revokeDownloadAccess(
+		orderId: string,
+		input: { revokedBy: string },
+		opts: { idempotencyKey: string },
+	): Promise<RevokeDownloadAccessResult>;
 }

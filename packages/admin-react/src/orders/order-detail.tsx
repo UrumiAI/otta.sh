@@ -50,6 +50,8 @@ import {
 	FULLY_REFUNDED_NOTE,
 	CANCEL_BANNER,
 	MARK_REFUNDED_CONFIRM,
+	REVOKE_DOWNLOADS_CONFIRM,
+	REVOKE_DOWNLOADS_NOTE,
 	PENDING_CANCEL_EFFECTS,
 	ORDERS_BACK_LABEL,
 	ORDER_LINES_EMPTY,
@@ -130,6 +132,17 @@ import {
 /** The states whose transition button is destructive enough to confirm — the
  *  same single-member set the Block Kit screen uses. */
 const DANGER_TRANSITIONS: ReadonlySet<string> = new Set(["refunded"]);
+
+/** The states whose downloads still serve — the plugin's download gate delivers
+ *  in exactly these (`DELIVERABLE_ORDER_STATES`). Anywhere else access is already
+ *  closed, so Revoke download access (issue #447) would have nothing to do. */
+const DOWNLOADABLE_STATES: ReadonlySet<string> = new Set([
+	"paid",
+	"processing",
+	"shipped",
+	"delivered",
+	"completed",
+]);
 
 const TAB_LABELS = ["Order", "Fulfilment", "Money", "History"] as const;
 
@@ -1037,6 +1050,9 @@ export function OrderDetail({
 	// and refunds nothing; a paid one refunds what remains refundable (the server
 	// computes the same remainder) and restocks unless the box is unticked.
 	const hasPhysical = order.lines.some((line) => line.fulfillmentKind === "physical");
+	const hasDownloads =
+		DOWNLOADABLE_STATES.has(order.state) &&
+		order.lines.some((line) => line.fulfillmentKind === "digital");
 	const cancelEffects: CancelEffects =
 		order.state === "pending"
 			? PENDING_CANCEL_EFFECTS
@@ -1537,6 +1553,30 @@ export function OrderDetail({
 										});
 									}}
 								/>
+							</Group>
+						)}
+
+						{hasDownloads && (
+							<Group testId="detail-downloads" label="Downloads">
+								<p style={{ fontSize: 13, margin: 0 }}>{REVOKE_DOWNLOADS_NOTE}</p>
+								<div>
+									<Button
+										testId="revoke-downloads"
+										label="Revoke download access"
+										danger
+										disabled={busy}
+										onClick={() => {
+											setPending({
+												actionId: "orders:revoke-downloads",
+												value: { orderId: order.id },
+												title: REVOKE_DOWNLOADS_CONFIRM.title,
+												text: REVOKE_DOWNLOADS_CONFIRM.text,
+												confirmLabel: REVOKE_DOWNLOADS_CONFIRM.confirm,
+												denyLabel: REVOKE_DOWNLOADS_CONFIRM.deny,
+											});
+										}}
+									/>
+								</div>
 							</Group>
 						)}
 

@@ -132,8 +132,10 @@ expired holds and queued emails drain at the Free pace (§5).
    > show yet does not close access by itself:
    > - **A refund made in the Stripe dashboard:** start the same refund in Money → Refunds
    >   (Otta checks with Stripe, issues nothing and flags the order), then use **Mark refunded**.
-   > - **A chargeback:** Otta does not act on disputes, and Mark refunded is refused while the
-   >   payment shows as captured, so the console cannot close access for it today.
+   > - **A chargeback or dispute:** Otta does not act on disputes, and Mark refunded is refused
+   >   while the payment shows as captured. Close access by hand: the order's Fulfilment tab →
+   >   Downloads → **Revoke download access**. It moves no money, changes no order state and
+   >   can't be undone; History records who did it.
    > - **A cancellation whose refund timed out** ("refund status unknown"): the order stays
    >   uncancelled until you confirm that refund in Money → Refunds, which finishes the
    >   cancellation and closes access.

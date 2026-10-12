@@ -93,6 +93,7 @@
 import {
 	adminNextStates,
 	appendOrderNote,
+	revokeOrderDownloadAccess,
 	cancelOrderWithRefund,
 	capturedOnlyThroughLegacy,
 	emailTemplateForState,
@@ -179,6 +180,7 @@ import type {
 	ResolveFollowUpWire,
 	ResolveReconciliationResult,
 	ResolveUnverifiedRefundResult,
+	RevokeDownloadAccessResult,
 	TransitionOrderResult,
 } from "./admin-orders-surface.js";
 
@@ -997,6 +999,44 @@ export class InProcessAdminOrdersClient implements AdminOrdersSurface {
 		if (res.ok) return { ok: true, appended: res.appended, note: toNoteWire(res.note) };
 		// The add-note surface carries no `reason` on the wire — only the status.
 		return { ok: false, status: res.reason === "ORDER_NOT_FOUND" ? 404 : 400 };
+	}
+
+	/** POST revoke-downloads (issue #447): `revokeOrderDownloadAccess` over the
+	 *  client's stores. The key is required — the action derives one per order,
+	 *  because revocation is terminal and is recorded once. */
+	async revokeDownloadAccess(
+		orderId: string,
+		input: { revokedBy: string },
+		opts: { idempotencyKey: string },
+	): Promise<RevokeDownloadAccessResult> {
+		try {
+			requireIdToken("orderId", orderId);
+			requireBoundedText("revokedBy", input.revokedBy, 1, 200);
+		} catch (err) {
+			if (isCommerceInputError(err)) return { ok: false, status: 400, reason: "INVALID_INPUT" };
+			throw err;
+		}
+		const res = await revokeOrderDownloadAccess(
+			{
+				orderStore: this.#stores.orderStore,
+				entitlementStore: this.#stores.entitlementStore,
+				orderNotesStore: this.#stores.orderNotesStore,
+			},
+			{
+				orderId: toOrderId(orderId),
+				revokedBy: input.revokedBy,
+				idempotencyKey: toIdempotencyKey(opts.idempotencyKey),
+			},
+		);
+		if (res.ok) return { ok: true, revoked: res.revoked };
+		switch (res.reason) {
+			case "ORDER_NOT_FOUND":
+				return { ok: false, status: 404, reason: res.reason };
+			case "NO_DOWNLOADS":
+				return { ok: false, status: 409, reason: res.reason };
+			case "EMPTY_REVOKED_BY":
+				return { ok: false, status: 400, reason: "INVALID_INPUT" };
+		}
 	}
 
 	// -- internals -------------------------------------------------------------

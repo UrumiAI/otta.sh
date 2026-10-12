@@ -80,6 +80,7 @@ function surface(state: string, email: InlineEmailStatus | undefined): AdminOrde
 		listNotes: refuse("listNotes"),
 		addNote: refuse("addNote"),
 		resolveUnverifiedRefund: refuse("resolveUnverifiedRefund"),
+		revokeDownloadAccess: refuse("revokeDownloadAccess"),
 	};
 }
 

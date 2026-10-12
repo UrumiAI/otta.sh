@@ -70,7 +70,9 @@ const INVALID_INPUT = { authorized: false, reason: "INVALID_INPUT" } as const;
  *    provider refund and flags the order) and then uses Mark refunded;
  *  - a CHARGEBACK — Otta acts on no `charge.dispute.*` event, and a dispute is
  *    not a refund to the pre-flight, so Mark refunded stays refused while the
- *    ledger shows the money captured: no console action closes access today;
+ *    ledger shows the money captured: the operator closes access with the order
+ *    detail's Revoke download access (`orders:revoke-downloads`, issue #447),
+ *    which revokes the grant gate 1 reads;
  *  - a cancellation whose refund came back UNVERIFIED — the order is not
  *    cancelled; Mark refunded is refused while that refund is unresolved, and
  *    confirming it in Money → Refunds finishes the cancel and revokes.
