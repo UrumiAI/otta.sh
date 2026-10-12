@@ -497,7 +497,7 @@ describe.each(REVIEW_VIEWS)("/checkout — delivery (ADR-0021) — %s", (_label,
 
 	test("#478: a refused buyer location says why Place is not offered", () => {
 		expect(shown(REVIEW)).toMatch(
-			/buyerLocation && destinationError !== null \? "Pick a more specific region above, or clear your location, to continue\."/,
+			/buyerLocation && destinationError !== null\s*\?\s*destinationError\.reason === "SHIPPING_REGION_CODE_REQUIRED"\s*\?\s*"Pick a more specific region above, or clear your location, to continue\."\s*:\s*"Choose another location above, or clear it, to continue\."/,
 		);
 		// Place is offered only when the plugin says so (readyToPlace).
 		expect(VIEW).toMatch(/summary\.readyToPlace \? \(/);

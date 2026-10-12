@@ -259,7 +259,9 @@ const chosenOption =
 const notReadyCopy =
 	/* #478: the buyer's location was refused — Place waits until it is fixed or cleared. */
 	buyerLocation && destinationError !== null
-		? "Pick a more specific region above, or clear your location, to continue."
+		? destinationError.reason === "SHIPPING_REGION_CODE_REQUIRED"
+			? "Pick a more specific region above, or clear your location, to continue."
+			: "Choose another location above, or clear it, to continue."
 		: summary.shipping.noOptions
 			? cartErrorMessage("SHIPPING_METHOD_REQUIRED")
 			: summary.shipping.status === "matched"
