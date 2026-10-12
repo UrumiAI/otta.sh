@@ -52,12 +52,20 @@ describe("readOrderTaxSnapshot", () => {
 		if (old?.v !== 1) throw new Error("expected v1");
 		// Unknown on an older order: the key is absent, not defaulted to "taxable".
 		expect("taxStatus" in (old.lines[0] ?? {})).toBe(false);
-		expect(
-			readOrderTaxSnapshot({ ...v1, lines: [{ ...v1.lines[0], taxStatus: "exempt" }] }),
-		).toBeNull();
-		expect(
-			readOrderTaxSnapshot({ ...v1, lines: [{ ...v1.lines[0], taxStatus: null }] }),
-		).toBeNull();
+	});
+
+	test("an unknown or invalid `taxStatus` drops only that key: the line reads as unknown, the snapshot intact", () => {
+		// Display-only: the storefront, account pages and emails read this same
+		// snapshot for its tax layout, so a status this code does not know (a
+		// future fourth one, read after a rollback) must never null the whole thing.
+		const known = { ...v1.lines[0], lineIndex: 1, taxStatus: "none" };
+		for (const bad of ["exempt", null, 1, ""]) {
+			const raw = { ...v1, lines: [{ ...v1.lines[0], taxStatus: bad }, known] };
+			expect(readOrderTaxSnapshot(JSON.parse(JSON.stringify(raw)))).toEqual({
+				...v1,
+				lines: [v1.lines[0], known],
+			});
+		}
 	});
 
 	test("buildOrderTaxSnapshot records each line's tax status, in line order", () => {

@@ -11,6 +11,7 @@ import {
 	cents,
 	currency as toCurrency,
 	idempotencyKey as toIdempotencyKey,
+	money,
 	orderId as toOrderId,
 	productId as toProductId,
 	sku as toSku,
@@ -120,4 +121,65 @@ test("a legacy or missing snapshot leaves every status absent", async () => {
 	expect(await lineStatuses(legacy)).toEqual(["<absent>", "<absent>"]);
 	const none = await seed("ord-null", null);
 	expect(await lineStatuses(none)).toEqual(["<absent>", "<absent>"]);
+});
+
+test("a status this code does not know never reaches the wire; the line reads as unknown", async () => {
+	const id = await seed("ord-future", {
+		v: 1,
+		calculatorId: "otta.rate-table",
+		pricesIncludeTax: false,
+		lines: [taxed(0, { taxStatus: "exempt" }), taxed(1, { taxStatus: "none" })],
+		shipping: null,
+	});
+	expect(await lineStatuses(id)).toEqual(["<absent>", "none"]);
+});
+
+test("end to end: a [taxable, none, shipping_only] checkout shows each frozen status by position", async () => {
+	const products = [
+		["p-tax", "SKU-TAX", "taxable"],
+		["p-none", "SKU-NONE", "none"],
+		["p-ship", "SKU-SHIP", "shipping_only"],
+	] as const;
+	for (const [id, sku, status] of products) {
+		const upserted = await harness.stores.productCommerce.upsert(
+			{
+				productId: toProductId(id),
+				sku: toSku(sku),
+				price: money(cents(1000), USD),
+				title: id,
+				productKind: "digital",
+			},
+			toIdempotencyKey(`seed-${id}`),
+		);
+		await harness.stores.productCommerce.updateCommerceFields(
+			{ productId: toProductId(id), taxStatus: status },
+			toIdempotencyKey(`status-${id}`),
+			upserted.updatedAt.toISOString(),
+		);
+		await harness.stores.productCommerce.activate(
+			toProductId(id),
+			toIdempotencyKey(`publish-${id}`),
+			"2026-01-01T00:00:00.000Z",
+		);
+	}
+	const { cartId } = await harness.client.createCart(USD);
+	for (const [id, sku] of products) {
+		const added = await harness.client.addCartLine(cartId, sku, id, 1, `add-${id}`);
+		expect(added.ok).toBe(true);
+	}
+	const placed = await harness.client.createOrder(
+		{ cartId, paymentMethod: "stripe", buyerRef: "ada@example.com" },
+		`place-${cartId}`,
+	);
+	if (!placed.ok) throw new Error(placed.reason);
+	const detail = await new InProcessAdminOrdersClient(harness.ctx, { gateways }).getOrder(
+		placed.order.id,
+	);
+	// The order keeps its own line order (not necessarily the add order); each
+	// line must carry ITS product's status, matched by the snapshot's lineIndex.
+	const lines = detail?.order.lines ?? [];
+	expect(lines).toHaveLength(3);
+	const expected = new Map<string, string>(products.map(([, sku, status]) => [sku, status]));
+	for (const line of lines)
+		expect([line.sku, line.taxStatus]).toEqual([line.sku, expected.get(line.sku)]);
 });

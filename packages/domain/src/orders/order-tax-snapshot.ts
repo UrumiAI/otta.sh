@@ -31,8 +31,9 @@ export interface OrderTaxSnapshotV1 {
 			/**
 			 * The product's tax status at checkout (#427), so the order can still
 			 * explain why the line was or was not taxed after the product changes.
-			 * Written by every order since; ABSENT on a line written before it, which
-			 * reads as unknown — never guessed as "taxable".
+			 * Written by every order since; ABSENT on a line written before it (or
+			 * holding a value this reader does not know), which reads as unknown —
+			 * never guessed as "taxable".
 			 */
 			taxStatus?: ProductTaxStatus;
 			taxableCents: Cents;
@@ -125,9 +126,12 @@ function readV1(raw: Record<string, unknown>): OrderTaxSnapshotV1 | null {
 		if (!isRecord(item) || !isCount(item["lineIndex"]) || typeof item["taxClassId"] !== "string") {
 			return null;
 		}
-		// Optional (#427): a line from before the field omits it (read as unknown).
-		const taxStatus = item["taxStatus"];
-		if (taxStatus !== undefined && !isProductTaxStatus(taxStatus)) return null;
+		// Optional and display-only (#427): a line from before the field omits it,
+		// and a value this code does not know (a future status, read after a
+		// rollback) is DROPPED — the line reads as unknown — rather than nulling a
+		// snapshot the storefront, account pages and emails still lay tax out from.
+		const rawStatus = item["taxStatus"];
+		const taxStatus = isProductTaxStatus(rawStatus) ? rawStatus : undefined;
 		const line = taxedOf(item);
 		if (line === null) return null;
 		out.push({
