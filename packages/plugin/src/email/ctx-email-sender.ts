@@ -60,9 +60,10 @@ export const DEFAULT_EMAIL_TIMEOUT_MS = 30_000;
  */
 export const LOGIN_EMAIL_TIMEOUT_MS = 3_000;
 
-/** The reads {@link makeEmailSender} makes: the store name and the sign-in page
- *  (for the storefront origin) from kv, and the tax options' "Display tax totals"
- *  from the settings document (issue #422). The cron's query budget counts them. */
+/** The reads {@link makeEmailSender} makes for ORDER emails: the store name and
+ *  the sign-in page (for the storefront origin) from kv, and the tax options'
+ *  "Display tax totals" from the settings document (issue #422). The sign-in
+ *  sender skips the last. The cron's query budget counts them. */
 export const EMAIL_SENDER_BUILD_READS = 3;
 
 /** The kv write the FIRST delivered send of a sender adds after the host call:
@@ -333,14 +334,19 @@ async function readIsoMs(ctx: PluginContext, key: string): Promise<number | unde
  */
 export async function makeEmailSender(
 	ctx: PluginContext,
-	options: { requestTimeoutMs?: number | (() => number) } = {},
+	options: {
+		requestTimeoutMs?: number | (() => number);
+		/** Read "Display tax totals" for order emails (default). The sign-in email
+		 *  has no totals, so its sender skips the read under its short ceiling. */
+		orderTotals?: boolean;
+	} = {},
 ): Promise<EmailSender | undefined> {
 	const email = ctx.email;
 	if (email === undefined) return undefined;
 	const [storeName, signInPageUrl, taxTotalsDisplay] = await Promise.all([
 		ctx.kv.get<string>(STORE_DISPLAY_NAME_KEY).then(storeNameFrom, () => undefined),
 		resolveLoginLinkUrl(ctx),
-		emailTaxTotalsDisplay(ctx),
+		options.orderTotals === false ? undefined : emailTaxTotalsDisplay(ctx),
 	]);
 	return new CtxEmailSender({
 		email,
@@ -383,7 +389,7 @@ async function emailTaxTotalsDisplay(ctx: PluginContext): Promise<"itemized" | "
  *  behind it, so nothing to count: a failed or timed-out sign-in email is logged.) */
 export async function makeLoginEmailSender(ctx: PluginContext): Promise<EmailSender | undefined> {
 	if (!(await emailSendingAvailable(ctx))) return undefined;
-	return makeEmailSender(ctx, { requestTimeoutMs: LOGIN_EMAIL_TIMEOUT_MS });
+	return makeEmailSender(ctx, { requestTimeoutMs: LOGIN_EMAIL_TIMEOUT_MS, orderTotals: false });
 }
 
 /**

@@ -96,7 +96,11 @@ afterEach(async () => {
 });
 
 /** Two lines at two rates: 1800 + 250 tax on 15,000. */
-async function placeOrder(key: string, customer?: { token: string }): Promise<string> {
+async function placeOrder(
+	key: string,
+	customer?: { token: string },
+	expectedTaxCents = 2050,
+): Promise<string> {
 	const { cartId } = await h.client.createCart(USD);
 	expect((await h.client.addCartLine(cartId, "COURSE", "course", 1, `${key}-a`)).ok).toBe(true);
 	expect((await h.client.addCartLine(cartId, "EBOOK", "ebook", 1, `${key}-b`)).ok).toBe(true);
@@ -106,7 +110,7 @@ async function placeOrder(key: string, customer?: { token: string }): Promise<st
 		...(customer !== undefined ? [{ sessionToken: customer.token }] : []),
 	);
 	if (!placed.ok) throw new Error(placed.reason);
-	expect(placed.order.totals.taxCents).toBe(2050);
+	expect(placed.order.totals.taxCents).toBe(expectedTaxCents);
 	return placed.order.id;
 }
 
@@ -147,6 +151,38 @@ describe("the buyer's order pages", () => {
 		if (!read.ok) throw new Error(read.reason);
 		const view = buildOrderView(read.order, "en-US");
 		expect(view.totals.taxRows.map((r) => [r.label, r.amount.label])).toEqual([["Tax", "$20.50"]]);
+	});
+
+	test("prices entered WITH tax: the wire itemizes the tax inside the prices, and the page shows a net subtotal that still sums to the total", async () => {
+		await saveTax({ pricesIncludeTax: true }, "tax-incl");
+		// Gross 10,000 at 18% holds 1525 (half down); gross 5000 at 5% holds 238.
+		const id = await placeOrder("incl", undefined, 1763);
+		const read = await h.client.getPublicOrder(id);
+		if (!read.ok) throw new Error(read.reason);
+		expect(read.order.totals.totalCents).toBe(15_000);
+		expect(read.order.totals.tax).toMatchObject({
+			pricesIncludeTax: true,
+			totalsDisplay: "itemized",
+			lineTaxCents: 1763,
+		});
+		expect(
+			read.order.totals.tax?.itemized.toSorted((a, b) => a.label.localeCompare(b.label)),
+		).toEqual([
+			{ label: "GST 18%", amountCents: 1525 },
+			{ label: "GST 5%", amountCents: 238 },
+		]);
+		const view = buildOrderView(read.order, "en-US");
+		expect(rowsOf(view)).toEqual([
+			["GST 18%", "$15.25"],
+			["GST 5%", "$2.38"],
+		]);
+		// Net subtotal: 15,000 gross less the 1763 tax inside it.
+		expect(view.totals.subtotal.money?.amount).toBe(13_237);
+		const rowsSum = view.totals.taxRows.reduce((s, r) => s + (r.amount.money?.amount ?? 0), 0);
+		expect((view.totals.subtotal.money?.amount ?? 0) + rowsSum).toBe(
+			view.totals.total.money?.amount,
+		);
+		expect(view.totals.total.label).toBe("$150.00");
 	});
 
 	test("an older order with no tax snapshot keeps the single Tax row", async () => {

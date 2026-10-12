@@ -909,6 +909,9 @@ export class InProcessCommerceClient implements CommerceClient {
 			customerId,
 		);
 		if (orders === null) return { ok: false, reason: "UNAUTHENTICATED" };
+		// Wrapped, not passed as `map`'s callback: `map` would hand the index in as
+		// `taxTotalsDisplay`. The list shows no tax rows, so the default ("single")
+		// stands and no settings read is spent.
 		return { ok: true, orders: orders.map((order) => serializeOrderSummary(order)) };
 	}
 
