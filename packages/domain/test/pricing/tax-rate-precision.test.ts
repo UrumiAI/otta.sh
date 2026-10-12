@@ -262,6 +262,7 @@ describe("the order's frozen snapshot keeps the exact rate", () => {
 			breakdown,
 			{ calculatorId: "otta.rate-table", result },
 			true,
+			["taxable"],
 		);
 		expect(snap.lines[0]).toMatchObject({ rateBps: 888, ratePpm: NYC, taxCents: 8875 });
 		expect(readOrderTaxSnapshot(JSON.parse(JSON.stringify(snap)))).toEqual(snap);
