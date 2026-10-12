@@ -1,6 +1,7 @@
 /**
- * Re-save the payment credentials an earlier build stored, ONCE, so they are
- * encrypted at rest (ADR-0037).
+ * Re-save the payment credentials so they are encrypted at rest (ADR-0037):
+ * every stored one once, and again whenever one is written by something other
+ * than this migration since.
  *
  * Declaring a field `type: "secret"` makes EmDash encrypt every NEW write to it,
  * and its read path still accepts a value stored before the declaration. So a
@@ -8,6 +9,16 @@
  * until it is written again. This writes each one again, through the same
  * `ctx.kv` path the Settings form uses, and therefore through EmDash's
  * encryption.
+ *
+ * THE MARKER RECORDS REVISIONS (#478). `state:paymentSecretsEncrypted` holds the
+ * host revision this migration wrote for each stored key. Each new isolate reads
+ * every key's revision and re-saves any key whose revision differs (a value an
+ * earlier build re-entered in plain text during a rollback, or one stored for
+ * the first time since); a key that matches is not touched. A key saved through
+ * the encrypted Settings form also differs, and costs one harmless re-save.
+ * What a revision cannot show: a key-ROTATION (the stored row is unchanged) or a
+ * site that only later declared the schema. For those, deleting the marker runs
+ * every key again (DEPLOYMENT.md).
  *
  * THE STEPS, AND WHY THEY CANNOT LOSE A KEY:
  *  1. PREFLIGHT. Read every target key (`getVersioned`) BEFORE writing any. If a
@@ -17,19 +28,22 @@
  *     strand them. (If EVERY key is still plain, a wrong key cannot be told
  *     apart from the right one: whichever key is configured at that tick is the
  *     key they are saved under.)
- *  2. Per key, `compareAndSet` at the preflight revision with the SAME value:
- *     one statement that replaces the stored row with its encrypted envelope.
- *     The row always holds the old form or the new one. A key an operator saved
- *     since the preflight is never overwritten; that is retried on a later tick.
+ *  2. Per key whose revision differs from the marker's, `compareAndSet` at the
+ *     preflight revision with the SAME (decrypted) value: one statement that
+ *     replaces the stored row with a fresh envelope. The row always holds the
+ *     old form or the new one, and either decrypts, so a reader (the webhook
+ *     route among them) never sees a gap. A key an operator saved since the
+ *     preflight is never overwritten; that is retried on a later tick.
  *     With no encryption key, the host refuses BEFORE writing.
  *     In EmDash's sandboxed bridge a pre-1.0 copy can live outside the options
  *     table; its conditional write then never applies although nothing changed.
  *     When a re-read shows the same revision, the options row is created with a
  *     conditional write that applies only while it is still absent, which the
  *     bridge stores encrypted and which deletes that legacy copy (counted in the log line, never shown).
- *  3. Read back and compare; then record the key's new revision in a progress
- *     record, so an unfinished run does not re-save the keys it already did.
- *  4. Write the marker. Until then, every later tick resumes.
+ *  3. Read back: the same value at the revision this write returned (anything
+ *     else is a concurrent save, kept, and retried). Then record that revision
+ *     in the marker, so an unfinished run does not re-save the keys it already did.
+ *  4. Write the marker once more without the keys no longer stored.
  *
  * NO x402 KEY. x402 is gone; its stored keys (the facilitator API key and the
  * older facilitator secret among them) are deleted by their own one-shot purge
@@ -49,22 +63,25 @@
 import { ENCRYPTED_PAYMENT_SECRET_KEYS } from "./payment-secrets.js";
 import type { PluginContext } from "./types.js";
 
-/** Set once every stored payment credential has been re-saved encrypted. The
- *  value names the key set, so a future addition to the set runs again. */
+/** `{ set, revisions }`: the key-set tag below, and per stored key the revision
+ *  this migration wrote. Any other value (an earlier build's `v1:` string among
+ *  them) re-saves every key once. */
 export const PAYMENT_SECRETS_ENCRYPTED_MARKER_KEY = "state:paymentSecretsEncrypted";
 
-/** The marker's value for the current key set. */
-export const PAYMENT_SECRETS_ENCRYPTED_MARKER_VALUE = `v1:${ENCRYPTED_PAYMENT_SECRET_KEYS.join(",")}`;
+/** The marker's key-set tag. It names the key set, so a future addition to the
+ *  set runs again. */
+export const PAYMENT_SECRETS_ENCRYPTED_MARKER_VALUE = `v2:${ENCRYPTED_PAYMENT_SECRET_KEYS.join(",")}`;
 
-/** Per-key progress of an unfinished run: kv key → the revision this migration
- *  wrote. A key still at that revision is already encrypted and is skipped. */
+/** An earlier build's (v1) per-key progress record. No longer written; deleted
+ *  when a run completes. */
 export const PAYMENT_SECRETS_ENCRYPTION_PROGRESS_KEY = "state:paymentSecretsEncryptionProgress";
 
 /** What one call did. */
 export type EncryptPaymentSecretsOutcome =
-	/** Every stored credential was re-saved and read back; the marker is set. */
+	/** Every key the marker did not match was re-saved and read back (or was
+	 *  gone), and the marker now matches. */
 	| "encrypted"
-	/** The marker was already set (or this isolate already saw it). */
+	/** The marker matched every key (or this isolate already saw it match). */
 	| "already-done"
 	/** Something stopped it; nothing was lost, and a later call retries. */
 	| "retry";
@@ -119,18 +136,23 @@ function reportOnce(kind: Report): void {
 	console.warn(REPORT_LINES[kind]);
 }
 
-function readProgress(value: unknown): Record<string, string> {
-	if (typeof value !== "object" || value === null || Array.isArray(value)) return {};
+/** The revisions a marker records, or `null` for no marker, another key set,
+ *  or a shape this build does not write (each re-saves every key once). */
+function readMarker(value: unknown): Record<string, string> | null {
+	if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
+	const { set, revisions } = value as { set?: unknown; revisions?: unknown };
+	if (set !== PAYMENT_SECRETS_ENCRYPTED_MARKER_VALUE) return null;
+	if (typeof revisions !== "object" || revisions === null || Array.isArray(revisions)) return null;
 	const out: Record<string, string> = {};
-	for (const [key, revision] of Object.entries(value)) {
+	for (const [key, revision] of Object.entries(revisions)) {
 		if (typeof revision === "string") out[key] = revision;
 	}
 	return out;
 }
 
 /**
- * Re-save every stored payment credential through the encrypted path unless
- * that already happened for this site. Never throws.
+ * Re-save every stored payment credential the marker does not match through
+ * the encrypted path. Never throws.
  */
 export async function encryptStoredPaymentSecrets(
 	ctx: PluginContext,
@@ -140,15 +162,9 @@ export async function encryptStoredPaymentSecrets(
 	const { kv } = ctx;
 	const { getVersioned, compareAndSet } = kv;
 	try {
-		if (
-			(await kv.get<unknown>(PAYMENT_SECRETS_ENCRYPTED_MARKER_KEY)) ===
-			PAYMENT_SECRETS_ENCRYPTED_MARKER_VALUE
-		) {
-			doneInIsolate.add(site);
-			return "already-done";
-		}
 		// Without the conditional pair a re-save could overwrite a key an operator
-		// saves at the same moment. Leave everything as it is instead.
+		// saves at the same moment, and no revision can be compared. Leave
+		// everything as it is instead.
 		if (getVersioned === undefined || compareAndSet === undefined) {
 			reportOnce("host");
 			return "retry";
@@ -168,19 +184,32 @@ export async function encryptStoredPaymentSecrets(
 			return "retry";
 		}
 
+		const recorded = readMarker(await kv.get<unknown>(PAYMENT_SECRETS_ENCRYPTED_MARKER_KEY));
+		const pending = stored.filter(({ key, revision }) => recorded?.[key] !== revision);
+		if (
+			recorded !== null &&
+			pending.length === 0 &&
+			Object.keys(recorded).length === stored.length
+		) {
+			doneInIsolate.add(site);
+			return "already-done";
+		}
+
+		// The keys that already match stay recorded; a key no longer stored drops out.
+		const revisions: Record<string, string> = {};
+		for (const { key, revision } of stored) {
+			if (recorded?.[key] === revision) revisions[key] = revision;
+		}
+
 		// Retry cost: while the key is missing, each sweep tick costs a handful of
-		// kv calls (the marker and preflight reads, and when every value is still
-		// plain, the progress read plus one refused conditional write), and logs
-		// once per isolate. This is intentional and bounded.
-		const progress = readProgress(await kv.get<unknown>(PAYMENT_SECRETS_ENCRYPTION_PROGRESS_KEY));
+		// kv calls (the preflight and marker reads, and when every value is still
+		// plain, one refused conditional write), and logs once per isolate. This
+		// is intentional and bounded.
 		let resaved = 0;
 		let legacyReplaced = 0;
-		for (const { key, value, revision } of stored) {
-			// 3 (earlier run). Re-saved by this migration and unchanged since.
-			if (progress[key] === revision) continue;
-
+		for (const { key, value, revision } of pending) {
 			// 2. The conditional re-save.
-			const written = await cas(key, revision, value);
+			let written = await cas(key, revision, value);
 			if (!written.applied) {
 				const again = await getV<unknown>(key);
 				if (again === null || again.revision !== revision) {
@@ -192,27 +221,33 @@ export async function encryptStoredPaymentSecrets(
 				// options row only if it is STILL absent (expected revision `null`), so
 				// an operator's save at this moment is never overwritten; the bridge
 				// deletes the pre-1.0 copy when this applies.
-				const created = await cas(key, null, value);
-				if (!created.applied) {
+				written = await cas(key, null, value);
+				if (!written.applied) {
 					reportOnce("conflict");
 					return "retry";
 				}
 				legacyReplaced += 1;
 			}
 
-			// 3. Read back, then record progress.
+			// 3. Read back exactly what this write stored, then record its revision.
 			const back = await getV<unknown>(key);
-			if (back === null || back.value !== value) {
-				reportOnce("other");
+			if (back === null || back.revision !== written.revision || back.value !== value) {
+				reportOnce("conflict");
 				return "retry";
 			}
-			progress[key] = back.revision;
-			await kv.set(PAYMENT_SECRETS_ENCRYPTION_PROGRESS_KEY, progress);
+			revisions[key] = written.revision;
+			await kv.set(PAYMENT_SECRETS_ENCRYPTED_MARKER_KEY, {
+				set: PAYMENT_SECRETS_ENCRYPTED_MARKER_VALUE,
+				revisions,
+			});
 			resaved += 1;
 		}
 
 		// 4. Done.
-		await kv.set(PAYMENT_SECRETS_ENCRYPTED_MARKER_KEY, PAYMENT_SECRETS_ENCRYPTED_MARKER_VALUE);
+		await kv.set(PAYMENT_SECRETS_ENCRYPTED_MARKER_KEY, {
+			set: PAYMENT_SECRETS_ENCRYPTED_MARKER_VALUE,
+			revisions,
+		});
 		await kv.delete(PAYMENT_SECRETS_ENCRYPTION_PROGRESS_KEY);
 		doneInIsolate.add(site);
 		console.info(

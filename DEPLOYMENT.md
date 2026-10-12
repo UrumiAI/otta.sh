@@ -344,7 +344,9 @@ order of appearance in a deployment's life:
     (`EMDASH_ENCRYPTION_KEY=<new>,<old>`). New saves use the new key; both still decrypt.
     Keep the old key listed until all three keys have been entered again in Settings (they
     are write-only, so each must be copied again from Stripe or its provider), then drop
-    it. The one-time upgrade re-save below does not repeat for a rotation.
+    it. Or delete `state:paymentSecretsEncrypted`: the next new isolate (after a redeploy)
+    re-saves all three under the new key. The re-save does not repeat for a rotation by
+    itself.
   - **Upgrading a site that already has these keys saved:** the first cron tick after the
     deploy re-saves them encrypted, once (it needs the key set; until then it retries and
     logs one warning naming `EMDASH_ENCRYPTION_KEY`). It first reads every key and changes
@@ -363,8 +365,8 @@ order of appearance in a deployment's life:
   - **Rolling back:** after the one-time re-save, a build without the `settingsSchema` cannot
     read the three encrypted values, so Stripe payments and webhooks stop until you roll
     forward or enter the keys again. Nothing is lost. Keys entered while the old build runs
-    are stored plain; after rolling forward, enter them again or delete
-    `state:paymentSecretsEncrypted` so the re-save runs again.
+    are stored plain; after rolling forward, the first cron tick encrypts each of them again
+    (the marker records which revisions it encrypted).
 
 > **The Stripe webhook endpoint is public by design, and permanently site-owned.**
 > Stripe delivers to `POST /webhooks/stripe` on the site (`sites/staging/src/pages/webhooks/stripe.ts`)
