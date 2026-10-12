@@ -66,6 +66,7 @@ import {
 	EmdashProductCommerceStore,
 	EmdashSettingsStore,
 	EmdashTaxRulesStore,
+	SETTINGS_COLLECTION,
 	systemClock,
 	uuidIdGen,
 	type StorageAccess,
@@ -557,6 +558,55 @@ describe("the console's Pricing & inventory branch on the otta admin route", () 
 		// The LIVE registry now, rather than the static backstop.
 		expect(result["taxClasses"]).toEqual([{ id: "standard", name: "Standard" }]);
 		expect(result["threshold"]).toBe(THRESHOLD);
+	});
+
+	test("products.detail says a FAILED settings read as storeCurrency null — distinct from never-saved USD", async () => {
+		const seeded = await seedProduct({ term: "storecurrencyfail" });
+		const real = storage[SETTINGS_COLLECTION];
+		if (real === undefined) throw new Error("no settings collection to fault-inject");
+		storage[SETTINGS_COLLECTION] = new Proxy(real, {
+			get(_holder, property) {
+				if (property === "get" || property === "getVersioned") {
+					return () => {
+						throw new Error("injected storage fault: settings unreadable");
+					};
+				}
+				const value = Reflect.get(real, property) as unknown;
+				if (typeof value !== "function") return value;
+				return (value as (...args: unknown[]) => unknown).bind(real);
+			},
+		}) as StorageAccess[string];
+		let result: Record<string, unknown>;
+		try {
+			result = await invoke({
+				type: READ,
+				resource: "products.detail",
+				productId: seeded.productId,
+			});
+		} finally {
+			storage[SETTINGS_COLLECTION] = real;
+		}
+		expect(result["ok"]).toBe(true);
+		expect(result["storeCurrency"]).toBeNull();
+		expect(result["threshold"]).toBeNull();
+	});
+
+	test("products.detail carries the effective store currency from the same settings read: USD until one is saved", async () => {
+		const seeded = await seedProduct({ term: "storecurrency" });
+		const read = async (): Promise<Record<string, unknown>> =>
+			invoke({ type: READ, resource: "products.detail", productId: seeded.productId });
+		// Never saved — what the picker always started on.
+		expect((await read())["storeCurrency"]).toBe("USD");
+		const settings = new EmdashSettingsStore({ storage, clock: systemClock });
+		await settings.update({ currency: "EUR" }, idempotencyKey(`${NS}-store-currency`));
+		try {
+			const result = await read();
+			expect(result["storeCurrency"]).toBe("EUR");
+			// The threshold rides the same read, unchanged.
+			expect(result["threshold"]).toBe(THRESHOLD);
+		} finally {
+			await settings.update({ currency: "USD" }, idempotencyKey(`${NS}-store-currency-back`));
+		}
 	});
 
 	test("an unknown product is a refusal with copy, at HTTP 200 (G5)", async () => {

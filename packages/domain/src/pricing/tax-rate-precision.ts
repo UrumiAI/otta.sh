@@ -1,5 +1,5 @@
 /**
- * A tax rate's value, finer than a basis point (#425, ADR-0034).
+ * A tax rate's value, finer than a basis point (#425, ADR-0036).
  *
  * A rate has always been `rateBps`, integer basis points (0.01%). Some real
  * combined rates need more — New York City's 8.875% — so a rate may also carry
