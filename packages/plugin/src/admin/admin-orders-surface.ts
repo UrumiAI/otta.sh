@@ -43,6 +43,9 @@ export interface OrderTotalsWire {
 	shippingCents: number;
 	taxCents: number;
 	totalCents: number;
+	/** The payment rounding (ADR-0035's amendment), SIGNED minor units — present
+	 *  only on an order in a currency with a payment increment. */
+	roundingCents?: number;
 	appliedCouponCode: string | null;
 	/** The chosen shipping zone id (ADR-0009), or null when none was selected.
 	 *  DISPLAY-ONLY: rendered next to the captured ship-to country so a human can

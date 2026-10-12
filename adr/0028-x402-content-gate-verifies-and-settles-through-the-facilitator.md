@@ -32,7 +32,7 @@
   [ADR-0026](./0026-admin-order-actions-never-claim-money-that-did-not-move.md) is unchanged:
   x402 stays a `"gateway"` method for settlement and an `"outside"` method for refunds.
 - Supersedes: the phase-4 plan's §6 x402 flow, steps 2–3, and its "page-gate bypass" that
-  created an order on the first 402 (`plans/archive/phase-4-checkout-and-gateways.md:448-505`).
+  created an order on the first 402 ([`plans/archive/phase-4-checkout-and-gateways.md:448-505`](https://github.com/UrumiAI/otta.sh/blob/527f7526bbb61ed95b75b793e94e4399a7c50be0/plans/archive/phase-4-checkout-and-gateways.md#L448-L505)).
   It also retires the receipt-forwarding model of `@otta-sh/payments-x402`.
 - Moots: the clause in ADR-0005's first 2026-10-02 amendment that names `entitlements/x402/settle`
   as an inline-email caller. That route is retired (Decision 10), and a gate order has no email

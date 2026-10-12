@@ -4,6 +4,7 @@ import type {
 	SettingsStore,
 	SettingsUpdateOptions,
 } from "../ports/settings-store.js";
+import { isSupportedCurrency } from "../money/currencies.js";
 import { parseTaxSettings } from "../pricing/tax-settings.js";
 
 /**
@@ -57,6 +58,15 @@ export async function updateSettings(
 			throw new InvalidSettingsError(
 				"lowStockThreshold",
 				`lowStockThreshold must be a non-negative integer, got ${String(v)}`,
+			);
+		}
+	}
+	if (patch.currency !== undefined) {
+		const v: unknown = patch.currency;
+		if (typeof v !== "string" || !isSupportedCurrency(v)) {
+			throw new InvalidSettingsError(
+				"currency",
+				`currency must be a supported ISO 4217 code like USD or EUR, got ${String(v)}`,
 			);
 		}
 	}

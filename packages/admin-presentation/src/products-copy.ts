@@ -47,6 +47,7 @@
  * `@otta-sh/admin-react` and stops being shared.
  */
 import { LABEL_BUDGET, fit, unitWord, valueLabel } from "./copy.js";
+import { DEFAULT_STORE_CURRENCY } from "./currency-choices.js";
 import { UNFORMATTABLE, formatOptionalAmount } from "./format-money.js";
 import type { RowNoun, ZeroStateCopy } from "./list-outcome.js";
 
@@ -798,7 +799,9 @@ export const PRODUCT_KIND_LABELS = { physical: "physical", digital: "digital" } 
 export const PRICE_PLACEHOLDER = "19.99";
 export const COMPARE_AT_PLACEHOLDER = "29.99";
 export const UNIT_COST_PLACEHOLDER = "8.50";
-export const CURRENCY_PLACEHOLDER = "USD";
+/** @deprecated The never-saved store currency, `DEFAULT_STORE_CURRENCY`; kept as
+ *  an alias for existing importers. */
+export const CURRENCY_PLACEHOLDER = DEFAULT_STORE_CURRENCY;
 export const ADD_STOCK_PLACEHOLDER = "e.g. 12";
 export const REMOVE_STOCK_PLACEHOLDER = "e.g. 3";
 
