@@ -113,7 +113,12 @@ export {
 	TAX_PAGE,
 	type TaxPageInput,
 } from "./admin/tax-page.js";
-export { formatBpsAsPercent, parsePercentToBps } from "./admin/percent-input.js";
+export {
+	formatBpsAsPercent,
+	formatPpmAsPercent,
+	parsePercentToBps,
+	parsePercentToPpm,
+} from "./admin/percent-input.js";
 export {
 	createShippingPageHandler,
 	SHIPPING_ACTION_IDS,

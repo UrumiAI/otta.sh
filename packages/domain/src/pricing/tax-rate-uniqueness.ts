@@ -1,3 +1,4 @@
+import { ratePpmOf, type TaxRateValue } from "./tax-rate-precision.js";
 import type { TaxClassId } from "./types.js";
 
 /**
@@ -118,8 +119,11 @@ export class TaxRateDuplicateError extends Error {
 	readonly zoneId: string;
 	readonly existingRateId: string;
 	readonly existingRateBps: number;
+	/** The existing rate EXACTLY, in millionths (#425) — `existingRateBps × 100` for
+	 *  a whole-bps rate. */
+	readonly existingRatePpm: number;
 
-	constructor(existing: { id: string; taxClassId: TaxClassId; zoneId: string; rateBps: number }) {
+	constructor(existing: { id: string; taxClassId: TaxClassId; zoneId: string } & TaxRateValue) {
 		super(
 			`tax class ${existing.taxClassId} already has a rate for zone ${existing.zoneId} ` +
 				`(${existing.id}) — one rate per class and zone; edit it with updateRate`,
@@ -128,6 +132,7 @@ export class TaxRateDuplicateError extends Error {
 		this.zoneId = existing.zoneId;
 		this.existingRateId = existing.id;
 		this.existingRateBps = existing.rateBps;
+		this.existingRatePpm = ratePpmOf(existing);
 	}
 }
 

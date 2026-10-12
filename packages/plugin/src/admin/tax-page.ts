@@ -1,4 +1,4 @@
-import { appliedTaxRate, shadowedTaxRates } from "@otta-sh/domain";
+import { appliedTaxRate, ratePpmOf, shadowedTaxRates, taxRateValueOfPpm } from "@otta-sh/domain";
 import type {
 	AccordionBlock,
 	ActionsBlock,
@@ -30,7 +30,7 @@ import {
 	showOptionsAction,
 	taxOffBanner,
 } from "./tax-options-screen.js";
-import { formatBpsAsPercent, parsePercentToBps } from "./percent-input.js";
+import { formatPpmAsPercent, parsePercentToPpm } from "./percent-input.js";
 import {
 	asRecord,
 	backButton,
@@ -170,7 +170,7 @@ interface RateDraft {
 	/** Set when the create was refused as a duplicate: the rate already in the
 	 *  slot. The create screen words the refusal itself, because it holds the
 	 *  zones list — so the notice names the zone without another read. */
-	duplicateOf?: { id: string; rateBps: number };
+	duplicateOf?: { id: string; rateBps: number; ratePpm?: number };
 }
 
 /** A tax rate ROW as this screen renders it: the wire shape plus the zone's
@@ -185,7 +185,7 @@ interface TaxRateRow extends TaxRateWire {
 	/** Set on the rate that applies when ignored duplicates share its slot. */
 	ignoredDuplicates?: string[];
 	/** On that applying rate: the duplicate that would apply if it were deleted. */
-	nextIfDeleted?: { id: string; rateBps: number; appliesToShipping: boolean };
+	nextIfDeleted?: { id: string; rateBps: number; ratePpm?: number; appliesToShipping: boolean };
 }
 
 /** The rates level's own filter: an OPTIONAL zone-id narrow. Unset ⇒ every
@@ -643,6 +643,7 @@ function flagDuplicates(rows: TaxRateRow[]): TaxRateRow[] {
 						nextIfDeleted: {
 							id: next.id,
 							rateBps: next.rateBps,
+							...(next.ratePpm === undefined ? {} : { ratePpm: next.ratePpm }),
 							appliesToShipping: next.appliesToShipping,
 						},
 					}),
@@ -833,7 +834,7 @@ function ignoredShippingText(row: TaxRateRow): string {
 function nextIfDeletedText(row: TaxRateRow): string | undefined {
 	const next = row.nextIfDeleted;
 	if (next === undefined) return undefined;
-	return `Deleting this makes ${next.id} apply: ${formatBpsAsPercent(next.rateBps)}%, shipping ${next.appliesToShipping ? "yes" : "no"}.`;
+	return `Deleting this makes ${next.id} apply: ${percentOf(next)}%, shipping ${next.appliesToShipping ? "yes" : "no"}.`;
 }
 
 /**
@@ -887,6 +888,9 @@ function rateEditForm(classId: string, row: TaxRateRow): FormBlock {
 			classId,
 			rateId: row.id,
 			expectedRateBps: String(row.rateBps),
+			// The exact rate (#425), only when finer than a basis point — so a
+			// whole-bps rate's carrier is exactly what it always was.
+			...(row.ratePpm === undefined ? {} : { expectedRatePpm: String(row.ratePpm) }),
 			expectedAppliesToShipping: String(row.appliesToShipping),
 		},
 		form: {
@@ -896,7 +900,7 @@ function rateEditForm(classId: string, row: TaxRateRow): FormBlock {
 					type: "text_input",
 					action_id: "ratePercent",
 					label: "Rate (%)",
-					initial_value: formatBpsAsPercent(row.rateBps),
+					initial_value: percentOf(row),
 				},
 				{
 					type: "toggle",
@@ -944,11 +948,11 @@ function rateDeleteActions(classId: string, row: TaxRateRow) {
  * its place in the label IN FULL (a tax rate id is a readable natural key, not
  * an opaque uuid — the short-id rule does not apply to it).
  *
- * A percent is NOT money: it is formatted by `formatBpsAsPercent` (exact
- * integer basis points), never by `formatMoney`, and carries no currency.
+ * A percent is NOT money: it is formatted by `formatPpmAsPercent` (exact
+ * integer millionths, #425), never by `formatMoney`, and carries no currency.
  */
 function rateRow(classId: string, row: TaxRateRow): AccordionBlock {
-	const percent = formatBpsAsPercent(row.rateBps);
+	const percent = percentOf(row);
 	// An IGNORED duplicate says so in place of what it would tax: it taxes nothing.
 	const appliesLabel =
 		row.appliedInstead !== undefined
@@ -988,7 +992,7 @@ function ratesTable(
 			return {
 				id: r.id,
 				zone: r.zoneName ?? r.zoneId,
-				rate: `${formatBpsAsPercent(r.rateBps)}%${status === undefined ? "" : ` (${status})`}`,
+				rate: `${percentOf(r)}%${status === undefined ? "" : ` (${status})`}`,
 				appliesToShipping:
 					r.appliedInstead !== undefined
 						? ignoredShippingText(r)
@@ -1013,7 +1017,7 @@ function openRateForm(classId: string, rows: TaxRateRow[]): FormBlock {
 		{ value: "none", label: "Choose a tax rate…" },
 		...rows.map((r) => ({
 			value: encodePath([classId, r.id]),
-			label: `${formatBpsAsPercent(r.rateBps)}% · ${r.zoneName ?? r.zoneId}`,
+			label: `${percentOf(r)}% · ${r.zoneName ?? r.zoneId}`,
 		})),
 	];
 	return carriedForm({
@@ -1197,7 +1201,7 @@ function rateDetailBlocks(
 		type: "fields",
 		fields: [
 			{ label: "Zone", value: row.zoneName ?? row.zoneId },
-			{ label: "Rate", value: `${formatBpsAsPercent(row.rateBps)}%` },
+			{ label: "Rate", value: `${percentOf(row)}%` },
 		],
 	});
 	blocks.push(rateEditForm(classId, row));
@@ -1221,18 +1225,25 @@ function rateDetailFailClosed() {
 // precedent as `money-input.ts`).
 
 /**
- * A tax rate is 0–100% — the port's documented `rateBps` range (0–10000). The
- * shared percent parser accepts up to 1000% because it also serves coupons, and
- * the copy here used to advertise "0 to 1000", which is how QA saved a 150% tax.
- * The rules client refuses the same range, so this only decides the words.
+ * A tax rate is 0–100% — the port's documented `rateBps` range (0–10000), here
+ * in millionths: up to four decimal places, so 8.875% can be entered (#425 —
+ * WooCommerce's precision). The percent parser accepts up to 1000%, and the copy
+ * here used to advertise "0 to 1000", which is how QA saved a 150% tax. The rules
+ * client refuses the same range, so this only decides the words.
  */
-const MAX_TAX_RATE_BPS = 10_000;
+const MAX_TAX_RATE_PPM = 1_000_000;
 const TAX_PERCENT_HINT =
-	"Rate must be a percent from 0 to 100, like 7.25 (up to two decimal places).";
+	"Rate must be a percent from 0 to 100, like 7.25 or 8.875 (up to four decimal places).";
 
+/** The merchant's percent, in millionths, or null. */
 function parseTaxPercent(input: string): number | null {
-	const bps = parsePercentToBps(input);
-	return bps !== null && bps <= MAX_TAX_RATE_BPS ? bps : null;
+	const ppm = parsePercentToPpm(input);
+	return ppm !== null && ppm <= MAX_TAX_RATE_PPM ? ppm : null;
+}
+
+/** A rate's exact percent for display (#425): "8.875" for 8.875%, "7.25" for 7.25%. */
+function percentOf(rate: { rateBps: number; ratePpm?: number }): string {
+	return formatPpmAsPercent(ratePpmOf(rate));
 }
 
 // -- custom action: create a tax class ----------------------------------------
@@ -1450,13 +1461,13 @@ function createRateAction() {
 		}
 		const idProblem = idInputProblem(id);
 		if (idProblem !== undefined) return err(idProblem);
-		const bps = parseTaxPercent(readString(values.ratePercent) ?? "");
-		if (bps === null) return err(TAX_PERCENT_HINT);
+		const ppm = parseTaxPercent(readString(values.ratePercent) ?? "");
+		if (ppm === null) return err(TAX_PERCENT_HINT);
 		const result = await client.createTaxRate({
 			id,
 			taxClassId: classId,
 			zoneId,
-			rateBps: bps,
+			...taxRateValueOfPpm(ppm),
 			appliesToShipping,
 		});
 		if (!result.ok && result.duplicateTaxRate !== undefined) {
@@ -1478,12 +1489,12 @@ function createRateAction() {
 export function duplicateRateNotice(
 	classId: string,
 	zoneLabel: string,
-	existing: { id: string; rateBps: number },
+	existing: { id: string; rateBps: number; ratePpm?: number },
 ): Notice {
 	return {
 		variant: "error",
 		title: "Tax rate not created",
-		description: `Class "${classId}" already has a rate for "${zoneLabel}": "${existing.id}" (${formatBpsAsPercent(existing.rateBps)}%). A class can have one rate per zone — edit "${existing.id}" instead, or delete it first.`,
+		description: `Class "${classId}" already has a rate for "${zoneLabel}": "${existing.id}" (${percentOf(existing)}%). A class can have one rate per zone — edit "${existing.id}" instead, or delete it first.`,
 	};
 }
 
@@ -1540,9 +1551,14 @@ function saveRateAction() {
 			return showList();
 		}
 		const expectedRateBps = Number.parseInt(expectedRateBpsRaw, 10);
+		// The exact rate the form loaded (#425), when finer than a basis point; a
+		// form without it loaded a whole-bps rate.
+		const expectedRatePpmRaw = carried?.expectedRatePpm;
+		const expectedRatePpm =
+			expectedRatePpmRaw === undefined ? undefined : Number.parseInt(expectedRatePpmRaw, 10);
 		const values = input.values ?? {};
-		const bps = parseTaxPercent(readString(values.ratePercent) ?? "");
-		if (bps === null) {
+		const ppm = parseTaxPercent(readString(values.ratePercent) ?? "");
+		if (ppm === null) {
 			return showList([classId], {
 				variant: "error",
 				title: "Rate not saved",
@@ -1553,10 +1569,11 @@ function saveRateAction() {
 		// `rateEditForm`): a flag changed elsewhere since is `stale`, never reverted.
 		const appliesToShipping = readBoolean(values.appliesToShipping) ?? false;
 		const result = await client.updateTaxRate(rateId, {
-			rateBps: bps,
+			...taxRateValueOfPpm(ppm),
 			appliesToShipping,
 			expectedAppliesToShipping: expectedFlagRaw === "true",
 			expectedRateBps,
+			...(expectedRatePpm === undefined ? {} : { expectedRatePpm }),
 		});
 		return showList([classId], saveRateNotice(result));
 	});
