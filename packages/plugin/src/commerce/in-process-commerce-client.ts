@@ -174,13 +174,13 @@ import {
 	requireDocumentIdempotencyKey,
 	requireIdempotencyKey,
 	requireMoney,
-	requireSupportedCurrency,
 	requireNonNegativeInteger,
 	requireNullableInteger,
 	requireProductId,
 	requireQty,
 	requireShippingAddress,
 	requireSku,
+	requireSupportedCurrency,
 	requireTitle,
 	requireVariantKey,
 	requireWatermark,
@@ -320,7 +320,9 @@ export class InProcessCommerceClient implements CommerceClient {
 		if (input.price !== undefined) {
 			requireMoney("price", input.price);
 			// The currency table, not just the shape (#457): an unlisted code would
-			// price a product no money boundary knows the minor unit of.
+			// price a product no money boundary knows the minor unit of. Unlike the
+			// admin product edit, a stored legacy code is refused too; no caller
+			// sends a price here today (CMS sync sends title and watermark only).
 			requireSupportedCurrency("price.currency", input.price.currency);
 		}
 		if (input.title !== undefined) requireTitle(input.title);

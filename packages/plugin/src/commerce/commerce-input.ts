@@ -43,8 +43,11 @@
  *    by sending zero;
  *  - `currency` — exactly three upper-case letters, on every money field and on
  *    a cart's currency; and, where a write AUTHORS one (a cart's explicit
- *    currency, a product or variant price), a code in the currency table too
- *    ({@link requireSupportedCurrency}, issue #457);
+ *    currency, a product or variant price through the commerce client), a code
+ *    in the currency table too ({@link requireSupportedCurrency}, issue #457).
+ *    Admin product prices are table-checked in `products-actions.ts` instead,
+ *    which lets a product re-submit a stored legacy code, so `requireMoney`
+ *    itself stays shape-only;
  *  - `qty` — a positive integer no greater than 10,000 (the shopper-facing cap,
  *    far tighter than the raw inventory primitive's);
  *  - `sku` — non-empty, and at most 200 characters where the entitlement check
@@ -375,9 +378,10 @@ export function requireCurrencyCode(field: string, value: string): string {
  * A currency a write AUTHORS (a new rate's, a new coupon's, a cart's explicit
  * one, a price's): the shape, then membership of the store's currency table
  * (`@otta-sh/domain`'s `isSupportedCurrency` — the currencies whose minor unit
- * every money boundary knows). Write paths only — reads and edits that name a
- * currency already stored keep the shape check, since refusing a stored code
- * there would strand a row written before this rule.
+ * every money boundary knows). Write paths only — reads keep the shape check,
+ * since refusing a stored code there would strand a row written before this
+ * rule. There is no stored-code carve-out here: a caller that must let a row
+ * re-submit its legacy code (the admin product edit) checks the table itself.
  */
 export function requireSupportedCurrency(field: string, value: string): string {
 	requireCurrencyCode(field, value);
