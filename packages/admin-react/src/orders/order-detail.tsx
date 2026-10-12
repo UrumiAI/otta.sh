@@ -167,6 +167,10 @@ export function checkRefundInput(
 	_refundedBy: string,
 	remainingCents: number,
 	currency: string,
+	/** The gateway's honest `refundable`: true ⇒ the money goes back through the
+	 *  provider, and only then does the currency's payment step apply (#447). A
+	 *  manual refund takes any minor-unit amount. */
+	refundAutomatic = true,
 ): RefundCheck {
 	// In the ORDER's currency: a JPY refund of "1500" is 1500 yen, never 150000.
 	const parsed = parseMinorUnitsInput(amountInput, currency, { allowZero: false });
@@ -195,9 +199,10 @@ export function checkRefundInput(
 		};
 	}
 	// ADR-0035's amendment, AFTER the ceiling (an amount that is too high is told
-	// so first): KWD, BHD, OMR and JOD are paid back in steps of 0.010, or the
-	// whole remainder. The domain refuses the same (`AMOUNT_NOT_PAYMENT_INCREMENT`).
-	if (!isRefundableIncrement(parsed, remainingCents, currency)) {
+	// so first): through the gateway, KWD, BHD, OMR and JOD are paid back in steps
+	// of 0.010, or the whole remainder. The domain refuses the same
+	// (`AMOUNT_NOT_PAYMENT_INCREMENT`), for gateway refunds only.
+	if (refundAutomatic && !isRefundableIncrement(parsed, remainingCents, currency)) {
 		return { ok: false, refusal: { message: refundIncrementText(currency), field: "amount" } };
 	}
 	return { ok: true, amountCents: parsed };
@@ -832,6 +837,7 @@ export function RefundsPanel({
 												refundedBy,
 												refunds.remainingCents,
 												cur,
+												refunds.refundable,
 											);
 											if (!checked.ok) {
 												// A refusal that leaves focus where it was makes the

@@ -246,6 +246,25 @@ export function refundOrderContract(
 			expect(any.ok).toBe(true);
 		});
 
+		test("a MANUAL KWD refund takes any minor-unit amount — the 0.010 step binds gateway refunds only (#447)", async () => {
+			const h = await makeHarness();
+			const KWD = toCurrency("KWD");
+			const id = await h.seedPaidOrder({ id: "ord-kwd-manual", totalCents: 5000, currency: "KWD" });
+			const gw = new FakePaymentGateway({ id: "stripe", refundable: false });
+			const res = await refundOrder({ orderStore: h.orderStore }, gw, {
+				orderId: id,
+				amount: cents(1234),
+				currency: KWD,
+				refundedBy: "admin",
+				idempotencyKey: idempotencyKey("rf-kwd-manual"),
+			});
+			expect(res.ok).toBe(true);
+			if (!res.ok) return;
+			expect(res.refund.kind).toBe("manual");
+			expect(res.refund.amount).toBe(1234);
+			expect(gw.refundCalls).toHaveLength(0);
+		});
+
 		test("a short capture binds the ceiling at captured (REFUND_EXCEEDS_CAPTURED past it)", async () => {
 			const h = await makeHarness();
 			// Frozen total 1000, but only 700 actually captured (a settle anomaly).

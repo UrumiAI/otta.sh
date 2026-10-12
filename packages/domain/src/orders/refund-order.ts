@@ -83,7 +83,8 @@ export type RefundOrderFailure =
 	/** The refund currency does not match the order's currency. */
 	| "CURRENCY_MISMATCH"
 	/** ADR-0035 amendment: in a currency with a payment increment (KWD, BHD, OMR,
-	 *  JOD: 10), a NEW refund must be a multiple of it, or the order's whole
+	 *  JOD: 10), a NEW gateway refund must be a multiple of it (a manual refund
+	 *  takes any minor-unit amount, #447), or the order's whole
 	 *  remaining refundable amount (an order placed before checkout rounded its
 	 *  total may hold any remainder). Refused before anything is reserved. */
 	| "AMOUNT_NOT_PAYMENT_INCREMENT"
@@ -349,13 +350,15 @@ async function refundOnLedger(
 	const kind = gateway.refundable ? "gateway" : "manual";
 	const payments = known?.payments ?? (await deps.orderStore.getCapturedPayments(cmd.orderId));
 
-	// ADR-0035 amendment: a new refund in an increment currency is a multiple of
-	// it, or exactly the remaining capacity. An amount OVER the remainder falls
-	// through to the reservation's ceiling refusal — "too high" is the more useful
-	// answer. A resume re-issues a reservation that already passed this. Every
-	// other currency skips it, with no extra read.
+	// ADR-0035 amendment: a new GATEWAY refund in an increment currency is a
+	// multiple of it, or exactly the remaining capacity. An amount OVER the
+	// remainder falls through to the reservation's ceiling refusal — "too high" is
+	// the more useful answer. A resume re-issues a reservation that already passed
+	// this. A MANUAL refund moves no money through the provider, so its step is
+	// the currency's minor unit (#447). Every other currency skips it, with no
+	// extra read.
 	const increment = currencyPaymentIncrement(cmd.currency);
-	if (!resuming && increment !== undefined && cmd.amount % increment !== 0) {
+	if (kind === "gateway" && !resuming && increment !== undefined && cmd.amount % increment !== 0) {
 		const refunds = known?.refunds ?? (await deps.orderStore.listRefunds(cmd.orderId));
 		const remaining =
 			computeRefundCeiling(sumCapturedPayments(payments), order.totals.total) - sumRefunds(refunds);
