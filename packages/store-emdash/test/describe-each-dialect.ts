@@ -148,7 +148,8 @@ export async function makeSqliteStorage(layout: StorageLayout): Promise<DialectD
  * How many connections this test may open without starving the server: the
  * server's `max_connections`, minus those already in use (other suites share it
  * under `test:pg`), minus a margin for the harness's admin pool and peers that
- * start later. Never below `floor`.
+ * start later. Never below `floor`. The count includes every `pg_stat_activity` row
+ * (background workers too), so it is conservative.
  */
 export async function pgConnectionsAvailable(want: number, floor = 16): Promise<number> {
 	const connectionString = process.env.PG_CONNECTION_STRING;
@@ -195,19 +196,26 @@ export async function makePgStorage(
 		options: `-c search_path=${schema}`,
 		// A reserved pool must keep what it took: the default reaps idle clients
 		// after 10 s and re-opening them can hit a server a peer has since filled.
-		...(options.reserveConnections === true ? { idleTimeoutMillis: 0 } : {}),
+		...(options.reserveConnections === true
+			? { idleTimeoutMillis: 0, connectionTimeoutMillis: 10_000 }
+			: {}),
 	});
 	if (options.reserveConnections === true) {
 		// Take every connection up front, so a server shared with parallel suites
 		// refuses HERE (the caller can retry smaller) and never mid-race.
-		try {
-			const held = await Promise.all(Array.from({ length: poolMax }, () => pool.connect()));
-			for (const client of held) client.release();
-		} catch (err) {
+		// allSettled, not all: on the first refusal the clients that DID connect must
+		// still be released, or pool.end() waits for them forever.
+		const results = await Promise.allSettled(Array.from({ length: poolMax }, () => pool.connect()));
+		let refusal: { reason: unknown } | undefined;
+		for (const result of results) {
+			if (result.status === "fulfilled") result.value.release();
+			else refusal ??= { reason: result.reason };
+		}
+		if (refusal !== undefined) {
 			await pool.end().catch(() => {});
 			await admin.query(`DROP SCHEMA "${schema}" CASCADE`).catch(() => {});
 			await admin.end().catch(() => {});
-			throw err;
+			throw refusal.reason;
 		}
 	}
 	const db = new Kysely({ dialect: new PostgresDialect({ pool }) }) as HostDb;

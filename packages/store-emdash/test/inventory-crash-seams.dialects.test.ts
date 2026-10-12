@@ -910,19 +910,19 @@ describe.skipIf(!PG_ENABLED)("inventory compare-and-set contention budget [postg
 		// racing — which can only make that shape's depth an UNDER-estimate, and it is
 		// already the shallower of the two, so the budget does not rest on it.
 		// Sized to what the shared server has free (parallel `test:pg` suites hold
-		// connections too) and reserved up front: asking for 96 on a 100-connection
+		// connections too) and reserved up front: a 96-connection pool on a 100-connection
 		// server failed with "too many clients" mid-race. If the server refuses,
 		// shrink and retry. A smaller pool only queues the last racers, which
 		// under-estimates depth (see above), never over-estimates it.
-		let size = await pgConnectionsAvailable(96);
+		let size = await pgConnectionsAvailable(52);
 		let db: Awaited<ReturnType<typeof makePgStorage>> | undefined;
 		for (let tries = 0; db === undefined; tries++) {
 			try {
 				db = await makePgStorage(INVENTORY_LAYOUT, size, { reserveConnections: true });
 			} catch (err) {
-				if (tries >= 6 || size <= 16) throw err;
+				if (tries >= 8) throw err;
 				size = Math.max(16, Math.floor(size * 0.7));
-				await new Promise((resolve) => setTimeout(resolve, 500));
+				await new Promise((resolve) => setTimeout(resolve, 1000));
 			}
 		}
 		storage = db.storage;
