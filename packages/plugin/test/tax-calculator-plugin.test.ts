@@ -116,6 +116,17 @@ describe("createOttaPlugin({ taxCalculator })", () => {
 		expect(calc.seen.map((r) => r.purpose)).toEqual(["quote"]);
 	});
 
+	test("a calculator-priced quote is flagged an estimate (the review sends no postcode); the built-in is not (#429)", async () => {
+		const { createOttaPlugin, makeCommerceClient } = await load();
+		const id = await cartId();
+		const builtIn = await (await makeCommerceClient(h.ctx)).quoteCheckout({ cartId: id });
+		expect(builtIn.ok && builtIn.breakdown.tax?.estimate).toBeUndefined();
+		createOttaPlugin({ taxCalculator: fake() });
+		const client = await makeCommerceClient(h.ctx);
+		const quote = await client.quoteCheckout({ cartId: id });
+		expect(quote.ok && quote.breakdown.tax?.estimate).toBe(true);
+	});
+
 	test("no rates and nothing saved: the calculator is still asked and tax charged (ADR-0032 upgrade rule)", async () => {
 		expect((await h.stores.settingsStore.get()).tax).toBeUndefined();
 		expect(await h.stores.taxRules.hasAnyRate()).toBe(false);

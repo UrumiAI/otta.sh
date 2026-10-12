@@ -685,7 +685,7 @@ const {
 			total={summary.totals.total}
 			excludesUncalculated={summary.totals.totalExcludesUncalculated}
 			footnote={footnote}
-			taxNote={summary.totals.taxIncludedNote}
+			taxNote={[summary.totals.taxIncludedNote, summary.totals.taxEstimateNote].filter((n) => n !== null).join(" ") || null}
 		/>
 	</section>
 </div>

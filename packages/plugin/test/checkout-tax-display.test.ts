@@ -172,3 +172,21 @@ describe("tax off, and tax not located", () => {
 		expect(t.taxIncludedNote).toBeNull();
 	});
 });
+
+describe("tax estimate note (#429)", () => {
+	test("a calculator-priced, located tax says it is an estimate until the order is placed", () => {
+		const t = buildCheckoutTotals({ ...EXCL, tax: tax({ estimate: true }) }, OPTS);
+		expect(t.taxEstimateNote).toMatch(/estimate/i);
+	});
+
+	test("no note for the built-in rate table, for an order, or before tax is computed", () => {
+		expect(buildCheckoutTotals({ ...EXCL, tax: tax() }, OPTS).taxEstimateNote).toBeNull();
+		expect(buildCheckoutTotals({ ...EXCL, tax: tax() }, OPTS).taxEstimateNote).toBeNull();
+		expect(buildCheckoutTotals(EXCL, OPTS).taxEstimateNote).toBeNull();
+		const notLocated = tax({ estimate: true, located: false });
+		expect(
+			buildCheckoutTotals({ ...EXCL, tax: notLocated }, { ...OPTS, taxZoneSelected: false })
+				.taxEstimateNote,
+		).toBeNull();
+	});
+});

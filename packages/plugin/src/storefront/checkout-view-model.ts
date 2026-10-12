@@ -100,6 +100,9 @@ export interface CheckoutTotalsView {
 	/** "Includes $3.00 tax" under the total when prices are shown with tax. Plain text. */
 	taxIncludedNote: string | null;
 	total: CheckoutAmountView;
+	/** Set when an outside calculator priced the tax before the buyer's postcode is
+	 *  known (#429): the order's tax may differ. Plain text; null otherwise. */
+	taxEstimateNote: string | null;
 	appliedCouponCode: string | null;
 	/** true while shipping or tax was not computed — the theme's signal to
 	 *  caveat the total ("this total does not include shipping or tax"). */
@@ -181,6 +184,10 @@ export function buildCheckoutTotals(
 		tax: taxView,
 		taxRows,
 		taxIncludedNote,
+		taxEstimateNote:
+			taxComputed && tax?.estimate === true
+				? "Tax is an estimate until you place the order; the final amount is confirmed then."
+				: null,
 		total: computed(breakdown.totalCents, code, locale),
 		appliedCouponCode: breakdown.appliedCouponCode,
 		totalExcludesUncalculated: !options.shippingSelected || !taxComputed,
