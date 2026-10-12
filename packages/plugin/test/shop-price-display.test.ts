@@ -410,32 +410,32 @@ describe("round at subtotal: the cart page's total matches checkout", () => {
 	test.each([
 		[true, 221],
 		[false, 222],
-	] as const)("roundAtSubtotal %s: 2 × 103¢ at 7.5 percent, shown including ⇒ %i on both", async (
-		roundAtSubtotal,
-		total,
-	) => {
-		await h.stores.taxRules.createClass({ id: "s75", name: "Seven and a half" });
-		await h.stores.taxRules.createRate({
-			id: "t-gb-s75",
-			taxClassId: "s75",
-			zoneId: "z-gb",
-			rateBps: 750,
-			appliesToShipping: false,
-		});
-		await seedProduct("p-a", 103, { taxClass: "s75" });
-		await seedProduct("p-b", 103, { taxClass: "s75" });
-		await saveTax({ ...ON, roundAtSubtotal, displayCart: "incl" });
-		const cartId = await cartWith([
-			["p-a", 1],
-			["p-b", 1],
-		]);
+	] as const)(
+		"roundAtSubtotal %s: 2 × 103¢ at 7.5 percent, shown including ⇒ %i on both",
+		async (roundAtSubtotal, total) => {
+			await h.stores.taxRules.createClass({ id: "s75", name: "Seven and a half" });
+			await h.stores.taxRules.createRate({
+				id: "t-gb-s75",
+				taxClassId: "s75",
+				zoneId: "z-gb",
+				rateBps: 750,
+				appliesToShipping: false,
+			});
+			await seedProduct("p-a", 103, { taxClass: "s75" });
+			await seedProduct("p-b", 103, { taxClass: "s75" });
+			await saveTax({ ...ON, roundAtSubtotal, displayCart: "incl" });
+			const cartId = await cartWith([
+				["p-a", 1],
+				["p-b", 1],
+			]);
 
-		const cart = await cartLines(cartId);
-		expect(cart.total?.amount).toBe(total);
-		expect(cart.lines.reduce((n, l) => n + (l.lineTotal?.amount ?? 0), 0)).toBe(total);
-		const review = await checkoutReview(cartId);
-		expect(review.subtotal).toBe(total);
-	});
+			const cart = await cartLines(cartId);
+			expect(cart.total?.amount).toBe(total);
+			expect(cart.lines.reduce((n, l) => n + (l.lineTotal?.amount ?? 0), 0)).toBe(total);
+			const review = await checkoutReview(cartId);
+			expect(review.subtotal).toBe(total);
+		},
+	);
 });
 
 describe("the price display read fails: pages fall back to prices as entered", () => {
