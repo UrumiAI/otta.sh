@@ -27,6 +27,7 @@ import type { SettingsStore } from "../ports/settings-store.js";
 import type { ShippingRulesStore } from "../ports/shipping-rules-store.js";
 import type { TaxRulesStore } from "../ports/tax-rules-store.js";
 import { applyRateTable, type RateTable, rateTableOf } from "./rate-table-calculator.js";
+import { ratePpmOf } from "./tax-rate-precision.js";
 import type { ShopTaxDisplay, TaxSettings } from "./tax-settings.js";
 import type { TaxClassId } from "./types.js";
 import { resolveShippingZone } from "./zone-match.js";
@@ -161,6 +162,9 @@ async function loadPriceDisplay(
 	if (zone.status === "matched") {
 		// The zone's rates exactly as checkout reads them (duplicates reduced the same way).
 		const table = rateTableOf(await deps.taxRules.listRatesForZone(zone.zoneId));
+		// A corrupt rate fails this read, as it always did: the page then shows prices
+		// as entered (`priceDisplayOrEntered`), never a product priced at a bad rate.
+		for (const bps of table.ratesByClass.values()) ratePpmOf({ rateBps: bps });
 		for (const [classId, bps] of table.ratesByClass) {
 			Object.defineProperty(ratesByClass, classId, {
 				value: bps,

@@ -58,13 +58,18 @@ export function canonicalTaxRateValue(rate: TaxRateValue): TaxRateValue {
 	return ppm === undefined ? { rateBps: rate.rateBps } : { rateBps: rate.rateBps, ratePpm: ppm };
 }
 
+/** A `rateBps` {@link ratePpmOf} reads: a non-negative safe integer. */
+export function isValidRateBps(rateBps: unknown): rateBps is number {
+	return typeof rateBps === "number" && Number.isSafeInteger(rateBps) && rateBps >= 0;
+}
+
 /**
  * The exact rate in millionths: an honoured `ratePpm` ({@link finerRatePpm}), else
  * `rateBps × 100`. A `rateBps` that is not a non-negative safe integer throws a
  * `RangeError` — corrupt data fails closed, as `computeLineTax` always did.
  */
 export function ratePpmOf(rate: TaxRateValue): number {
-	if (!Number.isSafeInteger(rate.rateBps) || rate.rateBps < 0) {
+	if (!isValidRateBps(rate.rateBps)) {
 		throw new RangeError(
 			`a tax rate needs a non-negative integer rateBps, got ${String(rate.rateBps)}`,
 		);

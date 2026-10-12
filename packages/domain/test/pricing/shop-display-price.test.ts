@@ -284,6 +284,24 @@ describe("loadShopPriceDisplay — what the store's options say to show", () => 
 		await save(on);
 		expect(shopDisplayPrice(await load(), item(999))).toBe(1199);
 	});
+
+	test("#478: a corrupt rate in the base zone still fails the read (the page shows prices as entered)", async () => {
+		await save(on);
+		const corrupt = {
+			async listRatesForZone(zoneId: string) {
+				const rates = await taxRules.listRatesForZone(zoneId);
+				return rates.map((r) => (r.taxClassId === "reduced" ? { ...r, rateBps: 7.5 } : r));
+			},
+		};
+		await expect(
+			loadShopPriceDisplay({
+				settings,
+				taxRules: corrupt,
+				shippingRules,
+				hasOutsideTaxCalculator: false,
+			}),
+		).rejects.toThrow(RangeError);
+	});
 });
 
 describe("loadCartPriceDisplay — the cart page's lines follow displayCart (WooCommerce's tax_display_cart)", () => {
