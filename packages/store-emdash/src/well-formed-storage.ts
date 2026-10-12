@@ -603,9 +603,14 @@ export function guardWellFormed<T>(
 		delete: (id) => addressing(id, () => inner.delete(id), false),
 		compareAndDelete: (id, expectedRevision) =>
 			addressing(id, () => inner.compareAndDelete(id, expectedRevision), { applied: false }),
-		put: (id, data) => creating(id, async () => inner.put(id, await writable(id, data))),
+		// `return await`, not a bare return: a store call can return an already-rejected
+		// promise (an async method that throws before its first await), and a bare
+		// return attaches its handler one microtask late, which workerd reports as an
+		// unhandled rejection although the caller catches it.
+		put: (id, data) => creating(id, async () => await inner.put(id, await writable(id, data))),
 		compareAndSet: (id, expectedRevision, data) => {
-			const write = async () => inner.compareAndSet(id, expectedRevision, await writable(id, data));
+			const write = async () =>
+				await inner.compareAndSet(id, expectedRevision, await writable(id, data));
 			// A null revision is create-if-absent; a revision names a row that exists.
 			return expectedRevision === null
 				? creating(id, write)
