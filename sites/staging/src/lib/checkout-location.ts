@@ -44,22 +44,6 @@ export function locationBlock(
 }
 
 /**
- * #478: the buyer's pick the review REFUSED (nothing priced; the totals are the
- * shop's address's), or null. The page echoes it to the place form, so a Place
- * with it still selected goes ahead at what the review priced instead of
- * re-pricing it into the same refusal again and again (place.ts).
- */
-export function refusedBuyerLocation(
-	block: LocationBlock,
-	priced: { country: string; region: string | null } | null,
-	refused: boolean,
-	asked: { country: string; region: string },
-): { country: string; region: string } | null {
-	if (block !== "buyer" || priced !== null || !refused || asked.country === "") return null;
-	return { country: asked.country, region: asked.region };
-}
-
-/**
  * The place form's echo → the order's `billingLocation`: only on a page that
  * priced the buyer's location (the marker), and only what passes the delivery
  * form's own SHAPE checks — a crafted hidden field is dropped, never sent.

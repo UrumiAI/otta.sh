@@ -9,7 +9,6 @@ import {
 	billingLocationFromForm,
 	buyerLocationErrorToken,
 	locationBlock,
-	refusedBuyerLocation,
 } from "../src/lib/checkout-location.js";
 import { cartErrorMessage } from "../src/lib/error-messages.js";
 
@@ -76,25 +75,5 @@ describe("billingLocationFromForm", () => {
 		expect(
 			billingLocationFromForm({ taxLocation: "buyer", country: "US", region: "Cali fornia" }),
 		).toEqual({ country: "US" });
-	});
-});
-
-describe("refusedBuyerLocation (#478)", () => {
-	const asked = { country: "ES", region: "CN" };
-
-	test("a buyer-location page whose pick was refused (nothing priced) ⇒ the pick, echoed for place", () => {
-		expect(refusedBuyerLocation("buyer", null, true, asked)).toEqual(asked);
-		expect(refusedBuyerLocation("buyer", null, true, { country: "ES", region: "" })).toEqual({
-			country: "ES",
-			region: "",
-		});
-	});
-
-	test("nothing refused, a priced location, nothing picked, or a delivery page ⇒ none", () => {
-		expect(refusedBuyerLocation("buyer", null, false, asked)).toBeNull();
-		expect(refusedBuyerLocation("buyer", { country: "ES", region: "TF" }, true, asked)).toBeNull();
-		expect(refusedBuyerLocation("buyer", null, true, { country: "", region: "" })).toBeNull();
-		expect(refusedBuyerLocation("delivery", null, true, asked)).toBeNull();
-		expect(refusedBuyerLocation(null, null, true, asked)).toBeNull();
 	});
 });

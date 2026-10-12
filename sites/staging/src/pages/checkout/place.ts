@@ -428,23 +428,9 @@ async function place(context: APIContext): Promise<Response> {
 		fromCountry: formString(form.get("fromCountry")),
 		fromRegion: formString(form.get("fromRegion")),
 	};
-	// #478: a buyer location the review REFUSED stays selected while the totals
-	// were priced at the shop's address; re-pricing it would only refuse it again,
-	// so every Place came back. Left as it was (the page echoes it), Place goes
-	// ahead at what the review priced: the shop's address, no billingLocation.
-	const refusedLocationKept =
-		buyerPage &&
-		intent !== "update-delivery" &&
-		pricedCountry === undefined &&
-		formString(form.get("refusedCountry")) !== undefined &&
-		!deliveryDiffers(delivery, {
-			country: formString(form.get("refusedCountry")),
-			region: formString(form.get("refusedRegion")),
-		});
 	if (
 		intent === "update-delivery" ||
 		((zoned || buyerPage) &&
-			!refusedLocationKept &&
 			deliveryDiffers(delivery, {
 				country: pricedCountry,
 				region: pricedRegion,

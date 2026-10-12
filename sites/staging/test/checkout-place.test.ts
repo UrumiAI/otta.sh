@@ -1064,66 +1064,6 @@ describe("the buyer's location at place (#426)", () => {
 		expect(response.headers.get("location")).toBe("/checkout?country=DE&error=INVALID_EMAIL");
 	});
 
-	/**
-	 * #478 (#467 review): a location the review REFUSED (here a region that
-	 * contains a zoned one) stays selected, while the page's totals were priced at
-	 * the shop's address. Re-pricing it only refuses it again, so every Place came
-	 * back. The page echoes the refused location; posted unchanged, Place goes
-	 * ahead at what the review priced — the shop's address, no billingLocation.
-	 */
-	const REFUSED = {
-		...BUYER,
-		fromCountry: "",
-		deliveryCountry: "ES",
-		deliveryRegion: "CN",
-		refusedCountry: "ES",
-		refusedRegion: "CN",
-	};
-
-	test("#478: a refused location left selected places at what the review priced, never re-prices again", async () => {
-		const { handler, calls } = makeHandler();
-		await PLACE_POST(makeContext(REFUSED, handler).context);
-		expect(calls).toHaveLength(1);
-		expect(calls[0]!.body).not.toHaveProperty("billingLocation");
-		expect(calls[0]!.body).not.toHaveProperty("shippingAddress");
-	});
-
-	test("#478: another location than the refused one, or an explicit Update, still re-prices", async () => {
-		const changed = makeHandler();
-		const response = await PLACE_POST(
-			makeContext({ ...REFUSED, deliveryRegion: "TF" }, changed.handler).context,
-		);
-		expect(response.headers.get("location")).toBe("/checkout?country=ES&region=TF");
-		expect(changed.calls).toHaveLength(0);
-
-		const update = makeHandler();
-		const updated = await PLACE_POST(
-			makeContext({ ...REFUSED, intent: "update-delivery" }, update.handler).context,
-		);
-		expect(updated.headers.get("location")).toBe("/checkout?country=ES&region=CN");
-		expect(update.calls).toHaveLength(0);
-
-		// A page that priced a location has nothing refused: the echo is ignored.
-		const priced = makeHandler();
-		const repriced = await PLACE_POST(
-			makeContext({ ...REFUSED, fromCountry: "ES", fromRegion: "TF" }, priced.handler).context,
-		);
-		expect(repriced.headers.get("location")).toBe(
-			"/checkout?country=ES&region=CN&fromCountry=ES&fromRegion=TF",
-		);
-		expect(priced.calls).toHaveLength(0);
-	});
-
-	test("#478: a delivery page (no marker) ignores a refused echo and re-prices as before", async () => {
-		const { handler, calls } = makeHandler();
-		const { taxLocation: _marker, ...delivery } = REFUSED;
-		const response = await PLACE_POST(
-			makeContext({ ...delivery, addressMode: "zoned" }, handler).context,
-		);
-		expect(response.headers.get("location")).toBe("/checkout?country=ES&region=CN");
-		expect(calls).toHaveLength(0);
-	});
-
 	test("a delivery page (no marker) never sends one", async () => {
 		const { handler, calls } = makeHandler();
 		await PLACE_POST(

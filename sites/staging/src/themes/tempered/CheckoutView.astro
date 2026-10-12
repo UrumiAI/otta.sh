@@ -73,7 +73,6 @@ const {
 	addressRegions,
 	showDelivery,
 	buyerLocation,
-	refusedLocation,
 	showAddress,
 	chosenOption,
 	notReadyCopy,
@@ -372,25 +371,6 @@ const {
 							form="checkout-place"
 							value={destination?.region ?? ""}
 						/>
-						{/* #478: the buyer's location the review refused. Placed with it
-						    still selected, the order goes ahead at what the review priced
-						    (the shop's address) instead of re-pricing it again (place.ts). */}
-						{refusedLocation !== null && (
-							<>
-								<input
-									type="hidden"
-									name="refusedCountry"
-									form="checkout-place"
-									value={refusedLocation.country}
-								/>
-								<input
-									type="hidden"
-									name="refusedRegion"
-									form="checkout-place"
-									value={refusedLocation.region}
-								/>
-							</>
-						)}
 						{summary.shipping.status === "matched" && summary.shipping.options.length > 0 && (
 							<div class="checkout-methods" role="radiogroup" aria-label="Delivery options">
 								{summary.shipping.options.map((option) => (
