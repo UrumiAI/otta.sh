@@ -597,10 +597,12 @@ export class EmdashTaxRulesStore implements TaxRulesStore {
 	 * a live one.
 	 *
 	 * The rollback re-reads the claim on EVERY attempt and stops, removing nothing, once
-	 * it names this class again: by then this create's rate was deleted and the id
-	 * re-created here by someone else, and that rate is not this create's to remove.
-	 * This create is still refused — what it wrote is gone, so success would describe a
-	 * rate it did not make. It also removes `rates[id]` only while it is still exactly
+	 * it names this class again: either this create's rate was deleted and the id
+	 * re-created here by someone else (that rate is not this create's to remove), or a
+	 * later id lookup healed the claim back onto this create's own rate. This create is
+	 * still refused in both cases; in the second its rate stays live and reachable, so a
+	 * caller's retry is refused as a collision with it — nothing is lost and the id is
+	 * never in two classes. It also removes `rates[id]` only while it is still exactly
 	 * the document this create embedded.
 	 *
 	 * RESIDUAL: if the rollback itself fails (a storage error, or its retries run out),
