@@ -33,7 +33,7 @@ afterEach(async () => {
 
 /** The harness context with every read of the `settings` collection rejecting. */
 function settingsFailingCtx(): PluginContext {
-	const storage = new Proxy(h.ctx.storage, {
+	const storage = new Proxy(h.ctx.storage ?? {}, {
 		get(target, name, receiver) {
 			const collection = Reflect.get(target, name, receiver) as unknown;
 			if (name !== "settings") return collection;

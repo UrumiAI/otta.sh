@@ -1,5 +1,6 @@
 import {
 	buildOrderEmailData,
+	cents,
 	createOrderFromCart,
 	idempotencyKey,
 	NEW_STORE_TAX_SETTINGS,
@@ -54,6 +55,29 @@ async function placeDigitalAtBase(): Promise<Order> {
 	return placed.order;
 }
 
+function withSnapshot(order: Order, lineTax: number, shippingTax: number): Order {
+	const snapshot = order.totals.taxBreakdown as {
+		lines: Array<Record<string, unknown>>;
+		shipping: Record<string, unknown> | null;
+	};
+	return {
+		...order,
+		totals: {
+			...order.totals,
+			tax: cents(lineTax + shippingTax),
+			taxBreakdown: {
+				...snapshot,
+				pricesIncludeTax: true,
+				lines: snapshot.lines.map((l) => ({ ...l, taxCents: cents(lineTax) })),
+				shipping:
+					shippingTax === 0
+						? null
+						: { taxableCents: 1000, rateBps: 2000, label: "VAT", taxCents: cents(shippingTax) },
+			},
+		},
+	};
+}
+
 const money = (minor: number, code: string): string => `${code} ${String(minor)}`;
 
 describe("a digital cart taxed at the shop base address", () => {
@@ -83,29 +107,6 @@ describe("a digital cart taxed at the shop base address", () => {
 	});
 
 	describe("prices entered with tax (#469)", () => {
-		const withSnapshot = (order: Order, lineTax: number, shippingTax: number): Order => {
-			const snapshot = order.totals.taxBreakdown as {
-				lines: Array<Record<string, unknown>>;
-				shipping: Record<string, unknown> | null;
-			};
-			return {
-				...order,
-				totals: {
-					...order.totals,
-					tax: lineTax + shippingTax,
-					taxBreakdown: {
-						...snapshot,
-						pricesIncludeTax: true,
-						lines: snapshot.lines.map((l) => ({ ...l, taxCents: lineTax })),
-						shipping:
-							shippingTax === 0
-								? null
-								: { taxableCents: 1000, rateBps: 2000, label: "VAT", taxCents: shippingTax },
-					},
-				},
-			};
-		};
-
 		test("tax on the shipping alone is not 'included in prices'", async () => {
 			const order = withSnapshot(await placeDigitalAtBase(), 0, 200);
 			const data = buildOrderEmailData(order, "paid");
