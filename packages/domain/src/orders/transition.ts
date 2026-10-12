@@ -902,8 +902,12 @@ function withTaxRows(rows: TaxRow[] | null): { taxRows?: TaxRow[] } {
 	return rows === null ? {} : { taxRows: rows };
 }
 
-/** Whether the order's frozen tax snapshot says prices were entered with tax (ADR-0032). */
+/**
+ * Whether the order's frozen tax snapshot says prices were entered with tax AND
+ * some of the tax is inside them (ADR-0032). The shipping tax is never inside the
+ * item prices, so an order taxed on its shipping alone is not "included" (#469).
+ */
 function pricedWithTaxIncluded(order: Order): boolean {
 	const snapshot = readOrderTaxSnapshot(order.totals.taxBreakdown);
-	return snapshot?.v === 1 && snapshot.pricesIncludeTax;
+	return snapshot?.v === 1 && snapshot.pricesIncludeTax && snapshot.lines.some((l) => l.taxCents > 0);
 }
