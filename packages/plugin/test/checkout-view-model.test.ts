@@ -656,6 +656,8 @@ const lineBreakdown = (over: Partial<QuoteBreakdownWire>): QuoteBreakdownWire =>
 	appliedCouponCode: null,
 	...over,
 });
+/** One quote line's tax, keyed by the cart line it priced. */
+const tx = (lineId: string, qty: number, taxCents: number) => ({ lineId, qty, taxCents });
 const lineAmounts = (lines: ReturnType<typeof showCheckoutLinesTax>) =>
 	lines.map((l) => [l.unitPrice?.amount, l.lineTotal?.amount]);
 
@@ -668,7 +670,7 @@ describe("showCheckoutLinesTax — the review lines follow displayCart and sum t
 			taxCents: 180,
 			totalCents: 1380,
 			appliedCouponCode: "SAVE",
-			tax: lineTaxOf({ lineTaxCents: 180, lineTaxes: [160, 20] }),
+			tax: lineTaxOf({ lineTaxCents: 180, lineTaxes: [tx("a", 1, 160), tx("b", 1, 20)] }),
 		});
 		const lines = showCheckoutLinesTax(
 			[reviewLine("a", 1000, 1), reviewLine("b", 500, 1)],
@@ -698,7 +700,7 @@ describe("showCheckoutLinesTax — the review lines follow displayCart and sum t
 				pricesIncludeTax: true,
 				displayCart: "excl",
 				lineTaxCents: 166,
-				lineTaxes: [166],
+				lineTaxes: [tx("a", 1, 166)],
 			}),
 		});
 		const lines = showCheckoutLinesTax([reviewLine("a", 999, 1)], b, LINE_OPTS);
@@ -714,7 +716,7 @@ describe("showCheckoutLinesTax — the review lines follow displayCart and sum t
 			subtotalCents: 297,
 			taxCents: 53,
 			totalCents: 350,
-			tax: lineTaxOf({ lineTaxCents: 53, lineTaxes: [53] }),
+			tax: lineTaxOf({ lineTaxCents: 53, lineTaxes: [tx("a", 3, 53)] }),
 		});
 		expect(lineAmounts(showCheckoutLinesTax([reviewLine("a", 99, 3)], b, LINE_OPTS))).toEqual([
 			[117, 350],
@@ -732,7 +734,7 @@ describe("showCheckoutLinesTax — the review lines follow displayCart and sum t
 				pricesIncludeTax: true,
 				displayCart: "excl",
 				lineTaxCents: 1,
-				lineTaxes: [1],
+				lineTaxes: [tx("a", 2, 1)],
 			}),
 		});
 		expect(lineAmounts(showCheckoutLinesTax([reviewLine("a", 3, 2)], b, LINE_OPTS))).toEqual([
@@ -740,16 +742,56 @@ describe("showCheckoutLinesTax — the review lines follow displayCart and sum t
 		]);
 	});
 
+	test("#478: each line takes ITS OWN tax, matched by line id — not by position", () => {
+		// A concurrent cart edit kept the line count but the quote read the lines in
+		// another order: 1000 at 20% (200) and 500 at 5% (25).
+		const b = lineBreakdown({
+			subtotalCents: 1500,
+			taxCents: 225,
+			totalCents: 1725,
+			tax: lineTaxOf({ lineTaxCents: 225, lineTaxes: [tx("b", 1, 25), tx("a", 1, 200)] }),
+		});
+		expect(
+			lineAmounts(
+				showCheckoutLinesTax([reviewLine("a", 1000, 1), reviewLine("b", 500, 1)], b, LINE_OPTS),
+			),
+		).toEqual([
+			[1200, 1200],
+			[525, 525],
+		]);
+	});
+
+	test("#478: a quote priced for other lines (an id or a quantity changed): the very same rows", () => {
+		const rows = [reviewLine("a", 1000, 1), reviewLine("b", 500, 1)];
+		const quoted = (lineTaxes: QuoteTaxWire["lineTaxes"]) =>
+			lineBreakdown({
+				subtotalCents: 1500,
+				taxCents: 225,
+				totalCents: 1725,
+				tax: lineTaxOf({ lineTaxCents: 225, lineTaxes }),
+			});
+		// Line b swapped for line c, same count.
+		expect(showCheckoutLinesTax(rows, quoted([tx("a", 1, 200), tx("c", 1, 25)]), LINE_OPTS)).toBe(
+			rows,
+		);
+		// Line b's quantity changed in between.
+		expect(showCheckoutLinesTax(rows, quoted([tx("a", 1, 200), tx("b", 2, 25)]), LINE_OPTS)).toBe(
+			rows,
+		);
+		// One line missing.
+		expect(showCheckoutLinesTax(rows, quoted([tx("a", 1, 200)]), LINE_OPTS)).toBe(rows);
+	});
+
 	test("the display matching how prices are entered, or tax not located: the very same rows", () => {
 		const rows = [reviewLine("a", 999, 1)];
 		const same = lineBreakdown({
 			subtotalCents: 999,
-			tax: lineTaxOf({ displayCart: "excl", lineTaxCents: 200, lineTaxes: [200] }),
+			tax: lineTaxOf({ displayCart: "excl", lineTaxCents: 200, lineTaxes: [tx("a", 1, 200)] }),
 		});
 		expect(showCheckoutLinesTax(rows, same, LINE_OPTS)).toBe(rows);
 		const unlocated = lineBreakdown({
 			subtotalCents: 999,
-			tax: lineTaxOf({ located: false, lineTaxCents: 200, lineTaxes: [200] }),
+			tax: lineTaxOf({ located: false, lineTaxCents: 200, lineTaxes: [tx("a", 1, 200)] }),
 		});
 		expect(showCheckoutLinesTax(rows, unlocated, { ...LINE_OPTS, taxZoneSelected: false })).toBe(
 			rows,

@@ -1147,7 +1147,7 @@ export class InProcessCommerceClient implements CommerceClient {
 				totalCents: breakdown.totalCents,
 				...roundingEntry("roundingCents", breakdown.roundingCents),
 				appliedCouponCode: breakdown.appliedCouponCode ?? null,
-				tax: quoteTaxWire(quote),
+				tax: quoteTaxWire(quote, cart.lines),
 			},
 		};
 	}
@@ -1674,7 +1674,11 @@ function roundingWire(order: Order): { roundingCents?: number } {
 }
 
 /** The quote's tax display facts (ADR-0032): settings, location, and the tax per label. */
-function quoteTaxWire(quote: Extract<DomainQuoteResult, { ok: true }>): QuoteTaxWire {
+function quoteTaxWire(
+	quote: Extract<DomainQuoteResult, { ok: true }>,
+	/** The cart lines the quote priced, in request order (`quoteCheckout`). */
+	cartLines: ReadonlyArray<Pick<CartLine, "lineId" | "qty">>,
+): QuoteTaxWire {
 	const { result } = quote.tax;
 	// The grouping the order's rows use too (`orderTaxRows`, issue #422), so the
 	// order page shows the rows the checkout showed.
@@ -1695,8 +1699,13 @@ function quoteTaxWire(quote: Extract<DomainQuoteResult, { ok: true }>): QuoteTax
 		displayCart: quote.taxSettings.displayCart,
 		totalsDisplay: quote.taxSettings.totalsDisplay,
 		lineTaxCents: result.lines.reduce((sum, l) => sum + l.taxCents, 0),
-		// In request order, which is the cart's line order (`quoteCheckout`).
-		lineTaxes: result.lines.map((l) => l.taxCents),
+		// Request order is the cart's line order (`quoteCheckout`): each tax is keyed
+		// by the line it priced, so the review never matches them by position (#478).
+		lineTaxes: result.lines.map((l, i) => ({
+			lineId: cartLines[i]?.lineId ?? "",
+			qty: cartLines[i]?.qty ?? 0,
+			taxCents: l.taxCents,
+		})),
 		itemized,
 	};
 }
