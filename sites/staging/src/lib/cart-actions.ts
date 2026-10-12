@@ -30,11 +30,15 @@ export const SERVICE_UNAVAILABLE = "SERVICE_UNAVAILABLE";
  * Refusals that mean the COOKIE's cart is bad, so the cookie is dropped and the
  * next add mints a fresh cart instead of failing forever:
  * - `CART_NOT_FOUND` — the cookie names a cart that no longer exists;
- * - `INVALID_CART_ID` — the cookie is not a cart-id token (the read route's guard);
+ * - `INVALID_CART_ID` — the cookie is not a cart-id token. Only the plugin's READ
+ *   route returns it; the write routes report a bad cookie as `INVALID_INPUT`. It is
+ *   listed so a write that ever starts returning it clears the cookie too;
  * - `INVALID_INPUT` — on the write routes the plugin's input guard also checks the
  *   cart id first, so a tampered cookie lands here. The other fields it guards
  *   (sku, qty, line id, idempotency key) are validated or minted by the site's
- *   own forms, so a legitimate shopper cannot reach it by any other route.
+ *   own forms, so a legitimate shopper cannot reach it by any other route — as
+ *   long as those forms keep matching the guards in the plugin's
+ *   `storefront/cart-routes.ts`. Change either side with the other in view.
  *
  * Deliberately NOT here: transient or per-request refusals that leave the cart
  * good (`OUT_OF_STOCK`, `QTY_TOO_LARGE`, `HOLD_EXPIRED`, `LINE_NOT_FOUND`,
