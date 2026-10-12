@@ -84,17 +84,21 @@ export function taxOffBanner(read: Pick<TaxSettingsRead, "settings" | "hasRates"
  * Said on the screen rather than left silent; `null` when it does not apply.
  */
 function missingBaseAddressNote(current: TaxSettingsWire): Block | null {
-	if (current.baseAddress !== null) return null;
-	if (current.basedOn === "base") {
+	if (current.basedOn === "billing") {
+		// One note for the rule: the buyer's country is their own word (#467), and
+		// with no base address a buyer who gives none is not taxed at all.
+		return {
+			type: "context",
+			text:
+				current.baseAddress === null
+					? "Note: tax is set to the customer's billing address, but no base address is set — a digital-only order whose buyer gives no country is not taxed until one is. Buyers declare their own country and can pick one taxed at 0%."
+					: "Note: buyers declare their own billing country, so a buyer can pick a country taxed at 0%.",
+		};
+	}
+	if (current.basedOn === "base" && current.baseAddress === null) {
 		return {
 			type: "context",
 			text: "Note: tax is set to the shop base address, but no base address is set — until one is, tax is calculated from the customer's shipping address.",
-		};
-	}
-	if (current.basedOn === "billing") {
-		return {
-			type: "context",
-			text: "Note: tax is set to the customer's billing address, but no base address is set — a digital-only order whose buyer gives no country is not taxed until one is.",
 		};
 	}
 	return null;
@@ -248,13 +252,6 @@ function optionsScreen(
 	if (off !== null) blocks.push(off);
 	const baseNote = missingBaseAddressNote(current);
 	if (baseNote !== null) blocks.push(baseNote);
-	// #467: the billing location is the buyer's own word, as in WooCommerce.
-	if (current.basedOn === "billing") {
-		blocks.push({
-			type: "context",
-			text: "The billing country is the buyer's own declaration: a buyer can pick a country taxed at 0%, as in WooCommerce.",
-		});
-	}
 	// The shop-price option's caveats: a Block Kit select carries no hint of its own.
 	blocks.push({
 		type: "context",

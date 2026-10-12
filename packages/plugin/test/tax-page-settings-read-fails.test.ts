@@ -1,4 +1,12 @@
-import { afterEach, beforeEach, describe, expect, test } from "vitest";
+import {
+	collectionOf,
+	TAX_CLASSES_COLLECTION,
+	TAX_RATE_OWNERS_COLLECTION,
+	type StorageAccess as StoreStorageAccess,
+	type TaxClassDoc,
+	type TaxRateOwnerDoc,
+} from "@otta-sh/store-emdash";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { createTaxPageHandler } from "../src/admin/tax-page.js";
 import { encodePath } from "../src/admin/scaffold/nav.js";
 import type { BlockResponse, PluginContext, RouteHandler, StorageAccess } from "../src/types.js";
@@ -69,4 +77,49 @@ describe("the tax rates page when the tax-settings read fails (#471)", () => {
 		expect(text).not.toContain("unavailable");
 		expect(res.toast).toBeUndefined();
 	});
+
+	test("a duplicate's note stays neutral: no legacy and no 'taxes nothing' claim, and the failure is logged", async () => {
+		await seedDuplicate();
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		try {
+			// Working read: this store (rates, nothing saved) is on the legacy rule.
+			const known = JSON.stringify((await openStandard(h.ctx)).blocks);
+			expect(known).toContain(
+				"its shipping setting still counts, so deleting it can change shipping tax",
+			);
+			expect(warn).not.toHaveBeenCalled();
+
+			const unknown = JSON.stringify((await openStandard(settingsFailingCtx())).blocks);
+			expect(unknown).toContain("its shipping setting could not be checked");
+			expect(unknown).not.toContain("still counts");
+			expect(unknown).not.toContain("taxes nothing");
+			expect(unknown).not.toContain("only if this rate becomes the active one");
+			expect(unknown).not.toContain("can still tax shipping");
+			expect(warn).toHaveBeenCalledTimes(1);
+			expect(String(warn.mock.calls[0]?.[0])).not.toContain("725");
+		} finally {
+			warn.mockRestore();
+		}
+	});
 });
+
+/** A second rate in the same (class, zone), written as a store did before it refused one. */
+async function seedDuplicate(): Promise<void> {
+	const storage = h.ctx.storage as unknown as StoreStorageAccess;
+	const classes = collectionOf<TaxClassDoc>(storage, TAX_CLASSES_COLLECTION);
+	const owners = collectionOf<TaxRateOwnerDoc>(storage, TAX_RATE_OWNERS_COLLECTION);
+	const held = await classes.get("standard");
+	await classes.put("standard", {
+		taxClassId: "standard",
+		name: held?.name ?? null,
+		rates: {
+			...held?.rates,
+			"std-us-b": { rateId: "std-us-b", zoneId: "us", rateBps: 900, appliesToShipping: false },
+		},
+	});
+	await owners.put("std-us-b", {
+		rateId: "std-us-b",
+		taxClassId: "standard",
+		claimedAt: "2026-07-10T00:00:00.000Z",
+	});
+}
