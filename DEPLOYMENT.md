@@ -183,6 +183,8 @@ expired holds and queued emails drain at the Free pace (§5).
    pnpm --filter @otta-sh/site-staging build
    ```
 
+   The build does not type-check. If you changed code, run `pnpm typecheck` first.
+
 5. **Deploy plain — never `--config` here** (from `sites/staging`):
 
    ```bash
