@@ -6,7 +6,8 @@
  * allow. `computeQuote` is the ONE place either is called.
  *
  * Money is integer minor units throughout. `rateBps` is for DISPLAY only — a
- * calculator may round a rate like 8.875% to whole basis points; the amounts it
+ * calculator may round a rate like 8.875% to whole basis points, and may add the
+ * exact rate in millionths as the OPTIONAL `ratePpm` (#425); the amounts it
  * returns are authoritative and are never recomputed from the rate.
  */
 import type { Cents, Currency } from "../money/cents.js";
@@ -17,6 +18,8 @@ import type { TaxClassId } from "./types.js";
 export const DEFAULT_TAX_CALCULATOR_TIMEOUT_MS = 5_000;
 /** Upper bound of a display rate: 1000%. */
 export const TAX_RATE_BPS_MAX = 100_000;
+/** The same bound in millionths (`ratePpm`, #425). */
+export const TAX_RATE_PPM_MAX = TAX_RATE_BPS_MAX * 100;
 /** A label's length bound — the admin's own class-name bound. */
 export const TAX_LABEL_MAX = 200;
 
@@ -76,6 +79,13 @@ export interface TaxRequest {
 export interface TaxLine {
 	/** Integer basis points, 0–{@link TAX_RATE_BPS_MAX}; display only. */
 	rateBps: number;
+	/**
+	 * OPTIONAL (#425): the display rate in integer millionths (0.0001%), for a rate
+	 * finer than a basis point — 8.875% is `{ rateBps: 888, ratePpm: 88750 }`.
+	 * `rateBps` must then be it rounded half up. Absent ⇒ exactly `rateBps`; a
+	 * calculator that never sends it is answered exactly as before.
+	 */
+	ratePpm?: number;
 	/** What the buyer sees, e.g. the tax class name. */
 	label: string;
 	taxCents: Cents;

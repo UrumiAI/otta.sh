@@ -46,11 +46,10 @@ jobs:
       - run: pnpm lint
       # Formatting is a CI gate (oxfmt --check), not just a pre-PR habit.
       - run: pnpm format:check
-      # The branded-money negative type-test is enforced here.
+      # Root typecheck: tsc -b (incl. the branded-money negative type-test),
+      # the e2e project, and every workspace package's own typecheck
+      # (sites/* run `astro check`).
       - run: pnpm typecheck
-      # Per-package typecheck for workspaces outside root tsc -b (the
-      # sites/* Astro packages typecheck with `astro check`).
-      - run: pnpm -r --if-present typecheck
       - run: pnpm -r build
       # SQLite + fake contract suites; pg-required specs self-skip
       # because PG_CONNECTION_STRING is unset.

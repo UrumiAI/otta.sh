@@ -118,6 +118,9 @@ export function makeTaxRulesHarness(
 						rateId: rate.id,
 						zoneId: rate.zoneId,
 						rateBps: rate.rateBps,
+						// Written as given, consistent or not: a document an older build
+						// edited can hold a stale `ratePpm` (#425).
+						...(rate.ratePpm === undefined ? {} : { ratePpm: rate.ratePpm }),
 						appliesToShipping: rate.appliesToShipping,
 					},
 				},

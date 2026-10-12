@@ -47,6 +47,8 @@ export interface TaxRateWire {
 	taxClassId: string;
 	zoneId: string;
 	rateBps: number;
+	/** The exact rate in millionths, only when finer than a basis point (#425). */
+	ratePpm?: number;
 	appliesToShipping: boolean;
 }
 
@@ -132,7 +134,7 @@ export type RulesCreateResult<T> =
 			ok: false;
 			status: number;
 			/** The rate already in the slot, when that was the refusal. */
-			duplicateTaxRate?: { id: string; rateBps: number };
+			duplicateTaxRate?: { id: string; rateBps: number; ratePpm?: number };
 	  };
 
 /** LWW-update outcome (zones, methods, coupons) — no `stale` (no CAS). */
@@ -229,18 +231,26 @@ export interface TaxRateInput {
 	taxClassId: string;
 	zoneId: string;
 	rateBps: number;
+	/** A rate finer than a basis point, in millionths (#425); `rateBps` must then
+	 *  be it rounded half up. */
+	ratePpm?: number;
 	appliesToShipping?: boolean;
 }
 /** Full-replace edit — `appliesToShipping` is REQUIRED (an omitted key is
  *  refused, so an edit can never silently flip the shipping-tax behavior). */
 export interface TaxRateEdit {
 	rateBps: number;
+	/** As `TaxRateInput.ratePpm` (#425). */
+	ratePpm?: number;
 	appliesToShipping: boolean;
 	/** The flag the form LOADED with — part of the CAS with `expectedRateBps` (a
 	 *  flag changed since is `stale`, never reverted). Required. */
 	expectedAppliesToShipping: boolean;
 	/** The money-bearing CAS token — the rate the admin read on the detail. */
 	expectedRateBps: number;
+	/** The token's exact rate in millionths, when the rate read was finer than a
+	 *  basis point (#425); absent ⇒ exactly `expectedRateBps`. */
+	expectedRatePpm?: number;
 }
 export interface CouponInput {
 	id: string;
@@ -430,7 +440,7 @@ export type TaxSettingsUpdateResult =
 export interface TaxSettingsWire {
 	enabled: boolean;
 	pricesIncludeTax: boolean;
-	basedOn: "shipping" | "base";
+	basedOn: "shipping" | "billing" | "base";
 	baseAddress: { country: string; region: string | null } | null;
 	shippingTaxClass:
 		| { kind: "inherit" }

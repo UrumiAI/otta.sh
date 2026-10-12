@@ -105,7 +105,7 @@ describe("updateSettings validates the tax block before it reaches the store", (
 	test.each<[string, unknown]>([
 		["enabled", { ...ok, enabled: "yes" }],
 		["pricesIncludeTax", { ...ok, pricesIncludeTax: 1 }],
-		["basedOn", { ...ok, basedOn: "billing" }],
+		["basedOn", { ...ok, basedOn: "customer" }],
 		["baseAddress", { ...ok, baseAddress: { country: "XX", region: null } }],
 		["baseAddress", { ...ok, baseAddress: { country: "US", region: "ZZ" } }],
 		["shippingTaxClass", { ...ok, shippingTaxClass: { kind: "fixed", taxClassId: "" } }],
@@ -122,6 +122,17 @@ describe("updateSettings validates the tax block before it reaches the store", (
 			field: `tax.${field}`.replace("tax.tax", "tax"),
 		});
 		expect((await store.get()).tax).toBeUndefined();
+	});
+
+	test("#426: 'billing' (the customer's billing address) is accepted and read back", async () => {
+		const store = new InMemorySettingsStore();
+		const result = await updateSettings(
+			store,
+			{ tax: { ...ok, basedOn: "billing" } },
+			idempotencyKey("k1"),
+		);
+		expect(result.tax?.basedOn).toBe("billing");
+		expect(readTaxSettings(JSON.parse(JSON.stringify(result.tax)))?.basedOn).toBe("billing");
 	});
 
 	test("a patch without `tax` keeps the saved block", async () => {

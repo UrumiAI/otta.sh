@@ -525,7 +525,10 @@ export interface QuoteRequestWire {
 	 * Where the order ships: an ISO 3166-1 alpha-2 country and an optional ISO
 	 * 3166-2 region code (`CA` or `US-CA`). The shipping/tax zone is DERIVED
 	 * from it (ADR-0021); there is deliberately no zone field — nobody chooses
-	 * their own tax zone.
+	 * their own tax zone. For a cart that ships nothing it is where the BUYER is
+	 * (its country and region only), which taxes the cart when the store taxes
+	 * "based on the customer's billing address" (#426) — see
+	 * `QuoteResult.taxByBuyerLocation` — and is ignored otherwise.
 	 */
 	destination?: DestinationRequestWire;
 	shippingMethodId?: string;
@@ -587,6 +590,12 @@ export interface QuoteTaxWire {
 	enabled: boolean;
 	/** A tax location matched a zone — the tax was really calculated. */
 	located: boolean;
+	/** A quote only: a calculator other than the built-ins (`otta.rate-table`,
+	 *  `otta.tax-disabled`) priced it, and the review sends it no postcode or city
+	 *  (the address is not typed yet; ADR-0030), so the order's tax may differ.
+	 *  Calculator-wide by design: it may label a base-address or digital-only quote
+	 *  that cannot differ, which errs on the safe side. Absent on an order's tax. */
+	estimate?: true;
 	/** Prices (not shipping) were entered with tax: the line tax is inside `subtotalCents`. */
 	pricesIncludeTax: boolean;
 	displayCart: "excl" | "incl";
@@ -636,6 +645,11 @@ export type QuoteResult =
 			/** `subtotal − discount` — what a delivery option's free-shipping
 			 *  threshold is measured against (`listShippingOptions`). */
 			discountedSubtotalCents: number;
+			/** #426: this cart ships nothing and the store taxes it where the buyer
+			 *  is — the page should ask for the buyer's country (and region), send it
+			 *  as `destination` here and as `billingLocation` on the order. ABSENT
+			 *  otherwise, so every other reply is exactly as before. */
+			taxByBuyerLocation?: true;
 	  }
 	| { ok: false; reason: QuoteFailureReason };
 
@@ -664,6 +678,17 @@ export interface CheckoutRequestWire {
 	/** Required for a cart that ships, in a store with zones. The country is an
 	 *  ISO alpha-2 code and a region an ISO 3166-2 code, on EVERY order. */
 	shippingAddress?: ShippingAddressWire;
+	/** Where the buyer is (#426) — the location the review was quoted for. It
+	 *  taxes only a cart that ships nothing, in a store taxing "based on the
+	 *  customer's billing address"; ignored otherwise. */
+	billingLocation?: BillingLocationWire;
+}
+
+/** A buyer's coarse location (#426): ISO 3166-1 alpha-2, and an optional ISO
+ *  3166-2 region code (`CA` or `US-CA`). */
+export interface BillingLocationWire {
+	country: string;
+	region?: string;
 }
 
 /** The domain's `ClientAction` verbatim — passed through unmodified; the

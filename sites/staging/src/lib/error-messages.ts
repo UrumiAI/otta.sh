@@ -134,6 +134,9 @@ const MESSAGES: Record<string, string> = {
 	   India — the address is for the payment, not for a delivery. */
 	BUYER_ADDRESS_REQUIRED:
 		"Enter your name and address to continue — Stripe accounts in India need them to take your payment.",
+	/* #426: a buyer location (a cart that ships nothing, taxed where the buyer
+	   is) the store refused — it is not a delivery address. */
+	BUYER_LOCATION_INVALID: "Please choose your country from the list.",
 	/* …and INVALID_SHIPPING_ADDRESS there: the same check, without "delivery". */
 	BUYER_ADDRESS_INVALID: "Please check your address — some fields are missing or too long.",
 	INVALID_EMAIL: "That doesn't look like a valid email address — please check it and try again.",

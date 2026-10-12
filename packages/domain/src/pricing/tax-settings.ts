@@ -1,6 +1,6 @@
 /**
  * The store's tax options (PR 2a, ADR-0032) — WooCommerce core's Tax tab, minus
- * what Otta has no data for yet (billing address). Stored
+ * what Otta has no data for yet (none at present). Stored
  * whole as the `tax` block of the operational settings; ABSENT means "never
  * saved", which is what the upgrade rule keys on.
  *
@@ -32,8 +32,15 @@ export interface TaxSettings {
 	enabled: boolean;
 	/** Prices are entered with tax. Never applies to shipping costs. */
 	pricesIncludeTax: boolean;
-	/** "Calculate tax based on" — the customer's shipping address or the shop's. */
-	basedOn: "shipping" | "base";
+	/**
+	 * "Calculate tax based on" — the customer's shipping address, the customer's
+	 * billing address, or the shop's. Otta collects a billing LOCATION (country
+	 * and region) only for a cart that ships nothing (#426), so `billing` taxes
+	 * such a cart where the buyer is; a cart that ships has one address, its
+	 * ship-to, and is taxed by it as under `shipping` (WooCommerce's checkout
+	 * likewise bills to the ship-to unless told otherwise).
+	 */
+	basedOn: "shipping" | "billing" | "base";
 	baseAddress: TaxBaseAddress | null;
 	shippingTaxClass: ShippingTaxClassSetting;
 	/** Round tax at subtotal level (per class) instead of per line. */
@@ -109,8 +116,8 @@ export function parseTaxSettings(raw: unknown): TaxSettings | TaxSettingsProblem
 	for (const key of ["enabled", "pricesIncludeTax", "roundAtSubtotal"] as const) {
 		if (typeof raw[key] !== "boolean") return problem(`tax.${key}`, "must be true or false");
 	}
-	const basedOn = oneOf(raw["basedOn"], ["shipping", "base"] as const);
-	if (basedOn === undefined) return problem("tax.basedOn", "must be shipping or base");
+	const basedOn = oneOf(raw["basedOn"], ["shipping", "billing", "base"] as const);
+	if (basedOn === undefined) return problem("tax.basedOn", "must be shipping, billing or base");
 	const displayCart = oneOf(raw["displayCart"], ["excl", "incl"] as const);
 	if (displayCart === undefined) return problem("tax.displayCart", "must be excl or incl");
 	const totalsDisplay = oneOf(raw["totalsDisplay"], ["itemized", "single"] as const);
