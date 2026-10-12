@@ -103,7 +103,7 @@ typed retryable error, and measurement.
 
 This is the one part of the model that **exists**. The decisions and the numbers are recorded here;
 the **living detail** — the per-method choreography, the eight fault-injected crash seams and the
-per-shape measurements — lives in `packages/store-emdash/README.md` and is not restated here.
+per-shape measurements — lives in `docs/store-emdash/design-notes.md` and is not restated here.
 
 | Collection | Doc id | Holds |
 |---|---|---|
@@ -243,7 +243,7 @@ removal** shape is the one shape that reached the old ceiling and raised the typ
 `CAS_MAX_ATTEMPTS` took it two or three attempts deeper and its typed failures to **zero**, which is the
 whole point of the raise — attempts the loop now has are failures the caller no longer sees. The numbers
 here are kept only as the record of what was measured at 12. **The live per-shape tables live in
-`packages/store-emdash/README.md`** ("Contention budget", and "Coupon contention, measured" for the
+`docs/store-emdash/design-notes.md`** ("Contention budget", and "Coupon contention, measured" for the
 coupon counter), which is where they are re-measured; cite those rather than these, and do not re-copy
 figures into this record, because they drift and this record does not.
 
@@ -1247,7 +1247,7 @@ an id that was never created, and the next create of that id takes the claim ove
 
 ### Where the living detail is
 
-This record is the decision; `packages/store-emdash/README.md` is the detail, and it is the one to read
+This record is the decision; `docs/store-emdash/design-notes.md` is the detail, and it is the one to read
 for anything measured or per-method. In particular: "Contention budget" and "Coupon contention, measured"
 for the live per-shape figures — **do not copy them here, they drift**; "The admin list, the search and
 the keyset cursor" and "The outbox locator" for §6; "What the carry cannot make atomic, stated exactly"

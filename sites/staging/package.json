@@ -33,7 +33,6 @@
 		"better-sqlite3": "catalog:",
 		"happy-dom": "^20.11.1",
 		"kysely": "catalog:",
-		"sharp": "^0.35.4",
 		"typescript": "catalog:",
 		"vitest": "catalog:",
 		"wrangler": "catalog:"

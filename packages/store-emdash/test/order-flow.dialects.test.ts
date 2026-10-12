@@ -57,7 +57,7 @@ const FUTURE = "2026-07-10T00:15:00.000Z";
 /**
  * The ceiling this package holds the order document to: 8 KB for a three-line order
  * that has walked its whole state machine. It is a CAP, not the measurement — the
- * measured figures live in the README and are printed by the case below — so that a
+ * measured figures live in `docs/store-emdash/design-notes.md` and are printed by the case below — so that a
  * row-size regression (an unbounded ledger, a re-embedded snapshot) fails a test
  * instead of surfacing as a slow read in production.
  */
@@ -828,7 +828,7 @@ describeEachDialect("order flow", (ctx) => {
 	});
 
 	test("a three-line order with five transitions stays well under the document-size cap", async () => {
-		// The figure the README quotes, asserted by something rather than remembered.
+		// The figure `docs/store-emdash/design-notes.md` quotes, asserted by something rather than remembered.
 		// The cap is a CEILING on the hot money-path document, not a measurement: the
 		// point is that a row-size regression (an unbounded ledger, a re-embedded
 		// snapshot) fails here instead of being discovered in production.

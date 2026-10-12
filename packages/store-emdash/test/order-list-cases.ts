@@ -183,7 +183,7 @@ export function orderListCases(storage: () => StorageAccess): void {
 		// THE NARROWING, stated as an assertion. The port documents an UNANCHORED substring;
 		// the filter algebra has no substring operator and no OR to hang a second one off,
 		// so a MID-STRING fragment — a domain, anything after the first character — reaches
-		// nothing. Documented in the README and in the screen's empty state; widening it
+		// nothing. Documented in `docs/store-emdash/design-notes.md` and in the screen's empty state; widening it
 		// back out is a [Domain] change.
 		expect((await h.store.listOrders({ search: "example.com" }, { limit: 25 })).orders).toEqual([]);
 		expect(await h.store.countOrders({ search: "example.com" })).toBe(0);

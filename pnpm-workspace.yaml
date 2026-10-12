@@ -39,8 +39,8 @@ overrides:
   "miniflare>undici": 7.29.1
   # sharp < 0.35.5 (GHSA-wq5f-xc86-pv6w, GHSA-rgj7-g3m4-5g8c, GHSA-f88m-g3jw-g9cj).
   # Every miniflare release pins sharp exactly (4.x 0.34.5, 5.x 0.35.4); unscoped
-  # because astro's optional `^0.35.4` and sites/staging's `^0.35.4` would
-  # otherwise keep the locked 0.35.4 copy. Drop once miniflare pins >= 0.35.5.
+  # because astro's optional `^0.35.4` dependency would otherwise keep the locked
+  # 0.35.4 copy. Drop once miniflare pins >= 0.35.5.
   sharp: 0.35.5
 
 allowBuilds:
@@ -75,7 +75,7 @@ catalog:
 minimumReleaseAgeExclude:
   # The D1 test tier's toolchain (`@cloudflare/vitest-plugin`), which pins its own
   # wrangler/miniflare exactly and therefore its own workerd — see the "D1 tier"
-  # section of `packages/store-emdash/README.md`.
+  # section of `docs/store-emdash/design-notes.md`.
   - "@cloudflare/vitest-plugin@1.1.8"
   - "wrangler@4.131.1"
   - "miniflare@5.20260911.0-alpha"

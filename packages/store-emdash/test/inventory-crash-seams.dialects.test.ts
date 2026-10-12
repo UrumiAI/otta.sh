@@ -114,7 +114,7 @@ const NOW = "2026-07-10T00:00:00.000Z";
  * writes nothing.
  *
  * Raising this constant is a change to the budget: measure first, then move it, and
- * update the table above and the package README together.
+ * update the table above and `docs/store-emdash/design-notes.md` together.
  */
 export const CAS_ATTEMPT_BUDGET = 8;
 
@@ -622,7 +622,7 @@ describeEachDialect("EmdashInventoryStore crash seams", (ctx) => {
 		it("restock past ring eviction RE-APPLIES — the documented, ACCEPTED residual the sweeper contract bounds (do not 'fix' this test)", async () => {
 			// This is not a bug being tolerated quietly; it is the residual the
 			// applied-movement ring's bound leaves, stated in `inventory-documents.ts`
-			// and in this package's README, together with the contract that closes it:
+			// and in `docs/store-emdash/design-notes.md`, together with the contract that closes it:
 			//
 			//   a movement claim whose `applied` is ABSENT and whose key still appears
 			//   in the aggregate's ring (or on a hold) is given its `applied` record by
