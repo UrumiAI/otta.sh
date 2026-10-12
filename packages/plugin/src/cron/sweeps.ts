@@ -576,6 +576,24 @@ export const ORPHAN_READS_PER_STRIKE = 3;
 export const ORPHAN_TOMBSTONES_PER_TICK = 5;
 
 /**
+ * And at most this many in any {@link ORPHAN_TOMBSTONE_WINDOW_MS} (#447, from #415).
+ * The per-tick cap alone still let a systematic false positive — one that fooled
+ * every other gate — tombstone about 300 rows an hour, because an unfinished scan
+ * runs every tick. This bounds the worst case to 25 a day, each recoverable, while a
+ * lost delete hook (rare, one at a time) still clears the same day. The window is
+ * kept in the leg's own kv state (`OrphanState.tombstonedAt`), so it holds across
+ * ticks and isolates — while runs do not overlap and each reaches its `save()`, as
+ * the strikes do. A run that tombstones and then fails to save (or overlaps another)
+ * goes uncounted, so each such lapse adds at most `ORPHAN_TOMBSTONES_PER_TICK` to
+ * the day. A lost or garbled state forgets the window — and every strike with it,
+ * so nothing can be tombstoned again until three fresh strikes a cadence apart.
+ */
+export const ORPHAN_TOMBSTONES_PER_DAY = 25;
+
+/** The rolling window {@link ORPHAN_TOMBSTONES_PER_DAY} counts over. */
+export const ORPHAN_TOMBSTONE_WINDOW_MS = 24 * 60 * 60 * 1000;
+
+/**
  * After this many runs IN A ROW whose read of the same product REJECTED, the walk
  * steps past that row (leaving it live, logged every time) rather than stopping on
  * it forever. Three: two failures can be one outage spanning a cadence; a third,
@@ -899,6 +917,9 @@ export interface CommerceSweepOptions {
 	readonly now?: Date;
 	/** Rows per scan page. The host clamps `limit` to 100, so this is a floor. */
 	readonly pageSize?: number;
+	/** `product-orphans`' cap over any 24 hours. Default `ORPHAN_TOMBSTONES_PER_DAY`;
+	 *  a suite that measures the walk's pacing, not the cap, raises it. */
+	readonly orphanTombstonesPerDay?: number;
 	/** Safety cap on scan pages per leg per tick — a sweep must never become an
 	 *  unbounded table walk on a large store. Exhausting it is not a truncation
 	 *  here: the leg's cursor resumes at the next tick. */
@@ -1512,32 +1533,46 @@ export async function runCommerceSweeps(
 			});
 			return waiting.size === 0 ? listed : listed.filter((id) => !waiting.has(id));
 		})());
+	/** Orders expired this tick, across both passes (the leg fails only on none). */
+	let ordersExpiredThisTick = 0;
 	const expireOrdersLeg = async (): Promise<void> =>
 		await run(
 			"expire-orders",
 			async (legBudget) => {
 				const limit = batchLeft("expire-orders", expiryLimit);
 				if (limit === 0) return { count: 0 };
-				return batchOutcome(
-					await expireOrdersBatch(
-						{
-							orderStore: stores.orderStore,
-							inventoryStore: stores.inventory,
-							couponStore: stores.couponStore,
-							clock: stores.clock,
-						},
-						now,
-						{
-							limit,
-							shouldContinue: legBudget.gate(0, LEG_QUERY_COSTS["expire-orders"].unit),
-							due: await expirableIds(),
-							backoff: expiryBackoff,
-							// The tick's query ceiling ends the leg; it is not one order failing.
-							stopsBatch: isSweepQueryCeilingError,
-						},
-					),
-					(count) => noteUnits("expire-orders", count, legBudget),
+				const result = await expireOrdersBatch(
+					{
+						orderStore: stores.orderStore,
+						inventoryStore: stores.inventory,
+						couponStore: stores.couponStore,
+						clock: stores.clock,
+					},
+					now,
+					{
+						limit,
+						shouldContinue: legBudget.gate(0, LEG_QUERY_COSTS["expire-orders"].unit),
+						due: await expirableIds(),
+						backoff: expiryBackoff,
+						// The tick's query ceiling ends the leg; it is not one order failing.
+						stopsBatch: isSweepQueryCeilingError,
+					},
 				);
+				ordersExpiredThisTick += result.count;
+				// #447: every order this call tried threw (each is logged and backing
+				// off), and none expired this tick — not in this pass nor the first.
+				// That is an outage, not an idle leg, so the LEG fails: its `ok: false`
+				// row and FAILED line are what alerting watches. One failing order among
+				// good ones does not fail it, nor does a second pass that met only
+				// failing orders after the first made progress, and the back-off keeps a
+				// poison order from failing every tick: while it waits it is read past.
+				if (result.allFailed === true && ordersExpiredThisTick === 0) {
+					throw new Error(
+						"every order the leg tried failed to expire; each is backing off (see the " +
+							"'expiring order' lines above)",
+					);
+				}
+				return batchOutcome(result, (count) => noteUnits("expire-orders", count, legBudget));
 			},
 			{ isDue: async () => (await expirableIds()).length > 0, cheapDueCheck: true },
 		);
@@ -3080,7 +3115,9 @@ async function releaseOrphanedRedemptions(
  *     each strike `ORPHAN_READS_PER_STRIKE` consecutive misses in one run. Any read
  *     that finds the document wipes the row's strikes.
  *  5. A CAP of `ORPHAN_TOMBSTONES_PER_TICK` tombstones per tick (its second pass
- *     included), logged when hit.
+ *     included), and of `ORPHAN_TOMBSTONES_PER_DAY` in any 24 hours, each logged
+ *     when hit. A row whose last strike finds the daily cap full is stepped past
+ *     with its strikes kept, and judged again on a later pass.
  *  6. The GRACE window: a row younger than `PRODUCT_ORPHAN_GRACE_MS` is not read.
  *
  * A breaker that trips (1, 2, or a canary read `null`) is direct evidence the CMS is
@@ -3138,7 +3175,9 @@ async function softDeleteOrphanedProducts(
 	const nowIso = now.toISOString();
 	const cutoff = new Date(nowMs - PRODUCT_ORPHAN_GRACE_MS).toISOString();
 	const raw = await cursors.read(PRODUCT_ORPHAN_CURSOR);
-	const state = parseOrphanState(raw, nowMs);
+	const perDay = options.orphanTombstonesPerDay ?? ORPHAN_TOMBSTONES_PER_DAY;
+	const state = parseOrphanState(raw, nowMs, perDay);
+	let dayCapSaid = false;
 	const save = async (): Promise<void> => {
 		const next = JSON.stringify(state);
 		if (next !== raw) await cursors.write(PRODUCT_ORPHAN_CURSOR, next);
@@ -3406,6 +3445,18 @@ async function softDeleteOrphanedProducts(
 				continue;
 			}
 			// The last strike.
+			if (state.tombstonedAt.length >= perDay) {
+				// The daily cap: step past, strikes kept — stopping here would re-read
+				// this row every tick until the window had room. Said once a run.
+				if (!dayCapSaid) {
+					dayCapSaid = true;
+					const line = `reached the cap of ${String(perDay)} tombstones in 24 hours; rows on their last strike are left live until the window has room`;
+					console.error(`[otta] cron sweep product-orphans: ${line}`);
+					anomalies.push(line);
+				}
+				advance(read.item);
+				continue;
+			}
 			if (tombstones.count >= ORPHAN_TOMBSTONES_PER_TICK) {
 				const line = `reached the cap of ${String(ORPHAN_TOMBSTONES_PER_TICK)} tombstones in one tick; the rest wait for the next tick`;
 				console.error(`[otta] cron sweep product-orphans: ${line}`);
@@ -3423,6 +3474,7 @@ async function softDeleteOrphanedProducts(
 				toIdempotencyKey(deriveDeleteIdempotencyKey(PRODUCTS_COLLECTION, id)),
 			);
 			delete state.suspects[id];
+			state.tombstonedAt.push(nowIso);
 			deleted++;
 			tombstones.count++;
 			advance(read.item);
@@ -3483,13 +3535,16 @@ interface OrphanState {
 	passStartedAt: string | null;
 	/** How long the last COMPLETE pass took, ms — what `orphanMarkTtlMs` scales by. */
 	lastPassMs: number | null;
+	/** When each tombstone of the last `ORPHAN_TOMBSTONE_WINDOW_MS` was made, oldest
+	 *  first — the daily cap's count. */
+	tombstonedAt: string[];
 }
 
 /** A lost or garbled state costs a re-read and restarts every strike — the safe
  *  direction: nothing is tombstoned on the strength of a lost record. Entries past
  *  their lifetime (`orphanMarkTtlMs`), and any beyond `ORPHAN_MAX_SUSPECTS` per map,
  *  are dropped here, which is what keeps the document bounded. */
-function parseOrphanState(raw: string | null, nowMs: number): OrphanState {
+function parseOrphanState(raw: string | null, nowMs: number, perDay: number): OrphanState {
 	const state: OrphanState = {
 		at: null,
 		id: null,
@@ -3497,6 +3552,7 @@ function parseOrphanState(raw: string | null, nowMs: number): OrphanState {
 		failures: {},
 		passStartedAt: null,
 		lastPassMs: null,
+		tombstonedAt: [],
 	};
 	if (raw === null || raw === "") return state;
 	try {
@@ -3520,10 +3576,32 @@ function parseOrphanState(raw: string | null, nowMs: number): OrphanState {
 		const ttlMs = orphanMarkTtlMs(state);
 		state.suspects = parseMarks(value.suspects, nowMs, ttlMs);
 		state.failures = parseMarks(value.failures, nowMs, ttlMs);
+		state.tombstonedAt = parseTombstoneTimes(value.tombstonedAt, nowMs, perDay);
 		return state;
 	} catch {
 		return state;
 	}
+}
+
+/**
+ * The tombstone times still inside the window, oldest first, at most `perDay` (the
+ * newest kept: they are the ones that still count). A time in the future (a clock
+ * step back) is kept, counted as made NOW: its slot frees 24 hours from now rather
+ * than never, and a clock change cannot empty the window at once.
+ */
+function parseTombstoneTimes(raw: unknown, nowMs: number, perDay: number): string[] {
+	if (!Array.isArray(raw)) return [];
+	const times: number[] = [];
+	for (const entry of raw) {
+		if (typeof entry !== "string") continue;
+		const ms = Date.parse(entry);
+		if (Number.isNaN(ms) || nowMs - ms >= ORPHAN_TOMBSTONE_WINDOW_MS) continue;
+		times.push(Math.min(ms, nowMs));
+	}
+	return times
+		.toSorted((a, b) => a - b)
+		.slice(-perDay)
+		.map((ms) => new Date(ms).toISOString());
 }
 
 function parseMarks(raw: unknown, nowMs: number, ttlMs: number): Record<string, OrphanMark> {

@@ -1,6 +1,9 @@
 /**
- * The write half of B-X1: no document reaches storage carrying text Postgres's
- * `jsonb` cannot read (a lone UTF-16 surrogate, or U+0000), whoever the caller.
+ * The write half of B-X1: no document reaches Postgres carrying text its `jsonb`
+ * cannot read (a lone UTF-16 surrogate, or U+0000), whoever the caller. SQLite and
+ * D1 read such text, so there it is stored as given (#447): a repair could re-key
+ * a legacy id built from it (see `ill-formed-text-legacy-ids`). Every write logs it
+ * on every dialect, since it is a boundary gap either way.
  *
  * The guard lives in `collectionOf`, the one place every adapter gets its
  * collection from, so it covers every store and every caller — the public
@@ -12,7 +15,7 @@
  * for good — which is the outage this fixes. The refusal a person can act on
  * belongs at the boundary, and lives there (the plugin's `commerce-input.ts`).
  */
-import { findIllFormedText } from "@otta-sh/domain";
+import { findIllFormedText, repairIllFormedText } from "@otta-sh/domain";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { collectionOf } from "../src/index.js";
 import { IllFormedIdError, isIllFormedIdError } from "../src/well-formed-storage.js";
@@ -38,8 +41,11 @@ describeEachDialect("ill-formed text: the write guard", (ctx) => {
 	const notes = () => collectionOf<Note>(bound.storage, "notes");
 	/** What is ACTUALLY stored, read past the guard. */
 	const rawGet = async (id: string): Promise<unknown> => bound.storage["notes"]?.get(id);
+	/** What a write of `written` stores here: repaired on Postgres, as given elsewhere. */
+	const storedAs = <T>(written: T): T =>
+		ctx.dialect === "postgres" ? repairIllFormedText(written) : written;
 
-	test("put: a lone surrogate and a NUL, in values and in keys, are stored as U+FFFD", async () => {
+	test("put: a lone surrogate and a NUL, in values and in keys, are stored as U+FFFD on Postgres, as given elsewhere", async () => {
 		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
 		const doc: Note = {
 			kind: "k",
@@ -47,10 +53,11 @@ describeEachDialect("ill-formed text: the write guard", (ctx) => {
 		};
 		await notes().put("n1", doc);
 
-		expect(await rawGet("n1")).toEqual({
-			kind: "k",
-			body: { city: "Ber\uFFFDlin", lines: ["ok", "a\uFFFDb"], ["key\uFFFD"]: 1 },
-		});
+		expect(await rawGet("n1")).toEqual(
+			ctx.dialect === "postgres"
+				? { kind: "k", body: { city: "Ber\uFFFDlin", lines: ["ok", "a\uFFFDb"], ["key\uFFFD"]: 1 } }
+				: doc,
+		);
 		// The caller's object is never mutated: the repair is a copy.
 		expect((doc.body as { city: string }).city).toBe("Ber\uD800lin");
 		// A repair is a boundary gap, so it is LOGGED — collection, a hash of the id,
@@ -61,11 +68,11 @@ describeEachDialect("ill-formed text: the write guard", (ctx) => {
 		expect(String(warn.mock.calls[0]?.[0])).not.toContain("Ber");
 	});
 
-	test("compareAndSet: create-if-absent and a guarded replace both store the repaired text", async () => {
+	test("compareAndSet: create-if-absent and a guarded replace both store the text as this dialect needs", async () => {
 		vi.spyOn(console, "warn").mockImplementation(() => {});
 		const created = await notes().compareAndSet("n1", null, { kind: "k", body: "\uDBFFx" });
 		expect(created.applied).toBe(true);
-		expect(await rawGet("n1")).toEqual({ kind: "k", body: "\uFFFDx" });
+		expect(await rawGet("n1")).toEqual(storedAs({ kind: "k", body: "\uDBFFx" }));
 
 		const current = await notes().getVersioned("n1");
 		if (current === null || !created.applied) throw new Error("arrange");
@@ -74,10 +81,10 @@ describeEachDialect("ill-formed text: the write guard", (ctx) => {
 			body: "y\u0000",
 		});
 		expect(replaced.applied).toBe(true);
-		expect(await rawGet("n1")).toEqual({ kind: "k", body: "y\uFFFD" });
+		expect(await rawGet("n1")).toEqual(storedAs({ kind: "k", body: "y\u0000" }));
 	});
 
-	test("updateIf: a set value is repaired too, and the guard still applies", async () => {
+	test("updateIf: a set value is treated the same, and the guard still applies", async () => {
 		vi.spyOn(console, "warn").mockImplementation(() => {});
 		await notes().put("n1", { kind: "k", seq: 1, body: "x" });
 		const result = await notes().updateIf("n1", {
@@ -85,7 +92,7 @@ describeEachDialect("ill-formed text: the write guard", (ctx) => {
 			set: { body: "\uD83Dz" },
 		});
 		expect(result.applied).toBe(true);
-		expect(await rawGet("n1")).toEqual({ kind: "k", seq: 1, body: "\uFFFDz" });
+		expect(await rawGet("n1")).toEqual(storedAs({ kind: "k", seq: 1, body: "\uD83Dz" }));
 	});
 
 	test("well-formed text — emoji, other controls, noncharacters — is stored exactly, with no warning", async () => {
@@ -104,8 +111,49 @@ describeEachDialect("ill-formed text: the write guard", (ctx) => {
 		}
 		const page = await notes().query({ where: { kind: "k" }, orderBy: { seq: "asc" } });
 		expect(page.items.map((i) => i.id)).toEqual(["n0", "n1", "n2", "n3"]);
-		for (const item of page.items) expect(findIllFormedText(item.data)).toBeNull();
+		if (ctx.dialect === "postgres") {
+			for (const item of page.items) expect(findIllFormedText(item.data)).toBeNull();
+		}
 		expect(await notes().count({ kind: "k" })).toBe(4);
+	});
+
+	test("an INCONCLUSIVE dialect probe stores the text as given, says so once without data, and asks again next write (#447 review)", async () => {
+		// The probe is `get("\u0000")`: Postgres refuses it (22021), SQLite and D1
+		// answer null. Any other failure proves nothing — and repairing then could
+		// re-key a legacy id on SQLite or D1, which cannot be undone, while text left
+		// as given on Postgres is healed by the next read that trips on it.
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		const inner = bound.storage["notes"];
+		if (inner === undefined) throw new Error("arrange");
+		let probes = 0;
+		const flaky = new Proxy(inner, {
+			get(target, prop) {
+				const value: unknown = Reflect.get(target, prop, target);
+				if (prop !== "get" || typeof value !== "function") {
+					return typeof value === "function" ? value.bind(target) : value;
+				}
+				return async (id: string) => {
+					if (id === "\u0000") {
+						probes++;
+						throw new Error("connection reset while probing");
+					}
+					return (value as (id: string) => Promise<unknown>).call(target, id);
+				};
+			},
+		});
+		const guarded = collectionOf<Note>({ ...bound.storage, notes: flaky }, "notes");
+		await guarded.put("n1", { kind: "k", body: "a\uD800b" });
+		await guarded.put("n2", { kind: "k", body: "c\uDC00d" });
+		expect(probes).toBe(2);
+		const n1 = await rawGet("n1");
+		expect(findIllFormedText(n1)).toBe("body");
+		if (ctx.dialect === "sqlite") {
+			expect(n1).toEqual({ kind: "k", body: "a\uD800b" });
+		}
+		const lines = warn.mock.calls.map((c) => String(c[0]));
+		const inconclusive = lines.filter((l) => l.includes("could not tell"));
+		expect(inconclusive).toHaveLength(1);
+		expect(inconclusive[0]).not.toMatch(/n1|connection reset|a\uD800b/);
 	});
 
 	describe("ids (review B L1; round 2 A R2-A1): an id that is not well formed can never CREATE a row", () => {
@@ -177,7 +225,7 @@ describeEachDialect("ill-formed text: the write guard", (ctx) => {
 	test("keys that repair to the same text (review B L2): the already-well-formed key wins, the drop is logged without text", async () => {
 		vi.spyOn(console, "warn").mockImplementation(() => {});
 		const error = vi.spyOn(console, "error").mockImplementation(() => {});
-		await notes().put("cart", {
+		const written = {
 			kind: "c",
 			body: {
 				mutations: {
@@ -186,7 +234,14 @@ describeEachDialect("ill-formed text: the write guard", (ctx) => {
 					["k\uFFFD"]: { result: "C" },
 				},
 			},
-		});
+		};
+		await notes().put("cart", written);
+		if (ctx.dialect !== "postgres") {
+			// Nothing is repaired here, so no keys merge and nothing is dropped.
+			expect(await rawGet("cart")).toEqual(written);
+			expect(error).not.toHaveBeenCalled();
+			return;
+		}
 		expect(await rawGet("cart")).toEqual({
 			kind: "c",
 			body: { mutations: { ["k\uFFFD"]: { result: "C" } } },
@@ -218,8 +273,12 @@ describeEachDialect("ill-formed text: the write guard", (ctx) => {
 	test("where operands are repaired the way stored text is (review A A5): a lookup by the raw value finds the stored row on every dialect", async () => {
 		vi.spyOn(console, "warn").mockImplementation(() => {});
 		await notes().put("n1", { kind: "a\uD800b", seq: 1 });
-		expect(await rawGet("n1")).toEqual({ kind: "a\uFFFDb", seq: 1 });
-		for (const kind of ["a\uD800b", "a\uDBFFb", "a\u0000b", "a\uFFFDb"]) {
+		expect(await rawGet("n1")).toEqual(storedAs({ kind: "a\uD800b", seq: 1 }));
+		// On Postgres every spelling that repairs to the stored text finds it; on
+		// SQLite the text is stored as given, so only that spelling does.
+		const finding =
+			ctx.dialect === "postgres" ? ["a\uD800b", "a\uDBFFb", "a\u0000b", "a\uFFFDb"] : ["a\uD800b"];
+		for (const kind of finding) {
 			expect(
 				(await notes().query({ where: { kind } })).items.map((i) => i.id),
 				kind,
@@ -230,10 +289,19 @@ describeEachDialect("ill-formed text: the write guard", (ctx) => {
 				kind,
 			).toEqual(["n1"]);
 		}
-		expect(
-			(await notes().query({ where: { kind: { startsWith: "a\u0000" } } })).items.map((i) => i.id),
-		).toEqual(["n1"]);
-		const updated = await notes().updateIf("n1", { where: { kind: "a\uDC00b" }, set: { seq: 2 } });
+		if (ctx.dialect === "postgres") {
+			expect(
+				(await notes().query({ where: { kind: { startsWith: "a\u0000" } } })).items.map(
+					(i) => i.id,
+				),
+			).toEqual(["n1"]);
+		} else {
+			expect(await notes().count({ kind: "a\uFFFDb" })).toBe(0);
+		}
+		const updated = await notes().updateIf("n1", {
+			where: { kind: ctx.dialect === "postgres" ? "a\uDC00b" : "a\uD800b" },
+			set: { seq: 2 },
+		});
 		expect(updated.applied).toBe(true);
 	});
 	test("a LEGACY row holding the raw text is still found by its raw value (A R2-A3)", async () => {

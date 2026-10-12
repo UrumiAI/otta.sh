@@ -131,12 +131,13 @@ describeEachDialect("ill-formed text already stored: order reads", (ctx) => {
 			expect(afterReads?.shippingAddress?.city).toBe(expected);
 
 			// And the legacy order is not bricked for writes: the sweep can still expire
-			// it (releasing its stock), and that write stores the repaired text on
-			// every dialect.
+			// it (releasing its stock). That write stores the repaired text on
+			// Postgres and leaves SQLite's as it was: a repair there could re-key a
+			// legacy id built from this text, the buyer's email say (#447).
 			expect(await h.store.expire(orderId("ord-bad"), "2099-01-01T00:00:00.000Z")).toBe(true);
 			const expired = await h.store.getById(orderId("ord-bad"));
 			expect(expired?.state).toBe("expired");
-			expect(expired?.shippingAddress?.city).toBe(toWellFormedText(poison));
+			expect(expired?.shippingAddress?.city).toBe(expected);
 			expect((await h.store.getById(orderId("ord-clean")))?.buyerRef).toBe("ord-clean@example.com");
 		});
 	}
