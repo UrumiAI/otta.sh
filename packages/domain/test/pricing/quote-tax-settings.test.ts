@@ -276,6 +276,65 @@ describe("calculate tax based on", () => {
 	});
 });
 
+describe("the base address is never asked for a more specific region (ADR-0021)", () => {
+	// A buyer whose pick CONTAINS a zoned subdivision is asked to pick again; the
+	// shop's saved base address cannot be asked, so it keeps the pre-containment
+	// answer: its own zone, else an ancestor's, else the country's.
+	beforeEach(async () => {
+		// A City of London courier zone: methods, no tax rate of its own.
+		await deps.shippingRules.createZone({ id: "z-lnd", name: "London", regions: ["GB-LND"] });
+	});
+
+	const ukBase = (basedOn: TaxSettings["basedOn"]) =>
+		save({
+			...NEW_STORE_TAX_SETTINGS,
+			enabled: true,
+			basedOn,
+			baseAddress: { country: "GB", region: "ENG" },
+		});
+
+	test("base address ENG with a GB-LND zone still taxes at GB's rate ('base')", async () => {
+		await ukBase("base");
+		const q = await computeQuote(deps, {
+			...physical,
+			destination: { country: "US", region: "NY" },
+			methodId: "m-z-us",
+		});
+		if (!q.ok) throw new Error(q.reason);
+		expect(q.breakdown.taxCents).toBe(240 + 100); // the UK 20%, not 0%
+		expect(q.taxLocated).toBe(true);
+	});
+
+	test("base address ENG with a GB-LND zone still taxes at GB's rate (digital-only cart)", async () => {
+		await ukBase("shipping");
+		const q = await computeQuote(deps, digital);
+		if (!q.ok) throw new Error(q.reason);
+		expect(q.breakdown.taxCents).toBe(200);
+		expect(q.taxLocated).toBe(true);
+	});
+
+	test("base address ES-CN with an ES-TF zone taxes at ES's rate", async () => {
+		await deps.shippingRules.createZone({ id: "z-es", name: "Spain", regions: ["ES"] });
+		await deps.shippingRules.createZone({ id: "z-tf", name: "Tenerife", regions: ["ES-TF"] });
+		await taxRules.createRate({
+			id: "t-es",
+			taxClassId: "standard",
+			zoneId: "z-es",
+			rateBps: 2100,
+			appliesToShipping: true,
+		});
+		await save({
+			...NEW_STORE_TAX_SETTINGS,
+			enabled: true,
+			baseAddress: { country: "ES", region: "CN" },
+		});
+		const q = await computeQuote(deps, digital);
+		if (!q.ok) throw new Error(q.reason);
+		expect(q.breakdown.taxCents).toBe(210);
+		expect(q.taxLocated).toBe(true);
+	});
+});
+
 describe("digital-only carts (DECISIONS 5)", () => {
 	test("with a shop base address: taxed at the base address", async () => {
 		await save({

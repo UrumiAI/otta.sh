@@ -336,7 +336,9 @@ interface TaxLocation {
  * ship-to and the zone it already matched. With NO base address set, a
  * digital-only cart stays unlocated — and so untaxed, exactly as before — and
  * "base" falls back to the ship-to. A base address no zone matches is located
- * nowhere: no rate ⇒ 0%, never a refusal.
+ * nowhere: no rate ⇒ 0%, never a refusal. A base region that CONTAINS a
+ * zoned subdivision is never asked to be narrower: it takes its ancestor's or
+ * the country's zone.
  */
 async function taxLocationOf(
 	deps: QuoteDeps,
@@ -352,6 +354,8 @@ async function taxLocationOf(
 	const matched = resolveShippingZone(zones, {
 		requiresShipping: true,
 		destination: { country: base.country, region: base.region },
+		// The base address cannot be asked for a narrower region (ADR-0021).
+		askForNarrower: false,
 	});
 	return {
 		address: { country: base.country, region: base.region, postalCode: null, city: null },

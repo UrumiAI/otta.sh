@@ -182,6 +182,20 @@ describe("resolveShippingZone", () => {
 			expect(resolveShippingZone([ES, TF], physical("ES", "GC"))).toEqual(matched("z-es", "ES"));
 		});
 
+		test("askForNarrower: false (the store's base address) falls back to the ancestor or country zone", () => {
+			const TF = zone("z-tf", ["ES-TF"]);
+			const base = (country: string, region: string) => ({
+				...physical(country, region),
+				askForNarrower: false,
+			});
+			expect(resolveShippingZone([ES, TF], base("ES", "CN"))).toEqual(matched("z-es", "ES"));
+			expect(
+				resolveShippingZone([zone("z-gb", ["GB"]), zone("z-lnd", ["GB-LND"])], base("GB", "ENG")),
+			).toEqual(matched("z-gb", "GB"));
+			// Nothing to fall back to: unmatched, never region_code_required.
+			expect(resolveShippingZone([TF], base("ES", "CN"))).toEqual({ status: "unmatched" });
+		});
+
 		test("a blank region still asks for one when only a parent is zoned", () => {
 			expect(resolveShippingZone([ES, ES_CN], physical("ES"))).toEqual({
 				status: "region_code_required",

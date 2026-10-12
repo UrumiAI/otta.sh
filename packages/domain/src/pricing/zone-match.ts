@@ -10,7 +10,9 @@
  * aside) — a zone never covers a code it does not list or contain. A pick that
  * no zone covers but that CONTAINS a zoned subdivision (Canary Islands, with
  * only Tenerife zoned) is asked to be more specific (`region_code_required`),
- * never matched to the country. Pure: no IO.
+ * never matched to the country — unless `askForNarrower` is `false` (the
+ * store's base address, which nobody can be asked about): then it falls back
+ * to an ancestor's or the country's zone, as before containment. Pure: no IO.
  */
 import type { ShippingZone } from "../ports/shipping-rules-store.js";
 import { parseZoneRegions, subdivisionAncestors } from "./region-codes.js";
@@ -46,7 +48,13 @@ export type ZoneResolution =
 
 export function resolveShippingZone(
 	zones: ReadonlyArray<ShippingZone>,
-	input: { requiresShipping: boolean; destination?: ZoneDestination },
+	input: {
+		requiresShipping: boolean;
+		destination?: ZoneDestination;
+		/** `false` never refuses a pick that CONTAINS a zoned subdivision; it
+		 *  falls to the ancestor/country zone. Default `true` (a buyer). */
+		askForNarrower?: boolean;
+	},
 ): ZoneResolution {
 	if (!input.requiresShipping) return { status: "not_required" };
 	if (zones.length === 0) return { status: "no_zones" };
@@ -83,7 +91,10 @@ export function resolveShippingZone(
 		// which zone applies depends on where inside it the address is. Ask for
 		// the more specific one — never fall to the country's zone (silently the
 		// wrong tax) or refuse.
-		if (parsed.some((z) => z.codes.some((code) => subdivisionAncestors(code).includes(own)))) {
+		if (
+			input.askForNarrower !== false &&
+			parsed.some((z) => z.codes.some((code) => subdivisionAncestors(code).includes(own)))
+		) {
 			return { status: "region_code_required", country };
 		}
 	}
