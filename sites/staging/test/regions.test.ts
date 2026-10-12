@@ -229,6 +229,7 @@ describe("the Tempered review, rendered", () => {
 			showDelivery: false,
 			showAddress: true,
 			buyerLocation: false,
+			refusedLocation: null,
 			chosenOption: null,
 			notReadyCopy: "",
 			paymentConfigured: true,
@@ -281,6 +282,25 @@ describe("the Tempered review, rendered", () => {
 		expect(fieldOf(html, "address-region")).not.toMatch(/\bhidden\b/);
 		// No free-text region anywhere.
 		expect(html).not.toMatch(/<input[^>]*name="region"/);
+	});
+
+	test("#478: a refused buyer location is echoed to the place form; none ⇒ no echo", async () => {
+		const buyer = {
+			showDelivery: true,
+			buyerLocation: true,
+			countryValue: "ES",
+			deliveryRegions: regionChoice("ES", "CN", "en-US"),
+		};
+		const html = await render(
+			model({ ...buyer, refusedLocation: { country: "ES", region: "CN" } }),
+		);
+		expect(html).toMatch(
+			/<input[^>]*name="refusedCountry"[^>]*form="checkout-place"[^>]*value="ES"/,
+		);
+		expect(html).toMatch(
+			/<input[^>]*name="refusedRegion"[^>]*form="checkout-place"[^>]*value="CN"/,
+		);
+		expect(await render(model(buyer))).not.toContain("refusedCountry");
 	});
 
 	test("an old stored form of the code (us-ca) still renders as the selected option", async () => {
