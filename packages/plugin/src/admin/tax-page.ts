@@ -601,7 +601,7 @@ function taxRatesLevel() {
  * regardless of filter state) — the Zone select's options need the full list
  * even when scoped, which is the one extra read D-6 explicitly permits
  * (`r.zoneName ?? r.zoneId`, §12.3's own note).
- * Any read failure PROPAGATES (never silently degrades to "no rates" — this
+ * A failed RATES read PROPAGATES (never silently degrades to "no rates" — this
  * is the level's PRIMARY data, unlike a leaf's secondary reads), so the
  * caller's `onError` fails closed instead of rendering a misleading empty list.
  */
@@ -611,11 +611,16 @@ async function fetchRatesForClass(
 	zoneId: string | undefined,
 	zones: ShippingZoneWire[],
 ): Promise<TaxRateRow[]> {
-	const [rows, read] = await Promise.all([
+	const [rows, legacyShipping] = await Promise.all([
 		readRatesForClass(client, classId, zoneId, zones),
-		client.getTaxSettings(),
+		// Secondary: it only words the duplicate notes. A failed read must not take
+		// the whole rates page down, so it reads as "not legacy" (#471).
+		client.getTaxSettings().then(
+			(read) => read.settings.shippingTaxClass.kind === "legacy",
+			() => false,
+		),
 	]);
-	return flagDuplicates(rows, read.settings.shippingTaxClass.kind === "legacy");
+	return flagDuplicates(rows, legacyShipping);
 }
 
 /**
@@ -868,7 +873,7 @@ function duplicateBlocks(row: TaxRateRow): Block[] {
 				type: "context",
 				text:
 					row.ignoredShippingFlagCounts === true
-						? `Duplicate: only ${row.appliedInstead} applies to ${zone}; its shipping setting still counts. Delete the one you don't want.`
+						? `Duplicate: only ${row.appliedInstead} applies to ${zone}; its shipping setting still counts, so deleting it can change shipping tax.`
 						: `Duplicate: only ${row.appliedInstead} applies to ${zone}, so this rate taxes nothing (goods or shipping). Delete the one you don't want.`,
 			},
 		];

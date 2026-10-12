@@ -909,5 +909,7 @@ function withTaxRows(rows: TaxRow[] | null): { taxRows?: TaxRow[] } {
  */
 function pricedWithTaxIncluded(order: Order): boolean {
 	const snapshot = readOrderTaxSnapshot(order.totals.taxBreakdown);
-	return snapshot?.v === 1 && snapshot.pricesIncludeTax && snapshot.lines.some((l) => l.taxCents > 0);
+	return (
+		snapshot?.v === 1 && snapshot.pricesIncludeTax && snapshot.lines.some((l) => l.taxCents > 0)
+	);
 }
