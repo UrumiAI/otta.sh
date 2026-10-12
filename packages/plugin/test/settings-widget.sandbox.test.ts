@@ -1,8 +1,17 @@
 import { OTTA_PLUGIN_CAPABILITIES, SETTINGS_SCHEMA } from "@otta-sh/plugin";
-import { idempotencyKey, type TaxSettings } from "@otta-sh/domain";
+import {
+	cents,
+	currency as toCurrency,
+	idempotencyKey,
+	money,
+	productId as toProductId,
+	type TaxSettings,
+} from "@otta-sh/domain";
 import {
 	collectionOf,
+	EmdashProductCommerceStore,
 	EmdashSettingsStore,
+	PRODUCT_COMMERCE_COLLECTION,
 	SETTINGS_COLLECTION,
 	SETTINGS_DOC_ID,
 	SETTINGS_MUTATIONS_COLLECTION,
@@ -16,10 +25,13 @@ import { assertBlockContract } from "./helpers/block-contract.js";
 import {
 	blocksOf,
 	contextTexts,
+	buttons,
+	confirmOf,
 	field,
 	findBlocks,
 	formFor,
 	openGroupIds,
+	valueOf,
 	type LooseBlock,
 } from "./helpers/blocks.js";
 import { loadPluginInSandbox, type SandboxHandle } from "./sandbox/harness.js";
@@ -1154,6 +1166,11 @@ async function storedDoc(): Promise<Record<string, unknown> | null> {
 	> | null;
 }
 
+/** #447: the store-currency switch's confirm button, when the screen shows one. */
+function confirmButton(blocks: readonly LooseBlock[]) {
+	return buttons(blocks).find((b) => b.action_id === "confirm-store-currency");
+}
+
 describe("Settings: store currency", () => {
 	afterEach(async () => {
 		await resetOperationalSettings();
@@ -1299,6 +1316,121 @@ describe("Settings: store currency", () => {
 		});
 		expect(String(findBlocks(blocksOf(again), "banner")[0]?.title)).toBe("Nothing changed");
 		expect(await storedDoc()).toEqual(before);
+	});
+
+	// #447: products keep their price currency, so a switch makes every product
+	// priced in the OLD one unbuyable in new carts. The save asks first, naming
+	// how many — and only when there is at least one.
+	describe("switching with priced products", () => {
+		const seeded = ["sc-usd-a", "sc-usd-b", "sc-eur-a", "sc-unpriced"];
+		afterEach(async () => {
+			// The SQLite store is process-shared: leave no products behind.
+			const { storage } = await storageBridge();
+			for (const id of seeded) await collectionOf(storage, PRODUCT_COMMERCE_COLLECTION).delete(id);
+		});
+		async function seedProducts(): Promise<void> {
+			const { storage } = await storageBridge();
+			const products = new EmdashProductCommerceStore({ storage, clock: systemClock });
+			const prices: Record<string, string | null> = {
+				"sc-usd-a": "USD",
+				"sc-usd-b": "USD",
+				"sc-eur-a": "EUR",
+				"sc-unpriced": null,
+			};
+			for (const id of seeded) {
+				const code = prices[id] ?? null;
+				await products.upsert(
+					{
+						productId: toProductId(id),
+						...(code === null ? {} : { price: money(cents(1200), toCurrency(code)) }),
+					},
+					idempotencyKey(`sc-seed-${id}`),
+				);
+			}
+		}
+		test("a switch away from the currency products are priced in asks first, naming how many — nothing is saved until confirmed", async () => {
+			await resetOperationalSettings();
+			await seedProducts();
+			sandbox = await loadPluginInSandbox({ allowedHosts: [], storage: true });
+			const outcome = await sandbox.invokeRoute("admin", {
+				type: "form_submit",
+				action_id: "save-store-currency",
+				values: { currency: "KWD" },
+				idempotencyKey: "k-sc-priced-ask",
+			});
+			const blocks = blocksOf(outcome);
+			assertBlockContract(blocks, { screen: "settings", level: "list" });
+			expectAllRealFormsPresent(blocks);
+			// Nothing written: the store is still never-saved (USD).
+			expect(await storedDoc()).toBeNull();
+			const banner = findBlocks(blocks, "banner")[0];
+			expect(String(banner?.description)).toContain("2 products are priced in USD");
+			const button = confirmButton(blocks);
+			expect(button).toBeDefined();
+			expect(valueOf(button)).toEqual({ currency: "KWD", from: "USD" });
+			expect(String(confirmOf(button).text)).toContain("2 products are priced in USD");
+
+			// Confirming saves exactly as an unprompted save does.
+			const confirmed = await sandbox.invokeRoute("admin", {
+				type: "block_action",
+				action_id: "confirm-store-currency",
+				value: { currency: "KWD", from: "USD" },
+				idempotencyKey: "k-sc-priced-confirm",
+			});
+			expect(toastOf(confirmed)).toEqual({ message: "Store currency saved", type: "success" });
+			expect((await storedDoc())?.["currency"]).toBe("KWD");
+			expect(confirmButton(blocksOf(confirmed))).toBeUndefined();
+
+			// No product is priced in KWD, so switching away from it needs no confirm.
+			const direct = await sandbox.invokeRoute("admin", {
+				type: "form_submit",
+				action_id: "save-store-currency",
+				values: { currency: "EUR" },
+				idempotencyKey: "k-sc-priced-direct",
+			});
+			expect(toastOf(direct)).toEqual({ message: "Store currency saved", type: "success" });
+			expect((await storedDoc())?.["currency"]).toBe("EUR");
+		});
+
+		test("one priced product reads in the singular", async () => {
+			await resetOperationalSettings();
+			await seedProducts();
+			const { storage } = await storageBridge();
+			const settings = new EmdashSettingsStore({ storage, clock: systemClock });
+			await settings.update({ currency: "EUR" }, idempotencyKey("sc-priced-eur"));
+			sandbox = await loadPluginInSandbox({ allowedHosts: [], storage: true });
+			const blocks = blocksOf(
+				await sandbox.invokeRoute("admin", {
+					type: "form_submit",
+					action_id: "save-store-currency",
+					values: { currency: "USD" },
+					idempotencyKey: "k-sc-priced-one",
+				}),
+			);
+			expect(String(findBlocks(blocks, "banner")[0]?.description)).toContain(
+				"1 product is priced in EUR",
+			);
+			expect((await storedDoc())?.["currency"]).toBe("EUR");
+		});
+
+		test("a confirm for a currency the store no longer has saves nothing", async () => {
+			await resetOperationalSettings();
+			await seedProducts();
+			const { storage } = await storageBridge();
+			const settings = new EmdashSettingsStore({ storage, clock: systemClock });
+			await settings.update({ currency: "EUR" }, idempotencyKey("sc-priced-stale"));
+			sandbox = await loadPluginInSandbox({ allowedHosts: [], storage: true });
+			const outcome = await sandbox.invokeRoute("admin", {
+				type: "block_action",
+				action_id: "confirm-store-currency",
+				value: { currency: "KWD", from: "USD" },
+				idempotencyKey: "k-sc-priced-stale",
+			});
+			const blocks = blocksOf(outcome);
+			assertBlockContract(blocks, { screen: "settings", level: "list" });
+			expect(findBlocks(blocks, "banner")[0]?.variant).toBe("error");
+			expect((await storedDoc())?.["currency"]).toBe("EUR");
+		});
 	});
 
 	test("a three-decimal currency (KWD, BHD) can be the store currency — checkout rounds its total (ADR-0035 amendment)", async () => {

@@ -42,6 +42,7 @@ import type {
 	RouteHandler,
 	SettingsFieldSpec,
 } from "../types.js";
+import type { AdminProductsSurface } from "./admin-products-surface.js";
 import { MAX_LOW_STOCK_THRESHOLD } from "./in-process-reporting-settings-client.js";
 import { makeAdminClients } from "./make-admin-clients.js";
 import type {
@@ -111,6 +112,11 @@ const SAVE_BACKGROUND_WORK_ACTION = "save-background-work";
 
 /** The "Store currency" form's submit — a settings-store save. */
 const SAVE_STORE_CURRENCY_ACTION = "save-store-currency";
+
+/** #447: the confirm step's button, shown when a store-currency save would
+ *  leave products priced in the old currency. Carries `{ currency, from }`;
+ *  clicking it runs the same save the form would have. */
+const CONFIRM_STORE_CURRENCY_ACTION = "confirm-store-currency";
 
 /** Current save generation for a token key, defaulting to 0 when never saved.
  *  FAIL-SOFT (INC-C3): a kv read that REJECTS degrades to 0 rather than taking
@@ -433,6 +439,7 @@ export const SETTINGS_ACTION_IDS: ReadonlySet<string> = new Set([
 	"save-operational",
 	SAVE_BACKGROUND_WORK_ACTION,
 	SAVE_STORE_CURRENCY_ACTION,
+	CONFIRM_STORE_CURRENCY_ACTION,
 	// INC-C3: the payment secrets, from the one table that also builds
 	// their forms — so a new secret is routable the moment it is declared.
 	...PAYMENT_SECRET_FIELDS.map((spec) => spec.actionId),
@@ -498,7 +505,9 @@ export function createSettingsFormHandler(): RouteHandler<SettingsFormInput> {
 		notice?: Notice,
 		paymentRefusal?: PaymentRefusal,
 		settings?: OperationalSettingsWire,
-	): Promise<BlockResponse> => renderSettingsPage(ctx, client, notice, paymentRefusal, settings);
+		currencySwitch?: CurrencySwitchAsk,
+	): Promise<BlockResponse> =>
+		renderSettingsPage(ctx, client, notice, paymentRefusal, settings, currencySwitch);
 	return async (routeCtx, ctx) => {
 		const input = routeCtx.input;
 		const action = typeof input.action_id === "string" ? input.action_id : "load";
@@ -509,7 +518,7 @@ export function createSettingsFormHandler(): RouteHandler<SettingsFormInput> {
 		// write-only kv a second time, but with the commerce service folded into
 		// the plugin (ADR-0014 D3) there is no second deployable to authenticate
 		// to, so there are no tokens to read or thread through at all.
-		const { reporting: client } = await makeAdminClients(ctx);
+		const { reporting: client, products } = await makeAdminClients(ctx);
 
 		// -- kv save path: display name, S-5/S-5a ------------------------------
 		if (action === "save-display") {
@@ -750,8 +759,17 @@ export function createSettingsFormHandler(): RouteHandler<SettingsFormInput> {
 		// threshold or the tax block (the store merges a partial patch). The select
 		// offers only table codes; a forged value is refused here by name and again
 		// by the domain (`updateSettings` checks `isSupportedCurrency`).
-		if (action === SAVE_STORE_CURRENCY_ACTION) {
-			const raw = input.values?.currency;
+		//
+		// #447: a switch AWAY from the currency products are priced in asks first
+		// (products keep their currency, so those become unbuyable in new carts);
+		// the confirm button then runs this same branch, which saves as before.
+		if (action === SAVE_STORE_CURRENCY_ACTION || action === CONFIRM_STORE_CURRENCY_ACTION) {
+			const confirming = action === CONFIRM_STORE_CURRENCY_ACTION;
+			const carried =
+				confirming && typeof input.value === "object" && input.value !== null
+					? (input.value as Record<string, unknown>)
+					: undefined;
+			const raw = confirming ? carried?.currency : input.values?.currency;
 			const code = typeof raw === "string" ? raw.trim() : "";
 			const refuse = async (title: string, description: string): Promise<BlockResponse> => {
 				const page = await renderPage(ctx, client, { variant: "error", title, description });
@@ -782,6 +800,47 @@ export function createSettingsFormHandler(): RouteHandler<SettingsFormInput> {
 			}
 			const unsupported = `${code.length > 0 ? code : "That"} isn't a supported currency — choose one from the list. Nothing was changed.`;
 			if (!isSupportedCurrency(code)) return refuse("Store currency not saved", unsupported);
+			if (confirming) {
+				// The count the operator confirmed was for `from`. A store whose
+				// currency moved since (or cannot be read) is not switched on it.
+				if (current === undefined || effectiveStoreCurrency(current) !== carried?.from) {
+					return refuse(
+						"Store currency not saved",
+						"The store currency changed or couldn't be read since you were asked. Nothing was changed — reload and try again.",
+					);
+				}
+			} else if (current !== undefined) {
+				const from = effectiveStoreCurrency(current);
+				let count: number;
+				try {
+					count = await countProductsPricedIn(products, from);
+				} catch (err) {
+					console.error("[otta] admin settings priced-product count failed:", err);
+					return refuse(
+						"Store currency not saved",
+						`Couldn't check which products are priced in ${from}. Nothing was changed — try again.`,
+					);
+				}
+				if (count > 0) {
+					const ask: CurrencySwitchAsk = { from, to: code, count };
+					const page = await renderPage(
+						ctx,
+						client,
+						{
+							variant: "default",
+							title: "Confirm the currency switch",
+							description: `${pricedProductsText(ask)} After switching to ${currencyChoiceLabel(code)}, they can't be bought in new carts or repriced in it. Nothing was changed yet.`,
+						},
+						undefined,
+						current,
+						ask,
+					);
+					return {
+						...page,
+						toast: { message: "Confirm the currency switch", type: "info" },
+					} satisfies BlockResponse;
+				}
+			}
 			const key =
 				typeof input.idempotencyKey === "string" && input.idempotencyKey.length > 0
 					? input.idempotencyKey
@@ -933,6 +992,7 @@ async function renderSettingsPage(
 	paymentRefusal?: PaymentRefusal,
 	/** A settings read the caller already made on this request — reused, not repeated. */
 	alreadyRead?: OperationalSettingsWire,
+	currencySwitch?: CurrencySwitchAsk,
 ): Promise<BlockResponse> {
 	const state = await readPageState(ctx);
 	try {
@@ -946,6 +1006,7 @@ async function renderSettingsPage(
 				persisted: settings,
 				notice,
 				paymentRefusal,
+				currencySwitch,
 			}),
 		};
 	} catch {
@@ -956,6 +1017,7 @@ async function renderSettingsPage(
 				persisted: undefined,
 				notice,
 				paymentRefusal,
+				currencySwitch,
 			}),
 		};
 	}
@@ -1104,6 +1166,8 @@ function buildSettingsBlocks(args: {
 	emailStatus: EmailSendingStatus;
 	notice?: Notice;
 	paymentRefusal?: PaymentRefusal;
+	/** #447: the switch waiting on a confirm, rendered under the notice. */
+	currencySwitch?: CurrencySwitchAsk;
 }): Block[] {
 	const blocks: Block[] = [
 		{ type: "header", text: "Settings" },
@@ -1113,6 +1177,7 @@ function buildSettingsBlocks(args: {
 		},
 	];
 	if (args.notice !== undefined) blocks.push(noticeBanner(args.notice));
+	if (args.currencySwitch !== undefined) blocks.push(currencySwitchActions(args.currencySwitch));
 	blocks.push(
 		storeGroup(args.displayName, args.persisted),
 		checkoutGroup(args.settings, args.persisted, args.backgroundWork),
@@ -1273,6 +1338,64 @@ function storeCurrencyBlocks(persisted: OperationalSettingsWire | undefined): Bl
 			},
 		}),
 	];
+}
+
+/** #447: a store-currency switch that would leave `count` live products priced
+ *  in `from`, waiting on the operator's confirm. */
+interface CurrencySwitchAsk {
+	from: string;
+	to: string;
+	count: number;
+}
+
+/** Live (not deleted) products priced in `code`, counted over the admin list a
+ *  full page at a time. Throws when the list cannot be read through. */
+async function countProductsPricedIn(
+	products: Pick<AdminProductsSurface, "listProducts">,
+	code: string,
+): Promise<number> {
+	let count = 0;
+	let cursor: string | undefined;
+	do {
+		const page = await products.listProducts(
+			{},
+			cursor === undefined ? { limit: 100 } : { cursor, limit: 100 },
+		);
+		if (page.cursorRejected === true) throw new Error("product list cursor refused mid-count");
+		count += page.products.filter((p) => p.currency === code).length;
+		cursor = page.nextCursor ?? undefined;
+	} while (cursor !== undefined);
+	return count;
+}
+
+function pricedProductsText(ask: CurrencySwitchAsk): string {
+	return ask.count === 1
+		? `1 product is priced in ${ask.from}.`
+		: `${String(ask.count)} products are priced in ${ask.from}.`;
+}
+
+/** The confirm step's one button, behind the same confirm dialog every other
+ *  consequential button on this console uses. */
+function currencySwitchActions(ask: CurrencySwitchAsk): Block {
+	return {
+		type: "actions",
+		elements: [
+			{
+				type: "button",
+				action_id: CONFIRM_STORE_CURRENCY_ACTION,
+				label: `Switch to ${ask.to}`,
+				style: "danger",
+				value: { currency: ask.to, from: ask.from },
+				confirm: {
+					title: `Switch the store currency to ${ask.to}?`,
+					text: `${pricedProductsText(ask)} They can't be bought in new carts after the switch, or repriced in ${ask.to}.`,
+					confirm: "Yes, switch",
+					deny: `Keep ${ask.from}`,
+					style: "danger",
+				},
+			},
+		],
+	};
 }
 
 /** What the choice means, in the operator's terms. */
