@@ -344,7 +344,7 @@ export class EmdashTaxRulesStore implements TaxRulesStore {
 			}
 			throw err;
 		});
-		await this.#settleClaim(input.id, input.taxClassId, claimRevision, () => claim("live"));
+		await this.#settleClaim(input.taxClassId, rate, claimRevision, () => claim("live"));
 		return toTaxRate(input.taxClassId, rate);
 	}
 
@@ -592,15 +592,29 @@ export class EmdashTaxRulesStore implements TaxRulesStore {
 	 *  - it is gone, or already live in this class: nothing to do (`#findRate` heals a
 	 *    missing one).
 	 *
-	 * A STORAGE failure here does not fail the create — the rate has landed, and a
-	 * pending claim that names its class is followed by `#findRate` like a live one.
+	 * A STORAGE failure setting the claim live does not fail the create — the rate has
+	 * landed, and a pending claim that names its class is followed by `#findRate` like
+	 * a live one.
+	 *
+	 * The rollback re-reads the claim on EVERY attempt and stops, removing nothing, once
+	 * it names this class again: by then this create's rate was deleted and the id
+	 * re-created here by someone else, and that rate is not this create's to remove.
+	 * This create is still refused — what it wrote is gone, so success would describe a
+	 * rate it did not make. It also removes `rates[id]` only while it is still exactly
+	 * the document this create embedded.
+	 *
+	 * RESIDUAL: if the rollback itself fails (a storage error, or its retries run out),
+	 * the caller gets that error and both rates may remain. That needs a pause past the
+	 * whole lease AND a failing rollback; the next id-keyed edit or delete reaches only
+	 * the class the claim names.
 	 */
 	async #settleClaim(
-		rateId: string,
 		taxClassId: string,
+		rate: TaxRateDoc,
 		ownRevision: string,
 		live: () => TaxRateOwnerDoc,
 	): Promise<void> {
+		const rateId = rate.rateId;
 		let revision = ownRevision;
 		let takenBy: string | null;
 		try {
@@ -626,8 +640,13 @@ export class EmdashTaxRulesStore implements TaxRulesStore {
 		}
 		if (takenBy === null) return;
 		await this.#cas<void>("createTaxRate.rollback", async () => {
+			const owner = await this.#rateOwners.get(rateId);
+			if (owner?.taxClassId === taxClassId) return casDone(undefined);
 			const held = await this.#heldClass(taxClassId);
-			if (held === null || held.doc.rates[rateId] === undefined) return casDone(undefined);
+			const embedded = held?.doc.rates[rateId];
+			if (held === null || embedded === undefined || !sameRateDoc(embedded, rate)) {
+				return casDone(undefined);
+			}
 			const next = withoutTaxRate(held.doc, rateId);
 			const written =
 				next.name === null && Object.keys(next.rates).length === 0
@@ -680,4 +699,15 @@ export class EmdashTaxRulesStore implements TaxRulesStore {
 		}
 		throw new ScanPageLimitError(operation, this.#maxListPages, collected.length, "maxListPages");
 	}
+}
+
+/** Whether two rate documents carry the same fields — key order aside. */
+function sameRateDoc(a: TaxRateDoc, b: TaxRateDoc): boolean {
+	return (
+		a.rateId === b.rateId &&
+		a.zoneId === b.zoneId &&
+		a.rateBps === b.rateBps &&
+		a.ratePpm === b.ratePpm &&
+		a.appliesToShipping === b.appliesToShipping
+	);
 }

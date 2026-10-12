@@ -1054,6 +1054,60 @@ describeEachDialect("EmdashTaxRulesStore cross-class claim race (#462)", (ctx) =
 		expect(await plain.rateOwners.get("x")).toMatchObject({ taxClassId: "b", state: "live" });
 	});
 
+	test("a lease-overrun rollback never removes a rate re-created in its class meanwhile", async () => {
+		const raw = bound.storage;
+		const plain = makeTaxRulesHarness(raw);
+		// A's class "a" is undeclared, so its rollback is a compareAndDelete of the
+		// emptied document; that is the call held below, after the embed is released.
+		const rollbackPark = parkCall(
+			raw["tax_classes"] ?? never(),
+			(call) => call.method === "compareAndDelete" && call.id === "a",
+		);
+		const embedPark = parkCall(
+			rollbackPark.collection,
+			(call) => call.method === "compareAndSet" && call.id === "a",
+		);
+		const a = makeTaxRulesHarness(raw, {
+			clock: plain.clock,
+			storageForStore: withCollection(raw, "tax_classes", embedPark.collection),
+		}).store.createRate({
+			id: "x",
+			taxClassId: "a",
+			zoneId: "z",
+			rateBps: 725,
+			appliesToShipping: false,
+		});
+		await embedPark.arrived;
+		plain.clock.advance(61_000);
+		await plain.store.createRate({
+			id: "x",
+			taxClassId: "b",
+			zoneId: "z",
+			rateBps: 500,
+			appliesToShipping: false,
+		});
+		embedPark.release();
+		await rollbackPark.arrived;
+
+		// While A's rollback is held: B's rate is deleted, then A's (found by the heal
+		// scan), and C re-creates "x" in class "a".
+		expect(await plain.store.deleteRate("x")).toEqual({ ok: true });
+		expect(await plain.store.deleteRate("x")).toEqual({ ok: true });
+		await plain.store.createRate({
+			id: "x",
+			taxClassId: "a",
+			zoneId: "z",
+			rateBps: 900,
+			appliesToShipping: true,
+		});
+
+		rollbackPark.release();
+		expect(await settleOne(a)).toMatchObject({ code: "TAX_RATE_ID_COLLISION" });
+		// C's rate survived A's rollback.
+		expect((await plain.store.getRate("a", "z"))?.rateBps).toBe(900);
+		expect(await plain.rateOwners.get("x")).toMatchObject({ taxClassId: "a", state: "live" });
+	});
+
 	test("a same-class adoption of an in-flight claim still ends live, so a later delete frees the id", async () => {
 		const raw = bound.storage;
 		const plain = makeTaxRulesHarness(raw);

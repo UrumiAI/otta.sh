@@ -54,7 +54,10 @@ export interface TaxRulesStore {
 	countRatesByClass(id: TaxClassId): Promise<number>;
 
 	/**
-	 * Mint a rate. Refusals, checked in this order, each writing nothing:
+	 * Mint a rate. Refusals, checked in this order, each writing nothing (one
+	 * exception: in the emdash store, a create that paused past its id-claim lease
+	 * and lost the id to another class takes its already-embedded rate back out, so
+	 * that rate is briefly visible before it is refused):
 	 *  - the id is a LIVE rate's (in any class), or — in an adapter that claims ids
 	 *    first (the emdash store) — another class's create of that id is still in
 	 *    flight → throws an error with code `TAX_RATE_ID_COLLISION`;
