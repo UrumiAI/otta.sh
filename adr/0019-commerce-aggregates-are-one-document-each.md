@@ -103,7 +103,7 @@ typed retryable error, and measurement.
 
 This is the one part of the model that **exists**. The decisions and the numbers are recorded here;
 the **living detail** — the per-method choreography, the eight fault-injected crash seams and the
-per-shape measurements — lives in `packages/store-emdash/README.md` and is not restated here.
+per-shape measurements — lives in `docs/store-emdash/design-notes.md` and is not restated here.
 
 | Collection | Doc id | Holds |
 |---|---|---|
@@ -243,18 +243,18 @@ removal** shape is the one shape that reached the old ceiling and raised the typ
 `CAS_MAX_ATTEMPTS` took it two or three attempts deeper and its typed failures to **zero**, which is the
 whole point of the raise — attempts the loop now has are failures the caller no longer sees. The numbers
 here are kept only as the record of what was measured at 12. **The live per-shape tables live in
-`packages/store-emdash/README.md`** ("Contention budget", and "Coupon contention, measured" for the
+`docs/store-emdash/design-notes.md`** ("Contention budget", and "Coupon contention, measured" for the
 coupon counter), which is where they are re-measured; cite those rather than these, and do not re-copy
 figures into this record, because they drift and this record does not.
 
 Three honesty notes on that table. The right-hand column is a **record of measurement, not an
 assertion**: only the flash-sale shapes and the removal shape assert a depth at all, and the two restock
 shapes merely log theirs per case, so a regression there is caught by their contention and conservation
-assertions rather than by a depth ceiling. For the two restock rows the figures exist **only in the
-package README** — there is no in-code comment or assertion carrying them, so nothing in the source
+assertions rather than by a depth ceiling. For the two restock rows the figures exist **only in
+`docs/store-emdash/design-notes.md`** — there is no in-code comment or assertion carrying them, so nothing in the source
 corroborates them and they should be re-measured rather than cited. **† The README/test disagreement this
 paragraph used to name is closed.** It recorded that the removal shape's figure differed between the race
-file's own comment and the README's table, and that the code comment was the one to trust; the README has
+file's own comment and the design notes' table, and that the code comment was the one to trust; the design notes have
 since been reconciled to the test, and the shape's figures were re-measured after the ceiling raise
 besides. Note also that the sequenced row's ceiling of 5 is **per loop**, asserted ten times, not a
 cumulative budget for the case.
@@ -502,7 +502,7 @@ six names. `payment_refs`, `outbox_keys`, `cart_mutation_index`, `coupon_codes`,
 provider reference, an outbox entry id, a mutation key, a code, a method id, a rate id — with **no
 parent**, and a fact embedded in a parent document cannot be found from one. That is
 `reservation_index`'s reason (§2) applied six more times, and each is create-if-absent on its own id,
-so the reverse lookup and the uniqueness are the same write. The package README's "The outbox locator"
+so the reverse lookup and the uniqueness are the same write. `docs/store-emdash/design-notes.md`'s "The outbox locator"
 and "Why two claim collections, where the design table names none" carry the per-collection detail,
 including which bracket direction is healable. Two of the six answer a port method that takes a child
 id the port never pairs with a parent — nine such methods across the two rules stores. And
@@ -527,7 +527,7 @@ indexed two-value text mirror, because one dialect cannot bind a boolean as a `w
 `lifecycle` (a three-state tombstone axis — the algebra has no negation, the archive view needs one,
 and a document may hold variants before its product row exists), `productKind` and `createdAt` are
 added for predicates and ordering the admin list actually issues, and `productId` for the two batch
-reads. The field-by-field difference is tabulated in the package README's "Two deviations from the
+reads. The field-by-field difference is tabulated in `docs/store-emdash/design-notes.md`'s "Two deviations from the
 design's index table, both forced".
 
 **† Coupons are keyed by id, with the code as a claim document.** `redeem`, `findById`, `update` and
@@ -815,7 +815,7 @@ inventory sweeper leg's entry point — has no command key, so it deliberately w
 than invent entries it cannot attribute. The trail can therefore be honestly incomplete for a rename that
 crashed mid-flight, and only for that. The contract pins the sequential refusal, which is unchanged; the
 window is reachable only by a concurrent reserve and the adapter's crash-seam suite drives it
-deliberately. The package README's "What the carry cannot make atomic, stated exactly" is the full
+deliberately. `docs/store-emdash/design-notes.md`'s "What the carry cannot make atomic, stated exactly" is the full
 statement.
 *Proven by:* `product-commerce-store-contract`'s refusal cases at both grains, `sku-rename-ledger`, and
 `sku-rename-race`/`variant-sku-rename-race` — including the crossing-renames case where one side refuses
@@ -1171,7 +1171,7 @@ and all three are surprising enough to state: such a read **may write**; it **ma
 page-limit error where the SQL could only return `null`; and the healing is automatic rather than
 operator work. The cost is not uniform and the asymmetry is the point — a claim that resolves costs
 nothing extra, and the checkout reads do not consult a claim at all, so they never heal and never pay.
-The package README's "The one residue, and why it is healed rather than prevented" tabulates the cost per
+`docs/store-emdash/design-notes.md`'s "The one residue, and why it is healed rather than prevented" tabulates the cost per
 call.
 
 **(c) A residual resolves toward over-refusal, never toward overselling or over-granting.** Where a
@@ -1247,7 +1247,7 @@ an id that was never created, and the next create of that id takes the claim ove
 
 ### Where the living detail is
 
-This record is the decision; `packages/store-emdash/README.md` is the detail, and it is the one to read
+This record is the decision; `docs/store-emdash/design-notes.md` is the detail, and it is the one to read
 for anything measured or per-method. In particular: "Contention budget" and "Coupon contention, measured"
 for the live per-shape figures — **do not copy them here, they drift**; "The admin list, the search and
 the keyset cursor" and "The outbox locator" for §6; "What the carry cannot make atomic, stated exactly"

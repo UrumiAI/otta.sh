@@ -44,19 +44,24 @@ path — so no new write path or crypto is needed.
    all other settings are unchanged. The retired email and x402 keys are not included: x402 is
    removed (#437) and email goes through `ctx.email` (ADR-0031); each has its own one-time
    purge that deletes those stored keys, so they are deleted, not migrated.
-2. **Re-save stored values once.** The cron tick runs `encryptStoredPaymentSecrets` once per
-   site. It first reads ALL three keys (`getVersioned`) and writes nothing if any read fails,
-   so a wrong key can never re-encrypt a working plain key while a ciphertext it cannot open
-   exists. Then, per key, `compareAndSet` at the preflight revision with the same value (one
-   statement that replaces the row with its envelope) and a read-back; each finished key's
-   revision is recorded, so an unfinished run does not redo it. A conditional write that does
-   not apply although the revision is unchanged (a sandboxed bridge's pre-1.0 copy outside
-   the options table) is redone as a plain `set`, which the bridge stores encrypted while
-   deleting that copy. Last, the marker (`state:paymentSecretsEncrypted`, naming the key set)
-   is written. It reads and writes no x402 or email key, present or absent. Idempotent, safe
-   to interrupt, never overwrites a key saved in between, logs fixed lines and counts, never
-   a value. If every key is still plain, a wrong key cannot be detected:
-   the key set at that tick is the key they are saved under.
+2. **Re-save stored values, and again when one is rewritten.** The cron tick runs
+   `encryptStoredPaymentSecrets`, once per isolate. It first reads ALL three keys
+   (`getVersioned`) and writes nothing if any read fails, so a wrong key can never re-encrypt
+   a working plain key while a ciphertext it cannot open exists. The marker
+   (`state:paymentSecretsEncrypted`) names the key set and records, per stored key, the
+   revision this re-save wrote; a key whose current revision matches is skipped (#478). Every
+   other key (all of them on the first run, or after an earlier build's `v1:` marker) gets
+   `compareAndSet` at the preflight revision with the same value (one statement that replaces
+   the row with a fresh envelope) and a read-back of that exact revision, which is then
+   recorded in the marker, so an unfinished run does not redo it. So a key an earlier build
+   stores in plain text again (a rollback) is encrypted by the first isolate after rolling
+   forward. A conditional write that does not apply although the revision is unchanged (a
+   sandboxed bridge's pre-1.0 copy outside the options table) is redone as
+   `compareAndSet(key, null, value)`, which applies only while the options row is still
+   absent; the bridge stores it encrypted and deletes that copy. It reads and writes no x402
+   or email key, present or absent. Idempotent, safe to interrupt, never overwrites a key
+   saved in between, logs fixed lines and counts, never a value. If every key is still plain,
+   a wrong key cannot be detected: the key set at that tick is the key they are saved under.
 3. **Fail closed, and validate on read.** A key that cannot be read, or whose stored value is
    empty, not a string, or not the shape Otta's Settings form saves (the same checks), is
    never used and never replaced by anything else. `readSecret` reports `unreadable` or
@@ -86,8 +91,10 @@ path — so no new write path or crypto is needed.
 - In TRUSTED mode the plugin cannot see the sandbox's pre-1.0 `_plugin_storage` `__kv` rows,
   so a copy left there by an earlier sandboxed deployment of the same database is not removed
   by the re-save. Otta has only run trusted, so none is expected.
-- After a key rotation the re-save does not repeat; the old key stays listed until the three
-  keys are entered again.
+- A key rotation and a schema declared only later leave every revision unchanged, so the
+  re-save does not repeat by itself: the old key stays listed until the three keys are
+  entered again, or until `state:paymentSecretsEncrypted` is deleted so the next isolate
+  re-saves them all under the current key.
 - Encryption depends on the site descriptor. A site that drops `settingsSchema` stores new
   saves of these keys as plain values again, and values already encrypted become unreadable;
   the plugin cannot detect it, and the site-config test is the guard.

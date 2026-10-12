@@ -78,15 +78,30 @@ export function taxOffBanner(read: Pick<TaxSettingsRead, "settings" | "hasRates"
 
 /**
  * "Based on shop base address" with no base address set (review 2a B5): the quote
- * then taxes by the customer's shipping address (ADR-0032 §5). Said on the screen
- * rather than left silent; `null` when it does not apply.
+ * then taxes by the customer's shipping address (ADR-0032 §5). Likewise "based on
+ * the customer's billing address" (#467): a digital-only order whose buyer skips
+ * the country falls back to the base address, and with none it is not taxed.
+ * Said on the screen rather than left silent; `null` when it does not apply.
  */
 function missingBaseAddressNote(current: TaxSettingsWire): Block | null {
-	if (current.basedOn !== "base" || current.baseAddress !== null) return null;
-	return {
-		type: "context",
-		text: "Note: tax is set to the shop base address, but no base address is set — until one is, tax is calculated from the customer's shipping address.",
-	};
+	if (current.basedOn === "billing") {
+		// One note for the rule: the buyer's country is their own word (#467), and
+		// with no base address a buyer who gives none is not taxed at all.
+		return {
+			type: "context",
+			text:
+				current.baseAddress === null
+					? "Note: tax is set to the customer's billing address, but no base address is set — a digital-only order whose buyer gives no country is not taxed until one is. Buyers can pick a 0% country."
+					: "Note: buyers declare their own billing country, so a buyer can pick a country taxed at 0%.",
+		};
+	}
+	if (current.basedOn === "base" && current.baseAddress === null) {
+		return {
+			type: "context",
+			text: "Note: tax is set to the shop base address, but no base address is set — until one is, tax is calculated from the customer's shipping address.",
+		};
+	}
+	return null;
 }
 
 export function showOptionsAction(ids: TaxOptionsActions) {

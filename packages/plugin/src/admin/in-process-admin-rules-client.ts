@@ -101,7 +101,6 @@ import {
 	isTaxRateDuplicateError,
 	bpsOfPpm,
 	PPM_PER_BPS,
-	isSupportedCurrency,
 	parseCouponInstant,
 	parseZoneRegions,
 	type CouponListCursor,
@@ -125,7 +124,7 @@ import {
 	requireCurrencyCode,
 	requireIdToken,
 	requireNonNegativeInteger,
-	UNSUPPORTED_CURRENCY_REASON,
+	requireSupportedCurrency,
 } from "../commerce/commerce-input.js";
 import {
 	isShippingMethodIdCollisionError,
@@ -351,7 +350,7 @@ export class InProcessAdminRulesClient implements AdminRulesSurface {
 		input: ShippingRateInput,
 	): Promise<RulesCreateResult<ShippingRateWire>> {
 		requireIdToken("methodId", methodId);
-		requireAuthoredCurrency("currency", input.currency);
+		requireSupportedCurrency("currency", input.currency);
 		requireNonNegativeInteger("amountCents", input.amountCents);
 		const min = input.minSubtotalCents;
 		if (min !== undefined && min !== null) {
@@ -782,7 +781,7 @@ export class InProcessAdminRulesClient implements AdminRulesSurface {
 		const startsAt = optionalInstantText("startsAt", input.startsAt);
 		const expiresAt = optionalInstantText("expiresAt", input.expiresAt);
 		if (input.currency !== undefined && input.currency !== null) {
-			requireAuthoredCurrency("currency", input.currency);
+			requireSupportedCurrency("currency", input.currency);
 		}
 		// A percentage coupon's cap and minimum spend are AMOUNTS: in the coupon's
 		// currency's minor unit, so one is required with either (the coupon then
@@ -874,7 +873,7 @@ export class InProcessAdminRulesClient implements AdminRulesSurface {
 			if (existing.currency !== null) {
 				if (sent !== existing.currency) return { ok: false, reason: "error", status: 409 };
 			} else if (sent !== null) {
-				requireAuthoredCurrency("currency", sent);
+				requireSupportedCurrency("currency", sent);
 				if (hadBounds) {
 					// Binding would re-read a cap / minimum written in hundredths.
 					throw new CommerceInputError("currency", COUPON_CURRENCY_REFUSAL.legacyBounds);
@@ -1179,21 +1178,6 @@ const RETIRE_ATTEMPTS = 3;
 function requireFullReplaceKey(field: string, edit: object): void {
 	if (!Object.hasOwn(edit, field) || (edit as Record<string, unknown>)[field] === undefined) {
 		throw new CommerceInputError(field, "is required (send an explicit value to replace it)");
-	}
-}
-
-/**
- * A currency a merchant AUTHORS (a new rate's, a new coupon's): the shape, then
- * membership of the store's currency table (`@otta-sh/domain`'s
- * `isSupportedCurrency` — the currencies whose minor unit every money boundary
- * knows). Create paths only — reads and edits name a currency that already
- * exists, and refusing a stored code on read would strand a row written before
- * this rule.
- */
-function requireAuthoredCurrency(field: string, value: string): void {
-	requireCurrencyCode(field, value);
-	if (!isSupportedCurrency(value)) {
-		throw new CommerceInputError(field, UNSUPPORTED_CURRENCY_REASON);
 	}
 }
 

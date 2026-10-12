@@ -51,10 +51,14 @@ function countriesOf(codes: readonly string[][]): ReadonlySet<string> {
 }
 
 export function storeRegionFacts(ctx: PluginContext): StoreRegionFacts {
-	const stores = createInProcessCommerceStores(ctx);
-	const zones = once<readonly ShippingZone[]>(() => stores.shippingRules.listZones(), []);
+	// Built on the first read, INSIDE a guarded read, so a failure building them
+	// degrades like any other failed read instead of escaping (#478).
+	let built: ReturnType<typeof createInProcessCommerceStores> | undefined;
+	const stores = (): ReturnType<typeof createInProcessCommerceStores> =>
+		(built ??= createInProcessCommerceStores(ctx));
+	const zones = once<readonly ShippingZone[]>(async () => stores().shippingRules.listZones(), []);
 	const baseCountry = once(
-		async () => (await stores.settingsStore.get()).tax?.baseAddress?.country ?? null,
+		async () => (await stores().settingsStore.get()).tax?.baseAddress?.country ?? null,
 		null,
 	);
 	// Each SHIPPING zone's codes (one with a method) — one read a zone, store order.
@@ -62,7 +66,7 @@ export function storeRegionFacts(ctx: PluginContext): StoreRegionFacts {
 		const read = await Promise.all(
 			(await zones()).map(async (zone) => ({
 				codes: parseZoneRegions(zone.regions).codes,
-				ships: (await stores.shippingRules.listMethods(zone.id)).length > 0,
+				ships: (await stores().shippingRules.listMethods(zone.id)).length > 0,
 			})),
 		);
 		return read.filter((zone) => zone.ships).map((zone) => zone.codes);

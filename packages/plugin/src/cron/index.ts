@@ -246,7 +246,8 @@ export function createCronHandler(options: CommerceSweepOptions = {}): HookHandl
 		const name = typeof event?.name === "string" ? event.name : "";
 		if (name !== SWEEP_TASK_NAME) return { task: name, skipped: true };
 		await bootstrapSweepTask(ctx);
-		// Once per site, never throws: see encrypt-payment-secrets.ts (ADR-0037).
+		// Once per isolate (again for any key whose revision changed since the
+		// marker), never throws: see encrypt-payment-secrets.ts (ADR-0037).
 		await encryptStoredPaymentSecrets(ctx);
 		// Once per isolate, never throw: see purge-legacy-email-secrets.ts
 		// (ADR-0031) and purge-legacy-x402-settings.ts. Both run outside the tick's

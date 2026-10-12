@@ -344,9 +344,20 @@ order of appearance in a deployment's life:
     (`EMDASH_ENCRYPTION_KEY=<new>,<old>`). New saves use the new key; both still decrypt.
     Keep the old key listed until all three keys have been entered again in Settings (they
     are write-only, so each must be copied again from Stripe or its provider), then drop
-    it. The one-time upgrade re-save below does not repeat for a rotation.
+    it. Or delete the re-save marker (below) and redeploy: the first cron tick re-saves all
+    three under the new key. Keep the old key listed until the log shows `payment keys
+    re-saved through the settings layer` after that redeploy; then drop it and check that each
+    key still reads "— set" in Settings (if one does not, list the old key again). A rotation
+    alone never triggers the re-save.
+  - **Deleting the re-save marker** makes the next new isolate re-save every stored key under
+    the current key. It is one kv row, `state:paymentSecretsEncrypted`; deleting it loses
+    nothing. Trusted mode (the default):
+    `wrangler d1 execute YOUR-D1-DATABASE-NAME --remote --config wrangler.local.jsonc --command "DELETE FROM options WHERE name = 'plugin:otta:state:paymentSecretsEncrypted'"`.
+    A sandboxed deployment keeps it in `_plugin_storage` instead:
+    `... --command "DELETE FROM _plugin_storage WHERE plugin_id = 'otta' AND collection = '__kv' AND id = 'state:paymentSecretsEncrypted'"`.
+    Then redeploy so a new isolate runs it.
   - **Upgrading a site that already has these keys saved:** the first cron tick after the
-    deploy re-saves them encrypted, once (it needs the key set; until then it retries and
+    deploy re-saves them encrypted (it needs the key set; until then it retries and
     logs one warning naming `EMDASH_ENCRYPTION_KEY`). It first reads every key and changes
     nothing if any cannot be read, so a wrong key cannot strand a working one — but if every
     key is still unencrypted, whichever key is set at that tick is the key they are saved
@@ -354,17 +365,20 @@ order of appearance in a deployment's life:
     deleted by x402's own one-time purge, not by this run). Earlier backups and D1 Time Travel
     history still hold the earlier copies until they age out, so rotate a live Stripe key
     after the upgrade.
-  - **After deploying:** open Otta's Settings and look for "saved, but not valid"; enter any
-    such key again (an invalid stored edge token makes the webhook answer 503).
+  - **After every deploy (required check):** open Otta's Settings and confirm that every
+    payment secret you use (Stripe secret key, webhook signing secret, `OTTA_WH_TOKEN`) reads
+    "— set". Re-enter any that says "saved, but not valid" or "saved, but cannot be read" —
+    keys saved before 2026-10-02 or through EmDash's settings gear can read as not valid.
+    While the webhook secret or `OTTA_WH_TOKEN` reads "saved, but not valid" or "saved, but
+    cannot be read", every Stripe webhook answers 503 (an unset token is not checked).
   - **A custom site** must declare the schema (`PAYMENT_SECRET_SETTINGS_SCHEMA` in its
     descriptor `settingsSchema`) before upgrading. If it was added later, enter the three
-    keys again in Settings, or delete `state:paymentSecretsEncrypted` so the re-save runs
-    again.
-  - **Rolling back:** after the one-time re-save, a build without the `settingsSchema` cannot
+    keys again in Settings, or delete the re-save marker (above) so the re-save runs again.
+  - **Rolling back:** after the re-save, a build without the `settingsSchema` cannot
     read the three encrypted values, so Stripe payments and webhooks stop until you roll
     forward or enter the keys again. Nothing is lost. Keys entered while the old build runs
-    are stored plain; after rolling forward, enter them again or delete
-    `state:paymentSecretsEncrypted` so the re-save runs again.
+    are stored plain; after rolling forward, the first cron tick encrypts each of them again
+    (the marker records which revisions it encrypted).
 
 > **The Stripe webhook endpoint is public by design, and permanently site-owned.**
 > Stripe delivers to `POST /webhooks/stripe` on the site (`sites/staging/src/pages/webhooks/stripe.ts`)
@@ -906,6 +920,7 @@ reviewed tip, so a new one fails CI first).
 | A ~5 s stall on a new isolate's first request, an occasional 500 on a write, and `[emdash] A D1 session query hung …` in the logs | `global_fetch_strictly_public` + D1 `session` both on (emdash #1273). The build refuses this pair, so check what was deployed: remove the flag (§2.4, "Upgrading an existing deployment"), rebuild, redeploy |
 | `/products` empty right after deploy | Healthy (§1) — sample content lands via the wizard checkbox, not first boot |
 | `POST /webhooks/stripe` reports `NOT_CONFIGURED` | The Stripe webhook signing secret is unset — provision it in admin Settings (§3) |
+| Every Stripe delivery answers 503 after a deploy | The webhook signing secret or `OTTA_WH_TOKEN` reads "saved, but not valid" or "saved, but cannot be read" in Otta's Settings — re-enter it there; for "cannot be read", first check `EMDASH_ENCRYPTION_KEY` (§3) |
 | Every Stripe delivery 401s | `OTTA_WH_TOKEN` set on the plugin side but not on the site (or the values differ) — §3 |
 | An expired order is flagged `late payment … needs checking (…) — verify in Stripe` | A buyer paid after expiry and the automatic refund's outcome is unknown — most often a refund create that hit the settle path's 3 s timeout (the price of answering Stripe inside its delivery window: a timed-out create may still have been processed, so it is held `unverified` rather than retried blind) — or Stripe already shows it refunded, or the retries gave up after ~3 days. Check the PaymentIntent in Stripe before refunding again, then resolve the flag in the admin console |
 | An expired order is flagged `late payment … automatic refund failed (…) — refund it manually` | Stripe definitively refused the automatic refund (or it would exceed the order total). Refund in Stripe or the admin console, then resolve the flag |

@@ -28,7 +28,7 @@
  *    so the constructor argument is the whole of the declaration here: it is the
  *    queryable-field allow-list, and NO physical index — unique or otherwise —
  *    exists in either tier. Uniqueness is therefore never enforced in these
- *    suites, and no adapter may depend on it being (see this package's README).
+ *    suites, and no adapter may depend on it being (see `docs/store-emdash/design-notes.md`).
  *
  * This file lives in `test/`, outside the sandbox perimeter: it runs in Node and
  * may import the host, `kysely`, `pg` and `better-sqlite3`. Nothing in `src/`

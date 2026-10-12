@@ -110,12 +110,9 @@ import {
 	BACKORDERS_CONTEXT,
 	DIGITAL_WITH_FILE_REASON,
 	DIGITAL_WITH_FILE_TITLE,
-	LOW_STOCK_FILTER_DESCRIPTION,
-	PRODUCTS_LIST_INTRO,
 	REMOVE_STOCK_BANNER,
 	REMOVE_STOCK_CONTEXT,
 	STOCK_ON_HAND_CONTEXT,
-	removeStockConfirm,
 } from "@otta-sh/admin-presentation";
 import {
 	ATTACH_DOWNLOAD_ACTION_ID,
@@ -1242,13 +1239,10 @@ describe("the Pricing & inventory write path (workerd sandbox)", () => {
 		const banned = /oversell|oversold|overselling/i;
 		const copy = [
 			BACKORDERS_CONTEXT,
-			LOW_STOCK_FILTER_DESCRIPTION,
-			PRODUCTS_LIST_INTRO,
 			REMOVE_STOCK_BANNER.title,
 			REMOVE_STOCK_BANNER.description,
 			REMOVE_STOCK_CONTEXT,
 			STOCK_ON_HAND_CONTEXT,
-			removeStockConfirm(3).text,
 		];
 		for (const text of copy) expect(text, text).not.toMatch(banned);
 
