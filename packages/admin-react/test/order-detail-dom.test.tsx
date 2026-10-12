@@ -37,6 +37,7 @@ vi.mock("emdash/plugin-utils", async (importOriginal) => {
 const { OrderDetail, REFUND_RECIPIENT_MAX_LEN } = await import("../src/orders/order-detail.js");
 const {
 	ABSENT,
+	PRICES_INCLUDED_TAX,
 	UNNAMED_REFUND_RECIPIENT,
 	fit,
 	formatAmount,
@@ -1161,4 +1162,53 @@ test("an invalid refund amount marks its input without a shorthand/longhand styl
 	} finally {
 		errors.mockRestore();
 	}
+});
+
+// ── #421: the order's own frozen snapshot says prices included tax ───────────
+
+test("an order whose snapshot recorded tax-inclusive prices says so under the totals", async () => {
+	const base = detailFor("paid", CAPTURED);
+	if (!base.ok) throw new Error("fixture");
+	const view = await show({
+		...base,
+		order: { ...base.order, totals: { ...base.order.totals, pricesIncludeTax: true } },
+	});
+	const note = one(view, '[data-testid="detail-prices-include-tax"]');
+	expect(note.textContent).toBe(PRICES_INCLUDED_TAX);
+	expect(
+		table(view, "detail-totals").closest("[aria-describedby]")?.getAttribute("aria-describedby"),
+	).toBe(note.id);
+});
+
+test("an order without the record shows no such label", async () => {
+	const view = await show(detailFor("paid", CAPTURED));
+	expect(view.container.querySelector('[data-testid="detail-prices-include-tax"]')).toBeNull();
+});
+
+// ── #427: each line's FROZEN tax status ──────────────────────────────────────
+
+test("a line frozen as not taxed or shipping-only is marked; a taxable or unknown one is not", async () => {
+	const base = detailFor("paid");
+	const [first] = base.order.lines;
+	if (first === undefined) throw new Error("fixture has no line");
+	const payload: DetailPayload = {
+		...base,
+		order: {
+			...base.order,
+			lines: [
+				{ ...first, taxStatus: "none" },
+				{ ...first, taxStatus: "shipping_only" },
+				{ ...first, taxStatus: "taxable" },
+				first,
+			],
+		},
+	};
+	const view = await show(payload);
+	const lines = table(view, "detail-lines");
+	const notes = bodyRows(lines).map(
+		(row) => row.querySelector('[data-testid="detail-line-tax-status"]')?.textContent ?? null,
+	);
+	expect(notes).toEqual([" · Tax: None", " · Tax: Shipping only", null, null]);
+	// The title stays its own text beside the marker.
+	expect(cellIn(lines, 3, 1).textContent).toBe("Linen apron");
 });

@@ -157,7 +157,7 @@ in-process leniency.
 Same cadence as EmDash:
 
 - `lint` (quick) after every edit.
-- `typecheck` after each round of edits.
+- `typecheck` after each round of edits (runs `tsc -b`, the e2e project, and each workspace package's own `typecheck`, including the site's `astro check`).
 - `format` regularly.
 - Before a PR: **tests pass, lint clean, formatted.**
 

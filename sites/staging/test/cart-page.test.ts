@@ -700,8 +700,8 @@ describe("a checked-out cart is rendered as terminal, and never as a paid one �
 		// reddens both of them — root `pnpm typecheck` (`tsc -b` over `packages/*`
 		// only; the root tsconfig is `files: []` plus package references and does
 		// not reach `sites/*`) because `in-process-commerce-client.ts` reads and
-		// assigns the field, and `sites/staging`'s own `astro check` — CI reaches it via
-		// `pnpm -r --if-present typecheck` — because of this fixture. Verified by
+		// assigns the field, and `sites/staging`'s own `astro check` — which root
+		// `pnpm typecheck` also runs — because of this fixture. Verified by
 		// doing exactly that. The executed assertions below are vitest's share.
 		const named: CartWire = {
 			cartId: "cart_1",
