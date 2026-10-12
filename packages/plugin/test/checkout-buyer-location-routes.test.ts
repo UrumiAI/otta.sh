@@ -23,6 +23,16 @@ vi.mock("../src/commerce/make-commerce-client.js", () => ({
 vi.mock("../src/payments/stripe-account-country.js", () => ({
 	checkoutRequiresBuyerAddress: async () => false,
 }));
+// #446: the summary reads the store's region facts through the document
+// store this stubbed ctx does not have; nothing known is what a failed read gives.
+vi.mock("../src/storefront/store-region-facts.js", () => ({
+	storeRegionFacts: () => ({
+		regionCountries: async () => new Set<string>(),
+		storeCountry: async () => null,
+		baseCountry: async () => null,
+		regionZoneCountries: async () => new Set<string>(),
+	}),
+}));
 vi.mock("../src/storefront/pdp-route.js", async (importOriginal) => ({
 	...(await importOriginal<object>()),
 	createCommerceLoader: async () => ({ loadMany: async () => new Map() }),

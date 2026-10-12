@@ -46,8 +46,10 @@ export type DraftField = "email" | DraftAddressField;
 export const DRAFT_FIELDS: readonly DraftField[] = ["email", ...DRAFT_ADDRESS_FIELDS];
 
 /** Why a field was refused. */
-export type DraftFieldError = "missing" | "too_long" | "invalid";
-const FIELD_ERRORS: ReadonlySet<string> = new Set(["missing", "too_long", "invalid"]);
+/** `stale`: a region picked from the list of a country the buyer has since
+ *  changed — dropped, so it must be picked again from this country's list. */
+export type DraftFieldError = "missing" | "too_long" | "invalid" | "stale";
+const FIELD_ERRORS: ReadonlySet<string> = new Set(["missing", "too_long", "invalid", "stale"]);
 
 export interface CheckoutDraft {
 	values: Partial<Record<DraftField, string>>;
@@ -123,16 +125,32 @@ export interface DraftCookieWriter {
  * existed, rather than a form that looks whole and is not.
  */
 export function writeCheckoutDraft(cookies: DraftCookieWriter, draft: CheckoutDraft): void {
-	const candidate = clean(draft);
-	if (candidate === null) return;
-	if (encodeURIComponent(JSON.stringify(candidate)).length > COOKIE_BUDGET) return;
-	cookies.set(CHECKOUT_DRAFT_COOKIE, JSON.stringify(candidate), {
+	const value = serializeDraft(draft);
+	if (value === null) return;
+	cookies.set(CHECKOUT_DRAFT_COOKIE, value, {
 		httpOnly: true,
 		secure: true,
 		sameSite: "strict",
 		path: DRAFT_PATH,
 		maxAge: CHECKOUT_DRAFT_MAX_AGE_SECONDS,
 	});
+}
+
+/** The cookie value a draft is stored as — whitelisted and bounded — or `null`
+ *  when it cannot be stored (not a draft, or over the cookie budget). The one
+ *  rule `writeCheckoutDraft` and `checkoutDraftFits` share. */
+function serializeDraft(draft: CheckoutDraft): string | null {
+	const candidate = clean(draft);
+	if (candidate === null) return null;
+	const json = JSON.stringify(candidate);
+	return encodeURIComponent(json).length <= COOKIE_BUDGET ? json : null;
+}
+
+/** Would `writeCheckoutDraft` actually store this draft? False when it is over
+ *  the cookie budget — a caller whose next step depends on the typed values
+ *  coming back (a re-render that asks again) must not rely on them then. */
+export function checkoutDraftFits(draft: CheckoutDraft): boolean {
+	return serializeDraft(draft) !== null;
 }
 
 export function readCheckoutDraft(cookies: CookieReader): CheckoutDraft | null {
@@ -185,13 +203,16 @@ export function fieldErrorCopy(
 		return `Too long — use at most ${max} characters.`;
 	}
 	if (field === "email") return "Enter an email address like name@example.com.";
+	if (field === "region" && error === "stale") {
+		return "Pick your state/province again — the list changed with the country you chose.";
+	}
 	if (error === "missing") {
 		return context.addressRequired === true
 			? "Fill this in."
 			: "Fill this in, or leave the whole address blank.";
 	}
 	if (field === "country") return "Choose a country from the list.";
-	if (field === "region") return "Use a state/province code, e.g. CA — or leave it blank.";
+	if (field === "region") return "Choose a state/province from the list — or leave it blank.";
 	return "Check this field.";
 }
 

@@ -6,8 +6,32 @@ import {
 	normalizeSubdivision,
 	parseZoneRegions,
 	REGION_CODE_PATTERN,
+	subdivisionAncestors,
 	validateZoneRegionsInput,
 } from "../../src/pricing/region-codes.js";
+
+describe("subdivisionAncestors (CLDR containment)", () => {
+	test("nearest first; empty at the top level and for anything that is not a code", () => {
+		expect(subdivisionAncestors("ES-TF")).toEqual(["ES-CN"]);
+		expect(subdivisionAncestors("GB-BFS")).toEqual(["GB-NIR"]);
+		expect(subdivisionAncestors("FR-75C")).toEqual(["FR-IDF"]);
+		expect(subdivisionAncestors("ES-CN")).toEqual([]);
+		expect(subdivisionAncestors("US-CA")).toEqual([]);
+		expect(subdivisionAncestors("ES")).toEqual([]);
+		expect(subdivisionAncestors("es-tf")).toEqual([]); // canonical input only
+	});
+
+	test("every parent is a real subdivision of the child's own country", () => {
+		for (const [country, suffixes] of SUBDIVISIONS) {
+			for (const suffix of suffixes) {
+				for (const parent of subdivisionAncestors(`${country}-${suffix}`)) {
+					expect(parent.slice(0, 3)).toBe(`${country}-`);
+					expect(suffixes.has(parent.slice(3))).toBe(true);
+				}
+			}
+		}
+	});
+});
 
 /**
  * ADR-0021: countries are ISO 3166-1 alpha-2 and subdivisions ISO 3166-2, both

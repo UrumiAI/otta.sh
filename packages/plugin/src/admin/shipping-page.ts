@@ -91,8 +91,10 @@ import {
  *
  * REGIONS ARE ISO CODES (ADR-0021). Checkout DERIVES the buyer's shipping/tax
  * zone from their address by matching these codes — an ISO 3166-1 country
- * (`US`) or an ISO 3166-2 subdivision (`US-CA`), exactly, the most specific
- * zone winning. So the console refuses anything else on write (naming each bad
+ * (`US`) or an ISO 3166-2 subdivision (`US-CA`), the most specific zone
+ * winning; a subdivision code also covers the subdivisions inside it (CLDR
+ * containment: `GB-NIR` covers `GB-BFS`), and a buyer who picks one CONTAINING
+ * a zoned code is asked for the more specific one. So the console refuses anything else on write (naming each bad
  * token, with a hint), refuses a code another zone already lists (an overlap
  * would make the match ambiguous), labels the stored tokens that can never
  * match (zones written before the rule), and warns about such zones on this
@@ -634,7 +636,7 @@ function newZoneScreen(
 	if (firstZone) blocks.push(FIRST_ZONE_WARNING);
 	blocks.push({
 		type: "context",
-		text: "Regions are ISO codes: a country (US) or state/province (US-CA). Addresses match exactly; the most specific zone wins.",
+		text: "Regions are ISO codes: country (US) or state/province (US-CA). A zone covers the subdivisions inside its codes; the most specific zone wins.",
 	});
 	blocks.push(createZoneForm(draft, firstZone));
 	return blocks;
