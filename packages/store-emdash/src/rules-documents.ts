@@ -170,6 +170,11 @@ export interface TaxRateOwnerDoc {
 	readonly rateId: string;
 	readonly taxClassId: string;
 	readonly claimedAt: string;
+	/**
+	 * `"pending"` from the claim until its create's embed lands, then `"live"` (#462).
+	 * Absent on claims written before the field existed, which are read as live.
+	 */
+	readonly state?: "pending" | "live";
 }
 
 /**

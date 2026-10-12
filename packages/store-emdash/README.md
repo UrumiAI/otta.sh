@@ -1604,7 +1604,7 @@ assertion that would fail if the write order were reversed.
 | `shipping_zones` | zone id | the zone's name and opaque region list, its `methods` map keyed by method id, and each method's `rates` map keyed by currency | — |
 | `shipping_method_owners` | method id | `{ zoneId }` — the store-wide method-id claim, and the FAST way to reach a method from an id alone (the heal scan below is the fallback) | — |
 | `tax_classes` | class id | the registry `name` (`null` when only rates live there) and the class's `rates` map keyed by rate id | — |
-| `tax_rate_owners` | rate id | `{ taxClassId }` — the store-wide rate-id claim, and the FAST way to reach a rate from an id alone (the heal scan below is the fallback) | — |
+| `tax_rate_owners` | rate id | `{ taxClassId, state }` — the store-wide rate-id claim, and the FAST way to reach a rate from an id alone (the heal scan below is the fallback). `state` is `pending` until the create's embed lands, then `live` (absent = live); an unbacked pending claim of another class is taken over only after a 60 s lease (#462) | — |
 
 | The SQL | Here |
 |---|---|
