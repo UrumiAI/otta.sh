@@ -168,9 +168,10 @@ export async function encryptStoredPaymentSecrets(
 			return "retry";
 		}
 
-		// Retry cost: while the key is missing, each sweep tick runs only the marker
-		// read and the preflight reads (a handful of kv calls), and logs once per
-		// isolate. This is intentional and bounded.
+		// Retry cost: while the key is missing, each sweep tick costs a handful of
+		// kv calls (the marker and preflight reads, and when every value is still
+		// plain, the progress read plus one refused conditional write), and logs
+		// once per isolate. This is intentional and bounded.
 		const progress = readProgress(await kv.get<unknown>(PAYMENT_SECRETS_ENCRYPTION_PROGRESS_KEY));
 		let resaved = 0;
 		let legacyReplaced = 0;

@@ -362,7 +362,9 @@ order of appearance in a deployment's life:
     again.
   - **Rolling back:** after the one-time re-save, a build without the `settingsSchema` cannot
     read the three encrypted values, so Stripe payments and webhooks stop until you roll
-    forward or enter the keys again. Nothing is lost.
+    forward or enter the keys again. Nothing is lost. Keys entered while the old build runs
+    are stored plain; after rolling forward, enter them again or delete
+    `state:paymentSecretsEncrypted` so the re-save runs again.
 
 > **The Stripe webhook endpoint is public by design, and permanently site-owned.**
 > Stripe delivers to `POST /webhooks/stripe` on the site (`sites/staging/src/pages/webhooks/stripe.ts`)
