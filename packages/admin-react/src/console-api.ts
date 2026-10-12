@@ -89,6 +89,13 @@ export interface OrderTotals {
 	readonly roundingCents?: number;
 	readonly appliedCouponCode: string | null;
 	readonly shippingZoneId?: string | null;
+	/** #426: where the tax was charged; only on an order priced under "based on
+	 *  the customer's billing address". */
+	readonly taxAddress?: {
+		readonly basis: "billing" | "base" | "shipping";
+		readonly country: string;
+		readonly region: string | null;
+	};
 }
 
 export interface ShippingAddress {

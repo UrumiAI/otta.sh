@@ -1276,9 +1276,13 @@ describe("admin Tax console — tax options (PR 2a, ADR-0032)", () => {
 		await seedRules({ rates: [] });
 		const blocks = await openOptions();
 		const options = field(formFor(blocks, "tax:save-options"), "basedOn")?.options as
-			| Array<{ value: string }>
+			| Array<{ value: string; label: string }>
 			| undefined;
 		expect(options?.map((o) => o.value)).toEqual(["shipping", "billing", "base"]);
+		// Review round 1: the merchant is told the location is the buyer's own word, and optional.
+		const billing = options?.find((o) => o.value === "billing")?.label ?? "";
+		expect(billing).toMatch(/declares/);
+		expect(billing).toMatch(/optional/);
 		await submitForm(blocks, "tax:save-options", {
 			...untouched(blocks),
 			enabled: true,

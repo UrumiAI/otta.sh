@@ -91,6 +91,7 @@
  */
 
 import {
+	readOrderTaxSnapshot,
 	adminNextStates,
 	appendOrderNote,
 	cancelOrderWithRefund,
@@ -1158,6 +1159,7 @@ function toOrderDetailWire(order: Order): OrderDetailWire {
 			// the totals' method snapshot so the console can render the captured
 			// ship-to country NEXT TO the priced zone. No matching/validation.
 			shippingZoneId: shippingZoneIdOf(order.totals.shippingMethodSnapshot),
+			...taxAddressEntry(order),
 		},
 		lines: order.lines.map((l) => ({
 			sku: l.sku,
@@ -1168,6 +1170,14 @@ function toOrderDetailWire(order: Order): OrderDetailWire {
 			fulfillmentKind: l.fulfillmentKind,
 		})),
 	};
+}
+
+/** #426: the order tax snapshot's `taxAddress`, when it has one. */
+function taxAddressEntry(order: Order): Pick<OrderDetailWire["totals"], "taxAddress"> {
+	const snapshot = readOrderTaxSnapshot(order.totals.taxBreakdown);
+	if (snapshot === null || snapshot.v !== 1 || snapshot.taxAddress === undefined) return {};
+	const { basis, country, region } = snapshot.taxAddress;
+	return { taxAddress: { basis, country, region } };
 }
 
 /** `shippingZoneIdOf`'s twin: read the zone id off the opaque method snapshot

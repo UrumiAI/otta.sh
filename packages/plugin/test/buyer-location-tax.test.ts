@@ -21,6 +21,7 @@ import {
 } from "@otta-sh/domain";
 import { FakePaymentGateway } from "@otta-sh/domain/testing";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
+import { InProcessAdminOrdersClient } from "../src/admin/in-process-admin-orders-client.js";
 import { CommerceInputError } from "../src/commerce/commerce-input.js";
 import {
 	makeInProcessCommerce,
@@ -120,6 +121,8 @@ describe("setting OFF: every reply exactly as before", () => {
 		const order = await h.stores.orderStore.getById(brandOrderId(placed.order.id));
 		expect(order?.totals.tax).toBe(1000);
 		expect(order?.totals.taxBreakdown).not.toHaveProperty("taxAddress");
+		const admin = await new InProcessAdminOrdersClient(h.ctx).getOrder(placed.order.id);
+		expect(admin?.order.totals).not.toHaveProperty("taxAddress");
 	});
 });
 
@@ -161,6 +164,13 @@ describe("setting ON: based on the customer's billing address", () => {
 		const read = await h.client.getPublicOrder(placed.order.id);
 		if (!read.ok) throw new Error(read.reason);
 		expect(read.order.totals).toMatchObject({ taxCents: 950, taxLocated: true });
+		// The admin order detail states where the tax was charged (review round 1).
+		const admin = await new InProcessAdminOrdersClient(h.ctx).getOrder(placed.order.id);
+		expect(admin?.order.totals.taxAddress).toEqual({
+			basis: "billing",
+			country: "DE",
+			region: null,
+		});
 	});
 
 	test("a billing location that is not code-shaped is a malformed call, refused before anything", async () => {

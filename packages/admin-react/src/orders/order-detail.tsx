@@ -1062,6 +1062,10 @@ export function OrderDetail({
 		],
 		["Shipping", formatAmount(order.totals.shippingCents, totalsCur)],
 		["Tax", formatAmount(order.totals.taxCents, totalsCur)],
+		// #426: where that tax was charged, when the order recorded it.
+		...(order.totals.taxAddress !== undefined
+			? [["Tax location", taxLocationLabel(order.totals.taxAddress)] as const]
+			: []),
 		// ADR-0035's amendment: the total rounded to its currency's payment
 		// increment, SIGNED — only on an order that has a non-zero one.
 		...(rounding !== undefined && rounding !== 0
@@ -1939,4 +1943,17 @@ function FulfilmentForm({
 			</div>
 		</div>
 	);
+}
+
+/** #426: where an order's tax was charged, as the totals ladder states it —
+ *  `DE (buyer-declared)`, `GB (shop address)`, `US-CA (ship-to)`. */
+function taxLocationLabel(at: {
+	readonly basis: "billing" | "base" | "shipping";
+	readonly country: string;
+	readonly region: string | null;
+}): string {
+	const place = at.region === null ? at.country : `${at.country}-${at.region}`;
+	const how =
+		at.basis === "billing" ? "buyer-declared" : at.basis === "base" ? "shop address" : "ship-to";
+	return `${place} (${how})`;
 }
