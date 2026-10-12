@@ -350,8 +350,16 @@ export function requireSku(value: string, max?: number): string {
 	return value;
 }
 
+/** The reason a currency-code input refuses a value that is not three
+ *  upper-case letters. */
+export const CURRENCY_SHAPE_REASON = "must be a three-letter ISO-4217 code";
+
+/** The reason an admin write refuses a currency outside the store's currency
+ *  table — shared by every screen that authors one (shipping rates, coupons). */
+export const UNSUPPORTED_CURRENCY_REASON = "must be a currency the store supports";
+
 export function requireCurrencyCode(field: string, value: string): string {
-	if (!/^[A-Z]{3}$/.test(value)) fail(field, "must be a three-letter ISO-4217 code");
+	if (!/^[A-Z]{3}$/.test(value)) fail(field, CURRENCY_SHAPE_REASON);
 	return value;
 }
 

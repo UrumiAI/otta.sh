@@ -58,11 +58,20 @@ export interface StorageBridge {
 
 let started: Promise<StorageBridge> | undefined;
 
-/** The failure fields the proxy needs to rebuild a structurally-equivalent error. */
+/**
+ * The failure fields the proxy needs to rebuild a structurally-equivalent error.
+ *
+ * Only named fields cross — an Error's own `message` and `name` and the
+ * structural markers the adapters' errors carry — never its `stack`, and never
+ * a stringified non-Error throw, which could carry anything (CodeQL
+ * js/stack-trace-exposure). That non-Error value is logged here instead, the
+ * same rule `sandbox-entry.ts` applies to its own replies.
+ */
 function serializeError(err: unknown): Record<string, unknown> {
+	if (!(err instanceof Error)) console.error("storage bridge: non-Error thrown", err);
 	const source = (err ?? {}) as Record<string, unknown>;
 	return {
-		message: err instanceof Error ? err.message : String(err),
+		message: err instanceof Error ? err.message : "internal error",
 		name: err instanceof Error ? err.name : "Error",
 		...(source.code === undefined ? {} : { code: source.code }),
 		...(source.retryable === undefined ? {} : { retryable: source.retryable }),
