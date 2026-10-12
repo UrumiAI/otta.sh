@@ -132,6 +132,11 @@ describe("extraAllowedHosts (OTTA_EXTRA_ALLOWED_HOSTS)", () => {
 		["nip.io wildcard-IP name", "127.0.0.1.nip.io"],
 		["sslip.io wildcard-IP name", "10-0-0-1.sslip.io"],
 		["xip.io wildcard-IP name", "app.192.168.1.1.xip.io"],
+		// #478: public names whose every subdomain resolves to 127.0.0.1.
+		["localtest.me (loopback DNS)", "localtest.me"],
+		["localtest.me subdomain", "app.localtest.me"],
+		["lvh.me (loopback DNS)", "lvh.me"],
+		["lvh.me subdomain", "shop.lvh.me"],
 		["Stripe.js CDN (ADR-0012)", "js.stripe.com"],
 		["other Stripe host", "files.stripe.com"],
 		["bare Stripe domain", "stripe.com"],
@@ -161,6 +166,8 @@ describe("extraAllowedHosts (OTTA_EXTRA_ALLOWED_HOSTS)", () => {
 			"mylocal.com",
 			"internal.example.com",
 			"nip.io.example.com",
+			"mylvh.me",
+			"notlocaltest.me",
 			"notstripe.com",
 		]) {
 			expect(normalizeExtraHost(host)).toBe(host);

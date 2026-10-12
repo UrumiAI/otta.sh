@@ -587,7 +587,8 @@ ungranted:
   under them (`app.localhost`, `printer.local`, `metadata.google.internal`,
   `localhost.localdomain`, `nas.lan`);
 - the wildcard-IP DNS services `nip.io`, `sslip.io` and `xip.io` and any name under them
-  (`127.0.0.1.nip.io`);
+  (`127.0.0.1.nip.io`), and the loopback names `localtest.me` and `lvh.me` and any name
+  under them (`app.lvh.me` resolves to 127.0.0.1);
 - any Stripe host other than `api.stripe.com`, above all `js.stripe.com`, which is loaded
   by the buyer's browser and is never plugin egress
   ([ADR-0012](./adr/0012-storefront-checkout-loads-stripe-elements-in-the-browser.md) §3).
