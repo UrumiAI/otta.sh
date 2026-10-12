@@ -71,6 +71,7 @@ export {
 	loadShopPriceDisplay,
 	SHOP_PRICE_AS_ENTERED,
 	shopDisplayPrice,
+	shopDisplayPrices,
 	type ShopDisplayItem,
 	type ShopPriceDisplay,
 	type ShopPriceDisplayDeps,

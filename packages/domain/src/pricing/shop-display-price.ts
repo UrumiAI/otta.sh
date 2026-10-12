@@ -70,9 +70,23 @@ export interface ShopDisplayItem {
  * not taxable, or a class with no rate — shows the stored amount.
  */
 export function shopDisplayPrice(display: ShopPriceDisplay, item: ShopDisplayItem): Cents {
-	const quantity = item.quantity ?? 1;
-	const amount = cents(item.unitPriceCents * quantity);
-	if (display.mode === "entered") return amount;
+	return shopDisplayPrices(display, [item])[0] as Cents;
+}
+
+/**
+ * Several lines' prices to show, priced TOGETHER as checkout prices a cart: one
+ * rate-table call over every line (#478). With "round at subtotal" the tax is
+ * rounded once over the lines and allocated back, so the lines sum to what
+ * checkout shows for the same cart; rounding per line, each line is exactly
+ * {@link shopDisplayPrice} alone. Every item is in one currency (the first one's).
+ */
+export function shopDisplayPrices(
+	display: ShopPriceDisplay,
+	items: readonly ShopDisplayItem[],
+): Cents[] {
+	const amounts = items.map((item) => cents(item.unitPriceCents * (item.quantity ?? 1)));
+	const first = items[0];
+	if (display.mode === "entered" || first === undefined) return amounts;
 	// The rate table checkout reads, built straight from the base zone's rates.
 	const table: RateTable = {
 		ratesByClass: new Map(Object.entries(display.ratesByClass)),
@@ -83,19 +97,17 @@ export function shopDisplayPrice(display: ShopPriceDisplay, item: ShopDisplayIte
 	const result = applyRateTable(
 		{
 			purpose: "quote",
-			currency: item.currency,
+			currency: first.currency,
 			pricesIncludeTax: display.pricesIncludeTax,
-			lines: [
-				{
-					lineId: "shop",
-					quantity,
-					unitPriceCents: item.unitPriceCents,
-					amountCents: amount,
-					taxClassId: item.taxClassId,
-					taxStatus: item.taxStatus,
-					requiresShipping: false,
-				},
-			],
+			lines: items.map((item, i) => ({
+				lineId: String(i),
+				quantity: item.quantity ?? 1,
+				unitPriceCents: item.unitPriceCents,
+				amountCents: amounts[i] as Cents,
+				taxClassId: item.taxClassId,
+				taxStatus: item.taxStatus,
+				requiresShipping: false,
+			})),
 			shipping: null,
 			origin: null,
 			destination: null,
@@ -105,9 +117,11 @@ export function shopDisplayPrice(display: ShopPriceDisplay, item: ShopDisplayIte
 		new Map(),
 		{ roundAtSubtotal: display.roundAtSubtotal },
 	);
-	const tax = result.lines[0]?.taxCents ?? 0;
-	if (display.pricesIncludeTax) return display.mode === "excl" ? cents(amount - tax) : amount;
-	return display.mode === "incl" ? cents(amount + tax) : amount;
+	return amounts.map((amount, i) => {
+		const tax = result.lines[i]?.taxCents ?? 0;
+		if (display.pricesIncludeTax) return display.mode === "excl" ? cents(amount - tax) : amount;
+		return display.mode === "incl" ? cents(amount + tax) : amount;
+	});
 }
 
 export interface ShopPriceDisplayDeps {
