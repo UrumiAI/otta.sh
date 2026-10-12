@@ -1363,6 +1363,7 @@ describe("GET /checkout entry guard (§1.7)", () => {
 				paymentAccountNeedsAddress: false,
 				readyToPlace: true,
 				uncalculatedReason: "no_zones",
+				taxByBuyerLocation: false,
 				orderCreated: false,
 				order: null,
 			}),
