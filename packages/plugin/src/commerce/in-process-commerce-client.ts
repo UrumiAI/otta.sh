@@ -86,6 +86,7 @@ import {
 	SkuHeldStockError,
 	SkuStockConflictError,
 	sku as toSku,
+	restoreProductCommerce,
 	softDeleteProductCommerce,
 	updateLine,
 	updateProductVariantFields,
@@ -381,6 +382,24 @@ export class InProcessCommerceClient implements CommerceClient {
 			this.#stores.productCommerce,
 			toProductId(productId),
 			toIdempotencyKey(idempotencyKey),
+		);
+	}
+
+	async restoreProductCommerce(
+		productId: string,
+		idempotencyKey: string,
+		contentUpdatedAt: string,
+		options: { documentConfirmed?: boolean } = {},
+	): Promise<void> {
+		requireProductId(productId);
+		requireIdempotencyKey(idempotencyKey);
+		requireWatermark("contentUpdatedAt", contentUpdatedAt);
+		await restoreProductCommerce(
+			this.#stores.productCommerce,
+			toProductId(productId),
+			toIdempotencyKey(idempotencyKey),
+			contentUpdatedAt,
+			options.documentConfirmed === true ? { documentConfirmed: true } : {},
 		);
 	}
 

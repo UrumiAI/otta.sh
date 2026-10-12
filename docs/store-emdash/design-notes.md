@@ -973,6 +973,11 @@ claim document per live sku. It also READS and WRITES the `inventory` collection
 above — the stock projections and the sku-rename carry — so a caller must bind both
 layouts.
 
+Stock is tracked per sku, not per product: when a sku is freed (its product is deleted, or
+renamed away from it) its `inventory` document stays, so a product that later takes that sku
+as its first sku sees, and sells, the stock count still recorded there (THE FIRST-SKU
+ASYMMETRY; a rename onto it is refused while that stock is there).
+
 | Collection | Doc id | Holds | Declared indexes |
 |---|---|---|---|
 | `product_commerce` | product id | every `ProductCommerce` field, the embedded `variants` map, the publish-gate watermark, the recorded rename carries, and the denormalized `lifecycle`/`publishKey` | `productId`, `lifecycle`, `publishKey`, `productKind`, `taxClass`, `createdAt` |

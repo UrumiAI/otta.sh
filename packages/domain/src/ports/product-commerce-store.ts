@@ -579,6 +579,16 @@ export interface ProductCommerceView {
 	active: boolean;
 }
 
+/** Options for {@link ProductCommerceStore.restore} (issue #447). */
+export interface RestoreProductCommerceOptions {
+	/**
+	 * The caller read the document from the CMS just now and found it, so it is
+	 * live: skip the "older than the delete" staleness guard. Set only on that
+	 * proof, never on the restore event alone.
+	 */
+	documentConfirmed?: boolean;
+}
+
 /**
  * Intent, not SQL (Phase 1 §7): insert-or-update by `product_id`, idempotent
  * under `key` (a replay whose incoming key equals the stored key is a no-op
@@ -732,6 +742,42 @@ export interface ProductCommerceStore {
 	 *  replay with the same key (or an already-deleted / unknown row) is a
 	 *  no-op. */
 	softDelete(productId: ProductId, key: IdempotencyKey): Promise<void>;
+	/**
+	 * Undo a soft delete (issue #447): the CMS restored this product from its
+	 * trash (`content:afterRestore`). Every tombstone is a CMS delete — the
+	 * delete hook's, or the `product-orphans` sweep finishing a lost one — so the
+	 * CMS undoing that delete is the one event allowed to reverse it.
+	 *  - unknown or LIVE row → no-op. A live row is never touched, so a restore
+	 *    can never deactivate a product that is on sale.
+	 *  - a STALE restore — `contentUpdatedAt` (the restored content's
+	 *    `updatedAt`) older than the row's `deletedAt` — → no-op: a delayed or
+	 *    replayed restore of an earlier trash never undoes a newer delete. UNLESS
+	 *    `options.documentConfirmed`: the caller has just read the document from
+	 *    the CMS, which proves it live NOW, so a tombstone that committed after
+	 *    the restore (a slow delete hook, or the sweep) is the stale write.
+	 *  - a TOMBSTONED row → `deletedAt = null`. `active` STAYS false: EmDash
+	 *    restores a document as a draft, so the product is sold again only after
+	 *    the next publish. The publish-gate watermark is raised to
+	 *    `contentUpdatedAt` (never lowered), so a publish OLDER than the restore
+	 *    cannot activate the draft (`activate`'s stale guard).
+	 *  - its sku is RE-CLAIMED when still free among live sellable units, and
+	 *    CLEARED to null when another live product or variant took it while the
+	 *    row was tombstoned — never a `SkuConflictError` (the variant
+	 *    resurrect's rule, see `upsertVariant`). Title, kind and every other
+	 *    field are kept; the inventory row is never touched.
+	 *  - the PRICE is kept even if the store currency changed meanwhile (unlike
+	 *    the variant resurrect, which clears a conflicting one). Harmless: a
+	 *    product priced in another currency cannot enter a cart in the new one.
+	 * Idempotency is STATE-BASED: a replay finds the row live (or the delete
+	 * newer than its watermark) and does nothing. `key` is stamped on the row
+	 * as the last applied write, an audit trail only.
+	 */
+	restore(
+		productId: ProductId,
+		key: IdempotencyKey,
+		contentUpdatedAt: string,
+		options?: RestoreProductCommerceOptions,
+	): Promise<void>;
 	/**
 	 * Guarded admin EDIT of the commerce-owned fields (admin-UX Increment 2,
 	 * slice 2 — the standalone product edit page). UNLIKE `upsert` (a CMS-sync /

@@ -65,6 +65,7 @@ import {
 	type ProductVariant,
 	type ProductVariantSummary,
 	type ProductVariantUpdateResult,
+	type RestoreProductCommerceOptions,
 	type Sku,
 	type UpdateProductCommerceFieldsInput,
 	type UpdateProductVariantFieldsInput,
@@ -262,6 +263,13 @@ interface SkuClaimLedger {
  *    lease. The writer that took it is gone; the claim may be taken over.
  */
 type ClaimStatus = "held" | "owed" | "in-flight" | "abandoned";
+
+/** A live claim this owner held, and the revision it was read at. */
+interface OwnClaim {
+	readonly sku: string;
+	readonly revision: string;
+	readonly doc: SkuOwnerDoc;
+}
 
 /** One resolved sku claim: whether it was already ours, and what it found. */
 interface SkuClaim {
@@ -960,7 +968,9 @@ export class EmdashProductCommerceStore implements ProductCommerceStore {
 	 * It also RELEASES the row's sku claim, which is what makes the freeing
 	 * explicit here where SQL got it as a side effect of a partial index predicate:
 	 * live-sku uniqueness held among non-deleted rows only, so a tombstoned row's
-	 * sku was reusable at once, and the claim document has to say so out loud.
+	 * sku was reusable at once, and the claim document has to say so out loud. The
+	 * release is pinned to the claim revision read before the tombstone, so a restore
+	 * that lands between the two keeps its claim (`#releaseClaimAt`).
 	 */
 	async softDelete(productId: ProductId, key: IdempotencyKey): Promise<void> {
 		const ref: SkuOwnerRef = { kind: "product", productId };
@@ -969,6 +979,9 @@ export class EmdashProductCommerceStore implements ProductCommerceStore {
 			if (current === null) return casDone(undefined);
 			const doc = normalizeProductDoc(current.value);
 			if (doc.lifecycle !== "live") return casDone(undefined);
+			// Read BEFORE the tombstone, inside the step so a retry re-reads it; see
+			// `#releaseClaimAt` for why the release is pinned to this revision.
+			const claim = doc.sku === null ? null : await this.#readOwnClaim(doc.sku, ref);
 			const at = this.#clock.now().toISOString();
 			const written = await this.#products.compareAndSet(productId, current.revision, {
 				...doc,
@@ -980,8 +993,77 @@ export class EmdashProductCommerceStore implements ProductCommerceStore {
 				updatedAt: at,
 			});
 			if (!written.applied) return CAS_RETRY;
-			if (doc.sku !== null) await this.#releaseSku(doc.sku, ref);
+			if (claim !== null) await this.#releaseClaimAt(claim);
 			return casDone(undefined);
+		});
+	}
+
+	/**
+	 * Undo a soft delete when the CMS restored the product from its trash (#447).
+	 * Unknown and live rows are no-ops; `active` stays false (the restored document
+	 * is a draft until published).
+	 *
+	 * The sku the tombstone released is RE-CLAIMED, the way a resurrecting variant
+	 * reclaims its own: kept when still free, cleared when another live unit took it
+	 * meanwhile, and re-asserted just before the commit so a takeover inside the
+	 * window is seen. The inventory document is never touched. As with the variant
+	 * resurrect, a claim written before a compare-and-set that then fails for good
+	 * lingers until its lease (`CLAIM_ABANDON_AFTER_MS`) lets another owner take it.
+	 *
+	 * A restore older than the delete (`contentUpdatedAt` < `deletedAt`) is stale and
+	 * a no-op unless `documentConfirmed`; an applied one stamps the gate watermark so
+	 * an older publish is stale.
+	 */
+	async restore(
+		productId: ProductId,
+		key: IdempotencyKey,
+		contentUpdatedAt: string,
+		options: RestoreProductCommerceOptions = {},
+	): Promise<void> {
+		const ref: SkuOwnerRef = { kind: "product", productId };
+		await this.#cas<void>("restore", async () => {
+			const current = await this.#products.getVersioned(productId);
+			if (current === null) return casDone(undefined);
+			const doc = normalizeProductDoc(current.value);
+			if (doc.lifecycle !== "deleted") return casDone(undefined);
+			if (
+				options.documentConfirmed !== true &&
+				doc.deletedAt !== null &&
+				doc.deletedAt > contentUpdatedAt
+			) {
+				return casDone(undefined);
+			}
+			const reclaimed = doc.sku === null ? null : await this.#reclaimSku(doc.sku, ref);
+			if (reclaimed !== null) {
+				let held: boolean;
+				try {
+					held = await this.#heartbeatClaim(reclaimed, ref, {
+						claimed: null,
+						createdTarget: null,
+						committed: false,
+						contended: 0,
+					});
+				} catch (err) {
+					if (!(err instanceof SkuConflictError)) throw err;
+					return CAS_RETRY;
+				}
+				if (!held) return CAS_RETRY;
+			}
+			const at = this.#clock.now().toISOString();
+			const written = await this.#products.compareAndSet(productId, current.revision, {
+				...doc,
+				lifecycle: "live",
+				sku: reclaimed === null ? null : doc.sku,
+				deletedAt: null,
+				// Never BACKWARDS: a newer publish's watermark survives a late restore.
+				activeUpdatedAt:
+					doc.activeUpdatedAt !== null && doc.activeUpdatedAt > contentUpdatedAt
+						? doc.activeUpdatedAt
+						: contentUpdatedAt,
+				idempotencyKey: key,
+				updatedAt: at,
+			});
+			return written.applied ? casDone(undefined) : CAS_RETRY;
 		});
 	}
 
@@ -1269,6 +1351,9 @@ export class EmdashProductCommerceStore implements ProductCommerceStore {
 			if (existing.contentUpdatedAt !== null && existing.contentUpdatedAt > contentUpdatedAt) {
 				return casDone(undefined);
 			}
+			// Read BEFORE the orphaning write, as `softDelete` does: a resurrect can land
+			// between that write and the release. See `#releaseClaimAt`.
+			const claim = existing.sku === null ? null : await this.#readOwnClaim(existing.sku, ref);
 			const at = this.#clock.now().toISOString();
 			const written = await this.#products.compareAndSet(productId, current.revision, {
 				...doc,
@@ -1284,7 +1369,7 @@ export class EmdashProductCommerceStore implements ProductCommerceStore {
 				},
 			});
 			if (!written.applied) return CAS_RETRY;
-			if (existing.sku !== null) await this.#releaseSku(existing.sku, ref);
+			if (claim !== null) await this.#releaseClaimAt(claim);
 			return casDone(undefined);
 		});
 	}
@@ -1775,6 +1860,33 @@ export class EmdashProductCommerceStore implements ProductCommerceStore {
 			});
 			return written.applied ? casDone(undefined) : CAS_RETRY;
 		});
+	}
+
+	/** `ref`'s live claim on `sku` as it stands now, or `null` when it holds none. */
+	async #readOwnClaim(sku: string, ref: SkuOwnerRef): Promise<OwnClaim | null> {
+		const current = await this.#skuOwners.getVersioned(sku);
+		if (current === null || !current.value.live || !isOwnedBy(current.value, ref)) return null;
+		return { sku, revision: current.revision, doc: current.value };
+	}
+
+	/**
+	 * Release a claim read BEFORE a tombstone (a soft delete, an orphaning) at exactly
+	 * that revision, once the tombstone has committed — and do nothing on a mismatch.
+	 *
+	 * The tombstone and the release are two writes, and a restore (or a variant
+	 * resurrect) can run between them: it finds the claim still live and ours,
+	 * heartbeats it, and commits the row live with the sku. A release that re-read the
+	 * claim would see "live and ours" and free the claim that row now stands on, and
+	 * another product could take the sku and share its stock. Any write to the claim
+	 * after the pre-read moves its revision, so a mismatch means someone renewed it
+	 * after the tombstone, and the release must not touch it.
+	 *
+	 * A skipped claim whose row really is still tombstoned is backed by nothing, so the
+	 * lease ({@link CLAIM_ABANDON_AFTER_MS}) lets the next claimant take it over: the
+	 * cost of skipping is at most one lease of refusals, never a sku held for good.
+	 */
+	async #releaseClaimAt(claim: OwnClaim): Promise<void> {
+		await this.#skuOwners.compareAndSet(claim.sku, claim.revision, { ...claim.doc, live: false });
 	}
 
 	#cas<T>(operation: string, step: (attempt: number) => Promise<CasStep<T>>): Promise<T> {
