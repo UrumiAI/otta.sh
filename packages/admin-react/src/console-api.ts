@@ -86,6 +86,9 @@ export interface OrderTotals {
 	readonly totalCents: number;
 	readonly appliedCouponCode: string | null;
 	readonly shippingZoneId?: string | null;
+	/** One row per tax, adding up to `taxCents` (issue #422). Absent ⇒ the
+	 *  single Tax row (an older order, or a plugin before the field). */
+	readonly taxRows?: ReadonlyArray<{ readonly label: string; readonly amountCents: number }>;
 }
 
 export interface ShippingAddress {

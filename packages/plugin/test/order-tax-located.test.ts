@@ -98,6 +98,10 @@ describe("a digital cart taxed at the shop base address", () => {
 		});
 		const view = buildOrderView(read.order, "en-US");
 		expect(view.totals.tax.label).toBe("$10.00");
-		expect(view.totals.taxRows.map((r) => [r.label, r.amount.label])).toEqual([["Tax", "$10.00"]]);
+		// A new store's tax totals are itemized (ADR-0032), and since issue #422 the
+		// order page itemizes too: the one tax charged, under its class's name.
+		expect(view.totals.taxRows.map((r) => [r.label, r.amount.label])).toEqual([
+			["Standard", "$10.00"],
+		]);
 	});
 });

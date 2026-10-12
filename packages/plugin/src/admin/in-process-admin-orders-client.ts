@@ -107,6 +107,7 @@ import {
 	orderHasEmailRecipient,
 	orderId as toOrderId,
 	orderNumber,
+	orderTaxRows,
 	recordFulfillment as recordFulfillmentUseCase,
 	refundOrder as refundOrderUseCase,
 	resolveReconciliation as resolveReconciliationUseCase,
@@ -163,6 +164,7 @@ import type {
 	InlineEmailStatus,
 	OrderDetailResult,
 	OrderDetailWire,
+	OrderTotalsWire,
 	OrderNoteWire,
 	OrdersListFilter,
 	OrdersListResult,
@@ -1128,6 +1130,11 @@ function toOrderSummaryWire(summary: OrderSummary): OrderSummaryWire {
  *  (lines and totals were frozen at purchase time; `shippingAddress` was captured
  *  at checkout, ADR-0009, and is read off the order rather than the live address
  *  book). */
+function adminTaxRows(order: Order): Pick<OrderTotalsWire, "taxRows"> {
+	const rows = orderTaxRows(order.totals);
+	return rows === null ? {} : { taxRows: rows };
+}
+
 function toOrderDetailWire(order: Order): OrderDetailWire {
 	return {
 		id: order.id,
@@ -1156,6 +1163,7 @@ function toOrderDetailWire(order: Order): OrderDetailWire {
 			// the totals' method snapshot so the console can render the captured
 			// ship-to country NEXT TO the priced zone. No matching/validation.
 			shippingZoneId: shippingZoneIdOf(order.totals.shippingMethodSnapshot),
+			...adminTaxRows(order),
 		},
 		lines: order.lines.map((l) => ({
 			sku: l.sku,
