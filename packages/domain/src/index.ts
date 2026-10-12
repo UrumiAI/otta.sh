@@ -627,6 +627,7 @@ export {
 	getProductCommerce,
 	listProductCommerceByIds,
 	listProductVariants,
+	restoreProductCommerce,
 	softDeleteProductCommerce,
 	updateProductCommerceFields,
 	updateProductVariantFields,

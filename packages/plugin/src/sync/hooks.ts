@@ -11,6 +11,7 @@ import { parseProductTitle } from "./parse-product-title.js";
 import {
 	deriveDeleteIdempotencyKey,
 	derivePublishIdempotencyKey,
+	deriveRestoreIdempotencyKey,
 	deriveSaveIdempotencyKey,
 	deriveUnpublishIdempotencyKey,
 } from "./derive-idempotency-key.js";
@@ -452,6 +453,66 @@ export function createAfterDeleteHandler(): HookHandler<ContentDeleteEvent> {
 		} catch (err) {
 			console.error(
 				`[otta] content:afterDelete sync failed for product_id=${event.id} — the cron's product-orphans sweep soft-deletes the row once the CMS has confirmed, on three separate runs, that the document is gone:`,
+				err,
+			);
+		}
+	};
+}
+
+/**
+ * `content:afterRestore` → undo the soft delete (issue #447). Trashing a product
+ * tombstones its row (`createAfterDeleteHandler`, or the `product-orphans` sweep
+ * when that delivery was lost); restoring it from the trash is the CMS taking
+ * that delete back, so the row comes back too — with its price, and its sku and
+ * stock unless another product took the sku meanwhile (`ProductCommerceStore.restore`).
+ *
+ * NO ACTIVATE. EmDash restores a document as a DRAFT (`ContentRepository.restore`
+ * sets `status = 'draft'`, `live_revision_id = NULL`), so the product is sold
+ * again only once the merchant publishes it, through `content:afterPublish`.
+ *
+ * STILL TRASHED? The event says the document WAS restored, but a quick re-trash
+ * can land first (both hooks are deferred, fire-and-forget). So when the host
+ * hands over `ctx.content`, the document is read first: `null` means it is gone
+ * again and the tombstone stays. A read that REJECTS is not taken as gone — the
+ * event itself is the evidence, and a wrongly restored row is inactive anyway and
+ * is tombstoned again by the sweep.
+ *
+ * Fire-and-forget, like its siblings: a failure is logged, never thrown. The
+ * recovery is to trash and restore the product again.
+ */
+export function createAfterRestoreHandler(): HookHandler<ContentStateChangeEvent> {
+	return async (event, ctx) => {
+		if (event.collection !== PRODUCTS_COLLECTION) return;
+		const id = event.content["id"];
+		if (typeof id !== "string" || id.length === 0) return;
+		if (ctx.content !== undefined) {
+			let doc: Record<string, unknown> | null | undefined;
+			try {
+				doc = await ctx.content.get(PRODUCTS_COLLECTION, id);
+			} catch (err) {
+				console.warn(
+					`[otta] content:afterRestore: could not re-read product_id=${id}; restoring on the event's word:`,
+					err,
+				);
+			}
+			if (doc === null) {
+				console.warn(
+					`[otta] content:afterRestore: product_id=${id} is not in the CMS any more (trashed again?) — its commerce row stays deleted.`,
+				);
+				return;
+			}
+		}
+		const key = deriveRestoreIdempotencyKey(
+			event.collection,
+			id,
+			event.content["updatedAt"],
+			event.content["version"],
+		);
+		try {
+			await (await makeCommerceClient(ctx)).restoreProductCommerce(id, key);
+		} catch (err) {
+			console.error(
+				`[otta] content:afterRestore sync failed for product_id=${id} — its commerce row stays deleted until the product is trashed and restored again:`,
 				err,
 			);
 		}

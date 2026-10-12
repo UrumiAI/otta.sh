@@ -568,6 +568,14 @@ export function storefrontCommerceClientContract(tier: CommerceClientTier): void
 			expect(row?.sku).toBe("SKU-C4"); // commercial data preserved, not wiped
 		});
 
+		test("restoreProductCommerce clears the tombstone (issue #447): live again, still inactive, sku kept", async () => {
+			await client.upsertProductCommerce("prod-c4r", { sku: "SKU-C4R" }, "k4r");
+			await client.softDeleteProductCommerce("prod-c4r", "del-1");
+			await client.restoreProductCommerce("prod-c4r", "restore-1");
+			const row = await client.getProductCommerce("prod-c4r");
+			expect(row).toMatchObject({ deletedAt: null, active: false, sku: "SKU-C4R" });
+		});
+
 		test("getCommerceBatch returns only the known items, each carrying inStock", async () => {
 			await client.upsertProductCommerce(
 				"prod-cb1",

@@ -549,6 +549,21 @@ export class InMemoryProductCommerceStore implements ProductCommerceStore {
 		});
 	}
 
+	async restore(productId: ProductId, key: IdempotencyKey): Promise<void> {
+		const existing = this.#rows.get(productId);
+		if (existing === undefined || existing.deletedAt === null) return; // unknown or live: no-op.
+		const s = existing.sku;
+		// The sku comes back only if no live product or variant took it meanwhile.
+		const keep = s !== null && !this.#skuTakenByLiveProduct(s) && !this.#skuTakenByLiveVariant(s);
+		this.#rows.set(productId, {
+			...existing,
+			sku: keep ? s : null,
+			deletedAt: null,
+			idempotencyKey: key,
+			updatedAt: this.#clock.now(),
+		});
+	}
+
 	// -- Admin Products console: view-only keyset list (admin-UX Increment 2) --
 
 	/**

@@ -87,6 +87,8 @@ import {
 	type FakeCms,
 } from "./cron-sweep-fixtures.js";
 import { commerceStorageLayout } from "./sandbox/storage-layout.js";
+import { createAfterPublishHandler, createAfterRestoreHandler } from "../src/sync/hooks.js";
+import type { ContentStateChangeEvent } from "../src/types.js";
 
 const NOW = new Date("2026-10-05T12:00:00.000Z");
 /** Comfortably outside the grace window. */
@@ -740,6 +742,103 @@ describe("the soft delete is the hook's own, and touches nothing else", () => {
 		expect(orphanLeg(rest).count).toBe(gone.length - ORPHAN_TOMBSTONES_PER_TICK);
 		for (const id of gone) expect(await lifecycleOf(id), id).toBe("deleted");
 		for (const id of kept) expect(await lifecycleOf(id), id).toBe("live");
+	});
+});
+
+describe("a product restored from the CMS trash is sold again (issue #447)", () => {
+	/** The `content:afterRestore` event EmDash sends: the restored item, back as a
+	 *  DRAFT with a bumped `updatedAt` and `version`. */
+	function restored(id: string): ContentStateChangeEvent {
+		return {
+			collection: "products",
+			content: {
+				id,
+				status: "draft",
+				liveRevisionId: null,
+				updatedAt: new Date(NOW.getTime() + 4 * CADENCE).toISOString(),
+				version: 3,
+				data: { title: `Product ${id}` },
+			},
+		};
+	}
+
+	function published(id: string): ContentStateChangeEvent {
+		return {
+			collection: "products",
+			content: {
+				id,
+				status: "published",
+				updatedAt: new Date(NOW.getTime() + 5 * CADENCE).toISOString(),
+				version: 4,
+				data: { title: `Product ${id}` },
+			},
+		};
+	}
+
+	test("the sweep tombstones a trashed product; the restore brings the row back with its sku and stock, inactive, and the next publish puts it on sale", async () => {
+		await product("p-restore", CREATED, "SKU-RESTORE");
+		const inventory = new EmdashInventoryStore({
+			storage,
+			idGen: uuidIdGen,
+			clock: new FixedClock(NOW),
+		});
+		await inventory.seedOnHand(toSku("SKU-RESTORE"), 5);
+		const cms = fakeCms({ gone: ["p-restore"] });
+		const cursors = memoryCursors();
+		expect(await strikeOut(cms, cursors)).toBe(1);
+		expect(await row("p-restore")).toMatchObject({ lifecycle: "deleted", active: false });
+
+		// The merchant restores it from the trash.
+		cms.gone.delete("p-restore");
+		const ctx = sweepContext(storage, undefined, {}, cms);
+		await createAfterRestoreHandler()(restored("p-restore"), ctx);
+
+		expect(await row("p-restore")).toMatchObject({
+			lifecycle: "live",
+			deletedAt: null,
+			active: false,
+			sku: "SKU-RESTORE",
+			price: { amount: 1500, currency: "USD" },
+		});
+		expect(await inventory.getOnHand(toSku("SKU-RESTORE"))).toBe(5);
+
+		await createAfterPublishHandler()(published("p-restore"), ctx);
+		expect(await row("p-restore")).toMatchObject({ lifecycle: "live", active: true });
+
+		// The sweep finds the document now, so it stays live on the next pass.
+		const later = await tick(cms, cursors, 6 * CADENCE);
+		expect(orphanLeg(later)).toMatchObject({ ok: true, count: 0 });
+		expect(await lifecycleOf("p-restore")).toBe("live");
+	});
+
+	test("a restore event for a product the CMS no longer has (trashed again) leaves the tombstone alone", async () => {
+		await product("p-retrashed");
+		const cms = fakeCms({ gone: ["p-retrashed"] });
+		await strikeOut(cms, memoryCursors());
+		const tombstone = await row("p-retrashed");
+		expect(tombstone?.lifecycle).toBe("deleted");
+
+		await createAfterRestoreHandler()(
+			restored("p-retrashed"),
+			sweepContext(storage, undefined, {}, cms),
+		);
+
+		expect(await row("p-retrashed")).toEqual(tombstone);
+	});
+
+	test("a CMS read that fails does not block the restore: the event itself says the document is back", async () => {
+		await product("p-restore-fail");
+		const cms = fakeCms({ gone: ["p-restore-fail"] });
+		await strikeOut(cms, memoryCursors());
+		cms.gone.delete("p-restore-fail");
+		cms.failing.add("p-restore-fail");
+
+		await createAfterRestoreHandler()(
+			restored("p-restore-fail"),
+			sweepContext(storage, undefined, {}, cms),
+		);
+
+		expect(await row("p-restore-fail")).toMatchObject({ lifecycle: "live", active: false });
 	});
 });
 

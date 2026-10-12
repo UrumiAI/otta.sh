@@ -506,12 +506,14 @@ export {
 export {
 	deriveDeleteIdempotencyKey,
 	derivePublishIdempotencyKey,
+	deriveRestoreIdempotencyKey,
 	deriveSaveIdempotencyKey,
 	deriveUnpublishIdempotencyKey,
 } from "./sync/derive-idempotency-key.js";
 export {
 	createAfterDeleteHandler,
 	createAfterPublishHandler,
+	createAfterRestoreHandler,
 	createAfterSaveHandler,
 	createAfterUnpublishHandler,
 	PRODUCTS_COLLECTION,

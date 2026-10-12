@@ -725,6 +725,23 @@ export interface ProductCommerceStore {
 	 *  no-op. */
 	softDelete(productId: ProductId, key: IdempotencyKey): Promise<void>;
 	/**
+	 * Undo a soft delete (issue #447): the CMS restored this product from its
+	 * trash (`content:afterRestore`). Every tombstone is a CMS delete — the
+	 * delete hook's, or the `product-orphans` sweep finishing a lost one — so the
+	 * CMS undoing that delete is the one event allowed to reverse it.
+	 *  - unknown or LIVE row → no-op. A live row is never touched, so a restore
+	 *    can never deactivate a product that is on sale, and a replay is a no-op.
+	 *  - a TOMBSTONED row → `deletedAt = null`, stamped with `key`. `active`
+	 *    STAYS false: EmDash restores a document as a draft, so the product is
+	 *    sold again only after the next publish (`activate`).
+	 *  - its sku is RE-CLAIMED when still free among live sellable units, and
+	 *    CLEARED to null when another live product or variant took it while the
+	 *    row was tombstoned — never a `SkuConflictError` (the variant
+	 *    resurrect's rule, see `upsertVariant`). Price, title, kind and every
+	 *    other field are kept; the inventory row is never touched.
+	 */
+	restore(productId: ProductId, key: IdempotencyKey): Promise<void>;
+	/**
 	 * Guarded admin EDIT of the commerce-owned fields (admin-UX Increment 2,
 	 * slice 2 — the standalone product edit page). UNLIKE `upsert` (a CMS-sync /
 	 * field-widget insert-or-update, last-writer-wins), this is an EDIT of an

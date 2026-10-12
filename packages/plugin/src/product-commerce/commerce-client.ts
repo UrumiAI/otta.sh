@@ -235,6 +235,9 @@ export interface CommerceClient {
 	): Promise<ProductCommerce>;
 	getProductCommerce(productId: string): Promise<ProductCommerce | null>;
 	softDeleteProductCommerce(productId: string, idempotencyKey: string): Promise<void>;
+	/** `content:afterRestore` (issue #447): undo a soft delete. A live or unknown
+	 *  row is a no-op; the row stays inactive until the next publish. */
+	restoreProductCommerce(productId: string, idempotencyKey: string): Promise<void>;
 	/** The afterPublish→activate follow-up (plan §6 step 7): mirrors
 	 *  `POST /products/:id/commerce/activate` 1:1. Deliberately separate from
 	 *  `upsertProductCommerce` — see the service route's doc for why `active`

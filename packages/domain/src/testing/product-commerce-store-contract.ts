@@ -370,6 +370,118 @@ export function productCommerceStoreContract(
 			expect(await h.store.getByProductId(productId("does-not-exist"))).toBeNull();
 		});
 
+		// -- restore (issue #447: a product restored from the CMS trash) ---------
+
+		test("restore clears the tombstone and keeps sku, price and stock; the row stays INACTIVE until a publish activates it", async () => {
+			const h = await makeStore();
+			const pid = productId("prod-447-a");
+			await h.seedStock("SKU-447-A", 7);
+			await h.store.upsert(
+				{ productId: pid, sku: sku("SKU-447-A"), price: money(cents(900), currency("USD")) },
+				idempotencyKey("k1"),
+			);
+			await h.store.activate(pid, idempotencyKey("pub-1"), "2026-07-01T00:00:00.000Z");
+			await h.store.softDelete(pid, idempotencyKey("products:prod-447-a:deleted"));
+
+			await h.store.restore(pid, idempotencyKey("restore-1"));
+
+			const read = await h.store.getByProductId(pid);
+			expect(read).toMatchObject({
+				deletedAt: null,
+				active: false,
+				sku: "SKU-447-A",
+				price: { amount: 900, currency: "USD" },
+			});
+			expect(await onHandOf(h, "prod-447-a")).toBe(7);
+			// A restored CMS document comes back as a DRAFT, so the restore itself
+			// sells nothing: the catalog reports it inactive until the next publish.
+			expect(await h.store.listCommerceByIds([pid])).toMatchObject([{ active: false }]);
+
+			await h.store.activate(pid, idempotencyKey("pub-2"), "2026-07-02T00:00:00.000Z");
+			expect(await h.store.listCommerceByIds([pid])).toMatchObject([
+				{ active: true, sku: "SKU-447-A" },
+			]);
+		});
+
+		test("restore is a no-op on a live row, on an unknown id, and when replayed", async () => {
+			const h = await makeStore();
+			const pid = productId("prod-447-b");
+			await h.store.upsert(
+				{ productId: pid, sku: sku("SKU-447-B"), price: money(cents(900), currency("USD")) },
+				idempotencyKey("k1"),
+			);
+			await h.store.activate(pid, idempotencyKey("pub-1"), "2026-07-01T00:00:00.000Z");
+			const live = await h.store.getByProductId(pid);
+
+			// A live (and active) row: nothing moves — in particular the restore does
+			// not deactivate a product that is on sale.
+			await h.store.restore(pid, idempotencyKey("restore-1"));
+			expect(await h.store.getByProductId(pid)).toEqual(live);
+
+			await h.store.restore(productId("prod-447-none"), idempotencyKey("restore-1"));
+			expect(await h.store.getByProductId(productId("prod-447-none"))).toBeNull();
+
+			await h.store.softDelete(pid, idempotencyKey("products:prod-447-b:deleted"));
+			await h.store.restore(pid, idempotencyKey("restore-2"));
+			const restored = await h.store.getByProductId(pid);
+			await h.store.restore(pid, idempotencyKey("restore-2"));
+			expect(await h.store.getByProductId(pid)).toEqual(restored);
+		});
+
+		test("restore after the sku was reused by another live product clears the restored row's sku instead of refusing, and moves no stock", async () => {
+			const h = await makeStore();
+			const old = productId("prod-447-old");
+			const other = productId("prod-447-other");
+			await h.seedStock("SKU-447-C", 4);
+			await h.store.upsert(
+				{ productId: old, sku: sku("SKU-447-C"), price: money(cents(900), currency("USD")) },
+				idempotencyKey("k-old"),
+			);
+			await h.store.softDelete(old, idempotencyKey("products:prod-447-old:deleted"));
+			// While the old product sat in the trash, its sku was free and taken.
+			await h.store.upsert(
+				{ productId: other, sku: sku("SKU-447-C"), price: money(cents(900), currency("USD")) },
+				idempotencyKey("k-other"),
+			);
+
+			await h.store.restore(old, idempotencyKey("restore-1"));
+
+			const restored = await h.store.getByProductId(old);
+			expect(restored).toMatchObject({ deletedAt: null, active: false, sku: null });
+			// The price is kept: the merchant only has to give the product a new sku.
+			expect(restored?.price).toEqual({ amount: 900, currency: "USD" });
+			expect(await h.store.getByProductId(other)).toMatchObject({ sku: "SKU-447-C" });
+			expect(await onHandOf(h, "prod-447-other")).toBe(4);
+			// Two live rows never share a sku: the new owner keeps it.
+			await expect(
+				h.store.upsert({ productId: old, sku: sku("SKU-447-C") }, idempotencyKey("k-old-2")),
+			).rejects.toBeInstanceOf(SkuConflictError);
+		});
+
+		test("restore re-claims the sku, so it is not free for another product afterwards, and a second trash tombstones again under the same delete key", async () => {
+			const h = await makeStore();
+			const pid = productId("prod-447-d");
+			const other = productId("prod-447-d2");
+			await h.store.upsert(
+				{ productId: pid, sku: sku("SKU-447-D"), price: money(cents(900), currency("USD")) },
+				idempotencyKey("k1"),
+			);
+			const deleteKey = idempotencyKey("products:prod-447-d:deleted");
+			await h.store.softDelete(pid, deleteKey);
+			await h.store.restore(pid, idempotencyKey("restore-1"));
+
+			await expect(
+				h.store.upsert({ productId: other, sku: sku("SKU-447-D") }, idempotencyKey("k2")),
+			).rejects.toBeInstanceOf(SkuConflictError);
+
+			await h.store.softDelete(pid, deleteKey);
+			expect((await h.store.getByProductId(pid))?.deletedAt).not.toBeNull();
+			// …and the second tombstone frees the sku again, exactly like the first.
+			expect(
+				await h.store.upsert({ productId: other, sku: sku("SKU-447-D") }, idempotencyKey("k3")),
+			).toMatchObject({ sku: "SKU-447-D" });
+		});
+
 		// -- updateCommerceFields (guarded admin edit, admin-UX Increment 2) -----
 		//
 		// NOTE (ADR-0013): these cases deliberately use `taxClass` as their "field

@@ -310,9 +310,10 @@ export interface PluginContext {
 	 * capability this plugin already declares for its content hooks. Read-only here
 	 * on purpose: the plugin never writes CMS content.
 	 *
-	 * ONE caller: the `product-orphans` sweep leg (issue #374), which asks whether a
-	 * commerce row's CMS document still exists. Everything else gets what it needs
-	 * from the hook event itself.
+	 * TWO callers: the `product-orphans` sweep leg (issue #374), which asks whether a
+	 * commerce row's CMS document still exists, and `content:afterRestore` (issue
+	 * #447), which checks a restored document was not trashed again before its row
+	 * comes back. Everything else gets what it needs from the hook event itself.
 	 *
 	 * OPTIONAL like `storage` and `cron`: the host omits it when the capability is
 	 * missing, and the workerd test mirror (`sandbox-entry.ts`) has no CMS to offer.
@@ -366,9 +367,11 @@ export interface EmailAccess {
  *    read REJECTS, as on the trusted path (`src/sandbox/bridge.ts`: `contentGet`
  *    retries once on the raw binding and lets that error out).
  *
- * So `null` is never proof on its own. The one caller (`product-orphans`) asks the
+ * So `null` is never proof on its own. The sweep (`product-orphans`) asks the
  * CMS to LIST a product first, re-reads every `null`, counts it only in a run that
  * read some other document, and needs three such runs a cadence apart.
+ * `content:afterRestore` acts on a `null` only in the safe direction: it leaves
+ * the row deleted.
  */
 export interface ContentReadAccess {
 	get(collection: string, id: string): Promise<Record<string, unknown> | null>;
@@ -423,6 +426,7 @@ export interface SandboxedPluginHooks {
 	"content:afterDelete"?: { handler: HookHandler<ContentDeleteEvent> };
 	"content:afterPublish"?: { handler: HookHandler<ContentStateChangeEvent> };
 	"content:afterUnpublish"?: { handler: HookHandler<ContentStateChangeEvent> };
+	"content:afterRestore"?: { handler: HookHandler<ContentStateChangeEvent> };
 	/**
 	 * The scheduled sweep (INC-C4). Not capability-gated — the host validates a
 	 * declared hook name against its own list, on which `cron` carries no required

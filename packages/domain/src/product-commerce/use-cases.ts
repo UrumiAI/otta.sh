@@ -277,6 +277,20 @@ export async function softDeleteProductCommerce(
 }
 
 /**
+ * Undo a soft delete when the CMS restored the product from its trash (issue
+ * #447): a thin pass-through to `ProductCommerceStore.restore`, whose doc
+ * carries the semantics (live/unknown rows are no-ops, the row stays inactive
+ * until a publish, a sku taken meanwhile is cleared rather than refused).
+ */
+export async function restoreProductCommerce(
+	store: ProductCommerceStore,
+	productId: ProductId,
+	key: IdempotencyKey,
+): Promise<void> {
+	return store.restore(productId, key);
+}
+
+/**
  * The afterPublish→activate follow-up (plan §6 step 7): a thin pass-through
  * to `ProductCommerceStore.activate` — the port's doc carries the semantics
  * (unknown/soft-deleted/already-active rows are no-ops; a soft-deleted

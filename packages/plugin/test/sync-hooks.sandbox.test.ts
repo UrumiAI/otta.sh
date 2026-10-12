@@ -714,6 +714,53 @@ describe("sync hooks — afterSave keeps product_commerce alive and its title cu
 		expect(doc.idempotencyKey).toBe(`products:${id}:deleted`);
 	});
 
+	test("content:afterRestore (issue #447) undoes the trash's soft delete: the row is live again with its sku, inactive until the next publish, which activates it", async () => {
+		const id = pid("prod-restore");
+		await seedPricedRow(id, "SKU-SH-RESTORE");
+		await sandboxHandle.invokeHook("content:afterDelete", {
+			id,
+			collection: "products",
+			permanent: false,
+		});
+		expect((await requireDoc(id)).lifecycle).toBe("deleted");
+
+		// EmDash restores a document as a DRAFT and bumps `updatedAt` and `version`.
+		const restoredAt = "2026-07-11T00:00:00.000Z";
+		const outcome = await sandboxHandle.invokeHook("content:afterRestore", {
+			collection: "products",
+			content: productContent(id, {
+				status: "draft",
+				liveRevisionId: null,
+				updatedAt: restoredAt,
+				version: 2,
+			}),
+		});
+
+		expect(outcome).toEqual({ result: null });
+		const doc = await requireDoc(id);
+		expect(doc).toMatchObject({
+			lifecycle: "live",
+			deletedAt: null,
+			active: false,
+			sku: "SKU-SH-RESTORE",
+			price: { amount: 1999, currency: "USD" },
+		});
+		expect(doc.idempotencyKey).toBe(`products:${id}:restored:${restoredAt}:2`);
+
+		await afterPublish(
+			productContent(id, { status: "published", updatedAt: "2026-07-12T00:00:00.000Z" }),
+		);
+		expect(await requireDoc(id)).toMatchObject({ lifecycle: "live", active: true });
+	});
+
+	test("content:afterRestore for a non-products collection is a no-op — the store is not even read", async () => {
+		await sandboxHandle.invokeHook("content:afterRestore", {
+			collection: "pages",
+			content: productContent(pid("page-restore")),
+		});
+		expect(productCalls.calls).toEqual([]);
+	});
+
 	test("afterSave/afterDelete for a non-products collection are no-ops — the store is not even read", async () => {
 		const id = pid("page-1");
 

@@ -981,6 +981,52 @@ export class EmdashProductCommerceStore implements ProductCommerceStore {
 		});
 	}
 
+	/**
+	 * Undo a soft delete when the CMS restored the product from its trash (#447).
+	 * Unknown and live rows are no-ops; `active` stays false (the restored document
+	 * is a draft until published).
+	 *
+	 * The sku the tombstone released is RE-CLAIMED, the way a resurrecting variant
+	 * reclaims its own: kept when still free, cleared when another live unit took it
+	 * meanwhile, and re-asserted just before the commit so a takeover inside the
+	 * window is seen. The inventory document is never touched.
+	 */
+	async restore(productId: ProductId, key: IdempotencyKey): Promise<void> {
+		const ref: SkuOwnerRef = { kind: "product", productId };
+		await this.#cas<void>("restore", async () => {
+			const current = await this.#products.getVersioned(productId);
+			if (current === null) return casDone(undefined);
+			const doc = normalizeProductDoc(current.value);
+			if (doc.lifecycle !== "deleted") return casDone(undefined);
+			const reclaimed = doc.sku === null ? null : await this.#reclaimSku(doc.sku, ref);
+			if (reclaimed !== null) {
+				let held: boolean;
+				try {
+					held = await this.#heartbeatClaim(reclaimed, ref, {
+						claimed: null,
+						createdTarget: null,
+						committed: false,
+						contended: 0,
+					});
+				} catch (err) {
+					if (!(err instanceof SkuConflictError)) throw err;
+					return CAS_RETRY;
+				}
+				if (!held) return CAS_RETRY;
+			}
+			const at = this.#clock.now().toISOString();
+			const written = await this.#products.compareAndSet(productId, current.revision, {
+				...doc,
+				lifecycle: "live",
+				sku: reclaimed === null ? null : doc.sku,
+				deletedAt: null,
+				idempotencyKey: key,
+				updatedAt: at,
+			});
+			return written.applied ? casDone(undefined) : CAS_RETRY;
+		});
+	}
+
 	// -- variants --------------------------------------------------------------
 
 	/**
