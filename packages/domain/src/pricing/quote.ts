@@ -127,7 +127,11 @@ export type QuoteResult =
 			/** Whether tax was calculated for a place: a tax location matched a
 			 *  zone, or the calculator charged tax without one (an outside
 			 *  calculator answers for the address itself, #436). False ⇒ the tax
-			 *  was not located. The built-in charges nothing without a zone. */
+			 *  was not located. The built-in charges nothing without a zone.
+			 *  So `located` here means "a place resolved, or tax was charged": a
+			 *  zero-rated outside answer with no zone reads as not located. A future
+			 *  `TaxResult` field could let an outside calculator report "located"
+			 *  explicitly for such answers. */
 			taxLocated: boolean;
 	  }
 	| { ok: false; reason: QuoteFailure };

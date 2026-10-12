@@ -200,4 +200,63 @@ describe("an outside calculator charging tax on a store with no shipping zones",
 		const view = buildOrderView(read.order, "en-US");
 		expect(view.totals.tax.label).toBe("$5.00");
 	});
+
+	test("prices entered with tax: the review carries the 'Includes' note; the order shows the same tax", async () => {
+		await z.stores.settingsStore.update(
+			{
+				tax: {
+					...NEW_STORE_TAX_SETTINGS,
+					enabled: true,
+					pricesIncludeTax: true,
+					displayCart: "incl",
+					totalsDisplay: "single",
+				},
+			},
+			idempotencyKey("tax-incl"),
+		);
+		const { cartId } = await z.client.createCart(USD);
+		const added = await z.client.addCartLine(cartId, "MUG", "mug", 1, "add-1");
+		expect(added.ok).toBe(true);
+
+		const quote = await z.client.quoteCheckout({ cartId, destination: { country: "GB" } });
+		if (!quote.ok) throw new Error(quote.reason);
+		expect(quote.destination.status).toBe("no_zones");
+		// The 500 is inside the 5000 the buyer pays.
+		expect(quote.breakdown).toMatchObject({ taxCents: 500, totalCents: 5000 });
+		expect(quote.breakdown.tax?.located).toBe(true);
+		const review = buildCheckoutTotals(quote.breakdown, {
+			locale: "en-US",
+			shippingSelected: false,
+			taxZoneSelected: false,
+		});
+		expect(review.taxRows).toEqual([]);
+		expect(review.taxIncludedNote).toBe("Includes $5.00 tax");
+
+		const placed = await z.client.createOrder(
+			{
+				cartId,
+				paymentMethod: "stripe",
+				buyerRef: "ada@example.com",
+				shippingAddress: {
+					name: "Ada Lovelace",
+					line1: "1 Main St",
+					city: "London",
+					postalCode: "N1 1AA",
+					country: "GB",
+				},
+			},
+			`place-${cartId}`,
+		);
+		if (!placed.ok) throw new Error(placed.reason);
+		const read = await z.client.getPublicOrder(placed.order.id);
+		if (!read.ok) throw new Error(read.reason);
+		expect(read.order.totals).toMatchObject({ taxCents: 500, totalCents: 5000, taxLocated: true });
+		// The order page states an inclusive order net with one Tax row (the
+		// store's display setting is not frozen into the order — orderTaxWire);
+		// what must agree is that the same $5.00 tax is shown, not "Not calculated".
+		const view = buildOrderView(read.order, "en-US");
+		expect(view.totals.taxRows.map((r) => [r.label, r.amount.label])).toEqual([["Tax", "$5.00"]]);
+		expect(view.totals.subtotal.label).toBe("$45.00");
+		expect(view.totals.total.label).toBe("$50.00");
+	});
 });
