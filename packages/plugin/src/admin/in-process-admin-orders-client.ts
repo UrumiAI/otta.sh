@@ -107,6 +107,7 @@ import {
 	orderHasEmailRecipient,
 	orderId as toOrderId,
 	orderNumber,
+	orderTaxRows,
 	readOrderTaxSnapshot,
 	recordFulfillment as recordFulfillmentUseCase,
 	refundOrder as refundOrderUseCase,
@@ -165,6 +166,7 @@ import type {
 	InlineEmailStatus,
 	OrderDetailResult,
 	OrderDetailWire,
+	OrderTotalsWire,
 	OrderNoteWire,
 	OrdersListFilter,
 	OrdersListResult,
@@ -1126,6 +1128,13 @@ function toOrderSummaryWire(summary: OrderSummary): OrderSummaryWire {
 	};
 }
 
+/** The order's tax rows for the admin (issue #422): always itemized, absent when
+ *  the order has nothing to itemize. */
+function adminTaxRows(order: Order): Pick<OrderTotalsWire, "taxRows"> {
+	const rows = orderTaxRows(order.totals);
+	return rows === null ? {} : { taxRows: rows };
+}
+
 /** `serializeOrder`'s twin — the full mutable envelope plus the SNAPSHOT halves
  *  (lines and totals were frozen at purchase time; `shippingAddress` was captured
  *  at checkout, ADR-0009, and is read off the order rather than the live address
@@ -1162,6 +1171,7 @@ function toOrderDetailWire(order: Order): OrderDetailWire {
 			shippingZoneId: shippingZoneIdOf(order.totals.shippingMethodSnapshot),
 			// #421: what the order's own frozen snapshot recorded, never today's setting.
 			...(pricesIncludeTaxOf(order.totals.taxBreakdown) ? { pricesIncludeTax: true as const } : {}),
+			...adminTaxRows(order),
 		},
 		lines: order.lines.map((l, index) => {
 			const taxStatus = taxStatusOf.get(index);

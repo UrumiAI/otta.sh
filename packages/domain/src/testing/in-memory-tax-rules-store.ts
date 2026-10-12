@@ -13,6 +13,11 @@ import type {
 	UpdateTaxRateResult,
 } from "../ports/tax-rules-store.js";
 import { appliedTaxRate, TaxRateDuplicateError } from "../pricing/tax-rate-uniqueness.js";
+import {
+	canonicalTaxRateValue,
+	normalizeTaxRateValue,
+	ratePpmOf,
+} from "../pricing/tax-rate-precision.js";
 
 /** IO-free `TaxRulesStore` fake — the first adapter to pass the contract. */
 export class InMemoryTaxRulesStore implements TaxRulesStore {
@@ -74,11 +79,12 @@ export class InMemoryTaxRulesStore implements TaxRulesStore {
 		}
 		const existing = appliedTaxRate([...this.#rates.values()], input.taxClassId, input.zoneId);
 		if (existing !== null) throw new TaxRateDuplicateError(existing);
+		const value = normalizeTaxRateValue(input); // a disagreeing pair throws, writing nothing
 		const rate: TaxRate = {
 			id: input.id,
 			taxClassId: input.taxClassId,
 			zoneId: input.zoneId,
-			rateBps: input.rateBps,
+			...value,
 			appliesToShipping: input.appliesToShipping,
 		};
 		this.#rates.set(rate.id, rate);
@@ -87,7 +93,7 @@ export class InMemoryTaxRulesStore implements TaxRulesStore {
 
 	async getRate(taxClassId: string, zoneId: string): Promise<TaxRate | null> {
 		const applied = appliedTaxRate([...this.#rates.values()], taxClassId, zoneId);
-		return applied === null ? null : { ...applied };
+		return applied === null ? null : canonical(applied);
 	}
 
 	async listRatesForZone(zoneId: string): Promise<TaxRate[]> {
@@ -96,7 +102,7 @@ export class InMemoryTaxRulesStore implements TaxRulesStore {
 		return [...this.#rates.values()]
 			.filter((r) => r.zoneId === zoneId)
 			.toSorted((a, b) => (a.id < b.id ? -1 : 1))
-			.map((r) => ({ ...r }));
+			.map(canonical);
 	}
 
 	async hasAnyRate(): Promise<boolean> {
@@ -111,18 +117,29 @@ export class InMemoryTaxRulesStore implements TaxRulesStore {
 	): Promise<UpdateTaxRateResult> {
 		const rate = this.#rates.get(id);
 		if (rate === undefined) return { ok: false, reason: "not_found" };
-		if (rate.rateBps === input.rateBps && rate.appliesToShipping === input.appliesToShipping) {
-			return { ok: true, rate: { ...rate } }; // idempotent replay
+		const value = normalizeTaxRateValue(input);
+		// The rate is compared EXACTLY (#425): 8.875% is not the 8.88% it rounds to.
+		if (
+			ratePpmOf(rate) === ratePpmOf(value) &&
+			rate.appliesToShipping === input.appliesToShipping
+		) {
+			return { ok: true, rate: canonical(rate) }; // idempotent replay
 		}
 		if (
-			rate.rateBps !== expected.rateBps ||
+			ratePpmOf(rate) !== ratePpmOf(expected) ||
 			rate.appliesToShipping !== expected.appliesToShipping
 		) {
-			return { ok: false, reason: "stale", current: { ...rate } };
+			return { ok: false, reason: "stale", current: canonical(rate) };
 		}
-		rate.rateBps = input.rateBps;
-		rate.appliesToShipping = input.appliesToShipping;
-		return { ok: true, rate: { ...rate } };
+		const next: TaxRate = {
+			id: rate.id,
+			taxClassId: rate.taxClassId,
+			zoneId: rate.zoneId,
+			...value,
+			appliesToShipping: input.appliesToShipping,
+		};
+		this.#rates.set(id, next);
+		return { ok: true, rate: { ...next } };
 	}
 
 	/**
@@ -140,4 +157,11 @@ export class InMemoryTaxRulesStore implements TaxRulesStore {
 		this.#rates.delete(id);
 		return { ok: true };
 	}
+}
+
+/** A rate as the port returns it: a stale or malformed `ratePpm` (one a build that
+ *  knew only `rateBps` left behind, #425) is not part of the rate. */
+function canonical(rate: TaxRate): TaxRate {
+	const { ratePpm: _stored, ...rest } = rate;
+	return { ...rest, ...canonicalTaxRateValue(rate) };
 }

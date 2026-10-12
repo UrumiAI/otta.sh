@@ -12,6 +12,7 @@ import {
 	createOrderFromCart,
 	currency,
 	idempotencyKey,
+	readOrderTaxSnapshot,
 	type CreateOrderDeps,
 } from "@otta-sh/domain";
 import { expect, test } from "vitest";
@@ -47,9 +48,11 @@ describeEachDialect("checkout zone derivation (ADR-0021)", (ctx) => {
 		const h = makeOrderHarness(bound.storage);
 		const shippingRules = new EmdashShippingRulesStore({ storage: bound.storage, clock: h.clock });
 		const taxRules = new EmdashTaxRulesStore({ storage: bound.storage, clock: h.clock });
-		for (const [id, regions, bps] of [
-			["z-us", ["US"], 0],
-			["z-us-ca", ["US-CA"], 725],
+		for (const [id, regions, bps, ppm] of [
+			["z-us", ["US"], 0, undefined],
+			["z-us-ca", ["US-CA"], 725, undefined],
+			// #425: New York City's 8.875%, finer than a basis point.
+			["z-us-ny", ["US-NY"], 888, 88_750],
 		] as const) {
 			await shippingRules.createZone({ id, name: id, regions: [...regions] });
 			await shippingRules.createMethod({
@@ -69,6 +72,7 @@ describeEachDialect("checkout zone derivation (ADR-0021)", (ctx) => {
 				taxClassId: "standard",
 				zoneId: id,
 				rateBps: bps,
+				...(ppm === undefined ? {} : { ratePpm: ppm }),
 				appliesToShipping: false,
 			});
 		}
@@ -99,6 +103,32 @@ describeEachDialect("checkout zone derivation (ADR-0021)", (ctx) => {
 			shippingMethodSnapshot: { zoneId: "z-us-ca", methodId: "m-z-us-ca", matchedRegion: "US-CA" },
 		});
 		expect(stored?.shippingAddress).toMatchObject({ country: "US", region: "CA" });
+	});
+
+	test("US-NY at 8.875% (#425): $1,000.00 is taxed $88.75 — not the $88.80 of 8.88% — and the snapshot keeps the exact rate", async () => {
+		const { h, deps } = await setup();
+		await h.seedPhysical({
+			productId: "p2",
+			sku: "SKU-2",
+			priceCents: 100_000,
+			title: "Espresso machine",
+			onHand: 1,
+		});
+		const cartId = await h.cartWith([{ sku: "SKU-2", productId: "p2", qty: 1, kind: "physical" }]);
+		const res = await createOrderFromCart(
+			deps,
+			cmd(cartId, { shippingAddress: address("US", "NY"), shippingMethodId: "m-z-us-ny" }),
+		);
+		expect(res.ok).toBe(true);
+		if (!res.ok) return;
+		const stored = await h.store.getById(res.order.id);
+		expect(stored?.totals).toMatchObject({ tax: 8875, total: 100_000 + 599 + 8875 });
+		expect(readOrderTaxSnapshot(stored?.totals.taxBreakdown)).toMatchObject({
+			v: 1,
+			calculatorId: "otta.rate-table",
+			lines: [{ taxableCents: 100_000, rateBps: 888, ratePpm: 88_750, taxCents: 8875 }],
+			shipping: null,
+		});
 	});
 
 	test.each([

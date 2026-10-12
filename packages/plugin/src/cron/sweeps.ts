@@ -327,10 +327,11 @@ export const STARVING_TICKS = 3 * AGING_TICKS;
  * the provider call (`headroom`), and allowed past the ceiling once the call has
  * happened (`allowCommit`), so an action is never repeated for want of its record.
  *  - An email, from just before the send: the refund-total and recipient reads (two),
- *    building the sender (`EMAIL_SENDER_BUILD_READS` kv reads, two, on the first
- *    send), the send (one), its "last sent" record (`EMAIL_SENT_RECORD_WRITES`, one
- *    kv write, also on the first send), and marking it sent (three: the read, the write, the locator) —
- *    nine. `cron-leg-costs.test.ts` measures it with the REAL sender construction.
+ *    building the sender (`EMAIL_SENDER_BUILD_READS`, three, on the first send: two
+ *    kv reads and the tax options' settings read, issue #422), the send (one), its
+ *    "last sent" record (`EMAIL_SENT_RECORD_WRITES`, one kv write, also on the first
+ *    send), and marking it sent (three: the read, the write, the locator) — ten.
+ *    `cron-leg-costs.test.ts` measures it with the REAL sender construction.
  *  - A withdrawal: the cancel and, when Stripe refuses it, the read-back (two
  *    subrequests), the intent's resolution (two) and, on a last attempt, the
  *    give-up flag (two) — six; its record is the last four.

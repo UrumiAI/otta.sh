@@ -45,6 +45,9 @@ async function placedOrderView(enabled: boolean) {
 			tax: {
 				...NEW_STORE_TAX_SETTINGS,
 				enabled,
+				// One "Tax" row, not one per rate (#422's itemized default): this
+				// case is about tax on/off, not itemization.
+				totalsDisplay: "single",
 				baseAddress: { country: "GB", region: null },
 			},
 		},

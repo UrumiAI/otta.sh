@@ -1,6 +1,7 @@
 import type { Cents } from "../money/cents.js";
 import { isProductTaxStatus, type ProductTaxStatus } from "../ports/product-commerce-store.js";
 import type { TaxLine, TaxResult } from "../pricing/tax-calculator.js";
+import { finerRatePpm } from "../pricing/tax-rate-precision.js";
 import type { TotalsBreakdown } from "../pricing/types.js";
 
 /**
@@ -24,7 +25,12 @@ export interface OrderTaxSnapshotV1 {
 	 * the shipping zone alone, exactly as before.
 	 */
 	located?: boolean;
-	/** One per order line, in order-line order (`lineIndex` indexes `order.lines`). */
+	/**
+	 * One per order line, in order-line order (`lineIndex` indexes `order.lines`).
+	 * A line (and `shipping`) taxed at a rate finer than a basis point also records
+	 * that exact rate as `ratePpm` (#425, `TaxLine`); `rateBps` keeps its meaning,
+	 * so a snapshot written before — which never has `ratePpm` — reads unchanged.
+	 */
 	lines: Array<
 		{
 			lineIndex: number;
@@ -87,6 +93,7 @@ export function buildOrderTaxSnapshot(
 				taxStatus,
 				taxableCents: line.discountedCents,
 				rateBps: answered.rateBps,
+				...ratePpmOf(answered),
 				label: answered.label,
 				taxCents: answered.taxCents,
 			};
@@ -97,6 +104,7 @@ export function buildOrderTaxSnapshot(
 				: {
 						taxableCents: breakdown.shippingCents,
 						rateBps: tax.result.shipping.rateBps,
+						...ratePpmOf(tax.result.shipping),
 						label: tax.result.shipping.label,
 						taxCents: tax.result.shipping.taxCents,
 					},
@@ -158,13 +166,23 @@ function readV1(raw: Record<string, unknown>): OrderTaxSnapshotV1 | null {
 	};
 }
 
+/** A line's exact rate (#425), only when it has one: a snapshot of a whole-bps
+ *  rate — and every snapshot written before #425 — carries no `ratePpm` key. */
+function ratePpmOf(line: TaxLine): { ratePpm?: number } {
+	return line.ratePpm === undefined ? {} : { ratePpm: line.ratePpm };
+}
+
 function taxedOf(item: Record<string, unknown>): ({ taxableCents: Cents } & TaxLine) | null {
-	const { taxableCents, rateBps, label, taxCents } = item;
+	const { taxableCents, rateBps, ratePpm, label, taxCents } = item;
 	if (!isCount(taxableCents) || !isCount(rateBps) || !isCount(taxCents)) return null;
 	if (typeof label !== "string") return null;
+	// Only a consistent finer rate is part of the line (the store's own rule, #425);
+	// anything else under that key is ignored, as an unknown key always was.
+	const finer = finerRatePpm({ rateBps, ratePpm });
 	return {
 		taxableCents: taxableCents as Cents,
 		rateBps,
+		...(finer === undefined ? {} : { ratePpm: finer }),
 		label,
 		taxCents: taxCents as Cents,
 	};
