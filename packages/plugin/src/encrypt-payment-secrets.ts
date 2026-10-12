@@ -119,10 +119,12 @@ function isKeyProblem(error: unknown): boolean {
 	return typeof code === "string" && KEY_PROBLEM_CODES.has(code);
 }
 
-type Report = "key" | "host" | "conflict" | "other";
+type Report = "key" | "keyAfterMarker" | "host" | "conflict" | "other";
 
 const REPORT_LINES: Readonly<Record<Report, string>> = {
 	key: "[otta] payment keys are not encrypted yet: EMDASH_ENCRYPTION_KEY is missing, is not the key they were saved with, or a stored value is malformed; nothing was changed; will retry",
+	keyAfterMarker:
+		"[otta] a stored payment key cannot be read: EMDASH_ENCRYPTION_KEY is missing, is not the key it was saved with, or the stored value is malformed; nothing was changed",
 	host: "[otta] payment keys are not encrypted yet: this host's kv has no conditional write; will retry",
 	conflict:
 		"[otta] payment keys are not encrypted yet: a key changed while they were being re-saved; will retry",
@@ -180,7 +182,20 @@ export async function encryptStoredPaymentSecrets(
 				if (current !== null) stored.push({ key, ...current });
 			}
 		} catch (error) {
-			reportOnce(isKeyProblem(error) ? "key" : "other");
+			if (!isKeyProblem(error)) {
+				reportOnce("other");
+				return "retry";
+			}
+			// A key problem on a site the marker says was encrypted: nothing here
+			// can be re-saved until the key is fixed (a redeploy, so a new isolate).
+			// Say so once and stop checking in this isolate, instead of failing the
+			// same preflight every tick.
+			if (readMarker(await kv.get<unknown>(PAYMENT_SECRETS_ENCRYPTED_MARKER_KEY)) !== null) {
+				reportOnce("keyAfterMarker");
+				doneInIsolate.add(site);
+				return "retry";
+			}
+			reportOnce("key");
 			return "retry";
 		}
 
@@ -201,10 +216,11 @@ export async function encryptStoredPaymentSecrets(
 			if (recorded?.[key] === revision) revisions[key] = revision;
 		}
 
-		// Retry cost: while the key is missing, each sweep tick costs a handful of
-		// kv calls (the preflight and marker reads, and when every value is still
-		// plain, one refused conditional write), and logs once per isolate. This
-		// is intentional and bounded.
+		// Retry cost: before the first marker, while the key is missing, each sweep
+		// tick costs a handful of kv calls (the preflight and marker reads, and when
+		// every value is still plain, one refused conditional write), and logs once
+		// per isolate. Intentional and bounded. Once a marker exists, a key problem
+		// costs one failed preflight and one marker read per ISOLATE (see above).
 		let resaved = 0;
 		let legacyReplaced = 0;
 		for (const { key, value, revision } of pending) {

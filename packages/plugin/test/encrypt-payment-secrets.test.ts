@@ -163,10 +163,13 @@ beforeEach(() => {
 	}
 });
 
+/** Values the cases below store besides {@link VALUES}; never logged either. */
+const OTHER_VALUES = ["sk_test_ENTERED_DURING_ROLLBACK"];
+
 afterEach(() => {
 	vi.restoreAllMocks();
 	// Whatever a case did, nothing it logged may carry any value.
-	for (const value of Object.values(VALUES)) {
+	for (const value of [...Object.values(VALUES), ...OTHER_VALUES]) {
 		for (const line of logged) expect(line).not.toContain(value);
 	}
 });
@@ -423,22 +426,59 @@ describe("a key written again after the marker (#478)", () => {
 		expect(host.casCalls.n).toBe(calls);
 	});
 
-	test("an operator's save between the write and the read-back is kept, and the run retries", async () => {
+	test("a save between the write and the read-back is kept, and the run retries (even the same value)", async () => {
 		const host = fakeHost({ ...VALUES });
-		const fresh = "sk_test_SAVED_AFTER_RESAVE";
+		// The SAME value: only the read-back's revision check can tell this save
+		// (a plain one, as a rollback build writes it) from the re-save's own.
+		const fresh = VALUES[STRIPE_SECRET_KEY_KEY];
 		const { compareAndSet } = host.ctx.kv;
 		if (compareAndSet === undefined) throw new Error("fake has compareAndSet");
 		const kv: KvAccess = {
 			...host.ctx.kv,
 			async compareAndSet(key, expected, value) {
 				const result = await compareAndSet(key, expected, value);
-				if (key === STRIPE_SECRET_KEY_KEY) await host.ctx.kv.set(key, fresh);
+				if (key === STRIPE_SECRET_KEY_KEY) host.writePlain(key, fresh);
 				return result;
 			},
 		};
 		expect(await encryptStoredPaymentSecrets({ ...host.ctx, kv })).toBe("retry");
 		expect(await readWriteOnlySecret(host.ctx, STRIPE_SECRET_KEY_KEY)).toBe(fresh);
+		// Not recorded as encrypted: the next isolate re-saves it.
 		expect(host.raw.has(PAYMENT_SECRETS_ENCRYPTED_MARKER_KEY)).toBe(false);
+		resetPaymentSecretEncryptionForTesting();
+		expect(await encryptStoredPaymentSecrets(host.ctx)).toBe("encrypted");
+		expect(isEnvelope(host.raw.get(STRIPE_SECRET_KEY_KEY))).toBe(true);
+	});
+});
+
+describe("a settled site whose key cannot be read (#478)", () => {
+	test("is checked once per isolate, logs once, and never says the keys are unencrypted", async () => {
+		const host = fakeHost({ ...VALUES });
+		expect(await encryptStoredPaymentSecrets(host.ctx)).toBe("encrypted");
+		resetPaymentSecretEncryptionForTesting();
+		logged = [];
+		host.keys.value = ["B"];
+		let reads = 0;
+		const { getVersioned } = host.ctx.kv;
+		if (getVersioned === undefined) throw new Error("fake has getVersioned");
+		const kv: KvAccess = {
+			...host.ctx.kv,
+			async getVersioned<T>(key: string) {
+				reads += 1;
+				return getVersioned<T>(key);
+			},
+		};
+		const ctx: PluginContext = { ...host.ctx, kv };
+		const before = rawDump(host);
+
+		expect(await encryptStoredPaymentSecrets(ctx)).toBe("retry");
+		const afterFirst = reads;
+		expect(await encryptStoredPaymentSecrets(ctx)).toBe("already-done");
+		expect(reads).toBe(afterFirst);
+		expect(rawDump(host)).toBe(before);
+		expect(logged).toHaveLength(1);
+		expect(logged[0]).toContain("EMDASH_ENCRYPTION_KEY");
+		expect(logged[0]).not.toContain("not encrypted yet");
 	});
 });
 

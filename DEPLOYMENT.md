@@ -344,11 +344,20 @@ order of appearance in a deployment's life:
     (`EMDASH_ENCRYPTION_KEY=<new>,<old>`). New saves use the new key; both still decrypt.
     Keep the old key listed until all three keys have been entered again in Settings (they
     are write-only, so each must be copied again from Stripe or its provider), then drop
-    it. Or delete `state:paymentSecretsEncrypted`: the next new isolate (after a redeploy)
-    re-saves all three under the new key. The re-save does not repeat for a rotation by
-    itself.
+    it. Or delete the re-save marker (below) and redeploy: the first cron tick re-saves all
+    three under the new key. Keep the old key listed until the log shows `payment keys
+    re-saved through the settings layer` after that redeploy; then drop it and check that each
+    key still reads "— set" in Settings (if one does not, list the old key again). A rotation
+    alone never triggers the re-save.
+  - **Deleting the re-save marker** makes the next new isolate re-save every stored key under
+    the current key. It is one kv row, `state:paymentSecretsEncrypted`; deleting it loses
+    nothing. Trusted mode (the default):
+    `wrangler d1 execute YOUR-D1-DATABASE-NAME --remote --config wrangler.local.jsonc --command "DELETE FROM options WHERE name = 'plugin:otta:state:paymentSecretsEncrypted'"`.
+    A sandboxed deployment keeps it in `_plugin_storage` instead:
+    `... --command "DELETE FROM _plugin_storage WHERE plugin_id = 'otta' AND collection = '__kv' AND id = 'state:paymentSecretsEncrypted'"`.
+    Then redeploy so a new isolate runs it.
   - **Upgrading a site that already has these keys saved:** the first cron tick after the
-    deploy re-saves them encrypted, once (it needs the key set; until then it retries and
+    deploy re-saves them encrypted (it needs the key set; until then it retries and
     logs one warning naming `EMDASH_ENCRYPTION_KEY`). It first reads every key and changes
     nothing if any cannot be read, so a wrong key cannot strand a working one — but if every
     key is still unencrypted, whichever key is set at that tick is the key they are saved
@@ -360,12 +369,12 @@ order of appearance in a deployment's life:
     payment secret you use (Stripe secret key, webhook signing secret, `OTTA_WH_TOKEN`) reads
     "— set". Re-enter any that says "saved, but not valid" or "saved, but cannot be read" —
     keys saved before 2026-10-02 or through EmDash's settings gear can read as not valid.
-    Until the webhook secret and token read "— set", every Stripe webhook answers 503.
+    While the webhook secret or `OTTA_WH_TOKEN` reads "saved, but not valid" or "saved, but
+    cannot be read", every Stripe webhook answers 503 (an unset token is not checked).
   - **A custom site** must declare the schema (`PAYMENT_SECRET_SETTINGS_SCHEMA` in its
     descriptor `settingsSchema`) before upgrading. If it was added later, enter the three
-    keys again in Settings, or delete `state:paymentSecretsEncrypted` so the re-save runs
-    again.
-  - **Rolling back:** after the one-time re-save, a build without the `settingsSchema` cannot
+    keys again in Settings, or delete the re-save marker (above) so the re-save runs again.
+  - **Rolling back:** after the re-save, a build without the `settingsSchema` cannot
     read the three encrypted values, so Stripe payments and webhooks stop until you roll
     forward or enter the keys again. Nothing is lost. Keys entered while the old build runs
     are stored plain; after rolling forward, the first cron tick encrypts each of them again
