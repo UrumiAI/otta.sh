@@ -228,6 +228,7 @@ describe("the Tempered review, rendered", () => {
 			addressRegions: regionChoice("", "", "en-US"),
 			showDelivery: false,
 			showAddress: true,
+			buyerLocation: false,
 			chosenOption: null,
 			notReadyCopy: "",
 			paymentConfigured: true,
