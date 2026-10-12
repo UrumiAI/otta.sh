@@ -371,6 +371,12 @@ export function productCommerceStoreContract(
 		});
 
 		// -- restore (issue #447: a product restored from the CMS trash) ---------
+		//
+		// Every harness runs on a FIXED clock at 2026-07-10, so a soft delete always
+		// stamps `deletedAt` there. A restore watermark after it is a real restore; one
+		// before it is a stale or replayed restore of an EARLIER trash.
+		const AFTER_DELETE = "2026-07-11T00:00:00.000Z";
+		const BEFORE_DELETE = "2026-07-09T00:00:00.000Z";
 
 		test("restore clears the tombstone and keeps sku, price and stock; the row stays INACTIVE until a publish activates it", async () => {
 			const h = await makeStore();
@@ -383,7 +389,7 @@ export function productCommerceStoreContract(
 			await h.store.activate(pid, idempotencyKey("pub-1"), "2026-07-01T00:00:00.000Z");
 			await h.store.softDelete(pid, idempotencyKey("products:prod-447-a:deleted"));
 
-			await h.store.restore(pid, idempotencyKey("restore-1"));
+			await h.store.restore(pid, idempotencyKey("restore-1"), AFTER_DELETE);
 
 			const read = await h.store.getByProductId(pid);
 			expect(read).toMatchObject({
@@ -397,10 +403,44 @@ export function productCommerceStoreContract(
 			// sells nothing: the catalog reports it inactive until the next publish.
 			expect(await h.store.listCommerceByIds([pid])).toMatchObject([{ active: false }]);
 
-			await h.store.activate(pid, idempotencyKey("pub-2"), "2026-07-02T00:00:00.000Z");
+			await h.store.activate(pid, idempotencyKey("pub-2"), "2026-07-12T00:00:00.000Z");
 			expect(await h.store.listCommerceByIds([pid])).toMatchObject([
 				{ active: true, sku: "SKU-447-A" },
 			]);
+		});
+
+		test("a publish OLDER than the restore cannot activate the restored draft; a newer one can", async () => {
+			const h = await makeStore();
+			const pid = productId("prod-447-e");
+			await h.store.upsert(
+				{ productId: pid, sku: sku("SKU-447-E"), price: money(cents(900), currency("USD")) },
+				idempotencyKey("k1"),
+			);
+			await h.store.softDelete(pid, idempotencyKey("products:prod-447-e:deleted"));
+			await h.store.restore(pid, idempotencyKey("restore-1"), AFTER_DELETE);
+
+			// A delayed publish from before the trash, delivered after the restore.
+			await h.store.activate(pid, idempotencyKey("pub-old"), BEFORE_DELETE);
+			expect((await h.store.getByProductId(pid))?.active).toBe(false);
+
+			await h.store.activate(pid, idempotencyKey("pub-new"), "2026-07-12T00:00:00.000Z");
+			expect((await h.store.getByProductId(pid))?.active).toBe(true);
+		});
+
+		test("a STALE restore (its watermark older than the delete) leaves the tombstone alone", async () => {
+			const h = await makeStore();
+			const pid = productId("prod-447-f");
+			await h.store.upsert(
+				{ productId: pid, sku: sku("SKU-447-F"), price: money(cents(900), currency("USD")) },
+				idempotencyKey("k1"),
+			);
+			await h.store.softDelete(pid, idempotencyKey("products:prod-447-f:deleted"));
+			const tombstone = await h.store.getByProductId(pid);
+
+			// A redelivered restore of an EARLIER trash, arriving after this newer delete.
+			await h.store.restore(pid, idempotencyKey("restore-old"), BEFORE_DELETE);
+
+			expect(await h.store.getByProductId(pid)).toEqual(tombstone);
 		});
 
 		test("restore is a no-op on a live row, on an unknown id, and when replayed", async () => {
@@ -415,16 +455,16 @@ export function productCommerceStoreContract(
 
 			// A live (and active) row: nothing moves — in particular the restore does
 			// not deactivate a product that is on sale.
-			await h.store.restore(pid, idempotencyKey("restore-1"));
+			await h.store.restore(pid, idempotencyKey("restore-1"), AFTER_DELETE);
 			expect(await h.store.getByProductId(pid)).toEqual(live);
 
-			await h.store.restore(productId("prod-447-none"), idempotencyKey("restore-1"));
+			await h.store.restore(productId("prod-447-none"), idempotencyKey("restore-1"), AFTER_DELETE);
 			expect(await h.store.getByProductId(productId("prod-447-none"))).toBeNull();
 
 			await h.store.softDelete(pid, idempotencyKey("products:prod-447-b:deleted"));
-			await h.store.restore(pid, idempotencyKey("restore-2"));
+			await h.store.restore(pid, idempotencyKey("restore-2"), AFTER_DELETE);
 			const restored = await h.store.getByProductId(pid);
-			await h.store.restore(pid, idempotencyKey("restore-2"));
+			await h.store.restore(pid, idempotencyKey("restore-2"), AFTER_DELETE);
 			expect(await h.store.getByProductId(pid)).toEqual(restored);
 		});
 
@@ -444,7 +484,7 @@ export function productCommerceStoreContract(
 				idempotencyKey("k-other"),
 			);
 
-			await h.store.restore(old, idempotencyKey("restore-1"));
+			await h.store.restore(old, idempotencyKey("restore-1"), AFTER_DELETE);
 
 			const restored = await h.store.getByProductId(old);
 			expect(restored).toMatchObject({ deletedAt: null, active: false, sku: null });
@@ -458,7 +498,7 @@ export function productCommerceStoreContract(
 			).rejects.toBeInstanceOf(SkuConflictError);
 		});
 
-		test("restore re-claims the sku, so it is not free for another product afterwards, and a second trash tombstones again under the same delete key", async () => {
+		test("restore re-claims the sku, so it is not free for another product afterwards, and a second trash tombstones it again", async () => {
 			const h = await makeStore();
 			const pid = productId("prod-447-d");
 			const other = productId("prod-447-d2");
@@ -468,7 +508,7 @@ export function productCommerceStoreContract(
 			);
 			const deleteKey = idempotencyKey("products:prod-447-d:deleted");
 			await h.store.softDelete(pid, deleteKey);
-			await h.store.restore(pid, idempotencyKey("restore-1"));
+			await h.store.restore(pid, idempotencyKey("restore-1"), AFTER_DELETE);
 
 			await expect(
 				h.store.upsert({ productId: other, sku: sku("SKU-447-D") }, idempotencyKey("k2")),

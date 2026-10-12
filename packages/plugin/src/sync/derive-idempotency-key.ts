@@ -140,9 +140,9 @@ export function deriveUnpublishIdempotencyKey(
 
 /**
  * `content:afterRestore` (issue #447). EmDash's restore bumps both `updated_at`
- * and `version`, so every restore of a document gets its own key — a trash →
- * restore → trash → restore cycle applies each restore once, and a redelivery of
- * one restore is a replay.
+ * and `version`, so every restore of a document gets its own key. The key is the
+ * row's audit trail only: the store's `restore` is idempotent by STATE (a live
+ * row is a no-op) and by its watermark, not by this key.
  */
 export function deriveRestoreIdempotencyKey(
 	collection: string,

@@ -571,7 +571,7 @@ export function storefrontCommerceClientContract(tier: CommerceClientTier): void
 		test("restoreProductCommerce clears the tombstone (issue #447): live again, still inactive, sku kept", async () => {
 			await client.upsertProductCommerce("prod-c4r", { sku: "SKU-C4R" }, "k4r");
 			await client.softDeleteProductCommerce("prod-c4r", "del-1");
-			await client.restoreProductCommerce("prod-c4r", "restore-1");
+			await client.restoreProductCommerce("prod-c4r", "restore-1", "2999-01-01T00:00:00.000Z");
 			const row = await client.getProductCommerce("prod-c4r");
 			expect(row).toMatchObject({ deletedAt: null, active: false, sku: "SKU-C4R" });
 		});

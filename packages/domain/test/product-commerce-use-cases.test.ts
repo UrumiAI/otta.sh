@@ -194,7 +194,12 @@ describe("product-commerce use-cases (over the in-memory fakes)", () => {
 		expect(afterDelete?.deletedAt).not.toBeNull();
 		expect(afterDelete?.active).toBe(false);
 
-		await restoreProductCommerce(productCommerce, pid, idempotencyKey("restore-1"));
+		await restoreProductCommerce(
+			productCommerce,
+			pid,
+			idempotencyKey("restore-1"),
+			"2999-01-01T00:00:00.000Z",
+		);
 		const afterRestore = await getProductCommerce(productCommerce, pid);
 		expect(afterRestore).toMatchObject({ deletedAt: null, active: false, sku: "SKU-3" });
 	});

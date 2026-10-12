@@ -310,10 +310,10 @@ export interface PluginContext {
 	 * capability this plugin already declares for its content hooks. Read-only here
 	 * on purpose: the plugin never writes CMS content.
 	 *
-	 * TWO callers: the `product-orphans` sweep leg (issue #374), which asks whether a
-	 * commerce row's CMS document still exists, and `content:afterRestore` (issue
-	 * #447), which checks a restored document was not trashed again before its row
-	 * comes back. Everything else gets what it needs from the hook event itself.
+	 * Callers: the `product-orphans` sweep leg (issue #374), which asks whether a
+	 * commerce row's CMS document still exists, and `content:afterDelete` /
+	 * `content:afterRestore` (issue #447), which check the document's presence so a
+	 * late delivery does not undo a newer restore or trash. Everything else gets what it needs from the hook event itself.
 	 *
 	 * OPTIONAL like `storage` and `cron`: the host omits it when the capability is
 	 * missing, and the workerd test mirror (`sandbox-entry.ts`) has no CMS to offer.
@@ -370,8 +370,8 @@ export interface EmailAccess {
  * So `null` is never proof on its own. The sweep (`product-orphans`) asks the
  * CMS to LIST a product first, re-reads every `null`, counts it only in a run that
  * read some other document, and needs three such runs a cadence apart.
- * `content:afterRestore` acts on a `null` only in the safe direction: it leaves
- * the row deleted.
+ * The delete and restore hooks re-read a `null` once; `content:afterRestore` then
+ * leaves the row deleted, and `content:afterDelete` deletes as it always did.
  */
 export interface ContentReadAccess {
 	get(collection: string, id: string): Promise<Record<string, unknown> | null>;

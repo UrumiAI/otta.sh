@@ -368,13 +368,19 @@ export class InProcessCommerceClient implements CommerceClient {
 		);
 	}
 
-	async restoreProductCommerce(productId: string, idempotencyKey: string): Promise<void> {
+	async restoreProductCommerce(
+		productId: string,
+		idempotencyKey: string,
+		contentUpdatedAt: string,
+	): Promise<void> {
 		requireProductId(productId);
 		requireIdempotencyKey(idempotencyKey);
+		requireWatermark("contentUpdatedAt", contentUpdatedAt);
 		await restoreProductCommerce(
 			this.#stores.productCommerce,
 			toProductId(productId),
 			toIdempotencyKey(idempotencyKey),
+			contentUpdatedAt,
 		);
 	}
 

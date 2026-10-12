@@ -19,9 +19,9 @@ export const OTTA_PLUGIN_VERSION = "0.1.0";
  *    `content:afterDelete` require to register (em-dash
  *    `HOOK_REQUIRED_CAPABILITY`). The readers of `ctx.content` are the
  *    `product-orphans` sweep leg, which asks `ctx.content.get` whether a
- *    commerce row's CMS document still exists (issue #374), and
- *    `content:afterRestore`, which checks the restored document is still there
- *    (issue #447). Never `content:write` — the plugin never writes CMS content.
+ *    commerce row's CMS document still exists (issue #374), and the
+ *    `content:afterDelete` / `content:afterRestore` hooks, which check the
+ *    document's presence before acting on a late delivery (issue #447). Never `content:write` — the plugin never writes CMS content.
  *  - `network:request` — `ctx.http.fetch`, host-restricted via
  *    `allowedHosts`. No `network:request:unrestricted`.
  *  - `email:send` — `ctx.email`, the host's email pipeline (ADR-0031). EmDash

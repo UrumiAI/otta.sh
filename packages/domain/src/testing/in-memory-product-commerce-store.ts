@@ -549,9 +549,15 @@ export class InMemoryProductCommerceStore implements ProductCommerceStore {
 		});
 	}
 
-	async restore(productId: ProductId, key: IdempotencyKey): Promise<void> {
+	async restore(
+		productId: ProductId,
+		key: IdempotencyKey,
+		contentUpdatedAt: string,
+	): Promise<void> {
 		const existing = this.#rows.get(productId);
 		if (existing === undefined || existing.deletedAt === null) return; // unknown or live: no-op.
+		// A stale restore (older than the delete) never undoes a newer delete.
+		if (existing.deletedAt.toISOString() > contentUpdatedAt) return;
 		const s = existing.sku;
 		// The sku comes back only if no live product or variant took it meanwhile.
 		const keep = s !== null && !this.#skuTakenByLiveProduct(s) && !this.#skuTakenByLiveVariant(s);
@@ -562,6 +568,8 @@ export class InMemoryProductCommerceStore implements ProductCommerceStore {
 			idempotencyKey: key,
 			updatedAt: this.#clock.now(),
 		});
+		// The draft's gate watermark: a publish older than the restore is stale.
+		this.#activeWatermark.set(productId, contentUpdatedAt);
 	}
 
 	// -- Admin Products console: view-only keyset list (admin-UX Increment 2) --

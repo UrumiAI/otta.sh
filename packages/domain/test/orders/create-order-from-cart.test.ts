@@ -467,7 +467,7 @@ describe("createOrderFromCart", () => {
 				return base.getManyByProductId(ids);
 			},
 			softDelete: (id, key) => base.softDelete(id, key),
-			restore: (id, key) => base.restore(id, key),
+			restore: (id, key, t) => base.restore(id, key, t),
 			updateCommerceFields: (input, key, expected) =>
 				base.updateCommerceFields(input, key, expected),
 			activate: (id, key, t) => base.activate(id, key, t),

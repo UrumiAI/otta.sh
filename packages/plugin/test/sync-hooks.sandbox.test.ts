@@ -725,7 +725,9 @@ describe("sync hooks — afterSave keeps product_commerce alive and its title cu
 		expect((await requireDoc(id)).lifecycle).toBe("deleted");
 
 		// EmDash restores a document as a DRAFT and bumps `updatedAt` and `version`.
-		const restoredAt = "2026-07-11T00:00:00.000Z";
+		// The delete above stamped `deletedAt` on the real clock, and a restore older
+		// than its delete is stale, so the restore and the publish are just after now.
+		const restoredAt = new Date(Date.now() + 60_000).toISOString();
 		const outcome = await sandboxHandle.invokeHook("content:afterRestore", {
 			collection: "products",
 			content: productContent(id, {
@@ -748,7 +750,10 @@ describe("sync hooks — afterSave keeps product_commerce alive and its title cu
 		expect(doc.idempotencyKey).toBe(`products:${id}:restored:${restoredAt}:2`);
 
 		await afterPublish(
-			productContent(id, { status: "published", updatedAt: "2026-07-12T00:00:00.000Z" }),
+			productContent(id, {
+				status: "published",
+				updatedAt: new Date(Date.now() + 120_000).toISOString(),
+			}),
 		);
 		expect(await requireDoc(id)).toMatchObject({ lifecycle: "live", active: true });
 	});

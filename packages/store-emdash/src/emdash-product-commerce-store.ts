@@ -989,15 +989,25 @@ export class EmdashProductCommerceStore implements ProductCommerceStore {
 	 * The sku the tombstone released is RE-CLAIMED, the way a resurrecting variant
 	 * reclaims its own: kept when still free, cleared when another live unit took it
 	 * meanwhile, and re-asserted just before the commit so a takeover inside the
-	 * window is seen. The inventory document is never touched.
+	 * window is seen. The inventory document is never touched. As with the variant
+	 * resurrect, a claim written before a compare-and-set that then fails for good
+	 * lingers until its lease (`CLAIM_ABANDON_AFTER_MS`) lets another owner take it.
+	 *
+	 * A restore older than the delete (`contentUpdatedAt` < `deletedAt`) is stale and
+	 * a no-op; an applied one stamps the gate watermark so an older publish is stale.
 	 */
-	async restore(productId: ProductId, key: IdempotencyKey): Promise<void> {
+	async restore(
+		productId: ProductId,
+		key: IdempotencyKey,
+		contentUpdatedAt: string,
+	): Promise<void> {
 		const ref: SkuOwnerRef = { kind: "product", productId };
 		await this.#cas<void>("restore", async () => {
 			const current = await this.#products.getVersioned(productId);
 			if (current === null) return casDone(undefined);
 			const doc = normalizeProductDoc(current.value);
 			if (doc.lifecycle !== "deleted") return casDone(undefined);
+			if (doc.deletedAt !== null && doc.deletedAt > contentUpdatedAt) return casDone(undefined);
 			const reclaimed = doc.sku === null ? null : await this.#reclaimSku(doc.sku, ref);
 			if (reclaimed !== null) {
 				let held: boolean;
@@ -1020,6 +1030,7 @@ export class EmdashProductCommerceStore implements ProductCommerceStore {
 				lifecycle: "live",
 				sku: reclaimed === null ? null : doc.sku,
 				deletedAt: null,
+				activeUpdatedAt: contentUpdatedAt,
 				idempotencyKey: key,
 				updatedAt: at,
 			});

@@ -5,6 +5,7 @@ import type {
 	ContentHookEvent,
 	ContentStateChangeEvent,
 	HookHandler,
+	PluginContext,
 } from "../types.js";
 import type { UpsertProductCommerceInput } from "../product-commerce/commerce-client.js";
 import { parseProductTitle } from "./parse-product-title.js";
@@ -443,10 +444,25 @@ export function createAfterSaveHandler(
  * times in a row on each of three runs a cadence apart.
  * Without it, a product deleted and re-created (a new CMS id) left the old row live
  * for good, holding the sku the new one needs.
+ *
+ * A LATE DELIVERY AFTER A RESTORE (issue #447) must not re-delete. When the host
+ * hands over `ctx.content`, the document is read first: found means it was
+ * restored before this hook ran, so the row is left live. A `null` (re-read once)
+ * or a failed read deletes as before.
  */
 export function createAfterDeleteHandler(): HookHandler<ContentDeleteEvent> {
 	return async (event, ctx) => {
 		if (event.collection !== PRODUCTS_COLLECTION) return;
+		// A LATE delivery (issue #447): the product may have been restored from the
+		// trash before this deferred hook ran. A document the CMS has NOW is not
+		// deleted, so the row is left live. A `null` or a failed read deletes, as
+		// before — the sweep is the backstop either way.
+		if ((await readDocument(ctx, event.id, "content:afterDelete")) === "found") {
+			console.warn(
+				`[otta] content:afterDelete: product_id=${event.id} is in the CMS again (restored before this delete hook ran) — its commerce row is left live.`,
+			);
+			return;
+		}
 		const key = deriveDeleteIdempotencyKey(event.collection, event.id);
 		try {
 			await (await makeCommerceClient(ctx)).softDeleteProductCommerce(event.id, key);
@@ -468,14 +484,17 @@ export function createAfterDeleteHandler(): HookHandler<ContentDeleteEvent> {
  *
  * NO ACTIVATE. EmDash restores a document as a DRAFT (`ContentRepository.restore`
  * sets `status = 'draft'`, `live_revision_id = NULL`), so the product is sold
- * again only once the merchant publishes it, through `content:afterPublish`.
+ * again only once the merchant publishes it, through `content:afterPublish`. The
+ * restore's `updatedAt` is the watermark: a restore older than the row's delete is
+ * stale, and a publish older than the restore cannot activate the draft.
  *
  * STILL TRASHED? The event says the document WAS restored, but a quick re-trash
  * can land first (both hooks are deferred, fire-and-forget). So when the host
- * hands over `ctx.content`, the document is read first: `null` means it is gone
- * again and the tombstone stays. A read that REJECTS is not taken as gone — the
- * event itself is the evidence, and a wrongly restored row is inactive anyway and
- * is tombstoned again by the sweep.
+ * hands over `ctx.content`, the document is read first, and a `null` is re-read
+ * once before it is trusted (a sandbox bridge may answer `null` for a failed
+ * read). Two `null`s: it is gone again and the tombstone stays. A read that
+ * REJECTS is not taken as gone — the event itself is the evidence, and a wrongly
+ * restored row is inactive anyway and is tombstoned again by the sweep.
  *
  * Fire-and-forget, like its siblings: a failure is logged, never thrown. The
  * recovery is to trash and restore the product again.
@@ -485,31 +504,28 @@ export function createAfterRestoreHandler(): HookHandler<ContentStateChangeEvent
 		if (event.collection !== PRODUCTS_COLLECTION) return;
 		const id = event.content["id"];
 		if (typeof id !== "string" || id.length === 0) return;
-		if (ctx.content !== undefined) {
-			let doc: Record<string, unknown> | null | undefined;
-			try {
-				doc = await ctx.content.get(PRODUCTS_COLLECTION, id);
-			} catch (err) {
-				console.warn(
-					`[otta] content:afterRestore: could not re-read product_id=${id}; restoring on the event's word:`,
-					err,
-				);
-			}
-			if (doc === null) {
-				console.warn(
-					`[otta] content:afterRestore: product_id=${id} is not in the CMS any more (trashed again?) — its commerce row stays deleted.`,
-				);
-				return;
-			}
+		const updatedAt = event.content["updatedAt"];
+		const watermark = normalizeWatermark(updatedAt);
+		if (watermark === undefined) {
+			console.error(
+				`[otta] content:afterRestore for product_id=${id} carried no parseable updatedAt watermark — its commerce row stays deleted. To recover, trash and restore the product again.`,
+			);
+			return;
+		}
+		if ((await readDocument(ctx, id, "content:afterRestore")) === "missing") {
+			console.error(
+				`[otta] content:afterRestore: product_id=${id} read as missing from the CMS twice (trashed again?) — its commerce row stays deleted. If the product is in fact restored, trash and restore it again.`,
+			);
+			return;
 		}
 		const key = deriveRestoreIdempotencyKey(
 			event.collection,
 			id,
-			event.content["updatedAt"],
+			updatedAt,
 			event.content["version"],
 		);
 		try {
-			await (await makeCommerceClient(ctx)).restoreProductCommerce(id, key);
+			await (await makeCommerceClient(ctx)).restoreProductCommerce(id, key, watermark);
 		} catch (err) {
 			console.error(
 				`[otta] content:afterRestore sync failed for product_id=${id} — its commerce row stays deleted until the product is trashed and restored again:`,
@@ -517,6 +533,29 @@ export function createAfterRestoreHandler(): HookHandler<ContentStateChangeEvent
 			);
 		}
 	};
+}
+
+/**
+ * What the CMS says about one product right now, for the delete and restore hooks:
+ * `found`, `missing` (a `null`, re-read once and `null` again), or `unknown` (no
+ * `ctx.content`, or a read that rejected — never taken as either answer).
+ */
+async function readDocument(
+	ctx: PluginContext,
+	id: string,
+	hook: string,
+): Promise<"found" | "missing" | "unknown"> {
+	const content = ctx.content;
+	if (content === undefined) return "unknown";
+	try {
+		for (let look = 0; look < 2; look++) {
+			if ((await content.get(PRODUCTS_COLLECTION, id)) !== null) return "found";
+		}
+		return "missing";
+	} catch (err) {
+		console.warn(`[otta] ${hook}: could not read product_id=${id} from the CMS:`, err);
+		return "unknown";
+	}
 }
 
 /**

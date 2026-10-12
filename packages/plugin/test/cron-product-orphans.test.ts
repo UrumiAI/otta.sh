@@ -87,7 +87,11 @@ import {
 	type FakeCms,
 } from "./cron-sweep-fixtures.js";
 import { commerceStorageLayout } from "./sandbox/storage-layout.js";
-import { createAfterPublishHandler, createAfterRestoreHandler } from "../src/sync/hooks.js";
+import {
+	createAfterDeleteHandler,
+	createAfterPublishHandler,
+	createAfterRestoreHandler,
+} from "../src/sync/hooks.js";
 import type { ContentStateChangeEvent } from "../src/types.js";
 
 const NOW = new Date("2026-10-05T12:00:00.000Z");
@@ -745,36 +749,38 @@ describe("the soft delete is the hook's own, and touches nothing else", () => {
 	});
 });
 
+/** The `content:afterRestore` event EmDash sends: the restored item, back as a
+ *  DRAFT with a bumped `updatedAt` and `version`. */
+function restored(id: string): ContentStateChangeEvent {
+	return {
+		collection: "products",
+		content: {
+			id,
+			status: "draft",
+			liveRevisionId: null,
+			// After the tombstone, which the sweep stamps on the REAL clock: a restore
+			// older than its delete is stale.
+			updatedAt: new Date(Date.now() + MINUTE_MS).toISOString(),
+			version: 3,
+			data: { title: `Product ${id}` },
+		},
+	};
+}
+
+function published(id: string): ContentStateChangeEvent {
+	return {
+		collection: "products",
+		content: {
+			id,
+			status: "published",
+			updatedAt: new Date(Date.now() + 2 * MINUTE_MS).toISOString(),
+			version: 4,
+			data: { title: `Product ${id}` },
+		},
+	};
+}
+
 describe("a product restored from the CMS trash is sold again (issue #447)", () => {
-	/** The `content:afterRestore` event EmDash sends: the restored item, back as a
-	 *  DRAFT with a bumped `updatedAt` and `version`. */
-	function restored(id: string): ContentStateChangeEvent {
-		return {
-			collection: "products",
-			content: {
-				id,
-				status: "draft",
-				liveRevisionId: null,
-				updatedAt: new Date(NOW.getTime() + 4 * CADENCE).toISOString(),
-				version: 3,
-				data: { title: `Product ${id}` },
-			},
-		};
-	}
-
-	function published(id: string): ContentStateChangeEvent {
-		return {
-			collection: "products",
-			content: {
-				id,
-				status: "published",
-				updatedAt: new Date(NOW.getTime() + 5 * CADENCE).toISOString(),
-				version: 4,
-				data: { title: `Product ${id}` },
-			},
-		};
-	}
-
 	test("the sweep tombstones a trashed product; the restore brings the row back with its sku and stock, inactive, and the next publish puts it on sale", async () => {
 		await product("p-restore", CREATED, "SKU-RESTORE");
 		const inventory = new EmdashInventoryStore({
@@ -824,6 +830,64 @@ describe("a product restored from the CMS trash is sold again (issue #447)", () 
 		);
 
 		expect(await row("p-retrashed")).toEqual(tombstone);
+		// Read twice before the null is trusted, and said loudly, with the way out.
+		expect(cms.reads.filter((id) => id === "p-retrashed").length).toBeGreaterThanOrEqual(2);
+		expect(errors.some((line) => line.includes("trash and restore"))).toBe(true);
+	});
+
+	test("one null read is re-read before it is trusted: a found document on the re-read restores the row", async () => {
+		await product("p-restore-flaky");
+		const cms = fakeCms({ gone: ["p-restore-flaky"] });
+		await strikeOut(cms, memoryCursors());
+		cms.gone.delete("p-restore-flaky");
+		// The bridge swallowing one sporadic error: the first read answers null.
+		let first = true;
+		cms.beforeGet = (id) => {
+			if (id === "p-restore-flaky" && first) {
+				first = false;
+				cms.gone.add(id);
+			} else {
+				cms.gone.delete(id);
+			}
+		};
+
+		await createAfterRestoreHandler()(
+			restored("p-restore-flaky"),
+			sweepContext(storage, undefined, {}, cms),
+		);
+
+		expect(await row("p-restore-flaky")).toMatchObject({ lifecycle: "live", active: false });
+	});
+
+	test("a late afterDelete that lands AFTER the restore finds the document back in the CMS and leaves the row live", async () => {
+		await product("p-late-delete");
+		const cms = fakeCms();
+		const ctx = sweepContext(storage, undefined, {}, cms);
+		// Trashed while its delete hook was lost; the sweep tombstones it.
+		cms.gone.add("p-late-delete");
+		await strikeOut(cms, memoryCursors());
+		expect(await lifecycleOf("p-late-delete")).toBe("deleted");
+		// Restored; then the delete hook from the earlier trash finally runs.
+		cms.gone.delete("p-late-delete");
+		await createAfterRestoreHandler()(restored("p-late-delete"), ctx);
+		await createAfterDeleteHandler()(
+			{ id: "p-late-delete", collection: "products", permanent: false },
+			ctx,
+		);
+
+		expect(await row("p-late-delete")).toMatchObject({ lifecycle: "live", deletedAt: null });
+	});
+
+	test("afterDelete still soft-deletes when the CMS confirms the document is gone", async () => {
+		await product("p-hook-delete");
+		const cms = fakeCms({ gone: ["p-hook-delete"] });
+
+		await createAfterDeleteHandler()(
+			{ id: "p-hook-delete", collection: "products", permanent: false },
+			sweepContext(storage, undefined, {}, cms),
+		);
+
+		expect(await lifecycleOf("p-hook-delete")).toBe("deleted");
 	});
 
 	test("a CMS read that fails does not block the restore: the event itself says the document is back", async () => {
