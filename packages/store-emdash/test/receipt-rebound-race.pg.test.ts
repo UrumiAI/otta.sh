@@ -25,11 +25,12 @@ import {
 	EmdashPaymentEventStore,
 	normalizeOrderDoc,
 	PAYMENT_ANOMALIES_COLLECTION,
+	PAYMENT_REFS_COLLECTION,
 	type PaymentAnomalyDoc,
+	type PaymentRefDoc,
 	type StorageAccess,
 } from "../src/index.js";
 import { makePgStorage, PG_ENABLED } from "./describe-each-dialect.js";
-import { settleOne } from "./helpers/fault-injection.js";
 import { MISC_LAYOUT } from "./misc-collections.js";
 import { ORDER_LAYOUT } from "./order-collections.js";
 import { makeOrderHarness, type OrderHarness } from "./order-harness.js";
@@ -37,6 +38,19 @@ import { makeOrderHarness, type OrderHarness } from "./order-harness.js";
 /** Orders racing one receipt per loop. */
 const K = 4;
 const LOOPS = 15;
+
+type SettleOutcome =
+	| { kind: "settled"; result: Awaited<ReturnType<typeof settleOrder>> }
+	| { kind: "threw"; err: unknown };
+
+/** Settle, capturing a throw as data so one racer's failure cannot hide the rest. */
+async function settleCaptured(call: Promise<Awaited<ReturnType<typeof settleOrder>>>) {
+	try {
+		return { kind: "settled", result: await call } satisfies SettleOutcome;
+	} catch (err: unknown) {
+		return { kind: "threw", err } satisfies SettleOutcome;
+	}
+}
 
 const PG_SUITE = PG_ENABLED
 	? "receipt rebound race [postgres]"
@@ -64,6 +78,7 @@ describe.skipIf(!PG_ENABLED)(PG_SUITE, () => {
 			...h.settleDeps,
 			paymentEventStore: new EmdashPaymentEventStore({ storage }),
 		};
+		const paymentRefs = collectionOf<PaymentRefDoc>(storage, PAYMENT_REFS_COLLECTION);
 		const anomalies = collectionOf<PaymentAnomalyDoc>(storage, PAYMENT_ANOMALIES_COLLECTION);
 		async function listAnomalies(): Promise<PaymentAnomalyDoc[]> {
 			const found: PaymentAnomalyDoc[] = [];
@@ -100,16 +115,17 @@ describe.skipIf(!PG_ENABLED)(PG_SUITE, () => {
 			// ONE receipt: the same dedupe key and provider ref, each copy naming a
 			// different order — the caller's claim is the only thing that differs.
 			const receipt = `evt-shared-${String(loop)}`;
-			const results = await Promise.all(
+			const providerRef = `pi-shared-${String(loop)}`;
+			const results: SettleOutcome[] = await Promise.all(
 				orders.map((order) =>
-					settleOne(
+					settleCaptured(
 						settleOrder(
 							settleDeps,
 							h.stripeGateway,
 							h.stripeGateway.webhook({
 								outcome: "succeeded",
 								orderId: order.id,
-								providerRef: `pi-shared-${String(loop)}`,
+								providerRef,
 								amount: order.totals.total,
 								currency: "USD",
 								dedupeKey: receipt,
@@ -120,10 +136,10 @@ describe.skipIf(!PG_ENABLED)(PG_SUITE, () => {
 			);
 
 			expect(
-				results.filter((r) => r instanceof Error).map((e) => String(e)),
+				results.flatMap((r) => (r.kind === "threw" ? [String(r.err)] : [])),
 				`${tag}: thrown`,
 			).toEqual([]);
-			const settled = results.map((r) => r as Awaited<ReturnType<typeof settleOrder>>);
+			const settled = results.map((r) => (r.kind === "settled" ? r.result : undefined));
 			const winners = orders.filter((_o, i) => settled[i]?.ok === true);
 			expect(winners, `${tag}: orders that bound the receipt`).toHaveLength(1);
 			const winner = winners[0]!;
@@ -136,14 +152,20 @@ describe.skipIf(!PG_ENABLED)(PG_SUITE, () => {
 				});
 			}
 
-			// The stored truth agrees: one paid order, the rest untouched.
+			// The stored truth agrees: one paid order, the rest untouched — and ONE
+			// receipt is ONE ledger row, on the winner, under the shared provider ref.
 			for (const order of orders) {
 				const doc = await h.orders.get(order.id);
 				if (doc === null) throw new Error(`${tag}: missing order document ${order.id}`);
-				expect(normalizeOrderDoc(doc).state, `${tag}: ${order.id}`).toBe(
-					order.id === winner.id ? "paid" : "pending",
-				);
+				const stored = normalizeOrderDoc(doc);
+				const isWinner = order.id === winner.id;
+				expect(stored.state, `${tag}: ${order.id}`).toBe(isWinner ? "paid" : "pending");
+				expect(
+					stored.payments.filter((p) => p.providerRef === providerRef),
+					`${tag}: ${order.id} ledger`,
+				).toHaveLength(isWinner ? 1 : 0);
 			}
+			expect((await paymentRefs.get(providerRef))?.orderId, `${tag}: payment ref`).toBe(winner.id);
 			// The receipt is bound to the winner, and only to the winner.
 			expect(await settleDeps.paymentEventStore.orderForDedupeKey(receipt), `${tag}: bound`).toBe(
 				winner.id,

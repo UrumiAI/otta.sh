@@ -117,7 +117,10 @@ export async function settleOrder(
 	// UNPROVEN binding, and only a proven same-order binding may re-drive. So a
 	// missing read-back is refused exactly like a rebind — never waved through as
 	// "probably the same order". No adapter deletes a dedupe row, so this arm is a
-	// store inconsistency, and it is recorded as loudly as one.
+	// store inconsistency, and it is recorded as loudly as one. If a retention
+	// purge of payment events is ever added, this arm becomes reachable: switch
+	// then to `dedupe` returning the bound order atomically (or answer a
+	// retryable 503) rather than refusing a legitimate redelivery here.
 	if (!claimed) {
 		const boundTo = await deps.paymentEventStore.orderForDedupeKey(conf.dedupeKey);
 		if (boundTo !== conf.orderId) {

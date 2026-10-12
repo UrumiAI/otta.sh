@@ -63,6 +63,20 @@ describeEachDialect("EmdashPaymentEventStore", (ctx) => {
 		expect(await h.paymentEventStore.orderForDedupeKey("evt_owned")).toBe("ord-9");
 	});
 
+	test("orderForDedupeKey reads a row with no usable orderId as unbound (null), never as `undefined`", async () => {
+		// A document that names no order proves no binding. `null` sends `settleOrder`
+		// down its fail-closed arm (#448); a bare `undefined` would have read as a
+		// rebind "against order undefined".
+		const h = harness();
+		const bare = { gateway: "stripe", receivedAt: NOW } as unknown as Parameters<
+			typeof h.events.compareAndSet
+		>[2];
+		await h.events.compareAndSet("evt_bare", null, bare);
+		await h.events.compareAndSet("evt_empty", null, { ...bare, orderId: "" });
+		expect(await h.paymentEventStore.orderForDedupeKey("evt_bare")).toBeNull();
+		expect(await h.paymentEventStore.orderForDedupeKey("evt_empty")).toBeNull();
+	});
+
 	test("a dedupe key redelivered against a DIFFERENT order still answers false", async () => {
 		// Faithful to the SQL, whose UNIQUE was global and whose conflict clause was
 		// silent. `dedupe` stays faithful; the loud cross-order refusal is
