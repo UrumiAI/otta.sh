@@ -749,9 +749,9 @@ export interface ProductCommerceStore {
 	 *    the restore (a slow delete hook, or the sweep) is the stale write.
 	 *  - a TOMBSTONED row → `deletedAt = null`. `active` STAYS false: EmDash
 	 *    restores a document as a draft, so the product is sold again only after
-	 *    the next publish. The publish-gate watermark is set to
-	 *    `contentUpdatedAt`, so a publish OLDER than the restore cannot activate
-	 *    the draft (`activate`'s stale guard).
+	 *    the next publish. The publish-gate watermark is raised to
+	 *    `contentUpdatedAt` (never lowered), so a publish OLDER than the restore
+	 *    cannot activate the draft (`activate`'s stale guard).
 	 *  - its sku is RE-CLAIMED when still free among live sellable units, and
 	 *    CLEARED to null when another live product or variant took it while the
 	 *    row was tombstoned — never a `SkuConflictError` (the variant

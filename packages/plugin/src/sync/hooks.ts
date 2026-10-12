@@ -510,6 +510,15 @@ export function createAfterDeleteHandler(): HookHandler<ContentDeleteEvent> {
  * still applies; a wrongly restored row is inactive anyway and is tombstoned again
  * by the sweep.
  *
+ * Two orderings this does not close, both left SAFE (the row is never sellable
+ * because of them):
+ *  - The confirmed restore reads, then writes. A tombstone committed between the
+ *    two (a re-trash) is undone; the row stays inactive, and the sweep tombstones
+ *    it again.
+ *  - A publish that lands while the row is tombstoned is refused (`activate`
+ *    no-ops on a tombstone), so the restore that follows leaves the row inactive.
+ *    The merchant publishes again.
+ *
  * Fire-and-forget, like its siblings: a failure is logged, never thrown. The
  * recovery is to trash and restore the product again.
  */

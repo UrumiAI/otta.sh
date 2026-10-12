@@ -1039,7 +1039,11 @@ export class EmdashProductCommerceStore implements ProductCommerceStore {
 				lifecycle: "live",
 				sku: reclaimed === null ? null : doc.sku,
 				deletedAt: null,
-				activeUpdatedAt: contentUpdatedAt,
+				// Never BACKWARDS: a newer publish's watermark survives a late restore.
+				activeUpdatedAt:
+					doc.activeUpdatedAt !== null && doc.activeUpdatedAt > contentUpdatedAt
+						? doc.activeUpdatedAt
+						: contentUpdatedAt,
 				idempotencyKey: key,
 				updatedAt: at,
 			});

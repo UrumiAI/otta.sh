@@ -573,8 +573,13 @@ export class InMemoryProductCommerceStore implements ProductCommerceStore {
 			idempotencyKey: key,
 			updatedAt: this.#clock.now(),
 		});
-		// The draft's gate watermark: a publish older than the restore is stale.
-		this.#activeWatermark.set(productId, contentUpdatedAt);
+		// The draft's gate watermark: a publish older than the restore is stale. It
+		// never moves BACKWARDS, so a newer publish's watermark survives a late restore.
+		const applied = this.#activeWatermark.get(productId);
+		this.#activeWatermark.set(
+			productId,
+			applied !== undefined && applied > contentUpdatedAt ? applied : contentUpdatedAt,
+		);
 	}
 
 	// -- Admin Products console: view-only keyset list (admin-UX Increment 2) --

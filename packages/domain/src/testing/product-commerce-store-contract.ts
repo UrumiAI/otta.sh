@@ -481,6 +481,30 @@ export function productCommerceStoreContract(
 			expect((await h.store.getByProductId(pid))?.active).toBe(true);
 		});
 
+		test("an applied restore never moves the publish watermark BACKWARDS: a stale replay of a newer publish still cannot activate", async () => {
+			const h = await makeStore();
+			const pid = productId("prod-447-h");
+			await h.store.upsert(
+				{ productId: pid, sku: sku("SKU-447-H"), price: money(cents(900), currency("USD")) },
+				idempotencyKey("k1"),
+			);
+			// A publish NEWER than everything below, then the trash.
+			const NEWEST = "2999-01-01T00:00:00.000Z";
+			await h.store.activate(pid, idempotencyKey("pub-newest"), NEWEST);
+			await h.store.softDelete(pid, idempotencyKey("products:prod-447-h:deleted"));
+			const w = await deleteWindow(h, pid);
+
+			// A late restore carrying an OLDER watermark, confirmed live by the CMS.
+			await h.store.restore(pid, idempotencyKey("restore-late"), w.after, {
+				documentConfirmed: true,
+			});
+			expect(await h.store.getByProductId(pid)).toMatchObject({ deletedAt: null, active: false });
+
+			// A replayed publish between the two: stale against NEWEST, so still inactive.
+			await h.store.activate(pid, idempotencyKey("pub-replay"), w.later);
+			expect((await h.store.getByProductId(pid))?.active).toBe(false);
+		});
+
 		test("restore is a no-op on a live row, on an unknown id, and when replayed", async () => {
 			const h = await makeStore();
 			const pid = productId("prod-447-b");

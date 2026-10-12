@@ -905,6 +905,30 @@ describe("a product restored from the CMS trash is sold again (issue #447)", () 
 		expect(await row("p-onsale")).toMatchObject({ lifecycle: "live", active: true });
 	});
 
+	test("a product trashed, restored AND re-published before its delete hook ran stays on sale: the late afterDelete finds it published", async () => {
+		await product("p-republished");
+		const store = new EmdashProductCommerceStore({ storage, clock: new FixedClock(NOW) });
+		await store.activate(
+			toProductId("p-republished"),
+			idempotencyKey("pub-republished"),
+			CREATED.toISOString(),
+		);
+		const cms = fakeCms();
+		const ctx = sweepContext(storage, undefined, {}, cms);
+		await createAfterRestoreHandler()(restored("p-republished"), ctx);
+		const publish = published("p-republished");
+		await createAfterPublishHandler()(publish, ctx);
+		cms.status.set("p-republished", "published");
+		cms.updatedAt.set("p-republished", String(publish.content["updatedAt"]));
+
+		await createAfterDeleteHandler()(
+			{ id: "p-republished", collection: "products", permanent: false },
+			ctx,
+		);
+
+		expect(await row("p-republished")).toMatchObject({ lifecycle: "live", active: true });
+	});
+
 	test("a soft delete that committed AFTER the restore does not block it when the CMS confirms the document is live", async () => {
 		await product("p-slow-delete");
 		const cms = fakeCms({ gone: ["p-slow-delete"] });
