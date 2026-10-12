@@ -101,6 +101,59 @@ describe("orderSumRows — the totals rows, by the order page's own rule", () =>
 	});
 });
 
+describe("orderSumRows — itemized tax rows (issue #422)", () => {
+	// The order wire as the plugin serves it for a store that itemizes: one row per
+	// tax off the order's frozen snapshot.
+	const ITEMIZED_ORDER = {
+		...BREAKDOWN,
+		subtotalCents: 15_000,
+		taxCents: 2050,
+		totalCents: 17_050,
+		shippingZoneId: "z-in",
+		shippingMethodId: null,
+		tax: {
+			enabled: true,
+			located: true,
+			pricesIncludeTax: false,
+			displayCart: "excl" as const,
+			totalsDisplay: "itemized" as const,
+			lineTaxCents: 2050,
+			itemized: [
+				{ label: "GST 18%", amountCents: 1800 },
+				{ label: "GST 5%", amountCents: 250 },
+			],
+		},
+	};
+
+	test("one row per tax, in place of the single Tax row, adding up to the tax total", () => {
+		const totals = buildCheckoutTotals(ITEMIZED_ORDER, {
+			locale: "en-US",
+			...orderTotalsFlags(ITEMIZED_ORDER),
+		});
+		const rows = orderSumRows(totals);
+		expect(rows.map((row) => [row.label, row.amount.label])).toEqual([
+			["Subtotal", "$150.00"],
+			["Discount", "—"],
+			["Shipping", "Not calculated"],
+			["GST 18%", "$18.00"],
+			["GST 5%", "$2.50"],
+		]);
+		const taxSum = rows.slice(3).reduce((sum, row) => sum + (row.amount.money?.amount ?? 0), 0);
+		expect(taxSum).toBe(2050);
+	});
+
+	test("an order the plugin serves without rows (single, or an older order) keeps one Tax row", () => {
+		const { tax: _drop, ...older } = ITEMIZED_ORDER;
+		const totals = buildCheckoutTotals(older, { locale: "en-US", ...orderTotalsFlags(older) });
+		expect(orderSumRows(totals).map((row) => row.label)).toEqual([
+			"Subtotal",
+			"Discount",
+			"Shipping",
+			"Tax",
+		]);
+	});
+});
+
 describe("orderProgress — the step tracker never claims a payment that did not happen", () => {
 	test.each(["paid", "processing", "shipped", "delivered", "completed", "refunded"])(
 		"%s: paid, so the tracker is at Order with Payment completed",
