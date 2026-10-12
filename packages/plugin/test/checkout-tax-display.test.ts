@@ -142,14 +142,24 @@ describe("displayed with tax", () => {
 });
 
 describe("tax off, and tax not located", () => {
-	test("tax switched off renders exactly as before 2a: the one Tax row, prices as entered", () => {
+	test("tax switched off: no Tax row, prices as entered, a complete total", () => {
 		const off = { ...EXCL, taxCents: 0, totalCents: 1500 };
 		const opts = { ...OPTS, taxZoneSelected: false };
 		const t = buildCheckoutTotals(
 			{ ...off, tax: tax({ enabled: false, displayCart: "incl", itemized: [] }) },
 			opts,
 		);
-		expect(t).toEqual(buildCheckoutTotals(off, opts));
+		expect(t.taxRows).toEqual([]);
+		expect(t.taxIncludedNote).toBeNull();
+		expect(t.subtotal.label).toBe("$10.00");
+		expect(t.shipping.label).toBe("$5.00");
+		expect(t.totalExcludesUncalculated).toBe(false);
+	});
+
+	test("a quote with no `tax` key still shows today's single Tax row", () => {
+		const off = { ...EXCL, taxCents: 0, totalCents: 1500 };
+		const opts = { ...OPTS, taxZoneSelected: false };
+		const t = buildCheckoutTotals(off, opts);
 		expect(t.taxRows.map((r) => [r.label, r.amount.money])).toEqual([["Tax", null]]);
 	});
 
