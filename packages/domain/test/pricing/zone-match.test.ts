@@ -24,6 +24,14 @@ const physical = (country: string, region: string | null = null) => ({
 	destination: { country, region },
 });
 
+const required = (country: string) => ({ status: "region_code_required", country });
+
+/** The store's base address: never asked for a narrower region. */
+const storeBase = (country: string, region: string) => ({
+	...physical(country, region),
+	askForNarrower: false,
+});
+
 describe("resolveShippingZone", () => {
 	test("a digital-only cart needs no zone — even when the address matches none", () => {
 		expect(resolveShippingZone([US], { requiresShipping: false })).toEqual({
@@ -154,7 +162,6 @@ describe("resolveShippingZone", () => {
 		});
 
 		test("a pick CONTAINING a zoned subdivision is asked to be more specific — never matched to the country", () => {
-			const required = (country: string) => ({ status: "region_code_required", country });
 			// [ES 21%, ES-TF 0%]: "Canary Islands" could be Tenerife or Las Palmas.
 			expect(resolveShippingZone([ES, zone("z-tf", ["ES-TF"])], physical("ES", "CN"))).toEqual(
 				required("ES"),
@@ -184,16 +191,15 @@ describe("resolveShippingZone", () => {
 
 		test("askForNarrower: false (the store's base address) falls back to the ancestor or country zone", () => {
 			const TF = zone("z-tf", ["ES-TF"]);
-			const base = (country: string, region: string) => ({
-				...physical(country, region),
-				askForNarrower: false,
-			});
-			expect(resolveShippingZone([ES, TF], base("ES", "CN"))).toEqual(matched("z-es", "ES"));
+			expect(resolveShippingZone([ES, TF], storeBase("ES", "CN"))).toEqual(matched("z-es", "ES"));
 			expect(
-				resolveShippingZone([zone("z-gb", ["GB"]), zone("z-lnd", ["GB-LND"])], base("GB", "ENG")),
+				resolveShippingZone(
+					[zone("z-gb", ["GB"]), zone("z-lnd", ["GB-LND"])],
+					storeBase("GB", "ENG"),
+				),
 			).toEqual(matched("z-gb", "GB"));
 			// Nothing to fall back to: unmatched, never region_code_required.
-			expect(resolveShippingZone([TF], base("ES", "CN"))).toEqual({ status: "unmatched" });
+			expect(resolveShippingZone([TF], storeBase("ES", "CN"))).toEqual({ status: "unmatched" });
 		});
 
 		test("a blank region still asks for one when only a parent is zoned", () => {
