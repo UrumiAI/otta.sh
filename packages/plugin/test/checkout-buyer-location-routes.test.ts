@@ -152,4 +152,25 @@ describe("storefront/checkout/summary — taxByBuyerLocation", () => {
 			selectionErrors: { destination: { reason: "SHIPPING_REGION_CODE_REQUIRED" } },
 		});
 	});
+
+	test("#478: a refused location blocks Place until it is fixed or cleared", async () => {
+		quoteCheckout
+			.mockResolvedValueOnce({ ok: false, reason: "SHIPPING_REGION_CODE_REQUIRED" })
+			.mockResolvedValueOnce({ ...QUOTE, taxByBuyerLocation: true });
+		const refused = await summary({
+			cartId: "cart-1",
+			destination: { country: "ES", region: "CN" },
+		});
+		expect(refused).toMatchObject({ ok: true, readyToPlace: false });
+
+		// Cleared: no location, the shop's address taxes ⇒ Place is offered.
+		quoteCheckout.mockResolvedValueOnce({ ...QUOTE, taxByBuyerLocation: true });
+		expect(await summary({ cartId: "cart-1" })).toMatchObject({ ok: true, readyToPlace: true });
+
+		// A location priced fine ⇒ Place is offered.
+		quoteCheckout.mockResolvedValueOnce({ ...QUOTE, taxByBuyerLocation: true });
+		expect(
+			await summary({ cartId: "cart-1", destination: { country: "ES", region: "TF" } }),
+		).toMatchObject({ ok: true, readyToPlace: true });
+	});
 });

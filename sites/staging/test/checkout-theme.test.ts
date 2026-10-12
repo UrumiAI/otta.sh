@@ -495,6 +495,14 @@ describe.each(REVIEW_VIEWS)("/checkout — delivery (ADR-0021) — %s", (_label,
 		expect(DELIVERY).toContain('{buyerLocation ? "Your location" : "Delivery"}');
 	});
 
+	test("#478: a refused buyer location says why Place is not offered", () => {
+		expect(shown(REVIEW)).toMatch(
+			/buyerLocation && destinationError !== null \? "Pick a more specific region above, or clear your location, to continue\."/,
+		);
+		// Place is offered only when the plugin says so (readyToPlace).
+		expect(VIEW).toMatch(/summary\.readyToPlace \? \(/);
+	});
+
 	test("it asks for a country (select) and a region (a pick list of codes), echoes the priced destination as fromCountry/fromRegion — all owned by the place form", () => {
 		const select = /<select[^>]*name="deliveryCountry"[^>]*>/.exec(DELIVERY)?.[0] ?? "";
 		expect(select).toContain('form="checkout-place"');

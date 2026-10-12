@@ -266,8 +266,9 @@ interface CheckoutSummaryViewBase {
 	taxByBuyerLocation: boolean;
 	/**
 	 * The ONE answer to "may the page offer the place button?". Unlocked: the
-	 * cart ships nothing, or the store has no zones, or a zone matched and a
-	 * method is selected. Locked: the order is still payable.
+	 * cart ships nothing (and no buyer location it asked for was refused, #478),
+	 * or the store has no zones, or a zone matched and a method is selected.
+	 * Locked: the order is still payable.
 	 */
 	readyToPlace: boolean;
 	/** Why the total leaves something out (`null` when it leaves nothing out). */
@@ -617,10 +618,17 @@ export function createCheckoutSummaryRouteHandler(): RouteHandler<CheckoutSummar
 					(quote.requiresShipping && status !== "no_zones") || paymentAccountNeedsAddress,
 				paymentAccountNeedsAddress,
 				taxByBuyerLocation: quote.taxByBuyerLocation === true,
+				// #478: a buyer location the quote refused blocks Place until the buyer
+				// fixes or clears it — placing would only re-price into the same refusal.
 				readyToPlace:
-					!quote.requiresShipping ||
-					status === "no_zones" ||
-					(status === "matched" && methodSelected),
+					!(
+						!quote.requiresShipping &&
+						quote.taxByBuyerLocation === true &&
+						selectionErrors.destination !== undefined
+					) &&
+					(!quote.requiresShipping ||
+						status === "no_zones" ||
+						(status === "matched" && methodSelected)),
 				uncalculatedReason: uncalculatedReasonFor(status, methodSelected),
 				orderCreated: false as const,
 				order: null,
