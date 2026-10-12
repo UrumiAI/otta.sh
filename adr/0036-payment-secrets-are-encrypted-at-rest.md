@@ -61,7 +61,9 @@ path — so no new write path or crypto is needed.
    empty, not a string, or not the shape Otta's Settings form saves (the same checks), is
    never used and never replaced by anything else. `readSecret` reports `unreadable` or
    `invalid`; payment readers treat both as not configured; the webhook edge-token gate
-   answers 503 instead of passing through (a never-set token still passes through); the
+   answers 503 instead of passing through (a never-set token still passes through).
+   "Unreadable" also covers a kv read failure when nothing was ever stored: whether a value
+   exists is then unknown, so the gate answers 503 (fail closed); the
    Settings page says "saved, but cannot be read" or "saved, but not valid" and keeps Remove;
    a save the host refuses says so.
 4. **`EMDASH_ENCRYPTION_KEY` is required** and documented as such in `DEPLOYMENT.md`, with
@@ -86,6 +88,9 @@ path — so no new write path or crypto is needed.
   by the re-save. Otta has only run trusted, so none is expected.
 - After a key rotation the re-save does not repeat; the old key stays listed until the three
   keys are entered again.
-- Encryption depends on the site descriptor. A site that drops `settingsSchema` stores these
-  keys as plain values again, and the plugin cannot detect it; the site-config test is the
-  guard.
+- Encryption depends on the site descriptor. A site that drops `settingsSchema` stores new
+  saves of these keys as plain values again, and values already encrypted become unreadable;
+  the plugin cannot detect it, and the site-config test is the guard.
+- A custom site must declare the schema (`PAYMENT_SECRET_SETTINGS_SCHEMA` in its descriptor
+  `settingsSchema`) before upgrading. If it was added later, enter the three keys again in
+  Settings, or delete `state:paymentSecretsEncrypted` so the re-save runs again.

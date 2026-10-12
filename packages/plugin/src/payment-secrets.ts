@@ -158,8 +158,10 @@ export const PAYMENT_SECRET_SETTINGS_SCHEMA: Readonly<Record<string, SecretSetti
 
 /**
  * What one secret read found. It carries nothing about the value or the error.
- *  - `"unreadable"`: a value IS stored but the kv read rejected — on EmDash
- *    1.0.1 that includes a stored ciphertext this site cannot decrypt.
+ *  - `"unreadable"`: the kv read rejected — on EmDash 1.0.1 that includes a
+ *    stored ciphertext this site cannot decrypt, and also a kv failure when
+ *    nothing was ever stored. Whether a value exists is then unknown, so the
+ *    edge-token gate fails closed (503).
  *  - `"invalid"`: a value IS stored, for one of the encrypted payment keys,
  *    but it is empty, not a string, or not the shape Otta's Settings form would
  *    have saved (ADR-0036 "validate on read"). EmDash's own plugin-settings form
@@ -230,6 +232,8 @@ export async function readSecret(ctx: PluginContext, key: string): Promise<Secre
  *  3. **A non-string folds to `undefined`.** kv is untyped at runtime; handing a
  *     number or an object on as a credential is worse than absence.
  *
+ * An invalid shape (see {@link readSecret}) also reads as `undefined` here.
+ *
  * NOTHING about the value — not its length, not a prefix — is ever logged or put
  * in an error. The caught error is dropped entirely rather than re-thrown or
  * wrapped, so no message built from a kv driver's own diagnostics (which can
@@ -249,9 +253,9 @@ export async function readWriteOnlySecret(
 export interface PaymentSecrets {
 	stripeSecretKey: string | undefined;
 	stripeWebhookSecret: string | undefined;
-	/** The `X-Otta-Wh-Token` edge token. `undefined` is MEANINGFUL here and only
-	 *  here: it means the token gate is off (pass-through), not that the route is
-	 *  disabled — see {@link WEBHOOK_EDGE_TOKEN_KEY}. */
+	/** The `X-Otta-Wh-Token` edge token. `undefined` means not set, unreadable or
+	 *  invalid, so do NOT treat it as "gate off". For an allow/deny decision use
+	 *  `edgeTokenGate` (`edge-token.ts`) or {@link readSecret}. */
 	webhookEdgeToken: string | undefined;
 }
 
@@ -288,8 +292,9 @@ export async function stripeSecretKeyFromKv(ctx: PluginContext): Promise<string 
 	return readWriteOnlySecret(ctx, STRIPE_SECRET_KEY_KEY);
 }
 
-/** The `X-Otta-Wh-Token` edge token, by name — the settle route's FIRST read and,
- *  on a rejection, its only one. */
+/** The `X-Otta-Wh-Token` edge token, by name. `undefined` means not set,
+ *  unreadable or invalid, so it must not be used as "gate off". For an
+ *  allow/deny decision use `edgeTokenGate` (`edge-token.ts`) or {@link readSecret}. */
 export async function webhookEdgeTokenFromKv(ctx: PluginContext): Promise<string | undefined> {
 	return readWriteOnlySecret(ctx, WEBHOOK_EDGE_TOKEN_KEY);
 }

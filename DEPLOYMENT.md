@@ -354,6 +354,15 @@ order of appearance in a deployment's life:
     deleted by x402's own one-time purge, not by this run). Earlier backups and D1 Time Travel
     history still hold the earlier copies until they age out, so rotate a live Stripe key
     after the upgrade.
+  - **After deploying:** open Otta's Settings and look for "saved, but not valid"; enter any
+    such key again (an invalid stored edge token makes the webhook answer 503).
+  - **A custom site** must declare the schema (`PAYMENT_SECRET_SETTINGS_SCHEMA` in its
+    descriptor `settingsSchema`) before upgrading. If it was added later, enter the three
+    keys again in Settings, or delete `state:paymentSecretsEncrypted` so the re-save runs
+    again.
+  - **Rolling back:** after the one-time re-save, a build without the `settingsSchema` cannot
+    read the three encrypted values, so Stripe payments and webhooks stop until you roll
+    forward or enter the keys again. Nothing is lost.
 
 > **The Stripe webhook endpoint is public by design, and permanently site-owned.**
 > Stripe delivers to `POST /webhooks/stripe` on the site (`sites/staging/src/pages/webhooks/stripe.ts`)

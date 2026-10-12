@@ -84,8 +84,10 @@ export function resetPaymentSecretEncryptionForTesting(): void {
 }
 
 /** EmDash's `PluginSettingEncryptionError` codes that mean "the encryption key
- *  is missing or is not the one these values were saved with". Matched by
- *  `code` only; the error's message is never read. */
+ *  is missing or is not the one these values were saved with". A malformed
+ *  stored value (for example a non-string row) raises the same decryption code,
+ *  so the "key" log line covers that case too. Matched by `code` only; the
+ *  error's message is never read. */
 const KEY_PROBLEM_CODES: ReadonlySet<string> = new Set([
 	"PLUGIN_SETTING_ENCRYPTION_KEY_MISSING",
 	"PLUGIN_SETTING_ENCRYPTION_KEY_UNKNOWN",
@@ -103,7 +105,7 @@ function isKeyProblem(error: unknown): boolean {
 type Report = "key" | "host" | "conflict" | "other";
 
 const REPORT_LINES: Readonly<Record<Report, string>> = {
-	key: "[otta] payment keys are not encrypted yet: EMDASH_ENCRYPTION_KEY is missing or is not the key they were saved with; nothing was changed; will retry",
+	key: "[otta] payment keys are not encrypted yet: EMDASH_ENCRYPTION_KEY is missing, is not the key they were saved with, or a stored value is malformed; nothing was changed; will retry",
 	host: "[otta] payment keys are not encrypted yet: this host's kv has no conditional write; will retry",
 	conflict:
 		"[otta] payment keys are not encrypted yet: a key changed while they were being re-saved; will retry",
@@ -166,6 +168,9 @@ export async function encryptStoredPaymentSecrets(
 			return "retry";
 		}
 
+		// Retry cost: while the key is missing, each sweep tick runs only the marker
+		// read and the preflight reads (a handful of kv calls), and logs once per
+		// isolate. This is intentional and bounded.
 		const progress = readProgress(await kv.get<unknown>(PAYMENT_SECRETS_ENCRYPTION_PROGRESS_KEY));
 		let resaved = 0;
 		let legacyReplaced = 0;
@@ -210,7 +215,7 @@ export async function encryptStoredPaymentSecrets(
 		await kv.delete(PAYMENT_SECRETS_ENCRYPTION_PROGRESS_KEY);
 		doneInIsolate.add(site);
 		console.info(
-			`[otta] payment keys encrypted at rest: ${String(resaved)} re-saved, ` +
+			`[otta] payment keys re-saved through the settings layer: ${String(resaved)} re-saved, ` +
 				`${String(legacyReplaced)} legacy copies replaced`,
 		);
 		return "encrypted";

@@ -79,8 +79,10 @@ export function header(request: SandboxedRequest, name: string): string | undefi
  * Four outcomes, and the middle two are the subtle ones:
  *  - token UNSET (never provisioned) ⇒ PASS THROUGH. The route's
  *    cryptographic anchor still applies.
- *  - token stored but UNREADABLE (the kv read rejected — on EmDash 1.0.1 that
- *    includes a stored token this site cannot decrypt) or INVALID (empty or
+ *  - token UNREADABLE (the kv read rejected — on EmDash 1.0.1 that
+ *    includes a stored token this site cannot decrypt, and also a kv failure
+ *    when nothing was ever stored; whether a token exists is then unknown, so
+ *    the gate fails closed) or INVALID (empty or
  *    malformed, e.g. saved through EmDash's own settings form) ⇒ UNAVAILABLE
  *    (ADR-0036). A stored token means the gate was turned on; a bad read must
  *    not turn it off.
