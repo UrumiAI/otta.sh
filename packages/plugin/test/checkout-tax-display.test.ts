@@ -172,3 +172,33 @@ describe("tax off, and tax not located", () => {
 		expect(t.taxIncludedNote).toBeNull();
 	});
 });
+
+describe("tax switched off (#420): no Tax row, as in WooCommerce", () => {
+	const OFF = tax({ enabled: false, located: false, itemized: [], lineTaxCents: 0 });
+	const FREE: QuoteBreakdownWire = { ...EXCL, taxCents: 0, totalCents: 1500, tax: OFF };
+
+	test("no tax row and no included note, with or without a tax zone", () => {
+		for (const taxZoneSelected of [true, false]) {
+			const t = buildCheckoutTotals(FREE, { ...OPTS, taxZoneSelected });
+			expect(t.taxRows).toEqual([]);
+			expect(t.taxIncludedNote).toBeNull();
+		}
+	});
+
+	test("tax off is not an uncalculated part of the total", () => {
+		const t = buildCheckoutTotals(FREE, { ...OPTS, taxZoneSelected: false });
+		expect(t.totalExcludesUncalculated).toBe(false);
+	});
+
+	test("tax ON with zero tax keeps its row; tax on, no zone keeps 'Not calculated'", () => {
+		const on = tax({ itemized: [], lineTaxCents: 0, totalsDisplay: "single" });
+		const zero = buildCheckoutTotals({ ...EXCL, taxCents: 0, totalCents: 1500, tax: on }, OPTS);
+		expect(zero.taxRows.map((r) => [r.label, r.amount.label])).toEqual([["Tax", "$0.00"]]);
+		const unknown = buildCheckoutTotals(
+			{ ...EXCL, tax: tax({ located: false }) },
+			{ ...OPTS, taxZoneSelected: false },
+		);
+		expect(unknown.taxRows[0]?.amount.money).toBeNull();
+		expect(unknown.totalExcludesUncalculated).toBe(true);
+	});
+});
