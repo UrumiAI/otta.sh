@@ -12,7 +12,7 @@ Requires a host that carries the conditional-write primitives (`updateIf`, `getV
 
 ## Usage
 
-The adapters are written against a structural `StorageAccess` port (`src/storage-access.ts`) and never import host code at runtime. In production, inject the plugin's `ctx.storage`; in tests, build a real repository with the repo-only dialect harness (`test/describe-each-dialect.ts` in this repo; it is not a published subpath) (in-memory SQLite, and Postgres when `PG_CONNECTION_STRING` is set).
+The adapters are written against a structural `StorageAccess` port (`src/storage-access.ts`) and never import host code at runtime. In production, inject the plugin's `ctx.storage`; in tests, build a real repository with the dialect harness in this repo, `test/describe-each-dialect.ts` (in-memory SQLite, and Postgres when `PG_CONNECTION_STRING` is set). It is not a published subpath.
 
 ## Design notes
 
