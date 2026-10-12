@@ -709,6 +709,13 @@ const EXPIRY_SCAN_ORDERS = 100;
 const ORDER_EXPIRY_BACKOFF = new UnitBackoff({ maxEntries: expiryBackoffCap(1) });
 
 /**
+ * How many different orders must be waiting out a failed flip before an
+ * all-failed expiry call fails the leg (#478): one order failing alone is logged,
+ * not alerted on. See the leg.
+ */
+const EXPIRY_FAILING_ORDERS_TO_ALERT = 2;
+
+/**
  * The expiry back-off's cap for a bite of `expiryLimit` (polish P-3): the rows the
  * look's one page ({@link EXPIRY_SCAN_ORDERS}) has left beside the bite and its one
  * extra row — 98 on Free (bite 1), 81 at the Paid bite of 18 — so reading past
@@ -1566,7 +1573,23 @@ export async function runCommerceSweeps(
 				// good ones does not fail it, nor does a second pass that met only
 				// failing orders after the first made progress, and the back-off keeps a
 				// poison order from failing every tick: while it waits it is read past.
-				if (result.allFailed === true && ordersExpiredThisTick === 0) {
+				//
+				// AT LEAST TWO FAILING ORDERS (#478, from #470). On a quiet store ONE
+				// order that always fails would still fail the leg on each back-off
+				// retry (5, 10, 20 minutes, then hourly): an alert that flaps for ever on
+				// one order. So the leg fails only while at least
+				// `EXPIRY_FAILING_ORDERS_TO_ALERT` different orders are waiting out a
+				// failure. Counted from the back-off, not from this call's attempts: the
+				// Free bite tries ONE order a tick, so a per-call "two attempts" would
+				// never alert there, and "N failing ticks in a row" never builds up
+				// either, because the ticks between retries skip the leg (every
+				// candidate is waiting). A store with a single pending order cannot tell
+				// an outage from a poison order; its failure lines are still logged.
+				if (
+					result.allFailed === true &&
+					ordersExpiredThisTick === 0 &&
+					expiryBackoff.waiting(now.getTime()).size >= EXPIRY_FAILING_ORDERS_TO_ALERT
+				) {
 					throw new Error(
 						"every order the leg tried failed to expire; each is backing off (see the " +
 							"'expiring order' lines above)",

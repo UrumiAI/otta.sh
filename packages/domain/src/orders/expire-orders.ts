@@ -79,8 +79,8 @@ export interface ExpireOrdersBatchResult extends SweepBatchResult {
 	 * is logged but is not a failed attempt. Each order is still caught and backed off on
 	 * its own, so one failing order never ends the batch; this flag is what lets the
 	 * caller tell "the store is refusing every flip" (an outage) from "nothing to
-	 * do" — the scheduled sweep fails the leg on it, which is what its per-leg
-	 * alerting watches. One failure among successes does not set it (that order is
+	 * do" — the scheduled sweep fails the leg on it (once two different orders
+	 * are failing, #478), which is what its per-leg alerting watches. One failure among successes does not set it (that order is
 	 * logged and backed off, and the leg made progress), nor does a flip that lost
 	 * its guard (`null`: someone else moved the order), nor a call that attempted
 	 * nothing because every candidate is backing off.
