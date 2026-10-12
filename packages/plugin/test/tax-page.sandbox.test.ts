@@ -1453,7 +1453,7 @@ describe("admin Tax console — tax options (PR 2a, ADR-0032)", () => {
 		);
 		expect(contextTexts(await openOptions()).some((t) => note.test(t))).toBe(true);
 		// The same note tells the merchant the buyer's country is self-declared.
-		expect(contextTexts(await openOptions()).join(" ")).toContain("can pick one taxed at 0%");
+		expect(contextTexts(await openOptions()).join(" ")).toContain("Buyers can pick a 0% country.");
 		await settingsStore.update(
 			{ tax: { ...TAX_ON, basedOn: "billing", baseAddress: { country: "GB", region: null } } },
 			idempotencyKey("billing-with-address"),

@@ -91,7 +91,7 @@ function missingBaseAddressNote(current: TaxSettingsWire): Block | null {
 			type: "context",
 			text:
 				current.baseAddress === null
-					? "Note: tax is set to the customer's billing address, but no base address is set — a digital-only order whose buyer gives no country is not taxed until one is. Buyers declare their own country and can pick one taxed at 0%."
+					? "Note: tax is set to the customer's billing address, but no base address is set — a digital-only order whose buyer gives no country is not taxed until one is. Buyers can pick a 0% country."
 					: "Note: buyers declare their own billing country, so a buyer can pick a country taxed at 0%.",
 		};
 	}
