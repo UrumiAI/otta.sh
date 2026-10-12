@@ -69,6 +69,6 @@ export const fields = { [PRICING_FIELD_WIDGET]: PricingStockField };
 
 export const contentListColumns = PRICING_COLUMNS;
 
-// The `otta` plugin's Block Kit accordions (Reports, Settings, Tax, Shipping)
+// The `otta` plugin's Block Kit accordions (Reports, Settings, Tax, Shipping, Coupons)
 // take their look from this module — see `./block-kit-accordion.ts` for why.
 mountBlockKitAccordionStyles();
