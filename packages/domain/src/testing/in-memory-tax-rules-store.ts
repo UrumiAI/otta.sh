@@ -13,7 +13,11 @@ import type {
 	UpdateTaxRateResult,
 } from "../ports/tax-rules-store.js";
 import { appliedTaxRate, TaxRateDuplicateError } from "../pricing/tax-rate-uniqueness.js";
-import { normalizeTaxRateValue, ratePpmOf } from "../pricing/tax-rate-precision.js";
+import {
+	canonicalTaxRateValue,
+	normalizeTaxRateValue,
+	ratePpmOf,
+} from "../pricing/tax-rate-precision.js";
 
 /** IO-free `TaxRulesStore` fake — the first adapter to pass the contract. */
 export class InMemoryTaxRulesStore implements TaxRulesStore {
@@ -89,7 +93,7 @@ export class InMemoryTaxRulesStore implements TaxRulesStore {
 
 	async getRate(taxClassId: string, zoneId: string): Promise<TaxRate | null> {
 		const applied = appliedTaxRate([...this.#rates.values()], taxClassId, zoneId);
-		return applied === null ? null : { ...applied };
+		return applied === null ? null : canonical(applied);
 	}
 
 	async listRatesForZone(zoneId: string): Promise<TaxRate[]> {
@@ -98,7 +102,7 @@ export class InMemoryTaxRulesStore implements TaxRulesStore {
 		return [...this.#rates.values()]
 			.filter((r) => r.zoneId === zoneId)
 			.toSorted((a, b) => (a.id < b.id ? -1 : 1))
-			.map((r) => ({ ...r }));
+			.map(canonical);
 	}
 
 	async hasAnyRate(): Promise<boolean> {
@@ -119,13 +123,13 @@ export class InMemoryTaxRulesStore implements TaxRulesStore {
 			ratePpmOf(rate) === ratePpmOf(value) &&
 			rate.appliesToShipping === input.appliesToShipping
 		) {
-			return { ok: true, rate: { ...rate } }; // idempotent replay
+			return { ok: true, rate: canonical(rate) }; // idempotent replay
 		}
 		if (
 			ratePpmOf(rate) !== ratePpmOf(expected) ||
 			rate.appliesToShipping !== expected.appliesToShipping
 		) {
-			return { ok: false, reason: "stale", current: { ...rate } };
+			return { ok: false, reason: "stale", current: canonical(rate) };
 		}
 		const next: TaxRate = {
 			id: rate.id,
@@ -153,4 +157,11 @@ export class InMemoryTaxRulesStore implements TaxRulesStore {
 		this.#rates.delete(id);
 		return { ok: true };
 	}
+}
+
+/** A rate as the port returns it: a stale or malformed `ratePpm` (one a build that
+ *  knew only `rateBps` left behind, #425) is not part of the rate. */
+function canonical(rate: TaxRate): TaxRate {
+	const { ratePpm: _stored, ...rest } = rate;
+	return { ...rest, ...canonicalTaxRateValue(rate) };
 }

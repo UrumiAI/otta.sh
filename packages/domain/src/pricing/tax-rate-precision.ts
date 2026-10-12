@@ -13,9 +13,17 @@
  *    half up to the nearest basis point (what a reader that only knows basis
  *    points shows — never what is charged).
  *
- * `ratePpm`, when present, is THE rate; {@link ratePpmOf} reads either shape. A
- * rate stored before #425 has no `ratePpm` and reads as `rateBps × 100` — the
- * read-time upgrade; nothing is ever rewritten. Integer maths only.
+ * `ratePpm`, when present AND CONSISTENT, is THE rate; {@link ratePpmOf} reads
+ * either shape. A rate stored before #425 has no `ratePpm` and reads as
+ * `rateBps × 100` — the read-time upgrade; nothing is ever rewritten.
+ *
+ * `rateBps` is the source of truth whenever the two disagree. A build from before
+ * #425 knows only `rateBps`: if it edits a finer rate (8.875% → 9%), it rewrites
+ * `rateBps` and carries the old `ratePpm` along untouched, leaving
+ * `{ rateBps: 900, ratePpm: 88750 }`. So a `ratePpm` counts only when it is a
+ * non-negative safe integer that rounds half up to `rateBps`
+ * ({@link finerRatePpm}); otherwise it is ignored and the rate is `rateBps × 100`
+ * — what the older build meant. Integer maths only.
  */
 
 /** Millionths in one basis point. */
@@ -29,9 +37,39 @@ export interface TaxRateValue {
 	ratePpm?: number;
 }
 
-/** The exact rate in millionths: `ratePpm`, else `rateBps × 100`. */
+/**
+ * The `ratePpm` a rate really carries: present, a non-negative safe integer, not a
+ * whole basis point, and rounding half up to `rateBps`. Anything else — absent,
+ * malformed, `null`, or stale (left behind by an edit that only knew `rateBps`) —
+ * is `undefined`, and the rate is its `rateBps`.
+ */
+export function finerRatePpm(rate: { rateBps: unknown; ratePpm?: unknown }): number | undefined {
+	const { rateBps, ratePpm } = rate;
+	if (typeof ratePpm !== "number" || !Number.isSafeInteger(ratePpm) || ratePpm < 0)
+		return undefined;
+	if (ratePpm % PPM_PER_BPS === 0 || bpsOfPpm(ratePpm) !== rateBps) return undefined;
+	return ratePpm;
+}
+
+/** A stored rate's value in canonical form: `{ rateBps }`, plus `ratePpm` only
+ *  when {@link finerRatePpm} honours it. What a store returns on every read. */
+export function canonicalTaxRateValue(rate: TaxRateValue): TaxRateValue {
+	const ppm = finerRatePpm(rate);
+	return ppm === undefined ? { rateBps: rate.rateBps } : { rateBps: rate.rateBps, ratePpm: ppm };
+}
+
+/**
+ * The exact rate in millionths: an honoured `ratePpm` ({@link finerRatePpm}), else
+ * `rateBps × 100`. A `rateBps` that is not a non-negative safe integer throws a
+ * `RangeError` — corrupt data fails closed, as `computeLineTax` always did.
+ */
 export function ratePpmOf(rate: TaxRateValue): number {
-	return rate.ratePpm ?? rate.rateBps * PPM_PER_BPS;
+	if (!Number.isSafeInteger(rate.rateBps) || rate.rateBps < 0) {
+		throw new RangeError(
+			`a tax rate needs a non-negative integer rateBps, got ${String(rate.rateBps)}`,
+		);
+	}
+	return finerRatePpm(rate) ?? rate.rateBps * PPM_PER_BPS;
 }
 
 /** `ppm` rounded half up to whole basis points (`ppm` a non-negative integer). */

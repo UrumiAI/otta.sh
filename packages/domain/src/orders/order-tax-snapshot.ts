@@ -1,5 +1,6 @@
 import type { Cents } from "../money/cents.js";
 import type { TaxLine, TaxResult } from "../pricing/tax-calculator.js";
+import { finerRatePpm } from "../pricing/tax-rate-precision.js";
 import type { TotalsBreakdown } from "../pricing/types.js";
 
 /**
@@ -140,12 +141,14 @@ function ratePpmOf(line: TaxLine): { ratePpm?: number } {
 function taxedOf(item: Record<string, unknown>): ({ taxableCents: Cents } & TaxLine) | null {
 	const { taxableCents, rateBps, ratePpm, label, taxCents } = item;
 	if (!isCount(taxableCents) || !isCount(rateBps) || !isCount(taxCents)) return null;
-	if (ratePpm !== undefined && !isCount(ratePpm)) return null;
 	if (typeof label !== "string") return null;
+	// Only a consistent finer rate is part of the line (the store's own rule, #425);
+	// anything else under that key is ignored, as an unknown key always was.
+	const finer = finerRatePpm({ rateBps, ratePpm });
 	return {
 		taxableCents: taxableCents as Cents,
 		rateBps,
-		...(ratePpm === undefined ? {} : { ratePpm }),
+		...(finer === undefined ? {} : { ratePpm: finer }),
 		label,
 		taxCents: taxCents as Cents,
 	};

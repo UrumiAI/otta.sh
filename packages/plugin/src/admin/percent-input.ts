@@ -1,3 +1,4 @@
+import { PPM_PER_BPS } from "@otta-sh/domain";
 /**
  * Shared percent ↔ basis-points TEXT-input parsing/formatting for admin
  * screens (NO float arithmetic — CLAUDE.md). The ONE implementation behind
@@ -48,6 +49,8 @@ export function formatBpsAsPercent(bps: number): string {
 
 /** Millionths in 1% — a rate in `ratePpm` (#425) is `percent × 10_000`. */
 const PPM_PER_PERCENT = 10_000;
+/** The parsers' shared bound in basis points: 1000%. */
+const MAX_PERCENT_BPS = 100_000;
 
 /**
  * A TAX rate's percent, to WooCommerce's precision (#425): up to FOUR decimal
@@ -64,7 +67,7 @@ export function parsePercentToPpm(input: string): number | null {
 	const minor = Number.parseInt((m[2] ?? "").padEnd(4, "0"), 10);
 	if (!Number.isSafeInteger(major)) return null;
 	const ppm = major * PPM_PER_PERCENT + minor;
-	return Number.isSafeInteger(ppm) && ppm >= 0 && ppm <= 100_000 * 100 ? ppm : null;
+	return Number.isSafeInteger(ppm) && ppm >= 0 && ppm <= MAX_PERCENT_BPS * PPM_PER_BPS ? ppm : null;
 }
 
 /**

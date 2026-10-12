@@ -710,6 +710,36 @@ export function taxRulesStoreContract(
 			expect(await store.getRate("standard", "z-us")).not.toHaveProperty("ratePpm");
 		});
 
+		test("a stale ratePpm (an older build edited only rateBps) reads as rateBps, and the next edit drops it", async () => {
+			const { store, seedUncheckedRate } = await makeStore();
+			// 8.875% edited to 9% by a build that knew only rateBps: ratePpm came along.
+			await seedUncheckedRate({
+				id: "nyc",
+				taxClassId: "standard",
+				zoneId: "z-nyc",
+				rateBps: 900,
+				ratePpm: 88_750,
+				appliesToShipping: false,
+			});
+			const nine = {
+				id: "nyc",
+				taxClassId: "standard",
+				zoneId: "z-nyc",
+				rateBps: 900,
+				appliesToShipping: false,
+			};
+			expect(await store.getRate("standard", "z-nyc")).toEqual(nine);
+			expect(await store.listRatesForZone("z-nyc")).toEqual([nine]);
+			// An editor that read 9% is not stale, and its edit leaves no stale ratePpm.
+			const edited = await store.updateRate(
+				"nyc",
+				{ rateBps: 950, appliesToShipping: false },
+				{ rateBps: 900, appliesToShipping: false },
+			);
+			expect(edited.ok && edited.rate).toEqual({ ...nine, rateBps: 950 });
+			expect(await store.getRate("standard", "z-nyc")).toEqual({ ...nine, rateBps: 950 });
+		});
+
 		test("the one-per-slot refusal names the existing rate's exact value", async () => {
 			const { store } = await makeStore();
 			await store.createRate({

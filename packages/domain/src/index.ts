@@ -175,6 +175,8 @@ export {
 // #425: a rate finer than a basis point (8.875%) — `ratePpm` beside `rateBps`.
 export {
 	bpsOfPpm,
+	canonicalTaxRateValue,
+	finerRatePpm,
 	normalizeTaxRateValue,
 	PPM_PER_BPS,
 	ratePpmOf,

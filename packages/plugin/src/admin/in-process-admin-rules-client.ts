@@ -100,6 +100,7 @@ import {
 	isCouponIdCollisionError,
 	isTaxRateDuplicateError,
 	bpsOfPpm,
+	PPM_PER_BPS,
 	isSupportedCurrency,
 	parseCouponInstant,
 	parseZoneRegions,
@@ -1137,7 +1138,7 @@ export async function createOrRefuse<T>(write: () => Promise<T>): Promise<RulesC
 					rateBps: err.existingRateBps,
 					// The exact rate only when finer than a basis point (#425); an error
 					// from across a bridge may not carry it.
-					...(typeof err.existingRatePpm === "number" && err.existingRatePpm % 100 !== 0
+					...(typeof err.existingRatePpm === "number" && err.existingRatePpm % PPM_PER_BPS !== 0
 						? { ratePpm: err.existingRatePpm }
 						: {}),
 				},
@@ -1241,12 +1242,12 @@ function optionalRatePpm(
 	if (
 		!Number.isSafeInteger(value) ||
 		value < 0 ||
-		value > maxBps * 100 ||
+		value > maxBps * PPM_PER_BPS ||
 		bpsOfPpm(value) !== rateBps
 	) {
 		throw new CommerceInputError(
 			field,
-			`must be an integer between 0 and ${String(maxBps * 100)} that rounds half up to the rate in basis points`,
+			`must be an integer between 0 and ${String(maxBps * PPM_PER_BPS)} that rounds half up to the rate in basis points`,
 		);
 	}
 	return { ratePpm: value };

@@ -9,6 +9,8 @@ import { applyRateTable, rateTableOf } from "../../src/pricing/rate-table-calcul
 import type { TaxRequest } from "../../src/pricing/tax-calculator.js";
 import {
 	bpsOfPpm,
+	canonicalTaxRateValue,
+	finerRatePpm,
 	normalizeTaxRateValue,
 	ratePpmOf,
 	taxRateValueOfPpm,
@@ -68,11 +70,35 @@ describe("the rate value: rateBps + an optional finer ratePpm", () => {
 		expect(ratePpmOf({ rateBps: 0 })).toBe(0);
 	});
 
+	test("a stale ratePpm — one an older build left behind when it edited only rateBps — is ignored", () => {
+		// The old build edited 8.875% → 9% and carried ratePpm along: rateBps wins.
+		expect(ratePpmOf({ rateBps: 900, ratePpm: NYC })).toBe(90_000);
+		expect(canonicalTaxRateValue({ rateBps: 900, ratePpm: NYC })).toEqual({ rateBps: 900 });
+		// Malformed or redundant values are not a finer rate either.
+		expect(finerRatePpm({ rateBps: 888, ratePpm: 88_750.5 })).toBeUndefined();
+		expect(finerRatePpm({ rateBps: 888, ratePpm: -1 })).toBeUndefined();
+		expect(finerRatePpm({ rateBps: 888, ratePpm: null })).toBeUndefined();
+		expect(finerRatePpm({ rateBps: 888, ratePpm: "88750" })).toBeUndefined();
+		expect(finerRatePpm({ rateBps: 888, ratePpm: 88_800 })).toBeUndefined();
+		expect(finerRatePpm({ rateBps: 888, ratePpm: NYC })).toBe(NYC);
+	});
+
+	test("a corrupt rateBps fails closed, as computeLineTax always did", () => {
+		expect(() => ratePpmOf({ rateBps: 7.5 })).toThrow(RangeError);
+		expect(() => ratePpmOf({ rateBps: -1 })).toThrow(RangeError);
+		expect(() => ratePpmOf({ rateBps: Number.NaN })).toThrow(RangeError);
+	});
+
 	test("bpsOfPpm rounds half up to the nearest whole basis point", () => {
 		expect(bpsOfPpm(NYC)).toBe(888);
 		expect(bpsOfPpm(88_749)).toBe(887);
 		expect(bpsOfPpm(72_500)).toBe(725);
 		expect(bpsOfPpm(1)).toBe(0);
+		// The half-up boundary.
+		expect(bpsOfPpm(49)).toBe(0);
+		expect(bpsOfPpm(50)).toBe(1);
+		expect(bpsOfPpm(149)).toBe(1);
+		expect(bpsOfPpm(150)).toBe(2);
 	});
 
 	test("taxRateValueOfPpm is canonical: a whole basis point carries no ratePpm", () => {
@@ -112,6 +138,33 @@ describe("the built-in rate table charges the exact 8.875%", () => {
 			new Map(),
 		);
 		expect(r.lines[0]?.taxCents).toBe(8875); // exactly the tax inside $1,088.75
+	});
+
+	test("prices with tax: an EXACT half at millionths scale rounds DOWN", () => {
+		// 64 ppm (0.0064%): 23439 × 64 / 1000064 = 1.5 exactly → 1 (half up would be 2).
+		const tiny = rate({ rateBps: 1, ratePpm: 64 });
+		const r = applyRateTable(
+			request(23_439, { pricesIncludeTax: true }),
+			rateTableOf([tiny]),
+			new Map(),
+		);
+		expect(r.lines[0]).toMatchObject({ rateBps: 1, ratePpm: 64, taxCents: 1 });
+		// And 7813 × 64 / 1000064 = 0.5 exactly → 0.
+		const half = applyRateTable(
+			request(7813, { pricesIncludeTax: true }),
+			rateTableOf([tiny]),
+			new Map(),
+		);
+		expect(half.lines[0]?.taxCents).toBe(0);
+	});
+
+	test("a stale ratePpm is charged at rateBps — what the build that wrote it meant", () => {
+		const r = applyRateTable(
+			request(100_000),
+			rateTableOf([rate({ rateBps: 900, ratePpm: NYC })]),
+			new Map(),
+		);
+		expect(r.lines[0]).toEqual({ lineId: "l0", rateBps: 900, label: "standard", taxCents: 9000 });
 	});
 
 	test("shipping and round-at-subtotal use the exact rate too", () => {
@@ -155,9 +208,11 @@ describe("validateTaxResult and the optional ratePpm (ADR-0030 stays backward co
 		shipping: null,
 	});
 
-	test("an answer without ratePpm passes unchanged", () => {
+	test("an answer without ratePpm (or with ratePpm: null) passes unchanged", () => {
 		const ok = validateTaxResult(req, answer({ rateBps: 888 }));
 		expect(ok?.lines[0]).toEqual({ lineId: "l0", rateBps: 888, label: "NY", taxCents: 8875 });
+		const nulled = validateTaxResult(req, answer({ rateBps: 888, ratePpm: null }));
+		expect(nulled?.lines[0]).toEqual({ lineId: "l0", rateBps: 888, label: "NY", taxCents: 8875 });
 	});
 
 	test("a consistent ratePpm is kept; a whole-bps one is dropped as redundant", () => {
@@ -183,6 +238,17 @@ describe("validateTaxResult and the optional ratePpm (ADR-0030 stays backward co
 		).toBeNull();
 	});
 });
+
+/** A v1 snapshot with no lines and the given shipping line. */
+function shippingOnlySnapshot(shipping: Record<string, unknown>) {
+	return {
+		v: 1,
+		calculatorId: "otta.rate-table",
+		pricesIncludeTax: false,
+		lines: [],
+		shipping,
+	};
+}
 
 describe("the order's frozen snapshot keeps the exact rate", () => {
 	const breakdown = {
@@ -224,15 +290,13 @@ describe("the order's frozen snapshot keeps the exact rate", () => {
 		expect(JSON.stringify(read)).toBe(JSON.stringify(old));
 	});
 
-	test("a malformed ratePpm makes the snapshot unreadable, like any malformed field", () => {
-		const bad = {
-			v: 1,
-			calculatorId: "otta.rate-table",
-			pricesIncludeTax: false,
-			lines: [],
-			shipping: { taxableCents: 500, rateBps: 888, ratePpm: "x", label: "NY", taxCents: 44 },
-		};
-		expect(readOrderTaxSnapshot(bad)).toBeNull();
+	test("a malformed or inconsistent ratePpm is ignored, as any unknown key always was", () => {
+		const line = { taxableCents: 500, rateBps: 888, label: "NY", taxCents: 44 };
+		for (const ratePpm of ["x", null, -5, 90_000, 88_750.5]) {
+			expect(readOrderTaxSnapshot(shippingOnlySnapshot({ ...line, ratePpm }))).toEqual(
+				shippingOnlySnapshot(line),
+			);
+		}
 	});
 });
 

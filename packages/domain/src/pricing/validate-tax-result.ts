@@ -26,7 +26,7 @@ import {
  * `ceil(G × 100000 / 110000)`, which is below G, so the net can never go
  * negative — shipping is always entered without tax and keeps `amount × 10`
  * (exact integers throughout); a rate that is not an integer in
- * [0, 1000%]; an OPTIONAL `ratePpm` (#425) that is not an integer in [0, 1000%]
+ * [0, 1000%]; an OPTIONAL `ratePpm` (#425; `null` reads as absent) that is not an integer in [0, 1000%]
  * or is not exactly `rateBps` once rounded half up (a whole-bps one is dropped as
  * redundant, so the line reads as it always did); a bad label; a NON-ZERO tax on a line whose product is not
  * taxable (`shipping_only` or `none`, PR 2b — never silently zeroed); a NON-ZERO
@@ -107,13 +107,14 @@ function taxLineOf(item: Record<string, unknown>): TaxLine | null {
 	const { rateBps, ratePpm, label, taxCents } = item;
 	if (typeof rateBps !== "number" || !Number.isInteger(rateBps)) return null;
 	if (rateBps < 0 || rateBps > TAX_RATE_BPS_MAX) return null;
-	if (ratePpm !== undefined) {
+	// `null` is treated as absent; any other non-integer value is refused.
+	if (ratePpm !== undefined && ratePpm !== null) {
 		if (typeof ratePpm !== "number" || !Number.isInteger(ratePpm)) return null;
 		if (ratePpm < 0 || ratePpm > TAX_RATE_PPM_MAX || bpsOfPpm(ratePpm) !== rateBps) return null;
 	}
 	if (!isValidTaxLabel(label)) return null;
 	if (typeof taxCents !== "number" || !Number.isSafeInteger(taxCents) || taxCents < 0) return null;
-	const finer = ratePpm !== undefined && ratePpm % PPM_PER_BPS !== 0;
+	const finer = typeof ratePpm === "number" && ratePpm % PPM_PER_BPS !== 0;
 	return { rateBps, ...(finer ? { ratePpm } : {}), label, taxCents: cents(taxCents) };
 }
 
