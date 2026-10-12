@@ -59,6 +59,15 @@ export interface OrderTotalsWire {
 	 *  were entered tax-inclusive. ABSENT for every other order (no snapshot, an
 	 *  old-shape one, or tax-exclusive prices) — never guessed from current settings. */
 	pricesIncludeTax?: true;
+	/**
+	 * One row per tax, off the order's frozen tax snapshot (issue #422,
+	 * `orderTaxRows`), adding up to `taxCents`. ALWAYS itemized here, whatever the
+	 * buyer-facing "Display tax totals" says — WooCommerce's order screen lists
+	 * each tax too; the merchant files by it. Absent for an order with nothing to
+	 * itemize (no or an older snapshot): the single Tax row. Labels are merchant
+	 * or calculator text — render them escaped.
+	 */
+	taxRows?: Array<{ label: string; amountCents: number }>;
 }
 
 /** The immutable shipping-address snapshot captured on an order at checkout

@@ -1076,7 +1076,13 @@ export function OrderDetail({
 			formatAmount(order.totals.discountCents, totalsCur),
 		],
 		["Shipping", formatAmount(order.totals.shippingCents, totalsCur)],
-		["Tax", formatAmount(order.totals.taxCents, totalsCur)],
+		// Issue #422: one row per tax off the order's frozen snapshot — always
+		// itemized here, as WooCommerce's order screen is — else the single Tax row.
+		...(order.totals.taxRows !== undefined && order.totals.taxRows.length > 0
+			? order.totals.taxRows.map(
+					(row) => [row.label, formatAmount(row.amountCents, totalsCur)] as const,
+				)
+			: [["Tax", formatAmount(order.totals.taxCents, totalsCur)] as const]),
 		// ADR-0035's amendment: the total rounded to its currency's payment
 		// increment, SIGNED — only on an order that has a non-zero one.
 		...(rounding !== undefined && rounding !== 0
@@ -1365,8 +1371,10 @@ export function OrderDetail({
 								caption="Totals"
 								headers={["Line", <EndHeader label="Amount" />]}
 							>
-								{ladder.map(([label, amount]) => (
-									<tr key={label}>
+								{ladder.map(([label, amount], index) => (
+									// By position: a tax row's label is merchant text and may
+									// repeat another row's name.
+									<tr key={index}>
 										<td className="otta-td">{label}</td>
 										<td className="otta-td otta-num" style={endCellStyle}>
 											{amount}

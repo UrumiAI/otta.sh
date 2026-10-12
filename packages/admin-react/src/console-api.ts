@@ -93,6 +93,9 @@ export interface OrderTotals {
 	readonly shippingZoneId?: string | null;
 	/** Present (true) only when the order's frozen tax snapshot recorded tax-inclusive prices. */
 	readonly pricesIncludeTax?: true;
+	/** One row per tax, adding up to `taxCents` (issue #422). Absent ⇒ the
+	 *  single Tax row (an older order, or a plugin before the field). */
+	readonly taxRows?: ReadonlyArray<{ readonly label: string; readonly amountCents: number }>;
 }
 
 export interface ShippingAddress {

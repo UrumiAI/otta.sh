@@ -86,6 +86,13 @@ export {
 	type OrderTaxSnapshotV0,
 	type OrderTaxSnapshotV1,
 } from "./orders/order-tax-snapshot.js";
+// Issue #422: the order's tax snapshot as one display row per tax.
+export {
+	itemizeTaxLines,
+	orderTaxRows,
+	taxTotalsDisplayOf,
+	type TaxRow,
+} from "./orders/order-tax-rows.js";
 // ADR-0028 Decision 1: one quote command for checkout and the order.
 export { quoteCommandFor, type PricedLine, type QuoteInput } from "./pricing/quote-input.js";
 // ADR-0021: ISO 3166 codes (CLDR) and the zone derived from the address.
