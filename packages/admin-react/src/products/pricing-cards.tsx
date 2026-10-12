@@ -1449,8 +1449,8 @@ export function PricingStockEditor({ productId }: { productId: string }): React.
 				}
 				status={moving ? "Another stock change is still running — wait for it to finish." : ""}
 				confirmLabel={confirmRemove?.direction === "add" ? "Add" : "Remove"}
-				// Adding is undoable, so its confirm is not dressed as destruction; only
-				// Remove keeps the destructive weight.
+				// Add only puts stock back; only Remove reduces what can be sold, so
+				// only it keeps the destructive style.
 				confirmTone={confirmRemove?.direction === "add" ? "neutral" : "danger"}
 				denyLabel="Cancel"
 				// A confirm pressed while a move is in flight would be dropped by the

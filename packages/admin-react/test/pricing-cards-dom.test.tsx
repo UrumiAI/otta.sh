@@ -854,6 +854,9 @@ test("the large-Add confirm is neutral, while Remove keeps the destructive weigh
 
 	await type(input(c, "Add or remove stock"), "2");
 	await fire(button(c, "Remove"), "click");
+	expect(c.querySelector('[data-testid="otta-confirm"]')?.textContent).toContain(
+		"Remove 2 from stock?",
+	);
 	expect(yes()?.getAttribute("style") ?? "").toContain(FAIL_ACCENT);
 });
 

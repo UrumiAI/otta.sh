@@ -121,8 +121,7 @@ function statedTotal(count: number, total: number | undefined): number | undefin
  *  - THIS PAGE otherwise — `25 orders on this page`, a smaller claim and a true
  *    one. That is the fallback for a service older than `total`, and for a
  *    level that deliberately WITHHOLDS one because the count it holds describes
- *    a different set of rows than the page does — a level that narrowed the
- *    fetched page itself, or one whose filter the service could not be asked to
+ *    a different set of rows than the page does — one whose filter the service could not be asked to
  *    apply (products' "Low stock only" with no readable threshold: the service
  *    counted every product, so passing that number would caption the rows on
  *    screen as though the filter had run).
@@ -386,8 +385,7 @@ export type ZeroStateOffer = "clear-filters" | "way-in" | "none";
  * decision about the same number — which is exactly how "25 orders on this page"
  * ends up sitting above "Page 2 of 6". A caller feeds this value to
  * {@link pageCount} instead of the raw one, so a total this ladder withheld —
- * because the page was narrowed after the fetch, because the service contradicted
- * itself, because the page is empty — cannot reappear one line down.
+ * because the service contradicted itself, because the page is empty — cannot reappear one line down.
  */
 interface StatedTotal {
 	readonly statedTotal: number | undefined;
@@ -413,6 +411,12 @@ export type ListOutcome =
 			readonly emptyText: string;
 	  } & StatedTotal);
 
+/**
+ * `count` and `total` must describe a SERVICE-FILTERED set: `firstPage &&
+ * !hasNext` is read as "the counted set is complete". A caller that narrows an
+ * already-fetched page client-side must reintroduce a count scope first (see
+ * the git history of `countScope`).
+ */
 export interface ListOutcomeOptions {
 	/** Rows on the page about to be rendered. */
 	readonly count: number;
@@ -424,7 +428,7 @@ export interface ListOutcomeOptions {
 	/** Whether a page remains behind this one. */
 	readonly hasNext: boolean;
 	/** The service's exact count of the filtered set (INC-23), when it reports
-	 *  one and the caller has not narrowed the fetched page itself. Absent ⇒ the
+	 *  one. Absent ⇒ the
 	 *  count falls back to describing the page. See {@link rowCountLine}. */
 	readonly total?: number;
 	/** What qualifies a count the render cannot claim as the whole set. Absent ⇒
