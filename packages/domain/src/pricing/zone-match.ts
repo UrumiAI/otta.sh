@@ -8,9 +8,9 @@
  * and `GB-BFS` → `GB-NIR` → `GB`: a zone on the child beats one on its
  * parent, which beats one on the country. Codes themselves are exact (case
  * aside) — a zone never covers a code it does not list or contain. A pick that
- * no zone covers but that CONTAINS a zoned subdivision (Canary Islands, with
- * only Tenerife zoned) is asked to be more specific (`region_code_required`),
- * never matched to the country — unless `askForNarrower` is `false` (the
+ * CONTAINS a zoned subdivision (Canary Islands, with Tenerife zoned) is asked to
+ * be more specific (`region_code_required`), even when a zone covers the pick
+ * itself or its parent — never matched for the whole of it — unless `askForNarrower` is `false` (the
  * store's base address, which nobody can be asked about): then it falls back
  * to an ancestor's or the country's zone, as before containment. Pure: no IO.
  */
@@ -82,21 +82,23 @@ export function resolveShippingZone(
 			: { status: "matched", zoneId: winner, matchedRegion: code, ambiguousWith: rest };
 	};
 	if (own !== null) {
-		for (const code of [own, ...subdivisionAncestors(own)]) {
-			const found = match(code);
-			if (found !== null) return found;
-		}
 		// The blank-region rule one level down: the pick CONTAINS a zoned
 		// subdivision (Canary Islands, with zones on Tenerife and Las Palmas), so
 		// which zone applies depends on where inside it the address is. Ask for
 		// the more specific one — never fall to the country's zone (silently the
-		// wrong tax) or refuse. The store's base address cannot be asked
+		// wrong tax) or refuse. Checked BEFORE the pick's own and its parents'
+		// zones (#478): with ES-CN and ES-TF both zoned, "Canary Islands" could
+		// still be Tenerife. The store's base address cannot be asked
 		// (`askForNarrower: false`), so it skips this and falls back below.
 		if (
 			input.askForNarrower !== false &&
 			parsed.some((z) => z.codes.some((code) => subdivisionAncestors(code).includes(own)))
 		) {
 			return { status: "region_code_required", country };
+		}
+		for (const code of [own, ...subdivisionAncestors(own)]) {
+			const found = match(code);
+			if (found !== null) return found;
 		}
 	}
 	return match(country) ?? { status: "unmatched" };

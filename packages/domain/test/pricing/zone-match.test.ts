@@ -179,9 +179,26 @@ describe("resolveShippingZone", () => {
 			);
 		});
 
+		test("#478: a pick that is zoned itself but CONTAINS another zoned subdivision is still asked", () => {
+			// [ES-CN, ES-TF]: "Canary Islands" could be Tenerife (its own zone) or Las
+			// Palmas (the ES-CN zone) — the pick's own zone must not answer for both.
+			const TF = zone("z-tf", ["ES-TF"]);
+			for (const zones of [
+				[ES, ES_CN, TF],
+				[ES_CN, TF],
+				[TF, ES_CN],
+			]) {
+				expect(resolveShippingZone(zones, physical("ES", "CN"))).toEqual(required("ES"));
+			}
+			// The store's base address cannot be asked: its own zone still answers.
+			expect(resolveShippingZone([ES, ES_CN, TF], storeBase("ES", "CN"))).toEqual(
+				matched("z-es-cn", "ES-CN"),
+			);
+		});
+
 		test("…but a zone on the pick itself, or on a subdivision containing it, still matches", () => {
 			const TF = zone("z-tf", ["ES-TF"]);
-			expect(resolveShippingZone([ES, ES_CN, TF], physical("ES", "CN"))).toEqual(
+			expect(resolveShippingZone([ES, ES_CN], physical("ES", "CN"))).toEqual(
 				matched("z-es-cn", "ES-CN"),
 			);
 			expect(resolveShippingZone([ES, TF], physical("ES", "TF"))).toEqual(matched("z-tf", "ES-TF"));
