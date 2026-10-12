@@ -902,13 +902,11 @@ describe.skipIf(!PG_ENABLED)("inventory compare-and-set contention budget [postg
 	let close: (() => Promise<void>) | undefined;
 
 	beforeAll(async () => {
-		// As close to a connection per racer as a single test server allows. The
-		// M=5/N=50 shape the budget is SET from has a connection to spare per caller,
-		// so every one of its writers really contends. The harsher M=1/N=100 shape asks
-		// for more clients than one server hands out (the harness also holds an admin
-		// connection), so its last few callers queue for a connection rather than
-		// racing — which can only make that shape's depth an UNDER-estimate, and it is
-		// already the shallower of the two, so the budget does not rest on it.
+		// Capped at 52 connections: one per racer, plus spare, for the M=5/N=50 shape
+		// the budget is SET from, so every one of its writers really contends. The
+		// harsher M=1/N=100 shape queues about half its callers for a connection rather
+		// than racing — which can only make that shape's depth an UNDER-estimate, and it
+		// is already the shallower of the two, so the budget does not rest on it.
 		// Sized to what the shared server has free (parallel `test:pg` suites hold
 		// connections too) and reserved up front: a 96-connection pool on a 100-connection
 		// server failed with "too many clients" mid-race. If the server refuses,
