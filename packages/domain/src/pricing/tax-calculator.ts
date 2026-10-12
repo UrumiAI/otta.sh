@@ -51,8 +51,30 @@ export interface TaxRequestLine {
 }
 
 export interface TaxRequest {
-	/** "quote" for a review; "order" when an order is about to be placed. */
+	/**
+	 * "quote" for a review; "order" when an order is about to be placed.
+	 *
+	 * NEITHER COMMITS ANYTHING. An "order" request is asked BEFORE the order
+	 * exists, and the checkout can still fail after it answers (stock, coupon,
+	 * payment) — or be retried under the same idempotency key, which asks again
+	 * with the same request. A same-key replay of an order already created does
+	 * NOT ask at all: it returns the order as committed. So a calculator must not
+	 * record a filed transaction (e.g. an Avalara `SalesInvoice` commit) on
+	 * "order"; treat it as an estimate for a likely order, and commit from the
+	 * paid-order event instead.
+	 */
 	purpose: "quote" | "order";
+	/**
+	 * Aborted when Otta stops waiting for the answer (the calculator's timeout,
+	 * `DEFAULT_TAX_CALCULATOR_TIMEOUT_MS` unless configured). A calculator that
+	 * does IO should pass it to `fetch` so a late call is cancelled; its answer
+	 * after the abort is discarded either way. Present on every request Otta
+	 * makes to an outside calculator. NOT enumerable, so a calculator that
+	 * forwards the request as JSON does not send it (and a spread copy drops it).
+	 * An exception thrown by the calculator's own abort listener surfaces as that
+	 * calculator's uncaught error, not as a refusal.
+	 */
+	readonly signal?: AbortSignal;
 	currency: Currency;
 	/**
 	 * Whether entered prices include tax (ADR-0032): each line's `amountCents` is

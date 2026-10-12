@@ -318,6 +318,67 @@ describe("computeQuote → TaxCalculator", () => {
 		expect(vi.getTimerCount()).toBe(0);
 	});
 
+	// Issue #447: the request carries an AbortSignal tied to the calculator's
+	// timeout, so a calculator doing its own IO can stop when Otta stops waiting.
+	test("an outside calculator's request carries a live signal, aborted at the timeout", async () => {
+		vi.spyOn(console, "warn").mockImplementation(() => {});
+		vi.useFakeTimers();
+		let signal: AbortSignal | undefined;
+		let abortedWith: unknown;
+		const pending = computeQuote(
+			{
+				...deps,
+				taxCalculator: {
+					id: "slow",
+					calculate: (req) => {
+						signal = req.signal;
+						req.signal?.addEventListener("abort", () => {
+							abortedWith = req.signal?.reason;
+						});
+						return new Promise(() => {});
+					},
+				},
+			},
+			command,
+		);
+		await vi.advanceTimersByTimeAsync(0);
+		expect(signal).toBeInstanceOf(AbortSignal);
+		expect(signal?.aborted).toBe(false);
+		await vi.advanceTimersByTimeAsync(DEFAULT_TAX_CALCULATOR_TIMEOUT_MS);
+		expect(await pending).toEqual({ ok: false, reason: "TAX_UNAVAILABLE" });
+		expect(signal?.aborted).toBe(true);
+		expect(abortedWith).toBeDefined();
+	});
+
+	test("the signal is not aborted when the calculator answers in time, and is not serialised", async () => {
+		const calc = fake();
+		const res = await computeQuote({ ...deps, taxCalculator: calc }, command);
+		expect(res.ok).toBe(true);
+		const seen = calc.seen[0] as TaxRequest;
+		expect(seen.signal).toBeInstanceOf(AbortSignal);
+		expect(seen.signal?.aborted).toBe(false);
+		// A calculator that forwards the request as JSON sends no `signal` key.
+		expect(Object.keys(JSON.parse(JSON.stringify(seen)) as object)).not.toContain("signal");
+	});
+
+	// Issue #447 (from #445): a store holding an old duplicate pair whose IGNORED
+	// copy carries "applies to shipping" keeps the shipping tax it charged before.
+	test("built-in: a seeded duplicate pair whose ignored copy ships keeps shipping tax", async () => {
+		// "t" (10%, ships) is now ignored by "u" (10%, no ship) — same class, same zone.
+		taxRules.seedUncheckedRate({
+			id: "u",
+			taxClassId: "standard",
+			zoneId: "z-us",
+			rateBps: 1000,
+			appliesToShipping: false,
+		});
+		const res = await computeQuote(deps, command);
+		expect(res.ok).toBe(true);
+		if (!res.ok) return;
+		// Goods: 3000 @10% = 300, 999 @0%; shipping 500 @10% = 50 — as before #445.
+		expect(res.breakdown).toMatchObject({ taxCents: 350, shippingTaxCents: 50 });
+	});
+
 	test("a refusal before the tax step never calls the calculator (no paid call wasted)", async () => {
 		const calc = fake();
 		const res = await computeQuote(

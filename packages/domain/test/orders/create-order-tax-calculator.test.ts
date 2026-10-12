@@ -172,6 +172,94 @@ describe("createOrderFromCart → TaxCalculator", () => {
 	});
 });
 
+/** An outside calculator whose answer the test can change between calls. */
+function switchable(): TaxCalculator & {
+	calls: number;
+	mode: { kind: "tax"; taxCents: number } | "throw" | "refuse";
+} {
+	const calc = {
+		id: "acme.tax",
+		calls: 0,
+		mode: { kind: "tax", taxCents: 222 } as { kind: "tax"; taxCents: number } | "throw" | "refuse",
+		async calculate(req: TaxRequest) {
+			calc.calls += 1;
+			const mode = calc.mode;
+			if (mode === "throw") throw new Error("calculator down");
+			if (mode === "refuse") return { ok: false as const, reason: "unavailable" as const };
+			return {
+				ok: true as const,
+				currency: req.currency,
+				lines: req.lines.map((l) => ({
+					lineId: l.lineId,
+					rateBps: 888,
+					label: "NY",
+					taxCents: cents(mode.taxCents),
+				})),
+				shipping: null,
+			};
+		},
+	};
+	return calc;
+}
+
+/**
+ * Issue #447 (from #414): idempotency across the calculator. A same-key replay
+ * returns the order AS COMMITTED — the calculator is not asked again, so a
+ * calculator that now answers differently, throws or refuses cannot change or
+ * fail it. And a TAX_UNAVAILABLE commits nothing, so a retry under the same key
+ * succeeds once the calculator answers.
+ */
+describe("createOrderFromCart → TaxCalculator replay (issue #447)", () => {
+	for (const change of ["a different tax", "a throw", "a refusal"] as const) {
+		test(`the calculator answers ${change} before a same-key replay ⇒ the ORIGINAL order`, async () => {
+			vi.spyOn(console, "warn").mockImplementation(() => {});
+			const calc = switchable();
+			const cartId = await h.cartWith([
+				{ sku: "SKU-1", productId: "p1", qty: 2, kind: "physical" },
+			]);
+			const deps = { ...h.createDeps, taxCalculator: calc };
+			const first = await createOrderFromCart(deps, command(cartId));
+			expect(first.ok).toBe(true);
+			if (!first.ok) return;
+			expect(first.order.totals.tax).toBe(222);
+			expect(calc.calls).toBe(1);
+
+			calc.mode =
+				change === "a different tax"
+					? { kind: "tax", taxCents: 999 }
+					: change === "a throw"
+						? "throw"
+						: "refuse";
+			const replay = await createOrderFromCart(deps, command(cartId));
+			expect(replay.ok).toBe(true);
+			if (!replay.ok) return;
+			expect(replay.order.id).toBe(first.order.id);
+			expect(replay.order.totals).toEqual(first.order.totals);
+			expect(calc.calls).toBe(1);
+			expect((await h.couponStore.findById("cpn"))?.usesCount).toBe(1);
+		});
+	}
+
+	test("a retry under the same key after TAX_UNAVAILABLE succeeds once the calculator answers", async () => {
+		vi.spyOn(console, "warn").mockImplementation(() => {});
+		const calc = switchable();
+		calc.mode = "throw";
+		const cartId = await h.cartWith([{ sku: "SKU-1", productId: "p1", qty: 2, kind: "physical" }]);
+		const deps = { ...h.createDeps, taxCalculator: calc };
+		const refused = await createOrderFromCart(deps, command(cartId));
+		expect(refused).toEqual({ ok: false, reason: "TAX_UNAVAILABLE" });
+
+		calc.mode = { kind: "tax", taxCents: 222 };
+		const retried = await createOrderFromCart(deps, command(cartId));
+		expect(retried.ok).toBe(true);
+		if (!retried.ok) return;
+		expect(retried.order.totals).toMatchObject({ tax: 222, total: 2500 + 500 + 222 });
+		expect(await h.orderStore.getByIdempotencyKey(idempotencyKey(`k-${cartId}`))).not.toBeNull();
+		expect((await h.couponStore.findById("cpn"))?.usesCount).toBe(1);
+		expect(h.stripeGw.intentCalls).toHaveLength(1);
+	});
+});
+
 describe("createOrderFromCart → product tax status (PR 2b)", () => {
 	test("#427: a cart of [taxable, none, shipping_only] freezes each status at its own position", async () => {
 		for (const [id, sku, status] of [

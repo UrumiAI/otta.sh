@@ -182,6 +182,11 @@ interface TaxRateRow extends TaxRateWire {
 	 *  (class, zone) that applies instead — the checkout's own rule
 	 *  (`shadowedTaxRates`), so the console and the charge cannot disagree. */
 	appliedInstead?: string;
+	/** On an IGNORED duplicate: whether its "applies to shipping" flag still
+	 *  counts. True only under the store's "legacy" shipping tax class, which
+	 *  reads the flag across every rate in the zone (issue #447); "fixed" and
+	 *  "inherit" read the applied rate's flag alone. */
+	ignoredShippingFlagCounts?: boolean;
 	/** Set on the rate that applies when ignored duplicates share its slot. */
 	ignoredDuplicates?: string[];
 	/** On that applying rate: the duplicate that would apply if it were deleted. */
@@ -606,7 +611,11 @@ async function fetchRatesForClass(
 	zoneId: string | undefined,
 	zones: ShippingZoneWire[],
 ): Promise<TaxRateRow[]> {
-	return flagDuplicates(await readRatesForClass(client, classId, zoneId, zones));
+	const [rows, read] = await Promise.all([
+		readRatesForClass(client, classId, zoneId, zones),
+		client.getTaxSettings(),
+	]);
+	return flagDuplicates(rows, read.settings.shippingTaxClass.kind === "legacy");
 }
 
 /**
@@ -615,7 +624,7 @@ async function fetchRatesForClass(
  * both rows stay listed, editable and deletable — but the one the checkout
  * ignores says so, and names the one it charges.
  */
-function flagDuplicates(rows: TaxRateRow[]): TaxRateRow[] {
+function flagDuplicates(rows: TaxRateRow[], shippingFlagCounts: boolean): TaxRateRow[] {
 	const shadowed = shadowedTaxRates(rows);
 	if (shadowed.size === 0) return rows;
 	const ignoredBy = new Map<string, string[]>();
@@ -625,7 +634,9 @@ function flagDuplicates(rows: TaxRateRow[]): TaxRateRow[] {
 	const byId = new Map(rows.map((r) => [r.id, r]));
 	return rows.map((row) => {
 		const applied = shadowed.get(row.id);
-		if (applied !== undefined) return { ...row, appliedInstead: applied.id };
+		if (applied !== undefined) {
+			return { ...row, appliedInstead: applied.id, ignoredShippingFlagCounts: shippingFlagCounts };
+		}
 		const ignored = ignoredBy.get(row.id);
 		if (ignored === undefined) return row;
 		// The same rule, over what would be left: who takes over if this one goes.
@@ -825,8 +836,13 @@ function duplicateStatus(row: TaxRateRow): string | undefined {
 	return undefined;
 }
 
-/** What an IGNORED duplicate's stored shipping flag reads as: shown, never as active. */
+/** What an IGNORED duplicate's stored shipping flag reads as. Its rate is never
+ *  charged; its flag still counts only under the "legacy" shipping tax class
+ *  (issue #447). */
 function ignoredShippingText(row: TaxRateRow): string {
+	if (row.ignoredShippingFlagCounts === true) {
+		return row.appliesToShipping ? "yes (duplicate — can still tax shipping)" : "no (duplicate)";
+	}
 	return `${row.appliesToShipping ? "yes" : "no"} (not applied — duplicate ignored)`;
 }
 
@@ -839,8 +855,9 @@ function nextIfDeletedText(row: TaxRateRow): string | undefined {
 
 /**
  * The lines a duplicate's body opens with — the SAME in the accordion and the
- * detail leaf; `[]` for an ordinary rate. The ignored rate shows its stored
- * shipping flag read-only, as not applied; the applying rate says which
+ * detail leaf; `[]` for an ordinary rate. The ignored rate says its rate is
+ * not charged, and whether its shipping flag still counts (only under the
+ * "legacy" shipping tax class); the applying rate says which
  * duplicate takes over if it is deleted.
  */
 function duplicateBlocks(row: TaxRateRow): Block[] {
@@ -849,7 +866,10 @@ function duplicateBlocks(row: TaxRateRow): Block[] {
 		return [
 			{
 				type: "context",
-				text: `Duplicate: only ${row.appliedInstead} applies to ${zone}, so this rate taxes nothing (goods or shipping). Delete the one you don't want.`,
+				text:
+					row.ignoredShippingFlagCounts === true
+						? `Duplicate: only ${row.appliedInstead} applies to ${zone}; its shipping setting still counts. Delete the one you don't want.`
+						: `Duplicate: only ${row.appliedInstead} applies to ${zone}, so this rate taxes nothing (goods or shipping). Delete the one you don't want.`,
 			},
 		];
 	}
@@ -879,8 +899,9 @@ function rateEditForm(classId: string, row: TaxRateRow): FormBlock {
 	// The flag this form LOADED rides in the carrier beside the rate, and the save
 	// sends both as the store's compare-and-set expectation — so a tab that loaded
 	// before another changed either is told to reload, never reverts it. An IGNORED
-	// duplicate keeps an editable toggle (so the merchant can fix it before deleting
-	// the rate that applies), labelled as taking effect only once it applies.
+	// duplicate keeps an editable toggle. Under the "legacy" shipping tax class its
+	// flag still counts toward the zone's shipping tax (issue #447); under "fixed"
+	// or "inherit" it takes effect only once the rate applies. The label says which.
 	const ignored = row.appliedInstead !== undefined;
 	return carriedForm({
 		namespace: "tax:rate-save",
@@ -905,9 +926,11 @@ function rateEditForm(classId: string, row: TaxRateRow): FormBlock {
 				{
 					type: "toggle",
 					action_id: "appliesToShipping",
-					label: ignored
-						? "Applies to shipping — only if this rate becomes the active one"
-						: "Applies to shipping",
+					label: !ignored
+						? "Applies to shipping"
+						: row.ignoredShippingFlagCounts === true
+							? "Applies to shipping — can still tax shipping while this duplicate exists"
+							: "Applies to shipping — only if this rate becomes the active one",
 					initial_value: row.appliesToShipping, // F-6b/X-24: REQUIRED — toggle is mount-only
 				},
 			],
@@ -953,7 +976,8 @@ function rateDeleteActions(classId: string, row: TaxRateRow) {
  */
 function rateRow(classId: string, row: TaxRateRow): AccordionBlock {
 	const percent = percentOf(row);
-	// An IGNORED duplicate says so in place of what it would tax: it taxes nothing.
+	// An IGNORED duplicate says so in place of what it would tax: its rate is never
+	// charged (its shipping flag may still count — see `duplicateBlocks`).
 	const appliesLabel =
 		row.appliedInstead !== undefined
 			? "duplicate — ignored"

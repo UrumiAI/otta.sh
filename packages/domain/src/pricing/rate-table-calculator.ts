@@ -49,20 +49,26 @@ export interface RateTableOptions {
  * emdash store lists by id ascending), each rate sets its class, and the last
  * shipping-flagged rate names the shipping tax class (default `standard`).
  * Duplicate (class, zone) rates written before the store refused them are
- * reduced first to the one that applies (`effectiveTaxRates`: the greatest id —
- * the rate the last-listed overwrite always charged), so an ignored duplicate is
- * ignored entirely, its shipping flag included, exactly as the admin shows it.
+ * reduced to the one that applies (`effectiveTaxRates`: the greatest id — the
+ * rate the last-listed overwrite always charged) for each class's RATE and its
+ * per-class shipping flag. The zone's legacy shipping fields (`shippingTaxable`,
+ * `shippingTaxClassId`) are still read across EVERY rate, duplicates included,
+ * exactly as before duplicates were refused (issue #447): a store holding an old
+ * duplicate whose ignored copy was the one marked "applies to shipping" keeps
+ * the shipping tax it charged. The tax is still at the class's applied rate.
  */
 export function rateTableOf(zoneRates: readonly TaxRate[]): RateTable {
 	const ratesByClass = new Map<TaxClassId, number>();
 	const ratesPpmByClass = new Map<TaxClassId, number>();
 	const shipsByClass = new Map<TaxClassId, boolean>();
-	let shippingTaxable = false;
-	let shippingTaxClassId: TaxClassId = "standard";
 	for (const r of effectiveTaxRates(zoneRates)) {
 		ratesByClass.set(r.taxClassId, r.rateBps);
 		ratesPpmByClass.set(r.taxClassId, ratePpmOf(r));
 		shipsByClass.set(r.taxClassId, r.appliesToShipping);
+	}
+	let shippingTaxable = false;
+	let shippingTaxClassId: TaxClassId = "standard";
+	for (const r of zoneRates) {
 		if (r.appliesToShipping) {
 			shippingTaxable = true;
 			shippingTaxClassId = r.taxClassId;
