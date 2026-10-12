@@ -19,7 +19,7 @@ import { STRIPE_SECRET_KEY_KEY, STRIPE_WEBHOOK_SECRET_KEY } from "../src/payment
 import type { PluginContext } from "../src/types.js";
 
 const SECRET_KEY = ["sk_test_", "trustedHostFixture"].join("");
-const WEBHOOK_SECRET = "whsec_trusted";
+const WEBHOOK_SECRET = "whsec_trustedHostFixture";
 
 /** A `ctx.http` that never answers on its own — like a hung Stripe. It
  *  rejects when its signal aborts, as a real `fetch` does. */
