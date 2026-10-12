@@ -63,6 +63,9 @@ interface FakeHost {
 	/** Called before each compareAndSet; may throw to simulate a crash. */
 	beforeCas: { fn: (key: string, calls: number) => void };
 	casCalls: { n: number };
+	/** A write that bypasses the declaration, as an earlier build (no
+	 *  `settingsSchema`) does during a rollback: a plain row, new revision. */
+	writePlain: (key: string, value: unknown) => void;
 }
 
 function fakeHost(seed: Record<string, unknown>, site = "https://shop.example"): FakeHost {
@@ -136,7 +139,11 @@ function fakeHost(seed: Record<string, unknown>, site = "https://shop.example"):
 		kv,
 		site: { name: "Shop", url: site, locale: "en" },
 	};
-	return { ctx, raw, keys, legacy, beforeCas, casCalls };
+	const writePlain = (key: string, value: unknown): void => {
+		raw.set(key, value);
+		bump(key);
+	};
+	return { ctx, raw, keys, legacy, beforeCas, casCalls, writePlain };
 }
 
 /** Every raw row, as one string — what a database export would show. */
@@ -156,10 +163,13 @@ beforeEach(() => {
 	}
 });
 
+/** Values the cases below store besides {@link VALUES}; never logged either. */
+const OTHER_VALUES = ["sk_test_ENTERED_DURING_ROLLBACK"];
+
 afterEach(() => {
 	vi.restoreAllMocks();
 	// Whatever a case did, nothing it logged may carry any value.
-	for (const value of Object.values(VALUES)) {
+	for (const value of [...Object.values(VALUES), ...OTHER_VALUES]) {
 		for (const line of logged) expect(line).not.toContain(value);
 	}
 });
@@ -177,9 +187,9 @@ describe("plain text → encrypted", () => {
 			expect(await readWriteOnlySecret(host.ctx, key)).toBe(VALUES[key]);
 		}
 		for (const value of Object.values(VALUES)) expect(rawDump(host)).not.toContain(value);
-		expect(host.raw.get(PAYMENT_SECRETS_ENCRYPTED_MARKER_KEY)).toBe(
-			PAYMENT_SECRETS_ENCRYPTED_MARKER_VALUE,
-		);
+		expect(host.raw.get(PAYMENT_SECRETS_ENCRYPTED_MARKER_KEY)).toMatchObject({
+			set: PAYMENT_SECRETS_ENCRYPTED_MARKER_VALUE,
+		});
 	});
 
 	test("keys that were never set stay unset, and the site is still marked done", async () => {
@@ -346,6 +356,132 @@ describe("idempotent", () => {
 	});
 });
 
+describe("a key written again after the marker (#478)", () => {
+	test("plain text a rollback build saved is re-encrypted by the next isolate, and only that key", async () => {
+		const host = fakeHost({ ...VALUES });
+		expect(await encryptStoredPaymentSecrets(host.ctx)).toBe("encrypted");
+		const fresh = "sk_test_ENTERED_DURING_ROLLBACK";
+		host.writePlain(STRIPE_SECRET_KEY_KEY, fresh);
+		expect(rawDump(host)).toContain(fresh);
+		const calls = host.casCalls.n;
+
+		resetPaymentSecretEncryptionForTesting();
+		expect(await encryptStoredPaymentSecrets(host.ctx)).toBe("encrypted");
+		expect(host.casCalls.n).toBe(calls + 1);
+		expect(isEnvelope(host.raw.get(STRIPE_SECRET_KEY_KEY))).toBe(true);
+		expect(rawDump(host)).not.toContain(fresh);
+		expect(await readWriteOnlySecret(host.ctx, STRIPE_SECRET_KEY_KEY)).toBe(fresh);
+		expect(await readWriteOnlySecret(host.ctx, STRIPE_WEBHOOK_SECRET_KEY)).toBe(
+			VALUES[STRIPE_WEBHOOK_SECRET_KEY],
+		);
+
+		// Settled again: the isolate after that rewrites nothing.
+		resetPaymentSecretEncryptionForTesting();
+		const after = rawDump(host);
+		expect(await encryptStoredPaymentSecrets(host.ctx)).toBe("already-done");
+		expect(rawDump(host)).toBe(after);
+	});
+
+	test("a key stored for the first time after the marker is re-saved encrypted", async () => {
+		const host = fakeHost({ [STRIPE_SECRET_KEY_KEY]: VALUES[STRIPE_SECRET_KEY_KEY] });
+		expect(await encryptStoredPaymentSecrets(host.ctx)).toBe("encrypted");
+		host.writePlain(WEBHOOK_EDGE_TOKEN_KEY, VALUES[WEBHOOK_EDGE_TOKEN_KEY]);
+
+		resetPaymentSecretEncryptionForTesting();
+		expect(await encryptStoredPaymentSecrets(host.ctx)).toBe("encrypted");
+		expect(isEnvelope(host.raw.get(WEBHOOK_EDGE_TOKEN_KEY))).toBe(true);
+		expect(await readWriteOnlySecret(host.ctx, WEBHOOK_EDGE_TOKEN_KEY)).toBe(
+			VALUES[WEBHOOK_EDGE_TOKEN_KEY],
+		);
+	});
+
+	test("a key removed after the marker needs no write to it; the marker settles", async () => {
+		const host = fakeHost({ ...VALUES });
+		expect(await encryptStoredPaymentSecrets(host.ctx)).toBe("encrypted");
+		await host.ctx.kv.delete(STRIPE_SECRET_KEY_KEY);
+		const calls = host.casCalls.n;
+
+		resetPaymentSecretEncryptionForTesting();
+		expect(await encryptStoredPaymentSecrets(host.ctx)).toBe("encrypted");
+		expect(host.casCalls.n).toBe(calls);
+		expect(host.raw.has(STRIPE_SECRET_KEY_KEY)).toBe(false);
+
+		resetPaymentSecretEncryptionForTesting();
+		expect(await encryptStoredPaymentSecrets(host.ctx)).toBe("already-done");
+	});
+
+	test("a site an earlier build marked done (v1 marker) re-saves once, then settles", async () => {
+		const host = fakeHost({
+			...VALUES,
+			[PAYMENT_SECRETS_ENCRYPTED_MARKER_KEY]: `v1:${ENCRYPTED_PAYMENT_SECRET_KEYS.join(",")}`,
+		});
+		expect(await encryptStoredPaymentSecrets(host.ctx)).toBe("encrypted");
+		for (const key of ENCRYPTED_PAYMENT_SECRET_KEYS) {
+			expect(isEnvelope(host.raw.get(key)), key).toBe(true);
+			expect(await readWriteOnlySecret(host.ctx, key)).toBe(VALUES[key]);
+		}
+		resetPaymentSecretEncryptionForTesting();
+		const calls = host.casCalls.n;
+		expect(await encryptStoredPaymentSecrets(host.ctx)).toBe("already-done");
+		expect(host.casCalls.n).toBe(calls);
+	});
+
+	test("a save between the write and the read-back is kept, and the run retries (even the same value)", async () => {
+		const host = fakeHost({ ...VALUES });
+		// The SAME value: only the read-back's revision check can tell this save
+		// (a plain one, as a rollback build writes it) from the re-save's own.
+		const fresh = VALUES[STRIPE_SECRET_KEY_KEY];
+		const { compareAndSet } = host.ctx.kv;
+		if (compareAndSet === undefined) throw new Error("fake has compareAndSet");
+		const kv: KvAccess = {
+			...host.ctx.kv,
+			async compareAndSet(key, expected, value) {
+				const result = await compareAndSet(key, expected, value);
+				if (key === STRIPE_SECRET_KEY_KEY) host.writePlain(key, fresh);
+				return result;
+			},
+		};
+		expect(await encryptStoredPaymentSecrets({ ...host.ctx, kv })).toBe("retry");
+		expect(await readWriteOnlySecret(host.ctx, STRIPE_SECRET_KEY_KEY)).toBe(fresh);
+		// Not recorded as encrypted: the next isolate re-saves it.
+		expect(host.raw.has(PAYMENT_SECRETS_ENCRYPTED_MARKER_KEY)).toBe(false);
+		resetPaymentSecretEncryptionForTesting();
+		expect(await encryptStoredPaymentSecrets(host.ctx)).toBe("encrypted");
+		expect(isEnvelope(host.raw.get(STRIPE_SECRET_KEY_KEY))).toBe(true);
+	});
+});
+
+describe("a settled site whose key cannot be read (#478)", () => {
+	test("is checked once per isolate, logs once, and never says the keys are unencrypted", async () => {
+		const host = fakeHost({ ...VALUES });
+		expect(await encryptStoredPaymentSecrets(host.ctx)).toBe("encrypted");
+		resetPaymentSecretEncryptionForTesting();
+		logged = [];
+		host.keys.value = ["B"];
+		let reads = 0;
+		const { getVersioned } = host.ctx.kv;
+		if (getVersioned === undefined) throw new Error("fake has getVersioned");
+		const kv: KvAccess = {
+			...host.ctx.kv,
+			async getVersioned<T>(key: string) {
+				reads += 1;
+				return getVersioned<T>(key);
+			},
+		};
+		const ctx: PluginContext = { ...host.ctx, kv };
+		const before = rawDump(host);
+
+		expect(await encryptStoredPaymentSecrets(ctx)).toBe("retry");
+		const afterFirst = reads;
+		expect(await encryptStoredPaymentSecrets(ctx)).toBe("already-done");
+		expect(reads).toBe(afterFirst);
+		expect(rawDump(host)).toBe(before);
+		expect(logged).toHaveLength(1);
+		expect(logged[0]).toContain("EMDASH_ENCRYPTION_KEY");
+		expect(logged[0]).not.toContain("not encrypted yet");
+	});
+});
+
 describe("interrupted part way", () => {
 	test("a crash after the first key loses nothing, and the next tick finishes", async () => {
 		const host = fakeHost({ ...VALUES });
@@ -362,7 +498,11 @@ describe("interrupted part way", () => {
 		expect(host.raw.get(ENCRYPTED_PAYMENT_SECRET_KEYS[1])).toBe(
 			VALUES[ENCRYPTED_PAYMENT_SECRET_KEYS[1]],
 		);
-		expect(host.raw.has(PAYMENT_SECRETS_ENCRYPTED_MARKER_KEY)).toBe(false);
+		// The marker records only the key that was finished.
+		expect(host.raw.get(PAYMENT_SECRETS_ENCRYPTED_MARKER_KEY)).toEqual({
+			set: PAYMENT_SECRETS_ENCRYPTED_MARKER_VALUE,
+			revisions: { [ENCRYPTED_PAYMENT_SECRET_KEYS[0]]: expect.any(String) },
+		});
 
 		host.beforeCas.fn = () => {};
 		expect(await encryptStoredPaymentSecrets(host.ctx)).toBe("encrypted");
