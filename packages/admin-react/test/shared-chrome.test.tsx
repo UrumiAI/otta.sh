@@ -19,11 +19,13 @@ import {
 	CURSOR_RESET_DESCENDANT_SELECTOR,
 	CopyIdButton,
 	FAIL_ACCENT,
+	INTERACTIVE_DESCENDANT_SELECTOR,
 	OK_ACCENT,
 	ROW_ID_ATTRIBUTE,
 	StatusPill,
 	Table,
 	WARN_ACCENT,
+	rowActivationId,
 } from "../src/ui.js";
 
 const sheet = (): string => CONSOLE_STYLES.replace(/\s+/g, " ");
@@ -246,5 +248,66 @@ describe("the confirm dialog", () => {
 		// The host reset zeroes the user-agent margin a modal dialog centres with,
 		// which pinned the dialog to the top-left corner over the sidebar.
 		expect(css).toContain(".otta-dialog { margin: auto; }");
+	});
+});
+
+describe("a copy button over a natural key", () => {
+	test("names what it copies, so a SKU is not announced as an order id", () => {
+		// §1.3 exempts a natural key, so a SKU is copied rendered in full rather
+		// than as the full form of a truncated uuid. A screen-reader user must hear
+		// the right noun.
+		const html = renderToStaticMarkup(<CopyIdButton id="APR-LIN-NAT" what="SKU" />);
+		expect(html).toContain('aria-label="Copy SKU APR-LIN-NAT"');
+		expect(html).toContain('data-full-id="APR-LIN-NAT"');
+	});
+});
+
+/**
+ * ROW ACTIVATION over a cell whose content is a code (F11). The guards
+ * themselves are pinned in the Orders suite; what matters here is that a `code`
+ * cell survives them — it must be selectable AND activatable, and the copy
+ * button beside it must be neither.
+ */
+describe("row activation and a code cell", () => {
+	const cell = (tag: string, inControl: string | null) => ({
+		closest: (selectors: string) => {
+			const wanted = selectors.split(",").map((raw) => raw.trim());
+			if (wanted.includes(`[${ROW_ID_ATTRIBUTE}]`)) return row;
+			if (inControl !== null && wanted.includes(inControl)) return row;
+			return wanted.includes(tag) ? row : null;
+		},
+		getAttribute: () => "prod_41c",
+		contains: () => false,
+	});
+	const row = {
+		closest: () => row,
+		getAttribute: (name: string) => (name === ROW_ID_ATTRIBUTE ? "prod_41c" : null),
+		contains: () => false,
+	};
+	const STEADY = {
+		modified: false,
+		origin: { x: 10, y: 10 },
+		point: { x: 10, y: 10 },
+		selection: null,
+	} as const;
+
+	test("clicking the code opens the row; clicking Copy beside it does not", () => {
+		// `code` is deliberately not exempt: exempting it would make the one cell
+		// an operator most needs the one cell that does nothing.
+		expect(rowActivationId(cell("code", null), STEADY)).toBe("prod_41c");
+		expect(rowActivationId(cell("span", "button"), STEADY)).toBeNull();
+		expect(rowActivationId(cell("span", "a"), STEADY)).toBeNull();
+	});
+
+	test("the pointer stops at the row's controls", () => {
+		const css = sheet();
+		// Scoped to rows that actually activate, so the detail tables — same
+		// `Table`, no callback, no row id — keep the default cursor.
+		expect(css).toContain(`.otta-row[${ROW_ID_ATTRIBUTE}] { cursor: pointer; }`);
+		expect(INTERACTIVE_DESCENDANT_SELECTOR).not.toContain("code");
+		// The drill-in link goes to the same destination the row does, so it
+		// keeps the row's pointer instead of falling back to auto with the rest.
+		expect(CURSOR_RESET_DESCENDANT_SELECTOR.split(", ")).not.toContain("a");
+		expect(INTERACTIVE_DESCENDANT_SELECTOR.split(", ")).toContain("a");
 	});
 });
