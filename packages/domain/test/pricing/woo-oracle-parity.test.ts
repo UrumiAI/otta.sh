@@ -4,6 +4,7 @@ import { cents, currency } from "../../src/money/cents.js";
 import { allocateCents } from "../../src/pricing/allocate.js";
 import { applyRateTable, rateTableOf } from "../../src/pricing/rate-table-calculator.js";
 import type { TaxRequest } from "../../src/pricing/tax-calculator.js";
+import { shopDisplayPrice } from "../../src/pricing/shop-display-price.js";
 import type { ShippingTaxClassSetting } from "../../src/pricing/tax-settings.js";
 
 /**
@@ -46,11 +47,19 @@ const ORACLE = JSON.parse(
 	readFileSync(new URL("./fixtures/woo-oracle-11.1.2.json", import.meta.url), "utf8"),
 ) as OracleScenario[];
 
-/** Out of scope, so not run: shop-page price display (a follow-up, DECISIONS 6). */
-const OUT_OF_SCOPE: Record<string, string> = {
-	"DP-01": "shop-page price display (follow-up)",
-	"DP-02": "shop-page price display (follow-up)",
-};
+/** The shop-page price display rows (#423) — a product's price, not a cart. */
+const DISPLAY_KIND = "display_price_including_tax";
+interface DisplayScenario {
+	id: string;
+	inputs: {
+		unit_cents: number;
+		qty: number;
+		rate_bps: number;
+		prices_include_tax: boolean;
+		round_at_subtotal: boolean;
+	};
+	expected: { price_including_tax_cents: number };
+}
 
 /**
  * Where Otta deliberately differs. RD-07: rounding at subtotal, WooCommerce rounds
@@ -130,9 +139,9 @@ function run(s: OracleScenario) {
 }
 
 describe("the built-in calculator against WooCommerce 11.1.2 (independent oracle)", () => {
-	const inScope = ORACLE.filter((s) => !(s.id in OUT_OF_SCOPE));
+	const inScope = ORACLE.filter((s) => s.kind !== DISPLAY_KIND);
 
-	test("the oracle holds 39 scenarios, 37 of them in scope", () => {
+	test("the oracle holds 39 scenarios: 37 carts and 2 shop-page prices", () => {
 		expect(ORACLE).toHaveLength(39);
 		expect(inScope).toHaveLength(37);
 	});
@@ -148,6 +157,38 @@ describe("the built-in calculator against WooCommerce 11.1.2 (independent oracle
 		if (!s.inputs.round_at_subtotal) {
 			expect(got.lineTaxes).toEqual(s.expected.lines.map((l) => Number(l.line_tax)));
 		}
+	});
+});
+
+/**
+ * #423: WooCommerce's `wc_get_price_including_tax` — what a shop page shows with
+ * "Display prices in the shop: including tax" — against `shopDisplayPrice`, the
+ * shop-page path over the same rate-table maths as checkout.
+ */
+describe("shop-page price display against WooCommerce 11.1.2 (DP rows)", () => {
+	const rows = ORACLE.filter((s) => s.kind === DISPLAY_KIND) as unknown as DisplayScenario[];
+
+	test("both DP rows are present", () => {
+		expect(rows.map((r) => r.id)).toEqual(["DP-01", "DP-02"]);
+	});
+
+	test.each(rows.map((s) => [s.id, s] as const))("%s", (_id, s) => {
+		const shown = shopDisplayPrice(
+			{
+				mode: "incl",
+				pricesIncludeTax: s.inputs.prices_include_tax,
+				roundAtSubtotal: s.inputs.round_at_subtotal,
+				ratesByClass: { standard: s.inputs.rate_bps },
+			},
+			{
+				currency: currency("USD"),
+				unitPriceCents: cents(s.inputs.unit_cents),
+				quantity: s.inputs.qty,
+				taxClassId: "standard",
+				taxStatus: "taxable",
+			},
+		);
+		expect(shown).toBe(s.expected.price_including_tax_cents);
 	});
 });
 

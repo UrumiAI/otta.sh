@@ -133,3 +133,27 @@ pay must not change silently (user decision 4).
   existing golden is byte-identical. The order tax snapshot's shape is unchanged.
 - The admin product edit's idempotency key covers the tax status, so two saves at one
   watermark that differ only in status are never one replay.
+
+## Addendum (#423): shop-page price display
+
+- **The option.** `tax.displayShop`, WooCommerce's `woocommerce_tax_display_shop`, is optional
+  and takes `excl` or `incl`. When it is absent, prices show as entered. That is a third
+  value WooCommerce does not have. It is the default for both default blocks and for every
+  block saved before the option existed, so no store's pages change until the merchant
+  picks a value. A stored block without the key is not damaged: `readTaxSettings` keeps it.
+  The settings digest and `sameTaxSettings` add the field only when it is set, so a block
+  without it keeps its old fingerprint.
+- **The maths** is checkout's: `shopDisplayPrice` runs one line through `applyRateTable`
+  (per-line or at-subtotal rounding, half up without tax, half down for the tax inside a
+  gross price). There is no second formula. Oracle rows DP-01 and DP-02 are now in scope,
+  so all 39 rows run.
+- **Where.** Prices are taxed at the shop base address's zone, which is WooCommerce's
+  default location for a shopper whose address is unknown. The rates follow each product's
+  tax class, and only `taxable` products carry tax. A base address that no zone matches
+  gets 0%.
+- **When the stored price is shown**: tax off; no base address; or an outside calculator
+  registered (ADR-0030). An outside calculator is asked once per quote with a real cart.
+  It is never asked once per product on a listing render, because that would put a paid,
+  rate-limited and possibly slow outside call on every page view.
+- **What is affected.** The PDP and PLP price, the PDP was-price and the PDP JSON-LD offer
+  all use the shown figure. Cart, checkout and orders read the stored price as before.

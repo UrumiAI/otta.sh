@@ -428,6 +428,8 @@ export interface TaxSettingsWire {
 	roundAtSubtotal: boolean;
 	displayCart: "excl" | "incl";
 	totalsDisplay: "itemized" | "single";
+	/** Shop pages show prices with or without tax (#423); absent ⇒ as entered. */
+	displayShop?: "excl" | "incl";
 }
 
 /** A stable fingerprint of a tax options block — the edit guard's token. Every
@@ -443,5 +445,7 @@ export function taxSettingsDigest(s: TaxSettingsWire): string {
 		s.roundAtSubtotal,
 		s.displayCart,
 		s.totalsDisplay,
+		// Appended only when set, so a block without it keeps its digest (#423).
+		...(s.displayShop !== undefined ? [s.displayShop] : []),
 	]);
 }

@@ -1,6 +1,6 @@
 /**
  * The store's tax options (PR 2a, ADR-0032) — WooCommerce core's Tax tab, minus
- * what Otta has no data for yet (billing address; shop-page display). Stored
+ * what Otta has no data for yet (billing address). Stored
  * whole as the `tax` block of the operational settings; ABSENT means "never
  * saved", which is what the upgrade rule keys on.
  *
@@ -42,7 +42,19 @@ export interface TaxSettings {
 	displayCart: "excl" | "incl";
 	/** Tax totals as one row per tax, or a single row. */
 	totalsDisplay: "itemized" | "single";
+	/**
+	 * Shop and product pages show prices with or without tax — WooCommerce's
+	 * `woocommerce_tax_display_shop` (#423). ABSENT ⇒ the price exactly as
+	 * entered, which is what every store showed before this option existed; it
+	 * is absent from both default blocks and from every block saved before it,
+	 * so no store's pages change until the merchant picks a value. See
+	 * `shop-display-price.ts` for how a value is applied.
+	 */
+	displayShop?: ShopTaxDisplay;
 }
+
+/** The two values of {@link TaxSettings.displayShop}, as WooCommerce names them. */
+export type ShopTaxDisplay = "excl" | "incl";
 
 /** What a new store gets: WooCommerce's defaults — tax OFF, and no rates ship. */
 export const NEW_STORE_TAX_SETTINGS: TaxSettings = Object.freeze({
@@ -88,8 +100,9 @@ export function effectiveTaxSettings(
 export type TaxSettingsProblem = { field: string; message: string };
 
 /**
- * Validate and normalise a block an operator submitted. Every field is required:
- * the block is replaced whole, so an omitted key would silently reset a setting.
+ * Validate and normalise a block an operator submitted. Every field is required
+ * — the block is replaced whole, so an omitted key would silently reset a setting
+ * — except `displayShop`, whose absence IS a setting ("as entered", #423).
  */
 export function parseTaxSettings(raw: unknown): TaxSettings | TaxSettingsProblem {
 	if (!isRecord(raw)) return problem("tax", "must be an object");
@@ -103,6 +116,15 @@ export function parseTaxSettings(raw: unknown): TaxSettings | TaxSettingsProblem
 	const totalsDisplay = oneOf(raw["totalsDisplay"], ["itemized", "single"] as const);
 	if (totalsDisplay === undefined) {
 		return problem("tax.totalsDisplay", "must be itemized or single");
+	}
+	// The one OPTIONAL field: absent is "as entered" (#423), the meaning every
+	// block saved before it existed must keep — so its absence is not damage.
+	const displayShop =
+		raw["displayShop"] === undefined
+			? undefined
+			: oneOf(raw["displayShop"], ["excl", "incl"] as const);
+	if (raw["displayShop"] !== undefined && displayShop === undefined) {
+		return problem("tax.displayShop", "must be excl or incl, or absent for prices as entered");
 	}
 	const baseAddress = parseBaseAddress(raw["baseAddress"]);
 	if (baseAddress === undefined) {
@@ -121,6 +143,7 @@ export function parseTaxSettings(raw: unknown): TaxSettings | TaxSettingsProblem
 		roundAtSubtotal: raw["roundAtSubtotal"] as boolean,
 		displayCart,
 		totalsDisplay,
+		...(displayShop !== undefined ? { displayShop } : {}),
 	};
 }
 
@@ -153,6 +176,8 @@ function taxSettingsFields(s: TaxSettings): unknown[] {
 		s.roundAtSubtotal,
 		s.displayCart,
 		s.totalsDisplay,
+		// Appended only when set, so a block without it compares as it always did.
+		...(s.displayShop !== undefined ? [s.displayShop] : []),
 	];
 }
 

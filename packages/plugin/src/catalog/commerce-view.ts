@@ -30,6 +30,9 @@ export interface CatalogProductCommerce {
 	 *  Until the deferred afterPublish→activate wiring lands, every row is
 	 *  false and the whole catalog renders not-purchasable. */
 	active: boolean;
+	/** What checkout taxes the product by (#423); absent ⇒ `standard` / `taxable`. */
+	taxClass?: string | null;
+	taxStatus?: "taxable" | "shipping_only" | "none";
 }
 
 export function parseCommerceBatchItem(item: ProductCommerceBatchItem): CatalogProductCommerce {
@@ -48,5 +51,8 @@ export function parseCommerceBatchItem(item: ProductCommerceBatchItem): CatalogP
 					},
 		inStock: item.inStock === true,
 		active: item.active === true,
+		taxClass: typeof item.taxClass === "string" ? item.taxClass : null,
+		taxStatus:
+			item.taxStatus === "shipping_only" || item.taxStatus === "none" ? item.taxStatus : "taxable",
 	};
 }

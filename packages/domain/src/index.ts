@@ -41,9 +41,19 @@ export {
 	readTaxSettings,
 	TAX_DISABLED_CALCULATOR_ID,
 	type ShippingTaxClassSetting,
+	type ShopTaxDisplay,
 	type TaxBaseAddress,
 	type TaxSettings,
 } from "./pricing/tax-settings.js";
+// #423: shop-page prices shown with or without tax (WooCommerce's tax_display_shop).
+export {
+	loadShopPriceDisplay,
+	SHOP_PRICE_AS_ENTERED,
+	shopDisplayPrice,
+	type ShopDisplayItem,
+	type ShopPriceDisplay,
+	type ShopPriceDisplayDeps,
+} from "./pricing/shop-display-price.js";
 // ADR-0030: the tax calculator hook, the built-in rate table, the order's frozen snapshot.
 export {
 	DEFAULT_TAX_CALCULATOR_TIMEOUT_MS,

@@ -28,6 +28,7 @@ import { CommerceBatchLoader } from "../catalog/commerce-batch-loader.js";
 import { parseCommerceBatchItem } from "../catalog/commerce-view.js";
 import { joinProduct } from "../catalog/join-product.js";
 import { buildProductJsonLd } from "../catalog/product-json-ld.js";
+import { withShopDisplayPrice } from "../catalog/shop-display.js";
 import type { CommerceClient } from "../product-commerce/commerce-client.js";
 import type { PluginContext, RouteHandler } from "../types.js";
 import { buildProductViewModel, type ProductViewModel } from "./product-view-model.js";
@@ -117,7 +118,7 @@ export async function createCommerceLoader(ctx: PluginContext): Promise<Commerce
 	return commerceLoaderFor(await makeCommerceClient(ctx));
 }
 
-function commerceLoaderFor(client: CommerceClient): CommerceBatchLoader {
+export function commerceLoaderFor(client: CommerceClient): CommerceBatchLoader {
 	return new CommerceBatchLoader(async (ids) =>
 		(await client.getCommerceBatch(ids)).map(parseCommerceBatchItem),
 	);
@@ -138,13 +139,16 @@ export function createPdpRouteHandler(): RouteHandler<PdpRouteInput> {
 			const locale = sanitizeLocale(routeCtx.input.locale);
 
 			const client = await makeCommerceClient(ctx);
-			const [commerce, cartHoldMinutes] = await Promise.all([
+			const [commerce, cartHoldMinutes, display] = await Promise.all([
 				commerceLoaderFor(client).load(content.id),
 				client.getCartHoldTtlMinutes(),
+				client.getShopPriceDisplay(),
 			]);
 			// null covers unsynced / soft-deleted / batch-omitted identically
-			// (§4.2): the page renders not-purchasable instead of 500ing.
-			const joined = joinProduct(content, commerce);
+			// (§4.2): the page renders not-purchasable instead of 500ing. The
+			// prices are then shown as the store's tax display says (#423) — on
+			// the page and in the JSON-LD offer alike.
+			const joined = withShopDisplayPrice(joinProduct(content, commerce), display);
 
 			return {
 				ok: true as const,
