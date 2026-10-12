@@ -113,6 +113,7 @@ import {
 	type PricedLine,
 	type QuoteResult as DomainQuoteResult,
 	readOrderTaxSnapshot,
+	TAX_DISABLED_CALCULATOR_ID,
 	type ZoneResolution,
 	roundingEntry,
 } from "@otta-sh/domain";
@@ -1622,7 +1623,8 @@ function quoteTaxWire(quote: Extract<DomainQuoteResult, { ok: true }>): QuoteTax
 /**
  * An order priced with tax-INCLUSIVE prices carries that fact from its frozen
  * snapshot, so its pages show the subtotal net and the rows still sum to the
- * total. Every other order keeps today's single "Tax" row (no `tax` key).
+ * total. An order priced with tax switched off carries `tax.enabled: false` (no
+ * Tax row). Every other order keeps today's single "Tax" row (no `tax` key).
  *
  * Tax calculated for a place with no shipping zone (ADR-0032: a digital cart
  * taxed at the shop base address) adds `taxLocated: true`, so the order's pages
@@ -1632,6 +1634,24 @@ function quoteTaxWire(quote: Extract<DomainQuoteResult, { ok: true }>): QuoteTax
 function orderTaxWire(order: Order): { tax?: QuoteTaxWire; taxLocated?: true } {
 	const snapshot = readOrderTaxSnapshot(order.totals.taxBreakdown);
 	if (snapshot === null || snapshot.v !== 1) return {};
+	// An order priced while tax was switched off says so from its own frozen
+	// calculator id (#420), so its pages hide the Tax row like the review did.
+	// Older snapshots carry other ids and keep today's single row. The zero-tax
+	// check keeps the row on any order that did charge tax, even if an outside
+	// calculator reused the id. `taxLocated` only matters while tax is on.
+	if (snapshot.calculatorId === TAX_DISABLED_CALCULATOR_ID && Number(order.totals.tax) === 0) {
+		return {
+			tax: {
+				enabled: false,
+				located: false,
+				pricesIncludeTax: false,
+				displayCart: "excl",
+				totalsDisplay: "single",
+				lineTaxCents: 0,
+				itemized: [],
+			},
+		};
+	}
 	const located = snapshot.located === true;
 	const flag = located ? { taxLocated: true as const } : {};
 	if (!snapshot.pricesIncludeTax) return flag;

@@ -103,7 +103,8 @@ pay must not change silently (user decision 4).
 - An outside calculator's answer is bounded by the 1000% rate cap: `amount × 10` for an
   amount entered without tax and for shipping; for a line entered with tax, the tax inside
   the gross at that rate, `ceil(G × 100000 / 110000)`, so the net can never go negative.
-- Follow-ups, not built: shop-page price display; hiding the tax row when tax is off; per-line prices with/without tax on the
+- Built since: the checkout and order pages hide the Tax row when tax is off (#420); the emails still show it (follow-up).
+- Follow-ups, not built: shop-page price display; per-line prices with/without tax on the
   review table and the cart page; postcode/city matching, priority/compound rates, CSV;
   customer tax-exempt; adjusting inclusive prices for non-base buyers; finer rate
   precision; buyer-location tax for digital goods; itemized tax rows on the order pages, the emails and
