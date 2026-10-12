@@ -456,6 +456,10 @@ export interface CheckoutModel {
 	 *  optional country, and the place form echoes it with `taxLocation=buyer`.
 	 *  Only ever true alongside `showDelivery`. */
 	buyerLocation: boolean;
+	/** #478: the buyer's location the review refused (nothing priced), else null.
+	 *  Print it as hidden `refusedCountry` / `refusedRegion` owned by the place
+	 *  form, so a Place with it still selected is placed, not re-priced again. */
+	refusedLocation: { country: string; region: string } | null;
 	showAddress: boolean;
 	/** The method the totals were priced with, stated beside the submit. */
 	chosenOption: { label: string; price: string } | null;

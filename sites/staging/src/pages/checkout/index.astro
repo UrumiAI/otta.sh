@@ -71,7 +71,11 @@ import {
 	readMethodParam,
 } from "../../lib/checkout-selection.js";
 import { countryName, countryOptions } from "../../lib/countries.js";
-import { buyerLocationErrorToken, locationBlock } from "../../lib/checkout-location.js";
+import {
+	buyerLocationErrorToken,
+	locationBlock,
+	refusedBuyerLocation,
+} from "../../lib/checkout-location.js";
 import { regionChoice, regionContainsOthers } from "../../lib/regions.js";
 import { SITE_LOCALE } from "../../lib/site-locale.js";
 import { cartErrorMessage } from "../../lib/error-messages.js";
@@ -392,6 +396,8 @@ const model: CheckoutModel = {
 	addressRegions,
 	showDelivery,
 	buyerLocation,
+	/* #478: echoed to the place form, so Place with it still selected is placed. */
+	refusedLocation: refusedBuyerLocation(location, destination, destinationError !== null, askedFor),
 	showAddress,
 	chosenOption,
 	notReadyCopy,

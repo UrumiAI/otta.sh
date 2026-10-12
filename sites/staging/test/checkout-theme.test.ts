@@ -495,6 +495,16 @@ describe.each(REVIEW_VIEWS)("/checkout — delivery (ADR-0021) — %s", (_label,
 		expect(DELIVERY).toContain('{buyerLocation ? "Your location" : "Delivery"}');
 	});
 
+	test("#478: a refused buyer location is echoed as refusedCountry/refusedRegion, owned by the place form", () => {
+		expect(DELIVERY).toMatch(
+			/refusedLocation !== null && \(\s*<>\s*<input[^>]*type="hidden"[^>]*name="refusedCountry"[^>]*form="checkout-place"[^>]*value=\{refusedLocation\.country\}/,
+		);
+		expect(DELIVERY).toMatch(
+			/<input[^>]*type="hidden"[^>]*name="refusedRegion"[^>]*form="checkout-place"[^>]*value=\{refusedLocation\.region\}/,
+		);
+		expect(REVIEW).toMatch(/refusedLocation: refusedBuyerLocation\(/);
+	});
+
 	test("it asks for a country (select) and a region (a pick list of codes), echoes the priced destination as fromCountry/fromRegion — all owned by the place form", () => {
 		const select = /<select[^>]*name="deliveryCountry"[^>]*>/.exec(DELIVERY)?.[0] ?? "";
 		expect(select).toContain('form="checkout-place"');
