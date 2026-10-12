@@ -25,9 +25,12 @@
  *   the text as given and logs the same line. The guard cannot see the dialect
  *   (the host's collections expose no database handle), so it ASKS, once per
  *   collection and only when a write first carries such text: `get("\u0000")`,
- *   which Postgres refuses (22021) and SQLite and D1 answer `null`. A probe that
- *   fails any other way proves nothing, so that write repairs, as before, and the
- *   next one asks again. Repair, NOT refusal, at this
+ *   which Postgres refuses (22021) and SQLite and D1 answer `null`. Only that
+ *   refusal makes a write repair. A probe that fails any other way proves
+ *   nothing, so that write stores the text AS GIVEN (said once per process, with
+ *   no data) and the next one asks again: on SQLite or D1 a repair could re-key a
+ *   legacy id for good, while text left as given on Postgres is healed by the
+ *   first read that trips on it (READS HEAL, below). Repair, NOT refusal, at this
  *   layer, deliberately: a refusal here would make a document that ALREADY holds
  *   such text — written before this guard — unwritable forever, and an order that
  *   can never be expired or paid holds its stock for good, which is the outage
@@ -263,11 +266,15 @@ function healStateOf(target: StorageCollection<unknown>, collection: string): He
 	return state;
 }
 
+/** Whether an inconclusive dialect probe has been said this process (said once). */
+let inconclusiveProbeSaid = false;
+
 /** Forget every walk's cursor and cool-down. Suites only: state is per process,
  *  and store-emdash's test setup calls this after every case. */
 export function resetHealStateForTests(): void {
 	healStatesByStore = new WeakMap();
 	healStatesByName = new Map();
+	inconclusiveProbeSaid = false;
 }
 
 function warnRepaired(collection: string, id: string, path: string, why: string): void {
@@ -423,8 +430,10 @@ async function readHealing<R>(
  * U+0000 — the one dialect a write must repair for (see the module doc). Asked by
  * the cheapest read that tells them apart: Postgres refuses U+0000 in a bound
  * parameter (22021), SQLite and D1 look the id up and find nothing. Remembered
- * per collection once known; an inconclusive probe answers "repair" (the
- * behaviour before #447) and is asked again next time.
+ * per collection once known. Only Postgres's refusal answers "repair": a probe that
+ * fails any other way answers "store as given" (the one choice that cannot re-key
+ * a legacy id on SQLite or D1; Postgres heals on read), is not remembered, and is
+ * asked again next time.
  */
 async function repairsWrites(
 	target: StorageCollection<unknown>,
@@ -435,7 +444,16 @@ async function repairsWrites(
 		await target.get("\u0000");
 		state.repairsWrites = false;
 	} catch (err) {
-		if (!isNulParameterError(err)) return true;
+		if (!isNulParameterError(err)) {
+			if (!inconclusiveProbeSaid) {
+				inconclusiveProbeSaid = true;
+				console.warn(
+					"[otta] storage: could not tell this store's dialect (the probe failed); a write " +
+						"carrying a lone surrogate or U+0000 is stored as given, and the next one asks again",
+				);
+			}
+			return false;
+		}
 		state.repairsWrites = true;
 	}
 	return state.repairsWrites;

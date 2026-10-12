@@ -73,7 +73,10 @@ export interface ExpireOrdersBatchOptions extends SweepBatchOptions {
 export interface ExpireOrdersBatchResult extends SweepBatchResult {
 	/**
 	 * Present (and `true`) only when the call attempted at least one order and EVERY
-	 * flip it attempted threw (#447). Each order is still caught and backed off on
+	 * flip it attempted threw (#447). It counts FLIP failures only: a hold or coupon
+	 * release that throws after a successful flip leaves the order expired with its
+	 * release still owed, which the hold-intent and coupon sweepers complete, so it
+	 * is logged but is not a failed attempt. Each order is still caught and backed off on
 	 * its own, so one failing order never ends the batch; this flag is what lets the
 	 * caller tell "the store is refusing every flip" (an outage) from "nothing to
 	 * do" — the scheduled sweep fails the leg on it, which is what its per-leg

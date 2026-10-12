@@ -581,7 +581,10 @@ export const ORPHAN_TOMBSTONES_PER_TICK = 5;
  * runs every tick. This bounds the worst case to 25 a day, each recoverable, while a
  * lost delete hook (rare, one at a time) still clears the same day. The window is
  * kept in the leg's own kv state (`OrphanState.tombstonedAt`), so it holds across
- * ticks and isolates. A lost or garbled state forgets it — and every strike with it,
+ * ticks and isolates — while runs do not overlap and each reaches its `save()`, as
+ * the strikes do. A run that tombstones and then fails to save (or overlaps another)
+ * goes uncounted, so each such lapse adds at most `ORPHAN_TOMBSTONES_PER_TICK` to
+ * the day. A lost or garbled state forgets the window — and every strike with it,
  * so nothing can be tombstoned again until three fresh strikes a cadence apart.
  */
 export const ORPHAN_TOMBSTONES_PER_DAY = 25;
@@ -1529,6 +1532,8 @@ export async function runCommerceSweeps(
 			});
 			return waiting.size === 0 ? listed : listed.filter((id) => !waiting.has(id));
 		})());
+	/** Orders expired this tick, across both passes (the leg fails only on none). */
+	let ordersExpiredThisTick = 0;
 	const expireOrdersLeg = async (): Promise<void> =>
 		await run(
 			"expire-orders",
@@ -1552,12 +1557,15 @@ export async function runCommerceSweeps(
 						stopsBatch: isSweepQueryCeilingError,
 					},
 				);
-				// #447: every order this tick tried threw (each is logged and backing
-				// off). That is an outage, not an idle leg, so the LEG fails — its
-				// `ok: false` row and FAILED line are what alerting watches. One failing
-				// order among good ones does not fail it, and the back-off keeps a
+				ordersExpiredThisTick += result.count;
+				// #447: every order this call tried threw (each is logged and backing
+				// off), and none expired this tick — not in this pass nor the first.
+				// That is an outage, not an idle leg, so the LEG fails: its `ok: false`
+				// row and FAILED line are what alerting watches. One failing order among
+				// good ones does not fail it, nor does a second pass that met only
+				// failing orders after the first made progress, and the back-off keeps a
 				// poison order from failing every tick: while it waits it is read past.
-				if (result.allFailed === true) {
+				if (result.allFailed === true && ordersExpiredThisTick === 0) {
 					throw new Error(
 						"every order the leg tried failed to expire; each is backing off (see the " +
 							"'expiring order' lines above)",
@@ -3577,7 +3585,8 @@ function parseOrphanState(raw: string | null, nowMs: number, perDay: number): Or
 /**
  * The tombstone times still inside the window, oldest first, at most `perDay` (the
  * newest kept: they are the ones that still count). A time in the future (a clock
- * step back) is kept as now, so a clock change cannot free the window early.
+ * step back) is kept, counted as made NOW: its slot frees 24 hours from now rather
+ * than never, and a clock change cannot empty the window at once.
  */
 function parseTombstoneTimes(raw: unknown, nowMs: number, perDay: number): string[] {
 	if (!Array.isArray(raw)) return [];

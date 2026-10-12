@@ -117,6 +117,45 @@ describeEachDialect("ill-formed text: the write guard", (ctx) => {
 		expect(await notes().count({ kind: "k" })).toBe(4);
 	});
 
+	test("an INCONCLUSIVE dialect probe stores the text as given, says so once without data, and asks again next write (#447 review)", async () => {
+		// The probe is `get("\u0000")`: Postgres refuses it (22021), SQLite and D1
+		// answer null. Any other failure proves nothing — and repairing then could
+		// re-key a legacy id on SQLite or D1, which cannot be undone, while text left
+		// as given on Postgres is healed by the next read that trips on it.
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		const inner = bound.storage["notes"];
+		if (inner === undefined) throw new Error("arrange");
+		let probes = 0;
+		const flaky = new Proxy(inner, {
+			get(target, prop) {
+				const value: unknown = Reflect.get(target, prop, target);
+				if (prop !== "get" || typeof value !== "function") {
+					return typeof value === "function" ? value.bind(target) : value;
+				}
+				return async (id: string) => {
+					if (id === "\u0000") {
+						probes++;
+						throw new Error("connection reset while probing");
+					}
+					return (value as (id: string) => Promise<unknown>).call(target, id);
+				};
+			},
+		});
+		const guarded = collectionOf<Note>({ ...bound.storage, notes: flaky }, "notes");
+		await guarded.put("n1", { kind: "k", body: "a\uD800b" });
+		await guarded.put("n2", { kind: "k", body: "c\uDC00d" });
+		expect(probes).toBe(2);
+		const n1 = await rawGet("n1");
+		expect(findIllFormedText(n1)).toBe("body");
+		if (ctx.dialect === "sqlite") {
+			expect(n1).toEqual({ kind: "k", body: "a\uD800b" });
+		}
+		const lines = warn.mock.calls.map((c) => String(c[0]));
+		const inconclusive = lines.filter((l) => l.includes("could not tell"));
+		expect(inconclusive).toHaveLength(1);
+		expect(inconclusive[0]).not.toMatch(/n1|connection reset|a\uD800b/);
+	});
+
 	describe("ids (review B L1; round 2 A R2-A1): an id that is not well formed can never CREATE a row", () => {
 		// Creating under such an id is refused: on Postgres the driver rewrites a lone
 		// surrogate to U+FFFD on the way in, so "x\uD800" and "x\uDC00" would name ONE
