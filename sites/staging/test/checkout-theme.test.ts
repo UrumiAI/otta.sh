@@ -554,9 +554,11 @@ describe.each(REVIEW_VIEWS)("/checkout — delivery (ADR-0021) — %s", (_label,
 });
 describe("/checkout — delivery (ADR-0021): the page's half", () => {
 	test("the delivery form is shown only for an unlocked cart that ships, in a store with zones", () => {
-		expect(REVIEW).toContain(
-			'const showDelivery = locked === null && summary.requiresShipping && summary.shipping.status !== "no_zones";',
-		);
+		// #426: the rule moved into `locationBlock` (lib/checkout-location.ts, pinned
+		// case by case in checkout-location.test.ts), which also shows the same block
+		// as the buyer's location on a cart that ships nothing.
+		expect(REVIEW).toContain("const location = locationBlock(summary, locked !== null);");
+		expect(REVIEW).toContain("const showDelivery = location !== null;");
 	});
 
 	test("the not-ready copy is the page's", () => {

@@ -49,7 +49,12 @@ export function quoteCommandFor(input: QuoteInput): QuoteCommand {
 		lines: input.lines.map(totalsLineOf),
 		requiresShipping: input.lines.some((line) => line.productKind === "physical"),
 		...(input.destination !== undefined ? { destination: input.destination } : {}),
-		...(input.billingLocation !== undefined ? { billingLocation: input.billingLocation } : {}),
+		// Only a cart that ships nothing has a billing location (#426): a cart that
+		// ships never carries one, so its command is key for key what it was.
+		...(input.billingLocation !== undefined &&
+		!input.lines.some((l) => l.productKind === "physical")
+			? { billingLocation: input.billingLocation }
+			: {}),
 		...(input.methodId !== undefined ? { methodId: input.methodId } : {}),
 		...(input.couponCode !== undefined ? { couponCode: input.couponCode } : {}),
 	};
