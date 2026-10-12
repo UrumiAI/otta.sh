@@ -142,6 +142,8 @@ describe("admin route dispatch (workerd sandbox)", () => {
 	// `plugins:manage`) relies on the host applying its DEFAULT permission to this
 	// route. A `permission` declared here would replace that default, and the
 	// guard's threshold would silently stop matching what the route requires.
+	// That the host default IS `plugins:manage` is proven on the installed EmDash
+	// by `sites/staging/test/admin-route-permission.test.ts` (#478).
 	test("the admin route declares no `permission` of its own (the attach guard's role threshold relies on the host default)", () => {
 		const adminRoute = plugin.routes?.admin;
 		expect(adminRoute).toBeDefined();
