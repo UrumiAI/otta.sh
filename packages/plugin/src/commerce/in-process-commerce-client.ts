@@ -1699,8 +1699,12 @@ function quoteTaxWire(
 		displayCart: quote.taxSettings.displayCart,
 		totalsDisplay: quote.taxSettings.totalsDisplay,
 		lineTaxCents: result.lines.reduce((sum, l) => sum + l.taxCents, 0),
-		// Request order is the cart's line order (`quoteCheckout`): each tax is keyed
-		// by the line it priced, so the review never matches them by position (#478).
+		// Each tax is keyed by the line it priced, so the review never matches them
+		// by position (#478). The keys are 1:1 with `cartLines`: `quoteCheckout`
+		// builds one request line per cart line, in order (or refuses the quote),
+		// and `validateTaxResult` holds the answer to one line per request line, in
+		// request order. The `??` fallbacks are unreachable; an empty id or qty 0
+		// would only fail to match, leaving the review's rows as they are.
 		lineTaxes: result.lines.map((l, i) => ({
 			lineId: cartLines[i]?.lineId ?? "",
 			qty: cartLines[i]?.qty ?? 0,
