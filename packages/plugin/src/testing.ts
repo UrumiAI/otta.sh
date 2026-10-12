@@ -4,8 +4,9 @@
  * {@link isTrustedHost}, for a site pinning its in-process registration.
  *
  * The shapes are structural mirrors of emdash's `EmailMessage` /
- * `EmailDeliverEvent` (`emdash/plugin`), so this package keeps no runtime or
- * type dependency on `emdash`. The example provider's test pins that the two
+ * `EmailDeliverEvent` (`emdash/plugin`), so this entry keeps no runtime or
+ * type dependency on `emdash`. Its one runtime import is the small trusted-host
+ * flag module behind {@link isTrustedHost}, not the plugin itself. The example provider's test pins that the two
  * stay assignable (`examples/email-provider/test`).
  */
 

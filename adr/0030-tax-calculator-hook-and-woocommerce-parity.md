@@ -145,8 +145,8 @@ no priority, compound flag, postcode or city that could tell two such rates apar
   writes, so there it proves the logic, not the race.
 - **Existing duplicates are kept, never deleted.** One rule resolves them everywhere,
   in `@otta-sh/domain` (`effectiveTaxRates`, `appliedTaxRate`, `shadowedTaxRates`):
-  **the greatest rate id applies; the others' rates are ignored** (their shipping flag
-  still counts — see below). On goods that is the
+  **the greatest rate id applies; the others' rates are ignored** (under the default
+  shipping tax class rule their shipping flag still counts — see below). On goods that is the
   rate checkout already charged, so no line-item tax changes. `getRate` answers the same
   rate.
 - **Shipping tax, for stores that already hold duplicates — unchanged (issue #447).**
@@ -162,7 +162,9 @@ no priority, compound flag, postcode or city that could tell two such rates apar
   applies …` (the applying row: `Applies to <zone>. Duplicate <id> is ignored.`; table
   rows: `duplicate: only <id> applies` / `applies; duplicate <id> ignored`). The ignored
   row keeps an editable shipping toggle labelled "can still tax shipping while this
-  duplicate exists" (issue #447). Every rate form sends
+  duplicate exists" under the default shipping tax class rule (issue #447); under "fixed"
+  or "inherit" the row says it taxes nothing (goods or shipping) and the toggle reads
+  "only if this rate becomes the active one". Every rate form sends
   the flag it shows plus the flag it loaded, and the store's compare-and-set checks both
   the rate and the flag, so a stale tab is told to reload instead of reverting a change. Both rows stay editable and deletable, so the merchant deletes the one they
   don't want.
