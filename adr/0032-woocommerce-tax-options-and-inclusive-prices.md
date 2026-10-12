@@ -156,7 +156,7 @@ Decided by the maintainer: Otta does not add WooCommerce's coupon allocation, no
   that ships nothing — the checkout's existing zero-JS "where" block, shown with no delivery
   options. Under `billing` such a cart is taxed at that location; with none given it falls
   back to the base address (decision 5, as before). The location is the buyer's own
-  declaration, not verified evidence. A location no zone matches gets 0%, never a refusal; a
+  declaration, not verified evidence: a buyer can pick a country taxed at 0%, as in WooCommerce (the options screen says so). A location no zone matches gets 0%, never a refusal; a
   malformed one is refused with the ship-to's reasons, and so is a location without a region
   in a country whose zones go down to regions (ES with ES-CN zoned apart, CA/QC, US states):
   `SHIPPING_REGION_CODE_REQUIRED`, exactly as for a ship-to, never a silent 0%. A cart that ships

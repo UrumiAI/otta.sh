@@ -1452,6 +1452,8 @@ describe("admin Tax console — tax options (PR 2a, ADR-0032)", () => {
 			idempotencyKey("billing-no-address"),
 		);
 		expect(contextTexts(await openOptions()).some((t) => note.test(t))).toBe(true);
+		// The merchant is also told the buyer's country is self-declared.
+		expect(contextTexts(await openOptions()).join(" ")).toContain("can pick a country taxed at 0%");
 		await settingsStore.update(
 			{ tax: { ...TAX_ON, basedOn: "billing", baseAddress: { country: "GB", region: null } } },
 			idempotencyKey("billing-with-address"),
@@ -1461,6 +1463,7 @@ describe("admin Tax console — tax options (PR 2a, ADR-0032)", () => {
 			{ tax: { ...TAX_ON, basedOn: "shipping", baseAddress: null } },
 			idempotencyKey("shipping-no-address"),
 		);
+		expect(contextTexts(await openOptions()).join(" ")).not.toContain("taxed at 0%");
 		expect(contextTexts(await openOptions()).some((t) => note.test(t))).toBe(false);
 	});
 });

@@ -248,6 +248,13 @@ function optionsScreen(
 	if (off !== null) blocks.push(off);
 	const baseNote = missingBaseAddressNote(current);
 	if (baseNote !== null) blocks.push(baseNote);
+	// #467: the billing location is the buyer's own word, as in WooCommerce.
+	if (current.basedOn === "billing") {
+		blocks.push({
+			type: "context",
+			text: "The billing country is the buyer's own declaration: a buyer can pick a country taxed at 0%, as in WooCommerce.",
+		});
+	}
 	// The shop-price option's caveats: a Block Kit select carries no hint of its own.
 	blocks.push({
 		type: "context",
