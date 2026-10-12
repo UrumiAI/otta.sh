@@ -239,6 +239,102 @@ test("ONE always-failing order with the back-off lost every tick still never fai
 	expect(error.mock.calls.filter((c) => /expiring order/.test(String(c[0])))).toHaveLength(4);
 }, 120_000);
 
+/** The kv record of failing orders a tick left behind. */
+async function expiryFailuresIn(cursors: ReturnType<typeof memoryCursors>) {
+	const raw = await cursors.read("state");
+	return (JSON.parse(raw ?? "{}") as { expiryFailures?: Record<string, { n: number; at: string }> })
+		.expiryFailures;
+}
+
+test("a failure stamped in the future counts as now: re-stamped, and the order expires one base wait later (#478 review)", async () => {
+	const createdAt = new Date(NOW.getTime() - 2 * HOUR_MS);
+	await placeOrder(storage, "a", new Date(NOW.getTime() - 50 * MINUTE_MS), createdAt);
+	const cursors = memoryCursors();
+	await cursors.write(
+		"state",
+		JSON.stringify({ expiryFailures: { "order-a": { n: 1, at: "2099-01-01T00:00:00Z" } } }),
+	);
+	const tick = (at: Date) =>
+		runCommerceSweeps(sweepContext(storage), SWEEP_TASK_NAME, {
+			cursors,
+			emailSender: recordingSender([]),
+			now: at,
+			expiryBatchLimit: 1,
+			expiryBackoff: new UnitBackoff(),
+		});
+	const s = adapters(storage, NOW);
+	await tick(NOW);
+	expect((await s.orderStore.getById(toOrderId("order-a")))?.state).toBe("pending");
+	expect(await expiryFailuresIn(cursors)).toEqual({
+		"order-a": { n: 1, at: NOW.toISOString() },
+	});
+	await tick(new Date(NOW.getTime() + UnitBackoff.DEFAULT_BASE_MS));
+	expect((await s.orderStore.getById(toOrderId("order-a")))?.state).toBe("expired");
+	expect(await expiryFailuresIn(cursors)).toEqual({});
+}, 120_000);
+
+const recent = (minutesAgo: number) =>
+	new Date(NOW.getTime() - minutesAgo * MINUTE_MS).toISOString();
+
+test.each([
+	["a string", "nope", {}],
+	["an array", [{ n: 1, at: recent(1) }], {}],
+	["null", null, {}],
+	["an entry that is null", { "order-a": null }, {}],
+	["a string n", { "order-a": { n: "1", at: recent(1) } }, {}],
+	["a zero n", { "order-a": { n: 0, at: recent(1) } }, {}],
+	["a fractional n", { "order-a": { n: 1.5, at: recent(1) } }, {}],
+	["a bad at", { "order-a": { n: 1, at: "yesterday-ish" } }, {}],
+	["a missing at", { "order-a": { n: 1 } }, {}],
+	["an empty id", { "": { n: 1, at: recent(1) } }, {}],
+	["a too-long id", { ["x".repeat(129)]: { n: 1, at: recent(1) } }, {}],
+	["an entry past the window", { "order-z": { n: 3, at: recent(90) } }, {}],
+	[
+		"one good entry among bad ones",
+		{ "order-z": { n: 2, at: recent(1) }, "order-a": { n: -1, at: recent(1) } },
+		{ "order-z": { n: 2, at: recent(1) } },
+	],
+] as const)(
+	"a malformed kv record of failing orders (%s) is read safely: the order is not held back (#478 review)",
+	async (_why, expiryFailures, kept) => {
+		const createdAt = new Date(NOW.getTime() - 2 * HOUR_MS);
+		await placeOrder(storage, "a", new Date(NOW.getTime() - 50 * MINUTE_MS), createdAt);
+		const cursors = memoryCursors();
+		await cursors.write("state", JSON.stringify({ expiryFailures }));
+		const summary = await runCommerceSweeps(sweepContext(storage), SWEEP_TASK_NAME, {
+			cursors,
+			emailSender: recordingSender([]),
+			now: NOW,
+			expiryBatchLimit: 1,
+			expiryBackoff: new UnitBackoff(),
+		});
+		expect(legOf(summary)).toMatchObject({ ok: true, count: 1 });
+		expect((await adapters(storage, NOW).orderStore.getById(toOrderId("order-a")))?.state).toBe(
+			"expired",
+		);
+		expect(await expiryFailuresIn(cursors)).toEqual(kept);
+	},
+	120_000,
+);
+
+test("a kv record of more than 8 failing orders keeps the 8 newest (#478 review)", async () => {
+	const many = Object.fromEntries(
+		Array.from({ length: 11 }, (_unused, i) => [`gone-${String(i)}`, { n: 1, at: recent(i + 1) }]),
+	);
+	const cursors = memoryCursors();
+	await cursors.write("state", JSON.stringify({ expiryFailures: many }));
+	await runCommerceSweeps(sweepContext(storage), SWEEP_TASK_NAME, {
+		cursors,
+		emailSender: recordingSender([]),
+		now: NOW,
+		expiryBatchLimit: 1,
+		expiryBackoff: new UnitBackoff(),
+	});
+	expect(Object.keys((await expiryFailuresIn(cursors)) ?? {}).toSorted()).toEqual(
+		Array.from({ length: 8 }, (_unused, i) => `gone-${String(i)}`).toSorted(),
+	);
+}, 120_000);
+
 test("one failing order among good ones: the leg made progress, so it stays ok (#447)", async () => {
 	const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
 	const createdAt = new Date(NOW.getTime() - 2 * HOUR_MS);

@@ -736,23 +736,30 @@ interface ExpiryFailure {
 }
 
 /** When `failure`'s order may be tried again: the in-memory back-off's own wait
- *  (doubling from the base, capped at the longest). */
-function expiryRetryAt(failure: ExpiryFailure): number {
+ *  (doubling from the base, capped at the longest), from its last failure — a
+ *  stamp in the future counting as now. */
+function expiryRetryAt(failure: ExpiryFailure, nowMs: number): number {
 	const wait = Math.min(
 		UnitBackoff.DEFAULT_BASE_MS * 2 ** Math.min(failure.n - 1, 30),
 		UnitBackoff.DEFAULT_MAX_MS,
 	);
-	return Date.parse(failure.at) + wait;
+	return Math.min(Date.parse(failure.at), nowMs) + wait;
 }
 
 /** `failures` without the entries past {@link EXPIRY_FAILURE_WINDOW_MS}, and at most
  *  {@link EXPIRY_FAILURES_KEPT}, newest kept. A stamp in the future (a clock step
- *  back) counts as now. */
+ *  back, a hand-edited state) counts as now and is RE-STAMPED now, so it ages out
+ *  like any other instead of holding its order back for good. */
 function prunedExpiryFailures(
 	failures: Record<string, ExpiryFailure>,
 	nowMs: number,
 ): Record<string, ExpiryFailure> {
 	const kept = Object.entries(failures)
+		.map(([id, failure]): [string, ExpiryFailure] =>
+			Date.parse(failure.at) > nowMs
+				? [id, { n: failure.n, at: new Date(nowMs).toISOString() }]
+				: [id, failure],
+		)
 		.filter(([, failure]) => nowMs - Date.parse(failure.at) < EXPIRY_FAILURE_WINDOW_MS)
 		.toSorted(([, a], [, b]) => Date.parse(b.at) - Date.parse(a.at))
 		.slice(0, EXPIRY_FAILURES_KEPT);
@@ -1572,6 +1579,15 @@ export async function runCommerceSweeps(
 	// Orders still backing off after a failed flip (review round 3, B I4) are read
 	// past: the look lists that many more and leaves them out, in the same query.
 	const expiryBackoff = options.expiryBackoff ?? ORDER_EXPIRY_BACKOFF;
+	/** Age out (and clamp) the kv record of failing orders; the record as kept. */
+	const pruneExpiryFailures = (): Record<string, ExpiryFailure> => {
+		const pruned = prunedExpiryFailures(state.expiryFailures, now.getTime());
+		if (JSON.stringify(pruned) !== JSON.stringify(state.expiryFailures)) {
+			state.expiryFailures = pruned;
+			stateChanged = true;
+		}
+		return state.expiryFailures;
+	};
 	let expirable: Promise<readonly OrderId[]> | undefined;
 	const expirableIds = (): Promise<readonly OrderId[]> =>
 		(expirable ??= (async () => {
@@ -1579,8 +1595,9 @@ export async function runCommerceSweeps(
 			const waiting = new Set<string>(expiryBackoff.waiting(now.getTime()));
 			// The kv record's failing orders wait too (#478): the in-memory
 			// back-off is gone whenever the isolate is.
+			pruneExpiryFailures();
 			for (const [id, failure] of Object.entries(state.expiryFailures)) {
-				if (expiryRetryAt(failure) > now.getTime()) waiting.add(id);
+				if (expiryRetryAt(failure, now.getTime()) > now.getTime()) waiting.add(id);
 			}
 			const listed = await stores.orderStore.listExpirable(nowIso, {
 				limit: expiryLimit + 1 + waiting.size,
@@ -1628,11 +1645,7 @@ export async function runCommerceSweeps(
 					},
 				);
 				ordersExpiredThisTick += result.count;
-				const failing = prunedExpiryFailures(state.expiryFailures, now.getTime());
-				if (Object.keys(failing).length !== Object.keys(state.expiryFailures).length) {
-					state.expiryFailures = failing;
-					stateChanged = true;
-				}
+				const failing = pruneExpiryFailures();
 				// #447: every order this call tried threw (each is logged and backing
 				// off), and none expired this tick — not in this pass nor the first.
 				// That is an outage, not an idle leg, so the LEG fails: its `ok: false`
