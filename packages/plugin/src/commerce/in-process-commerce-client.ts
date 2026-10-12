@@ -71,6 +71,8 @@ import {
 	isProductLive,
 	listCustomerOrders,
 	listProductCommerceByIds,
+	loadCartPriceDisplay,
+	loadShopPriceDisplay,
 	listProductVariants,
 	money,
 	orderId as toOrderId,
@@ -140,6 +142,7 @@ import type {
 	PaymentIntentWire,
 	ProductCommerce,
 	ProductCommerceBatchItem,
+	ShopPriceDisplayWire,
 	ProductVariantSummaryWire,
 	ProductVariantWire,
 	PublicOrderResult,
@@ -414,6 +417,30 @@ export class InProcessCommerceClient implements CommerceClient {
 			productIds.map((id) => toProductId(id)),
 		);
 		return views.map(serializeView);
+	}
+
+	/**
+	 * How shop pages show prices (#423): the store's `displayShop` option at the
+	 * shop base address's rates. A registered outside calculator (ADR-0030) is
+	 * never asked here — it is asked once per quote, not once per listing render
+	 * — so such a store's pages show prices as entered.
+	 */
+	async getShopPriceDisplay(): Promise<ShopPriceDisplayWire> {
+		return loadShopPriceDisplay(this.#priceDisplayDeps());
+	}
+
+	/** The cart page's line prices (`displayCart`), by the same rules (#423). */
+	async getCartPriceDisplay(): Promise<ShopPriceDisplayWire> {
+		return loadCartPriceDisplay(this.#priceDisplayDeps());
+	}
+
+	#priceDisplayDeps() {
+		return {
+			settings: this.#stores.settingsStore,
+			taxRules: this.#stores.taxRules,
+			shippingRules: this.#stores.shippingRules,
+			hasOutsideTaxCalculator: this.#taxCalculator !== undefined,
+		};
 	}
 
 	// ── variants ────────────────────────────────────────────────────────────
@@ -1535,6 +1562,8 @@ function serializeView(view: ProductCommerceView): ProductCommerceBatchItem {
 				: { amount: view.compareAtPrice.amount, currency: view.compareAtPrice.currency },
 		inStock: view.inStock,
 		active: view.active,
+		taxClass: view.taxClass,
+		taxStatus: view.taxStatus,
 	};
 }
 
@@ -1666,6 +1695,8 @@ function quoteTaxWire(quote: Extract<DomainQuoteResult, { ok: true }>): QuoteTax
 		displayCart: quote.taxSettings.displayCart,
 		totalsDisplay: quote.taxSettings.totalsDisplay,
 		lineTaxCents: result.lines.reduce((sum, l) => sum + l.taxCents, 0),
+		// In request order, which is the cart's line order (`quoteCheckout`).
+		lineTaxes: result.lines.map((l) => l.taxCents),
 		itemized,
 	};
 }

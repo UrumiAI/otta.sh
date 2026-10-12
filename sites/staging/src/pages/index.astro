@@ -137,6 +137,7 @@ const cards: HomeModel["cards"] =
 						? (product.compareAtPrice?.formatted ?? null)
 						: null,
 				availability: product.availability,
+				...(product.price?.taxNote !== undefined ? { taxNote: product.price.taxNote } : {}),
 			}));
 
 /* §7: the currency the page quoted, from the view model that knows it. */

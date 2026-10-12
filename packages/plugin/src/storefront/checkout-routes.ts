@@ -59,6 +59,7 @@ import {
 import {
 	buildCheckoutLines,
 	buildCheckoutTotals,
+	showCheckoutLinesTax,
 	buildOrderLines,
 	buildOrderTotal,
 	buildOrderView,
@@ -538,10 +539,16 @@ export function createCheckoutSummaryRouteHandler(): RouteHandler<CheckoutSummar
 				ok: true as const,
 				cartId: cart.cartId,
 				currency: cart.currency,
-				lines: buildCheckoutLines(
-					cart.lines,
-					pricing,
-					new Map([...commerceById].map(([id, commerce]) => [id, commerce?.title ?? null])),
+				// Shown with or without tax as `displayCart` says, from the quote's
+				// own per-line tax, so they sum to the subtotal row (#423).
+				lines: showCheckoutLinesTax(
+					buildCheckoutLines(
+						cart.lines,
+						pricing,
+						new Map([...commerceById].map(([id, commerce]) => [id, commerce?.title ?? null])),
+					),
+					quote.breakdown,
+					{ locale: input.locale, taxZoneSelected: status === "matched" },
 				),
 				totals: buildCheckoutTotals(quote.breakdown, {
 					locale: input.locale,

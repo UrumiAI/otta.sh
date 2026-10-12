@@ -1296,6 +1296,38 @@ describe("admin Tax console — tax options (PR 2a, ADR-0032)", () => {
 		});
 	});
 
+	test("shop prices (#423): the form offers as entered / excluding / including, and starts at as entered", async () => {
+		await seedRules();
+		const blocks = await openOptions();
+		expect(untouched(blocks).displayShop).toBe("entered");
+		const options = field(formFor(blocks, "tax:save-options"), "displayShop")?.options as
+			| Array<{ value: string }>
+			| undefined;
+		expect(options?.map((o) => o.value)).toEqual(["entered", "excl", "incl"]);
+	});
+
+	test("shop prices (#423): including tax is saved and shown again; as entered removes the option", async () => {
+		await seedRules({ rates: [] });
+		const blocks = await openOptions();
+		await submitForm(blocks, "tax:save-options", {
+			...untouched(blocks),
+			enabled: true,
+			baseCountry: "US",
+			displayShop: "incl",
+		});
+		expect((await settingsStore.get()).tax?.displayShop).toBe("incl");
+
+		const reopened = await openOptions();
+		expect(untouched(reopened).displayShop).toBe("incl");
+		await submitForm(reopened, "tax:save-options", {
+			...untouched(reopened),
+			displayShop: "entered",
+		});
+		const tax = (await settingsStore.get()).tax;
+		expect(tax?.enabled).toBe(true);
+		expect(tax !== undefined && "displayShop" in tax).toBe(false);
+	});
+
 	test("an invalid base address is refused on the options screen, with the typing kept — nothing is saved", async () => {
 		await seedRules({ rates: [] });
 		const blocks = await openOptions();

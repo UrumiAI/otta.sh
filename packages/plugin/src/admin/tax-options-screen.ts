@@ -1,8 +1,8 @@
 /**
  * The Tax console's "Tax options" screen (PR 2a, ADR-0032) — WooCommerce's Tax
  * tab: tax on/off, prices entered with or without tax, what tax is based on, the
- * shop's base address, the shipping tax class, rounding, and how cart and
- * checkout show tax. A drill-in from the classes registry, like the create
+ * shop's base address, the shipping tax class, rounding, and how the shop, cart
+ * and checkout show tax. A drill-in from the classes registry, like the create
  * screens; the options are saved whole.
  *
  * THE EDIT GUARD is a compare on the VALUE the form loaded, exactly like a tax
@@ -48,6 +48,8 @@ interface OptionsDraft {
 	roundAtSubtotal: boolean;
 	displayCart: string;
 	totalsDisplay: string;
+	/** `entered`, `excl` or `incl` (#423). */
+	displayShop: string;
 }
 
 /** "Tax options" — the registry's way in, under its intro line. */
@@ -111,6 +113,7 @@ export function saveOptionsAction(ids: TaxOptionsActions) {
 			roundAtSubtotal: readBoolean(values.roundAtSubtotal) ?? false,
 			displayCart: readString(values.displayCart) ?? "",
 			totalsDisplay: readString(values.totalsDisplay) ?? "",
+			displayShop: readString(values.displayShop) ?? "entered",
 		};
 		const result = await client.updateTaxSettings(settingsOf(draft), {
 			expected,
@@ -178,6 +181,9 @@ function settingsOf(d: OptionsDraft): unknown {
 		roundAtSubtotal: d.roundAtSubtotal,
 		displayCart: d.displayCart,
 		totalsDisplay: d.totalsDisplay,
+		// "As entered" is the option's ABSENCE (#423); anything else goes to the
+		// domain, which refuses what is not excl or incl.
+		...(d.displayShop === "entered" ? {} : { displayShop: d.displayShop }),
 	};
 }
 
@@ -193,6 +199,7 @@ function draftOf(s: TaxSettingsWire): OptionsDraft {
 		roundAtSubtotal: s.roundAtSubtotal,
 		displayCart: s.displayCart,
 		totalsDisplay: s.totalsDisplay,
+		displayShop: s.displayShop ?? "entered",
 	};
 }
 
@@ -230,6 +237,11 @@ function optionsScreen(
 	if (off !== null) blocks.push(off);
 	const baseNote = missingBaseAddressNote(current);
 	if (baseNote !== null) blocks.push(baseNote);
+	// The shop-price option's caveats: a Block Kit select carries no hint of its own.
+	blocks.push({
+		type: "context",
+		text: "Shop prices use the base address's rates. They show as entered if tax is off, no base address is set, or an outside tax calculator is used.",
+	});
 	blocks.push(optionsForm(ids, current, classes, draft));
 	return blocks;
 }
@@ -267,6 +279,10 @@ function optionsForm(
 		{ label: "Shop base address", value: "base" },
 	];
 	const displayOptions = yesNo("Including tax", "Excluding tax");
+	const shopOptions: SelectOption[] = [
+		{ label: "As entered (no change)", value: "entered" },
+		...displayOptions,
+	];
 	const totalsOptions: SelectOption[] = [
 		{ label: "Itemized — one row per tax", value: "itemized" },
 		{ label: "As a single total", value: "single" },
@@ -322,6 +338,13 @@ function optionsForm(
 					action_id: "roundAtSubtotal",
 					label: "Round tax at subtotal level, instead of per line",
 					initial_value: d.roundAtSubtotal,
+				},
+				{
+					type: "select",
+					action_id: "displayShop",
+					label: "Display prices in the shop",
+					options: shopOptions,
+					...selected(shopOptions, d.displayShop),
 				},
 				{
 					type: "select",

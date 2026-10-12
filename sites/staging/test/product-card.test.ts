@@ -226,3 +226,41 @@ describe("StockRule — a rule, not a coloured badge (§4)", () => {
 		}
 	});
 });
+
+describe("PriceTag — the tax note (#423): only when the merchant chose how shop prices show tax", () => {
+	const price = (props: Record<string, unknown>): Promise<string> =>
+		container.renderToString(PriceTag, { props });
+
+	test.each([
+		["incl", "incl. tax", "including tax"],
+		["excl", "excl. tax", "excluding tax"],
+	] as const)(
+		"taxNote %s prints “%s”, spelled out for a screen reader",
+		async (note, short, long) => {
+			const html = await price({ formatted: "$11.99", taxNote: note });
+			expect(html).toContain("$11.99");
+			expect(html).toMatch(new RegExp(`<span[^>]*class="[^"]*tax-note[^"]*"[^>]*>`));
+			expect(html).toMatch(
+				new RegExp(`aria-hidden="true"[^>]*>${short.replace(".", "\\.")}</span>`),
+			);
+			expect(html).toContain(long);
+		},
+	);
+
+	test("no taxNote ⇒ exactly the markup it rendered before", async () => {
+		const before = await price({ formatted: "$9.99" });
+		expect(before).not.toContain("tax");
+		expect(await price({ formatted: "$9.99", taxNote: null })).toBe(before);
+		expect(await price({ formatted: "$9.99", was: "$12.00" })).not.toContain("tax");
+	});
+
+	test("a sale carries the note after the current price", async () => {
+		const html = await price({ formatted: "$9.99", was: "$12.00", taxNote: "incl" });
+		expect(html.indexOf("$9.99")).toBeLessThan(html.indexOf("incl. tax"));
+	});
+
+	test("ProductCard passes the note through to its price", async () => {
+		expect(await card({ price: "$11.99", taxNote: "incl" })).toContain("incl. tax");
+		expect(await card({ price: "$11.99" })).not.toContain("incl. tax");
+	});
+});

@@ -111,7 +111,28 @@ export interface ProductCommerceBatchItem {
 	/** The publish gate: the join derives purchasability from it
 	 *  (`purchasable ⟺ present && active`). */
 	active: boolean;
+	/** The row's tax class (null ⇒ `standard`) and tax status, so a shop page that
+	 *  shows prices with or without tax (#423) taxes the product as checkout does.
+	 *  Absent ⇒ `standard` / `taxable`, exactly as checkout reads an absent value. */
+	taxClass?: string | null;
+	taxStatus?: "taxable" | "shipping_only" | "none";
 }
+
+/**
+ * How shop and product pages show prices (#423, WooCommerce's
+ * `woocommerce_tax_display_shop`): `entered` ⇒ the stored price unchanged;
+ * otherwise with (`incl`) or without (`excl`) tax at the shop base address's
+ * rates per class. Structurally the domain's `ShopPriceDisplay`.
+ */
+export type ShopPriceDisplayWire =
+	| { mode: "entered" }
+	| {
+			mode: "excl" | "incl";
+			pricesIncludeTax: boolean;
+			roundAtSubtotal: boolean;
+			ratesByClass: Readonly<Record<string, number>>;
+			ratesPpmByClass: Readonly<Record<string, number>>;
+	  };
 // ── end Phase 2 catalog batch read ───────────────────────────────────────
 
 // ── Variants wire types ──────────────────────────────────────────────────
@@ -260,6 +281,11 @@ export interface CommerceClient {
 	// (A later Phase-3 task adds its cart methods below this block — keep
 	// the delimiters so the diff surfaces stay additive.)
 	getCommerceBatch(productIds: string[]): Promise<ProductCommerceBatchItem[]>;
+	/** How the shop pages show prices (#423) — read once per page render. */
+	getShopPriceDisplay(): Promise<ShopPriceDisplayWire>;
+	/** How the cart page shows its line prices (`displayCart`, #423), for a shopper
+	 *  whose address is not known yet: at the shop base address. */
+	getCartPriceDisplay(): Promise<ShopPriceDisplayWire>;
 	// ── end Phase 2 catalog batch read ────────────────────────────────────
 
 	// ── Variants: one method per WRITER, never one per row ────────────────
@@ -577,6 +603,10 @@ export interface QuoteTaxWire {
 	totalsDisplay: "itemized" | "single";
 	/** The tax on the lines (`taxCents` minus the shipping tax). */
 	lineTaxCents: number;
+	/** Each line's own tax, in the cart's line order — so the review can show
+	 *  every line with or without tax and the lines still sum to the subtotal
+	 *  (#423). Absent on an order's wire. */
+	lineTaxes?: number[];
 	/** The tax per label (lines and shipping together), in first-seen order. Labels
 	 *  are the merchant's or a calculator's text: render them escaped, never as HTML. */
 	itemized: Array<{ label: string; amountCents: number }>;
