@@ -60,7 +60,7 @@ function commerceStorage(): DescriptorStorage {
 
 /** INC-C3 — what the egress allowlist depends on. */
 export interface OttaPluginDescriptorOptions {
-	/** Deployment-supplied in-process egress (none today). Absent ⇒ no host
+	/** Deployment-supplied in-process egress (only `OTTA_EXTRA_ALLOWED_HOSTS` today). Absent ⇒ no host
 	 *  granted for it. Email needs none: it goes through `ctx.email`. */
 	egress?: InProcessEgressUrls;
 }

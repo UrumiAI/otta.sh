@@ -6,13 +6,14 @@
  * descriptor (ADR-0006). Commerce runs IN-PROCESS in this Worker: there is no
  * separate service to point at. Deployment-supplied egress goes in the `egress`
  * const below, which is baked into the bundle AND fed to the descriptor's
- * allowlist from one place — empty today.
+ * allowlist from one place — today only OTTA_EXTRA_ALLOWED_HOSTS.
  */
 import { existsSync, readFileSync } from "node:fs";
 import cloudflare from "@astrojs/cloudflare";
 import react from "@astrojs/react";
 import { defineConfig, fontProviders } from "astro/config";
 import emdash from "emdash/astro";
+import { parseExtraAllowedHosts } from "@otta-sh/plugin";
 import { parseDotEnv } from "./src/lib/dot-env.js";
 import { buildEmdashOptions } from "./src/emdash-options.js";
 import { assertDownloadsBucketPrivate } from "./src/lib/downloads-bucket.js";
@@ -49,10 +50,18 @@ function readDotEnv(name: string): string | undefined {
  * on `vars` intact and unroutable-around, and why site-config.test.ts can assert
  * this file names none of them.
  *
- * EMPTY TODAY, so staging's allowlist is the constant part alone — Stripe's API
- * host.
+ * UNSET IS THE DEFAULT AND IT IS FAIL-CLOSED: with no OTTA_EXTRA_ALLOWED_HOSTS,
+ * staging's allowlist is the constant part alone — Stripe's API host.
  */
-const egress = {};
+const egress = {
+	// OTTA_EXTRA_ALLOWED_HOSTS: comma-separated extra egress hostnames. Validated
+	// HERE so a typo fails the build loudly (parseExtraAllowedHosts throws naming
+	// the entry); the normalized list is what both the descriptor and the Vite
+	// define below receive, so they agree by construction.
+	extraAllowedHosts: parseExtraAllowedHosts(
+		process.env.OTTA_EXTRA_ALLOWED_HOSTS ?? readDotEnv("OTTA_EXTRA_ALLOWED_HOSTS"),
+	),
+};
 
 /**
  * The Stripe publishable key (ADR-0012 decision 4), resolved the same way.
@@ -250,8 +259,11 @@ export default defineConfig({
 			// bakes "", which that module reads as undefined; baking `undefined`
 			// would leave the identifier undeclared in the worker bundle.
 			__OTTA_STRIPE_PUBLIC_KEY__: JSON.stringify(stripePublishableKey ?? ""),
-			// In-process egress defines, from the SAME `egress` const that decides
-			// what the descriptor allowlists (see its note above) — none today.
+			// Validated extra egress hosts, comma-joined, from the SAME `egress` const
+			// that decides what the descriptor allowlists (see its note above).
+			// ALWAYS a string: baking `undefined` would leave the identifier
+			// undeclared, and `""` is what the plugin's `typeof` guard reads as none.
+			__OTTA_EXTRA_ALLOWED_HOSTS__: JSON.stringify(egress.extraAllowedHosts.join(",")),
 		},
 		ssr: {
 			// UNCONDITIONAL: if @otta-sh/plugin is ever externalized the defines

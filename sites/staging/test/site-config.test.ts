@@ -5,7 +5,7 @@
  *  - the Otta plugin descriptor is standard-format, entrypoint
  *    `@otta-sh/plugin/trusted` (the plugin with `trustedHost` on), capabilities EXACTLY the manifest's, and its
  *    allowedHosts is exactly the in-process egress list — Stripe's API host
- *    plus whatever the deployment's egress supplies (nothing today) (the
+ *    plus whatever the deployment's egress supplies (only `OTTA_EXTRA_ALLOWED_HOSTS` today) (the
  *    egress gate that holds even in trusted mode — ADR-0006);
  *  - NO `sandboxed:` / `sandboxRunner:` keys (a LOADER-consuming sandbox
  *    runner is the Workers-Paid cost pivot this deployment avoids);
@@ -43,7 +43,7 @@ import {
 	createPlugin as createConsolePlugin,
 	OTTA_CONSOLE_ADMIN_PAGES,
 } from "@otta-sh/admin-react";
-import { describe, expect, test } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vitest";
 // `../e2e/registry.js`, NEVER `../e2e/harness.js`. The harness loopback-guards
 // its addresses at MODULE LOAD and imports `@playwright/test`, which threw
 // before a single assertion and redded the whole unit suite. The registry is
@@ -275,7 +275,7 @@ describe("ottaPluginDescriptor storage, EXACTLY (INC-D1)", () => {
  * whole sorted array — never `toContain`, which would pass for either mistake.
  *
  * Anything beyond Stripe's API host is DEPLOYMENT-SUPPLIED through the
- * descriptor's `egress` input (nothing today), and grants NOTHING when absent.
+ * descriptor's `egress` input (only `OTTA_EXTRA_ALLOWED_HOSTS` today), and grants NOTHING when absent.
  * Stripe's API host is the one constant. No email host: email is `ctx.email`
  * (ADR-0031).
  */
@@ -286,6 +286,24 @@ const sorted = (hosts: readonly string[] | undefined): string[] => [...(hosts ??
 describe("ottaPluginDescriptor allowedHosts, EXACTLY", () => {
 	test("with nothing configured: EXACTLY the Stripe API host", () => {
 		expect(ottaPluginDescriptor().allowedHosts).toEqual(BASELINE_HOSTS);
+		expect(ottaPluginDescriptor({ egress: { extraAllowedHosts: "" } }).allowedHosts).toEqual(
+			BASELINE_HOSTS,
+		);
+	});
+
+	test("OTTA_EXTRA_ALLOWED_HOSTS extras are granted after the fixed hosts", () => {
+		const hosts = ottaPluginDescriptor({
+			egress: {
+				extraAllowedHosts: ["Api.Example.org", "b.example.net"],
+			},
+		}).allowedHosts;
+		expect(hosts).toEqual([...BASELINE_HOSTS, "api.example.org", "b.example.net"]);
+	});
+
+	test("an invalid extra grants nothing (fail-closed, never throws)", () => {
+		const options = { egress: { extraAllowedHosts: "*,127.0.0.1,localhost" } };
+		expect(() => ottaPluginDescriptor(options)).not.toThrow();
+		expect(ottaPluginDescriptor(options).allowedHosts).toEqual(BASELINE_HOSTS);
 	});
 
 	test("an EMPTY egress grants nothing beyond Stripe and never throws", () => {
@@ -411,6 +429,12 @@ describe("buildEmdashOptions", () => {
 		const registered = buildEmdashOptions({}).plugins[0];
 		expect(registered).toEqual(ottaPluginDescriptor({ egress: {} }));
 		expect(sorted(registered?.allowedHosts)).toEqual(sorted(BASELINE_HOSTS));
+	});
+
+	test("threads extraAllowedHosts into the registered descriptor's allowlist", () => {
+		const hosts = buildEmdashOptions({ extraAllowedHosts: "x.example.com" }).plugins[0]
+			?.allowedHosts;
+		expect(hosts).toEqual([...BASELINE_HOSTS, "x.example.com"]);
 	});
 
 	test("with no egress configured the allowlist is EXACTLY the baseline — fail-closed", () => {
@@ -785,15 +809,17 @@ describe("astro.config", () => {
 	);
 
 	test(
-		"no in-process egress URL rides a build-time define today — and no email URL does",
+		"no egress URL rides a build-time define (only the extra-hosts define) — and no email URL does",
 		async () => {
 			// INC-D3a retired the commerce-mode define along with the transport it
 			// selected; ADR-0031 retired the email URL, and the last egress URL went
-			// with its payment rail. An operator-supplied egress define is added
-			// beside the `egress` const when one exists.
+			// with its payment rail. The one operator define left is
+			// `__OTTA_EXTRA_ALLOWED_HOSTS__`, which carries hosts, not a URL.
 			const config = (await import("../astro.config.js")).default;
 			const define = config.vite?.define as Record<string, string>;
 			expect(Object.keys(define).filter((name) => name.endsWith("_URL__"))).toEqual([]);
+			expect(Object.keys(define)).toContain("__OTTA_EXTRA_ALLOWED_HOSTS__");
+			expect(typeof JSON.parse(define["__OTTA_EXTRA_ALLOWED_HOSTS__"] ?? "null")).toBe("string");
 			expect(Object.keys(define).filter((name) => /EMAIL/.test(name))).toEqual([]);
 		},
 		CONFIG_IMPORT_TIMEOUT_MS,
@@ -835,6 +861,11 @@ describe("astro.config", () => {
 			// fails here as `undefined`; every egress define must be baked from it too.
 			expect(args[0], "buildEmdashOptions must be passed the egress const").toBe("egress");
 			expect(source).toMatch(/\nconst egress\b/);
+			// ...and the extra-hosts define is baked from that same const, never from
+			// process.env directly (which could drift from the descriptor allowlist).
+			expect(source).toMatch(
+				/__OTTA_EXTRA_ALLOWED_HOSTS__:\s*JSON\.stringify\(egress\.extraAllowedHosts/,
+			);
 
 			// And the registered descriptor is the single in-process shape: storage
 			// declared, Stripe allowlisted, no service host anywhere.
@@ -845,4 +876,45 @@ describe("astro.config", () => {
 		},
 		CONFIG_IMPORT_TIMEOUT_MS,
 	);
+
+	/**
+	 * BEHAVIOUR, not source text: the REAL config module, evaluated with
+	 * OTTA_EXTRA_ALLOWED_HOSTS in the shell env (which wins over `.env`). A fresh
+	 * module registry per test, so the env value is what the config reads.
+	 */
+	describe("OTTA_EXTRA_ALLOWED_HOSTS at config load", () => {
+		afterEach(() => {
+			vi.unstubAllEnvs();
+			vi.resetModules();
+		});
+
+		test(
+			"a refused entry makes loading the site config THROW, naming the entry",
+			async () => {
+				vi.stubEnv("OTTA_EXTRA_ALLOWED_HOSTS", "api.example.com, metadata.google.internal");
+				vi.resetModules();
+				await expect(import("../astro.config.js")).rejects.toThrow(
+					/OTTA_EXTRA_ALLOWED_HOSTS: invalid entry "metadata\.google\.internal"/,
+				);
+			},
+			CONFIG_IMPORT_TIMEOUT_MS,
+		);
+
+		test(
+			"valid entries load and are baked, normalized, into the define",
+			async () => {
+				vi.stubEnv(
+					"OTTA_EXTRA_ALLOWED_HOSTS",
+					" API.Example.com,hooks.example.org,api.example.com ",
+				);
+				vi.resetModules();
+				const config = (await import("../astro.config.js")).default;
+				const define = config.vite?.define as Record<string, string>;
+				expect(JSON.parse(define["__OTTA_EXTRA_ALLOWED_HOSTS__"] ?? "null")).toBe(
+					"api.example.com,hooks.example.org",
+				);
+			},
+			CONFIG_IMPORT_TIMEOUT_MS,
+		);
+	});
 });
