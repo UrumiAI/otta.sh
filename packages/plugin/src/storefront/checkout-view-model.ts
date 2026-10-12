@@ -95,7 +95,7 @@ export interface CheckoutTotalsView {
 	/** The whole tax, whatever the display. */
 	tax: CheckoutAmountView;
 	/** The tax rows to ADD in the totals block: one per tax (itemized) or one
-	 *  "Tax" row; empty when prices are shown with tax or tax is switched off. */
+	 *  "Tax" row; empty when prices are shown with tax or tax is switched off (#420). */
 	taxRows: CheckoutTaxRowView[];
 	/** "Includes $3.00 tax" under the total when prices are shown with tax. Plain text. */
 	taxIncludedNote: string | null;
@@ -163,9 +163,11 @@ export function buildCheckoutTotals(
 	const code = currency(breakdown.currency);
 	const { locale } = options;
 	const hasDiscount = breakdown.discountCents > 0 || breakdown.appliedCouponCode !== null;
-	// Tax switched off renders EXACTLY as before 2a — the one "Tax" row — so the
-	// many existing stores with no rates (off under the upgrade rule) see no change
-	// on the page. Hiding the row, as WooCommerce does, is a listed follow-up.
+	// Tax switched off (#420, as WooCommerce): no tax row at all, and tax is not
+	// one of the uncalculated parts of the total. Keyed on the setting, never on
+	// the amount, so tax ON with a zero tax keeps its "$0.00" row. A quote without
+	// `tax` (an older order, a pre-2a caller) still gets today's single row.
+	const taxOff = breakdown.tax?.enabled === false;
 	const tax = breakdown.tax?.enabled === true ? breakdown.tax : undefined;
 	const taxComputed = options.taxZoneSelected || tax?.located === true;
 	const shown = taxComputed && tax !== undefined ? shownAmounts(breakdown, tax) : null;
@@ -173,7 +175,7 @@ export function buildCheckoutTotals(
 		? computed(breakdown.taxCents, code, locale)
 		: uncomputed(NOT_CALCULATED_LABEL);
 
-	let taxRows: CheckoutTaxRowView[] = [{ label: "Tax", amount: taxView }];
+	let taxRows: CheckoutTaxRowView[] = taxOff ? [] : [{ label: "Tax", amount: taxView }];
 	let taxIncludedNote: string | null = null;
 	if (shown !== null && tax !== undefined) {
 		const parts =
@@ -216,7 +218,7 @@ export function buildCheckoutTotals(
 			: {}),
 		total: computed(breakdown.totalCents, code, locale),
 		appliedCouponCode: breakdown.appliedCouponCode,
-		totalExcludesUncalculated: !options.shippingSelected || !taxComputed,
+		totalExcludesUncalculated: !options.shippingSelected || (!taxComputed && !taxOff),
 	};
 }
 
