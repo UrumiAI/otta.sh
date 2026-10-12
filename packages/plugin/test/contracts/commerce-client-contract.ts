@@ -831,6 +831,44 @@ export function storefrontCommerceClientContract(tier: CommerceClientTier): void
 			});
 		});
 
+		test("a currency-shaped code outside the currency table (XYZ) is refused on every non-admin write that names one", async () => {
+			// Three letters passes the shape check; the table is what every money
+			// boundary (checkout rounding, Stripe's exponent) knows. Issue #457.
+			const refused = { code: "INVALID_INPUT", field: "currency" };
+			await expect(client.createCart("XYZ")).rejects.toMatchObject(refused);
+			await expect(client.replaceCart("cart-any", "XYZ")).rejects.toMatchObject(refused);
+			await expect(
+				client.upsertProductCommerce(
+					"prod-xyz",
+					{ sku: "SKU-XYZ", price: { amount: 1000, currency: "XYZ" } },
+					"xyz-upsert",
+				),
+			).rejects.toMatchObject({ code: "INVALID_INPUT", field: "price.currency" });
+			expect(await client.getProductCommerce("prod-xyz")).toBeNull();
+			await tier.arrange.product({
+				productId: "prod-xyz-v",
+				sku: "SKU-XYZ-V",
+				price: { amount: 1000, currency: "USD" },
+				title: "prod-xyz-v",
+				idempotencyKey: "xyz-parent",
+			});
+			const declared = await client.upsertProductVariant(
+				"prod-xyz-v",
+				"large",
+				{ title: "Large", contentUpdatedAt: "2026-08-08T00:00:00.000Z" },
+				"xyz-declare",
+			);
+			await expect(
+				client.updateProductVariantFields(
+					"prod-xyz-v",
+					"large",
+					{ price: { amount: 2000, currency: "XYZ" } },
+					declared.updatedAt,
+					"xyz-variant",
+				),
+			).rejects.toMatchObject({ code: "INVALID_INPUT", field: "price.currency" });
+		});
+
 		// The storefront replaces a spent cart under a key derived from it, so two
 		// racing requests land in ONE new cart (cart-rotation.ts on the site).
 		// The storefront replaces a SPENT cart under a key the server derives from it,
