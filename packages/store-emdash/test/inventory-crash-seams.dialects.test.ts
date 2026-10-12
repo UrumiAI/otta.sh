@@ -985,6 +985,10 @@ describe.skipIf(!PG_ENABLED)("inventory compare-and-set contention budget [postg
 				`budget=${String(CAS_ATTEMPT_BUDGET)} ceiling=${String(CAS_MAX_ATTEMPTS)}`,
 		);
 		expect(maxAttempts).toBeLessThanOrEqual(CAS_ATTEMPT_BUDGET);
+		// And the racers really raced (#478, from #464): a pool squeezed by a busy
+		// server queues them one by one, every write wins first time, and a depth
+		// of 1 would pass the budget without measuring anything.
+		expect(maxAttempts).toBeGreaterThanOrEqual(2);
 	}, 300_000);
 
 	it("the harsher shape (1 unit, 100 racers) stays within the budget, and is no deeper", async () => {
@@ -999,5 +1003,7 @@ describe.skipIf(!PG_ENABLED)("inventory compare-and-set contention budget [postg
 		// can succeed before every other caller reads `onHand: 0` and decides cleanly
 		// with no write at all — so ten times the crowd must not move the number.
 		expect(maxAttempts).toBeLessThanOrEqual(6);
+		// Not vacuous either: at least one caller lost a compare-and-set (#478).
+		expect(maxAttempts).toBeGreaterThanOrEqual(2);
 	}, 300_000);
 });
