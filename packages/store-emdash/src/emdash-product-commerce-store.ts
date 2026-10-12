@@ -45,6 +45,7 @@
 import {
 	InvalidLowStockThresholdError,
 	InvalidProductFieldError,
+	isProductTaxStatus,
 	isValidLowStockThreshold,
 	MissingProductIdError,
 	MissingVariantKeyError,
@@ -423,6 +424,9 @@ export class EmdashProductCommerceStore implements ProductCommerceStore {
 				price,
 				title: doc.title,
 				compareAtPrice: doc.compareAtPrice,
+				taxClass: doc.taxClass,
+				// A document written before PR 2b has no status: it was always taxable.
+				taxStatus: isProductTaxStatus(doc.taxStatus) ? doc.taxStatus : "taxable",
 				active: doc.active,
 			});
 		}

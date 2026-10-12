@@ -45,7 +45,8 @@ exactly as in the sandbox.
    stays.
 3. The site registers the plugin via a hand-written descriptor
    (`sites/staging/src/otta-plugin-descriptor.ts`): `format: "standard"`, entrypoint
-   `@otta-sh/plugin/plugin`, capabilities exactly the manifest's
+   `@otta-sh/plugin/trusted` (the default export with `trustedHost` on, so Stripe calls
+   carry an `AbortSignal`; issue #447 — it was `@otta-sh/plugin/plugin`), capabilities exactly the manifest's
    (`content:read`, `network:request`), `allowedHosts` = the commerce service's hostname
    (baked at build time). No `sandboxed:`, no `sandboxRunner:`, no `worker_loaders`
    binding.

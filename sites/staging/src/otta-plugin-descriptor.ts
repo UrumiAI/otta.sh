@@ -1,7 +1,7 @@
 /**
  * The Otta plugin's TRUSTED (in-process) registration descriptor —
  * ADR-0006. A hand-written standard-format `PluginDescriptor`: em-dash's
- * integration generates `import def from "@otta-sh/plugin/plugin";
+ * integration generates `import def from "@otta-sh/plugin/trusted";
  * adaptSandboxEntry(def, {...this descriptor})` at build time, so the
  * plugin's `{hooks, routes}` default export runs in the host worker — but
  * `capabilities` and `allowedHosts` are STILL enforced by the
@@ -24,6 +24,7 @@ import {
 	OTTA_PLUGIN_CAPABILITIES,
 	OTTA_PLUGIN_ID,
 	OTTA_PLUGIN_VERSION,
+	PAYMENT_SECRET_SETTINGS_SCHEMA,
 } from "@otta-sh/plugin";
 
 /** The descriptor's own storage shape, so the widening below is expressed once. */
@@ -60,7 +61,7 @@ function commerceStorage(): DescriptorStorage {
 
 /** INC-C3 — what the egress allowlist depends on. */
 export interface OttaPluginDescriptorOptions {
-	/** Deployment-supplied in-process egress (none today). Absent ⇒ no host
+	/** Deployment-supplied in-process egress (only `OTTA_EXTRA_ALLOWED_HOSTS` today). Absent ⇒ no host
 	 *  granted for it. Email needs none: it goes through `ctx.email`. */
 	egress?: InProcessEgressUrls;
 }
@@ -70,7 +71,10 @@ export function ottaPluginDescriptor(options: OttaPluginDescriptorOptions = {}):
 		id: OTTA_PLUGIN_ID,
 		version: OTTA_PLUGIN_VERSION,
 		format: "standard",
-		entrypoint: "@otta-sh/plugin/plugin",
+		// The TRUSTED entry (issue #447): the plugin's default export with
+		// `trustedHost` on, so a timed-out Stripe request is aborted at the
+		// socket. Right only because this registration is in-process.
+		entrypoint: "@otta-sh/plugin/trusted",
 		// EXACTLY the manifest's three capabilities — never more (the
 		// sandbox-clean contract, pinned by the plugin's own guard test).
 		capabilities: [...OTTA_PLUGIN_CAPABILITIES],
@@ -123,5 +127,11 @@ export function ottaPluginDescriptor(options: OttaPluginDescriptorOptions = {}):
 		// products/tax/shipping/coupons routes are network:request proxies and
 		// ctx.kv is always-available.
 		adminPages: [REPORTS_PAGE, SETTINGS_PAGE, TAX_PAGE, SHIPPING_PAGE, COUPONS_PAGE],
+		// ADR-0037: the payment credentials, declared `secret` so EmDash encrypts
+		// them at rest under EMDASH_ENCRYPTION_KEY. The plugin's Settings page stays
+		// where they are entered; declaring a schema also makes EmDash list a
+		// Settings gear for the plugin, whose form writes the same encrypted keys.
+		// Copied, not shared: the descriptor type wants a mutable record.
+		settingsSchema: { ...PAYMENT_SECRET_SETTINGS_SCHEMA },
 	};
 }

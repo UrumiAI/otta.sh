@@ -24,6 +24,8 @@ export interface QuoteInput {
 	lines: readonly PricedLine[];
 	/** Where the order ships; absent ⇒ none given (the zone is derived from it). */
 	destination?: QuoteCommand["destination"];
+	/** Where the buyer is (#426) — read only for a cart that ships nothing. */
+	billingLocation?: QuoteCommand["billingLocation"];
 	methodId?: string;
 	couponCode?: string;
 }
@@ -47,6 +49,12 @@ export function quoteCommandFor(input: QuoteInput): QuoteCommand {
 		lines: input.lines.map(totalsLineOf),
 		requiresShipping: input.lines.some((line) => line.productKind === "physical"),
 		...(input.destination !== undefined ? { destination: input.destination } : {}),
+		// Only a cart that ships nothing has a billing location (#426): a cart that
+		// ships never carries one, so its command is key for key what it was.
+		...(input.billingLocation !== undefined &&
+		!input.lines.some((l) => l.productKind === "physical")
+			? { billingLocation: input.billingLocation }
+			: {}),
 		...(input.methodId !== undefined ? { methodId: input.methodId } : {}),
 		...(input.couponCode !== undefined ? { couponCode: input.couponCode } : {}),
 	};

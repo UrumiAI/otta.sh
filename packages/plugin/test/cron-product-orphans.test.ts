@@ -26,7 +26,8 @@
  *  - a strike lives for at least seven days, or four full passes if longer;
  *  - a read that rejects never counts as gone, and one row rejecting run after run
  *    is stepped past (left live) rather than stopping the walk forever;
- *  - at most `ORPHAN_TOMBSTONES_PER_TICK` tombstones a tick;
+ *  - at most `ORPHAN_TOMBSTONES_PER_TICK` tombstones a tick, and at most
+ *    `ORPHAN_TOMBSTONES_PER_DAY` in any 24 hours;
  *  - the soft delete is the hook's own: a replay is a no-op, holds, stock and
  *    orders are untouched, and the delete-and-recreate shape frees the sku;
  *  - the walk pages behind a compound `(createdAt, id)` cursor across ticks on the
@@ -67,6 +68,7 @@ import {
 	AGING_TICKS,
 	ORPHAN_MAX_READ_FAILURES,
 	ORPHAN_STRIKES,
+	ORPHAN_TOMBSTONES_PER_DAY,
 	ORPHAN_TOMBSTONES_PER_TICK,
 	PRODUCT_ORPHAN_GRACE_MS,
 	STARVING_TICKS,
@@ -488,7 +490,14 @@ describe("a dense block of real orphans is struck out like any rows", () => {
 		const cursors = memoryCursors();
 		let doneAt: number | null = null;
 		for (let t = 0; t < maxTicks && doneAt === null; t++) {
-			const leg = orphanLeg(await tick(cms, cursors, t * MINUTE_MS, { queryBudget: budget }));
+			// The daily cap is lifted here: this measures the walk's pacing over a block
+			// bigger than a day's allowance (the cap has its own test, below).
+			const leg = orphanLeg(
+				await tick(cms, cursors, t * MINUTE_MS, {
+					queryBudget: budget,
+					orphanTombstonesPerDay: 1000,
+				}),
+			);
 			expect(leg.ok, `tick ${String(t)}: ${leg.error ?? ""}`).toBe(true);
 			const states = await Promise.all(gone.map((id) => lifecycleOf(id)));
 			if (states.every((state) => state === "deleted")) doneAt = t;
@@ -747,6 +756,52 @@ describe("the soft delete is the hook's own, and touches nothing else", () => {
 		for (const id of gone) expect(await lifecycleOf(id), id).toBe("deleted");
 		for (const id of kept) expect(await lifecycleOf(id), id).toBe("live");
 	});
+
+	// #447 (from #415 item 4): the per-tick cap alone let a systematic false positive
+	// that fooled every other gate tombstone five a minute — about 300 an hour, since
+	// an unfinished scan runs every tick. The daily cap bounds that to
+	// ORPHAN_TOMBSTONES_PER_DAY in any 24 hours, kept in the leg's own kv state so it
+	// holds across ticks and isolates. A row its last strike finds over the cap is
+	// stepped past with its strikes kept, so the scan does not re-read it every tick,
+	// and it is judged again on a later pass once the window has room.
+	test(`at most ${String(ORPHAN_TOMBSTONES_PER_DAY)} tombstones in any 24 hours, across ticks — logged when hit; the rest wait for the window`, async () => {
+		const total = ORPHAN_TOMBSTONES_PER_DAY + 5;
+		const gone = Array.from({ length: total }, (_, i) => `p-day-g${String(i).padStart(2, "0")}`);
+		const kept = Array.from({ length: 5 }, (_, i) => `p-day-k${String(i)}`);
+		for (const [i, id] of [...gone, ...kept].entries()) {
+			await product(id, new Date(CREATED.getTime() + i * 1000));
+		}
+		const cms = fakeCms({ gone });
+		const cursors = memoryCursors();
+		const deleted = async (): Promise<number> =>
+			(await Promise.all(gone.map((id) => lifecycleOf(id)))).filter((l) => l === "deleted").length;
+
+		// Strike everything out, then tick every minute for two hours: far more than
+		// enough ticks for the per-tick cap alone to tombstone every orphan.
+		let tombstoned = await strikeOut(cms, cursors);
+		for (let m = 1; m <= 120; m++) {
+			const leg = orphanLeg(await tick(cms, cursors, 2 * CADENCE + m * MINUTE_MS));
+			expect(leg.ok, leg.error).toBe(true);
+			tombstoned += leg.count;
+		}
+		expect(tombstoned).toBe(ORPHAN_TOMBSTONES_PER_DAY);
+		expect(await deleted()).toBe(ORPHAN_TOMBSTONES_PER_DAY);
+		expect(
+			errors.some((line) =>
+				line.includes(`cap of ${String(ORPHAN_TOMBSTONES_PER_DAY)} tombstones in 24 hours`),
+			),
+		).toBe(true);
+		// The rows it stepped past keep their strikes: they are owed, not forgiven.
+		const waiting = strikesOf(await orphanState(cursors));
+		expect(Object.keys(waiting)).toHaveLength(total - ORPHAN_TOMBSTONES_PER_DAY);
+		for (const n of Object.values(waiting)) expect(n).toBe(ORPHAN_STRIKES - 1);
+
+		// A day after the first tombstone, the window has room again: the rest go.
+		const dayLater = 2 * CADENCE + 24 * HOUR_MS;
+		for (let m = 0; m <= 30; m++) await tick(cms, cursors, dayLater + m * MINUTE_MS);
+		expect(await deleted()).toBe(total);
+		for (const id of kept) expect(await lifecycleOf(id), id).toBe("live");
+	}, 120_000);
 });
 
 /** The `content:afterRestore` event EmDash sends: the restored item, back as a

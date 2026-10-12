@@ -23,8 +23,10 @@
  */
 import { joinProduct } from "../catalog/join-product.js";
 import type { CmsProductContent } from "../catalog/join-product.js";
+import { priceDisplayOrEntered, withShopDisplayPrice } from "../catalog/shop-display.js";
+import { makeCommerceClient } from "../commerce/make-commerce-client.js";
 import type { RouteHandler } from "../types.js";
-import { createCommerceLoader, renderGuard, type RenderGuardFailure } from "./pdp-route.js";
+import { commerceLoaderFor, renderGuard, type RenderGuardFailure } from "./pdp-route.js";
 import { buildProductViewModel, type ProductViewModel } from "./product-view-model.js";
 import { parseCmsProductContent, sanitizeLocale } from "./route-input.js";
 
@@ -91,11 +93,21 @@ export function createPlpRouteHandler(): RouteHandler<PlpRouteInput> {
 
 			// Collect every CMS id on the page, then ONE batched call (§4.3.1);
 			// the loader dedupes duplicates within the page.
-			const loader = await createCommerceLoader(ctx);
-			const commerceById = await loader.loadMany(contents.map((content) => content.id));
+			// The store's shop-price display (#423) is read once for the whole page,
+			// beside the one batch — never per product.
+			const client = await makeCommerceClient(ctx);
+			const [commerceById, display] = await Promise.all([
+				commerceLoaderFor(client).loadMany(contents.map((content) => content.id)),
+				// A failed read shows the stored prices rather than failing the page.
+				priceDisplayOrEntered(STOREFRONT_LIST_ROUTE, () => client.getShopPriceDisplay()),
+			]);
 
 			const items = contents.map((content) =>
-				buildProductViewModel(joinProduct(content, commerceById.get(content.id) ?? null), locale),
+				buildProductViewModel(
+					withShopDisplayPrice(joinProduct(content, commerceById.get(content.id) ?? null), display),
+					locale,
+					display,
+				),
 			);
 			return { ok: true as const, items, query };
 		});

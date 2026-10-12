@@ -552,6 +552,14 @@ export interface ProductCommerceView {
 	 */
 	compareAtPrice: Money | null;
 	/**
+	 * The row's tax class (`ProductCommerce.taxClass`; null ⇒ `standard`) and tax
+	 * status — what checkout prices the line with, so a shop page that shows
+	 * prices with or without tax (#423) applies the same tax from the read it
+	 * already makes. Not rendered on the storefront wire.
+	 */
+	taxClass: string | null;
+	taxStatus: ProductTaxStatus;
+	/**
 	 * Coarse display-only stock signal: `inventory.on_hand > 0` at read time
 	 * (Phase 2 §8 risk 5, pre-approved). NOT reservation-aware — it can say
 	 * "in stock" moments before a concurrent buyer takes the last unit.

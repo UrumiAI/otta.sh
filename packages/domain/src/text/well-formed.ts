@@ -16,7 +16,9 @@
  * all valid JSON text, and refusing them would refuse real input for nothing.
  *
  * Pure, no IO. The plugin's boundary REFUSES such input (see `commerce-input.ts`);
- * the storage adapter REPAIRS anything that reaches it with {@link toWellFormedText}.
+ * the storage adapter REPAIRS anything that reaches a Postgres store with
+ * {@link toWellFormedText}; on SQLite and D1, which read such text, it stores it as
+ * given, since a repair there could re-key a legacy id built from it (#447).
  */
 
 /** A lone surrogate (either half) or U+0000. Code-unit regex — no `u` flag, on

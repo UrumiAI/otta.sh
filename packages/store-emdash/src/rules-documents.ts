@@ -42,6 +42,7 @@
  * a declared index and these collections declare none.
  */
 import {
+	canonicalTaxRateValue,
 	cents,
 	currency as toCurrency,
 	type Cents,
@@ -139,6 +140,15 @@ export interface TaxRateDoc {
 	readonly zoneId: string;
 	/** Integer basis points. The money-bearing field `updateRate` CAS-guards. */
 	readonly rateBps: number;
+	/**
+	 * The exact rate in integer millionths (0.0001%, #425), ONLY for a rate finer
+	 * than a basis point — then it is the rate and `rateBps` its half-up rounding.
+	 * A document written before #425 never has it and reads as `rateBps × 100`:
+	 * the read-time upgrade (as `ShippingMethodDoc.taxable`); nothing is rewritten.
+	 * One that disagrees with `rateBps` (an older build edited the rate and carried
+	 * it along) is ignored on read and dropped by the next edit.
+	 */
+	readonly ratePpm?: number;
 	readonly appliesToShipping: boolean;
 }
 
@@ -232,7 +242,9 @@ export function toTaxRate(taxClassId: TaxClassId, doc: TaxRateDoc): TaxRate {
 		id: doc.rateId,
 		taxClassId,
 		zoneId: doc.zoneId,
-		rateBps: doc.rateBps,
+		// A stale or malformed `ratePpm` (a build that knew only `rateBps` edited the
+		// rate, #425) is dropped: `rateBps` is the source of truth when they disagree.
+		...canonicalTaxRateValue(doc),
 		appliesToShipping: doc.appliesToShipping,
 	};
 }

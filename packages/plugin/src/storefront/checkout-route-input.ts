@@ -25,6 +25,7 @@ import {
 	isIdToken,
 } from "../commerce/commerce-input.js";
 import type {
+	BillingLocationWire,
 	DestinationRequestWire,
 	ShippingAddressWire,
 } from "../product-commerce/commerce-client.js";
@@ -111,6 +112,8 @@ export interface CheckoutPlaceParsedInput {
 	buyerRef: string;
 	idempotencyKey: string;
 	shippingAddress?: ShippingAddressWire;
+	/** #426: where the buyer is — the location the review was priced for. */
+	billingLocation?: BillingLocationWire;
 	/** Display only — it formats the order total this route returns and reaches
 	 *  no upstream call. Sanitized like the other routes' (a malformed tag falls
 	 *  back rather than rejecting: a bad locale must not fail an order). */
@@ -187,7 +190,8 @@ export function parseCheckoutSummaryInput(input: {
 }
 
 /**
- * The summary's destination (ADR-0021): absent/null ⇒ none; otherwise an object
+ * The summary's destination (ADR-0021) — and the place's `billingLocation`
+ * (#426), of which only the country and region are kept: absent/null ⇒ none; otherwise an object
  * with a two-letter `country` and an optional code-shaped `region`, both
  * uppercased — else `null` (INVALID_INPUT). SHAPE only: a code-shaped value
  * that is not a real code (`XX`) passes, and the domain refuses it with a typed
@@ -233,6 +237,7 @@ export function parseCheckoutPlaceInput(input: {
 	buyerRef?: unknown;
 	idempotencyKey?: unknown;
 	shippingAddress?: unknown;
+	billingLocation?: unknown;
 	locale?: unknown;
 	couponCode?: unknown;
 	shippingMethodId?: unknown;
@@ -263,6 +268,15 @@ export function parseCheckoutPlaceInput(input: {
 		const address = parseShippingAddress(input.shippingAddress);
 		if (address === null) return null;
 		parsed.shippingAddress = address;
+	}
+	const billingLocation = parseDestination(input.billingLocation);
+	if (billingLocation === null) return null;
+	if (billingLocation !== undefined) {
+		// The coarse location only: a postcode or city has no use here.
+		parsed.billingLocation = {
+			country: billingLocation.country,
+			...(billingLocation.region !== undefined ? { region: billingLocation.region } : {}),
+		};
 	}
 	// DROPPED, never refused, when it is not a plausible token: the session only
 	// decides who OWNS the order, and a stale or mangled cookie must not cost the

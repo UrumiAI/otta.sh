@@ -7,7 +7,8 @@
  * once, when that module is evaluated, and every commerce client the isolate
  * builds reads it from here (`makeCommerceClient`). Nothing registered ⇒ the
  * built-in `otta.rate-table`. Sandboxed mode loads the default export, so it is
- * always the built-in.
+ * always the built-in. An in-process site writing its own entry should also pass
+ * `trustedHost: true` (issue #447): its entry replaces `@otta-sh/plugin/trusted`.
  *
  * A calculator is TRUSTED code the merchant chose to install, like a WordPress
  * plugin: it runs in-process and may use `fetch` itself (ADR-0030). What Otta

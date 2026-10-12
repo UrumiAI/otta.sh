@@ -255,7 +255,6 @@ describeEachDialect("EmdashInventoryStore document model", (ctx) => {
 
 		it("answers from the key document after an adopted hold was committed by commitMany", async () => {
 			const h = harness();
-			if (h.holdWithExpiry === undefined) throw new Error("harness must stamp deadlines");
 			await h.seed("SKU-1", 5);
 			const reservationId = await h.holdWithExpiry("SKU-1", 2, "k1", "2026-07-10T00:15:00.000Z");
 			const adopted = await h.store.adoptMany({
@@ -292,7 +291,6 @@ describeEachDialect("EmdashInventoryStore document model", (ctx) => {
 	describe("duplicate ids in a batch", () => {
 		it("reports each id once in adoptMany and commitMany", async () => {
 			const h = harness();
-			if (h.holdWithExpiry === undefined) throw new Error("harness must stamp deadlines");
 			await h.seed("SKU-1", 10);
 			const held = await h.holdWithExpiry("SKU-1", 1, "k1", "2026-07-10T00:15:00.000Z");
 			const adopted = await h.store.adoptMany({

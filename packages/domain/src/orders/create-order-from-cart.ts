@@ -37,7 +37,7 @@ import type { CreateOrderFailure } from "./errors.js";
 import { snapshotOrderLine } from "./line-snapshot.js";
 import type { Order, OrderAddress, PaymentMethod } from "./model.js";
 import { normalizeOrderAddress, type OrderAddressInput } from "./order-address.js";
-import { buildOrderTaxSnapshot } from "./order-tax-snapshot.js";
+import { buildOrderTaxSnapshot, type OrderTaxAddress } from "./order-tax-snapshot.js";
 import { gatewayForStored } from "./payment-methods.js";
 
 /** 15 minutes — the checkout hold TTL (§9 decision 5), configurable. */
@@ -109,6 +109,15 @@ export interface CreateOrderCommand {
 	 * rules alone.
 	 */
 	addressRequired?: boolean;
+	/**
+	 * Where the buyer is (#426): a country and an optional region code — the
+	 * SAME location the checkout review was quoted for. It decides the tax only
+	 * for a cart that ships nothing, in a store taxing "based on the customer's
+	 * billing address"; anywhere else it is ignored. Absent ⇒ none: the shop's
+	 * base address taxes, as before — even when a buyer address came along
+	 * (issue #382), because the review the buyer approved was priced without it.
+	 */
+	billingLocation?: { country: string; region?: string | null };
 }
 
 export type CreateOrderFromCartResult =
@@ -347,6 +356,7 @@ export async function createOrderFromCart(
 							city: shippingAddress.city,
 						}
 					: undefined,
+			billingLocation: command.billingLocation,
 			methodId: command.shippingMethodId,
 			couponCode: command.couponCode,
 		}),
@@ -423,6 +433,7 @@ export async function createOrderFromCart(
 			taxLocated: quote.taxLocated,
 			// #427: what each line was asked as (`taxRequestLinesOf`'s default).
 			taxStatuses: pricedLines.map((l) => l.taxStatus ?? "taxable"),
+			...(quote.taxAddress !== undefined ? { taxAddress: quote.taxAddress } : {}),
 			couponRecord: quote.couponRecord,
 			shippingMethodSnapshot,
 			shippingAddress,
@@ -496,6 +507,8 @@ interface FinalizeContext {
 	taxLocated: boolean;
 	/** Each line's product tax status, frozen into the snapshot (#427). */
 	taxStatuses: readonly ProductTaxStatus[];
+	/** The quote's `taxAddress` (#426), frozen into the snapshot. */
+	taxAddress?: OrderTaxAddress;
 	couponRecord: CouponRecord | null;
 	/** What priced the shipping and tax (ADR-0021 Decision 7); null when no zone
 	 *  matched (no zones configured, or nothing ships). */
@@ -560,7 +573,13 @@ async function finalizeOrder(
 			appliedCouponCode: breakdown.appliedCouponCode ?? null,
 			shippingMethodSnapshot: ctx.shippingMethodSnapshot,
 			// ADR-0030: the typed v1 snapshot, written once, never recomputed.
-			taxBreakdown: buildOrderTaxSnapshot(breakdown, ctx.tax, ctx.taxLocated, ctx.taxStatuses),
+			taxBreakdown: buildOrderTaxSnapshot(
+				breakdown,
+				ctx.tax,
+				ctx.taxLocated,
+				ctx.taxStatuses,
+				ctx.taxAddress,
+			),
 		},
 	});
 	// Issue #133, race twin of the I1 cart check: a same-key call for ANOTHER cart

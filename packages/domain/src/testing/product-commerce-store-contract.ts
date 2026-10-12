@@ -2048,9 +2048,29 @@ export function productCommerceStoreContract(
 				title: null,
 				// No was-price set — null, never a zero amount.
 				compareAtPrice: null,
+				// No class named (checkout reads it as `standard`); taxable by default.
+				taxClass: null,
+				taxStatus: "taxable",
 				inStock: true,
 				active: false, // afterPublish deferred — unpublished until it lands
 			});
+		});
+
+		test("listCommerceByIds carries the tax class and status checkout prices with — the shop page shows the same tax (#423)", async () => {
+			const h = await makeStore();
+			const pid = productId("prod-btx1");
+			const seeded = await seedEditable(h, "prod-btx1", { taxClass: "reduced" });
+			const res = await h.store.updateCommerceFields(
+				{ productId: pid, taxStatus: "none" },
+				idempotencyKey("tax-status-1"),
+				seeded.updatedAt.toISOString(),
+			);
+			expect(res.ok).toBe(true);
+
+			const [view] = await h.store.listCommerceByIds([pid]);
+
+			expect(view?.taxClass).toBe("reduced");
+			expect(view?.taxStatus).toBe("none");
 		});
 
 		test("listCommerceByIds carries the title cache — the name an order line will snapshot", async () => {
@@ -2131,6 +2151,8 @@ export function productCommerceStoreContract(
 				"price",
 				"productId",
 				"sku",
+				"taxClass",
+				"taxStatus",
 				"title",
 			]);
 		});

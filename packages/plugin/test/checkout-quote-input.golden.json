@@ -180,6 +180,7 @@
 				"displayCart": "excl",
 				"totalsDisplay": "single",
 				"lineTaxCents": 10972,
+				"lineTaxes": [8982, 1990],
 				"itemized": [
 					{
 						"label": "GST 18%",
@@ -321,6 +322,7 @@
 				"displayCart": "excl",
 				"totalsDisplay": "itemized",
 				"lineTaxCents": 0,
+				"lineTaxes": [0],
 				"itemized": []
 			}
 		}
@@ -369,6 +371,7 @@
 				"displayCart": "excl",
 				"totalsDisplay": "itemized",
 				"lineTaxCents": 0,
+				"lineTaxes": [0],
 				"itemized": []
 			}
 		}
@@ -501,6 +504,7 @@
 				"displayCart": "excl",
 				"totalsDisplay": "single",
 				"lineTaxCents": 0,
+				"lineTaxes": [0],
 				"itemized": []
 			}
 		}
@@ -632,6 +636,7 @@
 				"displayCart": "excl",
 				"totalsDisplay": "itemized",
 				"lineTaxCents": 0,
+				"lineTaxes": [0],
 				"itemized": []
 			}
 		}
@@ -814,6 +819,7 @@
 				"displayCart": "excl",
 				"totalsDisplay": "single",
 				"lineTaxCents": 223,
+				"lineTaxes": [196, 27],
 				"itemized": [
 					{
 						"label": "standard",
@@ -863,6 +869,7 @@
 				"displayCart": "excl",
 				"totalsDisplay": "single",
 				"lineTaxCents": 0,
+				"lineTaxes": [0],
 				"itemized": []
 			}
 		}
@@ -994,6 +1001,7 @@
 				"displayCart": "excl",
 				"totalsDisplay": "itemized",
 				"lineTaxCents": 0,
+				"lineTaxes": [0],
 				"itemized": []
 			}
 		}

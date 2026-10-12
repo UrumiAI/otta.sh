@@ -49,6 +49,7 @@
 
 import { fetchStripeAccountCountry } from "@otta-sh/payments-stripe";
 import { stripeSecretKeyFromKv } from "../payment-secrets.js";
+import { isTrustedHost } from "./trusted-host.js";
 import type { PluginContext } from "../types.js";
 
 /** Where the last answer is kept. Not a `settings:*` key: nobody sets it. */
@@ -150,8 +151,11 @@ async function askStripe(
 ): Promise<StripeAccountCountryStatus> {
 	const result = await fetchStripeAccountCountry({
 		secretKey,
-		fetch: (input, init) => ctx.http.fetch(String(input), init),
+		// Narrower bridge answer; the transport reads only members both have.
+		fetch: (input, init) => ctx.http.fetch(String(input), init) as Promise<Response>,
 		timeoutMs,
+		// Issue #447: as the gateway's — a signal only on an in-process host.
+		...(isTrustedHost() ? { trustedHost: true } : {}),
 	});
 	const checkedAt = new Date(now).toISOString();
 	const record: StoredRecord = result.ok

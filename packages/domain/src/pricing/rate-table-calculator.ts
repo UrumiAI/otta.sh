@@ -2,11 +2,13 @@ import { type Cents, cents } from "../money/cents.js";
 import type { TaxRate, TaxRulesStore } from "../ports/tax-rules-store.js";
 import { allocateCents } from "./allocate.js";
 import { mulDivRoundHalfDownAny } from "./round.js";
-import { computeLineTax } from "./tax.js";
+import { computeLineTaxPpm, PPM_DENOMINATOR } from "./tax.js";
+import { bpsOfPpm, PPM_PER_BPS, ratePpmOf } from "./tax-rate-precision.js";
 import { effectiveTaxRates } from "./tax-rate-uniqueness.js";
 import {
 	isValidTaxLabel,
 	TAX_RATE_BPS_MAX,
+	TAX_RATE_PPM_MAX,
 	type TaxCalculator,
 	type TaxLine,
 	type TaxRequest,
@@ -20,7 +22,11 @@ export const RATE_TABLE_CALCULATOR_ID = "otta.rate-table";
 
 /** One zone's rates, reduced to what the arithmetic reads. */
 export interface RateTable {
+	/** Each class's rate in whole basis points (a finer rate: rounded half up). */
 	ratesByClass: ReadonlyMap<TaxClassId, number>;
+	/** Each class's EXACT rate in millionths (#425) — what is charged. Absent, or a
+	 *  class missing from it ⇒ its `ratesByClass` × 100. */
+	ratesPpmByClass?: ReadonlyMap<TaxClassId, number>;
 	/** Whether any rate in the zone applies to shipping. */
 	shippingTaxable: boolean;
 	/** The class whose rate taxes shipping (the LAST flagged rate's). */
@@ -43,31 +49,40 @@ export interface RateTableOptions {
  * emdash store lists by id ascending), each rate sets its class, and the last
  * shipping-flagged rate names the shipping tax class (default `standard`).
  * Duplicate (class, zone) rates written before the store refused them are
- * reduced first to the one that applies (`effectiveTaxRates`: the greatest id —
- * the rate the last-listed overwrite always charged), so an ignored duplicate is
- * ignored entirely, its shipping flag included, exactly as the admin shows it.
+ * reduced to the one that applies (`effectiveTaxRates`: the greatest id — the
+ * rate the last-listed overwrite always charged) for each class's RATE and its
+ * per-class shipping flag. The zone's legacy shipping fields (`shippingTaxable`,
+ * `shippingTaxClassId`) are still read across EVERY rate, duplicates included,
+ * exactly as before duplicates were refused (issue #447): a store holding an old
+ * duplicate whose ignored copy was the one marked "applies to shipping" keeps
+ * the shipping tax it charged. The tax is still at the class's applied rate.
  */
 export function rateTableOf(zoneRates: readonly TaxRate[]): RateTable {
 	const ratesByClass = new Map<TaxClassId, number>();
+	const ratesPpmByClass = new Map<TaxClassId, number>();
 	const shipsByClass = new Map<TaxClassId, boolean>();
-	let shippingTaxable = false;
-	let shippingTaxClassId: TaxClassId = "standard";
 	for (const r of effectiveTaxRates(zoneRates)) {
 		ratesByClass.set(r.taxClassId, r.rateBps);
+		ratesPpmByClass.set(r.taxClassId, ratePpmOf(r));
 		shipsByClass.set(r.taxClassId, r.appliesToShipping);
+	}
+	let shippingTaxable = false;
+	let shippingTaxClassId: TaxClassId = "standard";
+	for (const r of zoneRates) {
 		if (r.appliesToShipping) {
 			shippingTaxable = true;
 			shippingTaxClassId = r.taxClassId;
 		}
 	}
-	return { ratesByClass, shippingTaxable, shippingTaxClassId, shipsByClass };
+	return { ratesByClass, ratesPpmByClass, shippingTaxable, shippingTaxClassId, shipsByClass };
 }
 
 /**
- * The rate-table arithmetic. Each line at its class's rate (no rate ⇒ 0%, never
- * a refusal — WooCommerce's rule):
- *  - prices WITHOUT tax: `round_half_up(amount × bps / 10000)` (main's maths);
- *  - prices WITH tax: the tax inside the gross, `round_half_down(G × bps / (10000 + bps))`
+ * The rate-table arithmetic. Each line at its class's EXACT rate, in millionths
+ * (`ppm`, #425 — a whole-bps rate is `bps × 100`, the same rational, so the same
+ * tax as main's `bps / 10000` maths). No rate ⇒ 0%, never a refusal — WooCommerce's rule:
+ *  - prices WITHOUT tax: `round_half_up(amount × ppm / 1e6)` (main's maths);
+ *  - prices WITH tax: the tax inside the gross, `round_half_down(G × ppm / (1e6 + ppm))`
  *    (WooCommerce's rounding for tax-inclusive stores — see {@link taxOn});
  *  - at subtotal: the same formula once per class over the class's summed amount,
  *    allocated back to its lines by amount (largest remainder).
@@ -81,21 +96,34 @@ export function applyRateTable(
 	labels: ReadonlyMap<TaxClassId, string>,
 	options: RateTableOptions = {},
 ): TaxResult {
-	const rateOf = (classId: TaxClassId) => table.ratesByClass.get(classId) ?? 0;
+	const rateOf = (classId: TaxClassId) =>
+		table.ratesPpmByClass?.get(classId) ?? (table.ratesByClass.get(classId) ?? 0) * PPM_PER_BPS;
 	// The tax is computed at the STORED rate; only the display rate is capped, so a
-	// rate written outside the admin (> 1000%) still charges as before.
-	const lineOf = (classId: TaxClassId, taxCents: Cents): TaxLine => ({
-		rateBps: Math.min(rateOf(classId), TAX_RATE_BPS_MAX),
-		label: labelOf(classId, labels),
-		taxCents,
-	});
+	// rate written outside the admin (> 1000%) still charges as before. A finer
+	// rate shows its exact `ratePpm` too; a whole-bps one shows exactly as before.
+	const lineOf = (classId: TaxClassId, taxCents: Cents): TaxLine => {
+		const ppm = Math.min(rateOf(classId), TAX_RATE_PPM_MAX);
+		return {
+			rateBps: Math.min(bpsOfPpm(ppm), TAX_RATE_BPS_MAX),
+			...(ppm % PPM_PER_BPS === 0 ? {} : { ratePpm: ppm }),
+			label: labelOf(classId, labels),
+			taxCents,
+		};
+	};
 	const taxes = lineTaxes(request, rateOf, options.roundAtSubtotal === true);
 	// An untaxed line (PR 2b) shows a 0% rate: it is charged none.
-	const untaxed = (classId: TaxClassId): TaxLine => ({ ...lineOf(classId, cents(0)), rateBps: 0 });
+	const untaxed = (classId: TaxClassId): TaxLine => ({
+		rateBps: 0,
+		label: labelOf(classId, labels),
+		taxCents: cents(0),
+	});
 	const shippingClass = shippingTaxClassOf(request, table, labels, options.shippingTaxClass);
 	const shipping: TaxLine | null =
 		shippingClass !== null && request.shipping !== null
-			? lineOf(shippingClass, computeLineTax(request.shipping.amountCents, rateOf(shippingClass)))
+			? lineOf(
+					shippingClass,
+					computeLineTaxPpm(request.shipping.amountCents, rateOf(shippingClass)),
+				)
 			: null;
 	return {
 		ok: true,
@@ -144,10 +172,10 @@ function nameSortKey(name: string): string {
  * for tax-inclusive stores (woo-oracle IN-02: 999 at 20% → 166), which is what
  * keeps `net + tax = gross` with the net rounded half up.
  */
-function taxOn(amount: number, rateBps: number, inclusive: boolean): Cents {
+function taxOn(amount: number, ratePpm: number, inclusive: boolean): Cents {
 	return inclusive
-		? cents(mulDivRoundHalfDownAny(amount, rateBps, 10_000 + rateBps))
-		: computeLineTax(cents(amount), rateBps);
+		? cents(mulDivRoundHalfDownAny(amount, ratePpm, PPM_DENOMINATOR + ratePpm))
+		: computeLineTaxPpm(cents(amount), ratePpm);
 }
 
 function lineTaxes(
@@ -187,7 +215,7 @@ function taxRoundedAtSubtotal(
 		const amounts: number[] = indexes.map((i) => request.lines[i]?.amountCents ?? 0);
 		const rate = BigInt(rateOf(classId));
 		const num = BigInt(amounts.reduce((a, b) => a + b, 0)) * rate;
-		const den = inclusive ? 10_000n + rate : 10_000n;
+		const den = inclusive ? BigInt(PPM_DENOMINATOR) + rate : BigInt(PPM_DENOMINATOR);
 		return { indexes, amounts, num, den, floor: num / den, rem: num % den };
 	});
 	// Σ num/den over a common denominator, rounded once.

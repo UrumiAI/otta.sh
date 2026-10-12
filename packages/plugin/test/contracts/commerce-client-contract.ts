@@ -600,6 +600,9 @@ export function storefrontCommerceClientContract(tier: CommerceClientTier): void
 				compareAtPrice: null,
 				inStock: true,
 				active: false, // unpublished until the deferred afterPublish wiring lands
+				// What checkout taxes it by (#423): no class named, taxable by default.
+				taxClass: null,
+				taxStatus: "taxable",
 			});
 			expect(byId.get("prod-cb2")).toEqual({
 				productId: "prod-cb2",
@@ -609,6 +612,8 @@ export function storefrontCommerceClientContract(tier: CommerceClientTier): void
 				compareAtPrice: null,
 				inStock: false, // never seeded — coarse out-of-stock, still listed
 				active: false,
+				taxClass: null,
+				taxStatus: "taxable",
 			});
 			// The unknown id is OMITTED — absence, not an error entry.
 			expect(byId.has("prod-cb-unknown")).toBe(false);

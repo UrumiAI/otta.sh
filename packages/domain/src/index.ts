@@ -21,7 +21,7 @@ export {
 // Phase 6 pricing engines (pure, IO-free): the totals pipeline + its components.
 export { divRoundHalfUp } from "./pricing/round.js";
 export { allocateCents } from "./pricing/allocate.js";
-export { computeLineTax } from "./pricing/tax.js";
+export { computeLineTax, computeLineTaxPpm } from "./pricing/tax.js";
 export { computeCouponDiscount } from "./pricing/coupon.js";
 export { resolveShippingRate } from "./pricing/shipping.js";
 export { computeTotals } from "./pricing/compute-totals.js";
@@ -50,6 +50,7 @@ export {
 	type QuoteFailure,
 	type QuoteResult,
 	type QuoteTax,
+	type QuoteTaxAddress,
 } from "./pricing/quote.js";
 // ADR-0032: the store's tax options (WooCommerce's Tax tab).
 export {
@@ -60,9 +61,20 @@ export {
 	readTaxSettings,
 	TAX_DISABLED_CALCULATOR_ID,
 	type ShippingTaxClassSetting,
+	type ShopTaxDisplay,
 	type TaxBaseAddress,
 	type TaxSettings,
 } from "./pricing/tax-settings.js";
+// #423: shop-page prices shown with or without tax (WooCommerce's tax_display_shop).
+export {
+	loadCartPriceDisplay,
+	loadShopPriceDisplay,
+	SHOP_PRICE_AS_ENTERED,
+	shopDisplayPrice,
+	type ShopDisplayItem,
+	type ShopPriceDisplay,
+	type ShopPriceDisplayDeps,
+} from "./pricing/shop-display-price.js";
 // ADR-0030: the tax calculator hook, the built-in rate table, the order's frozen snapshot.
 export {
 	DEFAULT_TAX_CALCULATOR_TIMEOUT_MS,
@@ -82,10 +94,18 @@ export {
 export { validateTaxResult } from "./pricing/validate-tax-result.js";
 export {
 	readOrderTaxSnapshot,
+	type OrderTaxAddress,
 	type OrderTaxSnapshot,
 	type OrderTaxSnapshotV0,
 	type OrderTaxSnapshotV1,
 } from "./orders/order-tax-snapshot.js";
+// Issue #422: the order's tax snapshot as one display row per tax.
+export {
+	itemizeTaxLines,
+	orderTaxRows,
+	taxTotalsDisplayOf,
+	type TaxRow,
+} from "./orders/order-tax-rows.js";
 // ADR-0028 Decision 1: one quote command for checkout and the order.
 export { quoteCommandFor, type PricedLine, type QuoteInput } from "./pricing/quote-input.js";
 // ADR-0021: ISO 3166 codes (CLDR) and the zone derived from the address.
@@ -172,6 +192,17 @@ export {
 	TaxRateDuplicateError,
 	type TaxRateSlotted,
 } from "./pricing/tax-rate-uniqueness.js";
+// #425: a rate finer than a basis point (8.875%) — `ratePpm` beside `rateBps`.
+export {
+	bpsOfPpm,
+	canonicalTaxRateValue,
+	finerRatePpm,
+	normalizeTaxRateValue,
+	PPM_PER_BPS,
+	ratePpmOf,
+	taxRateValueOfPpm,
+	type TaxRateValue,
+} from "./pricing/tax-rate-precision.js";
 export type {
 	CouponListCursor,
 	CouponListFilter,
@@ -551,6 +582,7 @@ export {
 	expireOrders,
 	expireOrdersBatch,
 	type ExpireOrdersBatchOptions,
+	type ExpireOrdersBatchResult,
 	type ExpireOrdersDeps,
 } from "./orders/expire-orders.js";
 export { assertSweepLimit, type SweepBatchOptions, type SweepBatchResult } from "./sweep/batch.js";
