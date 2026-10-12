@@ -48,7 +48,7 @@ engine build, in a different process model. So this tier exists to answer, rathe
 than assume, whether D1 agrees.
 
 ```bash
-pnpm test:d1        # from the repo root, or from this package
+pnpm test:d1        # from the repo root, or from packages/store-emdash
 ```
 
 It runs under the Cloudflare workers vitest pool on the **local miniflare D1
