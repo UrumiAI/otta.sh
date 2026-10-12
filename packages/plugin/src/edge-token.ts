@@ -84,7 +84,7 @@ export function header(request: SandboxedRequest, name: string): string | undefi
  *    when nothing was ever stored; whether a token exists is then unknown, so
  *    the gate fails closed) or INVALID (empty or
  *    malformed, e.g. saved through EmDash's own settings form) ⇒ UNAVAILABLE
- *    (ADR-0036). A stored token means the gate was turned on; a bad read must
+ *    (ADR-0037). A stored token means the gate was turned on; a bad read must
  *    not turn it off.
  *  - token SET, header absent ⇒ reject. No comparison is attempted; the absence
  *    of a header is not a secret and leaks nothing by short-circuiting.

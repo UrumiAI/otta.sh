@@ -50,6 +50,9 @@ interface Props extends HTMLAttributes<"span"> {
 	 *  is the same as absent, and `soldOut` drops it. Whether it is a sale is
 	 *  never decided here — see the note above. */
 	was?: string | null;
+	/** Whether the figure includes tax (#423) — set only when the merchant chose
+	 *  how shop prices show tax. Absent/null prints nothing, exactly as before. */
+	taxNote?: "incl" | "excl" | null;
 }
 
 const {
@@ -57,12 +60,20 @@ const {
 	soldOut = false,
 	size = "md",
 	was = null,
+	taxNote = null,
 	class: className,
 	...rest
 } = Astro.props;
 
 /** Sold out wins: one struck figure, never two (see the note above). */
 const onSale = was !== null && was !== "" && !soldOut;
+/** The short note seen, the words heard (an abbreviation reads badly aloud). */
+const note =
+	taxNote === "incl"
+		? { short: "incl. tax", long: "including tax" }
+		: taxNote === "excl"
+			? { short: "excl. tax", long: "excluding tax" }
+			: null;
 ---
 
 {
@@ -75,6 +86,12 @@ const onSale = was !== null && was !== "" && !soldOut;
 			<span class:list={["u-mono", "price", `size-${size}`]}>
 				<span class="u-sr-only">Now </span>
 				{formatted}
+				{note !== null && (
+					<span class="tax-note">
+						<span aria-hidden="true">{note.short}</span>
+						<span class="u-sr-only">{note.long}</span>
+					</span>
+				)}
 			</span>
 		</span>
 	) : (
@@ -84,11 +101,26 @@ const onSale = was !== null && was !== "" && !soldOut;
 			{...restProps(rest)}
 		>
 			{formatted}
+			{note !== null && (
+				<span class="tax-note">
+					<span aria-hidden="true">{note.short}</span>
+					<span class="u-sr-only">{note.long}</span>
+				</span>
+			)}
 		</span>
 	)
 }
 
 <style>
+	/* The tax note (#423): a quiet qualifier after the figure, never louder
+	   than it. */
+	.tax-note {
+		margin-left: 0.375em;
+		font-size: 0.75em;
+		font-weight: 400;
+		color: var(--u-mute);
+	}
+
 	.price {
 		font-weight: 500;
 		color: var(--u-ink);

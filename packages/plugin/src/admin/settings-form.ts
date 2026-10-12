@@ -276,12 +276,12 @@ export const PAYMENT_SECRET_ACTION_IDS: ReadonlySet<string> = new Set(
 interface SecretRenderState {
 	set: boolean;
 	gen: number;
-	/** ADR-0036: a value IS stored but could not be read — on EmDash 1.0.1, a
+	/** ADR-0037: a value IS stored but could not be read — on EmDash 1.0.1, a
 	 *  ciphertext this site cannot decrypt. Rendered as its own state (the
 	 *  field label says so and Remove stays available); counted as not set
 	 *  everywhere else, since nothing can use it. */
 	unreadable?: true;
-	/** ADR-0036: a value IS stored but is empty or malformed (e.g. written
+	/** ADR-0037: a value IS stored but is empty or malformed (e.g. written
 	 *  through EmDash's own plugin-settings form). Never used; treated like
 	 *  `unreadable` here, with its own message. */
 	invalid?: true;
@@ -468,7 +468,7 @@ export interface SettingsSchema {
 
 /** `admin.settingsSchema` (§5.3) — the source-of-truth field shapes a manifest
  *  generator reads. Only kv- and service-tier fields; the payment credentials'
- *  `secret` fields live in `PAYMENT_SECRET_SETTINGS_SCHEMA` (ADR-0036). */
+ *  `secret` fields live in `PAYMENT_SECRET_SETTINGS_SCHEMA` (ADR-0037). */
 export const SETTINGS_SCHEMA: SettingsSchema = {
 	storeDisplayName: {
 		type: "string",
@@ -629,7 +629,7 @@ export function createSettingsFormHandler(): RouteHandler<SettingsFormInput> {
 						toast: { message: `${secretSpec.noun} not saved`, type: "error" },
 					} satisfies BlockResponse;
 				}
-				// ADR-0036: the host encrypts this write, and refuses it BEFORE storing
+				// ADR-0037: the host encrypts this write, and refuses it BEFORE storing
 				// anything when it has no usable EMDASH_ENCRYPTION_KEY. Say so; the key
 				// already stored (if any) stays. The error itself is never shown.
 				try {
@@ -686,7 +686,7 @@ export function createSettingsFormHandler(): RouteHandler<SettingsFormInput> {
 			}
 			// Nothing stored: say so rather than claim a removal (a second click, or
 			// a page left open while someone else removed it). A stored value this
-			// site cannot read (ADR-0036) IS stored, and removing it is the way out.
+			// site cannot read (ADR-0037) IS stored, and removing it is the way out.
 			if ((await readSecret(ctx, spec.kvKey)).state === "unset") {
 				const page = await renderPage(ctx, client, {
 					variant: "default",
@@ -1649,10 +1649,10 @@ function secretForm(
 	});
 }
 
-/** ADR-0036 — why a stored key is not used. */
+/** ADR-0037 — why a stored key is not used. */
 type SecretProblem = "unreadable" | "invalid";
 
-/** ADR-0036 — under a key that is stored but not used. Says what to check and
+/** ADR-0037 — under a key that is stored but not used. Says what to check and
  *  the way out; names nothing about the key. */
 const SECRET_PROBLEM_HELP: Readonly<Record<SecretProblem, string>> = {
 	unreadable:

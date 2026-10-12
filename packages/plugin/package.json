@@ -21,7 +21,8 @@
 		".": "./src/index.ts",
 		"./plugin": "./src/plugin.ts",
 		"./sandbox-entry": "./src/sandbox-entry.ts",
-		"./testing": "./src/testing.ts"
+		"./testing": "./src/testing.ts",
+		"./trusted": "./src/trusted.ts"
 	},
 	"publishConfig": {
 		"exports": {
@@ -40,6 +41,10 @@
 			"./testing": {
 				"types": "./dist/testing.d.mts",
 				"default": "./dist/testing.mjs"
+			},
+			"./trusted": {
+				"types": "./dist/trusted.d.mts",
+				"default": "./dist/trusted.mjs"
 			}
 		}
 	},

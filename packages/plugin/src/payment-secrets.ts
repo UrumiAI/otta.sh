@@ -28,7 +28,7 @@
  * SANDBOX-CLEAN. No IO, no host import, no `node:` — `ctx.kv` only, which
  * em-dash provides ungated (no capability, no storage declaration).
  *
- * ENCRYPTED AT REST (ADR-0036). The three payment credentials in
+ * ENCRYPTED AT REST (ADR-0037). The three payment credentials in
  * {@link ENCRYPTED_PAYMENT_SECRET_KEYS} are declared `type: "secret"` in the
  * plugin's `admin.settingsSchema` ({@link PAYMENT_SECRET_SETTINGS_SCHEMA}, which
  * the site's plugin descriptor declares). EmDash 1.0.1 routes every
@@ -108,7 +108,7 @@ export const PAYMENT_SECRET_KEYS = [
 export type PaymentSecretKey = (typeof PAYMENT_SECRET_KEYS)[number];
 
 /**
- * The payment credentials stored ENCRYPTED at rest (ADR-0036): each is declared
+ * The payment credentials stored ENCRYPTED at rest (ADR-0037): each is declared
  * `type: "secret"` in {@link PAYMENT_SECRET_SETTINGS_SCHEMA}. Today this is
  * every key in {@link PAYMENT_SECRET_KEYS}. The retired email and x402 keys are
  * not here: their own one-shot purges delete them (ADR-0031, x402 removal).
@@ -164,7 +164,7 @@ export const PAYMENT_SECRET_SETTINGS_SCHEMA: Readonly<Record<string, SecretSetti
  *    edge-token gate fails closed (503).
  *  - `"invalid"`: a value IS stored, for one of the encrypted payment keys,
  *    but it is empty, not a string, or not the shape Otta's Settings form would
- *    have saved (ADR-0036 "validate on read"). EmDash's own plugin-settings form
+ *    have saved (ADR-0037 "validate on read"). EmDash's own plugin-settings form
  *    can write these keys without Otta's checks; such a value is never used.
  */
 export type SecretRead =

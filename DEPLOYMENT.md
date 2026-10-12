@@ -56,7 +56,7 @@ Three rules hold. Everything else in this guide is a consequence of them.
   **write-only plugin `kv`** under `settings:*` — persisted only on a non-empty submit,
   never rendered back into a block, read through a fail-closed reader. The Stripe secret
   key, the Stripe webhook signing secret and the webhook edge token are **encrypted at
-  rest** with `EMDASH_ENCRYPTION_KEY` (ADR-0036). Nothing
+  rest** with `EMDASH_ENCRYPTION_KEY` (ADR-0037). Nothing
   secret-shaped ever goes in a tracked `wrangler.jsonc` (pinned by the site's config tests,
   which reject any `vars` key matching `/SECRET|KEY|TOKEN|PASSWORD/i`).
 
@@ -319,7 +319,7 @@ order of appearance in a deployment's life:
   never committed, never echoed into logs; **back it up in a password manager**. EmDash
   encrypts plugin settings declared `secret` with it (AES-GCM), and Otta declares three: the
   Stripe secret key, the Stripe webhook signing secret and the webhook edge token
-  (`settings:otta-wh-token`) (ADR-0036). The site's Otta
+  (`settings:otta-wh-token`) (ADR-0037). The site's Otta
   descriptor must keep its `settingsSchema` for that to happen. Other plugin settings, the
   email keys and order data are **not** encrypted with it.
   - **Enter these keys on Otta's Settings page only.** Declaring them makes EmDash also show
@@ -564,11 +564,45 @@ allowlist (capability `network:request`). That allowlist is resolved at **build*
 | Host | When |
 |---|---|
 | `api.stripe.com` | always |
+| each host in `OTTA_EXTRA_ALLOWED_HOSTS` | when set (see below) |
 
 No email host: email is not plugin egress. It goes through the host's `ctx.email`
 (capability `email:send`, [ADR-0031](./adr/0031-email-through-emdash-host.md)), and the
-EmDash email provider makes its own requests under its own allowlist. No other host is
-deployment-supplied, so there is no egress URL to set at build time.
+EmDash email provider makes its own requests under its own allowlist. The only
+deployment-supplied hosts are the operator extras below.
+
+**Extra hosts: `OTTA_EXTRA_ALLOWED_HOSTS`.** A comma-separated list of hostnames to add to
+the allowlist, read from the shell env, then `sites/staging/.env`, at
+**build** time, e.g. `OTTA_EXTRA_ALLOWED_HOSTS=api.example.com,hooks.example.org`.
+Entries are trimmed and lowercased, empty entries are dropped, duplicates collapse, and
+the order is stable (Stripe, then extras as given). Each entry must be a public DNS hostname:
+letters, digits and hyphens in dot-separated labels, with at least one dot. These **fail the
+build** with an error naming every refused entry, so a typo is loud rather than silently
+ungranted:
+
+- a wildcard (`*`, `*.example.com`), or anything with a scheme, port, path or userinfo;
+- an IPv4 literal (including hex forms such as `0x7f.0.0.1`) or an IPv6 literal;
+- a single-label name (`localhost`, `intranet`);
+- `localhost`, `local`, `internal`, `localdomain`, `home.arpa` and `lan`, and any name
+  under them (`app.localhost`, `printer.local`, `metadata.google.internal`,
+  `localhost.localdomain`, `nas.lan`);
+- the wildcard-IP DNS services `nip.io`, `sslip.io` and `xip.io` and any name under them
+  (`127.0.0.1.nip.io`);
+- any Stripe host other than `api.stripe.com`, above all `js.stripe.com`, which is loaded
+  by the buyer's browser and is never plugin egress
+  ([ADR-0012](./adr/0012-storefront-checkout-loads-stripe-elements-in-the-browser.md) §3).
+  Listing `api.stripe.com` itself is a harmless no-op: it is always granted.
+
+This is a **build-time sanity check against obvious mistakes, not SSRF protection**: any
+public name can resolve to a private address. The capability stays `network:request`
+(never `network:request:unrestricted`), and the runtime protection is EmDash's egress
+check, which validates the resolved IP and blocks private, loopback and metadata addresses
+whatever is listed here (the Worker deliberately runs without
+`global_fetch_strictly_public`, §2.4). Listing a host means
+trusting its DNS: EmDash validates the resolved IP and `fetch` then resolves again (a
+DNS-rebinding window), and no platform flag backs this up. Allowlisted hosts, extras
+included, also become allowed image sources in the plugin admin UI (EmDash behaviour for
+`network:request`, already true for Stripe).
 
 Stripe traffic goes through the same gate: `@otta-sh/payments-stripe` would default its
 transport to `globalThis.fetch`, but the plugin constructs the live gateway with
@@ -577,10 +611,10 @@ so the allowlist is the perimeter for `api.stripe.com` too. This
 closes the caveat recorded in
 [ADR-0020](./adr/0020-one-deployable-plugin-owns-commerce-truth.md) §2.
 
-It is a third-party host on the public internet. The Worker runs without
+All of these are third-party hosts on the public internet. The Worker runs without
 `global_fetch_strictly_public` (§2.4), so a URL on the site's **own** Cloudflare zone would
 reach that zone's origin directly, skipping its Workers routes and security settings — keep
-any egress host off the site's zone.
+every allowlisted host (each `OTTA_EXTRA_ALLOWED_HOSTS` entry) off the site's zone.
 
 Because it is build-time, adding a host means a rebuild and redeploy — a Settings edit
 alone cannot widen it. That is deliberate: the allowlist is the perimeter, and an operator

@@ -327,7 +327,7 @@ describe("Settings: how a key field renders", () => {
 			"Payments & email — Stripe live · no webhook · no email",
 		);
 
-		// ADR-0036 validate-on-read: a stored key that is not a Stripe secret key's
+		// ADR-0037 validate-on-read: a stored key that is not a Stripe secret key's
 		// shape (saved before shapes were checked, or outside Otta's form) is never
 		// used, so the label does not claim one.
 		const legacy = await invoke(makeCtx({ [STRIPE_SECRET_KEY_KEY]: "legacy-unchecked" }).ctx, {

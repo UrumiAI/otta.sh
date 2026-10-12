@@ -1,10 +1,12 @@
 /**
  * `@otta-sh/plugin/testing` — test helpers for code that sends email through
- * EmDash's `ctx.email`, and for authors of EmDash email-transport plugins.
+ * EmDash's `ctx.email`, and for authors of EmDash email-transport plugins; and
+ * {@link isTrustedHost}, for a site pinning its in-process registration.
  *
  * The shapes are structural mirrors of emdash's `EmailMessage` /
- * `EmailDeliverEvent` (`emdash/plugin`), so this package keeps no runtime or
- * type dependency on `emdash`. The example provider's test pins that the two
+ * `EmailDeliverEvent` (`emdash/plugin`), so this entry keeps no runtime or
+ * type dependency on `emdash`. Its one runtime import is the small trusted-host
+ * flag module behind {@link isTrustedHost}, not the plugin itself. The example provider's test pins that the two
  * stay assignable (`examples/email-provider/test`).
  */
 
@@ -71,3 +73,10 @@ export function recordingEmailProvider(): RecordingEmailProvider {
 		},
 	};
 }
+
+/**
+ * Whether this isolate's plugin was registered with `trustedHost` on (issue
+ * #447) — so a site's test can pin that its in-process entry turned it on
+ * (e.g. after importing `@otta-sh/plugin/trusted`). Read-only.
+ */
+export { isTrustedHost } from "./payments/trusted-host.js";

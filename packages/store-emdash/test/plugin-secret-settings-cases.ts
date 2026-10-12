@@ -1,5 +1,5 @@
 /**
- * ADR-0036 — EmDash 1.0.1's encrypted plugin settings, asserted on the RAW
+ * ADR-0037 — EmDash 1.0.1's encrypted plugin settings, asserted on the RAW
  * `options` rows of a real database. Shared by the sqlite/Postgres suite
  * (`plugin-secret-settings.dialects.test.ts`) and the D1 suite
  * (`d1/plugin-secret-settings.d1.spec.ts`); only the database differs.
@@ -81,7 +81,7 @@ export function pluginSecretSettingsCases(getDb: () => HostDb): void {
 		await sql`DELETE FROM options WHERE name LIKE ${`plugin:${PLUGIN_ID}:%`}`.execute(getDb());
 	}
 
-	describe("EmDash secret plugin settings, on the raw options rows (ADR-0036)", () => {
+	describe("EmDash secret plugin settings, on the raw options rows (ADR-0037)", () => {
 		test("a declared secret is stored as an encrypted envelope; no raw row contains a value", async () => {
 			await clear();
 			const access = settings(await keysFor(generateKey()));

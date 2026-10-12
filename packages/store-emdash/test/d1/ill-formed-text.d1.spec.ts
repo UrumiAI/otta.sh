@@ -1,8 +1,9 @@
 /**
- * Review R3-B X1 on real D1 (miniflare): the write guard repairs text Postgres
- * cannot store, and a legacy row holding such text neither breaks a query nor
- * blocks a later write. D1's JSON functions read both escapes, so the legacy row
- * is left as it is until something writes it — then the write repairs it.
+ * Review R3-B X1 on real D1 (miniflare): text Postgres cannot store neither breaks
+ * a query nor blocks a write here. D1's JSON functions read both escapes, so the
+ * write guard stores such text AS GIVEN on D1 (#447): repairing it could re-key a
+ * legacy id built from it (an `inventory` row keyed by a product's raw sku). Only
+ * Postgres repairs on write.
  */
 import { findIllFormedText } from "@otta-sh/domain";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -30,15 +31,20 @@ afterEach(() => {
 });
 
 describe("ill-formed text [d1]", () => {
-	it("put and compareAndSet store a lone surrogate or NUL as U+FFFD", async () => {
-		vi.spyOn(console, "warn").mockImplementation(() => {});
+	it("put and compareAndSet store a lone surrogate or NUL as given, and log it", async () => {
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
 		await notes().put("n1", { kind: "k", seq: 1, body: "a\uD800b" });
 		await notes().compareAndSet("n2", null, { kind: "k", seq: 2, body: "c\u0000d" });
-		expect(await raw().get("n1")).toEqual({ kind: "k", seq: 1, body: "a\uFFFDb" });
-		expect(await raw().get("n2")).toEqual({ kind: "k", seq: 2, body: "c\uFFFDd" });
+		// Compared by where the ill-formed text is, never by the text: a lone
+		// surrogate in an assertion message breaks the pool's WebSocket.
+		expect(findIllFormedText(await raw().get("n1"))).toBe("body");
+		expect(findIllFormedText(await raw().get("n2"))).toBe("body");
+		expect(((await raw().get("n2")) as Note | null)?.body === "c\u0000d").toBe(true);
+		expect(warn).toHaveBeenCalledTimes(2);
+		expect(await notes().count({ kind: "k" })).toBe(2);
 	});
 
-	it("a legacy row breaks no query, and its next write repairs it", async () => {
+	it("a legacy row breaks no query, and its next write keeps its text", async () => {
 		vi.spyOn(console, "warn").mockImplementation(() => {});
 		await raw().put("legacy", { kind: "k", seq: 1, body: "x\uDC00" });
 		await raw().put("clean", { kind: "k", seq: 2, body: "fine" });
@@ -54,7 +60,8 @@ describe("ill-formed text [d1]", () => {
 			seq: 3,
 		});
 		expect(written.applied).toBe(true);
-		expect(findIllFormedText(await raw().get("legacy"))).toBeNull();
+		expect(findIllFormedText(await raw().get("legacy"))).toBe("body");
+		expect(((await raw().get("legacy")) as Note | null)?.body === "x\uDC00").toBe(true);
 	});
 
 	it("an id that is not well formed can never create a row; the other methods pass it through", async () => {
@@ -104,14 +111,14 @@ describe("ill-formed text [d1]", () => {
 		});
 		expect(written.applied).toBe(true);
 		expect((await c.updateIf("s\uD800", { where: {}, set: { seq: 3 } })).applied).toBe(true);
-		// Re-written repaired, and still found by the same lookup.
-		expect(findIllFormedText(await raw().get("s\uD800"))).toBeNull();
+		// Re-written with its text as it was (#447), and still found by the same lookup.
+		expect(findIllFormedText(await raw().get("s\uD800"))).toBe("kind");
 		expect((await raw().get("s\uD800")) as Note | null).toMatchObject({ seq: 3 });
 		expect(await c.count({ kind: "k\uDC00" })).toBe(1);
 		expect(await c.delete("s\uD800")).toBe(true);
 	});
 
-	it("keys that repair to the same text keep the already-well-formed one; a raw where operand finds the repaired row", async () => {
+	it("keys that would repair to the same text are all kept as given; the raw where operand finds the row", async () => {
 		vi.spyOn(console, "warn").mockImplementation(() => {});
 		const error = vi.spyOn(console, "error").mockImplementation(() => {});
 		await db.collection<Record<string, unknown>>("notes").put("n1", {
@@ -119,13 +126,10 @@ describe("ill-formed text [d1]", () => {
 			seq: 1,
 			body: { ["k\uD800"]: "A", ["k\uDC00"]: "B", ["k\uFFFD"]: "C" },
 		});
-		expect(await raw().get("n1")).toEqual({
-			kind: "a\uFFFDb",
-			seq: 1,
-			body: { ["k\uFFFD"]: "C" },
-		});
-		expect(error).toHaveBeenCalledTimes(1);
-		const page = await notes().query({ where: { kind: "a\uDBFFb" } });
+		const stored = (await raw().get("n1")) as { body: Record<string, string> } | null;
+		expect(Object.keys(stored?.body ?? {})).toHaveLength(3);
+		expect(error).not.toHaveBeenCalled();
+		const page = await notes().query({ where: { kind: "a\uD800b" } });
 		expect(page.items.map((i) => i.id)).toEqual(["n1"]);
 	});
 });

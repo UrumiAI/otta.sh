@@ -1,5 +1,9 @@
 import { describe, expect, test } from "vitest";
-import { readOrderTaxSnapshot } from "../../src/orders/order-tax-snapshot.js";
+import { cents, currency } from "../../src/index.js";
+import {
+	buildOrderTaxSnapshot,
+	readOrderTaxSnapshot,
+} from "../../src/orders/order-tax-snapshot.js";
 
 /**
  * Orders written before PR 1 hold an untyped `taxBreakdown` — `null` (the
@@ -37,6 +41,99 @@ describe("readOrderTaxSnapshot", () => {
 		expect(old).toEqual(v1);
 		expect(old !== null && old.v === 1 && "located" in old).toBe(false);
 		expect(readOrderTaxSnapshot({ ...v1, located: "yes" })).toBeNull();
+	});
+
+	test("a line's `taxStatus` (#427) round-trips; a v1 line written before it reads WITHOUT one, never as taxable", () => {
+		for (const taxStatus of ["taxable", "shipping_only", "none"] as const) {
+			const withStatus = { ...v1, lines: [{ ...v1.lines[0], taxStatus }] };
+			expect(readOrderTaxSnapshot(JSON.parse(JSON.stringify(withStatus)))).toEqual(withStatus);
+		}
+		const old = readOrderTaxSnapshot(v1);
+		if (old?.v !== 1) throw new Error("expected v1");
+		// Unknown on an older order: the key is absent, not defaulted to "taxable".
+		expect("taxStatus" in (old.lines[0] ?? {})).toBe(false);
+	});
+
+	test("an unknown or invalid `taxStatus` drops only that key: the line reads as unknown, the snapshot intact", () => {
+		// Display-only: the storefront, account pages and emails read this same
+		// snapshot for its tax layout, so a status this code does not know (a
+		// future fourth one, read after a rollback) must never null the whole thing.
+		const known = { ...v1.lines[0], lineIndex: 1, taxStatus: "none" };
+		for (const bad of ["exempt", null, 1, ""]) {
+			const raw = { ...v1, lines: [{ ...v1.lines[0], taxStatus: bad }, known] };
+			expect(readOrderTaxSnapshot(JSON.parse(JSON.stringify(raw)))).toEqual({
+				...v1,
+				lines: [v1.lines[0], known],
+			});
+		}
+	});
+
+	test("buildOrderTaxSnapshot records each line's tax status, in line order", () => {
+		const breakdown = {
+			currency: currency("USD"),
+			subtotalCents: cents(3000),
+			discountCents: cents(0),
+			shippingCents: cents(0),
+			taxCents: cents(100),
+			totalCents: cents(3100),
+			lineBreakdown: [
+				{ taxClassId: "standard", discountedCents: cents(1000), taxCents: cents(100) },
+				{ taxClassId: "standard", discountedCents: cents(1000), taxCents: cents(0) },
+				{ taxClassId: "standard", discountedCents: cents(1000), taxCents: cents(0) },
+			],
+			shippingTaxCents: cents(0),
+		};
+		const result = {
+			ok: true as const,
+			currency: currency("USD"),
+			lines: ["0", "1", "2"].map((lineId, i) => ({
+				lineId,
+				rateBps: i === 0 ? 1000 : 0,
+				label: "Tax",
+				taxCents: cents(i === 0 ? 100 : 0),
+			})),
+			shipping: null,
+		};
+		const snapshot = buildOrderTaxSnapshot(
+			breakdown,
+			{ calculatorId: "otta.rate-table", result },
+			false,
+			["taxable", "shipping_only", "none"],
+		);
+		expect(snapshot.lines.map((l) => l.taxStatus)).toEqual(["taxable", "shipping_only", "none"]);
+		// What is written reads back unchanged.
+		expect(readOrderTaxSnapshot(JSON.parse(JSON.stringify(snapshot)))).toEqual(snapshot);
+		expect(() =>
+			buildOrderTaxSnapshot(breakdown, { calculatorId: "x", result }, false, ["taxable"]),
+		).toThrow(RangeError);
+	});
+
+	test("`taxAddress` (#426: the billing location a digital order was taxed at) round-trips", () => {
+		const billed = {
+			...v1,
+			located: true,
+			taxAddress: { basis: "billing", country: "DE", region: null },
+		};
+		expect(readOrderTaxSnapshot(JSON.parse(JSON.stringify(billed)))).toEqual(billed);
+		const withRegion = { ...v1, taxAddress: { basis: "billing", country: "US", region: "CA" } };
+		expect(readOrderTaxSnapshot(withRegion)).toEqual(withRegion);
+		for (const basis of ["base", "shipping"]) {
+			const other = { ...v1, taxAddress: { basis, country: "GB", region: null } };
+			expect(readOrderTaxSnapshot(other)).toEqual(other);
+		}
+		const old = readOrderTaxSnapshot(v1);
+		expect(old !== null && "taxAddress" in old).toBe(false);
+		for (const bad of [
+			"DE",
+			{ basis: "elsewhere", country: "DE", region: null },
+			{ basis: "billing", country: "de", region: null },
+			{ basis: "billing", country: "DEU", region: null },
+			{ basis: "billing", country: 7, region: null },
+			{ basis: "billing", country: "DE" },
+			{ basis: "billing", country: "DE", region: 1 },
+		]) {
+			expect(readOrderTaxSnapshot({ ...v1, taxAddress: bad })).toBeNull();
+		}
 	});
 
 	test("the legacy shape (the golden INR order on main) reads as v0, rate and label null", () => {

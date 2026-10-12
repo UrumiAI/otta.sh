@@ -527,6 +527,43 @@ describe("settleOrder", () => {
 		expect(anomaly?.detail).toContain(first.id);
 	});
 
+	test("FAILS CLOSED when a duplicate dedupe key's bound order cannot be read back (#448)", async () => {
+		// `dedupe` said "already recorded" but the read-back of WHOSE row it is came
+		// back empty. The binding is then unproven — and an unproven binding must not
+		// be treated as "same order": the receipt is refused, loudly, before anything
+		// moves.
+		const order = await pendingDigital();
+		const raw = h.stripeGw.webhook({
+			outcome: "succeeded" as const,
+			orderId: order.id,
+			providerRef: "pi_unbound",
+			amount: order.totals.total,
+			currency: "USD",
+			dedupeKey: "evt-unbound",
+		});
+		// Record the key against this very order, then lose the read-back.
+		await h.paymentEventStore.dedupe("evt-unbound", order.id, "stripe", "2026-01-01T00:00:00Z");
+		const store = h.paymentEventStore;
+		const deps = {
+			...h.settleDeps,
+			paymentEventStore: {
+				dedupe: store.dedupe.bind(store),
+				recordAnomaly: store.recordAnomaly.bind(store),
+				orderForDedupeKey: async () => null,
+			},
+		};
+
+		const res = await settleOrder(deps, h.stripeGw, raw);
+		expect(res).toEqual({ ok: false, reason: "RECEIPT_REBOUND" });
+		expect((await h.orderStore.getById(order.id))?.state).toBe("pending");
+		expect(await h.entitlementStore.check({ orderId: order.id, sku: brandSku("DIG-1") })).toBe(
+			false,
+		);
+		const anomaly = h.paymentEventStore.anomalies().find((a) => a.kind === "RECEIPT_REBOUND");
+		expect(anomaly?.orderId).toBe(order.id);
+		expect(anomaly?.detail).toContain("could not be read back");
+	});
+
 	test("a REDELIVERY of the same receipt to the SAME order still re-drives (not a rebind)", async () => {
 		// The refusal above must not catch the legitimate replay the whole
 		// claim/resume idiom depends on.

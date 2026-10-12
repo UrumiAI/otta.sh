@@ -1,4 +1,5 @@
 import type { TaxClassId } from "../pricing/types.js";
+import type { TaxRateValue } from "../pricing/tax-rate-precision.js";
 
 /**
  * `TaxRulesStore` (Phase 6 §6) — tax classes × zone → a single flat rate in
@@ -114,7 +115,7 @@ export interface TaxRulesStore {
 	 * forward-only migration — not a redesign of this port.
 	 *  - unknown `id` → `not_found` (no row minted; an edit is not a create).
 	 *  - the row already equals `input` → `ok` (idempotent replay; nothing written).
-	 *  - `rate_bps` or the flag `!=` `expected` → `stale`, carrying the current row
+	 *  - the exact rate (`ratePpmOf`, #425) or the flag `!=` `expected` → `stale`, carrying the current row
 	 *    (a tab that loaded before another changed either is told to reload).
 	 *  - otherwise → applies + returns the updated row.
 	 */
@@ -136,15 +137,17 @@ export interface TaxRulesStore {
 	deleteRate(id: string): Promise<DeleteTaxRateResult>;
 }
 
-/** What the editor READ — `updateRate`'s compare-and-set token, both fields. */
-export interface TaxRateExpectation {
-	rateBps: number;
+/** What the editor READ — `updateRate`'s compare-and-set token, both fields. The
+ *  rate is compared EXACTLY (`ratePpmOf`): an expectation without `ratePpm` is a
+ *  whole-bps rate, so a reader that only saw a finer rate rounded is `stale`. */
+export interface TaxRateExpectation extends TaxRateValue {
 	appliesToShipping: boolean;
 }
 
-export interface UpdateTaxRateInput {
-	/** Integer basis points, 0–10000 (0%–100%). */
-	rateBps: number;
+/** The new rate: `rateBps`, plus `ratePpm` for a rate finer than a basis point
+ *  (#425 — see `tax-rate-precision.ts`; a `rateBps` that disagrees with it is a
+ *  `RangeError`). Basis points 0–10000 (0%–100%). */
+export interface UpdateTaxRateInput extends TaxRateValue {
 	appliesToShipping: boolean;
 }
 
@@ -186,20 +189,27 @@ export type DeleteTaxClassStoreResult =
 	| { ok: false; reason: "not_found" }
 	| { ok: false; reason: "in_use_by_rates" };
 
-export interface TaxRate {
+/**
+ * A rate. `rateBps` is integer basis points, 0–10000 (0%–100%); a rate finer than
+ * a basis point (8.875%, #425) also carries `ratePpm`, integer millionths, which
+ * is then THE rate (`rateBps` is its half-up rounding, for display). A rate that
+ * is a whole basis point never carries `ratePpm` — the shape every rate had
+ * before. Read the exact value with `ratePpmOf`.
+ */
+export interface TaxRate extends TaxRateValue {
 	id: string;
 	taxClassId: TaxClassId;
 	zoneId: string;
-	/** Integer basis points, 0–10000 (0%–100%). */
-	rateBps: number;
 	/** Whether this class's rate is applied to the shipping fee in this zone. */
 	appliesToShipping: boolean;
 }
 
-export interface CreateTaxRateInput {
+/** A new rate. With `ratePpm`, `rateBps` must be its half-up rounding (else a
+ *  `RangeError`, writing nothing); the stored rate is canonical (a whole-bps
+ *  `ratePpm` is dropped). */
+export interface CreateTaxRateInput extends TaxRateValue {
 	id: string;
 	taxClassId: TaxClassId;
 	zoneId: string;
-	rateBps: number;
 	appliesToShipping: boolean;
 }

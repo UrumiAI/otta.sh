@@ -82,7 +82,7 @@ Each is quoted as ADR-0002 wrote it, and each is **rejected — pre-launch, no u
 
 ### 2. The Stripe-secret trust widening, recorded
 
-> **Storage superseded by [ADR-0036](./0036-payment-secrets-are-encrypted-at-rest.md)
+> **Storage superseded by [ADR-0037](./0037-payment-secrets-are-encrypted-at-rest.md)
 > (2026-10-08):** the Stripe secret key, Stripe webhook signing secret and webhook edge token
 > are now encrypted at rest. The in-process widening below still stands.
 

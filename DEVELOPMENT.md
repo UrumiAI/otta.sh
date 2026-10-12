@@ -145,7 +145,7 @@ in-process leniency.
     the published webhook secret anyone can mark orders paid, and EmDash's dev-bypass signs
     anyone in as admin. Bind it to loopback.
   - **`EMDASH_ENCRYPTION_KEY` in `sites/staging/.env`** (gitignored) for any `astro dev` where
-    payment keys are saved in Settings — they are stored encrypted (ADR-0036), and without a
+    payment keys are saved in Settings — they are stored encrypted (ADR-0037), and without a
     key every save is refused. Use a dev-only key (`npx emdash secrets generate`); a shell
     `export` does not reach the dev Worker. The Playwright stack sets a throwaway one itself.
     A local `astro build` copies `.env` values, including this key, into the gitignored
@@ -165,7 +165,7 @@ in-process leniency.
 Same cadence as EmDash:
 
 - `lint` (quick) after every edit.
-- `typecheck` after each round of edits.
+- `typecheck` after each round of edits (runs `tsc -b`, the e2e project, and each workspace package's own `typecheck`, including the site's `astro check`).
 - `format` regularly.
 - Before a PR: **tests pass, lint clean, formatted.**
 

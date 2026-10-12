@@ -2,6 +2,7 @@
 
 - Status: accepted
 - Date: 2026-10-07
+- Updated: 2026-10-09 — the review tax from an outside calculator is labelled an estimate (issue #429)
 
 ## Context
 
@@ -42,7 +43,9 @@ the service they choose, not to core).
    before; only the display rate it reports is capped at 1000%.
 3. **Registration.** A site gives em-dash its own entry module containing
    `export default createOttaPlugin({ taxCalculator })` and points the descriptor's
-   `entrypoint` at it. That em-dash bundles a site-local entrypoint like the package
+   `entrypoint` at it. A site registered in-process should also pass `trustedHost: true`
+   there (issue #447): its own entry replaces `@otta-sh/plugin/trusted`, which is what
+   turns on the abort signal on Stripe calls. That em-dash bundles a site-local entrypoint like the package
    one was proven by a build spike, not by a committed test. em-dash imports the
    entrypoint from a generated virtual module, so a relative path does not resolve: the
    site must give an absolute path (for example
@@ -101,8 +104,11 @@ are now refused — see the amendment below.)
 - An outside calculator is called once per successful quote (a refused quote never
   reaches it) and once at order placement with `purpose: "order"`. A review page can
   quote twice (with and without a preselected method), so a checkout typically costs
-  2–3 calls. Answers are not reused across requests: the order call is the one a
-  provider records as a transaction, and reuse would need a shared cache.
+  2–3 calls. Answers are not reused across requests: reuse would need a shared cache.
+  Neither purpose COMMITS anything (issue #447): the `"order"` call comes before the
+  order exists, the checkout can still fail after it, and a retry under the same key
+  asks again. A calculator must not file a transaction on it; commit from the paid
+  order instead. A same-key replay of a created order does not ask at all.
 - A slow or broken calculator stops checkout with a clear message instead of charging
   the wrong tax.
 - Orders now say which calculator priced them and at what rate and label. A label is
@@ -111,8 +117,8 @@ are now refused — see the amendment below.)
 - Known limitation: the review page's quote sends only country and region, while the
   order sends the postcode and city too. A calculator that prices by postcode may
   therefore show one tax on the review page and charge another on the order (the pay
-  page shows the order's total). Follow-up: send the postcode on the review once the
-  address is known.
+  page shows the order's total). See the update below: the review now labels this tax
+  an estimate.
 - `TotalsBreakdown` is unchanged, so emails, pages and reports read the same totals.
 
 ## Amendment (2026-10-08): one rate per (class, zone)
@@ -140,24 +146,41 @@ no priority, compound flag, postcode or city that could tell two such rates apar
   writes, so there it proves the logic, not the race.
 - **Existing duplicates are kept, never deleted.** One rule resolves them everywhere,
   in `@otta-sh/domain` (`effectiveTaxRates`, `appliedTaxRate`, `shadowedTaxRates`):
-  **the greatest rate id applies; the others are ignored entirely.** On goods that is the
+  **the greatest rate id applies; the others' rates are ignored** (under the default
+  shipping tax class rule their shipping flag still counts — see below). On goods that is the
   rate checkout already charged, so no line-item tax changes. `getRate` answers the same
   rate.
-- **Behaviour change — shipping tax, for stores that already hold duplicates.** "Ignored"
-  includes the ignored rate's "applies to shipping" flag. Where the ignored duplicate was
-  the one marked "applies to shipping", shipping tax changes on the next quote: it
-  **disappears** if no applying rate in the zone is flagged, or it **moves to another
-  class's flagged rate** (the shipping tax class was the last flagged rate, and that was
-  the ignored one), which can be higher or lower. Placed orders keep their tax snapshot.
-  Chosen deliberately (user decision, 2026-10-08) so the admin's "only X applies" is true
-  everywhere; the admin flags every such duplicate, and deleting the one the merchant does
-  not want resolves it.
+- **Shipping tax, for stores that already hold duplicates — unchanged (issue #447).**
+  An ignored duplicate's RATE is never charged, but its "applies to shipping" flag still
+  counts: the default shipping tax class rule reads the flag across every rate in the
+  zone, duplicates included, exactly as checkout did before duplicates were refused, and
+  shipping is taxed at the class's applied rate. (The first cut of this amendment ignored
+  the flag too, so a store whose ignored duplicate was the flagged one saw its shipping
+  tax disappear or move to another class; #447 reverted that to keep totals unchanged.)
+  The "fixed" and "inherit" rules read the applied rate's own flag, as they always did.
 - **The admin flags them.** The class's rates page shows a warning naming each pair, and
   the ignored row is labelled `duplicate — ignored` and opens with `Duplicate: only <id>
   applies …` (the applying row: `Applies to <zone>. Duplicate <id> is ignored.`; table
   rows: `duplicate: only <id> applies` / `applies; duplicate <id> ignored`). The ignored
-  row keeps an editable shipping toggle labelled "only if this rate becomes the active
-  one", so the survivor can be fixed before the other is deleted. Every rate form sends
+  row keeps an editable shipping toggle labelled "can still tax shipping while this
+  duplicate exists" under the default shipping tax class rule (issue #447); under "fixed"
+  or "inherit" the row says it taxes nothing (goods or shipping) and the toggle reads
+  "only if this rate becomes the active one". Every rate form sends
   the flag it shows plus the flag it loaded, and the store's compare-and-set checks both
   the rate and the flag, so a stale tab is told to reload instead of reverting a change. Both rows stay editable and deletable, so the merchant deletes the one they
   don't want.
+
+## Update (2026-10-09): the review's tax is labelled an estimate (issue #429)
+
+The postcode and city cannot reach the review quote: the review is a `GET /checkout`
+whose only address input is the URL, and ADR-0021 Decision 9 keeps every personal
+field out of it; the buyer types them below the delivery selector, after the quote.
+So the gap stays, and is now said out loud. A quote priced by any calculator other than
+the two built-ins (`otta.rate-table` and `otta.tax-disabled`) is flagged `estimate` on
+the wire, and the checkout totals show "Estimated tax — the final amount is shown on
+the payment page." on its own line. The flag is calculator-wide by design: it may label a
+quote that cannot differ (a base-address or digital-only cart), which errs on the safe
+side. The built-in rate table never shows it: its zone matching reads only country and
+region (`zone-match.ts` has no postcode or city), so its review tax equals the order's.
+The order page and the pay page show the order's own total and carry no such note. The
+order call is still the one that counts.

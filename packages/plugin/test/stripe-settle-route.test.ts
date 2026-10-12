@@ -515,7 +515,7 @@ describe("(v) an UNSET edge token passes through — but never disables the HMAC
 	});
 
 	test("an EMPTY stored token is INVALID: 503, never 'unset' and never 'the empty string is the password'", async () => {
-		// ADR-0036 validate-on-read: Otta's form never stores "", so a stored empty
+		// ADR-0037 validate-on-read: Otta's form never stores "", so a stored empty
 		// token came from somewhere else (EmDash's own settings form). A stored
 		// token means the gate was turned on; it must not silently turn off.
 		await harness.ctx.kv.set(WEBHOOK_EDGE_TOKEN_KEY, "");
@@ -529,7 +529,7 @@ describe("(v) an UNSET edge token passes through — but never disables the HMAC
 
 describe("(vii) the new secret is fail-closed and leaks nothing", () => {
 	test("a kv read that REJECTS refuses with 503 NOT_CONFIGURED, settles nothing, never throws", async () => {
-		// ADR-0036: a rejected read of the token is a token that IS stored but cannot
+		// ADR-0037: a rejected read of the token is a token that IS stored but cannot
 		// be read (on EmDash 1.0.1, e.g. a ciphertext this site cannot decrypt). The
 		// operator turned the gate on; a read failure must not turn it off, so the
 		// delivery is refused as "not configured" and Stripe retries it later.

@@ -109,16 +109,15 @@ function createHttpAccess(allowedHosts: readonly string[]): HttpAccess {
 			response.headers.forEach((value, key) => {
 				headers[key] = value;
 			});
-			// The bridge's shape, not a `Response` (see the header). `HttpAccess`
-			// still says `Response` because em-dash's in-process `ctx.http` returns
-			// one; code that must run sandboxed uses only what both provide.
+			// The bridge's shape, not a `Response` (see the header) — exactly
+			// `HttpResponse`, so no cast.
 			return {
 				status: response.status,
 				ok: response.status >= 200 && response.status < 300,
 				headers: new Headers(headers),
 				text: async () => text,
 				json: async () => JSON.parse(text) as unknown,
-			} as unknown as Response;
+			};
 		},
 	};
 }
@@ -132,7 +131,7 @@ function createHttpAccess(allowedHosts: readonly string[]): HttpAccess {
  * next within the same worker — matching the host's persistence contract.
  * It has the host's conditional pair (`getVersioned`/`compareAndSet`, with a
  * per-key counter as the revision) but NOT its encryption: EmDash encrypts
- * declared secrets on its side of the bridge (ADR-0036), which this mirror does
+ * declared secrets on its side of the bridge (ADR-0037), which this mirror does
  * not reproduce — the raw-row proofs live where a real EmDash runs.
  */
 function createKvAccess(
@@ -265,7 +264,7 @@ export interface SandboxWorkerOptions {
 	readonly cmsWithoutTable?: boolean;
 	/**
 	 * TEST ONLY: every stored encrypted payment key reads as EmDash 1.0.1 reports
-	 * a ciphertext it cannot decrypt — the read rejects (ADR-0036). Proves the
+	 * a ciphertext it cannot decrypt — the read rejects (ADR-0037). Proves the
 	 * readers refuse rather than fall back, inside workerd.
 	 */
 	readonly unreadableSecrets?: boolean;

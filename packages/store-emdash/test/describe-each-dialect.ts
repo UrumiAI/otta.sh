@@ -150,11 +150,39 @@ export async function makeSqliteStorage(layout: StorageLayout): Promise<DialectD
 }
 
 /**
+ * How many connections this test may open without starving the server: the
+ * server's `max_connections`, minus those already in use (other suites share it
+ * under `test:pg`), minus a margin for the harness's admin pool and peers that
+ * start later. Never below `floor`. The count includes every `pg_stat_activity` row
+ * (background workers too), so it is conservative.
+ */
+export async function pgConnectionsAvailable(want: number, floor = 16): Promise<number> {
+	const connectionString = process.env.PG_CONNECTION_STRING;
+	if (connectionString === undefined) throw new Error("PG_CONNECTION_STRING is not set");
+	const probe = new pg.Pool({ connectionString, max: 1 });
+	try {
+		const { rows } = await probe.query<{ free: number }>(
+			`SELECT current_setting('max_connections')::int
+			   - current_setting('superuser_reserved_connections')::int
+			   - (SELECT count(*) FROM pg_stat_activity)::int AS free`,
+		);
+		const free = rows[0]?.free ?? 0;
+		return Math.max(floor, Math.min(want, free - 12));
+	} finally {
+		await probe.end();
+	}
+}
+
+/**
  * Fresh, isolated Postgres schema: `CREATE SCHEMA test_<rand>` plus a pool whose
  * every connection is pinned to it via `search_path`, migrated to latest inside
  * it. One per test FILE; cases are isolated by `reset()`.
  */
-export async function makePgStorage(layout: StorageLayout, poolMax = 12): Promise<DialectDb> {
+export async function makePgStorage(
+	layout: StorageLayout,
+	poolMax = 12,
+	options: { reserveConnections?: boolean } = {},
+): Promise<DialectDb> {
 	const connectionString = process.env.PG_CONNECTION_STRING;
 	if (connectionString === undefined) throw new Error("PG_CONNECTION_STRING is not set");
 	const schema = `test_${crypto.randomUUID().replace(/-/g, "").slice(0, 16)}`;
@@ -171,7 +199,30 @@ export async function makePgStorage(layout: StorageLayout, poolMax = 12): Promis
 		connectionString,
 		max: poolMax,
 		options: `-c search_path=${schema}`,
+		// A reserved pool must keep what it took: the default reaps idle clients
+		// after 10 s and re-opening them can hit a server a peer has since filled.
+		...(options.reserveConnections === true
+			? { idleTimeoutMillis: 0, connectionTimeoutMillis: 10_000 }
+			: {}),
 	});
+	if (options.reserveConnections === true) {
+		// Take every connection up front, so a server shared with parallel suites
+		// refuses HERE (the caller can retry smaller) and never mid-race.
+		// allSettled, not all: on the first refusal the clients that DID connect must
+		// still be released, or pool.end() waits for them forever.
+		const results = await Promise.allSettled(Array.from({ length: poolMax }, () => pool.connect()));
+		let refusal: { reason: unknown } | undefined;
+		for (const result of results) {
+			if (result.status === "fulfilled") result.value.release();
+			else refusal ??= { reason: result.reason };
+		}
+		if (refusal !== undefined) {
+			await pool.end().catch(() => {});
+			await admin.query(`DROP SCHEMA "${schema}" CASCADE`).catch(() => {});
+			await admin.end().catch(() => {});
+			throw refusal.reason;
+		}
+	}
 	const db = new Kysely({ dialect: new PostgresDialect({ pool }) }) as HostDb;
 	const close = async (): Promise<void> => {
 		// Guarded: a rejecting destroy() must not leak the admin pool (connection

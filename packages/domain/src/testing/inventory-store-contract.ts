@@ -10,13 +10,14 @@ export interface InventoryStoreHarness {
 	seed(sku: string, qty: number): Promise<void>;
 	onHand(sku: string): Promise<number>;
 	/**
-	 * Optional: create a HELD reservation with a stamped hold deadline
-	 * (`expires_at`) and return its id — the cart-flow precondition
-	 * `adoptMany`/`adopt` require (a bare `reserve` leaves `expires_at` NULL, and
-	 * the guarded flip is `WHERE … expires_at > :now`). Every adapter here (fake +
-	 * each DB dialect) implements it; the adoptMany cases skip if absent.
+	 * Create a HELD reservation with a stamped hold deadline (`expires_at`) and
+	 * return its id — the cart-flow precondition `adoptMany`/`adopt` require (a
+	 * bare `reserve` leaves `expires_at` NULL, and the guarded flip is
+	 * `WHERE … expires_at > :now`). REQUIRED: every adapter (fake + each DB
+	 * dialect) implements it, and a harness without it would let the adopt and
+	 * release cases pass by doing nothing.
 	 */
-	holdWithExpiry?(sku: string, qty: number, key: string, expiresAt: string): Promise<string>;
+	holdWithExpiry(sku: string, qty: number, key: string, expiresAt: string): Promise<string>;
 }
 
 export interface InventoryStoreContractOptions {
@@ -689,7 +690,6 @@ export function inventoryStoreContract(
 
 		test("adoptMany flips every held line of one order to adopted (all-success)", async () => {
 			const h = await makeStore();
-			if (!h.holdWithExpiry) return;
 			await h.seed("SKU-1", 10);
 			const r1 = await h.holdWithExpiry("SKU-1", 1, "k1", FUTURE);
 			const r2 = await h.holdWithExpiry("SKU-1", 1, "k2", FUTURE);
@@ -706,7 +706,6 @@ export function inventoryStoreContract(
 
 		test("adoptMany partial: released / committed / expired holds land in lost; the held siblings adopt", async () => {
 			const h = await makeStore();
-			if (!h.holdWithExpiry) return;
 			await h.seed("SKU-1", 10);
 			const held1 = await h.holdWithExpiry("SKU-1", 1, "k1", FUTURE);
 			const held2 = await h.holdWithExpiry("SKU-1", 1, "k2", FUTURE);
@@ -728,7 +727,6 @@ export function inventoryStoreContract(
 
 		test("adoptMany replay is idempotent — a row already adopted for THIS order stays adopted even PAST its hold deadline (never lost)", async () => {
 			const h = await makeStore();
-			if (!h.holdWithExpiry) return;
 			await h.seed("SKU-1", 10);
 			const r1 = await h.holdWithExpiry("SKU-1", 1, "k1", FUTURE);
 			const first = await h.store.adoptMany({
@@ -773,7 +771,6 @@ export function inventoryStoreContract(
 
 		test("adoptMany on an unknown reservation id lands in lost (never throws); the valid held sibling adopts", async () => {
 			const h = await makeStore();
-			if (!h.holdWithExpiry) return;
 			await h.seed("SKU-1", 10);
 			const held = await h.holdWithExpiry("SKU-1", 1, "k1", FUTURE);
 			const res = await h.store.adoptMany({
@@ -833,7 +830,6 @@ export function inventoryStoreContract(
 			key: string,
 			order: string,
 		): Promise<string> {
-			if (!h.holdWithExpiry) throw new Error("harness has no holdWithExpiry");
 			const id = await h.holdWithExpiry(sku, qty, key, FUTURE);
 			const adopted = await h.store.adoptMany({
 				reservationIds: [id],
@@ -847,7 +843,6 @@ export function inventoryStoreContract(
 
 		test("releaseAdoptedMany returns every hold the order adopted, across SKUs, exactly once", async () => {
 			const h = await makeStore();
-			if (!h.holdWithExpiry) return;
 			await h.seed("SKU-A", 10);
 			await h.seed("SKU-B", 10);
 			const a1 = await adoptedHold(h, "SKU-A", 2, "ka1", "ord-1");
@@ -868,7 +863,6 @@ export function inventoryStoreContract(
 
 		test("releaseAdoptedMany is ORDER-SCOPED: another order's hold, a cart's held hold, a committed hold and an unknown id are untouched", async () => {
 			const h = await makeStore();
-			if (!h.holdWithExpiry) return;
 			await h.seed("SKU-A", 10);
 			const mine = await adoptedHold(h, "SKU-A", 1, "k-mine", "ord-1");
 			const theirs = await adoptedHold(h, "SKU-A", 2, "k-theirs", "ord-2");
@@ -890,7 +884,6 @@ export function inventoryStoreContract(
 
 		test("releaseAdoptedMany collapses duplicate ids and is a no-op for an empty list", async () => {
 			const h = await makeStore();
-			if (!h.holdWithExpiry) return;
 			await h.seed("SKU-A", 10);
 			const id = await adoptedHold(h, "SKU-A", 2, "k-dup", "ord-1");
 			await h.store.releaseAdoptedMany([], "ord-1");
@@ -937,7 +930,6 @@ export function inventoryStoreContract(
 
 		test("releaseAdopted releases the order's adopted hold and returns its units exactly once; a replay is a no-op", async () => {
 			const h = await makeStore();
-			if (!h.holdWithExpiry) return;
 			await h.seed("SKU-A", 10);
 			await h.seed("SKU-B", 10);
 			const mine = await adoptedHold(h, "SKU-A", 3, "k-mine", "ord-1");
@@ -974,7 +966,6 @@ export function inventoryStoreContract(
 			// reaps `held`). Before every harness clock, so the hold is expired however
 			// the adapter reads "now".
 			const h = await makeStore();
-			if (!h.holdWithExpiry) return;
 			const LAPSED = "2026-07-09T00:00:00.000Z";
 			await h.seed("SKU-A", 10);
 			const id = await h.holdWithExpiry("SKU-A", 4, "k-lapsed", FUTURE);
@@ -996,7 +987,6 @@ export function inventoryStoreContract(
 
 		test("releaseAdopted is ORDER-SCOPED: another order's adopted hold is skipped, and stays its owner's to release", async () => {
 			const h = await makeStore();
-			if (!h.holdWithExpiry) return;
 			await h.seed("SKU-A", 10);
 			const theirs = await adoptedHold(h, "SKU-A", 2, "k-theirs", "ord-2");
 			expect(await h.onHand("SKU-A")).toBe(8);
@@ -1018,7 +1008,6 @@ export function inventoryStoreContract(
 
 		test("releaseAdopted leaves a committed hold, a cart-held hold and an unknown id alone: no throw, no stock moved, states unchanged", async () => {
 			const h = await makeStore();
-			if (!h.holdWithExpiry) return;
 			await h.seed("SKU-A", 10);
 			// Committed by the order that adopted it: the spent units must never return.
 			const sold = await adoptedHold(h, "SKU-A", 1, "k-sold", "ord-1");

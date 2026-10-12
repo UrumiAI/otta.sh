@@ -600,5 +600,170 @@ export function taxRulesStoreContract(
 			expect(await store.getRate("standard", "z-us")).toMatchObject({ id: "dup-a", rateBps: 750 });
 			expect((await store.listRatesForZone("z-us")).map((r) => r.id)).toEqual(["dup-a"]);
 		});
+
+		// -- #425: a rate finer than a basis point (8.875%) -------------------------
+
+		test("a rate in millionths (8.875%) round-trips through create, getRate and listRatesForZone", async () => {
+			const { store } = await makeStore();
+			const created = await store.createRate({
+				id: "nyc",
+				taxClassId: "standard",
+				zoneId: "z-nyc",
+				rateBps: 888,
+				ratePpm: 88_750,
+				appliesToShipping: true,
+			});
+			const exact = {
+				id: "nyc",
+				taxClassId: "standard",
+				zoneId: "z-nyc",
+				rateBps: 888,
+				ratePpm: 88_750,
+				appliesToShipping: true,
+			};
+			expect(created).toEqual(exact);
+			expect(await store.getRate("standard", "z-nyc")).toEqual(exact);
+			expect(await store.listRatesForZone("z-nyc")).toEqual([exact]);
+		});
+
+		test("a whole-bps rate keeps its old shape: no ratePpm, even when written in millionths", async () => {
+			const { store } = await makeStore();
+			await seedRate(store);
+			expect(await store.getRate("standard", "z-us")).toEqual({
+				id: "r1",
+				taxClassId: "standard",
+				zoneId: "z-us",
+				rateBps: 725,
+				appliesToShipping: false,
+			});
+			await store.createRate({
+				id: "r2",
+				taxClassId: "reduced",
+				zoneId: "z-us",
+				rateBps: 500,
+				ratePpm: 50_000,
+				appliesToShipping: false,
+			});
+			expect(await store.getRate("reduced", "z-us")).not.toHaveProperty("ratePpm");
+		});
+
+		test("createRate refuses a ratePpm that disagrees with rateBps, writing nothing", async () => {
+			const { store } = await makeStore();
+			await expect(
+				store.createRate({
+					id: "bad",
+					taxClassId: "standard",
+					zoneId: "z-nyc",
+					rateBps: 900,
+					ratePpm: 88_750,
+					appliesToShipping: false,
+				}),
+			).rejects.toThrow(RangeError);
+			expect(await store.getRate("standard", "z-nyc")).toBeNull();
+		});
+
+		test("updateRate CAS compares the EXACT rate: 8.875% is not 8.88%", async () => {
+			const { store } = await makeStore();
+			await seedRate(store); // 7.25%
+			// 7.25% → 8.875%, against the whole-bps rate it read.
+			const toNyc = await store.updateRate(
+				"r1",
+				{ rateBps: 888, ratePpm: 88_750, appliesToShipping: false },
+				{ rateBps: 725, appliesToShipping: false },
+			);
+			expect(toNyc.ok && toNyc.rate).toEqual({
+				id: "r1",
+				taxClassId: "standard",
+				zoneId: "z-us",
+				rateBps: 888,
+				ratePpm: 88_750,
+				appliesToShipping: false,
+			});
+			// A replay of the same edit is an idempotent success.
+			expect(
+				await store.updateRate(
+					"r1",
+					{ rateBps: 888, ratePpm: 88_750, appliesToShipping: false },
+					{ rateBps: 725, appliesToShipping: false },
+				),
+			).toMatchObject({ ok: true, rate: { ratePpm: 88_750 } });
+			// A tab that only knew the rounded 8.88% is stale — it never read this rate.
+			const coarse = await store.updateRate(
+				"r1",
+				{ rateBps: 900, appliesToShipping: false },
+				{ rateBps: 888, appliesToShipping: false },
+			);
+			expect(coarse).toMatchObject({ ok: false, reason: "stale", current: { ratePpm: 88_750 } });
+			// The exact expectation applies, and a whole-bps edit drops ratePpm.
+			const back = await store.updateRate(
+				"r1",
+				{ rateBps: 900, appliesToShipping: false },
+				{ rateBps: 888, ratePpm: 88_750, appliesToShipping: false },
+			);
+			expect(back.ok && back.rate).toEqual({
+				id: "r1",
+				taxClassId: "standard",
+				zoneId: "z-us",
+				rateBps: 900,
+				appliesToShipping: false,
+			});
+			expect(await store.getRate("standard", "z-us")).not.toHaveProperty("ratePpm");
+		});
+
+		test("a stale ratePpm (an older build edited only rateBps) reads as rateBps, and the next edit drops it", async () => {
+			const { store, seedUncheckedRate } = await makeStore();
+			// 8.875% edited to 9% by a build that knew only rateBps: ratePpm came along.
+			await seedUncheckedRate({
+				id: "nyc",
+				taxClassId: "standard",
+				zoneId: "z-nyc",
+				rateBps: 900,
+				ratePpm: 88_750,
+				appliesToShipping: false,
+			});
+			const nine = {
+				id: "nyc",
+				taxClassId: "standard",
+				zoneId: "z-nyc",
+				rateBps: 900,
+				appliesToShipping: false,
+			};
+			expect(await store.getRate("standard", "z-nyc")).toEqual(nine);
+			expect(await store.listRatesForZone("z-nyc")).toEqual([nine]);
+			// An editor that read 9% is not stale, and its edit leaves no stale ratePpm.
+			const edited = await store.updateRate(
+				"nyc",
+				{ rateBps: 950, appliesToShipping: false },
+				{ rateBps: 900, appliesToShipping: false },
+			);
+			expect(edited.ok && edited.rate).toEqual({ ...nine, rateBps: 950 });
+			expect(await store.getRate("standard", "z-nyc")).toEqual({ ...nine, rateBps: 950 });
+		});
+
+		test("the one-per-slot refusal names the existing rate's exact value", async () => {
+			const { store } = await makeStore();
+			await store.createRate({
+				id: "nyc",
+				taxClassId: "standard",
+				zoneId: "z-nyc",
+				rateBps: 888,
+				ratePpm: 88_750,
+				appliesToShipping: false,
+			});
+			await expect(
+				store.createRate({
+					id: "nyc-2",
+					taxClassId: "standard",
+					zoneId: "z-nyc",
+					rateBps: 900,
+					appliesToShipping: false,
+				}),
+			).rejects.toMatchObject({
+				code: "TAX_RATE_DUPLICATE",
+				existingRateId: "nyc",
+				existingRateBps: 888,
+				existingRatePpm: 88_750,
+			});
+		});
 	});
 }

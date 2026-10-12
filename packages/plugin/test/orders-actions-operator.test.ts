@@ -16,7 +16,7 @@
  * in-process client are pinned over a real store elsewhere.
  */
 import { isWellFormedText } from "@otta-sh/domain";
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 import type {
 	AdminOrdersSurface,
 	OrderDetailResult,
@@ -285,6 +285,70 @@ describe("a refund replayed after it was recorded (QA round 2)", () => {
 		]);
 		expect(result.notice).toMatchObject({ variant: "default", title: "Already refunded" });
 		expect(result.notice?.description).not.toMatch(/someone else/);
+	});
+
+	test("a replay the service refuses is warned about with its reason, and the notice stays Already refunded", async () => {
+		const { client } = withLedger(
+			[
+				{
+					status: "recorded",
+					amountCents: 100,
+					currency: "USD",
+					refundedBy: "carol",
+					idempotencyKey: `admin-refund:${ORDER_ID}:100:0`,
+				},
+			],
+			100,
+		);
+		client.refundOrder = () =>
+			Promise.resolve({ ok: false, status: 409, reason: "GATEWAY_UNVERIFIED" }) as never;
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+		try {
+			const result = await act(
+				client,
+				"orders:refund",
+				{ orderId: ORDER_ID, amountCents: "100", refundedSoFarCents: "0", currency: "USD" },
+				OPERATOR,
+			);
+			expect(result.notice).toMatchObject({ title: "Already refunded" });
+			expect(warn).toHaveBeenCalledTimes(1);
+			const message = String(warn.mock.calls[0]?.join(" "));
+			expect(message).toContain("GATEWAY_UNVERIFIED");
+			expect(message).toContain("409");
+			// No PII or secret: not the operator, the refunder's name or the key.
+			expect(message).not.toContain(OPERATOR);
+			expect(message).not.toContain("carol");
+			expect(message).not.toContain("admin-refund:");
+		} finally {
+			warn.mockRestore();
+		}
+	});
+
+	test("a replay the service accepts does not warn", async () => {
+		const { client } = withLedger(
+			[
+				{
+					status: "recorded",
+					amountCents: 100,
+					currency: "USD",
+					refundedBy: "carol",
+					idempotencyKey: `admin-refund:${ORDER_ID}:100:0`,
+				},
+			],
+			100,
+		);
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+		try {
+			await act(
+				client,
+				"orders:refund",
+				{ orderId: ORDER_ID, amountCents: "100", refundedSoFarCents: "0", currency: "USD" },
+				OPERATOR,
+			);
+			expect(warn).not.toHaveBeenCalled();
+		} finally {
+			warn.mockRestore();
+		}
 	});
 
 	test("a ledger moved by another refund says so without blaming anyone", async () => {

@@ -2,8 +2,10 @@ import { readFileSync } from "node:fs";
 import { describe, expect, test } from "vitest";
 import { cents, currency } from "../../src/money/cents.js";
 import { allocateCents } from "../../src/pricing/allocate.js";
+import { computeTotals } from "../../src/pricing/compute-totals.js";
 import { applyRateTable, rateTableOf } from "../../src/pricing/rate-table-calculator.js";
 import type { TaxRequest } from "../../src/pricing/tax-calculator.js";
+import { shopDisplayPrice } from "../../src/pricing/shop-display-price.js";
 import type { ShippingTaxClassSetting } from "../../src/pricing/tax-settings.js";
 
 /**
@@ -46,11 +48,19 @@ const ORACLE = JSON.parse(
 	readFileSync(new URL("./fixtures/woo-oracle-11.1.2.json", import.meta.url), "utf8"),
 ) as OracleScenario[];
 
-/** Out of scope, so not run: shop-page price display (a follow-up, DECISIONS 6). */
-const OUT_OF_SCOPE: Record<string, string> = {
-	"DP-01": "shop-page price display (follow-up)",
-	"DP-02": "shop-page price display (follow-up)",
-};
+/** The shop-page price display rows (#423) — a product's price, not a cart. */
+const DISPLAY_KIND = "display_price_including_tax";
+interface DisplayScenario {
+	id: string;
+	inputs: {
+		unit_cents: number;
+		qty: number;
+		rate_bps: number;
+		prices_include_tax: boolean;
+		round_at_subtotal: boolean;
+	};
+	expected: { price_including_tax_cents: number };
+}
 
 /**
  * Where Otta deliberately differs. RD-07: rounding at subtotal, WooCommerce rounds
@@ -130,9 +140,9 @@ function run(s: OracleScenario) {
 }
 
 describe("the built-in calculator against WooCommerce 11.1.2 (independent oracle)", () => {
-	const inScope = ORACLE.filter((s) => !(s.id in OUT_OF_SCOPE));
+	const inScope = ORACLE.filter((s) => s.kind !== DISPLAY_KIND);
 
-	test("the oracle holds 39 scenarios, 37 of them in scope", () => {
+	test("the oracle holds 39 scenarios: 37 carts and 2 shop-page prices", () => {
 		expect(ORACLE).toHaveLength(39);
 		expect(inScope).toHaveLength(37);
 	});
@@ -152,6 +162,39 @@ describe("the built-in calculator against WooCommerce 11.1.2 (independent oracle
 });
 
 /**
+ * #423: WooCommerce's `wc_get_price_including_tax` — what a shop page shows with
+ * "Display prices in the shop: including tax" — against `shopDisplayPrice`, the
+ * shop-page path over the same rate-table maths as checkout.
+ */
+describe("shop-page price display against WooCommerce 11.1.2 (DP rows)", () => {
+	const rows = ORACLE.filter((s) => s.kind === DISPLAY_KIND) as unknown as DisplayScenario[];
+
+	test("both DP rows are present", () => {
+		expect(rows.map((r) => r.id)).toEqual(["DP-01", "DP-02"]);
+	});
+
+	test.each(rows.map((s) => [s.id, s] as const))("%s", (_id, s) => {
+		const shown = shopDisplayPrice(
+			{
+				mode: "incl",
+				pricesIncludeTax: s.inputs.prices_include_tax,
+				roundAtSubtotal: s.inputs.round_at_subtotal,
+				ratesByClass: { standard: s.inputs.rate_bps },
+				ratesPpmByClass: {},
+			},
+			{
+				currency: currency("USD"),
+				unitPriceCents: cents(s.inputs.unit_cents),
+				quantity: s.inputs.qty,
+				taxClassId: "standard",
+				taxStatus: "taxable",
+			},
+		);
+		expect(shown).toBe(s.expected.price_including_tax_cents);
+	});
+});
+
+/**
  * Not a parity claim: Otta's coupon allocation is unchanged by 2a (pro rata over
  * line subtotals, largest remainder), and WooCommerce's is per unit, highest price
  * first. Pinned so the difference is visible.
@@ -165,9 +208,51 @@ describe("coupon cent distribution — Otta vs WooCommerce (reported, not change
 	});
 
 	test("EX-08 (fixed 1000 over 2000 + 2×1000): WooCommerce 334/666; Otta 500/500", () => {
-		const lineSubtotals = [2000, 2000];
-		const after = allocateCents(cents(4000 - 1000), lineSubtotals);
-		// Otta allocates the DISCOUNTED subtotal 3000 pro rata → 1500/1500 ⇒ 500/500
-		expect(lineSubtotals.map((l, i) => l - (after[i] ?? 0))).toEqual([500, 500]);
+		// Inputs and WooCommerce's answer come from the oracle itself, not retyped numbers.
+		const s = ORACLE.find((o) => o.id === "EX-08");
+		if (!s) throw new Error("EX-08 missing from the oracle");
+		const coupon = s.inputs.coupon as { type: string; amount_cents: number };
+		expect(coupon.type).toBe("fixed_cart");
+		// WooCommerce splits a fixed_cart coupon equally per unit (333 a unit), then gives the
+		// leftover cent(s) to the highest unit price first: 334 on the 2000 line, 666 on the rest.
+		expect(s.expected.lines.map((l) => l.discount)).toEqual([334, 666]);
+		expect(s.expected.total_tax).toBe(247);
+		expect(s.expected.grand_total).toBe(3247);
+		// Otta (deliberate, ADR-0032, issue #424), through the production pipeline: the
+		// discounted subtotal is split pro rata over the line subtotals by largest remainder.
+		const [first, second] = s.inputs.items;
+		const b = computeTotals({
+			currency: currency("USD"),
+			lines: s.inputs.items.map((i) => ({
+				unitPriceCents: cents(i.unit_cents),
+				qty: i.qty,
+				taxClassId: "standard",
+			})),
+			coupon: {
+				type: "fixed_amount",
+				code: "EX08",
+				amountCents: cents(coupon.amount_cents),
+				currency: currency("USD"),
+			},
+			rules: {
+				shippingMethod: {
+					zoneId: "z",
+					methodId: "m",
+					type: "flat_rate",
+					amountCents: cents(0),
+					minSubtotalCents: null,
+				},
+				taxRatesByClass: { standard: s.inputs.tax_classes[""]?.rate_bps ?? 0 },
+				shippingTaxable: false,
+				shippingTaxClassId: "standard",
+			},
+		});
+		const subtotals = [first, second].map((i) => (i ? i.unit_cents * i.qty : 0));
+		const discounts = b.lineBreakdown.map((l, i) => (subtotals[i] ?? 0) - l.discountedCents);
+		expect(discounts).toEqual([500, 500]); // WooCommerce: 334/666, a 166-cent gap per line
+		expect(discounts.reduce((x, y) => x + y, 0)).toBe(coupon.amount_cents);
+		// Both lines are taxed on 1500 at 8.25% (123.75 → 124 each): 248 and 3248, not 247 and 3247.
+		expect(b.taxCents).toBe(248);
+		expect(b.totalCents).toBe(3248);
 	});
 });

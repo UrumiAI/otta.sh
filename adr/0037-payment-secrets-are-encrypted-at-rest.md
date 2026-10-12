@@ -1,4 +1,4 @@
-# 0036. Payment secrets are encrypted at rest through EmDash secret settings
+# 0037. Payment secrets are encrypted at rest through EmDash secret settings
 
 - Status: accepted
 - Date: 2026-10-08

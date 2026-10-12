@@ -107,6 +107,8 @@ import {
 	orderHasEmailRecipient,
 	orderId as toOrderId,
 	orderNumber,
+	orderTaxRows,
+	readOrderTaxSnapshot,
 	recordFulfillment as recordFulfillmentUseCase,
 	refundOrder as refundOrderUseCase,
 	resolveReconciliation as resolveReconciliationUseCase,
@@ -164,6 +166,7 @@ import type {
 	InlineEmailStatus,
 	OrderDetailResult,
 	OrderDetailWire,
+	OrderTotalsWire,
 	OrderNoteWire,
 	OrdersListFilter,
 	OrdersListResult,
@@ -1125,11 +1128,19 @@ function toOrderSummaryWire(summary: OrderSummary): OrderSummaryWire {
 	};
 }
 
+/** The order's tax rows for the admin (issue #422): always itemized, absent when
+ *  the order has nothing to itemize. */
+function adminTaxRows(order: Order): Pick<OrderTotalsWire, "taxRows"> {
+	const rows = orderTaxRows(order.totals);
+	return rows === null ? {} : { taxRows: rows };
+}
+
 /** `serializeOrder`'s twin — the full mutable envelope plus the SNAPSHOT halves
  *  (lines and totals were frozen at purchase time; `shippingAddress` was captured
  *  at checkout, ADR-0009, and is read off the order rather than the live address
  *  book). */
 function toOrderDetailWire(order: Order): OrderDetailWire {
+	const taxStatusOf = frozenLineTaxStatuses(order);
 	return {
 		id: order.id,
 		orderNumber: orderNumber(order.id),
@@ -1158,16 +1169,52 @@ function toOrderDetailWire(order: Order): OrderDetailWire {
 			// the totals' method snapshot so the console can render the captured
 			// ship-to country NEXT TO the priced zone. No matching/validation.
 			shippingZoneId: shippingZoneIdOf(order.totals.shippingMethodSnapshot),
+			// #421: what the order's own frozen snapshot recorded, never today's setting.
+			...(pricesIncludeTaxOf(order.totals.taxBreakdown) ? { pricesIncludeTax: true as const } : {}),
+			...adminTaxRows(order),
+			...taxAddressEntry(order),
 		},
-		lines: order.lines.map((l) => ({
-			sku: l.sku,
-			title: l.title,
-			unitPriceCents: l.unitPrice,
-			currency: l.currency,
-			quantity: l.quantity,
-			fulfillmentKind: l.fulfillmentKind,
-		})),
+		lines: order.lines.map((l, index) => {
+			const taxStatus = taxStatusOf.get(index);
+			return {
+				sku: l.sku,
+				title: l.title,
+				unitPriceCents: l.unitPrice,
+				currency: l.currency,
+				quantity: l.quantity,
+				fulfillmentKind: l.fulfillmentKind,
+				...(taxStatus !== undefined ? { taxStatus } : {}),
+			};
+		}),
 	};
+}
+
+/** Whether the order's frozen v1 tax snapshot recorded tax-inclusive prices. Any
+ *  other snapshot (none, v0, malformed) is false — never guessed. */
+function pricesIncludeTaxOf(taxBreakdown: unknown): boolean {
+	const snapshot = readOrderTaxSnapshot(taxBreakdown);
+	return snapshot?.v === 1 && snapshot.pricesIncludeTax;
+}
+
+/** #427: each line's tax status as FROZEN in the order's tax snapshot, keyed by
+ *  line index. A line whose snapshot predates the field — or a legacy / missing
+ *  snapshot — has no entry: unknown, never guessed as "taxable". */
+function frozenLineTaxStatuses(order: Order): Map<number, string> {
+	const out = new Map<number, string>();
+	const snapshot = readOrderTaxSnapshot(order.totals.taxBreakdown);
+	if (snapshot?.v !== 1) return out;
+	for (const line of snapshot.lines) {
+		if (line.taxStatus !== undefined) out.set(line.lineIndex, line.taxStatus);
+	}
+	return out;
+}
+
+/** #426: the order tax snapshot's `taxAddress`, when it has one. */
+function taxAddressEntry(order: Order): Pick<OrderDetailWire["totals"], "taxAddress"> {
+	const snapshot = readOrderTaxSnapshot(order.totals.taxBreakdown);
+	if (snapshot === null || snapshot.v !== 1 || snapshot.taxAddress === undefined) return {};
+	const { basis, country, region } = snapshot.taxAddress;
+	return { taxAddress: { basis, country, region } };
 }
 
 /** `shippingZoneIdOf`'s twin: read the zone id off the opaque method snapshot
