@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { cents, currency } from "../money/cents.js";
+import { cents, currency, signedCents } from "../money/cents.js";
 import {
 	customerId,
 	idempotencyKey,
@@ -131,6 +131,45 @@ export function orderStoreContract(
 			expect(order.totals.discount).toBe(0);
 			expect(order.totals.shipping).toBe(0);
 			expect(order.totals.tax).toBe(0);
+		});
+
+		test("persists the payment rounding when given, and reads an order without it with no rounding (ADR-0035 amendment)", async () => {
+			const { store } = await makeHarness();
+			const KWD = currency("KWD");
+			await store.createFromCart(
+				physicalInput({
+					currency: KWD,
+					lines: [
+						{
+							productId: productId("p1"),
+							sku: sku("SKU-1"),
+							title: "Widget",
+							unitPrice: cents(1234),
+							currency: KWD,
+							quantity: 1,
+							fulfillmentKind: "physical",
+							reservationId: reservationId("res-1"),
+						},
+					],
+					totals: {
+						subtotal: cents(1234),
+						total: cents(1230),
+						rounding: signedCents(-4),
+						currency: KWD,
+					},
+				}),
+			);
+			const rounded = await store.getById(orderId("ord-1"));
+			expect(rounded?.totals.total).toBe(1230);
+			expect(rounded?.totals.rounding).toBe(-4);
+			// An order written without one (every other currency, every older order)
+			// reads back with no `rounding` key at all — not a 0, not a null.
+			await store.createFromCart(
+				physicalInput({ orderId: orderId("ord-2"), idempotencyKey: idempotencyKey("key-2") }),
+			);
+			const plain = await store.getById(orderId("ord-2"));
+			expect(plain?.totals.total).toBe(1500);
+			expect(Object.hasOwn(plain?.totals ?? {}, "rounding")).toBe(false);
 		});
 
 		test("creates an order with multiple distinct-sku lines; all persist and reload", async () => {
@@ -777,7 +816,7 @@ export function orderStoreContract(
 					state: "shipped",
 					currency: "EUR",
 					buyerRef: "Jane@Example.com",
-					paymentMethod: "x402",
+					paymentMethod: "stripe",
 					customerId: "cust-1",
 					createdAt: "2026-07-10T01:00:00.000Z",
 					totalCents: 4200,
@@ -791,7 +830,7 @@ export function orderStoreContract(
 			expect(s.state).toBe("shipped");
 			expect(s.currency).toBe("EUR");
 			expect(s.buyerRef).toBe("Jane@Example.com");
-			expect(s.paymentMethod).toBe("x402");
+			expect(s.paymentMethod).toBe("stripe");
 			expect(s.customerId).toBe("cust-1");
 			expect(s.createdAt).toBe("2026-07-10T01:00:00.000Z");
 			expect(s.total).toBe(4200);
@@ -874,6 +913,41 @@ export function orderStoreContract(
 			// sensitivity differs between Postgres and SQLite).
 			const upper = await h.store.listOrders({ search: "ORD-7E4C" }, { limit: 25 });
 			expect(upper.orders.map((o) => o.id)).toEqual(["ord-7e4ce728"]);
+		});
+
+		test("a search typed as an ORDER NUMBER reads the id arm as its id prefix; the buyer and sku arms stay literal (ADR-0033)", async () => {
+			const h = await makeHarness();
+			const byId = "3f9a2b1c-7d4e-4a5b-9c8d-0123456789ab";
+			await seedLinedOrder(h.store, { id: byId, skus: ["SKU-A"], buyerRef: "a@x.com" });
+			// The literal text, `#` and all, still reaches the sku and buyer arms.
+			const bySku = "b0000000-0000-4000-8000-000000000001";
+			await seedLinedOrder(h.store, { id: bySku, skus: ["#3F9A2"], buyerRef: "b@x.com" });
+			const byRef = "c0000000-0000-4000-8000-000000000002";
+			await seedLinedOrder(h.store, { id: byRef, skus: ["SKU-C"], buyerRef: "#3f9a2@x.com" });
+			// The `#`-less digits are NOT a buyer or sku search: only the id arm is rewritten.
+			const neither = "d0000000-0000-4000-8000-000000000003";
+			await seedLinedOrder(h.store, { id: neither, skus: ["3F9A2"], buyerRef: "3f9a2@x.com" });
+
+			const number = await h.store.listOrders({ search: "#3F9A2" }, { limit: 25 });
+			expect(number.orders.map((o) => o.id).toSorted()).toEqual([byId, bySku, byRef].toSorted());
+			expect(await h.store.countOrders({ search: "#3F9A2" })).toBe(3);
+			// A longer number — hex only, or with the id's own hyphens — finds just its order.
+			for (const typed of [
+				"#3F9A2B1C7D",
+				"#3f9a2b1c-7d4e",
+				"Order #3F9A2B1C:",
+				"Order#3F9A2B1C",
+				"Order: #3F9A2B1C",
+			]) {
+				const one = await h.store.listOrders({ search: typed }, { limit: 25 });
+				expect(
+					one.orders.map((o) => o.id),
+					typed,
+				).toEqual([byId]);
+			}
+			// A hyphen right after `#` is not a number: matched literally, it finds nothing.
+			const literal = await h.store.listOrders({ search: "#-3F9A2" }, { limit: 25 });
+			expect(literal.orders).toHaveLength(0);
 		});
 
 		test("listOrders search matches a buyer_ref PREFIX, case-folded on both sides", async () => {

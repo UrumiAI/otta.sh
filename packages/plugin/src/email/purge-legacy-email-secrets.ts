@@ -23,8 +23,8 @@
  *
  * THE MARKER IS WRITTEN ONLY AFTER EVERY DELETE SUCCEEDED, so a kv failure part
  * way through is retried on a later tick. It never throws: a failed purge must
- * not take the sweep down. Only these four keys are touched — never a Stripe,
- * x402 or edge-token key.
+ * not take the sweep down. Only these four keys are touched — never a Stripe
+ * or edge-token key.
  *
  * A SEPARATE, DROPPABLE CHANGE: this is the point of no return for a rollback to
  * a build that still sent through those providers.
@@ -65,26 +65,35 @@ export function resetLegacyEmailPurgeForTesting(): void {
 }
 
 /**
- * Purge the legacy email credentials unless that already happened. Resolves
- * `true` when this call deleted them, `false` otherwise (already done, no host
- * provider confirmed yet, or a kv failure left the marker unset for a later
- * retry).
+ * What one call did:
+ *  - `purged`    — it deleted the keys and wrote the marker;
+ *  - `attempted` — it began deleting and a kv failure stopped it (the marker is
+ *                  unset, so a later tick retries);
+ *  - `idle`      — it deleted nothing: already done, or no host provider
+ *                  confirmed yet (it may still have read kv to find that out).
+ */
+export type LegacyEmailPurgeOutcome = "purged" | "attempted" | "idle";
+
+/**
+ * Purge the legacy email credentials unless that already happened. See
+ * {@link LegacyEmailPurgeOutcome} for what it resolves to.
  */
 export async function purgeLegacyEmailSecrets(
 	ctx: PluginContext,
 	nowMs: number = Date.now(),
-): Promise<boolean> {
+): Promise<LegacyEmailPurgeOutcome> {
 	const site = ctx.site?.url ?? "";
-	if (doneInIsolate.has(site)) return false;
+	if (doneInIsolate.has(site)) return "idle";
 	// No provider at all (trusted mode): nothing to confirm, not even a read.
-	if (ctx.email === undefined) return false;
-	if (nowMs < (nextLookAt.get(site) ?? 0)) return false;
+	if (ctx.email === undefined) return "idle";
+	if (nowMs < (nextLookAt.get(site) ?? 0)) return "idle";
+	let deleting = false;
 	try {
 		// A string marker (what the purge writes) means done; `null` or `undefined`
 		// (a host's "missing") means not yet.
 		if (typeof (await ctx.kv.get<unknown>(LEGACY_EMAIL_PURGE_MARKER_KEY)) === "string") {
 			doneInIsolate.add(site);
-			return false;
+			return "idle";
 		}
 		// Never before a host provider has delivered: until then a rollback must
 		// still find its keys. Fail-soft inside: unreadable ⇒ not confirmed ⇒ wait.
@@ -95,15 +104,16 @@ export async function purgeLegacyEmailSecrets(
 		// deliberate site choice, not a missing provider.
 		if ((await emailSendingStatus(ctx, nowMs)) !== "confirmed") {
 			nextLookAt.set(site, nowMs + UNCONFIRMED_RECHECK_MS);
-			return false;
+			return "idle";
 		}
+		deleting = true;
 		for (const key of LEGACY_EMAIL_SECRET_KEYS) await ctx.kv.delete(key);
 		await ctx.kv.set(LEGACY_EMAIL_PURGE_MARKER_KEY, new Date().toISOString());
 		doneInIsolate.add(site);
-		return true;
+		return "purged";
 	} catch {
 		// Names nothing about any value; retried on a later tick.
 		console.warn("[otta] could not purge the legacy email credentials yet; will retry");
-		return false;
+		return deleting ? "attempted" : "idle";
 	}
 }

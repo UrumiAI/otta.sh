@@ -39,7 +39,9 @@
  * key is refused, and only an explicit `null` clears.
  *
  * COUPON IDENTITY IS IMMUTABLE and its economics cannot be blanked. `CouponEdit`
- * omits id/code/type/currency. The "a `fixed_amount` coupon cannot lose its
+ * omits id/code/type; its optional `currency` is the currency the edit's
+ * amounts were parsed in (checked against the stored one, inside the store's
+ * compare-and-set) and, on an unbound percentage coupon, the one it binds. The "a `fixed_amount` coupon cannot lose its
  * `amountCents`, a `percentage` coupon cannot lose its `rateBps`" rule lived ONLY
  * in the service route (issue #75 — before that it lived only in the plugin's own
  * form parser, so a direct API caller could blank a live coupon), so
@@ -87,9 +89,17 @@ import {
 	cents as toCents,
 	currency as toCurrency,
 	deleteTaxClass as deleteTaxClassUseCase,
+	effectiveStoreCurrency,
+	effectiveTaxSettings,
+	idempotencyKey as toIdempotencyKey,
+	InvalidSettingsError,
+	isSettingsPreconditionFailedError,
+	parseTaxSettings,
+	updateSettings,
 	isCouponCodeConflictError,
 	isCouponIdCollisionError,
-	isIsoCurrencyCode,
+	isTaxRateDuplicateError,
+	isSupportedCurrency,
 	parseCouponInstant,
 	parseZoneRegions,
 	type CouponListCursor,
@@ -103,7 +113,9 @@ import {
 	type ShippingZone,
 	type TaxClass,
 	type TaxRate,
+	type TaxSettings,
 } from "@otta-sh/domain";
+import { COUPON_CURRENCY_REFUSAL } from "./coupon-currency-rules.js";
 import {
 	CommerceInputError,
 	isIdToken,
@@ -111,6 +123,7 @@ import {
 	requireCurrencyCode,
 	requireIdToken,
 	requireNonNegativeInteger,
+	UNSUPPORTED_CURRENCY_REASON,
 } from "../commerce/commerce-input.js";
 import {
 	isShippingMethodIdCollisionError,
@@ -155,8 +168,11 @@ import type {
 	TaxClassWire,
 	TaxRateEdit,
 	TaxRateInput,
+	TaxSettingsRead,
+	TaxSettingsUpdateResult,
 	TaxRateWire,
 } from "./admin-rules-surface.js";
+import { taxSettingsDigest } from "./admin-rules-surface.js";
 
 /** The coupon-list page bounds (`couponsListQuery`: `min(1).max(100)`, default
  *  25). Mirrored, not imported — the service package goes away. */
@@ -192,16 +208,29 @@ const SHIPPING_METHOD_TYPES = [
 
 const COUPON_TYPES = ["fixed_amount", "percentage"] as const satisfies readonly CouponType[];
 
+export interface InProcessAdminRulesClientOptions extends InProcessCommerceStoresOptions {
+	/**
+	 * A site registered an outside tax calculator (`createOttaPlugin({ taxCalculator })`,
+	 * ADR-0030). With nothing saved, such a store already charges tax — the
+	 * calculator replaces the rate table, so it has no rates — and the upgrade rule
+	 * reads it like a store with rates (ADR-0032): tax on. Default `false`.
+	 */
+	hasOutsideTaxCalculator?: boolean;
+}
+
 export class InProcessAdminRulesClient implements AdminRulesSurface {
 	readonly #stores: InProcessCommerceStores;
+	readonly #hasOutsideTaxCalculator: boolean;
 
 	/**
 	 * Takes the whole context and constructs the adapters once per client, the
 	 * same request-scoped lifecycle the console pages already had. A context with
 	 * no document store fails HERE, at construction, naming what is missing.
 	 */
-	constructor(ctx: PluginContext, options: InProcessCommerceStoresOptions = {}) {
-		this.#stores = createInProcessCommerceStores(ctx, options);
+	constructor(ctx: PluginContext, options: InProcessAdminRulesClientOptions = {}) {
+		const { hasOutsideTaxCalculator = false, ...storeOptions } = options;
+		this.#stores = createInProcessCommerceStores(ctx, storeOptions);
+		this.#hasOutsideTaxCalculator = hasOutsideTaxCalculator;
 	}
 
 	// -- Shipping: zones -------------------------------------------------------
@@ -263,6 +292,7 @@ export class InProcessAdminRulesClient implements AdminRulesSurface {
 		requireIdToken("id", input.id);
 		requireBoundedText("name", input.name, 1, NAME_MAX);
 		const type = requireShippingMethodType(input.type);
+		const taxable = optionalTaxable(input.taxable);
 		return createOrRefuse(async () =>
 			toMethodWire(
 				await this.#stores.shippingRules.createMethod({
@@ -271,6 +301,7 @@ export class InProcessAdminRulesClient implements AdminRulesSurface {
 					zoneId,
 					name: input.name,
 					type,
+					...(taxable !== undefined ? { taxable } : {}),
 				}),
 			),
 		);
@@ -284,9 +315,11 @@ export class InProcessAdminRulesClient implements AdminRulesSurface {
 		requireIdToken("methodId", methodId);
 		requireBoundedText("name", edit.name, 1, NAME_MAX);
 		const type = requireShippingMethodType(edit.type);
+		const taxable = optionalTaxable(edit.taxable);
 		const res = await this.#stores.shippingRules.updateMethod(methodId, {
 			name: edit.name,
 			type,
+			...(taxable !== undefined ? { taxable } : {}),
 		});
 		return res.ok
 			? { ok: true, value: toMethodWire(res.method) }
@@ -444,11 +477,13 @@ export class InProcessAdminRulesClient implements AdminRulesSurface {
 			{
 				taxRules: this.#stores.taxRules,
 				productCommerce: this.#stores.productCommerce,
+				settings: this.#stores.settingsStore,
 			},
 			classId,
 		);
 		if (res.ok) return { ok: true };
 		if (res.reason === "not_found") return { ok: false, reason: "not_found" };
+		if (res.reason === "in_use_by_settings") return { ok: false, reason: "in_use_by_settings" };
 		if (res.reason === "in_use_by_products") {
 			return { ok: false, reason: "in_use_by_products", count: res.count };
 		}
@@ -468,6 +503,7 @@ export class InProcessAdminRulesClient implements AdminRulesSurface {
 		requireIdToken("taxClassId", input.taxClassId);
 		requireIdToken("zoneId", input.zoneId);
 		requireBps("rateBps", input.rateBps, MAX_TAX_RATE_BPS);
+		await this.#pinTaxSettings();
 		return createOrRefuse(async () =>
 			toTaxRateWire(
 				await this.#stores.taxRules.createRate({
@@ -484,7 +520,9 @@ export class InProcessAdminRulesClient implements AdminRulesSurface {
 	}
 
 	/** CAS edit on the money-bearing `rateBps` (`expectedRateBps` is the rate the
-	 *  admin read). `appliesToShipping` is the required full-replace key. */
+	 *  admin read) AND on the flag (`expectedAppliesToShipping`, the flag it loaded),
+	 *  so a stale tab gets `stale` instead of reverting either. `appliesToShipping`
+	 *  is the required full-replace key. */
 	async updateTaxRate(
 		rateId: string,
 		edit: TaxRateEdit,
@@ -496,10 +534,14 @@ export class InProcessAdminRulesClient implements AdminRulesSurface {
 		if (typeof edit.appliesToShipping !== "boolean") {
 			throw new CommerceInputError("appliesToShipping", "must be a boolean");
 		}
+		requireFullReplaceKey("expectedAppliesToShipping", edit);
+		if (typeof edit.expectedAppliesToShipping !== "boolean") {
+			throw new CommerceInputError("expectedAppliesToShipping", "must be a boolean");
+		}
 		const res = await this.#stores.taxRules.updateRate(
 			rateId,
 			{ rateBps: edit.rateBps, appliesToShipping: edit.appliesToShipping },
-			edit.expectedRateBps,
+			{ rateBps: edit.expectedRateBps, appliesToShipping: edit.expectedAppliesToShipping },
 		);
 		if (res.ok) return { ok: true, value: toTaxRateWire(res.rate) };
 		if (res.reason === "not_found") return { ok: false, reason: "not_found" };
@@ -510,8 +552,127 @@ export class InProcessAdminRulesClient implements AdminRulesSurface {
 	 *  shipping rate's. */
 	async deleteTaxRate(rateId: string): Promise<RulesDeleteResult> {
 		requireIdToken("rateId", rateId);
+		await this.#pinTaxSettings();
 		const res = await this.#stores.taxRules.deleteRate(rateId);
 		return res.ok ? { ok: true } : { ok: false, reason: "not_found" };
+	}
+
+	// -- Store currency ------------------------------------------------------------
+
+	/** One keyed settings read; never-saved is USD (`effectiveStoreCurrency`). */
+	async getStoreCurrency(): Promise<string> {
+		return effectiveStoreCurrency(await this.#stores.settingsStore.get());
+	}
+
+	// -- Tax: options (ADR-0032) -------------------------------------------------
+
+	async getTaxSettings(): Promise<TaxSettingsRead> {
+		const [saved, hasRates] = await Promise.all([
+			this.#stores.settingsStore.get().then((s) => s.tax),
+			this.#stores.taxRules.hasAnyRate(),
+		]);
+		return {
+			settings: effectiveTaxSettings(saved, hasRates || this.#hasOutsideTaxCalculator),
+			saved: saved !== undefined,
+			hasRates,
+		};
+	}
+
+	/**
+	 * Replace the options whole, guarded on the VALUE the form loaded (`expected`,
+	 * the same compare-on-value as a tax rate's `expectedRateBps`, ABA accepted
+	 * for the same reason). Options already equal to `next` are answered `ok`
+	 * without a write, so a double submit is not reported stale.
+	 *
+	 * The guard is atomic: the write itself is conditional on the stored block
+	 * still being the one read here (`ifTax`, re-checked by the store on every
+	 * compare-and-set attempt), so a peer save — or a first-rate pin — landing
+	 * between this read and the write makes this save `stale`, never a clobber.
+	 * With nothing saved, the effective options come from "are there rates?";
+	 * every change to that (the first rate, the last rate deleted) writes a block
+	 * first, which fails the `ifTax: null` condition the same way.
+	 */
+	async updateTaxSettings(
+		next: unknown,
+		opts: { expected: string; idempotencyKey: string },
+	): Promise<TaxSettingsUpdateResult> {
+		requireBoundedText("idempotencyKey", opts.idempotencyKey, 1, 200);
+		const stored = (await this.#stores.settingsStore.get()).tax;
+		const current = stored ?? effectiveTaxSettings(undefined, await this.#chargesTaxAlready());
+		const currentDigest = taxSettingsDigest(current);
+		const parsed = parseTaxSettings(next);
+		if (!("field" in parsed) && taxSettingsDigest(parsed) === currentDigest) {
+			return { ok: true, settings: current };
+		}
+		if (currentDigest !== opts.expected) return { ok: false, reason: "stale", current };
+		// A fixed shipping tax class must name a class that exists: an unknown id
+		// would silently price shipping "based on cart items" instead.
+		if (!("field" in parsed) && parsed.shippingTaxClass.kind === "fixed") {
+			const { taxClassId } = parsed.shippingTaxClass;
+			const classes = await this.#stores.taxRules.listClasses();
+			if (!classes.some((c) => c.id === taxClassId)) {
+				return {
+					ok: false,
+					reason: "invalid",
+					field: "tax.shippingTaxClass",
+					message: `no tax class "${taxClassId}" exists`,
+				};
+			}
+		}
+		try {
+			const result = await updateSettings(
+				this.#stores.settingsStore,
+				{ tax: next as TaxSettings },
+				toIdempotencyKey(opts.idempotencyKey),
+				{ ifTax: stored ?? null },
+			);
+			return { ok: true, settings: result.tax ?? current };
+		} catch (err) {
+			if (err instanceof InvalidSettingsError) {
+				return { ok: false, reason: "invalid", field: err.field, message: err.message };
+			}
+			if (isSettingsPreconditionFailedError(err)) {
+				return { ok: false, reason: "stale", current: (await this.getTaxSettings()).settings };
+			}
+			throw err;
+		}
+	}
+
+	/**
+	 * The upgrade rule is decided by whether rates exist, so the first rate created
+	 * (or the last deleted) would flip a store with nothing saved between "new" and
+	 * "existing". Before either, a store with nothing saved has what it has NOW
+	 * written down — a new store stays a new store (tax off), an existing one keeps
+	 * its legacy behaviour.
+	 *
+	 * The write is conditional on nothing being saved (`ifTax: null`), checked by
+	 * the store atomically with the write: an admin save that lands first wins and
+	 * the pin writes nothing. Two racing pins write the same value, so each takes a
+	 * key of its own (a fixed key could be pinned forever to a revision that has
+	 * since moved, and refuse every later rate edit).
+	 */
+	/** The upgrade rule's input with nothing saved: rates exist, or an outside
+	 *  calculator is registered (it replaces the rates). Same rule as the quote's. */
+	async #chargesTaxAlready(): Promise<boolean> {
+		return this.#hasOutsideTaxCalculator || (await this.#stores.taxRules.hasAnyRate());
+	}
+
+	async #pinTaxSettings(): Promise<void> {
+		if ((await this.#stores.settingsStore.get()).tax !== undefined) return;
+		const chargesTax = await this.#chargesTaxAlready();
+		try {
+			await this.#stores.settingsStore.update(
+				{ tax: effectiveTaxSettings(undefined, chargesTax) },
+				toIdempotencyKey(
+					`tax-settings-pin-${this.#stores.clock.now().toISOString()}-${String(++pinSeq)}`,
+				),
+				{ ifTax: null },
+			);
+		} catch (err) {
+			// Something was saved since the read above — the saved block decides now.
+			if (isSettingsPreconditionFailedError(err)) return;
+			throw err;
+		}
 	}
 
 	// -- Coupons ---------------------------------------------------------------
@@ -609,6 +770,27 @@ export class InProcessAdminRulesClient implements AdminRulesSurface {
 		if (input.currency !== undefined && input.currency !== null) {
 			requireAuthoredCurrency("currency", input.currency);
 		}
+		// A percentage coupon's cap and minimum spend are AMOUNTS: in the coupon's
+		// currency's minor unit, so one is required with either (the coupon then
+		// applies only to carts in it). One with neither needs none.
+		if (
+			type === "percentage" &&
+			(capCents !== null || minSubtotalCents !== null) &&
+			(input.currency === undefined || input.currency === null)
+		) {
+			throw new CommerceInputError("currency", COUPON_CURRENCY_REFUSAL.boundsNeedCurrency);
+		}
+		// …and only then: a currency on one with neither would restrict it to
+		// that currency's carts for nothing (it can never be unbound).
+		if (
+			type === "percentage" &&
+			capCents === null &&
+			minSubtotalCents === null &&
+			input.currency !== undefined &&
+			input.currency !== null
+		) {
+			throw new CommerceInputError("currency", COUPON_CURRENCY_REFUSAL.currencyNeedsBounds);
+		}
 		return createOrRefuse(async () => {
 			const coupon = await this.#stores.couponStore.create({
 				id: input.id,
@@ -665,8 +847,49 @@ export class InProcessAdminRulesClient implements AdminRulesSurface {
 			// answer it identically and a shared case can pin it.
 			return { ok: false, reason: "error", status: 400 };
 		}
+		// `currency`, when sent, is the currency the edit's amounts were PARSED in
+		// (null: an unbound coupon's, in hundredths). It is compared with the
+		// stored one so an edit read against a coupon whose currency has moved
+		// since — another admin bound one — is refused (409) rather than its
+		// amounts re-read in a different exponent. On an unbound coupon a
+		// currency BINDS it; a set currency never changes.
+		const sent = edit.currency;
+		const hadBounds = existing.capCents !== null || existing.minSubtotalCents !== null;
+		let bind: string | null = null;
+		if (sent !== undefined) {
+			if (existing.currency !== null) {
+				if (sent !== existing.currency) return { ok: false, reason: "error", status: 409 };
+			} else if (sent !== null) {
+				requireAuthoredCurrency("currency", sent);
+				if (hadBounds) {
+					// Binding would re-read a cap / minimum written in hundredths.
+					throw new CommerceInputError("currency", COUPON_CURRENCY_REFUSAL.legacyBounds);
+				}
+				if (capCents === null && minSubtotalCents === null) {
+					// It would restrict the coupon to one currency for nothing.
+					throw new CommerceInputError("currency", COUPON_CURRENCY_REFUSAL.currencyNeedsBounds);
+				}
+				bind = sent;
+			}
+		}
+		if (
+			existing.type === "percentage" &&
+			existing.currency === null &&
+			bind === null &&
+			!hadBounds &&
+			(capCents !== null || minSubtotalCents !== null)
+		) {
+			// A NEW cap / minimum needs its currency — the same typed refusal create
+			// gives. A coupon whose bounds predate that rule keeps working as it did.
+			throw new CommerceInputError("currency", COUPON_CURRENCY_REFUSAL.boundsNeedCurrency);
+		}
 
 		const res = await this.#stores.couponStore.update(couponId, {
+			...(bind !== null ? { bindCurrency: toCurrency(bind) } : {}),
+			// The check above read the coupon OUTSIDE the store's compare-and-set; this
+			// precondition repeats it INSIDE, against the revision actually replaced,
+			// so a bind landing between that read and this write is refused too.
+			...(sent !== undefined ? { expectCurrency: existing.currency } : {}),
 			amountCents: amountCents === null ? null : toCents(amountCents),
 			rateBps,
 			capCents: capCents === null ? null : toCents(capCents),
@@ -676,8 +899,9 @@ export class InProcessAdminRulesClient implements AdminRulesSurface {
 			maxUses,
 			maxUsesPerCustomer,
 		});
-		return res.ok
-			? { ok: true, value: toCouponWire(res.coupon) }
+		if (res.ok) return { ok: true, value: toCouponWire(res.coupon) };
+		return res.reason === "currency_moved"
+			? { ok: false, reason: "error", status: 409 }
 			: { ok: false, reason: "not_found" };
 	}
 
@@ -701,42 +925,55 @@ export class InProcessAdminRulesClient implements AdminRulesSurface {
 	 */
 	async retireCoupon(couponId: string): Promise<CouponRetireResult> {
 		requireIdToken("couponId", couponId);
-		const current = await this.#stores.couponStore.findById(couponId);
-		if (current === null) return { ok: false, reason: "not_found" };
-		const now = this.#stores.clock.now();
-		const at = now.getTime();
-		// An UNREADABLE bound is handled by design. The window fields are free text
-		// (≤64 chars; older rows predate the write check), so a stored bound may not
-		// parse. An unreadable EXPIRY reads as not-yet-ended, so retire replaces it
-		// with a real instant (which is what the operator asked for); an unreadable
-		// START is not "in the future", so it is kept as stored — retire changes only
-		// the bound it must. Checkout already treats either as "not active".
-		const expires = current.expiresAt === null ? null : parseCouponInstant(current.expiresAt);
-		if (expires !== null && expires <= at) {
-			return { ok: false, reason: "already_ended" };
+		// The write replaces the economics with the values just READ, so it is
+		// conditioned on the coupon's currency still being the one read. A bind that
+		// lands in between (a percentage coupon gaining a currency WITH a new cap)
+		// would otherwise be a LOST UPDATE: retire would overwrite that new cap with
+		// the stale null it read. The store refuses such a write (`currency_moved`)
+		// and retire re-reads and retries, keeping the bind's cap.
+		for (let attempt = 0; attempt < RETIRE_ATTEMPTS; attempt++) {
+			const current = await this.#stores.couponStore.findById(couponId);
+			if (current === null) return { ok: false, reason: "not_found" };
+			const now = this.#stores.clock.now();
+			const at = now.getTime();
+			// An UNREADABLE bound is handled by design. The window fields are free text
+			// (≤64 chars; older rows predate the write check), so a stored bound may not
+			// parse. An unreadable EXPIRY reads as not-yet-ended, so retire replaces it
+			// with a real instant (which is what the operator asked for); an unreadable
+			// START is not "in the future", so it is kept as stored — retire changes only
+			// the bound it must. Checkout already treats either as "not active".
+			const expires = current.expiresAt === null ? null : parseCouponInstant(current.expiresAt);
+			if (expires !== null && expires <= at) {
+				return { ok: false, reason: "already_ended" };
+			}
+			const starts = current.startsAt === null ? null : parseCouponInstant(current.startsAt);
+			const futureStart = starts !== null && starts > at;
+			const retiredAt = now.toISOString();
+			const res = await this.#stores.couponStore.update(couponId, {
+				expectCurrency: current.currency,
+				amountCents: current.amountCents,
+				rateBps: current.rateBps,
+				capCents: current.capCents,
+				minSubtotalCents: current.minSubtotalCents,
+				startsAt: futureStart ? null : current.startsAt,
+				expiresAt: retiredAt,
+				maxUses: current.maxUses,
+				maxUsesPerCustomer: current.maxUsesPerCustomer,
+			});
+			if (!res.ok && res.reason === "currency_moved") continue;
+			if (!res.ok) return { ok: false, reason: "not_found" };
+			return {
+				ok: true,
+				value: {
+					coupon: toCouponWire(res.coupon),
+					retiredAt,
+					previous: { startsAt: current.startsAt, expiresAt: current.expiresAt },
+				},
+			};
 		}
-		const starts = current.startsAt === null ? null : parseCouponInstant(current.startsAt);
-		const futureStart = starts !== null && starts > at;
-		const retiredAt = now.toISOString();
-		const res = await this.#stores.couponStore.update(couponId, {
-			amountCents: current.amountCents,
-			rateBps: current.rateBps,
-			capCents: current.capCents,
-			minSubtotalCents: current.minSubtotalCents,
-			startsAt: futureStart ? null : current.startsAt,
-			expiresAt: retiredAt,
-			maxUses: current.maxUses,
-			maxUsesPerCustomer: current.maxUsesPerCustomer,
-		});
-		if (!res.ok) return { ok: false, reason: "not_found" };
-		return {
-			ok: true,
-			value: {
-				coupon: toCouponWire(res.coupon),
-				retiredAt,
-				previous: { startsAt: current.startsAt, expiresAt: current.expiresAt },
-			},
-		};
+		// A currency can be bound once and never changes, so a second read already
+		// sees the final one; running out of attempts means something else is wrong.
+		throw new Error(`retireCoupon(${couponId}): the coupon's currency kept moving`);
 	}
 
 	/** Idempotent delete, guarded by live redemptions (`in_use_by_redemptions`) —
@@ -754,7 +991,20 @@ function toZoneWire(zone: ShippingZone): ShippingZoneWire {
 }
 
 function toMethodWire(method: ShippingMethod): ShippingMethodWire {
-	return { id: method.id, zoneId: method.zoneId, name: method.name, type: method.type };
+	return {
+		id: method.id,
+		zoneId: method.zoneId,
+		name: method.name,
+		type: method.type,
+		taxable: method.taxable,
+	};
+}
+
+/** A method's `taxable` flag (PR 2b): absent, or a real boolean — never coerced. */
+function optionalTaxable(value: unknown): boolean | undefined {
+	if (value === undefined) return undefined;
+	if (typeof value !== "boolean") throw new CommerceInputError("taxable", "must be true or false");
+	return value;
 }
 
 /** Money on the wire is an integer minor `amountCents` plus its ISO-4217
@@ -772,6 +1022,9 @@ function toRateWire(rate: ShippingRate): ShippingRateWire {
 function toTaxClassWire(cls: TaxClass): TaxClassWire {
 	return { id: cls.id, name: cls.name };
 }
+
+/** Disambiguates two pins in one isolate within one clock tick. */
+let pinSeq = 0;
 
 function toTaxRateWire(rate: TaxRate): TaxRateWire {
 	return {
@@ -852,10 +1105,22 @@ const CREATE_PARENT_MISSING = 404;
  * writes anything (or after it has given its claim back), which is the whole
  * licence for answering rather than rejecting; any other throw propagates.
  */
-async function createOrRefuse<T>(write: () => Promise<T>): Promise<RulesCreateResult<T>> {
+/** @internal Exported for its unit test only. */
+export async function createOrRefuse<T>(write: () => Promise<T>): Promise<RulesCreateResult<T>> {
 	try {
 		return { ok: true, value: await write() };
 	} catch (err) {
+		// One tax rate per (class, zone): a 409 that NAMES the rate already there. No
+		// rate was written (the store may keep an orphan id claim, adopted by the next
+		// create of that id). The store runs in this isolate — no bridge — so the
+		// error always carries the fields that name the rate.
+		if (isTaxRateDuplicateError(err)) {
+			return {
+				ok: false,
+				status: CREATE_CONFLICT,
+				duplicateTaxRate: { id: err.existingRateId, rateBps: err.existingRateBps },
+			};
+		}
 		if (
 			isShippingZoneIdCollisionError(err) ||
 			isShippingMethodIdCollisionError(err) ||
@@ -873,6 +1138,9 @@ async function createOrRefuse<T>(write: () => Promise<T>): Promise<RulesCreateRe
 		throw err;
 	}
 }
+
+/** Retire re-reads after a refused write; a currency moves at most once. */
+const RETIRE_ATTEMPTS = 3;
 
 // ── the input bounds the request schemas used to hold ─────────────────────
 
@@ -893,14 +1161,16 @@ function requireFullReplaceKey(field: string, edit: object): void {
 
 /**
  * A currency a merchant AUTHORS (a new rate's, a new coupon's): the shape, then
- * ISO-4217 membership (`@otta-sh/domain`'s `isIsoCurrencyCode`). Create paths
- * only — reads and edits name a currency that already exists, and refusing a
- * stored code on read would strand a row written before this rule.
+ * membership of the store's currency table (`@otta-sh/domain`'s
+ * `isSupportedCurrency` — the currencies whose minor unit every money boundary
+ * knows). Create paths only — reads and edits name a currency that already
+ * exists, and refusing a stored code on read would strand a row written before
+ * this rule.
  */
 function requireAuthoredCurrency(field: string, value: string): void {
 	requireCurrencyCode(field, value);
-	if (!isIsoCurrencyCode(value)) {
-		throw new CommerceInputError(field, "must be an ISO-4217 currency in current use");
+	if (!isSupportedCurrency(value)) {
+		throw new CommerceInputError(field, UNSUPPORTED_CURRENCY_REASON);
 	}
 }
 

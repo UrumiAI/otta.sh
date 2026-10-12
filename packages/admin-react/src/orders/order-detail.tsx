@@ -58,8 +58,10 @@ import {
 	REFUNDS_UNAVAILABLE,
 	REFUND_ADDITIVE_NOTE,
 	REFUND_AMOUNT_INVALID,
-	REFUND_AMOUNT_PRECISION,
 	hasExcessDecimals,
+	refundAmountPrecisionText,
+	refundIncrementText,
+	isRefundableIncrement,
 	REFUND_PARTIAL_GROUP_LABEL,
 	RESOLVE_RECONCILIATION_NOTE,
 	SHIPPING_ADDRESS_ABSENT,
@@ -77,6 +79,7 @@ import {
 	formatTimestamp,
 	maskBuyerEmail,
 	orderStateCell,
+	orderNumberOf,
 	parseMinorUnitsInput,
 	reconciliationAlertSentence,
 	reconciliationSummary,
@@ -165,12 +168,15 @@ export function checkRefundInput(
 	remainingCents: number,
 	currency: string,
 ): RefundCheck {
-	const parsed = parseMinorUnitsInput(amountInput, { allowZero: false });
+	// In the ORDER's currency: a JPY refund of "1500" is 1500 yen, never 150000.
+	const parsed = parseMinorUnitsInput(amountInput, currency, { allowZero: false });
 	if (parsed === null) {
 		return {
 			ok: false,
 			refusal: {
-				message: hasExcessDecimals(amountInput) ? REFUND_AMOUNT_PRECISION : REFUND_AMOUNT_INVALID,
+				message: hasExcessDecimals(amountInput, currency)
+					? refundAmountPrecisionText(currency)
+					: REFUND_AMOUNT_INVALID,
 				field: "amount",
 			},
 		};
@@ -187,6 +193,12 @@ export function checkRefundInput(
 				field: "amount",
 			},
 		};
+	}
+	// ADR-0035's amendment, AFTER the ceiling (an amount that is too high is told
+	// so first): KWD, BHD, OMR and JOD are paid back in steps of 0.010, or the
+	// whole remainder. The domain refuses the same (`AMOUNT_NOT_PAYMENT_INCREMENT`).
+	if (!isRefundableIncrement(parsed, remainingCents, currency)) {
+		return { ok: false, refusal: { message: refundIncrementText(currency), field: "amount" } };
 	}
 	return { ok: true, amountCents: parsed };
 }
@@ -613,7 +625,11 @@ export function RefundsPanel({
 				*/}
 				{refundMode !== "empty" && (
 					<p style={{ fontSize: 12, opacity: 0.8 }} data-testid="refund-capability">
-						{refundCapabilityText(refunds.refundable, refunds.paymentMethod)}
+						{refundCapabilityText(
+							refunds.refundable,
+							refunds.paymentMethod,
+							refunds.legacyPaymentMethod === true,
+						)}
 					</p>
 				)}
 
@@ -835,7 +851,7 @@ export function RefundsPanel({
 								</div>
 								<p style={{ fontSize: 12, opacity: 0.7, margin: 0 }}>
 									{REFUND_ADDITIVE_NOTE} The remaining refundable amount is{" "}
-									{formatMinorUnitsInput(refunds.remainingCents)}.
+									{formatMinorUnitsInput(refunds.remainingCents, cur)}.
 								</p>
 							</div>
 						</Group>
@@ -1032,19 +1048,33 @@ export function OrderDetail({
 	const reasonLabels: ReadonlyMap<string, string> = new Map(
 		detail.vocabulary.cancellationReasons.map((r) => [r.value, r.label]),
 	);
-	const ladder: ReadonlyArray<readonly [string, number]> = [
-		["Subtotal", order.totals.subtotalCents],
+	const totalsCur = order.totals.currency;
+	const rounding = order.totals.roundingCents;
+	const ladder: ReadonlyArray<readonly [string, string]> = [
+		["Subtotal", formatAmount(order.totals.subtotalCents, totalsCur)],
 		// The coupon the order was priced with, as the merchant stored it (QA round
 		// 2: the detail showed "Discount $3.00" with no code).
 		[
 			order.totals.appliedCouponCode != null && order.totals.appliedCouponCode.length > 0
 				? `Discount · ${order.totals.appliedCouponCode}`
 				: "Discount",
-			order.totals.discountCents,
+			formatAmount(order.totals.discountCents, totalsCur),
 		],
-		["Shipping", order.totals.shippingCents],
-		["Tax", order.totals.taxCents],
-		["Total", order.totals.totalCents],
+		["Shipping", formatAmount(order.totals.shippingCents, totalsCur)],
+		["Tax", formatAmount(order.totals.taxCents, totalsCur)],
+		// ADR-0035's amendment: the total rounded to its currency's payment
+		// increment, SIGNED — only on an order that has a non-zero one.
+		...(rounding !== undefined && rounding !== 0
+			? [
+					[
+						"Rounding",
+						rounding > 0
+							? `+${formatAmount(rounding, totalsCur)}`
+							: formatAmount(rounding, totalsCur),
+					] as const,
+				]
+			: []),
+		["Total", formatAmount(order.totals.totalCents, totalsCur)],
 	];
 
 	const askRefund = (amountCents: number) => {
@@ -1199,6 +1229,15 @@ export function OrderDetail({
 						["Placed", formatTimestamp(order.createdAt)],
 						["Payment", order.paymentMethod ?? "—"],
 						[
+							// The shopper's label for this order (ADR-0033) — what a buyer
+							// quotes from their email. Display only; the full id below is
+							// the identity.
+							"Order number",
+							<span key="number" data-testid="detail-order-number">
+								{orderNumberOf(order)}
+							</span>,
+						],
+						[
 							// §1.3: the full id remains obtainable, and on the React tier it
 							// is also COPYABLE — the affordance the Block Kit surface could
 							// not offer at all.
@@ -1304,7 +1343,7 @@ export function OrderDetail({
 									<tr key={label}>
 										<td className="otta-td">{label}</td>
 										<td className="otta-td otta-num" style={endCellStyle}>
-											{formatAmount(amount, order.totals.currency)}
+											{amount}
 										</td>
 									</tr>
 								))}

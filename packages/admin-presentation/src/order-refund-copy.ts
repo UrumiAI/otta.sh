@@ -16,7 +16,7 @@
  * Decision 3). Pure string work, no IO, no wire types — the signatures take
  * primitives precisely so this module never learns what an order looks like.
  */
-import { SHORT_ID_CONFIRM_LEN, shortIdFixed } from "./short-id.js";
+import { orderConfirmLabel } from "./order-number.js";
 
 /** `confirm.text`'s hard budget (§1): exactly two sentences, ≤200 characters. */
 const CONFIRM_BUDGET = 200;
@@ -37,10 +37,10 @@ export const UNNAMED_REFUND_RECIPIENT = "this order's buyer";
  * THE ORDER COMES FIRST, and it is the reason this function takes an id at all
  * (D4). Amount and recipient are the two attributes a repeat customer's orders
  * SHARE, so a dialog naming only those is a dialog that cannot tell the operator
- * which of two candidates the money is about to leave. `shortIdFixed` is used
- * rather than `shortIdsFor` because a confirm renders against one record with no
- * candidate set in hand; at 8 characters it is a visible superset of the
- * 4-character prefix the operator just read in the list row.
+ * which of two candidates the money is about to leave. A confirm renders against
+ * one record with no candidate set in hand, so it names a FIXED 12 hex digits
+ * (`orderConfirmLabel`, ADR-0033): a visible superset of the order number and of
+ * any tie-breaker the list row printed beside it.
  *
  * QUOTES MARK UNTRUSTED INPUT, AND NOTHING ELSE (review round 3, finding 2).
  * `recipient` may be caller-supplied, unverified free text — this function
@@ -75,7 +75,9 @@ export function refundConfirmText(
 	const consequence = refundable
 		? "This sends the money back through Stripe and cannot be reversed."
 		: "This records a refund made out of band — it does not move money.";
-	const order = `Order #${shortIdFixed(orderId, SHORT_ID_CONFIRM_LEN)}`;
+	// It visibly EXTENDS the order number the list row printed, and any
+	// tie-breaker beside it ("#7E4CE" there, "#7E4CEABCD400" here — ADR-0033).
+	const order = `Order ${orderConfirmLabel(orderId)}`;
 	const named =
 		recipient === UNNAMED_REFUND_RECIPIENT
 			? `${order} — refund ${amount} to ${recipient}? ${consequence}`
@@ -86,14 +88,21 @@ export function refundConfirmText(
 }
 
 /** The honest per-gateway capability copy (ADR-0008), each ≤200 (§1): Stripe
- *  moves money; x402 / no-secret is record-only, and says why. Takes primitives
- *  rather than a summary object so this module stays free of wire types. */
-export function refundCapabilityText(refundable: boolean, paymentMethod: string | null): string {
+ *  moves money; no-secret is record-only, and says why; a LEGACY method (the
+ *  server's `legacyPaymentMethod`: stored on an older order, no longer supported
+ *  — an x402 order) is record-only for good, and says that instead. Takes
+ *  primitives rather than a summary object so this module stays free of wire
+ *  types. */
+export function refundCapabilityText(
+	refundable: boolean,
+	paymentMethod: string | null,
+	legacyPaymentMethod = false,
+): string {
 	if (refundable) {
 		return `Paid via ${paymentMethod ?? "the payment provider"} — refunding here issues a REAL refund through Stripe and money moves back to the buyer.`;
 	}
-	if (paymentMethod === "x402") {
-		return "Paid on-chain (x402), which cannot be reversed and has no signing wallet — refunds here are RECORD-ONLY. Send the return yourself, then record it here.";
+	if (legacyPaymentMethod) {
+		return "Paid with a payment method Otta no longer supports. Refunds are record-only: return the money outside Otta, then record it here.";
 	}
 	return "Automatic refunds are unavailable for this order — refunds here are RECORD-ONLY. Issue it through your payment provider, then record it here.";
 }

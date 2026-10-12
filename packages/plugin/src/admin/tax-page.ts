@@ -1,3 +1,4 @@
+import { appliedTaxRate, shadowedTaxRates } from "@otta-sh/domain";
 import type {
 	AccordionBlock,
 	ActionsBlock,
@@ -23,6 +24,12 @@ import {
 	type TaxRateWire,
 } from "./admin-rules-surface.js";
 import { idInputProblem } from "./id-input.js";
+import {
+	optionsButtonBlock,
+	saveOptionsAction,
+	showOptionsAction,
+	taxOffBanner,
+} from "./tax-options-screen.js";
 import { formatBpsAsPercent, parsePercentToBps } from "./percent-input.js";
 import {
 	asRecord,
@@ -98,6 +105,12 @@ const ACTION_SHOW_NEW_RATE = TAX_ACTIONS.custom("show-new-rate");
 /** Leave either create screen — re-lists the level the operator came from
  *  (the path rides in the button's own `value`, L-6). */
 const ACTION_CANCEL_NEW = TAX_ACTIONS.custom("cancel-new");
+/** ADR-0032: the "Tax options" drill-in and its save. */
+const OPTIONS_ACTIONS = {
+	show: TAX_ACTIONS.custom("show-options"),
+	save: TAX_ACTIONS.custom("save-options"),
+	back: ACTION_CANCEL_NEW,
+};
 
 /**
  * The action ids the admin-route dispatcher recognizes as belonging to the
@@ -115,6 +128,8 @@ export const TAX_ACTION_IDS: ReadonlySet<string> = TAX_ACTIONS.actionIds(
 	"delete-rate",
 	"show-new-rate",
 	"cancel-new",
+	"show-options",
+	"save-options",
 );
 
 /** The em-dash BlockInteraction envelope this page consumes (the scaffold's
@@ -152,6 +167,10 @@ interface RateDraft {
 	zoneId: string;
 	ratePercent: string;
 	appliesToShipping: boolean;
+	/** Set when the create was refused as a duplicate: the rate already in the
+	 *  slot. The create screen words the refusal itself, because it holds the
+	 *  zones list — so the notice names the zone without another read. */
+	duplicateOf?: { id: string; rateBps: number };
 }
 
 /** A tax rate ROW as this screen renders it: the wire shape plus the zone's
@@ -159,6 +178,14 @@ interface RateDraft {
  *  performs (D-6's one-extra-read allowance — see `fetchRatesForClass`). */
 interface TaxRateRow extends TaxRateWire {
 	zoneName?: string;
+	/** Set when this row is an IGNORED duplicate: the id of the rate in the same
+	 *  (class, zone) that applies instead — the checkout's own rule
+	 *  (`shadowedTaxRates`), so the console and the charge cannot disagree. */
+	appliedInstead?: string;
+	/** Set on the rate that applies when ignored duplicates share its slot. */
+	ignoredDuplicates?: string[];
+	/** On that applying rate: the duplicate that would apply if it were deleted. */
+	nextIfDeleted?: { id: string; rateBps: number; appliesToShipping: boolean };
 }
 
 /** The rates level's own filter: an OPTIONAL zone-id narrow. Unset ⇒ every
@@ -230,14 +257,22 @@ export function createTaxPageHandler(): RouteHandler<TaxPageInput> {
 			[ACTION_DELETE_RATE]: deleteRateAction(),
 			[ACTION_SHOW_NEW_RATE]: showNewRateAction(),
 			[ACTION_CANCEL_NEW]: cancelNewAction(),
+			[OPTIONS_ACTIONS.show]: showOptionsAction(OPTIONS_ACTIONS),
+			[OPTIONS_ACTIONS.save]: saveOptionsAction(OPTIONS_ACTIONS),
 		},
 	});
 }
 
 // -- level 0: the tax classes registry ----------------------------------------
 
+/** The registry's one "page": the classes, and the "tax is off" banner if any. */
+interface ClassesPageBundle {
+	classes: TaxClassWire[];
+	taxOff: Block | null;
+}
+
 function taxClassesLevel() {
-	return listLevel<AdminRulesSurface, Record<string, never>, TaxClassWire, TaxRenderState>({
+	return listLevel<AdminRulesSurface, Record<string, never>, ClassesPageBundle, TaxRenderState>({
 		// The registry has no service-side pagination (`GET /admin/tax/classes`
 		// returns the full list) — `limit` is unused by `fetchPage` (kept for the
 		// level's shape) and `nextCursor` is always `null`. Deliberately above
@@ -246,11 +281,12 @@ function taxClassesLevel() {
 		limit: 200,
 		filterFromValues: () => ({}),
 		async fetchPage(client) {
-			const classes = await client.listTaxClasses();
-			return { items: classes, nextCursor: null };
+			const [classes, read] = await Promise.all([client.listTaxClasses(), client.getTaxSettings()]);
+			return { items: [{ classes, taxOff: taxOffBanner(read) }], nextCursor: null };
 		},
 		render({ actions, items, nextToken, notice, renderState }) {
-			return classesBlocks(actions, items, nextToken, notice, renderState);
+			const bundle = items[0] ?? { classes: [], taxOff: null };
+			return classesBlocks(actions, bundle, nextToken, notice, renderState);
 		},
 		onError: () => classesFailClosed(),
 	});
@@ -267,7 +303,7 @@ function taxClassesLevel() {
  */
 function classesBlocks(
 	actions: ScreenActions,
-	classes: TaxClassWire[],
+	{ classes, taxOff }: ClassesPageBundle,
 	nextToken: string | undefined,
 	notice: Notice | undefined,
 	renderState: TaxRenderState | undefined,
@@ -280,8 +316,12 @@ function classesBlocks(
 			text: "A tax class is a rate group; products and rates reference one by id.",
 		},
 		createActionBlock("tax:create-class-action", ACTION_SHOW_NEW_CLASS, "New tax class"),
+		// ADR-0032: the store's tax options, one drill-in away.
+		optionsButtonBlock(OPTIONS_ACTIONS),
 	];
 	if (notice !== undefined) blocks.push(noticeBanner(notice));
+	// ADR-0032: rates but tax off — say so where the rates are managed.
+	if (taxOff !== null) blocks.push(taxOff);
 	// No filter block: this level has no filter fields (L-2, count 0).
 
 	const accordionBranch = nextToken === undefined && classes.length <= REGISTRY_ACCORDION_LIMIT;
@@ -566,6 +606,56 @@ async function fetchRatesForClass(
 	zoneId: string | undefined,
 	zones: ShippingZoneWire[],
 ): Promise<TaxRateRow[]> {
+	return flagDuplicates(await readRatesForClass(client, classId, zoneId, zones));
+}
+
+/**
+ * Mark the duplicates a store may still hold from before it refused a second
+ * rate per (class, zone). A duplicate is never hidden and never deleted here —
+ * both rows stay listed, editable and deletable — but the one the checkout
+ * ignores says so, and names the one it charges.
+ */
+function flagDuplicates(rows: TaxRateRow[]): TaxRateRow[] {
+	const shadowed = shadowedTaxRates(rows);
+	if (shadowed.size === 0) return rows;
+	const ignoredBy = new Map<string, string[]>();
+	for (const [ignoredId, applied] of shadowed) {
+		ignoredBy.set(applied.id, [...(ignoredBy.get(applied.id) ?? []), ignoredId]);
+	}
+	const byId = new Map(rows.map((r) => [r.id, r]));
+	return rows.map((row) => {
+		const applied = shadowed.get(row.id);
+		if (applied !== undefined) return { ...row, appliedInstead: applied.id };
+		const ignored = ignoredBy.get(row.id);
+		if (ignored === undefined) return row;
+		// The same rule, over what would be left: who takes over if this one goes.
+		const next = appliedTaxRate(
+			ignored.flatMap((id) => byId.get(id) ?? []),
+			row.taxClassId,
+			row.zoneId,
+		);
+		return {
+			...row,
+			ignoredDuplicates: ignored.toSorted(),
+			...(next === null
+				? {}
+				: {
+						nextIfDeleted: {
+							id: next.id,
+							rateBps: next.rateBps,
+							appliesToShipping: next.appliesToShipping,
+						},
+					}),
+		};
+	});
+}
+
+async function readRatesForClass(
+	client: AdminRulesSurface,
+	classId: string,
+	zoneId: string | undefined,
+	zones: ShippingZoneWire[],
+): Promise<TaxRateRow[]> {
 	if (zoneId !== undefined) {
 		const rates = await client.listTaxRates(zoneId);
 		const zoneName = zones.find((z) => z.id === zoneId)?.name;
@@ -599,6 +689,8 @@ function ratesBlocks(
 		backButton(actions.back, "← Back to tax classes", path),
 	];
 	if (notice !== undefined) blocks.push(noticeBanner(notice));
+	const duplicates = duplicatesBanner(bundle.rows);
+	if (duplicates !== undefined) blocks.push(duplicates);
 	blocks.push({ type: "context", text: "Each rate applies to purchases shipping to one zone." });
 	// INC-14: the create action, promoted from an accordion at the very bottom
 	// to a button under the intro line. It carries the drill path (L-6) — this
@@ -703,6 +795,75 @@ function zoneFilterBlock(
 	});
 }
 
+/**
+ * One warning for the whole level when duplicates survive, naming each pair —
+ * shown in both the accordion and the table branch, so a merchant past the
+ * accordion limit is told too.
+ */
+function duplicatesBanner(rows: TaxRateRow[]): Block | undefined {
+	const ignored = rows.filter((r) => r.appliedInstead !== undefined);
+	if (ignored.length === 0) return undefined;
+	const lines = ignored.map(
+		(r) =>
+			`"${r.id}" duplicates "${r.appliedInstead ?? ""}" for ${r.zoneName ?? r.zoneId} — only "${r.appliedInstead ?? ""}" applies.`,
+	);
+	return {
+		type: "banner",
+		variant: "alert",
+		title: `Duplicate tax rate${ignored.length === 1 ? "" : "s"}`,
+		description: `${lines.join(" ")} A class can have one rate per zone. Delete the rate you don't want; until then the ignored one is not charged.`,
+	};
+}
+
+/** The short status a duplicate's table row carries; `undefined` for an ordinary rate. */
+function duplicateStatus(row: TaxRateRow): string | undefined {
+	if (row.appliedInstead !== undefined) return `duplicate: only ${row.appliedInstead} applies`;
+	if (row.ignoredDuplicates !== undefined) {
+		return `applies; duplicate ${row.ignoredDuplicates.join(", ")} ignored`;
+	}
+	return undefined;
+}
+
+/** What an IGNORED duplicate's stored shipping flag reads as: shown, never as active. */
+function ignoredShippingText(row: TaxRateRow): string {
+	return `${row.appliesToShipping ? "yes" : "no"} (not applied — duplicate ignored)`;
+}
+
+/** "Deleting this makes <dup> apply: <rate>, shipping <yes/no>" — on the applying rate. */
+function nextIfDeletedText(row: TaxRateRow): string | undefined {
+	const next = row.nextIfDeleted;
+	if (next === undefined) return undefined;
+	return `Deleting this makes ${next.id} apply: ${formatBpsAsPercent(next.rateBps)}%, shipping ${next.appliesToShipping ? "yes" : "no"}.`;
+}
+
+/**
+ * The lines a duplicate's body opens with — the SAME in the accordion and the
+ * detail leaf; `[]` for an ordinary rate. The ignored rate shows its stored
+ * shipping flag read-only, as not applied; the applying rate says which
+ * duplicate takes over if it is deleted.
+ */
+function duplicateBlocks(row: TaxRateRow): Block[] {
+	const zone = row.zoneName ?? row.zoneId;
+	if (row.appliedInstead !== undefined) {
+		return [
+			{
+				type: "context",
+				text: `Duplicate: only ${row.appliedInstead} applies to ${zone}, so this rate taxes nothing (goods or shipping). Delete the one you don't want.`,
+			},
+		];
+	}
+	if (row.ignoredDuplicates !== undefined) {
+		const next = nextIfDeletedText(row);
+		return [
+			{
+				type: "context",
+				text: `Applies to ${zone}. Duplicate ${row.ignoredDuplicates.join(", ")} is ignored.${next === undefined ? "" : ` ${next}`}`,
+			},
+		];
+	}
+	return [];
+}
+
 function rateGroupId(rateId: string): PlainBlockId {
 	return `tax:rate:${rateId}` as PlainBlockId;
 }
@@ -714,9 +875,20 @@ function rateGroupId(rateId: string): PlainBlockId {
  *  changed it loses the CAS and the reload shows the fresh value with a
  *  "reload" notice, never a silent clobber. */
 function rateEditForm(classId: string, row: TaxRateRow): FormBlock {
+	// The flag this form LOADED rides in the carrier beside the rate, and the save
+	// sends both as the store's compare-and-set expectation — so a tab that loaded
+	// before another changed either is told to reload, never reverts it. An IGNORED
+	// duplicate keeps an editable toggle (so the merchant can fix it before deleting
+	// the rate that applies), labelled as taking effect only once it applies.
+	const ignored = row.appliedInstead !== undefined;
 	return carriedForm({
 		namespace: "tax:rate-save",
-		context: { classId, rateId: row.id, expectedRateBps: String(row.rateBps) },
+		context: {
+			classId,
+			rateId: row.id,
+			expectedRateBps: String(row.rateBps),
+			expectedAppliesToShipping: String(row.appliesToShipping),
+		},
 		form: {
 			type: "form",
 			fields: [
@@ -729,7 +901,9 @@ function rateEditForm(classId: string, row: TaxRateRow): FormBlock {
 				{
 					type: "toggle",
 					action_id: "appliesToShipping",
-					label: "Applies to shipping",
+					label: ignored
+						? "Applies to shipping — only if this rate becomes the active one"
+						: "Applies to shipping",
 					initial_value: row.appliesToShipping, // F-6b/X-24: REQUIRED — toggle is mount-only
 				},
 			],
@@ -739,6 +913,7 @@ function rateEditForm(classId: string, row: TaxRateRow): FormBlock {
 }
 
 function rateDeleteActions(classId: string, row: TaxRateRow) {
+	const takeover = nextIfDeletedText(row);
 	const button: ButtonElement = {
 		type: "button",
 		action_id: ACTION_DELETE_RATE,
@@ -747,7 +922,7 @@ function rateDeleteActions(classId: string, row: TaxRateRow) {
 		value: { classId, rateId: row.id },
 		confirm: {
 			title: `Delete tax rate ${row.id}?`,
-			text: "In-flight carts recompute their tax without this rate. Orders already placed are unaffected — they snapshot the tax charged at purchase time.",
+			text: `${takeover === undefined ? "" : `${takeover} `}In-flight carts recompute their tax without this rate. Orders already placed are unaffected — they snapshot the tax charged at purchase time.`,
 			confirm: "Yes, delete",
 			deny: "Keep it",
 			style: "danger",
@@ -774,13 +949,19 @@ function rateDeleteActions(classId: string, row: TaxRateRow) {
  */
 function rateRow(classId: string, row: TaxRateRow): AccordionBlock {
 	const percent = formatBpsAsPercent(row.rateBps);
-	const appliesLabel = row.appliesToShipping ? "also shipping" : "goods only";
+	// An IGNORED duplicate says so in place of what it would tax: it taxes nothing.
+	const appliesLabel =
+		row.appliedInstead !== undefined
+			? "duplicate — ignored"
+			: row.appliesToShipping
+				? "also shipping"
+				: "goods only";
 	return {
 		type: "accordion",
 		block_id: rateGroupId(row.id),
 		label: `${percent}% — ${row.zoneName ?? row.zoneId} · ${row.id} · ${appliesLabel}`,
 		default_open: false,
-		blocks: [rateEditForm(classId, row), rateDeleteActions(classId, row)],
+		blocks: [...duplicateBlocks(row), rateEditForm(classId, row), rateDeleteActions(classId, row)],
 	};
 }
 
@@ -802,12 +983,20 @@ function ratesTable(
 			{ key: "rate", label: "Rate" },
 			{ key: "appliesToShipping", label: "Applies to shipping" },
 		],
-		rows: rows.map((r) => ({
-			id: r.id,
-			zone: r.zoneName ?? r.zoneId,
-			rate: `${formatBpsAsPercent(r.rateBps)}%`,
-			appliesToShipping: r.appliesToShipping ? "yes" : "—",
-		})),
+		rows: rows.map((r) => {
+			const status = duplicateStatus(r);
+			return {
+				id: r.id,
+				zone: r.zoneName ?? r.zoneId,
+				rate: `${formatBpsAsPercent(r.rateBps)}%${status === undefined ? "" : ` (${status})`}`,
+				appliesToShipping:
+					r.appliedInstead !== undefined
+						? ignoredShippingText(r)
+						: r.appliesToShipping
+							? "yes"
+							: "—",
+			};
+		}),
 		page_action_id: actions.page, // never fires: this registry has no service-side pagination
 		...(nextToken !== undefined ? { next_cursor: nextToken } : {}),
 		empty_text: "No tax rates yet for this class.",
@@ -862,7 +1051,17 @@ function newRateScreen(
 		{ type: "header", text: `New tax rate — ${classId}` },
 		backButton(ACTION_CANCEL_NEW, "← Back to tax rates", [classId]),
 	];
-	if (notice !== undefined) blocks.push(noticeBanner(notice));
+	const duplicateOf = draft?.duplicateOf;
+	const shown =
+		notice ??
+		(duplicateOf === undefined || draft === undefined
+			? undefined
+			: duplicateRateNotice(
+					classId,
+					zones.find((z) => z.id === draft.zoneId)?.name ?? draft.zoneId,
+					duplicateOf,
+				));
+	if (shown !== undefined) blocks.push(noticeBanner(shown));
 	blocks.push(
 		zones.length === 0
 			? {
@@ -988,6 +1187,8 @@ function rateDetailBlocks(
 		backButton(actions.back, "← Back to tax rates", [classId, row.id]),
 	];
 	if (notice !== undefined) blocks.push(noticeBanner(notice));
+	// The duplicate's own note, once (the class-level banner is for the list).
+	blocks.push(...duplicateBlocks(row));
 	blocks.push({
 		type: "context",
 		text: "Deleting only affects future carts — orders already placed keep the tax they were charged at purchase time.",
@@ -1198,6 +1399,14 @@ function deleteClassNotice(result: TaxClassDeleteResult): Notice {
 			description: `${result.count} product${result.count === 1 ? "" : "s"} still reference${result.count === 1 ? "s" : ""} this class — clear those references first, then retry.`,
 		};
 	}
+	if (result.reason === "in_use_by_settings") {
+		return {
+			variant: "error",
+			title: "Class not deleted",
+			description:
+				"Tax options use this class as the shipping tax class — choose another shipping tax class in Tax options first, then retry.",
+		};
+	}
 	if (result.reason === "in_use_by_rates") {
 		return {
 			variant: "error",
@@ -1250,11 +1459,32 @@ function createRateAction() {
 			rateBps: bps,
 			appliesToShipping,
 		});
+		if (!result.ok && result.duplicateTaxRate !== undefined) {
+			// Worded by the create screen, which has the zone's name in hand.
+			return showList([classId], undefined, {
+				kind: "new-rate",
+				draft: { ...draft, duplicateOf: result.duplicateTaxRate },
+			});
+		}
 		const notice = createRateNotice(result, id);
 		return result.ok
 			? showList([classId], notice)
 			: showList([classId], notice, { kind: "new-rate", draft });
 	});
+}
+
+/** The one-rate-per-(class, zone) refusal; `zoneLabel` is the zone's name (its id
+ *  when the name is not in the list). @internal Exported for its unit test. */
+export function duplicateRateNotice(
+	classId: string,
+	zoneLabel: string,
+	existing: { id: string; rateBps: number },
+): Notice {
+	return {
+		variant: "error",
+		title: "Tax rate not created",
+		description: `Class "${classId}" already has a rate for "${zoneLabel}": "${existing.id}" (${formatBpsAsPercent(existing.rateBps)}%). A class can have one rate per zone — edit "${existing.id}" instead, or delete it first.`,
+	};
 }
 
 function createRateNotice(result: RulesCreateResult<TaxRateWire>, id: string): Notice {
@@ -1298,7 +1528,15 @@ function saveRateAction() {
 		const classId = carried?.classId;
 		const rateId = carried?.rateId;
 		const expectedRateBpsRaw = carried?.expectedRateBps;
-		if (classId === undefined || rateId === undefined || expectedRateBpsRaw === undefined) {
+		// A form rendered before the flag joined the CAS carries no flag watermark:
+		// treated like a missing rate watermark (re-list), never as a guessed `false`.
+		const expectedFlagRaw = carried?.expectedAppliesToShipping;
+		if (
+			classId === undefined ||
+			rateId === undefined ||
+			expectedRateBpsRaw === undefined ||
+			expectedFlagRaw === undefined
+		) {
 			return showList();
 		}
 		const expectedRateBps = Number.parseInt(expectedRateBpsRaw, 10);
@@ -1311,10 +1549,13 @@ function saveRateAction() {
 				description: TAX_PERCENT_HINT,
 			});
 		}
+		// The flag the form shows, and the flag it loaded as the CAS expectation (see
+		// `rateEditForm`): a flag changed elsewhere since is `stale`, never reverted.
 		const appliesToShipping = readBoolean(values.appliesToShipping) ?? false;
 		const result = await client.updateTaxRate(rateId, {
 			rateBps: bps,
 			appliesToShipping,
+			expectedAppliesToShipping: expectedFlagRaw === "true",
 			expectedRateBps,
 		});
 		return showList([classId], saveRateNotice(result));

@@ -221,7 +221,7 @@ export interface CancelOrderWithRefundCommand extends CancelOrderCommand {
 export type CancelOrderWithRefundFailure =
 	| CancelOrderFailure
 	/** Money was captured, but this order's gateway cannot return it automatically
-	 *  (x402, which has no wallet to send from — ADR-0008 — or no gateway wired).
+	 *  (a gateway that cannot refund, or no gateway wired).
 	 *  NOTHING changed: refunding it is a person's job, recorded in Money → Refunds. */
 	| "REFUND_NOT_AUTOMATIC"
 	/** Another refund on this order is still reserved or of unknown outcome. NOTHING

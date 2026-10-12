@@ -239,6 +239,8 @@ export class InProcessReportingSettingsClient implements ReportingSettingsSurfac
 			...(patch.lowStockThreshold !== undefined
 				? { lowStockThreshold: patch.lowStockThreshold }
 				: {}),
+			// Validated by the domain (`isSupportedCurrency`), like every other field.
+			...(patch.currency !== undefined ? { currency: patch.currency } : {}),
 		};
 
 		try {
@@ -312,5 +314,8 @@ function toSettingsWire(settings: OperationalSettings): OperationalSettingsWire 
 	return {
 		holdTtlMinutes: settings.holdTtlMinutes,
 		lowStockThreshold: settings.lowStockThreshold,
+		// Only when saved: absent stays absent, so a store that never saved one
+		// reads exactly as it did before the setting existed.
+		...(settings.currency !== undefined ? { currency: settings.currency } : {}),
 	};
 }

@@ -47,6 +47,7 @@
  * `@otta-sh/admin-react` and stops being shared.
  */
 import { LABEL_BUDGET, fit, unitWord, valueLabel } from "./copy.js";
+import { DEFAULT_STORE_CURRENCY } from "./currency-choices.js";
 import { UNFORMATTABLE, formatOptionalAmount } from "./format-money.js";
 import type { RowNoun, ZeroStateCopy } from "./list-outcome.js";
 
@@ -653,6 +654,25 @@ export function taxClassOptions(
 	return options;
 }
 
+/** The product tax status select's options (PR 2b, WooCommerce's tax status),
+ *  in the order WooCommerce lists them. Values are the wire's enum. */
+export const TAX_STATUS_OPTIONS: ReadonlyArray<{ value: string; label: string }> = [
+	{ value: "taxable", label: "Taxable" },
+	{ value: "shipping_only", label: "Shipping only" },
+	{ value: "none", label: "None" },
+];
+
+/** What the tax status means, under the select. "Shipping only" on a digital
+ *  product behaves like "None": nothing ships (DECISIONS 2b-4). */
+export const TAX_STATUS_HINT =
+	"Taxable: tax is charged on the product. Shipping only: no tax on the product; its tax class still counts toward shipping tax when the shipping tax class is 'Based on cart items'. None: no tax, and it does not count toward shipping tax. On a digital product, Shipping only works like None.";
+
+/** A stored status as the summary shows it; a record without one reads Taxable. */
+export function taxStatusLabel(taxStatus: string | undefined): string {
+	const value = taxStatus ?? "taxable";
+	return TAX_STATUS_OPTIONS.find((o) => o.value === value)?.label ?? value;
+}
+
 /** The `Dimensions (mm, LxWxH)` cell. A partially-measured product shows which
  *  axis is missing (`120 x ? x 40`) rather than a single dash that would hide
  *  the two figures somebody did record. */
@@ -723,6 +743,7 @@ export const PRODUCT_FIELD_LABELS = {
 	compareAt: "Compare-at",
 	unitCost: "Unit cost",
 	taxClass: "Tax class",
+	taxStatus: "Tax status",
 	kind: "Kind",
 	weight: "Weight (g)",
 	dimensions: "Dimensions (mm, LxWxH)",
@@ -778,7 +799,9 @@ export const PRODUCT_KIND_LABELS = { physical: "physical", digital: "digital" } 
 export const PRICE_PLACEHOLDER = "19.99";
 export const COMPARE_AT_PLACEHOLDER = "29.99";
 export const UNIT_COST_PLACEHOLDER = "8.50";
-export const CURRENCY_PLACEHOLDER = "USD";
+/** @deprecated The never-saved store currency, `DEFAULT_STORE_CURRENCY`; kept as
+ *  an alias for existing importers. */
+export const CURRENCY_PLACEHOLDER = DEFAULT_STORE_CURRENCY;
 export const ADD_STOCK_PLACEHOLDER = "e.g. 12";
 export const REMOVE_STOCK_PLACEHOLDER = "e.g. 3";
 

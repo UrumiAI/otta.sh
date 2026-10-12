@@ -53,6 +53,11 @@ const ACT = "otta_console_act";
 
 export interface OrderSummary {
 	readonly id: string;
+	/** The order NUMBER ("#3F9A2"), computed by the server with the domain's
+	 *  `orderNumber` — the label the shopper sees. A display label, never a key
+	 *  (ADR-0033). Absent from a server older than the field: read it through
+	 *  `orderNumberOf`, never directly. */
+	readonly orderNumber?: string;
 	readonly state: string;
 	readonly currency: string;
 	readonly buyerRef: string;
@@ -79,6 +84,9 @@ export interface OrderTotals {
 	readonly shippingCents: number;
 	readonly taxCents: number;
 	readonly totalCents: number;
+	/** The payment rounding, SIGNED minor units (ADR-0035's amendment); only on an
+	 *  order in a currency with a payment increment. */
+	readonly roundingCents?: number;
 	readonly appliedCouponCode: string | null;
 	readonly shippingZoneId?: string | null;
 }
@@ -113,6 +121,11 @@ export interface OrderCancellation {
 
 export interface OrderDetail {
 	readonly id: string;
+	/** The order NUMBER ("#3F9A2"), computed by the server with the domain's
+	 *  `orderNumber` — the label the shopper sees. A display label, never a key
+	 *  (ADR-0033). Absent from a server older than the field: read it through
+	 *  `orderNumberOf`, never directly. */
+	readonly orderNumber?: string;
 	readonly state: string;
 	readonly currency: string;
 	readonly paymentMethod: string | null;
@@ -162,6 +175,9 @@ export interface RefundsSummary {
 	readonly remainingCents: number;
 	readonly paymentMethod: string | null;
 	readonly refundable: boolean;
+	/** The order's method is one Otta no longer supports: refunds are record-only
+	 *  for good. Absent from an older plugin ⇒ false. */
+	readonly legacyPaymentMethod?: boolean;
 }
 
 export interface TimelineEntry {
@@ -324,27 +340,6 @@ export interface ActPayload {
 
 // ── wire shapes: Pricing & inventory (INC-21) ────────────────────────────────
 
-/** One list row. A structural subset of the plugin's `ProductSummaryWire`, and
- *  `onHand` is the RAW COUNT rather than a rendered cell — G1's reasoning
- *  applied to a number that is not money: a Block Kit row carries `"3 · Low"`,
- *  a decision already made, and a React tier fed that string could neither
- *  re-band it nor tell `0` from "no inventory record". `onHandCell` is called
- *  HERE, from the shared package, so both surfaces band the same count the same
- *  way. */
-export interface ProductSummary {
-	readonly productId: string;
-	readonly sku: string | null;
-	readonly title: string | null;
-	readonly priceCents: number | null;
-	readonly currency: string | null;
-	readonly productKind: string;
-	readonly active: boolean;
-	/** `null` ⇒ the sku carries no inventory record. NEVER conflated with 0. */
-	readonly onHand: number | null;
-	readonly deletedAt: string | null;
-	readonly createdAt: string;
-}
-
 export interface ProductRecord {
 	readonly productId: string;
 	readonly sku: string | null;
@@ -352,6 +347,8 @@ export interface ProductRecord {
 	readonly priceCents: number | null;
 	readonly currency: string | null;
 	readonly taxClass: string | null;
+	/** PR 2b: `taxable` | `shipping_only` | `none`; absent (an older plugin) ⇒ taxable. */
+	readonly taxStatus?: string;
 	readonly compareAtCents: number | null;
 	readonly compareAtCurrency: string | null;
 	readonly unitCostCents: number | null;
@@ -387,7 +384,9 @@ export interface TaxClass {
 	readonly name: string;
 }
 
-export interface ProductsVocabulary {
+/** The `products.detail` answer still carries the list's filter vocabulary;
+ *  nothing in this package reads it, so it is described here and not exported. */
+interface ProductsVocabulary {
 	/** The combined Status select's options — `active`/`archived` as ONE
 	 *  mutually-exclusive choice, because a soft-deleted row is always
 	 *  inactive. */
@@ -398,62 +397,15 @@ export interface ProductsVocabulary {
 	readonly pageLimit: number;
 }
 
-/** Page context a row cannot carry: what counts as `Low`, and whether the read
- *  degraded. It survives a page narrowed to ZERO rows, which is exactly when
- *  the degradation banner has to speak. */
-export interface StockContext {
-	readonly threshold: number | null;
-	readonly unreadable: boolean;
-	readonly filterUnavailable: boolean;
-}
-
-export interface ProductsFilter {
-	readonly status?: string;
-	readonly productKind?: string;
-	readonly lowStock?: boolean;
-	readonly search?: string;
-}
-
-export interface ProductsListPayload {
-	readonly ok: true;
-	readonly products: readonly ProductSummary[];
-	readonly nextCursor: string | null;
-	/** Absent when the service reports none AND when "Low stock only" was
-	 *  asked for but the threshold could not be resolved, so the request never
-	 *  carried the predicate (`stock.filterUnavailable`) — see the plugin's
-	 *  `resolveStockContext`. Both land on the page-scoped count. */
-	readonly total?: number;
-	/**
-	 * THE PAGE THIS SCREEN ASKED FOR WAS REFUSED, and these are the first page's
-	 * rows instead.
-	 *
-	 * The service fails closed when a cursor disagrees with the filters sent
-	 * beside it, or when the token will not decode, and its prescribed remedy is
-	 * mechanical: drop the cursor and re-issue page one with the same parameters.
-	 * The plugin performs that before answering, so this arrives as a SUCCESS with
-	 * a flag rather than as a failure — the request was answered, just not from
-	 * the page that was named.
-	 *
-	 * IT IS THE ONLY THING THAT MAY TRIGGER THE ADDRESS-BAR RESET. A failure
-	 * cannot: every failure reaches this tier in one shape, so a refused token
-	 * would be indistinguishable from an expired session or a dropped connection,
-	 * and correcting the address on those would throw away the operator's page at
-	 * the moment a reload would have restored it.
-	 *
-	 * `?: true`, NOT `?: boolean`, matching the plugin's own declaration: the wire
-	 * never carries `false`, and a field with two spellings of "no" is a field two
-	 * call sites will eventually check differently.
-	 */
-	readonly cursorRejected?: true;
-	readonly stock: StockContext;
-	readonly vocabulary: ProductsVocabulary;
-}
-
 export interface ProductDetailPayload {
 	readonly ok: true;
 	readonly product: ProductRecord;
 	readonly taxClasses: readonly TaxClass[];
 	readonly threshold: number | null;
+	/** The effective store currency an unpriced product's picker starts on (USD
+	 *  when never saved). `null`: the settings read FAILED — preselect nothing and
+	 *  ask. Absent (an older plugin): USD, as before. */
+	readonly storeCurrency?: string | null;
 	readonly vocabulary: ProductsVocabulary;
 }
 
@@ -597,21 +549,6 @@ export function fetchOrderDetail(orderId: string): Promise<Result<DetailPayload>
 	return post<DetailPayload>(
 		{ type: READ, resource: "orders.detail", orderId },
 		ORDERS_UNAVAILABLE,
-	);
-}
-
-export function fetchProducts(
-	filter: ProductsFilter,
-	cursor?: string,
-): Promise<Result<ProductsListPayload>> {
-	return post<ProductsListPayload>(
-		{
-			type: READ,
-			resource: "products.list",
-			filter,
-			...(cursor !== undefined ? { cursor } : {}),
-		},
-		PRODUCTS_UNAVAILABLE,
 	);
 }
 

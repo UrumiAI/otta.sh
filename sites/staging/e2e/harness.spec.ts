@@ -15,7 +15,6 @@ import {
 	CONSOLE_PLUGIN_ID,
 	DEV_BYPASS_PATH,
 	E2E_BASE_URL,
-	E2E_PG_CONNECTION_STRING,
 	E2E_VIEWPORT,
 	MIGRATED_SCREENS,
 	NEVER_MIGRATED_PATHS,
@@ -79,34 +78,18 @@ test.describe("harness configuration", () => {
 		for (const { label, source } of surface) {
 			expect(source, `${label} names port ${prodPort}`).not.toMatch(namesProdPort);
 		}
-		// harness.ts owns the one connection string the harness can hand to a
-		// boot command, so its DEFAULT is pinned to the local test container...
-		const harness = readFileSync(
-			fileURLToPath(new URL("sites/staging/e2e/harness.ts", repoRoot)),
-			"utf8",
-		);
-		expect(harness, "the default e2e database is no longer the local test one").toContain(":55432");
-		// ...and the RESOLVED value is checked too, so an inherited
-		// PG_CONNECTION_STRING cannot aim a boot at production either.
-		expect(E2E_PG_CONNECTION_STRING, "PG_CONNECTION_STRING names production").not.toMatch(
-			namesProdPort,
-		);
 	});
 
 	test("every resolved e2e endpoint is loopback (§0.3 — no remote host, ever)", () => {
-		// The port guard above only covers Postgres — and Postgres is the variable
-		// a deploying shell really does export, which is the whole reason for this
-		// check. `OTTA_E2E_BASE_URL` is an e2e-only name, guarded anyway so that no
-		// resolved endpoint in this harness is merely trusted. (There were two such
-		// names until INC-D3b: `OTTA_E2E_SERVICE_URL` pointed at the standalone
-		// commerce service, which no longer exists, so the variable was removed
-		// rather than left as a knob that configures nothing.)
-		for (const [label, url] of [
-			["OTTA_E2E_BASE_URL", E2E_BASE_URL],
-			["PG_CONNECTION_STRING", E2E_PG_CONNECTION_STRING],
-		] as const) {
-			expect(() => assertLoopbackUrl(url, label), `${label} is not loopback`).not.toThrow();
-		}
+		// `OTTA_E2E_BASE_URL` is the one endpoint this harness resolves, guarded so
+		// that no resolved endpoint is merely trusted. (There used to be more:
+		// `OTTA_E2E_SERVICE_URL` pointed at the standalone commerce service until
+		// INC-D3b, and a `PG_CONNECTION_STRING` nothing read was resolved here too;
+		// both were removed rather than left as knobs that configure nothing.)
+		expect(
+			() => assertLoopbackUrl(E2E_BASE_URL, "OTTA_E2E_BASE_URL"),
+			"OTTA_E2E_BASE_URL is not loopback",
+		).not.toThrow();
 		// Negative control: the guard is not vacuous.
 		expect(() => assertLoopbackUrl("https://otta.example.com", "probe")).toThrow(/loopback/);
 		expect(() => assertLoopbackUrl("postgres://u:p@db.prod.internal:55432/otta", "probe")).toThrow(

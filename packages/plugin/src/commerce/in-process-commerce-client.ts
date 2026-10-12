@@ -58,11 +58,13 @@ import {
 	createOrderFromCart,
 	currency as toCurrency,
 	deactivateProductCommerce,
+	effectiveStoreCurrency,
 	deactivateProductVariant,
 	email as toEmail,
 	getCart,
 	getProductCommerce,
 	idempotencyKey as toIdempotencyKey,
+	isCurrentPaymentMethod,
 	InvalidProductFieldError,
 	isEmailTransportUnavailableError,
 	isProductLive,
@@ -109,7 +111,10 @@ import {
 	type ProductVariant,
 	type ProductVariantSummary,
 	type PricedLine,
+	type QuoteResult as DomainQuoteResult,
+	readOrderTaxSnapshot,
 	type ZoneResolution,
+	roundingEntry,
 } from "@otta-sh/domain";
 import type {
 	AbandonCartOrderResult,
@@ -134,6 +139,7 @@ import type {
 	ProductVariantWire,
 	PublicOrderResult,
 	PublicOrderWire,
+	QuoteTaxWire,
 	QuoteDestinationWire,
 	QuoteRequestWire,
 	ReplaceCartResult,
@@ -184,15 +190,11 @@ import {
 	type InProcessCommerceStoresOptions,
 } from "./in-process-commerce-stores.js";
 
-/** The currency a cart gets when the caller names none — the same default this
- *  surface has always applied. */
-const DEFAULT_CURRENCY = "USD";
-
 /**
  * The stores' own options plus the payment gateways.
  *
  * Gateways are PASSED IN rather than resolved here because resolving them is
- * asynchronous — the x402 wiring reads `payTo` and its networks from kv — and
+ * asynchronous — the Stripe wiring reads its keys from kv — and
  * this constructor is synchronous by design (a client is built per invocation
  * and must stay cheap). `makeCommerceClient` is already async, so it
  * is the natural place for that await; see `make-commerce-client.ts`.
@@ -292,11 +294,11 @@ export class InProcessCommerceClient implements CommerceClient {
 			taxRules: this.#stores.taxRules,
 			couponStore: this.#stores.couponStore,
 			...(options.taxCalculator !== undefined ? { taxCalculator: options.taxCalculator } : {}),
+			settings: this.#stores.settingsStore,
 			clock: this.#stores.clock,
 			idGen: this.#stores.idGen,
-			// Whatever the composition root could wire, and nothing more. INC-C5 fills
-			// the `x402` slot (`payments/x402-wiring.ts`); `stripe`
-			// arrives with the rest of the payment topology. A method with no gateway
+			// Whatever the composition root could wire, and nothing more. `stripe` is
+			// wired by `payments/stripe-wiring.ts`. A method with no gateway
 			// here is still REFUSED by the domain, loudly, rather than minted as a
 			// silently unpayable order — which is why an empty map stays a correct
 			// default rather than something to paper over.
@@ -568,19 +570,54 @@ export class InProcessCommerceClient implements CommerceClient {
 		return (await this.#stores.settingsStore.get()).holdTtlMinutes;
 	}
 
+	/**
+	 * A new, empty cart. An explicit `currency` wins (shape-checked, as always);
+	 * with none, the cart is in the STORE currency — the operator's saved setting,
+	 * or USD for a store that never saved one (`effectiveStoreCurrency`), which is
+	 * the default this surface always applied.
+	 *
+	 * The settings read is paid only on that path, once per cart (a cart is created
+	 * once and then carries its own currency for life — nothing rewrites it; the
+	 * spent-cart replacement, `replaceCart`, follows a SAVED store currency too).
+	 * It is the same keyed singleton read the hold TTL makes on every cart read,
+	 * and read per call for the same reason (`#liveCartDeps`): a cached value
+	 * would keep creating carts in the old currency after a save.
+	 *
+	 * A failed settings read FAILS the create, deliberately: falling back to USD
+	 * would silently mint wrong-currency carts in a store that saved another one,
+	 * and every later cart operation reads the same document anyway (hold TTL).
+	 */
 	async createCart(currency?: string): Promise<{ cartId: string }> {
 		if (currency !== undefined) requireCurrencyCode("currency", currency);
-		const cartId = await createCart(this.#cartDeps, toCurrency(currency ?? DEFAULT_CURRENCY));
+		const chosen = currency ?? effectiveStoreCurrency(await this.#stores.settingsStore.get());
+		const cartId = await createCart(this.#cartDeps, toCurrency(chosen));
 		return { cartId };
 	}
 
-	/** The domain's `replaceSpentCart`, which owns every rule (checked out, order
-	 *  finished) and derives the key — never here and never by the caller. */
-	async replaceCart(spentCartId: string): Promise<ReplaceCartResult> {
+	/**
+	 * The domain's `replaceSpentCart`, which owns every rule (checked out, order
+	 * finished) and derives the key — never here and never by the caller.
+	 *
+	 * The replacement's currency, in order: `currency` when the caller names one
+	 * (a theme that creates carts in an explicit currency keeps it), else the store
+	 * currency the operator SAVED (after a switch, a returning shopper's new cart
+	 * follows it rather than stranding them at CURRENCY_MISMATCH), else the spent
+	 * cart's — so a store that never saved one behaves exactly as before. Not
+	 * `effectiveStoreCurrency`: never-saved must not turn a GBP cart's replacement
+	 * into USD. The settings read is LAZY — made only once the spent cart has
+	 * validated, and never when a currency is named — so a refusal stays typed.
+	 */
+	async replaceCart(spentCartId: string, currency?: string): Promise<ReplaceCartResult> {
 		requireIdToken("cartId", spentCartId);
+		if (currency !== undefined) requireCurrencyCode("currency", currency);
 		return replaceSpentCart(
 			{ ...this.#cartDeps, orderStore: this.#stores.orderStore },
 			spentCartId,
+			async () => {
+				if (currency !== undefined) return toCurrency(currency);
+				const saved = (await this.#stores.settingsStore.get()).currency;
+				return saved === undefined ? undefined : toCurrency(saved);
+			},
 		);
 	}
 
@@ -1018,6 +1055,7 @@ export class InProcessCommerceClient implements CommerceClient {
 				qty: line.qty,
 				taxClass: row.taxClass,
 				productKind: row.productKind,
+				taxStatus: row.taxStatus,
 			});
 		}
 
@@ -1038,6 +1076,7 @@ export class InProcessCommerceClient implements CommerceClient {
 				couponStore: this.#stores.couponStore,
 				clock: this.#stores.clock,
 				...(this.#taxCalculator !== undefined ? { taxCalculator: this.#taxCalculator } : {}),
+				settings: this.#stores.settingsStore,
 			},
 			command,
 		);
@@ -1056,7 +1095,9 @@ export class InProcessCommerceClient implements CommerceClient {
 				shippingCents: breakdown.shippingCents,
 				taxCents: breakdown.taxCents,
 				totalCents: breakdown.totalCents,
+				...roundingEntry("roundingCents", breakdown.roundingCents),
 				appliedCouponCode: breakdown.appliedCouponCode ?? null,
+				tax: quoteTaxWire(quote),
 			},
 		};
 	}
@@ -1112,11 +1153,8 @@ export class InProcessCommerceClient implements CommerceClient {
 						},
 						{ sessionToken: opts.sessionToken, buyerRef: input.buyerRef },
 					);
-		// Issue #382: a fact about the STRIPE account, so it binds a Stripe
-		// checkout only — x402 has no such rule. A kv read, made before the
-		// domain's same-key short-circuit (which lives inside the use-case); a
-		// replay short-circuits before the domain looks at it.
-		const addressRequired = input.paymentMethod === "stripe" && (await this.#addressRequired());
+		// Issue #382: the Stripe account's address rule (Stripe is the only method), a kv read.
+		const addressRequired = await this.#addressRequired();
 		const result = await createOrderFromCart(this.#createOrderDeps, {
 			cartId: input.cartId,
 			idempotencyKey: toIdempotencyKey(idempotencyKey),
@@ -1243,7 +1281,11 @@ export class InProcessCommerceClient implements CommerceClient {
 			!Number.isFinite(deadline) ||
 			deadline <= this.#stores.clock.now().getTime() ||
 			order.cartId === null ||
-			order.paymentMethod === null
+			order.paymentMethod === null ||
+			// A stored method that is not a current one (removed like x402, or unknown):
+			// no gateway can ever take it. A current method whose gateway did not
+			// resolve (kv down) still falls through and throws, retryable, as before.
+			!isCurrentPaymentMethod(order.paymentMethod)
 		) {
 			return { ok: false, reason: "ORDER_NOT_PAYABLE" };
 		}
@@ -1538,13 +1580,72 @@ function serializeOrderSummary(order: Order): OrderSummaryWire {
 			shippingCents: order.totals.shipping,
 			taxCents: order.totals.tax,
 			totalCents: order.totals.total,
+			...roundingWire(order),
 			// The same evidence the public wire carries (`serializePublicOrder`), so
 			// the account pages apply the order page's "Not calculated" rule.
 			appliedCouponCode: order.totals.appliedCouponCode,
 			shippingZoneId: shippingZoneIdOf(order.totals.shippingMethodSnapshot),
 			shippingMethodId: shippingMethodIdOf(order.totals.shippingMethodSnapshot),
+			...orderTaxWire(order),
 		},
 		lines: serializeOrderLines(order),
+	};
+}
+
+/** The order's payment rounding on the wire (ADR-0035's amendment), by the
+ *  domain's presence rule (`roundingEntry`): every other order's wire is unchanged. */
+function roundingWire(order: Order): { roundingCents?: number } {
+	return roundingEntry("roundingCents", order.totals.rounding);
+}
+
+/** The quote's tax display facts (ADR-0032): settings, location, and the tax per label. */
+function quoteTaxWire(quote: Extract<DomainQuoteResult, { ok: true }>): QuoteTaxWire {
+	const { result } = quote.tax;
+	const itemized: QuoteTaxWire["itemized"] = [];
+	for (const line of [...result.lines, ...(result.shipping === null ? [] : [result.shipping])]) {
+		if (line.taxCents === 0) continue;
+		const row = itemized.find((r) => r.label === line.label);
+		if (row === undefined) itemized.push({ label: line.label, amountCents: line.taxCents });
+		else row.amountCents += line.taxCents;
+	}
+	return {
+		enabled: quote.taxSettings.enabled,
+		located: quote.taxLocated,
+		pricesIncludeTax: quote.tax.pricesIncludeTax,
+		displayCart: quote.taxSettings.displayCart,
+		totalsDisplay: quote.taxSettings.totalsDisplay,
+		lineTaxCents: result.lines.reduce((sum, l) => sum + l.taxCents, 0),
+		itemized,
+	};
+}
+
+/**
+ * An order priced with tax-INCLUSIVE prices carries that fact from its frozen
+ * snapshot, so its pages show the subtotal net and the rows still sum to the
+ * total. Every other order keeps today's single "Tax" row (no `tax` key).
+ *
+ * Tax calculated for a place with no shipping zone (ADR-0032: a digital cart
+ * taxed at the shop base address) adds `taxLocated: true`, so the order's pages
+ * show the tax charged rather than "Not calculated". A snapshot written before
+ * `located` existed adds nothing — the zone rule decides, as before.
+ */
+function orderTaxWire(order: Order): { tax?: QuoteTaxWire; taxLocated?: true } {
+	const snapshot = readOrderTaxSnapshot(order.totals.taxBreakdown);
+	if (snapshot === null || snapshot.v !== 1) return {};
+	const located = snapshot.located === true;
+	const flag = located ? { taxLocated: true as const } : {};
+	if (!snapshot.pricesIncludeTax) return flag;
+	return {
+		...flag,
+		tax: {
+			enabled: true,
+			located: shippingZoneIdOf(order.totals.shippingMethodSnapshot) !== null || located,
+			pricesIncludeTax: true,
+			displayCart: "excl",
+			totalsDisplay: "single",
+			lineTaxCents: snapshot.lines.reduce((sum, l) => sum + l.taxCents, 0),
+			itemized: [],
+		},
 	};
 }
 
@@ -1576,9 +1677,11 @@ function serializePublicOrder(
 			shippingCents: order.totals.shipping,
 			taxCents: order.totals.tax,
 			totalCents: order.totals.total,
+			...roundingWire(order),
 			appliedCouponCode: order.totals.appliedCouponCode,
 			shippingZoneId: shippingZoneIdOf(order.totals.shippingMethodSnapshot),
 			shippingMethodId: shippingMethodIdOf(order.totals.shippingMethodSnapshot),
+			...orderTaxWire(order),
 		},
 		lines: serializeOrderLines(order),
 		fulfillment: publicFulfillment(order),

@@ -63,7 +63,7 @@ const FUTURE = "2026-07-10T00:15:00.000Z";
  */
 const ORDER_DOC_SIZE_CAP = 8 * 1024;
 
-function cmd(cartId: string, method: "stripe" | "x402" = "stripe", key = "k-order") {
+function cmd(cartId: string, method: "stripe" = "stripe", key = "k-order") {
 	return {
 		cartId,
 		idempotencyKey: idempotencyKey(key),
@@ -505,21 +505,21 @@ describeEachDialect("order flow", (ctx) => {
 		expect(doc?.holdsCommitted?.reservationIds).toEqual([reservationId]);
 	});
 
-	test("x402 page-gate → paid + entitlement granted", async () => {
+	test("digital order, Stripe webhook → paid + entitlement granted", async () => {
 		const h = harness();
 		await h.seedDigital({ productId: "d1", sku: "DIG-1", priceCents: 900, title: "Ebook" });
 		const cartId = await h.cartWith([{ sku: "DIG-1", productId: "d1", qty: 1, kind: "digital" }]);
-		const res = await createOrderFromCart(h.createDeps, cmd(cartId, "x402"));
+		const res = await createOrderFromCart(h.createDeps, cmd(cartId));
 		if (!res.ok) throw new Error(res.reason);
-		const raw = h.x402Gateway.pageGate({
+		const raw = h.stripeGateway.webhook({
+			outcome: "succeeded",
 			orderId: res.order.id,
-			transaction: `0xtx-${res.order.id}`,
-			network: "eip155:8453",
-			payer: "0xbuyer",
+			providerRef: `pi_${res.order.id}`,
 			amount: res.order.totals.total,
 			currency: res.order.currency,
+			dedupeKey: `evt_${res.order.id}`,
 		});
-		const settled = await settleOrder(h.settleDeps, h.x402Gateway, raw);
+		const settled = await settleOrder(h.settleDeps, h.stripeGateway, raw);
 		expect(settled.ok).toBe(true);
 		expect((await h.store.getById(res.order.id))?.state).toBe("paid");
 		expect(await h.entitlementStore.check({ orderId: res.order.id, sku: brandSku("DIG-1") })).toBe(

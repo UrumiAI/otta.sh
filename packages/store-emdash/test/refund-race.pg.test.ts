@@ -66,7 +66,7 @@ const N = 24;
 /** A record-only (manual, `refundable:false`) gateway keeps a race a PURE test of
  *  the ledger arbiter — no external gateway calls interleave. */
 function manualGw(): FakePaymentGateway {
-	return new FakePaymentGateway({ id: "x402", refundable: false });
+	return new FakePaymentGateway({ id: "stripe", refundable: false });
 }
 
 /**
@@ -204,7 +204,7 @@ describe.skipIf(!PG_ENABLED)(PG_SUITE, () => {
 	test("N concurrent full refunds (each = ceiling) yield exactly ONE winner; Σ = ceiling; one → refunded event", async () => {
 		const h = harness();
 		const gw = manualGw();
-		const id = await h.seedPaidOrder({ id: "ord-full-race", totalCents: 1000, gateway: "x402" });
+		const id = await h.seedPaidOrder({ id: "ord-full-race", totalCents: 1000, gateway: "stripe" });
 
 		const keys = Array.from({ length: N }, (_v, i) => `rf-full-${String(i)}`);
 		const results = await Promise.all(
@@ -252,7 +252,7 @@ describe.skipIf(!PG_ENABLED)(PG_SUITE, () => {
 			const id = await h.seedPaidOrder({
 				id: `ord-part-${String(loop)}`,
 				totalCents: 1000,
-				gateway: "x402",
+				gateway: "stripe",
 			});
 			const keys = Array.from({ length: M }, (_v, i) => `rf-part-${String(loop)}-${String(i)}`);
 			const results = await Promise.all(
@@ -286,7 +286,7 @@ describe.skipIf(!PG_ENABLED)(PG_SUITE, () => {
 		const h = harness();
 		const gw = manualGw();
 		const M = 16;
-		const id = await h.seedPaidOrder({ id: "ord-idem-race", totalCents: 1000, gateway: "x402" });
+		const id = await h.seedPaidOrder({ id: "ord-idem-race", totalCents: 1000, gateway: "stripe" });
 		const key = idempotencyKey("rf-idem-race");
 		const results = await Promise.all(
 			Array.from({ length: M }, (_v, i) =>
@@ -529,7 +529,7 @@ describe.skipIf(!PG_ENABLED)(PG_SUITE, () => {
 			const id = await h.seedPaidOrder({
 				id: `ord-vs-${String(loop)}`,
 				totalCents: 1000,
-				gateway: "x402",
+				gateway: "stripe",
 			});
 			const [refund, cancel] = await Promise.all([
 				refundOrder({ orderStore: h.store }, gw, {

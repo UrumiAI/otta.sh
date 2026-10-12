@@ -48,7 +48,7 @@ describe("settleOrder", () => {
 			cartId,
 			idempotencyKey: idempotencyKey(key),
 			buyerRef: "buyer@example.com",
-			paymentMethod: "x402",
+			paymentMethod: "stripe",
 		});
 		if (!res.ok) throw new Error(`seed digital order failed: ${res.reason}`);
 		return res.order;
@@ -80,7 +80,7 @@ describe("settleOrder", () => {
 
 	test("verified confirmation on a digital line grants an entitlement", async () => {
 		const order = await pendingDigital();
-		const raw = h.x402Gw.webhook({
+		const raw = h.stripeGw.webhook({
 			outcome: "succeeded",
 			orderId: order.id,
 			providerRef: "rcpt_1",
@@ -88,7 +88,7 @@ describe("settleOrder", () => {
 			currency: "USD",
 			dedupeKey: "rcpt-1",
 		});
-		const res = await settleOrder(h.settleDeps, h.x402Gw, raw);
+		const res = await settleOrder(h.settleDeps, h.stripeGw, raw);
 		expect(res.ok).toBe(true);
 		expect((await h.orderStore.getById(order.id))?.state).toBe("paid");
 		expect(await h.entitlementStore.check({ orderId: order.id, sku: brandSku("DIG-1") })).toBe(
@@ -394,7 +394,7 @@ describe("settleOrder", () => {
 		// Past the checkout TTL, but the sweep has not run yet: settle loads the
 		// order still `pending`, then the sweep wins between load and flip.
 		h.clock.advance(16 * 60 * 1000);
-		// A gateway that CANNOT refund (x402, or Stripe with no secret key): the
+		// A gateway that CANNOT refund (Stripe with no secret key): the
 		// late payment cannot be returned automatically, so the flag must stand for
 		// a human. The refundable case — refunded, flag resolved — is pinned in
 		// `late-payment.test.ts` and the shared `latePaymentContract`.
@@ -468,13 +468,13 @@ describe("settleOrder", () => {
 	test("a settle retry after a crash between markPaid and grant heals the missing entitlement exactly once", async () => {
 		const order = await pendingDigital();
 		// Simulate the crash: dedupe + paid flip landed; the grant did not.
-		await h.paymentEventStore.dedupe("rcpt-crash", order.id, "x402", h.clock.now().toISOString());
+		await h.paymentEventStore.dedupe("rcpt-crash", order.id, "stripe", h.clock.now().toISOString());
 		await h.orderStore.markPaid(order.id);
 		expect(await h.entitlementStore.check({ orderId: order.id, sku: brandSku("DIG-1") })).toBe(
 			false,
 		);
 
-		const raw = h.x402Gw.webhook({
+		const raw = h.stripeGw.webhook({
 			outcome: "succeeded",
 			orderId: order.id,
 			providerRef: "rcpt_crash",
@@ -482,27 +482,27 @@ describe("settleOrder", () => {
 			currency: "USD",
 			dedupeKey: "rcpt-crash",
 		});
-		const res = await settleOrder(h.settleDeps, h.x402Gw, raw);
+		const res = await settleOrder(h.settleDeps, h.stripeGw, raw);
 		expect(res.ok).toBe(true);
 		expect(await h.entitlementStore.check({ orderId: order.id, sku: brandSku("DIG-1") })).toBe(
 			true,
 		);
 		// A further retry grants nothing more.
-		await settleOrder(h.settleDeps, h.x402Gw, raw);
+		await settleOrder(h.settleDeps, h.stripeGw, raw);
 		expect(h.entitlementStore.all()).toHaveLength(1);
 	});
 
 	test("ONE receipt settles ONE order: the same dedupe key aimed at a second order is refused", async () => {
-		// The cross-order replay. For x402 the dedupe key IS the on-chain
-		// `transaction` and `proof.orderId` is never attestable, so the amount
-		// equality alone would let a receipt already spent on order A settle a
-		// second, same-priced order B off one payment — and `recordPayment`'s
+		// The cross-order replay. The dedupe key names one payment and the order id
+		// a confirmation carries is only the caller's claim, so the amount equality
+		// alone would let a receipt already spent on order A settle a second,
+		// same-priced order B off one payment — and `recordPayment`'s
 		// globally-unique `provider_ref` would swallow the second ledger row, so it
 		// would not even show up as a double-spend.
 		const first = await pendingDigital("kd-a");
 		const second = await pendingDigital("kd-b");
 		const receipt = (order: Order) =>
-			h.x402Gw.webhook({
+			h.stripeGw.webhook({
 				outcome: "succeeded" as const,
 				orderId: order.id,
 				providerRef: "0xtx-shared",
@@ -511,10 +511,10 @@ describe("settleOrder", () => {
 				dedupeKey: "0xtx-shared",
 			});
 
-		expect((await settleOrder(h.settleDeps, h.x402Gw, receipt(first))).ok).toBe(true);
+		expect((await settleOrder(h.settleDeps, h.stripeGw, receipt(first))).ok).toBe(true);
 		expect((await h.orderStore.getById(first.id))?.state).toBe("paid");
 
-		const replay = await settleOrder(h.settleDeps, h.x402Gw, receipt(second));
+		const replay = await settleOrder(h.settleDeps, h.stripeGw, receipt(second));
 		expect(replay).toEqual({ ok: false, reason: "RECEIPT_REBOUND" });
 		// NOTHING moved on the second order — not the state, not the entitlement.
 		expect((await h.orderStore.getById(second.id))?.state).toBe("pending");
@@ -531,7 +531,7 @@ describe("settleOrder", () => {
 		// The refusal above must not catch the legitimate replay the whole
 		// claim/resume idiom depends on.
 		const order = await pendingDigital();
-		const raw = h.x402Gw.webhook({
+		const raw = h.stripeGw.webhook({
 			outcome: "succeeded" as const,
 			orderId: order.id,
 			providerRef: "0xtx-same",
@@ -539,8 +539,8 @@ describe("settleOrder", () => {
 			currency: "USD",
 			dedupeKey: "0xtx-same",
 		});
-		expect((await settleOrder(h.settleDeps, h.x402Gw, raw)).ok).toBe(true);
-		expect((await settleOrder(h.settleDeps, h.x402Gw, raw)).ok).toBe(true);
+		expect((await settleOrder(h.settleDeps, h.stripeGw, raw)).ok).toBe(true);
+		expect((await settleOrder(h.settleDeps, h.stripeGw, raw)).ok).toBe(true);
 		expect(h.paymentEventStore.anomalies()).toHaveLength(0);
 		expect(h.entitlementStore.all()).toHaveLength(1);
 	});

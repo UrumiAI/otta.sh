@@ -84,6 +84,7 @@ function detailFor(state: string, refunds: RefundsSummary | null = CAPTURED): De
 		ok: true,
 		order: {
 			id: ORDER_ID,
+			orderNumber: `#${ORDER_ID.slice(0, 5).toUpperCase()}`,
 			state,
 			currency: CUR,
 			paymentMethod: "card",

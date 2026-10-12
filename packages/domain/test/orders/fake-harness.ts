@@ -4,6 +4,7 @@ import {
 	cents,
 	createCart,
 	currency,
+	type Currency,
 	type CreateOrderDeps,
 	type ExpireOrdersDeps,
 	type FulfillmentKind,
@@ -46,14 +47,16 @@ export interface OrderHarness {
 	taxRules: InMemoryTaxRulesStore;
 	couponStore: InMemoryCouponStore;
 	stripeGw: FakePaymentGateway;
-	x402Gw: FakePaymentGateway;
+	/** A Stripe-id gateway that cannot refund (`refundable:false`): the manual / record-only path. */
+	manualGw: FakePaymentGateway;
 	createDeps: CreateOrderDeps;
 	cartDeps: CartDeps;
 	settleDeps: SettleDeps;
 	expireDeps: ExpireOrdersDeps;
 	seedPhysical(input: SeedInput & { onHand: number }): Promise<void>;
 	seedDigital(input: SeedInput): Promise<void>;
-	cartWith(lines: CartLineSpec[]): Promise<string>;
+	/** `code` defaults to USD (the payment-rounding suite prices in KWD). */
+	cartWith(lines: CartLineSpec[], code?: string): Promise<string>;
 }
 
 interface SeedInput {
@@ -61,6 +64,8 @@ interface SeedInput {
 	sku: string;
 	priceCents: number;
 	title: string;
+	/** Defaults to USD. */
+	currency?: Currency;
 }
 
 interface CartLineSpec {
@@ -96,7 +101,7 @@ export function makeOrderHarness(): OrderHarness {
 	const taxRules = new InMemoryTaxRulesStore();
 	const couponStore = new InMemoryCouponStore({ idGen: new CountingIdGen("red"), clock });
 	const stripeGw = new FakePaymentGateway({ id: "stripe" });
-	const x402Gw = new FakePaymentGateway({ id: "x402" });
+	const manualGw = new FakePaymentGateway({ id: "stripe", refundable: false });
 
 	const cartDeps: CartDeps = { cartStore, inventoryStore: inventory, clock };
 	const createDeps: CreateOrderDeps = {
@@ -109,7 +114,7 @@ export function makeOrderHarness(): OrderHarness {
 		couponStore,
 		clock,
 		idGen: new CountingIdGen("order"),
-		gateways: { stripe: stripeGw, x402: x402Gw },
+		gateways: { stripe: stripeGw },
 	};
 	const settleDeps: SettleDeps = {
 		orderStore,
@@ -147,7 +152,7 @@ export function makeOrderHarness(): OrderHarness {
 		taxRules,
 		couponStore,
 		stripeGw,
-		x402Gw,
+		manualGw,
 		createDeps,
 		cartDeps,
 		settleDeps,
@@ -157,7 +162,7 @@ export function makeOrderHarness(): OrderHarness {
 				{
 					productId: brandProductId(input.productId),
 					sku: brandSku(input.sku),
-					price: money(cents(input.priceCents), USD),
+					price: money(cents(input.priceCents), input.currency ?? USD),
 					title: input.title,
 					productKind: "physical",
 				},
@@ -171,7 +176,7 @@ export function makeOrderHarness(): OrderHarness {
 				{
 					productId: brandProductId(input.productId),
 					sku: brandSku(input.sku),
-					price: money(cents(input.priceCents), USD),
+					price: money(cents(input.priceCents), input.currency ?? USD),
 					title: input.title,
 					productKind: "digital",
 				},
@@ -179,8 +184,8 @@ export function makeOrderHarness(): OrderHarness {
 			);
 			await publish(input.productId);
 		},
-		async cartWith(specs) {
-			const cartId = await createCart(cartDeps, USD);
+		async cartWith(specs, code) {
+			const cartId = await createCart(cartDeps, code === undefined ? USD : currency(code));
 			for (const spec of specs) {
 				const res = await addLine(
 					cartDeps,

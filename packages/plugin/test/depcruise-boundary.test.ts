@@ -57,7 +57,6 @@ const STUB_PACKAGES = [
 	// was deleted in INC-D3b).
 	"store-sqlite",
 	"payments-stripe",
-	"payments-x402",
 	"plugin",
 ] as const;
 
@@ -210,9 +209,9 @@ describe("plugin-is-sandbox-clean: what the plugin perimeter forbids", () => {
 		).toEqual(["plugin-is-sandbox-clean"]);
 	});
 
-	test("a THIRD payment adapter is still forbidden — INC-C1b admitted two, not the family", () => {
+	test("another payment adapter is still forbidden — INC-C1b admitted one, not the family", () => {
 		// The carve-out is spelled as a negative lookahead on exactly
-		// `payments-(stripe|x402)`, so a payments-* package added later is banned by
+		// `payments-stripe`, so a payments-* package added later is banned by
 		// default rather than by anyone remembering to add it — the same discipline
 		// the store-emdash narrowing follows. Unresolved on purpose: this also
 		// re-exercises the bare-specifier clause.
@@ -246,15 +245,6 @@ describe("plugin-is-sandbox-clean: what the plugin perimeter now admits", () => 
 			rulesViolatedBy(
 				"plugin",
 				'import { stub } from "@otta-sh/payments-stripe";\nexport const x = stub;\n',
-			),
-		).toEqual([]);
-	});
-
-	test("the x402 payment adapter is admitted — the same ratified carve-out", () => {
-		expect(
-			rulesViolatedBy(
-				"plugin",
-				'import { stub } from "@otta-sh/payments-x402";\nexport const x = stub;\n',
 			),
 		).toEqual([]);
 	});

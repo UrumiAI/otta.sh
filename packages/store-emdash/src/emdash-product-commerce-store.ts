@@ -721,6 +721,7 @@ export class EmdashProductCommerceStore implements ProductCommerceStore {
 				price: input.price ?? null,
 				title: input.title ?? null,
 				taxClass: input.taxClass ?? null,
+				taxStatus: "taxable",
 				// compare-at / cost / inventory-policy are EDIT-ONLY: a fresh row starts at
 				// their defaults, and a later upsert preserves them (they are not on the
 				// sync input at all).
@@ -867,6 +868,7 @@ export class EmdashProductCommerceStore implements ProductCommerceStore {
 				unitCost: input.unitCost !== undefined ? input.unitCost : doc.unitCost,
 				inventoryPolicy:
 					input.inventoryPolicy !== undefined ? input.inventoryPolicy : doc.inventoryPolicy,
+				taxStatus: input.taxStatus ?? doc.taxStatus ?? "taxable",
 				weightGrams: input.weightGrams !== undefined ? input.weightGrams : doc.weightGrams,
 				lengthMm: input.lengthMm !== undefined ? input.lengthMm : doc.lengthMm,
 				widthMm: input.widthMm !== undefined ? input.widthMm : doc.widthMm,

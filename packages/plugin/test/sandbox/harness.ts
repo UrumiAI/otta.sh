@@ -11,8 +11,8 @@
  *
  * `manifest.ts` is never mutated in `src/` — this harness copies the whole
  * `src/` tree into a scratch dir and overwrites ONLY the copy's
- * `manifest.ts` with the test's `allowedHosts` (and the in-process
- * `facilitatorUrl` egress) before bundling (plan §6 step 1 /
+ * `manifest.ts` with the test's `allowedHosts` (and the resolved in-process
+ * egress) before bundling (plan §6 step 1 /
  * §8 Risk 5), so `pnpm build`'s real package output is never test-specific.
  *
  * `sandbox-storage.ts` is overwritten the same way when — and ONLY when — a boot
@@ -72,10 +72,6 @@ const WORKSPACE_PACKAGES: ReadonlyArray<{
 	// (`tsdown.config.ts` `noExternal`). Absent from this list, the worker fails to
 	// boot at all with `No such module "@otta-sh/payments-stripe"`.
 	{ name: "payments-stripe", exports: { ".": "./src/index.ts" } },
-	// INC-C5: the x402 gateway is wired inside the isolate (`x402-wiring.ts`), so
-	// the x402 adapter is a runtime import for exactly the same reason the Stripe
-	// one above is.
-	{ name: "payments-x402", exports: { ".": "./src/index.ts" } },
 	{ name: "store-emdash", exports: { ".": "./src/index.ts" } },
 ];
 /** `-I` search root for the capnp `/workerd/workerd.capnp` builtin import —
@@ -137,16 +133,6 @@ export interface SandboxOptions {
 	 * {@link productionAllowedHosts} here instead of restating the hosts.
 	 */
 	allowedHosts: string[];
-	/**
-	 * Baked into the bundled plugin as `IN_PROCESS_EGRESS_URLS` — the in-process
-	 * x402-facilitator endpoint (INC-C5). Defaults to absent, the fail-closed
-	 * "not configured" state: no x402 gateway is wired.
-	 *
-	 * A suite that sets it is responsible for putting the matching host in
-	 * `allowedHosts` too — production derives the allowlist from this value, this
-	 * harness takes the allowlist verbatim.
-	 */
-	facilitatorUrl?: string;
 	/**
 	 * Wire an EmDash email provider behind `ctx.email` that RECORDS every message
 	 * (ADR-0031; default: no). Without it the boot is a host with no provider
@@ -304,19 +290,16 @@ function manifestSource(options: SandboxOptions): string {
 		'export const OTTA_PLUGIN_VERSION = "0.1.0";',
 		'export const OTTA_PLUGIN_CAPABILITIES = ["content:read", "network:request", "email:send"];',
 		`export const ALLOWED_HOSTS = ${JSON.stringify(options.allowedHosts)};`,
-		// INC-C5: the x402 wiring reads its endpoint from here, the same build-time constant `ALLOWED_HOSTS` is derived from in
-		// production. Absent ⇒ that provider is unconfigured (fail-closed).
+		// The resolved in-process egress, the same build-time constant `ALLOWED_HOSTS`
+		// is derived from in production. Empty today: no URL is deployment-supplied.
 		//
 		// ROUTED THROUGH THE REAL RESOLVER (review round 2, B5), not baked verbatim.
 		// Baking the raw options made the sandbox tier the ONE tier where the gate
 		// `resolveInProcessEgress` applies was never exercised: a suite could hand
 		// the isolate a URL no `allowedHosts` entry covers and every assertion would
 		// still pass. INC-D3a dropped the resolver's mode argument along with the
-		// http arm it used to select — the unparseable-define behavior stays
-		// unit-pinned in `manifest-override.test.ts`.
-		`export const IN_PROCESS_EGRESS_URLS = ${JSON.stringify(
-			resolveInProcessEgress({ facilitatorUrl: options.facilitatorUrl }),
-		)};`,
+		// http arm it used to select.
+		`export const IN_PROCESS_EGRESS_URLS = ${JSON.stringify(resolveInProcessEgress({}))};`,
 		"",
 	].join("\n");
 }

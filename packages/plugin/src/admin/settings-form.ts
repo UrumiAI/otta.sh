@@ -4,10 +4,10 @@ import {
 	readBackgroundWork,
 	validateBackgroundWork,
 } from "../cron/background-work-setting.js";
-import { MAX_HOLD_TTL_MINUTES } from "@otta-sh/domain";
+import { currencyChoiceLabel, currencyChoicesWith } from "@otta-sh/admin-presentation";
+import { effectiveStoreCurrency, isSupportedCurrency, MAX_HOLD_TTL_MINUTES } from "@otta-sh/domain";
 import { emailSendingStatus, type EmailSendingStatus } from "../email/ctx-email-sender.js";
 import { STORE_DISPLAY_NAME_KEY } from "../email/email-render-context.js";
-import { isPlausiblePayTo, X402_ACCEPTS_KEY, X402_PAYTO_KEY } from "../payments/x402-wiring.js";
 import {
 	countryRequiresBuyerAddress,
 	readStripeAccountCountry,
@@ -31,8 +31,6 @@ import {
 	STRIPE_SECRET_KEY_KEY,
 	STRIPE_WEBHOOK_SECRET_KEY,
 	WEBHOOK_EDGE_TOKEN_KEY,
-	X402_FACILITATOR_API_KEY_KEY,
-	X402_LEGACY_FACILITATOR_SECRET_KEY,
 } from "../payment-secrets.js";
 import type {
 	AccordionBlock,
@@ -63,6 +61,10 @@ import { carriedForm, noticeBanner, type Notice } from "./scaffold/index.js";
  *    plugin's own store — no HTTP hop, no token — and its validation rejection
  *    is surfaced INLINE (never swallowed), read from the structural `reason`
  *    rather than from an HTTP status the in-process tier does not have.
+ *  - the store currency (also in the "Store" group, below the display name)
+ *    saves through the same client into the same settings document — one
+ *    field, so it never touches the hold time, the threshold or the tax block.
+ *    It decides the currency NEW carts are created in (`createCart`).
  *  - the write-only payment/email credentials ("Payments & email" group) save
  *    into write-only plugin kv, one key per secret ({@link PAYMENT_SECRET_FIELDS}).
  *  - "Background work per minute" (in "Checkout & holds", beside the hold TTL)
@@ -106,6 +108,9 @@ export { STORE_DISPLAY_NAME_KEY };
 
 /** The "Background work per minute" form's submit — a kv save. */
 const SAVE_BACKGROUND_WORK_ACTION = "save-background-work";
+
+/** The "Store currency" form's submit — a settings-store save. */
+const SAVE_STORE_CURRENCY_ACTION = "save-store-currency";
 
 /** Current save generation for a token key, defaulting to 0 when never saved.
  *  FAIL-SOFT (INC-C3): a kv read that REJECTS degrades to 0 rather than taking
@@ -192,31 +197,7 @@ const PAYMENT_SECRET_FIELDS: readonly SecretFieldSpec[] = [
 			"Card orders stop being marked paid when Stripe reports a payment, until a new secret is saved.",
 	},
 	{
-		actionId: "save-x402-facilitator-secret",
-		fieldId: "x402FacilitatorSecret",
-		kvKey: X402_FACILITATOR_API_KEY_KEY,
-		genKey: "settings:x402FacilitatorApiKeyGen",
-		// INC-C5 renamed the FIELD, the kv key AND the generation key, because the
-		// meaning changed: in-process the value is the bearer credential the
-		// facilitator call SENDS, not the offline HMAC secret INC-C3's label
-		// described. An operator who provisioned under the old label holds a
-		// forge-a-settlement secret this increment would hand to a third-party
-		// host, so the old value must not be inherited — the new key names make
-		// the field read as unset until it is deliberately re-provisioned (review
-		// round 2, A5).
-		label: "x402 facilitator API key",
-		noun: "x402 facilitator API key",
-		hint: "Your x402 facilitator's API key",
-		check: checkOpaqueToken,
-		// ADR-0028 increment 2: nothing reads this key until the x402 content gate
-		// ships, so the copy must not claim a removal breaks anything today.
-		removeEffect:
-			"Nothing uses this key yet. x402 payments are not available until x402 support ships.",
-		shapeHelp: "Your x402 facilitator's API key: one line, no spaces.",
-		whereToFind: "your x402 facilitator's dashboard",
-	},
-	{
-		// INC-C1b. Not a renamed service env var like the three above — it is the
+		// INC-C1b. Not a renamed service env var like the two above — it is the
 		// shared edge token the site attaches (`X-Otta-Wh-Token`) to a Stripe
 		// webhook it forwards to the plugin's `webhooks/stripe/settle` route. It
 		// gets the identical write-only treatment because it is a shared secret,
@@ -251,23 +232,13 @@ function secretSpecByField(fieldId: unknown): SecretFieldSpec | undefined {
 export const CLEAR_PAYMENT_SECRET_ACTION = "clear-payment-secret";
 
 /**
- * INC-C5 — the NON-SECRET companions of the secrets above: the in-process
- * equivalents of the service's `X402_PAYTO` and `X402_ACCEPTS`
- * env vars.
+ * INC-C5 — the NON-SECRET companion of the secrets above: the sign-in page
+ * address.
  *
- * WHY THEY ARE A SEPARATE TABLE AND A SEPARATE FORM. They are a different TIER,
- * and the difference is visible: these are READ BACK into the field, because an
- * operator must be able to see which address they are being paid at and which
- * sign-in page their customers are sent to. A secret rendered back is a bug; a
- * configuration value NOT rendered back is also a bug. One form for all three
- * because they are saved together and none of them is independently useful —
- * and because the alternative, three more submit buttons, would make the group
- * unreadable.
- *
- * WHY THEY EXIST AT ALL (review A3/B5): INC-C3 shipped the four secrets without
- * them, which left `settings:x402PayTo` with no writer anywhere in the product.
- * `x402GatewayFromCtx` fail-closes without it, so x402 was inert in EVERY
- * deployment regardless of how it was provisioned.
+ * WHY A SEPARATE TABLE AND A SEPARATE FORM. It is a different TIER, and the
+ * difference is visible: it is READ BACK into the field, because an operator
+ * must be able to see which sign-in page their customers are sent to. A secret
+ * rendered back is a bug; a configuration value NOT rendered back is also a bug.
  */
 export const SAVE_PAYMENT_SETTINGS_ACTION = "save-payment-settings";
 
@@ -282,25 +253,13 @@ interface PlainSettingSpec {
 
 const PLAIN_PAYMENT_SETTINGS: readonly PlainSettingSpec[] = [
 	// Issue #306 — where the emailed sign-in link points, and the ONLY place it may
-	// point: required for customer login (unset ⇒ no link is sent). Read back for
-	// the same reason as the x402 wallet. Adapted from #325 by @stephanedemotte.
+	// point: required for customer login (unset ⇒ no link is sent). Read back so
+	// the operator can check it. Adapted from #325 by @stephanedemotte.
 	{
 		fieldId: "loginLinkUrl",
 		kvKey: LOGIN_LINK_URL_KEY,
 		label: "Sign-in page address (your storefront's /account/verify page)",
 		placeholder: "https://shop.example/account/verify",
-	},
-	{
-		fieldId: "x402PayTo",
-		kvKey: X402_PAYTO_KEY,
-		label: "x402 destination wallet",
-		placeholder: "0x… (the address buyers pay)",
-	},
-	{
-		fieldId: "x402Accepts",
-		kvKey: X402_ACCEPTS_KEY,
-		label: "x402 networks, comma-separated",
-		placeholder: "eip155:8453",
 	},
 ];
 
@@ -454,7 +413,7 @@ function joinNames(names: readonly string[]): string {
 }
 
 /** "Email API key" → "email API key" mid-sentence; a name that starts with a
- *  proper noun or a code ("Stripe…", "x402…") is left alone. */
+ *  proper noun ("Stripe…") is left alone. */
 function lowerFirst(noun: string): string {
 	return /^(Email|Webhook)\b/.test(noun) ? noun.charAt(0).toLowerCase() + noun.slice(1) : noun;
 }
@@ -473,6 +432,7 @@ export const SETTINGS_ACTION_IDS: ReadonlySet<string> = new Set([
 	"save-display",
 	"save-operational",
 	SAVE_BACKGROUND_WORK_ACTION,
+	SAVE_STORE_CURRENCY_ACTION,
 	// INC-C3: the payment secrets, from the one table that also builds
 	// their forms — so a new secret is routable the moment it is declared.
 	...PAYMENT_SECRET_FIELDS.map((spec) => spec.actionId),
@@ -537,7 +497,8 @@ export function createSettingsFormHandler(): RouteHandler<SettingsFormInput> {
 		client: ReportingSettingsSurface,
 		notice?: Notice,
 		paymentRefusal?: PaymentRefusal,
-	): Promise<BlockResponse> => renderSettingsPage(ctx, client, notice, paymentRefusal);
+		settings?: OperationalSettingsWire,
+	): Promise<BlockResponse> => renderSettingsPage(ctx, client, notice, paymentRefusal, settings);
 	return async (routeCtx, ctx) => {
 		const input = routeCtx.input;
 		const action = typeof input.action_id === "string" ? input.action_id : "load";
@@ -661,20 +622,6 @@ export function createSettingsFormHandler(): RouteHandler<SettingsFormInput> {
 				if (secretSpec.kvKey === STRIPE_SECRET_KEY_KEY) {
 					await refreshStripeAccountCountry(ctx, { timeoutMs: STRIPE_ACCOUNT_READ_ON_SAVE_MS });
 				}
-				// A5. The INC-C3 key this credential moved OFF of holds a value with a
-				// different threat model (an offline HMAC secret, never transmitted)
-				// that nothing reads any more. Deleting it here — the one moment an
-				// operator is demonstrably re-provisioning this credential — keeps an
-				// orphaned forge-a-settlement secret from sitting in kv forever.
-				// Fail-soft: a kv that cannot delete must not fail a save that already
-				// succeeded.
-				if (secretSpec.kvKey === X402_FACILITATOR_API_KEY_KEY) {
-					try {
-						await ctx.kv.delete(X402_LEGACY_FACILITATOR_SECRET_KEY);
-					} catch {
-						// deliberately ignored — see above
-					}
-				}
 			}
 			const page = await renderPage(ctx, client, secretNotice(secretSpec, entered));
 			return {
@@ -726,22 +673,18 @@ export function createSettingsFormHandler(): RouteHandler<SettingsFormInput> {
 		}
 
 		// -- kv save path: the NON-secret payment/email settings (INC-C5) -----------
-		// ALL-OR-NOTHING. `payTo` is validated here, at the write end, because kv
-		// validates nothing itself and this value is the buyer's payment
-		// destination: a typo that is merely STORED would leave the operator with a
-		// screen that says "saved" and a checkout that silently never offers x402
-		// (`wireX402Gateway` fail-closes on the same predicate). Refusing the whole
-		// submit — rather than persisting the two valid siblings — means the
-		// operator never has to guess which half landed.
+		// ALL-OR-NOTHING. Every value is validated here, at the write end, because
+		// kv validates nothing itself. Refusing the whole submit — rather than
+		// persisting the valid siblings — means the operator never has to guess
+		// which half landed.
 		if (action === SAVE_PAYMENT_SETTINGS_ACTION) {
 			// ABSENT IS NOT EMPTY (review round 2, B3). A submit that carries no entry
 			// at all for a field is not an instruction to CLEAR that field — the host
 			// omits values for reasons that have nothing to do with intent (a field
 			// the operator never focused, a partial dispatch, a future block that
 			// stops echoing untouched inputs). Coercing absence to `""` and writing it
-			// unconditionally would silently blank `settings:x402PayTo`, which
-			// fail-closes x402 across the whole deployment with a screen that says
-			// "saved". A PRESENT empty string is still honoured: that is an operator
+			// unconditionally would silently blank the setting with a screen that
+			// says "saved". A PRESENT empty string is still honoured: that is an operator
 			// who cleared the box on purpose.
 			const submitted = new Map(
 				PLAIN_PAYMENT_SETTINGS.flatMap((spec) => {
@@ -753,13 +696,6 @@ export function createSettingsFormHandler(): RouteHandler<SettingsFormInput> {
 			// in one pass. Each names the FIELD and the SHAPE, never the rejected
 			// value (the form, not the banner, keeps what was typed).
 			const problems: Array<{ field: string; rule: string }> = [];
-			const payTo = submitted.get(X402_PAYTO_KEY) ?? "";
-			if (payTo.length > 0 && !isPlausiblePayTo(payTo)) {
-				problems.push({
-					field: "the x402 destination wallet",
-					rule: "The x402 destination wallet is not a wallet address (expected 0x followed by 40 hex characters, optionally CAIP-10 prefixed).",
-				});
-			}
 			// Issue #306: the sign-in link page must be an absolute URL with no
 			// credentials — the emailed token rides on it. U-8: and https, or http
 			// only on this machine, so that token never crosses a network in clear
@@ -801,11 +737,79 @@ export function createSettingsFormHandler(): RouteHandler<SettingsFormInput> {
 			const page = await renderPage(ctx, client, {
 				variant: "default",
 				title: "Payment settings saved",
-				description: "The sign-in page and x402 settings were saved.",
+				description: "The sign-in page address was saved.",
 			});
 			return {
 				...page,
 				toast: { message: "Payment settings saved", type: "success" },
+			} satisfies BlockResponse;
+		}
+
+		// -- store currency: the currency new carts are created in -----------------------
+		// A settings-store save of ONE field, so it never touches the hold time, the
+		// threshold or the tax block (the store merges a partial patch). The select
+		// offers only table codes; a forged value is refused here by name and again
+		// by the domain (`updateSettings` checks `isSupportedCurrency`).
+		if (action === SAVE_STORE_CURRENCY_ACTION) {
+			const raw = input.values?.currency;
+			const code = typeof raw === "string" ? raw.trim() : "";
+			const refuse = async (title: string, description: string): Promise<BlockResponse> => {
+				const page = await renderPage(ctx, client, { variant: "error", title, description });
+				return { ...page, toast: { message: title, type: "error" } } satisfies BlockResponse;
+			};
+			// Saving the select UNCHANGED writes nothing — checked FIRST, so a stored
+			// code the table (or checkout) no longer accepts can still be "saved" as
+			// is. A store that never saved one stays never-saved (USD by the upgrade
+			// rule, not by a stored "USD"). A failed read cannot tell, so it falls
+			// through to the write, which is what the operator asked for.
+			const current = await client.getSettings().catch(() => undefined);
+			if (current !== undefined && effectiveStoreCurrency(current) === code) {
+				const page = await renderPage(
+					ctx,
+					client,
+					{
+						variant: "default",
+						title: "Nothing changed",
+						description: `The store currency is already ${currencyChoiceLabel(code)}.`,
+					},
+					undefined,
+					current,
+				);
+				return {
+					...page,
+					toast: { message: "Nothing changed", type: "success" },
+				} satisfies BlockResponse;
+			}
+			const unsupported = `${code.length > 0 ? code : "That"} isn't a supported currency — choose one from the list. Nothing was changed.`;
+			if (!isSupportedCurrency(code)) return refuse("Store currency not saved", unsupported);
+			const key =
+				typeof input.idempotencyKey === "string" && input.idempotencyKey.length > 0
+					? input.idempotencyKey
+					: `settings-currency-${Date.now()}`;
+			const result = await client.updateSettings({ currency: code }, { idempotencyKey: key });
+			if (!result.ok) {
+				if (result.reason === "superseded") {
+					return refuse(
+						"Settings changed by someone else",
+						`${asSentence(result.message)} Nothing was saved.`,
+					);
+				}
+				if (result.reason === "validation") return refuse("Store currency not saved", unsupported);
+				// UNAVAILABLE: nothing is known about whether it applied, so the copy
+				// never claims it was not saved.
+				return refuse(
+					"Store currency couldn't be confirmed",
+					"The save couldn't be confirmed — reload to check the store currency.",
+				);
+			}
+			const page = await renderPage(ctx, client, {
+				variant: "default",
+				title: "Store currency saved",
+				description: `New carts are created in ${currencyChoiceLabel(code)}. Carts already open keep their currency.`,
+			});
+			return {
+				...page,
+				toast: { message: "Store currency saved", type: "success" },
 			} satisfies BlockResponse;
 		}
 
@@ -869,8 +873,18 @@ export function createSettingsFormHandler(): RouteHandler<SettingsFormInput> {
 				// The domain checks the same bounds as `checkOperationalValues`, so a
 				// refusal here is a backstop — still worded with the field's name, not
 				// the domain's identifier.
-				return superseded
-					? refuse("Settings changed by someone else", `${result.message} Nothing was saved.`)
+				if (superseded) {
+					return refuse(
+						"Settings changed by someone else",
+						`${asSentence(result.message)} Nothing was saved.`,
+					);
+				}
+				// UNAVAILABLE: whether it applied is unknown — never claim "not saved".
+				return result.reason === "unavailable"
+					? refuse(
+							"Settings couldn't be confirmed",
+							"The save couldn't be confirmed — reload to check the current values.",
+						)
 					: refuse("Settings not saved", `${namedForOperator(result.message)} Nothing was saved.`);
 			}
 			return {
@@ -917,12 +931,14 @@ async function renderSettingsPage(
 	client: ReportingSettingsSurface,
 	notice?: Notice,
 	paymentRefusal?: PaymentRefusal,
+	/** A settings read the caller already made on this request — reused, not repeated. */
+	alreadyRead?: OperationalSettingsWire,
 ): Promise<BlockResponse> {
 	const state = await readPageState(ctx);
 	try {
 		// Nothing was attempted on this path, so what the form shows and what the
 		// label states are the same read (see `persisted` in `buildSettingsBlocks`).
-		const settings = await client.getSettings();
+		const settings = alreadyRead ?? (await client.getSettings());
 		return {
 			blocks: buildSettingsBlocks({
 				...state,
@@ -1029,6 +1045,14 @@ function namedForOperator(message: string): string {
 	return /[.!?]$/.test(named) ? named : `${named}.`;
 }
 
+/** A client message as a sentence: capitalised, ending in a full stop — so a
+ *  sentence appended after it does not run on. */
+function asSentence(message: string): string {
+	const text = message.trim();
+	const capital = text.charAt(0).toUpperCase() + text.slice(1);
+	return /[.!?]$/.test(capital) ? capital : `${capital}.`;
+}
+
 /** The receipt for an accepted save: what is now in force, in words. */
 function savedOperationalSentence(settings: OperationalSettingsWire): string {
 	const minutes = settings.holdTtlMinutes === 1 ? "minute" : "minutes";
@@ -1090,7 +1114,7 @@ function buildSettingsBlocks(args: {
 	];
 	if (args.notice !== undefined) blocks.push(noticeBanner(args.notice));
 	blocks.push(
-		storeGroup(args.displayName),
+		storeGroup(args.displayName, args.persisted),
 		checkoutGroup(args.settings, args.persisted, args.backgroundWork),
 		paymentsGroup(
 			args.paymentSecrets,
@@ -1163,7 +1187,10 @@ function checkoutGroupLabel(persisted: OperationalSettingsWire | undefined): str
 	]);
 }
 
-function storeGroup(displayName: string): AccordionBlock {
+function storeGroup(
+	displayName: string,
+	persisted: OperationalSettingsWire | undefined,
+): AccordionBlock {
 	return {
 		type: "accordion",
 		block_id: "settings:store",
@@ -1185,8 +1212,67 @@ function storeGroup(displayName: string): AccordionBlock {
 					submit: { label: "Save display name", action_id: "save-display" },
 				},
 			}),
+			// AFTER the display-name form, so that form stays this group's index-0
+			// child (see `buildSettingsBlocks` on mount-only forms).
+			...storeCurrencyBlocks(persisted),
 		],
 	};
+}
+
+/** What changing the store currency does — and does not — change. Two lines,
+ *  each inside §1's 140-character context budget. */
+const STORE_CURRENCY_CONTEXT: readonly Block[] = [
+	{
+		type: "context",
+		text: "Store currency: new carts are created in it. Changing it affects new carts only — carts already open keep theirs.",
+	},
+	{
+		type: "context",
+		text: "Set it before pricing: products and coupons in another currency can't be bought in new carts or changed to it. Add shipping rates in it.",
+	},
+];
+
+/**
+ * "Store currency" — a select over the currency table, in the pricing picker's
+ * order (the familiar ten first, then by code; labels `USD — US Dollar`),
+ * prefilled with the EFFECTIVE value: the saved code, or USD for a store that
+ * never saved one. A saved code the table no longer lists is offered as its own
+ * row, so the form never shows a choice that is not what is stored (X-23).
+ *
+ * Reads the same `getSettings()` the "Checkout & holds" group does; when that
+ * read failed there is no value to prefill, and a context line says so rather
+ * than offering USD as if it were stored (E-1: the rest of the page works).
+ */
+function storeCurrencyBlocks(persisted: OperationalSettingsWire | undefined): Block[] {
+	if (persisted === undefined) {
+		return [
+			{
+				type: "context",
+				text: "The store currency could not be loaded right now. Reload to try again — the rest of this page still works.",
+			},
+		];
+	}
+	const current = effectiveStoreCurrency(persisted);
+	const codes = currencyChoicesWith(current);
+	return [
+		...STORE_CURRENCY_CONTEXT,
+		carriedForm({
+			namespace: "settings:currency",
+			form: {
+				type: "form",
+				fields: [
+					{
+						type: "select",
+						action_id: "currency",
+						label: "Store currency",
+						options: codes.map((code) => ({ value: code, label: currencyChoiceLabel(code) })),
+						initial_value: current,
+					},
+				],
+				submit: { label: "Save store currency", action_id: SAVE_STORE_CURRENCY_ACTION },
+			},
+		}),
+	];
 }
 
 /** What the choice means, in the operator's terms. */
@@ -1329,13 +1415,9 @@ function paymentsGroup(
 				if (country !== null) blocks.push({ type: "context", text: country });
 				return blocks;
 			}),
-			// INC-C5: the non-secret companions, LAST so the group still reads
-			// keys-first, and visibly a different kind of field — these prefill with
-			// what is stored.
-			{
-				type: "context",
-				text: "The settings below are shown as saved. x402 payments are not available yet. These settings are kept for when they are.",
-			},
+			// INC-C5: the non-secret companion, LAST so the group still reads
+			// keys-first. It prefills with what is stored, which says on its own that
+			// it is not a write-only key.
 			{ type: "context", text: emailStatusLine(emailStatus) },
 			...legacySignInWarning(plain.get(LOGIN_LINK_URL_KEY) ?? ""),
 			// A refused save states each rule in full beside the form, and the form
@@ -1453,10 +1535,10 @@ function plainSettingsForm(plain: Map<string, string>): FormBlock {
  *  "Payments & email — Stripe test · webhook set · email set".
  *
  *  The old label listed whichever of the five keys were missing, so a store with
- *  working card checkout and email read "no x402, edge" — two optional keys —
+ *  working card checkout and email read "no edge" — one optional key —
  *  as if something were broken. It now states the three that decide whether
- *  the store can take a card payment and send an email. The x402 and edge keys
- *  state their own status on their fields.
+ *  the store can take a card payment and send an email. The edge key
+ *  states its own status on its field.
  *
  *  SECURITY: "set" and the Stripe mode (from the key's prefix) are FACTS ABOUT a
  *  key, not any part of it; no value is in scope here. The longest render

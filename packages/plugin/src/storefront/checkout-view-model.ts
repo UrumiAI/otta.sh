@@ -31,6 +31,7 @@ import type {
 	QuoteBreakdownWire,
 	QuoteDestinationWire,
 	QuoteFailureReason,
+	QuoteTaxWire,
 	ShippingOptionWire,
 } from "../product-commerce/commerce-client.js";
 import type { CartMoneyWire, CartPricingWire } from "./cart-pricing.js";
@@ -79,11 +80,34 @@ export interface CheckoutAmountView {
 	label: string;
 }
 
+/** One tax row of the totals block. `label` is plain text — render it escaped. */
+export interface CheckoutTaxRowView {
+	label: string;
+	amount: CheckoutAmountView;
+}
+
 export interface CheckoutTotalsView {
+	/** Subtotal, discount and shipping are shown with or without tax as the store's
+	 *  display setting says (ADR-0032); the rows always sum to `total`. */
 	subtotal: CheckoutAmountView;
 	discount: CheckoutAmountView;
 	shipping: CheckoutAmountView;
+	/** The whole tax, whatever the display. */
 	tax: CheckoutAmountView;
+	/** The tax rows to ADD in the totals block: one per tax (itemized) or one
+	 *  "Tax" row; empty when prices are shown with tax or tax is switched off. */
+	taxRows: CheckoutTaxRowView[];
+	/** "Includes $3.00 tax" under the total when prices are shown with tax. Plain text. */
+	taxIncludedNote: string | null;
+	/**
+	 * The "Rounding" row (ADR-0035's amendment): the total rounded to its
+	 * currency's payment increment, SIGNED (`−KWD 0.003`, `+KWD 0.002`). Present
+	 * only when the rounding is non-zero; absent for every other total, whose
+	 * view is unchanged. Shown even while shipping or tax is uncalculated: the
+	 * total is already rounded, so the row is what makes the rows add up to it.
+	 * The theme shows it after the tax rows, before the total.
+	 */
+	rounding?: CheckoutAmountView;
 	total: CheckoutAmountView;
 	appliedCouponCode: string | null;
 	/** true while shipping or tax was not computed — the theme's signal to
@@ -112,6 +136,18 @@ function computed(amount: number, currencyCode: Currency, locale: string): Check
 	return { money: value, label: value.formatted };
 }
 
+/** A signed adjustment (the rounding row): the money keeps its sign, and the
+ *  label leads with `−` or `+` before the formatted magnitude. */
+function signedComputed(
+	amount: number,
+	currencyCode: Currency,
+	locale: string,
+): CheckoutAmountView {
+	const magnitude = money(Math.abs(amount), currencyCode, locale);
+	const formatted = `${amount < 0 ? "−" : "+"}${magnitude.formatted}`;
+	return { money: { ...magnitude, amount, formatted }, label: formatted };
+}
+
 function uncomputed(label: string): CheckoutAmountView {
 	return { money: null, label };
 }
@@ -124,21 +160,90 @@ export function buildCheckoutTotals(
 	const code = currency(breakdown.currency);
 	const { locale } = options;
 	const hasDiscount = breakdown.discountCents > 0 || breakdown.appliedCouponCode !== null;
+	// Tax switched off renders EXACTLY as before 2a — the one "Tax" row — so the
+	// many existing stores with no rates (off under the upgrade rule) see no change
+	// on the page. Hiding the row, as WooCommerce does, is a listed follow-up.
+	const tax = breakdown.tax?.enabled === true ? breakdown.tax : undefined;
+	const taxComputed = options.taxZoneSelected || tax?.located === true;
+	const shown = taxComputed && tax !== undefined ? shownAmounts(breakdown, tax) : null;
+	const taxView = taxComputed
+		? computed(breakdown.taxCents, code, locale)
+		: uncomputed(NOT_CALCULATED_LABEL);
+
+	let taxRows: CheckoutTaxRowView[] = [{ label: "Tax", amount: taxView }];
+	let taxIncludedNote: string | null = null;
+	if (shown !== null && tax !== undefined) {
+		const parts =
+			tax.totalsDisplay === "itemized" && tax.itemized.length > 0
+				? tax.itemized.map((row) => ({
+						label: row.label,
+						amount: computed(row.amountCents, code, locale),
+					}))
+				: [{ label: "Tax", amount: taxView }];
+		if (tax.displayCart === "incl") {
+			taxRows = [];
+			taxIncludedNote =
+				parts.length === 1 && parts[0]?.label === "Tax"
+					? `Includes ${taxView.label} tax`
+					: `Includes ${parts.map((p) => `${p.amount.label} ${p.label}`).join(", ")}`;
+		} else {
+			taxRows = parts;
+		}
+	}
 
 	return {
-		subtotal: computed(breakdown.subtotalCents, code, locale),
+		subtotal: computed(shown?.subtotal ?? breakdown.subtotalCents, code, locale),
 		discount: hasDiscount
-			? computed(breakdown.discountCents, code, locale)
+			? computed(shown?.discount ?? breakdown.discountCents, code, locale)
 			: uncomputed(NOT_APPLICABLE_LABEL),
 		shipping: options.shippingSelected
-			? computed(breakdown.shippingCents, code, locale)
+			? computed(shown?.shipping ?? breakdown.shippingCents, code, locale)
 			: uncomputed(NOT_CALCULATED_LABEL),
-		tax: options.taxZoneSelected
-			? computed(breakdown.taxCents, code, locale)
-			: uncomputed(NOT_CALCULATED_LABEL),
+		tax: taxView,
+		taxRows,
+		taxIncludedNote,
+		// Wherever there is one, uncalculated parts or not: the total shown is
+		// already rounded, so this row is what makes the rows add up to it.
+		...(breakdown.roundingCents !== undefined && breakdown.roundingCents !== 0
+			? { rounding: signedComputed(breakdown.roundingCents, code, locale) }
+			: {}),
 		total: computed(breakdown.totalCents, code, locale),
 		appliedCouponCode: breakdown.appliedCouponCode,
-		totalExcludesUncalculated: !options.shippingSelected || !options.taxZoneSelected,
+		totalExcludesUncalculated: !options.shippingSelected || !taxComputed,
+	};
+}
+
+/**
+ * Subtotal, discount and shipping as the display setting shows them. Shipping is
+ * exact (its cost is always entered without tax). The line tax is known only on
+ * the DISCOUNTED lines, so moving it in or out of the subtotal splits it across
+ * subtotal and discount pro rata (`subtotal / discounted`) — exact when there is
+ * no discount, and the rows always sum to the same total.
+ */
+function shownAmounts(
+	breakdown: QuoteBreakdownWire,
+	tax: QuoteTaxWire,
+): { subtotal: number; discount: number; shipping: number } {
+	const shippingTax = breakdown.taxCents - tax.lineTaxCents;
+	const incl = tax.displayCart === "incl";
+	const shipping = breakdown.shippingCents + (incl ? shippingTax : 0);
+	if (incl === tax.pricesIncludeTax) {
+		return { subtotal: breakdown.subtotalCents, discount: breakdown.discountCents, shipping };
+	}
+	const discounted = breakdown.subtotalCents - breakdown.discountCents;
+	const sign = incl ? 1 : -1;
+	const onSubtotal =
+		discounted > 0
+			? Number(
+					(2n * BigInt(tax.lineTaxCents) * BigInt(breakdown.subtotalCents) + BigInt(discounted)) /
+						(2n * BigInt(discounted)),
+				)
+			: 0;
+	const onDiscount = onSubtotal - tax.lineTaxCents;
+	return {
+		subtotal: breakdown.subtotalCents + sign * onSubtotal,
+		discount: breakdown.discountCents + sign * onDiscount,
+		shipping,
 	};
 }
 
@@ -260,15 +365,19 @@ export interface PublicOrderView {
  * Backward-compatible: a snapshot is only ever written together with a method,
  * so every older order that carries a zone also carries a method.
  *
+ * ADR-0032 adds one more piece of evidence for TAX: `taxLocated` (off the order's
+ * frozen tax snapshot), for tax calculated at a place with no shipping zone — a
+ * digital-only cart taxed at the shop base address. Absent on older orders.
+ *
  * Exported for the account's order page (QA U-5), whose wire carries the same two
  * ids, so "Not calculated" is decided by ONE rule wherever an order is shown.
  */
 export function orderTotalsFlags(
-	totals: Pick<PublicOrderWire["totals"], "shippingZoneId" | "shippingMethodId">,
+	totals: Pick<PublicOrderWire["totals"], "shippingZoneId" | "shippingMethodId" | "taxLocated">,
 ): Pick<CheckoutTotalsOptions, "shippingSelected" | "taxZoneSelected"> {
 	return {
 		shippingSelected: totals.shippingMethodId !== null,
-		taxZoneSelected: totals.shippingZoneId !== null,
+		taxZoneSelected: totals.shippingZoneId !== null || totals.taxLocated === true,
 	};
 }
 

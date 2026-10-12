@@ -56,3 +56,59 @@ export function mulDivRoundHalfUp(a: number, b: number, denominator: number): nu
 	const d = BigInt(denominator);
 	return Number((BigInt(a) * BigInt(b) + d / 2n) / d);
 }
+
+/**
+ * `round_half_up(a × b / d)` for ANY positive integer `d` — the even-denominator
+ * restriction of {@link mulDivRoundHalfUp} cannot serve `10000 + bps`, which is
+ * odd for an odd rate (prices entered with tax, ADR-0032). Computed as
+ * `floor((2ab + d) / 2d)` in BigInt, so it is exact at every magnitude.
+ */
+export function mulDivRoundHalfUpAny(a: number, b: number, denominator: number): number {
+	if (!Number.isSafeInteger(a) || a < 0 || !Number.isSafeInteger(b) || b < 0) {
+		throw new RangeError(
+			`mulDivRoundHalfUpAny requires non-negative integer factors, got ${String(a)}, ${String(b)}`,
+		);
+	}
+	if (!Number.isSafeInteger(denominator) || denominator <= 0) {
+		throw new RangeError(
+			`mulDivRoundHalfUpAny requires a positive integer denominator, got ${String(denominator)}`,
+		);
+	}
+	const d = BigInt(denominator);
+	return Number((2n * BigInt(a) * BigInt(b) + d) / (2n * d));
+}
+
+/**
+ * `round_half_down(a × b / d)` for any positive integer `d`: an exact half rounds
+ * DOWN — WooCommerce's tax rounding for prices entered with tax (ADR-0032).
+ * `floor((2ab + d − 1) / 2d)` in BigInt.
+ */
+export function mulDivRoundHalfDownAny(a: number, b: number, denominator: number): number {
+	mulDivRoundHalfUpAny(a, b, denominator); // the same argument checks
+	const d = BigInt(denominator);
+	return Number((2n * BigInt(a) * BigInt(b) + d - 1n) / (2n * d));
+}
+
+/**
+ * `amount` rounded half-up to the nearest multiple of `increment`: the checkout's
+ * payment rounding (ADR-0035's amendment — KWD 1.234 → 1.230, 1.235 → 1.240).
+ * `amount` a non-negative safe integer, `increment` a positive safe integer.
+ * Computed in `BigInt` as `floor((2·amount + increment) / (2·increment)) ·
+ * increment`, so it is exact at every magnitude and for an odd increment. The
+ * result is returned UNCHECKED — the caller brands it (`cents()` refuses a total
+ * past the safe-integer range).
+ */
+export function roundHalfUpToMultiple(amount: number, increment: number): number {
+	if (!Number.isSafeInteger(amount) || amount < 0) {
+		throw new RangeError(
+			`roundHalfUpToMultiple requires a non-negative integer amount, got ${String(amount)}`,
+		);
+	}
+	if (!Number.isSafeInteger(increment) || increment <= 0) {
+		throw new RangeError(
+			`roundHalfUpToMultiple requires a positive integer increment, got ${String(increment)}`,
+		);
+	}
+	const inc = BigInt(increment);
+	return Number(((2n * BigInt(amount) + inc) / (2n * inc)) * inc);
+}

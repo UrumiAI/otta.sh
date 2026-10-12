@@ -17,10 +17,18 @@ import {
  * Refused: not `ok: true`; another currency; lines that are not exactly the
  * request's (missing, extra, duplicated, unknown — matched through a `Map`, so
  * `__proto__` is just an unknown id); an amount that is not a safe non-negative
- * integer; a tax above its taxable amount × 1000% (the rate's own bound — a
- * units mix-up must not overcharge); a rate that is not an integer in
- * [0, 1000%]; a bad label; a NON-ZERO shipping line when no shipping was asked
- * about (a zero one is dropped); a total that is not a safe integer.
+ * integer; a tax above what the 1000% rate cap allows on its amount (the rate's
+ * own bound — a units mix-up must not overcharge): `amount × 10` for an amount
+ * entered without tax, and for a line entered WITH tax (`pricesIncludeTax`, the
+ * amount is the gross) the tax inside the gross at that rate,
+ * `ceil(G × 100000 / 110000)`, which is below G, so the net can never go
+ * negative — shipping is always entered without tax and keeps `amount × 10`
+ * (exact integers throughout); a rate that is not an integer in
+ * [0, 1000%]; a bad label; a NON-ZERO tax on a line whose product is not
+ * taxable (`shipping_only` or `none`, PR 2b — never silently zeroed); a NON-ZERO
+ * shipping line when no shipping was asked about (a zero one is dropped — this
+ * also covers a method that is not taxable, sent as no shipping); a total that is
+ * not a safe integer. The untaxed-line rule holds for the built-in too.
  *
  * `boundTaxToAmount: false` is for the built-in only, which must charge exactly
  * what main charged for any stored rate (its display rate is capped instead).
@@ -30,8 +38,8 @@ export function validateTaxResult(
 	raw: unknown,
 	{ boundTaxToAmount = true }: { boundTaxToAmount?: boolean } = {},
 ): TaxResult | null {
-	const maxTaxOn = (amount: number): number =>
-		boundTaxToAmount ? Math.ceil((amount * TAX_RATE_BPS_MAX) / 10_000) : Number.POSITIVE_INFINITY;
+	const exceedsBound = (taxCents: number, amount: number, inclusive: boolean): boolean =>
+		boundTaxToAmount && BigInt(taxCents) > maxTaxOn(amount, inclusive);
 	if (!isRecord(raw) || raw["ok"] !== true || raw["currency"] !== request.currency) return null;
 	const rawLines = raw["lines"];
 	if (!Array.isArray(rawLines) || rawLines.length !== request.lines.length) return null;
@@ -48,9 +56,13 @@ export function validateTaxResult(
 
 	let total = 0;
 	const lines: Array<{ lineId: string } & TaxLine> = [];
-	for (const { lineId, amountCents } of request.lines) {
+	for (const { lineId, amountCents, taxStatus } of request.lines) {
 		const line = byId.get(lineId);
-		if (line === undefined || line.taxCents > maxTaxOn(amountCents)) return null;
+		if (line === undefined || exceedsBound(line.taxCents, amountCents, request.pricesIncludeTax)) {
+			return null;
+		}
+		// A product that is not taxable carries no tax (PR 2b).
+		if (taxStatus !== "taxable" && !Object.is(line.taxCents, 0)) return null;
 		total += line.taxCents;
 		lines.push({ lineId, ...line });
 	}
@@ -65,7 +77,8 @@ export function validateTaxResult(
 			// No shipping was asked about: a zero line says nothing and is dropped.
 			if (line.taxCents !== 0) return null;
 		} else {
-			if (line.taxCents > maxTaxOn(request.shipping.amountCents)) return null;
+			// Shipping is always entered without tax (ADR-0032).
+			if (exceedsBound(line.taxCents, request.shipping.amountCents, false)) return null;
 			shipping = line;
 			total += line.taxCents;
 		}
@@ -73,6 +86,17 @@ export function validateTaxResult(
 	if (!Number.isSafeInteger(total)) return null;
 
 	return { ok: true, currency: request.currency, lines, shipping };
+}
+
+/**
+ * The most tax the 1000% rate cap allows on `amount`, exactly: without tax,
+ * `ceil(amount × MAX / 10000)`; with tax (the amount is the gross),
+ * `ceil(amount × MAX / (10000 + MAX))`. In `bigint`, so no product is rounded.
+ */
+function maxTaxOn(amount: number, inclusive: boolean): bigint {
+	const num = BigInt(amount) * BigInt(TAX_RATE_BPS_MAX);
+	const den = 10_000n + (inclusive ? BigInt(TAX_RATE_BPS_MAX) : 0n);
+	return (num + den - 1n) / den;
 }
 
 function taxLineOf(item: Record<string, unknown>): TaxLine | null {

@@ -410,6 +410,22 @@ describe("buildOrderView — honest zeros on the ORDER's own totals", () => {
 		expect(free.totals.shipping.money).toEqual({ amount: 0, currency: "USD", formatted: "$0.00" });
 	});
 
+	test("ADR-0032: a digital order taxed at the shop base address (no zone, `taxLocated`) shows its tax", () => {
+		const view = buildOrderView(
+			order({ taxCents: 1000, totalCents: 6000, taxLocated: true }),
+			LOCALE,
+		);
+		expect(view.totals.tax.label).toBe("$10.00");
+		expect(view.totals.taxRows.map((r) => r.amount.label)).toEqual(["$10.00"]);
+		// Only shipping (nothing ships) is still uncalculated — never the tax.
+		expect(view.totals.shipping).toEqual({ money: null, label: NOT_CALCULATED_LABEL });
+	});
+
+	test("an order without `taxLocated` (every order before ADR-0032's fix) keeps the zone rule", () => {
+		const view = buildOrderView(order({ taxCents: 0 }), LOCALE);
+		expect(view.totals.tax).toEqual({ money: null, label: NOT_CALCULATED_LABEL });
+	});
+
 	test("zone + method ⇒ both computed, and the total excludes nothing", () => {
 		const view = buildOrderView(
 			order({ shippingZoneId: "z-1", shippingMethodId: "m-1", shippingCents: 599, taxCents: 400 }),
@@ -552,5 +568,51 @@ describe("lockedCheckoutPhase — what a cart that already became an order may o
 
 	test("a state this build does not know is 'placed' — never a pay button, never \"start again\" over an order that may be paid", () => {
 		expect(lockedCheckoutPhase("some_future_state")).toBe("placed");
+	});
+});
+
+describe("buildCheckoutTotals — the payment rounding row (ADR-0035 amendment)", () => {
+	const KWD = {
+		currency: "KWD",
+		subtotalCents: 1234,
+		discountCents: 0,
+		shippingCents: 0,
+		taxCents: 0,
+		totalCents: 1230,
+		roundingCents: -4,
+		appliedCouponCode: null,
+	};
+	const flags = { locale: LOCALE, shippingSelected: true, taxZoneSelected: true };
+
+	test("a rounded-down KWD total gets a signed '−' row, its money keeping the sign", () => {
+		const totals = buildCheckoutTotals(KWD, flags);
+		expect(totals.rounding?.label).toMatch(/^−/);
+		expect(totals.rounding?.label).toContain("0.004");
+		expect(totals.rounding?.money?.amount).toBe(-4);
+		expect(totals.total.money?.amount).toBe(1230);
+	});
+
+	test("a rounded-up total gets a '+' row", () => {
+		const totals = buildCheckoutTotals({ ...KWD, totalCents: 1240, roundingCents: 6 }, flags);
+		expect(totals.rounding?.label).toMatch(/^\+/);
+		expect(totals.rounding?.label).toContain("0.006");
+	});
+
+	test("a digital-only KWD quote (no shipping, no tax calculated) still shows the row — the rows add up to the rounded total", () => {
+		const totals = buildCheckoutTotals(KWD, {
+			locale: LOCALE,
+			shippingSelected: false,
+			taxZoneSelected: false,
+		});
+		expect(totals.totalExcludesUncalculated).toBe(true);
+		expect(totals.rounding?.label).toMatch(/^−.*0\.004/);
+		expect(totals.total.money?.amount).toBe(1230);
+	});
+
+	test("a zero rounding, and a breakdown with none, add no row at all", () => {
+		expect(
+			Object.hasOwn(buildCheckoutTotals({ ...KWD, roundingCents: 0 }, flags), "rounding"),
+		).toBe(false);
+		expect(Object.hasOwn(buildCheckoutTotals(BREAKDOWN, flags), "rounding")).toBe(false);
 	});
 });

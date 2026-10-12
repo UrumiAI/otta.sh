@@ -1,5 +1,11 @@
-import { cents as toCents, currency as toCurrency } from "@otta-sh/domain";
-import { EmdashShippingRulesStore, systemClock, type StorageAccess } from "@otta-sh/store-emdash";
+import { cents as toCents, currency as toCurrency, idempotencyKey } from "@otta-sh/domain";
+import {
+	EmdashSettingsStore,
+	EmdashShippingRulesStore,
+	SETTINGS_COLLECTION,
+	systemClock,
+	type StorageAccess,
+} from "@otta-sh/store-emdash";
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "vitest";
 import { decodeCarrier } from "../src/admin/scaffold/carrier.js";
 import { decodePath, encodePath } from "../src/admin/scaffold/index.js";
@@ -986,7 +992,7 @@ describe("admin Shipping console — methods level, depth 1 (workerd sandbox)", 
 			groupBlocks(await openPath(["us"]), "ship:method:us:standard"),
 			"shipping:save-method",
 		);
-		expect(fieldIds(editForm)).toEqual(["name", "type"]);
+		expect(fieldIds(editForm)).toEqual(["name", "type", "taxable"]);
 		expect(carriedContext(editForm?.block_id)).toEqual({ zoneId: "us", methodId: "standard" });
 
 		const blocks = await submitForm(
@@ -1043,7 +1049,7 @@ describe("admin Shipping console — methods level, depth 1 (workerd sandbox)", 
 			await openNewMethodScreen(await openPath(["us"])),
 			"shipping:create-method",
 		);
-		expect(fieldIds(createForm)).toEqual(["id", "name", "type"]);
+		expect(fieldIds(createForm)).toEqual(["id", "name", "type", "taxable"]);
 		const blocks = await submitForm(
 			"shipping:create-method",
 			{ id: "express", name: "Express", type: "flat_rate" },
@@ -1055,6 +1061,7 @@ describe("admin Shipping console — methods level, depth 1 (workerd sandbox)", 
 			zoneId: "us",
 			name: "Express",
 			type: "flat_rate",
+			taxable: true,
 		});
 		expect(blocks.some((b) => b.type === "header" && b.text === "Shipping methods — us")).toBe(
 			true,
@@ -1086,7 +1093,79 @@ describe("admin Shipping console — methods level, depth 1 (workerd sandbox)", 
 			id: "bogus",
 			name: "Bogus",
 			type: "Flat rate",
+			taxable: true,
 		});
+	});
+
+	// -- PR 2b: "Charge tax on this method" -----------------------------------
+
+	test("the method toggle declares its state; switching it off is saved and shown on the row", async () => {
+		await seedShipping();
+		const editForm = formFor(
+			groupBlocks(await openPath(["us"]), "ship:method:us:standard"),
+			"shipping:save-method",
+		);
+		// F-6b/X-24: declared, or an untouched toggle is absent from `values`.
+		expect(field(editForm, "taxable")?.initial_value).toBe(true);
+		const blocks = await submitForm(
+			"shipping:save-method",
+			{ name: "Standard", type: "Flat rate", taxable: false },
+			editForm?.block_id,
+		);
+		expect(bannerOf(blocks)?.variant).toBe("default");
+		expect((await shippingRules.getMethod("standard"))?.taxable).toBe(false);
+		const row = group(blocks, "ship:method:us:standard");
+		expect(String(row?.label)).toContain("not taxed");
+		expect(
+			field(
+				formFor(groupBlocks(blocks, "ship:method:us:standard"), "shipping:save-method"),
+				"taxable",
+			)?.initial_value,
+		).toBe(false);
+	});
+
+	test("a save without the toggle in `values` PRESERVES the method's flag", async () => {
+		await seedShipping();
+		await shippingRules.updateMethod("standard", {
+			name: "Standard",
+			type: "flat_rate",
+			taxable: false,
+		});
+		const editForm = formFor(
+			groupBlocks(await openPath(["us"]), "ship:method:us:standard"),
+			"shipping:save-method",
+		);
+		await submitForm(
+			"shipping:save-method",
+			{ name: "Standard 2", type: "Flat rate" },
+			editForm?.block_id,
+		);
+		expect(await shippingRules.getMethod("standard")).toMatchObject({
+			name: "Standard 2",
+			taxable: false,
+		});
+	});
+
+	test("a new method can be created untaxed; a refusal restates the toggle", async () => {
+		await seedShipping();
+		const createForm = formFor(
+			await openNewMethodScreen(await openPath(["us"])),
+			"shipping:create-method",
+		);
+		expect(field(createForm, "taxable")?.initial_value).toBe(true);
+		const refused = await submitForm(
+			"shipping:create-method",
+			{ id: "", name: "Courier", type: "Flat rate", taxable: false },
+			createForm?.block_id,
+		);
+		expect(bannerOf(refused)?.variant).toBe("error");
+		expect(formInitialValues(refused, "shipping:create-method")).toMatchObject({ taxable: false });
+		await submitForm(
+			"shipping:create-method",
+			{ id: "courier", name: "Courier", type: "Flat rate", taxable: false },
+			createForm?.block_id,
+		);
+		expect((await shippingRules.getMethod("courier"))?.taxable).toBe(false);
 	});
 
 	// -- INC-14: the create action is a button above the data ------------------
@@ -1337,7 +1416,7 @@ describe("admin Shipping console — rates level, depth 2, EXEMPT from L-9 (work
 		expect(bannerOf(blocks)?.variant).toBe("error");
 	});
 
-	test("a currency-SHAPED code that is not an ISO-4217 currency (XYZ) is refused — nothing is written", async () => {
+	test("a currency-SHAPED code that is not a supported currency (XYZ) is refused — nothing is written", async () => {
 		// QA saved an "XYZ" rate: three letters passes the shape check, and a rate
 		// in a currency no cart is ever in is a price nobody is quoted.
 		await seedShipping();
@@ -1348,7 +1427,32 @@ describe("admin Shipping console — rates level, depth 2, EXEMPT from L-9 (work
 			createForm?.block_id,
 		);
 		expect(await shippingRules.getRate("bare", toCurrency("XYZ"))).toBeNull();
-		expect(String(bannerOf(blocks)?.description)).toMatch(/XYZ is not an ISO-4217 currency/);
+		expect(String(bannerOf(blocks)?.description)).toMatch(/XYZ isn't a supported currency/);
+	});
+
+	test("a JPY rate is read in whole yen: '1500' is stored as 1500, and the edit form shows 1500 back", async () => {
+		await seedShipping();
+		const createForm = formFor(await openPath(["us", "bare"]), "shipping:create-rate");
+		await submitForm(
+			"shipping:create-rate",
+			{ currency: "JPY", amount: "1500", minSubtotal: "" },
+			createForm?.block_id,
+		);
+		expect(await shippingRules.getRate("bare", toCurrency("JPY"))).toEqual({
+			methodId: "bare",
+			currency: "JPY",
+			amountCents: 1500,
+			minSubtotalCents: null,
+		});
+		// A fraction of a yen is no amount at all — refused, nothing written.
+		const again = formFor(await openPath(["us", "bare"]), "shipping:create-rate");
+		const refused = await submitForm(
+			"shipping:create-rate",
+			{ currency: "JPY", amount: "15.5", minSubtotal: "" },
+			again?.block_id,
+		);
+		expect(String(bannerOf(refused)?.description)).toMatch(/whole numbers only/);
+		expect((await shippingRules.getRate("bare", toCurrency("JPY")))?.amountCents).toBe(1500);
 	});
 
 	test("a free-shipping threshold on a FLAT-RATE method is refused with the reason — the domain would never apply it", async () => {
@@ -1829,3 +1933,151 @@ describe("admin Shipping console — regions are ISO codes (ADR-0021, workerd sa
 		});
 	});
 });
+
+// Currency PR 2: the rate currency the methods and rates levels start on (and
+// the new-rate form prefills) is the STORE currency — USD until one is saved.
+describe("admin Shipping console — the currency filter defaults to the store currency (workerd sandbox)", () => {
+	async function saveStoreCurrency(code: string): Promise<void> {
+		const settings = new EmdashSettingsStore({ storage, clock: systemClock });
+		await settings.update({ currency: code }, idempotencyKey(`ship-store-currency-${code}`));
+	}
+
+	test("never saved: the rates level and the new-rate form start on USD, with no filter summary", async () => {
+		await seedShipping();
+		const opened = await openPath(["us", "standard"]);
+		expect(field(formFor(opened, "shipping:apply-filter"), "currency")?.initial_value).toBe("USD");
+		const bare = await openPath(["us", "bare"]);
+		expect(field(formFor(bare, "shipping:create-rate"), "currency")?.initial_value).toBe("USD");
+		expect(findBlocks(bare, "section").some((b) => String(b.text).includes("currency:"))).toBe(
+			false,
+		);
+	});
+
+	test("saved EUR: both levels read in EUR by default, the new-rate form prefills EUR, and USD is now a filter", async () => {
+		await seedShipping({
+			rates: [
+				...DEFAULT_RATES,
+				{ methodId: "standard", currency: "EUR", amountCents: 1200, minSubtotalCents: null },
+			],
+		});
+		await saveStoreCurrency("EUR");
+
+		const rates = await openPath(["us", "standard"]);
+		expect(field(formFor(rates, "shipping:apply-filter"), "currency")?.initial_value).toBe("EUR");
+		expect(findBlocks(rates, "fields").some((b) => JSON.stringify(b).includes("EUR"))).toBe(true);
+		// The default is not a filter, so there is nothing to clear.
+		expect(findBlocks(rates, "section").some((b) => String(b.text).includes("currency:"))).toBe(
+			false,
+		);
+
+		const bare = await openPath(["us", "bare"]);
+		expect(field(formFor(bare, "shipping:create-rate"), "currency")?.initial_value).toBe("EUR");
+
+		const methods = await openPath(["us"]);
+		expect(contextTexts(methods).some((t) => t.includes("Prices in EUR"))).toBe(true);
+
+		// Asking for USD explicitly is now a narrowing away from the default.
+		const usd = await submitForm(
+			"shipping:apply-filter",
+			{ currency: "USD" },
+			formFor(rates, "shipping:apply-filter")?.block_id,
+		);
+		expect(field(formFor(usd, "shipping:apply-filter"), "currency")?.initial_value).toBe("USD");
+		expect(findBlocks(usd, "section").some((b) => String(b.text).includes("currency: USD"))).toBe(
+			true,
+		);
+	});
+
+	test("a settings outage does not blank the rates level: the filter falls back to USD", async () => {
+		await seedShipping();
+		await saveStoreCurrency("EUR");
+		const rates = await withSettingsUnreadable(() => openPath(["us", "standard"]));
+		// The level READS in USD, but the field stays blank — the stand-in is not
+		// offered as if it were the operator's filter.
+		expect(field(formFor(rates, "shipping:apply-filter"), "currency")?.initial_value).toBe("");
+		// The USD rate is still read and shown.
+		expect(findBlocks(rates, "fields").some((b) => JSON.stringify(b).includes("USD"))).toBe(true);
+		expect(findBlocks(rates, "banner").some((b) => b.variant === "error")).toBe(false);
+		// …and the level SAYS it is showing USD because the store currency is unknown.
+		expect(contextTexts(rates)).toContain(UNKNOWN_LINE);
+	});
+
+	test("a settings outage never guesses a NEW rate's currency: the field is left empty, with the reason", async () => {
+		await seedShipping();
+		await saveStoreCurrency("EUR");
+		const bare = await withSettingsUnreadable(() => openPath(["us", "bare"]));
+		expect(field(formFor(bare, "shipping:create-rate"), "currency")?.initial_value).toBe("");
+		expect(contextTexts(bare)).toContain(UNKNOWN_LINE);
+		// The methods level says so too.
+		const methods = await withSettingsUnreadable(() => openPath(["us"]));
+		expect(contextTexts(methods)).toContain(UNKNOWN_LINE);
+		// With the read back, the default is the store currency again, and no such line.
+		const healthy = await openPath(["us", "bare"]);
+		expect(field(formFor(healthy, "shipping:create-rate"), "currency")?.initial_value).toBe("EUR");
+		expect(contextTexts(healthy)).not.toContain(UNKNOWN_LINE);
+	});
+
+	test("an outage's USD stand-in is never prefilled into the filter, so an unedited Apply keeps it unknown", async () => {
+		await seedShipping();
+		await saveStoreCurrency("EUR");
+		const applied = await withSettingsUnreadable(async () => {
+			const opened = await openPath(["us", "bare"]);
+			const filterForm = formFor(opened, "shipping:apply-filter");
+			// The field is blank, not the guess.
+			expect(field(filterForm, "currency")?.initial_value).toBe("");
+			// Apply WITHOUT editing: the form submits what it shows.
+			return submitForm(
+				"shipping:apply-filter",
+				{ currency: String(field(filterForm, "currency")?.initial_value ?? "") },
+				filterForm?.block_id,
+			);
+		});
+		expect(contextTexts(applied)).toContain(UNKNOWN_LINE);
+		expect(field(formFor(applied, "shipping:create-rate"), "currency")?.initial_value).toBe("");
+		expect(field(formFor(applied, "shipping:apply-filter"), "currency")?.initial_value).toBe("");
+		// The methods level's price-currency field is blank too.
+		const methods = await withSettingsUnreadable(() => openPath(["us"]));
+		expect(field(formFor(methods, "shipping:apply-filter"), "currency")?.initial_value).toBe("");
+	});
+
+	test("a currency the operator typed is kept for the new rate even during an outage", async () => {
+		await seedShipping();
+		const bare = await withSettingsUnreadable(async () => {
+			const opened = await openPath(["us", "bare"]);
+			return submitForm(
+				"shipping:apply-filter",
+				{ currency: "GBP" },
+				formFor(opened, "shipping:apply-filter")?.block_id,
+			);
+		});
+		expect(field(formFor(bare, "shipping:create-rate"), "currency")?.initial_value).toBe("GBP");
+		expect(contextTexts(bare)).not.toContain(UNKNOWN_LINE);
+	});
+});
+
+const UNKNOWN_LINE =
+	"Couldn't load your store currency — showing USD. Reload to try again, or enter a currency.";
+
+/** Make ONLY the settings document unreadable for `body`, restoring it after —
+ *  the bridge resolves `storage[name]` fresh on every call. */
+async function withSettingsUnreadable<T>(body: () => Promise<T>): Promise<T> {
+	const real = storage[SETTINGS_COLLECTION];
+	if (real === undefined) throw new Error("no settings collection to fault-inject");
+	storage[SETTINGS_COLLECTION] = new Proxy(real, {
+		get(_holder, property) {
+			if (property === "get" || property === "getVersioned") {
+				return () => {
+					throw new Error("injected storage fault: settings unreadable");
+				};
+			}
+			const value = Reflect.get(real, property) as unknown;
+			if (typeof value !== "function") return value;
+			return (value as (...args: unknown[]) => unknown).bind(real);
+		},
+	}) as StorageAccess[string];
+	try {
+		return await body();
+	} finally {
+		storage[SETTINGS_COLLECTION] = real;
+	}
+}

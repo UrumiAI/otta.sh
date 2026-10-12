@@ -267,6 +267,7 @@ export class InMemoryProductCommerceStore implements ProductCommerceStore {
 			price: input.price ?? null,
 			title: input.title ?? null,
 			taxClass: input.taxClass ?? null,
+			taxStatus: "taxable",
 			// compare-at / cost / inventory-policy are EDIT-ONLY (set via
 			// `updateCommerceFields`, never a CMS-sync upsert) — a fresh row always
 			// starts with them at their defaults, and a later upsert PRESERVES them
@@ -411,6 +412,7 @@ export class InMemoryProductCommerceStore implements ProductCommerceStore {
 			unitCost: input.unitCost !== undefined ? input.unitCost : existing.unitCost,
 			inventoryPolicy:
 				input.inventoryPolicy !== undefined ? input.inventoryPolicy : existing.inventoryPolicy,
+			taxStatus: input.taxStatus ?? existing.taxStatus,
 			weightGrams: input.weightGrams !== undefined ? input.weightGrams : existing.weightGrams,
 			lengthMm: input.lengthMm !== undefined ? input.lengthMm : existing.lengthMm,
 			widthMm: input.widthMm !== undefined ? input.widthMm : existing.widthMm,
@@ -990,6 +992,7 @@ export class InMemoryProductCommerceStore implements ProductCommerceStore {
 					: null,
 			title: row.title ?? null,
 			taxClass: null,
+			taxStatus: "taxable",
 			compareAtPrice: null,
 			unitCost: null,
 			inventoryPolicy: "deny",

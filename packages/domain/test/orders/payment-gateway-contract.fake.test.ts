@@ -3,7 +3,7 @@ import { buildGatewayHarness, paymentGatewayContract } from "@otta-sh/domain/tes
 
 // paymentGatewayContract against the fake gateway (§8 step 4.4) — the shared
 // settlement behavior (verify→dedupe→settle→commit/grant), driven end-to-end
-// through the in-memory stores before any real Stripe/x402 adapter.
+// through the in-memory stores before any real Stripe adapter.
 paymentGatewayContract(
 	() => {
 		const gateway = new FakePaymentGateway({ id: "stripe" });

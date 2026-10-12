@@ -2,16 +2,21 @@ import {
 	cents,
 	currency,
 	idempotencyKey,
+	isSupportedCurrency,
 	orderId,
 	PaymentIntentError,
+	SUPPORTED_CURRENCIES,
 	type CreateIntentInput,
 } from "@otta-sh/domain";
 import { describe, expect, test } from "vitest";
 import {
 	createStripeHttpTransport,
 	IN_FLIGHT_BUDGET_MS,
-	STRIPE_UNSUPPORTED_CURRENCIES,
+	STRIPE_THREE_DECIMAL_CURRENCIES,
+	STRIPE_ZERO_DECIMAL_CURRENCIES,
 	StripePaymentGateway,
+	stripeAmountIncrement,
+	stripeRefusesCurrency,
 	type StripeCreatePaymentIntentInput,
 	type StripeCreatePaymentIntentResult,
 	type StripeCreateRefundResult,
@@ -85,66 +90,131 @@ describe("StripePaymentGateway.createIntent — the OFFLINE path is unchanged", 
 	});
 });
 
-describe("StripePaymentGateway.createIntent — the LIVE path FAILS CLOSED on non-exponent-2 currencies", () => {
-	// The repo's money convention is integer minor units at hundredths scale
-	// EVERYWHERE (see packages/plugin/src/admin/money-input.ts). Stripe wants
-	// ZERO-decimal currencies (JPY, KRW, …) in WHOLE units, so passing our
-	// hundredths integer through would charge the buyer 100×; three-decimal
-	// currencies (KWD, …) are the mirror hazard. Reject before the network — a
-	// wrong charge is not a retryable condition.
+describe("StripePaymentGateway.createIntent — the LIVE path sends our minor units unchanged, and FAILS CLOSED where they are not Stripe's", () => {
+	// Otta's amounts are in each currency's minor unit from the currency table
+	// (whole yen for JPY, fils for KWD). Stripe's `amount` is the same unit for
+	// two- and zero-decimal currencies (https://docs.stripe.com/currencies), so
+	// those go out unchanged; three-decimal ones too, but only as multiples of 10
+	// (checkout rounds their total to it — ADR-0035's amendment), so any other
+	// amount is refused before the network.
 
-	test("a ZERO-decimal currency (JPY) throws a TERMINAL unsupported_currency error and never calls the transport", async () => {
+	async function liveIntent(code: string, amount: number): Promise<StripeCreatePaymentIntentInput> {
+		const transport = new MockTransport();
+		const gw = new StripePaymentGateway({ webhookSecret: WEBHOOK, secretKey: SK, transport });
+		await gw.createIntent(intentInput({ currency: currency(code), amount: cents(amount) }));
+		expect(transport.intents).toHaveLength(1);
+		return transport.intents[0] as StripeCreatePaymentIntentInput;
+	}
+
+	async function refused(code: string): Promise<void> {
 		const transport = new MockTransport();
 		const gw = new StripePaymentGateway({ webhookSecret: WEBHOOK, secretKey: SK, transport });
 		const err = (await gw
-			.createIntent(intentInput({ currency: currency("JPY"), amount: cents(1000) }))
+			.createIntent(intentInput({ currency: currency(code), amount: cents(1000) }))
 			.catch((e: unknown) => e)) as PaymentIntentError;
-		expect(err).toBeInstanceOf(PaymentIntentError);
+		expect(err, code).toBeInstanceOf(PaymentIntentError);
 		expect(err.retryable).toBe(false);
 		expect(err.providerCode).toBe("unsupported_currency");
 		expect(err.providerStatus).toBeUndefined();
-		expect(transport.intents, "nothing was sent to Stripe").toHaveLength(0);
+		expect(transport.intents, `${code}: nothing was sent to Stripe`).toHaveLength(0);
+	}
+
+	test("a ZERO-decimal currency (JPY) now goes live: our whole-yen amount IS Stripe's amount", async () => {
+		// ¥1500 is stored as 1500 and sent as 1500 ("to charge 500 JPY, provide an
+		// amount value of 500").
+		const sent = await liveIntent("JPY", 1500);
+		expect(sent.amountCents).toBe(1500);
+		expect(sent.currency).toBe("jpy");
+		for (const code of ["KRW", "VND", "CLP"]) {
+			expect((await liveIntent(code, 1500)).amountCents, code).toBe(1500);
+		}
 	});
 
-	test("a THREE-decimal currency (KWD) is rejected the same way", async () => {
-		const transport = new MockTransport();
-		const gw = new StripePaymentGateway({ webhookSecret: WEBHOOK, secretKey: SK, transport });
-		const err = (await gw
-			.createIntent(intentInput({ currency: currency("KWD") }))
-			.catch((e: unknown) => e)) as PaymentIntentError;
-		expect(err).toBeInstanceOf(PaymentIntentError);
-		expect(err.retryable).toBe(false);
-		expect(err.providerCode).toBe("unsupported_currency");
-		expect(transport.intents).toHaveLength(0);
+	test("ISK is NOT in the table and behaves exactly as before it: hundredths, sent unchanged", async () => {
+		expect(isSupportedCurrency("ISK")).toBe(false);
+		expect(stripeRefusesCurrency("ISK")).toBe(false);
+		expect((await liveIntent("ISK", 150_000)).amountCents).toBe(150_000);
 	});
 
-	test("every currency on the deny-list is rejected; ordinary exponent-2 currencies still go live", async () => {
-		for (const denied of STRIPE_UNSUPPORTED_CURRENCIES) {
+	test("HUF and TWD (Stripe special cases for PAYOUTS only) are two-decimal: sent unchanged", async () => {
+		expect((await liveIntent("HUF", 1045)).amountCents).toBe(1045);
+		expect((await liveIntent("TWD", 80045)).amountCents).toBe(80045);
+	});
+
+	test("a listed THREE-decimal currency (KWD, BHD, OMR, JOD) goes live: thousandths sent unchanged when a multiple of 10", async () => {
+		for (const code of ["KWD", "BHD", "OMR", "JOD"]) {
+			expect(stripeRefusesCurrency(code), code).toBe(false);
+			const sent = await liveIntent(code, 1230);
+			expect(sent.amountCents, code).toBe(1230);
+			expect(sent.currency, code).toBe(code.toLowerCase());
+		}
+	});
+
+	test("a three-decimal amount that is NOT a multiple of 10 is refused before the network (unsupported_amount)", async () => {
+		for (const code of ["KWD", "BHD", "OMR", "JOD"]) {
 			const transport = new MockTransport();
 			const gw = new StripePaymentGateway({ webhookSecret: WEBHOOK, secretKey: SK, transport });
-			await expect(
-				gw.createIntent(intentInput({ currency: currency(denied) })),
-			).rejects.toBeInstanceOf(PaymentIntentError);
-			expect(transport.intents).toHaveLength(0);
+			const err = (await gw
+				.createIntent(intentInput({ currency: currency(code), amount: cents(1234) }))
+				.catch((e: unknown) => e)) as PaymentIntentError;
+			expect(err, code).toBeInstanceOf(PaymentIntentError);
+			expect(err.retryable).toBe(false);
+			expect(err.providerCode).toBe("unsupported_amount");
+			expect(err.providerStatus).toBeUndefined();
+			expect(transport.intents, `${code}: nothing was sent to Stripe`).toHaveLength(0);
 		}
+	});
+
+	test("the amount step is 10 for Stripe's three-decimal set and 1 for everything else", () => {
+		for (const code of STRIPE_THREE_DECIMAL_CURRENCIES)
+			expect(stripeAmountIncrement(code)).toBe(10);
+		for (const code of ["USD", "JPY", "EUR", "ISK", "kwd"]) {
+			expect(stripeAmountIncrement(code), code).toBe(code === "kwd" ? 10 : 1);
+		}
+	});
+
+	test("a code outside the currency table keeps its old treatment: Stripe's zero-/three-decimal codes refused, others unchanged", async () => {
+		for (const code of [...STRIPE_ZERO_DECIMAL_CURRENCIES, ...STRIPE_THREE_DECIMAL_CURRENCIES]) {
+			if (isSupportedCurrency(code)) continue;
+			await refused(code);
+		}
+		// LKR / ALL: codes outside the table, which went live before it.
+		expect((await liveIntent("LKR", 2500)).amountCents).toBe(2500);
+		expect((await liveIntent("ALL", 2500)).amountCents).toBe(2500);
+	});
+
+	test("ordinary exponent-2 currencies still go live, byte-for-byte unchanged", async () => {
 		for (const allowed of ["USD", "EUR", "GBP", "CAD", "AUD", "INR"]) {
-			const transport = new MockTransport();
-			const gw = new StripePaymentGateway({ webhookSecret: WEBHOOK, secretKey: SK, transport });
-			await gw.createIntent(intentInput({ currency: currency(allowed) }));
-			expect(transport.intents[0]?.currency).toBe(allowed.toLowerCase());
+			const sent = await liveIntent(allowed, 2500);
+			expect(sent.amountCents).toBe(2500);
+			expect(sent.currency).toBe(allowed.toLowerCase());
 		}
 	});
 
-	test("the deny-list covers Stripe's documented zero-decimal AND three-decimal sets", () => {
-		for (const code of "BIF CLP DJF GNF JPY KMF KRW MGA PYG RWF UGX VND VUV XAF XOF XPF".split(
-			" ",
-		)) {
-			expect(STRIPE_UNSUPPORTED_CURRENCIES.has(code), code).toBe(true);
+	test("Stripe's documented zero-decimal and three-decimal sets are the ones encoded", () => {
+		expect([...STRIPE_ZERO_DECIMAL_CURRENCIES].toSorted()).toEqual(
+			"BIF CLP DJF GNF JPY KMF KRW MGA PYG RWF UGX VND VUV XAF XOF XPF".split(" "),
+		);
+		expect([...STRIPE_THREE_DECIMAL_CURRENCIES].toSorted()).toEqual(
+			"BHD JOD KWD OMR TND".split(" "),
+		);
+	});
+
+	test("EVERY row of the currency table is charged unchanged", () => {
+		// Adding a currency to the table lands here: a row whose exponent Stripe
+		// treats differently is refused (and fails this test) until this adapter
+		// knows how to scale it.
+		// docs.stripe.com/currencies "Special cases": zero-decimal by ISO, but a
+		// two-decimal amount ending in 00 at Stripe. A table row naming one would be
+		// sent 100× too small, so none may be listed until the adapter scales it.
+		const twoDecimalAtStripe = new Set(["ISK", "UGX"]);
+		for (const row of SUPPORTED_CURRENCIES) {
+			expect(stripeRefusesCurrency(row.code), row.code).toBe(false);
+			if (row.digits === 0) {
+				expect(STRIPE_ZERO_DECIMAL_CURRENCIES.has(row.code), row.code).toBe(true);
+				expect(twoDecimalAtStripe.has(row.code), row.code).toBe(false);
+			}
 		}
-		for (const code of "BHD JOD KWD OMR TND".split(" ")) {
-			expect(STRIPE_UNSUPPORTED_CURRENCIES.has(code), code).toBe(true);
-		}
-		expect(STRIPE_UNSUPPORTED_CURRENCIES.has("USD")).toBe(false);
 	});
 });
 

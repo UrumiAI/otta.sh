@@ -24,8 +24,8 @@
  * **A dedupe key that arrives against a different order still answers `false`.**
  * The SQL's UNIQUE was global and its conflict clause silent, so this is faithful
  * rather than lenient. What `false` alone cannot say is WHOSE row it collided
- * with, and that is the whole cross-order replay question for x402, where the
- * dedupe key IS the on-chain transaction — so the port also asks
+ * with, and that is the whole cross-order replay question: the order id a
+ * confirmation carries is only the caller's claim — so the port also asks
  * {@link EmdashPaymentEventStore.orderForDedupeKey}, which reads the stored row's
  * `orderId` back, and `settleOrder` refuses a receipt already bound elsewhere.
  * The order store's `payment_refs/{providerRef}` claim is the other half, and

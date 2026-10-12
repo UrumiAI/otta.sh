@@ -1,5 +1,5 @@
 import type { Currency, Money } from "../money/cents.js";
-import type { ProductKind } from "../ports/product-commerce-store.js";
+import type { ProductKind, ProductTaxStatus } from "../ports/product-commerce-store.js";
 import type { QuoteCommand } from "./quote.js";
 import type { TotalsLineInput } from "./types.js";
 
@@ -15,6 +15,8 @@ export interface PricedLine {
 	qty: number;
 	taxClass: string | null;
 	productKind: ProductKind;
+	/** The row's tax status (PR 2b); absent ⇒ `taxable`. */
+	taxStatus?: ProductTaxStatus;
 }
 
 export interface QuoteInput {
@@ -30,9 +32,9 @@ export interface QuoteInput {
  * The quote command for these lines (ADR-0028 Decision 1).
  *
  * ONE builder, so that the checkout review, the order `createOrderFromCart`
- * places, and the x402 gate's price are the same quote of the same lines: a
+ * places are the same quote of the same lines: a
  * field the pricing pipeline gains (a tax profile, say) is added here once and
- * reaches all three, rather than to one of three copies. A line's tax base is
+ * reaches both, rather than to one of two copies. A line's tax base is
  * its price × qty at its tax class (`"standard"` when the row names none), and
  * the order ships iff any line is physical (ADR-0021 Decision 5).
  *
@@ -55,5 +57,11 @@ function totalsLineOf(line: PricedLine): TotalsLineInput {
 		unitPriceCents: line.price.amount,
 		qty: line.qty,
 		taxClassId: line.taxClass ?? "standard",
+		requiresShipping: line.productKind === "physical",
+		// Only a status that changes the tax is carried, so a taxable line's command
+		// is key for key what it was before PR 2b.
+		...(line.taxStatus !== undefined && line.taxStatus !== "taxable"
+			? { taxStatus: line.taxStatus }
+			: {}),
 	};
 }

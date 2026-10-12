@@ -63,8 +63,7 @@ account, token or remote database; the D1 is the local miniflare simulator. In C
 job: on demand, and as the **release gate** on any PR into `main` and the `main` push that
 follows. Per-increment PRs into an integration branch do not run it.
 
-Before a PR: **tests pass, lint clean, formatted, changeset added** if a published package
-changed. Migrations are forward-only.
+Before a PR: **tests pass, lint clean, formatted.** Migrations are forward-only.
 
 ## Branch & commit conventions
 
@@ -74,7 +73,7 @@ changed. Migrations are forward-only.
   | Area changed | Tag |
   |---|---|
   | `@otta-sh/domain` (ports, use-cases, invariants) | `[Domain]` |
-  | Store/client/payment **adapters** (store-emdash, stripe, x402) | `[Adapters]` |
+  | Store/client/payment **adapters** (store-emdash, stripe) | `[Adapters]` |
   | The EmDash **plugin** (storefront, Block Kit panel, sync hooks) and its admin packages (`admin-react`, `admin-presentation`) | `[Plugin]` |
   | `sites/*` (the reference storefront site/theme) | `[Site]` |
   | Shared test/contract packages | `[Test]` |

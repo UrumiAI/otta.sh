@@ -25,18 +25,16 @@ staging-only.
 > Workers deployment is coming soon.
 
 > **Status honesty.** The commerce layer is feature-complete: catalog, inventory, cart,
-> checkout, orders, customers with magic-link auth, Stripe payments (x402 planned), tax,
+> checkout, orders, customers with magic-link auth, Stripe payments, tax,
 > shipping, discounts, entitlements, reporting, and settings (the magic-link email needs an
 > EmDash email provider and a sign-in page URL, §3 Email). The reference **storefront** covers
 > catalog, cart and **card checkout**: `/checkout`, the Stripe pay page (`/checkout/pay`) and
 > the order confirmation page (`/orders/<orderId>`) are built (ADR-0012), and so are the
 > customer account pages (`/account/login`, `/account/verify`, `/account/orders`). Paid
 > digital downloads are built too (issue #376): the merchant attaches a file to a digital
-> product in the admin, and a buyer downloads it from the order page. One page surface is not
-> built yet: the x402 payment gate (issue #27). Deploying today gives you a browsable
+> product in the admin, and a buyer downloads it from the order page. Deploying today gives you a browsable
 > catalog, carts with real inventory holds, magic-link customer accounts, digital downloads,
-> and a Stripe card purchase end-to-end once Stripe is configured (§3). When #27 closes, this
-> banner shrinks to a version note.
+> and a Stripe card purchase end-to-end once Stripe is configured (§3).
 
 ## 1. Universal contracts
 
@@ -177,8 +175,7 @@ expired holds and queued emails drain at the Free pace (§5).
 4. **Build the site.** The Cloudflare adapter reads `wrangler.local.jsonc` at **build**
    time (`astro.config.ts` passes it as `configPath`), so the build, not the deploy, is
    where your Worker name, D1, and R2 config becomes real. Commerce runs in-process, so
-   there is no service URL to bake in; the optional x402 facilitator URL is read
-   here too (§4):
+   there is no service URL to bake in, and no egress URL either (§4):
 
    ```bash
    pnpm --filter @otta-sh/site-staging build
@@ -257,13 +254,9 @@ cannot be retried in place:
 ### 2.4 D1 sessions (`"primary-first"`) and `global_fetch_strictly_public`
 
 > The site's `wrangler.jsonc` does **not** carry the `global_fetch_strictly_public`
-> compatibility flag (issue #375). It was there so the site's calls to a commerce-service
-> Worker on `*.workers.dev` were not blocked and stubbed 404; that service is gone
-> ([ADR-0020](./adr/0020-one-deployable-plugin-owns-commerce-truth.md)), and nothing the
-> Worker fetches today (§4) is on `workers.dev`. One consequence of running without it: a
-> fetch to a hostname on the site's **own zone** is routed to that zone's origin, not back
-> through Cloudflare, so never point `X402_FACILITATOR_URL` at the site's
-> own zone.
+> compatibility flag (issue #375). One consequence of running without it: a fetch to a
+> hostname on the site's **own zone** is routed to that zone's origin, not back through
+> Cloudflare, so never add an egress host on the site's own zone.
 >
 > D1 `session` in `sites/staging/src/emdash-options.ts` is **`"primary-first"`**: every
 > request EmDash has not authenticated — every shopper — and every write and cron run starts
@@ -318,7 +311,6 @@ order of appearance in a deployment's life:
 | `OTTA_WH_TOKEN` | Worker secret **+** admin Settings (same value, both halves) | optional outer gate on the settle routes | with the Stripe webhook secret |
 | Stripe webhook signing secret | admin Settings (`settings:stripeWebhookSecret`) | for Stripe payments — **together with the secret key** (see below) | before enabling Stripe |
 | Stripe secret key | admin Settings (`settings:stripeSecretKey`) | for Stripe payments — **together with the webhook secret** (see below) | before enabling Stripe |
-| x402 pay-to + facilitator credential | admin Settings | for x402 | see the x402 box |
 | Email provider (from-address, SPF, DKIM, its own key) | an **EmDash email provider plugin**, selected in EmDash Settings > Email — not otta | optional | when wiring real email |
 
 - **`EMDASH_ENCRYPTION_KEY`** — generate with `npx emdash secrets generate`; never committed,
@@ -411,27 +403,57 @@ order of appearance in a deployment's life:
   order within about a minute). Orders placed before this change have no recorded intent and
   are not cancelled.
 
-> **Live Stripe is TWO-DECIMAL currencies only.** Otta stores money as integer minor units
-> at hundredths scale everywhere, while Stripe expects `amount` in each currency's own
-> smallest unit. For **zero-decimal** currencies (JPY, KRW, CLP, VND, BIF, DJF, GNF, KMF,
-> MGA, PYG, RWF, UGX, VUV, XAF, XOF, XPF) that would charge the buyer **100×**, and for
-> **three-decimal** ones (BHD, JOD, KWD, OMR, TND) it is the mirror error — so the live
-> `createIntent` **refuses them before any network call** with `PAYMENT_INTENT_FAILED`
-> (provider code `unsupported_currency`). Do not price a catalog in those currencies on a
-> deployment that takes Stripe payments. Lifting this needs an exponent-aware money
-> boundary, not an adapter tweak — the deny-list is `STRIPE_UNSUPPORTED_CURRENCIES` in
+> **Live Stripe currencies.** Otta stores each amount in its currency's own minor unit (the
+> currency table, `packages/domain/src/money/currencies.ts`) and sends it to Stripe unchanged,
+> which is Stripe's `amount` (<https://docs.stripe.com/currencies>) for two- and zero-decimal
+> currencies: USD, EUR, … and now JPY, KRW, VND and CLP; HUF and TWD charge as two-decimal.
+> **Three-decimal currencies (BHD, JOD, KWD, OMR) are payable** (ADR-0035 amendment). Stripe
+> takes their thousandths only in multiples of 10, so checkout rounds the order's **final
+> total** half-up to 0.010 and shows the difference as a signed "Rounding" row (at most
+> ±0.005); line prices, discounts, shipping and tax stay exact. The rounded total is what is
+> charged, settled and reported. Refunds in these currencies are multiples of 0.010 (or the
+> whole remaining amount); Otta refuses anything else, whatever asks. An amount that is not a multiple
+> of 10 never reaches Stripe: the adapter refuses it before any network call (intent:
+> `unsupported_amount`; refund: rejected). No other currency changes: no rounding row, no new
+> field, identical Stripe requests. A code outside the table (ISK included)
+> keeps its old treatment: typed in hundredths, Stripe's zero-/three-decimal codes refused,
+> others passed through. The rule is `stripeRefusesCurrency` in
 > `packages/payments-stripe/src/index.ts`.
+>
+> **Upgrading to the currency table — check before you deploy:**
+>
+> - **JPY, KRW, VND, CLP** amounts typed in the admin on an earlier version were stored **×100**
+>   (a price typed `1500` was stored as 150000 and shown as ¥150,000). Live Stripe refused these
+>   currencies, so such products were never purchasable; after the upgrade they are, at the
+>   stored value. Check and re-enter every product price, shipping rate and fixed coupon in
+>   those currencies first (the edit form now shows the stored figure, e.g. `150000`).
+> - **HUF, IDR, COP, PKR** now display with ISO 4217's 2 decimals (ICU used 0). Amounts typed in
+>   the admin were always stored in hundredths, so they now read correctly; amounts written in
+>   whole units by another program (an import, a script) will read 100× smaller.
+> - **Currency membership is enforced on the admin screens only** (a product's first price, new
+>   shipping rates and coupons). Programmatic writes — the CMS product sync, the variant price
+>   edit — still check only the code's shape.
+> - **Percentage coupons**: a NEW cap or minimum spend now needs a currency (the coupon then
+>   applies only to carts in it). Existing percentage coupons with a cap or minimum and no
+>   currency keep working exactly as before.
 
-> **x402 does not take payments yet.** The old receipt-forwarding settle route
-> (`entitlements/x402/settle`) is retired, and nothing settles an x402 payment until the
-> content gate in [ADR-0028](./adr/0028-x402-content-gate-verifies-and-settles-through-the-facilitator.md)
-> ships. The settings below still save, so a deployment can be configured ahead of it. The
-> facilitator credential is meant to go **on the wire** as `Authorization: Bearer …` to the
-> facilitator host, so provision a credential that was minted to be sent. The facilitator
-> host must be in the plugin's `allowedHosts` — it is seeded at **build** time from the
-> site's Astro config, not from `kv`, so changing facilitators is a rebuild, not a settings
-> edit. The pay-to address and the accepted-networks list (default `eip155:8453`) are
-> configuration, not credentials, and live alongside it in Settings.
+> **Store currency.** Settings → Store → "Store currency" is the currency a **new** cart is
+> created in (the storefront names none, so it is every shopper's cart). A store that never
+> saves it keeps USD, exactly as before the setting existed — no migration. Every currency in
+> the table can be the store currency (three-decimal ones included, with the rounding above);
+> saving the select unchanged writes nothing. Changing it affects new carts
+> only: carts already open keep their currency. **Decide it before pricing the catalogue.** A
+> product's currency is fixed once it is priced, and a coupon's at creation, so products and
+> coupons (fixed-amount, and percentage coupons with a cap or minimum spend) in another currency
+> can't be bought or used in new carts (`CURRENCY_MISMATCH` at checkout), and they can't be
+> moved to the new currency. Shipping rates are per currency, so add rates in the new one. A
+> spent cart's replacement is in the currency the storefront names, else the saved store
+> currency, else the spent cart's: **a theme that sends `currency` with `replacesCartId` keeps
+> that currency; omit it to follow the store currency.** If the admin cannot read the store
+> currency, it never guesses one into a saved value: the product picker, a new shipping rate and
+> the coupon form ask you to choose. The admin's defaults follow it: an unpriced product's
+> currency picker, the shipping rate filter and new-rate currency, and the coupon form's
+> currency hint.
 
 - **Email** — otta sends every email through the EmDash host's `ctx.email`
   ([ADR-0031](./adr/0031-email-through-emdash-host.md)). otta ships no email provider and
@@ -491,16 +513,11 @@ allowlist (capability `network:request`). That allowlist is resolved at **build*
 | Host | When |
 |---|---|
 | `api.stripe.com` | always |
-| the x402 facilitator host | when a facilitator URL is configured |
 
 No email host: email is not plugin egress. It goes through the host's `ctx.email`
 (capability `email:send`, [ADR-0031](./adr/0031-email-through-emdash-host.md)), and the
-EmDash email provider makes its own requests under its own allowlist.
-
-The URL is `X402_FACILITATOR_URL`, read by `sites/staging/astro.config.ts` from
-`process.env`, falling back to `sites/staging/.env`. Set it in the shell or in
-`sites/staging/.env` **before** building (§2.1 step 4); unset, the facilitator is simply
-unconfigured and no host is granted for it.
+EmDash email provider makes its own requests under its own allowlist. No other host is
+deployment-supplied, so there is no egress URL to set at build time.
 
 Stripe traffic goes through the same gate: `@otta-sh/payments-stripe` would default its
 transport to `globalThis.fetch`, but the plugin constructs the live gateway with
@@ -509,12 +526,12 @@ so the allowlist is the perimeter for `api.stripe.com` too. This
 closes the caveat recorded in
 [ADR-0020](./adr/0020-one-deployable-plugin-owns-commerce-truth.md) §2.
 
-All of these are third-party hosts on the public internet. The Worker runs without
+It is a third-party host on the public internet. The Worker runs without
 `global_fetch_strictly_public` (§2.4), so a URL on the site's **own** Cloudflare zone would
 reach that zone's origin directly, skipping its Workers routes and security settings — keep
-both URLs off the site's zone.
+any egress host off the site's zone.
 
-Because it is build-time, adding a provider means a rebuild and redeploy — a Settings edit
+Because it is build-time, adding a host means a rebuild and redeploy — a Settings edit
 alone cannot widen it. That is deliberate: the allowlist is the perimeter, and an operator
 editing a text field should not be able to move it.
 
@@ -610,7 +627,7 @@ only a share of the tick, never less than one unit of its own work; a leg its sh
 gets a second go on whatever the other legs left. **No leg is starved**: a leg passed over for
 three ticks in a row with work goes to the head of the next tick (right behind
 `cancel-intents`), and one passed over for nine goes ahead of even that, once — on Free a hold
-expiry or a stock-commit completion does not fit behind an intent cancel at all. A tick that did work logs one
+expiry does not fit behind an intent cancel at all. A tick that did work logs one
 line naming what each leg spent:
 
 ```

@@ -1,7 +1,16 @@
 # 0028. The x402 content gate answers 402 itself and settles through the facilitator's `/verify` and `/settle`
 
-- Status: accepted
+- Status: Withdrawn (x402 removed)
 - Date: 2026-10-05
+- Withdrawn: 2026-10-08. The product owner decided to remove x402 from Otta entirely: the
+  `@otta-sh/payments-x402` package, the `X402Rail` port, the gateway wiring, the Settings fields,
+  the facilitator egress and `X402_FACILITATOR_URL`. The content gate was never built; only its
+  early increments (the port, the adapter and the retired receipt route) existed, and none was
+  released. The rest of this record is kept unchanged as history and no longer describes the
+  code. What stays, because Stripe and the generic paths use it: the rule that an order whose
+  `buyerRef` is not an email address has no email recipient (Decision 7), the receipt binding
+  in `settleOrder`, and the dormant `"outside"` refund category. A one-time purge deletes the
+  x402 settings earlier builds stored in plugin kv.
 - Amended: 2026-10-06. The product owner answered the draft's two open questions (Decisions 5 and
   8), and review rounds 1 and 2 reshaped the flow and the plan. The changes are listed at the end
   of this record.
@@ -23,7 +32,7 @@
   [ADR-0026](./0026-admin-order-actions-never-claim-money-that-did-not-move.md) is unchanged:
   x402 stays a `"gateway"` method for settlement and an `"outside"` method for refunds.
 - Supersedes: the phase-4 plan's §6 x402 flow, steps 2–3, and its "page-gate bypass" that
-  created an order on the first 402 (`plans/archive/phase-4-checkout-and-gateways.md:448-505`).
+  created an order on the first 402 ([`plans/archive/phase-4-checkout-and-gateways.md:448-505`](https://github.com/UrumiAI/otta.sh/blob/527f7526bbb61ed95b75b793e94e4399a7c50be0/plans/archive/phase-4-checkout-and-gateways.md#L448-L505)).
   It also retires the receipt-forwarding model of `@otta-sh/payments-x402`.
 - Moots: the clause in ADR-0005's first 2026-10-02 amendment that names `entitlements/x402/settle`
   as an inline-email caller. That route is retired (Decision 10), and a gate order has no email

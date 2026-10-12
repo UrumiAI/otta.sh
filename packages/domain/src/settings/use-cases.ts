@@ -1,5 +1,11 @@
 import type { IdempotencyKey } from "../money/ids.js";
-import type { OperationalSettings, SettingsStore } from "../ports/settings-store.js";
+import type {
+	OperationalSettings,
+	SettingsStore,
+	SettingsUpdateOptions,
+} from "../ports/settings-store.js";
+import { isSupportedCurrency } from "../money/currencies.js";
+import { parseTaxSettings } from "../pricing/tax-settings.js";
 
 /**
  * Thin IO-free orchestration over `SettingsStore` (Phase 7 §6). Validation lives
@@ -29,6 +35,7 @@ export async function updateSettings(
 	store: SettingsStore,
 	patch: Partial<OperationalSettings>,
 	idempotencyKey: IdempotencyKey,
+	options?: SettingsUpdateOptions,
 ): Promise<OperationalSettings> {
 	if (patch.holdTtlMinutes !== undefined) {
 		const v = patch.holdTtlMinutes;
@@ -54,5 +61,19 @@ export async function updateSettings(
 			);
 		}
 	}
-	return store.update(patch, idempotencyKey);
+	if (patch.currency !== undefined) {
+		const v: unknown = patch.currency;
+		if (typeof v !== "string" || !isSupportedCurrency(v)) {
+			throw new InvalidSettingsError(
+				"currency",
+				`currency must be a supported ISO 4217 code like USD or EUR, got ${String(v)}`,
+			);
+		}
+	}
+	if ("tax" in patch) {
+		const tax = parseTaxSettings(patch.tax);
+		if ("field" in tax) throw new InvalidSettingsError(tax.field, tax.message);
+		return store.update({ ...patch, tax }, idempotencyKey, options);
+	}
+	return store.update(patch, idempotencyKey, options);
 }

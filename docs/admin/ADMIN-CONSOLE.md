@@ -149,7 +149,7 @@ a **gap** — build the listing, report the gap.
 ---
 
 **Precedence — against the plan.** Where this document and
-[`plans/archive/admin-ui-density-cleanup.md`](../../plans/archive/admin-ui-density-cleanup.md) disagree on
+[`plans/archive/admin-ui-density-cleanup.md`](https://github.com/UrumiAI/otta.sh/blob/527f7526bbb61ed95b75b793e94e4399a7c50be0/plans/archive/admin-ui-density-cleanup.md) disagree on
 *visual structure*, this document wins. Where they disagree on *scope* (which increment ships
 what), the plan wins — **except** for the three plan items withdrawn in §0.1 A, which are
 withdrawn outright and have been struck from the plan in the same commit as this revision.
@@ -1568,11 +1568,21 @@ paragraph is deleted, not relocated.
 Each rule is enforced twice — by the screen first, so the draft survives (DA-3a-i), and by the
 in-process rules client, so no caller of the surface can store the value:
 
-- **Currency (ISO-4217).** A currency an operator TYPES — a new shipping rate's, a new
-  fixed-amount coupon's — must be a member of `@otta-sh/domain`'s `CURRENCY_CODES`, not merely
-  three upper-case letters (`XYZ` used to save). Static data, not the host's ICU; a Node-only test
-  fails on drift against `Intl.supportedValuesOf("currency")`. Create paths only: a stored code
-  is never refused on read or edit.
+- **Currency (supported set).** A currency an operator TYPES — a new shipping rate's, a new
+  fixed-amount coupon's, a product's first price — must be in the store's currency table
+  (`@otta-sh/domain`'s `SUPPORTED_CURRENCIES`, `packages/domain/src/money/currencies.ts`), not
+  merely three upper-case letters (`XYZ` used to save). Amounts are then typed in that
+  currency's own minor unit (JPY `1500` is ¥1,500; KWD takes three decimals). Static data, not
+  the host's ICU. Create paths only: a stored code is never refused on read or edit, and a
+  product priced in an unlisted code before the table existed stays editable (a code outside
+  the table is typed in hundredths, as before). A percentage coupon's cap and minimum spend
+  are amounts too: setting either needs a currency (bound to the coupon, which then applies
+  only to carts in it); a percentage coupon whose bounds predate this keeps working unchanged
+  (the amount typed is ×100 and applied in the cart currency's smallest unit, as before
+  currencies; a currency can be set only after its cap and minimum are cleared). A currency is accepted on a percentage coupon only WITH a cap or minimum spend, and once
+  bound it stays: clearing both bounds later leaves the coupon applying only to carts in that
+  currency. An edit names the currency its amounts were read in; one whose coupon's currency
+  changed meanwhile is refused rather than re-read.
 - **Tax rate ≤ 100%.** `rateBps` 0–10000, the port's documented range; the console used to accept
   (and advertise) 1000%. Coupon percentages keep the wider wire bound — the pricing math clamps a
   discount to the subtotal.
@@ -3169,6 +3179,26 @@ accordion   block_id settings:store
             └─ form  cf{"settings:store", {displayName}}                         ← S-4
                      text_input  "Store display name"   initial_value <kv value>
                      submit "Save display name"          → save-display
+               context "Store currency: new carts are created in it. Changing it affects
+                        new carts only — carts already open keep theirs."         (≤140)
+               context "Set it before pricing: products and coupons in another currency
+                        can't be bought in new carts or changed to it. Add shipping
+                        rates in it."                                             (≤140)
+                     ← a product's or coupon's currency (fixed or cap/min-bound
+                       percentage) can never be changed, so the copy says to decide
+                       first; only shipping rates can be added in the new currency.
+               form  cf{"settings:currency", {currency}}                         ← S-4
+                     select  "Store currency"   initial_value <saved code> | "USD"
+                     ← the currency table, the familiar ten first then by code, labels
+                       "USD — US Dollar" (`CURRENCY_CHOICES`, shared with the React
+                       pricing picker). Never saved ⇒ USD, what every cart had before.
+                       A code outside the table is refused by name; nothing is saved.
+                       Saves ONE field into the settings document: the hold time, the
+                       threshold and the tax block are untouched.
+                     submit "Save store currency"        → save-store-currency
+               ← the display-name form stays the group's index-0 child. When the
+                 settings read failed the currency form is replaced by a context line
+                 ("The store currency could not be loaded right now…"), E-1.
 accordion   block_id settings:checkout
             label "Checkout & holds — 15 min hold · low stock at 5"
                   |  "Checkout & holds — not loaded"   ← when the secondary read failed:
@@ -3189,21 +3219,19 @@ accordion   block_id settings:payments
             ← U-8: states what card checkout and email have: "Stripe test" | "Stripe
               live" (from the key's prefix) | "Stripe key set" (an unchecked legacy
               value) | "no Stripe key"; "webhook set" | "no webhook"; "email set" |
-              "no email" (ADR-0031: whether the host hands over `ctx.email`). The optional x402 and edge keys state their status on their
-              own fields. Longest render is exactly 60 (X-11).
+              "no email" (ADR-0031: whether the host hands over `ctx.email`). The optional edge key states its status on its
+              own field. Longest render is exactly 60 (X-11).
             default_open FALSE
             └─ context "Keys are never shown once saved. Leave a field blank to keep the
                         key you saved before."                                    (≤200)
                per credential: context (the expected shape, e.g. "Starts with sk_live_ or
                      sk_test_ …"), then its form:
-               form × 4, one per credential, each cf{"settings:<actionId>",
+               form × 3, one per credential, each cf{"settings:<actionId>",
                      {gen:"<save generation>"}}                          ← AMENDED (INC-09)
                      secret_input "Stripe secret key — set|not set"
                                                          → save-stripe-secret-key
                      secret_input "Stripe webhook signing secret — …"
                                                          → save-stripe-webhook-secret
-                     secret_input "x402 facilitator API key — …"
-                                                         → save-x402-facilitator-secret
                      secret_input "Stripe webhook edge token (optional) — …"
                                                          → save-webhook-edge-token
                      placeholder  set: "Set — leave blank to keep it, or enter a new one"
@@ -3217,8 +3245,6 @@ accordion   block_id settings:payments
                                                          → clear-payment-secret {secret}
                      ← a removal notice names where to find the key again; a Remove on
                        a key not stored answers "No <key> was stored — nothing was removed."
-               context "The settings below are shown as saved. x402 payments are not
-                        available yet. These settings are kept for when they are."
                context "Email: sent via EmDash's email provider. …" | "Email: provider not
                         confirmed — …" | "Email: no EmDash
                         email provider. Order emails wait up to 72 h, then are skipped;
@@ -3234,8 +3260,6 @@ accordion   block_id settings:payments
                      text_input "Sign-in page address (your storefront's /account/verify page)"
                                         placeholder "https://shop.example/account/verify"
                                         ← U-8: https://, or http:// on localhost only
-                     text_input "x402 destination wallet"
-                     text_input "x402 networks, comma-separated"
                      submit "Save payment settings"          → save-payment-settings
 ```
 
@@ -3560,7 +3584,7 @@ row you are claiming. And do not claim one verified because it "reads right".
 
 The order the programme was actually run in. It was **not** a suggestion; step 2 was a gate. (The
 plan's increment numbers map on as 3 · 3a · 5 · 5-last — see
-[`plans/archive/admin-ui-density-cleanup.md`](../../plans/archive/admin-ui-density-cleanup.md), whose own screen
+[`plans/archive/admin-ui-density-cleanup.md`](https://github.com/UrumiAI/otta.sh/blob/527f7526bbb61ed95b75b793e94e4399a7c50be0/plans/archive/admin-ui-density-cleanup.md), whose own screen
 counts predate ADR-0015 and were not updated with it.)
 
 | Step | What | Concurrency |

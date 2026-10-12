@@ -71,11 +71,11 @@ module.exports = {
 				"three store-emdash-* rules below hold it to the same perimeter as this " +
 				"one, type-only imports included.\n\n" +
 				"THIRD NARROWING (work order 02, INC-C1b): `payments-[^/]+` became " +
-				"`(?!payments-(stripe|x402)(/|$))payments-[^/]+`, in all three clauses, " +
-				"so @otta-sh/payments-stripe and @otta-sh/payments-x402 are admitted and " +
+				"`(?!payments-stripe(/|$))payments-[^/]+`, in all three clauses, " +
+				"so @otta-sh/payments-stripe is admitted and " +
 				"every other payments-* package stays banned by default. The reason is " +
-				"the same shape as store-emdash's, and it is a statement about those two " +
-				"packages rather than about payment adapters generally: with the service " +
+				"the same shape as store-emdash's, and it is a statement about that one " +
+				"package rather than about payment adapters generally: with the service " +
 				"folded in there is no second deployable to verify a Stripe webhook in, " +
 				"and an UNAUTHENTICATED webhook only ever reaches a plugin route " +
 				"registered `public: true` — so the HMAC verification has to happen " +
@@ -86,26 +86,16 @@ module.exports = {
 				"there. A payments adapter that reached for `pg` or a node builtin would " +
 				"still be caught — by the driver and node-builtin clauses of this same " +
 				"rule, which the carve-out does not touch. " +
-				"packages/plugin/test/depcruise-boundary.test.ts pins both halves: these " +
-				"two admitted, a third payments-* package still forbidden.\n\n" +
-				"FOURTH CHANGE (work order 02, INC-D3c): `service` is no longer named in " +
-				"any of the three clauses, because @otta-sh/service no longer EXISTS — " +
-				"INC-D3b deleted packages/service (and packages/store-postgres with it) " +
-				"once the service was folded into the plugin. A ban on a package that " +
-				"cannot be imported is a clause no fixture can exercise, so it rots " +
-				"silently: nothing would notice if it stopped matching, which is the same " +
-				"failure mode as the `^node:`-only builtin clause above. store-postgres " +
-				"was never named literally — it was caught by the " +
-				"`(?!store-emdash(/|$))store-[^/]+` lookahead, which is untouched and " +
-				"still bans every store-* but the one, so a store-postgres reintroduced " +
-				"tomorrow is forbidden on the day it is created. A reintroduced `service` " +
-				"package would NOT be, and that is deliberate: after the fold-in " +
-				"(ADR-0018) a second deployable is a decision that needs its own ADR, not " +
-				"something a lint rule should pre-judge on a name.",
+				"packages/plugin/test/depcruise-boundary.test.ts pins both halves: that " +
+				"package admitted, a second payments-* package still forbidden.\n\n" +
+				"FOURTH CHANGE (INC-D3c): no clause names a `service` package, because " +
+				"none exists (ADR-0020). Any other store-* is still caught by the " +
+				"`(?!store-emdash(/|$))store-[^/]+` lookahead; a second deployable would " +
+				"need its own ADR, not a lint rule pre-judging it by name.",
 			severity: "error",
 			from: { path: "^packages/plugin/src" },
 			to: {
-				path: "(node_modules/(pg|pg-pool|kysely|better-sqlite3|workerd|hono|node-fetch|undici|axios|ws)(/|$)|node_modules/@otta-sh/((?!store-emdash(/|$))store-[^/]+|(?!payments-(stripe|x402)(/|$))payments-[^/]+|admin-react)(/|$)|^(pg|pg-pool|kysely|better-sqlite3|workerd|hono|node-fetch|undici|axios|ws)(/|$)|^@otta-sh/((?!store-emdash(/|$))store-[^/]+|(?!payments-(stripe|x402)(/|$))payments-[^/]+|admin-react)(/|$)|^(node:)?(fs|child_process|net|http|https|os|dgram|dns|tls|worker_threads|cluster|vm)(/|$)|^packages/((?!store-emdash(/|$))store-[^/]+|(?!payments-(stripe|x402)(/|$))payments-[^/]+|admin-react)/)",
+				path: "(node_modules/(pg|pg-pool|kysely|better-sqlite3|workerd|hono|node-fetch|undici|axios|ws)(/|$)|node_modules/@otta-sh/((?!store-emdash(/|$))store-[^/]+|(?!payments-stripe(/|$))payments-[^/]+|admin-react)(/|$)|^(pg|pg-pool|kysely|better-sqlite3|workerd|hono|node-fetch|undici|axios|ws)(/|$)|^@otta-sh/((?!store-emdash(/|$))store-[^/]+|(?!payments-stripe(/|$))payments-[^/]+|admin-react)(/|$)|^(node:)?(fs|child_process|net|http|https|os|dgram|dns|tls|worker_threads|cluster|vm)(/|$)|^packages/((?!store-emdash(/|$))store-[^/]+|(?!payments-stripe(/|$))payments-[^/]+|admin-react)/)",
 			},
 		},
 		{

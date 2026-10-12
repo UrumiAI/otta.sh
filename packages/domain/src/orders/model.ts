@@ -6,7 +6,7 @@
  * compile error (DEVELOPMENT.md §4).
  */
 
-import type { Cents, Currency } from "../money/cents.js";
+import type { Cents, Currency, SignedCents } from "../money/cents.js";
 import type { IdempotencyKey, OrderId, ProductId, ReservationId, Sku } from "../money/ids.js";
 
 /**
@@ -32,8 +32,8 @@ export type OrderState =
  *  the order line so settle's commit-vs-grant branch has a stable input (§4). */
 export type FulfillmentKind = "physical" | "digital";
 
-/** The two payment gateways (§5). */
-export type PaymentMethod = "stripe" | "x402";
+/** The payment gateways (§5). One today; the alias is the seam a second gateway slots into. */
+export type PaymentMethod = "stripe";
 
 /**
  * A customer email about an order that is NOT a state transition. The outbox was
@@ -261,6 +261,13 @@ export interface OrderTotals {
 	shipping: Cents;
 	tax: Cents;
 	total: Cents;
+	/**
+	 * The checkout's payment rounding (ADR-0035's amendment), signed minor units:
+	 * `total` minus the exact sum of the parts. Written only for an order in a
+	 * currency with a payment increment (KWD, BHD, OMR, JOD); absent on every
+	 * other order and on every order placed before it existed — read as 0.
+	 */
+	rounding?: SignedCents;
 	appliedCouponCode: string | null;
 	shippingMethodSnapshot: unknown | null;
 	/** Untyped on read: v1 (ADR-0030), the legacy shape, or null — read it

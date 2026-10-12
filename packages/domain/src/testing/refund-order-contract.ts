@@ -29,6 +29,8 @@ export interface RefundOrderHarness {
 		totalCents: number;
 		capturedCents?: number;
 		gateway?: PaymentMethod;
+		/** The order's currency (default USD). */
+		currency?: string;
 	}): Promise<OrderId>;
 }
 
@@ -52,12 +54,13 @@ function drain(h: RefundOrderHarness, sender: FakeEmailSender): Promise<number> 
 /** Build a `seedPaidOrder` over any `OrderStore` — adapter-agnostic (createFromCart
  *  → markPaid → recordPayment), so the fake/sqlite/pg all seed identically. */
 export function buildRefundSeed(store: OrderStore): RefundOrderHarness["seedPaidOrder"] {
-	return async ({ id, totalCents, capturedCents, gateway = "stripe" }) => {
+	return async ({ id, totalCents, capturedCents, gateway = "stripe", currency = "USD" }) => {
 		const oid = toOrderId(id);
+		const code = toCurrency(currency);
 		await store.createFromCart({
 			orderId: oid,
 			cartId: null,
-			currency: USD,
+			currency: code,
 			idempotencyKey: idempotencyKey(`seed-${id}`),
 			holdExpiresAt: "2026-07-10T00:15:00.000Z",
 			buyerRef: "buyer@example.com",
@@ -68,14 +71,14 @@ export function buildRefundSeed(store: OrderStore): RefundOrderHarness["seedPaid
 					sku: sku("SKU-1"),
 					title: "Widget",
 					unitPrice: cents(totalCents),
-					currency: USD,
+					currency: code,
 					quantity: 1,
 					// Digital ⇒ no reservation needed, so no inventory store to wire.
 					fulfillmentKind: "digital",
 					reservationId: null,
 				},
 			],
-			totals: { subtotal: cents(totalCents), total: cents(totalCents), currency: USD },
+			totals: { subtotal: cents(totalCents), total: cents(totalCents), currency: code },
 		});
 		await store.markPaid(oid);
 		await store.recordPayment({
@@ -83,7 +86,7 @@ export function buildRefundSeed(store: OrderStore): RefundOrderHarness["seedPaid
 			gateway,
 			providerRef: `pi_${id}`,
 			amount: cents(capturedCents ?? totalCents),
-			currency: USD,
+			currency: code,
 			status: "succeeded",
 		});
 		return oid;
@@ -195,6 +198,54 @@ export function refundOrderContract(
 			expect(await h.orderStore.listRefunds(id)).toHaveLength(0);
 		});
 
+		test("a KWD refund not in steps of 0.010 is AMOUNT_NOT_PAYMENT_INCREMENT before anything is reserved — unless it is the whole remainder or over it (ADR-0035 amendment)", async () => {
+			const h = await makeHarness();
+			const KWD = toCurrency("KWD");
+			const id = await h.seedPaidOrder({ id: "ord-kwd", totalCents: 5000, currency: "KWD" });
+			const gw = new FakePaymentGateway({ id: "stripe" });
+			const refund = (amount: number, key: string) =>
+				refundOrder({ orderStore: h.orderStore }, gw, {
+					orderId: id,
+					amount: cents(amount),
+					currency: KWD,
+					refundedBy: "admin",
+					idempotencyKey: idempotencyKey(key),
+				});
+			expect(await refund(1234, "rf-kwd-off")).toEqual({
+				ok: false,
+				reason: "AMOUNT_NOT_PAYMENT_INCREMENT",
+			});
+			expect(gw.refundCalls).toHaveLength(0);
+			expect(await h.orderStore.listRefunds(id)).toHaveLength(0);
+			// Over the remainder: the ceiling's "too high" wins over the step.
+			expect(await refund(5001, "rf-kwd-over")).toEqual({
+				ok: false,
+				reason: "REFUND_EXCEEDS_TOTAL",
+			});
+			const step = await refund(1230, "rf-kwd-step");
+			expect(step.ok).toBe(true);
+			// An older order's odd remainder (1.234, placed before rounding) is refundable WHOLE.
+			const id2 = await h.seedPaidOrder({ id: "ord-kwd-odd", totalCents: 1234, currency: "KWD" });
+			const whole = await refundOrder({ orderStore: h.orderStore }, gw, {
+				orderId: id2,
+				amount: cents(1234),
+				currency: KWD,
+				refundedBy: "admin",
+				idempotencyKey: idempotencyKey("rf-kwd-whole"),
+			});
+			expect(whole.ok && whole.fullyRefunded).toBe(true);
+			// A USD refund of any minor-unit amount is unaffected.
+			const usd = await h.seedPaidOrder({ id: "ord-usd-any", totalCents: 1000 });
+			const any = await refundOrder({ orderStore: h.orderStore }, gw, {
+				orderId: usd,
+				amount: cents(1),
+				currency: USD,
+				refundedBy: "admin",
+				idempotencyKey: idempotencyKey("rf-usd-any"),
+			});
+			expect(any.ok).toBe(true);
+		});
+
 		test("a short capture binds the ceiling at captured (REFUND_EXCEEDS_CAPTURED past it)", async () => {
 			const h = await makeHarness();
 			// Frozen total 1000, but only 700 actually captured (a settle anomaly).
@@ -300,9 +351,13 @@ export function refundOrderContract(
 
 		test("a reused key with a different amount on the MANUAL path is rejected too", async () => {
 			const h = await makeHarness();
-			const id = await h.seedPaidOrder({ id: "ord-idem-x402", totalCents: 1000, gateway: "x402" });
-			const gw = new FakePaymentGateway({ id: "x402" });
-			const key = idempotencyKey("rf-idem-x402");
+			const id = await h.seedPaidOrder({
+				id: "ord-idem-manual",
+				totalCents: 1000,
+				gateway: "stripe",
+			});
+			const gw = new FakePaymentGateway({ id: "stripe", refundable: false });
+			const key = idempotencyKey("rf-idem-manual");
 			const cmd = {
 				orderId: id,
 				amount: cents(300),
@@ -395,16 +450,16 @@ export function refundOrderContract(
 			expect(gw.refundCalls).toHaveLength(1);
 		});
 
-		test("an x402 (refundable:false) order records a MANUAL refund with no gateway call", async () => {
+		test("a refundable:false gateway's order records a MANUAL refund with no gateway call", async () => {
 			const h = await makeHarness();
-			const id = await h.seedPaidOrder({ id: "ord-x402", totalCents: 1000, gateway: "x402" });
-			const gw = new FakePaymentGateway({ id: "x402" }); // refundable:false by default
+			const id = await h.seedPaidOrder({ id: "ord-manual", totalCents: 1000, gateway: "stripe" });
+			const gw = new FakePaymentGateway({ id: "stripe", refundable: false });
 			const res = await refundOrder({ orderStore: h.orderStore }, gw, {
 				orderId: id,
 				amount: cents(1000),
 				currency: USD,
 				refundedBy: "admin",
-				idempotencyKey: idempotencyKey("rf-x402"),
+				idempotencyKey: idempotencyKey("rf-manual"),
 			});
 			expect(res.ok).toBe(true);
 			if (!res.ok) return;
@@ -1142,10 +1197,10 @@ export function refundOrderContract(
 			expect(sent.sends[0]?.data["noticeAmountCents"]).toBe(400);
 		});
 
-		test("a MANUAL partial refund (x402) emails the buyer the amount too", async () => {
+		test("a MANUAL partial refund (refundable:false) emails the buyer the amount too", async () => {
 			const h = await makeHarness();
-			const id = await h.seedPaidOrder({ id: "ord-mail-man", totalCents: 800, gateway: "x402" });
-			const gw = new FakePaymentGateway({ id: "x402", refundable: false });
+			const id = await h.seedPaidOrder({ id: "ord-mail-man", totalCents: 800, gateway: "stripe" });
+			const gw = new FakePaymentGateway({ id: "stripe", refundable: false });
 			const sent = new FakeEmailSender();
 			await drain(h, sent);
 			sent.reset();
@@ -1231,8 +1286,8 @@ export function refundOrderContract(
 
 		test("a cancellation's MANUAL refund of the whole ceiling does not flip the order either", async () => {
 			const h = await makeHarness();
-			const id = await h.seedPaidOrder({ id: "ord-cxl-man", totalCents: 800, gateway: "x402" });
-			const gw = new FakePaymentGateway({ id: "x402", refundable: false });
+			const id = await h.seedPaidOrder({ id: "ord-cxl-man", totalCents: 800, gateway: "stripe" });
+			const gw = new FakePaymentGateway({ id: "stripe", refundable: false });
 			const res = await refundOrder({ orderStore: h.orderStore }, gw, {
 				orderId: id,
 				amount: cents(800),

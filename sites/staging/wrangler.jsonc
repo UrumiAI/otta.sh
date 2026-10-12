@@ -40,11 +40,10 @@
 	// test/wrangler-config.test.ts). It was added for the site's ctx.http calls
 	// to a commerce-service Worker on workers.dev, which Cloudflare otherwise
 	// blocks and stubs 404; that service and the call are gone (ADR-0020). The
-	// remaining egress (DEPLOYMENT.md §4) is api.stripe.com and the deployment's
-	// x402 facilitator, none on workers.dev (email goes through EmDash's
-	// ctx.email, ADR-0031). Without the flag, a fetch to a
+	// remaining egress (DEPLOYMENT.md §4) is api.stripe.com, not on workers.dev
+	// (email goes through EmDash's ctx.email, ADR-0031). Without the flag, a fetch to a
 	// hostname on THIS Worker's own zone goes to the zone's origin rather than
-	// back through Cloudflare's front door — so do not point the facilitator URL at
+	// back through Cloudflare's front door — so do not add an egress host on
 	// this site's zone. Do not bring the flag back: D1 sessions are ON
 	// (`session: "primary-first"` in src/emdash-options.ts), and the flag
 	// hangs D1 session queries (emdash issue #1273: a ~5 s stall per new

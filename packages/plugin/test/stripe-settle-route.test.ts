@@ -831,7 +831,7 @@ describe("(x) the paid order's confirmation goes out with the settlement, best-e
 
 	test("redeliveries during a provider outage spend ONE attempt, not one each", async () => {
 		// Only a never-attempted row is claimed inline. Without that, every Stripe
-		// redelivery (or x402 re-post) would burn one of `maxAttempts` and could park the
+		// redelivery would burn one of `maxAttempts` and could park the
 		// confirmation `failed` within minutes of an outage.
 		await harness.ctx.kv.set(STRIPE_WEBHOOK_SECRET_KEY, WEBHOOK_SECRET);
 		await seedPendingOrder("ord-mail-outage");

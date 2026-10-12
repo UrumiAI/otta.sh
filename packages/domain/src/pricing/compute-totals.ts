@@ -1,6 +1,8 @@
-import { type Cents, cents, type Currency } from "../money/cents.js";
+import { type Cents, cents, type Currency, signedCents } from "../money/cents.js";
+import { currencyPaymentIncrement } from "../money/currencies.js";
 import { allocateCents } from "./allocate.js";
 import { computeCouponDiscount } from "./coupon.js";
+import { payableTotal } from "./payment-rounding.js";
 import { applyRateTable } from "./rate-table-calculator.js";
 import { resolveShippingRate } from "./shipping.js";
 import type { TaxRequestLine, TaxResult } from "./tax-calculator.js";
@@ -25,7 +27,10 @@ import type {
  *
  * The sum-of-parts identity `subtotal − discount + shipping + tax === total`
  * holds **by construction**: `allocateCents` reconciles the discount across
- * lines exactly, so per-line tax sums back without rounding leftover.
+ * lines exactly, so per-line tax sums back without rounding leftover. A
+ * currency with a payment increment (KWD, BHD, OMR, JOD) adds one last step —
+ * the total rounded to it, the difference as `roundingCents`
+ * (`payableTotal`, `payment-rounding.ts`) — so for it the identity gains `+ rounding`.
  *
  * Since ADR-0030 the tax step is a calculator's: `computeQuote` runs
  * {@link computePreTax}, asks the calculator, then {@link assembleTotals}. This
@@ -117,24 +122,36 @@ export function computePreTax(input: PreTaxInput): PreTaxTotals {
 	};
 }
 
-/** The request lines for a calculator: `lineId` is the line's index. */
-export function taxRequestLinesOf(preTax: PreTaxTotals): TaxRequestLine[] {
+/** The request lines for a calculator: `lineId` is the line's index. A line
+ *  that does not say whether it ships takes `cartRequiresShipping`. */
+export function taxRequestLinesOf(
+	preTax: PreTaxTotals,
+	cartRequiresShipping = true,
+): TaxRequestLine[] {
 	return preTax.lines.map((l, i) => ({
 		lineId: String(i),
 		quantity: l.qty,
 		unitPriceCents: l.unitPriceCents,
 		amountCents: preTax.discountedLineCents[i] as Cents,
 		taxClassId: l.taxClassId,
-		taxStatus: "taxable",
+		taxStatus: l.taxStatus ?? "taxable",
+		requiresShipping: l.requiresShipping ?? cartRequiresShipping,
 	}));
 }
 
 /**
  * Steps 6–9 from a VALIDATED calculator answer (`validateTaxResult`: one line
  * per request line, in request order). Tax = Σ line + shipping; total =
- * discounted subtotal + shipping + tax.
+ * discounted subtotal + shipping + tax — except when prices were entered WITH
+ * tax (ADR-0032): the line tax is already inside the discounted subtotal, so
+ * only the shipping tax is added (`totalCents` is what the buyer pays either way,
+ * and `taxCents` is still the whole tax).
  */
-export function assembleTotals(preTax: PreTaxTotals, tax: TaxResult): TotalsBreakdown {
+export function assembleTotals(
+	preTax: PreTaxTotals,
+	tax: TaxResult,
+	pricesIncludeTax = false,
+): TotalsBreakdown {
 	let perLineTax = 0;
 	const lineBreakdown: TotalsLineBreakdown[] = preTax.lines.map((l, i) => {
 		const taxCents = tax.lines[i]?.taxCents;
@@ -149,6 +166,12 @@ export function assembleTotals(preTax: PreTaxTotals, tax: TaxResult): TotalsBrea
 	const shippingTax = tax.shipping?.taxCents ?? cents(0);
 	const taxTotal = cents(perLineTax + shippingTax);
 	const discountedTotal = preTax.subtotalCents - preTax.discountCents;
+	const exactTotal = cents(
+		discountedTotal + preTax.shippingCents + (pricesIncludeTax ? shippingTax : taxTotal),
+	);
+	// Step 10 (ADR-0035's amendment): only the FINAL total is rounded, and only
+	// for a currency with a payment increment; every part above stays exact.
+	const totalCents = cents(payableTotal(exactTotal, preTax.currency));
 
 	const breakdown: TotalsBreakdown = {
 		currency: preTax.currency,
@@ -156,12 +179,17 @@ export function assembleTotals(preTax: PreTaxTotals, tax: TaxResult): TotalsBrea
 		discountCents: preTax.discountCents,
 		shippingCents: preTax.shippingCents,
 		taxCents: taxTotal,
-		totalCents: cents(discountedTotal + preTax.shippingCents + taxTotal),
+		totalCents,
 		lineBreakdown,
 		shippingTaxCents: shippingTax,
 	};
 	if (preTax.appliedCouponCode !== undefined) {
 		breakdown.appliedCouponCode = preTax.appliedCouponCode;
+	}
+	// The presence rule (`payment-rounding.ts`): an increment currency carries it,
+	// 0 included; every other currency's breakdown is unchanged.
+	if (currencyPaymentIncrement(preTax.currency) !== undefined) {
+		breakdown.roundingCents = signedCents(totalCents - exactTotal);
 	}
 	return breakdown;
 }

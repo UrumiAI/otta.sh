@@ -25,6 +25,29 @@ const XML_HTTP_REQUEST = /XMLHttpRequest/;
 /** Counting variant — `/g` is correct with `.match()`; sanctioned file only. */
 const GLOBAL_THIS_FETCH_ALL = /globalThis\s*\.\s*fetch/g;
 
+/** Stripe's browser-side host — `stripe.confirmPayment()` talks to it from the
+ *  theme page, never through the plugin. */
+const STRIPE_JS_HOST = "js.stripe.com";
+
+/**
+ * Whether `text` (source code, not a URL) names `host` anywhere: in a URL, a
+ * string, or a comment. It splits the text into hostname-shaped tokens and
+ * compares their dot-separated LABELS to the host's exactly, so a mention as
+ * part of a longer name (`cdn.js.stripe.com`) counts while a host that merely
+ * contains it as characters (`notjs.stripe.com`) does not. Label comparison
+ * rather than a substring check, so the guard says what it means.
+ */
+function mentionsHost(text: string, host: string): boolean {
+	const wanted = host.toLowerCase().split(".");
+	for (const token of text.split(/[^A-Za-z0-9.-]+/)) {
+		const labels = token.toLowerCase().split(".");
+		for (let at = 0; at + wanted.length <= labels.length; at++) {
+			if (wanted.every((label, offset) => labels[at + offset] === label)) return true;
+		}
+	}
+	return false;
+}
+
 function listSourceFiles(dir: string): string[] {
 	const out: string[] = [];
 	for (const entry of readdirSync(dir, { withFileTypes: true })) {
@@ -105,11 +128,10 @@ describe("sandbox-clean guard: the checkout feature widens NOTHING (ADR-0012)", 
 	// INC-D3a: the commerce service is gone, and with it the one host this
 	// suite used to pin. In-process, the plugin's own baseline egress is
 	// Stripe's SERVER-SIDE API (`STRIPE_API_HOST`, always granted — it is a
-	// constant, not a deployment-supplied define), plus whatever x402 host a
-	// deployment's build-time define resolves to. No email host (ADR-0031: email
-	// is `ctx.email`). The define is not set in this vitest run, so the allowlist
-	// is exactly Stripe's API host.
-	test("ALLOWED_HOSTS holds exactly Stripe's API host in this build (no x402 define is set)", () => {
+	// constant, not a deployment-supplied define), plus whatever the
+	// deployment's egress defines resolve to — none in this vitest run. No email
+	// host (ADR-0031: email is `ctx.email`).
+	test("ALLOWED_HOSTS holds exactly Stripe's API host in this build (no egress define is set)", () => {
 		expect(ALLOWED_HOSTS).toEqual([STRIPE_API_HOST]);
 	});
 
@@ -120,13 +142,32 @@ describe("sandbox-clean guard: the checkout feature widens NOTHING (ADR-0012)", 
 		// talks to, which never passes through the plugin). A blanket
 		// "nothing containing 'stripe'" assertion would fail on the sanctioned
 		// host, so this pins the SPECIFIC absent host by name instead.
-		expect(ALLOWED_HOSTS).not.toContain("js.stripe.com");
+		expect(ALLOWED_HOSTS).not.toContain(STRIPE_JS_HOST);
 		expect(ALLOWED_HOSTS).toContain(STRIPE_API_HOST);
+	});
+
+	test("the host scan finds a hostname wherever it is written, and only that hostname", () => {
+		for (const text of [
+			'<script src="https://js.stripe.com/v3"></script>',
+			"// Stripe.js comes from js.stripe.com.",
+			"const host = 'JS.Stripe.com';",
+			"https://cdn.js.stripe.com.example/",
+		]) {
+			expect(mentionsHost(text, STRIPE_JS_HOST), text).toBe(true);
+		}
+		for (const text of [
+			`fetch("https://${STRIPE_API_HOST}/v1/payment_intents")`,
+			"https://notjs.stripe.com/",
+			"js-stripe.com",
+			"js.stripe.co",
+		]) {
+			expect(mentionsHost(text, STRIPE_JS_HOST), text).toBe(false);
+		}
 	});
 
 	test("no plugin source references js.stripe.com — Stripe.js is loaded by the THEME page, never the plugin", () => {
 		const offenders = listSourceFiles(SRC_DIR).filter((file) =>
-			readFileSync(file, "utf8").includes("js.stripe.com"),
+			mentionsHost(readFileSync(file, "utf8"), STRIPE_JS_HOST),
 		);
 		expect(offenders).toEqual([]);
 	});

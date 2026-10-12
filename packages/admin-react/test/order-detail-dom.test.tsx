@@ -125,6 +125,7 @@ function detailFor(state: string, refunds: RefundsSummary | null = CAPTURED): De
 		ok: true,
 		order: {
 			id: ORDER_ID,
+			orderNumber: "#7E4CE",
 			state,
 			currency: CUR,
 			paymentMethod: "card",
@@ -392,7 +393,22 @@ test("an order with a real capture still states how a refund would move money", 
 	await fire(tab(view, "money"), "click");
 
 	const line = one(view, '[data-testid="refund-capability"]');
-	expect(line.textContent).toBe(refundCapabilityText(true, "card"));
+	expect(line.textContent).toBe(refundCapabilityText(true, "card", false));
+});
+
+test("a LEGACY payment method (the server's flag) gets its own record-only line", async () => {
+	const legacy: RefundsSummary = {
+		...CAPTURED,
+		paymentMethod: "x402",
+		refundable: false,
+		legacyPaymentMethod: true,
+	};
+	const view = await show(detailFor("paid", legacy));
+	await fire(tab(view, "money"), "click");
+
+	expect(one(view, '[data-testid="refund-capability"]').textContent).toBe(
+		"Paid with a payment method Otta no longer supports. Refunds are record-only: return the money outside Otta, then record it here.",
+	);
 });
 
 test("a capture refunded down to nothing keeps the line its remainder cannot justify", async () => {
@@ -400,7 +416,7 @@ test("a capture refunded down to nothing keeps the line its remainder cannot jus
 	await fire(tab(view, "money"), "click");
 
 	expect(one(view, '[data-testid="refund-capability"]').textContent).toBe(
-		refundCapabilityText(true, "card"),
+		refundCapabilityText(true, "card", false),
 	);
 	// Same remainder as the never-captured order above, opposite outcome. A gate
 	// re-derived from the remaining amount reads these two as one case.
@@ -428,6 +444,64 @@ test("every figure column on the detail is end-aligned, header and cells togethe
 	await fire(tab(view, "money"), "click");
 	const ledger = table(view, "detail-refund-ledger");
 	expect(columnAlignment(ledger, 0)).toEqual(["end", "end"]);
+});
+
+// ── the payment rounding row (ADR-0035 amendment) ───────────────────────────
+
+/** `detailFor` priced in KWD with a payment rounding on its totals. */
+function kwdDetail(roundingCents: number | undefined): DetailPayload {
+	const payload = detailFor("paid", CAPTURED);
+	return {
+		...payload,
+		order: {
+			...payload.order,
+			currency: "KWD",
+			totals: {
+				...payload.order.totals,
+				currency: "KWD",
+				subtotalCents: 1234,
+				discountCents: 0,
+				shippingCents: 0,
+				taxCents: 0,
+				totalCents: 1230,
+				...(roundingCents === undefined ? {} : { roundingCents }),
+			},
+		},
+	};
+}
+
+function totalsRows(view: Awaited<ReturnType<typeof show>>): Array<[string, string]> {
+	return bodyRows(table(view, "detail-totals")).map((row) => [
+		row.cells.item(0)?.textContent ?? "",
+		row.cells.item(1)?.textContent ?? "",
+	]);
+}
+
+test("a rounded KWD order shows a signed Rounding row before the total", async () => {
+	const rows = totalsRows(await show(kwdDetail(-4)));
+	expect(rows.map(([label]) => label)).toEqual([
+		"Subtotal",
+		"Discount",
+		"Shipping",
+		"Tax",
+		"Rounding",
+		"Total",
+	]);
+	expect(rows[4]?.[1]).toBe(formatAmount(-4, "KWD"));
+	expect(rows[4]?.[1]).toMatch(/^−.*0\.004$/);
+});
+
+test("a positive rounding reads +", async () => {
+	const rows = totalsRows(await show(kwdDetail(6)));
+	expect(rows[4]).toEqual(["Rounding", `+${formatAmount(6, "KWD")}`]);
+});
+
+test("a zero or absent rounding adds no row", async () => {
+	for (const rounding of [0, undefined]) {
+		const rows = totalsRows(await show(kwdDetail(rounding)));
+		expect(rows.map(([label]) => label)).not.toContain("Rounding");
+		expect(rows).toHaveLength(5);
+	}
 });
 
 // ── the amounts themselves, not merely the edge they sit on ──────────────────

@@ -68,6 +68,7 @@ export class InMemoryShippingRulesStore implements ShippingRulesStore {
 			zoneId: input.zoneId,
 			name: input.name,
 			type: input.type,
+			taxable: input.taxable ?? true,
 		};
 		this.#methods.set(method.id, method);
 		return { ...method };
@@ -91,6 +92,7 @@ export class InMemoryShippingRulesStore implements ShippingRulesStore {
 		if (method === undefined) return { ok: false, reason: "not_found" };
 		method.name = input.name;
 		method.type = input.type;
+		if (input.taxable !== undefined) method.taxable = input.taxable;
 		return { ok: true, method: { ...method } };
 	}
 

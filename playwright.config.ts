@@ -16,7 +16,8 @@
  * Run it with `pnpm test:e2e`. With no stack running the per-screen specs skip
  * themselves and the server-free gates still run, so the command is green on a
  * bare checkout; `OTTA_E2E_REQUIRE_SITE=1` turns those skips into failures and
- * `OTTA_E2E_START_STACK=1` has Playwright boot DIRECTOR-SPEC §0.2's stack.
+ * `OTTA_E2E_START_STACK=1` has Playwright boot the local stack itself
+ * (`sites/staging/README.md`, "Local development").
  */
 import { defineConfig, type PlaywrightTestConfig } from "@playwright/test";
 import { E2E_BASE_URL, E2E_STARTS_STACK, E2E_VIEWPORT } from "./sites/staging/e2e/harness.js";
@@ -34,15 +35,15 @@ type WebServer = Extract<
 >[number];
 
 /**
- * DIRECTOR-SPEC §0.2 — opt-in, because booting a dev server is not something a
- * bare `pnpm test:e2e` should do.
+ * The local stack (`sites/staging/README.md`, "Local development") — opt-in,
+ * because booting a dev server is not something a bare `pnpm test:e2e` should do.
  *
  * ONE ENTRY, not two. Until INC-D3b this array booted a standalone commerce
  * service (`packages/service/src/index.ts`) against the local test Postgres and
  * waited on its `/health`, then the site beside it. INC-D3a folded commerce
  * into the plugin and INC-D3b deleted the service package, so there is a single
  * process to start and no commerce address, port or `INTERNAL_API_TOKEN` to
- * hand it. The §0.3 port rule is unchanged and is still enforced where it
+ * hand it. The loopback-only port rule is unchanged and is still enforced where it
  * always was — `assertLoopbackUrl` re-checks every resolved endpoint at harness
  * module load, and `harness.spec.ts` greps this file and the harness for a bare
  * 5432 (the SSH tunnel to PRODUCTION) on every run.
@@ -144,7 +145,7 @@ export default defineConfig({
 		baseURL: E2E_BASE_URL,
 		browserName: "chromium",
 		headless: true,
-		// §0.4: `fullPage: true` truncates these pages, so shots are taken at an
+		// `fullPage: true` truncates these pages, so shots are taken at an
 		// explicit viewport instead — and every audit shot in `audit/shots/` uses
 		// this size, so a comparison at any other size is invalid.
 		viewport: { ...E2E_VIEWPORT },

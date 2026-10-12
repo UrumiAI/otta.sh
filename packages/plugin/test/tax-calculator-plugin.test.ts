@@ -46,6 +46,9 @@ beforeEach(async () => {
 		idempotencyKey("publish"),
 		"2026-01-01T00:00:00.000Z",
 	);
+	// Deliberately NO tax settings saved and NO rates: a store whose calculator
+	// replaces the rate table. ADR-0032 reads it as already charging tax (tax on),
+	// so every case below runs on the default a real such store has.
 });
 
 afterEach(async () => {
@@ -85,7 +88,8 @@ function fake(id = "acme.tax"): TaxCalculator & { seen: TaxRequest[] } {
 async function load() {
 	const pluginModule = await import("../src/plugin.js");
 	const { makeCommerceClient } = await import("../src/commerce/make-commerce-client.js");
-	return { ...pluginModule, makeCommerceClient };
+	const { makeAdminClients } = await import("../src/admin/make-admin-clients.js");
+	return { ...pluginModule, makeCommerceClient, makeAdminClients };
 }
 
 describe("createOttaPlugin({ taxCalculator })", () => {
@@ -110,6 +114,29 @@ describe("createOttaPlugin({ taxCalculator })", () => {
 		const quote = await client.quoteCheckout({ cartId: await cartId() });
 		expect(quote.ok && quote.breakdown).toMatchObject({ taxCents: 300, totalCents: 3300 });
 		expect(calc.seen.map((r) => r.purpose)).toEqual(["quote"]);
+	});
+
+	test("no rates and nothing saved: the calculator is still asked and tax charged (ADR-0032 upgrade rule)", async () => {
+		expect((await h.stores.settingsStore.get()).tax).toBeUndefined();
+		expect(await h.stores.taxRules.hasAnyRate()).toBe(false);
+		const { createOttaPlugin, makeCommerceClient, makeAdminClients } = await load();
+		const calc = fake();
+		createOttaPlugin({ taxCalculator: calc });
+		const client = await makeCommerceClient(h.ctx);
+		const quote = await client.quoteCheckout({ cartId: await cartId() });
+		expect(calc.seen).toHaveLength(1);
+		expect(quote.ok && quote.breakdown).toMatchObject({ taxCents: 300, totalCents: 3300 });
+		// The admin, built by its own composition root, agrees: tax is on.
+		const admin = await makeAdminClients(h.ctx);
+		const read = await admin.rules.getTaxSettings();
+		expect(read).toMatchObject({ saved: false, hasRates: false });
+		expect(read.settings.enabled).toBe(true);
+	});
+
+	test("without registration the admin reads a rate-less store as a new store: tax off", async () => {
+		const { makeAdminClients } = await load();
+		const admin = await makeAdminClients(h.ctx);
+		expect((await admin.rules.getTaxSettings()).settings.enabled).toBe(false);
 	});
 
 	test("registering the same calculator twice is fine; a different one throws", async () => {

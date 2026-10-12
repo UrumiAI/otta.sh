@@ -38,7 +38,12 @@ export function orderSumRows(totals: CheckoutTotalsView): SumRow[] {
 			fallback: "No coupon applied",
 		},
 		{ label: "Shipping", amount: totals.shipping },
-		{ label: "Tax", amount: totals.tax },
+		// ADR-0032: the view model's tax rows (today's single "Tax" row for every
+		// order not priced with tax-inclusive prices). Labels render escaped.
+		...totals.taxRows.map((row) => ({ label: row.label, amount: row.amount })),
+		// ADR-0035's amendment: the total rounded to its currency's payment increment
+		// (KWD, BHD, OMR, JOD), signed; only when non-zero.
+		...(totals.rounding !== undefined ? [{ label: "Rounding", amount: totals.rounding }] : []),
 	];
 }
 

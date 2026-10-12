@@ -105,8 +105,13 @@ export interface ReplaceSpentCartDeps extends CartDeps {
  * makes a create key: the same spent cart always has the same replacement, so two
  * requests racing to replace it converge on one cart. Cart ids are bearer secrets,
  * so a spent cart's id grants access to the cart that replaces it — exactly as it
- * already grants access to the spent cart itself. The replacement is in the spent
- * cart's currency.
+ * already grants access to the spent cart itself.
+ *
+ * The replacement's currency is what `resolveCurrency` answers, else the spent
+ * cart's. The resolver is called ONLY once the spent cart has validated, so a
+ * refusal stays typed and costs no read (the plugin's resolver reads settings).
+ * Racers converge regardless: the first create under the key wins, and a later
+ * racer gets that cart whatever its own resolver answered.
  *
  * Refused, in order: `CART_NOT_FOUND` (no such cart), `CART_NOT_CHECKED_OUT` (an
  * active cart needs no replacing, and rotating it would orphan its lines), and
@@ -118,6 +123,7 @@ export interface ReplaceSpentCartDeps extends CartDeps {
 export async function replaceSpentCart(
 	deps: ReplaceSpentCartDeps,
 	spentCartId: string,
+	resolveCurrency?: () => Promise<Currency | undefined>,
 ): Promise<ReplaceSpentCartResult> {
 	const spent = await deps.cartStore.get(spentCartId);
 	if (spent === null) return { ok: false, reason: "CART_NOT_FOUND" };
@@ -127,8 +133,9 @@ export async function replaceSpentCart(
 	if (order === null || order.state === "pending") {
 		return { ok: false, reason: "ORDER_NOT_FINISHED" };
 	}
+	const currency = (await resolveCurrency?.()) ?? spent.currency;
 	const cartId = await deps.cartStore.create(
-		spent.currency,
+		currency,
 		brandIdempotencyKey(`rotate:${spentCartId}`),
 	);
 	return { ok: true, cartId };

@@ -63,6 +63,35 @@ describe("orderSumRows — the totals rows, by the order page's own rule", () =>
 		expect(byLabel.get("Discount")?.fallback).toBe("No coupon applied");
 	});
 
+	test("a rounded KWD order adds a signed Rounding row after the tax; a USD order does not (ADR-0035 amendment)", () => {
+		const flags = {
+			locale: "en",
+			...orderTotalsFlags({ shippingZoneId: "z1", shippingMethodId: "m1" }),
+		};
+		const kwd = orderSumRows(
+			buildCheckoutTotals(
+				{
+					...BREAKDOWN,
+					currency: "KWD",
+					subtotalCents: 1234,
+					totalCents: 1230,
+					roundingCents: -4,
+				},
+				flags,
+			),
+		);
+		expect(kwd.map((row) => row.label)).toEqual([
+			"Subtotal",
+			"Discount",
+			"Shipping",
+			"Tax",
+			"Rounding",
+		]);
+		expect(kwd.at(-1)?.amount.label).toMatch(/^−.*0\.004/);
+		const usd = orderSumRows(buildCheckoutTotals({ ...BREAKDOWN }, flags));
+		expect(usd.map((row) => row.label)).toEqual(["Subtotal", "Discount", "Shipping", "Tax"]);
+	});
+
 	test("a priced method and zone print their real figures, even a zero", () => {
 		const totals = buildCheckoutTotals(
 			{ ...BREAKDOWN },
@@ -74,6 +103,19 @@ describe("orderSumRows — the totals rows, by the order page's own rule", () =>
 		const byLabel = new Map(orderSumRows(totals).map((row) => [row.label, row]));
 		expect(byLabel.get("Shipping")?.amount.label).toBe("$0.00");
 		expect(byLabel.get("Tax")?.amount.label).toBe("$0.00");
+	});
+
+	test("ADR-0032: a digital order taxed at the shop base address shows the tax it was charged", () => {
+		const totals = buildCheckoutTotals(
+			{ ...BREAKDOWN, subtotalCents: 5000, taxCents: 1000, totalCents: 6000 },
+			{
+				locale: "en",
+				...orderTotalsFlags({ shippingZoneId: null, shippingMethodId: null, taxLocated: true }),
+			},
+		);
+		const byLabel = new Map(orderSumRows(totals).map((row) => [row.label, row]));
+		expect(byLabel.get("Tax")?.amount.label).toBe("$10.00");
+		expect(byLabel.get("Tax")?.amount.money).not.toBeNull();
 	});
 
 	test("an applied coupon names itself on the discount row", () => {

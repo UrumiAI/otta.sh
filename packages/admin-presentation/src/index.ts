@@ -78,7 +78,14 @@
  * and all 18 workerd sandbox suites now exercise THIS code through the plugin's
  * public surface. `test/` here covers the package on its own terms.
  */
-export { canonicalMoneyInput, formatMinorUnitsInput, parseMinorUnitsInput } from "./money-input.js";
+export {
+	NO_CURRENCY,
+	canonicalMoneyInput,
+	formatMinorUnitsInput,
+	moneyInputExample,
+	moneyPrecisionPhrase,
+	parseMinorUnitsInput,
+} from "./money-input.js";
 export {
 	MONEY_LOCALE,
 	UNFORMATTABLE,
@@ -88,6 +95,24 @@ export {
 	majorUnits,
 } from "./format-money.js";
 export { cents, currency, type Cents, type Currency } from "./money.js";
+export {
+	SUPPORTED_CURRENCIES,
+	currencyDigits,
+	currencyInfo,
+	inputMinorUnitDigits,
+	currencyPaymentIncrement,
+	unsupportedCurrencyMessage,
+	isSupportedCurrency,
+	minorUnitDigits,
+	type CurrencyInfo,
+	type SupportedCurrencyCode,
+} from "./currencies.js";
+export {
+	CURRENCY_CHOICES,
+	DEFAULT_STORE_CURRENCY,
+	currencyChoiceLabel,
+	currencyChoicesWith,
+} from "./currency-choices.js";
 export {
 	DATE_LOCALE,
 	DAY_MS,
@@ -99,7 +124,16 @@ export {
 	formatTimestamp,
 	startOfDay,
 } from "./datetime.js";
-export { SHORT_ID_CONFIRM_LEN, SHORT_ID_MIN, shortIdFixed, shortIdsFor } from "./short-id.js";
+export { SHORT_ID_MIN, shortIdsFor } from "./short-id.js";
+// The order NUMBER on the console (ADR-0033): tie-breakers for rows that share
+// one, and the refund confirm's label.
+export {
+	ORDER_CONFIRM_DIGITS,
+	orderConfirmLabel,
+	orderNumberOf,
+	withOrderNumberCells,
+	type OrderNumberCell,
+} from "./order-number.js";
 export {
 	ORDER_STATE_SET,
 	ORDER_STATES,
@@ -182,6 +216,9 @@ export {
 	REFUND_AMOUNT_INVALID,
 	REFUND_AMOUNT_PRECISION,
 	hasExcessDecimals,
+	refundAmountPrecisionText,
+	refundIncrementText,
+	isRefundableIncrement,
 	REFUND_BY_REQUIRED,
 	REFUND_PARTIAL_BANNER_TITLE,
 	REFUND_PARTIAL_GROUP_LABEL,
@@ -279,6 +316,8 @@ export {
 	UNTITLED,
 	TOMBSTONE_CONTEXT,
 	NO_TAX_CLASS,
+	TAX_STATUS_HINT,
+	TAX_STATUS_OPTIONS,
 	addStockConfirm,
 	compareAtFieldLabel,
 	dimensionsSummary,
@@ -298,6 +337,7 @@ export {
 	stockDegradation,
 	taxClassLabel,
 	taxClassOptions,
+	taxStatusLabel,
 	unitCostFieldLabel,
 	type ProductSection,
 	type StockDegradation,

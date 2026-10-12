@@ -22,12 +22,7 @@ import {
 	formatTimestamp,
 	startOfDay,
 } from "../src/admin/scaffold/datetime.js";
-import {
-	SHORT_ID_CONFIRM_LEN,
-	SHORT_ID_MIN,
-	shortIdFixed,
-	shortIdsFor,
-} from "../src/admin/scaffold/short-id.js";
+import { SHORT_ID_MIN, shortIdsFor } from "../src/admin/scaffold/short-id.js";
 
 /**
  * `LIST_ID_1` / `LIST_ID_2` diverge at character 1 — the ordinary case, where
@@ -98,19 +93,6 @@ describe("short ids (D4)", () => {
 		}
 		// Above the minimum a fractional floor truncates rather than rounding up.
 		expect(shortIdsFor([LIST_ID_1, LIST_ID_2], 8.9).get(LIST_ID_1)).toBe("7e4ce728");
-	});
-
-	test("shortIdFixed takes 8 by default and never pads a shorter id", () => {
-		expect(SHORT_ID_CONFIRM_LEN).toBe(8);
-		expect(shortIdFixed(LIST_ID_1)).toBe("7e4ce728");
-		expect(shortIdFixed(LIST_ID_1, 4)).toBe("7e4c");
-		expect(shortIdFixed("ord-1")).toBe("ord-1");
-	});
-
-	test("the fixed length is a superset of any computed prefix ≤ 8 — the property the confirm dialog leans on", () => {
-		for (const [id, prefix] of shortIdsFor(UUIDS)) {
-			expect(shortIdFixed(id).startsWith(prefix)).toBe(true);
-		}
 	});
 });
 
