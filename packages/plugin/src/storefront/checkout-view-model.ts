@@ -21,6 +21,7 @@
  * sanctioned money→string boundary) with branded `cents()`/`currency()` inputs,
  * so a float or a bad currency code throws at the parse rather than rendering.
  */
+import { allocateCents, cents as domainCents } from "@otta-sh/domain";
 import { formatMoney } from "../presentation/format-money.js";
 import { cents, currency } from "../presentation/money.js";
 import type { Currency } from "../presentation/money.js";
@@ -95,7 +96,7 @@ export interface CheckoutTotalsView {
 	/** The whole tax, whatever the display. */
 	tax: CheckoutAmountView;
 	/** The tax rows to ADD in the totals block: one per tax (itemized) or one
-	 *  "Tax" row; empty when prices are shown with tax or tax is switched off. */
+	 *  "Tax" row; empty when prices are shown with tax or tax is switched off (#420). */
 	taxRows: CheckoutTaxRowView[];
 	/** "Includes $3.00 tax" under the total when prices are shown with tax. Plain text. */
 	taxIncludedNote: string | null;
@@ -109,6 +110,9 @@ export interface CheckoutTotalsView {
 	 */
 	rounding?: CheckoutAmountView;
 	total: CheckoutAmountView;
+	/** Set when an outside calculator priced the tax before the buyer's postcode is
+	 *  known (#429): the order's tax may differ. Plain text; null or absent otherwise. */
+	taxEstimateNote?: string | null;
 	appliedCouponCode: string | null;
 	/** true while shipping or tax was not computed — the theme's signal to
 	 *  caveat the total ("this total does not include shipping or tax"). */
@@ -160,9 +164,11 @@ export function buildCheckoutTotals(
 	const code = currency(breakdown.currency);
 	const { locale } = options;
 	const hasDiscount = breakdown.discountCents > 0 || breakdown.appliedCouponCode !== null;
-	// Tax switched off renders EXACTLY as before 2a — the one "Tax" row — so the
-	// many existing stores with no rates (off under the upgrade rule) see no change
-	// on the page. Hiding the row, as WooCommerce does, is a listed follow-up.
+	// Tax switched off (#420, as WooCommerce): no tax row at all, and tax is not
+	// one of the uncalculated parts of the total. Keyed on the setting, never on
+	// the amount, so tax ON with a zero tax keeps its "$0.00" row. A quote without
+	// `tax` (an older order, a pre-2a caller) still gets today's single row.
+	const taxOff = breakdown.tax?.enabled === false;
 	const tax = breakdown.tax?.enabled === true ? breakdown.tax : undefined;
 	const taxComputed = options.taxZoneSelected || tax?.located === true;
 	const shown = taxComputed && tax !== undefined ? shownAmounts(breakdown, tax) : null;
@@ -170,7 +176,7 @@ export function buildCheckoutTotals(
 		? computed(breakdown.taxCents, code, locale)
 		: uncomputed(NOT_CALCULATED_LABEL);
 
-	let taxRows: CheckoutTaxRowView[] = [{ label: "Tax", amount: taxView }];
+	let taxRows: CheckoutTaxRowView[] = taxOff ? [] : [{ label: "Tax", amount: taxView }];
 	let taxIncludedNote: string | null = null;
 	if (shown !== null && tax !== undefined) {
 		const parts =
@@ -202,6 +208,10 @@ export function buildCheckoutTotals(
 		tax: taxView,
 		taxRows,
 		taxIncludedNote,
+		taxEstimateNote:
+			taxComputed && tax?.estimate === true
+				? "Estimated tax — the final amount is shown on the payment page."
+				: null,
 		// Wherever there is one, uncalculated parts or not: the total shown is
 		// already rounded, so this row is what makes the rows add up to it.
 		...(breakdown.roundingCents !== undefined && breakdown.roundingCents !== 0
@@ -209,7 +219,7 @@ export function buildCheckoutTotals(
 			: {}),
 		total: computed(breakdown.totalCents, code, locale),
 		appliedCouponCode: breakdown.appliedCouponCode,
-		totalExcludesUncalculated: !options.shippingSelected || !taxComputed,
+		totalExcludesUncalculated: !options.shippingSelected || (!taxComputed && !taxOff),
 	};
 }
 
@@ -269,6 +279,56 @@ export function buildCheckoutLines(
 			qty: line.qty,
 			unitPrice: priced?.unitPrice ?? null,
 			lineTotal: priced?.lineTotal ?? null,
+		};
+	});
+}
+
+/**
+ * The review's lines shown with or without tax as the store's `displayCart` says
+ * (#423, WooCommerce's `tax_display_cart`) — from the QUOTE's own per-line tax,
+ * so the lines are taxed exactly as the totals are, at the same location.
+ *
+ * The lines always sum to the shown subtotal: the amount the subtotal row moves
+ * by (`shownAmounts`) is split across the lines by their tax (largest
+ * remainder), which is each line's own tax whenever there is no coupon. A unit
+ * price is its line's share over the quantity, rounded as the tax is (half down
+ * for prices entered with tax, half up otherwise) — exact at qty 1;
+ * like WooCommerce's cart, unit × qty may differ from the line by a cent.
+ *
+ * Unchanged — the very same rows — when tax is off or not calculated yet, when
+ * the display matches how prices were entered (every default store), when a line
+ * is unpriced, or when the quote carries no per-line tax.
+ */
+export function showCheckoutLinesTax(
+	lines: CheckoutLineView[],
+	breakdown: QuoteBreakdownWire,
+	options: Pick<CheckoutTotalsOptions, "taxZoneSelected" | "locale">,
+): CheckoutLineView[] {
+	const tax = breakdown.tax?.enabled === true ? breakdown.tax : undefined;
+	if (tax === undefined || !(options.taxZoneSelected || tax.located)) return lines;
+	const incl = tax.displayCart === "incl";
+	const lineTaxes = tax.lineTaxes;
+	if (incl === tax.pricesIncludeTax || lineTaxes?.length !== lines.length) return lines;
+	if (lines.some((l) => l.unitPrice === null || l.lineTotal === null)) return lines;
+	const moved = Math.abs(shownAmounts(breakdown, tax).subtotal - breakdown.subtotalCents);
+	if (moved === 0) return lines;
+	const shares = allocateCents(domainCents<number>(moved), lineTaxes);
+	const sign = incl ? 1 : -1;
+	const code = currency(breakdown.currency);
+	return lines.map((line, i) => {
+		const share: number = shares[i] ?? 0;
+		const unit = line.unitPrice?.amount ?? 0;
+		const total = line.lineTotal?.amount ?? 0;
+		// share / qty, rounded as the tax itself is (`taxOn`): half DOWN for the tax
+		// inside a price entered with tax, half up otherwise — so one unit shows what
+		// the PDP and the cart page show. In integers.
+		const unitShare = tax.pricesIncludeTax
+			? Math.floor((2 * share + line.qty - 1) / (2 * line.qty))
+			: Math.floor((2 * share + line.qty) / (2 * line.qty));
+		return {
+			...line,
+			unitPrice: money(unit + sign * unitShare, code, options.locale),
+			lineTotal: money(total + sign * share, code, options.locale),
 		};
 	});
 }

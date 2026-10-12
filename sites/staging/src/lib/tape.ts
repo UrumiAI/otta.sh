@@ -66,6 +66,9 @@ export interface TapeRow {
 	 *  The same figure the product's catalog card strikes, so the shelf on the
 	 *  front door and the shop agree about a sale. */
 	was: string | null;
+	/** Whether `price` includes tax (#423) — present only when the merchant chose
+	 *  how shop prices show tax. */
+	taxNote?: "incl" | "excl";
 	/** The availability TOKEN in words. The view model carries no count, so the
 	 *  tape states the fact it actually has rather than the mockup's "12 in
 	 *  stock" — §7's spirit: never render a figure the store did not quote.
@@ -116,6 +119,7 @@ export function tapeRows(
 					href: product.url ?? `/products/${productKey(product)}`,
 					price: product.price.formatted,
 					was: product.compareAtPrice?.formatted ?? null,
+					...(product.price.taxNote !== undefined ? { taxNote: product.price.taxNote } : {}),
 					stock: soldOut ? "Sold out" : product.availability === "in_stock" ? "In stock" : "",
 					soldOut,
 				},

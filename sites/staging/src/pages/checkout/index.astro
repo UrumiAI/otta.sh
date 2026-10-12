@@ -66,6 +66,7 @@ import {
 	readMethodParam,
 } from "../../lib/checkout-selection.js";
 import { countryOptions } from "../../lib/countries.js";
+import { buyerLocationErrorToken, locationBlock } from "../../lib/checkout-location.js";
 import { SITE_LOCALE } from "../../lib/site-locale.js";
 import { cartErrorMessage } from "../../lib/error-messages.js";
 import { checkoutFootnote } from "../../lib/totals.js";
@@ -184,8 +185,13 @@ const destination = summary.selection.destination;
 const countryValue = destination?.country ?? destinationRead.rejected?.country ?? "";
 const regionValue = destination?.region ?? destinationRead.rejected?.region ?? "";
 
-/** The delivery block: an unlocked cart that ships, in a store with zones. */
-const showDelivery = locked === null && summary.requiresShipping && summary.shipping.status !== "no_zones";
+/** The "where" block (lib/checkout-location.ts): DELIVERY — an unlocked cart
+ *  that ships, in a store with zones; or the BUYER's location (#426) — an
+ *  unlocked cart that ships nothing, in a store taxing it where the buyer is.
+ *  Both re-price through the same `?country=&region=` GET. */
+const location = locationBlock(summary, locked !== null);
+const showDelivery = location !== null;
+const buyerLocation = location === "buyer";
 /** The address block: an unlocked cart that ships, or ANY unlocked cart whose
  *  address is required — an India-based Stripe account needs every buyer's
  *  name and address, digital carts too (issue #382). Without the delivery
@@ -294,7 +300,14 @@ const model: CheckoutModel = {
 		couponError !== null
 			? cartErrorMessage(couponError.reason)
 			: (placeCouponError?.message ?? null),
-	destinationError: destinationError !== null ? cartErrorMessage(destinationError.reason) : null,
+	destinationError:
+		destinationError !== null
+			? cartErrorMessage(
+					buyerLocation
+						? buyerLocationErrorToken(destinationError.reason)
+						: destinationError.reason,
+				)
+			: null,
 	shippingError: shippingError !== null ? cartErrorMessage(shippingError.reason) : null,
 	noOptionsCopy: cartErrorMessage("SHIPPING_METHOD_REQUIRED"),
 	destination,
@@ -303,6 +316,7 @@ const model: CheckoutModel = {
 	regionValue,
 	countries,
 	showDelivery,
+	buyerLocation,
 	showAddress,
 	chosenOption,
 	notReadyCopy,
@@ -321,7 +335,9 @@ const model: CheckoutModel = {
 	emailNote: checkoutEmailNote(accountEmail),
 	ledgerRows,
 	sumRows,
-	footnote: checkoutFootnote(summary.uncalculatedReason, sumRows, totals.totalExcludesUncalculated),
+	footnote: checkoutFootnote(summary.uncalculatedReason, sumRows, totals.totalExcludesUncalculated, {
+		taxByBuyerLocation: summary.taxByBuyerLocation,
+	}),
 };
 ---
 

@@ -2,11 +2,13 @@ import { type Cents, cents } from "../money/cents.js";
 import type { TaxRate, TaxRulesStore } from "../ports/tax-rules-store.js";
 import { allocateCents } from "./allocate.js";
 import { mulDivRoundHalfDownAny } from "./round.js";
-import { computeLineTax } from "./tax.js";
+import { computeLineTaxPpm, PPM_DENOMINATOR } from "./tax.js";
+import { bpsOfPpm, PPM_PER_BPS, ratePpmOf } from "./tax-rate-precision.js";
 import { effectiveTaxRates } from "./tax-rate-uniqueness.js";
 import {
 	isValidTaxLabel,
 	TAX_RATE_BPS_MAX,
+	TAX_RATE_PPM_MAX,
 	type TaxCalculator,
 	type TaxLine,
 	type TaxRequest,
@@ -20,7 +22,11 @@ export const RATE_TABLE_CALCULATOR_ID = "otta.rate-table";
 
 /** One zone's rates, reduced to what the arithmetic reads. */
 export interface RateTable {
+	/** Each class's rate in whole basis points (a finer rate: rounded half up). */
 	ratesByClass: ReadonlyMap<TaxClassId, number>;
+	/** Each class's EXACT rate in millionths (#425) — what is charged. Absent, or a
+	 *  class missing from it ⇒ its `ratesByClass` × 100. */
+	ratesPpmByClass?: ReadonlyMap<TaxClassId, number>;
 	/** Whether any rate in the zone applies to shipping. */
 	shippingTaxable: boolean;
 	/** The class whose rate taxes shipping (the LAST flagged rate's). */
@@ -53,9 +59,11 @@ export interface RateTableOptions {
  */
 export function rateTableOf(zoneRates: readonly TaxRate[]): RateTable {
 	const ratesByClass = new Map<TaxClassId, number>();
+	const ratesPpmByClass = new Map<TaxClassId, number>();
 	const shipsByClass = new Map<TaxClassId, boolean>();
 	for (const r of effectiveTaxRates(zoneRates)) {
 		ratesByClass.set(r.taxClassId, r.rateBps);
+		ratesPpmByClass.set(r.taxClassId, ratePpmOf(r));
 		shipsByClass.set(r.taxClassId, r.appliesToShipping);
 	}
 	let shippingTaxable = false;
@@ -66,14 +74,15 @@ export function rateTableOf(zoneRates: readonly TaxRate[]): RateTable {
 			shippingTaxClassId = r.taxClassId;
 		}
 	}
-	return { ratesByClass, shippingTaxable, shippingTaxClassId, shipsByClass };
+	return { ratesByClass, ratesPpmByClass, shippingTaxable, shippingTaxClassId, shipsByClass };
 }
 
 /**
- * The rate-table arithmetic. Each line at its class's rate (no rate ⇒ 0%, never
- * a refusal — WooCommerce's rule):
- *  - prices WITHOUT tax: `round_half_up(amount × bps / 10000)` (main's maths);
- *  - prices WITH tax: the tax inside the gross, `round_half_down(G × bps / (10000 + bps))`
+ * The rate-table arithmetic. Each line at its class's EXACT rate, in millionths
+ * (`ppm`, #425 — a whole-bps rate is `bps × 100`, the same rational, so the same
+ * tax as main's `bps / 10000` maths). No rate ⇒ 0%, never a refusal — WooCommerce's rule:
+ *  - prices WITHOUT tax: `round_half_up(amount × ppm / 1e6)` (main's maths);
+ *  - prices WITH tax: the tax inside the gross, `round_half_down(G × ppm / (1e6 + ppm))`
  *    (WooCommerce's rounding for tax-inclusive stores — see {@link taxOn});
  *  - at subtotal: the same formula once per class over the class's summed amount,
  *    allocated back to its lines by amount (largest remainder).
@@ -87,21 +96,34 @@ export function applyRateTable(
 	labels: ReadonlyMap<TaxClassId, string>,
 	options: RateTableOptions = {},
 ): TaxResult {
-	const rateOf = (classId: TaxClassId) => table.ratesByClass.get(classId) ?? 0;
+	const rateOf = (classId: TaxClassId) =>
+		table.ratesPpmByClass?.get(classId) ?? (table.ratesByClass.get(classId) ?? 0) * PPM_PER_BPS;
 	// The tax is computed at the STORED rate; only the display rate is capped, so a
-	// rate written outside the admin (> 1000%) still charges as before.
-	const lineOf = (classId: TaxClassId, taxCents: Cents): TaxLine => ({
-		rateBps: Math.min(rateOf(classId), TAX_RATE_BPS_MAX),
-		label: labelOf(classId, labels),
-		taxCents,
-	});
+	// rate written outside the admin (> 1000%) still charges as before. A finer
+	// rate shows its exact `ratePpm` too; a whole-bps one shows exactly as before.
+	const lineOf = (classId: TaxClassId, taxCents: Cents): TaxLine => {
+		const ppm = Math.min(rateOf(classId), TAX_RATE_PPM_MAX);
+		return {
+			rateBps: Math.min(bpsOfPpm(ppm), TAX_RATE_BPS_MAX),
+			...(ppm % PPM_PER_BPS === 0 ? {} : { ratePpm: ppm }),
+			label: labelOf(classId, labels),
+			taxCents,
+		};
+	};
 	const taxes = lineTaxes(request, rateOf, options.roundAtSubtotal === true);
 	// An untaxed line (PR 2b) shows a 0% rate: it is charged none.
-	const untaxed = (classId: TaxClassId): TaxLine => ({ ...lineOf(classId, cents(0)), rateBps: 0 });
+	const untaxed = (classId: TaxClassId): TaxLine => ({
+		rateBps: 0,
+		label: labelOf(classId, labels),
+		taxCents: cents(0),
+	});
 	const shippingClass = shippingTaxClassOf(request, table, labels, options.shippingTaxClass);
 	const shipping: TaxLine | null =
 		shippingClass !== null && request.shipping !== null
-			? lineOf(shippingClass, computeLineTax(request.shipping.amountCents, rateOf(shippingClass)))
+			? lineOf(
+					shippingClass,
+					computeLineTaxPpm(request.shipping.amountCents, rateOf(shippingClass)),
+				)
 			: null;
 	return {
 		ok: true,
@@ -125,15 +147,35 @@ function isTaxed(line: TaxRequest["lines"][number]): boolean {
 }
 
 /**
+ * A class name's sort key: lower-cased, with accents removed from Latin letters
+ * only, then compared by code unit. A precomposed Latin letter (U+00C0-U+024F,
+ * U+1E00-U+1EFF) folds to its ASCII base when it decomposes to an ASCII letter
+ * plus combining diacritics, and combining diacritics that directly follow an
+ * ASCII letter are dropped. Nothing else is normalised, so plain ASCII and every
+ * other script (Cyrillic й, Greek tonos, Devanagari nukta letters, CJK) keep
+ * exactly the order a lower-case code-unit compare gave before, with no
+ * dependence on ICU or the host locale.
+ */
+function nameSortKey(name: string): string {
+	return name
+		.replace(/[\u00C0-\u024F\u1E00-\u1EFF]/g, (ch) => {
+			const d = ch.normalize("NFD");
+			return /^[A-Za-z][\u0300-\u036F]+$/.test(d) ? (d[0] as string) : ch;
+		})
+		.replace(/([A-Za-z])[\u0300-\u036F]+/g, "$1")
+		.toLowerCase();
+}
+
+/**
  * One line's tax. Prices WITHOUT tax round half UP (main's maths). Prices WITH tax
  * round the tax inside the gross half DOWN — WooCommerce's `WC_TAX_ROUNDING_MODE`
  * for tax-inclusive stores (woo-oracle IN-02: 999 at 20% → 166), which is what
  * keeps `net + tax = gross` with the net rounded half up.
  */
-function taxOn(amount: number, rateBps: number, inclusive: boolean): Cents {
+function taxOn(amount: number, ratePpm: number, inclusive: boolean): Cents {
 	return inclusive
-		? cents(mulDivRoundHalfDownAny(amount, rateBps, 10_000 + rateBps))
-		: computeLineTax(cents(amount), rateBps);
+		? cents(mulDivRoundHalfDownAny(amount, ratePpm, PPM_DENOMINATOR + ratePpm))
+		: computeLineTaxPpm(cents(amount), ratePpm);
 }
 
 function lineTaxes(
@@ -173,7 +215,7 @@ function taxRoundedAtSubtotal(
 		const amounts: number[] = indexes.map((i) => request.lines[i]?.amountCents ?? 0);
 		const rate = BigInt(rateOf(classId));
 		const num = BigInt(amounts.reduce((a, b) => a + b, 0)) * rate;
-		const den = inclusive ? 10_000n + rate : 10_000n;
+		const den = inclusive ? BigInt(PPM_DENOMINATOR) + rate : BigInt(PPM_DENOMINATOR);
 		return { indexes, amounts, num, den, floor: num / den, rem: num % den };
 	});
 	// Σ num/den over a common denominator, rounded once.
@@ -229,8 +271,8 @@ function shippingTaxClassOf(
  *  - one class ⇒ that class;
  *  - else the first by class NAME (WooCommerce's `ORDER BY name`) among the
  *    declared classes (`names`), falling back to `standard`. Names compare
- *    case-insensitively, as MySQL's default collation does; names equal but for
- *    case go to the lower id, so the pick never depends on listing order.
+ *    case- and accent-insensitively (approximately MySQL's default collation); names equal
+ *    under that go to the lower id, so the pick never depends on listing order.
  */
 export function inheritShippingTaxClass(
 	lines: TaxRequest["lines"],
@@ -244,9 +286,9 @@ export function inheritShippingTaxClass(
 	if (found.has("standard")) return "standard";
 	if (found.size === 1) return [...found][0] as TaxClassId;
 	const ordered = [...names].toSorted(([idA, a], [idB, b]) => {
-		const la = a.toLowerCase();
-		const lb = b.toLowerCase();
-		if (la !== lb) return la < lb ? -1 : 1;
+		const ka = nameSortKey(a);
+		const kb = nameSortKey(b);
+		if (ka !== kb) return ka < kb ? -1 : 1;
 		return idA < idB ? -1 : idA > idB ? 1 : 0;
 	});
 	return ordered.find(([id]) => found.has(id))?.[0] ?? "standard";

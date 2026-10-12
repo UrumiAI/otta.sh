@@ -45,7 +45,7 @@ strict TypeScript (`noUncheckedIndexedAccess`, `verbatimModuleSyntax`; internal 
 
 ```bash
 pnpm lint         # quick — run after every edit (includes the domain-purity dep check)
-pnpm typecheck    # after each round of edits
+pnpm typecheck    # tsc -b + e2e + every package's own typecheck (site: astro check); after each round of edits
 pnpm test         # vitest; run frequently while implementing
 pnpm format       # oxfmt, tabs — run regularly
 ```

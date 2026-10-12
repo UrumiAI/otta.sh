@@ -182,10 +182,13 @@ export class EmdashPaymentEventStore implements PaymentEventStore {
 	}
 
 	/** The order the recorded `dedupeKey` document names, or `null` when no
-	 *  document holds that key. A plain `get`: the dedupe key IS the document id. */
+	 *  document holds that key. A plain `get`: the dedupe key IS the document id.
+	 *  A document with no usable `orderId` proves no binding, so it is `null` too —
+	 *  `settleOrder` then fails closed rather than refusing "against order undefined". */
 	async orderForDedupeKey(dedupeKey: string): Promise<OrderId | null> {
 		const held = await this.#events.get(dedupeKey);
-		return held === null ? null : (held.orderId as OrderId);
+		const bound: unknown = held?.orderId;
+		return typeof bound === "string" && bound.length > 0 ? (bound as OrderId) : null;
 	}
 
 	/** Record an anomaly. Idempotent for an identical replay; never swallowed. */
