@@ -765,7 +765,7 @@ export class EmdashInventoryStore implements InventoryStore, HoldDeadlineStamper
 	 * write and the claim update, followed by the hold being pruned and the key being
 	 * evicted from a ring of {@link APPLIED_MOVEMENT_RING_SIZE} entries. Closing it
 	 * would need a second atomic document, which these primitives do not offer; the
-	 * sweeper contract that bounds it is in this package's README.
+	 * sweeper contract that bounds it is in `docs/store-emdash/design-notes.md`.
 	 */
 	async adjust(reservationId: string, newQty: number, key: IdempotencyKey): Promise<ReserveResult> {
 		assertPositiveInt(newQty, "adjust", "newQty");

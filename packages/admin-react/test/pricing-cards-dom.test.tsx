@@ -7,6 +7,7 @@
  */
 import * as React from "react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
+import { FAIL_ACCENT } from "../src/ui.js";
 import { fire, mount, type Mounted } from "./dom.js";
 
 const apiFetch = vi.fn<(input: string, init?: RequestInit) => Promise<Response>>();
@@ -840,6 +841,23 @@ test("a very large Add asks first, says what the count becomes, and adds only on
 			value: expect.objectContaining({ qty: "100000000", onHand: "24" }),
 		}),
 	]);
+});
+
+test("the large-Add confirm is neutral, while Remove keeps the destructive weight", async () => {
+	apiFetch.mockImplementation(() => Promise.resolve(detail({ onHand: 24 })));
+	const c = await mountPanel();
+	const yes = () => c.querySelector('[data-testid="otta-confirm-yes"]');
+	await type(input(c, "Add or remove stock"), "100000000");
+	await fire(button(c, "Add"), "click");
+	expect(yes()?.getAttribute("style") ?? "").not.toContain(FAIL_ACCENT);
+	await fire(c.querySelector('[data-testid="otta-confirm-deny"]')!, "click");
+
+	await type(input(c, "Add or remove stock"), "2");
+	await fire(button(c, "Remove"), "click");
+	expect(c.querySelector('[data-testid="otta-confirm"]')?.textContent).toContain(
+		"Remove 2 from stock?",
+	);
+	expect(yes()?.getAttribute("style") ?? "").toContain(FAIL_ACCENT);
 });
 
 test("an ordinary Add (up to 10,000) is still one click", async () => {

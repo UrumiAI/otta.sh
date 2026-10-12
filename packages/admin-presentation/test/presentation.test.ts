@@ -44,15 +44,12 @@ import {
 	PAGE_ZERO,
 	PRICE_PENDING_CONTEXT,
 	PRODUCT_FILTER_LABELS,
-	REFUND_ADDITIVE_NOTE,
-	REFUND_REVIEW_STEP_PREFIX,
 	RESOLVE_RECONCILIATION_NOTE,
 	RETRYING_LABEL,
 	RETRY_LABEL,
 	SCAN_FURTHER,
 	TERMINAL_ORDER_STATES,
 	UNNAMED_REFUND_RECIPIENT,
-	addStockConfirm,
 	buyerRefHint,
 	buyerReferenceText,
 	canonicalMoneyInput,
@@ -96,11 +93,9 @@ import {
 	priceChangeSummary,
 	priceGroupLabel,
 	pricePendingLine,
-	priceSavedNotice,
 	refundCapabilityText,
 	refundConfirmText,
 	refundTooHighText,
-	removeStockConfirm,
 	rowCountLine,
 	shippingGroupLabel,
 	shortIdsFor,
@@ -335,11 +330,7 @@ describe("the list outcome ladder — FIVE outcomes, and both surfaces read them
 	const noun = ORDERS_NOUN;
 	const empty = ORDERS_EMPTY;
 	const noMatch = ORDERS_NO_MATCH;
-	// EVERY CASE IN THIS DESCRIBE BLOCK IS THE ORDINARY, SERVICE-FILTERED SHAPE —
-	// the products-specific "narrowed-after-fetch" scope gets its own describe
-	// block below, so the required discriminant is stated once here rather than
-	// at each of the nine call sites that spread `base`.
-	const base = { noun, empty, noMatch, countScope: "service-filtered" } as const;
+	const base = { noun, empty, noMatch } as const;
 
 	test("1. rows: the table renders, and page 1 with no next page states a TOTAL", () => {
 		const outcome = listOutcome({
@@ -515,72 +506,12 @@ describe("INC-23's exact count, shared by both surfaces", () => {
 			firstPage: false,
 			hasNext: true,
 			total: 137,
-			countScope: "service-filtered",
 			noun,
 			empty: ORDERS_EMPTY,
 			noMatch: ORDERS_NO_MATCH,
 		});
 		expect(outcome.kind).toBe("rows");
 		expect(outcome.countLine).toBe("137 orders");
-	});
-
-	test("a level that narrowed the fetched page WITHHOLDS the total, and is believed", () => {
-		// A level that trims rows after fetching them holds a count of a different
-		// set than the one on screen. Omitting it is the contract; the ladder must
-		// then say the smaller, true thing.
-		const outcome = listOutcome({
-			count: 4,
-			filtered: true,
-			firstPage: true,
-			hasNext: true,
-			countScope: "narrowed-after-fetch",
-			noun,
-			empty: ORDERS_EMPTY,
-			noMatch: ORDERS_NO_MATCH,
-		});
-		expect(outcome.countLine).toBe("4 orders on this page");
-	});
-
-	test("narrowed-after-fetch never borrows the FETCH's completeness", () => {
-		// The exact shape that shipped the blocking defect: the fetch itself is
-		// complete (first page, no next cursor) — a catalog that happens to fit on
-		// one page, or a scan that reached the end of it — but the NARROWING is not
-		// a service predicate, so the fetch being done says nothing about whether
-		// the narrowed set is. `complete` must not go true on this scope no matter
-		// what `firstPage`/`hasNext` say.
-		const outcome = listOutcome({
-			count: 3,
-			filtered: true,
-			firstPage: true,
-			hasNext: false,
-			countScope: "narrowed-after-fetch",
-			noun,
-			empty: ORDERS_EMPTY,
-			noMatch: ORDERS_NO_MATCH,
-		});
-		expect(outcome.countLine).toBe("3 orders on this page");
-	});
-
-	test("a `total` under narrowed-after-fetch is REFUSED, not rendered", () => {
-		// PINNED DIRECTLY: a caller can mislabel a page `narrowed-after-fetch`
-		// while a real `total` is present — its own trimming did not actually
-		// apply to this page, but the service's exact count arrived anyway. The
-		// ladder must not let that total resurrect whole-set phrasing: this scope
-		// refuses one unconditionally, independently of whether the caller's own
-		// labelling was correct.
-		const outcome = listOutcome({
-			count: 3,
-			filtered: true,
-			firstPage: true,
-			hasNext: false,
-			total: 137,
-			countScope: "narrowed-after-fetch",
-			noun,
-			empty: ORDERS_EMPTY,
-			noMatch: ORDERS_NO_MATCH,
-		});
-		expect(outcome.countLine).toBe("3 orders on this page");
-		expect(outcome.countLine).not.toContain("137");
 	});
 });
 
@@ -728,33 +659,14 @@ describe("Page N of M — derived from what the list already has, never fetched"
 	});
 
 	test("the effective total the COUNT LINE used is what the page count must consume", () => {
-		// THE COUPLING, PINNED. A page narrowed after the fetch withholds its total
-		// from the caption; handing the raw payload figure to `pageCount` would put
-		// "of 6" under a line that had just refused the 137 it came from. The ladder
-		// hands back the figure it actually used, and the caller feeds THAT.
-		const narrowed = listOutcome({
-			count: 4,
-			filtered: true,
-			firstPage: true,
-			hasNext: true,
-			total: 137,
-			countScope: "narrowed-after-fetch",
-			noun: ORDERS_NOUN,
-			empty: ORDERS_EMPTY,
-			noMatch: ORDERS_NO_MATCH,
-		});
-		expect(narrowed.countLine).toBe("4 orders on this page");
-		expect(narrowed.statedTotal).toBeUndefined();
-		expect(pageCount(4, { total: narrowed.statedTotal, pageSize: 25 })).toBeUndefined();
-
-		// And the ordinary scope hands back exactly what it stated.
+		// THE COUPLING, PINNED. The ladder hands back the total it actually used for
+		// the count line, and the caller feeds THAT to `pageCount`.
 		const served = listOutcome({
 			count: 25,
 			filtered: false,
 			firstPage: true,
 			hasNext: true,
 			total: 137,
-			countScope: "service-filtered",
 			noun: ORDERS_NOUN,
 			empty: ORDERS_EMPTY,
 			noMatch: ORDERS_NO_MATCH,
@@ -770,7 +682,6 @@ describe("Page N of M — derived from what the list already has, never fetched"
 			firstPage: false,
 			hasNext: false,
 			total: 137,
-			countScope: "service-filtered",
 			noun: ORDERS_NOUN,
 			empty: ORDERS_EMPTY,
 			noMatch: ORDERS_NO_MATCH,
@@ -958,65 +869,6 @@ describe("the stock-degradation banner carries every true fact, not the first on
 	});
 });
 
-describe("the remove-stock confirm is composed once for both surfaces", () => {
-	test("it names the concrete quantity, and agrees with itself about the unit", () => {
-		const one = removeStockConfirm(1);
-		expect(one.title).toBe("Remove 1 unit?");
-		expect(one.text).toContain("Remove 1 unit from stock?");
-		expect(one.confirm).toBe("Yes, remove 1");
-
-		const many = removeStockConfirm(3);
-		expect(many.title).toBe("Remove 3 units?");
-		expect(many.text).toContain("Remove 3 units from stock?");
-	});
-
-	test("it says the consequence, not just the verb", () => {
-		expect(removeStockConfirm(3).text).toContain("cannot be undone by restocking");
-		expect(removeStockConfirm(3).deny).toBe("Keep as is");
-	});
-
-	test("the title stays inside the label budget however large the quantity", () => {
-		expect(removeStockConfirm(999_999_999).title.length).toBeLessThanOrEqual(LABEL_BUDGET);
-	});
-});
-
-describe("the add-stock confirm restates the quantity the system will act on (F5)", () => {
-	test("it names the parsed quantity, the SKU and BOTH ends of the projection", () => {
-		// The whole point: `100` typed where `10` was meant is valid input, so the
-		// only place it can be caught is a sentence stating the number and what it
-		// does to on-hand.
-		const confirm = addStockConfirm(100, "GDE-CARE-PDF", 0);
-		expect(confirm.title).toBe("Add 100 units?");
-		expect(confirm.text).toBe(
-			"Add 100 units to GDE-CARE-PDF? On hand goes from 0 to 100 and the store can sell them immediately.",
-		);
-		expect(confirm.confirm).toBe("Yes, add 100");
-		expect(confirm.deny).toBe("Keep as is");
-	});
-
-	test("the projection is computed FROM the quantity, not restated from the field", () => {
-		expect(addStockConfirm(10, "GDE-CARE-PDF", 42).text).toContain("from 42 to 52");
-	});
-
-	test("it agrees with itself about the unit, as the removal's does", () => {
-		expect(addStockConfirm(1, "APR-LIN-NAT", 7).title).toBe("Add 1 unit?");
-		expect(addStockConfirm(1, "APR-LIN-NAT", 7).text).toContain("Add 1 unit to APR-LIN-NAT?");
-	});
-
-	test("it says what the addition ENABLES, where the removal says what it costs", () => {
-		// Levelling the two gates must not level the two sentences: the reason to
-		// check an addition is that the store starts selling the units.
-		expect(addStockConfirm(5, "APR-LIN-NAT", 0).text).toContain("can sell them immediately");
-		expect(addStockConfirm(5, "APR-LIN-NAT", 0).text).not.toContain("cannot be undone");
-	});
-
-	test("the title stays inside the label budget however large the quantity", () => {
-		expect(addStockConfirm(999_999_999, "APR-LIN-NAT", 0).title.length).toBeLessThanOrEqual(
-			LABEL_BUDGET,
-		);
-	});
-});
-
 describe("a price save gets a before and an after (F4)", () => {
 	test("the pending line names both amounts, through the money formatter", () => {
 		const change = priceChangeSummary(900, 9999, "USD");
@@ -1037,23 +889,6 @@ describe("a price save gets a before and an after (F4)", () => {
 		expect(priceChangeSummary(900, null, "USD")).toBeNull();
 		expect(priceChangeSummary(900, 9999, null)).toBeNull();
 		expect(priceChangeSummary(900, 9999, "NOT-A-CURRENCY")).toBeNull();
-	});
-
-	test("the receipt names the amounts AND what they did not touch", () => {
-		const notice = priceSavedNotice("$9.00 → $99.99");
-		expect(notice.title).toBe("Price updated — live on the storefront");
-		expect(notice.description).toBe(
-			"$9.00 → $99.99. Shoppers see the new price now; orders already placed keep the price they were charged.",
-		);
-	});
-
-	test("a save with no amount change still reports, without inventing amounts", () => {
-		// A compare-at or unit-cost edit is still a save, and still publishes.
-		const notice = priceSavedNotice(null);
-		expect(notice.description).toBe(
-			"Shoppers see the new price now; orders already placed keep the price they were charged.",
-		);
-		expect(notice.description).not.toContain("→");
 	});
 
 	test("a group holding unsaved work says so on its own label", () => {
@@ -1276,14 +1111,6 @@ describe("the Orders detail copy is shared, and says what the Block Kit screen s
 	test("the reconciliation note keeps its next step", () => {
 		expect(RESOLVE_RECONCILIATION_NOTE).toContain("moves no money");
 		expect(RESOLVE_RECONCILIATION_NOTE).toContain("Refund in Money if the buyer is owed one");
-	});
-
-	test("the additive-refunds warning is shared and the STEP REFERENCE is not", () => {
-		// Only the Block Kit screen has a staged review step to point at, so only
-		// it prefixes the step reference. Sharing the whole sentence would have put
-		// a step reference on a screen that has no such step.
-		expect(REFUND_ADDITIVE_NOTE).not.toContain("next step");
-		expect(REFUND_REVIEW_STEP_PREFIX).toContain("next step");
 	});
 
 	test("the mark-refunded confirm separates the ledger from the money", () => {

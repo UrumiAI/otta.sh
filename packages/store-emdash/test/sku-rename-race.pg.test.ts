@@ -87,7 +87,7 @@ describe.skipIf(!PG_ENABLED)("sku rename concurrency [postgres]", () => {
 	let inventoryDocs: ReturnType<typeof collectionOf<InventoryDoc>>;
 	let productDocs: ReturnType<typeof collectionOf<ProductCommerceDoc>>;
 	// The contention budget these shapes actually spend, measured rather than assumed;
-	// see the package README's contention table.
+	// see `docs/store-emdash/design-notes.md`'s contention table.
 	let maxCasDepth = 0;
 
 	beforeAll(async () => {
