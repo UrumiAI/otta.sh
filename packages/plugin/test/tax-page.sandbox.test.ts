@@ -1442,6 +1442,32 @@ describe("admin Tax console — tax options (PR 2a, ADR-0032)", () => {
 		);
 		expect(contextTexts(await openOptions()).some((t) => note.test(t))).toBe(false);
 	});
+
+	// #467: the billing-address rule falls back to the base address too.
+	test("based on the billing address with no base address: the options screen warns", async () => {
+		await seedRules();
+		const note = /billing address, but no base address is set .* not taxed/;
+		await settingsStore.update(
+			{ tax: { ...TAX_ON, basedOn: "billing", baseAddress: null } },
+			idempotencyKey("billing-no-address"),
+		);
+		expect(contextTexts(await openOptions()).some((t) => note.test(t))).toBe(true);
+		// The same note tells the merchant the buyer's country is self-declared.
+		expect(contextTexts(await openOptions()).join(" ")).toContain("Buyers can pick a 0% country.");
+		await settingsStore.update(
+			{ tax: { ...TAX_ON, basedOn: "billing", baseAddress: { country: "GB", region: null } } },
+			idempotencyKey("billing-with-address"),
+		);
+		expect(contextTexts(await openOptions()).some((t) => note.test(t))).toBe(false);
+		// With an address the note is only the 0% remark, still one line.
+		expect(contextTexts(await openOptions()).join(" ")).toContain("can pick a country taxed at 0%");
+		await settingsStore.update(
+			{ tax: { ...TAX_ON, basedOn: "shipping", baseAddress: null } },
+			idempotencyKey("shipping-no-address"),
+		);
+		expect(contextTexts(await openOptions()).join(" ")).not.toContain("taxed at 0%");
+		expect(contextTexts(await openOptions()).some((t) => note.test(t))).toBe(false);
+	});
 });
 
 describe("admin Tax console — assertBlockContract (§15 V-3)", () => {
@@ -1634,7 +1660,7 @@ describe("admin Tax console — one rate per (class, zone) (workerd sandbox)", (
 		// The label flags it (inside the label budget); the body says which applies.
 		expect(String(group(blocks, "tax:rate:std-us")?.label)).toContain("duplicate — ignored");
 		expect(contextTexts(groupBlocks(blocks, "tax:rate:std-us"))).toContain(
-			"Duplicate: only std-us-b applies to United States; its shipping setting still counts. Delete the one you don't want.",
+			"Duplicate: only std-us-b applies to United States; its shipping setting still counts, so deleting it can change shipping tax.",
 		);
 		expect(contextTexts(groupBlocks(blocks, "tax:rate:std-us-b"))).toContain(
 			"Applies to United States. Duplicate std-us is ignored. Deleting this makes std-us apply: 7.25%, shipping no.",
@@ -1926,6 +1952,8 @@ describe("admin Tax console — one rate per (class, zone) (workerd sandbox)", (
 		expect(contextTexts(body)).toContain(
 			"Duplicate: only std-us-b applies to United States, so this rate taxes nothing (goods or shipping). Delete the one you don't want.",
 		);
+		// The deletion warning is the legacy rule's alone: here the flag counts for nothing.
+		expect(contextTexts(body).join(" ")).not.toContain("deleting it can change shipping tax");
 		expect(field(formFor(body, "tax:save-rate"), "appliesToShipping")?.label).toBe(
 			"Applies to shipping — only if this rate becomes the active one",
 		);

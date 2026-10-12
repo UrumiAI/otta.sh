@@ -40,4 +40,16 @@ describe("setTaxCalculator", () => {
 		setTaxCalculator(c);
 		expect(warn).not.toHaveBeenCalled();
 	});
+
+	test("repeated hot-reload replacements warn once per process (#463), yet each one still replaces", async () => {
+		const { setTaxCalculator, getTaxCalculator } =
+			await import("../src/commerce/tax-calculator-slot.js");
+		setTaxCalculator(calc("acme.tax"));
+		const last = calc("acme.tax");
+		setTaxCalculator(calc("acme.tax"));
+		setTaxCalculator(calc("acme.tax"));
+		setTaxCalculator(last);
+		expect(getTaxCalculator()).toBe(last);
+		expect(warn).toHaveBeenCalledTimes(1);
+	});
 });
