@@ -636,7 +636,7 @@ function newZoneScreen(
 	if (firstZone) blocks.push(FIRST_ZONE_WARNING);
 	blocks.push({
 		type: "context",
-		text: "Regions are ISO codes: a country (US) or state/province (US-CA). A zone also covers the subdivisions inside its codes (GB-NIR covers Belfast); the most specific zone wins.",
+		text: "Regions are ISO codes: country (US) or state/province (US-CA). A zone covers the subdivisions inside its codes; the most specific zone wins.",
 	});
 	blocks.push(createZoneForm(draft, firstZone));
 	return blocks;

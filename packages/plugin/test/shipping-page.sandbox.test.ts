@@ -473,7 +473,7 @@ describe("admin Shipping console — zones level, accordion branch (workerd sand
 		expect(await shippingRules.getZone("QA JP!")).toBeNull();
 	});
 
-	test("the create screen carries the F-8 line about regions — ISO codes, exact, most specific wins (ADR-0021); the page context stays terse", async () => {
+	test("the create screen carries the F-8 line about regions — ISO codes, containment, most specific wins (ADR-0021); the page context stays terse", async () => {
 		await seedShipping();
 		const blocks = await loadZones();
 		// The page-level context stays terse (≤140) and says nothing about regions.
@@ -486,7 +486,7 @@ describe("admin Shipping console — zones level, accordion branch (workerd sand
 		const line = contextTexts(screen).find((t) => /ISO/.test(t)) ?? "";
 		expect(line).toMatch(/US-CA/);
 		expect(line).toMatch(/most specific/i);
-		expect(line).toMatch(/exact/i);
+		expect(line).toMatch(/covers the subdivisions inside/i);
 		expect(contextTexts(screen).some((t) => /auto-match/i.test(t))).toBe(false);
 	});
 
