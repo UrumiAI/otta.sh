@@ -9,6 +9,7 @@
 import { describe, expect, test } from "vitest";
 import {
 	checkoutPath,
+	deliveryFieldValues,
 	placeFailurePath,
 	readCouponParam,
 	readDestinationParams,
@@ -176,14 +177,18 @@ describe("placeFailurePath", () => {
 		},
 	);
 
-	test.each([
-		["INVALID_SHIPPING_ADDRESS"],
-		["SHIPPING_ZONE_NOT_MATCHED"],
-		["SHIPPING_REGION_CODE_REQUIRED"],
-	])(
-		"a %s failure drops the DESTINATION and the method (a method means nothing outside its zone)",
+	test("a SHIPPING_REGION_CODE_REQUIRED failure keeps the buyer's COUNTRY and drops the region it refused", () => {
+		expect(placeFailurePath("SHIPPING_REGION_CODE_REQUIRED", SELECTION)).toBe(
+			"/checkout?coupon=CK-SAVE5&country=US&error=SHIPPING_REGION_CODE_REQUIRED",
+		);
+	});
+
+	test.each([["INVALID_SHIPPING_ADDRESS"], ["SHIPPING_ZONE_NOT_MATCHED"]])(
+		"a %s failure keeps the country AND the region (a zoned order never loses its state silently); the method goes",
 		(token) => {
-			expect(placeFailurePath(token, SELECTION)).toBe(`/checkout?coupon=CK-SAVE5&error=${token}`);
+			expect(placeFailurePath(token, SELECTION)).toBe(
+				`/checkout?coupon=CK-SAVE5&country=US&region=CA&error=${token}`,
+			);
 		},
 	);
 
@@ -227,5 +232,45 @@ describe("shapedDestination — a form's destination, shape-checked before it ca
 		[[undefined, undefined], {}],
 	] as const)("%j → %j", ([country, region], expected) => {
 		expect(shapedDestination(country, region)).toEqual(expected);
+	});
+});
+
+describe("deliveryFieldValues — the country stays chosen whoever refused the destination", () => {
+	test("the priced destination wins", () => {
+		expect(
+			deliveryFieldValues(
+				{ country: "US", region: "CA" },
+				readDestinationParams(at("?country=US&region=CA")),
+			),
+		).toEqual({ country: "US", region: "CA" });
+	});
+
+	test("the PLUGIN refused US without a region (a US-CA zone): US stays chosen, so its state list is offered", () => {
+		// The summary's destination is null; only the site's own shape refusal
+		// fills `rejected` — the asked-for country must not be lost.
+		expect(deliveryFieldValues(null, readDestinationParams(at("?country=US")))).toEqual({
+			country: "US",
+			region: "",
+		});
+		expect(deliveryFieldValues(null, readDestinationParams(at("?country=US&region=ZZ")))).toEqual({
+			country: "US",
+			region: "ZZ",
+		});
+	});
+
+	test("the site's own shape refusal keeps what was typed", () => {
+		expect(
+			deliveryFieldValues(null, readDestinationParams(at("?country=US&region=Ca%20lifornia"))),
+		).toEqual({
+			country: "US",
+			region: "Ca lifornia",
+		});
+	});
+
+	test("nothing asked: nothing chosen", () => {
+		expect(deliveryFieldValues(null, readDestinationParams(at("?")))).toEqual({
+			country: "",
+			region: "",
+		});
 	});
 });

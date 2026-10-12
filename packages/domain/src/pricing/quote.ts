@@ -416,6 +416,9 @@ function billingLocationOf(
  * nowhere: no rate ⇒ 0%, never a refusal. A digital-only cart's `billing`
  * location (#426), when there is one, comes first, under the same rules — and,
  * like a ship-to, it needs a region where its country's zones go down to one.
+ * A base region that CONTAINS a
+ * zoned subdivision is never asked to be narrower: it takes its ancestor's or
+ * the country's zone.
  */
 async function taxLocationOf(
 	deps: QuoteDeps,
@@ -429,7 +432,7 @@ async function taxLocationOf(
 	// and such a cart read no zones yet.
 	if (billing !== null) {
 		const zones = await deps.shippingRules.listZones();
-		const matched = matchZone(zones, billing);
+		const matched = matchZone(zones, billing, true);
 		if (matched.status === "region_code_required") return "region_code_required";
 		return locatedAt(billing, matched, "billing");
 	}
@@ -439,16 +442,20 @@ async function taxLocationOf(
 		return requiresShipping ? shipTo : { address: null, zoneId: null, basis: "base" };
 	}
 	const zones = requiresShipping ? zonesRead : await deps.shippingRules.listZones();
-	return locatedAt(base, matchZone(zones, base), "base");
+	return locatedAt(base, matchZone(zones, base, false), "base");
 }
 
 function matchZone(
 	zones: Awaited<ReturnType<ShippingRulesStore["listZones"]>>,
 	at: CodedLocation,
+	askForNarrower: boolean,
 ): ZoneResolution {
 	return resolveShippingZone(zones, {
 		requiresShipping: true,
 		destination: { country: at.country, region: at.region },
+		// The base address cannot be asked for a narrower region (ADR-0021); a
+		// buyer's billing location (#426), like a ship-to, can.
+		askForNarrower,
 	});
 }
 

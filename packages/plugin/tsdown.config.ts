@@ -6,10 +6,14 @@ export default defineConfig({
 	// for em-dash's `plugins: []` / `adaptSandboxEntry`).
 	// `src/trusted.ts` is the same object with `trustedHost` on, for an
 	// in-process registration only (`@otta-sh/plugin/trusted`, issue #447).
+	// `src/subdivisions.ts` (`@otta-sh/plugin/subdivisions`) carries the English
+	// subdivision names for a storefront's region pick list. Its own entry, so the
+	// names are emitted beside it and never into the chunk the sandbox entry loads.
 	entry: [
 		"src/index.ts",
 		"src/plugin.ts",
 		"src/sandbox-entry.ts",
+		"src/subdivisions.ts",
 		"src/testing.ts",
 		"src/trusted.ts",
 	],
@@ -46,5 +50,11 @@ export default defineConfig({
 	 * isolate, so the adapter has to be in the bundle for the same reason the
 	 * other two are.
 	 */
-	noExternal: ["@otta-sh/domain", "@otta-sh/payments-stripe", "@otta-sh/store-emdash"],
+	noExternal: [
+		"@otta-sh/domain",
+		// Its own subpath: matched as an exact id, so it is listed too.
+		"@otta-sh/domain/subdivision-names",
+		"@otta-sh/payments-stripe",
+		"@otta-sh/store-emdash",
+	],
 });

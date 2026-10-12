@@ -2928,6 +2928,18 @@ level-1 `context` 268 → ≤200; the delete-blocked clause moves into DA-7's li
 
 ### 12.4 Shipping (`shipping-page.ts`) — three list levels
 
+> **A zone on a region also covers the subdivisions inside it.** The storefront offers every
+> ISO 3166-2 subdivision of a country, all levels (GB: 221 entries). A buyer's pick matches the
+> zone listing it, else the zone listing the subdivision containing it, else the country's: a
+> `GB-NIR` zone covers a buyer who picks Belfast (`GB-BFS`), and an `ES-CN` zone covers both
+> Canary Islands provinces. A zone on the smaller subdivision wins over its parent's. A buyer who
+> picks a larger subdivision containing a zoned one (Canary Islands, with only Tenerife zoned) is
+> asked to pick the more specific one, never charged the country zone's rates. CLDR lists
+> `FR-6AE` (Alsace) and `FR-69M` (Métropole de Lyon) as siblings of their departments, so a zone
+> on them does not cover a pick of `67`, `68` or `69`. A country any zone lists at region level
+> also makes the state/province REQUIRED at checkout for that country (ADR-0021, amended
+> 2026-10-08 and 2026-10-09).
+
 Same per-row-accordion transformation as §12.3 at levels 0 and 1; level 2 is **exempt** (L-9a).
 
 ```

@@ -1,6 +1,7 @@
 # 0012. The storefront checkout loads Stripe Elements in the buyer's browser
 
 - Status: accepted
+- **Superseded in part by [ADR-0034](./0034-checkout-region-list-progressive-enhancement.md)** (2026-10-09): decision 2's fence gains a third and last exception — one external, first-party script on `/checkout` that swaps the state/province list.
 - Date: 2026-07-27
 - Amended: 2026-07-28 — decision 2's fence widened by exactly one component; see
   "Amendment (2026-07-28)" under Decision; clarified 2026-09-30 (HoldClock rename).

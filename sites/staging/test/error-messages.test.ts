@@ -163,11 +163,17 @@ describe("cartErrorMessage", () => {
 		expect(cartErrorMessage("SHIPPING_ZONE_NOT_MATCHED")).toBe("We don't ship to this address.");
 	});
 
-	test("SHIPPING_REGION_CODE_REQUIRED asks for a CODE, and says blank is fine where a country uses none", () => {
+	test("SHIPPING_REGION_CODE_REQUIRED points at the state/province LIST, and says blank is fine where a country uses none", () => {
 		const message = cartErrorMessage("SHIPPING_REGION_CODE_REQUIRED");
-		expect(message).toMatch(/code/i);
-		expect(message).toMatch(/e\.g\. CA/);
+		expect(message).toMatch(/state\/province/i);
+		expect(message).toMatch(/from the list/i);
 		expect(message).toMatch(/leave it blank/i);
+	});
+
+	test("REGION_LIST_UPDATED (the site's own) says the list changed and asks the buyer to pick, then continue", () => {
+		const message = cartErrorMessage("REGION_LIST_UPDATED");
+		expect(message).toMatch(/state\/province list/i);
+		expect(message).toMatch(/then continue/i);
 	});
 
 	test("SHIPPING_METHOD_REQUIRED is about the ADDRESS having no delivery options — not a nag to choose", () => {
