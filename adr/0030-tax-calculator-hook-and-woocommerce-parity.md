@@ -168,10 +168,12 @@ no priority, compound flag, postcode or city that could tell two such rates apar
 The postcode and city cannot reach the review quote: the review is a `GET /checkout`
 whose only address input is the URL, and ADR-0021 Decision 9 keeps every personal
 field out of it; the buyer types them below the delivery selector, after the quote.
-So the gap stays, and is now said out loud. A quote priced by an outside calculator
-(any calculator other than `otta.rate-table`) is flagged `estimate` on the wire, and the
-checkout totals carry a note that the tax is an estimate until the order is placed. The
-built-in rate table never shows it: its zone matching reads only country and region
-(`zone-match.ts` has no postcode or city), so its review tax equals the order's. The order
-page and the pay page show the order's own total and carry no such note. The order call
-is still the one that counts.
+So the gap stays, and is now said out loud. A quote priced by any calculator other than
+the two built-ins (`otta.rate-table` and `otta.tax-disabled`) is flagged `estimate` on
+the wire, and the checkout totals show "Estimated tax — the final amount is shown on
+the payment page." on its own line. The flag is calculator-wide by design: it may label a
+quote that cannot differ (a base-address or digital-only cart), which errs on the safe
+side. The built-in rate table never shows it: its zone matching reads only country and
+region (`zone-match.ts` has no postcode or city), so its review tax equals the order's.
+The order page and the pay page show the order's own total and carry no such note. The
+order call is still the one that counts.

@@ -1,6 +1,10 @@
 import { describe, expect, test } from "vitest";
-import type { QuoteBreakdownWire, QuoteTaxWire } from "../src/product-commerce/commerce-client.js";
-import { buildCheckoutTotals } from "../src/storefront/checkout-view-model.js";
+import type {
+	PublicOrderWire,
+	QuoteBreakdownWire,
+	QuoteTaxWire,
+} from "../src/product-commerce/commerce-client.js";
+import { buildCheckoutTotals, buildOrderView } from "../src/storefront/checkout-view-model.js";
 
 /**
  * PR 2a (ADR-0032): the cart & checkout tax display — prices shown with or
@@ -174,13 +178,12 @@ describe("tax off, and tax not located", () => {
 });
 
 describe("tax estimate note (#429)", () => {
-	test("a calculator-priced, located tax says it is an estimate until the order is placed", () => {
+	test("a calculator-priced, located tax says it is an estimate", () => {
 		const t = buildCheckoutTotals({ ...EXCL, tax: tax({ estimate: true }) }, OPTS);
 		expect(t.taxEstimateNote).toMatch(/estimate/i);
 	});
 
-	test("no note for the built-in rate table, for an order, or before tax is computed", () => {
-		expect(buildCheckoutTotals({ ...EXCL, tax: tax() }, OPTS).taxEstimateNote).toBeNull();
+	test("no note for the built-in rate table, or before tax is computed", () => {
 		expect(buildCheckoutTotals({ ...EXCL, tax: tax() }, OPTS).taxEstimateNote).toBeNull();
 		expect(buildCheckoutTotals(EXCL, OPTS).taxEstimateNote).toBeNull();
 		const notLocated = tax({ estimate: true, located: false });
@@ -188,5 +191,24 @@ describe("tax estimate note (#429)", () => {
 			buildCheckoutTotals({ ...EXCL, tax: notLocated }, { ...OPTS, taxZoneSelected: false })
 				.taxEstimateNote,
 		).toBeNull();
+	});
+
+	test("an order priced by an outside calculator has no note: the order's tax is final", () => {
+		// What `orderTaxWire` hands the page: the snapshot's display facts, never `estimate`.
+		const order = {
+			id: "order-1",
+			state: "pending",
+			currency: "USD",
+			paymentMethod: "stripe",
+			holdExpiresAt: "2099-01-01T00:00:00.000Z",
+			createdAt: "2026-07-27T00:00:00.000Z",
+			totals: { ...EXCL, tax: tax(), shippingZoneId: null, shippingMethodId: null },
+			lines: [],
+			fulfillment: null,
+			cancellation: null,
+			latePayment: "none",
+			refundedCents: 0,
+		} as unknown as PublicOrderWire;
+		expect(buildOrderView(order, "en-US").totals.taxEstimateNote ?? null).toBeNull();
 	});
 });
