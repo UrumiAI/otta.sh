@@ -11,8 +11,10 @@
  */
 import {
 	ACCUMULATED_SUFFIX,
+	ORDERS_EMPTY,
+	ORDERS_NOUN,
+	ORDERS_NO_MATCH,
 	PRODUCTS_EMPTY,
-	PRODUCTS_PAGE_FAILED_TITLE,
 	PRODUCTS_LOW_STOCK_NOUN,
 	PRODUCTS_LOW_STOCK_NO_MATCH,
 	PRODUCTS_NOUN,
@@ -35,12 +37,11 @@ import {
 	walkWindow,
 	type PageArrival,
 } from "../src/accumulate.js";
-import { nextPage as ordersNextPage, ordersFailureCard } from "../src/orders/orders-list.js";
 import {
-	failureNotice,
-	nextPage as productsNextPage,
+	nextPage as ordersNextPage,
+	ordersFailureCard,
 	pageAfterFailure,
-} from "../src/products/products-list.js";
+} from "../src/orders/orders-list.js";
 
 interface Row {
 	readonly id: string;
@@ -147,130 +148,24 @@ describe("which requests EXTEND the list and which RESET it", () => {
 		expect(refiltered.pages).toBe(1);
 		expect(refiltered.firstPage).toBe(true);
 	});
-
-	test("the products list makes the same two calls, keyed on the product id", () => {
-		const stock = { threshold: 3, unreadable: false, filterUnavailable: false };
-		const productsPage = (ids: readonly string[], nextCursor: string | null) => ({
-			products: ids.map((productId) => ({ productId })) as never,
-			nextCursor,
-			total: undefined,
-			stock,
-			vocabulary: { statuses: [], kinds: [], any: "any", pageLimit: 25 } as never,
-		});
-		const first = productsNextPage(null, productsPage(["p1", "p2"], "cursor-2"), "reset");
-		const second = productsNextPage(first, productsPage(["p2", "p3"], null), "extend");
-		expect(second.products.map((p) => p.productId)).toEqual(["p1", "p2", "p3"]);
-		expect(second.pages).toBe(2);
-		expect(productsNextPage(second, productsPage(["p9"], null), "reset").products).toHaveLength(1);
-	});
 });
 
-function productsLoaded() {
-	return productsNextPage(
-		null,
-		{
-			products: [{ productId: "p1" }, { productId: "p2" }] as never,
-			nextCursor: "cursor-2",
-			total: 12,
-			stock: { threshold: 3, unreadable: false, filterUnavailable: false },
-			vocabulary: { statuses: [], kinds: [], any: "any", pageLimit: 25 } as never,
-		},
-		"reset",
-	);
+function ordersLoaded() {
+	return ordersNextPage(null, ordersPage(["a", "b"], "cursor-2", 12), "reset");
 }
 
-/** Four more low-stock rows, another cursor behind them, and no total — the
- *  case where the service calculated none. */
-const PAGE_TWO = {
-	products: [
-		{ productId: "p3" },
-		{ productId: "p4" },
-		{ productId: "p5" },
-		{ productId: "p6" },
-	] as never,
-	nextCursor: "cursor-3",
-	total: undefined,
-	stock: { threshold: 3, unreadable: false, filterUnavailable: false },
-	vocabulary: { statuses: [], kinds: [], any: "any", pageLimit: 25 } as never,
-};
+/** Four more rows, another cursor behind them, and no total — the case where
+ *  the service calculated none. */
+const PAGE_TWO = ordersPage(["c", "d", "e", "f"], "cursor-3");
 
 describe("a total the service never calculated stays ABSENT through a merge", () => {
-	test("on both lists — `0` is a count nobody made", () => {
-		// A service older than the exact count sends none on either list, and the
-		// products list withholds it by design on a page its filter could not be
-		// applied to. Coercing that to zero inside the merge is the one place this
-		// change could invent a number, and it would then be handed to the count
-		// line as fact.
+	test("`0` is a count nobody made", () => {
+		// A service older than the exact count sends none. Coercing that to zero
+		// inside the merge is the one place this change could invent a number, and
+		// it would then be handed to the count line as fact.
 		const firstOrders = ordersNextPage(null, ordersPage(["a"], "cursor-2"), "reset");
 		expect(firstOrders.total).toBeUndefined();
 		expect(ordersNextPage(firstOrders, ordersPage(["b"], null), "extend").total).toBeUndefined();
-
-		const stock = { threshold: 3, unreadable: false, filterUnavailable: false };
-		const productsPage = (ids: readonly string[], nextCursor: string | null) => ({
-			products: ids.map((productId) => ({ productId })) as never,
-			nextCursor,
-			total: undefined,
-			stock,
-			vocabulary: { statuses: [], kinds: [], any: "any", pageLimit: 25 } as never,
-		});
-		const firstProducts = productsNextPage(null, productsPage(["p1"], "cursor-2"), "reset");
-		expect(firstProducts.total).toBeUndefined();
-		expect(
-			productsNextPage(firstProducts, productsPage(["p2"], null), "extend").total,
-		).toBeUndefined();
-	});
-});
-
-const stockPage = (
-	ids: readonly string[],
-	nextCursor: string | null,
-	filterUnavailable: boolean,
-	total: number | undefined,
-) => ({
-	products: ids.map((productId) => ({ productId })) as never,
-	nextCursor,
-	total,
-	stock: { threshold: filterUnavailable ? null : 3, unreadable: false, filterUnavailable },
-	vocabulary: { statuses: [], kinds: [], any: "any", pageLimit: 25 } as never,
-});
-
-describe("`filterUnavailable` LATCHES across a scan, because it describes the rows", () => {
-	test("a page one that went out UNFILTERED keeps saying so after a continuation reports false", () => {
-		// THE DIRECTION THE PLUGIN CANNOT SEE. Page one's settings read failed, so
-		// no predicate was sent and its cursor carries none either — the
-		// continuation is unfiltered too. But a continuation's predicate rode
-		// inside that opaque cursor, so the plugin always answers `false` for it
-		// (`resolveStockContext`'s decision 3). Taking the newest response at face
-		// value would drop the banner and caption every product in the catalog as
-		// "N low-stock products" at the click of `Load more`.
-		const first = productsNextPage(null, stockPage(["p1"], "cursor-2", true, undefined), "reset");
-		expect(first.stock.filterUnavailable).toBe(true);
-		const second = productsNextPage(first, stockPage(["p2"], null, false, 137), "extend");
-		expect(second.stock.filterUnavailable).toBe(true);
-		// AND THE TOTAL GOES WITH IT. Not because the rows are a mixture — they
-		// were all fetched WITHOUT the predicate — but because 137 is the count of
-		// every product while the operator asked for the low-stock ones. Page one
-		// withheld its own total on that ground, and honouring this one would jump
-		// the caption to a confident exact number under a banner saying the filter
-		// was skipped.
-		expect(second.total).toBeUndefined();
-	});
-
-	test("a scan that was filtered throughout keeps its total and raises nothing", () => {
-		// THE CONVERSE, so the latch cannot be satisfied by always answering true.
-		const first = productsNextPage(null, stockPage(["p1"], "cursor-2", false, 137), "reset");
-		const second = productsNextPage(first, stockPage(["p2"], null, false, 137), "extend");
-		expect(second.stock.filterUnavailable).toBe(false);
-		expect(second.total).toBe(137);
-	});
-
-	test("a RESET drops the latch — a re-applied filter is a new question", () => {
-		// `apply()` nulls the cursor, so the next response arrives as a reset and
-		// the previous scan's degradation must not outlive it.
-		const first = productsNextPage(null, stockPage(["p1"], "cursor-2", true, undefined), "reset");
-		const reset = productsNextPage(first, stockPage(["p9"], null, false, 4), "reset");
-		expect(reset.stock.filterUnavailable).toBe(false);
-		expect(reset.total).toBe(4);
 	});
 });
 
@@ -291,14 +186,14 @@ describe("a cursor belongs to the filter it was issued under", () => {
 });
 
 describe("a page that fails BEHIND one that succeeded", () => {
-	const loaded = productsLoaded();
+	const loaded = ordersLoaded();
 
 	test("keeps every accumulated row, the count AND the cursor", () => {
 		const after = pageAfterFailure(loaded, true);
-		// Untouched, exactly as on the Orders list: a request that failed behind one
-		// that succeeded disproves nothing this page states.
+		// Untouched: a request that failed behind one that succeeded disproves
+		// nothing this page states.
 		expect(after).toBe(loaded);
-		expect(after?.products).toHaveLength(2);
+		expect(after?.orders).toHaveLength(2);
 		expect(after?.total).toBe(12);
 		// THE CURSOR IS THE REGRESSION THIS PINS. Nulling it flipped `hasNext`
 		// false, which flipped the outcome to a completed scan, which dropped the
@@ -309,85 +204,53 @@ describe("a page that fails BEHIND one that succeeded", () => {
 
 	test("a FIRST page that failed still takes the answer with it (F2)", () => {
 		const after = pageAfterFailure(loaded, false);
-		expect(after?.products).toEqual([]);
+		expect(after?.orders).toEqual([]);
 		expect(after?.total).toBeUndefined();
 		expect(after?.nextCursor).toBeNull();
 	});
 
 	test("the count keeps its qualifier while a page is still out there", () => {
-		const after = pageAfterFailure(productsNextPage(loaded, PAGE_TWO, "extend"), true);
+		const after = pageAfterFailure(ordersNextPage(loaded, PAGE_TWO, "extend"), true);
 		expect(
 			listOutcome({
-				count: after?.products.length ?? 0,
+				count: after?.orders.length ?? 0,
 				filtered: true,
 				firstPage: after?.firstPage ?? true,
 				hasNext: after?.nextCursor != null,
-				countScope: "narrowed-after-fetch",
-				noun: PRODUCTS_LOW_STOCK_NOUN,
-				empty: PRODUCTS_EMPTY,
-				noMatch: PRODUCTS_LOW_STOCK_NO_MATCH,
+				countScope: "service-filtered",
+				noun: ORDERS_NOUN,
+				empty: ORDERS_EMPTY,
+				noMatch: ORDERS_NO_MATCH,
 				scopeSuffix: ACCUMULATED_SUFFIX,
 			}).countLine,
-		).toBe("6 low-stock products loaded so far");
+		).toBe("6 orders loaded so far");
 	});
 
 	test("zero rows with a cursor behind them stay a SCAN, not an empty state", () => {
-		// The worse half of the same defect. A low-stock page holding no rows used
+		// The worse half of the same defect. A filtered page holding no rows used
 		// to flip to `Clear filters` when the next page failed — the scan
 		// dead-ending, with the only way on a Retry above the fold.
-		const emptied = pageAfterFailure({ ...loaded, products: [] }, true);
+		const emptied = pageAfterFailure({ ...loaded, orders: [] }, true);
 		expect(
 			listOutcome({
-				count: emptied?.products.length ?? 0,
+				count: emptied?.orders.length ?? 0,
 				filtered: true,
 				firstPage: true,
 				hasNext: emptied?.nextCursor != null,
-				countScope: "narrowed-after-fetch",
-				noun: PRODUCTS_LOW_STOCK_NOUN,
-				empty: PRODUCTS_EMPTY,
-				noMatch: PRODUCTS_LOW_STOCK_NO_MATCH,
+				countScope: "service-filtered",
+				noun: ORDERS_NOUN,
+				empty: ORDERS_EMPTY,
+				noMatch: ORDERS_NO_MATCH,
 			}).kind,
 		).toBe("scan");
 	});
 });
 
 describe("where a failure is drawn, and what it may claim", () => {
-	test("a CONTINUATION failure goes inline, under a title the rows do not disprove", () => {
-		const notice = failureNotice({
-			title: "Products could not be reached",
-			description: "Try again.",
-			paging: true,
-		});
-		// The service's whole-collection refusal is dropped: the rows still on
-		// screen are the answer to a request that worked.
-		expect(notice?.title).toBe(PRODUCTS_PAGE_FAILED_TITLE);
-		expect(notice?.inline).toBe(true);
-	});
-
-	test("a cold or stale failure keeps the service's words, at the top", () => {
-		const notice = failureNotice({
-			title: "Products could not be reached",
-			description: "Try again.",
-			paging: false,
-		});
-		expect(notice?.title).toBe("Products could not be reached");
-		expect(notice?.inline).toBe(false);
-		expect(failureNotice(null)).toBeNull();
-	});
-
 	test("a REFRESH that re-read nothing is titled as one, and still keeps its rows", () => {
 		// Same survival rules as a page move — inline, rows untouched — because the
 		// window on screen was never replaced. Only the name differs, and it has to:
 		// the operator pressed Refresh, not Next.
-		const products = failureNotice({
-			title: "Products could not be reached",
-			description: "Try again.",
-			paging: true,
-			refresh: true,
-		});
-		expect(products?.title).toBe(REFRESH_FAILED_TITLE);
-		expect(products?.inline).toBe(true);
-
 		const orders = ordersFailureCard(
 			{
 				title: "Orders could not be reached",

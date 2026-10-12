@@ -1,5 +1,6 @@
 import type { Cents, Currency } from "../money/cents.js";
 import { cents } from "../money/cents.js";
+import { currencyPaymentIncrement } from "../money/currencies.js";
 import type { IdempotencyKey, OrderId } from "../money/ids.js";
 import type { Clock } from "../ports/clock.js";
 import type { EntitlementStore } from "../ports/entitlement-store.js";
@@ -81,6 +82,11 @@ export type RefundOrderFailure =
 	| "INVALID_AMOUNT"
 	/** The refund currency does not match the order's currency. */
 	| "CURRENCY_MISMATCH"
+	/** ADR-0035 amendment: in a currency with a payment increment (KWD, BHD, OMR,
+	 *  JOD: 10), a NEW refund must be a multiple of it, or the order's whole
+	 *  remaining refundable amount (an order placed before checkout rounded its
+	 *  total may hold any remainder). Refused before anything is reserved. */
+	| "AMOUNT_NOT_PAYMENT_INCREMENT"
 	/** A gateway refund was requested but no captured payment exists to refund
 	 *  against (an unpaid order, or a settlement that recorded no `succeeded`
 	 *  payment for this gateway). */
@@ -342,6 +348,19 @@ async function refundOnLedger(
 
 	const kind = gateway.refundable ? "gateway" : "manual";
 	const payments = known?.payments ?? (await deps.orderStore.getCapturedPayments(cmd.orderId));
+
+	// ADR-0035 amendment: a new refund in an increment currency is a multiple of
+	// it, or exactly the remaining capacity. An amount OVER the remainder falls
+	// through to the reservation's ceiling refusal — "too high" is the more useful
+	// answer. A resume re-issues a reservation that already passed this. Every
+	// other currency skips it, with no extra read.
+	const increment = currencyPaymentIncrement(cmd.currency);
+	if (!resuming && increment !== undefined && cmd.amount % increment !== 0) {
+		const refunds = known?.refunds ?? (await deps.orderStore.listRefunds(cmd.orderId));
+		const remaining =
+			computeRefundCeiling(sumCapturedPayments(payments), order.totals.total) - sumRefunds(refunds);
+		if (cmd.amount < remaining) return { ok: false, reason: "AMOUNT_NOT_PAYMENT_INCREMENT" };
+	}
 
 	if (kind === "manual") {
 		// No gateway leg ⇒ the one-shot atomic record (arbitration + finalized
