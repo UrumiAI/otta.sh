@@ -703,8 +703,11 @@ const EXPIRY_SCAN_ORDERS = 100;
  * Orders whose expiry flip threw, waiting before they are tried again (review
  * round 3, B I4), so orders that fail every time cannot take every tick's bite and
  * starve the orders listed behind them. Per process, like the storage guard's heal
- * state; losing it (a restart, a fresh isolate) only means such an order is tried
- * once more sooner. Its cap is sized each tick by {@link expiryBackoffCap}.
+ * state, and so LOST with the isolate (a restart, a fresh isolate per tick). The
+ * last few failing orders are therefore also kept in the sweep's kv state
+ * (`SweepState.expiryFailures`, #478): the leg reads past those too, and counts
+ * them for its alert, so neither the back-off nor the alert depends on the
+ * isolate surviving. Its cap is sized each tick by {@link expiryBackoffCap}.
  */
 const ORDER_EXPIRY_BACKOFF = new UnitBackoff({ maxEntries: expiryBackoffCap(1) });
 
@@ -714,6 +717,47 @@ const ORDER_EXPIRY_BACKOFF = new UnitBackoff({ maxEntries: expiryBackoffCap(1) }
  * not alerted on. See the leg.
  */
 const EXPIRY_FAILING_ORDERS_TO_ALERT = 2;
+
+/** Most failing orders the kv record keeps (the most recent failures win). A few
+ *  are enough: it backs off what the in-memory back-off may have lost, and the
+ *  alert needs only {@link EXPIRY_FAILING_ORDERS_TO_ALERT}. */
+const EXPIRY_FAILURES_KEPT = 8;
+
+/** A failing order is forgotten this long after its last failure: the longest
+ *  back-off wait plus one base wait, so an order still failing is retried (and
+ *  re-stamped) before it ages out, and one that stopped failing elsewhere (paid,
+ *  cancelled) drops out within the hour. */
+const EXPIRY_FAILURE_WINDOW_MS = UnitBackoff.DEFAULT_MAX_MS + UnitBackoff.DEFAULT_BASE_MS;
+
+/** One failing order in the kv record: failures in a row, and the last one. */
+interface ExpiryFailure {
+	n: number;
+	at: string;
+}
+
+/** When `failure`'s order may be tried again: the in-memory back-off's own wait
+ *  (doubling from the base, capped at the longest). */
+function expiryRetryAt(failure: ExpiryFailure): number {
+	const wait = Math.min(
+		UnitBackoff.DEFAULT_BASE_MS * 2 ** Math.min(failure.n - 1, 30),
+		UnitBackoff.DEFAULT_MAX_MS,
+	);
+	return Date.parse(failure.at) + wait;
+}
+
+/** `failures` without the entries past {@link EXPIRY_FAILURE_WINDOW_MS}, and at most
+ *  {@link EXPIRY_FAILURES_KEPT}, newest kept. A stamp in the future (a clock step
+ *  back) counts as now. */
+function prunedExpiryFailures(
+	failures: Record<string, ExpiryFailure>,
+	nowMs: number,
+): Record<string, ExpiryFailure> {
+	const kept = Object.entries(failures)
+		.filter(([, failure]) => nowMs - Date.parse(failure.at) < EXPIRY_FAILURE_WINDOW_MS)
+		.toSorted(([, a], [, b]) => Date.parse(b.at) - Date.parse(a.at))
+		.slice(0, EXPIRY_FAILURES_KEPT);
+	return Object.fromEntries(kept);
+}
 
 /**
  * The expiry back-off's cap for a bite of `expiryLimit` (polish P-3): the rows the
@@ -1532,7 +1576,12 @@ export async function runCommerceSweeps(
 	const expirableIds = (): Promise<readonly OrderId[]> =>
 		(expirable ??= (async () => {
 			expiryBackoff.setMaxEntries(expiryBackoffCap(expiryLimit));
-			const waiting = expiryBackoff.waiting(now.getTime());
+			const waiting = new Set<string>(expiryBackoff.waiting(now.getTime()));
+			// The kv record's failing orders wait too (#478): the in-memory
+			// back-off is gone whenever the isolate is.
+			for (const [id, failure] of Object.entries(state.expiryFailures)) {
+				if (expiryRetryAt(failure) > now.getTime()) waiting.add(id);
+			}
 			const listed = await stores.orderStore.listExpirable(nowIso, {
 				limit: expiryLimit + 1 + waiting.size,
 				excludeIntentDue: true,
@@ -1542,6 +1591,18 @@ export async function runCommerceSweeps(
 		})());
 	/** Orders expired this tick, across both passes (the leg fails only on none). */
 	let ordersExpiredThisTick = 0;
+	/** Keep the kv record of failing orders in step with each flip (#478). */
+	const noteExpiryOutcome = (id: OrderId, failed: boolean): void => {
+		const before = state.expiryFailures[id];
+		if (failed) {
+			state.expiryFailures[id] = { n: (before?.n ?? 0) + 1, at: nowIso };
+		} else if (before !== undefined) {
+			delete state.expiryFailures[id];
+		} else {
+			return;
+		}
+		stateChanged = true;
+	};
 	const expireOrdersLeg = async (): Promise<void> =>
 		await run(
 			"expire-orders",
@@ -1563,9 +1624,15 @@ export async function runCommerceSweeps(
 						backoff: expiryBackoff,
 						// The tick's query ceiling ends the leg; it is not one order failing.
 						stopsBatch: isSweepQueryCeilingError,
+						onFlipOutcome: noteExpiryOutcome,
 					},
 				);
 				ordersExpiredThisTick += result.count;
+				const failing = prunedExpiryFailures(state.expiryFailures, now.getTime());
+				if (Object.keys(failing).length !== Object.keys(state.expiryFailures).length) {
+					state.expiryFailures = failing;
+					stateChanged = true;
+				}
 				// #447: every order this call tried threw (each is logged and backing
 				// off), and none expired this tick — not in this pass nor the first.
 				// That is an outage, not an idle leg, so the LEG fails: its `ok: false`
@@ -1578,17 +1645,19 @@ export async function runCommerceSweeps(
 				// order that always fails would still fail the leg on each back-off
 				// retry (5, 10, 20 minutes, then hourly): an alert that flaps for ever on
 				// one order. So the leg fails only while at least
-				// `EXPIRY_FAILING_ORDERS_TO_ALERT` different orders are waiting out a
-				// failure. Counted from the back-off, not from this call's attempts: the
+				// `EXPIRY_FAILING_ORDERS_TO_ALERT` different orders failed within the
+				// last `EXPIRY_FAILURE_WINDOW_MS`. Counted from the kv record (#478
+				// review), not from this call's attempts nor the in-memory back-off: the
 				// Free bite tries ONE order a tick, so a per-call "two attempts" would
-				// never alert there, and "N failing ticks in a row" never builds up
-				// either, because the ticks between retries skip the leg (every
-				// candidate is waiting). A store with a single pending order cannot tell
-				// an outage from a poison order; its failure lines are still logged.
+				// never alert there; "N failing ticks in a row" never builds up either,
+				// because the ticks between retries skip the leg (every candidate is
+				// waiting); and the back-off is lost with the isolate. A store with a
+				// single pending order cannot tell an outage from a poison order; its
+				// failure lines are still logged.
 				if (
 					result.allFailed === true &&
 					ordersExpiredThisTick === 0 &&
-					expiryBackoff.waiting(now.getTime()).size >= EXPIRY_FAILING_ORDERS_TO_ALERT
+					Object.keys(failing).length >= EXPIRY_FAILING_ORDERS_TO_ALERT
 				) {
 					throw new Error(
 						"every order the leg tried failed to expire; each is backing off (see the " +
@@ -2308,22 +2377,27 @@ interface SweepState {
 	/** Ticks in a row each leg was passed over with work (deferred, or not reached)
 	 *  — what ages it to the head of a tick (`tickOrder`). */
 	waits: Partial<Record<SweepLeg, number>>;
+	/** The last few orders whose expiry flip threw, by id (#478): the durable half
+	 *  of the expiry back-off, and what the leg's alert counts. */
+	expiryFailures: Record<string, ExpiryFailure>;
 }
 
 /** A lost or garbled state only makes every scan due and resets the streaks —
  *  the same "a lost cursor costs a re-read" rule as every other cursor here. */
 async function readState(cursors: SweepCursorStore): Promise<SweepState> {
-	const state: SweepState = { lastRun: {}, deferrals: {}, waits: {} };
+	const state: SweepState = { lastRun: {}, deferrals: {}, waits: {}, expiryFailures: {} };
 	const raw = await cursors.read(STATE_CURSOR);
 	if (raw === null) return state;
 	try {
 		const parsed: unknown = JSON.parse(raw);
 		if (typeof parsed !== "object" || parsed === null) return state;
-		const { lastRun, deferrals, waits } = parsed as {
+		const { lastRun, deferrals, waits, expiryFailures } = parsed as {
 			lastRun?: unknown;
 			deferrals?: unknown;
 			waits?: unknown;
+			expiryFailures?: unknown;
 		};
+		state.expiryFailures = parseExpiryFailures(expiryFailures);
 		for (const leg of SWEEP_LEGS) {
 			const stamp = (lastRun as Record<string, unknown> | undefined)?.[leg];
 			if (typeof stamp === "string" && (MAINTENANCE_LEGS.includes(leg) || leg === "late-refunds")) {
@@ -2343,6 +2417,26 @@ async function readState(cursors: SweepCursorStore): Promise<SweepState> {
 	} catch {
 		return state;
 	}
+}
+
+/** The kv record's failing orders, well-formed entries only, at most
+ *  {@link EXPIRY_FAILURES_KEPT} (newest kept). Age is pruned by the leg, which
+ *  knows the tick's time. */
+function parseExpiryFailures(raw: unknown): Record<string, ExpiryFailure> {
+	if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return {};
+	const out: Record<string, ExpiryFailure> = {};
+	for (const [id, value] of Object.entries(raw as Record<string, unknown>)) {
+		if (id.length === 0 || id.length > 128 || typeof value !== "object" || value === null) continue;
+		const { n, at } = value as { n?: unknown; at?: unknown };
+		if (typeof n !== "number" || !Number.isInteger(n) || n < 1 || n > 1000) continue;
+		if (typeof at !== "string" || Number.isNaN(Date.parse(at))) continue;
+		out[id] = { n, at };
+	}
+	return Object.fromEntries(
+		Object.entries(out)
+			.toSorted(([, a], [, b]) => Date.parse(b.at) - Date.parse(a.at))
+			.slice(0, EXPIRY_FAILURES_KEPT),
+	);
 }
 
 // ── cursors ─────────────────────────────────────────────────────────────────

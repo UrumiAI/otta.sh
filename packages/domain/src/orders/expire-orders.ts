@@ -67,6 +67,13 @@ export interface ExpireOrdersBatchOptions extends SweepBatchOptions {
 	 * afford (`UnitBackoff.setMaxEntries`).
 	 */
 	readonly backoff?: UnitBackoff;
+	/**
+	 * Told each attempted order's flip outcome: `true` when its flip threw (the
+	 * order is logged and, with a `backoff`, backed off), `false` when it did not
+	 * (expired, or lost its guard). The scheduled sweep keeps the failing ones in
+	 * its durable state (#478), which an in-memory `backoff` cannot be.
+	 */
+	readonly onFlipOutcome?: (id: OrderId, failed: boolean) => void;
 }
 
 /** {@link expireOrdersBatch}'s answer. */
@@ -146,10 +153,12 @@ export async function expireOrdersBatch(
 			if (options.stopsBatch?.(err) === true) throw err;
 			failed++;
 			backoff?.failed(id, instant.getTime());
+			options.onFlipOutcome?.(id, true);
 			logUnitFailure(`expiring order ${id}`, err);
 			continue;
 		}
 		backoff?.succeeded(id);
+		options.onFlipOutcome?.(id, false);
 		if (won === null) continue; // someone else won the transition (paid/cancelled/expired)
 		expired++;
 		const { order } = won;

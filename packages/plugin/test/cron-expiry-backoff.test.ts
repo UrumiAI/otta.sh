@@ -183,6 +183,62 @@ test("an outage on the Free bite (one order a tick) still fails the leg once a s
 	expect(error.mock.calls.filter((c) => /expiring order/.test(String(c[0])))).toHaveLength(2);
 }, 120_000);
 
+test("an outage still fails the leg when the in-memory back-off is lost every tick (#478 review)", async () => {
+	// The back-off is per isolate. A fresh isolate each tick loses it, and with a
+	// bite of one the leg would retry the same head order for ever and never see a
+	// second failing order. The failing orders are also kept in the sweep's kv
+	// state, so the leg reads past them and the second failure is seen.
+	const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
+	const createdAt = new Date(NOW.getTime() - 2 * HOUR_MS);
+	for (const [tag, lapsedMinutes] of [
+		["a", 50],
+		["b", 40],
+		["c", 30],
+	] as const) {
+		await placeOrder(storage, tag, new Date(NOW.getTime() - lapsedMinutes * MINUTE_MS), createdAt);
+	}
+	const ctx = sweepContext(poisonedOrders(new Set(["order-a", "order-b", "order-c"])));
+	const cursors = memoryCursors();
+	const tick = (at: Date) =>
+		runCommerceSweeps(ctx, SWEEP_TASK_NAME, {
+			cursors,
+			emailSender: recordingSender([]),
+			now: at,
+			expiryBatchLimit: 1,
+			expiryBackoff: new UnitBackoff(),
+		});
+	expect(legOf(await tick(NOW))).toMatchObject({ ok: true, count: 0 });
+	const second = await tick(new Date(NOW.getTime() + MINUTE_MS));
+	expect(legOf(second)).toMatchObject({ ok: false, count: 0 });
+	expect(legOf(second)?.error).toMatch(/every order the leg tried failed to expire/);
+	const tried = error.mock.calls
+		.map((c) => String(c[0]))
+		.filter((line) => /expiring order/.test(line));
+	expect(tried).toHaveLength(2);
+}, 120_000);
+
+test("ONE always-failing order with the back-off lost every tick still never fails the leg (#478 review)", async () => {
+	const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
+	const createdAt = new Date(NOW.getTime() - 2 * HOUR_MS);
+	await placeOrder(storage, "a", new Date(NOW.getTime() - 50 * MINUTE_MS), createdAt);
+	const ctx = sweepContext(poisonedOrders(new Set(["order-a"])));
+	const cursors = memoryCursors();
+	for (let minute = 0; minute < 40; minute++) {
+		const summary = await runCommerceSweeps(ctx, SWEEP_TASK_NAME, {
+			cursors,
+			emailSender: recordingSender([]),
+			now: new Date(NOW.getTime() + minute * MINUTE_MS),
+			expiryBatchLimit: 1,
+			expiryBackoff: new UnitBackoff(),
+		});
+		const leg = legOf(summary);
+		if (leg !== undefined) expect(leg, `minute ${String(minute)}`).toMatchObject({ ok: true });
+	}
+	// Retried after 5, then 10, then 20 minutes, not every tick: the kv record
+	// backs it off when the isolate's back-off is gone.
+	expect(error.mock.calls.filter((c) => /expiring order/.test(String(c[0])))).toHaveLength(4);
+}, 120_000);
+
 test("one failing order among good ones: the leg made progress, so it stays ok (#447)", async () => {
 	const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
 	const createdAt = new Date(NOW.getTime() - 2 * HOUR_MS);
