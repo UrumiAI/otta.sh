@@ -196,6 +196,17 @@ describe("resolveShippingZone", () => {
 			);
 		});
 
+		test("#478 review: one zone covering the pick AND the subdivision inside it never asks", () => {
+			// Wherever in the Canary Islands the address is, the same zone applies.
+			const CANARIES = zone("z-canaries", ["ES-CN", "ES-TF"]);
+			expect(resolveShippingZone([ES, CANARIES], physical("ES", "CN"))).toEqual(
+				matched("z-canaries", "ES-CN"),
+			);
+			// The same when only the country's zone also lists the subdivision.
+			const SPAIN = zone("z-spain", ["ES", "ES-TF"]);
+			expect(resolveShippingZone([SPAIN], physical("ES", "CN"))).toEqual(matched("z-spain", "ES"));
+		});
+
 		test("…but a zone on the pick itself, or on a subdivision containing it, still matches", () => {
 			const TF = zone("z-tf", ["ES-TF"]);
 			expect(resolveShippingZone([ES, ES_CN], physical("ES", "CN"))).toEqual(
