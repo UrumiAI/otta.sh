@@ -729,12 +729,12 @@ describe("each refund refusal names the field it is about", () => {
 	});
 
 	test("a MANUAL three-decimal refund takes any minor-unit amount — the 0.010 step is for gateway refunds only (#447)", () => {
-		expect(checkRefundInput("1.234", "ops", 5000, "KWD", false)).toEqual({
+		expect(checkRefundInput("1.234", "ops", 5000, "KWD", { refundAutomatic: false })).toEqual({
 			ok: true,
 			amountCents: 1234,
 		});
 		// The ceiling still binds a manual refund.
-		const over = checkRefundInput("99.999", "ops", 5000, "KWD", false);
+		const over = checkRefundInput("99.999", "ops", 5000, "KWD", { refundAutomatic: false });
 		expect(over.ok).toBe(false);
 	});
 

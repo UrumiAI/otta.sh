@@ -1413,6 +1413,45 @@ describe("Settings: store currency", () => {
 			expect((await storedDoc())?.["currency"]).toBe("EUR");
 		});
 
+		test("when the product count can't be read, the switch is refused and nothing is saved", async () => {
+			await resetOperationalSettings();
+			await seedProducts();
+			sandbox = await loadPluginInSandbox({ allowedHosts: [], storage: true });
+			const handle = sandbox;
+			const { storage } = await storageBridge();
+			const real = storage[PRODUCT_COMMERCE_COLLECTION];
+			if (real === undefined) throw new Error("no product collection to fault-inject");
+			storage[PRODUCT_COMMERCE_COLLECTION] = new Proxy(real, {
+				get(_holder, property) {
+					const value = Reflect.get(real, property) as unknown;
+					if (typeof value !== "function") return value;
+					return () => {
+						throw new Error("injected storage fault: products unreadable");
+					};
+				},
+			}) as StorageAccess[string];
+			let outcome: unknown;
+			try {
+				outcome = await handle.invokeRoute("admin", {
+					type: "form_submit",
+					action_id: "save-store-currency",
+					values: { currency: "KWD" },
+					idempotencyKey: "k-sc-priced-count-fails",
+				});
+			} finally {
+				storage[PRODUCT_COMMERCE_COLLECTION] = real;
+			}
+			const blocks = blocksOf(outcome);
+			assertBlockContract(blocks, { screen: "settings", level: "list" });
+			const banner = findBlocks(blocks, "banner").find((b) => b.variant === "error");
+			expect(String(banner?.title)).toBe("Store currency not saved");
+			expect(String(banner?.description)).toBe(
+				"Couldn't check which products are priced in USD. Nothing was changed — try again.",
+			);
+			expect(confirmButton(blocks)).toBeUndefined();
+			expect(await storedDoc()).toBeNull();
+		});
+
 		test("a confirm for a currency the store no longer has saves nothing", async () => {
 			await resetOperationalSettings();
 			await seedProducts();
@@ -1532,6 +1571,26 @@ describe("Settings: store currency", () => {
 			"The store currency could not be loaded right now. Reload to try again — the rest of this page still works.",
 		);
 		expect(formFor(blocks, "save-display")).toBeDefined();
+	});
+
+	test("when the settings read fails, a currency save is refused and nothing is stored (#447)", async () => {
+		await resetOperationalSettings();
+		sandbox = await loadPluginInSandbox({ allowedHosts: [], storage: true });
+		const handle = sandbox;
+		const outcome = await withSettingsReadFailing(() =>
+			handle.invokeRoute("admin", {
+				type: "form_submit",
+				action_id: "save-store-currency",
+				values: { currency: "KWD" },
+				idempotencyKey: "k-sc-read-fails",
+			}),
+		);
+		const banner = findBlocks(blocksOf(outcome), "banner").find((b) => b.variant === "error");
+		expect(String(banner?.title)).toBe("Store currency not saved");
+		expect(String(banner?.description)).toBe(
+			"Couldn't read the store settings. Nothing was changed — try again.",
+		);
+		expect(await storedDoc()).toBeNull();
 	});
 
 	test("a superseded currency save says someone else changed the settings, and writes nothing", async () => {

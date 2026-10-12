@@ -92,6 +92,8 @@ Decision 5 is replaced. BHD, JOD, KWD and OMR are payable at checkout.
    refuses, before any network call, an intent (`unsupported_amount`) or refund (`TERMINAL`)
    whose amount is not a multiple of 10 in Stripe's three-decimal set. It never rounds.
    An exact total of 1–4 fils rounds to 0 and takes the existing zero-total path.
+   *Amended (#447):* the increment rule applies to gateway refunds only; a manual refund takes
+   any minor-unit amount.
 6. **The "not yet payable" machinery is removed**: `isCheckoutPayableCurrency`,
    `StoreCurrencyNotPayableError`, `checkoutPaymentWarning` and its label helpers. No listed
    currency is unpayable now. A future currency with a payment rule gets an increment, not a

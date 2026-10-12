@@ -42,7 +42,8 @@ import type {
 	RouteHandler,
 	SettingsFieldSpec,
 } from "../types.js";
-import type { AdminProductsSurface } from "./admin-products-surface.js";
+import type { ProductCommerceStore } from "@otta-sh/domain";
+import { createInProcessCommerceStores } from "../commerce/in-process-commerce-stores.js";
 import { MAX_LOW_STOCK_THRESHOLD } from "./in-process-reporting-settings-client.js";
 import { makeAdminClients } from "./make-admin-clients.js";
 import type {
@@ -518,7 +519,7 @@ export function createSettingsFormHandler(): RouteHandler<SettingsFormInput> {
 		// write-only kv a second time, but with the commerce service folded into
 		// the plugin (ADR-0014 D3) there is no second deployable to authenticate
 		// to, so there are no tokens to read or thread through at all.
-		const { reporting: client, products } = await makeAdminClients(ctx);
+		const { reporting: client } = await makeAdminClients(ctx);
 
 		// -- kv save path: display name, S-5/S-5a ------------------------------
 		if (action === "save-display") {
@@ -778,8 +779,9 @@ export function createSettingsFormHandler(): RouteHandler<SettingsFormInput> {
 			// Saving the select UNCHANGED writes nothing — checked FIRST, so a stored
 			// code the table (or checkout) no longer accepts can still be "saved" as
 			// is. A store that never saved one stays never-saved (USD by the upgrade
-			// rule, not by a stored "USD"). A failed read cannot tell, so it falls
-			// through to the write, which is what the operator asked for.
+			// rule, not by a stored "USD"). A failed read cannot tell, and cannot
+			// say which products the switch would strand (#447), so it saves
+			// nothing — refused below, after an unsupported code is named.
 			const current = await client.getSettings().catch(() => undefined);
 			if (current !== undefined && effectiveStoreCurrency(current) === code) {
 				const page = await renderPage(
@@ -800,20 +802,29 @@ export function createSettingsFormHandler(): RouteHandler<SettingsFormInput> {
 			}
 			const unsupported = `${code.length > 0 ? code : "That"} isn't a supported currency — choose one from the list. Nothing was changed.`;
 			if (!isSupportedCurrency(code)) return refuse("Store currency not saved", unsupported);
+			if (current === undefined) {
+				return refuse(
+					"Store currency not saved",
+					"Couldn't read the store settings. Nothing was changed — try again.",
+				);
+			}
 			if (confirming) {
 				// The count the operator confirmed was for `from`. A store whose
-				// currency moved since (or cannot be read) is not switched on it.
-				if (current === undefined || effectiveStoreCurrency(current) !== carried?.from) {
+				// currency moved since is not switched on it.
+				if (effectiveStoreCurrency(current) !== carried?.from) {
 					return refuse(
 						"Store currency not saved",
-						"The store currency changed or couldn't be read since you were asked. Nothing was changed — reload and try again.",
+						"The store currency changed since you were asked. Nothing was changed — reload and try again.",
 					);
 				}
-			} else if (current !== undefined) {
+			} else {
 				const from = effectiveStoreCurrency(current);
 				let count: number;
 				try {
-					count = await countProductsPricedIn(products, from);
+					count = await countProductsPricedIn(
+						createInProcessCommerceStores(ctx).productCommerce,
+						from,
+					);
 				} catch (err) {
 					console.error("[otta] admin settings priced-product count failed:", err);
 					return refuse(
@@ -1348,24 +1359,21 @@ interface CurrencySwitchAsk {
 	count: number;
 }
 
-/** Live (not deleted) products priced in `code`, counted over the admin list a
- *  full page at a time. Throws when the list cannot be read through. */
+/** Live (not deleted) products priced in `code`, counted by walking the store's
+ *  product list a page at a time — the store directly, not the admin client,
+ *  whose pages each also run a full `countProducts`. Throws when the list cannot
+ *  be read through. */
 async function countProductsPricedIn(
-	products: Pick<AdminProductsSurface, "listProducts">,
+	products: Pick<ProductCommerceStore, "listProducts">,
 	code: string,
 ): Promise<number> {
 	let count = 0;
-	let cursor: string | undefined;
-	do {
-		const page = await products.listProducts(
-			{},
-			cursor === undefined ? { limit: 100 } : { cursor, limit: 100 },
-		);
-		if (page.cursorRejected === true) throw new Error("product list cursor refused mid-count");
-		count += page.products.filter((p) => p.currency === code).length;
-		cursor = page.nextCursor ?? undefined;
-	} while (cursor !== undefined);
-	return count;
+	let page = await products.listProducts({}, { limit: 100 });
+	for (;;) {
+		count += page.products.filter((p) => p.price?.currency === code).length;
+		if (page.nextCursor === null) return count;
+		page = await products.listProducts({}, { cursor: page.nextCursor, limit: 100 });
+	}
 }
 
 function pricedProductsText(ask: CurrencySwitchAsk): string {

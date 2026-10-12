@@ -167,10 +167,11 @@ export function checkRefundInput(
 	_refundedBy: string,
 	remainingCents: number,
 	currency: string,
-	/** The gateway's honest `refundable`: true ⇒ the money goes back through the
-	 *  provider, and only then does the currency's payment step apply (#447). A
-	 *  manual refund takes any minor-unit amount. */
-	refundAutomatic = true,
+	/** `refundAutomatic` is the gateway's honest `refundable` (default true): true ⇒
+	 *  the money goes back through the provider, and only then does the
+	 *  currency's payment step apply (#447). A manual refund takes any minor-unit
+	 *  amount. */
+	{ refundAutomatic = true }: { refundAutomatic?: boolean } = {},
 ): RefundCheck {
 	// In the ORDER's currency: a JPY refund of "1500" is 1500 yen, never 150000.
 	const parsed = parseMinorUnitsInput(amountInput, currency, { allowZero: false });
@@ -837,7 +838,7 @@ export function RefundsPanel({
 												refundedBy,
 												refunds.remainingCents,
 												cur,
-												refunds.refundable,
+												{ refundAutomatic: refunds.refundable },
 											);
 											if (!checked.ok) {
 												// A refusal that leaves focus where it was makes the
