@@ -187,7 +187,7 @@ export async function encryptStoredPaymentSecrets(
 				return "retry";
 			}
 			// A key problem on a site the marker says was encrypted: nothing here
-			// can be re-saved until the key is fixed (a redeploy, so a new isolate).
+			// can be re-saved until the key is fixed and a new isolate starts.
 			// Say so once and stop checking in this isolate, instead of failing the
 			// same preflight every tick.
 			if (readMarker(await kv.get<unknown>(PAYMENT_SECRETS_ENCRYPTED_MARKER_KEY)) !== null) {
