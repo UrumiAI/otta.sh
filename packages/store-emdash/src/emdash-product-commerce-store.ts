@@ -64,6 +64,7 @@ import {
 	type ProductVariant,
 	type ProductVariantSummary,
 	type ProductVariantUpdateResult,
+	type RestoreProductCommerceOptions,
 	type Sku,
 	type UpdateProductCommerceFieldsInput,
 	type UpdateProductVariantFieldsInput,
@@ -994,12 +995,14 @@ export class EmdashProductCommerceStore implements ProductCommerceStore {
 	 * lingers until its lease (`CLAIM_ABANDON_AFTER_MS`) lets another owner take it.
 	 *
 	 * A restore older than the delete (`contentUpdatedAt` < `deletedAt`) is stale and
-	 * a no-op; an applied one stamps the gate watermark so an older publish is stale.
+	 * a no-op unless `documentConfirmed`; an applied one stamps the gate watermark so
+	 * an older publish is stale.
 	 */
 	async restore(
 		productId: ProductId,
 		key: IdempotencyKey,
 		contentUpdatedAt: string,
+		options: RestoreProductCommerceOptions = {},
 	): Promise<void> {
 		const ref: SkuOwnerRef = { kind: "product", productId };
 		await this.#cas<void>("restore", async () => {
@@ -1007,7 +1010,13 @@ export class EmdashProductCommerceStore implements ProductCommerceStore {
 			if (current === null) return casDone(undefined);
 			const doc = normalizeProductDoc(current.value);
 			if (doc.lifecycle !== "deleted") return casDone(undefined);
-			if (doc.deletedAt !== null && doc.deletedAt > contentUpdatedAt) return casDone(undefined);
+			if (
+				options.documentConfirmed !== true &&
+				doc.deletedAt !== null &&
+				doc.deletedAt > contentUpdatedAt
+			) {
+				return casDone(undefined);
+			}
 			const reclaimed = doc.sku === null ? null : await this.#reclaimSku(doc.sku, ref);
 			if (reclaimed !== null) {
 				let held: boolean;

@@ -8,6 +8,7 @@ import type {
 	ProductVariant,
 	ProductVariantSummary,
 	ProductVariantUpdateResult,
+	RestoreProductCommerceOptions,
 	UpdateProductCommerceFieldsInput,
 	UpdateProductVariantFieldsInput,
 	UpsertProductCommerceInput,
@@ -288,8 +289,9 @@ export async function restoreProductCommerce(
 	productId: ProductId,
 	key: IdempotencyKey,
 	contentUpdatedAt: string,
+	options?: RestoreProductCommerceOptions,
 ): Promise<void> {
-	return store.restore(productId, key, contentUpdatedAt);
+	return store.restore(productId, key, contentUpdatedAt, options);
 }
 
 /**

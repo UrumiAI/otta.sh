@@ -372,6 +372,7 @@ export class InProcessCommerceClient implements CommerceClient {
 		productId: string,
 		idempotencyKey: string,
 		contentUpdatedAt: string,
+		options: { documentConfirmed?: boolean } = {},
 	): Promise<void> {
 		requireProductId(productId);
 		requireIdempotencyKey(idempotencyKey);
@@ -381,6 +382,7 @@ export class InProcessCommerceClient implements CommerceClient {
 			toProductId(productId),
 			toIdempotencyKey(idempotencyKey),
 			contentUpdatedAt,
+			options.documentConfirmed === true ? { documentConfirmed: true } : {},
 		);
 	}
 

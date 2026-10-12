@@ -243,6 +243,8 @@ export interface CommerceClient {
 		productId: string,
 		idempotencyKey: string,
 		contentUpdatedAt: string,
+		/** The CMS was just read and the document found: see the store port. */
+		options?: { documentConfirmed?: boolean },
 	): Promise<void>;
 	/** The afterPublish→activate follow-up (plan §6 step 7): mirrors
 	 *  `POST /products/:id/commerce/activate` 1:1. Deliberately separate from

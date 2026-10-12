@@ -313,7 +313,8 @@ export interface PluginContext {
 	 * Callers: the `product-orphans` sweep leg (issue #374), which asks whether a
 	 * commerce row's CMS document still exists, and `content:afterDelete` /
 	 * `content:afterRestore` (issue #447), which check the document's presence so a
-	 * late delivery does not undo a newer restore or trash. Everything else gets what it needs from the hook event itself.
+	 * late delivery does not undo a newer restore or trash. Everything else gets
+	 * what it needs from the hook event itself.
 	 *
 	 * OPTIONAL like `storage` and `cron`: the host omits it when the capability is
 	 * missing, and the workerd test mirror (`sandbox-entry.ts`) has no CMS to offer.

@@ -604,6 +604,7 @@ export type {
 	ProductVariant,
 	ProductVariantSummary,
 	ProductVariantUpdateResult,
+	RestoreProductCommerceOptions,
 	UpdateProductCommerceFieldsInput,
 	UpdateProductVariantFieldsInput,
 	UpsertProductCommerceInput,

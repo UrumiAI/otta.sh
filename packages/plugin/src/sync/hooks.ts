@@ -449,6 +449,15 @@ export function createAfterSaveHandler(
  * hands over `ctx.content`, the document is read first: found means it was
  * restored before this hook ran, so the row is left live. A `null` (re-read once)
  * or a failed read deletes as before.
+ *  - Found but NOT published (a restore brings a document back as a draft): the
+ *    row may still be active from before the trash, because the restore found it
+ *    live and did nothing. It is deactivated at the document's own `updatedAt`, so
+ *    a newer publish still wins and an older one cannot re-activate it.
+ *  - A failed read after a restore still tombstones. That is safe — the row is
+ *    unsellable — and the recovery is to trash and restore the product again.
+ *  - The found-guard assumes reads are not served by a lagging D1 read replica.
+ *    Replication is off; the D1-session test in #447 is the prerequisite for
+ *    turning it on.
  */
 export function createAfterDeleteHandler(): HookHandler<ContentDeleteEvent> {
 	return async (event, ctx) => {
@@ -457,10 +466,12 @@ export function createAfterDeleteHandler(): HookHandler<ContentDeleteEvent> {
 		// trash before this deferred hook ran. A document the CMS has NOW is not
 		// deleted, so the row is left live. A `null` or a failed read deletes, as
 		// before — the sweep is the backstop either way.
-		if ((await readDocument(ctx, event.id, "content:afterDelete")) === "found") {
+		const read = await readDocument(ctx, event.id, "content:afterDelete");
+		if (read.state === "found") {
 			console.warn(
 				`[otta] content:afterDelete: product_id=${event.id} is in the CMS again (restored before this delete hook ran) — its commerce row is left live.`,
 			);
+			if (read.doc["status"] !== PUBLISHED_STATUS) await withdrawDraft(ctx, event.id, read.doc);
 			return;
 		}
 		const key = deriveDeleteIdempotencyKey(event.collection, event.id);
@@ -492,9 +503,12 @@ export function createAfterDeleteHandler(): HookHandler<ContentDeleteEvent> {
  * can land first (both hooks are deferred, fire-and-forget). So when the host
  * hands over `ctx.content`, the document is read first, and a `null` is re-read
  * once before it is trusted (a sandbox bridge may answer `null` for a failed
- * read). Two `null`s: it is gone again and the tombstone stays. A read that
- * REJECTS is not taken as gone — the event itself is the evidence, and a wrongly
- * restored row is inactive anyway and is tombstoned again by the sweep.
+ * read). Two `null`s: it is gone again and the tombstone stays. A FOUND document
+ * is live now, so it overrides the "restore older than the delete" guard (a soft
+ * delete that committed after the restore is the stale write). A read that
+ * REJECTS is not taken as gone — the event itself is the evidence, and the guard
+ * still applies; a wrongly restored row is inactive anyway and is tombstoned again
+ * by the sweep.
  *
  * Fire-and-forget, like its siblings: a failure is logged, never thrown. The
  * recovery is to trash and restore the product again.
@@ -512,7 +526,8 @@ export function createAfterRestoreHandler(): HookHandler<ContentStateChangeEvent
 			);
 			return;
 		}
-		if ((await readDocument(ctx, id, "content:afterRestore")) === "missing") {
+		const read = await readDocument(ctx, id, "content:afterRestore");
+		if (read.state === "missing") {
 			console.error(
 				`[otta] content:afterRestore: product_id=${id} read as missing from the CMS twice (trashed again?) — its commerce row stays deleted. If the product is in fact restored, trash and restore it again.`,
 			);
@@ -525,7 +540,17 @@ export function createAfterRestoreHandler(): HookHandler<ContentStateChangeEvent
 			event.content["version"],
 		);
 		try {
-			await (await makeCommerceClient(ctx)).restoreProductCommerce(id, key, watermark);
+			// A document found just now is live NOW, which outranks a tombstone that
+			// committed after the restore (a slow delete hook, or the sweep). Without
+			// that proof (no `ctx.content`, or a failed read) the staleness guard holds.
+			await (
+				await makeCommerceClient(ctx)
+			).restoreProductCommerce(
+				id,
+				key,
+				watermark,
+				read.state === "found" ? { documentConfirmed: true } : {},
+			);
 		} catch (err) {
 			console.error(
 				`[otta] content:afterRestore sync failed for product_id=${id} — its commerce row stays deleted until the product is trashed and restored again:`,
@@ -536,25 +561,61 @@ export function createAfterRestoreHandler(): HookHandler<ContentStateChangeEvent
 }
 
 /**
- * What the CMS says about one product right now, for the delete and restore hooks:
- * `found`, `missing` (a `null`, re-read once and `null` again), or `unknown` (no
- * `ctx.content`, or a read that rejected — never taken as either answer).
+ * A late `afterDelete` found the product restored as a DRAFT: close the publish
+ * gate it may still hold from before the trash, at the document's own `updatedAt`
+ * (the unpublish path), so a newer publish still wins. Logged, never thrown.
  */
-async function readDocument(
+async function withdrawDraft(
 	ctx: PluginContext,
 	id: string,
-	hook: string,
-): Promise<"found" | "missing" | "unknown"> {
+	doc: Record<string, unknown>,
+): Promise<void> {
+	const updatedAt = doc["updatedAt"];
+	const watermark = normalizeWatermark(updatedAt);
+	if (watermark === undefined) {
+		console.error(
+			`[otta] content:afterDelete: product_id=${id} is back as a draft but carries no parseable updatedAt — its row was not deactivated. Unpublish or re-publish it to settle its state.`,
+		);
+		return;
+	}
+	try {
+		await (
+			await makeCommerceClient(ctx)
+		).deactivateProductCommerce(
+			id,
+			deriveUnpublishIdempotencyKey(PRODUCTS_COLLECTION, id, updatedAt),
+			watermark,
+		);
+	} catch (err) {
+		console.error(
+			`[otta] content:afterDelete: deactivating restored draft product_id=${id} failed — unpublish or re-publish it to settle its state:`,
+			err,
+		);
+	}
+}
+
+/**
+ * What the CMS says about one product right now, for the delete and restore hooks:
+ * `found` (with the document), `missing` (a `null`, re-read once and `null` again),
+ * or `unknown` (no `ctx.content`, or a read that rejected — never taken as either).
+ */
+type DocumentRead =
+	| { state: "found"; doc: Record<string, unknown> }
+	| { state: "missing" }
+	| { state: "unknown" };
+
+async function readDocument(ctx: PluginContext, id: string, hook: string): Promise<DocumentRead> {
 	const content = ctx.content;
-	if (content === undefined) return "unknown";
+	if (content === undefined) return { state: "unknown" };
 	try {
 		for (let look = 0; look < 2; look++) {
-			if ((await content.get(PRODUCTS_COLLECTION, id)) !== null) return "found";
+			const doc = await content.get(PRODUCTS_COLLECTION, id);
+			if (doc !== null) return { state: "found", doc };
 		}
-		return "missing";
+		return { state: "missing" };
 	} catch (err) {
 		console.warn(`[otta] ${hook}: could not read product_id=${id} from the CMS:`, err);
-		return "unknown";
+		return { state: "unknown" };
 	}
 }
 

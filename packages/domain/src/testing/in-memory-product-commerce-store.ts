@@ -14,6 +14,7 @@ import type {
 	ProductVariant,
 	ProductVariantSummary,
 	ProductVariantUpdateResult,
+	RestoreProductCommerceOptions,
 	UpdateProductCommerceFieldsInput,
 	UpdateProductVariantFieldsInput,
 	UpsertProductCommerceInput,
@@ -553,11 +554,15 @@ export class InMemoryProductCommerceStore implements ProductCommerceStore {
 		productId: ProductId,
 		key: IdempotencyKey,
 		contentUpdatedAt: string,
+		options: RestoreProductCommerceOptions = {},
 	): Promise<void> {
 		const existing = this.#rows.get(productId);
 		if (existing === undefined || existing.deletedAt === null) return; // unknown or live: no-op.
-		// A stale restore (older than the delete) never undoes a newer delete.
-		if (existing.deletedAt.toISOString() > contentUpdatedAt) return;
+		// A stale restore (older than the delete) never undoes a newer delete —
+		// unless the CMS just confirmed the document is live.
+		if (options.documentConfirmed !== true && existing.deletedAt.toISOString() > contentUpdatedAt) {
+			return;
+		}
 		const s = existing.sku;
 		// The sku comes back only if no live product or variant took it meanwhile.
 		const keep = s !== null && !this.#skuTakenByLiveProduct(s) && !this.#skuTakenByLiveVariant(s);

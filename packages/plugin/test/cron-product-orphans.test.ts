@@ -878,6 +878,60 @@ describe("a product restored from the CMS trash is sold again (issue #447)", () 
 		expect(await row("p-late-delete")).toMatchObject({ lifecycle: "live", deletedAt: null });
 	});
 
+	test("a product ON SALE, trashed and restored before its delete hook ran: the late afterDelete finds a DRAFT and takes it off sale, and a newer publish puts it back", async () => {
+		await product("p-onsale");
+		await new EmdashProductCommerceStore({ storage, clock: new FixedClock(NOW) }).activate(
+			toProductId("p-onsale"),
+			idempotencyKey("pub-onsale"),
+			CREATED.toISOString(),
+		);
+		const cms = fakeCms();
+		const ctx = sweepContext(storage, undefined, {}, cms);
+		// Trashed, then restored at once: the restore finds the row LIVE (the delete
+		// hook has not run yet) and does nothing, so the row is still on sale.
+		const event = restored("p-onsale");
+		cms.status.set("p-onsale", "draft");
+		cms.updatedAt.set("p-onsale", String(event.content["updatedAt"]));
+		await createAfterRestoreHandler()(event, ctx);
+		expect(await row("p-onsale")).toMatchObject({ lifecycle: "live", active: true });
+
+		await createAfterDeleteHandler()(
+			{ id: "p-onsale", collection: "products", permanent: false },
+			ctx,
+		);
+
+		expect(await row("p-onsale")).toMatchObject({ lifecycle: "live", active: false });
+		await createAfterPublishHandler()(published("p-onsale"), ctx);
+		expect(await row("p-onsale")).toMatchObject({ lifecycle: "live", active: true });
+	});
+
+	test("a soft delete that committed AFTER the restore does not block it when the CMS confirms the document is live", async () => {
+		await product("p-slow-delete");
+		const cms = fakeCms({ gone: ["p-slow-delete"] });
+		// The CMS restore happened an hour ago; the tombstone below is stamped now.
+		const event = restored("p-slow-delete");
+		event.content["updatedAt"] = new Date(Date.now() - HOUR_MS).toISOString();
+		await strikeOut(cms, memoryCursors());
+		expect(await lifecycleOf("p-slow-delete")).toBe("deleted");
+		cms.gone.delete("p-slow-delete");
+
+		await createAfterRestoreHandler()(event, sweepContext(storage, undefined, {}, cms));
+
+		expect(await row("p-slow-delete")).toMatchObject({ lifecycle: "live", active: false });
+	});
+
+	test("without a CMS read to confirm it, a restore older than the tombstone is refused", async () => {
+		await product("p-stale-restore");
+		await strikeOut(fakeCms({ gone: ["p-stale-restore"] }), memoryCursors());
+		const event = restored("p-stale-restore");
+		event.content["updatedAt"] = new Date(Date.now() - HOUR_MS).toISOString();
+
+		// No `ctx.content` at all: the event is the only evidence.
+		await createAfterRestoreHandler()(event, sweepContext(storage));
+
+		expect(await lifecycleOf("p-stale-restore")).toBe("deleted");
+	});
+
 	test("afterDelete still soft-deletes when the CMS confirms the document is gone", async () => {
 		await product("p-hook-delete");
 		const cms = fakeCms({ gone: ["p-hook-delete"] });
