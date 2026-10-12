@@ -471,7 +471,9 @@ export function createAfterDeleteHandler(): HookHandler<ContentDeleteEvent> {
 			console.warn(
 				`[otta] content:afterDelete: product_id=${event.id} is in the CMS again (restored before this delete hook ran) — its commerce row is left live.`,
 			);
-			if (read.doc["status"] !== PUBLISHED_STATUS) await withdrawDraft(ctx, event.id, read.doc);
+			if (read.doc["status"] !== PUBLISHED_STATUS) {
+				await withdrawDraft(ctx, event.id, read.doc, "content:afterDelete");
+			}
 			return;
 		}
 		const key = deriveDeleteIdempotencyKey(event.collection, event.id);
@@ -509,6 +511,11 @@ export function createAfterDeleteHandler(): HookHandler<ContentDeleteEvent> {
  * REJECTS is not taken as gone — the event itself is the evidence, and the guard
  * still applies; a wrongly restored row is inactive anyway and is tombstoned again
  * by the sweep.
+ *
+ * A LOST DELETE: if `afterDelete` never arrived, the row is still live and may be on
+ * sale while the CMS now holds a draft. The restore no-ops on a live row, so a found,
+ * non-published document also closes the publish gate at its own `updatedAt`, as a
+ * late `afterDelete` does; a newer publish still wins.
  *
  * Two orderings this does not close, both left SAFE (the row is never sellable
  * because of them):
@@ -566,24 +573,33 @@ export function createAfterRestoreHandler(): HookHandler<ContentStateChangeEvent
 				err,
 			);
 		}
+		// A LOST afterDelete: the row was never tombstoned, so the restore above found it
+		// live, did nothing, and it may still be on sale while the CMS holds a draft.
+		// Close its gate the way a late afterDelete would. On a row the restore just
+		// brought back this is a no-op (it is already inactive).
+		if (read.state === "found" && read.doc["status"] !== PUBLISHED_STATUS) {
+			await withdrawDraft(ctx, id, read.doc, "content:afterRestore");
+		}
 	};
 }
 
 /**
- * A late `afterDelete` found the product restored as a DRAFT: close the publish
- * gate it may still hold from before the trash, at the document's own `updatedAt`
- * (the unpublish path), so a newer publish still wins. Logged, never thrown.
+ * A late `afterDelete`, or a restore whose delete was never delivered, found the
+ * product back as a DRAFT: close the publish gate it may still hold from before the
+ * trash, at the document's own `updatedAt` (the unpublish path), so a newer publish
+ * still wins. Logged, never thrown.
  */
 async function withdrawDraft(
 	ctx: PluginContext,
 	id: string,
 	doc: Record<string, unknown>,
+	hook: string,
 ): Promise<void> {
 	const updatedAt = doc["updatedAt"];
 	const watermark = normalizeWatermark(updatedAt);
 	if (watermark === undefined) {
 		console.error(
-			`[otta] content:afterDelete: product_id=${id} is back as a draft but carries no parseable updatedAt — its row was not deactivated. Unpublish or re-publish it to settle its state.`,
+			`[otta] ${hook}: product_id=${id} is back as a draft but carries no parseable updatedAt — its row was not deactivated. Unpublish or re-publish it to settle its state.`,
 		);
 		return;
 	}
@@ -597,7 +613,7 @@ async function withdrawDraft(
 		);
 	} catch (err) {
 		console.error(
-			`[otta] content:afterDelete: deactivating restored draft product_id=${id} failed — unpublish or re-publish it to settle its state:`,
+			`[otta] ${hook}: deactivating restored draft product_id=${id} failed — unpublish or re-publish it to settle its state:`,
 			err,
 		);
 	}

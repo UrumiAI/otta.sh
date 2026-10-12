@@ -942,12 +942,12 @@ describe("a product restored from the CMS trash is sold again (issue #447)", () 
 		);
 		const cms = fakeCms();
 		const ctx = sweepContext(storage, undefined, {}, cms);
-		// Trashed, then restored at once: the restore finds the row LIVE (the delete
-		// hook has not run yet) and does nothing, so the row is still on sale.
+		// Trashed, then restored at once, and the late delete hook runs BEFORE the
+		// restore hook (both are deferred): the row is still live and on sale, and the
+		// CMS holds a draft.
 		const event = restored("p-onsale");
 		cms.status.set("p-onsale", "draft");
 		cms.updatedAt.set("p-onsale", String(event.content["updatedAt"]));
-		await createAfterRestoreHandler()(event, ctx);
 		expect(await row("p-onsale")).toMatchObject({ lifecycle: "live", active: true });
 
 		await createAfterDeleteHandler()(
@@ -956,8 +956,53 @@ describe("a product restored from the CMS trash is sold again (issue #447)", () 
 		);
 
 		expect(await row("p-onsale")).toMatchObject({ lifecycle: "live", active: false });
+		// The restore hook that follows finds the row live and keeps it off sale.
+		await createAfterRestoreHandler()(event, ctx);
+		expect(await row("p-onsale")).toMatchObject({ lifecycle: "live", active: false });
 		await createAfterPublishHandler()(published("p-onsale"), ctx);
 		expect(await row("p-onsale")).toMatchObject({ lifecycle: "live", active: true });
+	});
+
+	test("a product ON SALE whose afterDelete was LOST, then restored: the restore finds a DRAFT and takes it off sale, and a newer publish puts it back", async () => {
+		await product("p-lost-delete");
+		const store = new EmdashProductCommerceStore({ storage, clock: new FixedClock(NOW) });
+		await store.activate(
+			toProductId("p-lost-delete"),
+			idempotencyKey("pub-lost-delete"),
+			CREATED.toISOString(),
+		);
+		const cms = fakeCms();
+		const ctx = sweepContext(storage, undefined, {}, cms);
+		// Trashed, but the delete hook never arrives and the sweep has not struck it
+		// yet; the merchant restores it, and the CMS now holds a draft.
+		const event = restored("p-lost-delete");
+		cms.status.set("p-lost-delete", "draft");
+		cms.updatedAt.set("p-lost-delete", String(event.content["updatedAt"]));
+
+		await createAfterRestoreHandler()(event, ctx);
+
+		expect(await row("p-lost-delete")).toMatchObject({ lifecycle: "live", active: false });
+		await createAfterPublishHandler()(published("p-lost-delete"), ctx);
+		expect(await row("p-lost-delete")).toMatchObject({ lifecycle: "live", active: true });
+	});
+
+	test("a restore event that arrives after a NEWER publish leaves the product on sale: the CMS reads it published", async () => {
+		await product("p-restore-then-pub");
+		const cms = fakeCms({ gone: ["p-restore-then-pub"] });
+		await strikeOut(cms, memoryCursors());
+		cms.gone.delete("p-restore-then-pub");
+		const ctx = sweepContext(storage, undefined, {}, cms);
+		const event = restored("p-restore-then-pub");
+		await createAfterRestoreHandler()(event, ctx);
+		const publish = published("p-restore-then-pub");
+		await createAfterPublishHandler()(publish, ctx);
+		cms.status.set("p-restore-then-pub", "published");
+		cms.updatedAt.set("p-restore-then-pub", String(publish.content["updatedAt"]));
+
+		// The same restore delivered again (a redelivery) must not take it off sale.
+		await createAfterRestoreHandler()(event, ctx);
+
+		expect(await row("p-restore-then-pub")).toMatchObject({ lifecycle: "live", active: true });
 	});
 
 	test("a product trashed, restored AND re-published before its delete hook ran stays on sale: the late afterDelete finds it published", async () => {
