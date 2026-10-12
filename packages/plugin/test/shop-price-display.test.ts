@@ -132,6 +132,7 @@ describe("the commerce client's shop-price display", () => {
 			pricesIncludeTax: false,
 			roundAtSubtotal: false,
 			ratesByClass: { standard: 2000, reduced: 500 },
+			ratesPpmByClass: { standard: 200_000, reduced: 50_000 },
 		});
 	});
 
@@ -248,6 +249,7 @@ describe("withShopDisplayPrice — the join, re-priced for display", () => {
 		pricesIncludeTax: false,
 		roundAtSubtotal: false,
 		ratesByClass: { standard: 2000 },
+		ratesPpmByClass: {},
 	};
 
 	test("as entered: the very same join", () => {

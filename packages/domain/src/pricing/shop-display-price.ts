@@ -42,6 +42,10 @@ export type ShopPriceDisplay =
 			roundAtSubtotal: boolean;
 			/** The base address's zone's rate per class, in basis points. */
 			ratesByClass: Readonly<Record<TaxClassId, number>>;
+			/** The same rates exactly, in millionths (#425, ADR-0036): 8.875% is
+			 *  88750, where `ratesByClass` holds the rounded 888 bps. A class missing
+			 *  here falls back to its bps × 100, as the rate table does. */
+			ratesPpmByClass: Readonly<Record<TaxClassId, number>>;
 	  };
 
 /** Show the stored price, unchanged. */
@@ -71,6 +75,7 @@ export function shopDisplayPrice(display: ShopPriceDisplay, item: ShopDisplayIte
 	// The rate table checkout reads, built straight from the base zone's rates.
 	const table: RateTable = {
 		ratesByClass: new Map(Object.entries(display.ratesByClass)),
+		ratesPpmByClass: new Map(Object.entries(display.ratesPpmByClass)),
 		shippingTaxable: false,
 		shippingTaxClassId: "standard",
 	};
@@ -152,6 +157,7 @@ async function loadPriceDisplay(
 		destination: { country: base.country, region: base.region },
 	});
 	const ratesByClass: Record<TaxClassId, number> = {};
+	const ratesPpmByClass: Record<TaxClassId, number> = {};
 	if (zone.status === "matched") {
 		// The zone's rates exactly as checkout reads them (duplicates reduced the same way).
 		const table = rateTableOf(await deps.taxRules.listRatesForZone(zone.zoneId));
@@ -163,11 +169,20 @@ async function loadPriceDisplay(
 				configurable: true,
 			});
 		}
+		for (const [classId, ppm] of table.ratesPpmByClass ?? []) {
+			Object.defineProperty(ratesPpmByClass, classId, {
+				value: ppm,
+				enumerable: true,
+				writable: true,
+				configurable: true,
+			});
+		}
 	}
 	return {
 		mode,
 		pricesIncludeTax: saved.pricesIncludeTax,
 		roundAtSubtotal: saved.roundAtSubtotal,
 		ratesByClass,
+		ratesPpmByClass,
 	};
 }

@@ -180,6 +180,7 @@ describe("shop-page price display against WooCommerce 11.1.2 (DP rows)", () => {
 				pricesIncludeTax: s.inputs.prices_include_tax,
 				roundAtSubtotal: s.inputs.round_at_subtotal,
 				ratesByClass: { standard: s.inputs.rate_bps },
+				ratesPpmByClass: {},
 			},
 			{
 				currency: currency("USD"),

@@ -8,6 +8,7 @@ import {
 	type ShopPriceDisplay,
 	shopDisplayPrice,
 } from "../../src/pricing/shop-display-price.js";
+import { applyRateTable, rateTableOf } from "../../src/pricing/rate-table-calculator.js";
 import {
 	LEGACY_TAX_SETTINGS,
 	NEW_STORE_TAX_SETTINGS,
@@ -34,7 +35,13 @@ const display = (
 	pricesIncludeTax: boolean,
 	ratesByClass: Record<string, number>,
 	roundAtSubtotal = false,
-): ShopPriceDisplay => ({ mode, pricesIncludeTax, roundAtSubtotal, ratesByClass });
+): ShopPriceDisplay => ({
+	mode,
+	pricesIncludeTax,
+	roundAtSubtotal,
+	ratesByClass,
+	ratesPpmByClass: {},
+});
 
 const item = (amount: number, over: Partial<Parameters<typeof shopDisplayPrice>[1]> = {}) => ({
 	currency: USD,
@@ -199,8 +206,69 @@ describe("loadShopPriceDisplay — what the store's options say to show", () => 
 			pricesIncludeTax: true,
 			roundAtSubtotal: true,
 			ratesByClass: { standard: 2000, reduced: 500 },
+			ratesPpmByClass: { standard: 200_000, reduced: 50_000 },
 		});
 	});
+
+	test.each([
+		["prices entered without tax, shown including", false, "incl", 100_000, 108_875],
+		["prices entered with tax, shown excluding", true, "excl", 108_875, 100_000],
+	] as const)(
+		"#425 x #423: an 8.875 percent rate shows the exact rate, as checkout charges — %s",
+		async (_name, pricesIncludeTax, displayShop, entered, shown) => {
+			await shippingRules.createZone({ id: "z-ny", name: "NYC", regions: ["US-NY"] });
+			await taxRules.createRate({
+				id: "t-ny-std",
+				taxClassId: "standard",
+				zoneId: "z-ny",
+				rateBps: 888,
+				ratePpm: 88_750,
+				appliesToShipping: false,
+			});
+			await save({
+				...on,
+				pricesIncludeTax,
+				displayShop,
+				baseAddress: { country: "US", region: "NY" },
+			});
+			const loaded = await load();
+			expect(loaded).toMatchObject({
+				ratesByClass: { standard: 888 },
+				ratesPpmByClass: { standard: 88_750 },
+			});
+			const price = shopDisplayPrice(loaded, item(entered));
+			// By hand: 1000.00 x 8.875% = 88.75 exactly; the rounded 888 bps would give 88.80.
+			expect(price).toBe(shown);
+			// The checkout's own rate table over the same zone charges the same tax.
+			const table = rateTableOf(await taxRules.listRatesForZone("z-ny"));
+			const quoted = applyRateTable(
+				{
+					purpose: "quote",
+					currency: USD,
+					pricesIncludeTax,
+					lines: [
+						{
+							lineId: "l",
+							quantity: 1,
+							unitPriceCents: cents(entered),
+							amountCents: cents(entered),
+							taxClassId: "standard",
+							taxStatus: "taxable",
+							requiresShipping: false,
+						},
+					],
+					shipping: null,
+					origin: null,
+					destination: null,
+					zoneId: "z-ny",
+				},
+				table,
+				new Map(),
+				{ roundAtSubtotal: false },
+			);
+			expect(quoted.lines[0]?.taxCents).toBe(8875);
+		},
+	);
 
 	test("based on the shipping address still prices a shopper at the base (WooCommerce's default)", async () => {
 		await save({ ...on, basedOn: "shipping", baseAddress: { country: "US", region: null } });
@@ -269,6 +337,7 @@ describe("loadCartPriceDisplay — the cart page's lines follow displayCart (Woo
 			pricesIncludeTax: false,
 			roundAtSubtotal: false,
 			ratesByClass: { standard: 2000 },
+			ratesPpmByClass: { standard: 200_000 },
 		});
 	});
 

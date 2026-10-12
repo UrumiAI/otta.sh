@@ -131,6 +131,7 @@ export type ShopPriceDisplayWire =
 			pricesIncludeTax: boolean;
 			roundAtSubtotal: boolean;
 			ratesByClass: Readonly<Record<string, number>>;
+			ratesPpmByClass: Readonly<Record<string, number>>;
 	  };
 // ── end Phase 2 catalog batch read ───────────────────────────────────────
 
