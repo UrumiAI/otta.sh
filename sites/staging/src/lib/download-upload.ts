@@ -59,9 +59,9 @@
  * Replacing uploads a NEW object under a new key; the old object is NOT deleted.
  * Deleting it here (or at the save) could cut off a buyer's download already in
  * flight, and an upload whose save never happens (a closed tab) leaves an object
- * nothing points at either. Both are orphans by design in v1: they cost storage,
- * never access — nothing serves a key the descriptor does not name. DEPLOYMENT.md
- * says how to find and remove them.
+ * nothing points at either. Both cost storage, never access — nothing serves a
+ * key the descriptor does not name — and the site's hourly orphan sweep deletes
+ * them once they are a week old (`download-orphans.ts`, issue #447).
  */
 import {
 	CONSOLE_READ_INTERACTION,
@@ -148,6 +148,9 @@ export type ProductLookup =
 			readonly productId: string;
 			readonly productKind: string;
 			readonly deletedAt: string | null;
+			/** The key of the file the product names, `null` for none — what the
+			 *  orphan sweep keeps (`download-orphans.ts`). */
+			readonly downloadKey: string | null;
 	  }
 	| { readonly kind: "refused"; readonly message: string }
 	| { readonly kind: "busy" }
@@ -170,12 +173,13 @@ export type PluginRouteDispatcher = (
  * the `otta` admin route), dispatched in-process with the signed-in user as the
  * caller — the read the console itself makes. Only call it once the user is
  * known to hold `plugins:manage`: EmDash's HTTP endpoint checks that before it
- * dispatches, and this call stands in for that endpoint.
+ * dispatches, and this call stands in for that endpoint. `user` is absent only
+ * for the orphan sweep, which runs from the cron with no request (`worker.ts`).
  */
 export async function lookupProduct(
 	dispatch: PluginRouteDispatcher | undefined,
 	productId: string,
-	user: UploadUser,
+	user: UploadUser | undefined,
 	baseUrl: URL,
 ): Promise<ProductLookup> {
 	if (dispatch === undefined) return { kind: "failed" };
@@ -220,11 +224,16 @@ export async function lookupProduct(
 	if (typeof row["productId"] !== "string" || typeof row["productKind"] !== "string") {
 		return { kind: "failed" };
 	}
+	const asset = row["downloadAsset"];
+	const assetKey =
+		typeof asset === "object" && asset !== null ? (asset as Record<string, unknown>)["key"] : null;
+	if (assetKey !== null && typeof assetKey !== "string") return { kind: "failed" };
 	return {
 		kind: "found",
 		productId: row["productId"],
 		productKind: row["productKind"],
 		deletedAt: typeof row["deletedAt"] === "string" ? row["deletedAt"] : null,
+		downloadKey: assetKey,
 	};
 }
 
