@@ -42,7 +42,9 @@
  *    domain's own rule: an absent price is expressed by omitting the field, never
  *    by sending zero;
  *  - `currency` — exactly three upper-case letters, on every money field and on
- *    a cart's currency;
+ *    a cart's currency; and, where a write AUTHORS one (a cart's explicit
+ *    currency, a product or variant price), a code in the currency table too
+ *    ({@link requireSupportedCurrency}, issue #457);
  *  - `qty` — a positive integer no greater than 10,000 (the shopper-facing cap,
  *    far tighter than the raw inventory primitive's);
  *  - `sku` — non-empty, and at most 200 characters where the entitlement check
@@ -82,7 +84,12 @@
  * here to carry one, and a caller branches on the code.
  */
 
-import { isCodeShapedRegion, isWellFormedText, ORDER_ADDRESS_MAX_LENGTHS } from "@otta-sh/domain";
+import {
+	isCodeShapedRegion,
+	isSupportedCurrency,
+	isWellFormedText,
+	ORDER_ADDRESS_MAX_LENGTHS,
+} from "@otta-sh/domain";
 
 /** `Date.toISOString()` output, and only that: fixed-width UTC milliseconds. */
 const ISO_MILLIS_UTC = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
@@ -354,12 +361,27 @@ export function requireSku(value: string, max?: number): string {
  *  upper-case letters. */
 export const CURRENCY_SHAPE_REASON = "must be a three-letter ISO-4217 code";
 
-/** The reason an admin write refuses a currency outside the store's currency
- *  table — shared by every screen that authors one (shipping rates, coupons). */
+/** The reason a write refuses a currency outside the store's currency table —
+ *  shared by every path that authors one (shipping rates, coupons, carts,
+ *  product and variant prices). */
 export const UNSUPPORTED_CURRENCY_REASON = "must be a currency the store supports";
 
 export function requireCurrencyCode(field: string, value: string): string {
 	if (!/^[A-Z]{3}$/.test(value)) fail(field, CURRENCY_SHAPE_REASON);
+	return value;
+}
+
+/**
+ * A currency a write AUTHORS (a new rate's, a new coupon's, a cart's explicit
+ * one, a price's): the shape, then membership of the store's currency table
+ * (`@otta-sh/domain`'s `isSupportedCurrency` — the currencies whose minor unit
+ * every money boundary knows). Write paths only — reads and edits that name a
+ * currency already stored keep the shape check, since refusing a stored code
+ * there would strand a row written before this rule.
+ */
+export function requireSupportedCurrency(field: string, value: string): string {
+	requireCurrencyCode(field, value);
+	if (!isSupportedCurrency(value)) fail(field, UNSUPPORTED_CURRENCY_REASON);
 	return value;
 }
 

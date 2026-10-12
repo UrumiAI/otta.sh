@@ -174,6 +174,7 @@ import {
 	requireDocumentIdempotencyKey,
 	requireIdempotencyKey,
 	requireMoney,
+	requireSupportedCurrency,
 	requireNonNegativeInteger,
 	requireNullableInteger,
 	requireProductId,
@@ -316,7 +317,12 @@ export class InProcessCommerceClient implements CommerceClient {
 		requireProductId(productId);
 		requireIdempotencyKey(idempotencyKey);
 		if (input.sku !== undefined) requireSku(input.sku);
-		if (input.price !== undefined) requireMoney("price", input.price);
+		if (input.price !== undefined) {
+			requireMoney("price", input.price);
+			// The currency table, not just the shape (#457): an unlisted code would
+			// price a product no money boundary knows the minor unit of.
+			requireSupportedCurrency("price.currency", input.price.currency);
+		}
 		if (input.title !== undefined) requireTitle(input.title);
 		if (input.weightGrams !== undefined) requireNullableInteger("weightGrams", input.weightGrams);
 		if (input.lengthMm !== undefined) requireNullableInteger("lengthMm", input.lengthMm);
@@ -475,7 +481,10 @@ export class InProcessCommerceClient implements CommerceClient {
 		// price was refused at the wire before the use-case ever saw it, and it has
 		// to be refused here for the same reason — an absent price is expressed by
 		// omitting the field, so a zero is a mistake rather than a clearing.
-		if (input.price !== undefined) requireMoney("price", input.price, { positive: true });
+		if (input.price !== undefined) {
+			requireMoney("price", input.price, { positive: true });
+			requireSupportedCurrency("price.currency", input.price.currency);
+		}
 		try {
 			const result = await updateProductVariantFields(
 				{ productCommerce: this.#stores.productCommerce, inventory: this.#stores.inventory },
@@ -571,7 +580,8 @@ export class InProcessCommerceClient implements CommerceClient {
 	}
 
 	/**
-	 * A new, empty cart. An explicit `currency` wins (shape-checked, as always);
+	 * A new, empty cart. An explicit `currency` wins (checked against the currency
+	 * table, #457 — a cart in an unlisted code would reach checkout);
 	 * with none, the cart is in the STORE currency — the operator's saved setting,
 	 * or USD for a store that never saved one (`effectiveStoreCurrency`), which is
 	 * the default this surface always applied.
@@ -588,7 +598,7 @@ export class InProcessCommerceClient implements CommerceClient {
 	 * and every later cart operation reads the same document anyway (hold TTL).
 	 */
 	async createCart(currency?: string): Promise<{ cartId: string }> {
-		if (currency !== undefined) requireCurrencyCode("currency", currency);
+		if (currency !== undefined) requireSupportedCurrency("currency", currency);
 		const chosen = currency ?? effectiveStoreCurrency(await this.#stores.settingsStore.get());
 		const cartId = await createCart(this.#cartDeps, toCurrency(chosen));
 		return { cartId };
@@ -609,7 +619,7 @@ export class InProcessCommerceClient implements CommerceClient {
 	 */
 	async replaceCart(spentCartId: string, currency?: string): Promise<ReplaceCartResult> {
 		requireIdToken("cartId", spentCartId);
-		if (currency !== undefined) requireCurrencyCode("currency", currency);
+		if (currency !== undefined) requireSupportedCurrency("currency", currency);
 		return replaceSpentCart(
 			{ ...this.#cartDeps, orderStore: this.#stores.orderStore },
 			spentCartId,
