@@ -115,6 +115,8 @@ import {
 	type QuoteResult as DomainQuoteResult,
 	orderTaxRows,
 	readOrderTaxSnapshot,
+	RATE_TABLE_CALCULATOR_ID,
+	TAX_DISABLED_CALCULATOR_ID,
 	taxTotalsDisplayOf,
 	type ZoneResolution,
 	roundingEntry,
@@ -1630,6 +1632,12 @@ function quoteTaxWire(quote: Extract<DomainQuoteResult, { ok: true }>): QuoteTax
 	return {
 		enabled: quote.taxSettings.enabled,
 		located: quote.taxLocated,
+		// Only an outside calculator is an estimate; omitted otherwise, so the
+		// built-in's quote wire is unchanged.
+		...(quote.tax.calculatorId !== RATE_TABLE_CALCULATOR_ID &&
+		quote.tax.calculatorId !== TAX_DISABLED_CALCULATOR_ID
+			? { estimate: true }
+			: {}),
 		pricesIncludeTax: quote.tax.pricesIncludeTax,
 		displayCart: quote.taxSettings.displayCart,
 		totalsDisplay: quote.taxSettings.totalsDisplay,
@@ -1643,7 +1651,8 @@ function quoteTaxWire(quote: Extract<DomainQuoteResult, { ok: true }>): QuoteTax
  * snapshot, so its pages show the subtotal net and the rows still sum to the
  * total. With `totalsDisplay` "itemized" (the store's "Display tax totals",
  * resolved by the caller — issue #422), an order whose snapshot itemizes
- * (`orderTaxRows`) carries one row per tax. Every other order keeps today's
+ * (`orderTaxRows`) carries one row per tax. An order priced with tax switched off
+ * carries `tax.enabled: false` (no Tax row). Every other order keeps today's
  * single "Tax" row (no `tax` key).
  *
  * Tax calculated for a place with no shipping zone (ADR-0032: a digital cart
@@ -1657,6 +1666,24 @@ function orderTaxWire(
 ): { tax?: QuoteTaxWire; taxLocated?: true } {
 	const snapshot = readOrderTaxSnapshot(order.totals.taxBreakdown);
 	if (snapshot === null || snapshot.v !== 1) return {};
+	// An order priced while tax was switched off says so from its own frozen
+	// calculator id (#420), so its pages hide the Tax row like the review did.
+	// Older snapshots carry other ids and keep today's single row. The zero-tax
+	// check keeps the row on any order that did charge tax, even if an outside
+	// calculator reused the id. `taxLocated` only matters while tax is on.
+	if (snapshot.calculatorId === TAX_DISABLED_CALCULATOR_ID && Number(order.totals.tax) === 0) {
+		return {
+			tax: {
+				enabled: false,
+				located: false,
+				pricesIncludeTax: false,
+				displayCart: "excl",
+				totalsDisplay: "single",
+				lineTaxCents: 0,
+				itemized: [],
+			},
+		};
+	}
 	const located = snapshot.located === true;
 	const flag = located ? { taxLocated: true as const } : {};
 	const rows = totalsDisplay === "itemized" ? orderTaxRows(order.totals) : null;

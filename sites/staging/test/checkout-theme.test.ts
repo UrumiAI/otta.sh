@@ -866,3 +866,11 @@ describe("/checkout/pay — the page keeps the money path and hands it to the vi
 		expect(body).toMatch(/<Storefront[^>]*view="pay"/);
 	});
 });
+
+describe("the Tempered checkout prints the tax estimate note (#429)", () => {
+	test("CheckoutView hands the view model's estimate note to Sum as its own prop", () => {
+		const view = read("themes/tempered/CheckoutView.astro");
+		expect(templateOf(view)).toMatch(/estimateNote=\{summary\.totals\.taxEstimateNote\}/);
+		expect(templateOf(view)).toMatch(/taxNote=\{summary\.totals\.taxIncludedNote\}/);
+	});
+});

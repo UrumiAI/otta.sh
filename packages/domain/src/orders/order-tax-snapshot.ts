@@ -1,4 +1,5 @@
 import type { Cents } from "../money/cents.js";
+import { isProductTaxStatus, type ProductTaxStatus } from "../ports/product-commerce-store.js";
 import type { TaxLine, TaxResult } from "../pricing/tax-calculator.js";
 import type { TotalsBreakdown } from "../pricing/types.js";
 
@@ -16,14 +17,29 @@ export interface OrderTaxSnapshotV1 {
 	/**
 	 * The tax was really calculated for a place (ADR-0032): a tax location matched
 	 * a zone — the shipping zone, or the shop base address for a digital-only cart
-	 * or a "based on the shop" store, which leaves the order with no shipping zone.
+	 * or a "based on the shop" store, which leaves the order with no shipping zone —
+	 * or an outside calculator charged tax with no zone at all (#436).
 	 * Written by every order since; ABSENT on a v1 snapshot written before it, which
 	 * reads as not located, so those orders keep deciding "was tax calculated?" off
 	 * the shipping zone alone, exactly as before.
 	 */
 	located?: boolean;
 	/** One per order line, in order-line order (`lineIndex` indexes `order.lines`). */
-	lines: Array<{ lineIndex: number; taxClassId: string; taxableCents: Cents } & TaxLine>;
+	lines: Array<
+		{
+			lineIndex: number;
+			taxClassId: string;
+			/**
+			 * The product's tax status at checkout (#427), so the order can still
+			 * explain why the line was or was not taxed after the product changes.
+			 * Written by every order since; ABSENT on a line written before it (or
+			 * holding a value this reader does not know), which reads as unknown —
+			 * never guessed as "taxable".
+			 */
+			taxStatus?: ProductTaxStatus;
+			taxableCents: Cents;
+		} & TaxLine
+	>;
 	shipping: ({ taxableCents: Cents } & TaxLine) | null;
 }
 
@@ -48,8 +64,10 @@ export type OrderTaxSnapshot = OrderTaxSnapshotV1 | OrderTaxSnapshotV0;
 export function buildOrderTaxSnapshot(
 	breakdown: TotalsBreakdown,
 	tax: { calculatorId: string; result: TaxResult; pricesIncludeTax?: boolean },
-	/** The quote's `taxLocated`: a tax location matched a zone. */
+	/** The quote's `taxLocated`: a tax location matched a zone, or tax was charged without one. */
 	located: boolean,
+	/** Each line's product tax status, as the calculator was asked (line order). */
+	taxStatuses: readonly ProductTaxStatus[],
 ): OrderTaxSnapshotV1 {
 	return {
 		v: 1,
@@ -59,9 +77,14 @@ export function buildOrderTaxSnapshot(
 		lines: breakdown.lineBreakdown.map((line, lineIndex) => {
 			const answered = tax.result.lines[lineIndex];
 			if (answered === undefined) throw new RangeError(`no tax line for line ${String(lineIndex)}`);
+			const taxStatus = taxStatuses[lineIndex];
+			if (taxStatus === undefined) {
+				throw new RangeError(`no tax status for line ${String(lineIndex)}`);
+			}
 			return {
 				lineIndex,
 				taxClassId: line.taxClassId,
+				taxStatus,
 				taxableCents: line.discountedCents,
 				rateBps: answered.rateBps,
 				label: answered.label,
@@ -104,9 +127,20 @@ function readV1(raw: Record<string, unknown>): OrderTaxSnapshotV1 | null {
 		if (!isRecord(item) || !isCount(item["lineIndex"]) || typeof item["taxClassId"] !== "string") {
 			return null;
 		}
+		// Optional and display-only (#427): a line from before the field omits it,
+		// and a value this code does not know (a future status, read after a
+		// rollback) is DROPPED — the line reads as unknown — rather than nulling a
+		// snapshot the storefront, account pages and emails still lay tax out from.
+		const rawStatus = item["taxStatus"];
+		const taxStatus = isProductTaxStatus(rawStatus) ? rawStatus : undefined;
 		const line = taxedOf(item);
 		if (line === null) return null;
-		out.push({ lineIndex: item["lineIndex"], taxClassId: item["taxClassId"], ...line });
+		out.push({
+			lineIndex: item["lineIndex"],
+			taxClassId: item["taxClassId"],
+			...(taxStatus !== undefined ? { taxStatus } : {}),
+			...line,
+		});
 	}
 	let ship: OrderTaxSnapshotV1["shipping"] = null;
 	if (shipping !== null) {
