@@ -92,7 +92,9 @@ pay must not change silently (user decision 4).
   lines; rate-less stores' snapshots record `otta.tax-disabled`.
 - An order taxed at the shop base address with no shipping zone (a digital-only cart) records
   `located: true` on its v1 tax snapshot, so its pages and emails show the tax charged rather
-  than "Not calculated". v1 snapshots written without the field read as not located (the
+  than "Not calculated". So does an order whose outside calculator (ADR-0030) charged tax
+  without any shipping zone matching (#436): `located` means a place resolved to a zone, or
+  tax was charged. v1 snapshots written without the field read as not located (the
   shipping-zone rule, as before); the version stays 1 because the field is optional.
 - With prices shown the other way from how they were entered and a coupon applied, the
   subtotal and discount split the line tax pro rata, because tax is known only on the
