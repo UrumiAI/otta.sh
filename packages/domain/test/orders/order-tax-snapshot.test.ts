@@ -48,11 +48,17 @@ describe("readOrderTaxSnapshot", () => {
 		expect(readOrderTaxSnapshot(JSON.parse(JSON.stringify(billed)))).toEqual(billed);
 		const withRegion = { ...v1, taxAddress: { basis: "billing", country: "US", region: "CA" } };
 		expect(readOrderTaxSnapshot(withRegion)).toEqual(withRegion);
+		for (const basis of ["base", "shipping"]) {
+			const other = { ...v1, taxAddress: { basis, country: "GB", region: null } };
+			expect(readOrderTaxSnapshot(other)).toEqual(other);
+		}
 		const old = readOrderTaxSnapshot(v1);
 		expect(old !== null && "taxAddress" in old).toBe(false);
 		for (const bad of [
 			"DE",
-			{ basis: "shipping", country: "DE", region: null },
+			{ basis: "elsewhere", country: "DE", region: null },
+			{ basis: "billing", country: "de", region: null },
+			{ basis: "billing", country: "DEU", region: null },
 			{ basis: "billing", country: 7, region: null },
 			{ basis: "billing", country: "DE" },
 			{ basis: "billing", country: "DE", region: 1 },

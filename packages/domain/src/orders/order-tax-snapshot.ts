@@ -23,11 +23,12 @@ export interface OrderTaxSnapshotV1 {
 	 */
 	located?: boolean;
 	/**
-	 * The address the tax was charged for, when it is not one the order already
-	 * holds (#426): the buyer's billing location, for a cart that shipped nothing
-	 * under "based on the customer's billing address". ABSENT otherwise — the
-	 * tax location is then the order's ship-to or the shop's base address, as
-	 * before — and on every snapshot written before it.
+	 * Which address the tax was charged for (#426), written on every order priced
+	 * under "based on the customer's billing address": the buyer's self-declared
+	 * billing location, the shop's base address (a digital cart whose buyer gave
+	 * none), or the ship-to (a cart that ships). ABSENT under every other option —
+	 * those orders are snapshotted exactly as before — when no address was used,
+	 * and on every snapshot written before it.
 	 */
 	taxAddress?: OrderTaxAddress;
 	/** One per order line, in order-line order (`lineIndex` indexes `order.lines`). */
@@ -37,7 +38,7 @@ export interface OrderTaxSnapshotV1 {
 
 /** Where an order's tax was charged, frozen with it (#426). */
 export interface OrderTaxAddress {
-	basis: "billing";
+	basis: "billing" | "base" | "shipping";
 	/** ISO 3166-1 alpha-2. */
 	country: string;
 	/** ISO 3166-2 subdivision suffix, or null. */
@@ -67,20 +68,20 @@ export function buildOrderTaxSnapshot(
 	tax: { calculatorId: string; result: TaxResult; pricesIncludeTax?: boolean },
 	/** The quote's `taxLocated`: a tax location matched a zone. */
 	located: boolean,
-	/** The quote's `billingLocation`, when the buyer's location was the tax location. */
-	billingLocation?: { country: string; region: string | null },
+	/** The quote's `taxAddress` (#426), when it has one. */
+	taxAddress?: OrderTaxAddress,
 ): OrderTaxSnapshotV1 {
 	return {
 		v: 1,
 		calculatorId: tax.calculatorId,
 		pricesIncludeTax: tax.pricesIncludeTax === true,
 		located,
-		...(billingLocation !== undefined
+		...(taxAddress !== undefined
 			? {
 					taxAddress: {
-						basis: "billing" as const,
-						country: billingLocation.country,
-						region: billingLocation.region,
+						basis: taxAddress.basis,
+						country: taxAddress.country,
+						region: taxAddress.region,
 					},
 				}
 			: {}),
@@ -156,12 +157,13 @@ function readV1(raw: Record<string, unknown>): OrderTaxSnapshotV1 | null {
 }
 
 function readTaxAddress(raw: unknown): OrderTaxAddress | null {
-	if (!isRecord(raw) || raw["basis"] !== "billing" || typeof raw["country"] !== "string") {
-		return null;
-	}
-	const region = raw["region"];
+	if (!isRecord(raw)) return null;
+	const { basis, country, region } = raw;
+	if (basis !== "billing" && basis !== "base" && basis !== "shipping") return null;
+	// ISO 3166-1 alpha-2, as the quote normalised it.
+	if (typeof country !== "string" || !/^[A-Z]{2}$/.test(country)) return null;
 	if (region !== null && typeof region !== "string") return null;
-	return { basis: "billing", country: raw["country"], region };
+	return { basis, country, region };
 }
 
 function taxedOf(item: Record<string, unknown>): ({ taxableCents: Cents } & TaxLine) | null {

@@ -50,6 +50,7 @@ export {
 	type QuoteFailure,
 	type QuoteResult,
 	type QuoteTax,
+	type QuoteTaxAddress,
 } from "./pricing/quote.js";
 // ADR-0032: the store's tax options (WooCommerce's Tax tab).
 export {

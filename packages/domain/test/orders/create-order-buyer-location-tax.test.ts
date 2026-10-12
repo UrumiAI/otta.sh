@@ -130,15 +130,19 @@ describe("setting ON: based on the customer's billing address", () => {
 		);
 		if (!res.ok) throw new Error(res.reason);
 		expect(res.order.totals.tax).toBe(200); // the base address, as the review priced it
-		expect(res.order.totals.taxBreakdown).not.toHaveProperty("taxAddress");
+		expect(res.order.totals.taxBreakdown).toMatchObject({
+			taxAddress: { basis: "base", country: "GB", region: null },
+		});
 	});
 
-	test("no billing location at all ⇒ the base address, nothing recorded", async () => {
+	test("no billing location at all ⇒ the base address, and the snapshot says so", async () => {
 		await save(BY_BUYER);
 		const res = await place(digitalCommand(await ebook()));
 		if (!res.ok) throw new Error(res.reason);
 		expect(res.order.totals.tax).toBe(200);
-		expect(res.order.totals.taxBreakdown).not.toHaveProperty("taxAddress");
+		expect(res.order.totals.taxBreakdown).toMatchObject({
+			taxAddress: { basis: "base", country: "GB", region: null },
+		});
 	});
 
 	test("a malformed billing location refuses the checkout before anything is minted", async () => {
@@ -161,7 +165,7 @@ describe("setting ON: based on the customer's billing address", () => {
 		expect(replay.order.totals.tax).toBe(190);
 	});
 
-	test("a mixed cart (something ships) is taxed by its ship-to, nothing recorded", async () => {
+	test("a mixed cart (something ships) is taxed by its ship-to, recorded as such", async () => {
 		await save(BY_BUYER);
 		const cartId = await h.cartWith([
 			{ sku: "MUG", productId: "p1", qty: 1, kind: "physical" },
@@ -182,6 +186,8 @@ describe("setting ON: based on the customer's billing address", () => {
 		);
 		if (!res.ok) throw new Error(res.reason);
 		expect(res.order.totals.tax).toBe(400 + 100); // UK 20% on 2000 + shipping
-		expect(res.order.totals.taxBreakdown).not.toHaveProperty("taxAddress");
+		expect(res.order.totals.taxBreakdown).toMatchObject({
+			taxAddress: { basis: "shipping", country: "GB", region: null },
+		});
 	});
 });

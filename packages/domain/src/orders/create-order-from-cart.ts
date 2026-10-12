@@ -37,7 +37,7 @@ import type { CreateOrderFailure } from "./errors.js";
 import { snapshotOrderLine } from "./line-snapshot.js";
 import type { Order, OrderAddress, PaymentMethod } from "./model.js";
 import { normalizeOrderAddress, type OrderAddressInput } from "./order-address.js";
-import { buildOrderTaxSnapshot } from "./order-tax-snapshot.js";
+import { buildOrderTaxSnapshot, type OrderTaxAddress } from "./order-tax-snapshot.js";
 import { gatewayForStored } from "./payment-methods.js";
 
 /** 15 minutes — the checkout hold TTL (§9 decision 5), configurable. */
@@ -431,7 +431,7 @@ export async function createOrderFromCart(
 			breakdown,
 			tax: quote.tax,
 			taxLocated: quote.taxLocated,
-			...(quote.billingLocation !== undefined ? { billingLocation: quote.billingLocation } : {}),
+			...(quote.taxAddress !== undefined ? { taxAddress: quote.taxAddress } : {}),
 			couponRecord: quote.couponRecord,
 			shippingMethodSnapshot,
 			shippingAddress,
@@ -503,8 +503,8 @@ interface FinalizeContext {
 	tax: QuoteTax;
 	/** The quote's `taxLocated`, frozen into the snapshot (ADR-0032). */
 	taxLocated: boolean;
-	/** The quote's `billingLocation` (#426), frozen into the snapshot. */
-	billingLocation?: { country: string; region: string | null };
+	/** The quote's `taxAddress` (#426), frozen into the snapshot. */
+	taxAddress?: OrderTaxAddress;
 	couponRecord: CouponRecord | null;
 	/** What priced the shipping and tax (ADR-0021 Decision 7); null when no zone
 	 *  matched (no zones configured, or nothing ships). */
@@ -569,7 +569,7 @@ async function finalizeOrder(
 			appliedCouponCode: breakdown.appliedCouponCode ?? null,
 			shippingMethodSnapshot: ctx.shippingMethodSnapshot,
 			// ADR-0030: the typed v1 snapshot, written once, never recomputed.
-			taxBreakdown: buildOrderTaxSnapshot(breakdown, ctx.tax, ctx.taxLocated, ctx.billingLocation),
+			taxBreakdown: buildOrderTaxSnapshot(breakdown, ctx.tax, ctx.taxLocated, ctx.taxAddress),
 		},
 	});
 	// Issue #133, race twin of the I1 cart check: a same-key call for ANOTHER cart

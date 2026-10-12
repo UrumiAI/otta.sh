@@ -109,7 +109,7 @@ describe("setting OFF (based on shipping or base): digital carts exactly as befo
 			if (!without.ok || !withLocation.ok) throw new Error("refused");
 			expect(withLocation.breakdown.taxCents).toBe(200); // the UK's 20%
 			expect(withLocation).toEqual(without);
-			expect("billingLocation" in withLocation).toBe(false);
+			expect("taxAddress" in withLocation).toBe(false);
 		},
 	);
 
@@ -127,7 +127,7 @@ describe("setting ON (based on the customer's billing address)", () => {
 		if (!q.ok) throw new Error(q.reason);
 		expect(q.breakdown.taxCents).toBe(190); // Germany's 19%, not the UK's 20%
 		expect(q.taxLocated).toBe(true);
-		expect(q.billingLocation).toEqual({ country: "DE", region: null });
+		expect(q.taxAddress).toEqual({ basis: "billing", country: "DE", region: null });
 	});
 
 	test("the buyer's region picks a region-level zone", async () => {
@@ -135,7 +135,7 @@ describe("setting ON (based on the customer's billing address)", () => {
 		const q = await computeQuote(deps, digital({ country: "US", region: "ca" }));
 		if (!q.ok) throw new Error(q.reason);
 		expect(q.breakdown.taxCents).toBe(73); // 7.25% of 1000, half up
-		expect(q.billingLocation).toEqual({ country: "US", region: "CA" });
+		expect(q.taxAddress).toEqual({ basis: "billing", country: "US", region: "CA" });
 	});
 
 	test("the calculator is asked for the billing location and the zone it matched", async () => {
@@ -151,12 +151,20 @@ describe("setting ON (based on the customer's billing address)", () => {
 		expect(calc.seen[0]?.zoneId).toBe("z-de");
 	});
 
-	test("no billing location given ⇒ the base address, as before (nothing recorded)", async () => {
+	test("no billing location given ⇒ the base address, as before — and the basis says so", async () => {
 		await save(BY_BUYER);
 		const q = await computeQuote(deps, digital());
 		if (!q.ok) throw new Error(q.reason);
 		expect(q.breakdown.taxCents).toBe(200);
-		expect("billingLocation" in q).toBe(false);
+		expect(q.taxAddress).toEqual({ basis: "base", country: "GB", region: null });
+	});
+
+	test("no billing location and no base address ⇒ untaxed, as before, nothing recorded", async () => {
+		await save({ ...BY_BUYER, baseAddress: null });
+		const q = await computeQuote(deps, digital());
+		if (!q.ok) throw new Error(q.reason);
+		expect(q.breakdown.taxCents).toBe(0);
+		expect("taxAddress" in q).toBe(false);
 	});
 
 	test("a billing location no zone matches ⇒ 0%, never a refusal, still recorded", async () => {
@@ -165,7 +173,7 @@ describe("setting ON (based on the customer's billing address)", () => {
 		if (!q.ok) throw new Error(q.reason);
 		expect(q.breakdown.taxCents).toBe(0);
 		expect(q.taxLocated).toBe(false);
-		expect(q.billingLocation).toEqual({ country: "FR", region: null });
+		expect(q.taxAddress).toEqual({ basis: "billing", country: "FR", region: null });
 	});
 
 	test("a country that is not an ISO code is refused like a ship-to's", async () => {
@@ -189,7 +197,7 @@ describe("setting ON (based on the customer's billing address)", () => {
 		const q = await computeQuote(deps, digital({ country: "DE" }));
 		if (!q.ok) throw new Error(q.reason);
 		expect(q.breakdown.taxCents).toBe(0);
-		expect("billingLocation" in q).toBe(false);
+		expect("taxAddress" in q).toBe(false);
 	});
 
 	test("a cart that ships is still taxed by its ship-to; the billing location is not read", async () => {
@@ -212,6 +220,39 @@ describe("setting ON (based on the customer's billing address)", () => {
 		if (!plain.ok || !withBilling.ok) throw new Error("refused");
 		expect(withBilling.breakdown.taxCents).toBe(400 + 100); // UK 20% on 2000 + shipping
 		expect(withBilling).toEqual(plain);
-		expect("billingLocation" in withBilling).toBe(false);
+		expect(withBilling.taxAddress).toEqual({ basis: "shipping", country: "GB", region: null });
+	});
+});
+
+describe("a country whose zones go down to its regions (review round 1)", () => {
+	beforeEach(async () => {
+		// Spain 21%, with the Canaries (ES-CN) zoned apart and untaxed here.
+		await deps.shippingRules.createZone({ id: "z-es", name: "Spain", regions: ["ES"] });
+		await deps.shippingRules.createZone({ id: "z-cn", name: "Canaries", regions: ["ES-CN"] });
+		await deps.taxRules.createRate({
+			id: "t-es",
+			taxClassId: "standard",
+			zoneId: "z-es",
+			rateBps: 2100,
+			appliesToShipping: true,
+		});
+		await save(BY_BUYER);
+	});
+
+	test("no region ⇒ SHIPPING_REGION_CODE_REQUIRED (as a ship-to), never a silent 0%", async () => {
+		expect(await computeQuote(deps, digital({ country: "ES", region: null }))).toEqual({
+			ok: false,
+			reason: "SHIPPING_REGION_CODE_REQUIRED",
+		});
+	});
+
+	test("a mainland region ⇒ the country zone's 21%; the Canaries ⇒ their own zone", async () => {
+		const madrid = await computeQuote(deps, digital({ country: "ES", region: "MD" }));
+		if (!madrid.ok) throw new Error(madrid.reason);
+		expect(madrid.breakdown.taxCents).toBe(210);
+		const canaries = await computeQuote(deps, digital({ country: "ES", region: "CN" }));
+		if (!canaries.ok) throw new Error(canaries.reason);
+		expect(canaries.breakdown.taxCents).toBe(0);
+		expect(canaries.taxLocated).toBe(true);
 	});
 });
