@@ -1636,8 +1636,10 @@ function orderTaxWire(order: Order): { tax?: QuoteTaxWire; taxLocated?: true } {
 	if (snapshot === null || snapshot.v !== 1) return {};
 	// An order priced while tax was switched off says so from its own frozen
 	// calculator id (#420), so its pages hide the Tax row like the review did.
-	// Older snapshots carry other ids and keep today's single row.
-	if (snapshot.calculatorId === TAX_DISABLED_CALCULATOR_ID) {
+	// Older snapshots carry other ids and keep today's single row. The zero-tax
+	// check keeps the row on any order that did charge tax, even if an outside
+	// calculator reused the id. `taxLocated` only matters while tax is on.
+	if (snapshot.calculatorId === TAX_DISABLED_CALCULATOR_ID && Number(order.totals.tax) === 0) {
 		return {
 			tax: {
 				enabled: false,
