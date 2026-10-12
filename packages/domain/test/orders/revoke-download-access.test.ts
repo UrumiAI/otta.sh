@@ -108,6 +108,40 @@ describe("revokeOrderDownloadAccess", () => {
 		expect(await listOrderNotes(deps, order.id)).toHaveLength(1);
 	});
 
+	test("a PENDING order is refused and nothing is recorded — a later settle would grant past it", async () => {
+		await h.seedDigital({ productId: "d1", sku: "DIG-1", priceCents: 900, title: "Ebook" });
+		const cartId = await h.cartWith([{ sku: "DIG-1", productId: "d1", qty: 1, kind: "digital" }]);
+		const res = await createOrderFromCart(h.createDeps, {
+			cartId,
+			idempotencyKey: idempotencyKey("order-pending"),
+			buyerRef: "buyer@example.com",
+			paymentMethod: h.stripeGw.id,
+		});
+		if (!res.ok) throw new Error(res.reason);
+
+		expect(await revoke(res.order)).toEqual({ ok: false, reason: "NOT_DELIVERABLE" });
+		expect(await listOrderNotes(deps, res.order.id)).toEqual([]);
+	});
+
+	test("a replay that closes a grant written after the first revoke says it revoked", async () => {
+		const order = await paidOrder("digital");
+		await revoke(order);
+		// A grant landing after the revoke (a settle redelivery under a new key).
+		await h.entitlementStore.grant({
+			orderId: order.id,
+			productId: null,
+			sku: SKU,
+			buyerRef: "buyer@example.com",
+			source: "order_paid",
+			grantIdempotencyKey: idempotencyKey("late-grant"),
+		});
+		expect(await h.entitlementStore.check({ orderId: order.id, sku: SKU })).toBe(true);
+
+		expect(await revoke(order)).toEqual({ ok: true, revoked: true });
+		expect(await h.entitlementStore.check({ orderId: order.id, sku: SKU })).toBe(false);
+		expect(await listOrderNotes(deps, order.id)).toHaveLength(1);
+	});
+
 	test("an order with no digital line is refused and nothing is recorded", async () => {
 		const order = await paidOrder("physical");
 		expect(await revoke(order)).toEqual({ ok: false, reason: "NO_DOWNLOADS" });

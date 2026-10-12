@@ -199,6 +199,10 @@ export interface OrderDetailResult {
 	/** The legal outbound transitions from the current state — the domain state
 	 *  machine, forwarded by the service (never re-derived plugin-side). */
 	allowedTransitions: string[];
+	/** The order's download access (issue #447), present only on a paid-side
+	 *  order with a digital line: `open` while a grant still authorizes it,
+	 *  `revoked` once none does. Absent: no download control applies. */
+	downloads?: "open" | "revoked";
 }
 
 /** A saved profile address on the wire (admin-UX Increment 1). This is the
@@ -466,7 +470,7 @@ export type AddNoteResult =
 /** POST revoke-downloads (issue #447). `revoked: false` on an `ok` is the
  *  idempotent replay: access was already closed by this action. A refusal
  *  carries the domain's reason: `ORDER_NOT_FOUND`, `NO_DOWNLOADS` (no digital
- *  line), or `INVALID_INPUT`. */
+ *  line), `NOT_DELIVERABLE` (not a paid-side order), or `INVALID_INPUT`. */
 export type RevokeDownloadAccessResult =
 	| { ok: true; revoked: boolean }
 	| { ok: false; status: number; reason: string };

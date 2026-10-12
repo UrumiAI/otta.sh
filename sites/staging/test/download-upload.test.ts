@@ -119,6 +119,9 @@ function makeDispatcher(answer: ProductAnswer) {
 						productId: answer.productId ?? PRODUCT,
 						productKind: answer.productKind,
 						deletedAt: answer.deletedAt ?? null,
+						// The plugin's product wire always carries the field; a row
+						// without it is a failed read (issue #447).
+						downloadAsset: null,
 						updatedAt: "2026-10-06T00:00:00.000Z",
 					},
 				},

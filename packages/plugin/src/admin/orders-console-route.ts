@@ -207,6 +207,9 @@ export interface ConsoleDetailPayload {
 	readonly timeline: OrderTimelineWire | null;
 	readonly refunds: RefundsSummaryWire | null;
 	readonly notes: readonly OrderNoteWire[];
+	/** Download access (issue #447): `open` offers Revoke download access,
+	 *  `revoked` says it was revoked; absent shows neither. */
+	readonly downloads?: "open" | "revoked";
 	readonly vocabulary: ConsoleVocabulary;
 }
 
@@ -342,6 +345,7 @@ async function consoleDetail(
 		timeline: surfaces.timeline,
 		refunds: surfaces.refunds,
 		notes: surfaces.notes,
+		...(detail.downloads !== undefined ? { downloads: detail.downloads } : {}),
 		vocabulary: CONSOLE_VOCABULARY,
 	};
 }

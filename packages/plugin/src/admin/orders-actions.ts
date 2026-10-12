@@ -516,7 +516,9 @@ const revokeDownloadsAction: OrdersAction = async (client, payload, operator) =>
 			description:
 				result.reason === "NO_DOWNLOADS"
 					? "This order has no download to close. Nothing was changed."
-					: "That could not be done. Nothing was changed — reload the order and try again.",
+					: result.reason === "NOT_DELIVERABLE"
+						? "This order’s downloads are not open: it is not paid, or its money was returned. Nothing was changed."
+						: "That could not be done. Nothing was changed — reload the order and try again.",
 		});
 	}
 	return applied(

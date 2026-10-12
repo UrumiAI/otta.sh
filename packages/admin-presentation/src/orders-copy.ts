@@ -315,6 +315,10 @@ export const MARK_REFUNDED_CONFIRM = {
 export const REVOKE_DOWNLOADS_NOTE =
 	"Buyers can download this order’s files. After a dispute or chargeback, revoke access here: refunds and cancellations made in Otta already do it.";
 
+/** What the Downloads group says once access is closed. */
+export const DOWNLOADS_REVOKED_NOTE =
+	"Download access was revoked. The buyer’s download links for this order no longer work.";
+
 /** The confirm before revoking. Revocation is terminal, so the text says it
  *  cannot be undone, and that it moves no money and emails nobody. */
 export const REVOKE_DOWNLOADS_CONFIRM = {

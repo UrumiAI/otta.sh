@@ -2,6 +2,7 @@ import type { IdempotencyKey, OrderId } from "../money/ids.js";
 import type { EntitlementStore } from "../ports/entitlement-store.js";
 import type { OrderNotesStore } from "../ports/order-notes-store.js";
 import type { OrderStore } from "../ports/order-store.js";
+import { isDownloadDeliverableState } from "./download-deliverable.js";
 
 export interface RevokeDownloadAccessDeps {
 	orderStore: OrderStore;
@@ -20,10 +21,15 @@ export interface RevokeDownloadAccessCommand {
 	idempotencyKey: IdempotencyKey;
 }
 
-export type RevokeDownloadAccessFailure = "ORDER_NOT_FOUND" | "NO_DOWNLOADS" | "EMPTY_REVOKED_BY";
+export type RevokeDownloadAccessFailure =
+	| "ORDER_NOT_FOUND"
+	| "NO_DOWNLOADS"
+	| "NOT_DELIVERABLE"
+	| "EMPTY_REVOKED_BY";
 
-/** `revoked: false` is the idempotent replay: access was already closed by this
- *  command and nothing new was written. */
+/** `revoked: true` when this call recorded the revocation OR flipped a grant
+ *  (a replay that closed a grant written after the first revoke). `false` is
+ *  the pure replay: nothing changed. */
 export type RevokeDownloadAccessOutcome =
 	| { ok: true; revoked: boolean }
 	| { ok: false; reason: RevokeDownloadAccessFailure };
@@ -46,6 +52,19 @@ export const DOWNLOAD_ACCESS_REVOKED_NOTE =
  *
  * An order with no digital line has nothing to revoke and is refused, so the
  * command never writes a note claiming access that never existed was closed.
+ *
+ * ONLY A DELIVERABLE ORDER ({@link isDownloadDeliverableState}). Grants are
+ * written by settlement, so on a `pending` order a revoke would find nothing,
+ * record "revoked", and a later settle would grant an ACTIVE entitlement past
+ * it. Refused as `NOT_DELIVERABLE` with no note; on a `cancelled` or `refunded`
+ * order the gate already refuses, so there is nothing to close.
+ *
+ * RESIDUAL WINDOW. Settlement marks an order paid and then grants; a crash
+ * between the two leaves a paid order with no grant yet, and a revoke there
+ * records the note while the grant the settle retry writes is active. A replay
+ * of this command closes it (and answers `revoked: true`, from the flip
+ * count), but nothing closes it by itself. A durable per-order "revoked"
+ * marker that `grant` honours is the follow-up that removes this window.
  */
 export async function revokeOrderDownloadAccess(
 	deps: RevokeDownloadAccessDeps,
@@ -60,12 +79,14 @@ export async function revokeOrderDownloadAccess(
 		return { ok: false, reason: "NO_DOWNLOADS" };
 	}
 
-	await deps.entitlementStore.revokeByOrder(order.id);
+	if (!isDownloadDeliverableState(order.state)) return { ok: false, reason: "NOT_DELIVERABLE" };
+
+	const flipped = await deps.entitlementStore.revokeByOrder(order.id);
 	const { appended } = await deps.orderNotesStore.append({
 		orderId: order.id,
 		author: revokedBy,
 		body: DOWNLOAD_ACCESS_REVOKED_NOTE,
 		idempotencyKey: cmd.idempotencyKey,
 	});
-	return { ok: true, revoked: appended };
+	return { ok: true, revoked: appended || flipped > 0 };
 }

@@ -102,14 +102,17 @@ export type CurrentDownload =
 	| { readonly kind: "busy" }
 	| { readonly kind: "failed" };
 
-/** The upload endpoint's product read, as the sweep needs it. A refusal (no
- *  such product) keeps the product's objects. */
+/** The upload endpoint's product read, as the sweep needs it. "No such
+ *  product" keeps the product's objects and moves on; any other refusal is a
+ *  failed read, which stops the pass. */
 export function currentDownloadOf(lookup: ProductLookup): CurrentDownload {
 	switch (lookup.kind) {
 		case "found":
 			return { kind: "found", key: lookup.downloadKey };
 		case "refused":
-			return { kind: "gone" };
+			// Only "no such product" lets the sweep skip and carry on; any other
+			// refusal (unreadable request, store unavailable) stops the pass.
+			return lookup.notFound ? { kind: "gone" } : { kind: "failed" };
 		case "busy":
 			return { kind: "busy" };
 		case "failed":
@@ -198,6 +201,9 @@ export async function sweepDownloadOrphans(
 		const prefix = prefixes[(start + i) % prefixes.length];
 		if (prefix === undefined) continue;
 		const productId = prefix.slice(PREFIX.length, -1);
+		// ONE page (up to 1000 objects) per product a pass: a product with more
+		// objects is swept a page at a time over later passes, and its current
+		// file, if on a later page, is aged by its ULID alone.
 		const listed = await bucket.list({ prefix });
 		const isOld = (key: string, uploaded: Date | undefined): boolean => {
 			const time = downloadUploadTime(key, uploaded);

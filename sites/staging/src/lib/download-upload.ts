@@ -66,6 +66,7 @@
 import {
 	CONSOLE_READ_INTERACTION,
 	DOWNLOAD_KEY_RANDOM_BYTES,
+	PRODUCT_NOT_FOUND_TITLE,
 	downloadContentTypeFor,
 	mintDownloadAssetKey,
 	sanitizeDownloadFilename,
@@ -152,7 +153,13 @@ export type ProductLookup =
 			 *  orphan sweep keeps (`download-orphans.ts`). */
 			readonly downloadKey: string | null;
 	  }
-	| { readonly kind: "refused"; readonly message: string }
+	| {
+			readonly kind: "refused";
+			readonly message: string;
+			/** The plugin's "no such product" refusal, as opposed to any other
+			 *  (an unreadable request, an unavailable store). */
+			readonly notFound: boolean;
+	  }
 	| { readonly kind: "busy" }
 	| { readonly kind: "failed" };
 
@@ -214,7 +221,11 @@ export async function lookupProduct(
 		const words = [answer["title"], answer["description"]].filter(
 			(part): part is string => typeof part === "string" && part.length > 0,
 		);
-		return { kind: "refused", message: words.join(". ") || "No product matches that id." };
+		return {
+			kind: "refused",
+			message: words.join(". ") || "No product matches that id.",
+			notFound: answer["title"] === PRODUCT_NOT_FOUND_TITLE,
+		};
 	}
 	const product = answer["product"];
 	if (answer["ok"] !== true || typeof product !== "object" || product === null) {
@@ -224,6 +235,10 @@ export async function lookupProduct(
 	if (typeof row["productId"] !== "string" || typeof row["productKind"] !== "string") {
 		return { kind: "failed" };
 	}
+	// FAIL CLOSED: only an explicit `null` means "no file". A row without the
+	// field (an older plugin, a reshaped answer) is a failed read, never "no
+	// file" — the orphan sweep would otherwise delete the product's live file.
+	if (!("downloadAsset" in row)) return { kind: "failed" };
 	const asset = row["downloadAsset"];
 	const assetKey =
 		typeof asset === "object" && asset !== null ? (asset as Record<string, unknown>)["key"] : null;

@@ -40,7 +40,7 @@ afterAll(async () => {
 
 /** A paid order for one digital line whose product carries a file, with the
  *  grant settlement writes — a buyer the download route authorizes. */
-async function seedPaidDigital(id: string): Promise<OrderId> {
+async function seedPaidDigital(id: string, opts: { paid?: boolean } = {}): Promise<OrderId> {
 	const oid = toOrderId(id);
 	const pid = toProductId(`prod-${id}`);
 	const sku = toSku(`DIG-${id}`);
@@ -84,6 +84,7 @@ async function seedPaidDigital(id: string): Promise<OrderId> {
 		],
 		totals: { subtotal: cents(1500), total: cents(1500), currency: USD },
 	});
+	if (opts.paid === false) return oid;
 	await harness.stores.orderStore.markPaid(oid);
 	await harness.stores.entitlementStore.grant({
 		orderId: oid,
@@ -128,6 +129,25 @@ describe("orders:revoke-downloads", () => {
 		expect((await harness.stores.orderStore.getById(toOrderId(id)))?.state).toBe("paid");
 		const notes = await new InProcessAdminOrdersClient(harness.ctx).listNotes(id);
 		expect(notes.map((n) => n.author)).toEqual(["carol"]);
+	});
+
+	test("the order detail says open before the revoke and revoked after", async () => {
+		const id = await seedPaidDigital("ord-detail");
+		const client = new InProcessAdminOrdersClient(harness.ctx);
+		expect((await client.getOrder(id))?.downloads).toBe("open");
+		await revoke(id, "carol");
+		expect((await client.getOrder(id))?.downloads).toBe("revoked");
+	});
+
+	test("a PENDING order is refused: nothing to close yet, and no note claims it was", async () => {
+		const id = await seedPaidDigital("ord-pending", { paid: false });
+		const res = await revoke(id, "carol");
+		expect(res?.notice).toMatchObject({ variant: "error", title: "Download access not revoked" });
+		expect(res?.notice?.description).toContain("not open");
+		expect(await new InProcessAdminOrdersClient(harness.ctx).listNotes(id)).toEqual([]);
+		expect((await new InProcessAdminOrdersClient(harness.ctx).getOrder(id))?.downloads).toBe(
+			undefined,
+		);
 	});
 
 	test("a second click changes nothing and says access was already closed", async () => {

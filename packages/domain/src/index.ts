@@ -531,6 +531,10 @@ export {
 	type AppendOrderNoteDeps,
 } from "./orders/append-order-note.js";
 export {
+	DOWNLOAD_DELIVERABLE_STATES,
+	isDownloadDeliverableState,
+} from "./orders/download-deliverable.js";
+export {
 	DOWNLOAD_ACCESS_REVOKED_NOTE,
 	revokeOrderDownloadAccess,
 	type RevokeDownloadAccessCommand,

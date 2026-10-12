@@ -81,6 +81,10 @@ export {
 	type ProductsActionPayload,
 	type ProductsActionResult,
 } from "./admin/products-actions.js";
+// The title of the products read's "no such product" refusal — the one refusal
+// the site's orphan sweep treats as "product gone" (issue #447); every other
+// refusal stops the sweep.
+export { PRODUCT_NOT_FOUND_TITLE } from "@otta-sh/admin-presentation";
 // INC-D1 — the console's two interaction types and the products resource prefix,
 // exported so an OUT-OF-BROWSER caller can drive the admin route without
 // restating its wire strings. The staging quickstart seeder is the first: with

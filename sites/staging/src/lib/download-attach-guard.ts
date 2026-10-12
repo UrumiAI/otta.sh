@@ -73,7 +73,7 @@ import {
 	isDownloadAssetKeyFor,
 } from "@otta-sh/plugin";
 import type { DownloadsBucket } from "./download-delivery.js";
-import { ATTACH_MAX_AGE_MS } from "./download-orphans.js";
+import { ATTACH_MAX_AGE_MS, downloadUploadTime } from "./download-orphans.js";
 import { DOWNLOADS_BINDING } from "./downloads-bucket.js";
 import { PRIVATE_NO_STORE } from "./no-store.js";
 
@@ -189,7 +189,10 @@ export async function attachDownloadRefusal(
 			"The uploaded file is not in the store's downloads storage, so buyers' links would fail. Nothing was attached. Upload the file again.",
 		);
 	}
-	if (stored.uploaded !== undefined && now - stored.uploaded.getTime() > ATTACH_MAX_AGE_MS) {
+	// The same clock rule as the sweep: R2's `uploaded` stamp, or the key's ULID
+	// time when the bucket answers none.
+	const uploadedAt = downloadUploadTime(claim.key, stored.uploaded);
+	if (uploadedAt !== null && now - uploadedAt > ATTACH_MAX_AGE_MS) {
 		return refused(
 			"This upload is more than six days old, and old uploads that were never saved are cleared from storage. Nothing was attached. Upload the file again.",
 		);

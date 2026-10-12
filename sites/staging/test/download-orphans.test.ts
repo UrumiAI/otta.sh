@@ -12,7 +12,7 @@
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { mintDownloadAssetKey } from "@otta-sh/plugin";
+import { mintDownloadAssetKey, PRODUCT_NOT_FOUND_TITLE } from "@otta-sh/plugin";
 import { getPlatformProxy } from "wrangler";
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "vitest";
 import { attachDownloadRefusal } from "../src/lib/download-attach-guard.js";
@@ -245,7 +245,7 @@ describe("the product read the sweep makes", () => {
 		expect(
 			currentDownloadOf(await lookupProduct(none.dispatch, "P1", undefined, new URL("https://x/"))),
 		).toEqual({ kind: "found", key: null });
-		const gone = dispatchAnswering({ ok: false, title: "Product not found" });
+		const gone = dispatchAnswering({ ok: false, title: PRODUCT_NOT_FOUND_TITLE });
 		expect(
 			currentDownloadOf(await lookupProduct(gone.dispatch, "P1", undefined, new URL("https://x/"))),
 		).toEqual({ kind: "gone" });
@@ -265,16 +265,57 @@ describe("the product read the sweep makes", () => {
 			currentDownloadOf(await lookupProduct(odd.dispatch, "P1", undefined, new URL("https://x/"))),
 		).toEqual({ kind: "failed" });
 	});
+
+	test("a product row with NO downloadAsset field is a failed read, never 'no file'", async () => {
+		// Fail closed: read as "no file", the sweep would delete the live file.
+		const bare = dispatchAnswering({
+			ok: true,
+			product: { productId: "P1", productKind: "digital", deletedAt: null },
+		});
+		expect(
+			currentDownloadOf(await lookupProduct(bare.dispatch, "P1", undefined, new URL("https://x/"))),
+		).toEqual({ kind: "failed" });
+	});
+
+	test("any refusal other than 'no such product' stops the pass", async () => {
+		for (const refusal of [
+			{ ok: false, title: "Pricing & inventory is unavailable", description: "Check settings." },
+			{ ok: false, title: "That request could not be read" },
+		]) {
+			const { dispatch } = dispatchAnswering(refusal);
+			expect(
+				currentDownloadOf(await lookupProduct(dispatch, "P1", undefined, new URL("https://x/"))),
+				refusal.title,
+			).toEqual({ kind: "failed" });
+		}
+	});
 });
 
 describe("the attach guard refuses a file old enough to be swept", () => {
 	test("an upload older than ATTACH_MAX_AGE_MS is not attached; a fresh one is", async () => {
-		const key = await upload("P8", 0);
+		// Minted at the real clock, the moment the simulator stamps `uploaded`.
+		const key = mintDownloadAssetKey(
+			"P8" as Parameters<typeof mintDownloadAssetKey>[0],
+			Date.now(),
+			new Uint8Array(10).fill(3),
+		);
+		await bucket.put(key, "bytes");
 		const claim = { productId: "P8", key, size: "5" };
 		expect(await attachDownloadRefusal(bucket, claim, Date.now())).toBeNull();
 
 		const stale = await attachDownloadRefusal(bucket, claim, Date.now() + ATTACH_MAX_AGE_MS + DAY);
 		const body = (await stale?.json()) as { data?: { notice?: { description?: string } } };
 		expect(body.data?.notice?.description).toMatch(/upload the file again/i);
+	});
+
+	test("with no `uploaded` stamp, the key's ULID age decides — the sweep's own rule", async () => {
+		const key = mintDownloadAssetKey(
+			"P9" as Parameters<typeof mintDownloadAssetKey>[0],
+			Date.now() - ATTACH_MAX_AGE_MS - DAY,
+			new Uint8Array(10).fill(4),
+		);
+		const noStamp = { head: () => Promise.resolve({ size: 5, httpEtag: "e" }) };
+		const stale = await attachDownloadRefusal(noStamp, { productId: "P9", key, size: "5" });
+		expect(stale).not.toBeNull();
 	});
 });

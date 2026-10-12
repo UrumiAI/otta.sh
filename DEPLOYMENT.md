@@ -134,8 +134,9 @@ expired holds and queued emails drain at the Free pace (§5).
    >   (Otta checks with Stripe, issues nothing and flags the order), then use **Mark refunded**.
    > - **A chargeback or dispute:** Otta does not act on disputes, and Mark refunded is refused
    >   while the payment shows as captured. Close access by hand: the order's Fulfilment tab →
-   >   Downloads → **Revoke download access**. It moves no money, changes no order state and
-   >   can't be undone; History records who did it.
+   >   Downloads → **Revoke download access** (offered on a paid order only). It moves no money,
+   >   changes no order state and can't be undone; History records who did it, and the order
+   >   then shows "Download access was revoked".
    > - **A cancellation whose refund timed out** ("refund status unknown"): the order stays
    >   uncancelled until you confirm that refund in Money → Refunds, which finishes the
    >   cancellation and closes access.
@@ -154,7 +155,9 @@ expired holds and queued emails drain at the Free pace (§5).
    > under a product the store cannot find; it reads each product through the plugin and stops
    > for the hour if that read fails. So that a file it may delete can never be attached,
    > saving an upload more than six days old is refused: upload the file again. Each object's
-   > metadata records the product, the original filename and who uploaded it.
+   > metadata records the product, the original filename and who uploaded it. Files of a
+   > product the store no longer has are never reclaimed by the sweep; remove those by hand
+   > (`wrangler r2 object delete your-downloads-bucket/<key> --remote`).
 
 2. **Fill in the local config.** Copy `sites/staging/wrangler.jsonc` (also a template) to
    `wrangler.local.jsonc` (gitignored) and set your Worker `name` (over `my-otta-store`),

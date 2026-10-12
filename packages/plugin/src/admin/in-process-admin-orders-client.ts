@@ -94,6 +94,7 @@ import {
 	adminNextStates,
 	appendOrderNote,
 	revokeOrderDownloadAccess,
+	isDownloadDeliverableState,
 	cancelOrderWithRefund,
 	capturedOnlyThroughLegacy,
 	emailTemplateForState,
@@ -413,10 +414,30 @@ export class InProcessAdminOrdersClient implements AdminOrdersSurface {
 		// refunds, QA2 M4). The same one document read.
 		const ledger = await this.#stores.orderStore.readOrderLedger(toOrderId(orderId));
 		if (ledger === null) return null;
+		const downloads = await this.#downloadAccess(ledger.order);
 		return {
 			order: toOrderDetailWire(ledger.order),
 			allowedTransitions: adminNextStates(ledger.order, ledger),
+			...(downloads !== undefined ? { downloads } : {}),
 		};
+	}
+
+	/**
+	 * The order's download access for the detail (issue #447): only on a paid-side
+	 * order (the domain's deliverable states) with a digital line — `open` while
+	 * any digital line's grant is active, `revoked` once none is. Read with the
+	 * gate's own `check`, so the console shows what the download route would do.
+	 * A paid order whose grant was never written (a settle that crashed between
+	 * paid and grant) reads as `revoked` too: nothing downloads there either.
+	 */
+	async #downloadAccess(order: Order): Promise<"open" | "revoked" | undefined> {
+		if (!isDownloadDeliverableState(order.state)) return undefined;
+		const skus = order.lines.filter((l) => l.fulfillmentKind === "digital").map((l) => l.sku);
+		if (skus.length === 0) return undefined;
+		for (const sku of skus) {
+			if (await this.#stores.entitlementStore.check({ orderId: order.id, sku })) return "open";
+		}
+		return "revoked";
 	}
 
 	/** POST an order-status transition, as the admin makes it
@@ -1033,6 +1054,7 @@ export class InProcessAdminOrdersClient implements AdminOrdersSurface {
 			case "ORDER_NOT_FOUND":
 				return { ok: false, status: 404, reason: res.reason };
 			case "NO_DOWNLOADS":
+			case "NOT_DELIVERABLE":
 				return { ok: false, status: 409, reason: res.reason };
 			case "EMPTY_REVOKED_BY":
 				return { ok: false, status: 400, reason: "INVALID_INPUT" };
