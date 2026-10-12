@@ -1,3 +1,4 @@
+import { CURRENCY_PATTERN } from "../money/cents.js";
 import type { IdempotencyKey } from "../money/ids.js";
 import { sameTaxSettings, type TaxSettings } from "../pricing/tax-settings.js";
 
@@ -87,6 +88,15 @@ export interface OperationalSettings {
 	 * means — so `get()` never fills it with a default.
 	 */
 	tax?: TaxSettings;
+	/**
+	 * The store currency: the currency a NEW cart is created in when the caller
+	 * names none. An ISO 4217 code from the currency table (`isSupportedCurrency`
+	 * is checked on update). ABSENT means never saved — `effectiveStoreCurrency`
+	 * decides what that means (USD, what every store had before the setting
+	 * existed) — so `get()` never fills it with a default. Existing carts keep the
+	 * currency they were created in.
+	 */
+	currency?: string;
 }
 
 /** Defaults returned by `get()` before anything is persisted (§5.1). */
@@ -94,3 +104,27 @@ export const DEFAULT_OPERATIONAL_SETTINGS: OperationalSettings = {
 	holdTtlMinutes: 15,
 	lowStockThreshold: 5,
 };
+
+/** The store currency of a store that never saved one — the currency every cart
+ *  was created in before the setting existed. */
+export const DEFAULT_STORE_CURRENCY = "USD";
+
+/**
+ * The upgrade rule for the store currency, the counterpart of
+ * `effectiveTaxSettings`: a saved code wins; a store that never saved one keeps
+ * {@link DEFAULT_STORE_CURRENCY}, exactly what it had before.
+ */
+export function effectiveStoreCurrency(settings: Pick<OperationalSettings, "currency">): string {
+	return settings.currency ?? DEFAULT_STORE_CURRENCY;
+}
+
+/**
+ * A stored store currency, read back: a shape-valid code (`CURRENCY_PATTERN`;
+ * membership is the WRITE side's, in `updateSettings`), or `undefined` (never
+ * saved, or not a code at all). Shape, not table membership, on purpose: a read
+ * path never refuses data a write accepted (currencies.ts), and a code the table
+ * later drops still names the currency the operator chose.
+ */
+export function readStoreCurrency(raw: unknown): string | undefined {
+	return typeof raw === "string" && CURRENCY_PATTERN.test(raw) ? raw : undefined;
+}

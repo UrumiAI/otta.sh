@@ -1,5 +1,5 @@
 import type { ExpiryListOptions } from "./cart-store.js";
-import type { Cents, Currency } from "../money/cents.js";
+import type { Cents, Currency, SignedCents } from "../money/cents.js";
 import type { OrderTaxSnapshotV1 } from "../orders/order-tax-snapshot.js";
 import type {
 	CustomerId,
@@ -969,6 +969,8 @@ export interface CreateOrderTotalsInput {
 	discount?: Cents;
 	shipping?: Cents;
 	tax?: Cents;
+	/** The payment rounding, when the breakdown carries one (see `OrderTotals.rounding`). */
+	rounding?: SignedCents;
 	appliedCouponCode?: string | null;
 	shippingMethodSnapshot?: unknown | null;
 	/** ADR-0030: new orders write the typed v1 snapshot. Stored documents stay
