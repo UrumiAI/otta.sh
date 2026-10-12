@@ -90,7 +90,8 @@ export function resolveShippingZone(
 		// subdivision (Canary Islands, with zones on Tenerife and Las Palmas), so
 		// which zone applies depends on where inside it the address is. Ask for
 		// the more specific one — never fall to the country's zone (silently the
-		// wrong tax) or refuse.
+		// wrong tax) or refuse. The store's base address cannot be asked
+		// (`askForNarrower: false`), so it skips this and falls back below.
 		if (
 			input.askForNarrower !== false &&
 			parsed.some((z) => z.codes.some((code) => subdivisionAncestors(code).includes(own)))
