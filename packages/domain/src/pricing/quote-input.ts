@@ -53,6 +53,7 @@ export function quoteCommandFor(input: QuoteInput): QuoteCommand {
 }
 
 function totalsLineOf(line: PricedLine): TotalsLineInput {
+	const taxStatus = line.taxStatus;
 	return {
 		unitPriceCents: line.price.amount,
 		qty: line.qty,
@@ -60,8 +61,6 @@ function totalsLineOf(line: PricedLine): TotalsLineInput {
 		requiresShipping: line.productKind === "physical",
 		// Only a status that changes the tax is carried, so a taxable line's command
 		// is key for key what it was before PR 2b.
-		...(line.taxStatus !== undefined && line.taxStatus !== "taxable"
-			? { taxStatus: line.taxStatus }
-			: {}),
+		...(taxStatus !== undefined && taxStatus !== "taxable" ? { taxStatus } : {}),
 	};
 }
