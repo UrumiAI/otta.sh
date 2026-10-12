@@ -1,6 +1,10 @@
 import { describe, expect, test } from "vitest";
-import type { QuoteBreakdownWire, QuoteTaxWire } from "../src/product-commerce/commerce-client.js";
-import { buildCheckoutTotals } from "../src/storefront/checkout-view-model.js";
+import type {
+	PublicOrderWire,
+	QuoteBreakdownWire,
+	QuoteTaxWire,
+} from "../src/product-commerce/commerce-client.js";
+import { buildCheckoutTotals, buildOrderView } from "../src/storefront/checkout-view-model.js";
 
 /**
  * PR 2a (ADR-0032): the cart & checkout tax display — prices shown with or
@@ -142,14 +146,24 @@ describe("displayed with tax", () => {
 });
 
 describe("tax off, and tax not located", () => {
-	test("tax switched off renders exactly as before 2a: the one Tax row, prices as entered", () => {
+	test("tax switched off: no Tax row, prices as entered, a complete total", () => {
 		const off = { ...EXCL, taxCents: 0, totalCents: 1500 };
 		const opts = { ...OPTS, taxZoneSelected: false };
 		const t = buildCheckoutTotals(
 			{ ...off, tax: tax({ enabled: false, displayCart: "incl", itemized: [] }) },
 			opts,
 		);
-		expect(t).toEqual(buildCheckoutTotals(off, opts));
+		expect(t.taxRows).toEqual([]);
+		expect(t.taxIncludedNote).toBeNull();
+		expect(t.subtotal.label).toBe("$10.00");
+		expect(t.shipping.label).toBe("$5.00");
+		expect(t.totalExcludesUncalculated).toBe(false);
+	});
+
+	test("a quote with no `tax` key still shows today's single Tax row", () => {
+		const off = { ...EXCL, taxCents: 0, totalCents: 1500 };
+		const opts = { ...OPTS, taxZoneSelected: false };
+		const t = buildCheckoutTotals(off, opts);
 		expect(t.taxRows.map((r) => [r.label, r.amount.money])).toEqual([["Tax", null]]);
 	});
 
@@ -170,5 +184,71 @@ describe("tax off, and tax not located", () => {
 		expect(t.taxRows.map((r) => [r.label, r.amount.money])).toEqual([["Tax", null]]);
 		expect(t.subtotal.label).toBe("$10.00");
 		expect(t.taxIncludedNote).toBeNull();
+	});
+});
+
+describe("tax switched off (#420): no Tax row, as in WooCommerce", () => {
+	const OFF = tax({ enabled: false, located: false, itemized: [], lineTaxCents: 0 });
+	const FREE: QuoteBreakdownWire = { ...EXCL, taxCents: 0, totalCents: 1500, tax: OFF };
+
+	test("no tax row and no included note, with or without a tax zone", () => {
+		for (const taxZoneSelected of [true, false]) {
+			const t = buildCheckoutTotals(FREE, { ...OPTS, taxZoneSelected });
+			expect(t.taxRows).toEqual([]);
+			expect(t.taxIncludedNote).toBeNull();
+		}
+	});
+
+	test("tax off is not an uncalculated part of the total", () => {
+		const t = buildCheckoutTotals(FREE, { ...OPTS, taxZoneSelected: false });
+		expect(t.totalExcludesUncalculated).toBe(false);
+	});
+
+	test("tax ON with zero tax keeps its row; tax on, no zone keeps 'Not calculated'", () => {
+		const on = tax({ itemized: [], lineTaxCents: 0, totalsDisplay: "single" });
+		const zero = buildCheckoutTotals({ ...EXCL, taxCents: 0, totalCents: 1500, tax: on }, OPTS);
+		expect(zero.taxRows.map((r) => [r.label, r.amount.label])).toEqual([["Tax", "$0.00"]]);
+		const unknown = buildCheckoutTotals(
+			{ ...EXCL, tax: tax({ located: false }) },
+			{ ...OPTS, taxZoneSelected: false },
+		);
+		expect(unknown.taxRows[0]?.amount.money).toBeNull();
+		expect(unknown.totalExcludesUncalculated).toBe(true);
+	});
+});
+
+describe("tax estimate note (#429)", () => {
+	test("a calculator-priced, located tax says it is an estimate", () => {
+		const t = buildCheckoutTotals({ ...EXCL, tax: tax({ estimate: true }) }, OPTS);
+		expect(t.taxEstimateNote).toMatch(/estimate/i);
+	});
+
+	test("no note for the built-in rate table, or before tax is computed", () => {
+		expect(buildCheckoutTotals({ ...EXCL, tax: tax() }, OPTS).taxEstimateNote).toBeNull();
+		expect(buildCheckoutTotals(EXCL, OPTS).taxEstimateNote).toBeNull();
+		const notLocated = tax({ estimate: true, located: false });
+		expect(
+			buildCheckoutTotals({ ...EXCL, tax: notLocated }, { ...OPTS, taxZoneSelected: false })
+				.taxEstimateNote,
+		).toBeNull();
+	});
+
+	test("an order priced by an outside calculator has no note: the order's tax is final", () => {
+		// What `orderTaxWire` hands the page: the snapshot's display facts, never `estimate`.
+		const order = {
+			id: "order-1",
+			state: "pending",
+			currency: "USD",
+			paymentMethod: "stripe",
+			holdExpiresAt: "2099-01-01T00:00:00.000Z",
+			createdAt: "2026-07-27T00:00:00.000Z",
+			totals: { ...EXCL, tax: tax(), shippingZoneId: null, shippingMethodId: null },
+			lines: [],
+			fulfillment: null,
+			cancellation: null,
+			latePayment: "none",
+			refundedCents: 0,
+		} as unknown as PublicOrderWire;
+		expect(buildOrderView(order, "en-US").totals.taxEstimateNote ?? null).toBeNull();
 	});
 });

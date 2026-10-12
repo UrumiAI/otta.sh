@@ -4,9 +4,10 @@
 	// It needs its own project because it falls between the two that exist:
 	// the root `tsconfig.json` references the six PACKAGES only, and
 	// `sites/staging/tsconfig.json` is not among them (the site is checked by
-	// `astro check`, which `pnpm typecheck` does not run). So this TypeScript
-	// shipped unchecked, and it was wrong — `playwright.config.ts` had a live
-	// TS2769 nobody could see. `pnpm typecheck` now runs `tsc -b` and then this.
+	// its own `astro check`). So this TypeScript once shipped unchecked, and it
+	// was wrong — `playwright.config.ts` had a live TS2769 nobody could see.
+	// `pnpm typecheck` runs `tsc -b`, then this, then each package's own
+	// `typecheck` (the site's `astro check`).
 	//
 	// Not `composite`, and not a reference of the root project: a referenced
 	// project may not disable emit, and there is nothing here worth emitting.
