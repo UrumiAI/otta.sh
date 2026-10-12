@@ -356,8 +356,11 @@ order of appearance in a deployment's life:
     deleted by x402's own one-time purge, not by this run). Earlier backups and D1 Time Travel
     history still hold the earlier copies until they age out, so rotate a live Stripe key
     after the upgrade.
-  - **After deploying:** open Otta's Settings and look for "saved, but not valid"; enter any
-    such key again (an invalid stored edge token makes the webhook answer 503).
+  - **After every deploy (required check):** open Otta's Settings and confirm that every
+    payment secret you use (Stripe secret key, webhook signing secret, `OTTA_WH_TOKEN`) reads
+    "— set". Re-enter any that says "saved, but not valid" or "saved, but cannot be read" —
+    keys saved before 2026-10-02 or through EmDash's settings gear can read as not valid.
+    Until the webhook secret and token read "— set", every Stripe webhook answers 503.
   - **A custom site** must declare the schema (`PAYMENT_SECRET_SETTINGS_SCHEMA` in its
     descriptor `settingsSchema`) before upgrading. If it was added later, enter the three
     keys again in Settings, or delete `state:paymentSecretsEncrypted` so the re-save runs
@@ -908,6 +911,7 @@ reviewed tip, so a new one fails CI first).
 | A ~5 s stall on a new isolate's first request, an occasional 500 on a write, and `[emdash] A D1 session query hung …` in the logs | `global_fetch_strictly_public` + D1 `session` both on (emdash #1273). The build refuses this pair, so check what was deployed: remove the flag (§2.4, "Upgrading an existing deployment"), rebuild, redeploy |
 | `/products` empty right after deploy | Healthy (§1) — sample content lands via the wizard checkbox, not first boot |
 | `POST /webhooks/stripe` reports `NOT_CONFIGURED` | The Stripe webhook signing secret is unset — provision it in admin Settings (§3) |
+| Every Stripe delivery answers 503 after a deploy | The webhook signing secret or `OTTA_WH_TOKEN` reads "saved, but not valid" or "saved, but cannot be read" in Otta's Settings — re-enter it there; for "cannot be read", first check `EMDASH_ENCRYPTION_KEY` (§3) |
 | Every Stripe delivery 401s | `OTTA_WH_TOKEN` set on the plugin side but not on the site (or the values differ) — §3 |
 | An expired order is flagged `late payment … needs checking (…) — verify in Stripe` | A buyer paid after expiry and the automatic refund's outcome is unknown — most often a refund create that hit the settle path's 3 s timeout (the price of answering Stripe inside its delivery window: a timed-out create may still have been processed, so it is held `unverified` rather than retried blind) — or Stripe already shows it refunded, or the retries gave up after ~3 days. Check the PaymentIntent in Stripe before refunding again, then resolve the flag in the admin console |
 | An expired order is flagged `late payment … automatic refund failed (…) — refund it manually` | Stripe definitively refused the automatic refund (or it would exceed the order total). Refund in Stripe or the admin console, then resolve the flag |
