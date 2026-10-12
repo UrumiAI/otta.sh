@@ -4,7 +4,7 @@
 	"type": "module",
 	"scripts": {
 		"lint": "oxlint && depcruise --config .dependency-cruiser.cjs packages",
-		"typecheck": "tsc -b && tsc -p tsconfig.e2e.json",
+		"typecheck": "tsc -b && tsc -p tsconfig.e2e.json && pnpm -r --if-present typecheck",
 		"test": "vitest run",
 		"test:pg": "vitest run $(./scripts/pg-test-files.sh)",
 		"test:d1": "pnpm -C packages/store-emdash test:d1",

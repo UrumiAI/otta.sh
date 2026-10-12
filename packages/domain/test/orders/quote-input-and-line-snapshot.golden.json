@@ -63,6 +63,7 @@
 					{
 						"lineIndex": 0,
 						"taxClassId": "gst18",
+						"taxStatus": "taxable",
 						"taxableCents": 49900,
 						"rateBps": 1800,
 						"label": "GST 18%",
@@ -71,6 +72,7 @@
 					{
 						"lineIndex": 1,
 						"taxClassId": "standard",
+						"taxStatus": "taxable",
 						"taxableCents": 39800,
 						"rateBps": 500,
 						"label": "standard",
@@ -147,6 +149,7 @@
 					{
 						"lineIndex": 0,
 						"taxClassId": "gst18",
+						"taxStatus": "taxable",
 						"taxableCents": 49900,
 						"rateBps": 1800,
 						"label": "GST 18%",
@@ -155,6 +158,7 @@
 					{
 						"lineIndex": 1,
 						"taxClassId": "standard",
+						"taxStatus": "taxable",
 						"taxableCents": 39800,
 						"rateBps": 500,
 						"label": "standard",
@@ -251,6 +255,7 @@
 					{
 						"lineIndex": 0,
 						"taxClassId": "standard",
+						"taxStatus": "taxable",
 						"taxableCents": 2040,
 						"rateBps": 0,
 						"label": "Tax",
@@ -306,6 +311,7 @@
 					{
 						"lineIndex": 0,
 						"taxClassId": "standard",
+						"taxStatus": "taxable",
 						"taxableCents": 2040,
 						"rateBps": 0,
 						"label": "Tax",
@@ -395,6 +401,7 @@
 					{
 						"lineIndex": 0,
 						"taxClassId": "standard",
+						"taxStatus": "taxable",
 						"taxableCents": 2497,
 						"rateBps": 0,
 						"label": "standard",
@@ -450,6 +457,7 @@
 					{
 						"lineIndex": 0,
 						"taxClassId": "standard",
+						"taxStatus": "taxable",
 						"taxableCents": 2497,
 						"rateBps": 0,
 						"label": "standard",
@@ -519,6 +527,7 @@
 					{
 						"lineIndex": 0,
 						"taxClassId": "standard",
+						"taxStatus": "taxable",
 						"taxableCents": 2500,
 						"rateBps": 0,
 						"label": "Tax",
@@ -574,6 +583,7 @@
 					{
 						"lineIndex": 0,
 						"taxClassId": "standard",
+						"taxStatus": "taxable",
 						"taxableCents": 2500,
 						"rateBps": 0,
 						"label": "Tax",
@@ -666,6 +676,7 @@
 					{
 						"lineIndex": 0,
 						"taxClassId": "standard",
+						"taxStatus": "taxable",
 						"taxableCents": 2700,
 						"rateBps": 725,
 						"label": "standard",
@@ -674,6 +685,7 @@
 					{
 						"lineIndex": 1,
 						"taxClassId": "reduced",
+						"taxStatus": "taxable",
 						"taxableCents": 899,
 						"rateBps": 300,
 						"label": "reduced",
@@ -750,6 +762,7 @@
 					{
 						"lineIndex": 0,
 						"taxClassId": "standard",
+						"taxStatus": "taxable",
 						"taxableCents": 2700,
 						"rateBps": 725,
 						"label": "standard",
@@ -758,6 +771,7 @@
 					{
 						"lineIndex": 1,
 						"taxClassId": "reduced",
+						"taxStatus": "taxable",
 						"taxableCents": 899,
 						"rateBps": 300,
 						"label": "reduced",
@@ -855,6 +869,7 @@
 					{
 						"lineIndex": 0,
 						"taxClassId": "standard",
+						"taxStatus": "taxable",
 						"taxableCents": 6000,
 						"rateBps": 0,
 						"label": "Tax",
@@ -910,6 +925,7 @@
 					{
 						"lineIndex": 0,
 						"taxClassId": "standard",
+						"taxStatus": "taxable",
 						"taxableCents": 6000,
 						"rateBps": 0,
 						"label": "Tax",
@@ -988,6 +1004,7 @@
 					{
 						"lineIndex": 0,
 						"taxClassId": "standard",
+						"taxStatus": "taxable",
 						"taxableCents": 2500,
 						"rateBps": 0,
 						"label": "Tax",
@@ -996,6 +1013,7 @@
 					{
 						"lineIndex": 1,
 						"taxClassId": "standard",
+						"taxStatus": "taxable",
 						"taxableCents": 5000,
 						"rateBps": 0,
 						"label": "Tax",
@@ -1063,6 +1081,7 @@
 					{
 						"lineIndex": 0,
 						"taxClassId": "standard",
+						"taxStatus": "taxable",
 						"taxableCents": 2500,
 						"rateBps": 0,
 						"label": "Tax",
@@ -1071,6 +1090,7 @@
 					{
 						"lineIndex": 1,
 						"taxClassId": "standard",
+						"taxStatus": "taxable",
 						"taxableCents": 5000,
 						"rateBps": 0,
 						"label": "Tax",

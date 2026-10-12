@@ -40,6 +40,12 @@ export interface EmailRenderContext {
 	/** The storefront's locale (BCP 47), declared on the HTML part's wrapper so a
 	 *  client picks the right hyphenation, voice and font fallbacks. */
 	locale?: string | undefined;
+	/**
+	 * The store's "Display tax totals" (ADR-0032, issue #422): `itemized` shows the
+	 * order's `taxRows` — one row per tax, as the order page does — in place of the
+	 * single Tax row. Anything else, or absent, keeps the single row.
+	 */
+	taxTotalsDisplay?: "itemized" | "single" | undefined;
 }
 
 /** What an uncalculated shipping or tax row says — the storefront's own
@@ -121,7 +127,7 @@ export function renderEmail(
 		asParagraph(tracking ?? cancellation),
 		orderLine(number, label),
 		lineItems(data["lines"], str(data["currency"]), money),
-		totalsBlock(data, money, refunded !== null),
+		totalsBlock(data, money, refunded !== null, context.taxTotalsDisplay === "itemized"),
 		DELIVERY_TEMPLATES.has(template) ? addressBlock(data["shippingAddress"]) : null,
 		orderLink(context.orderPageUrl),
 		signOff(context.storeName),
@@ -266,6 +272,10 @@ function lineItems(lines: unknown, currency: string | undefined, money: Money): 
  *    `orderTotalsFlags`) is not set — whatever the amount, as on the page. (An
  *    amount without a flag cannot be created: shipping is only priced with a
  *    method, tax only with a zone.) A calculated zero is money.
+ *  - tax is ONE row per tax when the store itemizes (`itemizeTax`) and the data
+ *    carries well-formed `taxRows` (`orderTaxRows`, which already fell back for
+ *    an older order or rows that do not add up); otherwise the single Tax row.
+ *    With prices entered with tax, each row says it is included.
  *  - the total is labelled by `orderTotalLabel`, the rule the order pages use:
  *    "Paid" for every state an order reaches only after its payment was
  *    captured (refunded included — the refund is said separately), "Total"
@@ -274,7 +284,12 @@ function lineItems(lines: unknown, currency: string | undefined, money: Money): 
  *    never be read as the money coming back.
  * A row whose amount cannot be formatted is left out rather than shown wrong.
  */
-function totalsBlock(data: Record<string, unknown>, money: Money, isRefund: boolean): Block | null {
+function totalsBlock(
+	data: Record<string, unknown>,
+	money: Money,
+	isRefund: boolean,
+	itemizeTax: boolean,
+): Block | null {
 	const currency = str(data["currency"]);
 	const rows: Array<[string, string]> = [];
 	const push = (label: string, value: string | null) => {
@@ -290,10 +305,21 @@ function totalsBlock(data: Record<string, unknown>, money: Money, isRefund: bool
 		push("Discount", NO_COUPON_LABEL);
 	}
 	push("Shipping", calculated(data["shippingCents"], data["shippingCalculated"], currency, money));
-	push(
-		data["taxIncluded"] === true ? "Tax (included in prices)" : "Tax",
-		calculated(data["taxCents"], data["taxCalculated"], currency, money),
-	);
+	const included = data["taxIncluded"] === true;
+	const taxRows = itemizeTax && data["taxCalculated"] === true ? taxRowsOf(data["taxRows"]) : null;
+	if (taxRows !== null) {
+		for (const row of taxRows) {
+			push(
+				included ? `${row.label} (included in prices)` : row.label,
+				money(row.amountCents, currency),
+			);
+		}
+	} else {
+		push(
+			included ? "Tax (included in prices)" : "Tax",
+			calculated(data["taxCents"], data["taxCalculated"], currency, money),
+		);
+	}
 	// ADR-0035's amendment: the payment rounding, signed, only when the order has one.
 	const rounding = data["roundingCents"];
 	if (typeof rounding === "number" && rounding !== 0) {
@@ -312,6 +338,27 @@ function totalsBlock(data: Record<string, unknown>, money: Money, isRefund: bool
 		text: rows.map(([label, value]) => `${label}: ${value}`).join("\n"),
 		html: table(rows.map(([label, value]) => [escapeHtml(label), escapeHtml(value)])),
 	};
+}
+
+/**
+ * The data's `taxRows` (built by `buildOrderEmailData` through `orderTaxRows`),
+ * read back defensively: a non-empty array of `{label, amountCents}` with a
+ * non-blank label (folded onto one line) and a non-negative safe integer, or
+ * `null` — the single Tax row.
+ */
+function taxRowsOf(raw: unknown): Array<{ label: string; amountCents: number }> | null {
+	if (!Array.isArray(raw) || raw.length === 0) return null;
+	const rows: Array<{ label: string; amountCents: number }> = [];
+	for (const item of raw as unknown[]) {
+		if (item === null || typeof item !== "object") return null;
+		const { label, amountCents } = item as Record<string, unknown>;
+		if (typeof label !== "string" || oneLine(label).length === 0) return null;
+		if (typeof amountCents !== "number" || !Number.isSafeInteger(amountCents) || amountCents < 0) {
+			return null;
+		}
+		rows.push({ label: oneLine(label), amountCents });
+	}
+	return rows;
 }
 
 /** The order page's discount row when no coupon was applied (its `fallback`). */

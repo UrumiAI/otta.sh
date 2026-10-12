@@ -1124,6 +1124,22 @@ describe("admin Shipping console — methods level, depth 1 (workerd sandbox)", 
 		).toBe(false);
 	});
 
+	test('a method with no taxable flag stored shows no "not taxed" label', async () => {
+		// An older method document has no `taxable`; it reads taxed (PR 2b), so the
+		// row must not claim otherwise.
+		await seedShipping();
+		const zones = storage["shipping_zones"];
+		const zone = (await zones?.get("us")) as {
+			methods: Record<string, Record<string, unknown>>;
+		} | null;
+		expect(zone).not.toBeNull();
+		const { taxable: _dropped, ...older } = zone?.methods["standard"] ?? {};
+		await zones?.put("us", { ...zone, methods: { ...zone?.methods, standard: older } });
+		const row = group(await openPath(["us"]), "ship:method:us:standard");
+		expect(String(row?.label)).toContain("Standard");
+		expect(String(row?.label)).not.toContain("not taxed");
+	});
+
 	test("a save without the toggle in `values` PRESERVES the method's flag", async () => {
 		await seedShipping();
 		await shippingRules.updateMethod("standard", {

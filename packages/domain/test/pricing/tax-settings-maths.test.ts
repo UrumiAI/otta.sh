@@ -239,6 +239,88 @@ describe("shipping tax class — WooCommerce 'based on cart items' (woo-facts-ve
 		expect(inheritShippingTaxClass(lines, new Map([...tie].toReversed()))).toBe("a-one");
 	});
 
+	test('names compare accent-insensitively: "Éco" sorts with "Eco", before "Food"', () => {
+		const accented = new Map([
+			["z-food", "Food"],
+			["a-eco", "Éco"],
+		]);
+		const lines = [line("0", 1, "z-food"), line("1", 1, "a-eco")];
+		expect(inheritShippingTaxClass(lines, accented)).toBe("a-eco");
+		// "Éclair" vs "Eclat": base letters decide (i < t), not the accent code point.
+		const second = new Map([
+			["z-eclat", "Eclat"],
+			["a-eclair", "Éclair"],
+		]);
+		expect(
+			inheritShippingTaxClass([line("0", 1, "z-eclat"), line("1", 1, "a-eclair")], second),
+		).toBe("a-eclair");
+	});
+
+	test("names equal ignoring accent and case → deterministic whatever the insertion order", () => {
+		const tie = new Map([
+			["z-two", "Cafe"],
+			["a-one", "Café"],
+		]);
+		const lines = [line("0", 1, "z-two"), line("1", 1, "a-one")];
+		const first = inheritShippingTaxClass(lines, tie);
+		expect(inheritShippingTaxClass(lines, new Map([...tie].toReversed()))).toBe(first);
+		// The lower id breaks the tie (as for names equal but for case).
+		expect(first).toBe("a-one");
+	});
+
+	test("plain ASCII order is unchanged: punctuation, digits and letters compare by code unit", () => {
+		// Old comparator: lower-case, then code unit. "-" (0x2d) < "_" (0x5f); "1" (0x31) < "_".
+		const pick = (x: string, y: string): string =>
+			inheritShippingTaxClass(
+				[line("0", 1, "z-x"), line("1", 1, "a-y")],
+				new Map([
+					["z-x", x],
+					["a-y", y],
+				]),
+			) as string;
+		expect(pick("Reduced_rate", "Reduced-rate")).toBe("a-y");
+		expect(pick("Reduced-rate", "Reduced_rate")).toBe("z-x");
+		expect(pick("Tax_A", "Tax1")).toBe("a-y");
+		expect(pick("Tax1", "Tax_A")).toBe("z-x");
+		expect(pick("a~", "a0")).toBe("a-y");
+	});
+
+	test("non-Latin scripts keep their code-unit order: Devanagari vowel signs are not stripped", () => {
+		// U+0915 U+0930 "कर" vs U+0915 U+093E U+0930 "कार": the vowel sign U+093E is a
+		// mark (\p{M}) but not a Latin accent, so "कर" (0930 < 093E) still sorts first.
+		const pick = (x: string, y: string): string =>
+			inheritShippingTaxClass(
+				[line("0", 1, "z-x"), line("1", 1, "a-y")],
+				new Map([
+					["z-x", x],
+					["a-y", y],
+				]),
+			) as string;
+		expect(pick("\u0915\u093E\u0930", "\u0915\u0930")).toBe("a-y");
+		expect(pick("\u0915\u0930", "\u0915\u093E\u0930")).toBe("z-x");
+	});
+
+	test("non-Latin letters that share Latin's combining range keep their order: Cyrillic й, Greek tonos, Devanagari nukta", () => {
+		const pick = (x: string, y: string): string =>
+			inheritShippingTaxClass(
+				[line("0", 1, "z-x"), line("1", 1, "a-y")],
+				new Map([
+					["z-x", x],
+					["a-y", y],
+				]),
+			) as string;
+		// "й" (U+0439) sorts after "и" (U+0438), as before; it is not folded into "и".
+		expect(pick("\u0439", "\u0438")).toBe("a-y");
+		expect(pick("\u0438", "\u0439")).toBe("z-x");
+		// Greek "ά" (U+03AC) sorts before "α" (U+03B1), as before; tonos is not stripped.
+		expect(pick("\u03B1", "\u03AC")).toBe("a-y");
+		expect(pick("\u03AC", "\u03B1")).toBe("z-x");
+		// Devanagari "ख़" (U+0959) sorts after "ख" + nukta (U+0916 U+093C), as before;
+		// it is not decomposed.
+		expect(pick("\u0959", "\u0916\u093C")).toBe("a-y");
+		expect(pick("\u0916\u093C", "\u0959")).toBe("z-x");
+	});
+
 	test("several classes none of which is declared → standard (WooCommerce's fallback)", () => {
 		expect(inheritShippingTaxClass([line("0", 1, "x"), line("1", 1, "y")], new Map())).toBe(
 			"standard",

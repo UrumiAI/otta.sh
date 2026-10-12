@@ -237,6 +237,7 @@ export {
 	refundTooHighInline,
 	refundTooHighText,
 	refundsGroupLabel,
+	PRICES_INCLUDED_TAX,
 } from "./orders-copy.js";
 export {
 	LOW_STOCK_SUFFIX,
@@ -338,6 +339,7 @@ export {
 	taxClassLabel,
 	taxClassOptions,
 	taxStatusLabel,
+	orderLineTaxStatusNote,
 	unitCostFieldLabel,
 	type ProductSection,
 	type StockDegradation,

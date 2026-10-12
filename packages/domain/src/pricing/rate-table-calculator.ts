@@ -141,6 +141,26 @@ function isTaxed(line: TaxRequest["lines"][number]): boolean {
 }
 
 /**
+ * A class name's sort key: lower-cased, with accents removed from Latin letters
+ * only, then compared by code unit. A precomposed Latin letter (U+00C0-U+024F,
+ * U+1E00-U+1EFF) folds to its ASCII base when it decomposes to an ASCII letter
+ * plus combining diacritics, and combining diacritics that directly follow an
+ * ASCII letter are dropped. Nothing else is normalised, so plain ASCII and every
+ * other script (Cyrillic й, Greek tonos, Devanagari nukta letters, CJK) keep
+ * exactly the order a lower-case code-unit compare gave before, with no
+ * dependence on ICU or the host locale.
+ */
+function nameSortKey(name: string): string {
+	return name
+		.replace(/[\u00C0-\u024F\u1E00-\u1EFF]/g, (ch) => {
+			const d = ch.normalize("NFD");
+			return /^[A-Za-z][\u0300-\u036F]+$/.test(d) ? (d[0] as string) : ch;
+		})
+		.replace(/([A-Za-z])[\u0300-\u036F]+/g, "$1")
+		.toLowerCase();
+}
+
+/**
  * One line's tax. Prices WITHOUT tax round half UP (main's maths). Prices WITH tax
  * round the tax inside the gross half DOWN — WooCommerce's `WC_TAX_ROUNDING_MODE`
  * for tax-inclusive stores (woo-oracle IN-02: 999 at 20% → 166), which is what
@@ -245,8 +265,8 @@ function shippingTaxClassOf(
  *  - one class ⇒ that class;
  *  - else the first by class NAME (WooCommerce's `ORDER BY name`) among the
  *    declared classes (`names`), falling back to `standard`. Names compare
- *    case-insensitively, as MySQL's default collation does; names equal but for
- *    case go to the lower id, so the pick never depends on listing order.
+ *    case- and accent-insensitively (approximately MySQL's default collation); names equal
+ *    under that go to the lower id, so the pick never depends on listing order.
  */
 export function inheritShippingTaxClass(
 	lines: TaxRequest["lines"],
@@ -260,9 +280,9 @@ export function inheritShippingTaxClass(
 	if (found.has("standard")) return "standard";
 	if (found.size === 1) return [...found][0] as TaxClassId;
 	const ordered = [...names].toSorted(([idA, a], [idB, b]) => {
-		const la = a.toLowerCase();
-		const lb = b.toLowerCase();
-		if (la !== lb) return la < lb ? -1 : 1;
+		const ka = nameSortKey(a);
+		const kb = nameSortKey(b);
+		if (ka !== kb) return ka < kb ? -1 : 1;
 		return idA < idB ? -1 : idA > idB ? 1 : 0;
 	});
 	return ordered.find(([id]) => found.has(id))?.[0] ?? "standard";
