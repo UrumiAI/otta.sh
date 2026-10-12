@@ -123,7 +123,7 @@ To self-deploy this for free on Cloudflare Workers today, follow
 | `@otta-sh/payments-stripe` | Stripe `PaymentGateway` adapter (async-webhook, raw-body HMAC). |
 | `@otta-sh/plugin` | The EmDash plugin: commerce composition, storefront routes, admin console, content-sync hooks. |
 | `@otta-sh/admin-presentation` | Pure admin presentation primitives (money, dates, short ids, status vocabulary) shared by both console surfaces. No IO. |
-| `@otta-sh/admin-react` | The React admin console on the `otta-console` native descriptor (ADR-0014) — Orders and Themes pages, plus the product editor's Pricing & stock cards and the products list's Price / Stock columns. |
+| `@otta-sh/admin-react` | The React admin console on the `otta-console` native descriptor (ADR-0014) — the Orders page, plus the product editor's Pricing & stock cards (and the Download file card for a digital product) and the products list's Price / Stock columns. |
 | `sites/staging` | Staging storefront + admin — EmDash on Cloudflare Workers, plugin registered trusted. |
 
 Design decisions live in [`adr/`](./adr/); development practices in

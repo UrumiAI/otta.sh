@@ -11,11 +11,9 @@
 		"test:e2e": "playwright test",
 		"format": "oxfmt",
 		"format:check": "oxfmt --check",
-		"build": "pnpm -r build",
-		"changeset": "changeset"
+		"build": "pnpm -r build"
 	},
 	"devDependencies": {
-		"@changesets/cli": "catalog:",
 		"@playwright/test": "catalog:",
 		"@types/node": "catalog:",
 		"dependency-cruiser": "catalog:",

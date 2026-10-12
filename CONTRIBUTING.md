@@ -89,8 +89,6 @@ decision rather than a mechanical change — gets its own PR and, if it's a deci
 ## Before opening a PR
 
 - Tests pass, lint is clean, code is formatted.
-- A changeset is added if a published package changed — run `pnpm changeset` to generate
-  one.
 
 ## Reporting issues
 

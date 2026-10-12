@@ -1,5 +1,8 @@
+import { unsupportedCurrencyMessage } from "@otta-sh/admin-presentation";
 import {
 	COUNTRY_CODES,
+	DEFAULT_STORE_CURRENCY,
+	isSupportedCurrency,
 	parseZoneRegions,
 	validateZoneRegionsInput,
 	type ShippingMethodType,
@@ -20,6 +23,7 @@ import type {
 	TableBlock,
 } from "../types.js";
 import { makeAdminClients } from "./make-admin-clients.js";
+import { readStoreCurrencySoft } from "./store-currency-read.js";
 import {
 	type AdminRulesSurface,
 	type RulesCasUpdateResult,
@@ -31,8 +35,12 @@ import {
 	type ShippingZoneWire,
 } from "./admin-rules-surface.js";
 import { idInputProblem } from "./id-input.js";
-import { isIsoCurrencyCode } from "@otta-sh/domain";
-import { formatMinorUnitsInput, parseMinorUnitsInput } from "./money-input.js";
+import {
+	formatMinorUnitsInput,
+	moneyInputExample,
+	moneyPrecisionPhrase,
+	parseMinorUnitsInput,
+} from "./money-input.js";
 import {
 	asRecord,
 	backButton,
@@ -127,7 +135,8 @@ import {
  *
  * A rate is keyed by (methodId, currency), so a price cannot be read without
  * naming a currency: the methods level therefore carries the SAME currency
- * filter its rates level already had, defaulting to `DEFAULT_RATE_CURRENCY`,
+ * filter its rates level already had, defaulting to the STORE currency (the
+ * Settings page's; USD for a store that never saved one — `DEFAULT_STORE_CURRENCY`),
  * and states that currency ONCE in the level's context line rather than per
  * row (G1). The two filters are independent — drilling in re-opens the rates
  * level at its own default, as every level's filter already resets on a
@@ -225,24 +234,82 @@ interface MethodDraft {
 
 /** The rates level's filter: a currency narrow that ALWAYS has a value (no
  *  "unfiltered" state exists — see the module doc's rates-identity note).
- *  Defaults to `"USD"`. The methods level carries the same shape, for the same
- *  reason: a rate is keyed by (methodId, currency), so neither level can name
- *  a price without naming a currency. */
+ *  Defaults to the store currency. The methods level carries the same shape, for
+ *  the same reason: a rate is keyed by (methodId, currency), so neither level can
+ *  name a price without naming a currency.
+ *
+ *  `filterFromValues` is synchronous and the store currency is a read, so a blank
+ *  field parses to `defaulted` and `fetchPage` resolves it
+ *  ({@link resolveStoreCurrency}) — writing BOTH fields unconditionally, as the
+ *  engine asks of page context written there. */
 interface RatesFilterForm {
+	/** The currency the level reads: as typed, or the store currency when blank. */
 	currency: string;
+	/** The store currency, as `fetchPage` read it — what "no filter" means.
+	 *  `null`: NOT READ on this render (the methods level skips the read when
+	 *  the operator typed a currency) — never a stand-in that looks read. */
+	storeCurrency: string | null;
+	/** The field was blank: `currency` follows the store currency. */
+	defaulted: boolean;
+	/** The store-currency read FAILED: `storeCurrency` is the never-saved USD
+	 *  stand-in, the levels say so, and a new rate's currency is not prefilled. */
+	storeCurrencyUnknown: boolean;
 }
-
-const DEFAULT_RATE_CURRENCY = "USD";
 
 /** Read the currency filter off a submitted filter form — shared by the
  *  methods and rates levels so the two can never disagree about what an empty
  *  or whitespace value means (it means the default, never `""`). */
 function currencyFromValues(values: Record<string, unknown>): RatesFilterForm {
 	const currency = readString(values.currency)?.trim().toUpperCase();
+	const defaulted = currency === undefined || currency.length === 0;
 	return {
-		currency: currency !== undefined && currency.length > 0 ? currency : DEFAULT_RATE_CURRENCY,
+		currency: defaulted ? DEFAULT_STORE_CURRENCY : currency,
+		storeCurrency: null,
+		defaulted,
+		storeCurrencyUnknown: false,
 	};
 }
+
+/** The "not read on this render" state, written UNCONDITIONALLY by a level that
+ *  skips the read — list-detail's rule: page context written in `fetchPage` is
+ *  overwritten, never merged with what a cursor carried back. */
+function markStoreCurrencyNotRead(filter: RatesFilterForm): void {
+	filter.storeCurrency = null;
+	filter.storeCurrencyUnknown = false;
+}
+
+/**
+ * Fill in the store currency (and, for a blank field, the filter currency) —
+ * one keyed settings read per render. SECONDARY and contained: a failed read
+ * does not blank a level whose rates are still readable. The FILTER falls back
+ * to USD (and the level says so), but `storeCurrencyUnknown` keeps a new rate's
+ * currency from being prefilled with a guess.
+ */
+async function resolveStoreCurrency(
+	client: AdminRulesSurface,
+	filter: RatesFilterForm,
+): Promise<void> {
+	const read = await readStoreCurrencySoft(client, "shipping");
+	const storeCurrency = read ?? DEFAULT_STORE_CURRENCY;
+	filter.storeCurrency = storeCurrency;
+	filter.storeCurrencyUnknown = read === undefined;
+	if (filter.defaulted) filter.currency = storeCurrency;
+}
+
+/**
+ * What a filter FIELD shows. While the store currency is unknown and the field
+ * was left blank, it stays blank: prefilling the USD stand-in would let an
+ * unedited "Apply filters" submit it, turning the guess into a real USD filter
+ * (and a USD prefill on a new rate). Blank re-parses to `defaulted`, so the
+ * level keeps saying the store currency is unknown.
+ */
+function filterFieldValue(filter: RatesFilterForm): string {
+	return filter.storeCurrencyUnknown && filter.defaulted ? "" : filter.currency;
+}
+
+/** What a level says when the store currency could not be read (≤140). */
+const STORE_CURRENCY_UNKNOWN_TEXT =
+	"Couldn't load your store currency — showing USD. Reload to try again, or enter a currency.";
 
 /** ISO-4217's shape. Not a membership test — the service owns the real code
  *  list; this only separates "a currency the store may not price in" from
@@ -262,16 +329,15 @@ const CURRENCY_CODE_SHAPE = /^[A-Z]{3}$/;
  * already correctly attributed, and silently substituting a default there
  * would turn a typo into a wrong answer rather than an error.
  */
-interface MethodsFilterForm {
-	/** Trimmed and upper-cased; the default when the field was blank. */
-	currency: string;
-	/** `currency` is not a 3-letter ISO-4217 shape. */
+interface MethodsFilterForm extends RatesFilterForm {
+	/** `currency` is not a 3-letter ISO-4217 shape (never, when defaulted: the
+	 *  store currency always is one). */
 	invalid: boolean;
 }
 
 function methodsFilterFromValues(values: Record<string, unknown>): MethodsFilterForm {
-	const { currency } = currencyFromValues(values);
-	return { currency, invalid: !CURRENCY_CODE_SHAPE.test(currency) };
+	const filter = currencyFromValues(values);
+	return { ...filter, invalid: !CURRENCY_CODE_SHAPE.test(filter.currency) };
 }
 
 const BAD_CURRENCY_NOTICE: Notice = {
@@ -729,7 +795,13 @@ function methodsLevel() {
 		async fetchPage(client, path, filter) {
 			const zoneId = path[0];
 			if (zoneId === undefined) return { items: [], nextCursor: null };
-			const methods = await client.listMethods(zoneId);
+			// Independent reads, run together; pricing needs both. A currency the
+			// operator typed needs no store-currency read at all (this level uses the
+			// store currency only as the blank field's default).
+			const [, methods] = await Promise.all([
+				filter.defaulted ? resolveStoreCurrency(client, filter) : markStoreCurrencyNotRead(filter),
+				client.listMethods(zoneId),
+			]);
 			const items = await pricedMethods(client, methods, filter);
 			// SECONDARY and contained, like the price reads: the zone is read only for
 			// its legacy-regions warning, and losing it must not blank the level.
@@ -916,6 +988,9 @@ function methodsBlocks(
 	// G5: a rejected filter is a banner inside a 200, never a refused render —
 	// the method list is unaffected by it and stays on screen, editable.
 	if (filter.invalid) blocks.push(noticeBanner(BAD_CURRENCY_NOTICE));
+	if (filter.storeCurrencyUnknown && filter.defaulted) {
+		blocks.push({ type: "context", text: STORE_CURRENCY_UNKNOWN_TEXT });
+	}
 
 	if (methods.length === 0) {
 		blocks.push(
@@ -967,7 +1042,7 @@ function methodCurrencyForm(zoneId: string, filter: MethodsFilterForm): FormBloc
 					type: "text_input",
 					action_id: "currency",
 					label: "Price currency (ISO-4217, e.g. USD)",
-					initial_value: filter.currency,
+					initial_value: filterFieldValue(filter),
 				},
 			],
 			submit: { label: "Apply filters", action_id: SHIPPING_ACTIONS.applyFilter },
@@ -1225,7 +1300,17 @@ function ratesLevel() {
 		async fetchPage(client, path, filter) {
 			const methodId = path[1];
 			if (methodId === undefined) return { items: [], nextCursor: null };
-			const rate = await client.getRate(methodId, filter.currency);
+			// A typed currency does not depend on the store currency (still read, for
+			// "Clear filters"), so the two reads run together; a blank one does.
+			if (filter.defaulted) {
+				await resolveStoreCurrency(client, filter);
+				const rate = await client.getRate(methodId, filter.currency);
+				return { items: rate === null ? [] : [rate], nextCursor: null };
+			}
+			const [, rate] = await Promise.all([
+				resolveStoreCurrency(client, filter),
+				client.getRate(methodId, filter.currency),
+			]);
 			return { items: rate === null ? [] : [rate], nextCursor: null };
 		},
 		render({ path, filter, items, notice }) {
@@ -1255,7 +1340,12 @@ function ratesBlocks(
 	if (notice !== undefined) blocks.push(noticeBanner(notice));
 
 	blocks.push(currencyFilterForm(zoneId, methodId, filter));
-	if (filter.currency !== DEFAULT_RATE_CURRENCY) {
+	if (filter.storeCurrencyUnknown && filter.defaulted) {
+		blocks.push({ type: "context", text: STORE_CURRENCY_UNKNOWN_TEXT });
+	}
+	// The rates level always reads it; a `null` here would be a bug, and reads as
+	// "a filter is set" rather than hiding the way back.
+	if (filter.currency !== filter.storeCurrency) {
 		const summary = filterSummary([`currency: ${filter.currency}`]);
 		if (summary !== undefined) {
 			const clearButton: ButtonElement = {
@@ -1297,7 +1387,7 @@ function currencyFilterForm(zoneId: string, methodId: string, filter: RatesFilte
 					type: "text_input",
 					action_id: "currency",
 					label: "Currency (ISO-4217, e.g. USD)",
-					initial_value: filter.currency,
+					initial_value: filterFieldValue(filter),
 				},
 			],
 			// L-5 wants the standard verb phrase, not "Look up rate".
@@ -1337,12 +1427,14 @@ function createRateForm(zoneId: string, methodId: string, filter: RatesFilterFor
 					type: "text_input",
 					action_id: "currency",
 					label: "Currency (ISO-4217, e.g. USD)",
-					initial_value: filter.currency,
+					// A store currency that could not be read is not GUESSED into a value
+					// that would be saved: the operator types it (the level says why).
+					initial_value: filterFieldValue(filter),
 				},
 				{
 					type: "text_input",
 					action_id: "amount",
-					label: "Amount (up to 2 decimals, e.g. 4.99 — 0 is allowed)",
+					label: "Amount (in the rate currency's decimals, e.g. 4.99 — 0 is allowed)",
 					placeholder: "4.99",
 				},
 				{
@@ -1381,15 +1473,15 @@ function editRateForm(zoneId: string, methodId: string, row: ShippingRateWire): 
 				{
 					type: "text_input",
 					action_id: "amount",
-					label: `Amount for ${row.currency} (up to 2 decimals)`,
-					initial_value: formatMinorUnitsInput(row.amountCents),
+					label: `Amount for ${row.currency} (${moneyPrecisionPhrase(row.currency)})`,
+					initial_value: formatMinorUnitsInput(row.amountCents, row.currency),
 				},
 				{
 					type: "text_input",
 					action_id: "minSubtotal",
 					label: "Free-shipping threshold (blank = none)",
 					...(row.minSubtotalCents !== null
-						? { initial_value: formatMinorUnitsInput(row.minSubtotalCents) }
+						? { initial_value: formatMinorUnitsInput(row.minSubtotalCents, row.currency) }
 						: {}),
 				},
 			],
@@ -1840,31 +1932,30 @@ function createRateAction() {
 				description: "Currency must be a 3-letter ISO-4217 code like USD.",
 			});
 		}
-		if (!isIsoCurrencyCode(currency)) {
+		if (!isSupportedCurrency(currency)) {
 			return showList([zoneId, methodId], {
 				variant: "error",
 				title: "Rate not created",
-				description: `${currency} is not an ISO-4217 currency — use the code your store prices in, like USD or EUR.`,
+				description: unsupportedCurrencyMessage(currency),
 			});
 		}
-		const amountCents = parseAmountInput(readString(values.amount) ?? "");
+		const amountCents = parseAmountInput(readString(values.amount) ?? "", currency);
 		if (amountCents === null) {
 			return showList([zoneId, methodId], {
 				variant: "error",
 				title: "Rate not created",
-				description: "Amount must be 0 or a positive number like 4.99 (up to two decimal places).",
+				description: amountRefusal(currency),
 			});
 		}
 		const minSubtotalRaw = (readString(values.minSubtotal) ?? "").trim();
 		let minSubtotalCents: number | null = null;
 		if (minSubtotalRaw.length > 0) {
-			minSubtotalCents = parseAmountInput(minSubtotalRaw);
+			minSubtotalCents = parseAmountInput(minSubtotalRaw, currency);
 			if (minSubtotalCents === null) {
 				return showList([zoneId, methodId], {
 					variant: "error",
 					title: "Rate not created",
-					description:
-						"Free-shipping threshold must be 0 or a positive number like 35.00, or blank for none.",
+					description: thresholdRefusal(currency),
 				});
 			}
 			if (await isFlatRateMethod(client, zoneId, methodId)) {
@@ -1916,24 +2007,23 @@ function saveRateAction() {
 		}
 		const expectedAmountCents = Number.parseInt(expectedAmountCentsRaw, 10);
 		const values = input.values ?? {};
-		const amountCents = parseAmountInput(readString(values.amount) ?? "");
+		const amountCents = parseAmountInput(readString(values.amount) ?? "", currency);
 		if (amountCents === null) {
 			return showList([zoneId, methodId], {
 				variant: "error",
 				title: "Rate not saved",
-				description: "Amount must be 0 or a positive number like 4.99 (up to two decimal places).",
+				description: amountRefusal(currency),
 			});
 		}
 		const minSubtotalRaw = (readString(values.minSubtotal) ?? "").trim();
 		let minSubtotalCents: number | null = null;
 		if (minSubtotalRaw.length > 0) {
-			minSubtotalCents = parseAmountInput(minSubtotalRaw);
+			minSubtotalCents = parseAmountInput(minSubtotalRaw, currency);
 			if (minSubtotalCents === null) {
 				return showList([zoneId, methodId], {
 					variant: "error",
 					title: "Rate not saved",
-					description:
-						"Free-shipping threshold must be 0 or a positive number like 35.00, or blank for none.",
+					description: thresholdRefusal(currency),
 				});
 			}
 			if (await isFlatRateMethod(client, zoneId, methodId)) {
@@ -2233,10 +2323,22 @@ function regionsSummary(regions: unknown): string {
 // schemas use `nonnegative()`, not `positive()`) — in one place instead of at
 // every call site.
 
-/** Parse a merchant-entered decimal amount into integer minor units; null
- *  for any non-conforming or NEGATIVE input (never throws). */
-function parseAmountInput(input: string): number | null {
-	return parseMinorUnitsInput(input, { allowZero: true });
+/** Parse a merchant-entered decimal amount into integer minor units of
+ *  `currency` (its own exponent: JPY `"500"` is 500); null for any
+ *  non-conforming or NEGATIVE input (never throws). */
+function parseAmountInput(input: string, currency: string): number | null {
+	return parseMinorUnitsInput(input, currency, { allowZero: true });
+}
+
+/** The refusal for an unreadable rate amount, in the currency's own shape —
+ *  for a two-decimal currency, word for word what it always said. */
+function amountRefusal(currency: string): string {
+	return `Amount must be 0 or a positive number like ${moneyInputExample("4.99", currency)} (${moneyPrecisionPhrase(currency)}).`;
+}
+
+/** The free-shipping threshold refusal, its example in the currency's shape. */
+function thresholdRefusal(currency: string): string {
+	return `Free-shipping threshold must be 0 or a positive number like ${moneyInputExample("35.00", currency)}, or blank for none.`;
 }
 
 /** Display-format (with currency symbol) for the rate readout — falls back to
@@ -2246,6 +2348,6 @@ function formatCentsForDisplay(minorUnits: number, currencyCode: string): string
 	try {
 		return formatMoney(toCents(minorUnits), toCurrency(currencyCode), "en-US");
 	} catch {
-		return `${currencyCode} ${formatMinorUnitsInput(minorUnits)}`;
+		return `${currencyCode} ${formatMinorUnitsInput(minorUnits, currencyCode)}`;
 	}
 }

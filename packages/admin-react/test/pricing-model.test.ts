@@ -4,9 +4,13 @@
  * `pricing-model.ts` so it is proven here without a document; the DOM suite
  * only proves the wiring.
  */
+import { currencyChoicesWith } from "@otta-sh/admin-presentation";
 import { describe, expect, test } from "vitest";
 import type { ProductRecord } from "../src/console-api.js";
 import {
+	CURRENCY_CHOICES,
+	currencyChangeText,
+	currencyChoiceLabel,
 	draftFromRecord,
 	isDraftDirty,
 	marginSummary,
@@ -15,6 +19,7 @@ import {
 	savePayload,
 	stockStatus,
 	validateDraft,
+	type PricingDraft,
 } from "../src/products/pricing-model.js";
 
 const BASE: ProductRecord = {
@@ -69,6 +74,330 @@ describe("the draft", () => {
 		});
 		expect(draft.price).toBe("");
 		expect(draft.currency).toBe("USD");
+	});
+
+	test("an unpriced product starts on the store currency when the detail read carried one; a priced one keeps its own", () => {
+		const unpriced: ProductRecord = {
+			...BASE,
+			priceCents: null,
+			currency: null,
+			compareAtCents: null,
+			unitCostCents: null,
+		};
+		expect(draftFromRecord(unpriced, "EUR").currency).toBe("EUR");
+		expect(draftFromRecord(BASE, "EUR").currency).toBe(BASE.currency);
+	});
+
+	// THE CURRENCY RULE (`resolveDraftCurrency`), stateless, every case through
+	// `mergeDraft` against the FRESH record.
+	describe("a merge's currency rule", () => {
+		const unpriced: ProductRecord = {
+			...BASE,
+			priceCents: null,
+			currency: null,
+			compareAtCents: null,
+			unitCostCents: null,
+		};
+		const pricedIn = (currency: string): ProductRecord => ({
+			...unpriced,
+			priceCents: 1500,
+			currency,
+		});
+		type Row = {
+			name: string;
+			previous: ProductRecord;
+			/** The store currency the form was seeded with ("" = unknown). */
+			seeded: string;
+			edit: Partial<PricingDraft>;
+			picked: boolean;
+			fresh: ProductRecord;
+			freshStore: string;
+			want: {
+				currency: string;
+				conflict: boolean;
+				change?: { kind: "priced_elsewhere" | "store_default_moved"; from: string; to: string };
+			};
+		};
+		const rows: Row[] = [
+			// Rule 1 — no money typed: follow the fresh record, no conflict.
+			{
+				name: "1. no money typed, store default moved: follows it",
+				previous: unpriced,
+				seeded: "USD",
+				edit: { sku: "X-1" },
+				picked: false,
+				fresh: unpriced,
+				freshStore: "EUR",
+				want: { currency: "EUR", conflict: false },
+			},
+			{
+				name: "1. no money typed, unknown became known: adopts it",
+				previous: unpriced,
+				seeded: "",
+				edit: {},
+				picked: false,
+				fresh: unpriced,
+				freshStore: "EUR",
+				want: { currency: "EUR", conflict: false },
+			},
+			{
+				name: "1. no money typed, priced elsewhere: takes the stored currency",
+				previous: unpriced,
+				seeded: "EUR",
+				edit: { sku: "X-2" },
+				picked: false,
+				fresh: pricedIn("GBP"),
+				freshStore: "EUR",
+				want: { currency: "GBP", conflict: false },
+			},
+			{
+				name: "1. a SEEDED price is not typed money: a priced product follows its record",
+				previous: pricedIn("GBP"),
+				seeded: "EUR",
+				edit: { sku: "X-3" },
+				picked: false,
+				fresh: { ...pricedIn("GBP"), onHand: 99 },
+				freshStore: "USD",
+				want: { currency: "GBP", conflict: false },
+			},
+			// Rule 2 — priced elsewhere in another currency, money typed.
+			{
+				name: "2. price typed under USD, priced elsewhere in GBP: GBP, conflict",
+				previous: unpriced,
+				seeded: "USD",
+				edit: { price: "24.99" },
+				picked: false,
+				fresh: pricedIn("GBP"),
+				freshStore: "USD",
+				want: {
+					currency: "GBP",
+					conflict: true,
+					change: { kind: "priced_elsewhere", from: "USD", to: "GBP" },
+				},
+			},
+			{
+				name: "2. picked JPY + cost typed, priced elsewhere in USD: USD, conflict (cost never silently USD)",
+				previous: unpriced,
+				seeded: "EUR",
+				edit: { currency: "JPY", unitCost: "800" },
+				picked: true,
+				fresh: pricedIn("USD"),
+				freshStore: "EUR",
+				want: {
+					currency: "USD",
+					conflict: true,
+					change: { kind: "priced_elsewhere", from: "JPY", to: "USD" },
+				},
+			},
+			{
+				name: "2. priced elsewhere in the SAME currency as typed: no conflict",
+				previous: unpriced,
+				seeded: "GBP",
+				edit: { compareAt: "30.00" },
+				picked: false,
+				fresh: pricedIn("GBP"),
+				freshStore: "GBP",
+				want: { currency: "GBP", conflict: false },
+			},
+			// Rule 3 — unpriced, money typed, not picked, store default moved.
+			{
+				name: "3. price typed under USD, store now EUR: stays USD, conflict",
+				previous: unpriced,
+				seeded: "USD",
+				edit: { price: "24.99" },
+				picked: false,
+				fresh: unpriced,
+				freshStore: "EUR",
+				want: {
+					currency: "USD",
+					conflict: true,
+					change: { kind: "store_default_moved", from: "USD", to: "EUR" },
+				},
+			},
+			{
+				name: "3. unit cost typed counts as money too",
+				previous: unpriced,
+				seeded: "USD",
+				edit: { unitCost: "9.50" },
+				picked: false,
+				fresh: unpriced,
+				freshStore: "EUR",
+				want: {
+					currency: "USD",
+					conflict: true,
+					change: { kind: "store_default_moved", from: "USD", to: "EUR" },
+				},
+			},
+			{
+				name: '3. typed while unknown, now known: stays "", conflict',
+				previous: unpriced,
+				seeded: "",
+				edit: { price: "18" },
+				picked: false,
+				fresh: unpriced,
+				freshStore: "EUR",
+				want: {
+					currency: "",
+					conflict: true,
+					change: { kind: "store_default_moved", from: "", to: "EUR" },
+				},
+			},
+			{
+				name: "3. it is STATELESS: re-evaluated against the same fresh state, it is still a conflict",
+				previous: unpriced,
+				seeded: "EUR",
+				edit: { price: "24.99", currency: "USD" },
+				picked: false,
+				fresh: unpriced,
+				freshStore: "EUR",
+				want: {
+					currency: "USD",
+					conflict: true,
+					change: { kind: "store_default_moved", from: "USD", to: "EUR" },
+				},
+			},
+			{
+				name: "money typed, nothing moved: no conflict",
+				previous: unpriced,
+				seeded: "EUR",
+				edit: { price: "18" },
+				picked: false,
+				fresh: { ...unpriced, onHand: 99 },
+				freshStore: "EUR",
+				want: { currency: "EUR", conflict: false },
+			},
+			// Rule 4 — unpriced and picked: never a store-default conflict.
+			{
+				name: "4. picked JPY + price, store default moved: JPY stands, no conflict",
+				previous: unpriced,
+				seeded: "EUR",
+				edit: { currency: "JPY", price: "1500" },
+				picked: true,
+				fresh: unpriced,
+				freshStore: "GBP",
+				want: { currency: "JPY", conflict: false },
+			},
+			{
+				name: "4. picking the NEW store currency resolves rule 3",
+				previous: unpriced,
+				seeded: "USD",
+				edit: { currency: "EUR", price: "24.99" },
+				picked: true,
+				fresh: unpriced,
+				freshStore: "EUR",
+				want: { currency: "EUR", conflict: false },
+			},
+		];
+		test.each(rows)("$name", (row) => {
+			const draft = { ...draftFromRecord(row.previous, row.seeded), ...row.edit };
+			const merged = mergeDraft(row.previous, row.fresh, draft, {
+				storeCurrency: row.seeded,
+				freshStoreCurrency: row.freshStore,
+				currencyPicked: row.picked,
+			});
+			expect(merged.draft.currency).toBe(row.want.currency);
+			expect(merged.conflict).toBe(row.want.conflict);
+			expect(merged.currencyChange).toEqual(row.want.change);
+		});
+
+		test('rule 2 clears EVERY typed amount: price + cost typed in USD, priced elsewhere in KWD with no cost → cost ""', () => {
+			const draft = { ...draftFromRecord(unpriced, "USD"), price: "24.99", unitCost: "9.50" };
+			const merged = mergeDraft(unpriced, { ...pricedIn("KWD"), priceCents: 12_500 }, draft, {
+				storeCurrency: "USD",
+			});
+			expect(merged.draft.currency).toBe("KWD");
+			expect(merged.draft.unitCost).toBe(""); // never 9.50 read as KWD
+			expect(merged.draft.compareAt).toBe("");
+			expect(merged.draft.price).toBe("12.500"); // the stored price, in KWD's own digits
+			// Non-money edits still merge as before.
+			const withSku = mergeDraft(
+				unpriced,
+				pricedIn("KWD"),
+				{ ...draft, sku: "MINE-1" },
+				{ storeCurrency: "USD" },
+			);
+			expect(withSku.draft.sku).toBe("MINE-1");
+		});
+
+		test("a field clash AND a currency conflict are both reported", () => {
+			// Typed a price; someone else priced it (the price field clashes) in GBP.
+			const draft = { ...draftFromRecord(unpriced, "USD"), price: "24.99" };
+			const merged = mergeDraft(unpriced, pricedIn("GBP"), draft, { storeCurrency: "USD" });
+			expect(merged.conflict).toBe(true);
+			expect(merged.fieldClash).toBe(true);
+			expect(merged.currencyChange?.kind).toBe("priced_elsewhere");
+		});
+
+		test("the banners say what changed", () => {
+			expect(currencyChangeText({ kind: "priced_elsewhere", from: "JPY", to: "GBP" })).toBe(
+				"This product was priced in GBP by someone else — the amounts you entered in JPY were replaced with its saved ones — check every amount in GBP before saving.",
+			);
+			expect(currencyChangeText({ kind: "store_default_moved", from: "USD", to: "EUR" })).toBe(
+				"Your store currency is now EUR — this product will be priced in USD unless you choose EUR. Pick the currency to confirm, then save.",
+			);
+			expect(currencyChangeText({ kind: "store_default_moved", from: "", to: "EUR" })).toBe(
+				"Your store currency is now EUR — choose this product's currency, then save.",
+			);
+		});
+
+		test("isDraftDirty is unchanged: a lone pick is not unsaved work", () => {
+			const saved = draftFromRecord(unpriced, "EUR");
+			expect(isDraftDirty(saved, { ...saved, currency: "JPY" })).toBe(false);
+			expect(isDraftDirty(saved, { ...saved, currency: "JPY", price: "1500" })).toBe(true);
+		});
+	});
+
+	test("the picker offers a saved code the table no longer lists, first, so the select has a matching option", () => {
+		expect(currencyChoicesWith("USD")).toBe(CURRENCY_CHOICES);
+		expect(currencyChoicesWith("XYZ")).toEqual(["XYZ", ...CURRENCY_CHOICES]);
+		// Nothing chosen yet adds nothing.
+		expect(currencyChoicesWith("")).toBe(CURRENCY_CHOICES);
+	});
+
+	test("a JPY product's amounts are WHOLE YEN, both ways: 1500 shows as 1500 and '1500' saves as 1500", () => {
+		const jpy: ProductRecord = {
+			...BASE,
+			priceCents: 1500,
+			currency: "JPY",
+			compareAtCents: 2000,
+			compareAtCurrency: "JPY",
+			unitCostCents: 900,
+			unitCostCurrency: "JPY",
+		};
+		const draft = draftFromRecord(jpy);
+		expect(draft.price).toBe("1500");
+		expect(draft.compareAt).toBe("2000");
+		expect(validateDraft(draft, jpy)).toEqual({});
+		expect(savePayload(jpy, { ...draft, price: " 1600 " })).toMatchObject({
+			price: "1600",
+			currency: "JPY",
+		});
+		// A fraction of a yen is a problem quoted in the currency's own shape.
+		expect(validateDraft({ ...draft, price: "15.50" }, jpy).price).toBe("Enter a price like 2499");
+		expect(isDraftDirty(draft, { ...draft, price: "1500" })).toBe(false);
+	});
+
+	test("a first pricing in JPY reads the picked currency, and every offered currency is supported", () => {
+		const unpriced: ProductRecord = {
+			...BASE,
+			priceCents: null,
+			currency: null,
+			compareAtCents: null,
+			unitCostCents: null,
+		};
+		const draft = { ...draftFromRecord(unpriced), price: "1500", currency: "JPY" };
+		expect(validateDraft(draft, unpriced)).toEqual({});
+		expect(savePayload(unpriced, draft)).toMatchObject({ price: "1500", currency: "JPY" });
+		expect(validateDraft({ ...draft, currency: "XYZ" }, unpriced).currency).toBe(
+			"Choose a supported currency",
+		);
+		expect(CURRENCY_CHOICES.slice(0, 3)).toEqual(["USD", "EUR", "GBP"]);
+		expect(CURRENCY_CHOICES).toContain("JPY");
+		expect(CURRENCY_CHOICES).toContain("KWD");
+		expect(new Set(CURRENCY_CHOICES).size).toBe(CURRENCY_CHOICES.length);
+		expect(currencyChoiceLabel("JPY")).toBe("JPY — Japanese Yen");
+		// Payable at checkout now (its total is rounded — ADR-0035 amendment): no warning.
+		expect(currencyChoiceLabel("KWD")).toBe("KWD — Kuwaiti Dinar");
 	});
 
 	test("is dirty only when a value differs, and `32` vs `32.00` is not a difference", () => {
