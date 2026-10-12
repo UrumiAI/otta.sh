@@ -81,7 +81,12 @@ async function dispatchAs(role: number) {
 		}),
 		user: { id: "u", email: "u@example.com", name: null, role, createdAt: new Date(0) },
 	});
-	return { status: response.status, handled: handled.mock.calls.length > 0 };
+	const body = (await response.json()) as { error?: { code?: string } };
+	return {
+		status: response.status,
+		code: body.error?.code,
+		handled: handled.mock.calls.length > 0,
+	};
 }
 
 describe("EmDash's default permission for Otta's admin route (#478)", () => {
@@ -92,7 +97,17 @@ describe("EmDash's default permission for Otta's admin route (#478)", () => {
 	});
 
 	test("so EmDash requires plugins:manage: one role below UPLOAD_MIN_ROLE is refused, at it the handler runs", async () => {
-		expect(await dispatchAs(UPLOAD_MIN_ROLE - 10)).toEqual({ status: 403, handled: false });
-		expect(await dispatchAs(UPLOAD_MIN_ROLE)).toEqual({ status: 200, handled: true });
+		// FORBIDDEN is the permission check's refusal; the request carries the CSRF
+		// header, so it is not that check's CSRF_REJECTED.
+		expect(await dispatchAs(UPLOAD_MIN_ROLE - 10)).toEqual({
+			status: 403,
+			code: "FORBIDDEN",
+			handled: false,
+		});
+		expect(await dispatchAs(UPLOAD_MIN_ROLE)).toEqual({
+			status: 200,
+			code: undefined,
+			handled: true,
+		});
 	});
 });
