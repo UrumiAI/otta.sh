@@ -14,7 +14,6 @@ import { applyRateTable, rateTableOf } from "../../src/pricing/rate-table-calcul
 import { resolveShippingRate } from "../../src/pricing/shipping.js";
 import { computeLineTax } from "../../src/pricing/tax.js";
 import type { TaxRequest } from "../../src/pricing/tax-calculator.js";
-import { effectiveTaxRates } from "../../src/pricing/tax-rate-uniqueness.js";
 import type { TotalsBreakdown, TotalsInput, TotalsLineBreakdown } from "../../src/pricing/types.js";
 
 /**
@@ -123,9 +122,11 @@ describe("rate-table parity with main's arithmetic (property)", () => {
 			fc.property(cartArb, ({ lines, zoneRates, coupon, shippingMethod }) => {
 				const rates = zoneRates.map((r, i) => ({ ...r, id: `r${i}`, zoneId: "z" }));
 				// The generator puts several rates in one class (one zone): duplicates a store
-				// may still hold from before it refused them. Main's map is the oracle over the
-				// rates that APPLY — one per (class, zone), the greatest id (ADR-0030 amendment).
-				const rules = { shippingMethod, ...legacyRateMap(effectiveTaxRates(rates)) };
+				// may still hold from before it refused them. Main's loop over ALL of them is
+				// the oracle: the class's rate is the last listed (the greatest id, the one
+				// that applies), and the shipping flag is read across every rate, ignored
+				// duplicates included, so their totals never change (issue #447).
+				const rules = { shippingMethod, ...legacyRateMap(rates) };
 				const input: TotalsInput = {
 					currency: USD,
 					lines,

@@ -173,6 +173,9 @@ export interface ShopCard {
 	 */
 	was: string | null;
 	availability: AvailabilityToken | null;
+	/** Whether `price` includes tax (#423) — the view model's `price.taxNote`,
+	 *  present only when the merchant chose how shop prices show tax. */
+	taxNote?: "incl" | "excl";
 }
 
 export interface NoticeCopy {
@@ -214,6 +217,9 @@ export interface ProductPurchase {
 	 *  — off the view model's `compareAtPrice`, which is null unless it is above
 	 *  the price. A view strikes it beside `priceFormatted`. */
 	compareAtFormatted: string | null;
+	/** Whether the price includes tax (#423) — the view model's `price.taxNote`,
+	 *  present only when the merchant chose how shop prices show tax. */
+	taxNote?: "incl" | "excl";
 	/** Strike the price: not in stock (degraded is never "purchasable"). */
 	priceStruck: boolean;
 	availability: AvailabilityToken | null;
@@ -445,6 +451,11 @@ export interface CheckoutModel {
 	 *  as for the delivery list. */
 	addressRegions: RegionChoice;
 	showDelivery: boolean;
+	/** #426: the "where" block asks where the BUYER is (a cart that ships
+	 *  nothing, taxed there), not where the order goes: no delivery options, an
+	 *  optional country, and the place form echoes it with `taxLocation=buyer`.
+	 *  Only ever true alongside `showDelivery`. */
+	buyerLocation: boolean;
 	showAddress: boolean;
 	/** The method the totals were priced with, stated beside the submit. */
 	chosenOption: { label: string; price: string } | null;

@@ -1475,7 +1475,7 @@ evaluates against `undefined` (R-12b). Do **not** use `condition` to smuggle a h
 | Data | Element | Why |
 |---|---|---|
 | Money | `text_input`, parsed to integer minor units | `number_input` yields a JS `number` — a float money path, forbidden by the project's money rule. |
-| Percent / basis points | `text_input` (`7.25`), parsed to bps | Same reason. |
+| Percent / basis points | `text_input` (`7.25`), parsed to bps — a **tax** rate to four decimal places (`8.875`), parsed to millionths (`ratePpm`, ADR-0036) | Same reason. |
 | Non-money integer (minutes, thresholds, quantities, dimensions) | `text_input`, parsed with `/^\d+$/` | One parsing discipline for every numeric field beats two. `number_input` is not *forbidden* here — it is simply unused, and the two current uses (Settings' TTL and threshold) migrate for consistency, not to fix a bug. |
 | Boolean | `toggle` | Replaces the current two-option `yes/no` selects. Emits a **real boolean**, and `readString` (`scaffold/list-detail.ts:334`) is `typeof value === "string" ? value : undefined` — so every current parser returns `undefined` for a toggle and the field **appears to save and never persists.** Add `readBoolean` to the scaffold and migrate the call sites in the same change. Subject to F-6b. |
 | Closed set, ≤8 options, **every value readable as a word** | `select` | The trigger shows the **value**, not the label (R-17a) — so this row requires F-6c. |
@@ -1585,7 +1585,8 @@ in-process rules client, so no caller of the surface can store the value:
   changed meanwhile is refused rather than re-read.
 - **Tax rate ≤ 100%.** `rateBps` 0–10000, the port's documented range; the console used to accept
   (and advertise) 1000%. Coupon percentages keep the wider wire bound — the pricing math clamps a
-  discount to the subtotal.
+  discount to the subtotal. A tax rate may have up to four decimal places (8.875%, ADR-0036); a
+  coupon percentage keeps two.
 - **Free-shipping threshold only on a `free_shipping` method.** `shippingCost` never reads it for a
   flat rate, so a non-blank threshold on a flat-rate method's rate is refused with that reason.
 

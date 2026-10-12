@@ -58,8 +58,7 @@ export interface StagingEmdashOptions {
  *   The DESCRIPTOR's `allowedHosts` is built HERE, in that Node pass. With no
  *   parameter for it the descriptor could never allowlist a deployment-supplied
  *   host, so the first person to add a define would ship a bundle holding a live
- *   client aimed at a host the gate refuses — the exact failure `manifest.ts`'s
- *   `resolveInProcessEgress` note documents.
+ *   client aimed at a host the gate refuses.
  *
  *   Same const, both consumers, one decision. The cannot-disagree test in
  *   site-config.test.ts pins it by reading `astro.config.ts` AS SOURCE and

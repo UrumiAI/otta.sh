@@ -136,7 +136,7 @@ strict TypeScript.
 
 ```bash
 pnpm lint         # oxlint + domain-purity dependency check
-pnpm typecheck    # tsc -b
+pnpm typecheck    # tsc -b + e2e + each package's typecheck (site: astro check)
 pnpm test         # vitest (better-sqlite3 by default)
 pnpm format       # oxfmt, tabs
 ```

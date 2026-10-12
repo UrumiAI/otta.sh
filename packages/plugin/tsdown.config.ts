@@ -4,6 +4,8 @@ export default defineConfig({
 	// `src/plugin.ts` is the standard-format descriptor entrypoint
 	// (`@otta-sh/plugin/plugin` — default-exports the {hooks, routes} object
 	// for em-dash's `plugins: []` / `adaptSandboxEntry`).
+	// `src/trusted.ts` is the same object with `trustedHost` on, for an
+	// in-process registration only (`@otta-sh/plugin/trusted`, issue #447).
 	// `src/subdivisions.ts` (`@otta-sh/plugin/subdivisions`) carries the English
 	// subdivision names for a storefront's region pick list. Its own entry, so the
 	// names are emitted beside it and never into the chunk the sandbox entry loads.
@@ -13,6 +15,7 @@ export default defineConfig({
 		"src/sandbox-entry.ts",
 		"src/subdivisions.ts",
 		"src/testing.ts",
+		"src/trusted.ts",
 	],
 	format: ["esm"],
 	/**

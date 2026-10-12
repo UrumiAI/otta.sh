@@ -10,6 +10,7 @@ import {
 	createOrderFromCart,
 	currency,
 	idempotencyKey,
+	productId,
 	readOrderTaxSnapshot,
 	type CreateOrderDeps,
 	type TaxCalculator,
@@ -37,6 +38,24 @@ const answering: TaxCalculator = {
 				rateBps: 888,
 				label: "NY",
 				taxCents: cents(222),
+			})),
+			shipping: null,
+		};
+	},
+};
+
+/** Taxes only a `taxable` line, as every calculator must (PR 2b). */
+const answeringByStatus: TaxCalculator = {
+	id: "acme.tax",
+	async calculate(req) {
+		return {
+			ok: true,
+			currency: req.currency,
+			lines: req.lines.map((l) => ({
+				lineId: l.lineId,
+				rateBps: l.taxStatus === "taxable" ? 888 : 0,
+				label: "NY",
+				taxCents: cents(l.taxStatus === "taxable" ? 222 : 0),
 			})),
 			shipping: null,
 		};
@@ -121,12 +140,15 @@ export function checkoutTaxCalculatorCases(bound: BoundStorage): void {
 			v: 1,
 			calculatorId: "acme.tax",
 			pricesIncludeTax: false,
-			// ADR-0032: no shipping zone matched (this store has none), so not located.
-			located: false,
+			// #436: this store has no shipping zone, but the outside calculator
+			// charged tax for the ship-to — the tax was calculated, so located.
+			located: true,
 			lines: [
 				{
 					lineIndex: 0,
 					taxClassId: "standard",
+					// #427: the product's tax status, frozen with the line.
+					taxStatus: "taxable",
 					taxableCents: 2500,
 					rateBps: 888,
 					label: "NY",
@@ -135,5 +157,35 @@ export function checkoutTaxCalculatorCases(bound: BoundStorage): void {
 			],
 			shipping: null,
 		});
+	});
+
+	test("#427: a line's tax status survives the order document, and a replay is byte-identical", async () => {
+		const { orders, deps, command } = await setup(answeringByStatus);
+		const row = await deps.productCommerce.getByProductId(productId("p1"));
+		if (row === null) throw new Error("no seeded row");
+		const edited = await deps.productCommerce.updateCommerceFields(
+			{ productId: productId("p1"), taxStatus: "none" },
+			idempotencyKey("status-none"),
+			row.updatedAt.toISOString(),
+		);
+		expect(edited.ok).toBe(true);
+		const res = await createOrderFromCart(deps, command);
+		if (!res.ok) throw new Error(`create failed: ${res.reason}`);
+		const stored = await orders.store.getById(res.order.id);
+		const snapshot = readOrderTaxSnapshot(stored?.totals.taxBreakdown);
+		expect(snapshot?.v === 1 && snapshot.lines.map((l) => [l.taxStatus, l.taxCents])).toEqual([
+			["none", 0],
+		]);
+		// What the document holds is what the use-case wrote, byte for byte…
+		expect(JSON.stringify(stored?.totals.taxBreakdown)).toBe(
+			JSON.stringify(res.order.totals.taxBreakdown),
+		);
+		// …and a replay with the same idempotency key returns the same bytes.
+		const replay = await createOrderFromCart(deps, command);
+		if (!replay.ok) throw new Error(`replay failed: ${replay.reason}`);
+		expect(replay.order.id).toBe(res.order.id);
+		expect(JSON.stringify(replay.order.totals.taxBreakdown)).toBe(
+			JSON.stringify(stored?.totals.taxBreakdown),
+		);
 	});
 }

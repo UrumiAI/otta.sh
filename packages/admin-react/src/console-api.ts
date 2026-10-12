@@ -75,6 +75,8 @@ export interface OrderLine {
 	readonly currency: string;
 	readonly quantity: number;
 	readonly fulfillmentKind: string;
+	/** #427: the tax status frozen with the order; absent when it predates it. */
+	readonly taxStatus?: string;
 }
 
 export interface OrderTotals {
@@ -89,6 +91,18 @@ export interface OrderTotals {
 	readonly roundingCents?: number;
 	readonly appliedCouponCode: string | null;
 	readonly shippingZoneId?: string | null;
+	/** Present (true) only when the order's frozen tax snapshot recorded tax-inclusive prices. */
+	readonly pricesIncludeTax?: true;
+	/** One row per tax, adding up to `taxCents` (issue #422). Absent ⇒ the
+	 *  single Tax row (an older order, or a plugin before the field). */
+	readonly taxRows?: ReadonlyArray<{ readonly label: string; readonly amountCents: number }>;
+	/** #426: where the tax was charged; only on an order priced under "based on
+	 *  the customer's billing address". */
+	readonly taxAddress?: {
+		readonly basis: "billing" | "base" | "shipping";
+		readonly country: string;
+		readonly region: string | null;
+	};
 }
 
 export interface ShippingAddress {

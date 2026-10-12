@@ -54,7 +54,9 @@ Three rules hold. Everything else in this guide is a consequence of them.
   `EMDASH_ENCRYPTION_KEY` and `OTTA_WH_TOKEN`. Every payment **credential** is
   provisioned by the operator in the admin console's **Settings** page and held in
   **write-only plugin `kv`** under `settings:*` — persisted only on a non-empty submit,
-  never rendered back into a block, read through a fail-closed reader. Nothing
+  never rendered back into a block, read through a fail-closed reader. The Stripe secret
+  key, the Stripe webhook signing secret and the webhook edge token are **encrypted at
+  rest** with `EMDASH_ENCRYPTION_KEY` (ADR-0037). Nothing
   secret-shaped ever goes in a tracked `wrangler.jsonc` (pinned by the site's config tests,
   which reject any `vars` key matching `/SECRET|KEY|TOKEN|PASSWORD/i`).
 
@@ -313,9 +315,56 @@ order of appearance in a deployment's life:
 | Stripe secret key | admin Settings (`settings:stripeSecretKey`) | for Stripe payments — **together with the webhook secret** (see below) | before enabling Stripe |
 | Email provider (from-address, SPF, DKIM, its own key) | an **EmDash email provider plugin**, selected in EmDash Settings > Email — not otta | optional | when wiring real email |
 
-- **`EMDASH_ENCRYPTION_KEY`** — generate with `npx emdash secrets generate`; never committed,
-  never echoed into logs; **back it up in a password manager** (it protects the CMS's
-  encrypted data — losing it strands that data).
+- **`EMDASH_ENCRYPTION_KEY`** — **required.** Generate with `npx emdash secrets generate`;
+  never committed, never echoed into logs; **back it up in a password manager**. EmDash
+  encrypts plugin settings declared `secret` with it (AES-GCM), and Otta declares three: the
+  Stripe secret key, the Stripe webhook signing secret and the webhook edge token
+  (`settings:otta-wh-token`) (ADR-0037). The site's Otta
+  descriptor must keep its `settingsSchema` for that to happen. Other plugin settings, the
+  email keys and order data are **not** encrypted with it.
+  - **Enter these keys on Otta's Settings page only.** Declaring them makes EmDash also show
+    a Settings gear for the plugin under Plugins; its form stores whatever is typed, without
+    Otta's checks. Otta checks every stored key's shape when it reads it: an empty or
+    malformed value is never used (payments refuse, the webhook route answers 503) and
+    Otta's Settings page shows "saved, but not valid" until it is entered again there.
+  - **Where it is read:** EmDash reads it from `process.env`. On Workers that is the Worker
+    secret (`nodejs_compat` populates `process.env`). **Local development (`astro dev`):**
+    put `EMDASH_ENCRYPTION_KEY=<key>` in `sites/staging/.env` (gitignored; generate a
+    separate dev key). Exporting it in the shell does **not** work: the dev Worker runs in
+    workerd, which does not inherit the shell environment. (A `.dev.vars` file would also be
+    read, but it is not gitignored in this repo — use `.env`.) The Playwright stack and CI's
+    e2e job use a throwaway test key (`playwright.config.ts`).
+  - **Missing:** saving any of those three keys fails, and a key already saved encrypted
+    cannot be read. Payments then refuse as "not configured", the webhook route answers
+    503 (Stripe retries it), and Settings shows the key as "saved, but cannot be read".
+    Nothing falls back to an unencrypted copy.
+  - **Lost:** the three keys cannot be recovered. Set a new key, then enter each key again in
+    Settings (or remove it there).
+  - **Rotating:** put the new key first and keep the old one after it, comma-separated
+    (`EMDASH_ENCRYPTION_KEY=<new>,<old>`). New saves use the new key; both still decrypt.
+    Keep the old key listed until all three keys have been entered again in Settings (they
+    are write-only, so each must be copied again from Stripe or its provider), then drop
+    it. The one-time upgrade re-save below does not repeat for a rotation.
+  - **Upgrading a site that already has these keys saved:** the first cron tick after the
+    deploy re-saves them encrypted, once (it needs the key set; until then it retries and
+    logs one warning naming `EMDASH_ENCRYPTION_KEY`). It first reads every key and changes
+    nothing if any cannot be read, so a wrong key cannot strand a working one — but if every
+    key is still unencrypted, whichever key is set at that tick is the key they are saved
+    under, so set the right one before deploying. It logs counts only (stored x402 keys are
+    deleted by x402's own one-time purge, not by this run). Earlier backups and D1 Time Travel
+    history still hold the earlier copies until they age out, so rotate a live Stripe key
+    after the upgrade.
+  - **After deploying:** open Otta's Settings and look for "saved, but not valid"; enter any
+    such key again (an invalid stored edge token makes the webhook answer 503).
+  - **A custom site** must declare the schema (`PAYMENT_SECRET_SETTINGS_SCHEMA` in its
+    descriptor `settingsSchema`) before upgrading. If it was added later, enter the three
+    keys again in Settings, or delete `state:paymentSecretsEncrypted` so the re-save runs
+    again.
+  - **Rolling back:** after the one-time re-save, a build without the `settingsSchema` cannot
+    read the three encrypted values, so Stripe payments and webhooks stop until you roll
+    forward or enter the keys again. Nothing is lost. Keys entered while the old build runs
+    are stored plain; after rolling forward, enter them again or delete
+    `state:paymentSecretsEncrypted` so the re-save runs again.
 
 > **The Stripe webhook endpoint is public by design, and permanently site-owned.**
 > Stripe delivers to `POST /webhooks/stripe` on the site (`sites/staging/src/pages/webhooks/stripe.ts`)
@@ -337,7 +386,9 @@ order of appearance in a deployment's life:
 > opens a store. Provision the same value on both halves — `wrangler secret put
 > OTTA_WH_TOKEN` on the site and the matching field in admin Settings. Unset on the plugin
 > side, the gate **passes through** (degrading to "cryptographic anchor only", never to
-> "nothing works" and never to "nothing is checked"); set on the plugin side but unset on
+> "nothing works" and never to "nothing is checked"); saved on the plugin side but
+> unreadable (no usable `EMDASH_ENCRYPTION_KEY`), the route answers **503** and Stripe
+> retries — the gate never opens because a read failed; set on the plugin side but unset on
 > the site, **every delivery 401s** — that is the dangerous direction, and the reason the
 > endpoint replays the 401 into Stripe's dashboard rather than swallowing it.
 
@@ -513,11 +564,45 @@ allowlist (capability `network:request`). That allowlist is resolved at **build*
 | Host | When |
 |---|---|
 | `api.stripe.com` | always |
+| each host in `OTTA_EXTRA_ALLOWED_HOSTS` | when set (see below) |
 
 No email host: email is not plugin egress. It goes through the host's `ctx.email`
 (capability `email:send`, [ADR-0031](./adr/0031-email-through-emdash-host.md)), and the
-EmDash email provider makes its own requests under its own allowlist. No other host is
-deployment-supplied, so there is no egress URL to set at build time.
+EmDash email provider makes its own requests under its own allowlist. The only
+deployment-supplied hosts are the operator extras below.
+
+**Extra hosts: `OTTA_EXTRA_ALLOWED_HOSTS`.** A comma-separated list of hostnames to add to
+the allowlist, read from the shell env, then `sites/staging/.env`, at
+**build** time, e.g. `OTTA_EXTRA_ALLOWED_HOSTS=api.example.com,hooks.example.org`.
+Entries are trimmed and lowercased, empty entries are dropped, duplicates collapse, and
+the order is stable (Stripe, then extras as given). Each entry must be a public DNS hostname:
+letters, digits and hyphens in dot-separated labels, with at least one dot. These **fail the
+build** with an error naming every refused entry, so a typo is loud rather than silently
+ungranted:
+
+- a wildcard (`*`, `*.example.com`), or anything with a scheme, port, path or userinfo;
+- an IPv4 literal (including hex forms such as `0x7f.0.0.1`) or an IPv6 literal;
+- a single-label name (`localhost`, `intranet`);
+- `localhost`, `local`, `internal`, `localdomain`, `home.arpa` and `lan`, and any name
+  under them (`app.localhost`, `printer.local`, `metadata.google.internal`,
+  `localhost.localdomain`, `nas.lan`);
+- the wildcard-IP DNS services `nip.io`, `sslip.io` and `xip.io` and any name under them
+  (`127.0.0.1.nip.io`);
+- any Stripe host other than `api.stripe.com`, above all `js.stripe.com`, which is loaded
+  by the buyer's browser and is never plugin egress
+  ([ADR-0012](./adr/0012-storefront-checkout-loads-stripe-elements-in-the-browser.md) §3).
+  Listing `api.stripe.com` itself is a harmless no-op: it is always granted.
+
+This is a **build-time sanity check against obvious mistakes, not SSRF protection**: any
+public name can resolve to a private address. The capability stays `network:request`
+(never `network:request:unrestricted`), and the runtime protection is EmDash's egress
+check, which validates the resolved IP and blocks private, loopback and metadata addresses
+whatever is listed here (the Worker deliberately runs without
+`global_fetch_strictly_public`, §2.4). Listing a host means
+trusting its DNS: EmDash validates the resolved IP and `fetch` then resolves again (a
+DNS-rebinding window), and no platform flag backs this up. Allowlisted hosts, extras
+included, also become allowed image sources in the plugin admin UI (EmDash behaviour for
+`network:request`, already true for Stripe).
 
 Stripe traffic goes through the same gate: `@otta-sh/payments-stripe` would default its
 transport to `globalThis.fetch`, but the plugin constructs the live gateway with
@@ -526,10 +611,10 @@ so the allowlist is the perimeter for `api.stripe.com` too. This
 closes the caveat recorded in
 [ADR-0020](./adr/0020-one-deployable-plugin-owns-commerce-truth.md) §2.
 
-It is a third-party host on the public internet. The Worker runs without
+All of these are third-party hosts on the public internet. The Worker runs without
 `global_fetch_strictly_public` (§2.4), so a URL on the site's **own** Cloudflare zone would
 reach that zone's origin directly, skipping its Workers routes and security settings — keep
-any egress host off the site's zone.
+every allowlisted host (each `OTTA_EXTRA_ALLOWED_HOSTS` entry) off the site's zone.
 
 Because it is build-time, adding a host means a rebuild and redeploy — a Settings edit
 alone cannot widen it. That is deliberate: the allowlist is the perimeter, and an operator

@@ -483,6 +483,18 @@ describe.each(REVIEW_VIEWS)("/checkout — delivery (ADR-0021) — %s", (_label,
 		expect(VIEW).toMatch(/showDelivery && \(\s*<div class="checkout-delivery" id="delivery">/);
 	});
 
+	test("#426: on a buyer-location page the place form carries the taxLocation marker", () => {
+		// The priced location itself rides as the delivery block's fromCountry /
+		// fromRegion (pinned below), which place.ts reads on a marked page.
+		expect(PLACE).toMatch(
+			/\{buyerLocation && <input type="hidden" name="taxLocation" value="buyer" \/>\}/,
+		);
+		// Optional (review round 1): never `required` on a buyer-location page.
+		const select = /<select[^>]*name="deliveryCountry"[^>]*>/.exec(DELIVERY)?.[0] ?? "";
+		expect(select).toContain("required={!buyerLocation}");
+		expect(DELIVERY).toContain('{buyerLocation ? "Your location" : "Delivery"}');
+	});
+
 	test("it asks for a country (select) and a region (a pick list of codes), echoes the priced destination as fromCountry/fromRegion — all owned by the place form", () => {
 		const select = /<select[^>]*name="deliveryCountry"[^>]*>/.exec(DELIVERY)?.[0] ?? "";
 		expect(select).toContain('form="checkout-place"');
@@ -578,9 +590,11 @@ describe.each(REVIEW_VIEWS)("/checkout — delivery (ADR-0021) — %s", (_label,
 });
 describe("/checkout — delivery (ADR-0021): the page's half", () => {
 	test("the delivery form is shown only for an unlocked cart that ships, in a store with zones", () => {
-		expect(REVIEW).toContain(
-			'const showDelivery = locked === null && summary.requiresShipping && summary.shipping.status !== "no_zones";',
-		);
+		// #426: the rule moved into `locationBlock` (lib/checkout-location.ts, pinned
+		// case by case in checkout-location.test.ts), which also shows the same block
+		// as the buyer's location on a cart that ships nothing.
+		expect(REVIEW).toContain("const location = locationBlock(summary, locked !== null);");
+		expect(REVIEW).toContain("const showDelivery = location !== null;");
 	});
 
 	test("the not-ready copy is the page's", () => {
@@ -900,5 +914,13 @@ describe("/checkout/pay — the page keeps the money path and hands it to the vi
 		expect(slot).toContain("<noscript>");
 		expect(slot).toContain('<script is:inline src="https://js.stripe.com/v3/"></script>');
 		expect(body).toMatch(/<Storefront[^>]*view="pay"/);
+	});
+});
+
+describe("the Tempered checkout prints the tax estimate note (#429)", () => {
+	test("CheckoutView hands the view model's estimate note to Sum as its own prop", () => {
+		const view = read("themes/tempered/CheckoutView.astro");
+		expect(templateOf(view)).toMatch(/estimateNote=\{summary\.totals\.taxEstimateNote\}/);
+		expect(templateOf(view)).toMatch(/taxNote=\{summary\.totals\.taxIncludedNote\}/);
 	});
 });

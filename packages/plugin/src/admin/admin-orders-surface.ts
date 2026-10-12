@@ -34,6 +34,10 @@ export interface OrderLineWire {
 	currency: string;
 	quantity: number;
 	fulfillmentKind: string;
+	/** #427: the product's tax status FROZEN with the order (`taxable` |
+	 *  `shipping_only` | `none`). Absent on an order from before it was recorded:
+	 *  unknown, never assumed taxable. */
+	taxStatus?: string;
 }
 
 export interface OrderTotalsWire {
@@ -51,6 +55,23 @@ export interface OrderTotalsWire {
 	 *  DISPLAY-ONLY: rendered next to the captured ship-to country so a human can
 	 *  spot a "domestic zone / foreign country" mismatch — no matching/validation. */
 	shippingZoneId?: string | null;
+	/** True only when the order's FROZEN tax snapshot (ADR-0030) recorded that prices
+	 *  were entered tax-inclusive. ABSENT for every other order (no snapshot, an
+	 *  old-shape one, or tax-exclusive prices) — never guessed from current settings. */
+	pricesIncludeTax?: true;
+	/**
+	 * One row per tax, off the order's frozen tax snapshot (issue #422,
+	 * `orderTaxRows`), adding up to `taxCents`. ALWAYS itemized here, whatever the
+	 * buyer-facing "Display tax totals" says — WooCommerce's order screen lists
+	 * each tax too; the merchant files by it. Absent for an order with nothing to
+	 * itemize (no or an older snapshot): the single Tax row. Labels are merchant
+	 * or calculator text — render them escaped.
+	 */
+	taxRows?: Array<{ label: string; amountCents: number }>;
+	/** #426: where the order's tax was charged, off its frozen tax snapshot —
+	 *  present only on an order priced under "based on the customer's billing
+	 *  address" (`billing` = the buyer's self-declared location). */
+	taxAddress?: { basis: "billing" | "base" | "shipping"; country: string; region: string | null };
 }
 
 /** The immutable shipping-address snapshot captured on an order at checkout

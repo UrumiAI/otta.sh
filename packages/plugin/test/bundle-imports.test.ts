@@ -161,11 +161,13 @@ describe("emitted plugin bundle carries no un-bundled workspace or host import",
 		}
 	});
 
-	test("the build emits at least the three declared entrypoints", () => {
+	test("the build emits at least the four declared entrypoints", () => {
 		const names = emitted.map((e) => e.file);
 		expect(names).toContain("index.mjs");
 		expect(names).toContain("plugin.mjs");
 		expect(names).toContain("sandbox-entry.mjs");
+		// Issue #447: the in-process entry, `@otta-sh/plugin/trusted`.
+		expect(names).toContain("trusted.mjs");
 	});
 
 	test("the subdivision NAMES ride only the `subdivisions` entry, never what the sandbox loads", () => {

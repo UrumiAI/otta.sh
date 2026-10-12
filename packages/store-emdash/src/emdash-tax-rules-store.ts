@@ -9,7 +9,7 @@
  * | `tax_rates.id` PRIMARY KEY | `tax_rate_owners/{rateId}`, claimed create-if-absent |
  * | (no SQL equivalent — the SQL never had it) one rate per `(tax_class_id, zone_id)` | checked against the class document the embed is guarded on, so two racing creates for one slot cannot both land |
  * | `SELECT count(*) … WHERE tax_class_id = ?` | the size of the class document's own `rates` map |
- * | `UPDATE tax_rates SET … WHERE id = ? AND rate_bps = :expected` | the same expected-value comparison inside the class document's compare-and-set |
+ * | `UPDATE tax_rates SET … WHERE id = ? AND rate_bps = :expected` | the same expected-value comparison inside the class document's compare-and-set — on the EXACT rate (`ratePpm` when finer than a basis point, #425) |
  * | `ORDER BY id` on `listRatesForZone` / `listClasses` | sorted in code — ordering needs a declared index, and this store declares none |
  *
  * ## A rate may exist without its class, and that is the SQL's own shape
@@ -44,6 +44,8 @@
  */
 import {
 	appliedTaxRate,
+	normalizeTaxRateValue,
+	ratePpmOf,
 	TaxRateDuplicateError,
 	type Clock,
 	type CreateTaxClassInput,
@@ -243,11 +245,13 @@ export class EmdashTaxRulesStore implements TaxRulesStore {
 	 */
 	async createRate(input: CreateTaxRateInput): Promise<TaxRate> {
 		const now = this.#clock.now().toISOString();
+		// A rateBps that disagrees with ratePpm throws BEFORE the id is claimed (#425).
+		const value = normalizeTaxRateValue(input);
 		let claimRevision = await this.#claimRateId(input.id, input.taxClassId, now);
 		const rate: TaxRateDoc = {
 			rateId: input.id,
 			zoneId: input.zoneId,
-			rateBps: input.rateBps,
+			...value,
 			appliesToShipping: input.appliesToShipping,
 		};
 		await this.#cas<void>("createTaxRate", async () => {
@@ -345,6 +349,7 @@ export class EmdashTaxRulesStore implements TaxRulesStore {
 		input: UpdateTaxRateInput,
 		expected: TaxRateExpectation,
 	): Promise<UpdateTaxRateResult> {
+		const value = normalizeTaxRateValue(input);
 		return this.#cas<UpdateTaxRateResult>("updateTaxRate", async () => {
 			const found = await this.#findRate(id);
 			if (found === null) {
@@ -352,8 +357,10 @@ export class EmdashTaxRulesStore implements TaxRulesStore {
 			}
 			// The guard, re-evaluated against what this attempt just read.
 			// Already exactly what was asked: an idempotent replay, nothing to write.
+			// The rate is compared EXACTLY (`ratePpmOf`, #425): 8.875% is not 8.88%.
+			const current = ratePpmOf(found.rate);
 			if (
-				found.rate.rateBps === input.rateBps &&
+				current === ratePpmOf(value) &&
 				found.rate.appliesToShipping === input.appliesToShipping
 			) {
 				return casDone<UpdateTaxRateResult>({
@@ -362,7 +369,7 @@ export class EmdashTaxRulesStore implements TaxRulesStore {
 				});
 			}
 			if (
-				found.rate.rateBps !== expected.rateBps ||
+				current !== ratePpmOf(expected) ||
 				found.rate.appliesToShipping !== expected.appliesToShipping
 			) {
 				return casDone<UpdateTaxRateResult>({
@@ -371,9 +378,11 @@ export class EmdashTaxRulesStore implements TaxRulesStore {
 					current: toTaxRate(found.held.doc.taxClassId, found.rate),
 				});
 			}
+			// A stored `ratePpm` goes unless the new value carries one (canonical, #425).
+			const { ratePpm: _old, ...kept } = found.rate;
 			const next: TaxRateDoc = {
-				...found.rate,
-				rateBps: input.rateBps,
+				...kept,
+				...value,
 				appliesToShipping: input.appliesToShipping,
 			};
 			const written = await this.#classes.compareAndSet(

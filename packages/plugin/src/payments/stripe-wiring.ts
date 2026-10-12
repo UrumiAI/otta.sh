@@ -55,6 +55,7 @@
 import { StripePaymentGateway } from "@otta-sh/payments-stripe";
 import { stripeSecretKeyFromKv, stripeWebhookSecretFromKv } from "../payment-secrets.js";
 import { checkoutRequiresBuyerAddress } from "./stripe-account-country.js";
+import { isTrustedHost } from "./trusted-host.js";
 import type { PluginContext } from "../types.js";
 
 /**
@@ -67,7 +68,9 @@ import type { PluginContext } from "../types.js";
  * wider declared type, not to handle a shape that occurs.
  */
 function toGlobalFetch(fetchImpl: PluginContext["http"]["fetch"]): typeof fetch {
-	return (input, init) => fetchImpl(String(input), init);
+	// The answer is the bridge's narrower `HttpResponse`; the Stripe transport reads
+	// only members both have (`deadline.ts` `readJson` tolerates a missing `body`).
+	return (input, init) => fetchImpl(String(input), init) as Promise<Response>;
 }
 
 /** Per-caller tuning of the live gateway. */
@@ -139,6 +142,9 @@ export async function stripeGatewayFromCtx(
 		secretKey,
 		webhookSecret,
 		fetch: toGlobalFetch(ctx.http.fetch),
+		// Issue #447: a signal in `init` only when the site said the host is
+		// in-process (`createOttaPlugin({ trustedHost: true })`), never in the sandbox.
+		...(isTrustedHost() ? { trustedHost: true } : {}),
 		...(options.requestTimeoutMs !== undefined
 			? { requestTimeoutMs: options.requestTimeoutMs }
 			: {}),

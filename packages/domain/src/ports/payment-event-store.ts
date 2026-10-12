@@ -57,7 +57,8 @@ export interface PaymentEventStore {
 	 * so "one settlement consumes one payment" is only true if a receipt already
 	 * bound to order A is refused when it is resubmitted naming order B. `settleOrder` asks this ONLY
 	 * on the duplicate path, so the first delivery of every event still costs one
-	 * statement.
+	 * statement. A `null` there (the key was just reported as recorded) is an
+	 * unproven binding, and `settleOrder` fails closed on it as `RECEIPT_REBOUND`.
 	 */
 	orderForDedupeKey(dedupeKey: string): Promise<OrderId | null>;
 	/** Record an anomaly row (§5). Idempotent enough for replay safety. */

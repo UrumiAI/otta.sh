@@ -71,6 +71,7 @@ import {
 	readMethodParam,
 } from "../../lib/checkout-selection.js";
 import { countryName, countryOptions } from "../../lib/countries.js";
+import { buyerLocationErrorToken, locationBlock } from "../../lib/checkout-location.js";
 import { regionChoice, regionContainsOthers } from "../../lib/regions.js";
 import { SITE_LOCALE } from "../../lib/site-locale.js";
 import { cartErrorMessage } from "../../lib/error-messages.js";
@@ -204,8 +205,13 @@ const regionTooBroad =
 	destinationError?.reason === "SHIPPING_REGION_CODE_REQUIRED" &&
 	regionContainsOthers(askedFor.country, regionValue);
 
-/** The delivery block: an unlocked cart that ships, in a store with zones. */
-const showDelivery = locked === null && summary.requiresShipping && summary.shipping.status !== "no_zones";
+/** The "where" block (lib/checkout-location.ts): DELIVERY — an unlocked cart
+ *  that ships, in a store with zones; or the BUYER's location (#426) — an
+ *  unlocked cart that ships nothing, in a store taxing it where the buyer is.
+ *  Both re-price through the same `?country=&region=` GET. */
+const location = locationBlock(summary, locked !== null);
+const showDelivery = location !== null;
+const buyerLocation = location === "buyer";
 /** The address block: an unlocked cart that ships, or ANY unlocked cart whose
  *  address is required — an India-based Stripe account needs every buyer's
  *  name and address, digital carts too (issue #382). Without the delivery
@@ -355,7 +361,11 @@ const model: CheckoutModel = {
 				? cartErrorMessage("SHIPPING_REGION_NOT_SERVED")
 				: regionTooBroad
 					? cartErrorMessage("SHIPPING_REGION_TOO_BROAD")
-					: cartErrorMessage(destinationError.reason),
+					: cartErrorMessage(
+							buyerLocation
+								? buyerLocationErrorToken(destinationError.reason)
+								: destinationError.reason,
+						),
 	/* The REGION is what was refused — missing where a zone needs it, not one
 	   of the country's codes, or not even code-shaped (the site's own check uses
 	   the same reason). A country-level refusal ("we don't ship here") is not. */
@@ -381,6 +391,7 @@ const model: CheckoutModel = {
 	regionRequiredCountries,
 	addressRegions,
 	showDelivery,
+	buyerLocation,
 	showAddress,
 	chosenOption,
 	notReadyCopy,
@@ -399,7 +410,9 @@ const model: CheckoutModel = {
 	emailNote: checkoutEmailNote(accountEmail),
 	ledgerRows,
 	sumRows,
-	footnote: checkoutFootnote(summary.uncalculatedReason, sumRows, totals.totalExcludesUncalculated),
+	footnote: checkoutFootnote(summary.uncalculatedReason, sumRows, totals.totalExcludesUncalculated, {
+		taxByBuyerLocation: summary.taxByBuyerLocation,
+	}),
 };
 ---
 

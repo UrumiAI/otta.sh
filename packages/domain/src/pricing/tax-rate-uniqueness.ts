@@ -1,3 +1,4 @@
+import { ratePpmOf, type TaxRateValue } from "./tax-rate-precision.js";
 import type { TaxClassId } from "./types.js";
 
 /**
@@ -20,13 +21,12 @@ import type { TaxClassId } from "./types.js";
  * "Greatest" is plain code-unit string order (`a < b`), the order the store lists
  * rates in. It is not arbitrary: checkout has always let the last-listed rate of a
  * class overwrite the earlier ones, so this is exactly the rate existing stores
- * were already charging on GOODS — no line-item price changes. An ignored rate is
- * ignored ENTIRELY, its "applies to shipping" flag included, so a merchant reading
- * "only X applies" in the admin is told the truth. That part IS a behaviour change
- * for a store that already holds duplicates where the ignored one was marked
- * "applies to shipping": its shipping tax can disappear (no other applying rate in
- * the zone is flagged) or move to another class's flagged rate (the shipping tax
- * class was the last flagged rate, and that was the ignored one). Deleting the
+ * were already charging on GOODS — no line-item price changes. An ignored rate's
+ * RATE is never charged. Its "applies to shipping" flag, though, still counts
+ * toward the zone's shipping tax under the default (legacy) shipping tax class
+ * rule (`rateTableOf`, issue #447): checkout always read that flag across every
+ * rate, and ignoring it would make a store that holds such a duplicate drop or
+ * move its shipping tax. The admin says so on the ignored row. Deleting the
  * duplicate the merchant doesn't want resolves it either way.
  */
 
@@ -118,8 +118,11 @@ export class TaxRateDuplicateError extends Error {
 	readonly zoneId: string;
 	readonly existingRateId: string;
 	readonly existingRateBps: number;
+	/** The existing rate EXACTLY, in millionths (#425) — `existingRateBps × 100` for
+	 *  a whole-bps rate. */
+	readonly existingRatePpm: number;
 
-	constructor(existing: { id: string; taxClassId: TaxClassId; zoneId: string; rateBps: number }) {
+	constructor(existing: { id: string; taxClassId: TaxClassId; zoneId: string } & TaxRateValue) {
 		super(
 			`tax class ${existing.taxClassId} already has a rate for zone ${existing.zoneId} ` +
 				`(${existing.id}) — one rate per class and zone; edit it with updateRate`,
@@ -128,6 +131,7 @@ export class TaxRateDuplicateError extends Error {
 		this.zoneId = existing.zoneId;
 		this.existingRateId = existing.id;
 		this.existingRateBps = existing.rateBps;
+		this.existingRatePpm = ratePpmOf(existing);
 	}
 }
 

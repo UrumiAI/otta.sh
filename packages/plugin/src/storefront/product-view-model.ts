@@ -14,6 +14,7 @@
  */
 import type { CatalogProductCommerce } from "../catalog/commerce-view.js";
 import type { JoinedProduct } from "../catalog/join-product.js";
+import type { ShopPriceDisplayWire } from "../product-commerce/commerce-client.js";
 import { formatMoney } from "../presentation/format-money.js";
 import { STOREFRONT_CART_LINE_ADD_ROUTE } from "./cart-routes.js";
 import type { ButtonElement, Element, NumberInputElement } from "../types.js";
@@ -88,6 +89,13 @@ export interface ProductPriceViewModel {
 	currency: string;
 	/** Locale-formatted display string (the §4.6 boundary's output). */
 	formatted: string;
+	/**
+	 * Whether `amount` includes tax (#423) — present ONLY when the merchant chose
+	 * how shop prices show tax (`displayShop`) and it applies, so a theme can say
+	 * "incl. tax" / "excl. tax". Absent for every other store: its prices are as
+	 * entered and its pages say nothing new.
+	 */
+	taxNote?: "incl" | "excl";
 }
 
 export interface ProductViewModel {
@@ -146,7 +154,13 @@ function saleWasPrice(
 	};
 }
 
-export function buildProductViewModel(joined: JoinedProduct, locale: string): ProductViewModel {
+export function buildProductViewModel(
+	joined: JoinedProduct,
+	locale: string,
+	/** The shop-price display the join was re-priced with (#423); it only adds
+	 *  `price.taxNote`. Absent ⇒ as entered. */
+	display?: ShopPriceDisplayWire,
+): ProductViewModel {
 	const { content, commerce, purchasable } = joined;
 	// Commercial fields render only for a PURCHASABLE product (§4.5, and
 	// §4.2's inactive arm): an inactive/unpublished commerce row displays
@@ -164,6 +178,9 @@ export function buildProductViewModel(joined: JoinedProduct, locale: string): Pr
 						amount: sellable.price.amount,
 						currency: sellable.price.currency,
 						formatted: formatMoney(sellable.price.amount, sellable.price.currency, locale),
+						...(display !== undefined && display.mode !== "entered"
+							? { taxNote: display.mode }
+							: {}),
 					},
 		compareAtPrice: sellable === null ? null : saleWasPrice(sellable, locale),
 		availability: sellable === null ? null : sellable.inStock ? "in_stock" : "out_of_stock",

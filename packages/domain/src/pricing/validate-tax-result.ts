@@ -1,7 +1,9 @@
 import { cents } from "../money/cents.js";
+import { bpsOfPpm, PPM_PER_BPS } from "./tax-rate-precision.js";
 import {
 	isValidTaxLabel,
 	TAX_RATE_BPS_MAX,
+	TAX_RATE_PPM_MAX,
 	type TaxLine,
 	type TaxRequest,
 	type TaxResult,
@@ -24,7 +26,9 @@ import {
  * `ceil(G × 100000 / 110000)`, which is below G, so the net can never go
  * negative — shipping is always entered without tax and keeps `amount × 10`
  * (exact integers throughout); a rate that is not an integer in
- * [0, 1000%]; a bad label; a NON-ZERO tax on a line whose product is not
+ * [0, 1000%]; an OPTIONAL `ratePpm` (#425; `null` reads as absent) that is not an integer in [0, 1000%]
+ * or is not exactly `rateBps` once rounded half up (a whole-bps one is dropped as
+ * redundant, so the line reads as it always did); a bad label; a NON-ZERO tax on a line whose product is not
  * taxable (`shipping_only` or `none`, PR 2b — never silently zeroed); a NON-ZERO
  * shipping line when no shipping was asked about (a zero one is dropped — this
  * also covers a method that is not taxable, sent as no shipping); a total that is
@@ -100,12 +104,18 @@ function maxTaxOn(amount: number, inclusive: boolean): bigint {
 }
 
 function taxLineOf(item: Record<string, unknown>): TaxLine | null {
-	const { rateBps, label, taxCents } = item;
+	const { rateBps, ratePpm, label, taxCents } = item;
 	if (typeof rateBps !== "number" || !Number.isInteger(rateBps)) return null;
 	if (rateBps < 0 || rateBps > TAX_RATE_BPS_MAX) return null;
+	// `null` is treated as absent; any other non-integer value is refused.
+	if (ratePpm !== undefined && ratePpm !== null) {
+		if (typeof ratePpm !== "number" || !Number.isInteger(ratePpm)) return null;
+		if (ratePpm < 0 || ratePpm > TAX_RATE_PPM_MAX || bpsOfPpm(ratePpm) !== rateBps) return null;
+	}
 	if (!isValidTaxLabel(label)) return null;
 	if (typeof taxCents !== "number" || !Number.isSafeInteger(taxCents) || taxCents < 0) return null;
-	return { rateBps, label, taxCents: cents(taxCents) };
+	const finer = typeof ratePpm === "number" && ratePpm % PPM_PER_BPS !== 0;
+	return { rateBps, ...(finer ? { ratePpm } : {}), label, taxCents: cents(taxCents) };
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

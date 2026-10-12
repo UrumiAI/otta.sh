@@ -35,7 +35,9 @@ import {
 	seededProductSlugs,
 	seedOneProduct,
 } from "../scripts/seed-demo-commerce.js";
+import { RetryableError, retryBounded } from "../scripts/retry.js";
 import {
+	assertLoopbackSite,
 	DEFAULT_PAID_ORDERS,
 	E2E_WEBHOOK_SECRET,
 	seedPaidOrders,
@@ -142,13 +144,35 @@ async function warmConsole(deadline: number): Promise<void> {
 	}
 }
 
+/** The dev-bypass seed's tries and the wait between them. A cold dev server can
+ *  drop or 5xx the first call; a 4xx is a real refusal and is not retried. */
+const CMS_SEED_ATTEMPTS = 4;
+const CMS_SEED_RETRY_DELAY_MS = 3_000;
+
 /** Apply the CMS seed (signs in as the dev admin too). `onConflict: "skip"` on
- *  em-dash's side makes it a no-op for anything already there. */
+ *  em-dash's side makes it a no-op for anything already there, so a retry is safe. */
 async function applyCmsSeed(): Promise<void> {
-	const res = await fetch(`${E2E_BASE_URL}/_emdash/api/setup/dev-bypass`, { redirect: "manual" });
-	if (res.status >= 400) {
-		throw new Error(`seed: the CMS seed (setup dev-bypass) answered HTTP ${String(res.status)}.`);
-	}
+	await retryBounded(
+		async () => {
+			let res: Response;
+			try {
+				res = await fetch(`${E2E_BASE_URL}/_emdash/api/setup/dev-bypass`, { redirect: "manual" });
+			} catch (err) {
+				throw new RetryableError(`seed: the CMS seed (setup dev-bypass) failed: ${String(err)}`);
+			}
+			if (res.status >= 500) {
+				throw new RetryableError(
+					`seed: the CMS seed (setup dev-bypass) answered HTTP ${String(res.status)}.`,
+				);
+			}
+			if (res.status >= 400) {
+				throw new Error(
+					`seed: the CMS seed (setup dev-bypass) answered HTTP ${String(res.status)}.`,
+				);
+			}
+		},
+		{ attempts: CMS_SEED_ATTEMPTS, delayMs: CMS_SEED_RETRY_DELAY_MS },
+	);
 }
 
 /** Price and stock the demo catalog — `seed-demo-commerce.ts`'s own steps. A
@@ -213,6 +237,9 @@ export default async function globalSetup(): Promise<void> {
 		}
 		for (const path of WARM_UP_PATHS) await untilAnswers(path, deadline);
 		if (E2E_SEEDS) {
+			// The order seed signs payment webhooks: refuse a non-loopback site here, as
+			// the script's own entry point does, whatever the base URL came from.
+			assertLoopbackSite(E2E_BASE_URL);
 			await applyCmsSeed();
 			await priceCatalog();
 			const placed = await seedPaidOrders(

@@ -2,12 +2,16 @@ import {
 	cents,
 	currency,
 	idempotencyKey,
+	NEW_STORE_TAX_SETTINGS,
 	productId as toProductId,
 	sku as toSku,
 } from "@otta-sh/domain";
 import {
 	EmdashInventoryStore,
 	EmdashProductCommerceStore,
+	EmdashSettingsStore,
+	EmdashShippingRulesStore,
+	EmdashTaxRulesStore,
 	INVENTORY_COLLECTION,
 	PRODUCT_COMMERCE_COLLECTION,
 	systemClock,
@@ -407,5 +411,55 @@ describe("storefront PLP route (workerd sandbox)", () => {
 
 		expect(result).toEqual({ ok: false, error: "INVALID_ITEMS" });
 		expect(productCalls.queries).toHaveLength(0);
+	});
+
+	// #423, in workerd: the store's shop-price display, read once per page, shows
+	// the listing including tax at the base address's rates. Runs LAST and puts
+	// the options back, because the sandbox's store is shared by every case.
+	test("shop prices including tax (#423): the page shows each price with its base-address tax, still in one batched read", async () => {
+		const settings = new EmdashSettingsStore({ storage, clock: systemClock });
+		const shipping = new EmdashShippingRulesStore({ storage, clock: systemClock });
+		const taxRules = new EmdashTaxRulesStore({ storage, clock: systemClock });
+		await shipping.createZone({ id: "plp-tax-us", name: "US", regions: ["US"] });
+		await taxRules.createClass({ id: "standard", name: "Sales tax" });
+		await taxRules.createRate({
+			id: "plp-tax-us-std",
+			taxClassId: "standard",
+			zoneId: "plp-tax-us",
+			rateBps: 2000,
+			appliesToShipping: false,
+		});
+		await seedProduct({
+			id: "plp-tax",
+			sku: "SKU-PLP-TAX",
+			amount: 999,
+			currency: "USD",
+			onHand: 1,
+		});
+		const on = {
+			...NEW_STORE_TAX_SETTINGS,
+			enabled: true,
+			baseAddress: { country: "US", region: null },
+		};
+		try {
+			await settings.update({ tax: { ...on, displayShop: "incl" } }, idempotencyKey("plp-tax-on"));
+			productCalls.reset();
+
+			const result = await renderList({ items: [contentItem("plp-tax")], locale: "en-US" });
+
+			const [item] = result["items"] as Array<Record<string, unknown>>;
+			expect(item?.["price"]).toEqual({
+				amount: 1199,
+				currency: "USD",
+				formatted: "$11.99",
+				taxNote: "incl",
+			});
+			expect(productCalls.queries).toHaveLength(1);
+		} finally {
+			await settings.update({ tax: on }, idempotencyKey("plp-tax-off"));
+		}
+		const after = await renderList({ items: [contentItem("plp-tax")], locale: "en-US" });
+		const [plain] = after["items"] as Array<Record<string, unknown>>;
+		expect(plain?.["price"]).toEqual({ amount: 999, currency: "USD", formatted: "$9.99" });
 	});
 });

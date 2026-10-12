@@ -52,8 +52,16 @@ export interface ContentStateChangeEvent {
  *  (`test/sandbox-clean-guard.test.ts`) sees no bare fetch-invocation token
  *  in this declaration. */
 export interface HttpAccess {
-	fetch: (url: string, init?: RequestInit) => Promise<Response>;
+	fetch: (url: string, init?: RequestInit) => Promise<HttpResponse>;
 }
+
+/**
+ * What the sandbox bridge's `http.fetch` answers: a plain object with the body
+ * already buffered — no `url`, no `body` stream (EmDash 0.38's Worker Loader
+ * bridge; 1.0.1 returns a full `Response`, which satisfies this too). Code that
+ * must run sandboxed may use only these members.
+ */
+export type HttpResponse = Pick<Response, "status" | "ok" | "headers" | "text" | "json">;
 
 /**
  * Non-secret key/value store (em-dash `KVAccess`, `packages/core/src/plugins/
@@ -67,12 +75,27 @@ export interface HttpAccess {
  * depends on. Keys are transparently namespaced `plugin:<id>:` by the host;
  * the convention is `settings:*` for user-configurable prefs (em-dash
  * `types.ts:159-162`). SECRETS MUST NEVER be written here (§5). Method is
- * `set` (not `put`) — verified against em-dash. */
+ * `set` (not `put`) — verified against em-dash.
+ *
+ * AMENDED BY ADR-0037: the three payment credentials ARE written here, under
+ * `settings:*` keys the site's descriptor declares `type: "secret"`, which
+ * EmDash 1.0.1 encrypts at rest (`payment-secrets.ts`). EmDash 1.0.1's kv also
+ * has the conditional pair below (emdash `plugins/types.ts` `KVAccess`); they
+ * are OPTIONAL here only because hand-built test contexts omit them. */
 export interface KvAccess {
 	get<T>(key: string): Promise<T | null>;
 	set(key: string, value: unknown): Promise<void>;
 	delete(key: string): Promise<boolean>;
 	list(prefix?: string): Promise<Array<{ key: string; value: unknown }>>;
+	/** The value and its opaque host revision, or `null` when unset. */
+	getVersioned?<T>(key: string): Promise<{ value: T; revision: string } | null>;
+	/** Write only if the key is still at `expectedRevision` (`null`: only if
+	 *  absent). A conflict resolves `{ applied: false }`; errors reject. */
+	compareAndSet?(
+		key: string,
+		expectedRevision: string | null,
+		value: unknown,
+	): Promise<{ applied: true; revision: string } | { applied: false }>;
 }
 
 // -- the document store (ADR-0018) ------------------------------------------
@@ -1017,8 +1040,9 @@ export interface BlockResponse {
 }
 
 /** A single `admin.settingsSchema` field descriptor (em-dash
- *  `manifest-schema.ts:156-190`). `secret` fields are write-only and never
- *  returned — DELIBERATELY unused here: no Phase-7 setting is a secret. */
+ *  `manifest-schema.ts:156-190`) for Otta's own readable-back settings. The
+ *  payment credentials' `secret` fields are declared separately, in
+ *  `payment-secrets.ts` `PAYMENT_SECRET_SETTINGS_SCHEMA` (ADR-0037). */
 export interface SettingsFieldSpec {
 	type: "string" | "number" | "boolean";
 	label: string;

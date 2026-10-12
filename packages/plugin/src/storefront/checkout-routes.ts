@@ -59,6 +59,7 @@ import {
 import {
 	buildCheckoutLines,
 	buildCheckoutTotals,
+	showCheckoutLinesTax,
 	buildOrderLines,
 	buildOrderTotal,
 	buildOrderView,
@@ -123,6 +124,10 @@ export interface CheckoutPlaceRouteInput {
 	 *  (`checkoutIdempotencyKey` is how the summary derives it). */
 	idempotencyKey?: unknown;
 	shippingAddress?: unknown;
+	/** #426: `{ country, region? }` — where the buyer is, the location the review
+	 *  was priced for (`destination` there) when the summary said
+	 *  `taxByBuyerLocation`. Code-shaped, or INVALID_INPUT. */
+	billingLocation?: unknown;
 	/** The same selection the summary priced — see {@link CheckoutSummaryRouteInput}. */
 	couponCode?: unknown;
 	shippingMethodId?: unknown;
@@ -251,6 +256,14 @@ interface CheckoutSummaryViewBase {
 	 * an address-less place is refused MISSING_SHIPPING_ADDRESS.
 	 */
 	paymentAccountNeedsAddress: boolean;
+	/**
+	 * #426: the cart ships nothing and the store taxes it where the BUYER is
+	 * ("based on the customer's billing address"). The page asks for the buyer's
+	 * country (and region) — optional; without one the shop's base address taxes —
+	 * sends it back as `destination` to re-price, and places with it as
+	 * `billingLocation`. Never on a locked review.
+	 */
+	taxByBuyerLocation: boolean;
 	/**
 	 * The ONE answer to "may the page offer the place button?". Unlocked: the
 	 * cart ships nothing, or the store has no zones, or a zone matched and a
@@ -553,10 +566,16 @@ export function createCheckoutSummaryRouteHandler(): RouteHandler<CheckoutSummar
 				ok: true as const,
 				cartId: cart.cartId,
 				currency: cart.currency,
-				lines: buildCheckoutLines(
-					cart.lines,
-					pricing,
-					new Map([...commerceById].map(([id, commerce]) => [id, commerce?.title ?? null])),
+				// Shown with or without tax as `displayCart` says, from the quote's
+				// own per-line tax, so they sum to the subtotal row (#423).
+				lines: showCheckoutLinesTax(
+					buildCheckoutLines(
+						cart.lines,
+						pricing,
+						new Map([...commerceById].map(([id, commerce]) => [id, commerce?.title ?? null])),
+					),
+					quote.breakdown,
+					{ locale: input.locale, taxZoneSelected: status === "matched" },
 				),
 				totals: buildCheckoutTotals(quote.breakdown, {
 					locale: input.locale,
@@ -597,6 +616,7 @@ export function createCheckoutSummaryRouteHandler(): RouteHandler<CheckoutSummar
 				addressRequired:
 					(quote.requiresShipping && status !== "no_zones") || paymentAccountNeedsAddress,
 				paymentAccountNeedsAddress,
+				taxByBuyerLocation: quote.taxByBuyerLocation === true,
 				readyToPlace:
 					!quote.requiresShipping ||
 					status === "no_zones" ||
@@ -661,6 +681,7 @@ function lockedSummary(
 		// address or method is looked at (createOrderFromCart's I1).
 		addressRequired: false,
 		paymentAccountNeedsAddress: false,
+		taxByBuyerLocation: false,
 		// The ONE source for the locked page: a pending order can still be paid.
 		readyToPlace: phase === "payable",
 		uncalculatedReason:
@@ -715,6 +736,9 @@ export function createCheckoutPlaceRouteHandler(): RouteHandler<CheckoutPlaceRou
 					...quoteSelection(input.selection),
 					...(input.shippingAddress !== undefined
 						? { shippingAddress: input.shippingAddress }
+						: {}),
+					...(input.billingLocation !== undefined
+						? { billingLocation: input.billingLocation }
 						: {}),
 				},
 				input.idempotencyKey,

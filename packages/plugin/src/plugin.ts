@@ -75,6 +75,7 @@ import {
 } from "./sync/hooks.js";
 import type { TaxCalculator } from "@otta-sh/domain";
 import { setTaxCalculator } from "./commerce/tax-calculator-slot.js";
+import { setTrustedHost } from "./payments/trusted-host.js";
 import type { SandboxedPlugin } from "./types.js";
 
 /**
@@ -260,17 +261,27 @@ export interface OttaPluginOptions {
 	 * `TAX_UNAVAILABLE` before any order is created.
 	 */
 	taxCalculator?: TaxCalculator;
+	/**
+	 * `true` ONLY when the site registers this plugin IN-PROCESS (EmDash
+	 * `plugins:`), never under `sandboxed:`: each Stripe request then carries an
+	 * `AbortSignal`, so a timed-out request's socket is released. Under the
+	 * sandbox runner a signal cannot cross the RPC, so the default (`false`)
+	 * sends none and bounds each call with its own timer (`payments/trusted-host.ts`).
+	 */
+	trustedHost?: boolean;
 }
 
 /**
  * The plugin, configured. A site that wants an outside tax calculator gives
  * em-dash its OWN entry module (the descriptor's `entrypoint`) containing
  * `export default createOttaPlugin({ taxCalculator })`. Returns the same plugin
- * object as the default export; the option is held in a module slot that the
- * commerce composition root reads. Trusted (in-process) mode only.
+ * object as the default export; each option is held in a module slot that the
+ * composition root reads (`trustedHost` by the Stripe wiring). Trusted
+ * (in-process) mode only.
  */
 export function createOttaPlugin(options: OttaPluginOptions = {}): SandboxedPlugin {
 	if (options.taxCalculator !== undefined) setTaxCalculator(options.taxCalculator);
+	if (options.trustedHost !== undefined) setTrustedHost(options.trustedHost);
 	return plugin;
 }
 
