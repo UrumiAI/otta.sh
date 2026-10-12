@@ -66,7 +66,7 @@ import {
 	readMethodParam,
 } from "../../lib/checkout-selection.js";
 import { countryOptions } from "../../lib/countries.js";
-import { locationBlock } from "../../lib/checkout-location.js";
+import { buyerLocationErrorToken, locationBlock } from "../../lib/checkout-location.js";
 import { SITE_LOCALE } from "../../lib/site-locale.js";
 import { cartErrorMessage } from "../../lib/error-messages.js";
 import { checkoutFootnote } from "../../lib/totals.js";
@@ -300,7 +300,14 @@ const model: CheckoutModel = {
 		couponError !== null
 			? cartErrorMessage(couponError.reason)
 			: (placeCouponError?.message ?? null),
-	destinationError: destinationError !== null ? cartErrorMessage(destinationError.reason) : null,
+	destinationError:
+		destinationError !== null
+			? cartErrorMessage(
+					buyerLocation
+						? buyerLocationErrorToken(destinationError.reason)
+						: destinationError.reason,
+				)
+			: null,
 	shippingError: shippingError !== null ? cartErrorMessage(shippingError.reason) : null,
 	noOptionsCopy: cartErrorMessage("SHIPPING_METHOD_REQUIRED"),
 	destination,
@@ -328,7 +335,9 @@ const model: CheckoutModel = {
 	emailNote: checkoutEmailNote(accountEmail),
 	ledgerRows,
 	sumRows,
-	footnote: checkoutFootnote(summary.uncalculatedReason, sumRows, totals.totalExcludesUncalculated),
+	footnote: checkoutFootnote(summary.uncalculatedReason, sumRows, totals.totalExcludesUncalculated, {
+		taxByBuyerLocation: summary.taxByBuyerLocation,
+	}),
 };
 ---
 

@@ -5,7 +5,12 @@
  * and what the place form's echo of that location becomes.
  */
 import { describe, expect, test } from "vitest";
-import { billingLocationFromForm, locationBlock } from "../src/lib/checkout-location.js";
+import {
+	billingLocationFromForm,
+	buyerLocationErrorToken,
+	locationBlock,
+} from "../src/lib/checkout-location.js";
+import { cartErrorMessage } from "../src/lib/error-messages.js";
 
 const summary = (
 	requiresShipping: boolean,
@@ -31,6 +36,24 @@ describe("locationBlock", () => {
 	test("a locked review shows neither", () => {
 		expect(locationBlock(summary(true, "matched"), true)).toBeNull();
 		expect(locationBlock(summary(false, "not_required", true), true)).toBeNull();
+	});
+});
+
+describe("buyerLocationErrorToken (review round 1)", () => {
+	test("a refused buyer location is not called a delivery address", () => {
+		const token = buyerLocationErrorToken("INVALID_SHIPPING_ADDRESS");
+		expect(token).not.toBe("INVALID_SHIPPING_ADDRESS");
+		expect(cartErrorMessage(token)).not.toMatch(/deliver/i);
+		expect(cartErrorMessage(token)).toMatch(/country/i);
+		expect(cartErrorMessage(buyerLocationErrorToken("SHIPPING_ZONE_NOT_MATCHED"))).not.toMatch(
+			/ship/i,
+		);
+	});
+
+	test("the region refusal keeps its own (already neutral) copy", () => {
+		expect(buyerLocationErrorToken("SHIPPING_REGION_CODE_REQUIRED")).toBe(
+			"SHIPPING_REGION_CODE_REQUIRED",
+		);
 	});
 });
 

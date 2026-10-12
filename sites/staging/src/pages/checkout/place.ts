@@ -61,7 +61,11 @@ import {
 	type CheckoutUrlSelection,
 } from "../../lib/checkout-selection.js";
 import { ORDER_PLACED_OTHER_EMAIL } from "../../lib/checkout-review.js";
-import { billingLocationFromForm, TAX_LOCATION_FIELD } from "../../lib/checkout-location.js";
+import {
+	billingLocationFromForm,
+	TAX_LOCATION_BUYER,
+	TAX_LOCATION_FIELD,
+} from "../../lib/checkout-location.js";
 import { isPlausibleEmail, normalizeBuyerRef } from "../../lib/email.js";
 import { STRIPE_PUBLISHABLE_KEY } from "../../lib/stripe-config.js";
 import {
@@ -245,16 +249,26 @@ async function place(context: APIContext): Promise<Response> {
 	// A zoned store's review carries the destination it priced as hidden
 	// fields (see readShippingAddress).
 	const zoned = formString(form.get("addressMode")) === "zoned";
+	// #426: a page that asked where the BUYER is (a cart that ships nothing,
+	// taxed there). The location its totals were priced for is the delivery
+	// block's own echo, `fromCountry`/`fromRegion` — never the address block's
+	// country, which on a #382 page is the buyer's typed address.
+	const buyerPage = formString(form.get(TAX_LOCATION_FIELD)) === TAX_LOCATION_BUYER;
+	const pricedCountry = buyerPage
+		? formString(form.get("fromCountry"))
+		: formString(form.get("country"));
+	const pricedRegion = buyerPage
+		? formString(form.get("fromRegion"))
+		: formString(form.get("region"));
 	// What a failure redirect may carry back — never an address field: only the
-	// coupon, the method and, from a zoned page, the coarse destination.
+	// coupon, the method and, from a zoned or buyer-location page, the coarse
+	// location priced.
 	const selection: CheckoutUrlSelection = {
 		couponCode,
 		shippingMethodId,
 		// Shape-checked like the delivery form's GET: a crafted hidden field
 		// never reaches the redirect URL.
-		...(zoned
-			? shapedDestination(formString(form.get("country")), formString(form.get("region")))
-			: {}),
+		...(zoned || buyerPage ? shapedDestination(pricedCountry, pricedRegion) : {}),
 	};
 
 	// APPLY / REMOVE COUPON (QA U-1). These buttons submit THIS form (they sit
@@ -308,10 +322,10 @@ async function place(context: APIContext): Promise<Response> {
 	};
 	if (
 		intent === "update-delivery" ||
-		(zoned &&
+		((zoned || buyerPage) &&
 			deliveryDiffers(delivery, {
-				country: formString(form.get("country")),
-				region: formString(form.get("region")),
+				country: pricedCountry,
+				region: pricedRegion,
 				method: shippingMethodId,
 			}))
 	) {
@@ -367,17 +381,13 @@ async function place(context: APIContext): Promise<Response> {
 		);
 	}
 
-	// #426: the buyer's location the review was priced for, on a page that asked
-	// for it (a cart that ships nothing, taxed where the buyer is). The same
-	// hidden echo as a zoned page's destination; sent as the order's
-	// `billingLocation`, never as a ship-to.
-	const billingLocation = zoned
-		? billingLocationFromForm({
-				taxLocation: formString(form.get(TAX_LOCATION_FIELD)),
-				country: formString(form.get("country")),
-				region: formString(form.get("region")),
-			})
-		: undefined;
+	// #426: the buyer's location the review was priced for (see `buyerPage`),
+	// sent as the order's `billingLocation`, never as a ship-to.
+	const billingLocation = billingLocationFromForm({
+		taxLocation: formString(form.get(TAX_LOCATION_FIELD)),
+		country: pricedCountry,
+		region: pricedRegion,
+	});
 
 	// The signed-in shopper's session, if any. The plugin route is cookie-blind
 	// (ADR-0003), so the page reads its own cookie and passes the bearer on; the

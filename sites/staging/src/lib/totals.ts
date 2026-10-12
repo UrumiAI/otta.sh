@@ -205,6 +205,8 @@ export function checkoutFootnote(
 	reason: UncalculatedReason | null,
 	rows: SumRow[],
 	excludesUncalculated: boolean,
+	/** #426: the review was taxed where the buyer is, so its tax is located. */
+	options: { taxByBuyerLocation?: boolean } = {},
 ): string | null {
 	if (!excludesUncalculated) return null;
 	switch (reason) {
@@ -213,6 +215,10 @@ export function checkoutFootnote(
 		case "method_needed":
 			return "This total doesn't include shipping yet — choose a delivery option above.";
 		case "digital_only":
+			// #426: never "no location-based tax" on a review taxed by location.
+			if (options.taxByBuyerLocation === true) {
+				return "Nothing in this order ships, so there's no delivery charge.";
+			}
 			return "Nothing in this order ships, so there's no delivery charge and no location-based tax.";
 		case "no_zones":
 		case null:

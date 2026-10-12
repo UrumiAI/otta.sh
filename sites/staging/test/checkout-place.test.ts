@@ -988,24 +988,37 @@ describe("the coupon at place", () => {
  * `billingLocation` — never as a ship-to.
  */
 describe("the buyer's location at place (#426)", () => {
-	const BUYER = { ...VALID_FORM, addressMode: "zoned", taxLocation: "buyer" };
+	// The page's echo: the marker in the place form, and the location the review
+	// was priced for as the delivery block's fromCountry/fromRegion.
+	const BUYER = { ...VALID_FORM, taxLocation: "buyer" };
 
 	test("the priced location is sent as billingLocation, with no ship-to", async () => {
 		const { handler, calls } = makeHandler();
-		await PLACE_POST(makeContext({ ...BUYER, country: "de" }, handler).context);
+		await PLACE_POST(
+			makeContext({ ...BUYER, fromCountry: "de", deliveryCountry: "DE" }, handler).context,
+		);
 		expect(calls[0]!.body["billingLocation"]).toEqual({ country: "DE" });
 		expect(calls[0]!.body).not.toHaveProperty("shippingAddress");
 
 		const withRegion = makeHandler();
 		await PLACE_POST(
-			makeContext({ ...BUYER, country: "US", region: "CA" }, withRegion.handler).context,
+			makeContext(
+				{
+					...BUYER,
+					fromCountry: "US",
+					fromRegion: "CA",
+					deliveryCountry: "US",
+					deliveryRegion: "CA",
+				},
+				withRegion.handler,
+			).context,
 		);
 		expect(withRegion.calls[0]!.body["billingLocation"]).toEqual({ country: "US", region: "CA" });
 	});
 
-	test("no location priced yet ⇒ none sent (the shop's base address taxes, as on the review)", async () => {
+	test("no location priced yet, none picked ⇒ none sent (the shop's base address taxes, as on the review)", async () => {
 		const { handler, calls } = makeHandler();
-		await PLACE_POST(makeContext(BUYER, handler).context);
+		await PLACE_POST(makeContext({ ...BUYER, fromCountry: "" }, handler).context);
 		expect(calls).toHaveLength(1);
 		expect(calls[0]!.body).not.toHaveProperty("billingLocation");
 	});
@@ -1013,10 +1026,42 @@ describe("the buyer's location at place (#426)", () => {
 	test("a country picked but not applied is re-priced, never placed at the old price", async () => {
 		const { handler, calls } = makeHandler();
 		const response = await PLACE_POST(
-			makeContext({ ...BUYER, deliveryCountry: "DE" }, handler).context,
+			makeContext({ ...BUYER, fromCountry: "", deliveryCountry: "DE" }, handler).context,
 		);
 		expect(response.headers.get("location")).toBe("/checkout?country=DE");
 		expect(calls).toHaveLength(0);
+	});
+
+	test("review round 1 (#382 page, address typed, no location priced): a picked location still re-prices", async () => {
+		// The address block takes its own country here (no zoned echo), so the
+		// re-price must not depend on `addressMode=zoned`.
+		const { handler, calls } = makeHandler();
+		const response = await PLACE_POST(
+			makeContext(
+				{
+					...BUYER,
+					name: "A Buyer",
+					line1: "1 Hauptstr.",
+					city: "Berlin",
+					postalCode: "10115",
+					country: "DE",
+					fromCountry: "",
+					deliveryCountry: "DE",
+				},
+				handler,
+			).context,
+		);
+		expect(response.headers.get("location")).toBe("/checkout?country=DE");
+		expect(calls).toHaveLength(0);
+	});
+
+	test("a refusal keeps the priced location in the redirect", async () => {
+		const { handler } = makeHandler();
+		const response = await PLACE_POST(
+			makeContext({ ...BUYER, email: "nope", fromCountry: "DE", deliveryCountry: "DE" }, handler)
+				.context,
+		);
+		expect(response.headers.get("location")).toBe("/checkout?country=DE&error=INVALID_EMAIL");
 	});
 
 	test("a delivery page (no marker) never sends one", async () => {

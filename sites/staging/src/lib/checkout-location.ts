@@ -15,6 +15,18 @@ import { shapedDestination } from "./checkout-selection.js";
 export const TAX_LOCATION_FIELD = "taxLocation";
 export const TAX_LOCATION_BUYER = "buyer";
 
+/** The site's own token for a refused buyer location: the plugin answers with
+ *  the ship-to's reasons, whose copy speaks of a delivery address. */
+export const BUYER_LOCATION_INVALID = "BUYER_LOCATION_INVALID";
+
+/** A destination refusal as a buyer-location page should word it (review round
+ *  1): never "delivery address". The region refusal's copy is already neutral. */
+export function buyerLocationErrorToken(reason: string): string {
+	return reason === "INVALID_SHIPPING_ADDRESS" || reason === "SHIPPING_ZONE_NOT_MATCHED"
+		? BUYER_LOCATION_INVALID
+		: reason;
+}
+
 export type LocationBlock = "delivery" | "buyer" | null;
 
 /** Which block the review shows; a locked review (an order exists) shows none. */

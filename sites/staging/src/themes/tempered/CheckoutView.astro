@@ -266,7 +266,7 @@ const {
 									name="deliveryCountry"
 									form="checkout-place"
 									autocomplete="country"
-									required={!buyerLocation || summary.addressRequired}
+									required={!buyerLocation}
 								>
 									<option value="">Choose a country…</option>
 									{countries.map((option) => (
@@ -388,29 +388,11 @@ const {
 					{summary.selection.couponCode !== null && (
 						<input type="hidden" name="couponCode" value={summary.selection.couponCode} />
 					)}
-					{/* #426: the buyer's location the totals were priced for, echoed for
-					    the order (place.ts sends it as `billingLocation`). `zoned`
-					    turns on place.ts's re-price safety net for a country picked
-					    but not applied. With an address block that takes the
-					    country itself, the block below carries the echo instead. */}
-					{buyerLocation && (
-						<>
-							<input type="hidden" name="taxLocation" value="buyer" />
-							{!showAddress && (
-								<>
-									<input type="hidden" name="addressMode" value="zoned" />
-									{destination !== null && (
-										<>
-											<input type="hidden" name="country" value={destination.country} />
-											{destination.region !== null && (
-												<input type="hidden" name="region" value={destination.region} />
-											)}
-										</>
-									)}
-								</>
-							)}
-						</>
-					)}
+					{/* #426: this page asks where the BUYER is. The location its totals
+					    were priced for rides as the delivery block's fromCountry /
+					    fromRegion; place.ts reads them on a marked page and sends them
+					    as the order's `billingLocation`. */}
+					{buyerLocation && <input type="hidden" name="taxLocation" value="buyer" />}
 					{/* The method the totals were priced with. */}
 					{summary.selection.shippingMethodId !== null && (
 						<input

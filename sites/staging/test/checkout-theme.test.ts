@@ -458,15 +458,15 @@ describe.each(REVIEW_VIEWS)("/checkout — delivery (ADR-0021) — %s", (_label,
 		expect(VIEW).toMatch(/showDelivery && \(\s*<div class="checkout-delivery" id="delivery">/);
 	});
 
-	test("#426: on a buyer-location page the place form echoes the priced location with the taxLocation marker", () => {
-		const echo =
-			/\{buyerLocation && \([\s\S]*?name="taxLocation" value="buyer"[\s\S]*?name="addressMode" value="zoned"[\s\S]*?name="country" value=\{destination\.country\}/.exec(
-				PLACE,
-			)?.[0] ?? "";
-		expect(echo, "no buyer-location echo in the place form").not.toBe("");
-		// Optional there: the country is required only where a ship-to or address is.
+	test("#426: on a buyer-location page the place form carries the taxLocation marker", () => {
+		// The priced location itself rides as the delivery block's fromCountry /
+		// fromRegion (pinned below), which place.ts reads on a marked page.
+		expect(PLACE).toMatch(
+			/\{buyerLocation && <input type="hidden" name="taxLocation" value="buyer" \/>\}/,
+		);
+		// Optional (review round 1): never `required` on a buyer-location page.
 		const select = /<select[^>]*name="deliveryCountry"[^>]*>/.exec(DELIVERY)?.[0] ?? "";
-		expect(select).toContain("required={!buyerLocation || summary.addressRequired}");
+		expect(select).toContain("required={!buyerLocation}");
 		expect(DELIVERY).toContain('{buyerLocation ? "Your location" : "Delivery"}');
 	});
 
