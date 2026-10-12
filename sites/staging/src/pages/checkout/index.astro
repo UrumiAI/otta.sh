@@ -215,11 +215,6 @@ const showAddress = locked === null && (summary.requiresShipping || summary.addr
 /** Named in the same language the summary formatted the money in. */
 const countries = countryOptions(SITE_LOCALE);
 
-
-/** The state/province PICK LISTS (server-rendered; no JS needed): rendered for the country the
- *  page knows — the delivery block's for the priced (or refused) country, the
- *  address block's for the draft's — with the stored/typed code preselected.
- *  Another country's list is one Update away. */
 /** A TRULY FRESH visit — no draft, no `?country=`, no `?error=` — starts on the
  *  STORE's country (`summary.storeCountry`), so its state list is on the page
  *  from the first render, JS or not. Anything else is the buyer's: a country
@@ -236,6 +231,10 @@ const addressValues =
 	!showDelivery && summary.addressRequired && storeCountry !== null
 		? { ...draftAddress, country: storeCountry }
 		: draftAddress;
+/** The state/province PICK LISTS (server-rendered; no JS needed): rendered for the country the
+ *  page knows — the delivery block's for the priced (or refused) country, the
+ *  address block's for the draft's — with the stored/typed code preselected.
+ *  Another country's list is one Update away. */
 const deliveryRegions = regionChoice(countryValue, regionValue, SITE_LOCALE);
 /** The store prices or taxes this country by region (a zone lists one of its
  *  subdivisions), so the plugin refuses a blank one: the select says so. */

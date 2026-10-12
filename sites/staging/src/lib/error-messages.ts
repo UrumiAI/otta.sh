@@ -136,9 +136,6 @@ const MESSAGES: Record<string, string> = {
 		"Enter your name and address to continue — Stripe accounts in India need them to take your payment.",
 	/* …and INVALID_SHIPPING_ADDRESS there: the same check, without "delivery". */
 	BUYER_ADDRESS_INVALID: "Please check your address — some fields are missing or too long.",
-	/* The site's own: the address's country changed after its state/province
-	   list was rendered (without the optional script), so the review came back with
-	   the new country's list instead of placing. Nothing was placed. */
 	/* The site's own copy for SHIPPING_ZONE_NOT_MATCHED when the plugin blames
 	   the region: other states/provinces of that country are served. */
 	SHIPPING_REGION_NOT_SERVED: "We don't ship to this state/province.",
@@ -147,6 +144,9 @@ const MESSAGES: Record<string, string> = {
 	   Canary Islands, with Tenerife zoned): pick the one inside it. */
 	SHIPPING_REGION_TOO_BROAD:
 		"Choose the more specific state/province your address is in — this store prices them separately.",
+	/* The site's own: the address's country changed after its state/province
+	   list was rendered (without the optional script), so the review came back with
+	   the new country's list instead of placing. Nothing was placed. */
 	REGION_LIST_UPDATED:
 		"We've updated the state/province list for the country you chose — pick yours (or leave it blank if none applies), then continue.",
 	/* The site's own: a step that must come back with what was typed (Update,
