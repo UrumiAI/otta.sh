@@ -47,7 +47,12 @@
  * {@link RATE_CLAIM_ABANDON_AFTER_MS} (the product store's sku-claim lease, same
  * reasoning). The SAME class may adopt it at once: both embeds then guard on that
  * one class document, so at most one lands. A claim with no `state` predates the
- * field and is read as live.
+ * field and is read as live — so during a rolling deploy, an older build's claims
+ * still allow the pre-#462 race for as long as that build serves writes.
+ *
+ * The 60 s lease is this file's own constant, not the customer store's exported
+ * `CLAIM_ABANDON_AFTER_MS`: that one is the email claim's public option default,
+ * and the product store keeps its own private copy the same way.
  */
 import {
 	appliedTaxRate,
@@ -72,6 +77,7 @@ import {
 import {
 	CAS_RETRY,
 	casDone,
+	StorageContentionError,
 	withCasRetry,
 	type CasRetryOptions,
 	type CasStep,
@@ -261,11 +267,7 @@ export class EmdashTaxRulesStore implements TaxRulesStore {
 	 * back with a compare-and-delete at the revision IT last wrote, so a same-id create
 	 * that adopted the claim since (which moved the revision) keeps it.
 	 *
-	 * Once the embed lands the claim is set `live` at that same revision (#462). If the
-	 * write refuses, a same-class create adopted the claim; it names this class, which
-	 * holds the rate, so it is backed and nothing is lost. (The one other way is a pause
-	 * longer than the whole lease between the re-assertion and the embed — the residual
-	 * every lease has; see the product store's `#heartbeatClaim`.)
+	 * Once the embed lands the claim is set `live` (#462) — see {@link #settleClaim}.
 	 */
 	async createRate(input: CreateTaxRateInput): Promise<TaxRate> {
 		// A rateBps that disagrees with ratePpm throws BEFORE the id is claimed (#425).
@@ -329,12 +331,20 @@ export class EmdashTaxRulesStore implements TaxRulesStore {
 			);
 			return written.applied ? casDone(undefined) : CAS_RETRY;
 		}).catch(async (err: unknown) => {
-			if (err instanceof TaxRateDuplicateError) {
-				await this.#rateOwners.compareAndDelete(input.id, claimRevision);
+			// No embed of this create landed — a duplicate refusal, or every embed
+			// compare-and-set refused until the retries ran out — so its claim goes back.
+			// Never on a crash or an unknown error: the embed may have landed.
+			if (err instanceof TaxRateDuplicateError || err instanceof StorageContentionError) {
+				try {
+					await this.#rateOwners.compareAndDelete(input.id, claimRevision);
+				} catch {
+					// The refusal is the caller's answer; a pending claim left here is a
+					// lease orphan like a crash's.
+				}
 			}
 			throw err;
 		});
-		await this.#rateOwners.compareAndSet(input.id, claimRevision, claim("live"));
+		await this.#settleClaim(input.id, input.taxClassId, claimRevision, () => claim("live"));
 		return toTaxRate(input.taxClassId, rate);
 	}
 
@@ -565,6 +575,67 @@ export class EmdashTaxRulesStore implements TaxRulesStore {
 			const written = await this.#rateOwners.compareAndSet(rateId, current.revision, mine);
 			return written.applied ? casDone(written.revision) : CAS_RETRY;
 		});
+	}
+
+	/**
+	 * Set a create's claim `live` once its embed has landed (#462).
+	 *
+	 * The write is at the create's own revision. A refusal means someone wrote the
+	 * claim since, and the re-read decides:
+	 *  - it names THIS class: a same-class create adopted it (its embed then refuses
+	 *    on ours), so the rate here is the one it backs — set it live at the current
+	 *    revision, or a pending claim would outlive the rate and block other classes;
+	 *  - it names ANOTHER class: this create paused past the whole lease between its
+	 *    re-assertion and its embed, and a create in that class took the id over. The
+	 *    rate just embedded here is taken back out and this create is refused, so the
+	 *    id is never live in two classes;
+	 *  - it is gone, or already live in this class: nothing to do (`#findRate` heals a
+	 *    missing one).
+	 *
+	 * A STORAGE failure here does not fail the create — the rate has landed, and a
+	 * pending claim that names its class is followed by `#findRate` like a live one.
+	 */
+	async #settleClaim(
+		rateId: string,
+		taxClassId: string,
+		ownRevision: string,
+		live: () => TaxRateOwnerDoc,
+	): Promise<void> {
+		let revision = ownRevision;
+		let takenBy: string | null;
+		try {
+			takenBy = await this.#cas<string | null>("createTaxRate.live", async () => {
+				const written = await this.#rateOwners.compareAndSet(rateId, revision, live());
+				if (written.applied) return casDone<string | null>(null);
+				const current = await this.#rateOwners.getVersioned(rateId);
+				if (current === null) return casDone<string | null>(null);
+				if (current.value.taxClassId !== taxClassId) {
+					return casDone<string | null>(current.value.taxClassId);
+				}
+				if (current.value.state !== "pending") return casDone<string | null>(null);
+				revision = current.revision;
+				return CAS_RETRY;
+			});
+		} catch (err) {
+			// No ids or values: the error's name is enough to find this line.
+			console.warn(
+				`[otta] tax rules: a created rate's id claim was not set live ` +
+					`(${err instanceof Error ? err.name : "unknown error"}); the rate is stored and reachable`,
+			);
+			return;
+		}
+		if (takenBy === null) return;
+		await this.#cas<void>("createTaxRate.rollback", async () => {
+			const held = await this.#heldClass(taxClassId);
+			if (held === null || held.doc.rates[rateId] === undefined) return casDone(undefined);
+			const next = withoutTaxRate(held.doc, rateId);
+			const written =
+				next.name === null && Object.keys(next.rates).length === 0
+					? await this.#classes.compareAndDelete(taxClassId, held.revision)
+					: await this.#classes.compareAndSet(taxClassId, held.revision, next);
+			return written.applied ? casDone(undefined) : CAS_RETRY;
+		});
+		throw new TaxRateIdCollisionError(rateId, takenBy);
 	}
 
 	/** Whether a pending claim is older than the lease, by this store's clock. */
