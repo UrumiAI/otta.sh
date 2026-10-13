@@ -780,6 +780,11 @@ describeEachDialect("EmdashTaxRulesStore crash seams", (ctx) => {
 		expect(await deleting).toEqual({ ok: true });
 		peerPark.release();
 		await creating;
+		// The release left the peer's PENDING claim alone, so the peer set it live (#462).
+		expect(await plain.rateOwners.get("r1")).toMatchObject({
+			taxClassId: "standard",
+			state: "live",
+		});
 
 		// The money-bearing rate the peer embedded is reachable, editable and deletable —
 		// never a live rate no admin can touch.
@@ -914,7 +919,7 @@ describeEachDialect("EmdashTaxRulesStore crash seams", (ctx) => {
 		expect((await plain.store.getRate("standard", "z-eu"))?.id).toBe("r2");
 	});
 
-	test("(dup) a refused create's leftover claim misleads no reader, and the id is adopted later — in any class", async () => {
+	test("(dup) a refused create's id misleads no reader, and is free for any class at once", async () => {
 		const raw = bound.storage;
 		const plain = makeTaxRulesHarness(raw);
 		await plain.store.createRate({
@@ -935,9 +940,11 @@ describeEachDialect("EmdashTaxRulesStore crash seams", (ctx) => {
 			}),
 		);
 		expect(err).toMatchObject({ code: "TAX_RATE_DUPLICATE", existingRateId: "r1" });
-		// A refused create keeps its claim (no release that could race), so it is an orphan …
-		expect(await plain.rateOwners.get("r2")).not.toBeNull();
-		// … which misleads no reader and strands no id.
+		// A refused create gives its claim back, at the revision it last wrote (#462: a
+		// pending claim left behind would block another class for the whole lease). The
+		// (dup-race) case above pins that this cannot take a peer's adopted claim …
+		expect(await plain.rateOwners.get("r2")).toBeNull();
+		// … and the id misleads no reader and is free for any class at once.
 		expect(
 			await plain.store.updateRate(
 				"r2",
@@ -957,6 +964,339 @@ describeEachDialect("EmdashTaxRulesStore crash seams", (ctx) => {
 		});
 		expect((await plain.store.getRate("reduced", "z-us"))?.id).toBe("r2");
 		expect(await plain.rateOwners.get("r2")).toMatchObject({ taxClassId: "reduced" });
+	});
+});
+
+describeEachDialect("EmdashTaxRulesStore cross-class claim race (#462)", (ctx) => {
+	const bound = ctx.useStorage(TAX_RULES_LAYOUT);
+
+	/** Embeds into `taxClassId` are held — A stops after re-asserting its claim. */
+	function parkedEmbed(raw: typeof bound.storage, taxClassId: string) {
+		return parkCall(
+			raw["tax_classes"] ?? never(),
+			(call) => call.method === "compareAndSet" && call.id === taxClassId,
+		);
+	}
+
+	test("a create of the same id in ANOTHER class cannot take over an in-flight claim", async () => {
+		const raw = bound.storage;
+		const plain = makeTaxRulesHarness(raw);
+
+		// A: "x" into class "a", held just before its embed — the claim is A's, the
+		// class does not hold "x" yet.
+		const parked = parkedEmbed(raw, "a");
+		const a = makeTaxRulesHarness(raw, {
+			clock: plain.clock,
+			storageForStore: withCollection(raw, "tax_classes", parked.collection),
+		}).store.createRate({
+			id: "x",
+			taxClassId: "a",
+			zoneId: "z",
+			rateBps: 725,
+			appliesToShipping: false,
+		});
+		await parked.arrived;
+
+		// B: "x" into class "b", run to completion while A is held.
+		const b = await settleOne(
+			plain.store.createRate({
+				id: "x",
+				taxClassId: "b",
+				zoneId: "z",
+				rateBps: 500,
+				appliesToShipping: false,
+			}),
+		);
+		parked.release();
+		const aResult = await settleOne(a);
+
+		const inA = (await plain.classes.get("a"))?.rates["x"];
+		const inB = (await plain.classes.get("b"))?.rates["x"];
+		// Exactly one rate "x" exists, and the losing create was refused as a collision.
+		expect([inA, inB].filter((rate) => rate !== undefined)).toHaveLength(1);
+		const loser = inA === undefined ? aResult : b;
+		expect(loser).toMatchObject({ code: "TAX_RATE_ID_COLLISION" });
+		// The claim names the class that holds the rate.
+		expect((await plain.rateOwners.get("x"))?.taxClassId).toBe(inA === undefined ? "b" : "a");
+	});
+
+	test("a create paused past the lease loses to the class that took the id over — never two rates", async () => {
+		const raw = bound.storage;
+		const plain = makeTaxRulesHarness(raw);
+		const parked = parkedEmbed(raw, "a");
+		const a = makeTaxRulesHarness(raw, {
+			clock: plain.clock,
+			storageForStore: withCollection(raw, "tax_classes", parked.collection),
+		}).store.createRate({
+			id: "x",
+			taxClassId: "a",
+			zoneId: "z",
+			rateBps: 725,
+			appliesToShipping: false,
+		});
+		await parked.arrived;
+
+		// A stalls longer than the whole lease, so B may (correctly) treat it as gone.
+		plain.clock.advance(61_000);
+		await plain.store.createRate({
+			id: "x",
+			taxClassId: "b",
+			zoneId: "z",
+			rateBps: 500,
+			appliesToShipping: false,
+		});
+		parked.release();
+
+		// A's embed lands, then A finds the claim moved and takes its rate back out.
+		expect(await settleOne(a)).toMatchObject({ code: "TAX_RATE_ID_COLLISION", heldBy: "b" });
+		expect((await plain.classes.get("a"))?.rates["x"]).toBeUndefined();
+		expect((await plain.classes.get("b"))?.rates["x"]).toBeDefined();
+		expect(await plain.rateOwners.get("x")).toMatchObject({ taxClassId: "b", state: "live" });
+	});
+
+	test("a lease-overrun rollback never removes a rate re-created in its class meanwhile", async () => {
+		const raw = bound.storage;
+		const plain = makeTaxRulesHarness(raw);
+		// A's class "a" is undeclared, so its rollback is a compareAndDelete of the
+		// emptied document; that is the call held below, after the embed is released.
+		const rollbackPark = parkCall(
+			raw["tax_classes"] ?? never(),
+			(call) => call.method === "compareAndDelete" && call.id === "a",
+		);
+		const embedPark = parkCall(
+			rollbackPark.collection,
+			(call) => call.method === "compareAndSet" && call.id === "a",
+		);
+		const a = makeTaxRulesHarness(raw, {
+			clock: plain.clock,
+			storageForStore: withCollection(raw, "tax_classes", embedPark.collection),
+		}).store.createRate({
+			id: "x",
+			taxClassId: "a",
+			zoneId: "z",
+			rateBps: 725,
+			appliesToShipping: false,
+		});
+		await embedPark.arrived;
+		plain.clock.advance(61_000);
+		await plain.store.createRate({
+			id: "x",
+			taxClassId: "b",
+			zoneId: "z",
+			rateBps: 500,
+			appliesToShipping: false,
+		});
+		embedPark.release();
+		await rollbackPark.arrived;
+
+		// While A's rollback is held: B's rate is deleted, then A's (found by the heal
+		// scan), and C re-creates "x" in class "a".
+		expect(await plain.store.deleteRate("x")).toEqual({ ok: true });
+		expect(await plain.store.deleteRate("x")).toEqual({ ok: true });
+		await plain.store.createRate({
+			id: "x",
+			taxClassId: "a",
+			zoneId: "z",
+			rateBps: 900,
+			appliesToShipping: true,
+		});
+
+		rollbackPark.release();
+		expect(await settleOne(a)).toMatchObject({ code: "TAX_RATE_ID_COLLISION" });
+		// C's rate survived A's rollback.
+		expect((await plain.store.getRate("a", "z"))?.rateBps).toBe(900);
+		expect(await plain.rateOwners.get("x")).toMatchObject({ taxClassId: "a", state: "live" });
+	});
+
+	test("a same-class adoption of an in-flight claim still ends live, so a later delete frees the id", async () => {
+		const raw = bound.storage;
+		const plain = makeTaxRulesHarness(raw);
+		const parkedA = parkedEmbed(raw, "a");
+		const a = makeTaxRulesHarness(raw, {
+			storageForStore: withCollection(raw, "tax_classes", parkedA.collection),
+		}).store.createRate({
+			id: "x",
+			taxClassId: "a",
+			zoneId: "z1",
+			rateBps: 725,
+			appliesToShipping: false,
+		});
+		await parkedA.arrived;
+		// B: the same id and class, another zone. It adopts A's claim at once (same class)
+		// and is held before its own embed.
+		const parkedB = parkedEmbed(raw, "a");
+		const b = makeTaxRulesHarness(raw, {
+			storageForStore: withCollection(raw, "tax_classes", parkedB.collection),
+		}).store.createRate({
+			id: "x",
+			taxClassId: "a",
+			zoneId: "z2",
+			rateBps: 500,
+			appliesToShipping: false,
+		});
+		await parkedB.arrived;
+
+		parkedA.release();
+		expect((await a).zoneId).toBe("z1");
+		parkedB.release();
+		expect(await settleOne(b)).toMatchObject({ code: "TAX_RATE_ID_COLLISION" });
+
+		// A's own-revision live write was refused (B moved the claim); A re-read it, saw
+		// its own class, and set it live anyway.
+		expect(await plain.rateOwners.get("x")).toMatchObject({ taxClassId: "a", state: "live" });
+		expect(await plain.store.deleteRate("x")).toEqual({ ok: true });
+		expect(await plain.rateOwners.get("x")).toBeNull();
+		await plain.store.createRate({
+			id: "x",
+			taxClassId: "b",
+			zoneId: "z1",
+			rateBps: 100,
+			appliesToShipping: false,
+		});
+	});
+
+	test("a create whose every embed is refused gives its claim back", async () => {
+		const raw = bound.storage;
+		const plain = makeTaxRulesHarness(raw);
+		const refusing = delegatingCollection(raw["tax_classes"] ?? never(), {
+			compareAndSet: async () => ({ applied: false }),
+		});
+		const busy = makeTaxRulesHarness(raw, {
+			clock: plain.clock,
+			maxCasAttempts: 2,
+			storageForStore: withCollection(raw, "tax_classes", refusing),
+		});
+		expect(
+			await settleOne(
+				busy.store.createRate({
+					id: "x",
+					taxClassId: "a",
+					zoneId: "z",
+					rateBps: 725,
+					appliesToShipping: false,
+				}),
+			),
+		).toMatchObject({ code: "STORAGE_CONTENTION" });
+		expect(await plain.rateOwners.get("x")).toBeNull();
+	});
+
+	test("a storage failure setting the claim live does not fail a create that landed", async () => {
+		const raw = bound.storage;
+		const plain = makeTaxRulesHarness(raw);
+		// The third claim write of the create — claim, re-assert, then the live write.
+		let writes = 0;
+		const crashed = failCall(
+			raw["tax_rate_owners"] ?? never(),
+			(call) => call.method === "compareAndSet" && call.id === "x" && ++writes === 3,
+		);
+		const wounded = makeTaxRulesHarness(raw, {
+			clock: plain.clock,
+			storageForStore: withCollection(raw, "tax_rate_owners", crashed.collection),
+		});
+		const created = await wounded.store.createRate({
+			id: "x",
+			taxClassId: "a",
+			zoneId: "z",
+			rateBps: 725,
+			appliesToShipping: false,
+		});
+		expect(created.id).toBe("x");
+		expect(await plain.rateOwners.get("x")).toMatchObject({ taxClassId: "a", state: "pending" });
+		// The pending claim names the class that holds the rate, so the id-keyed path works.
+		expect(
+			await plain.store.updateRate(
+				"x",
+				{ rateBps: 800, appliesToShipping: false },
+				{ rateBps: 725, appliesToShipping: false },
+			),
+		).toMatchObject({ ok: true });
+	});
+
+	test("a duplicate refusal stays the answer when giving the claim back fails", async () => {
+		const raw = bound.storage;
+		const plain = makeTaxRulesHarness(raw);
+		await plain.store.createRate({
+			id: "r1",
+			taxClassId: "a",
+			zoneId: "z",
+			rateBps: 725,
+			appliesToShipping: false,
+		});
+		const crashed = failCall(
+			raw["tax_rate_owners"] ?? never(),
+			(call) => call.method === "compareAndDelete",
+		);
+		const wounded = makeTaxRulesHarness(raw, {
+			clock: plain.clock,
+			storageForStore: withCollection(raw, "tax_rate_owners", crashed.collection),
+		});
+		expect(
+			await settleOne(
+				wounded.store.createRate({
+					id: "x",
+					taxClassId: "a",
+					zoneId: "z",
+					rateBps: 900,
+					appliesToShipping: false,
+				}),
+			),
+		).toMatchObject({ code: "TAX_RATE_DUPLICATE" });
+	});
+
+	test("an unbacked claim written before claim states existed is still an orphan", async () => {
+		const plain = makeTaxRulesHarness(bound.storage);
+		// No `state`: an older build's claim, read as live — its create finished long ago.
+		await plain.rateOwners.put("x", {
+			rateId: "x",
+			taxClassId: "a",
+			claimedAt: plain.clock.now().toISOString(),
+		});
+		await plain.store.createRate({
+			id: "x",
+			taxClassId: "b",
+			zoneId: "z",
+			rateBps: 500,
+			appliesToShipping: false,
+		});
+		expect(await plain.rateOwners.get("x")).toMatchObject({ taxClassId: "b", state: "live" });
+	});
+
+	test("a crashed create's claim blocks another class only until the lease runs out", async () => {
+		const raw = bound.storage;
+		const plain = makeTaxRulesHarness(raw);
+
+		const crashed = failCall(
+			raw["tax_classes"] ?? never(),
+			(call) => call.method === "compareAndSet" && call.id === "a",
+			{ mode: "instead" },
+		);
+		const wounded = makeTaxRulesHarness(raw, {
+			clock: plain.clock,
+			storageForStore: withCollection(raw, "tax_classes", crashed.collection),
+		});
+		expect(
+			await settleOne(
+				wounded.store.createRate({
+					id: "x",
+					taxClassId: "a",
+					zoneId: "z",
+					rateBps: 725,
+					appliesToShipping: false,
+				}),
+			),
+		).toBeInstanceOf(InjectedCrashError);
+
+		const input = { id: "x", taxClassId: "b", zoneId: "z", rateBps: 500, appliesToShipping: false };
+		// Inside the lease the claim may still be a create one round trip from its embed.
+		plain.clock.advance(59_000);
+		expect(await settleOne(plain.store.createRate(input))).toMatchObject({
+			code: "TAX_RATE_ID_COLLISION",
+		});
+		// Past it, the writer is gone and the id is adopted.
+		plain.clock.advance(1_000);
+		await plain.store.createRate(input);
+		expect((await plain.store.getRate("b", "z"))?.id).toBe("x");
+		expect((await plain.rateOwners.get("x"))?.taxClassId).toBe("b");
 	});
 });
 
