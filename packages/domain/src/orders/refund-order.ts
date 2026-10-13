@@ -14,6 +14,7 @@ import type {
 import type { PaymentEventStore } from "../ports/payment-event-store.js";
 import type { PaymentGateway } from "../ports/payment-gateway.js";
 import type { Order } from "./model.js";
+import { isCurrentPaymentMethod } from "./payment-methods.js";
 import { revokeOrderEntitlements } from "./revoke-entitlements.js";
 import {
 	flagAmount,
@@ -83,10 +84,13 @@ export type RefundOrderFailure =
 	/** The refund currency does not match the order's currency. */
 	| "CURRENCY_MISMATCH"
 	/** ADR-0035 amendment: in a currency with a payment increment (KWD, BHD, OMR,
-	 *  JOD: 10), a NEW gateway refund must be a multiple of it (a manual refund
-	 *  takes any minor-unit amount, #447), or the order's whole
-	 *  remaining refundable amount (an order placed before checkout rounded its
-	 *  total may hold any remainder). Refused before anything is reserved. */
+	 *  JOD: 10), a NEW gateway refund — or a manual one on an order a current
+	 *  provider captured through this gateway — must be a multiple of it, or the
+	 *  order's whole remaining refundable amount (an order placed before checkout
+	 *  rounded its total may hold any remainder; Stripe still refuses an off-step
+	 *  one, so through the gateway it ends TERMINAL). A manual refund on an order
+	 *  with no such capture takes any minor-unit amount (#447). Refused before
+	 *  anything is reserved. */
 	| "AMOUNT_NOT_PAYMENT_INCREMENT"
 	/** A gateway refund was requested but no captured payment exists to refund
 	 *  against (an unpaid order, or a settlement that recorded no `succeeded`
@@ -173,6 +177,20 @@ export function sumCapturedPayments(payments: CapturedPayment[]): Cents {
 	let total = 0;
 	for (const p of payments) if (p.status === "succeeded") total += p.amount;
 	return cents(total);
+}
+
+/**
+ * Whether a CURRENT provider captured money for this order through `gatewayId`:
+ * a `succeeded` payment on that gateway, which must be a current payment method
+ * (a legacy method's record-only gateway has no provider to refund through). It
+ * decides whether a manual refund keeps the currency's payment step (#447): the
+ * rest of such an order may later go back through that provider.
+ */
+export function providerCaptured(payments: readonly CapturedPayment[], gatewayId: string): boolean {
+	return (
+		isCurrentPaymentMethod(gatewayId) &&
+		payments.some((p) => p.status === "succeeded" && p.gateway === gatewayId)
+	);
 }
 
 /** The refund ceiling: `min(Σ captured, frozen total)` (ADR-0008 review condition
@@ -350,15 +368,33 @@ async function refundOnLedger(
 	const kind = gateway.refundable ? "gateway" : "manual";
 	const payments = known?.payments ?? (await deps.orderStore.getCapturedPayments(cmd.orderId));
 
-	// ADR-0035 amendment: a new GATEWAY refund in an increment currency is a
-	// multiple of it, or exactly the remaining capacity. An amount OVER the
-	// remainder falls through to the reservation's ceiling refusal — "too high" is
-	// the more useful answer. A resume re-issues a reservation that already passed
-	// this. A MANUAL refund moves no money through the provider, so its step is
-	// the currency's minor unit (#447). Every other currency skips it, with no
-	// extra read.
+	// ADR-0035 amendment: a new refund in an increment currency is a multiple of
+	// it, or exactly the remaining capacity. An amount OVER the remainder falls
+	// through to the reservation's ceiling refusal — "too high" is the more useful
+	// answer. A resume re-issues a reservation that already passed this. Every
+	// other currency skips it, with no extra read.
+	//
+	// It binds a gateway refund AND a manual one on an order this gateway's
+	// provider captured: `refundable` is the adapter's state NOW (an unreadable
+	// Stripe secret makes it false), so the rest of that order may still go back
+	// through the provider later, and an off-step manual refund would leave a
+	// remainder the provider cannot refund. Only a manual refund on an order with
+	// no capture through a current provider (a legacy x402 order) takes any
+	// minor-unit amount (#447).
+	//
+	// The exact-remainder exception does not make an off-step remainder payable
+	// through the provider: Stripe refuses a non-multiple of 10 before any network
+	// call, so an odd remainder (an order placed before checkout rounded its
+	// total) refunded through the gateway ends TERMINAL (voided). The exception
+	// keeps the domain from refusing it outright; such a remainder goes back
+	// manually, or in steps up to the last few fils.
 	const increment = currencyPaymentIncrement(cmd.currency);
-	if (kind === "gateway" && !resuming && increment !== undefined && cmd.amount % increment !== 0) {
+	if (
+		(kind === "gateway" || providerCaptured(payments, gateway.id)) &&
+		!resuming &&
+		increment !== undefined &&
+		cmd.amount % increment !== 0
+	) {
 		const refunds = known?.refunds ?? (await deps.orderStore.listRefunds(cmd.orderId));
 		const remaining =
 			computeRefundCeiling(sumCapturedPayments(payments), order.totals.total) - sumRefunds(refunds);

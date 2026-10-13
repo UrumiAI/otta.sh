@@ -101,12 +101,14 @@ import {
 	gatewayForStored,
 	getOrderTimeline,
 	idempotencyKey as toIdempotencyKey,
+	isCurrentPaymentMethod,
 	isLegacyPaymentMethod,
 	listOrderNotes,
 	ORDER_STATE_MACHINE,
 	orderHasEmailRecipient,
 	orderId as toOrderId,
 	orderNumber,
+	providerCaptured,
 	readOrderTaxSnapshot,
 	recordFulfillment as recordFulfillmentUseCase,
 	refundOrder as refundOrderUseCase,
@@ -768,6 +770,15 @@ export class InProcessAdminOrdersClient implements AdminOrdersSurface {
 		// order's method, false is the truth rather than a placeholder. A legacy
 		// order captured only through it gets its record-only stand-in: false too.
 		const route = this.#refundRouteFor(order.paymentMethod, payments);
+		// Whether a current provider captured this order's money — through the
+		// refund's own gateway, or (with none composed) through any current method.
+		// The refund form keeps the currency's payment step for a manual refund
+		// when it is true, as the domain does: the rest may go back through that
+		// provider later (#447).
+		const captured =
+			route.gateway !== undefined
+				? providerCaptured(payments, route.gateway.id)
+				: payments.some((p) => p.status === "succeeded" && isCurrentPaymentMethod(p.gateway));
 		return {
 			refunds: refunds.map(toRefundWire),
 			currency: order.totals.currency,
@@ -779,6 +790,7 @@ export class InProcessAdminOrdersClient implements AdminOrdersSurface {
 			paymentMethod: order.paymentMethod,
 			refundable: route.gateway?.refundable ?? false,
 			legacyPaymentMethod: route.legacy,
+			providerCaptured: captured,
 		};
 	}
 

@@ -476,6 +476,7 @@ export {
 export { settleOrder, type SettleDeps, type SettleResult } from "./orders/settle-order.js";
 export {
 	computeRefundCeiling,
+	providerCaptured,
 	refundOrder,
 	sumCapturedPayments,
 	sumFinalizedRefunds,

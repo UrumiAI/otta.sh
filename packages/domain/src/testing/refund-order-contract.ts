@@ -224,7 +224,9 @@ export function refundOrderContract(
 			});
 			const step = await refund(1230, "rf-kwd-step");
 			expect(step.ok).toBe(true);
-			// An older order's odd remainder (1.234, placed before rounding) is refundable WHOLE.
+			// An older order's odd remainder (1.234, placed before rounding) passes the
+			// domain's step WHOLE. The fake gateway takes it; Stripe itself would refuse
+			// it (TERMINAL), so in practice such a remainder goes back manually.
 			const id2 = await h.seedPaidOrder({ id: "ord-kwd-odd", totalCents: 1234, currency: "KWD" });
 			const whole = await refundOrder({ orderStore: h.orderStore }, gw, {
 				orderId: id2,
@@ -246,23 +248,64 @@ export function refundOrderContract(
 			expect(any.ok).toBe(true);
 		});
 
-		test("a MANUAL KWD refund takes any minor-unit amount — the 0.010 step binds gateway refunds only (#447)", async () => {
+		test("a MANUAL KWD refund on an order the provider CAPTURED keeps the 0.010 step — a later gateway refund of the remainder must still be payable (#447 review)", async () => {
+			// The gateway is refundable:false only for now (e.g. an unreadable Stripe
+			// secret). Once it is back, the rest of this order goes back through the
+			// provider, which refuses any amount that is not a multiple of 10 fils —
+			// so a manual 1.234 would strand the last 6 fils.
 			const h = await makeHarness();
 			const KWD = toCurrency("KWD");
 			const id = await h.seedPaidOrder({ id: "ord-kwd-manual", totalCents: 5000, currency: "KWD" });
 			const gw = new FakePaymentGateway({ id: "stripe", refundable: false });
-			const res = await refundOrder({ orderStore: h.orderStore }, gw, {
-				orderId: id,
-				amount: cents(1234),
-				currency: KWD,
-				refundedBy: "admin",
-				idempotencyKey: idempotencyKey("rf-kwd-manual"),
+			const refund = (amount: number, key: string) =>
+				refundOrder({ orderStore: h.orderStore }, gw, {
+					orderId: id,
+					amount: cents(amount),
+					currency: KWD,
+					refundedBy: "admin",
+					idempotencyKey: idempotencyKey(key),
+				});
+			expect(await refund(1234, "rf-kwd-manual-off")).toEqual({
+				ok: false,
+				reason: "AMOUNT_NOT_PAYMENT_INCREMENT",
 			});
-			expect(res.ok).toBe(true);
-			if (!res.ok) return;
-			expect(res.refund.kind).toBe("manual");
-			expect(res.refund.amount).toBe(1234);
+			expect(await h.orderStore.listRefunds(id)).toHaveLength(0);
+			// A multiple of the step is recorded manually, as before.
+			const step = await refund(1230, "rf-kwd-manual-step");
+			expect(step.ok && step.refund.kind).toBe("manual");
 			expect(gw.refundCalls).toHaveLength(0);
+		});
+
+		test("a MANUAL KWD refund on an order with NO capture on this gateway takes any minor-unit amount (#447)", async () => {
+			// A legacy x402 order: its money was never captured by Stripe, so no later
+			// provider refund depends on the step. Both a non-refundable Stripe gateway
+			// and the legacy method's own record-only gateway accept 1.234.
+			const h = await makeHarness();
+			const KWD = toCurrency("KWD");
+			const x402 = "x402" as unknown as PaymentMethod;
+			for (const gw of [
+				new FakePaymentGateway({ id: "stripe", refundable: false }),
+				new FakePaymentGateway({ id: x402, refundable: false }),
+			]) {
+				const id = await h.seedPaidOrder({
+					id: `ord-kwd-legacy-${gw.id}`,
+					totalCents: 5000,
+					currency: "KWD",
+					gateway: x402,
+				});
+				const res = await refundOrder({ orderStore: h.orderStore }, gw, {
+					orderId: id,
+					amount: cents(1234),
+					currency: KWD,
+					refundedBy: "admin",
+					idempotencyKey: idempotencyKey(`rf-kwd-legacy-${gw.id}`),
+				});
+				expect(res.ok, gw.id).toBe(true);
+				if (!res.ok) return;
+				expect(res.refund.kind).toBe("manual");
+				expect(res.refund.amount).toBe(1234);
+				expect(gw.refundCalls).toHaveLength(0);
+			}
 		});
 
 		test("a short capture binds the ceiling at captured (REFUND_EXCEEDS_CAPTURED past it)", async () => {

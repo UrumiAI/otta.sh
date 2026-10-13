@@ -287,6 +287,11 @@ export interface RefundsSummaryWire {
 	/** True when `paymentMethod` is one Otta no longer supports (a legacy x402
 	 *  order): its refunds are record-only for good, and the panel says so. */
 	legacyPaymentMethod: boolean;
+	/** True when a current provider captured this order's money (a `succeeded`
+	 *  payment through the refund's gateway). A manual refund then keeps the
+	 *  currency's payment step, because the rest may go back through that
+	 *  provider later; false ⇒ a manual refund takes any minor-unit amount (#447). */
+	providerCaptured: boolean;
 }
 
 /**
