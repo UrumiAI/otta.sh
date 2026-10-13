@@ -122,6 +122,219 @@ test("two orders whose flip always fails cannot hold the bite: the order behind 
 	expect(error.mock.calls.filter((c) => /expiring order/.test(String(c[0])))).toHaveLength(2);
 }, 120_000);
 
+test("a quiet store with ONE always-failing order does not fail the leg on each back-off retry (#478, from #470)", async () => {
+	// The leg used to fail whenever every order it tried threw, so one poison order
+	// on an otherwise idle store failed the critical leg on every retry (5 min, 10,
+	// 20, ... an hour): an alert that flaps for ever on one order. One order is
+	// logged and backed off; the leg fails only once two different orders are
+	// failing within the back-off window.
+	const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
+	const createdAt = new Date(NOW.getTime() - 2 * HOUR_MS);
+	await placeOrder(storage, "a", new Date(NOW.getTime() - 50 * MINUTE_MS), createdAt);
+	const ctx = sweepContext(poisonedOrders(new Set(["order-a"])));
+	const backoff = new UnitBackoff();
+	const cursors = memoryCursors();
+	const tick = (at: Date) =>
+		runCommerceSweeps(ctx, SWEEP_TASK_NAME, {
+			cursors,
+			emailSender: recordingSender([]),
+			now: at,
+			expiryBatchLimit: 1,
+			expiryBackoff: backoff,
+		});
+	// Each tick lands just past the order's back-off, so every one retries it.
+	let at = NOW.getTime();
+	for (const wait of [0, 5, 10, 20]) {
+		at += wait * MINUTE_MS;
+		const summary = await tick(new Date(at));
+		const leg = legOf(summary);
+		if (leg !== undefined) expect(leg).toMatchObject({ ok: true, count: 0 });
+	}
+	expect(error.mock.calls.filter((c) => /expiring order/.test(String(c[0])))).toHaveLength(4);
+	expect(error.mock.calls.some((c) => /cron sweep expire-orders FAILED/.test(String(c[0])))).toBe(
+		false,
+	);
+}, 120_000);
+
+test("an outage on the Free bite (one order a tick) still fails the leg once a second order fails (#478)", async () => {
+	const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
+	const createdAt = new Date(NOW.getTime() - 2 * HOUR_MS);
+	for (const [tag, lapsedMinutes] of [
+		["a", 50],
+		["b", 40],
+	] as const) {
+		await placeOrder(storage, tag, new Date(NOW.getTime() - lapsedMinutes * MINUTE_MS), createdAt);
+	}
+	const ctx = sweepContext(poisonedOrders(new Set(["order-a", "order-b"])));
+	const backoff = new UnitBackoff();
+	const cursors = memoryCursors();
+	const tick = (at: Date) =>
+		runCommerceSweeps(ctx, SWEEP_TASK_NAME, {
+			cursors,
+			emailSender: recordingSender([]),
+			now: at,
+			expiryBatchLimit: 1,
+			expiryBackoff: backoff,
+		});
+	expect(legOf(await tick(NOW))).toMatchObject({ ok: true, count: 0 });
+	const second = await tick(new Date(NOW.getTime() + MINUTE_MS));
+	expect(legOf(second)).toMatchObject({ ok: false, count: 0 });
+	expect(legOf(second)?.error).toMatch(/every order the leg tried failed to expire/);
+	expect(error.mock.calls.filter((c) => /expiring order/.test(String(c[0])))).toHaveLength(2);
+}, 120_000);
+
+test("an outage still fails the leg when the in-memory back-off is lost every tick (#478 review)", async () => {
+	// The back-off is per isolate. A fresh isolate each tick loses it, and with a
+	// bite of one the leg would retry the same head order for ever and never see a
+	// second failing order. The failing orders are also kept in the sweep's kv
+	// state, so the leg reads past them and the second failure is seen.
+	const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
+	const createdAt = new Date(NOW.getTime() - 2 * HOUR_MS);
+	for (const [tag, lapsedMinutes] of [
+		["a", 50],
+		["b", 40],
+		["c", 30],
+	] as const) {
+		await placeOrder(storage, tag, new Date(NOW.getTime() - lapsedMinutes * MINUTE_MS), createdAt);
+	}
+	const ctx = sweepContext(poisonedOrders(new Set(["order-a", "order-b", "order-c"])));
+	const cursors = memoryCursors();
+	const tick = (at: Date) =>
+		runCommerceSweeps(ctx, SWEEP_TASK_NAME, {
+			cursors,
+			emailSender: recordingSender([]),
+			now: at,
+			expiryBatchLimit: 1,
+			expiryBackoff: new UnitBackoff(),
+		});
+	expect(legOf(await tick(NOW))).toMatchObject({ ok: true, count: 0 });
+	const second = await tick(new Date(NOW.getTime() + MINUTE_MS));
+	expect(legOf(second)).toMatchObject({ ok: false, count: 0 });
+	expect(legOf(second)?.error).toMatch(/every order the leg tried failed to expire/);
+	const tried = error.mock.calls
+		.map((c) => String(c[0]))
+		.filter((line) => /expiring order/.test(line));
+	expect(tried).toHaveLength(2);
+}, 120_000);
+
+test("ONE always-failing order with the back-off lost every tick still never fails the leg (#478 review)", async () => {
+	const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
+	const createdAt = new Date(NOW.getTime() - 2 * HOUR_MS);
+	await placeOrder(storage, "a", new Date(NOW.getTime() - 50 * MINUTE_MS), createdAt);
+	const ctx = sweepContext(poisonedOrders(new Set(["order-a"])));
+	const cursors = memoryCursors();
+	for (let minute = 0; minute < 40; minute++) {
+		const summary = await runCommerceSweeps(ctx, SWEEP_TASK_NAME, {
+			cursors,
+			emailSender: recordingSender([]),
+			now: new Date(NOW.getTime() + minute * MINUTE_MS),
+			expiryBatchLimit: 1,
+			expiryBackoff: new UnitBackoff(),
+		});
+		const leg = legOf(summary);
+		if (leg !== undefined) expect(leg, `minute ${String(minute)}`).toMatchObject({ ok: true });
+	}
+	// Retried after 5, then 10, then 20 minutes, not every tick: the kv record
+	// backs it off when the isolate's back-off is gone.
+	expect(error.mock.calls.filter((c) => /expiring order/.test(String(c[0])))).toHaveLength(4);
+}, 120_000);
+
+/** The kv record of failing orders a tick left behind. */
+async function expiryFailuresIn(cursors: ReturnType<typeof memoryCursors>) {
+	const raw = await cursors.read("state");
+	return (JSON.parse(raw ?? "{}") as { expiryFailures?: Record<string, { n: number; at: string }> })
+		.expiryFailures;
+}
+
+test("a failure stamped in the future counts as now: re-stamped, and the order expires one base wait later (#478 review)", async () => {
+	const createdAt = new Date(NOW.getTime() - 2 * HOUR_MS);
+	await placeOrder(storage, "a", new Date(NOW.getTime() - 50 * MINUTE_MS), createdAt);
+	const cursors = memoryCursors();
+	await cursors.write(
+		"state",
+		JSON.stringify({ expiryFailures: { "order-a": { n: 1, at: "2099-01-01T00:00:00Z" } } }),
+	);
+	const tick = (at: Date) =>
+		runCommerceSweeps(sweepContext(storage), SWEEP_TASK_NAME, {
+			cursors,
+			emailSender: recordingSender([]),
+			now: at,
+			expiryBatchLimit: 1,
+			expiryBackoff: new UnitBackoff(),
+		});
+	const s = adapters(storage, NOW);
+	await tick(NOW);
+	expect((await s.orderStore.getById(toOrderId("order-a")))?.state).toBe("pending");
+	expect(await expiryFailuresIn(cursors)).toEqual({
+		"order-a": { n: 1, at: NOW.toISOString() },
+	});
+	await tick(new Date(NOW.getTime() + UnitBackoff.DEFAULT_BASE_MS));
+	expect((await s.orderStore.getById(toOrderId("order-a")))?.state).toBe("expired");
+	expect(await expiryFailuresIn(cursors)).toEqual({});
+}, 120_000);
+
+const recent = (minutesAgo: number) =>
+	new Date(NOW.getTime() - minutesAgo * MINUTE_MS).toISOString();
+
+test.each([
+	["a string", "nope", {}],
+	["an array", [{ n: 1, at: recent(1) }], {}],
+	["null", null, {}],
+	["an entry that is null", { "order-a": null }, {}],
+	["a string n", { "order-a": { n: "1", at: recent(1) } }, {}],
+	["a zero n", { "order-a": { n: 0, at: recent(1) } }, {}],
+	["a fractional n", { "order-a": { n: 1.5, at: recent(1) } }, {}],
+	["a bad at", { "order-a": { n: 1, at: "yesterday-ish" } }, {}],
+	["a missing at", { "order-a": { n: 1 } }, {}],
+	["an empty id", { "": { n: 1, at: recent(1) } }, {}],
+	["a too-long id", { ["x".repeat(129)]: { n: 1, at: recent(1) } }, {}],
+	["an entry past the window", { "order-z": { n: 3, at: recent(90) } }, {}],
+	[
+		"one good entry among bad ones",
+		{ "order-z": { n: 2, at: recent(1) }, "order-a": { n: -1, at: recent(1) } },
+		{ "order-z": { n: 2, at: recent(1) } },
+	],
+] as const)(
+	"a malformed kv record of failing orders (%s) is read safely: the order is not held back (#478 review)",
+	async (_why, expiryFailures, kept) => {
+		const createdAt = new Date(NOW.getTime() - 2 * HOUR_MS);
+		await placeOrder(storage, "a", new Date(NOW.getTime() - 50 * MINUTE_MS), createdAt);
+		const cursors = memoryCursors();
+		await cursors.write("state", JSON.stringify({ expiryFailures }));
+		const summary = await runCommerceSweeps(sweepContext(storage), SWEEP_TASK_NAME, {
+			cursors,
+			emailSender: recordingSender([]),
+			now: NOW,
+			expiryBatchLimit: 1,
+			expiryBackoff: new UnitBackoff(),
+		});
+		expect(legOf(summary)).toMatchObject({ ok: true, count: 1 });
+		expect((await adapters(storage, NOW).orderStore.getById(toOrderId("order-a")))?.state).toBe(
+			"expired",
+		);
+		expect(await expiryFailuresIn(cursors)).toEqual(kept);
+	},
+	120_000,
+);
+
+test("a kv record of more than 8 failing orders keeps the 8 newest (#478 review)", async () => {
+	const many = Object.fromEntries(
+		Array.from({ length: 11 }, (_unused, i) => [`gone-${String(i)}`, { n: 1, at: recent(i + 1) }]),
+	);
+	const cursors = memoryCursors();
+	await cursors.write("state", JSON.stringify({ expiryFailures: many }));
+	await runCommerceSweeps(sweepContext(storage), SWEEP_TASK_NAME, {
+		cursors,
+		emailSender: recordingSender([]),
+		now: NOW,
+		expiryBatchLimit: 1,
+		expiryBackoff: new UnitBackoff(),
+	});
+	expect(Object.keys((await expiryFailuresIn(cursors)) ?? {}).toSorted()).toEqual(
+		Array.from({ length: 8 }, (_unused, i) => `gone-${String(i)}`).toSorted(),
+	);
+}, 120_000);
+
 test("one failing order among good ones: the leg made progress, so it stays ok (#447)", async () => {
 	const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
 	const createdAt = new Date(NOW.getTime() - 2 * HOUR_MS);

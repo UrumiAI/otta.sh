@@ -183,6 +183,8 @@ expired holds and queued emails drain at the Free pace (§5).
    pnpm --filter @otta-sh/site-staging build
    ```
 
+   The build does not type-check. If you changed code, run `pnpm typecheck` first.
+
 5. **Deploy plain — never `--config` here** (from `sites/staging`):
 
    ```bash
@@ -588,6 +590,9 @@ deployment-supplied hosts are the operator extras below.
 **Extra hosts: `OTTA_EXTRA_ALLOWED_HOSTS`.** A comma-separated list of hostnames to add to
 the allowlist, read from the shell env, then `sites/staging/.env`, at
 **build** time, e.g. `OTTA_EXTRA_ALLOWED_HOSTS=api.example.com,hooks.example.org`.
+Nothing in Otta calls an extra host today: the plugin's own `ctx.http` calls go to
+`api.stripe.com` only. The variable is for a deployment that adds code calling out through
+the plugin's `ctx.http` (a fork or a later integration); leave it unset otherwise.
 Entries are trimmed and lowercased, empty entries are dropped, duplicates collapse, and
 the order is stable (Stripe, then extras as given). Each entry must be a public DNS hostname:
 letters, digits and hyphens in dot-separated labels, with at least one dot. These **fail the
@@ -601,7 +606,8 @@ ungranted:
   under them (`app.localhost`, `printer.local`, `metadata.google.internal`,
   `localhost.localdomain`, `nas.lan`);
 - the wildcard-IP DNS services `nip.io`, `sslip.io` and `xip.io` and any name under them
-  (`127.0.0.1.nip.io`);
+  (`127.0.0.1.nip.io`), and the loopback names `localtest.me` and `lvh.me` and any name
+  under them (`app.lvh.me` resolves to 127.0.0.1);
 - any Stripe host other than `api.stripe.com`, above all `js.stripe.com`, which is loaded
   by the buyer's browser and is never plugin egress
   ([ADR-0012](./adr/0012-storefront-checkout-loads-stripe-elements-in-the-browser.md) §3).
