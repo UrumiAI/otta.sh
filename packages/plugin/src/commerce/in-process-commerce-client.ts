@@ -65,11 +65,14 @@ import {
 	getProductCommerce,
 	idempotencyKey as toIdempotencyKey,
 	isCurrentPaymentMethod,
+	itemizeTaxLines,
 	InvalidProductFieldError,
 	isEmailTransportUnavailableError,
 	isProductLive,
 	listCustomerOrders,
 	listProductCommerceByIds,
+	loadCartPriceDisplay,
+	loadShopPriceDisplay,
 	listProductVariants,
 	money,
 	orderId as toOrderId,
@@ -83,6 +86,7 @@ import {
 	SkuHeldStockError,
 	SkuStockConflictError,
 	sku as toSku,
+	restoreProductCommerce,
 	softDeleteProductCommerce,
 	updateLine,
 	updateProductVariantFields,
@@ -112,9 +116,11 @@ import {
 	type ProductVariantSummary,
 	type PricedLine,
 	type QuoteResult as DomainQuoteResult,
+	orderTaxRows,
 	readOrderTaxSnapshot,
 	RATE_TABLE_CALCULATOR_ID,
 	TAX_DISABLED_CALCULATOR_ID,
+	taxTotalsDisplayOf,
 	type ZoneResolution,
 	roundingEntry,
 } from "@otta-sh/domain";
@@ -137,6 +143,7 @@ import type {
 	PaymentIntentWire,
 	ProductCommerce,
 	ProductCommerceBatchItem,
+	ShopPriceDisplayWire,
 	ProductVariantSummaryWire,
 	ProductVariantWire,
 	PublicOrderResult,
@@ -169,6 +176,7 @@ import {
 	requireBoundedProductId,
 	requireBoundedText,
 	requireCurrencyCode,
+	requireBillingLocation,
 	requireDestination,
 	LOGIN_TOKEN_MAX,
 	BUYER_REF_MAX,
@@ -182,6 +190,7 @@ import {
 	requireQty,
 	requireShippingAddress,
 	requireSku,
+	requireSupportedCurrency,
 	requireTitle,
 	requireVariantKey,
 	requireWatermark,
@@ -318,7 +327,14 @@ export class InProcessCommerceClient implements CommerceClient {
 		requireProductId(productId);
 		requireIdempotencyKey(idempotencyKey);
 		if (input.sku !== undefined) requireSku(input.sku);
-		if (input.price !== undefined) requireMoney("price", input.price);
+		if (input.price !== undefined) {
+			requireMoney("price", input.price);
+			// The currency table, not just the shape (#457): an unlisted code would
+			// price a product no money boundary knows the minor unit of. Unlike the
+			// admin product edit, a stored legacy code is refused too; no caller
+			// sends a price here today (CMS sync sends title and watermark only).
+			requireSupportedCurrency("price.currency", input.price.currency);
+		}
 		if (input.title !== undefined) requireTitle(input.title);
 		if (input.weightGrams !== undefined) requireNullableInteger("weightGrams", input.weightGrams);
 		if (input.lengthMm !== undefined) requireNullableInteger("lengthMm", input.lengthMm);
@@ -369,6 +385,24 @@ export class InProcessCommerceClient implements CommerceClient {
 		);
 	}
 
+	async restoreProductCommerce(
+		productId: string,
+		idempotencyKey: string,
+		contentUpdatedAt: string,
+		options: { documentConfirmed?: boolean } = {},
+	): Promise<void> {
+		requireProductId(productId);
+		requireIdempotencyKey(idempotencyKey);
+		requireWatermark("contentUpdatedAt", contentUpdatedAt);
+		await restoreProductCommerce(
+			this.#stores.productCommerce,
+			toProductId(productId),
+			toIdempotencyKey(idempotencyKey),
+			contentUpdatedAt,
+			options.documentConfirmed === true ? { documentConfirmed: true } : {},
+		);
+	}
+
 	async activateProductCommerce(
 		productId: string,
 		idempotencyKey: string,
@@ -410,6 +444,30 @@ export class InProcessCommerceClient implements CommerceClient {
 			productIds.map((id) => toProductId(id)),
 		);
 		return views.map(serializeView);
+	}
+
+	/**
+	 * How shop pages show prices (#423): the store's `displayShop` option at the
+	 * shop base address's rates. A registered outside calculator (ADR-0030) is
+	 * never asked here — it is asked once per quote, not once per listing render
+	 * — so such a store's pages show prices as entered.
+	 */
+	async getShopPriceDisplay(): Promise<ShopPriceDisplayWire> {
+		return loadShopPriceDisplay(this.#priceDisplayDeps());
+	}
+
+	/** The cart page's line prices (`displayCart`), by the same rules (#423). */
+	async getCartPriceDisplay(): Promise<ShopPriceDisplayWire> {
+		return loadCartPriceDisplay(this.#priceDisplayDeps());
+	}
+
+	#priceDisplayDeps() {
+		return {
+			settings: this.#stores.settingsStore,
+			taxRules: this.#stores.taxRules,
+			shippingRules: this.#stores.shippingRules,
+			hasOutsideTaxCalculator: this.#taxCalculator !== undefined,
+		};
 	}
 
 	// ── variants ────────────────────────────────────────────────────────────
@@ -477,7 +535,10 @@ export class InProcessCommerceClient implements CommerceClient {
 		// price was refused at the wire before the use-case ever saw it, and it has
 		// to be refused here for the same reason — an absent price is expressed by
 		// omitting the field, so a zero is a mistake rather than a clearing.
-		if (input.price !== undefined) requireMoney("price", input.price, { positive: true });
+		if (input.price !== undefined) {
+			requireMoney("price", input.price, { positive: true });
+			requireSupportedCurrency("price.currency", input.price.currency);
+		}
 		try {
 			const result = await updateProductVariantFields(
 				{ productCommerce: this.#stores.productCommerce, inventory: this.#stores.inventory },
@@ -573,7 +634,8 @@ export class InProcessCommerceClient implements CommerceClient {
 	}
 
 	/**
-	 * A new, empty cart. An explicit `currency` wins (shape-checked, as always);
+	 * A new, empty cart. An explicit `currency` wins (checked against the currency
+	 * table, #457 — a cart in an unlisted code would reach checkout);
 	 * with none, the cart is in the STORE currency — the operator's saved setting,
 	 * or USD for a store that never saved one (`effectiveStoreCurrency`), which is
 	 * the default this surface always applied.
@@ -590,7 +652,7 @@ export class InProcessCommerceClient implements CommerceClient {
 	 * and every later cart operation reads the same document anyway (hold TTL).
 	 */
 	async createCart(currency?: string): Promise<{ cartId: string }> {
-		if (currency !== undefined) requireCurrencyCode("currency", currency);
+		if (currency !== undefined) requireSupportedCurrency("currency", currency);
 		const chosen = currency ?? effectiveStoreCurrency(await this.#stores.settingsStore.get());
 		const cartId = await createCart(this.#cartDeps, toCurrency(chosen));
 		return { cartId };
@@ -611,7 +673,7 @@ export class InProcessCommerceClient implements CommerceClient {
 	 */
 	async replaceCart(spentCartId: string, currency?: string): Promise<ReplaceCartResult> {
 		requireIdToken("cartId", spentCartId);
-		if (currency !== undefined) requireCurrencyCode("currency", currency);
+		if (currency !== undefined) requireSupportedCurrency("currency", currency);
 		return replaceSpentCart(
 			{ ...this.#cartDeps, orderStore: this.#stores.orderStore },
 			spentCartId,
@@ -908,7 +970,10 @@ export class InProcessCommerceClient implements CommerceClient {
 			customerId,
 		);
 		if (orders === null) return { ok: false, reason: "UNAUTHENTICATED" };
-		return { ok: true, orders: orders.map(serializeOrderSummary) };
+		// Wrapped, not passed as `map`'s callback: `map` would hand the index in as
+		// `taxTotalsDisplay`. The list shows no tax rows, so the default ("single")
+		// stands and no settings read is spent.
+		return { ok: true, orders: orders.map((order) => serializeOrderSummary(order)) };
 	}
 
 	async getMyAccount(sessionToken: string): Promise<AuthedResult<{ email: string }>> {
@@ -942,7 +1007,7 @@ export class InProcessCommerceClient implements CommerceClient {
 		return {
 			ok: true,
 			order: {
-				...serializeOrderSummary(ledger.order),
+				...serializeOrderSummary(ledger.order, await this.#taxTotalsDisplayFor(ledger.order)),
 				latePayment: classifyLatePayment({
 					state: ledger.order.state,
 					events: ledger.events,
@@ -1067,6 +1132,17 @@ export class InProcessCommerceClient implements CommerceClient {
 			currency: cart.currency,
 			lines,
 			destination: input.destination,
+			// #426: for a cart that ships nothing the review's location is where the
+			// buyer is (the domain reads it for no other cart, and only when the
+			// store taxes "based on the customer's billing address").
+			...(input.destination !== undefined
+				? {
+						billingLocation: {
+							country: input.destination.country,
+							region: input.destination.region ?? null,
+						},
+					}
+				: {}),
 			methodId: input.shippingMethodId,
 			couponCode: input.couponCode,
 		});
@@ -1090,6 +1166,9 @@ export class InProcessCommerceClient implements CommerceClient {
 			requiresShipping,
 			destination: serializeDestination(quote.destination),
 			discountedSubtotalCents: breakdown.subtotalCents - breakdown.discountCents,
+			...(!requiresShipping && quote.taxSettings.enabled && quote.taxSettings.basedOn === "billing"
+				? { taxByBuyerLocation: true as const }
+				: {}),
 			breakdown: {
 				currency: breakdown.currency,
 				subtotalCents: breakdown.subtotalCents,
@@ -1099,7 +1178,7 @@ export class InProcessCommerceClient implements CommerceClient {
 				totalCents: breakdown.totalCents,
 				...roundingEntry("roundingCents", breakdown.roundingCents),
 				appliedCouponCode: breakdown.appliedCouponCode ?? null,
-				tax: quoteTaxWire(quote),
+				tax: quoteTaxWire(quote, cart.lines),
 			},
 		};
 	}
@@ -1139,6 +1218,7 @@ export class InProcessCommerceClient implements CommerceClient {
 		if (input.couponCode !== undefined)
 			requireBoundedText("couponCode", input.couponCode, 1, COUPON_CODE_MAX);
 		if (input.shippingAddress !== undefined) requireShippingAddress(input.shippingAddress);
+		if (input.billingLocation !== undefined) requireBillingLocation(input.billingLocation);
 		const customerId =
 			opts.sessionToken === undefined
 				? undefined
@@ -1167,6 +1247,14 @@ export class InProcessCommerceClient implements CommerceClient {
 			...(input.shippingMethodId !== undefined ? { shippingMethodId: input.shippingMethodId } : {}),
 			...(input.couponCode !== undefined ? { couponCode: input.couponCode } : {}),
 			...(input.shippingAddress !== undefined ? { shippingAddress: input.shippingAddress } : {}),
+			...(input.billingLocation !== undefined
+				? {
+						billingLocation: {
+							country: input.billingLocation.country,
+							region: input.billingLocation.region ?? null,
+						},
+					}
+				: {}),
 		});
 		if (!result.ok) return { ok: false, reason: result.reason };
 		return {
@@ -1248,8 +1336,19 @@ export class InProcessCommerceClient implements CommerceClient {
 					refunds: ledger.refunds,
 				}),
 				recordedRefundTotal(ledger.refunds),
+				await this.#taxTotalsDisplayFor(ledger.order),
 			),
 		};
+	}
+
+	/**
+	 * The store's "Display tax totals" for an order's page (issue #422) — read
+	 * only for an order that has rows to itemize, so an untaxed or older order's
+	 * read costs nothing more.
+	 */
+	async #taxTotalsDisplayFor(order: Order): Promise<"itemized" | "single"> {
+		if (orderTaxRows(order.totals) === null) return "single";
+		return taxTotalsDisplayOf((await this.#stores.settingsStore.get()).tax);
 	}
 
 	/**
@@ -1494,6 +1593,8 @@ function serializeView(view: ProductCommerceView): ProductCommerceBatchItem {
 				: { amount: view.compareAtPrice.amount, currency: view.compareAtPrice.currency },
 		inStock: view.inStock,
 		active: view.active,
+		taxClass: view.taxClass,
+		taxStatus: view.taxStatus,
 	};
 }
 
@@ -1567,7 +1668,10 @@ function serializeOrderLines(order: Order): OrderLineWire[] {
 }
 
 /** The customer's own order, as their account pages read it. */
-function serializeOrderSummary(order: Order): OrderSummaryWire {
+function serializeOrderSummary(
+	order: Order,
+	taxTotalsDisplay: "itemized" | "single" = "single",
+): OrderSummaryWire {
 	return {
 		id: order.id,
 		state: order.state,
@@ -1588,7 +1692,7 @@ function serializeOrderSummary(order: Order): OrderSummaryWire {
 			appliedCouponCode: order.totals.appliedCouponCode,
 			shippingZoneId: shippingZoneIdOf(order.totals.shippingMethodSnapshot),
 			shippingMethodId: shippingMethodIdOf(order.totals.shippingMethodSnapshot),
-			...orderTaxWire(order),
+			...orderTaxWire(order, taxTotalsDisplay),
 		},
 		lines: serializeOrderLines(order),
 	};
@@ -1601,15 +1705,18 @@ function roundingWire(order: Order): { roundingCents?: number } {
 }
 
 /** The quote's tax display facts (ADR-0032): settings, location, and the tax per label. */
-function quoteTaxWire(quote: Extract<DomainQuoteResult, { ok: true }>): QuoteTaxWire {
+function quoteTaxWire(
+	quote: Extract<DomainQuoteResult, { ok: true }>,
+	/** The cart lines the quote priced, in request order (`quoteCheckout`). */
+	cartLines: ReadonlyArray<Pick<CartLine, "lineId" | "qty">>,
+): QuoteTaxWire {
 	const { result } = quote.tax;
-	const itemized: QuoteTaxWire["itemized"] = [];
-	for (const line of [...result.lines, ...(result.shipping === null ? [] : [result.shipping])]) {
-		if (line.taxCents === 0) continue;
-		const row = itemized.find((r) => r.label === line.label);
-		if (row === undefined) itemized.push({ label: line.label, amountCents: line.taxCents });
-		else row.amountCents += line.taxCents;
-	}
+	// The grouping the order's rows use too (`orderTaxRows`, issue #422), so the
+	// order page shows the rows the checkout showed.
+	const itemized = itemizeTaxLines([
+		...result.lines,
+		...(result.shipping === null ? [] : [result.shipping]),
+	]);
 	return {
 		enabled: quote.taxSettings.enabled,
 		located: quote.taxLocated,
@@ -1623,6 +1730,17 @@ function quoteTaxWire(quote: Extract<DomainQuoteResult, { ok: true }>): QuoteTax
 		displayCart: quote.taxSettings.displayCart,
 		totalsDisplay: quote.taxSettings.totalsDisplay,
 		lineTaxCents: result.lines.reduce((sum, l) => sum + l.taxCents, 0),
+		// Each tax is keyed by the line it priced, so the review never matches them
+		// by position (#478). The keys are 1:1 with `cartLines`: `quoteCheckout`
+		// builds one request line per cart line, in order (or refuses the quote),
+		// and `validateTaxResult` holds the answer to one line per request line, in
+		// request order. The `??` fallbacks are unreachable; an empty id or qty 0
+		// would only fail to match, leaving the review's rows as they are.
+		lineTaxes: result.lines.map((l, i) => ({
+			lineId: cartLines[i]?.lineId ?? "",
+			qty: cartLines[i]?.qty ?? 0,
+			taxCents: l.taxCents,
+		})),
 		itemized,
 	};
 }
@@ -1630,15 +1748,21 @@ function quoteTaxWire(quote: Extract<DomainQuoteResult, { ok: true }>): QuoteTax
 /**
  * An order priced with tax-INCLUSIVE prices carries that fact from its frozen
  * snapshot, so its pages show the subtotal net and the rows still sum to the
- * total. An order priced with tax switched off carries `tax.enabled: false` (no
- * Tax row). Every other order keeps today's single "Tax" row (no `tax` key).
+ * total. With `totalsDisplay` "itemized" (the store's "Display tax totals",
+ * resolved by the caller — issue #422), an order whose snapshot itemizes
+ * (`orderTaxRows`) carries one row per tax. An order priced with tax switched off
+ * carries `tax.enabled: false` (no Tax row). Every other order keeps today's
+ * single "Tax" row (no `tax` key).
  *
  * Tax calculated for a place with no shipping zone (ADR-0032: a digital cart
  * taxed at the shop base address) adds `taxLocated: true`, so the order's pages
  * show the tax charged rather than "Not calculated". A snapshot written before
  * `located` existed adds nothing — the zone rule decides, as before.
  */
-function orderTaxWire(order: Order): { tax?: QuoteTaxWire; taxLocated?: true } {
+function orderTaxWire(
+	order: Order,
+	totalsDisplay: "itemized" | "single" = "single",
+): { tax?: QuoteTaxWire; taxLocated?: true } {
 	const snapshot = readOrderTaxSnapshot(order.totals.taxBreakdown);
 	if (snapshot === null || snapshot.v !== 1) return {};
 	// An order priced while tax was switched off says so from its own frozen
@@ -1661,17 +1785,18 @@ function orderTaxWire(order: Order): { tax?: QuoteTaxWire; taxLocated?: true } {
 	}
 	const located = snapshot.located === true;
 	const flag = located ? { taxLocated: true as const } : {};
-	if (!snapshot.pricesIncludeTax) return flag;
+	const rows = totalsDisplay === "itemized" ? orderTaxRows(order.totals) : null;
+	if (!snapshot.pricesIncludeTax && rows === null) return flag;
 	return {
 		...flag,
 		tax: {
 			enabled: true,
 			located: shippingZoneIdOf(order.totals.shippingMethodSnapshot) !== null || located,
-			pricesIncludeTax: true,
+			pricesIncludeTax: snapshot.pricesIncludeTax,
 			displayCart: "excl",
-			totalsDisplay: "single",
+			totalsDisplay: rows === null ? "single" : "itemized",
 			lineTaxCents: snapshot.lines.reduce((sum, l) => sum + l.taxCents, 0),
-			itemized: [],
+			itemized: rows ?? [],
 		},
 	};
 }
@@ -1689,6 +1814,7 @@ function serializePublicOrder(
 	order: Order,
 	latePayment: LatePaymentStatus,
 	refundedCents: number,
+	taxTotalsDisplay: "itemized" | "single" = "single",
 ): PublicOrderWire {
 	return {
 		id: order.id,
@@ -1708,7 +1834,7 @@ function serializePublicOrder(
 			appliedCouponCode: order.totals.appliedCouponCode,
 			shippingZoneId: shippingZoneIdOf(order.totals.shippingMethodSnapshot),
 			shippingMethodId: shippingMethodIdOf(order.totals.shippingMethodSnapshot),
-			...orderTaxWire(order),
+			...orderTaxWire(order, taxTotalsDisplay),
 		},
 		lines: serializeOrderLines(order),
 		fulfillment: publicFulfillment(order),

@@ -106,13 +106,13 @@ pay must not change silently (user decision 4).
   amount entered without tax and for shipping; for a line entered with tax, the tax inside
   the gross at that rate, `ceil(G × 100000 / 110000)`, so the net can never go negative.
 - Built since: the checkout and order pages hide the Tax row when tax is off (#420); the emails still show it (follow-up).
-- Follow-ups, not built: shop-page price display; per-line prices with/without tax on the
-  review table and the cart page; postcode/city matching, priority/compound rates, CSV;
-  customer tax-exempt; adjusting inclusive prices for non-base buyers; finer rate
-  precision; buyer-location tax for digital goods; itemized tax rows on the order pages, the emails and
-  the admin order detail; marking a tax-inclusive order on the admin order detail (its
-  subtotal is the gross, and nothing there says the tax is included); recording each line's
-  tax status in the frozen order tax record (PR 2b left the record's shape unchanged).
+- Built since: shop-page price display (#477), cart-page line prices (#477), per-line prices
+  with/without tax on the review table (#477, `showCheckoutLinesTax`), finer rate precision
+  (#475), buyer-location tax for digital goods (#467), itemized tax rows on the order pages,
+  the emails and the admin order detail (#469), the admin order detail's "Prices included tax"
+  marker (#461), and each line's tax status in the frozen order tax snapshot (#466).
+- Follow-ups, not built: postcode/city matching, priority/compound rates, CSV;
+  customer tax-exempt; adjusting inclusive prices for non-base buyers.
 
 ## Addendum (PR 2b): product tax status and shipping-method taxable
 
@@ -145,3 +145,82 @@ Decided by the maintainer: Otta does not add WooCommerce's coupon allocation, no
 - **Why Otta keeps it.** A line's share of the coupon is its share of the cart's value, whatever its unit count: a line of one 2000 item and a line of two 1000 items take the same discount. The rule predates the tax work (#416 left it unchanged), and keeping it was a maintainer decision. (Exact sums and a deterministic result also hold for WooCommerce, so they are not reasons to differ.)
 - **Cost.** A merchant comparing per-line discount or tax with WooCommerce can see differences of tens or hundreds of cents per line with odd amounts, and a cent or more in the tax total and the order total.
 - **Pinned** by the EX-08 test in `packages/domain/test/pricing/woo-oracle-parity.test.ts`, which runs `computeTotals` and asserts Otta's 500/500, 248 and 3248 against WooCommerce's 334/666, 247 and 3247 from the oracle. Changing the rule must change that test on purpose.
+
+## Addendum (#426): tax based on the customer's billing address, for digital-only carts
+
+- `basedOn` gains `billing` — WooCommerce's "Customer billing address"
+  (`woocommerce_tax_based_on` = `billing`), which reverses decision 5's "billing address is
+  not offered". No store gets it unless an admin saves it: the defaults and the upgrade rule
+  are unchanged, so every existing store keeps today's behaviour exactly.
+- Otta collects a billing LOCATION (country and optional region code), and only for a cart
+  that ships nothing — the checkout's existing zero-JS "where" block, shown with no delivery
+  options. Under `billing` such a cart is taxed at that location; with none given it falls
+  back to the base address (decision 5, as before). The location is the buyer's own
+  declaration, not verified evidence: a buyer can pick a country taxed at 0%, as in WooCommerce (the options screen says so). A location no zone matches gets 0%, never a refusal; a
+  malformed one is refused with the ship-to's reasons, and so is a location without a region
+  in a country whose zones go down to regions (ES with ES-CN zoned apart, CA/QC, US states):
+  `SHIPPING_REGION_CODE_REQUIRED`, exactly as for a ship-to, never a silent 0%. A cart that ships
+  is still taxed by its ship-to, its only address (WooCommerce's checkout likewise bills to
+  the ship-to unless told otherwise). Under `shipping` or `base` the location is ignored
+  entirely — never validated, never priced by.
+- The review quote and the order are taxed at the same location by convention: the review
+  prices the location the page sent (`destination`, for a cart that ships nothing), and the
+  place form echoes it as the order's `billingLocation`; the domain re-prices the order from
+  what it is sent. A buyer address sent for another reason (issue
+  #382) is not used as the billing location, because the review was not priced for it.
+- The order's v1 tax snapshot gains an optional `taxAddress: { basis, country, region }`,
+  written on every order priced under `billing` whose tax had an address: `billing` (the
+  buyer's declared location), `base` (a digital cart whose buyer gave none) or `shipping` (a
+  cart that ships). Orders under `shipping` or `base` are snapshotted exactly as before, and
+  older snapshots read without it. The admin order detail states it ("Tax location: DE
+  (buyer-declared)").
+
+## Addendum (#423): shop-page price display
+
+- **The option.** `tax.displayShop`, WooCommerce's `woocommerce_tax_display_shop`, is optional
+  and takes `excl` or `incl`. When it is absent, prices show as entered. That is a third
+  value WooCommerce does not have. It is the default for both default blocks and for every
+  block saved before the option existed, so no store's pages change until the merchant
+  picks a value. A stored block without the key is not damaged: `readTaxSettings` keeps it.
+  The settings digest and `sameTaxSettings` add the field only when it is set, so a block
+  without it keeps its old fingerprint.
+- **The maths** is checkout's: `shopDisplayPrice` runs one line through `applyRateTable`
+  (per-line or at-subtotal rounding, half up without tax, half down for the tax inside a
+  gross price). There is no second formula. Oracle rows DP-01 and DP-02 are now in scope,
+  so all 39 rows run.
+- **Where.** Prices are taxed at the shop base address's zone, which is WooCommerce's
+  default location for a shopper whose address is unknown. The rates follow each product's
+  tax class, and only `taxable` products carry tax. A base address that no zone matches
+  gets 0%.
+- **When the stored price is shown**: tax off; no base address; or an outside calculator
+  registered (ADR-0030). An outside calculator is asked once per quote with a real cart.
+  It is never asked once per product on a listing render, because that would put a paid,
+  rate-limited and possibly slow outside call on every page view.
+- **What is affected.** The PDP and PLP price and the PDP was-price use the shown figure.
+  The view model's `price.taxNote` (`incl`/`excl`) is present only then, so the theme prints
+  "incl. tax" or "excl. tax" only for a store that opted in. If the display read fails, the
+  page falls back to prices as entered and logs a warning; the page never fails.
+- **JSON-LD.** The PDP offer carries the shown figure. When the display is `incl`, the offer
+  price always includes VAT, which is what search engines expect for consumer prices in
+  VAT regions. When it is `excl`, the offer carries the price without tax, matching the page
+  (Google asks that structured data match the visible price). As entered, the offer is the
+  stored price, as before.
+- **Cart and checkout lines (review round 1).** These follow `displayCart`, WooCommerce's
+  `tax_display_cart`, not just the totals rows.
+  - The cart page has no address yet. It prices lines at the shop base address with
+    `shopDisplayPrice`, and its total is the sum of the shown lines.
+  - The checkout review uses the quote's own per-line tax (`QuoteTaxWire.lineTaxes`). It
+    splits the amount the subtotal row moves by across the lines by their tax, using
+    largest remainder, so the lines always sum to the shown subtotal. Without a coupon,
+    that is each line's own tax.
+  - A unit price is the line's share divided by the quantity, rounded the way the tax is
+    rounded: half down for prices entered with tax, half up otherwise. This is exact at
+    quantity 1. As in WooCommerce, unit × quantity can differ from the line by a cent.
+  - With an outside calculator registered (ADR-0030), checkout lines still follow the
+    quote's per-line tax, which is that calculator's answer. The cart page shows those
+    stores' prices as entered, because it never calls the calculator.
+  - A store whose `displayCart` matches how its prices are entered (every default store),
+    or whose tax is off, renders its lines byte for byte as before.
+  - Placed-order pages and emails read the order's line snapshot, which records no
+    per-line tax, so their lines are unchanged.
+- What is charged (the quote and the order) is unchanged.

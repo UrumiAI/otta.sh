@@ -46,7 +46,7 @@ const SELECTION_MESSAGES = {
 	// digital-only review has no address block), but the words stay true for
 	// an API caller's digital order with a bad region too.
 	SHIPPING_REGION_CODE_REQUIRED:
-		"Enter your state/province code (e.g. CA), or leave it blank if your country doesn't use one.",
+		"Choose your state/province from the list, or leave it blank if your country doesn't use one.",
 	SHIPPING_METHOD_NOT_IN_ZONE: "Delivery options changed for your address — please choose again.",
 	SHIPPING_METHOD_REQUIRED: "There are no delivery options for this address.",
 	// For API callers: no page of this site sends a method for a cart with
@@ -134,8 +134,29 @@ const MESSAGES: Record<string, string> = {
 	   India — the address is for the payment, not for a delivery. */
 	BUYER_ADDRESS_REQUIRED:
 		"Enter your name and address to continue — Stripe accounts in India need them to take your payment.",
+	/* #426: a buyer location (a cart that ships nothing, taxed where the buyer
+	   is) the store refused — it is not a delivery address. */
+	BUYER_LOCATION_INVALID: "Please choose your country from the list.",
 	/* …and INVALID_SHIPPING_ADDRESS there: the same check, without "delivery". */
 	BUYER_ADDRESS_INVALID: "Please check your address — some fields are missing or too long.",
+	/* The site's own copy for SHIPPING_ZONE_NOT_MATCHED when the plugin blames
+	   the region: other states/provinces of that country are served. */
+	SHIPPING_REGION_NOT_SERVED: "We don't ship to this state/province.",
+	/* The site's own copy for SHIPPING_REGION_CODE_REQUIRED when the buyer DID
+	   pick one, but it contains smaller ones the store prices differently (the
+	   Canary Islands, with Tenerife zoned): pick the one inside it. */
+	SHIPPING_REGION_TOO_BROAD:
+		"Choose the more specific state/province your address is in — this store prices them separately.",
+	/* The site's own: the address's country changed after its state/province
+	   list was rendered (without the optional script), so the review came back with
+	   the new country's list instead of placing. Nothing was placed. */
+	REGION_LIST_UPDATED:
+		"We've updated the state/province list for the country you chose — pick yours (or leave it blank if none applies), then continue.",
+	/* The site's own: a step that must come back with what was typed (Update,
+	   Apply, Remove, a state/province to pick again) could not keep it — the
+	   address is too long for the page to carry between steps. */
+	ADDRESS_TOO_LONG_TO_KEEP:
+		"Your address was too long for us to keep between steps. Please shorten it and try again.",
 	INVALID_EMAIL: "That doesn't look like a valid email address — please check it and try again.",
 	ORDER_NOT_FOUND: "That order could not be found — please check the link you followed.",
 	/* Resuming a payment with the order's email (QA U-2): one generic sentence

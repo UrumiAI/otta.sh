@@ -308,31 +308,34 @@ export const MARK_REFUNDED_CONFIRM = {
 	deny: "Keep as is",
 } as const;
 
+// ── the detail: downloads (issue #447) ──────────────────────────────────────
+
+/** The Downloads group's one line: what the control is for. A dispute or
+ *  chargeback moves no order state, so nothing else closes access for it. */
+export const REVOKE_DOWNLOADS_NOTE =
+	"Buyers can download this order’s files. After a dispute or chargeback, revoke access here: refunds and cancellations made in Otta already do it.";
+
+/** What the Downloads group says once access is closed. */
+export const DOWNLOADS_REVOKED_NOTE =
+	"Download access was revoked. The buyer’s download links for this order no longer work.";
+
+/** The confirm before revoking. Revocation is terminal, so the text says it
+ *  cannot be undone, and that it moves no money and emails nobody. */
+export const REVOKE_DOWNLOADS_CONFIRM = {
+	title: "Revoke download access?",
+	text: "The buyer’s download links for this order stop working at once. This can’t be undone. It does not refund, cancel or email anyone; History records that you did it.",
+	confirm: "Yes, revoke access",
+	deny: "Keep access",
+} as const;
+
 // ── the detail: refunds ──────────────────────────────────────────────────────
 
 /** DA-7: no control at all, one line naming the reason. */
 export const FULLY_REFUNDED_NOTE = "Fully refunded — nothing left to refund.";
 
-/**
- * The additive-refunds warning, and the ONE genuine per-surface split in this
- * module.
- *
- * Both screens must say that recording a refund twice records two refunds. Only
- * the BLOCK KIT screen has a "next step" to point at — its DA-3 flow stages the
- * amount server-side and renders a confirm button on a second render — so it
- * prefixes {@link REFUND_REVIEW_STEP_PREFIX} to this and the React screen does
- * not. Sharing the sentence and splitting the prefix is what keeps the shared
- * half honest; sharing the whole thing would have put a step reference on a
- * screen that has no such step.
- */
+/** The additive-refunds warning: recording a refund twice records two refunds. */
 export const REFUND_ADDITIVE_NOTE =
 	"Refunds are additive: recording one twice records two refunds.";
-
-/** The Block Kit screen's own lead-in to {@link REFUND_ADDITIVE_NOTE}. */
-export const REFUND_REVIEW_STEP_PREFIX = "Review the amount on the next step.";
-
-/** The partial-refund group's alert title. */
-export const REFUND_PARTIAL_BANNER_TITLE = "A recorded refund cannot be reversed here";
 
 /** A refund amount that does not parse to a positive amount. Both surfaces
  *  refuse before anything is sent, and both say the same thing — including the

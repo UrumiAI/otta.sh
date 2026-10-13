@@ -568,6 +568,14 @@ export function storefrontCommerceClientContract(tier: CommerceClientTier): void
 			expect(row?.sku).toBe("SKU-C4"); // commercial data preserved, not wiped
 		});
 
+		test("restoreProductCommerce clears the tombstone (issue #447): live again, still inactive, sku kept", async () => {
+			await client.upsertProductCommerce("prod-c4r", { sku: "SKU-C4R" }, "k4r");
+			await client.softDeleteProductCommerce("prod-c4r", "del-1");
+			await client.restoreProductCommerce("prod-c4r", "restore-1", "2999-01-01T00:00:00.000Z");
+			const row = await client.getProductCommerce("prod-c4r");
+			expect(row).toMatchObject({ deletedAt: null, active: false, sku: "SKU-C4R" });
+		});
+
 		test("getCommerceBatch returns only the known items, each carrying inStock", async () => {
 			await client.upsertProductCommerce(
 				"prod-cb1",
@@ -592,6 +600,9 @@ export function storefrontCommerceClientContract(tier: CommerceClientTier): void
 				compareAtPrice: null,
 				inStock: true,
 				active: false, // unpublished until the deferred afterPublish wiring lands
+				// What checkout taxes it by (#423): no class named, taxable by default.
+				taxClass: null,
+				taxStatus: "taxable",
 			});
 			expect(byId.get("prod-cb2")).toEqual({
 				productId: "prod-cb2",
@@ -601,6 +612,8 @@ export function storefrontCommerceClientContract(tier: CommerceClientTier): void
 				compareAtPrice: null,
 				inStock: false, // never seeded — coarse out-of-stock, still listed
 				active: false,
+				taxClass: null,
+				taxStatus: "taxable",
 			});
 			// The unknown id is OMITTED — absence, not an error entry.
 			expect(byId.has("prod-cb-unknown")).toBe(false);
@@ -824,6 +837,44 @@ export function storefrontCommerceClientContract(tier: CommerceClientTier): void
 				// `orderId: null` (#132): a fresh cart names no order.
 				cart: { currency: "EUR", state: "active", orderId: null, lines: [] },
 			});
+		});
+
+		test("a currency-shaped code outside the currency table (XYZ) is refused on every non-admin write that names one", async () => {
+			// Three letters passes the shape check; the table is what every money
+			// boundary (checkout rounding, Stripe's exponent) knows. Issue #457.
+			const refused = { code: "INVALID_INPUT", field: "currency" };
+			await expect(client.createCart("XYZ")).rejects.toMatchObject(refused);
+			await expect(client.replaceCart("cart-any", "XYZ")).rejects.toMatchObject(refused);
+			await expect(
+				client.upsertProductCommerce(
+					"prod-xyz",
+					{ sku: "SKU-XYZ", price: { amount: 1000, currency: "XYZ" } },
+					"xyz-upsert",
+				),
+			).rejects.toMatchObject({ code: "INVALID_INPUT", field: "price.currency" });
+			expect(await client.getProductCommerce("prod-xyz")).toBeNull();
+			await tier.arrange.product({
+				productId: "prod-xyz-v",
+				sku: "SKU-XYZ-V",
+				price: { amount: 1000, currency: "USD" },
+				title: "prod-xyz-v",
+				idempotencyKey: "xyz-parent",
+			});
+			const declared = await client.upsertProductVariant(
+				"prod-xyz-v",
+				"large",
+				{ title: "Large", contentUpdatedAt: "2026-08-08T00:00:00.000Z" },
+				"xyz-declare",
+			);
+			await expect(
+				client.updateProductVariantFields(
+					"prod-xyz-v",
+					"large",
+					{ price: { amount: 2000, currency: "XYZ" } },
+					declared.updatedAt,
+					"xyz-variant",
+				),
+			).rejects.toMatchObject({ code: "INVALID_INPUT", field: "price.currency" });
 		});
 
 		// The storefront replaces a spent cart under a key derived from it, so two

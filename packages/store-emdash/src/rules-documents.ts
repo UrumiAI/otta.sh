@@ -14,7 +14,7 @@
  * | `shipping_zones/{zoneId}` | the zone, its `methods` map keyed by method id, and each method's `rates` map keyed by currency |
  * | `shipping_method_owners/{methodId}` | `{ zoneId }` — the method-id uniqueness claim, and the FAST way to reach a method from an id alone (a bounded scan of the zones is the fallback) |
  * | `tax_classes/{classId}` | the class registry entry (`name`) and its `rates` map keyed by rate id |
- * | `tax_rate_owners/{rateId}` | `{ taxClassId }` — the rate-id uniqueness claim, and the FAST way to reach a rate from an id alone (a bounded scan of the classes is the fallback) |
+ * | `tax_rate_owners/{rateId}` | `{ taxClassId, state }` — the rate-id uniqueness claim (`state`: `pending` until the create's embed lands, then `live`; absent = live, #462), and the FAST way to reach a rate from an id alone (a bounded scan of the classes is the fallback) |
  *
  * **Why the two claim documents exist.** NINE port methods take a child id with no
  * parent: `getMethod`, `updateMethod`, `deleteMethod`, `createRate`, `getRate`,
@@ -22,7 +22,7 @@
  * `methodId`); `updateRate` and `deleteRate` on the tax side. With the children embedded there is no document to read, and a scan
  * would answer the question ambiguously the moment two zones could hold the same
  * method id — which SQL made impossible with a primary key and which no declared
- * index enforces here (see the README's "no physical indexes"). The claim
+ * index enforces here (see `docs/store-emdash/design-notes.md`, "no physical indexes"). The claim
  * document is therefore both halves at once: create-if-absent on the document id
  * IS the uniqueness enforcement (the storage table's own primary key), and the
  * `zoneId`/`taxClassId` it carries IS the reverse lookup. It is the
@@ -42,6 +42,7 @@
  * a declared index and these collections declare none.
  */
 import {
+	canonicalTaxRateValue,
 	cents,
 	currency as toCurrency,
 	type Cents,
@@ -139,6 +140,15 @@ export interface TaxRateDoc {
 	readonly zoneId: string;
 	/** Integer basis points. The money-bearing field `updateRate` CAS-guards. */
 	readonly rateBps: number;
+	/**
+	 * The exact rate in integer millionths (0.0001%, #425), ONLY for a rate finer
+	 * than a basis point — then it is the rate and `rateBps` its half-up rounding.
+	 * A document written before #425 never has it and reads as `rateBps × 100`:
+	 * the read-time upgrade (as `ShippingMethodDoc.taxable`); nothing is rewritten.
+	 * One that disagrees with `rateBps` (an older build edited the rate and carried
+	 * it along) is ignored on read and dropped by the next edit.
+	 */
+	readonly ratePpm?: number;
 	readonly appliesToShipping: boolean;
 }
 
@@ -160,6 +170,11 @@ export interface TaxRateOwnerDoc {
 	readonly rateId: string;
 	readonly taxClassId: string;
 	readonly claimedAt: string;
+	/**
+	 * `"pending"` from the claim until its create's embed lands, then `"live"` (#462).
+	 * Absent on claims written before the field existed, which are read as live.
+	 */
+	readonly state?: "pending" | "live";
 }
 
 /**
@@ -232,7 +247,9 @@ export function toTaxRate(taxClassId: TaxClassId, doc: TaxRateDoc): TaxRate {
 		id: doc.rateId,
 		taxClassId,
 		zoneId: doc.zoneId,
-		rateBps: doc.rateBps,
+		// A stale or malformed `ratePpm` (a build that knew only `rateBps` edited the
+		// rate, #425) is dropped: `rateBps` is the source of truth when they disagree.
+		...canonicalTaxRateValue(doc),
 		appliesToShipping: doc.appliesToShipping,
 	};
 }

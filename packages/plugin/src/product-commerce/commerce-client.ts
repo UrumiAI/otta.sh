@@ -111,7 +111,28 @@ export interface ProductCommerceBatchItem {
 	/** The publish gate: the join derives purchasability from it
 	 *  (`purchasable ⟺ present && active`). */
 	active: boolean;
+	/** The row's tax class (null ⇒ `standard`) and tax status, so a shop page that
+	 *  shows prices with or without tax (#423) taxes the product as checkout does.
+	 *  Absent ⇒ `standard` / `taxable`, exactly as checkout reads an absent value. */
+	taxClass?: string | null;
+	taxStatus?: "taxable" | "shipping_only" | "none";
 }
+
+/**
+ * How shop and product pages show prices (#423, WooCommerce's
+ * `woocommerce_tax_display_shop`): `entered` ⇒ the stored price unchanged;
+ * otherwise with (`incl`) or without (`excl`) tax at the shop base address's
+ * rates per class. Structurally the domain's `ShopPriceDisplay`.
+ */
+export type ShopPriceDisplayWire =
+	| { mode: "entered" }
+	| {
+			mode: "excl" | "incl";
+			pricesIncludeTax: boolean;
+			roundAtSubtotal: boolean;
+			ratesByClass: Readonly<Record<string, number>>;
+			ratesPpmByClass: Readonly<Record<string, number>>;
+	  };
 // ── end Phase 2 catalog batch read ───────────────────────────────────────
 
 // ── Variants wire types ──────────────────────────────────────────────────
@@ -235,6 +256,17 @@ export interface CommerceClient {
 	): Promise<ProductCommerce>;
 	getProductCommerce(productId: string): Promise<ProductCommerce | null>;
 	softDeleteProductCommerce(productId: string, idempotencyKey: string): Promise<void>;
+	/** `content:afterRestore` (issue #447): undo a soft delete. A live or unknown
+	 *  row, or a restore older than the delete, is a no-op; the row stays inactive
+	 *  until a publish newer than `contentUpdatedAt` (the restored content's
+	 *  `updatedAt`). */
+	restoreProductCommerce(
+		productId: string,
+		idempotencyKey: string,
+		contentUpdatedAt: string,
+		/** The CMS was just read and the document found: see the store port. */
+		options?: { documentConfirmed?: boolean },
+	): Promise<void>;
 	/** The afterPublish→activate follow-up (plan §6 step 7): mirrors
 	 *  `POST /products/:id/commerce/activate` 1:1. Deliberately separate from
 	 *  `upsertProductCommerce` — see the service route's doc for why `active`
@@ -260,6 +292,11 @@ export interface CommerceClient {
 	// (A later Phase-3 task adds its cart methods below this block — keep
 	// the delimiters so the diff surfaces stay additive.)
 	getCommerceBatch(productIds: string[]): Promise<ProductCommerceBatchItem[]>;
+	/** How the shop pages show prices (#423) — read once per page render. */
+	getShopPriceDisplay(): Promise<ShopPriceDisplayWire>;
+	/** How the cart page shows its line prices (`displayCart`, #423), for a shopper
+	 *  whose address is not known yet: at the shop base address. */
+	getCartPriceDisplay(): Promise<ShopPriceDisplayWire>;
 	// ── end Phase 2 catalog batch read ────────────────────────────────────
 
 	// ── Variants: one method per WRITER, never one per row ────────────────
@@ -500,7 +537,10 @@ export interface QuoteRequestWire {
 	 * Where the order ships: an ISO 3166-1 alpha-2 country and an optional ISO
 	 * 3166-2 region code (`CA` or `US-CA`). The shipping/tax zone is DERIVED
 	 * from it (ADR-0021); there is deliberately no zone field — nobody chooses
-	 * their own tax zone.
+	 * their own tax zone. For a cart that ships nothing it is where the BUYER is
+	 * (its country and region only), which taxes the cart when the store taxes
+	 * "based on the customer's billing address" (#426) — see
+	 * `QuoteResult.taxByBuyerLocation` — and is ignored otherwise.
 	 */
 	destination?: DestinationRequestWire;
 	shippingMethodId?: string;
@@ -574,6 +614,11 @@ export interface QuoteTaxWire {
 	totalsDisplay: "itemized" | "single";
 	/** The tax on the lines (`taxCents` minus the shipping tax). */
 	lineTaxCents: number;
+	/** Each line's own tax, keyed by the cart line (and quantity) the quote priced
+	 *  — so the review can show every line with or without tax and the lines still
+	 *  sum to the subtotal (#423), matched by key, never by position (#478).
+	 *  Absent on an order's wire. */
+	lineTaxes?: Array<{ lineId: string; qty: number; taxCents: number }>;
 	/** The tax per label (lines and shipping together), in first-seen order. Labels
 	 *  are the merchant's or a calculator's text: render them escaped, never as HTML. */
 	itemized: Array<{ label: string; amountCents: number }>;
@@ -613,6 +658,11 @@ export type QuoteResult =
 			/** `subtotal − discount` — what a delivery option's free-shipping
 			 *  threshold is measured against (`listShippingOptions`). */
 			discountedSubtotalCents: number;
+			/** #426: this cart ships nothing and the store taxes it where the buyer
+			 *  is — the page should ask for the buyer's country (and region), send it
+			 *  as `destination` here and as `billingLocation` on the order. ABSENT
+			 *  otherwise, so every other reply is exactly as before. */
+			taxByBuyerLocation?: true;
 	  }
 	| { ok: false; reason: QuoteFailureReason };
 
@@ -641,6 +691,17 @@ export interface CheckoutRequestWire {
 	/** Required for a cart that ships, in a store with zones. The country is an
 	 *  ISO alpha-2 code and a region an ISO 3166-2 code, on EVERY order. */
 	shippingAddress?: ShippingAddressWire;
+	/** Where the buyer is (#426) — the location the review was quoted for. It
+	 *  taxes only a cart that ships nothing, in a store taxing "based on the
+	 *  customer's billing address"; ignored otherwise. */
+	billingLocation?: BillingLocationWire;
+}
+
+/** A buyer's coarse location (#426): ISO 3166-1 alpha-2, and an optional ISO
+ *  3166-2 region code (`CA` or `US-CA`). */
+export interface BillingLocationWire {
+	country: string;
+	region?: string;
 }
 
 /** The domain's `ClientAction` verbatim — passed through unmodified; the

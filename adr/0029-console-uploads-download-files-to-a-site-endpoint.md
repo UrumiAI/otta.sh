@@ -72,7 +72,8 @@ forbids.
    save could cut off a download already in progress, and the console cannot know when the
    last one ends. An upload whose save never happens (a closed tab) is left too. These
    orphans cost storage, never access, since nothing serves a key the descriptor does not
-   name. DEPLOYMENT.md §2.1 says how to find and remove them.
+   name. The site's hourly orphan sweep deletes them once they are a week old (amended
+   2026-10-12, issue #447; see below).
 6. **Replace only; a file is never removed (product-owner decision, 2026-10-06).** Past
    buyers must never lose access to what they bought, so the console offers no Remove file
    control and the product cannot be switched to Physical while it has a file: the editor
@@ -101,9 +102,14 @@ forbids.
   before dispatching.
 - Files over 100 MB cannot be attached. That needs a presigned multipart upload straight to
   R2, with an S3 access key as a Worker secret. Out of scope for v1.
-- Orphaned objects accumulate with every replacement and every abandoned upload until
-  someone removes them. A sweep would need to list the bucket and know which keys a
-  descriptor names, which is a site job with its own cron, not a plugin one.
+- Orphaned objects accumulate with every replacement and every abandoned upload until the
+  sweep removes them. **Amended 2026-10-12 (issue #447):** the site's `scheduled()` handler
+  runs an hourly sweep (`sites/staging/src/lib/download-orphans.ts`). It lists the bucket,
+  reads each product's current key through the plugin's admin read (via EmDash's
+  `withEmDashRuntime`), and deletes minted keys a product does not name once they, and the
+  product's current file, are over a week old. The attach guard refuses saving an upload over
+  six days old, so a file the sweep may delete can never become a product's file mid-sweep.
+  A lifecycle rule cannot do this: uploads land under their final `dl/` key.
 - The endpoint does not compute a sha256, so `downloadAsset.sha256` stays unset for an
   uploaded file. Computing one would mean hashing the stream on the way to R2, which can be
   added without changing the wire.

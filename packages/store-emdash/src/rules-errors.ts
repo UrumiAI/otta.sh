@@ -135,7 +135,8 @@ export class TaxClassIdCollisionError extends Error {
  *
  * `tax_rates.id` was a primary key across every class, and the claim document
  * `tax_rate_owners/{rateId}` enforces it here — with the same orphan takeover as
- * {@link ShippingMethodIdCollisionError}.
+ * {@link ShippingMethodIdCollisionError}, except that another class's PENDING claim
+ * (a create still in flight) is refused too until its 60 s lease runs out (#462).
  */
 export class TaxRateIdCollisionError extends Error {
 	override readonly name = "TaxRateIdCollisionError";

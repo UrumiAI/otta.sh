@@ -121,8 +121,7 @@ function statedTotal(count: number, total: number | undefined): number | undefin
  *  - THIS PAGE otherwise — `25 orders on this page`, a smaller claim and a true
  *    one. That is the fallback for a service older than `total`, and for a
  *    level that deliberately WITHHOLDS one because the count it holds describes
- *    a different set of rows than the page does — a level that narrowed the
- *    fetched page itself, or one whose filter the service could not be asked to
+ *    a different set of rows than the page does — one whose filter the service could not be asked to
  *    apply (products' "Low stock only" with no readable threshold: the service
  *    counted every product, so passing that number would caption the rows on
  *    screen as though the filter had run).
@@ -386,8 +385,7 @@ export type ZeroStateOffer = "clear-filters" | "way-in" | "none";
  * decision about the same number — which is exactly how "25 orders on this page"
  * ends up sitting above "Page 2 of 6". A caller feeds this value to
  * {@link pageCount} instead of the raw one, so a total this ladder withheld —
- * because the page was narrowed after the fetch, because the service contradicted
- * itself, because the page is empty — cannot reappear one line down.
+ * because the service contradicted itself, because the page is empty — cannot reappear one line down.
  */
 interface StatedTotal {
 	readonly statedTotal: number | undefined;
@@ -413,6 +411,12 @@ export type ListOutcome =
 			readonly emptyText: string;
 	  } & StatedTotal);
 
+/**
+ * `count` and `total` must describe a SERVICE-FILTERED set: `firstPage &&
+ * !hasNext` is read as "the counted set is complete". A caller that narrows an
+ * already-fetched page client-side must reintroduce a count scope first (see
+ * the git history of `countScope`).
+ */
 export interface ListOutcomeOptions {
 	/** Rows on the page about to be rendered. */
 	readonly count: number;
@@ -424,7 +428,7 @@ export interface ListOutcomeOptions {
 	/** Whether a page remains behind this one. */
 	readonly hasNext: boolean;
 	/** The service's exact count of the filtered set (INC-23), when it reports
-	 *  one and the caller has not narrowed the fetched page itself. Absent ⇒ the
+	 *  one. Absent ⇒ the
 	 *  count falls back to describing the page. See {@link rowCountLine}. */
 	readonly total?: number;
 	/** What qualifies a count the render cannot claim as the whole set. Absent ⇒
@@ -432,38 +436,6 @@ export interface ListOutcomeOptions {
 	 *  {@link ACCUMULATED_SUFFIX} instead, because its rows outlive the page they
 	 *  arrived on. */
 	readonly scopeSuffix?: string;
-	/**
-	 * WHAT `count` (and any `total`) DESCRIBE — a REQUIRED discriminant, not an
-	 * opt-in, so a caller that narrows a page after fetching it cannot forget to
-	 * say so and quietly inherit the larger, whole-set-capable default.
-	 *
-	 *  - `"service-filtered"` — every filter that produced `count` (and, when
-	 *    present, `total`) is a predicate the SERVICE applied to its query. The
-	 *    fetched page and the filtered set are the same collection, so
-	 *    `firstPage && !hasNext` really does mean the counted set is complete,
-	 *    and a `total` is honoured exactly as {@link rowCountLine} validates it.
-	 *  - `"narrowed-after-fetch"` — `count` was produced by narrowing an
-	 *    ALREADY-FETCHED page client-side. NO caller states this scope today:
-	 *    products' "Low stock only" was the one that did, and it is a service
-	 *    predicate now. The scope stays because the failure it prevents is one a
-	 *    caller commits SILENTLY — a screen that filters rows in the browser and
-	 *    says nothing gets the whole-set phrasing for free. Two things follow,
-	 *    and both are ENFORCED here rather than left to the caller to get right:
-	 *      1. `firstPage && !hasNext` is the FETCH being complete, not the
-	 *         narrowed set — the moment a query happens to fit on one page, or a
-	 *         scan exhausts every page, that would otherwise read as "the
-	 *         counted set is complete" and drop the qualifier off a count that
-	 *         has only ever described rows on screen. `complete` never goes true
-	 *         in this scope.
-	 *      2. A `total`, however it arrives, is NOT honoured: `listOutcome`
-	 *         drops it before it reaches {@link rowCountLine}. A caller whose
-	 *         narrowing did not actually apply to the page it is rendering must
-	 *         report `"service-filtered"` for that page — passing
-	 *         `"narrowed-after-fetch"` with a total present
-	 *         is exactly the caller error this refusal exists to survive, not a
-	 *         state this helper trusts a caller to avoid on its own.
-	 */
-	readonly countScope: "service-filtered" | "narrowed-after-fetch";
 	readonly noun: RowNoun;
 	/** Zero rows and NO filter on: the collection itself is empty. */
 	readonly empty: ZeroStateCopy;
@@ -479,20 +451,12 @@ export interface ListOutcomeOptions {
 }
 
 export function listOutcome(opts: ListOutcomeOptions): ListOutcome {
-	const narrowedAfterFetch = opts.countScope === "narrowed-after-fetch";
 	// THE ONE PLACE THE TOTAL IS DECIDED. Everything below reads this, including
 	// what is handed back to the caller for the page count — see {@link
 	// StatedTotal}.
-	const stated = narrowedAfterFetch ? undefined : statedTotal(opts.count, opts.total);
+	const stated = statedTotal(opts.count, opts.total);
 	const countLine = rowCountLine(opts.count, opts.noun, {
-		complete: opts.firstPage && !opts.hasNext && !narrowedAfterFetch,
-		// REFUSED, NOT MERELY UNCLAIMED: a `total` is dropped here whenever the
-		// scope says the page was narrowed after the fetch, even if the caller
-		// passed one — see `countScope`'s doc. This is what survives a caller
-		// mislabelling a page `narrowed-after-fetch` while a real `total` is
-		// present (a `filterUnavailable` page that forwards the service's own
-		// count): the mislabel would still be a bug, but it can no longer
-		// resurrect the whole-set phrasing this scope exists to withhold.
+		complete: opts.firstPage && !opts.hasNext,
 		...(stated !== undefined ? { total: stated } : {}),
 		...(opts.scopeSuffix !== undefined ? { scopeSuffix: opts.scopeSuffix } : {}),
 	});

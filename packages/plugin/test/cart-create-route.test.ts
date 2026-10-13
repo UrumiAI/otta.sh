@@ -127,4 +127,13 @@ describe("storefront/cart/create — replacing a spent cart", () => {
 			error: "INVALID_CURRENCY",
 		});
 	});
+
+	test("a currency-shaped code outside the currency table (XYZ) is refused INVALID_CURRENCY, on create and on replace", async () => {
+		expect(await create({ currency: "XYZ" })).toEqual({ ok: false, error: "INVALID_CURRENCY" });
+		const spent = await spentCart("unsupported-currency");
+		expect(await create({ replacesCartId: spent, currency: "XYZ" })).toEqual({
+			ok: false,
+			error: "INVALID_CURRENCY",
+		});
+	});
 });

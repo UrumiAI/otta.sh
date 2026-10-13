@@ -21,6 +21,7 @@
  * sanctioned money→string boundary) with branded `cents()`/`currency()` inputs,
  * so a float or a bad currency code throws at the parse rather than rendering.
  */
+import { allocateCents, cents as domainCents } from "@otta-sh/domain";
 import { formatMoney } from "../presentation/format-money.js";
 import { cents, currency } from "../presentation/money.js";
 import type { Currency } from "../presentation/money.js";
@@ -278,6 +279,67 @@ export function buildCheckoutLines(
 			qty: line.qty,
 			unitPrice: priced?.unitPrice ?? null,
 			lineTotal: priced?.lineTotal ?? null,
+		};
+	});
+}
+
+/**
+ * The review's lines shown with or without tax as the store's `displayCart` says
+ * (#423, WooCommerce's `tax_display_cart`) — from the QUOTE's own per-line tax,
+ * so the lines are taxed exactly as the totals are, at the same location.
+ *
+ * The lines always sum to the shown subtotal: the amount the subtotal row moves
+ * by (`shownAmounts`) is split across the lines by their tax (largest
+ * remainder), which is each line's own tax whenever there is no coupon. A unit
+ * price is its line's share over the quantity, rounded as the tax is (half down
+ * for prices entered with tax, half up otherwise) — exact at qty 1;
+ * like WooCommerce's cart, unit × qty may differ from the line by a cent.
+ *
+ * Unchanged — the very same rows — when tax is off or not calculated yet, when
+ * the display matches how prices were entered (every default store), when a line
+ * is unpriced, when the quote carries no per-line tax, or when it priced other
+ * lines than these (matched by line id and quantity, #478).
+ */
+export function showCheckoutLinesTax(
+	lines: CheckoutLineView[],
+	breakdown: QuoteBreakdownWire,
+	options: Pick<CheckoutTotalsOptions, "taxZoneSelected" | "locale">,
+): CheckoutLineView[] {
+	const tax = breakdown.tax?.enabled === true ? breakdown.tax : undefined;
+	if (tax === undefined || !(options.taxZoneSelected || tax.located)) return lines;
+	const incl = tax.displayCart === "incl";
+	if (incl === tax.pricesIncludeTax || tax.lineTaxes?.length !== lines.length) return lines;
+	if (lines.some((l) => l.unitPrice === null || l.lineTotal === null)) return lines;
+	// Each line's tax by its key (#478): a concurrent cart edit between this page's
+	// cart read and the quote's can reorder or swap lines. Any line the quote did
+	// not price as shown (another id or quantity) ⇒ the rows as they are.
+	const taxById = new Map(tax.lineTaxes.map((t) => [t.lineId, t]));
+	const lineTaxes: number[] = [];
+	for (const line of lines) {
+		const quoted = taxById.get(line.lineId);
+		if (quoted === undefined || quoted.qty !== line.qty) return lines;
+		lineTaxes.push(quoted.taxCents);
+	}
+	if (taxById.size !== lines.length) return lines;
+	const moved = Math.abs(shownAmounts(breakdown, tax).subtotal - breakdown.subtotalCents);
+	if (moved === 0) return lines;
+	const shares = allocateCents(domainCents<number>(moved), lineTaxes);
+	const sign = incl ? 1 : -1;
+	const code = currency(breakdown.currency);
+	return lines.map((line, i) => {
+		const share: number = shares[i] ?? 0;
+		const unit = line.unitPrice?.amount ?? 0;
+		const total = line.lineTotal?.amount ?? 0;
+		// share / qty, rounded as the tax itself is (`taxOn`): half DOWN for the tax
+		// inside a price entered with tax, half up otherwise — so one unit shows what
+		// the PDP and the cart page show. In integers.
+		const unitShare = tax.pricesIncludeTax
+			? Math.floor((2 * share + line.qty - 1) / (2 * line.qty))
+			: Math.floor((2 * share + line.qty) / (2 * line.qty));
+		return {
+			...line,
+			unitPrice: money(unit + sign * unitShare, code, options.locale),
+			lineTotal: money(total + sign * share, code, options.locale),
 		};
 	});
 }

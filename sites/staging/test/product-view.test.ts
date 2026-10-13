@@ -91,3 +91,10 @@ describe("the product page's spec ledger on a sale", () => {
 		expect(row).not.toContain("$20.00");
 	});
 });
+
+describe("the product page's price names the tax display when the merchant chose one (#423)", () => {
+	test("taxNote incl ⇒ “incl. tax” in the Price row; absent ⇒ nothing new", async () => {
+		expect(priceRow(await render(purchase({ taxNote: "incl" })))).toContain("incl. tax");
+		expect(priceRow(await render(purchase()))).not.toContain("tax");
+	});
+});

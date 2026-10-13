@@ -81,6 +81,10 @@ export {
 	type ProductsActionPayload,
 	type ProductsActionResult,
 } from "./admin/products-actions.js";
+// The title of the products read's "no such product" refusal — the one refusal
+// the site's orphan sweep treats as "product gone" (issue #447); every other
+// refusal stops the sweep.
+export { PRODUCT_NOT_FOUND_TITLE } from "@otta-sh/admin-presentation";
 // INC-D1 — the console's two interaction types and the products resource prefix,
 // exported so an OUT-OF-BROWSER caller can drive the admin route without
 // restating its wire strings. The staging quickstart seeder is the first: with
@@ -113,7 +117,12 @@ export {
 	TAX_PAGE,
 	type TaxPageInput,
 } from "./admin/tax-page.js";
-export { formatBpsAsPercent, parsePercentToBps } from "./admin/percent-input.js";
+export {
+	formatBpsAsPercent,
+	formatPpmAsPercent,
+	parsePercentToBps,
+	parsePercentToPpm,
+} from "./admin/percent-input.js";
 export {
 	createShippingPageHandler,
 	SHIPPING_ACTION_IDS,
@@ -159,8 +168,9 @@ export {
 } from "./admin/admin-rules-surface.js";
 export {
 	ALLOWED_HOSTS,
-	IN_PROCESS_EGRESS_URLS,
 	type InProcessEgressUrls,
+	normalizeExtraHost,
+	parseExtraAllowedHosts,
 	resolveAllowedHosts,
 	STRIPE_API_HOST,
 	OTTA_PLUGIN_CAPABILITIES,
@@ -225,6 +235,11 @@ export {
 // restating the key strings.
 export {
 	constantTimeEquals,
+	ENCRYPTED_PAYMENT_SECRET_KEYS,
+	PAYMENT_SECRET_SETTINGS_SCHEMA,
+	readSecret,
+	type SecretRead,
+	type SecretSettingFieldSpec,
 	type PaymentSecretKey,
 	type PaymentSecrets,
 	PAYMENT_SECRET_KEYS,
@@ -238,6 +253,16 @@ export {
 	WEBHOOK_EDGE_TOKEN_KEY,
 	webhookEdgeTokenFromKv,
 } from "./payment-secrets.js";
+// ADR-0037 — the one-time re-save of stored payment keys through EmDash's
+// encrypted settings path (run by the sweep's cron tick).
+export {
+	encryptStoredPaymentSecrets,
+	type EncryptPaymentSecretsOutcome,
+	PAYMENT_SECRETS_ENCRYPTED_MARKER_KEY,
+	PAYMENT_SECRETS_ENCRYPTED_MARKER_VALUE,
+	PAYMENT_SECRETS_ENCRYPTION_PROGRESS_KEY,
+	resetPaymentSecretEncryptionForTesting,
+} from "./encrypt-payment-secrets.js";
 // Email goes through the EmDash host's `ctx.email` (ADR-0031): the plugin's one
 // sender, exported so a suite or a site can build it directly.
 export {
@@ -444,6 +469,11 @@ export { STOREFRONT_LOCALE } from "./storefront/route-input.js";
 // site that builds the country picker and pre-checks a typed region code the
 // way the routes do. Membership is still the domain's call.
 export { COUNTRY_CODES, isCodeShapedRegion, REGION_CODE_PATTERN } from "@otta-sh/domain";
+// The rule that reads a typed or stored region as one of a country's codes, so
+// the site can pre-select a stored code in its state/province pick list (whose
+// names live in `@otta-sh/plugin/subdivisions`). The routes still validate
+// every region themselves.
+export { normalizeSubdivision } from "@otta-sh/domain";
 // The shopper-facing name of an order — its products, never its id. The site
 // names an order on its confirmation and account pages; the order emails name
 // it through the same function in the domain, so the site takes THAT one rather
@@ -506,12 +536,14 @@ export {
 export {
 	deriveDeleteIdempotencyKey,
 	derivePublishIdempotencyKey,
+	deriveRestoreIdempotencyKey,
 	deriveSaveIdempotencyKey,
 	deriveUnpublishIdempotencyKey,
 } from "./sync/derive-idempotency-key.js";
 export {
 	createAfterDeleteHandler,
 	createAfterPublishHandler,
+	createAfterRestoreHandler,
 	createAfterSaveHandler,
 	createAfterUnpublishHandler,
 	PRODUCTS_COLLECTION,
@@ -526,6 +558,7 @@ export type {
 	Element,
 	FieldWidgetConfig,
 	HttpAccess,
+	HttpResponse,
 	KvAccess,
 	PluginContext,
 	SandboxedPlugin,

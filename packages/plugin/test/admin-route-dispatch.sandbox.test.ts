@@ -138,6 +138,21 @@ describe("admin route dispatch (workerd sandbox)", () => {
 		expect(adminRoute?.public).toBe(false);
 	});
 
+	// The site's download-upload guard (`UPLOAD_MIN_ROLE` = the role level of
+	// `plugins:manage`) relies on the host applying its DEFAULT permission to this
+	// route. A `permission` declared here would replace that default, and the
+	// guard's threshold would silently stop matching what the route requires.
+	// That the host default IS `plugins:manage` is proven on the installed EmDash
+	// by `sites/staging/test/admin-route-permission.test.ts` (#478).
+	test("the admin route declares no `permission` of its own (the attach guard's role threshold relies on the host default)", () => {
+		const adminRoute = plugin.routes?.admin;
+		expect(adminRoute).toBeDefined();
+		if (typeof adminRoute === "function")
+			throw new Error("admin route registered as a bare handler, with no entry object");
+		expect(adminRoute).not.toHaveProperty("permission");
+		expect(Object.keys(adminRoute ?? {}).toSorted()).toEqual(["handler", "public"]);
+	});
+
 	test("page_load /reports renders the Reports blocks over real in-process order/inventory data", async () => {
 		const { storage } = await storageBridge();
 		await seedReportingFixtures(storage);

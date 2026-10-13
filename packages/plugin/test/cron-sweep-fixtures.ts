@@ -134,6 +134,8 @@ export interface FakeCms {
 	listEmpty: boolean;
 	/** Status per id, for a case that cares (default `published`). */
 	readonly status: Map<string, string>;
+	/** `updatedAt` per id, for a case that cares (default: absent). */
+	readonly updatedAt: Map<string, string>;
 	/** Every id read, in order. */
 	readonly reads: string[];
 	/** Called before each `get`, so a case can throw from inside the read. */
@@ -183,6 +185,7 @@ export function fakeCms(
 		listFailRate: 0,
 		random: Math.random,
 		status: new Map(Object.entries(spec.status ?? {})),
+		updatedAt: new Map(),
 		reads: [],
 		access(count) {
 			return {
@@ -204,6 +207,7 @@ export function fakeCms(
 						type: collection,
 						slug: id,
 						status: cms.status.get(id) ?? "published",
+						...(cms.updatedAt.has(id) ? { updatedAt: cms.updatedAt.get(id) } : {}),
 						data: { title: `CMS ${id}` },
 					};
 				},

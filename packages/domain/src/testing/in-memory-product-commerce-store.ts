@@ -14,6 +14,7 @@ import type {
 	ProductVariant,
 	ProductVariantSummary,
 	ProductVariantUpdateResult,
+	RestoreProductCommerceOptions,
 	UpdateProductCommerceFieldsInput,
 	UpdateProductVariantFieldsInput,
 	UpsertProductCommerceInput,
@@ -467,6 +468,8 @@ export class InMemoryProductCommerceStore implements ProductCommerceStore {
 				price: row.price,
 				title: row.title,
 				compareAtPrice: row.compareAtPrice,
+				taxClass: row.taxClass,
+				taxStatus: row.taxStatus,
 				// A join miss (`null`) is coarsely "not in stock", exactly like 0.
 				inStock: (this.#readOnHand(row.sku) ?? 0) > 0,
 				active: row.active,
@@ -547,6 +550,38 @@ export class InMemoryProductCommerceStore implements ProductCommerceStore {
 			idempotencyKey: key,
 			updatedAt: this.#clock.now(),
 		});
+	}
+
+	async restore(
+		productId: ProductId,
+		key: IdempotencyKey,
+		contentUpdatedAt: string,
+		options: RestoreProductCommerceOptions = {},
+	): Promise<void> {
+		const existing = this.#rows.get(productId);
+		if (existing === undefined || existing.deletedAt === null) return; // unknown or live: no-op.
+		// A stale restore (older than the delete) never undoes a newer delete —
+		// unless the CMS just confirmed the document is live.
+		if (options.documentConfirmed !== true && existing.deletedAt.toISOString() > contentUpdatedAt) {
+			return;
+		}
+		const s = existing.sku;
+		// The sku comes back only if no live product or variant took it meanwhile.
+		const keep = s !== null && !this.#skuTakenByLiveProduct(s) && !this.#skuTakenByLiveVariant(s);
+		this.#rows.set(productId, {
+			...existing,
+			sku: keep ? s : null,
+			deletedAt: null,
+			idempotencyKey: key,
+			updatedAt: this.#clock.now(),
+		});
+		// The draft's gate watermark: a publish older than the restore is stale. It
+		// never moves BACKWARDS, so a newer publish's watermark survives a late restore.
+		const applied = this.#activeWatermark.get(productId);
+		this.#activeWatermark.set(
+			productId,
+			applied !== undefined && applied > contentUpdatedAt ? applied : contentUpdatedAt,
+		);
 	}
 
 	// -- Admin Products console: view-only keyset list (admin-UX Increment 2) --

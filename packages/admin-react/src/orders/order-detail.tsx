@@ -50,6 +50,9 @@ import {
 	FULLY_REFUNDED_NOTE,
 	CANCEL_BANNER,
 	MARK_REFUNDED_CONFIRM,
+	DOWNLOADS_REVOKED_NOTE,
+	REVOKE_DOWNLOADS_CONFIRM,
+	REVOKE_DOWNLOADS_NOTE,
 	PENDING_CANCEL_EFFECTS,
 	ORDERS_BACK_LABEL,
 	ORDER_LINES_EMPTY,
@@ -1095,7 +1098,17 @@ export function OrderDetail({
 			formatAmount(order.totals.discountCents, totalsCur),
 		],
 		["Shipping", formatAmount(order.totals.shippingCents, totalsCur)],
-		["Tax", formatAmount(order.totals.taxCents, totalsCur)],
+		// Issue #422: one row per tax off the order's frozen snapshot — always
+		// itemized here, as WooCommerce's order screen is — else the single Tax row.
+		...(order.totals.taxRows !== undefined && order.totals.taxRows.length > 0
+			? order.totals.taxRows.map(
+					(row) => [row.label, formatAmount(row.amountCents, totalsCur)] as const,
+				)
+			: [["Tax", formatAmount(order.totals.taxCents, totalsCur)] as const]),
+		// #426: where that tax was charged, when the order recorded it.
+		...(order.totals.taxAddress !== undefined
+			? [["Tax location", taxLocationLabel(order.totals.taxAddress)] as const]
+			: []),
 		// ADR-0035's amendment: the total rounded to its currency's payment
 		// increment, SIGNED — only on an order that has a non-zero one.
 		...(rounding !== undefined && rounding !== 0
@@ -1384,8 +1397,10 @@ export function OrderDetail({
 								caption="Totals"
 								headers={["Line", <EndHeader label="Amount" />]}
 							>
-								{ladder.map(([label, amount]) => (
-									<tr key={label}>
+								{ladder.map(([label, amount], index) => (
+									// By position: a tax row's label is merchant text and may
+									// repeat another row's name.
+									<tr key={index}>
 										<td className="otta-td">{label}</td>
 										<td className="otta-td otta-num" style={endCellStyle}>
 											{amount}
@@ -1544,6 +1559,37 @@ export function OrderDetail({
 										});
 									}}
 								/>
+							</Group>
+						)}
+
+						{detail.downloads === "revoked" && (
+							<Group testId="detail-downloads" label="Downloads">
+								<p style={{ fontSize: 13, margin: 0 }} data-testid="downloads-revoked">
+									{DOWNLOADS_REVOKED_NOTE}
+								</p>
+							</Group>
+						)}
+						{detail.downloads === "open" && (
+							<Group testId="detail-downloads" label="Downloads">
+								<p style={{ fontSize: 13, margin: 0 }}>{REVOKE_DOWNLOADS_NOTE}</p>
+								<div>
+									<Button
+										testId="revoke-downloads"
+										label="Revoke download access"
+										danger
+										disabled={busy}
+										onClick={() => {
+											setPending({
+												actionId: "orders:revoke-downloads",
+												value: { orderId: order.id },
+												title: REVOKE_DOWNLOADS_CONFIRM.title,
+												text: REVOKE_DOWNLOADS_CONFIRM.text,
+												confirmLabel: REVOKE_DOWNLOADS_CONFIRM.confirm,
+												denyLabel: REVOKE_DOWNLOADS_CONFIRM.deny,
+											});
+										}}
+									/>
+								</div>
 							</Group>
 						)}
 
@@ -1993,4 +2039,17 @@ function FulfilmentForm({
 			</div>
 		</div>
 	);
+}
+
+/** #426: where an order's tax was charged, as the totals ladder states it —
+ *  `DE (buyer-declared)`, `GB (shop address)`, `US-CA (ship-to)`. */
+function taxLocationLabel(at: {
+	readonly basis: "billing" | "base" | "shipping";
+	readonly country: string;
+	readonly region: string | null;
+}): string {
+	const place = at.region === null ? at.country : `${at.country}-${at.region}`;
+	const how =
+		at.basis === "billing" ? "buyer-declared" : at.basis === "base" ? "shop address" : "ship-to";
+	return `${place} (${how})`;
 }

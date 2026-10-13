@@ -7,7 +7,7 @@
 import { STOREFRONT_CART_LINE_REMOVE_ROUTE, type CartLineRemoveRouteResult } from "@otta-sh/plugin";
 import type { APIRoute } from "astro";
 import {
-	clearCartCookie,
+	clearCartCookieIfBad,
 	currentCartId,
 	failureToken,
 	routeDispatcher,
@@ -47,7 +47,7 @@ export const POST: APIRoute = async (context) => {
 	if (isBusyResult(result)) return busyResponse("/cart");
 	if (result === null || !result.ok) {
 		const token = failureToken(result);
-		if (token === "CART_NOT_FOUND") clearCartCookie(context);
+		clearCartCookieIfBad(context, token);
 		return seeOther(context, "/cart", token);
 	}
 

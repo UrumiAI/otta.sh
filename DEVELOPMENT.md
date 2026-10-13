@@ -137,6 +137,9 @@ in-process leniency.
 - **pnpm** workspace + `catalog:` for shared version pins.
 - **tsdown** builds (ESM + DTS).
 - **vitest** for tests; **Playwright** for storefront e2e (`pnpm test:e2e`).
+  - **Node:** CI runs the major in `.nvmrc` (22). `pnpm test` refuses Node 26 or later, where
+    four tests fail (a URL-parser change, and better-sqlite3's handling of lone surrogates;
+    both test-only, see #478). **`OTTA_ANY_NODE=1`** runs the suite anyway.
   - **`OTTA_E2E_STRIPE_OFFLINE=1`** (issue #378) arms a dev-only offline Stripe gateway, so an
     e2e stack with no Stripe account can create orders. Orders get an unpayable `pi_<orderId>`
     handle and are paid only by a signed test webhook (`sites/staging/scripts/seed-e2e-orders.ts`,
@@ -144,6 +147,14 @@ in-process leniency.
     `astro build` refuses to run with it set. **Never expose such a dev server publicly:** with
     the published webhook secret anyone can mark orders paid, and EmDash's dev-bypass signs
     anyone in as admin. Bind it to loopback.
+  - **`EMDASH_ENCRYPTION_KEY` in `sites/staging/.env`** (gitignored) for any `astro dev` where
+    payment keys are saved in Settings — they are stored encrypted (ADR-0037), and without a
+    key every save is refused. Use a dev-only key (`npx emdash secrets generate`); a shell
+    `export` does not reach the dev Worker. The Playwright stack sets a throwaway one itself.
+    A local `astro build` copies `.env` values, including this key, into the gitignored
+    `dist/server/.dev.vars`; never ship or upload that file. Never set
+    `CLOUDFLARE_INCLUDE_PROCESS_ENV` outside the Playwright dev server: in a build it copies
+    the whole shell environment into that file.
 - **oxfmt** formatting — **tabs**, run regularly.
 - **oxlint** type-aware for linting; keep it clean.
 - **TypeScript:** strict, `noUncheckedIndexedAccess`, `noImplicitOverride`,

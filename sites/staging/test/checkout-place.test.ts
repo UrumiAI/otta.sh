@@ -982,6 +982,113 @@ describe("the coupon at place", () => {
 });
 
 /**
+ * #426: a cart that ships nothing, in a store taxing it where the buyer is. The
+ * review priced the buyer's location; the place form echoes it as hidden fields
+ * beside a `taxLocation=buyer` marker, and the order gets it as
+ * `billingLocation` — never as a ship-to.
+ */
+describe("the buyer's location at place (#426)", () => {
+	// The page's echo: the marker in the place form, and the location the review
+	// was priced for as the delivery block's fromCountry/fromRegion.
+	const BUYER = { ...VALID_FORM, taxLocation: "buyer" };
+
+	test("the priced location is sent as billingLocation, with no ship-to", async () => {
+		const { handler, calls } = makeHandler();
+		await PLACE_POST(
+			makeContext({ ...BUYER, fromCountry: "de", deliveryCountry: "DE" }, handler).context,
+		);
+		expect(calls[0]!.body["billingLocation"]).toEqual({ country: "DE" });
+		expect(calls[0]!.body).not.toHaveProperty("shippingAddress");
+
+		const withRegion = makeHandler();
+		await PLACE_POST(
+			makeContext(
+				{
+					...BUYER,
+					fromCountry: "US",
+					fromRegion: "CA",
+					deliveryCountry: "US",
+					deliveryRegion: "CA",
+				},
+				withRegion.handler,
+			).context,
+		);
+		expect(withRegion.calls[0]!.body["billingLocation"]).toEqual({ country: "US", region: "CA" });
+	});
+
+	test("no location priced yet, none picked ⇒ none sent (the shop's base address taxes, as on the review)", async () => {
+		const { handler, calls } = makeHandler();
+		await PLACE_POST(makeContext({ ...BUYER, fromCountry: "" }, handler).context);
+		expect(calls).toHaveLength(1);
+		expect(calls[0]!.body).not.toHaveProperty("billingLocation");
+	});
+
+	test("a country picked but not applied is re-priced, never placed at the old price", async () => {
+		const { handler, calls } = makeHandler();
+		const response = await PLACE_POST(
+			makeContext({ ...BUYER, fromCountry: "", deliveryCountry: "DE" }, handler).context,
+		);
+		expect(response.headers.get("location")).toBe("/checkout?country=DE");
+		expect(calls).toHaveLength(0);
+	});
+
+	test("review round 1 (#382 page, address typed, no location priced): a picked location still re-prices", async () => {
+		// The address block takes its own country here (no zoned echo), so the
+		// re-price must not depend on `addressMode=zoned`.
+		const { handler, calls } = makeHandler();
+		const response = await PLACE_POST(
+			makeContext(
+				{
+					...BUYER,
+					name: "A Buyer",
+					line1: "1 Hauptstr.",
+					city: "Berlin",
+					postalCode: "10115",
+					country: "DE",
+					fromCountry: "",
+					deliveryCountry: "DE",
+				},
+				handler,
+			).context,
+		);
+		expect(response.headers.get("location")).toBe("/checkout?country=DE");
+		expect(calls).toHaveLength(0);
+	});
+
+	test("a refusal keeps the priced location in the redirect", async () => {
+		const { handler } = makeHandler();
+		const response = await PLACE_POST(
+			makeContext({ ...BUYER, email: "nope", fromCountry: "DE", deliveryCountry: "DE" }, handler)
+				.context,
+		);
+		expect(response.headers.get("location")).toBe("/checkout?country=DE&error=INVALID_EMAIL");
+	});
+
+	test("#478: a forged Place with a refused location still selected is re-priced, never placed", async () => {
+		// The review offers no Place then (readyToPlace false); a POST anyway goes
+		// back to the review, which refuses the location again — nothing is placed.
+		const { handler, calls } = makeHandler();
+		const response = await PLACE_POST(
+			makeContext(
+				{ ...BUYER, fromCountry: "", deliveryCountry: "ES", deliveryRegion: "CN" },
+				handler,
+			).context,
+		);
+		expect(response.headers.get("location")).toBe("/checkout?country=ES&region=CN");
+		expect(calls).toHaveLength(0);
+	});
+
+	test("a delivery page (no marker) never sends one", async () => {
+		const { handler, calls } = makeHandler();
+		await PLACE_POST(
+			makeContext({ ...VALID_FORM, addressMode: "zoned", country: "US", region: "CA" }, handler)
+				.context,
+		);
+		expect(calls[0]!.body).not.toHaveProperty("billingLocation");
+	});
+});
+
+/**
  * #305 part 2 (ADR-0021): the delivery address at place, and the page it came
  * from. On a ZONED store's page the country/region are HIDDEN — the destination
  * the review priced — and only the typed fields decide all-or-nothing; on a
@@ -1063,8 +1170,14 @@ describe("the delivery address at place (ADR-0021)", () => {
 	});
 
 	test.each([
-		["SHIPPING_ZONE_NOT_MATCHED", "/checkout?coupon=C&error=SHIPPING_ZONE_NOT_MATCHED"],
-		["SHIPPING_REGION_CODE_REQUIRED", "/checkout?coupon=C&error=SHIPPING_REGION_CODE_REQUIRED"],
+		[
+			"SHIPPING_ZONE_NOT_MATCHED",
+			"/checkout?coupon=C&country=US&region=CA&error=SHIPPING_ZONE_NOT_MATCHED",
+		],
+		[
+			"SHIPPING_REGION_CODE_REQUIRED",
+			"/checkout?coupon=C&country=US&error=SHIPPING_REGION_CODE_REQUIRED",
+		],
 		[
 			"SHIPPING_METHOD_NOT_IN_ZONE",
 			"/checkout?coupon=C&country=US&region=CA&error=SHIPPING_METHOD_NOT_IN_ZONE",
@@ -1072,6 +1185,11 @@ describe("the delivery address at place (ADR-0021)", () => {
 		[
 			"MISSING_SHIPPING_ADDRESS",
 			"/checkout?coupon=C&country=US&region=CA&error=MISSING_SHIPPING_ADDRESS",
+		],
+		// A zoned order's incomplete street address keeps its state too.
+		[
+			"INVALID_SHIPPING_ADDRESS",
+			"/checkout?coupon=C&country=US&region=CA&error=INVALID_SHIPPING_ADDRESS",
 		],
 		["COUPON_NOT_FOUND", "/checkout?country=US&region=CA&method=m-1&error=COUPON_NOT_FOUND"],
 		[
@@ -1306,6 +1424,8 @@ describe("GET /checkout entry guard (§1.7)", () => {
 				lines: [],
 				totals: {} as never,
 				idempotencyKey: "checkout:cart-1",
+				storeCountry: null,
+				regionRequiredCountries: [],
 				hasUnpricedLines: false,
 				selection: { couponCode: null, shippingMethodId: null, destination: null },
 				selectionErrors: {},
@@ -1315,6 +1435,7 @@ describe("GET /checkout entry guard (§1.7)", () => {
 				paymentAccountNeedsAddress: false,
 				readyToPlace: true,
 				uncalculatedReason: "no_zones",
+				taxByBuyerLocation: false,
 				orderCreated: false,
 				order: null,
 			}),

@@ -24,6 +24,7 @@ import type {
 	PublicOrderView,
 } from "@otta-sh/plugin";
 import type { CountryOption } from "../lib/countries.js";
+import type { RegionChoice } from "../lib/regions.js";
 import type { TapeRow } from "../lib/tape.js";
 import type { SumRow } from "../lib/totals.js";
 import type { ThemeId } from "./manifest.js";
@@ -172,6 +173,9 @@ export interface ShopCard {
 	 */
 	was: string | null;
 	availability: AvailabilityToken | null;
+	/** Whether `price` includes tax (#423) — the view model's `price.taxNote`,
+	 *  present only when the merchant chose how shop prices show tax. */
+	taxNote?: "incl" | "excl";
 }
 
 export interface NoticeCopy {
@@ -213,6 +217,9 @@ export interface ProductPurchase {
 	 *  — off the view model's `compareAtPrice`, which is null unless it is above
 	 *  the price. A view strikes it beside `priceFormatted`. */
 	compareAtFormatted: string | null;
+	/** Whether the price includes tax (#423) — the view model's `price.taxNote`,
+	 *  present only when the merchant chose how shop prices show tax. */
+	taxNote?: "incl" | "excl";
 	/** Strike the price: not in stock (degraded is never "purchasable"). */
 	priceStruck: boolean;
 	availability: AvailabilityToken | null;
@@ -404,7 +411,51 @@ export interface CheckoutModel {
 	countryValue: string;
 	regionValue: string;
 	countries: readonly CountryOption[];
+	/** The destination was refused for its REGION (SHIPPING_REGION_CODE_REQUIRED,
+	 *  from the plugin or the site's shape check): mark the delivery region
+	 *  field invalid. False for a country-level refusal. */
+	regionRefused: boolean;
+	/** The destination was refused for its COUNTRY (not shipped to, not a
+	 *  country): mark the delivery country select invalid. */
+	countryRefused: boolean;
+	/** `destination.region` in words ("California"), or null — none, or no name. */
+	destinationRegionName: string | null;
+	/**
+	 * The delivery block's state/province PICK LIST: the subdivisions of
+	 * `countryValue`, `regionValue` preselected. Empty `options` ⇒ print the
+	 * field `hidden` (`data-region-field`). Print it as a
+	 * `<select name="deliveryRegion">` with a blank first option, and mark the
+	 * country select `data-region-target` for the optional script (ADR-0034).
+	 * REQUIRED beside it: the hidden `deliveryRegionCountry` =
+	 * `deliveryRegions.country` (`autocomplete="off"`,
+	 * `data-region-list-for="<the select's id>"`) — the country the list was
+	 * drawn for, so the server never prices a state code under another country
+	 * (CA is California and Cádiz). Pinned per theme by checkout-theme.test.ts.
+	 * A view that still prints a typed region input keeps working (the codes
+	 * are the same).
+	 */
+	deliveryRegions: RegionChoice;
+	/** The store needs a region for `deliveryRegions.country` (some zone lists
+	 *  one of its subdivisions; the plugin refuses a blank one): print the
+	 *  delivery select `required` with `aria-required="true"`. */
+	deliveryRegionRequired: boolean;
+	/** Every country the store needs a region for (`summary.regionRequiredCountries`),
+	 *  space-joined on the delivery select as `data-region-required`, so the
+	 *  optional script keeps `required` in step as the country changes. */
+	regionRequiredCountries: readonly string[];
+	/** The same for the address block's own country (a page without the
+	 *  delivery block): the subdivisions of `addressValues.country`. Offer an
+	 *  `intent=update-address` submit beside the country (`data-region-update`,
+	 *  hidden by the script). REQUIRED with it: the hidden `regionCountry` =
+	 *  `addressRegions.country` (`autocomplete="off"`, `data-region-list-for`),
+	 *  as for the delivery list. */
+	addressRegions: RegionChoice;
 	showDelivery: boolean;
+	/** #426: the "where" block asks where the BUYER is (a cart that ships
+	 *  nothing, taxed there), not where the order goes: no delivery options, an
+	 *  optional country, and the place form echoes it with `taxLocation=buyer`.
+	 *  Only ever true alongside `showDelivery`. */
+	buyerLocation: boolean;
 	showAddress: boolean;
 	/** The method the totals were priced with, stated beside the submit. */
 	chosenOption: { label: string; price: string } | null;

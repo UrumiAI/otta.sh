@@ -153,6 +153,57 @@ describe("bounded order expiry", () => {
 		expect(h.inventory.onHand("SKU-1")).toBe(5);
 	});
 
+	// #447 (from #415 item 3): a call that caught every order's failure used to
+	// answer like a healthy one, so a storage outage looked like "nothing to do".
+	// It now says `allFailed` when it attempted at least one order and every flip it
+	// attempted threw. One failure among successes is not that (see the test above:
+	// its result carries no flag), and neither is a call that attempted nothing.
+	test("a call where every attempted flip threw reports allFailed, and still backs each order off", async () => {
+		const error = vi.spyOn(console, "error").mockImplementation(() => {});
+		const orders = await pendingOrders(3);
+		vi.spyOn(h.orderStore, "expireWithOrder").mockRejectedValue(new Error("storage down"));
+		const backoff = new UnitBackoff();
+		expect(await expireOrdersBatch(h.expireDeps, undefined, { backoff })).toEqual({
+			count: 0,
+			drained: true,
+			allFailed: true,
+		});
+		expect(backoff.size).toBe(3);
+		expect(error).toHaveBeenCalledTimes(3);
+		// While they all wait, nothing is attempted: no flag.
+		expect(await expireOrdersBatch(h.expireDeps, undefined, { backoff })).toEqual({
+			count: 0,
+			drained: true,
+		});
+		expect(await expiredCount(orders)).toBe(0);
+	});
+
+	test("onFlipOutcome hears each attempted order: failed for a throw, not for an expiry or a lost guard (#478)", async () => {
+		vi.spyOn(console, "error").mockImplementation(() => {});
+		const orders = await pendingOrders(3);
+		const real = h.orderStore.expireWithOrder.bind(h.orderStore);
+		vi.spyOn(h.orderStore, "expireWithOrder").mockImplementation(async (id, now) => {
+			if (id === orders[0]?.id) throw new Error("poisoned order");
+			if (id === orders[1]?.id) return null;
+			return real(id, now);
+		});
+		const heard: Array<[string, boolean]> = [];
+		await expireOrdersBatch(h.expireDeps, undefined, {
+			onFlipOutcome: (id, failed) => heard.push([id, failed]),
+		});
+		expect(heard).toEqual([
+			[orders[0]?.id, true],
+			[orders[1]?.id, false],
+			[orders[2]?.id, false],
+		]);
+	});
+
+	test("a flip that loses its guard is not a failure: no allFailed", async () => {
+		await pendingOrders(1);
+		vi.spyOn(h.orderStore, "expireWithOrder").mockResolvedValue(null);
+		expect(await expireOrdersBatch(h.expireDeps)).toEqual({ count: 0, drained: true });
+	});
+
 	test("orders whose flip always fails cannot starve the orders behind them: they back off (review round 3, B I4)", async () => {
 		// Reviewer B's repro (S8): with a bite of 2 and two poisoned orders at the head
 		// of the list, every run spent its bite on them and the third order's stock
@@ -172,7 +223,9 @@ describe("bounded order expiry", () => {
 		for (let i = 0; i < 3; i++) {
 			runs.push(await expireOrdersBatch(h.expireDeps, undefined, { limit: 2, backoff }));
 		}
-		expect(runs[0]).toEqual({ count: 0, drained: false });
+		// Every order that run tried threw, so it says so (#447): the leg reports a
+		// failure instead of looking healthy.
+		expect(runs[0]).toEqual({ count: 0, drained: false, allFailed: true });
 		expect(runs[1]).toEqual({ count: 1, drained: true });
 		expect((await h.orderStore.getById(orders[2]?.id ?? ("" as never)))?.state).toBe("expired");
 		expect(h.inventory.onHand("SKU-3")).toBe(5);

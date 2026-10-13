@@ -20,7 +20,7 @@ import {
 import type { APIRoute } from "astro";
 import { getEmDashEntry } from "emdash";
 import {
-	clearCartCookie,
+	clearCartCookieIfBad,
 	ensureCartId,
 	failureToken,
 	PRODUCT_NOT_FOUND,
@@ -211,7 +211,7 @@ export const POST: APIRoute = async (context) => {
 		const token = failureToken(result);
 		// A stale cookie pointing at a vanished cart: drop it so the next
 		// add mints a fresh cart instead of failing forever.
-		if (token === "CART_NOT_FOUND") clearCartCookie(context);
+		clearCartCookieIfBad(context, token);
 		// One unit refused is a sold-out item: "try a smaller quantity" would send
 		// the shopper looking for a quantity below 1 (QA2 F). More than one keeps
 		// the quantity sentence, which is true either way.

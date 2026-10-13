@@ -149,6 +149,46 @@ describe("createRateTableCalculator (otta.rate-table)", () => {
 		);
 		expect((await calc(store)).lines.map((l) => l.label)).toEqual(["standard", "reduced"]);
 	});
+
+	describe("#478: a corrupt rateBps fails only the quotes that use its class", () => {
+		const zone = [
+			{ id: "a", taxClassId: "standard", rateBps: 1000, appliesToShipping: true },
+			{ id: "b", taxClassId: "zero", rateBps: 7.5, appliesToShipping: false },
+		];
+		const standardOnly = request().lines.slice(0, 1);
+
+		for (const roundAtSubtotal of [false, true]) {
+			for (const pricesIncludeTax of [false, true]) {
+				test(`a corrupt class not in the cart does not fail the quote (roundAtSubtotal ${roundAtSubtotal}, incl ${pricesIncludeTax})`, async () => {
+					const { store } = storeWith(zone);
+					const res = await createRateTableCalculator(store, { roundAtSubtotal }).calculate(
+						request({ lines: standardOnly, pricesIncludeTax }),
+					);
+					if (!res.ok) throw new Error("the built-in never refuses");
+					expect(res.lines.map((l) => l.taxCents)).toEqual([pricesIncludeTax ? 909 : 1000]);
+					expect(res.shipping?.taxCents).toBe(50);
+				});
+
+				test(`a line in that class still fails closed (roundAtSubtotal ${roundAtSubtotal}, incl ${pricesIncludeTax})`, async () => {
+					const { store } = storeWith(zone);
+					const zeroLine = { ...standardOnly[0]!, lineId: "1", taxClassId: "zero" };
+					await expect(
+						createRateTableCalculator(store, { roundAtSubtotal }).calculate(
+							request({ lines: [...standardOnly, zeroLine], pricesIncludeTax }),
+						),
+					).rejects.toThrow(RangeError);
+				});
+			}
+		}
+
+		test("shipping taxed at that class fails closed too", async () => {
+			const { store } = storeWith([
+				{ id: "a", taxClassId: "standard", rateBps: 1000, appliesToShipping: false },
+				{ id: "b", taxClassId: "zero", rateBps: -1, appliesToShipping: true },
+			]);
+			await expect(calc(store, request({ lines: standardOnly }))).rejects.toThrow(RangeError);
+		});
+	});
 });
 
 /**

@@ -39,6 +39,7 @@
  * Phase 5's session-cookie design, which makes the same now-disproven
  * assumption) — a candidate follow-up ADR, not resolved here.
  */
+import { isSupportedCurrency } from "@otta-sh/domain";
 import {
 	CART_LINE_MAX_QTY,
 	isBoundedProductId,
@@ -48,15 +49,17 @@ import {
 } from "../commerce/commerce-input.js";
 import { makeCommerceClient } from "../commerce/make-commerce-client.js";
 import type { CatalogProductCommerce } from "../catalog/commerce-view.js";
+import { PRICES_AS_ENTERED, priceDisplayOrEntered } from "../catalog/shop-display.js";
 import type {
 	CartFailureReason,
 	CartLineWire,
 	CartResult,
 	CartWire,
+	ShopPriceDisplayWire,
 } from "../product-commerce/commerce-client.js";
 import type { RouteHandler } from "../types.js";
 import { buildCartPricing, DEGRADED_CART_PRICING, type CartPricingWire } from "./cart-pricing.js";
-import { createCommerceLoader, renderGuard, type RenderGuardFailure } from "./pdp-route.js";
+import { commerceLoaderFor, renderGuard, type RenderGuardFailure } from "./pdp-route.js";
 import { sanitizeLocale } from "./route-input.js";
 
 // ── Public route names ──────────────────────────────────────────────────
@@ -243,8 +246,6 @@ function isOverCartQtyCap(value: number): boolean {
 	return value > CART_LINE_MAX_QTY;
 }
 
-const CURRENCY_PATTERN = /^[A-Z]{3}$/;
-
 /**
  * `POST /carts` proxy — mints a fresh anonymous cart and returns its id
  * plus the cookie descriptor the theme shim applies (see module doc).
@@ -253,7 +254,9 @@ export function createCartCreateRouteHandler(): RouteHandler<CartCreateRouteInpu
 	return (routeCtx, ctx): Promise<CartCreateRouteResult> =>
 		renderGuard(STOREFRONT_CART_CREATE_ROUTE, async () => {
 			const raw = routeCtx.input.currency;
-			if (raw !== undefined && (typeof raw !== "string" || !CURRENCY_PATTERN.test(raw))) {
+			// A code in the currency table, not merely three letters (#457): a cart
+			// in an unlisted code would carry it all the way to checkout.
+			if (raw !== undefined && (typeof raw !== "string" || !isSupportedCurrency(raw))) {
 				return { ok: false, error: "INVALID_CURRENCY" } as const;
 			}
 			const replaces = routeCtx.input.replacesCartId;
@@ -333,14 +336,19 @@ export function createCartReadRouteHandler(): RouteHandler<CartReadRouteInput> {
 				// cart, or a cart of only legacy bare-add lines) — same "zero
 				// inventory-only calls" discipline as PDP/PLP.
 				let commerceById = new Map<string, CatalogProductCommerce | null>();
+				let display: ShopPriceDisplayWire = PRICES_AS_ENTERED;
 				if (productIds.length > 0) {
-					const loader = await createCommerceLoader(ctx);
-					commerceById = await loader.loadMany(productIds);
+					// The lines' tax display (`displayCart`, #423) is read beside the
+					// batch; a failed read shows the lines as entered, never no prices.
+					[commerceById, display] = await Promise.all([
+						commerceLoaderFor(client).loadMany(productIds),
+						priceDisplayOrEntered(STOREFRONT_CART_READ_ROUTE, () => client.getCartPriceDisplay()),
+					]);
 				}
 				// buildCartPricing's cents() money-math can itself throw on
 				// malformed upstream data — kept INSIDE this try (not just
 				// loadMany) so that throw degrades pricing too, never RENDER_FAILED.
-				pricing = buildCartPricing(cart.lines, commerceById, cart.currency, locale);
+				pricing = buildCartPricing(cart.lines, commerceById, cart.currency, locale, display);
 			} catch (err) {
 				console.error(`[otta] ${STOREFRONT_CART_READ_ROUTE} pricing join failed:`, err);
 				pricing = DEGRADED_CART_PRICING;

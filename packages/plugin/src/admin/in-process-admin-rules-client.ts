@@ -99,7 +99,8 @@ import {
 	isCouponCodeConflictError,
 	isCouponIdCollisionError,
 	isTaxRateDuplicateError,
-	isSupportedCurrency,
+	bpsOfPpm,
+	PPM_PER_BPS,
 	parseCouponInstant,
 	parseZoneRegions,
 	type CouponListCursor,
@@ -123,7 +124,7 @@ import {
 	requireCurrencyCode,
 	requireIdToken,
 	requireNonNegativeInteger,
-	UNSUPPORTED_CURRENCY_REASON,
+	requireSupportedCurrency,
 } from "../commerce/commerce-input.js";
 import {
 	isShippingMethodIdCollisionError,
@@ -349,7 +350,7 @@ export class InProcessAdminRulesClient implements AdminRulesSurface {
 		input: ShippingRateInput,
 	): Promise<RulesCreateResult<ShippingRateWire>> {
 		requireIdToken("methodId", methodId);
-		requireAuthoredCurrency("currency", input.currency);
+		requireSupportedCurrency("currency", input.currency);
 		requireNonNegativeInteger("amountCents", input.amountCents);
 		const min = input.minSubtotalCents;
 		if (min !== undefined && min !== null) {
@@ -503,6 +504,7 @@ export class InProcessAdminRulesClient implements AdminRulesSurface {
 		requireIdToken("taxClassId", input.taxClassId);
 		requireIdToken("zoneId", input.zoneId);
 		requireBps("rateBps", input.rateBps, MAX_TAX_RATE_BPS);
+		const ratePpm = optionalRatePpm("ratePpm", input.ratePpm, input.rateBps, MAX_TAX_RATE_BPS);
 		await this.#pinTaxSettings();
 		return createOrRefuse(async () =>
 			toTaxRateWire(
@@ -511,6 +513,7 @@ export class InProcessAdminRulesClient implements AdminRulesSurface {
 					taxClassId: input.taxClassId,
 					zoneId: input.zoneId,
 					rateBps: input.rateBps,
+					...ratePpm,
 					// The CREATE's optional-default-false is deliberate and unlike the edit's
 					// required key: there is no prior value to clobber at creation.
 					appliesToShipping: input.appliesToShipping ?? false,
@@ -529,7 +532,13 @@ export class InProcessAdminRulesClient implements AdminRulesSurface {
 	): Promise<RulesCasUpdateResult<TaxRateWire>> {
 		requireIdToken("rateId", rateId);
 		requireBps("rateBps", edit.rateBps, MAX_TAX_RATE_BPS);
+		const ratePpm = optionalRatePpm("ratePpm", edit.ratePpm, edit.rateBps, MAX_TAX_RATE_BPS);
 		requireBps("expectedRateBps", edit.expectedRateBps);
+		const expectedRatePpm = optionalRatePpm(
+			"expectedRatePpm",
+			edit.expectedRatePpm,
+			edit.expectedRateBps,
+		);
 		requireFullReplaceKey("appliesToShipping", edit);
 		if (typeof edit.appliesToShipping !== "boolean") {
 			throw new CommerceInputError("appliesToShipping", "must be a boolean");
@@ -540,8 +549,12 @@ export class InProcessAdminRulesClient implements AdminRulesSurface {
 		}
 		const res = await this.#stores.taxRules.updateRate(
 			rateId,
-			{ rateBps: edit.rateBps, appliesToShipping: edit.appliesToShipping },
-			{ rateBps: edit.expectedRateBps, appliesToShipping: edit.expectedAppliesToShipping },
+			{ rateBps: edit.rateBps, ...ratePpm, appliesToShipping: edit.appliesToShipping },
+			{
+				rateBps: edit.expectedRateBps,
+				...expectedRatePpm,
+				appliesToShipping: edit.expectedAppliesToShipping,
+			},
 		);
 		if (res.ok) return { ok: true, value: toTaxRateWire(res.rate) };
 		if (res.reason === "not_found") return { ok: false, reason: "not_found" };
@@ -768,7 +781,7 @@ export class InProcessAdminRulesClient implements AdminRulesSurface {
 		const startsAt = optionalInstantText("startsAt", input.startsAt);
 		const expiresAt = optionalInstantText("expiresAt", input.expiresAt);
 		if (input.currency !== undefined && input.currency !== null) {
-			requireAuthoredCurrency("currency", input.currency);
+			requireSupportedCurrency("currency", input.currency);
 		}
 		// A percentage coupon's cap and minimum spend are AMOUNTS: in the coupon's
 		// currency's minor unit, so one is required with either (the coupon then
@@ -860,7 +873,7 @@ export class InProcessAdminRulesClient implements AdminRulesSurface {
 			if (existing.currency !== null) {
 				if (sent !== existing.currency) return { ok: false, reason: "error", status: 409 };
 			} else if (sent !== null) {
-				requireAuthoredCurrency("currency", sent);
+				requireSupportedCurrency("currency", sent);
 				if (hadBounds) {
 					// Binding would re-read a cap / minimum written in hundredths.
 					throw new CommerceInputError("currency", COUPON_CURRENCY_REFUSAL.legacyBounds);
@@ -1032,6 +1045,7 @@ function toTaxRateWire(rate: TaxRate): TaxRateWire {
 		taxClassId: rate.taxClassId,
 		zoneId: rate.zoneId,
 		rateBps: rate.rateBps,
+		...(rate.ratePpm === undefined ? {} : { ratePpm: rate.ratePpm }),
 		appliesToShipping: rate.appliesToShipping,
 	};
 }
@@ -1118,7 +1132,15 @@ export async function createOrRefuse<T>(write: () => Promise<T>): Promise<RulesC
 			return {
 				ok: false,
 				status: CREATE_CONFLICT,
-				duplicateTaxRate: { id: err.existingRateId, rateBps: err.existingRateBps },
+				duplicateTaxRate: {
+					id: err.existingRateId,
+					rateBps: err.existingRateBps,
+					// The exact rate only when finer than a basis point (#425); an error
+					// from across a bridge may not carry it.
+					...(typeof err.existingRatePpm === "number" && err.existingRatePpm % PPM_PER_BPS !== 0
+						? { ratePpm: err.existingRatePpm }
+						: {}),
+				},
 			};
 		}
 		if (
@@ -1159,21 +1181,6 @@ function requireFullReplaceKey(field: string, edit: object): void {
 	}
 }
 
-/**
- * A currency a merchant AUTHORS (a new rate's, a new coupon's): the shape, then
- * membership of the store's currency table (`@otta-sh/domain`'s
- * `isSupportedCurrency` — the currencies whose minor unit every money boundary
- * knows). Create paths only — reads and edits name a currency that already
- * exists, and refusing a stored code on read would strand a row written before
- * this rule.
- */
-function requireAuthoredCurrency(field: string, value: string): void {
-	requireCurrencyCode(field, value);
-	if (!isSupportedCurrency(value)) {
-		throw new CommerceInputError(field, UNSUPPORTED_CURRENCY_REASON);
-	}
-}
-
 function requireShippingMethodType(value: string): ShippingMethodType {
 	if (!SHIPPING_METHOD_TYPES.includes(value as ShippingMethodType)) {
 		throw new CommerceInputError("type", "must be flat_rate or free_shipping");
@@ -1201,6 +1208,33 @@ function requireBps(field: string, value: number, max: number = MAX_BPS): number
 function optionalNonNegative(field: string, value: number | null | undefined): number | null {
 	if (value === undefined || value === null) return null;
 	return requireNonNegativeInteger(field, value);
+}
+
+/**
+ * A tax rate's optional exact value in millionths (#425): absent ⇒ `{}` (the rate
+ * is exactly `rateBps`); present ⇒ an integer whose half-up rounding IS `rateBps`
+ * and within `maxBps` (in millionths), spread into the store
+ * call as `{ ratePpm }`.
+ */
+function optionalRatePpm(
+	field: string,
+	value: number | undefined,
+	rateBps: number,
+	maxBps: number = MAX_BPS,
+): { ratePpm?: number } {
+	if (value === undefined) return {};
+	if (
+		!Number.isSafeInteger(value) ||
+		value < 0 ||
+		value > maxBps * PPM_PER_BPS ||
+		bpsOfPpm(value) !== rateBps
+	) {
+		throw new CommerceInputError(
+			field,
+			`must be an integer between 0 and ${String(maxBps * PPM_PER_BPS)} that rounds half up to the rate in basis points`,
+		);
+	}
+	return { ratePpm: value };
 }
 
 function optionalBps(field: string, value: number | null | undefined): number | null {

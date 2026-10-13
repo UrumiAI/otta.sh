@@ -1,6 +1,7 @@
 # 0012. The storefront checkout loads Stripe Elements in the buyer's browser
 
 - Status: accepted
+- **Superseded in part by [ADR-0034](./0034-checkout-region-list-progressive-enhancement.md)** (2026-10-09): decision 2's fence gains a third and last exception — one external, first-party script on `/checkout` that swaps the state/province list.
 - Date: 2026-07-27
 - Amended: 2026-07-28 — decision 2's fence widened by exactly one component; see
   "Amendment (2026-07-28)" under Decision; clarified 2026-09-30 (HoldClock rename).
@@ -135,6 +136,12 @@ fetched and called **by the buyer's browser**, which never passes through the pl
 `js.stripe.com` there would be both useless and a real widening of the gate ADR-0006 exists to
 keep at exactly one host. A test asserts `js.stripe.com`'s **absence** from `ALLOWED_HOSTS`,
 so a future "we talk to Stripe now, so add it" edit fails loudly.
+(Addendum: the plugin's own fixed egress is still exactly one host, `api.stripe.com`.
+Separately, an operator may grant extra plugin egress hosts at build time via
+`OTTA_EXTRA_ALLOWED_HOSTS`; that is an operator decision per deployment, not plugin egress
+this ADR adds. `js.stripe.com`, and every Stripe host other than `api.stripe.com`, is
+refused there: listing it fails the build. That refusal, like the rest of that variable's
+checks, is a build-time sanity check, not SSRF protection; see DEPLOYMENT.md §4.)
 
 **4. The publishable key is a build-time bake, and the variable is `STRIPE_PUBLIC_KEY`.**
 It is read at build time by `sites/staging/astro.config.ts` (shell env → `sites/staging/.env`

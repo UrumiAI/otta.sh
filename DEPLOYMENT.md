@@ -54,7 +54,9 @@ Three rules hold. Everything else in this guide is a consequence of them.
   `EMDASH_ENCRYPTION_KEY` and `OTTA_WH_TOKEN`. Every payment **credential** is
   provisioned by the operator in the admin console's **Settings** page and held in
   **write-only plugin `kv`** under `settings:*` — persisted only on a non-empty submit,
-  never rendered back into a block, read through a fail-closed reader. Nothing
+  never rendered back into a block, read through a fail-closed reader. The Stripe secret
+  key, the Stripe webhook signing secret and the webhook edge token are **encrypted at
+  rest** with `EMDASH_ENCRYPTION_KEY` (ADR-0037). Nothing
   secret-shaped ever goes in a tracked `wrangler.jsonc` (pinned by the site's config tests,
   which reject any `vars` key matching `/SECRET|KEY|TOKEN|PASSWORD/i`).
 
@@ -130,8 +132,11 @@ expired holds and queued emails drain at the Free pace (§5).
    > show yet does not close access by itself:
    > - **A refund made in the Stripe dashboard:** start the same refund in Money → Refunds
    >   (Otta checks with Stripe, issues nothing and flags the order), then use **Mark refunded**.
-   > - **A chargeback:** Otta does not act on disputes, and Mark refunded is refused while the
-   >   payment shows as captured, so the console cannot close access for it today.
+   > - **A chargeback or dispute:** Otta does not act on disputes, and Mark refunded is refused
+   >   while the payment shows as captured. Close access by hand: the order's Fulfilment tab →
+   >   Downloads → **Revoke download access** (offered on a paid order only). It moves no money,
+   >   changes no order state and can't be undone; History records who did it, and the order
+   >   then shows "Download access was revoked".
    > - **A cancellation whose refund timed out** ("refund status unknown"): the order stays
    >   uncancelled until you confirm that refund in Money → Refunds, which finishes the
    >   cancellation and closes access.
@@ -141,16 +146,18 @@ expired holds and queued emails drain at the Free pace (§5).
    > **A file is replaced, never removed.** Past buyers keep access, so a product with a
    > download file stays Digital: the editor disables the Physical choice and says why.
    >
-   > **Replaced files are not deleted.** Replacing a file uploads a new object and points the
-   > product at it; every buyer's link serves the new file from then on. The old object stays
-   > in the bucket, because deleting it could cut off a download already in progress, and an
-   > upload whose save never happened (a closed tab) stays too. They cost storage, never access:
-   > nothing serves a key the product does not name. To tidy up, open the bucket in the
-   > Cloudflare dashboard (R2 → the bucket → Objects, filtered by the prefix
-   > `dl/<productId>/`; wrangler has no `object list`), compare with the current key — the
-   > product's Download file card shows it under the file's name — and remove the rest there or
-   > with `wrangler r2 object delete your-downloads-bucket/<key> --remote`. Each object's metadata
-   > records the product, the original filename and who uploaded it.
+   > **Unused files are cleared after a week.** Replacing a file uploads a new object and points
+   > the product at it; every buyer's link serves the new file from then on. The old object
+   > stays for now, and so does an upload whose save never happened (a closed tab). Once an
+   > hour the site's cron deletes such objects (at most 100 a run) once they are over a week old
+   > and the product's current file is too, so no download in progress loses its file. It never
+   > deletes the file a product names, a key the upload endpoint did not mint, or anything
+   > under a product the store cannot find; it reads each product through the plugin and stops
+   > for the hour if that read fails. So that a file it may delete can never be attached,
+   > saving an upload more than six days old is refused: upload the file again. Each object's
+   > metadata records the product, the original filename and who uploaded it. Files of a
+   > product the store no longer has are never reclaimed by the sweep; remove those by hand
+   > (`wrangler r2 object delete your-downloads-bucket/<key> --remote`).
 
 2. **Fill in the local config.** Copy `sites/staging/wrangler.jsonc` (also a template) to
    `wrangler.local.jsonc` (gitignored) and set your Worker `name` (over `my-otta-store`),
@@ -180,6 +187,8 @@ expired holds and queued emails drain at the Free pace (§5).
    ```bash
    pnpm --filter @otta-sh/site-staging build
    ```
+
+   The build does not type-check. If you changed code, run `pnpm typecheck` first.
 
 5. **Deploy plain — never `--config` here** (from `sites/staging`):
 
@@ -313,9 +322,70 @@ order of appearance in a deployment's life:
 | Stripe secret key | admin Settings (`settings:stripeSecretKey`) | for Stripe payments — **together with the webhook secret** (see below) | before enabling Stripe |
 | Email provider (from-address, SPF, DKIM, its own key) | an **EmDash email provider plugin**, selected in EmDash Settings > Email — not otta | optional | when wiring real email |
 
-- **`EMDASH_ENCRYPTION_KEY`** — generate with `npx emdash secrets generate`; never committed,
-  never echoed into logs; **back it up in a password manager** (it protects the CMS's
-  encrypted data — losing it strands that data).
+- **`EMDASH_ENCRYPTION_KEY`** — **required.** Generate with `npx emdash secrets generate`;
+  never committed, never echoed into logs; **back it up in a password manager**. EmDash
+  encrypts plugin settings declared `secret` with it (AES-GCM), and Otta declares three: the
+  Stripe secret key, the Stripe webhook signing secret and the webhook edge token
+  (`settings:otta-wh-token`) (ADR-0037). The site's Otta
+  descriptor must keep its `settingsSchema` for that to happen. Other plugin settings, the
+  email keys and order data are **not** encrypted with it.
+  - **Enter these keys on Otta's Settings page only.** Declaring them makes EmDash also show
+    a Settings gear for the plugin under Plugins; its form stores whatever is typed, without
+    Otta's checks. Otta checks every stored key's shape when it reads it: an empty or
+    malformed value is never used (payments refuse, the webhook route answers 503) and
+    Otta's Settings page shows "saved, but not valid" until it is entered again there.
+  - **Where it is read:** EmDash reads it from `process.env`. On Workers that is the Worker
+    secret (`nodejs_compat` populates `process.env`). **Local development (`astro dev`):**
+    put `EMDASH_ENCRYPTION_KEY=<key>` in `sites/staging/.env` (gitignored; generate a
+    separate dev key). Exporting it in the shell does **not** work: the dev Worker runs in
+    workerd, which does not inherit the shell environment. (A `.dev.vars` file would also be
+    read, but it is not gitignored in this repo — use `.env`.) The Playwright stack and CI's
+    e2e job use a throwaway test key (`playwright.config.ts`).
+  - **Missing:** saving any of those three keys fails, and a key already saved encrypted
+    cannot be read. Payments then refuse as "not configured", the webhook route answers
+    503 (Stripe retries it), and Settings shows the key as "saved, but cannot be read".
+    Nothing falls back to an unencrypted copy.
+  - **Lost:** the three keys cannot be recovered. Set a new key, then enter each key again in
+    Settings (or remove it there).
+  - **Rotating:** put the new key first and keep the old one after it, comma-separated
+    (`EMDASH_ENCRYPTION_KEY=<new>,<old>`). New saves use the new key; both still decrypt.
+    Keep the old key listed until all three keys have been entered again in Settings (they
+    are write-only, so each must be copied again from Stripe or its provider), then drop
+    it. Or delete the re-save marker (below) and redeploy: the first cron tick re-saves all
+    three under the new key. Keep the old key listed until the log shows `payment keys
+    re-saved through the settings layer` after that redeploy; then drop it and check that each
+    key still reads "— set" in Settings (if one does not, list the old key again). A rotation
+    alone never triggers the re-save.
+  - **Deleting the re-save marker** makes the next new isolate re-save every stored key under
+    the current key. It is one kv row, `state:paymentSecretsEncrypted`; deleting it loses
+    nothing. Trusted mode (the default):
+    `wrangler d1 execute YOUR-D1-DATABASE-NAME --remote --config wrangler.local.jsonc --command "DELETE FROM options WHERE name = 'plugin:otta:state:paymentSecretsEncrypted'"`.
+    A sandboxed deployment keeps it in `_plugin_storage` instead:
+    `... --command "DELETE FROM _plugin_storage WHERE plugin_id = 'otta' AND collection = '__kv' AND id = 'state:paymentSecretsEncrypted'"`.
+    Then redeploy so a new isolate runs it.
+  - **Upgrading a site that already has these keys saved:** the first cron tick after the
+    deploy re-saves them encrypted (it needs the key set; until then it retries and
+    logs one warning naming `EMDASH_ENCRYPTION_KEY`). It first reads every key and changes
+    nothing if any cannot be read, so a wrong key cannot strand a working one — but if every
+    key is still unencrypted, whichever key is set at that tick is the key they are saved
+    under, so set the right one before deploying. It logs counts only (stored x402 keys are
+    deleted by x402's own one-time purge, not by this run). Earlier backups and D1 Time Travel
+    history still hold the earlier copies until they age out, so rotate a live Stripe key
+    after the upgrade.
+  - **After every deploy (required check):** open Otta's Settings and confirm that every
+    payment secret you use (Stripe secret key, webhook signing secret, `OTTA_WH_TOKEN`) reads
+    "— set". Re-enter any that says "saved, but not valid" or "saved, but cannot be read" —
+    keys saved before 2026-10-02 or through EmDash's settings gear can read as not valid.
+    While the webhook secret or `OTTA_WH_TOKEN` reads "saved, but not valid" or "saved, but
+    cannot be read", every Stripe webhook answers 503 (an unset token is not checked).
+  - **A custom site** must declare the schema (`PAYMENT_SECRET_SETTINGS_SCHEMA` in its
+    descriptor `settingsSchema`) before upgrading. If it was added later, enter the three
+    keys again in Settings, or delete the re-save marker (above) so the re-save runs again.
+  - **Rolling back:** after the re-save, a build without the `settingsSchema` cannot
+    read the three encrypted values, so Stripe payments and webhooks stop until you roll
+    forward or enter the keys again. Nothing is lost. Keys entered while the old build runs
+    are stored plain; after rolling forward, the first cron tick encrypts each of them again
+    (the marker records which revisions it encrypted).
 
 > **The Stripe webhook endpoint is public by design, and permanently site-owned.**
 > Stripe delivers to `POST /webhooks/stripe` on the site (`sites/staging/src/pages/webhooks/stripe.ts`)
@@ -337,7 +407,9 @@ order of appearance in a deployment's life:
 > opens a store. Provision the same value on both halves — `wrangler secret put
 > OTTA_WH_TOKEN` on the site and the matching field in admin Settings. Unset on the plugin
 > side, the gate **passes through** (degrading to "cryptographic anchor only", never to
-> "nothing works" and never to "nothing is checked"); set on the plugin side but unset on
+> "nothing works" and never to "nothing is checked"); saved on the plugin side but
+> unreadable (no usable `EMDASH_ENCRYPTION_KEY`), the route answers **503** and Stripe
+> retries — the gate never opens because a read failed; set on the plugin side but unset on
 > the site, **every delivery 401s** — that is the dangerous direction, and the reason the
 > endpoint replays the 401 into Stripe's dashboard rather than swallowing it.
 
@@ -513,11 +585,49 @@ allowlist (capability `network:request`). That allowlist is resolved at **build*
 | Host | When |
 |---|---|
 | `api.stripe.com` | always |
+| each host in `OTTA_EXTRA_ALLOWED_HOSTS` | when set (see below) |
 
 No email host: email is not plugin egress. It goes through the host's `ctx.email`
 (capability `email:send`, [ADR-0031](./adr/0031-email-through-emdash-host.md)), and the
-EmDash email provider makes its own requests under its own allowlist. No other host is
-deployment-supplied, so there is no egress URL to set at build time.
+EmDash email provider makes its own requests under its own allowlist. The only
+deployment-supplied hosts are the operator extras below.
+
+**Extra hosts: `OTTA_EXTRA_ALLOWED_HOSTS`.** A comma-separated list of hostnames to add to
+the allowlist, read from the shell env, then `sites/staging/.env`, at
+**build** time, e.g. `OTTA_EXTRA_ALLOWED_HOSTS=api.example.com,hooks.example.org`.
+Nothing in Otta calls an extra host today: the plugin's own `ctx.http` calls go to
+`api.stripe.com` only. The variable is for a deployment that adds code calling out through
+the plugin's `ctx.http` (a fork or a later integration); leave it unset otherwise.
+Entries are trimmed and lowercased, empty entries are dropped, duplicates collapse, and
+the order is stable (Stripe, then extras as given). Each entry must be a public DNS hostname:
+letters, digits and hyphens in dot-separated labels, with at least one dot. These **fail the
+build** with an error naming every refused entry, so a typo is loud rather than silently
+ungranted:
+
+- a wildcard (`*`, `*.example.com`), or anything with a scheme, port, path or userinfo;
+- an IPv4 literal (including hex forms such as `0x7f.0.0.1`) or an IPv6 literal;
+- a single-label name (`localhost`, `intranet`);
+- `localhost`, `local`, `internal`, `localdomain`, `home.arpa` and `lan`, and any name
+  under them (`app.localhost`, `printer.local`, `metadata.google.internal`,
+  `localhost.localdomain`, `nas.lan`);
+- the wildcard-IP DNS services `nip.io`, `sslip.io` and `xip.io` and any name under them
+  (`127.0.0.1.nip.io`), and the loopback names `localtest.me` and `lvh.me` and any name
+  under them (`app.lvh.me` resolves to 127.0.0.1);
+- any Stripe host other than `api.stripe.com`, above all `js.stripe.com`, which is loaded
+  by the buyer's browser and is never plugin egress
+  ([ADR-0012](./adr/0012-storefront-checkout-loads-stripe-elements-in-the-browser.md) §3).
+  Listing `api.stripe.com` itself is a harmless no-op: it is always granted.
+
+This is a **build-time sanity check against obvious mistakes, not SSRF protection**: any
+public name can resolve to a private address. The capability stays `network:request`
+(never `network:request:unrestricted`), and the runtime protection is EmDash's egress
+check, which validates the resolved IP and blocks private, loopback and metadata addresses
+whatever is listed here (the Worker deliberately runs without
+`global_fetch_strictly_public`, §2.4). Listing a host means
+trusting its DNS: EmDash validates the resolved IP and `fetch` then resolves again (a
+DNS-rebinding window), and no platform flag backs this up. Allowlisted hosts, extras
+included, also become allowed image sources in the plugin admin UI (EmDash behaviour for
+`network:request`, already true for Stripe).
 
 Stripe traffic goes through the same gate: `@otta-sh/payments-stripe` would default its
 transport to `globalThis.fetch`, but the plugin constructs the live gateway with
@@ -526,10 +636,10 @@ so the allowlist is the perimeter for `api.stripe.com` too. This
 closes the caveat recorded in
 [ADR-0020](./adr/0020-one-deployable-plugin-owns-commerce-truth.md) §2.
 
-It is a third-party host on the public internet. The Worker runs without
+All of these are third-party hosts on the public internet. The Worker runs without
 `global_fetch_strictly_public` (§2.4), so a URL on the site's **own** Cloudflare zone would
 reach that zone's origin directly, skipping its Workers routes and security settings — keep
-any egress host off the site's zone.
+every allowlisted host (each `OTTA_EXTRA_ALLOWED_HOSTS` entry) off the site's zone.
 
 Because it is build-time, adding a host means a rebuild and redeploy — a Settings edit
 alone cannot widen it. That is deliberate: the allowlist is the perimeter, and an operator
@@ -821,6 +931,7 @@ reviewed tip, so a new one fails CI first).
 | A ~5 s stall on a new isolate's first request, an occasional 500 on a write, and `[emdash] A D1 session query hung …` in the logs | `global_fetch_strictly_public` + D1 `session` both on (emdash #1273). The build refuses this pair, so check what was deployed: remove the flag (§2.4, "Upgrading an existing deployment"), rebuild, redeploy |
 | `/products` empty right after deploy | Healthy (§1) — sample content lands via the wizard checkbox, not first boot |
 | `POST /webhooks/stripe` reports `NOT_CONFIGURED` | The Stripe webhook signing secret is unset — provision it in admin Settings (§3) |
+| Every Stripe delivery answers 503 after a deploy | The webhook signing secret or `OTTA_WH_TOKEN` reads "saved, but not valid" or "saved, but cannot be read" in Otta's Settings — re-enter it there; for "cannot be read", first check `EMDASH_ENCRYPTION_KEY` (§3) |
 | Every Stripe delivery 401s | `OTTA_WH_TOKEN` set on the plugin side but not on the site (or the values differ) — §3 |
 | An expired order is flagged `late payment … needs checking (…) — verify in Stripe` | A buyer paid after expiry and the automatic refund's outcome is unknown — most often a refund create that hit the settle path's 3 s timeout (the price of answering Stripe inside its delivery window: a timed-out create may still have been processed, so it is held `unverified` rather than retried blind) — or Stripe already shows it refunded, or the retries gave up after ~3 days. Check the PaymentIntent in Stripe before refunding again, then resolve the flag in the admin console |
 | An expired order is flagged `late payment … automatic refund failed (…) — refund it manually` | Stripe definitively refused the automatic refund (or it would exceed the order total). Refund in Stripe or the admin console, then resolve the flag |

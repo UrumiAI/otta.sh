@@ -39,7 +39,7 @@ jobs:
       - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: "22"
+          node-version-file: .nvmrc
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       # Domain purity is a CI gate (dependency-cruiser domain-is-io-free).
@@ -78,7 +78,7 @@ jobs:
       - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: "22"
+          node-version-file: .nvmrc
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       # Scoped to the files that actually touch Postgres (scripts/pg-test-files.sh) —
@@ -118,7 +118,7 @@ jobs:
       - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: "22"
+          node-version-file: .nvmrc
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm test:d1
@@ -153,12 +153,16 @@ jobs:
       OTTA_E2E_START_STACK: "1"
       OTTA_E2E_REQUIRE_SITE: "1"
       OTTA_E2E_SEED: "1"
+      # ADR-0037: a THROWAWAY encryption key for this job's disposable dev stack
+      # (the seed saves a webhook secret, which EmDash stores encrypted). Same
+      # value as playwright.config.ts's default; never a real site's key.
+      EMDASH_ENCRYPTION_KEY: emdash_enc_v1_cugE5mpPbewXCXUpUxvpscThKOCTYMxr1Ro8lVSc_Ps
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: "22"
+          node-version-file: .nvmrc
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       # The browser cache is keyed on the INSTALLED Playwright version, so a

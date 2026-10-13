@@ -46,124 +46,9 @@
  * WHEN THE BLOCK KIT SCREEN IS RETIRED, this module goes back to
  * `@otta-sh/admin-react` and stops being shared.
  */
-import { LABEL_BUDGET, fit, unitWord, valueLabel } from "./copy.js";
+import { valueLabel } from "./copy.js";
 import { DEFAULT_STORE_CURRENCY } from "./currency-choices.js";
 import { UNFORMATTABLE, formatOptionalAmount } from "./format-money.js";
-import type { RowNoun, ZeroStateCopy } from "./list-outcome.js";
-
-/** How the Pricing & inventory list names one row and many. */
-export const PRODUCTS_NOUN: RowNoun = { one: "product", other: "products" };
-
-/**
- * The noun the count uses while "Low stock only" is on (F29).
- *
- * A CORRECTNESS FIX IN A FILTER, NOT A FLOURISH. The count describes the rows
- * the low-stock predicate selected, and naming them with the noun for the whole
- * catalog read as a claim about the catalog — "3 products" over a screen showing
- * the three that are low. The number was right and the sentence was not, which
- * is the failure an operator reconciles against and loses. Naming what was
- * counted costs one word and removes the ambiguity.
- *
- * ONLY WHILE THE PREDICATE ACTUALLY RAN. A page the filter could not be applied
- * to holds every product, and {@link PRODUCTS_NOUN} is the honest word for those
- * rows — see the degradation banner's `filterUnavailable`.
- */
-export const PRODUCTS_LOW_STOCK_NOUN: RowNoun = {
-	one: "low-stock product",
-	other: "low-stock products",
-};
-
-/**
- * A PAGING failure's title, which is a smaller claim than the server's.
- *
- * The same ruling the Orders list already made, and this screen inherits it
- * along with the accumulated-pages state itself: the service answers a
- * whole-collection refusal ("Products could not be reached"), and rendering that
- * above rows that are still on screen states something those rows disprove. What
- * failed is one page, so that is what the title says — and it names no
- * DIRECTION, because `Load more`, `Next` and `Previous` all land here and only
- * one of them is "more".
- */
-export const PRODUCTS_PAGE_FAILED_TITLE = "Couldn't open that page of products";
-
-/**
- * The standing half of the list's intro line — the row count goes in front of
- * it.
- *
- * 97 chars; the longest count line this screen can produce
- * (`25 products on this page`) puts the whole line at 124 ≤ 140 (X-11). The
- * "Archived" explanation lives in the filter panel; stock is a COLUMN, so this
- * line says what the count means instead of pointing at the detail.
- */
-export const PRODUCTS_LIST_INTRO =
-	"Filter and open a product. Money in each product's own currency; On hand is what can be sold now.";
-
-/** Zero rows, no filter, first page: the catalog itself is empty. Offers no way
- *  IN, because products originate in the CMS (E-2). */
-export const PRODUCTS_EMPTY: ZeroStateCopy = {
-	title: "No products yet",
-	description:
-		"Products appear here as soon as a product document is saved in the CMS — pricing them is the next step, not a precondition.",
-};
-
-/** Zero rows with a filter on and "Low stock only" OFF: the operator narrowed
- *  to nothing, so the way out is the filter. */
-export const PRODUCTS_NO_MATCH: ZeroStateCopy & { readonly emptyText: string } = {
-	title: "No products match these filters",
-	description:
-		"Nothing came back for the filters you set. Clear them to go back to the whole catalog, or widen one and apply again.",
-	emptyText: "No products match these filters.",
-};
-
-/**
- * Zero rows with "Low stock only" ON AND NOTHING ELSE — a WHOLE-CATALOG claim,
- * which is why the second half of that condition is load-bearing.
- *
- * "Low stock only" is a predicate the SERVICE applies to the query, so a
- * zero-row result means nothing in the catalog sits at or below the threshold —
- * a claim the screen can now keep, and the opposite of the page-scoped
- * narrowing this replaced.
- *
- * ONLY WHEN IT IS THE SOLE ACTIVE FILTER. The predicates are ANDed, so "low
- * stock + Archived", "low stock + Digital" and "low stock + a search" can each
- * return nothing while the catalog is full of low-stock products; this copy
- * would then blame the threshold for the other filter's work. A caller with a
- * second filter on renders {@link PRODUCTS_NO_MATCH} instead, which names the
- * filters rather than the stock — see `products-list.tsx`'s `noMatch` choice.
- *
- * WHAT "NOTHING IS LOW" MEANS, EXACTLY. Not "everything is above the
- * threshold": a product with no inventory row is neither low nor comparable to
- * it (`ProductSummary.onHand`'s null is unknown, never zero). Both sentences
- * below therefore say what the PREDICATE found — no row at or below the
- * threshold — rather than making a claim about every product's stock level.
- *
- * NO `scanNote` OF ITS OWN ANY MORE, and the deletion is the point. That field
- * exists for a screen with BETTER WORDS than the ladder's default, and this
- * screen had them only while the narrowing made a zero-row page with a cursor
- * behind it the ORDINARY case. It is now unreachable: the store emits a cursor
- * only when a page overflows its limit, so zero rows always means no cursor.
- * The ladder's default composes `emptyText` with the shared "Load more scans
- * further", which keeps the rung — and `Load more` with it — should a future
- * caller ever reach it, without this screen authoring a sentence nothing can
- * render.
- */
-export const PRODUCTS_LOW_STOCK_NO_MATCH: ZeroStateCopy & {
-	readonly emptyText: string;
-} = {
-	title: "No products are low on stock",
-	description:
-		"No product in the catalog is at or below the low-stock threshold. Clear the filters to see them all, or set the threshold on Settings.",
-	emptyText: "No products are at or below the low-stock threshold.",
-};
-
-/** The "Low stock only" control's own description. It names the WHOLE CATALOG,
- *  for the reason above: the threshold is a predicate on the query, so
- *  promising every low-stock product is a promise the screen keeps. It states
- *  WHERE the threshold lives rather than its value — the number is a service
- *  read, and a filter control that sometimes carries a number and sometimes
- *  does not is worse than one that never does. */
-export const LOW_STOCK_FILTER_DESCRIPTION =
-	"Show every product in the catalog at or below the low-stock threshold (set the threshold on Settings).";
 
 /** The `Low stock only` control's label, on both surfaces. */
 export const LOW_STOCK_FILTER_LABEL = "Low stock only";
@@ -342,78 +227,6 @@ export const REMOVE_STOCK_INVALID_QTY = {
 	description: "Enter a whole number of units greater than zero, like 3. Nothing was changed.",
 } as const;
 
-/**
- * The remove-stock confirm dialog, composed from the quantity.
- *
- * ONE COMPOSITION, TWO SURFACES, and it is the load-bearing half of this
- * module. The Block Kit screen shows this as a `confirm` on its DA-3 state-2
- * button; the React screen shows it in a native `<dialog>` in place of the
- * staged step — the same collapse INC-20 made for refunds, and safe for the
- * same reason: every check the review step performed is performed again,
- * server-side against live truth, by the write handler. What must not collapse
- * is the SENTENCE the operator reads before the stock moves.
- *
- * The title is trimmed to the label budget for the same reason a group label
- * is (X-11); at any realistic quantity it is nowhere near it.
- */
-export function removeStockConfirm(qty: number): {
-	readonly title: string;
-	readonly text: string;
-	readonly confirm: string;
-	readonly deny: string;
-} {
-	const unit = unitWord(qty);
-	return {
-		title: fit(`Remove ${String(qty)} ${unit}?`, LABEL_BUDGET),
-		text: `Remove ${String(qty)} ${unit} from stock? This records a removal and cannot be undone by restocking.`,
-		confirm: `Yes, remove ${String(qty)}`,
-		deny: "Keep as is",
-	};
-}
-
-/**
- * The add-stock confirm dialog, composed beside the removal's.
- *
- * WHY THE TWO MOVEMENTS ARE GATED THE SAME WAY, and why the reconciliation went
- * UPWARD. Two controls sat on one panel with opposite gates and no stated
- * reason: a removal confirmed, an addition committed on the click. Levelling
- * DOWN would delete the only safeguard on the screen's one destructive act;
- * levelling up costs a keystroke on an event that happens per delivery, not per
- * edit. The direction is also the safer one — an over-add lets the store sell
- * units it does not have, where an over-remove only costs sales.
- *
- * THE DIALOG'S REAL JOB IS RESTATING THE PARSED QUANTITY. The `100` typed where
- * `10` was meant is exactly what the field cannot catch, because both are valid
- * input; so the sentence names the number the system will act on, and the
- * projected on-hand is derived FROM that number rather than from the raw string.
- * The derivation lives here rather than on the surface for the reason the
- * removal's composition does: two screens describing one movement must not
- * describe it two ways.
- *
- * `onHand` is the watermark the render was built from — the same value that
- * rides with the write. It is never defaulted: the add form is not rendered at
- * all for a SKU with no inventory record, so an absent on-hand cannot reach here
- * and cannot be reported as a zero.
- */
-export function addStockConfirm(
-	qty: number,
-	sku: string,
-	onHand: number,
-): {
-	readonly title: string;
-	readonly text: string;
-	readonly confirm: string;
-	readonly deny: string;
-} {
-	const unit = unitWord(qty);
-	return {
-		title: fit(`Add ${String(qty)} ${unit}?`, LABEL_BUDGET),
-		text: `Add ${String(qty)} ${unit} to ${sku}? On hand goes from ${String(onHand)} to ${String(onHand + qty)} and the store can sell them immediately.`,
-		confirm: `Yes, add ${String(qty)}`,
-		deny: "Keep as is",
-	};
-}
-
 // ── an edit's before and after ──────────────────────────────────────────────
 //
 // F4. A price save had neither: nothing stated the pending change or its size,
@@ -556,28 +369,6 @@ export function pricePendingLine(change: string | null): string | null {
 	return change === null ? null : `Price ${change}`;
 }
 
-/**
- * The receipt a completed price save leaves BEHIND IT, inside the section.
- *
- * IT PERSISTS, and that is the fix. A receipt that fades is one the operator —
- * who is looking at the field they just edited, not at the top of the page —
- * never sees at all, which is how a generic `Saved` managed to answer nothing
- * about the storefront. The second sentence answers the question a price change
- * actually raises: whether it reaches orders that were already placed. It does
- * not.
- */
-export function priceSavedNotice(change: string | null): {
-	readonly title: string;
-	readonly description: string;
-} {
-	const consequence =
-		"Shoppers see the new price now; orders already placed keep the price they were charged.";
-	return {
-		title: "Price updated — live on the storefront",
-		description: change === null ? consequence : `${change}. ${consequence}`,
-	};
-}
-
 // ── composed labels and cells ────────────────────────────────────────────────
 //
 // D-6: a group's label carries its ANSWER, so the group can be skipped
@@ -703,19 +494,6 @@ export function dimensionsSummary(
 // one becomes `Weight (grams)` an operator comparing them has to work out
 // whether they are looking at one field or two. The reviewers found ~20 of
 // these already duplicated by hand; they are mechanical, so they are shared.
-
-/** What a product with no title reads as — in the list table, in the Block Kit
- *  picker label, and nowhere near the product id, which is an opaque uuid §1.3
- *  keeps off a list row. The parenthesis and the lower case are deliberate: it
- *  has to be unmistakably a placeholder rather than a product somebody named. */
-export const UNTITLED = "(untitled)";
-
-/** The screen's own name — its H1 on React, its `header` block on Block Kit. */
-export const PRODUCTS_SCREEN_TITLE = "Pricing & inventory";
-
-/** The back control, on both surfaces and on both of each surface's paths (the
- *  detail and the not-found/failure state) — four hand-copies before this. */
-export const PRODUCTS_BACK_LABEL = "← Back to pricing & inventory";
 
 /** E-7's fail-closed banner. THREE copies before this: the Block Kit screen's
  *  `failClosed()`, the console route's own, and the React transport's HTTP

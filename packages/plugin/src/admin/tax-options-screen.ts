@@ -1,8 +1,8 @@
 /**
  * The Tax console's "Tax options" screen (PR 2a, ADR-0032) — WooCommerce's Tax
  * tab: tax on/off, prices entered with or without tax, what tax is based on, the
- * shop's base address, the shipping tax class, rounding, and how cart and
- * checkout show tax. A drill-in from the classes registry, like the create
+ * shop's base address, the shipping tax class, rounding, and how the shop, cart
+ * and checkout show tax. A drill-in from the classes registry, like the create
  * screens; the options are saved whole.
  *
  * THE EDIT GUARD is a compare on the VALUE the form loaded, exactly like a tax
@@ -48,6 +48,8 @@ interface OptionsDraft {
 	roundAtSubtotal: boolean;
 	displayCart: string;
 	totalsDisplay: string;
+	/** `entered`, `excl` or `incl` (#423). */
+	displayShop: string;
 }
 
 /** "Tax options" — the registry's way in, under its intro line. */
@@ -76,15 +78,30 @@ export function taxOffBanner(read: Pick<TaxSettingsRead, "settings" | "hasRates"
 
 /**
  * "Based on shop base address" with no base address set (review 2a B5): the quote
- * then taxes by the customer's shipping address (ADR-0032 §5). Said on the screen
- * rather than left silent; `null` when it does not apply.
+ * then taxes by the customer's shipping address (ADR-0032 §5). Likewise "based on
+ * the customer's billing address" (#467): a digital-only order whose buyer skips
+ * the country falls back to the base address, and with none it is not taxed.
+ * Said on the screen rather than left silent; `null` when it does not apply.
  */
 function missingBaseAddressNote(current: TaxSettingsWire): Block | null {
-	if (current.basedOn !== "base" || current.baseAddress !== null) return null;
-	return {
-		type: "context",
-		text: "Note: tax is set to the shop base address, but no base address is set — until one is, tax is calculated from the customer's shipping address.",
-	};
+	if (current.basedOn === "billing") {
+		// One note for the rule: the buyer's country is their own word (#467), and
+		// with no base address a buyer who gives none is not taxed at all.
+		return {
+			type: "context",
+			text:
+				current.baseAddress === null
+					? "Note: tax is set to the customer's billing address, but no base address is set — a digital-only order whose buyer gives no country is not taxed until one is. Buyers can pick a 0% country."
+					: "Note: buyers declare their own billing country, so a buyer can pick a country taxed at 0%.",
+		};
+	}
+	if (current.basedOn === "base" && current.baseAddress === null) {
+		return {
+			type: "context",
+			text: "Note: tax is set to the shop base address, but no base address is set — until one is, tax is calculated from the customer's shipping address.",
+		};
+	}
+	return null;
 }
 
 export function showOptionsAction(ids: TaxOptionsActions) {
@@ -111,6 +128,7 @@ export function saveOptionsAction(ids: TaxOptionsActions) {
 			roundAtSubtotal: readBoolean(values.roundAtSubtotal) ?? false,
 			displayCart: readString(values.displayCart) ?? "",
 			totalsDisplay: readString(values.totalsDisplay) ?? "",
+			displayShop: readString(values.displayShop) ?? "entered",
 		};
 		const result = await client.updateTaxSettings(settingsOf(draft), {
 			expected,
@@ -178,6 +196,9 @@ function settingsOf(d: OptionsDraft): unknown {
 		roundAtSubtotal: d.roundAtSubtotal,
 		displayCart: d.displayCart,
 		totalsDisplay: d.totalsDisplay,
+		// "As entered" is the option's ABSENCE (#423); anything else goes to the
+		// domain, which refuses what is not excl or incl.
+		...(d.displayShop === "entered" ? {} : { displayShop: d.displayShop }),
 	};
 }
 
@@ -193,6 +214,7 @@ function draftOf(s: TaxSettingsWire): OptionsDraft {
 		roundAtSubtotal: s.roundAtSubtotal,
 		displayCart: s.displayCart,
 		totalsDisplay: s.totalsDisplay,
+		displayShop: s.displayShop ?? "entered",
 	};
 }
 
@@ -230,6 +252,11 @@ function optionsScreen(
 	if (off !== null) blocks.push(off);
 	const baseNote = missingBaseAddressNote(current);
 	if (baseNote !== null) blocks.push(baseNote);
+	// The shop-price option's caveats: a Block Kit select carries no hint of its own.
+	blocks.push({
+		type: "context",
+		text: "Shop prices use the base address's rates. They show as entered if tax is off, no base address is set, or an outside tax calculator is used.",
+	});
 	blocks.push(optionsForm(ids, current, classes, draft));
 	return blocks;
 }
@@ -257,9 +284,20 @@ function optionsForm(
 	const pricesOptions = yesNo("Yes, I enter prices with tax", "No, I enter prices without tax");
 	const basedOnOptions: SelectOption[] = [
 		{ label: "Customer shipping address", value: "shipping" },
+		// #426: digital-only carts taxed where the buyer is (the checkout then asks
+		// for their country); a cart that ships is still taxed by its ship-to.
+		{
+			label:
+				"Customer billing address — digital-only orders, at the country the buyer declares at checkout (optional; the shop address when they skip it)",
+			value: "billing",
+		},
 		{ label: "Shop base address", value: "base" },
 	];
 	const displayOptions = yesNo("Including tax", "Excluding tax");
+	const shopOptions: SelectOption[] = [
+		{ label: "As entered (no change)", value: "entered" },
+		...displayOptions,
+	];
 	const totalsOptions: SelectOption[] = [
 		{ label: "Itemized — one row per tax", value: "itemized" },
 		{ label: "As a single total", value: "single" },
@@ -315,6 +353,13 @@ function optionsForm(
 					action_id: "roundAtSubtotal",
 					label: "Round tax at subtotal level, instead of per line",
 					initial_value: d.roundAtSubtotal,
+				},
+				{
+					type: "select",
+					action_id: "displayShop",
+					label: "Display prices in the shop",
+					options: shopOptions,
+					...selected(shopOptions, d.displayShop),
 				},
 				{
 					type: "select",

@@ -59,6 +59,7 @@ import {
 import {
 	buildCheckoutLines,
 	buildCheckoutTotals,
+	showCheckoutLinesTax,
 	buildOrderLines,
 	buildOrderTotal,
 	buildOrderView,
@@ -83,6 +84,7 @@ import {
 	type UncalculatedReason,
 } from "./checkout-view-model.js";
 import { createCommerceLoader, renderGuard, type RenderGuardFailure } from "./pdp-route.js";
+import { storeRegionFacts } from "./store-region-facts.js";
 
 // ── Public route names ──────────────────────────────────────────────────
 /** The ONE summary route. There is deliberately no `storefront/checkout/quote`
@@ -122,6 +124,10 @@ export interface CheckoutPlaceRouteInput {
 	 *  (`checkoutIdempotencyKey` is how the summary derives it). */
 	idempotencyKey?: unknown;
 	shippingAddress?: unknown;
+	/** #426: `{ country, region? }` — where the buyer is, the location the review
+	 *  was priced for (`destination` there) when the summary said
+	 *  `taxByBuyerLocation`. Code-shaped, or INVALID_INPUT. */
+	billingLocation?: unknown;
 	/** The same selection the summary priced — see {@link CheckoutSummaryRouteInput}. */
 	couponCode?: unknown;
 	shippingMethodId?: unknown;
@@ -182,8 +188,11 @@ export interface CheckoutSelectionErrors {
 	/** `code` is the code AS TYPED, so the page can put it back for correcting. */
 	coupon?: { code: string; reason: CouponSelectionReason };
 	shippingMethod?: { reason: ShippingSelectionReason };
-	/** The destination was refused (ADR-0021) — it and the method were dropped. */
-	destination?: { reason: DestinationSelectionReason };
+	/** The destination was refused (ADR-0021) — it and the method were dropped.
+	 *  `blames: "region"`: SHIPPING_ZONE_NOT_MATCHED for a state/province of a
+	 *  country whose OTHER states are served (a zone lists it at region level) —
+	 *  the region is what to change, not the country. */
+	destination?: { reason: DestinationSelectionReason; blames?: "region" };
 }
 
 /**
@@ -223,6 +232,19 @@ interface CheckoutSummaryViewBase {
 	selectionErrors: CheckoutSelectionErrors;
 	/** Whether any line ships. */
 	requiresShipping: boolean;
+	/** The country the review preselects on a fresh visit, so its state list
+	 *  renders on first load. For the delivery block, one the store SHIPS to (its
+	 *  base country when a zone with methods serves it, else the first such
+	 *  zone's); for an address-only page, the tax options' base country. `null`
+	 *  when there is none, and whenever a destination was asked for (the review
+	 *  preselects only on a fresh visit, so it is not read then). */
+	storeCountry: string | null;
+	/** Countries whose state/province the delivery block must REQUIRE: some zone
+	 *  lists one of their subdivisions, so the plugin refuses a blank region
+	 *  (SHIPPING_REGION_CODE_REQUIRED). It is satisfied by a subdivision at or
+	 *  inside a zoned one, or one no zone touches. Sorted; empty with no
+	 *  delivery block. */
+	regionRequiredCountries: string[];
 	shipping: CheckoutShippingView;
 	/** The page must collect an address: a physical cart in a zoned store, or
 	 *  any cart when {@link paymentAccountNeedsAddress}. */
@@ -235,9 +257,18 @@ interface CheckoutSummaryViewBase {
 	 */
 	paymentAccountNeedsAddress: boolean;
 	/**
+	 * #426: the cart ships nothing and the store taxes it where the BUYER is
+	 * ("based on the customer's billing address"). The page asks for the buyer's
+	 * country (and region) — optional; without one the shop's base address taxes —
+	 * sends it back as `destination` to re-price, and places with it as
+	 * `billingLocation`. Never on a locked review.
+	 */
+	taxByBuyerLocation: boolean;
+	/**
 	 * The ONE answer to "may the page offer the place button?". Unlocked: the
-	 * cart ships nothing, or the store has no zones, or a zone matched and a
-	 * method is selected. Locked: the order is still payable.
+	 * cart ships nothing (and no buyer location it asked for was refused, #478),
+	 * or the store has no zones, or a zone matched and a method is selected.
+	 * Locked: the order is still payable.
 	 */
 	readyToPlace: boolean;
 	/** Why the total leaves something out (`null` when it leaves nothing out). */
@@ -446,6 +477,9 @@ export function createCheckoutSummaryRouteHandler(): RouteHandler<CheckoutSummar
 			const selectionErrors: CheckoutSelectionErrors = {};
 			const quoteWith = (current: CheckoutSelection): Promise<QuoteResult> =>
 				client.quoteCheckout({ cartId: input.cartId, ...quoteSelection(current) });
+			// Lazy, each read at most once: only what this render shows is read
+			// (store-region-facts.ts), and a failed read degrades to "nothing known".
+			const regionFacts = storeRegionFacts(ctx);
 			let quote = await quoteWith(selection);
 			while (!quote.ok) {
 				const reason = quote.reason;
@@ -453,7 +487,12 @@ export function createCheckoutSummaryRouteHandler(): RouteHandler<CheckoutSummar
 					selectionErrors.coupon = { code: selection.couponCode, reason };
 					selection = without(selection, "couponCode");
 				} else if (isDestinationSelectionReason(reason) && selection.destination !== undefined) {
-					selectionErrors.destination = { reason };
+					const asked = selection.destination;
+					const blamesRegion =
+						reason === "SHIPPING_ZONE_NOT_MATCHED" &&
+						(asked.region ?? "") !== "" &&
+						(await regionFacts.regionZoneCountries()).has(asked.country.trim().toUpperCase());
+					selectionErrors.destination = blamesRegion ? { reason, blames: "region" } : { reason };
 					selection = without(selection, "destination", "shippingMethodId");
 				} else if (isShippingSelectionReason(reason) && selection.shippingMethodId !== undefined) {
 					selectionErrors.shippingMethod = { reason };
@@ -507,6 +546,8 @@ export function createCheckoutSummaryRouteHandler(): RouteHandler<CheckoutSummar
 
 			const methodSelected = selection.shippingMethodId !== undefined;
 			const status = quote.destination.status;
+			/** The review shows a delivery block: a cart that ships, in a zoned store. */
+			const deliveryBlock = quote.requiresShipping && status !== "no_zones";
 			// Issue #382: a kv read of the cached account country (Stripe is asked
 			// only when nothing usable is cached). The SAME answer `createOrder`
 			// enforces at place, so the form never under-asks.
@@ -526,10 +567,16 @@ export function createCheckoutSummaryRouteHandler(): RouteHandler<CheckoutSummar
 				ok: true as const,
 				cartId: cart.cartId,
 				currency: cart.currency,
-				lines: buildCheckoutLines(
-					cart.lines,
-					pricing,
-					new Map([...commerceById].map(([id, commerce]) => [id, commerce?.title ?? null])),
+				// Shown with or without tax as `displayCart` says, from the quote's
+				// own per-line tax, so they sum to the subtotal row (#423).
+				lines: showCheckoutLinesTax(
+					buildCheckoutLines(
+						cart.lines,
+						pricing,
+						new Map([...commerceById].map(([id, commerce]) => [id, commerce?.title ?? null])),
+					),
+					quote.breakdown,
+					{ locale: input.locale, taxZoneSelected: status === "matched" },
 				),
 				totals: buildCheckoutTotals(quote.breakdown, {
 					locale: input.locale,
@@ -553,14 +600,35 @@ export function createCheckoutSummaryRouteHandler(): RouteHandler<CheckoutSummar
 				},
 				selectionErrors,
 				requiresShipping: quote.requiresShipping,
+				// Read only when the review can preselect it — a FRESH visit, with no
+				// destination asked for. The delivery block (a cart that ships, in a
+				// zoned store) starts on a country the store ships to; an address-only
+				// page on its base country.
+				storeCountry:
+					input.selection.destination !== undefined
+						? null
+						: deliveryBlock
+							? await regionFacts.storeCountry()
+							: await regionFacts.baseCountry(),
+				regionRequiredCountries: deliveryBlock
+					? [...(await regionFacts.regionCountries())].toSorted()
+					: [],
 				shipping,
 				addressRequired:
 					(quote.requiresShipping && status !== "no_zones") || paymentAccountNeedsAddress,
 				paymentAccountNeedsAddress,
+				taxByBuyerLocation: quote.taxByBuyerLocation === true,
+				// #478: a buyer location the quote refused blocks Place until the buyer
+				// fixes or clears it — placing would only re-price into the same refusal.
 				readyToPlace:
-					!quote.requiresShipping ||
-					status === "no_zones" ||
-					(status === "matched" && methodSelected),
+					!(
+						!quote.requiresShipping &&
+						quote.taxByBuyerLocation === true &&
+						selectionErrors.destination !== undefined
+					) &&
+					(!quote.requiresShipping ||
+						status === "no_zones" ||
+						(status === "matched" && methodSelected)),
 				uncalculatedReason: uncalculatedReasonFor(status, methodSelected),
 				orderCreated: false as const,
 				order: null,
@@ -612,6 +680,8 @@ function lockedSummary(
 		},
 		selectionErrors: {},
 		requiresShipping,
+		storeCountry: null,
+		regionRequiredCountries: [],
 		// Nothing to choose: no options are read and none are offered. The
 		// order's method is stated by its totals.
 		shipping: { status, matchedRegion: null, noOptions: false, options: [] },
@@ -619,6 +689,7 @@ function lockedSummary(
 		// address or method is looked at (createOrderFromCart's I1).
 		addressRequired: false,
 		paymentAccountNeedsAddress: false,
+		taxByBuyerLocation: false,
 		// The ONE source for the locked page: a pending order can still be paid.
 		readyToPlace: phase === "payable",
 		uncalculatedReason:
@@ -673,6 +744,9 @@ export function createCheckoutPlaceRouteHandler(): RouteHandler<CheckoutPlaceRou
 					...quoteSelection(input.selection),
 					...(input.shippingAddress !== undefined
 						? { shippingAddress: input.shippingAddress }
+						: {}),
+					...(input.billingLocation !== undefined
+						? { billingLocation: input.billingLocation }
 						: {}),
 				},
 				input.idempotencyKey,

@@ -26,7 +26,8 @@
  *  - a strike lives for at least seven days, or four full passes if longer;
  *  - a read that rejects never counts as gone, and one row rejecting run after run
  *    is stepped past (left live) rather than stopping the walk forever;
- *  - at most `ORPHAN_TOMBSTONES_PER_TICK` tombstones a tick;
+ *  - at most `ORPHAN_TOMBSTONES_PER_TICK` tombstones a tick, and at most
+ *    `ORPHAN_TOMBSTONES_PER_DAY` in any 24 hours;
  *  - the soft delete is the hook's own: a replay is a no-op, holds, stock and
  *    orders are untouched, and the delete-and-recreate shape frees the sku;
  *  - the walk pages behind a compound `(createdAt, id)` cursor across ticks on the
@@ -67,6 +68,7 @@ import {
 	AGING_TICKS,
 	ORPHAN_MAX_READ_FAILURES,
 	ORPHAN_STRIKES,
+	ORPHAN_TOMBSTONES_PER_DAY,
 	ORPHAN_TOMBSTONES_PER_TICK,
 	PRODUCT_ORPHAN_GRACE_MS,
 	STARVING_TICKS,
@@ -87,6 +89,12 @@ import {
 	type FakeCms,
 } from "./cron-sweep-fixtures.js";
 import { commerceStorageLayout } from "./sandbox/storage-layout.js";
+import {
+	createAfterDeleteHandler,
+	createAfterPublishHandler,
+	createAfterRestoreHandler,
+} from "../src/sync/hooks.js";
+import type { ContentStateChangeEvent } from "../src/types.js";
 
 const NOW = new Date("2026-10-05T12:00:00.000Z");
 /** Comfortably outside the grace window. */
@@ -482,7 +490,14 @@ describe("a dense block of real orphans is struck out like any rows", () => {
 		const cursors = memoryCursors();
 		let doneAt: number | null = null;
 		for (let t = 0; t < maxTicks && doneAt === null; t++) {
-			const leg = orphanLeg(await tick(cms, cursors, t * MINUTE_MS, { queryBudget: budget }));
+			// The daily cap is lifted here: this measures the walk's pacing over a block
+			// bigger than a day's allowance (the cap has its own test, below).
+			const leg = orphanLeg(
+				await tick(cms, cursors, t * MINUTE_MS, {
+					queryBudget: budget,
+					orphanTombstonesPerDay: 1000,
+				}),
+			);
 			expect(leg.ok, `tick ${String(t)}: ${leg.error ?? ""}`).toBe(true);
 			const states = await Promise.all(gone.map((id) => lifecycleOf(id)));
 			if (states.every((state) => state === "deleted")) doneAt = t;
@@ -740,6 +755,332 @@ describe("the soft delete is the hook's own, and touches nothing else", () => {
 		expect(orphanLeg(rest).count).toBe(gone.length - ORPHAN_TOMBSTONES_PER_TICK);
 		for (const id of gone) expect(await lifecycleOf(id), id).toBe("deleted");
 		for (const id of kept) expect(await lifecycleOf(id), id).toBe("live");
+	});
+
+	// #447 (from #415 item 4): the per-tick cap alone let a systematic false positive
+	// that fooled every other gate tombstone five a minute — about 300 an hour, since
+	// an unfinished scan runs every tick. The daily cap bounds that to
+	// ORPHAN_TOMBSTONES_PER_DAY in any 24 hours, kept in the leg's own kv state so it
+	// holds across ticks and isolates. A row its last strike finds over the cap is
+	// stepped past with its strikes kept, so the scan does not re-read it every tick,
+	// and it is judged again on a later pass once the window has room.
+	test(`at most ${String(ORPHAN_TOMBSTONES_PER_DAY)} tombstones in any 24 hours, across ticks — logged when hit; the rest wait for the window`, async () => {
+		const total = ORPHAN_TOMBSTONES_PER_DAY + 5;
+		const gone = Array.from({ length: total }, (_, i) => `p-day-g${String(i).padStart(2, "0")}`);
+		const kept = Array.from({ length: 5 }, (_, i) => `p-day-k${String(i)}`);
+		for (const [i, id] of [...gone, ...kept].entries()) {
+			await product(id, new Date(CREATED.getTime() + i * 1000));
+		}
+		const cms = fakeCms({ gone });
+		const cursors = memoryCursors();
+		const deleted = async (): Promise<number> =>
+			(await Promise.all(gone.map((id) => lifecycleOf(id)))).filter((l) => l === "deleted").length;
+
+		// Strike everything out, then tick every minute for two hours: far more than
+		// enough ticks for the per-tick cap alone to tombstone every orphan.
+		let tombstoned = await strikeOut(cms, cursors);
+		for (let m = 1; m <= 120; m++) {
+			const leg = orphanLeg(await tick(cms, cursors, 2 * CADENCE + m * MINUTE_MS));
+			expect(leg.ok, leg.error).toBe(true);
+			tombstoned += leg.count;
+		}
+		expect(tombstoned).toBe(ORPHAN_TOMBSTONES_PER_DAY);
+		expect(await deleted()).toBe(ORPHAN_TOMBSTONES_PER_DAY);
+		expect(
+			errors.some((line) =>
+				line.includes(`cap of ${String(ORPHAN_TOMBSTONES_PER_DAY)} tombstones in 24 hours`),
+			),
+		).toBe(true);
+		// The rows it stepped past keep their strikes: they are owed, not forgiven.
+		const waiting = strikesOf(await orphanState(cursors));
+		expect(Object.keys(waiting)).toHaveLength(total - ORPHAN_TOMBSTONES_PER_DAY);
+		for (const n of Object.values(waiting)) expect(n).toBe(ORPHAN_STRIKES - 1);
+
+		// A day after the first tombstone, the window has room again: the rest go.
+		const dayLater = 2 * CADENCE + 24 * HOUR_MS;
+		for (let m = 0; m <= 30; m++) await tick(cms, cursors, dayLater + m * MINUTE_MS);
+		expect(await deleted()).toBe(total);
+		for (const id of kept) expect(await lifecycleOf(id), id).toBe("live");
+	}, 120_000);
+});
+
+/** The `content:afterRestore` event EmDash sends: the restored item, back as a
+ *  DRAFT with a bumped `updatedAt` and `version`. */
+function restored(id: string): ContentStateChangeEvent {
+	return {
+		collection: "products",
+		content: {
+			id,
+			status: "draft",
+			liveRevisionId: null,
+			// After the tombstone, which the sweep stamps on the REAL clock: a restore
+			// older than its delete is stale.
+			updatedAt: new Date(Date.now() + MINUTE_MS).toISOString(),
+			version: 3,
+			data: { title: `Product ${id}` },
+		},
+	};
+}
+
+function published(id: string): ContentStateChangeEvent {
+	return {
+		collection: "products",
+		content: {
+			id,
+			status: "published",
+			updatedAt: new Date(Date.now() + 2 * MINUTE_MS).toISOString(),
+			version: 4,
+			data: { title: `Product ${id}` },
+		},
+	};
+}
+
+describe("a product restored from the CMS trash is sold again (issue #447)", () => {
+	test("the sweep tombstones a trashed product; the restore brings the row back with its sku and stock, inactive, and the next publish puts it on sale", async () => {
+		await product("p-restore", CREATED, "SKU-RESTORE");
+		const inventory = new EmdashInventoryStore({
+			storage,
+			idGen: uuidIdGen,
+			clock: new FixedClock(NOW),
+		});
+		await inventory.seedOnHand(toSku("SKU-RESTORE"), 5);
+		const cms = fakeCms({ gone: ["p-restore"] });
+		const cursors = memoryCursors();
+		expect(await strikeOut(cms, cursors)).toBe(1);
+		expect(await row("p-restore")).toMatchObject({ lifecycle: "deleted", active: false });
+
+		// The merchant restores it from the trash.
+		cms.gone.delete("p-restore");
+		const ctx = sweepContext(storage, undefined, {}, cms);
+		await createAfterRestoreHandler()(restored("p-restore"), ctx);
+
+		expect(await row("p-restore")).toMatchObject({
+			lifecycle: "live",
+			deletedAt: null,
+			active: false,
+			sku: "SKU-RESTORE",
+			price: { amount: 1500, currency: "USD" },
+		});
+		expect(await inventory.getOnHand(toSku("SKU-RESTORE"))).toBe(5);
+
+		await createAfterPublishHandler()(published("p-restore"), ctx);
+		expect(await row("p-restore")).toMatchObject({ lifecycle: "live", active: true });
+
+		// The sweep finds the document now, so it stays live on the next pass.
+		const later = await tick(cms, cursors, 6 * CADENCE);
+		expect(orphanLeg(later)).toMatchObject({ ok: true, count: 0 });
+		expect(await lifecycleOf("p-restore")).toBe("live");
+	});
+
+	test("a restore event for a product the CMS no longer has (trashed again) leaves the tombstone alone", async () => {
+		await product("p-retrashed");
+		const cms = fakeCms({ gone: ["p-retrashed"] });
+		await strikeOut(cms, memoryCursors());
+		const tombstone = await row("p-retrashed");
+		expect(tombstone?.lifecycle).toBe("deleted");
+
+		await createAfterRestoreHandler()(
+			restored("p-retrashed"),
+			sweepContext(storage, undefined, {}, cms),
+		);
+
+		expect(await row("p-retrashed")).toEqual(tombstone);
+		// Read twice before the null is trusted, and said loudly, with the way out.
+		expect(cms.reads.filter((id) => id === "p-retrashed").length).toBeGreaterThanOrEqual(2);
+		expect(errors.some((line) => line.includes("trash and restore"))).toBe(true);
+	});
+
+	test("one null read is re-read before it is trusted: a found document on the re-read restores the row", async () => {
+		await product("p-restore-flaky");
+		const cms = fakeCms({ gone: ["p-restore-flaky"] });
+		await strikeOut(cms, memoryCursors());
+		cms.gone.delete("p-restore-flaky");
+		// The bridge swallowing one sporadic error: the first read answers null.
+		let first = true;
+		cms.beforeGet = (id) => {
+			if (id === "p-restore-flaky" && first) {
+				first = false;
+				cms.gone.add(id);
+			} else {
+				cms.gone.delete(id);
+			}
+		};
+
+		await createAfterRestoreHandler()(
+			restored("p-restore-flaky"),
+			sweepContext(storage, undefined, {}, cms),
+		);
+
+		expect(await row("p-restore-flaky")).toMatchObject({ lifecycle: "live", active: false });
+	});
+
+	test("a late afterDelete that lands AFTER the restore finds the document back in the CMS and leaves the row live", async () => {
+		await product("p-late-delete");
+		const cms = fakeCms();
+		const ctx = sweepContext(storage, undefined, {}, cms);
+		// Trashed while its delete hook was lost; the sweep tombstones it.
+		cms.gone.add("p-late-delete");
+		await strikeOut(cms, memoryCursors());
+		expect(await lifecycleOf("p-late-delete")).toBe("deleted");
+		// Restored; then the delete hook from the earlier trash finally runs.
+		cms.gone.delete("p-late-delete");
+		await createAfterRestoreHandler()(restored("p-late-delete"), ctx);
+		await createAfterDeleteHandler()(
+			{ id: "p-late-delete", collection: "products", permanent: false },
+			ctx,
+		);
+
+		expect(await row("p-late-delete")).toMatchObject({ lifecycle: "live", deletedAt: null });
+	});
+
+	test("a product ON SALE, trashed and restored before its delete hook ran: the late afterDelete finds a DRAFT and takes it off sale, and a newer publish puts it back", async () => {
+		await product("p-onsale");
+		await new EmdashProductCommerceStore({ storage, clock: new FixedClock(NOW) }).activate(
+			toProductId("p-onsale"),
+			idempotencyKey("pub-onsale"),
+			CREATED.toISOString(),
+		);
+		const cms = fakeCms();
+		const ctx = sweepContext(storage, undefined, {}, cms);
+		// Trashed, then restored at once, and the late delete hook runs BEFORE the
+		// restore hook (both are deferred): the row is still live and on sale, and the
+		// CMS holds a draft.
+		const event = restored("p-onsale");
+		cms.status.set("p-onsale", "draft");
+		cms.updatedAt.set("p-onsale", String(event.content["updatedAt"]));
+		expect(await row("p-onsale")).toMatchObject({ lifecycle: "live", active: true });
+
+		await createAfterDeleteHandler()(
+			{ id: "p-onsale", collection: "products", permanent: false },
+			ctx,
+		);
+
+		expect(await row("p-onsale")).toMatchObject({ lifecycle: "live", active: false });
+		// The restore hook that follows finds the row live and keeps it off sale.
+		await createAfterRestoreHandler()(event, ctx);
+		expect(await row("p-onsale")).toMatchObject({ lifecycle: "live", active: false });
+		await createAfterPublishHandler()(published("p-onsale"), ctx);
+		expect(await row("p-onsale")).toMatchObject({ lifecycle: "live", active: true });
+	});
+
+	test("a product ON SALE whose afterDelete was LOST, then restored: the restore finds a DRAFT and takes it off sale, and a newer publish puts it back", async () => {
+		await product("p-lost-delete");
+		const store = new EmdashProductCommerceStore({ storage, clock: new FixedClock(NOW) });
+		await store.activate(
+			toProductId("p-lost-delete"),
+			idempotencyKey("pub-lost-delete"),
+			CREATED.toISOString(),
+		);
+		const cms = fakeCms();
+		const ctx = sweepContext(storage, undefined, {}, cms);
+		// Trashed, but the delete hook never arrives and the sweep has not struck it
+		// yet; the merchant restores it, and the CMS now holds a draft.
+		const event = restored("p-lost-delete");
+		cms.status.set("p-lost-delete", "draft");
+		cms.updatedAt.set("p-lost-delete", String(event.content["updatedAt"]));
+
+		await createAfterRestoreHandler()(event, ctx);
+
+		expect(await row("p-lost-delete")).toMatchObject({ lifecycle: "live", active: false });
+		await createAfterPublishHandler()(published("p-lost-delete"), ctx);
+		expect(await row("p-lost-delete")).toMatchObject({ lifecycle: "live", active: true });
+	});
+
+	test("a restore event that arrives after a NEWER publish leaves the product on sale: the CMS reads it published", async () => {
+		await product("p-restore-then-pub");
+		const cms = fakeCms({ gone: ["p-restore-then-pub"] });
+		await strikeOut(cms, memoryCursors());
+		cms.gone.delete("p-restore-then-pub");
+		const ctx = sweepContext(storage, undefined, {}, cms);
+		const event = restored("p-restore-then-pub");
+		await createAfterRestoreHandler()(event, ctx);
+		const publish = published("p-restore-then-pub");
+		await createAfterPublishHandler()(publish, ctx);
+		cms.status.set("p-restore-then-pub", "published");
+		cms.updatedAt.set("p-restore-then-pub", String(publish.content["updatedAt"]));
+
+		// The same restore delivered again (a redelivery) must not take it off sale.
+		await createAfterRestoreHandler()(event, ctx);
+
+		expect(await row("p-restore-then-pub")).toMatchObject({ lifecycle: "live", active: true });
+	});
+
+	test("a product trashed, restored AND re-published before its delete hook ran stays on sale: the late afterDelete finds it published", async () => {
+		await product("p-republished");
+		const store = new EmdashProductCommerceStore({ storage, clock: new FixedClock(NOW) });
+		await store.activate(
+			toProductId("p-republished"),
+			idempotencyKey("pub-republished"),
+			CREATED.toISOString(),
+		);
+		const cms = fakeCms();
+		const ctx = sweepContext(storage, undefined, {}, cms);
+		await createAfterRestoreHandler()(restored("p-republished"), ctx);
+		const publish = published("p-republished");
+		await createAfterPublishHandler()(publish, ctx);
+		cms.status.set("p-republished", "published");
+		cms.updatedAt.set("p-republished", String(publish.content["updatedAt"]));
+
+		await createAfterDeleteHandler()(
+			{ id: "p-republished", collection: "products", permanent: false },
+			ctx,
+		);
+
+		expect(await row("p-republished")).toMatchObject({ lifecycle: "live", active: true });
+	});
+
+	test("a soft delete that committed AFTER the restore does not block it when the CMS confirms the document is live", async () => {
+		await product("p-slow-delete");
+		const cms = fakeCms({ gone: ["p-slow-delete"] });
+		// The CMS restore happened an hour ago; the tombstone below is stamped now.
+		const event = restored("p-slow-delete");
+		event.content["updatedAt"] = new Date(Date.now() - HOUR_MS).toISOString();
+		await strikeOut(cms, memoryCursors());
+		expect(await lifecycleOf("p-slow-delete")).toBe("deleted");
+		cms.gone.delete("p-slow-delete");
+
+		await createAfterRestoreHandler()(event, sweepContext(storage, undefined, {}, cms));
+
+		expect(await row("p-slow-delete")).toMatchObject({ lifecycle: "live", active: false });
+	});
+
+	test("without a CMS read to confirm it, a restore older than the tombstone is refused", async () => {
+		await product("p-stale-restore");
+		await strikeOut(fakeCms({ gone: ["p-stale-restore"] }), memoryCursors());
+		const event = restored("p-stale-restore");
+		event.content["updatedAt"] = new Date(Date.now() - HOUR_MS).toISOString();
+
+		// No `ctx.content` at all: the event is the only evidence.
+		await createAfterRestoreHandler()(event, sweepContext(storage));
+
+		expect(await lifecycleOf("p-stale-restore")).toBe("deleted");
+	});
+
+	test("afterDelete still soft-deletes when the CMS confirms the document is gone", async () => {
+		await product("p-hook-delete");
+		const cms = fakeCms({ gone: ["p-hook-delete"] });
+
+		await createAfterDeleteHandler()(
+			{ id: "p-hook-delete", collection: "products", permanent: false },
+			sweepContext(storage, undefined, {}, cms),
+		);
+
+		expect(await lifecycleOf("p-hook-delete")).toBe("deleted");
+	});
+
+	test("a CMS read that fails does not block the restore: the event itself says the document is back", async () => {
+		await product("p-restore-fail");
+		const cms = fakeCms({ gone: ["p-restore-fail"] });
+		await strikeOut(cms, memoryCursors());
+		cms.gone.delete("p-restore-fail");
+		cms.failing.add("p-restore-fail");
+
+		await createAfterRestoreHandler()(
+			restored("p-restore-fail"),
+			sweepContext(storage, undefined, {}, cms),
+		);
+
+		expect(await row("p-restore-fail")).toMatchObject({ lifecycle: "live", active: false });
 	});
 });
 

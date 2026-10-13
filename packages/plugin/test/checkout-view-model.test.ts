@@ -32,6 +32,7 @@ import {
 	NOT_APPLICABLE_LABEL,
 	NOT_CALCULATED_LABEL,
 	selectionFieldFor,
+	showCheckoutLinesTax,
 	uncalculatedReasonFor,
 	type LockedCheckoutPhase,
 	type SelectionField,
@@ -39,7 +40,9 @@ import {
 import type {
 	CartLineWire,
 	PublicOrderWire,
+	QuoteBreakdownWire,
 	QuoteFailureReason,
+	QuoteTaxWire,
 } from "../src/product-commerce/commerce-client.js";
 
 const LOCALE = "en-US";
@@ -614,5 +617,184 @@ describe("buildCheckoutTotals — the payment rounding row (ADR-0035 amendment)"
 			Object.hasOwn(buildCheckoutTotals({ ...KWD, roundingCents: 0 }, flags), "rounding"),
 		).toBe(false);
 		expect(Object.hasOwn(buildCheckoutTotals(BREAKDOWN, flags), "rounding")).toBe(false);
+	});
+});
+
+// ── #423: review lines shown with or without tax (showCheckoutLinesTax) ──────
+
+const LINE_OPTS = { locale: LOCALE, taxZoneSelected: true };
+const usdOf = (amount: number) => ({
+	amount,
+	currency: "USD",
+	formatted: `$${(amount / 100).toFixed(2)}`,
+});
+const reviewLine = (id: string, unit: number, qty: number) => ({
+	lineId: id,
+	sku: `SKU-${id}`,
+	title: null,
+	qty,
+	unitPrice: usdOf(unit),
+	lineTotal: usdOf(unit * qty),
+});
+const lineTaxOf = (over: Partial<QuoteTaxWire>): QuoteTaxWire => ({
+	enabled: true,
+	located: true,
+	pricesIncludeTax: false,
+	displayCart: "incl",
+	totalsDisplay: "single",
+	lineTaxCents: 0,
+	itemized: [],
+	...over,
+});
+const lineBreakdown = (over: Partial<QuoteBreakdownWire>): QuoteBreakdownWire => ({
+	currency: "USD",
+	subtotalCents: 0,
+	discountCents: 0,
+	shippingCents: 0,
+	taxCents: 0,
+	totalCents: 0,
+	appliedCouponCode: null,
+	...over,
+});
+/** One quote line's tax, keyed by the cart line it priced. */
+const tx = (lineId: string, qty: number, taxCents: number) => ({ lineId, qty, taxCents });
+const lineAmounts = (lines: ReturnType<typeof showCheckoutLinesTax>) =>
+	lines.map((l) => [l.unitPrice?.amount, l.lineTotal?.amount]);
+
+describe("showCheckoutLinesTax — the review lines follow displayCart and sum to the subtotal row", () => {
+	test("with a coupon: the lines sum to the shown subtotal, and subtotal − discount is the taxed total", () => {
+		// 1000 at 20% and 500 at 5%; a 300 coupon leaves 800 and 400, taxed 160 and 20.
+		const b = lineBreakdown({
+			subtotalCents: 1500,
+			discountCents: 300,
+			taxCents: 180,
+			totalCents: 1380,
+			appliedCouponCode: "SAVE",
+			tax: lineTaxOf({ lineTaxCents: 180, lineTaxes: [tx("a", 1, 160), tx("b", 1, 20)] }),
+		});
+		const lines = showCheckoutLinesTax(
+			[reviewLine("a", 1000, 1), reviewLine("b", 500, 1)],
+			b,
+			LINE_OPTS,
+		);
+		const totals = buildCheckoutTotals(b, { ...LINE_OPTS, shippingSelected: true });
+		const sum = lines.reduce((n, l) => n + (l.lineTotal?.amount ?? 0), 0);
+		expect(sum).toBe(totals.subtotal.money?.amount);
+		expect((totals.subtotal.money?.amount ?? 0) - (totals.discount.money?.amount ?? 0)).toBe(
+			1200 + 180,
+		);
+		// The subtotal row moves by round(180 × 1500 / 1200) = 225, split 200 / 25 by tax.
+		expect(lineAmounts(lines)).toEqual([
+			[1200, 1200],
+			[525, 525],
+		]);
+	});
+
+	test("prices entered WITH tax, shown excluding: the tax inside each line is taken out", () => {
+		// 999 gross at 20% carries 166 (half down) — IN-02.
+		const b = lineBreakdown({
+			subtotalCents: 999,
+			taxCents: 166,
+			totalCents: 999,
+			tax: lineTaxOf({
+				pricesIncludeTax: true,
+				displayCart: "excl",
+				lineTaxCents: 166,
+				lineTaxes: [tx("a", 1, 166)],
+			}),
+		});
+		const lines = showCheckoutLinesTax([reviewLine("a", 999, 1)], b, LINE_OPTS);
+		expect(lineAmounts(lines)).toEqual([[833, 833]]);
+		expect(
+			buildCheckoutTotals(b, { ...LINE_OPTS, shippingSelected: true }).subtotal.money?.amount,
+		).toBe(833);
+	});
+
+	test("qty > 1, prices without tax: the line carries its rounded tax, the unit its share half up", () => {
+		// 3 × 0.99 at 18%: line tax 53 (53.46); per unit 53 / 3 = 17.67 → 18.
+		const b = lineBreakdown({
+			subtotalCents: 297,
+			taxCents: 53,
+			totalCents: 350,
+			tax: lineTaxOf({ lineTaxCents: 53, lineTaxes: [tx("a", 3, 53)] }),
+		});
+		expect(lineAmounts(showCheckoutLinesTax([reviewLine("a", 99, 3)], b, LINE_OPTS))).toEqual([
+			[117, 350],
+		]);
+	});
+
+	test("qty > 1, prices WITH tax: the unit share rounds half DOWN, as the tax inside a gross does", () => {
+		// 2 × 3 gross at 20%: line tax 1 (1.0); per unit 0.5 rounds down to 0, so the
+		// unit shows 3 — what the PDP and the cart page show for one unit (0.5 → 0).
+		const b = lineBreakdown({
+			subtotalCents: 6,
+			taxCents: 1,
+			totalCents: 6,
+			tax: lineTaxOf({
+				pricesIncludeTax: true,
+				displayCart: "excl",
+				lineTaxCents: 1,
+				lineTaxes: [tx("a", 2, 1)],
+			}),
+		});
+		expect(lineAmounts(showCheckoutLinesTax([reviewLine("a", 3, 2)], b, LINE_OPTS))).toEqual([
+			[3, 5],
+		]);
+	});
+
+	test("#478: each line takes ITS OWN tax, matched by line id — not by position", () => {
+		// A concurrent cart edit kept the line count but the quote read the lines in
+		// another order: 1000 at 20% (200) and 500 at 5% (25).
+		const b = lineBreakdown({
+			subtotalCents: 1500,
+			taxCents: 225,
+			totalCents: 1725,
+			tax: lineTaxOf({ lineTaxCents: 225, lineTaxes: [tx("b", 1, 25), tx("a", 1, 200)] }),
+		});
+		expect(
+			lineAmounts(
+				showCheckoutLinesTax([reviewLine("a", 1000, 1), reviewLine("b", 500, 1)], b, LINE_OPTS),
+			),
+		).toEqual([
+			[1200, 1200],
+			[525, 525],
+		]);
+	});
+
+	test("#478: a quote priced for other lines (an id or a quantity changed): the very same rows", () => {
+		const rows = [reviewLine("a", 1000, 1), reviewLine("b", 500, 1)];
+		const quoted = (lineTaxes: QuoteTaxWire["lineTaxes"]) =>
+			lineBreakdown({
+				subtotalCents: 1500,
+				taxCents: 225,
+				totalCents: 1725,
+				tax: lineTaxOf({ lineTaxCents: 225, lineTaxes }),
+			});
+		// Line b swapped for line c, same count.
+		expect(showCheckoutLinesTax(rows, quoted([tx("a", 1, 200), tx("c", 1, 25)]), LINE_OPTS)).toBe(
+			rows,
+		);
+		// Line b's quantity changed in between.
+		expect(showCheckoutLinesTax(rows, quoted([tx("a", 1, 200), tx("b", 2, 25)]), LINE_OPTS)).toBe(
+			rows,
+		);
+		// One line missing.
+		expect(showCheckoutLinesTax(rows, quoted([tx("a", 1, 200)]), LINE_OPTS)).toBe(rows);
+	});
+
+	test("the display matching how prices are entered, or tax not located: the very same rows", () => {
+		const rows = [reviewLine("a", 999, 1)];
+		const same = lineBreakdown({
+			subtotalCents: 999,
+			tax: lineTaxOf({ displayCart: "excl", lineTaxCents: 200, lineTaxes: [tx("a", 1, 200)] }),
+		});
+		expect(showCheckoutLinesTax(rows, same, LINE_OPTS)).toBe(rows);
+		const unlocated = lineBreakdown({
+			subtotalCents: 999,
+			tax: lineTaxOf({ located: false, lineTaxCents: 200, lineTaxes: [tx("a", 1, 200)] }),
+		});
+		expect(showCheckoutLinesTax(rows, unlocated, { ...LINE_OPTS, taxZoneSelected: false })).toBe(
+			rows,
+		);
 	});
 });

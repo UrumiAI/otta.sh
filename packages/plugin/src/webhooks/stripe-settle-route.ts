@@ -53,7 +53,7 @@ import { settleOrder, type SettleDeps, type SettleResult } from "@otta-sh/domain
 import { StripePaymentGateway } from "@otta-sh/payments-stripe";
 import { isRetryableStorageBusy } from "@otta-sh/store-emdash";
 import { createInProcessCommerceStores } from "../commerce/in-process-commerce-stores.js";
-import { edgeTokenAccepted } from "../edge-token.js";
+import { edgeTokenGate } from "../edge-token.js";
 import {
 	sendOrderEmailsNow,
 	type SendOrderEmailsNowOptions,
@@ -251,9 +251,9 @@ export function createStripeWebhookSettleHandler(
 		// ── GATE 1: the edge token, BEFORE anything else reads kv or allocates ──
 		// Nothing above this line touches `settings:stripeWebhookSecret`, builds a
 		// gateway, or constructs a store. A rejection here costs exactly one kv get.
-		if (!(await edgeTokenAccepted(ctx, routeCtx.request))) {
-			return { ok: false, status: 401, reason: "UNAUTHORIZED" };
-		}
+		const gate = await edgeTokenGate(ctx, routeCtx.request);
+		if (gate === "unavailable") return { ok: false, status: 503, reason: "NOT_CONFIGURED" };
+		if (gate === "reject") return { ok: false, status: 401, reason: "UNAUTHORIZED" };
 
 		const { rawBodyBase64, stripeSignature, idempotencyKey } = routeCtx.input;
 		if (

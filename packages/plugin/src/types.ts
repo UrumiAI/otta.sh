@@ -52,8 +52,16 @@ export interface ContentStateChangeEvent {
  *  (`test/sandbox-clean-guard.test.ts`) sees no bare fetch-invocation token
  *  in this declaration. */
 export interface HttpAccess {
-	fetch: (url: string, init?: RequestInit) => Promise<Response>;
+	fetch: (url: string, init?: RequestInit) => Promise<HttpResponse>;
 }
+
+/**
+ * What the sandbox bridge's `http.fetch` answers: a plain object with the body
+ * already buffered — no `url`, no `body` stream (EmDash 0.38's Worker Loader
+ * bridge; 1.0.1 returns a full `Response`, which satisfies this too). Code that
+ * must run sandboxed may use only these members.
+ */
+export type HttpResponse = Pick<Response, "status" | "ok" | "headers" | "text" | "json">;
 
 /**
  * Non-secret key/value store (em-dash `KVAccess`, `packages/core/src/plugins/
@@ -67,12 +75,27 @@ export interface HttpAccess {
  * depends on. Keys are transparently namespaced `plugin:<id>:` by the host;
  * the convention is `settings:*` for user-configurable prefs (em-dash
  * `types.ts:159-162`). SECRETS MUST NEVER be written here (§5). Method is
- * `set` (not `put`) — verified against em-dash. */
+ * `set` (not `put`) — verified against em-dash.
+ *
+ * AMENDED BY ADR-0037: the three payment credentials ARE written here, under
+ * `settings:*` keys the site's descriptor declares `type: "secret"`, which
+ * EmDash 1.0.1 encrypts at rest (`payment-secrets.ts`). EmDash 1.0.1's kv also
+ * has the conditional pair below (emdash `plugins/types.ts` `KVAccess`); they
+ * are OPTIONAL here only because hand-built test contexts omit them. */
 export interface KvAccess {
 	get<T>(key: string): Promise<T | null>;
 	set(key: string, value: unknown): Promise<void>;
 	delete(key: string): Promise<boolean>;
 	list(prefix?: string): Promise<Array<{ key: string; value: unknown }>>;
+	/** The value and its opaque host revision, or `null` when unset. */
+	getVersioned?<T>(key: string): Promise<{ value: T; revision: string } | null>;
+	/** Write only if the key is still at `expectedRevision` (`null`: only if
+	 *  absent). A conflict resolves `{ applied: false }`; errors reject. */
+	compareAndSet?(
+		key: string,
+		expectedRevision: string | null,
+		value: unknown,
+	): Promise<{ applied: true; revision: string } | { applied: false }>;
 }
 
 // -- the document store (ADR-0018) ------------------------------------------
@@ -310,9 +333,11 @@ export interface PluginContext {
 	 * capability this plugin already declares for its content hooks. Read-only here
 	 * on purpose: the plugin never writes CMS content.
 	 *
-	 * ONE caller: the `product-orphans` sweep leg (issue #374), which asks whether a
-	 * commerce row's CMS document still exists. Everything else gets what it needs
-	 * from the hook event itself.
+	 * Callers: the `product-orphans` sweep leg (issue #374), which asks whether a
+	 * commerce row's CMS document still exists, and `content:afterDelete` /
+	 * `content:afterRestore` (issue #447), which check the document's presence so a
+	 * late delivery does not undo a newer restore or trash. Everything else gets
+	 * what it needs from the hook event itself.
 	 *
 	 * OPTIONAL like `storage` and `cron`: the host omits it when the capability is
 	 * missing, and the workerd test mirror (`sandbox-entry.ts`) has no CMS to offer.
@@ -366,9 +391,11 @@ export interface EmailAccess {
  *    read REJECTS, as on the trusted path (`src/sandbox/bridge.ts`: `contentGet`
  *    retries once on the raw binding and lets that error out).
  *
- * So `null` is never proof on its own. The one caller (`product-orphans`) asks the
+ * So `null` is never proof on its own. The sweep (`product-orphans`) asks the
  * CMS to LIST a product first, re-reads every `null`, counts it only in a run that
  * read some other document, and needs three such runs a cadence apart.
+ * The delete and restore hooks re-read a `null` once; `content:afterRestore` then
+ * leaves the row deleted, and `content:afterDelete` deletes as it always did.
  */
 export interface ContentReadAccess {
 	get(collection: string, id: string): Promise<Record<string, unknown> | null>;
@@ -423,6 +450,7 @@ export interface SandboxedPluginHooks {
 	"content:afterDelete"?: { handler: HookHandler<ContentDeleteEvent> };
 	"content:afterPublish"?: { handler: HookHandler<ContentStateChangeEvent> };
 	"content:afterUnpublish"?: { handler: HookHandler<ContentStateChangeEvent> };
+	"content:afterRestore"?: { handler: HookHandler<ContentStateChangeEvent> };
 	/**
 	 * The scheduled sweep (INC-C4). Not capability-gated — the host validates a
 	 * declared hook name against its own list, on which `cron` carries no required
@@ -1017,8 +1045,9 @@ export interface BlockResponse {
 }
 
 /** A single `admin.settingsSchema` field descriptor (em-dash
- *  `manifest-schema.ts:156-190`). `secret` fields are write-only and never
- *  returned — DELIBERATELY unused here: no Phase-7 setting is a secret. */
+ *  `manifest-schema.ts:156-190`) for Otta's own readable-back settings. The
+ *  payment credentials' `secret` fields are declared separately, in
+ *  `payment-secrets.ts` `PAYMENT_SECRET_SETTINGS_SCHEMA` (ADR-0037). */
 export interface SettingsFieldSpec {
 	type: "string" | "number" | "boolean";
 	label: string;

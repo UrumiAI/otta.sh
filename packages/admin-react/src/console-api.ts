@@ -93,6 +93,16 @@ export interface OrderTotals {
 	readonly shippingZoneId?: string | null;
 	/** Present (true) only when the order's frozen tax snapshot recorded tax-inclusive prices. */
 	readonly pricesIncludeTax?: true;
+	/** One row per tax, adding up to `taxCents` (issue #422). Absent ⇒ the
+	 *  single Tax row (an older order, or a plugin before the field). */
+	readonly taxRows?: ReadonlyArray<{ readonly label: string; readonly amountCents: number }>;
+	/** #426: where the tax was charged; only on an order priced under "based on
+	 *  the customer's billing address". */
+	readonly taxAddress?: {
+		readonly basis: "billing" | "base" | "shipping";
+		readonly country: string;
+		readonly region: string | null;
+	};
 }
 
 export interface ShippingAddress {
@@ -314,6 +324,10 @@ export interface DetailPayload {
 	readonly timeline: OrderTimeline | null;
 	readonly refunds: RefundsSummary | null;
 	readonly notes: readonly OrderNote[];
+	/** Download access (issue #447), decided by the plugin from the domain's
+	 *  deliverable states and the order's grants: `open` offers Revoke download
+	 *  access, `revoked` says it was revoked; absent shows neither. */
+	readonly downloads?: "open" | "revoked";
 	readonly vocabulary: Vocabulary;
 }
 

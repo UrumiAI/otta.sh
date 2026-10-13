@@ -59,6 +59,19 @@ export interface OrderTotalsWire {
 	 *  were entered tax-inclusive. ABSENT for every other order (no snapshot, an
 	 *  old-shape one, or tax-exclusive prices) — never guessed from current settings. */
 	pricesIncludeTax?: true;
+	/**
+	 * One row per tax, off the order's frozen tax snapshot (issue #422,
+	 * `orderTaxRows`), adding up to `taxCents`. ALWAYS itemized here, whatever the
+	 * buyer-facing "Display tax totals" says — WooCommerce's order screen lists
+	 * each tax too; the merchant files by it. Absent for an order with nothing to
+	 * itemize (no or an older snapshot): the single Tax row. Labels are merchant
+	 * or calculator text — render them escaped.
+	 */
+	taxRows?: Array<{ label: string; amountCents: number }>;
+	/** #426: where the order's tax was charged, off its frozen tax snapshot —
+	 *  present only on an order priced under "based on the customer's billing
+	 *  address" (`billing` = the buyer's self-declared location). */
+	taxAddress?: { basis: "billing" | "base" | "shipping"; country: string; region: string | null };
 }
 
 /** The immutable shipping-address snapshot captured on an order at checkout
@@ -186,6 +199,10 @@ export interface OrderDetailResult {
 	/** The legal outbound transitions from the current state — the domain state
 	 *  machine, forwarded by the service (never re-derived plugin-side). */
 	allowedTransitions: string[];
+	/** The order's download access (issue #447), present only on a paid-side
+	 *  order with a digital line: `open` while a grant still authorizes it,
+	 *  `revoked` once none does. Absent: no download control applies. */
+	downloads?: "open" | "revoked";
 }
 
 /** A saved profile address on the wire (admin-UX Increment 1). This is the
@@ -454,6 +471,14 @@ export interface OrderTimelineWire {
 export type AddNoteResult =
 	| { ok: true; appended: boolean; note: OrderNoteWire }
 	| { ok: false; status: number };
+
+/** POST revoke-downloads (issue #447). `revoked: false` on an `ok` is the
+ *  idempotent replay: access was already closed by this action. A refusal
+ *  carries the domain's reason: `ORDER_NOT_FOUND`, `NO_DOWNLOADS` (no digital
+ *  line), `NOT_DELIVERABLE` (not a paid-side order), or `INVALID_INPUT`. */
+export type RevokeDownloadAccessResult =
+	| { ok: true; revoked: boolean }
+	| { ok: false; status: number; reason: string };
 
 /** Why the admin transition was refused — the domain's `TransitionOrderAsAdminFailure`,
  *  restated here as a closed union (this module imports no domain type, MOD-4), so a
@@ -736,4 +761,14 @@ export interface AdminOrdersSurface {
 		note: { author: string; body: string },
 		opts: { idempotencyKey: string },
 	): Promise<AddNoteResult>;
+
+	/** Close an order's download access by hand — the path for a dispute or
+	 *  chargeback, which moves no order state (issue #447). Revokes every grant the
+	 *  order made and records `revokedBy` on a note in History. Idempotent under
+	 *  `idempotencyKey`; the order's state and money are untouched. */
+	revokeDownloadAccess(
+		orderId: string,
+		input: { revokedBy: string },
+		opts: { idempotencyKey: string },
+	): Promise<RevokeDownloadAccessResult>;
 }

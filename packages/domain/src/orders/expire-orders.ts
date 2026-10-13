@@ -67,6 +67,32 @@ export interface ExpireOrdersBatchOptions extends SweepBatchOptions {
 	 * afford (`UnitBackoff.setMaxEntries`).
 	 */
 	readonly backoff?: UnitBackoff;
+	/**
+	 * Told each attempted order's flip outcome: `true` when its flip threw (the
+	 * order is logged and, with a `backoff`, backed off), `false` when it did not
+	 * (expired, or lost its guard). The scheduled sweep keeps the failing ones in
+	 * its durable state (#478), which an in-memory `backoff` cannot be.
+	 */
+	readonly onFlipOutcome?: (id: OrderId, failed: boolean) => void;
+}
+
+/** {@link expireOrdersBatch}'s answer. */
+export interface ExpireOrdersBatchResult extends SweepBatchResult {
+	/**
+	 * Present (and `true`) only when the call attempted at least one order and EVERY
+	 * flip it attempted threw (#447). It counts FLIP failures only: a hold or coupon
+	 * release that throws after a successful flip leaves the order expired with its
+	 * release still owed, which the hold-intent and coupon sweepers complete, so it
+	 * is logged but is not a failed attempt. Each order is still caught and backed off on
+	 * its own, so one failing order never ends the batch; this flag is what lets the
+	 * caller tell "the store is refusing every flip" (an outage) from "nothing to
+	 * do" — the scheduled sweep fails the leg on it (once two different orders
+	 * are failing, #478), which is what its per-leg alerting watches. One failure among successes does not set it (that order is
+	 * logged and backed off, and the leg made progress), nor does a flip that lost
+	 * its guard (`null`: someone else moved the order), nor a call that attempted
+	 * nothing because every candidate is backing off.
+	 */
+	readonly allFailed?: true;
 }
 
 /**
@@ -89,7 +115,7 @@ export async function expireOrdersBatch(
 	deps: ExpireOrdersDeps,
 	at?: Date,
 	options: ExpireOrdersBatchOptions = {},
-): Promise<SweepBatchResult> {
+): Promise<ExpireOrdersBatchResult> {
 	const instant = at ?? deps.clock.now();
 	const now = instant.toISOString();
 	const { backoff } = options;
@@ -103,8 +129,13 @@ export async function expireOrdersBatch(
 	const ids = waiting.size === 0 ? listed : listed.filter((id) => !waiting.has(id));
 	let expired = 0;
 	let attempted = 0;
+	let failed = 0;
+	const result = (drained: boolean): ExpireOrdersBatchResult =>
+		attempted > 0 && failed === attempted
+			? { count: expired, drained, allFailed: true }
+			: { count: expired, drained };
 	for (const id of ids) {
-		if (!mayContinue(options, attempted)) return { count: expired, drained: false };
+		if (!mayContinue(options, attempted)) return result(false);
 		attempted++;
 		// ONE ORDER IS ONE UNIT (review round 2, A R2-A1): a throw from one order's
 		// flip or release is logged and the batch moves on, so it can neither end the
@@ -120,11 +151,14 @@ export async function expireOrdersBatch(
 			won = await deps.orderStore.expireWithOrder(id, now);
 		} catch (err) {
 			if (options.stopsBatch?.(err) === true) throw err;
+			failed++;
 			backoff?.failed(id, instant.getTime());
+			options.onFlipOutcome?.(id, true);
 			logUnitFailure(`expiring order ${id}`, err);
 			continue;
 		}
 		backoff?.succeeded(id);
+		options.onFlipOutcome?.(id, false);
 		if (won === null) continue; // someone else won the transition (paid/cancelled/expired)
 		expired++;
 		const { order } = won;
@@ -162,7 +196,7 @@ export async function expireOrdersBatch(
 			}
 		}
 	}
-	return { count: expired, drained: true };
+	return result(true);
 }
 
 /** One order's step failed; the batch goes on. */

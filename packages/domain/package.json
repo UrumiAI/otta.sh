@@ -19,6 +19,7 @@
 	"type": "module",
 	"exports": {
 		".": "./src/index.ts",
+		"./subdivision-names": "./src/pricing/subdivision-names.ts",
 		"./testing": "./src/testing/index.ts"
 	},
 	"publishConfig": {
@@ -26,6 +27,10 @@
 			".": {
 				"types": "./dist/index.d.mts",
 				"default": "./dist/index.mjs"
+			},
+			"./subdivision-names": {
+				"types": "./dist/pricing/subdivision-names.d.mts",
+				"default": "./dist/pricing/subdivision-names.mjs"
 			},
 			"./testing": {
 				"types": "./dist/testing/index.d.mts",

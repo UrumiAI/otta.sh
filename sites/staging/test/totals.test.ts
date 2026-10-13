@@ -363,6 +363,12 @@ describe("checkoutFootnote — the reason the total is incomplete, stated truthf
 		);
 	});
 
+	test("#426: digital_only on a review taxed where the buyer is never says 'no location-based tax'", () => {
+		const note = checkoutFootnote("digital_only", rows, true, { taxByBuyerLocation: true }) ?? "";
+		expect(note).toMatch(/nothing in this order ships/i);
+		expect(note).not.toMatch(/location-based tax/i);
+	});
+
 	test("a complete total has no footnote, whatever the reason", () => {
 		expect(checkoutFootnote("address_needed", rows, false)).toBeNull();
 	});

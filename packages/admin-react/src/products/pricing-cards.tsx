@@ -150,7 +150,7 @@ const STOCK_COUNT = new Intl.NumberFormat("en-US");
 /**
  * A STOCK MOVE WHOSE ANSWER WAS LOST (no response, a 5xx, or an unreadable 2xx:
  * `Failure.indeterminate`), held for an explicit Retry — the same design as
- * `HeldRetry` on the retired Products page (ADR-0015, amended 2026-10-02).
+ * the Products page this screen replaced (ADR-0015).
  *
  * The write may have landed, so a re-send must carry the SAME nonce for the
  * ledger to answer it once. But a later click that merely looks like the lost
@@ -1449,6 +1449,9 @@ export function PricingStockEditor({ productId }: { productId: string }): React.
 				}
 				status={moving ? "Another stock change is still running — wait for it to finish." : ""}
 				confirmLabel={confirmRemove?.direction === "add" ? "Add" : "Remove"}
+				// Add only puts stock back; only Remove reduces what can be sold, so
+				// only it keeps the destructive style.
+				confirmTone={confirmRemove?.direction === "add" ? "neutral" : "danger"}
 				denyLabel="Cancel"
 				// A confirm pressed while a move is in flight would be dropped by the
 				// in-flight guard; it waits instead, and says why.

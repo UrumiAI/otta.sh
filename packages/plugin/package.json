@@ -21,7 +21,9 @@
 		".": "./src/index.ts",
 		"./plugin": "./src/plugin.ts",
 		"./sandbox-entry": "./src/sandbox-entry.ts",
-		"./testing": "./src/testing.ts"
+		"./subdivisions": "./src/subdivisions.ts",
+		"./testing": "./src/testing.ts",
+		"./trusted": "./src/trusted.ts"
 	},
 	"publishConfig": {
 		"exports": {
@@ -37,9 +39,17 @@
 				"types": "./dist/sandbox-entry.d.mts",
 				"default": "./dist/sandbox-entry.mjs"
 			},
+			"./subdivisions": {
+				"types": "./dist/subdivisions.d.mts",
+				"default": "./dist/subdivisions.mjs"
+			},
 			"./testing": {
 				"types": "./dist/testing.d.mts",
 				"default": "./dist/testing.mjs"
+			},
+			"./trusted": {
+				"types": "./dist/trusted.d.mts",
+				"default": "./dist/trusted.mjs"
 			}
 		}
 	},

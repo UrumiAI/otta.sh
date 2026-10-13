@@ -327,10 +327,11 @@ export const STARVING_TICKS = 3 * AGING_TICKS;
  * the provider call (`headroom`), and allowed past the ceiling once the call has
  * happened (`allowCommit`), so an action is never repeated for want of its record.
  *  - An email, from just before the send: the refund-total and recipient reads (two),
- *    building the sender (`EMAIL_SENDER_BUILD_READS` kv reads, two, on the first
- *    send), the send (one), its "last sent" record (`EMAIL_SENT_RECORD_WRITES`, one
- *    kv write, also on the first send), and marking it sent (three: the read, the write, the locator) —
- *    nine. `cron-leg-costs.test.ts` measures it with the REAL sender construction.
+ *    building the sender (`EMAIL_SENDER_BUILD_READS`, three, on the first send: two
+ *    kv reads and the tax options' settings read, issue #422), the send (one), its
+ *    "last sent" record (`EMAIL_SENT_RECORD_WRITES`, one kv write, also on the first
+ *    send), and marking it sent (three: the read, the write, the locator) — ten.
+ *    `cron-leg-costs.test.ts` measures it with the REAL sender construction.
  *  - A withdrawal: the cancel and, when Stripe refuses it, the read-back (two
  *    subrequests), the intent's resolution (two) and, on a last attempt, the
  *    give-up flag (two) — six; its record is the last four.
@@ -575,6 +576,24 @@ export const ORPHAN_READS_PER_STRIKE = 3;
 export const ORPHAN_TOMBSTONES_PER_TICK = 5;
 
 /**
+ * And at most this many in any {@link ORPHAN_TOMBSTONE_WINDOW_MS} (#447, from #415).
+ * The per-tick cap alone still let a systematic false positive — one that fooled
+ * every other gate — tombstone about 300 rows an hour, because an unfinished scan
+ * runs every tick. This bounds the worst case to 25 a day, each recoverable, while a
+ * lost delete hook (rare, one at a time) still clears the same day. The window is
+ * kept in the leg's own kv state (`OrphanState.tombstonedAt`), so it holds across
+ * ticks and isolates — while runs do not overlap and each reaches its `save()`, as
+ * the strikes do. A run that tombstones and then fails to save (or overlaps another)
+ * goes uncounted, so each such lapse adds at most `ORPHAN_TOMBSTONES_PER_TICK` to
+ * the day. A lost or garbled state forgets the window — and every strike with it,
+ * so nothing can be tombstoned again until three fresh strikes a cadence apart.
+ */
+export const ORPHAN_TOMBSTONES_PER_DAY = 25;
+
+/** The rolling window {@link ORPHAN_TOMBSTONES_PER_DAY} counts over. */
+export const ORPHAN_TOMBSTONE_WINDOW_MS = 24 * 60 * 60 * 1000;
+
+/**
  * After this many runs IN A ROW whose read of the same product REJECTED, the walk
  * steps past that row (leaving it live, logged every time) rather than stopping on
  * it forever. Three: two failures can be one outage spanning a cadence; a third,
@@ -684,10 +703,68 @@ const EXPIRY_SCAN_ORDERS = 100;
  * Orders whose expiry flip threw, waiting before they are tried again (review
  * round 3, B I4), so orders that fail every time cannot take every tick's bite and
  * starve the orders listed behind them. Per process, like the storage guard's heal
- * state; losing it (a restart, a fresh isolate) only means such an order is tried
- * once more sooner. Its cap is sized each tick by {@link expiryBackoffCap}.
+ * state, and so LOST with the isolate (a restart, a fresh isolate per tick). The
+ * last few failing orders are therefore also kept in the sweep's kv state
+ * (`SweepState.expiryFailures`, #478): the leg reads past those too, and counts
+ * them for its alert, so neither the back-off nor the alert depends on the
+ * isolate surviving. Its cap is sized each tick by {@link expiryBackoffCap}.
  */
 const ORDER_EXPIRY_BACKOFF = new UnitBackoff({ maxEntries: expiryBackoffCap(1) });
+
+/**
+ * How many different orders must be waiting out a failed flip before an
+ * all-failed expiry call fails the leg (#478): one order failing alone is logged,
+ * not alerted on. See the leg.
+ */
+const EXPIRY_FAILING_ORDERS_TO_ALERT = 2;
+
+/** Most failing orders the kv record keeps (the most recent failures win). A few
+ *  are enough: it backs off what the in-memory back-off may have lost, and the
+ *  alert needs only {@link EXPIRY_FAILING_ORDERS_TO_ALERT}. */
+const EXPIRY_FAILURES_KEPT = 8;
+
+/** A failing order is forgotten this long after its last failure: the longest
+ *  back-off wait plus one base wait, so an order still failing is retried (and
+ *  re-stamped) before it ages out, and one that stopped failing elsewhere (paid,
+ *  cancelled) drops out within the hour. */
+const EXPIRY_FAILURE_WINDOW_MS = UnitBackoff.DEFAULT_MAX_MS + UnitBackoff.DEFAULT_BASE_MS;
+
+/** One failing order in the kv record: failures in a row, and the last one. */
+interface ExpiryFailure {
+	n: number;
+	at: string;
+}
+
+/** When `failure`'s order may be tried again: the in-memory back-off's own wait
+ *  (doubling from the base, capped at the longest), from its last failure — a
+ *  stamp in the future counting as now. */
+function expiryRetryAt(failure: ExpiryFailure, nowMs: number): number {
+	const wait = Math.min(
+		UnitBackoff.DEFAULT_BASE_MS * 2 ** Math.min(failure.n - 1, 30),
+		UnitBackoff.DEFAULT_MAX_MS,
+	);
+	return Math.min(Date.parse(failure.at), nowMs) + wait;
+}
+
+/** `failures` without the entries past {@link EXPIRY_FAILURE_WINDOW_MS}, and at most
+ *  {@link EXPIRY_FAILURES_KEPT}, newest kept. A stamp in the future (a clock step
+ *  back, a hand-edited state) counts as now and is RE-STAMPED now, so it ages out
+ *  like any other instead of holding its order back for good. */
+function prunedExpiryFailures(
+	failures: Record<string, ExpiryFailure>,
+	nowMs: number,
+): Record<string, ExpiryFailure> {
+	const kept = Object.entries(failures)
+		.map(([id, failure]): [string, ExpiryFailure] =>
+			Date.parse(failure.at) > nowMs
+				? [id, { n: failure.n, at: new Date(nowMs).toISOString() }]
+				: [id, failure],
+		)
+		.filter(([, failure]) => nowMs - Date.parse(failure.at) < EXPIRY_FAILURE_WINDOW_MS)
+		.toSorted(([, a], [, b]) => Date.parse(b.at) - Date.parse(a.at))
+		.slice(0, EXPIRY_FAILURES_KEPT);
+	return Object.fromEntries(kept);
+}
 
 /**
  * The expiry back-off's cap for a bite of `expiryLimit` (polish P-3): the rows the
@@ -898,6 +975,9 @@ export interface CommerceSweepOptions {
 	readonly now?: Date;
 	/** Rows per scan page. The host clamps `limit` to 100, so this is a floor. */
 	readonly pageSize?: number;
+	/** `product-orphans`' cap over any 24 hours. Default `ORPHAN_TOMBSTONES_PER_DAY`;
+	 *  a suite that measures the walk's pacing, not the cap, raises it. */
+	readonly orphanTombstonesPerDay?: number;
 	/** Safety cap on scan pages per leg per tick — a sweep must never become an
 	 *  unbounded table walk on a large store. Exhausting it is not a truncation
 	 *  here: the leg's cursor resumes at the next tick. */
@@ -1499,11 +1579,26 @@ export async function runCommerceSweeps(
 	// Orders still backing off after a failed flip (review round 3, B I4) are read
 	// past: the look lists that many more and leaves them out, in the same query.
 	const expiryBackoff = options.expiryBackoff ?? ORDER_EXPIRY_BACKOFF;
+	/** Age out (and clamp) the kv record of failing orders; the record as kept. */
+	const pruneExpiryFailures = (): Record<string, ExpiryFailure> => {
+		const pruned = prunedExpiryFailures(state.expiryFailures, now.getTime());
+		if (JSON.stringify(pruned) !== JSON.stringify(state.expiryFailures)) {
+			state.expiryFailures = pruned;
+			stateChanged = true;
+		}
+		return state.expiryFailures;
+	};
 	let expirable: Promise<readonly OrderId[]> | undefined;
 	const expirableIds = (): Promise<readonly OrderId[]> =>
 		(expirable ??= (async () => {
 			expiryBackoff.setMaxEntries(expiryBackoffCap(expiryLimit));
-			const waiting = expiryBackoff.waiting(now.getTime());
+			const waiting = new Set<string>(expiryBackoff.waiting(now.getTime()));
+			// The kv record's failing orders wait too (#478): the in-memory
+			// back-off is gone whenever the isolate is.
+			pruneExpiryFailures();
+			for (const [id, failure] of Object.entries(state.expiryFailures)) {
+				if (expiryRetryAt(failure, now.getTime()) > now.getTime()) waiting.add(id);
+			}
 			const listed = await stores.orderStore.listExpirable(nowIso, {
 				limit: expiryLimit + 1 + waiting.size,
 				excludeIntentDue: true,
@@ -1511,32 +1606,78 @@ export async function runCommerceSweeps(
 			});
 			return waiting.size === 0 ? listed : listed.filter((id) => !waiting.has(id));
 		})());
+	/** Orders expired this tick, across both passes (the leg fails only on none). */
+	let ordersExpiredThisTick = 0;
+	/** Keep the kv record of failing orders in step with each flip (#478). */
+	const noteExpiryOutcome = (id: OrderId, failed: boolean): void => {
+		const before = state.expiryFailures[id];
+		if (failed) {
+			state.expiryFailures[id] = { n: (before?.n ?? 0) + 1, at: nowIso };
+		} else if (before !== undefined) {
+			delete state.expiryFailures[id];
+		} else {
+			return;
+		}
+		stateChanged = true;
+	};
 	const expireOrdersLeg = async (): Promise<void> =>
 		await run(
 			"expire-orders",
 			async (legBudget) => {
 				const limit = batchLeft("expire-orders", expiryLimit);
 				if (limit === 0) return { count: 0 };
-				return batchOutcome(
-					await expireOrdersBatch(
-						{
-							orderStore: stores.orderStore,
-							inventoryStore: stores.inventory,
-							couponStore: stores.couponStore,
-							clock: stores.clock,
-						},
-						now,
-						{
-							limit,
-							shouldContinue: legBudget.gate(0, LEG_QUERY_COSTS["expire-orders"].unit),
-							due: await expirableIds(),
-							backoff: expiryBackoff,
-							// The tick's query ceiling ends the leg; it is not one order failing.
-							stopsBatch: isSweepQueryCeilingError,
-						},
-					),
-					(count) => noteUnits("expire-orders", count, legBudget),
+				const result = await expireOrdersBatch(
+					{
+						orderStore: stores.orderStore,
+						inventoryStore: stores.inventory,
+						couponStore: stores.couponStore,
+						clock: stores.clock,
+					},
+					now,
+					{
+						limit,
+						shouldContinue: legBudget.gate(0, LEG_QUERY_COSTS["expire-orders"].unit),
+						due: await expirableIds(),
+						backoff: expiryBackoff,
+						// The tick's query ceiling ends the leg; it is not one order failing.
+						stopsBatch: isSweepQueryCeilingError,
+						onFlipOutcome: noteExpiryOutcome,
+					},
 				);
+				ordersExpiredThisTick += result.count;
+				const failing = pruneExpiryFailures();
+				// #447: every order this call tried threw (each is logged and backing
+				// off), and none expired this tick — not in this pass nor the first.
+				// That is an outage, not an idle leg, so the LEG fails: its `ok: false`
+				// row and FAILED line are what alerting watches. One failing order among
+				// good ones does not fail it, nor does a second pass that met only
+				// failing orders after the first made progress, and the back-off keeps a
+				// poison order from failing every tick: while it waits it is read past.
+				//
+				// AT LEAST TWO FAILING ORDERS (#478, from #470). On a quiet store ONE
+				// order that always fails would still fail the leg on each back-off
+				// retry (5, 10, 20 minutes, then hourly): an alert that flaps for ever on
+				// one order. So the leg fails only while at least
+				// `EXPIRY_FAILING_ORDERS_TO_ALERT` different orders failed within the
+				// last `EXPIRY_FAILURE_WINDOW_MS`. Counted from the kv record (#478
+				// review), not from this call's attempts nor the in-memory back-off: the
+				// Free bite tries ONE order a tick, so a per-call "two attempts" would
+				// never alert there; "N failing ticks in a row" never builds up either,
+				// because the ticks between retries skip the leg (every candidate is
+				// waiting); and the back-off is lost with the isolate. A store with a
+				// single pending order cannot tell an outage from a poison order; its
+				// failure lines are still logged.
+				if (
+					result.allFailed === true &&
+					ordersExpiredThisTick === 0 &&
+					Object.keys(failing).length >= EXPIRY_FAILING_ORDERS_TO_ALERT
+				) {
+					throw new Error(
+						"every order the leg tried failed to expire; each is backing off (see the " +
+							"'expiring order' lines above)",
+					);
+				}
+				return batchOutcome(result, (count) => noteUnits("expire-orders", count, legBudget));
 			},
 			{ isDue: async () => (await expirableIds()).length > 0, cheapDueCheck: true },
 		);
@@ -2249,22 +2390,27 @@ interface SweepState {
 	/** Ticks in a row each leg was passed over with work (deferred, or not reached)
 	 *  — what ages it to the head of a tick (`tickOrder`). */
 	waits: Partial<Record<SweepLeg, number>>;
+	/** The last few orders whose expiry flip threw, by id (#478): the durable half
+	 *  of the expiry back-off, and what the leg's alert counts. */
+	expiryFailures: Record<string, ExpiryFailure>;
 }
 
 /** A lost or garbled state only makes every scan due and resets the streaks —
  *  the same "a lost cursor costs a re-read" rule as every other cursor here. */
 async function readState(cursors: SweepCursorStore): Promise<SweepState> {
-	const state: SweepState = { lastRun: {}, deferrals: {}, waits: {} };
+	const state: SweepState = { lastRun: {}, deferrals: {}, waits: {}, expiryFailures: {} };
 	const raw = await cursors.read(STATE_CURSOR);
 	if (raw === null) return state;
 	try {
 		const parsed: unknown = JSON.parse(raw);
 		if (typeof parsed !== "object" || parsed === null) return state;
-		const { lastRun, deferrals, waits } = parsed as {
+		const { lastRun, deferrals, waits, expiryFailures } = parsed as {
 			lastRun?: unknown;
 			deferrals?: unknown;
 			waits?: unknown;
+			expiryFailures?: unknown;
 		};
+		state.expiryFailures = parseExpiryFailures(expiryFailures);
 		for (const leg of SWEEP_LEGS) {
 			const stamp = (lastRun as Record<string, unknown> | undefined)?.[leg];
 			if (typeof stamp === "string" && (MAINTENANCE_LEGS.includes(leg) || leg === "late-refunds")) {
@@ -2284,6 +2430,26 @@ async function readState(cursors: SweepCursorStore): Promise<SweepState> {
 	} catch {
 		return state;
 	}
+}
+
+/** The kv record's failing orders, well-formed entries only, at most
+ *  {@link EXPIRY_FAILURES_KEPT} (newest kept). Age is pruned by the leg, which
+ *  knows the tick's time. */
+function parseExpiryFailures(raw: unknown): Record<string, ExpiryFailure> {
+	if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return {};
+	const out: Record<string, ExpiryFailure> = {};
+	for (const [id, value] of Object.entries(raw as Record<string, unknown>)) {
+		if (id.length === 0 || id.length > 128 || typeof value !== "object" || value === null) continue;
+		const { n, at } = value as { n?: unknown; at?: unknown };
+		if (typeof n !== "number" || !Number.isInteger(n) || n < 1 || n > 1000) continue;
+		if (typeof at !== "string" || Number.isNaN(Date.parse(at))) continue;
+		out[id] = { n, at };
+	}
+	return Object.fromEntries(
+		Object.entries(out)
+			.toSorted(([, a], [, b]) => Date.parse(b.at) - Date.parse(a.at))
+			.slice(0, EXPIRY_FAILURES_KEPT),
+	);
 }
 
 // ── cursors ─────────────────────────────────────────────────────────────────
@@ -3079,7 +3245,9 @@ async function releaseOrphanedRedemptions(
  *     each strike `ORPHAN_READS_PER_STRIKE` consecutive misses in one run. Any read
  *     that finds the document wipes the row's strikes.
  *  5. A CAP of `ORPHAN_TOMBSTONES_PER_TICK` tombstones per tick (its second pass
- *     included), logged when hit.
+ *     included), and of `ORPHAN_TOMBSTONES_PER_DAY` in any 24 hours, each logged
+ *     when hit. A row whose last strike finds the daily cap full is stepped past
+ *     with its strikes kept, and judged again on a later pass.
  *  6. The GRACE window: a row younger than `PRODUCT_ORPHAN_GRACE_MS` is not read.
  *
  * A breaker that trips (1, 2, or a canary read `null`) is direct evidence the CMS is
@@ -3137,7 +3305,9 @@ async function softDeleteOrphanedProducts(
 	const nowIso = now.toISOString();
 	const cutoff = new Date(nowMs - PRODUCT_ORPHAN_GRACE_MS).toISOString();
 	const raw = await cursors.read(PRODUCT_ORPHAN_CURSOR);
-	const state = parseOrphanState(raw, nowMs);
+	const perDay = options.orphanTombstonesPerDay ?? ORPHAN_TOMBSTONES_PER_DAY;
+	const state = parseOrphanState(raw, nowMs, perDay);
+	let dayCapSaid = false;
 	const save = async (): Promise<void> => {
 		const next = JSON.stringify(state);
 		if (next !== raw) await cursors.write(PRODUCT_ORPHAN_CURSOR, next);
@@ -3405,6 +3575,18 @@ async function softDeleteOrphanedProducts(
 				continue;
 			}
 			// The last strike.
+			if (state.tombstonedAt.length >= perDay) {
+				// The daily cap: step past, strikes kept — stopping here would re-read
+				// this row every tick until the window had room. Said once a run.
+				if (!dayCapSaid) {
+					dayCapSaid = true;
+					const line = `reached the cap of ${String(perDay)} tombstones in 24 hours; rows on their last strike are left live until the window has room`;
+					console.error(`[otta] cron sweep product-orphans: ${line}`);
+					anomalies.push(line);
+				}
+				advance(read.item);
+				continue;
+			}
 			if (tombstones.count >= ORPHAN_TOMBSTONES_PER_TICK) {
 				const line = `reached the cap of ${String(ORPHAN_TOMBSTONES_PER_TICK)} tombstones in one tick; the rest wait for the next tick`;
 				console.error(`[otta] cron sweep product-orphans: ${line}`);
@@ -3422,6 +3604,7 @@ async function softDeleteOrphanedProducts(
 				toIdempotencyKey(deriveDeleteIdempotencyKey(PRODUCTS_COLLECTION, id)),
 			);
 			delete state.suspects[id];
+			state.tombstonedAt.push(nowIso);
 			deleted++;
 			tombstones.count++;
 			advance(read.item);
@@ -3482,13 +3665,16 @@ interface OrphanState {
 	passStartedAt: string | null;
 	/** How long the last COMPLETE pass took, ms — what `orphanMarkTtlMs` scales by. */
 	lastPassMs: number | null;
+	/** When each tombstone of the last `ORPHAN_TOMBSTONE_WINDOW_MS` was made, oldest
+	 *  first — the daily cap's count. */
+	tombstonedAt: string[];
 }
 
 /** A lost or garbled state costs a re-read and restarts every strike — the safe
  *  direction: nothing is tombstoned on the strength of a lost record. Entries past
  *  their lifetime (`orphanMarkTtlMs`), and any beyond `ORPHAN_MAX_SUSPECTS` per map,
  *  are dropped here, which is what keeps the document bounded. */
-function parseOrphanState(raw: string | null, nowMs: number): OrphanState {
+function parseOrphanState(raw: string | null, nowMs: number, perDay: number): OrphanState {
 	const state: OrphanState = {
 		at: null,
 		id: null,
@@ -3496,6 +3682,7 @@ function parseOrphanState(raw: string | null, nowMs: number): OrphanState {
 		failures: {},
 		passStartedAt: null,
 		lastPassMs: null,
+		tombstonedAt: [],
 	};
 	if (raw === null || raw === "") return state;
 	try {
@@ -3519,10 +3706,32 @@ function parseOrphanState(raw: string | null, nowMs: number): OrphanState {
 		const ttlMs = orphanMarkTtlMs(state);
 		state.suspects = parseMarks(value.suspects, nowMs, ttlMs);
 		state.failures = parseMarks(value.failures, nowMs, ttlMs);
+		state.tombstonedAt = parseTombstoneTimes(value.tombstonedAt, nowMs, perDay);
 		return state;
 	} catch {
 		return state;
 	}
+}
+
+/**
+ * The tombstone times still inside the window, oldest first, at most `perDay` (the
+ * newest kept: they are the ones that still count). A time in the future (a clock
+ * step back) is kept, counted as made NOW: its slot frees 24 hours from now rather
+ * than never, and a clock change cannot empty the window at once.
+ */
+function parseTombstoneTimes(raw: unknown, nowMs: number, perDay: number): string[] {
+	if (!Array.isArray(raw)) return [];
+	const times: number[] = [];
+	for (const entry of raw) {
+		if (typeof entry !== "string") continue;
+		const ms = Date.parse(entry);
+		if (Number.isNaN(ms) || nowMs - ms >= ORPHAN_TOMBSTONE_WINDOW_MS) continue;
+		times.push(Math.min(ms, nowMs));
+	}
+	return times
+		.toSorted((a, b) => a - b)
+		.slice(-perDay)
+		.map((ms) => new Date(ms).toISOString());
 }
 
 function parseMarks(raw: unknown, nowMs: number, ttlMs: number): Record<string, OrphanMark> {

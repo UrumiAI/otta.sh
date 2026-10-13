@@ -283,6 +283,31 @@ test("the Discount row names the coupon the order was priced with", async () => 
 	expect(view.container.textContent).toContain("Discount · qa2admin2");
 });
 
+test("#426: an order taxed under 'based on billing' states where its tax was charged", async () => {
+	const payload = detailFor("paid");
+	const at = async (taxAddress: object) =>
+		(
+			await show({
+				...payload,
+				order: { ...payload.order, totals: { ...payload.order.totals, taxAddress } as never },
+			})
+		).container.textContent;
+	expect(await at({ basis: "billing", country: "DE", region: null })).toContain(
+		"Tax locationDE (buyer-declared)",
+	);
+	expect(await at({ basis: "base", country: "GB", region: null })).toContain(
+		"Tax locationGB (shop address)",
+	);
+	expect(await at({ basis: "shipping", country: "US", region: "CA" })).toContain(
+		"Tax locationUS-CA (ship-to)",
+	);
+});
+
+test("#426: an order without a recorded tax location shows no such row", async () => {
+	const view = await show(detailFor("paid"));
+	expect(view.container.textContent).not.toContain("Tax location");
+});
+
 test("a recorded fulfilment shows its tracking link", async () => {
 	const payload = detailFor("shipped");
 	const view = await show({
@@ -415,4 +440,105 @@ test("a recorded refund offers no resolve controls", async () => {
 	const view = await show(detailFor("paid"));
 	await fire(tab(view, "money"), "click");
 	expect(view.container.querySelector('[data-testid="resolve-refund-confirmed"]')).toBeNull();
+});
+
+// ── Issue #422: itemized tax rows ────────────────────────────────────────────
+
+test("Totals lists one row per tax when the order carries tax rows, in place of the single Tax row", async () => {
+	const payload = detailFor("paid");
+	const withRows: DetailPayload = {
+		...payload,
+		order: {
+			...payload.order,
+			totals: {
+				...payload.order.totals,
+				taxRows: [
+					{ label: "GST 18%", amountCents: 90_000 },
+					{ label: "<b>GST 5%</b>", amountCents: 8750 },
+				],
+			},
+		},
+	} as DetailPayload;
+	const view = await show(withRows);
+	const totals = table(view, "detail-totals");
+	expect(
+		bodyRows(totals).map((row) => [row.cells.item(0)?.textContent, row.cells.item(1)?.textContent]),
+	).toEqual([
+		["Subtotal", formatAmount(SUBTOTAL_CENTS, CUR)],
+		["Discount", formatAmount(DISCOUNT_CENTS, CUR)],
+		["Shipping", formatAmount(SHIPPING_CENTS, CUR)],
+		["GST 18%", formatAmount(90_000, CUR)],
+		// Merchant text, rendered as text — never as markup.
+		["<b>GST 5%</b>", formatAmount(8750, CUR)],
+		["Total", formatAmount(TOTAL_CENTS, CUR)],
+	]);
+	expect(totals.querySelector("b")).toBeNull();
+});
+
+test("an order without tax rows (older order, or nothing to itemize) keeps the single Tax row", async () => {
+	const view = await show(detailFor("paid"));
+	const totals = table(view, "detail-totals");
+	expect(bodyRows(totals).map((row) => row.cells.item(0)?.textContent)).toEqual([
+		"Subtotal",
+		"Discount",
+		"Shipping",
+		"Tax",
+		"Total",
+	]);
+});
+
+// ── Downloads: revoke access after a dispute (issue #447) ─────────────────────
+
+/** A digital order with the plugin's verdict on its download access. */
+function digital(payload: DetailPayload, downloads?: "open" | "revoked"): DetailPayload {
+	return {
+		...payload,
+		order: {
+			...payload.order,
+			lines: payload.order.lines.map((line) => ({ ...line, fulfillmentKind: "digital" })),
+		},
+		...(downloads !== undefined ? { downloads } : {}),
+	};
+}
+
+test("open downloads offer Revoke download access, behind a confirm that posts the order id", async () => {
+	const view = await show(digital(detailFor("paid"), "open"));
+	await fire(tab(view, "fulfilment"), "click");
+	await fire(one<HTMLButtonElement>(view, '[data-testid="revoke-downloads"]'), "click");
+	const text = one(view, '[data-testid="otta-confirm-text"]').textContent ?? "";
+	expect(text).toContain("can’t be undone");
+	expect(text).toContain("does not refund");
+
+	apiFetch.mockClear();
+	apiFetch.mockResolvedValue(
+		new Response(JSON.stringify({ data: { ok: true, notice: null } }), {
+			status: 200,
+			headers: { "Content-Type": "application/json" },
+		}),
+	);
+	await fire(one<HTMLButtonElement>(view, '[data-testid="otta-confirm-yes"]'), "click");
+	const sent = apiFetch.mock.calls
+		.map((call) => JSON.parse(String(call[1]?.body ?? "{}")) as Record<string, unknown>)
+		.find((body) => body["action_id"] === "orders:revoke-downloads");
+	expect(sent?.["value"]).toEqual({ orderId: ORDER_ID });
+});
+
+test("revoked downloads say so, with no button and no 'Buyers can download' line", async () => {
+	const view = await show(digital(detailFor("paid"), "revoked"));
+	await fire(tab(view, "fulfilment"), "click");
+	expect(one(view, '[data-testid="downloads-revoked"]').textContent).toContain(
+		"Download access was revoked",
+	);
+	expect(view.container.querySelector('[data-testid="revoke-downloads"]')).toBeNull();
+	expect(view.container.textContent).not.toContain("Buyers can download");
+});
+
+test("no Downloads group when the plugin sends no verdict (physical, or money returned)", async () => {
+	const physical = await show(detailFor("paid"));
+	await fire(tab(physical, "fulfilment"), "click");
+	expect(physical.container.querySelector('[data-testid="detail-downloads"]')).toBeNull();
+
+	const refunded = await show(digital(detailFor("refunded")));
+	await fire(tab(refunded, "fulfilment"), "click");
+	expect(refunded.container.querySelector('[data-testid="detail-downloads"]')).toBeNull();
 });

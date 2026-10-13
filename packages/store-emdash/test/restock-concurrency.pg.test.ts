@@ -392,7 +392,7 @@ describe.skipIf(!PG_ENABLED)("restock / removeStock concurrency [postgres]", () 
 		// The merchant shape is the one that genuinely reaches the compare-and-set
 		// ceiling, because a REFUSED removal still writes its ledger entry and the
 		// writes are therefore not bounded by the units. Both numbers are recorded in
-		// this package's README, and both are asserted so the shape cannot quietly get
+		// `docs/store-emdash/design-notes.md`, and both are asserted so the shape cannot quietly get
 		// worse: the depth stays inside the budget the retry loop enforces, and the
 		// typed failures stay a minority of the crowd rather than becoming the norm.
 		expect(metrics.maxAttempts, "removal shape: depth within the ceiling").toBeLessThanOrEqual(
