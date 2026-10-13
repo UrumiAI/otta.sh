@@ -170,6 +170,7 @@ async function loadPriceDisplay(
 	const zone = resolveShippingZone(await deps.shippingRules.listZones(), {
 		requiresShipping: true,
 		destination: { country: base.country, region: base.region },
+		askForNarrower: false,
 	});
 	const ratesByClass: Record<TaxClassId, number> = {};
 	const ratesPpmByClass: Record<TaxClassId, number> = {};

@@ -354,6 +354,27 @@ describe("loadShopPriceDisplay — what the store's options say to show", () => 
 		expect(await load()).toMatchObject({ mode: "incl", ratesByClass: {} });
 	});
 
+	test("#478 x #488: a base address that contains a narrower zone is priced at its own zone, never asked", async () => {
+		await shippingRules.createZone({ id: "z-es-cn", name: "Canary Islands", regions: ["ES-CN"] });
+		await shippingRules.createZone({ id: "z-es-tf", name: "Tenerife", regions: ["ES-TF"] });
+		await taxRules.createRate({
+			id: "t-es-cn-std",
+			taxClassId: "standard",
+			zoneId: "z-es-cn",
+			rateBps: 700,
+			appliesToShipping: false,
+		});
+		await taxRules.createRate({
+			id: "t-es-tf-std",
+			taxClassId: "standard",
+			zoneId: "z-es-tf",
+			rateBps: 300,
+			appliesToShipping: false,
+		});
+		await save({ ...on, baseAddress: { country: "ES", region: "CN" } });
+		expect(await load()).toMatchObject({ mode: "incl", ratesByClass: { standard: 700 } });
+	});
+
 	test("end to end: a 9.99 product in a 20% base zone shows 11.99 including tax", async () => {
 		await save(on);
 		expect(shopDisplayPrice(await load(), item(999))).toBe(1199);
