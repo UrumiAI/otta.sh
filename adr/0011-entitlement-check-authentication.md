@@ -181,3 +181,8 @@ refunded is refused while the ledger shows the money captured. A cancellation wh
 back unverified leaves the order uncancelled until that refund is confirmed in Money → Refunds,
 which finishes the cancel and revokes; Mark refunded is refused until then. A partial refund
 keeps access by design.
+
+**A console path for a chargeback (noted 2026-10-12, issue #447).** The order detail now has
+Revoke download access: it revokes the order's grants (`revokeByOrder`, terminal) and records the
+operator on a note in History, without moving the order or its money. Otta still acts on no
+`charge.dispute.*` event; closing access after a dispute is the operator's step.

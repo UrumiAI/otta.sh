@@ -486,3 +486,59 @@ test("an order without tax rows (older order, or nothing to itemize) keeps the s
 		"Total",
 	]);
 });
+
+// ── Downloads: revoke access after a dispute (issue #447) ─────────────────────
+
+/** A digital order with the plugin's verdict on its download access. */
+function digital(payload: DetailPayload, downloads?: "open" | "revoked"): DetailPayload {
+	return {
+		...payload,
+		order: {
+			...payload.order,
+			lines: payload.order.lines.map((line) => ({ ...line, fulfillmentKind: "digital" })),
+		},
+		...(downloads !== undefined ? { downloads } : {}),
+	};
+}
+
+test("open downloads offer Revoke download access, behind a confirm that posts the order id", async () => {
+	const view = await show(digital(detailFor("paid"), "open"));
+	await fire(tab(view, "fulfilment"), "click");
+	await fire(one<HTMLButtonElement>(view, '[data-testid="revoke-downloads"]'), "click");
+	const text = one(view, '[data-testid="otta-confirm-text"]').textContent ?? "";
+	expect(text).toContain("can’t be undone");
+	expect(text).toContain("does not refund");
+
+	apiFetch.mockClear();
+	apiFetch.mockResolvedValue(
+		new Response(JSON.stringify({ data: { ok: true, notice: null } }), {
+			status: 200,
+			headers: { "Content-Type": "application/json" },
+		}),
+	);
+	await fire(one<HTMLButtonElement>(view, '[data-testid="otta-confirm-yes"]'), "click");
+	const sent = apiFetch.mock.calls
+		.map((call) => JSON.parse(String(call[1]?.body ?? "{}")) as Record<string, unknown>)
+		.find((body) => body["action_id"] === "orders:revoke-downloads");
+	expect(sent?.["value"]).toEqual({ orderId: ORDER_ID });
+});
+
+test("revoked downloads say so, with no button and no 'Buyers can download' line", async () => {
+	const view = await show(digital(detailFor("paid"), "revoked"));
+	await fire(tab(view, "fulfilment"), "click");
+	expect(one(view, '[data-testid="downloads-revoked"]').textContent).toContain(
+		"Download access was revoked",
+	);
+	expect(view.container.querySelector('[data-testid="revoke-downloads"]')).toBeNull();
+	expect(view.container.textContent).not.toContain("Buyers can download");
+});
+
+test("no Downloads group when the plugin sends no verdict (physical, or money returned)", async () => {
+	const physical = await show(detailFor("paid"));
+	await fire(tab(physical, "fulfilment"), "click");
+	expect(physical.container.querySelector('[data-testid="detail-downloads"]')).toBeNull();
+
+	const refunded = await show(digital(detailFor("refunded")));
+	await fire(tab(refunded, "fulfilment"), "click");
+	expect(refunded.container.querySelector('[data-testid="detail-downloads"]')).toBeNull();
+});

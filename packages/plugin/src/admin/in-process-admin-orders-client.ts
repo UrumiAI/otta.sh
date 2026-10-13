@@ -93,6 +93,8 @@
 import {
 	adminNextStates,
 	appendOrderNote,
+	revokeOrderDownloadAccess,
+	isDownloadDeliverableState,
 	cancelOrderWithRefund,
 	capturedOnlyThroughLegacy,
 	emailTemplateForState,
@@ -179,6 +181,7 @@ import type {
 	ResolveFollowUpWire,
 	ResolveReconciliationResult,
 	ResolveUnverifiedRefundResult,
+	RevokeDownloadAccessResult,
 	TransitionOrderResult,
 } from "./admin-orders-surface.js";
 
@@ -411,10 +414,30 @@ export class InProcessAdminOrdersClient implements AdminOrdersSurface {
 		// refunds, QA2 M4). The same one document read.
 		const ledger = await this.#stores.orderStore.readOrderLedger(toOrderId(orderId));
 		if (ledger === null) return null;
+		const downloads = await this.#downloadAccess(ledger.order);
 		return {
 			order: toOrderDetailWire(ledger.order),
 			allowedTransitions: adminNextStates(ledger.order, ledger),
+			...(downloads !== undefined ? { downloads } : {}),
 		};
+	}
+
+	/**
+	 * The order's download access for the detail (issue #447): only on a paid-side
+	 * order (the domain's deliverable states) with a digital line — `open` while
+	 * any digital line's grant is active, `revoked` once none is. Read with the
+	 * gate's own `check`, so the console shows what the download route would do.
+	 * A paid order whose grant was never written (a settle that crashed between
+	 * paid and grant) reads as `revoked` too: nothing downloads there either.
+	 */
+	async #downloadAccess(order: Order): Promise<"open" | "revoked" | undefined> {
+		if (!isDownloadDeliverableState(order.state)) return undefined;
+		const skus = order.lines.filter((l) => l.fulfillmentKind === "digital").map((l) => l.sku);
+		if (skus.length === 0) return undefined;
+		for (const sku of skus) {
+			if (await this.#stores.entitlementStore.check({ orderId: order.id, sku })) return "open";
+		}
+		return "revoked";
 	}
 
 	/** POST an order-status transition, as the admin makes it
@@ -997,6 +1020,45 @@ export class InProcessAdminOrdersClient implements AdminOrdersSurface {
 		if (res.ok) return { ok: true, appended: res.appended, note: toNoteWire(res.note) };
 		// The add-note surface carries no `reason` on the wire — only the status.
 		return { ok: false, status: res.reason === "ORDER_NOT_FOUND" ? 404 : 400 };
+	}
+
+	/** POST revoke-downloads (issue #447): `revokeOrderDownloadAccess` over the
+	 *  client's stores. The key is required — the action derives one per order,
+	 *  because revocation is terminal and is recorded once. */
+	async revokeDownloadAccess(
+		orderId: string,
+		input: { revokedBy: string },
+		opts: { idempotencyKey: string },
+	): Promise<RevokeDownloadAccessResult> {
+		try {
+			requireIdToken("orderId", orderId);
+			requireBoundedText("revokedBy", input.revokedBy, 1, 200);
+		} catch (err) {
+			if (isCommerceInputError(err)) return { ok: false, status: 400, reason: "INVALID_INPUT" };
+			throw err;
+		}
+		const res = await revokeOrderDownloadAccess(
+			{
+				orderStore: this.#stores.orderStore,
+				entitlementStore: this.#stores.entitlementStore,
+				orderNotesStore: this.#stores.orderNotesStore,
+			},
+			{
+				orderId: toOrderId(orderId),
+				revokedBy: input.revokedBy,
+				idempotencyKey: toIdempotencyKey(opts.idempotencyKey),
+			},
+		);
+		if (res.ok) return { ok: true, revoked: res.revoked };
+		switch (res.reason) {
+			case "ORDER_NOT_FOUND":
+				return { ok: false, status: 404, reason: res.reason };
+			case "NO_DOWNLOADS":
+			case "NOT_DELIVERABLE":
+				return { ok: false, status: 409, reason: res.reason };
+			case "EMPTY_REVOKED_BY":
+				return { ok: false, status: 400, reason: "INVALID_INPUT" };
+		}
 	}
 
 	// -- internals -------------------------------------------------------------

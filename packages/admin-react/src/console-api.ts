@@ -321,6 +321,10 @@ export interface DetailPayload {
 	readonly timeline: OrderTimeline | null;
 	readonly refunds: RefundsSummary | null;
 	readonly notes: readonly OrderNote[];
+	/** Download access (issue #447), decided by the plugin from the domain's
+	 *  deliverable states and the order's grants: `open` offers Revoke download
+	 *  access, `revoked` says it was revoked; absent shows neither. */
+	readonly downloads?: "open" | "revoked";
 	readonly vocabulary: Vocabulary;
 }
 

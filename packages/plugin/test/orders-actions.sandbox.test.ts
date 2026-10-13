@@ -85,6 +85,7 @@ import {
 	type Order,
 } from "@otta-sh/domain";
 import {
+	EmdashEntitlementStore,
 	EmdashInventoryStore,
 	EmdashOrderStore,
 	systemClock,
@@ -285,11 +286,13 @@ describe("the Orders write path (workerd sandbox)", () => {
 		// The combination that used to blank a console: a control rendered for an id
 		// the dispatcher does not know. The set is read straight off the dispatch
 		// table, and this drives every member to prove it.
-		// 7 named (incl. the two answers to an unverified refund, review round 2) +
+		// 8 named (incl. the two answers to an unverified refund, review round 2, and
+		// revoke-downloads, #447) +
 		// one per order state + one per ONE-CLICK cancellation reason. `other` has no
 		// one-click control, so it derives no id (and the deleted `-review` pair
 		// derives none either).
-		expect(ORDERS_ACTION_IDS.size).toBe(7 + 10 + 4);
+		expect(ORDERS_ACTION_IDS.size).toBe(8 + 10 + 4);
+		expect(ORDERS_ACTION_IDS.has("orders:revoke-downloads")).toBe(true);
 		expect(ORDERS_ACTION_IDS.has("orders:resolve-refund-confirmed")).toBe(true);
 		expect(ORDERS_ACTION_IDS.has("orders:resolve-refund-voided")).toBe(true);
 		expect(ORDERS_ACTION_IDS.has("orders:cancel-other")).toBe(false);
@@ -512,6 +515,35 @@ describe("the Orders write path (workerd sandbox)", () => {
 		const replay = await act("orders:add-note", value);
 		expect(replay.notice?.variant).toBe("default");
 		expect(replay.notice?.title).toBe("Already added");
+	});
+
+	// -- downloads --------------------------------------------------------------
+
+	test("revoke-downloads closes the order's grant in the sandbox, and a replay says so", async () => {
+		// Issue #447: the console's way to close access after a dispute or chargeback.
+		const id = await seedOrder();
+		const entitlements = new EmdashEntitlementStore({
+			storage,
+			idGen: uuidIdGen,
+			clock: systemClock,
+		});
+		const scope = { orderId: toOrderId(id), sku: toSku(skuOf(id)) };
+		await entitlements.grant({
+			...scope,
+			productId: null,
+			buyerRef: "buyer@example.com",
+			source: "order_paid",
+			grantIdempotencyKey: idempotencyKey(`ent:${id}`),
+		});
+		expect(await entitlements.check(scope)).toBe(true);
+
+		const first = await act("orders:revoke-downloads", { orderId: id });
+		expect(first.notice?.title).toBe("Download access revoked");
+		expect(await entitlements.check(scope)).toBe(false);
+		expect((await readOrder(id)).state).toBe("paid");
+
+		const replay = await act("orders:revoke-downloads", { orderId: id });
+		expect(replay.notice?.title).toBe("Download access already revoked");
 	});
 
 	test("add-note with a blank author or body refuses inline and writes nothing", async () => {

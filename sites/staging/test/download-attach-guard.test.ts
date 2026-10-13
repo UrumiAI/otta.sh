@@ -39,10 +39,12 @@ import { onRequest } from "../src/middleware.js";
 const SITE = "http://localhost:4321";
 const ADMIN_ROUTE = "/_emdash/api/plugins/otta/admin";
 const PRODUCT = "prod_1";
-/** A key exactly as the upload endpoint mints it for {@link PRODUCT}. */
+/** A key exactly as the upload endpoint mints it for {@link PRODUCT}, minted
+ *  now: the guard refuses an upload over six days old by its ULID when the
+ *  bucket answers no `uploaded` stamp, as this file's fake does (issue #447). */
 const KEY = mintDownloadAssetKey(
 	PRODUCT as Parameters<typeof mintDownloadAssetKey>[0],
-	Date.UTC(2026, 9, 6),
+	Date.now(),
 	new Uint8Array(DOWNLOAD_KEY_RANDOM_BYTES).fill(7),
 );
 const ADMIN = { id: "user-admin", role: 50 };
