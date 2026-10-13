@@ -106,13 +106,13 @@ pay must not change silently (user decision 4).
   amount entered without tax and for shipping; for a line entered with tax, the tax inside
   the gross at that rate, `ceil(G × 100000 / 110000)`, so the net can never go negative.
 - Built since: the checkout and order pages hide the Tax row when tax is off (#420); the emails still show it (follow-up).
-- Follow-ups, not built: shop-page price display; per-line prices with/without tax on the
-  review table and the cart page; postcode/city matching, priority/compound rates, CSV;
-  customer tax-exempt; adjusting inclusive prices for non-base buyers; finer rate
-  precision; buyer-location tax for digital goods; itemized tax rows on the order pages, the emails and
-  the admin order detail; marking a tax-inclusive order on the admin order detail (its
-  subtotal is the gross, and nothing there says the tax is included); recording each line's
-  tax status in the frozen order tax record (PR 2b left the record's shape unchanged).
+- Built since: shop-page price display (#477), cart-page line prices (#477), per-line prices
+  with/without tax on the review table (#477, `showCheckoutLinesTax`), finer rate precision
+  (#475), buyer-location tax for digital goods (#467), itemized tax rows on the order pages,
+  the emails and the admin order detail (#469), the admin order detail's "Prices included tax"
+  marker (#461), and each line's tax status in the frozen order tax snapshot (#466).
+- Follow-ups, not built: postcode/city matching, priority/compound rates, CSV;
+  customer tax-exempt; adjusting inclusive prices for non-base buyers.
 
 ## Addendum (PR 2b): product tax status and shipping-method taxable
 
@@ -156,7 +156,7 @@ Decided by the maintainer: Otta does not add WooCommerce's coupon allocation, no
   that ships nothing — the checkout's existing zero-JS "where" block, shown with no delivery
   options. Under `billing` such a cart is taxed at that location; with none given it falls
   back to the base address (decision 5, as before). The location is the buyer's own
-  declaration, not verified evidence. A location no zone matches gets 0%, never a refusal; a
+  declaration, not verified evidence: a buyer can pick a country taxed at 0%, as in WooCommerce (the options screen says so). A location no zone matches gets 0%, never a refusal; a
   malformed one is refused with the ship-to's reasons, and so is a location without a region
   in a country whose zones go down to regions (ES with ES-CN zoned apart, CA/QC, US states):
   `SHIPPING_REGION_CODE_REQUIRED`, exactly as for a ship-to, never a silent 0%. A cart that ships

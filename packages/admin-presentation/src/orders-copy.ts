@@ -313,26 +313,9 @@ export const MARK_REFUNDED_CONFIRM = {
 /** DA-7: no control at all, one line naming the reason. */
 export const FULLY_REFUNDED_NOTE = "Fully refunded — nothing left to refund.";
 
-/**
- * The additive-refunds warning, and the ONE genuine per-surface split in this
- * module.
- *
- * Both screens must say that recording a refund twice records two refunds. Only
- * the BLOCK KIT screen has a "next step" to point at — its DA-3 flow stages the
- * amount server-side and renders a confirm button on a second render — so it
- * prefixes {@link REFUND_REVIEW_STEP_PREFIX} to this and the React screen does
- * not. Sharing the sentence and splitting the prefix is what keeps the shared
- * half honest; sharing the whole thing would have put a step reference on a
- * screen that has no such step.
- */
+/** The additive-refunds warning: recording a refund twice records two refunds. */
 export const REFUND_ADDITIVE_NOTE =
 	"Refunds are additive: recording one twice records two refunds.";
-
-/** The Block Kit screen's own lead-in to {@link REFUND_ADDITIVE_NOTE}. */
-export const REFUND_REVIEW_STEP_PREFIX = "Review the amount on the next step.";
-
-/** The partial-refund group's alert title. */
-export const REFUND_PARTIAL_BANNER_TITLE = "A recorded refund cannot be reversed here";
 
 /** A refund amount that does not parse to a positive amount. Both surfaces
  *  refuse before anything is sent, and both say the same thing — including the

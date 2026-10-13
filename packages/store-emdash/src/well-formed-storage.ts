@@ -67,7 +67,13 @@
  *   legacy SQLite or D1 row still holds it — nothing heals there), as an `in`.
  *   A raw spelling holding NUL is left out: Postgres refuses it (22021), and its
  *   driver folds a lone surrogate anyway. A range or prefix operand has one
- *   value, so it matches the repaired text only.
+ *   value, so it matches the repaired text only. On SQLite and D1 that means it
+ *   does NOT match a row whose text is stored raw, and since #447 that is every
+ *   row written there, not only legacy ones (writes repair on Postgres only).
+ *   The admin order search's `startsWith` is one such operand: a search holding
+ *   a lone surrogate does not find a SQLite or D1 order whose text holds the
+ *   same one (#478). Nothing a sweep or checkout depends on ranges over
+ *   shopper text.
  * - **KEYS NEVER MERGE.** Two object keys that repair to the same text keep one
  *   entry (see `repairIllFormedText`) and the drop is logged as an error. The key
  *   that was already well formed wins; that assumes it was written after the

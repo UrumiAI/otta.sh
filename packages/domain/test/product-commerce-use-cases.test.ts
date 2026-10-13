@@ -14,6 +14,7 @@ import {
 	deactivateProductVariant,
 	getProductCommerce,
 	listProductVariants,
+	restoreProductCommerce,
 	softDeleteProductCommerce,
 	updateProductCommerceFields,
 	updateProductVariantFields,
@@ -177,7 +178,7 @@ describe("product-commerce use-cases (over the in-memory fakes)", () => {
 		expect(inventory.onHand("SKU-X")).toBe(0);
 	});
 
-	test("getProductCommerce / softDeleteProductCommerce delegate to the store", async () => {
+	test("getProductCommerce / softDeleteProductCommerce / restoreProductCommerce delegate to the store", async () => {
 		const pid = productId("prod-3");
 		await upsertProductCommerce(
 			{ productCommerce, inventory },
@@ -192,6 +193,15 @@ describe("product-commerce use-cases (over the in-memory fakes)", () => {
 		const afterDelete = await getProductCommerce(productCommerce, pid);
 		expect(afterDelete?.deletedAt).not.toBeNull();
 		expect(afterDelete?.active).toBe(false);
+
+		await restoreProductCommerce(
+			productCommerce,
+			pid,
+			idempotencyKey("restore-1"),
+			"2999-01-01T00:00:00.000Z",
+		);
+		const afterRestore = await getProductCommerce(productCommerce, pid);
+		expect(afterRestore).toMatchObject({ deletedAt: null, active: false, sku: "SKU-3" });
 	});
 
 	// -- activateProductCommerce (the afterPublish→activate follow-up) ------

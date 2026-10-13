@@ -67,6 +67,13 @@ export interface ExpireOrdersBatchOptions extends SweepBatchOptions {
 	 * afford (`UnitBackoff.setMaxEntries`).
 	 */
 	readonly backoff?: UnitBackoff;
+	/**
+	 * Told each attempted order's flip outcome: `true` when its flip threw (the
+	 * order is logged and, with a `backoff`, backed off), `false` when it did not
+	 * (expired, or lost its guard). The scheduled sweep keeps the failing ones in
+	 * its durable state (#478), which an in-memory `backoff` cannot be.
+	 */
+	readonly onFlipOutcome?: (id: OrderId, failed: boolean) => void;
 }
 
 /** {@link expireOrdersBatch}'s answer. */
@@ -79,8 +86,8 @@ export interface ExpireOrdersBatchResult extends SweepBatchResult {
 	 * is logged but is not a failed attempt. Each order is still caught and backed off on
 	 * its own, so one failing order never ends the batch; this flag is what lets the
 	 * caller tell "the store is refusing every flip" (an outage) from "nothing to
-	 * do" — the scheduled sweep fails the leg on it, which is what its per-leg
-	 * alerting watches. One failure among successes does not set it (that order is
+	 * do" — the scheduled sweep fails the leg on it (once two different orders
+	 * are failing, #478), which is what its per-leg alerting watches. One failure among successes does not set it (that order is
 	 * logged and backed off, and the leg made progress), nor does a flip that lost
 	 * its guard (`null`: someone else moved the order), nor a call that attempted
 	 * nothing because every candidate is backing off.
@@ -146,10 +153,12 @@ export async function expireOrdersBatch(
 			if (options.stopsBatch?.(err) === true) throw err;
 			failed++;
 			backoff?.failed(id, instant.getTime());
+			options.onFlipOutcome?.(id, true);
 			logUnitFailure(`expiring order ${id}`, err);
 			continue;
 		}
 		backoff?.succeeded(id);
+		options.onFlipOutcome?.(id, false);
 		if (won === null) continue; // someone else won the transition (paid/cancelled/expired)
 		expired++;
 		const { order } = won;

@@ -14,8 +14,7 @@
  * checked the count and decided to add the same amount again — so reusing a
  * nonce by resemblance would silently drop genuine moves. The one re-send is the
  * "Retry this change" action the screen offers after an indeterminate failure
- * (`HeldMove` in `pricing-cards.tsx`; `HeldRetry` in the retired
- * `product-detail.tsx`), held in memory only, so a reload or a
+ * (`HeldMove` in `pricing-cards.tsx`), held in memory only, so a reload or a
  * duplicated tab never inherits a move to re-send.
  *
  * `getRandomValues`, NOT `randomUUID`: `randomUUID` exists only in a secure

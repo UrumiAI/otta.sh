@@ -137,3 +137,18 @@ export function deriveUnpublishIdempotencyKey(
 ): string {
 	return `${collection}:${id}:unpublished:${String(updatedAt)}`;
 }
+
+/**
+ * `content:afterRestore` (issue #447). EmDash's restore bumps both `updated_at`
+ * and `version`, so every restore of a document gets its own key. The key is the
+ * row's audit trail only: the store's `restore` is idempotent by STATE (a live
+ * row is a no-op) and by its watermark, not by this key.
+ */
+export function deriveRestoreIdempotencyKey(
+	collection: string,
+	id: string,
+	updatedAt: unknown,
+	version: unknown,
+): string {
+	return `${collection}:${id}:restored:${String(updatedAt)}:${String(version)}`;
+}

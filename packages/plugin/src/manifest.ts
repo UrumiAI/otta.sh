@@ -17,11 +17,12 @@ export const OTTA_PLUGIN_VERSION = "0.1.0";
  * capabilities, nothing else.
  *  - `content:read` — the minimum capability `content:afterSave` /
  *    `content:afterDelete` require to register (em-dash
- *    `HOOK_REQUIRED_CAPABILITY`). The hooks never call `ctx.content` (the event
- *    already carries what they need); the one reader is the `product-orphans`
- *    sweep leg, which asks `ctx.content.get` whether a commerce row's CMS
- *    document still exists (issue #374). Never `content:write` — the plugin
- *    never writes CMS content.
+ *    `HOOK_REQUIRED_CAPABILITY`). The readers of `ctx.content` are the
+ *    `product-orphans` sweep leg, which asks `ctx.content.get` whether a
+ *    commerce row's CMS document still exists (issue #374), and the
+ *    `content:afterDelete` / `content:afterRestore` hooks, which check the
+ *    document's presence before acting on a late delivery (issue #447). Never
+ *    `content:write` — the plugin never writes CMS content.
  *  - `network:request` — `ctx.http.fetch`, host-restricted via
  *    `allowedHosts`. No `network:request:unrestricted`.
  *  - `email:send` — `ctx.email`, the host's email pipeline (ADR-0031). EmDash
@@ -76,7 +77,9 @@ const DNS_LABEL = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
  * internal-only suffixes (RFC 6761 `localhost`, mDNS `local`, `home.arpa`, and
  * the common `internal` / `localdomain` / `lan`), plus public wildcard-IP DNS
  * services that resolve `10.0.0.1.nip.io`-style names to whatever IP is
- * embedded, loopback and private ranges included.
+ * embedded, loopback and private ranges included, and the public loopback
+ * names `localtest.me` and `lvh.me`, whose every subdomain resolves to
+ * 127.0.0.1 (#478).
  *
  * A BUILD-TIME SANITY CHECK against an obvious operator mistake, NOT SSRF
  * protection: any public name can still resolve to a private address. The
@@ -92,6 +95,8 @@ const REFUSED_SUFFIXES = [
 	"nip.io",
 	"sslip.io",
 	"xip.io",
+	"localtest.me",
+	"lvh.me",
 ] as const;
 
 /** Stripe's registrable domain. Of its hosts only {@link STRIPE_API_HOST} is
@@ -168,7 +173,8 @@ export function parseExtraAllowedHosts(raw: string | readonly string[] | undefin
 			`OTTA_EXTRA_ALLOWED_HOSTS: invalid entry ${invalid.map((entry) => JSON.stringify(entry)).join(", ")}. ` +
 				'Each entry must be a public DNS hostname like "api.example.com" (comma-separated; no wildcard, ' +
 				"scheme, port, path, IP address, single-label name, localhost / .local / .internal / " +
-				".localdomain / .home.arpa / .lan name, nip.io / sslip.io / xip.io name, or Stripe host " +
+				".localdomain / .home.arpa / .lan name, nip.io / sslip.io / xip.io / localtest.me / lvh.me " +
+				"name, or Stripe host " +
 				"other than api.stripe.com).",
 		);
 	}

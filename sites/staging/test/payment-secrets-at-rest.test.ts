@@ -210,10 +210,40 @@ describe("payment keys at rest, through this site's descriptor (ADR-0037)", () =
 			expect(isEncryptedPluginSetting(await rawValue(key)), key).toBe(true);
 			expect(await readSecret(ctx, key)).toEqual({ state: "set", value: VALUES[key] });
 		}
-		expect(await rawValue(PAYMENT_SECRETS_ENCRYPTED_MARKER_KEY)).toEqual(expect.any(String));
+		expect(await rawValue(PAYMENT_SECRETS_ENCRYPTED_MARKER_KEY)).toMatchObject({
+			revisions: expect.any(Object),
+		});
 
 		// A later isolate finds the marker and rewrites nothing.
 		resetPaymentSecretEncryptionForTesting();
+		expect(await encryptStoredPaymentSecrets(ctx)).toBe("already-done");
+		expect(await rawDump()).toBe(dump);
+	});
+
+	test("a key re-entered in plain text after the migration (a rollback build) is encrypted again (#478)", async () => {
+		const ctx = hostCtx(keyA);
+		for (const [key, value] of Object.entries(VALUES)) await ctx.kv.set(key, value);
+		expect(await encryptStoredPaymentSecrets(ctx)).toBe("encrypted");
+
+		// What a build without the settingsSchema stores: the value itself.
+		const fresh = "whsec_REENTERED_DURING_ROLLBACK";
+		await new OptionsRepository(db).set(
+			`plugin:${OTTA_PLUGIN_ID}:${STRIPE_WEBHOOK_SECRET_KEY}`,
+			fresh,
+		);
+		expect(await rawDump()).toContain(fresh);
+
+		resetPaymentSecretEncryptionForTesting();
+		expect(await encryptStoredPaymentSecrets(ctx)).toBe("encrypted");
+		expect(await rawDump()).not.toContain(fresh);
+		expect(isEncryptedPluginSetting(await rawValue(STRIPE_WEBHOOK_SECRET_KEY))).toBe(true);
+		expect(await readSecret(ctx, STRIPE_WEBHOOK_SECRET_KEY)).toEqual({
+			state: "set",
+			value: fresh,
+		});
+
+		resetPaymentSecretEncryptionForTesting();
+		const dump = await rawDump();
 		expect(await encryptStoredPaymentSecrets(ctx)).toBe("already-done");
 		expect(await rawDump()).toBe(dump);
 	});

@@ -5,12 +5,14 @@ import type {
 	ContentHookEvent,
 	ContentStateChangeEvent,
 	HookHandler,
+	PluginContext,
 } from "../types.js";
 import type { UpsertProductCommerceInput } from "../product-commerce/commerce-client.js";
 import { parseProductTitle } from "./parse-product-title.js";
 import {
 	deriveDeleteIdempotencyKey,
 	derivePublishIdempotencyKey,
+	deriveRestoreIdempotencyKey,
 	deriveSaveIdempotencyKey,
 	deriveUnpublishIdempotencyKey,
 } from "./derive-idempotency-key.js";
@@ -442,10 +444,38 @@ export function createAfterSaveHandler(
  * times in a row on each of three runs a cadence apart.
  * Without it, a product deleted and re-created (a new CMS id) left the old row live
  * for good, holding the sku the new one needs.
+ *
+ * A LATE DELIVERY AFTER A RESTORE (issue #447) must not re-delete. When the host
+ * hands over `ctx.content`, the document is read first: found means it was
+ * restored before this hook ran, so the row is left live. A `null` (re-read once)
+ * or a failed read deletes as before.
+ *  - Found but NOT published (a restore brings a document back as a draft): the
+ *    row may still be active from before the trash, because the restore found it
+ *    live and did nothing. It is deactivated at the document's own `updatedAt`, so
+ *    a newer publish still wins and an older one cannot re-activate it.
+ *  - A failed read after a restore still tombstones. That is safe — the row is
+ *    unsellable — and the recovery is to trash and restore the product again.
+ *  - The found-guard assumes reads are not served by a lagging D1 read replica.
+ *    Replication is off; the D1-session test in #447 is the prerequisite for
+ *    turning it on.
  */
 export function createAfterDeleteHandler(): HookHandler<ContentDeleteEvent> {
 	return async (event, ctx) => {
 		if (event.collection !== PRODUCTS_COLLECTION) return;
+		// A LATE delivery (issue #447): the product may have been restored from the
+		// trash before this deferred hook ran. A document the CMS has NOW is not
+		// deleted, so the row is left live. A `null` or a failed read deletes, as
+		// before — the sweep is the backstop either way.
+		const read = await readDocument(ctx, event.id, "content:afterDelete");
+		if (read.state === "found") {
+			console.warn(
+				`[otta] content:afterDelete: product_id=${event.id} is in the CMS again (restored before this delete hook ran) — its commerce row is left live.`,
+			);
+			if (read.doc["status"] !== PUBLISHED_STATUS) {
+				await withdrawDraft(ctx, event.id, read.doc, "content:afterDelete");
+			}
+			return;
+		}
 		const key = deriveDeleteIdempotencyKey(event.collection, event.id);
 		try {
 			await (await makeCommerceClient(ctx)).softDeleteProductCommerce(event.id, key);
@@ -456,6 +486,162 @@ export function createAfterDeleteHandler(): HookHandler<ContentDeleteEvent> {
 			);
 		}
 	};
+}
+
+/**
+ * `content:afterRestore` → undo the soft delete (issue #447). Trashing a product
+ * tombstones its row (`createAfterDeleteHandler`, or the `product-orphans` sweep
+ * when that delivery was lost); restoring it from the trash is the CMS taking
+ * that delete back, so the row comes back too — with its price, and its sku and
+ * stock unless another product took the sku meanwhile (`ProductCommerceStore.restore`).
+ *
+ * NO ACTIVATE. EmDash restores a document as a DRAFT (`ContentRepository.restore`
+ * sets `status = 'draft'`, `live_revision_id = NULL`), so the product is sold
+ * again only once the merchant publishes it, through `content:afterPublish`. The
+ * restore's `updatedAt` is the watermark: a restore older than the row's delete is
+ * stale, and a publish older than the restore cannot activate the draft.
+ *
+ * STILL TRASHED? The event says the document WAS restored, but a quick re-trash
+ * can land first (both hooks are deferred, fire-and-forget). So when the host
+ * hands over `ctx.content`, the document is read first, and a `null` is re-read
+ * once before it is trusted (a sandbox bridge may answer `null` for a failed
+ * read). Two `null`s: it is gone again and the tombstone stays. A FOUND document
+ * is live now, so it overrides the "restore older than the delete" guard (a soft
+ * delete that committed after the restore is the stale write). A read that
+ * REJECTS is not taken as gone — the event itself is the evidence, and the guard
+ * still applies; a wrongly restored row is inactive anyway and is tombstoned again
+ * by the sweep.
+ *
+ * A LOST DELETE: if `afterDelete` never arrived, the row is still live and may be on
+ * sale while the CMS now holds a draft. The restore no-ops on a live row, so a found,
+ * non-published document also closes the publish gate at its own `updatedAt`, as a
+ * late `afterDelete` does; a newer publish still wins.
+ *
+ * Two orderings this does not close, both left SAFE (the row is never sellable
+ * because of them):
+ *  - The confirmed restore reads, then writes. A tombstone committed between the
+ *    two (a re-trash) is undone; the row stays inactive, and the sweep tombstones
+ *    it again.
+ *  - A publish that lands while the row is tombstoned is refused (`activate`
+ *    no-ops on a tombstone), so the restore that follows leaves the row inactive.
+ *    The merchant publishes again.
+ *
+ * Fire-and-forget, like its siblings: a failure is logged, never thrown. The
+ * recovery is to trash and restore the product again.
+ */
+export function createAfterRestoreHandler(): HookHandler<ContentStateChangeEvent> {
+	return async (event, ctx) => {
+		if (event.collection !== PRODUCTS_COLLECTION) return;
+		const id = event.content["id"];
+		if (typeof id !== "string" || id.length === 0) return;
+		const updatedAt = event.content["updatedAt"];
+		const watermark = normalizeWatermark(updatedAt);
+		if (watermark === undefined) {
+			console.error(
+				`[otta] content:afterRestore for product_id=${id} carried no parseable updatedAt watermark — its commerce row stays deleted. To recover, trash and restore the product again.`,
+			);
+			return;
+		}
+		const read = await readDocument(ctx, id, "content:afterRestore");
+		if (read.state === "missing") {
+			console.error(
+				`[otta] content:afterRestore: product_id=${id} read as missing from the CMS twice (trashed again?) — its commerce row stays deleted. If the product is in fact restored, trash and restore it again.`,
+			);
+			return;
+		}
+		const key = deriveRestoreIdempotencyKey(
+			event.collection,
+			id,
+			updatedAt,
+			event.content["version"],
+		);
+		try {
+			// A document found just now is live NOW, which outranks a tombstone that
+			// committed after the restore (a slow delete hook, or the sweep). Without
+			// that proof (no `ctx.content`, or a failed read) the staleness guard holds.
+			await (
+				await makeCommerceClient(ctx)
+			).restoreProductCommerce(
+				id,
+				key,
+				watermark,
+				read.state === "found" ? { documentConfirmed: true } : {},
+			);
+		} catch (err) {
+			console.error(
+				`[otta] content:afterRestore sync failed for product_id=${id} — its commerce row stays deleted until the product is trashed and restored again:`,
+				err,
+			);
+		}
+		// A LOST afterDelete: the row was never tombstoned, so the restore above found it
+		// live, did nothing, and it may still be on sale while the CMS holds a draft.
+		// Close its gate the way a late afterDelete would. On a row the restore just
+		// brought back this is a no-op (it is already inactive).
+		if (read.state === "found" && read.doc["status"] !== PUBLISHED_STATUS) {
+			await withdrawDraft(ctx, id, read.doc, "content:afterRestore");
+		}
+	};
+}
+
+/**
+ * A late `afterDelete`, or a restore whose delete was never delivered, found the
+ * product back as a DRAFT: close the publish gate it may still hold from before the
+ * trash, at the document's own `updatedAt` (the unpublish path), so a newer publish
+ * still wins. Logged, never thrown.
+ */
+async function withdrawDraft(
+	ctx: PluginContext,
+	id: string,
+	doc: Record<string, unknown>,
+	hook: string,
+): Promise<void> {
+	const updatedAt = doc["updatedAt"];
+	const watermark = normalizeWatermark(updatedAt);
+	if (watermark === undefined) {
+		console.error(
+			`[otta] ${hook}: product_id=${id} is back as a draft but carries no parseable updatedAt — its row was not deactivated. Unpublish or re-publish it to settle its state.`,
+		);
+		return;
+	}
+	try {
+		await (
+			await makeCommerceClient(ctx)
+		).deactivateProductCommerce(
+			id,
+			deriveUnpublishIdempotencyKey(PRODUCTS_COLLECTION, id, updatedAt),
+			watermark,
+		);
+	} catch (err) {
+		console.error(
+			`[otta] ${hook}: deactivating restored draft product_id=${id} failed — unpublish or re-publish it to settle its state:`,
+			err,
+		);
+	}
+}
+
+/**
+ * What the CMS says about one product right now, for the delete and restore hooks:
+ * `found` (with the document), `missing` (a `null`, re-read once and `null` again),
+ * or `unknown` (no `ctx.content`, or a read that rejected — never taken as either).
+ */
+type DocumentRead =
+	| { state: "found"; doc: Record<string, unknown> }
+	| { state: "missing" }
+	| { state: "unknown" };
+
+async function readDocument(ctx: PluginContext, id: string, hook: string): Promise<DocumentRead> {
+	const content = ctx.content;
+	if (content === undefined) return { state: "unknown" };
+	try {
+		for (let look = 0; look < 2; look++) {
+			const doc = await content.get(PRODUCTS_COLLECTION, id);
+			if (doc !== null) return { state: "found", doc };
+		}
+		return { state: "missing" };
+	} catch (err) {
+		console.warn(`[otta] ${hook}: could not read product_id=${id} from the CMS:`, err);
+		return { state: "unknown" };
+	}
 }
 
 /**
