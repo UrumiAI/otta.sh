@@ -232,9 +232,11 @@ export interface StockPageContext {
 	 * IT DESCRIBES ONE RESPONSE, NOT A SCAN. A continuation can only ever report
 	 * `false` (`resolveStockContext`'s doc says why), so a caller that
 	 * ACCUMULATES pages must carry the flag forward itself rather than take the
-	 * newest response's word for the rows above it — `nextPage` in
-	 * `products-list.tsx` is where that is done, and where the reason is
-	 * written down.
+	 * newest response's word for the rows above it. No caller accumulates
+	 * products pages since the React products list was retired;
+	 * `RefreshWalk.carried` (`admin-react/src/accumulate.ts`, reached via
+	 * `PendingCursor.refresh`) is the mechanism a future accumulating caller
+	 * would use.
 	 */
 	filterUnavailable: boolean;
 }
@@ -304,8 +306,10 @@ export interface StockPageResult {
  *     threshold, so a continuation of it is unfiltered too while reporting
  *     `false` here — correct for the one response, wrong for the accumulated
  *     rows. Only a caller that keeps the pages knows that, which is why
- *     `products-list.tsx`'s `nextPage` carries the flag forward and is where
- *     that half is pinned.
+ *     an accumulating caller must carry the flag forward. None does since the
+ *     React products list was retired; `RefreshWalk.carried`
+ *     (`admin-react/src/accumulate.ts`, via `PendingCursor.refresh`) is the
+ *     mechanism a future one would use.
  */
 export function resolveStockContext(
 	products: readonly ProductSummaryWire[],

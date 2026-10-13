@@ -160,6 +160,9 @@ async function applyCmsSeed(): Promise<void> {
 			} catch (err) {
 				throw new RetryableError(`seed: the CMS seed (setup dev-bypass) failed: ${String(err)}`);
 			}
+			// Only the status is read: release the body now, so a retried attempt does
+			// not leave the last one's response holding its connection (#478).
+			await res.body?.cancel().catch(() => undefined);
 			if (res.status >= 500) {
 				throw new RetryableError(
 					`seed: the CMS seed (setup dev-bypass) answered HTTP ${String(res.status)}.`,

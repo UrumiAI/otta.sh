@@ -1,11 +1,11 @@
 import {
+	DOWNLOAD_DELIVERABLE_STATES,
 	InvalidProductFieldError,
 	orderId as toOrderId,
 	sku as toSku,
 	validateDownloadAsset,
 	type DownloadAsset,
 	type Order,
-	type OrderState,
 } from "@otta-sh/domain";
 import { isRetryableStorageBusy } from "@otta-sh/store-emdash";
 import type { DownloadAssetWire } from "../admin/admin-products-surface.js";
@@ -54,10 +54,9 @@ const NOT_FOUND = { authorized: false, reason: "NOT_FOUND" } as const;
 const INVALID_INPUT = { authorized: false, reason: "INVALID_INPUT" } as const;
 
 /**
- * Which order states may deliver: those whose money was taken and kept.
- * `pending`, `failed` and `expired` never kept it; `cancelled` and `refunded`
- * gave it back. A `Record` over the whole union, so a state added later fails
- * typecheck here until someone decides whether it delivers.
+ * Which order states may deliver: the domain's `DOWNLOAD_DELIVERABLE_STATES`
+ * (issue #447 made it the one copy, shared with the console's Revoke download
+ * access): those whose money was taken and kept.
  *
  * A PARTIAL refund leaves the order in its paid-side state and still delivers —
  * the same line increment 1 drew for revocation.
@@ -70,25 +69,16 @@ const INVALID_INPUT = { authorized: false, reason: "INVALID_INPUT" } as const;
  *    provider refund and flags the order) and then uses Mark refunded;
  *  - a CHARGEBACK — Otta acts on no `charge.dispute.*` event, and a dispute is
  *    not a refund to the pre-flight, so Mark refunded stays refused while the
- *    ledger shows the money captured: no console action closes access today;
+ *    ledger shows the money captured: the operator closes access with the order
+ *    detail's Revoke download access (`orders:revoke-downloads`, issue #447),
+ *    which revokes the grant gate 1 reads;
  *  - a cancellation whose refund came back UNVERIFIED — the order is not
  *    cancelled; Mark refunded is refused while that refund is unresolved, and
  *    confirming it in Money → Refunds finishes the cancel and revokes.
  * DEPLOYMENT.md §2.1 and ADR-0011's 2026-10-05 amendment say the same to the
  * merchant and the reviewer.
  */
-const DELIVERABLE_ORDER_STATES: Readonly<Record<OrderState, boolean>> = {
-	paid: true,
-	processing: true,
-	shipped: true,
-	delivered: true,
-	completed: true,
-	pending: false,
-	failed: false,
-	expired: false,
-	cancelled: false,
-	refunded: false,
-};
+const DELIVERABLE_ORDER_STATES = DOWNLOAD_DELIVERABLE_STATES;
 
 /**
  * Entitlement-gated digital download (issue #376; ADR-0011). The plugin decides

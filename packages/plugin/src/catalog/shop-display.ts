@@ -12,8 +12,10 @@
 import {
 	cents as domainCents,
 	currency as domainCurrency,
+	type ShopDisplayItem,
 	type ShopPriceDisplay,
 	shopDisplayPrice,
+	shopDisplayPrices,
 } from "@otta-sh/domain";
 import { type Cents, cents } from "../presentation/money.js";
 import type { ShopPriceDisplayWire } from "../product-commerce/commerce-client.js";
@@ -50,26 +52,49 @@ export async function priceDisplayOrEntered(
 	}
 }
 
+type Priced = Pick<CatalogProductCommerce, "taxClass" | "taxStatus">;
+
+// The two `Cents` brands are deliberately not cross-assignable (presentation/
+// money.ts): re-minted on the way in and on the way out.
+function displayItem(commerce: Priced, money: Money, quantity: number): ShopDisplayItem {
+	return {
+		currency: domainCurrency(money.currency),
+		unitPriceCents: domainCents<number>(money.amount),
+		quantity,
+		// Read exactly as checkout reads the row (`quoteCommandFor`).
+		taxClassId: commerce.taxClass ?? "standard",
+		taxStatus: commerce.taxStatus ?? "taxable",
+	};
+}
+
 /** `quantity` units of a product at `money`, as `display` shows them. */
 export function displayAmount(
-	commerce: Pick<CatalogProductCommerce, "taxClass" | "taxStatus">,
+	commerce: Priced,
 	money: Money,
 	quantity: number,
 	display: ShopPriceDisplayWire,
 ): Cents {
 	if (display.mode === "entered") return cents<number>(money.amount * quantity);
-	// The two `Cents` brands are deliberately not cross-assignable (presentation/
-	// money.ts): re-minted on the way in and on the way out.
-	return cents<number>(
-		shopDisplayPrice(display, {
-			currency: domainCurrency(money.currency),
-			unitPriceCents: domainCents<number>(money.amount),
-			quantity,
-			// Read exactly as checkout reads the row (`quoteCommandFor`).
-			taxClassId: commerce.taxClass ?? "standard",
-			taxStatus: commerce.taxStatus ?? "taxable",
-		}),
-	);
+	return cents<number>(shopDisplayPrice(display, displayItem(commerce, money, quantity)));
+}
+
+/**
+ * Several cart lines (one currency), as `display` shows them, priced TOGETHER as
+ * checkout prices the cart (#478): with "round at subtotal" the tax is rounded
+ * once over the lines, so they sum to what checkout shows. Rounding per line,
+ * each is exactly {@link displayAmount}.
+ */
+export function displayAmounts(
+	lines: ReadonlyArray<{ commerce: Priced; money: Money; quantity: number }>,
+	display: ShopPriceDisplayWire,
+): Cents[] {
+	if (display.mode === "entered") {
+		return lines.map((l) => cents<number>(l.money.amount * l.quantity));
+	}
+	return shopDisplayPrices(
+		display,
+		lines.map((l) => displayItem(l.commerce, l.money, l.quantity)),
+	).map((amount) => cents<number>(amount));
 }
 
 /** `joined` with its prices as the shop shows them; the same object when nothing changes. */

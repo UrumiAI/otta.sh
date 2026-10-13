@@ -50,6 +50,9 @@ import {
 	FULLY_REFUNDED_NOTE,
 	CANCEL_BANNER,
 	MARK_REFUNDED_CONFIRM,
+	DOWNLOADS_REVOKED_NOTE,
+	REVOKE_DOWNLOADS_CONFIRM,
+	REVOKE_DOWNLOADS_NOTE,
 	PENDING_CANCEL_EFFECTS,
 	ORDERS_BACK_LABEL,
 	ORDER_LINES_EMPTY,
@@ -1537,6 +1540,37 @@ export function OrderDetail({
 										});
 									}}
 								/>
+							</Group>
+						)}
+
+						{detail.downloads === "revoked" && (
+							<Group testId="detail-downloads" label="Downloads">
+								<p style={{ fontSize: 13, margin: 0 }} data-testid="downloads-revoked">
+									{DOWNLOADS_REVOKED_NOTE}
+								</p>
+							</Group>
+						)}
+						{detail.downloads === "open" && (
+							<Group testId="detail-downloads" label="Downloads">
+								<p style={{ fontSize: 13, margin: 0 }}>{REVOKE_DOWNLOADS_NOTE}</p>
+								<div>
+									<Button
+										testId="revoke-downloads"
+										label="Revoke download access"
+										danger
+										disabled={busy}
+										onClick={() => {
+											setPending({
+												actionId: "orders:revoke-downloads",
+												value: { orderId: order.id },
+												title: REVOKE_DOWNLOADS_CONFIRM.title,
+												text: REVOKE_DOWNLOADS_CONFIRM.text,
+												confirmLabel: REVOKE_DOWNLOADS_CONFIRM.confirm,
+												denyLabel: REVOKE_DOWNLOADS_CONFIRM.deny,
+											});
+										}}
+									/>
+								</div>
 							</Group>
 						)}
 

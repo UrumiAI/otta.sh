@@ -114,7 +114,7 @@ const NOW = "2026-07-10T00:00:00.000Z";
  * writes nothing.
  *
  * Raising this constant is a change to the budget: measure first, then move it, and
- * update the table above and the package README together.
+ * update the table above and `docs/store-emdash/design-notes.md` together.
  */
 export const CAS_ATTEMPT_BUDGET = 8;
 
@@ -622,7 +622,7 @@ describeEachDialect("EmdashInventoryStore crash seams", (ctx) => {
 		it("restock past ring eviction RE-APPLIES — the documented, ACCEPTED residual the sweeper contract bounds (do not 'fix' this test)", async () => {
 			// This is not a bug being tolerated quietly; it is the residual the
 			// applied-movement ring's bound leaves, stated in `inventory-documents.ts`
-			// and in this package's README, together with the contract that closes it:
+			// and in `docs/store-emdash/design-notes.md`, together with the contract that closes it:
 			//
 			//   a movement claim whose `applied` is ABSENT and whose key still appears
 			//   in the aggregate's ring (or on a hold) is given its `applied` record by
@@ -900,6 +900,8 @@ describeEachDialect("EmdashInventoryStore crash seams", (ctx) => {
 describe.skipIf(!PG_ENABLED)("inventory compare-and-set contention budget [postgres]", () => {
 	let storage: StorageAccess;
 	let close: (() => Promise<void>) | undefined;
+	/** The pool the racers got, for the contention asserts' message. */
+	let poolSize = 0;
 
 	beforeAll(async () => {
 		// Capped at 52 connections: one per racer, plus spare, for the M=5/N=50 shape
@@ -925,6 +927,7 @@ describe.skipIf(!PG_ENABLED)("inventory compare-and-set contention budget [postg
 		}
 		storage = db.storage;
 		close = db.close;
+		poolSize = size;
 	}, 180_000);
 
 	afterAll(async () => {
@@ -985,6 +988,12 @@ describe.skipIf(!PG_ENABLED)("inventory compare-and-set contention budget [postg
 				`budget=${String(CAS_ATTEMPT_BUDGET)} ceiling=${String(CAS_MAX_ATTEMPTS)}`,
 		);
 		expect(maxAttempts).toBeLessThanOrEqual(CAS_ATTEMPT_BUDGET);
+		// And the racers really raced (#478, from #464): a pool squeezed by a busy
+		// server queues them one by one, every write wins first time, and a depth
+		// of 1 would pass the budget without measuring anything.
+		expect(maxAttempts, `pool=${String(poolSize)}: racers did not contend`).toBeGreaterThanOrEqual(
+			2,
+		);
 	}, 300_000);
 
 	it("the harsher shape (1 unit, 100 racers) stays within the budget, and is no deeper", async () => {
@@ -999,5 +1008,9 @@ describe.skipIf(!PG_ENABLED)("inventory compare-and-set contention budget [postg
 		// can succeed before every other caller reads `onHand: 0` and decides cleanly
 		// with no write at all — so ten times the crowd must not move the number.
 		expect(maxAttempts).toBeLessThanOrEqual(6);
+		// Not vacuous either: at least one caller lost a compare-and-set (#478).
+		expect(maxAttempts, `pool=${String(poolSize)}: racers did not contend`).toBeGreaterThanOrEqual(
+			2,
+		);
 	}, 300_000);
 });

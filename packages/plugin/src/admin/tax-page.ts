@@ -185,8 +185,9 @@ interface TaxRateRow extends TaxRateWire {
 	/** On an IGNORED duplicate: whether its "applies to shipping" flag still
 	 *  counts. True only under the store's "legacy" shipping tax class, which
 	 *  reads the flag across every rate in the zone (issue #447); "fixed" and
-	 *  "inherit" read the applied rate's flag alone. */
-	ignoredShippingFlagCounts?: boolean;
+	 *  "inherit" read the applied rate's flag alone. `null` when the settings
+	 *  read failed, so the rule is unknown and the copy stays neutral (#471). */
+	ignoredShippingFlagCounts?: boolean | null;
 	/** Set on the rate that applies when ignored duplicates share its slot. */
 	ignoredDuplicates?: string[];
 	/** On that applying rate: the duplicate that would apply if it were deleted. */
@@ -601,7 +602,7 @@ function taxRatesLevel() {
  * regardless of filter state) — the Zone select's options need the full list
  * even when scoped, which is the one extra read D-6 explicitly permits
  * (`r.zoneName ?? r.zoneId`, §12.3's own note).
- * Any read failure PROPAGATES (never silently degrades to "no rates" — this
+ * A failed RATES read PROPAGATES (never silently degrades to "no rates" — this
  * is the level's PRIMARY data, unlike a leaf's secondary reads), so the
  * caller's `onError` fails closed instead of rendering a misleading empty list.
  */
@@ -611,11 +612,20 @@ async function fetchRatesForClass(
 	zoneId: string | undefined,
 	zones: ShippingZoneWire[],
 ): Promise<TaxRateRow[]> {
-	const [rows, read] = await Promise.all([
+	const [rows, legacyShipping] = await Promise.all([
 		readRatesForClass(client, classId, zoneId, zones),
-		client.getTaxSettings(),
+		// Secondary: it only words the duplicate notes. A failed read must not take
+		// the whole rates page down, so the rule reads as unknown (`null`) and the
+		// notes stay neutral rather than claim either rule (#471). Logged, no values.
+		client.getTaxSettings().then(
+			(read): boolean | null => read.settings.shippingTaxClass.kind === "legacy",
+			() => {
+				console.warn("[otta] tax rates page: the tax settings could not be read");
+				return null;
+			},
+		),
 	]);
-	return flagDuplicates(rows, read.settings.shippingTaxClass.kind === "legacy");
+	return flagDuplicates(rows, legacyShipping);
 }
 
 /**
@@ -624,7 +634,7 @@ async function fetchRatesForClass(
  * both rows stay listed, editable and deletable — but the one the checkout
  * ignores says so, and names the one it charges.
  */
-function flagDuplicates(rows: TaxRateRow[], shippingFlagCounts: boolean): TaxRateRow[] {
+function flagDuplicates(rows: TaxRateRow[], shippingFlagCounts: boolean | null): TaxRateRow[] {
 	const shadowed = shadowedTaxRates(rows);
 	if (shadowed.size === 0) return rows;
 	const ignoredBy = new Map<string, string[]>();
@@ -840,6 +850,9 @@ function duplicateStatus(row: TaxRateRow): string | undefined {
  *  charged; its flag still counts only under the "legacy" shipping tax class
  *  (issue #447). */
 function ignoredShippingText(row: TaxRateRow): string {
+	if (row.ignoredShippingFlagCounts === null) {
+		return `${row.appliesToShipping ? "yes" : "no"} (duplicate ignored)`;
+	}
 	if (row.ignoredShippingFlagCounts === true) {
 		return row.appliesToShipping ? "yes (duplicate — can still tax shipping)" : "no (duplicate)";
 	}
@@ -867,9 +880,11 @@ function duplicateBlocks(row: TaxRateRow): Block[] {
 			{
 				type: "context",
 				text:
-					row.ignoredShippingFlagCounts === true
-						? `Duplicate: only ${row.appliedInstead} applies to ${zone}; its shipping setting still counts. Delete the one you don't want.`
-						: `Duplicate: only ${row.appliedInstead} applies to ${zone}, so this rate taxes nothing (goods or shipping). Delete the one you don't want.`,
+					row.ignoredShippingFlagCounts === null
+						? `Duplicate: only ${row.appliedInstead} applies to ${zone}; its shipping setting could not be checked. Delete the one you don't want.`
+						: row.ignoredShippingFlagCounts === true
+							? `Duplicate: only ${row.appliedInstead} applies to ${zone}; its shipping setting still counts, so deleting it can change shipping tax.`
+							: `Duplicate: only ${row.appliedInstead} applies to ${zone}, so this rate taxes nothing (goods or shipping). Delete the one you don't want.`,
 			},
 		];
 	}
@@ -926,11 +941,12 @@ function rateEditForm(classId: string, row: TaxRateRow): FormBlock {
 				{
 					type: "toggle",
 					action_id: "appliesToShipping",
-					label: !ignored
-						? "Applies to shipping"
-						: row.ignoredShippingFlagCounts === true
-							? "Applies to shipping — can still tax shipping while this duplicate exists"
-							: "Applies to shipping — only if this rate becomes the active one",
+					label:
+						!ignored || row.ignoredShippingFlagCounts === null
+							? "Applies to shipping"
+							: row.ignoredShippingFlagCounts === true
+								? "Applies to shipping — can still tax shipping while this duplicate exists"
+								: "Applies to shipping — only if this rate becomes the active one",
 					initial_value: row.appliesToShipping, // F-6b/X-24: REQUIRED — toggle is mount-only
 				},
 			],

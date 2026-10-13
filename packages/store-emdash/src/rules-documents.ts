@@ -22,7 +22,7 @@
  * `methodId`); `updateRate` and `deleteRate` on the tax side. With the children embedded there is no document to read, and a scan
  * would answer the question ambiguously the moment two zones could hold the same
  * method id — which SQL made impossible with a primary key and which no declared
- * index enforces here (see the README's "no physical indexes"). The claim
+ * index enforces here (see `docs/store-emdash/design-notes.md`, "no physical indexes"). The claim
  * document is therefore both halves at once: create-if-absent on the document id
  * IS the uniqueness enforcement (the storage table's own primary key), and the
  * `zoneId`/`taxClassId` it carries IS the reverse lookup. It is the

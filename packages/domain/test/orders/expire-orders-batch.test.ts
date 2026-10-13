@@ -178,6 +178,26 @@ describe("bounded order expiry", () => {
 		expect(await expiredCount(orders)).toBe(0);
 	});
 
+	test("onFlipOutcome hears each attempted order: failed for a throw, not for an expiry or a lost guard (#478)", async () => {
+		vi.spyOn(console, "error").mockImplementation(() => {});
+		const orders = await pendingOrders(3);
+		const real = h.orderStore.expireWithOrder.bind(h.orderStore);
+		vi.spyOn(h.orderStore, "expireWithOrder").mockImplementation(async (id, now) => {
+			if (id === orders[0]?.id) throw new Error("poisoned order");
+			if (id === orders[1]?.id) return null;
+			return real(id, now);
+		});
+		const heard: Array<[string, boolean]> = [];
+		await expireOrdersBatch(h.expireDeps, undefined, {
+			onFlipOutcome: (id, failed) => heard.push([id, failed]),
+		});
+		expect(heard).toEqual([
+			[orders[0]?.id, true],
+			[orders[1]?.id, false],
+			[orders[2]?.id, false],
+		]);
+	});
+
 	test("a flip that loses its guard is not a failure: no allFailed", async () => {
 		await pendingOrders(1);
 		vi.spyOn(h.orderStore, "expireWithOrder").mockResolvedValue(null);

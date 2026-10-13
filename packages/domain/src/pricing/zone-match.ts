@@ -8,11 +8,12 @@
  * and `GB-BFS` → `GB-NIR` → `GB`: a zone on the child beats one on its
  * parent, which beats one on the country. Codes themselves are exact (case
  * aside) — a zone never covers a code it does not list or contain. A pick that
- * no zone covers but that CONTAINS a zoned subdivision (Canary Islands, with
- * only Tenerife zoned) is asked to be more specific (`region_code_required`),
- * never matched to the country — unless `askForNarrower` is `false` (the
- * store's base address, which nobody can be asked about): then it falls back
- * to an ancestor's or the country's zone, as before containment. Pure: no IO.
+ * CONTAINS a zoned subdivision whose addresses get another zone than the pick's
+ * (Canary Islands, with Tenerife zoned on its own) is asked to be more specific
+ * (`region_code_required`), even when a zone covers the pick itself or its
+ * parent — unless `askForNarrower` is `false` (the store's base address, which
+ * nobody can be asked about): then it falls back to its own, an ancestor's or
+ * the country's zone, as before containment. Pure: no IO.
  */
 import type { ShippingZone } from "../ports/shipping-rules-store.js";
 import { parseZoneRegions, subdivisionAncestors } from "./region-codes.js";
@@ -81,23 +82,39 @@ export function resolveShippingZone(
 			? null
 			: { status: "matched", zoneId: winner, matchedRegion: code, ambiguousWith: rest };
 	};
-	if (own !== null) {
-		for (const code of [own, ...subdivisionAncestors(own)]) {
-			const found = match(code);
+	/** The zone an address at `code` resolves to: its own, then each containing
+	 *  subdivision's, then the country's — or null. */
+	const resolve = (code: string): ZoneResolution | null => {
+		for (const c of [code, ...subdivisionAncestors(code)]) {
+			const found = match(c);
 			if (found !== null) return found;
 		}
+		return match(country);
+	};
+	if (own !== null) {
+		const picked = resolve(own);
 		// The blank-region rule one level down: the pick CONTAINS a zoned
-		// subdivision (Canary Islands, with zones on Tenerife and Las Palmas), so
-		// which zone applies depends on where inside it the address is. Ask for
-		// the more specific one — never fall to the country's zone (silently the
-		// wrong tax) or refuse. The store's base address cannot be asked
-		// (`askForNarrower: false`), so it skips this and falls back below.
+		// subdivision whose address would get ANOTHER zone than the pick's (Canary
+		// Islands, with zones on Tenerife and on the Canaries or Spain), so which
+		// zone applies depends on where inside it the address is. Ask for the more
+		// specific one — never answer for the whole of it (silently the wrong tax)
+		// or refuse (#478: even when the pick or its parent is zoned itself). One
+		// zone covering both asks nothing. The store's base address cannot be
+		// asked (`askForNarrower: false`), so it skips this.
+		const pickedZone = picked?.status === "matched" ? picked.zoneId : null;
 		if (
 			input.askForNarrower !== false &&
-			parsed.some((z) => z.codes.some((code) => subdivisionAncestors(code).includes(own)))
+			parsed.some((z) =>
+				z.codes.some((code) => {
+					if (!subdivisionAncestors(code).includes(own)) return false;
+					const inside = resolve(code);
+					return (inside?.status === "matched" ? inside.zoneId : null) !== pickedZone;
+				}),
+			)
 		) {
 			return { status: "region_code_required", country };
 		}
+		return picked ?? { status: "unmatched" };
 	}
 	return match(country) ?? { status: "unmatched" };
 }

@@ -35,6 +35,7 @@ function surface(outcome: CancelOrderResult): AdminOrdersSurface {
 		listNotes: refuse("listNotes"),
 		addNote: refuse("addNote"),
 		resolveUnverifiedRefund: refuse("resolveUnverifiedRefund"),
+		revokeDownloadAccess: refuse("revokeDownloadAccess"),
 	};
 }
 

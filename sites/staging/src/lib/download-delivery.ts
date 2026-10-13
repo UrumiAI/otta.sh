@@ -92,6 +92,8 @@ export function parseDownloadPath(pathname: string): { orderId: string; sku: str
 interface DownloadsObjectMeta {
 	size: number;
 	httpEtag: string;
+	/** When the object was written — R2 always sets it; the attach guard reads it. */
+	uploaded?: Date;
 }
 
 /** An R2 range: `{offset, length?}` or `{suffix}` (the last N bytes). */

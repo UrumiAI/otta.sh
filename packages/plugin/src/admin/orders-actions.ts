@@ -98,6 +98,8 @@ const ACTION_REFUND = ORDERS_ACTIONS.custom("refund");
 /** A person's answer to a refund whose provider outcome is unknown (review round 2). */
 const ACTION_RESOLVE_REFUND_CONFIRMED = ORDERS_ACTIONS.custom("resolve-refund-confirmed");
 const ACTION_RESOLVE_REFUND_VOIDED = ORDERS_ACTIONS.custom("resolve-refund-voided");
+/** Close a paid order's download access by hand — a dispute or chargeback (#447). */
+const ACTION_REVOKE_DOWNLOADS = ORDERS_ACTIONS.custom("revoke-downloads");
 
 /** `transition-<state>` — one DISTINCT verb per state, derived. */
 const transitionVerb = (state: string): string => `transition-${state}`;
@@ -483,6 +485,56 @@ const addNoteAction: OrdersAction = async (client, payload) => {
 		});
 	}
 	return applied(null);
+};
+
+// -- downloads ----------------------------------------------------------------
+
+/**
+ * Revoke download access (issue #447): the console's path for money that left
+ * without moving the order — a dispute or chargeback — which no refund path can
+ * see, so the download stayed open. A bare confirmed control: the surface's
+ * dialog is the confirm, and the payload carries only the order id.
+ *
+ * ONE KEY PER ORDER, `admin-revoke-downloads:${orderId}`. Revocation is terminal,
+ * so there is no second, deliberate revoke for a content-derived key to keep
+ * apart: a double-click, a retry and a second tab all land on the one record.
+ * Who did it is the signed-in operator the host named (`operator`), as on a
+ * transition; `admin` only when the host named nobody.
+ */
+const revokeDownloadsAction: OrdersAction = async (client, payload, operator) => {
+	const orderId = readString(payload["orderId"])?.trim();
+	if (orderId === undefined || orderId.length === 0) return applied(UNREADABLE);
+	const result = await client.revokeDownloadAccess(
+		orderId,
+		{ revokedBy: operator ?? "admin" },
+		{ idempotencyKey: `admin-revoke-downloads:${orderId}` },
+	);
+	if (!result.ok) {
+		return applied({
+			variant: "error",
+			title: "Download access not revoked",
+			description:
+				result.reason === "NO_DOWNLOADS"
+					? "This order has no download to close. Nothing was changed."
+					: result.reason === "NOT_DELIVERABLE"
+						? "This order’s downloads are not open: it is not paid, or its money was returned. Nothing was changed."
+						: "That could not be done. Nothing was changed — reload the order and try again.",
+		});
+	}
+	return applied(
+		result.revoked
+			? {
+					variant: "default",
+					title: "Download access revoked",
+					description:
+						"The buyer's download links for this order no longer work. The order and its money are unchanged; History records who did it.",
+				}
+			: {
+					variant: "default",
+					title: "Download access already revoked",
+					description: "This order's downloads were already closed. Nothing was changed.",
+				},
+	);
 };
 
 // -- reconciliation -----------------------------------------------------------
@@ -1404,6 +1456,7 @@ const ORDERS_ACTIONS_BY_ID: Readonly<Record<string, OrdersAction>> = {
 	[ACTION_REFUND]: refundOrderAction,
 	[ACTION_RESOLVE_REFUND_CONFIRMED]: resolveUnverifiedRefundAction("confirmed"),
 	[ACTION_RESOLVE_REFUND_VOIDED]: resolveUnverifiedRefundAction("voided"),
+	[ACTION_REVOKE_DOWNLOADS]: revokeDownloadsAction,
 	// One handler per state, keyed by the SAME derived id the control uses.
 	...Object.fromEntries(
 		ORDER_STATES.map((state) => [

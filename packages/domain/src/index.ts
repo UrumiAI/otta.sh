@@ -71,6 +71,7 @@ export {
 	loadShopPriceDisplay,
 	SHOP_PRICE_AS_ENTERED,
 	shopDisplayPrice,
+	shopDisplayPrices,
 	type ShopDisplayItem,
 	type ShopPriceDisplay,
 	type ShopPriceDisplayDeps,
@@ -531,6 +532,18 @@ export {
 	type AppendOrderNoteDeps,
 } from "./orders/append-order-note.js";
 export {
+	DOWNLOAD_DELIVERABLE_STATES,
+	isDownloadDeliverableState,
+} from "./orders/download-deliverable.js";
+export {
+	DOWNLOAD_ACCESS_REVOKED_NOTE,
+	revokeOrderDownloadAccess,
+	type RevokeDownloadAccessCommand,
+	type RevokeDownloadAccessDeps,
+	type RevokeDownloadAccessFailure,
+	type RevokeDownloadAccessOutcome,
+} from "./orders/revoke-download-access.js";
+export {
 	resolveReconciliation,
 	type ResolveReconciliationCommand,
 	type ResolveReconciliationDeps,
@@ -636,6 +649,7 @@ export type {
 	ProductVariant,
 	ProductVariantSummary,
 	ProductVariantUpdateResult,
+	RestoreProductCommerceOptions,
 	UpdateProductCommerceFieldsInput,
 	UpdateProductVariantFieldsInput,
 	UpsertProductCommerceInput,
@@ -659,6 +673,7 @@ export {
 	getProductCommerce,
 	listProductCommerceByIds,
 	listProductVariants,
+	restoreProductCommerce,
 	softDeleteProductCommerce,
 	updateProductCommerceFields,
 	updateProductVariantFields,

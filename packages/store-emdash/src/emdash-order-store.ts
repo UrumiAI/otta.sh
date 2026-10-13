@@ -112,7 +112,7 @@
  * than of a missing method: the port's `search` documents an unanchored `buyer_ref`
  * SUBSTRING, and the host's filter algebra has no substring operator — so that arm is
  * served as a PREFIX (ADR-0019 §6.1's ratified narrowing). See
- * {@link EmdashOrderStore.listOrders} and the package README.
+ * {@link EmdashOrderStore.listOrders} and `docs/store-emdash/design-notes.md`.
  */
 import {
 	assertSweepLimit,

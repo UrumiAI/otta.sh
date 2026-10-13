@@ -39,6 +39,7 @@
  * Phase 5's session-cookie design, which makes the same now-disproven
  * assumption) — a candidate follow-up ADR, not resolved here.
  */
+import { isSupportedCurrency } from "@otta-sh/domain";
 import {
 	CART_LINE_MAX_QTY,
 	isBoundedProductId,
@@ -245,8 +246,6 @@ function isOverCartQtyCap(value: number): boolean {
 	return value > CART_LINE_MAX_QTY;
 }
 
-const CURRENCY_PATTERN = /^[A-Z]{3}$/;
-
 /**
  * `POST /carts` proxy — mints a fresh anonymous cart and returns its id
  * plus the cookie descriptor the theme shim applies (see module doc).
@@ -255,7 +254,9 @@ export function createCartCreateRouteHandler(): RouteHandler<CartCreateRouteInpu
 	return (routeCtx, ctx): Promise<CartCreateRouteResult> =>
 		renderGuard(STOREFRONT_CART_CREATE_ROUTE, async () => {
 			const raw = routeCtx.input.currency;
-			if (raw !== undefined && (typeof raw !== "string" || !CURRENCY_PATTERN.test(raw))) {
+			// A code in the currency table, not merely three letters (#457): a cart
+			// in an unlisted code would carry it all the way to checkout.
+			if (raw !== undefined && (typeof raw !== "string" || !isSupportedCurrency(raw))) {
 				return { ok: false, error: "INVALID_CURRENCY" } as const;
 			}
 			const replaces = routeCtx.input.replacesCartId;

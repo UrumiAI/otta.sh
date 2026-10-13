@@ -22,6 +22,10 @@
  *    Download file card shows as written) and never reaches the plugin;
  *  - no `DOWNLOADS` binding → refused the same way: downloads are off, and a
  *    file attached now could not be served;
+ *  - an object uploaded more than `ATTACH_MAX_AGE_MS` (six days) ago → refused,
+ *    asking for a fresh upload: the orphan sweep (`download-orphans.ts`) deletes
+ *    unnamed uploads a week old, and this keeps every file it may delete from
+ *    becoming a product's file while it runs (issue #447);
  *  - the bucket throws → a retryable failure (`retryable: true`, the flag every
  *    Otta busy shape carries): the file may be fine, so the card offers a save
  *    again rather than a re-upload.
@@ -69,6 +73,7 @@ import {
 	isDownloadAssetKeyFor,
 } from "@otta-sh/plugin";
 import type { DownloadsBucket } from "./download-delivery.js";
+import { ATTACH_MAX_AGE_MS, downloadUploadTime } from "./download-orphans.js";
 import { DOWNLOADS_BINDING } from "./downloads-bucket.js";
 import { PRIVATE_NO_STORE } from "./no-store.js";
 
@@ -151,6 +156,7 @@ function refused(description: string): Response {
 export async function attachDownloadRefusal(
 	bucket: AttachBucket | undefined,
 	claim: AttachClaim,
+	now: number = Date.now(),
 ): Promise<Response | null> {
 	if (
 		!isDownloadAssetKeyFor(
@@ -165,7 +171,7 @@ export async function attachDownloadRefusal(
 			`Downloads are not set up on this store: it has no private ${DOWNLOADS_BINDING} bucket, so buyers could not get this file. Your developer can add one (DEPLOYMENT.md §2.1).`,
 		);
 	}
-	let stored: { size: number } | null;
+	let stored: { size: number; uploaded?: Date } | null;
 	try {
 		stored = await bucket.head(claim.key);
 	} catch (error) {
@@ -181,6 +187,14 @@ export async function attachDownloadRefusal(
 	if (stored === null || String(stored.size) !== claim.size) {
 		return refused(
 			"The uploaded file is not in the store's downloads storage, so buyers' links would fail. Nothing was attached. Upload the file again.",
+		);
+	}
+	// The same clock rule as the sweep: R2's `uploaded` stamp, or the key's ULID
+	// time when the bucket answers none.
+	const uploadedAt = downloadUploadTime(claim.key, stored.uploaded);
+	if (uploadedAt !== null && now - uploadedAt > ATTACH_MAX_AGE_MS) {
+		return refused(
+			"This upload is more than six days old, and old uploads that were never saved are cleared from storage. Nothing was attached. Upload the file again.",
 		);
 	}
 	return null;

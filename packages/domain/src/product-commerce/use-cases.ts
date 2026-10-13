@@ -8,6 +8,7 @@ import type {
 	ProductVariant,
 	ProductVariantSummary,
 	ProductVariantUpdateResult,
+	RestoreProductCommerceOptions,
 	UpdateProductCommerceFieldsInput,
 	UpdateProductVariantFieldsInput,
 	UpsertProductCommerceInput,
@@ -274,6 +275,23 @@ export async function softDeleteProductCommerce(
 	key: IdempotencyKey,
 ): Promise<void> {
 	return store.softDelete(productId, key);
+}
+
+/**
+ * Undo a soft delete when the CMS restored the product from its trash (issue
+ * #447): a thin pass-through to `ProductCommerceStore.restore`, whose doc
+ * carries the semantics (live/unknown rows and stale restores are no-ops, the
+ * row stays inactive until a newer publish, a sku taken meanwhile is cleared
+ * rather than refused).
+ */
+export async function restoreProductCommerce(
+	store: ProductCommerceStore,
+	productId: ProductId,
+	key: IdempotencyKey,
+	contentUpdatedAt: string,
+	options?: RestoreProductCommerceOptions,
+): Promise<void> {
+	return store.restore(productId, key, contentUpdatedAt, options);
 }
 
 /**

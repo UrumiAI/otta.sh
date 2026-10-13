@@ -256,6 +256,17 @@ export interface CommerceClient {
 	): Promise<ProductCommerce>;
 	getProductCommerce(productId: string): Promise<ProductCommerce | null>;
 	softDeleteProductCommerce(productId: string, idempotencyKey: string): Promise<void>;
+	/** `content:afterRestore` (issue #447): undo a soft delete. A live or unknown
+	 *  row, or a restore older than the delete, is a no-op; the row stays inactive
+	 *  until a publish newer than `contentUpdatedAt` (the restored content's
+	 *  `updatedAt`). */
+	restoreProductCommerce(
+		productId: string,
+		idempotencyKey: string,
+		contentUpdatedAt: string,
+		/** The CMS was just read and the document found: see the store port. */
+		options?: { documentConfirmed?: boolean },
+	): Promise<void>;
 	/** The afterPublish→activate follow-up (plan §6 step 7): mirrors
 	 *  `POST /products/:id/commerce/activate` 1:1. Deliberately separate from
 	 *  `upsertProductCommerce` — see the service route's doc for why `active`
@@ -603,10 +614,11 @@ export interface QuoteTaxWire {
 	totalsDisplay: "itemized" | "single";
 	/** The tax on the lines (`taxCents` minus the shipping tax). */
 	lineTaxCents: number;
-	/** Each line's own tax, in the cart's line order — so the review can show
-	 *  every line with or without tax and the lines still sum to the subtotal
-	 *  (#423). Absent on an order's wire. */
-	lineTaxes?: number[];
+	/** Each line's own tax, keyed by the cart line (and quantity) the quote priced
+	 *  — so the review can show every line with or without tax and the lines still
+	 *  sum to the subtotal (#423), matched by key, never by position (#478).
+	 *  Absent on an order's wire. */
+	lineTaxes?: Array<{ lineId: string; qty: number; taxCents: number }>;
 	/** The tax per label (lines and shipping together), in first-seen order. Labels
 	 *  are the merchant's or a calculator's text: render them escaped, never as HTML. */
 	itemized: Array<{ label: string; amountCents: number }>;

@@ -132,6 +132,7 @@ function recorder(): Recorder {
 		listNotes: refuse("listNotes"),
 		addNote: refuse("addNote"),
 		resolveUnverifiedRefund: refuse("resolveUnverifiedRefund"),
+		revokeDownloadAccess: refuse("revokeDownloadAccess"),
 	};
 	return {
 		client,

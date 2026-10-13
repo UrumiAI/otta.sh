@@ -70,6 +70,7 @@ import {
 import {
 	createAfterDeleteHandler,
 	createAfterPublishHandler,
+	createAfterRestoreHandler,
 	createAfterSaveHandler,
 	createAfterUnpublishHandler,
 } from "./sync/hooks.js";
@@ -117,6 +118,7 @@ const plugin: SandboxedPlugin = {
 		"content:afterDelete": { handler: withSweepBootstrap(createAfterDeleteHandler()) },
 		"content:afterPublish": { handler: withSweepBootstrap(createAfterPublishHandler()) },
 		"content:afterUnpublish": { handler: withSweepBootstrap(createAfterUnpublishHandler()) },
+		"content:afterRestore": { handler: withSweepBootstrap(createAfterRestoreHandler()) },
 		// `cron` carries NO capability requirement — the only gate is whether the
 		// runtime wired a cron executor — so a `format: "standard"` descriptor may
 		// declare it as it stands, and the declared capabilities stay exactly

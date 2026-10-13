@@ -154,6 +154,19 @@ describeEachDialect("ill-formed text: the write guard", (ctx) => {
 		const inconclusive = lines.filter((l) => l.includes("could not tell"));
 		expect(inconclusive).toHaveLength(1);
 		expect(inconclusive[0]).not.toMatch(/n1|connection reset|a\uD800b/);
+
+		// #478: on Postgres the text left as given is unreadable to `jsonb`, and the
+		// NEXT read that casts it heals it (READS HEAL): the query answers in full and
+		// both documents are stored repaired afterwards. On SQLite the text stays as
+		// given (a repair could re-key a legacy id) and the same read just works.
+		const page = await guarded.query({ where: { kind: "k" } });
+		expect(page.items.map((i) => i.id).toSorted()).toEqual(["n1", "n2"]);
+		if (ctx.dialect === "postgres") {
+			expect(await rawGet("n1")).toEqual({ kind: "k", body: "a\uFFFDb" });
+			expect(await rawGet("n2")).toEqual({ kind: "k", body: "c\uFFFDd" });
+		} else {
+			expect(await rawGet("n2")).toEqual({ kind: "k", body: "c\uDC00d" });
+		}
 	});
 
 	describe("ids (review B L1; round 2 A R2-A1): an id that is not well formed can never CREATE a row", () => {
