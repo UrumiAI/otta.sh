@@ -3,7 +3,7 @@ import type { TaxRate, TaxRulesStore } from "../ports/tax-rules-store.js";
 import { allocateCents } from "./allocate.js";
 import { mulDivRoundHalfDownAny } from "./round.js";
 import { computeLineTaxPpm, PPM_DENOMINATOR } from "./tax.js";
-import { bpsOfPpm, PPM_PER_BPS, ratePpmOf } from "./tax-rate-precision.js";
+import { bpsOfPpm, isValidRateBps, PPM_PER_BPS, ratePpmOf } from "./tax-rate-precision.js";
 import { effectiveTaxRates } from "./tax-rate-uniqueness.js";
 import {
 	isValidTaxLabel,
@@ -25,7 +25,8 @@ export interface RateTable {
 	/** Each class's rate in whole basis points (a finer rate: rounded half up). */
 	ratesByClass: ReadonlyMap<TaxClassId, number>;
 	/** Each class's EXACT rate in millionths (#425) — what is charged. Absent, or a
-	 *  class missing from it ⇒ its `ratesByClass` × 100. */
+	 *  class missing from it ⇒ its `ratesByClass` × 100 (a corrupt one throws when
+	 *  a line or shipping is taxed at it, `ratePpmOf`). */
 	ratesPpmByClass?: ReadonlyMap<TaxClassId, number>;
 	/** Whether any rate in the zone applies to shipping. */
 	shippingTaxable: boolean;
@@ -63,7 +64,9 @@ export function rateTableOf(zoneRates: readonly TaxRate[]): RateTable {
 	const shipsByClass = new Map<TaxClassId, boolean>();
 	for (const r of effectiveTaxRates(zoneRates)) {
 		ratesByClass.set(r.taxClassId, r.rateBps);
-		ratesPpmByClass.set(r.taxClassId, ratePpmOf(r));
+		// A corrupt rate is left out here and fails closed only when it is used
+		// (`applyRateTable`'s `rateOf`), so it never fails a cart without its class (#478).
+		if (isValidRateBps(r.rateBps)) ratesPpmByClass.set(r.taxClassId, ratePpmOf(r));
 		shipsByClass.set(r.taxClassId, r.appliesToShipping);
 	}
 	let shippingTaxable = false;
@@ -96,8 +99,11 @@ export function applyRateTable(
 	labels: ReadonlyMap<TaxClassId, string>,
 	options: RateTableOptions = {},
 ): TaxResult {
+	// A class with no valid ppm reads its bps; a corrupt bps throws `RangeError` here,
+	// on use only.
 	const rateOf = (classId: TaxClassId) =>
-		table.ratesPpmByClass?.get(classId) ?? (table.ratesByClass.get(classId) ?? 0) * PPM_PER_BPS;
+		table.ratesPpmByClass?.get(classId) ??
+		ratePpmOf({ rateBps: table.ratesByClass.get(classId) ?? 0 });
 	// The tax is computed at the STORED rate; only the display rate is capped, so a
 	// rate written outside the admin (> 1000%) still charges as before. A finer
 	// rate shows its exact `ratePpm` too; a whole-bps one shows exactly as before.

@@ -1064,6 +1064,20 @@ describe("the buyer's location at place (#426)", () => {
 		expect(response.headers.get("location")).toBe("/checkout?country=DE&error=INVALID_EMAIL");
 	});
 
+	test("#478: a forged Place with a refused location still selected is re-priced, never placed", async () => {
+		// The review offers no Place then (readyToPlace false); a POST anyway goes
+		// back to the review, which refuses the location again — nothing is placed.
+		const { handler, calls } = makeHandler();
+		const response = await PLACE_POST(
+			makeContext(
+				{ ...BUYER, fromCountry: "", deliveryCountry: "ES", deliveryRegion: "CN" },
+				handler,
+			).context,
+		);
+		expect(response.headers.get("location")).toBe("/checkout?country=ES&region=CN");
+		expect(calls).toHaveLength(0);
+	});
+
 	test("a delivery page (no marker) never sends one", async () => {
 		const { handler, calls } = makeHandler();
 		await PLACE_POST(

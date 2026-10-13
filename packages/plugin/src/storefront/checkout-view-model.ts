@@ -297,7 +297,8 @@ export function buildCheckoutLines(
  *
  * Unchanged — the very same rows — when tax is off or not calculated yet, when
  * the display matches how prices were entered (every default store), when a line
- * is unpriced, or when the quote carries no per-line tax.
+ * is unpriced, when the quote carries no per-line tax, or when it priced other
+ * lines than these (matched by line id and quantity, #478).
  */
 export function showCheckoutLinesTax(
 	lines: CheckoutLineView[],
@@ -307,9 +308,19 @@ export function showCheckoutLinesTax(
 	const tax = breakdown.tax?.enabled === true ? breakdown.tax : undefined;
 	if (tax === undefined || !(options.taxZoneSelected || tax.located)) return lines;
 	const incl = tax.displayCart === "incl";
-	const lineTaxes = tax.lineTaxes;
-	if (incl === tax.pricesIncludeTax || lineTaxes?.length !== lines.length) return lines;
+	if (incl === tax.pricesIncludeTax || tax.lineTaxes?.length !== lines.length) return lines;
 	if (lines.some((l) => l.unitPrice === null || l.lineTotal === null)) return lines;
+	// Each line's tax by its key (#478): a concurrent cart edit between this page's
+	// cart read and the quote's can reorder or swap lines. Any line the quote did
+	// not price as shown (another id or quantity) ⇒ the rows as they are.
+	const taxById = new Map(tax.lineTaxes.map((t) => [t.lineId, t]));
+	const lineTaxes: number[] = [];
+	for (const line of lines) {
+		const quoted = taxById.get(line.lineId);
+		if (quoted === undefined || quoted.qty !== line.qty) return lines;
+		lineTaxes.push(quoted.taxCents);
+	}
+	if (taxById.size !== lines.length) return lines;
 	const moved = Math.abs(shownAmounts(breakdown, tax).subtotal - breakdown.subtotalCents);
 	if (moved === 0) return lines;
 	const shares = allocateCents(domainCents<number>(moved), lineTaxes);

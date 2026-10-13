@@ -614,10 +614,11 @@ export interface QuoteTaxWire {
 	totalsDisplay: "itemized" | "single";
 	/** The tax on the lines (`taxCents` minus the shipping tax). */
 	lineTaxCents: number;
-	/** Each line's own tax, in the cart's line order — so the review can show
-	 *  every line with or without tax and the lines still sum to the subtotal
-	 *  (#423). Absent on an order's wire. */
-	lineTaxes?: number[];
+	/** Each line's own tax, keyed by the cart line (and quantity) the quote priced
+	 *  — so the review can show every line with or without tax and the lines still
+	 *  sum to the subtotal (#423), matched by key, never by position (#478).
+	 *  Absent on an order's wire. */
+	lineTaxes?: Array<{ lineId: string; qty: number; taxCents: number }>;
 	/** The tax per label (lines and shipping together), in first-seen order. Labels
 	 *  are the merchant's or a calculator's text: render them escaped, never as HTML. */
 	itemized: Array<{ label: string; amountCents: number }>;

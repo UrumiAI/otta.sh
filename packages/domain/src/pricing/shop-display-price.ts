@@ -27,6 +27,7 @@ import type { SettingsStore } from "../ports/settings-store.js";
 import type { ShippingRulesStore } from "../ports/shipping-rules-store.js";
 import type { TaxRulesStore } from "../ports/tax-rules-store.js";
 import { applyRateTable, type RateTable, rateTableOf } from "./rate-table-calculator.js";
+import { ratePpmOf } from "./tax-rate-precision.js";
 import type { ShopTaxDisplay, TaxSettings } from "./tax-settings.js";
 import type { TaxClassId } from "./types.js";
 import { resolveShippingZone } from "./zone-match.js";
@@ -69,9 +70,23 @@ export interface ShopDisplayItem {
  * not taxable, or a class with no rate — shows the stored amount.
  */
 export function shopDisplayPrice(display: ShopPriceDisplay, item: ShopDisplayItem): Cents {
-	const quantity = item.quantity ?? 1;
-	const amount = cents(item.unitPriceCents * quantity);
-	if (display.mode === "entered") return amount;
+	return shopDisplayPrices(display, [item])[0] as Cents;
+}
+
+/**
+ * Several lines' prices to show, priced TOGETHER as checkout prices a cart: one
+ * rate-table call over every line (#478). With "round at subtotal" the tax is
+ * rounded once over the lines and allocated back, so the lines sum to what
+ * checkout shows for the same cart; rounding per line, each line is exactly
+ * {@link shopDisplayPrice} alone. Every item is in one currency (the first one's).
+ */
+export function shopDisplayPrices(
+	display: ShopPriceDisplay,
+	items: readonly ShopDisplayItem[],
+): Cents[] {
+	const amounts = items.map((item) => cents(item.unitPriceCents * (item.quantity ?? 1)));
+	const first = items[0];
+	if (display.mode === "entered" || first === undefined) return amounts;
 	// The rate table checkout reads, built straight from the base zone's rates.
 	const table: RateTable = {
 		ratesByClass: new Map(Object.entries(display.ratesByClass)),
@@ -82,19 +97,17 @@ export function shopDisplayPrice(display: ShopPriceDisplay, item: ShopDisplayIte
 	const result = applyRateTable(
 		{
 			purpose: "quote",
-			currency: item.currency,
+			currency: first.currency,
 			pricesIncludeTax: display.pricesIncludeTax,
-			lines: [
-				{
-					lineId: "shop",
-					quantity,
-					unitPriceCents: item.unitPriceCents,
-					amountCents: amount,
-					taxClassId: item.taxClassId,
-					taxStatus: item.taxStatus,
-					requiresShipping: false,
-				},
-			],
+			lines: items.map((item, i) => ({
+				lineId: String(i),
+				quantity: item.quantity ?? 1,
+				unitPriceCents: item.unitPriceCents,
+				amountCents: amounts[i] as Cents,
+				taxClassId: item.taxClassId,
+				taxStatus: item.taxStatus,
+				requiresShipping: false,
+			})),
 			shipping: null,
 			origin: null,
 			destination: null,
@@ -104,9 +117,11 @@ export function shopDisplayPrice(display: ShopPriceDisplay, item: ShopDisplayIte
 		new Map(),
 		{ roundAtSubtotal: display.roundAtSubtotal },
 	);
-	const tax = result.lines[0]?.taxCents ?? 0;
-	if (display.pricesIncludeTax) return display.mode === "excl" ? cents(amount - tax) : amount;
-	return display.mode === "incl" ? cents(amount + tax) : amount;
+	return amounts.map((amount, i) => {
+		const tax = result.lines[i]?.taxCents ?? 0;
+		if (display.pricesIncludeTax) return display.mode === "excl" ? cents(amount - tax) : amount;
+		return display.mode === "incl" ? cents(amount + tax) : amount;
+	});
 }
 
 export interface ShopPriceDisplayDeps {
@@ -155,12 +170,16 @@ async function loadPriceDisplay(
 	const zone = resolveShippingZone(await deps.shippingRules.listZones(), {
 		requiresShipping: true,
 		destination: { country: base.country, region: base.region },
+		askForNarrower: false,
 	});
 	const ratesByClass: Record<TaxClassId, number> = {};
 	const ratesPpmByClass: Record<TaxClassId, number> = {};
 	if (zone.status === "matched") {
 		// The zone's rates exactly as checkout reads them (duplicates reduced the same way).
 		const table = rateTableOf(await deps.taxRules.listRatesForZone(zone.zoneId));
+		// A corrupt rate fails this read, as it always did: the page then shows prices
+		// as entered (`priceDisplayOrEntered`), never a product priced at a bad rate.
+		for (const bps of table.ratesByClass.values()) ratePpmOf({ rateBps: bps });
 		for (const [classId, bps] of table.ratesByClass) {
 			Object.defineProperty(ratesByClass, classId, {
 				value: bps,

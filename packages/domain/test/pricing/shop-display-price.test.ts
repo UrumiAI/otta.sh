@@ -7,6 +7,7 @@ import {
 	SHOP_PRICE_AS_ENTERED,
 	type ShopPriceDisplay,
 	shopDisplayPrice,
+	shopDisplayPrices,
 } from "../../src/pricing/shop-display-price.js";
 import { applyRateTable, rateTableOf } from "../../src/pricing/rate-table-calculator.js";
 import {
@@ -139,6 +140,79 @@ describe("shopDisplayPrice — the checkout's rate-table maths, one product", ()
 	test("a class named like an Object prototype key is just a class with no rate", () => {
 		const d = display("incl", false, { standard: 2000 });
 		expect(shopDisplayPrice(d, item(1000, { taxClassId: "constructor" }))).toBe(1000);
+	});
+});
+
+/**
+ * #478: the cart page's lines, priced together. With "round at subtotal" the
+ * checkout rounds the cart's tax once and allocates it to the lines, so the cart
+ * page does the same — one multi-line rate-table call — and both show one total.
+ */
+describe("shopDisplayPrices — several lines, as checkout prices them together", () => {
+	test("#477's numbers: 2 × 103¢ at 7.5%, shown including, round at subtotal ⇒ $2.21, as checkout", () => {
+		const d = display("incl", false, { standard: 750 }, true);
+		const amounts = shopDisplayPrices(d, [item(103), item(103)]);
+		// 2 × 7.725 = 15.45 ⇒ 15, allocated 8 + 7 (not 8 + 8 per line).
+		expect(amounts).toEqual([111, 110]);
+		expect(amounts[0]! + amounts[1]!).toBe(221);
+		// Each line alone still rounds its own tax.
+		expect(shopDisplayPrice(d, item(103))).toBe(111);
+	});
+
+	test("rounding per line: each line exactly as shopDisplayPrice alone ($2.22)", () => {
+		const d = display("incl", false, { standard: 750 });
+		expect(shopDisplayPrices(d, [item(103), item(103)])).toEqual([111, 111]);
+	});
+
+	test.each([
+		["prices without tax, shown including", "incl", false],
+		["prices with tax, shown excluding", "excl", true],
+	] as const)("%s: the same tax the checkout's rate table gives the cart", (_name, mode, incl) => {
+		const d = display(mode, incl, { standard: 750, reduced: 500 }, true);
+		const items = [
+			item(103, { quantity: 3 }),
+			item(103),
+			item(999, { taxClassId: "reduced" }),
+			item(250, { taxStatus: "none" }),
+		];
+		const checkout = applyRateTable(
+			{
+				purpose: "quote",
+				currency: USD,
+				pricesIncludeTax: incl,
+				lines: items.map((it, i) => ({
+					lineId: String(i),
+					quantity: it.quantity ?? 1,
+					unitPriceCents: it.unitPriceCents,
+					amountCents: cents(it.unitPriceCents * (it.quantity ?? 1)),
+					taxClassId: it.taxClassId,
+					taxStatus: it.taxStatus,
+					requiresShipping: false,
+				})),
+				shipping: null,
+				origin: null,
+				destination: null,
+				zoneId: "z",
+			},
+			rateTableOf([
+				{ id: "a", zoneId: "z", taxClassId: "standard", rateBps: 750, appliesToShipping: false },
+				{ id: "b", zoneId: "z", taxClassId: "reduced", rateBps: 500, appliesToShipping: false },
+			]),
+			new Map(),
+			{ roundAtSubtotal: true },
+		);
+		const sign = incl ? -1 : 1;
+		expect(shopDisplayPrices(d, items)).toEqual(
+			items.map(
+				(it, i) =>
+					it.unitPriceCents * (it.quantity ?? 1) + sign * (checkout.lines[i]?.taxCents ?? 0),
+			),
+		);
+	});
+
+	test("as entered, or no lines: the stored amounts", () => {
+		expect(shopDisplayPrices(SHOP_PRICE_AS_ENTERED, [item(103, { quantity: 2 })])).toEqual([206]);
+		expect(shopDisplayPrices(display("incl", false, { standard: 750 }, true), [])).toEqual([]);
 	});
 });
 
@@ -280,9 +354,48 @@ describe("loadShopPriceDisplay — what the store's options say to show", () => 
 		expect(await load()).toMatchObject({ mode: "incl", ratesByClass: {} });
 	});
 
+	test("#478 x #488: a base address that contains a narrower zone is priced at its own zone, never asked", async () => {
+		await shippingRules.createZone({ id: "z-es-cn", name: "Canary Islands", regions: ["ES-CN"] });
+		await shippingRules.createZone({ id: "z-es-tf", name: "Tenerife", regions: ["ES-TF"] });
+		await taxRules.createRate({
+			id: "t-es-cn-std",
+			taxClassId: "standard",
+			zoneId: "z-es-cn",
+			rateBps: 700,
+			appliesToShipping: false,
+		});
+		await taxRules.createRate({
+			id: "t-es-tf-std",
+			taxClassId: "standard",
+			zoneId: "z-es-tf",
+			rateBps: 300,
+			appliesToShipping: false,
+		});
+		await save({ ...on, baseAddress: { country: "ES", region: "CN" } });
+		expect(await load()).toMatchObject({ mode: "incl", ratesByClass: { standard: 700 } });
+	});
+
 	test("end to end: a 9.99 product in a 20% base zone shows 11.99 including tax", async () => {
 		await save(on);
 		expect(shopDisplayPrice(await load(), item(999))).toBe(1199);
+	});
+
+	test("#478: a corrupt rate in the base zone still fails the read (the page shows prices as entered)", async () => {
+		await save(on);
+		const corrupt = {
+			async listRatesForZone(zoneId: string) {
+				const rates = await taxRules.listRatesForZone(zoneId);
+				return rates.map((r) => (r.taxClassId === "reduced" ? { ...r, rateBps: 7.5 } : r));
+			},
+		};
+		await expect(
+			loadShopPriceDisplay({
+				settings,
+				taxRules: corrupt,
+				shippingRules,
+				hasOutsideTaxCalculator: false,
+			}),
+		).rejects.toThrow(RangeError);
 	});
 });
 
