@@ -840,7 +840,7 @@ export function createSettingsFormHandler(): RouteHandler<SettingsFormInput> {
 						{
 							variant: "default",
 							title: "Confirm the currency switch",
-							description: `${pricedProductsText(ask)} After switching to ${currencyChoiceLabel(code)}, they can't be bought in new carts or repriced in it. Nothing was changed yet.`,
+							description: `${pricedProductsText(ask)} After switching to ${currencyChoiceLabel(code)}, they can't be bought in new carts or repriced in it. Coupons and shipping rates in ${ask.from} stop working too. Nothing was changed yet.`,
 						},
 						undefined,
 						current,
@@ -1396,7 +1396,7 @@ function currencySwitchActions(ask: CurrencySwitchAsk): Block {
 				value: { currency: ask.to, from: ask.from },
 				confirm: {
 					title: `Switch the store currency to ${ask.to}?`,
-					text: `${pricedProductsText(ask)} They can't be bought in new carts after the switch, or repriced in ${ask.to}.`,
+					text: `${pricedProductsText(ask)} They can't be bought in new carts after the switch, or repriced in ${ask.to}. Coupons and shipping rates in ${ask.from} stop working too.`,
 					confirm: "Yes, switch",
 					deny: `Keep ${ask.from}`,
 					style: "danger",

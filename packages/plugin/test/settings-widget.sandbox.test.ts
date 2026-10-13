@@ -1365,10 +1365,17 @@ describe("Settings: store currency", () => {
 			expect(await storedDoc()).toBeNull();
 			const banner = findBlocks(blocks, "banner")[0];
 			expect(String(banner?.description)).toContain("2 products are priced in USD");
+			// Coupons and shipping rates in the old currency stop working too (#447 review).
+			expect(String(banner?.description)).toContain(
+				"Coupons and shipping rates in USD stop working too.",
+			);
 			const button = confirmButton(blocks);
 			expect(button).toBeDefined();
 			expect(valueOf(button)).toEqual({ currency: "KWD", from: "USD" });
 			expect(String(confirmOf(button).text)).toContain("2 products are priced in USD");
+			expect(String(confirmOf(button).text)).toContain(
+				"Coupons and shipping rates in USD stop working too.",
+			);
 
 			// Confirming saves exactly as an unprompted save does.
 			const confirmed = await sandbox.invokeRoute("admin", {
