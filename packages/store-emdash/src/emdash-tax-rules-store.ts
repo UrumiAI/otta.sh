@@ -642,9 +642,9 @@ export class EmdashTaxRulesStore implements TaxRulesStore {
 		}
 		if (takenBy === null) return;
 		await this.#cas<void>("createTaxRate.rollback", async () => {
+			const held = await this.#heldClass(taxClassId);
 			const owner = await this.#rateOwners.get(rateId);
 			if (owner?.taxClassId === taxClassId) return casDone(undefined);
-			const held = await this.#heldClass(taxClassId);
 			const embedded = held?.doc.rates[rateId];
 			if (held === null || embedded === undefined || !sameRateDoc(embedded, rate)) {
 				return casDone(undefined);
