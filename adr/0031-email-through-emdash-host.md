@@ -1,6 +1,9 @@
 # 0031. Email goes through the EmDash host's `ctx.email`; otta ships no email provider
 
 - Status: accepted
+- Note (2026-10-14): the one-time purge of the stale email credentials (Decision 5) was removed
+  (issue #455). The product owner confirmed no live store still depended on it. Nothing reads
+  those keys; a store that still holds them can delete them by hand.
 - Date: 2026-10-07
 - Supersedes: [ADR-0005](./0005-transactional-email-transport.md) **the transport decision
   only** ("the commerce layer sends email itself, not via EmDash's `email:send`") and its

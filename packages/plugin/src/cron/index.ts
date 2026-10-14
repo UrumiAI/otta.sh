@@ -44,9 +44,7 @@
  * first isolate after a deploy at the cost of one write, and an unchanged one
  * costs a read per isolate — not a write per minute.
  */
-import { purgeLegacyEmailSecrets } from "../email/purge-legacy-email-secrets.js";
 import { encryptStoredPaymentSecrets } from "../encrypt-payment-secrets.js";
-import { purgeLegacyX402Settings } from "../payments/purge-legacy-x402-settings.js";
 import type { CronEvent, CronTaskInfo, HookHandler, PluginContext } from "../types.js";
 import type { PluginLifecycleEvent } from "../types.js";
 import {
@@ -249,12 +247,6 @@ export function createCronHandler(options: CommerceSweepOptions = {}): HookHandl
 		// Once per isolate (again for any key whose revision changed since the
 		// marker), never throws: see encrypt-payment-secrets.ts (ADR-0037).
 		await encryptStoredPaymentSecrets(ctx);
-		// Once per isolate, never throw: see purge-legacy-email-secrets.ts
-		// (ADR-0031) and purge-legacy-x402-settings.ts. Both run outside the tick's
-		// query budget, so they never pile onto one tick: a tick whose email purge
-		// issued any delete (even one that then failed) leaves the x402 purge to the
-		// next tick.
-		if ((await purgeLegacyEmailSecrets(ctx)) === "idle") await purgeLegacyX402Settings(ctx);
 		return await runCommerceSweeps(ctx, name, { ...options, tickClock, startedAtMs });
 	};
 }

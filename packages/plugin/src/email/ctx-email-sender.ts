@@ -263,8 +263,7 @@ export const EMAIL_AVAILABILITY_READS = 1;
  * A sandboxed host always hands over `ctx.email`, and the "no provider" record
  * ({@link EMAIL_TRANSPORT_UNAVAILABLE_KEY}) lapses after 5 minutes, so neither
  * says a provider WORKS. This does: the Settings line only says "sent via
- * EmDash's email provider" once it is newer than any "no provider" answer, and
- * the legacy-credential purge waits for it. Plain kv, written fail-soft by the
+ * EmDash's email provider" once it is newer than any "no provider" answer. Plain kv, written fail-soft by the
  * first delivered send of each sender — once per tick or request
  * ({@link EMAIL_SENT_RECORD_WRITES}).
  */

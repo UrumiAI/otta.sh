@@ -291,7 +291,7 @@ describe("encrypted at rest (ADR-0037)", () => {
 		}
 	});
 
-	test("no retired email or x402 key is in it — main's purges delete those", () => {
+	test("no retired email or x402 key is in it", () => {
 		for (const key of ENCRYPTED_PAYMENT_SECRET_KEYS) expect(key).not.toMatch(/email|x402/i);
 	});
 

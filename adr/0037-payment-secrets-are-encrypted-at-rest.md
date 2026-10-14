@@ -1,6 +1,9 @@
 # 0037. Payment secrets are encrypted at rest through EmDash secret settings
 
 - Status: accepted
+- Note (2026-10-14): the one-time purges of the retired email and x402 keys named in
+  Decision 1 were removed (issue #455). Those keys are still not encrypted or migrated;
+  nothing reads them.
 - Date: 2026-10-08
 - Supersedes: the acceptance in [ADR-0020](./0020-one-deployable-plugin-owns-commerce-truth.md)
   §2 and its Consequences that these credentials may be stored as plain values, for the three

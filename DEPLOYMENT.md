@@ -368,8 +368,8 @@ order of appearance in a deployment's life:
     logs one warning naming `EMDASH_ENCRYPTION_KEY`). It first reads every key and changes
     nothing if any cannot be read, so a wrong key cannot strand a working one — but if every
     key is still unencrypted, whichever key is set at that tick is the key they are saved
-    under, so set the right one before deploying. It logs counts only (stored x402 keys are
-    deleted by x402's own one-time purge, not by this run). Earlier backups and D1 Time Travel
+    under, so set the right one before deploying. It logs counts only (it never touches a
+    leftover x402 key). Earlier backups and D1 Time Travel
     history still hold the earlier copies until they age out, so rotate a live Stripe key
     after the upgrade.
   - **After every deploy (required check):** open Otta's Settings and confirm that every
