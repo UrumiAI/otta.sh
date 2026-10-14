@@ -288,20 +288,12 @@ cannot be retried in place:
 > 500 rather than re-run. Nothing fails at deploy time. So the flag must never come back
 > while a session mode is set. Pinned by `sites/staging/test/wrangler-config.test.ts` (flag
 > absent, template hygiene) and `sites/staging/test/site-config.test.ts` (`"primary-first"`;
-> never flag + session together), and enforced at **build** time on the config the build
-> actually uses (`sites/staging/src/lib/wrangler-pairing.ts`, called from `astro.config.ts`).
+> never flag + session together, `sites/staging/src/lib/wrangler-pairing.ts`).
 >
-> **Upgrading an existing deployment.** If you made `wrangler.local.jsonc` by copying the
-> template before this change (§2.1 step 2), it still lists the flag. Before building this
-> version, delete `"global_fetch_strictly_public"` from its `compatibility_flags`, leaving
-> `["nodejs_compat"]`. If you don't, the build stops with:
->
-> ```text
-> Error: wrangler.local.jsonc sets the "global_fetch_strictly_public" compatibility flag, but
-> D1 sessions are on (session: "primary-first", sites/staging/src/emdash-options.ts). …
-> Delete "global_fetch_strictly_public" from compatibility_flags in wrangler.local.jsonc,
-> then build again (DEPLOYMENT.md §2.4, "Upgrading an existing deployment").
-> ```
+> **Your own `wrangler.local.jsonc` is not checked.** If you made it by copying the template
+> before issue #375 (§2.1 step 2), it may still list the flag: delete
+> `"global_fetch_strictly_public"` from its `compatibility_flags`, leaving `["nodejs_compat"]`.
+> (A build-time guard used to refuse that file; it was removed in issue #455.)
 >
 > A **custom domain** on the site (issue #32) is what unlocks zone-level WAF rules.
 
@@ -928,7 +920,7 @@ reviewed tip, so a new one fails CI first).
 
 | Symptom | Cause → fix |
 |---|---|
-| A ~5 s stall on a new isolate's first request, an occasional 500 on a write, and `[emdash] A D1 session query hung …` in the logs | `global_fetch_strictly_public` + D1 `session` both on (emdash #1273). The build refuses this pair, so check what was deployed: remove the flag (§2.4, "Upgrading an existing deployment"), rebuild, redeploy |
+| A ~5 s stall on a new isolate's first request, an occasional 500 on a write, and `[emdash] A D1 session query hung …` in the logs | `global_fetch_strictly_public` + D1 `session` both on (emdash #1273): remove the flag from `wrangler.local.jsonc` (§2.4), rebuild, redeploy |
 | `/products` empty right after deploy | Healthy (§1) — sample content lands via the wizard checkbox, not first boot |
 | `POST /webhooks/stripe` reports `NOT_CONFIGURED` | The Stripe webhook signing secret is unset — provision it in admin Settings (§3) |
 | Every Stripe delivery answers 503 after a deploy | The webhook signing secret or `OTTA_WH_TOKEN` reads "saved, but not valid" or "saved, but cannot be read" in Otta's Settings — re-enter it there; for "cannot be read", first check `EMDASH_ENCRYPTION_KEY` (§3) |
