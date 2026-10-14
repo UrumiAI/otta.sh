@@ -250,10 +250,9 @@ export function priceBody(row: DemoRow, expectedUpdatedAt: string): Record<strin
 
 /** The `products:restock` payload. `onHand` is the count this script just
  *  observed — not the target, and not a precondition: a restock is not pinned to
- *  it (an add is commutative), and the route requires it only as the legacy
- *  key's component. `qty` is how many to ADD. `nonce` is the movement's
- *  idempotency key, one per decision: the route's content-derived fallback for a
- *  caller that sends none is going away. */
+ *  it (an add is commutative), but the route still requires it. `qty` is how many
+ *  to ADD. `nonce` is the movement's idempotency key, one per decision: the
+ *  route refuses a movement without one. */
 export function restockBody(
 	row: DemoRow,
 	onHand: number,

@@ -29,6 +29,9 @@
   count is a terminal `STALE_ON_HAND`. A RESTOCK is still not pinned to any count. The refusal
   is still binding on the movement it always guarded: only its tier moved. See "Amended
   2026-10-02" at the end of this record.
+- Note (2026-10-14): the one-release no-nonce fallback that amendment kept was removed (issue
+  #455). The nonce is now mandatory: a movement without one is refused as unreadable and
+  nothing moves.
 - Supersedes: **one clause of [ADR-0014](./0014-second-native-descriptor-for-react-admin.md)** —
   "The Block Kit screens stay in the tree and stay green until a migration increment replaces
   each one" — **as to Orders and Pricing & inventory only**. That clause is the third bullet of

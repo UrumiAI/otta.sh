@@ -843,7 +843,7 @@ export function PricingStockEditor({ productId }: { productId: string }): React.
 
 	/** A NEW move: one click, one fresh nonce, never reused after it is answered.
 	 *  `onHand` is the count this render showed — the removal's watermark (the
-	 *  store refuses a stale one), and on a restock only the legacy key's part. */
+	 *  store refuses a stale one); a restock sends it too, but is not judged by it. */
 	const move = (actionId: StockActionId, n: number, onHand: number): void => {
 		if (movingNow.current) return;
 		send(
