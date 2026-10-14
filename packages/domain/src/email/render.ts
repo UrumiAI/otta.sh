@@ -43,7 +43,9 @@ export interface EmailRenderContext {
 	/**
 	 * The store's "Display tax totals" (ADR-0032, issue #422): `itemized` shows the
 	 * order's `taxRows` — one row per tax, as the order page does — in place of the
-	 * single Tax row. Anything else, or absent, keeps the single row.
+	 * single Tax row. Anything else, or absent, keeps the single row. The live
+	 * option: the display the order was placed under (the data's
+	 * `taxTotalsDisplay`, #478) wins whenever the data carries one.
 	 */
 	taxTotalsDisplay?: "itemized" | "single" | undefined;
 }
@@ -127,7 +129,7 @@ export function renderEmail(
 		asParagraph(tracking ?? cancellation),
 		orderLine(number, label),
 		lineItems(data["lines"], str(data["currency"]), money),
-		totalsBlock(data, money, refunded !== null, context.taxTotalsDisplay === "itemized"),
+		totalsBlock(data, money, refunded !== null, taxTotalsDisplayFor(data, context) === "itemized"),
 		DELIVERY_TEMPLATES.has(template) ? addressBlock(data["shippingAddress"]) : null,
 		orderLink(context.orderPageUrl),
 		signOff(context.storeName),
@@ -338,6 +340,16 @@ function totalsBlock(
 		text: rows.map(([label, value]) => `${label}: ${value}`).join("\n"),
 		html: table(rows.map(([label, value]) => [escapeHtml(label), escapeHtml(value)])),
 	};
+}
+
+/** The order's own recorded display (#478) when the data carries a known one,
+ *  else the store's live option — an order placed before it was recorded. */
+function taxTotalsDisplayFor(
+	data: Record<string, unknown>,
+	context: EmailRenderContext,
+): "itemized" | "single" | undefined {
+	const recorded = data["taxTotalsDisplay"];
+	return recorded === "itemized" || recorded === "single" ? recorded : context.taxTotalsDisplay;
 }
 
 /**

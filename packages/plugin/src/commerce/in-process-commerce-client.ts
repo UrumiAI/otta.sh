@@ -120,6 +120,7 @@ import {
 	readOrderTaxSnapshot,
 	RATE_TABLE_CALCULATOR_ID,
 	TAX_DISABLED_CALCULATOR_ID,
+	recordedTaxTotalsDisplay,
 	taxTotalsDisplayOf,
 	type ZoneResolution,
 	roundingEntry,
@@ -1342,12 +1343,16 @@ export class InProcessCommerceClient implements CommerceClient {
 	}
 
 	/**
-	 * The store's "Display tax totals" for an order's page (issue #422) — read
-	 * only for an order that has rows to itemize, so an untaxed or older order's
-	 * read costs nothing more.
+	 * The "Display tax totals" for an order's page (issue #422): the one the order
+	 * was placed under (#478), so changing the option never changes a past
+	 * order's look; the store's live option only for an order placed before that
+	 * was recorded. Settings are read only for such an order with rows to itemize,
+	 * so an untaxed, older or recorded order's read costs nothing more.
 	 */
 	async #taxTotalsDisplayFor(order: Order): Promise<"itemized" | "single"> {
 		if (orderTaxRows(order.totals) === null) return "single";
+		const recorded = recordedTaxTotalsDisplay(order.totals);
+		if (recorded !== undefined) return recorded;
 		return taxTotalsDisplayOf((await this.#stores.settingsStore.get()).tax);
 	}
 

@@ -3,6 +3,7 @@ import { cents, type Cents } from "../../src/money/cents.js";
 import {
 	itemizeTaxLines,
 	orderTaxRows,
+	recordedTaxTotalsDisplay,
 	taxTotalsDisplayOf,
 } from "../../src/orders/order-tax-rows.js";
 import { LEGACY_TAX_SETTINGS, NEW_STORE_TAX_SETTINGS } from "../../src/pricing/tax-settings.js";
@@ -131,6 +132,32 @@ describe("itemizeTaxLines (shared with the checkout quote)", () => {
 			{ label: "B", amountCents: 4 },
 			{ label: "A", amountCents: 2 },
 		]);
+	});
+});
+
+function recorded(raw: unknown) {
+	return recordedTaxTotalsDisplay({ taxBreakdown: raw });
+}
+
+describe("recordedTaxTotalsDisplay (#478)", () => {
+	const base = {
+		v: 1,
+		calculatorId: "otta.rate-table",
+		pricesIncludeTax: false,
+		lines: [],
+		shipping: null,
+	};
+
+	test("the display the order was placed under", () => {
+		expect(recorded({ ...base, totalsDisplay: "itemized" })).toBe("itemized");
+		expect(recorded({ ...base, totalsDisplay: "single" })).toBe("single");
+	});
+
+	test("none recorded — an order placed before #478, a v0 or no snapshot: undefined (the caller falls back to the live option)", () => {
+		expect(recorded(base)).toBeUndefined();
+		expect(recorded({ ...base, totalsDisplay: "none" })).toBeUndefined();
+		expect(recorded(null)).toBeUndefined();
+		expect(recorded({ lines: [], shippingTaxCents: 0 })).toBeUndefined();
 	});
 });
 

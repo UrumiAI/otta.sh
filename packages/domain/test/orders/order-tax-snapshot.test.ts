@@ -43,6 +43,20 @@ describe("readOrderTaxSnapshot", () => {
 		expect(readOrderTaxSnapshot({ ...v1, located: "yes" })).toBeNull();
 	});
 
+	test("`totalsDisplay` (#478: the Display tax totals the order was placed under) round-trips; a snapshot written before it reads without it", () => {
+		for (const totalsDisplay of ["itemized", "single"] as const) {
+			const recorded = { ...v1, totalsDisplay };
+			expect(readOrderTaxSnapshot(JSON.parse(JSON.stringify(recorded)))).toEqual(recorded);
+		}
+		const old = readOrderTaxSnapshot(v1);
+		expect(old !== null && "totalsDisplay" in old).toBe(false);
+		// Display-only, like `taxStatus`: a value this reader does not know drops
+		// only that key (the order follows the live option), never the snapshot.
+		for (const bad of ["none", null, 1, ""]) {
+			expect(readOrderTaxSnapshot({ ...v1, totalsDisplay: bad })).toEqual(v1);
+		}
+	});
+
 	test("a line's `taxStatus` (#427) round-trips; a v1 line written before it reads WITHOUT one, never as taxable", () => {
 		for (const taxStatus of ["taxable", "shipping_only", "none"] as const) {
 			const withStatus = { ...v1, lines: [{ ...v1.lines[0], taxStatus }] };
@@ -103,6 +117,18 @@ describe("readOrderTaxSnapshot", () => {
 		expect(snapshot.lines.map((l) => l.taxStatus)).toEqual(["taxable", "shipping_only", "none"]);
 		// What is written reads back unchanged.
 		expect(readOrderTaxSnapshot(JSON.parse(JSON.stringify(snapshot)))).toEqual(snapshot);
+		// #478: the display the order was placed under, when the caller gives it.
+		expect("totalsDisplay" in snapshot).toBe(false);
+		const recorded = buildOrderTaxSnapshot(
+			breakdown,
+			{ calculatorId: "otta.rate-table", result },
+			false,
+			["taxable", "shipping_only", "none"],
+			undefined,
+			"single",
+		);
+		expect(recorded.totalsDisplay).toBe("single");
+		expect(readOrderTaxSnapshot(JSON.parse(JSON.stringify(recorded)))).toEqual(recorded);
 		expect(() =>
 			buildOrderTaxSnapshot(breakdown, { calculatorId: "x", result }, false, ["taxable"]),
 		).toThrow(RangeError);

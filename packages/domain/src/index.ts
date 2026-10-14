@@ -99,11 +99,13 @@ export {
 	type OrderTaxSnapshot,
 	type OrderTaxSnapshotV0,
 	type OrderTaxSnapshotV1,
+	type TaxTotalsDisplay,
 } from "./orders/order-tax-snapshot.js";
 // Issue #422: the order's tax snapshot as one display row per tax.
 export {
 	itemizeTaxLines,
 	orderTaxRows,
+	recordedTaxTotalsDisplay,
 	taxTotalsDisplayOf,
 	type TaxRow,
 } from "./orders/order-tax-rows.js";

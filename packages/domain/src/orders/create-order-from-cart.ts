@@ -37,7 +37,11 @@ import type { CreateOrderFailure } from "./errors.js";
 import { snapshotOrderLine } from "./line-snapshot.js";
 import type { Order, OrderAddress, PaymentMethod } from "./model.js";
 import { normalizeOrderAddress, type OrderAddressInput } from "./order-address.js";
-import { buildOrderTaxSnapshot, type OrderTaxAddress } from "./order-tax-snapshot.js";
+import {
+	buildOrderTaxSnapshot,
+	type OrderTaxAddress,
+	type TaxTotalsDisplay,
+} from "./order-tax-snapshot.js";
 import { gatewayForStored } from "./payment-methods.js";
 
 /** 15 minutes — the checkout hold TTL (§9 decision 5), configurable. */
@@ -434,6 +438,8 @@ export async function createOrderFromCart(
 			// #427: what each line was asked as (`taxRequestLinesOf`'s default).
 			taxStatuses: pricedLines.map((l) => l.taxStatus ?? "taxable"),
 			...(quote.taxAddress !== undefined ? { taxAddress: quote.taxAddress } : {}),
+			// #478: the order's pages and emails keep the display it was placed under.
+			taxTotalsDisplay: quote.taxSettings.totalsDisplay,
 			couponRecord: quote.couponRecord,
 			shippingMethodSnapshot,
 			shippingAddress,
@@ -509,6 +515,8 @@ interface FinalizeContext {
 	taxStatuses: readonly ProductTaxStatus[];
 	/** The quote's `taxAddress` (#426), frozen into the snapshot. */
 	taxAddress?: OrderTaxAddress;
+	/** The store's "Display tax totals" at placement (#478), frozen into the snapshot. */
+	taxTotalsDisplay: TaxTotalsDisplay;
 	couponRecord: CouponRecord | null;
 	/** What priced the shipping and tax (ADR-0021 Decision 7); null when no zone
 	 *  matched (no zones configured, or nothing ships). */
@@ -579,6 +587,7 @@ async function finalizeOrder(
 				ctx.taxLocated,
 				ctx.taxStatuses,
 				ctx.taxAddress,
+				ctx.taxTotalsDisplay,
 			),
 		},
 	});

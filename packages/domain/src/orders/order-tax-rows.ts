@@ -14,7 +14,7 @@
 import type { TaxLine } from "../pricing/tax-calculator.js";
 import type { TaxSettings } from "../pricing/tax-settings.js";
 import type { OrderTotals } from "./model.js";
-import { readOrderTaxSnapshot } from "./order-tax-snapshot.js";
+import { readOrderTaxSnapshot, type TaxTotalsDisplay } from "./order-tax-snapshot.js";
 
 /** One tax row: its label (merchant or calculator text — render it escaped,
  *  never as HTML) and the tax under it, in integer minor units. */
@@ -75,4 +75,17 @@ export function orderTaxRows(totals: Pick<OrderTotals, "tax" | "taxBreakdown">):
  */
 export function taxTotalsDisplayOf(saved: TaxSettings | undefined): "itemized" | "single" {
 	return saved?.totalsDisplay ?? "single";
+}
+
+/**
+ * The "Display tax totals" the order was placed under (#478), frozen on its v1
+ * snapshot, or `undefined` for an order placed before it was recorded (or with
+ * no v1 snapshot) — the caller then falls back to the live option
+ * ({@link taxTotalsDisplayOf}), today's behaviour for those orders.
+ */
+export function recordedTaxTotalsDisplay(
+	totals: Pick<OrderTotals, "taxBreakdown">,
+): TaxTotalsDisplay | undefined {
+	const snapshot = readOrderTaxSnapshot(totals.taxBreakdown);
+	return snapshot?.v === 1 ? snapshot.totalsDisplay : undefined;
 }
