@@ -68,6 +68,41 @@ function order(taxBreakdown: unknown, tax = 2140): Order {
 	} as unknown as Order;
 }
 
+describe("#478: the Display tax totals the order was placed under", () => {
+	test("buildOrderEmailData carries the recorded display; an order without one carries none", () => {
+		for (const totalsDisplay of ["itemized", "single"] as const) {
+			expect(
+				buildOrderEmailData(order(snapshot({ totalsDisplay })), "paid")["taxTotalsDisplay"],
+			).toBe(totalsDisplay);
+		}
+		expect(buildOrderEmailData(order(snapshot()), "paid")).not.toHaveProperty("taxTotalsDisplay");
+		expect(buildOrderEmailData(order(null), "paid")).not.toHaveProperty("taxTotalsDisplay");
+	});
+
+	test("the recorded display wins over the store's live option", () => {
+		const placedItemized = buildOrderEmailData(
+			order(snapshot({ totalsDisplay: "itemized" })),
+			"paid",
+		);
+		const itemized = renderEmail("order-confirmation", placedItemized, SINGLE).text;
+		expect(itemized).toMatch(/^GST 18%: \[INR 1890\]$/m);
+		expect(itemized).not.toMatch(/^Tax:/m);
+		const placedSingle = buildOrderEmailData(order(snapshot({ totalsDisplay: "single" })), "paid");
+		const single = renderEmail("order-confirmation", placedSingle, ITEMIZED).text;
+		expect(single).toMatch(/^Tax: \[INR 2140\]$/m);
+		expect(single).not.toContain("GST 18%");
+	});
+
+	test("no recorded display (an order placed before #478): the live option decides", () => {
+		const data = buildOrderEmailData(order(snapshot()), "paid");
+		expect(renderEmail("order-confirmation", data, ITEMIZED).text).toMatch(/^GST 5%: /m);
+		expect(renderEmail("order-confirmation", data, SINGLE).text).toMatch(/^Tax: /m);
+		// A value the renderer does not know is ignored the same way.
+		const odd = { ...data, taxTotalsDisplay: "none" };
+		expect(renderEmail("order-confirmation", odd, ITEMIZED).text).toMatch(/^GST 5%: /m);
+	});
+});
+
 describe("buildOrderEmailData carries the tax rows", () => {
 	test("a v1 snapshot: one row per tax, adding up to the tax total", () => {
 		expect(buildOrderEmailData(order(snapshot()), "paid")["taxRows"]).toEqual([

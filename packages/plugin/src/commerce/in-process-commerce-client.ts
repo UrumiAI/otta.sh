@@ -120,7 +120,9 @@ import {
 	readOrderTaxSnapshot,
 	RATE_TABLE_CALCULATOR_ID,
 	TAX_DISABLED_CALCULATOR_ID,
+	recordedTaxTotalsDisplay,
 	taxTotalsDisplayOf,
+	type TaxTotalsDisplay,
 	type ZoneResolution,
 	roundingEntry,
 } from "@otta-sh/domain";
@@ -1342,12 +1344,16 @@ export class InProcessCommerceClient implements CommerceClient {
 	}
 
 	/**
-	 * The store's "Display tax totals" for an order's page (issue #422) — read
-	 * only for an order that has rows to itemize, so an untaxed or older order's
-	 * read costs nothing more.
+	 * The "Display tax totals" for an order's page (issue #422): the one the order
+	 * was placed under (#478), so changing the option never changes a past
+	 * order's look; the store's live option only for an order placed before that
+	 * was recorded. Settings are read only for such an order with rows to itemize,
+	 * so an untaxed, older or recorded order's read costs nothing more.
 	 */
-	async #taxTotalsDisplayFor(order: Order): Promise<"itemized" | "single"> {
+	async #taxTotalsDisplayFor(order: Order): Promise<TaxTotalsDisplay> {
 		if (orderTaxRows(order.totals) === null) return "single";
+		const recorded = recordedTaxTotalsDisplay(order.totals);
+		if (recorded !== undefined) return recorded;
 		return taxTotalsDisplayOf((await this.#stores.settingsStore.get()).tax);
 	}
 
@@ -1670,7 +1676,7 @@ function serializeOrderLines(order: Order): OrderLineWire[] {
 /** The customer's own order, as their account pages read it. */
 function serializeOrderSummary(
 	order: Order,
-	taxTotalsDisplay: "itemized" | "single" = "single",
+	taxTotalsDisplay: TaxTotalsDisplay = "single",
 ): OrderSummaryWire {
 	return {
 		id: order.id,
@@ -1761,7 +1767,7 @@ function quoteTaxWire(
  */
 function orderTaxWire(
 	order: Order,
-	totalsDisplay: "itemized" | "single" = "single",
+	totalsDisplay: TaxTotalsDisplay = "single",
 ): { tax?: QuoteTaxWire; taxLocated?: true } {
 	const snapshot = readOrderTaxSnapshot(order.totals.taxBreakdown);
 	if (snapshot === null || snapshot.v !== 1) return {};
@@ -1814,7 +1820,7 @@ function serializePublicOrder(
 	order: Order,
 	latePayment: LatePaymentStatus,
 	refundedCents: number,
-	taxTotalsDisplay: "itemized" | "single" = "single",
+	taxTotalsDisplay: TaxTotalsDisplay = "single",
 ): PublicOrderWire {
 	return {
 		id: order.id,

@@ -2,6 +2,7 @@ import type { Cents } from "../money/cents.js";
 import { isProductTaxStatus, type ProductTaxStatus } from "../ports/product-commerce-store.js";
 import type { TaxLine, TaxResult } from "../pricing/tax-calculator.js";
 import { finerRatePpm } from "../pricing/tax-rate-precision.js";
+import type { TaxTotalsDisplay } from "../pricing/tax-settings.js";
 import type { TotalsBreakdown } from "../pricing/types.js";
 
 /**
@@ -34,6 +35,15 @@ export interface OrderTaxSnapshotV1 {
 	 * and on every snapshot written before it.
 	 */
 	taxAddress?: OrderTaxAddress;
+	/**
+	 * The store's "Display tax totals" when the order was placed (#478): the
+	 * buyer's order pages and emails show the order this way for good, so a later
+	 * change to the option never changes how a past order looks. Written by every
+	 * order since; ABSENT on a snapshot written before it — those orders follow
+	 * the live option, as before. Display-only: a value this reader does not know
+	 * is dropped (the order follows the live option), never the whole snapshot.
+	 */
+	totalsDisplay?: TaxTotalsDisplay;
 	/**
 	 * One per order line, in order-line order (`lineIndex` indexes `order.lines`).
 	 * A line (and `shipping`) taxed at a rate finer than a basis point also records
@@ -94,6 +104,8 @@ export function buildOrderTaxSnapshot(
 	taxStatuses: readonly ProductTaxStatus[],
 	/** The quote's `taxAddress` (#426), when it has one. */
 	taxAddress?: OrderTaxAddress,
+	/** The store's "Display tax totals" the order is placed under (#478). */
+	totalsDisplay?: TaxTotalsDisplay,
 ): OrderTaxSnapshotV1 {
 	return {
 		v: 1,
@@ -109,6 +121,7 @@ export function buildOrderTaxSnapshot(
 					},
 				}
 			: {}),
+		...(totalsDisplay !== undefined ? { totalsDisplay } : {}),
 		lines: breakdown.lineBreakdown.map((line, lineIndex) => {
 			const answered = tax.result.lines[lineIndex];
 			if (answered === undefined) throw new RangeError(`no tax line for line ${String(lineIndex)}`);
@@ -154,12 +167,16 @@ export function readOrderTaxSnapshot(raw: unknown): OrderTaxSnapshot | null {
 }
 
 function readV1(raw: Record<string, unknown>): OrderTaxSnapshotV1 | null {
-	const { calculatorId, pricesIncludeTax, located, taxAddress, lines, shipping } = raw;
+	const { calculatorId, pricesIncludeTax, located, taxAddress, totalsDisplay, lines, shipping } =
+		raw;
 	if (typeof calculatorId !== "string" || typeof pricesIncludeTax !== "boolean") return null;
 	// Optional: a snapshot from before the field omits it (read as not located).
 	if (located !== undefined && typeof located !== "boolean") return null;
 	const address = taxAddress === undefined ? undefined : readTaxAddress(taxAddress);
 	if (address === null) return null;
+	// Optional and display-only (#478): an unknown value is dropped, like `taxStatus`.
+	const display =
+		totalsDisplay === "itemized" || totalsDisplay === "single" ? totalsDisplay : undefined;
 	if (!Array.isArray(lines)) return null;
 	const out: OrderTaxSnapshotV1["lines"] = [];
 	for (const item of lines as unknown[]) {
@@ -193,6 +210,7 @@ function readV1(raw: Record<string, unknown>): OrderTaxSnapshotV1 | null {
 		pricesIncludeTax,
 		...(located !== undefined ? { located } : {}),
 		...(address !== undefined ? { taxAddress: address } : {}),
+		...(display !== undefined ? { totalsDisplay: display } : {}),
 		lines: out,
 		shipping: ship,
 	};

@@ -34,6 +34,7 @@ import {
 	TRANSPORT_UNAVAILABLE_RETRY_MS,
 	type EmailSender,
 	type SendEmailInput,
+	type TaxTotalsDisplay,
 } from "@otta-sh/domain";
 import { EmdashSettingsStore, systemClock } from "@otta-sh/store-emdash";
 import { resolveLoginLinkUrl } from "../storefront/login-link.js";
@@ -84,7 +85,7 @@ export interface CtxEmailSenderOptions {
 	storefrontOrigin?: string | undefined;
 	/** The store's "Display tax totals" (issue #422): `itemized` lists an order's
 	 *  tax rows. Absent ⇒ the single Tax row. */
-	taxTotalsDisplay?: "itemized" | "single" | undefined;
+	taxTotalsDisplay?: TaxTotalsDisplay | undefined;
 	/** Told when the host answered "no email provider" — {@link makeEmailSender}
 	 *  records it ({@link markEmailTransportUnavailable}). */
 	onUnavailable?: (() => Promise<void>) | undefined;
@@ -100,7 +101,7 @@ export class CtxEmailSender implements EmailSender {
 	readonly #timeoutMs: number | (() => number);
 	readonly #storeName: string | undefined;
 	readonly #storefrontOrigin: string | undefined;
-	readonly #taxTotalsDisplay: "itemized" | "single" | undefined;
+	readonly #taxTotalsDisplay: TaxTotalsDisplay | undefined;
 	readonly #onUnavailable: (() => Promise<void>) | undefined;
 	readonly #onSent: (() => Promise<void>) | undefined;
 	#sentRecorded = false;
@@ -370,7 +371,7 @@ export async function makeEmailSender(
  * row — the total is right either way, and an email must not fail over a
  * display preference.
  */
-async function emailTaxTotalsDisplay(ctx: PluginContext): Promise<"itemized" | "single"> {
+async function emailTaxTotalsDisplay(ctx: PluginContext): Promise<TaxTotalsDisplay> {
 	if (ctx.storage === undefined) return "single";
 	try {
 		const settings = await new EmdashSettingsStore({

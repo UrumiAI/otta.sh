@@ -111,6 +111,9 @@ pay must not change silently (user decision 4).
   (#475), buyer-location tax for digital goods (#467), itemized tax rows on the order pages,
   the emails and the admin order detail (#469), the admin order detail's "Prices included tax"
   marker (#461), and each line's tax status in the frozen order tax snapshot (#466).
+- Built since (#478): each order's snapshot records the `totalsDisplay` it was placed under,
+  and its buyer pages and emails show it that way, so changing the option never changes how a
+  past order looks. An order placed before this has none recorded and follows the live option.
 - Follow-ups, not built: postcode/city matching, priority/compound rates, CSV;
   customer tax-exempt; adjusting inclusive prices for non-base buyers.
 
@@ -226,6 +229,9 @@ Decided by the maintainer: Otta does not add WooCommerce's coupon allocation, no
     stores' prices as entered, because it never calls the calculator.
   - A store whose `displayCart` matches how its prices are entered (every default store),
     or whose tax is off, renders its lines byte for byte as before.
+  - A store that already saved a `displayCart` different from how it enters prices will see
+    its cart and checkout line prices change after the #477 deploy; the amounts charged do
+    not change.
   - Placed-order pages and emails read the order's line snapshot, which records no
     per-line tax, so their lines are unchanged.
 - What is charged (the quote and the order) is unchanged.

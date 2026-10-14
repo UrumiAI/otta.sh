@@ -36,6 +36,8 @@ async function placeDigitalAtBase(): Promise<Order> {
 				...NEW_STORE_TAX_SETTINGS,
 				enabled: true,
 				baseAddress: { country: "GB", region: null },
+				// The single Tax row these emails check (#478: the order records it).
+				totalsDisplay: "single",
 			},
 		},
 		idempotencyKey("tax-on"),
