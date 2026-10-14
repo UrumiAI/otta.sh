@@ -1020,6 +1020,43 @@ describeEachDialect("EmdashTaxRulesStore cross-class claim race (#462)", (ctx) =
 		expect((await plain.rateOwners.get("x"))?.taxClassId).toBe(inA === undefined ? "b" : "a");
 	});
 
+	test("a create whose lookup ran before a peer's embed cannot take the peer's LIVE claim (#489)", async () => {
+		const raw = bound.storage;
+		const plain = makeTaxRulesHarness(raw);
+
+		// B: "x" into class "b". Its lookup finds nothing, and it is held just before it
+		// reads the claim — the read it decides "orphaned or not" on.
+		const claimRead = parkBeforeRead(raw["tax_rate_owners"] ?? never(), "x");
+		const b = makeTaxRulesHarness(raw, {
+			clock: plain.clock,
+			storageForStore: withCollection(raw, "tax_rate_owners", claimRead.collection),
+		}).store.createRate({
+			id: "x",
+			taxClassId: "b",
+			zoneId: "z",
+			rateBps: 500,
+			appliesToShipping: false,
+		});
+		await claimRead.arrived;
+
+		// A: "x" into class "a", run to completion — embedded, claim set live.
+		await plain.store.createRate({
+			id: "x",
+			taxClassId: "a",
+			zoneId: "z",
+			rateBps: 725,
+			appliesToShipping: false,
+		});
+		claimRead.release();
+
+		// B now reads a LIVE claim its lookup never saw backed: it must be refused, not
+		// take the claim over and embed a second "x".
+		expect(await settleOne(b)).toMatchObject({ code: "TAX_RATE_ID_COLLISION" });
+		expect((await plain.classes.get("b"))?.rates["x"]).toBeUndefined();
+		expect((await plain.classes.get("a"))?.rates["x"]).toBeDefined();
+		expect(await plain.rateOwners.get("x")).toMatchObject({ taxClassId: "a", state: "live" });
+	});
+
 	test("a create paused past the lease loses to the class that took the id over — never two rates", async () => {
 		const raw = bound.storage;
 		const plain = makeTaxRulesHarness(raw);

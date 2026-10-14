@@ -572,6 +572,14 @@ export class EmdashTaxRulesStore implements TaxRulesStore {
 			) {
 				throw new TaxRateIdCollisionError(rateId, current.value.taxClassId);
 			}
+			// The lookup above ran BEFORE this read: a peer's embed and its live claim can
+			// both land in between (#489), so "unbacked" is re-proved against the class
+			// this claim names. Any later embed of the id re-asserts the claim first, which
+			// moves the revision and refuses the compare-and-set below.
+			const backer = await this.#heldClass(current.value.taxClassId);
+			if (backer?.doc.rates[rateId] !== undefined) {
+				throw new TaxRateIdCollisionError(rateId, current.value.taxClassId);
+			}
 			const written = await this.#rateOwners.compareAndSet(rateId, current.revision, mine);
 			return written.applied ? casDone(written.revision) : CAS_RETRY;
 		});
@@ -595,6 +603,15 @@ export class EmdashTaxRulesStore implements TaxRulesStore {
 	 * A STORAGE failure setting the claim live does not fail the create — the rate has
 	 * landed, and a pending claim that names its class is followed by `#findRate` like
 	 * a live one.
+	 *
+	 * STUCK PENDING: when that storage failure happens, the claim stays `pending`, and
+	 * nothing sets it live later (`#findRate` heals only a missing or mis-pointed
+	 * claim). While the rate exists nothing changes: a create in another class is
+	 * refused this id by `#findRate`, which follows a pending claim like a live one.
+	 * Once the rate is deleted, `#releaseRateClaim` keeps the pending claim (it reads
+	 * as a create in flight), so a create of this id in ANOTHER class is refused
+	 * (`TAX_RATE_ID_COLLISION`) until 60 s after its `claimedAt`, while a create in
+	 * THIS class adopts it at once.
 	 *
 	 * The rollback re-reads the claim on EVERY attempt and stops, removing nothing, once
 	 * it names this class again: either this create's rate was deleted and the id

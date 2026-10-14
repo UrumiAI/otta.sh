@@ -1660,7 +1660,7 @@ describe("admin Tax console — one rate per (class, zone) (workerd sandbox)", (
 		// The label flags it (inside the label budget); the body says which applies.
 		expect(String(group(blocks, "tax:rate:std-us")?.label)).toContain("duplicate — ignored");
 		expect(contextTexts(groupBlocks(blocks, "tax:rate:std-us"))).toContain(
-			"Duplicate: only std-us-b applies to United States; its shipping setting still counts, so deleting it can change shipping tax.",
+			"Duplicate: only std-us-b applies to United States. Delete the one you don't want.",
 		);
 		expect(contextTexts(groupBlocks(blocks, "tax:rate:std-us-b"))).toContain(
 			"Applies to United States. Duplicate std-us is ignored. Deleting this makes std-us apply: 7.25%, shipping no.",
@@ -1744,7 +1744,7 @@ describe("admin Tax console — one rate per (class, zone) (workerd sandbox)", (
 		const ignoredForm = formFor(groupBlocks(blocks, "tax:rate:std-us"), "tax:save-rate");
 		const toggle = field(ignoredForm, "appliesToShipping");
 		expect(toggle?.label).toBe(
-			"Applies to shipping — can still tax shipping while this duplicate exists",
+			"Applies to shipping — counts toward shipping tax even while this duplicate is ignored",
 		);
 		expect(toggle?.initial_value).toBe(true);
 		// The rate that applies keeps its toggle, showing its own (off) flag.
@@ -1894,7 +1894,7 @@ describe("admin Tax console — one rate per (class, zone) (workerd sandbox)", (
 			target: encodePath(["standard", "std-us"]),
 		});
 		expect(field(formFor(ignoredDetail, "tax:save-rate"), "appliesToShipping")?.label).toBe(
-			"Applies to shipping — can still tax shipping while this duplicate exists",
+			"Applies to shipping — counts toward shipping tax even while this duplicate is ignored",
 		);
 		expect(bannerOf(ignoredDetail)).toBeUndefined();
 		expect(
