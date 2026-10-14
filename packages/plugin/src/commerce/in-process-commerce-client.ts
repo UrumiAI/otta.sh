@@ -1054,10 +1054,10 @@ export class InProcessCommerceClient implements CommerceClient {
 			// The check's own schema bounded this one as plain text, not as a path
 			// parameter — mirror that rather than the stricter path rule.
 			requireBoundedText("orderId", scope.orderId, 1, 200);
-			const active = await this.#stores.entitlementStore.check({
-				orderId: toOrderId(scope.orderId),
-				sku: skuValue,
-			});
+			const active = await this.#stores.entitlementStore.check(
+				{ orderId: toOrderId(scope.orderId), sku: skuValue },
+				{ repair: true },
+			);
 			return { ok: true, active };
 		}
 		if (opts.sessionToken !== undefined) {
@@ -1065,10 +1065,10 @@ export class InProcessCommerceClient implements CommerceClient {
 			if (customerId !== null) {
 				const customer = await this.#stores.customerStore.get(customerId);
 				if (customer !== null) {
-					const active = await this.#stores.entitlementStore.check({
-						buyerRef: customer.email,
-						sku: skuValue,
-					});
+					const active = await this.#stores.entitlementStore.check(
+						{ buyerRef: customer.email, sku: skuValue },
+						{ repair: true },
+					);
 					return { ok: true, active };
 				}
 			}
