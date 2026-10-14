@@ -133,6 +133,8 @@ describe("the tax rates page when the tax-settings read fails (#471)", () => {
 		const text = JSON.stringify((await openStandard(h.ctx)).blocks);
 		expect(text).toContain("Duplicate: only std-us-b applies");
 		expect(text).not.toContain("can change shipping tax");
+		// The toggle's label makes the same claim, so it is plain here too.
+		expect(text).not.toContain("can still tax shipping");
 	});
 });
 

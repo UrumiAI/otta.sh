@@ -956,7 +956,9 @@ function rateEditForm(classId: string, row: TaxRateRow): FormBlock {
 					type: "toggle",
 					action_id: "appliesToShipping",
 					label:
-						!ignored || row.ignoredShippingFlagCounts === null
+						!ignored ||
+						row.ignoredShippingFlagCounts === null ||
+						(row.ignoredShippingFlagCounts === true && !row.appliesToShipping)
 							? "Applies to shipping"
 							: row.ignoredShippingFlagCounts === true
 								? "Applies to shipping — can still tax shipping while this duplicate exists"
