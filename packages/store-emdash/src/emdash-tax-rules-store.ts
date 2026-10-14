@@ -596,6 +596,11 @@ export class EmdashTaxRulesStore implements TaxRulesStore {
 	 * landed, and a pending claim that names its class is followed by `#findRate` like
 	 * a live one.
 	 *
+	 * STUCK PENDING: when that storage failure happens, the claim stays `pending`, and
+	 * creates in OTHER classes are refused this id (`TAX_RATE_ID_COLLISION`) until the
+	 * lease runs out (60 s) — the claim is not released early, because the rate it
+	 * backs is stored and reachable in this class.
+	 *
 	 * The rollback re-reads the claim on EVERY attempt and stops, removing nothing, once
 	 * it names this class again: either this create's rate was deleted and the id
 	 * re-created here by someone else (that rate is not this create's to remove), or a

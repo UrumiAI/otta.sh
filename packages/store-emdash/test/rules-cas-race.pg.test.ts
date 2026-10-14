@@ -510,3 +510,53 @@ describe.skipIf(!PG_ENABLED)(
 		}, 180_000);
 	},
 );
+
+/**
+ * The headline property of the id claim (#485): the same id created concurrently
+ * in DIFFERENT classes, free-running — exactly one create lands, every other is
+ * refused as `TAX_RATE_ID_COLLISION`, and exactly one class holds the rate, with
+ * a `live` claim naming it.
+ */
+describe.skipIf(!PG_ENABLED)("tax-rate createRate: one id across classes race [postgres]", () => {
+	test("N concurrent creates of one id in N classes: one lands, the rest collide", async () => {
+		const fx = await freshTax(N + 4);
+		try {
+			const store = fx.harness.store;
+			const classIds = Array.from({ length: 8 }, (_unused, i) => `class-${String(i)}`);
+			for (const id of classIds) await store.createClass({ id, name: id });
+
+			const settled = await Promise.allSettled(
+				classIds.map((taxClassId, i) =>
+					store.createRate({
+						id: "x",
+						taxClassId,
+						zoneId: "z-us",
+						rateBps: 700 + i,
+						appliesToShipping: false,
+					}),
+				),
+			);
+
+			const won = settled.flatMap((r) => (r.status === "fulfilled" ? [r.value] : []));
+			expect(won, "exactly one create lands").toHaveLength(1);
+			const lost = settled.flatMap((r) => (r.status === "rejected" ? [r.reason] : []));
+			expect(lost).toHaveLength(classIds.length - 1);
+			for (const reason of lost) {
+				expect(reason).toMatchObject({ code: "TAX_RATE_ID_COLLISION" });
+			}
+
+			const holders: string[] = [];
+			for (const taxClassId of classIds) {
+				const doc = await fx.harness.classes.get(taxClassId);
+				if (doc?.rates.x !== undefined) holders.push(taxClassId);
+			}
+			expect(holders, "exactly one class holds x").toEqual([won[0]?.taxClassId]);
+			expect(await fx.harness.rateOwners.get("x")).toMatchObject({
+				taxClassId: won[0]?.taxClassId,
+				state: "live",
+			});
+		} finally {
+			await fx.close();
+		}
+	}, 60_000);
+});
