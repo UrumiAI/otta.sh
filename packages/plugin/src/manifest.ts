@@ -129,7 +129,7 @@ export function normalizeExtraHost(entry: string): string | undefined {
 	if (REFUSED_SUFFIXES.some((suffix) => isSameOrSubdomain(host, suffix))) return undefined;
 	if (isSameOrSubdomain(host, STRIPE_DOMAIN) && host !== STRIPE_API_HOST) return undefined;
 	// Finally require that a URL parser accepts the host exactly as written, so what
-	// is granted is what emdash will compare (rejects IDNA-invalid `xn--` labels).
+	// is granted is what emdash will compare (rejects IDNA-invalid `xn--` labels on Node < 26; Node 26's URL parser accepts some).
 	try {
 		if (new URL(`https://${host}`).hostname !== host) return undefined;
 	} catch {

@@ -25,7 +25,7 @@ import {
 	type ReservationIndexDoc,
 	type StorageCollection,
 } from "../src/index.js";
-import { describeEachDialect } from "./describe-each-dialect.js";
+import { describeEachDialect, nodeMajor } from "./describe-each-dialect.js";
 import { INVENTORY_LAYOUT } from "./inventory-collections.js";
 
 afterEach(() => {
@@ -34,9 +34,6 @@ afterEach(() => {
 
 let seq = 0;
 const ids = { newId: () => `res-${String(++seq)}` };
-
-/** Node major in use: four tests differ on Node 26+ (#478, #489). */
-const nodeMajor = Number(process.versions.node.split(".")[0]);
 
 describeEachDialect("ill-formed text: ids built from legacy stored text", (ctx) => {
 	const bound = ctx.useStorage({

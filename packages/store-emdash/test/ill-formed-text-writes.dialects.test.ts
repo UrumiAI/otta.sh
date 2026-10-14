@@ -19,7 +19,7 @@ import { findIllFormedText, repairIllFormedText } from "@otta-sh/domain";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { collectionOf } from "../src/index.js";
 import { IllFormedIdError, isIllFormedIdError } from "../src/well-formed-storage.js";
-import { describeEachDialect } from "./describe-each-dialect.js";
+import { describeEachDialect, nodeMajor } from "./describe-each-dialect.js";
 
 const LAYOUT = { notes: { indexes: ["kind", "seq"] } };
 
@@ -35,9 +35,6 @@ afterEach(() => {
 
 /** The id hash a log line carries. */
 const tag = (line: string | undefined) => /id#[0-9a-f]{8}/.exec(line ?? "")?.[0];
-
-/** Node major in use: four tests differ on Node 26+ (#478, #489). */
-const nodeMajor = Number(process.versions.node.split(".")[0]);
 
 describeEachDialect("ill-formed text: the write guard", (ctx) => {
 	const bound = ctx.useStorage(LAYOUT);

@@ -392,11 +392,14 @@ order of appearance in a deployment's life:
   - **Rolling back past the tax-rate precision change (#475):** a build from before it
     knows only whole basis points. If it re-saves a rate such as 8.875% (stored as 888 bps
     plus a finer value), the finer value can be left behind and still match, so after you
-    roll forward the new build charges 8.875% where the old build showed 8.88%. After rolling
-    forward, re-save each affected rate in Tax rates.
-  - **Rolling back past "Customer billing address" tax (#467):** a build from before it
-    rejects `basedOn: "billing"`, so it ignores all saved tax options (it falls back to its
-    defaults). Nothing is deleted; after rolling forward, re-check Tax settings.
+    roll forward the new build charges 8.875% where the old build showed 8.88%. Re-saving the
+    form unchanged keeps 8.875%. After rolling forward, check each rate shown with 3 or 4
+    decimals in Tax rates and re-enter the rate you intend (for example 8.88).
+  - **Rolling back past "Customer billing address" tax (#467):** if the store taxes by the
+    customer's billing address, a build from before it rejects `basedOn: "billing"` and
+    ignores all saved tax options, falling back to its never-saved rule. Nothing is deleted.
+    Do not save Tax settings while the old build runs: a save replaces the stored options.
+    After rolling forward, re-check Tax settings.
 
 > **The Stripe webhook endpoint is public by design, and permanently site-owned.**
 > Stripe delivers to `POST /webhooks/stripe` on the site (`sites/staging/src/pages/webhooks/stripe.ts`)
