@@ -572,6 +572,14 @@ export class EmdashTaxRulesStore implements TaxRulesStore {
 			) {
 				throw new TaxRateIdCollisionError(rateId, current.value.taxClassId);
 			}
+			// The lookup above ran BEFORE this read: a peer's embed and its live claim can
+			// both land in between (#489), so "unbacked" is re-proved against the class
+			// this claim names. Any later embed of the id re-asserts the claim first, which
+			// moves the revision and refuses the compare-and-set below.
+			const backer = await this.#heldClass(current.value.taxClassId);
+			if (backer?.doc.rates[rateId] !== undefined) {
+				throw new TaxRateIdCollisionError(rateId, current.value.taxClassId);
+			}
 			const written = await this.#rateOwners.compareAndSet(rateId, current.revision, mine);
 			return written.applied ? casDone(written.revision) : CAS_RETRY;
 		});
