@@ -95,6 +95,7 @@ describe("the tax rates page when the tax-settings read fails (#471)", () => {
 			expect(unknown).not.toContain("taxes nothing");
 			expect(unknown).not.toContain("only if this rate becomes the active one");
 			expect(unknown).not.toContain("can still tax shipping");
+			expect(unknown).not.toContain("counts toward shipping tax");
 			expect(warn).toHaveBeenCalledTimes(1);
 			expect(String(warn.mock.calls[0]?.[0])).not.toContain("725");
 		} finally {
@@ -121,8 +122,10 @@ describe("the tax rates page when the tax-settings read fails (#471)", () => {
 			warn.mockRestore();
 		}
 	});
+});
 
-	test("an ignored duplicate that does not apply to shipping is not warned about shipping tax (#484)", async () => {
+describe("the tax rates page duplicate note (#484)", () => {
+	test("an ignored duplicate that does not apply to shipping is not warned about shipping tax", async () => {
 		// std-us (the ignored one, "std-us" < "std-us-b") stops applying to shipping.
 		await h.stores.taxRules.updateRate(
 			"std-us",
@@ -133,8 +136,12 @@ describe("the tax rates page when the tax-settings read fails (#471)", () => {
 		const text = JSON.stringify((await openStandard(h.ctx)).blocks);
 		expect(text).toContain("Duplicate: only std-us-b applies");
 		expect(text).not.toContain("can change shipping tax");
-		// The toggle's label makes the same claim, so it is plain here too.
 		expect(text).not.toContain("can still tax shipping");
+		// The toggle's label says what switching it ON does, so it is the same label
+		// whether this copy applies to shipping or not.
+		expect(text).toContain(
+			"Applies to shipping — counts toward shipping tax even while this duplicate is ignored",
+		);
 	});
 });
 

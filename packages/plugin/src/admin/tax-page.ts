@@ -955,13 +955,13 @@ function rateEditForm(classId: string, row: TaxRateRow): FormBlock {
 				{
 					type: "toggle",
 					action_id: "appliesToShipping",
+					// What switching it ON does — never its current value, so one label
+					// serves both states.
 					label:
-						!ignored ||
-						row.ignoredShippingFlagCounts === null ||
-						(row.ignoredShippingFlagCounts === true && !row.appliesToShipping)
+						!ignored || row.ignoredShippingFlagCounts === null
 							? "Applies to shipping"
 							: row.ignoredShippingFlagCounts === true
-								? "Applies to shipping — can still tax shipping while this duplicate exists"
+								? "Applies to shipping — counts toward shipping tax even while this duplicate is ignored"
 								: "Applies to shipping — only if this rate becomes the active one",
 					initial_value: row.appliesToShipping, // F-6b/X-24: REQUIRED — toggle is mount-only
 				},

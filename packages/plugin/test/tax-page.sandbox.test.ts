@@ -1744,7 +1744,7 @@ describe("admin Tax console — one rate per (class, zone) (workerd sandbox)", (
 		const ignoredForm = formFor(groupBlocks(blocks, "tax:rate:std-us"), "tax:save-rate");
 		const toggle = field(ignoredForm, "appliesToShipping");
 		expect(toggle?.label).toBe(
-			"Applies to shipping — can still tax shipping while this duplicate exists",
+			"Applies to shipping — counts toward shipping tax even while this duplicate is ignored",
 		);
 		expect(toggle?.initial_value).toBe(true);
 		// The rate that applies keeps its toggle, showing its own (off) flag.
@@ -1894,7 +1894,7 @@ describe("admin Tax console — one rate per (class, zone) (workerd sandbox)", (
 			target: encodePath(["standard", "std-us"]),
 		});
 		expect(field(formFor(ignoredDetail, "tax:save-rate"), "appliesToShipping")?.label).toBe(
-			"Applies to shipping — can still tax shipping while this duplicate exists",
+			"Applies to shipping — counts toward shipping tax even while this duplicate is ignored",
 		);
 		expect(bannerOf(ignoredDetail)).toBeUndefined();
 		expect(
