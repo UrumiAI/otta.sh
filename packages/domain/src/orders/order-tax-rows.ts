@@ -12,9 +12,9 @@
  * the order page shows exactly the rows the buyer saw at checkout.
  */
 import type { TaxLine } from "../pricing/tax-calculator.js";
-import type { TaxSettings } from "../pricing/tax-settings.js";
+import type { TaxSettings, TaxTotalsDisplay } from "../pricing/tax-settings.js";
 import type { OrderTotals } from "./model.js";
-import { readOrderTaxSnapshot, type TaxTotalsDisplay } from "./order-tax-snapshot.js";
+import { readOrderTaxSnapshot } from "./order-tax-snapshot.js";
 
 /** One tax row: its label (merchant or calculator text — render it escaped,
  *  never as HTML) and the tax under it, in integer minor units. */
@@ -73,7 +73,7 @@ export function orderTaxRows(totals: Pick<OrderTotals, "tax" | "taxBreakdown">):
  * upgrade rule (`effectiveTaxSettings`) keeps on today's single row. (The admin
  * always itemizes, as WooCommerce's order screen does — the merchant files by it.)
  */
-export function taxTotalsDisplayOf(saved: TaxSettings | undefined): "itemized" | "single" {
+export function taxTotalsDisplayOf(saved: TaxSettings | undefined): TaxTotalsDisplay {
 	return saved?.totalsDisplay ?? "single";
 }
 

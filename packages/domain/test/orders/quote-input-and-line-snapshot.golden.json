@@ -253,7 +253,6 @@
 				"calculatorId": "otta.tax-disabled",
 				"pricesIncludeTax": false,
 				"located": false,
-				"totalsDisplay": "itemized",
 				"lines": [
 					{
 						"lineIndex": 0,
@@ -310,7 +309,6 @@
 				"calculatorId": "otta.tax-disabled",
 				"pricesIncludeTax": false,
 				"located": false,
-				"totalsDisplay": "itemized",
 				"lines": [
 					{
 						"lineIndex": 0,
@@ -529,7 +527,6 @@
 				"calculatorId": "otta.tax-disabled",
 				"pricesIncludeTax": false,
 				"located": false,
-				"totalsDisplay": "itemized",
 				"lines": [
 					{
 						"lineIndex": 0,
@@ -586,7 +583,6 @@
 				"calculatorId": "otta.tax-disabled",
 				"pricesIncludeTax": false,
 				"located": false,
-				"totalsDisplay": "itemized",
 				"lines": [
 					{
 						"lineIndex": 0,
@@ -875,7 +871,6 @@
 				"calculatorId": "otta.tax-disabled",
 				"pricesIncludeTax": false,
 				"located": false,
-				"totalsDisplay": "itemized",
 				"lines": [
 					{
 						"lineIndex": 0,
@@ -932,7 +927,6 @@
 				"calculatorId": "otta.tax-disabled",
 				"pricesIncludeTax": false,
 				"located": false,
-				"totalsDisplay": "itemized",
 				"lines": [
 					{
 						"lineIndex": 0,
@@ -1012,7 +1006,6 @@
 				"calculatorId": "otta.tax-disabled",
 				"pricesIncludeTax": false,
 				"located": false,
-				"totalsDisplay": "itemized",
 				"lines": [
 					{
 						"lineIndex": 0,
@@ -1090,7 +1083,6 @@
 				"calculatorId": "otta.tax-disabled",
 				"pricesIncludeTax": false,
 				"located": false,
-				"totalsDisplay": "itemized",
 				"lines": [
 					{
 						"lineIndex": 0,

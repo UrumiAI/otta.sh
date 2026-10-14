@@ -64,6 +64,7 @@ export {
 	type ShopTaxDisplay,
 	type TaxBaseAddress,
 	type TaxSettings,
+	type TaxTotalsDisplay,
 } from "./pricing/tax-settings.js";
 // #423: shop-page prices shown with or without tax (WooCommerce's tax_display_shop).
 export {
@@ -99,7 +100,6 @@ export {
 	type OrderTaxSnapshot,
 	type OrderTaxSnapshotV0,
 	type OrderTaxSnapshotV1,
-	type TaxTotalsDisplay,
 } from "./orders/order-tax-snapshot.js";
 // Issue #422: the order's tax snapshot as one display row per tax.
 export {

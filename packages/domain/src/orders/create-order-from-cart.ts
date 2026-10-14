@@ -33,15 +33,12 @@ import { computeQuote, type QuoteTax } from "../pricing/quote.js";
 import { type PricedLine, quoteCommandFor } from "../pricing/quote-input.js";
 import type { SettingsStore } from "../ports/settings-store.js";
 import type { TaxCalculator } from "../pricing/tax-calculator.js";
+import { TAX_DISABLED_CALCULATOR_ID, type TaxTotalsDisplay } from "../pricing/tax-settings.js";
 import type { CreateOrderFailure } from "./errors.js";
 import { snapshotOrderLine } from "./line-snapshot.js";
 import type { Order, OrderAddress, PaymentMethod } from "./model.js";
 import { normalizeOrderAddress, type OrderAddressInput } from "./order-address.js";
-import {
-	buildOrderTaxSnapshot,
-	type OrderTaxAddress,
-	type TaxTotalsDisplay,
-} from "./order-tax-snapshot.js";
+import { buildOrderTaxSnapshot, type OrderTaxAddress } from "./order-tax-snapshot.js";
 import { gatewayForStored } from "./payment-methods.js";
 
 /** 15 minutes — the checkout hold TTL (§9 decision 5), configurable. */
@@ -439,7 +436,10 @@ export async function createOrderFromCart(
 			taxStatuses: pricedLines.map((l) => l.taxStatus ?? "taxable"),
 			...(quote.taxAddress !== undefined ? { taxAddress: quote.taxAddress } : {}),
 			// #478: the order's pages and emails keep the display it was placed under.
-			taxTotalsDisplay: quote.taxSettings.totalsDisplay,
+			// Only for a taxed order: one priced with tax off shows no Tax row at all.
+			...(quote.tax.calculatorId !== TAX_DISABLED_CALCULATOR_ID
+				? { taxTotalsDisplay: quote.taxSettings.totalsDisplay }
+				: {}),
 			couponRecord: quote.couponRecord,
 			shippingMethodSnapshot,
 			shippingAddress,
@@ -515,8 +515,9 @@ interface FinalizeContext {
 	taxStatuses: readonly ProductTaxStatus[];
 	/** The quote's `taxAddress` (#426), frozen into the snapshot. */
 	taxAddress?: OrderTaxAddress;
-	/** The store's "Display tax totals" at placement (#478), frozen into the snapshot. */
-	taxTotalsDisplay: TaxTotalsDisplay;
+	/** The store's "Display tax totals" at placement (#478), frozen into the
+	 *  snapshot; absent for an order priced with tax off. */
+	taxTotalsDisplay?: TaxTotalsDisplay;
 	couponRecord: CouponRecord | null;
 	/** What priced the shipping and tax (ADR-0021 Decision 7); null when no zone
 	 *  matched (no zones configured, or nothing ships). */

@@ -2,6 +2,7 @@ import type { Cents } from "../money/cents.js";
 import { isProductTaxStatus, type ProductTaxStatus } from "../ports/product-commerce-store.js";
 import type { TaxLine, TaxResult } from "../pricing/tax-calculator.js";
 import { finerRatePpm } from "../pricing/tax-rate-precision.js";
+import type { TaxTotalsDisplay } from "../pricing/tax-settings.js";
 import type { TotalsBreakdown } from "../pricing/types.js";
 
 /**
@@ -66,9 +67,6 @@ export interface OrderTaxSnapshotV1 {
 	>;
 	shipping: ({ taxableCents: Cents } & TaxLine) | null;
 }
-
-/** How the buyer's surfaces show an order's tax: one row per tax, or one "Tax" row. */
-export type TaxTotalsDisplay = "itemized" | "single";
 
 /** Where an order's tax was charged, frozen with it (#426). */
 export interface OrderTaxAddress {

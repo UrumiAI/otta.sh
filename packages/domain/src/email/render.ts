@@ -2,6 +2,7 @@ import { orderLabel, type OrderLabelLine } from "../orders/order-label.js";
 import { orderNumber } from "../orders/order-number.js";
 import { orderTotalLabel } from "../orders/order-total-label.js";
 import type { EmailTemplate } from "../ports/email-sender.js";
+import type { TaxTotalsDisplay } from "../pricing/tax-settings.js";
 
 export interface RenderedEmail {
 	subject: string;
@@ -47,7 +48,7 @@ export interface EmailRenderContext {
 	 * option: the display the order was placed under (the data's
 	 * `taxTotalsDisplay`, #478) wins whenever the data carries one.
 	 */
-	taxTotalsDisplay?: "itemized" | "single" | undefined;
+	taxTotalsDisplay?: TaxTotalsDisplay | undefined;
 }
 
 /** What an uncalculated shipping or tax row says — the storefront's own
@@ -347,7 +348,7 @@ function totalsBlock(
 function taxTotalsDisplayFor(
 	data: Record<string, unknown>,
 	context: EmailRenderContext,
-): "itemized" | "single" | undefined {
+): TaxTotalsDisplay | undefined {
 	const recorded = data["taxTotalsDisplay"];
 	return recorded === "itemized" || recorded === "single" ? recorded : context.taxTotalsDisplay;
 }

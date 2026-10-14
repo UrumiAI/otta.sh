@@ -122,6 +122,7 @@ import {
 	TAX_DISABLED_CALCULATOR_ID,
 	recordedTaxTotalsDisplay,
 	taxTotalsDisplayOf,
+	type TaxTotalsDisplay,
 	type ZoneResolution,
 	roundingEntry,
 } from "@otta-sh/domain";
@@ -1349,7 +1350,7 @@ export class InProcessCommerceClient implements CommerceClient {
 	 * was recorded. Settings are read only for such an order with rows to itemize,
 	 * so an untaxed, older or recorded order's read costs nothing more.
 	 */
-	async #taxTotalsDisplayFor(order: Order): Promise<"itemized" | "single"> {
+	async #taxTotalsDisplayFor(order: Order): Promise<TaxTotalsDisplay> {
 		if (orderTaxRows(order.totals) === null) return "single";
 		const recorded = recordedTaxTotalsDisplay(order.totals);
 		if (recorded !== undefined) return recorded;
@@ -1675,7 +1676,7 @@ function serializeOrderLines(order: Order): OrderLineWire[] {
 /** The customer's own order, as their account pages read it. */
 function serializeOrderSummary(
 	order: Order,
-	taxTotalsDisplay: "itemized" | "single" = "single",
+	taxTotalsDisplay: TaxTotalsDisplay = "single",
 ): OrderSummaryWire {
 	return {
 		id: order.id,
@@ -1766,7 +1767,7 @@ function quoteTaxWire(
  */
 function orderTaxWire(
 	order: Order,
-	totalsDisplay: "itemized" | "single" = "single",
+	totalsDisplay: TaxTotalsDisplay = "single",
 ): { tax?: QuoteTaxWire; taxLocated?: true } {
 	const snapshot = readOrderTaxSnapshot(order.totals.taxBreakdown);
 	if (snapshot === null || snapshot.v !== 1) return {};
@@ -1819,7 +1820,7 @@ function serializePublicOrder(
 	order: Order,
 	latePayment: LatePaymentStatus,
 	refundedCents: number,
-	taxTotalsDisplay: "itemized" | "single" = "single",
+	taxTotalsDisplay: TaxTotalsDisplay = "single",
 ): PublicOrderWire {
 	return {
 		id: order.id,

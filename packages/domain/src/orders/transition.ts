@@ -25,7 +25,8 @@ import {
 } from "./payment-methods.js";
 import { roundingEntry } from "../pricing/payment-rounding.js";
 import { PROVIDER_REFUNDED_FLAG_PREFIX } from "./provider-refunded-flag.js";
-import { readOrderTaxSnapshot, type TaxTotalsDisplay } from "./order-tax-snapshot.js";
+import { readOrderTaxSnapshot } from "./order-tax-snapshot.js";
+import type { TaxTotalsDisplay } from "../pricing/tax-settings.js";
 import { orderTaxRows, recordedTaxTotalsDisplay, type TaxRow } from "./order-tax-rows.js";
 import { sumFinalizedRefunds } from "./refund-order.js";
 import { revokeOrderEntitlements } from "./revoke-entitlements.js";
