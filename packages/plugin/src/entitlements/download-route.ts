@@ -198,8 +198,11 @@ async function authorize(
 	// gateway or mail sender is resolved for a check that needs neither.
 	const stores = createInProcessCommerceStores(ctx);
 
-	// 1. An active grant for exactly this order and sku.
-	if (!(await stores.entitlementStore.check({ orderId, sku }))) return NOT_FOUND;
+	// 1. An active grant for exactly this order and sku. The delivery gate may
+	//    repair the store's lookup pointer as it answers.
+	if (!(await stores.entitlementStore.check({ orderId, sku }, { repair: true }))) {
+		return NOT_FOUND;
+	}
 
 	// 2. The order kept its money, and bought this sku.
 	const order = await stores.orderStore.getById(orderId);

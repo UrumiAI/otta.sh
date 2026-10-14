@@ -134,10 +134,34 @@ describeEachDialect("misc document model", (ctx) => {
 		await h.revoke("ord-1");
 		// The pointer still names the revoked grant, so the answer has to come from the
 		// index — and it does, because the pointer is a cache and not authority.
-		expect(await h.entitlementStore.check({ buyerRef: buyer, sku: SKU })).toBe(true);
+		expect(await h.entitlementStore.check({ buyerRef: buyer, sku: SKU }, { repair: true })).toBe(
+			true,
+		);
 		expect((await h.lookups.get(scopeId))?.grantKey).toBe("g-ord2");
 		// The revoked grant's OWN order scope is refused: nothing else covers it.
 		expect(await h.entitlementStore.check({ orderId: orderId("ord-1"), sku: SKU })).toBe(false);
+	});
+
+	test("a check writes nothing by default; only `repair: true` heals a missing pointer", async () => {
+		const h = harness();
+		await h.entitlementStore.grant({
+			orderId: orderId("ord-1"),
+			productId: null,
+			sku: SKU,
+			buyerRef: "buyer@example.com",
+			source: "order_paid",
+			grantIdempotencyKey: idempotencyKey("g-ord1"),
+		});
+		// A crash between the grant and its pointers: the order scope has none.
+		const scopeId = entitlementLookupId("order", "ord-1", "DIG-1");
+		await h.lookups.delete(scopeId);
+
+		const query = { orderId: orderId("ord-1"), sku: SKU };
+		expect(await h.entitlementStore.check(query)).toBe(true);
+		expect(await h.lookups.get(scopeId)).toBeNull();
+		// The download gate's check asks for the repair.
+		expect(await h.entitlementStore.check(query, { repair: true })).toBe(true);
+		expect((await h.lookups.get(scopeId))?.grantKey).toBe("g-ord1");
 	});
 
 	// -- order notes -----------------------------------------------------------

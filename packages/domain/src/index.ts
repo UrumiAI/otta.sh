@@ -441,6 +441,7 @@ export {
 } from "./customers/customer-orders.js";
 export type {
 	Entitlement,
+	EntitlementCheckOptions,
 	EntitlementQuery,
 	EntitlementSource,
 	EntitlementState,

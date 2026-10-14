@@ -15,6 +15,7 @@ import {
 	productId as toProductId,
 	sku as toSku,
 } from "@otta-sh/domain";
+import { ENTITLEMENT_LOOKUPS_COLLECTION, entitlementLookupId } from "@otta-sh/store-emdash";
 import { afterAll, beforeEach, describe, expect, test } from "vitest";
 import { InProcessAdminOrdersClient } from "../src/admin/in-process-admin-orders-client.js";
 import { dispatchOrdersAction } from "../src/admin/orders-actions.js";
@@ -137,6 +138,23 @@ describe("orders:revoke-downloads", () => {
 		expect((await client.getOrder(id))?.downloads).toBe("open");
 		await revoke(id, "carol");
 		expect((await client.getOrder(id))?.downloads).toBe("revoked");
+	});
+
+	test("reading the order detail writes nothing; the download repairs the lookup pointer", async () => {
+		const id = await seedPaidDigital("ord-readonly");
+		// A grant whose order-scope pointer was lost (a crash between the two writes).
+		const lookups = harness.ctx.storage?.[ENTITLEMENT_LOOKUPS_COLLECTION];
+		if (lookups === undefined) throw new Error("no entitlement lookups collection");
+		const pointerId = entitlementLookupId("order", id, `DIG-${id}`);
+		expect(await lookups.delete(pointerId)).toBe(true);
+
+		expect((await new InProcessAdminOrdersClient(harness.ctx).getOrder(id))?.downloads).toBe(
+			"open",
+		);
+		expect(await lookups.get(pointerId)).toBeNull();
+
+		expect(await download(id)).toMatchObject({ authorized: true });
+		expect(await lookups.get(pointerId)).not.toBeNull();
 	});
 
 	test("a PENDING order is refused: nothing to close yet, and no note claims it was", async () => {
