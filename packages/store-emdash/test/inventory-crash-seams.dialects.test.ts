@@ -1008,9 +1008,8 @@ describe.skipIf(!PG_ENABLED)("inventory compare-and-set contention budget [postg
 		// can succeed before every other caller reads `onHand: 0` and decides cleanly
 		// with no write at all — so ten times the crowd must not move the number.
 		expect(maxAttempts).toBeLessThanOrEqual(6);
-		// Not vacuous either: at least one caller lost a compare-and-set (#478).
-		expect(maxAttempts, `pool=${String(poolSize)}: racers did not contend`).toBeGreaterThanOrEqual(
-			2,
-		);
+		// No `>= 2` floor here (#489): one burst of 1 unit can legitimately show a depth
+		// of 1, so a floor would flake. The "racers really raced" check lives in the
+		// 20-loop M5/N50 test above.
 	}, 300_000);
 });
