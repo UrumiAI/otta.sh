@@ -132,7 +132,7 @@ describeEachDialect("EmdashShippingRulesStore crash seams", (ctx) => {
 		expect((await plain.store.listMethods("z-us")).map((m) => m.id)).toEqual(["m-flat"]);
 	});
 
-	test("(b) an orphaned claim is taken over by a create in ANOTHER zone", async () => {
+	test("(b) an orphaned claim is taken over by a create in ANOTHER zone once its lease runs out", async () => {
 		const raw = bound.storage;
 		const plain = makeShippingRulesHarness(raw);
 		await plain.store.createZone({ id: "z-us", name: "US", regions: null });
@@ -142,13 +142,26 @@ describeEachDialect("EmdashShippingRulesStore crash seams", (ctx) => {
 			mode: "instead",
 		});
 		const wounded = makeShippingRulesHarness(raw, {
+			clock: plain.clock,
 			storageForStore: withCollection(raw, "shipping_zones", crashed.collection),
 		});
 		await settleOne(
 			wounded.store.createMethod({ id: "m-x", zoneId: "z-us", name: "X", type: "flat_rate" }),
 		);
-		expect((await plain.methodOwners.get("m-x"))?.zoneId).toBe("z-us");
+		expect(await plain.methodOwners.get("m-x")).toMatchObject({
+			zoneId: "z-us",
+			state: "pending",
+		});
 
+		// Inside the lease the claim may still be a create one round trip from its embed.
+		plain.clock.advance(59_000);
+		expect(
+			await settleOne(
+				plain.store.createMethod({ id: "m-x", zoneId: "z-eu", name: "X", type: "flat_rate" }),
+			),
+		).toMatchObject({ code: "SHIPPING_METHOD_ID_COLLISION", heldBy: "z-us" });
+		// Past it, the writer is gone and the id is adopted.
+		plain.clock.advance(1_000);
 		const method = await plain.store.createMethod({
 			id: "m-x",
 			zoneId: "z-eu",
@@ -156,7 +169,7 @@ describeEachDialect("EmdashShippingRulesStore crash seams", (ctx) => {
 			type: "flat_rate",
 		});
 		expect(method.zoneId).toBe("z-eu");
-		expect((await plain.methodOwners.get("m-x"))?.zoneId).toBe("z-eu");
+		expect(await plain.methodOwners.get("m-x")).toMatchObject({ zoneId: "z-eu", state: "live" });
 		expect((await plain.store.getMethod("m-x"))?.zoneId).toBe("z-eu");
 		expect(await plain.store.listMethods("z-us")).toEqual([]);
 	});
@@ -473,6 +486,335 @@ describeEachDialect("EmdashShippingRulesStore crash seams", (ctx) => {
 				cents(599),
 			),
 		).toMatchObject({ ok: true });
+	});
+
+	test("(m) a create whose lookup ran before a peer's embed cannot take the peer's LIVE claim", async () => {
+		const raw = bound.storage;
+		const plain = makeShippingRulesHarness(raw);
+		await plain.store.createZone({ id: "z-us", name: "US", regions: null });
+		await plain.store.createZone({ id: "z-eu", name: "EU", regions: null });
+
+		// B: "m-x" into "z-eu". Its lookup finds nothing, and it is held just before it
+		// reads the claim — the read it decides "orphaned or not" on.
+		const claimRead = parkBeforeRead(raw["shipping_method_owners"] ?? never(), "m-x");
+		const b = makeShippingRulesHarness(raw, {
+			clock: plain.clock,
+			storageForStore: withCollection(raw, "shipping_method_owners", claimRead.collection),
+		}).store.createMethod({ id: "m-x", zoneId: "z-eu", name: "EU", type: "flat_rate" });
+		await claimRead.arrived;
+
+		// A: "m-x" into "z-us", run to completion — claimed, re-asserted, embedded.
+		await plain.store.createMethod({ id: "m-x", zoneId: "z-us", name: "US", type: "flat_rate" });
+		claimRead.release();
+
+		// B now reads a claim whose method IS embedded, though its lookup never saw it: it
+		// must be refused, not take the claim over and embed a second "m-x".
+		expect(await settleOne(b)).toMatchObject({ code: "SHIPPING_METHOD_ID_COLLISION" });
+		expect(await plain.store.listMethods("z-eu")).toEqual([]);
+		expect((await plain.store.listMethods("z-us")).map((m) => m.id)).toEqual(["m-x"]);
+		expect((await plain.methodOwners.get("m-x"))?.zoneId).toBe("z-us");
+	});
+});
+
+/** Embeds into `zoneId` are held — the create stops after re-asserting its claim. */
+function parkedZoneEmbed(collection: StorageCollection<unknown>, zoneId: string) {
+	return parkCall(collection, (call) => call.method === "compareAndSet" && call.id === zoneId);
+}
+
+async function twoZones(plain: ReturnType<typeof makeShippingRulesHarness>): Promise<void> {
+	await plain.store.createZone({ id: "z-a", name: "A", regions: null });
+	await plain.store.createZone({ id: "z-b", name: "B", regions: null });
+}
+
+describeEachDialect("EmdashShippingRulesStore cross-zone claim race (#489)", (ctx) => {
+	const bound = ctx.useStorage(SHIPPING_RULES_LAYOUT);
+
+	test("a create of the same id in ANOTHER zone cannot take over an in-flight claim", async () => {
+		const raw = bound.storage;
+		const plain = makeShippingRulesHarness(raw);
+		await twoZones(plain);
+
+		// A: "m-x" into "z-a", held just before its embed — the claim is A's, the zone
+		// does not hold "m-x" yet.
+		const parked = parkedZoneEmbed(raw["shipping_zones"] ?? never(), "z-a");
+		const a = makeShippingRulesHarness(raw, {
+			clock: plain.clock,
+			storageForStore: withCollection(raw, "shipping_zones", parked.collection),
+		}).store.createMethod({ id: "m-x", zoneId: "z-a", name: "A", type: "flat_rate" });
+		await parked.arrived;
+
+		// B: "m-x" into "z-b", run to completion while A is held.
+		const b = await settleOne(
+			plain.store.createMethod({ id: "m-x", zoneId: "z-b", name: "B", type: "flat_rate" }),
+		);
+		parked.release();
+		const aResult = await settleOne(a);
+
+		// B is refused while A's claim is in flight — not let in to embed and then rolled
+		// back by A — and A lands. Exactly one "m-x" exists, live in A's zone.
+		expect(b).toMatchObject({ code: "SHIPPING_METHOD_ID_COLLISION", heldBy: "z-a" });
+		expect(aResult).toMatchObject({ id: "m-x", zoneId: "z-a" });
+		expect(await plain.store.listMethods("z-b")).toEqual([]);
+		expect((await plain.store.listMethods("z-a")).map((m) => m.id)).toEqual(["m-x"]);
+		expect(await plain.methodOwners.get("m-x")).toMatchObject({ zoneId: "z-a", state: "live" });
+	});
+
+	test("a create paused past the lease loses to the zone that took the id over — never two methods", async () => {
+		const raw = bound.storage;
+		const plain = makeShippingRulesHarness(raw);
+		await twoZones(plain);
+		const parked = parkedZoneEmbed(raw["shipping_zones"] ?? never(), "z-a");
+		const a = makeShippingRulesHarness(raw, {
+			clock: plain.clock,
+			storageForStore: withCollection(raw, "shipping_zones", parked.collection),
+		}).store.createMethod({ id: "m-x", zoneId: "z-a", name: "A", type: "flat_rate" });
+		await parked.arrived;
+
+		// A stalls longer than the whole lease, so B may (correctly) treat it as gone.
+		plain.clock.advance(61_000);
+		await plain.store.createMethod({ id: "m-x", zoneId: "z-b", name: "B", type: "flat_rate" });
+		parked.release();
+
+		// A's embed lands, then A finds the claim moved and takes its method back out.
+		expect(await settleOne(a)).toMatchObject({
+			code: "SHIPPING_METHOD_ID_COLLISION",
+			heldBy: "z-b",
+		});
+		expect(await plain.store.listMethods("z-a")).toEqual([]);
+		expect((await plain.store.listMethods("z-b")).map((m) => m.id)).toEqual(["m-x"]);
+		expect(await plain.methodOwners.get("m-x")).toMatchObject({ zoneId: "z-b", state: "live" });
+	});
+
+	test("a lease-overrun rollback never removes a method re-created in its zone meanwhile", async () => {
+		const raw = bound.storage;
+		const plain = makeShippingRulesHarness(raw);
+		await twoZones(plain);
+		// A's embed is its FIRST compareAndSet on "z-a", its rollback the SECOND. The
+		// outer wrapper sees each call first, so it keeps the count.
+		let writes = 0;
+		const parked = parkCall(
+			raw["shipping_zones"] ?? never(),
+			(call) => call.method === "compareAndSet" && call.id === "z-a" && writes === 1,
+		);
+		const rollbackPark = parkCall(
+			parked.collection,
+			(call) => call.method === "compareAndSet" && call.id === "z-a" && ++writes === 2,
+		);
+		const a = makeShippingRulesHarness(raw, {
+			clock: plain.clock,
+			storageForStore: withCollection(raw, "shipping_zones", rollbackPark.collection),
+		}).store.createMethod({ id: "m-x", zoneId: "z-a", name: "A", type: "flat_rate" });
+		await parked.arrived;
+		plain.clock.advance(61_000);
+		await plain.store.createMethod({ id: "m-x", zoneId: "z-b", name: "B", type: "flat_rate" });
+		parked.release();
+		await rollbackPark.arrived;
+
+		// While A's rollback is held: B's method is deleted, then A's (found by the heal
+		// scan), and C re-creates "m-x" in "z-a".
+		expect(await plain.store.deleteMethod("m-x")).toEqual({ ok: true });
+		expect(await plain.store.deleteMethod("m-x")).toEqual({ ok: true });
+		await plain.store.createMethod({ id: "m-x", zoneId: "z-a", name: "C", type: "flat_rate" });
+
+		rollbackPark.release();
+		expect(await settleOne(a)).toMatchObject({ code: "SHIPPING_METHOD_ID_COLLISION" });
+		// C's method survived A's rollback.
+		expect((await plain.store.getMethod("m-x"))?.name).toBe("C");
+		expect(await plain.methodOwners.get("m-x")).toMatchObject({ zoneId: "z-a", state: "live" });
+	});
+
+	test("a same-zone adoption of an in-flight claim still ends live, so a later delete frees the id", async () => {
+		const raw = bound.storage;
+		const plain = makeShippingRulesHarness(raw);
+		await twoZones(plain);
+		const parkedA = parkedZoneEmbed(raw["shipping_zones"] ?? never(), "z-a");
+		const a = makeShippingRulesHarness(raw, {
+			storageForStore: withCollection(raw, "shipping_zones", parkedA.collection),
+		}).store.createMethod({ id: "m-x", zoneId: "z-a", name: "A", type: "flat_rate" });
+		await parkedA.arrived;
+		// B: the same id and zone. It adopts A's claim at once (same zone) and is held
+		// before its own embed.
+		const parkedB = parkedZoneEmbed(raw["shipping_zones"] ?? never(), "z-a");
+		const b = makeShippingRulesHarness(raw, {
+			storageForStore: withCollection(raw, "shipping_zones", parkedB.collection),
+		}).store.createMethod({ id: "m-x", zoneId: "z-a", name: "B", type: "flat_rate" });
+		await parkedB.arrived;
+
+		parkedA.release();
+		expect((await a).name).toBe("A");
+		parkedB.release();
+		expect(await settleOne(b)).toMatchObject({ code: "SHIPPING_METHOD_ID_COLLISION" });
+
+		// B never embedded over A's method, and A's claim ended live in its own zone.
+		expect((await plain.store.getMethod("m-x"))?.name).toBe("A");
+		expect(await plain.methodOwners.get("m-x")).toMatchObject({ zoneId: "z-a", state: "live" });
+		expect(await plain.store.deleteMethod("m-x")).toEqual({ ok: true });
+		expect(await plain.methodOwners.get("m-x")).toBeNull();
+		await plain.store.createMethod({ id: "m-x", zoneId: "z-b", name: "B", type: "flat_rate" });
+	});
+
+	test("a create whose every embed is refused gives its claim back", async () => {
+		const raw = bound.storage;
+		const plain = makeShippingRulesHarness(raw);
+		await twoZones(plain);
+		const refusing = delegatingCollection(raw["shipping_zones"] ?? never(), {
+			compareAndSet: async () => ({ applied: false }),
+		});
+		const busy = makeShippingRulesHarness(raw, {
+			clock: plain.clock,
+			maxCasAttempts: 2,
+			storageForStore: withCollection(raw, "shipping_zones", refusing),
+		});
+		expect(
+			await settleOne(
+				busy.store.createMethod({ id: "m-x", zoneId: "z-a", name: "A", type: "flat_rate" }),
+			),
+		).toMatchObject({ code: "STORAGE_CONTENTION" });
+		expect(await plain.methodOwners.get("m-x")).toBeNull();
+	});
+
+	test("a storage failure setting the claim live does not fail a create that landed", async () => {
+		const raw = bound.storage;
+		const plain = makeShippingRulesHarness(raw);
+		await twoZones(plain);
+		// The third claim write of the create — claim, re-assert, then the live write.
+		let writes = 0;
+		const crashed = failCall(
+			raw["shipping_method_owners"] ?? never(),
+			(call) => call.method === "compareAndSet" && call.id === "m-x" && ++writes === 3,
+		);
+		const wounded = makeShippingRulesHarness(raw, {
+			clock: plain.clock,
+			storageForStore: withCollection(raw, "shipping_method_owners", crashed.collection),
+		});
+		const created = await wounded.store.createMethod({
+			id: "m-x",
+			zoneId: "z-a",
+			name: "A",
+			type: "flat_rate",
+		});
+		expect(created.id).toBe("m-x");
+		expect(await plain.methodOwners.get("m-x")).toMatchObject({
+			zoneId: "z-a",
+			state: "pending",
+		});
+		// The pending claim names the zone that holds the method, so the id-keyed path works.
+		expect(await plain.store.updateMethod("m-x", { name: "A2", type: "flat_rate" })).toMatchObject({
+			ok: true,
+		});
+	});
+
+	test("a same-zone create re-asserting after a peer embedded is refused, never an overwrite", async () => {
+		const raw = bound.storage;
+		const plain = makeShippingRulesHarness(raw);
+		await twoZones(plain);
+		// A is held at its embed, and again at its THIRD claim write (the live write),
+		// so it has embedded but not settled when B retries.
+		const zoneParkA = parkedZoneEmbed(raw["shipping_zones"] ?? never(), "z-a");
+		let ownerWrites = 0;
+		const settleParkA = parkCall(
+			raw["shipping_method_owners"] ?? never(),
+			(call) => call.method === "compareAndSet" && call.id === "m-x" && ++ownerWrites === 3,
+		);
+		const a = makeShippingRulesHarness(raw, {
+			storageForStore: withCollection(
+				withCollection(raw, "shipping_zones", zoneParkA.collection),
+				"shipping_method_owners",
+				settleParkA.collection,
+			),
+		}).store.createMethod({ id: "m-x", zoneId: "z-a", name: "A", type: "flat_rate" });
+		await zoneParkA.arrived;
+		// B: same id and zone. It adopts A's pending claim at once, re-asserts, and is
+		// held at its embed with a zone read from before A's embed.
+		const zoneParkB = parkedZoneEmbed(raw["shipping_zones"] ?? never(), "z-a");
+		const b = makeShippingRulesHarness(raw, {
+			storageForStore: withCollection(raw, "shipping_zones", zoneParkB.collection),
+		}).store.createMethod({ id: "m-x", zoneId: "z-a", name: "B", type: "flat_rate" });
+		await zoneParkB.arrived;
+
+		zoneParkA.release();
+		await settleParkA.arrived;
+		// B's embed is refused on the stale revision; its retry re-reads the zone (now
+		// holding A's method) and re-asserts at its own claim revision, which A has not
+		// moved yet. It must be refused there, not embed over A's method.
+		zoneParkB.release();
+		const bResult = await settleOne(b);
+		settleParkA.release();
+		const aResult = await settleOne(a);
+
+		expect(bResult).toMatchObject({ code: "SHIPPING_METHOD_ID_COLLISION", heldBy: "z-a" });
+		expect(aResult).toMatchObject({ id: "m-x", name: "A" });
+		expect((await plain.store.getMethod("m-x"))?.name).toBe("A");
+		expect(await plain.methodOwners.get("m-x")).toMatchObject({ zoneId: "z-a", state: "live" });
+	});
+
+	test("a create into a missing zone gives its claim back, so another zone may use the id at once", async () => {
+		const plain = makeShippingRulesHarness(bound.storage);
+		await twoZones(plain);
+		expect(
+			await settleOne(
+				plain.store.createMethod({ id: "m-x", zoneId: "z-missing", name: "A", type: "flat_rate" }),
+			),
+		).toMatchObject({ name: "ShippingZoneNotFoundError" });
+		expect(await plain.methodOwners.get("m-x")).toBeNull();
+		// No lease wait: the clock has not moved.
+		const created = await plain.store.createMethod({
+			id: "m-x",
+			zoneId: "z-b",
+			name: "B",
+			type: "flat_rate",
+		});
+		expect(created.zoneId).toBe("z-b");
+		expect(await plain.methodOwners.get("m-x")).toMatchObject({ zoneId: "z-b", state: "live" });
+	});
+
+	test("a delete's release leaves a same-zone create's PENDING claim alone", async () => {
+		const raw = bound.storage;
+		const plain = makeShippingRulesHarness(raw);
+		await twoZones(plain);
+		await plain.store.createMethod({ id: "m-x", zoneId: "z-a", name: "A", type: "flat_rate" });
+
+		// The deleter has un-embedded and is held before its release reads the claim
+		// (its lookup reads the claim with `get`, so this is the release's read).
+		const releaseRead = parkBeforeRead(raw["shipping_method_owners"] ?? never(), "m-x");
+		const deleting = makeShippingRulesHarness(raw, {
+			clock: plain.clock,
+			storageForStore: withCollection(raw, "shipping_method_owners", releaseRead.collection),
+		}).store.deleteMethod("m-x");
+		await releaseRead.arrived;
+
+		// A same-zone create adopts the now-orphaned claim (pending) and is held before
+		// its embed.
+		const embedPark = parkedZoneEmbed(raw["shipping_zones"] ?? never(), "z-a");
+		const creating = makeShippingRulesHarness(raw, {
+			clock: plain.clock,
+			storageForStore: withCollection(raw, "shipping_zones", embedPark.collection),
+		}).store.createMethod({ id: "m-x", zoneId: "z-a", name: "A2", type: "flat_rate" });
+		await embedPark.arrived;
+
+		releaseRead.release();
+		expect(await deleting).toEqual({ ok: true });
+		// The release saw a pending claim naming the zone it emptied: a peer in flight,
+		// not the deleted method's claim. It survives.
+		expect(await plain.methodOwners.get("m-x")).toMatchObject({ zoneId: "z-a", state: "pending" });
+
+		embedPark.release();
+		expect((await creating).name).toBe("A2");
+		expect((await plain.store.getMethod("m-x"))?.name).toBe("A2");
+		expect(await plain.methodOwners.get("m-x")).toMatchObject({ zoneId: "z-a", state: "live" });
+	});
+
+	test("an unbacked claim written before claim states existed is still an orphan", async () => {
+		const plain = makeShippingRulesHarness(bound.storage);
+		await twoZones(plain);
+		// No `state`: an older build's claim, read as live — its create finished long ago.
+		await plain.methodOwners.put("m-x", {
+			methodId: "m-x",
+			zoneId: "z-a",
+			claimedAt: plain.clock.now().toISOString(),
+		});
+		await plain.store.createMethod({ id: "m-x", zoneId: "z-b", name: "B", type: "flat_rate" });
+		expect(await plain.methodOwners.get("m-x")).toMatchObject({ zoneId: "z-b", state: "live" });
 	});
 });
 

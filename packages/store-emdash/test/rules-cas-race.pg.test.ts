@@ -578,3 +578,56 @@ describe.skipIf(!PG_ENABLED)("tax-rate createRate: one id across classes race [p
 		}
 	}, 120_000);
 });
+
+/**
+ * The shipping twin of the tax cross-class race: N creates of ONE method id in
+ * DIFFERENT zones, free-running — exactly one create lands, every other is refused
+ * as `SHIPPING_METHOD_ID_COLLISION`, and exactly one zone holds the method, with a
+ * claim naming it.
+ *
+ * The retry backoff sleep is a no-op and the pool is warmed right before each burst,
+ * so the creates really overlap. That is what catches a loser whose lookup ran before
+ * the winner's embed and whose claim read came after it: without the re-check of the
+ * zone the claim names, it took the live claim over and embedded a second copy.
+ */
+describe.skipIf(!PG_ENABLED)("shipping createMethod: one id across zones race [postgres]", () => {
+	test("N concurrent creates of one id in N zones: one lands, the rest collide", async () => {
+		const ROUNDS = 30;
+		const db = await makePgStorage(SHIPPING_RULES_LAYOUT, 20, { reserveConnections: true });
+		const harness = makeShippingRulesHarness(db.storage, { sleep: async () => {} });
+		try {
+			const store = harness.store;
+			const zoneIds = Array.from({ length: 16 }, (_unused, i) => `zone-${String(i)}`);
+			for (const id of zoneIds) await store.createZone({ id, name: id, regions: null });
+
+			for (let loop = 0; loop < ROUNDS; loop++) {
+				const id = `m${String(loop)}`;
+				// Warm every connection so the burst starts together.
+				await Promise.all(zoneIds.map((z) => harness.zones.get(z)));
+				const settled = await Promise.allSettled(
+					zoneIds.map((zoneId) => store.createMethod({ id, zoneId, name: id, type: "flat_rate" })),
+				);
+
+				const won = settled.flatMap((r) => (r.status === "fulfilled" ? [r.value] : []));
+				expect(won, `loop ${String(loop)}: exactly one create lands`).toHaveLength(1);
+				const lost = settled.flatMap((r) => (r.status === "rejected" ? [r.reason] : []));
+				expect(lost).toHaveLength(zoneIds.length - 1);
+				for (const reason of lost) {
+					expect(reason).toMatchObject({ code: "SHIPPING_METHOD_ID_COLLISION" });
+				}
+
+				const holders: string[] = [];
+				for (const zoneId of zoneIds) {
+					const doc = await harness.zones.get(zoneId);
+					if (doc?.methods[id] !== undefined) holders.push(zoneId);
+				}
+				expect(holders, `loop ${String(loop)}: exactly one zone holds ${id}`).toEqual([
+					won[0]?.zoneId,
+				]);
+				expect(await harness.methodOwners.get(id)).toMatchObject({ zoneId: won[0]?.zoneId });
+			}
+		} finally {
+			await db.close();
+		}
+	}, 120_000);
+});

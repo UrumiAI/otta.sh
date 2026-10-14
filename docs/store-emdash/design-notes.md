@@ -1608,7 +1608,7 @@ assertion that would fail if the write order were reversed.
 | Collection | Doc id | Holds | Declared indexes |
 |---|---|---|---|
 | `shipping_zones` | zone id | the zone's name and opaque region list, its `methods` map keyed by method id, and each method's `rates` map keyed by currency | — |
-| `shipping_method_owners` | method id | `{ zoneId }` — the store-wide method-id claim, and the FAST way to reach a method from an id alone (the heal scan below is the fallback) | — |
+| `shipping_method_owners` | method id | `{ zoneId, state }` — the store-wide method-id claim, and the FAST way to reach a method from an id alone (the heal scan below is the fallback). `state` is `pending` until the create's embed lands, then `live` (absent = live); an unbacked pending claim of another zone is taken over only after a 60 s lease, and a second create of the same id in the same zone is refused with `SHIPPING_METHOD_ID_COLLISION` (#496) | — |
 | `tax_classes` | class id | the registry `name` (`null` when only rates live there) and the class's `rates` map keyed by rate id | — |
 | `tax_rate_owners` | rate id | `{ taxClassId, state }` — the store-wide rate-id claim, and the FAST way to reach a rate from an id alone (the heal scan below is the fallback). `state` is `pending` until the create's embed lands, then `live` (absent = live); an unbacked pending claim of another class is taken over only after a 60 s lease (#462) | — |
 
@@ -1638,8 +1638,9 @@ reason ADR-0019 gives for that one.
 An **orphaned** claim — one whose parent does not hold the child — is the crash
 state, and the rule is that it misleads no reader and strands no id: every
 id-taking method answers exactly as it would for an id that was never created, and
-the next create of that id takes the claim over. A claim whose child really is
-embedded is a collision and is loud.
+the next create of that id takes the claim over — except that an unbacked `pending`
+claim of another parent is taken over only once its 60 s lease has run out. A claim
+whose child really is embedded is a collision and is loud.
 
 ### A tax rate may exist without its class
 

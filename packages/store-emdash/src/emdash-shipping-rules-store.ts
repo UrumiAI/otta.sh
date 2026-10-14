@@ -67,6 +67,15 @@
  *    rather than becoming an unreachable priced row. The create path's collision
  *    test goes through that same lookup, which is what stops the residue from
  *    becoming one id in two zones.
+ *
+ * A claim whose zone does not hold the method is ORPHANED and taken over by the
+ * next create of that id — but "does not hold it" is only proof of an orphan once
+ * the create that wrote the claim is done. As for tax rate ids (#462), a claim is
+ * written `pending` and set `live` after its embed lands; an unbacked `pending`
+ * claim may be a create one round trip from its embed, so another ZONE adopts it
+ * only once it is older than {@link METHOD_CLAIM_ABANDON_AFTER_MS}. The SAME zone
+ * may adopt it at once: both embeds then guard on that one zone document, so at
+ * most one lands. A claim with no `state` predates the field and is read as live.
  */
 import {
 	type Cents,
@@ -92,6 +101,7 @@ import {
 import {
 	CAS_RETRY,
 	casDone,
+	StorageContentionError,
 	withCasRetry,
 	type CasRetryOptions,
 	type CasStep,
@@ -133,6 +143,14 @@ const LIST_PAGE_SIZE = 100;
  */
 const MAX_LIST_PAGES = 1000;
 
+/**
+ * How old an unbacked `pending` method-id claim must be before a create in another
+ * zone may take it over — the tax store's 60 s rate-id lease, for the same reason:
+ * the whole CAS retry budget is well under two seconds, and `claimedAt` is
+ * re-stamped on every attempt.
+ */
+const METHOD_CLAIM_ABANDON_AFTER_MS = 60_000;
+
 export interface EmdashShippingRulesStoreOptions {
 	/** The collections the descriptor declared (`SHIPPING_RULES_COLLECTIONS`). */
 	storage: StorageAccess;
@@ -148,6 +166,8 @@ export interface EmdashShippingRulesStoreOptions {
 	random?: CasRetryOptions["random"];
 	/** Page ceiling for the bounded zone scan. Default 1000. */
 	maxListPages?: number;
+	/** Override the pending method-id claim lease (ms). Default {@link METHOD_CLAIM_ABANDON_AFTER_MS}. */
+	claimAbandonAfterMs?: number;
 }
 
 /** One zone document as read, with the revision the next write is guarded on. */
@@ -162,6 +182,7 @@ export class EmdashShippingRulesStore implements ShippingRulesStore {
 	readonly #clock: Clock;
 	readonly #retry: CasRetryOptions;
 	readonly #maxListPages: number;
+	readonly #claimAbandonAfterMs: number;
 
 	constructor(options: EmdashShippingRulesStoreOptions) {
 		this.#zones = collectionOf<ShippingZoneDoc>(options.storage, SHIPPING_ZONES_COLLECTION);
@@ -177,6 +198,7 @@ export class EmdashShippingRulesStore implements ShippingRulesStore {
 			random: options.random,
 		};
 		this.#maxListPages = options.maxListPages ?? MAX_LIST_PAGES;
+		this.#claimAbandonAfterMs = options.claimAbandonAfterMs ?? METHOD_CLAIM_ABANDON_AFTER_MS;
 	}
 
 	// -- zones -----------------------------------------------------------------
@@ -275,10 +297,20 @@ export class EmdashShippingRulesStore implements ShippingRulesStore {
 	 * while a deleter is mid-release — because the claim's revision is the owner
 	 * token and re-asserting at it both PROVES the id is still ours and invalidates
 	 * any release already in flight against the revision it read.
+	 *
+	 * Once the embed lands the claim is set `live` — see {@link #settleClaim}. A create
+	 * whose every embed is refused gives its `pending` claim back with a
+	 * compare-and-delete at the revision IT last wrote, so a same-id create that
+	 * adopted the claim since (which moved the revision) keeps it.
 	 */
 	async createMethod(input: CreateShippingMethodInput): Promise<ShippingMethod> {
-		const now = this.#clock.now().toISOString();
-		let claimRevision = await this.#claimMethodId(input.id, input.zoneId, now);
+		const claim = (state: "pending" | "live"): ShippingMethodOwnerDoc => ({
+			methodId: input.id,
+			zoneId: input.zoneId,
+			claimedAt: this.#clock.now().toISOString(),
+			state,
+		});
+		let claimRevision = await this.#claimMethodId(input.id, input.zoneId, claim("pending"));
 		const method: ShippingMethodDoc = {
 			methodId: input.id,
 			name: input.name,
@@ -292,31 +324,52 @@ export class EmdashShippingRulesStore implements ShippingRulesStore {
 			// Re-asserted on EVERY attempt, with the revision carried forward from this
 			// write's own result: a claim a peer has adopted, or a deleter has released,
 			// fails here — BEFORE a method could be embedded under an id this call no
-			// longer holds.
-			const reasserted = await this.#methodOwners.compareAndSet(input.id, claimRevision, {
-				methodId: input.id,
-				zoneId: input.zoneId,
-				claimedAt: now,
-			});
+			// longer holds. It also re-stamps the lease.
+			const reasserted = await this.#methodOwners.compareAndSet(
+				input.id,
+				claimRevision,
+				claim("pending"),
+			);
 			if (!reasserted.applied) {
 				const taken = await this.#methodOwners.get(input.id);
 				throw new ShippingMethodIdCollisionError(input.id, taken?.zoneId ?? "a concurrent create");
 			}
 			claimRevision = reasserted.revision;
+			// A concurrent create of the SAME id landed here after this one claimed: the
+			// id is live, so this is an id collision — never an embed over that method
+			// (the methods map is keyed by id).
+			if (held.doc.methods[input.id] !== undefined) {
+				throw new ShippingMethodIdCollisionError(input.id, input.zoneId);
+			}
 			const written = await this.#zones.compareAndSet(
 				input.zoneId,
 				held.revision,
 				withMethod(held.doc, method),
 			);
 			return written.applied ? casDone<"embedded" | "no_zone">("embedded") : CAS_RETRY;
+		}).catch(async (err: unknown) => {
+			// Every embed compare-and-set refused until the retries ran out: no embed of
+			// this create landed, so its claim goes back. Never on a crash or an unknown
+			// error: the embed may have landed.
+			if (err instanceof StorageContentionError) {
+				try {
+					await this.#methodOwners.compareAndDelete(input.id, claimRevision);
+				} catch {
+					// The refusal is the caller's answer; a pending claim left here is a
+					// lease orphan like a crash's.
+				}
+			}
+			throw err;
 		});
 		if (embedded === "no_zone") {
 			// The zone the foreign key pointed at is not there. Give the id back before
 			// throwing, or a retry with a real zone would collide with this call's own
-			// abandoned claim.
-			await this.#releaseMethodClaim(input.id, input.zoneId);
+			// abandoned claim — at the revision this call last wrote, so a same-zone peer
+			// that adopted it since keeps it.
+			await this.#methodOwners.compareAndDelete(input.id, claimRevision);
 			throw new ShippingZoneNotFoundError(input.zoneId);
 		}
+		await this.#settleClaim(input.zoneId, method, claimRevision, () => claim("live"));
 		return toShippingMethod(input.zoneId, method);
 	}
 
@@ -554,6 +607,7 @@ export class EmdashShippingRulesStore implements ShippingRulesStore {
 			methodId,
 			zoneId: holder.zoneId,
 			claimedAt: this.#clock.now().toISOString(),
+			state: "live",
 		};
 		// A refusal is somebody else having written the claim in the meantime, which is
 		// the state this wanted to reach; the read below is what the caller gets either
@@ -569,7 +623,9 @@ export class EmdashShippingRulesStore implements ShippingRulesStore {
 	}
 
 	/**
-	 * Claim a method id store-wide, taking over an ORPHANED claim.
+	 * Claim a method id store-wide, taking over an ORPHANED claim: an unbacked live
+	 * one, an unbacked pending one of this same zone, or an unbacked pending one of
+	 * another zone once its lease has run out (see the header).
 	 *
 	 * A claim is orphaned when the zone it names does not hold the method — the
 	 * crash-between-claim-and-embed state, and the state a `deleteMethod` that died
@@ -581,8 +637,11 @@ export class EmdashShippingRulesStore implements ShippingRulesStore {
 	 * It reports its attempt depth under its own operation name, so the claim step's
 	 * contention and the embed step's are two budgets rather than one number.
 	 */
-	async #claimMethodId(methodId: string, zoneId: string, now: string): Promise<string> {
-		const mine: ShippingMethodOwnerDoc = { methodId, zoneId, claimedAt: now };
+	async #claimMethodId(
+		methodId: string,
+		zoneId: string,
+		mine: ShippingMethodOwnerDoc,
+	): Promise<string> {
 		return this.#cas<string>("createShippingMethod.claim", async () => {
 			// The collision test goes through the HEALING lookup, not through the claim
 			// alone: a method that is embedded while its claim is missing must refuse this
@@ -595,12 +654,109 @@ export class EmdashShippingRulesStore implements ShippingRulesStore {
 				const written = await this.#methodOwners.compareAndSet(methodId, null, mine);
 				return written.applied ? casDone(written.revision) : CAS_RETRY;
 			}
-			// Orphaned (the lookup above proved no method holds it). Re-point it at this
-			// call's zone — a no-op when it already points there, which is the same-zone
-			// replay of an abandoned create.
+			// Unbacked. A `pending` claim in ANOTHER zone may be a create one round trip
+			// from its embed, whose compare-and-set this create could not see.
+			if (
+				current.value.state === "pending" &&
+				current.value.zoneId !== zoneId &&
+				!this.#leaseExpired(current.value)
+			) {
+				throw new ShippingMethodIdCollisionError(methodId, current.value.zoneId);
+			}
+			// The lookup above ran BEFORE this read: a peer's claim and embed can both land
+			// in between, so "orphaned" is re-proved against the zone this claim names. Any
+			// later embed of the id re-asserts the claim first, which moves the revision and
+			// refuses the compare-and-set below.
+			const backer = await this.#heldZone(current.value.zoneId);
+			if (backer?.doc.methods[methodId] !== undefined) {
+				throw new ShippingMethodIdCollisionError(methodId, current.value.zoneId);
+			}
+			// Orphaned. Re-point it at this call's zone — a no-op when it already points
+			// there, which is the same-zone replay of an abandoned create.
 			const written = await this.#methodOwners.compareAndSet(methodId, current.revision, mine);
 			return written.applied ? casDone(written.revision) : CAS_RETRY;
 		});
+	}
+
+	/**
+	 * Set a create's claim `live` once its embed has landed — the tax store's
+	 * `#settleClaim`, for method ids.
+	 *
+	 * The write is at the create's own revision. A refusal means someone wrote the
+	 * claim since, and the re-read decides:
+	 *  - it names THIS zone: a same-zone create adopted it (its embed then refuses on
+	 *    ours), so the method here is the one it backs — set it live at the current
+	 *    revision, or a pending claim would outlive the method and block other zones;
+	 *  - it names ANOTHER zone: this create paused past the whole lease between its
+	 *    re-assertion and its embed, and a create in that zone took the id over. The
+	 *    method just embedded here is taken back out and this create is refused, so
+	 *    the id is never live in two zones;
+	 *  - it is gone, or already live in this zone: nothing to do (`#findMethod` heals
+	 *    a missing one).
+	 *
+	 * A STORAGE failure setting the claim live does not fail the create — the method
+	 * has landed, and a pending claim that names its zone is followed by `#findMethod`
+	 * like a live one.
+	 *
+	 * The rollback reads the zone, then the claim, on EVERY attempt and stops,
+	 * removing nothing, once the claim names this zone again (the id was re-created
+	 * here, or a lookup healed the claim back onto this create's own method), and it
+	 * removes the method only while it is still exactly the document this create
+	 * embedded. RESIDUAL, as for tax: if the rollback itself fails, the caller gets
+	 * that error and both methods may remain — that needs a pause past the whole lease
+	 * AND a failing rollback.
+	 */
+	async #settleClaim(
+		zoneId: string,
+		method: ShippingMethodDoc,
+		ownRevision: string,
+		live: () => ShippingMethodOwnerDoc,
+	): Promise<void> {
+		const methodId = method.methodId;
+		let revision = ownRevision;
+		let takenBy: string | null;
+		try {
+			takenBy = await this.#cas<string | null>("createShippingMethod.live", async () => {
+				const written = await this.#methodOwners.compareAndSet(methodId, revision, live());
+				if (written.applied) return casDone<string | null>(null);
+				const current = await this.#methodOwners.getVersioned(methodId);
+				if (current === null) return casDone<string | null>(null);
+				if (current.value.zoneId !== zoneId) return casDone<string | null>(current.value.zoneId);
+				if (current.value.state !== "pending") return casDone<string | null>(null);
+				revision = current.revision;
+				return CAS_RETRY;
+			});
+		} catch (err) {
+			// No ids or values: the error's name is enough to find this line.
+			console.warn(
+				`[otta] shipping rules: a created method's id claim was not set live ` +
+					`(${err instanceof Error ? err.name : "unknown error"}); the method is stored and reachable`,
+			);
+			return;
+		}
+		if (takenBy === null) return;
+		await this.#cas<void>("createShippingMethod.rollback", async () => {
+			const held = await this.#heldZone(zoneId);
+			const owner = await this.#methodOwners.get(methodId);
+			if (owner?.zoneId === zoneId) return casDone(undefined);
+			const embedded = held?.doc.methods[methodId];
+			if (held === null || embedded === undefined || !sameMethodDoc(embedded, method)) {
+				return casDone(undefined);
+			}
+			const written = await this.#zones.compareAndSet(
+				zoneId,
+				held.revision,
+				withoutMethod(held.doc, methodId),
+			);
+			return written.applied ? casDone(undefined) : CAS_RETRY;
+		});
+		throw new ShippingMethodIdCollisionError(methodId, takenBy);
+	}
+
+	/** Whether a pending claim is older than the lease, by this store's clock. */
+	#leaseExpired(claim: ShippingMethodOwnerDoc): boolean {
+		const age = this.#clock.now().getTime() - new Date(claim.claimedAt).getTime();
+		return age >= this.#claimAbandonAfterMs;
 	}
 
 	/**
@@ -629,6 +785,9 @@ export class EmdashShippingRulesStore implements ShippingRulesStore {
 	async #releaseMethodClaim(methodId: string, expectedZoneId: string): Promise<void> {
 		const current = await this.#methodOwners.getVersioned(methodId);
 		if (current === null || current.value.zoneId !== expectedZoneId) return;
+		// A pending claim is a peer's create in flight (it adopted the id after the
+		// method left), not the claim of the method this delete removed.
+		if (current.value.state === "pending") return;
 		const holder = await this.#zones.get(current.value.zoneId);
 		if (holder !== null && normalizeZoneDoc(holder).methods[methodId] !== undefined) return;
 		await this.#methodOwners.compareAndDelete(methodId, current.revision);
@@ -646,4 +805,18 @@ export class EmdashShippingRulesStore implements ShippingRulesStore {
 		}
 		throw new ScanPageLimitError(operation, this.#maxListPages, collected.length, "maxListPages");
 	}
+}
+
+/**
+ * Whether two method documents are the same freshly created method — key order
+ * aside. A method that has gained a rate since is not, and a rollback leaves it.
+ */
+function sameMethodDoc(a: ShippingMethodDoc, b: ShippingMethodDoc): boolean {
+	return (
+		a.methodId === b.methodId &&
+		a.name === b.name &&
+		a.type === b.type &&
+		(a.taxable ?? true) === (b.taxable ?? true) &&
+		Object.keys(a.rates).length === Object.keys(b.rates).length
+	);
 }

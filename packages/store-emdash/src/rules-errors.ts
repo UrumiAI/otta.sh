@@ -52,7 +52,8 @@ export class ShippingZoneNotFoundError extends Error {
  * document `shipping_method_owners/{methodId}` is what enforces that here. A
  * claim whose zone no longer holds the method is taken over rather than treated
  * as a conflict, so a crash between claiming an id and embedding the method does
- * not strand the id forever.
+ * not strand the id forever — except that another zone's PENDING claim (a create
+ * still in flight) is refused until its 60 s lease runs out, as for tax rates (#462).
  */
 export class ShippingMethodIdCollisionError extends Error {
 	override readonly name = "ShippingMethodIdCollisionError";
