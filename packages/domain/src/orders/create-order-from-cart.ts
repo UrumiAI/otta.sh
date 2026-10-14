@@ -624,8 +624,9 @@ async function finalizeOrder(
 
 /**
  * True iff a PENDING order found under this key was placed with a DIFFERENT method
- * than the gateway about to be asked for an intent — a legacy x402 order replayed
- * as a Stripe checkout must never get a Stripe intent. Only a pending order would
+ * than the gateway about to be asked for an intent — an order stored under an
+ * unknown method (a removed one such as x402) replayed as a Stripe checkout must
+ * never get a Stripe intent. Only a pending order would
  * get one: a paid, expired or cancelled order replays as it always did (no
  * intent). A `null` method (a historical order) is not "another method" either.
  */

@@ -218,65 +218,14 @@ describe("makeAdminClients wires the payment gateways into admin refunds", () =>
 		expect(await harness.stores.orderStore.listRefunds(toOrderId(id))).toEqual([]);
 	});
 
-	test("a LEGACY x402 order (a method Otta no longer supports) is record-only: the refund is ledgered as manual, with no egress", async () => {
-		// x402 is gone from `PaymentMethod`, but an order paid before its removal
-		// still stores it. Before the removal its gateway was `refundable: false`,
-		// so the admin could record the refund made outside Otta; that must hold.
+	test("an UNKNOWN stored method (x402, removed, or any non-current value) fails closed: 409, nothing ledgered", async () => {
+		// x402 was removed (#437) and its record-only legacy handling with it (#455):
+		// an order that still stores it is refused like any unknown method.
 		const ctx = withKv({ ...harness.ctx, http: stripeHttp() }, {});
 		const { orders } = await makeAdminClients(ctx);
-		const id = await seedPaidOrder("x402" as unknown as PaymentMethod);
-
-		expect(await orders.getRefunds(id)).toMatchObject({
-			refundable: false,
-			paymentMethod: "x402",
-			legacyPaymentMethod: true,
-			remainingCents: 1500,
-		});
-		expect(
-			await orders.refundOrder(
-				id,
-				{ amountCents: 500, currency: "USD", refundedBy: "ops@example.test" },
-				{ idempotencyKey: `${id}-r1` },
-			),
-		).toMatchObject({ ok: true, recorded: true, duplicate: false, fullyRefunded: false });
-		const [row] = (await orders.getRefunds(id))?.refunds ?? [];
-		expect(row).toMatchObject({
-			kind: "manual",
-			gateway: "x402",
-			refundRef: null,
-			amountCents: 500,
-			status: "recorded",
-		});
-		expect(requests).toEqual([]);
-
-		// A STRIPE order on the same unconfigured deployment still fails closed: the
-		// stand-in is only for a method Otta no longer has.
-		const stripeId = await seedPaidOrder("stripe");
-		expect(await orders.getRefunds(stripeId)).toMatchObject({
-			refundable: false,
-			paymentMethod: "stripe",
-			legacyPaymentMethod: false,
-		});
-		expect(
-			await orders.refundOrder(
-				stripeId,
-				{ amountCents: 500, currency: "USD", refundedBy: "ops@example.test" },
-				{ idempotencyKey: `${stripeId}-r1` },
-			),
-		).toEqual({ ok: false, status: 409, reason: "REFUND_GATEWAY_UNAVAILABLE" });
-		expect(await harness.stores.orderStore.listRefunds(toOrderId(stripeId))).toEqual([]);
-		expect(requests).toEqual([]);
-	});
-
-	test("an UNKNOWN stored method (not current, not a named legacy one) fails closed: 409, nothing ledgered", async () => {
-		const ctx = withKv({ ...harness.ctx, http: stripeHttp() }, {});
-		const { orders } = await makeAdminClients(ctx);
-		for (const method of ["Stripe", "bogus", "toString"]) {
+		for (const method of ["x402", "Stripe", "bogus", "toString"]) {
 			const id = await seedPaidOrder(method as unknown as PaymentMethod);
-			expect(await orders.getRefunds(id), method).toMatchObject({
-				refundable: false,
-				legacyPaymentMethod: false,
-			});
+			expect(await orders.getRefunds(id), method).toMatchObject({ refundable: false });
 			expect(
 				await orders.refundOrder(
 					id,
@@ -290,8 +239,8 @@ describe("makeAdminClients wires the payment gateways into admin refunds", () =>
 		expect(requests).toEqual([]);
 	});
 
-	/** A legacy x402 order whose money Stripe captured. */
-	async function seedLegacyPaidThroughStripe(): Promise<string> {
+	/** An x402 order (now an unknown method) whose money Stripe captured. */
+	async function seedX402PaidThroughStripe(): Promise<string> {
 		seq += 1;
 		const id = `mac-o-${String(seq)}`;
 		await sharedTierSeeders({
@@ -318,36 +267,28 @@ describe("makeAdminClients wires the payment gateways into admin refunds", () =>
 		return id;
 	}
 
-	test("a legacy x402 order whose money STRIPE captured refunds through Stripe — never record-only", async () => {
+	test("an x402 order whose money STRIPE captured is still an unknown method: 409 with Stripe configured, and no egress", async () => {
 		const orders = await configuredOrders();
-		const id = await seedLegacyPaidThroughStripe();
+		const id = await seedX402PaidThroughStripe();
 
-		expect(await orders.getRefunds(id)).toMatchObject({
-			paymentMethod: "x402",
-			refundable: true,
-			legacyPaymentMethod: false,
-		});
+		expect(await orders.getRefunds(id)).toMatchObject({ paymentMethod: "x402", refundable: false });
 		expect(
 			await orders.refundOrder(
 				id,
 				{ amountCents: 500, currency: "USD", refundedBy: "ops@example.test" },
 				{ idempotencyKey: `${id}-r1` },
 			),
-		).toMatchObject({ ok: true, recorded: true, duplicate: false });
-		const [row] = (await orders.getRefunds(id))?.refunds ?? [];
-		expect(row).toMatchObject({ kind: "gateway", gateway: "stripe", amountCents: 500 });
-		expect(requests.filter((r) => r.method === "POST")).toHaveLength(1);
+		).toEqual({ ok: false, status: 409, reason: "REFUND_GATEWAY_UNAVAILABLE" });
+		expect(await harness.stores.orderStore.listRefunds(toOrderId(id))).toEqual([]);
+		expect(requests.filter((r) => r.method === "POST")).toEqual([]);
 	});
 
 	test("...and with Stripe NOT configured it is 409, not a record-only refund", async () => {
 		const ctx = withKv({ ...harness.ctx, http: stripeHttp() }, {});
 		const { orders } = await makeAdminClients(ctx);
-		const id = await seedLegacyPaidThroughStripe();
+		const id = await seedX402PaidThroughStripe();
 
-		expect(await orders.getRefunds(id)).toMatchObject({
-			refundable: false,
-			legacyPaymentMethod: false,
-		});
+		expect(await orders.getRefunds(id)).toMatchObject({ refundable: false });
 		expect(
 			await orders.refundOrder(
 				id,
@@ -359,7 +300,7 @@ describe("makeAdminClients wires the payment gateways into admin refunds", () =>
 		expect(requests).toEqual([]);
 	});
 
-	test("cancelling a PAID legacy x402 order refuses like an unrefundable gateway: nothing moves", async () => {
+	test("cancelling a PAID x402 order (an unknown method) refuses: nothing moves", async () => {
 		const ctx = withKv({ ...harness.ctx, http: stripeHttp() }, {});
 		const { orders } = await makeAdminClients(ctx);
 		const id = await seedPaidOrder("x402" as unknown as PaymentMethod);

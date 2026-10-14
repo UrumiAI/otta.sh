@@ -394,22 +394,7 @@ test("an order with a real capture still states how a refund would move money", 
 	await fire(tab(view, "money"), "click");
 
 	const line = one(view, '[data-testid="refund-capability"]');
-	expect(line.textContent).toBe(refundCapabilityText(true, "card", false));
-});
-
-test("a LEGACY payment method (the server's flag) gets its own record-only line", async () => {
-	const legacy: RefundsSummary = {
-		...CAPTURED,
-		paymentMethod: "x402",
-		refundable: false,
-		legacyPaymentMethod: true,
-	};
-	const view = await show(detailFor("paid", legacy));
-	await fire(tab(view, "money"), "click");
-
-	expect(one(view, '[data-testid="refund-capability"]').textContent).toBe(
-		"Paid with a payment method Otta no longer supports. Refunds are record-only: return the money outside Otta, then record it here.",
-	);
+	expect(line.textContent).toBe(refundCapabilityText(true, "card"));
 });
 
 test("a capture refunded down to nothing keeps the line its remainder cannot justify", async () => {
@@ -417,7 +402,7 @@ test("a capture refunded down to nothing keeps the line its remainder cannot jus
 	await fire(tab(view, "money"), "click");
 
 	expect(one(view, '[data-testid="refund-capability"]').textContent).toBe(
-		refundCapabilityText(true, "card", false),
+		refundCapabilityText(true, "card"),
 	);
 	// Same remainder as the never-captured order above, opposite outcome. A gate
 	// re-derived from the remaining amount reads these two as one case.

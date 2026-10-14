@@ -3988,7 +3988,6 @@ export function adminOrdersProductsClientContract(tier: CommerceClientTier): voi
 				// between a provider button and "record a manual refund" (ADR-0008), and
 				// neither state is faked here.
 				refundable: tier.payments !== undefined,
-				legacyPaymentMethod: false,
 			});
 
 			expect(await orders.getRefunds("adm-o-missing")).toBeNull();

@@ -7,6 +7,10 @@
   `paymentMethod: "x402"`: the domain names it in `LEGACY_PAYMENT_METHODS` (refunds `outside`,
   settlement `gateway`), so Mark refunded can close it. Any other stored method that is neither
   current nor named there fails closed and goes through the captured-money check.
+- Note (2026-10-14): `LEGACY_PAYMENT_METHODS` and the legacy x402 handling were removed (issue
+  #455; the product owner confirmed no live store holds such an order). An order that stores
+  `paymentMethod: "x402"` is now an unknown method: it fails closed and goes through the
+  captured-money check like any other. The `"outside"` category stays, dormant.
 - Date: 2026-10-02
 - Decided by: the maintainer, 2026-10-02 (QA findings T1-3, T1-4, T1-6)
 - Refines: the Phase-5 order state machine, as the admin console applies it. Amends no earlier

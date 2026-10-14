@@ -63,7 +63,6 @@ function surface(state: string, email: InlineEmailStatus | undefined): AdminOrde
 				remainingCents: 2400,
 				paymentMethod: "stripe",
 				refundable: true,
-				legacyPaymentMethod: false,
 			}),
 		refundOrder: () =>
 			Promise.resolve({
