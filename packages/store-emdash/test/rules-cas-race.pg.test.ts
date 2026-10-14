@@ -512,6 +512,74 @@ describe.skipIf(!PG_ENABLED)(
 );
 
 /**
+ * The headline property of the id claim (#485): the same id created concurrently
+ * in DIFFERENT classes, free-running — exactly one create lands, every other is
+ * refused as `TAX_RATE_ID_COLLISION`, and exactly one class holds the rate, with
+ * a `live` claim naming it.
+ *
+ * Two things keep this a real race rather than a serial run. The retry backoff
+ * sleep is a no-op, and the pool is warmed right before each burst: otherwise the
+ * losers sit in backoff on a cold pool, the winner has embedded by the time they
+ * retry, and `#findRate` refuses them one at a time — a run that passes with the
+ * pending-lease guard removed. Overlapping like this, it also catches #489: a
+ * loser whose lookup ran before the winner's embed, and whose claim read came
+ * after the winner set the claim live, overwrote that live claim and embedded too.
+ */
+describe.skipIf(!PG_ENABLED)("tax-rate createRate: one id across classes race [postgres]", () => {
+	test("N concurrent creates of one id in N classes: one lands, the rest collide", async () => {
+		const ROUNDS = 30;
+		const db = await makePgStorage(TAX_RULES_LAYOUT, 20, { reserveConnections: true });
+		const harness = makeTaxRulesHarness(db.storage, { sleep: async () => {} });
+		try {
+			const store = harness.store;
+			const classIds = Array.from({ length: 16 }, (_unused, i) => `class-${String(i)}`);
+			for (const id of classIds) await store.createClass({ id, name: id });
+
+			for (let loop = 0; loop < ROUNDS; loop++) {
+				const id = `x${String(loop)}`;
+				const zoneId = `z-${String(loop)}`;
+				// Warm every connection so the burst starts together.
+				await Promise.all(classIds.map((c) => harness.classes.get(c)));
+				const settled = await Promise.allSettled(
+					classIds.map((taxClassId, i) =>
+						store.createRate({
+							id,
+							taxClassId,
+							zoneId,
+							rateBps: 700 + i,
+							appliesToShipping: false,
+						}),
+					),
+				);
+
+				const won = settled.flatMap((r) => (r.status === "fulfilled" ? [r.value] : []));
+				expect(won, `loop ${String(loop)}: exactly one create lands`).toHaveLength(1);
+				const lost = settled.flatMap((r) => (r.status === "rejected" ? [r.reason] : []));
+				expect(lost).toHaveLength(classIds.length - 1);
+				for (const reason of lost) {
+					expect(reason).toMatchObject({ code: "TAX_RATE_ID_COLLISION" });
+				}
+
+				const holders: string[] = [];
+				for (const taxClassId of classIds) {
+					const doc = await harness.classes.get(taxClassId);
+					if (doc?.rates[id] !== undefined) holders.push(taxClassId);
+				}
+				expect(holders, `loop ${String(loop)}: exactly one class holds ${id}`).toEqual([
+					won[0]?.taxClassId,
+				]);
+				expect(await harness.rateOwners.get(id)).toMatchObject({
+					taxClassId: won[0]?.taxClassId,
+					state: "live",
+				});
+			}
+		} finally {
+			await db.close();
+		}
+	}, 120_000);
+});
+
+/**
  * The shipping twin of the tax cross-class race: N creates of ONE method id in
  * DIFFERENT zones, free-running — exactly one create lands, every other is refused
  * as `SHIPPING_METHOD_ID_COLLISION`, and exactly one zone holds the method, with a

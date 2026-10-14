@@ -240,8 +240,10 @@ export async function lookupProduct(
 	// file" — the orphan sweep would otherwise delete the product's live file.
 	if (!("downloadAsset" in row)) return { kind: "failed" };
 	const asset = row["downloadAsset"];
-	const assetKey =
-		typeof asset === "object" && asset !== null ? (asset as Record<string, unknown>)["key"] : null;
+	// Likewise a value that is neither a descriptor nor `null` (a bare string, a
+	// number) is a failed read, never "no file".
+	if (asset !== null && typeof asset !== "object") return { kind: "failed" };
+	const assetKey = asset === null ? null : (asset as Record<string, unknown>)["key"];
 	if (assetKey !== null && typeof assetKey !== "string") return { kind: "failed" };
 	return {
 		kind: "found",

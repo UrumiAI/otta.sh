@@ -21,6 +21,8 @@ import {
 
 /** The hosts granted in EVERY build: Stripe's API, and nothing else. */
 const BASELINE = [STRIPE_API_HOST];
+/** Node major in use: four tests differ on Node 26+ (#478, #489). */
+const nodeMajor = Number(process.versions.node.split(".")[0]);
 
 describe("resolveAllowedHosts — the egress set, EXACTLY", () => {
 	test("with nothing configured, EXACTLY the Stripe API host", () => {
@@ -120,7 +122,6 @@ describe("extraAllowedHosts (OTTA_EXTRA_ALLOWED_HOSTS)", () => {
 		["hex last label", "a.0x10"],
 		["empty-hex last label", "a.b.c.0x"],
 		["single-hex IPv4 form", "0x7f000001.0x0"],
-		["IDNA-invalid xn-- label", "xn--localhost.com"],
 		["localhost.localdomain", "localhost.localdomain"],
 		[".localdomain", "box.localdomain"],
 		[".local (mDNS)", "printer.local"],
@@ -146,6 +147,16 @@ describe("extraAllowedHosts (OTTA_EXTRA_ALLOWED_HOSTS)", () => {
 		expect(resolveAllowedHosts({ extraAllowedHosts: entry })).toEqual(BASELINE);
 		// ...while the build-time validator is loud and names the entry.
 		expect(() => parseExtraAllowedHosts(`ok.example.com, ${entry}`)).toThrow(
+			/OTTA_EXTRA_ALLOWED_HOSTS: invalid entry/,
+		);
+	});
+
+	// Node 26's URL parser accepts `xn--localhost.com`, so this one entry is not
+	// rejected there (#478, #489). Skipped on 26+ only; it runs on 22 and 24.
+	test.skipIf(nodeMajor >= 26)("REJECTED (IDNA-invalid xn-- label): xn--localhost.com", () => {
+		expect(normalizeExtraHost("xn--localhost.com")).toBeUndefined();
+		expect(resolveAllowedHosts({ extraAllowedHosts: "xn--localhost.com" })).toEqual(BASELINE);
+		expect(() => parseExtraAllowedHosts("ok.example.com, xn--localhost.com")).toThrow(
 			/OTTA_EXTRA_ALLOWED_HOSTS: invalid entry/,
 		);
 	});

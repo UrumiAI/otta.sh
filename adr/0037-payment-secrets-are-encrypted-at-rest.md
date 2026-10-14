@@ -55,13 +55,16 @@ path — so no new write path or crypto is needed.
    the row with a fresh envelope) and a read-back of that exact revision, which is then
    recorded in the marker, so an unfinished run does not redo it. So a key an earlier build
    stores in plain text again (a rollback) is encrypted by the first isolate after rolling
-   forward. A conditional write that does not apply although the revision is unchanged (a
-   sandboxed bridge's pre-1.0 copy outside the options table) is redone as
-   `compareAndSet(key, null, value)`, which applies only while the options row is still
-   absent; the bridge stores it encrypted and deletes that copy. It reads and writes no x402
-   or email key, present or absent. Idempotent, safe to interrupt, never overwrites a key
-   saved in between, logs fixed lines and counts, never a value. If every key is still plain,
-   a wrong key cannot be detected: the key set at that tick is the key they are saved under.
+   forward. The marker is written with plain `kv.set`, so two isolates running at once can
+   drop each other's entries; that only costs one extra re-save of the affected key (same
+   value, fresh envelope), so there is no locking. A conditional write that does not apply
+   although the revision is unchanged (a sandboxed bridge's pre-1.0 copy outside the options
+   table) is redone as `compareAndSet(key, null, value)`, which applies only while the
+   options row is still absent; the bridge stores it encrypted and deletes that copy. It
+   reads and writes no x402 or email key, present or absent. Idempotent, safe to interrupt,
+   never overwrites a key saved in between, logs fixed lines and counts, never a value. If
+   every key is still plain, a wrong key cannot be detected: the key set at that tick is the
+   key they are saved under.
 3. **Fail closed, and validate on read.** A key that cannot be read, or whose stored value is
    empty, not a string, or not the shape Otta's Settings form saves (the same checks), is
    never used and never replaced by anything else. `readSecret` reports `unreadable` or

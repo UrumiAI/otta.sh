@@ -163,6 +163,11 @@ Decided by the maintainer: Otta does not add WooCommerce's coupon allocation, no
   is still taxed by its ship-to, its only address (WooCommerce's checkout likewise bills to
   the ship-to unless told otherwise). Under `shipping` or `base` the location is ignored
   entirely — never validated, never priced by.
+- A buyer who picks a region that contains subdivisions in different zones (Spain's "Canary
+  Islands" when ES-CN and ES-TF are zoned apart) is refused too, even if that region has a zone
+  of its own (#488). The review says "Pick a more specific region above, or clear your
+  location, to continue." and Place is blocked until the buyer picks a narrower region or
+  clears the location. A forged Place is re-priced and refused the same way.
 - The review quote and the order are taxed at the same location by convention: the review
   prices the location the page sent (`destination`, for a cart that ships nothing), and the
   place form echoes it as the order's `billingLocation`; the domain re-prices the order from

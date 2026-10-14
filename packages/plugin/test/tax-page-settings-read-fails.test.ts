@@ -95,11 +95,53 @@ describe("the tax rates page when the tax-settings read fails (#471)", () => {
 			expect(unknown).not.toContain("taxes nothing");
 			expect(unknown).not.toContain("only if this rate becomes the active one");
 			expect(unknown).not.toContain("can still tax shipping");
+			expect(unknown).not.toContain("counts toward shipping tax");
 			expect(warn).toHaveBeenCalledTimes(1);
 			expect(String(warn.mock.calls[0]?.[0])).not.toContain("725");
 		} finally {
 			warn.mockRestore();
 		}
+	});
+
+	test("the class list still renders when the tax-settings read fails, and the failure is logged", async () => {
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		try {
+			const handler = createTaxPageHandler() as unknown as RouteHandler<Record<string, unknown>>;
+			const res = (await handler(
+				{
+					input: { type: "page_load", page: "/tax" },
+					request: { method: "POST", url: "/admin", headers: {} },
+				},
+				settingsFailingCtx(),
+			)) as BlockResponse;
+			const text = JSON.stringify(res.blocks);
+			expect(text).toContain("standard");
+			expect(text).not.toContain("unavailable");
+			expect(warn).toHaveBeenCalledTimes(1);
+		} finally {
+			warn.mockRestore();
+		}
+	});
+});
+
+describe("the tax rates page duplicate note (#484)", () => {
+	test("an ignored duplicate that does not apply to shipping is not warned about shipping tax", async () => {
+		// std-us (the ignored one, "std-us" < "std-us-b") stops applying to shipping.
+		await h.stores.taxRules.updateRate(
+			"std-us",
+			{ rateBps: 725, appliesToShipping: false },
+			{ rateBps: 725, appliesToShipping: true },
+		);
+		await seedDuplicate();
+		const text = JSON.stringify((await openStandard(h.ctx)).blocks);
+		expect(text).toContain("Duplicate: only std-us-b applies");
+		expect(text).not.toContain("can change shipping tax");
+		expect(text).not.toContain("can still tax shipping");
+		// The toggle's label says what switching it ON does, so it is the same label
+		// whether this copy applies to shipping or not.
+		expect(text).toContain(
+			"Applies to shipping — counts toward shipping tax even while this duplicate is ignored",
+		);
 	});
 });
 

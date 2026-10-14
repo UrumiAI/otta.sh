@@ -144,11 +144,15 @@ describeEachDialect("misc crash seams", (ctx) => {
 		expect((await live.grants.get("g1"))?.state).toBe("active");
 		expect(await live.lookups.count()).toBe(0);
 
-		// Either scope's own read answers from the declared index, and writes the
-		// pointer back as it goes.
-		expect(await live.entitlementStore.check({ orderId: orderId("ord-1"), sku: SKU })).toBe(true);
+		// Either scope's own repairing read (the download gate's) answers from the
+		// declared index, and writes the pointer back as it goes.
+		expect(
+			await live.entitlementStore.check({ orderId: orderId("ord-1"), sku: SKU }, { repair: true }),
+		).toBe(true);
 		expect((await live.lookups.get(ORDER_SCOPE))?.grantKey).toBe("g1");
-		expect(await live.entitlementStore.check({ buyerRef: BUYER, sku: SKU })).toBe(true);
+		expect(await live.entitlementStore.check({ buyerRef: BUYER, sku: SKU }, { repair: true })).toBe(
+			true,
+		);
 		expect((await live.lookups.get(BUYER_SCOPE))?.grantKey).toBe("g1");
 		expect(await live.lookups.count()).toBe(2);
 	});
@@ -167,7 +171,9 @@ describeEachDialect("misc crash seams", (ctx) => {
 		expect((await live.lookups.get(ORDER_SCOPE))?.grantKey).toBe("g1");
 		expect(await live.lookups.get(BUYER_SCOPE)).toBeNull();
 
-		expect(await live.entitlementStore.check({ buyerRef: BUYER, sku: SKU })).toBe(true);
+		expect(await live.entitlementStore.check({ buyerRef: BUYER, sku: SKU }, { repair: true })).toBe(
+			true,
+		);
 		expect((await live.lookups.get(BUYER_SCOPE))?.grantKey).toBe("g1");
 	});
 

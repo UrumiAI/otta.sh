@@ -287,8 +287,20 @@ function taxClassesLevel() {
 		limit: 200,
 		filterFromValues: () => ({}),
 		async fetchPage(client) {
-			const [classes, read] = await Promise.all([client.listTaxClasses(), client.getTaxSettings()]);
-			return { items: [{ classes, taxOff: taxOffBanner(read) }], nextCursor: null };
+			const [classes, taxOff] = await Promise.all([
+				client.listTaxClasses(),
+				// Secondary: it only feeds the tax-off banner. A failed read must not take
+				// the class list down, so the banner is simply left out (as on the rates
+				// page, #471). Logged, no values.
+				client.getTaxSettings().then(
+					(read) => taxOffBanner(read),
+					(): Block | null => {
+						console.warn("[otta] tax classes page: the tax settings could not be read");
+						return null;
+					},
+				),
+			]);
+			return { items: [{ classes, taxOff }], nextCursor: null };
 		},
 		render({ actions, items, nextToken, notice, renderState }) {
 			const bundle = items[0] ?? { classes: [], taxOff: null };
@@ -883,7 +895,9 @@ function duplicateBlocks(row: TaxRateRow): Block[] {
 					row.ignoredShippingFlagCounts === null
 						? `Duplicate: only ${row.appliedInstead} applies to ${zone}; its shipping setting could not be checked. Delete the one you don't want.`
 						: row.ignoredShippingFlagCounts === true
-							? `Duplicate: only ${row.appliedInstead} applies to ${zone}; its shipping setting still counts, so deleting it can change shipping tax.`
+							? row.appliesToShipping
+								? `Duplicate: only ${row.appliedInstead} applies to ${zone}; its shipping setting still counts, so deleting it can change shipping tax.`
+								: `Duplicate: only ${row.appliedInstead} applies to ${zone}. Delete the one you don't want.`
 							: `Duplicate: only ${row.appliedInstead} applies to ${zone}, so this rate taxes nothing (goods or shipping). Delete the one you don't want.`,
 			},
 		];
@@ -941,11 +955,13 @@ function rateEditForm(classId: string, row: TaxRateRow): FormBlock {
 				{
 					type: "toggle",
 					action_id: "appliesToShipping",
+					// What switching it ON does — never its current value, so one label
+					// serves both states.
 					label:
 						!ignored || row.ignoredShippingFlagCounts === null
 							? "Applies to shipping"
 							: row.ignoredShippingFlagCounts === true
-								? "Applies to shipping — can still tax shipping while this duplicate exists"
+								? "Applies to shipping — counts toward shipping tax even while this duplicate is ignored"
 								: "Applies to shipping — only if this rate becomes the active one",
 					initial_value: row.appliesToShipping, // F-6b/X-24: REQUIRED — toggle is mount-only
 				},

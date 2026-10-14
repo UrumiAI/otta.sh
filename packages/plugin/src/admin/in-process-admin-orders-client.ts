@@ -426,7 +426,9 @@ export class InProcessAdminOrdersClient implements AdminOrdersSurface {
 	 * The order's download access for the detail (issue #447): only on a paid-side
 	 * order (the domain's deliverable states) with a digital line — `open` while
 	 * any digital line's grant is active, `revoked` once none is. Read with the
-	 * gate's own `check`, so the console shows what the download route would do.
+	 * gate's own `check`, so the console shows what the download route would do —
+	 * without `repair`, so loading the page never writes (the lookup repair stays
+	 * on the download route itself).
 	 * A paid order whose grant was never written (a settle that crashed between
 	 * paid and grant) reads as `revoked` too: nothing downloads there either.
 	 */
