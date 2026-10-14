@@ -137,9 +137,9 @@ in-process leniency.
 - **pnpm** workspace + `catalog:` for shared version pins.
 - **tsdown** builds (ESM + DTS).
 - **vitest** for tests; **Playwright** for storefront e2e (`pnpm test:e2e`).
-  - **Node:** CI runs the major in `.nvmrc` (22). `pnpm test` refuses Node 26 or later, where
-    four tests fail (a URL-parser change, and better-sqlite3's handling of lone surrogates;
-    both test-only, see #478). **`OTTA_ANY_NODE=1`** runs the suite anyway.
+  - **Node:** CI runs the major in `.nvmrc` (22). On Node 26 or later four tests are skipped
+    (a URL-parser change, and better-sqlite3's handling of lone surrogates; both test-only,
+    see #478); they run on 22 and 24.
   - **`OTTA_E2E_STRIPE_OFFLINE=1`** (issue #378) arms a dev-only offline Stripe gateway, so an
     e2e stack with no Stripe account can create orders. Orders get an unpayable `pi_<orderId>`
     handle and are paid only by a signed test webhook (`sites/staging/scripts/seed-e2e-orders.ts`,

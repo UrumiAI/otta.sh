@@ -35,6 +35,9 @@ afterEach(() => {
 let seq = 0;
 const ids = { newId: () => `res-${String(++seq)}` };
 
+/** Node major in use: four tests differ on Node 26+ (#478, #489). */
+const nodeMajor = Number(process.versions.node.split(".")[0]);
+
 describeEachDialect("ill-formed text: ids built from legacy stored text", (ctx) => {
 	const bound = ctx.useStorage({
 		...INVENTORY_LAYOUT,
@@ -43,43 +46,49 @@ describeEachDialect("ill-formed text: ids built from legacy stored text", (ctx) 
 	});
 	const raw = <T>(name: string) => bound.storage[name] as StorageCollection<T>;
 
-	test("a reservation whose stored sku is a legacy lone surrogate can still be released (A R2-A1 probe)", async () => {
-		vi.spyOn(console, "warn").mockImplementation(() => {});
-		const store = new EmdashInventoryStore({
-			storage: bound.storage,
-			idGen: ids,
-			clock: new FixedClock(new Date("2026-10-06T00:00:00.000Z")),
-		});
-		await store.seedOnHand("s�", 5);
-		const reserved = await store.reserve("s�", 2, idempotencyKey("legacy-sku-hold"));
-		if (!reserved.ok) throw new Error("arrange: reserve");
-		const resId = reserved.reservationId;
+	// Node 26+ only: its better-sqlite3 binds a lone surrogate as U+FFFD while SQLite
+	// keeps it raw, so a SQLite lookup by a legacy lone-surrogate value misses its row
+	// (#478, #489). Runs on 22 and 24, and on every other dialect.
+	test.skipIf(ctx.dialect === "sqlite" && nodeMajor >= 26)(
+		"a reservation whose stored sku is a legacy lone surrogate can still be released (A R2-A1 probe)",
+		async () => {
+			vi.spyOn(console, "warn").mockImplementation(() => {});
+			const store = new EmdashInventoryStore({
+				storage: bound.storage,
+				idGen: ids,
+				clock: new FixedClock(new Date("2026-10-06T00:00:00.000Z")),
+			});
+			await store.seedOnHand("s�", 5);
+			const reserved = await store.reserve("s�", 2, idempotencyKey("legacy-sku-hold"));
+			if (!reserved.ok) throw new Error("arrange: reserve");
+			const resId = reserved.reservationId;
 
-		// The legacy shape: the index entry's sku as written before the boundary
-		// existed. On SQLite the inventory row was keyed by that raw text too; on
-		// Postgres the driver folded it into the U+FFFD row on the way in.
-		const index = await raw<ReservationIndexDoc>(RESERVATION_INDEX_COLLECTION).get(resId);
-		if (index === null) throw new Error("arrange: index");
-		await raw<ReservationIndexDoc>(RESERVATION_INDEX_COLLECTION).put(resId, {
-			...index,
-			sku: "s\uD800",
-		});
-		if (ctx.dialect === "sqlite") {
-			const inventory = raw<InventoryDoc>(INVENTORY_COLLECTION);
-			const doc = await inventory.get("s�");
-			if (doc === null) throw new Error("arrange: inventory");
-			await inventory.put("s\uD800", { ...doc, sku: "s\uD800" });
-			await inventory.delete("s�");
-		}
+			// The legacy shape: the index entry's sku as written before the boundary
+			// existed. On SQLite the inventory row was keyed by that raw text too; on
+			// Postgres the driver folded it into the U+FFFD row on the way in.
+			const index = await raw<ReservationIndexDoc>(RESERVATION_INDEX_COLLECTION).get(resId);
+			if (index === null) throw new Error("arrange: index");
+			await raw<ReservationIndexDoc>(RESERVATION_INDEX_COLLECTION).put(resId, {
+				...index,
+				sku: "s\uD800",
+			});
+			if (ctx.dialect === "sqlite") {
+				const inventory = raw<InventoryDoc>(INVENTORY_COLLECTION);
+				const doc = await inventory.get("s�");
+				if (doc === null) throw new Error("arrange: inventory");
+				await inventory.put("s\uD800", { ...doc, sku: "s\uD800" });
+				await inventory.delete("s�");
+			}
 
-		await expect(store.release(resId)).resolves.toBeUndefined();
-		const after = await raw<ReservationIndexDoc>(RESERVATION_INDEX_COLLECTION).get(resId);
-		expect(after?.terminalState).toBe("released");
-		// The stock came back: a fresh guarded read of the row the legacy id names.
-		const inventory = collectionOf<InventoryDoc>(bound.storage, INVENTORY_COLLECTION);
-		const row = await inventory.get("s\uD800");
-		expect(row).not.toBeNull();
-	});
+			await expect(store.release(resId)).resolves.toBeUndefined();
+			const after = await raw<ReservationIndexDoc>(RESERVATION_INDEX_COLLECTION).get(resId);
+			expect(after?.terminalState).toBe("released");
+			// The stock came back: a fresh guarded read of the row the legacy id names.
+			const inventory = collectionOf<InventoryDoc>(bound.storage, INVENTORY_COLLECTION);
+			const row = await inventory.get("s\uD800");
+			expect(row).not.toBeNull();
+		},
+	);
 
 	describe("a write never re-keys a legacy sku (#447, from #415 item 1)", () => {
 		// `inventory` and `sku_owners` are keyed by the raw sku a product document

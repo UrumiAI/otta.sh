@@ -252,6 +252,10 @@ export async function encryptStoredPaymentSecrets(
 				return "retry";
 			}
 			revisions[key] = written.revision;
+			// Plain `kv.set`, no compare-and-set: two isolates running at once can overwrite each
+			// other's entries in `revisions`. Harmless: a dropped entry only makes a later run
+			// re-save that key once more (same value, fresh envelope). The marker is never
+			// trusted for a key whose current revision it does not match.
 			await kv.set(PAYMENT_SECRETS_ENCRYPTED_MARKER_KEY, {
 				set: PAYMENT_SECRETS_ENCRYPTED_MARKER_VALUE,
 				revisions,

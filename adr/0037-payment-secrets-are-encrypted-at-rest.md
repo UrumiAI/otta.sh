@@ -53,7 +53,9 @@ path — so no new write path or crypto is needed.
    other key (all of them on the first run, or after an earlier build's `v1:` marker) gets
    `compareAndSet` at the preflight revision with the same value (one statement that replaces
    the row with a fresh envelope) and a read-back of that exact revision, which is then
-   recorded in the marker, so an unfinished run does not redo it. So a key an earlier build
+   recorded in the marker, so an unfinished run does not redo it. The marker is written with plain `kv.set`, so two isolates running at once can drop each
+   other's entries; that only costs one extra re-save of the affected key (same value, fresh
+   envelope), so there is no locking. So a key an earlier build
    stores in plain text again (a rollback) is encrypted by the first isolate after rolling
    forward. A conditional write that does not apply although the revision is unchanged (a
    sandboxed bridge's pre-1.0 copy outside the options table) is redone as

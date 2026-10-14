@@ -386,6 +386,9 @@ order of appearance in a deployment's life:
     forward or enter the keys again. Nothing is lost. Keys entered while the old build runs
     are stored plain; after rolling forward, the first cron tick encrypts each of them again
     (the marker records which revisions it encrypted).
+    Rolling back to the earlier (v1) encryption build re-saves every payment key once, and
+    rolling forward again does it once more. Each re-save only rewrites the same value
+    under the current key, so this is harmless.
 
 > **The Stripe webhook endpoint is public by design, and permanently site-owned.**
 > Stripe delivers to `POST /webhooks/stripe` on the site (`sites/staging/src/pages/webhooks/stripe.ts`)
