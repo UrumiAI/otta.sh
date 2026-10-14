@@ -567,6 +567,27 @@ order of appearance in a deployment's life:
 > provider and region settings are gone, and a build-time email URL is ignored. Until an
 > EmDash email provider is selected the store's email waits in the outbox. Configure the
 > sender address and domain records in the provider instead.
+>
+> **Leftover email and x402 keys (delete them by hand).** Earlier builds stored the email
+> API keys and the x402 settings in plugin kv as **plain text**. A one-time cron purge used to
+> delete them; it was removed in issue #455, so a store that never ran it still holds them.
+> Nothing reads them any more. The rows are:
+>
+> - email: `settings:emailApiKey`, `settings:emailApiKeyGen`, `settings:emailSmtp2goApiKey`,
+>   `settings:emailSmtp2goApiKeyGen`;
+> - x402: `settings:x402PayTo`, `settings:x402Accepts`, `settings:x402FacilitatorApiKey`,
+>   `settings:x402FacilitatorApiKeyGen`, `settings:x402FacilitatorSecret`,
+>   `settings:x402FacilitatorSecretGen`.
+>
+> First **revoke** the email API keys (Resend, SMTP2GO) and the x402 facilitator key at the
+> provider: a key copied into a backup or D1 Time Travel stays live until revoked. Then delete
+> the rows. Trusted mode (the default):
+> `wrangler d1 execute YOUR-D1-DATABASE-NAME --remote --config wrangler.local.jsonc --command "DELETE FROM options WHERE name IN ('plugin:otta:settings:emailApiKey', 'plugin:otta:settings:emailApiKeyGen', 'plugin:otta:settings:emailSmtp2goApiKey', 'plugin:otta:settings:emailSmtp2goApiKeyGen', 'plugin:otta:settings:x402PayTo', 'plugin:otta:settings:x402Accepts', 'plugin:otta:settings:x402FacilitatorApiKey', 'plugin:otta:settings:x402FacilitatorApiKeyGen', 'plugin:otta:settings:x402FacilitatorSecret', 'plugin:otta:settings:x402FacilitatorSecretGen')"`.
+> A sandboxed deployment keeps them in `_plugin_storage` instead:
+> `... --command "DELETE FROM _plugin_storage WHERE plugin_id = 'otta' AND collection = '__kv' AND id IN ('settings:emailApiKey', 'settings:emailApiKeyGen', 'settings:emailSmtp2goApiKey', 'settings:emailSmtp2goApiKeyGen', 'settings:x402PayTo', 'settings:x402Accepts', 'settings:x402FacilitatorApiKey', 'settings:x402FacilitatorApiKeyGen', 'settings:x402FacilitatorSecret', 'settings:x402FacilitatorSecretGen')"`.
+> Deleting a row that is not there is a no-op. The purges' own marker rows
+> (`state:legacyEmailSecretsPurged`, `state:legacyX402SettingsPurged`) can be deleted the same
+> way, or left: nothing reads them.
 
 ## 4. Egress and `allowedHosts`
 

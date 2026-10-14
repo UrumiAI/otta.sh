@@ -10,9 +10,12 @@
   code. What stays, because Stripe and the generic paths use it: the rule that an order whose
   `buyerRef` is not an email address has no email recipient (Decision 7), the receipt binding
   in `settleOrder`, and the dormant `"outside"` refund category. A one-time purge deletes the
-  x402 settings earlier builds stored in plugin kv. (Note, 2026-10-14: that purge, and the
-  legacy handling of orders that store `paymentMethod: "x402"`, were removed in issue #455;
-  such an order is now an unknown method and fails closed.)
+  x402 settings earlier builds stored in plugin kv.
+- Note (2026-10-14): that purge, and the legacy handling of orders that store
+  `paymentMethod: "x402"`, were removed in issue #455. Such an order is now an unknown method
+  and fails closed. A store that never ran the purge still holds the x402 keys in plugin kv:
+  revoke the facilitator key and delete the rows by hand (DEPLOYMENT.md §3, "Leftover email
+  and x402 keys").
 - Amended: 2026-10-06. The product owner answered the draft's two open questions (Decisions 5 and
   8), and review rounds 1 and 2 reshaped the flow and the plan. The changes are listed at the end
   of this record.

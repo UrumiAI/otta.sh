@@ -46,7 +46,7 @@ path — so no new write path or crypto is needed.
    reader keep calling `ctx.kv`; EmDash encrypts and decrypts. The Stripe publishable key and
    all other settings are unchanged. The retired email and x402 keys are not included: x402 is
    removed (#437) and email goes through `ctx.email` (ADR-0031); each has its own one-time
-   purge that deletes those stored keys, so they are deleted, not migrated.
+   purge (removed, #455) that deletes those stored keys, so they are deleted, not migrated.
 2. **Re-save stored values, and again when one is rewritten.** The cron tick runs
    `encryptStoredPaymentSecrets`, once per isolate. It first reads ALL three keys
    (`getVersioned`) and writes nothing if any read fails, so a wrong key can never re-encrypt

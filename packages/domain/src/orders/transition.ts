@@ -208,6 +208,8 @@ function refundRouteOf(stored: string): "provider" | "outside" | undefined {
  * OUTSIDE Otta (or there is none). A payment with no `gateway` on file is not
  * taken as outside (fail closed). No current method is `outside`, so today this
  * holds only when nothing was captured.
+ *
+ * DORMANT: no "outside" method exists today. Whoever adds the first one must add tests for it.
  */
 function capturedOnlyOutside(payments: RefundLedgerFacts["payments"]): boolean {
 	return payments.every(
