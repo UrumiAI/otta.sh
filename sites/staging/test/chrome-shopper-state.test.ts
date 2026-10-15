@@ -253,6 +253,10 @@ describe("the shell reads the shopper's state only where it may", () => {
 		expect(shell.match(/readShopperState\(/g)).toHaveLength(1);
 		expect(shell).not.toContain("readCartCount(");
 		expect(shell).not.toContain("signedInEmail(");
+		// No other commerce read in the shell, and never a 503 from it: the one
+		// dispatch is the fail-soft `dispatchOttaRouteOnce` inside lib/chrome-state.ts.
+		expect(shell).not.toMatch(/\bdispatchOttaRoute(Once)?\b/);
+		expect(shell).not.toMatch(/\bmarkBusy\b/);
 	});
 
 	test("the signed-in state reaches the chrome as a boolean — the email never does", () => {

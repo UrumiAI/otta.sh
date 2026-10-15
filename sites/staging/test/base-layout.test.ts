@@ -86,8 +86,7 @@ describe("Storefront shell — contract kept by the rebuild", () => {
  * Neither call has an error channel. `getSiteSettings()` and `getMenu()` both
  * await `getDb()` and a query behind it and reject outright; there is no
  * `{ error }` to inspect the way `getEmDashCollection` provides one. So the only
- * available guard is `try`/`catch`, on both. (The theme lookup is guarded too —
- * see theme-resolve.test.ts.)
+ * available guard is `try`/`catch`, on both.
  */
 describe("Storefront shell — a dead content store costs the chrome, not the response", () => {
 	test.each([

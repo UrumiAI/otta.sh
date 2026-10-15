@@ -329,6 +329,8 @@ so nothing is migrated.
   them.
 - **Consequence "one extra D1 read per storefront request"** no longer applies: the shell reads no
   options row for the theme.
+- **Consequence "every later theme PR brings its own set via `?theme=`"** no longer applies: there
+  are no later themes and no `?theme=` override.
 - **A stored `settings:storeTheme` is ignored.** Nothing in this repo wrote it since 2026-10-02.
   DEPLOYMENT.md §3, "Leftover theme key", gives the row name; deleting it is optional.
 - **Kept, unchanged:** the contract, the manifest, the registry, the shell, the Tempered fallback

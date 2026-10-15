@@ -137,6 +137,7 @@ export const onRequest = defineMiddleware(async (context, next) => {
 	const hasCart = (cookies.get(CART_COOKIE_NAME)?.value ?? "").length > 0;
 	const hasSession = (cookies.get(SESSION_COOKIE_NAME)?.value ?? "").length > 0;
 	if (!hasCart && !hasSession) return next();
+	// Constant for Tempered today (it sets shopperState); kept as a guard.
 	const drawsShopper = themeFor(DEFAULT_THEME_ID).chrome?.shopperState === true;
 	if (!drawsShopper) return next();
 	skipRouteCache(context);

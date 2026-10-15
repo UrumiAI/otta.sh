@@ -275,8 +275,7 @@ export interface CartLineModel {
 	/**
 	 * The product's own page (`lib/products.ts`'s `productPath`), or `null` when
 	 * this store cannot name the line — for a view that links a line back to its
-	 * object (e.g. a bag whose picture carries the product's view-transition
-	 * name back to the product page).
+	 * product page.
 	 */
 	href: string | null;
 	/** The line total, or its honest prose ("Priced at checkout"). */
