@@ -1,6 +1,7 @@
 // `orderStateCell` is imported from the shared presentation package directly:
 // it used to be re-exported by `orders-page.ts`, which ADR-0015 retires.
 import { orderStateCell } from "@otta-sh/admin-presentation";
+import { DEFAULT_OPERATIONAL_SETTINGS } from "@otta-sh/domain";
 import { formatMoney } from "../presentation/format-money.js";
 import { type Currency, cents as toCents, currency as toCurrency } from "../presentation/money.js";
 import type {
@@ -68,9 +69,7 @@ const MAX_STATS_ITEMS = 4;
 
 /**
  * The order states the SERVICE counts as revenue (`REVENUE_COUNTING_STATES` in
- * the domain's reporting port: payment confirmed and not reversed). Mirrored
- * here — like every other wire fact this package uses — because the plugin
- * never imports `@otta-sh/domain`.
+ * the domain's reporting port: payment confirmed and not reversed).
  *
  * Used for ONE thing: the denominator of the average-order-value tile, so AOV
  * divides revenue by the orders that actually produced it rather than by every
@@ -333,16 +332,18 @@ export function createReportsPageHandler(): RouteHandler<ReportsPageInput> {
 			// escape into the host — the one in-process failure this page's fail-closed
 			// promise did not actually keep.
 			const { reporting: client } = await makeAdminClients(ctx);
+			const settingsRead = client.getSettings().catch(() => undefined);
 			const [revenue, statuses, top, low, settings] = await Promise.all([
 				client.getRevenue(range, interval),
 				client.getOrdersByStatus(range),
 				client.getTopProducts(range, "revenue", 10),
-				client.getLowStock(),
-				// The low-stock THRESHOLD is a label, not a figure: a settings read
-				// that fails must not take the whole screen down with it, so this one
-				// read degrades to an unlabelled "Low stock (3)" instead of joining
-				// the fail-closed set above.
-				client.getSettings().catch(() => undefined),
+				// An explicit threshold avoids a second settings read inside the report.
+				settingsRead.then((savedSettings) =>
+					client.getLowStock(
+						savedSettings?.lowStockThreshold ?? DEFAULT_OPERATIONAL_SETTINGS.lowStockThreshold,
+					),
+				),
+				settingsRead,
 			]);
 			return buildReportsBlocks({
 				displayName,
