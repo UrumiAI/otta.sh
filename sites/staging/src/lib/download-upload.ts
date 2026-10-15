@@ -243,8 +243,14 @@ export async function lookupProduct(
 	// Likewise a value that is neither a descriptor nor `null` (a bare string, a
 	// number) is a failed read, never "no file".
 	if (asset !== null && typeof asset !== "object") return { kind: "failed" };
-	const assetKey = asset === null ? null : (asset as Record<string, unknown>)["key"];
-	if (assetKey !== null && typeof assetKey !== "string") return { kind: "failed" };
+	// And a descriptor must carry a string key: one whose key is `null`, absent
+	// or anything else (a version-skewed answer) is a failed read, never "no file".
+	let assetKey: string | null = null;
+	if (asset !== null) {
+		const key = (asset as Record<string, unknown>)["key"];
+		if (typeof key !== "string") return { kind: "failed" };
+		assetKey = key;
+	}
 	return {
 		kind: "found",
 		productId: row["productId"],
