@@ -302,6 +302,98 @@ describe("the order emails", () => {
 	});
 });
 
+describe("#502: the order emails read the live option only for an order that recorded none", () => {
+	/** `h.ctx` with `ctx.email` and its settings collection's `get` counted —
+	 *  or failing, when `failing` is set. */
+	function countedCtx(failing = false) {
+		const counter = { settingsReads: 0 };
+		const storage = h.ctx.storage as unknown as Record<string, Record<string, unknown>>;
+		const settings = storage["settings"];
+		if (settings === undefined) throw new Error("no settings collection");
+		const countedSettings = new Proxy(settings, {
+			get(target, prop, receiver) {
+				const value: unknown = Reflect.get(target, prop, receiver);
+				if (prop !== "get" || typeof value !== "function") return value;
+				return (...args: unknown[]) => {
+					counter.settingsReads++;
+					if (failing) return Promise.reject(new Error("settings unreadable"));
+					return (value as (...a: unknown[]) => unknown).apply(target, args);
+				};
+			},
+		});
+		const sent: Array<{ text: string }> = [];
+		const ctx = {
+			...h.ctx,
+			storage: new Proxy(storage, {
+				get: (target, prop, receiver) =>
+					prop === "settings" ? countedSettings : Reflect.get(target, prop, receiver),
+			}),
+			email: {
+				async send(message: { text: string }) {
+					sent.push(message);
+				},
+			},
+		} as unknown as PluginContext;
+		return { ctx, counter, sent };
+	}
+
+	async function sendFor(
+		sender: Awaited<ReturnType<typeof makeEmailSender>>,
+		id: string,
+	): Promise<void> {
+		const order = await h.stores.orderStore.getById(id as never);
+		if (order === null) throw new Error("no order");
+		const { buildOrderEmailData } = await import("@otta-sh/domain");
+		await sender?.send({
+			to: toEmail("ada@example.com"),
+			template: "order-confirmation" as EmailTemplate,
+			data: buildOrderEmailData(order, "paid"),
+			idempotencyKey: `row-${id}`,
+		});
+	}
+
+	test("building the sender reads nothing; an order that recorded its display never triggers the read", async () => {
+		const recorded = await placeOrder("lazy-recorded");
+		const { ctx, counter, sent } = countedCtx();
+		const sender = await makeEmailSender(ctx);
+		expect(counter.settingsReads).toBe(0);
+		await sendFor(sender, recorded);
+		await sendFor(sender, recorded);
+		expect(counter.settingsReads).toBe(0);
+		expect(sent).toHaveLength(2);
+		expect(sent[0]?.text).toMatch(/^GST 18%: \$18\.00$/m);
+	});
+
+	test("an order with nothing recorded reads the live option — once per sender", async () => {
+		const first = await placeOrder("lazy-unrecorded-1");
+		const second = await placeOrder("lazy-unrecorded-2");
+		await stripRecordedDisplay(first);
+		await stripRecordedDisplay(second);
+		await saveTax({ totalsDisplay: "single" }, "tax-single");
+		const { ctx, counter, sent } = countedCtx();
+		const sender = await makeEmailSender(ctx);
+		await Promise.all([sendFor(sender, first), sendFor(sender, second)]);
+		await sendFor(sender, first);
+		expect(counter.settingsReads).toBe(1);
+		expect(sent).toHaveLength(3);
+		for (const message of sent) {
+			expect(message.text).toContain("Tax: $20.50");
+			expect(message.text).not.toContain("GST 18%");
+		}
+	});
+
+	test("an unreadable option still sends, with the single Tax row (fail-soft, as before)", async () => {
+		const id = await placeOrder("lazy-unreadable");
+		await stripRecordedDisplay(id);
+		const { ctx, counter, sent } = countedCtx(true);
+		const sender = await makeEmailSender(ctx);
+		await sendFor(sender, id);
+		expect(counter.settingsReads).toBe(1);
+		expect(sent[0]?.text).toContain("Tax: $20.50");
+		expect(sent[0]?.text).not.toContain("GST 18%");
+	});
+});
+
 describe("the admin order detail", () => {
 	test("always itemized — even when the buyer's surfaces show a single row", async () => {
 		const id = await placeOrder("admin");
