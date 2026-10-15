@@ -728,6 +728,41 @@ describe("each refund refusal names the field it is about", () => {
 		expect(checkRefundInput("0.01", "ops", 4500, "USD")).toEqual({ ok: true, amountCents: 1 });
 	});
 
+	test("a MANUAL three-decimal refund with no provider capture takes any minor-unit amount (#447)", () => {
+		const manual = { refundAutomatic: false, providerCaptured: false };
+		expect(checkRefundInput("1.234", "ops", 5000, "KWD", manual)).toEqual({
+			ok: true,
+			amountCents: 1234,
+		});
+		// The ceiling still binds a manual refund.
+		const over = checkRefundInput("99.999", "ops", 5000, "KWD", manual);
+		expect(over.ok).toBe(false);
+	});
+
+	test("a MANUAL three-decimal refund on an order the provider captured keeps the 0.010 step — the rest may go back through it later (#447 review)", () => {
+		const refused = {
+			ok: false,
+			refusal: { message: refundIncrementText("KWD"), field: "amount" },
+		};
+		expect(
+			checkRefundInput("1.234", "ops", 5000, "KWD", {
+				refundAutomatic: false,
+				providerCaptured: true,
+			}),
+		).toEqual(refused);
+		// Unknown (an older plugin sends no flag) keeps the step: fail closed.
+		expect(checkRefundInput("1.234", "ops", 5000, "KWD", { refundAutomatic: false })).toEqual(
+			refused,
+		);
+		// The exact remainder still passes.
+		expect(
+			checkRefundInput("5.000", "ops", 5000, "KWD", {
+				refundAutomatic: false,
+				providerCaptured: true,
+			}),
+		).toEqual({ ok: true, amountCents: 5000 });
+	});
+
 	test("a blank `refunded by` is not refused — the server records the signed-in operator (QA round 2)", () => {
 		const check = checkRefundInput("19.99", "   ", 4500, "USD");
 		expect(check).toEqual({ ok: true, amountCents: 1999 });

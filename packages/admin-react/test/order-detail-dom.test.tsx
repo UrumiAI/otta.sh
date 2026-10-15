@@ -44,6 +44,7 @@ const {
 	orderStateCell,
 	refundCapabilityText,
 	refundConfirmText,
+	refundIncrementText,
 } = await import("@otta-sh/admin-presentation");
 type DetailPayload = import("../src/console-api.js").DetailPayload;
 type RefundsSummary = import("../src/console-api.js").RefundsSummary;
@@ -1002,6 +1003,66 @@ test("the refund confirm sends the FINALIZED total as its watermark", async () =
 	expect((sent?.["value"] as Record<string, string> | undefined)?.["refundedSoFarCents"]).toBe(
 		String(FINALIZED_CENTS),
 	);
+});
+
+// ── #447: the refund form hands the wire's flags to its pre-check ──────────────
+
+/** A KWD order captured whole (5.000), nothing refunded yet, through a gateway
+ *  that cannot refund right now: every refund here is a MANUAL one. */
+function kwdManual(providerCaptured: boolean | undefined): DetailPayload {
+	const payload = kwdDetail(undefined);
+	return {
+		...payload,
+		refunds: {
+			refunds: [],
+			currency: "KWD",
+			capturedTotalCents: 5000,
+			refundedTotalCents: 0,
+			ceilingCents: 5000,
+			remainingCents: 5000,
+			paymentMethod: "card",
+			refundable: false,
+			...(providerCaptured === undefined ? {} : { providerCaptured }),
+		},
+	};
+}
+
+async function typeInto(field: HTMLInputElement, value: string): Promise<void> {
+	await React.act(async () => {
+		Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set?.call(field, value);
+		field.dispatchEvent(new Event("input", { bubbles: true }));
+	});
+}
+
+/** Type `amount` into the partial-refund form and submit it; the pre-check's
+ *  inline refusal, or null when it let the amount through. */
+async function submitPartialRefund(payload: DetailPayload, amount: string): Promise<string | null> {
+	const view = await show(payload);
+	await fire(tab(view, "money"), "click");
+	await typeInto(one<HTMLInputElement>(view, '[data-testid="refund-amount"]'), amount);
+	await fire(one<HTMLButtonElement>(view, '[data-testid="refund-partial-submit"]'), "click");
+	return view.container.querySelector('[data-testid="refund-amount-error"]')?.textContent ?? null;
+}
+
+test("a manual KWD refund on an order the provider captured keeps the 0.010 step — the form passes providerCaptured", async () => {
+	const refusal = await submitPartialRefund(kwdManual(true), "1.234");
+	expect(refusal).toBe(refundIncrementText("KWD"));
+});
+
+test("a plugin that sends no providerCaptured keeps the step too (fail closed)", async () => {
+	expect(await submitPartialRefund(kwdManual(undefined), "1.234")).toBe(refundIncrementText("KWD"));
+});
+
+test("a manual KWD refund with no provider capture takes any minor-unit amount — the form passes refundable and providerCaptured", async () => {
+	expect(await submitPartialRefund(kwdManual(false), "1.234")).toBeNull();
+	// The same order through a gateway that CAN refund keeps the step: the form
+	// passes `refundable` too.
+	const gateway = kwdManual(false);
+	const refundable: DetailPayload = {
+		...gateway,
+		refunds: { ...(gateway.refunds as RefundsSummary), refundable: true },
+	};
+	expect(await submitPartialRefund(refundable, "1.234")).toBe(refundIncrementText("KWD"));
 });
 
 // ── T1-3 / T1-6: the status buttons are the server's, and Mark refunded is bookkeeping ──

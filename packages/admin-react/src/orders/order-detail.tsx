@@ -172,6 +172,16 @@ export function checkRefundInput(
 	_refundedBy: string,
 	remainingCents: number,
 	currency: string,
+	/** `refundAutomatic` is the gateway's honest `refundable` (default true): true ⇒
+	 *  the money goes back through the provider, so the currency's payment step
+	 *  applies. `providerCaptured` (default true) is the server's word that a
+	 *  current provider captured this order: a MANUAL refund keeps the step then
+	 *  too, because the rest may go back through that provider later. Only a
+	 *  manual refund with no provider capture takes any minor-unit amount (#447). */
+	{
+		refundAutomatic = true,
+		providerCaptured = true,
+	}: { refundAutomatic?: boolean; providerCaptured?: boolean } = {},
 ): RefundCheck {
 	// In the ORDER's currency: a JPY refund of "1500" is 1500 yen, never 150000.
 	const parsed = parseMinorUnitsInput(amountInput, currency, { allowZero: false });
@@ -201,8 +211,12 @@ export function checkRefundInput(
 	}
 	// ADR-0035's amendment, AFTER the ceiling (an amount that is too high is told
 	// so first): KWD, BHD, OMR and JOD are paid back in steps of 0.010, or the
-	// whole remainder. The domain refuses the same (`AMOUNT_NOT_PAYMENT_INCREMENT`).
-	if (!isRefundableIncrement(parsed, remainingCents, currency)) {
+	// whole remainder — through the gateway, or manually on an order the provider
+	// captured. The domain refuses the same (`AMOUNT_NOT_PAYMENT_INCREMENT`).
+	if (
+		(refundAutomatic || providerCaptured) &&
+		!isRefundableIncrement(parsed, remainingCents, currency)
+	) {
 		return { ok: false, refusal: { message: refundIncrementText(currency), field: "amount" } };
 	}
 	return { ok: true, amountCents: parsed };
@@ -850,6 +864,11 @@ export function RefundsPanel({
 												refundedBy,
 												refunds.remainingCents,
 												cur,
+												{
+													refundAutomatic: refunds.refundable,
+													// Absent from an older plugin ⇒ keep the step.
+													providerCaptured: refunds.providerCaptured ?? true,
+												},
 											);
 											if (!checked.ok) {
 												// A refusal that leaves focus where it was makes the

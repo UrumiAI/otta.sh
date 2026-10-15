@@ -231,6 +231,9 @@ describe("makeAdminClients wires the payment gateways into admin refunds", () =>
 			paymentMethod: "x402",
 			legacyPaymentMethod: true,
 			remainingCents: 1500,
+			// No current provider captured it, so a manual refund skips the
+			// currency's payment step (#447).
+			providerCaptured: false,
 		});
 		expect(
 			await orders.refundOrder(
@@ -326,6 +329,7 @@ describe("makeAdminClients wires the payment gateways into admin refunds", () =>
 			paymentMethod: "x402",
 			refundable: true,
 			legacyPaymentMethod: false,
+			providerCaptured: true,
 		});
 		expect(
 			await orders.refundOrder(
@@ -347,6 +351,8 @@ describe("makeAdminClients wires the payment gateways into admin refunds", () =>
 		expect(await orders.getRefunds(id)).toMatchObject({
 			refundable: false,
 			legacyPaymentMethod: false,
+			// Stripe captured it: a manual refund would keep the payment step (#447).
+			providerCaptured: true,
 		});
 		expect(
 			await orders.refundOrder(

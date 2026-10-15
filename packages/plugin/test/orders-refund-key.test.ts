@@ -101,6 +101,7 @@ function recorder(): Recorder {
 				paymentMethod: "stripe",
 				refundable: true,
 				legacyPaymentMethod: false,
+				providerCaptured: true,
 			});
 		},
 		refundOrder: (

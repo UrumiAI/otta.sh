@@ -192,6 +192,9 @@ export interface RefundsSummary {
 	/** The order's method is one Otta no longer supports: refunds are record-only
 	 *  for good. Absent from an older plugin ⇒ false. */
 	readonly legacyPaymentMethod?: boolean;
+	/** A current provider captured this order's money, so a manual refund keeps
+	 *  the currency's payment step (#447). Absent from an older plugin ⇒ true. */
+	readonly providerCaptured?: boolean;
 }
 
 export interface TimelineEntry {

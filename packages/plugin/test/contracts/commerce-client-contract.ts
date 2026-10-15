@@ -3989,6 +3989,8 @@ export function adminOrdersProductsClientContract(tier: CommerceClientTier): voi
 				// neither state is faked here.
 				refundable: tier.payments !== undefined,
 				legacyPaymentMethod: false,
+				// Nothing was captured, so no provider can be asked for the rest later.
+				providerCaptured: false,
 			});
 
 			expect(await orders.getRefunds("adm-o-missing")).toBeNull();
