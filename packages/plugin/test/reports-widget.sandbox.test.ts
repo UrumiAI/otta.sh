@@ -73,13 +73,6 @@ import { storageBridge } from "./sandbox/storage-bridge.js";
 // amount nobody reported. The claim never needed a transport, so it is now a
 // direct unit test over the exported `buildReportsBlocks`:
 // `test/reports-refunded-fallback.test.ts`.
-//
-// ONE CASE IS PARKED AS A `test.todo`, NOT INVERTED. "A failed settings read
-// degrades the low-stock label instead of taking the screen down" stopped being
-// true at INC-D3a — see the todo below for the mechanism. It was briefly
-// rewritten to assert the NEW behaviour, which would have pinned a regression as
-// the spec; the property is stated as a todo instead, so the next person to fix
-// the degradation finds a claim to satisfy rather than a passing test to delete.
 
 /** Every seeded id is suffixed: the document store is shared by every sandbox
  *  suite in this process (see `sandbox/storage-bridge.ts`), and `lowStock`
@@ -228,12 +221,6 @@ function reports(
 
 beforeAll(async () => {
 	({ storage } = await storageBridge());
-	// The low-stock THRESHOLD is read from the settings store (the in-process
-	// client defaults it from there when the page passes none, and the page
-	// passes none), so a settings document a sibling suite left behind would
-	// silently redefine which rows are "low". Cleared once: every case here
-	// wants the domain default of 5.
-	await collection(SETTINGS_COLLECTION).delete(SETTINGS_DOC_ID);
 	// NO allowed hosts. This screen makes no request at all now, and an empty
 	// allowlist is what says so on every case at once.
 	sandbox = await loadPluginInSandbox({ allowedHosts: [], storage: true });
@@ -244,6 +231,7 @@ afterAll(async () => {
 });
 
 beforeEach(async () => {
+	await collection(SETTINGS_COLLECTION).delete(SETTINGS_DOC_ID);
 	await wipe(REPORTING_DAILY_COLLECTION);
 	await wipe(ORDERS_COLLECTION);
 	await wipe(INVENTORY_COLLECTION);
@@ -833,30 +821,65 @@ describe("Reports admin page (workerd sandbox)", () => {
 		expect(String(group(blocks, "reports:revenue")?.label)).toBe("Revenue by day");
 	});
 
-	// PARKED, NOT PASSING, AND DELIBERATELY NOT ASSERTED THE OTHER WAY.
-	//
-	// This slot used to hold "a failed settings read degrades the low-stock label
-	// instead of taking the screen down": the E-1 property that a COSMETIC read —
-	// the threshold that turns "Low stock (1)" into "Low stock (1) — at or below
-	// 5" — can never cost the operator the four reports. The page still asks for
-	// settings with a `.catch(() => undefined)` precisely so that it cannot.
-	//
-	// INC-D3a broke that property. In process the low-stock REPORT reads the
-	// settings store too (the client defaults its threshold from `SettingsStore`
-	// when the caller passes none, and this page passes none), so a settings-store
-	// fault fails `getLowStock()` as well, that rejection is inside the page's
-	// `Promise.all`, and the whole screen fails closed. The `getSettings()` catch
-	// is now cover for a failure mode that cannot occur alone.
-	//
-	// The case was briefly rewritten to ASSERT the new behaviour — a green test
-	// stating that one unreadable label takes four reports with it. That pins a
-	// regression as the spec: the next person to fix the degradation would have had
-	// to delete a passing test to do it, and every reader in between would have
-	// read the fail-closed screen as intended. So the property is stated as the
-	// TODO it is, and stays red-by-absence until the page passes an explicit
-	// threshold into `getLowStock()` (or the client stops defaulting from the same
-	// store) and the E-1 claim can be made honestly again.
-	test.todo("settings-read failure should degrade only the low-stock label, not the whole screen — see issue #287", () => {});
+	test("a failed settings read degrades only the low-stock label (#287)", async () => {
+		await seedStandardRange();
+		await seedStock(`SKU-B-${SFX}`, 5);
+		await seedStock(`SKU-C-${SFX}`, 6);
+		const settings = collection(SETTINGS_COLLECTION);
+		const get = settings.get;
+		settings.get = async () => {
+			throw new Error("injected settings read failure");
+		};
+		try {
+			const blocks = blocksOf(await reports(RANGE));
+			assertBlockContract(blocks, { screen: "reports", level: "list" });
+			expect(findBlocks(blocks, "table")).toHaveLength(4);
+			expect(statItems(blocks)[0]?.value).toBe("$85.00");
+			expect(rowsOf(blocks, "reports:statuses-table")).toEqual([{ status: "paid", orderCount: 3 }]);
+			expect(rowsOf(blocks, "reports:top-table")).toEqual([
+				{ titleSnapshot: "Gadget", qtySold: 4, revenue: "$40.00" },
+			]);
+			expect(rowsOf(blocks, "reports:low-table").map((row) => row.sku)).toEqual([
+				`SKU-A-${SFX}`,
+				`SKU-B-${SFX}`,
+			]);
+			expect(group(blocks, "reports:low")?.label).toBe("Low stock (2)");
+			expect(findBlocks(blocks, "banner")).toHaveLength(0);
+		} finally {
+			settings.get = get;
+		}
+	});
+
+	test.each([0, 8])("low-stock rows and label use the saved threshold %i", async (threshold) => {
+		await collection(SETTINGS_COLLECTION).put(SETTINGS_DOC_ID, {
+			holdTtlMinutes: 15,
+			lowStockThreshold: threshold,
+		});
+		await seedStock(`SKU-A-${SFX}`, threshold);
+		await seedStock(`SKU-B-${SFX}`, threshold + 1);
+
+		const blocks = blocksOf(await reports(RANGE));
+		expect(rowsOf(blocks, "reports:low-table").map((row) => row.sku)).toEqual([`SKU-A-${SFX}`]);
+		expect(group(blocks, "reports:low")?.label).toBe(`Low stock (1) — at or below ${threshold}`);
+	});
+
+	test("a low-stock query failure still fails the reports page closed", async () => {
+		await seedStandardRange();
+		const inventory = collection(INVENTORY_COLLECTION);
+		const query = inventory.query;
+		inventory.query = async () => {
+			throw new Error("injected inventory query failure");
+		};
+		try {
+			const blocks = blocksOf(await reports(RANGE));
+			expect(findBlocks(blocks, "table")).toHaveLength(0);
+			expect(findBlocks(blocks, "banner").find((b) => b.variant === "error")?.title).toBe(
+				"Reports are unavailable",
+			);
+		} finally {
+			inventory.query = query;
+		}
+	});
 
 	test("low-stock rows render Title, then SKU, then On hand — the SKU→title map operators used to keep in their head", async () => {
 		await seedStock(`SKU-A-${SFX}`, 0, "Aluminum Water Bottle");
