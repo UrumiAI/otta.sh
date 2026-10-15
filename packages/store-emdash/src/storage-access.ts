@@ -29,6 +29,7 @@ import type {
 	ConditionalDeleteResult,
 	ConditionalWriteResult,
 	NumericDelta,
+	PluginContext,
 	StorageCollection as HostStorageCollection,
 	UpdateIfArgs,
 	UpdateIfResult,
@@ -48,6 +49,9 @@ export type {
  * string, valid only for the id it was read from.
  */
 export type Versioned<T> = VersionedValue<T>;
+
+/** The host's cron API, derived because EmDash does not export it by name. */
+export type HostCronAccess = NonNullable<PluginContext["cron"]>;
 
 /**
  * The host's `where` algebra: field → scalar, range, `in` set, or prefix. It is

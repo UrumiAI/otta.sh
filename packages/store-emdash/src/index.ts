@@ -272,6 +272,7 @@ export {
 	isStorageSerializationError,
 	type ConditionalDeleteResult,
 	type ConditionalWriteResult,
+	type HostCronAccess,
 	type NumericDelta,
 	type OrderBy,
 	type QueryOptions,
