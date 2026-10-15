@@ -44,9 +44,9 @@ export interface EmailRenderContext {
 	/**
 	 * The store's "Display tax totals" (ADR-0032, issue #422): `itemized` shows the
 	 * order's `taxRows` — one row per tax, as the order page does — in place of the
-	 * single Tax row. Anything else, or absent, keeps the single row. The live
-	 * option: the display the order was placed under (the data's
-	 * `taxTotalsDisplay`, #478) wins whenever the data carries one.
+	 * single Tax row. Anything else, or absent, keeps the single row. This is
+	 * the store's live option. The order's recorded `taxTotalsDisplay` (#478), when
+	 * present, wins.
 	 */
 	taxTotalsDisplay?: TaxTotalsDisplay | undefined;
 }
