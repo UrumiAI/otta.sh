@@ -407,14 +407,7 @@ export {
 	type TransitionOrderDeps,
 	type TransitionOrderResult,
 } from "./orders/transition.js";
-export {
-	capturedOnlyThroughLegacy,
-	gatewayForStored,
-	isCurrentPaymentMethod,
-	isLegacyPaymentMethod,
-	LEGACY_PAYMENT_METHODS,
-	type LegacyMethodFacts,
-} from "./orders/payment-methods.js";
+export { gatewayForStored, isCurrentPaymentMethod } from "./orders/payment-methods.js";
 export {
 	resolveUnverifiedRefund,
 	type ResolveFollowUp,

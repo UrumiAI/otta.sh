@@ -6,6 +6,9 @@
   `paymentMethod: "x402"`, named in the domain's `LEGACY_PAYMENT_METHODS`) are the only live case of a
   method that is record-only for good: the admin client gives them a record-only stand-in gateway
   (`refundable: false`), and an unknown stored method still answers `409 REFUND_GATEWAY_UNAVAILABLE`.
+- Note (2026-10-14): the legacy x402 handling above was removed (issue #455). An order that stores
+  `paymentMethod: "x402"` is now an unknown method: no stand-in gateway, so a refund answers
+  `409 REFUND_GATEWAY_UNAVAILABLE` and a paid one cannot be cancelled with a refund.
 - Status: accepted — second-expert concurrence **with conditions**, all three incorporated in the
   2026-07-23 amendment: (1) refund-time provider pre-flight (never issue blind), (2) ceiling bound
   to `min(Σ captured, total)`, (3) the Stripe-stub → first-live-API reality stated and scoped

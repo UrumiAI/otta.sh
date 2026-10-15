@@ -66,12 +66,9 @@
  * says so (`replayed`), and this module reports "already applied", never a
  * fresh movement: see {@link replayedNotice}.
  *
- * A CALLER WITHOUT A NONCE (a tab rendered by the previous release) keeps the
- * F-2a key for one release, so its double-submit still dedupes, and is made
- * HONEST rather than correct: a removal's watermark refuses a stale count, and
- * an answer the store marks as a ledger replay is reported as "this submit
- * changed nothing", never as done. See {@link replayedNotice}. Remove the
- * fallback, and make the nonce mandatory, in the release after this one.
+ * THE NONCE IS MANDATORY. A movement without one (or with a malformed one) is
+ * refused as unreadable and nothing moves; the one-release F-2a fallback for a
+ * caller that sent none was removed (#455).
  *
  * EVERY FIELD ARRIVING HERE IS UNTRUSTED operator-round-tripped input, exactly
  * as a decoded carrier was: closed sets are re-checked, watermarks are
@@ -745,35 +742,28 @@ function editOutcome(
  *  to admit any opaque id of comparable entropy. */
 const NONCE_PATTERN = /^[A-Za-z0-9-]{16,64}$/;
 
-type ReadNonce = { kind: "absent" } | { kind: "ok"; value: string } | { kind: "bad" };
-
-/** Read the per-click nonce. ABSENT selects the one-release legacy key; PRESENT
- *  but malformed refuses — falling back to the legacy key would quietly reopen
- *  the replay-collision this nonce exists to close. */
-function readNonce(value: unknown): ReadNonce {
+/** Read the per-click nonce, or `undefined` when it is ABSENT or malformed —
+ *  both refuse. The one-release content-derived fallback for a caller that sent
+ *  none was removed (#455): every caller (the console, the demo seed) sends one. */
+function readNonce(value: unknown): string | undefined {
 	const raw = readString(value);
-	if (raw === undefined) return { kind: "absent" };
-	return NONCE_PATTERN.test(raw) ? { kind: "ok", value: raw } : { kind: "bad" };
+	return raw !== undefined && NONCE_PATTERN.test(raw) ? raw : undefined;
 }
 
-/** The movement's idempotency key: per-intent when the caller sent a nonce, and
- *  F-2a's content-derived key otherwise (the legacy fallback, one release). The
- *  `nonce:` segment keeps the two shapes from ever colliding. */
+/** The movement's idempotency key: per intent, from the caller's nonce. The
+ *  `nonce:` segment keeps it apart from the content-derived keys an earlier
+ *  release wrote to the ledger. */
 function stockMovementKey(
 	productId: string,
 	direction: "restock" | "removal",
-	onHand: number,
-	qty: number,
-	nonce: string | undefined,
+	nonce: string,
 ): string {
-	return nonce === undefined
-		? `${productId}:${direction}:${onHand}:${qty}`
-		: `${productId}:${direction}:nonce:${nonce}`;
+	return `${productId}:${direction}:nonce:${nonce}`;
 }
 
 /** What one movement needs, read and checked off the payload. */
 type MovementInput =
-	| { ok: true; productId: string; onHand: number; qty: number; nonce: string | undefined }
+	| { ok: true; productId: string; onHand: number; qty: number; nonce: string }
 	| { ok: false; notice: Notice };
 
 /**
@@ -789,13 +779,11 @@ function readMovement(
 	direction: "restock" | "removal",
 ): MovementInput {
 	const productId = readString(payload["productId"]);
-	// TODO(next release, with the legacy fallback): a restock with a nonce needs
-	// no `onHand` — it is unpinned, and the count is only the legacy key's
-	// component. Drop the restock requirement when `stockMovementKey`'s content
-	// branch goes; a removal keeps it, as its watermark.
+	// A restock does not use `onHand` (it is unpinned) but still requires it, as
+	// every caller sends it; a removal keeps it as its watermark.
 	const onHand = parseOnHand(payload["onHand"]);
 	const nonce = readNonce(payload["nonce"]);
-	if (productId === undefined || onHand === null || nonce.kind === "bad") {
+	if (productId === undefined || onHand === null || nonce === undefined) {
 		return { ok: false, notice: UNREADABLE };
 	}
 	const qty = parseStockQty(readString(payload["qty"]));
@@ -810,7 +798,7 @@ function readMovement(
 		productId,
 		onHand,
 		qty,
-		nonce: nonce.kind === "ok" ? nonce.value : undefined,
+		nonce,
 	};
 }
 
@@ -820,32 +808,12 @@ function readMovement(
  * the units, and this one moved nothing. Reporting it as a fresh "Added 8" is
  * the same lie the original bug told.
  *
- * WITH A NONCE the replay is this decision's own retry (a lost response, then
- * the console's explicit Retry), so it is "already applied", with the count
- * RE-READ now — the recorded one is the count that earlier call produced, and
- * the shelf may have moved since.
- *
- * WITHOUT ONE (the legacy key, one release), a replay is EITHER a double-submit
- * OR a different later move of the same shape that derived an earlier one's key
- * (Add 2, Remove 2, Add 2), and nothing — not even the live count, which a sale
- * can move either way — tells the two apart reliably. So it says only what is
- * certain: this submit changed nothing. "Reload" is the way out, not a figure of
- * speech: a reload fetches the console that sends a nonce, while retrying in the
- * old tab re-derives the very same key.
+ * The key is per-click, so the replay is this decision's own retry (a lost
+ * response, then the console's explicit Retry): "already applied", with the
+ * count RE-READ now — the recorded one is the count that earlier call produced,
+ * and the shelf may have moved since.
  */
-async function replayedNotice(
-	client: AdminProductsSurface,
-	productId: string,
-	nonce: string | undefined,
-): Promise<Notice> {
-	if (nonce === undefined) {
-		return {
-			variant: "error",
-			title: "Nothing changed",
-			description:
-				"This submit changed nothing — an identical earlier change was already applied; if you meant a second change, reload and try again.",
-		};
-	}
+async function replayedNotice(client: AdminProductsSurface, productId: string): Promise<Notice> {
 	const live = await client.getProduct(productId).catch(() => null);
 	const liveOnHand = live === null ? null : live.onHand;
 	return {
@@ -865,17 +833,16 @@ async function replayedNotice(
  * 10 — two clicks, two decisions, two nonces — and an honest "Add 10" is never
  * refused because a shopper checked out meanwhile. Lost-response safety is the
  * nonce's job: the console re-sends the SAME nonce until it gets an answer.
- * `onHand` is still read (and still required) because it is the legacy key's
- * component for a caller that sends no nonce.
+ * `onHand` is still read and required, though nothing judges a restock by it.
  */
 const restockAction: ProductsAction = async (client, payload) => {
 	const input = readMovement(payload, "restock");
 	if (!input.ok) return applied(input.notice);
-	const { productId, onHand, qty, nonce } = input;
-	const key = stockMovementKey(productId, "restock", onHand, qty, nonce);
+	const { productId, qty, nonce } = input;
+	const key = stockMovementKey(productId, "restock", nonce);
 	const result = await client.restock(productId, qty, key);
 	if (result.ok && result.replayed === true) {
-		return { ...applied(await replayedNotice(client, productId, nonce)), replayed: true };
+		return { ...applied(await replayedNotice(client, productId)), replayed: true };
 	}
 	return applied(restockNotice(result, qty));
 };
@@ -927,10 +894,10 @@ const removeStockAction: ProductsAction = async (client, payload) => {
 	const input = readMovement(payload, "removal");
 	if (!input.ok) return applied(input.notice);
 	const { productId, onHand, qty, nonce } = input;
-	const key = stockMovementKey(productId, "removal", onHand, qty, nonce);
+	const key = stockMovementKey(productId, "removal", nonce);
 	const result = await client.removeStock(productId, qty, key, onHand);
 	if (result.ok && result.replayed === true) {
-		return { ...applied(await replayedNotice(client, productId, nonce)), replayed: true };
+		return { ...applied(await replayedNotice(client, productId)), replayed: true };
 	}
 	return applied(removeStockNotice(result, qty));
 };

@@ -268,7 +268,7 @@ describe("createOrderFromCart", () => {
 		expect(replay.ok && replay.order.id).toBe(first.order.id);
 	});
 
-	test("a same-key replay of an order stored under ANOTHER method (a legacy x402 order) is refused, and no intent is minted", async () => {
+	test("a same-key replay of an order stored under ANOTHER method (x402, now unknown) is refused, and no intent is minted", async () => {
 		await h.seedDigital({ productId: "d1", sku: "DIG-1", priceCents: 900, title: "Ebook" });
 		const cartId = await h.cartWith([{ sku: "DIG-1", productId: "d1", qty: 1, kind: "digital" }]);
 		const usd = (await h.cartStore.get(cartId))!.currency;
@@ -289,7 +289,7 @@ describe("createOrderFromCart", () => {
 		expect(h.stripeGw.intentCalls).toEqual([]);
 	});
 
-	test("a same-key replay of a PAID legacy x402 order replays as before: the order, and no intent", async () => {
+	test("a same-key replay of a PAID x402 order (now an unknown method) replays as before: the order, and no intent", async () => {
 		await h.seedDigital({ productId: "d1", sku: "DIG-1", priceCents: 900, title: "Ebook" });
 		const cartId = await h.cartWith([{ sku: "DIG-1", productId: "d1", qty: 1, kind: "digital" }]);
 		const usd = (await h.cartStore.get(cartId))!.currency;

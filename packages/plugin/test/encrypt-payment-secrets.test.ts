@@ -211,7 +211,7 @@ describe("plain text → encrypted", () => {
 		for (const [key, value] of Object.entries(others)) expect(host.raw.get(key)).toBe(value);
 	});
 
-	test("leaves any x402 key alone, present or absent (its own purge deletes them)", async () => {
+	test("leaves any x402 key alone, present or absent", async () => {
 		const x402 = {
 			"settings:x402FacilitatorApiKey": "x402_NEVER_LOG",
 			"settings:x402FacilitatorSecret": "legacy_HMAC_NEVER_LOG",

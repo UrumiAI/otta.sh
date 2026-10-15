@@ -3988,7 +3988,6 @@ export function adminOrdersProductsClientContract(tier: CommerceClientTier): voi
 				// between a provider button and "record a manual refund" (ADR-0008), and
 				// neither state is faked here.
 				refundable: tier.payments !== undefined,
-				legacyPaymentMethod: false,
 				// Nothing was captured, so no provider can be asked for the rest later.
 				providerCaptured: false,
 			});

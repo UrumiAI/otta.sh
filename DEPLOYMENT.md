@@ -288,20 +288,12 @@ cannot be retried in place:
 > 500 rather than re-run. Nothing fails at deploy time. So the flag must never come back
 > while a session mode is set. Pinned by `sites/staging/test/wrangler-config.test.ts` (flag
 > absent, template hygiene) and `sites/staging/test/site-config.test.ts` (`"primary-first"`;
-> never flag + session together), and enforced at **build** time on the config the build
-> actually uses (`sites/staging/src/lib/wrangler-pairing.ts`, called from `astro.config.ts`).
+> never flag + session together, `sites/staging/src/lib/wrangler-pairing.ts`).
 >
-> **Upgrading an existing deployment.** If you made `wrangler.local.jsonc` by copying the
-> template before this change (§2.1 step 2), it still lists the flag. Before building this
-> version, delete `"global_fetch_strictly_public"` from its `compatibility_flags`, leaving
-> `["nodejs_compat"]`. If you don't, the build stops with:
->
-> ```text
-> Error: wrangler.local.jsonc sets the "global_fetch_strictly_public" compatibility flag, but
-> D1 sessions are on (session: "primary-first", sites/staging/src/emdash-options.ts). …
-> Delete "global_fetch_strictly_public" from compatibility_flags in wrangler.local.jsonc,
-> then build again (DEPLOYMENT.md §2.4, "Upgrading an existing deployment").
-> ```
+> **Your own `wrangler.local.jsonc` is not checked.** If you made it by copying the template
+> before issue #375 (§2.1 step 2), it may still list the flag: delete
+> `"global_fetch_strictly_public"` from its `compatibility_flags`, leaving `["nodejs_compat"]`.
+> (A build-time guard used to refuse that file; it was removed in issue #455.)
 >
 > A **custom domain** on the site (issue #32) is what unlocks zone-level WAF rules.
 
@@ -368,8 +360,8 @@ order of appearance in a deployment's life:
     logs one warning naming `EMDASH_ENCRYPTION_KEY`). It first reads every key and changes
     nothing if any cannot be read, so a wrong key cannot strand a working one — but if every
     key is still unencrypted, whichever key is set at that tick is the key they are saved
-    under, so set the right one before deploying. It logs counts only (stored x402 keys are
-    deleted by x402's own one-time purge, not by this run). Earlier backups and D1 Time Travel
+    under, so set the right one before deploying. It logs counts only (it never touches a
+    leftover x402 key). Earlier backups and D1 Time Travel
     history still hold the earlier copies until they age out, so rotate a live Stripe key
     after the upgrade.
   - **After every deploy (required check):** open Otta's Settings and confirm that every
@@ -589,6 +581,30 @@ order of appearance in a deployment's life:
 > provider and region settings are gone, and a build-time email URL is ignored. Until an
 > EmDash email provider is selected the store's email waits in the outbox. Configure the
 > sender address and domain records in the provider instead.
+>
+> **Leftover email and x402 keys (delete them by hand).** Earlier builds stored the email
+> API keys and the x402 settings in plugin kv as **plain text**. A one-time cron purge used to
+> delete them; it was removed in issue #455, so a store that never ran it still holds them.
+> Nothing reads them any more. The rows are:
+>
+> - email: `settings:emailApiKey`, `settings:emailApiKeyGen`, `settings:emailSmtp2goApiKey`,
+>   `settings:emailSmtp2goApiKeyGen`;
+> - x402: `settings:x402PayTo`, `settings:x402Accepts`, `settings:x402FacilitatorApiKey`,
+>   `settings:x402FacilitatorApiKeyGen`, `settings:x402FacilitatorSecret`,
+>   `settings:x402FacilitatorSecretGen`.
+>
+> First **revoke** the email API keys (Resend, SMTP2GO) and the x402 facilitator key at the
+> provider: a key copied into a backup or D1 Time Travel stays live until revoked. Then delete
+> the rows. Trusted mode (the default):
+> `wrangler d1 execute YOUR-D1-DATABASE-NAME --remote --config wrangler.local.jsonc --command "DELETE FROM options WHERE name IN ('plugin:otta:settings:emailApiKey', 'plugin:otta:settings:emailApiKeyGen', 'plugin:otta:settings:emailSmtp2goApiKey', 'plugin:otta:settings:emailSmtp2goApiKeyGen', 'plugin:otta:settings:x402PayTo', 'plugin:otta:settings:x402Accepts', 'plugin:otta:settings:x402FacilitatorApiKey', 'plugin:otta:settings:x402FacilitatorApiKeyGen', 'plugin:otta:settings:x402FacilitatorSecret', 'plugin:otta:settings:x402FacilitatorSecretGen')"`.
+> A sandboxed deployment may hold them in **either** table (the sandbox bridge routes `settings:`
+> keys to `options`, while older bridge versions wrote them to `_plugin_storage`), so run the
+> trusted-mode command above **and** this one:
+> `... --command "DELETE FROM _plugin_storage WHERE plugin_id = 'otta' AND collection = '__kv' AND id IN ('settings:emailApiKey', 'settings:emailApiKeyGen', 'settings:emailSmtp2goApiKey', 'settings:emailSmtp2goApiKeyGen', 'settings:x402PayTo', 'settings:x402Accepts', 'settings:x402FacilitatorApiKey', 'settings:x402FacilitatorApiKeyGen', 'settings:x402FacilitatorSecret', 'settings:x402FacilitatorSecretGen')"`.
+> Deleting a row that is not there is a no-op. The purges' own marker rows
+> (`state:legacyEmailSecretsPurged`, `state:legacyX402SettingsPurged`) can be deleted the same
+> way (they are not `settings:` keys, so sandboxed mode holds them in `_plugin_storage` only),
+> or left: nothing reads them.
 
 ## 4. Egress and `allowedHosts`
 
@@ -942,7 +958,7 @@ reviewed tip, so a new one fails CI first).
 
 | Symptom | Cause → fix |
 |---|---|
-| A ~5 s stall on a new isolate's first request, an occasional 500 on a write, and `[emdash] A D1 session query hung …` in the logs | `global_fetch_strictly_public` + D1 `session` both on (emdash #1273). The build refuses this pair, so check what was deployed: remove the flag (§2.4, "Upgrading an existing deployment"), rebuild, redeploy |
+| A ~5 s stall on a new isolate's first request, an occasional 500 on a write, and `[emdash] A D1 session query hung …` in the logs | `global_fetch_strictly_public` + D1 `session` both on (emdash #1273): remove the flag from `wrangler.local.jsonc` (§2.4), rebuild, redeploy |
 | `/products` empty right after deploy | Healthy (§1) — sample content lands via the wizard checkbox, not first boot |
 | `POST /webhooks/stripe` reports `NOT_CONFIGURED` | The Stripe webhook signing secret is unset — provision it in admin Settings (§3) |
 | Every Stripe delivery answers 503 after a deploy | The webhook signing secret or `OTTA_WH_TOKEN` reads "saved, but not valid" or "saved, but cannot be read" in Otta's Settings — re-enter it there; for "cannot be read", first check `EMDASH_ENCRYPTION_KEY` (§3) |

@@ -40,16 +40,16 @@
  *  2. **The stale-watermark refusal (DA-3a).** A stock REMOVAL carries the count
  *     the operator saw, and the inventory store refuses a mismatch in the same
  *     write as the decrement, with NOTHING written; an ABSENT watermark refuses
- *     fail-closed before anything is sent (for a restock too, whose watermark is
- *     still required as the legacy key's component). A RESTOCK is not pinned: an
+ *     fail-closed before anything is sent (for a restock too, which still
+ *     requires one though it is not judged against it). A RESTOCK is not pinned: an
  *     add is commutative and the count it would be judged against moves with
  *     every sale. A save carries `expectedUpdatedAt` and refuses without one
  *     rather than clobbering; with a stale one it is refused by the store's own
  *     compare-and-set.
  *  3. **Idempotency, and the replay case.** A save's key is derived from content
  *     plus its watermark; a stock movement's is a per-click NONCE the console
- *     mints, with F-2a's content key kept as a one-release fallback for a caller
- *     that sends none. THE KEY IS NO LONGER A STRING ANY TEST CAN SEE — it is an
+ *     mints, and a movement without one is refused (the one-release content-key
+ *     fallback was removed, #455). THE KEY IS NO LONGER A STRING ANY TEST CAN SEE — it is an
  *     argument handed to a use-case in this process rather than a header on a
  *     wire — so it is proven by what it BUYS: a double-submit of one rendered
  *     form applies once and still reads `Saved`; a retry of one movement applies
@@ -865,6 +865,7 @@ describe("the Pricing & inventory write path (workerd sandbox)", () => {
 			productId: seeded.productId,
 			onHand: "42",
 			qty: "8",
+			nonce: nonce(),
 		});
 		expect(result.notice?.variant).toBe("default");
 		expect(result.notice?.title).toBe("Stock added");
@@ -897,6 +898,7 @@ describe("the Pricing & inventory write path (workerd sandbox)", () => {
 				productId: seeded.productId,
 				onHand: "42",
 				qty,
+				nonce: nonce(),
 			});
 			expect(result.notice?.variant, qty).toBe("error");
 			expect(await inventory.findOnHand(seeded.sku), qty).toBe(42);
@@ -1032,7 +1034,7 @@ describe("the Pricing & inventory write path (workerd sandbox)", () => {
 		expect(await inventory.findOnHand(seeded.sku)).toBe(8);
 	});
 
-	test("a malformed nonce refuses the movement as unreadable — it is never quietly dropped to the legacy key", async () => {
+	test("a malformed nonce refuses the movement as unreadable — it is never quietly dropped to a content key", async () => {
 		const seeded = await seedProduct({ onHand: 42 });
 		for (const bad of ["", "  ", "short", "has spaces in it ok?", "x".repeat(65)]) {
 			for (const action of ["products:restock", "products:remove-stock"]) {
@@ -1048,72 +1050,16 @@ describe("the Pricing & inventory write path (workerd sandbox)", () => {
 		expect(await inventory.findOnHand(seeded.sku)).toBe(42);
 	});
 
-	// -- a caller that sends NO nonce (backward compatibility, one release) -----
-
-	test("LEGACY, no nonce: a double-submit of one rendered form still moves once", async () => {
-		// The property the content-derived key (F-2a) was chosen for, kept for a
-		// tab rendered by the previous release.
+	test("a movement with NO nonce is refused as unreadable — nothing moves (the content-key fallback is gone, #455)", async () => {
+		// The console mints a nonce per click and the demo seed sends one; a caller
+		// without one is a tab from a release before the nonce, or a hand-made
+		// payload. Either way there is no safe key to build, so nothing is applied.
 		const seeded = await seedProduct({ onHand: 42 });
-		const payload = { productId: seeded.productId, onHand: "42", qty: "8" };
-		await act("products:restock", payload);
-		const replay = await act("products:restock", payload);
-		expect(await inventory.findOnHand(seeded.sku)).toBe(50);
-		// Without a nonce a replay cannot be told from a DIFFERENT later move of the
-		// same shape, so it says only what is certain: this submit changed nothing.
-		expect(replay.notice?.title).toBe("Nothing changed");
-		expect(String(replay.notice?.description)).toBe(
-			"This submit changed nothing — an identical earlier change was already applied; if you meant a second change, reload and try again.",
-		);
-	});
-
-	test("LEGACY, no nonce: Add 2, Remove 2, Add 2 is a CONFLICT on the third, never a silent 'done'", async () => {
-		// Without a nonce the third Add derives the first one's key, and the ledger
-		// can only echo that earlier answer. It cannot be made to apply; it can be
-		// made honest: the live count disagrees with the echoed one, so the
-		// operator is told to check rather than shown a movement that never landed.
-		// "Reload" is the way out, not a figure of speech: a reload fetches the
-		// console that sends a nonce, while retrying in the old tab re-derives the
-		// same key.
-		const seeded = await seedProduct({ onHand: 7 });
-		await act("products:restock", { productId: seeded.productId, onHand: "7", qty: "2" });
-		await act("products:remove-stock", { productId: seeded.productId, onHand: "9", qty: "2" });
-		const third = await act("products:restock", {
-			productId: seeded.productId,
-			onHand: "7",
-			qty: "2",
-		});
-		expect(third.notice?.variant).toBe("error");
-		expect(third.notice?.title).toBe("Nothing changed");
-		expect(String(third.notice?.description)).toBe(
-			"This submit changed nothing — an identical earlier change was already applied; if you meant a second change, reload and try again.",
-		);
-		expect(await inventory.findOnHand(seeded.sku)).toBe(7);
-	});
-
-	test("LEGACY, no nonce: a stale tab's restock applies as it always did; a byte-identical one is a double-submit", async () => {
-		// THE KNOWN LIMIT OF THE FALLBACK. Two old tabs that both saw 4 and both add
-		// 3 send byte-identical payloads, which no server can tell from one tab's
-		// double-submit — that ambiguity is why the nonce exists. The answer is at
-		// least true to what that operator decided ("4 + 3 = 7"). A tab whose
-		// payload differs in any way derives a different key and applies, exactly
-		// as before this release: a restock takes no watermark.
-		const seeded = await seedProduct({ onHand: 4 });
-		const payload = { productId: seeded.productId, onHand: "4", qty: "3" };
-		await act("products:restock", payload);
-		const tabB = await act("products:restock", payload);
-		expect(tabB.notice?.title).toBe("Nothing changed");
-		expect(String(tabB.notice?.description)).toBe(
-			"This submit changed nothing — an identical earlier change was already applied; if you meant a second change, reload and try again.",
-		);
-		expect(await inventory.findOnHand(seeded.sku)).toBe(7);
-
-		const stale = await act("products:restock", {
-			productId: seeded.productId,
-			onHand: "4",
-			qty: "2",
-		});
-		expect(stale.notice?.title).toBe("Stock added");
-		expect(await inventory.findOnHand(seeded.sku)).toBe(9);
+		for (const action of ["products:restock", "products:remove-stock"]) {
+			const result = await act(action, { productId: seeded.productId, onHand: "42", qty: "1" });
+			expect(result.notice?.title, action).toBe("Not changed");
+		}
+		expect(await inventory.findOnHand(seeded.sku)).toBe(42);
 	});
 
 	// -- remove stock (the screen's ONE destructive act) ------------------------
@@ -1124,6 +1070,7 @@ describe("the Pricing & inventory write path (workerd sandbox)", () => {
 			productId: seeded.productId,
 			qty: "5",
 			onHand: "42",
+			nonce: nonce(),
 		});
 		expect(result.notice?.variant).toBe("default");
 		expect(result.notice?.title).toBe("Stock removed");
@@ -1140,6 +1087,7 @@ describe("the Pricing & inventory write path (workerd sandbox)", () => {
 			productId: seeded.productId,
 			qty: "10", // valid against the stale 42 AND against the live 30
 			onHand: "42",
+			nonce: nonce(),
 		});
 		expect(result.notice?.variant).toBe("error");
 		expect(result.notice?.title).toBe("Stock changed — nothing was removed");
@@ -1158,6 +1106,7 @@ describe("the Pricing & inventory write path (workerd sandbox)", () => {
 			productId: seeded.productId,
 			qty: "5",
 			onHand: "42",
+			nonce: nonce(),
 		});
 		expect(result.notice?.title).toBe("Stock changed — nothing was removed");
 		expect(String(result.notice?.description)).toContain("no longer has an inventory record");
@@ -1178,6 +1127,7 @@ describe("the Pricing & inventory write path (workerd sandbox)", () => {
 				productId: seeded.productId,
 				qty: "5",
 				...(onHand === undefined ? {} : { onHand }),
+				nonce: nonce(),
 			});
 			expect(result.notice?.title, JSON.stringify(onHand)).toBe("Not changed");
 			expect(await inventory.findOnHand(seeded.sku), JSON.stringify(onHand)).toBe(42);
@@ -1206,6 +1156,7 @@ describe("the Pricing & inventory write path (workerd sandbox)", () => {
 			productId: seeded.productId,
 			qty: "50",
 			onHand: "42",
+			nonce: nonce(),
 		});
 		expect(result.notice?.variant).toBe("error");
 		expect(result.notice?.title).toBe("Not enough stock to remove");
@@ -1221,6 +1172,7 @@ describe("the Pricing & inventory write path (workerd sandbox)", () => {
 			productId: seeded.productId,
 			onHand: "42",
 			qty: "1",
+			nonce: nonce(),
 		});
 		expect(result.notice?.title).toBe("No stock record yet");
 		expect(String(result.notice?.description)).toContain("Re-save the SKU");
@@ -1251,11 +1203,13 @@ describe("the Pricing & inventory write path (workerd sandbox)", () => {
 			productId: seeded.productId,
 			qty: "5",
 			onHand: "42",
+			nonce: nonce(),
 		});
 		const ok = await act("products:restock", {
 			productId: seeded.productId,
 			onHand: "30",
 			qty: "1",
+			nonce: nonce(),
 		});
 		for (const outcome of [refusal, ok]) {
 			expect(JSON.stringify(outcome)).not.toMatch(banned);

@@ -96,7 +96,6 @@ import {
 	revokeOrderDownloadAccess,
 	isDownloadDeliverableState,
 	cancelOrderWithRefund,
-	capturedOnlyThroughLegacy,
 	emailTemplateForState,
 	computeRefundCeiling,
 	getOrderCustomerContext,
@@ -104,7 +103,6 @@ import {
 	getOrderTimeline,
 	idempotencyKey as toIdempotencyKey,
 	isCurrentPaymentMethod,
-	isLegacyPaymentMethod,
 	listOrderNotes,
 	ORDER_STATE_MACHINE,
 	orderHasEmailRecipient,
@@ -198,28 +196,6 @@ const DEFAULT_LIMIT = 25;
  *  the real ceiling is computed from captured payments below. */
 const MAX_REFUND_AMOUNT_CENTS = 1_000_000_000_000;
 
-/**
- * A record-only gateway for a LEGACY order: one whose stored payment method Otta
- * no longer supports (an x402 order placed before its removal). That method's
- * money can only go back outside Otta, so the refund use-case takes its manual
- * path (`refundable: false`) and ledgers the refund under the stored method. It
- * can do nothing else: every verb answers that it is unsupported.
- */
-function recordOnlyLegacyGateway(stored: string): PaymentGateway {
-	return {
-		// The stored value, not a current `PaymentMethod`: the ledger row keeps the
-		// method the order was paid with.
-		id: stored as PaymentMethod,
-		refundable: false,
-		createIntent(): Promise<never> {
-			return Promise.reject(new Error(`payment method "${stored}" is no longer supported`));
-		},
-		verifyConfirmation: () => Promise.resolve({ ok: false, reason: "UNKNOWN_EVENT" }),
-		refund: () => Promise.resolve({ ok: false, reason: "UNSUPPORTED" }),
-		cancelIntent: () => Promise.resolve({ ok: false, reason: "UNSUPPORTED" }),
-	};
-}
-
 export interface InProcessAdminOrdersClientOptions extends InProcessCommerceStoresOptions {
 	gateways?: Partial<Record<PaymentMethod, PaymentGateway>>;
 	/** The inline order-email attempt's options — a deploy passes none (the bundle's
@@ -262,48 +238,14 @@ export class InProcessAdminOrdersClient implements AdminOrdersSurface {
 	}
 
 	/**
-	 * Where a refund on an order paid by `method` goes, decided ONCE for the refund
-	 * POST, the cancel and the summary.
-	 *  - A CURRENT method (or `null`): its wired gateway, or `undefined` when none is
-	 *    wired (the refund POST's `409 REFUND_GATEWAY_UNAVAILABLE`) — as on main.
-	 *  - A NAMED legacy method (`LEGACY_PAYMENT_METHODS`: an x402 order from before
-	 *    its removal), by where its captured money is:
-	 *    - captured only through legacy methods, or not at all: a record-only
-	 *      stand-in, and `legacy: true` (the panel says it is record-only for good);
-	 *    - captured by ONE current provider (Stripe): that provider's wired gateway,
-	 *      because the money is there to refund;
-	 *    - anything else (mixed, unknown): `undefined`, so 409.
-	 *  - Any other stored value is unknown: `undefined`.
+	 * The gateway a refund on `order` goes through, decided ONCE for the refund
+	 * POST, the cancel and the summary: its CURRENT method's wired gateway, or
+	 * `undefined` when none is wired (the refund POST's
+	 * `409 REFUND_GATEWAY_UNAVAILABLE`). A stored method that is not current (a
+	 * removed one such as x402, or an unknown value) has none, so it fails closed.
 	 */
-	#refundRouteFor(
-		method: PaymentMethod | null,
-		payments: readonly { status: string; gateway: string }[],
-	): { gateway: PaymentGateway | undefined; legacy: boolean } {
-		if (method === null || !isLegacyPaymentMethod(method)) {
-			return { gateway: gatewayForStored(this.#gateways, method), legacy: false };
-		}
-		if (capturedOnlyThroughLegacy(payments)) {
-			return { gateway: recordOnlyLegacyGateway(method), legacy: true };
-		}
-		const capturedBy = new Set(
-			payments.filter((p) => p.status === "succeeded").map((p) => p.gateway),
-		);
-		const [only] = capturedBy;
-		return {
-			gateway:
-				capturedBy.size === 1 && only !== undefined
-					? gatewayForStored(this.#gateways, only)
-					: undefined,
-			legacy: false,
-		};
-	}
-
-	/** {@link #refundRouteFor} for an order, reading its payments only for a legacy
-	 *  method — a current method's path reads nothing more than before. */
-	async #refundGatewayForOrder(order: Order): Promise<PaymentGateway | undefined> {
-		const legacy = order.paymentMethod !== null && isLegacyPaymentMethod(order.paymentMethod);
-		const payments = legacy ? await this.#stores.orderStore.getCapturedPayments(order.id) : [];
-		return this.#refundRouteFor(order.paymentMethod, payments).gateway;
+	#refundGatewayForOrder(order: Order): PaymentGateway | undefined {
+		return gatewayForStored(this.#gateways, order.paymentMethod);
 	}
 
 	/**
@@ -635,9 +577,8 @@ export class InProcessAdminOrdersClient implements AdminOrdersSurface {
 		const order = await this.#stores.orderStore.getById(oid);
 		// The order's own gateway, or null — the domain refuses a refund it cannot
 		// issue (`REFUND_NOT_AUTOMATIC`) rather than cancelling with the money kept.
-		// Resolved like a refund's: a legacy method's record-only stand-in is not
-		// refundable, so a paid legacy order is refused exactly as with no gateway.
-		const gateway = order === null ? null : ((await this.#refundGatewayForOrder(order)) ?? null);
+		// Resolved like a refund's: an order whose method is not current has none.
+		const gateway = order === null ? null : (this.#refundGatewayForOrder(order) ?? null);
 		const res = await cancelOrderWithRefund(
 			{
 				orderStore: this.#stores.orderStore,
@@ -794,17 +735,16 @@ export class InProcessAdminOrdersClient implements AdminOrdersSurface {
 		// The gateway's HONEST capability (ADR-0008): `refundable` true ⇒ money moves
 		// via the provider; false ⇒ the admin records a manual/off-platform refund.
 		// Never a button that silently no-ops — and with no gateway composed for the
-		// order's method, false is the truth rather than a placeholder. A legacy
-		// order captured only through it gets its record-only stand-in: false too.
-		const route = this.#refundRouteFor(order.paymentMethod, payments);
+		// order's method, false is the truth rather than a placeholder.
+		const gateway = this.#refundGatewayForOrder(order);
 		// Whether a current provider captured this order's money — through the
 		// refund's own gateway, or (with none composed) through any current method.
 		// The refund form keeps the currency's payment step for a manual refund
 		// when it is true, as the domain does: the rest may go back through that
 		// provider later (#447).
 		const captured =
-			route.gateway !== undefined
-				? providerCaptured(payments, route.gateway.id)
+			gateway !== undefined
+				? providerCaptured(payments, gateway.id)
 				: payments.some((p) => p.status === "succeeded" && isCurrentPaymentMethod(p.gateway));
 		return {
 			refunds: refunds.map(toRefundWire),
@@ -815,8 +755,7 @@ export class InProcessAdminOrdersClient implements AdminOrdersSurface {
 			ceilingCents: ceiling,
 			remainingCents: remaining,
 			paymentMethod: order.paymentMethod,
-			refundable: route.gateway?.refundable ?? false,
-			legacyPaymentMethod: route.legacy,
+			refundable: gateway?.refundable ?? false,
 			providerCaptured: captured,
 		};
 	}
@@ -827,9 +766,9 @@ export class InProcessAdminOrdersClient implements AdminOrdersSurface {
 	 * The `Idempotency-Key` is REQUIRED — a refund is ADDITIVE, so two deliberate
 	 * refunds must not collapse and there is no safe content-only fallback
 	 * (mirrors restock). The order lookup comes next, then the gateway: an order
-	 * whose CURRENT method has no gateway in the injected map lands on the route's
-	 * own `409 REFUND_GATEWAY_UNAVAILABLE`, and a LEGACY method Otta no longer
-	 * supports is record-only (see `#refundRouteFor`). Otherwise the domain use-case decides —
+	 * whose method has no gateway in the injected map (none is wired, or the stored
+	 * method is not a current one) lands on the route's own
+	 * `409 REFUND_GATEWAY_UNAVAILABLE`. Otherwise the domain use-case decides —
 	 * a `refundable` gateway issues at the provider (reserve → issue → finalize),
 	 * a non-refundable one records a manual, off-platform refund.
 	 */
@@ -859,7 +798,7 @@ export class InProcessAdminOrdersClient implements AdminOrdersSurface {
 		const oid = toOrderId(orderId);
 		const order = await this.#stores.orderStore.getById(oid);
 		if (order === null) return { ok: false, status: 404, reason: "ORDER_NOT_FOUND" };
-		const gateway = await this.#refundGatewayForOrder(order);
+		const gateway = this.#refundGatewayForOrder(order);
 		if (gateway === undefined) {
 			// No gateway wired for the order's method — cannot even record a refund
 			// against it (the domain needs a gateway to declare capability).

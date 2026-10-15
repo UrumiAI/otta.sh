@@ -45,11 +45,9 @@
  *     in the marker, so an unfinished run does not re-save the keys it already did.
  *  4. Write the marker once more without the keys no longer stored.
  *
- * NO x402 KEY. x402 is gone; its stored keys (the facilitator API key and the
- * older facilitator secret among them) are deleted by their own one-shot purge
- * (`payments/purge-legacy-x402-settings.ts`), not re-saved here. This touches
- * only {@link ENCRYPTED_PAYMENT_SECRET_KEYS}, so it neither reads nor writes an
- * x402 key, whether or not one is still stored.
+ * NO x402 KEY. x402 is gone, and nothing reads its stored keys any more. This
+ * touches only {@link ENCRYPTED_PAYMENT_SECRET_KEYS}, so it neither reads nor
+ * writes an x402 key, whether or not one is still stored.
  *
  * It never throws and never logs a value or an error message — only fixed lines
  * and counts. A site without the `secret` declaration is not detectable from

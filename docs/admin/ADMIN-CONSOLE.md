@@ -1310,8 +1310,8 @@ the shipped keys are `admin-refund:${orderId}:${amountCents}:${observedSoFar}`
 regression gate from here. **Except stock movements — [ADR-0015, amended
 2026-10-02](../../adr/0015-retire-duplicated-block-kit-screens.md):** a stock movement's key is now a
 nonce the console mints fresh per CLICK (not per render) and sends in the action payload; it is
-re-sent only by an explicit "Retry this change" after a lost answer, held in memory for ten minutes; the content key above survives only as a
-one-release fallback for a caller that sends none. This also keeps the document self-consistent: §2 already lists nonce
+re-sent only by an explicit "Retry this change" after a lost answer, held in memory for ten minutes; the content key above is gone (its one-release fallback for a
+caller that sends no nonce was removed in #455, and such a movement is refused). This also keeps the document self-consistent: §2 already lists nonce
 fields under `form` → forbidden, and F-2 already says a key is never something a human can see, pick
 or alter — a render-time carried nonce satisfies neither half.
 

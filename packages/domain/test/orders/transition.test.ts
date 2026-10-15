@@ -170,11 +170,11 @@ describe("order state transition (5.1)", () => {
 	});
 });
 
-describe("a legacy order whose payment method no longer exists", () => {
-	test("a hand-seeded paid x402 order can still be closed with Mark refunded", async () => {
-		// An order placed before x402 was removed stores `paymentMethod: "x402"`.
-		// Nothing can refund it through a provider, so Mark refunded — recording a
-		// refund the operator made outside Otta — must stay open for it.
+describe("an order whose payment method no longer exists", () => {
+	test("a hand-seeded paid x402 order is an UNKNOWN method: Mark refunded is refused while money is held", async () => {
+		// x402 was removed (#437), and the legacy handling that let Mark refunded
+		// close such an order went with it (#455). It now fails closed like any
+		// unknown method, and nothing is changed.
 		const { store } = harness();
 		const { order } = await store.createFromCart(
 			pending({ paymentMethod: "x402" as unknown as PaymentMethod }),
@@ -184,8 +184,8 @@ describe("a legacy order whose payment method no longer exists", () => {
 			{ orderId: order.id, toState: "paid", idempotencyKey: key(order.id, "paid") },
 		);
 		expect(paid.ok).toBe(true);
-		// Money captured and NOT returned through any provider — for a Stripe order
-		// this is exactly what refuses Mark refunded (REFUND_THROUGH_MONEY).
+		// Money captured and NOT returned through any provider: exactly what refuses
+		// Mark refunded (REFUND_THROUGH_MONEY).
 		await store.recordPayment({
 			orderId: order.id,
 			gateway: "x402" as unknown as PaymentMethod,
@@ -199,7 +199,7 @@ describe("a legacy order whose payment method no longer exists", () => {
 			{ orderStore: store },
 			{ orderId: order.id, toState: "refunded", idempotencyKey: key(order.id, "refunded") },
 		);
-		expect(res).toMatchObject({ ok: true });
-		expect((await store.getById(order.id))?.state).toBe("refunded");
+		expect(res).toEqual({ ok: false, reason: "REFUND_THROUGH_MONEY" });
+		expect((await store.getById(order.id))?.state).toBe("paid");
 	});
 });

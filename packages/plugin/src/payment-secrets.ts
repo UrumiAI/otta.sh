@@ -111,7 +111,7 @@ export type PaymentSecretKey = (typeof PAYMENT_SECRET_KEYS)[number];
  * The payment credentials stored ENCRYPTED at rest (ADR-0037): each is declared
  * `type: "secret"` in {@link PAYMENT_SECRET_SETTINGS_SCHEMA}. Today this is
  * every key in {@link PAYMENT_SECRET_KEYS}. The retired email and x402 keys are
- * not here: their own one-shot purges delete them (ADR-0031, x402 removal).
+ * not here: nothing reads them any more (ADR-0031, x402 removal).
  */
 export const ENCRYPTED_PAYMENT_SECRET_KEYS = [
 	STRIPE_SECRET_KEY_KEY,

@@ -294,10 +294,10 @@ describe("payment keys at rest, through this site's descriptor (ADR-0037)", () =
 		);
 	});
 
-	test("a WRONG key with mixed rows changes nothing; the right key then finishes and leaves x402 rows to their own purge", async () => {
+	test("a WRONG key with mixed rows changes nothing; the right key then finishes and leaves x402 rows alone", async () => {
 		const repo = new OptionsRepository(db);
 		// An earlier build's plain rows, the webhook secret already encrypted under
-		// key A, and a leftover x402 secret (deleted by x402's own purge, not here).
+		// key A, and a leftover x402 secret (not this migration's to touch).
 		for (const [key, value] of Object.entries(VALUES)) {
 			await repo.set(`plugin:${OTTA_PLUGIN_ID}:${key}`, value);
 		}

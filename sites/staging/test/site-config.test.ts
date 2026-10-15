@@ -403,27 +403,14 @@ describe("buildEmdashOptions", () => {
 
 	test("PAIRING INVARIANT: the template never has global_fetch_strictly_public on together with a D1 session", () => {
 		// Sessions are ON ("primary-first"), so this is not vacuous: it fails the
-		// moment the flag comes back. The predicate is the build guard's own
-		// (src/lib/wrangler-pairing.ts, unit-tested in wrangler-pairing.test.ts).
+		// moment the flag comes back. The predicate is src/lib/wrangler-pairing.ts,
+		// unit-tested in wrangler-pairing.test.ts.
 		const flags = wranglerCompatibilityFlags(
 			readFileSync(new URL("../wrangler.jsonc", import.meta.url), "utf8"),
 		);
 		expect(flags).toContain("nodejs_compat");
 		const d1Config = (options.database as { config?: { session?: unknown } }).config;
 		expect(violatesPairing(flags, d1Config?.session)).toBe(false);
-	});
-
-	test("astro.config.ts runs the pairing guard on the wrangler config the build SELECTS", async () => {
-		// The template is pinned above; a deployment builds from its own
-		// gitignored wrangler.local.jsonc, which a pre-#375 copy fills with the
-		// flag. Only the build sees that file, so the build must check it.
-		const source = await readFile(new URL("../astro.config.ts", import.meta.url), "utf8");
-		expect(source).toMatch(
-			/const selectedWranglerConfig = localWranglerConfig \?\? "wrangler\.jsonc";/,
-		);
-		expect(source).toMatch(
-			/assertWranglerSessionPairing\(\s*readFileSync\(new URL\(selectedWranglerConfig, import\.meta\.url\), "utf8"\),\s*selectedWranglerConfig,/,
-		);
 	});
 
 	test("storage is R2 binding MEDIA", () => {

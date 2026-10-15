@@ -1,9 +1,9 @@
 /**
- * Reading a wrangler config (JSONC) at BUILD time, shared by the two build
- * guards that parse one: `wrangler-pairing.ts` (compatibility flags vs D1
- * sessions) and `downloads-bucket.ts` (the private downloads bucket). Pure text
- * in, value or throw out. Kept as one module so a fix to the comment/trailing
- * comma handling lands in both guards at once (issue #447).
+ * Reading a wrangler config (JSONC), shared by the two readers that parse one:
+ * `wrangler-pairing.ts` (compatibility flags vs D1 sessions, applied to the
+ * template by a test) and `downloads-bucket.ts` (the private downloads bucket,
+ * a build guard). Pure text in, value or throw out. Kept as one module so a fix
+ * to the comment/trailing comma handling lands in both at once (issue #447).
  */
 
 /**

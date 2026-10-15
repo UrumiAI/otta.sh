@@ -238,8 +238,8 @@ describe("seed-demo-commerce", () => {
 	});
 
 	test("restock carries a FRESH nonce per call — the movement's idempotency key", () => {
-		// The route keys a movement on the caller's nonce; without one it falls back
-		// to a content key that is going away. Two calls are two decisions.
+		// The route keys a movement on the caller's nonce, and refuses one without
+		// it. Two calls are two decisions.
 		const a = restockBody(TEE, 0)["nonce"];
 		const b = restockBody(TEE, 0)["nonce"];
 		expect(a).toMatch(/^[A-Za-z0-9-]{16,64}$/);

@@ -957,8 +957,7 @@ describe("the console's Pricing & inventory branch on the otta admin route", () 
 	});
 
 	test("a RESTOCK dispatched from the console really adds the units", async () => {
-		// The key is built in the action (per-click nonce, or F-2a's content key
-		// without one), and in-process it is an ARGUMENT rather than a header — it
+		// The key is built in the action from the per-click nonce, and in-process it is an ARGUMENT rather than a header — it
 		// is proven by what it buys, in `products-actions.sandbox.test.ts`. What
 		// this tier still owns is that the console's flat payload reaches the
 		// movement at all.
@@ -974,8 +973,7 @@ describe("the console's Pricing & inventory branch on the otta admin route", () 
 
 	test("the console's NONCE reaches the key: Add 2, Remove 2, Add 2 through the route lands at 9", async () => {
 		// The admin QA repro, end to end through the route's payload reader: a
-		// `nonce` it dropped would put all three clicks back on F-2a's content key,
-		// and the third would be swallowed as a replay of the first.
+		// `nonce` it dropped would refuse every click as unreadable.
 		const seeded = await seedProduct({ term: "noncewire", onHand: 7 });
 		for (const [action_id, onHand] of [
 			["products:restock", "7"],
@@ -1048,7 +1046,7 @@ describe("the console's Pricing & inventory branch on the otta admin route", () 
 		const result = await invoke({
 			type: ACT,
 			action_id: "products:remove-stock",
-			value: { productId: seeded.productId, qty: "3", onHand: "42" },
+			value: { productId: seeded.productId, qty: "3", onHand: "42", nonce: crypto.randomUUID() },
 		});
 		expect(result["ok"]).toBe(true);
 		expect(await inventory.findOnHand(toSku(seeded.sku))).toBe(39);
