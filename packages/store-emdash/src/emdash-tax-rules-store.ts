@@ -625,9 +625,9 @@ export class EmdashTaxRulesStore implements TaxRulesStore {
 	 * RESIDUAL: if the rollback itself fails (a storage error, or its retries run out),
 	 * the caller gets that error and both rates may remain. That needs a pause past the
 	 * whole lease AND a failing rollback; the next id-keyed edit or delete reaches only
-	 * the class the claim names.
-	 * A second RESIDUAL: a create paused past the lease, then crashing after its embed
-	 * but before settle, can leave two classes holding the id.
+	 * the class the claim names. A second RESIDUAL: a
+	 * create paused past the lease, then crashing after its embed but before settle,
+	 * can leave two classes holding the id.
 	 */
 	async #settleClaim(
 		taxClassId: string,

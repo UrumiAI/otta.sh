@@ -153,6 +153,9 @@ async function applyTransition(
  * A `Record` over every `PaymentMethod` on purpose: a new method (a "bank
  * transfer" or "cash on delivery") must declare which kind it is, and only an
  * `offline` one may be marked paid by hand. None is today.
+ *
+ * A method that refunds outside Otta also needs a refund-route declaration read by
+ * markRefundedRefusal (removed in #502 while none existed).
  */
 const PAYMENT_METHOD_SETTLEMENT: Readonly<Record<PaymentMethod, "gateway" | "offline">> = {
 	stripe: "gateway",
@@ -212,7 +215,7 @@ export function unrefundedCapturedCents(facts: RefundLedgerFacts): number {
  *    ({@link markRefundedAllowed}).
  */
 export function markRefundedRefusal(
-	order: Pick<Order, "paymentMethod" | "reconciliationFlag">,
+	order: Pick<Order, "reconciliationFlag">,
 	facts: RefundLedgerFacts,
 ): "REFUND_IN_FLIGHT" | "REFUND_THROUGH_MONEY" | null {
 	if (facts.refunds.some((r) => r.status === "reserved" || r.status === "unverified")) {
