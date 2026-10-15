@@ -780,7 +780,10 @@ function readMovement(
 ): MovementInput {
 	const productId = readString(payload["productId"]);
 	// A restock does not use `onHand` (it is unpinned) but still requires it, as
-	// every caller sends it; a removal keeps it as its watermark.
+	// every caller sends it; a removal keeps it as its watermark. Requiring it for
+	// restocks is DELIBERATE (#502, kept over the old TODO to drop it): an absent
+	// watermark is a hand-made or version-skewed payload, so it is refused as
+	// unreadable for both directions before anything is sent (see `parseOnHand`).
 	const onHand = parseOnHand(payload["onHand"]);
 	const nonce = readNonce(payload["nonce"]);
 	if (productId === undefined || onHand === null || nonce === undefined) {
