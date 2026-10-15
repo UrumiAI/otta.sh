@@ -28,7 +28,9 @@
 import {
 	EmailSendTimeoutError,
 	EmailTransportUnavailableError,
+	isCutShortEmailTimeout,
 	isEmailSendTimeoutError,
+	recordedEmailTaxTotalsDisplay,
 	renderEmail,
 	taxTotalsDisplayOf,
 	TRANSPORT_UNAVAILABLE_RETRY_MS,
@@ -94,6 +96,11 @@ export interface CtxEmailSenderOptions {
 	 *  given — only for an email whose order recorded no display (#502), and at
 	 *  most once per sender. Must not reject (fail-soft). */
 	readTaxTotalsDisplay?: (() => Promise<TaxTotalsDisplay | undefined>) | undefined;
+	/** Asked once the email is rendered — after any lazy settings read — just
+	 *  before `ctx.email.send`. `false` ⇒ the send is NOT started: a CUT-SHORT
+	 *  timeout, which {@link countTimeoutsAsAttempts} lets through uncounted (the
+	 *  inline path's `MIN_INLINE_SEND_MS` floor, r3 S2 / #502). */
+	canStart?: (() => boolean) | undefined;
 	/** Told when the host answered "no email provider" — {@link makeEmailSender}
 	 *  records it ({@link markEmailTransportUnavailable}). */
 	onUnavailable?: (() => Promise<void>) | undefined;
@@ -112,6 +119,7 @@ export class CtxEmailSender implements EmailSender {
 	readonly #taxTotalsDisplay: TaxTotalsDisplay | undefined;
 	readonly #readTaxTotalsDisplay: (() => Promise<TaxTotalsDisplay | undefined>) | undefined;
 	#liveTaxTotalsDisplay: Promise<TaxTotalsDisplay | undefined> | undefined;
+	readonly #canStart: (() => boolean) | undefined;
 	readonly #onUnavailable: (() => Promise<void>) | undefined;
 	readonly #onSent: (() => Promise<void>) | undefined;
 	#sentRecorded = false;
@@ -125,6 +133,7 @@ export class CtxEmailSender implements EmailSender {
 		this.#storefrontOrigin = options.storefrontOrigin;
 		this.#taxTotalsDisplay = options.taxTotalsDisplay;
 		this.#readTaxTotalsDisplay = options.readTaxTotalsDisplay;
+		this.#canStart = options.canStart;
 	}
 
 	/** The live option for this email: needed only when its order recorded no
@@ -133,15 +142,15 @@ export class CtxEmailSender implements EmailSender {
 		if (this.#taxTotalsDisplay !== undefined || this.#readTaxTotalsDisplay === undefined) {
 			return this.#taxTotalsDisplay;
 		}
-		const recorded = input.data["taxTotalsDisplay"];
 		if (
 			input.template === "customer-login-link" ||
-			recorded === "itemized" ||
-			recorded === "single"
+			recordedEmailTaxTotalsDisplay(input.data) !== undefined
 		) {
 			return undefined;
 		}
-		this.#liveTaxTotalsDisplay ??= this.#readTaxTotalsDisplay();
+		// Fail-soft even if a reader rejects: the single Tax row, never a failed
+		// send, and never a rejected promise shared by every later send.
+		this.#liveTaxTotalsDisplay ??= this.#readTaxTotalsDisplay().catch(() => undefined);
 		return this.#liveTaxTotalsDisplay;
 	}
 
@@ -160,6 +169,11 @@ export class CtxEmailSender implements EmailSender {
 					? orderPageUrl(this.#storefrontOrigin, orderId)
 					: undefined,
 		});
+		// Nothing has been handed to the host yet: too little time left to start
+		// is the caller's own limit, handed back uncounted.
+		if (this.#canStart !== undefined && !this.#canStart()) {
+			throw new EmailSendTimeoutError(0, { cutShort: true });
+		}
 		const timeoutMs = typeof this.#timeoutMs === "function" ? this.#timeoutMs() : this.#timeoutMs;
 		// `ctx.email.send` takes no abort signal, so the send is RACED: a hung
 		// provider must never hold a cron tick or a request open. The loser keeps
@@ -368,6 +382,8 @@ export async function makeEmailSender(
 		/** Read "Display tax totals" for order emails (default). The sign-in email
 		 *  has no totals, so its sender skips the read under its short ceiling. */
 		orderTotals?: boolean;
+		/** {@link CtxEmailSenderOptions.canStart}. */
+		canStart?: () => boolean;
 	} = {},
 ): Promise<EmailSender | undefined> {
 	const email = ctx.email;
@@ -392,6 +408,7 @@ export async function makeEmailSender(
 		...(options.requestTimeoutMs !== undefined
 			? { requestTimeoutMs: options.requestTimeoutMs }
 			: {}),
+		...(options.canStart !== undefined ? { canStart: options.canStart } : {}),
 	});
 }
 
@@ -434,6 +451,10 @@ export async function makeLoginEmailSender(ctx: PluginContext): Promise<EmailSen
  * timeout is counted and rescheduled like any failure, so duplicates stop at
  * the row's `maxAttempts`. Wrap OUTERMOST, around any wrapper that makes its
  * own timeouts (the sweep's timer).
+ *
+ * Except a CUT-SHORT timeout ({@link isCutShortEmailTimeout}): only thrown before
+ * the host call starts (`canStart`, #502), so nothing can have gone out — it
+ * passes through and the dispatcher hands the row back uncounted.
  */
 export function countTimeoutsAsAttempts(sender: EmailSender): EmailSender {
 	return {
@@ -441,7 +462,9 @@ export function countTimeoutsAsAttempts(sender: EmailSender): EmailSender {
 			try {
 				await sender.send(input);
 			} catch (err) {
-				if (!isEmailSendTimeoutError(err)) throw err;
+				// A cut-short timeout was thrown before anything reached the host
+				// (`canStart`): nothing can have been delivered, so it stays uncounted.
+				if (!isEmailSendTimeoutError(err) || isCutShortEmailTimeout(err)) throw err;
 				throw new Error(
 					`email send timed out${err.timeoutMs === undefined ? "" : ` after ${String(err.timeoutMs)} ms`}; counted as an attempt (the email may have been delivered)`,
 					{ cause: err },

@@ -19,6 +19,7 @@
 import {
 	EmailSendTimeoutError,
 	TRANSPORT_UNAVAILABLE_RETRY_MS,
+	isCutShortEmailTimeout,
 	isEmailSendTimeoutError,
 	isEmailTransportUnavailableError,
 	type EmailTemplate,
@@ -370,6 +371,28 @@ describe("countTimeoutsAsAttempts", () => {
 		);
 		expect(isEmailSendTimeoutError(err)).toBe(false);
 		expect(String((err as Error).message)).toContain("5000 ms");
+	});
+
+	test("#502: a CUT-SHORT timeout (the send never started) passes through uncounted", async () => {
+		const cut = new EmailSendTimeoutError(0, { cutShort: true });
+		expect(
+			await rejectionOf(countTimeoutsAsAttempts({ send: () => Promise.reject(cut) }).send(INPUT)),
+		).toBe(cut);
+	});
+
+	test("#502: `canStart` refusing after the render ⇒ a cut-short timeout, and ctx.email is never called", async () => {
+		const messages: EmailMessage[] = [];
+		const sender = new CtxEmailSender({
+			email: {
+				async send(message) {
+					messages.push(message);
+				},
+			},
+			canStart: () => false,
+		});
+		const err = await rejectionOf(sender.send(INPUT));
+		expect(isCutShortEmailTimeout(err)).toBe(true);
+		expect(messages).toEqual([]);
 	});
 
 	test("the no-provider error and any other failure pass through untouched", async () => {

@@ -2,7 +2,11 @@ import { describe, expect, test } from "vitest";
 import { cents, currency } from "../../src/money/cents.js";
 import { buildOrderEmailData } from "../../src/orders/transition.js";
 import type { Order } from "../../src/orders/model.js";
-import { renderEmail, type EmailRenderContext } from "../../src/email/render.js";
+import {
+	recordedEmailTaxTotalsDisplay,
+	renderEmail,
+	type EmailRenderContext,
+} from "../../src/email/render.js";
 
 /**
  * Issue #422: the order emails show one tax row per tax (the order's frozen v1
@@ -195,5 +199,18 @@ describe("renderEmail's tax rows", () => {
 			const rendered = renderEmail("order-confirmation", { ...base, taxRows }, ITEMIZED);
 			expect(rendered.text).toContain("Tax: [INR 2140]");
 		}
+	});
+});
+
+describe("recordedEmailTaxTotalsDisplay (#502)", () => {
+	test("a known recorded display is returned; anything else, or nothing, is undefined", () => {
+		expect(recordedEmailTaxTotalsDisplay({ taxTotalsDisplay: "itemized" })).toBe("itemized");
+		expect(recordedEmailTaxTotalsDisplay({ taxTotalsDisplay: "single" })).toBe("single");
+		for (const taxTotalsDisplay of [undefined, null, "", "ITEMIZED", 1, {}]) {
+			expect(recordedEmailTaxTotalsDisplay({ taxTotalsDisplay }), String(taxTotalsDisplay)).toBe(
+				undefined,
+			);
+		}
+		expect(recordedEmailTaxTotalsDisplay({})).toBe(undefined);
 	});
 });

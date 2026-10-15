@@ -329,7 +329,8 @@ export const STARVING_TICKS = 3 * AGING_TICKS;
  *  - An email, from just before the send: the refund-total and recipient reads (two),
  *    building the sender (`EMAIL_SENDER_BUILD_READS`, three at most: two kv reads on
  *    the first send, and the tax options' settings read, issue #422, on the first
- *    send of an order that recorded no display, #502), the send (one), its
+ *    send of the sender that needs it — an order that recorded no display, #502),
+ *    the send (one), its
  *    "last sent" record (`EMAIL_SENT_RECORD_WRITES`, one kv write, also on the first
  *    send), and marking it sent (three: the read, the write, the locator) — ten.
  *    `cron-leg-costs.test.ts` measures it with the REAL sender construction.

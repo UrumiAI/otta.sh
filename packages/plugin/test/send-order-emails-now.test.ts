@@ -429,6 +429,47 @@ describe("a send never outlives the wait", () => {
 		expect(await cronView(id)).toMatchObject({ attempts: 1, timeouts: 0 });
 	});
 
+	test("#502: the floor is checked again AFTER the lazy tax-display read — an unrecorded order whose settings read eats the margin sends nothing, uncounted", async () => {
+		// The seeded order records no "Display tax totals", so its email reads the
+		// live option inside the send — after the build's own floor check.
+		const id = await seedOrder("ord-slow-tax-display", true);
+		let clock = 0;
+		const deadline = settleDeadline(() => clock);
+		const { orderStore } = harness.stores;
+		const realClaim = orderStore.claimNextEmailForOrder.bind(orderStore);
+		vi.spyOn(orderStore, "claimNextEmailForOrder").mockImplementation(async (...args) => {
+			const row = await realClaim(...args);
+			// `canSend` and the build's check still see 1.1 s left…
+			clock += ORDER_EMAIL_INLINE_DEADLINE_MS - (MIN_INLINE_SEND_MS + 100);
+			return row;
+		});
+		const { ctx, messages } = withEmail();
+		// …but the settings read takes 200 ms of it.
+		const storage = ctx.storage as unknown as Record<string, Record<string, unknown>>;
+		const settings = storage["settings"];
+		if (settings === undefined) throw new Error("no settings collection");
+		const slowSettings = new Proxy(settings, {
+			get(target, prop, receiver) {
+				const value: unknown = Reflect.get(target, prop, receiver);
+				if (prop !== "get" || typeof value !== "function") return value;
+				return (...args: unknown[]) => {
+					clock += 200;
+					return (value as (...a: unknown[]) => unknown).apply(target, args);
+				};
+			},
+		});
+		ctx.storage = new Proxy(storage, {
+			get: (target, prop, receiver) =>
+				prop === "settings" ? slowSettings : Reflect.get(target, prop, receiver),
+		}) as unknown as PluginContext["storage"];
+
+		const result = await sendOrderEmailsNow(ctx, harness.stores, id, { deadline });
+
+		expect(messages).toHaveLength(0);
+		expect(result.sent).toEqual([]);
+		expect(await cronView(id)).toMatchObject({ attempts: 1, timeouts: 0 });
+	});
+
 	test("r3 F5: a delivered inline send records `state:emailLastSentAt` through the real path", async () => {
 		const id = await seedOrder("ord-records-sent", true);
 		const { ctx, messages } = withEmail();
