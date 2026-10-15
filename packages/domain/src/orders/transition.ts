@@ -242,7 +242,7 @@ export function markRefundedRefusal(
  * emails the buyer.
  */
 export function markRefundedAllowed(
-	order: Pick<Order, "paymentMethod" | "reconciliationFlag">,
+	order: Pick<Order, "reconciliationFlag">,
 	facts: RefundLedgerFacts,
 ): boolean {
 	return markRefundedRefusal(order, facts) === null;
