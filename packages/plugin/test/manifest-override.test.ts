@@ -161,6 +161,24 @@ describe("extraAllowedHosts (OTTA_EXTRA_ALLOWED_HOSTS)", () => {
 		);
 	});
 
+	// Pins what Node 26 really does with the entry the case above skips: its URL
+	// parser accepts the name, so it is a valid extra host there. A parser change on
+	// either side (Node or this validator) is noticed here (#492).
+	test.runIf(nodeMajor >= 26)(
+		"ACCEPTED on Node 26+ (its parser takes the xn-- label): xn--localhost.com",
+		() => {
+			expect(normalizeExtraHost("xn--localhost.com")).toBe("xn--localhost.com");
+			expect(resolveAllowedHosts({ extraAllowedHosts: "xn--localhost.com" })).toEqual([
+				...BASELINE,
+				"xn--localhost.com",
+			]);
+			expect(parseExtraAllowedHosts("ok.example.com, xn--localhost.com")).toEqual([
+				"ok.example.com",
+				"xn--localhost.com",
+			]);
+		},
+	);
+
 	test("the build-time error names every offending entry", () => {
 		expect(() => parseExtraAllowedHosts("good.example.com,*.bad.com,x.local")).toThrow(
 			/"\*\.bad\.com", "x\.local"/,
