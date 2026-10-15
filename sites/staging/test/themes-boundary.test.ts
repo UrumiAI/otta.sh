@@ -25,7 +25,7 @@ import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, test } from "vitest";
-import { DEFAULT_THEME_ID, isThemeId, STORE_THEMES } from "../src/themes/manifest.js";
+import { DEFAULT_THEME_ID, STORE_THEMES } from "../src/themes/manifest.js";
 import { THEMES } from "../src/themes/registry.js";
 import { COMMERCE_VIEW_FILES } from "./theme-views.js";
 
@@ -73,7 +73,7 @@ test("the sweep found the themes — an empty list would pass every case below",
 			...Object.values(COMMERCE_VIEW_FILES).map((file) => `themes/tempered/${file}`),
 		]),
 	);
-	expect(CODE).toEqual(expect.arrayContaining(["themes/registry.ts", "themes/resolve.ts"]));
+	expect(CODE).toEqual(expect.arrayContaining(["themes/registry.ts"]));
 });
 
 describe("themes are presentation — no store logic reaches src/themes/**", () => {
@@ -119,7 +119,7 @@ describe("themes are presentation — no store logic reaches src/themes/**", () 
 describe("the theme list has one source", () => {
 	test("the manifest's default is registered, and is Tempered", () => {
 		expect(DEFAULT_THEME_ID).toBe("tempered");
-		expect(isThemeId(DEFAULT_THEME_ID)).toBe(true);
+		expect(STORE_THEMES.map((theme) => theme.id)).toContain(DEFAULT_THEME_ID);
 	});
 
 	test("ids are unique and every entry has a label", () => {
@@ -237,53 +237,5 @@ describe("the commerce views — the registry wires exactly what is on disk", ()
 		const shell = readFileSync(path.join(SRC, "layouts/Storefront.astro"), "utf8");
 		expect(shell).toContain("fallbackSheetFor(theme, props.view)");
 		expect(shell).toContain('<link rel="stylesheet" href={viewSheet} slot="head" />');
-	});
-
-	test("only a theme that renders the bag's lines in its chrome opts into the cart-lines read", () => {
-		// `ThemeModule.chrome.cartLines` makes the shell pay one cart read on every
-		// non-checkout page. A theme that sets it must actually DRAW the lines — its
-		// Layout takes `chrome.bag` and it, or a theme component it imports, reads
-		// the bag's `lines` (e.g. a bag drawer or a bag strip) — and
-		// every theme that does not draw them must not set it (it would pay a read
-		// for nothing). The scan goes ONE import deep (the Layout and the theme
-		// components it imports directly); a theme that read the lines two
-		// components down would need this widened.
-		for (const id of THEME_DIRS) {
-			const block = themeBlock(id);
-			const layout = read(`themes/${id}/Layout.astro`);
-			const opts = /chrome:\s*\{\s*cartLines:\s*true\s*\}/.test(block);
-			const imported = [...code(`themes/${id}/Layout.astro`).matchAll(/from\s+"\.\/(\w+)\.astro"/g)]
-				.map((match) => `themes/${id}/${match[1] ?? ""}.astro`)
-				.map((file) => code(file))
-				.join("\n");
-			const draws =
-				/chrome\.bag\b/.test(layout) &&
-				/\bbag\.lines\b/.test(code(`themes/${id}/Layout.astro`) + imported);
-			expect(opts, `${id}: chrome.cartLines vs drawing chrome.bag's lines`).toBe(draws);
-		}
-		// No theme this repo ships draws the lines today (Tempered's chrome shows a
-		// count), so nothing in the registry sets it; the read itself is pinned
-		// with an in-test fixture theme in bag.test.ts.
-		expect(registry.match(/cartLines\s*:/g)).toBeNull();
-	});
-
-	test("the shell reads the bag only for an opted-in theme, off the checkout flow", () => {
-		const shell = readFileSync(path.join(SRC, "layouts/Storefront.astro"), "utf8");
-		// Opted in, not a checkout-flow view, and a cart link in the chrome to
-		// hang the bag on — all three, or no read.
-		expect(shell).toMatch(
-			/const drawsBag =\s*theme\.chrome\?\.cartLines === true && !BAGLESS_VIEWS\.has\(props\.view \?\? ""\) && hasCartLink;/,
-		);
-		expect(shell).toMatch(
-			/const hasCartLink = withAccountLink\(navItems\)\.some\(\(item\) => isCartLink\(item\.url\)\);/,
-		);
-		expect(shell).toMatch(/const bagPending = drawsBag\s*\?\s*readBag\(/);
-		expect(shell).toContain('new Set(["cart", "checkout", "pay", "order"])');
-		// Started before the settings read is awaited, so the two run together.
-		expect(shell.indexOf("const bagPending")).toBeLessThan(shell.indexOf("await settingsRead"));
-		// One call site, no other commerce read in the shell.
-		expect(shell.match(/readBag\(/g)).toHaveLength(1);
-		expect(shell).not.toMatch(/dispatchOttaRoute/);
-		expect(shell).not.toMatch(/markBusy/);
 	});
 });

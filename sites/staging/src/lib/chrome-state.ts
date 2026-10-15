@@ -13,7 +13,7 @@
  * depends on (no cookie ⇒ no dispatch), and the middleware sends every HTML page
  * rendered for such a request `private, no-store` and out of the route cache.
  *
- * FAIL SOFT, like the bag (`lib/bag.ts`): chrome decorates a page that has its
+ * FAIL SOFT: chrome decorates a page that has its
  * own job, so any answer but a clean one is "draw nothing" — never an error page,
  * never a 503.
  */

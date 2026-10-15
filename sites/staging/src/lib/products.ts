@@ -24,9 +24,9 @@ export interface ProductEntryData {
 /**
  * A product's own identity key: its slug, or its id when it has none. ONE
  * rule, because several things must agree on it — the catalog card's `slug`,
- * the product page's `art`, a bag line's `artKey` and every product path —
- * and a theme that ties them together (e.g. a card → product → bag morph
- * that names all three alike) breaks silently the day one of them drifts.
+ * the product page's `art`, a cart line's `artKey` and every product path —
+ * and a theme that ties them together (e.g. a card → product morph that
+ * names them alike) breaks silently the day one of them drifts.
  */
 export function productKey(entry: { readonly slug?: string | null; readonly id: string }): string {
 	return entry.slug ?? entry.id;

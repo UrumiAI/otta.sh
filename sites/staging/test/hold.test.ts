@@ -17,6 +17,7 @@ import {
 	holdNote,
 	holdView,
 	isFreshHold,
+	wallClock,
 } from "../src/lib/hold.js";
 
 /** A fixed "now" — the tests move `expiresAt`, never the clock. */
@@ -26,6 +27,15 @@ const NOW = new Date("2026-07-28T14:00:00.000Z");
 function inSeconds(seconds: number): string {
 	return new Date(NOW.getTime() + seconds * 1000).toISOString();
 }
+
+describe("wallClock — static hold copy outside the countdown", () => {
+	test("wallClock floors to the minute and names UTC", () => {
+		expect(wallClock("2026-09-30T16:52:59.900Z")).toBe("4:52 pm UTC");
+		expect(wallClock("2026-09-30T00:05:00Z")).toBe("12:05 am UTC");
+		expect(wallClock("2026-09-30T12:00:00Z")).toBe("12:00 pm UTC");
+		expect(wallClock("nope")).toBeNull();
+	});
+});
 
 describe("holdView — the three states and their boundaries", () => {
 	test("a fresh hold is `held`", () => {

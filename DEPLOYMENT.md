@@ -606,6 +606,13 @@ order of appearance in a deployment's life:
 > way (they are not `settings:` keys, so sandboxed mode holds them in `_plugin_storage` only),
 > or left: nothing reads them.
 
+> **Leftover theme key (optional to delete).** Builds before issue #501 read the storefront theme
+> from plugin kv `settings:storeTheme`. Otta now renders Tempered, its only theme, and nothing
+> reads that key. It is not a secret, so leaving it is harmless. To delete it, run
+> `wrangler d1 execute YOUR-D1-DATABASE-NAME --remote --config wrangler.local.jsonc --command "DELETE FROM options WHERE name = 'plugin:otta:settings:storeTheme'"`.
+> A sandboxed deployment may also hold it in `_plugin_storage`:
+> `... --command "DELETE FROM _plugin_storage WHERE plugin_id = 'otta' AND collection = '__kv' AND id = 'settings:storeTheme'"`.
+
 ## 4. Egress and `allowedHosts`
 
 The plugin's only egress is `ctx.http.fetch`, gated by the descriptor's `allowedHosts`

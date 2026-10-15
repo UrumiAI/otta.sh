@@ -165,8 +165,8 @@ export function absoluteExpiry(expiresAt: string | null | undefined): string | n
 
 /**
  * The hold's expiry as a wall clock — "4:52 pm UTC" — for copy that must stay
- * true for as long as the page is open without a script to count (a drawer's
- * static line, a stamp's fixed text).
+ * true for as long as the page is open without a script to count (a stamp's
+ * fixed text).
  *
  * The minute is FLOORED, so the copy never promises time the shopper does not
  * have, and UTC is named for `absoluteExpiry`'s reason: the server cannot know

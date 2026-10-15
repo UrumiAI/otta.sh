@@ -1,8 +1,8 @@
 /**
  * ONE product key (`lib/products.ts`): the catalog card's `slug`, the product
- * page's `art`, a bag line's `artKey` and every product path agree on it, so a
- * theme that ties them together (a card → product → bag morph naming all three
- * alike) cannot break silently the day one of them drifts.
+ * page's `art`, a cart line's `artKey` and every product path agree on it, so a
+ * theme that ties them together (a card → product morph naming them alike)
+ * cannot break silently the day one of them drifts.
  */
 import { readFileSync } from "node:fs";
 import path from "node:path";
@@ -12,7 +12,7 @@ import { SRC } from "./theme-views.js";
 
 const page = (file: string): string => readFileSync(path.join(SRC, "pages", file), "utf8");
 
-describe("one product key, so the card, the product page and the bag line agree", () => {
+describe("one product key, so the card, the product page and the cart line agree", () => {
 	test("productKey is the slug, else the id; productPath is built from it", () => {
 		expect(productKey({ slug: "vase", id: "p-1" })).toBe("vase");
 		expect(productKey({ slug: null, id: "p-1" })).toBe("p-1");
@@ -36,8 +36,5 @@ describe("one product key, so the card, the product page and the bag line agree"
 		for (const file of ["index.astro", "products/index.astro"]) {
 			expect(page(file), file).toContain("slug: productKey(product),");
 		}
-		expect(readFileSync(path.join(SRC, "lib/bag.ts"), "utf8")).toMatch(
-			/artKey: content === null \? \(line\.productId \?\? line\.sku\) : productKey\(content\)/,
-		);
 	});
 });

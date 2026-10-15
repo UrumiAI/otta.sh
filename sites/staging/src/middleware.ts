@@ -13,11 +13,11 @@
  *
  * THE CACHING RULE.
  * A page whose chrome draws the shopper's own state is PER-SHOPPER. For a theme
- * that opts into the chrome's cart-lines read (`ThemeModule.chrome.cartLines`)
- * or into the shopper's state (`chrome.shopperState`: the cart count and the
- * signed-in label on every page — QA U-12, U-14), a request carrying a cart
- * cookie can render that shopper's cart into the header of any page, and (for
- * `shopperState`) one carrying a session cookie their signed-in state. Its HTML
+ * that opts into the shopper's state (`ThemeModule.chrome.shopperState`: the
+ * cart count and the signed-in label on every page — QA U-12, U-14; Tempered
+ * does), a request carrying a cart cookie can render that shopper's cart count
+ * into the header of any page, and one carrying a session cookie their
+ * signed-in state. Its HTML
  * is sent `private, no-store` and kept out of Astro's route cache — it must
  * never be stored and replayed to anyone else.
  *
@@ -73,7 +73,7 @@ import { isPrivateDownloadMediaRequest } from "./lib/media-deny.js";
 import { PRIVATE_NO_STORE } from "./lib/no-store.js";
 import { rejectCrossOrigin } from "./lib/origin-guard.js";
 import { themeFor } from "./themes/registry.js";
-import { activeTheme } from "./themes/resolve.js";
+import { DEFAULT_THEME_ID } from "./themes/manifest.js";
 
 /** `Cache-Control` for a page that drew one shopper's state — the site's ONE
  *  private, no-store constant, under the name its callers already use. */
@@ -131,20 +131,14 @@ export const onRequest = defineMiddleware(async (context, next) => {
 	}
 	if (url.pathname.startsWith("/_")) return next();
 
-	// A shopper with a cart or a session, on a theme whose chrome draws it. The
-	// theme is asked only when there IS such a cookie, and `activeTheme` is
-	// memoized per request, so the shell's own call reuses this answer. It is
-	// asked on every such GET, not only pages (an endpoint or a redirect too):
-	// deliberate, since it is one memoized read and the HTML check below is what
-	// decides the header.
+	// A shopper with a cart or a session, on a theme whose chrome draws it. Every
+	// such GET, not only pages (an endpoint or a redirect too): the HTML check
+	// below is what decides the header.
 	const hasCart = (cookies.get(CART_COOKIE_NAME)?.value ?? "").length > 0;
 	const hasSession = (cookies.get(SESSION_COOKIE_NAME)?.value ?? "").length > 0;
 	if (!hasCart && !hasSession) return next();
-	const chrome = themeFor(await activeTheme(context)).chrome;
-	const drawsShopper = chrome?.shopperState === true;
-	const perShopper =
-		(hasCart && (drawsShopper || chrome?.cartLines === true)) || (hasSession && drawsShopper);
-	if (!perShopper) return next();
+	const drawsShopper = themeFor(DEFAULT_THEME_ID).chrome?.shopperState === true;
+	if (!drawsShopper) return next();
 	skipRouteCache(context);
 	const response = await next();
 	// Again after the page (TWO CACHES above).

@@ -22,7 +22,7 @@ describe("the sandbox entry's test hooks", () => {
 		const ok = await worker.fetch(new Request(`http://sandbox/kv/${STAMP}`, { method: "DELETE" }));
 		expect(ok.status).toBe(200);
 		const other = await worker.fetch(
-			new Request(`http://sandbox/kv/${encodeURIComponent("settings:storeTheme")}`, {
+			new Request(`http://sandbox/kv/${encodeURIComponent("settings:storeDisplayName")}`, {
 				method: "DELETE",
 			}),
 		);

@@ -209,6 +209,17 @@ describe("the middleware keeps a shopper-state page private", () => {
 		expect(ctx.cache.set.mock.calls).toEqual([[false], [false]]);
 	});
 
+	test("a page that sets a cache hint cannot re-enable the route cache", async () => {
+		// Astro 7's `cache.set(options)` clears an earlier `set(false)`, and the
+		// route cache reads the options after `next()` returns.
+		const ctx = middlewareContext({ otta_cart: "cart-1" });
+		await runMiddleware(ctx, () => {
+			ctx.cache.set({ maxAge: 60 });
+			return page();
+		});
+		expect(ctx.cache.set.mock.calls.at(-1)).toEqual([false]);
+	});
+
 	test("with neither cookie, the page's caching is untouched — it rendered the neutral header", async () => {
 		const ctx = middlewareContext({});
 		const response = await runMiddleware(ctx, () => page());
