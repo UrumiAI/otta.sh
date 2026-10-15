@@ -189,6 +189,9 @@ export interface RefundsSummary {
 	readonly remainingCents: number;
 	readonly paymentMethod: string | null;
 	readonly refundable: boolean;
+	/** A current provider captured this order's money, so a manual refund keeps
+	 *  the currency's payment step (#447). Absent from an older plugin ⇒ true. */
+	readonly providerCaptured?: boolean;
 }
 
 export interface TimelineEntry {

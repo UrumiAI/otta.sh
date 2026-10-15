@@ -21,7 +21,8 @@ import { isCurrentPaymentMethod } from "./payment-methods.js";
 import { roundingEntry } from "../pricing/payment-rounding.js";
 import { PROVIDER_REFUNDED_FLAG_PREFIX } from "./provider-refunded-flag.js";
 import { readOrderTaxSnapshot } from "./order-tax-snapshot.js";
-import { orderTaxRows, type TaxRow } from "./order-tax-rows.js";
+import type { TaxTotalsDisplay } from "../pricing/tax-settings.js";
+import { orderTaxRows, recordedTaxTotalsDisplay, type TaxRow } from "./order-tax-rows.js";
 import { sumFinalizedRefunds } from "./refund-order.js";
 import { revokeOrderEntitlements } from "./revoke-entitlements.js";
 import {
@@ -822,6 +823,10 @@ export function buildOrderEmailData(order: Order, toState: OrderState): Record<s
 		// itemizes its tax totals (the renderer decides, from its context). Absent
 		// for an order with nothing to itemize: the single Tax row, as before.
 		...withTaxRows(orderTaxRows(order.totals)),
+		// #478: the "Display tax totals" the order was placed under, which the
+		// renderer prefers to the store's live option. Absent on an order placed
+		// before it was recorded: the live option decides, as before.
+		...withTaxTotalsDisplay(recordedTaxTotalsDisplay(order.totals)),
 		// The order's line SNAPSHOT (title and unit price as bought), never the
 		// live product: an email sent after a rename still names what was paid for.
 		lines: order.lines.map((l) => ({
@@ -908,6 +913,12 @@ function taxLocated(order: Order): boolean {
 
 function withTaxRows(rows: TaxRow[] | null): { taxRows?: TaxRow[] } {
 	return rows === null ? {} : { taxRows: rows };
+}
+
+function withTaxTotalsDisplay(display: TaxTotalsDisplay | undefined): {
+	taxTotalsDisplay?: TaxTotalsDisplay;
+} {
+	return display === undefined ? {} : { taxTotalsDisplay: display };
 }
 
 /**

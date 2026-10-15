@@ -83,6 +83,34 @@ export function entitlementStoreContract(
 			expect(await store.check({ orderId: orderId("ord-1"), sku: sku("DIG-1") })).toBe(false);
 		});
 
+		test("check answers the same with and without `repair`: active, revoked and missing, on both scopes", async () => {
+			const { store } = await makeHarness();
+			await store.grant(grantInput());
+			await store.grant(
+				grantInput({
+					orderId: orderId("ord-2"),
+					sku: sku("DIG-2"),
+					buyerRef: "revoked@example.com",
+					grantIdempotencyKey: idempotencyKey("grant-2"),
+				}),
+			);
+			await store.revokeByOrder(orderId("ord-2"));
+			const cases = [
+				{ query: { orderId: orderId("ord-1"), sku: sku("DIG-1") }, active: true },
+				{ query: { buyerRef: "buyer@example.com", sku: sku("DIG-1") }, active: true },
+				{ query: { orderId: orderId("ord-2"), sku: sku("DIG-2") }, active: false },
+				{ query: { buyerRef: "revoked@example.com", sku: sku("DIG-2") }, active: false },
+				{ query: { orderId: orderId("ord-9"), sku: sku("DIG-1") }, active: false },
+				{ query: { buyerRef: "nobody@example.com", sku: sku("DIG-1") }, active: false },
+			];
+			for (const { query, active } of cases) {
+				const label = JSON.stringify(query);
+				expect(await store.check(query), label).toBe(active);
+				expect(await store.check(query, { repair: true }), label).toBe(active);
+				expect(await store.check(query), label).toBe(active);
+			}
+		});
+
 		// -- revokeByOrder: the full-refund revocation (issue #376) --------------
 
 		test("revokeByOrder revokes EVERY entitlement the order granted, on both scopes", async () => {

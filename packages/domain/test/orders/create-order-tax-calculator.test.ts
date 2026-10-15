@@ -125,6 +125,9 @@ describe("createOrderFromCart → TaxCalculator", () => {
 				},
 			],
 			shipping: { taxableCents: 500, rateBps: 1000, label: "Standard rate", taxCents: 50 },
+			// #478: the "Display tax totals" the order was placed under (nothing
+			// saved and a rate exists: the upgrade rule's single row).
+			totalsDisplay: "single",
 		});
 		expect(res.order.totals.tax).toBe(300);
 		expect(readOrderTaxSnapshot(res.order.totals.taxBreakdown)?.v).toBe(1);

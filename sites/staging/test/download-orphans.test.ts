@@ -266,6 +266,48 @@ describe("the product read the sweep makes", () => {
 		).toEqual({ kind: "failed" });
 	});
 
+	test("a downloadAsset that is neither an object nor null is a failed read, never 'no file'", async () => {
+		// Fail closed: read as "no file", the sweep would delete the live file.
+		for (const downloadAsset of ["dl/P1/01J9ZQ3V8K4M2N6P7R8S9T0VWX", 7, true, undefined]) {
+			const odd = dispatchAnswering({
+				ok: true,
+				product: { productId: "P1", productKind: "digital", deletedAt: null, downloadAsset },
+			});
+			expect(
+				currentDownloadOf(
+					await lookupProduct(odd.dispatch, "P1", undefined, new URL("https://x/")),
+				),
+				String(downloadAsset),
+			).toEqual({ kind: "failed" });
+		}
+	});
+
+	test("a trashed product's file is kept: the product can be restored (#481)", async () => {
+		const current = await upload("P9", 400);
+		const { dispatch } = dispatchAnswering({
+			ok: true,
+			product: {
+				productId: "P9",
+				productKind: "digital",
+				deletedAt: "2026-01-01T00:00:00.000Z",
+				downloadAsset: { key: current, filename: "a.pdf" },
+			},
+		});
+		const res = await sweepDownloadOrphans(
+			{
+				bucket,
+				currentDownload: async (productId) =>
+					currentDownloadOf(
+						await lookupProduct(dispatch, productId, undefined, new URL("https://x/")),
+					),
+				now: NOW,
+			},
+			{ tick: 0, caps: CAPS },
+		);
+		expect(res.deleted).toEqual([]);
+		expect(await keys()).toEqual([current]);
+	});
+
 	test("a product row with NO downloadAsset field is a failed read, never 'no file'", async () => {
 		// Fail closed: read as "no file", the sweep would delete the live file.
 		const bare = dispatchAnswering({

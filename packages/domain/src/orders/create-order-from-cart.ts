@@ -33,6 +33,7 @@ import { computeQuote, type QuoteTax } from "../pricing/quote.js";
 import { type PricedLine, quoteCommandFor } from "../pricing/quote-input.js";
 import type { SettingsStore } from "../ports/settings-store.js";
 import type { TaxCalculator } from "../pricing/tax-calculator.js";
+import { TAX_DISABLED_CALCULATOR_ID, type TaxTotalsDisplay } from "../pricing/tax-settings.js";
 import type { CreateOrderFailure } from "./errors.js";
 import { snapshotOrderLine } from "./line-snapshot.js";
 import type { Order, OrderAddress, PaymentMethod } from "./model.js";
@@ -434,6 +435,11 @@ export async function createOrderFromCart(
 			// #427: what each line was asked as (`taxRequestLinesOf`'s default).
 			taxStatuses: pricedLines.map((l) => l.taxStatus ?? "taxable"),
 			...(quote.taxAddress !== undefined ? { taxAddress: quote.taxAddress } : {}),
+			// #478: the order's pages and emails keep the display it was placed under.
+			// Only for a taxed order: one priced with tax off shows no Tax row at all.
+			...(quote.tax.calculatorId !== TAX_DISABLED_CALCULATOR_ID
+				? { taxTotalsDisplay: quote.taxSettings.totalsDisplay }
+				: {}),
 			couponRecord: quote.couponRecord,
 			shippingMethodSnapshot,
 			shippingAddress,
@@ -509,6 +515,9 @@ interface FinalizeContext {
 	taxStatuses: readonly ProductTaxStatus[];
 	/** The quote's `taxAddress` (#426), frozen into the snapshot. */
 	taxAddress?: OrderTaxAddress;
+	/** The store's "Display tax totals" at placement (#478), frozen into the
+	 *  snapshot; absent for an order priced with tax off. */
+	taxTotalsDisplay?: TaxTotalsDisplay;
 	couponRecord: CouponRecord | null;
 	/** What priced the shipping and tax (ADR-0021 Decision 7); null when no zone
 	 *  matched (no zones configured, or nothing ships). */
@@ -579,6 +588,7 @@ async function finalizeOrder(
 				ctx.taxLocated,
 				ctx.taxStatuses,
 				ctx.taxAddress,
+				ctx.taxTotalsDisplay,
 			),
 		},
 	});

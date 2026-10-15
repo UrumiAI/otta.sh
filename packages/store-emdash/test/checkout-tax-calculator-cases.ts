@@ -156,6 +156,9 @@ export function checkoutTaxCalculatorCases(bound: BoundStorage): void {
 				},
 			],
 			shipping: null,
+			// #478: the "Display tax totals" the order was placed under survives the
+			// order document (nothing saved, a calculator registered: single).
+			totalsDisplay: "single",
 		});
 	});
 

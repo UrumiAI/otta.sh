@@ -145,8 +145,8 @@ describe("the buyer's order pages", () => {
 	});
 
 	test("single: one Tax row with the total", async () => {
-		const id = await placeOrder("single");
 		await saveTax({ totalsDisplay: "single" }, "tax-single");
+		const id = await placeOrder("single");
 		const read = await h.client.getPublicOrder(id);
 		if (!read.ok) throw new Error(read.reason);
 		const view = buildOrderView(read.order, "en-US");
@@ -183,6 +183,47 @@ describe("the buyer's order pages", () => {
 			view.totals.total.money?.amount,
 		);
 		expect(view.totals.total.label).toBe("$150.00");
+	});
+
+	test("#478: a placed order keeps the display it was placed under, whatever the option says later", async () => {
+		const itemized = await placeOrder("kept-itemized");
+		await saveTax({ totalsDisplay: "single" }, "tax-single");
+		const single = await placeOrder("kept-single");
+		await saveTax({ totalsDisplay: "itemized" }, "tax-itemized-again");
+		await saveTax({ totalsDisplay: "single" }, "tax-single-again");
+		const pub = await h.client.getPublicOrder(itemized);
+		if (!pub.ok) throw new Error(pub.reason);
+		expect(rowsOf(buildOrderView(pub.order, "en-US"))).toEqual(ITEMIZED);
+		await saveTax({ totalsDisplay: "itemized" }, "tax-itemized-last");
+		const one = await h.client.getPublicOrder(single);
+		if (!one.ok) throw new Error(one.reason);
+		expect(
+			buildOrderView(one.order, "en-US").totals.taxRows.map((r) => [r.label, r.amount.label]),
+		).toEqual([["Tax", "$20.50"]]);
+	});
+
+	test("#478: the account's order page keeps the placed display too", async () => {
+		const customer = await h.stores.customerStore.create({ email: toEmail("ada@example.com") });
+		const session = await h.stores.sessionStore.create(customer.id);
+		const id = await placeOrder("acct-kept", session);
+		await saveTax({ totalsDisplay: "single" }, "tax-single");
+		const read = await h.client.getMyOrder(session.token, id);
+		if (!read.ok) throw new Error(read.reason);
+		expect(rowsOf(buildOrderView(read.order as never, "en-US"))).toEqual(ITEMIZED);
+	});
+
+	test("#478: an order placed before the display was recorded follows the live option", async () => {
+		const id = await placeOrder("unrecorded");
+		await stripRecordedDisplay(id);
+		const before = await h.client.getPublicOrder(id);
+		if (!before.ok) throw new Error(before.reason);
+		expect(rowsOf(buildOrderView(before.order, "en-US"))).toEqual(ITEMIZED);
+		await saveTax({ totalsDisplay: "single" }, "tax-single");
+		const after = await h.client.getPublicOrder(id);
+		if (!after.ok) throw new Error(after.reason);
+		expect(
+			buildOrderView(after.order, "en-US").totals.taxRows.map((r) => [r.label, r.amount.label]),
+		).toEqual([["Tax", "$20.50"]]);
 	});
 
 	test("an older order with no tax snapshot keeps the single Tax row", async () => {
@@ -231,7 +272,29 @@ describe("the order emails", () => {
 	});
 
 	test("single: the email keeps the one Tax row", async () => {
+		await saveTax({ totalsDisplay: "single" }, "tax-single");
 		const id = await placeOrder("mail-single");
+		const text = await render(id);
+		expect(text).toContain("Tax: $20.50");
+		expect(text).not.toContain("GST 18%");
+	});
+
+	test("#478: an order's email keeps the display it was placed under, whatever the option says later", async () => {
+		const itemized = await placeOrder("mail-kept-itemized");
+		await saveTax({ totalsDisplay: "single" }, "tax-single");
+		const single = await placeOrder("mail-kept-single");
+		const kept = await render(itemized);
+		expect(kept).toMatch(/^GST 18%: \$18\.00$/m);
+		expect(kept).not.toMatch(/^Tax:/m);
+		await saveTax({ totalsDisplay: "itemized" }, "tax-itemized-again");
+		const one = await render(single);
+		expect(one).toContain("Tax: $20.50");
+		expect(one).not.toContain("GST 18%");
+	});
+
+	test("#478: an order placed before the display was recorded emails by the live option", async () => {
+		const id = await placeOrder("mail-unrecorded");
+		await stripRecordedDisplay(id);
 		await saveTax({ totalsDisplay: "single" }, "tax-single");
 		const text = await render(id);
 		expect(text).toContain("Tax: $20.50");
@@ -269,5 +332,20 @@ async function stripSnapshot(id: string): Promise<void> {
 	if (doc === null) throw new Error("no order doc");
 	const value = structuredClone(doc.value) as { totals: Record<string, unknown> };
 	value.totals["taxBreakdown"] = null;
+	await orders.compareAndSet(id, doc.revision, value as never);
+}
+
+/** Rewrite the stored order's tax snapshot as one written before #478: no
+ *  recorded "Display tax totals". */
+async function stripRecordedDisplay(id: string): Promise<void> {
+	const { collectionOf, ORDERS_COLLECTION } = await import("@otta-sh/store-emdash");
+	const orders = collectionOf<Record<string, unknown>>(h.ctx.storage as never, ORDERS_COLLECTION);
+	const doc = await orders.getVersioned(id);
+	if (doc === null) throw new Error("no order doc");
+	const value = structuredClone(doc.value) as {
+		totals: { taxBreakdown: Record<string, unknown> };
+	};
+	expect(value.totals.taxBreakdown).toHaveProperty("totalsDisplay");
+	delete value.totals.taxBreakdown["totalsDisplay"];
 	await orders.compareAndSet(id, doc.revision, value as never);
 }

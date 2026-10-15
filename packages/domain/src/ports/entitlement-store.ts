@@ -35,6 +35,16 @@ export interface EntitlementQuery {
 	sku: Sku;
 }
 
+/** How a `check` may run. */
+export interface EntitlementCheckOptions {
+	/** Let the store repair its own lookup data (a cache pointer) while it
+	 *  answers. Off by default, so a plain `check` writes nothing — a page that
+	 *  only displays access (the console's order detail) never writes. The
+	 *  delivery gates (the download route, the storefront's entitlement check)
+	 *  pass `true`. The answer is the same either way. */
+	repair?: boolean;
+}
+
 /**
  * The `EntitlementStore` port (Phase 4 §6). Shared machinery for
  * digital-via-Stripe. Grant is idempotent under `grantIdempotencyKey`
@@ -48,8 +58,9 @@ export interface EntitlementStore {
 	/** True iff an `active` entitlement matches the query (order/buyer + sku).
 	 *  `buyerRef` matching is CASE-INSENSITIVE (email semantics — a case-distinct
 	 *  ref is the same principal), so a session-derived lower-normalized Email
-	 *  hits an entitlement granted from a mixed-case checkout ref. */
-	check(query: EntitlementQuery): Promise<boolean>;
+	 *  hits an entitlement granted from a mixed-case checkout ref. Writes
+	 *  nothing unless `opts.repair` is `true` (see {@link EntitlementCheckOptions}). */
+	check(query: EntitlementQuery, opts?: EntitlementCheckOptions): Promise<boolean>;
 	/**
 	 * Revoke every entitlement `orderId` granted — the full-refund revocation
 	 * (issue #376: a fully refunded order must stop authorizing its downloads).

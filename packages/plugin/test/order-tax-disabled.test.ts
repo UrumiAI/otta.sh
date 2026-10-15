@@ -22,6 +22,8 @@ import {
 
 const USD = currency("USD");
 let h: InProcessCommerceHarness;
+/** The placed order's stored tax snapshot, as the last `placedOrderView` left it. */
+let placedSnapshot: unknown;
 
 afterEach(async () => {
 	await h.close();
@@ -75,6 +77,8 @@ async function placedOrderView(enabled: boolean) {
 		`place-${cartId}`,
 	);
 	if (!placed.ok) throw new Error(placed.reason);
+	placedSnapshot = (await h.stores.orderStore.getById(placed.order.id as never))?.totals
+		.taxBreakdown;
 	const read = await h.client.getPublicOrder(placed.order.id);
 	if (!read.ok) throw new Error(read.reason);
 	return buildOrderView(read.order, "en-US");
@@ -85,6 +89,17 @@ describe("an order's Tax row follows the tax setting it was priced under", () =>
 		const view = await placedOrderView(false);
 		expect(view.totals.taxRows).toEqual([]);
 		expect(view.totals.taxIncludedNote).toBeNull();
+	});
+
+	test("#478: priced with tax off, the order records no tax totals display (it shows no Tax row)", async () => {
+		await placedOrderView(false);
+		expect(placedSnapshot).toMatchObject({ v: 1, calculatorId: "otta.tax-disabled" });
+		expect(placedSnapshot).not.toHaveProperty("totalsDisplay");
+	});
+
+	test("#478: priced with tax on, the order records the display it was placed under", async () => {
+		await placedOrderView(true);
+		expect(placedSnapshot).toMatchObject({ v: 1, totalsDisplay: "single" });
 	});
 
 	test("priced with tax on: the Tax row stays", async () => {

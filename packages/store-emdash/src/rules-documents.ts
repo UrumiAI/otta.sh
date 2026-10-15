@@ -132,6 +132,12 @@ export interface ShippingMethodOwnerDoc {
 	readonly methodId: string;
 	readonly zoneId: string;
 	readonly claimedAt: string;
+	/**
+	 * `"pending"` from the claim until its create's embed lands, then `"live"` (the
+	 * tax claim's #462 lease, #489). Absent on claims written before the field
+	 * existed, which are read as live.
+	 */
+	readonly state?: "pending" | "live";
 }
 
 /** One tax rate, as embedded in its class. Keyed by rate id. */

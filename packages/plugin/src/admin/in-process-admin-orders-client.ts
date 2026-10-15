@@ -102,12 +102,14 @@ import {
 	gatewayForStored,
 	getOrderTimeline,
 	idempotencyKey as toIdempotencyKey,
+	isCurrentPaymentMethod,
 	listOrderNotes,
 	ORDER_STATE_MACHINE,
 	orderHasEmailRecipient,
 	orderId as toOrderId,
 	orderNumber,
 	orderTaxRows,
+	providerCaptured,
 	readOrderTaxSnapshot,
 	recordFulfillment as recordFulfillmentUseCase,
 	refundOrder as refundOrderUseCase,
@@ -368,7 +370,9 @@ export class InProcessAdminOrdersClient implements AdminOrdersSurface {
 	 * The order's download access for the detail (issue #447): only on a paid-side
 	 * order (the domain's deliverable states) with a digital line — `open` while
 	 * any digital line's grant is active, `revoked` once none is. Read with the
-	 * gate's own `check`, so the console shows what the download route would do.
+	 * gate's own `check`, so the console shows what the download route would do —
+	 * without `repair`, so loading the page never writes (the lookup repair stays
+	 * on the download route itself).
 	 * A paid order whose grant was never written (a settle that crashed between
 	 * paid and grant) reads as `revoked` too: nothing downloads there either.
 	 */
@@ -733,6 +737,15 @@ export class InProcessAdminOrdersClient implements AdminOrdersSurface {
 		// Never a button that silently no-ops — and with no gateway composed for the
 		// order's method, false is the truth rather than a placeholder.
 		const gateway = this.#refundGatewayForOrder(order);
+		// Whether a current provider captured this order's money — through the
+		// refund's own gateway, or (with none composed) through any current method.
+		// The refund form keeps the currency's payment step for a manual refund
+		// when it is true, as the domain does: the rest may go back through that
+		// provider later (#447).
+		const captured =
+			gateway !== undefined
+				? providerCaptured(payments, gateway.id)
+				: payments.some((p) => p.status === "succeeded" && isCurrentPaymentMethod(p.gateway));
 		return {
 			refunds: refunds.map(toRefundWire),
 			currency: order.totals.currency,
@@ -743,6 +756,7 @@ export class InProcessAdminOrdersClient implements AdminOrdersSurface {
 			remainingCents: remaining,
 			paymentMethod: order.paymentMethod,
 			refundable: gateway?.refundable ?? false,
+			providerCaptured: captured,
 		};
 	}
 

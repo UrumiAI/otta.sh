@@ -10,6 +10,9 @@ import { normalizeCountryCode, normalizeSubdivision } from "./region-codes.js";
 import { isValidTaxLabel } from "./tax-calculator.js";
 import type { TaxClassId } from "./types.js";
 
+/** How the buyer's surfaces show tax totals: one row per tax, or one "Tax" row. */
+export type TaxTotalsDisplay = "itemized" | "single";
+
 /** How shipping's tax class is chosen. */
 export type ShippingTaxClassSetting =
 	/** WooCommerce's "based on cart items" (`inherit`). */
@@ -48,7 +51,7 @@ export interface TaxSettings {
 	/** Cart and checkout show prices with or without tax. */
 	displayCart: "excl" | "incl";
 	/** Tax totals as one row per tax, or a single row. */
-	totalsDisplay: "itemized" | "single";
+	totalsDisplay: TaxTotalsDisplay;
 	/**
 	 * Shop and product pages show prices with or without tax — WooCommerce's
 	 * `woocommerce_tax_display_shop` (#423). ABSENT ⇒ the price exactly as

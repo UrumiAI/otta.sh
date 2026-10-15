@@ -69,7 +69,9 @@ test("a grant with no scope pointer is still authorized, and the gate writes the
 	expect(await live.lookups.count()).toBe(0);
 
 	// The healing read: an indexed query planned by D1, then a pointer write.
-	expect(await live.entitlementStore.check({ buyerRef: BUYER, sku: SKU })).toBe(true);
+	expect(await live.entitlementStore.check({ buyerRef: BUYER, sku: SKU }, { repair: true })).toBe(
+		true,
+	);
 	expect(
 		(await live.lookups.get(entitlementLookupId("buyer", "buyer@example.com", "DIG-1")))?.grantKey,
 	).toBe("g1");

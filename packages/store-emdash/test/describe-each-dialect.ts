@@ -43,6 +43,9 @@ import { Kysely, PostgresDialect, sql, SqliteDialect } from "kysely";
 import pg from "pg";
 import { afterAll, beforeAll, beforeEach, describe } from "vitest";
 
+/** Node major in use: some tests differ on Node 26+ (#478, #489). */
+export const nodeMajor = Number(process.versions.node.split(".")[0]);
+
 /** Postgres runs only when the connection string is present (DEVELOPMENT.md §2). */
 export const PG_ENABLED = process.env.PG_CONNECTION_STRING !== undefined;
 

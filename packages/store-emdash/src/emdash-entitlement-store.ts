@@ -44,6 +44,7 @@
 import type {
 	Clock,
 	Entitlement,
+	EntitlementCheckOptions,
 	EntitlementQuery,
 	EntitlementStore,
 	GrantEntitlementInput,
@@ -170,8 +171,11 @@ export class EmdashEntitlementStore implements EntitlementStore {
 	 * A scopeless query is refused with a typed error rather than answered `false` —
 	 * see {@link EntitlementScopeRequiredError} for why the guard the SQL expressed
 	 * as a short-circuit is loud here.
+	 *
+	 * Only `opts.repair: true` writes the pointer back; by default a check writes
+	 * nothing and answers the same.
 	 */
-	async check(query: EntitlementQuery): Promise<boolean> {
+	async check(query: EntitlementQuery, opts: EntitlementCheckOptions = {}): Promise<boolean> {
 		const scopes: Scope[] = [];
 		if (query.orderId !== undefined) {
 			scopes.push({ kind: "order", key: query.orderId, field: "orderId" });
@@ -203,12 +207,12 @@ export class EmdashEntitlementStore implements EntitlementStore {
 			}
 		}
 
-		// No usable pointer: the declared index answers, and the answer is written back
-		// so the next read is keyed again. This is the read that heals both a crash
+		// No usable pointer: the declared index answers, and — on a repairing check —
+		// the answer is written back so the next read is keyed again. This is the read that heals both a crash
 		// between the grant and its pointers and a pointer left on a revoked grant.
 		const found = await this.#firstMatch(where);
 		if (found === undefined) return false;
-		await this.#repointLookup(lookupId, found.id);
+		if (opts.repair === true) await this.#repointLookup(lookupId, found.id);
 		return true;
 	}
 

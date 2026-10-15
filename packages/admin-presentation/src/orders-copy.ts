@@ -360,10 +360,12 @@ export function refundAmountPrecisionText(currencyCode: string): string {
 
 /**
  * Whether `amountCents` is a refund amount the order's currency can be paid back
- * in: a whole multiple of its payment increment (KWD, BHD, OMR, JOD: 10 — 0.010),
- * or the WHOLE remaining amount, whatever it is (an order placed before checkout
- * rounded its total may hold a remainder of any size). Every other currency has
- * no increment, so any amount passes and the refund form behaves as it always did.
+ * in through a provider: a whole multiple of its payment increment (KWD, BHD,
+ * OMR, JOD: 10 — 0.010), or the WHOLE remaining amount, whatever it is (an order
+ * placed before checkout rounded its total may hold a remainder of any size;
+ * Stripe itself still refuses an off-step one). Every other currency has no
+ * increment, so any amount passes and the refund form behaves as it always did.
+ * A manual refund on an order no current provider captured skips this (#447).
  *
  * A PRE-CHECK only: the deciding rule is the domain's `refundOrder`, which refuses
  * the same amounts with `AMOUNT_NOT_PAYMENT_INCREMENT` for every caller.

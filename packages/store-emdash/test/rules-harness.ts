@@ -20,6 +20,8 @@ import {
 	SHIPPING_ZONES_COLLECTION,
 	TAX_CLASSES_COLLECTION,
 	TAX_RATE_OWNERS_COLLECTION,
+	type EmdashShippingRulesStoreOptions,
+	type EmdashTaxRulesStoreOptions,
 	type ShippingMethodOwnerDoc,
 	type ShippingZoneDoc,
 	type StorageAccess,
@@ -38,6 +40,8 @@ export interface RulesHarnessOptions {
 	onCasAttempts?: (operation: string, attempts: number) => void;
 	/** Page ceiling for the bounded scans. */
 	maxListPages?: number;
+	/** Retry backoff sleep (tax and shipping stores): a race suite passes a no-op so peers overlap. */
+	sleep?: EmdashTaxRulesStoreOptions["sleep"] & EmdashShippingRulesStoreOptions["sleep"];
 	/** Wrap the storage the STORE writes through (fault injection). */
 	storageForStore?: StorageAccess;
 	/** Reuse another harness's clock, so a fault-injected twin shares its time. */
@@ -74,6 +78,7 @@ export function makeShippingRulesHarness(
 		maxCasAttempts: options.maxCasAttempts,
 		onCasAttempts: options.onCasAttempts,
 		maxListPages: options.maxListPages,
+		sleep: options.sleep,
 	});
 	// The RAW collections, deliberately unwrapped by any fault injection: an
 	// assertion about what landed must read what the host really holds.
@@ -97,6 +102,7 @@ export function makeTaxRulesHarness(
 		maxCasAttempts: options.maxCasAttempts,
 		onCasAttempts: options.onCasAttempts,
 		maxListPages: options.maxListPages,
+		sleep: options.sleep,
 	});
 	const classes = collectionOf<TaxClassDoc>(storage, TAX_CLASSES_COLLECTION);
 	const rateOwners = collectionOf<TaxRateOwnerDoc>(storage, TAX_RATE_OWNERS_COLLECTION);

@@ -271,7 +271,12 @@ describe("makeAdminClients wires the payment gateways into admin refunds", () =>
 		const orders = await configuredOrders();
 		const id = await seedX402PaidThroughStripe();
 
-		expect(await orders.getRefunds(id)).toMatchObject({ paymentMethod: "x402", refundable: false });
+		expect(await orders.getRefunds(id)).toMatchObject({
+			paymentMethod: "x402",
+			refundable: false,
+			// Stripe captured it: a manual refund would keep the payment step (#447).
+			providerCaptured: true,
+		});
 		expect(
 			await orders.refundOrder(
 				id,
@@ -288,7 +293,11 @@ describe("makeAdminClients wires the payment gateways into admin refunds", () =>
 		const { orders } = await makeAdminClients(ctx);
 		const id = await seedX402PaidThroughStripe();
 
-		expect(await orders.getRefunds(id)).toMatchObject({ refundable: false });
+		expect(await orders.getRefunds(id)).toMatchObject({
+			refundable: false,
+			// Stripe captured it: a manual refund would keep the payment step (#447).
+			providerCaptured: true,
+		});
 		expect(
 			await orders.refundOrder(
 				id,

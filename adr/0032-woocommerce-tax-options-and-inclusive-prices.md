@@ -111,6 +111,9 @@ pay must not change silently (user decision 4).
   (#475), buyer-location tax for digital goods (#467), itemized tax rows on the order pages,
   the emails and the admin order detail (#469), the admin order detail's "Prices included tax"
   marker (#461), and each line's tax status in the frozen order tax snapshot (#466).
+- Built since (#478): each order's snapshot records the `totalsDisplay` it was placed under,
+  and its buyer pages and emails show it that way, so changing the option never changes how a
+  past order looks. An order placed before this has none recorded and follows the live option.
 - Follow-ups, not built: postcode/city matching, priority/compound rates, CSV;
   customer tax-exempt; adjusting inclusive prices for non-base buyers.
 
@@ -163,6 +166,11 @@ Decided by the maintainer: Otta does not add WooCommerce's coupon allocation, no
   is still taxed by its ship-to, its only address (WooCommerce's checkout likewise bills to
   the ship-to unless told otherwise). Under `shipping` or `base` the location is ignored
   entirely — never validated, never priced by.
+- A buyer who picks a region that contains subdivisions in different zones (Spain's "Canary
+  Islands" when ES-CN and ES-TF are zoned apart) is refused too, even if that region has a zone
+  of its own (#488). The review says "Pick a more specific region above, or clear your
+  location, to continue." and Place is blocked until the buyer picks a narrower region or
+  clears the location. A forged Place is re-priced and refused the same way.
 - The review quote and the order are taxed at the same location by convention: the review
   prices the location the page sent (`destination`, for a cart that ships nothing), and the
   place form echoes it as the order's `billingLocation`; the domain re-prices the order from
@@ -221,6 +229,9 @@ Decided by the maintainer: Otta does not add WooCommerce's coupon allocation, no
     stores' prices as entered, because it never calls the calculator.
   - A store whose `displayCart` matches how its prices are entered (every default store),
     or whose tax is off, renders its lines byte for byte as before.
+  - A store that already saved a `displayCart` different from how it enters prices will see
+    its cart and checkout line prices change after the #477 deploy; the amounts charged do
+    not change.
   - Placed-order pages and emails read the order's line snapshot, which records no
     per-line tax, so their lines are unchanged.
 - What is charged (the quote and the order) is unchanged.

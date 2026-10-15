@@ -64,6 +64,7 @@ export {
 	type ShopTaxDisplay,
 	type TaxBaseAddress,
 	type TaxSettings,
+	type TaxTotalsDisplay,
 } from "./pricing/tax-settings.js";
 // #423: shop-page prices shown with or without tax (WooCommerce's tax_display_shop).
 export {
@@ -104,6 +105,7 @@ export {
 export {
 	itemizeTaxLines,
 	orderTaxRows,
+	recordedTaxTotalsDisplay,
 	taxTotalsDisplayOf,
 	type TaxRow,
 } from "./orders/order-tax-rows.js";
@@ -434,6 +436,7 @@ export {
 } from "./customers/customer-orders.js";
 export type {
 	Entitlement,
+	EntitlementCheckOptions,
 	EntitlementQuery,
 	EntitlementSource,
 	EntitlementState,
@@ -501,6 +504,7 @@ export {
 export { settleOrder, type SettleDeps, type SettleResult } from "./orders/settle-order.js";
 export {
 	computeRefundCeiling,
+	providerCaptured,
 	refundOrder,
 	sumCapturedPayments,
 	sumFinalizedRefunds,
