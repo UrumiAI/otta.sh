@@ -209,6 +209,17 @@ describe("the middleware keeps a shopper-state page private", () => {
 		expect(ctx.cache.set.mock.calls).toEqual([[false], [false]]);
 	});
 
+	test("a page that sets a cache hint cannot re-enable the route cache", async () => {
+		// Astro 7's `cache.set(options)` clears an earlier `set(false)`, and the
+		// route cache reads the options after `next()` returns.
+		const ctx = middlewareContext({ otta_cart: "cart-1" });
+		await runMiddleware(ctx, () => {
+			ctx.cache.set({ maxAge: 60 });
+			return page();
+		});
+		expect(ctx.cache.set.mock.calls.at(-1)).toEqual([false]);
+	});
+
 	test("with neither cookie, the page's caching is untouched — it rendered the neutral header", async () => {
 		const ctx = middlewareContext({});
 		const response = await runMiddleware(ctx, () => page());
@@ -241,7 +252,16 @@ describe("the shell reads the shopper's state only where it may", () => {
 		expect(shell).toMatch(/chrome\?\.shopperState === true/);
 		expect(shell.match(/readShopperState\(/g)).toHaveLength(1);
 		expect(shell).not.toContain("readCartCount(");
+		// The count is asked for only when the menu has a cart link to badge.
+		expect(shell).toMatch(/count:\s*pageCount === null && props\.view !== "cart" && hasCartLink\b/);
+		expect(shell).toMatch(
+			/const hasCartLink = withAccountLink\(navItems\)\.some\(\(item\) => isCartLink\(item\.url\)\)/,
+		);
 		expect(shell).not.toContain("signedInEmail(");
+		// No other commerce read in the shell, and never a 503 from it: the one
+		// dispatch is the fail-soft `dispatchOttaRouteOnce` inside lib/chrome-state.ts.
+		expect(shell).not.toMatch(/\bdispatchOttaRoute(Once)?\b/);
+		expect(shell).not.toMatch(/\bmarkBusy\b/);
 	});
 
 	test("the signed-in state reaches the chrome as a boolean — the email never does", () => {

@@ -23,6 +23,11 @@
   the end.
 - Amended: 2026-10-05 — Decision 6's "the origin guard … stay in the page files": the origin
   guard now lives in the site middleware. See "Amended 2026-10-05" at the end.
+- Amended: 2026-10-15 — **Otta does not support external themes**; Tempered is the only theme
+  (#501). The host side the 2026-10-02 amendment kept for them is removed: the `settings:storeTheme`
+  read, the dev `?theme=` override, the `chrome.cartLines` bag read and `CartLineFields.astro`.
+  Decisions 3 and 4 and the 2026-09-30 bag-read amendment are retired. See "Amendment 2026-10-15 —
+  no external themes" at the end.
 
 ## Context
 
@@ -307,3 +312,30 @@ state-changing storefront route (see
 [ADR-0006's "Amended 2026-10-05"](./0006-trusted-in-process-deployment.md#amended-2026-10-05--the-origin-check-runs-once-in-the-site-middleware-default-deny)).
 The point of Decision 6 is unchanged: the guard is single-sourced in site code and never in a
 theme. A theme view still never imports `origin-guard`, and the sweep test still enforces that.
+
+## Amendment 2026-10-15 — no external themes
+
+The amendment of 2026-10-02 kept the theme system's host side so that a theme from the separate
+themes repo could plug in later. The product owner decided on 2026-10-15 that Otta does not support
+external themes: Tempered is the only storefront theme (issue #501). No live store has chosen a theme,
+so nothing is migrated.
+
+- **Removed:** the resolver's read of plugin kv `settings:storeTheme` (`themes/resolve.ts`, Decision
+  3), the dev-only `?theme=<id>` override (Decision 4), the opt-in chrome bag read of the 2026-09-30
+  amendment (`chrome.cartLines`, `ChromeModel.bag`, `lib/bag.ts`) and `forms/CartLineFields.astro`,
+  with their tests, the in-test fixture theme and the manifest's `isThemeId` (its only callers
+  were the resolver and that fixture). The shell and the middleware render Tempered
+  (`DEFAULT_THEME_ID`) directly. The Context's `theme-resolve.test.ts` round trip is deleted with
+  them.
+- **Consequence "one extra D1 read per storefront request"** no longer applies: the shell reads no
+  options row for the theme.
+- **Consequence "every later theme PR brings its own set via `?theme=`"** no longer applies: there
+  are no later themes and no `?theme=` override.
+- **A stored `settings:storeTheme` is ignored.** Nothing in this repo wrote it since 2026-10-02.
+  DEPLOYMENT.md §3, "Leftover theme key", gives the row name; deleting it is optional.
+- **Kept, unchanged:** the contract, the manifest, the registry, the shell, the Tempered fallback
+  for views, and `chrome.shopperState` (the "Amended 2026-10-02" section above). They are how
+  Tempered is rendered, not an extension point.
+
+Reopens this decision: a request to support a second theme. It would need a new resolver and a new
+way to choose a theme, designed for it rather than restored from history.

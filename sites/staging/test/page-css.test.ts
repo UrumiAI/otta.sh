@@ -297,7 +297,7 @@ const MOTION = /animation[-a-z]*\s*:|transition[-a-z]*\s*:|@keyframes/;
 
 /** A view sheet of any theme but Tempered — the one theme whose budget is zero.
  *  Every sheet such a theme ships beside its token layer (its `views.css`, and
- *  e.g. a `commerce.css` for its commerce views, or a bag drawer's). */
+ *  e.g. a `commerce.css` for its commerce views). */
 function isOtherThemeSheet(name: string): boolean {
 	return /^themes\/[^/]+\/[\w-]+\.css$/.test(name) && !name.startsWith("themes/tempered/");
 }

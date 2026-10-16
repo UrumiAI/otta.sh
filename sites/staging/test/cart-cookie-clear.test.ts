@@ -104,3 +104,36 @@ describe.each(ROUTES)("POST /cart/$name — cart cookie on refusal", (shim) => {
 		expect(survives).toBe(true);
 	});
 });
+
+describe.each(ROUTES.filter((shim) => shim.name !== "add"))(
+	"POST /cart/$name — a success lands on /cart",
+	(shim) => {
+		test("where the change is visible — a posted returnTo is ignored", async () => {
+			const url = new URL(`/cart/${shim.name}`, SITE);
+			const request = new Request(url, {
+				method: "POST",
+				headers: { origin: SITE, "content-type": "application/x-www-form-urlencoded" },
+				body: new URLSearchParams({ ...shim.form, returnTo: "/products/otta-mug" }).toString(),
+			});
+			const handler = async (_pluginId: string, _method: string, path: string) =>
+				path.replace(/^\//, "") === shim.route
+					? { success: true, data: { ok: true, line: {} } }
+					: { success: false };
+			const context = {
+				request,
+				url,
+				cookies: {
+					get: (name: string) => (name === "otta_cart" ? { value: "cart-1" } : undefined),
+					set: () => {},
+					delete: () => {},
+				},
+				locals: { emdash: { handlePublicPluginApiRoute: handler } },
+				redirect: (path: string, status = 302) =>
+					new Response(null, { status, headers: { location: path } }),
+			} as unknown as APIContext;
+			const response = await shim.post(context);
+			expect(response.status).toBe(303);
+			expect(response.headers.get("location")).toBe("/cart");
+		});
+	},
+);

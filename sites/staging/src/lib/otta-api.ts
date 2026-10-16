@@ -246,8 +246,9 @@ export async function dispatchOttaRoute<TResult>(
 /**
  * {@link dispatchOttaRoute} WITHOUT the automatic BUSY retry: one dispatch, and
  * a BUSY answer goes straight back to the caller. For a read whose caller fails
- * soft anyway (the chrome's bag, `lib/bag.ts`): a retry there would only add a
- * jittered pause and a second read to a page that answers without it.
+ * soft anyway (the chrome's shopper state, `lib/chrome-state.ts`): a retry
+ * there would only add a jittered pause and a second read to a page that
+ * answers without it.
  */
 export function dispatchOttaRouteOnce<TResult>(
 	handler: PublicPluginApiRouteHandler | undefined,

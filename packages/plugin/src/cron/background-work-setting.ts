@@ -13,7 +13,7 @@
  * WHY `ctx.kv`, NOT THE OPERATIONAL SETTINGS STORE. It is a fact about the
  * deployment the PLUGIN runs on, not commerce configuration the domain reads —
  * the domain has no notion of a Cloudflare plan — so it sits beside the other
- * plugin-scoped settings (`settings:storeTheme`, `settings:storeDisplayName`).
+ * plugin-scoped settings (e.g. `settings:storeDisplayName`).
  * The admin form beside the cart hold TTL is its one writer; the sweep reads it
  * once per tick.
  *
