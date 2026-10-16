@@ -194,29 +194,8 @@ test.describe("this gate is ADDITIVE — ADR-0006 Decision 1 is untouched", () =
 		.filter((name) => name.endsWith(".sandbox.test.ts"))
 		.toSorted();
 
-	/**
-	 * The skip-shaped constructs allowed, and why — asserted EXACTLY, so this
-	 * map goes stale in both directions and the gate fails either way.
-	 *
-	 * It used to hold `account-routes` and `download-route` under the documented
-	 * Postgres gate. Both are gone: the mode collapse retrofitted those two
-	 * suites onto the plugin's own document store, so neither is conditional any
-	 * more and every sandbox suite runs unconditionally now — a strengthening.
-	 *
-	 * What replaces them is the cost of deleting the HTTP transport. One
-	 * settings-degradation case in `reports-widget` is PARKED rather than deleted
-	 * or inverted, naming the blocking work in its own title, so the coverage it
-	 * represents stays visible instead of vanishing with the client that used to
-	 * carry it. It is listed here rather than waved through by a laxer regex: the
-	 * count is the thing to argue with, and it should only ever go down.
-	 *
-	 * It has gone down once. Thirteen `place` cases in `storefront-checkout` were
-	 * parked the same way until issue #286 restored the checkout success path
-	 * against a stubbed Stripe API; that suite now carries no allowance at all.
-	 */
-	const ALLOWED_SKIPS: Readonly<Record<string, readonly string[]>> = {
-		"reports-widget.sandbox.test.ts": ["test.todo"],
-	};
+	// All sandbox regressions run; no skipped or parked cases remain.
+	const ALLOWED_SKIPS: Readonly<Record<string, readonly string[]>> = {};
 
 	/**
 	 * THE 18, BY NAME — ADR-0006 Decision 1's contract gate as it stood when
