@@ -382,6 +382,17 @@ describe("#502: the order emails read the live option only for an order that rec
 		}
 	});
 
+	test("the live option it reads is the one the email renders (itemized, not the single-row fallback)", async () => {
+		const id = await placeOrder("lazy-unrecorded-itemized");
+		await stripRecordedDisplay(id);
+		const { ctx, counter, sent } = countedCtx();
+		const sender = await makeEmailSender(ctx);
+		await sendFor(sender, id);
+		expect(counter.settingsReads).toBe(1);
+		expect(sent[0]?.text).toMatch(/^GST 18%: \$18\.00$/m);
+		expect(sent[0]?.text).not.toMatch(/^Tax:/m);
+	});
+
 	test("an unreadable option still sends, with the single Tax row (fail-soft, as before)", async () => {
 		const id = await placeOrder("lazy-unreadable");
 		await stripRecordedDisplay(id);
