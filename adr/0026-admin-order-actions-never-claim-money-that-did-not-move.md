@@ -10,11 +10,12 @@
 - Note (2026-10-14): `LEGACY_PAYMENT_METHODS` and the legacy x402 handling were removed (issue
   #455; the product owner confirmed no live store holds such an order). An order that stores
   `paymentMethod: "x402"` is now an unknown method: it fails closed and goes through the
-  captured-money check like any other. The `"outside"` category stays, dormant.
+  captured-money check like any other. The `"outside"` category stays, dormant (removed by the
+  next note).
 - Note (2026-10-15): issue #502 deleted the dormant `"outside"` refund category
   (`PAYMENT_METHOD_REFUNDS`, `capturedOnlyOutside`). Mark refunded is now decided by the refund
-  ledger and the provider-refunded flag only (rules 2 and 3 below; rule 1 no longer exists in
-  code). A future method that refunds outside Otta must re-add a per-method refund declaration,
+  ledger and the provider-refunded flag only (see `markRefundedAllowed` in `transition.ts`; the
+  outside-Otta shortcut no longer exists in code). A future method that refunds outside Otta must re-add a per-method refund declaration,
   read by `markRefundedRefusal`, together with tests for it.
 - Date: 2026-10-02
 - Decided by: the maintainer, 2026-10-02 (QA findings T1-3, T1-4, T1-6)
