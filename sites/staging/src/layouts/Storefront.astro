@@ -182,8 +182,7 @@ const shopperPending = drawsShopper
 	? readShopperState(
 			{ cookies: Astro.cookies, locals: Astro.locals, url: Astro.url },
 			{
-				count:
-					pageCount === null && props.view !== "cart" && hasCartLink,
+				count: pageCount === null && props.view !== "cart" && hasCartLink,
 				signedIn: props.signedIn === undefined,
 			},
 		)

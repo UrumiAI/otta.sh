@@ -252,6 +252,11 @@ describe("the shell reads the shopper's state only where it may", () => {
 		expect(shell).toMatch(/chrome\?\.shopperState === true/);
 		expect(shell.match(/readShopperState\(/g)).toHaveLength(1);
 		expect(shell).not.toContain("readCartCount(");
+		// The count is asked for only when the menu has a cart link to badge.
+		expect(shell).toMatch(/count:\s*pageCount === null && props\.view !== "cart" && hasCartLink\b/);
+		expect(shell).toMatch(
+			/const hasCartLink = withAccountLink\(navItems\)\.some\(\(item\) => isCartLink\(item\.url\)\)/,
+		);
 		expect(shell).not.toContain("signedInEmail(");
 		// No other commerce read in the shell, and never a 503 from it: the one
 		// dispatch is the fail-soft `dispatchOttaRouteOnce` inside lib/chrome-state.ts.
