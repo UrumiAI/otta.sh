@@ -52,7 +52,6 @@
  */
 import {
 	dispatchOrderEmailsForOrder,
-	EmailSendTimeoutError,
 	type Clock,
 	type CustomerStore,
 	type EmailSender,
@@ -204,9 +203,11 @@ export async function sendOrderEmailsNow(
 
 	// No idempotency key on `ctx.email`: a timeout is a COUNTED attempt, so a slow
 	// but accepting provider is not re-sent the same email every time — outermost
-	// around the send. The built-on-first-send sender checks the floor again AFTER
-	// its kv reads (r3 S2), outside that wrapper, so the real send never starts with
-	// under `MIN_INLINE_SEND_MS` left.
+	// around the send. The built-on-first-send sender checks the floor again just
+	// before the host call (`canStart`): AFTER its kv reads (r3 S2) and any lazy
+	// "Display tax totals" read (#502). Refused, it is a cut-short timeout that
+	// wrapper lets through uncounted, so the real send never starts with under
+	// `MIN_INLINE_SEND_MS` left.
 	const emailSender =
 		options.emailSender === undefined
 			? lazySender(ctx, sendTimeoutMs, () => waitEndsAt - deadline.now() >= MIN_INLINE_SEND_MS)
@@ -291,10 +292,11 @@ export async function sendOrderEmailsNow(
  * sender that cannot exist. `timeoutMs` is a FUNCTION the sender asks at each send, so every
  * per-request abort is what is left of the wait when that send starts.
  *
- * `enoughLeft` is asked once the sender is built: the build's kv reads take time
- * of their own, after the dispatcher's `canSend`. Too little left and the send is
- * not started — a CUT-SHORT timeout, which the dispatcher hands back uncounted. It
- * sits outside {@link countTimeoutsAsAttempts}, which wraps only the real send.
+ * `enoughLeft` is the sender's `canStart`, asked just before the host call: the
+ * build's kv reads and a lazy "Display tax totals" read (#502) take time of their
+ * own, after the dispatcher's `canSend`. Too little left and the send is not
+ * started — a CUT-SHORT timeout, which {@link countTimeoutsAsAttempts} lets through
+ * and the dispatcher hands back uncounted.
  */
 function lazySender(
 	ctx: PluginContext,
@@ -304,12 +306,11 @@ function lazySender(
 	let built: Promise<EmailSender | undefined> | undefined;
 	return {
 		async send(input) {
-			built ??= makeEmailSender(ctx, { requestTimeoutMs: timeoutMs });
+			built ??= makeEmailSender(ctx, { requestTimeoutMs: timeoutMs, canStart: enoughLeft });
 			const sender = await built;
 			// Unreachable while `emailSendingConfigured` and `makeEmailSender` agree; a
 			// throw here is a failed send, rescheduled for the cron like any other.
 			if (sender === undefined) throw new Error("email sender is not configured");
-			if (!enoughLeft()) throw new EmailSendTimeoutError(0, { cutShort: true });
 			await countTimeoutsAsAttempts(sender).send(input);
 		},
 	};

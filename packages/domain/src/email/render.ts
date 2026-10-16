@@ -343,14 +343,23 @@ function totalsBlock(
 	};
 }
 
+/** The display an order email's data records (#478) when it carries a known
+ *  one, else `undefined` — an order placed before the display was recorded. A
+ *  sender reads the store's live option only then (#502). */
+export function recordedEmailTaxTotalsDisplay(
+	data: Record<string, unknown>,
+): TaxTotalsDisplay | undefined {
+	const recorded = data["taxTotalsDisplay"];
+	return recorded === "itemized" || recorded === "single" ? recorded : undefined;
+}
+
 /** The order's own recorded display (#478) when the data carries a known one,
  *  else the store's live option — an order placed before it was recorded. */
 function taxTotalsDisplayFor(
 	data: Record<string, unknown>,
 	context: EmailRenderContext,
 ): TaxTotalsDisplay | undefined {
-	const recorded = data["taxTotalsDisplay"];
-	return recorded === "itemized" || recorded === "single" ? recorded : context.taxTotalsDisplay;
+	return recordedEmailTaxTotalsDisplay(data) ?? context.taxTotalsDisplay;
 }
 
 /**

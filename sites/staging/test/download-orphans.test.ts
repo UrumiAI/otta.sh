@@ -252,18 +252,26 @@ describe("the product read the sweep makes", () => {
 	});
 
 	test("a file descriptor whose key is not a string is a failed read, never 'no file'", async () => {
-		const odd = dispatchAnswering({
-			ok: true,
-			product: {
-				productId: "P1",
-				productKind: "digital",
-				deletedAt: null,
-				downloadAsset: { key: 7 },
-			},
-		});
-		expect(
-			currentDownloadOf(await lookupProduct(odd.dispatch, "P1", undefined, new URL("https://x/"))),
-		).toEqual({ kind: "failed" });
+		// Only a top-level `downloadAsset: null` means "no file". A descriptor
+		// with a `null`, missing or non-string key is a reshaped answer: read as
+		// "no file", the sweep would delete the live file (#502).
+		for (const downloadAsset of [{ key: 7 }, { key: null }, {}, { key: undefined }]) {
+			const odd = dispatchAnswering({
+				ok: true,
+				product: {
+					productId: "P1",
+					productKind: "digital",
+					deletedAt: null,
+					downloadAsset,
+				},
+			});
+			expect(
+				currentDownloadOf(
+					await lookupProduct(odd.dispatch, "P1", undefined, new URL("https://x/")),
+				),
+				JSON.stringify(downloadAsset),
+			).toEqual({ kind: "failed" });
+		}
 	});
 
 	test("a downloadAsset that is neither an object nor null is a failed read, never 'no file'", async () => {

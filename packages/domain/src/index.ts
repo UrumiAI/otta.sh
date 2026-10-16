@@ -356,6 +356,7 @@ export {
 export {
 	customerSafeCancellationCopy,
 	EMAIL_NOT_CALCULATED_LABEL,
+	recordedEmailTaxTotalsDisplay,
 	renderEmail,
 	type EmailRenderContext,
 	type RenderedEmail,
