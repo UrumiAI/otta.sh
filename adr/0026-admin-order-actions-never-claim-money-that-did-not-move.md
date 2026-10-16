@@ -15,8 +15,9 @@
 - Note (2026-10-15): issue #502 deleted the dormant `"outside"` refund category
   (`PAYMENT_METHOD_REFUNDS`, `capturedOnlyOutside`). Mark refunded is now decided by the refund
   ledger and the provider-refunded flag only (see `markRefundedAllowed` in `transition.ts`; the
-  outside-Otta shortcut no longer exists in code). A future method that refunds outside Otta must re-add a per-method refund declaration,
-  read by `markRefundedRefusal`, together with tests for it.
+  outside-Otta shortcut no longer exists in code). A future method that refunds outside Otta must
+  re-add a per-method refund declaration, read by `markRefundedRefusal`, together with tests for
+  it.
 - Date: 2026-10-02
 - Decided by: the maintainer, 2026-10-02 (QA findings T1-3, T1-4, T1-6)
 - Refines: the Phase-5 order state machine, as the admin console applies it. Amends no earlier
