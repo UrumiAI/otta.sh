@@ -624,7 +624,10 @@ describe.skipIf(!PG_ENABLED)("shipping createMethod: one id across zones race [p
 				expect(holders, `loop ${String(loop)}: exactly one zone holds ${id}`).toEqual([
 					won[0]?.zoneId,
 				]);
-				expect(await harness.methodOwners.get(id)).toMatchObject({ zoneId: won[0]?.zoneId });
+				expect(await harness.methodOwners.get(id)).toMatchObject({
+					zoneId: won[0]?.zoneId,
+					state: "live",
+				});
 			}
 		} finally {
 			await db.close();

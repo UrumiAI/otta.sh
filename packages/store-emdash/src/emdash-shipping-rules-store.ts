@@ -704,7 +704,8 @@ export class EmdashShippingRulesStore implements ShippingRulesStore {
 	 * removes the method only while it is still exactly the document this create
 	 * embedded. RESIDUAL, as for tax: if the rollback itself fails, the caller gets
 	 * that error and both methods may remain — that needs a pause past the whole lease
-	 * AND a failing rollback.
+	 * AND a failing rollback. A second RESIDUAL: a create paused past the lease, then
+	 * crashing after its embed but before settle, can leave two zones holding the id.
 	 */
 	async #settleClaim(
 		zoneId: string,

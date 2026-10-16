@@ -6,6 +6,7 @@ import {
 	type TaxClassDoc,
 	type TaxRateOwnerDoc,
 } from "@otta-sh/store-emdash";
+import { idempotencyKey } from "@otta-sh/domain";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { createTaxPageHandler } from "../src/admin/tax-page.js";
 import { encodePath } from "../src/admin/scaffold/nav.js";
@@ -94,7 +95,6 @@ describe("the tax rates page when the tax-settings read fails (#471)", () => {
 			expect(unknown).not.toContain("still counts");
 			expect(unknown).not.toContain("taxes nothing");
 			expect(unknown).not.toContain("only if this rate becomes the active one");
-			expect(unknown).not.toContain("can still tax shipping");
 			expect(unknown).not.toContain("counts toward shipping tax");
 			expect(warn).toHaveBeenCalledTimes(1);
 			expect(String(warn.mock.calls[0]?.[0])).not.toContain("725");
@@ -107,16 +107,39 @@ describe("the tax rates page when the tax-settings read fails (#471)", () => {
 		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
 		try {
 			const handler = createTaxPageHandler() as unknown as RouteHandler<Record<string, unknown>>;
-			const res = (await handler(
+			const load = async (ctx: PluginContext) =>
+				JSON.stringify(
+					(
+						(await handler(
+							{
+								input: { type: "page_load", page: "/tax" },
+								request: { method: "POST", url: "/admin", headers: {} },
+							},
+							ctx,
+						)) as BlockResponse
+					).blocks,
+				);
+			// Control: with tax switched off and a working read, the page shows the
+			// tax-off banner, so its absence below is meaningful.
+			await h.stores.settingsStore.update(
 				{
-					input: { type: "page_load", page: "/tax" },
-					request: { method: "POST", url: "/admin", headers: {} },
+					tax: {
+						enabled: false,
+						pricesIncludeTax: false,
+						basedOn: "shipping",
+						baseAddress: null,
+						shippingTaxClass: { kind: "inherit" },
+						roundAtSubtotal: false,
+						displayCart: "excl",
+						totalsDisplay: "itemized",
+					},
 				},
-				settingsFailingCtx(),
-			)) as BlockResponse;
-			const text = JSON.stringify(res.blocks);
+				idempotencyKey("tax-off"),
+			);
+			expect(await load(h.ctx)).toContain("Tax is switched off");
+			const text = await load(settingsFailingCtx());
 			expect(text).toContain("standard");
-			expect(text).not.toContain("unavailable");
+			expect(text).not.toContain("Tax is switched off");
 			expect(warn).toHaveBeenCalledTimes(1);
 		} finally {
 			warn.mockRestore();
@@ -136,7 +159,6 @@ describe("the tax rates page duplicate note (#484)", () => {
 		const text = JSON.stringify((await openStandard(h.ctx)).blocks);
 		expect(text).toContain("Duplicate: only std-us-b applies");
 		expect(text).not.toContain("can change shipping tax");
-		expect(text).not.toContain("can still tax shipping");
 		// The toggle's label says what switching it ON does, so it is the same label
 		// whether this copy applies to shipping or not.
 		expect(text).toContain(

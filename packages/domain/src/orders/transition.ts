@@ -153,6 +153,9 @@ async function applyTransition(
  * A `Record` over every `PaymentMethod` on purpose: a new method (a "bank
  * transfer" or "cash on delivery") must declare which kind it is, and only an
  * `offline` one may be marked paid by hand. None is today.
+ *
+ * A method that refunds outside Otta also needs a refund-route declaration read by
+ * markRefundedRefusal (removed in #502 while none existed).
  */
 const PAYMENT_METHOD_SETTLEMENT: Readonly<Record<PaymentMethod, "gateway" | "offline">> = {
 	stripe: "gateway",
@@ -183,47 +186,9 @@ export function manualPaymentAllowed(method: PaymentMethod | null): boolean {
 	return factForStored(PAYMENT_METHOD_SETTLEMENT, method) === "offline";
 }
 
-/**
- * How each payment method's money goes BACK: through its PROVIDER (a Stripe refund,
- * which Money → Refunds issues and records on the ledger) or OUTSIDE Otta (a method
- * that cannot refund automatically; the operator sends the money and records it). A
- * `Record` over every method, like {@link PAYMENT_METHOD_SETTLEMENT}, so a new
- * method must say which it is.
- */
-const PAYMENT_METHOD_REFUNDS: Readonly<Record<PaymentMethod, "provider" | "outside">> = {
-	stripe: "provider",
-};
-
-/**
- * How a STORED method's money goes back. The stored value is read as a `string`,
- * not trusted as a `PaymentMethod`: an order placed before a method was removed
- * (x402) still carries it. A method that is not current is `undefined`: NOT
- * outside, so Mark refunded goes through the captured-money check.
- */
-function refundRouteOf(stored: string): "provider" | "outside" | undefined {
-	return factForStored(PAYMENT_METHOD_REFUNDS, stored);
-}
-
-/**
- * True iff every SUCCEEDED payment came through a method whose money goes back
- * OUTSIDE Otta (or there is none). A payment with no `gateway` on file is not
- * taken as outside (fail closed). No current method is `outside`, so today this
- * holds only when nothing was captured.
- *
- * DORMANT: no "outside" method exists today. Whoever adds the first one must add tests for it.
- */
-function capturedOnlyOutside(payments: RefundLedgerFacts["payments"]): boolean {
-	return payments.every(
-		(p) =>
-			p.status !== "succeeded" ||
-			(p.gateway !== undefined && refundRouteOf(p.gateway) === "outside"),
-	);
-}
-
 /** The two ledgers Mark refunded is decided from. */
 export interface RefundLedgerFacts {
-	/** `gateway`: the method the payment came through. Absent reads as NOT an
-	 *  outside method (fail-closed: see {@link markRefundedRefusal}). */
+	/** `gateway`: the method the payment came through (not read by the decision today). */
 	payments: readonly { amount: number; status: string; gateway?: string }[];
 	refunds: readonly { amount: number; status: string }[];
 }
@@ -250,21 +215,11 @@ export function unrefundedCapturedCents(facts: RefundLedgerFacts): number {
  *    ({@link markRefundedAllowed}).
  */
 export function markRefundedRefusal(
-	order: Pick<Order, "paymentMethod" | "reconciliationFlag">,
+	order: Pick<Order, "reconciliationFlag">,
 	facts: RefundLedgerFacts,
 ): "REFUND_IN_FLIGHT" | "REFUND_THROUGH_MONEY" | null {
 	if (facts.refunds.some((r) => r.status === "reserved" || r.status === "unverified")) {
 		return "REFUND_IN_FLIGHT";
-	}
-	// The `outside` shortcut holds only while every captured payment came through an
-	// outside method too: money a provider captured still goes through the check
-	// below. No current method is `outside`; the category is kept dormant (ADR-0026).
-	if (
-		order.paymentMethod !== null &&
-		refundRouteOf(order.paymentMethod) === "outside" &&
-		capturedOnlyOutside(facts.payments)
-	) {
-		return null;
 	}
 	if (unrefundedCapturedCents(facts) === 0) return null;
 	return order.reconciliationFlag?.startsWith(PROVIDER_REFUNDED_FLAG_PREFIX) === true
@@ -276,8 +231,6 @@ export function markRefundedRefusal(
  * May an admin MARK this order refunded — a status move that moves no money? Only
  * where that cannot hide money still held (QA2 M4: a shipped Stripe order with
  * $6.50 captured was closed as "refunded" and its buyer's page said so):
- *  - its method returns money OUTSIDE Otta, so a refund made there is
- *    exactly what this records; or
  *  - the ledger shows NOTHING left to refund through the provider; or
  *  - the provider itself reported the payment refunded IN FULL — the flag
  *    `refundOrder` writes on that pre-flight answer
@@ -289,7 +242,7 @@ export function markRefundedRefusal(
  * emails the buyer.
  */
 export function markRefundedAllowed(
-	order: Pick<Order, "paymentMethod" | "reconciliationFlag">,
+	order: Pick<Order, "reconciliationFlag">,
 	facts: RefundLedgerFacts,
 ): boolean {
 	return markRefundedRefusal(order, facts) === null;
