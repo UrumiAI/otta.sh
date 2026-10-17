@@ -124,9 +124,10 @@ const plugin: SandboxedPlugin = {
 		// runtime wired a cron executor — so a `format: "standard"` descriptor may
 		// declare it as it stands, and the declared capabilities stay exactly
 		// `content:read` + `network:request` + `email:send`. `plugin:activate` is the host's own
-		// registration moment (an admin toggle, or a marketplace install); the tick
-		// re-affirms; the wrappers above cover the configured deployment that reaches
-		// neither.
+		// registration moment (an admin toggle, a marketplace install, and on EmDash
+		// 1.1+ one unretried attempt at first boot — so it must never fail, see
+		// `createActivateHandler`); the tick re-affirms; the wrappers above cover the
+		// configured deployment that reaches none of them, or whose attempt failed.
 		"plugin:activate": { handler: createActivateHandler() },
 		// The timeout is DECLARED, not inherited: the tick's time budget
 		// (`SWEEP_TICK_BUDGET_MS`) is derived from it. See `cron/index.ts`.

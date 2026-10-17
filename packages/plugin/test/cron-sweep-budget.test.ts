@@ -54,6 +54,8 @@ import { makeSqliteStorage } from "@otta-sh/store-emdash/testing";
 import { PRODUCT_COMMERCE_COLLECTION } from "@otta-sh/store-emdash";
 import { beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
 import {
+	ACTIVATE_SCHEDULE_BUDGET_MS,
+	bootstrapSweepTask,
 	createActivateHandler,
 	createCronHandler,
 	ensureSweepTaskScheduled,
@@ -668,6 +670,60 @@ describe("the hook's own bookkeeping", () => {
 			const activated = await createActivateHandler()({}, ctx);
 			expect(activated).toMatchObject({ scheduled: false, task: SWEEP_TASK_NAME });
 			expect(logged).toHaveBeenCalled();
+		} finally {
+			logged.mockRestore();
+		}
+	});
+
+	test("plugin:activate gives up before the host's hook timeout when the cron table stalls", async () => {
+		// The host treats a hook that outruns its 5000 ms default exactly like one
+		// that threw — and on first boot that disables the plugin for good.
+		expect(ACTIVATE_SCHEDULE_BUDGET_MS).toBeLessThan(5_000);
+		const ctx = {
+			...context(storage),
+			cron: {
+				async schedule() {},
+				async cancel() {},
+				list: () => new Promise<never>(() => {}),
+			},
+		} as PluginContext;
+		const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+		vi.useFakeTimers();
+		try {
+			const pending = createActivateHandler()({}, ctx);
+			await vi.advanceTimersByTimeAsync(ACTIVATE_SCHEDULE_BUDGET_MS);
+			expect(await pending).toMatchObject({ scheduled: false, task: SWEEP_TASK_NAME });
+			expect(logged).toHaveBeenCalled();
+		} finally {
+			vi.useRealTimers();
+			logged.mockRestore();
+		}
+	});
+
+	test("a failed activate leaves the bootstrap free to register the task", async () => {
+		// What makes swallowing the activate failure safe: the next request's
+		// latched bootstrap still runs, and succeeds once the cron table answers.
+		let failing = true;
+		let upserts = 0;
+		const ctx = {
+			...context(storage),
+			cron: {
+				async schedule() {
+					if (failing) throw new Error("D1_ERROR: transient");
+					upserts++;
+				},
+				async cancel() {},
+				async list() {
+					return [];
+				},
+			},
+		} as PluginContext;
+		const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+		try {
+			expect(await createActivateHandler()({}, ctx)).toMatchObject({ scheduled: false });
+			failing = false;
+			await bootstrapSweepTask(ctx);
+			expect(upserts).toBe(1);
 		} finally {
 			logged.mockRestore();
 		}
