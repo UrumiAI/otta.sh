@@ -109,8 +109,9 @@ const plugin: SandboxedPlugin = {
 	hooks: {
 		// Work order 02 INC-C4: `withSweepBootstrap` is what actually gets the sweep
 		// task REGISTERED on this deployment. Otta is hand-registered in the site's
-		// `plugins` array, so the host never fires `plugin:activate` for it (that runs
-		// only from an admin enable toggle) — but these four content hooks and the
+		// `plugins` array, so EmDash 1.0.x never fires `plugin:activate` for it (that
+		// runs only from an admin enable toggle; 1.1+ also fires it once at first
+		// boot, and cannot be relied on to retry) — but these four content hooks and the
 		// storefront routes below do fire, with a live `ctx.cron` on each. The wrapper
 		// ensures the task exists, once per isolate, and can neither slow nor fail the
 		// handler it wraps. See `cron/index.ts`.
@@ -123,9 +124,10 @@ const plugin: SandboxedPlugin = {
 		// runtime wired a cron executor — so a `format: "standard"` descriptor may
 		// declare it as it stands, and the declared capabilities stay exactly
 		// `content:read` + `network:request` + `email:send`. `plugin:activate` is the host's own
-		// registration moment (an admin toggle, or a marketplace install); the tick
-		// re-affirms; the wrappers above cover the configured deployment that reaches
-		// neither.
+		// registration moment (an admin toggle, a marketplace install, and on EmDash
+		// 1.1+ one unretried attempt at first boot — so it must never fail, see
+		// `createActivateHandler`); the tick re-affirms; the wrappers above cover the
+		// configured deployment that reaches none of them, or whose attempt failed.
 		"plugin:activate": { handler: createActivateHandler() },
 		// The timeout is DECLARED, not inherited: the tick's time budget
 		// (`SWEEP_TICK_BUDGET_MS`) is derived from it. See `cron/index.ts`.

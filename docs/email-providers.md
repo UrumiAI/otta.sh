@@ -105,8 +105,8 @@ are write-only in the admin and are never echoed back.
    - **"no email"**: "no EmDash email provider". Order emails wait up to 72 h, then are
      skipped.
 
-   Email API keys that older otta builds stored are deleted only after the first email goes
-   through your provider, so a rollback still works until then.
+   Email API keys that older otta builds stored are **not** deleted automatically; remove them
+   by hand ([`DEPLOYMENT.md`](../DEPLOYMENT.md), "Leftover email and x402 keys").
 
 ## Test it
 

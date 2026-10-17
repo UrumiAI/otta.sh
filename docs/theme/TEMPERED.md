@@ -35,9 +35,8 @@ Three rules fall out, and everything else follows from them:
 
 ## 2. Tokens
 
-Define once in `src/themes/tempered/theme.css`, linked by `src/themes/tempered/Layout.astro`
-(was `src/styles/tokens.css` / `Base.astro` before the theme system). Every page reads these —
-no page declares a raw colour or a font stack of its own.
+Define once in `src/themes/tempered/theme.css`, linked by `src/themes/tempered/Layout.astro`.
+Every page reads these — no page declares a raw colour or a font stack of its own.
 
 ### Light (default)
 
@@ -143,7 +142,7 @@ list `prep` and that its `fvar` axes match the table above, e.g.
 ### The two data recipes
 
 `wdth 90` + tracking + tabular figures is one tuple that every price, quantity, SKU,
-countdown and eyebrow needs, so it is written down **once**, in `tokens.css`, as unscoped
+countdown and eyebrow needs, so it is written down **once**, in `theme.css`, as unscoped
 globals beside `.u-sr-only`:
 
 - **`.u-mono`** — the data face, `wdth 90`, `letter-spacing: -0.045em`, `tabular-nums`. Type
@@ -228,7 +227,7 @@ Every cart line carries one. A 2px track in `--u-edge`; a fill that drains left�
 the line's `expiresAt` (already on the cart wire); the remaining time in mono beside it.
 
 The window is the store's hold TTL — **900 seconds, fifteen minutes**: the domain's
-`DEFAULT_HOLD_TTL_MS`, unless the store changes the Settings "Cart hold TTL (minutes)"
+`DEFAULT_HOLD_TTL_MS`, unless the store changes the Settings "Cart hold time (minutes)"
 field (`holdTtlMinutes`; there is no environment variable for it). It is *only* the fill's denominator. The wire carries the expiry instant,
 not the length of the hold, so the state, the label and the countdown all come off
 `expiresAt` and are unaffected by this number: getting it wrong draws the bar at the wrong
@@ -276,7 +275,7 @@ Compare each against the matching frame in the mockup.
 
 | Page | Shape |
 |---|---|
-| `index.astro` | Asymmetric hero (~1.15fr / 1fr): thesis copy + CTA left, the **inventory tape** right — ITEM / PRICE / STOCK rows. The ITEM cell is the product's **name**, in the body face and linked to its page (straw underline on hover, like a card title), with the SKU beneath it in muted mono as the reference — the `Ledger`'s pattern. The mockup's SKU-only, unlinked ITEM column read as a stock sheet rather than a shelf, and a shelf on the front door should be a way in. The head is `Stock`, not the mockup's `In stock`: the cells below hold the words `In stock` and `Sold out`, and a column headed with one of its own values reads as a claim about the column. The tape fetches a bounded window of the catalog, so this page does make a commerce call — render thesis copy alone when the service is down |
+| `index.astro` | Asymmetric hero (~1.15fr / 1fr): thesis copy + CTA left, the **inventory tape** right — ITEM / PRICE / STOCK rows. The ITEM cell is the product's **name**, in the body face and linked to its page (straw underline on hover, like a card title), with the SKU beneath it in muted mono as the reference — the `Ledger`'s pattern. The mockup's SKU-only, unlinked ITEM column read as a stock sheet rather than a shelf, and a shelf on the front door should be a way in. The head is `Stock`, not the mockup's `In stock`: the cells below hold the words `In stock` and `Sold out`, and a column headed with one of its own values reads as a claim about the column. The tape fetches a bounded window of the catalog, so this page does make a commerce call — render thesis copy alone when that read fails or answers busy |
 | `products/index.astro` | 3-up grid, no card borders, generous air. Titles carry the weight |
 | `products/[slug].astro` | Media left (~4/5), right column: title, description, **spec ledger** (Price / Stock / SKU), qty + add-to-cart, then the hold note. A cart error carried back on the URL is a `Notice`; when the page gives it a way out (`model.errorAction` — CART_CHECKED_OUT links "Go to your cart"), the view links it after the sentence and never chooses the path itself |
 | `cart/index.astro` | Lines, not a table: media, name + SKU + hold ribbon, then price and controls right. Totals block bottom-right. The header carries the **unit count alone** — see below |
@@ -393,9 +392,6 @@ The copy is design material and is part of this spec.
   for fifteen minutes" is useful to a shopper — but the boast goes. Fifteen, not ten: it is
   the TTL the store actually runs (§6), and it is stated as a number because "a few minutes"
   gives a shopper nothing to plan around.
-  - **`sites/staging/seed/seed.json` still carries the old mug description** ("Holds exactly
-    one coffee, atomically. No oversell under concurrency."). Replace it, and drop the
-    CMS/commerce-service plumbing talk from the tee description, in the same increment.
 - Write from the shopper's side. Never name internals: no "the commerce service", no "CMS",
   no "view model" in anything a shopper reads.
 - Active voice; a control says exactly what happens. "Continue to payment" leads to Payment.
@@ -418,6 +414,5 @@ Not optional, and not worth announcing in the UI:
 - Both themes carry equal care — dark is not a naive inversion, and the accent works on both
   grounds.
 - Text contrast meets AA. Straw is never a text-on-fill colour.
-- `base-layout-favicon.test.ts` pins an inline SVG data-URI favicon in every theme's `Layout.astro`
-  (was `Base.astro`). Keep it
-  inline; redraw the mark as the coil.
+- `base-layout-favicon.test.ts` pins an inline SVG data-URI favicon in Tempered's
+  `Layout.astro`. Keep it inline; redraw the mark as the coil.

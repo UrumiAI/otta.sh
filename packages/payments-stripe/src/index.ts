@@ -215,14 +215,15 @@ function toStripeShipping(shipTo: CreateIntentShipTo | undefined): StripeShippin
 
 export interface StripePaymentGatewayOptions {
 	/**
-	 * Stripe webhook signing secret (`whsec_…`). SERVICE-ENV ONLY (CLAUDE.md) —
-	 * never in the plugin / `ctx.kv`. Used to HMAC-verify the raw webhook body.
+	 * Stripe webhook signing secret (`whsec_…`). Used to HMAC-verify the raw
+	 * webhook body. In Otta it is entered on the admin Settings page and stored
+	 * encrypted at rest (ADR-0037).
 	 */
 	webhookSecret: string;
 	/**
-	 * Stripe secret key (`sk_…`); SERVICE-ENV ONLY (CLAUDE.md). Reserved for real
-	 * intent creation (Phase 4 creates the client handle offline — see
-	 * `createIntent`) AND now REQUIRED for the live refund path (ADR-0008): the
+	 * Stripe secret key (`sk_…`); stored like `webhookSecret` (ADR-0037). Required
+	 * for live intent creation (unset ⇒ `createIntent` returns the OFFLINE,
+	 * unpayable handle) AND REQUIRED for the live refund path (ADR-0008): the
 	 * refund-time pre-flight (`GET`) and `refunds.create` both authenticate with
 	 * it. **Unset ⇒ `refundable` is false** — the adapter has no credential to call
 	 * the refund API with, surfaced honestly rather than failing on first use.

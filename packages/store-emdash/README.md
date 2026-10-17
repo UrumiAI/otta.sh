@@ -8,7 +8,9 @@ Commerce store adapters over EmDash's plugin-storage primitives. Each commerce a
 pnpm add @otta-sh/store-emdash
 ```
 
-Requires a host that carries the conditional-write primitives (`updateIf`, `getVersioned`, `compareAndSet`, `compareAndDelete`): `emdash` `~1.0.1`.
+Requires a host that carries the conditional-write primitives (`updateIf`, `getVersioned`, `compareAndSet`, `compareAndDelete`): `emdash` `^1.0.1`.
+
+Published entry point: `@otta-sh/store-emdash` (ESM-only). Part of [Otta](https://github.com/UrumiAI/otta.sh#readme).
 
 ## Usage
 
@@ -17,3 +19,5 @@ The adapters are written against a structural `StorageAccess` port (`src/storage
 ## Design notes
 
 Document models, index and claim design, contention budget, crash seams and the D1 test tier are in [docs/store-emdash/design-notes.md](https://github.com/UrumiAI/otta.sh/blob/main/docs/store-emdash/design-notes.md). The decision record is [ADR-0019](https://github.com/UrumiAI/otta.sh/blob/main/adr/0019-commerce-aggregates-are-one-document-each.md).
+
+MIT licensed.
