@@ -9,11 +9,13 @@
  * deployment's egress supplies (only `OTTA_EXTRA_ALLOWED_HOSTS` today). ADR-0031 removed every email
  * host: email goes through `ctx.email`, never `ctx.http`.
  */
+import { readFileSync } from "node:fs";
 import { describe, expect, test } from "vitest";
 import {
 	ALLOWED_HOSTS,
 	normalizeExtraHost,
 	OTTA_PLUGIN_CAPABILITIES,
+	OTTA_PLUGIN_VERSION,
 	parseExtraAllowedHosts,
 	resolveAllowedHosts,
 	STRIPE_API_HOST,
@@ -221,5 +223,16 @@ describe("extraAllowedHosts (OTTA_EXTRA_ALLOWED_HOSTS)", () => {
 
 	test("capabilities are untouched: never network:request:unrestricted", () => {
 		expect([...OTTA_PLUGIN_CAPABILITIES]).not.toContain("network:request:unrestricted");
+	});
+});
+
+describe("OTTA_PLUGIN_VERSION", () => {
+	test("is the version this package is published as", () => {
+		// Hand-maintained literal: a release bump that misses it ships a
+		// descriptor that misreports the plugin's version.
+		const manifest = JSON.parse(
+			readFileSync(new URL("../package.json", import.meta.url), "utf8"),
+		) as { version: string };
+		expect(OTTA_PLUGIN_VERSION).toBe(manifest.version);
 	});
 });

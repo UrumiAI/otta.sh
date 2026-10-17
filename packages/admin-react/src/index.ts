@@ -29,7 +29,7 @@ import { definePlugin } from "emdash";
 /** ADR-0014's second descriptor id. Never `otta` — see the module doc. */
 export const OTTA_CONSOLE_PLUGIN_ID = "otta-console";
 
-export const OTTA_CONSOLE_PLUGIN_VERSION = "0.0.1";
+export const OTTA_CONSOLE_PLUGIN_VERSION = "0.1.0";
 
 /**
  * This package's name, as EmDash's generated virtual modules will write it.

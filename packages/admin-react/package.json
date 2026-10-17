@@ -1,6 +1,6 @@
 {
 	"name": "@otta-sh/admin-react",
-	"version": "0.0.1",
+	"version": "0.1.0",
 	"description": "Otta React admin console — the `otta-console` native-format EmDash descriptor (ADR-0014). Zero capabilities, zero allowedHosts; reaches commerce only through the existing authenticated `otta` admin routes.",
 	"homepage": "https://github.com/UrumiAI/otta.sh#readme",
 	"bugs": {
@@ -13,7 +13,8 @@
 		"directory": "packages/admin-react"
 	},
 	"files": [
-		"dist"
+		"dist",
+		"!dist/tsc"
 	],
 	"type": "module",
 	"exports": {
@@ -30,10 +31,12 @@
 				"types": "./dist/admin.d.mts",
 				"default": "./dist/admin.mjs"
 			}
-		}
+		},
+		"access": "public"
 	},
 	"scripts": {
-		"build": "tsdown"
+		"build": "tsdown",
+		"prepublishOnly": "tsdown"
 	},
 	"dependencies": {
 		"@otta-sh/admin-presentation": "workspace:*"
