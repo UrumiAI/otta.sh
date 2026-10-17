@@ -1,101 +1,106 @@
 /**
- * C8 (storefront-checkout plan §3) — the build-time Stripe publishable key and
- * the site's own `buyerRef` guard.
+ * C8 (storefront-checkout plan §3) — the Stripe publishable key and the site's
+ * own `buyerRef` guard.
  *
- * ── Why test 8b exists at all ─────────────────────────────────────────────
- * "The key is absent" and "we read the wrong variable name" are
- * INDISTINGUISHABLE at runtime: both render "Card payment isn't set up on this
- * store yet.", nothing throws, and no test fails. An earlier draft of the plan
- * named this variable `STRIPE_PUBLISHABLE_KEY`; implemented literally it would
- * have shipped that message to every buyer while a valid `pk_test_…` sat
- * unread in `~/.otta-deploy.env`. So the variable NAME is pinned as test
- * data, the config module is pinned to read that spelling and no other, and a
- * present-but-malformed value THROWS at build (throw early rather than bake
- * garbage) — leaving quiet degradation as the
- * behaviour for a genuinely unprovisioned key, and only that.
+ * ── The key is a Settings value now (issue #498) ──────────────────────────
+ * It used to be baked in at build time from `STRIPE_PUBLIC_KEY`, which an
+ * operator with only the admin could not set. The plugin now holds it (entered
+ * in Settings, shape-checked on save and on read) and the checkout pages read it
+ * per request through `readStripePublishableKey`.
+ *
+ * What the old build check guarded still holds, and is pinned here: "no key"
+ * (a store that has not connected Stripe) is the ONLY way to reach "Card payment
+ * isn't set up" — a read that FAILED is `unavailable`, which the pages answer as
+ * busy — and a build that still sets the old variable fails loudly instead of
+ * looking like configuration (site-config.test.ts).
  */
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { STOREFRONT_PAYMENT_CONFIG_ROUTE } from "@otta-sh/plugin";
 import { describe, expect, test } from "vitest";
 import { isPlausibleEmail } from "../src/lib/email.js";
-import { resolveStripePublishableKey, STRIPE_PUBLIC_KEY_VAR } from "../src/lib/stripe-config.js";
+import { readStripePublishableKey } from "../src/lib/stripe-config.js";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
-const ASTRO_CONFIG = readFileSync(path.resolve(HERE, "../astro.config.ts"), "utf8");
 const ENV_EXAMPLE = readFileSync(path.resolve(HERE, "../.env.example"), "utf8");
+const SITE = new URL("http://localhost:4321/checkout");
 
-describe("8a — resolveStripePublishableKey", () => {
-	test("returns a valid pk_test_ key unchanged", () => {
-		expect(resolveStripePublishableKey("pk_test_51AbCdEf0123456789")).toBe(
-			"pk_test_51AbCdEf0123456789",
+/** A fake public dispatcher answering the payment-config route from a script
+ *  (the last answer repeats); `null` answers with a non-success envelope. */
+function answering(...answers: unknown[]): { handler: never; routes: string[] } {
+	const routes: string[] = [];
+	const handler = async (_id: string, _method: string, route: string) => {
+		routes.push(route.replace(/^\//, ""));
+		const data = answers[Math.min(routes.length - 1, answers.length - 1)];
+		return data === null ? { success: false } : { success: true, data };
+	};
+	return { handler: handler as never, routes };
+}
+
+describe("8a — readStripePublishableKey", () => {
+	test("a stored key is configured, read from the plugin's payment-config route", async () => {
+		const { handler, routes } = answering({ ok: true, stripePublishableKey: "pk_live_51Abc0123" });
+		expect(await readStripePublishableKey(handler, SITE)).toEqual({
+			state: "configured",
+			key: "pk_live_51Abc0123",
+		});
+		expect(routes).toEqual([STOREFRONT_PAYMENT_CONFIG_ROUTE]);
+	});
+
+	test("no stored key is unconfigured — the one way to 'card payment isn't set up'", async () => {
+		const { handler } = answering({ ok: true, stripePublishableKey: null });
+		expect(await readStripePublishableKey(handler, SITE)).toEqual({ state: "unconfigured" });
+	});
+
+	test("BUSY twice (the one allowlisted retry spent) is unavailable, not unconfigured", async () => {
+		const busy = { ok: false, error: "BUSY", retryable: true };
+		const { handler, routes } = answering(busy, busy);
+		expect(await readStripePublishableKey(handler, SITE)).toEqual({ state: "unavailable" });
+		expect(routes).toHaveLength(2);
+	});
+
+	test("BUSY then an answer is the answer (it is a read, so it is retried once)", async () => {
+		const { handler } = answering(
+			{ ok: false, error: "BUSY", retryable: true },
+			{ ok: true, stripePublishableKey: "pk_test_51Abc0123" },
 		);
-	});
-
-	test("accepts a pk_live_ key too (a live storefront is a legitimate build)", () => {
-		expect(resolveStripePublishableKey("pk_live_51AbCdEf0123456789")).toBe(
-			"pk_live_51AbCdEf0123456789",
-		);
-	});
-
-	test("trims surrounding whitespace (a value pasted into .env keeps its newline otherwise)", () => {
-		expect(resolveStripePublishableKey("  pk_test_abc123  ")).toBe("pk_test_abc123");
-	});
-
-	test.each([[undefined], [""], ["   "]])(
-		"an ABSENT key (%p) resolves to undefined — never a placeholder that would half-boot Stripe.js",
-		(raw) => {
-			expect(resolveStripePublishableKey(raw)).toBeUndefined();
-		},
-	);
-});
-
-describe("8b — the loud-failure guards", () => {
-	test("the variable name is EXACTLY the provisioned one: STRIPE_PUBLIC_KEY", () => {
-		// Pinned as DATA. `~/.otta-deploy.env` carries STRIPE_PUBLIC_KEY;
-		// STRIPE_PUBLISHABLE_KEY appears nowhere in our provisioning.
-		expect(STRIPE_PUBLIC_KEY_VAR).toBe("STRIPE_PUBLIC_KEY");
-	});
-
-	test("astro.config reads STRIPE_PUBLIC_KEY and never STRIPE_PUBLISHABLE_KEY", () => {
-		expect(ASTRO_CONFIG).toContain("STRIPE_PUBLIC_KEY");
-		expect(ASTRO_CONFIG).not.toContain("STRIPE_PUBLISHABLE_KEY");
-	});
-
-	test(".env.example documents that exact spelling, and not the wrong one", () => {
-		expect(ENV_EXAMPLE).toContain("STRIPE_PUBLIC_KEY");
-		expect(ENV_EXAMPLE).not.toContain("STRIPE_PUBLISHABLE_KEY");
+		expect((await readStripePublishableKey(handler, SITE)).state).toBe("configured");
 	});
 
 	test.each([
-		["garbage"],
-		["sk_test_thisIsASECRETkey"],
-		["pk_wrong_123"],
-		["PK_TEST_123"],
-		["pk_test_"],
-	])("a PRESENT-but-malformed value (%p) THROWS at build rather than silently degrading", (raw) => {
-		expect(() => resolveStripePublishableKey(raw)).toThrow(/STRIPE_PUBLIC_KEY/);
+		["a render failure", { ok: false, error: "RENDER_FAILED" }],
+		["a failed envelope", null],
+	])("%s is unavailable", async (_name, answer) => {
+		const { handler } = answering(answer);
+		expect(await readStripePublishableKey(handler, SITE)).toEqual({ state: "unavailable" });
 	});
 
-	test("BOTH halves of the degraded state exist: the review page hides the button AND the endpoint refuses to create an order", () => {
+	test("no dispatcher at all is unavailable", async () => {
+		expect(await readStripePublishableKey(undefined, SITE)).toEqual({ state: "unavailable" });
+	});
+});
+
+describe("8b — the guards around the degraded state", () => {
+	test("BOTH halves of 'not set up' exist: the review hides the button AND the endpoint refuses to create an order", () => {
 		// Hiding the button alone is a UI convention, not a guarantee — a direct
 		// POST would still hold stock for 15 minutes against a payment that
 		// cannot happen.
 		const page = readFileSync(path.resolve(HERE, "../src/pages/checkout/index.astro"), "utf8");
 		const endpoint = readFileSync(path.resolve(HERE, "../src/pages/checkout/place.ts"), "utf8");
-		expect(page).toContain("STRIPE_PUBLISHABLE_KEY");
-		expect(endpoint).toContain("STRIPE_PUBLISHABLE_KEY === undefined");
+		expect(page).toContain("readStripePublishableKey");
+		expect(endpoint).toContain('stripeKey.state === "unconfigured"');
 	});
 
-	test("the throw names the variable but NEVER echoes the value (a mistyped secret key must not reach a build log)", () => {
-		let message = "";
-		try {
-			resolveStripePublishableKey("sk_test_SUPERSECRETVALUE");
-		} catch (err) {
-			message = err instanceof Error ? err.message : String(err);
+	test("every page answers an UNAVAILABLE read as busy, never as 'not set up'", () => {
+		for (const file of ["index.astro", "place.ts", "pay.astro"]) {
+			const source = readFileSync(path.resolve(HERE, `../src/pages/checkout/${file}`), "utf8");
+			expect(source, file).toContain('stripeKey.state === "unavailable"');
 		}
-		expect(message).toContain("STRIPE_PUBLIC_KEY");
-		expect(message).not.toContain("SUPERSECRETVALUE");
+	});
+
+	test(".env.example no longer offers STRIPE_PUBLIC_KEY as a setting", () => {
+		expect(ENV_EXAMPLE).not.toMatch(/^#?\s*STRIPE_PUBLIC_KEY=/m);
 	});
 });
 

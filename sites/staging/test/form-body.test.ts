@@ -21,9 +21,7 @@ vi.mock("emdash", () => ({ getEmDashEntry }));
 // Under vitest the publishable key (a build-time define) is undefined; stub it
 // so /checkout/place reaches the body read instead of the no-key redirect.
 vi.mock("../src/lib/stripe-config.js", () => ({
-	STRIPE_PUBLIC_KEY_VAR: "STRIPE_PUBLIC_KEY",
-	resolveStripePublishableKey: (raw: string | undefined) => raw,
-	STRIPE_PUBLISHABLE_KEY: "pk_test_fake",
+	readStripePublishableKey: async () => ({ state: "configured", key: "pk_test_fake" }),
 }));
 
 import { POST as LOGIN_REQUEST_POST } from "../src/pages/account/login/request.js";

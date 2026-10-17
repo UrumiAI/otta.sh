@@ -45,7 +45,7 @@ import {
 	createPlugin as createConsolePlugin,
 	OTTA_CONSOLE_ADMIN_PAGES,
 } from "@otta-sh/admin-react";
-import { afterEach, describe, expect, test, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 // `../e2e/registry.js`, NEVER `../e2e/harness.js`. The harness loopback-guards
 // its addresses at MODULE LOAD and imports `@playwright/test`, which threw
 // before a single assertion and redded the whole unit suite. The registry is
@@ -759,6 +759,16 @@ describe("the otta-console gate rejects the near-miss shapes", () => {
 });
 
 describe("astro.config", () => {
+	// #498: loading the config THROWS when STRIPE_PUBLIC_KEY is set, and it falls
+	// back to this checkout's own sites/staging/.env. An empty stub stops that
+	// fallback, so a developer's leftover .env line cannot fail these tests; the
+	// test of the throw sets its own value.
+	beforeEach(() => {
+		vi.stubEnv("STRIPE_PUBLIC_KEY", "");
+	});
+	afterEach(() => {
+		vi.unstubAllEnvs();
+	});
 	// Both tests here dynamically import astro.config.js, which pulls in the
 	// Cloudflare adapter and the EmDash integration: measured at 2-6.6s on a
 	// loaded machine, against vitest's 5000ms default. The generous timeout is
@@ -797,18 +807,11 @@ describe("astro.config", () => {
 	);
 
 	test(
-		"the Stripe publishable key rides a SECOND build-time define (ADR-0012 decision 4)",
+		"#498: the Stripe publishable key is NOT a build-time define any more (it is a Settings value)",
 		async () => {
-			// Baked, not read from wrangler `vars` at runtime: wrangler-config.test.ts
-			// forbids any vars key matching /SECRET|KEY|TOKEN|PASSWORD/i, and
-			// STRIPE_PUBLIC_KEY matches on KEY. Keep the guard; bake the key.
 			const config = (await import("../astro.config.js")).default;
 			const define = config.vite?.define as Record<string, string>;
-			expect(Object.keys(define)).toContain("__OTTA_STRIPE_PUBLIC_KEY__");
-			// Whatever this machine's env holds, the baked value is a STRING (an
-			// absent key bakes "", which the config module treats as unconfigured) —
-			// never `undefined`, which would leave the identifier undeclared.
-			expect(typeof JSON.parse(define["__OTTA_STRIPE_PUBLIC_KEY__"] ?? "null")).toBe("string");
+			expect(Object.keys(define)).not.toContain("__OTTA_STRIPE_PUBLIC_KEY__");
 		},
 		CONFIG_IMPORT_TIMEOUT_MS,
 	);
@@ -881,6 +884,35 @@ describe("astro.config", () => {
 		},
 		CONFIG_IMPORT_TIMEOUT_MS,
 	);
+
+	describe("#498: a leftover STRIPE_PUBLIC_KEY at config load", () => {
+		afterEach(() => {
+			vi.unstubAllEnvs();
+			vi.resetModules();
+		});
+
+		test(
+			"makes loading the site config THROW, saying where the key goes now, never echoing it",
+			async () => {
+				vi.stubEnv("STRIPE_PUBLIC_KEY", "pk_test_LEFTOVERVALUE123");
+				vi.resetModules();
+				const loaded = import("../astro.config.js");
+				await expect(loaded).rejects.toThrow(/no longer read.*Stripe publishable key/s);
+				await expect(loaded).rejects.not.toThrow(/LEFTOVERVALUE/);
+			},
+			CONFIG_IMPORT_TIMEOUT_MS,
+		);
+
+		test(
+			"an EMPTY value is treated as unset (a blanked line is not a configuration)",
+			async () => {
+				vi.stubEnv("STRIPE_PUBLIC_KEY", "  ");
+				vi.resetModules();
+				await expect(import("../astro.config.js")).resolves.toBeDefined();
+			},
+			CONFIG_IMPORT_TIMEOUT_MS,
+		);
+	});
 
 	/**
 	 * BEHAVIOUR, not source text: the REAL config module, evaluated with

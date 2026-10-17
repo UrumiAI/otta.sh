@@ -10,9 +10,7 @@ import { readCheckoutDraft } from "../src/lib/checkout-draft.js";
 import { POST as PLACE_POST } from "../src/pages/checkout/place.js";
 
 vi.mock("../src/lib/stripe-config.js", () => ({
-	STRIPE_PUBLIC_KEY_VAR: "STRIPE_PUBLIC_KEY",
-	resolveStripePublishableKey: (raw: string | undefined) => raw,
-	STRIPE_PUBLISHABLE_KEY: "pk_test_fake",
+	readStripePublishableKey: async () => ({ state: "configured", key: "pk_test_fake" }),
 }));
 
 const SITE = "http://localhost:4321";

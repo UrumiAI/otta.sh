@@ -20,9 +20,7 @@ const { getEmDashEntry } = vi.hoisted(() => ({ getEmDashEntry: vi.fn() }));
 vi.mock("emdash", () => ({ getEmDashEntry }));
 
 vi.mock("../src/lib/stripe-config.js", () => ({
-	STRIPE_PUBLIC_KEY_VAR: "STRIPE_PUBLIC_KEY",
-	resolveStripePublishableKey: (raw: string | undefined) => raw,
-	STRIPE_PUBLISHABLE_KEY: "pk_test_fake",
+	readStripePublishableKey: async () => ({ state: "configured", key: "pk_test_fake" }),
 }));
 
 import {

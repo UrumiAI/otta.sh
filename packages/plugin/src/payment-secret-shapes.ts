@@ -54,7 +54,7 @@ export function checkStripeSecretKey(raw: string): SecretShapeCheck {
 		return {
 			ok: false,
 			problem:
-				"must start with sk_live_ or sk_test_ (or rk_live_ / rk_test_ for a restricted key). The publishable key (pk_…) goes in the storefront, not here",
+				"must start with sk_live_ or sk_test_ (or rk_live_ / rk_test_ for a restricted key). The publishable key (pk_…) goes in its own field below",
 		};
 	}
 	return base;
@@ -81,4 +81,28 @@ export function checkStripeWebhookSecret(raw: string): SecretShapeCheck {
 		};
 	}
 	return base;
+}
+
+/** Issue #498: `pk_live_` / `pk_test_`, then the key body (as the secret key's).
+ *  Not a secret — it is sent to every buyer's browser — but checked the same way,
+ *  so a secret key pasted here is refused rather than published. */
+const STRIPE_PUBLISHABLE_KEY = /^pk_(test|live)_[A-Za-z0-9_]{10,}$/;
+
+export function checkStripePublishableKey(raw: string): SecretShapeCheck {
+	const base = opaque(raw);
+	if (!base.ok) return base;
+	if (!STRIPE_PUBLISHABLE_KEY.test(base.value)) {
+		return {
+			ok: false,
+			problem:
+				"must start with pk_live_ or pk_test_. The secret key (sk_…) goes in its own field above, never here",
+		};
+	}
+	return base;
+}
+
+/** Test or live, from a publishable key's prefix; `undefined` if it is not one. */
+export function stripePublishableKeyMode(value: string): "test" | "live" | undefined {
+	const match = STRIPE_PUBLISHABLE_KEY.exec(value);
+	return match?.[1] === "test" ? "test" : match?.[1] === "live" ? "live" : undefined;
 }

@@ -76,7 +76,7 @@ import { regionChoice, regionContainsOthers } from "../../lib/regions.js";
 import { SITE_LOCALE } from "../../lib/site-locale.js";
 import { cartErrorMessage } from "../../lib/error-messages.js";
 import { checkoutFootnote } from "../../lib/totals.js";
-import { STRIPE_PUBLISHABLE_KEY } from "../../lib/stripe-config.js";
+import { readStripePublishableKey } from "../../lib/stripe-config.js";
 import { dispatchOttaRoute } from "../../lib/otta-api.js";
 import type { CheckoutModel } from "../../themes/contract.js";
 
@@ -141,9 +141,12 @@ const summary = result as Extract<CheckoutSummaryRouteResult, { ok: true }>;
 const { lines, totals } = summary;
 
 /** No key ⇒ no payment step, and NO order is created: creating one would hold
- *  stock for a payment the buyer cannot make. (A key that is present but
- *  malformed never reaches here — it fails the build; see stripe-config.ts.) */
-const paymentConfigured = STRIPE_PUBLISHABLE_KEY !== undefined;
+ *  stock for a payment the buyer cannot make. The key is a Settings value read
+ *  per request (#498); a read that failed is busy, never "not set up" — the same
+ *  303 to /cart?error=BUSY a busy summary takes. */
+const stripeKey = await readStripePublishableKey(getPublicPluginApiRouteHandler(Astro.locals), Astro.url);
+if (stripeKey.state === "unavailable") return Astro.redirect("/cart?error=BUSY", 303);
+const paymentConfigured = stripeKey.state === "configured";
 
 /** The dead-cart trap's exit, offered only where it applies. */
 const checkedOut = error === "CART_CHECKED_OUT";

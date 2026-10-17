@@ -44,13 +44,15 @@ vi.mock("astro:middleware", () => ({
 	defineMiddleware: <T>(handler: T): T => handler,
 }));
 
-const stripeKey = vi.hoisted(() => ({ value: "pk_test_fake" as string | undefined }));
+const stripeKey = vi.hoisted(() => ({ value: "pk_test_fake" as string | null | undefined }));
 vi.mock("../src/lib/stripe-config.js", () => ({
-	STRIPE_PUBLIC_KEY_VAR: "STRIPE_PUBLIC_KEY",
-	resolveStripePublishableKey: (raw: string | undefined) => raw,
-	get STRIPE_PUBLISHABLE_KEY() {
-		return stripeKey.value;
-	},
+	// #498: the key is read per request; `null` stands for a read that failed.
+	readStripePublishableKey: async () =>
+		stripeKey.value === null
+			? { state: "unavailable" }
+			: stripeKey.value === undefined
+				? { state: "unconfigured" }
+				: { state: "configured", key: stripeKey.value },
 }));
 
 const { POST: PLACE_POST } = await import("../src/pages/checkout/place.js");

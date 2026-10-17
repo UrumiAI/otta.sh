@@ -601,8 +601,10 @@ describe("Settings admin form (workerd sandbox)", () => {
 		// Stripe mode comes from the key's prefix, never any more of it. Email is
 		// `ctx.email` (ADR-0031), which a sandboxed host always hands over — so with
 		// nothing sent through it yet it is "email TBC", never "set" (PR #418 review).
+		// #498: with no publishable key saved, card checkout is not ready, so the
+		// Stripe part says what is missing rather than the secret key's mode.
 		expect(groupLabels(blocks).get("settings:payments")).toBe(
-			"Payments & email — Stripe live · webhook set · email TBC",
+			"Payments & email — no publishable · webhook set · email TBC",
 		);
 	});
 
@@ -886,8 +888,9 @@ describe("Settings admin form (workerd sandbox)", () => {
 		expect(String(findBlocks(afterBlankBlocks, "banner")[0]?.title)).toBe(
 			"Nothing entered — Stripe secret key unchanged",
 		);
-		// The label now states the key's mode — the earlier save held.
-		expect(groupLabels(afterBlankBlocks).get("settings:payments")).toContain("Stripe test");
+		// The label still counts the secret key as set — the earlier save held. (It
+		// names the missing publishable key, #498, which only a set secret key gets.)
+		expect(groupLabels(afterBlankBlocks).get("settings:payments")).toContain("no publishable");
 		expect(JSON.stringify(afterBlankBlocks)).not.toContain(
 			["sk_test_", "QaLocalStripeKey0000"].join(""),
 		);
@@ -965,7 +968,7 @@ describe("Settings admin form (workerd sandbox)", () => {
 		// lost the "no " prefix that makes the list read as MISSING rather than
 		// as present.
 		expect(groupLabels(savedKey).get("settings:payments")).toBe(
-			"Payments & email — Stripe test · no webhook · email TBC",
+			"Payments & email — no publishable · no webhook · email TBC",
 		);
 
 		// …and a later page load agrees, so the label is reporting kv, not the
@@ -976,7 +979,7 @@ describe("Settings admin form (workerd sandbox)", () => {
 			await sandbox.invokeRoute("admin", { type: "page_load", page: "/settings" }),
 		);
 		expect(groupLabels(reloaded).get("settings:payments")).toBe(
-			"Payments & email — Stripe test · no webhook · email TBC",
+			"Payments & email — no publishable · no webhook · email TBC",
 		);
 
 		// SECURITY PIN: no part of the secret value appears in any of these
