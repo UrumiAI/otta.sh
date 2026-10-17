@@ -18,8 +18,7 @@
  * plugin with no status row as active), its hooks and routes run from the first
  * request, and nobody ever toggles it. A config-array deployment on 1.0.x therefore
  * reaches `plugin:activate` NEVER, and even on 1.1+ that single attempt is not
- * retried by the host. The first
- * cut of this file scheduled the task only from there and from the tick — a tick
+ * retried by the host. The first cut of this file scheduled the task only from there and from the tick — a tick
  * that cannot happen until something schedules. Registration could not bootstrap
  * itself.
  *
@@ -241,8 +240,8 @@ export function createActivateHandler(): HookHandler<PluginLifecycleEvent> {
 		};
 		let timer: ReturnType<typeof setTimeout> | undefined;
 		const attempt = ensureSweepTaskScheduled(ctx);
-		// A late rejection after the deadline has nobody awaiting it; observe it so
-		// it is logged rather than surfacing as an unhandled rejection.
+		// A late rejection after the deadline has nobody awaiting it; observe it so it
+		// does not surface as an unhandled rejection. The retry logs its own failure.
 		attempt.catch(() => {});
 		const deadline = new Promise<"timeout">((resolve) => {
 			timer = setTimeout(() => resolve("timeout"), ACTIVATE_SCHEDULE_BUDGET_MS);
