@@ -10,7 +10,7 @@ pnpm add @otta-sh/store-emdash
 
 Requires a host that carries the conditional-write primitives (`updateIf`, `getVersioned`, `compareAndSet`, `compareAndDelete`): `emdash` `~1.0.1`.
 
-Published entry point: `@otta-sh/store-emdash` (ESM-only). Peer dependency: `emdash` `~1.0.1`. Part of [Otta](https://github.com/UrumiAI/otta.sh#readme).
+Published entry point: `@otta-sh/store-emdash` (ESM-only). Part of [Otta](https://github.com/UrumiAI/otta.sh#readme).
 
 ## Usage
 

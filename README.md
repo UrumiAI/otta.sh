@@ -104,7 +104,11 @@ pnpm add @otta-sh/plugin @otta-sh/admin-react
 and `@otta-sh/admin-presentation` with it. The packages export no ready-made plugin descriptor: each
 site writes its own. The reference site's are the worked example:
 [`otta-plugin-descriptor.ts`](./sites/staging/src/otta-plugin-descriptor.ts) and
-[`otta-console-descriptor.ts`](./sites/staging/src/otta-console-descriptor.ts). Each package has
+[`otta-console-descriptor.ts`](./sites/staging/src/otta-console-descriptor.ts). Your `otta`
+descriptor **must** declare `settingsSchema: { ...PAYMENT_SECRET_SETTINGS_SCHEMA }` (exported by
+`@otta-sh/plugin`) and the host must set `EMDASH_ENCRYPTION_KEY`; without the schema the Stripe
+keys are stored as plain text and the plugin cannot tell ([ADR-0037](./adr/0037-payment-secrets-are-encrypted-at-rest.md),
+[`DEPLOYMENT.md`](./DEPLOYMENT.md) §3). Each package has
 its own README under [`packages/`](./packages/). The workspace, not npm, is how you develop Otta
 itself.
 

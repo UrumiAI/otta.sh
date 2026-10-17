@@ -17,14 +17,14 @@ ESM-only, for an EmDash site on `emdash` `~1.0.1` (the requirement of `@otta-sh/
 
 | Import | What it is |
 |---|---|
-| `@otta-sh/plugin` | The plugin's public surface: ids, capabilities, `COMMERCE_STORAGE_COLLECTIONS`, `resolveAllowedHosts`, the admin page constants. |
+| `@otta-sh/plugin` | The plugin's public surface: ids, capabilities, `COMMERCE_STORAGE_COLLECTIONS`, `resolveAllowedHosts`, `PAYMENT_SECRET_SETTINGS_SCHEMA`, the admin page constants. |
 | `@otta-sh/plugin/plugin` | The sandboxed plugin (`createOttaPlugin`). |
 | `@otta-sh/plugin/sandbox-entry` | The entry for running it in the sandbox (`createSandboxWorker`). |
 | `@otta-sh/plugin/trusted` | The same plugin with `trustedHost` on, for a site that registers it in-process. |
 | `@otta-sh/plugin/subdivisions` | English subdivision names for a storefront's region pick list (kept out of the sandbox bundle). |
 | `@otta-sh/plugin/testing` | Test helpers, e.g. `recordingEmailProvider`. |
 
-The package exports no descriptor; each site writes its own, as the reference site does in [`sites/staging/src/otta-plugin-descriptor.ts`](https://github.com/UrumiAI/otta.sh/blob/main/sites/staging/src/otta-plugin-descriptor.ts). See the [repo README](https://github.com/UrumiAI/otta.sh#readme).
+The package exports no descriptor; each site writes its own, as the reference site does in [`sites/staging/src/otta-plugin-descriptor.ts`](https://github.com/UrumiAI/otta.sh/blob/main/sites/staging/src/otta-plugin-descriptor.ts). That descriptor **must** declare `settingsSchema: { ...PAYMENT_SECRET_SETTINGS_SCHEMA }` and the host must set `EMDASH_ENCRYPTION_KEY`: without the schema the Stripe keys are stored as plain text, and the plugin cannot detect it ([ADR-0037](https://github.com/UrumiAI/otta.sh/blob/main/adr/0037-payment-secrets-are-encrypted-at-rest.md)). See the [repo README](https://github.com/UrumiAI/otta.sh#readme).
 
 ## The commerce transport
 
