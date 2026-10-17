@@ -1,9 +1,9 @@
 # Otta — an open-source commerce layer for EmDash
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](./LICENSE)
-[![Version](https://img.shields.io/badge/version-0.0.1-orange.svg)](https://github.com/UrumiAI/otta.sh/releases/tag/v0.0.1)
+[![Version](https://img.shields.io/badge/version-0.1.0-orange.svg)](https://github.com/UrumiAI/otta.sh/releases/tag/v0.1.0)
 
-Open source (MIT), version 0.0.1. The WooCommerce-equivalent for
+Open source (MIT), version 0.1.0. The WooCommerce-equivalent for
 [EmDash](https://github.com/emdash-cms/emdash), Cloudflare's TypeScript CMS.
 
 > [!WARNING]
@@ -55,7 +55,11 @@ no Postgres in the loop.
 ```bash
 pnpm install
 
-# 1. Storefront + admin.
+# 1. A dev-only encryption key in sites/staging/.env (gitignored). Without it no
+#    payment key can be saved in Settings (ADR-0037). Re-running keeps the key you have.
+pnpm --filter @otta-sh/site-staging exec emdash secrets generate --write .env
+
+# 2. Storefront + admin.
 pnpm --filter @otta-sh/site-staging dev
 ```
 
@@ -70,7 +74,7 @@ The seed creates the three sample products as CMS **content** only — prices an
 commerce fields it does not touch — so give them some:
 
 ```bash
-# 2. Price, stock and activate the demo products (second terminal).
+# 3. Price, stock and activate the demo products (second terminal).
 #    It reads the products' real ids from the CMS (matching the seed's slugs),
 #    then prices and stocks each one through the SITE's own admin API — the same
 #    route the product editor's Pricing & stock section uses, so the site URL is all it needs.
@@ -147,8 +151,8 @@ process, so it verifies the SQL is correct, not that it's race-safe under conten
 
 ## Status
 
-**v0.0.1 — in active development.** First open-source release. The `@otta-sh/*` packages
-are all at `0.0.1` and are not published to npm yet; consume them from the workspace. Expect
+**v0.1.0 — in active development.** The `@otta-sh/*` packages
+are all at `0.1.0` and are not published to npm yet; consume them from the workspace. Expect
 breaking changes before 1.0.
 
 **Cloudflare Workers:** self-deploying the reference site to Workers works today

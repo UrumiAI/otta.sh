@@ -8,6 +8,7 @@
  * runtime reads `adminMode` from THAT, not from the descriptor. These tests
  * cover the difference, plus the one silent-failure mode the admin sidebar has.
  */
+import { readFileSync } from "node:fs";
 import { describe, expect, test } from "vitest";
 import {
 	OTTA_CONSOLE_ADMIN_ENTRY,
@@ -35,6 +36,15 @@ describe("createPlugin — the native entrypoint EmDash calls", () => {
 		expect(plugin.id).toBe(OTTA_CONSOLE_PLUGIN_ID);
 		expect(plugin.id).not.toBe("otta");
 		expect(plugin.version).toBe(OTTA_CONSOLE_PLUGIN_VERSION);
+	});
+
+	test("reports the version this package is published as", () => {
+		// Hand-maintained literal: a release bump that misses it ships a console
+		// that misreports its own version.
+		const manifest = JSON.parse(
+			readFileSync(new URL("../package.json", import.meta.url), "utf8"),
+		) as { version: string };
+		expect(OTTA_CONSOLE_PLUGIN_VERSION).toBe(manifest.version);
 	});
 
 	test("declares zero capabilities (ADR-0014 Decision 3)", () => {

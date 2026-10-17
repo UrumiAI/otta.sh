@@ -35,9 +35,11 @@ import {
 	WEBHOOK_EDGE_TOKEN_KEY,
 } from "../payment-secrets.js";
 import { STRIPE_PUBLISHABLE_KEY_KEY } from "../payments/stripe-publishable-key.js";
+import { encryptionKeyStatus, type EncryptionKeyStatus } from "../encryption-key-status.js";
 import type {
 	AccordionBlock,
 	AdminPageConfig,
+	BannerBlock,
 	Block,
 	BlockResponse,
 	FormBlock,
@@ -361,6 +363,9 @@ interface SettingsPageState {
 	/** What is known about the EmDash host's email provider (`ctx.email`, ADR-0031):
 	 *  none, not yet confirmed by a send, or confirmed — two kv reads. */
 	emailStatus: EmailSendingStatus;
+	/** #497: whether a payment key saved now could be stored encrypted. Not kv,
+	 *  but read once with it. */
+	encryptionKey: EncryptionKeyStatus;
 }
 
 /** Read the three non-secret payment/email settings. FAIL-SOFT per key, for the
@@ -415,6 +420,7 @@ async function readPageState(ctx: PluginContext): Promise<SettingsPageState> {
 		plainSettings,
 		displayName: displayName ?? "",
 		paymentSecrets,
+		encryptionKey: encryptionKeyStatus(),
 	};
 }
 
@@ -653,14 +659,19 @@ export function createSettingsFormHandler(): RouteHandler<SettingsFormInput> {
 				}
 				// ADR-0037: the host encrypts this write, and refuses it BEFORE storing
 				// anything when it has no usable EMDASH_ENCRYPTION_KEY. Say so; the key
-				// already stored (if any) stays. The error itself is never shown.
+				// already stored (if any) stays. The error itself is never shown. With
+				// a key known to be present (#497) the failure is something else, so
+				// the operator is not sent to the deployer for it.
 				try {
 					await ctx.kv.set(secretSpec.kvKey, checked.value);
 				} catch {
 					const page = await renderPage(ctx, client, {
 						variant: "error",
 						title: `${secretSpec.noun} not saved`,
-						description: `The ${lowerFirst(secretSpec.noun)} could not be stored encrypted. Check that EMDASH_ENCRYPTION_KEY is set on this site, then save it again. Nothing was saved.`,
+						description:
+							encryptionKeyStatus() === "present"
+								? `The ${lowerFirst(secretSpec.noun)} could not be saved right now. Try again. Nothing was saved.`
+								: `The ${lowerFirst(secretSpec.noun)} could not be stored encrypted. ${ENCRYPTION_KEY_FIX} Then save it again. Nothing was saved.`,
 					});
 					return {
 						...page,
@@ -1237,6 +1248,8 @@ function buildSettingsBlocks(args: {
 	backgroundWork: number;
 	stripeAccount: StripeAccountCountryStatus;
 	emailStatus: EmailSendingStatus;
+	/** #497: whether a payment key typed below could be stored encrypted. */
+	encryptionKey: EncryptionKeyStatus;
 	notice?: Notice;
 	paymentRefusal?: PaymentRefusal;
 	/** #447: the switch waiting on a confirm, rendered under the notice. */
@@ -1250,6 +1263,8 @@ function buildSettingsBlocks(args: {
 		},
 	];
 	if (args.notice !== undefined) blocks.push(noticeBanner(args.notice));
+	const keyWarning = encryptionKeyBanner(args.encryptionKey);
+	if (keyWarning !== undefined) blocks.push(keyWarning);
 	if (args.currencySwitch !== undefined) blocks.push(currencySwitchActions(args.currencySwitch));
 	blocks.push(
 		storeGroup(args.displayName, args.persisted),
@@ -1848,6 +1863,29 @@ function secretForm(
 	});
 }
 
+/** #497 — who fixes a missing or malformed EMDASH_ENCRYPTION_KEY, and how: it
+ *  is a Worker secret, so nobody can set it from this screen. */
+const ENCRYPTION_KEY_FIX =
+	"Whoever deployed this site sets EMDASH_ENCRYPTION_KEY (wrangler secret put EMDASH_ENCRYPTION_KEY, or .env locally; DEPLOYMENT.md §3).";
+
+/** #497 — the up-front warning, before anything is typed: a key saved below
+ *  would be refused (ADR-0037 fails closed). `"unknown"` (the sandbox) shows
+ *  nothing; the refused save still says why. */
+function encryptionKeyBanner(status: EncryptionKeyStatus): BannerBlock | undefined {
+	if (status !== "missing" && status !== "malformed") return undefined;
+	return {
+		type: "banner",
+		block_id: "settings:encryption-key",
+		variant: "alert",
+		title: "Payment keys cannot be saved on this site yet",
+		description: `${
+			status === "missing"
+				? "EMDASH_ENCRYPTION_KEY is not set, so keys entered under Payments & email are refused."
+				: "EMDASH_ENCRYPTION_KEY is not a valid key, so keys entered under Payments & email are refused."
+		} ${ENCRYPTION_KEY_FIX}`,
+	};
+}
+
 /** ADR-0037 — why a stored key is not used. */
 type SecretProblem = "unreadable" | "invalid";
 
@@ -1855,7 +1893,7 @@ type SecretProblem = "unreadable" | "invalid";
  *  the way out; names nothing about the key. */
 const SECRET_PROBLEM_HELP: Readonly<Record<SecretProblem, string>> = {
 	unreadable:
-		"This key is saved encrypted, but this site cannot decrypt it, so it is not used. Check that EMDASH_ENCRYPTION_KEY is the key it was saved with, or enter the key again here.",
+		"This key is saved encrypted, but this site cannot decrypt it, so it is not used. Whoever deployed the site restores the EMDASH_ENCRYPTION_KEY it was saved with (DEPLOYMENT.md §3), or enter the key again here.",
 	invalid:
 		"This key is saved, but it is empty or not in the expected format (it may have been saved outside these Otta settings), so it is not used. Enter it again here, or remove it.",
 };
