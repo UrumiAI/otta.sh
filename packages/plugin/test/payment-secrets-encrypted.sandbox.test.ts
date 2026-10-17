@@ -133,6 +133,8 @@ describe("encrypted payment keys under workerd (ADR-0037)", () => {
 		const whole = JSON.stringify(page);
 		expect(whole).toContain("Stripe webhook signing secret — saved, but cannot be read");
 		expect(whole).toContain("EMDASH_ENCRYPTION_KEY");
+		// #497: the sandbox cannot see the host's env, so no up-front key warning.
+		expect(whole).not.toContain("settings:encryption-key");
 		expect(whole).not.toContain(WEBHOOK_SECRET);
 		expect(whole).not.toContain(EDGE_TOKEN);
 	});

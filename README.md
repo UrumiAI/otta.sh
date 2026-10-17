@@ -55,7 +55,11 @@ no Postgres in the loop.
 ```bash
 pnpm install
 
-# 1. Storefront + admin.
+# 1. A dev-only encryption key in sites/staging/.env (gitignored). Without it no
+#    payment key can be saved in Settings (ADR-0037). Re-running keeps the key you have.
+pnpm --filter @otta-sh/site-staging exec emdash secrets generate --write .env
+
+# 2. Storefront + admin.
 pnpm --filter @otta-sh/site-staging dev
 ```
 
@@ -70,7 +74,7 @@ The seed creates the three sample products as CMS **content** only — prices an
 commerce fields it does not touch — so give them some:
 
 ```bash
-# 2. Price, stock and activate the demo products (second terminal).
+# 3. Price, stock and activate the demo products (second terminal).
 #    It reads the products' real ids from the CMS (matching the seed's slugs),
 #    then prices and stocks each one through the SITE's own admin API — the same
 #    route the product editor's Pricing & stock section uses, so the site URL is all it needs.
