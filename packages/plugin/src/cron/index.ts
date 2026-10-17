@@ -10,13 +10,15 @@
  * schedules, every sweep in this directory is dead code in production.
  *
  * WHY `plugin:activate` IS NOT ENOUGH, which is the defect this file used to have.
- * The host fires `plugin:activate` from exactly one place — `setPluginStatus(id,
- * "active")`, reached only from the admin's `POST /api/admin/plugins/{id}/enable`
- * route. Otta is registered in the SITE CONFIG's `plugins` array, so it is enabled
- * by absence: `isPluginEnabled` treats a plugin with no status row as active, its
- * hooks and routes run from the first request, and nobody ever toggles it. A
- * config-array deployment on EmDash 1.0.x therefore reaches `plugin:activate` NEVER
- * (1.1+ fires it once, at first boot — see `createActivateHandler`), and the first
+ * The host fires `plugin:activate` from the admin's enable toggle (`setPluginStatus`)
+ * and from the marketplace/registry install and update lifecycles — and, since
+ * EmDash 1.1, once at the first boot of a config-array plugin with no state row
+ * (see `createActivateHandler`). Otta is registered in the SITE CONFIG's `plugins`
+ * array; on EmDash 1.0.x it is enabled by absence (`isPluginEnabled` treats a
+ * plugin with no status row as active), its hooks and routes run from the first
+ * request, and nobody ever toggles it. A config-array deployment on 1.0.x therefore
+ * reaches `plugin:activate` NEVER, and even on 1.1+ that single attempt is not
+ * retried by the host. The first
  * cut of this file scheduled the task only from there and from the tick — a tick
  * that cannot happen until something schedules. Registration could not bootstrap
  * itself.
@@ -209,30 +211,56 @@ export function withSweepBootstrap<A, R>(
 	};
 }
 
+/** How long `plugin:activate` may spend registering the task before it gives up
+ *  and reports `scheduled: false`. Well under the host's 5000 ms default hook
+ *  timeout: a timeout is a FAILED hook to the host, with the same consequence as a
+ *  throw (see `createActivateHandler`). */
+export const ACTIVATE_SCHEDULE_BUDGET_MS = 3_000;
+
 /** The `plugin:activate` handler: the host's own registration moment — an
  *  operator's admin enable toggle, a marketplace install, and, since EmDash 1.1,
  *  the FIRST BOOT of a config-array deployment (the host runs install → activate
  *  once for a config plugin with no state row). Not the only moment: on EmDash
  *  1.0.x a config-array deployment never reaches it, hence the bootstrap.
  *
- *  NEVER REJECTS. On that first-boot path a failed hook makes the host DISABLE
- *  the plugin and its cron, and never retry — so a transient cron-table error
+ *  NEVER FAILS — neither rejects nor outruns the host's hook timeout. On that
+ *  first-boot path a failed hook (a throw OR a timeout) makes the host DISABLE the
+ *  plugin and its cron, and never retry — so a transient or stalled cron-table call
  *  would take the whole store offline until an operator re-enabled it. A failure
- *  here is logged and reported as unscheduled instead; the latched bootstrap on
- *  the next request or tick retries the registration. */
+ *  here, or a registration slower than `ACTIVATE_SCHEDULE_BUDGET_MS`, is logged and
+ *  reported as unscheduled instead. The activate path does not touch the
+ *  bootstrap latch, so the next request (or tick, once a task row exists) retries
+ *  the registration through `bootstrapSweepTask`. */
 export function createActivateHandler(): HookHandler<PluginLifecycleEvent> {
 	return async (_event, ctx) => {
+		const unscheduled: SweepScheduleOutcome = {
+			scheduled: false,
+			task: SWEEP_TASK_NAME,
+			schedule: SWEEP_SCHEDULE,
+			tasks: [],
+		};
+		let timer: ReturnType<typeof setTimeout> | undefined;
+		const attempt = ensureSweepTaskScheduled(ctx);
+		// A late rejection after the deadline has nobody awaiting it; observe it so
+		// it is logged rather than surfacing as an unhandled rejection.
+		attempt.catch(() => {});
+		const deadline = new Promise<"timeout">((resolve) => {
+			timer = setTimeout(() => resolve("timeout"), ACTIVATE_SCHEDULE_BUDGET_MS);
+		});
 		try {
-			return await ensureSweepTaskScheduled(ctx);
+			const result = await Promise.race([attempt, deadline]);
+			if (result === "timeout") {
+				console.error(
+					`[otta] cron sweep task registration on activate exceeded ${String(ACTIVATE_SCHEDULE_BUDGET_MS)} ms (will retry)`,
+				);
+				return unscheduled;
+			}
+			return result;
 		} catch (err) {
 			console.error("[otta] cron sweep task registration on activate failed (will retry):", err);
-			const outcome: SweepScheduleOutcome = {
-				scheduled: false,
-				task: SWEEP_TASK_NAME,
-				schedule: SWEEP_SCHEDULE,
-				tasks: [],
-			};
-			return outcome;
+			return unscheduled;
+		} finally {
+			clearTimeout(timer);
 		}
 	};
 }
