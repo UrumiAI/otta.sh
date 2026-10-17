@@ -52,8 +52,9 @@ import {
 } from "@otta-sh/store-emdash";
 import { makeSqliteStorage } from "@otta-sh/store-emdash/testing";
 import { PRODUCT_COMMERCE_COLLECTION } from "@otta-sh/store-emdash";
-import { beforeAll, beforeEach, describe, expect, test } from "vitest";
+import { beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
 import {
+	createActivateHandler,
 	createCronHandler,
 	ensureSweepTaskScheduled,
 	MAINTENANCE_LEG_INTERVAL_MS,
@@ -643,6 +644,33 @@ describe("the hook's own bookkeeping", () => {
 		expect(registered).toBe(SWEEP_SCHEDULE);
 		await ensureSweepTaskScheduled(ctx); // already current → read only
 		expect(upserts).toBe(1);
+	});
+
+	test("plugin:activate never rejects when the task cannot be registered", async () => {
+		// EmDash 1.1+ runs install → activate once, at first boot, for a config-array
+		// plugin with no state row, and DISABLES the plugin (and its cron) for good
+		// if the hook fails. A transient cron-table error there must not take the
+		// store offline: the latched bootstrap on the next request retries.
+		const ctx = {
+			...context(storage),
+			cron: {
+				async schedule() {
+					throw new Error("D1_ERROR: transient");
+				},
+				async cancel() {},
+				async list() {
+					throw new Error("D1_ERROR: transient");
+				},
+			},
+		} as PluginContext;
+		const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+		try {
+			const activated = await createActivateHandler()({}, ctx);
+			expect(activated).toMatchObject({ scheduled: false, task: SWEEP_TASK_NAME });
+			expect(logged).toHaveBeenCalled();
+		} finally {
+			logged.mockRestore();
+		}
 	});
 });
 

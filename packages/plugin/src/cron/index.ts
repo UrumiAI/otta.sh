@@ -15,7 +15,8 @@
  * route. Otta is registered in the SITE CONFIG's `plugins` array, so it is enabled
  * by absence: `isPluginEnabled` treats a plugin with no status row as active, its
  * hooks and routes run from the first request, and nobody ever toggles it. A
- * config-array deployment therefore reaches `plugin:activate` NEVER, and the first
+ * config-array deployment on EmDash 1.0.x therefore reaches `plugin:activate` NEVER
+ * (1.1+ fires it once, at first boot — see `createActivateHandler`), and the first
  * cut of this file scheduled the task only from there and from the tick — a tick
  * that cannot happen until something schedules. Registration could not bootstrap
  * itself.
@@ -208,12 +209,32 @@ export function withSweepBootstrap<A, R>(
 	};
 }
 
-/** The `plugin:activate` handler: the host's own registration moment. Still
- *  declared — it IS the right moment when an operator toggles the plugin from the
- *  admin, and it is the path a marketplace install takes — but no longer the only
- *  one, because a config-array deployment never reaches it. */
+/** The `plugin:activate` handler: the host's own registration moment — an
+ *  operator's admin enable toggle, a marketplace install, and, since EmDash 1.1,
+ *  the FIRST BOOT of a config-array deployment (the host runs install → activate
+ *  once for a config plugin with no state row). Not the only moment: on EmDash
+ *  1.0.x a config-array deployment never reaches it, hence the bootstrap.
+ *
+ *  NEVER REJECTS. On that first-boot path a failed hook makes the host DISABLE
+ *  the plugin and its cron, and never retry — so a transient cron-table error
+ *  would take the whole store offline until an operator re-enabled it. A failure
+ *  here is logged and reported as unscheduled instead; the latched bootstrap on
+ *  the next request or tick retries the registration. */
 export function createActivateHandler(): HookHandler<PluginLifecycleEvent> {
-	return async (_event, ctx) => await ensureSweepTaskScheduled(ctx);
+	return async (_event, ctx) => {
+		try {
+			return await ensureSweepTaskScheduled(ctx);
+		} catch (err) {
+			console.error("[otta] cron sweep task registration on activate failed (will retry):", err);
+			const outcome: SweepScheduleOutcome = {
+				scheduled: false,
+				task: SWEEP_TASK_NAME,
+				schedule: SWEEP_SCHEDULE,
+				tasks: [],
+			};
+			return outcome;
+		}
+	};
 }
 
 /**
