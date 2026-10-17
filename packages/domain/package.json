@@ -37,10 +37,12 @@
 				"types": "./dist/testing/index.d.mts",
 				"default": "./dist/testing/index.mjs"
 			}
-		}
+		},
+		"access": "public"
 	},
 	"scripts": {
-		"build": "tsdown"
+		"build": "tsdown",
+		"prepublishOnly": "tsdown"
 	},
 	"devDependencies": {
 		"@types/node": "catalog:",

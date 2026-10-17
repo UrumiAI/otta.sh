@@ -27,10 +27,12 @@
 				"types": "./dist/index.d.mts",
 				"default": "./dist/index.mjs"
 			}
-		}
+		},
+		"access": "public"
 	},
 	"scripts": {
 		"build": "tsdown",
+		"prepublishOnly": "tsdown",
 		"test:d1": "vitest run --config vitest.d1.config.ts"
 	},
 	"dependencies": {

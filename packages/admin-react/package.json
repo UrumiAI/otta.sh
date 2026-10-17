@@ -31,10 +31,12 @@
 				"types": "./dist/admin.d.mts",
 				"default": "./dist/admin.mjs"
 			}
-		}
+		},
+		"access": "public"
 	},
 	"scripts": {
-		"build": "tsdown"
+		"build": "tsdown",
+		"prepublishOnly": "tsdown"
 	},
 	"dependencies": {
 		"@otta-sh/admin-presentation": "workspace:*"

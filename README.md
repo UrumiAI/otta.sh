@@ -1,9 +1,9 @@
 # Otta — an open-source commerce layer for EmDash
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](./LICENSE)
-[![Version](https://img.shields.io/badge/version-0.0.1-orange.svg)](https://github.com/UrumiAI/otta.sh/releases/tag/v0.0.1)
+[![Version](https://img.shields.io/badge/version-0.1.0-orange.svg)](https://github.com/UrumiAI/otta.sh/releases/tag/v0.1.0)
 
-Open source (MIT), version 0.0.1. The WooCommerce-equivalent for
+Open source (MIT), version 0.1.0. The WooCommerce-equivalent for
 [EmDash](https://github.com/emdash-cms/emdash), Cloudflare's TypeScript CMS.
 
 > [!WARNING]
@@ -147,8 +147,8 @@ process, so it verifies the SQL is correct, not that it's race-safe under conten
 
 ## Status
 
-**v0.0.1 — in active development.** First open-source release. The `@otta-sh/*` packages
-are all at `0.0.1` and are not published to npm yet; consume them from the workspace. Expect
+**v0.1.0 — in active development.** The `@otta-sh/*` packages
+are all at `0.1.0` and are not published to npm yet; consume them from the workspace. Expect
 breaking changes before 1.0.
 
 **Cloudflare Workers:** self-deploying the reference site to Workers works today

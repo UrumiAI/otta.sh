@@ -26,10 +26,12 @@
 				"types": "./dist/index.d.mts",
 				"default": "./dist/index.mjs"
 			}
-		}
+		},
+		"access": "public"
 	},
 	"scripts": {
-		"build": "tsdown"
+		"build": "tsdown",
+		"prepublishOnly": "tsdown"
 	},
 	"dependencies": {
 		"@otta-sh/domain": "workspace:*"
