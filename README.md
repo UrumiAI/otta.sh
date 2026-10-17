@@ -9,8 +9,8 @@ Open source (MIT), version 0.1.0. The WooCommerce-equivalent for
 > [!WARNING]
 > **In active development — pre-1.0.** The core buy flow — catalog, cart and card checkout —
 > works today, but APIs, storage document shapes, settings and admin screens may still change
-> between releases, and the `@otta-sh/*` packages are not on npm yet. Pin a commit if you build
-> on it.
+> between releases. The `@otta-sh/*` packages are published to npm at `0.1.0`; pin an exact
+> version if you build on it.
 >
 > **Coming soon: one-click Cloudflare Workers deployment.** A one-click / hosted way to put
 > an Otta store on Cloudflare Workers is on the way. Until then you can self-deploy the
@@ -91,6 +91,23 @@ simulates — see [Status](#status).
 To self-deploy this for free on Cloudflare Workers today, follow
 [`DEPLOYMENT.md`](./DEPLOYMENT.md) §2 (one-click deployment: see [Status](#status)).
 
+## Install from npm
+
+The six packages are published to npm under `@otta-sh/*`, ESM-only, at `0.1.0`. A site that
+runs on EmDash `~1.0.1` installs what it registers:
+
+```bash
+pnpm add @otta-sh/plugin @otta-sh/admin-react
+```
+
+`@otta-sh/plugin` brings `@otta-sh/domain`, `@otta-sh/store-emdash`, `@otta-sh/payments-stripe`
+and `@otta-sh/admin-presentation` with it. The packages export no ready-made plugin descriptor: each
+site writes its own. The reference site's are the worked example:
+[`otta-plugin-descriptor.ts`](./sites/staging/src/otta-plugin-descriptor.ts) and
+[`otta-console-descriptor.ts`](./sites/staging/src/otta-console-descriptor.ts). Each package has
+its own README under [`packages/`](./packages/). The workspace, not npm, is how you develop Otta
+itself.
+
 ## Architecture (summary)
 
 - **Product model = hybrid.** Content (title, description, images, SEO, taxonomies)
@@ -125,6 +142,7 @@ To self-deploy this for free on Cloudflare Workers today, follow
 | `@otta-sh/admin-presentation` | Pure admin presentation primitives (money, dates, short ids, status vocabulary) shared by both console surfaces. No IO. |
 | `@otta-sh/admin-react` | The React admin console on the `otta-console` native descriptor (ADR-0014) — the Orders page, plus the product editor's Pricing & stock cards (and the Download file card for a digital product) and the products list's Price / Stock columns. |
 | `sites/staging` | Staging storefront + admin — EmDash on Cloudflare Workers, plugin registered trusted. |
+| `examples/email-provider` | Template for an EmDash email-transport plugin (not published); see [`docs/email-providers.md`](./docs/email-providers.md). |
 
 Design decisions live in [`adr/`](./adr/); development practices in
 [`DEVELOPMENT.md`](./DEVELOPMENT.md); the agent-facing contract in [`CLAUDE.md`](./CLAUDE.md).
@@ -148,7 +166,8 @@ process, so it verifies the SQL is correct, not that it's race-safe under conten
 ## Status
 
 **v0.1.0 — in active development.** The `@otta-sh/*` packages
-are all at `0.1.0` and are not published to npm yet; consume them from the workspace. Expect
+are all at `0.1.0` and published to npm (`pnpm add @otta-sh/plugin`; see
+[Install from npm](#install-from-npm)); work on Otta itself from the workspace. Expect
 breaking changes before 1.0.
 
 **Cloudflare Workers:** self-deploying the reference site to Workers works today
@@ -157,8 +176,9 @@ breaking changes before 1.0.
 The commerce **layer** is feature-complete (Phases 0–7 merged): catalog, inventory,
 cart, checkout, orders, customers with magic-link auth, Stripe payments, tax,
 shipping, discounts, entitlements, reporting, and settings. The magic-link email is sent once
-an email API is configured and the Settings "Sign-in page address" (`settings:loginLinkUrl`)
-points at the storefront's `/account/verify` page.
+an EmDash email provider is selected ([`docs/email-providers.md`](./docs/email-providers.md))
+and the Settings "Sign-in page address" (`settings:loginLinkUrl`) points at the storefront's
+`/account/verify` page.
 
 The reference **storefront** (`sites/staging`) covers catalog, cart, **card checkout** and
 **customer accounts** (`/account/login`, `/account/verify`, `/account/orders`):

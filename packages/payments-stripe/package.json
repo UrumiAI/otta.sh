@@ -1,7 +1,7 @@
 {
 	"name": "@otta-sh/payments-stripe",
 	"version": "0.1.0",
-	"description": "Stripe PaymentGateway adapter for Otta — async-webhook confirmation with raw-body HMAC verification. Secrets are service-env only.",
+	"description": "Stripe PaymentGateway adapter for Otta — async-webhook confirmation with raw-body HMAC verification. Keys are saved in the admin Settings, encrypted at rest (ADR-0037).",
 	"homepage": "https://github.com/UrumiAI/otta.sh#readme",
 	"bugs": {
 		"url": "https://github.com/UrumiAI/otta.sh/issues"

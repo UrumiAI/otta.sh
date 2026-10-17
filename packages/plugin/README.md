@@ -7,6 +7,25 @@ no host import, one declared egress (`ctx.http` plus `allowedHosts`), and exactl
 three declared capabilities (`content:read`, `network:request`, and `email:send` for the
 host's `ctx.email`, ADR-0031).
 
+## Install
+
+```sh
+pnpm add @otta-sh/plugin
+```
+
+ESM-only, for an EmDash site on `emdash` `~1.0.1` (the requirement of `@otta-sh/store-emdash`, which comes with it, as do `@otta-sh/domain`, `@otta-sh/payments-stripe` and `@otta-sh/admin-presentation`). Published entry points:
+
+| Import | What it is |
+|---|---|
+| `@otta-sh/plugin` | The plugin's public surface: ids, capabilities, `COMMERCE_STORAGE_COLLECTIONS`, `resolveAllowedHosts`, the admin page constants. |
+| `@otta-sh/plugin/plugin` | The sandboxed plugin (`createOttaPlugin`). |
+| `@otta-sh/plugin/sandbox-entry` | The entry for running it in the sandbox (`createSandboxWorker`). |
+| `@otta-sh/plugin/trusted` | The same plugin with `trustedHost` on, for a site that registers it in-process. |
+| `@otta-sh/plugin/subdivisions` | English subdivision names for a storefront's region pick list (kept out of the sandbox bundle). |
+| `@otta-sh/plugin/testing` | Test helpers, e.g. `recordingEmailProvider`. |
+
+The package exports no descriptor; each site writes its own, as the reference site does in [`sites/staging/src/otta-plugin-descriptor.ts`](https://github.com/UrumiAI/otta.sh/blob/main/sites/staging/src/otta-plugin-descriptor.ts). See the [repo README](https://github.com/UrumiAI/otta.sh#readme).
+
 ## The commerce transport
 
 Everything that touches commerce goes through the `CommerceClient` port and
@@ -64,7 +83,7 @@ the request's origin). With no EmDash email provider, or no sign-in link URL, it
 answers the same generic success and logs once server-side.)
 
 - **The checkout hold ignores the hold TTL setting.** The Settings page's "Cart hold
-  TTL (minutes)" field (`holdTtlMinutes` in the settings aggregate; there is no
+  time (minutes)" field (`holdTtlMinutes` in the settings aggregate; there is no
   environment variable for it) now drives the CART hold end to end: add-to-cart and
   adjust stamp it, the lazy expiry on cart read measures against it, and the
   `expire-holds` sweep leg reaps by it (#318). The CHECKOUT hold — the window a
@@ -104,3 +123,5 @@ process** and mirrors the host's side of the bridge: `ctx.http` with the
 tree and overwrites exactly two modules in the copy — `manifest.ts` (the test's
 allowed hosts) and `sandbox-storage.ts` (the document-store bridge) — so the real
 sources are never test-specific and the shipped bundle stays self-contained.
+
+MIT licensed.
