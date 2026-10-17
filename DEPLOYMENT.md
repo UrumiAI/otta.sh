@@ -432,6 +432,11 @@ order of appearance in a deployment's life:
   page also needs the **publishable key**, entered in the same Settings group (issue #498;
   no rebuild) — see [`sites/staging/README.md`](./sites/staging/README.md).
 
+  **Upgrading a site built with `STRIPE_PUBLIC_KEY`:** remove that line from the environment
+  and `sites/staging/.env` (a build or `astro dev` that still sets it refuses to start, saying
+  so), restart, then paste the same `pk_…` key into Otta Settings → Payments & email →
+  Stripe publishable key. Until it is entered, checkout says card payment isn't set up.
+
   With both secrets set, `createIntent` performs a real `POST /v1/payment_intents` over
   `ctx.http.fetch` (LIVE client secret, `metadata[order_id]` as the settlement key the
   webhook is matched on, the checkout `Idempotency-Key` travelling as Stripe's native one).

@@ -46,12 +46,15 @@ function makeUnusedStorage(): StorageAccess {
 
 function makeCtx(
 	seed: Record<string, unknown> = {},
-	options: { kvFails?: boolean } = {},
+	options: { kvFails?: boolean; email?: boolean } = {},
 ): { ctx: PluginContext; kv: Map<string, unknown> } {
 	const kv = new Map<string, unknown>(Object.entries(seed));
 	const ctx: PluginContext = {
 		storage: makeUnusedStorage(),
 		http: { fetch: () => Promise.reject(new Error("no egress in this suite")) },
+		...(options.email === true
+			? { email: { send: () => Promise.reject(new Error("no sends in this suite")) } }
+			: {}),
 		kv: {
 			async get<T>(k: string): Promise<T | null> {
 				if (options.kvFails === true) throw new Error("kv unavailable");
@@ -180,6 +183,33 @@ describe("what Settings says about card checkout", () => {
 		expect(contextTexts(page.blocks).join("\n")).toContain(
 			"The publishable key is a test key but the Stripe secret key is live.",
 		);
+	});
+
+	test("a SECRET key stored in the publishable slot (outside Settings) is never shown back", async () => {
+		const page = await invoke(makeCtx({ [STRIPE_PUBLISHABLE_KEY_KEY]: SK_LIVE }).ctx, {
+			type: "page_load",
+		});
+		expect(publishableField(page.blocks)?.initial_value).toBe("");
+		expect(JSON.stringify(page)).not.toContain(SK_LIVE);
+	});
+
+	test("the longest label still fits the 60-character budget", async () => {
+		const page = await invoke(
+			makeCtx(
+				{
+					[STRIPE_SECRET_KEY_KEY]: SK_LIVE,
+					[STRIPE_PUBLISHABLE_KEY_KEY]: PK_TEST,
+					"settings:stripeWebhookSecret": ["whsec_", "0123456789abcdef0123456789abcdef"].join(""),
+					"state:emailLastSentAt": new Date().toISOString(),
+				},
+				{ email: true },
+			).ctx,
+			{ type: "page_load" },
+		);
+		expect(paymentsLabel(page.blocks)).toBe(
+			"Payments & email — test/live mixed · webhook set · email set",
+		);
+		expect(paymentsLabel(page.blocks).length).toBeLessThanOrEqual(60);
 	});
 
 	test("a stored value that is not a pk_ key is explained, and not used", async () => {

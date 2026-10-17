@@ -59,6 +59,7 @@ import {
 	STOREFRONT_CART_CREATE_ROUTE,
 	STOREFRONT_CART_LINE_ADD_ROUTE,
 	STOREFRONT_CHECKOUT_PLACE_ROUTE,
+	STOREFRONT_PAYMENT_CONFIG_ROUTE,
 } from "@otta-sh/plugin";
 import { signStripeWebhook } from "@otta-sh/payments-stripe";
 import { cmsAuthHeaders } from "./seed-demo-commerce.js";
@@ -304,6 +305,20 @@ export async function provisionPublishableKey(deps: SeedOrdersDeps): Promise<voi
 		"reading the Settings page",
 	);
 	if (storedPublishableKey(page) !== "") return;
+	// An empty field can also mean the Settings read of it FAILED (it degrades to
+	// empty). The storefront route fails loudly instead, so only a confirmed
+	// "no key" from it lets the placeholder be written.
+	const config = await storefront(deps, STOREFRONT_PAYMENT_CONFIG_ROUTE, {});
+	if (
+		typeof config !== "object" ||
+		config === null ||
+		(config as { ok?: unknown }).ok !== true ||
+		(config as { stripePublishableKey?: unknown }).stripePublishableKey !== null
+	) {
+		throw new Error(
+			`refusing to save the e2e publishable key: the store did not confirm it has none (${JSON.stringify(config)}).`,
+		);
+	}
 	const saved = await admin(
 		deps,
 		{

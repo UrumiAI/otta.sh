@@ -490,8 +490,9 @@ the operator at all.
 public, so it is stored and read back in plain text, not declared `secret`. The checkout
 pages (`/checkout`, `POST /checkout/place`, `/checkout/pay`) read it per request through the
 public `storefront/payment-config` route. `STRIPE_PUBLIC_KEY` is retired outright — no
-build-time fallback, since no store has deployed with it — and a build that still sets it
-**fails**, naming where the key goes now.
+build-time fallback, since no production store has deployed with it (the demo store moves its
+key into Settings once; DEPLOYMENT.md §3) — and a build that still sets it **fails**, naming
+where the key goes now, including a leftover line in `sites/staging/.env`.
 
 **What decision 4's guards protected, and where that lives now.** The bake's point was that
 "no key" must be the only way to reach "isn't set up": a key that exists but is not read
@@ -500,7 +501,9 @@ must not look like a store that takes no cards. That holds with three answers in
 - **configured** — a stored value that passes the `pk_test_…` / `pk_live_…` check;
 - **unconfigured** — nothing stored, or a stored value that fails the check (Settings refuses
   such a value on save and, for one stored another way, says why). The pages degrade exactly
-  as decision 4 described, and the place endpoint still refuses to create an order;
+  as decision 4 described, and the site's place endpoint still refuses to create an order.
+  (The refusal is the SITE's, as before: the plugin's own public place route does not yet
+  check the key — it could now, and that is a separate follow-up);
 - **unavailable** — the read itself failed (storage busy, a render fault). Each page answers
   it as **busy** (503, or `/cart?error=BUSY`), never as "isn't set up".
 

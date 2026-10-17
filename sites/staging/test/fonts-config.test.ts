@@ -22,7 +22,7 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 import { STORE_THEMES } from "../src/themes/manifest.js";
 import { fvarAxes, woff2Tables } from "./helpers/woff2.js";
 
@@ -47,6 +47,9 @@ interface ConfiguredFont {
 	};
 }
 
+// #498: a leftover STRIPE_PUBLIC_KEY line in this checkout's .env makes the
+// config throw; an empty stub stops that fallback (site-config.test.ts).
+vi.stubEnv("STRIPE_PUBLIC_KEY", "");
 const config = await import("../astro.config.js");
 const { LATIN_UNICODE_RANGE } = config;
 const fonts = (config.default.fonts ?? []) as unknown as ConfiguredFont[];

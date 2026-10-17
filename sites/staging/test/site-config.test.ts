@@ -45,7 +45,7 @@ import {
 	createPlugin as createConsolePlugin,
 	OTTA_CONSOLE_ADMIN_PAGES,
 } from "@otta-sh/admin-react";
-import { afterEach, describe, expect, test, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 // `../e2e/registry.js`, NEVER `../e2e/harness.js`. The harness loopback-guards
 // its addresses at MODULE LOAD and imports `@playwright/test`, which threw
 // before a single assertion and redded the whole unit suite. The registry is
@@ -759,6 +759,16 @@ describe("the otta-console gate rejects the near-miss shapes", () => {
 });
 
 describe("astro.config", () => {
+	// #498: loading the config THROWS when STRIPE_PUBLIC_KEY is set, and it falls
+	// back to this checkout's own sites/staging/.env. An empty stub stops that
+	// fallback, so a developer's leftover .env line cannot fail these tests; the
+	// test of the throw sets its own value.
+	beforeEach(() => {
+		vi.stubEnv("STRIPE_PUBLIC_KEY", "");
+	});
+	afterEach(() => {
+		vi.unstubAllEnvs();
+	});
 	// Both tests here dynamically import astro.config.js, which pulls in the
 	// Cloudflare adapter and the EmDash integration: measured at 2-6.6s on a
 	// loaded machine, against vitest's 5000ms default. The generous timeout is
@@ -875,11 +885,6 @@ describe("astro.config", () => {
 		CONFIG_IMPORT_TIMEOUT_MS,
 	);
 
-	/**
-	 * BEHAVIOUR, not source text: the REAL config module, evaluated with
-	 * OTTA_EXTRA_ALLOWED_HOSTS in the shell env (which wins over `.env`). A fresh
-	 * module registry per test, so the env value is what the config reads.
-	 */
 	describe("#498: a leftover STRIPE_PUBLIC_KEY at config load", () => {
 		afterEach(() => {
 			vi.unstubAllEnvs();
@@ -909,6 +914,11 @@ describe("astro.config", () => {
 		);
 	});
 
+	/**
+	 * BEHAVIOUR, not source text: the REAL config module, evaluated with
+	 * OTTA_EXTRA_ALLOWED_HOSTS in the shell env (which wins over `.env`). A fresh
+	 * module registry per test, so the env value is what the config reads.
+	 */
 	describe("OTTA_EXTRA_ALLOWED_HOSTS at config load", () => {
 		afterEach(() => {
 			vi.unstubAllEnvs();

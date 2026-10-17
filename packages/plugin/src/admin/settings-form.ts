@@ -809,7 +809,7 @@ export function createSettingsFormHandler(): RouteHandler<SettingsFormInput> {
 			const page = await renderPage(ctx, client, {
 				variant: "default",
 				title: "Payment settings saved",
-				description: "The Stripe publishable key and sign-in page address were saved.",
+				description: "Payment settings were saved.",
 			});
 			return {
 				...page,
@@ -1752,7 +1752,14 @@ function plainSettingsForm(plain: Map<string, string>): FormBlock {
 				action_id: spec.fieldId,
 				label: spec.label,
 				placeholder: spec.placeholder,
-				initial_value: plain.get(spec.kvKey) ?? "",
+				// #498: a stored "publishable key" that is not one (it arrived outside
+				// these settings, and may be a secret key) is never shown back; the
+				// warning above the form asks for it again.
+				initial_value:
+					spec.kvKey === STRIPE_PUBLISHABLE_KEY_KEY &&
+					stripePublishableKeyMode(plain.get(spec.kvKey) ?? "") === undefined
+						? ""
+						: (plain.get(spec.kvKey) ?? ""),
 			})),
 			submit: { label: "Save payment settings", action_id: SAVE_PAYMENT_SETTINGS_ACTION },
 		},
@@ -1770,8 +1777,8 @@ function plainSettingsForm(plain: Map<string, string>): FormBlock {
  *
  *  SECURITY: "set" and the Stripe mode (from the key's prefix) are FACTS ABOUT a
  *  key, not any part of it; no value is in scope here. The longest render
- *  ("no Stripe key"/"Stripe key set" · "webhook set" · "email set") is exactly
- *  the X-11 60-character budget. "email TBC" (a provider not yet confirmed by a
+ *  ("test/live mixed" · "webhook set" · "email set", #498) is exactly the X-11
+ *  60-character budget. "email TBC" (a provider not yet confirmed by a
  *  send, PR #418 review) is the same width as "email set". */
 function paymentsGroupLabel(
 	state: Map<string, SecretRenderState>,
