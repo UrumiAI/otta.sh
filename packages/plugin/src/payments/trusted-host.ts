@@ -3,12 +3,15 @@
  * site said in its own entry module: `createOttaPlugin({ trustedHost: true })`
  * (issue #447, from #409).
  *
- * WHAT IT CHANGES. Only how a Stripe call is bounded. On a trusted host every
+ * WHAT IT CHANGES. Two things. (1) How a Stripe call is bounded. On a trusted host every
  * Stripe request carries an `AbortSignal`, aborted when the call's own bound
  * passes, so a timed-out request's socket is released (on Node it would
  * otherwise be held until undici's own ~300 s timeouts). Results never change:
  * the call gives up at the same bound with the same class either way
- * (`@otta-sh/payments-stripe` `deadline.ts`).
+ * (`@otta-sh/payments-stripe` `deadline.ts`). (2) Issue #497: whether the
+ * plugin's own `process.env` is the host's, so Settings can warn up front about
+ * a missing or malformed EMDASH_ENCRYPTION_KEY (`encryption-key-status.ts`).
+ * Under the sandbox it is not, and no warning is shown.
  *
  * WHY THE SITE SAYS SO. The plugin cannot detect it: staging's trusted mode is
  * workerd, the same runtime as EmDash's sandbox runner, and under that runner a
@@ -29,7 +32,8 @@ export function setTrustedHost(value: unknown): void {
 	trusted = value === true;
 }
 
-/** Read by every Stripe call site the plugin wires. */
+/** Read by every Stripe call site the plugin wires, and by
+ *  `encryptionKeyStatus` (#497). */
 export function isTrustedHost(): boolean {
 	return trusted;
 }

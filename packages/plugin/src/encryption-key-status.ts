@@ -12,15 +12,16 @@
  * says nothing about the host, so the answer is `"unknown"` and no warning shows
  * (the refused save still explains itself).
  *
- * PRESENCE AND SHAPE ONLY. The value is never returned, logged or parsed beyond
- * EmDash's own entry pattern (`emdash_enc_v1_` + 43 base64url chars); a key that
- * passes this but fails EmDash's stricter decode is caught by the save itself.
+ * PRESENCE AND SHAPE ONLY. The value is never returned, logged or decoded:
+ * EmDash's entry pattern (`emdash_enc_v1_` + 43 base64url chars), plus its
+ * canonical-encoding rule — 43 chars carry 258 bits for a 32-byte key, so the
+ * last char's two spare bits must be zero.
  */
 import { isTrustedHost } from "./payments/trusted-host.js";
 
 export type EncryptionKeyStatus = "present" | "missing" | "malformed" | "unknown";
 
-const ENCRYPTION_KEY_ENTRY = /^emdash_enc_v1_[A-Za-z0-9_-]{43}$/;
+const ENCRYPTION_KEY_ENTRY = /^emdash_enc_v1_[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$/;
 
 export function encryptionKeyStatus(): EncryptionKeyStatus {
 	if (!isTrustedHost()) return "unknown";

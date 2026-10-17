@@ -126,6 +126,8 @@ describe("encryptionKeyStatus", () => {
 		[` ${VALID_KEY} , ${VALID_KEY},`, "present"],
 		["emdash_enc_v1_replace_me", "malformed"],
 		[`${VALID_KEY},not-a-key`, "malformed"],
+		// 43 base64url chars, but not a canonical 32-byte encoding: EmDash refuses it.
+		[["emdash_enc_v1_", "A".repeat(42), "B"].join(""), "malformed"],
 	] as const)("EMDASH_ENCRYPTION_KEY=%j is %s", (value, status) => {
 		setKey(value);
 		expect(encryptionKeyStatus()).toBe(status);
@@ -152,7 +154,7 @@ describe("the up-front warning on Settings", () => {
 		expect(description).toContain("EMDASH_ENCRYPTION_KEY is not set");
 		expect(description).toContain("Whoever deployed this site");
 		expect(description).toContain("wrangler secret put");
-		expect(description).toContain("sites/staging/.env");
+		expect(description).toContain(".env in local dev");
 		expect(description).toContain("DEPLOYMENT.md §3");
 		// Before the groups, so it is seen without opening one.
 		const accordion = page.blocks.findIndex((b) => b.type === "accordion");
@@ -201,6 +203,7 @@ describe("a save the host refuses", () => {
 			const error = findBlocks(outcome.blocks, "banner").find((b) => b.variant === "error");
 			const description = String(error?.description);
 			expect(description).toContain("could not be stored encrypted");
+			expect(description).not.toContain("sites/staging");
 			expect(description).toContain("Whoever deployed this site sets EMDASH_ENCRYPTION_KEY");
 			expect(description).toContain("DEPLOYMENT.md §3");
 			expect(description).toContain("Nothing was saved.");
@@ -213,4 +216,21 @@ describe("a save the host refuses", () => {
 			assertBlockContract(outcome.blocks, { screen: "settings", level: "list" });
 		},
 	);
+});
+
+test("a write that fails with a valid key does not blame the key", async () => {
+	setKey(VALID_KEY);
+	const { ctx, kv } = makeCtx({ refuseSecrets: true });
+	const outcome = await invoke(ctx, {
+		type: "form_submit",
+		action_id: "save-stripe-secret-key",
+		values: { stripeSecretKey: SK_TEST },
+	});
+	const error = findBlocks(outcome.blocks, "banner").find((b) => b.variant === "error");
+	expect(String(error?.description)).toBe(
+		"The Stripe secret key could not be saved right now. Try again. Nothing was saved.",
+	);
+	expect(keyBanner(outcome.blocks)).toBeUndefined();
+	expect(kv.has(STRIPE_SECRET_KEY_KEY)).toBe(false);
+	assertBlockContract(outcome.blocks, { screen: "settings", level: "list" });
 });

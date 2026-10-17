@@ -647,14 +647,19 @@ export function createSettingsFormHandler(): RouteHandler<SettingsFormInput> {
 				}
 				// ADR-0037: the host encrypts this write, and refuses it BEFORE storing
 				// anything when it has no usable EMDASH_ENCRYPTION_KEY. Say so; the key
-				// already stored (if any) stays. The error itself is never shown.
+				// already stored (if any) stays. The error itself is never shown. With
+				// a key known to be present (#497) the failure is something else, so
+				// the operator is not sent to the deployer for it.
 				try {
 					await ctx.kv.set(secretSpec.kvKey, checked.value);
 				} catch {
 					const page = await renderPage(ctx, client, {
 						variant: "error",
 						title: `${secretSpec.noun} not saved`,
-						description: `The ${lowerFirst(secretSpec.noun)} could not be stored encrypted. ${ENCRYPTION_KEY_FIX} Then save it again. Nothing was saved.`,
+						description:
+							encryptionKeyStatus() === "present"
+								? `The ${lowerFirst(secretSpec.noun)} could not be saved right now. Try again. Nothing was saved.`
+								: `The ${lowerFirst(secretSpec.noun)} could not be stored encrypted. ${ENCRYPTION_KEY_FIX} Then save it again. Nothing was saved.`,
 					});
 					return {
 						...page,
@@ -1793,7 +1798,7 @@ function secretForm(
 /** #497 — who fixes a missing or malformed EMDASH_ENCRYPTION_KEY, and how: it
  *  is a Worker secret, so nobody can set it from this screen. */
 const ENCRYPTION_KEY_FIX =
-	"Whoever deployed this site sets EMDASH_ENCRYPTION_KEY (wrangler secret put, or sites/staging/.env in local dev; DEPLOYMENT.md §3).";
+	"Whoever deployed this site sets EMDASH_ENCRYPTION_KEY (wrangler secret put, or .env in local dev; DEPLOYMENT.md §3).";
 
 /** #497 — the up-front warning, before anything is typed: a key saved below
  *  would be refused (ADR-0037 fails closed). `"unknown"` (the sandbox) shows
