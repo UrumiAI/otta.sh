@@ -1798,7 +1798,7 @@ function secretForm(
 /** #497 — who fixes a missing or malformed EMDASH_ENCRYPTION_KEY, and how: it
  *  is a Worker secret, so nobody can set it from this screen. */
 const ENCRYPTION_KEY_FIX =
-	"Whoever deployed this site sets EMDASH_ENCRYPTION_KEY (wrangler secret put, or .env in local dev; DEPLOYMENT.md §3).";
+	"Whoever deployed this site sets EMDASH_ENCRYPTION_KEY (wrangler secret put EMDASH_ENCRYPTION_KEY, or .env locally; DEPLOYMENT.md §3).";
 
 /** #497 — the up-front warning, before anything is typed: a key saved below
  *  would be refused (ADR-0037 fails closed). `"unknown"` (the sandbox) shows

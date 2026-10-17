@@ -153,8 +153,8 @@ describe("the up-front warning on Settings", () => {
 		const description = String(banner?.description);
 		expect(description).toContain("EMDASH_ENCRYPTION_KEY is not set");
 		expect(description).toContain("Whoever deployed this site");
-		expect(description).toContain("wrangler secret put");
-		expect(description).toContain(".env in local dev");
+		expect(description).toContain("wrangler secret put EMDASH_ENCRYPTION_KEY");
+		expect(description).toContain(".env locally");
 		expect(description).toContain("DEPLOYMENT.md §3");
 		// Before the groups, so it is seen without opening one.
 		const accordion = page.blocks.findIndex((b) => b.type === "accordion");
