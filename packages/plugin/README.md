@@ -13,7 +13,7 @@ host's `ctx.email`, ADR-0031).
 pnpm add @otta-sh/plugin
 ```
 
-ESM-only, for an EmDash site on `emdash` `~1.0.1` (the requirement of `@otta-sh/store-emdash`, which comes with it, as do `@otta-sh/domain`, `@otta-sh/payments-stripe` and `@otta-sh/admin-presentation`). Published entry points:
+ESM-only, for an EmDash site on `emdash` `^1.0.1` (the requirement of `@otta-sh/store-emdash`, which comes with it, as do `@otta-sh/domain`, `@otta-sh/payments-stripe` and `@otta-sh/admin-presentation`). Published entry points:
 
 | Import | What it is |
 |---|---|

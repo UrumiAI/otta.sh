@@ -8,7 +8,7 @@ Commerce store adapters over EmDash's plugin-storage primitives. Each commerce a
 pnpm add @otta-sh/store-emdash
 ```
 
-Requires a host that carries the conditional-write primitives (`updateIf`, `getVersioned`, `compareAndSet`, `compareAndDelete`): `emdash` `~1.0.1`.
+Requires a host that carries the conditional-write primitives (`updateIf`, `getVersioned`, `compareAndSet`, `compareAndDelete`): `emdash` `^1.0.1`.
 
 Published entry point: `@otta-sh/store-emdash` (ESM-only). Part of [Otta](https://github.com/UrumiAI/otta.sh#readme).
 

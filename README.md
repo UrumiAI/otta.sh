@@ -94,7 +94,7 @@ To self-deploy this for free on Cloudflare Workers today, follow
 ## Install from npm
 
 The six packages are published to npm under `@otta-sh/*`, ESM-only, at `0.1.0`. A site that
-runs on EmDash `~1.0.1` installs what it registers:
+runs on EmDash `^1.0.1` (tested on 1.0.1 and 1.3.0) installs what it registers:
 
 ```bash
 pnpm add @otta-sh/plugin @otta-sh/admin-react
