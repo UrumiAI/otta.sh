@@ -387,6 +387,15 @@ export {
 // ── end Phase 3 group E: cart ────────────────────────────────────────────────
 // ── Phase 4: checkout (storefront-checkout plan §1.2, ADR-0012) ──────────────
 export {
+	createPaymentConfigRouteHandler,
+	STOREFRONT_PAYMENT_CONFIG_ROUTE,
+	type PaymentConfigRouteResult,
+} from "./storefront/payment-config-route.js";
+export {
+	readStripePublishableKey,
+	STRIPE_PUBLISHABLE_KEY_KEY,
+} from "./payments/stripe-publishable-key.js";
+export {
 	createCheckoutPlaceRouteHandler,
 	createCheckoutSummaryRouteHandler,
 	createOrderRouteHandler,

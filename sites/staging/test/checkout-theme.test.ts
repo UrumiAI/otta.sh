@@ -239,7 +239,7 @@ describe.each(REVIEW_VIEWS)("the /checkout form contract — %s", (_label, { sou
 
 describe("the /checkout page keeps the decisions the review prints", () => {
 	test("no payable-looking button when the store has no publishable key", () => {
-		expect(REVIEW).toContain("STRIPE_PUBLISHABLE_KEY");
+		expect(REVIEW).toContain("readStripePublishableKey");
 		expect(REVIEW).toContain("paymentConfigured");
 	});
 

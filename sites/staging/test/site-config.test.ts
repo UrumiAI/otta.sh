@@ -797,18 +797,11 @@ describe("astro.config", () => {
 	);
 
 	test(
-		"the Stripe publishable key rides a SECOND build-time define (ADR-0012 decision 4)",
+		"#498: the Stripe publishable key is NOT a build-time define any more (it is a Settings value)",
 		async () => {
-			// Baked, not read from wrangler `vars` at runtime: wrangler-config.test.ts
-			// forbids any vars key matching /SECRET|KEY|TOKEN|PASSWORD/i, and
-			// STRIPE_PUBLIC_KEY matches on KEY. Keep the guard; bake the key.
 			const config = (await import("../astro.config.js")).default;
 			const define = config.vite?.define as Record<string, string>;
-			expect(Object.keys(define)).toContain("__OTTA_STRIPE_PUBLIC_KEY__");
-			// Whatever this machine's env holds, the baked value is a STRING (an
-			// absent key bakes "", which the config module treats as unconfigured) —
-			// never `undefined`, which would leave the identifier undeclared.
-			expect(typeof JSON.parse(define["__OTTA_STRIPE_PUBLIC_KEY__"] ?? "null")).toBe("string");
+			expect(Object.keys(define)).not.toContain("__OTTA_STRIPE_PUBLIC_KEY__");
 		},
 		CONFIG_IMPORT_TIMEOUT_MS,
 	);
@@ -887,6 +880,35 @@ describe("astro.config", () => {
 	 * OTTA_EXTRA_ALLOWED_HOSTS in the shell env (which wins over `.env`). A fresh
 	 * module registry per test, so the env value is what the config reads.
 	 */
+	describe("#498: a leftover STRIPE_PUBLIC_KEY at config load", () => {
+		afterEach(() => {
+			vi.unstubAllEnvs();
+			vi.resetModules();
+		});
+
+		test(
+			"makes loading the site config THROW, saying where the key goes now, never echoing it",
+			async () => {
+				vi.stubEnv("STRIPE_PUBLIC_KEY", "pk_test_LEFTOVERVALUE123");
+				vi.resetModules();
+				const loaded = import("../astro.config.js");
+				await expect(loaded).rejects.toThrow(/no longer read.*Stripe publishable key/s);
+				await expect(loaded).rejects.not.toThrow(/LEFTOVERVALUE/);
+			},
+			CONFIG_IMPORT_TIMEOUT_MS,
+		);
+
+		test(
+			"an EMPTY value is treated as unset (a blanked line is not a configuration)",
+			async () => {
+				vi.stubEnv("STRIPE_PUBLIC_KEY", "  ");
+				vi.resetModules();
+				await expect(import("../astro.config.js")).resolves.toBeDefined();
+			},
+			CONFIG_IMPORT_TIMEOUT_MS,
+		);
+	});
+
 	describe("OTTA_EXTRA_ALLOWED_HOSTS at config load", () => {
 		afterEach(() => {
 			vi.unstubAllEnvs();

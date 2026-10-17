@@ -267,6 +267,58 @@ export async function provisionWebhookSecret(deps: SeedOrdersDeps): Promise<void
 	}
 }
 
+/** Issue #498: the e2e stack's publishable key. A placeholder is enough — the
+ *  specs block js.stripe.com and the offline gateway never hands Stripe a real
+ *  client secret. It only has to exist, so /checkout offers the place button. */
+export const E2E_PUBLISHABLE_KEY = "pk_test_e2eplaceholder";
+
+/** The publishable key the Settings page prefills, or "" — read off the form
+ *  field the way {@link stripeSecretKeyIsSet} reads the secret's label. */
+export function storedPublishableKey(settingsPage: unknown): string {
+	let found: string | undefined;
+	const walk = (node: unknown): void => {
+		if (Array.isArray(node)) {
+			for (const item of node) walk(item);
+			return;
+		}
+		if (node === null || typeof node !== "object") return;
+		const record = node as Record<string, unknown>;
+		if (record["action_id"] === "stripePublishableKey") {
+			found = typeof record["initial_value"] === "string" ? record["initial_value"] : "";
+		}
+		for (const value of Object.values(record)) walk(value);
+	};
+	walk(settingsPage);
+	if (found === undefined) {
+		throw new Error('could not find the "Stripe publishable key" field on the Settings page.');
+	}
+	return found;
+}
+
+/** Save {@link E2E_PUBLISHABLE_KEY} in Settings unless a key is already there
+ *  (a developer's own key wins, as the old build variable's did). */
+export async function provisionPublishableKey(deps: SeedOrdersDeps): Promise<void> {
+	const page = await admin(
+		deps,
+		{ type: "page_load", page: "/settings" },
+		"reading the Settings page",
+	);
+	if (storedPublishableKey(page) !== "") return;
+	const saved = await admin(
+		deps,
+		{
+			type: "form_submit",
+			action_id: "save-payment-settings",
+			values: { stripePublishableKey: E2E_PUBLISHABLE_KEY },
+		},
+		"saving the publishable key",
+	);
+	const toast = (saved as { toast?: { type?: unknown; message?: unknown } } | null)?.toast;
+	if (toast?.type !== "success") {
+		throw new Error(`the publishable key was not saved: ${JSON.stringify(toast ?? saved)}`);
+	}
+}
+
 /** The first purchasable product, read through the products console. */
 export async function findPurchasable(deps: SeedOrdersDeps): Promise<Purchasable> {
 	const data = ok<{ products: CatalogRow[] }>(

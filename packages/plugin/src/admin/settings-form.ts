@@ -16,10 +16,12 @@ import {
 } from "../payments/stripe-account-country.js";
 import {
 	checkOpaqueToken,
+	checkStripePublishableKey,
 	checkStripeSecretKey,
 	checkStripeWebhookSecret,
 	type SecretShapeCheck,
 	stripeKeyMode,
+	stripePublishableKeyMode,
 } from "../payment-secret-shapes.js";
 import {
 	isSavableLoginLinkUrl,
@@ -32,6 +34,7 @@ import {
 	STRIPE_WEBHOOK_SECRET_KEY,
 	WEBHOOK_EDGE_TOKEN_KEY,
 } from "../payment-secrets.js";
+import { STRIPE_PUBLISHABLE_KEY_KEY } from "../payments/stripe-publishable-key.js";
 import type {
 	AccordionBlock,
 	AdminPageConfig,
@@ -259,6 +262,15 @@ interface PlainSettingSpec {
 }
 
 const PLAIN_PAYMENT_SETTINGS: readonly PlainSettingSpec[] = [
+	// Issue #498 — the Stripe PUBLISHABLE key, the third value card checkout
+	// needs. Public (every buyer's browser gets it), so it is read back like the
+	// sign-in page; it used to be baked into the site at build time.
+	{
+		fieldId: "stripePublishableKey",
+		kvKey: STRIPE_PUBLISHABLE_KEY_KEY,
+		label: "Stripe publishable key (pk_live_… or pk_test_…)",
+		placeholder: "pk_live_…",
+	},
 	// Issue #306 — where the emailed sign-in link points, and the ONLY place it may
 	// point: required for customer login (unset ⇒ no link is sent). Read back so
 	// the operator can check it. Adapted from #325 by @stephanedemotte.
@@ -740,6 +752,15 @@ export function createSettingsFormHandler(): RouteHandler<SettingsFormInput> {
 			// in one pass. Each names the FIELD and the SHAPE, never the rejected
 			// value (the form, not the banner, keeps what was typed).
 			const problems: Array<{ field: string; rule: string }> = [];
+			// Issue #498: the publishable key must be one, so a wrong paste is refused
+			// here rather than surfacing as "card payment isn't set up" at checkout.
+			const publishableKey = submitted.get(STRIPE_PUBLISHABLE_KEY_KEY) ?? "";
+			if (publishableKey.length > 0 && !checkStripePublishableKey(publishableKey).ok) {
+				problems.push({
+					field: "the Stripe publishable key",
+					rule: "The Stripe publishable key must start with pk_live_ or pk_test_. The secret key (sk_…) goes in its own field above, never here.",
+				});
+			}
 			// Issue #306: the sign-in link page must be an absolute URL with no
 			// credentials — the emailed token rides on it. U-8: and https, or http
 			// only on this machine, so that token never crosses a network in clear
@@ -766,7 +787,14 @@ export function createSettingsFormHandler(): RouteHandler<SettingsFormInput> {
 						if (typeof raw !== "string") return [];
 						// A sign-in URL with user:pw@ in it is put back WITHOUT them: the
 						// credentials are refused anyway, and are not echoed into the page.
-						const shown = spec.kvKey === LOGIN_LINK_URL_KEY ? withoutUserInfo(raw) : raw;
+						// A refused publishable key is not put back at all: the commonest
+						// wrong paste there is the SECRET key, which must not be shown.
+						const shown =
+							spec.kvKey === LOGIN_LINK_URL_KEY
+								? withoutUserInfo(raw)
+								: spec.kvKey === STRIPE_PUBLISHABLE_KEY_KEY && !checkStripePublishableKey(raw).ok
+									? ""
+									: raw;
 						return [[spec.kvKey, shown] as const];
 					}),
 				);
@@ -781,7 +809,7 @@ export function createSettingsFormHandler(): RouteHandler<SettingsFormInput> {
 			const page = await renderPage(ctx, client, {
 				variant: "default",
 				title: "Payment settings saved",
-				description: "The sign-in page address was saved.",
+				description: "The Stripe publishable key and sign-in page address were saved.",
 			});
 			return {
 				...page,
@@ -1561,7 +1589,7 @@ function paymentsGroup(
 	return {
 		type: "accordion",
 		block_id: "settings:payments",
-		label: paymentsGroupLabel(state, emailStatus),
+		label: paymentsGroupLabel(state, plain, emailStatus),
 		default_open: false,
 		blocks: [
 			{
@@ -1594,6 +1622,7 @@ function paymentsGroup(
 			// keys-first. It prefills with what is stored, which says on its own that
 			// it is not a write-only key.
 			{ type: "context", text: emailStatusLine(emailStatus) },
+			...publishableKeyWarnings(plain.get(STRIPE_PUBLISHABLE_KEY_KEY) ?? "", state),
 			...legacySignInWarning(plain.get(LOGIN_LINK_URL_KEY) ?? ""),
 			// A refused save states each rule in full beside the form, and the form
 			// keeps what was typed (J6).
@@ -1663,6 +1692,30 @@ export function emailStatusLine(status: EmailSendingStatus): string {
 	}
 }
 
+/** Issue #498 — what the stored publishable key means for card checkout, under
+ *  the form: a value that is not a pk_… key (saved outside these settings) is
+ *  NOT used, and a key whose mode differs from the secret key's cannot pay. */
+function publishableKeyWarnings(stored: string, state: Map<string, SecretRenderState>): Block[] {
+	if (stored === "") return [];
+	const mode = stripePublishableKeyMode(stored);
+	if (mode === undefined) {
+		return [
+			{
+				type: "context",
+				text: "The saved Stripe publishable key is not a pk_live_… or pk_test_… key, so card payment is off. Enter it again below.",
+			},
+		];
+	}
+	const secretMode = state.get(STRIPE_SECRET_KEY_KEY)?.mode;
+	if (secretMode === undefined || secretMode === mode) return [];
+	return [
+		{
+			type: "context",
+			text: `The publishable key is a ${mode} key but the Stripe secret key is ${secretMode}. Card payments fail until both come from the same mode in Stripe.`,
+		},
+	];
+}
+
 /** A refused payment-settings save: every rule broken, and what was typed. */
 interface PaymentRefusal {
 	problems: string[];
@@ -1722,15 +1775,23 @@ function plainSettingsForm(plain: Map<string, string>): FormBlock {
  *  send, PR #418 review) is the same width as "email set". */
 function paymentsGroupLabel(
 	state: Map<string, SecretRenderState>,
+	plain: Map<string, string>,
 	emailStatus: EmailSendingStatus,
 ): string {
 	const stripe = state.get(STRIPE_SECRET_KEY_KEY);
+	// #498: card checkout needs the publishable key too, so the Stripe part reads
+	// as ready ("Stripe test") only when both keys are set and agree on the mode.
+	const publishableMode = stripePublishableKeyMode(plain.get(STRIPE_PUBLISHABLE_KEY_KEY) ?? "");
 	const stripePart =
 		stripe?.set !== true
 			? "no Stripe key"
-			: stripe.mode === undefined
-				? "Stripe key set"
-				: `Stripe ${stripe.mode}`;
+			: publishableMode === undefined
+				? "no publishable"
+				: stripe.mode !== undefined && stripe.mode !== publishableMode
+					? "test/live mixed"
+					: stripe.mode === undefined
+						? "Stripe key set"
+						: `Stripe ${stripe.mode}`;
 	const webhookPart =
 		state.get(STRIPE_WEBHOOK_SECRET_KEY)?.set === true ? "webhook set" : "no webhook";
 	const emailPart =

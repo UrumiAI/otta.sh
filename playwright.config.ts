@@ -117,12 +117,8 @@ const stack: WebServer[] = [
 			// dev`, and `astro build` refuses to run with it set
 			// (sites/staging/src/lib/e2e-stripe-offline.ts).
 			OTTA_E2E_STRIPE_OFFLINE: "1",
-			// /checkout offers no place button without a publishable key (by design:
-			// no order may hold stock against a payment that cannot happen). A
-			// placeholder is enough, because the specs block js.stripe.com and the
-			// offline gateway never hands Stripe a real client secret. A key already
-			// in the environment wins.
-			STRIPE_PUBLIC_KEY: process.env["STRIPE_PUBLIC_KEY"] ?? "pk_test_e2eplaceholder",
+			// No STRIPE_PUBLIC_KEY (issue #498): the publishable key is a Settings
+			// value, which e2e/global-setup.ts saves on a stack this run starts.
 			// ADR-0037: payment keys are stored encrypted, so the dev Worker needs a
 			// key. `astro dev` runs the Worker in workerd, which does NOT inherit this
 			// process's environment: wrangler copies it in only when

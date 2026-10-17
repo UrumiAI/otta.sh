@@ -83,8 +83,8 @@ admin, **Content › Products** lists each product's price and stock; open a pro
 **Pricing & stock** cards (under the images) to reprice, restock, or price a product of your own.
 They are the only place commercial fields are edited; the CMS owns the title, description and images.
 
-One thing to know: card checkout needs Stripe configured (both secrets in admin Settings, plus
-the build-time publishable key). A Digital product's file is attached in the same editor
+One thing to know: card checkout needs Stripe configured: the secret key, webhook signing secret
+and publishable key, all in admin Settings. A Digital product's file is attached in the same editor
 (the **Download file** card) and needs a private `DOWNLOADS` bucket, which local dev
 simulates — see [Status](#status).
 

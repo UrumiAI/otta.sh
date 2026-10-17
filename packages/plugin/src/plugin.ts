@@ -26,6 +26,10 @@ import {
 	STOREFRONT_ORDER_ABANDON_ROUTE,
 	STOREFRONT_ORDER_RESUME_ROUTE,
 } from "./storefront/checkout-routes.js";
+import {
+	createPaymentConfigRouteHandler,
+	STOREFRONT_PAYMENT_CONFIG_ROUTE,
+} from "./storefront/payment-config-route.js";
 // ── end Phase 4 checkout routes ────────────────────────────────────────────
 import {
 	createEntitlementDownloadHandler,
@@ -180,6 +184,11 @@ const plugin: SandboxedPlugin = {
 			public: true,
 		},
 		[STOREFRONT_ORDER_ROUTE]: { handler: createOrderRouteHandler() as never, public: true },
+		// #498: the Stripe publishable key, read per request by the checkout pages.
+		[STOREFRONT_PAYMENT_CONFIG_ROUTE]: {
+			handler: createPaymentConfigRouteHandler() as never,
+			public: true,
+		},
 		// QA U-2: the order page's "Complete payment" — the order id PLUS a second
 		// factor (cart, owning session or email), answering the pending order's
 		// OWN intent. The id alone is PROOF_REQUIRED.

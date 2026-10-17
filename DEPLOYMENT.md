@@ -429,8 +429,8 @@ order of appearance in a deployment's life:
   is set, the settle route answers `NOT_CONFIGURED`; it verifies deliveries with the
   **webhook secret only** (`packages/plugin/src/webhooks/stripe-settle-route.ts`), and uses the
   secret key, when set, only to refund a late payment (below). The pay
-  page also needs the build-time publishable key, `STRIPE_PUBLIC_KEY` — see
-  [`sites/staging/README.md`](./sites/staging/README.md).
+  page also needs the **publishable key**, entered in the same Settings group (issue #498;
+  no rebuild) — see [`sites/staging/README.md`](./sites/staging/README.md).
 
   With both secrets set, `createIntent` performs a real `POST /v1/payment_intents` over
   `ctx.http.fetch` (LIVE client secret, `metadata[order_id]` as the settlement key the

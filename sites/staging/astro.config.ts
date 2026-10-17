@@ -18,7 +18,6 @@ import { parseDotEnv } from "./src/lib/dot-env.js";
 import { buildEmdashOptions } from "./src/emdash-options.js";
 import { assertDownloadsBucketPrivate } from "./src/lib/downloads-bucket.js";
 import { devStripeOfflineIntegration } from "./src/lib/e2e-stripe-offline.js";
-import { resolveStripePublishableKey, STRIPE_PUBLIC_KEY_VAR } from "./src/lib/stripe-config.js";
 
 /** Astro does NOT load .env into process.env for THIS module (verified —
  *  see src/lib/dot-env.ts), so fall back to sites/staging/.env explicitly:
@@ -63,16 +62,18 @@ const egress = {
 };
 
 /**
- * The Stripe publishable key (ADR-0012 decision 4), resolved the same way.
- * Absent ⇒ `undefined` ⇒ the define below bakes `""` ⇒ `/checkout` renders
- * review + totals but says "Card payment isn't set up on this store yet." and
- * creates NO order. PRESENT but malformed ⇒ `resolveStripePublishableKey`
- * THROWS here and fails the build, because a typo'd key is otherwise
- * indistinguishable at runtime from having no key at all.
+ * Issue #498: the Stripe publishable key is no longer a build setting — it is
+ * entered in admin Settings and read per request. A build that still sets the
+ * old variable FAILS, naming where the key goes now: left unread, it would look
+ * like configuration while checkout says card payment isn't set up.
  */
-const stripePublishableKey = resolveStripePublishableKey(
-	process.env[STRIPE_PUBLIC_KEY_VAR] ?? readDotEnv(STRIPE_PUBLIC_KEY_VAR),
-);
+if ((process.env.STRIPE_PUBLIC_KEY ?? readDotEnv("STRIPE_PUBLIC_KEY") ?? "").trim() !== "") {
+	throw new Error(
+		"STRIPE_PUBLIC_KEY is no longer read (issue #498). Remove it from the environment and " +
+			"sites/staging/.env, and enter the publishable key in the admin: Otta Settings → " +
+			"Payments & email → Stripe publishable key.",
+	);
+}
 
 /**
  * Real deploy identifiers live in the gitignored `wrangler.local.jsonc`
@@ -241,11 +242,6 @@ export default defineConfig({
 		// Build-time globals the @otta-sh/plugin bundle reads through `typeof`
 		// guards (manifest.ts, src/lib/stripe-config.ts).
 		define: {
-			// The Stripe publishable key for /checkout/pay's Payment Element
-			// (src/lib/stripe-config.ts). ALWAYS a string — an unconfigured store
-			// bakes "", which that module reads as undefined; baking `undefined`
-			// would leave the identifier undeclared in the worker bundle.
-			__OTTA_STRIPE_PUBLIC_KEY__: JSON.stringify(stripePublishableKey ?? ""),
 			// Validated extra egress hosts, comma-joined, from the SAME `egress` const
 			// that decides what the descriptor allowlists (see its note above).
 			// ALWAYS a string: baking `undefined` would leave the identifier
