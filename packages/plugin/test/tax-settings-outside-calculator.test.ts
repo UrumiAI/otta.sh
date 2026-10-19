@@ -7,7 +7,7 @@
  *
  * In-process over a real document store (no mocks).
  */
-import { LEGACY_TAX_SETTINGS, NEW_STORE_TAX_SETTINGS } from "@urumi-ai/otta-domain";
+import { LEGACY_TAX_SETTINGS, NEW_STORE_TAX_SETTINGS } from "@urumi.ai/otta-domain";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { taxSettingsDigest } from "../src/admin/admin-rules-surface.js";
 import { InProcessAdminRulesClient } from "../src/admin/in-process-admin-rules-client.js";

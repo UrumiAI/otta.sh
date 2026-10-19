@@ -12,8 +12,8 @@ import {
 	orderId as toOrderId,
 	productId as toProductId,
 	sku as toSku,
-} from "@urumi-ai/otta-domain";
-import { FakePaymentGateway } from "@urumi-ai/otta-domain/testing";
+} from "@urumi.ai/otta-domain";
+import { FakePaymentGateway } from "@urumi.ai/otta-domain/testing";
 import { afterAll, afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { SWEEP_TASK_NAME } from "../src/cron/index.js";
 import { runCommerceSweeps, SWEEP_LEGS } from "../src/cron/sweeps.js";

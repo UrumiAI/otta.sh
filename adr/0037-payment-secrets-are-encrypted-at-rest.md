@@ -39,7 +39,7 @@ path — so no new write path or crypto is needed.
 
 ## Decision
 
-1. **Declare the three keys `secret`.** `@urumi-ai/otta-plugin` exports
+1. **Declare the three keys `secret`.** `@urumi.ai/otta-plugin` exports
    `PAYMENT_SECRET_SETTINGS_SCHEMA` (`stripeSecretKey`, `stripeWebhookSecret`,
    `otta-wh-token`), and the site's Otta descriptor declares it as
    `settingsSchema`. The site-config test pins the two equal. The Settings page and every

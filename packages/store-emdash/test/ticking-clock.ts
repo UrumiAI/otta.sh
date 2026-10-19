@@ -1,4 +1,4 @@
-import type { Clock } from "@urumi-ai/otta-domain";
+import type { Clock } from "@urumi.ai/otta-domain";
 
 /**
  * A clock that ADVANCES a millisecond per reading — the clock every

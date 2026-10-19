@@ -18,7 +18,7 @@ import {
 	idempotencyKey,
 	sku,
 	updateLine,
-} from "@urumi-ai/otta-domain";
+} from "@urumi.ai/otta-domain";
 import { expect, test } from "vitest";
 import {
 	collectionOf,

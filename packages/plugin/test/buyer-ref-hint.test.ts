@@ -4,7 +4,7 @@
  * not enough to read it: the order id is a bearer capability, and the public
  * order deliberately carries no email.
  */
-import { buyerRefHint as sharedBuyerRefHint } from "@urumi-ai/otta-admin-presentation";
+import { buyerRefHint as sharedBuyerRefHint } from "@urumi.ai/otta-admin-presentation";
 import { describe, expect, test } from "vitest";
 import { buyerRefHint } from "../src/commerce/buyer-ref-hint.js";
 
@@ -36,7 +36,7 @@ describe("buyerRefHint", () => {
 
 	test("is the ONE shared function the Orders console masks with, not a copy of it (#377)", () => {
 		// The console may not import this package (ADR-0014), so the rule lives in
-		// `@urumi-ai/otta-admin-presentation` and this path re-exports it. Identity, not
+		// `@urumi.ai/otta-admin-presentation` and this path re-exports it. Identity, not
 		// equal output: a second implementation that happened to agree today is
 		// exactly the drift this pins against.
 		expect(buyerRefHint).toBe(sharedBuyerRefHint);

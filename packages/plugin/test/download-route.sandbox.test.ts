@@ -10,7 +10,7 @@
  * document store on `ctx.storage` — so there is no service to start, no
  * `commerceServiceBaseUrl` to hand the sandbox, and no Postgres in this file at
  * all. The contract's fixtures are written through the same
- * `@urumi-ai/otta-store-emdash` adapters the plugin composes, into the Node-side store
+ * `@urumi.ai/otta-store-emdash` adapters the plugin composes, into the Node-side store
  * the sandbox's storage bridge serves, and its grant mirrors, key for key, what
  * `settleOrder` writes on a paid digital line (`ent:{order}:{sku}`, source
  * `order_paid`) — the settle path itself is proven by its own sandbox suite, so
@@ -39,7 +39,7 @@ import {
 	orderId as toOrderId,
 	productId as toProductId,
 	sku as toSku,
-} from "@urumi-ai/otta-domain";
+} from "@urumi.ai/otta-domain";
 import {
 	EmdashCredentialVerifier,
 	EmdashCustomerStore,
@@ -50,7 +50,7 @@ import {
 	systemClock,
 	uuidIdGen,
 	type StorageAccess,
-} from "@urumi-ai/otta-store-emdash";
+} from "@urumi.ai/otta-store-emdash";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import { MISSING_STORAGE_MESSAGE } from "../src/commerce/in-process-commerce-stores.js";
 import { downloadRouteContract } from "./contracts/download-route-contract.js";

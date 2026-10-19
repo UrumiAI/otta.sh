@@ -18,7 +18,7 @@
  * The page should redeem the token on a POST from its own form rather than on
  * the GET, so a mail scanner that pre-fetches links does not burn it.
  */
-import { DEFAULT_CHALLENGE_TTL_MS } from "@urumi-ai/otta-store-emdash";
+import { DEFAULT_CHALLENGE_TTL_MS } from "@urumi.ai/otta-store-emdash";
 import type { PluginContext } from "../types.js";
 
 /**

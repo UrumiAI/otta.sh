@@ -6,7 +6,7 @@ import {
 	money,
 	productId as toProductId,
 	sku as toSku,
-} from "@urumi-ai/otta-domain";
+} from "@urumi.ai/otta-domain";
 import {
 	collectionOf,
 	EmdashProductCommerceStore,
@@ -19,7 +19,7 @@ import {
 	type StorageAccess,
 	type TaxClassDoc,
 	type TaxRateOwnerDoc,
-} from "@urumi-ai/otta-store-emdash";
+} from "@urumi.ai/otta-store-emdash";
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "vitest";
 import { COMMERCE_STORAGE_COLLECTION_NAMES } from "../src/commerce/commerce-storage.js";
 import { decodeCarrier, encodeCarrier } from "../src/admin/scaffold/carrier.js";
@@ -55,7 +55,7 @@ import { storageBridge } from "./sandbox/storage-bridge.js";
 // THE RULES SURFACE IS NO LONGER AN HTTP SERVICE (INC-D3a). `makeAdminClients`
 // hands this screen an `InProcessAdminRulesClient` composed over `ctx.storage`,
 // so the fixtures below are REAL documents written through the same
-// `@urumi-ai/otta-store-emdash` stores the plugin itself reads, and every "did the
+// `@urumi.ai/otta-store-emdash` stores the plugin itself reads, and every "did the
 // write land" claim is read back off the store rather than off a recorded
 // request body. That is strictly stronger: a recorded `PUT /admin/tax/rates/std-us`
 // proved a request was FORMED, while a re-read row proves the edit was APPLIED.

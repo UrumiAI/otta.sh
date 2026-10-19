@@ -15,14 +15,14 @@
  * and cheap (no "0 (more next tick)", no expiry deferred for want of room it never
  * needed).
  */
-import { cents, currency, idempotencyKey, sku as toSku } from "@urumi-ai/otta-domain";
+import { cents, currency, idempotencyKey, sku as toSku } from "@urumi.ai/otta-domain";
 import {
 	collectionOf,
 	EmdashCouponStore,
 	uuidIdGen,
 	type StorageAccess,
-} from "@urumi-ai/otta-store-emdash";
-import { makeSqliteStorage } from "@urumi-ai/otta-store-emdash/testing";
+} from "@urumi.ai/otta-store-emdash";
+import { makeSqliteStorage } from "@urumi.ai/otta-store-emdash/testing";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import {
 	runCommerceSweeps,
@@ -47,7 +47,7 @@ import {
 } from "./cron-sweep-fixtures.js";
 import { commerceStorageLayout } from "./sandbox/storage-layout.js";
 import type { PluginContext } from "../src/types.js";
-import { orderId as toOrderId } from "@urumi-ai/otta-domain";
+import { orderId as toOrderId } from "@urumi.ai/otta-domain";
 
 const FREE = 30;
 const NOW = new Date("2026-09-20T12:00:00.000Z");

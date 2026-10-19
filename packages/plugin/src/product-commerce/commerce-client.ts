@@ -19,7 +19,7 @@
  * presentation code: a Block Kit renderer that had to unwrap a branded scalar,
  * or a storefront route that had to narrow a domain result union, would be
  * carrying the domain's vocabulary into a layer whose job is to format strings.
- * The plugin's sandbox-cleanliness rule (no `@urumi-ai/otta-domain` import from these
+ * The plugin's sandbox-cleanliness rule (no `@urumi.ai/otta-domain` import from these
  * modules) points the same way.
  *
  * INC-D4 should cost out only the NARROWER question: de-duplicating these
@@ -343,7 +343,7 @@ export interface CommerceClient {
 
 	// ── Phase 3 group E: cart (plan §6) ────────────────────────────────────
 	// Hand-rolled like the wire types above: these modules declare no runtime
-	// dependency on @urumi-ai/otta-domain, which is what keeps them sandbox-clean. ──
+	// dependency on @urumi.ai/otta-domain, which is what keeps them sandbox-clean. ──
 	/** A new cart in `currency`, or — when none is named — in the store currency
 	 *  (the operator's saved setting; USD for a store that never saved one). */
 	createCart(currency?: string): Promise<{ cartId: string }>;
@@ -765,7 +765,7 @@ export interface PublicOrderWire {
 	refundedCents: number;
 }
 
-/** `CreateOrderFailure` verbatim (`@urumi-ai/otta-domain`'s orders/errors.ts). */
+/** `CreateOrderFailure` verbatim (`@urumi.ai/otta-domain`'s orders/errors.ts). */
 export type CheckoutFailureReason =
 	| "CART_NOT_FOUND"
 	| "CART_EMPTY"

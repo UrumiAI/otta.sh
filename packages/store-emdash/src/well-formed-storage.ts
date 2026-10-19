@@ -126,7 +126,7 @@ import {
 	isWellFormedText,
 	repairIllFormedText,
 	toWellFormedText,
-} from "@urumi-ai/otta-domain";
+} from "@urumi.ai/otta-domain";
 import { CAS_MAX_ATTEMPTS } from "./cas-retry.js";
 import type { QueryOptions, StorageCollection, WhereClause, WhereValue } from "./storage-access.js";
 

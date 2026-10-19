@@ -24,8 +24,8 @@
  * file, and hiding a purchase is worse than a click that says "try again". A
  * dispatch that failed outright draws none.
  */
-import type { EntitlementDownloadResult } from "@urumi-ai/otta-plugin";
-import { ENTITLEMENT_DOWNLOAD_ROUTE } from "@urumi-ai/otta-plugin";
+import type { EntitlementDownloadResult } from "@urumi.ai/otta-plugin";
+import { ENTITLEMENT_DOWNLOAD_ROUTE } from "@urumi.ai/otta-plugin";
 import type { PublicPluginApiRouteHandler } from "emdash/plugin-utils";
 import { downloadHref } from "./download-delivery.js";
 import { dispatchOttaRouteOnce } from "./otta-api.js";

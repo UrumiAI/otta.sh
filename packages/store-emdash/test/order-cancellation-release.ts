@@ -20,7 +20,7 @@ import {
 	createOrderFromCart,
 	idempotencyKey,
 	settleOrder,
-} from "@urumi-ai/otta-domain";
+} from "@urumi.ai/otta-domain";
 import { expect, test } from "vitest";
 import type { OrderHarness } from "./order-harness.js";
 

@@ -11,7 +11,7 @@
  *
  * ONE FUNCTION, so the storefront and the emails cannot drift into two
  * spellings of the same order. The storefront reaches it through
- * `@urumi-ai/otta-plugin`'s re-export; the email renderer calls it directly.
+ * `@urumi.ai/otta-plugin`'s re-export; the email renderer calls it directly.
  *
  * THE FORMAT:
  *  - one line → `"<title>"`, or `"<title> × <qty>"` when bought more than once;
@@ -41,7 +41,7 @@
  *
  * WHAT THIS DELIBERATELY IS NOT:
  *  - It is not Stripe's PaymentIntent `description` ("2 × Otta Tee, 1 × Otta
- *    Mug"), which `@urumi-ai/otta-payments-stripe` formats on its own. That one is
+ *    Mug"), which `@urumi.ai/otta-payments-stripe` formats on its own. That one is
  *    merchant/Stripe-facing, lists every line, and must stay byte-identical
  *    across retries for Stripe's idempotency — so it is left alone and differs
  *    from this on purpose.

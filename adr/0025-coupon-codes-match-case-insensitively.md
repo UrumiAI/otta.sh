@@ -21,13 +21,13 @@ did not enforce folded uniqueness at all, so the contract suite could not even s
 
 ## Decision
 
-1. **`CouponStore.findByCode` folds case.** One fold, `foldCouponCode` in `@urumi-ai/otta-domain`, used by
+1. **`CouponStore.findByCode` folds case.** One fold, `foldCouponCode` in `@urumi.ai/otta-domain`, used by
    every adapter. Because codes are unique after folding, a folded lookup names at most one coupon.
 2. **The record keeps the merchant's spelling.** The applied code — and the order's
    `appliedCouponCode` snapshot — is the coupon's own `code`, never what the shopper typed.
 3. **`create` refuses a case-variant and a duplicate id with the PORT's errors** —
    `CouponCodeConflictError` (`code: "COUPON_CODE_CONFLICT"`) and `CouponIdCollisionError`
-   (`COUPON_ID_COLLISION`), declared in `@urumi-ai/otta-domain` and thrown by both stores. The contract
+   (`COUPON_ID_COLLISION`), declared in `@urumi.ai/otta-domain` and thrown by both stores. The contract
    asserts the codes, not merely a rejection; callers (the admin rules client) match them
    structurally without importing an adapter.
 4. **New codes are printable ASCII with no whitespace** (the ID charset, `isIdToken`), enforced by

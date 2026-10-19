@@ -15,7 +15,7 @@
  *    `EmailMessage` (to, subject, text, html) — no `from` (the provider owns it,
  *    ADR-0031) — and nothing goes out over `ctx.http`.
  */
-import { EMAIL_NOT_CALCULATED_LABEL, type EmailTemplate } from "@urumi-ai/otta-domain";
+import { EMAIL_NOT_CALCULATED_LABEL, type EmailTemplate } from "@urumi.ai/otta-domain";
 import { describe, expect, test } from "vitest";
 import { STORE_DISPLAY_NAME_KEY } from "../src/admin/settings-form.js";
 import {

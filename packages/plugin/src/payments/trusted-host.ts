@@ -8,7 +8,7 @@
  * passes, so a timed-out request's socket is released (on Node it would
  * otherwise be held until undici's own ~300 s timeouts). Results never change:
  * the call gives up at the same bound with the same class either way
- * (`@urumi-ai/otta-payments-stripe` `deadline.ts`). (2) Issue #497: whether the
+ * (`@urumi.ai/otta-payments-stripe` `deadline.ts`). (2) Issue #497: whether the
  * plugin's own `process.env` is the host's, so Settings can warn up front about
  * a missing or malformed EMDASH_ENCRYPTION_KEY (`encryption-key-status.ts`).
  * Under the sandbox it is not, and no warning is shown.

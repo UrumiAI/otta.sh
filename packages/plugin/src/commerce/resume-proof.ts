@@ -39,7 +39,7 @@
  * close the email route for a window with `RESUME_EMAIL_ORDER_MAX_ATTEMPTS`
  * requests.
  */
-import { isEmailAddress } from "@urumi-ai/otta-domain";
+import { isEmailAddress } from "@urumi.ai/otta-domain";
 
 export type { ResumeProof } from "../product-commerce/commerce-client.js";
 

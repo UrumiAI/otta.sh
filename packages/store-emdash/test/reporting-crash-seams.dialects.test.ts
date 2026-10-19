@@ -16,7 +16,7 @@
  * assumed. The order document always moves FIRST — that is the order the hook runs
  * in, and it is why the orders can always define the answer.
  */
-import type { DateRange } from "@urumi-ai/otta-domain";
+import type { DateRange } from "@urumi.ai/otta-domain";
 import { expect, test } from "vitest";
 import { REPORTING_APPLIED_COLLECTION, REPORTING_DAILY_COLLECTION } from "../src/index.js";
 import { describeEachDialect } from "./describe-each-dialect.js";

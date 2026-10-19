@@ -32,7 +32,7 @@ import type {
 import type { RouteHandler } from "../types.js";
 import { resolveLoginLinkUrl } from "./login-link.js";
 import { renderGuard, type RenderGuardFailure } from "./pdp-route.js";
-import { isWellFormedText } from "@urumi-ai/otta-domain";
+import { isWellFormedText } from "@urumi.ai/otta-domain";
 
 // ── Public route names ──────────────────────────────────────────────────
 export const ACCOUNT_LOGIN_REQUEST_ROUTE = "storefront/account/login/request";

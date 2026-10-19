@@ -1,4 +1,4 @@
-import { toWellFormedText } from "@urumi-ai/otta-domain";
+import { toWellFormedText } from "@urumi.ai/otta-domain";
 
 /** Mirrors the `upsertProductCommerceBody.title` bound
  *  (`z.string().min(1).max(500)`) that the standalone `@otta-sh/service`

@@ -9,7 +9,7 @@ Open source (MIT), version 0.1.0. The WooCommerce-equivalent for
 > [!WARNING]
 > **In active development — pre-1.0.** The core buy flow — catalog, cart and card checkout —
 > works today, but APIs, storage document shapes, settings and admin screens may still change
-> between releases. The `@urumi-ai/otta-*` packages are at `0.1.0` and about to be published to npm (not on the
+> between releases. The `@urumi.ai/otta-*` packages are at `0.1.0` and about to be published to npm (not on the
 > registry yet); pin an exact version (`pnpm add -E`) if you build on it.
 >
 > **Coming soon: one-click Cloudflare Workers deployment.** A one-click / hosted way to put
@@ -31,7 +31,7 @@ Otta turns an EmDash site into a store. It is **one deployable**, and it ships a
    shipping, discounts, entitlements, reporting, and webhooks, plus storefront routes,
    content-sync hooks and an admin console (pricing & inventory, orders, coupons, tax,
    shipping, reports, settings). Commerce state lives in
-   the host's per-plugin document store (`ctx.storage`) via the `@urumi-ai/otta-store-emdash`
+   the host's per-plugin document store (`ctx.storage`) via the `@urumi.ai/otta-store-emdash`
    adapter — no separate service, no second database. Its only outbound egress is
    `ctx.http.fetch`, gated by `network:request` + `allowedHosts`. The CMS owns content; every commercial
    field lives in the plugin's store and is edited in the admin console
@@ -57,10 +57,10 @@ pnpm install
 
 # 1. A dev-only encryption key in sites/staging/.env (gitignored). Without it no
 #    payment key can be saved in Settings (ADR-0037). Re-running keeps the key you have.
-pnpm --filter @urumi-ai/otta-site-staging exec emdash secrets generate --write .env
+pnpm --filter @urumi.ai/otta-site-staging exec emdash secrets generate --write .env
 
 # 2. Storefront + admin.
-pnpm --filter @urumi-ai/otta-site-staging dev
+pnpm --filter @urumi.ai/otta-site-staging dev
 ```
 
 Then open the dev-only setup bypass, which claims the site and applies the full seed
@@ -97,21 +97,21 @@ To self-deploy this for free on Cloudflare Workers today, follow
 
 ## Install from npm
 
-The six packages will be published to npm under `@urumi-ai/otta-*`, ESM-only, at `0.1.0` (not on the
+The six packages will be published to npm under `@urumi.ai/otta-*`, ESM-only, at `0.1.0` (not on the
 registry yet; until then, work from the workspace). A site that
 runs on EmDash `^1.0.1` (tested on 1.0.1 and 1.3.0) installs what it registers:
 
 ```bash
-pnpm add @urumi-ai/otta-plugin @urumi-ai/otta-admin-react
+pnpm add @urumi.ai/otta-plugin @urumi.ai/otta-admin-react
 ```
 
-`@urumi-ai/otta-plugin` brings `@urumi-ai/otta-domain`, `@urumi-ai/otta-store-emdash`, `@urumi-ai/otta-payments-stripe`
-and `@urumi-ai/otta-admin-presentation` with it. The packages export no ready-made plugin descriptor: each
+`@urumi.ai/otta-plugin` brings `@urumi.ai/otta-domain`, `@urumi.ai/otta-store-emdash`, `@urumi.ai/otta-payments-stripe`
+and `@urumi.ai/otta-admin-presentation` with it. The packages export no ready-made plugin descriptor: each
 site writes its own. The reference site's are the worked example:
 [`otta-plugin-descriptor.ts`](./sites/staging/src/otta-plugin-descriptor.ts) and
 [`otta-console-descriptor.ts`](./sites/staging/src/otta-console-descriptor.ts). Your `otta`
 descriptor **must** declare `settingsSchema: { ...PAYMENT_SECRET_SETTINGS_SCHEMA }` (exported by
-`@urumi-ai/otta-plugin`) and the host must set `EMDASH_ENCRYPTION_KEY`; without the schema the Stripe
+`@urumi.ai/otta-plugin`) and the host must set `EMDASH_ENCRYPTION_KEY`; without the schema the Stripe
 keys are stored as plain text and the plugin cannot tell ([ADR-0037](./adr/0037-payment-secrets-are-encrypted-at-rest.md),
 [`DEPLOYMENT.md`](./DEPLOYMENT.md) §3). Each package has
 its own README under [`packages/`](./packages/). The workspace, not npm, is how you develop Otta
@@ -126,8 +126,8 @@ itself.
   content lives in the CMS's own tables, commerce lives in the host's per-plugin document
   store (`ctx.storage`), namespaced by plugin id and collection. They are not joined in
   SQL — the hybrid product model is joined in app code at render time.
-- **Ports and adapters.** `@urumi-ai/otta-domain` is pure (no IO); the stores that implement its
-  ports live in `@urumi-ai/otta-store-emdash`, which writes one document per aggregate to the
+- **Ports and adapters.** `@urumi.ai/otta-domain` is pure (no IO); the stores that implement its
+  ports live in `@urumi.ai/otta-store-emdash`, which writes one document per aggregate to the
   host's per-plugin document store (`ctx.storage`) by compare-and-set — D1 in dev and in
   production, with a dialect harness that runs the same adapters against SQLite and
   Postgres in CI. The plugin composes those stores in-process, and the domain's contract
@@ -144,12 +144,12 @@ itself.
 
 | Package | What it is |
 |---|---|
-| `@urumi-ai/otta-domain` | Pure ports, use-cases, branded money types, contract-test suites. No IO. |
-| `@urumi-ai/otta-store-emdash` | Store adapters over the host's per-plugin document store — one document per aggregate, compare-and-set writes. |
-| `@urumi-ai/otta-payments-stripe` | Stripe `PaymentGateway` adapter (async-webhook, raw-body HMAC). |
-| `@urumi-ai/otta-plugin` | The EmDash plugin: commerce composition, storefront routes, admin console, content-sync hooks. |
-| `@urumi-ai/otta-admin-presentation` | Pure admin presentation primitives (money, dates, short ids, status vocabulary) shared by both console surfaces. No IO. |
-| `@urumi-ai/otta-admin-react` | The React admin console on the `otta-console` native descriptor (ADR-0014) — the Orders page, plus the product editor's Pricing & stock cards (and the Download file card for a digital product) and the products list's Price / Stock columns. |
+| `@urumi.ai/otta-domain` | Pure ports, use-cases, branded money types, contract-test suites. No IO. |
+| `@urumi.ai/otta-store-emdash` | Store adapters over the host's per-plugin document store — one document per aggregate, compare-and-set writes. |
+| `@urumi.ai/otta-payments-stripe` | Stripe `PaymentGateway` adapter (async-webhook, raw-body HMAC). |
+| `@urumi.ai/otta-plugin` | The EmDash plugin: commerce composition, storefront routes, admin console, content-sync hooks. |
+| `@urumi.ai/otta-admin-presentation` | Pure admin presentation primitives (money, dates, short ids, status vocabulary) shared by both console surfaces. No IO. |
+| `@urumi.ai/otta-admin-react` | The React admin console on the `otta-console` native descriptor (ADR-0014) — the Orders page, plus the product editor's Pricing & stock cards (and the Download file card for a digital product) and the products list's Price / Stock columns. |
 | `sites/staging` | Staging storefront + admin — EmDash on Cloudflare Workers, plugin registered trusted. |
 | `examples/email-provider` | Template for an EmDash email-transport plugin (not published); see [`docs/email-providers.md`](./docs/email-providers.md). |
 
@@ -174,8 +174,8 @@ process, so it verifies the SQL is correct, not that it's race-safe under conten
 
 ## Status
 
-**v0.1.0 — in active development.** The `@urumi-ai/otta-*` packages
-are all at `0.1.0` and about to be published to npm (`pnpm add @urumi-ai/otta-plugin` once they are; see
+**v0.1.0 — in active development.** The `@urumi.ai/otta-*` packages
+are all at `0.1.0` and about to be published to npm (`pnpm add @urumi.ai/otta-plugin` once they are; see
 [Install from npm](#install-from-npm)); work on Otta itself from the workspace. Expect
 breaking changes before 1.0.
 

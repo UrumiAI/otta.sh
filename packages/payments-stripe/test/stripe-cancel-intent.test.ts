@@ -1,4 +1,4 @@
-import { idempotencyKey, orderId, type CancelIntentInput } from "@urumi-ai/otta-domain";
+import { idempotencyKey, orderId, type CancelIntentInput } from "@urumi.ai/otta-domain";
 import { describe, expect, test } from "vitest";
 import {
 	createStripeHttpTransport,

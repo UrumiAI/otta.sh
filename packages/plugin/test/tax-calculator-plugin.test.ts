@@ -7,8 +7,8 @@ import {
 	sku as brandSku,
 	type TaxCalculator,
 	type TaxRequest,
-} from "@urumi-ai/otta-domain";
-import { FakePaymentGateway } from "@urumi-ai/otta-domain/testing";
+} from "@urumi.ai/otta-domain";
+import { FakePaymentGateway } from "@urumi.ai/otta-domain/testing";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { InProcessCommerceClient } from "../src/commerce/in-process-commerce-client.js";
 import {

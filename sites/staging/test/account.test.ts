@@ -31,7 +31,7 @@ import {
 	LOGIN_LINK_MAX_ACTIVE,
 	LOGIN_LINK_TTL_MS,
 	SESSION_COOKIE_NAME,
-} from "@urumi-ai/otta-plugin";
+} from "@urumi.ai/otta-plugin";
 import type { APIContext } from "astro";
 import { describe, expect, test, vi } from "vitest";
 

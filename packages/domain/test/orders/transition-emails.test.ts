@@ -11,7 +11,7 @@ import {
 	transitionOrder,
 	type CreateOrderInput,
 	type OrderState,
-} from "@urumi-ai/otta-domain";
+} from "@urumi.ai/otta-domain";
 import {
 	EmailSendTimeoutError,
 	EmailTransportUnavailableError,
@@ -23,13 +23,13 @@ import {
 	TIMEOUT_BACKOFF_MAX_MS,
 	TRANSPORT_UNAVAILABLE_RETRY_MS,
 	UNTRIED_RETRY_MS,
-} from "@urumi-ai/otta-domain";
+} from "@urumi.ai/otta-domain";
 import {
 	CountingIdGen,
 	FakeEmailSender,
 	FixedClock,
 	InMemoryOrderStore,
-} from "@urumi-ai/otta-domain/testing";
+} from "@urumi.ai/otta-domain/testing";
 import { describe, expect, test } from "vitest";
 
 // Step 5.3: EmailSender port + FakeEmailSender + outbox-backed transition, all

@@ -57,7 +57,7 @@ import {
 	STRIPE_WEBHOOK_SETTLE_ROUTE,
 	WEBHOOK_EDGE_TOKEN_HEADER,
 	type StripeWebhookSettleResult,
-} from "@urumi-ai/otta-plugin";
+} from "@urumi.ai/otta-plugin";
 import type { APIRoute } from "astro";
 import { routeDispatcher } from "../../lib/cart-actions.js";
 import { BUSY_RETRY_AFTER_SECONDS, dispatchOttaRoute } from "../../lib/otta-api.js";

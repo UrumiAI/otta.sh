@@ -11,7 +11,7 @@
  * conditional kv pair, and a REJECTED read (the host's "cannot decrypt")
  * reaches every reader as a refusal.
  */
-import { signStripeWebhook } from "@urumi-ai/otta-payments-stripe";
+import { signStripeWebhook } from "@urumi.ai/otta-payments-stripe";
 import { afterEach, describe, expect, test } from "vitest";
 import { SWEEP_TASK_NAME } from "../src/cron/index.js";
 import { startStubHttpServer, type StubHttpServer } from "./helpers/stub-http-server.js";

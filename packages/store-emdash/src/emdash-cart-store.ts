@@ -77,7 +77,7 @@ import {
 	type ReservationLifecycle,
 	ReservationNotFoundError,
 	type UpsertLineInput,
-} from "@urumi-ai/otta-domain";
+} from "@urumi.ai/otta-domain";
 import {
 	CAS_RETRY,
 	type CasRetryOptions,

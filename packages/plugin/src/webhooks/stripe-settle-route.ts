@@ -49,9 +49,9 @@
  * nor the webhook secret is ever interpolated into one.
  */
 
-import { settleOrder, type SettleDeps, type SettleResult } from "@urumi-ai/otta-domain";
-import { StripePaymentGateway } from "@urumi-ai/otta-payments-stripe";
-import { isRetryableStorageBusy } from "@urumi-ai/otta-store-emdash";
+import { settleOrder, type SettleDeps, type SettleResult } from "@urumi.ai/otta-domain";
+import { StripePaymentGateway } from "@urumi.ai/otta-payments-stripe";
+import { isRetryableStorageBusy } from "@urumi.ai/otta-store-emdash";
 import { createInProcessCommerceStores } from "../commerce/in-process-commerce-stores.js";
 import { edgeTokenGate } from "../edge-token.js";
 import {

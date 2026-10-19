@@ -32,7 +32,7 @@ import {
 	checkoutIdempotencyKey,
 	STOREFRONT_CHECKOUT_PLACE_ROUTE,
 	type CheckoutPlaceRouteResult,
-} from "@urumi-ai/otta-plugin";
+} from "@urumi.ai/otta-plugin";
 import type { APIContext, APIRoute } from "astro";
 import { currentSessionToken } from "../../lib/account.js";
 import {
@@ -81,7 +81,7 @@ import {
 	COUNTRY_CODES,
 	isCodeShapedRegion,
 	ORDER_ADDRESS_MAX_LENGTHS,
-} from "@urumi-ai/otta-plugin";
+} from "@urumi.ai/otta-plugin";
 import { hasRegionList, regionOutsideCountry, regionToDropSilently } from "../../lib/regions.js";
 
 /** The site's own token for a form-level email reject — never reaches the

@@ -13,7 +13,7 @@
  * EVERY RESPONSE IS SERVED HERE, successes included, so a failure is a
  * transition this file chooses rather than an environment it has to arrange.
  */
-import { ORDERS_PAGE_FAILED_TITLE } from "@urumi-ai/otta-admin-presentation";
+import { ORDERS_PAGE_FAILED_TITLE } from "@urumi.ai/otta-admin-presentation";
 import {
 	REFRESH_BUSY_TITLE,
 	REFRESH_FAILED_TITLE,

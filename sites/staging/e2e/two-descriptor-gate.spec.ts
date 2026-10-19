@@ -38,7 +38,7 @@ import {
 	SETTINGS_PAGE,
 	SHIPPING_PAGE,
 	TAX_PAGE,
-} from "@urumi-ai/otta-plugin";
+} from "@urumi.ai/otta-plugin";
 import type { ConsoleScreen } from "./harness.js";
 import {
 	ADMIN_BASE_PATH,
@@ -83,7 +83,7 @@ const HOST_SCREEN = hostScreen();
 
 /**
  * The Block Kit screens that must survive the console's presence — taken from
- * `@urumi-ai/otta-plugin`'s own exports, which are the same constants
+ * `@urumi.ai/otta-plugin`'s own exports, which are the same constants
  * `ottaPluginDescriptor` registers. `site-config.test.ts` pins the descriptor's
  * `adminPages` to exactly this list, so the two cannot drift.
  */

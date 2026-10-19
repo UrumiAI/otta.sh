@@ -17,7 +17,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { describe, expect, test, vi } from "vitest";
 import type { APIContext } from "astro";
-import { STOREFRONT_CHECKOUT_PLACE_ROUTE } from "@urumi-ai/otta-plugin";
+import { STOREFRONT_CHECKOUT_PLACE_ROUTE } from "@urumi.ai/otta-plugin";
 import { readCheckoutStash } from "../src/lib/checkout-cookie.js";
 import { lockedOtherEmailNotice } from "../src/lib/checkout-review.js";
 import { cartErrorMessage } from "../src/lib/error-messages.js";

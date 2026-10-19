@@ -8,7 +8,7 @@
  *
  * A FILE OF ITS OWN because that line is logged once per isolate — module state.
  */
-import { EmailTransportUnavailableError, type EmailSender } from "@urumi-ai/otta-domain";
+import { EmailTransportUnavailableError, type EmailSender } from "@urumi.ai/otta-domain";
 import { afterAll, beforeAll, describe, expect, test, vi } from "vitest";
 import {
 	makeInProcessCommerce,

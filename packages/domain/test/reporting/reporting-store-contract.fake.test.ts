@@ -2,7 +2,7 @@ import {
 	InMemoryReportingStore,
 	reportingStoreContract,
 	type ReportingStoreHarness,
-} from "@urumi-ai/otta-domain/testing";
+} from "@urumi.ai/otta-domain/testing";
 
 // Proves the contract suite is real against the IO-free fake before any DB
 // (mirrors the Phase-0/1 fake-first convention).

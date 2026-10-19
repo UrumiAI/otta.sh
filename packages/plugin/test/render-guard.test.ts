@@ -8,7 +8,7 @@
  * `Retry-After`) — never flattened into `RENDER_FAILED`'s "something went wrong".
  * Every other throw keeps collapsing to the message-free `RENDER_FAILED`.
  */
-import { StorageContentionError } from "@urumi-ai/otta-store-emdash";
+import { StorageContentionError } from "@urumi.ai/otta-store-emdash";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { renderGuard, type RenderGuardFailure } from "../src/storefront/pdp-route.js";
 

@@ -22,7 +22,7 @@ import {
 	idempotencyKey,
 	productId as toProductId,
 	sku as toSku,
-} from "@urumi-ai/otta-domain";
+} from "@urumi.ai/otta-domain";
 import { afterAll, afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { IDEMPOTENCY_KEY_MAX } from "../src/commerce/commerce-input.js";
 import {

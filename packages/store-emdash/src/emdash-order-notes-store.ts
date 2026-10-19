@@ -26,7 +26,7 @@ import type {
 	OrderId,
 	OrderNote,
 	OrderNotesStore,
-} from "@urumi-ai/otta-domain";
+} from "@urumi.ai/otta-domain";
 import {
 	CAS_RETRY,
 	casDone,

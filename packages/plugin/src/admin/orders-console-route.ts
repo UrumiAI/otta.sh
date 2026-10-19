@@ -47,7 +47,7 @@
  * G5 APPLIES UNCHANGED: every response here is HTTP 200 with an outcome in the
  * body. A refusal is a value.
  */
-import { toWellFormedText } from "@urumi-ai/otta-domain";
+import { toWellFormedText } from "@urumi.ai/otta-domain";
 import {
 	type AdminOrdersSurface,
 	type CustomerContextWire,
@@ -87,9 +87,9 @@ import {
 	readConsolePayload,
 	type ConsoleFailure,
 } from "./console-transport.js";
-import { isRetryableStorageBusy } from "@urumi-ai/otta-store-emdash";
+import { isRetryableStorageBusy } from "@urumi.ai/otta-store-emdash";
 import { asRecord, readString } from "./scaffold/index.js";
-import { ORDER_STATES } from "@urumi-ai/otta-admin-presentation";
+import { ORDER_STATES } from "@urumi.ai/otta-admin-presentation";
 import type { PluginContext, RouteHandler } from "../types.js";
 
 /** INC-21 moved the two interaction types and the refusal shapes into

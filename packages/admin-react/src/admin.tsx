@@ -26,9 +26,9 @@
  * background colours.
  *
  * MONEY. G1 says money is integer minor units rendered through `formatMoney`,
- * and this package cannot import `@urumi-ai/otta-plugin` (ADR-0014 Decision 3 / the
+ * and this package cannot import `@urumi.ai/otta-plugin` (ADR-0014 Decision 3 / the
  * depcruise quarantine). The function is SHARED rather than reimplemented: it
- * lives in `@urumi-ai/otta-admin-presentation`, a dependency-free package both admin
+ * lives in `@urumi.ai/otta-admin-presentation`, a dependency-free package both admin
  * surfaces import. There is still no second money renderer anywhere in this
  * repo.
  *

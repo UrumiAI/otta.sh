@@ -44,7 +44,7 @@
  *     migrating from does not have, because it holds no copy of the list.
  *
  * WHEN THE BLOCK KIT SCREEN IS RETIRED, this module goes back to
- * `@urumi-ai/otta-admin-react` and stops being shared.
+ * `@urumi.ai/otta-admin-react` and stops being shared.
  */
 import { valueLabel } from "./copy.js";
 import { DEFAULT_STORE_CURRENCY } from "./currency-choices.js";

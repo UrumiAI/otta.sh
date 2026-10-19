@@ -9,12 +9,12 @@
   stands, Decision 6 included.
 - Amends: **ADR-0006 Decision 2 only** — the trusted-only-API fence, insofar as it forbids
   React admin components. ADR-0006 **Decision 1 is reaffirmed unchanged**: the workerd
-  sandbox suite remains the contract gate for `@urumi-ai/otta-plugin`.
+  sandbox suite remains the contract gate for `@urumi.ai/otta-plugin`.
 - Amended: 2026-09-13 — **Decision 5 only** (the stock, pinned-exact dependency floor), and only
   for the duration of the vendored host build carrying the conditional-write storage primitives,
   by [ADR-0018](./0018-plugin-owns-commerce-truth-in-process.md). Decision 5's intent — that a
   host upgrade cannot quietly break the plugin — is unchanged, and Decision 1's zero-EmDash-
-  dependency property for `@urumi-ai/otta-plugin` is untouched.
+  dependency property for `@urumi.ai/otta-plugin` is untouched.
 - Amended: 2026-09-30 — **Decision 6 only**, by adding one screen: the storefront **Themes** screen
   is a React page on `otta-console`. See "Amendment 2026-09-30" at the end. Tax, Shipping and
   Settings still never migrate; the Settings "Store theme" radio stays as the Block Kit fallback.
@@ -41,7 +41,7 @@
 
 ADR-0006 Decision 2 reads, verbatim:
 
-> **Trusted-only APIs remain forbidden** in `@urumi-ai/otta-plugin`: no React admin components, no
+> **Trusted-only APIs remain forbidden** in `@urumi.ai/otta-plugin`: no React admin components, no
 > `page:fragments`, no `options`-configured native format, no direct DB/storage access —
 > nothing that could not also run sandboxed. ADR-0003's route-based storefront shape stays.
 
@@ -137,14 +137,14 @@ path here, not the compromise.
 pages alongside the existing `otta` Block Kit descriptor in the same `plugins: []` array.**
 Concretely, and exhaustively:
 
-1. **`@urumi-ai/otta-plugin` is unchanged, and Decision 2 continues to bind it in full.** It stays
+1. **`@urumi.ai/otta-plugin` is unchanged, and Decision 2 continues to bind it in full.** It stays
    `format: "standard"`, sandbox-clean, with **zero EmDash dependency** — not in
    `dependencies`, not in `devDependencies` — and `packages/plugin/src/types.ts` stays a
    hand-written mirror of EmDash's plugin and Block Kit types. No `react`, no `emdash`, no
    `@emdash-cms/*` import enters that package under any circumstance. Its best structural
    property (a pinned-exact upgrade cannot break it by construction) is not being spent.
-2. **The React code lives in a NEW package** (`@urumi-ai/otta-admin-react`, per the migration plan),
-   never in `@urumi-ai/otta-plugin` and never in `sites/staging` application code.
+2. **The React code lives in a NEW package** (`@urumi.ai/otta-admin-react`, per the migration plan),
+   never in `@urumi.ai/otta-plugin` and never in `sites/staging` application code.
 3. **`otta-console` declares zero capabilities and zero `allowedHosts`**, owns no hooks and no
    routes, and reaches the commerce service **only** by calling the **existing authenticated
    `otta` admin routes** from the browser. It gets no new data path.
@@ -172,7 +172,7 @@ Stated separately so it cannot be read as collateral to the above:
 
 - The **18 `packages/plugin/test/*.sandbox.test.ts` suites remain the contract gate.** None is
   deleted, skipped, weakened or made conditional by this amendment or by any migration
-  increment under it. A change to `@urumi-ai/otta-plugin` that only works trusted is still broken and
+  increment under it. A change to `@urumi.ai/otta-plugin` that only works trusted is still broken and
   still must not merge.
 - The sandbox suites are **browser-blind** — they cannot cover React, which is why Playwright is
   added as the gate **for React screens only**. That is **additive**. It replaces nothing.
@@ -237,7 +237,7 @@ nothing about `adminEntry` or `componentsEntry` — the boundary above is pinned
   Smaller than it looks: Otta already requires a hand-edited astro config, and
   marketplace-installed plugins cannot surface `fieldWidgets`/`portableTextBlocks` anyway.
 - **The 18 sandbox suites cannot cover React**, and ADR-0006 calls those suites the only thing
-  keeping "runs trusted" honest. That statement remains true **of `@urumi-ai/otta-plugin`**, whose
+  keeping "runs trusted" honest. That statement remains true **of `@urumi.ai/otta-plugin`**, whose
   coverage does not shrink. The React surface is simply outside their reach, so it carries its
   own gate. Two gates now, of different kinds — a real increase in what has to stay green.
 - **Sunk Block Kit investment on every migrated screen**: tests, spec text, and a scaffold whose
@@ -253,7 +253,7 @@ nothing about `adminEntry` or `componentsEntry` — the boundary above is pinned
 
 ### What would reopen this decision
 
-- Any `emdash` / `@emdash-cms/*` / `react` dependency appearing in `@urumi-ai/otta-plugin`.
+- Any `emdash` / `@emdash-cms/*` / `react` dependency appearing in `@urumi.ai/otta-plugin`.
 - Any of the 18 sandbox suites being deleted, skipped or weakened (this already reopens
   ADR-0006 on its own terms).
 - `otta-console` acquiring a capability, an `allowedHost`, a route, or a hook.

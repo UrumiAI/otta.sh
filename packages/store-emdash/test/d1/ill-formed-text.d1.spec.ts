@@ -5,7 +5,7 @@
  * legacy id built from it (an `inventory` row keyed by a product's raw sku). Only
  * Postgres repairs on write.
  */
-import { findIllFormedText } from "@urumi-ai/otta-domain";
+import { findIllFormedText } from "@urumi.ai/otta-domain";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { isIllFormedIdError } from "../../src/well-formed-storage.js";
 import { useD1Storage, type StorageLayout } from "./describe-d1.js";

@@ -11,7 +11,7 @@ import {
 	verifyLogin,
 	type CreateOrderInput,
 	type VerifyLoginDeps,
-} from "@urumi-ai/otta-domain";
+} from "@urumi.ai/otta-domain";
 import {
 	CountingIdGen,
 	FixedClock,
@@ -19,7 +19,7 @@ import {
 	InMemoryCustomerStore,
 	InMemoryOrderStore,
 	InMemorySessionStore,
-} from "@urumi-ai/otta-domain/testing";
+} from "@urumi.ai/otta-domain/testing";
 import { beforeEach, describe, expect, test } from "vitest";
 
 // Step 5.2 (use-case layer): the requestLogin/verifyLogin orchestration over the

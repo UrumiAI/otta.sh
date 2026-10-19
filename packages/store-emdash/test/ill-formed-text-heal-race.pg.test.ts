@@ -23,8 +23,8 @@ import {
 	productId,
 	reservationId,
 	sku,
-} from "@urumi-ai/otta-domain";
-import type { CreateOrderInput } from "@urumi-ai/otta-domain";
+} from "@urumi.ai/otta-domain";
+import type { CreateOrderInput } from "@urumi.ai/otta-domain";
 import { afterAll, beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
 import { collectionOf } from "../src/index.js";
 import { resetHealStateForTests } from "../src/well-formed-storage.js";

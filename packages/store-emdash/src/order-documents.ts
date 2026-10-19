@@ -93,7 +93,7 @@ import type {
 	ReservationId,
 	SignedCents,
 	Sku,
-} from "@urumi-ai/otta-domain";
+} from "@urumi.ai/otta-domain";
 
 /** Collection name: the per-order aggregate. Id is the order id. */
 export const ORDERS_COLLECTION = "orders";

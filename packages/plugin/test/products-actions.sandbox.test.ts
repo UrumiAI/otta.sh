@@ -4,7 +4,7 @@
  *
  * WHY A SANDBOX SUITE AND NOT A UNIT TEST. ADR-0006 Decision 1, reaffirmed by
  * ADR-0014 and again by ADR-0015: the workerd suites are the contract gate for
- * `@urumi-ai/otta-plugin`, and "a change that only works trusted is still broken". This
+ * `@urumi.ai/otta-plugin`, and "a change that only works trusted is still broken". This
  * suite therefore drives the writes the way the React console does — one POST to
  * the plugin's single `admin` route, `type: "otta_console_act"`, an action id and
  * a FLAT payload — inside the isolate the plugin is specified to run in.
@@ -97,14 +97,14 @@ import {
 	productId as toProductId,
 	sku as toSku,
 	type ProductCommerce,
-} from "@urumi-ai/otta-domain";
+} from "@urumi.ai/otta-domain";
 import {
 	EmdashInventoryStore,
 	EmdashProductCommerceStore,
 	systemClock,
 	uuidIdGen,
 	type StorageAccess,
-} from "@urumi-ai/otta-store-emdash";
+} from "@urumi.ai/otta-store-emdash";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import {
 	BACKORDERS_CONTEXT,
@@ -113,7 +113,7 @@ import {
 	REMOVE_STOCK_BANNER,
 	REMOVE_STOCK_CONTEXT,
 	STOCK_ON_HAND_CONTEXT,
-} from "@urumi-ai/otta-admin-presentation";
+} from "@urumi.ai/otta-admin-presentation";
 import {
 	ATTACH_DOWNLOAD_ACTION_ID,
 	deriveEditIdempotencyKey,
@@ -1184,7 +1184,7 @@ describe("the Pricing & inventory write path (workerd sandbox)", () => {
 	test("X-20: no operator-facing string on this screen says `oversell`", async () => {
 		// The retired suite asserted this over a RENDERED detail response, via the
 		// block contract's banned-slogan check. The screen is gone and its copy now
-		// lives in `@urumi-ai/otta-admin-presentation`, shared with the React tier — so
+		// lives in `@urumi.ai/otta-admin-presentation`, shared with the React tier — so
 		// the same claim is made about the strings themselves, plus every notice a
 		// write can produce. Out-of-stock policy is deny-only and the copy states
 		// the MECHANISM rather than sloganeering about it.

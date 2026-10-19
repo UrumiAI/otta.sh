@@ -1,5 +1,5 @@
 {
-	"name": "@urumi-ai/otta-example-email-provider",
+	"name": "@urumi.ai/otta-example-email-provider",
 	"version": "0.0.0",
 	"private": true,
 	"description": "Template, not published: an EmDash email-transport plugin that POSTs to an HTTP JSON email API. See docs/email-providers.md.",
@@ -10,7 +10,7 @@
 		"./plugin": "./src/plugin.ts"
 	},
 	"devDependencies": {
-		"@urumi-ai/otta-plugin": "workspace:*",
+		"@urumi.ai/otta-plugin": "workspace:*",
 		"emdash": "1.0.1",
 		"typescript": "catalog:",
 		"vitest": "catalog:"

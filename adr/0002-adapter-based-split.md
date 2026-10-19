@@ -49,7 +49,7 @@ Build Otta as a **host-agnostic commerce domain behind two ports**, so the trans
 plugin/service split becomes a **wiring choice per deployment, not a structural
 commitment.**
 
-1. **Domain package (`@urumi-ai/otta-domain`)** — pure TypeScript commerce logic (inventory
+1. **Domain package (`@urumi.ai/otta-domain`)** — pure TypeScript commerce logic (inventory
    reserve/commit/release, cart, checkout, orders, pricing, entitlements). **Zero IO
    dependencies:** no `pg`, no `ctx`, no HTTP framework. Depends only on port interfaces.
    This is the artifact that runs in the service today and inside the plugin tomorrow,
@@ -70,7 +70,7 @@ commitment.**
 3. **Transport seam** — storefront routes and the Block Kit widget depend on a
    `CommerceClient` interface, **never on `fetch`**. Adapters:
    - `HttpCommerceClient` — today (calls the service over `ctx.http` + `allowedHosts`).
-   - `InProcessCommerceClient` — future (imports `@urumi-ai/otta-domain` directly).
+   - `InProcessCommerceClient` — future (imports `@urumi.ai/otta-domain` directly).
 
    The service's REST API is a **1:1 serialization of the port** and grows no semantics the
    port lacks, so the in-process swap is "call the method instead of POSTing to it."

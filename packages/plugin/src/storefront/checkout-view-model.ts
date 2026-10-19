@@ -6,7 +6,7 @@
  * ── Honest zeros, the rule this module exists to enforce ──────────────────
  * `computeQuote` substitutes a synthetic ZERO-shipping method when no
  * `methodId` is passed, and skips the tax lookup entirely when no `zoneId` is
- * passed (`@urumi-ai/otta-domain`'s pricing/quote.ts). So a store with nothing
+ * passed (`@urumi.ai/otta-domain`'s pricing/quote.ts). So a store with nothing
  * configured — which is every store today — gets `shippingCents: 0` and
  * `taxCents: 0` on the wire, indistinguishable at the number from a genuine
  * free-shipping, zero-tax order.
@@ -21,7 +21,7 @@
  * sanctioned money→string boundary) with branded `cents()`/`currency()` inputs,
  * so a float or a bad currency code throws at the parse rather than rendering.
  */
-import { allocateCents, cents as domainCents } from "@urumi-ai/otta-domain";
+import { allocateCents, cents as domainCents } from "@urumi.ai/otta-domain";
 import { formatMoney } from "../presentation/format-money.js";
 import { cents, currency } from "../presentation/money.js";
 import type { Currency } from "../presentation/money.js";

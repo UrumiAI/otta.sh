@@ -1,6 +1,6 @@
 /**
  * Issue #447 (from #409): `trustedHost` reaches every Stripe call the plugin
- * makes. `@urumi-ai/otta-payments-stripe` puts an `AbortSignal` in `init` only when
+ * makes. `@urumi.ai/otta-payments-stripe` puts an `AbortSignal` in `init` only when
  * told the host is in-process (`trustedHost: true`), so a timed-out request's
  * socket is released; under EmDash's sandbox runner a signal must never be
  * sent. The plugin cannot tell the two apart at runtime (staging's trusted mode
@@ -13,7 +13,7 @@ import {
 	currency as toCurrency,
 	idempotencyKey as toIdempotencyKey,
 	orderId as toOrderId,
-} from "@urumi-ai/otta-domain";
+} from "@urumi.ai/otta-domain";
 import { beforeEach, describe, expect, test, vi } from "vitest";
 import { STRIPE_SECRET_KEY_KEY, STRIPE_WEBHOOK_SECRET_KEY } from "../src/payment-secrets.js";
 import type { PluginContext } from "../src/types.js";

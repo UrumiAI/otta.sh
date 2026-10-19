@@ -4,7 +4,7 @@ import {
 	FixedClock,
 	InMemoryOrderStore,
 	orderFulfillmentContract,
-} from "@urumi-ai/otta-domain/testing";
+} from "@urumi.ai/otta-domain/testing";
 
 // The order-fulfillment spec (admin-UX Increment 1) run against the in-memory
 // fake first. The pg/sqlite dialect runs — incl. the concurrent record + the

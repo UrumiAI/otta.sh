@@ -178,7 +178,7 @@ import {
 	type ResolveReconciliationInput,
 	type ResolveReconciliationStoreResult,
 	roundingEntry,
-} from "@urumi-ai/otta-domain";
+} from "@urumi.ai/otta-domain";
 import {
 	CAS_RETRY,
 	type CasRetryOptions,

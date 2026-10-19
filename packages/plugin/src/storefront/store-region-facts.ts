@@ -27,7 +27,7 @@
  * A failed read only costs a preselect, a blame or a `required` attribute —
  * never the review — so every fact degrades to "nothing known".
  */
-import { parseZoneRegions, type ShippingZone } from "@urumi-ai/otta-domain";
+import { parseZoneRegions, type ShippingZone } from "@urumi.ai/otta-domain";
 import { createInProcessCommerceStores } from "../commerce/in-process-commerce-stores.js";
 import type { PluginContext } from "../types.js";
 

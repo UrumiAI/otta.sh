@@ -167,7 +167,7 @@ operator's domain, and a registered webhook URL is the kind of thing that must n
 ### 4. A future service is re-derived, never resurrected
 
 If a service is ever needed — a non-EmDash storefront, a genuinely independent scaling need,
-a customer who requires the isolation §2 gave up — it is **built new from `@urumi-ai/otta-domain`,
+a customer who requires the isolation §2 gave up — it is **built new from `@urumi.ai/otta-domain`,
 whose ports are unchanged by this record.** It is not restored from deleted code, and no
 service is kept on standby, behind a flag, or in a branch.
 

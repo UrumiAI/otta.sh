@@ -9,7 +9,7 @@
  * was wrong, so it says so: `?error=QTY_TOO_LARGE`. The field itself carries the
  * same `max`, so a browser stops most of these before they are ever sent.
  */
-import { CART_LINE_MAX_QTY } from "@urumi-ai/otta-plugin";
+import { CART_LINE_MAX_QTY } from "@urumi.ai/otta-plugin";
 import type { APIContext, APIRoute } from "astro";
 import { describe, expect, test, vi } from "vitest";
 

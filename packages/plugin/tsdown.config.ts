@@ -2,11 +2,11 @@ import { defineConfig } from "tsdown";
 
 export default defineConfig({
 	// `src/plugin.ts` is the standard-format descriptor entrypoint
-	// (`@urumi-ai/otta-plugin/plugin` — default-exports the {hooks, routes} object
+	// (`@urumi.ai/otta-plugin/plugin` — default-exports the {hooks, routes} object
 	// for em-dash's `plugins: []` / `adaptSandboxEntry`).
 	// `src/trusted.ts` is the same object with `trustedHost` on, for an
-	// in-process registration only (`@urumi-ai/otta-plugin/trusted`, issue #447).
-	// `src/subdivisions.ts` (`@urumi-ai/otta-plugin/subdivisions`) carries the English
+	// in-process registration only (`@urumi.ai/otta-plugin/trusted`, issue #447).
+	// `src/subdivisions.ts` (`@urumi.ai/otta-plugin/subdivisions`) carries the English
 	// subdivision names for a storefront's region pick list. Its own entry, so the
 	// names are emitted beside it and never into the chunk the sandbox entry loads.
 	entry: [
@@ -22,8 +22,8 @@ export default defineConfig({
 	 * `build: true` — declaration emit goes through the TypeScript PROJECT, not
 	 * through a per-file compile.
 	 *
-	 * WHY IT IS REQUIRED NOW. `src/` imports `@urumi-ai/otta-store-emdash` and
-	 * `@urumi-ai/otta-domain` for their VALUES (the in-process commerce client
+	 * WHY IT IS REQUIRED NOW. `src/` imports `@urumi.ai/otta-store-emdash` and
+	 * `@urumi.ai/otta-domain` for their VALUES (the in-process commerce client
 	 * constructs adapters and use-cases), and both are workspace packages whose
 	 * `exports` point at TypeScript SOURCE. A per-file declaration compile tries
 	 * to load those sources as if they belonged to this package and fails, because
@@ -38,23 +38,23 @@ export default defineConfig({
 	/**
 	 * BUNDLE the three commerce workspace packages into the emitted plugin rather
 	 * than leaving them as bare specifiers. The in-process commerce client
-	 * (work order 02, Phase B/C) constructs `@urumi-ai/otta-domain` use-cases over
-	 * `@urumi-ai/otta-store-emdash` adapters, and the plugin runs inside workerd —
+	 * (work order 02, Phase B/C) constructs `@urumi.ai/otta-domain` use-cases over
+	 * `@urumi.ai/otta-store-emdash` adapters, and the plugin runs inside workerd —
 	 * which has no node resolution, so a surviving bare specifier fails at
 	 * module instantiation inside the sandbox rather than anywhere readable.
 	 * `test/bundle-imports.test.ts` asserts on the emitted output for exactly
-	 * that reason. (`@urumi-ai/otta-admin-presentation` is deliberately NOT here: it
+	 * that reason. (`@urumi.ai/otta-admin-presentation` is deliberately NOT here: it
 	 * is a real `dependencies` entry, IO-free, and shared with
-	 * `@urumi-ai/otta-admin-react`.) `@urumi-ai/otta-payments-stripe` joined them at INC-C1b:
+	 * `@urumi.ai/otta-admin-react`.) `@urumi.ai/otta-payments-stripe` joined them at INC-C1b:
 	 * the `webhooks/stripe/settle` route verifies the webhook HMAC INSIDE the
 	 * isolate, so the adapter has to be in the bundle for the same reason the
 	 * other two are.
 	 */
 	noExternal: [
-		"@urumi-ai/otta-domain",
+		"@urumi.ai/otta-domain",
 		// Its own subpath: matched as an exact id, so it is listed too.
-		"@urumi-ai/otta-domain/subdivision-names",
-		"@urumi-ai/otta-payments-stripe",
-		"@urumi-ai/otta-store-emdash",
+		"@urumi.ai/otta-domain/subdivision-names",
+		"@urumi.ai/otta-payments-stripe",
+		"@urumi.ai/otta-store-emdash",
 	],
 });

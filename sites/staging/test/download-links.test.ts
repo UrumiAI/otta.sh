@@ -16,7 +16,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, test, vi } from "vitest";
-import { ENTITLEMENT_DOWNLOAD_ROUTE, type EntitlementDownloadResult } from "@urumi-ai/otta-plugin";
+import { ENTITLEMENT_DOWNLOAD_ROUTE, type EntitlementDownloadResult } from "@urumi.ai/otta-plugin";
 import { downloadHref } from "../src/lib/download-delivery.js";
 import { downloadLinks, MAX_DOWNLOAD_LINKS } from "../src/lib/download-links.js";
 import { splitAstro } from "./astro-source.js";

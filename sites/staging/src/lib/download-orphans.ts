@@ -45,7 +45,7 @@
  * product read stops the pass: the store is under pressure, and the next hour
  * tries again.
  */
-import { isDownloadAssetKeyFor } from "@urumi-ai/otta-plugin";
+import { isDownloadAssetKeyFor } from "@urumi.ai/otta-plugin";
 import type { ProductLookup } from "./download-upload.js";
 
 const DAY_MS = 24 * 60 * 60 * 1000;

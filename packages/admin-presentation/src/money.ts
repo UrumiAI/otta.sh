@@ -1,9 +1,9 @@
 /**
  * The admin surfaces' OWN branded money types — a deliberate, documented
- * mirror of `@urumi-ai/otta-domain`'s `money/cents.ts` (same brands, same
+ * mirror of `@urumi.ai/otta-domain`'s `money/cents.ts` (same brands, same
  * constructors, same float-literal rejection), NOT an import of it.
  *
- * Extracted from `@urumi-ai/otta-plugin` by INC-20 together with `formatMoney`, whose
+ * Extracted from `@urumi.ai/otta-plugin` by INC-20 together with `formatMoney`, whose
  * arguments these are: the React console renders money and cannot import the
  * plugin, and a renderer shared without its brands would take a raw `number`
  * again — the exact G1 violation the brands exist to make a compile error.
@@ -21,7 +21,7 @@
  * rule that the plugin reaches commerce truth ONLY over HTTP (`ctx.http`) and
  * never by linking DOMAIN code, the plugin still links no domain — the same
  * standalone discipline as `types.ts`'s mirror of the em-dash plugin surface,
- * and `plugin-is-sandbox-clean` still forbids `@urumi-ai/otta-domain` by name. The
+ * and `plugin-is-sandbox-clean` still forbids `@urumi.ai/otta-domain` by name. The
  * two `Cents` types
  * are intentionally NOT cross-assignable — a value crosses the wire as an
  * integer and is re-validated/re-branded at the plugin edge

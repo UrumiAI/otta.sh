@@ -23,7 +23,7 @@ export interface OrderNotesStoreContractOptions {
  *
  * The concurrent-replay race that once-only guard needs is adapter-local and
  * Postgres-required (a fake or SQLite serializes writes and cannot race), so it
- * lives with the adapter rather than in this shared spec: `@urumi-ai/otta-store-emdash`'s
+ * lives with the adapter rather than in this shared spec: `@urumi.ai/otta-store-emdash`'s
  * `test/misc-contract.dialects.test.ts` carries "concurrent appends with one
  * idempotency_key insert exactly once (no duplicates)" as a `runIf(ctx.canRace)`
  * case in the same `describeEachDialect` block that runs this contract. It replaces

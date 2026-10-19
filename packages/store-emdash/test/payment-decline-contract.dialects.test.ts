@@ -5,7 +5,7 @@
  * order nobody pays is released by the expiry sweep exactly once. D1 runs the same
  * suite from `d1/payment-decline-contract.d1.spec.ts`.
  */
-import { paymentDeclineContract } from "@urumi-ai/otta-domain/testing";
+import { paymentDeclineContract } from "@urumi.ai/otta-domain/testing";
 import { PAYMENT_DECLINE_LAYOUT } from "./coupon-collections.js";
 import { describeEachDialect } from "./describe-each-dialect.js";
 import { makePaymentDeclineHarness } from "./payment-decline-harness.js";

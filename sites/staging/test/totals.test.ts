@@ -14,7 +14,7 @@ import {
 	NOT_APPLICABLE_LABEL,
 	NOT_CALCULATED_LABEL,
 	type CheckoutAmountView,
-} from "@urumi-ai/otta-plugin";
+} from "@urumi.ai/otta-plugin";
 import { describe, expect, test } from "vitest";
 import { PRICED_AT_CHECKOUT_LABEL, UNAVAILABLE_LABEL } from "../src/lib/cart-view.js";
 import {

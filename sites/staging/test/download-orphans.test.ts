@@ -12,7 +12,7 @@
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { mintDownloadAssetKey, PRODUCT_NOT_FOUND_TITLE } from "@urumi-ai/otta-plugin";
+import { mintDownloadAssetKey, PRODUCT_NOT_FOUND_TITLE } from "@urumi.ai/otta-plugin";
 import { getPlatformProxy } from "wrangler";
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "vitest";
 import { attachDownloadRefusal } from "../src/lib/download-attach-guard.js";

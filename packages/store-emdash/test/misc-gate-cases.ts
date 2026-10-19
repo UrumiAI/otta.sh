@@ -7,7 +7,7 @@
  * the negative half (the same call over a layout with the indexes stripped), which is
  * a statement about the host's filter algebra and therefore identical everywhere.
  */
-import { idempotencyKey, orderId, productId, sku } from "@urumi-ai/otta-domain";
+import { idempotencyKey, orderId, productId, sku } from "@urumi.ai/otta-domain";
 import { describe, expect, test } from "vitest";
 import type { MiscHarness } from "./misc-harness.js";
 

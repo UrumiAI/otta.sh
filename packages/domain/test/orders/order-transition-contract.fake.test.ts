@@ -4,7 +4,7 @@ import {
 	FixedClock,
 	InMemoryOrderStore,
 	orderTransitionContract,
-} from "@urumi-ai/otta-domain/testing";
+} from "@urumi.ai/otta-domain/testing";
 
 // Step 5.4: lift the order state-machine + exactly-once-email spec into the
 // shared contract suite, run against the in-memory fake first. (The pg/sqlite

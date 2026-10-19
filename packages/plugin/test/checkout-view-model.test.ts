@@ -15,7 +15,7 @@
  *     deterministic — a fresh key per render would mint a second order that
  *     the `CART_CHECKED_OUT` fence then rejects, stranding the buyer.
  */
-import type { OrderState } from "@urumi-ai/otta-domain";
+import type { OrderState } from "@urumi.ai/otta-domain";
 import { describe, expect, test } from "vitest";
 import type { CartPricingWire } from "../src/storefront/cart-pricing.js";
 import {

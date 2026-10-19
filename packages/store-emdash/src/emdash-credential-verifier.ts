@@ -49,7 +49,7 @@ import {
 	type IssueChallengeResult,
 	type PruneChallengesOptions,
 	type VerifyChallengeResult,
-} from "@urumi-ai/otta-domain";
+} from "@urumi.ai/otta-domain";
 import {
 	CAS_RETRY,
 	casDone,

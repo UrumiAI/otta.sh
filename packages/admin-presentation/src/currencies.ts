@@ -1,5 +1,5 @@
 /**
- * The admin surfaces' COPY of `@urumi-ai/otta-domain`'s currency table
+ * The admin surfaces' COPY of `@urumi.ai/otta-domain`'s currency table
  * (`packages/domain/src/money/currencies.ts`) — the canonical file, whose header
  * says how to add a currency. Same rows, same helpers, NOT an import of it, for
  * the reason `./money.ts`'s header gives: this package imports nothing
@@ -153,7 +153,7 @@ export function inputMinorUnitDigits(code: string): number {
 /**
  * The table's payment increment for `code` (its `paymentIncrement`, in minor
  * units), or `undefined` when a payment in it may be any minor-unit amount.
- * Mirrors `@urumi-ai/otta-domain`'s `currencyPaymentIncrement` (pinned equal by
+ * Mirrors `@urumi.ai/otta-domain`'s `currencyPaymentIncrement` (pinned equal by
  * `packages/plugin/test/money-parity.test.ts`); the admin's refund entry reads
  * it, since a refund is a multiple of it.
  */

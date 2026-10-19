@@ -1,4 +1,4 @@
-import { orderTotalLabel, recordedRefundTotal } from "@urumi-ai/otta-domain";
+import { orderTotalLabel, recordedRefundTotal } from "@urumi.ai/otta-domain";
 import { describe, expect, test } from "vitest";
 
 // What the figure under an order's totals is called — ONE rule for the order

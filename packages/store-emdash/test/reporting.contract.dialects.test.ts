@@ -10,7 +10,7 @@
  * in the same document, and the ISO-Monday and month boundaries as a fold over
  * days rather than a dialect-branched `date_trunc`.
  */
-import { reportingStoreContract } from "@urumi-ai/otta-domain/testing";
+import { reportingStoreContract } from "@urumi.ai/otta-domain/testing";
 import { expect, test } from "vitest";
 import { isStorageQueryError } from "../src/index.js";
 import { describeEachDialect } from "./describe-each-dialect.js";

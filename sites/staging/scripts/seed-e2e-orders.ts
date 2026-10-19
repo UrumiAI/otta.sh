@@ -60,8 +60,8 @@ import {
 	STOREFRONT_CART_LINE_ADD_ROUTE,
 	STOREFRONT_CHECKOUT_PLACE_ROUTE,
 	STOREFRONT_PAYMENT_CONFIG_ROUTE,
-} from "@urumi-ai/otta-plugin";
-import { signStripeWebhook } from "@urumi-ai/otta-payments-stripe";
+} from "@urumi.ai/otta-plugin";
+import { signStripeWebhook } from "@urumi.ai/otta-payments-stripe";
 import { cmsAuthHeaders } from "./seed-demo-commerce.js";
 
 /** The webhook secret the seed provisions and signs with. A placeholder: it

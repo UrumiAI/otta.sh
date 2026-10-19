@@ -16,8 +16,8 @@ import {
 	currency as toCurrency,
 	idempotencyKey,
 	orderId as toOrderId,
-} from "@urumi-ai/otta-domain";
-import { SETTINGS_COLLECTION } from "@urumi-ai/otta-store-emdash";
+} from "@urumi.ai/otta-domain";
+import { SETTINGS_COLLECTION } from "@urumi.ai/otta-store-emdash";
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "vitest";
 import {
 	makeInProcessCommerce,

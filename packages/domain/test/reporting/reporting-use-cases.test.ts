@@ -4,7 +4,7 @@ import {
 	getRevenueReport,
 	getTopProductsReport,
 	ReportRangeTooWideError,
-} from "@urumi-ai/otta-domain";
+} from "@urumi.ai/otta-domain";
 import {
 	EXPECTED_ORDERS_BY_STATUS,
 	EXPECTED_REVENUE_BY_DAY,
@@ -18,7 +18,7 @@ import {
 	InMemoryReportingStore,
 	InMemorySettingsStore,
 	REPORTING_WINDOW,
-} from "@urumi-ai/otta-domain/testing";
+} from "@urumi.ai/otta-domain/testing";
 import { beforeEach, describe, expect, test } from "vitest";
 
 function seededStore(): InMemoryReportingStore {
@@ -100,7 +100,7 @@ describe("reporting use-cases (over the in-memory fake)", () => {
 		const settings = new InMemorySettingsStore();
 		await settings.update(
 			{ lowStockThreshold: 0 },
-			(await import("@urumi-ai/otta-domain")).idempotencyKey("k-thr"),
+			(await import("@urumi.ai/otta-domain")).idempotencyKey("k-thr"),
 		);
 		const rows = await getLowStockReport({ reportingStore: store, settingsStore: settings });
 		// threshold defaults to 0 → only SKU-A(0).

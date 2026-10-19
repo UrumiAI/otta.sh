@@ -83,7 +83,7 @@ are write-only in the admin and are never echoed back.
 ## Register and select it
 
 1. Add the descriptor to the `plugins` array of the site's EmDash config, after the otta
-   descriptors already there. `@urumi-ai/otta-plugin` exports no descriptor; each site writes its
+   descriptors already there. `@urumi.ai/otta-plugin` exports no descriptor; each site writes its
    own (the staging site's are in `sites/staging/src/emdash-options.ts`):
    ```ts
    import { httpEmailProvider } from "your-email-provider";
@@ -116,9 +116,9 @@ are write-only in the admin and are never echoed back.
 - **Your transport:** call `deliver(event, { kv, http })` with a stubbed `http.fetch`. Check the
   success case, a non-2xx response, and that the API key appears in no error. See
   [`examples/email-provider/test/provider.test.ts`](../examples/email-provider/test/provider.test.ts).
-- **Code that sends through otta:** use the fake transport from `@urumi-ai/otta-plugin/testing`:
+- **Code that sends through otta:** use the fake transport from `@urumi.ai/otta-plugin/testing`:
   ```ts
-  import { recordingEmailProvider } from "@urumi-ai/otta-plugin/testing";
+  import { recordingEmailProvider } from "@urumi.ai/otta-plugin/testing";
   const email = recordingEmailProvider();
   // As ctx.email: email.send(message). As an email:deliver handler: email.deliver(event), one argument.
   email.fail(new Error("outage")); // every send throws

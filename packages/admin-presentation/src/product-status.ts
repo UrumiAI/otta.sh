@@ -16,7 +16,7 @@
  * `Open product` picker and the detail's identity strip — precisely so a
  * product could not read `low` in one place and plain in another. The React
  * Pricing & inventory screen is a fourth surface that cannot import
- * `@urumi-ai/otta-plugin` (ADR-0014 Decision 3), so the only way to keep that
+ * `@urumi.ai/otta-plugin` (ADR-0014 Decision 3), so the only way to keep that
  * property is the way INC-20 kept it for money, dates and short ids: one
  * definition, two importers.
  *

@@ -24,9 +24,9 @@ import {
 	productId as brandProductId,
 	sku as brandSku,
 	type OrderState,
-} from "@urumi-ai/otta-domain";
-import type { ReportingStoreHarness } from "@urumi-ai/otta-domain/testing";
-import { FixedClock } from "@urumi-ai/otta-domain/testing";
+} from "@urumi.ai/otta-domain";
+import type { ReportingStoreHarness } from "@urumi.ai/otta-domain/testing";
+import { FixedClock } from "@urumi.ai/otta-domain/testing";
 import {
 	collectionOf,
 	customerKeyFor,

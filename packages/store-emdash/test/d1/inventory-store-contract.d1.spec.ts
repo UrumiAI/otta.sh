@@ -13,9 +13,9 @@
  * helpers, the contract itself — are all imported, so what is duplicated here is
  * only the ~60 lines of test-surface plumbing between them.
  */
-import { idempotencyKey } from "@urumi-ai/otta-domain";
-import type { InventoryStoreHarness } from "@urumi-ai/otta-domain/testing";
-import { CountingIdGen, FixedClock, inventoryStoreContract } from "@urumi-ai/otta-domain/testing";
+import { idempotencyKey } from "@urumi.ai/otta-domain";
+import type { InventoryStoreHarness } from "@urumi.ai/otta-domain/testing";
+import { CountingIdGen, FixedClock, inventoryStoreContract } from "@urumi.ai/otta-domain/testing";
 import { describe, expect, it } from "vitest";
 import type { InventoryDoc, ReservationKeyDoc, StorageAccess } from "../../src/index.js";
 import {

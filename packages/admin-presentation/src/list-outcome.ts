@@ -235,7 +235,7 @@ export const NEXT_RELEASES_SCAN_TITLE =
  * as `1` and never as `0`.
  *
  * WHERE THE REST OF THE PAGER LIVES: the client-side stack and the view it
- * derives are `PageTrail` and `pagerView` in `@urumi-ai/otta-admin-react`'s
+ * derives are `PageTrail` and `pagerView` in `@urumi.ai/otta-admin-react`'s
  * `accumulate.ts`; the markup is `PagerButton` in its `ui.tsx`. This module owns
  * the words and the arithmetic and nothing else.
  *

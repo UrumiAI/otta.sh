@@ -45,7 +45,7 @@ import {
 	sku as brandSku,
 	type CreateOrderInput,
 	type OrderStore,
-} from "@urumi-ai/otta-domain";
+} from "@urumi.ai/otta-domain";
 import { expect, test } from "vitest";
 import {
 	collectionOf,

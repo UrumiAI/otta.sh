@@ -10,7 +10,7 @@
  * Driven over a fake kv, like `settings-secrets.test.ts`, so what was stored can
  * be read back exactly.
  */
-import type { StorageAccess, StorageCollection } from "@urumi-ai/otta-store-emdash";
+import type { StorageAccess, StorageCollection } from "@urumi.ai/otta-store-emdash";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { createSettingsFormHandler } from "../src/admin/settings-form.js";
 import { COMMERCE_STORAGE_COLLECTIONS } from "../src/commerce/commerce-storage.js";

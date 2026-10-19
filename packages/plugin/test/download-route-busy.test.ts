@@ -13,8 +13,8 @@ import {
 	orderId as toOrderId,
 	productId as toProductId,
 	sku as toSku,
-} from "@urumi-ai/otta-domain";
-import { PRODUCT_COMMERCE_COLLECTION } from "@urumi-ai/otta-store-emdash";
+} from "@urumi.ai/otta-domain";
+import { PRODUCT_COMMERCE_COLLECTION } from "@urumi.ai/otta-store-emdash";
 import { afterAll, afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import {
 	createEntitlementDownloadHandler,

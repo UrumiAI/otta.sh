@@ -10,7 +10,7 @@
  */
 import { readdirSync, readFileSync, realpathSync } from "node:fs";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { plugin } from "@urumi-ai/otta-plugin";
+import { plugin } from "@urumi.ai/otta-plugin";
 import { beforeAll, describe, expect, test, vi } from "vitest";
 import { UPLOAD_MIN_ROLE } from "../src/lib/download-upload.js";
 

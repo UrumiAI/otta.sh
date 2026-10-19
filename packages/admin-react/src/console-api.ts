@@ -18,7 +18,7 @@
  *
  * WIRE TYPES ARE MIRRORED, NOT IMPORTED, and for the same reason
  * `packages/plugin/src/types.ts` hand-mirrors EmDash's plugin surface: the
- * console may not import `@urumi-ai/otta-plugin`
+ * console may not import `@urumi.ai/otta-plugin`
  * (`console-imports-no-workspace-package`), so the shapes below are this
  * package's own statement of what it expects to receive. They are structural
  * subsets — every field here is read by a component; fields the plugin sends and
@@ -33,7 +33,7 @@
  * increment; {@link readFailure} is where it lands, built on EmDash's own
  * `getErrorMessage` so the server's message is what the operator reads.
  */
-import { PRODUCTS_UNAVAILABLE_TITLE } from "@urumi-ai/otta-admin-presentation";
+import { PRODUCTS_UNAVAILABLE_TITLE } from "@urumi.ai/otta-admin-presentation";
 import { apiFetch, getErrorMessage } from "emdash/plugin-utils";
 
 /** The Block Kit plugin's single admin dispatch route — `otta`, not

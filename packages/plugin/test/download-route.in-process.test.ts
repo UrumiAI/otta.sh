@@ -4,8 +4,8 @@
  * sandbox in `download-route.sandbox.test.ts`; storage pressure is pinned in
  * `download-route-busy.test.ts`.
  */
-import type { StorageAccess } from "@urumi-ai/otta-store-emdash";
-import { email as toEmail } from "@urumi-ai/otta-domain";
+import type { StorageAccess } from "@urumi.ai/otta-store-emdash";
+import { email as toEmail } from "@urumi.ai/otta-domain";
 import { afterAll, beforeAll } from "vitest";
 import { createEntitlementDownloadHandler } from "../src/entitlements/download-route.js";
 import { downloadRouteContract } from "./contracts/download-route-contract.js";

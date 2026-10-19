@@ -116,7 +116,7 @@ import {
 	formatMinorUnitsInput,
 	OTTA_PLUGIN_ID,
 	PRODUCTS_CONSOLE_RESOURCE_PREFIX,
-} from "@urumi-ai/otta-plugin";
+} from "@urumi.ai/otta-plugin";
 
 export interface DemoPricing {
 	sku: string;

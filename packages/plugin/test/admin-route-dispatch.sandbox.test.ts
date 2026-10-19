@@ -6,8 +6,8 @@ import {
 	productId as toProductId,
 	reservationId as toReservationId,
 	sku as toSku,
-} from "@urumi-ai/otta-domain";
-import { plugin } from "@urumi-ai/otta-plugin";
+} from "@urumi.ai/otta-domain";
+import { plugin } from "@urumi.ai/otta-plugin";
 import {
 	EmdashInventoryStore,
 	EmdashOrderStore,
@@ -15,7 +15,7 @@ import {
 	systemClock,
 	uuidIdGen,
 	type StorageAccess,
-} from "@urumi-ai/otta-store-emdash";
+} from "@urumi.ai/otta-store-emdash";
 import { afterEach, describe, expect, test } from "vitest";
 import { blocksOf, field, findBlocks, formFor, tableWithId } from "./helpers/blocks.js";
 import { loadPluginInSandbox, type SandboxHandle } from "./sandbox/harness.js";

@@ -54,7 +54,7 @@ import {
 	maskBuyerEmail,
 	orderStateCell,
 	withOrderNumberCells,
-} from "@urumi-ai/otta-admin-presentation";
+} from "@urumi.ai/otta-admin-presentation";
 import * as React from "react";
 import {
 	CURSOR_RESET_DESCRIPTION,
@@ -164,7 +164,7 @@ const orderLinkStyle: React.CSSProperties = {
  *
  * All three are what happens when a decision argued this carefully is written
  * twice. `listOutcome` and the copy constants come from
- * `@urumi-ai/otta-admin-presentation`; both surfaces make the SAME call with the same
+ * `@urumi.ai/otta-admin-presentation`; both surfaces make the SAME call with the same
  * inputs and differ only in how they draw the answer.
  */
 
@@ -1683,7 +1683,7 @@ export function OrdersList({
 									  reference only on an UNCLAIMED order — the one where the LEAST
 									  is known about the buyer — and an opaque uuid on every CLAIMED
 									  one. `buyerReferenceText` is shared with the detail heading
-									  (`order-detail.tsx`, `@urumi-ai/otta-admin-presentation`) so the two
+									  (`order-detail.tsx`, `@urumi.ai/otta-admin-presentation`) so the two
 									  screens cannot drift back apart on this rule. An email is
 									  MASKED until this row's Show is pressed (issue #377) — see
 									  `BuyerReference`. */}

@@ -5,7 +5,7 @@ import {
 	currency as toCurrency,
 	idempotencyKey,
 	orderId,
-} from "@urumi-ai/otta-domain";
+} from "@urumi.ai/otta-domain";
 import {
 	EmdashCouponStore,
 	EmdashSettingsStore,
@@ -13,7 +13,7 @@ import {
 	type StorageAccess,
 	systemClock,
 	uuidIdGen,
-} from "@urumi-ai/otta-store-emdash";
+} from "@urumi.ai/otta-store-emdash";
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "vitest";
 import { couponStatus, couponUsesSummary } from "../src/admin/coupons-page.js";
 import {
@@ -59,7 +59,7 @@ import { storageBridge } from "./sandbox/storage-bridge.js";
 // THERE IS NO COUPON-ADMIN HTTP SURFACE ANY MORE (INC-D3a). `makeAdminClients`
 // hands this screen an `InProcessAdminRulesClient` composed over `ctx.storage`,
 // so every fixture below is written as a REAL document through the same
-// `@urumi-ai/otta-store-emdash` coupon store the plugin reads, and every "what
+// `@urumi.ai/otta-store-emdash` coupon store the plugin reads, and every "what
 // landed" claim is read back off that store rather than off a recorded request
 // body — a strictly stronger claim, since a recorded `PUT /admin/coupons/c-five`
 // proved only that a request was FORMED. Four consequences, stated once because
@@ -542,7 +542,7 @@ describe("admin Coupons console — list level (workerd sandbox)", () => {
 	// back empty has nothing behind it either.
 	//
 	// The rule lives one level down, in `listOutcome`
-	// (`@urumi-ai/otta-admin-presentation`) — the single decision both the Block Kit
+	// (`@urumi.ai/otta-admin-presentation`) — the single decision both the Block Kit
 	// scaffold and the React lists call — and is covered directly there, in
 	// `packages/admin-presentation/test/presentation.test.ts`: "3. zero WITH a page
 	// behind it: NO empty state, a scan note instead", plus its filtered twin "3b.

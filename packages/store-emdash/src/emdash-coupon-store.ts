@@ -120,7 +120,7 @@ import {
 	type RedeemResult,
 	type UpdateCouponInput,
 	type UpdateCouponResult,
-} from "@urumi-ai/otta-domain";
+} from "@urumi.ai/otta-domain";
 import {
 	CAS_BASE_DELAY_MS,
 	CAS_MAX_ATTEMPTS,

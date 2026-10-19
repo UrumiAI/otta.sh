@@ -23,7 +23,7 @@
  * dialect; the real Postgres error is covered by `ill-formed-text-reads` and the
  * heal race suite.
  */
-import { findIllFormedText } from "@urumi-ai/otta-domain";
+import { findIllFormedText } from "@urumi.ai/otta-domain";
 import { afterEach, expect, test, vi } from "vitest";
 import type { StorageCollection } from "../src/index.js";
 import { guardWellFormed, HEAL_COOL_DOWN_MS } from "../src/well-formed-storage.js";

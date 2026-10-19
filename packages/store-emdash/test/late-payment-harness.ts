@@ -5,7 +5,7 @@
  * every order that predates the audit log. Factored out so all three dialects run
  * it; like the decline harness it names no Node driver, so D1 can load it.
  */
-import type { LatePaymentHarness } from "@urumi-ai/otta-domain/testing";
+import type { LatePaymentHarness } from "@urumi.ai/otta-domain/testing";
 import type { StorageAccess } from "../src/index.js";
 import { makeOrderHarness } from "./order-harness.js";
 import { makePaymentDeclineHarness } from "./payment-decline-harness.js";

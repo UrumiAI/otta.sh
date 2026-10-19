@@ -12,9 +12,9 @@
  *   those two writes is only observable under fault injection, which is INC-A3);
  * - the retry-exhaustion error is typed and retryable, never `OUT_OF_STOCK`.
  */
-import { idempotencyKey } from "@urumi-ai/otta-domain";
-import type { InventoryStoreHarness } from "@urumi-ai/otta-domain/testing";
-import { CountingIdGen, FixedClock, inventoryStoreContract } from "@urumi-ai/otta-domain/testing";
+import { idempotencyKey } from "@urumi.ai/otta-domain";
+import type { InventoryStoreHarness } from "@urumi.ai/otta-domain/testing";
+import { CountingIdGen, FixedClock, inventoryStoreContract } from "@urumi.ai/otta-domain/testing";
 import { describe, expect, it } from "vitest";
 import type { InventoryDoc, ReservationKeyDoc, StorageAccess } from "../src/index.js";
 import {

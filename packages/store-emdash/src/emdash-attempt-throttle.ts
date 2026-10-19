@@ -14,7 +14,7 @@
  * whose slots have all lapsed is simply rewritten on the next admit. That is at
  * most one small document per throttled key.
  */
-import type { AttemptThrottle, Clock, IdGen } from "@urumi-ai/otta-domain";
+import type { AttemptThrottle, Clock, IdGen } from "@urumi.ai/otta-domain";
 import { CAS_RETRY, casDone, withCasRetry, type CasRetryOptions } from "./cas-retry.js";
 import { collectionOf } from "./collection-of.js";
 import {

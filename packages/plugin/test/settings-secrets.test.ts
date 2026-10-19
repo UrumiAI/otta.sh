@@ -18,7 +18,7 @@
  * store these settings touch, and a fake kv is the only way to read back
  * exactly what was stored (the sandbox suite cannot see kv).
  */
-import type { StorageAccess, StorageCollection } from "@urumi-ai/otta-store-emdash";
+import type { StorageAccess, StorageCollection } from "@urumi.ai/otta-store-emdash";
 import { describe, expect, test } from "vitest";
 import { createSettingsFormHandler } from "../src/admin/settings-form.js";
 import { COMMERCE_STORAGE_COLLECTIONS } from "../src/commerce/commerce-storage.js";

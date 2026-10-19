@@ -43,12 +43,12 @@
  * settings document's own revision, re-read on every attempt and used immediately
  * after, which is what rule (a) asks for.
  */
-import type { OperationalSettings, TaxSettings } from "@urumi-ai/otta-domain";
+import type { OperationalSettings, TaxSettings } from "@urumi.ai/otta-domain";
 import {
 	DEFAULT_OPERATIONAL_SETTINGS,
 	readStoreCurrency,
 	readTaxSettings,
-} from "@urumi-ai/otta-domain";
+} from "@urumi.ai/otta-domain";
 
 /** Collection name: the settings singleton. */
 export const SETTINGS_COLLECTION = "settings";

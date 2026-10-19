@@ -19,7 +19,7 @@ import {
 	makeInProcessCommerce,
 	type InProcessCommerceHarness,
 } from "./helpers/in-process-commerce.js";
-import { email as toEmail } from "@urumi-ai/otta-domain";
+import { email as toEmail } from "@urumi.ai/otta-domain";
 
 let harness: InProcessCommerceHarness;
 let seq = 0;

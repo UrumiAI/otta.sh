@@ -14,7 +14,7 @@
  * Kept here rather than in the pages because `.astro` files have no render harness
  * in this package (issue #40).
  */
-import type { AccountOrderWire } from "@urumi-ai/otta-plugin";
+import type { AccountOrderWire } from "@urumi.ai/otta-plugin";
 import { resumeHref } from "./checkout-resume.js";
 import { countryOptions } from "./countries.js";
 import { isOrderPayable } from "./pay-guard.js";

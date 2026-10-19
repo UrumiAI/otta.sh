@@ -42,8 +42,8 @@ import {
 	orderId as toOrderId,
 	productId as toProductId,
 	sku as toSku,
-} from "@urumi-ai/otta-domain";
-import { FixedClock } from "@urumi-ai/otta-domain/testing";
+} from "@urumi.ai/otta-domain";
+import { FixedClock } from "@urumi.ai/otta-domain/testing";
 import {
 	collectionOf,
 	EmdashInventoryStore,
@@ -53,8 +53,8 @@ import {
 	uuidIdGen,
 	type ProductCommerceDoc,
 	type StorageAccess,
-} from "@urumi-ai/otta-store-emdash";
-import { makeSqliteStorage } from "@urumi-ai/otta-store-emdash/testing";
+} from "@urumi.ai/otta-store-emdash";
+import { makeSqliteStorage } from "@urumi.ai/otta-store-emdash/testing";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { BACKGROUND_WORK_KEY } from "../src/cron/background-work-setting.js";
 import {

@@ -12,7 +12,7 @@ import { parsePriceMinorUnits } from "../src/admin/products-actions.js";
 // THE FORMAT HALF NAMES `formatMinorUnitsInput` DIRECTLY now (INC-R3). The
 // retired Block Kit screen exported it under the alias `formatPriceMinorUnits`
 // for its own text inputs' `initial_value`; the React screen calls the shared
-// `@urumi-ai/otta-admin-presentation` formatter, so with that screen gone the alias had
+// `@urumi.ai/otta-admin-presentation` formatter, so with that screen gone the alias had
 // no caller. Deleting an alias is not deleting an assertion — every case below is
 // the one it always was, against the function the alias forwarded to.
 

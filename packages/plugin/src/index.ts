@@ -1,4 +1,4 @@
-// Public barrel of @urumi-ai/otta-plugin — the CommerceClient transport port, the
+// Public barrel of @urumi.ai/otta-plugin — the CommerceClient transport port, the
 // admin/storefront page handlers, and the manifest constants the sandbox-
 // clean guard test asserts against.
 //
@@ -84,7 +84,7 @@ export {
 // The title of the products read's "no such product" refusal — the one refusal
 // the site's orphan sweep treats as "product gone" (issue #447); every other
 // refusal stops the sweep.
-export { PRODUCT_NOT_FOUND_TITLE } from "@urumi-ai/otta-admin-presentation";
+export { PRODUCT_NOT_FOUND_TITLE } from "@urumi.ai/otta-admin-presentation";
 // INC-D1 — the console's two interaction types and the products resource prefix,
 // exported so an OUT-OF-BROWSER caller can drive the admin route without
 // restating its wire strings. The staging quickstart seeder is the first: with
@@ -98,7 +98,7 @@ export { PRODUCT_NOT_FOUND_TITLE } from "@urumi-ai/otta-admin-presentation";
 // discriminators belong to) and `ConsoleFailure` (the route's internal refusal
 // shape) were exported alongside them and have no consumer outside this package;
 // a barrel entry with no caller is API surface bought with nothing, and this
-// barrel is `@urumi-ai/otta-plugin`'s public one.
+// barrel is `@urumi.ai/otta-plugin`'s public one.
 export { CONSOLE_ACT_INTERACTION, CONSOLE_READ_INTERACTION } from "./admin/console-transport.js";
 export { PRODUCTS_CONSOLE_RESOURCE_PREFIX } from "./admin/products-console-route.js";
 export {
@@ -302,7 +302,7 @@ export {
 	isDownloadAssetKeyFor,
 	mintDownloadAssetKey,
 	sanitizeDownloadFilename,
-} from "@urumi-ai/otta-domain";
+} from "@urumi.ai/otta-domain";
 export {
 	CommerceClientError,
 	type CartFailureReason,
@@ -477,40 +477,40 @@ export { STOREFRONT_LOCALE } from "./storefront/route-input.js";
 // ADR-0021: the ISO 3166 codes (CLDR) and the one region SHAPE rule, for a
 // site that builds the country picker and pre-checks a typed region code the
 // way the routes do. Membership is still the domain's call.
-export { COUNTRY_CODES, isCodeShapedRegion, REGION_CODE_PATTERN } from "@urumi-ai/otta-domain";
+export { COUNTRY_CODES, isCodeShapedRegion, REGION_CODE_PATTERN } from "@urumi.ai/otta-domain";
 // The rule that reads a typed or stored region as one of a country's codes, so
 // the site can pre-select a stored code in its state/province pick list (whose
-// names live in `@urumi-ai/otta-plugin/subdivisions`). The routes still validate
+// names live in `@urumi.ai/otta-plugin/subdivisions`). The routes still validate
 // every region themselves.
-export { normalizeSubdivision } from "@urumi-ai/otta-domain";
+export { normalizeSubdivision } from "@urumi.ai/otta-domain";
 // The shopper-facing name of an order — its products, never its id. The site
 // names an order on its confirmation and account pages; the order emails name
 // it through the same function in the domain, so the site takes THAT one rather
 // than a copy that could spell the same order differently.
-export { ORDER_LABEL_FALLBACK, orderLabel, type OrderLabelLine } from "@urumi-ai/otta-domain";
+export { ORDER_LABEL_FALLBACK, orderLabel, type OrderLabelLine } from "@urumi.ai/otta-domain";
 // The order NUMBER ("#3F9A2") the site prints beside the label — the domain's one
 // function, the same the order emails and the admin console use (ADR-0033).
-export { ORDER_NUMBER_LENGTH, orderNumber } from "@urumi-ai/otta-domain";
+export { ORDER_NUMBER_LENGTH, orderNumber } from "@urumi.ai/otta-domain";
 // "Paid" / "Total" for an order's figure — the domain's one rule, shared with the
 // order emails.
-export { orderTotalLabel } from "@urumi-ai/otta-domain";
+export { orderTotalLabel } from "@urumi.ai/otta-domain";
 // The sign-in link's per-address cap and lifetime, as the in-process verifier
 // enforces them (its defaults — `createInProcessCommerceStores` passes no
 // override), so a storefront's copy about them cannot drift from the truth.
 //
 // Declared HERE as plugin constants rather than re-exported from
-// `@urumi-ai/otta-store-emdash`: a re-export makes the emitted declarations reach into
+// `@urumi.ai/otta-store-emdash`: a re-export makes the emitted declarations reach into
 // that package's types, and through them the host's toolchain (vite, postcss,
 // typescript), which the declaration bundler cannot bundle — the plugin build
 // fails. Same values; the store's defaults stay the one source.
 // The lifetime is `storefront/login-link.ts`'s LOGIN_LINK_TTL_MS (exported
 // above), the one value the verifier is built with and the sign-in email states.
-import { DEFAULT_MAX_ACTIVE_CHALLENGES as STORE_MAX_ACTIVE_CHALLENGES } from "@urumi-ai/otta-store-emdash";
+import { DEFAULT_MAX_ACTIVE_CHALLENGES as STORE_MAX_ACTIVE_CHALLENGES } from "@urumi.ai/otta-store-emdash";
 export const LOGIN_LINK_MAX_ACTIVE: number = STORE_MAX_ACTIVE_CHALLENGES;
 // The ship-to's per-field length bounds the domain enforces, for a site that
 // bounds its address inputs and refuses an over-long field as the address
 // error it is rather than a generic one.
-export { ORDER_ADDRESS_MAX_LENGTHS } from "@urumi-ai/otta-domain";
+export { ORDER_ADDRESS_MAX_LENGTHS } from "@urumi.ai/otta-domain";
 // The shopper-facing cart quantity cap the routes enforce, for a site that
 // bounds its quantity field and names the limit instead of a generic failure.
 export { CART_LINE_MAX_QTY } from "./commerce/commerce-input.js";
@@ -585,4 +585,4 @@ export type {
 	TaxRequest,
 	TaxRequestLine,
 	TaxResult,
-} from "@urumi-ai/otta-domain";
+} from "@urumi.ai/otta-domain";

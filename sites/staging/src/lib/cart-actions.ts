@@ -15,7 +15,7 @@ import {
 	CART_COOKIE_PATH,
 	STOREFRONT_CART_CREATE_ROUTE,
 	type CartCreateRouteResult,
-} from "@urumi-ai/otta-plugin";
+} from "@urumi.ai/otta-plugin";
 import type { APIContext } from "astro";
 import type { PublicPluginApiRouteHandler } from "emdash/plugin-utils";
 import { getPublicPluginApiRouteHandler } from "emdash/plugin-utils";

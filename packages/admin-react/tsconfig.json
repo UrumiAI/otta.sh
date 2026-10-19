@@ -2,9 +2,9 @@
 	// EXACTLY ONE reference, and the rule that permits it is narrower than it
 	// looks. ADR-0014 Decision 3 gives the console exactly one DATA path — HTTP
 	// to `otta`'s existing authenticated admin routes — so importing
-	// @urumi-ai/otta-plugin (or the domain, service, store or payments packages) would
+	// @urumi.ai/otta-plugin (or the domain, service, store or payments packages) would
 	// be a second one, compiled in and invisible to the empty capability set.
-	// `@urumi-ai/otta-admin-presentation` is not a data path: it holds no IO, no wire
+	// `@urumi.ai/otta-admin-presentation` is not a data path: it holds no IO, no wire
 	// types and no dependencies, only the money renderer, the date dialect, the
 	// short-id rule and the status vocabulary that BOTH admin surfaces must
 	// agree on. INC-20 extracted it precisely so the console could satisfy G1

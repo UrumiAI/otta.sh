@@ -5,8 +5,8 @@
  *
  * WHAT THIS CLASS IS. The sole implementation of `AdminRulesSurface`: the same
  * twenty-five methods, the same argument shapes, the same RETURN VALUES — every
- * field the `*Wire` types carry — with the `@urumi-ai/otta-domain` ports composed over
- * the `@urumi-ai/otta-store-emdash` adapters bound to `ctx.storage` instead of a
+ * field the `*Wire` types carry — with the `@urumi.ai/otta-domain` ports composed over
+ * the `@urumi.ai/otta-store-emdash` adapters bound to `ctx.storage` instead of a
  * commerce service. Nothing here reaches for egress; `ctx.http` is never
  * touched.
  *
@@ -115,7 +115,7 @@ import {
 	type TaxClass,
 	type TaxRate,
 	type TaxSettings,
-} from "@urumi-ai/otta-domain";
+} from "@urumi.ai/otta-domain";
 import { COUPON_CURRENCY_REFUSAL } from "./coupon-currency-rules.js";
 import {
 	CommerceInputError,
@@ -134,7 +134,7 @@ import {
 	isShippingZoneNotFoundError,
 	isTaxClassIdCollisionError,
 	isTaxRateIdCollisionError,
-} from "@urumi-ai/otta-store-emdash";
+} from "@urumi.ai/otta-store-emdash";
 import {
 	createInProcessCommerceStores,
 	type InProcessCommerceStores,
@@ -1114,7 +1114,7 @@ const CREATE_PARENT_MISSING = 404;
  * own `{ ok: false, status }` arm (see the class doc's "A COLLISION IS THE
  * EXCEPTION"). Matched STRUCTURALLY, by the error's `code`, so the mapping
  * survives a bundle boundary. The coupon refusals are the PORT's
- * (`@urumi-ai/otta-domain`, ADR-0025) and hold for every adapter; the shipping/tax
+ * (`@urumi.ai/otta-domain`, ADR-0025) and hold for every adapter; the shipping/tax
  * collisions are still the document store's own, since their ports declare none. Every one of these is raised before the store
  * writes anything (or after it has given its claim back), which is the whole
  * licence for answering rather than rejecting; any other throw propagates.

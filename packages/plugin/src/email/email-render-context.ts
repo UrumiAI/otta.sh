@@ -5,7 +5,7 @@
  * it renders WITH, so an email states money and links exactly as the
  * storefront does.
  */
-import { cents, currency, formatMoney } from "@urumi-ai/otta-admin-presentation";
+import { cents, currency, formatMoney } from "@urumi.ai/otta-admin-presentation";
 import { STOREFRONT_LOCALE } from "../storefront/route-input.js";
 import { isSavableLoginLinkUrl } from "../storefront/login-link.js";
 

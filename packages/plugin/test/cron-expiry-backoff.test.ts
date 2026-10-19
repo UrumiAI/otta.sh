@@ -5,9 +5,9 @@
  * order behind them was never expired and its stock stayed held. Now a failed order
  * waits (`UnitBackoff`) and the tick's one list reads past it.
  */
-import { orderId as toOrderId, UnitBackoff } from "@urumi-ai/otta-domain";
-import { ORDERS_COLLECTION, type StorageAccess } from "@urumi-ai/otta-store-emdash";
-import { makeSqliteStorage } from "@urumi-ai/otta-store-emdash/testing";
+import { orderId as toOrderId, UnitBackoff } from "@urumi.ai/otta-domain";
+import { ORDERS_COLLECTION, type StorageAccess } from "@urumi.ai/otta-store-emdash";
+import { makeSqliteStorage } from "@urumi.ai/otta-store-emdash/testing";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import {
 	runCommerceSweeps,

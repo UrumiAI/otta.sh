@@ -16,7 +16,7 @@ import {
 	NOT_CALCULATED_LABEL,
 	type CheckoutAmountView,
 	type UncalculatedReason,
-} from "@urumi-ai/otta-plugin";
+} from "@urumi.ai/otta-plugin";
 
 /**
  * What a not-applicable row says when the page supplies nothing better.

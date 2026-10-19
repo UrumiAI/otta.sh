@@ -7,9 +7,9 @@
  * `packages/plugin/test/format-money.type-test.ts`, mirroring Phase 0's `Cents`
  * test).
  *
- * Lived in `@urumi-ai/otta-plugin` until INC-20, under a standing note to "extract to
+ * Lived in `@urumi.ai/otta-plugin` until INC-20, under a standing note to "extract to
  * a shared presentation package only when a second real consumer package exists
- * (ADR-0002 rule 5)". `@urumi-ai/otta-admin-react` is that second consumer: it renders
+ * (ADR-0002 rule 5)". `@urumi.ai/otta-admin-react` is that second consumer: it renders
  * the same orders and may not import the plugin (ADR-0014 Decision 3), so G1's
  * "always `formatMoney(Cents, Currency, locale)`" is satisfiable only by both
  * surfaces calling THIS function. The plugin's `presentation/format-money.ts` is

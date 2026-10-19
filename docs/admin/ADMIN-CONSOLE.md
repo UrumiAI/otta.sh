@@ -39,7 +39,7 @@ had become false: `assertBlockContract` **exists** (§13, V-3a); the two live X-
 Pricing & inventory are **fixed**; §15's tier-2 gate no longer asks for a test in a repo
 this project cannot write to; and §14's heading no longer offers a fork as the route its own body
 rules out. **Two screens — Orders and Pricing & inventory — now render from
-`@urumi-ai/otta-admin-react`** (ADR-0014); at the time of that sweep their Block Kit twins were still in
+`@urumi.ai/otta-admin-react`** (ADR-0014); at the time of that sweep their Block Kit twins were still in
 the tree, and where a listing described both, it said so. The sixth amendment records that they are
 no longer.
 
@@ -750,7 +750,7 @@ the routine path (fulfil → mark completed) in the same box as the irreversible
 govern.** Tax and Shipping have no detail screen at all — every level is a list (§12.3, §12.4);
 Reports and Settings are §4.1 screens with no panels. The other two rows of this table were Orders
 (`Order` · `Fulfilment` · `Money` · `History`) and Pricing & inventory (`Product` · `Stock`), both of
-which left Block Kit under ADR-0015 and now render those same panel sets from `@urumi-ai/otta-admin-react`.
+which left Block Kit under ADR-0015 and now render those same panel sets from `@urumi.ai/otta-admin-react`.
 X-16 checks a panel count against this table, so it now has exactly one screen to check.
 
 **D-2a — two panels are permitted where a third would hold only a `context` line.** Coupons'
@@ -1380,7 +1380,7 @@ accordion, each with its own submit and its own `carriedForm` `block_id` (includ
 
 **Verify the whole path, not just the plugin.** (Historical citations: the `service/src/…` and
 `kysely-product-commerce-store.ts` references below are to code deleted under ADR-0020; the rule
-stands, and today's path is the plugin's in-process client over `@urumi-ai/otta-store-emdash`.) For
+stands, and today's path is the plugin's in-process client over `@urumi.ai/otta-store-emdash`.) For
 products it holds and preservation is designed:
 `buildEditWire` assigns conditionally only (`products-actions.ts:205-291`, with the
 `// field not in the form ⇒ preserve.` comment at `:242`), every wire field is `.optional()`
@@ -1570,7 +1570,7 @@ in-process rules client, so no caller of the surface can store the value:
 
 - **Currency (supported set).** A currency an operator TYPES — a new shipping rate's, a new
   fixed-amount coupon's, a product's first price — must be in the store's currency table
-  (`@urumi-ai/otta-domain`'s `SUPPORTED_CURRENCIES`, `packages/domain/src/money/currencies.ts`), not
+  (`@urumi.ai/otta-domain`'s `SUPPORTED_CURRENCIES`, `packages/domain/src/money/currencies.ts`), not
   merely three upper-case letters (`XYZ` used to save). Amounts are then typed in that
   currency's own minor unit (JPY `1500` is ¥1,500; KWD takes three decimals). Static data, not
   the host's ICU. Create paths only: a stored code is never refused on read or edit, and a
@@ -2348,7 +2348,7 @@ renders a money ladder**, and X-10 is a regression gate.
 and prices are what the buyer paid — later product edits never change them."* Nothing else on the
 screen re-litigates it.
 
-**M-6 — dates.** ONE dialect, from **`@urumi-ai/otta-admin-presentation`'s `datetime.ts`** — the module
+**M-6 — dates.** ONE dialect, from **`@urumi.ai/otta-admin-presentation`'s `datetime.ts`** — the module
 moved into the shared package when Orders went React, so both surfaces render the same words;
 `scaffold/datetime.ts` is now a re-export shim and not the implementation. An absolute instant renders
 `8 Jul 2026, 10:30 UTC` (`formatTimestamp`) — day-first and spelled-month so it cannot be misread
@@ -3637,7 +3637,7 @@ Three things to read off this table:
 
 **All four steps merged, and the two screens at either end of the table have since left Block Kit
 entirely** (ADR-0014, then ADR-0015 — see §14 and the sixth amendment). Orders and Pricing & inventory
-render from `@urumi-ai/otta-admin-react` and are gated by Playwright as well as by the sandbox suites on
+render from `@urumi.ai/otta-admin-react` and are gated by Playwright as well as by the sandbox suites on
 their extracted action modules; **their Block Kit twins have been deleted.** This table is the record
 of the order the programme was run in, not a plan with work left in it.
 

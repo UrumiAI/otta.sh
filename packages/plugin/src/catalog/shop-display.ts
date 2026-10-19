@@ -16,7 +16,7 @@ import {
 	type ShopPriceDisplay,
 	shopDisplayPrice,
 	shopDisplayPrices,
-} from "@urumi-ai/otta-domain";
+} from "@urumi.ai/otta-domain";
 import { type Cents, cents } from "../presentation/money.js";
 import type { ShopPriceDisplayWire } from "../product-commerce/commerce-client.js";
 import type { CatalogProductCommerce } from "./commerce-view.js";

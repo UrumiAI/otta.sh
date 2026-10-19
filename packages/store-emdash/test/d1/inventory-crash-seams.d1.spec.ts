@@ -35,8 +35,8 @@
  * Node tiers already give on every commit. They are named here so the gap is a
  * recorded decision rather than a silent omission.
  */
-import { idempotencyKey } from "@urumi-ai/otta-domain";
-import { FixedClock } from "@urumi-ai/otta-domain/testing";
+import { idempotencyKey } from "@urumi.ai/otta-domain";
+import { FixedClock } from "@urumi.ai/otta-domain/testing";
 import { describe, expect, it } from "vitest";
 import type {
 	HoldEntry,

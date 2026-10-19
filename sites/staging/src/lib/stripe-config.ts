@@ -21,7 +21,7 @@
 import {
 	STOREFRONT_PAYMENT_CONFIG_ROUTE,
 	type PaymentConfigRouteResult,
-} from "@urumi-ai/otta-plugin";
+} from "@urumi.ai/otta-plugin";
 import type { PublicPluginApiRouteHandler } from "emdash/plugin-utils";
 import { dispatchOttaRoute } from "./otta-api.js";
 

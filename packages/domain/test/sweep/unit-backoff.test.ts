@@ -1,4 +1,4 @@
-import { UnitBackoff } from "@urumi-ai/otta-domain";
+import { UnitBackoff } from "@urumi.ai/otta-domain";
 import { describe, expect, test } from "vitest";
 
 // A sweep unit that keeps failing must not hold the head of the sweep's list

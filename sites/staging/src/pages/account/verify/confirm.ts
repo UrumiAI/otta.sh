@@ -16,7 +16,7 @@ import {
 	ACCOUNT_LOGOUT_ROUTE,
 	type AccountLoginVerifyResult,
 	type AccountLogoutResult,
-} from "@urumi-ai/otta-plugin";
+} from "@urumi.ai/otta-plugin";
 import type { APIRoute } from "astro";
 import {
 	ACCOUNT_HOME_PATH,

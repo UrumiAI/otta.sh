@@ -7,7 +7,7 @@
  * read, and the point is to prove the route boundary maps the refusal wherever
  * in the handler it surfaces.
  */
-import { StorageContentionError } from "@urumi-ai/otta-store-emdash";
+import { StorageContentionError } from "@urumi.ai/otta-store-emdash";
 import type { StorageAccess } from "../../src/types.js";
 
 export function busyStorage(

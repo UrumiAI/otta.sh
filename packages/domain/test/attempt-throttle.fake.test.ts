@@ -2,7 +2,7 @@ import {
 	attemptThrottleContract,
 	FixedClock,
 	InMemoryAttemptThrottle,
-} from "@urumi-ai/otta-domain/testing";
+} from "@urumi.ai/otta-domain/testing";
 
 attemptThrottleContract(
 	async () => {

@@ -89,7 +89,7 @@
  * renders by name. Re-introducing a server-side two-step confirm means WRITING
  * that check against the shape of the new flow, not restoring it.
  */
-import { isSupportedCurrency } from "@urumi-ai/otta-domain";
+import { isSupportedCurrency } from "@urumi.ai/otta-domain";
 import {
 	ADD_STOCK_INVALID_QTY,
 	DIGITAL_WITH_FILE_REASON,
@@ -101,8 +101,8 @@ import {
 	parseStockQty as parseStockQtyShared,
 	unitWord,
 	unsupportedCurrencyMessage,
-} from "@urumi-ai/otta-admin-presentation";
-import { isProductTaxStatus } from "@urumi-ai/otta-domain";
+} from "@urumi.ai/otta-admin-presentation";
+import { isProductTaxStatus } from "@urumi.ai/otta-domain";
 import {
 	type AdminProductsSurface,
 	type ProductEditWire,
@@ -239,7 +239,7 @@ export function parsePriceMinorUnits(input: string, currency: string): number | 
 
 /** Parse a merchant-entered stock quantity into a POSITIVE WHOLE number.
  *
- *  RE-EXPORTED from `@urumi-ai/otta-admin-presentation`: the React screen checks the
+ *  RE-EXPORTED from `@urumi.ai/otta-admin-presentation`: the React screen checks the
  *  quantity in the browser before it opens the remove-stock confirm, so a second
  *  parser here would let an operator read a dialog for a quantity the write then
  *  refuses. */
@@ -429,7 +429,7 @@ function fnv1a(input: string, seed: number): string {
 
 /**
  * The currency this edit would AUTHOR when it is not in the currency table
- * (`@urumi-ai/otta-domain`'s `isSupportedCurrency`), or `null` when the edit is fine.
+ * (`@urumi.ai/otta-domain`'s `isSupportedCurrency`), or `null` when the edit is fine.
  *
  * MEMBERSHIP IS CHECKED ONLY FOR A NEW CURRENCY. A product priced before the
  * table existed may sit in any shape-valid code, and its form re-submits that

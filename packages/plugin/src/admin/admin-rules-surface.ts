@@ -5,14 +5,14 @@
  * No UI is built here (the console pages consume this port).
  *
  * These types are defined LOCALLY and deliberately: this module NEVER imports
- * `@urumi-ai/otta-domain`, which keeps the plugin sandbox-clean (enforced by the
+ * `@urumi.ai/otta-domain`, which keeps the plugin sandbox-clean (enforced by the
  * dependency-cruiser rule, MOD-4). Money is integer minor units + ISO-4217
  * currency throughout. The "wire" in the names is historical — it was once the
  * JSON shape of a separate commerce service — and it is still exactly the shape
  * the admin route's JSON responses use, so the name stays accurate.
  */
 
-// -- Wire types (local; never `@urumi-ai/otta-domain`) --------------------------------
+// -- Wire types (local; never `@urumi.ai/otta-domain`) --------------------------------
 
 export interface ShippingZoneWire {
 	id: string;

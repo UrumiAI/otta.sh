@@ -10,8 +10,8 @@ import {
 	transitionOrder,
 	updateProductCommerceFields,
 	upsertProductCommerce,
-} from "@urumi-ai/otta-domain";
-import { FakeEmailSender } from "@urumi-ai/otta-domain/testing";
+} from "@urumi.ai/otta-domain";
+import { FakeEmailSender } from "@urumi.ai/otta-domain/testing";
 import { describe, expect, test } from "vitest";
 import { makeOrderHarness } from "./fake-harness.js";
 

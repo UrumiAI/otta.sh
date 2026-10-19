@@ -26,8 +26,8 @@ import {
 	EmailSendTimeoutError,
 	type EmailSender,
 	type OrderId,
-} from "@urumi-ai/otta-domain";
-import { FakeEmailSender } from "@urumi-ai/otta-domain/testing";
+} from "@urumi.ai/otta-domain";
+import { FakeEmailSender } from "@urumi.ai/otta-domain/testing";
 import { afterAll, afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import {
 	ORDER_EMAIL_INLINE_DEADLINE_MS,

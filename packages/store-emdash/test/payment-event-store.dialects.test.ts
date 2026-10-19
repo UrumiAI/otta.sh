@@ -12,7 +12,7 @@
  * digest document id makes an identical replay record once, where the SQL's fresh
  * `id` per call wrote a second indistinguishable row.
  */
-import { orderId } from "@urumi-ai/otta-domain";
+import { orderId } from "@urumi.ai/otta-domain";
 import { expect, test } from "vitest";
 import { paymentAnomalyId } from "../src/index.js";
 import { describeEachDialect } from "./describe-each-dialect.js";

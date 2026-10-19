@@ -1,5 +1,5 @@
-import { unsupportedCurrencyMessage } from "@urumi-ai/otta-admin-presentation";
-import { parseCouponInstant } from "@urumi-ai/otta-domain";
+import { unsupportedCurrencyMessage } from "@urumi.ai/otta-admin-presentation";
+import { parseCouponInstant } from "@urumi.ai/otta-domain";
 import { formatMoney } from "../presentation/format-money.js";
 import { cents as toCents, currency as toCurrency } from "../presentation/money.js";
 import type {
@@ -42,7 +42,7 @@ import {
 } from "../commerce/commerce-input.js";
 import { COUPON_CURRENCY_REFUSAL } from "./coupon-currency-rules.js";
 import { idInputProblem } from "./id-input.js";
-import { isSupportedCurrency } from "@urumi-ai/otta-domain";
+import { isSupportedCurrency } from "@urumi.ai/otta-domain";
 import { formatBpsAsPercent, parsePercentToBps } from "./percent-input.js";
 import {
 	asRecord,

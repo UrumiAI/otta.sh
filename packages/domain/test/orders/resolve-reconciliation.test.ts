@@ -1,5 +1,5 @@
-import { idempotencyKey, orderId, resolveReconciliation } from "@urumi-ai/otta-domain";
-import { CountingIdGen, FixedClock, InMemoryOrderStore } from "@urumi-ai/otta-domain/testing";
+import { idempotencyKey, orderId, resolveReconciliation } from "@urumi.ai/otta-domain";
+import { CountingIdGen, FixedClock, InMemoryOrderStore } from "@urumi.ai/otta-domain/testing";
 import { beforeEach, describe, expect, test } from "vitest";
 
 // The resolveReconciliation use-case (admin-UX Increment 1): validation

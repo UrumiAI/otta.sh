@@ -7,7 +7,7 @@
  * become an upstream round trip, let alone an order.
  */
 import { describe, expect, test } from "vitest";
-import { ORDER_ADDRESS_MAX_LENGTHS } from "@urumi-ai/otta-domain";
+import { ORDER_ADDRESS_MAX_LENGTHS } from "@urumi.ai/otta-domain";
 import {
 	exceedsAddressBounds,
 	holdsIllFormedAddressText,

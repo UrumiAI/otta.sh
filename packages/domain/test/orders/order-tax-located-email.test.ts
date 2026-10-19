@@ -7,8 +7,8 @@ import {
 	readOrderTaxSnapshot,
 	renderEmail,
 	type Order,
-} from "@urumi-ai/otta-domain";
-import { InMemorySettingsStore } from "@urumi-ai/otta-domain/testing";
+} from "@urumi.ai/otta-domain";
+import { InMemorySettingsStore } from "@urumi.ai/otta-domain/testing";
 import { describe, expect, test } from "vitest";
 import { makeOrderHarness } from "./fake-harness.js";
 

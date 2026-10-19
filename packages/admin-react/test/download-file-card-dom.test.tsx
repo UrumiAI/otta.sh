@@ -30,7 +30,7 @@ const { PricingStockEditor } = await import("../src/products/pricing-cards.js");
 const { formatFileSize } = await import("../src/products/download-file-card.js");
 const { MAX_DOWNLOAD_FILE_BYTES, downloadUploadUrl } =
 	await import("../src/download-upload-api.js");
-const { DIGITAL_WITH_FILE } = await import("@urumi-ai/otta-admin-presentation");
+const { DIGITAL_WITH_FILE } = await import("@urumi.ai/otta-admin-presentation");
 type ProductRecord = import("../src/console-api.js").ProductRecord;
 
 const KEY_1 = "dl/p_ebook/01KAZQ3V8K4M2N6P7R8S9T0VWX";

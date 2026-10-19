@@ -13,7 +13,7 @@
  * after each of its writes, so returning to the list after an edit reads again.
  */
 import * as React from "react";
-import { formatAmount } from "@urumi-ai/otta-admin-presentation";
+import { formatAmount } from "@urumi.ai/otta-admin-presentation";
 import {
 	fetchProductSummaries,
 	isFailure,

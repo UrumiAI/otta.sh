@@ -20,7 +20,7 @@ the host's own migrations), with `ctx.http` bound to a rejecting stub so a metho
 egress fails the suite.
 
 ```bash
-pnpm --filter @urumi-ai/otta-plugin exec vitest run test/commerce-client-contract.in-process.test.ts
+pnpm --filter @urumi.ai/otta-plugin exec vitest run test/commerce-client-contract.in-process.test.ts
 ```
 
 ### The tier interface (`CommerceClientTier`)
