@@ -1,4 +1,4 @@
-import { idempotencyKey } from "@otta-sh/domain";
+import { idempotencyKey } from "@urumi-ai/otta-domain";
 import {
 	CountingIdGen,
 	FixedClock,
@@ -8,7 +8,7 @@ import {
 	InMemoryOrderStore,
 	InMemoryPaymentEventStore,
 	latePaymentContract,
-} from "@otta-sh/domain/testing";
+} from "@urumi-ai/otta-domain/testing";
 
 // The late-payment cure (auto-refund once, flagged honestly, buyer told once)
 // against the in-memory fakes — the first adapter family to pass it, before the

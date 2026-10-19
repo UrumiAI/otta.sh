@@ -7,7 +7,7 @@
  * could pay an order whose stock had already gone back on sale. Stripe captured,
  * the order stayed expired, and the order page said "Nothing was charged".
  */
-import type { OrderRouteResult, PublicOrderView } from "@otta-sh/plugin";
+import type { OrderRouteResult, PublicOrderView } from "@urumi-ai/otta-plugin";
 import { describe, expect, test } from "vitest";
 import { isOrderPayable, payPageRedirect } from "../src/lib/pay-guard.js";
 

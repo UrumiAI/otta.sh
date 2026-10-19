@@ -92,7 +92,7 @@ import {
 	isSupportedCurrency,
 	isWellFormedText,
 	ORDER_ADDRESS_MAX_LENGTHS,
-} from "@otta-sh/domain";
+} from "@urumi-ai/otta-domain";
 
 /** `Date.toISOString()` output, and only that: fixed-width UTC milliseconds. */
 const ISO_MILLIS_UTC = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
@@ -377,7 +377,7 @@ export function requireCurrencyCode(field: string, value: string): string {
 /**
  * A currency a write AUTHORS (a new rate's, a new coupon's, a cart's explicit
  * one, a price's): the shape, then membership of the store's currency table
- * (`@otta-sh/domain`'s `isSupportedCurrency` — the currencies whose minor unit
+ * (`@urumi-ai/otta-domain`'s `isSupportedCurrency` — the currencies whose minor unit
  * every money boundary knows). Write paths only — reads keep the shape check,
  * since refusing a stored code there would strand a row written before this
  * rule. There is no stored-code carve-out here: a caller that must let a row

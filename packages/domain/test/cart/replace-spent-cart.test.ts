@@ -12,8 +12,8 @@ import {
 	orderId,
 	replaceSpentCart,
 	type CreateOrderInput,
-} from "@otta-sh/domain";
-import { CountingIdGen, InMemoryOrderStore } from "@otta-sh/domain/testing";
+} from "@urumi-ai/otta-domain";
+import { CountingIdGen, InMemoryOrderStore } from "@urumi-ai/otta-domain/testing";
 import { beforeEach, describe, expect, test } from "vitest";
 import { makeFakeCartHarness, type FakeCartHarness } from "./fake-harness.js";
 

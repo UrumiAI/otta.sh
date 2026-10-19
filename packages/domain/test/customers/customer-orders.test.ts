@@ -11,14 +11,14 @@ import {
 	sku,
 	type CreateOrderInput,
 	type CustomerId,
-} from "@otta-sh/domain";
+} from "@urumi-ai/otta-domain";
 import {
 	CountingIdGen,
 	FixedClock,
 	InMemoryCustomerStore,
 	InMemoryOrderStore,
 	InMemorySessionStore,
-} from "@otta-sh/domain/testing";
+} from "@urumi-ai/otta-domain/testing";
 import { beforeEach, describe, expect, test } from "vitest";
 
 // What a SESSION may claim for its customer. A session was minted by redeeming a

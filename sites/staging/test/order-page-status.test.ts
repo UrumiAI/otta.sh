@@ -13,7 +13,7 @@
  */
 import { readFileSync } from "node:fs";
 import path from "node:path";
-import type { OrderRouteResult } from "@otta-sh/plugin";
+import type { OrderRouteResult } from "@urumi-ai/otta-plugin";
 import { describe, expect, test } from "vitest";
 import { cartErrorMessage } from "../src/lib/error-messages.js";
 import { orderReadOutcome } from "../src/lib/order-view.js";

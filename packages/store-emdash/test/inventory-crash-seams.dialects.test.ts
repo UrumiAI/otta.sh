@@ -28,13 +28,13 @@
  * suite states: one process over better-sqlite3 serializes writers and can never
  * make a compare-and-set lose.
  */
-import type { ReserveResult } from "@otta-sh/domain";
+import type { ReserveResult } from "@urumi-ai/otta-domain";
 import {
 	idempotencyKey,
 	ReservationCommitLostError,
 	ReservationNotHeldError,
-} from "@otta-sh/domain";
-import { FixedClock } from "@otta-sh/domain/testing";
+} from "@urumi-ai/otta-domain";
+import { FixedClock } from "@urumi-ai/otta-domain/testing";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type {
 	AppliedMovement,

@@ -6,9 +6,9 @@
  * recipient" and never emailed (ADR-0028 Decision 7). The domain's check is the
  * looser of the two by design, so the reverse need not hold.
  *
- * `@otta-sh/domain` is a devDependency of the site for this check only.
+ * `@urumi-ai/otta-domain` is a devDependency of the site for this check only.
  */
-import { isEmailAddress } from "@otta-sh/domain";
+import { isEmailAddress } from "@urumi-ai/otta-domain";
 import { describe, expect, test } from "vitest";
 import { isPlausibleEmail, normalizeBuyerRef } from "../src/lib/email.js";
 

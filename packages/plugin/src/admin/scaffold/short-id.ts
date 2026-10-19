@@ -1,6 +1,6 @@
 /**
  * Git-style short ids for the admin console (the UUID display rule, D4),
- * RE-EXPORTED from `@otta-sh/admin-presentation` since INC-20.
+ * RE-EXPORTED from `@urumi-ai/otta-admin-presentation` since INC-20.
  *
  * WHY THIS ONE HAD TO MOVE, specifically. §1.3's guarantee is a relationship
  * BETWEEN surfaces: what an operator reads in a list row must line up with what
@@ -20,11 +20,11 @@
  * `orders-page.ts` and `scaffold/index.ts`.
  *
  * ONE IDIOM, STATED ONCE (INC-20 review). A module in `src/` that needs a
- * shared primitive imports `@otta-sh/admin-presentation` DIRECTLY. This file
+ * shared primitive imports `@urumi-ai/otta-admin-presentation` DIRECTLY. This file
  * and its four siblings are compatibility re-exports for the ~30 modules that
  * already imported these paths and that this increment had no reason to touch
  * — they are not a second sanctioned way in. A module being edited for any
  * other reason should take the package import and drop the shim path; when the
  * last caller has, these files go.
  */
-export { SHORT_ID_MIN, shortIdsFor } from "@otta-sh/admin-presentation";
+export { SHORT_ID_MIN, shortIdsFor } from "@urumi-ai/otta-admin-presentation";

@@ -32,8 +32,8 @@
  * an `Error` with them, so the structural tests hold inside the isolate.
  */
 import { createServer, type Server } from "node:http";
-import { makeSqliteStorage } from "@otta-sh/store-emdash/testing";
-import type { StorageAccess } from "@otta-sh/store-emdash";
+import { makeSqliteStorage } from "@urumi-ai/otta-store-emdash/testing";
+import type { StorageAccess } from "@urumi-ai/otta-store-emdash";
 import { commerceStorageLayout } from "./storage-layout.js";
 
 /** The nine methods a collection answers. Anything else is rejected by name. */

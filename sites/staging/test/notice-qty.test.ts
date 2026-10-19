@@ -10,7 +10,7 @@
 import { experimental_AstroContainer as AstroContainer } from "astro/container";
 import { beforeAll, describe, expect, test } from "vitest";
 import Notice from "../src/components/Notice.astro";
-import { CART_LINE_MAX_QTY } from "@otta-sh/plugin";
+import { CART_LINE_MAX_QTY } from "@urumi-ai/otta-plugin";
 import QtyField from "../src/components/QtyField.astro";
 
 let container: AstroContainer;

@@ -5,7 +5,7 @@ import {
 	idempotencyKey,
 	UnitBackoff,
 	type Order,
-} from "@otta-sh/domain";
+} from "@urumi-ai/otta-domain";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { makeOrderHarness, type OrderHarness } from "./fake-harness.js";
 

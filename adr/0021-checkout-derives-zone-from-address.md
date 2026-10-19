@@ -44,8 +44,8 @@ named "the address is a record, not a pricing input" as a deliberate, temporary 
    `packages/domain/scripts/generate-iso-3166.ts`, over the vendored XML (dev-only, D14). A test
    re-runs the generator and requires the committed file **byte for byte**; the file is in
    `.prettierignore`, so the generator — not oxfmt — owns its layout. The Unicode License v3
-   notice ships in `THIRD_PARTY_NOTICES` inside the published `@otta-sh/domain` and
-   `@otta-sh/plugin` tarballs (the plugin bundles the domain); `scripts/` is not published.
+   notice ships in `THIRD_PARTY_NOTICES` inside the published `@urumi-ai/otta-domain` and
+   `@urumi-ai/otta-plugin` tarballs (the plugin bundles the domain); `scripts/` is not published.
    Matching ignores case and surrounding spaces, uses **exact codes only — no hierarchy**
    (`FR-IDF` does not cover `FR-75C`) *(superseded 2026-10-09: containing subdivisions are
    tried too — see the region pick list amendment below)*, and the **most specific** zone
@@ -158,7 +158,7 @@ and never asked for. This supersedes "exact codes only — no hierarchy" in Deci
   bundle.
 - Stripe receives a valid alpha-2 country and a bare state code.
 - An unknown tax class resolving to 0 bps is out of scope (separate issue).
-- Changesets for `@otta-sh/domain` and `@otta-sh/plugin` flag the breaking changes.
+- Changesets for `@urumi-ai/otta-domain` and `@urumi-ai/otta-plugin` flag the breaking changes.
 
 ## Alternatives rejected
 

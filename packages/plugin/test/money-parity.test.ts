@@ -6,7 +6,7 @@ import {
 	currencyPaymentIncrement as adminPaymentIncrement,
 	isSupportedCurrency as adminIsSupported,
 	minorUnitDigits as adminMinorUnitDigits,
-} from "@otta-sh/admin-presentation";
+} from "@urumi-ai/otta-admin-presentation";
 import {
 	SUPPORTED_CURRENCIES as DOMAIN_CURRENCIES,
 	DEFAULT_STORE_CURRENCY as DOMAIN_DEFAULT_STORE_CURRENCY,
@@ -16,14 +16,14 @@ import {
 	currencyPaymentIncrement as domainPaymentIncrement,
 	isSupportedCurrency as domainIsSupported,
 	minorUnitDigits as domainMinorUnitDigits,
-} from "@otta-sh/domain";
-import { stripeAmountIncrement, stripeRefusesCurrency } from "@otta-sh/payments-stripe";
+} from "@urumi-ai/otta-domain";
+import { stripeAmountIncrement, stripeRefusesCurrency } from "@urumi-ai/otta-payments-stripe";
 import { cents as pluginCents, currency as pluginCurrency } from "../src/presentation/money.js";
 
 /**
  * Drift guard for the money-brand MIRROR (review B3, both reviewers):
  * `plugin/src/presentation/money.ts` deliberately re-declares
- * `@otta-sh/domain`'s `cents()`/`currency()` instead of importing them (see
+ * `@urumi-ai/otta-domain`'s `cents()`/`currency()` instead of importing them (see
  * that file's header for why). This test imports BOTH — test files run in
  * Node with workspace resolution and are never bundled by the sandbox
  * harness (it copies `src/` only) — and pins that the two implementations
@@ -96,8 +96,8 @@ describe("money mirror parity (plugin/presentation/money.ts ⇄ domain/money/cen
 });
 
 /**
- * The CURRENCY TABLE has the same mirror: `@otta-sh/domain`'s
- * `money/currencies.ts` is canonical, `@otta-sh/admin-presentation`'s
+ * The CURRENCY TABLE has the same mirror: `@urumi-ai/otta-domain`'s
+ * `money/currencies.ts` is canonical, `@urumi-ai/otta-admin-presentation`'s
  * `currencies.ts` is its copy (the admin surfaces cannot import the domain).
  * Deep equality here is what makes the pair ONE source of truth: a row added,
  * removed or changed in one file and not the other fails this test.

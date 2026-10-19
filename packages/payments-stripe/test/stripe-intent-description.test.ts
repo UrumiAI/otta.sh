@@ -6,7 +6,7 @@ import {
 	PaymentIntentError,
 	type CreateIntentInput,
 	type CreateIntentLine,
-} from "@otta-sh/domain";
+} from "@urumi-ai/otta-domain";
 import { describe, expect, test } from "vitest";
 import {
 	createStripeHttpTransport,

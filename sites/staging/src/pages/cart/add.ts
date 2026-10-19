@@ -16,7 +16,7 @@ import {
 	type CartLineMutationRouteResult,
 	type CartLineWire,
 	type PdpRouteResult,
-} from "@otta-sh/plugin";
+} from "@urumi-ai/otta-plugin";
 import type { APIRoute } from "astro";
 import { getEmDashEntry } from "emdash";
 import {

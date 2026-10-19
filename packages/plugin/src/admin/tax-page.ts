@@ -1,4 +1,9 @@
-import { appliedTaxRate, ratePpmOf, shadowedTaxRates, taxRateValueOfPpm } from "@otta-sh/domain";
+import {
+	appliedTaxRate,
+	ratePpmOf,
+	shadowedTaxRates,
+	taxRateValueOfPpm,
+} from "@urumi-ai/otta-domain";
 import type {
 	AccordionBlock,
 	ActionsBlock,

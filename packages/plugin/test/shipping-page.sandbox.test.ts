@@ -1,11 +1,11 @@
-import { cents as toCents, currency as toCurrency, idempotencyKey } from "@otta-sh/domain";
+import { cents as toCents, currency as toCurrency, idempotencyKey } from "@urumi-ai/otta-domain";
 import {
 	EmdashSettingsStore,
 	EmdashShippingRulesStore,
 	SETTINGS_COLLECTION,
 	systemClock,
 	type StorageAccess,
-} from "@otta-sh/store-emdash";
+} from "@urumi-ai/otta-store-emdash";
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "vitest";
 import { decodeCarrier } from "../src/admin/scaffold/carrier.js";
 import { decodePath, encodePath } from "../src/admin/scaffold/index.js";
@@ -47,7 +47,7 @@ import { storageBridge } from "./sandbox/storage-bridge.js";
 // THE RULES SURFACE IS NO LONGER AN HTTP SERVICE (INC-D3a). `makeAdminClients`
 // hands this screen an `InProcessAdminRulesClient` composed over `ctx.storage`,
 // so the fixtures below are REAL documents written through the same
-// `@otta-sh/store-emdash` store the plugin itself reads, and every "did the
+// `@urumi-ai/otta-store-emdash` store the plugin itself reads, and every "did the
 // write land" claim is read back off that store rather than off a recorded
 // request body — a strictly stronger claim, since a recorded `PUT
 // /admin/shipping/zones/us` proved only that a request was FORMED.

@@ -27,7 +27,7 @@
  * the shape that makes revision loss actually happen; the measured depth is
  * reported per case rather than per file.
  */
-import { cents, currency } from "@otta-sh/domain";
+import { cents, currency } from "@urumi-ai/otta-domain";
 import { describe, expect, test } from "vitest";
 import { CAS_MAX_ATTEMPTS } from "../src/index.js";
 import { makePgStorage, PG_ENABLED } from "./describe-each-dialect.js";

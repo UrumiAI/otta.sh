@@ -6,8 +6,8 @@ Operational guide for Claude working in this repo. The **why** lives in
 conventions, and the guardrails that must not be crossed.
 
 > **Status: shipped, pre-1.0.** Phases 0–7 are merged and the full toolchain below is wired —
-> `@otta-sh/domain`, the EmDash plugin (which now runs commerce in-process on `ctx.storage`),
-> `@otta-sh/store-emdash`, the payment adapters and the React admin all exist under
+> `@urumi-ai/otta-domain`, the EmDash plugin (which now runs commerce in-process on `ctx.storage`),
+> `@urumi-ai/otta-store-emdash`, the payment adapters and the React admin all exist under
 > `packages/`. Treat the commands below as live, not aspirational; if one genuinely doesn't
 > exist, say so rather than inventing output.
 
@@ -18,11 +18,11 @@ conventions, and the guardrails that must not be crossed.
 These are build-breaking, not code-review nits (see `DEVELOPMENT.md` for the full rules):
 
 - **TDD, contract-first.** Failing test → code → green → refactor. For anything in
-  `@otta-sh/domain`, the behavioral test is written against the **port interface** before any
+  `@urumi-ai/otta-domain`, the behavioral test is written against the **port interface** before any
   adapter. The headline contract is **no oversell under concurrency**.
 - **Money is integer minor units, never floats.** A `number` reaching a money field is a type
   error. Branded types (e.g. `Cents`) carry an explicit currency.
-- **Ports-and-adapters purity.** `@otta-sh/domain` imports nothing with IO — no `pg`, `ctx`, or
+- **Ports-and-adapters purity.** `@urumi-ai/otta-domain` imports nothing with IO — no `pg`, `ctx`, or
   `fetch`. The boundary is enforced by a dependency check wired into `lint`.
 - **Real databases, never mocks.** SQLite (better-sqlite3) is the fast local default; Postgres
   runs in CI. The **concurrency / no-oversell test is Postgres-required** (SQLite can't race).
@@ -33,7 +33,7 @@ These are build-breaking, not code-review nits (see `DEVELOPMENT.md` for the ful
 - **The plugin is sandbox-clean.** Dev/test against the workerd-on-Node sandbox; Block Kit
   widgets, not React — the discriminator is `format` (`format: "native"` may declare
   `adminEntry`; a `format: "standard"` descriptor that declares `adminEntry` throws at build
-  time), and `@otta-sh/plugin` registers `format: "standard"` and stays Block Kit; the plugin's
+  time), and `@urumi-ai/otta-plugin` registers `format: "standard"` and stays Block Kit; the plugin's
   **only** egress is `ctx.http` + `allowedHosts` (email is host-mediated: `ctx.email`, ADR-0031),
   and commerce truth lives in `ctx.storage`.
 
@@ -72,7 +72,7 @@ Before a PR: **tests pass, lint clean, formatted.** Migrations are forward-only.
 
   | Area changed | Tag |
   |---|---|
-  | `@otta-sh/domain` (ports, use-cases, invariants) | `[Domain]` |
+  | `@urumi-ai/otta-domain` (ports, use-cases, invariants) | `[Domain]` |
   | Store/client/payment **adapters** (store-emdash, stripe) | `[Adapters]` |
   | The EmDash **plugin** (storefront, Block Kit panel, sync hooks) and its admin packages (`admin-react`, `admin-presentation`) | `[Plugin]` |
   | `sites/*` (the reference storefront site/theme) | `[Site]` |

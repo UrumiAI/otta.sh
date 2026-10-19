@@ -14,15 +14,15 @@
  * turn (a tick budget of 3, 4, 5 … calls), then drains with a roomy tick, and counts
  * the provider calls.
  */
-import { orderId as toOrderId, settleOrder, type SendEmailInput } from "@otta-sh/domain";
-import { FakePaymentGateway } from "@otta-sh/domain/testing";
+import { orderId as toOrderId, settleOrder, type SendEmailInput } from "@urumi-ai/otta-domain";
+import { FakePaymentGateway } from "@urumi-ai/otta-domain/testing";
 import {
 	EmdashEntitlementStore,
 	EmdashPaymentEventStore,
 	uuidIdGen,
 	type StorageAccess,
-} from "@otta-sh/store-emdash";
-import { makeSqliteStorage } from "@otta-sh/store-emdash/testing";
+} from "@urumi-ai/otta-store-emdash";
+import { makeSqliteStorage } from "@urumi-ai/otta-store-emdash/testing";
 import { afterEach, beforeAll, describe, expect, test, vi } from "vitest";
 import { runCommerceSweeps, SWEEP_TASK_NAME } from "../src/cron/index.js";
 import {

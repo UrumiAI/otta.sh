@@ -1,5 +1,5 @@
-import { FakePaymentGateway } from "@otta-sh/domain/testing";
-import { buildGatewayHarness, paymentGatewayContract } from "@otta-sh/domain/testing";
+import { FakePaymentGateway } from "@urumi-ai/otta-domain/testing";
+import { buildGatewayHarness, paymentGatewayContract } from "@urumi-ai/otta-domain/testing";
 
 // paymentGatewayContract against the fake gateway (§8 step 4.4) — the shared
 // settlement behavior (verify→dedupe→settle→commit/grant), driven end-to-end

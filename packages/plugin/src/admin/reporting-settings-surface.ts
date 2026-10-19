@@ -4,7 +4,7 @@
  * wire-shaped types that cross it.
  *
  * These types are defined LOCALLY and deliberately: this module NEVER imports
- * `@otta-sh/domain`, which keeps the plugin sandbox-clean. Money is integer
+ * `@urumi-ai/otta-domain`, which keeps the plugin sandbox-clean. Money is integer
  * minor units + ISO-4217 currency throughout. The "wire" in the names is
  * historical — it was once the JSON shape of a separate commerce service — and
  * it is still exactly the shape the admin route's JSON responses use, so the

@@ -64,7 +64,7 @@
  * would 404 every buyer (`lib/download-attach-guard.ts`). Every other write
  * passes through.
  */
-import { CART_COOKIE_NAME, SESSION_COOKIE_NAME } from "@otta-sh/plugin";
+import { CART_COOKIE_NAME, SESSION_COOKIE_NAME } from "@urumi-ai/otta-plugin";
 import { defineMiddleware } from "astro:middleware";
 import { env } from "virtual:emdash/env";
 import { attachBucketFrom, guardAttachDownload } from "./lib/download-attach-guard.js";

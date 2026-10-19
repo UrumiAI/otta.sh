@@ -185,7 +185,7 @@ expired holds and queued emails drain at the Free pace (§5).
    there is no service URL to bake in, and no egress URL either (§4):
 
    ```bash
-   pnpm --filter @otta-sh/site-staging build
+   pnpm --filter @urumi-ai/otta-site-staging build
    ```
 
    The build does not type-check. If you changed code, run `pnpm typecheck` first.
@@ -671,7 +671,7 @@ DNS-rebinding window), and no platform flag backs this up. Allowlisted hosts, ex
 included, also become allowed image sources in the plugin admin UI (EmDash behaviour for
 `network:request`, already true for Stripe).
 
-Stripe traffic goes through the same gate: `@otta-sh/payments-stripe` would default its
+Stripe traffic goes through the same gate: `@urumi-ai/otta-payments-stripe` would default its
 transport to `globalThis.fetch`, but the plugin constructs the live gateway with
 `ctx.http.fetch` (`packages/plugin/src/payments/stripe-wiring.ts`) —
 so the allowlist is the perimeter for `api.stripe.com` too. This

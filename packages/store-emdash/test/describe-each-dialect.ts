@@ -1,5 +1,5 @@
 /**
- * The dialect harness for `@otta-sh/store-emdash`.
+ * The dialect harness for `@urumi-ai/otta-store-emdash`.
  *
  * It builds a `StorageAccess` out of **real `PluginStorageRepository` instances**
  * — the host's own class, from the root `emdash` entry — over two dialects:

@@ -16,7 +16,7 @@ import {
 	sku as toSku,
 	type TaxCalculator,
 	type TaxSettings,
-} from "@otta-sh/domain";
+} from "@urumi-ai/otta-domain";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import type { CatalogProductCommerce } from "../src/catalog/commerce-view.js";
 import { joinProduct, type CmsProductContent } from "../src/catalog/join-product.js";

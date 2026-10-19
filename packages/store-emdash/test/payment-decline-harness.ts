@@ -11,8 +11,8 @@
  * the success settle) in those documents. Only the entitlement store — which a
  * physical order never reaches — is the order harness's in-memory one.
  */
-import { idempotencyKey } from "@otta-sh/domain";
-import type { PaymentDeclineHarness } from "@otta-sh/domain/testing";
+import { idempotencyKey } from "@urumi-ai/otta-domain";
+import type { PaymentDeclineHarness } from "@urumi-ai/otta-domain/testing";
 import { EmdashPaymentEventStore, type StorageAccess } from "../src/index.js";
 import { makeCouponHarness } from "./coupon-harness.js";
 import { makeOrderHarness } from "./order-harness.js";

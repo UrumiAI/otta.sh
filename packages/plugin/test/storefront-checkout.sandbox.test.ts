@@ -51,8 +51,8 @@ import {
 	orderId as toOrderId,
 	productId as toProductId,
 	sku as toSku,
-} from "@otta-sh/domain";
-import { signStripeWebhook } from "@otta-sh/payments-stripe";
+} from "@urumi-ai/otta-domain";
+import { signStripeWebhook } from "@urumi-ai/otta-payments-stripe";
 import {
 	EmdashCouponStore,
 	EmdashInventoryStore,
@@ -65,7 +65,7 @@ import {
 	systemClock,
 	uuidIdGen,
 	type StorageAccess,
-} from "@otta-sh/store-emdash";
+} from "@urumi-ai/otta-store-emdash";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from "vitest";
 import {
 	startStripeApiStub,

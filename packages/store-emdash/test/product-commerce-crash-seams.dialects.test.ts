@@ -35,7 +35,7 @@ import {
 	sku,
 	SkuConflictError,
 	SkuHeldStockError,
-} from "@otta-sh/domain";
+} from "@urumi-ai/otta-domain";
 import { expect, test } from "vitest";
 import {
 	INVENTORY_COLLECTION,

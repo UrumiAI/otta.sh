@@ -73,7 +73,7 @@ import {
 	type UpdateTaxClassResult,
 	type UpdateTaxRateInput,
 	type UpdateTaxRateResult,
-} from "@otta-sh/domain";
+} from "@urumi-ai/otta-domain";
 import {
 	CAS_RETRY,
 	casDone,

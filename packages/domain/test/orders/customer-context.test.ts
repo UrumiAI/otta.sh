@@ -3,7 +3,7 @@ import {
 	getOrderCustomerContext,
 	orderId,
 	type OrderCustomerContextDeps,
-} from "@otta-sh/domain";
+} from "@urumi-ai/otta-domain";
 import {
 	CountingIdGen,
 	FixedClock,
@@ -11,7 +11,7 @@ import {
 	InMemoryCustomerStore,
 	InMemoryOrderStore,
 	InMemorySessionStore,
-} from "@otta-sh/domain/testing";
+} from "@urumi-ai/otta-domain/testing";
 import { describe, expect, test } from "vitest";
 
 // getOrderCustomerContext (admin-UX Increment 1): pure orchestration over the

@@ -14,7 +14,7 @@
  * freed slot is worth exactly one more admission and never two, and that the cap is
  * per address rather than global.
  */
-import { email, type Email } from "@otta-sh/domain";
+import { email, type Email } from "@urumi-ai/otta-domain";
 import { describe, expect, test } from "vitest";
 import { makePgStorage, PG_ENABLED } from "./describe-each-dialect.js";
 import { IDENTITY_LAYOUT } from "./identity-collections.js";

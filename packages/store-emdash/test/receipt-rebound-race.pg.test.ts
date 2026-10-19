@@ -18,7 +18,12 @@
  * The pool is sized so each racer holds its own connection — a narrower pool would
  * serialize the writers and weaken the race.
  */
-import { createOrderFromCart, idempotencyKey, type Order, settleOrder } from "@otta-sh/domain";
+import {
+	createOrderFromCart,
+	idempotencyKey,
+	type Order,
+	settleOrder,
+} from "@urumi-ai/otta-domain";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import {
 	collectionOf,

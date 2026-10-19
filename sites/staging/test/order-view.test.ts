@@ -11,7 +11,7 @@
  */
 import { readFileSync } from "node:fs";
 import path from "node:path";
-import { buildCheckoutTotals, orderTotalLabel, orderTotalsFlags } from "@otta-sh/plugin";
+import { buildCheckoutTotals, orderTotalLabel, orderTotalsFlags } from "@urumi-ai/otta-plugin";
 import { describe, expect, test } from "vitest";
 import { orderProgress, orderSumRows } from "../src/lib/order-view.js";
 import { SRC } from "./theme-views.js";
@@ -27,11 +27,11 @@ const BREAKDOWN = {
 };
 
 describe("orderTotalLabel — the order pages use the domain's one rule", () => {
-	test("both order pages take it from @otta-sh/plugin (the domain's), not a copy of their own", () => {
+	test("both order pages take it from @urumi-ai/otta-plugin (the domain's), not a copy of their own", () => {
 		for (const page of ["orders/[orderId].astro", "account/orders/[id].astro"]) {
 			const source = readFileSync(path.join(SRC, "pages", page), "utf8");
 			expect(source, page).toMatch(
-				/import \{[^}]*\borderTotalLabel\b[^}]*\} from "@otta-sh\/plugin"/,
+				/import \{[^}]*\borderTotalLabel\b[^}]*\} from "@urumi-ai\/otta-plugin"/,
 			);
 		}
 		expect(readFileSync(path.join(SRC, "lib/order-view.ts"), "utf8")).not.toMatch(

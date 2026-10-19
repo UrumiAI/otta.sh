@@ -41,8 +41,8 @@ import {
 	type EmailSender,
 	type SendEmailInput,
 	TRANSPORT_UNAVAILABLE_RETRY_MS,
-} from "@otta-sh/domain";
-import { FixedClock } from "@otta-sh/domain/testing";
+} from "@urumi-ai/otta-domain";
+import { FixedClock } from "@urumi-ai/otta-domain/testing";
 import {
 	collectionOf,
 	EmdashCartStore,
@@ -65,7 +65,7 @@ import {
 	type OrderSkuIndexDoc,
 	type ProductCommerceDoc,
 	type StorageAccess,
-} from "@otta-sh/store-emdash";
+} from "@urumi-ai/otta-store-emdash";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import {
 	MAINTENANCE_LEGS,

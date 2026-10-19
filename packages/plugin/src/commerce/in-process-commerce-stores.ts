@@ -48,7 +48,7 @@ import type {
 	IdGen,
 	PaymentEventStore,
 	SessionStore,
-} from "@otta-sh/domain";
+} from "@urumi-ai/otta-domain";
 import {
 	EmdashAddressStore,
 	EmdashAttemptThrottle,
@@ -69,13 +69,13 @@ import {
 	EmdashTaxRulesStore,
 	systemClock,
 	uuidIdGen,
-} from "@otta-sh/store-emdash";
+} from "@urumi-ai/otta-store-emdash";
 import {
 	RESUME_EMAIL_MAX_ATTEMPTS,
 	RESUME_EMAIL_ORDER_MAX_ATTEMPTS,
 	RESUME_EMAIL_WINDOW_MS,
 } from "./resume-proof.js";
-import type { StorageAccess as AdapterStorageAccess } from "@otta-sh/store-emdash";
+import type { StorageAccess as AdapterStorageAccess } from "@urumi-ai/otta-store-emdash";
 import type { PluginContext, StorageAccess as PluginStorageAccess } from "../types.js";
 import { LOGIN_LINK_TTL_MS } from "../storefront/login-link.js";
 

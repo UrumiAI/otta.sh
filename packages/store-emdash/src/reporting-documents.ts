@@ -38,7 +38,7 @@
  * really is zero", and the SQL distinguishes them (a zero-total row still produces a
  * bucket), so the document has to.
  */
-import { REVENUE_COUNTING_STATES, type ReportInterval } from "@otta-sh/domain";
+import { REVENUE_COUNTING_STATES, type ReportInterval } from "@urumi-ai/otta-domain";
 
 /** Collection name: the precomputed day counters. */
 export const REPORTING_DAILY_COLLECTION = "reporting_daily";

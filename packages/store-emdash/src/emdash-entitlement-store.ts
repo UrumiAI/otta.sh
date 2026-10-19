@@ -50,7 +50,7 @@ import type {
 	GrantEntitlementInput,
 	IdGen,
 	OrderId,
-} from "@otta-sh/domain";
+} from "@urumi-ai/otta-domain";
 import {
 	CAS_RETRY,
 	casDone,

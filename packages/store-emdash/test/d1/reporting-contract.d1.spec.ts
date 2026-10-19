@@ -14,7 +14,7 @@
  * restores exactness. The harness wiring is `test/reporting-harness.ts`, imported
  * rather than restated — it names no Node driver, so it loads inside `workerd`.
  */
-import { reportingStoreContract } from "@otta-sh/domain/testing";
+import { reportingStoreContract } from "@urumi-ai/otta-domain/testing";
 import { expect, test } from "vitest";
 import { REPORTING_DAILY_COLLECTION } from "../../src/index.js";
 import { failCall, InjectedCrashError, withCollection } from "../helpers/fault-injection.js";

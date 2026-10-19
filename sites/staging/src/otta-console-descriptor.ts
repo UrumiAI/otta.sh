@@ -17,9 +17,9 @@
  *    `undefined` is not `[]`: "we asked for nothing" has to be written down.
  *    These two empty arrays are the only declared controls this descriptor has
  *    (ADR-0014 Decision 3), which is why the test pins them deep-equal.
- *  - **Both module specifiers name `@otta-sh/admin-react`.** An `adminEntry` of
- *    `"@otta-sh/plugin/admin"` would satisfy every other pin here while making
- *    `@otta-sh/plugin` the module EmDash statically imports React from — ADR-0014
+ *  - **Both module specifiers name `@urumi-ai/otta-admin-react`.** An `adminEntry` of
+ *    `"@urumi-ai/otta-plugin/admin"` would satisfy every other pin here while making
+ *    `@urumi-ai/otta-plugin` the module EmDash statically imports React from — ADR-0014
  *    Decision 1 inverted, arriving through the site config instead of through an
  *    import a depcruise rule could see.
  *
@@ -36,7 +36,7 @@ import {
 	OTTA_CONSOLE_ENTRYPOINT,
 	OTTA_CONSOLE_PLUGIN_ID,
 	OTTA_CONSOLE_PLUGIN_VERSION,
-} from "@otta-sh/admin-react";
+} from "@urumi-ai/otta-admin-react";
 import type { PluginDescriptor } from "emdash";
 
 /**

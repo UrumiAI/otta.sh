@@ -10,7 +10,7 @@ import {
 	currency as toCurrency,
 	idempotencyKey as toIdempotencyKey,
 	orderId as toOrderId,
-} from "@otta-sh/domain";
+} from "@urumi-ai/otta-domain";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { STRIPE_SECRET_KEY_KEY, STRIPE_WEBHOOK_SECRET_KEY } from "../src/payment-secrets.js";
 import { devStripeOfflineEnabled, stripeGatewayFromCtx } from "../src/payments/stripe-wiring.js";

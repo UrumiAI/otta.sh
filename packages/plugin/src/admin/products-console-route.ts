@@ -59,7 +59,7 @@ import {
 	PRODUCTS_UNAVAILABLE_DESCRIPTION,
 	PRODUCTS_UNAVAILABLE_TITLE,
 	PRODUCT_NOT_FOUND_TITLE,
-} from "@otta-sh/admin-presentation";
+} from "@urumi-ai/otta-admin-presentation";
 import {
 	CONSOLE_ACT_INTERACTION,
 	STORE_BUSY,
@@ -68,7 +68,7 @@ import {
 	readConsolePayload,
 	type ConsoleFailure,
 } from "./console-transport.js";
-import { isRetryableStorageBusy } from "@otta-sh/store-emdash";
+import { isRetryableStorageBusy } from "@urumi-ai/otta-store-emdash";
 import {
 	PRODUCTS_ACTION_IDS,
 	dispatchProductsAction,
@@ -99,7 +99,7 @@ import { readString } from "./scaffold/index.js";
  * (live)" and "Archived (deleted)" in a package that cannot import the one
  * place they are defined. Every authored string that decides what an operator
  * can ASK FOR travels down the wire; every authored string that decides what an
- * operator READS is in `@otta-sh/admin-presentation`, which both packages
+ * operator READS is in `@urumi-ai/otta-admin-presentation`, which both packages
  * import. Nothing is copied.
  */
 export interface ProductsConsoleVocabulary {

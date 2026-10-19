@@ -4,7 +4,7 @@ import {
 	FixedClock,
 	InMemoryOrderStore,
 	orderCancellationContract,
-} from "@otta-sh/domain/testing";
+} from "@urumi-ai/otta-domain/testing";
 
 // The order-cancellation spec (admin-UX Increment 1, "cancel with reason") run
 // against the in-memory fake first. The pg/sqlite dialect runs — incl. the

@@ -16,9 +16,9 @@ import type {
 	EntitlementStoreHarness,
 	OrderNotesStoreHarness,
 	SettingsStoreHarness,
-} from "@otta-sh/domain/testing";
-import { orderId as toOrderId } from "@otta-sh/domain";
-import { CountingIdGen, FixedClock } from "@otta-sh/domain/testing";
+} from "@urumi-ai/otta-domain/testing";
+import { orderId as toOrderId } from "@urumi-ai/otta-domain";
+import { CountingIdGen, FixedClock } from "@urumi-ai/otta-domain/testing";
 import {
 	collectionOf,
 	EmdashEntitlementStore,

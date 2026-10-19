@@ -3,7 +3,7 @@
  *
  * An order id is a UUID: to the buyer it names nothing they bought. So every
  * customer surface names the order by its products instead — `orderLabel` from
- * `@otta-sh/plugin` (the domain's one function, the same the order emails use):
+ * `@urumi-ai/otta-plugin` (the domain's one function, the same the order emails use):
  * "Otta Tee", "Otta Tee × 3", "Otta Tee and 2 more", or "Your order".
  *
  * The id still does its machine jobs — it is in every URL (`/orders/<id>`,
@@ -108,7 +108,7 @@ describe.each([
 
 	test("builds the label with the shared orderLabel — never its own spelling", () => {
 		expect(splitAstro(source).frontmatter).toMatch(
-			/import \{[^}]*\borderLabel\b[^}]*\} from "@otta-sh\/plugin"/,
+			/import \{[^}]*\borderLabel\b[^}]*\} from "@urumi-ai\/otta-plugin"/,
 		);
 		expect(splitAstro(source).frontmatter).toMatch(builds);
 	});
@@ -156,7 +156,9 @@ describe("the order number", () => {
 
 		test("builds it with the shared orderNumber — never its own slice of the id", () => {
 			const { frontmatter } = splitAstro(source);
-			expect(frontmatter).toMatch(/import \{[^}]*\borderNumber\b[^}]*\} from "@otta-sh\/plugin"/);
+			expect(frontmatter).toMatch(
+				/import \{[^}]*\borderNumber\b[^}]*\} from "@urumi-ai\/otta-plugin"/,
+			);
 			expect(frontmatter).toMatch(builds);
 			expect(frontmatter).not.toMatch(/\.id\.slice\(/);
 		});

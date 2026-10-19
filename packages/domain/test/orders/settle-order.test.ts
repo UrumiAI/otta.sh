@@ -11,8 +11,8 @@ import {
 	reservationId as brandReservationId,
 	settleOrder,
 	sku as brandSku,
-} from "@otta-sh/domain";
-import { FakePaymentGateway } from "@otta-sh/domain/testing";
+} from "@urumi-ai/otta-domain";
+import { FakePaymentGateway } from "@urumi-ai/otta-domain/testing";
 import { beforeEach, describe, expect, test } from "vitest";
 import { makeOrderHarness, type OrderHarness } from "./fake-harness.js";
 

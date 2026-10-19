@@ -14,8 +14,8 @@
  * (`regionOutsideCountry`): a region that is not one of the posted country's is
  * dropped and asked for again.
  */
-import { COUNTRY_CODES, isCodeShapedRegion, normalizeSubdivision } from "@otta-sh/plugin";
-import { subdivisionDataVersion, subdivisionOptions } from "@otta-sh/plugin/subdivisions";
+import { COUNTRY_CODES, isCodeShapedRegion, normalizeSubdivision } from "@urumi-ai/otta-plugin";
+import { subdivisionDataVersion, subdivisionOptions } from "@urumi-ai/otta-plugin/subdivisions";
 import { byLabel } from "./countries.js";
 
 export interface RegionOption {

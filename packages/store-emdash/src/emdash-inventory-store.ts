@@ -60,7 +60,7 @@
  * exhaustion failure is `StorageContentionError` — typed, retryable, and
  * deliberately NOT `OUT_OF_STOCK`. See `cas-retry.ts`.
  */
-import type { Clock, IdGen, IdempotencyKey } from "@otta-sh/domain";
+import type { Clock, IdGen, IdempotencyKey } from "@urumi-ai/otta-domain";
 import {
 	AdjustReservationMismatchError,
 	ReservationCommitLostError,
@@ -78,7 +78,7 @@ import {
 	type RestockResult,
 	type StockMovementOptions,
 	type StockRemovalResult,
-} from "@otta-sh/domain";
+} from "@urumi-ai/otta-domain";
 import {
 	CAS_RETRY,
 	casDone,

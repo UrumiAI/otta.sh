@@ -1,5 +1,5 @@
 /**
- * The **D1** harness for `@otta-sh/store-emdash` — tier T3.
+ * The **D1** harness for `@urumi-ai/otta-store-emdash` — tier T3.
  *
  * It is the sibling of `test/describe-each-dialect.ts`, not an extension of it,
  * and the split is structural rather than stylistic: this file runs INSIDE

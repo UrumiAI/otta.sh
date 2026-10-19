@@ -12,7 +12,7 @@
  * refuse something it could have allowed (acceptable) or allow something it should
  * have refused (never)?
  */
-import { customerId, email, DuplicateCustomerEmailError } from "@otta-sh/domain";
+import { customerId, email, DuplicateCustomerEmailError } from "@urumi-ai/otta-domain";
 import { expect, test } from "vitest";
 import {
 	failCall,

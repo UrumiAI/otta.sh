@@ -23,7 +23,7 @@
  * for the null write's `upsertLine`. Without that check, a run where the park
  * never fired would pass while proving nothing.
  */
-import { createCart, currency, DEFAULT_HOLD_TTL_MS, idempotencyKey } from "@otta-sh/domain";
+import { createCart, currency, DEFAULT_HOLD_TTL_MS, idempotencyKey } from "@urumi-ai/otta-domain";
 import { expect, test } from "vitest";
 import { CARTS_COLLECTION, collectionOf, type CartDoc, type StorageAccess } from "../src/index.js";
 import { CART_LAYOUT } from "./cart-collections.js";

@@ -13,7 +13,7 @@ import {
 	productId as toProductId,
 	sku as toSku,
 	type PaymentMethod,
-} from "@otta-sh/domain";
+} from "@urumi-ai/otta-domain";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import {
 	makeInProcessCommerce,

@@ -11,7 +11,7 @@
  * key nothing is written and nothing is read.
  *
  * THE FIELD NAMES ARE OTTA'S: the `settings:*` names of the three payment keys
- * in `@otta-sh/plugin`'s `PAYMENT_SECRET_SETTINGS_SCHEMA`. They are restated
+ * in `@urumi-ai/otta-plugin`'s `PAYMENT_SECRET_SETTINGS_SCHEMA`. They are restated
  * here because this package must not import the plugin; the site's
  * `site-config.test.ts` pins the plugin's schema to the deployed descriptor,
  * and `sites/staging/test/payment-secrets-at-rest.test.ts` runs the plugin's

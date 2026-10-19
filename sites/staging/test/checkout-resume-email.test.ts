@@ -7,7 +7,7 @@
  */
 import { readFileSync } from "node:fs";
 import path from "node:path";
-import type { OrderRouteResult } from "@otta-sh/plugin";
+import type { OrderRouteResult } from "@urumi-ai/otta-plugin";
 import { describe, expect, test } from "vitest";
 import { resumeEmailGate } from "../src/lib/checkout-resume.js";
 import { splitAstro } from "./astro-source.js";

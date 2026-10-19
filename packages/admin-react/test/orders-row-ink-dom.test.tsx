@@ -28,7 +28,7 @@ vi.mock("emdash/plugin-utils", async (importOriginal) => {
 
 const { OrdersList } = await import("../src/orders/orders-list.js");
 const { CONSOLE_STYLES } = await import("../src/ui.js");
-const { ABSENT, formatAmount, orderStateCell } = await import("@otta-sh/admin-presentation");
+const { ABSENT, formatAmount, orderStateCell } = await import("@urumi-ai/otta-admin-presentation");
 
 let mounted: Mounted | null = null;
 

@@ -19,12 +19,12 @@
  * names no Node driver, so it loads inside `workerd`. Only the storage BINDING
  * differs, and that is what `describe-d1.ts` supplies.
  */
-import { orderId } from "@otta-sh/domain";
+import { orderId } from "@urumi-ai/otta-domain";
 import {
 	entitlementStoreContract,
 	orderNotesStoreContract,
 	settingsStoreContract,
-} from "@otta-sh/domain/testing";
+} from "@urumi-ai/otta-domain/testing";
 import { expect, test } from "vitest";
 import { paymentAnomalyId } from "../../src/index.js";
 import { MISC_LAYOUT } from "../misc-collections.js";

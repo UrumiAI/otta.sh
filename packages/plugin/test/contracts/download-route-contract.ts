@@ -13,7 +13,7 @@
  * refusals that differed by so much as a field would fail here. A malformed
  * input is the typed `INVALID_INPUT`, which depends on the input's shape alone.
  *
- * The fixtures go through the same `@otta-sh/store-emdash` adapters the plugin
+ * The fixtures go through the same `@urumi-ai/otta-store-emdash` adapters the plugin
  * composes, and the grant mirrors key for key what `settleOrder` writes on a paid
  * digital line (`ent:{order}:{sku}`). Several cases then put the order or the
  * product in a state the ordinary flows would have paired with a revocation —
@@ -34,7 +34,7 @@ import {
 	sku as toSku,
 	type DownloadAsset,
 	type OrderState,
-} from "@otta-sh/domain";
+} from "@urumi-ai/otta-domain";
 import {
 	EmdashEntitlementStore,
 	EmdashInventoryStore,
@@ -43,7 +43,7 @@ import {
 	systemClock,
 	uuidIdGen,
 	type StorageAccess,
-} from "@otta-sh/store-emdash";
+} from "@urumi-ai/otta-store-emdash";
 import { beforeAll, describe, expect, test } from "vitest";
 
 export interface DownloadRouteTier {

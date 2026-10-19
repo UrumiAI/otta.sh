@@ -1,12 +1,12 @@
 /**
  * Packaging guard (work order 02, INC-A6 / R6): the plugin is about to start
- * importing `@otta-sh/domain` and `@otta-sh/store-emdash` (the in-process
+ * importing `@urumi-ai/otta-domain` and `@urumi-ai/otta-store-emdash` (the in-process
  * commerce client), and both must be BUNDLED INTO the emitted plugin, never
  * emitted as bare specifiers.
  *
  * WHY THIS TEST ASSERTS ON BUILT OUTPUT. The twenty `*.sandbox.test.ts` suites
  * run the plugin inside workerd from a bundle, and workerd has no node
- * resolution: a surviving bare `@otta-sh/*` specifier does not fail like a
+ * resolution: a surviving bare `@urumi-ai/otta-*` specifier does not fail like a
  * missing module in vitest, it fails at module instantiation inside the sandbox,
  * one indirection away from anything readable. Likewise a runtime `emdash`
  * import would break ADR-0018's "zero EmDash RUNTIME dependency" rule, which
@@ -43,14 +43,14 @@ const PKG_DIR = fileURLToPath(new URL("..", import.meta.url));
 
 /**
  * The ONLY bare specifier the emitted bundle may carry.
- * `@otta-sh/admin-presentation` is a real `dependencies` entry and is
+ * `@urumi-ai/otta-admin-presentation` is a real `dependencies` entry and is
  * deliberately left external — it is pure presentation helpers with no IO,
- * shared with `@otta-sh/admin-react`, and the consuming site resolves it from
- * the workspace while bundling `@otta-sh/plugin`. `@otta-sh/domain` and
- * `@otta-sh/store-emdash` are NOT on this list: they are marked `noExternal`
+ * shared with `@urumi-ai/otta-admin-react`, and the consuming site resolves it from
+ * the workspace while bundling `@urumi-ai/otta-plugin`. `@urumi-ai/otta-domain` and
+ * `@urumi-ai/otta-store-emdash` are NOT on this list: they are marked `noExternal`
  * precisely so they land inside the bundle.
  */
-const ALLOWED_BARE_SPECIFIERS = new Set(["@otta-sh/admin-presentation"]);
+const ALLOWED_BARE_SPECIFIERS = new Set(["@urumi-ai/otta-admin-presentation"]);
 
 function isBare(spec: string): boolean {
 	return !spec.startsWith(".") && !spec.startsWith("/");
@@ -166,7 +166,7 @@ describe("emitted plugin bundle carries no un-bundled workspace or host import",
 		expect(names).toContain("index.mjs");
 		expect(names).toContain("plugin.mjs");
 		expect(names).toContain("sandbox-entry.mjs");
-		// Issue #447: the in-process entry, `@otta-sh/plugin/trusted`.
+		// Issue #447: the in-process entry, `@urumi-ai/otta-plugin/trusted`.
 		expect(names).toContain("trusted.mjs");
 	});
 
@@ -195,16 +195,16 @@ describe("emitted plugin bundle carries no un-bundled workspace or host import",
 		}
 	});
 
-	test("NO bare @otta-sh/domain or @otta-sh/store-emdash import survives", () => {
+	test("NO bare @urumi-ai/otta-domain or @urumi-ai/otta-store-emdash import survives", () => {
 		for (const { file, specifiers } of emitted) {
-			expect(specifiers, file).not.toContain("@otta-sh/domain");
-			expect(specifiers, file).not.toContain("@otta-sh/store-emdash");
+			expect(specifiers, file).not.toContain("@urumi-ai/otta-domain");
+			expect(specifiers, file).not.toContain("@urumi-ai/otta-store-emdash");
 			expect(
-				specifiers.filter((s) => s.startsWith("@otta-sh/domain/")),
+				specifiers.filter((s) => s.startsWith("@urumi-ai/otta-domain/")),
 				file,
 			).toEqual([]);
 			expect(
-				specifiers.filter((s) => s.startsWith("@otta-sh/store-emdash/")),
+				specifiers.filter((s) => s.startsWith("@urumi-ai/otta-store-emdash/")),
 				file,
 			).toEqual([]);
 		}

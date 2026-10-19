@@ -18,7 +18,7 @@
  * Postgres additionally runs the races, in `refund-race.pg.test.ts` — SQLite
  * serializes writes globally, so it cannot race.
  */
-import { buildRefundSeed, refundOrderContract } from "@otta-sh/domain/testing";
+import { buildRefundSeed, refundOrderContract } from "@urumi-ai/otta-domain/testing";
 import { describeEachDialect } from "./describe-each-dialect.js";
 import { ORDER_LAYOUT } from "./order-collections.js";
 import { makeOrderHarness } from "./order-harness.js";

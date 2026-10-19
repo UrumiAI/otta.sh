@@ -1,13 +1,13 @@
 /**
  * Domain-purity boundary (DEVELOPMENT.md §3, CLAUDE.md non-negotiables).
- * `@otta-sh/domain` must depend on nothing with IO. Wired into `pnpm lint`.
+ * `@urumi-ai/otta-domain` must depend on nothing with IO. Wired into `pnpm lint`.
  */
 module.exports = {
 	forbidden: [
 		{
 			name: "domain-is-io-free",
 			comment:
-				"@otta-sh/domain imports nothing with IO — no pg/kysely/better-sqlite3/hono/http, " +
+				"@urumi-ai/otta-domain imports nothing with IO — no pg/kysely/better-sqlite3/hono/http, " +
 				"and no dependency on adapter/plugin packages (DEVELOPMENT.md §3).",
 			severity: "error",
 			from: { path: "^packages/domain/src" },
@@ -21,7 +21,7 @@ module.exports = {
 		{
 			name: "plugin-is-sandbox-clean",
 			comment:
-				"@otta-sh/plugin's src (loaded inside the workerd sandbox) has NO DB/" +
+				"@urumi-ai/otta-plugin's src (loaded inside the workerd sandbox) has NO DB/" +
 				"driver, filesystem, process, socket or network-client surface, and no " +
 				"dependency on a SQL store or a payment adapter. Its egress " +
 				"is the injected ctx.http; its commerce truth is the injected ctx.storage " +
@@ -40,14 +40,14 @@ module.exports = {
 				"every builtin it names, from the day it was written until INC-21. " +
 				"`domain-is-io-free` above always had the correct form, which is why " +
 				"the two rules disagreed about the same import. It still forbids " +
-				"@otta-sh/admin-react, in all three spellings: without that, the console " +
+				"@urumi-ai/otta-admin-react, in all three spellings: without that, the console " +
 				"quarantine below is escapable in ONE HOP — packages/plugin importing " +
 				"packages/admin-react trips no rule, and react/emdash then reach the " +
 				"plugin transitively, which is precisely what ADR-0014 Decision 1 " +
 				"forbids.\n\n" +
 				"TWO things this rule USED to forbid and deliberately no longer does " +
-				"(ADR-0018). First, @otta-sh/domain, which was named in all three " +
-				"@otta-sh clauses. The boundary was never `the plugin must not know the " +
+				"(ADR-0018). First, @urumi-ai/otta-domain, which was named in all three " +
+				"@urumi-ai/otta-* clauses. The boundary was never `the plugin must not know the " +
 				"domain`; it was `the plugin must not acquire IO`, and banning the domain " +
 				"was a cheap PROXY for that — cheap because the domain is the package " +
 				"most likely to grow an adapter import. The proxy is no longer needed and " +
@@ -63,7 +63,7 @@ module.exports = {
 				"is mirrored into the two SPECIFIER clauses, not only the packages " +
 				"clause, because pnpm's strict isolation leaves an UNDECLARED import as " +
 				"a bare specifier that never resolves to a packages/ path: naming only " +
-				"admin-react there meant an undeclared @otta-sh/store-* " +
+				"admin-react there meant an undeclared @urumi-ai/otta-store-* " +
 				"or payments-* import tripped nothing at all, which is the same class of " +
 				"silent miss as the `^node:`-only builtin clause. store-emdash is " +
 				"admissible because it carries no IO of its own: it is written against a " +
@@ -72,7 +72,7 @@ module.exports = {
 				"one, type-only imports included.\n\n" +
 				"THIRD NARROWING (work order 02, INC-C1b): `payments-[^/]+` became " +
 				"`(?!payments-stripe(/|$))payments-[^/]+`, in all three clauses, " +
-				"so @otta-sh/payments-stripe is admitted and " +
+				"so @urumi-ai/otta-payments-stripe is admitted and " +
 				"every other payments-* package stays banned by default. The reason is " +
 				"the same shape as store-emdash's, and it is a statement about that one " +
 				"package rather than about payment adapters generally: with the service " +
@@ -81,7 +81,7 @@ module.exports = {
 				"registered `public: true` — so the HMAC verification has to happen " +
 				"inside the isolate. It can: payments-stripe's verifier is WebCrypto " +
 				"(`crypto.subtle.verify`, an ambient global in workerd), it imports " +
-				"nothing but @otta-sh/domain, and its own sandbox-clean guard " +
+				"nothing but @urumi-ai/otta-domain, and its own sandbox-clean guard " +
 				"(packages/payments-stripe/test/sandbox-clean-guard.test.ts) holds it " +
 				"there. A payments adapter that reached for `pg` or a node builtin would " +
 				"still be caught — by the driver and node-builtin clauses of this same " +
@@ -95,7 +95,7 @@ module.exports = {
 			severity: "error",
 			from: { path: "^packages/plugin/src" },
 			to: {
-				path: "(node_modules/(pg|pg-pool|kysely|better-sqlite3|workerd|hono|node-fetch|undici|axios|ws)(/|$)|node_modules/@otta-sh/((?!store-emdash(/|$))store-[^/]+|(?!payments-stripe(/|$))payments-[^/]+|admin-react)(/|$)|^(pg|pg-pool|kysely|better-sqlite3|workerd|hono|node-fetch|undici|axios|ws)(/|$)|^@otta-sh/((?!store-emdash(/|$))store-[^/]+|(?!payments-stripe(/|$))payments-[^/]+|admin-react)(/|$)|^(node:)?(fs|child_process|net|http|https|os|dgram|dns|tls|worker_threads|cluster|vm)(/|$)|^packages/((?!store-emdash(/|$))store-[^/]+|(?!payments-stripe(/|$))payments-[^/]+|admin-react)/)",
+				path: "(node_modules/(pg|pg-pool|kysely|better-sqlite3|workerd|hono|node-fetch|undici|axios|ws)(/|$)|node_modules/@urumi-ai/otta-((?!store-emdash(/|$))store-[^/]+|(?!payments-stripe(/|$))payments-[^/]+|admin-react)(/|$)|^(pg|pg-pool|kysely|better-sqlite3|workerd|hono|node-fetch|undici|axios|ws)(/|$)|^@urumi-ai/otta-((?!store-emdash(/|$))store-[^/]+|(?!payments-stripe(/|$))payments-[^/]+|admin-react)(/|$)|^(node:)?(fs|child_process|net|http|https|os|dgram|dns|tls|worker_threads|cluster|vm)(/|$)|^packages/((?!store-emdash(/|$))store-[^/]+|(?!payments-stripe(/|$))payments-[^/]+|admin-react)/)",
 			},
 		},
 		{
@@ -105,7 +105,7 @@ module.exports = {
 				"decisions 1-2). `react`/`react-dom`, `emdash` + `@emdash-cms/*`, and the " +
 				"two component libraries the 2026-07-31 spike proved OPTIONAL rather than " +
 				"required (`@cloudflare/kumo`, `@phosphor-icons/react`) may be imported " +
-				"only from packages/admin-react. Every other package — @otta-sh/plugin " +
+				"only from packages/admin-react. Every other package — @urumi-ai/otta-plugin " +
 				"above all — keeps ZERO EmDash dependency, which is what makes a " +
 				"pinned-exact EmDash upgrade unable to break it by construction, and " +
 				"keeps packages/plugin/src/types.ts a hand-written mirror rather than a " +
@@ -117,7 +117,7 @@ module.exports = {
 				"sites/staging is deliberately out of scope (it is the EmDash HOST: it " +
 				"imports `emdash` types and renders React storefront components) and " +
 				"`pnpm lint` cruises `packages` only. " +
-				"@otta-sh/store-emdash is the SECOND exemption, and it is a HANDOFF to " +
+				"@urumi-ai/otta-store-emdash is the SECOND exemption, and it is a HANDOFF to " +
 				"three rules below, not a hole: that package exists to name the host's " +
 				"plugin-storage types, so the blanket ban would forbid the one import it " +
 				"is for. What replaces it, precisely, because 'nothing is lost' was " +
@@ -147,7 +147,7 @@ module.exports = {
 				"The console quarantine, restated for the ONE package whose `from` " +
 				"`console-react-is-quarantined` exempts. That exemption exists because " +
 				"the blanket ban names `emdash`, which is the one import " +
-				"@otta-sh/store-emdash is FOR — but react has nothing to do with that, " +
+				"@urumi-ai/otta-store-emdash is FOR — but react has nothing to do with that, " +
 				"and losing the react ban as a side effect of the EmDash carve-out would " +
 				"be exactly the silent hole ADR-0014 Decision 1 forbids. So this rule " +
 				"binds the WHOLE package, `test/` included: unlike the IO rule below, " +
@@ -169,7 +169,7 @@ module.exports = {
 		{
 			name: "store-emdash-is-sandbox-clean",
 			comment:
-				"@otta-sh/store-emdash's src is commerce-truth code that runs INSIDE the " +
+				"@urumi-ai/otta-store-emdash's src is commerce-truth code that runs INSIDE the " +
 				"workerd sandbox, bound to the `ctx.storage` the host injects. It " +
 				"therefore carries the same perimeter as `plugin-is-sandbox-clean`: no " +
 				"DB driver, no filesystem/process/socket builtin, no HTTP or WS client, " +
@@ -187,7 +187,7 @@ module.exports = {
 				"over better-sqlite3 and Postgres on purpose: real databases, never " +
 				"mocks. That harness is why the ban can be this strict in `src` without " +
 				"costing coverage. (`react` and friends are banned across the whole " +
-				"package by `store-emdash-no-console-react` above.) @otta-sh/plugin is " +
+				"package by `store-emdash-no-console-react` above.) @urumi-ai/otta-plugin is " +
 				"banned here too, in all three spellings, and that half is about LAYERING " +
 				"rather than IO: the plugin is what injects ctx.storage into this " +
 				"package, so an import in this direction would make the adapter depend on " +
@@ -206,13 +206,13 @@ module.exports = {
 				// Both spellings, as above. The builtin half is the optional-`node:`
 				// form the plugin rule's comment explains — dependency-cruiser reports
 				// `from "node:fs"` under the bare name `fs`.
-				path: "(node_modules/(pg|pg-pool|kysely|better-sqlite3|workerd|hono|node-fetch|undici|axios|ws)(/|$)|node_modules/@otta-sh/((?!store-emdash(/|$))store-[^/]+|payments-[^/]+|admin-react|plugin)(/|$)|^(pg|pg-pool|kysely|better-sqlite3|workerd|hono|node-fetch|undici|axios|ws)(/|$)|^@otta-sh/((?!store-emdash(/|$))store-[^/]+|payments-[^/]+|admin-react|plugin)(/|$)|^(node:)?(fs|child_process|net|http|https|os|dgram|dns|tls|worker_threads|cluster|vm)(/|$)|^packages/(payments-[^/]+|admin-react|plugin)/|^packages/(?!store-emdash(/|$))store-[^/]+/)",
+				path: "(node_modules/(pg|pg-pool|kysely|better-sqlite3|workerd|hono|node-fetch|undici|axios|ws)(/|$)|node_modules/@urumi-ai/otta-((?!store-emdash(/|$))store-[^/]+|payments-[^/]+|admin-react|plugin)(/|$)|^(pg|pg-pool|kysely|better-sqlite3|workerd|hono|node-fetch|undici|axios|ws)(/|$)|^@urumi-ai/otta-((?!store-emdash(/|$))store-[^/]+|payments-[^/]+|admin-react|plugin)(/|$)|^(node:)?(fs|child_process|net|http|https|os|dgram|dns|tls|worker_threads|cluster|vm)(/|$)|^packages/(payments-[^/]+|admin-react|plugin)/|^packages/(?!store-emdash(/|$))store-[^/]+/)",
 			},
 		},
 		{
 			name: "store-emdash-runs-no-host-code",
 			comment:
-				"The seam, as a rule. @otta-sh/store-emdash may NAME EmDash's storage " +
+				"The seam, as a rule. @urumi-ai/otta-store-emdash may NAME EmDash's storage " +
 				"types and may never EXECUTE EmDash's code: `src/storage-access.ts` is " +
 				"written in terms of the host's `StorageCollection` and its conditional-" +
 				"write result types, and the implementation arrives injected — " +
@@ -240,11 +240,11 @@ module.exports = {
 		{
 			name: "admin-presentation-is-dependency-free",
 			comment:
-				"@otta-sh/admin-presentation may import NOTHING but its own relative " +
+				"@urumi-ai/otta-admin-presentation may import NOTHING but its own relative " +
 				"modules. It is the ONE package imported by BOTH a module bundled " +
-				"into workerd (@otta-sh/plugin, from a bare scratch copy of src/ " +
+				"into workerd (@urumi-ai/otta-plugin, from a bare scratch copy of src/ " +
 				"with no workspace node_modules) AND a module that ships to a " +
-				"browser (@otta-sh/admin-react). Nothing else in this workspace is " +
+				"browser (@urumi-ai/otta-admin-react). Nothing else in this workspace is " +
 				"safe in both, and neither host would fail at lint or at typecheck: " +
 				"a `node:fs` here typechecks, cruises clean under every OTHER rule, " +
 				"and fails inside the isolate at runtime; a `pg` here would be a " +
@@ -271,10 +271,10 @@ module.exports = {
 			comment:
 				"The OTHER half of the console quarantine, and the one the rules above " +
 				"do not cover. `plugin-is-sandbox-clean` forbids packages/plugin from " +
-				"importing @otta-sh/admin-react; nothing forbade the reverse, and the " +
+				"importing @urumi-ai/otta-admin-react; nothing forbade the reverse, and the " +
 				"reverse is the direction that actually tempts an implementer — " +
 				"`formatMoney`, the wire types, the short-id helper all sit in " +
-				"@otta-sh/plugin and all look reusable. ADR-0014 Decision 3 gives " +
+				"@urumi-ai/otta-plugin and all look reusable. ADR-0014 Decision 3 gives " +
 				"otta-console EXACTLY ONE data path: HTTP to the existing " +
 				"authenticated `otta` admin routes, with the operator's own session. A " +
 				"static import would be a second one — compiled in, invisible to the " +
@@ -289,13 +289,13 @@ module.exports = {
 				"one. Test code is exempt for the same reason it is exempt above: it " +
 				"runs in Node, outside the shipped surface. INC-20 PAID that bill, " +
 				"and paying it is the one carve-out below: " +
-				"@otta-sh/admin-presentation holds formatMoney and its brands, the " +
+				"@urumi-ai/otta-admin-presentation holds formatMoney and its brands, the " +
 				"console's single date dialect, the short-id rule and the " +
 				"order-status vocabulary — everything the two admin surfaces must " +
 				"agree on when rendering the same record. It is NOT a second data " +
 				"path: zero dependencies, zero IO, zero wire types, zero react, zero " +
 				"emdash, pure Intl and string work, which is what makes it safe both " +
-				"in a browser and inside workerd (@otta-sh/plugin imports it too, so " +
+				"in a browser and inside workerd (@urumi-ai/otta-plugin imports it too, so " +
 				"the plugin's own suites prove the two surfaces cannot drift). Every " +
 				"OTHER workspace package stays forbidden, in either direction.",
 			severity: "error",
@@ -304,10 +304,10 @@ module.exports = {
 				// Both forms, as above: resolved into node_modules (the workspace
 				// link) or left as a bare specifier by pnpm's strict isolation. The
 				// lookaheads carve out admin-presentation in each spelling a cruise
-				// can produce. A lookalike such as `@otta-sh/admin-presentation-shim`
+				// can produce. A lookalike such as `@urumi-ai/otta-admin-presentation-shim`
 				// is still caught, because the lookahead requires the name to END
 				// there — at a `/` or at the end of the specifier.
-				path: "(node_modules/@otta-sh/(?!admin-presentation(/|$))[^/]+(/|$)|^@otta-sh/(?!admin-presentation(/|$))[^/]+(/|$)|^packages/(?!admin-react/|admin-presentation/))",
+				path: "(node_modules/@urumi-ai/(?!otta-admin-presentation(/|$))[^/]+(/|$)|^@urumi-ai/(?!otta-admin-presentation(/|$))[^/]+(/|$)|^packages/(?!admin-react/|admin-presentation/))",
 			},
 		},
 	],
@@ -326,7 +326,7 @@ module.exports = {
 			// It is NOT what enforces the quarantine. dependency-cruiser walks
 			// `.tsx` source regardless of this list, so `admin.tsx`'s own imports
 			// are cruised and `console-imports-no-workspace-package` fires on a
-			// planted `@otta-sh/plugin` import with or without the entry —
+			// planted `@urumi-ai/otta-plugin` import with or without the entry —
 			// verified both ways, not assumed.
 			//
 			// What it actually closes is one phantom unresolved edge:

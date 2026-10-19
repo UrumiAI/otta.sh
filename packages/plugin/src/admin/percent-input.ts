@@ -1,4 +1,4 @@
-import { PPM_PER_BPS } from "@otta-sh/domain";
+import { PPM_PER_BPS } from "@urumi-ai/otta-domain";
 /**
  * Shared percent ↔ basis-points TEXT-input parsing/formatting for admin
  * screens (NO float arithmetic — CLAUDE.md). The ONE implementation behind

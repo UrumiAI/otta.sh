@@ -1,4 +1,4 @@
-import type { IdGen } from "@otta-sh/domain";
+import type { IdGen } from "@urumi-ai/otta-domain";
 
 /**
  * Zero-dep collision-free id source for the in-process adapters. WebCrypto off

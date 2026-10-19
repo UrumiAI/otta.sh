@@ -1,4 +1,4 @@
-import { idempotencyKey } from "@otta-sh/domain";
+import { idempotencyKey } from "@urumi-ai/otta-domain";
 import {
 	CountingIdGen,
 	FixedClock,
@@ -8,7 +8,7 @@ import {
 	InMemoryOrderStore,
 	InMemoryPaymentEventStore,
 	intentCancelContract,
-} from "@otta-sh/domain/testing";
+} from "@urumi-ai/otta-domain/testing";
 
 // Late-payment PREVENTION (intents recorded at checkout, due at the hold, drained
 // by the bounded intent-cancel sweep) against the in-memory fakes — the first

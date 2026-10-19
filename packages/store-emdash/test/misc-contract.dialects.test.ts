@@ -9,12 +9,12 @@
  * `grant_idempotency_key`, a settings mutation ledger without the transaction that
  * bracketed it, and note-once without a UNIQUE `idempotency_key`.
  */
-import { idempotencyKey, orderId } from "@otta-sh/domain";
+import { idempotencyKey, orderId } from "@urumi-ai/otta-domain";
 import {
 	entitlementStoreContract,
 	orderNotesStoreContract,
 	settingsStoreContract,
-} from "@otta-sh/domain/testing";
+} from "@urumi-ai/otta-domain/testing";
 import { expect, test } from "vitest";
 import { collectionOf, ORDER_NOTES_COLLECTION, type OrderNoteDoc } from "../src/index.js";
 import { describeEachDialect } from "./describe-each-dialect.js";

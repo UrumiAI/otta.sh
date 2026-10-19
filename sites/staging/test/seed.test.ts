@@ -17,7 +17,7 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { PRODUCTS_COLLECTION } from "@otta-sh/plugin";
+import { PRODUCTS_COLLECTION } from "@urumi-ai/otta-plugin";
 import { describe, expect, test } from "vitest";
 
 interface SeedSubField {

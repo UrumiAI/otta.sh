@@ -9,7 +9,7 @@
  * release are cross-aggregate edges, and a fake inventory could not lose a
  * `compareAndSet` race). The stores the checkout USE-CASES need but this package
  * does not implement yet — product commerce, coupons, shipping and tax rules,
- * entitlements, payment events — come from `@otta-sh/domain/testing`'s in-memory
+ * entitlements, payment events — come from `@urumi-ai/otta-domain/testing`'s in-memory
  * fakes. That is not a mocked subject: none of them is an order-store invariant,
  * and each has its own adapter increment with its own contract suite. Where a real
  * document store is load-bearing (every order, cart and inventory write in these
@@ -39,7 +39,7 @@ import {
 	productId as brandProductId,
 	type SettleDeps,
 	sku as brandSku,
-} from "@otta-sh/domain";
+} from "@urumi-ai/otta-domain";
 import {
 	CountingIdGen,
 	FakeEmailSender,
@@ -57,7 +57,7 @@ import {
 	type OrderTimelineHarness,
 	type OrderTransitionHarness,
 	type SeedOrderSummaryRow,
-} from "@otta-sh/domain/testing";
+} from "@urumi-ai/otta-domain/testing";
 import {
 	collectionOf,
 	EmdashCartStore,
@@ -389,7 +389,7 @@ export function makeOrderHarness(
 			return normalizeInventoryDoc(doc).holds[index.idempotencyKey]?.state;
 		},
 		async sweepHeldHolds() {
-			const { expireHolds } = await import("@otta-sh/domain");
+			const { expireHolds } = await import("@urumi-ai/otta-domain");
 			clock.advance(16 * 60 * 1000);
 			return expireHolds(cartDeps);
 		},

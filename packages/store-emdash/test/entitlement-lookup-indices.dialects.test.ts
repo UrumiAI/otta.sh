@@ -19,7 +19,7 @@
  * the predicate would fail it, exactly as a rewritten fold stopped matching the
  * functional index in SQL.
  */
-import { orderId, sku } from "@otta-sh/domain";
+import { orderId, sku } from "@urumi-ai/otta-domain";
 import { expect, test } from "vitest";
 import { isStorageQueryError } from "../src/index.js";
 import { describeEachDialect } from "./describe-each-dialect.js";

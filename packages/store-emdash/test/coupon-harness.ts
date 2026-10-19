@@ -8,9 +8,9 @@
  * coupon the admin list's code search (and `findByCode`) could not reach, so the
  * list cases would be asserting against a state the store never produces.
  */
-import { cents, currency } from "@otta-sh/domain";
-import type { CouponStoreHarness, SeedCouponSummaryRow } from "@otta-sh/domain/testing";
-import { FixedClock } from "@otta-sh/domain/testing";
+import { cents, currency } from "@urumi-ai/otta-domain";
+import type { CouponStoreHarness, SeedCouponSummaryRow } from "@urumi-ai/otta-domain/testing";
+import { FixedClock } from "@urumi-ai/otta-domain/testing";
 import {
 	collectionOf,
 	COUPON_CODES_COLLECTION,

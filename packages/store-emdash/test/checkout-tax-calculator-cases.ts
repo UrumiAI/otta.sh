@@ -14,7 +14,7 @@ import {
 	readOrderTaxSnapshot,
 	type CreateOrderDeps,
 	type TaxCalculator,
-} from "@otta-sh/domain";
+} from "@urumi-ai/otta-domain";
 import { expect, test, vi } from "vitest";
 import type { StorageAccess } from "../src/index.js";
 import { makeCouponHarness } from "./coupon-harness.js";

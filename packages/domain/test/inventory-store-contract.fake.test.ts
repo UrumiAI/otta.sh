@@ -1,11 +1,11 @@
-import { idempotencyKey } from "@otta-sh/domain";
+import { idempotencyKey } from "@urumi-ai/otta-domain";
 import {
 	CountingIdGen,
 	FixedClock,
 	InMemoryInventoryStore,
 	type InventoryStoreHarness,
 	inventoryStoreContract,
-} from "@otta-sh/domain/testing";
+} from "@urumi-ai/otta-domain/testing";
 
 // Step 0.3: the reusable behavioral spec runs against its first adapter — the
 // IO-free fake — proving the suite is real and the port shape is right before

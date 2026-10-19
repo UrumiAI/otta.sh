@@ -22,7 +22,7 @@ import type {
 	CheckoutAmountView,
 	CheckoutSummaryView,
 	PublicOrderView,
-} from "@otta-sh/plugin";
+} from "@urumi-ai/otta-plugin";
 import type { CountryOption } from "../lib/countries.js";
 import type { RegionChoice } from "../lib/regions.js";
 import type { TapeRow } from "../lib/tape.js";

@@ -1,4 +1,4 @@
-import { ORDER_LABEL_TITLE_MAX_LENGTH, orderLabel } from "@otta-sh/domain";
+import { ORDER_LABEL_TITLE_MAX_LENGTH, orderLabel } from "@urumi-ai/otta-domain";
 import { describe, expect, test } from "vitest";
 
 // The shopper-facing name of an order. A shopper never sees the order id — a

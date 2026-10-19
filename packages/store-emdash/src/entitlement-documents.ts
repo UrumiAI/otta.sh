@@ -35,8 +35,12 @@
  * other's delivery is a security bug rather than a collision statistic. Both parts
  * are therefore percent-escaped before they are joined (see {@link entitlementLookupId}).
  */
-import type { Entitlement, EntitlementSource, EntitlementState } from "@otta-sh/domain";
-import { orderId as toOrderId, productId as toProductId, sku as toSku } from "@otta-sh/domain";
+import type { Entitlement, EntitlementSource, EntitlementState } from "@urumi-ai/otta-domain";
+import {
+	orderId as toOrderId,
+	productId as toProductId,
+	sku as toSku,
+} from "@urumi-ai/otta-domain";
 import { foldBuyerRef } from "./order-documents.js";
 
 /** Collection name: one grant per grant-idempotency key. */

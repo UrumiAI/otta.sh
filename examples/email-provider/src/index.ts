@@ -20,7 +20,7 @@ export function httpEmailProvider(): PluginDescriptor {
 		version: "0.0.0",
 		format: "standard",
 		// The module that default-exports ./plugin.ts. Rename to your package.
-		entrypoint: "@otta-sh/example-email-provider/plugin",
+		entrypoint: "@urumi-ai/otta-example-email-provider/plugin",
 		capabilities: ["hooks.email-transport:register", "network:request"],
 		// One exact host, never a wildcard.
 		allowedHosts: [httpsHost(EMAIL_API_URL)],

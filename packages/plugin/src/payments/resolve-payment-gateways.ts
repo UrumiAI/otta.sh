@@ -18,7 +18,7 @@
  * so a future gateway slots in beside it.
  */
 
-import type { PaymentGateway, PaymentMethod } from "@otta-sh/domain";
+import type { PaymentGateway, PaymentMethod } from "@urumi-ai/otta-domain";
 import type { PluginContext } from "../types.js";
 import { stripeGatewayFromCtx, type StripeGatewayOptions } from "./stripe-wiring.js";
 

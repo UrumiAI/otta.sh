@@ -31,7 +31,7 @@
  * other key. Like the coupon, resubmitting the delivery form loses the address
  * fields typed below it.
  */
-import { isCodeShapedRegion } from "@otta-sh/plugin";
+import { isCodeShapedRegion } from "@urumi-ai/otta-plugin";
 
 /** The query parameter the coupon form submits. */
 export const COUPON_PARAM = "coupon";

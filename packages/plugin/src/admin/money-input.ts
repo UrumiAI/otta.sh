@@ -1,6 +1,6 @@
 /**
  * The money INPUT boundary — an operator's typed amount → integer minor units —
- * RE-EXPORTED from `@otta-sh/admin-presentation` since INC-20.
+ * RE-EXPORTED from `@urumi-ai/otta-admin-presentation` since INC-20.
  *
  * It moved for the same reason `formatAmount` did, running the other way. The
  * React Orders console has a partial-refund field, and the moment an operator
@@ -13,13 +13,13 @@
  *
  * `packages/plugin/src/admin/money-input.js` stays as this re-export because it
  * is the path several modules already import — `shipping-page.ts`,
- * `coupons-page.ts` and `products-actions.ts` — and `@otta-sh/plugin`'s public
+ * `coupons-page.ts` and `products-actions.ts` — and `@urumi-ai/otta-plugin`'s public
  * `index.ts` re-exports both functions from it. (The two importers this note
  * used to name, `orders-page.ts` and `products-page.ts`, were the retired Block
  * Kit screens and are gone; the shim outlived them.)
  *
  * ONE IDIOM, STATED ONCE (INC-20 review). A module in `src/` that needs a
- * shared primitive imports `@otta-sh/admin-presentation` DIRECTLY. This file
+ * shared primitive imports `@urumi-ai/otta-admin-presentation` DIRECTLY. This file
  * and its four siblings are compatibility re-exports for the ~30 modules that
  * already imported these paths and that this increment had no reason to touch
  * — they are not a second sanctioned way in. A module being edited for any
@@ -32,4 +32,4 @@ export {
 	moneyPrecisionPhrase,
 	NO_CURRENCY,
 	parseMinorUnitsInput,
-} from "@otta-sh/admin-presentation";
+} from "@urumi-ai/otta-admin-presentation";

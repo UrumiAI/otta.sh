@@ -1,6 +1,6 @@
 /**
  * The storage layout commerce truth lives in: every collection the
- * `@otta-sh/store-emdash` adapters read or write, with the indexes each one
+ * `@urumi-ai/otta-store-emdash` adapters read or write, with the indexes each one
  * declares.
  *
  * WHY IT IS ASSEMBLED HERE AND NOT IN THE ADAPTER PACKAGE. Each adapter module
@@ -36,7 +36,7 @@ import {
 	REPORTING_COLLECTIONS,
 	RULES_COLLECTIONS,
 	SETTINGS_COLLECTIONS,
-} from "@otta-sh/store-emdash";
+} from "@urumi-ai/otta-store-emdash";
 
 /**
  * One collection's declaration. A composite entry (`["state", "createdAt"]`) is

@@ -25,8 +25,8 @@ import {
 	reservationId,
 	sku,
 	toWellFormedText,
-} from "@otta-sh/domain";
-import type { CreateOrderInput } from "@otta-sh/domain";
+} from "@urumi-ai/otta-domain";
+import type { CreateOrderInput } from "@urumi-ai/otta-domain";
 import { expect, test } from "vitest";
 import {
 	CART_COLLECTIONS,

@@ -9,7 +9,7 @@
  * time; and the cancel flip records both on the envelope. Only the storage binding
  * differs, which `describe-d1.ts` supplies.
  */
-import { cancelWithRefundContract } from "@otta-sh/domain/testing";
+import { cancelWithRefundContract } from "@urumi-ai/otta-domain/testing";
 import { ORDER_LAYOUT } from "../order-collections.js";
 import { makeOrderHarness } from "../order-harness.js";
 import { useD1Storage } from "./describe-d1.js";

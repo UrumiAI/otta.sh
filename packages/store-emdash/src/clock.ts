@@ -1,4 +1,4 @@
-import type { Clock } from "@otta-sh/domain";
+import type { Clock } from "@urumi-ai/otta-domain";
 
 /**
  * Real time, for the in-process adapters. `Date` only — no `node:` import, so

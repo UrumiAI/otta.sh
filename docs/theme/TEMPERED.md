@@ -10,7 +10,7 @@ Tempered is Otta's only storefront theme (external themes are not supported); se
 amendment of 2026-10-15.
 
 ADR-0003 stands: the plugin serves JSON view models, the active theme owns every byte of
-markup. Nothing in here belongs in `@otta-sh/plugin`.
+markup. Nothing in here belongs in `@urumi-ai/otta-plugin`.
 
 ---
 

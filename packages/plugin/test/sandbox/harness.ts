@@ -69,7 +69,7 @@ const WORKSPACE_PACKAGES: ReadonlyArray<{
 	// the isolate, so the Stripe adapter became a runtime import like the two
 	// beside it — and it is bundled into the deployed artifact for the same reason
 	// (`tsdown.config.ts` `noExternal`). Absent from this list, the worker fails to
-	// boot at all with `No such module "@otta-sh/payments-stripe"`.
+	// boot at all with `No such module "@urumi-ai/otta-payments-stripe"`.
 	{ name: "payments-stripe", exports: { ".": "./src/index.ts" } },
 	{ name: "store-emdash", exports: { ".": "./src/index.ts" } },
 ];
@@ -336,7 +336,7 @@ function capnpConfig(
  * WHY ANYTHING IS NEEDED. The copy lives under the OS temp directory, so Node's
  * resolution walks the scratch directory's own `node_modules`, then
  * `/tmp/node_modules`, then `/node_modules`, and finds nothing: a bare
- * `@otta-sh/…` specifier would be left external by the bundler and workerd would
+ * `@urumi-ai/otta-…` specifier would be left external by the bundler and workerd would
  * fail to load a module that imports a package it has no way to fetch.
  *
  * WHY THIS IS NOT A WEAKENING. What the bare copy pins is that the SHIPPED BUNDLE
@@ -363,7 +363,7 @@ function capnpConfig(
  */
 async function materializeWorkspacePackages(workDir: string): Promise<void> {
 	for (const pkg of WORKSPACE_PACKAGES) {
-		const packageDir = path.join(workDir, "node_modules", "@otta-sh", pkg.name);
+		const packageDir = path.join(workDir, "node_modules", "@urumi-ai", `otta-${pkg.name}`);
 		await cp(path.resolve(PLUGIN_ROOT, "..", pkg.name, "src"), path.join(packageDir, "src"), {
 			recursive: true,
 		});
@@ -371,7 +371,7 @@ async function materializeWorkspacePackages(workDir: string): Promise<void> {
 			path.join(packageDir, "package.json"),
 			JSON.stringify(
 				{
-					name: `@otta-sh/${pkg.name}`,
+					name: `@urumi-ai/otta-${pkg.name}`,
 					version: "0.0.0-sandbox",
 					type: "module",
 					exports: pkg.exports,
@@ -428,10 +428,10 @@ export async function loadPluginInSandbox(options: SandboxOptions): Promise<Sand
 		// working directory. See `materializeWorkspacePackages` — tsdown reads
 		// externals from the package.json nearest the CWD, so without this the
 		// bundle is self-contained under `pnpm test` and broken under
-		// `pnpm --filter @otta-sh/plugin exec vitest`. The pattern is the SCOPE
+		// `pnpm --filter @urumi-ai/otta-plugin exec vitest`. The pattern is the SCOPE
 		// rather than the one package, because a second shared package would
 		// otherwise reintroduce exactly this failure and only in one invocation.
-		noExternal: [/^@otta-sh\//],
+		noExternal: [/^@urumi-ai\/otta-/],
 	});
 
 	// tsdown emits a single entry flat into outDir under the entry's basename.

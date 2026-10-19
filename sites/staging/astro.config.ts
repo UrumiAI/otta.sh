@@ -13,7 +13,7 @@ import cloudflare from "@astrojs/cloudflare";
 import react from "@astrojs/react";
 import { defineConfig, fontProviders } from "astro/config";
 import emdash from "emdash/astro";
-import { parseExtraAllowedHosts } from "@otta-sh/plugin";
+import { parseExtraAllowedHosts } from "@urumi-ai/otta-plugin";
 import { parseDotEnv } from "./src/lib/dot-env.js";
 import { buildEmdashOptions } from "./src/emdash-options.js";
 import { assertDownloadsBucketPrivate } from "./src/lib/downloads-bucket.js";
@@ -239,7 +239,7 @@ export default defineConfig({
 	// ourselves (pinned by the site-config test) so nothing regresses if emdash
 	// stops overriding.
 	vite: {
-		// Build-time globals the @otta-sh/plugin bundle reads through `typeof`
+		// Build-time globals the @urumi-ai/otta-plugin bundle reads through `typeof`
 		// guards (manifest.ts, src/lib/stripe-config.ts).
 		define: {
 			// Validated extra egress hosts, comma-joined, from the SAME `egress` const
@@ -249,16 +249,16 @@ export default defineConfig({
 			__OTTA_EXTRA_ALLOWED_HOSTS__: JSON.stringify(egress.extraAllowedHosts.join(",")),
 		},
 		ssr: {
-			// UNCONDITIONAL: if @otta-sh/plugin is ever externalized the defines
+			// UNCONDITIONAL: if @urumi-ai/otta-plugin is ever externalized the defines
 			// it reads (the egress defines above, `__OTTA_DEV_STRIPE_OFFLINE__`)
 			// silently never apply. (It is also consumed as TS
 			// source via its workspace `"."`/`"./plugin"` exports, which
 			// requires bundling anyway.)
 			//
-			// @otta-sh/admin-react is here for the second reason only: its
+			// @urumi-ai/otta-admin-react is here for the second reason only: its
 			// workspace `"."`/`"./admin"` exports point at TS/TSX SOURCE, so it
 			// cannot be externalized. It carries no build-time define.
-			noExternal: ["@otta-sh/plugin", "@otta-sh/admin-react"],
+			noExternal: ["@urumi-ai/otta-plugin", "@urumi-ai/otta-admin-react"],
 		},
 	},
 	devToolbar: { enabled: false },

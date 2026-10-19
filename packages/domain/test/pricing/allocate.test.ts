@@ -1,4 +1,4 @@
-import { allocateCents, cents } from "@otta-sh/domain";
+import { allocateCents, cents } from "@urumi-ai/otta-domain";
 import fc from "fast-check";
 import { describe, expect, test } from "vitest";
 

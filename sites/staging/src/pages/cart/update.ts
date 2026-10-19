@@ -9,7 +9,7 @@ import {
 	STOREFRONT_CART_LINE_UPDATE_ROUTE,
 	type CartLineMutationRouteResult,
 	type CartLineWire,
-} from "@otta-sh/plugin";
+} from "@urumi-ai/otta-plugin";
 import type { APIRoute } from "astro";
 import {
 	clearCartCookieIfBad,

@@ -24,7 +24,7 @@ import {
 	type RefundsSummaryWire,
 } from "./admin-orders-surface.js";
 import { DAY_MS, dayOf, endOfDay, startOfDay } from "./scaffold/index.js";
-import { ORDER_STATE_SET } from "@otta-sh/admin-presentation";
+import { ORDER_STATE_SET } from "@urumi-ai/otta-admin-presentation";
 
 export const PAGE_LIMIT = 25;
 

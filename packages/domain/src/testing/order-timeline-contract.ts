@@ -94,7 +94,7 @@ function addNote(
  *
  * The exactly-one-event-UNDER-CONTENTION case is Postgres-required (a fake or
  * SQLite serializes writes and cannot race), so it is adapter-local rather than
- * part of this shared spec: `@otta-sh/store-emdash`'s
+ * part of this shared spec: `@urumi-ai/otta-store-emdash`'s
  * `test/order-timeline-contract.dialects.test.ts` carries "concurrent state flips
  * write exactly one audit event (no double audit under a race)" as a
  * `runIf(ctx.canRace)` case in the same `describeEachDialect` block that runs this

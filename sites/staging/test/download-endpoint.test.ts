@@ -23,7 +23,7 @@ import {
 	ENTITLEMENT_DOWNLOAD_ROUTE,
 	type DownloadAssetWire,
 	type EntitlementDownloadResult,
-} from "@otta-sh/plugin";
+} from "@urumi-ai/otta-plugin";
 import { env as virtualEnv } from "./helpers/virtual-emdash-env.js";
 // Astro's own URL normalization (not exported; imported by file, as the dev
 // server and the Worker run it on every request — fetch-state.js).

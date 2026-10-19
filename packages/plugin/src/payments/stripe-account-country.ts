@@ -47,7 +47,7 @@
  * `allowedHosts` entry), through the Stripe adapter's own reader.
  */
 
-import { fetchStripeAccountCountry } from "@otta-sh/payments-stripe";
+import { fetchStripeAccountCountry } from "@urumi-ai/otta-payments-stripe";
 import { stripeSecretKeyFromKv } from "../payment-secrets.js";
 import { isTrustedHost } from "./trusted-host.js";
 import type { PluginContext } from "../types.js";

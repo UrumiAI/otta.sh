@@ -40,7 +40,7 @@ import {
 	idempotencyKey,
 	orderId,
 	type CreateCouponInput,
-} from "@otta-sh/domain";
+} from "@urumi-ai/otta-domain";
 import { expect, test } from "vitest";
 import {
 	COUPON_BUMP_LEASE_MS,

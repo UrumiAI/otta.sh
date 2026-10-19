@@ -1,4 +1,4 @@
-import { recordingEmailProvider, type TestEmailMessage } from "@otta-sh/plugin/testing";
+import { recordingEmailProvider, type TestEmailMessage } from "@urumi-ai/otta-plugin/testing";
 import type { EmailDeliverEvent, HookHandlers } from "emdash/plugin";
 import { describe, expect, expectTypeOf, test } from "vitest";
 import { httpEmailProvider, httpsHost } from "../src/index.js";

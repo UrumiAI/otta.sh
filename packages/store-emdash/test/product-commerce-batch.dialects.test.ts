@@ -27,7 +27,7 @@
  * The behavioral cases live in `productCommerceStoreContract`; this file pins only
  * the call-shape invariant, which the contract suite cannot see.
  */
-import { cents, currency, idempotencyKey, money, productId, sku } from "@otta-sh/domain";
+import { cents, currency, idempotencyKey, money, productId, sku } from "@urumi-ai/otta-domain";
 import { expect, test } from "vitest";
 import {
 	EmdashProductCommerceStore,

@@ -25,7 +25,7 @@ import {
 	credentialVerifierContract,
 	customerStoreContract,
 	sessionContract,
-} from "@otta-sh/domain/testing";
+} from "@urumi-ai/otta-domain/testing";
 import { IDENTITY_LAYOUT } from "../identity-collections.js";
 import {
 	makeAddressHarness,

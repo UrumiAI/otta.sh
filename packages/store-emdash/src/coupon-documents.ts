@@ -40,7 +40,13 @@
  * somebody else's slot. The array is bounded by the cap it enforces, because the
  * document exists only while a cap is in force.
  */
-import type { Cents, Currency, CouponRecord, CouponSummary, CouponType } from "@otta-sh/domain";
+import type {
+	Cents,
+	Currency,
+	CouponRecord,
+	CouponSummary,
+	CouponType,
+} from "@urumi-ai/otta-domain";
 
 /** Collection name: the coupon aggregate, one document per coupon. */
 export const COUPONS_COLLECTION = "coupons";
@@ -264,14 +270,14 @@ export function isTerminalRedemption(state: RedemptionState): boolean {
 
 /**
  * The folded form of a code: the `coupon_codes` document id. The DOMAIN's fold
- * (`@otta-sh/domain`), re-exported so every adapter folds identically.
+ * (`@urumi-ai/otta-domain`), re-exported so every adapter folds identically.
  *
  * Folding is what makes both `findByCode` and the admin list's case-insensitive
  * EXACT search a document read rather than a scan — the lookup is
  * case-INSENSITIVE end to end (ADR-0025; it used to compare the claim's stored
  * spelling to keep the SQL adapter's `WHERE code = ?`).
  */
-export { foldCouponCode } from "@otta-sh/domain";
+export { foldCouponCode } from "@urumi-ai/otta-domain";
 
 /** The redemption document id: the once-only guard for `(couponId, key)`. */
 export function couponRedemptionDocId(couponId: string, idempotencyKey: string): string {

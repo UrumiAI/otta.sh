@@ -4,7 +4,7 @@ import {
 	CouponCurrencyMismatchError,
 	currency,
 	type Coupon,
-} from "@otta-sh/domain";
+} from "@urumi-ai/otta-domain";
 import fc from "fast-check";
 import { describe, expect, test } from "vitest";
 

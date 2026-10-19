@@ -5,8 +5,8 @@ import {
 	InvalidSettingsError,
 	readStoreCurrency,
 	updateSettings,
-} from "@otta-sh/domain";
-import { InMemorySettingsStore, settingsStoreContract } from "@otta-sh/domain/testing";
+} from "@urumi-ai/otta-domain";
+import { InMemorySettingsStore, settingsStoreContract } from "@urumi-ai/otta-domain/testing";
 import { describe, expect, test } from "vitest";
 
 // Contract suite against the fake (Step 2, fake-first).

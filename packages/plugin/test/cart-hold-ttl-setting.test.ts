@@ -13,8 +13,8 @@
  * settings store — the same one the admin form saves to. Time moves on a clock
  * every store in the composition shares.
  */
-import { DEFAULT_OPERATIONAL_SETTINGS, idempotencyKey } from "@otta-sh/domain";
-import { FixedClock } from "@otta-sh/domain/testing";
+import { DEFAULT_OPERATIONAL_SETTINGS, idempotencyKey } from "@urumi-ai/otta-domain";
+import { FixedClock } from "@urumi-ai/otta-domain/testing";
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "vitest";
 import { SWEEP_TASK_NAME } from "../src/cron/index.js";
 import { runCommerceSweeps } from "../src/cron/sweeps.js";

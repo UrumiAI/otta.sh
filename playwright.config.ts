@@ -5,7 +5,7 @@
  * ADR-0014 permits a second EmDash descriptor (`otta-console`,
  * `format: "native"`) to render React admin pages. ADR-0006 Decision 1 is
  * REAFFIRMED by it: the 24 `packages/plugin/test/*.sandbox.test.ts` suites stay
- * the contract gate for `@otta-sh/plugin`. Those suites are browser-blind, so
+ * the contract gate for `@urumi-ai/otta-plugin`. Those suites are browser-blind, so
  * they cannot cover React — hence this config. It is **additive**. Nothing here
  * weakens, replaces or conditions the sandbox gate, and
  * `sites/staging/e2e/harness.spec.ts` proves that on every run.
@@ -80,7 +80,7 @@ const stack: WebServer[] = [
 		// brackets of an IPv6 literal (`[::1]`) are not part of the address Vite
 		// takes.
 		command:
-			`pnpm --filter @otta-sh/site-staging dev --port ${new URL(E2E_BASE_URL).port} ` +
+			`pnpm --filter @urumi-ai/otta-site-staging dev --port ${new URL(E2E_BASE_URL).port} ` +
 			`--host ${new URL(E2E_BASE_URL).hostname.replace(/^\[|\]$/g, "")}`,
 		url: E2E_BASE_URL,
 		// Playwright's default is to DROP the server's stdout, which left the failed

@@ -13,7 +13,7 @@
  * because a free-running race reaches that window too rarely to prove anything; this
  * file races the calls for real and checks the invariant over the orders that occur.
  */
-import { idempotencyKey, productId, sku, type ProductId } from "@otta-sh/domain";
+import { idempotencyKey, productId, sku, type ProductId } from "@urumi-ai/otta-domain";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import {
 	collectionOf,

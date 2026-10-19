@@ -3,7 +3,7 @@
  *
  * WHY A SANDBOX SUITE AND NOT A UNIT TEST. ADR-0006 Decision 1, reaffirmed by
  * ADR-0014 and again by ADR-0015: the workerd suites are the contract gate for
- * `@otta-sh/plugin`, and "a change that only works trusted is still broken". This
+ * `@urumi-ai/otta-plugin`, and "a change that only works trusted is still broken". This
  * suite therefore drives the writes the way the React console does — one POST to
  * the plugin's single `admin` route, `type: "otta_console_act"`, an action id and
  * a flat payload — inside the isolate the plugin is specified to run in.
@@ -83,7 +83,7 @@ import {
 	productId as toProductId,
 	sku as toSku,
 	type Order,
-} from "@otta-sh/domain";
+} from "@urumi-ai/otta-domain";
 import {
 	EmdashEntitlementStore,
 	EmdashInventoryStore,
@@ -91,8 +91,8 @@ import {
 	systemClock,
 	uuidIdGen,
 	type StorageAccess,
-} from "@otta-sh/store-emdash";
-import { REFUND_TOO_HIGH_TITLE } from "@otta-sh/admin-presentation";
+} from "@urumi-ai/otta-store-emdash";
+import { REFUND_TOO_HIGH_TITLE } from "@urumi-ai/otta-admin-presentation";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from "vitest";
 import { ORDERS_ACTION_IDS } from "../src/admin/orders-actions.js";
 import {

@@ -11,8 +11,8 @@
  * stub `fetch` that plays Stripe's native idempotency: a same-key request with
  * different parameters is a 400 `idempotency_error`, exactly as live.
  */
-import { StripePaymentGateway } from "@otta-sh/payments-stripe";
-import { EmdashOrderStore } from "@otta-sh/store-emdash";
+import { StripePaymentGateway } from "@urumi-ai/otta-payments-stripe";
+import { EmdashOrderStore } from "@urumi-ai/otta-store-emdash";
 import { afterAll, afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import {
 	makeInProcessCommerce,

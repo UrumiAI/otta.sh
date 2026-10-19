@@ -1,7 +1,7 @@
 // `orderStateCell` is imported from the shared presentation package directly:
 // it used to be re-exported by `orders-page.ts`, which ADR-0015 retires.
-import { orderStateCell } from "@otta-sh/admin-presentation";
-import { DEFAULT_OPERATIONAL_SETTINGS } from "@otta-sh/domain";
+import { orderStateCell } from "@urumi-ai/otta-admin-presentation";
+import { DEFAULT_OPERATIONAL_SETTINGS } from "@urumi-ai/otta-domain";
 import { formatMoney } from "../presentation/format-money.js";
 import { type Currency, cents as toCents, currency as toCurrency } from "../presentation/money.js";
 import type {

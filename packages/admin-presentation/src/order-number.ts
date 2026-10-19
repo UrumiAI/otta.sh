@@ -19,7 +19,7 @@ export interface OrderNumberCell {
  * A row's order number: the one the server sent, or — from a server published
  * before the field existed (the plugin and the console ship separately) — the
  * domain's `orderNumber` rule applied here: `#` + the id's first five characters,
- * upper-cased. `@otta-sh/plugin`'s tests pin that this matches the domain.
+ * upper-cased. `@urumi-ai/otta-plugin`'s tests pin that this matches the domain.
  */
 export function orderNumberOf(order: {
 	readonly id: string;

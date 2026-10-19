@@ -6,7 +6,7 @@ import {
 	PROVIDER_REFUNDED_FLAG_PREFIX,
 	unrefundedCapturedCents,
 	type PaymentMethod,
-} from "@otta-sh/domain";
+} from "@urumi-ai/otta-domain";
 import { describe, expect, test } from "vitest";
 
 // The admin's status offer: the state machine's legal moves minus the ones a person

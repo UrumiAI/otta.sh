@@ -23,7 +23,7 @@ import {
 	idempotencyKey,
 	removeLine,
 	sku,
-} from "@otta-sh/domain";
+} from "@urumi-ai/otta-domain";
 import { expect, test } from "vitest";
 import {
 	collectionOf,

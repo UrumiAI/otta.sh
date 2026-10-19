@@ -7,7 +7,7 @@ import {
 	PREVIOUS_UNWALKED_TITLE,
 	pageCount,
 	pagePositionLine,
-} from "@otta-sh/admin-presentation";
+} from "@urumi-ai/otta-admin-presentation";
 
 /**
  * What `Load more` does to the rows already on screen (F24).
@@ -917,7 +917,7 @@ export interface PagerView {
 	/** `Page 2 of 6` · `Pages 2–3 of 6` — or with either half an em dash.
 	 *  `undefined` when neither half is known, because "Page — of —" is a line
 	 *  that says nothing. Composed by `pagePositionLine` in
-	 *  `@otta-sh/admin-presentation`. */
+	 *  `@urumi-ai/otta-admin-presentation`. */
 	readonly position: string | undefined;
 }
 
@@ -928,7 +928,7 @@ export interface PagerView {
  * WHERE THE REST OF THE PAGER LIVES, since it is deliberately split across three
  * files: the STACK is {@link PageTrail} above; the WORDS and the arithmetic are
  * `pagePositionLine`, `pageCount` and the four title constants in
- * `@otta-sh/admin-presentation`'s `list-outcome.ts`; the MARKUP is `PagerButton`
+ * `@urumi-ai/otta-admin-presentation`'s `list-outcome.ts`; the MARKUP is `PagerButton`
  * in `ui.tsx`. This function is the seam that turns the first into the second so
  * the third has nothing left to decide.
  *

@@ -6,7 +6,7 @@ import {
 	SUPPORTED_CURRENCIES,
 	type RulesSnapshot,
 	type TotalsInput,
-} from "@otta-sh/domain";
+} from "@urumi-ai/otta-domain";
 import fc from "fast-check";
 import { describe, expect, test } from "vitest";
 import { roundHalfUpToMultiple } from "../../src/pricing/round.js";

@@ -10,8 +10,11 @@
  * Everything else builds its state through the ports, so a fixture that wrote
  * documents directly could never drift from what the stores really produce.
  */
-import { FixedClock } from "@otta-sh/domain/testing";
-import type { ShippingRulesStoreHarness, TaxRulesStoreHarness } from "@otta-sh/domain/testing";
+import { FixedClock } from "@urumi-ai/otta-domain/testing";
+import type {
+	ShippingRulesStoreHarness,
+	TaxRulesStoreHarness,
+} from "@urumi-ai/otta-domain/testing";
 import {
 	collectionOf,
 	EmdashShippingRulesStore,

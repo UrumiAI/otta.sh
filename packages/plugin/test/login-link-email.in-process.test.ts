@@ -13,9 +13,9 @@
  * isolate — module state — and a file is the unit vitest gives a fresh module
  * graph to.
  */
-import { EmailSendTimeoutError } from "@otta-sh/domain";
-import { DEFAULT_CHALLENGE_TTL_MS } from "@otta-sh/store-emdash";
-import { FakeEmailSender } from "@otta-sh/domain/testing";
+import { EmailSendTimeoutError } from "@urumi-ai/otta-domain";
+import { DEFAULT_CHALLENGE_TTL_MS } from "@urumi-ai/otta-store-emdash";
+import { FakeEmailSender } from "@urumi-ai/otta-domain/testing";
 import { afterAll, afterEach, beforeAll, describe, expect, test, vi } from "vitest";
 import {
 	makeInProcessCommerce,

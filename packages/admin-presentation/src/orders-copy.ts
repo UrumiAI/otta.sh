@@ -56,7 +56,7 @@
  * exactly what this module exists to prevent.
  *
  * WHEN THE BLOCK KIT SCREEN IS RETIRED, this module goes back to
- * `@otta-sh/admin-react` and stops being shared. It is a migration artefact and
+ * `@urumi-ai/otta-admin-react` and stops being shared. It is a migration artefact and
  * should be read as one.
  */
 import { currencyPaymentIncrement, inputMinorUnitDigits } from "./currencies.js";

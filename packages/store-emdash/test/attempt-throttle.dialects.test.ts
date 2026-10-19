@@ -5,7 +5,7 @@
  * thing the contract cannot see: its documents never share a key with an
  * address's sign-in window.
  */
-import { attemptThrottleContract, CountingIdGen, FixedClock } from "@otta-sh/domain/testing";
+import { attemptThrottleContract, CountingIdGen, FixedClock } from "@urumi-ai/otta-domain/testing";
 import { expect, test } from "vitest";
 import { collectionOf } from "../src/collection-of.js";
 import { EmdashAttemptThrottle } from "../src/emdash-attempt-throttle.js";
@@ -16,7 +16,7 @@ import {
 import { describeEachDialect } from "./describe-each-dialect.js";
 import { IDENTITY_LAYOUT } from "./identity-collections.js";
 import { MAX_ACTIVE_CHALLENGES, makeIdentityHarness } from "./identity-harness.js";
-import { email } from "@otta-sh/domain";
+import { email } from "@urumi-ai/otta-domain";
 
 describeEachDialect("EmdashAttemptThrottle", (ctx) => {
 	const bound = ctx.useStorage(IDENTITY_LAYOUT);

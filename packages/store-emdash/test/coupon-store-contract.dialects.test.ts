@@ -9,8 +9,8 @@
  * refusal, the per-customer cap, the guest degradation and the release floor all
  * have to give the answers they gave inside one transaction.
  */
-import { cents } from "@otta-sh/domain";
-import { couponStoreContract } from "@otta-sh/domain/testing";
+import { cents } from "@urumi-ai/otta-domain";
+import { couponStoreContract } from "@urumi-ai/otta-domain/testing";
 import { expect, test } from "vitest";
 import type { CouponDoc } from "../src/coupon-documents.js";
 import { COUPON_LAYOUT } from "./coupon-collections.js";

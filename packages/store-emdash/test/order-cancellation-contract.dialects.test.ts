@@ -26,8 +26,11 @@ import {
 	transitionOrder,
 	type CreateOrderInput,
 	type OrderId,
-} from "@otta-sh/domain";
-import { orderCancellationContract, type OrderTransitionHarness } from "@otta-sh/domain/testing";
+} from "@urumi-ai/otta-domain";
+import {
+	orderCancellationContract,
+	type OrderTransitionHarness,
+} from "@urumi-ai/otta-domain/testing";
 import { expect, test } from "vitest";
 import { cancellationReleaseCase } from "./order-cancellation-release.js";
 import { describeEachDialect } from "./describe-each-dialect.js";

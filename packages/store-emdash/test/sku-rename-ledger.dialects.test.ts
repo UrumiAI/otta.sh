@@ -15,7 +15,7 @@
  * case now pins a decision the code makes rather than one the schema enforces,
  * which is exactly why it is still here.
  */
-import { idempotencyKey, productId, sku } from "@otta-sh/domain";
+import { idempotencyKey, productId, sku } from "@urumi-ai/otta-domain";
 import { expect, test } from "vitest";
 import {
 	INVENTORY_MOVEMENTS_COLLECTION,

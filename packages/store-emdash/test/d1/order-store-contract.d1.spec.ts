@@ -27,7 +27,7 @@ import {
 	orderTimelineContract,
 	orderTransitionContract,
 	refundOrderContract,
-} from "@otta-sh/domain/testing";
+} from "@urumi-ai/otta-domain/testing";
 import { cancellationReleaseCase } from "../order-cancellation-release.js";
 import { orderListCases } from "../order-list-cases.js";
 import { ORDER_LAYOUT } from "../order-collections.js";

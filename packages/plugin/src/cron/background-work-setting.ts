@@ -60,7 +60,7 @@ export type BackgroundWorkValidation =
 /**
  * Validate a submitted value: a whole number within the bounds, from the form's
  * string (or a number). Refused, never clamped — the same "reject, don't coerce"
- * rule as the cart hold TTL's validation in `@otta-sh/domain`.
+ * rule as the cart hold TTL's validation in `@urumi-ai/otta-domain`.
  */
 export function validateBackgroundWork(raw: unknown): BackgroundWorkValidation {
 	const text = typeof raw === "number" ? String(raw) : typeof raw === "string" ? raw.trim() : "";

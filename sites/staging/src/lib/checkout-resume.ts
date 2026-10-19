@@ -23,7 +23,7 @@
  * Like `pay-guard.ts`, the logic lives here because `.astro` and endpoint files
  * have no render harness in this package.
  */
-import type { OrderResumeRouteResult, OrderRouteResult } from "@otta-sh/plugin";
+import type { OrderResumeRouteResult, OrderRouteResult } from "@urumi-ai/otta-plugin";
 import {
 	checkoutStashTotal,
 	type CheckoutStash,

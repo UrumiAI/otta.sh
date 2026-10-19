@@ -20,7 +20,7 @@ import {
 	type AccountMeResult,
 	type AccountOrderResult,
 	type SessionCookieDescriptor,
-} from "@otta-sh/plugin";
+} from "@urumi-ai/otta-plugin";
 import type { PublicPluginApiRouteHandler } from "emdash/plugin-utils";
 import { dispatchOttaRoute } from "./otta-api.js";
 import { SITE_LOCALE } from "./site-locale.js";

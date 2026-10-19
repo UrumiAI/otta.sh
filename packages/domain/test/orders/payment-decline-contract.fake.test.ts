@@ -1,4 +1,4 @@
-import { idempotencyKey } from "@otta-sh/domain";
+import { idempotencyKey } from "@urumi-ai/otta-domain";
 import {
 	CountingIdGen,
 	FixedClock,
@@ -8,7 +8,7 @@ import {
 	InMemoryOrderStore,
 	InMemoryPaymentEventStore,
 	paymentDeclineContract,
-} from "@otta-sh/domain/testing";
+} from "@urumi-ai/otta-domain/testing";
 
 // The decline spec (ADR-0022) against the in-memory fakes — the first adapter
 // family to pass it, before the document store on sqlite, Postgres and D1.

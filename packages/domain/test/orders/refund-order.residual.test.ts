@@ -1,14 +1,14 @@
-import { cents, currency as toCurrency } from "@otta-sh/domain";
-import { idempotencyKey, orderId as toOrderId, productId, sku } from "@otta-sh/domain";
-import { refundOrder } from "@otta-sh/domain";
-import type { FinalizeRefundStoreResult } from "@otta-sh/domain";
+import { cents, currency as toCurrency } from "@urumi-ai/otta-domain";
+import { idempotencyKey, orderId as toOrderId, productId, sku } from "@urumi-ai/otta-domain";
+import { refundOrder } from "@urumi-ai/otta-domain";
+import type { FinalizeRefundStoreResult } from "@urumi-ai/otta-domain";
 import {
 	CountingIdGen,
 	FakePaymentGateway,
 	FixedClock,
 	InMemoryOrderStore,
 	InMemoryPaymentEventStore,
-} from "@otta-sh/domain/testing";
+} from "@urumi-ai/otta-domain/testing";
 import { describe, expect, test } from "vitest";
 
 const USD = toCurrency("USD");

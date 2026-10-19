@@ -37,7 +37,7 @@ vi.mock("emdash/plugin-utils", async (importOriginal) => {
 const { OrdersList } = await import("../src/orders/orders-list.js");
 const { OrderDetail } = await import("../src/orders/order-detail.js");
 const { buyerRefHint, formatAmount, refundConfirmText } =
-	await import("@otta-sh/admin-presentation");
+	await import("@urumi-ai/otta-admin-presentation");
 type DetailPayload = import("../src/console-api.js").DetailPayload;
 type RefundsSummary = import("../src/console-api.js").RefundsSummary;
 

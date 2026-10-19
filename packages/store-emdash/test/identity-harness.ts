@@ -17,8 +17,8 @@ import type {
 	CredentialVerifierHarness,
 	CustomerStoreHarness,
 	SessionHarness,
-} from "@otta-sh/domain/testing";
-import { CountingIdGen, FixedClock } from "@otta-sh/domain/testing";
+} from "@urumi-ai/otta-domain/testing";
+import { CountingIdGen, FixedClock } from "@urumi-ai/otta-domain/testing";
 import {
 	collectionOf,
 	CUSTOMER_EMAILS_COLLECTION,

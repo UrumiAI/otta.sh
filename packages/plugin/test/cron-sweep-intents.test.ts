@@ -15,10 +15,14 @@
  * lapsed has its intent withdrawn no later than its expiry. The expiry never flips
  * an order whose intent is due and not yet withdrawn.
  */
-import { orderId as toOrderId, type OrderId, type PaymentIntentRecord } from "@otta-sh/domain";
-import { FakePaymentGateway } from "@otta-sh/domain/testing";
-import type { StorageAccess } from "@otta-sh/store-emdash";
-import { makeSqliteStorage } from "@otta-sh/store-emdash/testing";
+import {
+	orderId as toOrderId,
+	type OrderId,
+	type PaymentIntentRecord,
+} from "@urumi-ai/otta-domain";
+import { FakePaymentGateway } from "@urumi-ai/otta-domain/testing";
+import type { StorageAccess } from "@urumi-ai/otta-store-emdash";
+import { makeSqliteStorage } from "@urumi-ai/otta-store-emdash/testing";
 import { beforeEach, describe, expect, test, vi } from "vitest";
 import { runCommerceSweeps, SWEEP_TASK_NAME } from "../src/cron/index.js";
 import { BACKGROUND_WORK_KEY } from "../src/cron/background-work-setting.js";

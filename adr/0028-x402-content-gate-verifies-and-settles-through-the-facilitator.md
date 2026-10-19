@@ -203,7 +203,7 @@ the order belong to the plugin, and the decisions about money belong to the doma
 
 **One domain use case, `payForGatedProduct`, runs the whole flow.** That covers verify, create,
 settle, the delivery check (`authorizeDownload`, Decision 6) and the replay tree in Decision 5, in
-`@otta-sh/domain`, with no IO. The plugin route only adapts: it reads settings, builds the stores, calls the use case and maps its typed outcome to a
+`@urumi-ai/otta-domain`, with no IO. The plugin route only adapts: it reads settings, builds the stores, calls the use case and maps its typed outcome to a
 wire result. The site only adapts the wire result to HTTP.
 
 **A new port, `X402Rail`** (`packages/domain/src/ports/x402-rail.ts`), carries everything
@@ -243,17 +243,17 @@ checks the fields' shapes and returns `ok` with `dedupeKey = paymentKey` and
 
 **It is unforgeable at the type level.** `GatedSettlement` is an opaque branded type: a
 `unique symbol` brand declared in `pay-for-gated-product.ts`. The minting function lives in that
-module and is **not exported from `@otta-sh/domain`'s index**. The type is exported, so an adapter
+module and is **not exported from `@urumi-ai/otta-domain`'s index**. The type is exported, so an adapter
 can read the fields. Nothing outside the module can build a value without an `as` cast, and review
 rejects that cast. Domain tests import the module by its path.
 
-**One other route reaches the mint: `@otta-sh/domain/testing`.** `FakePaymentGateway.pageGate`
+**One other route reaches the mint: `@urumi-ai/otta-domain/testing`.** `FakePaymentGateway.pageGate`
 (`packages/domain/src/testing/fake-payment-gateway.ts:167-176`) has to mint a `GatedSettlement`,
 because adapter suites drive settlement through it. For example,
 `packages/store-emdash/test/order-flow.dialects.test.ts:514` uses it. So the mint is reachable
 through the `./testing` export (`packages/domain/package.json`). Increment 7 adds a
 **dependency-cruiser rule** (`.dependency-cruiser.cjs`) that forbids importing
-`@otta-sh/domain/testing` from any non-test `src` file. That keeps the minting route out of
+`@urumi-ai/otta-domain/testing` from any non-test `src` file. That keeps the minting route out of
 production code by lint, not by convention.
 
 **This reverses today's invariant**, "facilitator-verified server-side — never trust the plugin's
@@ -1222,7 +1222,7 @@ from five PRs into eight.
    - **It depends on downloads #394 (revocation, `downloadAsset`) and #396 (the gate being moved)
      being merged.**
 6. **[Domain][Adapters] The `X402Rail` port and its adapter.**
-   - The port in `@otta-sh/domain`, as types only (Decision 2).
+   - The port in `@urumi-ai/otta-domain`, as types only (Decision 2).
    - `payments-x402` implements it:
      - the asset table and the `payTo` projection;
      - the offer, the decoder and the structural match;
@@ -1234,7 +1234,7 @@ from five PRs into eight.
    - The branded `GatedSettlement` `page_gate` arm, replacing `X402Proof`. This includes the fake
      gateway and `X402PaymentGateway.verifyConfirmation`'s structural normalisation, so it
      typechecks.
-   - The dependency-cruiser rule that bans `@otta-sh/domain/testing` from non-test `src`
+   - The dependency-cruiser rule that bans `@urumi-ai/otta-domain/testing` from non-test `src`
      (Decision 2).
    - The `x402Settle` marker, and the flag-not-expire rule inside `expireWithOrder`'s guarded flip,
      with contract and race cases on every dialect.
@@ -1335,7 +1335,7 @@ The amendments, against the 2026-10-05 draft:
 - The port and its adapter (now increment 6) come before the money rules (now increment 7), so
   each increment typechecks on its own.
 - Go-live depends on all of increments 2–7.
-- The `@otta-sh/domain/testing` route to the `GatedSettlement` mint is named, and a
+- The `@urumi-ai/otta-domain/testing` route to the `GatedSettlement` mint is named, and a
   dependency-cruiser rule bans it from non-test `src`.
 - The allowlist's safety is stated as the reference `catch` mapping any post-broadcast error only
   to `*_transaction_failed`.

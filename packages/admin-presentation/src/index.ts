@@ -1,14 +1,14 @@
 /**
- * `@otta-sh/admin-presentation` — the admin console's presentation primitives,
+ * `@urumi-ai/otta-admin-presentation` — the admin console's presentation primitives,
  * and the answer to a question INC-19 recorded and deliberately did not answer:
  * where does the React tier's `formatMoney` come from?
  *
  * THE PROBLEM THIS SOLVES. There are now two admin surfaces — the Block Kit
- * screens in `@otta-sh/plugin` and the React console in `@otta-sh/admin-react`
+ * screens in `@urumi-ai/otta-plugin` and the React console in `@urumi-ai/otta-admin-react`
  * — and the console may not import the plugin. ADR-0014 Decision 3 gives it
  * exactly one data path (HTTP to `otta`'s existing authenticated admin routes),
  * and `.dependency-cruiser.cjs`'s `console-imports-no-workspace-package` makes
- * that mechanical: a static import of `@otta-sh/plugin` would be a second data
+ * that mechanical: a static import of `@urumi-ai/otta-plugin` would be a second data
  * path, compiled in and invisible to the empty capability set the console is
  * pinned on. That rule's own comment names the bill this package pays:
  *
@@ -73,7 +73,7 @@
  * and `short-id.ts` for allocation cost.
  *
  * DRIFT IS PROVEN, NOT TRUSTED, and by the suites that already existed:
- * `@otta-sh/plugin` re-exports these modules from their original paths, so
+ * `@urumi-ai/otta-plugin` re-exports these modules from their original paths, so
  * `packages/plugin/test/{format-money,money-parity,format-money.type-test}.ts`
  * and all 18 workerd sandbox suites now exercise THIS code through the plugin's
  * public surface. `test/` here covers the package on its own terms.
