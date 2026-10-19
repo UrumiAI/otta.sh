@@ -40,6 +40,7 @@ import {
 	assertLoopbackSite,
 	DEFAULT_PAID_ORDERS,
 	E2E_WEBHOOK_SECRET,
+	provisionPublishableKey,
 	seedPaidOrders,
 } from "../scripts/seed-e2e-orders.js";
 import {
@@ -50,6 +51,7 @@ import {
 	E2E_BASE_URL,
 	E2E_REQUIRES_SITE,
 	E2E_SEEDS,
+	E2E_STARTS_STACK,
 	siteIsUp,
 } from "./harness.js";
 
@@ -239,6 +241,17 @@ export default async function globalSetup(): Promise<void> {
 			return;
 		}
 		for (const path of WARM_UP_PATHS) await untilAnswers(path, deadline);
+		// Issue #498: the publishable key is a Settings value now, not a build
+		// variable the config injected — so a stack this run started, or one it
+		// seeds, gets the placeholder saved (never over a key already there).
+		if (E2E_SEEDS || E2E_STARTS_STACK) {
+			assertLoopbackSite(E2E_BASE_URL);
+			await provisionPublishableKey({
+				siteUrl: E2E_BASE_URL,
+				authHeaders: await cmsAuthHeaders(E2E_BASE_URL),
+				webhookSecret: E2E_WEBHOOK_SECRET,
+			});
+		}
 		if (E2E_SEEDS) {
 			// The order seed signs payment webhooks: refuse a non-loopback site here, as
 			// the script's own entry point does, whatever the base URL came from.

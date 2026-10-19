@@ -33,6 +33,7 @@ import {
 	STRIPE_WEBHOOK_SECRET_KEY,
 	WEBHOOK_EDGE_TOKEN_KEY,
 } from "../src/payment-secrets.js";
+import { STRIPE_PUBLISHABLE_KEY_KEY } from "../src/payments/stripe-publishable-key.js";
 import { LOGIN_LINK_URL_KEY } from "../src/storefront/login-link.js";
 import type { PluginContext } from "../src/types.js";
 import { assertBlockContract } from "./helpers/block-contract.js";
@@ -45,6 +46,8 @@ const SK_TEST = ["sk_test_", "51QaFixtureKey000000000000"].join("");
 const SK_LIVE = ["sk_live_", "51QaFixtureKey000000000000"].join("");
 const RK_TEST = ["rk_test_", "51QaFixtureKey000000000000"].join("");
 const WHSEC = ["whsec_", "0123456789abcdef0123456789abcdef"].join("");
+const PK_TEST = ["pk_test_", "51QaFixtureKey000000000000"].join("");
+const PK_LIVE = ["pk_live_", "51QaFixtureKey000000000000"].join("");
 
 function refuseStorageCall(): never {
 	throw new Error("this suite asserts kv settings, never commerce storage");
@@ -296,6 +299,7 @@ describe("Settings: how a key field renders", () => {
 			makeCtx(
 				{
 					[STRIPE_SECRET_KEY_KEY]: SK_TEST,
+					[STRIPE_PUBLISHABLE_KEY_KEY]: PK_TEST,
 					[STRIPE_WEBHOOK_SECRET_KEY]: WHSEC,
 					"state:emailLastSentAt": new Date().toISOString(),
 				},
@@ -310,7 +314,11 @@ describe("Settings: how a key field renders", () => {
 		// PR #418 review: `ctx.email` with nothing sent through it yet is NOT "set".
 		const unconfirmed = await invoke(
 			makeCtx(
-				{ [STRIPE_SECRET_KEY_KEY]: SK_TEST, [STRIPE_WEBHOOK_SECRET_KEY]: WHSEC },
+				{
+					[STRIPE_SECRET_KEY_KEY]: SK_TEST,
+					[STRIPE_PUBLISHABLE_KEY_KEY]: PK_TEST,
+					[STRIPE_WEBHOOK_SECRET_KEY]: WHSEC,
+				},
 				{ email: true },
 			).ctx,
 			{ type: "page_load", page: "/settings" },
@@ -319,10 +327,10 @@ describe("Settings: how a key field renders", () => {
 			"Payments & email — Stripe test · webhook set · email TBC",
 		);
 
-		const live = await invoke(makeCtx({ [STRIPE_SECRET_KEY_KEY]: SK_LIVE }).ctx, {
-			type: "page_load",
-			page: "/settings",
-		});
+		const live = await invoke(
+			makeCtx({ [STRIPE_SECRET_KEY_KEY]: SK_LIVE, [STRIPE_PUBLISHABLE_KEY_KEY]: PK_LIVE }).ctx,
+			{ type: "page_load", page: "/settings" },
+		);
 		expect(paymentsLabel(live.blocks)).toBe(
 			"Payments & email — Stripe live · no webhook · no email",
 		);
@@ -382,8 +390,9 @@ describe("Settings: how a key field renders", () => {
 	test("the label follows a save on the same response", async () => {
 		const { ctx } = makeCtx();
 		const saved = await saveSecret(ctx, "save-stripe-secret-key", "stripeSecretKey", SK_LIVE);
+		// #498: no publishable key yet, so card checkout is not ready.
 		expect(paymentsLabel(saved.blocks)).toBe(
-			"Payments & email — Stripe live · no webhook · no email",
+			"Payments & email — no publishable · no webhook · no email",
 		);
 		expect(field(formFor(saved.blocks, "save-stripe-secret-key"), "stripeSecretKey")?.label).toBe(
 			"Stripe secret key — set",

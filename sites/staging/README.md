@@ -38,35 +38,26 @@ terminal and never returns. In an automated or agent-driven environment, start i
 and wait until it reports its URL before driving it — a request issued before the server is
 listening fails in a way that looks like an application error.
 
-`STRIPE_PUBLIC_KEY` is read by the process that starts, not per request: it is baked as a
-Vite `define`. **Changing it means restarting the dev server** — there is no runtime
-override, in dev any more than in production. Setting it in a later shell has no effect on a
-server that is already up.
+## The Stripe publishable key (a Settings value)
 
-## The STRIPE_PUBLIC_KEY build-time contract
+The checkout's Payment Element needs a Stripe **publishable** key. It is entered in the admin
+with the two Stripe secrets — **Otta Settings → Payments & email → Stripe publishable key** —
+and the checkout pages read it **per request** (`src/lib/stripe-config.ts`, through the
+plugin's `storefront/payment-config` route). Changing it needs no rebuild, redeploy or
+restart (issue #498; it used to be the build-time `STRIPE_PUBLIC_KEY`).
 
-The checkout's Payment Element needs a Stripe **publishable** key, baked in
-`astro.config.ts` as a Vite `define`: shell env → `sites/staging/.env` → absent.
-**Changing it means rebuild + redeploy.** The variable is **`STRIPE_PUBLIC_KEY`** — the name
-matters, see below. It is not put in wrangler `vars` because the guard test forbids any
-`vars` key matching `/SECRET|KEY|TOKEN|PASSWORD/i`, and that guard is worth keeping.
-
-Three behaviours, deliberately distinct:
-
-| `STRIPE_PUBLIC_KEY` | What happens |
+| Publishable key | What happens |
 |---|---|
 | a valid `pk_test_…` / `pk_live_…` | full checkout: review → pay → confirmation |
-| **unset** | `/checkout` renders review + totals, says "Card payment isn't set up on this store yet.", and creates **no order** (the endpoint refuses too, not just the button) |
-| set but malformed | **the build FAILS** |
+| **not set** | `/checkout` renders review + totals, says "Card payment isn't set up on this store yet.", and creates **no order** (the endpoint refuses too, not just the button) |
+| not a `pk_…` key | refused on save in Settings; a value stored some other way reads as **not set**, and Settings says why |
+| the read failed (storage busy) | answered as **busy** (503 / `?error=BUSY`), never as "not set up" |
 
-That last row is the point. An absent key and a *misspelt variable name* look identical at
-runtime — both degrade quietly while a valid key may sit unread — so a present-but-malformed
-value throws instead of degrading, and `test/checkout-config.test.ts` pins the variable's
-exact spelling as test data. See [ADR-0012](../../adr/0012-storefront-checkout-loads-stripe-elements-in-the-browser.md).
-
-**A build without the key tree-shakes the payment step away entirely** (the branch is
-constant-folded). That is correct, but it means any QA of the payment step must build *with*
-the key.
+The last row is what the old build check protected: a key that exists but cannot be read
+must not look like a store that takes no cards. Settings also warns when the publishable
+key's mode (test/live) differs from the secret key's. A build that still sets
+`STRIPE_PUBLIC_KEY` **fails**, saying where the key goes now. See
+[ADR-0012](../../adr/0012-storefront-checkout-loads-stripe-elements-in-the-browser.md).
 
 ## Deploying
 

@@ -317,7 +317,7 @@ describe("10a — the client-JS fence (ADR-0012 decision 2)", () => {
 		expect(block).toContain("href={orderPath}");
 	});
 
-	test("the publishable key is read from the build-time module, never from a runtime env lookup on the page", () => {
+	test("the publishable key is read through stripe-config (the plugin's Settings value, #498), never from an env lookup on the page", () => {
 		expect(source).toContain("stripe-config");
 		expect(source).not.toContain("process.env");
 		expect(source).not.toContain("import.meta.env.STRIPE");

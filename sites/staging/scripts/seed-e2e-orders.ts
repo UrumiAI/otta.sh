@@ -59,6 +59,7 @@ import {
 	STOREFRONT_CART_CREATE_ROUTE,
 	STOREFRONT_CART_LINE_ADD_ROUTE,
 	STOREFRONT_CHECKOUT_PLACE_ROUTE,
+	STOREFRONT_PAYMENT_CONFIG_ROUTE,
 } from "@otta-sh/plugin";
 import { signStripeWebhook } from "@otta-sh/payments-stripe";
 import { cmsAuthHeaders } from "./seed-demo-commerce.js";
@@ -264,6 +265,72 @@ export async function provisionWebhookSecret(deps: SeedOrdersDeps): Promise<void
 	const toast = (saved as { toast?: { type?: unknown; message?: unknown } } | null)?.toast;
 	if (toast?.type !== "success") {
 		throw new Error(`the webhook secret was not saved: ${JSON.stringify(toast ?? saved)}`);
+	}
+}
+
+/** Issue #498: the e2e stack's publishable key. A placeholder is enough — the
+ *  specs block js.stripe.com and the offline gateway never hands Stripe a real
+ *  client secret. It only has to exist, so /checkout offers the place button. */
+export const E2E_PUBLISHABLE_KEY = "pk_test_e2eplaceholder";
+
+/** The publishable key the Settings page prefills, or "" — read off the form
+ *  field the way {@link stripeSecretKeyIsSet} reads the secret's label. */
+export function storedPublishableKey(settingsPage: unknown): string {
+	let found: string | undefined;
+	const walk = (node: unknown): void => {
+		if (Array.isArray(node)) {
+			for (const item of node) walk(item);
+			return;
+		}
+		if (node === null || typeof node !== "object") return;
+		const record = node as Record<string, unknown>;
+		if (record["action_id"] === "stripePublishableKey") {
+			found = typeof record["initial_value"] === "string" ? record["initial_value"] : "";
+		}
+		for (const value of Object.values(record)) walk(value);
+	};
+	walk(settingsPage);
+	if (found === undefined) {
+		throw new Error('could not find the "Stripe publishable key" field on the Settings page.');
+	}
+	return found;
+}
+
+/** Save {@link E2E_PUBLISHABLE_KEY} in Settings unless a key is already there
+ *  (a developer's own key wins, as the old build variable's did). */
+export async function provisionPublishableKey(deps: SeedOrdersDeps): Promise<void> {
+	const page = await admin(
+		deps,
+		{ type: "page_load", page: "/settings" },
+		"reading the Settings page",
+	);
+	if (storedPublishableKey(page) !== "") return;
+	// An empty field can also mean the Settings read of it FAILED (it degrades to
+	// empty). The storefront route fails loudly instead, so only a confirmed
+	// "no key" from it lets the placeholder be written.
+	const config = await storefront(deps, STOREFRONT_PAYMENT_CONFIG_ROUTE, {});
+	if (
+		typeof config !== "object" ||
+		config === null ||
+		(config as { ok?: unknown }).ok !== true ||
+		(config as { stripePublishableKey?: unknown }).stripePublishableKey !== null
+	) {
+		throw new Error(
+			`refusing to save the e2e publishable key: the store did not confirm it has none (${JSON.stringify(config)}).`,
+		);
+	}
+	const saved = await admin(
+		deps,
+		{
+			type: "form_submit",
+			action_id: "save-payment-settings",
+			values: { stripePublishableKey: E2E_PUBLISHABLE_KEY },
+		},
+		"saving the publishable key",
+	);
+	const toast = (saved as { toast?: { type?: unknown; message?: unknown } } | null)?.toast;
+	if (toast?.type !== "success") {
+		throw new Error(`the publishable key was not saved: ${JSON.stringify(toast ?? saved)}`);
 	}
 }
 

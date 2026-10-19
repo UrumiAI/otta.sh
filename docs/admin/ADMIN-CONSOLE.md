@@ -3231,7 +3231,9 @@ accordion   block_id settings:payments
             label "Payments & email — <Stripe> · <webhook> · <email>"
             ← U-8: states what card checkout and email have: "Stripe test" | "Stripe
               live" (from the key's prefix) | "Stripe key set" (an unchecked legacy
-              value) | "no Stripe key"; "webhook set" | "no webhook"; "email set" |
+              value) | "no Stripe key"; #498: "no publishable" (secret key set, no usable
+              publishable key) | "test/live mixed" (the two keys' modes differ) — so
+              "Stripe test/live" means card checkout is ready; "webhook set" | "no webhook"; "email set" |
               "no email" (ADR-0031: whether the host hands over `ctx.email`). The optional edge key states its status on its
               own field. Longest render is exactly 60 (X-11).
             default_open FALSE
@@ -3263,6 +3265,9 @@ accordion   block_id settings:payments
                         email provider. Order emails wait up to 72 h, then are skipped;
                         sign-in links are not sent. See docs/email-providers.md."
                                                           ← ADR-0031: `ctx.email` present?
+               context (cond, #498) a stored publishable key that is not a pk_ key: "…so card
+                     payment is off. Enter it again below." | the two keys' modes differ:
+                     "The publishable key is a test key but the Stripe secret key is live. …"
                banner alert (cond) a stored http sign-in page saved before the https
                      rule: "The links in sign-in emails point to an http page, so their
                      tokens travel unencrypted when clicked — change this address to https. …"
@@ -3270,6 +3275,13 @@ accordion   block_id settings:payments
                      names every field, and the form keeps what was typed (J6) — a
                      sign-in URL without any user:pw@ part
                form  cf{"settings:save-payment-settings", {…}}   ← prefilled from kv
+                     text_input "Stripe publishable key (pk_live_… or pk_test_…)"
+                                        placeholder "pk_live_…"
+                                        ← #498: public, so prefilled; must be pk_live_/pk_test_.
+                                          A refused value (e.g. a pasted sk_ key) is NOT put
+                                          back, and a stored non-pk_ value is not prefilled.
+                                          Read per request by the checkout pages through
+                                          `storefront/payment-config`.
                      text_input "Sign-in page address (your storefront's /account/verify page)"
                                         placeholder "https://shop.example/account/verify"
                                         ← U-8: https://, or http:// on localhost only

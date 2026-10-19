@@ -1,11 +1,10 @@
 /**
  * The site's Stripe-webhook EDGE TOKEN, read at RUNTIME from a Worker secret.
  *
- * ── Why this is not a build-time define ───────────────────────────────────
- * `stripe-config.ts` bakes the Stripe *publishable* key in with a Vite
- * `define`, and that is right for a publishable key: it is public, it is
- * needed in client JS, and rotating it is a deploy anyway. This value is the
- * opposite on every count. It is a SHARED SECRET, it must never enter a
+ * ── Why this is not a Settings value or a define ──────────────────────────
+ * The Stripe *publishable* key is public and needed in client JS, so it is a
+ * plain Settings value read per request (`stripe-config.ts`, issue #498). This
+ * value is the opposite on every count. It is a SHARED SECRET, it must never enter a
  * bundle, and it has to be rotatable with `wrangler secret put` alone. It is
  * also barred from wrangler `vars` by `test/wrangler-config.test.ts`, which
  * forbids any `vars` key matching /SECRET|KEY|TOKEN|PASSWORD/i — a guard

@@ -61,13 +61,15 @@ vi.mock("astro:middleware", () => ({
  * change the value without re-importing the endpoint. (`vi.mock` is hoisted
  * above the imports above by vitest.)
  */
-const stripeKey = vi.hoisted(() => ({ value: "pk_test_fake" as string | undefined }));
+const stripeKey = vi.hoisted(() => ({ value: "pk_test_fake" as string | null | undefined }));
 vi.mock("../src/lib/stripe-config.js", () => ({
-	STRIPE_PUBLIC_KEY_VAR: "STRIPE_PUBLIC_KEY",
-	resolveStripePublishableKey: (raw: string | undefined) => raw,
-	get STRIPE_PUBLISHABLE_KEY() {
-		return stripeKey.value;
-	},
+	// #498: the key is read per request; `null` stands for a read that failed.
+	readStripePublishableKey: async () =>
+		stripeKey.value === null
+			? { state: "unavailable" }
+			: stripeKey.value === undefined
+				? { state: "unconfigured" }
+				: { state: "configured", key: stripeKey.value },
 }));
 
 afterEach(() => {
@@ -390,6 +392,18 @@ describe("no publishable key ⇒ NO ORDER (§1.7)", () => {
 		expect(calls).toHaveLength(0);
 		// No stash: nothing to pay. (The typed values are kept in the draft — QA U-1.)
 		expect(cookieOps.filter((op) => op.name !== "otta_checkout_draft")).toHaveLength(0);
+	});
+
+	test("#498: a key read that FAILED is busy (503), never 'not set up', and creates nothing", async () => {
+		stripeKey.value = null;
+		const { handler, calls } = makeHandler();
+		const { context } = makeContext(VALID_FORM, handler);
+
+		const response = await PLACE_POST(context);
+
+		expect(response.status).toBe(503);
+		expect(response.headers.get("Retry-After")).not.toBeNull();
+		expect(calls).toHaveLength(0);
 	});
 });
 

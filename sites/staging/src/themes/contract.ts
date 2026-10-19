@@ -400,7 +400,8 @@ export interface CheckoutModel {
 	chosenOption: { label: string; price: string } | null;
 	/** Why the place button is not offered yet. */
 	notReadyCopy: string;
-	/** A publishable key is baked into this build (no key ⇒ no order). */
+	/** The store has a usable Stripe publishable key (a Settings value, read per
+	 *  request, #498; no key ⇒ no order). */
 	paymentConfigured: boolean;
 	/** STRIPE_NOT_CONFIGURED's copy, quoted. */
 	notConfiguredLead: string;

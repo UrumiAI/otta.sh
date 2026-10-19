@@ -15,6 +15,9 @@
 - Amended: 2026-10-05 — resume-by-email guesses are throttled per device of an order (5) and
   per order (20), so a stranger's wrong guesses no longer lock the buyer out; see "Amended
   2026-10-05" at the end of this record.
+- **Amended: 2026-10-17 — decision 4 is replaced**: the publishable key is a runtime Settings
+  value read per request, not a build-time bake; `STRIPE_PUBLIC_KEY` is retired (issue #498).
+  See "Amended 2026-10-17" at the end of this record.
 ## Context
 
 The buyer journey dead-ends at `/cart`: `GET /checkout` is a themed 404, and nothing in the
@@ -143,7 +146,7 @@ this ADR adds. `js.stripe.com`, and every Stripe host other than `api.stripe.com
 refused there: listing it fails the build. That refusal, like the rest of that variable's
 checks, is a build-time sanity check, not SSRF protection; see DEPLOYMENT.md §4.)
 
-**4. The publishable key is a build-time bake, and the variable is `STRIPE_PUBLIC_KEY`.**
+**4. (Replaced 2026-10-17 — see the amendment at the end.) The publishable key is a build-time bake, and the variable is `STRIPE_PUBLIC_KEY`.**
 It is read at build time by `sites/staging/astro.config.ts` (shell env → `sites/staging/.env`
 → absent) and baked via a second Vite `define`, exactly like `COMMERCE_SERVICE_URL`. Changing
 it is a rebuild + redeploy. Its **absence** degrades honestly: `/checkout` renders review and
@@ -471,3 +474,46 @@ a lockout, as before, and a wrong guess still gets the one generic sentence.
 
 `commerceClientContract` pins both windows and that a refused order window writes no document; the route test pins that `clientKey` is forwarded
 only as an id token; the site tests pin the cookie and that it rides the POST.
+
+## Amended 2026-10-17 — the publishable key is a Settings value, read per request (issue #498)
+
+**Replaces decision 4.** Decision 4 baked the publishable key into the build from
+`STRIPE_PUBLIC_KEY`. The two Stripe secrets had meanwhile moved into admin Settings
+(work order 02, ADR-0037), so card checkout needed three values in two places, and the
+third could only be set by whoever builds the site. An operator with only the admin saved
+both secrets and still saw "Card payment isn't set up on this store yet." with nothing
+pointing at the missing value — and a hosted, one-click deployment has no build step for
+the operator at all.
+
+**Decision.** The publishable key is a plugin Settings value
+(`settings:stripePublishableKey`, "Payments & email" group, beside the secrets). It is
+public, so it is stored and read back in plain text, not declared `secret`. The checkout
+pages (`/checkout`, `POST /checkout/place`, `/checkout/pay`) read it per request through the
+public `storefront/payment-config` route. `STRIPE_PUBLIC_KEY` is retired outright — no
+build-time fallback, since no production store has deployed with it (the demo store moves its
+key into Settings once; DEPLOYMENT.md §3) — and a build that still sets it **fails**, naming
+where the key goes now, including a leftover line in `sites/staging/.env`.
+
+**What decision 4's guards protected, and where that lives now.** The bake's point was that
+"no key" must be the only way to reach "isn't set up": a key that exists but is not read
+must not look like a store that takes no cards. That holds with three answers instead of two:
+
+- **configured** — a stored value that passes the `pk_test_…` / `pk_live_…` check;
+- **unconfigured** — nothing stored, or a stored value that fails the check (Settings refuses
+  such a value on save and, for one stored another way, says why). The pages degrade exactly
+  as decision 4 described, and the site's place endpoint still refuses to create an order.
+  (The refusal is the SITE's, as before: the plugin's own public place route does not yet
+  check the key — it could now, and that is a separate follow-up);
+- **unavailable** — the read itself failed (storage busy, a render fault). Each page answers
+  it as **busy** (503, or `/cart?error=BUSY`), never as "isn't set up".
+
+Settings marks card payment ready in its group label only when the secret key and the
+publishable key are both set and agree on test/live, and warns under the form when they
+do not. The webhook-secret rule is unchanged.
+
+**Costs, stated.** One in-process kv read per checkout page (the route is on the site's
+read-retry allowlist). The payment step is no longer tree-shaken away from a build without
+a key: it ships in every build and is gated per request. A key typed into the wrong Stripe
+account still passes the shape check; that remains Stripe's answer to give, as decision 4
+already accepted.
+

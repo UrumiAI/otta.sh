@@ -68,7 +68,7 @@ import {
 	TAX_LOCATION_FIELD,
 } from "../../lib/checkout-location.js";
 import { isPlausibleEmail, normalizeBuyerRef } from "../../lib/email.js";
-import { STRIPE_PUBLISHABLE_KEY } from "../../lib/stripe-config.js";
+import { readStripePublishableKey } from "../../lib/stripe-config.js";
 import {
 	busyResponse,
 	dispatchOttaRoute,
@@ -454,8 +454,14 @@ async function place(context: APIContext): Promise<Response> {
 	// No publishable key ⇒ NO ORDER (§1.7). The review page already hides the
 	// button, but this is the server-side half of that promise: creating an
 	// order would hold stock for 15 minutes against a payment that structurally
-	// cannot happen. (A malformed key never reaches here — it fails the build.)
-	if (STRIPE_PUBLISHABLE_KEY === undefined) {
+	// cannot happen. The key is read per request (#498); a failed read is busy,
+	// answered like a busy place — nothing was created, a reload re-posts.
+	const stripeKey = await readStripePublishableKey(routeDispatcher(context), context.url);
+	if (stripeKey.state === "unavailable") {
+		writeCheckoutDraft(context.cookies, { values: draftValues, errors: {} });
+		return busyResponse("/checkout");
+	}
+	if (stripeKey.state === "unconfigured") {
 		return refuse(placeFailurePath(STRIPE_NOT_CONFIGURED, selection), STRIPE_NOT_CONFIGURED, {
 			fields: staleMark,
 		});

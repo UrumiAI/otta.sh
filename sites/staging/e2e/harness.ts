@@ -435,15 +435,16 @@ export async function skipWithoutPurchasableProduct(testInfo: TestInfo): Promise
  * place button for a cart that should be placeable.
  *
  * `reason` is the page's own explanation, read off it by the caller: most
- * often the site was started without `STRIPE_PUBLIC_KEY` (the review then shows
- * STRIPE_NOT_CONFIGURED and, by design, no button — no order may hold stock
- * against a payment that cannot happen), which a placeholder `pk_test_…` fixes.
+ * often the store has no Stripe publishable key in Settings (the review then
+ * shows STRIPE_NOT_CONFIGURED and, by design, no button — no order may hold
+ * stock against a payment that cannot happen), which a placeholder `pk_test_…`
+ * fixes; OTTA_E2E_SEED=1 or OTTA_E2E_START_STACK=1 saves one (issue #498).
  */
 export async function skipWithoutPlaceButton(testInfo: TestInfo, reason: string): Promise<void> {
 	const how =
 		`/checkout offers no "Continue to payment" button (the page says: ${reason}). ` +
-		"If payment is not configured, start the site with STRIPE_PUBLIC_KEY set " +
-		"(a placeholder pk_test_… is enough for this spec).";
+		"If payment is not configured, save a Stripe publishable key in Settings, or run " +
+		"with OTTA_E2E_SEED=1 (a placeholder pk_test_… is enough for this spec).";
 	if (E2E_REQUIRES_SITE) throw new Error(`OTTA_E2E_REQUIRE_SITE=1 and ${how}`);
 	testInfo.skip(true, how);
 }
