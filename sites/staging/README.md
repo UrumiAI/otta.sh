@@ -104,9 +104,8 @@ admin console's **Settings** page instead.
   gate authorizes (`src/lib/download-links.ts`). The middleware refuses EmDash's public media
   route for any `dl/` key (`src/lib/media-deny.ts`), and the build refuses a wrangler config
   whose `DOWNLOADS` is the `MEDIA` bucket (`src/lib/downloads-bucket.ts`; DEPLOYMENT.md
-  §2.1). Attaching a file from the admin is increment 4; until then a file is attached by
-  writing the descriptor through the admin product edit and putting the object with
-  `wrangler r2 object put`.
+  §2.1). The merchant attaches the file in the product editor's **Download file** card
+  (`@otta-sh/admin-react`, `packages/admin-react/src/products/download-file-card.tsx`).
 - **Customer account pages (issue #306, ADR-0004).** Magic-link sign-in:
   `/account/login` (email form → `POST /account/login/request` → the same generic
   "check your inbox" notice for every address), `/account/verify` (where the
@@ -120,8 +119,8 @@ admin console's **Settings** page instead.
   are `private, no-store`. The header carries a theme-owned "Account" link unless the
   CMS menu already links into `/account`. Saved addresses
   (`storefront/account/addresses`) have no page yet.
-  **Operator setup, required for sign-in:** in the plugin's Settings, set **Sign-in link
-  page** (`settings:loginLinkUrl`) to this site's absolute verify URL, e.g.
+  **Operator setup, required for sign-in:** in the plugin's Settings, set **Sign-in page
+  address** (`settings:loginLinkUrl`) to this site's absolute verify URL, e.g.
   `https://shop.example/account/verify`. The emailed link points there and nowhere else.
   The request's origin is never used, because a spoofed `Host` could otherwise aim a
   victim's link at another domain. While the setting is unset, the login form still
