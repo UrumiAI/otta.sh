@@ -4,7 +4,7 @@
  * imported rather than restated; it names no Node driver, so it loads inside
  * `workerd`. Only the storage BINDING differs, and `describe-d1.ts` supplies it.
  */
-import { paymentDeclineContract } from "@otta-sh/domain/testing";
+import { paymentDeclineContract } from "@urumi-ai/otta-domain/testing";
 import { PAYMENT_DECLINE_LAYOUT } from "../coupon-collections.js";
 import { makePaymentDeclineHarness } from "../payment-decline-harness.js";
 import { useD1Storage } from "./describe-d1.js";

@@ -21,7 +21,7 @@
  * refund replayed while its first attempt is still revoking must not double-count or
  * leave a grant active.
  */
-import { idempotencyKey, orderId, sku } from "@otta-sh/domain";
+import { idempotencyKey, orderId, sku } from "@urumi-ai/otta-domain";
 import { describe, expect, test } from "vitest";
 import { entitlementLookupId } from "../src/index.js";
 import { makePgStorage, PG_ENABLED } from "./describe-each-dialect.js";

@@ -5,7 +5,7 @@ import {
 	orderId,
 	PaymentIntentError,
 	type CreateIntentInput,
-} from "@otta-sh/domain";
+} from "@urumi-ai/otta-domain";
 import { describe, expect, test } from "vitest";
 import { StripePaymentGateway, STRIPE_CUSTOMER_IDEMPOTENCY_PREFIX } from "../src/index.js";
 

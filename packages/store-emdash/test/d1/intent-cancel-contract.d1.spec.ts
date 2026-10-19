@@ -3,7 +3,7 @@
  * on. Harness: `test/payment-decline-harness.ts`, which names no Node driver and
  * so loads inside `workerd`.
  */
-import { intentCancelContract } from "@otta-sh/domain/testing";
+import { intentCancelContract } from "@urumi-ai/otta-domain/testing";
 import { PAYMENT_DECLINE_LAYOUT } from "../coupon-collections.js";
 import { makePaymentDeclineHarness } from "../payment-decline-harness.js";
 import { useD1Storage } from "./describe-d1.js";

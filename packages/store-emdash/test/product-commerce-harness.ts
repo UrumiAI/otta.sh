@@ -26,9 +26,9 @@ import {
 	money,
 	productId as toProductId,
 	sku as toSku,
-} from "@otta-sh/domain";
-import type { ProductCommerceStoreHarness } from "@otta-sh/domain/testing";
-import { FixedClock } from "@otta-sh/domain/testing";
+} from "@urumi-ai/otta-domain";
+import type { ProductCommerceStoreHarness } from "@urumi-ai/otta-domain/testing";
+import { FixedClock } from "@urumi-ai/otta-domain/testing";
 import {
 	collectionOf,
 	EmdashProductCommerceStore,

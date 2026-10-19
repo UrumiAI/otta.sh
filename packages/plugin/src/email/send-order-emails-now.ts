@@ -58,7 +58,7 @@ import {
 	type OrderId,
 	type OrderStore,
 	type OutboxEmail,
-} from "@otta-sh/domain";
+} from "@urumi-ai/otta-domain";
 import { settleDeadline, type SettleDeadline } from "../settle-deadline.js";
 import type { PluginContext } from "../types.js";
 import {

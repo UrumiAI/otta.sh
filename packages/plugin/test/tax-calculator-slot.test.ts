@@ -1,4 +1,4 @@
-import type { TaxCalculator } from "@otta-sh/domain";
+import type { TaxCalculator } from "@urumi-ai/otta-domain";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
 const calc = (id: string): TaxCalculator => ({

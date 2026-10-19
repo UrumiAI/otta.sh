@@ -13,8 +13,8 @@
  * as it did before the guard (Postgres's driver folds a lone surrogate to U+FFFD,
  * SQLite matches the raw row).
  */
-import { idempotencyKey } from "@otta-sh/domain";
-import { FixedClock } from "@otta-sh/domain/testing";
+import { idempotencyKey } from "@urumi-ai/otta-domain";
+import { FixedClock } from "@urumi-ai/otta-domain/testing";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import {
 	collectionOf,

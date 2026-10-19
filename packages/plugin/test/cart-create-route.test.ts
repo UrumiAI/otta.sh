@@ -10,7 +10,7 @@ import {
 	currency as toCurrency,
 	idempotencyKey as toIdempotencyKey,
 	orderId as toOrderId,
-} from "@otta-sh/domain";
+} from "@urumi-ai/otta-domain";
 import { afterAll, beforeEach, describe, expect, test } from "vitest";
 import {
 	createCartCreateRouteHandler,

@@ -18,7 +18,7 @@ import {
 	DOWNLOAD_KEY_RANDOM_BYTES,
 	DOWNLOAD_NOT_ATTACHED_TITLE,
 	mintDownloadAssetKey,
-} from "@otta-sh/plugin";
+} from "@urumi-ai/otta-plugin";
 import { afterEach, describe, expect, test, vi } from "vitest";
 
 vi.mock("astro:middleware", () => ({

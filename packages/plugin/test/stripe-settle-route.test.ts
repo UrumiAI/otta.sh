@@ -26,10 +26,10 @@ import {
 	sku as toSku,
 	type EmailSender,
 	type SettleResult,
-} from "@otta-sh/domain";
-import { FakeEmailSender } from "@otta-sh/domain/testing";
-import { signStripeWebhook } from "@otta-sh/payments-stripe";
-import { EmdashOrderStore, StorageContentionError } from "@otta-sh/store-emdash";
+} from "@urumi-ai/otta-domain";
+import { FakeEmailSender } from "@urumi-ai/otta-domain/testing";
+import { signStripeWebhook } from "@urumi-ai/otta-payments-stripe";
+import { EmdashOrderStore, StorageContentionError } from "@urumi-ai/otta-store-emdash";
 import { afterAll, afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import {
 	STRIPE_SECRET_KEY_KEY,

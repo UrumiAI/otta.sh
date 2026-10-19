@@ -1,5 +1,5 @@
 {
-	"name": "@otta-sh/store-emdash",
+	"name": "@urumi-ai/otta-store-emdash",
 	"version": "0.1.0",
 	"description": "Commerce store adapters for Otta over the EmDash plugin-storage primitives — bound to a structural StorageAccess port, never to the host at runtime. REQUIRES the conditional-write primitives (updateIf/getVersioned/compareAndSet/compareAndDelete), first published in emdash 0.38.0.",
 	"homepage": "https://github.com/UrumiAI/otta.sh#readme",
@@ -36,7 +36,7 @@
 		"test:d1": "vitest run --config vitest.d1.config.ts"
 	},
 	"dependencies": {
-		"@otta-sh/domain": "workspace:*"
+		"@urumi-ai/otta-domain": "workspace:*"
 	},
 	"devDependencies": {
 		"@cloudflare/vitest-plugin": "^1.1.8",

@@ -15,7 +15,7 @@
  * changing to host this suite: it takes any layout, and the cart layout is derived
  * from `src` exactly as the inventory one is.
  */
-import { cartStoreContract } from "@otta-sh/domain/testing";
+import { cartStoreContract } from "@urumi-ai/otta-domain/testing";
 import { CART_LAYOUT } from "../cart-collections.js";
 import { makeCartHarness } from "../cart-harness.js";
 import { useD1Storage } from "./describe-d1.js";

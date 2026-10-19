@@ -14,8 +14,8 @@ import {
 	type OrderId,
 	productId as toProductId,
 	sku as toSku,
-} from "@otta-sh/domain";
-import { ENTITLEMENT_LOOKUPS_COLLECTION, entitlementLookupId } from "@otta-sh/store-emdash";
+} from "@urumi-ai/otta-domain";
+import { ENTITLEMENT_LOOKUPS_COLLECTION, entitlementLookupId } from "@urumi-ai/otta-store-emdash";
 import { afterAll, beforeEach, describe, expect, test } from "vitest";
 import { InProcessAdminOrdersClient } from "../src/admin/in-process-admin-orders-client.js";
 import { dispatchOrdersAction } from "../src/admin/orders-actions.js";

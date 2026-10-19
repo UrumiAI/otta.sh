@@ -16,7 +16,7 @@
  * implausible address, refused before any dispatch) or an outage (the plugin
  * could not be reached), and neither says anything about an account.
  */
-import { ACCOUNT_LOGIN_REQUEST_ROUTE, type AccountLoginRequestResult } from "@otta-sh/plugin";
+import { ACCOUNT_LOGIN_REQUEST_ROUTE, type AccountLoginRequestResult } from "@urumi-ai/otta-plugin";
 import type { APIRoute } from "astro";
 import { routeDispatcher, seeOther, SERVICE_UNAVAILABLE } from "../../../lib/cart-actions.js";
 import { recordLoginRequest } from "../../../lib/account.js";

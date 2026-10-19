@@ -1,5 +1,5 @@
 /**
- * `@otta-sh/plugin/testing` — test helpers for code that sends email through
+ * `@urumi-ai/otta-plugin/testing` — test helpers for code that sends email through
  * EmDash's `ctx.email`, and for authors of EmDash email-transport plugins; and
  * {@link isTrustedHost}, for a site pinning its in-process registration.
  *
@@ -77,6 +77,6 @@ export function recordingEmailProvider(): RecordingEmailProvider {
 /**
  * Whether this isolate's plugin was registered with `trustedHost` on (issue
  * #447) — so a site's test can pin that its in-process entry turned it on
- * (e.g. after importing `@otta-sh/plugin/trusted`). Read-only.
+ * (e.g. after importing `@urumi-ai/otta-plugin/trusted`). Read-only.
  */
 export { isTrustedHost } from "./payments/trusted-host.js";

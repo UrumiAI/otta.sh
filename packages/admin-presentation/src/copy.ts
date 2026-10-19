@@ -9,7 +9,7 @@
  * `products-copy.ts` importing `orders-copy.ts` for it would say something false
  * about how the two screens relate. The budgets belong to §1, not to Orders.
  *
- * The public export names are unchanged: `@otta-sh/admin-presentation` still
+ * The public export names are unchanged: `@urumi-ai/otta-admin-presentation` still
  * exports `BANNER_BUDGET`, `fit` and `fitBanner`, and `orders-copy.ts` still
  * uses them. Only the file they live in moved.
  */

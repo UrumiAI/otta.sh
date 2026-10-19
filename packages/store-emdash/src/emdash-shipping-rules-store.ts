@@ -97,7 +97,7 @@ import {
 	type UpdateShippingRateResult,
 	type UpdateShippingZoneInput,
 	type UpdateShippingZoneResult,
-} from "@otta-sh/domain";
+} from "@urumi-ai/otta-domain";
 import {
 	CAS_RETRY,
 	casDone,

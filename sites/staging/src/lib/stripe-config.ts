@@ -18,7 +18,10 @@
  * A stored value that is not a `pk_…` key reads as no key (the plugin refuses it
  * on save, and fails closed on read), and Settings says why.
  */
-import { STOREFRONT_PAYMENT_CONFIG_ROUTE, type PaymentConfigRouteResult } from "@otta-sh/plugin";
+import {
+	STOREFRONT_PAYMENT_CONFIG_ROUTE,
+	type PaymentConfigRouteResult,
+} from "@urumi-ai/otta-plugin";
 import type { PublicPluginApiRouteHandler } from "emdash/plugin-utils";
 import { dispatchOttaRoute } from "./otta-api.js";
 

@@ -20,8 +20,8 @@ import {
 	email as toEmail,
 	idempotencyKey as toIdempotencyKey,
 	orderId as toOrderId,
-} from "@otta-sh/domain";
-import { FakePaymentGateway } from "@otta-sh/domain/testing";
+} from "@urumi-ai/otta-domain";
+import { FakePaymentGateway } from "@urumi-ai/otta-domain/testing";
 import { afterAll, beforeEach, describe, expect, test } from "vitest";
 import {
 	makeInProcessCommerce,

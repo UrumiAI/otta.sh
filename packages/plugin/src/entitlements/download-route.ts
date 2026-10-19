@@ -6,12 +6,12 @@ import {
 	validateDownloadAsset,
 	type DownloadAsset,
 	type Order,
-} from "@otta-sh/domain";
-import { isRetryableStorageBusy } from "@otta-sh/store-emdash";
+} from "@urumi-ai/otta-domain";
+import { isRetryableStorageBusy } from "@urumi-ai/otta-store-emdash";
 import type { DownloadAssetWire } from "../admin/admin-products-surface.js";
 import { createInProcessCommerceStores } from "../commerce/in-process-commerce-stores.js";
 import type { PluginContext, RouteHandler } from "../types.js";
-import { isWellFormedText } from "@otta-sh/domain";
+import { isWellFormedText } from "@urumi-ai/otta-domain";
 
 /** The PUBLIC route the site dispatches, in-process, before it streams a
  *  digital download (issue #376). */

@@ -52,7 +52,7 @@ import {
 	WEBHOOK_EDGE_TOKEN_HEADER,
 	WEBHOOK_EDGE_TOKEN_KEY,
 	type StripeWebhookSettleResult,
-} from "@otta-sh/plugin";
+} from "@urumi-ai/otta-plugin";
 // The stub `vitest.config.ts` aliases `virtual:emdash/env` to. Imported by its
 // real path rather than through the alias: same file, so the same module
 // instance `webhook-env.ts` reads — but typed as the always-present object it

@@ -54,7 +54,7 @@ const {
 	NEXT_RELEASES_SCAN_TITLE,
 	PREVIOUS_AT_START_TITLE,
 	PREVIOUS_UNWALKED_TITLE,
-} = await import("@otta-sh/admin-presentation");
+} = await import("@urumi-ai/otta-admin-presentation");
 
 // ── the stack, as a value ────────────────────────────────────────────────────
 

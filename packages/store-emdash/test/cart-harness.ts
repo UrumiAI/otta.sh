@@ -15,9 +15,9 @@
  * - `advance` moves the injected `FixedClock`, which is what makes a hold lapse
  *   without waiting fifteen minutes.
  */
-import type { CartDeps } from "@otta-sh/domain";
-import type { CartStoreHarness } from "@otta-sh/domain/testing";
-import { FixedClock } from "@otta-sh/domain/testing";
+import type { CartDeps } from "@urumi-ai/otta-domain";
+import type { CartStoreHarness } from "@urumi-ai/otta-domain/testing";
+import { FixedClock } from "@urumi-ai/otta-domain/testing";
 import {
 	collectionOf,
 	EmdashCartStore,

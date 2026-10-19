@@ -32,7 +32,7 @@ vi.mock("emdash/plugin-utils", async (importOriginal) => {
 });
 
 const { OrdersList } = await import("../src/orders/orders-list.js");
-const { ORDERS_SEARCH_LABEL } = await import("@otta-sh/admin-presentation");
+const { ORDERS_SEARCH_LABEL } = await import("@urumi-ai/otta-admin-presentation");
 
 let mounted: Mounted | null = null;
 

@@ -8,7 +8,7 @@
  * never from an argument — is the commerce-client contract's; these cases pin
  * only the route layer: its input guard and its forwarding.
  */
-import { email as toEmail } from "@otta-sh/domain";
+import { email as toEmail } from "@urumi-ai/otta-domain";
 import { afterAll, beforeEach, describe, expect, test } from "vitest";
 import {
 	ACCOUNT_LOGIN_PATH,

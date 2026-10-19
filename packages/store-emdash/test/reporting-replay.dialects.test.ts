@@ -15,7 +15,7 @@
  * reproducible and the shape is not one a hand-written sequence happens to avoid.
  */
 import { expect, test } from "vitest";
-import type { DateRange } from "@otta-sh/domain";
+import type { DateRange } from "@urumi-ai/otta-domain";
 import {
 	isScanPageLimitError,
 	type ReportingDailyDoc,

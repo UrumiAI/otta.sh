@@ -85,7 +85,7 @@ importers:
 
   examples/email-provider:
     devDependencies:
-      '@otta-sh/plugin':
+      '@urumi-ai/otta-plugin':
         specifier: workspace:*
         version: link:../../packages/plugin
       emdash:
@@ -112,7 +112,7 @@ importers:
 
   packages/admin-react:
     dependencies:
-      '@otta-sh/admin-presentation':
+      '@urumi-ai/otta-admin-presentation':
         specifier: workspace:*
         version: link:../admin-presentation
     devDependencies:
@@ -164,7 +164,7 @@ importers:
 
   packages/payments-stripe:
     dependencies:
-      '@otta-sh/domain':
+      '@urumi-ai/otta-domain':
         specifier: workspace:*
         version: link:../domain
     devDependencies:
@@ -183,16 +183,16 @@ importers:
 
   packages/plugin:
     dependencies:
-      '@otta-sh/admin-presentation':
+      '@urumi-ai/otta-admin-presentation':
         specifier: workspace:*
         version: link:../admin-presentation
-      '@otta-sh/domain':
+      '@urumi-ai/otta-domain':
         specifier: workspace:*
         version: link:../domain
-      '@otta-sh/payments-stripe':
+      '@urumi-ai/otta-payments-stripe':
         specifier: workspace:*
         version: link:../payments-stripe
-      '@otta-sh/store-emdash':
+      '@urumi-ai/otta-store-emdash':
         specifier: workspace:*
         version: link:../store-emdash
     devDependencies:
@@ -214,7 +214,7 @@ importers:
 
   packages/store-emdash:
     dependencies:
-      '@otta-sh/domain':
+      '@urumi-ai/otta-domain':
         specifier: workspace:*
         version: link:../domain
     devDependencies:
@@ -263,10 +263,10 @@ importers:
       '@emdash-cms/cloudflare':
         specifier: 1.0.1
         version: 1.0.1(913e67c8f67578b14e4e92a441317390)
-      '@otta-sh/admin-react':
+      '@urumi-ai/otta-admin-react':
         specifier: workspace:*
         version: link:../../packages/admin-react
-      '@otta-sh/plugin':
+      '@urumi-ai/otta-plugin':
         specifier: workspace:*
         version: link:../../packages/plugin
       astro:
@@ -288,12 +288,6 @@ importers:
       '@cloudflare/workers-types':
         specifier: ^5.20260708.1
         version: 5.20260710.1
-      '@otta-sh/domain':
-        specifier: workspace:*
-        version: link:../../packages/domain
-      '@otta-sh/payments-stripe':
-        specifier: workspace:*
-        version: link:../../packages/payments-stripe
       '@types/better-sqlite3':
         specifier: 'catalog:'
         version: 7.6.13
@@ -303,6 +297,12 @@ importers:
       '@types/react-dom':
         specifier: ^19.2.3
         version: 19.2.3(@types/react@19.2.17)
+      '@urumi-ai/otta-domain':
+        specifier: workspace:*
+        version: link:../../packages/domain
+      '@urumi-ai/otta-payments-stripe':
+        specifier: workspace:*
+        version: link:../../packages/payments-stripe
       better-sqlite3:
         specifier: 'catalog:'
         version: 12.11.1

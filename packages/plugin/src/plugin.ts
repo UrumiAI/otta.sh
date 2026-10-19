@@ -78,7 +78,7 @@ import {
 	createAfterSaveHandler,
 	createAfterUnpublishHandler,
 } from "./sync/hooks.js";
-import type { TaxCalculator } from "@otta-sh/domain";
+import type { TaxCalculator } from "@urumi-ai/otta-domain";
 import { setTaxCalculator } from "./commerce/tax-calculator-slot.js";
 import { setTrustedHost } from "./payments/trusted-host.js";
 import type { SandboxedPlugin } from "./types.js";

@@ -18,8 +18,8 @@ import {
 	email as toEmail,
 	type EmailTemplate,
 	type TaxSettings,
-} from "@otta-sh/domain";
-import { FakePaymentGateway } from "@otta-sh/domain/testing";
+} from "@urumi-ai/otta-domain";
+import { FakePaymentGateway } from "@urumi-ai/otta-domain/testing";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { InProcessAdminOrdersClient } from "../src/admin/in-process-admin-orders-client.js";
 import { makeEmailSender } from "../src/email/ctx-email-sender.js";
@@ -254,7 +254,7 @@ describe("the order emails", () => {
 		const sender = await makeEmailSender(emailCtx(sent));
 		const order = await h.stores.orderStore.getById(id as never);
 		if (order === null) throw new Error("no order");
-		const { buildOrderEmailData } = await import("@otta-sh/domain");
+		const { buildOrderEmailData } = await import("@urumi-ai/otta-domain");
 		await sender?.send({
 			to: toEmail("ada@example.com"),
 			template: "order-confirmation" as EmailTemplate,
@@ -343,7 +343,7 @@ describe("#502: the order emails read the live option only for an order that rec
 	): Promise<void> {
 		const order = await h.stores.orderStore.getById(id as never);
 		if (order === null) throw new Error("no order");
-		const { buildOrderEmailData } = await import("@otta-sh/domain");
+		const { buildOrderEmailData } = await import("@urumi-ai/otta-domain");
 		await sender?.send({
 			to: toEmail("ada@example.com"),
 			template: "order-confirmation" as EmailTemplate,
@@ -429,7 +429,7 @@ describe("the admin order detail", () => {
 
 /** Rewrite the stored order as one written before ADR-0030: no tax snapshot. */
 async function stripSnapshot(id: string): Promise<void> {
-	const { collectionOf, ORDERS_COLLECTION } = await import("@otta-sh/store-emdash");
+	const { collectionOf, ORDERS_COLLECTION } = await import("@urumi-ai/otta-store-emdash");
 	const orders = collectionOf<Record<string, unknown>>(h.ctx.storage as never, ORDERS_COLLECTION);
 	const doc = await orders.getVersioned(id);
 	if (doc === null) throw new Error("no order doc");
@@ -441,7 +441,7 @@ async function stripSnapshot(id: string): Promise<void> {
 /** Rewrite the stored order's tax snapshot as one written before #478: no
  *  recorded "Display tax totals". */
 async function stripRecordedDisplay(id: string): Promise<void> {
-	const { collectionOf, ORDERS_COLLECTION } = await import("@otta-sh/store-emdash");
+	const { collectionOf, ORDERS_COLLECTION } = await import("@urumi-ai/otta-store-emdash");
 	const orders = collectionOf<Record<string, unknown>>(h.ctx.storage as never, ORDERS_COLLECTION);
 	const doc = await orders.getVersioned(id);
 	if (doc === null) throw new Error("no order doc");

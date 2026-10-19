@@ -29,8 +29,8 @@
  * skus and its idempotency keys. A key shared with an earlier case would replay
  * that case's recorded answer against a different sku.
  */
-import { idempotencyKey } from "@otta-sh/domain";
-import { FixedClock } from "@otta-sh/domain/testing";
+import { idempotencyKey } from "@urumi-ai/otta-domain";
+import { FixedClock } from "@urumi-ai/otta-domain/testing";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { InventoryDoc, MovementClaimDoc, StorageAccess } from "../src/index.js";
 import {

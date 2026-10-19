@@ -10,7 +10,7 @@
  * Postgres whenever the connection string is present (and a visibly skipped suite
  * naming the missing variable when it is not).
  */
-import { cartStoreContract } from "@otta-sh/domain/testing";
+import { cartStoreContract } from "@urumi-ai/otta-domain/testing";
 import { CART_LAYOUT } from "./cart-collections.js";
 import { makeCartHarness } from "./cart-harness.js";
 import { describeEachDialect } from "./describe-each-dialect.js";

@@ -27,7 +27,7 @@ import {
 	removeLine,
 	sku,
 	updateLine,
-} from "@otta-sh/domain";
+} from "@urumi-ai/otta-domain";
 import { expect, test } from "vitest";
 import { normalizeCartDoc, normalizeInventoryDoc } from "../src/index.js";
 import { CART_LAYOUT } from "./cart-collections.js";

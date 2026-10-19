@@ -45,7 +45,7 @@ const {
 	refundCapabilityText,
 	refundConfirmText,
 	refundIncrementText,
-} = await import("@otta-sh/admin-presentation");
+} = await import("@urumi-ai/otta-admin-presentation");
 type DetailPayload = import("../src/console-api.js").DetailPayload;
 type RefundsSummary = import("../src/console-api.js").RefundsSummary;
 type Vocabulary = import("../src/console-api.js").Vocabulary;

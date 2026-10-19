@@ -16,7 +16,7 @@
  * it names no Node driver, so it loads inside `workerd`. Only the storage BINDING
  * differs, and that is what `describe-d1.ts` supplies.
  */
-import { shippingRulesStoreContract, taxRulesStoreContract } from "@otta-sh/domain/testing";
+import { shippingRulesStoreContract, taxRulesStoreContract } from "@urumi-ai/otta-domain/testing";
 import { RULES_LAYOUT } from "../rules-collections.js";
 import { makeShippingRulesHarness, makeTaxRulesHarness } from "../rules-harness.js";
 import { useD1Storage } from "./describe-d1.js";

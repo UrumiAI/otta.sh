@@ -23,7 +23,7 @@ import {
 	REPORTING_COLLECTIONS,
 	RULES_COLLECTIONS,
 	SETTINGS_COLLECTIONS,
-} from "@otta-sh/store-emdash";
+} from "@urumi-ai/otta-store-emdash";
 import {
 	COMMERCE_STORAGE_COLLECTION_NAMES,
 	COMMERCE_STORAGE_COLLECTIONS,

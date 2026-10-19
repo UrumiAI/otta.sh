@@ -38,7 +38,7 @@ import {
 	ACCOUNT_LOGOUT_ROUTE,
 	SESSION_COOKIE_NAME,
 	type OrderRouteResult,
-} from "@otta-sh/plugin";
+} from "@urumi-ai/otta-plugin";
 import { seeOther } from "../src/lib/cart-actions.js";
 import { checkoutEntryRedirect } from "../src/lib/checkout-redirect.js";
 import { payPageRedirect } from "../src/lib/pay-guard.js";

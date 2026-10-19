@@ -18,7 +18,7 @@
  * The last case pins the price of skipping: a claim left live on a row that really is
  * tombstoned is freed by the lease (`CLAIM_ABANDON_AFTER_MS`), not held forever.
  */
-import { idempotencyKey, productId, sku, SkuConflictError } from "@otta-sh/domain";
+import { idempotencyKey, productId, sku, SkuConflictError } from "@urumi-ai/otta-domain";
 import { expect, test } from "vitest";
 import { SKU_OWNERS_COLLECTION, type SkuOwnerDoc } from "../src/index.js";
 import { describeEachDialect } from "./describe-each-dialect.js";

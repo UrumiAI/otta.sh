@@ -22,7 +22,7 @@
  * request-scoped batch loader, so the PDP exercises the same one-call path
  * the PLP proves at scale.
  */
-import { isRetryableStorageBusy } from "@otta-sh/store-emdash";
+import { isRetryableStorageBusy } from "@urumi-ai/otta-store-emdash";
 import { makeCommerceClient } from "../commerce/make-commerce-client.js";
 import { CommerceBatchLoader } from "../catalog/commerce-batch-loader.js";
 import { parseCommerceBatchItem } from "../catalog/commerce-view.js";

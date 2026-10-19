@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { CountingIdGen, FixedClock } from "@otta-sh/domain/testing";
+import { CountingIdGen, FixedClock } from "@urumi-ai/otta-domain/testing";
 import {
 	couponStoreContract,
 	InMemoryCouponStore,
@@ -7,7 +7,7 @@ import {
 	InMemoryTaxRulesStore,
 	shippingRulesStoreContract,
 	taxRulesStoreContract,
-} from "@otta-sh/domain/testing";
+} from "@urumi-ai/otta-domain/testing";
 
 shippingRulesStoreContract(async () => ({ store: new InMemoryShippingRulesStore() }), {
 	dialect: "fake",

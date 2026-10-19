@@ -1,16 +1,16 @@
-# @otta-sh/store-emdash
+# @urumi-ai/otta-store-emdash
 
 Commerce store adapters over EmDash's plugin-storage primitives. Each commerce aggregate (inventory, cart, order, product-commerce, coupon, rules, identity, entitlement, payment events, settings, reporting) is one document, written with conditional-write primitives so concurrent writers cannot corrupt it.
 
 ## Install
 
 ```sh
-pnpm add @otta-sh/store-emdash
+pnpm add @urumi-ai/otta-store-emdash
 ```
 
 Requires a host that carries the conditional-write primitives (`updateIf`, `getVersioned`, `compareAndSet`, `compareAndDelete`): `emdash` `^1.0.1`.
 
-Published entry point: `@otta-sh/store-emdash` (ESM-only). Part of [Otta](https://github.com/UrumiAI/otta.sh#readme).
+Published entry point: `@urumi-ai/otta-store-emdash` (ESM-only). Part of [Otta](https://github.com/UrumiAI/otta.sh#readme).
 
 ## Usage
 

@@ -24,7 +24,7 @@ import type { APIContext } from "astro";
 const { getEmDashEntry } = vi.hoisted(() => ({ getEmDashEntry: vi.fn() }));
 vi.mock("emdash", () => ({ getEmDashEntry }));
 
-import { STOREFRONT_CART_LINE_ADD_ROUTE, STOREFRONT_PRODUCT_ROUTE } from "@otta-sh/plugin";
+import { STOREFRONT_CART_LINE_ADD_ROUTE, STOREFRONT_PRODUCT_ROUTE } from "@urumi-ai/otta-plugin";
 import { POST } from "../src/pages/cart/add.js";
 import { cartErrorMessage } from "../src/lib/error-messages.js";
 

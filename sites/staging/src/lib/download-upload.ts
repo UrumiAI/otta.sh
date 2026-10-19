@@ -5,7 +5,7 @@
  * media bucket is public by design (`downloads-bucket.ts`).
  *
  * ── The flow ─────────────────────────────────────────────────────────────────
- *  1. The console (`@otta-sh/admin-react`, the product editor's Download file
+ *  1. The console (`@urumi-ai/otta-admin-react`, the product editor's Download file
  *     card) POSTs the file's raw bytes here, with the file's name in
  *     {@link DOWNLOAD_FILENAME_HEADER} and its type as `Content-Type`.
  *  2. This endpoint checks who is asking, resolves the product through the
@@ -70,7 +70,7 @@ import {
 	downloadContentTypeFor,
 	mintDownloadAssetKey,
 	sanitizeDownloadFilename,
-} from "@otta-sh/plugin";
+} from "@urumi-ai/otta-plugin";
 import { DOWNLOADS_BINDING } from "./downloads-bucket.js";
 import { PRIVATE_NO_STORE } from "./no-store.js";
 import { BUSY_RETRY_AFTER_SECONDS } from "./otta-api.js";

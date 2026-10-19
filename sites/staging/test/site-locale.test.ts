@@ -9,7 +9,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, test } from "vitest";
 import { countryOptions } from "../src/lib/countries.js";
-import { STOREFRONT_LOCALE } from "@otta-sh/plugin";
+import { STOREFRONT_LOCALE } from "@urumi-ai/otta-plugin";
 import { orderMoney } from "../src/lib/account.js";
 import { SITE_LOCALE } from "../src/lib/site-locale.js";
 

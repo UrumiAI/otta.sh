@@ -1,4 +1,4 @@
-// Public barrel of @otta-sh/domain — ports, use-cases, and branded types.
+// Public barrel of @urumi-ai/otta-domain — ports, use-cases, and branded types.
 export {
 	cents,
 	currency,
@@ -362,7 +362,7 @@ export {
 	type RenderedEmail,
 } from "./email/render.js";
 // The shopper-facing name of an order (its products, never its id) — one pure
-// function shared by the order emails and, through `@otta-sh/plugin`, the
+// function shared by the order emails and, through `@urumi-ai/otta-plugin`, the
 // storefront, so the two cannot spell the same order differently.
 export {
 	ORDER_LABEL_FALLBACK,
@@ -372,10 +372,10 @@ export {
 } from "./orders/order-label.js";
 // The order NUMBER ("#3F9A2") — a display label from the id's first characters,
 // never a lookup key (ADR-0033). Shared by the emails and, through
-// `@otta-sh/plugin`, the storefront and the admin console.
+// `@urumi-ai/otta-plugin`, the storefront and the admin console.
 export { ORDER_NUMBER_LENGTH, orderNumber, orderNumberIdPrefix } from "./orders/order-number.js";
 // What an order's total is called ("Paid" / "Total") and what the ledger shows
-// refunded — shared by the order emails and, through `@otta-sh/plugin`, the
+// refunded — shared by the order emails and, through `@urumi-ai/otta-plugin`, the
 // storefront's order pages.
 export { orderTotalLabel, recordedRefundTotal } from "./orders/order-total-label.js";
 export {

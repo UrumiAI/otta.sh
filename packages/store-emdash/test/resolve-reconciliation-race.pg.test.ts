@@ -19,7 +19,7 @@
  * The pool is sized so each of the N callers can hold its OWN connection; a pool
  * narrower than the crowd serializes the writers and weakens the race.
  */
-import { idempotencyKey, orderId as toOrderId } from "@otta-sh/domain";
+import { idempotencyKey, orderId as toOrderId } from "@urumi-ai/otta-domain";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import { CAS_MAX_ATTEMPTS, type StorageAccess } from "../src/index.js";
 import { makePgStorage, PG_ENABLED } from "./describe-each-dialect.js";

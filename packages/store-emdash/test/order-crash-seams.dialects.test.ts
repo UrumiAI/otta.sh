@@ -53,8 +53,8 @@ import {
 	refundOrder,
 	type Order,
 	type RecordRefundInput,
-} from "@otta-sh/domain";
-import { buildRefundSeed, FakePaymentGateway } from "@otta-sh/domain/testing";
+} from "@urumi-ai/otta-domain";
+import { buildRefundSeed, FakePaymentGateway } from "@urumi-ai/otta-domain/testing";
 import { expect, test } from "vitest";
 import {
 	collectionOf,

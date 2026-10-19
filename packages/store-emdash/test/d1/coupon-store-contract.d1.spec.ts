@@ -16,7 +16,7 @@
  * names no Node driver, so it loads inside `workerd`. Only the storage BINDING
  * differs, and that is what `describe-d1.ts` supplies.
  */
-import { couponStoreContract } from "@otta-sh/domain/testing";
+import { couponStoreContract } from "@urumi-ai/otta-domain/testing";
 import { COUPON_LAYOUT } from "../coupon-collections.js";
 import { makeCouponHarness } from "../coupon-harness.js";
 import { useD1Storage } from "./describe-d1.js";

@@ -34,7 +34,7 @@ import {
 	sku,
 	SkuStockConflictError,
 	type IdempotencyKey,
-} from "@otta-sh/domain";
+} from "@urumi-ai/otta-domain";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import {
 	CAS_MAX_ATTEMPTS,

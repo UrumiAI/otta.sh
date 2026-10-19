@@ -44,7 +44,7 @@ re-migrates a fresh database per test file, so expect minutes rather than second
 ## TDD, contract-first
 
 The order is always: **failing test → code → green → refactor.** For anything in
-`@otta-sh/domain`, write the behavioral test against the **port interface** before writing any
+`@urumi-ai/otta-domain`, write the behavioral test against the **port interface** before writing any
 adapter — the headline contract is *no oversell under concurrency*. See
 [`DEVELOPMENT.md` §1](./DEVELOPMENT.md#1-tdd-is-contract-first) for the full rule.
 
@@ -72,7 +72,7 @@ Pick the tag for the area your change touches:
 
 | Area changed | Tag |
 |---|---|
-| `@otta-sh/domain` (ports, use-cases, invariants) | `[Domain]` |
+| `@urumi-ai/otta-domain` (ports, use-cases, invariants) | `[Domain]` |
 | Store/client/payment **adapters** (store-emdash, stripe) | `[Adapters]` |
 | The EmDash **plugin** (storefront, Block Kit panel, sync hooks) and its admin packages (`admin-react`, `admin-presentation`) | `[Plugin]` |
 | `sites/*` (the reference storefront site/theme) | `[Site]` |

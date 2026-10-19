@@ -39,7 +39,7 @@
  * `INSERT … ON CONFLICT DO NOTHING`). No unique index is relied upon: the test
  * harness cannot materialize one, and the host's index sync degrades silently.
  */
-import type { ReserveResult, StockRemovalResult } from "@otta-sh/domain";
+import type { ReserveResult, StockRemovalResult } from "@urumi-ai/otta-domain";
 
 /** Collection name: the per-SKU aggregate. Id is the sku; id lookup only. */
 export const INVENTORY_COLLECTION = "inventory";

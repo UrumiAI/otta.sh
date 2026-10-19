@@ -4,7 +4,7 @@ export default defineConfig({
 	entry: ["src/index.ts"],
 	format: ["esm"],
 	dts: true,
-	// The host is a PEER, exactly as it is for @otta-sh/admin-react: this package
+	// The host is a PEER, exactly as it is for @urumi-ai/otta-admin-react: this package
 	// names EmDash's storage types and never executes its code, so the built
 	// `.d.mts` must keep `import type … from "emdash"` as an external reference.
 	// Left bundlable, tsdown's dts rollup walks the host's whole type graph

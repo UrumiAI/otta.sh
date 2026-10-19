@@ -6,7 +6,7 @@
  * failure a bounded number of times — through the real `intentCancelDueAt` index.
  * D1 runs the same suite from `d1/intent-cancel-contract.d1.spec.ts`.
  */
-import { intentCancelContract } from "@otta-sh/domain/testing";
+import { intentCancelContract } from "@urumi-ai/otta-domain/testing";
 import { PAYMENT_DECLINE_LAYOUT } from "./coupon-collections.js";
 import { describeEachDialect } from "./describe-each-dialect.js";
 import { makePaymentDeclineHarness } from "./payment-decline-harness.js";

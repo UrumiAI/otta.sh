@@ -18,8 +18,8 @@ import {
 	readOrderTaxSnapshot,
 	sku as brandSku,
 	type TaxSettings,
-} from "@otta-sh/domain";
-import { FakePaymentGateway } from "@otta-sh/domain/testing";
+} from "@urumi-ai/otta-domain";
+import { FakePaymentGateway } from "@urumi-ai/otta-domain/testing";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { InProcessAdminOrdersClient } from "../src/admin/in-process-admin-orders-client.js";
 import { CommerceInputError } from "../src/commerce/commerce-input.js";

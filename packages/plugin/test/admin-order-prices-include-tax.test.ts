@@ -11,7 +11,7 @@ import {
 	orderId as toOrderId,
 	productId as toProductId,
 	sku as toSku,
-} from "@otta-sh/domain";
+} from "@urumi-ai/otta-domain";
 import { afterAll, beforeEach, expect, test } from "vitest";
 import { InProcessAdminOrdersClient } from "../src/admin/in-process-admin-orders-client.js";
 import {

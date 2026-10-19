@@ -22,7 +22,7 @@
  * `!== undefined` check would read as "configured".
  */
 import { describe, expect, test } from "vitest";
-import type { StorageAccess, StorageCollection } from "@otta-sh/store-emdash";
+import type { StorageAccess, StorageCollection } from "@urumi-ai/otta-store-emdash";
 import {
 	constantTimeEquals,
 	ENCRYPTED_PAYMENT_SECRET_KEYS,

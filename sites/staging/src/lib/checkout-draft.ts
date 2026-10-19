@@ -23,7 +23,7 @@
  * those errors belong to (`error`): the review marks a field only when the URL
  * carries that same token, so a stale draft never puts an old error on a field.
  */
-import { BUYER_REF_MAX, ORDER_ADDRESS_MAX_LENGTHS } from "@otta-sh/plugin";
+import { BUYER_REF_MAX, ORDER_ADDRESS_MAX_LENGTHS } from "@urumi-ai/otta-plugin";
 import type { CookieDeleter, CookieReader, CookieSetOptions } from "./checkout-cookie.js";
 
 export const CHECKOUT_DRAFT_COOKIE = "otta_checkout_draft";

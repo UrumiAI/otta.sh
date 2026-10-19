@@ -17,7 +17,7 @@ import {
 	type RawConfirmation,
 	type RefundInput,
 	type RefundResult,
-} from "@otta-sh/domain";
+} from "@urumi-ai/otta-domain";
 import { startDeadline, type CallDeadline } from "./deadline.js";
 
 /** Default replay-window tolerance for the signed `t` timestamp — 300s, matching
@@ -26,7 +26,7 @@ export const DEFAULT_TOLERANCE_SECONDS = 300;
 
 /**
  * WHICH CURRENCIES THE LIVE PATH CHARGES. Otta stores each amount in its
- * currency's minor unit from the currency table (`@otta-sh/domain`'s
+ * currency's minor unit from the currency table (`@urumi-ai/otta-domain`'s
  * `currencyDigits`: cents for USD, whole yen for JPY, fils for KWD) and sends it
  * to Stripe UNCHANGED. Per <https://docs.stripe.com/currencies> (read
  * 2026-10-08; "Specify amounts in API requests", "Zero-decimal currencies",

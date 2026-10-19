@@ -56,8 +56,8 @@ import type {
 	ProductVariant,
 	ProductVariantSummary,
 	Sku,
-} from "@otta-sh/domain";
-import { isProductTaxStatus } from "@otta-sh/domain";
+} from "@urumi-ai/otta-domain";
+import { isProductTaxStatus } from "@urumi-ai/otta-domain";
 
 /**
  * The replay key a SHELL document carries — a document a variant created before its

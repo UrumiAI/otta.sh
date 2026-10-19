@@ -37,8 +37,8 @@ import {
 	type EmailSender,
 	type SendEmailInput,
 	type TaxTotalsDisplay,
-} from "@otta-sh/domain";
-import { EmdashSettingsStore, systemClock } from "@otta-sh/store-emdash";
+} from "@urumi-ai/otta-domain";
+import { EmdashSettingsStore, systemClock } from "@urumi-ai/otta-store-emdash";
 import { resolveLoginLinkUrl } from "../storefront/login-link.js";
 import { STOREFRONT_LOCALE } from "../storefront/route-input.js";
 import type { EmailAccess, PluginContext } from "../types.js";

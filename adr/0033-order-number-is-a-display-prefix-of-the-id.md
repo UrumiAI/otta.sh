@@ -22,7 +22,7 @@ prefix of the existing id (no storage, no migration).
 ## Decision
 
 The order number is `"#"` + the first **5** characters of the order id, upper-cased —
-`orderNumber(orderId)` in `@otta-sh/domain`, the one function every surface uses: the
+`orderNumber(orderId)` in `@urumi-ai/otta-domain`, the one function every surface uses: the
 order page, the account order list and detail, every order email (subject and body), and
 the admin console (list rows and detail, sent on the admin wire as `orderNumber`).
 

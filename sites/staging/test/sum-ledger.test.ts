@@ -12,7 +12,7 @@ import {
 	NOT_APPLICABLE_LABEL,
 	NOT_CALCULATED_LABEL,
 	type CheckoutAmountView,
-} from "@otta-sh/plugin";
+} from "@urumi-ai/otta-plugin";
 import { experimental_AstroContainer as AstroContainer } from "astro/container";
 import { readFileSync } from "node:fs";
 import path from "node:path";

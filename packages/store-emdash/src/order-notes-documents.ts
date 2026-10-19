@@ -35,8 +35,8 @@
  * bounded paged read on the `orderId` index — the same shape as the session
  * history's.
  */
-import type { OrderNote } from "@otta-sh/domain";
-import { orderId as toOrderId } from "@otta-sh/domain";
+import type { OrderNote } from "@urumi-ai/otta-domain";
+import { orderId as toOrderId } from "@urumi-ai/otta-domain";
 
 /** Collection name: one note per idempotency key. */
 export const ORDER_NOTES_COLLECTION = "order_notes";

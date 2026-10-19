@@ -33,7 +33,7 @@ import {
 	STOREFRONT_CHECKOUT_PLACE_ROUTE,
 	STOREFRONT_ORDER_ABANDON_ROUTE,
 	type CheckoutSummaryRouteResult,
-} from "@otta-sh/plugin";
+} from "@urumi-ai/otta-plugin";
 import { checkoutEntryRedirect } from "../src/lib/checkout-redirect.js";
 import {
 	CHECKOUT_COOKIE_MAX_AGE_SECONDS,

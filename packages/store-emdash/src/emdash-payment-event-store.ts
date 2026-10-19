@@ -46,7 +46,7 @@ import type {
 	PaymentEventStore,
 	PaymentMethod,
 	RecordAnomalyInput,
-} from "@otta-sh/domain";
+} from "@urumi-ai/otta-domain";
 import {
 	CAS_RETRY,
 	casDone,

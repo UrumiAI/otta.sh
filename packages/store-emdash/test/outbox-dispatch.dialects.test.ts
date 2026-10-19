@@ -31,7 +31,7 @@ import {
 	reservationId,
 	sku,
 	type CreateOrderInput,
-} from "@otta-sh/domain";
+} from "@urumi-ai/otta-domain";
 import { expect, test } from "vitest";
 import { describeEachDialect } from "./describe-each-dialect.js";
 import { ORDER_LAYOUT } from "./order-collections.js";

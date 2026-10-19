@@ -8,7 +8,7 @@
  * can drift from what ADR-0022 already proves. D1 runs the same suite from
  * `d1/late-payment-contract.d1.spec.ts`.
  */
-import { latePaymentContract } from "@otta-sh/domain/testing";
+import { latePaymentContract } from "@urumi-ai/otta-domain/testing";
 import { PAYMENT_DECLINE_LAYOUT } from "./coupon-collections.js";
 import { describeEachDialect } from "./describe-each-dialect.js";
 import { makeLatePaymentHarness } from "./late-payment-harness.js";

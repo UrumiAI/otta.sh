@@ -23,7 +23,7 @@
  * Like `checkout-redirect.ts`, it lives here rather than in the page because
  * `.astro` files have no render harness in this package (issue #40).
  */
-import type { OrderRouteResult } from "@otta-sh/plugin";
+import type { OrderRouteResult } from "@urumi-ai/otta-plugin";
 
 /**
  * May the buyer pay this order NOW? Only a `pending` order, and only strictly

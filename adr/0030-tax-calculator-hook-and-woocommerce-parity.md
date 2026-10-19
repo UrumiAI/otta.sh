@@ -26,7 +26,7 @@ the service they choose, not to core).
 
 ## Decision
 
-1. **One hook, one call site.** `@otta-sh/domain` defines `TaxCalculator`
+1. **One hook, one call site.** `@urumi-ai/otta-domain` defines `TaxCalculator`
    (`calculate(request) → result | refusal`). The request is generic, in the style of
    Avalara and Stripe Tax: lines (quantity, unit price, discounted amount, tax class,
    product tax status), the shipping charge, origin and destination addresses (country,
@@ -44,7 +44,7 @@ the service they choose, not to core).
 3. **Registration.** A site gives em-dash its own entry module containing
    `export default createOttaPlugin({ taxCalculator })` and points the descriptor's
    `entrypoint` at it. A site registered in-process should also pass `trustedHost: true`
-   there (issue #447): its own entry replaces `@otta-sh/plugin/trusted`, which is what
+   there (issue #447): its own entry replaces `@urumi-ai/otta-plugin/trusted`, which is what
    turns on the abort signal on Stripe calls. That em-dash bundles a site-local entrypoint like the package
    one was proven by a build spike, not by a committed test. em-dash imports the
    entrypoint from a generated virtual module, so a relative path does not resolve: the
@@ -145,7 +145,7 @@ no priority, compound flag, postcode or city that could tell two such rates apar
   contract's concurrent-create case runs on every backend, but SQLite and D1 serialise
   writes, so there it proves the logic, not the race.
 - **Existing duplicates are kept, never deleted.** One rule resolves them everywhere,
-  in `@otta-sh/domain` (`effectiveTaxRates`, `appliedTaxRate`, `shadowedTaxRates`):
+  in `@urumi-ai/otta-domain` (`effectiveTaxRates`, `appliedTaxRate`, `shadowedTaxRates`):
   **the greatest rate id applies; the others' rates are ignored** (under the default
   shipping tax class rule their shipping flag still counts — see below). On goods that is the
   rate checkout already charged, so no line-item tax changes. `getRate` answers the same

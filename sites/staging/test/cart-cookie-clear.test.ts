@@ -9,7 +9,7 @@ import {
 	STOREFRONT_CART_LINE_ADD_ROUTE,
 	STOREFRONT_CART_LINE_REMOVE_ROUTE,
 	STOREFRONT_CART_LINE_UPDATE_ROUTE,
-} from "@otta-sh/plugin";
+} from "@urumi-ai/otta-plugin";
 import { POST as add } from "../src/pages/cart/add.js";
 import { POST as remove } from "../src/pages/cart/remove.js";
 import { POST as update } from "../src/pages/cart/update.js";

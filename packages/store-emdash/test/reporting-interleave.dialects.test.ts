@@ -25,7 +25,7 @@
  * The parking is real storage, not a mock: the parked call is performed for real once
  * released, so what lands is what the host would have written.
  */
-import type { DateRange } from "@otta-sh/domain";
+import type { DateRange } from "@urumi-ai/otta-domain";
 import { expect, test } from "vitest";
 import { REPORTING_APPLIED_COLLECTION, REPORTING_DAILY_COLLECTION } from "../src/index.js";
 import { describeEachDialect } from "./describe-each-dialect.js";

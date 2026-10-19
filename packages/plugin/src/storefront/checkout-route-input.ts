@@ -17,7 +17,11 @@
  * What this layer must never do is REWRITE it — the service stores `buyer_ref`
  * verbatim and ADR-0004's guest-order claiming matches on it.
  */
-import { isCodeShapedRegion, isWellFormedText, ORDER_ADDRESS_MAX_LENGTHS } from "@otta-sh/domain";
+import {
+	isCodeShapedRegion,
+	isWellFormedText,
+	ORDER_ADDRESS_MAX_LENGTHS,
+} from "@urumi-ai/otta-domain";
 import {
 	BUYER_REF_MAX,
 	COUNTRY_SHAPE,

@@ -45,8 +45,8 @@ import {
 	type RawConfirmation,
 	type RefundInput,
 	type RefundResult,
-} from "@otta-sh/domain";
-import { buildRefundSeed, FakePaymentGateway } from "@otta-sh/domain/testing";
+} from "@urumi-ai/otta-domain";
+import { buildRefundSeed, FakePaymentGateway } from "@urumi-ai/otta-domain/testing";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import {
 	CAS_MAX_ATTEMPTS,

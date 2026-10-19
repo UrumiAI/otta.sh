@@ -15,8 +15,8 @@ import {
 	renderEmail as renderWith,
 	settleOrder,
 	type EmailTemplate,
-} from "@otta-sh/domain";
-import { FakeEmailSender } from "@otta-sh/domain/testing";
+} from "@urumi-ai/otta-domain";
+import { FakeEmailSender } from "@urumi-ai/otta-domain/testing";
 import { beforeEach, describe, expect, test } from "vitest";
 import { makeOrderHarness, type OrderHarness } from "./fake-harness.js";
 

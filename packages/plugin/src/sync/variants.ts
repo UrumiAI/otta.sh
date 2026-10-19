@@ -44,7 +44,7 @@
  * draft-only save can leave `updatedAt` frozen, and the resurrect half of the
  * presence axis applies only on a STRICTLY NEWER watermark.
  */
-import { isWellFormedText, toWellFormedText } from "@otta-sh/domain";
+import { isWellFormedText, toWellFormedText } from "@urumi-ai/otta-domain";
 import type {
 	ProductVariantSummaryWire,
 	ProductVariantWire,

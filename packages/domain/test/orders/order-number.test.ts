@@ -1,4 +1,4 @@
-import { ORDER_NUMBER_LENGTH, orderNumber, orderNumberIdPrefix } from "@otta-sh/domain";
+import { ORDER_NUMBER_LENGTH, orderNumber, orderNumberIdPrefix } from "@urumi-ai/otta-domain";
 import { describe, expect, test } from "vitest";
 
 // The order NUMBER: the id's first five characters, upper-cased, behind a `#`.

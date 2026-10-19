@@ -27,7 +27,7 @@ import { afterAll, beforeAll, describe, expect, test } from "vitest";
  * spellings for every ban — a resolved `node_modules/...` path AND a bare
  * specifier left unresolved by pnpm's strict isolation — and the two halves
  * catch different things. Workspace packages here are reachable through
- * `node_modules/@otta-sh/<name>` symlinks into the fixture's own `packages/`,
+ * `node_modules/@urumi-ai/otta-<name>` symlinks into the fixture's own `packages/`,
  * which is how pnpm links them in the real repo, so enhanced-resolve follows
  * the symlink and dependency-cruiser reports the `^packages/<name>/` path the
  * third clause of each rule matches. `emdash` is a resolvable stub because the
@@ -75,7 +75,7 @@ let root = "";
 /**
  * A tree shaped like the workspace: a root `tsconfig.json`, the repo's real
  * cruiser config, stub packages under `packages/`, and the `node_modules`
- * links that make the bare `@otta-sh/*` specifiers resolve into them.
+ * links that make the bare `@urumi-ai/otta-*` specifiers resolve into them.
  *
  * The `tsconfig.json` is **deliberately minimal and is not a copy of the repo's
  * own root config**, which is solution-style (`files: []` plus project
@@ -100,17 +100,17 @@ function buildFixtureTree(): string {
 }
 `,
 	);
-	mkdirSync(path.join(dir, "node_modules", "@otta-sh"), { recursive: true });
+	mkdirSync(path.join(dir, "node_modules", "@urumi-ai"), { recursive: true });
 	for (const name of STUB_PACKAGES) {
 		mkdirSync(path.join(dir, "packages", name, "src"), { recursive: true });
 		writeFileSync(
 			path.join(dir, "packages", name, "package.json"),
-			`{ "name": "@otta-sh/${name}", "type": "module", "exports": { ".": "./src/index.ts" } }\n`,
+			`{ "name": "@urumi-ai/otta-${name}", "type": "module", "exports": { ".": "./src/index.ts" } }\n`,
 		);
 		writeFileSync(path.join(dir, "packages", name, "src", "index.ts"), "export const stub = 1;\n");
 		symlinkSync(
 			path.join("..", "..", "packages", name),
-			path.join(dir, "node_modules", "@otta-sh", name),
+			path.join(dir, "node_modules", "@urumi-ai", `otta-${name}`),
 		);
 	}
 	// A resolvable host stub, for the `type-only` reason explained above.
@@ -177,7 +177,7 @@ describe("plugin-is-sandbox-clean: what the plugin perimeter forbids", () => {
 		expect(
 			rulesViolatedBy(
 				"plugin",
-				'import { stub } from "@otta-sh/admin-react";\nexport const x = stub;\n',
+				'import { stub } from "@urumi-ai/otta-admin-react";\nexport const x = stub;\n',
 			),
 		).toEqual(["plugin-is-sandbox-clean"]);
 	});
@@ -185,11 +185,11 @@ describe("plugin-is-sandbox-clean: what the plugin perimeter forbids", () => {
 	test("an unresolved future store adapter is forbidden — the specifier clause, not the path clause", () => {
 		// No node_modules link for this name, so pnpm's strict isolation is
 		// reproduced: the import stays a bare specifier and never resolves to a
-		// packages/ path. Only the `^@otta-sh/…` clause can catch it.
+		// packages/ path. Only the `^@urumi-ai/otta-…` clause can catch it.
 		expect(
 			rulesViolatedBy(
 				"plugin",
-				'import { stub } from "@otta-sh/store-d1";\nexport const x = stub;\n',
+				'import { stub } from "@urumi-ai/otta-store-d1";\nexport const x = stub;\n',
 			),
 		).toEqual(["plugin-is-sandbox-clean"]);
 	});
@@ -204,7 +204,7 @@ describe("plugin-is-sandbox-clean: what the plugin perimeter forbids", () => {
 		expect(
 			rulesViolatedBy(
 				"plugin",
-				'import { stub } from "@otta-sh/store-sqlite";\nexport const x = stub;\n',
+				'import { stub } from "@urumi-ai/otta-store-sqlite";\nexport const x = stub;\n',
 			),
 		).toEqual(["plugin-is-sandbox-clean"]);
 	});
@@ -218,7 +218,7 @@ describe("plugin-is-sandbox-clean: what the plugin perimeter forbids", () => {
 		expect(
 			rulesViolatedBy(
 				"plugin",
-				'import { stub } from "@otta-sh/payments-adyen";\nexport const x = stub;\n',
+				'import { stub } from "@urumi-ai/otta-payments-adyen";\nexport const x = stub;\n',
 			),
 		).toEqual(["plugin-is-sandbox-clean"]);
 	});
@@ -230,7 +230,7 @@ describe("plugin-is-sandbox-clean: what the plugin perimeter forbids", () => {
 		expect(
 			rulesViolatedBy(
 				"plugin",
-				'import { stub } from "@otta-sh/payments-stripey";\nexport const x = stub;\n',
+				'import { stub } from "@urumi-ai/otta-payments-stripey";\nexport const x = stub;\n',
 			),
 		).toEqual(["plugin-is-sandbox-clean"]);
 	});
@@ -240,11 +240,11 @@ describe("plugin-is-sandbox-clean: what the plugin perimeter now admits", () => 
 	test("the Stripe payment adapter is admitted — INC-C1b's webhook settle route", () => {
 		// The plugin verifies the Stripe webhook HMAC itself now (an unauthenticated
 		// webhook only ever reaches a `public: true` plugin route), and the adapter
-		// is WebCrypto-only with @otta-sh/domain as its sole import.
+		// is WebCrypto-only with @urumi-ai/otta-domain as its sole import.
 		expect(
 			rulesViolatedBy(
 				"plugin",
-				'import { stub } from "@otta-sh/payments-stripe";\nexport const x = stub;\n',
+				'import { stub } from "@urumi-ai/otta-payments-stripe";\nexport const x = stub;\n',
 			),
 		).toEqual([]);
 	});
@@ -253,7 +253,7 @@ describe("plugin-is-sandbox-clean: what the plugin perimeter now admits", () => 
 		expect(
 			rulesViolatedBy(
 				"plugin",
-				'import { stub } from "@otta-sh/domain";\nexport const x = stub;\n',
+				'import { stub } from "@urumi-ai/otta-domain";\nexport const x = stub;\n',
 			),
 		).toEqual([]);
 	});
@@ -262,7 +262,7 @@ describe("plugin-is-sandbox-clean: what the plugin perimeter now admits", () => 
 		expect(
 			rulesViolatedBy(
 				"plugin",
-				'import { stub } from "@otta-sh/store-emdash";\nexport const x = stub;\n',
+				'import { stub } from "@urumi-ai/otta-store-emdash";\nexport const x = stub;\n',
 			),
 		).toEqual([]);
 	});
@@ -291,7 +291,7 @@ describe("the store-emdash perimeter", () => {
 		expect(
 			rulesViolatedBy(
 				"store-emdash",
-				'import { stub } from "@otta-sh/plugin";\nexport const x = stub;\n',
+				'import { stub } from "@urumi-ai/otta-plugin";\nexport const x = stub;\n',
 			),
 		).toEqual(["store-emdash-is-sandbox-clean"]);
 	});
@@ -300,7 +300,7 @@ describe("the store-emdash perimeter", () => {
 		expect(
 			rulesViolatedBy(
 				"store-emdash",
-				'import { stub } from "@otta-sh/store-d1";\nexport const x = stub;\n',
+				'import { stub } from "@urumi-ai/otta-store-d1";\nexport const x = stub;\n',
 			),
 		).toEqual(["store-emdash-is-sandbox-clean"]);
 	});
@@ -315,7 +315,7 @@ describe("the store-emdash perimeter", () => {
 		expect(
 			rulesViolatedBy(
 				"store-emdash",
-				'import { stub } from "@otta-sh/payments-stripe";\nexport const x = stub;\n',
+				'import { stub } from "@urumi-ai/otta-payments-stripe";\nexport const x = stub;\n',
 			),
 		).toEqual(["store-emdash-is-sandbox-clean"]);
 	});
@@ -326,7 +326,7 @@ describe("the domain perimeter", () => {
 		expect(
 			rulesViolatedBy(
 				"domain",
-				'import { stub } from "@otta-sh/store-sqlite";\nexport const x = stub;\n',
+				'import { stub } from "@urumi-ai/otta-store-sqlite";\nexport const x = stub;\n',
 			),
 		).toEqual(["domain-is-io-free"]);
 	});
@@ -335,7 +335,7 @@ describe("the domain perimeter", () => {
 		expect(
 			rulesViolatedBy(
 				"domain",
-				'import { stub } from "@otta-sh/plugin";\nexport const x = stub;\n',
+				'import { stub } from "@urumi-ai/otta-plugin";\nexport const x = stub;\n',
 			),
 		).toEqual(["domain-is-io-free"]);
 	});

@@ -38,7 +38,7 @@ import {
 	ENTITLEMENT_DOWNLOAD_ROUTE,
 	type DownloadAssetWire,
 	type EntitlementDownloadResult,
-} from "@otta-sh/plugin";
+} from "@urumi-ai/otta-plugin";
 import type { PublicPluginApiRouteHandler } from "emdash/plugin-utils";
 import { DOWNLOADS_BINDING } from "./downloads-bucket.js";
 import { PRIVATE_NO_STORE } from "./no-store.js";

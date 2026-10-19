@@ -2,7 +2,7 @@
  * Stripe payment gateway, in-process (work order 02 follow-up).
  *
  * WHAT WAS MISSING. `make-commerce-client.ts` never wired `stripe` into
- * `InProcessCommerceClient`'s `gateways` map — `@otta-sh/payments-stripe` ships a complete `PaymentGateway`
+ * `InProcessCommerceClient`'s `gateways` map — `@urumi-ai/otta-payments-stripe` ships a complete `PaymentGateway`
  * adapter (`StripePaymentGateway`) and `webhooks/stripe-settle-route.ts`
  * already constructs one to VERIFY inbound webhooks, but nothing ever
  * constructed one for `createOrder` to CREATE a PaymentIntent with. Every
@@ -52,7 +52,7 @@
  * `STRIPE_API_HOST`), unlike a deployment-supplied URL.
  */
 
-import { StripePaymentGateway } from "@otta-sh/payments-stripe";
+import { StripePaymentGateway } from "@urumi-ai/otta-payments-stripe";
 import { stripeSecretKeyFromKv, stripeWebhookSecretFromKv } from "../payment-secrets.js";
 import { checkoutRequiresBuyerAddress } from "./stripe-account-country.js";
 import { isTrustedHost } from "./trusted-host.js";
@@ -120,7 +120,7 @@ export function devStripeOfflineEnabled(): boolean {
 
 /**
  * Resolve the Stripe gateway for a context, or report `undefined` for
- * "Stripe is not configured on this deployment" — fail-closed. `createOrderFromCart` (`@otta-sh/domain`) refuses
+ * "Stripe is not configured on this deployment" — fail-closed. `createOrderFromCart` (`@urumi-ai/otta-domain`) refuses
  * a `paymentMethod` with no gateway before touching the cart, so an
  * unconfigured deployment gets a typed, loud refusal rather than a thrown
  * error.

@@ -37,8 +37,8 @@ import {
 	sku as toSku,
 	type EmailSender,
 	type SendEmailInput,
-} from "@otta-sh/domain";
-import { FixedClock } from "@otta-sh/domain/testing";
+} from "@urumi-ai/otta-domain";
+import { FixedClock } from "@urumi-ai/otta-domain/testing";
 import {
 	collectionOf,
 	EmdashCartStore,
@@ -49,9 +49,9 @@ import {
 	uuidIdGen,
 	type OrderDoc,
 	type StorageAccess,
-} from "@otta-sh/store-emdash";
-import { makeSqliteStorage } from "@otta-sh/store-emdash/testing";
-import { PRODUCT_COMMERCE_COLLECTION } from "@otta-sh/store-emdash";
+} from "@urumi-ai/otta-store-emdash";
+import { makeSqliteStorage } from "@urumi-ai/otta-store-emdash/testing";
+import { PRODUCT_COMMERCE_COLLECTION } from "@urumi-ai/otta-store-emdash";
 import { beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
 import {
 	ACTIVATE_SCHEDULE_BUDGET_MS,

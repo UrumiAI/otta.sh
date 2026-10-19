@@ -347,7 +347,7 @@ export function Button({
  *
  * IT DECIDES NOTHING. Which of the two states it is in, and what it says about
  * being unavailable, are `pagerView`'s answer (`accumulate.ts`, which reads its
- * words from `@otta-sh/admin-presentation`). This is the markup, and it is HERE
+ * words from `@urumi-ai/otta-admin-presentation`). This is the markup, and it is HERE
  * rather than in a list because both lists rendered it verbatim: two copies of a
  * control whose accessibility is the interesting part is two copies that drift.
  *
@@ -892,7 +892,7 @@ export function Group({
  * it.
  *
  * `text` is composed by the caller from the SHARED
- * `@otta-sh/admin-presentation` copy helpers, so the sentence an operator reads
+ * `@urumi-ai/otta-admin-presentation` copy helpers, so the sentence an operator reads
  * here is the same sentence the Block Kit confirm renders — id first, in the
  * same 8 characters.
  */

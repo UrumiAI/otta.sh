@@ -8,7 +8,7 @@
  * the registration that adopts it, the litter it leaves when its last address goes,
  * and the ordering the embedded list is read back in.
  */
-import { customerId, email, type CreateAddressInput } from "@otta-sh/domain";
+import { customerId, email, type CreateAddressInput } from "@urumi-ai/otta-domain";
 import { expect, test } from "vitest";
 import { collectionOf, CUSTOMERS_COLLECTION, type CustomerDoc } from "../src/index.js";
 import { describeEachDialect } from "./describe-each-dialect.js";

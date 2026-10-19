@@ -16,8 +16,8 @@ import {
 	productId as brandProductId,
 	sku as brandSku,
 	type TaxCalculator,
-} from "@otta-sh/domain";
-import { FakePaymentGateway } from "@otta-sh/domain/testing";
+} from "@urumi-ai/otta-domain";
+import { FakePaymentGateway } from "@urumi-ai/otta-domain/testing";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { buildCheckoutTotals, buildOrderView } from "../src/storefront/checkout-view-model.js";
 import {

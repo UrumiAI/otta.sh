@@ -55,7 +55,7 @@ import type {
 	CustomerId,
 	Email,
 	SessionSummary,
-} from "@otta-sh/domain";
+} from "@urumi-ai/otta-domain";
 
 /** Collection name: the customer aggregate, one document per customer id. */
 export const CUSTOMERS_COLLECTION = "customers";

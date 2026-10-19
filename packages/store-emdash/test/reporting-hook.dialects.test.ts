@@ -17,8 +17,14 @@
  *    transition committed, the order readable, and the caller's answer unchanged —
  *    the recompute is what makes the counters exact again.
  */
-import { cents, createOrderFromCart, currency, idempotencyKey, orderId } from "@otta-sh/domain";
-import type { SeedOrderSummaryRow } from "@otta-sh/domain/testing";
+import {
+	cents,
+	createOrderFromCart,
+	currency,
+	idempotencyKey,
+	orderId,
+} from "@urumi-ai/otta-domain";
+import type { SeedOrderSummaryRow } from "@urumi-ai/otta-domain/testing";
 import { expect, test } from "vitest";
 import type { ReportingOrderEvent, ReportingRollupWriter } from "../src/index.js";
 import { describeEachDialect } from "./describe-each-dialect.js";

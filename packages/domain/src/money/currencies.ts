@@ -138,7 +138,7 @@ export function currencyDigits(code: string): 0 | 2 | 3 | undefined {
  * units), or `undefined` when payments in it may be any minor-unit amount — every
  * code without the field, and every unlisted code. Checkout rounds a final total
  * to it (`roundToPaymentIncrement`); refunds are multiples of it. Mirrored, and
- * pinned equal by `money-parity.test.ts`, by `@otta-sh/admin-presentation`.
+ * pinned equal by `money-parity.test.ts`, by `@urumi-ai/otta-admin-presentation`.
  */
 export function currencyPaymentIncrement(code: string): number | undefined {
 	return BY_CODE.get(code)?.paymentIncrement;
@@ -148,7 +148,7 @@ export function currencyPaymentIncrement(code: string): number | undefined {
  * The minor-unit exponent money is DISPLAYED in: the table's for a listed code;
  * for any other code (old data) the runtime's ICU exponent it always rendered
  * with, and 2 when ICU cannot say. Never throws. Mirrored — and pinned equal by
- * `money-parity.test.ts` — by `@otta-sh/admin-presentation`'s `minorUnitDigits`,
+ * `money-parity.test.ts` — by `@urumi-ai/otta-admin-presentation`'s `minorUnitDigits`,
  * which `formatMoney` reads, so an operator flag and a screen agree.
  */
 export function minorUnitDigits(code: string): number {

@@ -1,4 +1,4 @@
-# @otta-sh/store-emdash design notes
+# @urumi-ai/otta-store-emdash design notes
 
 Design notes, measurements and crash-seam proofs for the EmDash commerce store adapters.
 The package README (`packages/store-emdash/README.md`) is the short overview; this is the detail.

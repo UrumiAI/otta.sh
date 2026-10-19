@@ -4,7 +4,7 @@ import {
 	FakeEmailSender,
 	FixedClock,
 	InMemoryOrderStore,
-} from "@otta-sh/domain/testing";
+} from "@urumi-ai/otta-domain/testing";
 
 // "The order's email recipient, or none" (ADR-0028 Decision 7) against the in-memory
 // fake first; the SQLite/Postgres runs are store-emdash's

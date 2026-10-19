@@ -16,8 +16,8 @@
  * The maximum compare-and-set depth observed is printed, because that number is
  * the contention budget this design accepts (INC-A3 turns it into an assertion).
  */
-import { idempotencyKey } from "@otta-sh/domain";
-import { FixedClock } from "@otta-sh/domain/testing";
+import { idempotencyKey } from "@urumi-ai/otta-domain";
+import { FixedClock } from "@urumi-ai/otta-domain/testing";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { InventoryDoc, MovementClaimDoc, StorageAccess } from "../src/index.js";
 import {

@@ -13,7 +13,7 @@
  * rendered even if a new one is introduced later and someone forgets this
  * file.
  */
-import { CART_LINE_MAX_QTY, type CheckoutFailureReason } from "@otta-sh/plugin";
+import { CART_LINE_MAX_QTY, type CheckoutFailureReason } from "@urumi-ai/otta-plugin";
 
 const GENERIC_FALLBACK = "Something went wrong — please try again shortly.";
 

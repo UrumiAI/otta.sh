@@ -6,14 +6,14 @@ import {
 	productId as toProductId,
 	reservationId as toReservationId,
 	sku as toSku,
-} from "@otta-sh/domain";
+} from "@urumi-ai/otta-domain";
 import {
 	EmdashInventoryStore,
 	EmdashOrderStore,
 	systemClock,
 	uuidIdGen,
 	type StorageAccess,
-} from "@otta-sh/store-emdash";
+} from "@urumi-ai/otta-store-emdash";
 import { afterEach, describe, expect, test } from "vitest";
 import { SWEEP_TASK_NAME } from "../src/cron/index.js";
 import type { CommerceSweepSummary, SweepLegOutcome } from "../src/cron/index.js";
@@ -93,7 +93,7 @@ async function tick(handle: SandboxHandle): Promise<SweepLegOutcome> {
 }
 
 describe("workerd-on-Node sandbox harness (plan §6 step 1)", () => {
-	test("loads @otta-sh/plugin under workerd-on-Node and executes a real route against real storage", async () => {
+	test("loads @urumi-ai/otta-plugin under workerd-on-Node and executes a real route against real storage", async () => {
 		// Commerce is folded into the plugin now (INC-D3a): the entitlement check
 		// is an in-process storage read, not a request over ctx.http, so this proof
 		// no longer needs a stub — only a real document store (`storage: true`) and

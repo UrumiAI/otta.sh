@@ -29,7 +29,7 @@
  * start from; neither reads or writes history itself.
  */
 import type { OrdersFilter } from "../console-api.js";
-import { ORDER_STATES } from "@otta-sh/admin-presentation";
+import { ORDER_STATES } from "@urumi-ai/otta-admin-presentation";
 import * as React from "react";
 import {
 	CURSOR_PARAM,

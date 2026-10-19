@@ -27,7 +27,7 @@ import {
 	isSupportedCurrency,
 	moneyInputExample,
 	parseMinorUnitsInput,
-} from "@otta-sh/admin-presentation";
+} from "@urumi-ai/otta-admin-presentation";
 import type { ProductRecord } from "../console-api.js";
 
 /** Offered when a product has no price yet: EVERY currency in the shared

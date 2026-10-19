@@ -39,14 +39,14 @@ exactly as in the sandbox.
    own, running only our own plugin), **iff the plugin keeps passing the full workerd
    sandbox suite.** The sandbox tests are the contract gate; a change that only works
    trusted is still broken and must not merge.
-2. **Trusted-only APIs remain forbidden** in `@otta-sh/plugin`: no React admin components, no
+2. **Trusted-only APIs remain forbidden** in `@urumi-ai/otta-plugin`: no React admin components, no
    `page:fragments`, no `options`-configured native format, no direct DB/storage access —
    nothing that could not also run sandboxed. ADR-0003's route-based storefront shape
    stays.
 3. The site registers the plugin via a hand-written descriptor
    (`sites/staging/src/otta-plugin-descriptor.ts`): `format: "standard"`, entrypoint
-   `@otta-sh/plugin/trusted` (the default export with `trustedHost` on, so Stripe calls
-   carry an `AbortSignal`; issue #447 — it was `@otta-sh/plugin/plugin`), capabilities exactly the manifest's
+   `@urumi-ai/otta-plugin/trusted` (the default export with `trustedHost` on, so Stripe calls
+   carry an `AbortSignal`; issue #447 — it was `@urumi-ai/otta-plugin/plugin`), capabilities exactly the manifest's
    (`content:read`, `network:request`), `allowedHosts` = the commerce service's hostname
    (baked at build time). No `sandboxed:`, no `sandboxRunner:`, no `worker_loaders`
    binding.
@@ -128,7 +128,7 @@ and the existing `otta` descriptor's capabilities and `allowedHosts` are unchang
 **Decision 1 is untouched and expressly reaffirmed there.** The 18 workerd sandbox suites
 remain the contract gate; none is deleted, skipped or weakened, and Playwright is added for
 React screens as an *addition*, never a replacement. Decision 2 continues to bind
-`@otta-sh/plugin` in full — standard format, sandbox-clean, zero EmDash dependency — and its
+`@urumi-ai/otta-plugin` in full — standard format, sandbox-clean, zero EmDash dependency — and its
 other prohibitions (no `page:fragments`, no `options`-configured native format, no direct
 DB/storage access, ADR-0003's route-based storefront) stand unamended.
 
@@ -138,8 +138,8 @@ Everything above is left exactly as written. This block only points at the recor
 one phrase of it.
 
 **[ADR-0018](./0018-plugin-owns-commerce-truth-in-process.md)** permits the plugin to own
-commerce truth **in-process on `ctx.storage`**, and admits `@otta-sh/domain` and the
-`@otta-sh/store-emdash` adapter package into the plugin's dependency perimeter. The reasoning is
+commerce truth **in-process on `ctx.storage`**, and admits `@urumi-ai/otta-domain` and the
+`@urumi-ai/otta-store-emdash` adapter package into the plugin's dependency perimeter. The reasoning is
 that the ban was a proxy for "the plugin must not acquire IO", and that property is enforced
 directly by the domain-purity rule rather than by forbidding the import.
 

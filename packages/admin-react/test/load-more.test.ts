@@ -15,7 +15,7 @@ import {
 	ORDERS_NOUN,
 	ORDERS_NO_MATCH,
 	listOutcome,
-} from "@otta-sh/admin-presentation";
+} from "@urumi-ai/otta-admin-presentation";
 import { describe, expect, test } from "vitest";
 import {
 	REFRESHING_LABEL,

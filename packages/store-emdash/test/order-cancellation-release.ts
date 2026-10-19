@@ -15,7 +15,12 @@
  * It is a plain module rather than a `.test.ts` for the same reason
  * `order-contract-b2.ts` is.
  */
-import { cancelOrder, createOrderFromCart, idempotencyKey, settleOrder } from "@otta-sh/domain";
+import {
+	cancelOrder,
+	createOrderFromCart,
+	idempotencyKey,
+	settleOrder,
+} from "@urumi-ai/otta-domain";
 import { expect, test } from "vitest";
 import type { OrderHarness } from "./order-harness.js";
 

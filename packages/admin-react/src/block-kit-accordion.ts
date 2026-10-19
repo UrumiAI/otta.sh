@@ -3,7 +3,7 @@
  * sections on Reports, Settings, Tax, Shipping and Coupons (and any other
  * `otta` Block Kit page that groups its content in them).
  *
- * WHY THIS LIVES IN THE CONSOLE. `@otta-sh/plugin` is `format: "standard"` and
+ * WHY THIS LIVES IN THE CONSOLE. `@urumi-ai/otta-plugin` is `format: "standard"` and
  * speaks Block Kit only: it sends `{ type: "accordion", label, blocks }` and
  * EmDash 1.x draws it with Kumo's `Collapsible.DefaultTrigger` — a bare blue
  * link and a chevron, with the body hung off a grey left rule. Block Kit has no

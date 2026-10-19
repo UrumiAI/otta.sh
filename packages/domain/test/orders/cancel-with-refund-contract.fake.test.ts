@@ -4,7 +4,7 @@ import {
 	FixedClock,
 	InMemoryInventoryStore,
 	InMemoryOrderStore,
-} from "@otta-sh/domain/testing";
+} from "@urumi-ai/otta-domain/testing";
 
 // Cancelling a paid order refunds and restocks it (QA T1-4) — the spec against the
 // in-memory fakes first; store-emdash runs it on both dialects.

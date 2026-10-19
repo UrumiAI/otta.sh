@@ -1,4 +1,4 @@
-import { TaxRateDuplicateError } from "@otta-sh/domain";
+import { TaxRateDuplicateError } from "@urumi-ai/otta-domain";
 import { describe, expect, test } from "vitest";
 import { createOrRefuse } from "../src/admin/in-process-admin-rules-client.js";
 import { duplicateRateNotice } from "../src/admin/tax-page.js";

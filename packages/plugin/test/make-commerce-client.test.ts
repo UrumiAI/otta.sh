@@ -18,7 +18,7 @@ import { MISSING_STORAGE_MESSAGE } from "../src/commerce/in-process-commerce-sto
 import { makeCommerceClient } from "../src/commerce/make-commerce-client.js";
 import { STRIPE_SECRET_KEY_KEY, STRIPE_WEBHOOK_SECRET_KEY } from "../src/payment-secrets.js";
 import type { PluginContext } from "../src/types.js";
-import type { StorageAccess, StorageCollection } from "@otta-sh/store-emdash";
+import type { StorageAccess, StorageCollection } from "@urumi-ai/otta-store-emdash";
 
 /**
  * A document store that EXISTS and is never used. This file is about which

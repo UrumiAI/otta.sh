@@ -51,7 +51,7 @@
  * apply on their own documents' revisions, and the residual goes with the
  * mechanism.
  */
-import { SkuHeldStockError, SkuStockConflictError, type Clock } from "@otta-sh/domain";
+import { SkuHeldStockError, SkuStockConflictError, type Clock } from "@urumi-ai/otta-domain";
 import { CAS_RETRY, casDone, withCasRetry, type CasRetryOptions } from "./cas-retry.js";
 import {
 	hasAppliedTransfer,

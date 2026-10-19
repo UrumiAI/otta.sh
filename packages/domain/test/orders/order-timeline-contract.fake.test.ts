@@ -4,7 +4,7 @@ import {
 	InMemoryOrderNotesStore,
 	InMemoryOrderStore,
 	orderTimelineContract,
-} from "@otta-sh/domain/testing";
+} from "@urumi-ai/otta-domain/testing";
 
 // The order timeline / audit spec (admin-UX Increment 1, timeline slice) run
 // against the in-memory fake first. The pg/sqlite dialect runs now live in

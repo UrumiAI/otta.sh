@@ -4,7 +4,11 @@
  * record of WHICH emails a buyer never got: a count, plus each row's id and
  * template. Never the address or the body.
  */
-import { emailTemplateForNotice, emailTemplateForState, type OutboxEmail } from "@otta-sh/domain";
+import {
+	emailTemplateForNotice,
+	emailTemplateForState,
+	type OutboxEmail,
+} from "@urumi-ai/otta-domain";
 
 /** `<row id> (<template>)`: what an operator needs to find the order, nothing personal. */
 function describeExpired(row: OutboxEmail): string {

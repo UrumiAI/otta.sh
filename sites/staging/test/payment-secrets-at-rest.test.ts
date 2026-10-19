@@ -25,7 +25,7 @@ import {
 	STRIPE_WEBHOOK_SECRET_KEY,
 	WEBHOOK_EDGE_TOKEN_KEY,
 	type PluginContext,
-} from "@otta-sh/plugin";
+} from "@urumi-ai/otta-plugin";
 import Database from "better-sqlite3";
 import {
 	createSettingsAccess,

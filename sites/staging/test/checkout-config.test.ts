@@ -17,7 +17,7 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { STOREFRONT_PAYMENT_CONFIG_ROUTE } from "@otta-sh/plugin";
+import { STOREFRONT_PAYMENT_CONFIG_ROUTE } from "@urumi-ai/otta-plugin";
 import { describe, expect, test } from "vitest";
 import { isPlausibleEmail } from "../src/lib/email.js";
 import { readStripePublishableKey } from "../src/lib/stripe-config.js";

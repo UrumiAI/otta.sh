@@ -57,7 +57,7 @@ forbids.
    allowlist increment 1 validates (anything else is `application/octet-stream`). The
    filename is sanitized to a name, never a path. The body is streamed, not buffered, and is
    capped at 100,000,000 bytes, below Cloudflare's 100 MB request limit on the Free and Pro
-   plans. The coercions live in `@otta-sh/domain` beside the validator, so whatever the
+   plans. The coercions live in `@urumi-ai/otta-domain` beside the validator, so whatever the
    endpoint produces, the save accepts.
 4. **The endpoint is a storefront path, so it guards its own origin, first.** It is not
    under `/_emdash`, which EmDash guards itself. Like every other site write route it calls

@@ -22,7 +22,7 @@ export interface EmailRenderContext {
 	 * "₹1,234.50"), or `null` when the value cannot be formatted.
 	 *
 	 * INJECTED, NOT IMPLEMENTED HERE. Formatting is presentation, not domain
-	 * (`@otta-sh/admin-presentation`'s `formatMoney` says so), and the email must
+	 * (`@urumi-ai/otta-admin-presentation`'s `formatMoney` says so), and the email must
 	 * format money exactly as the storefront does — so the plugin passes the
 	 * storefront's own formatter, at the storefront's locale. Called only with a
 	 * safe integer and a non-empty currency; a negative amount is never passed

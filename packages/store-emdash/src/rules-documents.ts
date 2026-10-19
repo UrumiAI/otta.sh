@@ -54,7 +54,7 @@ import {
 	type TaxClass,
 	type TaxClassId,
 	type TaxRate,
-} from "@otta-sh/domain";
+} from "@urumi-ai/otta-domain";
 
 /** Collection name: the shipping zone aggregate, one document per zone. */
 export const SHIPPING_ZONES_COLLECTION = "shipping_zones";

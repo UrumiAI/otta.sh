@@ -23,8 +23,8 @@ import type {
 	PaymentGateway,
 	PaymentMethod,
 	TaxCalculator,
-} from "@otta-sh/domain";
-import { makeSqliteStorage } from "@otta-sh/store-emdash/testing";
+} from "@urumi-ai/otta-domain";
+import { makeSqliteStorage } from "@urumi-ai/otta-store-emdash/testing";
 import { InProcessCommerceClient } from "../../src/commerce/in-process-commerce-client.js";
 import {
 	createInProcessCommerceStores,

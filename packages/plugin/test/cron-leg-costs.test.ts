@@ -32,8 +32,8 @@ import {
 	dispatchOrderEmails,
 	type EmailSender,
 	type PaymentGateway,
-} from "@otta-sh/domain";
-import { FakePaymentGateway } from "@otta-sh/domain/testing";
+} from "@urumi-ai/otta-domain";
+import { FakePaymentGateway } from "@urumi-ai/otta-domain/testing";
 import {
 	collectionOf,
 	INVENTORY_COLLECTION,
@@ -46,8 +46,8 @@ import {
 	type OrderSkuIndexDoc,
 	type ProductCommerceDoc,
 	type StorageAccess,
-} from "@otta-sh/store-emdash";
-import { makeSqliteStorage } from "@otta-sh/store-emdash/testing";
+} from "@urumi-ai/otta-store-emdash";
+import { makeSqliteStorage } from "@urumi-ai/otta-store-emdash/testing";
 import { beforeAll, describe, expect, test } from "vitest";
 import { createInProcessCommerceStores } from "../src/commerce/in-process-commerce-stores.js";
 import {

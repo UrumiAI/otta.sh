@@ -32,14 +32,14 @@ import {
 	orderId as toOrderId,
 	productId as toProductId,
 	sku as toSku,
-} from "@otta-sh/domain";
-import { signStripeWebhook } from "@otta-sh/payments-stripe";
+} from "@urumi-ai/otta-domain";
+import { signStripeWebhook } from "@urumi-ai/otta-payments-stripe";
 import {
 	EmdashInventoryStore,
 	EmdashOrderStore,
 	systemClock,
 	uuidIdGen,
-} from "@otta-sh/store-emdash";
+} from "@urumi-ai/otta-store-emdash";
 import { afterEach, describe, expect, test } from "vitest";
 import { chargeRefundedEvent, signedStripeEvent } from "./helpers/signed-stripe-event.js";
 import { startStubHttpServer, type StubHttpServer } from "./helpers/stub-http-server.js";

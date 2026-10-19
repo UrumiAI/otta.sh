@@ -33,8 +33,8 @@
  * the contention budget this design accepts — and on this tier it is a floor for
  * the real dialect, not a measurement of it.
  */
-import { idempotencyKey } from "@otta-sh/domain";
-import { FixedClock } from "@otta-sh/domain/testing";
+import { idempotencyKey } from "@urumi-ai/otta-domain";
+import { FixedClock } from "@urumi-ai/otta-domain/testing";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { InventoryDoc, StorageAccess } from "../../src/index.js";
 import {

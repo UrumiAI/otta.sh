@@ -71,7 +71,7 @@ import {
 	type UpdateProductVariantFieldsInput,
 	type UpsertProductCommerceInput,
 	type UpsertProductVariantInput,
-} from "@otta-sh/domain";
+} from "@urumi-ai/otta-domain";
 import {
 	CAS_RETRY,
 	casDone,

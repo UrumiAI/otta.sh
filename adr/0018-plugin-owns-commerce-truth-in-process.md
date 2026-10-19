@@ -40,7 +40,7 @@ is a per-plugin document store the host builds on an **always-available** path: 
 permission.
 
 The second was our own lint rule. `plugin-is-sandbox-clean` forbade the plugin from importing
-`@otta-sh/domain` at all. That ban was never a statement about knowledge; it was a **proxy for
+`@urumi-ai/otta-domain` at all. That ban was never a statement about knowledge; it was a **proxy for
 "the plugin must not acquire IO"**, and the domain was a cheap thing to name because it is the
 package most likely to grow an adapter import by accident. The proxy is now costing more than
 it buys: it forbids precisely the composition ADR-0002 designed for, while the property it was
@@ -61,9 +61,9 @@ the repo binds a **locally built, vendored build of the host** that does.
    use-cases may be constructed inside the plugin and bound to the store the host injects. The
    plugin remains the *transport* layer and the holder of `ctx`; it does not acquire rules of
    its own.
-2. **`@otta-sh/domain` is admitted into the plugin's dependency perimeter.** It is IO-free by
+2. **`@urumi-ai/otta-domain` is admitted into the plugin's dependency perimeter.** It is IO-free by
    construction and separately enforced, so importing it cannot put IO inside the isolate.
-3. **`@otta-sh/store-emdash` is the adapter package**: the stores, the structural
+3. **`@urumi-ai/otta-store-emdash` is the adapter package**: the stores, the structural
    `StorageAccess` port they are written against, and the in-process id and clock
    implementations. It is admitted into the plugin's perimeter on the same reasoning as the
    domain — it carries no IO of its own, because its storage implementation arrives injected.
@@ -82,7 +82,7 @@ host, in either manifest section, and none of its sources import host code. What
 survivable is that `ctx` is *injected*: owning commerce truth needs the storage object, not the
 host's implementation of it.
 
-For `@otta-sh/store-emdash` the same claim **narrows, deliberately, to "zero EmDash *runtime*
+For `@urumi-ai/otta-store-emdash` the same claim **narrows, deliberately, to "zero EmDash *runtime*
 dependency"**. The structural port is written in terms of the host's own storage types via
 `import type`, so the adapter names the host's types and never executes the host's code. A type
 import emits nothing, so it cannot put host behaviour inside the isolate; a runtime import of
@@ -152,7 +152,7 @@ The decision is encoded in the repo's dependency rules, not left to review:
 
 - **`domain-is-io-free`** is unchanged, and is this record's **premise**. Everything above rests
   on the domain having no IO; that is a build failure if it ever stops being true.
-- **`plugin-is-sandbox-clean`** now **admits** `@otta-sh/domain` and `@otta-sh/store-emdash`,
+- **`plugin-is-sandbox-clean`** now **admits** `@urumi-ai/otta-domain` and `@urumi-ai/otta-store-emdash`,
   and still **forbids**: database drivers, query builders, the workerd package itself, HTTP and
   WebSocket client libraries, the filesystem/process/socket/vm builtins (in both the prefixed
   and unprefixed spellings), the commerce service, the payment adapter packages, the React
@@ -168,8 +168,8 @@ The decision is encoded in the repo's dependency rules, not left to review:
   over its sources, **with no type-only exemption** — a type-only database-driver import is how
   a module starts being written against a host it must never touch; and one expresses the seam
   itself, permitting type-only imports of the host and failing any runtime import.
-- **A new ban closes an inversion** nobody's rule caught: `@otta-sh/store-emdash` may not
-  import `@otta-sh/plugin`. The plugin is what injects the store into the adapter, so an import
+- **A new ban closes an inversion** nobody's rule caught: `@urumi-ai/otta-store-emdash` may not
+  import `@urumi-ai/otta-plugin`. The plugin is what injects the store into the adapter, so an import
   in that direction would make the adapter depend on its own caller.
 
 Every case these rules turn on is **executed** in the plugin's test suite, which cruises

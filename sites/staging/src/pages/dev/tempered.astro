@@ -32,8 +32,8 @@
  * this; a static import here would silently put both chunks back.
  */
 import Storefront from "../../layouts/Storefront.astro";
-import type { CheckoutAmountView } from "@otta-sh/plugin";
-import { NOT_APPLICABLE_LABEL, NOT_CALCULATED_LABEL } from "@otta-sh/plugin";
+import type { CheckoutAmountView } from "@urumi-ai/otta-plugin";
+import { NOT_APPLICABLE_LABEL, NOT_CALCULATED_LABEL } from "@urumi-ai/otta-plugin";
 
 if (!import.meta.env.DEV) return new Response(null, { status: 404 });
 

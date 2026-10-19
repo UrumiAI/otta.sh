@@ -11,7 +11,7 @@
  * races; these are crash seams, which are about ORDERING and residue rather than about
  * concurrency.
  */
-import { idempotencyKey, orderId, sku } from "@otta-sh/domain";
+import { idempotencyKey, orderId, sku } from "@urumi-ai/otta-domain";
 import { expect, test } from "vitest";
 import {
 	ENTITLEMENT_LOOKUPS_COLLECTION,

@@ -11,8 +11,8 @@
  * one place in this console where drift moves money. `refundCapabilityText`
  * travels with it because the two are read together and read as one warning.
  *
- * They live here rather than in `@otta-sh/plugin` for the reason the whole
- * package exists: `@otta-sh/admin-react` may not import the plugin (ADR-0014
+ * They live here rather than in `@urumi-ai/otta-plugin` for the reason the whole
+ * package exists: `@urumi-ai/otta-admin-react` may not import the plugin (ADR-0014
  * Decision 3). Pure string work, no IO, no wire types — the signatures take
  * primitives precisely so this module never learns what an order looks like.
  */

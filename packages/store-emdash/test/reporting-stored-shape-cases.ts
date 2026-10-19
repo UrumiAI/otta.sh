@@ -15,7 +15,7 @@
  * SQLite JSON functions on D1, and D1 is the dialect Otta ships on. It names no Node
  * driver, so it loads inside `workerd`.
  */
-import type { DateRange } from "@otta-sh/domain";
+import type { DateRange } from "@urumi-ai/otta-domain";
 import { expect, test } from "vitest";
 import {
 	collectionOf,

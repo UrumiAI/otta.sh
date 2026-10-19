@@ -34,8 +34,8 @@ import {
 	settleOrder,
 	sku as brandSku,
 	updateLine,
-} from "@otta-sh/domain";
-import { FakePaymentGateway } from "@otta-sh/domain/testing";
+} from "@urumi-ai/otta-domain";
+import { FakePaymentGateway } from "@urumi-ai/otta-domain/testing";
 import { expect, test } from "vitest";
 import {
 	collectionOf,

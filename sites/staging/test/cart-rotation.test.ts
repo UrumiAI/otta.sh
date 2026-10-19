@@ -19,7 +19,7 @@ import {
 	STOREFRONT_CART_LINE_ADD_ROUTE,
 	STOREFRONT_CART_READ_ROUTE,
 	STOREFRONT_ORDER_ROUTE,
-} from "@otta-sh/plugin";
+} from "@urumi-ai/otta-plugin";
 import type { APIContext } from "astro";
 import { describe, expect, test, vi } from "vitest";
 

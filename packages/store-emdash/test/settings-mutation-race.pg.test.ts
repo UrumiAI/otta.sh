@@ -20,7 +20,7 @@ import {
 	DEFAULT_OPERATIONAL_SETTINGS as DEFAULTS,
 	idempotencyKey,
 	type OperationalSettings,
-} from "@otta-sh/domain";
+} from "@urumi-ai/otta-domain";
 import { describe, expect, test } from "vitest";
 import { settleOne } from "./helpers/fault-injection.js";
 import { MISC_LAYOUT } from "./misc-collections.js";

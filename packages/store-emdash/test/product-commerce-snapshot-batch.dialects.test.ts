@@ -17,7 +17,7 @@
  * half — that the checkout paths call the bulk method once instead of looping
  * `getByProductId` — is pinned in the domain's own create-order test.
  */
-import { cents, currency, idempotencyKey, money, productId, sku } from "@otta-sh/domain";
+import { cents, currency, idempotencyKey, money, productId, sku } from "@urumi-ai/otta-domain";
 import { expect, test } from "vitest";
 import {
 	EmdashProductCommerceStore,

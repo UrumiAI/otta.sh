@@ -9,7 +9,7 @@
  * document plus an id claim, with no transaction between them and no index to
  * read either one by.
  */
-import { shippingRulesStoreContract, taxRulesStoreContract } from "@otta-sh/domain/testing";
+import { shippingRulesStoreContract, taxRulesStoreContract } from "@urumi-ai/otta-domain/testing";
 import { expect, test } from "vitest";
 import { describeEachDialect } from "./describe-each-dialect.js";
 import { SHIPPING_RULES_LAYOUT, TAX_RULES_LAYOUT } from "./rules-collections.js";

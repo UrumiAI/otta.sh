@@ -106,7 +106,7 @@ function answerNow(where: string): { status: number; body: unknown } {
 }
 
 /**
- * `@emdash-cms/cloudflare` is not this package's dependency; `@otta-sh/store-emdash`
+ * `@emdash-cms/cloudflare` is not this package's dependency; `@urumi-ai/otta-store-emdash`
  * (a workspace dependency of the plugin) pins it at the version sites run.
  */
 function emdashSandboxSources(): {
@@ -274,7 +274,7 @@ describe("EmDash's sandbox runner: ctx.http.fetch over the PluginBridge RPC (rea
 			format: ["esm"],
 			dts: false,
 			logLevel: "silent",
-			noExternal: [/^@otta-sh\//],
+			noExternal: [/^@urumi-ai\/otta-/],
 		});
 		const pluginCode = await readFile(path.join(workDir, "probe/emdash-rpc-probe.mjs"), "utf8");
 		await writeFile(

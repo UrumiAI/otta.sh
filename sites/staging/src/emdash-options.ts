@@ -34,7 +34,7 @@
  *    `plugins: []`, still no sandbox runner.
  */
 import { d1, r2 } from "@emdash-cms/cloudflare";
-import type { InProcessEgressUrls } from "@otta-sh/plugin";
+import type { InProcessEgressUrls } from "@urumi-ai/otta-plugin";
 import type { DatabaseDescriptor, PluginDescriptor, StorageDescriptor } from "emdash";
 import { ottaConsoleDescriptor } from "./otta-console-descriptor.js";
 import { ottaPluginDescriptor } from "./otta-plugin-descriptor.js";

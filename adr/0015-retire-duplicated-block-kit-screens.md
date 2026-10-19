@@ -188,7 +188,7 @@ Concretely:
 Stated separately, because two sandbox suites are being deleted and that is exactly the thing
 ADR-0014 named as reopening this ground:
 
-- **The sandbox suites remain the contract gate for `@otta-sh/plugin`.** A change that only works
+- **The sandbox suites remain the contract gate for `@urumi-ai/otta-plugin`.** A change that only works
   trusted is still broken and still must not merge.
 - **Exactly two suites go, and only because the screen each one tests no longer exists.** No suite
   is skipped, weakened, made conditional, or narrowed to make this land. If porting a refusal onto

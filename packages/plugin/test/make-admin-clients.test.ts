@@ -21,7 +21,7 @@ import {
 	currency as toCurrency,
 	orderId as toOrderId,
 	type PaymentMethod,
-} from "@otta-sh/domain";
+} from "@urumi-ai/otta-domain";
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "vitest";
 import { makeAdminClients } from "../src/admin/make-admin-clients.js";
 import { STRIPE_SECRET_KEY_KEY, STRIPE_WEBHOOK_SECRET_KEY } from "../src/payment-secrets.js";

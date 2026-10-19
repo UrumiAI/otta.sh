@@ -240,13 +240,13 @@ export type StorageAccess = Record<string, StorageCollection>;
  * because it cannot be closed from inside this package. The storage mirror is
  * pinned against the host's real shape in `commerce/in-process-commerce-stores.ts`
  * by two type-only assignments, and that works only because
- * `@otta-sh/store-emdash` is a runtime dependency that re-exports the host's
+ * `@urumi-ai/otta-store-emdash` is a runtime dependency that re-exports the host's
  * `StorageAccess`. There is no equivalent for cron: the host does NOT export
  * `CronAccess` or `CronTaskInfo` from `emdash` or from `emdash/plugin` (they are
  * declared in its type chunk but left out of every export list), and this package
  * does not depend on `emdash` at all, so no host cron type is nameable here.
  *
- * ONE LINE CLOSES IT, in `@otta-sh/store-emdash` — the package that already owns
+ * ONE LINE CLOSES IT, in `@urumi-ai/otta-store-emdash` — the package that already owns
  * this exact job for storage. Adding to
  * `packages/store-emdash/src/storage-access.ts` (and its `src/index.ts` export
  * list):

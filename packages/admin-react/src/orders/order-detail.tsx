@@ -35,7 +35,7 @@
  * in the weeks between — typographic quotes, a shortened reconciliation note
  * that dropped its next step, an over-refund refusal that stated the fact but
  * not the instruction, and an additive-refunds warning whose "next step" clause
- * is true only on the surface that has one. `@otta-sh/admin-presentation`'s
+ * is true only on the surface that has one. `@urumi-ai/otta-admin-presentation`'s
  * `orders-copy.ts` records each. Nothing here authors copy any more; a string
  * that has to change changes once.
  */
@@ -93,7 +93,7 @@ import {
 	refundTooHighInline,
 	refundsGroupLabel,
 	type CancelEffects,
-} from "@otta-sh/admin-presentation";
+} from "@urumi-ai/otta-admin-presentation";
 
 /** The states an order can still be cancelled from — the state machine's own
  *  `→ cancelled` sources. The Cancel group is rendered only for these. */
@@ -502,7 +502,7 @@ function shownEmail(value: string, revealed: boolean): string {
  *     precisely because it is untrusted: `refundConfirmText` quotes this
  *     branch's return value, and an unescaped `"` inside it would close
  *     that quote early.
- *  3. {@link UNNAMED_REFUND_RECIPIENT} (`@otta-sh/admin-presentation`) — no
+ *  3. {@link UNNAMED_REFUND_RECIPIENT} (`@urumi-ai/otta-admin-presentation`) — no
  *     rendering of `ABSENT` (the em dash) here. THE EM DASH IS NEVER A NOUN
  *     IN A SENTENCE: it is correct on the table cell and the heading, where
  *     it marks an empty FIELD, and wrong inside prose ("refund $42 to
@@ -1148,7 +1148,7 @@ export function OrderDetail({
 			},
 			title: `Refund ${amount}?`,
 			// THE SHARED SENTENCE. Id first, 8 characters, the same helper the
-			// Block Kit confirm calls — see `@otta-sh/admin-presentation`.
+			// Block Kit confirm calls — see `@urumi-ai/otta-admin-presentation`.
 			text: refundConfirmText(order.id, amount, refundRecipient, refunds.refundable),
 			confirmLabel: `Yes, refund ${amount}`,
 			denyLabel: "Keep as is",

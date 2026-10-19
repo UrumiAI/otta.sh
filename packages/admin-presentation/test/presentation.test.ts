@@ -1,10 +1,10 @@
 /**
- * `@otta-sh/admin-presentation` on its own terms.
+ * `@urumi-ai/otta-admin-presentation` on its own terms.
  *
  * WHAT THIS FILE IS FOR, given that the code it covers is not new. The plugin's
  * existing suites (`format-money.test.ts`, `money-parity.test.ts`, the type
  * test, and all 18 workerd sandbox files) still exercise every one of these
- * functions through `@otta-sh/plugin`'s re-exports — that is the drift proof,
+ * functions through `@urumi-ai/otta-plugin`'s re-exports — that is the drift proof,
  * and it is why the extraction did not need a new copy of those assertions.
  *
  * What they cannot cover is the thing the extraction ADDS: a second consumer
@@ -1157,7 +1157,7 @@ describe("the Orders detail copy is shared, and says what the Block Kit screen s
  * console where a silent copy-edit could drop the amount, the order id or
  * the consequence clause from a REFUND CONFIRMATION and still read as a
  * passing build everywhere else it is only exercised indirectly (through
- * `@otta-sh/admin-react`'s DOM suite, which pins the call SITE's arguments,
+ * `@urumi-ai/otta-admin-react`'s DOM suite, which pins the call SITE's arguments,
  * not this function's own composition).
  */
 describe("refundConfirmText — the refund confirm's one sentence, exercised directly", () => {

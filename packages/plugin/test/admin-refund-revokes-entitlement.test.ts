@@ -22,8 +22,8 @@ import {
 	productId as toProductId,
 	refundOrder as refundOrderUseCase,
 	sku as toSku,
-} from "@otta-sh/domain";
-import { FakePaymentGateway } from "@otta-sh/domain/testing";
+} from "@urumi-ai/otta-domain";
+import { FakePaymentGateway } from "@urumi-ai/otta-domain/testing";
 import { afterAll, beforeEach, describe, expect, test } from "vitest";
 import { InProcessAdminOrdersClient } from "../src/admin/in-process-admin-orders-client.js";
 import { dispatchOrdersAction } from "../src/admin/orders-actions.js";

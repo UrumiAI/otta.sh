@@ -39,7 +39,7 @@
  * Phase 5's session-cookie design, which makes the same now-disproven
  * assumption) — a candidate follow-up ADR, not resolved here.
  */
-import { isSupportedCurrency } from "@otta-sh/domain";
+import { isSupportedCurrency } from "@urumi-ai/otta-domain";
 import {
 	CART_LINE_MAX_QTY,
 	isBoundedProductId,

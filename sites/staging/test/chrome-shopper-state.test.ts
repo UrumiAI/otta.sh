@@ -18,7 +18,7 @@
  */
 import { readFileSync } from "node:fs";
 import path from "node:path";
-import { STOREFRONT_CART_READ_ROUTE, STOREFRONT_SHOPPER_STATE_ROUTE } from "@otta-sh/plugin";
+import { STOREFRONT_CART_READ_ROUTE, STOREFRONT_SHOPPER_STATE_ROUTE } from "@urumi-ai/otta-plugin";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
 vi.mock("astro:middleware", () => ({

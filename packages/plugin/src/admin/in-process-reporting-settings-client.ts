@@ -6,8 +6,8 @@
  *
  * WHAT THIS CLASS IS. The sole implementation of `ReportingSettingsSurface`: the
  * same six methods, the same argument shapes, the same RETURN VALUES — every field
- * the `*Wire` types carry — with the `@otta-sh/domain` reporting/settings use-cases
- * composed over the `@otta-sh/store-emdash` adapters bound to `ctx.storage`
+ * the `*Wire` types carry — with the `@urumi-ai/otta-domain` reporting/settings use-cases
+ * composed over the `@urumi-ai/otta-store-emdash` adapters bound to `ctx.storage`
  * instead of a commerce service. Nothing here reaches for egress; `ctx.http` is
  * never touched.
  *
@@ -78,8 +78,8 @@ import {
 	type OperationalSettings,
 	type ReportInterval,
 	type TopProductsMetric,
-} from "@otta-sh/domain";
-import { isSettingsMutationSupersededError } from "@otta-sh/store-emdash";
+} from "@urumi-ai/otta-domain";
+import { isSettingsMutationSupersededError } from "@urumi-ai/otta-store-emdash";
 import { CommerceInputError, requireDocumentIdempotencyKey } from "../commerce/commerce-input.js";
 import {
 	createInProcessCommerceStores,

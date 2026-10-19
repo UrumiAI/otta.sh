@@ -9,7 +9,7 @@
  * Real document store (in-process harness); the gateway is the domain's
  * recording fake, so the case can read exactly what the intent was asked for.
  */
-import { FakePaymentGateway } from "@otta-sh/domain/testing";
+import { FakePaymentGateway } from "@urumi-ai/otta-domain/testing";
 import { afterAll, afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import {
 	makeInProcessCommerce,

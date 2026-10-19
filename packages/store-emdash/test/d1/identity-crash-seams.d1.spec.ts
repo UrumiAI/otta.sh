@@ -18,7 +18,7 @@
  * they are a SECURITY invariant, and an invariant pinned on two of three tiers is
  * pinned on the wrong number of them.
  */
-import { customerId, email, DuplicateCustomerEmailError } from "@otta-sh/domain";
+import { customerId, email, DuplicateCustomerEmailError } from "@urumi-ai/otta-domain";
 import { expect, test } from "vitest";
 import {
 	collectionOf,
