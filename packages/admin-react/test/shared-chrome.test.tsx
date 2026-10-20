@@ -229,6 +229,8 @@ describe("a group is a heading and a card, never a dropdown", () => {
 		expect(html).toMatch(
 			/<section[^>]*class="otta-group"[^>]*data-nested="true"[^>]*data-testid="inner"/,
 		);
+		expect(html).toContain('<h4 class="otta-group-title"');
+		expect(html).toContain(">Inner</h4>");
 	});
 });
 

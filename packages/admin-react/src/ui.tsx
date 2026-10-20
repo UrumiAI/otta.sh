@@ -45,7 +45,6 @@ export const KUMO = {
 	text: "var(--text-color-kumo-default, currentColor)",
 	/** Secondary ink: dates, hints, captions. */
 	subtle: "var(--text-color-kumo-subtle, color-mix(in srgb, currentColor 62%, transparent))",
-	/** Headings. */
 	/** The card / button surface. */
 	surface: "var(--color-kumo-base, transparent)",
 	/** An input's fill. */
@@ -980,7 +979,7 @@ const GroupDepth = React.createContext(0);
  *
  * NO DISCLOSURE. This used to be a native `<details>`; EmDash's own screens
  * fold nothing behind a dropdown, so every section is open, always, and the
- * label is an `<h3>` over its content. That also retires the Block Kit hazard
+ * label is an `<h3>` (an `<h4>` when nested) over its content. That also retires the Block Kit hazard
  * ADR-0014 lists (a group forced shut by a changed `block_id`, discarding
  * unsubmitted input): with nothing to shut, nothing can be shut on the operator.
  *
@@ -1085,7 +1084,7 @@ export function ConfirmDialog({
 				padding: 24,
 				maxInlineSize: 460,
 				background: "var(--color-kumo-base, Canvas)",
-				color: KUMO.text,
+				color: "var(--text-color-kumo-default, CanvasText)",
 				textAlign: "start",
 				boxShadow: "0 10px 30px var(--color-kumo-shadow-drop, rgba(0, 0, 0, 0.18))",
 			}}

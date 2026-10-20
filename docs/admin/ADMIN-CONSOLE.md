@@ -2828,7 +2828,7 @@ The `Type` badge column goes (T-5). The withheld-delete copy is trimmed 217 → 
 parametrized and correctly pluralised (`1 time` / `3 times`, `coupons-page.ts:1348-1350`), and the
 delete `confirm.text` 301 → ≤200.
 
-> *Superseded for the React tier (2026-10-20): every order state gets a tone badge there. Block Kit is unchanged.*
+> *Superseded for the React tier (2026-10-20): the Orders demotion described below no longer applies there — every order state gets a tone badge. Block Kit screens, including Coupons, are unchanged.*
 
 **This screen was the odd one out when it shipped; it is the rule now.** Its `Status` column was the
 first place the console reasoned all the way through "badge the exceptions, leave the happy path
