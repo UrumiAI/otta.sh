@@ -37,7 +37,14 @@ import { STRIPE_PUBLISHABLE_KEY_KEY } from "../src/payments/stripe-publishable-k
 import { LOGIN_LINK_URL_KEY } from "../src/storefront/login-link.js";
 import type { PluginContext } from "../src/types.js";
 import { assertBlockContract } from "./helpers/block-contract.js";
-import { contextTexts, field, findBlocks, formFor, type LooseBlock } from "./helpers/blocks.js";
+import {
+	contextTexts,
+	field,
+	findBlocks,
+	formFor,
+	sectionHeading,
+	type LooseBlock,
+} from "./helpers/blocks.js";
 
 const req = { method: "POST", url: "/route", headers: {} };
 
@@ -117,9 +124,7 @@ function errorBanner(blocks: readonly LooseBlock[]): LooseBlock | undefined {
 }
 
 function paymentsLabel(blocks: readonly LooseBlock[]): string {
-	return String(
-		findBlocks(blocks, "accordion").find((a) => a.block_id === "settings:payments")?.label,
-	);
+	return String(sectionHeading(blocks, "settings:payments")?.text);
 }
 
 /** Every secret on the screen: [submit id, field id, kv key, a value of the right shape]. */

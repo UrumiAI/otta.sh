@@ -14,6 +14,7 @@ import {
 	MAX_CARRIER_LENGTH,
 	PATH_FIELD,
 	PREFILL_FIELD,
+	section,
 } from "../src/admin/scaffold/index.js";
 import type { AccordionBlock, FormBlock } from "../src/types.js";
 
@@ -497,6 +498,25 @@ describe("emptyState (a real `empty` block)", () => {
 
 	test("drops an empty actions array rather than emitting an empty button row", () => {
 		expect(emptyState({ title: "T", actions: [] })).toEqual({ type: "empty", title: "T" });
+	});
+});
+
+describe("section (an always-open titled group — EmDash's settings-page pattern)", () => {
+	test("is a header carrying the block_id, then the body inline — nothing collapses", () => {
+		const body = [{ type: "context" as const, text: "Inside." }];
+		expect(section({ blockId: "reports:top", title: "Top products (3)", blocks: body })).toEqual([
+			{ type: "header", text: "Top products (3)", block_id: "reports:top" },
+			{ type: "context", text: "Inside." },
+		]);
+	});
+
+	test("a note renders as a context line directly under the heading", () => {
+		expect(
+			section({ blockId: "settings:store", title: "Store", note: "no display name", blocks: [] }),
+		).toEqual([
+			{ type: "header", text: "Store", block_id: "settings:store" },
+			{ type: "context", text: "no display name" },
+		]);
 	});
 });
 

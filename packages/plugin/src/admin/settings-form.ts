@@ -41,7 +41,6 @@ import {
 import { STRIPE_PUBLISHABLE_KEY_KEY } from "../payments/stripe-publishable-key.js";
 import { encryptionKeyStatus, type EncryptionKeyStatus } from "../encryption-key-status.js";
 import type {
-	AccordionBlock,
 	AdminPageConfig,
 	BannerBlock,
 	Block,
@@ -59,7 +58,7 @@ import type {
 	OperationalSettingsWire,
 	ReportingSettingsSurface,
 } from "./reporting-settings-surface.js";
-import { carriedForm, noticeBanner, type Notice } from "./scaffold/index.js";
+import { carriedForm, noticeBanner, section, type Notice } from "./scaffold/index.js";
 
 /**
  * The admin Settings screen (§4.1 report/settings skeleton;
@@ -98,7 +97,7 @@ import { carriedForm, noticeBanner, type Notice } from "./scaffold/index.js";
  * write-only, never-masked discipline they pioneered survives below in
  * {@link paymentsGroup} — the credentials that still need it.
  *
- * S-5 / S-4: every save re-renders the FULL screen (all three accordions) plus
+ * S-5 / S-4: every save re-renders the FULL screen (all three sections) plus
  * a notice banner — never a fragment. Two live bugs this fixes (§12.6):
  * `save-display`'s success path used to return `[header, section]` (every other
  * form vanished, and since the host's `page_load` effect never re-fires
@@ -1059,7 +1058,7 @@ export function createSettingsFormHandler(): RouteHandler<SettingsFormInput> {
 /**
  * Render the full Settings page from kv + the client's `getSettings()` read
  * (in-process since INC-D3a; the surface is the same one ADR-0010 guarded when
- * it was an HTTP `GET /settings`). Always the FULL three-accordion screen
+ * it was an HTTP `GET /settings`). Always the FULL three-section screen
  * (S-5): the caller supplies an optional `notice` for the top banner (an
  * action's outcome); a bare page load passes none.
  *
@@ -1211,30 +1210,19 @@ function savedOperationalSentence(settings: OperationalSettingsWire): string {
 
 /**
  * §4.1 / §12.6 skeleton: header, page context, an optional notice banner, then
- * exactly three named groups — "Store", "Checkout & holds", "Payments &
- * email" — each an `accordion`. (INC-D3a retired a fourth, "Service
+ * exactly three named sections — "Store", "Checkout & holds", "Payments &
+ * email" — each an always-open `section` (a heading, then its forms inline,
+ * EmDash's own settings-page pattern). (INC-D3a retired a fourth, "Service
  * connection", along with the two tokens it existed to provision — see the
  * module doc comment.)
  *
- * INC-15 amends S-3 for THIS screen: all three groups now render
- * `default_open: false`, and each group's LABEL carries its own current values
- * ("Checkout & holds — 15 min hold · low stock at 5"), so a closed group still
- * answers the question the operator opened the screen to ask. The screen used
- * to open "Store" — the ONE cosmetic field on it — pushing the two groups that
- * hold operational and payment state below an expanded form. With the values
- * on the labels there is nothing to rank: S-3's "exactly one" was a way to pick
- * a default, not a requirement that something be expanded, and the mechanical
- * rule (X-18) is "AT MOST one `default_open: true` per response". Zero is legal
- * and is what this screen now emits.
- *
- * This is the RENDER-TIME kind of closing, which §1.2 explicitly permits — no
- * `block_id` is changed to force a group shut, so no operator input is ever
- * discarded (that is the forbidden "programmatic accordion close").
+ * Each section's HEADING still carries its own current values ("Checkout &
+ * holds — 15 min hold · low stock at 5", INC-15): they are the PERSISTED
+ * values, which on a rejected save differ from what the form below prefills.
  *
  * S-4: every prefilling form's `block_id` comes from `carriedForm` so a saved
  * value redisplays correctly (the forms are mount-only `text_input` and, for
- * the keys, `secret_input` — and once inside an accordion each is that
- * container's own index-0 child forever — nothing else remounts them).
+ * the keys, `secret_input` — nothing but a changed key remounts them).
  */
 function buildSettingsBlocks(args: {
 	displayName: string;
@@ -1271,9 +1259,9 @@ function buildSettingsBlocks(args: {
 	if (keyWarning !== undefined) blocks.push(keyWarning);
 	if (args.currencySwitch !== undefined) blocks.push(currencySwitchActions(args.currencySwitch));
 	blocks.push(
-		storeGroup(args.displayName, args.persisted),
-		checkoutGroup(args.settings, args.persisted, args.backgroundWork),
-		paymentsGroup(
+		...storeGroup(args.displayName, args.persisted),
+		...checkoutGroup(args.settings, args.persisted, args.backgroundWork),
+		...paymentsGroup(
 			args.paymentSecrets,
 			args.plainSettings,
 			args.stripeAccount,
@@ -1284,7 +1272,7 @@ function buildSettingsBlocks(args: {
 	return blocks;
 }
 
-/** §1's accordion-label budget (X-11). */
+/** The section-heading budget (was §1's accordion-label budget, X-11). */
 const LABEL_BUDGET = 60;
 
 /** Separator between the values on a D-6 label. */
@@ -1324,8 +1312,8 @@ function valueLabel(prefix: string, values: readonly string[]): string {
 	return `${prefix} — ${shortened.join(VALUE_SEPARATOR)}`;
 }
 
-/** The Store group's label carries the name itself, so the one thing this group
- *  holds is readable closed. An unset name says so — never a blank tail after
+/** The Store heading carries the name itself, so the one thing this group
+ *  holds reads at a glance. An unset name says so — never a blank tail after
  *  the dash, which would read as a rendering fault rather than as "not set". */
 function storeGroupLabel(displayName: string): string {
 	return valueLabel("Store", [displayName.length > 0 ? displayName : "no display name"]);
@@ -1344,15 +1332,10 @@ function checkoutGroupLabel(persisted: OperationalSettingsWire | undefined): str
 	]);
 }
 
-function storeGroup(
-	displayName: string,
-	persisted: OperationalSettingsWire | undefined,
-): AccordionBlock {
-	return {
-		type: "accordion",
-		block_id: "settings:store",
-		label: storeGroupLabel(displayName),
-		default_open: false, // INC-15: the label carries the value; see buildSettingsBlocks
+function storeGroup(displayName: string, persisted: OperationalSettingsWire | undefined): Block[] {
+	return section({
+		blockId: "settings:store",
+		title: storeGroupLabel(displayName),
 		blocks: [
 			carriedForm({
 				namespace: "settings:store",
@@ -1369,11 +1352,9 @@ function storeGroup(
 					submit: { label: "Save display name", action_id: "save-display" },
 				},
 			}),
-			// AFTER the display-name form, so that form stays this group's index-0
-			// child (see `buildSettingsBlocks` on mount-only forms).
 			...storeCurrencyBlocks(persisted),
 		],
-	};
+	});
 }
 
 /** What changing the store currency does — and does not — change. Two lines,
@@ -1533,7 +1514,7 @@ function checkoutGroup(
 	settings: OperationalFormValues | undefined,
 	persisted: OperationalSettingsWire | undefined,
 	backgroundWork: number,
-): AccordionBlock {
+): Block[] {
 	const body: Block[] =
 		settings === undefined
 			? [
@@ -1576,13 +1557,11 @@ function checkoutGroup(
 					backgroundWorkContext,
 					backgroundWorkForm(backgroundWork),
 				];
-	return {
-		type: "accordion",
-		block_id: "settings:checkout",
-		label: checkoutGroupLabel(persisted),
-		default_open: false,
+	return section({
+		blockId: "settings:checkout",
+		title: checkoutGroupLabel(persisted),
 		blocks: body,
-	};
+	});
 }
 
 /**
@@ -1604,12 +1583,10 @@ function paymentsGroup(
 	stripeAccount: StripeAccountCountryStatus,
 	emailStatus: EmailSendingStatus,
 	refusal?: PaymentRefusal,
-): AccordionBlock {
-	return {
-		type: "accordion",
-		block_id: "settings:payments",
-		label: paymentsGroupLabel(state, plain, emailStatus),
-		default_open: false,
+): Block[] {
+	return section({
+		blockId: "settings:payments",
+		title: paymentsGroupLabel(state, plain, emailStatus),
 		blocks: [
 			{
 				type: "context",
@@ -1648,7 +1625,7 @@ function paymentsGroup(
 			...(refusal?.problems ?? []).map((problem): Block => ({ type: "context", text: problem })),
 			plainSettingsForm(refusal === undefined ? plain : new Map([...plain, ...refusal.typed])),
 		],
-	};
+	});
 }
 
 /** How long the Settings save waits on Stripe for the account's country. */
@@ -1785,7 +1762,7 @@ function plainSettingsForm(plain: Map<string, string>): FormBlock {
 	});
 }
 
-/** U-8 — what card checkout and email have, readable with the group closed:
+/** U-8 — what card checkout and email have, readable from the heading alone:
  *  "Payments & email — Stripe test · webhook set · email set".
  *
  *  The old label listed whichever of the five keys were missing, so a store with

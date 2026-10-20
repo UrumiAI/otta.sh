@@ -382,6 +382,12 @@ describe("assertBlockContract — X-11 (§1 prose budgets)", () => {
 		throwsRule([HEADER, { type: "context", text: "x".repeat(141) }], LIST, "X-11");
 	});
 
+	test("a context inside a top-level section gets the nested budget, not the page one", () => {
+		const section = { type: "header", text: "Top products (2)", block_id: "reports:top" };
+		passes([HEADER, section, { type: "context", text: "x".repeat(200) }], LIST);
+		throwsRule([HEADER, section, { type: "context", text: "x".repeat(201) }], LIST, "X-11");
+	});
+
 	test("violates: a nested context over 200 chars", () => {
 		throwsRule(
 			[

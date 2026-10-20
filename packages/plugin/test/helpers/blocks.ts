@@ -149,6 +149,56 @@ export function openGroupIds(blocks: readonly LooseBlock[]): string[] {
 		.map((a) => String(a.block_id));
 }
 
+/**
+ * A section's `header` resolved by its **`block_id`**, at any depth — the
+ * always-open replacement for an accordion group (`section` in
+ * `admin/scaffold/layout.ts`). Same rule as {@link group}: never by its text,
+ * which carries live counts and values.
+ */
+export function sectionHeading(
+	blocks: readonly LooseBlock[],
+	blockId: string,
+): LooseBlock | undefined {
+	return findBlocks(blocks, "header").find((h) => h.block_id === blockId);
+}
+
+/**
+ * The blocks of the section headed by the `header` with this `block_id`: every
+ * block after that heading in the SAME list, up to (not including) the next
+ * `header` in that list. `[]` when no such heading exists. Nested containers in
+ * the body are returned whole, so {@link findBlocks} et al. still recurse into
+ * them.
+ */
+export function sectionBlocks(blocks: readonly LooseBlock[], blockId: string): LooseBlock[] {
+	const list = listHolding(blocks, blockId);
+	if (list === undefined) return [];
+	const rest = list.slice(list.findIndex((b) => b.type === "header" && b.block_id === blockId) + 1);
+	const end = rest.findIndex((b) => b.type === "header");
+	return end < 0 ? rest : rest.slice(0, end);
+}
+
+/** The block list (top level or nested) that directly holds the heading. */
+function listHolding(
+	blocks: readonly LooseBlock[],
+	blockId: string,
+): readonly LooseBlock[] | undefined {
+	if (blocks.some((b) => b.type === "header" && b.block_id === blockId)) return blocks;
+	for (const block of blocks) {
+		for (const list of childBlockLists(block)) {
+			const found = listHolding(list, blockId);
+			if (found !== undefined) return found;
+		}
+	}
+	return undefined;
+}
+
+/** The `block_id`s of every section heading, in render order. */
+export function sectionIds(blocks: readonly LooseBlock[]): string[] {
+	return findBlocks(blocks, "header")
+		.map((h) => h.block_id)
+		.filter((id): id is string => typeof id === "string");
+}
+
 /** The `form` whose SUBMIT fires `actionId`, at any depth. Keyed on the submit
  *  rather than on a `block_id`, because a form's `block_id` is a carrier token
  *  that changes whenever its carried context or prefill does (B-3a). */

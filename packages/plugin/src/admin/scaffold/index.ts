@@ -89,6 +89,7 @@ export {
 	filterPanel,
 	filterPanelLabel,
 	filterSummary,
+	section,
 	type FilterPanelOptions,
 } from "./layout.js";
 export {

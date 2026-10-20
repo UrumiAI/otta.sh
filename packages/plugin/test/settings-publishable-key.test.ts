@@ -23,7 +23,14 @@ import {
 import { createPaymentConfigRouteHandler } from "../src/storefront/payment-config-route.js";
 import type { PluginContext } from "../src/types.js";
 import { assertBlockContract } from "./helpers/block-contract.js";
-import { contextTexts, field, findBlocks, formFor, type LooseBlock } from "./helpers/blocks.js";
+import {
+	contextTexts,
+	field,
+	findBlocks,
+	formFor,
+	sectionHeading,
+	type LooseBlock,
+} from "./helpers/blocks.js";
 
 const req = { method: "POST", url: "/route", headers: {} };
 
@@ -97,9 +104,7 @@ function publishableField(blocks: readonly LooseBlock[]): ReturnType<typeof fiel
 }
 
 function paymentsLabel(blocks: readonly LooseBlock[]): string {
-	return String(
-		findBlocks(blocks, "accordion").find((a) => a.block_id === "settings:payments")?.label,
-	);
+	return String(sectionHeading(blocks, "settings:payments")?.text);
 }
 
 describe("saving the publishable key", () => {

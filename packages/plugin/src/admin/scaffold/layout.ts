@@ -1,4 +1,11 @@
-import type { AccordionBlock, Element, EmptyBlock, FormBlock, PlainBlockId } from "../../types.js";
+import type {
+	AccordionBlock,
+	Block,
+	Element,
+	EmptyBlock,
+	FormBlock,
+	PlainBlockId,
+} from "../../types.js";
 import { decodeCarrier, prefillDigest, PREFILL_FIELD } from "./carrier.js";
 
 /**
@@ -253,4 +260,32 @@ export function emptyState(opts: {
 			: {}),
 		...(opts.blockId !== undefined ? { block_id: opts.blockId } : {}),
 	};
+}
+
+/**
+ * A titled group that is ALWAYS OPEN: a `header` naming it, an optional `context`
+ * line under that, then its blocks inline. It is how EmDash's own admin pages
+ * group content (Settings → General: "Site Identity", then its fields), and it
+ * replaces the collapsible `accordion` groups the screens used to emit — an
+ * operator should not have to open a dropdown to see a screen's content.
+ *
+ * `blockId` goes on the heading: a React key ONLY (a header echoes nothing back,
+ * so the type forbids a carrier), and the stable name tests find the group by.
+ * The body's blocks join the SAME list as the heading, so any of them whose key
+ * must track its prefilled values (a form) still needs its own `carriedForm`
+ * `block_id` — which every prefilling form here already carries.
+ */
+export function section(opts: {
+	blockId: PlainBlockId;
+	title: string;
+	/** What a collapsed label used to say beyond its name — a count, the current
+	 *  values, a threshold — as one `context` line under the heading. */
+	note?: string;
+	blocks: readonly Block[];
+}): Block[] {
+	return [
+		{ type: "header", text: opts.title, block_id: opts.blockId },
+		...(opts.note !== undefined ? [{ type: "context" as const, text: opts.note }] : []),
+		...opts.blocks,
+	];
 }

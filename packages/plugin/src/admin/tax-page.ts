@@ -56,6 +56,7 @@ import {
 	readCarrier,
 	readString,
 	screenActions,
+	section,
 	type ListDetailInput,
 	type NavPath,
 	type Notice,
@@ -73,12 +74,13 @@ import {
  *
  * THE DENSITY FIX THIS SCREEN EXISTS FOR. The previous layout rendered an edit
  * form plus a delete button INLINE, for every row, SIMULTANEOUSLY — N rows
- * cost N × (48px divider + ~5 field rows). Per-row content now lives inside a
- * collapsed `accordion` (default_open false), one per class / one per rate,
- * and every `divider` is gone (R-4).
+ * cost N × (48px divider + ~5 field rows). Every `divider` is gone (R-4), and
+ * each class / rate is now an always-open `section` — a heading naming the row,
+ * then its controls (EmDash's own pattern; the collapsed accordions that held
+ * them before are gone, so nothing on the screen hides behind a dropdown).
  *
  * L-9 IS A RUNTIME BRANCH, NOT A DESIGN-TIME ASSUMPTION. A level renders as
- * the per-row accordion list ONLY when the fetched page is complete
+ * the per-row section list ONLY when the fetched page is complete
  * (`nextCursor === null`, i.e. `nextToken === undefined`) AND `items.length
  * <= 25`; otherwise it renders a `table` + an L-7 `combobox` drill-in, because
  * `table.next_cursor` + "Load more" is the only paging affordance in the
@@ -218,10 +220,10 @@ interface RatesPageBundle {
 	zones: ShippingZoneWire[];
 }
 
-/** A level renders the per-row accordion list only when the page is COMPLETE
+/** A level renders the per-row section list only when the page is COMPLETE
  *  and small (L-9). Both branches ship; the suite asserts the branch at this
  *  bound and one past it. */
-const REGISTRY_ACCORDION_LIMIT = 25;
+const REGISTRY_SECTION_LIMIT = 25;
 
 export function createTaxPageHandler(): RouteHandler<TaxPageInput> {
 	return createListDetailHandler<TaxRenderState>({
@@ -347,8 +349,8 @@ function classesBlocks(
 	if (taxOff !== null) blocks.push(taxOff);
 	// No filter block: this level has no filter fields (L-2, count 0).
 
-	const accordionBranch = nextToken === undefined && classes.length <= REGISTRY_ACCORDION_LIMIT;
-	if (accordionBranch) {
+	const sectionBranch = nextToken === undefined && classes.length <= REGISTRY_SECTION_LIMIT;
+	if (sectionBranch) {
 		if (classes.length === 0) {
 			blocks.push(
 				emptyState({
@@ -360,7 +362,7 @@ function classesBlocks(
 				}),
 			);
 		} else {
-			for (const cls of classes) blocks.push(classRow(actions, cls));
+			for (const cls of classes) blocks.push(...classRow(actions, cls));
 		}
 	} else {
 		blocks.push(classesTable(actions, classes, nextToken));
@@ -408,7 +410,7 @@ function classGroupId(classId: string): PlainBlockId {
  *  (`deleteClassNotice`), the same shape D-6 already accepts for
  *  `ShippingZoneWire`'s missing method count, rather than a per-row
  *  reference-count fetch this level's own read never returns. */
-function classRow(actions: ScreenActions, cls: TaxClassWire): AccordionBlock {
+function classRow(actions: ScreenActions, cls: TaxClassWire): Block[] {
 	const renameForm = carriedForm({
 		namespace: "tax:class-save",
 		context: { classId: cls.id },
@@ -438,11 +440,9 @@ function classRow(actions: ScreenActions, cls: TaxClassWire): AccordionBlock {
 			style: "danger",
 		},
 	};
-	return {
-		type: "accordion",
-		block_id: classGroupId(cls.id),
-		label: `${cls.id} — ${cls.name}`,
-		default_open: false,
+	return section({
+		blockId: classGroupId(cls.id),
+		title: `${cls.id} — ${cls.name}`,
 		// ORDER IS THE AFFORDANCE HERE, because there is no other. A `form` is
 		// always `flex flex-col` in the pinned renderer, so these can never sit in
 		// a horizontal row with the primary on the end — every control is a
@@ -465,7 +465,7 @@ function classRow(actions: ScreenActions, cls: TaxClassWire): AccordionBlock {
 			},
 			{ type: "actions", elements: [deleteButton] },
 		],
-	};
+	});
 }
 
 /** The "New tax class" create screen (INC-14) — `header` · back · notice ·
@@ -759,8 +759,8 @@ function ratesBlocks(
 		});
 	}
 
-	const accordionBranch = nextToken === undefined && bundle.rows.length <= REGISTRY_ACCORDION_LIMIT;
-	if (accordionBranch) {
+	const sectionBranch = nextToken === undefined && bundle.rows.length <= REGISTRY_SECTION_LIMIT;
+	if (sectionBranch) {
 		if (bundle.rows.length === 0) {
 			if (filter.zoneId === undefined) {
 				// True zero, unfiltered (E-2) — never for a filtered-to-zero list.
@@ -788,7 +788,7 @@ function ratesBlocks(
 				});
 			}
 		} else {
-			for (const row of bundle.rows) blocks.push(rateRow(classId, row));
+			for (const row of bundle.rows) blocks.push(...rateRow(classId, row));
 		}
 	} else {
 		blocks.push(ratesTable(actions, bundle.rows, nextToken));
@@ -836,8 +836,8 @@ function zoneFilterBlock(
 
 /**
  * One warning for the whole level when duplicates survive, naming each pair —
- * shown in both the accordion and the table branch, so a merchant past the
- * accordion limit is told too.
+ * shown in both the section and the table branch, so a merchant past the
+ * section limit is told too.
  */
 function duplicatesBanner(rows: TaxRateRow[]): Block | undefined {
 	const ignored = rows.filter((r) => r.appliedInstead !== undefined);
@@ -884,7 +884,7 @@ function nextIfDeletedText(row: TaxRateRow): string | undefined {
 }
 
 /**
- * The lines a duplicate's body opens with — the SAME in the accordion and the
+ * The lines a duplicate's body opens with — the SAME in the section and the
  * detail leaf; `[]` for an ordinary rate. The ignored rate says its rate is
  * not charged, and whether its shipping flag still counts (only under the
  * "legacy" shipping tax class); the applying rate says which
@@ -923,7 +923,7 @@ function rateGroupId(rateId: string): PlainBlockId {
 	return `tax:rate:${rateId}` as PlainBlockId;
 }
 
-/** The per-rate edit form (CAS on `rateBps`) — shared by the accordion body
+/** The per-rate edit form (CAS on `rateBps`) — shared by the section body
  *  (L-9's primary branch) and the rate-detail leaf (the L-9 fallback's
  *  drill-in target), so the two never drift. `expectedRateBps` rides in the
  *  form's carrier (`carriedForm`'s change token, B-3) — a concurrent edit that
@@ -1011,7 +1011,7 @@ function rateDeleteActions(classId: string, row: TaxRateRow) {
  * A percent is NOT money: it is formatted by `formatPpmAsPercent` (exact
  * integer millionths, #425), never by `formatMoney`, and carries no currency.
  */
-function rateRow(classId: string, row: TaxRateRow): AccordionBlock {
+function rateRow(classId: string, row: TaxRateRow): Block[] {
 	const percent = percentOf(row);
 	// An IGNORED duplicate says so in place of what it would tax: its rate is never
 	// charged (its shipping flag may still count — see `duplicateBlocks`).
@@ -1021,13 +1021,11 @@ function rateRow(classId: string, row: TaxRateRow): AccordionBlock {
 			: row.appliesToShipping
 				? "also shipping"
 				: "goods only";
-	return {
-		type: "accordion",
-		block_id: rateGroupId(row.id),
-		label: `${percent}% — ${row.zoneName ?? row.zoneId} · ${row.id} · ${appliesLabel}`,
-		default_open: false,
+	return section({
+		blockId: rateGroupId(row.id),
+		title: `${percent}% — ${row.zoneName ?? row.zoneId} · ${row.id} · ${appliesLabel}`,
 		blocks: [...duplicateBlocks(row), rateEditForm(classId, row), rateDeleteActions(classId, row)],
-	};
+	});
 }
 
 /** L-9 fallback (>25 rates for this class, or a next page): the raw list,
@@ -1071,7 +1069,7 @@ function ratesTable(
 /** L-7 drill-in to the rate-detail LEAF (the fallback's "editing moves to a
  *  detail level") — always a `combobox` (R-17a/R-17b), option value the FULL
  *  two-level target path, never a bare rate id. The option label leads with
- *  the rate for the same reason the accordion label does: in a list of options
+ *  the rate for the same reason the section heading does: in a list of options
  *  the number is what is being chosen between. */
 function openRateForm(classId: string, rows: TaxRateRow[]): FormBlock {
 	const options: SelectOption[] = [
@@ -1207,8 +1205,8 @@ function ratesFailClosed() {
  * Reached ONLY via the rates level's L-7 `combobox` once that class has more
  * than 25 rates (or a next page) — the table+drill-in branch needs somewhere
  * for "editing moves to a detail level" (§12.3) to land, or row 26 is
- * editable in the accordion branch but unreachable in the fallback one.
- * Shares `rateEditForm`/`rateDeleteActions` with the accordion body verbatim,
+ * editable in the section branch but unreachable in the fallback one.
+ * Shares `rateEditForm`/`rateDeleteActions` with the section body verbatim,
  * so the two never drift.
  */
 function taxRateDetailLevel() {

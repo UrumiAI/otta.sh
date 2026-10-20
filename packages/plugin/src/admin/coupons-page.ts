@@ -67,6 +67,7 @@ import {
 	PATH_FIELD,
 	readString,
 	screenActions,
+	section,
 	type CustomActionApi,
 	type ListDetailInput,
 	type NavPath,
@@ -87,7 +88,7 @@ import {
  * and the redundant `Code` row is gone — the header already carries the code),
  * then TWO task-named panels — `Coupon` · `Redemptions` (D-2, D-2a: a would-be
  * `History` panel would hold only Created, which lives in the identity strip
- * instead) — whose one named group (`Edit`) is a CLOSED `accordion`.
+ * instead) — whose one named group (`Edit`) is an always-open `section`.
  *
  * WHY THIS SCREEN HAS NO RENDER-STATE CHANNEL FOR DA-3. Every destructive/
  * risky write here is DA-2 (delete: no input, forbid-if-redeemed) or DA-4
@@ -966,16 +967,13 @@ function couponFailClosed() {
  * the exceptions only) · the identity strip · TWO constant task-named panels —
  * `Coupon` · `Redemptions` (D-2).
  *
- * THE EDIT GROUP IS CLOSED. Coupons have no reconcile/fulfilment concept, so
- * D-5's rank-3 "named primary edit group" is the only rank that can fire here,
- * and it used to fire on every render — a screen operators open to READ
- * ("is this code live?") presented a loaded full-replace editor, one stray
- * Enter from rewriting the coupon's expiry, cap and use bounds (`PM §E3b`).
- * A rank that always fires is not a rank; the group now renders
- * `default_open: false` (a render-time call, exactly as Orders' Filters ships,
- * NOT a programmatic close), and the reading the operator came for is answered
- * above it — by `Status`, by the exception banner, and by the group's own
- * D-6 label.
+ * THE EDIT GROUP IS AN ALWAYS-OPEN SECTION. It used to be a closed accordion
+ * so a screen operators open to READ ("is this code live?") did not lead with a
+ * loaded full-replace editor (`PM §E3b`). The console now follows EmDash's own
+ * pages — no collapsed dropdowns — so the reading the operator came for is
+ * answered ABOVE the editor instead: by `Status`, by the exception banner, and
+ * by the section's own D-6 heading; the editor's own banner says saving
+ * replaces every field.
  */
 function detailBlocks(
 	actions: ScreenActions,
@@ -1094,7 +1092,7 @@ function couponPanel(detail: CouponSummaryWire, status: CouponStatus): Block[] {
 			],
 			["Valid", couponWindowSummary(detail.startsAt, detail.expiresAt)],
 		]),
-		editGroup(detail),
+		...editGroup(detail),
 	];
 	// Not offered on a coupon that has already ended: there is nothing to retire,
 	// and an expired coupon is reopened through the edit form's expiry instead.
@@ -1148,27 +1146,20 @@ function retireCouponActions(detail: CouponSummaryWire): ActionsBlock {
  * decides the branch once, the same way `createCouponForm`'s `condition`
  * decides it reactively on create.
  */
-function editGroup(detail: CouponSummaryWire): Block {
-	return {
-		type: "accordion",
-		block_id: `coupons:${detail.id}:edit`,
-		// D-6: the label carries the answer that makes opening it unnecessary —
-		// which is what makes shipping this group CLOSED cost the reader nothing.
-		label: fitLabel(
+function editGroup(detail: CouponSummaryWire): Block[] {
+	return section({
+		blockId: `coupons:${detail.id}:edit`,
+		// D-6: the heading carries the answer — what the coupon discounts, and when.
+		title: fitLabel(
 			`Edit — ${couponDiscountSummary(detail)} · ${couponWindowSummary(detail.startsAt, detail.expiresAt)}`,
 		),
-		// CLOSED — see {@link detailBlocks}. A render-time `default_open: false`,
-		// not a programmatic close: there is no open/close signal to read, and
-		// forcing a mounted group shut would mean changing its `block_id`, which
-		// remounts it and discards whatever the operator had typed.
-		default_open: false,
 		blocks: [
 			// HIGHER EMPHASIS THAN THE LABELS IT WARNS ABOUT. This was a `context`
 			// line — `text-sm text-kumo-subtle`, the same weight as the field
 			// labels below and quieter than their values — which is the wrong
 			// ranking for the one sentence that says a blank field DESTROYS a set
 			// value. A `banner` is the only primitive in this group that outranks
-			// them (icon + variant + title). It is nested inside the accordion, so
+			// them (icon + variant + title). It is inside the Coupon tab panel, so
 			// it does not count against §2's top-level banner budget (X-31).
 			{
 				type: "banner",
@@ -1187,7 +1178,7 @@ function editGroup(detail: CouponSummaryWire): Block {
 			},
 			editCouponForm(detail),
 		],
-	};
+	});
 }
 
 /** The disclosure gating the four rarely-touched bounds — a `toggle` inside the
@@ -2348,9 +2339,9 @@ function fields(blockId: string, entries: ReadonlyArray<readonly [string, string
 }
 
 /** Trim a string to `max`, ellipsis included — for the one place a rendered
- *  string's length depends on SERVICE DATA (the Edit accordion's label, which
+ *  string's length depends on SERVICE DATA (the Edit section's heading, which
  *  carries the coupon's own discount/window summary and could otherwise blow
- *  §1's 60-char accordion-label budget). */
+ *  §1's 60-char label budget). */
 function fit(text: string, max: number): string {
 	return text.length <= max ? text : `${text.slice(0, max - 1)}…`;
 }

@@ -371,11 +371,26 @@ const BUDGET = {
 	emptyDescription: 200,
 } as const;
 
+/** The top-level `context` blocks that precede any section heading — the page
+ *  title is the first top-level `header`; each one after it opens a section. */
+function pageLevelContext(blocks: readonly LooseBlock[]): LooseBlock[] {
+	const out: LooseBlock[] = [];
+	let headers = 0;
+	for (const b of blocks) {
+		if (b.type === "header") headers += 1;
+		else if (b.type === "context" && headers < 2) out.push(b);
+	}
+	return out;
+}
+
 function checkX11(blocks: readonly LooseBlock[]): string[] {
 	const out: string[] = [];
 	// "Page-level context" = a `context` block literally in the TOP-LEVEL array
-	// (P-1's whitelist position), never one recursed out of a tab/accordion.
-	const topLevelContext = blocks.filter((b) => b.type === "context");
+	// (P-1's whitelist position), never one recursed out of a tab/accordion —
+	// and never one inside a top-level `section` (`scaffold/layout.ts`): a line
+	// after a SECOND top-level `header` belongs to that section, exactly as it
+	// did when the section was an accordion, so it gets the nested budget.
+	const topLevelContext = pageLevelContext(blocks);
 	const topLevelSet = new Set<LooseBlock>(topLevelContext);
 	for (const ctx of topLevelContext) {
 		const text = String(ctx.text ?? "");

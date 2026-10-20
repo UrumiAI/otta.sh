@@ -34,8 +34,8 @@ import {
 	findBlock,
 	findBlocks,
 	formFor,
-	group,
-	openGroupIds,
+	sectionBlocks,
+	sectionHeading,
 	panel,
 	panelLabels,
 	type LooseBlock,
@@ -1193,10 +1193,10 @@ describe("admin Coupons console — list level (workerd sandbox)", () => {
 		expect(createButton?.style).toBe("primary");
 		// The old L-8 create group, in either of its two block_ids, is gone —
 		// as is any accordion labelled like a create affordance.
-		expect(group(blocks, "coupons:new")).toBeUndefined();
-		expect(group(blocks, "coupons:new:opened")).toBeUndefined();
-		expect(findBlocks(blocks, "accordion").map((a) => String(a.label))).not.toContain("New coupon");
-		expect(openGroupIds(blocks)).toHaveLength(0); // X-18
+		expect(sectionHeading(blocks, "coupons:new")).toBeUndefined();
+		expect(sectionHeading(blocks, "coupons:new:opened")).toBeUndefined();
+		expect(findBlocks(blocks, "header").map((h) => String(h.text))).not.toContain("New coupon");
+		expect(findBlocks(blocks, "accordion")).toEqual([]); // nothing behind a dropdown
 	});
 
 	test("INC-14: the create screen is a drill-in — header, a back control that returns to the list, and the create form", async () => {
@@ -1624,30 +1624,33 @@ describe("admin Coupons console — detail/edit leaf (workerd sandbox)", () => {
 		expect(meter?.custom_value).toBe("3 of 100");
 	});
 
-	test("SAFE BY DEFAULT: the Edit group renders CLOSED, so a screen opened to READ presents no loaded full-replace editor — and its label still carries the discount + window (D-6)", async () => {
+	test("the Edit group is an always-open section BELOW the reading the operator came for — and its heading carries the discount + window (D-6)", async () => {
 		const state = makeCouponsState();
 		await boot(state);
 		const blocks = await openCoupon("FIVEOFF");
-		const editGroup = group(blocks, "coupons:c-five:edit");
+		const editGroup = sectionHeading(blocks, "coupons:c-five:edit");
 		expect(editGroup).toBeDefined();
-		// PM §E3b: an operator diagnosing a code was one stray Enter from
-		// rewriting its expiry, cap and use bounds.
-		expect(editGroup?.default_open).toBe(false);
-		// The reading the operator came for is on the page WITHOUT opening it:
-		// the group's own label (D-6) plus the Status field above it.
-		expect(String(editGroup?.label)).toContain("Edit —");
-		expect(String(editGroup?.label)).toContain("$5.00 off");
-		expect(String(editGroup?.label).length).toBeLessThanOrEqual(60); // X-11
+		// PM §E3b: a screen opened to READ must answer before the editor starts —
+		// the panel's own fields (Minimum spend, Valid) come first, then the
+		// heading, then the full-replace warning ahead of the form.
+		const couponPanel = panel(blocks, "Coupon");
+		const headingAt = couponPanel.indexOf(editGroup as Blk);
+		expect(headingAt).toBeGreaterThan(0);
+		expect(couponPanel.findIndex((b) => b.type === "fields")).toBeLessThan(headingAt);
+		expect(sectionBlocks(blocks, "coupons:c-five:edit")[0]?.type).toBe("banner");
+		// The heading itself still states what the coupon does (D-6).
+		expect(String(editGroup?.text)).toContain("Edit —");
+		expect(String(editGroup?.text)).toContain("$5.00 off");
+		expect(String(editGroup?.text).length).toBeLessThanOrEqual(60); // X-11
 		// NOTHING is force-opened on a plain detail render (X-18).
-		expect(openGroupIds(blocks)).toEqual([]);
+		expect(findBlocks(blocks, "accordion")).toEqual([]);
 	});
 
 	test("the destructive full-replace warning outranks the field labels it warns about — a `banner`, not the `context` line it used to be", async () => {
 		const state = makeCouponsState();
 		await boot(state);
 		const blocks = await openCoupon("FIVEOFF");
-		const editGroup = group(blocks, "coupons:c-five:edit");
-		const body = (editGroup?.blocks ?? []) as Blk[];
+		const body = sectionBlocks(blocks, "coupons:c-five:edit") as Blk[];
 		const warning = body.find((b) => b.type === "banner");
 		expect(warning, "the full-replace warning must be a banner").toBeDefined();
 		expect(warning?.variant).toBe("alert"); // X-26: default|alert|error only

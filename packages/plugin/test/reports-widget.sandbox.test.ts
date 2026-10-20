@@ -27,10 +27,10 @@ import {
 	fieldIds,
 	findBlocks,
 	formFor,
-	group,
-	groupBlocks,
+	sectionHeading,
+	sectionBlocks,
 	type LooseBlock,
-	openGroupIds,
+	sectionIds,
 	tableWithId,
 } from "./helpers/blocks.js";
 import { loadPluginInSandbox, type SandboxHandle } from "./sandbox/harness.js";
@@ -281,15 +281,26 @@ describe("Reports admin page (workerd sandbox)", () => {
 		const blocks = blocksOf(await reports(RANGE));
 		assertBlockContract(blocks, { screen: "reports", level: "list" });
 
-		// §12.5: the four legacy `section` "headings" become accordion labels
-		// (P-2 — `section` is never a heading) — one accordion per report,
-		// resolved by `block_id`, never by label (D-6 makes labels dynamic).
-		expect(group(blocks, "reports:revenue")).toBeDefined();
-		expect(group(blocks, "reports:statuses")).toBeDefined();
-		expect(group(blocks, "reports:top")).toBeDefined();
-		expect(group(blocks, "reports:low")).toBeDefined();
-		// S-3: exactly one group is open, and it is "Revenue by day".
-		expect(openGroupIds(blocks)).toEqual(["reports:revenue"]);
+		// §12.5: one always-open section per report, each a `header` resolved by
+		// `block_id`, never by its text (D-6 makes the headings dynamic) — in
+		// this order, and with nothing collapsed behind a dropdown.
+		expect(sectionIds(blocks)).toEqual([
+			"reports:revenue",
+			"reports:statuses",
+			"reports:top",
+			"reports:low",
+		]);
+		expect(findBlocks(blocks, "accordion")).toEqual([]);
+		// Each section holds its own report's table.
+		expect(sectionBlocks(blocks, "reports:revenue").map((b) => b.block_id)).toContain(
+			"reports:revenue-table",
+		);
+		expect(sectionBlocks(blocks, "reports:statuses").map((b) => b.block_id)).toEqual([
+			"reports:statuses-table",
+		]);
+		expect(sectionBlocks(blocks, "reports:low").map((b) => b.block_id)).toEqual([
+			"reports:low-table",
+		]);
 
 		// Each report's data made it into a table, one per group.
 		expect(findBlocks(blocks, "table")).toHaveLength(4);
@@ -528,7 +539,7 @@ describe("Reports admin page (workerd sandbox)", () => {
 		);
 		assertBlockContract(blocks, { screen: "reports", level: "list" });
 		expect(blocks.length).toBeGreaterThan(0);
-		expect(groupBlocks(blocks, "reports:revenue").length).toBeGreaterThan(0);
+		expect(sectionBlocks(blocks, "reports:revenue").length).toBeGreaterThan(0);
 	});
 
 	test("multi-currency stats are ordered ALPHABETICALLY, never by revenue — and the ranking gap is disclosed to the operator", async () => {
@@ -563,7 +574,7 @@ describe("Reports admin page (workerd sandbox)", () => {
 		// ORDER COUNT, on either transport) is disclosed to the OPERATOR, inside
 		// the always-open "Revenue by day" group — not only in the PR body — and
 		// ONLY when it actually applies (multi-currency).
-		const revenueGroupText = groupBlocks(blocks, "reports:revenue")
+		const revenueGroupText = sectionBlocks(blocks, "reports:revenue")
 			.filter((b) => b.type === "context")
 			.map((b) => b.text);
 		expect(revenueGroupText.some((t) => /no per-currency order count/.test(String(t)))).toBe(true);
@@ -572,7 +583,7 @@ describe("Reports admin page (workerd sandbox)", () => {
 		// formatted across more than one — same "—" fallback as before, but with
 		// its own explanatory line inside the "Top products" group.
 		expect(rowsOf(blocks, "reports:top-table").map((r) => r.revenue)).toEqual(["—"]);
-		const topGroupText = groupBlocks(blocks, "reports:top")
+		const topGroupText = sectionBlocks(blocks, "reports:top")
 			.filter((b) => b.type === "context")
 			.map((b) => b.text);
 		expect(topGroupText.some((t) => /more than one currency/.test(String(t)))).toBe(true);
@@ -585,12 +596,12 @@ describe("Reports admin page (workerd sandbox)", () => {
 		assertBlockContract(blocks, { screen: "reports", level: "list" });
 
 		expect(
-			groupBlocks(blocks, "reports:revenue").some(
+			sectionBlocks(blocks, "reports:revenue").some(
 				(b) => b.type === "context" && /order count/.test(String(b.text)),
 			),
 		).toBe(false);
 		expect(
-			groupBlocks(blocks, "reports:top").some(
+			sectionBlocks(blocks, "reports:top").some(
 				(b) => b.type === "context" && /more than one currency/.test(String(b.text)),
 			),
 		).toBe(false);
@@ -653,7 +664,7 @@ describe("Reports admin page (workerd sandbox)", () => {
 		await seedStandardRange();
 
 		const weekly = blocksOf(await reports({ interval: "week" }));
-		expect(String(group(weekly, "reports:revenue")?.label)).toBe("Revenue by week");
+		expect(String(sectionHeading(weekly, "reports:revenue")?.text)).toBe("Revenue by week");
 
 		// A form_submit replaces the whole interaction and carries no route input,
 		// so without the carrier a period change silently reset a weekly report to
@@ -667,7 +678,7 @@ describe("Reports admin page (workerd sandbox)", () => {
 			}),
 		);
 		assertBlockContract(submitted, { screen: "reports", level: "list" });
-		expect(String(group(submitted, "reports:revenue")?.label)).toBe("Revenue by week");
+		expect(String(sectionHeading(submitted, "reports:revenue")?.text)).toBe("Revenue by week");
 		// The label is the cheap half. The interval reached the REPORT too: the
 		// two seeded days fold into ONE row whose period is the ISO week's Monday
 		// (6 Jul), which a daily report can never produce. That is what the
@@ -774,7 +785,7 @@ describe("Reports admin page (workerd sandbox)", () => {
 		// The substitution is never silent: the figures are labelled for the
 		// period actually rendered.
 		expect(statItems(blocks)[0]?.label).toBe("Revenue (USD) — last 30 days");
-		expect(group(blocks, "reports:revenue")).toBeDefined();
+		expect(sectionHeading(blocks, "reports:revenue")).toBeDefined();
 	});
 
 	test("the 400-day cap is judged on the SNAPPED period, so a range that exceeds it only once whole days apply still gets the banner", async () => {
@@ -816,9 +827,11 @@ describe("Reports admin page (workerd sandbox)", () => {
 		// "Low stock (1)" never said low compared to WHAT, and the threshold lives
 		// two screens away in Settings — it is the settings store's
 		// `lowStockThreshold`, at its domain default of 5 here.
-		expect(String(group(blocks, "reports:low")?.label)).toBe("Low stock (1) — at or below 5");
+		expect(String(sectionHeading(blocks, "reports:low")?.text)).toBe(
+			"Low stock (1) — at or below 5",
+		);
 		// The revenue group drops the internal "(N buckets)" vocabulary.
-		expect(String(group(blocks, "reports:revenue")?.label)).toBe("Revenue by day");
+		expect(String(sectionHeading(blocks, "reports:revenue")?.text)).toBe("Revenue by day");
 	});
 
 	test("a failed settings read degrades only the low-stock label (#287)", async () => {
@@ -843,7 +856,7 @@ describe("Reports admin page (workerd sandbox)", () => {
 				`SKU-A-${SFX}`,
 				`SKU-B-${SFX}`,
 			]);
-			expect(group(blocks, "reports:low")?.label).toBe("Low stock (2)");
+			expect(sectionHeading(blocks, "reports:low")?.text).toBe("Low stock (2)");
 			expect(findBlocks(blocks, "banner")).toHaveLength(0);
 		} finally {
 			settings.get = get;
@@ -860,7 +873,9 @@ describe("Reports admin page (workerd sandbox)", () => {
 
 		const blocks = blocksOf(await reports(RANGE));
 		expect(rowsOf(blocks, "reports:low-table").map((row) => row.sku)).toEqual([`SKU-A-${SFX}`]);
-		expect(group(blocks, "reports:low")?.label).toBe(`Low stock (1) — at or below ${threshold}`);
+		expect(sectionHeading(blocks, "reports:low")?.text).toBe(
+			`Low stock (1) — at or below ${threshold}`,
+		);
 	});
 
 	test("a low-stock query failure still fails the reports page closed", async () => {
@@ -994,7 +1009,7 @@ describe("Reports admin page (workerd sandbox)", () => {
 		// the formatter a money axis would need (§1.2).
 		expect(findBlocks(blocks, "chart")).toHaveLength(0);
 		// The fill happened, so the group makes no claim about omitted days.
-		expect(groupBlocks(blocks, "reports:revenue").map((b) => b.text)).not.toContain(
+		expect(sectionBlocks(blocks, "reports:revenue").map((b) => b.text)).not.toContain(
 			"Periods with no revenue are omitted for this range.",
 		);
 	});
@@ -1009,7 +1024,7 @@ describe("Reports admin page (workerd sandbox)", () => {
 			assertBlockContract(blocks, { screen: "reports", level: "list" });
 			return {
 				rows: rowsOf(blocks, "reports:revenue-table"),
-				notes: groupBlocks(blocks, "reports:revenue").map((b) => String(b.text)),
+				notes: sectionBlocks(blocks, "reports:revenue").map((b) => String(b.text)),
 			};
 		};
 
@@ -1037,7 +1052,7 @@ describe("Reports admin page (workerd sandbox)", () => {
 		// quiet currency would contribute more $0.00 rows than there are real
 		// ones, reading as activity that never happened. Sparse, and said.
 		expect(rowsOf(blocks, "reports:revenue-table")).toHaveLength(2);
-		expect(groupBlocks(blocks, "reports:revenue").map((b) => String(b.text))).toContain(
+		expect(sectionBlocks(blocks, "reports:revenue").map((b) => String(b.text))).toContain(
 			"Periods with no revenue are omitted for this range.",
 		);
 

@@ -30,7 +30,9 @@ import {
 	field,
 	findBlocks,
 	formFor,
-	openGroupIds,
+	sectionBlocks,
+	sectionHeading,
+	sectionIds,
 	valueOf,
 	type LooseBlock,
 } from "./helpers/blocks.js";
@@ -129,10 +131,13 @@ function expectAllRealFormsPresent(blocks: readonly LooseBlock[]): void {
 	}
 }
 
-/** Each group's `label` by `block_id` — INC-15's subject: the label states what
- *  the group holds, and the `block_id` is what must NOT move when it changes. */
+/** Each section's heading text by `block_id` — INC-15's subject: the heading
+ *  states what the section holds, and the `block_id` is what must NOT move when
+ *  it changes. */
 function groupLabels(blocks: readonly LooseBlock[]): Map<string, string> {
-	return new Map(findBlocks(blocks, "accordion").map((a) => [String(a.block_id), String(a.label)]));
+	return new Map(
+		sectionIds(blocks).map((id) => [id, String(sectionHeading(blocks, id)?.text)] as const),
+	);
 }
 
 function toastOf(outcome: unknown): { message?: string; type?: string } | undefined {
@@ -178,10 +183,9 @@ describe("Settings admin form (workerd sandbox)", () => {
 		// what `client.getSettings()` (a real in-process read) actually holds.
 		expect(field(formFor(blocks, "save-operational"), "holdTtlMinutes")?.initial_value).toBe("15");
 
-		// INC-15 amends S-3 for this screen: NO group is default_open. The labels
-		// carry the values, so there is nothing to rank — and X-18's mechanical
-		// rule is "at most one", which zero satisfies.
-		expect(openGroupIds(blocks)).toEqual([]);
+		// No dropdowns: every group is an always-open section, so nothing on
+		// this screen has to be opened to be read.
+		expect(findBlocks(blocks, "accordion")).toEqual([]);
 
 		// It persisted in kv: a later page load reflects it as the form's
 		// initial value too.
@@ -898,7 +902,7 @@ describe("Settings admin form (workerd sandbox)", () => {
 
 	// -- INC-15: the labels carry the values, so every group can start closed ----
 
-	test("INC-15: every group renders CLOSED and its label states its own values — nothing has to be opened to read this screen", async () => {
+	test("INC-15: every group is an always-open section whose heading states its own values", async () => {
 		await resetOperationalSettings();
 		sandbox = await loadPluginInSandbox({ allowedHosts: [], storage: true });
 		const blocks = blocksOf(
@@ -925,9 +929,14 @@ describe("Settings admin form (workerd sandbox)", () => {
 		);
 		for (const label of labels.values()) expect(label.length).toBeLessThanOrEqual(60);
 
-		// All three closed — the render-time kind (§1.2), which is legal.
-		expect(openGroupIds(blocks)).toEqual([]);
-		expect(findBlocks(blocks, "accordion").every((a) => a.default_open === false)).toBe(true);
+		// Nothing collapsed, and each section holds its own forms.
+		expect(findBlocks(blocks, "accordion")).toEqual([]);
+		expect(formFor(sectionBlocks(blocks, "settings:store"), "save-display")).toBeDefined();
+		expect(formFor(sectionBlocks(blocks, "settings:checkout"), "save-operational")).toBeDefined();
+		expect(formFor(sectionBlocks(blocks, "settings:store"), "save-operational")).toBeUndefined();
+		expect(findBlocks(sectionBlocks(blocks, "settings:payments"), "form").length).toBeGreaterThan(
+			0,
+		);
 	});
 
 	// The old "a label states an unset or unreadable value as a FACT" case used a
@@ -1003,8 +1012,7 @@ describe("Settings admin form (workerd sandbox)", () => {
 		);
 		assertBlockContract(saved, { screen: "settings", level: "list" });
 		// INC-09's post-save clear changes the FORM's carrier block_id inside the
-		// group; the GROUP's own block_id and default_open must not follow it.
-		expect(openGroupIds(saved)).toEqual([]);
+		// section; the section heading's own block_id must not follow it.
 		expect([...groupLabels(saved).keys()]).toEqual([
 			"settings:store",
 			"settings:checkout",
@@ -1066,7 +1074,7 @@ describe("Settings admin form (workerd sandbox)", () => {
 		);
 	});
 
-	test("INC-15: a label change NEVER changes a group's block_id — the labels move, the accordions do not remount (§1.2)", async () => {
+	test("INC-15: a heading change NEVER changes a section's block_id — the headings move, the sections do not remount (§1.2)", async () => {
 		sandbox = await loadPluginInSandbox({ allowedHosts: [], storage: true });
 		const before = blocksOf(
 			await sandbox.invokeRoute("admin", { type: "page_load", page: "/settings" }),
