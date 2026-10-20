@@ -203,7 +203,7 @@ them.
 | R-17a | **The `select` trigger — and only `select` — renders the raw resolved *value*, never the option label, and renders empty when that value is `""`, `null` or absent.** `select.tsx:30-42` passes the options as **children** and passes no `items`, `placeholder` or `renderValue`. Kumo 2.6.0 wraps **Base UI** (`@base-ui/react ^1.5.0`; 1.6.0 installed), **not Radix**. With `items === undefined`, Base UI's `SelectValue` falls through to `resolveSelectedLabel(value, undefined, undefined)` → `stringifyAsLabel` → `serializeValue(value)`, i.e. the value string; and its `hasSelectedValue` selector treats `""` as "no value" exactly as it does `null`/`undefined`. | `elements/select.tsx:30-42`; `@base-ui/react/select/value/SelectValue.js:41-58`, `internals/resolveValueLabel.js` (`resolveSelectedLabel`), `select/store.js:20-32` | This is the **real** cause of every blank select — not an unresolvable `initial_value` and not the `""` option value; both earlier diagnoses were wrong. Kumo's own `Select` *does* accept `renderValue`/`placeholder`, but with no fork there is no path to change it (§14 item 3). Two consequences: F-6a's rules remove the blank, and F-6c — a `select`'s option **value is operator-visible**. Scope this to `select`: `combobox` behaves differently (R-17b), and `radio` renders each option's label as its own row caption. |
 | R-17b | **`combobox` renders the option LABEL, and it has a real `placeholder`.** `combobox.tsx:50-52` passes `items={element.options}` **and** a whole-option object as `value`, so Base UI resolves a label instead of falling through to `serializeValue`; `Combobox.TriggerInput` takes `element.placeholder ?? "Search..."`; and an `initial_value` that matches no option resolves to `null` (`:16-19`), which shows the placeholder rather than a blank 36px box. `ComboboxElement` declares `placeholder?: string` (`types.ts:82-89`); `SelectElement` does not (R-17). | `elements/combobox.tsx:16-19,50-52`; upstream `types.ts:82-89` | **This is the correction that matters most in revision 4.** Revisions 1–3 said selects show the raw value and named "the order picker reads a raw UUID" as the worst instance. That wart **does not exist** — every L-7 picker is a `combobox`, and the surviving one reads `SUMMER25 · 20% off · 3 uses` (`coupons-page.ts:689-700`). Consequences: F-6c binds on `select`/`radio` only; a record picker whose option value is an opaque id **must** be a `combobox` (L-7); and §14 item 3 is worth less than claimed. |
 | R-18 | `banner.variant` is `"default" \| "alert" \| "error"` and is passed straight into Kumo. `banner` renders `{title, description}` only — a legacy `text` field is dropped. | types `BannerBlock`, `blocks/banner.tsx:7,21,24` | `"info"`/`"success"` are **phantoms**: Otta's mirror allows them, the renderer forwards them unvalidated to Kumo. Constrain to the three real values (M-9). |
-| R-19 | `chart` **cannot format money.** `TimeseriesChartConfig` exposes only `style`/`series`/`x_axis_name`/`y_axis_name`/`height`/`gradient`; series data is `[number, number][]`; and for a `custom` chart `formatter` is stripped as a DANGEROUS_KEY. | types `TimeseriesChartConfig`, `blocks/chart.tsx:53,108-118` | A chart renders **raw minor units** on the axis and in tooltips. Plotting major units instead puts a display float on the money path. `chart` is therefore forbidden here (§2, §12.5). |
+| R-19 | `chart` **cannot format money.** `TimeseriesChartConfig` exposes only `style`/`series`/`x_axis_name`/`y_axis_name`/`height`/`gradient`; series data is `[number, number][]`; and for a `custom` chart `formatter` is stripped as a DANGEROUS_KEY. | types `TimeseriesChartConfig`, `blocks/chart.tsx:53,108-118` | A chart renders **raw minor units** on the axis and in tooltips. Plotting major units instead puts a display float on the money path. **Amended by [ADR-0038](../../adr/0038-reports-page-charts.md):** a `custom` chart can carry money as pre-formatted strings (a tooltip/label data dimension via `encode`, and a category axis of formatted tick labels over a hidden value axis) while plotting integer minor units, so `chart` is allowed on Reports only, `custom` only (§2, §12.5). |
 | R-20 | `meter` takes a bare `number` with no currency, and renders `custom_value` verbatim when present. | types `MeterBlock`, `blocks/meter.tsx:7-13` | Money in `value`/`max` is unlabelled minor units. `custom_value` is **mandatory** whenever they are (M-8). |
 | R-21 | `TableBlock.page_action_id` is **required** by the authoritative type. Otta's mirror keeps it optional (a pre-existing MOD-3 divergence). | types `TableBlock` | A table without it typechecks in Otta today and violates the renderer's contract. Reports has four such tables (§12.5). Always set it (T-6). |
 | R-22 | `FormField` includes `ButtonElement`, and `form.tsx:68` renders it. But a button inside a form fires a bare `block_action` carrying **only `element.value`** — no access to the form's typed `values`, and no `block_id`. | types `FormField`, `blocks/form.tsx:64-69`, `elements/button.tsx:16-20` | A confirming button *can* sit visually inside a form; it still cannot read that form's fields. Do not conclude from `FormField ⊃ ButtonElement` that R-10 or DA-1 is wrong. |
@@ -242,7 +242,7 @@ these types, so the six screen teams cannot invent six conflicting shapes.
 | `toggle` element + field spec | absent from both unions | F-6, §12.3 Tax (`Applies to shipping`) — **the only consumer**; §12.4 Shipping has none | **The Tax screen**, not "increment 5" — increment 5 is **six** parallel screens (Pricing, Coupons, Tax, Shipping, Reports, Settings) and is not an owner |
 | `ImageBlock` in the `Block` union | `types.ts`' union ends at `FormBlock`; upstream has `image` | §2 image row, a product detail *if* a product image URL ever lands | **Deferred** — add with the first real consumer, not before |
 
-`chart` is **not** needed (R-19). `stats` already exists.
+`chart` was not needed here (R-19); Reports adopted it later (ADR-0038). `stats` already exists.
 
 #### C. Carrier codec: the namespace moves into the token
 
@@ -527,8 +527,8 @@ Every other `confirm.text` on every screen is already ≤200 (`tax-page.ts:248` 
 | `empty` | Once per screen, maximum: the primary collection at true zero state (E-2). | Sub-tables. Secondary collections. Setting `command_line`. |
 | `meter` | A **real** bounded ratio: refunded-of-refundable, redemptions-of-max-uses. `custom_value` mandatory when `value`/`max` are money (M-8). | A synthetic `max`. Money without `custom_value`. |
 | `stats` | Reports only, **max 4 items** (R-16). | Detail screens. Raw minor units (M-1). |
-| `columns` | **Nowhere.** Forbidden on every screen. | Everywhere. It appears in no skeleton and no listing here; dead vocabulary in a consistency-first document means six teams invent six uses. The type stays for future screens. |
-| `chart` | **Nowhere.** It cannot format money (R-19). | Everywhere. |
+| `columns` | **Reports only** (ADR-0038) — charts side by side. Forbidden on every other screen. | Everywhere. It appears in no skeleton and no listing here; dead vocabulary in a consistency-first document means six teams invent six uses. The type stays for future screens. |
+| `chart` | **Reports only**, `chart_type: "custom"` only, money as formatted strings (R-19, ADR-0038). | Every other screen. A `timeseries` chart, or any option key the renderer strips (`formatter`/`rich`/`graphic`/`axisPointer`). |
 | `divider` | **Nowhere.** | Everywhere (R-4) — accordion boundaries already separate groups. |
 | `code` | **Nowhere.** | Everywhere. |
 | `image` | Nowhere yet — no screen has an image URL on the wire. Add with the first real consumer (§0.1 B). | Inventing a URL. |
@@ -3047,6 +3047,16 @@ T-5).
 
 ### 12.5 Reports (`reports-page.ts`) — §4.1 skeleton
 
+> **Superseded in part by [ADR-0038](../../adr/0038-reports-page-charts.md) (2026-10-20).** The
+> page is now a Shopify-style overview: header · period context ("… (UTC) · compared with …") ·
+> a period `select` (presets, applied on change; "Custom range" opens a From/To form) · four
+> `stats` cards with the change against the previous period of equal length · `Total sales over
+> time` (line chart, dashed previous period) · `columns`[`Orders over time` (bars) | `Orders by
+> status` (donut)] · `columns`[`Top products` (horizontal bars) | `Low stock` (table)]. The
+> revenue-by-day table survives only for a multi-currency period, where no single money axis
+> exists. The listing below is the pre-ADR-0038 skeleton, kept for its reasoning (currency mode,
+> refund-only currencies, low-stock wording), which still applies.
+
 ```
 header      "<Store> — Reports"
 context     "1 Jul – 31 Jul 2026 (UTC) · Revenue is net order totals on paid-and-later
@@ -3374,7 +3384,7 @@ catch, exactly as every non-**H** row is — named, not silently dropped.
 | X-12 | | `header` used for a subsection beyond P-2's one-per-panel exception; `section` used as a heading or a receipt. | P-2 |
 | X-13 | H | A raw wire timestamp on any operator-facing surface — an ISO instant of any precision, milliseconds, or a non-UTC offset. Every instant renders through `scaffold/datetime.ts`. | M-6 |
 | X-14 | H | `sortable: true` on any column. | T-3 |
-| X-15 | H | Any `columns` or `chart` block. | §2 |
+| X-15 | H | Any `columns` or `chart` block — except on Reports (ADR-0038), where a chart must be `custom` and carry no stripped option key. | §2 |
 | X-16 | H | A conditionally-present `tab` panel; `default_tab` other than 0; a panel count differing from D-2's table. | D-3, D-4 |
 | X-17 | H | A form without an explicit `block_id`; a context-carrying `block_id` with no `:u1.` segment; a prefilling form whose `block_id` did not come from `carriedForm`. | B-1, B-3, B-3a |
 | X-18 | H | More than one `default_open: true` **per rendered response**. **Counted on the emitted JSON only.** A screenshot showing two expanded groups is **not** an X-18 finding: client-side open state survives a re-render with an unchanged `block_id`, so a group opened by an earlier response stays open through a response carrying `default_open: false` (B-5) — and on any screen with a D-5 Rule-2 rank this is **permanent and accepted** (B-8). | D-5, B-5, B-8 |

@@ -566,6 +566,10 @@ describe("assertBlockContract — X-14 (T-3)", () => {
 	test("violates: sortable:true", () => throwsRule([HEADER, x14Table(true)], LIST, "X-14"));
 });
 
+function customChart(options: Record<string, unknown>): LooseBlock {
+	return { type: "chart", config: { chart_type: "custom", options } };
+}
+
 describe("assertBlockContract — X-15 (§2)", () => {
 	test("compliant: no columns/chart block", () => passes([HEADER], LIST));
 	test("violates: a columns block", () => {
@@ -573,6 +577,27 @@ describe("assertBlockContract — X-15 (§2)", () => {
 	});
 	test("violates: a chart block", () => {
 		throwsRule([HEADER, { type: "chart" }], LIST, "X-15");
+	});
+
+	// ADR-0038: Reports is the one screen allowed charts and columns — and only a
+	// `custom` chart, whose money rides as pre-formatted strings.
+	const REPORTS: BlockContractOptions = { screen: "reports", level: "list" };
+	test("compliant on Reports: columns and a custom chart", () => {
+		passes([HEADER, { type: "columns", columns: [[customChart({ series: [] })], []] }], REPORTS);
+	});
+	test("violates on Reports: a timeseries chart (it prints raw minor units)", () => {
+		throwsRule(
+			[HEADER, { type: "chart", config: { chart_type: "timeseries", series: [] } }],
+			REPORTS,
+			"X-15",
+		);
+	});
+	test("violates on Reports: an option key the renderer strips", () => {
+		throwsRule(
+			[HEADER, customChart({ yAxis: { axisLabel: { formatter: "{value}" } } })],
+			REPORTS,
+			"X-15",
+		);
 	});
 });
 

@@ -106,7 +106,7 @@ export function assertBlockContract(
 		...checkX11(blocks),
 		...checkX13(blocks),
 		...checkX14(blocks),
-		...checkX15(blocks),
+		...checkX15(blocks, options.screen),
 		...checkX16(blocks, options.screen, options.level),
 		...checkX17(blocks),
 		...checkX18(blocks),
@@ -557,11 +557,51 @@ function checkX14(blocks: readonly LooseBlock[]): string[] {
 }
 
 // ---------------------------------------------------------------------------
-// X-15 (§2) — any columns or chart block.
+// X-15 (§2) — any columns or chart block. Reports is the one exception
+// (ADR-0038): columns, and `custom` charts only — a `timeseries` chart can print
+// nothing but raw numbers, and an option key the renderer strips
+// (`formatter`/`rich`/`graphic`/`axisPointer`) is a silent no-op that would leave
+// raw minor units on screen.
 // ---------------------------------------------------------------------------
 
-function checkX15(blocks: readonly LooseBlock[]): string[] {
+const STRIPPED_CHART_KEYS: ReadonlySet<string> = new Set([
+	"formatter",
+	"rich",
+	"graphic",
+	"axisPointer",
+]);
+
+function strippedKeys(value: unknown, path: string, out: string[]): void {
+	if (Array.isArray(value)) {
+		value.forEach((item, i) => strippedKeys(item, `${path}[${i}]`, out));
+	} else if (typeof value === "object" && value !== null) {
+		for (const [key, child] of Object.entries(value)) {
+			if (STRIPPED_CHART_KEYS.has(key)) out.push(`${path}.${key}`);
+			strippedKeys(child, `${path}.${key}`, out);
+		}
+	}
+}
+
+function checkX15(blocks: readonly LooseBlock[], screen: ScreenName): string[] {
 	const out: string[] = [];
+	if (screen === "reports") {
+		for (const chart of findBlocks(blocks, "chart")) {
+			const config = (chart.config ?? {}) as { chart_type?: unknown; options?: unknown };
+			if (config.chart_type !== "custom") {
+				out.push(
+					`X-15: chart "${String(chart.block_id)}" is chart_type "${String(config.chart_type)}" — only a custom chart can state money as formatted strings (ADR-0038).`,
+				);
+			}
+			const stripped: string[] = [];
+			strippedKeys(config.options, "options", stripped);
+			for (const path of stripped) {
+				out.push(
+					`X-15: chart "${String(chart.block_id)}" sets ${path}, which the renderer strips — carry formatted text in a data dimension instead (ADR-0038).`,
+				);
+			}
+		}
+		return out;
+	}
 	if (findBlocks(blocks, "columns").length > 0) {
 		out.push(`X-15: a "columns" block is present — forbidden on all seven screens (§2).`);
 	}
