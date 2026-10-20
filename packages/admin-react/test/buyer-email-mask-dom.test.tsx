@@ -391,7 +391,10 @@ function fieldValue(container: HTMLElement, groupTestId: string, label: string):
 }
 
 function summary(container: HTMLElement, groupTestId: string): string {
-	return one<HTMLElement>(container, `[data-testid="${groupTestId}"] > summary`).textContent ?? "";
+	return (
+		one<HTMLElement>(container, `[data-testid="${groupTestId}"] > .otta-group-title`).textContent ??
+		""
+	);
 }
 
 async function openTab(container: HTMLElement, name: string): Promise<void> {

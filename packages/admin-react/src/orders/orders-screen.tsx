@@ -42,7 +42,7 @@ import {
 	type PageChange,
 	type PageTrail,
 } from "../accumulate.js";
-import { ConsoleStyles } from "../ui.js";
+import { ConsoleStyles, KUMO } from "../ui.js";
 import { OrderDetail } from "./order-detail.js";
 import { OrdersList } from "./orders-list.js";
 
@@ -400,7 +400,10 @@ export function OrdersScreen(): React.ReactElement {
 	}, []);
 
 	return (
-		<div style={{ padding: 24, maxInlineSize: 1100, textAlign: "start" }}>
+		// NO PADDING OF OUR OWN: the admin already insets a plugin page exactly as it
+		// insets its own (the Products list's title sits at the same spot), and a
+		// second inset pushed this screen visibly off EmDash's grid.
+		<div style={{ textAlign: "start", color: KUMO.text }}>
 			<ConsoleStyles />
 			{selected === null ? (
 				<OrdersList

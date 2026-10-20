@@ -9,29 +9,73 @@
  *
  * TWO RULES GOVERN EVERY STYLE IN THIS FILE.
  *
- *  1. **Theme-neutral.** The admin ships light and dark, and a fixed foreground
- *     or background colour is legible in exactly one of them. Everything is
- *     `currentColor`, `transparent`, or a grey stated as an alpha over whatever
- *     is behind it. The three accent colours are used for BORDERS and never as
- *     text or fill, so they never have to contrast with a background this file
- *     does not control.
+ *  1. **EmDash's tokens, not our own colours.** The console renders inside the
+ *     EmDash admin, which defines Kumo's design tokens as CSS custom properties
+ *     on the document (`--color-kumo-base`, `--color-kumo-line`,
+ *     `--color-kumo-brand`, `--text-color-kumo-subtle`, …) and re-points them in
+ *     dark mode. Every colour here is a `var(--token, fallback)` read through
+ *     {@link KUMO}, so a button, a card or a badge is drawn in exactly the ink the
+ *     admin's own screens use, in light and in dark, with no conditional colour
+ *     of ours. The fallback is the old theme-neutral value (`currentColor`, an
+ *     alpha grey), so outside the admin — a unit test, a bare page — the screen
+ *     degrades to legible rather than to invisible. This supersedes the earlier
+ *     "theme-neutral only" rule: that rule existed because this file could not
+ *     know the background, and the tokens are how it now does.
  *  2. **Logical properties (G6).** `marginBlockEnd`, `borderInlineStart`,
  *     `textAlign: "start"` — the admin is RTL-capable and nothing here may pin
  *     to the left.
  *
- * WHY THERE IS A STYLESHEET AND NOT ONLY INLINE STYLES. Two things this screen
- * is required to have cannot be expressed as a style object: `:focus-visible`
- * (the DoD includes a focus-state screenshot, and every interactive element
- * needs a visible ring) and `:hover` on a table row (DESIGNER §8's full-row
- * hover tint, which is what makes a link in one cell read as "this row opens").
- * Both are pseudo-classes. The sheet is minimal and mounted once.
+ * WHY THERE IS A STYLESHEET AND NOT ONLY INLINE STYLES. Several things this
+ * screen is required to have cannot be expressed as a style object: `:focus-visible`
+ * (every interactive element needs a visible ring), `:hover` on a table row
+ * (the full-row hover tint that makes a link in one cell read as "this row
+ * opens") and on a button. All are pseudo-classes. The sheet is minimal and
+ * mounted once.
  */
 import * as React from "react";
 
-const HAIRLINE = "1px solid rgba(128, 128, 128, 0.35)";
-export const OK_ACCENT = "#2f855a";
-export const FAIL_ACCENT = "#c53030";
-export const WARN_ACCENT = "#b7791f";
+/**
+ * EmDash's design tokens, as the admin defines them at runtime (Kumo, the
+ * design system `@emdash-cms/admin` is built on — read from its compiled
+ * `styles.css`, never imported). Each is a `var()` with a theme-neutral
+ * fallback; see rule 1 in the header.
+ */
+export const KUMO = {
+	/** Body ink. */
+	text: "var(--text-color-kumo-default, currentColor)",
+	/** Secondary ink: dates, hints, captions. */
+	subtle: "var(--text-color-kumo-subtle, color-mix(in srgb, currentColor 62%, transparent))",
+	/** Headings. */
+	strong: "var(--text-color-kumo-strong, currentColor)",
+	link: "var(--text-color-kumo-link, LinkText)",
+	/** The card / button surface. */
+	surface: "var(--color-kumo-base, transparent)",
+	/** An input's fill. */
+	control: "var(--color-kumo-control, transparent)",
+	/** The border on cards, buttons and inputs. */
+	line: "var(--color-kumo-line, rgba(128, 128, 128, 0.35))",
+	/** A quieter divider. */
+	hairline: "var(--color-kumo-hairline, rgba(128, 128, 128, 0.2))",
+	/** Row dividers inside a table, a neutral badge's fill. */
+	fill: "var(--color-kumo-fill, rgba(128, 128, 128, 0.2))",
+	/** Hover wash. */
+	tint: "var(--color-kumo-tint, rgba(128, 128, 128, 0.12))",
+	brand: "var(--color-kumo-brand, #2563eb)",
+	brandHover: "var(--color-kumo-brand-hover, #1d4ed8)",
+	danger: "var(--color-kumo-danger, #dc2626)",
+	dangerText: "var(--text-color-kumo-danger, #b91c1c)",
+	focus: "var(--color-kumo-focus, currentColor)",
+} as const;
+
+const HAIRLINE = `1px solid ${KUMO.line}`;
+/**
+ * The three accents, now EmDash's own status inks. They are TOKENS, so — unlike
+ * the fixed hexes they replace — they are safe as text in both themes: the admin
+ * picks the darker ink on light and the lighter on dark.
+ */
+export const OK_ACCENT = "var(--text-color-kumo-success, #2f855a)";
+export const FAIL_ACCENT = KUMO.dangerText;
+export const WARN_ACCENT = "var(--text-color-kumo-warning, #b7791f)";
 /**
  * THE LOOK OF A CONTROL THAT IS PRESENT BUT CANNOT BE USED.
  *
@@ -58,12 +102,12 @@ export const WARN_ACCENT = "#b7791f";
  * unmistakably as "off"; it is stated against `currentColor` so it follows the
  * theme rather than pinning a grey that is legible in one of them.
  *
- * A whole `border` rather than a `border-color`: `buttonStyle` states the
- * shorthand, and React warns (correctly) that mixing the two on one element
- * makes removals order-dependent.
+ * A whole `border` rather than a `border-color`: `.otta-btn` states the
+ * shorthand, and mixing the two makes removals order-dependent. They are the
+ * sheet's `[aria-disabled="true"]` rule now, not inline.
  */
-export const UNAVAILABLE_BORDER = "1px solid rgba(128, 128, 128, 0.22)";
-export const UNAVAILABLE_FILL = "rgba(128, 128, 128, 0.10)";
+export const UNAVAILABLE_BORDER = `1px solid ${KUMO.hairline}`;
+export const UNAVAILABLE_FILL = KUMO.tint;
 export const UNAVAILABLE_INK = "color-mix(in srgb, currentColor 62%, transparent)";
 
 /**
@@ -97,8 +141,9 @@ export const INTERACTIVE_DESCENDANT_SELECTOR = "a, button, input, select, textar
  * EVERY ENTRY HERE HAS TO TAKE ITS OWN POINTER FROM THE SHEET for the reset to
  * be worth anything. `summary` is the one that reads like an exception and is
  * not: it is listed here, and a disclosure whose pointer were declared inline
- * would outrank this rule exactly the way the buttons used to, so `Group` puts
- * it on `.otta-summary` instead.
+ * would outrank this rule exactly the way the buttons used to. (The console
+ * itself renders no `<summary>` any more — EmDash shows no dropdowns — but the
+ * entry stays so a host control inside a row keeps the same guarantee.)
  */
 export const CURSOR_RESET_DESCENDANT_SELECTOR = "button, input, select, textarea, summary, label";
 
@@ -140,39 +185,118 @@ export const ROW_ACTIVATION_SLOP_PX = 4;
  */
 export const CONSOLE_STYLES = `
 .otta-focusable:focus-visible {
-	outline: 2px solid currentColor;
+	outline: 2px solid ${KUMO.focus};
 	outline-offset: 2px;
 	border-radius: 4px;
 }
 .otta-row:hover {
-	background: rgba(128, 128, 128, 0.10);
+	background: color-mix(in srgb, ${KUMO.tint} 50%, transparent);
 }
 .otta-row:focus-within {
-	background: rgba(128, 128, 128, 0.14);
+	background: color-mix(in srgb, ${KUMO.tint} 70%, transparent);
 }
 .otta-td, .otta-th {
-	padding: 8px 12px;
+	padding: 12px 16px;
 	text-align: start;
-	vertical-align: top;
-	border-block-end: ${HAIRLINE};
+	vertical-align: middle;
+	border-block-end: 1px solid ${KUMO.fill};
 }
+.otta-td { font-size: 14px; color: ${KUMO.text}; }
+.otta-td.otta-td-subtle { font-size: 13px; color: ${KUMO.subtle}; }
 .otta-th {
-	font-size: 12px;
-	font-weight: 650;
-	opacity: 0.72;
-	text-transform: uppercase;
-	letter-spacing: 0.04em;
+	font-size: 13px;
+	font-weight: 500;
+	color: ${KUMO.text};
 	white-space: nowrap;
 }
 .otta-num { font-variant-numeric: tabular-nums; }
-.otta-btn { cursor: pointer; }
+/* EmDash's Kumo button: the secondary look is the default, 36px tall, the lg
+   radius, a 1px line ring and medium weight. (No backticks in this sheet: it is
+   a template literal, and one would end it.) */
+.otta-btn {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	gap: 6px;
+	box-sizing: border-box;
+	block-size: 36px;
+	padding: 0 12px;
+	font: inherit;
+	font-size: 14px;
+	font-weight: 500;
+	line-height: 1;
+	white-space: nowrap;
+	border: 1px solid ${KUMO.line};
+	border-radius: 8px;
+	background: ${KUMO.surface};
+	color: ${KUMO.text};
+	cursor: pointer;
+	transition: background-color 120ms ease-out, border-color 120ms ease-out;
+}
+.otta-btn:hover:not(:disabled):not([aria-disabled="true"]) { background: ${KUMO.tint}; }
 .otta-btn:disabled { cursor: not-allowed; }
-/* A CONTROL DIMMED WITHOUT LEAVING THE TAB ORDER — see PagerButton. The rule
-   above cannot match it: aria-disabled is a STATE, not the disabled property,
-   and the whole point of using it is that the element stays focusable and
-   clickable at the DOM level while refusing its own click. (No backticks in
-   this sheet: it is a template literal, and one would end it.) */
-.otta-btn[aria-disabled="true"] { cursor: not-allowed; }
+.otta-btn[disabled] { opacity: 0.55; }
+.otta-btn[data-size="sm"] {
+	block-size: 26px;
+	padding: 0 8px;
+	font-size: 12px;
+	border-radius: 6px;
+	gap: 4px;
+}
+.otta-btn[data-variant="primary"] {
+	background: ${KUMO.brand};
+	border-color: color-mix(in oklch, ${KUMO.brand}, black 10%);
+	color: #fff;
+}
+.otta-btn[data-variant="primary"]:hover:not(:disabled) { background: ${KUMO.brandHover}; }
+.otta-btn[data-variant="destructive"] {
+	background: ${KUMO.danger};
+	border-color: color-mix(in oklch, ${KUMO.danger}, black 10%);
+	color: #fff;
+}
+.otta-btn[data-variant="destructive"]:hover:not(:disabled) {
+	background: color-mix(in oklch, ${KUMO.danger}, black 8%);
+}
+.otta-btn[data-variant="danger"] {
+	color: ${KUMO.dangerText};
+}
+.otta-btn[data-variant="danger"]:hover:not(:disabled) {
+	border-color: color-mix(in srgb, ${KUMO.danger} 30%, transparent);
+}
+/* A CONTROL DIMMED WITHOUT LEAVING THE TAB ORDER — see PagerButton. The
+   disabled rule above cannot match it: aria-disabled is a STATE, not the
+   disabled property, and the whole point of using it is that the element stays
+   focusable and clickable at the DOM level while refusing its own click. */
+.otta-btn[aria-disabled="true"] {
+	cursor: not-allowed;
+	border: ${UNAVAILABLE_BORDER};
+	background: ${UNAVAILABLE_FILL};
+	color: ${UNAVAILABLE_INK};
+}
+/* EmDash's underline tabs (Kumo Tabs, variant underline): a hairline under
+   the strip, subtle ink at rest, the brand rule under the selected tab. */
+.otta-tabs {
+	display: flex;
+	gap: 16px;
+	border-block-end: 1px solid ${KUMO.hairline};
+	margin-block-end: 16px;
+	overflow-x: auto;
+}
+.otta-btn.otta-tab {
+	block-size: auto;
+	padding: 10px 6px;
+	border: 0;
+	border-radius: 0;
+	background: transparent;
+	color: ${KUMO.subtle};
+	box-shadow: inset 0 -2px 0 transparent;
+}
+.otta-btn.otta-tab:hover:not(:disabled) { background: transparent; color: ${KUMO.text}; }
+.otta-btn.otta-tab[aria-selected="true"] {
+	color: ${KUMO.text};
+	box-shadow: inset 0 -2px 0 ${KUMO.brand};
+}
+.otta-btn.otta-tab:focus-visible { outline-offset: -2px; }
 /* Present to assistive technology, absent from the page. The same recipe the
    table caption uses inline; it is a class here because it is applied to
    elements that are not tables and would otherwise be a fourth copy. */
@@ -184,7 +308,6 @@ export const CONSOLE_STYLES = `
 	clip-path: inset(50%);
 	white-space: nowrap;
 }
-.otta-summary { cursor: pointer; }
 .otta-row[${ROW_ID_ATTRIBUTE}] {
 	cursor: pointer;
 }
@@ -195,15 +318,16 @@ export const CONSOLE_STYLES = `
 	cursor: not-allowed;
 }
 .otta-notice:focus-visible {
-	outline: 2px solid currentColor;
+	outline: 2px solid ${KUMO.focus};
 	outline-offset: 2px;
 }
 .otta-table-card {
-	border: ${HAIRLINE};
+	border: 1px solid ${KUMO.line};
 	border-radius: 8px;
+	background: ${KUMO.surface};
 	overflow: hidden;
 }
-.otta-table-card thead tr { background: rgba(128, 128, 128, 0.06); }
+.otta-table-card thead tr { background: color-mix(in srgb, ${KUMO.tint} 50%, transparent); }
 .otta-table-card :is(.otta-th, .otta-td):first-child { padding-inline-start: 16px; }
 .otta-table-card :is(.otta-th, .otta-td):last-child { padding-inline-end: 16px; }
 .otta-table-card tbody tr:last-child .otta-td { border-block-end: 0; }
@@ -211,6 +335,67 @@ export const CONSOLE_STYLES = `
 	.otta-table-card :is(.otta-th, .otta-td):first-child { padding-inline-start: 12px; }
 	.otta-table-card :is(.otta-th, .otta-td):last-child { padding-inline-end: 12px; }
 }
+/* EmDash's Kumo Badge: a full pill, 12px medium, the status tint behind the
+   status ink. Both come from the admin, so each pair is legible on its theme. */
+.otta-pill {
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+	padding: 2px 8px;
+	font-size: 12px;
+	font-weight: 500;
+	line-height: 16px;
+	border-radius: 999px;
+	white-space: nowrap;
+}
+.otta-pill[data-tone="ok"] {
+	background: color-mix(in srgb, var(--color-kumo-success-tint, rgba(47, 133, 90, 0.18)) 70%, transparent);
+	color: var(--text-color-kumo-success, currentColor);
+}
+.otta-pill[data-tone="info"] {
+	background: color-mix(in srgb, var(--color-kumo-info-tint, rgba(37, 99, 235, 0.16)) 70%, transparent);
+	color: var(--text-color-kumo-info, currentColor);
+}
+.otta-pill[data-tone="warn"] {
+	background: color-mix(in srgb, var(--color-kumo-warning-tint, rgba(183, 121, 31, 0.18)) 70%, transparent);
+	color: var(--text-color-kumo-warning, currentColor);
+}
+.otta-pill[data-tone="fail"] {
+	background: color-mix(in srgb, var(--color-kumo-danger-tint, rgba(197, 48, 48, 0.16)) 60%, transparent);
+	color: var(--text-color-kumo-danger, currentColor);
+}
+.otta-pill[data-tone="neutral"] {
+	background: var(--color-kumo-fill, rgba(128, 128, 128, 0.16));
+	color: var(--text-color-kumo-badge-neutral-subtle, currentColor);
+}
+/* A section: EmDash's heading-over-a-card. A group inside a group drops the
+   card and keeps the heading, divided from what is above it by a hairline. */
+.otta-group {
+	border: 1px solid ${KUMO.line};
+	border-radius: 8px;
+	background: ${KUMO.surface};
+	padding: 16px;
+	margin-block-end: 16px;
+	text-align: start;
+}
+.otta-group[data-nested="true"] {
+	border: 0;
+	border-block-start: 1px solid ${KUMO.hairline};
+	border-radius: 0;
+	background: transparent;
+	padding: 16px 0 0;
+	margin: 16px 0 0;
+}
+.otta-group-title {
+	margin: 0 0 12px;
+	font-size: 16px;
+	font-weight: 600;
+	line-height: 1.25;
+	color: ${KUMO.text};
+	overflow-wrap: anywhere;
+}
+.otta-group[data-nested="true"] > .otta-group-title { font-size: 14px; }
+.otta-group > :last-child { margin-block-end: 0; }
 .otta-link {
 	text-decoration-line: none;
 	text-decoration-color: color-mix(in srgb, currentColor 45%, transparent);
@@ -242,45 +427,53 @@ export function ConsoleStyles(): React.ReactElement {
 	return <style>{CONSOLE_STYLES}</style>;
 }
 
+/** EmDash's card: `rounded-lg border bg-kumo-base`. */
 export const panelStyle: React.CSSProperties = {
 	border: HAIRLINE,
 	borderRadius: 8,
-	padding: "14px 16px",
+	background: KUMO.surface,
+	padding: 16,
 	marginBlockEnd: 16,
 	textAlign: "start",
 };
 
-/**
- * NO `cursor` HERE, AND THAT IS THE POINT. It lives on `.otta-btn` in the sheet
- * instead, because an inline declaration outranks every rule a stylesheet can
- * write — so while `cursor` was inline, the row-activation reset could only beat
- * it with `!important`, which in turn flattened `not-allowed` on any disabled
- * button inside an activatable row. As a class rule it loses to the more
- * specific descendant reset on cascade alone, and the disabled case survives.
- * Anything that spreads this style must carry `otta-btn` in its `className`.
- */
-export const buttonStyle: React.CSSProperties = {
-	padding: "5px 12px",
-	fontSize: 13,
-	border: HAIRLINE,
-	borderRadius: 6,
-	background: "transparent",
-	color: "inherit",
-};
+/** Secondary ink for a hint, a caption or a date — EmDash's `text-kumo-subtle`,
+ *  which replaces the `opacity` this file used to recede text with. */
+export const subtleTextStyle: React.CSSProperties = { color: KUMO.subtle };
 
-/** A control whose click cannot be undone. The weight is carried by a border and
- *  by the word on it — never by a filled background, which this file cannot
- *  colour safely in both themes. */
-export const dangerButtonStyle: React.CSSProperties = {
-	...buttonStyle,
-	borderColor: FAIL_ACCENT,
-	fontWeight: 600,
-};
+/**
+ * Which of EmDash's button looks a control wears. `default` is Kumo's
+ * secondary (surface, line ring); `primary` is the brand blue, for the ONE main
+ * action on a screen; `danger` is red ink on the ordinary surface, for an
+ * in-page control whose click cannot be undone (it still goes through a
+ * confirm); `destructive` is the filled red, for the confirm itself.
+ *
+ * THE LOOK IS THE SHEET'S, carried by `data-variant` / `data-size` on an
+ * `otta-btn`: hover is a pseudo-class, and an inline background would outrank
+ * it — the same reason `cursor` is a class rule (an inline cursor could only be
+ * beaten by `!important`, which flattened `not-allowed` on disabled buttons
+ * inside an activatable row).
+ */
+export type ButtonVariant = "default" | "primary" | "danger" | "destructive";
+
+/** The attributes that put a control in one of {@link ButtonVariant}'s looks. */
+export function buttonLook(
+	variant: ButtonVariant = "default",
+	size: "base" | "sm" = "base",
+): { className: string; "data-variant"?: string; "data-size"?: string } {
+	return {
+		className: "otta-focusable otta-btn",
+		...(variant === "default" ? {} : { "data-variant": variant }),
+		...(size === "sm" ? { "data-size": "sm" } : {}),
+	};
+}
 
 export function Button({
 	label,
 	onClick,
 	danger,
+	variant,
+	size,
 	disabled,
 	busy,
 	autoFocus,
@@ -289,7 +482,10 @@ export function Button({
 }: {
 	label: string;
 	onClick: () => void;
+	/** Shorthand for `variant="danger"`. */
 	danger?: boolean;
+	variant?: ButtonVariant;
+	size?: "base" | "sm";
 	disabled?: boolean;
 	/** A click whose work is still in flight. `aria-busy` is what tells a screen
 	 *  reader the control is mid-flight rather than simply unavailable, which
@@ -321,7 +517,7 @@ export function Button({
 	return (
 		<button
 			type="button"
-			className="otta-focusable otta-btn"
+			{...buttonLook(variant ?? (danger === true ? "danger" : "default"), size)}
 			data-testid={testId}
 			disabled={disabled === true}
 			aria-busy={busy === true ? true : undefined}
@@ -331,10 +527,6 @@ export function Button({
 				const handoff = handOffFocusTo === undefined ? null : handOffFocusTo.current;
 				if (handoff !== null) handoff.focus();
 				onClick();
-			}}
-			style={{
-				...(danger === true ? dangerButtonStyle : buttonStyle),
-				opacity: disabled === true ? 0.5 : 1,
 			}}
 		>
 			{label}
@@ -390,20 +582,11 @@ export function PagerButton({
 		<span style={{ display: "inline-flex", alignItems: "center" }}>
 			<button
 				type="button"
-				className="otta-focusable otta-btn"
+				{...buttonLook()}
 				data-testid={testId}
+				// The unavailable look is the sheet's `[aria-disabled="true"]` rule.
 				aria-disabled={control.unavailable || undefined}
 				{...(reason !== undefined ? { "aria-describedby": describedBy, title: reason } : {})}
-				style={{
-					...buttonStyle,
-					...(control.unavailable
-						? {
-								border: UNAVAILABLE_BORDER,
-								background: UNAVAILABLE_FILL,
-								color: UNAVAILABLE_INK,
-							}
-						: {}),
-				}}
 				onClick={() => {
 					if (control.unavailable) return;
 					onClick();
@@ -484,6 +667,7 @@ export function CopyIdButton({
 	return (
 		<button
 			type="button"
+			{...buttonLook("default", "sm")}
 			className={
 				revealOnRowHover === true
 					? "otta-focusable otta-btn otta-copy-reveal"
@@ -508,15 +692,9 @@ export function CopyIdButton({
 					setState("failed");
 				}
 			}}
-			style={{
-				...buttonStyle,
-				padding: "1px 6px",
-				fontSize: 11,
-				marginInlineStart: 6,
-				// The reveal owns opacity from the sheet when it is on; an inline
-				// declaration here would outrank every one of its triggers.
-				...(revealOnRowHover === true ? {} : { opacity: 0.85 }),
-			}}
+			// The reveal owns opacity from the sheet when it is on; an inline
+			// declaration here would outrank every one of its triggers.
+			style={{ marginInlineStart: 8, verticalAlign: "middle" }}
 		>
 			{state === "done" ? "Copied" : state === "failed" ? "Press ⌘C" : "Copy"}
 		</button>
@@ -574,7 +752,7 @@ export function RevealToggle({
 	return (
 		<button
 			type="button"
-			className="otta-focusable otta-btn"
+			{...buttonLook("default", compact ? "sm" : "base")}
 			data-testid={testId}
 			aria-expanded={revealed}
 			aria-controls={controls}
@@ -582,16 +760,8 @@ export function RevealToggle({
 			onClick={onToggle}
 			style={
 				compact
-					? {
-							...buttonStyle,
-							padding: "1px 6px",
-							fontSize: 11,
-							fontWeight: 400,
-							marginInlineStart: 6,
-							opacity: 0.85,
-							verticalAlign: "baseline",
-						}
-					: { ...buttonStyle, marginInlineStart: 8 }
+					? { fontWeight: 400, marginInlineStart: 8, verticalAlign: "middle" }
+					: { marginInlineStart: 8 }
 			}
 		>
 			{revealed ? hideLabel : showLabel}
@@ -643,7 +813,13 @@ export function Notice({
 	};
 	testId?: string;
 }): React.ReactElement {
-	const accent = variant === "error" ? FAIL_ACCENT : variant === "alert" ? WARN_ACCENT : OK_ACCENT;
+	// EmDash's own callout: `border-s-4 border-s-kumo-{tone}` on an ordinary card.
+	const accent =
+		variant === "error"
+			? KUMO.danger
+			: variant === "alert"
+				? "var(--color-kumo-warning, #b7791f)"
+				: "var(--color-kumo-success, #2f855a)";
 	// WHERE FOCUS LANDS WHEN THE ACTION DISABLES ITSELF. Retry is focused on
 	// arrival, and its own click is what disables it — so without somewhere to go,
 	// focus falls to `<body>`. This region is the button's own container and it
@@ -665,9 +841,9 @@ export function Notice({
 				borderInlineStartColor: accent,
 			}}
 		>
-			<h3 style={{ fontSize: 14, fontWeight: 650, margin: 0 }}>{title}</h3>
+			<h3 style={{ fontSize: 14, fontWeight: 600, margin: 0, color: KUMO.text }}>{title}</h3>
 			{description.length > 0 && (
-				<p style={{ fontSize: 13, opacity: 0.85, margin: "6px 0 0" }}>{description}</p>
+				<p style={{ fontSize: 13, color: KUMO.subtle, margin: "4px 0 0" }}>{description}</p>
 			)}
 			{action !== undefined && (
 				<div style={{ marginBlockStart: 12 }}>
@@ -708,33 +884,23 @@ export function EndHeader({ label }: { label: string }): React.ReactElement {
 /** The cell under an {@link EndHeader}. */
 export const endCellStyle: React.CSSProperties = { textAlign: "end" };
 
-/** Which of the three accents a pill wears. There is no `ok` call site by
- *  design — a green "everything is fine" badge is the noise the badge-the-
- *  exception rule exists to prevent — but the tone stays in the type because the
- *  accent constant is real and a screen that needs it should not invent one. */
-export type StatusTone = "ok" | "warn" | "fail";
-
-const PILL_ACCENT: Readonly<Record<StatusTone, string>> = {
-	ok: OK_ACCENT,
-	warn: WARN_ACCENT,
-	fail: FAIL_ACCENT,
-};
+/** Which of EmDash's badge tones a pill wears — Kumo's `success`, `info`,
+ *  `warning`, `error` and neutral (`secondary`) badge variants. */
+export type StatusTone = "ok" | "info" | "warn" | "fail" | "neutral";
 
 /**
- * A state phrase that has to be picked out of a dense column.
+ * A state phrase, drawn as EmDash's own badge (the "Published" pill on its
+ * content lists): a full pill in the status tint with the status ink on it.
  *
- * BORDER ONLY, AND THE MEASUREMENT SAYS SO rather than taste. Every one of the
- * three accents fails the 4.5:1 text threshold against one ground or the other —
- * the greens and the red on the dark ground, the amber on white — while every
- * one of them clears the 3:1 non-text threshold on BOTH. So the accent is spent
- * on a 1px border and the text stays `currentColor`, which is the only way one
- * pill can serve light and dark with no conditional colour anywhere.
+ * BOTH COLOURS ARE THE ADMIN'S. The tint and the ink come from Kumo tokens that
+ * the admin re-points per theme, which is what makes a filled pill safe here at
+ * all — the earlier border-only pill existed because this file had no ink it
+ * could trust on both grounds. The look lives in the sheet (`.otta-pill`), keyed
+ * by `data-tone`, so nothing inline can pin a colour that ignores the theme.
  *
- * BADGE THE EXCEPTION, LEAVE THE HAPPY PATH BARE. Whether a given state is an
- * exception is the CALL SITE's decision, not this component's: it holds the raw
- * record, and it is the only place that knows a `failed` order is worth a ring
- * while every other order status is not. Absence is never an exception — unknown
- * stock stays a bare em dash and gets no pill at all.
+ * WHICH TONE A STATE GETS IS THE CALL SITE'S DECISION, not this component's: it
+ * holds the raw record. Absence is never a tone — unknown stock stays a bare em
+ * dash and gets no pill at all.
  *
  * IT WRAPS A PHRASE, IT NEVER MAKES ONE. The words arrive as children from the
  * shared copy module, which stays the single source of wording.
@@ -749,23 +915,7 @@ export function StatusPill({
 	testId?: string;
 }): React.ReactElement {
 	return (
-		<span
-			data-testid={testId}
-			data-tone={tone}
-			style={{
-				display: "inline-block",
-				padding: "1px 8px",
-				fontSize: 11,
-				fontWeight: 600,
-				lineHeight: 1.6,
-				border: `1px solid ${PILL_ACCENT[tone]}`,
-				borderRadius: 999,
-				background: "transparent",
-				// Never the accent. See the note above.
-				color: "currentColor",
-				whiteSpace: "nowrap",
-			}}
-		>
+		<span className="otta-pill" data-testid={testId} data-tone={tone}>
 			{children}
 		</span>
 	);
@@ -788,10 +938,10 @@ export function EmptyState({
 	return (
 		<section
 			data-testid={testId}
-			style={{ ...panelStyle, padding: "28px 16px", textAlign: "center" }}
+			style={{ ...panelStyle, padding: "48px 16px", textAlign: "center" }}
 		>
-			<h3 style={{ fontSize: 15, fontWeight: 650, margin: 0 }}>{title}</h3>
-			<p style={{ fontSize: 13, opacity: 0.8, margin: "8px auto 0", maxInlineSize: 460 }}>
+			<h3 style={{ fontSize: 16, fontWeight: 600, margin: 0, color: KUMO.text }}>{title}</h3>
+			<p style={{ fontSize: 14, color: KUMO.subtle, margin: "8px auto 0", maxInlineSize: 460 }}>
 				{description}
 			</p>
 			{action !== undefined && (
@@ -835,48 +985,38 @@ export function Fields({
 	);
 }
 
+/** Whether a {@link Group} sits inside another one. */
+const GroupDepth = React.createContext(0);
+
 /**
- * A disclosure group — the React tier's accordion.
+ * A titled section — EmDash's heading over a card.
  *
- * A NATIVE `<details>`, deliberately. It is keyboard-operable, screen-reader
- * announced and stateful without a line of JavaScript, and — the reason that
- * matters here — its open state is owned by the DOM rather than by a `block_id`.
- * That is precisely the Block Kit hazard ADR-0014 lists as gone: on Block Kit
- * the only way to force a group shut is to change its `block_id`, which remounts
- * it and discards unsubmitted operator input. Here, nothing the screen does can
- * close a group the operator opened.
+ * NO DISCLOSURE. This used to be a native `<details>`; EmDash's own screens
+ * fold nothing behind a dropdown, so every section is open, always, and the
+ * label is an `<h3>` over its content. That also retires the Block Kit hazard
+ * ADR-0014 lists (a group forced shut by a changed `block_id`, discarding
+ * unsubmitted input): with nothing to shut, nothing can be shut on the operator.
+ *
+ * A GROUP INSIDE A GROUP is a sub-section rather than a card in a card — the
+ * heading stays, the frame becomes a hairline above it (`data-nested`).
  */
 export function Group({
 	label,
-	defaultOpen,
 	children,
 	testId,
 }: {
 	/** Usually a string; a node when part of the title must be addressable —
 	 *  the detail's Customer title carries a masked email a toggle controls. */
 	label: React.ReactNode;
-	defaultOpen?: boolean;
 	children: React.ReactNode;
 	testId?: string;
 }): React.ReactElement {
+	const depth = React.useContext(GroupDepth);
 	return (
-		<details
-			data-testid={testId}
-			open={defaultOpen === true}
-			style={{ ...panelStyle, padding: "10px 14px" }}
-		>
-			<summary
-				// NO `cursor` IN THE STYLE OBJECT, for the reason `buttonStyle` has
-				// none: a disclosure inside an activatable row has to be able to fall
-				// back to `auto`, and an inline declaration cannot be reset by any
-				// rule the sheet is allowed to write.
-				className="otta-focusable otta-summary"
-				style={{ fontSize: 14, fontWeight: 600, listStyle: "revert" }}
-			>
-				{label}
-			</summary>
-			<div style={{ marginBlockStart: 12 }}>{children}</div>
-		</details>
+		<section className="otta-group" data-nested={depth > 0 ? true : undefined} data-testid={testId}>
+			<h3 className="otta-group-title">{label}</h3>
+			<GroupDepth.Provider value={depth + 1}>{children}</GroupDepth.Provider>
+		</section>
 	);
 }
 
@@ -953,18 +1093,20 @@ export function ConfirmDialog({
 			}}
 			style={{
 				border: HAIRLINE,
-				borderRadius: 10,
-				padding: "18px 20px",
+				borderRadius: 12,
+				padding: 24,
 				maxInlineSize: 460,
-				color: "inherit",
+				background: KUMO.surface,
+				color: KUMO.text,
 				textAlign: "start",
+				boxShadow: "0 10px 30px rgba(0, 0, 0, 0.18)",
 			}}
 		>
-			<h2 style={{ fontSize: 16, fontWeight: 700, margin: 0 }} data-testid="otta-confirm-title">
+			<h2 style={{ fontSize: 18, fontWeight: 600, margin: 0 }} data-testid="otta-confirm-title">
 				{title}
 			</h2>
 			<p
-				style={{ fontSize: 13, margin: "10px 0 16px", lineHeight: 1.5 }}
+				style={{ fontSize: 14, margin: "10px 0 20px", lineHeight: 1.5, color: KUMO.subtle }}
 				data-testid="otta-confirm-text"
 			>
 				{text}
@@ -983,7 +1125,7 @@ export function ConfirmDialog({
 				<Button
 					label={confirmLabel}
 					onClick={onConfirm}
-					danger={confirmTone === "danger"}
+					variant={confirmTone === "danger" ? "destructive" : "primary"}
 					disabled={confirmDisabled}
 					testId="otta-confirm-yes"
 				/>
@@ -996,28 +1138,52 @@ export function ConfirmDialog({
  *  no id and cannot break by duplication when two screens mount at once. */
 export function Field({
 	label,
+	hideLabel,
 	children,
 }: {
 	label: string;
+	/** Keep the label for assistive technology but off the page — an inline
+	 *  filter row whose control already says what it is. */
+	hideLabel?: boolean;
 	children: React.ReactNode;
 }): React.ReactElement {
 	return (
-		<label style={{ display: "block", fontSize: 12, opacity: 0.75, textAlign: "start" }}>
-			<span style={{ display: "block", marginBlockEnd: 4 }}>{label}</span>
+		<label style={{ display: "block", fontSize: 14, textAlign: "start", color: KUMO.text }}>
+			<span
+				className={hideLabel === true ? "otta-sr-only" : undefined}
+				style={
+					hideLabel === true ? undefined : { display: "block", marginBlockEnd: 6, fontWeight: 500 }
+				}
+			>
+				{label}
+			</span>
 			{children}
 		</label>
 	);
 }
 
+/** EmDash's Kumo input: 36px, the lg radius, a line ring on the control fill. */
 export const inputStyle: React.CSSProperties = {
 	inlineSize: "100%",
 	boxSizing: "border-box",
-	padding: "5px 8px",
-	fontSize: 13,
+	minBlockSize: 36,
+	padding: "6px 12px",
+	font: "inherit",
+	fontSize: 14,
 	border: HAIRLINE,
+	borderRadius: 8,
+	background: KUMO.control,
+	color: KUMO.text,
+};
+
+/** The compact control of an inline filter row — EmDash's Products list
+ *  search and selects. */
+export const compactInputStyle: React.CSSProperties = {
+	...inputStyle,
+	minBlockSize: 28,
+	padding: "2px 10px",
+	fontSize: 13,
 	borderRadius: 6,
-	background: "transparent",
-	color: "inherit",
 };
 
 /**
@@ -1123,13 +1289,11 @@ export function Table({
 	children: React.ReactNode;
 	testId?: string;
 	/**
-	 * Frame the table in the same card the rest of the console's panels already
-	 * use: shared hairline, 8px radius, a header band stated as an alpha over
-	 * whatever is behind it, generous first/last cell insets, and no rule under
-	 * the last row so the card edge is the final line.
+	 * Frame the table in EmDash's list-table card: `rounded-lg border
+	 * bg-kumo-base`, a `bg-kumo-tint/50` header band, generous first/last cell
+	 * insets, and no rule under the last row so the card edge is the final line.
 	 *
-	 * OPT-IN, because only the two LIST tables want it. The four detail tables
-	 * already sit inside a panel and a card there would double-border. The clip
+	 * OPT-IN, because a table already inside a section card would double-border. The clip
 	 * is `overflow: hidden` from the sheet on the same element that scrolls
 	 * horizontally, so a narrow viewport still scrolls the columns and the band
 	 * still stops at the corner.
@@ -1169,7 +1333,7 @@ export function Table({
 		<div className={card === true ? "otta-table-card" : undefined} style={{ overflowX: "auto" }}>
 			<table
 				data-testid={testId}
-				style={{ inlineSize: "100%", borderCollapse: "collapse", fontSize: 13 }}
+				style={{ inlineSize: "100%", borderCollapse: "collapse", fontSize: 14 }}
 			>
 				<caption
 					style={{

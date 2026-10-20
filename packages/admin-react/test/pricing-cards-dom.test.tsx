@@ -7,7 +7,6 @@
  */
 import * as React from "react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
-import { FAIL_ACCENT } from "../src/ui.js";
 import { fire, mount, type Mounted } from "./dom.js";
 
 const apiFetch = vi.fn<(input: string, init?: RequestInit) => Promise<Response>>();
@@ -319,15 +318,34 @@ test("a cleared SKU is refused beside the SKU, and focus goes there", async () =
 	expect(writes()).toEqual([]);
 });
 
-test("a problem inside the folded Shipping & tax section opens it", async () => {
+test("Shipping & tax is an always-open card, and a problem in it takes focus", async () => {
 	apiFetch.mockImplementation(() => Promise.resolve(detail()));
 	const c = await mountPanel();
-	const details = c.querySelector("details");
-	expect(details?.open).toBe(false);
-	await type(input(c, "Weight"), "");
+	// No dropdown: EmDash shows a section as a heading over a card.
+	expect(c.querySelector("details")).toBeNull();
+	expect(c.querySelector("summary")).toBeNull();
+	const heading = [...c.querySelectorAll("h3")].find((h) => h.textContent === "Shipping & tax");
+	expect(heading).toBeDefined();
+	// Its fields are on screen without a click.
+	const weight = input(c, "Weight");
+	await type(weight, "");
 	await fire(button(c, "Save pricing & stock"), "click");
-	expect(details?.open).toBe(true);
+	await React.act(async () => {
+		await new Promise((resolve) => requestAnimationFrame(() => resolve(null)));
+	});
 	expect(c.textContent).toContain("Can be changed but not removed");
+	expect(document.activeElement).toBe(input(c, "Weight"));
+});
+
+test("Save pricing & stock is the screen's one primary button", async () => {
+	apiFetch.mockImplementation(() => Promise.resolve(detail()));
+	const c = await mountPanel();
+	expect(button(c, "Save pricing & stock").getAttribute("data-primary")).toBe("true");
+	// The closed confirm dialog is not on screen; its buttons do not count.
+	const primaries = [
+		...c.querySelectorAll('[data-primary="true"], [data-variant="primary"]'),
+	].filter((node) => node.closest("dialog") === null);
+	expect(primaries.length).toBe(1);
 });
 
 test("an in-app link asks before leaving unsaved price changes, and stays put when told to", async () => {
@@ -849,7 +867,7 @@ test("the large-Add confirm is neutral, while Remove keeps the destructive weigh
 	const yes = () => c.querySelector('[data-testid="otta-confirm-yes"]');
 	await type(input(c, "Add or remove stock"), "100000000");
 	await fire(button(c, "Add"), "click");
-	expect(yes()?.getAttribute("style") ?? "").not.toContain(FAIL_ACCENT);
+	expect(yes()?.getAttribute("data-variant")).toBe("primary");
 	await fire(c.querySelector('[data-testid="otta-confirm-deny"]')!, "click");
 
 	await type(input(c, "Add or remove stock"), "2");
@@ -857,7 +875,7 @@ test("the large-Add confirm is neutral, while Remove keeps the destructive weigh
 	expect(c.querySelector('[data-testid="otta-confirm"]')?.textContent).toContain(
 		"Remove 2 from stock?",
 	);
-	expect(yes()?.getAttribute("style") ?? "").toContain(FAIL_ACCENT);
+	expect(yes()?.getAttribute("data-variant")).toBe("destructive");
 });
 
 test("an ordinary Add (up to 10,000) is still one click", async () => {

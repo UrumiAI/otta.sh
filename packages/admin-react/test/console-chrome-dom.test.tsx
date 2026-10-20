@@ -11,8 +11,11 @@
  * all, and every other test in this package stays green while it happens. The
  * assertion is therefore made over what the screens RENDER rather than over what
  * the source says — it holds for the buttons that do not exist yet, which is the
- * whole point of making it. The same rule, and the same reasoning, for the
- * `<summary>` a disclosure is opened by.
+ * whole point of making it.
+ *
+ * THE NO-DROPDOWN INVARIANT. EmDash's own screens show their sections as a
+ * heading over a card and their filters as an inline row; nothing is folded
+ * behind a disclosure. Asserted over the rendered screens for the same reason.
  */
 import * as React from "react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
@@ -28,7 +31,6 @@ vi.mock("emdash/plugin-utils", async (importOriginal) => {
 
 const { OrdersList } = await import("../src/orders/orders-list.js");
 const { OrderDetail } = await import("../src/orders/order-detail.js");
-const { buttonStyle } = await import("../src/ui.js");
 type DetailPayload = import("../src/console-api.js").DetailPayload;
 type ListPayload = import("../src/console-api.js").ListPayload;
 type Vocabulary = import("../src/console-api.js").Vocabulary;
@@ -181,11 +183,6 @@ const SCREENS: readonly (readonly [string, React.ReactElement, string])[] = [
 ];
 
 test("every button the console renders takes its pointer from the shared class", async () => {
-	// The declaration that used to be inline on every one of these. If it comes
-	// back, the row-activation reset needs `!important` again — and that is what
-	// flattened `not-allowed` on disabled controls inside a row.
-	expect(buttonStyle.cursor).toBeUndefined();
-
 	let seen = 0;
 	for (const [name, screen, rawButton] of SCREENS) {
 		const view = await show(screen);
@@ -210,21 +207,26 @@ test("every button the console renders takes its pointer from the shared class",
 	expect(seen).toBeGreaterThan(SCREENS.length);
 });
 
-test("a disclosure takes its pointer from the sheet too, so a row can reset it", async () => {
-	let seen = 0;
+test("no screen folds anything behind a dropdown disclosure", async () => {
+	for (const [name, screen, rawButton] of SCREENS) {
+		const view = await show(screen);
+		one(view, rawButton);
+		expect(view.container.querySelectorAll("details").length, `${name}: <details>`).toBe(0);
+		expect(view.container.querySelectorAll("summary").length, `${name}: <summary>`).toBe(0);
+		await view.unmount();
+		mounted = null;
+	}
+});
+
+test("the buttons carry no inline cursor, so the row reset can still win", async () => {
 	for (const [name, screen] of SCREENS) {
 		const view = await show(screen);
-		for (const summary of view.container.querySelectorAll("summary")) {
-			expect(summary.classList.contains("otta-summary"), `${name}: summary lost its class`).toBe(
-				true,
-			);
-			// An inline declaration here outranks every rule the sheet can write,
-			// which is exactly how the pointer survived the row reset before.
-			expect(summary.style.cursor, `${name}: summary declares cursor inline`).toBe("");
-			seen += 1;
+		for (const button of view.container.querySelectorAll("button")) {
+			// An inline declaration outranks every rule the sheet can write, which is
+			// how `!important` crept in and flattened `not-allowed` inside a row.
+			expect(button.style.cursor, `${name}: inline cursor`).toBe("");
 		}
 		await view.unmount();
 		mounted = null;
 	}
-	expect(seen).toBeGreaterThan(0);
 });

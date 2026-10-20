@@ -814,7 +814,7 @@ describe("a standing refusal accents the field it names, and only that field (F2
 		expect(messageId).not.toBeNull();
 		expect(html).toContain(check.refusal.message);
 		expect(message).toMatch(/font-weight:\s?600/);
-		expect(message).toMatch(/border-inline-start:\s?3px solid #c53030/);
+		expect(message).toMatch(/border-inline-start:\s?3px solid var\(--text-color-kumo-danger/);
 		const offending = tagFor(html, "refund-amount");
 		const other = tagFor(html, "refund-by");
 		expect(attr(offending, "aria-invalid")).toBe("true");
@@ -833,7 +833,7 @@ describe("a standing refusal accents the field it names, and only that field (F2
 		expect(messageId).not.toBeNull();
 		expect(html).toContain(check.refusal.message);
 		expect(message).toMatch(/font-weight:\s?600/);
-		expect(message).toMatch(/border-inline-start:\s?3px solid #c53030/);
+		expect(message).toMatch(/border-inline-start:\s?3px solid var\(--text-color-kumo-danger/);
 		const offending = tagFor(html, "refund-amount");
 		const other = tagFor(html, "refund-by");
 		expect(attr(offending, "aria-invalid")).toBe("true");
@@ -852,7 +852,7 @@ describe("a standing refusal accents the field it names, and only that field (F2
 		expect(messageId).not.toBeNull();
 		expect(html).toContain(check.refusal.message);
 		expect(message).toMatch(/font-weight:\s?600/);
-		expect(message).toMatch(/border-inline-start:\s?3px solid #c53030/);
+		expect(message).toMatch(/border-inline-start:\s?3px solid var\(--text-color-kumo-danger/);
 		const offending = tagFor(html, "refund-by");
 		const other = tagFor(html, "refund-amount");
 		expect(attr(offending, "aria-invalid")).toBe("true");

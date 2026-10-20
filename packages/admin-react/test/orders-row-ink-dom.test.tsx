@@ -123,25 +123,25 @@ const STATUS = 2;
 const IDENTITY = 3;
 const TOTAL = 4;
 
-test("the one status that needs attention is the only one wearing a ring", async () => {
+test("every status is an EmDash badge, toned by what the operator does next", async () => {
 	const container = await mountList();
 
-	const failed = cell(container, "ord_failed", STATUS);
-	const pill = failed.querySelector("[data-tone]");
-	expect(pill).not.toBeNull();
-	expect(pill?.getAttribute("data-tone")).toBe("fail");
-	// The pill wraps the shared phrase; it does not make one.
-	expect(pill?.textContent).toBe(orderStateCell("failed"));
-
-	// THE POINT OF THE DECISION, and the thing a symmetric "pill every status"
-	// change breaks: four ordinary statuses in the same column, all bare. A
-	// mark on every row marks nothing. `refunded` is here on purpose — the state
-	// most tempting to pill by "symmetry" with `failed`, and the one a broadened
-	// match would catch first.
-	for (const id of ["ord_paid", "ord_delivered", "ord_cancelled", "ord_refunded"]) {
-		const bare = cell(container, id, STATUS);
-		expect(bare.querySelector("[data-tone]")).toBeNull();
-		expect(bare.textContent).toBe(orderStateCell(id.slice(4)));
+	// The user's call (2026-10-20): status reads as a coloured pill like EmDash's
+	// own "Published" badge, on every row. The words inside are still the shared
+	// phrase, so a pill and the Block Kit cell cannot say different things.
+	const expected: Record<string, string> = {
+		ord_paid: "ok",
+		ord_failed: "fail",
+		ord_delivered: "ok",
+		ord_cancelled: "neutral",
+		ord_refunded: "neutral",
+	};
+	for (const [id, tone] of Object.entries(expected)) {
+		const pill = cell(container, id, STATUS).querySelector("[data-tone]");
+		expect(pill, id).not.toBeNull();
+		expect(pill?.getAttribute("data-tone"), id).toBe(tone);
+		expect(pill?.getAttribute("data-testid"), id).toBe("order-state-pill");
+		expect(pill?.textContent, id).toBe(orderStateCell(id.slice(4)));
 	}
 });
 
@@ -150,9 +150,11 @@ test("the row's two anchors carry the weight and the rest recedes", async () => 
 
 	expect(cell(container, "ord_paid", 1).style.fontWeight).toBe("600");
 	expect(cell(container, "ord_paid", TOTAL).style.fontWeight).toBe("600");
-	// Recessive, and stated as opacity so the ink is the same ink at less of it —
-	// never a second foreground colour, which cannot be safe in both themes.
-	expect(cell(container, "ord_paid", 0).style.opacity).toBe("0.72");
+	// Recessive in EmDash's own subtle ink, the way its lists print a date.
+	expect(cell(container, "ord_paid", 0).classList.contains("otta-td-subtle")).toBe(true);
+	expect(CONSOLE_STYLES.replace(/\s+/g, " ")).toMatch(
+		/\.otta-td\.otta-td-subtle \{[^}]*color: var\(--text-color-kumo-subtle/,
+	);
 	// The status column keeps its default weight: the pill is the only thing in
 	// it that is allowed to stand out.
 	expect(cell(container, "ord_paid", STATUS).style.fontWeight).toBe("");

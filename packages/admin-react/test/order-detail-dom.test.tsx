@@ -325,27 +325,26 @@ function columnAlignment(node: HTMLTableElement, index: number): readonly string
 	];
 }
 
-// ── D1: one status wears a ring, every other one is a word ───────────────────
+// ── every status is an EmDash badge ──────────────────────────────────────────
 
-test("the one order state that needs attention is the only one wearing a ring", async () => {
-	const view = await show(detailFor("failed"));
-	const marked = fieldValue(view, "detail-identity", "Status");
-	const pill = marked.querySelector("[data-tone]");
-	expect(pill).not.toBeNull();
-	expect(pill?.getAttribute("data-tone")).toBe("fail");
-	// The pill wraps the shared phrase; it does not make one.
-	expect(pill?.textContent).toBe(orderStateCell("failed"));
-});
-
-test("every other order state on the detail is drawn as the bare phrase", async () => {
-	// Three states the service ships today and one it does not: the decision is
-	// an equality against a single literal, so a status invented upstream later
-	// arrives here bare rather than pilled by a match that broadened to fit.
-	for (const state of ["paid", "delivered", "cancelled", "refunded", "quarantined"]) {
+test("the detail's status is the same EmDash badge as the list's", async () => {
+	for (const [state, tone] of [
+		["failed", "fail"],
+		["paid", "ok"],
+		["pending", "warn"],
+		["processing", "info"],
+		["delivered", "ok"],
+		["cancelled", "neutral"],
+		["refunded", "neutral"],
+		// A status invented upstream later gets the quiet tone, never a loud one.
+		["quarantined", "neutral"],
+	] as const) {
 		const view = await show(detailFor(state));
-		const bare = fieldValue(view, "detail-identity", "Status");
-		expect(bare.querySelector("[data-tone]"), `${state} is wearing a ring`).toBeNull();
-		expect(bare.textContent).toBe(orderStateCell(state));
+		const pill = fieldValue(view, "detail-identity", "Status").querySelector("[data-tone]");
+		expect(pill, state).not.toBeNull();
+		expect(pill?.getAttribute("data-tone"), state).toBe(tone);
+		// The pill wraps the shared phrase; it does not make one.
+		expect(pill?.textContent, state).toBe(orderStateCell(state));
 	}
 });
 
@@ -372,6 +371,19 @@ test("the tab strip moves the panel and says which tab owns it", async () => {
 	const panel = one(view, '[role="tabpanel"]');
 	expect(panel.getAttribute("aria-labelledby")).toBe(moneyTab.id);
 	expect(panel.id).toBe(moneyTab.getAttribute("aria-controls"));
+});
+
+test("the tabs are EmDash's underline tabs, not a row of boxed buttons", async () => {
+	const view = await show(detailFor("paid"));
+	const strip = one(view, '[role="tablist"]');
+	expect(strip.classList.contains("otta-tabs")).toBe(true);
+	for (const name of ["order", "fulfilment", "money", "history"]) {
+		const button = tab(view, name);
+		expect(button.classList.contains("otta-tab"), name).toBe(true);
+		// The look is the sheet's (underline on the selected tab); nothing inline
+		// may draw a box back around it.
+		expect(button.getAttribute("style"), name).toBeNull();
+	}
 });
 
 // ── the provider warning, wired through the mounted screen ───────────────────

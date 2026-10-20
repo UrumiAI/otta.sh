@@ -51,7 +51,6 @@ import {
 	currencyChangeText,
 	FIELD_CONFLICT_TEXT,
 	mergeDraft,
-	SIZE_FIELDS,
 	salePreview,
 	savePayload,
 	stockStatus,
@@ -208,7 +207,6 @@ function Icon({ d }: { d: string }): React.ReactElement {
 		</svg>
 	);
 }
-const CHEVRON = "M4 6l4 4 4-4";
 const PLUS = "M8 3.5v9M3.5 8h9";
 const MINUS = "M3.5 8h9";
 const CHECK = "M3.5 8.5l3 3 6-7";
@@ -341,7 +339,6 @@ export function PricingStockEditor({ productId }: { productId: string }): React.
 	const movingNow = React.useRef(false);
 	const qtyInput = React.useRef<HTMLInputElement | null>(null);
 	const [reload, setReload] = React.useState(0);
-	const [shippingOpen, setShippingOpen] = React.useState(false);
 	/** Whether the next read REPLACES what the merchant typed — after their own
 	 *  save, or after a refusal that means the record moved under them. */
 	const reseed = React.useRef(false);
@@ -718,8 +715,6 @@ export function PricingStockEditor({ productId }: { productId: string }): React.
 		if (Object.keys(allProblems).length > 0) {
 			setTouched(new Set(Object.keys(allProblems) as DraftField[]));
 			setSaveStatus({ tone: "fail", text: "Fix the highlighted fields to save" });
-			// A problem inside the folded Shipping & tax section must be seen.
-			if ([...SIZE_FIELDS].some((field) => allProblems[field] !== undefined)) setShippingOpen(true);
 			// Take the merchant to the first problem rather than leaving them to hunt
 			// for it in a column they may have scrolled.
 			requestAnimationFrame(() => {
@@ -1203,26 +1198,20 @@ export function PricingStockEditor({ productId }: { productId: string }): React.
 					</section>
 				) : null}
 
-				<details
-					className="otta-pricing-card"
-					open={shippingOpen}
-					onToggle={(event) => {
-						setShippingOpen(event.currentTarget.open);
-					}}
-				>
-					<summary>
-						<span className="otta-pricing-summary">
-							<span className="otta-pricing-card-title">Shipping &amp; tax</span>
-							<span>
-								{kindLabel}
-								{weightNote} · {taxName}
-							</span>
+				{/* ALWAYS OPEN, like every card EmDash draws: no dropdown to find the
+				    weight or the tax class behind, and so no problem that can hide in a
+				    folded section on save. */}
+				<section className="otta-pricing-card" aria-labelledby={id("h-shipping")}>
+					<div className="otta-pricing-summary">
+						<h3 id={id("h-shipping")} className="otta-pricing-card-title">
+							Shipping &amp; tax
+						</h3>
+						<span>
+							{kindLabel}
+							{weightNote} · {taxName}
 						</span>
-						<span className="otta-pricing-chevron">
-							<Icon d={CHEVRON} />
-						</span>
-					</summary>
-					<div className="otta-pricing-details otta-pricing-grid">
+					</div>
+					<div className="otta-pricing-grid">
 						<fieldset className="otta-pricing-fieldset">
 							<legend className="otta-pricing-label">Product type</legend>
 							<div className="otta-pricing-segment">
@@ -1389,7 +1378,7 @@ export function PricingStockEditor({ productId }: { productId: string }): React.
 							</>
 						)}
 					</div>
-				</details>
+				</section>
 			</fieldset>
 
 			<div className="otta-pricing-footer" data-dirty={dirty || saving}>
