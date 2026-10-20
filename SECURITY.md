@@ -2,7 +2,7 @@
 
 ## Supported versions
 
-Otta is pre-1.0. Only `main` and the latest `0.x` release on npm (once one is published) are supported; there are no LTS
+Otta is pre-1.0. Only `main` and the latest `0.x` release on npm are supported; there are no LTS
 branches yet.
 
 ## Reporting a vulnerability

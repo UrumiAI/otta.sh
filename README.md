@@ -1,7 +1,7 @@
 # Otta — an open-source commerce layer for EmDash
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](./LICENSE)
-[![Version](https://img.shields.io/badge/version-0.1.0-orange.svg)](./packages/plugin/package.json)
+[![npm](https://img.shields.io/npm/v/@urumi.ai/otta-plugin.svg)](https://www.npmjs.com/package/@urumi.ai/otta-plugin)
 
 Open source (MIT), version 0.1.0. The WooCommerce-equivalent for
 [EmDash](https://github.com/emdash-cms/emdash), Cloudflare's TypeScript CMS.
@@ -9,8 +9,8 @@ Open source (MIT), version 0.1.0. The WooCommerce-equivalent for
 > [!WARNING]
 > **In active development — pre-1.0.** The core buy flow — catalog, cart and card checkout —
 > works today, but APIs, storage document shapes, settings and admin screens may still change
-> between releases. The `@urumi.ai/otta-*` packages are at `0.1.0` and about to be published to npm (not on the
-> registry yet); pin an exact version (`pnpm add -E`) if you build on it.
+> between releases. The `@urumi.ai/otta-*` packages are published to npm at `0.1.0`; pin an exact version
+> (`pnpm add -E`) if you build on it.
 >
 > **Coming soon: one-click Cloudflare Workers deployment.** A one-click / hosted way to put
 > an Otta store on Cloudflare Workers is on the way. Until then you can self-deploy the
@@ -97,8 +97,7 @@ To self-deploy this for free on Cloudflare Workers today, follow
 
 ## Install from npm
 
-The six packages will be published to npm under `@urumi.ai/otta-*`, ESM-only, at `0.1.0` (not on the
-registry yet; until then, work from the workspace). A site that
+The six packages are published to npm under `@urumi.ai/otta-*`, ESM-only, at `0.1.0`. A site that
 runs on EmDash `^1.0.1` (tested on 1.0.1 and 1.3.0) installs what it registers:
 
 ```bash
@@ -175,7 +174,7 @@ process, so it verifies the SQL is correct, not that it's race-safe under conten
 ## Status
 
 **v0.1.0 — in active development.** The `@urumi.ai/otta-*` packages
-are all at `0.1.0` and about to be published to npm (`pnpm add @urumi.ai/otta-plugin` once they are; see
+are all at `0.1.0` and published to npm (`pnpm add @urumi.ai/otta-plugin`; see
 [Install from npm](#install-from-npm)); work on Otta itself from the workspace. Expect
 breaking changes before 1.0.
 
