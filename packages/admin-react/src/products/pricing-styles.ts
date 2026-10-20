@@ -29,11 +29,13 @@ export const PRICING_STYLES = `
 	--op-brand: var(--color-kumo-brand, LinkText);
 	--op-ring: color-mix(in srgb, var(--op-brand) 24%, transparent);
 	--op-shadow: var(--color-kumo-shadow-drop, rgba(0, 0, 0, 0.05));
-	/* Readable on both surfaces: the admin sets color-scheme by mode, so
-	   light-dark() picks the darker ink on light and the lighter on dark. */
-	--op-ok: light-dark(#1a7a43, #5fd18f);
-	--op-warn: light-dark(#9a5b00, #f0b45a);
-	--op-fail: light-dark(#b42d08, #ff8f70);
+	/* EmDash's own status inks; the light-dark() fallbacks are readable on both
+	   surfaces outside the admin, where the tokens are absent. */
+	--op-ok: var(--text-color-kumo-success, light-dark(#1a7a43, #5fd18f));
+	--op-warn: var(--text-color-kumo-warning, light-dark(#9a5b00, #f0b45a));
+	--op-fail: var(--text-color-kumo-danger, light-dark(#b42d08, #ff8f70));
+	--op-brand-hover: var(--color-kumo-brand-hover, var(--op-brand));
+	--op-focus: var(--color-kumo-focus, var(--op-brand));
 }
 .otta-pricing {
 	display: flex;
@@ -251,13 +253,14 @@ export const PRICING_STYLES = `
 }
 .otta-pricing-btn:hover:not(:disabled) { background: var(--op-tint); }
 .otta-pricing-btn:disabled { opacity: 0.45; cursor: not-allowed; }
+/* EmDash's primary: the brand blue, for the one main action on the editor. */
 .otta-pricing-btn[data-primary="true"] {
-	border-color: transparent;
-	background: var(--op-fg);
-	color: var(--op-card);
+	border-color: color-mix(in oklch, var(--op-brand), black 10%);
+	background: var(--op-brand);
+	color: #fff;
 }
-.otta-pricing-btn[data-primary="true"]:hover:not(:disabled) { background: var(--op-fg); opacity: 0.86; }
-.otta-pricing :is(button, select, summary):focus-visible {
+.otta-pricing-btn[data-primary="true"]:hover:not(:disabled) { background: var(--op-brand-hover); }
+.otta-pricing :is(button, select):focus-visible {
 	outline: 2px solid var(--op-brand);
 	outline-offset: 2px;
 }
@@ -325,36 +328,9 @@ export const PRICING_STYLES = `
 .otta-pricing-progress::-webkit-progress-value { background: var(--op-brand); border-radius: 999px; transition: inline-size 120ms ease-out; }
 .otta-pricing-progress::-moz-progress-bar { background: var(--op-brand); border-radius: 999px; }
 
-/* ── Shipping & tax disclosure ──────────────────────────────────────────── */
-.otta-pricing details > summary {
-	list-style: none;
-	display: flex;
-	align-items: center;
-	justify-content: space-between;
-	gap: 12px;
-	margin: -20px;
-	padding: 20px;
-	border-radius: 12px;
-	cursor: pointer;
-}
-.otta-pricing details > summary::-webkit-details-marker { display: none; }
-.otta-pricing details > summary:focus-visible { outline-offset: -2px; }
-.otta-pricing-chevron {
-	display: grid;
-	place-items: center;
-	inline-size: 28px;
-	block-size: 28px;
-	flex: none;
-	border-radius: 8px;
-	color: var(--op-subtle);
-	transition: background-color 120ms ease-out;
-}
-.otta-pricing details > summary:hover .otta-pricing-chevron { background: var(--op-tint); color: var(--op-fg); }
-.otta-pricing-chevron svg { transition: transform 180ms cubic-bezier(0.22, 1, 0.36, 1); }
-.otta-pricing details[open] .otta-pricing-chevron svg { transform: rotate(180deg); }
+/* ── Shipping & tax: an always-open card, its summary line under the title ── */
 .otta-pricing-summary { display: flex; flex-direction: column; gap: 2px; min-inline-size: 0; }
 .otta-pricing-summary > span:last-child { font-size: 13px; line-height: 18px; color: var(--op-subtle); }
-.otta-pricing-details { padding-block-start: 4px; }
 .otta-pricing-fieldset { border: 0; margin: 0; padding: 0; min-inline-size: 0; display: flex; flex-direction: column; gap: 8px; }
 .otta-pricing-fieldset > legend { padding: 0; margin-block-end: 8px; float: left; inline-size: 100%; }
 .otta-pricing-segment {
@@ -418,7 +394,7 @@ export const PRICING_STYLES = `
 }
 .otta-pricing-pending { inline-size: 7px; block-size: 7px; border-radius: 999px; background: var(--op-warn); flex: none; }
 @media (prefers-reduced-motion: reduce) {
-	.otta-pricing *, .otta-pricing-chevron svg { transition: none !important; }
+	.otta-pricing * { transition: none !important; }
 }
 
 /* ── list columns ───────────────────────────────────────────────────────── */

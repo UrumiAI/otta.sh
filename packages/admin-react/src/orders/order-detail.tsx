@@ -120,15 +120,16 @@ import {
 	Field,
 	Fields,
 	Group,
+	KUMO,
 	Notice,
 	RevealToggle,
 	StatusPill,
 	Table,
-	buttonStyle,
 	endCellStyle,
 	inputStyle,
 	panelStyle,
 } from "../ui.js";
+import { orderStateTone } from "./order-state-tone.js";
 
 /** The states whose transition button is destructive enough to confirm — the
  *  same single-member set the Block Kit screen uses. */
@@ -388,7 +389,7 @@ function LineTaxStatusNote({ taxStatus }: { taxStatus: string | undefined }): Re
 	const note = orderLineTaxStatusNote(taxStatus);
 	if (note === null) return null;
 	return (
-		<span data-testid="detail-line-tax-status" style={{ fontSize: 12, opacity: 0.7 }}>
+		<span data-testid="detail-line-tax-status" style={{ fontSize: 12, color: KUMO.subtle }}>
 			{" · "}
 			{note}
 		</span>
@@ -418,15 +419,8 @@ function trackingLink(url: string | null | undefined): React.ReactNode {
 /** A secondary surface that could not be loaded. E-1: it degrades to one line
  *  inside its own panel and never blanks the detail or fails the screen. */
 function Unavailable({ text }: { text: string }): React.ReactElement {
-	return <p style={{ fontSize: 13, opacity: 0.75, margin: "0 0 12px" }}>{text}</p>;
+	return <p style={{ fontSize: 13, color: KUMO.subtle, margin: "0 0 12px" }}>{text}</p>;
 }
-
-/**
- * The one order state that earns a ring (D1) — the same single exception the
- * list marks, so the two surfaces cannot disagree about which status is loud.
- * Every other state renders as the bare phrase.
- */
-const PILLED_ORDER_STATE = "failed";
 
 /**
  * How far a refund confirm's recipient token may reach before it is cut,
@@ -630,7 +624,6 @@ export function RefundsPanel({
 
 			<Group
 				testId="detail-refunds"
-				defaultOpen
 				label={
 					refundMode === "empty"
 						? REFUNDS_GROUP_EMPTY_LABEL
@@ -656,7 +649,7 @@ export function RefundsPanel({
 				  say. The ceiling is the test, once, for all three.
 				*/}
 				{refundMode !== "empty" && (
-					<p style={{ fontSize: 12, opacity: 0.8 }} data-testid="refund-capability">
+					<p style={{ fontSize: 12, color: KUMO.subtle }} data-testid="refund-capability">
 						{refundCapabilityText(refunds.refundable, refunds.paymentMethod)}
 					</p>
 				)}
@@ -731,7 +724,6 @@ export function RefundsPanel({
 									key={`resolve:${key}`}
 									testId="resolve-refund"
 									label={`Outcome unknown — ${formatAmount(refund.amountCents, refund.currency ?? cur)}: check your payment provider, then record what it shows`}
-									defaultOpen
 								>
 									<div style={{ display: "grid", gap: 10, maxInlineSize: 420 }}>
 										<Field label="Provider refund id (optional)">
@@ -882,7 +874,7 @@ export function RefundsPanel({
 										}}
 									/>
 								</div>
-								<p style={{ fontSize: 12, opacity: 0.7, margin: 0 }}>
+								<p style={{ fontSize: 12, color: KUMO.subtle, margin: 0 }}>
 									{REFUND_ADDITIVE_NOTE} The remaining refundable amount is{" "}
 									{formatMinorUnitsInput(refunds.remainingCents, cur)}.
 								</p>
@@ -1018,7 +1010,7 @@ export function OrderDetail({
 
 	if (detail === null) {
 		return (
-			<p style={{ fontSize: 13, opacity: 0.7 }} aria-live="polite">
+			<p style={{ fontSize: 13, color: KUMO.subtle }} aria-live="polite">
 				Loading order…
 			</p>
 		);
@@ -1159,9 +1151,11 @@ export function OrderDetail({
 		<div>
 			<h1
 				style={{
-					fontSize: 22,
-					fontWeight: 700,
-					marginBlockEnd: 8,
+					fontSize: 24,
+					fontWeight: 600,
+					lineHeight: 1.25,
+					margin: "0 0 12px",
+					color: KUMO.text,
 					// LAYOUT CONTAINMENT, NOT STRING CLAMPING (review finding N1,
 					// director ruling). `recipient` carries no length bound — unlike
 					// the refund confirm's `resolveRefundRecipient`, this text is
@@ -1257,16 +1251,11 @@ export function OrderDetail({
 					testId="detail-identity"
 					entries={[
 						[
-							// D1: `failed` is the one status that gets a ring, here and on the
-							// list. Nothing else on this screen is pilled.
+							// The same EmDash badge, in the same tone, as the list's row.
 							"Status",
-							order.state === PILLED_ORDER_STATE ? (
-								<StatusPill key="state" tone="fail" testId="detail-state-pill">
-									{orderStateCell(order.state)}
-								</StatusPill>
-							) : (
-								orderStateCell(order.state)
-							),
+							<StatusPill key="state" tone={orderStateTone(order.state)} testId="detail-state-pill">
+								{orderStateCell(order.state)}
+							</StatusPill>,
 						],
 						["Total", formatAmount(order.totals.totalCents, order.totals.currency)],
 						["Placed", formatTimestamp(order.createdAt)],
@@ -1301,11 +1290,8 @@ export function OrderDetail({
 				/>
 			</section>
 
-			<div
-				role="tablist"
-				aria-label="Order sections"
-				style={{ display: "flex", gap: 4, marginBlockEnd: 12 }}
-			>
+			{/* EmDash's underline tabs; the look is the sheet's `.otta-tabs`/`.otta-tab`. */}
+			<div role="tablist" aria-label="Order sections" className="otta-tabs">
 				{TAB_LABELS.map((label, index) => (
 					<button
 						key={label}
@@ -1314,17 +1300,11 @@ export function OrderDetail({
 						id={`otta-tab-${String(index)}`}
 						aria-selected={tab === index}
 						aria-controls={`otta-panel-${String(index)}`}
-						className="otta-focusable otta-btn"
+						className="otta-focusable otta-btn otta-tab"
 						data-testid={`tab-${label.toLowerCase()}`}
 						onClick={() => {
 							setTab(index);
 							onTabChange?.(index);
-						}}
-						style={{
-							...buttonStyle,
-							borderBlockEndWidth: tab === index ? 2 : 1,
-							fontWeight: tab === index ? 650 : 400,
-							opacity: tab === index ? 1 : 0.7,
 						}}
 					>
 						{label}
@@ -1339,8 +1319,11 @@ export function OrderDetail({
 			>
 				{tab === 0 && (
 					<>
-						<h2 style={{ fontSize: 16, fontWeight: 650, marginBlockEnd: 8 }}>Line items</h2>
+						<h2 style={{ fontSize: 16, fontWeight: 600, margin: "0 0 12px", color: KUMO.text }}>
+							Line items
+						</h2>
 						<Table
+							card
 							testId="detail-lines"
 							caption="Line items"
 							headers={[
@@ -1373,9 +1356,9 @@ export function OrderDetail({
 							))}
 						</Table>
 						{order.lines.length === 0 && (
-							<p style={{ fontSize: 13, opacity: 0.75 }}>{ORDER_LINES_EMPTY}</p>
+							<p style={{ fontSize: 13, color: KUMO.subtle }}>{ORDER_LINES_EMPTY}</p>
 						)}
-						<p style={{ fontSize: 12, opacity: 0.7, marginBlockStart: 10 }}>
+						<p style={{ fontSize: 12, color: KUMO.subtle, marginBlockStart: 10 }}>
 							{ORDER_LINES_SNAPSHOT_NOTE}
 						</p>
 
@@ -1389,6 +1372,7 @@ export function OrderDetail({
 								: {})}
 						>
 							<Table
+								card
 								testId="detail-totals"
 								caption="Totals"
 								headers={["Line", <EndHeader label="Amount" />]}
@@ -1408,7 +1392,7 @@ export function OrderDetail({
 								<p
 									id="detail-prices-include-tax"
 									data-testid="detail-prices-include-tax"
-									style={{ fontSize: 12, opacity: 0.7 }}
+									style={{ fontSize: 12, color: KUMO.subtle }}
 								>
 									{PRICES_INCLUDED_TAX}
 								</p>
@@ -1463,8 +1447,8 @@ export function OrderDetail({
 				{tab === 1 && (
 					<>
 						{order.reconciliationFlag !== null && (
-							<Group testId="detail-resolve" label="Resolve reconciliation" defaultOpen>
-								<p style={{ fontSize: 12, opacity: 0.75, marginBlockStart: 0 }}>
+							<Group testId="detail-resolve" label="Resolve reconciliation">
+								<p style={{ fontSize: 12, color: KUMO.subtle, marginBlockStart: 0 }}>
 									{RESOLVE_RECONCILIATION_NOTE}
 								</p>
 								<ResolveForm
@@ -1541,7 +1525,7 @@ export function OrderDetail({
 						)}
 
 						{order.fulfillment === null && order.state === "processing" && (
-							<Group testId="detail-record-fulfilment" label={FULFILMENT_LABELS.submit} defaultOpen>
+							<Group testId="detail-record-fulfilment" label={FULFILMENT_LABELS.submit}>
 								<FulfilmentForm
 									busy={busy}
 									onSubmit={(values) => {
@@ -1590,8 +1574,7 @@ export function OrderDetail({
 						)}
 
 						{detail.transitions.length > 0 && (
-							<section style={panelStyle}>
-								<h3 style={{ fontSize: 14, fontWeight: 650, marginBlockStart: 0 }}>Status</h3>
+							<Group label="Status">
 								<div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
 									{detail.transitions.map((toState) => (
 										<Button
@@ -1625,7 +1608,7 @@ export function OrderDetail({
 										/>
 									))}
 								</div>
-							</section>
+							</Group>
 						)}
 
 						{/* Only an order that can still be cancelled gets the group: on a shipped,
@@ -1652,7 +1635,7 @@ export function OrderDetail({
 										/>
 										<span>
 											{CANCEL_RESTOCK_LABEL}
-											<span style={{ display: "block", fontSize: 12, opacity: 0.75 }}>
+											<span style={{ display: "block", fontSize: 12, color: KUMO.subtle }}>
 												{CANCEL_RESTOCK_HINT}
 											</span>
 										</span>
@@ -1660,7 +1643,7 @@ export function OrderDetail({
 								)}
 								{!cancelBlocked && (
 									<>
-										<p style={{ fontSize: 12, opacity: 0.75 }}>{CANCEL_PICK_REASON}</p>
+										<p style={{ fontSize: 12, color: KUMO.subtle }}>{CANCEL_PICK_REASON}</p>
 										{/* One button per reason the plugin says has an id, taken from the list
 							    it SHIPS rather than filtered out of `cancellationReasons` here. The
 							    ids are derived on that side from the same constant; a second copy
@@ -1823,6 +1806,7 @@ export function OrderDetail({
 							<Unavailable text={TIMELINE_UNAVAILABLE} />
 						) : (
 							<Table
+								card
 								testId="detail-timeline"
 								caption="Timeline"
 								headers={["When", "Event", "Who", "Detail"]}
@@ -1838,7 +1822,7 @@ export function OrderDetail({
 							</Table>
 						)}
 						{detail.timeline !== null && detail.timeline.entries.length === 0 && (
-							<p style={{ fontSize: 13, opacity: 0.75 }}>{TIMELINE_EMPTY}</p>
+							<p style={{ fontSize: 13, color: KUMO.subtle }}>{TIMELINE_EMPTY}</p>
 						)}
 
 						<div style={{ marginBlockStart: 16 }}>
@@ -2028,6 +2012,7 @@ function FulfilmentForm({
 			<div>
 				<Button
 					testId="fulfil-submit"
+					variant="primary"
 					label={FULFILMENT_LABELS.submit}
 					disabled={busy}
 					onClick={() => onSubmit({ carrier, trackingNumber, trackingUrl, shippedAt, recordedBy })}
