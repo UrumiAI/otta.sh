@@ -6,7 +6,7 @@
  * "skipped" completion is a write to the order document, which is why the suite runs
  * here and on D1 (`d1/order-store-contract.d1.spec.ts`) as well as on the fake.
  */
-import { emailRecipientContract } from "@urumi-ai/otta-domain/testing";
+import { emailRecipientContract } from "@urumi.ai/otta-domain/testing";
 import { describeEachDialect } from "./describe-each-dialect.js";
 import { ORDER_LAYOUT } from "./order-collections.js";
 import { emailRecipientHarness, makeOrderHarness } from "./order-harness.js";

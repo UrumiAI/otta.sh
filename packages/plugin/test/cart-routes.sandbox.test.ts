@@ -4,7 +4,7 @@ import {
 	idempotencyKey,
 	productId as toProductId,
 	sku as toSku,
-} from "@urumi-ai/otta-domain";
+} from "@urumi.ai/otta-domain";
 import {
 	CARTS_COLLECTION,
 	EmdashInventoryStore,
@@ -13,7 +13,7 @@ import {
 	systemClock,
 	uuidIdGen,
 	type StorageAccess,
-} from "@urumi-ai/otta-store-emdash";
+} from "@urumi.ai/otta-store-emdash";
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "vitest";
 import { totalQty, type CartWire } from "../src/index.js";
 import { loadPluginInSandbox, type SandboxHandle } from "./sandbox/harness.js";

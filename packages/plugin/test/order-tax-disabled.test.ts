@@ -11,8 +11,8 @@ import {
 	NEW_STORE_TAX_SETTINGS,
 	productId as brandProductId,
 	sku as brandSku,
-} from "@urumi-ai/otta-domain";
-import { FakePaymentGateway } from "@urumi-ai/otta-domain/testing";
+} from "@urumi.ai/otta-domain";
+import { FakePaymentGateway } from "@urumi.ai/otta-domain/testing";
 import { afterEach, describe, expect, test } from "vitest";
 import { buildOrderView } from "../src/storefront/checkout-view-model.js";
 import {

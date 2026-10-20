@@ -35,7 +35,7 @@
  *
  * **The ledger is bounded.** See {@link CART_MUTATION_LEDGER_SIZE}.
  */
-import type { CartMutationKind, CartState, Currency } from "@urumi-ai/otta-domain";
+import type { CartMutationKind, CartState, Currency } from "@urumi.ai/otta-domain";
 import type { CollectionIndexDeclaration } from "./inventory-documents.js";
 
 /** Collection name: the per-cart aggregate. Id is the cart id. */

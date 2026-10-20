@@ -8,7 +8,7 @@ import {
 	idempotencyKey,
 	sku,
 	updateLine,
-} from "@urumi-ai/otta-domain";
+} from "@urumi.ai/otta-domain";
 import { describe, expect, test, vi } from "vitest";
 import { makeFakeCartHarness } from "./fake-harness.js";
 

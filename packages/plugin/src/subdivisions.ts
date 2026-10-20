@@ -1,5 +1,5 @@
 /**
- * `@urumi-ai/otta-plugin/subdivisions` — a country's ISO 3166-2 subdivisions with
+ * `@urumi.ai/otta-plugin/subdivisions` — a country's ISO 3166-2 subdivisions with
  * their English names (CLDR), for a storefront's state/province PICK LIST.
  * Display only: the value an address stores is still the bare code, and the
  * plugin's routes validate it as before.
@@ -12,4 +12,4 @@ export {
 	subdivisionName,
 	subdivisionOptions,
 	type SubdivisionOption,
-} from "@urumi-ai/otta-domain/subdivision-names";
+} from "@urumi.ai/otta-domain/subdivision-names";

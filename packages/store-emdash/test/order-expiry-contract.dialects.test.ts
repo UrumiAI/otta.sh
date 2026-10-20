@@ -5,7 +5,7 @@
  * (`holdsReleased: true`), while every adopted hold still returns exactly once. D1
  * runs the same suite from `d1/order-expiry-contract.d1.spec.ts`.
  */
-import { orderExpiryContract } from "@urumi-ai/otta-domain/testing";
+import { orderExpiryContract } from "@urumi.ai/otta-domain/testing";
 import { PAYMENT_DECLINE_LAYOUT } from "./coupon-collections.js";
 import { describeEachDialect } from "./describe-each-dialect.js";
 import { makePaymentDeclineHarness } from "./payment-decline-harness.js";

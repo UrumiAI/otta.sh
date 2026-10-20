@@ -28,8 +28,8 @@ import {
 	settleOrder,
 	sku as toSku,
 	type SendEmailInput,
-} from "@urumi-ai/otta-domain";
-import { FakePaymentGateway } from "@urumi-ai/otta-domain/testing";
+} from "@urumi.ai/otta-domain";
+import { FakePaymentGateway } from "@urumi.ai/otta-domain/testing";
 import {
 	collectionOf,
 	EmdashCouponStore,
@@ -46,8 +46,8 @@ import {
 	type OrderDoc,
 	type ProductCommerceDoc,
 	type StorageAccess,
-} from "@urumi-ai/otta-store-emdash";
-import { makeSqliteStorage } from "@urumi-ai/otta-store-emdash/testing";
+} from "@urumi.ai/otta-store-emdash";
+import { makeSqliteStorage } from "@urumi.ai/otta-store-emdash/testing";
 import { beforeAll, describe, expect, test, vi } from "vitest";
 import {
 	runCommerceSweeps,

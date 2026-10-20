@@ -4,8 +4,8 @@
  *
  * WHAT THIS CLASS IS. The sole implementation of `AdminOrdersSurface`: the same
  * twelve methods, the same argument shapes, the same RETURN VALUES — including
- * every field the `*Wire` types carry — with the `@urumi-ai/otta-domain` use-cases
- * composed over the `@urumi-ai/otta-store-emdash` adapters bound to `ctx.storage`
+ * every field the `*Wire` types carry — with the `@urumi.ai/otta-domain` use-cases
+ * composed over the `@urumi.ai/otta-store-emdash` adapters bound to `ctx.storage`
  * instead of a commerce service. Nothing here reaches for egress itself; the one
  * outbound call a refund can make belongs to the injected payment gateway.
  *
@@ -60,7 +60,7 @@
  *    use-case it calls: `Σ captured` (succeeded payments only) and the frozen
  *    order total give `computeRefundCeiling`, `Σ active refunds` (status ≠
  *    `voided`) is subtracted, and the remainder floors at zero. The three summands
- *    are real `@urumi-ai/otta-domain` exports; the COMPOSITION lived in the route, and
+ *    are real `@urumi.ai/otta-domain` exports; the COMPOSITION lived in the route, and
  *    now lives here too.
  *
  * THE GATEWAYS ARE INJECTED, never resolved here. The composition root
@@ -140,7 +140,7 @@ import {
 	type RefundRecord,
 	type ResolveFollowUp,
 	roundingEntry,
-} from "@urumi-ai/otta-domain";
+} from "@urumi.ai/otta-domain";
 import {
 	CommerceInputError,
 	isCommerceInputError,
@@ -153,7 +153,7 @@ import {
 	type InProcessCommerceStores,
 	type InProcessCommerceStoresOptions,
 } from "../commerce/in-process-commerce-stores.js";
-import { isRetryableStorageBusy } from "@urumi-ai/otta-store-emdash";
+import { isRetryableStorageBusy } from "@urumi.ai/otta-store-emdash";
 import {
 	sendOrderEmailsNow,
 	type SendOrderEmailsNowOptions,

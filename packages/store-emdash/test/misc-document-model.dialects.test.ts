@@ -6,7 +6,7 @@
  * an id lands under, what a pointer names, and what happens when a delivery gate is
  * asked to authorize with no scope at all.
  */
-import { idempotencyKey, orderId, productId, sku } from "@urumi-ai/otta-domain";
+import { idempotencyKey, orderId, productId, sku } from "@urumi.ai/otta-domain";
 import { expect, test } from "vitest";
 import {
 	entitlementLookupId,

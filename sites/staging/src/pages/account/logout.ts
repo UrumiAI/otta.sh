@@ -7,7 +7,7 @@
  * customer asked to be signed out of this browser, and that much is always in
  * our power.
  */
-import { ACCOUNT_LOGOUT_ROUTE, type AccountLogoutResult } from "@urumi-ai/otta-plugin";
+import { ACCOUNT_LOGOUT_ROUTE, type AccountLogoutResult } from "@urumi.ai/otta-plugin";
 import type { APIRoute } from "astro";
 import { clearSessionCookie, currentSessionToken } from "../../lib/account.js";
 import { routeDispatcher } from "../../lib/cart-actions.js";

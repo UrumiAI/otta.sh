@@ -15,7 +15,7 @@
 /** The commerce layer's DEFAULT hold TTL, in seconds — 15 minutes.
  *
  *  AUTHORITY: the admin's `holdTtlMinutes` setting, whose unsaved default
- *  (`DEFAULT_OPERATIONAL_SETTINGS` in @urumi-ai/otta-domain) is 15 minutes. Since
+ *  (`DEFAULT_OPERATIONAL_SETTINGS` in @urumi.ai/otta-domain) is 15 minutes. Since
  *  issue #127 the setting IS the cart hold — the plugin's cart use-cases stamp
  *  every deadline with it — so a store whose operator changed it runs a
  *  different window from this one. The PDP's hold note reads the effective value

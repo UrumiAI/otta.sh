@@ -8,8 +8,8 @@ import {
 	type RevokeDownloadAccessDeps,
 	settleOrder,
 	sku as brandSku,
-} from "@urumi-ai/otta-domain";
-import { CountingIdGen, InMemoryOrderNotesStore } from "@urumi-ai/otta-domain/testing";
+} from "@urumi.ai/otta-domain";
+import { CountingIdGen, InMemoryOrderNotesStore } from "@urumi.ai/otta-domain/testing";
 import { beforeEach, describe, expect, test } from "vitest";
 import { makeOrderHarness, type OrderHarness } from "./fake-harness.js";
 

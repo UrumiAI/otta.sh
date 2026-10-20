@@ -21,7 +21,7 @@
  * skips: SQLite always, Postgres whenever the connection string is present (and a
  * visibly skipped suite naming the missing variable when it is not).
  */
-import { orderStoreContract } from "@urumi-ai/otta-domain/testing";
+import { orderStoreContract } from "@urumi.ai/otta-domain/testing";
 import { describeEachDialect } from "./describe-each-dialect.js";
 import { ORDER_LAYOUT } from "./order-collections.js";
 import { makeOrderHarness, orderStoreHarness } from "./order-harness.js";

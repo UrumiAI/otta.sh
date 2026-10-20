@@ -18,8 +18,8 @@ import {
 	productId,
 	sku,
 	updateProductCommerceFields,
-} from "@urumi-ai/otta-domain";
-import { CountingIdGen, productCommerceStoreContract } from "@urumi-ai/otta-domain/testing";
+} from "@urumi.ai/otta-domain";
+import { CountingIdGen, productCommerceStoreContract } from "@urumi.ai/otta-domain/testing";
 import { expect, test } from "vitest";
 import { EmdashInventoryStore } from "../src/index.js";
 import { describeEachDialect } from "./describe-each-dialect.js";

@@ -45,7 +45,7 @@ import {
 	type IdGen,
 	type UpdateAddressInput,
 	type UpdateCustomerInput,
-} from "@urumi-ai/otta-domain";
+} from "@urumi.ai/otta-domain";
 import {
 	CAS_RETRY,
 	casDone,

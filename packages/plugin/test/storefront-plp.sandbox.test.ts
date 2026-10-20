@@ -5,7 +5,7 @@ import {
 	NEW_STORE_TAX_SETTINGS,
 	productId as toProductId,
 	sku as toSku,
-} from "@urumi-ai/otta-domain";
+} from "@urumi.ai/otta-domain";
 import {
 	EmdashInventoryStore,
 	EmdashProductCommerceStore,
@@ -17,7 +17,7 @@ import {
 	systemClock,
 	uuidIdGen,
 	type StorageAccess,
-} from "@urumi-ai/otta-store-emdash";
+} from "@urumi.ai/otta-store-emdash";
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "vitest";
 import { loadPluginInSandbox, type SandboxHandle } from "./sandbox/harness.js";
 import { storageBridge } from "./sandbox/storage-bridge.js";

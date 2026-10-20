@@ -34,7 +34,7 @@ import {
 	CART_COOKIE_NAME,
 	STOREFRONT_ORDER_ABANDON_ROUTE,
 	type OrderAbandonRouteResult,
-} from "@urumi-ai/otta-plugin";
+} from "@urumi.ai/otta-plugin";
 import type { APIRoute } from "astro";
 import { getPublicPluginApiRouteHandler } from "emdash/plugin-utils";
 import { clearCartCookie, seeOther, withoutReferrer } from "../../lib/cart-actions.js";

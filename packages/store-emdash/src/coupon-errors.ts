@@ -35,7 +35,7 @@ export class CouponNotFoundError extends Error {
  * the claim document `coupon_codes/{folded}` is the enforcement, and a claim whose
  * owning coupon no longer exists is taken over, so a crash between deleting a
  * coupon and releasing its code does not strand the code), and an id that already
- * has a document — are PORT behaviour and live in `@urumi-ai/otta-domain` (ADR-0025).
+ * has a document — are PORT behaviour and live in `@urumi.ai/otta-domain` (ADR-0025).
  * Re-exported here under their old names so existing imports keep working.
  */
 export {
@@ -43,7 +43,7 @@ export {
 	CouponIdCollisionError,
 	isCouponCodeConflictError,
 	isCouponIdCollisionError,
-} from "@urumi-ai/otta-domain";
+} from "@urumi.ai/otta-domain";
 
 /** Structural test for {@link CouponNotFoundError}. */
 export function isCouponNotFoundError(err: unknown): err is CouponNotFoundError {

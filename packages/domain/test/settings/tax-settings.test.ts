@@ -7,8 +7,8 @@ import {
 	readTaxSettings,
 	type TaxSettings,
 	updateSettings,
-} from "@urumi-ai/otta-domain";
-import { InMemorySettingsStore } from "@urumi-ai/otta-domain/testing";
+} from "@urumi.ai/otta-domain";
+import { InMemorySettingsStore } from "@urumi.ai/otta-domain/testing";
 import { describe, expect, test } from "vitest";
 
 /**

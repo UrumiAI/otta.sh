@@ -19,7 +19,7 @@
  *    the only caller that expects the duplicate error — so it is the one that would
  *    expose a claim which refused without the account being reachable.
  */
-import { email, DuplicateCustomerEmailError } from "@urumi-ai/otta-domain";
+import { email, DuplicateCustomerEmailError } from "@urumi.ai/otta-domain";
 import { describe, expect, test } from "vitest";
 import { makePgStorage, PG_ENABLED } from "./describe-each-dialect.js";
 import { IDENTITY_LAYOUT } from "./identity-collections.js";

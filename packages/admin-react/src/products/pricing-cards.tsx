@@ -68,7 +68,7 @@ import {
 	parseStockQty,
 	TAX_STATUS_HINT,
 	TAX_STATUS_OPTIONS,
-} from "@urumi-ai/otta-admin-presentation";
+} from "@urumi.ai/otta-admin-presentation";
 
 /** What EmDash hands a plugin field editor. Declared structurally: this
  *  package does not depend on `@emdash-cms/admin`. `onChange` is never called —

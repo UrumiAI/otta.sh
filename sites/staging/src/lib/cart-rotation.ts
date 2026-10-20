@@ -30,7 +30,7 @@ import {
 	STOREFRONT_ORDER_ROUTE,
 	type CartReadRouteResult,
 	type OrderRouteResult,
-} from "@urumi-ai/otta-plugin";
+} from "@urumi.ai/otta-plugin";
 import type { PublicPluginApiRouteHandler } from "emdash/plugin-utils";
 import { clearCheckoutCookie } from "./checkout-cookie.js";
 import { dispatchOttaRoute } from "./otta-api.js";

@@ -3,7 +3,7 @@
  *
  * WHY A SANDBOX SUITE AND NOT A UNIT TEST. ADR-0006 Decision 1 is the reason and
  * ADR-0014 reaffirms it verbatim: the workerd suites are the contract gate for
- * `@urumi-ai/otta-plugin`, and "a change that only works trusted is still broken". This
+ * `@urumi.ai/otta-plugin`, and "a change that only works trusted is still broken". This
  * increment adds a branch to the plugin's single admin route, so that branch has
  * to be proven in the isolate the plugin is specified to run in — bundled from a
  * bare copy of `src/`, with no Node, no workspace resolution and no `fetch` but
@@ -52,15 +52,15 @@ import {
 	orderId as toOrderId,
 	productId as toProductId,
 	sku as toSku,
-} from "@urumi-ai/otta-domain";
+} from "@urumi.ai/otta-domain";
 import {
 	EmdashInventoryStore,
 	EmdashOrderStore,
 	systemClock,
 	uuidIdGen,
 	type StorageAccess,
-} from "@urumi-ai/otta-store-emdash";
-import { withOrderNumberCells } from "@urumi-ai/otta-admin-presentation";
+} from "@urumi.ai/otta-store-emdash";
+import { withOrderNumberCells } from "@urumi.ai/otta-admin-presentation";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import { ORDERS_ACTION_IDS } from "../src/admin/orders-actions.js";
 import { loadPluginInSandbox, type SandboxHandle } from "./sandbox/harness.js";

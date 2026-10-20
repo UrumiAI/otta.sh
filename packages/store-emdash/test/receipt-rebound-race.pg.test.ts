@@ -23,7 +23,7 @@ import {
 	idempotencyKey,
 	type Order,
 	settleOrder,
-} from "@urumi-ai/otta-domain";
+} from "@urumi.ai/otta-domain";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import {
 	collectionOf,

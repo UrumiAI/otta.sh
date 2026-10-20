@@ -22,7 +22,7 @@
  *   pinned deterministically, on every dialect, by parking the losing write while a
  *   peer commits the change the loser should see.
  */
-import { cents, currency } from "@urumi-ai/otta-domain";
+import { cents, currency } from "@urumi.ai/otta-domain";
 import { expect, test } from "vitest";
 import { normalizeZoneDoc, type StorageCollection } from "../src/index.js";
 import { describeEachDialect } from "./describe-each-dialect.js";

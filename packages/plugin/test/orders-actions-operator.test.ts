@@ -15,7 +15,7 @@
  * The surface is stubbed to observe what each write asks for; the domain and the
  * in-process client are pinned over a real store elsewhere.
  */
-import { isWellFormedText } from "@urumi-ai/otta-domain";
+import { isWellFormedText } from "@urumi.ai/otta-domain";
 import { describe, expect, test, vi } from "vitest";
 import type {
 	AdminOrdersSurface,

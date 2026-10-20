@@ -14,7 +14,7 @@
  * Anything that is not shaped like `local@domain.tld` hides everything.
  *
  * WHY IT LIVES HERE (issue #377). It was written for the resume flow, in
- * `@urumi-ai/otta-plugin`, and the React Orders console now masks with it too — a
+ * `@urumi.ai/otta-plugin`, and the React Orders console now masks with it too — a
  * buyer's email is masked by default there, against a shoulder-surfer or a
  * screenshot. The console may not import the plugin (ADR-0014), and a second
  * masking rule is the drift this package exists to prevent, so the function

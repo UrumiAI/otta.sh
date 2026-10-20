@@ -5,8 +5,8 @@
  *
  * WHAT THIS CLASS IS. The sole implementation of `AdminProductsSurface`: the same
  * six methods, the same argument shapes, the same RETURN VALUES — including every
- * field the `*Wire` types carry — with the `@urumi-ai/otta-domain` use-cases composed
- * over the `@urumi-ai/otta-store-emdash` adapters bound to `ctx.storage` instead of a
+ * field the `*Wire` types carry — with the `@urumi.ai/otta-domain` use-cases composed
+ * over the `@urumi.ai/otta-store-emdash` adapters bound to `ctx.storage` instead of a
  * commerce service. Nothing here reaches for egress; `ctx.http` is never
  * touched.
  *
@@ -69,7 +69,7 @@ import {
 	type ProductListFilter,
 	type ProductSummary,
 	type UpdateProductCommerceFieldsInput,
-} from "@urumi-ai/otta-domain";
+} from "@urumi.ai/otta-domain";
 import {
 	CommerceInputError,
 	isCommerceInputError,

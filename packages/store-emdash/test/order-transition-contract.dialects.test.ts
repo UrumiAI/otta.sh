@@ -14,7 +14,7 @@
  * reads the documents back. That is a stronger statement on this store than a rollback
  * would be, which is why nothing here is skipped to make room for it.
  */
-import { orderTransitionContract } from "@urumi-ai/otta-domain/testing";
+import { orderTransitionContract } from "@urumi.ai/otta-domain/testing";
 import { describeEachDialect } from "./describe-each-dialect.js";
 import { ORDER_LAYOUT } from "./order-collections.js";
 import { makeOrderHarness, orderTransitionHarness } from "./order-harness.js";

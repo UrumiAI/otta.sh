@@ -14,7 +14,7 @@ import {
 	idempotencyKey,
 	readOrderTaxSnapshot,
 	type CreateOrderDeps,
-} from "@urumi-ai/otta-domain";
+} from "@urumi.ai/otta-domain";
 import { expect, test } from "vitest";
 import { EmdashShippingRulesStore, EmdashTaxRulesStore } from "../src/index.js";
 import { describeEachDialect } from "./describe-each-dialect.js";

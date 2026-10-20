@@ -4,7 +4,7 @@
  * `pricing-model.ts` so it is proven here without a document; the DOM suite
  * only proves the wiring.
  */
-import { currencyChoicesWith } from "@urumi-ai/otta-admin-presentation";
+import { currencyChoicesWith } from "@urumi.ai/otta-admin-presentation";
 import { describe, expect, test } from "vitest";
 import type { ProductRecord } from "../src/console-api.js";
 import {

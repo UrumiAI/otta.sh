@@ -3,7 +3,7 @@ import {
 	ratePpmOf,
 	shadowedTaxRates,
 	taxRateValueOfPpm,
-} from "@urumi-ai/otta-domain";
+} from "@urumi.ai/otta-domain";
 import type {
 	AccordionBlock,
 	ActionsBlock,

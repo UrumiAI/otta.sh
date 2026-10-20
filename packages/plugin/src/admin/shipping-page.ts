@@ -1,4 +1,4 @@
-import { unsupportedCurrencyMessage } from "@urumi-ai/otta-admin-presentation";
+import { unsupportedCurrencyMessage } from "@urumi.ai/otta-admin-presentation";
 import {
 	COUNTRY_CODES,
 	DEFAULT_STORE_CURRENCY,
@@ -6,7 +6,7 @@ import {
 	parseZoneRegions,
 	validateZoneRegionsInput,
 	type ShippingMethodType,
-} from "@urumi-ai/otta-domain";
+} from "@urumi.ai/otta-domain";
 import { formatMoney } from "../presentation/format-money.js";
 import { cents as toCents, currency as toCurrency } from "../presentation/money.js";
 import type {

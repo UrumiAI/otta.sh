@@ -6,7 +6,7 @@
  * Pure, and here rather than in the pages because `.astro` has no render harness
  * in this package (issue #40): the rules are unit-tested (`order-view.test.ts`).
  */
-import type { CheckoutTotalsView, OrderRouteResult } from "@urumi-ai/otta-plugin";
+import type { CheckoutTotalsView, OrderRouteResult } from "@urumi.ai/otta-plugin";
 import type { SumRow } from "./totals.js";
 
 /** The states in which the order was paid — the tracker's "Payment done". */
@@ -19,7 +19,7 @@ const PAID_STATES: ReadonlySet<string> = new Set([
 ]);
 
 /* The total's LABEL is not here: it is the domain's `orderTotalLabel` (through
-   `@urumi-ai/otta-plugin`), shared with the order emails so the three surfaces cannot
+   `@urumi.ai/otta-plugin`), shared with the order emails so the three surfaces cannot
    drift. */
 
 /**

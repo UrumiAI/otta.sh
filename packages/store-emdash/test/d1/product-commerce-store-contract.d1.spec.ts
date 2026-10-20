@@ -17,7 +17,7 @@
  * restated — it names no Node driver, so it loads inside `workerd`. Only the storage
  * BINDING differs, and that is what `describe-d1.ts` supplies.
  */
-import { productCommerceStoreContract } from "@urumi-ai/otta-domain/testing";
+import { productCommerceStoreContract } from "@urumi.ai/otta-domain/testing";
 import { PRODUCT_COMMERCE_LAYOUT } from "../product-commerce-collections.js";
 import { makeProductCommerceHarness } from "../product-commerce-harness.js";
 import { useD1Storage } from "./describe-d1.js";

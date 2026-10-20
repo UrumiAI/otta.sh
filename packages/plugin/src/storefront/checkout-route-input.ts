@@ -21,7 +21,7 @@ import {
 	isCodeShapedRegion,
 	isWellFormedText,
 	ORDER_ADDRESS_MAX_LENGTHS,
-} from "@urumi-ai/otta-domain";
+} from "@urumi.ai/otta-domain";
 import {
 	BUYER_REF_MAX,
 	COUNTRY_SHAPE,

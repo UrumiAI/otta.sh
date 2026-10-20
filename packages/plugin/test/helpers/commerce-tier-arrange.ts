@@ -1,6 +1,6 @@
 /**
  * The seeding half of a `commerceClientContract` tier, written ONCE against the
- * `@urumi-ai/otta-domain` ports and used by both transports' tiers.
+ * `@urumi.ai/otta-domain` ports and used by both transports' tiers.
  *
  * WHY SHARED RATHER THAN WRITTEN TWICE. A shared case is only an equivalence
  * proof if the two tiers arrange the same state; two hand-written copies of an
@@ -33,7 +33,7 @@ import {
 	type SessionStore,
 	type ShippingRulesStore,
 	type TaxRulesStore,
-} from "@urumi-ai/otta-domain";
+} from "@urumi.ai/otta-domain";
 import type { CommerceClientTierArrange } from "../contracts/commerce-client-contract.js";
 
 /** The ports a tier hands over so the arrangement below can run on it. */

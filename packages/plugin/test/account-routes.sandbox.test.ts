@@ -8,7 +8,7 @@
  * identity use-cases in process over `ctx.storage` — so there is no service to
  * start, no `commerceServiceBaseUrl` to hand the sandbox, and no Postgres in
  * this file at all. The document store IS the backend now, and the suite seeds
- * it through the same `@urumi-ai/otta-store-emdash` adapters the plugin composes.
+ * it through the same `@urumi.ai/otta-store-emdash` adapters the plugin composes.
  *
  * THE SUITE IS NO LONGER GATED, and that is deliberate rather than incidental:
  * a `PG_CONNECTION_STRING` gate is what let this file rot silently through a
@@ -35,14 +35,14 @@ import {
 	orderId as toOrderId,
 	productId as toProductId,
 	sku as toSku,
-} from "@urumi-ai/otta-domain";
+} from "@urumi.ai/otta-domain";
 import {
 	EmdashInventoryStore,
 	EmdashOrderStore,
 	systemClock,
 	uuidIdGen,
 	type StorageAccess,
-} from "@urumi-ai/otta-store-emdash";
+} from "@urumi.ai/otta-store-emdash";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import { OTTA_PLUGIN_CAPABILITIES } from "../src/manifest.js";
 import type { EmailMessage } from "../src/types.js";

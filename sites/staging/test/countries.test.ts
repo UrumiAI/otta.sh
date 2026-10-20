@@ -4,7 +4,7 @@
  * convenience: if the runtime cannot name a region, the bare code is shown —
  * the page never breaks for want of a label.
  */
-import { COUNTRY_CODES } from "@urumi-ai/otta-plugin";
+import { COUNTRY_CODES } from "@urumi.ai/otta-plugin";
 import { describe, expect, test } from "vitest";
 import { countryOptions } from "../src/lib/countries.js";
 

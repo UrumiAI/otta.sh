@@ -5,8 +5,8 @@ import {
 	type StorageAccess as StoreStorageAccess,
 	type TaxClassDoc,
 	type TaxRateOwnerDoc,
-} from "@urumi-ai/otta-store-emdash";
-import { idempotencyKey } from "@urumi-ai/otta-domain";
+} from "@urumi.ai/otta-store-emdash";
+import { idempotencyKey } from "@urumi.ai/otta-domain";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { createTaxPageHandler } from "../src/admin/tax-page.js";
 import { encodePath } from "../src/admin/scaffold/nav.js";

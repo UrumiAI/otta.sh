@@ -8,7 +8,7 @@
  * know — the option shows the bare code. The VALUE is always the code, which is
  * all the plugin reads.
  */
-import { COUNTRY_CODES } from "@urumi-ai/otta-plugin";
+import { COUNTRY_CODES } from "@urumi.ai/otta-plugin";
 
 export interface CountryOption {
 	code: string;

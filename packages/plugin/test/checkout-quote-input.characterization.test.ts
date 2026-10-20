@@ -10,8 +10,8 @@ import {
 	productId as brandProductId,
 	type QuoteCommand,
 	sku as brandSku,
-} from "@urumi-ai/otta-domain";
-import { CountingIdGen, FakePaymentGateway, FixedClock } from "@urumi-ai/otta-domain/testing";
+} from "@urumi.ai/otta-domain";
+import { CountingIdGen, FakePaymentGateway, FixedClock } from "@urumi.ai/otta-domain/testing";
 import { afterAll, afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import type { QuoteRequestWire } from "../src/product-commerce/commerce-client.js";
 import {
@@ -45,8 +45,8 @@ import {
  * pass: `OTTA_RECORD_CHARACTERIZATION=1`.
  */
 
-vi.mock("@urumi-ai/otta-domain", async (importOriginal) => {
-	const actual = await importOriginal<typeof import("@urumi-ai/otta-domain")>();
+vi.mock("@urumi.ai/otta-domain", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("@urumi.ai/otta-domain")>();
 	return { ...actual, computeQuote: vi.fn(actual.computeQuote) };
 });
 

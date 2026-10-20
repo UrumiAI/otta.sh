@@ -1,4 +1,4 @@
-# @urumi-ai/otta-site-staging
+# @urumi.ai/otta-site-staging
 
 The Otta **staging storefront + admin**: an EmDash site on Cloudflare Workers backed by
 a D1 content database and an R2 media bucket, with the Otta plugin registered **trusted
@@ -15,7 +15,7 @@ one at POST time, so a double-submit replays instead of duplicating.
 ## Local development
 
 ```bash
-pnpm --filter @urumi-ai/otta-site-staging dev
+pnpm --filter @urumi.ai/otta-site-staging dev
 ```
 
 Nothing else has to be running: commerce is **in-process** in this site's own Worker
@@ -96,7 +96,7 @@ admin console's **Settings** page instead.
   route for any `dl/` key (`src/lib/media-deny.ts`), and the build refuses a wrangler config
   whose `DOWNLOADS` is the `MEDIA` bucket (`src/lib/downloads-bucket.ts`; DEPLOYMENT.md
   §2.1). The merchant attaches the file in the product editor's **Download file** card
-  (`@urumi-ai/otta-admin-react`, `packages/admin-react/src/products/download-file-card.tsx`).
+  (`@urumi.ai/otta-admin-react`, `packages/admin-react/src/products/download-file-card.tsx`).
 - **Customer account pages (issue #306, ADR-0004).** Magic-link sign-in:
   `/account/login` (email form → `POST /account/login/request` → the same generic
   "check your inbox" notice for every address), `/account/verify` (where the

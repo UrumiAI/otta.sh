@@ -3,7 +3,7 @@
  * on. Harness: `test/late-payment-harness.ts`, which names no Node driver and so
  * loads inside `workerd`.
  */
-import { latePaymentContract } from "@urumi-ai/otta-domain/testing";
+import { latePaymentContract } from "@urumi.ai/otta-domain/testing";
 import { PAYMENT_DECLINE_LAYOUT } from "../coupon-collections.js";
 import { makeLatePaymentHarness } from "../late-payment-harness.js";
 import { useD1Storage } from "./describe-d1.js";

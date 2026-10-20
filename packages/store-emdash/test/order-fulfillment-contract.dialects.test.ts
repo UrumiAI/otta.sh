@@ -29,11 +29,11 @@ import {
 	transitionOrder,
 	type CreateOrderInput,
 	type OrderId,
-} from "@urumi-ai/otta-domain";
+} from "@urumi.ai/otta-domain";
 import {
 	orderFulfillmentContract,
 	type OrderTransitionHarness,
-} from "@urumi-ai/otta-domain/testing";
+} from "@urumi.ai/otta-domain/testing";
 import { expect, test } from "vitest";
 import { describeEachDialect } from "./describe-each-dialect.js";
 import { ORDER_LAYOUT } from "./order-collections.js";

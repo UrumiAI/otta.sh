@@ -168,7 +168,7 @@ import {
 	type OrderId,
 	type OrderState,
 	type OutboxEmail,
-} from "@urumi-ai/otta-domain";
+} from "@urumi.ai/otta-domain";
 import {
 	CARTS_COLLECTION,
 	collectionOf,
@@ -186,7 +186,7 @@ import {
 	type ProductCommerceDoc,
 	type StorageAccess as AdapterStorageAccess,
 	UNMETERED_COLLECTION,
-} from "@urumi-ai/otta-store-emdash";
+} from "@urumi.ai/otta-store-emdash";
 import {
 	createInProcessCommerceStores,
 	type InProcessCommerceStores,
@@ -2723,7 +2723,7 @@ function lastCreatedAt(items: readonly { data: { createdAt?: string } }[]): stri
  * public heal — so this leg reproduces the write AND the check rather than the
  * write alone, which is what the first cut did. That duplication is a real seam and
  * is recorded as a follow-up: the right home is a public method on the adapter that
- * owns the collection, which is a `@urumi-ai/otta-store-emdash` change and outside this
+ * owns the collection, which is a `@urumi.ai/otta-store-emdash` change and outside this
  * increment.
  *
  * THE CURSOR ADVANCES rather than the window being pinned to `now - 48h`. A fixed
@@ -3107,7 +3107,7 @@ function addDays(day: string, delta: number): string {
  * looks like they already used it.
  *
  * WHAT IS RELEASED: a redemption whose order does not exist (the domain's rule —
- * `reconcileCouponRedemptions` in `@urumi-ai/otta-domain` releases exactly the
+ * `reconcileCouponRedemptions` in `@urumi.ai/otta-domain` releases exactly the
  * `getById === null` case), OR whose order is `expired`.
  *
  * THE EXPIRED ARM IS THE RETRY FOR `expireOrders`, not a redundancy. That use-case
@@ -3163,7 +3163,7 @@ function addDays(day: string, delta: number): string {
  * ADR-0019 also requires a RECOUNT of the global counter, because a release that
  * dies between the guarded delete and the decrement leaves `usesCount` one HIGH and
  * a recount is the only thing that restores exactness. `CouponStore` exposes no
- * recount, and adding one is a `@urumi-ai/otta-store-emdash` change — out of this
+ * recount, and adding one is a `@urumi.ai/otta-store-emdash` change — out of this
  * increment's scope. The residual is in the SAFE direction (a use nobody holds
  * refuses a redemption that might have fit; it never grants one that does not).
  */

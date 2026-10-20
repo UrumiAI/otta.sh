@@ -36,7 +36,7 @@ import {
 	orderId,
 	sku,
 	type TaxSettings,
-} from "@urumi-ai/otta-domain";
+} from "@urumi.ai/otta-domain";
 import { expect, test } from "vitest";
 import {
 	ENTITLEMENT_LOOKUPS_COLLECTION,

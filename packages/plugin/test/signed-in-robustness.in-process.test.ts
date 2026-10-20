@@ -11,9 +11,9 @@
  * Real document store (in-process harness); the one failing call is forced on
  * the real adapter's prototype, so every other read and write is the real one.
  */
-import { email as toEmail } from "@urumi-ai/otta-domain";
-import { FakePaymentGateway } from "@urumi-ai/otta-domain/testing";
-import { EmdashOrderStore, EmdashSessionStore } from "@urumi-ai/otta-store-emdash";
+import { email as toEmail } from "@urumi.ai/otta-domain";
+import { FakePaymentGateway } from "@urumi.ai/otta-domain/testing";
+import { EmdashOrderStore, EmdashSessionStore } from "@urumi.ai/otta-store-emdash";
 import { afterAll, afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import {
 	makeInProcessCommerce,

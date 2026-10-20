@@ -3,7 +3,7 @@
  * staging site. The descriptor builder and the emdash options are pure
  * modules precisely so this file can pin them:
  *  - the Otta plugin descriptor is standard-format, entrypoint
- *    `@urumi-ai/otta-plugin/trusted` (the plugin with `trustedHost` on), capabilities EXACTLY the manifest's, and its
+ *    `@urumi.ai/otta-plugin/trusted` (the plugin with `trustedHost` on), capabilities EXACTLY the manifest's, and its
  *    allowedHosts is exactly the in-process egress list — Stripe's API host
  *    plus whatever the deployment's egress supplies (only `OTTA_EXTRA_ALLOWED_HOSTS` today) (the
  *    egress gate that holds even in trusted mode — ADR-0006);
@@ -17,11 +17,11 @@
  *    integration force-disables it platform-wide and substitutes a CSRF
  *    layer covering only /_emdash/api/* routes, so the real storefront
  *    CSRF pin is origin-middleware.test.ts (see ADR-0006);
- *  - `vite.ssr.noExternal` contains "@urumi-ai/otta-plugin" UNCONDITIONALLY: if the
+ *  - `vite.ssr.noExternal` contains "@urumi.ai/otta-plugin" UNCONDITIONALLY: if the
  *    plugin is externalized its build-time defines silently never apply and
  *    every
  *    ctx.http call fails against allowedHosts at runtime. It also contains
- *    "@urumi-ai/otta-admin-react", whose workspace exports are TS/TSX source;
+ *    "@urumi.ai/otta-admin-react", whose workspace exports are TS/TSX source;
  *  - and, since INC-19, ADR-0014's SECOND descriptor `otta-console` — its own
  *    block below.
  */
@@ -40,11 +40,11 @@ import {
 	TAX_PAGE,
 	OTTA_PLUGIN_CAPABILITIES,
 	OTTA_PLUGIN_ID,
-} from "@urumi-ai/otta-plugin";
+} from "@urumi.ai/otta-plugin";
 import {
 	createPlugin as createConsolePlugin,
 	OTTA_CONSOLE_ADMIN_PAGES,
-} from "@urumi-ai/otta-admin-react";
+} from "@urumi.ai/otta-admin-react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 // `../e2e/registry.js`, NEVER `../e2e/harness.js`. The harness loopback-guards
 // its addresses at MODULE LOAD and imports `@playwright/test`, which threw
@@ -64,20 +64,20 @@ const BASELINE_HOSTS = [STRIPE_API_HOST];
 describe("ottaPluginDescriptor", () => {
 	const descriptor = ottaPluginDescriptor();
 
-	test("is a standard-format descriptor for the @urumi-ai/otta-plugin TRUSTED entry", () => {
+	test("is a standard-format descriptor for the @urumi.ai/otta-plugin TRUSTED entry", () => {
 		expect(descriptor.id).toBe(OTTA_PLUGIN_ID);
 		expect(descriptor.format).toBe("standard");
 		// Issue #447: staging registers in-process, so it loads the entry that
 		// opts in to `trustedHost` (a signal on every Stripe call), never the
 		// sandbox-safe default export.
-		expect(descriptor.entrypoint).toBe("@urumi-ai/otta-plugin/trusted");
+		expect(descriptor.entrypoint).toBe("@urumi.ai/otta-plugin/trusted");
 	});
 
 	test("the trusted entry is the plugin, with trustedHost on", async () => {
-		const trusted = (await import("@urumi-ai/otta-plugin/trusted")).default;
-		const plain = (await import("@urumi-ai/otta-plugin/plugin")).default;
+		const trusted = (await import("@urumi.ai/otta-plugin/trusted")).default;
+		const plain = (await import("@urumi.ai/otta-plugin/plugin")).default;
 		expect(trusted).toBe(plain);
-		const { isTrustedHost } = await import("@urumi-ai/otta-plugin/testing");
+		const { isTrustedHost } = await import("@urumi.ai/otta-plugin/testing");
 		expect(isTrustedHost()).toBe(true);
 	});
 
@@ -187,7 +187,7 @@ describe("ottaPluginDescriptor", () => {
  * assertion below compares the WHOLE map or the WHOLE index list, never a subset.
  *
  * NOTHING HERE IS TRANSCRIBED. The expected value is `COMMERCE_STORAGE_COLLECTIONS`
- * itself — the union `@urumi-ai/otta-plugin` assembles from the twelve per-adapter
+ * itself — the union `@urumi.ai/otta-plugin` assembles from the twelve per-adapter
  * declarations — rather than a hand-copied snapshot that would rot.
  *
  * AND BE HONEST ABOUT WHAT THAT COSTS (review round 3, B4). `commerceStorage()`
@@ -472,7 +472,7 @@ const OTTA_CONSOLE_PLUGIN_ID = "otta-console";
 
 /** The package ADR-0014 Decision 2 confines the React code to. BOTH of the
  *  descriptor's module specifiers have to resolve into it — see below. */
-const OTTA_CONSOLE_PACKAGE = "@urumi-ai/otta-admin-react";
+const OTTA_CONSOLE_PACKAGE = "@urumi.ai/otta-admin-react";
 
 /**
  * ADR-0014's hard pins on `otta-console`, as a function — so the gate itself is
@@ -493,11 +493,11 @@ const OTTA_CONSOLE_PACKAGE = "@urumi-ai/otta-admin-react";
  * `entrypoint` and `adminEntry` are pinned to the console PACKAGE because the
  * empty capability set is not, on its own, the boundary ADR-0014 describes.
  * Decision 2 puts the React code in a separate package; a descriptor declaring
- * `adminEntry: "@urumi-ai/otta-plugin/admin"` satisfies every other pin here while
- * making `@urumi-ai/otta-plugin` the thing EmDash statically imports React from —
+ * `adminEntry: "@urumi.ai/otta-plugin/admin"` satisfies every other pin here while
+ * making `@urumi.ai/otta-plugin` the thing EmDash statically imports React from —
  * the exact inversion Decision 1 refuses, arriving through the site config
  * rather than through an import depcruise can see. Both ends are closed: this
- * pin, and `plugin-is-sandbox-clean` now forbidding `@urumi-ai/otta-admin-react`.
+ * pin, and `plugin-is-sandbox-clean` now forbidding `@urumi.ai/otta-admin-react`.
  */
 function assertOttaConsoleContract(descriptor: unknown): void {
 	expect(descriptor).toBeTypeOf("object");
@@ -517,7 +517,7 @@ function assertOttaConsoleContract(descriptor: unknown): void {
 
 	// Both module specifiers must name the console package — exactly, or as a
 	// subpath export of it. `startsWith` alone would admit a lookalike package
-	// (`@urumi-ai/otta-admin-react-shim`), hence the boundary character.
+	// (`@urumi.ai/otta-admin-react-shim`), hence the boundary character.
 	for (const key of ["entrypoint", "adminEntry"] as const) {
 		expect(Object.hasOwn(d, key), `\`${key}\` must be declared`).toBe(true);
 		const specifier = d[key];
@@ -612,7 +612,7 @@ describe("ottaConsoleDescriptor (ADR-0014's second descriptor)", () => {
  * together mechanically.
  *
  * Without this, the console's two halves are only related by intent. The console
- * declares its pages in `@urumi-ai/otta-admin-react`; the Playwright coverage gate
+ * declares its pages in `@urumi.ai/otta-admin-react`; the Playwright coverage gate
  * reads `MIGRATED_SCREENS` in `sites/staging/e2e/`. Nothing made adding to the
  * first require adding to the second, so INC-20 could ship an Orders page,
  * generate NO smoke spec for it, and see every gate go green — the precise
@@ -689,9 +689,9 @@ describe("the otta-console gate rejects the near-miss shapes", () => {
 	const compliant = {
 		id: "otta-console",
 		version: "0.0.1",
-		entrypoint: "@urumi-ai/otta-admin-react",
+		entrypoint: "@urumi.ai/otta-admin-react",
 		format: "native",
-		adminEntry: "@urumi-ai/otta-admin-react/admin",
+		adminEntry: "@urumi.ai/otta-admin-react/admin",
 		capabilities: [],
 		allowedHosts: [],
 	};
@@ -706,8 +706,8 @@ describe("the otta-console gate rejects the near-miss shapes", () => {
 	const spikeShape = {
 		id: "otta-console",
 		version: "0.0.1",
-		entrypoint: "@urumi-ai/otta-console-react",
-		adminEntry: "@urumi-ai/otta-console-react/admin",
+		entrypoint: "@urumi.ai/otta-console-react",
+		adminEntry: "@urumi.ai/otta-console-react/admin",
 		adminPages: [{ path: "/orders", label: "Orders (React)", icon: "list" }],
 		capabilities: [],
 		allowedHosts: [],
@@ -739,22 +739,22 @@ describe("the otta-console gate rejects the near-miss shapes", () => {
 		["the id is the Block Kit plugin's", { ...compliant, id: OTTA_PLUGIN_ID }],
 		// Reviewer A's mutation, pinned. Everything else about this descriptor is
 		// impeccable — native, zero capabilities, zero allowedHosts — and it still
-		// makes @urumi-ai/otta-plugin the module EmDash statically imports React from,
+		// makes @urumi.ai/otta-plugin the module EmDash statically imports React from,
 		// which is ADR-0014 Decision 1 inverted via the site config.
 		[
-			"adminEntry points into @urumi-ai/otta-plugin",
-			{ ...compliant, adminEntry: "@urumi-ai/otta-plugin/admin" },
+			"adminEntry points into @urumi.ai/otta-plugin",
+			{ ...compliant, adminEntry: "@urumi.ai/otta-plugin/admin" },
 		],
 		[
-			"entrypoint points into @urumi-ai/otta-plugin",
-			{ ...compliant, entrypoint: "@urumi-ai/otta-plugin" },
+			"entrypoint points into @urumi.ai/otta-plugin",
+			{ ...compliant, entrypoint: "@urumi.ai/otta-plugin" },
 		],
 		["adminEntry is omitted", withoutKey("adminEntry")],
 		["entrypoint is omitted", withoutKey("entrypoint")],
 		// A lookalike package name must not slip past a prefix check.
 		[
 			"entrypoint names a lookalike package",
-			{ ...compliant, entrypoint: "@urumi-ai/otta-admin-react-shim" },
+			{ ...compliant, entrypoint: "@urumi.ai/otta-admin-react-shim" },
 		],
 	])("rejects a descriptor where %s", (_why, shape) => {
 		expect(() => assertOttaConsoleContract(shape)).toThrow();
@@ -793,11 +793,11 @@ describe("astro.config", () => {
 
 			const noExternal = config.vite?.ssr?.noExternal;
 			const noExternalList = Array.isArray(noExternal) ? noExternal : [noExternal];
-			expect(noExternalList).toContain("@urumi-ai/otta-plugin");
-			// @urumi-ai/otta-admin-react for a different reason: its workspace exports
+			expect(noExternalList).toContain("@urumi.ai/otta-plugin");
+			// @urumi.ai/otta-admin-react for a different reason: its workspace exports
 			// point at TS/TSX source, so externalizing it hands raw TSX to the
 			// runtime. No define rides on it.
-			expect(noExternalList).toContain("@urumi-ai/otta-admin-react");
+			expect(noExternalList).toContain("@urumi.ai/otta-admin-react");
 
 			// INC-D3a: `__OTTA_COMMERCE_SERVICE_URL__` is GONE. There is no commerce
 			// service, so there is no URL to bake — and a build that reintroduced

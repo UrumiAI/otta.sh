@@ -18,14 +18,14 @@ import {
 	orderId as toOrderId,
 	productId as toProductId,
 	sku as toSku,
-} from "@urumi-ai/otta-domain";
+} from "@urumi.ai/otta-domain";
 import {
 	collectionOf,
 	ORDERS_COLLECTION,
 	type OrderDoc,
 	type StorageAccess,
-} from "@urumi-ai/otta-store-emdash";
-import { makeSqliteStorage } from "@urumi-ai/otta-store-emdash/testing";
+} from "@urumi.ai/otta-store-emdash";
+import { makeSqliteStorage } from "@urumi.ai/otta-store-emdash/testing";
 import { beforeAll, describe, expect, test, vi } from "vitest";
 import { SWEEP_TASK_NAME } from "../src/cron/index.js";
 import { runCommerceSweeps } from "../src/cron/sweeps.js";

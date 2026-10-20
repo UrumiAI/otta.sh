@@ -24,7 +24,7 @@ import {
 	isEmailTransportUnavailableError,
 	type EmailTemplate,
 	type SendEmailInput,
-} from "@urumi-ai/otta-domain";
+} from "@urumi.ai/otta-domain";
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import path from "node:path";
@@ -98,7 +98,7 @@ describe("no EmDash email provider", () => {
 
 	test("the pipeline text is EmDash's own: read from the installed package's source", () => {
 		// `emdash` is not this package's dependency; resolve it the way the sites do,
-		// through `@urumi-ai/otta-store-emdash` → `@emdash-cms/cloudflare` → `emdash`.
+		// through `@urumi.ai/otta-store-emdash` → `@emdash-cms/cloudflare` → `emdash`.
 		const fromStore = createRequire(
 			path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../store-emdash/package.json"),
 		);

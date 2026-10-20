@@ -1,4 +1,4 @@
-import { OTTA_PLUGIN_CAPABILITIES, SETTINGS_SCHEMA } from "@urumi-ai/otta-plugin";
+import { OTTA_PLUGIN_CAPABILITIES, SETTINGS_SCHEMA } from "@urumi.ai/otta-plugin";
 import {
 	cents,
 	currency as toCurrency,
@@ -6,7 +6,7 @@ import {
 	money,
 	productId as toProductId,
 	type TaxSettings,
-} from "@urumi-ai/otta-domain";
+} from "@urumi.ai/otta-domain";
 import {
 	collectionOf,
 	EmdashProductCommerceStore,
@@ -18,7 +18,7 @@ import {
 	systemClock,
 	type SettingsMutationDoc,
 	type StorageAccess,
-} from "@urumi-ai/otta-store-emdash";
+} from "@urumi.ai/otta-store-emdash";
 import { afterEach, describe, expect, test } from "vitest";
 import { MISSING_STORAGE_MESSAGE } from "../src/commerce/in-process-commerce-stores.js";
 import { assertBlockContract } from "./helpers/block-contract.js";
@@ -362,7 +362,7 @@ describe("Settings admin form (workerd sandbox)", () => {
 		sandbox = await loadPluginInSandbox({ allowedHosts: [], storage: true });
 
 		// MAX_HOLD_TTL_MINUTES is 10_080 (one week) — 99999 is a genuine
-		// InvalidSettingsError from `@urumi-ai/otta-domain`'s `updateSettings`, not a
+		// InvalidSettingsError from `@urumi.ai/otta-domain`'s `updateSettings`, not a
 		// stubbed 400. Only holdTtlMinutes is edited.
 		const outcome = await sandbox.invokeRoute("admin", {
 			type: "form_submit",

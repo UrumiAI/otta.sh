@@ -10,7 +10,7 @@
  * functions rather than against the pages that call them.
  */
 import { describe, expect, test } from "vitest";
-import type { ProductViewModel } from "@urumi-ai/otta-plugin";
+import type { ProductViewModel } from "@urumi.ai/otta-plugin";
 import { exactCount, itemCountLabel, shopLinkLabel, tapeRows, TAPE_ROWS } from "../src/lib/tape.js";
 
 /** A priced, sellable view model — the shape the plugin's list route returns. */

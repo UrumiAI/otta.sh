@@ -7,7 +7,7 @@ import {
 	PaymentIntentError,
 	SUPPORTED_CURRENCIES,
 	type CreateIntentInput,
-} from "@urumi-ai/otta-domain";
+} from "@urumi.ai/otta-domain";
 import { describe, expect, test } from "vitest";
 import {
 	createStripeHttpTransport,

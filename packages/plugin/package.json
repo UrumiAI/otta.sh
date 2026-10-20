@@ -1,5 +1,5 @@
 {
-	"name": "@urumi-ai/otta-plugin",
+	"name": "@urumi.ai/otta-plugin",
 	"version": "0.1.0",
 	"description": "Otta EmDash plugin — sandbox-clean (workerd, Block Kit, ctx.http + allowedHosts only). Runs commerce in-process on the host-injected ctx.storage; no React, no DB driver.",
 	"homepage": "https://github.com/UrumiAI/otta.sh#readme",
@@ -60,10 +60,10 @@
 		"prepublishOnly": "tsdown"
 	},
 	"dependencies": {
-		"@urumi-ai/otta-admin-presentation": "workspace:*",
-		"@urumi-ai/otta-domain": "workspace:*",
-		"@urumi-ai/otta-payments-stripe": "workspace:*",
-		"@urumi-ai/otta-store-emdash": "workspace:*"
+		"@urumi.ai/otta-admin-presentation": "workspace:*",
+		"@urumi.ai/otta-domain": "workspace:*",
+		"@urumi.ai/otta-payments-stripe": "workspace:*",
+		"@urumi.ai/otta-store-emdash": "workspace:*"
 	},
 	"devDependencies": {
 		"@types/node": "catalog:",

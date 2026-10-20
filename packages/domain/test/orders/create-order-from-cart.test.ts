@@ -11,8 +11,8 @@ import {
 	productId as brandProductId,
 	type ProductCommerceStore,
 	sku as brandSku,
-} from "@urumi-ai/otta-domain";
-import { CountingIdGen, FixedClock, InMemoryAddressStore } from "@urumi-ai/otta-domain/testing";
+} from "@urumi.ai/otta-domain";
+import { CountingIdGen, FixedClock, InMemoryAddressStore } from "@urumi.ai/otta-domain/testing";
 import { beforeEach, describe, expect, test } from "vitest";
 import { makeOrderHarness, type OrderHarness, SEED_PUBLISHED_AT } from "./fake-harness.js";
 
@@ -158,7 +158,7 @@ describe("createOrderFromCart", () => {
 		expect(h.inventory.reservationState(first)).toBe("released");
 		expect(h.inventory.onHand("SKU-1")).toBe(10);
 		h.clock.advance(16 * 60 * 1000);
-		const { expireOrders } = await import("@urumi-ai/otta-domain");
+		const { expireOrders } = await import("@urumi.ai/otta-domain");
 		expect(await expireOrders(h.expireDeps)).toBe(0);
 	});
 

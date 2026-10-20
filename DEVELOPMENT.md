@@ -17,7 +17,7 @@ The order is always: **failing test → code → green → refactor.** A behavio
 reproducing test is not done, and a bug without a reproducing test is not fixed.
 
 Otta's stronger rule: **the contract test suite is the spec.** For anything in
-`@urumi-ai/otta-domain`, write the behavioral test against the **port interface** before writing
+`@urumi.ai/otta-domain`, write the behavioral test against the **port interface** before writing
 any adapter. The adapter is "done" the day it turns that suite green — nothing else counts
 as done.
 
@@ -25,7 +25,7 @@ as done.
   stock M (M < N); assert **exactly M** succeed and the rest get `OUT_OF_STOCK`. Written
   once, run against every `InventoryStore` adapter.
 - One behavioral suite lives in the domain (or a shared test package) and runs against
-  **every** dialect beneath the one store adapter, `@urumi-ai/otta-store-emdash` — SQLite and
+  **every** dialect beneath the one store adapter, `@urumi.ai/otta-store-emdash` — SQLite and
   Postgres via `packages/store-emdash/test/describe-each-dialect.ts`, and real D1 in its own
   tier (below). This mirrors EmDash's `describeEachDialect`.
 
@@ -67,14 +67,14 @@ makes the decrement replayable; ADR-0019 is where that was reversed.
 
 ## 3. Ports-and-adapters purity is enforced, not trusted
 
-`@urumi-ai/otta-domain` depends on **nothing with IO**. A `pg`, `ctx`, or `fetch` import in the
+`@urumi.ai/otta-domain` depends on **nothing with IO**. A `pg`, `ctx`, or `fetch` import in the
 domain is a build-breaking bug, not a code-review nit.
 
 - The boundary is enforced by dependency-cruiser (`.dependency-cruiser.cjs`), run as part of
   `pnpm lint`, so the layering can't rot silently.
 - **There is no wire to keep in step.** Commerce runs in-process: the plugin builds
   `InProcessCommerceClient` through its single composition root, `makeCommerceClient`, which
-  binds the `@urumi-ai/otta-domain` use-cases to the `@urumi-ai/otta-store-emdash` stores over
+  binds the `@urumi.ai/otta-domain` use-cases to the `@urumi.ai/otta-store-emdash` stores over
   `ctx.storage` (ADR-0018). No REST API, no `@otta-sh/service`, no serialization layer that
   could drift from the port. The behavioral contract suite that used to run twice — once
   over HTTP against a live test server, once in-process — still runs every one of those
@@ -118,12 +118,12 @@ in-process leniency.
   discriminator is the declared `format`, not placement: `format: "native"` may declare
   `adminEntry` (a React admin surface); a `format: "standard"` descriptor that declares
   `adminEntry` (or `componentsEntry`) throws at build time (EmDash's Astro integration).
-  `@urumi-ai/otta-plugin` registers `format: "standard"` (ADR-0006), and its admin pages — Reports,
+  `@urumi.ai/otta-plugin` registers `format: "standard"` (ADR-0006), and its admin pages — Reports,
   Settings, Coupons, Tax, Shipping — are Block Kit `elements`. Orders is a React page, and
   the product editor's pricing and stock cards and the products list's columns are React too,
-  all in `@urumi-ai/otta-admin-react` on the separate `otta-console` native descriptor (ADR-0014),
+  all in `@urumi.ai/otta-admin-react` on the separate `otta-console` native descriptor (ADR-0014),
   which replaced the duplicated Block Kit screens (ADR-0015);
-  `@urumi-ai/otta-admin-presentation` holds the pure presentation primitives both surfaces share.
+  `@urumi.ai/otta-admin-presentation` holds the pure presentation primitives both surfaces share.
 - **Every capability is declared explicitly.** The plugin's only egress is `ctx.http` +
   `allowedHosts` (email is not egress: it goes through the host's `ctx.email`, ADR-0031),
   and its state lives only in what the host injects — `ctx.storage` for

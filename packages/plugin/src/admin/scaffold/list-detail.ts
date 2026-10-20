@@ -18,7 +18,7 @@ import {
 	listOutcome,
 	type RowNoun,
 	type ZeroStateCopy as SharedZeroStateCopy,
-} from "@urumi-ai/otta-admin-presentation";
+} from "@urumi.ai/otta-admin-presentation";
 import { emptyState } from "./layout.js";
 import {
 	decodeListCursor,
@@ -941,7 +941,7 @@ function withChildBlockLists(block: Block, lists: Block[][]): Block {
 
 /**
  * THE COUNT LINE, THE ZERO-STATE LADDER AND THEIR WORDS ALL MOVED (INC-20
- * review) into `@urumi-ai/otta-admin-presentation`, and this module now ADAPTS the
+ * review) into `@urumi.ai/otta-admin-presentation`, and this module now ADAPTS the
  * decision into Block Kit blocks rather than making it.
  *
  * WHY. INC-20 gave the console a React Orders list, and its first cut
@@ -963,8 +963,8 @@ export {
 	PAGE_ZERO,
 	SCAN_FURTHER,
 	rowCountLine,
-} from "@urumi-ai/otta-admin-presentation";
-export type { RowNoun } from "@urumi-ai/otta-admin-presentation";
+} from "@urumi.ai/otta-admin-presentation";
+export type { RowNoun } from "@urumi.ai/otta-admin-presentation";
 
 /**
  * The `Clear filters` control, wherever it appears.
@@ -990,7 +990,7 @@ export function clearFiltersButton(actions: ScreenActions, path: NavPath): Butto
 }
 
 /** The wording of ONE zero state PLUS the Block Kit key it renders under.
- *  The WORDS are `@urumi-ai/otta-admin-presentation`'s `ZeroStateCopy` — shared,
+ *  The WORDS are `@urumi.ai/otta-admin-presentation`'s `ZeroStateCopy` — shared,
  *  because the React tier renders the same states from the same decision — and
  *  `blockId` is the half only this surface has (a React key on an `empty`
  *  block). Screens still author every string: six screens describe their rows

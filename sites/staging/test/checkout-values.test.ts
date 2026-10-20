@@ -24,7 +24,7 @@ import {
 	ORDER_ADDRESS_MAX_LENGTHS,
 	STOREFRONT_CHECKOUT_PLACE_ROUTE,
 	STOREFRONT_ORDER_ABANDON_ROUTE,
-} from "@urumi-ai/otta-plugin";
+} from "@urumi.ai/otta-plugin";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { splitAstro, templateOf } from "./astro-source.js";
 import { viewSources } from "./theme-views.js";

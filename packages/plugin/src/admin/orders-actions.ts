@@ -72,7 +72,7 @@ import {
 	fit,
 	formatAmount as formatTotal,
 	refundIncrementText,
-} from "@urumi-ai/otta-admin-presentation";
+} from "@urumi.ai/otta-admin-presentation";
 import type {
 	AdminOrdersSurface,
 	InlineEmailStatus,

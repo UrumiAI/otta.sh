@@ -22,7 +22,7 @@ import {
 	SESSION_COOKIE_NAME,
 	STOREFRONT_SHOPPER_STATE_ROUTE,
 	type ShopperStateResult,
-} from "@urumi-ai/otta-plugin";
+} from "@urumi.ai/otta-plugin";
 import { getPublicPluginApiRouteHandler } from "emdash/plugin-utils";
 import { isCartTerminal } from "./cart-view.js";
 import { dispatchOttaRouteOnce } from "./otta-api.js";

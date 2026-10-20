@@ -4,12 +4,12 @@ import {
 	readBackgroundWork,
 	validateBackgroundWork,
 } from "../cron/background-work-setting.js";
-import { currencyChoiceLabel, currencyChoicesWith } from "@urumi-ai/otta-admin-presentation";
+import { currencyChoiceLabel, currencyChoicesWith } from "@urumi.ai/otta-admin-presentation";
 import {
 	effectiveStoreCurrency,
 	isSupportedCurrency,
 	MAX_HOLD_TTL_MINUTES,
-} from "@urumi-ai/otta-domain";
+} from "@urumi.ai/otta-domain";
 import { emailSendingStatus, type EmailSendingStatus } from "../email/ctx-email-sender.js";
 import { STORE_DISPLAY_NAME_KEY } from "../email/email-render-context.js";
 import {
@@ -51,7 +51,7 @@ import type {
 	RouteHandler,
 	SettingsFieldSpec,
 } from "../types.js";
-import type { ProductCommerceStore } from "@urumi-ai/otta-domain";
+import type { ProductCommerceStore } from "@urumi.ai/otta-domain";
 import { createInProcessCommerceStores } from "../commerce/in-process-commerce-stores.js";
 import { MAX_LOW_STOCK_THRESHOLD } from "./in-process-reporting-settings-client.js";
 import { makeAdminClients } from "./make-admin-clients.js";

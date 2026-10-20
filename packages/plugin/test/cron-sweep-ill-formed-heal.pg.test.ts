@@ -15,8 +15,8 @@
  * Postgres-only (`process.env.PG_CONNECTION_STRING`): SQLite reads both escapes,
  * so there is nothing to heal there.
  */
-import { ORDERS_COLLECTION, type OrderDoc, type StorageAccess } from "@urumi-ai/otta-store-emdash";
-import { makePgStorage } from "@urumi-ai/otta-store-emdash/testing";
+import { ORDERS_COLLECTION, type OrderDoc, type StorageAccess } from "@urumi.ai/otta-store-emdash";
+import { makePgStorage } from "@urumi.ai/otta-store-emdash/testing";
 import { afterAll, beforeAll, describe, expect, test, vi } from "vitest";
 import { runCommerceSweeps, SWEEP_TASK_NAME, SWEEP_TICK_QUERY_BUDGET } from "../src/cron/index.js";
 import {

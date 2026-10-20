@@ -71,7 +71,7 @@ import {
 	CONSOLE_ACT_INTERACTION,
 	DOWNLOAD_NOT_ATTACHED_TITLE,
 	isDownloadAssetKeyFor,
-} from "@urumi-ai/otta-plugin";
+} from "@urumi.ai/otta-plugin";
 import type { DownloadsBucket } from "./download-delivery.js";
 import { ATTACH_MAX_AGE_MS, downloadUploadTime } from "./download-orphans.js";
 import { DOWNLOADS_BINDING } from "./downloads-bucket.js";

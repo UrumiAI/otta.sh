@@ -15,7 +15,7 @@
  * for good — which is the outage this fixes. The refusal a person can act on
  * belongs at the boundary, and lives there (the plugin's `commerce-input.ts`).
  */
-import { findIllFormedText, repairIllFormedText } from "@urumi-ai/otta-domain";
+import { findIllFormedText, repairIllFormedText } from "@urumi.ai/otta-domain";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { collectionOf } from "../src/index.js";
 import { IllFormedIdError, isIllFormedIdError } from "../src/well-formed-storage.js";

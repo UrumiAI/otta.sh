@@ -20,7 +20,7 @@ import {
 	idempotencyKey,
 	orderId,
 	reconcileCouponRedemptions,
-} from "@urumi-ai/otta-domain";
+} from "@urumi.ai/otta-domain";
 import { expect, test } from "vitest";
 import { COUPON_LIFECYCLE_LAYOUT } from "./coupon-collections.js";
 import { makeCouponHarness, type CouponHarness } from "./coupon-harness.js";

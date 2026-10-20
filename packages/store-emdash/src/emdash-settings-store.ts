@@ -66,7 +66,7 @@ import {
 	type SettingsStore,
 	type SettingsUpdateOptions,
 	settingsUpdateAllowed,
-} from "@urumi-ai/otta-domain";
+} from "@urumi.ai/otta-domain";
 import {
 	CAS_RETRY,
 	casDone,

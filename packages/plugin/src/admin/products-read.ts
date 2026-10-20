@@ -22,8 +22,8 @@ import {
 } from "./admin-products-surface.js";
 import type { ReportingSettingsSurface } from "./reporting-settings-surface.js";
 import { readString } from "./scaffold/index.js";
-import { PRODUCT_KIND_LABELS } from "@urumi-ai/otta-admin-presentation";
-import { effectiveStoreCurrency } from "@urumi-ai/otta-domain";
+import { PRODUCT_KIND_LABELS } from "@urumi.ai/otta-admin-presentation";
+import { effectiveStoreCurrency } from "@urumi.ai/otta-domain";
 import type { SelectOption } from "../types.js";
 
 export const PAGE_LIMIT = 25;

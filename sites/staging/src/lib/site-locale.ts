@@ -8,6 +8,6 @@
  * `STOREFRONT_LOCALE`, so the account pages and the order emails format money
  * in the same locale as every other page.
  */
-import { STOREFRONT_LOCALE } from "@urumi-ai/otta-plugin";
+import { STOREFRONT_LOCALE } from "@urumi.ai/otta-plugin";
 
 export const SITE_LOCALE = STOREFRONT_LOCALE;

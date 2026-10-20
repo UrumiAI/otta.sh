@@ -3,18 +3,18 @@
  *
  * A site opts in from its own plugin entry module —
  * `export default createOttaPlugin({ taxCalculator })` — which em-dash imports at
- * build time, exactly as it imports `@urumi-ai/otta-plugin/plugin`. Registration runs
+ * build time, exactly as it imports `@urumi.ai/otta-plugin/plugin`. Registration runs
  * once, when that module is evaluated, and every commerce client the isolate
  * builds reads it from here (`makeCommerceClient`). Nothing registered ⇒ the
  * built-in `otta.rate-table`. Sandboxed mode loads the default export, so it is
  * always the built-in. An in-process site writing its own entry should also pass
- * `trustedHost: true` (issue #447): its entry replaces `@urumi-ai/otta-plugin/trusted`.
+ * `trustedHost: true` (issue #447): its entry replaces `@urumi.ai/otta-plugin/trusted`.
  *
  * A calculator is TRUSTED code the merchant chose to install, like a WordPress
  * plugin: it runs in-process and may use `fetch` itself (ADR-0030). What Otta
  * guards is its ANSWER — validated, and timed out — not its code.
  */
-import { isValidCalculatorId, type TaxCalculator } from "@urumi-ai/otta-domain";
+import { isValidCalculatorId, type TaxCalculator } from "@urumi.ai/otta-domain";
 
 let registered: TaxCalculator | undefined;
 /** The replacement warning is logged once per process: a dev server re-evaluates

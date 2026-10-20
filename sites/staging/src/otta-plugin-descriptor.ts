@@ -1,7 +1,7 @@
 /**
  * The Otta plugin's TRUSTED (in-process) registration descriptor —
  * ADR-0006. A hand-written standard-format `PluginDescriptor`: em-dash's
- * integration generates `import def from "@urumi-ai/otta-plugin/trusted";
+ * integration generates `import def from "@urumi.ai/otta-plugin/trusted";
  * adaptSandboxEntry(def, {...this descriptor})` at build time, so the
  * plugin's `{hooks, routes}` default export runs in the host worker — but
  * `capabilities` and `allowedHosts` are STILL enforced by the
@@ -25,7 +25,7 @@ import {
 	OTTA_PLUGIN_ID,
 	OTTA_PLUGIN_VERSION,
 	PAYMENT_SECRET_SETTINGS_SCHEMA,
-} from "@urumi-ai/otta-plugin";
+} from "@urumi.ai/otta-plugin";
 
 /** The descriptor's own storage shape, so the widening below is expressed once. */
 type DescriptorStorage = NonNullable<PluginDescriptor["storage"]>;
@@ -74,7 +74,7 @@ export function ottaPluginDescriptor(options: OttaPluginDescriptorOptions = {}):
 		// The TRUSTED entry (issue #447): the plugin's default export with
 		// `trustedHost` on, so a timed-out Stripe request is aborted at the
 		// socket. Right only because this registration is in-process.
-		entrypoint: "@urumi-ai/otta-plugin/trusted",
+		entrypoint: "@urumi.ai/otta-plugin/trusted",
 		// EXACTLY the manifest's three capabilities — never more (the
 		// sandbox-clean contract, pinned by the plugin's own guard test).
 		capabilities: [...OTTA_PLUGIN_CAPABILITIES],
@@ -96,7 +96,7 @@ export function ottaPluginDescriptor(options: OttaPluginDescriptorOptions = {}):
 		// path at runtime.
 		//
 		// The list is not restated here — `COMMERCE_STORAGE_COLLECTIONS` is exported
-		// by @urumi-ai/otta-plugin precisely so the deploying site declares the layout the
+		// by @urumi.ai/otta-plugin precisely so the deploying site declares the layout the
 		// adapters actually read, and site-config.test.ts asserts equality with it
 		// (names AND per-collection index lists) rather than a hand-copied snapshot.
 		storage: commerceStorage(),

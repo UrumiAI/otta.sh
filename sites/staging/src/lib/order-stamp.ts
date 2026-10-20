@@ -10,7 +10,7 @@
  * and Stripe captured it. That sentence now follows `latePayment` — derived by the
  * plugin from the order's payments and refunds ledgers, never from the URL.
  */
-import type { PublicOrderView } from "@urumi-ai/otta-plugin";
+import type { PublicOrderView } from "@urumi.ai/otta-plugin";
 
 export interface StateCopy {
 	/** The stamp's headline — the largest type on the page. */

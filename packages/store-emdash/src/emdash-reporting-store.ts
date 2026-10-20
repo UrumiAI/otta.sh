@@ -51,7 +51,7 @@ import {
 	type StatusCount,
 	type TopProduct,
 	type TopProductsMetric,
-} from "@urumi-ai/otta-domain";
+} from "@urumi.ai/otta-domain";
 import { CAS_RETRY, casDone, withCasRetry, type CasRetryOptions } from "./cas-retry.js";
 import { collectionOf } from "./collection-of.js";
 import { ScanPageLimitError } from "./errors.js";

@@ -30,9 +30,9 @@ import {
 	productId as toProductId,
 	sku as toSku,
 	type OrderId,
-} from "@urumi-ai/otta-domain";
-import { FakeEmailSender, FakePaymentGateway } from "@urumi-ai/otta-domain/testing";
-import { EmdashOrderStore } from "@urumi-ai/otta-store-emdash";
+} from "@urumi.ai/otta-domain";
+import { FakeEmailSender, FakePaymentGateway } from "@urumi.ai/otta-domain/testing";
+import { EmdashOrderStore } from "@urumi.ai/otta-store-emdash";
 import { afterAll, beforeEach, describe, expect, test, vi } from "vitest";
 import { InProcessAdminOrdersClient } from "../src/admin/in-process-admin-orders-client.js";
 import type { SendOrderEmailsNowOptions } from "../src/email/send-order-emails-now.js";

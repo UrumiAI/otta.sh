@@ -12,7 +12,7 @@ import {
 	orderId as toOrderId,
 	productId as toProductId,
 	sku as toSku,
-} from "@urumi-ai/otta-domain";
+} from "@urumi.ai/otta-domain";
 import { afterAll, beforeEach, describe, expect, test } from "vitest";
 import {
 	makeInProcessCommerce,

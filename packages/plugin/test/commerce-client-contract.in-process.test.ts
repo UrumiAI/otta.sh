@@ -40,8 +40,8 @@
  * The fake stands in for the PROVIDER only; the order store, the refund ledger
  * and its ceiling arbitration are the real adapters.
  */
-import { email as toEmail } from "@urumi-ai/otta-domain";
-import { FakePaymentGateway, FixedClock } from "@urumi-ai/otta-domain/testing";
+import { email as toEmail } from "@urumi.ai/otta-domain";
+import { FakePaymentGateway, FixedClock } from "@urumi.ai/otta-domain/testing";
 import { afterAll, afterEach, beforeAll, describe, expect, test, vi } from "vitest";
 import {
 	IDEMPOTENCY_KEY_MAX,

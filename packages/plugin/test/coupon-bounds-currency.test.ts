@@ -3,7 +3,7 @@
  * must answer like the Block Kit screen whoever calls it. In-process over a real
  * document store (no mocks), as `coupon-retire.test.ts` is.
  */
-import { cents, currency, type Clock } from "@urumi-ai/otta-domain";
+import { cents, currency, type Clock } from "@urumi.ai/otta-domain";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { InProcessAdminRulesClient } from "../src/admin/in-process-admin-rules-client.js";
 import type { PluginContext, StorageAccess } from "../src/types.js";

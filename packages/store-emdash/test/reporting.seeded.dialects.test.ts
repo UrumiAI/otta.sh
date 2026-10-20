@@ -17,8 +17,8 @@
  * revenue-counting state (which is a bucket at `revenueCents: 0`, not an absent
  * one).
  */
-import { InMemoryReportingStore } from "@urumi-ai/otta-domain/testing";
-import type { DateRange, ReportInterval } from "@urumi-ai/otta-domain";
+import { InMemoryReportingStore } from "@urumi.ai/otta-domain/testing";
+import type { DateRange, ReportInterval } from "@urumi.ai/otta-domain";
 import { describe, expect, test } from "vitest";
 import { isScanPageLimitError } from "../src/index.js";
 import { describeEachDialect } from "./describe-each-dialect.js";

@@ -15,8 +15,8 @@ import {
 	type Clock,
 	type EmailSender,
 	type SendEmailInput,
-} from "@urumi-ai/otta-domain";
-import { FixedClock } from "@urumi-ai/otta-domain/testing";
+} from "@urumi.ai/otta-domain";
+import { FixedClock } from "@urumi.ai/otta-domain/testing";
 import {
 	EmdashCartStore,
 	EmdashInventoryStore,
@@ -25,7 +25,7 @@ import {
 	systemClock,
 	uuidIdGen,
 	type StorageAccess,
-} from "@urumi-ai/otta-store-emdash";
+} from "@urumi.ai/otta-store-emdash";
 import type { SweepCursorStore } from "../src/cron/index.js";
 import {
 	CONTENT_LIST_QUERIES,

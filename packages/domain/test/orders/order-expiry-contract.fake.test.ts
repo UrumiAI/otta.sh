@@ -1,4 +1,4 @@
-import { idempotencyKey } from "@urumi-ai/otta-domain";
+import { idempotencyKey } from "@urumi.ai/otta-domain";
 import {
 	CountingIdGen,
 	FixedClock,
@@ -8,7 +8,7 @@ import {
 	InMemoryOrderStore,
 	InMemoryPaymentEventStore,
 	orderExpiryContract,
-} from "@urumi-ai/otta-domain/testing";
+} from "@urumi.ai/otta-domain/testing";
 
 // The order-expiry unit's shape (QA2 M2) against the in-memory fakes, before the
 // document store on sqlite, Postgres and D1. The fake's flip does not release

@@ -1,6 +1,6 @@
 /**
  * The admin console's ONE date dialect (INC-13), RE-EXPORTED from
- * `@urumi-ai/otta-admin-presentation` since INC-20.
+ * `@urumi.ai/otta-admin-presentation` since INC-20.
  *
  * INC-13 created this module to absorb three disagreeing answers to "what time
  * did this happen?" — a raw ISO value under a `(UTC)`-suffixed label, a
@@ -10,7 +10,7 @@
  * and cannot land on one screen only.
  *
  * INC-20 adds a screen the plugin cannot reach: the React Orders console in
- * `@urumi-ai/otta-admin-react`, which may not import `@urumi-ai/otta-plugin` at all
+ * `@urumi.ai/otta-admin-react`, which may not import `@urumi.ai/otta-plugin` at all
  * (ADR-0014 Decision 3 / `console-imports-no-workspace-package`). A React screen
  * with its own `Intl.DateTimeFormat` would put the console straight back to two
  * dialects, and the operator would meet the disagreement exactly where INC-13
@@ -20,7 +20,7 @@
  * NOTHING ABOUT THE DIALECT CHANGED: still `8 Jul 2026, 10:30 UTC`, still
  * `en-GB` for its day-first spelled-month SHAPE rather than for its country,
  * still minutes and never seconds, still UTC-pinned on every surface, still one
- * localizable constant. See `@urumi-ai/otta-admin-presentation`'s `datetime.ts` for
+ * localizable constant. See `@urumi.ai/otta-admin-presentation`'s `datetime.ts` for
  * the full rationale, the per-locale probe of what `timeZoneName: "short"`
  * actually renders, and the recorded bidi follow-up.
  *
@@ -28,7 +28,7 @@
  * Block Kit screens and `scaffold/index.ts` already import — keeps working.
  *
  * ONE IDIOM, STATED ONCE (INC-20 review). A module in `src/` that needs a
- * shared primitive imports `@urumi-ai/otta-admin-presentation` DIRECTLY. This file
+ * shared primitive imports `@urumi.ai/otta-admin-presentation` DIRECTLY. This file
  * and its four siblings are compatibility re-exports for the ~30 modules that
  * already imported these paths and that this increment had no reason to touch
  * — they are not a second sanctioned way in. A module being edited for any
@@ -45,4 +45,4 @@ export {
 	formatDay,
 	formatTimestamp,
 	startOfDay,
-} from "@urumi-ai/otta-admin-presentation";
+} from "@urumi.ai/otta-admin-presentation";

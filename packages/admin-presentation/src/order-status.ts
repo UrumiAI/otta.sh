@@ -3,14 +3,14 @@
  *
  * WHY IT LIVES HERE RATHER THAN ON A SCREEN. It arrived in `orders-page.ts` and
  * was correct there while there was one Orders screen. INC-20 gives the console
- * a second one (the React tier, `@urumi-ai/otta-admin-react`), and the two are the
+ * a second one (the React tier, `@urumi.ai/otta-admin-react`), and the two are the
  * same screen to an operator: they read the same list, one is reachable from the
  * other's sidebar, and a state that says `cancelled · closed` on one and
  * `cancelled` on the other is precisely the list/detail disagreement INC-13
  * spent an increment closing for `Placed`. A shared constant makes the drift
  * impossible rather than tested-for.
  *
- * The React package cannot import `@urumi-ai/otta-plugin` at all
+ * The React package cannot import `@urumi.ai/otta-plugin` at all
  * (`console-imports-no-workspace-package` — ADR-0014 Decision 3 gives the
  * console exactly one data path), so "share it" means "extract it", and this
  * package is where the extraction lands.
@@ -53,7 +53,7 @@ export const ORDER_STATE_SET: ReadonlySet<string> = new Set(ORDER_STATES);
  * also why `completed` is NOT here — a completed order can still be refunded,
  * so it is not a dead end.
  *
- * Neither consumer can IMPORT the machine — `@urumi-ai/otta-domain` is a
+ * Neither consumer can IMPORT the machine — `@urumi.ai/otta-domain` is a
  * devDependency of the plugin (the published plugin has no runtime dependency
  * on it) and is forbidden outright to the console — so the set is restated
  * here, once, against the citation above. New states are absent from it by

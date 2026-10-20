@@ -11,7 +11,7 @@
  * same order) before it is handed a payment intent, or it pays for units the cart
  * sweep can return to the shelf.
  */
-import { createOrderFromCart, idempotencyKey, type Order } from "@urumi-ai/otta-domain";
+import { createOrderFromCart, idempotencyKey, type Order } from "@urumi.ai/otta-domain";
 import { expect, test } from "vitest";
 import { CARTS_COLLECTION, INVENTORY_COLLECTION, isStorageContentionError } from "../src/index.js";
 import { describeEachDialect } from "./describe-each-dialect.js";

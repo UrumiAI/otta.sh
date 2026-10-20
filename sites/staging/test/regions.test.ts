@@ -8,9 +8,9 @@
 import type { APIContext } from "astro";
 import { experimental_AstroContainer as AstroContainer } from "astro/container";
 import { beforeAll, describe, expect, test } from "vitest";
-import type { CheckoutSummaryView } from "@urumi-ai/otta-plugin";
+import type { CheckoutSummaryView } from "@urumi.ai/otta-plugin";
 import { byLabel, countryOptions } from "../src/lib/countries.js";
-import { subdivisionOptions } from "@urumi-ai/otta-plugin/subdivisions";
+import { subdivisionOptions } from "@urumi.ai/otta-plugin/subdivisions";
 import {
 	regionChoice,
 	regionContainsOthers,

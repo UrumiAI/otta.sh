@@ -24,7 +24,7 @@ import {
 	STOREFRONT_PAYMENT_CONFIG_ROUTE,
 	STOREFRONT_PRODUCT_ROUTE,
 	type RenderBusy,
-} from "@urumi-ai/otta-plugin";
+} from "@urumi.ai/otta-plugin";
 import type { PublicPluginApiRouteHandler } from "emdash/plugin-utils";
 import { cartErrorMessage } from "./error-messages.js";
 

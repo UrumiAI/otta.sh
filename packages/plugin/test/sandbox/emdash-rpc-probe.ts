@@ -17,9 +17,9 @@ import {
 	orderId,
 	type IdempotencyKey,
 	type OrderId,
-} from "@urumi-ai/otta-domain";
-import { StripePaymentGateway } from "@urumi-ai/otta-payments-stripe";
-import { isEmailTransportUnavailableError } from "@urumi-ai/otta-domain";
+} from "@urumi.ai/otta-domain";
+import { StripePaymentGateway } from "@urumi.ai/otta-payments-stripe";
+import { isEmailTransportUnavailableError } from "@urumi.ai/otta-domain";
 import { CtxEmailSender, isEmailNotConfiguredError } from "../../src/email/ctx-email-sender.js";
 import { STRIPE_SECRET_KEY_KEY, STRIPE_WEBHOOK_SECRET_KEY } from "../../src/payment-secrets.js";
 import { refreshStripeAccountCountry } from "../../src/payments/stripe-account-country.js";

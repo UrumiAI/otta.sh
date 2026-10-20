@@ -91,7 +91,7 @@ function nodeImportsIn(file: string): string[] {
 /**
  * The sandbox-clean perimeter, asserted for THIS package (INC-C1).
  *
- * `@urumi-ai/otta-payments-stripe` is constructed in-process by the plugin, so its
+ * `@urumi.ai/otta-payments-stripe` is constructed in-process by the plugin, so its
  * source is loaded inside the workerd sandbox — where a `node:` import is not
  * merely discouraged but unavailable. The adapter used to import
  * `node:crypto`'s `createHmac` + `timingSafeEqual`; both are now

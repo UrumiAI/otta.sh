@@ -15,7 +15,7 @@
  * Then the ordinary pay step: `/checkout/pay` reads the stash and re-checks the
  * order with its unchanged guard (`lib/pay-guard.ts`).
  */
-import { STOREFRONT_ORDER_RESUME_ROUTE, type OrderResumeRouteResult } from "@urumi-ai/otta-plugin";
+import { STOREFRONT_ORDER_RESUME_ROUTE, type OrderResumeRouteResult } from "@urumi.ai/otta-plugin";
 import type { APIContext, APIRoute } from "astro";
 import { currentSessionToken } from "../../lib/account.js";
 import {

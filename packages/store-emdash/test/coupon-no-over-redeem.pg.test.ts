@@ -13,7 +13,7 @@
  * is the shape that makes the guard actually fire: with a smaller crowd the refusals
  * can happen without any two bumps ever contending.
  */
-import { cents, currency, customerId, idempotencyKey, orderId } from "@urumi-ai/otta-domain";
+import { cents, currency, customerId, idempotencyKey, orderId } from "@urumi.ai/otta-domain";
 import { describe, expect, test } from "vitest";
 import type { CouponDoc, StorageCollection } from "../src/index.js";
 import { COUPON_LAYOUT } from "./coupon-collections.js";

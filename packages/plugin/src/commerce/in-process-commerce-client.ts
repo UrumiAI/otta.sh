@@ -1,7 +1,7 @@
 /**
  * `InProcessCommerceClient` — the `CommerceClient` port with commerce truth held
- * on the plugin's own document store: the `@urumi-ai/otta-domain` use-cases composed
- * over the `@urumi-ai/otta-store-emdash` adapters bound to `ctx.storage`, with no
+ * on the plugin's own document store: the `@urumi.ai/otta-domain` use-cases composed
+ * over the `@urumi.ai/otta-store-emdash` adapters bound to `ctx.storage`, with no
  * commerce service and no egress at all (ADR-0018).
  *
  * WHAT THIS CLASS IS, AND WHAT IT IS NOT. It is a TRANSPORT adapter that happens
@@ -125,7 +125,7 @@ import {
 	type TaxTotalsDisplay,
 	type ZoneResolution,
 	roundingEntry,
-} from "@urumi-ai/otta-domain";
+} from "@urumi.ai/otta-domain";
 import type {
 	AbandonCartOrderResult,
 	AddressWire,

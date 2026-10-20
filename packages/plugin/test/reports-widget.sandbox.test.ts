@@ -4,8 +4,8 @@ import {
 	idempotencyKey,
 	productId as toProductId,
 	sku as toSku,
-} from "@urumi-ai/otta-domain";
-import { OTTA_PLUGIN_CAPABILITIES } from "@urumi-ai/otta-plugin";
+} from "@urumi.ai/otta-domain";
+import { OTTA_PLUGIN_CAPABILITIES } from "@urumi.ai/otta-plugin";
 import {
 	EmdashProductCommerceStore,
 	INVENTORY_COLLECTION,
@@ -15,7 +15,7 @@ import {
 	SETTINGS_DOC_ID,
 	systemClock,
 	type StorageAccess,
-} from "@urumi-ai/otta-store-emdash";
+} from "@urumi.ai/otta-store-emdash";
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "vitest";
 import { assertBlockContract } from "./helpers/block-contract.js";
 import {
@@ -44,7 +44,7 @@ import { storageBridge } from "./sandbox/storage-bridge.js";
 // SINCE INC-D3a THE DATA IS THE PLUGIN'S OWN. There is no `@otta-sh/service`
 // deployment and no `ctx.http` call behind this screen: `makeAdminClients`
 // hands the page an `InProcessReportingSettingsClient` that composes the
-// `@urumi-ai/otta-domain` reporting use-cases over the `@urumi-ai/otta-store-emdash`
+// `@urumi.ai/otta-domain` reporting use-cases over the `@urumi.ai/otta-store-emdash`
 // adapters bound to `ctx.storage`. So every case below seeds DOCUMENTS instead
 // of scripting a stub responder, and the four reports are read back through the
 // same store the rest of the plugin writes:

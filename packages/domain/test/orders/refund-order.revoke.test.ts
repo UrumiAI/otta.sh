@@ -9,8 +9,8 @@ import {
 	type RefundOrderDeps,
 	settleOrder,
 	sku as brandSku,
-} from "@urumi-ai/otta-domain";
-import { FakePaymentGateway } from "@urumi-ai/otta-domain/testing";
+} from "@urumi.ai/otta-domain";
+import { FakePaymentGateway } from "@urumi.ai/otta-domain/testing";
 import { beforeEach, describe, expect, test } from "vitest";
 import { makeOrderHarness, type OrderHarness, USD } from "./fake-harness.js";
 

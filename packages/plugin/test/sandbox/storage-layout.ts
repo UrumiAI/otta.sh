@@ -10,7 +10,7 @@
  * ordering), while the harness takes mutable arrays, so each entry is copied out
  * at exactly that boundary and nothing is renamed, added or dropped on the way.
  */
-import type { StorageLayout } from "@urumi-ai/otta-store-emdash/testing";
+import type { StorageLayout } from "@urumi.ai/otta-store-emdash/testing";
 import { COMMERCE_STORAGE_COLLECTIONS } from "../../src/commerce/commerce-storage.js";
 
 export function commerceStorageLayout(): StorageLayout {

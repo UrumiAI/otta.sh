@@ -4,7 +4,7 @@
  *
  * WHAT THIS PACKAGE IS. ADR-0014 amends ADR-0006 Decision 2 by exactly one
  * thing: React admin pages, on a SECOND EmDash descriptor, in a SEPARATE
- * package. This is that package. `@urumi-ai/otta-plugin` is untouched by it — still
+ * package. This is that package. `@urumi.ai/otta-plugin` is untouched by it — still
  * `format: "standard"`, still sandbox-clean, still zero EmDash dependency, and
  * `packages/plugin/src/types.ts` stays a hand-written mirror.
  *
@@ -38,9 +38,9 @@ export const OTTA_CONSOLE_PLUGIN_VERSION = "0.1.0";
  * a rename cannot leave one of them pointing at a package that no longer
  * exists — and so `sites/staging/test/site-config.test.ts`'s boundary check
  * (both specifiers must resolve INTO this package, and a lookalike such as
- * `@urumi-ai/otta-admin-react-shim` must not pass) has a single thing to hold.
+ * `@urumi.ai/otta-admin-react-shim` must not pass) has a single thing to hold.
  */
-export const OTTA_CONSOLE_PACKAGE = "@urumi-ai/otta-admin-react";
+export const OTTA_CONSOLE_PACKAGE = "@urumi.ai/otta-admin-react";
 
 /** `PluginDescriptor.entrypoint` — EmDash generates
  *  `import { createPlugin } from "<this>"` and calls it (native format). */
@@ -105,7 +105,7 @@ export const OTTA_CONSOLE_ADMIN_PAGES: readonly PluginAdminPage[] = [ORDERS_PAGE
 
 /**
  * The native entrypoint. EmDash's generated plugins module does
- * `import { createPlugin } from "@urumi-ai/otta-admin-react"` and calls it; the
+ * `import { createPlugin } from "@urumi.ai/otta-admin-react"` and calls it; the
  * returned `ResolvedPlugin` is what `configuredPlugins` holds, and it is
  * `admin.entry` HERE — not `descriptor.adminEntry` — that makes the runtime
  * derive `adminMode: "react"` for THIS plugin id only.

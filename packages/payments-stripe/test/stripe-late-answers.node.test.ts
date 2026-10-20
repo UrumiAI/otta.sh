@@ -15,7 +15,7 @@
  * create gets 409 ⇒ retryable); and however the calls interleave, Stripe records
  * ONE refund and ONE PaymentIntent per key.
  */
-import { cents, currency, idempotencyKey, orderId, type RefundInput } from "@urumi-ai/otta-domain";
+import { cents, currency, idempotencyKey, orderId, type RefundInput } from "@urumi.ai/otta-domain";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { Socket } from "node:net";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";

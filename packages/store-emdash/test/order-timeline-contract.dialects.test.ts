@@ -24,8 +24,8 @@ import {
 	reservationId,
 	sku,
 	type CreateOrderInput,
-} from "@urumi-ai/otta-domain";
-import { orderTimelineContract } from "@urumi-ai/otta-domain/testing";
+} from "@urumi.ai/otta-domain";
+import { orderTimelineContract } from "@urumi.ai/otta-domain/testing";
 import { expect, test } from "vitest";
 import { collectionOf, ORDERS_COLLECTION, type OrderDoc } from "../src/index.js";
 import { describeEachDialect } from "./describe-each-dialect.js";

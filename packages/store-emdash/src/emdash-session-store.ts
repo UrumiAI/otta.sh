@@ -27,7 +27,7 @@ import type {
 	Session,
 	SessionStore,
 	SessionSummary,
-} from "@urumi-ai/otta-domain";
+} from "@urumi.ai/otta-domain";
 import {
 	CAS_RETRY,
 	casDone,

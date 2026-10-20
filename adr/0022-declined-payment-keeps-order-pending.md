@@ -88,8 +88,8 @@ Three options were considered:
    rendering, reporting, the storefront order page — must keep rendering them. It is a
    historical value, not a live transition.
 
-The contract is `paymentDeclineContract` in `@urumi-ai/otta-domain/testing`, run on the in-memory
-fakes and on `@urumi-ai/otta-store-emdash` over SQLite, Postgres and D1: decline → still pending,
+The contract is `paymentDeclineContract` in `@urumi.ai/otta-domain/testing`, run on the in-memory
+fakes and on `@urumi.ai/otta-store-emdash` over SQLite, Postgres and D1: decline → still pending,
 stock held, coupon consumed, event recorded once; decline then success → paid, committed
 once, no flag; decline and never paid → expiry releases stock and coupon exactly once;
 success after expiry → flagged for reconciliation, as before.
@@ -217,7 +217,7 @@ key), an order without evidence it was unpaid, a definite refusal, and an ambigu
 
 **Consequences of the amendment.** The `paymentDeclineContract` case "success after expiry →
 flagged for reconciliation, as before" now asserts the refund; the new `latePaymentContract`
-(`@urumi-ai/otta-domain/testing`, run on the fakes and on the document store over SQLite, Postgres
+(`@urumi.ai/otta-domain/testing`, run on the fakes and on the document store over SQLite, Postgres
 and D1) pins the once-only cure, the flag wording, the retry, the concurrent case and the
 no-evidence case, the backoff, the give-up and per-refund retries. The order document gains a
 per-refund `refundRetries` map and an indexed, derived `refundRetryAt`. A late-payment refund
@@ -275,7 +275,7 @@ order normally, exactly as this record's original decision intends; its adopted 
 held, so the settle commits it. Only if that hold had been lost would the settle raise the
 existing loud `COMMIT_LOST` anomaly and flag the order — the same path any lost hold takes.
 
-The new `intentCancelContract` (`@urumi-ai/otta-domain/testing`, fakes and the document store over
+The new `intentCancelContract` (`@urumi.ai/otta-domain/testing`, fakes and the document store over
 SQLite, Postgres and D1) pins all of the above. The order document gains `paymentIntents` and an
 indexed `intentCancelDueAt`.
 

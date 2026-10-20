@@ -7,7 +7,7 @@
 import {
 	STOREFRONT_CART_LINE_REMOVE_ROUTE,
 	type CartLineRemoveRouteResult,
-} from "@urumi-ai/otta-plugin";
+} from "@urumi.ai/otta-plugin";
 import type { APIRoute } from "astro";
 import {
 	clearCartCookieIfBad,
