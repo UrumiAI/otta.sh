@@ -61,7 +61,9 @@ export type Trend = "up" | "down" | "neutral";
  * NO DIVISION BY ZERO, and no percentage that is not one: nothing then and
  * nothing now is "No change"; something now over nothing then has no
  * percentage at all ("No data in previous 30 days"), and an UNKNOWN previous
- * figure (one that cannot be computed, e.g. an average with no orders) says so.
+ * figure (a read that failed, or an average whose previous revenue is in another
+ * currency) says so. An average over no previous orders is not passed here at
+ * all: the card states "No data in …" itself rather than averaging nothing.
  * A change that rounds to 0% is neutral and unsigned, never "+0%".
  */
 export function periodChange(
@@ -256,7 +258,6 @@ export function salesChart(args: {
 						axisLine: { show: false },
 						axisTick: { show: false },
 						splitLine: { show: false },
-						triggerTooltip: false,
 					},
 				],
 				series: [

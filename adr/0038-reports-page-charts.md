@@ -42,5 +42,12 @@ To draw orders over time, `PeriodBucket` gained `revenueOrderCount` — the exis
   (two more reads of the same rollup), a sales line with a dashed comparison line, an orders bar
   chart, a status donut and a top-products bar chart. Low stock stays a table.
 - A multi-currency period cannot share one money axis, so its per-day sales stay a sparse table.
+- `columns` are a fixed 2-up split with no responsive breakpoint, so the paired charts are cramped
+  on a narrow screen.
+- A canvas chart is less accessible than a table: screen readers get only ECharts' aria
+  auto-description. The exact figures still appear as text — in the cards, the bar labels, the
+  donut's slice names and the tooltips.
+- A product title that looks like HTML renders escaped in the top-products chart (cosmetic, and the
+  renderer's doing; nothing is interpreted).
 - If a later renderer registers `LegendComponent` or allows a safe formatter, the context-line
   legend and the category-axis trick can be simplified; the money rule stays.

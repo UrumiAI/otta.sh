@@ -185,6 +185,9 @@ interface DaySeed {
 	/** How many of the day's orders sit in each state RIGHT NOW. This is what
 	 *  `ordersByStatus` folds — the page's Orders card and statuses table. */
 	readonly stateCounts?: Record<string, number>;
+	/** The orders behind `revenueCents` (`revenueOrders`). Defaults to one per
+	 *  earning day; the Average order value card divides by it. */
+	readonly revenueOrders?: number;
 }
 
 /** One `reporting_daily` document, written directly: the rollup is normally
@@ -199,7 +202,7 @@ async function seedDay(seed: DaySeed): Promise<void> {
 		stateCounts: seed.stateCounts ?? {},
 		// A bucket EXISTS when either half contributed; `revenueOrders` is the
 		// contributor count behind the money, never the page's order count.
-		revenueOrders: revenueCents === 0 ? 0 : 1,
+		revenueOrders: seed.revenueOrders ?? (revenueCents === 0 ? 0 : 1),
 		revenueCents,
 		refundEntries: seed.refundEntries ?? 0,
 		refundedCents: seed.refundedCents ?? 0,
@@ -300,7 +303,12 @@ async function seedStandardRange(): Promise<void> {
 		refundEntries: 1,
 		stateCounts: { paid: 1 },
 	});
-	await seedDay({ day: "2026-07-11", revenueCents: 5500, stateCounts: { paid: 2 } });
+	await seedDay({
+		day: "2026-07-11",
+		revenueCents: 5500,
+		stateCounts: { paid: 2 },
+		revenueOrders: 2,
+	});
 	await seedOrder(`ord-gadget-${SFX}`, "2026-07-11T09:00:00.000Z", [
 		{ productId: "p2", title: "Gadget", quantity: 4, unitPrice: 1000 },
 	]);
@@ -317,7 +325,7 @@ async function seedStandardDefault(): Promise<void> {
 		refundEntries: 1,
 		stateCounts: { paid: 1 },
 	});
-	await seedDay({ day: TODAY, revenueCents: 5500, stateCounts: { paid: 2 } });
+	await seedDay({ day: TODAY, revenueCents: 5500, stateCounts: { paid: 2 }, revenueOrders: 2 });
 	await seedOrder(`ord-gadget-${SFX}`, `${TODAY}T09:00:00.000Z`, [
 		{ productId: "p2", title: "Gadget", quantity: 4, unitPrice: 1000 },
 	]);
@@ -369,7 +377,7 @@ describe("Reports admin page (workerd sandbox)", () => {
 			["11 Jul", 5500, "$55.00"],
 			["12 Jul", 0, "$0.00"],
 		]);
-		expect(seriesData(blocks, "reports:orders-chart")).toEqual([1, 1, 0]);
+		expect(seriesData(blocks, "reports:orders-chart")).toEqual([1, 2, 0]);
 		expect(statusSlices(blocks)).toEqual([["paid (3)", 3]]);
 		expect(topBars(blocks)).toEqual([["Gadget", "$40.00 · 4 sold"]]);
 		expect(rowsOf(blocks, "reports:low-table")).toEqual([
@@ -434,7 +442,7 @@ describe("Reports admin page (workerd sandbox)", () => {
 		expect(contextTexts(blocks)).toContainEqual(
 			expect.stringContaining("Orders counts every status (3 paid)."),
 		);
-		// 8500 over the 3 `paid` orders the day counters hold.
+		// 8500 over the 3 USD orders behind that revenue (`revenueOrders`).
 		expect(items[2]?.value).toBe("$28.33");
 		// The refunded AMOUNT is a real figure: 250 on the earlier day + 0 on
 		// today, formatted through formatMoney like every other money value on
@@ -682,13 +690,15 @@ describe("Reports admin page (workerd sandbox)", () => {
 		expect(aov?.value).toBe("—");
 		expect(String(aov?.description)).toMatch(/several currencies/);
 
-		// DA-7: the gap (nothing in the reporting port carries a per-currency
-		// ORDER COUNT) is disclosed to the OPERATOR, inside the sales section —
-		// and ONLY when it actually applies (multi-currency).
+		// DA-7: the ordering rule (alphabetical, because amounts in different
+		// currencies are never compared) is disclosed to the OPERATOR, inside the
+		// sales section — and ONLY when it actually applies (multi-currency).
 		const revenueGroupText = sectionBlocks(blocks, "reports:sales")
 			.filter((b) => b.type === "context")
 			.map((b) => b.text);
-		expect(revenueGroupText.some((t) => /no per-currency order count/.test(String(t)))).toBe(true);
+		expect(revenueGroupText.some((t) => /alphabetically by currency code/.test(String(t)))).toBe(
+			true,
+		);
 
 		// Top products carries no currency of its own, so it cannot be safely
 		// formatted across more than one — same "—" fallback as before, but with
@@ -701,6 +711,27 @@ describe("Reports admin page (workerd sandbox)", () => {
 		expect(topGroupText.some((t) => /more than one currency/.test(String(t)))).toBe(true);
 	});
 
+	test("a multi-currency period's top products are the server's UNITS ranking, so 'Ranked by units' is true", async () => {
+		await seedDay({ day: TODAY, currency: "USD", revenueCents: 90_000 });
+		await seedDay({ day: TODAY, currency: "EUR", revenueCents: 1_000 });
+		// By revenue Atlas leads ($900 from 1 unit); by units Bolt does (5 × $1).
+		await seedOrder(`ord-atlas-${SFX}`, `${TODAY}T09:00:00.000Z`, [
+			{ productId: "pa", title: "Atlas", quantity: 1, unitPrice: 90_000 },
+		]);
+		await seedOrder(`ord-bolt-${SFX}`, `${TODAY}T10:00:00.000Z`, [
+			{ productId: "pb", title: "Bolt", quantity: 5, unitPrice: 100 },
+		]);
+
+		const blocks = blocksOf(await reports());
+		assertBlockContract(blocks, { screen: "reports", level: "list" });
+		expect(topBars(blocks)).toEqual([
+			["Bolt", "5 sold"],
+			["Atlas", "1 sold"],
+		]);
+		const topGroupText = sectionBlocks(blocks, "reports:top").map((b) => String(b.text));
+		expect(topGroupText.some((t) => t.startsWith("Ranked by units"))).toBe(true);
+	});
+
 	test("single-currency reports carry NEITHER disclosure line (T-8a: a caveat that cannot apply is noise)", async () => {
 		await seedStandardDefault();
 
@@ -709,7 +740,7 @@ describe("Reports admin page (workerd sandbox)", () => {
 
 		expect(
 			sectionBlocks(blocks, "reports:sales").some(
-				(b) => b.type === "context" && /order count/.test(String(b.text)),
+				(b) => b.type === "context" && /alphabetically by currency code/.test(String(b.text)),
 			),
 		).toBe(false);
 		expect(
@@ -1006,6 +1037,40 @@ describe("Reports admin page (workerd sandbox)", () => {
 		expect(sectionHeading(blocks, "reports:low")?.text).toBe(
 			`Low stock (1) — at or below ${threshold}`,
 		);
+	});
+
+	test("a failed PREVIOUS-period read costs only the comparison — the period's own figures still render", async () => {
+		await seedStandardRange();
+		// Fail exactly the rollup reads for 7–9 Jul (RANGE's previous period):
+		// both the previous revenue and the previous orders-by-status read them.
+		const daily = collection(REPORTING_DAILY_COLLECTION);
+		const query = daily.query;
+		daily.query = async (options) => {
+			const where = (options as { where?: { date?: { gte?: unknown } } } | undefined)?.where;
+			if (where?.date?.gte === "2026-07-07") {
+				throw new Error("injected previous-period read failure");
+			}
+			return query.call(daily, options);
+		};
+		try {
+			const blocks = blocksOf(await reports(RANGE));
+			assertBlockContract(blocks, { screen: "reports", level: "list" });
+			expect(findBlocks(blocks, "banner")).toHaveLength(0);
+			expect(statItems(blocks)).toMatchObject([
+				{ label: "Total sales", value: "$85.00", description: "No comparison available" },
+				{ label: "Orders", value: "3", description: "No comparison available" },
+				{ label: "Average order value", value: "$28.33", description: "No comparison available" },
+				{ label: "Refunded", value: "$2.50", description: "No comparison available" },
+			]);
+			expect(findBlocks(blocks, "chart")).toHaveLength(4);
+			expect(
+				sectionBlocks(blocks, "reports:sales").some((b) =>
+					String(b.text).includes("The previous period could not be loaded."),
+				),
+			).toBe(true);
+		} finally {
+			daily.query = query;
+		}
 	});
 
 	test("a low-stock query failure still fails the reports page closed", async () => {

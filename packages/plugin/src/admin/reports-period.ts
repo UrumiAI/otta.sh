@@ -11,7 +11,13 @@
  * documents ending with today's, so the default and a hand-typed identical period
  * are the SAME query (see `startOfDay`/`endOfDay`, the console's one bounds rule).
  */
-import { dayOf, DAY_MS, endOfDay, startOfDay } from "@urumi.ai/otta-admin-presentation";
+import {
+	dayOf,
+	DAY_MS,
+	DAY_PATTERN,
+	endOfDay,
+	startOfDay,
+} from "@urumi.ai/otta-admin-presentation";
 
 /** The period select's change — a REAL action (it fires on every pick), so it is
  *  registered in `REPORTS_ACTION_IDS` beside the From/To form's submit. */
@@ -21,6 +27,13 @@ export const REPORTS_PERIOD_ACTION_ID = "reports:period";
  *  custom period renders the page with a banner naming the limit instead of the
  *  generic fail-closed screen. */
 export const MAX_RANGE_DAYS = 400;
+
+/** The calendar years a custom period may fall in. Past these a `Date` can still
+ *  exist while its day is not a `YYYY-MM-DD` (`+010000-01-01`), and at the very
+ *  edge of what `Date` holds the previous-period shift steps off it and throws.
+ *  Nothing this store sold predates the Unix epoch. */
+export const MIN_REPORT_YEAR = 1970;
+export const MAX_REPORT_YEAR = 9999;
 
 /** What a bare page load shows. */
 export const DEFAULT_PRESET = "30d" satisfies ReportsPreset;
@@ -201,6 +214,9 @@ function resolveCustom(
 	// `2025-01-01T23:59Z` to `2026-02-05T00:01Z` is 399 raw days but 401 whole ones.
 	const fromDay = dayOf(from);
 	const toDay = dayOf(to);
+	if (!isReportableDay(fromDay) || !isReportableDay(toDay)) {
+		return fallback("Choose dates between 1 Jan 1970 and 31 Dec 9999, then update the period.");
+	}
 	if (fromDay > toDay) {
 		return fallback("The From date falls after the To date. Swap them, then update again.");
 	}
@@ -210,6 +226,15 @@ function resolveCustom(
 		);
 	}
 	return withPrevious({ ...periodFromDays(fromDay, toDay), preset: "custom", isDefault: false });
+}
+
+/** A well-formed `YYYY-MM-DD` inside {@link MIN_REPORT_YEAR}..{@link MAX_REPORT_YEAR}:
+ *  the only days the labels, the string comparisons and the previous-period
+ *  shift below are defined for. */
+function isReportableDay(day: string): boolean {
+	if (!DAY_PATTERN.test(day)) return false;
+	const year = Number(day.slice(0, 4));
+	return year >= MIN_REPORT_YEAR && year <= MAX_REPORT_YEAR;
 }
 
 function withPrevious(range: Omit<ResolvedRange, "previous">): ResolvedRange {

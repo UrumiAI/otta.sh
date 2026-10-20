@@ -22,6 +22,7 @@ import type {
 	TopProductWire,
 } from "./reporting-settings-surface.js";
 import {
+	MAX_DAILY_POINTS,
 	ordersChart,
 	periodChange,
 	salesChart,
@@ -59,8 +60,9 @@ const MAX_STATS_ITEMS = 4;
  * The order states the SERVICE counts as revenue (`REVENUE_COUNTING_STATES` in
  * the domain's reporting port: payment confirmed and not reversed).
  *
- * Used for ONE thing: the denominator of the average-order-value card, so AOV
- * divides revenue by the orders that actually produced it rather than by every
+ * Counts the "(N paid)" under the cards, and is the average-order-value card's
+ * denominator only on a reader too old to carry the per-currency
+ * `revenueOrderCount` — either way the orders that produced revenue, never every
  * order placed (which includes `failed`/`expired`/`cancelled`).
  */
 const REVENUE_COUNTING_STATES: ReadonlySet<string> = new Set([
@@ -120,9 +122,10 @@ function absolutePeriod(range: Pick<ReportPeriod, "fromDay" | "toDay">): string 
 }
 
 /**
- * The Reports page. Seven reads on the surface `makeAdminClients` hands over —
- * revenue, orders-by-status, top products, low stock and settings for the
- * period, plus revenue and orders-by-status for the PREVIOUS period. All but top
+ * The Reports page. Eight reads on the surface `makeAdminClients` hands over —
+ * revenue, orders-by-status, top products (by revenue and by units), low stock
+ * and settings for the period, plus revenue and orders-by-status for the
+ * PREVIOUS period. All but top
  * products and low stock read the `reporting_daily` rollup (day documents, never
  * a per-order scan), so the comparison costs two more range reads of the same
  * documents.
@@ -134,21 +137,27 @@ function absolutePeriod(range: Pick<ReportPeriod, "fromDay" | "toDay">): string 
  */
 export function createReportsPageHandler(): RouteHandler<ReportsPageInput> {
 	return async (routeCtx, ctx) => {
-		const range = resolveReportsRange(routeCtx.input);
 		// Cosmetic label from ctx.kv (never the service) — the display-only tier.
 		const displayName = (await ctx.kv.get<string>("settings:storeDisplayName")) ?? "Store";
 
 		try {
+			// Inside the try as defence in depth: the resolver refuses every bound it
+			// cannot shift or label, but a throw here would otherwise escape into the
+			// host rather than land on the fail-closed screen.
+			const range = resolveReportsRange(routeCtx.input);
 			// CONSTRUCTED INSIDE THE TRY, deliberately: the in-process branch builds
 			// every commerce adapter over `ctx.storage` and THROWS at construction
 			// when that store is absent.
 			const { reporting: client } = await makeAdminClients(ctx);
 			const settingsRead = client.getSettings().catch(() => undefined);
-			const [revenue, statuses, top, low, settings, previousRevenue, previousStatuses] =
+			const [revenue, statuses, top, topByUnits, low, settings, previousRevenue, previousStatuses] =
 				await Promise.all([
 					client.getRevenue(range, "day"),
 					client.getOrdersByStatus(range),
 					client.getTopProducts(range, "revenue", 10),
+					// Both rankings, read together: which one is drawn depends on the
+					// period's currency mode, decided from the revenue read beside it.
+					client.getTopProducts(range, "quantity", 10),
 					// An explicit threshold avoids a second settings read inside the report.
 					settingsRead.then((savedSettings) =>
 						client.getLowStock(
@@ -165,10 +174,12 @@ export function createReportsPageHandler(): RouteHandler<ReportsPageInput> {
 				revenue,
 				statuses,
 				top,
+				topByUnits,
 				low,
 				...(previousRevenue !== undefined ? { previousRevenue } : {}),
 				...(previousStatuses !== undefined ? { previousStatuses } : {}),
 				...(settings !== undefined ? { lowStockThreshold: settings.lowStockThreshold } : {}),
+				...(settings?.currency !== undefined ? { storeCurrency: settings.currency } : {}),
 			});
 		} catch {
 			// Fail CLOSED with E-7's normative copy — never leak a raw status/URL, and
@@ -191,7 +202,12 @@ export interface ReportsData {
 	range: ResolvedRange;
 	revenue: RevenueBucketWire[];
 	statuses: StatusCountWire[];
+	/** The top products ranked by revenue — drawn when the period has one currency. */
 	top: TopProductWire[];
+	/** The top products ranked by units sold — drawn when it has several (or none),
+	 *  since a revenue ranking would then sum minor units across currencies. Absent
+	 *  from an older caller: `top` is then re-sorted by units, and says so. */
+	topByUnits?: TopProductWire[];
 	low: LowStockWire[];
 	/** The previous period's reads. Absent when they failed: the deltas then say
 	 *  "No comparison available" rather than comparing against nothing. */
@@ -200,6 +216,9 @@ export interface ReportsData {
 	/** The threshold the low-stock rows were selected by, so its heading can state
 	 *  it. Absent when the settings read failed. */
 	lowStockThreshold?: number;
+	/** The SAVED store currency, for the money axis of a period that earned nothing.
+	 *  Absent when never saved or when the settings read failed. */
+	storeCurrency?: string;
 }
 
 export function buildReportsBlocks(data: ReportsData): BlockResponse {
@@ -226,8 +245,7 @@ export function buildReportsBlocks(data: ReportsData): BlockResponse {
 	}
 	// Selected AND ordered by a NON-COMPARATIVE, deterministic rule — alphabetical
 	// ISO code. Ranking by revenue would numerically compare incommensurable minor
-	// units (JPY vs USD); ranking by orders needs a per-currency order count the
-	// orders-by-status report does not carry. The gap is disclosed to the operator.
+	// units (JPY vs USD). The rule is disclosed to the operator.
 	const byCurrencyCode = [...totalByCurrency.entries()].toSorted((a, b) =>
 		a[0].localeCompare(b[0]),
 	);
@@ -262,11 +280,17 @@ export function buildReportsBlocks(data: ReportsData): BlockResponse {
 	const aovTile = averageOrderValueTile({
 		byCurrencyCode,
 		singleCurrency,
-		paidOrderCount,
+		// The orders behind THIS currency's revenue, not every paid order (which
+		// spans every currency). A reader older than `revenueOrderCount` falls back
+		// to the paid-status count, as this card always did.
+		orderCount:
+			singleCurrency === undefined
+				? paidOrderCount
+				: (revenueOrdersFor(revenueBuckets, singleCurrency) ?? paidOrderCount),
 		previous:
-			singleCurrency === undefined || data.previousStatuses === undefined
-				? undefined
-				: { revenueCents: previousTotal(singleCurrency), paid: paidOrders(data.previousStatuses) },
+			singleCurrency === undefined
+				? { kind: "unknown" }
+				: previousAverage(data.previousRevenue, singleCurrency),
 		phrase,
 	});
 	// The Refunded card's currency: the revenue currency when there is exactly one,
@@ -324,7 +348,7 @@ export function buildReportsBlocks(data: ReportsData): BlockResponse {
 		},
 		{
 			type: "columns",
-			columns: [topSection(data.top, singleCurrency), lowStockSection(data)],
+			columns: [topSection(data, singleCurrency), lowStockSection(data)],
 		},
 	];
 	return { blocks };
@@ -376,16 +400,16 @@ function salesSection(
 				},
 				{
 					type: "context",
-					text: "Cards are ordered alphabetically by currency code, not by order volume — the wire carries no per-currency order count.",
+					text: "Cards are ordered alphabetically by currency code: amounts in different currencies are never compared.",
 				},
 				table,
 			],
 		});
 	}
-	const currency = singleCurrency ?? toCurrency(data.previousRevenue?.[0]?.currency ?? "USD");
+	const currency = singleCurrency ?? emptyPeriodCurrency(data);
 	const current = timeBuckets(data.range, data.revenue, currency);
 	const previous = timeBuckets(data.range.previous, data.previousRevenue ?? [], currency);
-	const unit = current.granularity === "day" ? "day" : "week";
+	const points = pointsNote(data.range.days);
 	return section({
 		blockId: "reports:sales",
 		title: "Total sales over time",
@@ -397,24 +421,69 @@ function salesSection(
 				// The legend the renderer cannot draw (no LegendComponent is registered).
 				text:
 					data.previousRevenue === undefined
-						? `Solid line: ${absolutePeriod(data.range)}, one point per ${unit}. The previous period could not be loaded.`
-						: `Solid line: ${absolutePeriod(data.range)} · Dashed line: ${absolutePeriod(data.range.previous)} (previous period) · One point per ${unit}.`,
+						? `Solid line: ${absolutePeriod(data.range)}. ${points} The previous period could not be loaded.`
+						: `Solid line: ${absolutePeriod(data.range)} · Dashed line: ${absolutePeriod(data.range.previous)} (previous period). ${points}`,
 			},
 		],
 	});
+}
+
+/**
+ * The currency an EMPTY period's money axis is drawn in (nothing earned, so no
+ * revenue currency to take): the previous period's, when it earned in exactly
+ * one — so its dashed line is on the axis — else the store's saved currency,
+ * else USD (what a store that never saved one trades in). A refund-only or
+ * multi-currency previous period names nothing.
+ */
+function emptyPeriodCurrency(data: ReportsData): Currency {
+	const previous = [
+		...new Set((data.previousRevenue ?? []).filter(isRevenueBearing).map((b) => b.currency)),
+	];
+	const candidates = [previous.length === 1 ? previous[0] : undefined, data.storeCurrency];
+	const usable = candidates.find(
+		(code): code is string => code !== undefined && CURRENCY_CODE.test(code),
+	);
+	return toCurrency(usable ?? "USD");
+}
+
+const CURRENCY_CODE = /^[A-Z]{3}$/;
+
+/**
+ * How the over-time charts are bucketed, as a sentence. A folded series' LAST
+ * point usually covers fewer than seven days (365 = 52 × 7 + 1), and drawn
+ * without a word it reads as a cliff — so the note says how many it covers.
+ */
+function pointsNote(days: number): string {
+	if (days <= MAX_DAILY_POINTS) return "One point per day.";
+	const rest = days % 7;
+	return rest === 0
+		? "One point per week."
+		: `One point per week; the last point covers ${dayPhrase(rest)}.`;
+}
+
+function dayPhrase(days: number): string {
+	return days === 1 ? "1 day" : `${days} days`;
 }
 
 function ordersSection(data: ReportsData): Block[] {
 	const current: TimeSeries = timeBuckets(data.range, data.revenue, undefined);
 	const total = current.points.reduce((sum, p) => sum + p.orders, 0);
 	const unit = current.granularity === "day" ? "day" : "week";
+	const rest = data.range.days % 7;
+	const partial =
+		current.granularity === "week" && rest !== 0
+			? ` The last point covers ${dayPhrase(rest)}.`
+			: "";
 	return section({
 		blockId: "reports:orders",
 		title: "Orders over time",
 		blocks: current.ordersKnown
 			? [
 					ordersChart(current),
-					{ type: "context", text: `Paid orders per ${unit} · ${total} in this period.` },
+					{
+						type: "context",
+						text: `Paid orders per ${unit} · ${total} in this period.${partial}`,
+					},
 				]
 			: [{ type: "context", text: "Orders over time is not reported by this store version." }],
 	});
@@ -438,7 +507,15 @@ function statusesSection(statuses: StatusCountWire[]): Block[] {
 	});
 }
 
-function topSection(top: TopProductWire[], singleCurrency: Currency | undefined): Block[] {
+function topSection(data: ReportsData, singleCurrency: Currency | undefined): Block[] {
+	// One currency: the revenue ranking, labelled with money. Otherwise the UNITS
+	// ranking — the server's own quantity ranking, so "ranked by units" is true of
+	// both the selection and the order (an older caller without it: the revenue
+	// top list re-sorted by units).
+	const top =
+		singleCurrency !== undefined
+			? data.top
+			: (data.topByUnits ?? data.top.toSorted((a, b) => b.qtySold - a.qtySold));
 	const suppressed = singleCurrency === undefined && top.length > 0;
 	return section({
 		blockId: "reports:top",
@@ -559,11 +636,11 @@ function rangeProblemBanner(problem: string): BannerBlock {
 function averageOrderValueTile(args: {
 	byCurrencyCode: ReadonlyArray<readonly [string, number]>;
 	singleCurrency: Currency | undefined;
-	paidOrderCount: number;
-	previous: { revenueCents: number | undefined; paid: number } | undefined;
+	orderCount: number;
+	previous: PreviousAverage;
 	phrase: string;
 }): StatItem {
-	const { byCurrencyCode, singleCurrency, paidOrderCount, previous, phrase } = args;
+	const { byCurrencyCode, singleCurrency, orderCount, previous, phrase } = args;
 	const label = "Average order value";
 	if (singleCurrency === undefined) {
 		return {
@@ -575,21 +652,64 @@ function averageOrderValueTile(args: {
 					: "Orders in this period span several currencies",
 		};
 	}
-	if (paidOrderCount === 0) {
+	if (orderCount === 0) {
 		return { label, value: "—", description: "No paid orders to average" };
 	}
-	const averageCents = Math.round((byCurrencyCode[0]?.[1] ?? 0) / paidOrderCount);
-	const previousAverage =
-		previous === undefined || previous.revenueCents === undefined
-			? undefined
-			: previous.paid === 0
-				? 0
-				: Math.round(previous.revenueCents / previous.paid);
-	return {
-		label,
-		value: formatMoney(toCents(averageCents), singleCurrency, MONEY_LOCALE),
-		...periodChange(averageCents, previousAverage, phrase),
-	};
+	const averageCents = Math.round((byCurrencyCode[0]?.[1] ?? 0) / orderCount);
+	const value = formatMoney(toCents(averageCents), singleCurrency, MONEY_LOCALE);
+	switch (previous.kind) {
+		case "unknown":
+			return { label, value, ...periodChange(averageCents, undefined, phrase) };
+		case "none":
+			// No orders before is a known fact, said as every other card says it —
+			// never a percentage over an average that has no answer.
+			return { label, value, description: `No data in ${phrase}` };
+		case "average":
+			return { label, value, ...periodChange(averageCents, previous.averageCents, phrase) };
+	}
+}
+
+/** What the AOV card compares with: a previous average, a previous period with
+ *  no orders to average, or nothing knowable. */
+type PreviousAverage =
+	| { kind: "average"; averageCents: number }
+	| { kind: "none" }
+	| { kind: "unknown" };
+
+/**
+ * The previous period's average order value in `code` — its revenue ÷ the orders
+ * behind that revenue (`revenueOrderCount`), both for that ONE currency.
+ *
+ * UNKNOWN (no comparison) when the read failed, when the previous period earned
+ * in any other currency (its revenue is not the same kind of figure), or when a
+ * bucket lacks the per-currency count. "none" when it earned nothing at all.
+ */
+function previousAverage(
+	previousRevenue: readonly RevenueBucketWire[] | undefined,
+	code: string,
+): PreviousAverage {
+	if (previousRevenue === undefined) return { kind: "unknown" };
+	const earning = previousRevenue.filter(isRevenueBearing);
+	const currencies = new Set(earning.map((b) => b.currency));
+	if (currencies.size === 0) return { kind: "none" };
+	if (currencies.size > 1 || !currencies.has(code)) return { kind: "unknown" };
+	const orders = revenueOrdersFor(earning, code);
+	if (orders === undefined) return { kind: "unknown" };
+	if (orders === 0) return { kind: "none" };
+	const revenue = earning.reduce((sum, b) => sum + b.revenueCents, 0);
+	return { kind: "average", averageCents: Math.round(revenue / orders) };
+}
+
+/** Σ `revenueOrderCount` over `code`'s buckets, or `undefined` when any of them
+ *  lacks it (a reader older than the field) — never a partial count. */
+function revenueOrdersFor(buckets: readonly RevenueBucketWire[], code: string): number | undefined {
+	let total = 0;
+	for (const b of buckets) {
+		if (b.currency !== code) continue;
+		if (b.revenueOrderCount === undefined) return undefined;
+		total += b.revenueOrderCount;
+	}
+	return total;
 }
 
 /**

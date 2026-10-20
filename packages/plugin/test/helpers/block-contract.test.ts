@@ -599,6 +599,30 @@ describe("assertBlockContract — X-15 (§2)", () => {
 			"X-15",
 		);
 	});
+	// ADR-0038 decision 3: nothing that needs a component the renderer does not
+	// register (no legend, title, dataset, markLine or dataZoom), and only the
+	// three series types it does (line, bar, pie).
+	test.each([
+		["legend", { legend: { show: true }, series: [] }],
+		["title", { title: { text: "Sales" }, series: [] }],
+		["dataset", { dataset: { source: [] }, series: [] }],
+		["dataZoom", { dataZoom: [{ type: "inside" }], series: [] }],
+		["a series markLine", { series: [{ type: "line", markLine: { data: [] } }] }],
+	])("violates on Reports: %s (an unregistered component)", (_name, options) => {
+		throwsRule([HEADER, customChart(options)], REPORTS, "X-15");
+	});
+	test.each(["scatter", "candlestick", undefined])(
+		"violates on Reports: a series of type %s",
+		(type) => {
+			throwsRule([HEADER, customChart({ series: [{ type, data: [] }] })], REPORTS, "X-15");
+		},
+	);
+	test("compliant on Reports: line, bar and pie series", () => {
+		passes(
+			[HEADER, customChart({ series: [{ type: "line" }, { type: "bar" }, { type: "pie" }] })],
+			REPORTS,
+		);
+	});
 });
 
 describe("assertBlockContract — X-16 (D-3, D-4)", () => {

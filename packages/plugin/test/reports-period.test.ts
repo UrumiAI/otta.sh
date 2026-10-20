@@ -188,4 +188,31 @@ describe("reports period: resolving the interaction", () => {
 			resolveReportsRange({ values: { from: "not a day", to: "2026-07-01" } }, TODAY).problem,
 		).toMatch(/calendar date/);
 	});
+
+	// A crafted bound at the edge of what `Date` can hold used to escape the
+	// page: the previous-period shift stepped past the minimum date and
+	// `toISOString` threw a RangeError into the host. Out-of-range years now land
+	// on the same stated-problem banner as any other unusable period.
+	test.each([
+		["the minimum Date", "-271821-04-20T00:00:00.000Z", "-271821-04-20T00:00:00.000Z"],
+		["the maximum Date", "+275760-09-13T00:00:00.000Z", "+275760-09-13T00:00:00.000Z"],
+		["a five-digit year", "+010000-01-01T00:00:00.000Z", "+010000-01-02T00:00:00.000Z"],
+		["a year before 1970", "1969-12-30", "1969-12-31"],
+	])("%s is refused with a problem, never a throw", (_name, from, to) => {
+		const range = resolveReportsRange({ from, to }, TODAY);
+		expect(range).toMatchObject({ preset: "custom", fromDay: "2026-09-21", days: 30 });
+		expect(range.problem).toBe(
+			"Choose dates between 1 Jan 1970 and 31 Dec 9999, then update the period.",
+		);
+		expect(range.previous).toMatchObject({ fromDay: "2026-08-22", days: 30 });
+	});
+
+	test("the edges of the accepted years still resolve, with well-formed days", () => {
+		const first = resolveReportsRange({ from: "1970-01-01", to: "1970-01-03" }, TODAY);
+		expect(first.problem).toBeUndefined();
+		expect(first.previous).toMatchObject({ fromDay: "1969-12-29", toDay: "1969-12-31" });
+		const last = resolveReportsRange({ from: "9999-12-29", to: "9999-12-31" }, TODAY);
+		expect(last).toMatchObject({ fromDay: "9999-12-29", toDay: "9999-12-31", days: 3 });
+		expect(last.problem).toBeUndefined();
+	});
 });

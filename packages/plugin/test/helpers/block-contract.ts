@@ -630,7 +630,9 @@ function checkX14(blocks: readonly LooseBlock[]): string[] {
 // (ADR-0038): columns, and `custom` charts only — a `timeseries` chart can print
 // nothing but raw numbers, and an option key the renderer strips
 // (`formatter`/`rich`/`graphic`/`axisPointer`) is a silent no-op that would leave
-// raw minor units on screen.
+// raw minor units on screen. Nor may a Reports chart lean on a component the
+// renderer never registered (`legend`/`title`/`dataset`/`markLine`/`dataZoom`)
+// or a series type other than line, bar or pie.
 // ---------------------------------------------------------------------------
 
 const STRIPPED_CHART_KEYS: ReadonlySet<string> = new Set([
@@ -651,6 +653,43 @@ function strippedKeys(value: unknown, path: string, out: string[]): void {
 	}
 }
 
+/** Option keys that need an ECharts component `@emdash-cms/blocks` does not
+ *  register (ADR-0038 decision 3): set, they draw nothing. Checked at the top of
+ *  the option and on every series (where `markLine` lives). */
+const UNREGISTERED_CHART_KEYS: readonly string[] = [
+	"legend",
+	"title",
+	"dataset",
+	"markLine",
+	"dataZoom",
+];
+
+/** The series types the renderer registers: LineChart, BarChart, PieChart. */
+const REGISTERED_SERIES_TYPES: ReadonlySet<unknown> = new Set(["line", "bar", "pie"]);
+
+function unregisteredUses(options: unknown): string[] {
+	const out: string[] = [];
+	if (typeof options !== "object" || options === null) return out;
+	const top = options as Record<string, unknown>;
+	for (const key of UNREGISTERED_CHART_KEYS) {
+		if (key in top) out.push(`options.${key}`);
+	}
+	const series = Array.isArray(top["series"]) ? (top["series"] as unknown[]) : [];
+	series.forEach((entry, i) => {
+		const item = (typeof entry === "object" && entry !== null ? entry : {}) as Record<
+			string,
+			unknown
+		>;
+		for (const key of UNREGISTERED_CHART_KEYS) {
+			if (key in item) out.push(`options.series[${i}].${key}`);
+		}
+		if (!REGISTERED_SERIES_TYPES.has(item["type"])) {
+			out.push(`options.series[${i}].type ${JSON.stringify(item["type"])}`);
+		}
+	});
+	return out;
+}
+
 function checkX15(blocks: readonly LooseBlock[], screen: ScreenName): string[] {
 	const out: string[] = [];
 	if (screen === "reports") {
@@ -666,6 +705,11 @@ function checkX15(blocks: readonly LooseBlock[], screen: ScreenName): string[] {
 			for (const path of stripped) {
 				out.push(
 					`X-15: chart "${String(chart.block_id)}" sets ${path}, which the renderer strips — carry formatted text in a data dimension instead (ADR-0038).`,
+				);
+			}
+			for (const use of unregisteredUses(config.options)) {
+				out.push(
+					`X-15: chart "${String(chart.block_id)}" uses ${use}, which needs a component the renderer does not register (only line/bar/pie with aria, axisPointer, grid and tooltip) — state it in a context line instead (ADR-0038).`,
 				);
 			}
 		}
