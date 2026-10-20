@@ -1430,7 +1430,7 @@ export function OrdersList({
 						display: "flex",
 						flexWrap: "wrap",
 						gap: 8,
-						alignItems: "center",
+						alignItems: "end",
 						marginBlockEnd: 16,
 					}}
 				>

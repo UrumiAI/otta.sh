@@ -1046,6 +1046,8 @@ string, a joined address, a summary sentence).
 | A closed set of ≤3 values, none of them a happy path | `badge` | The only badge left (shipping-method `Type`). Subject to T-5. |
 | Everything else | *(none)* | |
 
+> *Superseded for the React tier (2026-10-20): every order state gets a tone badge there, to match EmDash's look. This rule still governs Block Kit.*
+
 **T-5 — badge discipline: badge the exceptions, and a status column cannot.** *(Rewritten by
 INC-10, which overturned this rule's earlier "lifecycle state ⇒ badge" whitelist. The per-screen
 wireframes that still drew the old badges were corrected in the docs sweep; **one** `format:"badge"`
@@ -2825,6 +2827,8 @@ Deltas: the page `context` drops 457 → ≤140. The `divider` before the create
 The `Type` badge column goes (T-5). The withheld-delete copy is trimmed 217 → the DA-7 blockquote,
 parametrized and correctly pluralised (`1 time` / `3 times`, `coupons-page.ts:1348-1350`), and the
 delete `confirm.text` 301 → ≤200.
+
+> *Superseded for the React tier (2026-10-20): every order state gets a tone badge there. Block Kit is unchanged.*
 
 **This screen was the odd one out when it shipped; it is the rule now.** Its `Status` column was the
 first place the console reasoned all the way through "badge the exceptions, leave the happy path

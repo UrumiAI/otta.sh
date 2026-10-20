@@ -46,8 +46,6 @@ export const KUMO = {
 	/** Secondary ink: dates, hints, captions. */
 	subtle: "var(--text-color-kumo-subtle, color-mix(in srgb, currentColor 62%, transparent))",
 	/** Headings. */
-	strong: "var(--text-color-kumo-strong, currentColor)",
-	link: "var(--text-color-kumo-link, LinkText)",
 	/** The card / button surface. */
 	surface: "var(--color-kumo-base, transparent)",
 	/** An input's fill. */
@@ -68,14 +66,8 @@ export const KUMO = {
 } as const;
 
 const HAIRLINE = `1px solid ${KUMO.line}`;
-/**
- * The three accents, now EmDash's own status inks. They are TOKENS, so — unlike
- * the fixed hexes they replace — they are safe as text in both themes: the admin
- * picks the darker ink on light and the lighter on dark.
- */
-export const OK_ACCENT = "var(--text-color-kumo-success, #2f855a)";
+/** The failure ink — EmDash's own status token, safe as text in both themes. */
 export const FAIL_ACCENT = KUMO.dangerText;
-export const WARN_ACCENT = "var(--text-color-kumo-warning, #b7791f)";
 /**
  * THE LOOK OF A CONTROL THAT IS PRESENT BUT CANNOT BE USED.
  *
@@ -106,8 +98,8 @@ export const WARN_ACCENT = "var(--text-color-kumo-warning, #b7791f)";
  * shorthand, and mixing the two makes removals order-dependent. They are the
  * sheet's `[aria-disabled="true"]` rule now, not inline.
  */
-export const UNAVAILABLE_BORDER = `1px solid ${KUMO.hairline}`;
-export const UNAVAILABLE_FILL = KUMO.tint;
+const UNAVAILABLE_BORDER = `1px solid ${KUMO.hairline}`;
+const UNAVAILABLE_FILL = KUMO.tint;
 export const UNAVAILABLE_INK = "color-mix(in srgb, currentColor 62%, transparent)";
 
 /**
@@ -437,16 +429,14 @@ export const panelStyle: React.CSSProperties = {
 	textAlign: "start",
 };
 
-/** Secondary ink for a hint, a caption or a date — EmDash's `text-kumo-subtle`,
- *  which replaces the `opacity` this file used to recede text with. */
-export const subtleTextStyle: React.CSSProperties = { color: KUMO.subtle };
-
 /**
  * Which of EmDash's button looks a control wears. `default` is Kumo's
  * secondary (surface, line ring); `primary` is the brand blue, for the ONE main
  * action on a screen; `danger` is red ink on the ordinary surface, for an
  * in-page control whose click cannot be undone (it still goes through a
- * confirm); `destructive` is the filled red, for the confirm itself.
+ * confirm); `destructive` is the filled red, for the confirm itself. The white-on-brand
+ * and white-on-danger fills mirror Kumo's own buttons on purpose: contrast
+ * parity with the host.
  *
  * THE LOOK IS THE SHEET'S, carried by `data-variant` / `data-size` on an
  * `otta-btn`: hover is a pseudo-class, and an inline background would outrank
@@ -664,15 +654,12 @@ export function CopyIdButton({
 		return () => clearTimeout(timer);
 	}, [state]);
 
+	const look = buttonLook("default", "sm");
 	return (
 		<button
 			type="button"
-			{...buttonLook("default", "sm")}
-			className={
-				revealOnRowHover === true
-					? "otta-focusable otta-btn otta-copy-reveal"
-					: "otta-focusable otta-btn"
-			}
+			{...look}
+			className={revealOnRowHover === true ? `${look.className} otta-copy-reveal` : look.className}
 			data-testid={testId}
 			data-full-id={id}
 			aria-label={`Copy ${what} ${id}`}
@@ -1012,9 +999,10 @@ export function Group({
 	testId?: string;
 }): React.ReactElement {
 	const depth = React.useContext(GroupDepth);
+	const Heading = depth > 0 ? "h4" : "h3";
 	return (
 		<section className="otta-group" data-nested={depth > 0 ? true : undefined} data-testid={testId}>
-			<h3 className="otta-group-title">{label}</h3>
+			<Heading className="otta-group-title">{label}</Heading>
 			<GroupDepth.Provider value={depth + 1}>{children}</GroupDepth.Provider>
 		</section>
 	);
@@ -1096,10 +1084,10 @@ export function ConfirmDialog({
 				borderRadius: 12,
 				padding: 24,
 				maxInlineSize: 460,
-				background: KUMO.surface,
+				background: "var(--color-kumo-base, Canvas)",
 				color: KUMO.text,
 				textAlign: "start",
-				boxShadow: "0 10px 30px rgba(0, 0, 0, 0.18)",
+				boxShadow: "0 10px 30px var(--color-kumo-shadow-drop, rgba(0, 0, 0, 0.18))",
 			}}
 		>
 			<h2 style={{ fontSize: 18, fontWeight: 600, margin: 0 }} data-testid="otta-confirm-title">

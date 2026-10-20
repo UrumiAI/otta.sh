@@ -4,7 +4,7 @@
  * A chrome invariant that only the rendered console can state, asserted
  * against the two screens that actually render it.
  *
- * THE POINTER INVARIANT. `cursor` left `buttonStyle` for `.otta-btn` in the
+ * THE POINTER INVARIANT. `cursor` left the old shared button style for `.otta-btn` in the
  * sheet, so the row-activation reset wins on cascade order instead of on
  * `!important`. The price of that is a rule no type can carry: a control that
  * spreads the shared style and forgets the class is a control with no pointer at
