@@ -90,6 +90,17 @@ export interface PeriodBucket {
 	currency: Currency;
 	revenueCents: Cents;
 	/**
+	 * How many orders contributed to `revenueCents` — the bucket's orders in a
+	 * revenue-counting state (`REVENUE_COUNTING_STATES`), never every order placed.
+	 * It is the denominator that makes `revenueCents` an average, and the count a
+	 * per-period "orders over time" series is drawn from.
+	 *
+	 * A refund-only bucket reads `0`: its order is excluded from the allow-list
+	 * (that is what made it refund-only). Every order state is still counted by
+	 * {@link ReportingStore.ordersByStatus}, which is the report for "all orders".
+	 */
+	revenueOrderCount: number;
+	/**
 	 * Money REFUNDED against the orders in this bucket — integer minor units in
 	 * the same `currency`, and a figure in its own right, never subtracted from
 	 * `revenueCents` (the two answer different questions and a merchant needs

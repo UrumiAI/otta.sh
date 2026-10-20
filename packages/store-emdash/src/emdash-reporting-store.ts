@@ -888,6 +888,7 @@ export class EmdashReportingStore implements ReportingStore {
 					bucketStart: group.bucketStart,
 					currency: toCurrency(group.currency),
 					revenueCents: cents(group.revenueCents),
+					revenueOrderCount: group.revenueOrders,
 					refundedCents: cents(group.refundedCents),
 				}))
 		);

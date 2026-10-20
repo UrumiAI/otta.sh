@@ -104,11 +104,23 @@ export class InMemoryReportingStore implements ReportingStore {
 	async revenueByPeriod(range: DateRange, interval: ReportInterval): Promise<PeriodBucket[]> {
 		const groups = new Map<
 			string,
-			{ bucketStart: string; currency: string; revenueCents: number; refundedCents: number }
+			{
+				bucketStart: string;
+				currency: string;
+				revenueCents: number;
+				revenueOrderCount: number;
+				refundedCents: number;
+			}
 		>();
 		const at = (bucketStart: string, currency: string) => {
 			const key = JSON.stringify([bucketStart, currency]);
-			const g = groups.get(key) ?? { bucketStart, currency, revenueCents: 0, refundedCents: 0 };
+			const g = groups.get(key) ?? {
+				bucketStart,
+				currency,
+				revenueCents: 0,
+				revenueOrderCount: 0,
+				refundedCents: 0,
+			};
 			groups.set(key, g);
 			return g;
 		};
@@ -120,7 +132,9 @@ export class InMemoryReportingStore implements ReportingStore {
 			// The allow-list gates REVENUE only — an excluded order still exists in
 			// `bucketOf` above, so its refunds land in the right bucket below.
 			if (!REVENUE_STATES.has(o.state)) continue;
-			at(bucketStart, o.currency).revenueCents += o.totalCents;
+			const g = at(bucketStart, o.currency);
+			g.revenueCents += o.totalCents;
+			g.revenueOrderCount += 1;
 		}
 		for (const r of this.#refunds) {
 			const bucketStart = bucketOf.get(r.orderId);
@@ -140,6 +154,7 @@ export class InMemoryReportingStore implements ReportingStore {
 				bucketStart: g.bucketStart,
 				currency: toCurrency(g.currency),
 				revenueCents: cents(g.revenueCents),
+				revenueOrderCount: g.revenueOrderCount,
 				refundedCents: cents(g.refundedCents),
 			}));
 	}

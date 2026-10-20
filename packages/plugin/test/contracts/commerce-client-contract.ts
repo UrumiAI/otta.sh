@@ -5116,6 +5116,9 @@ export function adminRulesReportingClientContract(tier: CommerceClientTier): voi
 			);
 			expect(buckets.length).toBeGreaterThan(0);
 			expect(buckets.reduce((sum, bucket) => sum + bucket.revenueCents, 0)).toBe(1500 + 2500 * 2);
+			// The orders BEHIND that revenue — the two settled ones, never the
+			// pending third — which is what an "orders over time" series draws.
+			expect(buckets.reduce((sum, bucket) => sum + (bucket.revenueOrderCount ?? -1), 0)).toBe(2);
 
 			for (const bucket of buckets) {
 				// PRESENCE, NEVER TRUTHINESS. `refundedCents: 0` is the fact "nothing

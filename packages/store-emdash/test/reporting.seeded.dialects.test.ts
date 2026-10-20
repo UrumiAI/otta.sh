@@ -281,6 +281,7 @@ describeEachDialect("EmdashReportingStore seeded aggregates", (ctx) => {
 				bucketStart: "2026-07-07T00:00:00.000Z",
 				currency: "GBP",
 				revenueCents: 0,
+				revenueOrderCount: 1,
 				refundedCents: 0,
 			},
 		]);
@@ -331,6 +332,7 @@ describeEachDialect("EmdashReportingStore seeded aggregates", (ctx) => {
 			bucketStart: "2026-06-28T00:00:00.000Z",
 			currency: "USD",
 			revenueCents: 1100,
+			revenueOrderCount: 1,
 			refundedCents: 100,
 		});
 		const weeks = await h.store.revenueByPeriod(
@@ -341,6 +343,7 @@ describeEachDialect("EmdashReportingStore seeded aggregates", (ctx) => {
 			bucketStart: "2026-06-22T00:00:00.000Z",
 			currency: "USD",
 			revenueCents: 1100,
+			revenueOrderCount: 1,
 			refundedCents: 100,
 		});
 	});
@@ -357,6 +360,7 @@ describeEachDialect("EmdashReportingStore seeded aggregates", (ctx) => {
 			bucketStart: "2026-07-01T00:00:00.000Z",
 			currency: "USD",
 			revenueCents: 10_000,
+			revenueOrderCount: 5,
 			refundedCents: 2500,
 		});
 		// The month is a FOLD over day documents. Nothing keyed by a month exists.
