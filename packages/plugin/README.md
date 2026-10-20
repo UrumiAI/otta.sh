@@ -78,12 +78,11 @@ as the retryable error it is — a caller has to be able to see that.
 One gap in the in-process transport is still open, and stays listed here until it closes.
 (The other, "`requestLoginLink` dispatches no mail", closed with issue #306: the magic link
 is emailed through `CtxEmailSender` over the EmDash host's `ctx.email` (ADR-0031), pointing
-at the sign-in page the operator saves in Settings (`settings:loginLinkUrl`, required; never
+at the sign-in page the operator saves in Store settings (General tab) (`settings:loginLinkUrl`, required; never
 the request's origin). With no EmDash email provider, or no sign-in link URL, it still
 answers the same generic success and logs once server-side.)
 
-- **The checkout hold ignores the hold TTL setting.** The Store settings page's (General tab) "Cart hold
-  time (minutes)" field (`holdTtlMinutes` in the settings aggregate; there is no
+- **The checkout hold ignores the hold TTL setting.** The "Cart hold time (minutes)" field on Store settings → General (`holdTtlMinutes` in the settings aggregate; there is no
   environment variable for it) now drives the CART hold end to end: add-to-cart and
   adjust stamp it, the lazy expiry on cart read measures against it, and the
   `expire-holds` sweep leg reaps by it (#318). The CHECKOUT hold — the window a

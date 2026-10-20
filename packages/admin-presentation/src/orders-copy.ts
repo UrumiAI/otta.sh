@@ -153,10 +153,10 @@ export const ORDER_LINES_EMPTY = "No line items.";
 // blanks the detail and never fails the screen.
 
 export const CUSTOMER_CONTEXT_UNAVAILABLE =
-	"Customer context unavailable — it could not be loaded right now. The order itself is unaffected; reload, and check the admin token in Store settings if this persists.";
+	"Customer context unavailable — it could not be loaded right now. The order itself is unaffected; reload, and if this persists it is a fault in the console itself.";
 
 export const TIMELINE_UNAVAILABLE =
-	"Timeline unavailable — it could not be loaded right now. The order itself is unaffected; reload, and check the admin token in Store settings if this persists.";
+	"Timeline unavailable — it could not be loaded right now. The order itself is unaffected; reload, and if this persists it is a fault in the console itself.";
 
 export const REFUNDS_UNAVAILABLE =
 	"Refunds are unavailable right now — the refunds service could not be reached. The order itself is unaffected; reload to try again.";

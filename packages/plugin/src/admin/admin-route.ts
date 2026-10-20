@@ -162,8 +162,8 @@ export function createAdminRouteHandler(): RouteHandler<AdminInteractionInput> {
 			return storeSettings(routeCtx as SandboxedRouteContext<StoreSettingsInput>, ctx);
 		}
 
-		// 5. Action interactions (block_action/form_submit) from any page other than
-		// Store settings — route each remaining Block Kit page's actions to its handler.
+		// 5. Action interactions (block_action/form_submit) from any other page, or an
+		// action Store settings does not own — route each remaining Block Kit page's actions to its handler.
 		// Orders and Pricing & inventory are ABSENT from this list (INC-R2/INC-R3,
 		// ADR-0015): both screens were retired, and their `orders:*`/`products:*`
 		// ids are now console actions, gated in branch 0 above.

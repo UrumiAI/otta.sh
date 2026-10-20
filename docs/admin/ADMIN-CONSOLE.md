@@ -1171,7 +1171,7 @@ phrasing; the existing pages get this right and it must survive re-layout.
 | Kind | Shape | Example |
 |---|---|---|
 | Successful and empty | State the fact. Add the *reason* when the reason is structural. | `No refunds recorded.` · `No sessions (guests never sign in).` |
-| Read failed | Name what failed · say what is unaffected · give the one next step. | `Timeline unavailable — it could not be loaded right now. The order itself is unaffected; reload, and check the admin token in Settings if this persists.` |
+| Read failed | Name what failed · say what is unaffected · give the one next step. | `Timeline unavailable — it could not be loaded right now. The order itself is unaffected; reload, and if this persists it is a fault in the console itself.` |
 
 **E-4 — copy voice.** Sentence case, full stop, no exclamation. No "sorry"/"oops"/"whoops", no
 "unfortunately", no "we". Never echo an HTTP status, URL, exception message, or internal field
@@ -1235,7 +1235,7 @@ would be a false statement about money. `showLeaf` is the same call on both path
 ("Nothing was refunded" / "Refund recorded"); the fail-closed banner carries only the symptom. Do not
 add an effect claim to the blockquote above.
 
-(122 chars at `Orders`. The copy named "the service connection and the admin token in Settings"
+(122 chars at `Orders`. The copy named "the service connection and the admin token in Store settings"
 until ADR-0020 removed the service, and both with it.) Title: `<Screen> are unavailable` / `<Screen>
 is unavailable`. The last clause is the load-bearing one — it is the only thing that stops a console
 bug from being reported as an outage. **Applies to every screen's

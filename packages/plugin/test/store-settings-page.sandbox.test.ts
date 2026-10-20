@@ -118,5 +118,6 @@ describe("Store settings page", () => {
 		});
 		expect(findBlock(after, "tab")).toBeUndefined();
 		expect(after.length).toBeGreaterThan(0);
+		expect(findBlock(after, "header")).toMatchObject({ text: "New coupon" });
 	}, 60_000);
 });
