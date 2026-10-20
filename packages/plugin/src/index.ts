@@ -129,6 +129,7 @@ export {
 	SHIPPING_PAGE,
 	type ShippingPageInput,
 } from "./admin/shipping-page.js";
+export { STORE_SETTINGS_PAGE } from "./admin/store-settings-page.js";
 export {
 	couponDiscountSummary,
 	couponUsesSummary,

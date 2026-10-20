@@ -31,6 +31,13 @@ import {
 	SHIPPING_PAGE,
 	type ShippingPageInput,
 } from "./shipping-page.js";
+import {
+	createStoreSettingsPageHandler,
+	STORE_SETTINGS_PAGE,
+	type StoreSettingsInput,
+	type StoreSettingsPanel,
+	storeSettingsOwnsAction,
+} from "./store-settings-page.js";
 import { createTaxPageHandler, TAX_ACTION_IDS, TAX_PAGE, type TaxPageInput } from "./tax-page.js";
 
 /**
@@ -76,6 +83,24 @@ export function createAdminRouteHandler(): RouteHandler<AdminInteractionInput> {
 	const coupons = createCouponsPageHandler();
 	const ordersConsole = createOrdersConsoleHandler();
 	const productsConsole = createProductsConsoleHandler();
+	// The three screens the Store settings page hosts as tabs — the SAME handler
+	// instances their own pages use, so a panel is that page, unchanged.
+	const storePanels: readonly StoreSettingsPanel[] = [
+		{
+			label: "General",
+			page: SETTINGS_PAGE.path,
+			actionIds: SETTINGS_ACTION_IDS,
+			handler: settings,
+		},
+		{ label: "Tax", page: TAX_PAGE.path, actionIds: TAX_ACTION_IDS, handler: tax },
+		{
+			label: "Shipping",
+			page: SHIPPING_PAGE.path,
+			actionIds: SHIPPING_ACTION_IDS,
+			handler: shipping,
+		},
+	];
+	const storeSettings = createStoreSettingsPageHandler(storePanels);
 
 	return async (routeCtx, ctx) => {
 		const input = routeCtx.input;
@@ -125,6 +150,20 @@ export function createAdminRouteHandler(): RouteHandler<AdminInteractionInput> {
 		}
 		if (type === "page_load" && page === COUPONS_PAGE.path) {
 			return coupons(routeCtx as SandboxedRouteContext<CouponsPageInput>, ctx);
+		}
+
+		// Store settings: its page_load, and any action EmDash sends FROM it (the
+		// host stamps the originating `page` on every action). An action from the
+		// old standalone pages carries their path instead and falls through to 5.
+		if (type === "page_load" && page === STORE_SETTINGS_PAGE.path) {
+			return storeSettings(routeCtx as SandboxedRouteContext<StoreSettingsInput>, ctx);
+		}
+		if (
+			page === STORE_SETTINGS_PAGE.path &&
+			actionId !== undefined &&
+			storeSettingsOwnsAction(storePanels, actionId)
+		) {
+			return storeSettings(routeCtx as SandboxedRouteContext<StoreSettingsInput>, ctx);
 		}
 
 		// 5. Action interactions (block_action/form_submit) carry an action_id and
