@@ -37,6 +37,7 @@ import {
 	REPORTS_PAGE,
 	SETTINGS_PAGE,
 	SHIPPING_PAGE,
+	STORE_SETTINGS_PAGE,
 	TAX_PAGE,
 	OTTA_PLUGIN_CAPABILITIES,
 	OTTA_PLUGIN_ID,
@@ -135,14 +136,9 @@ describe("ottaPluginDescriptor", () => {
 		// write path moved off it, taking the list from seven entries to FIVE.
 		// `/orders` is now served only by the `otta-console` descriptor, and
 		// pricing and stock live in the products collection's own editor and list
-		// (ADR-0014, amendment 2026-10-01).
-		expect(descriptor.adminPages).toEqual([
-			REPORTS_PAGE,
-			SETTINGS_PAGE,
-			TAX_PAGE,
-			SHIPPING_PAGE,
-			COUPONS_PAGE,
-		]);
+		// (ADR-0014, amendment 2026-10-01). Settings, Tax and Shipping then
+		// folded into ONE Store settings entry that hosts them as tabs: THREE.
+		expect(descriptor.adminPages).toEqual([REPORTS_PAGE, COUPONS_PAGE, STORE_SETTINGS_PAGE]);
 	});
 
 	test("declares NO adminEntry and NO componentsEntry, and stays standard format (ADR-0014)", () => {
@@ -271,14 +267,8 @@ describe("ottaPluginDescriptor storage, EXACTLY (INC-D1)", () => {
 		expect(inProcess.fieldWidgets).toBeUndefined();
 	});
 
-	test("the descriptor keeps the same five Block Kit admin pages", () => {
-		expect(inProcess.adminPages).toEqual([
-			REPORTS_PAGE,
-			SETTINGS_PAGE,
-			TAX_PAGE,
-			SHIPPING_PAGE,
-			COUPONS_PAGE,
-		]);
+	test("the descriptor keeps the same three Block Kit admin pages", () => {
+		expect(inProcess.adminPages).toEqual([REPORTS_PAGE, COUPONS_PAGE, STORE_SETTINGS_PAGE]);
 	});
 });
 
@@ -596,6 +586,7 @@ describe("ottaConsoleDescriptor (ADR-0014's second descriptor)", () => {
 		expect(consolePaths).not.toContain(TAX_PAGE.path);
 		expect(consolePaths).not.toContain(SHIPPING_PAGE.path);
 		expect(consolePaths).not.toContain(SETTINGS_PAGE.path);
+		expect(consolePaths).not.toContain(STORE_SETTINGS_PAGE.path);
 	});
 
 	test("still declares no sandboxed / sandboxRunner keys with the console registered", () => {

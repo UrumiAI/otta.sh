@@ -654,7 +654,7 @@ export function buildReportsBlocks(data: ReportsData): BlockResponse {
 		type: "accordion",
 		block_id: "reports:low",
 		// The count alone ("Low stock (3)") never said low COMPARED TO WHAT, and
-		// the threshold lives in Settings, two screens away. `GET /settings`
+		// the threshold lives in Store settings, a page away. `GET /settings`
 		// already returns it, so the label states it. Omitted — never guessed —
 		// when that read failed.
 		label:

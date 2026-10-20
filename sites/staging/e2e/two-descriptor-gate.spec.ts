@@ -32,13 +32,7 @@
  * it out of the generator means it is made once rather than once per migration.
  */
 import type { Page } from "@playwright/test";
-import {
-	COUPONS_PAGE,
-	REPORTS_PAGE,
-	SETTINGS_PAGE,
-	SHIPPING_PAGE,
-	TAX_PAGE,
-} from "@urumi.ai/otta-plugin";
+import { COUPONS_PAGE, REPORTS_PAGE, STORE_SETTINGS_PAGE } from "@urumi.ai/otta-plugin";
 import type { ConsoleScreen } from "./harness.js";
 import {
 	ADMIN_BASE_PATH,
@@ -87,13 +81,7 @@ const HOST_SCREEN = hostScreen();
  * `ottaPluginDescriptor` registers. `site-config.test.ts` pins the descriptor's
  * `adminPages` to exactly this list, so the two cannot drift.
  */
-const BLOCK_KIT_PAGES = [
-	REPORTS_PAGE,
-	SETTINGS_PAGE,
-	TAX_PAGE,
-	SHIPPING_PAGE,
-	COUPONS_PAGE,
-] as const;
+const BLOCK_KIT_PAGES = [REPORTS_PAGE, COUPONS_PAGE, STORE_SETTINGS_PAGE] as const;
 
 /**
  * Open the host screen and wait for the admin SPA to hand it to React.

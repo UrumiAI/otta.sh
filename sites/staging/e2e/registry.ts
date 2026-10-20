@@ -109,4 +109,10 @@ export const MIGRATED_SCREENS: readonly ConsoleScreen[] = [
 
 /** Screens ADR-0014 Decision 6 forbids migrating — pinned so a future
  *  increment cannot quietly add one to the registry above. */
-export const NEVER_MIGRATED_PATHS: readonly string[] = ["/tax", "/shipping", "/settings"];
+export const NEVER_MIGRATED_PATHS: readonly string[] = [
+	"/tax",
+	"/shipping",
+	"/settings",
+	// The page that hosts the three above as tabs.
+	"/store-settings",
+];

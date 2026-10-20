@@ -128,7 +128,7 @@ export interface SecretSettingFieldSpec {
 	readonly description: string;
 }
 
-const MANAGED_IN_OTTA = "Managed on the Otta Settings page; saved encrypted.";
+const MANAGED_IN_OTTA = "Managed in Otta → Store settings → General; saved encrypted.";
 
 /**
  * The `admin.settingsSchema` the deploying site's Otta descriptor MUST declare

@@ -18,9 +18,7 @@ import {
 	type InProcessEgressUrls,
 	REPORTS_PAGE,
 	resolveAllowedHosts,
-	SETTINGS_PAGE,
-	SHIPPING_PAGE,
-	TAX_PAGE,
+	STORE_SETTINGS_PAGE,
 	OTTA_PLUGIN_CAPABILITIES,
 	OTTA_PLUGIN_ID,
 	OTTA_PLUGIN_VERSION,
@@ -126,7 +124,11 @@ export function ottaPluginDescriptor(options: OttaPluginDescriptorOptions = {}):
 		// (webhook-notifier pattern) — no new capability: account/reports/
 		// products/tax/shipping/coupons routes are network:request proxies and
 		// ctx.kv is always-available.
-		adminPages: [REPORTS_PAGE, SETTINGS_PAGE, TAX_PAGE, SHIPPING_PAGE, COUPONS_PAGE],
+		//
+		// Settings, Tax and Shipping are ONE entry, Store settings, which hosts the
+		// three as tabs (`store-settings-page.ts`). Their own `/settings`, `/tax`
+		// and `/shipping` pages are still served for bookmarks, just not listed.
+		adminPages: [REPORTS_PAGE, COUPONS_PAGE, STORE_SETTINGS_PAGE],
 		// ADR-0037: the payment credentials, declared `secret` so EmDash encrypts
 		// them at rest under EMDASH_ENCRYPTION_KEY. The plugin's Settings page stays
 		// where they are entered; declaring a schema also makes EmDash list a

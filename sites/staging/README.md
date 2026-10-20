@@ -41,7 +41,7 @@ listening fails in a way that looks like an application error.
 ## The Stripe publishable key (a Settings value)
 
 The checkout's Payment Element needs a Stripe **publishable** key. It is entered in the admin
-with the two Stripe secrets — **Otta Settings → Payments & email → Stripe publishable key** —
+with the two Stripe secrets — **Otta Store settings → General → Payments & email → Stripe publishable key** —
 and the checkout pages read it **per request** (`src/lib/stripe-config.ts`, through the
 plugin's `storefront/payment-config` route). Changing it needs no rebuild, redeploy or
 restart (issue #498; it used to be the build-time `STRIPE_PUBLIC_KEY`).
@@ -68,7 +68,7 @@ recovery are §2; why D1 `session` is `"primary-first"` (not `"auto"`), and why
 checklist is §3. There is one deployable, so the only Worker secrets are
 `EMDASH_ENCRYPTION_KEY` (required before first boot) and the optional `OTTA_WH_TOKEN` webhook
 edge gate — every payment and email credential is provisioned in the
-admin console's **Settings** page instead.
+admin console's **Store settings** page (General tab) instead.
 
 ## Notes
 

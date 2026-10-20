@@ -28,6 +28,7 @@ import {
 	CANCEL_GROUP_LABEL,
 	CANCEL_REFUNDS_UNKNOWN,
 	CANCEL_RESTOCK_HINT,
+	CUSTOMER_CONTEXT_UNAVAILABLE,
 	DATE_LOCALE,
 	LABEL_BUDGET,
 	MARK_REFUNDED_CONFIRM,
@@ -38,6 +39,7 @@ import {
 	ORDERS_PAGE_FAILED_TITLE,
 	ORDERS_NOUN,
 	ORDERS_NO_MATCH,
+	PRODUCTS_UNAVAILABLE_DESCRIPTION,
 	ORDERS_SEARCH_LABEL,
 	ORDERS_STALE_CLEARED_NOTE,
 	ORDER_STATES,
@@ -107,10 +109,26 @@ import {
 	taxClassLabel,
 	taxClassOptions,
 	TAX_STATUS_HINT,
+	TIMELINE_UNAVAILABLE,
 	orderLineTaxStatusNote,
 } from "../src/index.js";
 
 const USD = currency("USD");
+
+describe("fail-closed copy names no retired remedy", () => {
+	test("no unavailable message sends the operator to the retired service connection or admin token", () => {
+		// The commerce service and its admin token are gone (ADR-0020); the
+		// plugin's own fail-closed test bans the same remedies on Block Kit pages.
+		const retired = /service connection|admin token|service token|in Settings/i;
+		for (const text of [
+			CUSTOMER_CONTEXT_UNAVAILABLE,
+			TIMELINE_UNAVAILABLE,
+			PRODUCTS_UNAVAILABLE_DESCRIPTION,
+		]) {
+			expect(text).not.toMatch(retired);
+		}
+	});
+});
 
 describe("the words a failed load is answered with (F1, F2)", () => {
 	test("the retry label and its in-flight form are authored here, not at the call sites", () => {
@@ -848,7 +866,7 @@ describe("the stock-degradation banner carries every true fact, not the first on
 			"Stock levels are unavailable; low-stock highlighting is unavailable.",
 		);
 		expect(banner?.description).toContain("open a product to read its stock");
-		expect(banner?.description).toContain("Checkout & holds on Settings");
+		expect(banner?.description).toContain("Checkout & holds in Store settings → General");
 	});
 
 	test("a filter that could not be applied says the rows are UNFILTERED", () => {

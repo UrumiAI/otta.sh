@@ -29,7 +29,7 @@ const gateway = new StripePaymentGateway({
 });
 ```
 
-Inside Otta you do not construct this yourself: `@urumi.ai/otta-plugin` wires it from the keys saved on the admin Settings page, which are encrypted at rest only when the site's descriptor declares the plugin's `PAYMENT_SECRET_SETTINGS_SCHEMA` ([ADR-0037](https://github.com/UrumiAI/otta.sh/blob/main/adr/0037-payment-secrets-are-encrypted-at-rest.md)).
+Inside Otta you do not construct this yourself: `@urumi.ai/otta-plugin` wires it from the keys saved on the admin Store settings page (General tab), which are encrypted at rest only when the site's descriptor declares the plugin's `PAYMENT_SECRET_SETTINGS_SCHEMA` ([ADR-0037](https://github.com/UrumiAI/otta.sh/blob/main/adr/0037-payment-secrets-are-encrypted-at-rest.md)).
 
 ## More
 

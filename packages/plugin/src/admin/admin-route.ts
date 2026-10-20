@@ -31,6 +31,13 @@ import {
 	SHIPPING_PAGE,
 	type ShippingPageInput,
 } from "./shipping-page.js";
+import {
+	createStoreSettingsPageHandler,
+	STORE_SETTINGS_PAGE,
+	type StoreSettingsInput,
+	type StoreSettingsPanel,
+	findActingPanel,
+} from "./store-settings-page.js";
 import { createTaxPageHandler, TAX_ACTION_IDS, TAX_PAGE, type TaxPageInput } from "./tax-page.js";
 
 /**
@@ -60,8 +67,8 @@ interface AdminInteractionInput {
 }
 
 /**
- * Build the single `admin` route handler. Constructs the Reports + Settings
- * sub-handlers ONCE, then returns a dispatcher that forwards the UNCHANGED
+ * Build the single `admin` route handler. Constructs every Block Kit screen's
+ * sub-handler ONCE, then returns a dispatcher that forwards the UNCHANGED
  * `routeCtx`/`ctx` to the chosen sub-handler.
  *
  * This module is IO-FREE — pure control flow. All IO (ctx.http / ctx.kv) stays
@@ -76,6 +83,24 @@ export function createAdminRouteHandler(): RouteHandler<AdminInteractionInput> {
 	const coupons = createCouponsPageHandler();
 	const ordersConsole = createOrdersConsoleHandler();
 	const productsConsole = createProductsConsoleHandler();
+	// The three screens the Store settings page hosts as tabs — the SAME handler
+	// instances their own pages use, so a panel is that page, unchanged.
+	const storePanels: readonly StoreSettingsPanel[] = [
+		{
+			label: "General",
+			page: SETTINGS_PAGE.path,
+			actionIds: SETTINGS_ACTION_IDS,
+			handler: settings,
+		},
+		{ label: "Tax", page: TAX_PAGE.path, actionIds: TAX_ACTION_IDS, handler: tax },
+		{
+			label: "Shipping",
+			page: SHIPPING_PAGE.path,
+			actionIds: SHIPPING_ACTION_IDS,
+			handler: shipping,
+		},
+	];
+	const storeSettings = createStoreSettingsPageHandler(storePanels);
 
 	return async (routeCtx, ctx) => {
 		const input = routeCtx.input;
@@ -89,7 +114,7 @@ export function createAdminRouteHandler(): RouteHandler<AdminInteractionInput> {
 		// operator's session and the same CSRF header the admin shell sends — the
 		// only data path the amendment grants them. The types are disjoint from
 		// EmDash's (`page_load` / `block_action` / `form_submit`), which is what
-		// guarantees the branches below are untouched: the five Block Kit screens
+		// guarantees the branches below are untouched: the Block Kit screens
 		// that remain keep rendering exactly as they did. The two whose consoles
 		// these branches serve are gone (ADR-0015) — this is now their only surface.
 		//
@@ -127,8 +152,18 @@ export function createAdminRouteHandler(): RouteHandler<AdminInteractionInput> {
 			return coupons(routeCtx as SandboxedRouteContext<CouponsPageInput>, ctx);
 		}
 
-		// 5. Action interactions (block_action/form_submit) carry an action_id and
-		// no page — route each remaining Block Kit page's actions to its handler.
+		// Store settings: its page_load, and any action EmDash sends FROM it (the
+		// host stamps the originating `page` on every action). An action from the
+		// old standalone pages carries their path instead and falls through to 5.
+		if (type === "page_load" && page === STORE_SETTINGS_PAGE.path) {
+			return storeSettings(routeCtx as SandboxedRouteContext<StoreSettingsInput>, ctx);
+		}
+		if (page === STORE_SETTINGS_PAGE.path && findActingPanel(storePanels, actionId) >= 0) {
+			return storeSettings(routeCtx as SandboxedRouteContext<StoreSettingsInput>, ctx);
+		}
+
+		// 5. Action interactions (block_action/form_submit) from any other page, or an
+		// action Store settings does not own — route each remaining Block Kit page's actions to its handler.
 		// Orders and Pricing & inventory are ABSENT from this list (INC-R2/INC-R3,
 		// ADR-0015): both screens were retired, and their `orders:*`/`products:*`
 		// ids are now console actions, gated in branch 0 above.

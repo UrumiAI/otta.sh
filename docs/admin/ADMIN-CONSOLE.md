@@ -1171,7 +1171,7 @@ phrasing; the existing pages get this right and it must survive re-layout.
 | Kind | Shape | Example |
 |---|---|---|
 | Successful and empty | State the fact. Add the *reason* when the reason is structural. | `No refunds recorded.` · `No sessions (guests never sign in).` |
-| Read failed | Name what failed · say what is unaffected · give the one next step. | `Timeline unavailable — it could not be loaded right now. The order itself is unaffected; reload, and check the admin token in Settings if this persists.` |
+| Read failed | Name what failed · say what is unaffected · give the one next step. | `Timeline unavailable — it could not be loaded right now. The order itself is unaffected; reload, and if this persists it is a fault in the console itself.` |
 
 **E-4 — copy voice.** Sentence case, full stop, no exclamation. No "sorry"/"oops"/"whoops", no
 "unfortunately", no "we". Never echo an HTTP status, URL, exception message, or internal field
