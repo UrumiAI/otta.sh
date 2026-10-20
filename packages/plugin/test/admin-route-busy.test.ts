@@ -16,6 +16,7 @@ import { COUPONS_PAGE } from "../src/admin/coupons-page.js";
 import { REPORTS_PAGE } from "../src/admin/reports-page.js";
 import { SETTINGS_PAGE } from "../src/admin/settings-form.js";
 import { SHIPPING_PAGE } from "../src/admin/shipping-page.js";
+import { STORE_SETTINGS_PAGE } from "../src/admin/store-settings-page.js";
 import { TAX_PAGE } from "../src/admin/tax-page.js";
 import type { PluginContext } from "../src/types.js";
 import { busyStorage } from "./helpers/busy-storage.js";
@@ -70,12 +71,16 @@ describe("the React console", () => {
 });
 
 describe("Block Kit screens", () => {
-	test.each([REPORTS_PAGE, SETTINGS_PAGE, TAX_PAGE, SHIPPING_PAGE, COUPONS_PAGE])(
-		"page_load $path against a busy store still renders blocks — never a throw",
-		async (page) => {
-			await expect(invoke({ type: "page_load", page: page.path }, loaded())).resolves.toEqual(
-				expect.objectContaining({ blocks: expect.any(Array) }),
-			);
-		},
-	);
+	test.each([
+		REPORTS_PAGE,
+		SETTINGS_PAGE,
+		TAX_PAGE,
+		SHIPPING_PAGE,
+		COUPONS_PAGE,
+		STORE_SETTINGS_PAGE,
+	])("page_load $path against a busy store still renders blocks — never a throw", async (page) => {
+		await expect(invoke({ type: "page_load", page: page.path }, loaded())).resolves.toEqual(
+			expect.objectContaining({ blocks: expect.any(Array) }),
+		);
+	});
 });

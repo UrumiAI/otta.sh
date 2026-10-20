@@ -110,7 +110,7 @@ test.describe("harness configuration", () => {
 
 	test("console screens are addressed under the second descriptor id, never under `otta`", () => {
 		// A React page served under id `otta` would flip that plugin's
-		// `adminMode` to "react" and make its five Block Kit pages VANISH
+		// `adminMode` to "react" and make its Block Kit pages VANISH
 		// from the sidebar (ADR-0014 Decision 7). The url builder is the one
 		// place that could get this wrong for every screen at once.
 		//

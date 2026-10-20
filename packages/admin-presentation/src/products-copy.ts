@@ -96,7 +96,7 @@ export function stockDegradation(
 	if (facts.thresholdUnreadable) {
 		symptoms.push("low-stock highlighting is unavailable");
 		remedies.push(
-			"The store's low-stock threshold could not be read — set it under Checkout & holds on Settings.",
+			"The store's low-stock threshold could not be read — set it under Checkout & holds in Store settings → General.",
 		);
 	}
 	if (facts.filterUnavailable) {
@@ -185,7 +185,7 @@ export const NO_INVENTORY_RECORD_CONTEXT =
 /** Said on the DETAIL when the threshold could not be read, in the register
  *  that panel already uses — the same fact the list's banner carries. */
 export const LOW_STOCK_BAND_UNAVAILABLE_CONTEXT =
-	"Low-stock highlighting is unavailable — the threshold could not be read. Set it under Checkout & holds on Settings.";
+	"Low-stock highlighting is unavailable — the threshold could not be read. Set it under Checkout & holds in Store settings → General.";
 
 // ── the two adjacent stock forms (PM §E2) ────────────────────────────────────
 
@@ -501,7 +501,7 @@ export function dimensionsSummary(
  *  spellings of it. */
 export const PRODUCTS_UNAVAILABLE_TITLE = "Pricing & inventory is unavailable";
 export const PRODUCTS_UNAVAILABLE_DESCRIPTION =
-	"Pricing & inventory could not be loaded. Check the service connection and the admin token in Settings; if both look right, this is a fault in the console itself — not your data.";
+	"Pricing & inventory could not be loaded. Check the service connection and the admin token in Store settings; if both look right, this is a fault in the console itself — not your data.";
 
 /**
  * "This product is gone", in the five places a screen can discover it.

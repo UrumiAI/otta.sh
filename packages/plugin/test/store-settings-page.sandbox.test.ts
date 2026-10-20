@@ -108,4 +108,15 @@ describe("Store settings page", () => {
 		expect(findBlock(after, "tab")).toBeUndefined();
 		expect(findBlock(after, "header")).toMatchObject({ text: "New tax class" });
 	}, 60_000);
+	test("an action this page does not own falls through to its own screen, unwrapped", async () => {
+		// A Coupons id stamped with this page (impossible from the UI today) must
+		// reach Coupons as-is, never be swallowed or rendered inside the tabs.
+		const after = await invoke({
+			type: "block_action",
+			action_id: "coupons:new",
+			page: STORE_SETTINGS_PAGE.path,
+		});
+		expect(findBlock(after, "tab")).toBeUndefined();
+		expect(after.length).toBeGreaterThan(0);
+	}, 60_000);
 });

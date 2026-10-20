@@ -23,15 +23,25 @@ import { noticeBanner } from "./scaffold/banner.js";
  * the Tax panel must answer with the full tabbed page — Tax's own response in
  * its panel, a fresh `page_load` of the other two — or the tabs vanish after the
  * first click. The tab block keeps a stable `block_id`, so React keeps it mounted
- * across responses and the operator stays on the tab they were using;
- * `default_tab` points at the acting panel for the case where it re-mounts.
+ * across responses and the operator stays on the tab they were using.
+ * `default_tab` is read only on mount, which only a page_load causes, so it is
+ * always 0 in practice; it names the acting panel anyway so a future host that
+ * remounts on actions still lands on the right tab.
+ *
+ * WHAT THE OPERATOR LOSES, by design. The host renders only the active panel,
+ * so switching tabs drops unsaved typing in the one left behind. And an action
+ * in one tab re-loads the others at their root, so a drill-in elsewhere (a zone's
+ * methods, an open "New tax class" form, a pending currency-switch confirm)
+ * resets. Each standalone page behaved the same when the operator navigated away.
  *
  * The acting handler runs FIRST and the others after it, so a panel that reads
  * what the action just wrote (Shipping showing the store currency a General save
  * changed) renders the new state, not the old.
  *
  * The old `/settings`, `/tax` and `/shipping` pages stay served by the dispatcher
- * for bookmarks; only an interaction that names THIS page is wrapped.
+ * for bookmarks; only an interaction that names THIS page is wrapped. With no
+ * sidebar link of their own they render without the console's accordion styling
+ * (`block-kit-accordion.ts` scopes it to the current sidebar entry).
  */
 export const STORE_SETTINGS_PAGE: AdminPageConfig = {
 	path: "/store-settings",
@@ -48,6 +58,8 @@ export interface StoreSettingsPanel {
 	/** The screen's own page path, sent as that screen's `page_load`. */
 	page: string;
 	actionIds: ReadonlySet<string>;
+	/** `never` because each screen validates its own richer input: the panels hold
+	 *  handlers of different input types, and only `routeCtx` is passed through. */
 	handler: RouteHandler<never>;
 }
 
@@ -57,13 +69,14 @@ export interface StoreSettingsInput {
 	action_id?: unknown;
 }
 
-/** True when `actionId` belongs to one of the panels — the dispatcher's test for
- *  routing an interaction from this page here. */
-export function storeSettingsOwnsAction(
+/** The index of the panel that owns `actionId`, or -1 — the dispatcher's test
+ *  for routing an action from this page here, and the handler's pick of the
+ *  acting panel. */
+export function findActingPanel(
 	panels: readonly StoreSettingsPanel[],
-	actionId: string,
-): boolean {
-	return panels.some((p) => p.actionIds.has(actionId));
+	actionId: string | undefined,
+): number {
+	return actionId === undefined ? -1 : panels.findIndex((p) => p.actionIds.has(actionId));
 }
 
 /** A handler's result, narrowed to the envelope. Anything without a `blocks`
@@ -97,15 +110,17 @@ export function createStoreSettingsPageHandler(
 	return async (routeCtx, ctx) => {
 		const actionId =
 			typeof routeCtx.input.action_id === "string" ? routeCtx.input.action_id : undefined;
-		const actingIndex =
-			actionId === undefined ? -1 : panels.findIndex((p) => p.actionIds.has(actionId));
+		const actingIndex = findActingPanel(panels, actionId);
 
 		const loadPanel = async (panel: StoreSettingsPanel): Promise<Block[]> => {
 			const loadCtx = { ...routeCtx, input: { type: "page_load", page: panel.page } };
 			try {
 				return asBlockResponse(await panel.handler(loadCtx as SandboxedRouteContext<never>, ctx))
 					.blocks;
-			} catch {
+			} catch (err) {
+				// Each screen renders its own expected failures, so a throw here is a bug;
+				// log it, since the banner deliberately says nothing about it.
+				console.error(`[otta] store settings: ${panel.label} panel failed to load:`, err);
 				return panelFailedBlocks(panel.label);
 			}
 		};

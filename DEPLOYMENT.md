@@ -52,7 +52,7 @@ Three rules hold. Everything else in this guide is a consequence of them.
 - **Secrets model.** There is one deployable, so there is one place secrets can live — and
   two stores inside it (§3). Two are **Worker secrets** (`wrangler secret put`):
   `EMDASH_ENCRYPTION_KEY` and `OTTA_WH_TOKEN`. Every payment **credential** is
-  provisioned by the operator in the admin console's **Settings** page and held in
+  provisioned by the operator in the admin console's **Store settings** page (General tab) and held in
   **write-only plugin `kv`** under `settings:*` — persisted only on a non-empty submit,
   never rendered back into a block, read through a fail-closed reader. The Stripe secret
   key, the Stripe webhook signing secret and the webhook edge token are **encrypted at
@@ -80,7 +80,7 @@ paid plan:
 
 The site's single `* * * * *` cron touches only D1, within free limits — the commerce sweep
 budgets itself to fit Workers Free's 50 D1 queries per invocation by default. On Workers Paid,
-switch Settings → Checkout & holds → "Background work per minute" to the Paid preset, or
+switch Store settings → General → Checkout & holds → "Background work per minute" to the Paid preset, or
 expired holds and queued emails drain at the Free pace (§5).
 
 ### 2.1 The site Worker
@@ -300,7 +300,7 @@ cannot be retried in place:
 ## 3. Secrets & tokens checklist
 
 Two of these are **Worker secrets** on the site (`wrangler secret put`); the rest are
-**plugin credentials** the operator types into the admin console's **Settings** page, which
+**plugin credentials** the operator types into the admin console's **Store settings** page (General tab), which
 persists them to write-only plugin `kv` under `settings:*`. On Workers, **every `wrangler
 secret put` below** needs `--config wrangler.local.jsonc`: without it, wrangler defaults to
 the tracked template and uploads the secret to the placeholder-named Worker, not yours. In
@@ -321,11 +321,11 @@ order of appearance in a deployment's life:
   (`settings:otta-wh-token`) (ADR-0037). The site's Otta
   descriptor must keep its `settingsSchema` for that to happen. Other plugin settings, the
   email keys and order data are **not** encrypted with it.
-  - **Enter these keys on Otta's Settings page only.** Declaring them makes EmDash also show
+  - **Enter these keys on Otta's Store settings page only.** Declaring them makes EmDash also show
     a Settings gear for the plugin under Plugins; its form stores whatever is typed, without
     Otta's checks. Otta checks every stored key's shape when it reads it: an empty or
     malformed value is never used (payments refuse, the webhook route answers 503) and
-    Otta's Settings page shows "saved, but not valid" until it is entered again there.
+    Otta's Store settings page shows "saved, but not valid" until it is entered again there.
   - **Where it is read:** EmDash reads it from `process.env`. On Workers that is the Worker
     secret (`nodejs_compat` populates `process.env`). **Local development (`astro dev`):**
     put `EMDASH_ENCRYPTION_KEY=<key>` in `sites/staging/.env` (gitignored; generate a
@@ -364,7 +364,7 @@ order of appearance in a deployment's life:
     leftover x402 key). Earlier backups and D1 Time Travel
     history still hold the earlier copies until they age out, so rotate a live Stripe key
     after the upgrade.
-  - **After every deploy (required check):** open Otta's Settings and confirm that every
+  - **After every deploy (required check):** open Otta's Store settings (General tab) and confirm that every
     payment secret you use (Stripe secret key, webhook signing secret, `OTTA_WH_TOKEN`) reads
     "— set". Re-enter any that says "saved, but not valid" or "saved, but cannot be read" —
     keys saved before 2026-10-02 or through EmDash's settings gear can read as not valid.

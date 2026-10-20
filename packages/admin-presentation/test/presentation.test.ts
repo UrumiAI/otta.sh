@@ -848,7 +848,7 @@ describe("the stock-degradation banner carries every true fact, not the first on
 			"Stock levels are unavailable; low-stock highlighting is unavailable.",
 		);
 		expect(banner?.description).toContain("open a product to read its stock");
-		expect(banner?.description).toContain("Checkout & holds on Settings");
+		expect(banner?.description).toContain("Checkout & holds in Store settings → General");
 	});
 
 	test("a filter that could not be applied says the rows are UNFILTERED", () => {
