@@ -165,7 +165,8 @@ export function sectionHeading(
 /**
  * The blocks of the section headed by the `header` with this `block_id`: every
  * block after that heading in the SAME list, up to (not including) the next
- * `header` in that list. `[]` when no such heading exists. Nested containers in
+ * `header` in that list — the LAST section of a list therefore runs to the end
+ * of that list. `[]` when no such heading exists. Nested containers in
  * the body are returned whole, so {@link findBlocks} et al. still recurse into
  * them.
  */

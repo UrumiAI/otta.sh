@@ -303,26 +303,17 @@ export function createGeoScreenHandler() {
 							context: carriedPath,
 							form: filterForm("Apply (carried)"),
 						}),
-						// A THIRD filter form, COLLAPSED behind `filterPanel` and carrying
-						// nothing — the engine's path-carry guarantee has to reach inside
-						// the accordion, or collapsing a deep filter would silently
-						// re-filter the root list.
+						// A THIRD filter form, via `filterPanel` and carrying nothing — the
+						// engine's path-carry guarantee has to reach it (and the container
+						// kinds below), or a deep filter would silently re-filter the root
+						// list. Through `carriedForm` because this form PREFILLS `q`;
+						// `filterPanel` enforces that (it throws). The carrier has no
+						// `__path`, so the engine still injects the visible path field.
 						filterPanel({
-							// Through `carriedForm` because this form PREFILLS `q` — collapsed
-							// in an accordion it would otherwise be index-0-forever, so a
-							// cleared filter would leave the old value on screen. `filterPanel`
-							// enforces that rather than trusting the author (it throws), which
-							// is why the carrier here has no `__path`: the digest satisfies the
-							// prefill rule while the engine still injects the visible path
-							// field, as the accordion-recursion test asserts.
 							form: carriedForm({
 								namespace: "geo:city-filter-collapsed",
 								form: filterForm("Apply (collapsed)"),
 							}),
-							blockId: "geo:city-filters",
-							label: "Filters",
-							activeFilters: [filter.q !== undefined && `name: ${filter.q}`],
-							inlineUpTo: 0,
 						}),
 						// A FOURTH and FIFTH, nested in the other two container kinds — the
 						// traversal has to reach every one of them, not just `accordion`.

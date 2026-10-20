@@ -9,14 +9,13 @@ import {
 	encodePath,
 	carriedFields,
 	filterPanel,
-	filterPanelLabel,
 	filterSummary,
 	MAX_CARRIER_LENGTH,
 	PATH_FIELD,
 	PREFILL_FIELD,
 	section,
 } from "../src/admin/scaffold/index.js";
-import type { AccordionBlock, FormBlock } from "../src/types.js";
+import type { FormBlock } from "../src/types.js";
 
 /**
  * The shared layout vocabulary the six admin screens build on (admin-UX density
@@ -305,87 +304,22 @@ function formWith(fieldCount: number): FormBlock {
 }
 
 describe("filterPanel (a filter form that costs no screenful of scroll)", () => {
-	test("a small filter (≤ 2 fields) renders INLINE — the form itself, untouched", () => {
-		const one = carriedFormWith(1);
-		expect(filterPanel({ form: one, blockId: "x:filters" })).toBe(one);
-		const two = carriedFormWith(2);
-		expect(filterPanel({ form: two, blockId: "x:filters", activeFilters: ["status: paid"] })).toBe(
-			two,
+	test("a filter of ANY size (1 to 4 fields) renders INLINE — the form itself, never an accordion", () => {
+		for (const n of [1, 2, 3, 4]) {
+			const form = carriedFormWith(n);
+			expect(filterPanel({ form })).toBe(form);
+		}
+	});
+
+	test("filterSummary joins only the active parts, and is undefined when none are", () => {
+		expect(filterSummary([false, "zone: us", undefined, "", "ships: yes", null])).toBe(
+			"zone: us · ships: yes",
 		);
-	});
-
-	test("a 3+ field filter collapses into a CLOSED accordion holding the form", () => {
-		const form = carriedFormWith(4);
-		const panel = filterPanel({ form, blockId: "orders:filters" });
-		expect(panel).toEqual({
-			type: "accordion",
-			label: "Filters",
-			blocks: [form],
-			block_id: "orders:filters",
-		});
-		// Closed always, and expressed by OMITTING default_open: em-dash reads it
-		// once in a useState initialiser, so it cannot be used as state anyway.
-		expect("default_open" in panel).toBe(false);
-	});
-
-	test("the collapsed label is a COUNT, never the values (spec L-3)", () => {
-		const panel = filterPanel({
-			form: carriedFormWith(4),
-			blockId: "orders:filters",
-			activeFilters: ["status: paid", "from: 2026-07-01"],
-		});
-		// A label is a control with a tight width budget: no values, no truncation,
-		// no ellipsis. The values live in the section beneath, via `filterSummary`.
-		expect((panel as AccordionBlock).label).toBe("Filters (2 active)");
-	});
-
-	test("filterPanelLabel counts only, and says nothing when nothing is active", () => {
-		expect(filterPanelLabel("Filters", 0)).toBe("Filters");
-		expect(filterPanelLabel("Filters", 1)).toBe("Filters (1 active)");
-		expect(filterPanelLabel("Rate filter", 3)).toBe("Rate filter (3 active)");
-		// Defensive: a negative count is treated as none rather than rendered.
-		expect(filterPanelLabel("Filters", -1)).toBe("Filters");
-	});
-
-	test("the count comes from the SAME array as the summary, so they cannot disagree", () => {
-		const parts: ReadonlyArray<string | false | null | undefined> = [
-			false,
-			"zone: us",
-			undefined,
-			"",
-			"ships: yes",
-			null,
-		];
-		const panel = filterPanel({
-			form: carriedFormWith(3),
-			blockId: "tax:filters",
-			activeFilters: parts,
-		});
-		expect((panel as AccordionBlock).label).toBe("Filters (2 active)");
-		expect(filterSummary(parts)).toBe("zone: us · ships: yes");
-	});
-
-	test("label + inlineUpTo are honoured; blockId is required and is a React key only", () => {
-		const form = carriedFormWith(1);
-		// inlineUpTo: 0 forces the accordion even for a single field.
-		expect(
-			filterPanel({
-				form,
-				blockId: "tax:filters:std",
-				label: "Rate filter",
-				activeFilters: ["zone: us"],
-				inlineUpTo: 0,
-			}),
-		).toEqual({
-			type: "accordion",
-			label: "Rate filter (1 active)",
-			blocks: [form],
-			block_id: "tax:filters:std",
-		});
+		expect(filterSummary([false, undefined])).toBeUndefined();
 	});
 
 	test("more than 4 filter fields THROWS rather than silently hiding a spec violation", () => {
-		expect(() => filterPanel({ form: carriedFormWith(5), blockId: "x:filters" })).toThrowError(
+		expect(() => filterPanel({ form: carriedFormWith(5) })).toThrowError(
 			/5 filter fields exceeds the 4-field maximum/,
 		);
 	});
@@ -398,9 +332,7 @@ describe("filterPanel (a filter form that costs no screenful of scroll)", () => 
 		// forever. Requiring the digest even when nothing is prefilled TODAY means the
 		// first render test on every screen trips this, and a filter that gains a
 		// prefill later cannot quietly become wrong.
-		expect(() => filterPanel({ form: formWith(3), blockId: "x:filters" })).toThrowError(
-			/carries no prefill digest/,
-		);
+		expect(() => filterPanel({ form: formWith(3) })).toThrowError(/carries no prefill digest/);
 		const prefilledForm: FormBlock = {
 			...formWith(3),
 			fields: [
@@ -409,16 +341,11 @@ describe("filterPanel (a filter form that costs no screenful of scroll)", () => 
 				{ type: "text_input", action_id: "z", label: "Zone" },
 			],
 		};
-		expect(() => filterPanel({ form: prefilledForm, blockId: "x:filters" })).toThrowError(
-			/carries no prefill digest/,
-		);
+		expect(() => filterPanel({ form: prefilledForm })).toThrowError(/carries no prefill digest/);
 		// Through `carriedForm`, both are accepted.
 		for (const form of [formWith(3), prefilledForm]) {
 			expect(() =>
-				filterPanel({
-					form: carriedForm({ namespace: "orders:filter", form }),
-					blockId: "x:filters",
-				}),
+				filterPanel({ form: carriedForm({ namespace: "orders:filter", form }) }),
 			).not.toThrow();
 		}
 	});
@@ -434,17 +361,13 @@ describe("filterPanel (a filter form that costs no screenful of scroll)", () => 
 			...form,
 			fields: [{ type: "text_input", action_id: "status", label: "Status", initial_value: "paid" }],
 		};
-		expect(() => filterPanel({ form: edited, blockId: "x:filters" })).toThrowError(
-			/carries a STALE prefill digest/,
-		);
+		expect(() => filterPanel({ form: edited })).toThrowError(/carries a STALE prefill digest/);
 		// And a hand-rolled token that merely CONTAINS the reserved key does not pass.
 		const faked: FormBlock = {
 			...formWith(3),
 			block_id: encodeCarrier("orders:filter", { [PREFILL_FIELD]: "1" }),
 		};
-		expect(() => filterPanel({ form: faked, blockId: "x:filters" })).toThrowError(
-			/carries a STALE prefill digest/,
-		);
+		expect(() => filterPanel({ form: faked })).toThrowError(/carries a STALE prefill digest/);
 	});
 
 	test("the digest covers a secret input's `has_value`, which the renderer reads once and never re-syncs", () => {
@@ -456,15 +379,13 @@ describe("filterPanel (a filter form that costs no screenful of scroll)", () => 
 		);
 	});
 
-	test("the form's own carrier is left alone — the accordion keeps its own plain key", () => {
+	test("the form's own carrier is left alone", () => {
 		const form = carriedForm({
 			namespace: "tax:filter",
 			context: { [PATH_FIELD]: encodePath(["z1"]) },
 			form: formWith(3),
 		});
-		const panel = filterPanel({ form, blockId: "tax:filters" }) as AccordionBlock;
-		expect(panel.block_id).toBe("tax:filters");
-		expect((panel.blocks[0] as FormBlock).block_id).toBe(form.block_id);
+		expect(filterPanel({ form })).toBe(form);
 	});
 });
 

@@ -52,6 +52,7 @@ import {
 	contextTexts,
 	emptyActions,
 	findBlocks,
+	sectionBlocks,
 	valueOf,
 	type LooseBlock,
 	type LooseElement,
@@ -271,7 +272,7 @@ function checkX4(blocks: readonly LooseBlock[]): string[] {
 function checkX6(blocks: readonly LooseBlock[]): string[] {
 	return findBlocks(blocks, "divider").map(
 		() =>
-			`X-6: a "divider" block is present (R-4/§2) — dividers are forbidden everywhere; accordion boundaries already separate groups.`,
+			`X-6: a "divider" block is present (R-4/§2) — dividers are forbidden everywhere; section headings already separate groups.`,
 	);
 }
 
@@ -365,7 +366,7 @@ const BUDGET = {
 	pageContext: 140,
 	otherContext: 200,
 	bannerDescription: 240,
-	accordionLabel: 60,
+	groupLabel: 60,
 	confirmTitle: 60,
 	confirmText: 200,
 	emptyDescription: 200,
@@ -374,11 +375,37 @@ const BUDGET = {
 /** The top-level `context` blocks that precede any section heading — the page
  *  title is the first top-level `header`; each one after it opens a section. */
 function pageLevelContext(blocks: readonly LooseBlock[]): LooseBlock[] {
-	const out: LooseBlock[] = [];
-	let headers = 0;
-	for (const b of blocks) {
-		if (b.type === "header") headers += 1;
-		else if (b.type === "context" && headers < 2) out.push(b);
+	return pageLevelBlocks(blocks).filter((b) => b.type === "context");
+}
+
+/** The top-level blocks before the first section heading (a `header` carrying a
+ *  `block_id`; the page title carries none). */
+function pageLevelBlocks(blocks: readonly LooseBlock[]): LooseBlock[] {
+	const end = blocks.findIndex((b) => isSectionHeading(b));
+	return end < 0 ? [...blocks] : blocks.slice(0, end);
+}
+
+function isSectionHeading(b: LooseBlock): boolean {
+	return b.type === "header" && typeof b.block_id === "string";
+}
+
+/** Every section heading at any depth, as `{label, destructive}`-ready groups:
+ *  the heading text, and the body that follows it in its own list. */
+function sectionHeadings(blocks: readonly LooseBlock[]): LooseBlock[] {
+	return findBlocks(blocks, "header").filter(isSectionHeading);
+}
+
+/** Every named group the contract judges: remaining accordions and sections. */
+function namedGroups(blocks: readonly LooseBlock[]): Array<{ label: string; body: LooseBlock[] }> {
+	const out: Array<{ label: string; body: LooseBlock[] }> = [];
+	for (const a of findBlocks(blocks, "accordion")) {
+		out.push({
+			label: String(a.label ?? ""),
+			body: Array.isArray(a.blocks) ? (a.blocks as LooseBlock[]) : [],
+		});
+	}
+	for (const h of sectionHeadings(blocks)) {
+		out.push({ label: String(h.text ?? ""), body: sectionBlocks(blocks, String(h.block_id)) });
 	}
 	return out;
 }
@@ -417,11 +444,10 @@ function checkX11(blocks: readonly LooseBlock[]): string[] {
 			);
 		}
 	}
-	for (const a of findBlocks(blocks, "accordion")) {
-		const label = String(a.label ?? "");
-		if (label.length > BUDGET.accordionLabel) {
+	for (const { label } of namedGroups(blocks)) {
+		if (label.length > BUDGET.groupLabel) {
 			out.push(
-				`X-11: accordion.label is ${label.length} chars (budget ${BUDGET.accordionLabel}, §1) — "${label}"`,
+				`X-11: section heading / accordion.label is ${label.length} chars (budget ${BUDGET.groupLabel}, §1) — "${label}"`,
 			);
 		}
 	}
@@ -977,10 +1003,11 @@ function checkX28(blocks: readonly LooseBlock[]): string[] {
 // ---------------------------------------------------------------------------
 
 function checkX31(blocks: readonly LooseBlock[]): string[] {
-	const topBanners = blocks.filter((b) => b.type === "banner");
+	// Page-level only: before the first section heading (mirrors pageLevelContext).
+	const topBanners = pageLevelBlocks(blocks).filter((b) => b.type === "banner");
 	if (topBanners.length > 2) {
 		return [
-			`X-31: ${topBanners.length} banners at the top level of this response (§2) — at most 2 (banners inside an accordion are not counted).`,
+			`X-31: ${topBanners.length} banners at the top level of this response (§2) — at most 2 (banners inside a section or accordion are not counted).`,
 		];
 	}
 	return [];
@@ -991,8 +1018,7 @@ function checkX31(blocks: readonly LooseBlock[]): string[] {
 // no consequence clause.
 // ---------------------------------------------------------------------------
 
-function isDestructiveGroup(accordion: LooseBlock): boolean {
-	const body = Array.isArray(accordion.blocks) ? (accordion.blocks as LooseBlock[]) : [];
+function isDestructiveGroup(body: readonly LooseBlock[]): boolean {
 	return allBlocks(body).some(
 		(b) =>
 			b.type === "actions" &&
@@ -1009,12 +1035,11 @@ function isDestructiveGroup(accordion: LooseBlock): boolean {
 
 function checkX35(blocks: readonly LooseBlock[]): string[] {
 	const out: string[] = [];
-	for (const a of findBlocks(blocks, "accordion")) {
-		if (!isDestructiveGroup(a)) continue;
-		const label = String(a.label ?? "");
+	for (const { label, body } of namedGroups(blocks)) {
+		if (!isDestructiveGroup(body)) continue;
 		if (!label.includes("—") && !/ - /.test(label)) {
 			out.push(
-				`X-35: destructive accordion "${label}" has no consequence clause (D-6a) — e.g. "${label} — permanent" or "${label} — cannot be reversed".`,
+				`X-35: destructive group "${label}" has no consequence clause (D-6a) — e.g. "${label} — permanent" or "${label} — cannot be reversed".`,
 			);
 		}
 	}
@@ -1029,8 +1054,7 @@ const DEGENERATE_RATIO_RE = /\$0\.00\s+of\s+\$0\.00|\b0\s+of\s+0\b|0%\s+of\s+not
 
 function checkX36(blocks: readonly LooseBlock[]): string[] {
 	const out: string[] = [];
-	for (const a of findBlocks(blocks, "accordion")) {
-		const label = String(a.label ?? "");
+	for (const { label } of namedGroups(blocks)) {
 		if (DEGENERATE_RATIO_RE.test(label)) {
 			out.push(
 				`X-36: accordion label "${label}" states a degenerate ratio (D-6b) — replace the arithmetic with the fact (e.g. "nothing captured, nothing to refund").`,

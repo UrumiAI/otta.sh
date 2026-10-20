@@ -523,8 +523,8 @@ function createActionBlock(
 	};
 }
 
-/** One zone's per-row group (L-9): edit form, the "View methods" drill-in
- *  (§12.7), and delete — all collapsed (L-9's own "zero open groups" rule). */
+/** One zone's per-row section (L-9): edit form, the "View methods" drill-in
+ *  (§12.7), and delete — always open, like every group on this screen. */
 function zoneSection(zone: ShippingZoneWire, onlyZone: boolean): Block[] {
 	return section({
 		title: `${zone.id} — ${zone.name}`,
@@ -922,7 +922,7 @@ async function methodPrice(
  * configuration is complete — the same false absence this module refuses to
  * render as `Free`. Scoping it in the row instead ("No rate set for this
  * currency") reads better in isolation and was tried first: it makes a
- * realistic label 63 characters against X-11's 60-char accordion budget, and
+ * realistic heading 63 characters against X-11's 60-char section-heading budget, and
  * the budget is the older constraint. So the qualifier lives once in the
  * context line, with the currency it qualifies — which is also where G1 wants
  * the currency named, rather than as an ISO code per row.
@@ -1014,7 +1014,7 @@ function methodsBlocks(
 	}
 
 	if (sectionBranch) {
-		// L-2: one filter field renders INLINE, no accordion. It is the price
+		// L-2: one filter field renders INLINE. It is the price
 		// column's currency, so it ships with the priced branch and not with the
 		// table branch, which prices nothing. It renders on a REJECTED currency
 		// too — that is the field the operator has to fix.
