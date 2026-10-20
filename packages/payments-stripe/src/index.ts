@@ -1680,7 +1680,7 @@ export type StripeAccountCountryResult =
 	| { ok: false; reason: "permission_denied" | "authentication_failed" | "unavailable" };
 
 /** The bound on the account read when the caller names none. Short: the plugin
- *  makes the read from admin Settings (its save and its page load), never from
+ *  makes the read from admin Store settings (its save and its page load), never from
  *  checkout, but an admin screen must not wait on Stripe for long either. */
 export const DEFAULT_ACCOUNT_READ_TIMEOUT_MS = 3_000;
 

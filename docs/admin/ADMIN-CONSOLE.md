@@ -1235,7 +1235,7 @@ would be a false statement about money. `showLeaf` is the same call on both path
 ("Nothing was refunded" / "Refund recorded"); the fail-closed banner carries only the symptom. Do not
 add an effect claim to the blockquote above.
 
-(122 chars at `Orders`. The copy named "the service connection and the admin token in Store settings"
+(122 chars at `Orders`. The copy named "the service connection and the admin token in Settings"
 until ADR-0020 removed the service, and both with it.) Title: `<Screen> are unavailable` / `<Screen>
 is unavailable`. The last clause is the load-bearing one — it is the only thing that stops a console
 bug from being reported as an outage. **Applies to every screen's

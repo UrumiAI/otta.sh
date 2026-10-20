@@ -501,7 +501,7 @@ export function dimensionsSummary(
  *  spellings of it. */
 export const PRODUCTS_UNAVAILABLE_TITLE = "Pricing & inventory is unavailable";
 export const PRODUCTS_UNAVAILABLE_DESCRIPTION =
-	"Pricing & inventory could not be loaded. Reload; if it keeps failing, this is a fault in the console itself — not your data.";
+	"Pricing & inventory could not be loaded. Retry in a moment; if it keeps failing, this is a fault in the console itself — not your data.";
 
 /**
  * "This product is gone", in the five places a screen can discover it.

@@ -435,8 +435,8 @@ export async function skipWithoutPurchasableProduct(testInfo: TestInfo): Promise
  * place button for a cart that should be placeable.
  *
  * `reason` is the page's own explanation, read off it by the caller: most
- * often the store has no Stripe publishable key in Store settings (General tab) (the review then
- * shows STRIPE_NOT_CONFIGURED and, by design, no button — no order may hold
+ * often the store has no Stripe publishable key on Store settings → General (the review
+ * then shows STRIPE_NOT_CONFIGURED and, by design, no button — no order may hold
  * stock against a payment that cannot happen), which a placeholder `pk_test_…`
  * fixes; OTTA_E2E_SEED=1 or OTTA_E2E_START_STACK=1 saves one (issue #498).
  */
