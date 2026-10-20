@@ -288,6 +288,11 @@ export const CONSOLE_STYLES = `
 	box-shadow: inset 0 -2px 0 ${KUMO.brand};
 }
 .otta-btn.otta-tab:focus-visible { outline-offset: -2px; }
+/* Forced colours (Windows High Contrast) drop box-shadow and flatten ink, so
+   the selected tab keeps a real border there. */
+@media (forced-colors: active) {
+	.otta-btn.otta-tab[aria-selected="true"] { border-block-end: 2px solid Highlight; }
+}
 /* Present to assistive technology, absent from the page. The same recipe the
    table caption uses inline; it is a class here because it is applied to
    elements that are not tables and would otherwise be a fourth copy. */
