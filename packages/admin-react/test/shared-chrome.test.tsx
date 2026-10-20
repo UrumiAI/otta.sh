@@ -18,13 +18,11 @@ import {
 	ConfirmDialog,
 	CURSOR_RESET_DESCENDANT_SELECTOR,
 	CopyIdButton,
-	FAIL_ACCENT,
+	Group,
 	INTERACTIVE_DESCENDANT_SELECTOR,
-	OK_ACCENT,
 	ROW_ID_ATTRIBUTE,
 	StatusPill,
 	Table,
-	WARN_ACCENT,
 	rowActivationId,
 } from "../src/ui.js";
 
@@ -61,20 +59,11 @@ describe("the cursor cascade no longer needs !important", () => {
 		// The inline declaration is gone from every button, which is what makes
 		// the rest of this possible: a rule in this sheet can now be outranked
 		// only by another rule in this sheet.
-		expect(css).toContain(".otta-btn { cursor: pointer; }");
+		expect(css).toMatch(/\.otta-btn \{[^}]*cursor: pointer;/);
 		expect(css).toContain(
 			`.otta-row[${ROW_ID_ATTRIBUTE}] :is(${CURSOR_RESET_DESCENDANT_SELECTOR}) { cursor: auto; }`,
 		);
 		expect(css).not.toContain("!important");
-	});
-
-	test("the disclosure's pointer is a class rule for the same reason", () => {
-		// `summary` is named in the reset selector, so a `<summary>` inside an
-		// activatable row has to be able to fall back to `auto` — which an inline
-		// declaration on the element makes impossible, whatever the sheet says.
-		const css = sheet();
-		expect(css).toContain(".otta-summary { cursor: pointer; }");
-		expect(CURSOR_RESET_DESCENDANT_SELECTOR.split(", ")).toContain("summary");
 	});
 
 	test("a disabled control keeps not-allowed, inside an activatable row and out", () => {
@@ -115,16 +104,31 @@ describe("the table card", () => {
 		expect(carded).toContain("overflow-x:auto");
 	});
 
-	test("frames without filling: shared hairline, clipped corners, banded header", () => {
+	test("frames in EmDash's own card: line border, lg radius, tinted header band", () => {
 		const css = sheet();
-		expect(css).toContain(
-			".otta-table-card { border: 1px solid rgba(128, 128, 128, 0.35); border-radius: 8px; " +
-				"overflow: hidden; }",
+		// EmDash's list tables are `rounded-lg border bg-kumo-base` with a
+		// `bg-kumo-tint/50` header row — read from the admin's own tokens, so the
+		// card follows light and dark with the rest of the admin.
+		expect(css).toContain(".otta-table-card { border: 1px solid var(--color-kumo-line");
+		expect(css).toMatch(/\.otta-table-card \{[^}]*border-radius: 8px;[^}]*overflow: hidden;/);
+		expect(css).toMatch(/\.otta-table-card \{[^}]*background: var\(--color-kumo-base/);
+		expect(css).toMatch(
+			/\.otta-table-card thead tr \{ background: color-mix\([^}]*--color-kumo-tint/,
 		);
-		// An alpha over whatever is behind it, so one value serves both grounds.
-		expect(css).toContain(".otta-table-card thead tr { background: rgba(128, 128, 128, 0.06); }");
 		// The card edge is the last line; a rule under the last row would double it.
 		expect(css).toContain(".otta-table-card tbody tr:last-child .otta-td { border-block-end: 0; }");
+	});
+
+	test("headers are sentence case in EmDash's medium weight, not a shouting caps bar", () => {
+		const th = /\} \.otta-th \{([^}]*)\}/.exec(sheet())?.[1] ?? "";
+		expect(th).not.toContain("text-transform");
+		expect(th).not.toContain("letter-spacing");
+		expect(th).toContain("font-weight: 500");
+		expect(th).toContain("font-size: 13px");
+	});
+
+	test("a row hover is EmDash's tint, not a fixed grey", () => {
+		expect(sheet()).toMatch(/\.otta-row:hover \{ background: color-mix\([^}]*--color-kumo-tint/);
 	});
 
 	test("insets the outer cells, and tightens them on a narrow viewport", () => {
@@ -147,26 +151,86 @@ describe("the table card", () => {
 
 describe("the state pill", () => {
 	test.each([
-		["ok", OK_ACCENT],
-		["warn", WARN_ACCENT],
-		["fail", FAIL_ACCENT],
-	] as const)("spends the %s accent on the border and nowhere else", (tone, accent) => {
+		["ok", "--color-kumo-success-tint", "--text-color-kumo-success"],
+		["info", "--color-kumo-info-tint", "--text-color-kumo-info"],
+		["warn", "--color-kumo-warning-tint", "--text-color-kumo-warning"],
+		["fail", "--color-kumo-danger-tint", "--text-color-kumo-danger"],
+		["neutral", "--color-kumo-fill", "--text-color-kumo-badge-neutral-subtle"],
+	] as const)("the %s tone is EmDash's own badge fill and ink", (tone, fill, ink) => {
 		const html = renderToStaticMarkup(<StatusPill tone={tone}>Out of stock</StatusPill>);
-		expect(html).toContain(`border:1px solid ${accent}`);
-		// Measured, not preferred: each accent fails 4.5:1 as text against one
-		// ground or the other, and clears 3:1 as a border against both. One
-		// occurrence means the accent reached `border` and nothing else.
-		expect(html.split(accent).length - 1).toBe(1);
-		expect(html).toContain("color:currentColor");
+		expect(html).toContain(`data-tone="${tone}"`);
+		expect(html).toContain('class="otta-pill"');
+		const rule = new RegExp(`\\.otta-pill\\[data-tone="${tone}"\\] \\{([^}]*)\\}`).exec(sheet());
+		expect(rule?.[1]).toContain(fill);
+		expect(rule?.[1]).toContain(ink);
 	});
 
 	test("wraps the phrase it is given and never composes one", () => {
 		const html = renderToStaticMarkup(<StatusPill tone="fail">Out of stock</StatusPill>);
 		expect(html).toContain(">Out of stock<");
-		expect(html).toContain('data-tone="fail"');
-		// Transparent fill: a filled pill would need a foreground this file is not
-		// allowed to pick.
-		expect(html).toContain("background:transparent");
+		// The colour lives in the sheet, so an inline declaration cannot pin a
+		// tone that ignores the theme.
+		expect(html).not.toContain("style=");
+	});
+});
+
+describe("buttons follow EmDash's Kumo button", () => {
+	test("the default button is the surface, a line ring and the lg radius", () => {
+		const rule = /\.otta-btn \{([^}]*)\}/.exec(sheet())?.[1] ?? "";
+		expect(rule).toContain("background: var(--color-kumo-base");
+		expect(rule).toContain("border: 1px solid var(--color-kumo-line");
+		expect(rule).toContain("border-radius: 8px");
+		expect(rule).toContain("font-weight: 500");
+		expect(rule).toContain("cursor: pointer");
+	});
+
+	test("primary is the brand blue and destructive is the danger red", () => {
+		const css = sheet();
+		expect(css).toMatch(
+			/\.otta-btn\[data-variant="primary"\] \{[^}]*background: var\(--color-kumo-brand/,
+		);
+		expect(css).toMatch(
+			/\.otta-btn\[data-variant="destructive"\] \{[^}]*background: var\(--color-kumo-danger/,
+		);
+		// The quieter in-page danger: red ink on the ordinary surface.
+		expect(css).toMatch(
+			/\.otta-btn\[data-variant="danger"\] \{[^}]*color: var\(--text-color-kumo-danger/,
+		);
+	});
+
+	test("a small button is Kumo's sm size", () => {
+		expect(sheet()).toMatch(/\.otta-btn\[data-size="sm"\] \{[^}]*block-size: 26px/);
+	});
+});
+
+describe("a group is a heading and a card, never a dropdown", () => {
+	test("renders an always-visible section with its label as a heading", () => {
+		const html = renderToStaticMarkup(
+			<Group label="Customer" testId="detail-customer">
+				<p>body</p>
+			</Group>,
+		);
+		expect(html).not.toContain("<details");
+		expect(html).not.toContain("<summary");
+		expect(html).toMatch(/^<section[^>]*data-testid="detail-customer"/);
+		expect(html).toContain('<h3 class="otta-group-title"');
+		expect(html).toContain(">Customer</h3>");
+		expect(html).toContain("<p>body</p>");
+	});
+
+	test("a group inside a group is a sub-section, not a card in a card", () => {
+		const html = renderToStaticMarkup(
+			<Group label="Outer">
+				<Group label="Inner" testId="inner">
+					x
+				</Group>
+			</Group>,
+		);
+		expect(html).toMatch(
+			/<section[^>]*class="otta-group"[^>]*data-nested="true"[^>]*data-testid="inner"/,
+		);
+		expect(html).toContain('<h4 class="otta-group-title"');
+		expect(html).toContain(">Inner</h4>");
 	});
 });
 
@@ -199,7 +263,6 @@ describe("Copy stops being the heaviest ink in the row", () => {
 		// The detail call sites sit in an identity strip with no row to hover, so
 		// they keep the steady control they have.
 		expect(always).not.toContain("otta-copy-reveal");
-		expect(always).toContain("opacity:0.85");
 		// The accessible name names the value either way.
 		expect(revealed).toContain('aria-label="Copy SKU APR-LIN-NAT"');
 	});
@@ -213,22 +276,19 @@ describe("the confirm dialog", () => {
 		const html = renderToStaticMarkup(
 			<ConfirmDialog {...CONFIRM} onConfirm={noop} onDeny={noop} />,
 		);
-		expect(tagFor(html, "otta-confirm-yes")).toContain(`border-color:${FAIL_ACCENT}`);
-		expect(tagFor(html, "otta-confirm-yes")).toContain("font-weight:600");
+		expect(tagFor(html, "otta-confirm-yes")).toContain('data-variant="destructive"');
 		// ON THE BUTTON THAT DOES THE THING. Weight on the way out reads as `Cancel`
-		// being the dangerous answer, and a whole-markup match cannot tell the two
-		// apart — this dialog has exactly one destructive control.
-		expect(tagFor(html, "otta-confirm-deny")).not.toContain(FAIL_ACCENT);
-		expect(html.split(FAIL_ACCENT).length - 1).toBe(1);
+		// being the dangerous answer — this dialog has exactly one weighted control.
+		expect(tagFor(html, "otta-confirm-deny")).not.toContain("data-variant");
+		expect(html.split("data-variant=").length - 1).toBe(1);
 	});
 
-	test("an additive confirm can opt out of destructive weight", () => {
+	test("an additive confirm is EmDash's primary, not destruction", () => {
 		const html = renderToStaticMarkup(
 			<ConfirmDialog {...CONFIRM} confirmTone="neutral" onConfirm={noop} onDeny={noop} />,
 		);
-		expect(tagFor(html, "otta-confirm-yes")).not.toContain(FAIL_ACCENT);
-		expect(tagFor(html, "otta-confirm-yes")).not.toContain("font-weight:600");
-		expect(html).not.toContain(FAIL_ACCENT);
+		expect(tagFor(html, "otta-confirm-yes")).toContain('data-variant="primary"');
+		expect(html).not.toContain('data-variant="destructive"');
 		expect(html).toContain(">Yes, add 100<");
 		// Only the weight changes; the sentence and the way out are untouched.
 		expect(html).toContain(">Cancel<");

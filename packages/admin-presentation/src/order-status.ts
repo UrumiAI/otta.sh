@@ -95,14 +95,13 @@ export const TERMINAL_ORDER_STATES: ReadonlySet<string> = new Set([
  * to `paid` and every row carries the same value, which is exactly the column
  * X-4 (T-5) rejects as decoration.
  *
- * REACT COULD DRAW THE INK, AND STILL DOES NOT. The React tier has per-cell
- * control and could badge exactly the four exceptions. It renders the same
- * words anyway, because the words are the decision and the ink was never the
- * point: `cancelled · closed` states the fact the state machine guarantees, and
- * an operator comparing the two surfaces during the migration must not have to
- * work out whether a pill and a phrase mean the same thing. The React screen
- * spends its extra expressiveness on the affordance Block Kit could not have at
- * all — a copy button — not on re-litigating settled copy.
+ * REACT NOW DRAWS THE INK, FOR EVERY STATE (user decision, 2026-10-20). The
+ * React tier has per-cell control, and it badges every order state with a tone
+ * (`orderStateTone` in `admin-react/src/orders/order-state-tone.ts`) to match
+ * EmDash's own badge look. The words inside the pill are still this file's, so
+ * the two surfaces cannot drift apart on wording — only the ink differs. The
+ * badge-the-exceptions reasoning above stands for Block Kit, which cannot do
+ * per-cell ink; it is superseded for the React tier only.
  *
  * WHAT THE EXCEPTION SAYS. Not a restatement of the word already in the cell,
  * and not a claim the console cannot stand behind (`refunded` is a bookkeeping

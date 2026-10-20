@@ -98,29 +98,17 @@ import {
 	EmptyState,
 	EndHeader,
 	Field,
-	Group,
+	KUMO,
 	Notice,
 	PagerButton,
 	RevealToggle,
 	StatusPill,
 	Table,
-	buttonStyle,
+	buttonLook,
+	compactInputStyle,
 	endCellStyle,
-	inputStyle,
-	panelStyle,
 } from "../ui.js";
-
-/**
- * The one order state that earns a ring (D1).
- *
- * BADGE THE EXCEPTION, LEAVE THE REST BARE. `failed` is the only status an
- * operator has to act on out of a column of forty, so it is the only one drawn
- * as anything other than the word itself. Pilling `paid` and `delivered` too
- * would be the symmetric-looking change that destroys the whole point: a mark on
- * every row marks nothing. The phrase inside the pill is still
- * `orderStateCell`'s, so the words cannot drift from the bare cells beside it.
- */
-const PILLED_ORDER_STATE = "failed";
+import { orderStateTone } from "./order-state-tone.js";
 
 /** The identity cell's link, and the only tab stop in its row.
  *
@@ -1320,7 +1308,17 @@ export function OrdersList({
 
 	return (
 		<div>
-			<h1 style={{ fontSize: 24, fontWeight: 700, marginBlockEnd: 4 }}>Orders</h1>
+			<h1
+				style={{
+					fontSize: 24,
+					fontWeight: 600,
+					lineHeight: 1.25,
+					margin: "0 0 4px",
+					color: KUMO.text,
+				}}
+			>
+				Orders
+			</h1>
 			{/*
 			  REFRESH SITS WITH THE COUNT LINE, not in the paging bar, and the two
 			  places answer different questions: the bar is about WHERE the operator
@@ -1344,7 +1342,7 @@ export function OrdersList({
 					marginBlockEnd: 16,
 				}}
 			>
-				<p style={{ fontSize: 13, opacity: 0.75 }} data-testid="orders-intro">
+				<p style={{ fontSize: 13, color: KUMO.subtle, margin: 0 }} data-testid="orders-intro">
 					{outcome.countLine === undefined || !answerVisible
 						? ORDERS_LIST_INTRO
 						: `${outcome.countLine} · ${ORDERS_LIST_INTRO}`}
@@ -1416,83 +1414,34 @@ export function OrdersList({
 				</div>
 			)}
 
+			{/*
+			  THE FILTERS ARE AN INLINE ROW, NOT A DROPDOWN — EmDash's Products list
+			  puts its search and selects in one compact row above the table, always
+			  visible, and so does this. Each control keeps its label for assistive
+			  technology (`hideLabel`); the select's own first option and the search
+			  box's placeholder say what each one is on screen. The active count the
+			  folded panel used to print in its summary is the section's name.
+			*/}
 			{filtersVisible && (
-				<Group
-					label={`Filters${parts.length > 0 ? ` (${String(parts.length)} active)` : ""}`}
-					testId="orders-filters"
+				<section
+					data-testid="orders-filters"
+					aria-label={`Filters${parts.length > 0 ? ` (${String(parts.length)} active)` : ""}`}
+					style={{
+						display: "flex",
+						flexWrap: "wrap",
+						gap: 8,
+						alignItems: "end",
+						marginBlockEnd: 16,
+					}}
 				>
-					<div
-						style={{
-							display: "grid",
-							gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))",
-							gap: 12,
-							alignItems: "end",
-						}}
-					>
-						<Field label="Status">
-							<select
-								className="otta-focusable"
-								data-testid="filter-status"
-								style={inputStyle}
-								value={draft.status ?? statusAny}
-								onChange={(event) => setDraft({ ...draft, status: event.target.value })}
-							>
-								<option value={statusAny}>All statuses</option>
-								{(vocabulary?.statuses ?? []).map((state) => (
-									<option key={state} value={state}>
-										{state}
-									</option>
-								))}
-							</select>
-						</Field>
-
-						{draft.period === "custom" ? (
-							<>
-								<Field label="From">
-									<input
-										type="date"
-										className="otta-focusable"
-										data-testid="filter-from"
-										style={inputStyle}
-										value={draft.from ?? ""}
-										onChange={(event) => setDraft({ ...draft, from: event.target.value })}
-									/>
-								</Field>
-								<Field label="To">
-									<input
-										type="date"
-										className="otta-focusable"
-										data-testid="filter-to"
-										style={inputStyle}
-										value={draft.to ?? ""}
-										onChange={(event) => setDraft({ ...draft, to: event.target.value })}
-									/>
-								</Field>
-							</>
-						) : (
-							<Field label="Period">
-								<select
-									className="otta-focusable"
-									data-testid="filter-period"
-									style={inputStyle}
-									value={draft.period ?? statusAny}
-									onChange={(event) => setDraft({ ...draft, period: event.target.value })}
-								>
-									{(vocabulary?.periods ?? []).map((period) => (
-										<option key={period.key} value={period.key}>
-											{period.label}
-										</option>
-									))}
-								</select>
-							</Field>
-						)}
-
-						<Field label={ORDERS_SEARCH_LABEL}>
+					<div style={{ flex: "0 1 400px", minInlineSize: 0 }}>
+						<Field label={ORDERS_SEARCH_LABEL} hideLabel>
 							<input
 								type="search"
 								className="otta-focusable"
 								data-testid="filter-search"
-								style={inputStyle}
+								style={compactInputStyle}
+								placeholder={ORDERS_SEARCH_LABEL}
 								value={draft.search ?? ""}
 								onChange={(event) => setDraft({ ...draft, search: event.target.value })}
 								// Enter searches, as Apply filters does (QA round 2: it did
@@ -1506,6 +1455,73 @@ export function OrdersList({
 							/>
 						</Field>
 					</div>
+
+					<div style={{ flex: "0 1 150px", minInlineSize: 0 }}>
+						<Field label="Status" hideLabel>
+							<select
+								className="otta-focusable"
+								data-testid="filter-status"
+								style={compactInputStyle}
+								value={draft.status ?? statusAny}
+								onChange={(event) => setDraft({ ...draft, status: event.target.value })}
+							>
+								<option value={statusAny}>All statuses</option>
+								{(vocabulary?.statuses ?? []).map((state) => (
+									<option key={state} value={state}>
+										{state}
+									</option>
+								))}
+							</select>
+						</Field>
+					</div>
+
+					{draft.period === "custom" ? (
+						<>
+							<div style={{ flex: "0 1 160px", minInlineSize: 0 }}>
+								<Field label="From">
+									<input
+										type="date"
+										className="otta-focusable"
+										data-testid="filter-from"
+										style={compactInputStyle}
+										value={draft.from ?? ""}
+										onChange={(event) => setDraft({ ...draft, from: event.target.value })}
+									/>
+								</Field>
+							</div>
+							<div style={{ flex: "0 1 160px", minInlineSize: 0 }}>
+								<Field label="To">
+									<input
+										type="date"
+										className="otta-focusable"
+										data-testid="filter-to"
+										style={compactInputStyle}
+										value={draft.to ?? ""}
+										onChange={(event) => setDraft({ ...draft, to: event.target.value })}
+									/>
+								</Field>
+							</div>
+						</>
+					) : (
+						<div style={{ flex: "0 1 150px", minInlineSize: 0 }}>
+							<Field label="Period" hideLabel>
+								<select
+									className="otta-focusable"
+									data-testid="filter-period"
+									style={compactInputStyle}
+									value={draft.period ?? statusAny}
+									onChange={(event) => setDraft({ ...draft, period: event.target.value })}
+								>
+									{(vocabulary?.periods ?? []).map((period) => (
+										<option key={period.key} value={period.key}>
+											{period.label}
+										</option>
+									))}
+								</select>
+							</Field>
+						</div>
+					)}
+
 					{/*
 					  UNAVAILABLE WHILE A READ IS IN FLIGHT, because this control now has
 					  two meanings and both are reads: a changed predicate re-queries, and
@@ -1516,39 +1532,46 @@ export function OrdersList({
 					  IT HANDS FOCUS TO ITS OWN CONTAINER first, the same way the Retry
 					  does: this is a control whose own click disables it, and a disabled
 					  element cannot hold focus, so without somewhere to go the browser
-					  drops it to `<body>` with the operator's hands still on the panel.
+					  drops it to `<body>` with the operator's hands still on the row.
 					*/}
-					<div ref={applyRegion} tabIndex={-1} style={{ marginBlockStart: 12 }}>
+					<div ref={applyRegion} tabIndex={-1} style={{ display: "flex" }}>
 						<Button
 							label={APPLY_FILTERS_LABEL}
 							testId="apply-filters"
+							size="sm"
 							disabled={busy}
 							handOffFocusTo={applyRegion}
 							onClick={() => apply(normalize(draft, statusAny))}
 						/>
 					</div>
-				</Group>
-			)}
-
-			{filtered && filtersVisible && (
-				<section
-					data-testid="orders-filter-summary"
-					style={{
-						...panelStyle,
-						display: "flex",
-						gap: 12,
-						alignItems: "center",
-						justifyContent: "space-between",
-						padding: "10px 14px",
-					}}
-				>
-					<span style={{ fontSize: 13 }}>{parts.join(" · ")}</span>
-					<Button label={CLEAR_FILTERS_LABEL} testId="clear-filters" onClick={() => apply({})} />
 				</section>
 			)}
 
+			{filtered && filtersVisible && (
+				<div
+					data-testid="orders-filter-summary"
+					style={{
+						display: "flex",
+						flexWrap: "wrap",
+						gap: 8,
+						alignItems: "center",
+						marginBlock: "-8px 16px",
+						fontSize: 13,
+						color: KUMO.subtle,
+					}}
+				>
+					<span>{parts.join(" · ")}</span>
+					<Button
+						label={CLEAR_FILTERS_LABEL}
+						testId="clear-filters"
+						size="sm"
+						onClick={() => apply({})}
+					/>
+				</div>
+			)}
+
 			{busy && page === null && failure === null && (
-				<p style={{ fontSize: 13, opacity: 0.7 }} aria-live="polite">
+				<p style={{ fontSize: 13, color: KUMO.subtle }} aria-live="polite">
 					Loading orders…
 				</p>
 			)}
@@ -1598,7 +1621,7 @@ export function OrdersList({
 			{page !== null && outcome.kind === "scan" && answerVisible && !pagingStopped && (
 				<p
 					data-testid="orders-scan-note"
-					style={{ fontSize: 13, opacity: 0.8, marginBlockEnd: 12 }}
+					style={{ fontSize: 13, color: KUMO.subtle, marginBlockEnd: 12 }}
 				>
 					{outcome.scanNote}
 				</p>
@@ -1622,12 +1645,11 @@ export function OrdersList({
 							>
 								{/*
 								  F16: TWO ANCHORS PER ROW — who, and how much. Customer and
-								  total carry the weight; the date and the id prefix recede to
-								  0.72; the status keeps 400 so the pill below is the only thing
-								  that stands out in that column. Every cell stays 13px: an
-								  operator scanning forty rows wants a stable grid, not a ramp.
+								  total carry the weight; the date recedes to EmDash's subtle ink
+								  (the way its lists print a date) and the id prefix to 0.72; the
+								  status keeps 400 so the badge is what stands out in that column.
 								*/}
-								<td className="otta-td otta-num" style={{ opacity: 0.72 }}>
+								<td className="otta-td otta-num otta-td-subtle">
 									{formatTimestamp(order.createdAt)}
 								</td>
 								<td
@@ -1693,13 +1715,9 @@ export function OrdersList({
 									/>
 								</td>
 								<td className="otta-td">
-									{order.state === PILLED_ORDER_STATE ? (
-										<StatusPill tone="fail" testId="order-state-pill">
-											{orderStateCell(order.state)}
-										</StatusPill>
-									) : (
-										orderStateCell(order.state)
-									)}
+									<StatusPill tone={orderStateTone(order.state)} testId="order-state-pill">
+										{orderStateCell(order.state)}
+									</StatusPill>
 								</td>
 								<td className="otta-td" style={{ whiteSpace: "nowrap" }}>
 									{/*
@@ -1821,7 +1839,7 @@ export function OrdersList({
 									// `Next` from the keyboard keeps focus on the button and would
 									// otherwise get no word that anything moved.
 									aria-live="polite"
-									style={{ fontSize: 13, opacity: 0.75, whiteSpace: "nowrap" }}
+									style={{ fontSize: 13, color: KUMO.subtle, whiteSpace: "nowrap" }}
 								>
 									{pager.position}
 								</span>
@@ -1836,10 +1854,9 @@ export function OrdersList({
 					{loadMoreVisible && (
 						<button
 							type="button"
-							className="otta-focusable otta-btn"
+							{...buttonLook()}
 							data-testid="orders-load-more"
 							disabled={busy}
-							style={buttonStyle}
 							onClick={() => goForward(true)}
 						>
 							{busy ? "Loading…" : LOAD_MORE_LABEL}

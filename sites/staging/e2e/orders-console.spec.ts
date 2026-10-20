@@ -144,11 +144,12 @@ test.describe("the migrated Orders console", () => {
 
 	test("the Period filter round-trips and can be cleared", async ({ adminPage }) => {
 		await openOrders(adminPage);
-		await adminPage.getByTestId("orders-filters").getByRole("group").first().isVisible();
 
-		// The filter panel is a native <details>; open it before touching a field.
+		// The filters are an always-visible inline row (EmDash's list pattern):
+		// no disclosure to open before touching a field.
 		const panel = adminPage.getByTestId("orders-filters");
-		await panel.locator("summary").click();
+		await expect(panel).toBeVisible();
+		await expect(panel.locator("summary")).toHaveCount(0);
 
 		// The vocabulary comes from the plugin, so these are literally the Block
 		// Kit screen's own options — asserting the labels here is what pins that
@@ -170,7 +171,7 @@ test.describe("the migrated Orders console", () => {
 		await expect(adminPage.getByTestId("orders-filter-summary")).toContainText(
 			"period: Last 30 days",
 		);
-		await expect(panel.locator("summary")).toContainText("(1 active)");
+		await expect(panel).toHaveAttribute("aria-label", /\(1 active\)/);
 
 		await adminPage.getByTestId("clear-filters").click();
 		await expect(adminPage.getByTestId("orders-filter-summary")).toHaveCount(0);
@@ -178,7 +179,6 @@ test.describe("the migrated Orders console", () => {
 
 	test("a filter that matches nothing says so, and offers the way back", async ({ adminPage }) => {
 		await openOrders(adminPage);
-		await adminPage.getByTestId("orders-filters").locator("summary").click();
 
 		// A search no order can match. The empty state must be the FILTERED one —
 		// "no orders yet" here would tell an operator their store is empty.
@@ -270,7 +270,7 @@ test.describe("the migrated Orders console", () => {
 		// rather than producing a screenshot nobody looks at closely.
 		const focusTarget = (await adminPage.getByTestId("order-link").count())
 			? adminPage.getByTestId("order-link").first()
-			: adminPage.getByTestId("orders-filters").locator("summary").first();
+			: adminPage.getByTestId("filter-search");
 		await focusTarget.focus();
 		await expect(focusTarget).toBeFocused();
 		// Chromium only paints `:focus-visible` for a focus it attributes to the
