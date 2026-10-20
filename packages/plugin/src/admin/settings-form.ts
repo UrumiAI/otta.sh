@@ -58,7 +58,7 @@ import type {
 	OperationalSettingsWire,
 	ReportingSettingsSurface,
 } from "./reporting-settings-surface.js";
-import { carriedForm, noticeBanner, section, type Notice } from "./scaffold/index.js";
+import { carriedForm, noticeBanner, section, valueLabel, type Notice } from "./scaffold/index.js";
 
 /**
  * The admin Settings screen (§4.1 report/settings skeleton;
@@ -1270,46 +1270,6 @@ function buildSettingsBlocks(args: {
 		),
 	);
 	return blocks;
-}
-
-/** The section-heading budget (was §1's accordion-label budget, X-11). */
-const LABEL_BUDGET = 60;
-
-/** Separator between the values on a D-6 label. */
-const VALUE_SEPARATOR = " · ";
-
-function fitLabel(text: string): string {
-	return text.length <= LABEL_BUDGET ? text : `${text.slice(0, LABEL_BUDGET - 1)}…`;
-}
-
-/**
- * A D-6 `<group> — <value> · <value>` label, kept inside the X-11 budget by
- * shortening a VALUE rather than the tail. EVERY label on this screen goes
- * through here, the constant ones included — a bypass is how one of them drifts
- * over budget unnoticed.
- *
- * Right-truncation would eat the LAST value outright: a 200-character display
- * name is the one operator-supplied value on this screen with no length bound
- * of its own, and on a two-value label the tail is the value most worth
- * keeping. So the truncation costs the LONGEST segment, and only by the
- * overflow. (Same helper, same reasoning, as `products-page.ts`'s — this file
- * keeps its own copy the way it keeps its own `fitLabel`, rather than growing
- * the shared scaffold for a label rule two screens use differently.)
- */
-function valueLabel(prefix: string, values: readonly string[]): string {
-	if (values.length === 0) return fitLabel(prefix);
-	const full = `${prefix} — ${values.join(VALUE_SEPARATOR)}`;
-	if (full.length <= LABEL_BUDGET) return full;
-	let longest = 0;
-	values.forEach((value, index) => {
-		if (value.length > (values[longest] ?? "").length) longest = index;
-	});
-	const room = (values[longest] ?? "").length - (full.length - LABEL_BUDGET) - 1;
-	if (room < 1) return fitLabel(full);
-	const shortened = values.map((value, index) =>
-		index === longest ? `${value.slice(0, room)}…` : value,
-	);
-	return `${prefix} — ${shortened.join(VALUE_SEPARATOR)}`;
 }
 
 /** The Store heading carries the name itself, so the one thing this group

@@ -54,7 +54,7 @@ export function blocksOf(outcome: unknown): LooseBlock[] {
  *  Deliberately data-driven rather than a `switch` over the block union: this
  *  runs against JSON from the sandbox, where a block type the suite has never
  *  heard of must be traversed (or not) on its shape alone. */
-function childBlockLists(block: LooseBlock): LooseBlock[][] {
+export function childBlockLists(block: LooseBlock): LooseBlock[][] {
 	const lists: LooseBlock[][] = [];
 	if (block.type === "columns" && Array.isArray(block.columns)) {
 		for (const column of block.columns) if (Array.isArray(column)) lists.push(column);
@@ -165,7 +165,11 @@ export function sectionHeading(
 /**
  * The blocks of the section headed by the `header` with this `block_id`: every
  * block after that heading in the SAME list, up to (not including) the next
- * `header` in that list. `[]` when no such heading exists. Nested containers in
+ * SECTION HEADING (a `header` carrying a `block_id`) in that list — the LAST
+ * section of a list therefore runs to the end of that list. The page title (the
+ * first top-level `header`, no `block_id`) is never a section's end because it
+ * precedes every section; a `block_id`-less `header` mid-body belongs to the
+ * body. `[]` when no such heading exists. Nested containers in
  * the body are returned whole, so {@link findBlocks} et al. still recurse into
  * them.
  */
@@ -173,7 +177,7 @@ export function sectionBlocks(blocks: readonly LooseBlock[], blockId: string): L
 	const list = listHolding(blocks, blockId);
 	if (list === undefined) return [];
 	const rest = list.slice(list.findIndex((b) => b.type === "header" && b.block_id === blockId) + 1);
-	const end = rest.findIndex((b) => b.type === "header");
+	const end = rest.findIndex((b) => b.type === "header" && typeof b.block_id === "string");
 	return end < 0 ? rest : rest.slice(0, end);
 }
 

@@ -479,8 +479,10 @@ function lowStockSection(data: ReportsData): Block[] {
 	};
 	return section({
 		blockId: "reports:low",
-		// The heading states the threshold the rows were selected by — omitted, never
-		// guessed, when the settings read failed.
+		// The count alone ("Low stock (3)") never said low COMPARED TO WHAT, and
+		// the threshold lives in Store settings, a page away. `GET /settings`
+		// already returns it, so the heading states it. Omitted — never guessed —
+		// when that read failed.
 		title:
 			data.lowStockThreshold === undefined
 				? `Low stock (${data.low.length})`

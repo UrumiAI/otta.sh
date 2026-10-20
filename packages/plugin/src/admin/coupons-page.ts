@@ -67,6 +67,7 @@ import {
 	PATH_FIELD,
 	readString,
 	screenActions,
+	fitLabel,
 	section,
 	type CustomActionApi,
 	type ListDetailInput,
@@ -82,7 +83,7 @@ import {
  *
  * THE SHAPE, in one paragraph. The list is `header` + one `context` + an
  * optional notice `banner` + an INLINE one-field search (L-2: 1 field renders
- * directly, no accordion) + the table — nothing else above the data (P-1).
+ * directly) + the table — nothing else above the data (P-1).
  * The detail is `header` + back + notice + a lifecycle `banner` on the
  * exceptions only + the 6-entry identity strip (D-1a's cap; `Status` leads it
  * and the redundant `Code` row is gone — the header already carries the code),
@@ -228,10 +229,6 @@ interface CouponDraft {
 
 /** Matches the service's default page size (`couponsListQuery` limit default). */
 const PAGE_LIMIT = 25;
-
-/** §1's prose budgets, as named constants so copy can be measured against
- *  them rather than eyeballed. */
-const LABEL_BUDGET = 60;
 
 export function createCouponsPageHandler(): RouteHandler<CouponsPageInput> {
 	return createListDetailHandler<CouponsRenderState>({
@@ -545,20 +542,15 @@ function couponsBlocks(
 		},
 	});
 	const blocks: Block[] = [
-		{ type: "header", text: "Coupons", block_id: "coupons:hdr" },
+		{ type: "header", text: "Coupons" },
 		listIntroLine(result.countLine, LIST_INTRO),
 		createCouponButton(),
 	];
 	if (notice !== undefined) blocks.push(noticeBanner(notice));
 
 	blocks.push(
-		filterPanel({
-			form: searchForm(actions, path, filter),
-			blockId: "coupons:filters",
-			activeFilters,
-			// 1 field ≤ the default inline threshold (2) — renders directly, no
-			// accordion (L-2).
-		}),
+		// One field — always inline (L-2).
+		filterPanel({ form: searchForm(actions, path, filter) }),
 	);
 	if (summary !== undefined) {
 		blocks.push({
@@ -610,7 +602,7 @@ function newCouponScreen(
 	storeCurrency: string | undefined,
 ): Block[] {
 	const blocks: Block[] = [
-		{ type: "header", text: "New coupon", block_id: "coupons:new:hdr" },
+		{ type: "header", text: "New coupon" },
 		// No path: this screen belongs to the ROOT list, and the cancel verb
 		// re-lists the level the operator came from.
 		backButton(ACTION_CANCEL_NEW, "← Back to coupons"),
@@ -1182,7 +1174,7 @@ function editGroup(detail: CouponSummaryWire): Block[] {
 }
 
 /** The disclosure gating the four rarely-touched bounds — a `toggle` inside the
- *  form, NOT a second `accordion`: an accordion would need a second FORM, and
+ *  form, NOT a second `section`: a section's body is blocks, so it would need a second FORM, and
  *  F-5a forbids splitting this one, because on a wire with no partial update
  *  saving one half silently nulls the other. See {@link editCouponForm}. */
 const LIMITS_TOGGLE = "showLimits";
@@ -1271,7 +1263,7 @@ function couponCurrencyRefusalCopy(err: unknown, sent: string | null): string | 
  * full-bleed inputs stacked — five of them empty on a typical coupon — is the
  * worst proportion offender in the console (`DESIGNER §3`), and the fix is to
  * put the rarely-touched bounds behind a closed disclosure. It CANNOT be a
- * second `accordion`, because an accordion holds blocks and a form's fields are
+ * second `section`, because a section's body is blocks and a form's fields are
  * not blocks: a second group would mean a second FORM, which F-5a forbids here
  * for the same reason this whole increment exists (saving the "Discount" half
  * would null the window and the use bounds). A `toggle` + `condition` gets the
@@ -1569,7 +1561,7 @@ function deleteCouponActions(detail: CouponSummaryWire): ActionsBlock {
 		value: { couponId: detail.id, code: detail.code },
 		confirm: {
 			// fitLabel: a merchant-chosen code has no length cap on the wire, so
-			// the title is truncated the same way a data-derived accordion label
+			// the title is truncated the same way a data-derived section heading
 			// is (§1's 60-char confirm.title budget, X-11).
 			title: fitLabel(`Delete ${detail.code}?`),
 			// 112 chars ≤ 200, trimmed from the former 301-char text.
@@ -2336,16 +2328,4 @@ function fields(blockId: string, entries: ReadonlyArray<readonly [string, string
 		block_id: blockId,
 		fields: entries.map(([label, value]) => ({ label, value })),
 	};
-}
-
-/** Trim a string to `max`, ellipsis included — for the one place a rendered
- *  string's length depends on SERVICE DATA (the Edit section's heading, which
- *  carries the coupon's own discount/window summary and could otherwise blow
- *  §1's 60-char label budget). */
-function fit(text: string, max: number): string {
-	return text.length <= max ? text : `${text.slice(0, max - 1)}…`;
-}
-
-function fitLabel(text: string): string {
-	return fit(text, LABEL_BUDGET);
 }

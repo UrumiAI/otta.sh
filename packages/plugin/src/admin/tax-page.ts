@@ -5,7 +5,6 @@ import {
 	taxRateValueOfPpm,
 } from "@urumi.ai/otta-domain";
 import type {
-	AccordionBlock,
 	ActionsBlock,
 	AdminPageConfig,
 	Block,
@@ -56,7 +55,9 @@ import {
 	readCarrier,
 	readString,
 	screenActions,
+	fit,
 	section,
+	valueLabel,
 	type ListDetailInput,
 	type NavPath,
 	type Notice,
@@ -69,15 +70,16 @@ import {
  * (registry create/list) drilling into a class's tax rates (list/create/
  * edit-with-CAS/delete), which — ONLY past L-9's 25-row bound — drills once
  * more into a single rate's own detail (the L-7 fallback's "drill-in", so a
- * rate past row 25 stays reachable without reviving the per-row inline forms
- * this overhaul removes).
+ * rate past row 25 stays reachable once the page is too long for per-row
+ * sections).
  *
- * THE DENSITY FIX THIS SCREEN EXISTS FOR. The previous layout rendered an edit
- * form plus a delete button INLINE, for every row, SIMULTANEOUSLY — N rows
- * cost N × (48px divider + ~5 field rows). Every `divider` is gone (R-4), and
- * each class / rate is now an always-open `section` — a heading naming the row,
- * then its controls (EmDash's own pattern; the collapsed accordions that held
- * them before are gone, so nothing on the screen hides behind a dropdown).
+ * ALWAYS-OPEN SECTIONS, AND THE DENSITY TRADE-OFF IS ACCEPTED. Each class / rate
+ * (up to 25 rows) renders as an always-open `section` — a heading naming the
+ * row, then its edit form and delete inline (EmDash's own pattern: no dropdowns,
+ * nothing hides behind a click). That does cost vertical space at N rows; the
+ * user accepted that trade-off (2026-10-20) in return for a screen that shows
+ * everything. Every `divider` is still gone (R-4), and past 25 rows the level
+ * falls back to the table + click-through below.
  *
  * L-9 IS A RUNTIME BRANCH, NOT A DESIGN-TIME ASSUMPTION. A level renders as
  * the per-row section list ONLY when the fetched page is complete
@@ -440,9 +442,14 @@ function classRow(actions: ScreenActions, cls: TaxClassWire): Block[] {
 			style: "danger",
 		},
 	};
+	const fullTitle = `${cls.id} — ${cls.name}`;
+	const title = valueLabel(cls.id, [cls.name]);
 	return section({
 		blockId: classGroupId(cls.id),
-		title: `${cls.id} — ${cls.name}`,
+		title,
+		// A shortened heading also says the class in full here (the rename form
+		// below prefills the name too).
+		...(title === fullTitle ? {} : { note: fit(fullTitle, 200) }),
 		// ORDER IS THE AFFORDANCE HERE, because there is no other. A `form` is
 		// always `flex flex-col` in the pinned renderer, so these can never sit in
 		// a horizontal row with the primary on the end — every control is a
@@ -805,7 +812,7 @@ function zoneFilterBlock(
 	classId: string,
 	filter: RatesFilterForm,
 	zones: ShippingZoneWire[],
-): FormBlock | AccordionBlock {
+): FormBlock {
 	const options: SelectOption[] = [
 		{ value: "any", label: "All zones" },
 		...zones.map((z) => ({ value: z.id, label: z.name })),
@@ -827,11 +834,7 @@ function zoneFilterBlock(
 			submit: { label: "Apply filters", action_id: TAX_ACTIONS.applyFilter },
 		},
 	});
-	return filterPanel({
-		form,
-		blockId: `tax:rate-filters:${classId}` as PlainBlockId,
-		activeFilters: [filter.zoneId !== undefined && `zone: ${filter.zoneId}`],
-	});
+	return filterPanel({ form });
 }
 
 /**
@@ -1021,9 +1024,14 @@ function rateRow(classId: string, row: TaxRateRow): Block[] {
 			: row.appliesToShipping
 				? "also shipping"
 				: "goods only";
+	const parts = [row.zoneName ?? row.zoneId, row.id, appliesLabel];
+	const fullTitle = `${percent}% — ${parts.join(" · ")}`;
+	const title = valueLabel(`${percent}%`, parts);
 	return section({
 		blockId: rateGroupId(row.id),
-		title: `${percent}% — ${row.zoneName ?? row.zoneId} · ${row.id} · ${appliesLabel}`,
+		title,
+		// A shortened heading also says the zone and ids in full here.
+		...(title === fullTitle ? {} : { note: fit(fullTitle, 200) }),
 		blocks: [...duplicateBlocks(row), rateEditForm(classId, row), rateDeleteActions(classId, row)],
 	});
 }

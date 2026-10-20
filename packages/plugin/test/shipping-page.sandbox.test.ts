@@ -2084,3 +2084,38 @@ async function withSettingsUnreadable<T>(body: () => Promise<T>): Promise<T> {
 		storage[SETTINGS_COLLECTION] = real;
 	}
 }
+
+describe("admin Shipping console — long names keep section headings inside the 60-char budget (X-11)", () => {
+	const LONG = "Northern and Eastern Territories of the Greater Metropolitan Distribution Area";
+
+	test("a zone with a very long name: heading <= 60, full name still on the screen", async () => {
+		await seedShipping({
+			zones: [{ id: "north", name: LONG, regions: ["US"] }],
+			methods: [],
+			rates: [],
+		});
+		const blocks = await loadZones();
+		const heading = sectionHeading(blocks, "ship:zone:north");
+		expect(String(heading?.text).length).toBeLessThanOrEqual(60);
+		expect(String(heading?.text).startsWith("north — Northern")).toBe(true);
+		const body = sectionBlocks(blocks, "ship:zone:north");
+		expect(contextTexts(body).some((t) => t.includes(LONG))).toBe(true);
+		expect(field(formFor(body, "shipping:save-zone"), "name")?.initial_value).toBe(LONG);
+		assertBlockContract(blocks, { screen: "shipping", level: "list" });
+	});
+
+	test("a method with a very long name: heading <= 60 and keeps its type, full name in a context line", async () => {
+		await seedShipping({
+			zones: [{ id: "us", name: "United States", regions: ["US"] }],
+			methods: [{ id: "slow", zoneId: "us", name: LONG, type: "flat_rate" }],
+			rates: [],
+		});
+		const blocks = await openPath(["us"]);
+		const heading = sectionHeading(blocks, "ship:method:us:slow");
+		expect(String(heading?.text).length).toBeLessThanOrEqual(60);
+		expect(String(heading?.text)).toContain("flat rate");
+		const body = sectionBlocks(blocks, "ship:method:us:slow");
+		expect(contextTexts(body).some((t) => t.includes(LONG))).toBe(true);
+		assertBlockContract(blocks, { screen: "shipping", level: "list" });
+	});
+});

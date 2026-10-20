@@ -28,8 +28,8 @@
  *     its prefilled values, which is what keeps a re-render's new `initial_value`s
  *     visible.
  *   - `filterPanel(...)` / `emptyState(...)` — the shared layout vocabulary: a
- *     filter form collapsed behind its own active-filter summary, and a real
- *     `empty` block.
+ *     filter form (always inline, never collapsed; its active values go in the
+ *     `filterSummary` line beneath), and a real `empty` block.
  *   - `listResult(...)` / `listIntroLine(...)` / `rowCountLine(...)` /
  *     `clearFiltersButton(...)` — how a list states its SIZE and its two zero
  *     states (INC-12): an honest, page-scoped-or-whole-set row count in the intro
@@ -87,9 +87,12 @@ export {
 export {
 	emptyState,
 	filterPanel,
-	filterPanelLabel,
 	filterSummary,
+	fit,
+	fitLabel,
+	LABEL_BUDGET,
 	section,
+	valueLabel,
 	type FilterPanelOptions,
 } from "./layout.js";
 export {
