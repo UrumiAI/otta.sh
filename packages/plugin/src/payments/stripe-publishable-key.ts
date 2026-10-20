@@ -2,10 +2,10 @@
  * Issue #498 — the Stripe PUBLISHABLE key, a runtime setting (ADR-0012 as
  * amended). It used to be baked into the site at build time, so an operator with
  * only the admin could not turn card payments on. It now lives in plugin kv,
- * entered on the Settings page beside the two Stripe secrets.
+ * entered on the Store settings page (General tab) beside the two Stripe secrets.
  *
  * NOT A SECRET. It is sent to every buyer's browser, so it is stored and read
- * back in plain text (the Settings form prefills it) and is not declared
+ * back in plain text (the Store settings form prefills it) and is not declared
  * `type: "secret"`.
  *
  * FAIL-CLOSED ON SHAPE. A stored value that is not a `pk_test_…` / `pk_live_…`
