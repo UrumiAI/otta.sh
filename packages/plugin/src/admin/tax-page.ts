@@ -55,7 +55,9 @@ import {
 	readCarrier,
 	readString,
 	screenActions,
+	fit,
 	section,
+	valueLabel,
 	type ListDetailInput,
 	type NavPath,
 	type Notice,
@@ -440,9 +442,14 @@ function classRow(actions: ScreenActions, cls: TaxClassWire): Block[] {
 			style: "danger",
 		},
 	};
+	const fullTitle = `${cls.id} — ${cls.name}`;
+	const title = valueLabel(cls.id, [cls.name]);
 	return section({
 		blockId: classGroupId(cls.id),
-		title: `${cls.id} — ${cls.name}`,
+		title,
+		// A shortened heading also says the class in full here (the rename form
+		// below prefills the name too).
+		...(title === fullTitle ? {} : { note: fit(fullTitle, 200) }),
 		// ORDER IS THE AFFORDANCE HERE, because there is no other. A `form` is
 		// always `flex flex-col` in the pinned renderer, so these can never sit in
 		// a horizontal row with the primary on the end — every control is a
@@ -1017,9 +1024,14 @@ function rateRow(classId: string, row: TaxRateRow): Block[] {
 			: row.appliesToShipping
 				? "also shipping"
 				: "goods only";
+	const parts = [row.zoneName ?? row.zoneId, row.id, appliesLabel];
+	const fullTitle = `${percent}% — ${parts.join(" · ")}`;
+	const title = valueLabel(`${percent}%`, parts);
 	return section({
 		blockId: rateGroupId(row.id),
-		title: `${percent}% — ${row.zoneName ?? row.zoneId} · ${row.id} · ${appliesLabel}`,
+		title,
+		// A shortened heading also says the zone and ids in full here.
+		...(title === fullTitle ? {} : { note: fit(fullTitle, 200) }),
 		blocks: [...duplicateBlocks(row), rateEditForm(classId, row), rateDeleteActions(classId, row)],
 	});
 }

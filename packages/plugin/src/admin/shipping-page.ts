@@ -57,7 +57,9 @@ import {
 	readBoolean,
 	readString,
 	screenActions,
+	fit,
 	section,
+	valueLabel,
 	type ListDetailInput,
 	type NavPath,
 	type Notice,
@@ -526,8 +528,13 @@ function createActionBlock(
 /** One zone's per-row section (L-9): edit form, the "View methods" drill-in
  *  (§12.7), and delete — always open, like every group on this screen. */
 function zoneSection(zone: ShippingZoneWire, onlyZone: boolean): Block[] {
+	const fullTitle = `${zone.id} — ${zone.name}`;
+	const title = valueLabel(zone.id, [zone.name]);
 	return section({
-		title: `${zone.id} — ${zone.name}`,
+		title,
+		// The heading is fitted to the 60-char budget; the edit form below carries
+		// the name in full, and a shortened heading also says it in full here.
+		...(title === fullTitle ? {} : { note: fit(fullTitle, 200) }),
 		// A PLAIN key, not a minted carrier: a heading never echoes `block_id`
 		// back (only `form`/`table` do — B-1), so there is nothing to decode.
 		// `zone.id` is the zone's own unique id, safe to interpolate directly —
@@ -1076,8 +1083,17 @@ function methodTypeLabel(type: string): string {
  * method id is a readable natural key, not an opaque uuid).
  */
 function methodSection(zoneId: string, method: MethodRow): Block[] {
+	const price = methodPriceLabel(method.price);
+	const rest = [
+		method.name,
+		method.id,
+		methodTypeLabel(method.type) + (method.taxable === false ? " · not taxed" : ""),
+	];
+	const fullTitle = `${price} — ${rest.join(" · ")}`;
+	const title = valueLabel(price, rest);
 	return section({
-		title: `${methodPriceLabel(method.price)} — ${method.name} · ${method.id} · ${methodTypeLabel(method.type)}${method.taxable === false ? " · not taxed" : ""}`,
+		title,
+		...(title === fullTitle ? {} : { note: fit(fullTitle, 200) }),
 		blockId: `ship:method:${zoneId}:${method.id}`,
 		blocks: [
 			editMethodForm(zoneId, method),

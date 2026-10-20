@@ -67,6 +67,7 @@ import {
 	PATH_FIELD,
 	readString,
 	screenActions,
+	fitLabel,
 	section,
 	type CustomActionApi,
 	type ListDetailInput,
@@ -228,10 +229,6 @@ interface CouponDraft {
 
 /** Matches the service's default page size (`couponsListQuery` limit default). */
 const PAGE_LIMIT = 25;
-
-/** §1's prose budgets, as named constants so copy can be measured against
- *  them rather than eyeballed. */
-const LABEL_BUDGET = 60;
 
 export function createCouponsPageHandler(): RouteHandler<CouponsPageInput> {
 	return createListDetailHandler<CouponsRenderState>({
@@ -545,7 +542,7 @@ function couponsBlocks(
 		},
 	});
 	const blocks: Block[] = [
-		{ type: "header", text: "Coupons", block_id: "coupons:hdr" },
+		{ type: "header", text: "Coupons" },
 		listIntroLine(result.countLine, LIST_INTRO),
 		createCouponButton(),
 	];
@@ -605,7 +602,7 @@ function newCouponScreen(
 	storeCurrency: string | undefined,
 ): Block[] {
 	const blocks: Block[] = [
-		{ type: "header", text: "New coupon", block_id: "coupons:new:hdr" },
+		{ type: "header", text: "New coupon" },
 		// No path: this screen belongs to the ROOT list, and the cancel verb
 		// re-lists the level the operator came from.
 		backButton(ACTION_CANCEL_NEW, "← Back to coupons"),
@@ -2331,16 +2328,4 @@ function fields(blockId: string, entries: ReadonlyArray<readonly [string, string
 		block_id: blockId,
 		fields: entries.map(([label, value]) => ({ label, value })),
 	};
-}
-
-/** Trim a string to `max`, ellipsis included — for the one place a rendered
- *  string's length depends on SERVICE DATA (the Edit section's heading, which
- *  carries the coupon's own discount/window summary and could otherwise blow
- *  §1's 60-char label budget). */
-function fit(text: string, max: number): string {
-	return text.length <= max ? text : `${text.slice(0, max - 1)}…`;
-}
-
-function fitLabel(text: string): string {
-	return fit(text, LABEL_BUDGET);
 }

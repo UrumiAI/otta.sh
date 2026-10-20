@@ -1227,6 +1227,66 @@ describe("assertBlockContract — section headings (always-open groups)", () => 
 	});
 });
 
+/** An orders-detail tab block whose first two panels hold the given blocks. */
+function dupTabs(order: LooseBlock[], fulfilment: LooseBlock[]): LooseBlock {
+	return {
+		type: "tab",
+		block_id: "orders:ord-1:tabs",
+		default_tab: 0,
+		panels: [
+			{ label: "Order", blocks: order },
+			{ label: "Fulfilment", blocks: fulfilment },
+			{ label: "Money", blocks: [] },
+			{ label: "History", blocks: [] },
+		],
+	};
+}
+
+describe("assertBlockContract — P-2 (page title carries no block_id)", () => {
+	test("violates: the first top-level header carries a block_id", () => {
+		throwsRule([{ type: "header", text: "Coupons", block_id: "coupons:hdr" }], LIST, "P-2");
+	});
+
+	test("compliant: a block_id-less title, then block_id sections", () => {
+		passes([HEADER, heading("S")], LIST);
+	});
+
+	test("a titled-with-id first header is never a section heading (checks stay live)", () => {
+		const titled: LooseBlock = { type: "header", text: "Coupons", block_id: "coupons:hdr" };
+		// Page context over 140 chars and three banners still violate X-11 / X-31.
+		throwsRule([titled, { type: "context", text: "x".repeat(141) }], LIST, "X-11");
+		throwsRule([titled, x31Banner(1), x31Banner(2), x31Banner(3)], LIST, "X-31");
+	});
+
+	test("duplicate section ids in two tab panels each judge their OWN body", () => {
+		// Destructive body in panel 1 only; panel 2's same-id heading has no
+		// consequence clause and no destructive body of its own... but panel 1's does.
+		throwsRule(
+			[
+				HEADER,
+				dupTabs(
+					[heading("Cancel order", "dup"), DANGER_ACTIONS],
+					[heading("Notes", "dup"), { type: "context", text: "n" }],
+				),
+			],
+			DETAIL,
+			"X-35",
+		);
+		// Reverse: the clause-less heading is the innocent one; a first-match lookup
+		// would hand it panel 1's destructive body and wrongly flag it.
+		passes(
+			[
+				HEADER,
+				dupTabs(
+					[heading("Cancel order — permanent", "dup"), DANGER_ACTIONS],
+					[heading("Notes", "dup"), { type: "context", text: "n" }],
+				),
+			],
+			DETAIL,
+		);
+	});
+});
+
 describe("assertBlockContract — X-31 (§2)", () => {
 	test("compliant: two top-level banners", () =>
 		passes([HEADER, x31Banner(1), x31Banner(2)], LIST));

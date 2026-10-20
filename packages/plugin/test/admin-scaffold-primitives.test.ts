@@ -22,6 +22,7 @@ import {
 	formatTimestamp,
 	startOfDay,
 } from "../src/admin/scaffold/datetime.js";
+import { fitLabel, LABEL_BUDGET, section, valueLabel } from "../src/admin/scaffold/layout.js";
 import { SHORT_ID_MIN, shortIdsFor } from "../src/admin/scaffold/short-id.js";
 
 /**
@@ -211,5 +212,33 @@ describe("the console's date dialect (INC-13)", () => {
 		// A full datetime passes through un-re-anchored.
 		expect(startOfDay("2026-07-08T09:00:00.000Z")).toBe("2026-07-08T09:00:00.000Z");
 		expect(endOfDay("2026-07-08T09:00:00.000Z")).toBe("2026-07-08T09:00:00.000Z");
+	});
+});
+
+const heading = (blocks: ReturnType<typeof section>): string =>
+	String((blocks[0] as { text?: unknown }).text);
+
+describe("section() — the 60-char heading budget (X-11)", () => {
+	test("a title within the budget is untouched", () => {
+		const title = "x".repeat(LABEL_BUDGET);
+		expect(heading(section({ blockId: "t:a" as never, title, blocks: [] }))).toBe(title);
+	});
+
+	test("a longer title is cut to the budget, ellipsis included, keeping the lead", () => {
+		const blocks = section({
+			blockId: "t:a" as never,
+			title: `Lead ${"y".repeat(200)}`,
+			blocks: [],
+		});
+		expect(heading(blocks)).toHaveLength(LABEL_BUDGET);
+		expect(heading(blocks).startsWith("Lead yyy")).toBe(true);
+		expect(heading(blocks).endsWith("…")).toBe(true);
+	});
+
+	test("fitLabel / valueLabel respect the budget; valueLabel shortens the longest value", () => {
+		expect(fitLabel("z".repeat(61))).toHaveLength(LABEL_BUDGET);
+		const label = valueLabel("Store", ["n".repeat(200), "short"]);
+		expect(label).toHaveLength(LABEL_BUDGET);
+		expect(label.endsWith(" · short")).toBe(true);
 	});
 });

@@ -168,6 +168,47 @@ export function emptyState(opts: {
 	};
 }
 
+/** The group-heading budget (X-11, §1): a section heading is at most this many
+ *  characters. {@link section} enforces it on every `title`. */
+export const LABEL_BUDGET = 60;
+
+/** Separator between the values on a D-6 label. */
+const VALUE_SEPARATOR = " · ";
+
+/** Trim `text` to `max` characters, ellipsis included, keeping the leading part. */
+export function fit(text: string, max: number): string {
+	return text.length <= max ? text : `${text.slice(0, max - 1)}…`;
+}
+
+/** Fit a heading to {@link LABEL_BUDGET} by plain tail truncation. */
+export function fitLabel(text: string): string {
+	return fit(text, LABEL_BUDGET);
+}
+
+/**
+ * A D-6 `<group> — <value> · <value>` label, kept inside {@link LABEL_BUDGET}
+ * by shortening a VALUE rather than the tail. Right-truncation would eat the
+ * LAST value outright: an operator-supplied name has no length bound of its own,
+ * and the values after it (an id, a flag) are worth keeping. So the truncation
+ * costs the LONGEST value, and only by the overflow; when no value can absorb
+ * it, the whole label is tail-truncated.
+ */
+export function valueLabel(prefix: string, values: readonly string[]): string {
+	if (values.length === 0) return fitLabel(prefix);
+	const full = `${prefix} — ${values.join(VALUE_SEPARATOR)}`;
+	if (full.length <= LABEL_BUDGET) return full;
+	let longest = 0;
+	values.forEach((value, index) => {
+		if (value.length > (values[longest] ?? "").length) longest = index;
+	});
+	const room = (values[longest] ?? "").length - (full.length - LABEL_BUDGET) - 1;
+	if (room < 1) return fitLabel(full);
+	const shortened = values.map((value, index) =>
+		index === longest ? `${value.slice(0, room)}…` : value,
+	);
+	return `${prefix} — ${shortened.join(VALUE_SEPARATOR)}`;
+}
+
 /**
  * A titled group that is ALWAYS OPEN: a `header` naming it, an optional `context`
  * line under that, then its blocks inline. It is how EmDash's own admin pages
@@ -177,6 +218,9 @@ export function emptyState(opts: {
  *
  * NOT the Block Kit `section` block type (text + accessory): this emits a `header`
  * followed by the body blocks, nothing else.
+ *
+ * The `title` is fitted to {@link LABEL_BUDGET} here, so no screen can ship an
+ * over-budget heading; a caller that must keep the full text passes it as `note`.
  *
  * `blockId` goes on the heading: a React key ONLY (a header echoes nothing back,
  * so the type forbids a carrier), and the stable name tests find the group by.
@@ -193,7 +237,7 @@ export function section(opts: {
 	blocks: readonly Block[];
 }): Block[] {
 	return [
-		{ type: "header", text: opts.title, block_id: opts.blockId },
+		{ type: "header", text: fitLabel(opts.title), block_id: opts.blockId },
 		...(opts.note !== undefined ? [{ type: "context" as const, text: opts.note }] : []),
 		...opts.blocks,
 	];

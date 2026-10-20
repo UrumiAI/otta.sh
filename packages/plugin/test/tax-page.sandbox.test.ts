@@ -2138,3 +2138,39 @@ describe("admin Tax console — 8.875% end to end (#425, workerd sandbox)", () =
 		expect(JSON.stringify(await classes.get("standard"))).toBe(before);
 	});
 });
+
+describe("admin Tax console — long names keep section headings inside the 60-char budget (X-11)", () => {
+	const LONG = "Reduced rate for essential household goods and certain printed publications";
+
+	test("a class with a very long name: heading <= 60, full name still on the screen", async () => {
+		await seedRules({ classes: [{ id: "essential", name: LONG }], rates: [] });
+		const blocks = await loadClasses();
+		const heading = sectionHeading(blocks, "tax:class:essential");
+		expect(String(heading?.text).length).toBeLessThanOrEqual(60);
+		const body = sectionBlocks(blocks, "tax:class:essential");
+		expect(contextTexts(body).some((t) => t.includes(LONG))).toBe(true);
+		assertBlockContract(blocks, { screen: "tax", level: "list" });
+	});
+
+	test("a rate in a very long zone name: heading <= 60 and keeps the rate id, full zone in a context line", async () => {
+		await seedRules({
+			zones: [{ id: "far", name: LONG, regions: ["US"] }],
+			rates: [
+				{
+					id: "far-std",
+					taxClassId: "standard",
+					zoneId: "far",
+					rateBps: 725,
+					appliesToShipping: false,
+				},
+			],
+		});
+		const blocks = await openClass("standard");
+		const heading = sectionHeading(blocks, "tax:rate:far-std");
+		expect(String(heading?.text).length).toBeLessThanOrEqual(60);
+		expect(String(heading?.text)).toContain("far-std");
+		expect(String(heading?.text).startsWith("7.25% — ")).toBe(true);
+		const body = sectionBlocks(blocks, "tax:rate:far-std");
+		expect(contextTexts(body).some((t) => t.includes(LONG))).toBe(true);
+	});
+});

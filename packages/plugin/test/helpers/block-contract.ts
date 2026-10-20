@@ -52,7 +52,7 @@ import {
 	contextTexts,
 	emptyActions,
 	findBlocks,
-	sectionBlocks,
+	childBlockLists,
 	valueOf,
 	type LooseBlock,
 	type LooseElement,
@@ -99,6 +99,7 @@ export function assertBlockContract(
 	options: BlockContractOptions,
 ): void {
 	const violations: string[] = [
+		...checkP2(blocks),
 		...checkX1(blocks),
 		...checkX2(blocks),
 		...checkX4(blocks),
@@ -373,15 +374,23 @@ const BUDGET = {
 } as const;
 
 /** The top-level `context` blocks that precede any section heading — the page
- *  title is the first top-level `header`; each one after it opens a section. */
+ *  title is the first top-level `header` (no `block_id`); a `header` carrying a
+ *  `block_id` opens a section, and what follows it belongs to that section. */
 function pageLevelContext(blocks: readonly LooseBlock[]): LooseBlock[] {
 	return pageLevelBlocks(blocks).filter((b) => b.type === "context");
 }
 
+/** The first top-level `header` — the page title, never a section heading
+ *  (P-2 requires it to carry no `block_id`; this stays robust if it does). */
+function pageTitle(blocks: readonly LooseBlock[]): LooseBlock | undefined {
+	return blocks.find((b) => b.type === "header");
+}
+
 /** The top-level blocks before the first section heading (a `header` carrying a
- *  `block_id`; the page title carries none). */
+ *  `block_id` that is not the page title). */
 function pageLevelBlocks(blocks: readonly LooseBlock[]): LooseBlock[] {
-	const end = blocks.findIndex((b) => isSectionHeading(b));
+	const title = pageTitle(blocks);
+	const end = blocks.findIndex((b) => b !== title && isSectionHeading(b));
 	return end < 0 ? [...blocks] : blocks.slice(0, end);
 }
 
@@ -389,34 +398,68 @@ function isSectionHeading(b: LooseBlock): boolean {
 	return b.type === "header" && typeof b.block_id === "string";
 }
 
-/** Every section heading at any depth, as `{label, destructive}`-ready groups:
- *  the heading text, and the body that follows it in its own list. */
+/** Every section heading at any depth, in render order — the first top-level
+ *  `header` (the page title) is never one, even if it carries a `block_id`. */
 function sectionHeadings(blocks: readonly LooseBlock[]): LooseBlock[] {
-	return findBlocks(blocks, "header").filter(isSectionHeading);
+	const title = pageTitle(blocks);
+	return findBlocks(blocks, "header").filter((h) => h !== title && isSectionHeading(h));
 }
 
-/** Every named group the contract judges: remaining accordions and sections. */
+/** Every named group the contract judges: remaining accordions, and each
+ *  section heading with its body. The body is taken from the heading's OWN list
+ *  position (the siblings after it up to the next section heading), so two
+ *  headings sharing a `block_id` (e.g. in different tab panels) never read each
+ *  other's body. */
 function namedGroups(blocks: readonly LooseBlock[]): Array<{ label: string; body: LooseBlock[] }> {
 	const out: Array<{ label: string; body: LooseBlock[] }> = [];
-	for (const a of findBlocks(blocks, "accordion")) {
-		out.push({
-			label: String(a.label ?? ""),
-			body: Array.isArray(a.blocks) ? (a.blocks as LooseBlock[]) : [],
+	const headings = new Set(sectionHeadings(blocks));
+	const walk = (list: readonly LooseBlock[]): void => {
+		list.forEach((block, index) => {
+			if (block.type === "accordion") {
+				out.push({
+					label: String(block.label ?? ""),
+					body: Array.isArray(block.blocks) ? (block.blocks as LooseBlock[]) : [],
+				});
+			}
+			if (headings.has(block)) {
+				const rest = list.slice(index + 1);
+				const end = rest.findIndex((b) => isSectionHeading(b));
+				out.push({
+					label: String(block.text ?? ""),
+					body: end < 0 ? [...rest] : rest.slice(0, end),
+				});
+			}
+			for (const child of childBlockLists(block)) walk(child);
 		});
-	}
-	for (const h of sectionHeadings(blocks)) {
-		out.push({ label: String(h.text ?? ""), body: sectionBlocks(blocks, String(h.block_id)) });
-	}
+	};
+	walk(blocks);
 	return out;
+}
+
+/**
+ * P-2 — the page title (the first top-level `header`) must NOT carry a
+ * `block_id`: a `block_id` makes a header a section heading, which silently
+ * turns the contract's page-level checks (X-11 page context, X-31 banner count)
+ * vacuous on that screen.
+ */
+function checkP2(blocks: readonly LooseBlock[]): string[] {
+	const title = pageTitle(blocks);
+	if (title !== undefined && typeof title.block_id === "string") {
+		return [
+			`P-2: the page title header "${String(title.text ?? "")}" carries a block_id ("${title.block_id}") — the title is the one header WITHOUT a block_id; a block_id makes it a section heading.`,
+		];
+	}
+	return [];
 }
 
 function checkX11(blocks: readonly LooseBlock[]): string[] {
 	const out: string[] = [];
 	// "Page-level context" = a `context` block literally in the TOP-LEVEL array
-	// (P-1's whitelist position), never one recursed out of a tab/accordion —
-	// and never one inside a top-level `section` (`scaffold/layout.ts`): a line
-	// after a SECOND top-level `header` belongs to that section, exactly as it
-	// did when the section was an accordion, so it gets the nested budget.
+	// (P-1's whitelist position) before the first section heading, never one
+	// recursed out of a tab/accordion — and never one inside a top-level
+	// `section` (`scaffold/layout.ts`): a line after a header carrying a
+	// `block_id` belongs to that section, exactly as it did when the section was
+	// an accordion, so it gets the nested budget.
 	const topLevelContext = pageLevelContext(blocks);
 	const topLevelSet = new Set<LooseBlock>(topLevelContext);
 	for (const ctx of topLevelContext) {
@@ -1047,7 +1090,7 @@ function checkX35(blocks: readonly LooseBlock[]): string[] {
 }
 
 // ---------------------------------------------------------------------------
-// X-36 (D-6b) — a degenerate ratio in an accordion label.
+// X-36 (D-6b) — a degenerate ratio in a group label (section heading or accordion).
 // ---------------------------------------------------------------------------
 
 const DEGENERATE_RATIO_RE = /\$0\.00\s+of\s+\$0\.00|\b0\s+of\s+0\b|0%\s+of\s+nothing/i;
@@ -1057,7 +1100,7 @@ function checkX36(blocks: readonly LooseBlock[]): string[] {
 	for (const { label } of namedGroups(blocks)) {
 		if (DEGENERATE_RATIO_RE.test(label)) {
 			out.push(
-				`X-36: accordion label "${label}" states a degenerate ratio (D-6b) — replace the arithmetic with the fact (e.g. "nothing captured, nothing to refund").`,
+				`X-36: group label (section heading or accordion) "${label}" states a degenerate ratio (D-6b) — replace the arithmetic with the fact (e.g. "nothing captured, nothing to refund").`,
 			);
 		}
 	}

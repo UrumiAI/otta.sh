@@ -501,7 +501,7 @@ exceptions (§8).
 | Page-level `context` (the one line under `header`) | **140** | One sentence: what this screen is, plus the one global fact that changes how numbers read. |
 | Any other `context` | **200** | Longer explanation moves into the section it belongs to, or gets cut. |
 | `banner.description` | **240** | State the consequence and the next step. Nothing else. |
-| Section heading (`header` with a `block_id`; was `accordion.label`) | **60** | Name + the answer the operator would otherwise have to look for (D-6). *Amended 2026-10-20.* A data-derived heading is truncated (`fitLabel`), not allowed to overflow. |
+| Section heading (`header` with a `block_id`; was `accordion.label`) | **60** | Name + the answer the operator would otherwise have to look for (D-6). *Amended 2026-10-20.* A data-derived heading is truncated (`fitLabel`, applied inside the scaffold `section()`; `valueLabel` shortens the longest value instead of the tail), not allowed to overflow — the full text goes in a `context` line. |
 | `fields` value | **40** *(human catch, not **H**)* | A style budget, not a truncation threshold — the renderer truncates on **pixel width** (~70–90 chars at `text-sm` in a half-width column), so 40 is chosen for scannability. Prose belongs in `context`. **This is the one budget a helper must not enforce** (X-11): a 45-char buyer email or a tracking URL busts it through no authoring fault, and truncating a tracking number or URL destroys the operator's ability to copy it. So the rule binds on what the **author writes** — split an address across fields, move prose to `context` — and never on what the **service returns**. A reviewer's question is "is this prose that belongs elsewhere?", not "is this over 40?". |
 | `confirm.title` | **60** | Names the act and the record. |
 | `confirm.text` | **200** | Exactly two sentences: one naming the concrete amount or record, one naming the consequence. |
@@ -535,7 +535,7 @@ Every other `confirm.text` on every screen is already ≤200 (`tax-page.ts:248` 
 
 | Block | Allowed use | Forbidden |
 |---|---|---|
-| `header` | Page title, once, first, no `block_id` (P-2). Plus **section headings**: a `header` carrying a `block_id`, followed by the group's body (P-2, amended 2026-10-20). | A second page title. A heading with no body. |
+| `header` | Page title, once, first, **no `block_id`** — enforced by contract rule P-2 (a `block_id` would make it a section heading and silently disable the page-level X-11/X-31 checks). Plus **section headings**: a `header` carrying a `block_id`, followed by the group's body (P-2, amended 2026-10-20). | A second page title. A heading with no body. |
 | `section` | One line of prose **with** an `accessory` control (the active-filter summary + `Clear filters`). | As a heading. Without an accessory (use `context`). As a save receipt. |
 | `context` | One line of caption, caveat, cap statement, or degraded-state copy. | Paragraphs (see budget). |
 | `banner` | Action outcome (notice), a state demanding attention (reconciliation), the irreversibility warning inside a destructive group. `variant` ∈ `default` \| `alert` \| `error` **only** (R-18). | More than **2 page-level banners** (before the first section heading) — banners inside a section are not counted (X-31, amended 2026-10-20). `variant:"info"`/`"success"`. The legacy `{variant,text}` shape (the renderer drops `text`). |
@@ -619,8 +619,7 @@ because `accordion.label` is a plain string and cannot hold a button.
 The label states *that* it is filtered; the `section` below states *how*; the operator who wants
 to change it clicks once.
 
-**"Never `true`", not "always `false`".** `filterPanel` emits **no `default_open` key at all**
-(`layout.ts:157-162`), which is behaviourally identical — `accordion.tsx:14` is
+**"Never `true`", not "always `false`".** `filterPanel` emits **no `default_open` key at all**, which is behaviourally identical — `accordion.tsx:14` is
 `useState(block.default_open ?? false)` — but an assertion written as `default_open === false` fails
 against the helper's own output. Assert `!== true`, or assert the helper was used. Because the accordion's `block_id` is stable across an apply (B-7), an
 operator who opened the panel stays open across the round trip — collapsed-by-default costs them
@@ -649,9 +648,7 @@ which is why §12.3 and §12.4 spell the path out per level rather than abbrevia
 
 Clearing changes the **inner form's** key (B-3a) but **not** the accordion's (B-7) — getting that
 pair backwards is the one way to break `Clear filters`, so B-7 states both change conditions side
-by side. Clearing changes the **inner form's** key
-(B-3a) but **not** the accordion's (B-7) — see the note there, because getting this backwards is
-the one way to break `Clear filters`.
+by side.
 
 **L-7 — drill-in.** Table row clicks are unreachable on Block Kit (§14 item 2): one `form`
 directly below the table, one field, submit label `Open <entity>`. Omit the whole block at 0
@@ -1579,10 +1576,10 @@ any other prefilling form.
 
 **F-7 — submit label names the result**: `Apply filters`, `Add note`, `Record fulfilment & ship`,
 `Save rate`, `Review refund`. Never `Submit`/`Save`/`OK` alone, and never an id (`Save std-us` →
-`Save rate`, with the id in the enclosing accordion label; M-7).
+`Save rate`, with the id in the section heading; M-7).
 
 **F-8 — the explanation that used to be a paragraph.** One `context` line above the form, inside
-the same accordion, ≤200 chars, describing only what the operator cannot infer from the labels
+the same section, ≤200 chars, describing only what the operator cannot infer from the labels
 ("Saving replaces every field below — a blank optional field saves as unset."). The rest of today's
 paragraph is deleted, not relocated.
 
@@ -2709,7 +2706,7 @@ form        (cond ≥1) combobox "Open coupon" options "<code> · 20% off · 3 u
             initial_value "none"                        submit "View / edit"
 
 ── THE CREATE SCREEN ── what "New coupon" drills into                             (L-8)
-header      "New coupon"        block_id coupons:new:hdr
+header      "New coupon"        ← the page title: NO block_id (P-2)
 actions     [← Back to coupons]   ← the cancel verb re-lists the level came from; no path
 banner      (cond) a refusal notice — ABOVE the form, because it explains the values the
                    form below has just put back
@@ -3074,7 +3071,7 @@ T-5).
 
 ### 12.5 Reports (`reports-page.ts`) — §4.1 skeleton
 
-> **Amended 2026-10-20 (always-open sections).** In every listing in §12.3–§12.6 below the node written `section` (formerly `accordion`) is an always-open group: a `header` whose text is the `label` shown and whose `block_id` is the one shown, followed by the group's body inline. `default_open` no longer exists on these screens; any `default_open …` text in a listing is history and is marked "was". The counts, values and thresholds in the labels are unchanged (they are the heading text).
+> **Amended 2026-10-20 (always-open sections).** The `section` / `default_open` note at the head of §12.3 applies to every listing in §12.3–§12.6.
 
 ```
 header      "<Store> — Reports"
@@ -3198,7 +3195,7 @@ the section headings above (P-2); the legacy `{variant, text}` banner at `:81-84
 
 ### 12.6 Settings (`settings-form.ts`) — §4.1 skeleton
 
-> **Amended 2026-10-20 (always-open sections).** In every listing in §12.3–§12.6 below the node written `section` (formerly `accordion`) is an always-open group: a `header` whose text is the `label` shown and whose `block_id` is the one shown, followed by the group's body inline. `default_open` no longer exists on these screens; any `default_open …` text in a listing is history and is marked "was". The counts, values and thresholds in the labels are unchanged (they are the heading text).
+> **Amended 2026-10-20 (always-open sections).** The `section` / `default_open` note at the head of §12.3 applies to every listing in §12.3–§12.6.
 
 Three sections (was accordions). The fourth group this section once specified, `Service connection` (the
 `X-Internal-Token` / `X-Service-Token` forms), was **retired** in work order 02 INC-D3a with the

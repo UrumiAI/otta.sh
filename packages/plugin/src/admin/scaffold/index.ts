@@ -88,7 +88,11 @@ export {
 	emptyState,
 	filterPanel,
 	filterSummary,
+	fit,
+	fitLabel,
+	LABEL_BUDGET,
 	section,
+	valueLabel,
 	type FilterPanelOptions,
 } from "./layout.js";
 export {
