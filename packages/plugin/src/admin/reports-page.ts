@@ -150,14 +150,23 @@ export function createReportsPageHandler(): RouteHandler<ReportsPageInput> {
 			// when that store is absent.
 			const { reporting: client } = await makeAdminClients(ctx);
 			const settingsRead = client.getSettings().catch(() => undefined);
+			const revenueRead = client.getRevenue(range, "day");
+			// The units ranking is only drawn when the period has no single revenue
+			// currency, which the revenue read decides. It is a full scan in the
+			// store, so it is asked for only then — and a failure of it costs only
+			// the ranking's own order (the builder re-sorts the revenue list), never
+			// the page.
+			const topByUnitsRead = revenueRead.then((buckets) =>
+				hasSingleRevenueCurrency(buckets)
+					? undefined
+					: client.getTopProducts(range, "quantity", 10).catch(() => undefined),
+			);
 			const [revenue, statuses, top, topByUnits, low, settings, previousRevenue, previousStatuses] =
 				await Promise.all([
-					client.getRevenue(range, "day"),
+					revenueRead,
 					client.getOrdersByStatus(range),
 					client.getTopProducts(range, "revenue", 10),
-					// Both rankings, read together: which one is drawn depends on the
-					// period's currency mode, decided from the revenue read beside it.
-					client.getTopProducts(range, "quantity", 10),
+					topByUnitsRead,
 					// An explicit threshold avoids a second settings read inside the report.
 					settingsRead.then((savedSettings) =>
 						client.getLowStock(
@@ -174,7 +183,7 @@ export function createReportsPageHandler(): RouteHandler<ReportsPageInput> {
 				revenue,
 				statuses,
 				top,
-				topByUnits,
+				...(topByUnits !== undefined ? { topByUnits } : {}),
 				low,
 				...(previousRevenue !== undefined ? { previousRevenue } : {}),
 				...(previousStatuses !== undefined ? { previousStatuses } : {}),
@@ -455,10 +464,18 @@ const CURRENCY_CODE = /^[A-Z]{3}$/;
  */
 function pointsNote(days: number): string {
 	if (days <= MAX_DAILY_POINTS) return "One point per day.";
-	const rest = days % 7;
-	return rest === 0
+	const rest = partialLastPoint(days);
+	return rest === undefined
 		? "One point per week."
 		: `One point per week; the last point covers ${dayPhrase(rest)}.`;
+}
+
+/** The days the LAST point of a weekly-folded series covers, or `undefined` when
+ *  the series is daily or ends on a whole week. */
+function partialLastPoint(days: number): number | undefined {
+	if (days <= MAX_DAILY_POINTS) return undefined;
+	const rest = days % 7;
+	return rest === 0 ? undefined : rest;
 }
 
 function dayPhrase(days: number): string {
@@ -469,11 +486,8 @@ function ordersSection(data: ReportsData): Block[] {
 	const current: TimeSeries = timeBuckets(data.range, data.revenue, undefined);
 	const total = current.points.reduce((sum, p) => sum + p.orders, 0);
 	const unit = current.granularity === "day" ? "day" : "week";
-	const rest = data.range.days % 7;
-	const partial =
-		current.granularity === "week" && rest !== 0
-			? ` The last point covers ${dayPhrase(rest)}.`
-			: "";
+	const rest = current.granularity === "week" ? partialLastPoint(data.range.days) : undefined;
+	const partial = rest !== undefined ? ` The last point covers ${dayPhrase(rest)}.` : "";
 	return section({
 		blockId: "reports:orders",
 		title: "Orders over time",
@@ -914,6 +928,12 @@ function refundedFor(revenue: RevenueBucketWire[], currency: Currency): number |
  * EVERY bucket looks like on a service that predates `refundedCents`, which must
  * keep behaving exactly as it did.
  */
+/** True when exactly one currency has revenue-bearing buckets — the page's
+ *  single-currency mode (see `buildReportsBlocks`). */
+function hasSingleRevenueCurrency(buckets: readonly RevenueBucketWire[]): boolean {
+	return new Set(buckets.filter(isRevenueBearing).map((b) => b.currency)).size === 1;
+}
+
 function isRevenueBearing(b: RevenueBucketWire): boolean {
 	return b.revenueCents > 0 || (readRefunded(b) ?? 0) === 0;
 }

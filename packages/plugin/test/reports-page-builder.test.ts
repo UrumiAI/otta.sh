@@ -239,6 +239,30 @@ describe("reports builder: a multi-currency period's top products are the UNITS 
 	});
 });
 
+describe("reports builder: no units ranking supplied", () => {
+	test("a multi-currency period re-sorts the revenue list by units sold", () => {
+		const top: TopProductWire[] = [
+			{ productId: "a", titleSnapshot: "Atlas", qtySold: 1, revenueCents: 90_000 },
+			{ productId: "b", titleSnapshot: "Bolt", qtySold: 5, revenueCents: 500 },
+			{ productId: "c", titleSnapshot: "Cog", qtySold: 3, revenueCents: 100 },
+		];
+		const multi = [bucket("2026-07-10", 3000, 1), bucket("2026-07-10", 1000, 1, "EUR")];
+		const chart = chartOptions(render({ revenue: multi, top }), "reports:top-chart");
+		expect((chart["yAxis"] as { data: string[] }).data).toEqual(["Bolt", "Cog", "Atlas"]);
+	});
+});
+
+describe("reports builder: average order value with a bucket lacking revenueOrderCount", () => {
+	test("falls back to the paid-order count rather than a partial sum", () => {
+		const blocks = render({
+			revenue: [bucket("2026-07-10", 3000, 1), bucket("2026-07-11", 5500, undefined)],
+			statuses: STATUSES,
+		});
+		// $85.00 / 10 paid orders = $8.50 — never $85.00 / 1.
+		expect(tile(blocks, "Average order value")?.value).toBe("$8.50");
+	});
+});
+
 describe("reports builder: a folded series states its partial last week", () => {
 	// 365 days = 52 weeks + 1 day: the 53rd point covers ONE day, and without a
 	// word it reads as a cliff.
