@@ -43,6 +43,8 @@ import {
 } from "@urumi.ai/otta-domain";
 import { expect, test } from "vitest";
 import {
+	BUMP_WAIT_MAX_DELAY_MS,
+	BUMP_WAIT_MAX_READS,
 	COUPON_BUMP_LEASE_MS,
 	COUPONS_COLLECTION,
 	COUPON_CUSTOMER_CAPS_COLLECTION,
@@ -545,17 +547,28 @@ describeEachDialect("coupon crash seams", (ctx) => {
 	/**
 	 * A peer whose backoff sleeps on the shared FIXED clock: every sleep advances it by
 	 * exactly what was asked for, so "how long the waiter waited" is a number the case
-	 * reads back, not wall time. `at` runs once, the first time that much has elapsed.
+	 * reads back, not wall time. `at` runs once, the first time that much has elapsed;
+	 * `eachSleep` runs after every sleep. `reads` is the wait's own count of key reads.
 	 */
-	function sleepingPeer(h: CouponHarness, at: { ms: number; run: () => Promise<void> } | null) {
-		const elapsed = { ms: 0 };
+	function sleepingPeer(
+		h: CouponHarness,
+		at: { ms: number; run: () => Promise<void> } | null,
+		options: { random?: () => number; bumpWaitMs?: number; eachSleep?: () => Promise<void> } = {},
+	) {
+		const elapsed = { ms: 0, sleeps: 0, reads: 0 };
 		let ran = false;
 		const peer = makeCouponHarness(bound.storage, {
 			clock: h.clock,
-			random: () => 0.5,
+			random: options.random ?? (() => 0.5),
+			bumpWaitMs: options.bumpWaitMs,
+			onCasAttempts: (operation, attempts) => {
+				if (operation === "redeemAwait") elapsed.reads = attempts;
+			},
 			sleep: async (ms) => {
 				elapsed.ms += ms;
+				elapsed.sleeps++;
 				h.clock.advance(ms);
+				await options.eachSleep?.();
 				if (at !== null && !ran && elapsed.ms >= at.ms) {
 					ran = true;
 					await at.run();
@@ -563,6 +576,19 @@ describeEachDialect("coupon crash seams", (ctx) => {
 			},
 		});
 		return { peer, elapsed };
+	}
+
+	/** Park an owner of `key` at its heartbeat: it holds the step and never comes back. */
+	async function deadOwner(h: CouponHarness, key: string) {
+		const parked = parkCall(
+			bound.collection<CouponRedemptionDoc>(COUPON_REDEMPTIONS_COLLECTION),
+			nthCall(2, onId(couponRedemptionDocId("c1", key), isUpdateWrite)),
+		);
+		const owner = wrappedTwin(h, COUPON_REDEMPTIONS_COLLECTION, parked.collection).store.redeem(
+			redeemInput(key),
+		);
+		await parked.arrived;
+		return { parked, owner };
 	}
 
 	test("a same-key waiter outwaits a SLOW live owner (3 s) and returns the owner's answer", async () => {
@@ -603,15 +629,7 @@ describeEachDialect("coupon crash seams", (ctx) => {
 		// retryable failure — and it must not outlast the lease either.
 		const h = makeCouponHarness(bound.storage);
 		await h.store.create(coupon({ maxUses: 5 }));
-		const docId = couponRedemptionDocId("c1", "k-dead");
-		const parked = parkCall(
-			bound.collection<CouponRedemptionDoc>(COUPON_REDEMPTIONS_COLLECTION),
-			nthCall(2, onId(docId, isUpdateWrite)),
-		);
-		const owner = wrappedTwin(h, COUPON_REDEMPTIONS_COLLECTION, parked.collection).store.redeem(
-			redeemInput("k-dead"),
-		);
-		await parked.arrived;
+		const { parked, owner } = await deadOwner(h, "k-dead");
 		expect((await record("k-dead"))?.state).toBe("bumping");
 
 		const { peer, elapsed } = sleepingPeer(h, null);
@@ -619,14 +637,94 @@ describeEachDialect("coupon crash seams", (ctx) => {
 		expect(taken.ok).toBe(true);
 		expect((await couponDoc())?.usesCount).toBe(1);
 		expect((await record("k-dead"))?.state).toBe("applied");
-		// Taken over AT the lease's end: not before it (a live owner is never overtaken)
-		// and not after it (the wait is bounded by the lease).
-		expect(elapsed.ms).toBe(COUPON_BUMP_LEASE_MS);
+		// Taken over at the lease's end: not before it (a live owner is never overtaken)
+		// and not past it by more than one step (the wait is bounded by the lease).
+		expect(elapsed.ms).toBeGreaterThanOrEqual(COUPON_BUMP_LEASE_MS);
+		expect(elapsed.ms).toBeLessThanOrEqual(COUPON_BUMP_LEASE_MS + BUMP_WAIT_MAX_DELAY_MS);
 
 		// The owner wakes into a fenced step and adds nothing.
 		parked.release();
 		expect((await owner).ok).toBe(true);
 		expect((await couponDoc())?.usesCount).toBe(1);
+	});
+
+	test("a full-lease wait for a dead owner stays inside the old read count, even with no jitter", async () => {
+		// Every re-read is a storage query against a per-invocation ceiling (Workers Free:
+		// 50 D1 queries), so waiting out a whole lease must not cost more reads than the
+		// old 24-poll wait did. `random: () => 0` is the slowest-growing schedule, so it
+		// is the most reads the wait can make for one lease.
+		const h = makeCouponHarness(bound.storage);
+		await h.store.create(coupon({ maxUses: 5 }));
+		const { parked, owner } = await deadOwner(h, "k-reads");
+
+		const { peer, elapsed } = sleepingPeer(h, null, { random: () => 0 });
+		expect((await peer.store.redeem(redeemInput("k-reads"))).ok).toBe(true);
+		expect(elapsed.ms).toBe(COUPON_BUMP_LEASE_MS);
+		// 22 sleeps growing to 750 ms, the last trimmed to the lease, then the read that
+		// sees it lapsed and takes over.
+		expect(elapsed.sleeps).toBe(22);
+		expect(elapsed.reads).toBe(23);
+		expect(elapsed.reads).toBeLessThanOrEqual(BUMP_WAIT_MAX_READS);
+		expect((await couponDoc())?.usesCount).toBe(1);
+
+		parked.release();
+		await owner;
+		expect((await couponDoc())?.usesCount).toBe(1);
+	});
+
+	test("a waiter on a LIVE owner that keeps renewing its lease stops at the read ceiling", async () => {
+		// The owner never finishes but renews its lease after every one of the peer's
+		// sleeps, so it never lapses. However large the time budget, the peer stops at
+		// BUMP_WAIT_MAX_READS reads with the typed retryable error, and takes nothing.
+		const h = makeCouponHarness(bound.storage);
+		await h.store.create(coupon({ maxUses: 5 }));
+		const parked = parkCall(
+			bound.collection<CouponDoc>(COUPONS_COLLECTION),
+			onId("c1", isGuardedUpdate),
+		);
+		const owner = twin(h, parked.collection).store.redeem(redeemInput("k-renew"));
+		await parked.arrived;
+		const redemptions = bound.collection<CouponRedemptionDoc>(COUPON_REDEMPTIONS_COLLECTION);
+		const docId = couponRedemptionDocId("c1", "k-renew");
+		const renew = async () => {
+			const current = await redemptions.get(docId);
+			if (current === null) throw new Error("the key document vanished");
+			await redemptions.put(docId, {
+				...current,
+				bumpLeaseUntil: new Date(h.clock.now().getTime() + COUPON_BUMP_LEASE_MS).toISOString(),
+			});
+		};
+
+		for (const bumpWaitMs of [undefined, 600_000]) {
+			const { peer, elapsed } = sleepingPeer(h, null, {
+				random: () => 1,
+				eachSleep: renew,
+				...(bumpWaitMs === undefined ? {} : { bumpWaitMs }),
+			});
+			await expect(peer.store.redeem(redeemInput("k-renew"))).rejects.toMatchObject({
+				code: "STORAGE_CONTENTION",
+				retryable: true,
+				message: expect.stringContaining("reads waiting on the same key's owner"),
+			});
+			expect(elapsed.reads).toBeLessThanOrEqual(BUMP_WAIT_MAX_READS);
+			if (bumpWaitMs === undefined) {
+				// The default budget ends the wait first, one step past the lease.
+				expect(elapsed.ms).toBe(COUPON_BUMP_LEASE_MS + BUMP_WAIT_MAX_DELAY_MS);
+			} else {
+				// A budget too large to matter: the read ceiling is what stops it.
+				expect(elapsed.reads).toBe(BUMP_WAIT_MAX_READS);
+			}
+		}
+		expect((await couponDoc())?.usesCount).toBe(0);
+
+		parked.release();
+		await Promise.allSettled([owner]);
+	});
+
+	test("a bumpWaitMs that could never be reached is refused at construction", () => {
+		for (const bumpWaitMs of [Number.NaN, Number.POSITIVE_INFINITY, 0, -1]) {
+			expect(() => makeCouponHarness(bound.storage, { bumpWaitMs })).toThrow(RangeError);
+		}
 	});
 
 	test("a SLOW owner woken after a legitimate takeover is fenced at its heartbeat", async () => {

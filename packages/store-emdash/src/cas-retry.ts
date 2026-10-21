@@ -96,9 +96,17 @@ export class StorageContentionError extends Error {
 	/** Which store operation gave up, for the log line. */
 	readonly operation: string;
 
-	constructor(operation: string, attempts: number, options?: { cause?: unknown }) {
+	constructor(
+		operation: string,
+		attempts: number,
+		options?: {
+			cause?: unknown;
+			/** What `attempts` counts, for the message. Defaults to compare-and-set attempts. */
+			unit?: string;
+		},
+	) {
 		super(
-			`${operation} could not commit after ${String(attempts)} compare-and-set attempts — ` +
+			`${operation} could not commit after ${String(attempts)} ${options?.unit ?? "compare-and-set attempts"} — ` +
 				"the document is contended; nothing was written, so the call is safe to retry",
 			// The last retryable abort seen, if any. Without it a storm of
 			// `40001`/`40P01` aborts and a storm of lost revision races are

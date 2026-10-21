@@ -197,11 +197,24 @@ export const COUPON_BUMP_LEASE_MS = 10_000;
 
 /**
  * The longest single sleep between two re-reads of a key document whose owner is
- * still working. Larger than the compare-and-set cap because this loop is waiting
- * out a lease measured in seconds, not racing a write measured in milliseconds: it
- * keeps a full-lease wait to a few dozen reads.
+ * still working. Far larger than the compare-and-set cap because this loop is
+ * waiting out a lease measured in seconds, not racing a write measured in
+ * milliseconds — and every re-read is a storage query against a per-invocation
+ * ceiling (Workers Free allows 50 D1 queries, and checkout has spent some already).
  */
-const BUMP_WAIT_MAX_DELAY_MS = 250;
+export const BUMP_WAIT_MAX_DELAY_MS = 1_000;
+
+/**
+ * The hard ceiling on re-reads in one same-key wait, whatever the jitter and the
+ * time budget say: the read count the old poll-count wait made, so waiting a full
+ * lease never costs more queries than the wait it replaced. With the schedule in
+ * `#waitDelay` a full 10-second lease takes at most 23 reads, so the ceiling is a
+ * backstop, not the usual way out.
+ */
+export const BUMP_WAIT_MAX_READS = CAS_MAX_ATTEMPTS;
+
+/** What a same-key wait's attempt count counts, for its contention error. */
+const WAIT_UNIT = "reads waiting on the same key's owner";
 
 export interface EmdashCouponStoreOptions {
 	/** The collections the plugin descriptor declared (`COUPON_COLLECTIONS`). */
@@ -224,9 +237,10 @@ export interface EmdashCouponStoreOptions {
 	bumpLeaseMs?: number;
 	/**
 	 * How long, in ms of backoff, a caller that lost the bump step to another caller
-	 * of the same key waits for that owner's answer. Defaults to the lease, so a
-	 * waiter outlasts any owner that is still alive by its own lease, and is still
-	 * there to take the step over once a dead owner's lease lapses.
+	 * of the same key waits for that owner's answer. Defaults to the lease plus one
+	 * {@link BUMP_WAIT_MAX_DELAY_MS} of margin, so a waiter outlasts an owner that is
+	 * still inside its lease, and is still there to take the step over once a dead
+	 * owner's lease lapses. Must be a finite number above zero.
 	 */
 	bumpWaitMs?: number;
 }
@@ -286,7 +300,14 @@ export class EmdashCouponStore implements CouponStore {
 		};
 		this.#maxListPages = options.maxListPages ?? MAX_LIST_PAGES;
 		this.#bumpLeaseMs = options.bumpLeaseMs ?? COUPON_BUMP_LEASE_MS;
-		this.#bumpWaitMs = options.bumpWaitMs ?? this.#bumpLeaseMs;
+		this.#bumpWaitMs = options.bumpWaitMs ?? this.#bumpLeaseMs + BUMP_WAIT_MAX_DELAY_MS;
+		// A NaN or infinite budget would never be reached, and the wait would run until
+		// the read ceiling; a zero or negative one would never wait at all.
+		if (!Number.isFinite(this.#bumpWaitMs) || this.#bumpWaitMs <= 0) {
+			throw new RangeError(
+				`bumpWaitMs must be a finite number above zero, got ${String(this.#bumpWaitMs)}`,
+			);
+		}
 	}
 
 	// -- the coupon row --------------------------------------------------------
@@ -757,14 +778,18 @@ export class EmdashCouponStore implements CouponStore {
 	 * exactly one use no matter how the crowd is scheduled. A lapsed lease means the
 	 * owner is not coming back, and then the takeover is the healing path.
 	 *
-	 * **The patience is TIME, bounded by the lease** (`bumpWaitMs`, the lease by
-	 * default), not a poll count: an owner is allowed its whole lease, so a waiter that
-	 * gave up after a fraction of it would turn a slow-but-healthy owner into a "busy,
-	 * try again" for every same-key retry. The budget is counted in backoff actually
-	 * asked of `sleep`, which needs no clock and so always ends; real elapsed time is
-	 * that plus the reads. Since the owner's lease was stamped no later than this
-	 * caller's first read, a waiter on the same clock that waits the full lease sees a
-	 * dead owner's lease lapse at its last read and takes over in this same call.
+	 * **The patience is TIME, bounded by the lease** (`bumpWaitMs`, the lease plus one
+	 * step of margin by default), not a poll count: an owner is allowed its whole lease,
+	 * so a waiter that gave up after a fraction of it would turn a slow-but-healthy
+	 * owner into a "busy, try again" for every same-key retry. The budget is counted in
+	 * backoff actually asked of `sleep`, which needs no clock and so always ends; real
+	 * elapsed time is that plus the reads. No sleep runs past the lease the waiter just
+	 * read, so a dead owner's lapse is seen at the first read after it and the step is
+	 * taken over in this same call.
+	 *
+	 * **Reads are bounded too**, because each one is a storage query against a
+	 * per-invocation ceiling: the sleeps grow to a second, and {@link BUMP_WAIT_MAX_READS}
+	 * stops the wait outright whatever the jitter does.
 	 *
 	 * Running out of patience while the lease is still live (an owner that keeps
 	 * renewing it) is the typed RETRYABLE failure — the caller's own retry will read
@@ -777,7 +802,11 @@ export class EmdashCouponStore implements CouponStore {
 		let waited = 0;
 		for (let attempt = 1; ; attempt++) {
 			const doc = await this.#redemptions.get(claim.docId);
-			if (doc === null) throw new StorageContentionError("redeem", attempt);
+			if (doc === null) {
+				throw new StorageContentionError("redeem", attempt, {
+					unit: WAIT_UNIT,
+				});
+			}
 			const settled = normalizeRedemptionDoc(doc);
 			if (settled.outcome !== null) {
 				this.#retry.onAttempts?.("redeemAwait", attempt);
@@ -787,13 +816,17 @@ export class EmdashCouponStore implements CouponStore {
 				this.#retry.onAttempts?.("redeemAwait", attempt);
 				return this.#takeOverBump(coupon, { ...claim, doc: settled });
 			}
-			if (waited >= budget) {
+			if (waited >= budget || attempt >= BUMP_WAIT_MAX_READS) {
 				this.#retry.onAttempts?.("redeemAwait", attempt);
-				throw new StorageContentionError("redeem", attempt);
+				throw new StorageContentionError("redeem", attempt, {
+					unit: WAIT_UNIT,
+				});
 			}
-			// The last sleep is trimmed to the budget, so the final read lands exactly at
-			// its end. Every sleep is positive (see `#waitDelay`), so the loop terminates.
-			const delay = Math.min(this.#waitDelay(attempt), budget - waited);
+			// Never sleep past the lease just read (the next read is the one that can take
+			// over) nor past the budget. Every term is positive — the lease is unexpired,
+			// see `#waitDelay` for the rest — so the loop terminates.
+			const leaseLeft = Date.parse(settled.bumpLeaseUntil ?? "") - this.#clock.now().getTime();
+			const delay = Math.min(this.#waitDelay(attempt), leaseLeft, budget - waited);
 			await (this.#retry.sleep ?? defaultSleep)(delay);
 			waited += delay;
 		}
@@ -801,14 +834,16 @@ export class EmdashCouponStore implements CouponStore {
 
 	/**
 	 * The `attempt`-th sleep of the same-key wait: doubling from the compare-and-set
-	 * base up to {@link BUMP_WAIT_MAX_DELAY_MS}, with EQUAL jitter — between half the
-	 * ceiling and all of it — so no sleep is zero and the time budget always drains.
-	 * Whole milliseconds, so the budget and a clock advanced by these sleeps agree.
+	 * base up to {@link BUMP_WAIT_MAX_DELAY_MS}, jittered only in its top quarter
+	 * (three quarters of the ceiling up to all of it). The floor keeps every sleep
+	 * positive, so the budget always drains, and keeps the read count down: even with
+	 * no jitter at all a full 10-second lease is 22 sleeps, 23 reads. Whole
+	 * milliseconds, so the budget and a clock advanced by these sleeps agree.
 	 */
 	#waitDelay(attempt: number): number {
 		const ceiling = Math.min(CAS_BASE_DELAY_MS * 2 ** (attempt - 1), BUMP_WAIT_MAX_DELAY_MS);
 		const random = this.#retry.random ?? Math.random;
-		return Math.ceil(ceiling / 2 + (random() * ceiling) / 2);
+		return Math.ceil(ceiling * (0.75 + random() * 0.25));
 	}
 
 	/**
@@ -972,10 +1007,9 @@ export class EmdashCouponStore implements CouponStore {
 	 * the heartbeat and the `updateIf` are adjacent statements rather than one: an owner
 	 * descheduled BETWEEN them for longer than a full lease could still land a late
 	 * `+1`. That window is the gap between two consecutive storage calls, against a
-	 * 10-second lease and a retry budget whose entire worst case is 24 sleeps of at most
-	 * 50 ms (about a second) — so reaching it means a pause an order of magnitude longer
-	 * than the whole call is allowed to take, and the request would have failed on its
-	 * own deadline first. It is bounded the same way as the other two residuals: the
+	 * 10-second lease — so reaching it means one owner paused for longer than a full
+	 * lease between two adjacent storage calls, while every peer of its key waited that
+	 * same lease out before taking over. It is bounded the same way as the other two residuals: the
 	 * counter can only end HIGH.
 	 */
 	async #bumpGlobal(

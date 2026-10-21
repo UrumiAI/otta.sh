@@ -79,7 +79,7 @@ export function makeCouponHarness(
 		maxListPages: options.maxListPages,
 		sleep: options.sleep,
 		random: options.random,
-		bumpWaitMs: options.bumpWaitMs,
+		...(options.bumpWaitMs === undefined ? {} : { bumpWaitMs: options.bumpWaitMs }),
 	});
 	// The RAW collections, deliberately unwrapped by any fault injection: a seed is a
 	// fixture, and a test that injected a fault into its own setup would be asserting
