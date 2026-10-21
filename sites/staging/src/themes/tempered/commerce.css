@@ -343,6 +343,11 @@
 	margin-bottom: 1.5rem;
 }
 
+/* #440's way out sits under its notice, on the notice's own left edge. */
+[data-theme-id] .cart-currency-switch {
+	margin-top: 0.75rem;
+}
+
 /* No `.btn` rule here, and none on any other page: §2's one button shape is
    `.u-btn` / `.u-btn-ghost` in tokens.css, written down once. Seven pages
    carried a private copy of it and they had already drifted. The rank is

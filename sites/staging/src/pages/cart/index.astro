@@ -56,6 +56,7 @@ import {
 	PRICED_AT_CHECKOUT_CELL,
 } from "../../lib/cart-view.js";
 import { cartErrorMessage } from "../../lib/error-messages.js";
+import { staleCurrencyNotice } from "../../lib/stale-currency.js";
 import {
 	productImage,
 	productKey,
@@ -396,6 +397,16 @@ const partialNote =
 		? "Some items are priced at checkout, so this total isn't complete yet."
 		: null;
 /**
+ * #440: the cart is still in the currency it was started in, and the store now
+ * sells in another — nothing priced in the new one can be checked out of it.
+ * Only a live cart: a terminal one is an order's record, and the read leaves
+ * the field null for it anyway. `?? null` because a stale bundle's read carries
+ * no such field, which is "no notice", never a crash.
+ */
+const staleWire = result !== null && result.ok && !terminal ? (result.staleCurrency ?? null) : null;
+const staleCurrency = staleWire === null ? null : staleCurrencyNotice(staleWire);
+
+/**
  * The model — every answer the view prints, decided above.
  *
  * The arms are decided HERE and handed over as flags, in the order the view
@@ -405,7 +416,13 @@ const partialNote =
  */
 const model: CartModel = {
 	summary,
-	errorMessage: error !== null ? cartErrorMessage(error) : null,
+	/* With the notice up, CURRENCY_MISMATCH's generic "no longer available" (what
+	   /checkout bounced here with) would be a second, vaguer account of the same
+	   thing — the notice is the one that says what to do. */
+	errorMessage:
+		error === null || (staleCurrency !== null && error === "CURRENCY_MISMATCH")
+			? null
+			: cartErrorMessage(error),
 	degraded,
 	/* BUSY is the page's to say, never a theme's: the view gets the copy. */
 	degradedLead: busy ? cartErrorMessage(BUSY) : "Your cart is unavailable right now.",
@@ -420,6 +437,7 @@ const model: CartModel = {
 	sumRows,
 	totalAmount,
 	partialNote,
+	staleCurrency,
 };
 
 /**
