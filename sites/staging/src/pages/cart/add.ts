@@ -4,10 +4,11 @@
  * response), and proxies to the plugin's public
  * `storefront/cart/lines/add`.
  *
- * The `idempotencyKey` arrives FROM THE FORM — minted per rendered PDP by
- * the plugin's add-to-cart slot — and is forwarded verbatim; this endpoint
- * never invents one (a double-submit must replay, not duplicate). A
- * missing key is a 400, mirroring the plugin route's own input guard.
+ * The `idempotencyKey` arrives FROM THE FORM — minted per SUBMISSION by the
+ * PDP's script (ADR-0039), or with no script the one the plugin's add-to-cart
+ * slot rendered into the page — and is forwarded verbatim; this endpoint never
+ * invents one (a double-submit must replay, not duplicate). A missing key is a
+ * 400, mirroring the plugin route's own input guard.
  */
 import {
 	CART_LINE_MAX_QTY,

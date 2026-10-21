@@ -131,6 +131,11 @@ const PERMITTED_CLIENT_JS: ReadonlyArray<readonly [string, string]> = [
 	// file (`public/scripts/region-picker.js`, no inline code, no framework),
 	// pure progressive enhancement: the page works unchanged without it.
 	[path.join("checkout", "index.astro"), "RegionPicker.astro"],
+	// ADR-0039 (issue #37): the product page's add-to-cart key script — one
+	// external, first-party file (`public/scripts/add-to-cart-key.js`) that mints
+	// a fresh idempotency key per submission. Rendered by the PAGE, never by the
+	// theme view, and the form posts the server's key without it.
+	[path.join("products", "[slug].astro"), "AddToCartKey.astro"],
 ];
 
 /** The dev styleguide renders every component in every state and 404s outside
@@ -222,7 +227,7 @@ describe("10a — the client-JS fence (ADR-0012 decision 2)", () => {
 			.filter((name) => name.endsWith(".astro"))
 			.filter((name) => hasExecutableScript(readFileSync(path.join(COMPONENTS_DIR, name), "utf8")))
 			.toSorted();
-		expect(scripted).toEqual(["HoldClock.astro", "RegionPicker.astro"]);
+		expect(scripted).toEqual(["AddToCartKey.astro", "HoldClock.astro", "RegionPicker.astro"]);
 	});
 
 	test("the walk sees THROUGH the theme registry, into every view and the shared form", () => {
@@ -510,5 +515,39 @@ describe("ADR-0034 — the checkout's region script is exactly what it says", ()
 		expect([...script.matchAll(/fetch\(/g)]).toHaveLength(1);
 		expect(script).toContain("/checkout/regions?country=");
 		expect(script).not.toMatch(/https?:\/\//);
+	});
+});
+
+describe("ADR-0039 — the product page's add-to-cart key script is exactly what it says", () => {
+	const component = readFileSync(path.join(COMPONENTS_DIR, "AddToCartKey.astro"), "utf8");
+	const script = readFileSync(
+		path.resolve(SRC_DIR, "../public/scripts/add-to-cart-key.js"),
+		"utf8",
+	);
+
+	test("ONE external, first-party <script src>: no inline code, no markup", () => {
+		const { body } = splitAstro(component);
+		const tags = [...body.matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script[^>]*>/gi)];
+		expect(tags).toHaveLength(1);
+		expect(tags[0]![1]).toMatch(/\bsrc="\/scripts\/add-to-cart-key\.js"/);
+		expect(tags[0]![2]!.trim()).toBe("");
+		expect(body.replace(tags[0]![0], "").trim()).toBe("");
+	});
+
+	test("small, frameworkless, no network, and only about the add-to-cart key", () => {
+		expect(script.split("\n").length).toBeLessThanOrEqual(40);
+		expect(script).not.toMatch(/\bimport\b|\brequire\(/);
+		// It never talks to anything: the form's own POST is the only request.
+		expect(script).not.toMatch(/fetch\(|XMLHttpRequest|sendBeacon|https?:\/\//);
+		// It touches the add-to-cart form's key and nothing else.
+		expect(script).toContain(`form[action="/cart/add"]`);
+		expect(script).toContain(`input[name="idempotencyKey"]`);
+	});
+
+	test("the product page renders it only alongside an add-to-cart form", () => {
+		const page = readFileSync(path.join(PAGES_DIR, "products", "[slug].astro"), "utf8");
+		expect(page).toMatch(
+			/\{purchase !== null && purchase\.addToCart !== null && <AddToCartKey slot="head" \/>\}/,
+		);
 	});
 });
