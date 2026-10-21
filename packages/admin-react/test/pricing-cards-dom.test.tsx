@@ -472,6 +472,9 @@ test("a rejected title is shown with its reason, as an alert at the top of the p
 		"The title is 612 characters long; the most it can be is 500.",
 	);
 	expect(alert?.textContent).toContain("Customers can't buy it until the entry's title is fixed");
+	// One title message: the "fill in a title" prompt (#166) would contradict the
+	// alert, since the entry does have a title.
+	expect(c.textContent).not.toContain("until it has a title");
 });
 
 test("no rejection, no alert — including from a plugin older than the field", async () => {

@@ -698,7 +698,11 @@ export function PricingStockEditor({ productId }: { productId: string }): React.
 	/** The shared sellability rule's title arm (#166): checkout refuses a product
 	 *  with no title, and the title is the CMS entry's, so this panel can only say
 	 *  so. A deleted product is past selling and gets no prompt. */
-	const untitled = unsellableReasons(p).includes("untitled");
+	// A REJECTED title (#112) also leaves the row untitled, but the entry does have
+	// a title: the alert above says why it wasn't accepted, so "fill it in" would
+	// contradict it. One title message, never two.
+	const titleRejected = typeof p.titleRejection === "string" && p.titleRejection.length > 0;
+	const untitled = !titleRejected && unsellableReasons(p).includes("untitled");
 	const sale = salePreview(d.price, d.compareAt, currency);
 	const margin = marginSummary(d.price, d.unitCost, currency);
 	const stock = stockStatus(p.onHand, threshold);
