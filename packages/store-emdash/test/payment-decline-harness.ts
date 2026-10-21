@@ -12,17 +12,24 @@
  * physical order never reaches — is the order harness's in-memory one.
  */
 import { idempotencyKey } from "@urumi.ai/otta-domain";
-import type { PaymentDeclineHarness } from "@urumi.ai/otta-domain/testing";
+import type { FixedClock, PaymentDeclineHarness } from "@urumi.ai/otta-domain/testing";
 import { EmdashPaymentEventStore, type StorageAccess } from "../src/index.js";
 import { makeCouponHarness } from "./coupon-harness.js";
 import { makeOrderHarness } from "./order-harness.js";
 
+/** The decline harness, plus the one fixed clock its stores share — so a spec built
+ *  on it can move time between deliveries. */
+export interface DocumentPaymentDeclineHarness extends PaymentDeclineHarness {
+	readonly clock: FixedClock;
+}
+
 /** Build the decline harness over an already-bound `StorageAccess`. */
-export function makePaymentDeclineHarness(storage: StorageAccess): PaymentDeclineHarness {
+export function makePaymentDeclineHarness(storage: StorageAccess): DocumentPaymentDeclineHarness {
 	const orders = makeOrderHarness(storage);
 	const couponStore = makeCouponHarness(storage, { clock: orders.clock }).store;
 	const paymentEventStore = new EmdashPaymentEventStore({ storage });
 	return {
+		clock: orders.clock,
 		settleDeps: { ...orders.settleDeps, paymentEventStore },
 		expireDeps: { ...orders.expireDeps, couponStore },
 		async holdForCheckout(sku, qty, key, expiresAt) {

@@ -21,7 +21,16 @@ export type PaymentAnomalyKind =
 	 *  DIFFERENT order — one payment (one Stripe event, say) being aimed at
 	 *  a second order. Terminally refused by `settleOrder`; recorded here because
 	 *  the ATTEMPT is the alert-worthy fact. */
-	| "RECEIPT_REBOUND";
+	| "RECEIPT_REBOUND"
+	/** LOW SEVERITY, informational (issue #35). A verified success carrying a
+	 *  DIFFERENT amount or currency arrived for an order that is already `paid`.
+	 *  The order settled at the right amount, so this is not `AMOUNT_MISMATCH` (which
+	 *  refuses a settle) and nothing is flagged or moved — it is kept only so the
+	 *  stray confirmation stays in the forensic trail. Recorded once per gateway
+	 *  event: only on that event's first delivery. EXCEPTION: when the event names
+	 *  a payment the order never captured (a second, real charge), `settleOrder`
+	 *  also flags the order for manual reconciliation. */
+	| "PAID_AMOUNT_MISMATCH";
 
 /**
  * The `PaymentEventStore` port (Phase 4 §5). Two jobs:
