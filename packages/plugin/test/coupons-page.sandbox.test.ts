@@ -2161,6 +2161,18 @@ describe("admin Coupons console — detail/edit leaf (workerd sandbox)", () => {
 		expect(actionButtons(main!.blocks).some((e) => e.action_id === "coupons:delete")).toBe(true);
 	});
 
+	test("Retire and Delete are not inside the Edit section: its body ends the panel", async () => {
+		const state = makeCouponsState();
+		await boot(state);
+		const detail = await openCoupon("FIVEOFF");
+		const ids = actionButtons(sectionBlocks(detail, "coupons:c-five:edit") as Blk[]).map(
+			(e) => e.action_id,
+		);
+		expect(ids).not.toContain("coupons:retire");
+		expect(ids).not.toContain("coupons:delete");
+		expect(actionButtons(detail).some((e) => e.action_id === "coupons:retire")).toBe(true);
+	});
+
 	test("Retire ends a LIVE coupon now — redeemed or not — keeping its economics and its uses, and the detail says checkout refuses it", async () => {
 		// QA: the copy said "retire this coupon" and there was no control that did
 		// it; a redeemed coupon could not be deleted either. Retiring is setting the

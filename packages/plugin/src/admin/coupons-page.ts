@@ -1084,7 +1084,6 @@ function couponPanel(detail: CouponSummaryWire, status: CouponStatus): Block[] {
 			],
 			["Valid", couponWindowSummary(detail.startsAt, detail.expiresAt)],
 		]),
-		...editGroup(detail),
 	];
 	// Not offered on a coupon that has already ended: there is nothing to retire,
 	// and an expired coupon is reopened through the edit form's expiry instead.
@@ -1092,6 +1091,9 @@ function couponPanel(detail: CouponSummaryWire, status: CouponStatus): Block[] {
 	// Delete sits beside Retire on the coupon's own panel (QA round 2: it was only
 	// reachable under Redemptions), offered on the same rule — never redeemed.
 	if (detail.usesCount === 0) blocks.push(deleteCouponActions(detail));
+	// Edit comes LAST: a section's body runs to the next heading or the end of the
+	// list, so anything after it would read as part of the editor (X-35).
+	blocks.push(...editGroup(detail));
 	return blocks;
 }
 
