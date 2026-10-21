@@ -163,59 +163,89 @@ export type ReplaceStaleCurrencyCartResult =
 	  };
 
 /**
+ * How many of a stale cart's holds one `replaceStaleCurrencyCart` call releases.
+ * A FIXED number, so the call's cost does not grow with the cart: on Workers Free
+ * a request gets 50 D1 queries, and a release is a handful of them. The rest are
+ * not leaked — see the use-case.
+ */
+export const STALE_CART_RELEASE_LIMIT = 2;
+
+/**
  * The cart that REPLACES a stale-currency one (#440): a new, EMPTY cart in
- * `storeCurrency`, after every hold the stale cart has is released.
+ * `storeCurrency`, and the stale cart's stock handed back.
  *
  * A cart is never rewritten — its currency is fixed at creation, and the stale
  * cart keeps its own. Nothing is converted and no line is carried over: a line's
  * price is read live at quote time, so the shopper re-adds what they want and is
- * quoted the current price in the new currency. Releasing the holds is what makes
- * that possible: otherwise the old cart would sit on the stock until its TTL.
+ * quoted the current price in the new currency.
  *
- * Keys are derived HERE, never by a caller: `recurrency:<cartId>:<currency>` for
- * the new cart and `recurrency:<cartId>:<currency>:<lineId>` for each release
- * (`removeLine`, so a release replays by its ledger entry). The rule holds until
- * the end — an emptied stale cart is still stale — so a retry after a crash
- * finishes the releases and lands on the same new cart, and racers converge. A
+ * BOUNDED COST, whatever the cart's size. One cart read (the same read the cart
+ * page itself makes), the keyed create, then at most `releaseLimit` hold releases
+ * through the inventory port — never `removeLine`, which re-reads the whole cart
+ * per line. The holds left behind are still the stale cart's `held` lines with a
+ * deadline at most one hold TTL away, and the hold sweep (`expireHolds`, the
+ * cron's budgeted `expire-holds` leg) reaps every expired `held` hold of an
+ * ACTIVE cart — releasing the stock and dropping the line — so they come back on
+ * their own within one TTL plus a sweep. A released line is left on the stale
+ * cart (nobody reads it again: the shopper's cookie now names the new cart), and
+ * the sweep's listing drops it as a dead candidate.
+ *
+ * ORDER, for a request that can always finish: the new cart is created FIRST,
+ * under `recurrency:<cartId>:<currency>`, so a request that dies mid-release has
+ * still minted the cart its retry will be handed. A retry re-reads the cart,
+ * skips the holds already released (a release is idempotent by the reservation's
+ * own state) and releases the next ones; racers converge on the same cart. A
  * second switch to another currency is a different key and its own cart.
  *
- * Refused, in order: `CART_NOT_FOUND`; `CART_CHECKED_OUT` (its holds belong to
- * an order now); `CART_CURRENCY_CURRENT` (nothing to replace); and the typed
- * failure of a release that races a checkout (`CART_CHECKED_OUT` /
- * `LINE_CHECKED_OUT`), in which case no cart is minted.
+ * Refused, in order, touching nothing: `CART_NOT_FOUND`; `CART_CHECKED_OUT` (its
+ * holds belong to an order now); `CART_CURRENCY_CURRENT` (nothing to replace);
+ * and `LINE_CHECKED_OUT` when any line's hold is already `adopted` or `committed`
+ * — a checkout is mid-flight on this cart (it adopts every hold before it flips
+ * the cart), and its stock is the order's, not the shopper's to free.
+ *
+ * Accepted residual, shared with `removeLine`: a checkout that adopts a hold
+ * between this read and its release. Releasing an adopted hold is the inventory
+ * port's own rule (`held|adopted → released`); the window is one request wide and
+ * needs the shopper to check the stale cart out in another tab at that instant.
  */
 export async function replaceStaleCurrencyCart(
-	deps: CartDeps,
+	deps: Pick<CartDeps, "cartStore" | "inventoryStore" | "clock">,
 	staleCartId: string,
 	storeCurrency: Currency,
+	releaseLimit: number = STALE_CART_RELEASE_LIMIT,
 ): Promise<ReplaceStaleCurrencyCartResult> {
-	// Lazy expiry first: a lapsed hold is already back on the shelf.
-	const cart = await getCart(deps, staleCartId);
+	// ONE read, no lazy expiry: expiring lapsed holds here is a write per line.
+	const cart = await deps.cartStore.get(staleCartId);
 	if (cart === null) return { ok: false, reason: "CART_NOT_FOUND" };
 	if (cart.state !== "active") return { ok: false, reason: "CART_CHECKED_OUT" };
 	if (!isStaleCurrencyCart(cart, storeCurrency)) {
 		return { ok: false, reason: "CART_CURRENCY_CURRENT" };
 	}
-	const base = `recurrency:${staleCartId}:${storeCurrency}`;
-	for (const line of cart.lines) {
-		const released = await removeLine(
-			deps,
-			staleCartId,
-			line.lineId,
-			brandIdempotencyKey(`${base}:${line.lineId}`),
-		);
-		if (!released.ok) {
-			const { reason } = released;
-			return {
-				ok: false,
-				reason:
-					reason === "CART_NOT_FOUND" || reason === "CART_CHECKED_OUT"
-						? reason
-						: "LINE_CHECKED_OUT",
-			};
-		}
+	if (
+		cart.lines.some(
+			(line) => line.reservationState === "adopted" || line.reservationState === "committed",
+		)
+	) {
+		return { ok: false, reason: "LINE_CHECKED_OUT" };
 	}
-	const cartId = await deps.cartStore.create(storeCurrency, brandIdempotencyKey(base));
+
+	const cartId = await deps.cartStore.create(
+		storeCurrency,
+		brandIdempotencyKey(`recurrency:${staleCartId}:${storeCurrency}`),
+	);
+
+	// Live holds only: one past its deadline is the sweep's already, and a
+	// released one is done (a retry after a crash lands here).
+	const nowIso = deps.clock.now().toISOString();
+	const live = cart.lines.filter(
+		(line): line is CartLine & { reservationId: string } =>
+			line.reservationId !== null &&
+			line.reservationState === "held" &&
+			(line.expiresAt === null || line.expiresAt > nowIso),
+	);
+	for (const line of live.slice(0, releaseLimit)) {
+		await deps.inventoryStore.release(line.reservationId);
+	}
 	return { ok: true, cartId };
 }
 

@@ -718,6 +718,7 @@ export {
 	removeLine,
 	replaceSpentCart,
 	replaceStaleCurrencyCart,
+	STALE_CART_RELEASE_LIMIT,
 	updateLine,
 	type AddLineResult,
 	type CartDeps,
