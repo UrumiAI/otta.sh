@@ -124,7 +124,6 @@ import {
 import {
 	CAS_BASE_DELAY_MS,
 	CAS_MAX_ATTEMPTS,
-	CAS_MAX_DELAY_MS,
 	CAS_RETRY,
 	casDone,
 	isStorageContentionError,
@@ -197,17 +196,12 @@ const CLAIM_ROUNDS = 2;
 export const COUPON_BUMP_LEASE_MS = 10_000;
 
 /**
- * How many times a completer that LOST the bump right re-reads the key document
- * while its owner's lease is still live.
- *
- * This is LATENCY, not correctness: the lease above decides whether a takeover is
- * allowed at all, and this only decides how long a caller is willing to wait for an
- * answer it can read instead of recompute. It shares the package's one budget knob
- * (`maxCasAttempts`), so a suite that wants a short wait asks for a short budget. Running out is the typed retryable
- * failure, never a takeover of a live owner. Backoff is the same jittered schedule
- * the retry loop uses.
+ * The longest single sleep between two re-reads of a key document whose owner is
+ * still working. Larger than the compare-and-set cap because this loop is waiting
+ * out a lease measured in seconds, not racing a write measured in milliseconds: it
+ * keeps a full-lease wait to a few dozen reads.
  */
-const BUMP_WAIT_ATTEMPTS = CAS_MAX_ATTEMPTS;
+const BUMP_WAIT_MAX_DELAY_MS = 250;
 
 export interface EmdashCouponStoreOptions {
 	/** The collections the plugin descriptor declared (`COUPON_COLLECTIONS`). */
@@ -228,6 +222,13 @@ export interface EmdashCouponStoreOptions {
 	maxListPages?: number;
 	/** Override the bump step's lease, in ms. Defaults to {@link COUPON_BUMP_LEASE_MS}. */
 	bumpLeaseMs?: number;
+	/**
+	 * How long, in ms of backoff, a caller that lost the bump step to another caller
+	 * of the same key waits for that owner's answer. Defaults to the lease, so a
+	 * waiter outlasts any owner that is still alive by its own lease, and is still
+	 * there to take the step over once a dead owner's lease lapses.
+	 */
+	bumpWaitMs?: number;
 }
 
 /**
@@ -262,6 +263,7 @@ export class EmdashCouponStore implements CouponStore {
 	readonly #retry: CasRetryOptions;
 	readonly #maxListPages: number;
 	readonly #bumpLeaseMs: number;
+	readonly #bumpWaitMs: number;
 
 	constructor(options: EmdashCouponStoreOptions) {
 		this.#coupons = collectionOf<CouponDoc>(options.storage, COUPONS_COLLECTION);
@@ -284,6 +286,7 @@ export class EmdashCouponStore implements CouponStore {
 		};
 		this.#maxListPages = options.maxListPages ?? MAX_LIST_PAGES;
 		this.#bumpLeaseMs = options.bumpLeaseMs ?? COUPON_BUMP_LEASE_MS;
+		this.#bumpWaitMs = options.bumpWaitMs ?? this.#bumpLeaseMs;
 	}
 
 	// -- the coupon row --------------------------------------------------------
@@ -754,17 +757,25 @@ export class EmdashCouponStore implements CouponStore {
 	 * exactly one use no matter how the crowd is scheduled. A lapsed lease means the
 	 * owner is not coming back, and then the takeover is the healing path.
 	 *
-	 * Running out of patience while the lease is still live is the typed RETRYABLE
-	 * failure — the caller's own retry will read the recorded answer — never a
-	 * takeover. A document that VANISHES while being waited on was released underneath
-	 * this call, and there is no honest answer to return for that either.
+	 * **The patience is TIME, bounded by the lease** (`bumpWaitMs`, the lease by
+	 * default), not a poll count: an owner is allowed its whole lease, so a waiter that
+	 * gave up after a fraction of it would turn a slow-but-healthy owner into a "busy,
+	 * try again" for every same-key retry. The budget is counted in backoff actually
+	 * asked of `sleep`, which needs no clock and so always ends; real elapsed time is
+	 * that plus the reads. Since the owner's lease was stamped no later than this
+	 * caller's first read, a waiter on the same clock that waits the full lease sees a
+	 * dead owner's lease lapse at its last read and takes over in this same call.
+	 *
+	 * Running out of patience while the lease is still live (an owner that keeps
+	 * renewing it) is the typed RETRYABLE failure — the caller's own retry will read
+	 * the recorded answer — never a takeover. A document that VANISHES while being
+	 * waited on was released underneath this call, and there is no honest answer to
+	 * return for that either.
 	 */
 	async #awaitOrTakeOver(coupon: CouponDoc, claim: ResolvedClaim): Promise<RedeemResult> {
-		// DELIBERATELY the same knob as the compare-and-set budget: both answer "how long
-		// may one call keep trying before it reports back", and a suite that wants a short
-		// wait wants a short budget. Splitting them would be two numbers to keep in step.
-		const patience = this.#retry.maxAttempts ?? BUMP_WAIT_ATTEMPTS;
-		for (let attempt = 1; attempt <= patience; attempt++) {
+		const budget = this.#bumpWaitMs;
+		let waited = 0;
+		for (let attempt = 1; ; attempt++) {
 			const doc = await this.#redemptions.get(claim.docId);
 			if (doc === null) throw new StorageContentionError("redeem", attempt);
 			const settled = normalizeRedemptionDoc(doc);
@@ -776,10 +787,28 @@ export class EmdashCouponStore implements CouponStore {
 				this.#retry.onAttempts?.("redeemAwait", attempt);
 				return this.#takeOverBump(coupon, { ...claim, doc: settled });
 			}
-			await this.#backoff(attempt);
+			if (waited >= budget) {
+				this.#retry.onAttempts?.("redeemAwait", attempt);
+				throw new StorageContentionError("redeem", attempt);
+			}
+			// The last sleep is trimmed to the budget, so the final read lands exactly at
+			// its end. Every sleep is positive (see `#waitDelay`), so the loop terminates.
+			const delay = Math.min(this.#waitDelay(attempt), budget - waited);
+			await (this.#retry.sleep ?? defaultSleep)(delay);
+			waited += delay;
 		}
-		this.#retry.onAttempts?.("redeemAwait", patience);
-		throw new StorageContentionError("redeem", patience);
+	}
+
+	/**
+	 * The `attempt`-th sleep of the same-key wait: doubling from the compare-and-set
+	 * base up to {@link BUMP_WAIT_MAX_DELAY_MS}, with EQUAL jitter — between half the
+	 * ceiling and all of it — so no sleep is zero and the time budget always drains.
+	 * Whole milliseconds, so the budget and a clock advanced by these sleeps agree.
+	 */
+	#waitDelay(attempt: number): number {
+		const ceiling = Math.min(CAS_BASE_DELAY_MS * 2 ** (attempt - 1), BUMP_WAIT_MAX_DELAY_MS);
+		const random = this.#retry.random ?? Math.random;
+		return Math.ceil(ceiling / 2 + (random() * ceiling) / 2);
 	}
 
 	/**
@@ -862,7 +891,7 @@ export class EmdashCouponStore implements CouponStore {
 		if (settled !== null && settled.outcome !== null) {
 			return answerOf(settled, settled.outcome, true);
 		}
-		throw new StorageContentionError("redeem", this.#retry.maxAttempts ?? BUMP_WAIT_ATTEMPTS);
+		throw new StorageContentionError("redeem", this.#retry.maxAttempts ?? CAS_MAX_ATTEMPTS);
 	}
 
 	/**
@@ -1016,13 +1045,6 @@ export class EmdashCouponStore implements CouponStore {
 		return answerOf(claim.doc, recorded, claim.replayed);
 	}
 
-	/** The jittered wait between two reads of a key somebody else owns. */
-	async #backoff(attempt: number): Promise<void> {
-		const sleep = this.#retry.sleep ?? defaultSleep;
-		const random = this.#retry.random ?? Math.random;
-		await sleep(random() * Math.min(CAS_BASE_DELAY_MS * 2 ** (attempt - 1), CAS_MAX_DELAY_MS));
-	}
-
 	/**
 	 * Free one redemption's slot, delete it, and decrement iff it consumed a use.
 	 *
@@ -1072,9 +1094,8 @@ export class EmdashCouponStore implements CouponStore {
 			try {
 				// Through the lease-aware waiter, not straight into the takeover: a release
 				// must not overtake a live completer any more than a redemption may. The
-				// waiter can never outlast the lease — it is bounded by the compare-and-set
-				// budget, about a second — so a crashed owner's key answers typed-retryable
-				// here until a later call, past the lease, takes the step over.
+				// waiter is bounded by the lease (`bumpWaitMs`), so a live owner's answer is
+				// awaited, and a crashed owner's step is taken over once its lease lapses.
 				await this.#awaitOrTakeOver(normalizeCouponDoc(coupon), { docId, doc, replayed: true });
 			} catch (err) {
 				if (!isStorageContentionError(err)) throw err;

@@ -512,13 +512,23 @@ describeEachDialect("coupon crash seams", (ctx) => {
 		const owner = twin(h, parked.collection).store.redeem(redeemInput("k-live"));
 		await parked.arrived;
 
-		// A short patience so the case does not sit through the whole budget; the LEASE,
-		// not the patience, is what forbids the takeover.
-		const peer = makeCouponHarness(bound.storage, { clock: h.clock, maxCasAttempts: 3 });
+		// A short wait budget so the case does not sit through a whole lease; the LEASE,
+		// not the patience, is what forbids the takeover. The sleep only COUNTS — the
+		// clock never moves — so this also pins that the wait ends on its own budget
+		// rather than on time the clock reports.
+		let waited = 0;
+		const peer = makeCouponHarness(bound.storage, {
+			clock: h.clock,
+			bumpWaitMs: 40,
+			sleep: async (ms) => {
+				waited += ms;
+			},
+		});
 		await expect(peer.store.redeem(redeemInput("k-live"))).rejects.toMatchObject({
 			code: "STORAGE_CONTENTION",
 			retryable: true,
 		});
+		expect(waited).toBe(40);
 		// Nothing was added behind the owner's back.
 		expect((await couponDoc())?.usesCount).toBe(0);
 
@@ -529,6 +539,93 @@ describeEachDialect("coupon crash seams", (ctx) => {
 		const retried = await peer.store.redeem(redeemInput("k-live"));
 		expect(retried.ok).toBe(true);
 		if (retried.ok) expect(retried.replayed).toBe(true);
+		expect((await couponDoc())?.usesCount).toBe(1);
+	});
+
+	/**
+	 * A peer whose backoff sleeps on the shared FIXED clock: every sleep advances it by
+	 * exactly what was asked for, so "how long the waiter waited" is a number the case
+	 * reads back, not wall time. `at` runs once, the first time that much has elapsed.
+	 */
+	function sleepingPeer(h: CouponHarness, at: { ms: number; run: () => Promise<void> } | null) {
+		const elapsed = { ms: 0 };
+		let ran = false;
+		const peer = makeCouponHarness(bound.storage, {
+			clock: h.clock,
+			random: () => 0.5,
+			sleep: async (ms) => {
+				elapsed.ms += ms;
+				h.clock.advance(ms);
+				if (at !== null && !ran && elapsed.ms >= at.ms) {
+					ran = true;
+					await at.run();
+				}
+			},
+		});
+		return { peer, elapsed };
+	}
+
+	test("a same-key waiter outwaits a SLOW live owner (3 s) and returns the owner's answer", async () => {
+		// The owner holds the step for three seconds — far past the old poll budget of
+		// about half a second, far inside its own ten-second lease. The waiter must get
+		// the owner's recorded answer, not a "busy, try again".
+		const h = makeCouponHarness(bound.storage);
+		await h.store.create(coupon({ maxUses: 5 }));
+		const parked = parkCall(
+			bound.collection<CouponDoc>(COUPONS_COLLECTION),
+			onId("c1", isGuardedUpdate),
+		);
+		const owner = twin(h, parked.collection).store.redeem(redeemInput("k-3s"));
+		await parked.arrived;
+
+		const { peer, elapsed } = sleepingPeer(h, {
+			ms: 3_000,
+			run: async () => {
+				parked.release();
+				await owner;
+			},
+		});
+		const waited = await peer.store.redeem(redeemInput("k-3s"));
+		const owned = await owner;
+
+		expect(waited.ok).toBe(true);
+		if (waited.ok) expect(waited.replayed).toBe(true);
+		if (waited.ok && owned.ok) expect(waited.redemptionId).toBe(owned.redemptionId);
+		expect((await couponDoc())?.usesCount).toBe(1);
+		expect(elapsed.ms).toBeGreaterThanOrEqual(3_000);
+		expect(elapsed.ms).toBeLessThan(COUPON_BUMP_LEASE_MS);
+	});
+
+	test("a same-key waiter takes a DEAD owner's step over once its lease lapses, and no later", async () => {
+		// The owner wins the step and never comes back (parked at its heartbeat, before
+		// the counter). The waiter's patience must reach the end of the lease, so the
+		// takeover heals the key inside this one call rather than handing back a
+		// retryable failure — and it must not outlast the lease either.
+		const h = makeCouponHarness(bound.storage);
+		await h.store.create(coupon({ maxUses: 5 }));
+		const docId = couponRedemptionDocId("c1", "k-dead");
+		const parked = parkCall(
+			bound.collection<CouponRedemptionDoc>(COUPON_REDEMPTIONS_COLLECTION),
+			nthCall(2, onId(docId, isUpdateWrite)),
+		);
+		const owner = wrappedTwin(h, COUPON_REDEMPTIONS_COLLECTION, parked.collection).store.redeem(
+			redeemInput("k-dead"),
+		);
+		await parked.arrived;
+		expect((await record("k-dead"))?.state).toBe("bumping");
+
+		const { peer, elapsed } = sleepingPeer(h, null);
+		const taken = await peer.store.redeem(redeemInput("k-dead"));
+		expect(taken.ok).toBe(true);
+		expect((await couponDoc())?.usesCount).toBe(1);
+		expect((await record("k-dead"))?.state).toBe("applied");
+		// Taken over AT the lease's end: not before it (a live owner is never overtaken)
+		// and not after it (the wait is bounded by the lease).
+		expect(elapsed.ms).toBe(COUPON_BUMP_LEASE_MS);
+
+		// The owner wakes into a fenced step and adds nothing.
+		parked.release();
+		expect((await owner).ok).toBe(true);
 		expect((await couponDoc())?.usesCount).toBe(1);
 	});
 
