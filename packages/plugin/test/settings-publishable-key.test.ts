@@ -20,6 +20,7 @@ import {
 	readStripePublishableKey,
 	STRIPE_PUBLISHABLE_KEY_KEY,
 } from "../src/payments/stripe-publishable-key.js";
+import { LOGIN_LINK_URL_KEY } from "../src/storefront/login-link.js";
 import { createPaymentConfigRouteHandler } from "../src/storefront/payment-config-route.js";
 import type { PluginContext } from "../src/types.js";
 import { assertBlockContract } from "./helpers/block-contract.js";
@@ -54,8 +55,10 @@ function makeUnusedStorage(): StorageAccess {
 function makeCtx(
 	seed: Record<string, unknown> = {},
 	options: { kvFails?: boolean; email?: boolean } = {},
-): { ctx: PluginContext; kv: Map<string, unknown> } {
+): { ctx: PluginContext; kv: Map<string, unknown>; failingReads: Set<string> } {
 	const kv = new Map<string, unknown>(Object.entries(seed));
+	// #513: kv keys whose READS fail right now (a blip), toggled by the test.
+	const failingReads = new Set<string>();
 	const ctx: PluginContext = {
 		storage: makeUnusedStorage(),
 		http: { fetch: () => Promise.reject(new Error("no egress in this suite")) },
@@ -64,7 +67,7 @@ function makeCtx(
 			: {}),
 		kv: {
 			async get<T>(k: string): Promise<T | null> {
-				if (options.kvFails === true) throw new Error("kv unavailable");
+				if (options.kvFails === true || failingReads.has(k)) throw new Error("kv unavailable");
 				return kv.has(k) ? (kv.get(k) as T) : null;
 			},
 			async set(k: string, v: unknown): Promise<void> {
@@ -78,7 +81,7 @@ function makeCtx(
 			},
 		},
 	};
-	return { ctx, kv };
+	return { ctx, kv, failingReads };
 }
 
 interface Outcome {
@@ -160,6 +163,90 @@ describe("saving the publishable key", () => {
 	});
 });
 
+/** What the browser submits for the payment-settings form: every field the
+ *  page rendered, with its prefill unless the operator changed it. */
+function submittedFrom(
+	blocks: readonly LooseBlock[],
+	changes: Record<string, string>,
+): Record<string, string> {
+	const form = formFor(blocks, "save-payment-settings");
+	const fields = Array.isArray(form?.fields) ? (form.fields as LooseBlock[]) : [];
+	return Object.fromEntries(
+		fields.map((f) => {
+			const id = String(f.action_id);
+			return [id, changes[id] ?? String(f.initial_value ?? "")] as const;
+		}),
+	);
+}
+
+describe("a failed read never blanks a stored value (#513)", () => {
+	const SIGN_IN = "https://shop.example/account/verify";
+	const NEW_SIGN_IN = "https://shop.example/account/verify-new";
+
+	test("the publishable key read fails, the sign-in URL is saved: the stored key is unchanged", async () => {
+		const { ctx, kv, failingReads } = makeCtx({
+			[STRIPE_SECRET_KEY_KEY]: SK_TEST,
+			[STRIPE_PUBLISHABLE_KEY_KEY]: PK_TEST,
+			[LOGIN_LINK_URL_KEY]: SIGN_IN,
+		});
+		failingReads.add(STRIPE_PUBLISHABLE_KEY_KEY);
+		const page = await invoke(ctx, { type: "page_load" });
+		// The operator is told, rather than shown a blank field that reads as "not set".
+		expect(contextTexts(page.blocks).join("\n")).toContain(
+			"The Stripe publishable key couldn't be loaded",
+		);
+		// Not "no publishable", which would read as unset.
+		expect(paymentsLabel(page.blocks)).toBe(
+			"Payments & email — pk not loaded · no webhook · no email",
+		);
+		assertBlockContract(page.blocks, { screen: "settings", level: "list" });
+
+		failingReads.clear();
+		const saved = await invoke(ctx, {
+			type: "form_submit",
+			action_id: "save-payment-settings",
+			values: submittedFrom(page.blocks, { loginLinkUrl: NEW_SIGN_IN }),
+		});
+		expect(kv.get(LOGIN_LINK_URL_KEY)).toBe(NEW_SIGN_IN);
+		expect(kv.get(STRIPE_PUBLISHABLE_KEY_KEY)).toBe(PK_TEST);
+		expect(saved.toast).toMatchObject({ type: "success" });
+		expect(publishableField(saved.blocks)?.initial_value).toBe(PK_TEST);
+	});
+
+	test("the sign-in URL read fails, the publishable key is saved: the stored URL is unchanged", async () => {
+		const { ctx, kv, failingReads } = makeCtx({ [LOGIN_LINK_URL_KEY]: SIGN_IN });
+		failingReads.add(LOGIN_LINK_URL_KEY);
+		const page = await invoke(ctx, { type: "page_load" });
+		expect(contextTexts(page.blocks).join("\n")).toContain(
+			"The sign-in page address couldn't be loaded",
+		);
+		failingReads.clear();
+		await invoke(ctx, {
+			type: "form_submit",
+			action_id: "save-payment-settings",
+			values: submittedFrom(page.blocks, { stripePublishableKey: PK_LIVE }),
+		});
+		expect(kv.get(STRIPE_PUBLISHABLE_KEY_KEY)).toBe(PK_LIVE);
+		expect(kv.get(LOGIN_LINK_URL_KEY)).toBe(SIGN_IN);
+	});
+
+	test("every read fails: no payment-settings form to save, and the page still renders", async () => {
+		const page = await invoke(makeCtx({}, { kvFails: true }).ctx, { type: "page_load" });
+		expect(formFor(page.blocks, "save-payment-settings")).toBeUndefined();
+		const texts = contextTexts(page.blocks).join("\n");
+		expect(texts).toContain("The Stripe publishable key couldn't be loaded");
+		expect(texts).toContain("The sign-in page address couldn't be loaded");
+	});
+
+	test("a stored empty value is not a failed read: the field is shown, blank", async () => {
+		const page = await invoke(makeCtx({ [STRIPE_PUBLISHABLE_KEY_KEY]: "" }).ctx, {
+			type: "page_load",
+		});
+		expect(publishableField(page.blocks)).toMatchObject({ initial_value: "" });
+		expect(contextTexts(page.blocks).join("\n")).not.toContain("couldn't be loaded");
+	});
+});
+
 describe("what Settings says about card checkout", () => {
 	test.each([
 		[{}, "no Stripe key"],
@@ -173,6 +260,12 @@ describe("what Settings says about card checkout", () => {
 		[
 			{ [STRIPE_SECRET_KEY_KEY]: SK_TEST, [STRIPE_PUBLISHABLE_KEY_KEY]: "not-a-key" },
 			"no publishable",
+		],
+		// #513 nit: a key stored with surrounding whitespace (outside Settings) works at
+		// checkout, which trims; Settings must agree rather than say card payment is off.
+		[
+			{ [STRIPE_SECRET_KEY_KEY]: SK_TEST, [STRIPE_PUBLISHABLE_KEY_KEY]: ` ${PK_TEST}\n` },
+			"Stripe test",
 		],
 	] as const)("%j → %s", async (seed, part) => {
 		const page = await invoke(makeCtx(seed).ctx, { type: "page_load" });
@@ -215,6 +308,14 @@ describe("what Settings says about card checkout", () => {
 			"Payments & email — test/live mixed · webhook set · email set",
 		);
 		expect(paymentsLabel(page.blocks).length).toBeLessThanOrEqual(60);
+	});
+
+	test("a stored key with surrounding whitespace is not called unusable (#513)", async () => {
+		const { ctx } = makeCtx({ [STRIPE_PUBLISHABLE_KEY_KEY]: `  ${PK_LIVE} ` });
+		const page = await invoke(ctx, { type: "page_load" });
+		expect(contextTexts(page.blocks).join("\n")).not.toContain("is not a pk_live_");
+		expect(publishableField(page.blocks)?.initial_value).toBe(PK_LIVE);
+		expect(await readStripePublishableKey(ctx)).toBe(PK_LIVE);
 	});
 
 	test("a stored value that is not a pk_ key is explained, and not used", async () => {

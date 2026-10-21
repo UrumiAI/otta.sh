@@ -101,8 +101,10 @@ export function checkStripePublishableKey(raw: string): SecretShapeCheck {
 	return base;
 }
 
-/** Test or live, from a publishable key's prefix; `undefined` if it is not one. */
+/** Test or live, from a publishable key's prefix; `undefined` if it is not one.
+ *  Trimmed first, as {@link checkStripePublishableKey} is (#513), so Settings and
+ *  the checkout route agree on a value stored with surrounding whitespace. */
 export function stripePublishableKeyMode(value: string): "test" | "live" | undefined {
-	const match = STRIPE_PUBLISHABLE_KEY.exec(value);
+	const match = STRIPE_PUBLISHABLE_KEY.exec(value.trim());
 	return match?.[1] === "test" ? "test" : match?.[1] === "live" ? "live" : undefined;
 }
