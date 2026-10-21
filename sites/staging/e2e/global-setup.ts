@@ -40,6 +40,7 @@ import {
 	assertLoopbackSite,
 	DEFAULT_PAID_ORDERS,
 	E2E_WEBHOOK_SECRET,
+	provisionE2eWebhookSecret,
 	provisionPublishableKey,
 	seedPaidOrders,
 } from "../scripts/seed-e2e-orders.js";
@@ -246,11 +247,15 @@ export default async function globalSetup(): Promise<void> {
 		// seeds, gets the placeholder saved (never over a key already there).
 		if (E2E_SEEDS || E2E_STARTS_STACK) {
 			assertLoopbackSite(E2E_BASE_URL);
-			await provisionPublishableKey({
+			const deps = {
 				siteUrl: E2E_BASE_URL,
 				authHeaders: await cmsAuthHeaders(E2E_BASE_URL),
 				webhookSecret: E2E_WEBHOOK_SECRET,
-			});
+			};
+			await provisionPublishableKey(deps);
+			// #499: the place button needs Stripe fully set up — on this stack, the
+			// offline gateway's webhook secret too.
+			await provisionE2eWebhookSecret(deps);
 		}
 		if (E2E_SEEDS) {
 			// The order seed signs payment webhooks: refuse a non-loopback site here, as

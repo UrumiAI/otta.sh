@@ -41,7 +41,7 @@ import type {
 	ResumeProof,
 } from "../product-commerce/commerce-client.js";
 import { checkoutRequiresBuyerAddress } from "../payments/stripe-account-country.js";
-import type { RouteHandler } from "../types.js";
+import type { PluginContext, RouteHandler } from "../types.js";
 import {
 	buildCartPricing,
 	DEGRADED_CART_PRICING,
@@ -83,6 +83,10 @@ import {
 	type ShippingSelectionReason,
 	type UncalculatedReason,
 } from "./checkout-view-model.js";
+import {
+	cardPaymentsNotReadyLog,
+	readStripeGatewayReadiness,
+} from "../payments/card-payment-readiness.js";
 import { createCommerceLoader, renderGuard, type RenderGuardFailure } from "./pdp-route.js";
 import { storeRegionFacts } from "./store-region-facts.js";
 
@@ -337,6 +341,12 @@ export type CheckoutPlaceRouteResult =
 	 * one. Nothing was minted, adopted or asked of the payment provider.
 	 */
 	| { ok: false; reason: "CHECKOUT_STALE" }
+	/**
+	 * #499: Stripe is not set up on this store — no usable secret key or webhook
+	 * signing secret, so no gateway. Nothing was created; a retry cannot help
+	 * until the operator saves the missing value (the server log names it).
+	 */
+	| { ok: false; reason: "STRIPE_NOT_CONFIGURED" }
 	| RenderGuardFailure;
 
 export type OrderRouteResult =
@@ -699,6 +709,31 @@ function lockedSummary(
 	};
 }
 
+const STRIPE_NOT_CONFIGURED = Symbol("STRIPE_NOT_CONFIGURED");
+
+/**
+ * #499: a create that THREW on a store with no Stripe gateway (a secret missing
+ * or unusable) is the store's "card payment isn't set up", not the guard's
+ * generic "try again" that no retry can fix. The domain refuses a method with no
+ * gateway before it touches the cart, so nothing was created. The operator gets
+ * one log line naming what to save — never a value. Any other throw, or one on a
+ * store whose gateway CAN be armed, propagates to the guard unchanged. Asked only
+ * after a throw, so a healthy place pays no extra kv read.
+ */
+async function placeOrRefuseUnconfigured<T>(
+	ctx: PluginContext,
+	create: () => Promise<T>,
+): Promise<T | typeof STRIPE_NOT_CONFIGURED> {
+	try {
+		return await create();
+	} catch (err) {
+		const gateway = await readStripeGatewayReadiness(ctx).catch(() => undefined);
+		if (gateway === undefined || gateway.ready) throw err;
+		console.error(cardPaymentsNotReadyLog(STOREFRONT_CHECKOUT_PLACE_ROUTE, gateway));
+		return STRIPE_NOT_CONFIGURED;
+	}
+}
+
 /**
  * `POST /checkout/orders` — mints the order, holds stock for the TTL, creates
  * the payment intent. Exactly one upstream call.
@@ -736,22 +771,27 @@ export function createCheckoutPlaceRouteHandler(): RouteHandler<CheckoutPlaceRou
 			}
 
 			const client = await makeCommerceClient(ctx);
-			const result = await client.createOrder(
-				{
-					cartId: input.cartId,
-					paymentMethod: PAYMENT_METHOD,
-					buyerRef: input.buyerRef,
-					...quoteSelection(input.selection),
-					...(input.shippingAddress !== undefined
-						? { shippingAddress: input.shippingAddress }
-						: {}),
-					...(input.billingLocation !== undefined
-						? { billingLocation: input.billingLocation }
-						: {}),
-				},
-				input.idempotencyKey,
-				input.sessionToken !== undefined ? { sessionToken: input.sessionToken } : {},
+			const result = await placeOrRefuseUnconfigured(ctx, () =>
+				client.createOrder(
+					{
+						cartId: input.cartId,
+						paymentMethod: PAYMENT_METHOD,
+						buyerRef: input.buyerRef,
+						...quoteSelection(input.selection),
+						...(input.shippingAddress !== undefined
+							? { shippingAddress: input.shippingAddress }
+							: {}),
+						...(input.billingLocation !== undefined
+							? { billingLocation: input.billingLocation }
+							: {}),
+					},
+					input.idempotencyKey,
+					input.sessionToken !== undefined ? { sessionToken: input.sessionToken } : {},
+				),
 			);
+			if (result === STRIPE_NOT_CONFIGURED) {
+				return { ok: false as const, reason: "STRIPE_NOT_CONFIGURED" as const };
+			}
 			if (!result.ok) {
 				// A same-key PaymentIntent request still in flight (a double-submitted
 				// checkout) is not a failure: the first request is about to land, and

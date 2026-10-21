@@ -84,8 +84,10 @@ const orderRead = await dispatchOttaRoute<OrderRouteResult>(
 const refuseTo = payPageRedirect(orderPath, orderRead, new Date());
 if (refuseTo !== null) return Astro.redirect(refuseTo, 303);
 
-// #498: the publishable key is a Settings value, read per request. A read that
-// failed is busy (503, a reload retries) — never "card payment isn't set up".
+// #498: the publishable key is a Settings value, read per request, and offered
+// only while card payment is fully set up (#499: a Stripe secret removed since
+// the place would leave this payment unconfirmable). A read that failed is busy
+// (503, a reload retries) — never "card payment isn't set up".
 const stripeKey = await readStripePublishableKey(getPublicPluginApiRouteHandler(Astro.locals), Astro.url);
 if (stripeKey.state === "unavailable") return busyResponse("/checkout/pay");
 const stripePublishableKey = stripeKey.state === "configured" ? stripeKey.key : undefined;

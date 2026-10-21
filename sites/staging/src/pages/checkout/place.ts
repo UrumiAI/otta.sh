@@ -455,11 +455,13 @@ async function place(context: APIContext): Promise<Response> {
 			fields: staleMark,
 		});
 	}
-	// No publishable key ⇒ NO ORDER (§1.7). The review page already hides the
-	// button, but this is the server-side half of that promise: creating an
-	// order would hold stock for 15 minutes against a payment that structurally
-	// cannot happen. The key is read per request (#498); a failed read is busy,
-	// answered like a busy place — nothing was created, a reload re-posts.
+	// Card payment not ready ⇒ NO ORDER (§1.7): no publishable key, or a Stripe
+	// secret missing (#499). The review page already hides the button, but this
+	// is the server-side half of that promise: creating an order would hold stock
+	// for 15 minutes against a payment that structurally cannot happen. Read per
+	// request (#498); a failed read is busy, answered like a busy place — nothing
+	// was created, a reload re-posts. The plugin's place route refuses a missing
+	// secret the same way (STRIPE_NOT_CONFIGURED), for a page that raced a change.
 	const stripeKey = await readStripePublishableKey(routeDispatcher(context), context.url);
 	if (stripeKey.state === "unavailable") {
 		writeCheckoutDraft(context.cookies, { values: draftValues, errors: {} });

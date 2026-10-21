@@ -1308,14 +1308,16 @@ describe("storefront/checkout/summary — the zone derived from the destination 
 describe("storefront/checkout/place (workerd sandbox)", () => {
 	/**
 	 * UNCONFIGURED, CONTAINED. This boot provisions no Stripe secrets, so no
-	 * `stripe` gateway is armed (module doc); the domain refuses the method by
-	 * throwing and `renderGuard` collapses that to RENDER_FAILED. Two things
-	 * matter about that and are asserted here: the caller is told nothing about
-	 * the plugin's insides, and — far more importantly — the buyer's cart is not
-	 * damaged on the way out. A refusal that consumed the cart
-	 * or dropped its stock hold would be worse than the missing gateway.
+	 * `stripe` gateway is armed (module doc). Issue #499: the route says so as the
+	 * typed STRIPE_NOT_CONFIGURED — the storefront's "card payment isn't set up",
+	 * not a generic "try again" no retry could fix — once the domain refuses the
+	 * method (it throws before touching the cart).
+	 * Two more things matter and are asserted here: the caller is told nothing
+	 * else about the plugin's insides, and — far more importantly — the buyer's
+	 * cart is not damaged on the way out. A refusal that consumed the cart or
+	 * dropped its stock hold would be worse than the missing gateway.
 	 */
-	test("with no payment gateway wired, place refuses cleanly and leaves the cart and its hold intact", async () => {
+	test("with no payment gateway wired, place refuses STRIPE_NOT_CONFIGURED and leaves the cart and its hold intact", async () => {
 		const cartId = await seedThreeLineCart();
 		const before = resultOf(await sandboxHandle.invokeRoute("storefront/cart/read", { cartId }));
 		const beforeLines = (before["cart"] as { lines: { reservationId: string | null }[] }).lines;
@@ -1328,9 +1330,11 @@ describe("storefront/checkout/place (workerd sandbox)", () => {
 			}),
 		);
 
-		expect(result).toEqual({ ok: false, error: "RENDER_FAILED" });
-		// Nothing about the composition root reaches the caller.
-		expect(JSON.stringify(result)).not.toMatch(/gateway|stripe|storage/i);
+		expect(result).toEqual({ ok: false, reason: "STRIPE_NOT_CONFIGURED" });
+		// Nothing else about the composition root reaches the caller.
+		expect(JSON.stringify(result).replace("STRIPE_NOT_CONFIGURED", "")).not.toMatch(
+			/gateway|stripe|storage|secret/i,
+		);
 
 		const after = resultOf(await sandboxHandle.invokeRoute("storefront/cart/read", { cartId }));
 		const cart = after["cart"] as {
@@ -1586,6 +1590,28 @@ describe("storefront/checkout/place success path (workerd sandbox, Stripe stubbe
 		expect(cart.orderId).toBeNull();
 		expect(cart.lines.map((l) => l.reservationId)).toEqual(heldBefore.map((l) => l.reservationId));
 	}
+
+	test("#499: payment-config is ready only once the publishable key joins both secrets", async () => {
+		const config = async () =>
+			resultOf(await stripeBoot.invokeRoute("storefront/payment-config", {}));
+		// This boot saved both secrets but no publishable key: not ready.
+		expect(await config()).toEqual({
+			ok: true,
+			stripePublishableKey: null,
+			cardPaymentReady: false,
+		});
+		const saved = await stripeBoot.invokeRoute("admin", {
+			type: "form_submit",
+			action_id: "save-payment-settings",
+			values: { stripePublishableKey: "pk_test_sandbox499" },
+		});
+		expect(saved).toHaveProperty("result");
+		expect(await config()).toEqual({
+			ok: true,
+			stripePublishableKey: "pk_test_sandbox499",
+			cardPaymentReady: true,
+		});
+	});
 
 	test("forwards the idempotency key verbatim — one PaymentIntent create per place, a same-key replay returns the SAME order — and stores buyerRef un-rewritten", async () => {
 		const cartId = await seedThreeLineCart();

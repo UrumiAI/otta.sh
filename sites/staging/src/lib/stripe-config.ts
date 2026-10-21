@@ -17,6 +17,13 @@
  *
  * A stored value that is not a `pk_…` key reads as no key (the plugin refuses it
  * on save, and fails closed on read), and Settings says why.
+ *
+ * ── Ready means all three values (#499) ───────────────────────────────────
+ * A key on a store missing the Stripe secret key or webhook signing secret is
+ * `unconfigured` too: the server cannot create or confirm the payment, so
+ * offering the pay step would only fail later with a "try again" no retry can
+ * fix. The plugin says so as `cardPaymentReady`; an answer without it fails
+ * closed. Settings names what is missing.
  */
 import {
 	STOREFRONT_PAYMENT_CONFIG_ROUTE,
@@ -42,7 +49,7 @@ export async function readStripePublishableKey(
 		baseUrl,
 	);
 	if (result === null || !result.ok) return { state: "unavailable" };
-	return result.stripePublishableKey === null
+	return result.stripePublishableKey === null || result.cardPaymentReady !== true
 		? { state: "unconfigured" }
 		: { state: "configured", key: result.stripePublishableKey };
 }

@@ -49,7 +49,7 @@ restart (issue #498; it used to be the build-time `STRIPE_PUBLIC_KEY`).
 | Publishable key | What happens |
 |---|---|
 | a valid `pk_test_…` / `pk_live_…` | full checkout: review → pay → confirmation |
-| **not set** | `/checkout` renders review + totals, says "Card payment isn't set up on this store yet.", and creates **no order** (the endpoint refuses too, not just the button) |
+| **not set** (or a Stripe secret is missing) | `/checkout` renders review + totals, says "Card payment isn't set up on this store yet.", and creates **no order** (the endpoint refuses too, not just the button) |
 | not a `pk_…` key | refused on save in Settings; a value stored some other way reads as **not set**, and Settings says why |
 | the read failed (storage busy) | answered as **busy** (503 / `?error=BUSY`), never as "not set up" |
 
@@ -58,6 +58,37 @@ must not look like a store that takes no cards. Settings also warns when the pub
 key's mode (test/live) differs from the secret key's. A build that still sets
 `STRIPE_PUBLIC_KEY` **fails**, saying where the key goes now. See
 [ADR-0012](../../adr/0012-storefront-checkout-loads-stripe-elements-in-the-browser.md).
+
+Card checkout is offered only when **all three** Stripe values are saved and usable: the
+publishable key, the secret key and the webhook signing secret (issue #499). The Payments &
+email group in Settings starts with one line, "Card payments: ready" or "not ready (missing: …)".
+A place that reaches the server without a gateway is refused the same way, and the server
+log names the missing value.
+
+## Test card payments locally
+
+Stripe can't reach `localhost`, so in local dev no webhook arrives and a paid order stays at
+"Payment submitted.". The Stripe CLI forwards them:
+
+1. Save your Stripe **test** secret key (`sk_test_…`) and publishable key (`pk_test_…`) in
+   **Store settings → General → Payments & email**.
+2. In a second terminal, with the dev server running:
+
+   ```bash
+   stripe listen --events payment_intent.succeeded,payment_intent.payment_failed \
+     --forward-to localhost:4321/webhooks/stripe
+   ```
+
+3. It prints `Your webhook signing secret is whsec_…`. Save **that** value as the Stripe
+   webhook signing secret. A Dashboard endpoint's secret (Developers → Webhooks) doesn't
+   apply here. The CLI keeps the same secret across restarts for the same account.
+4. Settings should now say "Card payments: ready.". Check out with test card
+   `4242 4242 4242 4242`, any future expiry, any CVC and any postal code. The order page
+   says "Order confirmed." once the forwarded `payment_intent.succeeded` lands.
+
+A confirmation missed while `stripe listen` wasn't running can be sent again: take the event id
+(`evt_…`) from the Dashboard (Developers → Events) or the CLI output and run
+`stripe events resend <evt_id>` while `stripe listen` is forwarding.
 
 ## Deploying
 
