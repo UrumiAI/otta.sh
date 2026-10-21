@@ -6,8 +6,8 @@
  * "Not calculated" is not zero. A store with no shipping zone and no tax class
  * gets synthetic zeros out of the quote pipeline, and rendering those as
  * "$0.00" or "Free shipping" would be a promise the store never made. The
- * plugin's view model already refuses to turn them into money — `money: null`
- * plus an honest label — and this component is the half of that contract that
+ * plugin's view model already refuses to turn them into money — a
+ * `not_calculated` state, `money: null` and an honest label — and this component is the half of that contract that
  * shows on screen: a row with no money is set as MUTED MONO PROSE, in a
  * different size and weight from every figure on the page, so it cannot be
  * mistaken for an amount.

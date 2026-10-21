@@ -11,11 +11,15 @@
  * token, the sold-out/in-stock decisions, the idempotency key and the return
  * path. The view receives answers, never inputs.
  *
- * Idempotency: the form forwards the view model's `slots.addToCart`
- * idempotencyKey — minted FRESH by the plugin per rendered PDP (see
- * product-view-model.ts) — so a double-submit of the same rendered form
- * replays in the service instead of duplicating, while a fresh page load
- * mints a new key. The /cart/add endpoint never invents a key.
+ * Idempotency (ADR-0039, issue #37): the form renders the view model's
+ * `slots.addToCart` idempotencyKey — minted FRESH by the plugin per rendered PDP
+ * (see product-view-model.ts) — and this page loads `AddToCartKey.astro`, whose
+ * script replaces it with a new key on every SUBMISSION. A second press adds a
+ * second unit, even from a page the browser handed back from its history cache;
+ * the same submission sent twice in one page life (a double-click, a press while
+ * the first is in flight) keeps its key and replays. The rendered key is the
+ * no-JS fallback: one key per render, so without the script a re-press from a
+ * history-restored page replays. The /cart/add endpoint never invents a key.
  *
  * TWO degraded states, and they are not the same state — the shop page's own
  * distinction, drawn here per product:
@@ -33,6 +37,7 @@ import {
 } from "@urumi.ai/otta-plugin";
 import { getEmDashEntry } from "emdash";
 import { getPublicPluginApiRouteHandler } from "emdash/plugin-utils";
+import AddToCartKey from "../../components/AddToCartKey.astro";
 import Storefront from "../../layouts/Storefront.astro";
 import { cartErrorAction, cartErrorMessage } from "../../lib/error-messages.js";
 import { holdNote } from "../../lib/hold.js";
@@ -219,4 +224,7 @@ const model: ProductModel =
 	title={content?.title ?? (contentUnavailable ? "Product unavailable" : "Product not found")}
 	description={content?.description}
 	currency={product?.price?.currency ?? null}
-/>
+>
+	{/* Only where there is an add-to-cart form for it to key (ADR-0039). */}
+	{purchase !== null && purchase.addToCart !== null && <AddToCartKey slot="head" />}
+</Storefront>

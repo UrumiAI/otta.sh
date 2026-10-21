@@ -56,6 +56,12 @@ export interface CouponHarnessOptions {
 	storageForStore?: StorageAccess;
 	/** Reuse another harness's clock, so a fault-injected twin shares its time. */
 	clock?: FixedClock;
+	/** Override the backoff sleep (a suite can advance its clock instead of waiting). */
+	sleep?: (ms: number) => Promise<void>;
+	/** Override the backoff jitter source. */
+	random?: () => number;
+	/** Override how long a same-key waiter waits for the bump step's owner. */
+	bumpWaitMs?: number;
 }
 
 /** Build a coupon harness over an already-bound `StorageAccess`. */
@@ -71,6 +77,9 @@ export function makeCouponHarness(
 		maxCasAttempts: options.maxCasAttempts,
 		onCasAttempts: options.onCasAttempts,
 		maxListPages: options.maxListPages,
+		sleep: options.sleep,
+		random: options.random,
+		...(options.bumpWaitMs === undefined ? {} : { bumpWaitMs: options.bumpWaitMs }),
 	});
 	// The RAW collections, deliberately unwrapped by any fault injection: a seed is a
 	// fixture, and a test that injected a fault into its own setup would be asserting

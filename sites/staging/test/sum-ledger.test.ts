@@ -30,10 +30,20 @@ beforeAll(async () => {
 });
 
 const money = (formatted: string): CheckoutAmountView => ({
+	state: "calculated",
 	money: { amount: 4000, currency: "USD", formatted },
 	label: formatted,
 });
-const uncomputed = (label: string): CheckoutAmountView => ({ money: null, label });
+const notCalculated = (label: string = NOT_CALCULATED_LABEL): CheckoutAmountView => ({
+	state: "not_calculated",
+	money: null,
+	label,
+});
+const notApplicable = (label: string = NOT_APPLICABLE_LABEL): CheckoutAmountView => ({
+	state: "not_applicable",
+	money: null,
+	label,
+});
 
 /** The text of every "this was not calculated" cell in a rendered block. */
 function uncalculatedCells(html: string): string[] {
@@ -49,9 +59,9 @@ const sum = (props: Record<string, unknown>): Promise<string> =>
 const UNCONFIGURED = {
 	rows: [
 		{ label: "Subtotal", amount: money("$40.00") },
-		{ label: "Discount", amount: uncomputed(NOT_APPLICABLE_LABEL), fallback: "No coupon applied" },
-		{ label: "Shipping", amount: uncomputed(NOT_CALCULATED_LABEL) },
-		{ label: "Tax", amount: uncomputed(NOT_CALCULATED_LABEL) },
+		{ label: "Discount", amount: notApplicable(), fallback: "No coupon applied" },
+		{ label: "Shipping", amount: notCalculated() },
+		{ label: "Tax", amount: notCalculated() },
 	],
 	total: money("$40.00"),
 	excludesUncalculated: true,
@@ -79,7 +89,7 @@ describe("Sum — 'Not calculated' is not zero (§7)", () => {
 		const html = await sum({
 			rows: [
 				{ label: "Subtotal", amount: money("$40.00") },
-				{ label: "Discount", amount: uncomputed(NOT_APPLICABLE_LABEL) },
+				{ label: "Discount", amount: notApplicable() },
 			],
 			total: money("$40.00"),
 		});
@@ -150,8 +160,8 @@ describe("Sum — the total line", () => {
 
 	test("a total that could not be calculated is prose too, not a zero", async () => {
 		const html = await sum({
-			rows: [{ label: "Subtotal", amount: uncomputed(NOT_CALCULATED_LABEL) }],
-			total: uncomputed(NOT_CALCULATED_LABEL),
+			rows: [{ label: "Subtotal", amount: notCalculated() }],
+			total: notCalculated(),
 		});
 		expect(html).not.toContain("0.00");
 		expect(html).toContain("Not calculated");
@@ -254,9 +264,7 @@ describe("Ledger — a bare em dash never reaches the money column either (§7)"
 		// One rule in one place. A second implementation is a second thing to
 		// forget.
 		const html = await ledger({ rows: [{ sku: "X", qty: 1, money: UNAVAILABLE_LABEL }] });
-		expect(html).toContain(
-			sumRowText({ label: "Discount", amount: uncomputed(NOT_APPLICABLE_LABEL) }),
-		);
+		expect(html).toContain(sumRowText({ label: "Discount", amount: notApplicable() }));
 	});
 
 	test("a page with something better to say says it instead", async () => {

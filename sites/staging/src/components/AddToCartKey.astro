@@ -1,0 +1,17 @@
+---
+/**
+ * The product page's ONE client script (ADR-0039, which amends ADR-0012's fence
+ * and ADR-0034's "last exception"): a fresh idempotency key per add-to-cart
+ * SUBMISSION, so a second press adds a second unit instead of replaying the
+ * first (issue #37). An EXTERNAL, first-party file
+ * (`public/scripts/add-to-cart-key.js`) — no inline code, no framework — and
+ * pure progressive enhancement: without it the form posts the key the server
+ * rendered, which is the no-JS behaviour ADR-0039 records.
+ *
+ * Script only, no markup, rendered by the PAGE (`products/[slug].astro`) and
+ * never by a theme view — a view is reached from every page through the theme
+ * registry. `checkout-client-js.test.ts` names exactly this pair.
+ */
+---
+
+<script is:inline type="module" src="/scripts/add-to-cart-key.js"></script>

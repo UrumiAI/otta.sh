@@ -26,6 +26,7 @@ import StockRule from "../../src/components/StockRule.astro";
 import Sum from "../../src/components/Sum.astro";
 
 const money = (formatted: string): CheckoutAmountView => ({
+	state: "calculated",
 	money: { amount: 4000, currency: "USD", formatted },
 	label: formatted,
 });
