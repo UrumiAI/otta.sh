@@ -72,6 +72,10 @@ export default defineConfig({
 	 * `deps.dts.neverBundle` applies only to imports made FROM a declaration file,
 	 * so the JS bundle above is unchanged. `test/bundle-imports.test.ts` asserts
 	 * both outcomes on the emitted files.
+	 *
+	 * The plugin declares no `@types/node` of its own: the root's copy serves it.
+	 * Adding it here back makes pnpm resolve a second `emdash` (now a peer), which
+	 * `sites/staging/test/host-pin.test.ts` refuses.
 	 */
 	deps: {
 		dts: {

@@ -1,6 +1,6 @@
 {
 	"name": "@urumi.ai/otta-payments-stripe",
-	"version": "0.1.0",
+	"version": "0.1.1",
 	"description": "Stripe PaymentGateway adapter for Otta — async-webhook confirmation with raw-body HMAC verification. In Otta the keys are entered on the admin Store settings page (General tab) and stored encrypted at rest.",
 	"homepage": "https://github.com/UrumiAI/otta.sh#readme",
 	"bugs": {
