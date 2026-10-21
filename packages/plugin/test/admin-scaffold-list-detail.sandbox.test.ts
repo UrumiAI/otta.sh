@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import {
 	backButton,
+	carrierNamespace,
 	decodeCarrier,
 	decodeListCursor,
 	decodePath,
@@ -503,38 +504,41 @@ describe("scaffold carrier: hidden context in `block_id` — workerd sandbox", (
 			(b) =>
 				b.type === "form" && (b.submit as { action_id?: string })?.action_id === "geo:apply-filter",
 		);
-		// Two TOP-LEVEL filter forms at this level: the plain one (engine-injected
-		// visible carrier — asserted above) and the carrier-bearing one, which must
-		// render with NO visible path field at all. (Three more are nested inside the
-		// accordion / columns / tab containers, asserted below.)
-		expect(forms).toHaveLength(2);
-		const carried = forms.find((f) => typeof f.block_id === "string");
+		// Three TOP-LEVEL filter forms at this level: the plain one (engine-injected
+		// visible carrier — asserted above), the carrier-bearing one, which must
+		// render with NO visible path field at all, and the `filterPanel` one
+		// (asserted below). (Two more are nested inside the columns / tab
+		// containers, asserted below.)
+		expect(forms).toHaveLength(3);
+		const carried = forms.find((f) => carrierNamespace(f.block_id) === "geo:city-filter");
 		expect(carried).toBeDefined();
 		expect(decodeCarrier(carried?.block_id)?.["__path"]).toBe(encodePath(["c1"]));
 		const fields = (carried?.fields ?? []) as Array<{ action_id?: string }>;
 		expect(fields.some((f) => f.action_id === "__path")).toBe(false);
 	});
 
-	test("the path-carry injection reaches a filter form COLLAPSED inside an accordion", async () => {
-		// Collapsing a deep filter form (the density fix) must not cost it the drill
-		// path: the engine's guarantee looks inside layout containers.
+	test("the path-carry injection reaches a filter form rendered by `filterPanel` (always inline)", async () => {
+		// A multi-field filter is never collapsed behind a dropdown, and it must not
+		// cost the form the drill path: the engine's guarantee reaches it.
 		const cities = await invoke({
 			type: "form_submit",
 			action_id: "geo:open",
 			values: { target: encodePath(["c1"]) },
 		});
-		const accordion = blocksOf(cities).find((b) => b.type === "accordion");
-		expect(accordion?.label).toBe("Filters");
-		const nested = ((accordion?.blocks ?? []) as Blk[]).find((b) => b.type === "form");
-		const fields = (nested?.fields ?? []) as Array<{ action_id?: string; initial_value?: string }>;
-		const injected = fields.find((f) => f.action_id === "__path");
+		expect(blocksOf(cities).some((b) => b.type === "accordion" && b.label === "Filters")).toBe(
+			false,
+		);
+		const panelForm = blocksOf(cities).find(
+			(b) => b.type === "form" && carrierNamespace(b.block_id) === "geo:city-filter-collapsed",
+		);
+		const injected = pathFieldOf(panelForm);
 		expect(injected).toBeDefined();
-		expect(decodePath(injected?.initial_value ?? "")).toEqual(["c1"]);
+		expect(decodePath(injected ?? "")).toEqual(["c1"]);
 		// And submitting it re-filters the DEEP level, not the root.
 		const filtered = await invoke({
 			type: "form_submit",
 			action_id: "geo:apply-filter",
-			values: { q: "T", __path: injected?.initial_value },
+			values: { q: "T", __path: injected },
 		});
 		expect(headerText(filtered)).toBe("Cities of c1");
 	});
@@ -580,7 +584,7 @@ describe("scaffold carrier: hidden context in `block_id` — workerd sandbox", (
 				b.type === "form" && (b.submit as { action_id?: string })?.action_id === "geo:apply-filter",
 		);
 		// The correctly-carried form is the one that renders WITHOUT the field.
-		const correct = forms.find((f) => typeof f.block_id === "string");
+		const correct = forms.find((f) => carrierNamespace(f.block_id) === "geo:city-filter");
 		expect(pathFieldOf(correct)).toBeUndefined();
 
 		// Now simulate the copy-paste mistake directly against the engine: a submit

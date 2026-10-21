@@ -156,9 +156,12 @@ describe("the up-front warning on Settings", () => {
 		expect(description).toContain("wrangler secret put EMDASH_ENCRYPTION_KEY");
 		expect(description).toContain(".env locally");
 		expect(description).toContain("DEPLOYMENT.md §3");
-		// Before the groups, so it is seen without opening one.
-		const accordion = page.blocks.findIndex((b) => b.type === "accordion");
-		expect(page.blocks.indexOf(banner as LooseBlock)).toBeLessThan(accordion);
+		// Before the sections, so it is seen above the forms it is about.
+		const firstSection = page.blocks.findIndex(
+			(b) => b.type === "header" && b.block_id === "settings:store",
+		);
+		expect(firstSection).toBeGreaterThan(0);
+		expect(page.blocks.indexOf(banner as LooseBlock)).toBeLessThan(firstSection);
 		assertBlockContract(page.blocks, { screen: "settings", level: "list" });
 	});
 

@@ -10,7 +10,6 @@ import {
 import { formatMoney } from "../presentation/format-money.js";
 import { cents as toCents, currency as toCurrency } from "../presentation/money.js";
 import type {
-	AccordionBlock,
 	ActionsBlock,
 	AdminPageConfig,
 	BannerBlock,
@@ -58,6 +57,9 @@ import {
 	readBoolean,
 	readString,
 	screenActions,
+	fit,
+	section,
+	valueLabel,
 	type ListDetailInput,
 	type NavPath,
 	type Notice,
@@ -73,8 +75,9 @@ import {
  * `scaffold/testing/geo-screen.ts`, is what proved the N-level nav core works
  * before any real screen needed it).
  *
- * L-9: the zones and methods levels render as a per-row `accordion` list
- * (edit form + "View …" drill-in button + delete, all collapsed) ONLY when
+ * L-9: the zones and methods levels render as a per-row `section` list (a
+ * heading, then edit form + "View …" drill-in button + delete, always open —
+ * EmDash's own pattern, no collapsed dropdowns) ONLY when
  * the fetched page is complete (`nextCursor === null`) AND `items.length <=
  * 25` — otherwise a `table` + a standalone `combobox` drill-in form (L-7),
  * with editing moving to the next level's list. Both branches ship; the
@@ -85,8 +88,8 @@ import {
  *
  * L-9a: the RATES level is EXEMPT. A rate's identity is `(methodId,
  * currency)` and the service exposes only a single-currency `GET
- * .../rates?currency=` read — a 0-or-1-row lookup, never a true list — so one
- * accordion wrapping one row would cost a click and save nothing. It keeps
+ * .../rates?currency=` read — a 0-or-1-row lookup, never a true list — so a
+ * per-row section around one row would add a heading and say nothing. It keeps
  * its existing inline `fields` + edit-or-create form shape.
  *
  * REGIONS ARE ISO CODES (ADR-0021). Checkout DERIVES the buyer's shipping/tax
@@ -123,7 +126,7 @@ import {
  * levels down. Unlike a rate COUNT (which nothing can price against), the
  * amount IS the screen's subject, so it is fetched — bounded and honestly:
  *
- *   - ONE `getRate` per method, in parallel, and ONLY on the L-9 accordion
+ *   - ONE `getRate` per method, in parallel, and ONLY on the L-9 section
  *     branch, so the fan-out can never exceed 25 (past that the level renders
  *     the table branch, which shows no price and fires no rate reads at all).
  *   - Each lookup is SECONDARY and independently contained: a failed one
@@ -352,9 +355,9 @@ const BAD_CURRENCY_NOTICE: Notice = {
  *  `combobox` option value must never be the empty string). */
 const NONE = "none";
 
-/** A registry level renders as a per-row accordion list (L-9) only when the
+/** A registry level renders as a per-row section list (L-9) only when the
  *  fetched page is complete and small; otherwise table + drill-in. */
-function isRegistryAccordion(nextToken: string | undefined, itemCount: number): boolean {
+function isRegistrySectionList(nextToken: string | undefined, itemCount: number): boolean {
 	return nextToken === undefined && itemCount <= 25;
 }
 
@@ -486,8 +489,8 @@ function zonesBlocks(
 		return blocks;
 	}
 
-	if (isRegistryAccordion(nextToken, zones.length)) {
-		for (const zone of zones) blocks.push(zoneAccordion(zone, zones.length === 1));
+	if (isRegistrySectionList(nextToken, zones.length)) {
+		for (const zone of zones) blocks.push(...zoneSection(zone, zones.length === 1));
 	} else {
 		blocks.push(zonesFallbackTable(zones));
 		blocks.push(openZoneForm(zones));
@@ -522,20 +525,23 @@ function createActionBlock(
 	};
 }
 
-/** One zone's per-row group (L-9): edit form, the "View methods" drill-in
- *  (§12.7), and delete — all collapsed (L-9's own "zero open groups" rule). */
-function zoneAccordion(zone: ShippingZoneWire, onlyZone: boolean): AccordionBlock {
-	return {
-		type: "accordion",
-		label: `${zone.id} — ${zone.name}`,
-		default_open: false,
-		// A PLAIN key, not a minted carrier: this accordion never echoes
-		// `block_id` back (only `form`/`table` do — B-1), so there is nothing to
-		// decode. `zone.id` is the zone's own unique id, safe to interpolate
-		// directly — unlike `encodeCarrier`'s NAMESPACE argument, which must stay
-		// a constant literal (CLAUDE.md's carrier-namespace trap), a plain key is
-		// just a string with no grammar to violate.
-		block_id: `ship:zone:${zone.id}`,
+/** One zone's per-row section (L-9): edit form, the "View methods" drill-in
+ *  (§12.7), and delete — always open, like every group on this screen. */
+function zoneSection(zone: ShippingZoneWire, onlyZone: boolean): Block[] {
+	const fullTitle = `${zone.id} — ${zone.name}`;
+	const title = valueLabel(zone.id, [zone.name]);
+	return section({
+		title,
+		// The heading is fitted to the 60-char budget; the edit form below carries
+		// the name in full, and a shortened heading also says it in full here.
+		...(title === fullTitle ? {} : { note: fit(fullTitle, 200) }),
+		// A PLAIN key, not a minted carrier: a heading never echoes `block_id`
+		// back (only `form`/`table` do — B-1), so there is nothing to decode.
+		// `zone.id` is the zone's own unique id, safe to interpolate directly —
+		// unlike `encodeCarrier`'s NAMESPACE argument, which must stay a constant
+		// literal (CLAUDE.md's carrier-namespace trap), a plain key is just a
+		// string with no grammar to violate.
+		blockId: `ship:zone:${zone.id}`,
 		blocks: [
 			{ type: "context", text: zoneMatchSummary(zone.regions) },
 			editZoneForm(zone),
@@ -554,7 +560,7 @@ function zoneAccordion(zone: ShippingZoneWire, onlyZone: boolean): AccordionBloc
 			},
 			deleteZoneActions(zone, onlyZone),
 		],
-	};
+	});
 }
 
 /** Full-replace edit (LWW, no CAS — a zone carries no money): the form always
@@ -585,7 +591,7 @@ function editZoneForm(zone: ShippingZoneWire): FormBlock {
 				},
 			],
 			// A verb phrase naming the result, no id (M-7) — the enclosing
-			// accordion's label already names the zone.
+			// section's heading already names the zone.
 			submit: { label: "Save zone", action_id: ACTION_SAVE_ZONE },
 		},
 	});
@@ -602,7 +608,7 @@ function deleteZoneActions(zone: ShippingZoneWire, onlyZone: boolean): ActionsBl
 	const button: ButtonElement = {
 		type: "button",
 		action_id: ACTION_DELETE_ZONE,
-		label: "Delete zone", // no id (M-7) — the accordion label already names it
+		label: "Delete zone", // no id (M-7) — the section heading already names it
 		style: "danger",
 		value: { zoneId: zone.id },
 		confirm: {
@@ -744,7 +750,7 @@ function zonesFallbackTable(zones: ShippingZoneWire[]): TableBlock {
 }
 
 /** L-7's standalone drill-in, used only by the fallback branch (the
- *  accordion branch uses the per-row "View methods" button instead — §12.7).
+ *  section branch uses the per-row "View methods" button instead — §12.7).
  *  ALWAYS a `combobox`: the option value is an opaque encoded path, and a
  *  `select` would render that in its trigger (R-17a, X-22). The label is the
  *  zone's name plus its regions as a disambiguator — never the id (M-7). */
@@ -882,7 +888,7 @@ async function pricedMethods(
 	// This level's `fetchPage` always returns `nextCursor: null` (the registry
 	// has no service-side paging), so the branch is decided by row count alone
 	// and can be asked here, before `render` asks it again for real.
-	if (filter.invalid || !isRegistryAccordion(undefined, methods.length)) {
+	if (filter.invalid || !isRegistrySectionList(undefined, methods.length)) {
 		return methods.map((method) => ({ ...method, price: { kind: "not-priced" } }));
 	}
 	return Promise.all(
@@ -923,7 +929,7 @@ async function methodPrice(
  * configuration is complete — the same false absence this module refuses to
  * render as `Free`. Scoping it in the row instead ("No rate set for this
  * currency") reads better in isolation and was tried first: it makes a
- * realistic label 63 characters against X-11's 60-char accordion budget, and
+ * realistic heading 63 characters against X-11's 60-char section-heading budget, and
  * the budget is the older constraint. So the qualifier lives once in the
  * context line, with the currency it qualifies — which is also where G1 wants
  * the currency named, rather than as an ISO code per row.
@@ -966,8 +972,8 @@ function methodsBlocks(
 	// The context line is where this level states its currency — ONCE, for the
 	// whole list (G1), never repeated as an ISO code per row. It claims a
 	// currency only when rows were actually priced in it.
-	const accordionBranch = isRegistryAccordion(nextToken, methods.length);
-	const pricesShown = accordionBranch && methods.length > 0 && !filter.invalid;
+	const sectionBranch = isRegistrySectionList(nextToken, methods.length);
+	const pricesShown = sectionBranch && methods.length > 0 && !filter.invalid;
 	if (renderState?.kind === "new-method") {
 		return newMethodScreen(zoneId, renderState.draft, notice);
 	}
@@ -1014,13 +1020,13 @@ function methodsBlocks(
 		return blocks;
 	}
 
-	if (accordionBranch) {
-		// L-2: one filter field renders INLINE, no accordion. It is the price
+	if (sectionBranch) {
+		// L-2: one filter field renders INLINE. It is the price
 		// column's currency, so it ships with the priced branch and not with the
 		// table branch, which prices nothing. It renders on a REJECTED currency
 		// too — that is the field the operator has to fix.
 		blocks.push(methodCurrencyForm(zoneId, filter));
-		for (const method of methods) blocks.push(methodAccordion(zoneId, method));
+		for (const method of methods) blocks.push(...methodSection(zoneId, method));
 	} else {
 		blocks.push(methodsFallbackTable(methods));
 		blocks.push(openMethodForm(zoneId, methods));
@@ -1076,12 +1082,19 @@ function methodTypeLabel(type: string): string {
  * (the slug, which varies in length, moves to second position — in FULL: a
  * method id is a readable natural key, not an opaque uuid).
  */
-function methodAccordion(zoneId: string, method: MethodRow): AccordionBlock {
-	return {
-		type: "accordion",
-		label: `${methodPriceLabel(method.price)} — ${method.name} · ${method.id} · ${methodTypeLabel(method.type)}${method.taxable === false ? " · not taxed" : ""}`,
-		default_open: false,
-		block_id: `ship:method:${zoneId}:${method.id}`,
+function methodSection(zoneId: string, method: MethodRow): Block[] {
+	const price = methodPriceLabel(method.price);
+	const rest = [
+		method.name,
+		method.id,
+		methodTypeLabel(method.type) + (method.taxable === false ? " · not taxed" : ""),
+	];
+	const fullTitle = `${price} — ${rest.join(" · ")}`;
+	const title = valueLabel(price, rest);
+	return section({
+		title,
+		...(title === fullTitle ? {} : { note: fit(fullTitle, 200) }),
+		blockId: `ship:method:${zoneId}:${method.id}`,
 		blocks: [
 			editMethodForm(zoneId, method),
 			{
@@ -1097,7 +1110,7 @@ function methodAccordion(zoneId: string, method: MethodRow): AccordionBlock {
 			},
 			deleteMethodActions(zoneId, method),
 		],
-	};
+	});
 }
 
 /**
@@ -1293,7 +1306,7 @@ function methodsFailClosed() {
 	});
 }
 
-// -- level 2: a method's rates (currency-keyed, L-9a EXEMPT from the accordion list) --
+// -- level 2: a method's rates (currency-keyed, L-9a EXEMPT from the section list) --
 
 function ratesLevel() {
 	return listLevel<AdminRulesSurface, RatesFilterForm, ShippingRateWire>({

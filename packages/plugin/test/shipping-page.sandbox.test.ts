@@ -23,9 +23,9 @@ import {
 	findBlock,
 	findBlocks,
 	formFor,
-	group,
-	groupBlocks,
-	openGroupIds,
+	sectionHeading,
+	sectionBlocks,
+	sectionIds,
 	tableRows,
 	valueOf,
 	type LooseBlock,
@@ -36,7 +36,7 @@ import { storageBridge } from "./sandbox/storage-bridge.js";
 
 // The admin Shipping console under the REAL workerd-on-Node sandbox (design
 // spec §12.4 — the deepest of the seven admin screens). Zones and methods
-// render as a per-row `accordion` list (L-9) when the fetched page is
+// render as a per-row `section` list (L-9) when the fetched page is
 // complete and small (<=25 rows); otherwise a `table` + a standalone
 // `combobox` drill-in (L-7 fallback). Rates is EXEMPT (L-9a) and keeps its
 // existing `fields`-based 0-or-1-row lookup. This suite drives all three
@@ -276,28 +276,27 @@ function formInitialValues(
 	return out;
 }
 
-describe("admin Shipping console — zones level, accordion branch (workerd sandbox)", () => {
-	test("page_load /shipping renders one per-row accordion per zone, all collapsed (L-9), off the plugin's own store", async () => {
+describe("admin Shipping console — zones level, section branch (workerd sandbox)", () => {
+	test("page_load /shipping renders one per-row section per zone, all open (L-9), off the plugin's own store", async () => {
 		await seedShipping();
 		const blocks = await loadZones();
 		expect(blocks.some((b) => b.type === "header" && b.text === "Shipping zones")).toBe(true);
 		expect(findBlocks(blocks, "divider")).toHaveLength(0); // R-4/X-6
 
-		const usGroup = group(blocks, "ship:zone:us");
-		expect(usGroup?.label).toBe("us — United States");
-		const emptyGroup = group(blocks, "ship:zone:empty");
-		expect(emptyGroup?.label).toBe("empty — Empty zone");
-		// L-9: every per-row accordion is collapsed — a registry level renders
-		// with ZERO open groups.
-		expect(openGroupIds(blocks)).toHaveLength(0);
+		const usGroup = sectionHeading(blocks, "ship:zone:us");
+		expect(usGroup?.text).toBe("us — United States");
+		const emptyGroup = sectionHeading(blocks, "ship:zone:empty");
+		expect(emptyGroup?.text).toBe("empty — Empty zone");
+		// Every row is an always-open section — nothing behind a dropdown.
+		expect(findBlocks(blocks, "accordion")).toEqual([]);
 	});
 
 	test("a zone's regions render honestly in the row's edit form (array joins, null renders blank)", async () => {
 		await seedShipping();
 		const blocks = await loadZones();
-		const usForm = formFor(groupBlocks(blocks, "ship:zone:us"), "shipping:save-zone");
+		const usForm = formFor(sectionBlocks(blocks, "ship:zone:us"), "shipping:save-zone");
 		expect(field(usForm, "regions")?.initial_value).toBe("US");
-		const emptyForm = formFor(groupBlocks(blocks, "ship:zone:empty"), "shipping:save-zone");
+		const emptyForm = formFor(sectionBlocks(blocks, "ship:zone:empty"), "shipping:save-zone");
 		expect(field(emptyForm, "regions")?.initial_value).toBe("");
 	});
 
@@ -313,7 +312,7 @@ describe("admin Shipping console — zones level, accordion branch (workerd sand
 
 	test("the row edit form's block_id carries the zoneId invisibly — no visible carrier field, no id in the field label", async () => {
 		await seedShipping();
-		const usForm = formFor(groupBlocks(await loadZones(), "ship:zone:us"), "shipping:save-zone");
+		const usForm = formFor(sectionBlocks(await loadZones(), "ship:zone:us"), "shipping:save-zone");
 		expect(fieldIds(usForm)).toEqual(["name", "regions"]); // no "zoneId" field (F-2, F-3)
 		expect(String(field(usForm, "name")?.label)).toBe("Name"); // no id in the label (M-7)
 		expect(carriedContext(usForm?.block_id)?.zoneId).toBe("us");
@@ -321,7 +320,7 @@ describe("admin Shipping console — zones level, accordion branch (workerd sand
 
 	test("save-zone applies the full-replace edit (reading the carried zoneId, not a visible field) and reloads with a 'saved' notice", async () => {
 		await seedShipping();
-		const usForm = formFor(groupBlocks(await loadZones(), "ship:zone:us"), "shipping:save-zone");
+		const usForm = formFor(sectionBlocks(await loadZones(), "ship:zone:us"), "shipping:save-zone");
 		const blocks = await submitForm(
 			"shipping:save-zone",
 			{ name: "USA", regions: "US, PR" },
@@ -341,7 +340,7 @@ describe("admin Shipping console — zones level, accordion branch (workerd sand
 
 	test("the row's 'View methods' button carries the FULL target path in value.target, never a bare id (§12.7)", async () => {
 		await seedShipping();
-		const rowButtons = buttons(groupBlocks(await loadZones(), "ship:zone:us"));
+		const rowButtons = buttons(sectionBlocks(await loadZones(), "ship:zone:us"));
 		const view = rowButtons.find((b) => b.action_id === "shipping:open");
 		expect(view?.label).toBe("View methods");
 		expect(decodePath(String(valueOf(view).target))).toEqual(["us"]);
@@ -349,7 +348,7 @@ describe("admin Shipping console — zones level, accordion branch (workerd sand
 
 	test("opening a zone via the row BUTTON drills to its methods (button carries no block_id — only value)", async () => {
 		await seedShipping();
-		const view = buttons(groupBlocks(await loadZones(), "ship:zone:us")).find(
+		const view = buttons(sectionBlocks(await loadZones(), "ship:zone:us")).find(
 			(b) => b.action_id === "shipping:open",
 		);
 		const blocks = await clickButton("shipping:open", valueOf(view));
@@ -360,7 +359,7 @@ describe("admin Shipping console — zones level, accordion branch (workerd sand
 
 	test("deleting a zone is unconditional (DA-2) — a forbid-if-methods conflict is reported by the post-attempt banner", async () => {
 		await seedShipping();
-		const del = buttons(groupBlocks(await loadZones(), "ship:zone:us")).find(
+		const del = buttons(sectionBlocks(await loadZones(), "ship:zone:us")).find(
 			(b) => b.action_id === "shipping:delete-zone",
 		);
 		expect(del?.label).toBe("Delete zone"); // no id in the button label (M-7)
@@ -374,7 +373,7 @@ describe("admin Shipping console — zones level, accordion branch (workerd sand
 
 	test("deleting a zone with no methods removes it and reloads with a 'deleted' notice; a repeat delete is idempotent", async () => {
 		await seedShipping();
-		const del = buttons(groupBlocks(await loadZones(), "ship:zone:empty")).find(
+		const del = buttons(sectionBlocks(await loadZones(), "ship:zone:empty")).find(
 			(b) => b.action_id === "shipping:delete-zone",
 		);
 		const first = await clickButton("shipping:delete-zone", valueOf(del));
@@ -382,7 +381,7 @@ describe("admin Shipping console — zones level, accordion branch (workerd sand
 		const firstBanner = bannerOf(first);
 		expect(firstBanner?.variant).toBe("default");
 		expect(String(firstBanner?.title)).toContain("deleted");
-		expect(group(first, "ship:zone:empty")).toBeUndefined();
+		expect(sectionHeading(first, "ship:zone:empty")).toBeUndefined();
 
 		const second = await clickButton("shipping:delete-zone", valueOf(del));
 		const secondBanner = bannerOf(second);
@@ -413,7 +412,7 @@ describe("admin Shipping console — zones level, accordion branch (workerd sand
 		const banner = bannerOf(blocks);
 		expect(banner?.variant).toBe("default");
 		expect(String(banner?.title)).toContain("created");
-		expect(group(blocks, "ship:zone:eu")).toBeDefined();
+		expect(sectionHeading(blocks, "ship:zone:eu")).toBeDefined();
 	});
 
 	test("a blank regions input creates a zone with regions=null (an explicit 'none', not a garbled string)", async () => {
@@ -504,26 +503,24 @@ describe("admin Shipping console — zones level, accordion branch (workerd sand
 		expect(blocks.findIndex((b) => b.type === "actions")).toBeLessThan(firstRow);
 		// L-8's bottom create group is gone, in either block_id, and no create
 		// form renders on the registry at all.
-		expect(group(blocks, "ship:new-zone")).toBeUndefined();
-		expect(group(blocks, "ship:new-zone:open")).toBeUndefined();
+		expect(sectionHeading(blocks, "ship:new-zone")).toBeUndefined();
+		expect(sectionHeading(blocks, "ship:new-zone:open")).toBeUndefined();
 		expect(formFor(blocks, "shipping:create-zone")).toBeUndefined();
-		expect(openGroupIds(blocks)).toHaveLength(0); // X-18
+		expect(findBlocks(blocks, "accordion")).toEqual([]); // nothing behind a dropdown
 	});
 
 	test("INC-14: the New shipping zone screen is a drill-in whose back control returns to the registry", async () => {
 		await seedShipping();
 		const screen = await openNewZoneScreen();
 		expect(screen.some((b) => b.type === "header" && b.text === "New shipping zone")).toBe(true);
-		expect(
-			findBlocks(screen, "accordion").filter((a) => String(a.block_id).startsWith("ship:zone:")),
-		).toHaveLength(0);
+		expect(sectionIds(screen).filter((id) => id.startsWith("ship:zone:"))).toHaveLength(0);
 		expect(fieldIds(formFor(screen, "shipping:create-zone"))).toEqual(["id", "name", "regions"]);
 
 		const back = buttons(screen).find((b) => b.action_id === "shipping:cancel-new");
 		expect(String(back?.label)).toMatch(/back to shipping zones/i);
 		const list = await clickButton("shipping:cancel-new", valueOf(back));
 		expect(list.some((b) => b.type === "header" && b.text === "Shipping zones")).toBe(true);
-		expect(group(list, "ship:zone:us")).toBeDefined();
+		expect(sectionHeading(list, "ship:zone:us")).toBeDefined();
 	});
 
 	// THE PROPERTY THIS INCREMENT MUST NOT LOSE: a refusal never costs the
@@ -631,14 +628,14 @@ describe("admin Shipping console — the first zone turns on address matching (A
 			methods: [],
 			rates: [],
 		});
-		const only = buttons(groupBlocks(await loadZones(), "ship:zone:jp")).find(
+		const only = buttons(sectionBlocks(await loadZones(), "ship:zone:jp")).find(
 			(b) => b.action_id === "shipping:delete-zone",
 		);
 		expect(String(confirmOf(only).text)).toMatch(/only zone.*ship.*anywhere again/i);
 		expect(String(confirmOf(only).text).length).toBeLessThanOrEqual(200);
 
 		await seedShipping();
-		const oneOfTwo = buttons(groupBlocks(await loadZones(), "ship:zone:us")).find(
+		const oneOfTwo = buttons(sectionBlocks(await loadZones(), "ship:zone:us")).find(
 			(b) => b.action_id === "shipping:delete-zone",
 		);
 		expect(String(confirmOf(oneOfTwo).text)).not.toMatch(/anywhere again/i);
@@ -656,9 +653,7 @@ describe("admin Shipping console — zones level, zero-row empty state (E-2)", (
 	test("zero zones renders the `empty` block (not the row list) with a create action in empty.actions", async () => {
 		await seedShipping({ zones: [], methods: [], rates: [] });
 		const blocks = await loadZones();
-		expect(
-			findBlocks(blocks, "accordion").some((a) => String(a.block_id).startsWith("ship:zone:")),
-		).toBe(false);
+		expect(sectionIds(blocks).some((id) => id.startsWith("ship:zone:"))).toBe(false);
 		const empty = findBlock(blocks, "empty");
 		expect(empty?.title).toBe("No shipping zones yet");
 		const action = emptyActions(blocks)[0];
@@ -673,7 +668,7 @@ describe("admin Shipping console — zones level, zero-row empty state (E-2)", (
 		const blocks = await clickButton("shipping:open-create-zone", valueOf(action));
 		expect(blocks.some((b) => b.type === "header" && b.text === "New shipping zone")).toBe(true);
 		expect(formFor(blocks, "shipping:create-zone")).toBeDefined();
-		expect(openGroupIds(blocks)).toHaveLength(0); // X-18
+		expect(findBlocks(blocks, "accordion")).toEqual([]); // nothing behind a dropdown
 	});
 });
 
@@ -682,17 +677,13 @@ describe("admin Shipping console — zones level, L-9 fallback branch (>25 rows)
 		await seedShipping(manyZones(25));
 		const blocks = await loadZones();
 		expect(findBlocks(blocks, "table")).toHaveLength(0);
-		expect(
-			findBlocks(blocks, "accordion").filter((a) => String(a.block_id).startsWith("ship:zone:")),
-		).toHaveLength(25);
+		expect(sectionIds(blocks).filter((id) => id.startsWith("ship:zone:"))).toHaveLength(25);
 	});
 
-	test("at 26 zones, the TABLE + combobox drill-in branch renders instead — no per-row accordions", async () => {
+	test("at 26 zones, the TABLE + combobox drill-in branch renders instead — no per-row sections", async () => {
 		await seedShipping(manyZones(26));
 		const blocks = await loadZones();
-		expect(
-			findBlocks(blocks, "accordion").filter((a) => String(a.block_id).startsWith("ship:zone:")),
-		).toHaveLength(0);
+		expect(sectionIds(blocks).filter((id) => id.startsWith("ship:zone:"))).toHaveLength(0);
 		const table = findBlock(blocks, "table");
 		expect(table).toBeDefined();
 		expect(tableRows(blocks)).toHaveLength(26);
@@ -718,13 +709,13 @@ describe("admin Shipping console — methods level, depth 1 (workerd sandbox)", 
 	/** Open the `us` zone's methods the way the zones list does — the row's own
 	 *  "View methods" BUTTON, carrying the full target path (§12.7). */
 	async function openUsMethods(): Promise<LooseBlock[]> {
-		const view = buttons(groupBlocks(await loadZones(), "ship:zone:us")).find(
+		const view = buttons(sectionBlocks(await loadZones(), "ship:zone:us")).find(
 			(b) => b.action_id === "shipping:open",
 		);
 		return clickButton("shipping:open", valueOf(view));
 	}
 
-	test("opening a zone drills to its methods; each per-row accordion label LEADS WITH THE PRICE, then the name, the full slug id and the type", async () => {
+	test("opening a zone drills to its methods; each per-row section heading LEADS WITH THE PRICE, then the name, the full slug id and the type", async () => {
 		await seedShipping();
 		const blocks = await openUsMethods();
 		expect(blocks.some((b) => b.type === "header" && b.text === "Shipping methods — us")).toBe(
@@ -733,16 +724,16 @@ describe("admin Shipping console — methods level, depth 1 (workerd sandbox)", 
 		// The number the operator came for is FIRST, so every row's amount starts
 		// at the same left edge and the column can be compared vertically. The
 		// slug keeps its place IN FULL — a method id is a natural key, not a uuid.
-		expect(group(blocks, "ship:method:us:standard")?.label).toBe(
+		expect(sectionHeading(blocks, "ship:method:us:standard")?.text).toBe(
 			"$4.99 — Standard · standard · flat rate",
 		);
 		expect(buttons(blocks).some((e) => e.action_id === "shipping:back")).toBe(true);
-		expect(openGroupIds(blocks)).toHaveLength(0); // L-9: zero open groups
+		expect(findBlocks(blocks, "accordion")).toEqual([]); // nothing behind a dropdown
 	});
 
 	test("a method with no rate in the filter currency says so — never 'Free', never a zero amount", async () => {
 		await seedShipping();
-		const label = String(group(await openUsMethods(), "ship:method:us:bare")?.label);
+		const label = String(sectionHeading(await openUsMethods(), "ship:method:us:bare")?.text);
 		expect(label).toBe("No rate set — No rates yet · bare · flat rate");
 		expect(label).not.toMatch(/free|\$0|0\.00/i);
 	});
@@ -762,14 +753,14 @@ describe("admin Shipping console — methods level, depth 1 (workerd sandbox)", 
 			],
 		});
 		const usd = await openUsMethods();
-		expect(group(usd, "ship:method:us:eu-express")?.label).toBe(
+		expect(sectionHeading(usd, "ship:method:us:eu-express")?.text).toBe(
 			"No rate set — Express courier · eu-express · flat rate",
 		);
 		// The row carries no ISO code (G1) — the currency is named once, above,
 		// and THAT is where the row's claim is scoped: the operator reads "no USD
 		// rate", not "unconfigured". Row-level scoping was tried first and is 63
-		// chars against X-11's 60-char accordion budget.
-		expect(String(group(usd, "ship:method:us:eu-express")?.label)).not.toContain("USD");
+		// chars against X-11's 60-char label budget.
+		expect(String(sectionHeading(usd, "ship:method:us:eu-express")?.text)).not.toContain("USD");
 		expect(contextTexts(usd)).toContain(
 			'"Flat rate" always charges its rate; "Free shipping" charges nothing above its threshold. Prices in USD — "No rate set" means no USD rate.',
 		);
@@ -780,12 +771,12 @@ describe("admin Shipping console — methods level, depth 1 (workerd sandbox)", 
 			{ currency: "EUR" },
 			filterForm?.block_id,
 		);
-		expect(group(eur, "ship:method:us:eu-express")?.label).toBe(
+		expect(sectionHeading(eur, "ship:method:us:eu-express")?.text).toBe(
 			"€12.00 — Express courier · eu-express · flat rate",
 		);
 		// …and the USD-only method flips the other way, by the same rule, with the
 		// context line's scope flipping with it.
-		expect(group(eur, "ship:method:us:standard")?.label).toBe(
+		expect(sectionHeading(eur, "ship:method:us:standard")?.text).toBe(
 			"No rate set — Standard · standard · flat rate",
 		);
 		expect(contextTexts(eur).some((t) => t.endsWith('"No rate set" means no EUR rate.'))).toBe(
@@ -813,10 +804,10 @@ describe("admin Shipping console — methods level, depth 1 (workerd sandbox)", 
 		expect(String(banner?.description)).toBe("Enter a 3-letter currency code like USD.");
 		// The list itself is unaffected and stays on screen, with the offending
 		// field still there to fix.
-		expect(group(blocks, "ship:method:us:standard")?.label).toBe(
+		expect(sectionHeading(blocks, "ship:method:us:standard")?.text).toBe(
 			"Price not loaded — Standard · standard · flat rate",
 		);
-		expect(group(blocks, "ship:method:us:bare")?.label).toBe(
+		expect(sectionHeading(blocks, "ship:method:us:bare")?.text).toBe(
 			"Price not loaded — No rates yet · bare · flat rate",
 		);
 		expect(field(formFor(blocks, "shipping:apply-filter"), "currency")?.initial_value).toBe(
@@ -824,9 +815,9 @@ describe("admin Shipping console — methods level, depth 1 (workerd sandbox)", 
 		);
 		// Nothing priced ⇒ no currency claimed, and never the read-failure copy.
 		expect(findBlocks(blocks, "context").some((c) => /Prices in/.test(String(c.text)))).toBe(false);
-		expect(
-			findBlocks(blocks, "accordion").some((a) => /Price unavailable/.test(String(a.label))),
-		).toBe(false);
+		expect(findBlocks(blocks, "header").some((h) => /Price unavailable/.test(String(h.text)))).toBe(
+			false,
+		);
 	});
 
 	test("a FAILED price read degrades that row to 'Price unavailable' — the level still renders, and absence is never claimed", async () => {
@@ -848,17 +839,19 @@ describe("admin Shipping console — methods level, depth 1 (workerd sandbox)", 
 		const blocks = await openUsMethods();
 		// Secondary read: the methods list itself still rendered, no fail-closed banner.
 		expect(bannerOf(blocks)).toBeUndefined();
-		expect(group(blocks, "ship:method:us:legacy id")?.label).toBe(
+		expect(sectionHeading(blocks, "ship:method:us:legacy id")?.text).toBe(
 			"Price unavailable — Legacy · legacy id · flat rate",
 		);
 		// "unavailable" is not "none": a read that did not answer must not be
 		// reported as a rate that does not exist…
-		expect(String(group(blocks, "ship:method:us:legacy id")?.label)).not.toMatch(/no rate set/i);
+		expect(String(sectionHeading(blocks, "ship:method:us:legacy id")?.text)).not.toMatch(
+			/no rate set/i,
+		);
 		// …and the containment is PER ROW: the readable rows are priced as usual.
-		expect(group(blocks, "ship:method:us:standard")?.label).toBe(
+		expect(sectionHeading(blocks, "ship:method:us:standard")?.text).toBe(
 			"$4.99 — Standard · standard · flat rate",
 		);
-		expect(group(blocks, "ship:method:us:bare")?.label).toBe(
+		expect(sectionHeading(blocks, "ship:method:us:bare")?.text).toBe(
 			"No rate set — No rates yet · bare · flat rate",
 		);
 	});
@@ -881,7 +874,7 @@ describe("admin Shipping console — methods level, depth 1 (workerd sandbox)", 
 			'"Flat rate" always charges its rate; "Free shipping" charges nothing above its threshold. Prices in USD — "No rate set" means no USD rate.',
 		);
 		expect(String(priced).length).toBeLessThanOrEqual(140);
-		expect(String(group(blocks, "ship:method:us:standard")?.label)).not.toContain("USD");
+		expect(String(sectionHeading(blocks, "ship:method:us:standard")?.text)).not.toContain("USD");
 		// One context line claiming a currency, not one per row.
 		expect(contexts.filter((t) => t.includes("Prices in"))).toHaveLength(1);
 	});
@@ -909,10 +902,10 @@ describe("admin Shipping console — methods level, depth 1 (workerd sandbox)", 
 		);
 		// The re-read really happened in EUR: the same row that priced at $4.99
 		// now prices at €12.00, which no cached USD answer could produce.
-		expect(group(blocks, "ship:method:us:standard")?.label).toBe(
+		expect(sectionHeading(blocks, "ship:method:us:standard")?.text).toBe(
 			"€12.00 — Standard · standard · flat rate",
 		);
-		expect(group(blocks, "ship:method:us:bare")?.label).toBe(
+		expect(sectionHeading(blocks, "ship:method:us:bare")?.text).toBe(
 			"No rate set — No rates yet · bare · flat rate",
 		);
 		expect(
@@ -927,7 +920,7 @@ describe("admin Shipping console — methods level, depth 1 (workerd sandbox)", 
 		const blocks = await openUsMethods();
 		const copy = [
 			...findBlocks(blocks, "context").map((c) => String(c.text)),
-			...findBlocks(blocks, "accordion").map((a) => String(a.label)),
+			...findBlocks(blocks, "header").map((h) => String(h.text)),
 		].join(" | ");
 		expect(copy).not.toMatch(/flat_rate|free_shipping/);
 		expect(copy).toContain('"Flat rate" always charges its rate');
@@ -983,13 +976,13 @@ describe("admin Shipping console — methods level, depth 1 (workerd sandbox)", 
 		expect(carriedContext(formFor(blocks, "shipping:create-method")?.block_id)).toMatchObject({
 			zoneId: "empty",
 		});
-		expect(openGroupIds(blocks)).toHaveLength(0); // X-18
+		expect(findBlocks(blocks, "accordion")).toEqual([]); // nothing behind a dropdown
 	});
 
 	test("the row edit form carries zoneId+methodId invisibly; save-method applies the LWW edit and reloads with a 'saved' notice", async () => {
 		await seedShipping();
 		const editForm = formFor(
-			groupBlocks(await openPath(["us"]), "ship:method:us:standard"),
+			sectionBlocks(await openPath(["us"]), "ship:method:us:standard"),
 			"shipping:save-method",
 		);
 		expect(fieldIds(editForm)).toEqual(["name", "type", "taxable"]);
@@ -1015,7 +1008,7 @@ describe("admin Shipping console — methods level, depth 1 (workerd sandbox)", 
 			rates: [{ methodId: "free", currency: "USD", amountCents: 499, minSubtotalCents: 5000 }],
 		});
 		const editForm = formFor(
-			groupBlocks(await openPath(["us"]), "ship:method:us:free"),
+			sectionBlocks(await openPath(["us"]), "ship:method:us:free"),
 			"shipping:save-method",
 		);
 		const blocks = await submitForm(
@@ -1066,7 +1059,7 @@ describe("admin Shipping console — methods level, depth 1 (workerd sandbox)", 
 		expect(blocks.some((b) => b.type === "header" && b.text === "Shipping methods — us")).toBe(
 			true,
 		);
-		expect(group(blocks, "ship:method:us:express")).toBeDefined();
+		expect(sectionHeading(blocks, "ship:method:us:express")).toBeDefined();
 		expect(bannerOf(blocks)?.variant).toBe("default");
 	});
 
@@ -1102,7 +1095,7 @@ describe("admin Shipping console — methods level, depth 1 (workerd sandbox)", 
 	test("the method toggle declares its state; switching it off is saved and shown on the row", async () => {
 		await seedShipping();
 		const editForm = formFor(
-			groupBlocks(await openPath(["us"]), "ship:method:us:standard"),
+			sectionBlocks(await openPath(["us"]), "ship:method:us:standard"),
 			"shipping:save-method",
 		);
 		// F-6b/X-24: declared, or an untouched toggle is absent from `values`.
@@ -1114,11 +1107,11 @@ describe("admin Shipping console — methods level, depth 1 (workerd sandbox)", 
 		);
 		expect(bannerOf(blocks)?.variant).toBe("default");
 		expect((await shippingRules.getMethod("standard"))?.taxable).toBe(false);
-		const row = group(blocks, "ship:method:us:standard");
-		expect(String(row?.label)).toContain("not taxed");
+		const row = sectionHeading(blocks, "ship:method:us:standard");
+		expect(String(row?.text)).toContain("not taxed");
 		expect(
 			field(
-				formFor(groupBlocks(blocks, "ship:method:us:standard"), "shipping:save-method"),
+				formFor(sectionBlocks(blocks, "ship:method:us:standard"), "shipping:save-method"),
 				"taxable",
 			)?.initial_value,
 		).toBe(false);
@@ -1135,9 +1128,9 @@ describe("admin Shipping console — methods level, depth 1 (workerd sandbox)", 
 		expect(zone).not.toBeNull();
 		const { taxable: _dropped, ...older } = zone?.methods["standard"] ?? {};
 		await zones?.put("us", { ...zone, methods: { ...zone?.methods, standard: older } });
-		const row = group(await openPath(["us"]), "ship:method:us:standard");
-		expect(String(row?.label)).toContain("Standard");
-		expect(String(row?.label)).not.toContain("not taxed");
+		const row = sectionHeading(await openPath(["us"]), "ship:method:us:standard");
+		expect(String(row?.text)).toContain("Standard");
+		expect(String(row?.text)).not.toContain("not taxed");
 	});
 
 	test("a save without the toggle in `values` PRESERVES the method's flag", async () => {
@@ -1148,7 +1141,7 @@ describe("admin Shipping console — methods level, depth 1 (workerd sandbox)", 
 			taxable: false,
 		});
 		const editForm = formFor(
-			groupBlocks(await openPath(["us"]), "ship:method:us:standard"),
+			sectionBlocks(await openPath(["us"]), "ship:method:us:standard"),
 			"shipping:save-method",
 		);
 		await submitForm(
@@ -1204,8 +1197,8 @@ describe("admin Shipping console — methods level, depth 1 (workerd sandbox)", 
 		expect(decodePath(String(valueOf(button)["__path"]))).toEqual(["us"]);
 		const firstRow = blocks.findIndex((b) => String(b.block_id).startsWith("ship:method:"));
 		expect(blocks.findIndex((b, i) => b.type === "actions" && i > 0)).toBeLessThan(firstRow);
-		expect(group(blocks, "ship:new-method:us")).toBeUndefined();
-		expect(group(blocks, "ship:new-method:us:open")).toBeUndefined();
+		expect(sectionHeading(blocks, "ship:new-method:us")).toBeUndefined();
+		expect(sectionHeading(blocks, "ship:new-method:us:open")).toBeUndefined();
 		expect(formFor(blocks, "shipping:create-method")).toBeUndefined();
 	});
 
@@ -1215,9 +1208,7 @@ describe("admin Shipping console — methods level, depth 1 (workerd sandbox)", 
 		expect(screen.some((b) => b.type === "header" && b.text === "New shipping method — us")).toBe(
 			true,
 		);
-		expect(
-			findBlocks(screen, "accordion").filter((a) => String(a.block_id).startsWith("ship:method:")),
-		).toHaveLength(0);
+		expect(sectionIds(screen).filter((id) => id.startsWith("ship:method:"))).toHaveLength(0);
 		const back = buttons(screen).find((b) => b.action_id === "shipping:cancel-new");
 		expect(String(back?.label)).toMatch(/back to shipping methods/i);
 		const methods = await clickButton("shipping:cancel-new", valueOf(back));
@@ -1225,12 +1216,12 @@ describe("admin Shipping console — methods level, depth 1 (workerd sandbox)", 
 		expect(methods.some((b) => b.type === "header" && b.text === "Shipping methods — us")).toBe(
 			true,
 		);
-		expect(group(methods, "ship:method:us:standard")).toBeDefined();
+		expect(sectionHeading(methods, "ship:method:us:standard")).toBeDefined();
 	});
 
 	test("deleting a method is unconditional (DA-2) — a forbid-if-rates conflict is reported by the post-attempt banner", async () => {
 		await seedShipping();
-		const del = buttons(groupBlocks(await openPath(["us"]), "ship:method:us:standard")).find(
+		const del = buttons(sectionBlocks(await openPath(["us"]), "ship:method:us:standard")).find(
 			(b) => b.action_id === "shipping:delete-method",
 		);
 		expect(del?.label).toBe("Delete method");
@@ -1242,7 +1233,7 @@ describe("admin Shipping console — methods level, depth 1 (workerd sandbox)", 
 
 	test("deleting a method with no rates removes it and reloads with a 'deleted' notice", async () => {
 		await seedShipping();
-		const del = buttons(groupBlocks(await openPath(["us"]), "ship:method:us:bare")).find(
+		const del = buttons(sectionBlocks(await openPath(["us"]), "ship:method:us:bare")).find(
 			(b) => b.action_id === "shipping:delete-method",
 		);
 		const blocks = await clickButton("shipping:delete-method", valueOf(del));
@@ -1250,7 +1241,7 @@ describe("admin Shipping console — methods level, depth 1 (workerd sandbox)", 
 		const banner = bannerOf(blocks);
 		expect(banner?.variant).toBe("default");
 		expect(String(banner?.title)).toContain("deleted");
-		expect(group(blocks, "ship:method:us:bare")).toBeUndefined();
+		expect(sectionHeading(blocks, "ship:method:us:bare")).toBeUndefined();
 	});
 
 	test("back from the methods level (depth 1) returns to the zones list", async () => {
@@ -1267,22 +1258,18 @@ describe("admin Shipping console — methods level, L-9 fallback branch (>25 row
 		await seedShipping(manyMethods(25));
 		const blocks25 = await openPath(["us"]);
 		expect(findBlocks(blocks25, "table")).toHaveLength(0);
-		const rows25 = findBlocks(blocks25, "accordion").filter((a) =>
-			String(a.block_id).startsWith("ship:method:"),
+		const rows25 = findBlocks(blocks25, "header").filter((h) =>
+			String(h.block_id).startsWith("ship:method:"),
 		);
 		expect(rows25).toHaveLength(25);
 		// THE BOUND, ASSERTED AT THE BOUND, by its observable consequence: at 25
 		// rows every row WAS priced (these methods have no rates, so the honest
 		// answer is "No rate set" — a fact only a completed read can state).
-		expect(rows25.every((a) => String(a.label).startsWith("No rate set — "))).toBe(true);
+		expect(rows25.every((h) => String(h.text).startsWith("No rate set — "))).toBe(true);
 
 		await seedShipping(manyMethods(26));
 		const blocks26 = await openPath(["us"]);
-		expect(
-			findBlocks(blocks26, "accordion").filter((a) =>
-				String(a.block_id).startsWith("ship:method:"),
-			),
-		).toHaveLength(0);
+		expect(sectionIds(blocks26).filter((id) => id.startsWith("ship:method:"))).toHaveLength(0);
 		const table = findBlock(blocks26, "table");
 		expect(table?.columns).toEqual([
 			{ key: "id", label: "Method ID", format: "code" },
@@ -1306,7 +1293,7 @@ describe("admin Shipping console — methods level, L-9 fallback branch (>25 row
 describe("admin Shipping console — rates level, depth 2, EXEMPT from L-9 (workerd sandbox)", () => {
 	test("opening a method drills to its rates, default-filtered to USD, rendered as `fields` (not a 1-row table, P-3)", async () => {
 		await seedShipping();
-		const view = buttons(groupBlocks(await openPath(["us"]), "ship:method:us:standard")).find(
+		const view = buttons(sectionBlocks(await openPath(["us"]), "ship:method:us:standard")).find(
 			(b) => b.action_id === "shipping:open",
 		);
 		// Depth-3 open FIRED FROM A BUTTON — the trap: value.target must carry
@@ -1644,7 +1631,7 @@ describe("admin Shipping console — full deep-drill round trip via row BUTTONS 
 	test("zones → methods → rates → back → back returns to zones, every open fired from a row button carrying the FULL path", async () => {
 		await seedShipping();
 		const zones = await loadZones();
-		const zoneOpen = buttons(groupBlocks(zones, "ship:zone:us")).find(
+		const zoneOpen = buttons(sectionBlocks(zones, "ship:zone:us")).find(
 			(b) => b.action_id === "shipping:open",
 		);
 		expect(decodePath(String(valueOf(zoneOpen).target))).toEqual(["us"]);
@@ -1653,7 +1640,7 @@ describe("admin Shipping console — full deep-drill round trip via row BUTTONS 
 			true,
 		);
 
-		const methodOpen = buttons(groupBlocks(methods, "ship:method:us:standard")).find(
+		const methodOpen = buttons(sectionBlocks(methods, "ship:method:us:standard")).find(
 			(b) => b.action_id === "shipping:open",
 		);
 		// The depth-3 trap: the FULL [zoneId, methodId] path, not a bare methodId.
@@ -1783,7 +1770,7 @@ describe("admin Shipping console — regions are ISO codes (ADR-0021, workerd sa
 		expect(await shippingRules.getZone("us2")).toBeNull();
 
 		const list = await loadZones();
-		const form = formFor(groupBlocks(list, "ship:zone:empty"), "shipping:save-zone");
+		const form = formFor(sectionBlocks(list, "ship:zone:empty"), "shipping:save-zone");
 		const saved = await submitForm(
 			"shipping:save-zone",
 			{ name: "Empty zone", regions: "US" },
@@ -1797,7 +1784,7 @@ describe("admin Shipping console — regions are ISO codes (ADR-0021, workerd sa
 	test("re-saving a zone with its OWN codes is not an overlap", async () => {
 		await seedShipping();
 		const list = await loadZones();
-		const form = formFor(groupBlocks(list, "ship:zone:us"), "shipping:save-zone");
+		const form = formFor(sectionBlocks(list, "ship:zone:us"), "shipping:save-zone");
 		const saved = await submitForm(
 			"shipping:save-zone",
 			{ name: "USA", regions: "US" },
@@ -1836,10 +1823,10 @@ describe("admin Shipping console — regions are ISO codes (ADR-0021, workerd sa
 		test("its row labels the legacy tokens 'never matches'; a zone with no codes says 'Matches no address'", async () => {
 			await seedShipping(LEGACY);
 			const blocks = await loadZones();
-			const legacy = contextTexts(groupBlocks(blocks, "ship:zone:legacy")).join(" | ");
+			const legacy = contextTexts(sectionBlocks(blocks, "ship:zone:legacy")).join(" | ");
 			expect(legacy).toMatch(/Matches: DE/);
 			expect(legacy).toMatch(/United States \(not a region code — never matches\)/);
-			const empty = contextTexts(groupBlocks(blocks, "ship:zone:empty")).join(" | ");
+			const empty = contextTexts(sectionBlocks(blocks, "ship:zone:empty")).join(" | ");
 			expect(empty).toMatch(/Matches no address/);
 		});
 
@@ -1928,7 +1915,7 @@ describe("admin Shipping console — regions are ISO codes (ADR-0021, workerd sa
 		test("saving it with its legacy text is refused until it is fixed; with codes it saves", async () => {
 			await seedShipping(LEGACY);
 			const list = await loadZones();
-			const form = formFor(groupBlocks(list, "ship:zone:legacy"), "shipping:save-zone");
+			const form = formFor(sectionBlocks(list, "ship:zone:legacy"), "shipping:save-zone");
 			expect(field(form, "regions")?.initial_value).toBe("United States, de");
 
 			const refused = await submitForm(
@@ -2097,3 +2084,38 @@ async function withSettingsUnreadable<T>(body: () => Promise<T>): Promise<T> {
 		storage[SETTINGS_COLLECTION] = real;
 	}
 }
+
+describe("admin Shipping console — long names keep section headings inside the 60-char budget (X-11)", () => {
+	const LONG = "Northern and Eastern Territories of the Greater Metropolitan Distribution Area";
+
+	test("a zone with a very long name: heading <= 60, full name still on the screen", async () => {
+		await seedShipping({
+			zones: [{ id: "north", name: LONG, regions: ["US"] }],
+			methods: [],
+			rates: [],
+		});
+		const blocks = await loadZones();
+		const heading = sectionHeading(blocks, "ship:zone:north");
+		expect(String(heading?.text).length).toBeLessThanOrEqual(60);
+		expect(String(heading?.text).startsWith("north — Northern")).toBe(true);
+		const body = sectionBlocks(blocks, "ship:zone:north");
+		expect(contextTexts(body).some((t) => t.includes(LONG))).toBe(true);
+		expect(field(formFor(body, "shipping:save-zone"), "name")?.initial_value).toBe(LONG);
+		assertBlockContract(blocks, { screen: "shipping", level: "list" });
+	});
+
+	test("a method with a very long name: heading <= 60 and keeps its type, full name in a context line", async () => {
+		await seedShipping({
+			zones: [{ id: "us", name: "United States", regions: ["US"] }],
+			methods: [{ id: "slow", zoneId: "us", name: LONG, type: "flat_rate" }],
+			rates: [],
+		});
+		const blocks = await openPath(["us"]);
+		const heading = sectionHeading(blocks, "ship:method:us:slow");
+		expect(String(heading?.text).length).toBeLessThanOrEqual(60);
+		expect(String(heading?.text)).toContain("flat rate");
+		const body = sectionBlocks(blocks, "ship:method:us:slow");
+		expect(contextTexts(body).some((t) => t.includes(LONG))).toBe(true);
+		assertBlockContract(blocks, { screen: "shipping", level: "list" });
+	});
+});

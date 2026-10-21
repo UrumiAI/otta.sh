@@ -17,7 +17,15 @@ import {
 	type StorageAccess,
 } from "@urumi.ai/otta-store-emdash";
 import { afterEach, describe, expect, test } from "vitest";
-import { blocksOf, field, findBlocks, formFor, tableWithId } from "./helpers/blocks.js";
+import {
+	blocksOf,
+	field,
+	findBlocks,
+	formFor,
+	sectionHeading,
+	sectionIds,
+	tableWithId,
+} from "./helpers/blocks.js";
 import { loadPluginInSandbox, type SandboxHandle } from "./sandbox/harness.js";
 import { storageBridge } from "./sandbox/storage-bridge.js";
 
@@ -162,9 +170,9 @@ describe("admin route dispatch (workerd sandbox)", () => {
 		const outcome = await sandbox.invokeRoute("admin", { type: "page_load", page: "/reports" });
 		const blocks = blocksOf(outcome);
 		expect(blocks.length).toBeGreaterThan(0);
-		// §12.5: the four report groups are accordions, resolved by `block_id`
-		// (never by label — D-6 makes labels carry live figures).
-		const groupIds = findBlocks(blocks, "accordion").map((a) => a.block_id);
+		// §12.5: the four report groups are always-open sections, resolved by
+		// `block_id` (never by heading text — D-6 makes it carry live figures).
+		const groupIds = sectionIds(blocks);
 		expect(groupIds).toEqual(
 			expect.arrayContaining(["reports:revenue", "reports:statuses", "reports:top", "reports:low"]),
 		);
@@ -193,8 +201,7 @@ describe("admin route dispatch (workerd sandbox)", () => {
 		);
 		// The low-stock group label states the threshold it read off Settings —
 		// the default (5), since nothing in this test touches it.
-		const lowGroup = findBlocks(blocks, "accordion").find((a) => a.block_id === "reports:low");
-		expect(String(lowGroup?.label)).toContain("at or below 5");
+		expect(String(sectionHeading(blocks, "reports:low")?.text)).toContain("at or below 5");
 	}, 60_000);
 
 	test("page_load /settings renders the Settings form (display + operational + the 4 payment secrets, no legacy service token)", async () => {
@@ -203,7 +210,7 @@ describe("admin route dispatch (workerd sandbox)", () => {
 		const outcome = await sandbox.invokeRoute("admin", { type: "page_load", page: "/settings" });
 		const blocks = blocksOf(outcome);
 		expect(blocks.length).toBeGreaterThan(0);
-		// §12.6: the three groups (store/checkout/payments) are accordions —
+		// §12.6: the three groups (store/checkout/payments) are sections —
 		// resolve each field by its form's SUBMIT action_id (stable), not by a
 		// top-level flat scan.
 		expect(field(formFor(blocks, "save-display"), "storeDisplayName")).toBeDefined();

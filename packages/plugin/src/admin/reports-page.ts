@@ -5,7 +5,6 @@ import { DEFAULT_OPERATIONAL_SETTINGS } from "@urumi.ai/otta-domain";
 import { formatMoney } from "../presentation/format-money.js";
 import { type Currency, cents as toCents, currency as toCurrency } from "../presentation/money.js";
 import type {
-	AccordionBlock,
 	AdminPageConfig,
 	BannerBlock,
 	Block,
@@ -23,6 +22,7 @@ import {
 	endOfDay,
 	failClosedResponse,
 	formatDay,
+	section,
 	startOfDay,
 } from "./scaffold/index.js";
 import { makeAdminClients } from "./make-admin-clients.js";
@@ -557,14 +557,12 @@ export function buildReportsBlocks(data: ReportsData): BlockResponse {
 		page_action_id: REPORTS_PAGE_ACTION_ID, // never fires: no next_cursor, no sortable column
 		empty_text: "No revenue in range.",
 	};
-	const revenueAccordion: AccordionBlock = {
-		type: "accordion",
-		block_id: "reports:revenue",
+	const revenueSection = section({
+		blockId: "reports:revenue",
 		// No "(N buckets)": a bucket is this codebase's word for a GROUP BY, not
 		// the operator's word for anything, and with the series now continuous the
 		// count was only ever restating the length of the range.
-		label: `Revenue by ${data.interval}`,
-		default_open: true, // S-3: the one open group on this screen
+		title: `Revenue by ${data.interval}`,
 		blocks: [
 			...(multiCurrency ? [{ type: "context" as const, text: rankingGapNote }] : []),
 			// A sparse series is never left to look continuous: when the fill is
@@ -572,7 +570,7 @@ export function buildReportsBlocks(data: ReportsData): BlockResponse {
 			...(series.filled ? [] : [{ type: "context" as const, text: SPARSE_SERIES_NOTE }]),
 			revenueTable,
 		],
-	};
+	});
 
 	const statusesTable: TableBlock = {
 		type: "table",
@@ -595,13 +593,11 @@ export function buildReportsBlocks(data: ReportsData): BlockResponse {
 		page_action_id: REPORTS_PAGE_ACTION_ID, // never fires: no next_cursor, no sortable column
 		empty_text: "No orders in range.",
 	};
-	const statusesAccordion: AccordionBlock = {
-		type: "accordion",
-		block_id: "reports:statuses",
-		label: `Orders by status (${data.statuses.length})`,
-		default_open: false,
+	const statusesSection = section({
+		blockId: "reports:statuses",
+		title: `Orders by status (${data.statuses.length})`,
 		blocks: [statusesTable],
-	};
+	});
 
 	const topTable: TableBlock = {
 		type: "table",
@@ -615,11 +611,9 @@ export function buildReportsBlocks(data: ReportsData): BlockResponse {
 		page_action_id: REPORTS_PAGE_ACTION_ID, // never fires: no next_cursor, no sortable column
 		empty_text: "No sales in range.",
 	};
-	const topAccordion: AccordionBlock = {
-		type: "accordion",
-		block_id: "reports:top",
-		label: `Top products (${data.top.length})`,
-		default_open: false,
+	const topSection = section({
+		blockId: "reports:top",
+		title: `Top products (${data.top.length})`,
 		blocks: topRevenueSuppressed
 			? [
 					{
@@ -629,7 +623,7 @@ export function buildReportsBlocks(data: ReportsData): BlockResponse {
 					topTable,
 				]
 			: [topTable],
-	};
+	});
 
 	const lowTable: TableBlock = {
 		type: "table",
@@ -650,20 +644,18 @@ export function buildReportsBlocks(data: ReportsData): BlockResponse {
 		page_action_id: REPORTS_PAGE_ACTION_ID, // never fires: no next_cursor, no sortable column
 		empty_text: "Nothing low on stock.",
 	};
-	const lowAccordion: AccordionBlock = {
-		type: "accordion",
-		block_id: "reports:low",
+	const lowSection = section({
+		blockId: "reports:low",
 		// The count alone ("Low stock (3)") never said low COMPARED TO WHAT, and
 		// the threshold lives in Store settings, a page away. `GET /settings`
-		// already returns it, so the label states it. Omitted — never guessed —
+		// already returns it, so the heading states it. Omitted — never guessed —
 		// when that read failed.
-		label:
+		title:
 			data.lowStockThreshold === undefined
 				? `Low stock (${data.low.length})`
 				: `Low stock (${data.low.length}) — at or below ${data.lowStockThreshold}`,
-		default_open: false,
 		blocks: [lowTable],
-	};
+	});
 
 	const blocks: Block[] = [
 		{ type: "header", text: `${data.displayName} — Reports` },
@@ -686,10 +678,10 @@ export function buildReportsBlocks(data: ReportsData): BlockResponse {
 				]
 			: []),
 		...refundOnlyNotes(data.revenue, refundOnlyCurrencies, refundedCurrency),
-		revenueAccordion,
-		statusesAccordion,
-		topAccordion,
-		lowAccordion,
+		...revenueSection,
+		...statusesSection,
+		...topSection,
+		...lowSection,
 	];
 	return { blocks };
 }

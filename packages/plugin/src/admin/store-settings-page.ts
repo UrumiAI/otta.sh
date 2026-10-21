@@ -39,9 +39,7 @@ import { noticeBanner } from "./scaffold/banner.js";
  * changed) renders the new state, not the old.
  *
  * The old `/settings`, `/tax` and `/shipping` pages stay served by the dispatcher
- * for bookmarks; only an interaction that names THIS page is wrapped. With no
- * sidebar link of their own they render without the console's accordion styling
- * (`block-kit-accordion.ts` scopes it to the current sidebar entry).
+ * for bookmarks; only an interaction that names THIS page is wrapped.
  */
 export const STORE_SETTINGS_PAGE: AdminPageConfig = {
 	path: "/store-settings",

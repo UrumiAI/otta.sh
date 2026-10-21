@@ -1,4 +1,4 @@
-import type { AccordionBlock, Element, EmptyBlock, FormBlock, PlainBlockId } from "../../types.js";
+import type { Block, Element, EmptyBlock, FormBlock, PlainBlockId } from "../../types.js";
 import { decodeCarrier, prefillDigest, PREFILL_FIELD } from "./carrier.js";
 
 /**
@@ -14,27 +14,17 @@ import { decodeCarrier, prefillDigest, PREFILL_FIELD } from "./carrier.js";
  * 0.29.0 and in the pinned 0.31.1). `ColumnsBlock` takes `Block[][]`, so putting a
  * filter's fields side by side would mean splitting ONE filter across several
  * `form` blocks — i.e. several independent submits, each losing the others'
- * unsubmitted edits. So the density win for filters is VERTICAL: collapse the whole
- * form, keep a count of what is on in its label, and put the active values in the
- * `section` beneath it ({@link filterPanel} + {@link filterSummary}). `columns`
+ * unsubmitted edits. So a filter stays ONE inline form and the active values go in
+ * the `section` beneath it ({@link filterPanel} + {@link filterSummary}). `columns`
  * remains available for composing WHOLE blocks side by side (see `ColumnsBlock`'s note on the renderer's 2-vs-3 grid), which
  * needs no shared helper.
  *
  * IO-FREE: pure block construction.
  */
 
-/** How many fields a filter form may have before it is worth collapsing. At or
- *  below this it renders inline: hiding one or two fields costs an operator a
- *  click and saves almost no scroll. Matches the design spec's threshold table for
- *  all six screens (orders 4, products 3, coupons 1, tax 1, shipping 1). */
-const DEFAULT_INLINE_UP_TO = 2;
-
 /** More than this many filter fields is a design-spec violation, not a layout
- *  problem — collapsing them would hide the violation instead of surfacing it. */
+ *  problem — a bigger form would be a screenful of fields, so it fails loudly. */
 const MAX_FILTER_FIELDS = 4;
-
-/** The base label of a collapsed filter panel. */
-const DEFAULT_LABEL = "Filters";
 
 /** Separator between active-filter parts in a {@link filterSummary}. */
 const SUMMARY_SEPARATOR = " · ";
@@ -47,96 +37,41 @@ export interface FilterPanelOptions {
 	 *  matching digest throws: its React key could not change when its prefilled
 	 *  values do, which strands cleared filters on screen. */
 	form: FormBlock;
-	/**
-	 * The accordion's `block_id`. REQUIRED, and a React key ONLY — an accordion
-	 * never echoes it back, so it must not be a carrier token (the type forbids it).
-	 *
-	 * Give it a value that is STABLE across an `apply-filter` on the same level, so
-	 * the panel does not slam shut on an operator who filters repeatedly, and that
-	 * CHANGES when the level does. `"orders:filters"` or `` `tax:filters:${classId}` ``
-	 * is the shape. The inner form's key is the thing that must track prefilled
-	 * values — that is `carriedForm`'s job, not this one's.
-	 */
-	blockId: PlainBlockId;
-	/** Base label for the collapsed row. Default `"Filters"`. */
-	label?: string;
-	/**
-	 * The CURRENTLY ACTIVE filter parts, in reading order — but ONLY THEIR COUNT
-	 * reaches the label, which is `Filters` or `Filters (2 active)` and nothing else.
-	 * The values themselves do NOT belong in an accordion label: it is a control, it
-	 * has a tight width budget, and free-text search would blow it. Put them in the
-	 * `section` beneath the panel, composed from the SAME array by
-	 * {@link filterSummary}, so the count and the summary can never disagree.
-	 *
-	 * ONE PART PER AUTHORED FILTER FIELD, so the count matches what an operator sees
-	 * in the panel: a from/to date range is TWO fields and therefore two parts, not one
-	 * "last 30 days". Falsy entries are dropped, so a call site can inline its
-	 * conditionals:
-	 *
-	 * ```ts
-	 * activeFilters: [
-	 *   form.status && `status: ${form.status}`,
-	 *   form.from && `from: ${form.from}`,
-	 *   form.to && `to: ${form.to}`,
-	 *   form.search && `search: ${form.search}`,
-	 * ]
-	 * ```
-	 *
-	 * Composition of each part is left to the screen because six screens describe
-	 * their filters differently (a status, a date bound, a zone id, a currency).
-	 */
-	activeFilters?: ReadonlyArray<string | false | null | undefined>;
-	/** Render inline (no accordion) at or below this many fields. Default 2; pass
-	 *  `0` to always collapse. Counts the fields the SCREEN authored — the engine
-	 *  may inject one more (the drill-path carrier) after this runs. */
-	inlineUpTo?: number;
 }
 
 /**
- * A filter form that does not cost a screenful of scroll: one `form`, collapsed
- * into an `accordion` whose label reports HOW MANY filters are active
- * (`Filters (2 active)` — a count, never the values), or rendered inline when it is
- * small enough to not be worth a click. The values go in the `section` beneath,
- * from {@link filterSummary}.
+ * A screen's filter form. It ALWAYS renders inline, as the `form` itself: the
+ * admin console has no dropdowns (an operator should not have to open a panel to
+ * see a screen's controls), so a multi-field filter is never collapsed. The
+ * active values go in the `section` beneath, from {@link filterSummary}.
  *
- * Always renders CLOSED. `accordion.default_open` is read once in a `useState`
- * initialiser, so it can neither reopen a panel the operator closed nor be relied
- * on across re-renders — and a filter that reopens itself on every response is the
- * scroll cost this helper exists to remove. It is therefore not an option here.
- *
- * TWO THINGS THE ENGINE GUARANTEES AROUND THIS, so a screen need not remember
- * them:
- *  - At a drill depth ≥ 1 an `apply-filter` submit must carry the drill path or it
- *    would re-filter the ROOT list. `createListDetailHandler` injects that carrier
- *    into every `applyFilter` form it renders, and it looks INSIDE layout
- *    containers — so collapsing a deep filter form here does not silently break it.
- *    To carry the path INVISIBLY (no visible "Scope" dropdown), build the form with
- *    `carriedForm({namespace, context: {[PATH_FIELD]: encodePath(path)}, form})`;
- *    the injection then stands down, but ONLY for the exact current path.
- *  - Accordion open/close is CLIENT side only and fires no interaction, so the
- *    collapsed body is still rendered on every response: this saves scroll, not
- *    work.
+ * ENGINE GUARANTEE AROUND THIS, so a screen need not remember it: at a drill depth
+ * >= 1 an `apply-filter` submit must carry the drill path or it would re-filter the
+ * ROOT list. `createListDetailHandler` injects that carrier into every
+ * `applyFilter` form it renders, and it looks INSIDE layout containers. To carry
+ * the path INVISIBLY (no visible "Scope" dropdown), build the form with
+ * `carriedForm({namespace, context: {[PATH_FIELD]: encodePath(path)}, form})`; the
+ * injection then stands down, but ONLY for the exact current path.
  *
  * THROWS in two cases, both of them screen bugs that must not render as something
  * subtly wrong: above {@link MAX_FILTER_FIELDS} authored fields (a design-spec
- * violation collapsing would hide), and when `form` does not carry a prefill digest
- * matching itself (i.e. it did not come from `carriedForm`, or was edited after).
- * Both are contained by `createListDetailHandler` and surface as that screen's
- * fail-closed banner, with the cause in the worker log.
+ * violation), and when `form` does not carry a prefill digest matching itself
+ * (i.e. it did not come from `carriedForm`, or was edited after). Both are
+ * contained by `createListDetailHandler` and surface as that screen's fail-closed
+ * banner, with the cause in the worker log.
  */
-export function filterPanel(opts: FilterPanelOptions): FormBlock | AccordionBlock {
+export function filterPanel(opts: FilterPanelOptions): FormBlock {
 	if (opts.form.fields.length > MAX_FILTER_FIELDS) {
 		throw new Error(
 			`filterPanel: ${opts.form.fields.length} filter fields exceeds the ${MAX_FILTER_FIELDS}-field maximum ` +
-				`(submit ${opts.form.submit.action_id}) — reduce the filter set rather than collapsing it`,
+				`(submit ${opts.form.submit.action_id}) — reduce the filter set`,
 		);
 	}
 	// EVERY form here must come from `carriedForm`, whether or not it prefills
 	// anything today. A form whose React key cannot change when its prefilled values
 	// change strands those values on screen — Block Kit inputs are uncontrolled, so
 	// the `Clear filters` re-render leaves the cleared filter visible and the next
-	// submit re-applies it — and nesting guarantees the key is stable (a form inside
-	// an accordion is index 0 of that accordion forever). Requiring it
+	// submit re-applies it — and nesting guarantees the key is stable (a form nested in a container is index 0 of it forever). Requiring it
 	// UNCONDITIONALLY means the very first render test on every screen trips this,
 	// rather than only the tests that happen to render with a filter applied, and a
 	// filter form that gains a prefill later cannot quietly become wrong.
@@ -152,27 +87,7 @@ export function filterPanel(opts: FilterPanelOptions): FormBlock | AccordionBloc
 			} — build it with carriedForm({namespace, context, form}), last, so its React key tracks its prefilled values`,
 		);
 	}
-	const inlineUpTo = opts.inlineUpTo ?? DEFAULT_INLINE_UP_TO;
-	if (opts.form.fields.length <= inlineUpTo) return opts.form;
-	return {
-		type: "accordion",
-		label: filterPanelLabel(opts.label ?? DEFAULT_LABEL, activeParts(opts.activeFilters).length),
-		blocks: [opts.form],
-		block_id: opts.blockId,
-	};
-}
-
-/**
- * The collapsed label: `Filters`, or `Filters (2 active)` when filters are on.
- * COUNT ONLY — no values, no truncation, no ellipsis.
- *
- * The label is a control with a tight width budget, and a free-text search term
- * would blow it; the values go in the `section` beneath the panel via
- * {@link filterSummary}. Exported so a screen can render the same string elsewhere
- * (an inline filter's `context` line) without re-deriving the format.
- */
-export function filterPanelLabel(label: string, activeCount: number): string {
-	return activeCount <= 0 ? label : `${label} (${activeCount} active)`;
+	return opts.form;
 }
 
 /**
@@ -190,12 +105,10 @@ export function filterPanelLabel(label: string, activeCount: number): string {
  *   form.to && `to: ${form.to}`,
  * ];
  * const summary = filterSummary(parts);
- * const blocks = [filterPanel({ form, blockId: "orders:filters", activeFilters: parts })];
+ * const blocks = [filterPanel({ form })];
  * if (summary !== undefined) blocks.push({ type: "section", text: summary, accessory: clearButton });
  * ```
  *
- * Pass the SAME array to both, so the panel's count and this summary can never
- * disagree.
  */
 export function filterSummary(
 	parts: ReadonlyArray<string | false | null | undefined>,
@@ -253,4 +166,79 @@ export function emptyState(opts: {
 			: {}),
 		...(opts.blockId !== undefined ? { block_id: opts.blockId } : {}),
 	};
+}
+
+/** The group-heading budget (X-11, §1): a section heading is at most this many
+ *  characters. {@link section} enforces it on every `title`. */
+export const LABEL_BUDGET = 60;
+
+/** Separator between the values on a D-6 label. */
+const VALUE_SEPARATOR = " · ";
+
+/** Trim `text` to `max` characters, ellipsis included, keeping the leading part. */
+export function fit(text: string, max: number): string {
+	return text.length <= max ? text : `${text.slice(0, max - 1)}…`;
+}
+
+/** Fit a heading to {@link LABEL_BUDGET} by plain tail truncation. */
+export function fitLabel(text: string): string {
+	return fit(text, LABEL_BUDGET);
+}
+
+/**
+ * A D-6 `<group> — <value> · <value>` label, kept inside {@link LABEL_BUDGET}
+ * by shortening a VALUE rather than the tail. Right-truncation would eat the
+ * LAST value outright: an operator-supplied name has no length bound of its own,
+ * and the values after it (an id, a flag) are worth keeping. So the truncation
+ * costs the LONGEST value, and only by the overflow; when no value can absorb
+ * it, the whole label is tail-truncated.
+ */
+export function valueLabel(prefix: string, values: readonly string[]): string {
+	if (values.length === 0) return fitLabel(prefix);
+	const full = `${prefix} — ${values.join(VALUE_SEPARATOR)}`;
+	if (full.length <= LABEL_BUDGET) return full;
+	let longest = 0;
+	values.forEach((value, index) => {
+		if (value.length > (values[longest] ?? "").length) longest = index;
+	});
+	const room = (values[longest] ?? "").length - (full.length - LABEL_BUDGET) - 1;
+	if (room < 1) return fitLabel(full);
+	const shortened = values.map((value, index) =>
+		index === longest ? `${value.slice(0, room)}…` : value,
+	);
+	return `${prefix} — ${shortened.join(VALUE_SEPARATOR)}`;
+}
+
+/**
+ * A titled group that is ALWAYS OPEN: a `header` naming it, an optional `context`
+ * line under that, then its blocks inline. It is how EmDash's own admin pages
+ * group content (Settings → General: "Site Identity", then its fields), and it
+ * replaces the collapsible `accordion` groups the screens used to emit — an
+ * operator should not have to open a dropdown to see a screen's content.
+ *
+ * NOT the Block Kit `section` block type (text + accessory): this emits a `header`
+ * followed by the body blocks, nothing else.
+ *
+ * The `title` is fitted to {@link LABEL_BUDGET} here, so no screen can ship an
+ * over-budget heading; a caller that must keep the full text passes it as `note`.
+ *
+ * `blockId` goes on the heading: a React key ONLY (a header echoes nothing back,
+ * so the type forbids a carrier), and the stable name tests find the group by.
+ * The body's blocks join the SAME list as the heading, so any of them whose key
+ * must track its prefilled values (a form) still needs its own `carriedForm`
+ * `block_id` — which every prefilling form here already carries.
+ */
+export function section(opts: {
+	blockId: PlainBlockId;
+	title: string;
+	/** What a collapsed label used to say beyond its name — a count, the current
+	 *  values, a threshold — as one `context` line under the heading. */
+	note?: string;
+	blocks: readonly Block[];
+}): Block[] {
+	return [
+		{ type: "header", text: fitLabel(opts.title), block_id: opts.blockId },
+		...(opts.note !== undefined ? [{ type: "context" as const, text: opts.note }] : []),
+		...opts.blocks,
+	];
 }

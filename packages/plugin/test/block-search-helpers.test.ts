@@ -19,6 +19,9 @@ import {
 	openGroupIds,
 	panel,
 	panelLabels,
+	sectionBlocks,
+	sectionHeading,
+	sectionIds,
 	tableRows,
 	tableWithId,
 } from "./helpers/blocks.js";
@@ -178,6 +181,34 @@ describe("recursive block-search helpers (spec §15 V-1)", () => {
 
 	test("openGroupIds reports every default_open group — X-18 allows at most one per response", () => {
 		expect(openGroupIds(TREE)).toEqual(["orders:refunds"]);
+	});
+
+	test("sectionBlocks returns a heading's body up to the next heading, at any depth", () => {
+		const sections: LooseBlock[] = [
+			{ type: "header", text: "Reports" },
+			{
+				type: "tab",
+				panels: [
+					{
+						label: "General",
+						blocks: [
+							{ type: "header", text: "Store", block_id: "s:store" },
+							{ type: "context", text: "no display name" },
+							{ type: "form", block_id: "f1" },
+							{ type: "header", text: "Checkout", block_id: "s:checkout" },
+							{ type: "columns", columns: [[{ type: "table", block_id: "t1" }]] },
+						],
+					},
+				],
+			},
+		];
+		expect(sectionHeading(sections, "s:store")?.text).toBe("Store");
+		expect(sectionHeading(sections, "s:missing")).toBeUndefined();
+		expect(sectionBlocks(sections, "s:store").map((b) => b.type)).toEqual(["context", "form"]);
+		// The last section runs to the end of its list; containers come back whole.
+		expect(findBlocks(sectionBlocks(sections, "s:checkout"), "table")[0]?.block_id).toBe("t1");
+		expect(sectionBlocks(sections, "s:missing")).toEqual([]);
+		expect(sectionIds(sections)).toEqual(["s:store", "s:checkout"]);
 	});
 
 	test("formFor keys on the submit action id, not on the carrier block_id", () => {

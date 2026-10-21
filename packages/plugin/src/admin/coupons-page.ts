@@ -67,6 +67,8 @@ import {
 	PATH_FIELD,
 	readString,
 	screenActions,
+	fitLabel,
+	section,
 	type CustomActionApi,
 	type ListDetailInput,
 	type NavPath,
@@ -81,13 +83,13 @@ import {
  *
  * THE SHAPE, in one paragraph. The list is `header` + one `context` + an
  * optional notice `banner` + an INLINE one-field search (L-2: 1 field renders
- * directly, no accordion) + the table — nothing else above the data (P-1).
+ * directly) + the table — nothing else above the data (P-1).
  * The detail is `header` + back + notice + a lifecycle `banner` on the
  * exceptions only + the 6-entry identity strip (D-1a's cap; `Status` leads it
  * and the redundant `Code` row is gone — the header already carries the code),
  * then TWO task-named panels — `Coupon` · `Redemptions` (D-2, D-2a: a would-be
  * `History` panel would hold only Created, which lives in the identity strip
- * instead) — whose one named group (`Edit`) is a CLOSED `accordion`.
+ * instead) — whose one named group (`Edit`) is an always-open `section`.
  *
  * WHY THIS SCREEN HAS NO RENDER-STATE CHANNEL FOR DA-3. Every destructive/
  * risky write here is DA-2 (delete: no input, forbid-if-redeemed) or DA-4
@@ -227,10 +229,6 @@ interface CouponDraft {
 
 /** Matches the service's default page size (`couponsListQuery` limit default). */
 const PAGE_LIMIT = 25;
-
-/** §1's prose budgets, as named constants so copy can be measured against
- *  them rather than eyeballed. */
-const LABEL_BUDGET = 60;
 
 export function createCouponsPageHandler(): RouteHandler<CouponsPageInput> {
 	return createListDetailHandler<CouponsRenderState>({
@@ -544,20 +542,15 @@ function couponsBlocks(
 		},
 	});
 	const blocks: Block[] = [
-		{ type: "header", text: "Coupons", block_id: "coupons:hdr" },
+		{ type: "header", text: "Coupons" },
 		listIntroLine(result.countLine, LIST_INTRO),
 		createCouponButton(),
 	];
 	if (notice !== undefined) blocks.push(noticeBanner(notice));
 
 	blocks.push(
-		filterPanel({
-			form: searchForm(actions, path, filter),
-			blockId: "coupons:filters",
-			activeFilters,
-			// 1 field ≤ the default inline threshold (2) — renders directly, no
-			// accordion (L-2).
-		}),
+		// One field — always inline (L-2).
+		filterPanel({ form: searchForm(actions, path, filter) }),
 	);
 	if (summary !== undefined) {
 		blocks.push({
@@ -609,7 +602,7 @@ function newCouponScreen(
 	storeCurrency: string | undefined,
 ): Block[] {
 	const blocks: Block[] = [
-		{ type: "header", text: "New coupon", block_id: "coupons:new:hdr" },
+		{ type: "header", text: "New coupon" },
 		// No path: this screen belongs to the ROOT list, and the cancel verb
 		// re-lists the level the operator came from.
 		backButton(ACTION_CANCEL_NEW, "← Back to coupons"),
@@ -966,16 +959,13 @@ function couponFailClosed() {
  * the exceptions only) · the identity strip · TWO constant task-named panels —
  * `Coupon` · `Redemptions` (D-2).
  *
- * THE EDIT GROUP IS CLOSED. Coupons have no reconcile/fulfilment concept, so
- * D-5's rank-3 "named primary edit group" is the only rank that can fire here,
- * and it used to fire on every render — a screen operators open to READ
- * ("is this code live?") presented a loaded full-replace editor, one stray
- * Enter from rewriting the coupon's expiry, cap and use bounds (`PM §E3b`).
- * A rank that always fires is not a rank; the group now renders
- * `default_open: false` (a render-time call, exactly as Orders' Filters ships,
- * NOT a programmatic close), and the reading the operator came for is answered
- * above it — by `Status`, by the exception banner, and by the group's own
- * D-6 label.
+ * THE EDIT GROUP IS AN ALWAYS-OPEN SECTION. It used to be a closed accordion
+ * so a screen operators open to READ ("is this code live?") did not lead with a
+ * loaded full-replace editor (`PM §E3b`). The console now follows EmDash's own
+ * pages — no collapsed dropdowns — so the reading the operator came for is
+ * answered ABOVE the editor instead: by `Status`, by the exception banner, and
+ * by the section's own D-6 heading; the editor's own banner says saving
+ * replaces every field.
  */
 function detailBlocks(
 	actions: ScreenActions,
@@ -1094,7 +1084,6 @@ function couponPanel(detail: CouponSummaryWire, status: CouponStatus): Block[] {
 			],
 			["Valid", couponWindowSummary(detail.startsAt, detail.expiresAt)],
 		]),
-		editGroup(detail),
 	];
 	// Not offered on a coupon that has already ended: there is nothing to retire,
 	// and an expired coupon is reopened through the edit form's expiry instead.
@@ -1102,6 +1091,9 @@ function couponPanel(detail: CouponSummaryWire, status: CouponStatus): Block[] {
 	// Delete sits beside Retire on the coupon's own panel (QA round 2: it was only
 	// reachable under Redemptions), offered on the same rule — never redeemed.
 	if (detail.usesCount === 0) blocks.push(deleteCouponActions(detail));
+	// Edit comes LAST: a section's body runs to the next heading or the end of the
+	// list, so anything after it would read as part of the editor (X-35).
+	blocks.push(...editGroup(detail));
 	return blocks;
 }
 
@@ -1148,27 +1140,20 @@ function retireCouponActions(detail: CouponSummaryWire): ActionsBlock {
  * decides the branch once, the same way `createCouponForm`'s `condition`
  * decides it reactively on create.
  */
-function editGroup(detail: CouponSummaryWire): Block {
-	return {
-		type: "accordion",
-		block_id: `coupons:${detail.id}:edit`,
-		// D-6: the label carries the answer that makes opening it unnecessary —
-		// which is what makes shipping this group CLOSED cost the reader nothing.
-		label: fitLabel(
+function editGroup(detail: CouponSummaryWire): Block[] {
+	return section({
+		blockId: `coupons:${detail.id}:edit`,
+		// D-6: the heading carries the answer — what the coupon discounts, and when.
+		title: fitLabel(
 			`Edit — ${couponDiscountSummary(detail)} · ${couponWindowSummary(detail.startsAt, detail.expiresAt)}`,
 		),
-		// CLOSED — see {@link detailBlocks}. A render-time `default_open: false`,
-		// not a programmatic close: there is no open/close signal to read, and
-		// forcing a mounted group shut would mean changing its `block_id`, which
-		// remounts it and discards whatever the operator had typed.
-		default_open: false,
 		blocks: [
 			// HIGHER EMPHASIS THAN THE LABELS IT WARNS ABOUT. This was a `context`
 			// line — `text-sm text-kumo-subtle`, the same weight as the field
 			// labels below and quieter than their values — which is the wrong
 			// ranking for the one sentence that says a blank field DESTROYS a set
 			// value. A `banner` is the only primitive in this group that outranks
-			// them (icon + variant + title). It is nested inside the accordion, so
+			// them (icon + variant + title). It is inside the Coupon tab panel, so
 			// it does not count against §2's top-level banner budget (X-31).
 			{
 				type: "banner",
@@ -1187,11 +1172,11 @@ function editGroup(detail: CouponSummaryWire): Block {
 			},
 			editCouponForm(detail),
 		],
-	};
+	});
 }
 
 /** The disclosure gating the four rarely-touched bounds — a `toggle` inside the
- *  form, NOT a second `accordion`: an accordion would need a second FORM, and
+ *  form, NOT a second `section`: a section's body is blocks, so it would need a second FORM, and
  *  F-5a forbids splitting this one, because on a wire with no partial update
  *  saving one half silently nulls the other. See {@link editCouponForm}. */
 const LIMITS_TOGGLE = "showLimits";
@@ -1280,7 +1265,7 @@ function couponCurrencyRefusalCopy(err: unknown, sent: string | null): string | 
  * full-bleed inputs stacked — five of them empty on a typical coupon — is the
  * worst proportion offender in the console (`DESIGNER §3`), and the fix is to
  * put the rarely-touched bounds behind a closed disclosure. It CANNOT be a
- * second `accordion`, because an accordion holds blocks and a form's fields are
+ * second `section`, because a section's body is blocks and a form's fields are
  * not blocks: a second group would mean a second FORM, which F-5a forbids here
  * for the same reason this whole increment exists (saving the "Discount" half
  * would null the window and the use bounds). A `toggle` + `condition` gets the
@@ -1578,7 +1563,7 @@ function deleteCouponActions(detail: CouponSummaryWire): ActionsBlock {
 		value: { couponId: detail.id, code: detail.code },
 		confirm: {
 			// fitLabel: a merchant-chosen code has no length cap on the wire, so
-			// the title is truncated the same way a data-derived accordion label
+			// the title is truncated the same way a data-derived section heading
 			// is (§1's 60-char confirm.title budget, X-11).
 			title: fitLabel(`Delete ${detail.code}?`),
 			// 112 chars ≤ 200, trimmed from the former 301-char text.
@@ -2345,16 +2330,4 @@ function fields(blockId: string, entries: ReadonlyArray<readonly [string, string
 		block_id: blockId,
 		fields: entries.map(([label, value]) => ({ label, value })),
 	};
-}
-
-/** Trim a string to `max`, ellipsis included — for the one place a rendered
- *  string's length depends on SERVICE DATA (the Edit accordion's label, which
- *  carries the coupon's own discount/window summary and could otherwise blow
- *  §1's 60-char accordion-label budget). */
-function fit(text: string, max: number): string {
-	return text.length <= max ? text : `${text.slice(0, max - 1)}…`;
-}
-
-function fitLabel(text: string): string {
-	return fit(text, LABEL_BUDGET);
 }

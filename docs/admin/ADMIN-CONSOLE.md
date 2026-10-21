@@ -26,6 +26,24 @@ empty state and picker format were corrected to match.) Applies to the **five** 
 dispatched at `admin-route.ts:114-128` and whose actions at `:135-149`. (It governed seven until
 ADR-0015; see the sixth amendment below.)
 
+**Seventh amendment — always-open sections (2026-10-20, user decision: "no dropdowns — match the
+EmDash admin").** No Block Kit admin screen emits an `accordion` any more. A *named group* is now a
+**section**: a `header` carrying a `block_id`, followed by the group's body inline, always visible.
+The page title is the one `header` **without** a `block_id`. Consequences, each amended in place
+below with an "Amended 2026-10-20" note: **P-2** (headings), **§4.1** and the §2 skeleton table (the
+anchor is the first section), **X-11** (the 60-char budget now binds a *section heading*), the
+vocabulary table, **L-2** (the 3+-field filter variant is legacy and unused: `filterPanel` always
+renders inline), **L-9/L-9b** (per-row sections, always open — the density cost at up to 25 rows is a
+trade-off the user accepted; past 25 rows the table + click-through fallback still applies),
+**S-2/S-3/D-5/X-18** (no collapsed groups exist, so there is nothing to open or close), **X-31**
+(only page-level banners, those before the first section heading, count), **X-35/X-36** (apply to
+section headings) and **§12.5/§12.6**. The accordion *mechanics* rules (R-13a, R-14a, B-5..B-8, DA-3
+staging, D-6 label discipline) are kept as the contract for the `accordion` primitive should a
+screen ever use one again; they are **dormant** on the current screens and read as history
+otherwise. The code is `section()` in `packages/plugin/src/admin/scaffold/layout.ts` (not the Block
+Kit `section` block type: it emits a `header` plus the body) and the contract checks are in
+`test/helpers/block-contract.ts`.
+
 **Fifth amendment — the 2026-08-01 docs sweep.** Twenty-four increments have now been built against
 this document, and this pass reconciles it with what they shipped. Nothing here is new design: every
 edit states what the code does and cites it. **Six rules were deliberately overridden during the
@@ -194,7 +212,7 @@ them.
 | R-12a | The effect-synced four resync their **own display state only** — the `useEffect` calls `setValue`/`setSelected` and **never `onChange`**, while `form.tsx:44-46` seeds `values` once at mount. | `combobox.tsx:22-24`, `date-input.tsx:16-18` | After a re-render the operator **sees the new value and submits the old one** (or nothing, if the field had no `initial_value` at mount). A silent display/submit divergence, strictly worse than "cannot refresh" — it is why F-6 restricts `combobox` to non-prefilling fields. |
 | R-12b | `form.tsx:27-35` seeds `values` **only** from fields that declare an `initial_value`. | `blocks/form.tsx:30` | An untouched control with no `initial_value` is **absent from `values`**, not defaulted. A handler doing `Boolean(values.x)` on an untouched `toggle` silently writes `false` (F-6b). |
 | R-13 | `BlockRenderer` keys children by `block.block_id ?? index`; `actions`/`empty` key elements by `action_id ?? index`; `form` keys fields by `action_id`. | `renderer.tsx:78`, `blocks/actions.tsx:14`, `blocks/empty.tsx:18`, `blocks/form.tsx:68` | Block state (form values, accordion open, active tab) persists while the key is stable. Duplicate `action_id`s in one `actions` block collide — that, not a renderer bug, is why the transition buttons were split one-per-block. |
-| R-13a | A block nested inside `accordion`/`tab`/`columns` is keyed by its index **within that container's own `BlockRenderer` call**. | `blocks/accordion.tsx:20` → `renderer.tsx:78` | A sole child of an accordion is `block_id ?? 0` — index **0 forever**. The incidental remount a top-level block gets when a banner is prepended and shifts indices **does not happen inside a container**. This is why B-3a exists. |
+| R-13a | A block nested inside `accordion`/`tab`/`columns` is keyed by its index **within that container's own `BlockRenderer` call**. | `blocks/accordion.tsx:20` → `renderer.tsx:78` | A sole child of an accordion is `block_id ?? 0` — index **0 forever**. The incidental remount a top-level block gets when a banner is prepended and shifts indices **does not happen inside a container**. This is why B-3a exists. *(2026-10-20: a section's body joins the SAME list as its heading, so a form in a section is keyed by its index in that list and CAN remount when a banner is prepended — B-3a's `carriedForm` key still governs.)* |
 | R-14 | `tab` keeps `activeTab` in local state and renders `panels[activeTab]?.blocks ?? []`. | `blocks/tab.tsx:14,26` | If the panel count shrinks between renders while the tab block's key is stable, the operator sees a **blank panel**. The panel set must be constant (§4, D-3). |
 | R-14a | `accordion` reads `default_open` **once**, at mount: `useState(block.default_open ?? false)`. | `blocks/accordion.tsx:14` | A changed `block_id` remounts the group — and the remount **re-reads `default_open`**. Forcing a group open therefore needs **both** (§10, B-6). |
 | R-15 | `validateBlocks` does **not** include `"tab"` in `BLOCK_TYPES` — all 17 others are there. Re-verified on the installed 0.31.1. | `validation-Dq-a7CXm.js:325-343` | Runtime is unaffected (`validateBlocks` is exported but invoked nowhere in the runtime or admin app), but any test or tool that validates reports `Unknown block type 'tab'`. No upstream PR is filed under D1; see §14 item 4. |
@@ -436,18 +454,21 @@ precede a screen's primary data block. Nothing else may be inserted, in any orde
 
 | Skeleton | Primary data block | Blocks permitted above it, in this order |
 |---|---|---|
-| List (§3) | the primary `table`, or the `empty` that replaces it | `header` · ≤1 `context` · ≤1 create `actions` block (L-8) · ≤1 notice `banner` · the filter block (a **collapsed** `accordion`, or an inline `form` at ≤2 fields per L-2) · ≤1 active-filter `section` |
+| List (§3) | the primary `table`, or the `empty` that replaces it | `header` · ≤1 `context` · ≤1 create `actions` block (L-8) · ≤1 notice `banner` · the filter block (an inline `form`; *amended 2026-10-20: never collapsed, L-2*) · ≤1 active-filter `section` |
 | Detail (§4) | the identity `fields` strip | `header` · the back `actions` block · ≤2 `banner`s |
-| Report/settings (§4.1) | the first `accordion` | `header` · ≤1 `context` · ≤1 `banner` · `stats` (reports only) |
+| Report/settings (§4.1) | the first section (a `header` carrying a `block_id`; *amended 2026-10-20, was the first `accordion`*) | `header` · ≤1 `context` · ≤1 `banner` · `stats` (reports only) |
 
-**P-2 — One `header` per screen; structure comes from `tab` and `accordion`.** `header` is the
-page title and appears exactly once, as the first block. Named groups are `accordion`s (inside a
-`tab` panel, or at top level). `section` is **never** a heading — it is one line of prose with an
-`accessory` control. *Single exception, absent a React migration (§14 item 1, indefinitely
-deferred):* **at most one** `header` may
-appear inside a `tab` panel, to name a group that must always be visible and cannot be an
-accordion (the retired Orders detail's line-item table + totals block was the instance). One per
-panel, never two.
+**P-2 — One page-title `header` per screen; named groups are always-open sections; structure also
+comes from `tab`.** *Amended 2026-10-20 (user decision: no dropdowns).* The page title is a `header`
+**with no `block_id`**, appears exactly once, and is the first block. A named group is a **section**:
+a `header` **carrying a `block_id`** (the stable name tests and React find it by) followed by the
+group's body inline, in the same block list — at top level or inside a `tab` panel. **There are no
+collapsed groups**: nothing on these screens hides behind a click. `section` (the Block Kit block
+type) is **never** a heading — it is one line of prose with an `accessory` control; the scaffold
+helper `section()` is unrelated to it and emits a `header` plus the body. A `tab` panel may contain
+section headings (several per panel; the old "at most one `header` per panel" cap was a workaround for
+accordions being the only grouping and is lifted). *History: this rule previously said named groups
+were `accordion`s and allowed one panel `header` for a group that had to stay visible.*
 
 **P-3 — Emptiness earns words, not containers.** A collection with zero rows never gets its own
 heading *and* table *and* explanatory line. It gets one `context` line, or a `table` with
@@ -478,9 +499,9 @@ exceptions (§8).
 | Where | Max | Rule |
 |---|---|---|
 | Page-level `context` (the one line under `header`) | **140** | One sentence: what this screen is, plus the one global fact that changes how numbers read. |
-| Any other `context` | **200** | Longer explanation moves into the accordion it belongs to, or gets cut. |
+| Any other `context` | **200** | Longer explanation moves into the section it belongs to, or gets cut. |
 | `banner.description` | **240** | State the consequence and the next step. Nothing else. |
-| `accordion.label` | **60** | Name + the answer that makes opening it unnecessary (D-6). |
+| Section heading (`header` with a `block_id`; was `accordion.label`) | **60** | Name + the answer the operator would otherwise have to look for (D-6). *Amended 2026-10-20.* A data-derived heading is truncated (`fitLabel`, applied inside the scaffold `section()`; `valueLabel` shortens the longest value instead of the tail), not allowed to overflow — the full text goes in a `context` line. |
 | `fields` value | **40** *(human catch, not **H**)* | A style budget, not a truncation threshold — the renderer truncates on **pixel width** (~70–90 chars at `text-sm` in a half-width column), so 40 is chosen for scannability. Prose belongs in `context`. **This is the one budget a helper must not enforce** (X-11): a 45-char buyer email or a tracking URL busts it through no authoring fault, and truncating a tracking number or URL destroys the operator's ability to copy it. So the rule binds on what the **author writes** — split an address across fields, move prose to `context` — and never on what the **service returns**. A reviewer's question is "is this prose that belongs elsewhere?", not "is this over 40?". |
 | `confirm.title` | **60** | Names the act and the record. |
 | `confirm.text` | **200** | Exactly two sentences: one naming the concrete amount or record, one naming the consequence. |
@@ -514,22 +535,23 @@ Every other `confirm.text` on every screen is already ≤200 (`tax-page.ts:248` 
 
 | Block | Allowed use | Forbidden |
 |---|---|---|
-| `header` | Page title, once, first (P-2). Plus **at most one per `tab` panel**, for a group that must always be visible and named. | A third use. Two in one panel. |
+| `header` | Page title, once, first, **no `block_id`** — enforced by contract rule P-2 (a `block_id` would make it a section heading and silently disable the page-level X-11/X-31 checks). Plus **section headings**: a `header` carrying a `block_id`, followed by the group's body (P-2, amended 2026-10-20). | A second page title. A heading with no body. |
 | `section` | One line of prose **with** an `accessory` control (the active-filter summary + `Clear filters`). | As a heading. Without an accessory (use `context`). As a save receipt. |
 | `context` | One line of caption, caveat, cap statement, or degraded-state copy. | Paragraphs (see budget). |
-| `banner` | Action outcome (notice), a state demanding attention (reconciliation), the irreversibility warning inside a destructive group. `variant` ∈ `default` \| `alert` \| `error` **only** (R-18). | More than **2 at the top level of a screen** — banners inside an accordion are not counted. `variant:"info"`/`"success"`. The legacy `{variant,text}` shape (the renderer drops `text`). |
+| `banner` | Action outcome (notice), a state demanding attention (reconciliation), the irreversibility warning inside a destructive group. `variant` ∈ `default` \| `alert` \| `error` **only** (R-18). | More than **2 page-level banners** (before the first section heading) — banners inside a section are not counted (X-31, amended 2026-10-20). `variant:"info"`/`"success"`. The legacy `{variant,text}` shape (the renderer drops `text`). |
 | `fields` | Label/value pairs, authored in row-major **pairs** (R-3). | Odd entry counts. A money ladder (M-4). |
 | `table` | Every list and sub-list. | >6 columns; `sortable` (T-3); `badge` on non-state columns (T-5); `next_cursor` inside a leaf detail (T-8). |
 | `form` | Filters, creates, edits, staged destructive input. | Carrier or idempotency-key fields; >6 visible fields (F-5); being the trigger of a destructive act (DA-1). |
 | `actions` | A row of buttons. One block per logical group, **distinct `action_id` per button** (R-13). | One block per button. |
-| `accordion` | Every named group. | Nesting deeper than `tab > accordion > accordion`. |
+| section (`header` with `block_id` + body) | Every named group (amended 2026-10-20). | A section with an empty body. |
+| `accordion` | **Nowhere** on the current screens (amended 2026-10-20: no dropdowns). | Any use; where one is ever reintroduced, nesting deeper than `tab > accordion > accordion`. |
 | `tab` | Detail screens only. A **constant** per-screen panel set of 2–4 (§4, D-2). | List screens. A varying panel count (R-14). |
 | `empty` | Once per screen, maximum: the primary collection at true zero state (E-2). | Sub-tables. Secondary collections. Setting `command_line`. |
 | `meter` | A **real** bounded ratio: refunded-of-refundable, redemptions-of-max-uses. `custom_value` mandatory when `value`/`max` are money (M-8). | A synthetic `max`. Money without `custom_value`. |
 | `stats` | Reports only, **max 4 items** (R-16). | Detail screens. Raw minor units (M-1). |
 | `columns` | **Nowhere.** Forbidden on every screen. | Everywhere. It appears in no skeleton and no listing here; dead vocabulary in a consistency-first document means six teams invent six uses. The type stays for future screens. |
 | `chart` | **Nowhere.** It cannot format money (R-19). | Everywhere. |
-| `divider` | **Nowhere.** | Everywhere (R-4) — accordion boundaries already separate groups. |
+| `divider` | **Nowhere.** | Everywhere (R-4) — section headings already separate groups. |
 | `code` | **Nowhere.** | Everywhere. |
 | `image` | Nowhere yet — no screen has an image URL on the wire. Add with the first real consumer (§0.1 B). | Inventing a URL. |
 
@@ -546,7 +568,7 @@ false — never rendered empty.
 3  actions         (cond) ONE primary "New <entity>" button — omit where
                    the entity is not created in the admin          [L-8]
 4  banner          (cond) notice from the last action, or a degraded-read warning
-5  accordion|form  the filter                                        [L-2..L-5]
+5  form            the filter (inline; was accordion|form, amended 2026-10-20)                                       [L-2..L-5]
 6  section         (cond) active-filter summary + `Clear filters` accessory   [L-6]
 7  table           THE DATA — or `empty` in its place                 [§5, E-2]
 8  form            (cond) "Open <entity>" drill-in — omit at 0 rows   [L-7]
@@ -581,24 +603,23 @@ carrier after this, and it does not count.
 | Field count | Treatment |
 |---|---|
 | 0 | No filter block at all. |
-| 1–2 | Render the `form` **directly** at position 4 (no accordion — two fields cost ~150px). |
-| 3–4 | Wrap the `form` in an `accordion`, `default_open: false`. |
+| 1–2 | Render the `form` **directly** at position 4 (two fields cost ~150px). |
+| 3–4 | Render the `form` **directly** too. *Amended 2026-10-20: the former `accordion` variant (collapsed, `default_open: false`) is **legacy and unused**; `filterPanel` now always renders inline, so a future multi-field filter cannot bring a dropdown back.* |
 | 5+ | Not allowed. Drop the weakest filter or move it to a second level. **`filterPanel` throws at 5+** — a runtime failure in the sandbox suite, not a review catch (§0.1 D item 3). |
 
-This is exactly `filterPanel`'s `inlineUpTo` default of 2. Use the helper; do not re-derive.
+Use `filterPanel`; do not re-derive. (Its former `inlineUpTo` option is gone.)
 
-**L-3 — filter accordion label carries a count, never values.** The label is exactly `Filters`
+**L-3 — (legacy; no collapsed filter exists since 2026-10-20) the filter accordion label carried a count, never values.** The label is exactly `Filters`
 when every field is at its default, and `Filters (N active)` otherwise, where **N** is the number
 of the screen's authored filter fields whose submitted value differs from that field's default. No
 values, no truncation, no ellipsis. Values live in L-6's `section`, which has to exist anyway
 because `accordion.label` is a plain string and cannot hold a button.
 
-**L-4 — `default_open` is never `true`** for a filter block, including when a filter is active.
+**L-4 — (legacy) `default_open` is never `true`** for a filter block, including when a filter is active.
 The label states *that* it is filtered; the `section` below states *how*; the operator who wants
 to change it clicks once.
 
-**"Never `true`", not "always `false`".** `filterPanel` emits **no `default_open` key at all**
-(`layout.ts:157-162`), which is behaviourally identical — `accordion.tsx:14` is
+**"Never `true`", not "always `false`".** `filterPanel` emits **no `default_open` key at all**, which is behaviourally identical — `accordion.tsx:14` is
 `useState(block.default_open ?? false)` — but an assertion written as `default_open === false` fails
 against the helper's own output. Assert `!== true`, or assert the helper was used. Because the accordion's `block_id` is stable across an apply (B-7), an
 operator who opened the panel stays open across the round trip — collapsed-by-default costs them
@@ -627,9 +648,7 @@ which is why §12.3 and §12.4 spell the path out per level rather than abbrevia
 
 Clearing changes the **inner form's** key (B-3a) but **not** the accordion's (B-7) — getting that
 pair backwards is the one way to break `Clear filters`, so B-7 states both change conditions side
-by side. Clearing changes the **inner form's** key
-(B-3a) but **not** the accordion's (B-7) — see the note there, because getting this backwards is
-the one way to break `Clear filters`.
+by side.
 
 **L-7 — drill-in.** Table row clicks are unreachable on Block Kit (§14 item 2): one `form`
 directly below the table, one field, submit label `Open <entity>`. Omit the whole block at 0
@@ -684,8 +703,8 @@ CMS), both of which are now React screens where the same omission holds; the ent
 elsewhere is what decides it, not the renderer. Keep the rule: the next registry whose rows arrive
 from a sync will need it.
 
-**L-9 — registry screens (Tax, Shipping): the per-row accordion list is a runtime branch.** A
-level renders as a per-row accordion list (§12.3) **only** when both hold for the fetched page:
+**L-9 — registry screens (Tax, Shipping): the per-row section list is a runtime branch.** *Amended
+2026-10-20: was a per-row accordion list.* A level renders as a per-row list of always-open sections (§12.3) **only** when both hold for the fetched page:
 
 1. the page is complete — `nextCursor === null`; **and**
 2. `items.length <= 25`.
@@ -693,12 +712,14 @@ level renders as a per-row accordion list (§12.3) **only** when both hold for t
 Otherwise it renders `table` + drill-in (blocks 6–7) and moves editing to a detail level. **Both
 branches ship**, and the sandbox suite asserts the branch at 25 rows and at 26.
 
-**Every per-row accordion is `default_open: false`** — a level with 25 rows must not open one of
-them, and D-5's precedence does not apply here (it governs detail screens). A registry level
-therefore renders with zero open groups. (There is no create accordion left to say this of: L-8's
-create control is a button above the data and its form is on another screen.)
+**Every per-row section is always open** *(amended 2026-10-20; was `default_open: false` accordions,
+"zero open groups")*. A level of 25 rows therefore renders 25 edit forms inline. **That density cost
+is a trade-off the user accepted** in return for no dropdowns; the 25-row bound and the table +
+click-through fallback past it are unchanged and are what keep the screen from growing without limit.
+D-5's precedence does not apply here (it governs detail screens). (L-8's create control is a button
+above the data and its form is on another screen.)
 
-**L-9b — zero rows.** The accordion branch has no `table` to carry `empty_text`, so emptiness must
+**L-9b — zero rows.** The section branch (was: accordion branch) has no `table` to carry `empty_text`, so emptiness must
 be stated explicitly or the level renders header + context + create button and never says it is
 empty. **At zero rows an L-9 level omits the row list and renders the `empty` block per E-2, with
 its create action in `empty.actions`.** And **every L-9 fallback table sets `empty_text`** (T-7).
@@ -711,7 +732,7 @@ currently read far more than 25 (`tax-page.ts:147` limit 200, `:271` limit 500,
 **L-9a — exemption: a level whose read returns at most one row keeps its inline form.** Shipping's
 rates level is a `(methodId, currency)`-keyed lookup returning 0 or 1 row
 (`shipping-page.ts:471` `limit: 1`; the client's `getRate` returns a single nullable row). One
-accordion around one row costs a click and saves nothing.
+section around one row adds a heading and saves nothing.
 
 ---
 
@@ -768,8 +789,10 @@ count strands `activeTab` past the end and renders blank (R-14).
 **D-4 — `default_tab` is always `0`.** Even when the record needs action; block 4's banner is how
 urgency is communicated.
 
-**D-5 — exactly one group is open, and which one is computed, not chosen.** Every named group
-inside a panel is an `accordion` (P-2 — there is no other heading available). `default_open` is
+**D-5 — exactly one group is open, and which one is computed, not chosen.** *(Amended 2026-10-20: no current screen emits an `accordion`, so this algorithm is dormant — every
+named group is an always-open section (P-2) and there is no `default_open` to decide. Kept as the
+contract should an `accordion` ever return.)* Every named group
+inside a panel was an `accordion`. `default_open` is
 decided by this two-rule algorithm, evaluated **once per rendered response**:
 
 **Rule 1 — staged-confirm override.** If this response is a DA-3 state 2 **or a DA-3a / DA-3c
@@ -836,12 +859,12 @@ pattern, not an exception: where a rank opens a group whose content does not exi
 line, never a dropped group (D-3's logic one level down) and never a silent fall-through to the next
 rank.
 
-D-5 governs **detail screens only.** On a registry level's row list every per-row accordion and
-the create accordion are `default_open: false` (L-9), so such a level has **zero** open groups.
-On a report/settings screen S-3 names the one open group. A list screen's filter block is always
-`false` (L-4). Across all four cases X-18's "at most one per response" holds.
+D-5 governs **detail screens only.** *Amended 2026-10-20:* on a registry level's row list, a
+report/settings screen and a list screen's filter there are no collapsed groups at all (L-9, S-3,
+L-2), so there is nothing to open; X-18's "at most one `default_open: true` per response" holds
+trivially (zero accordions).
 
-**D-6 — accordion label carries the answer, when the answer is already on the wire.**
+**D-6 — a group's heading (section heading; formerly accordion label) carries the answer, when the answer is already on the wire.** *(Amended 2026-10-20: D-6, D-6a, D-6b apply unchanged to section headings; X-11/X-35/X-36 check them.)*
 `Refunds — $0.00 of $99.00 refunded`, `Notes (0)`, `Saved addresses (2)`,
 `Customer — qa-ordc-2@example.com (guest)`. An operator must be able to skip the group from the
 label alone.
@@ -899,7 +922,7 @@ Each method row's label leads with its **price**, which is not on `ShippingMetho
 | | |
 |---|---|
 | **Why it was allowed** | The price is the number the operator came to this level for, and the level exists to answer "what does each method cost?". A bare `standard — Standard shipping` sends every operator into a drill-in to read one figure. The zone-count case above has no such claim: a method count is navigational, not the answer. |
-| **What bounds it** | **`Promise.all` over at most 25 rows**, because the fan-out runs **only on the L-9 accordion branch** — past 25 the level renders the table branch, which shows no price and fires **no** rate reads at all (`shipping-page.ts:103-113`, and `isRegistryAccordion` at `:271-273`). The bound is structural, not a constant a team can raise. |
+| **What bounds it** | **`Promise.all` over at most 25 rows**, because the fan-out runs **only on the L-9 section branch (was: accordion branch)** — past 25 the level renders the table branch, which shows no price and fires **no** rate reads at all (`shipping-page.ts:103-113`, and `isRegistryAccordion` at `:271-273`). The bound is structural, not a constant a team can raise. |
 | **How it degrades** | Per row, never per level: a failed read logs and renders that one label as `Price unavailable`; an absent rate reads `No rate set`; the table branch reads `Price not loaded` (`methodPriceLabel`, `shipping-page.ts:743-753`). One slow zone never fails the screen. |
 | **What is priced and NOT bought back** | The reads recur **per render of the level** — on the drill-in, on every filter apply, and on every post-write re-list — and they carry no `AbortSignal` and no deadline. Both are recorded as follow-ups at the call site (`shipping-page.ts:676-687`), not as unknowns. |
 
@@ -908,12 +931,12 @@ Each method row's label leads with its **price**, which is not on `ShippingMetho
 row's failure degrades that row alone. A zone's method count meets none of the three, which is why
 the bullet above still stands unchanged.
 
-**D-7 — zero-count groups collapse to words.** An accordion whose only content would be an empty
+**D-7 — zero-count groups collapse to words.** A group (section) whose only content would be an empty
 table is not rendered; the fact moves into one `context` line at the parent level, merged with its
 siblings where they share a cause: "Guest checkout — no account, no saved addresses, no sign-in
 history." replaces three headings and three empty tables.
 
-**D-8 — nesting depth.** `tab > accordion > accordion` is the maximum. No third level.
+**D-8 — nesting depth.** `tab > accordion > accordion` is the maximum if an `accordion` is ever used; sections are flat (a `header` plus siblings), so they do not nest. No third level.
 
 ### 4.1 The report/settings skeleton
 
@@ -925,23 +948,22 @@ no per-record identity. They get their own skeleton.
 2  context      (cond) ≤140 chars
 3  banner       (cond) notice, or the fail-closed error banner
 4  stats        (reports only) max 4 items, all money formatted        [§12.5]
-5..n accordion  one per named group, exactly one with default_open: true
+5..n section    one per named group (header with block_id + body), always open
 ```
 
 **S-1.** No `tab`, no filter block, no drill-in, no `empty`. §3 and §4 do not apply.
-**S-2.** Every group is an `accordion`; the `header` appears once (P-2), and the panel-header
-exception does not apply here because there are no panels.
-**S-3.** **At most** one accordion is `default_open: true`, named explicitly per screen (§12.5,
-§12.6) — D-5's precedence table does not apply, because there is no record state to derive it from.
-*(Was "exactly one". INC-15 made Settings open **zero**, so the cap is what binds and the floor is
-gone.)*
+**S-2.** Every group is a section (P-2, amended 2026-10-20; was an `accordion`); the page-title
+`header` appears once and carries no `block_id`.
+**S-3.** *Amended 2026-10-20: no collapsed groups exist.* Every section is always open, so there is
+no open group to name per screen. *(History: this rule capped `default_open: true` accordions at one,
+named per screen; INC-15 had already made Settings open zero.)*
 
 | Screen | Open group | Cite |
 |---|---|---|
-| Reports (§12.5) | `reports:revenue` — the one open group | `reports-page.ts:552-559` |
-| Settings (§12.6) | **none** — all three groups render `default_open: false` | `settings-form.ts:676-681`, `:743-748`, `:758-763` |
+| Reports (§12.5) | all four sections always open (was: `reports:revenue` the one open group) | `reports-page.ts` |
+| Settings (§12.6) | all three sections always open (was: all `default_open: false`) | `settings-form.ts` |
 
-**Why Settings opens nothing, stated as a ruling.** Every group's **label** now carries its own
+**Why Settings used to open nothing (history; superseded 2026-10-20 by always-open sections — the headings still carry their values).** Every group's **label** now carries its own
 current values — `Store — <name>`, `Checkout & holds — 15 min hold · low stock at 5`,
 `Payments & email — Stripe test · webhook set · email set` — so the screen answers "what is this
 set to?" with **zero** clicks rather than one group's worth (D-6's discipline, applied to a
@@ -952,7 +974,7 @@ is legal under X-18, which caps `default_open: true` at one per response and set
 **A label that cannot state its value says so, and does not imply a zero.** When the secondary
 `GET /settings` read failed there is nothing persisted to name, so the label reads
 `Checkout & holds — not loaded` rather than a fabricated `0 min hold` (`settings-form.ts:645-656`).
-This is E-3's successful-empty / failed-read distinction, one level up, in an accordion label.
+This is E-3's successful-empty / failed-read distinction, one level up, in a section heading.
 **S-4.** Every form on these screens obeys the change-token rule (B-3, B-3a): its `block_id` comes
 from `carriedForm(...)`, so a save re-renders with fresh prefill. This applies to **all four**
 Settings forms and is the only reason a saved value redisplays correctly.
@@ -960,7 +982,7 @@ Settings forms and is the only reason a saved value redisplays correctly.
 branch returns the full screen plus a notice. **Shipped on all four saves** — `save-display`'s
 success and its invalid-name branch both return `renderPage(...)`
 (`settings-form.ts:244-282`), as do the two token saves (`:305`, `:331`); `save-operational` builds
-the same three-accordion output through `buildSettingsBlocks` directly, because it already holds a
+the same three-section output through `buildSettingsBlocks` directly, because it already holds a
 fresher settings wire than a second `GET` would return (`:370-405`).
 
 **Why the rule is stated this hard.** The fragment receipt was **terminal**, not merely ugly:
@@ -1407,7 +1429,7 @@ unsubmitted input in the siblings.** This is the same hazard `filterRow()` was w
 (§0.1 A). State it in the PR; do not discover it in review.
 
 **F-5a-i — a split form set carries one `context` line naming the discard.** Revision 4 accepted the
-hazard on the grounds that each split form sits in its own **collapsed** accordion (D-5), "so
+hazard on the grounds that each split form sat in its own **collapsed** accordion (D-5; *moot since 2026-10-20: every group is now always open, so every sibling is visible and the context line is all the more necessary*), "so
 realistically one is open at a time." **That reasoning does not hold and is withdrawn.** D-5
 constrains the emitted response, not the viewport: accordion open state is client-side and
 **sticky** across a re-render with an unchanged `block_id` (B-5, and D-5's "constrains the emitted
@@ -1458,8 +1480,8 @@ fields either way (the economics field, the two window dates, the toggle). Seven
 stacked, five of them empty on a typical coupon, was the worst proportion offender in the console;
 this is what fixed it.
 
-**It could not have been a second accordion**, and that is worth knowing before someone proposes
-one: an accordion holds *blocks*, and a form's fields are not blocks, so a second group means a
+**It could not have been a second group (section; formerly accordion)**, and that is worth knowing before someone proposes
+one: a group's body holds *blocks*, and a form's fields are not blocks, so a second group means a
 second **form** — which F-5a forbids here, because on a full-replace `PUT` saving one half nulls
 the other (`coupons-page.ts:1049-1052,1066-1077`). A `toggle` + `condition` buys the same collapsed
 shape inside one submit. **Reach for this pairing before widening a budget:** it hides nothing the
@@ -1556,10 +1578,10 @@ any other prefilling form.
 
 **F-7 — submit label names the result**: `Apply filters`, `Add note`, `Record fulfilment & ship`,
 `Save rate`, `Review refund`. Never `Submit`/`Save`/`OK` alone, and never an id (`Save std-us` →
-`Save rate`, with the id in the enclosing accordion label; M-7).
+`Save rate`, with the id in the section heading; M-7).
 
 **F-8 — the explanation that used to be a paragraph.** One `context` line above the form, inside
-the same accordion, ≤200 chars, describing only what the operator cannot infer from the labels
+the same section, ≤200 chars, describing only what the operator cannot infer from the labels
 ("Saving replaces every field below — a blank optional field saves as unset."). The rest of today's
 paragraph is deleted, not relocated.
 
@@ -2536,7 +2558,7 @@ on a nested child — see DA-3. A
 group forced open this way is **exempt from D-5's** "always false for anything destructive": D-5
 Rule 1 is precisely that exemption.
 
-**B-7 — the filter accordion's key and the filter form's key are different keys with different
+**B-7 — (dormant since 2026-10-20: filters are never collapsed, so there is no filter accordion key; the form-key half still holds) the filter accordion's key and the filter form's key are different keys with different
 change conditions.** Getting this wrong in either direction is a bug, so both halves are stated:
 
 | Key | Changes when | Never changes on |
@@ -2686,7 +2708,7 @@ form        (cond ≥1) combobox "Open coupon" options "<code> · 20% off · 3 u
             initial_value "none"                        submit "View / edit"
 
 ── THE CREATE SCREEN ── what "New coupon" drills into                             (L-8)
-header      "New coupon"        block_id coupons:new:hdr
+header      "New coupon"        ← the page title: NO block_id (P-2)
 actions     [← Back to coupons]   ← the cancel verb re-lists the level came from; no path
 banner      (cond) a refusal notice — ABOVE the form, because it explains the values the
                    form below has just put back
@@ -2838,6 +2860,8 @@ plain text — and T-5 is its generalisation. One badge column survives anywhere
 
 ### 12.3 Tax (`tax-page.ts`) — the per-row inline form fix
 
+> **Amended 2026-10-20 (always-open sections).** In every listing in §12.3–§12.6 below the node written `section` (formerly `accordion`) is an always-open group: a `header` whose text is the `label` shown and whose `block_id` is the one shown, followed by the group's body inline. `default_open` no longer exists on these screens; any `default_open …` text in a listing is history and is marked "was". The counts, values and thresholds in the labels are unchanged (they are the heading text).
+
 Today every row renders `divider` + edit form + delete button **simultaneously**: N rows cost
 N × (48px + ~5 field rows). Both levels are lists; neither has a detail screen.
 
@@ -2850,7 +2874,7 @@ actions     block_id tax:create-class-action                                    
 banner      (cond) notice
             ── NO filter block: this level has no filter fields (L-2, count 0) ──
 ── the row list (no table at this level; the labels are the columns) ──
-accordion   block_id "tax:class:u1.<b64 {classId}>"     default_open false
+section     block_id "tax:class:u1.<b64 {classId}>"     (always open; was default_open false)
             label "standard — Standard rate"        ← no count: TaxClassWire is {id,name},
                                                      a rate count is not on the wire (D-6)
             ├─ actions  [ button "View rates" → tax:open
@@ -2899,7 +2923,7 @@ form        cf{"tax:rate-filter", {__path:encodePath([classId])}}
 section     (cond) filterSummary(["zone: us"]) + accessory button "Clear filters"
                    value { __path: encodePath([classId]) }             ← depth 1, REQUIRED
 ── the row list (L-9) ──
-accordion   block_id "tax:rate:u1.<b64 {rateId}>"      default_open false
+section     block_id "tax:rate:u1.<b64 {rateId}>"      (always open; was default_open false)
             label "7.25% — United States · std-us · goods only"        ← AMENDED (D-6)
             ← THE RATE LEADS THE LABEL (INC-16). It used to trail the slug
               (`std-us — United States · 7.25% · goods only`), which starts every row's
@@ -2960,7 +2984,7 @@ banner      (cond ≥1 zone) block_id ship:coverage, alert — "Checkout only sh
             says, in its confirm, that checkout ships anywhere again. Both are CONSOLE
             guards: the rules client and stores accept the write unprompted.
                                                                    ← ADDED (QA 2026-10-02)
-accordion   block_id "ship:zone:u1.<b64 {zoneId}>"
+section     block_id "ship:zone:u1.<b64 {zoneId}>"
             label "us — United States"     ← NOT "· 3 methods": ShippingZoneWire is
                                              {id,name,regions}; the count would cost up to
                                              200 extra reads per render (D-6). Filed, not
@@ -2991,7 +3015,7 @@ context     '"Flat rate" always charges its rate; "Free shipping" charges nothin
 actions     block_id "ship:create-method-action:<zoneId>"     ← per-LEVEL, not per-screen
             [ button "New shipping method" style primary → the create SCREEN
               value { __path: encodePath([zoneId]) } ]        ← depth 1           (L-8)
-accordion   block_id "ship:method:u1.<b64 {methodId}>"
+section     block_id "ship:method:u1.<b64 {methodId}>"
             label "$4.99 — Standard shipping · standard · flat rate"   ← AMENDED  (D-6)
             ← THE PRICE LEADS THE LABEL (INC-16): it is the number the operator came to
               this level for, and leading with it starts every row's amount at the same
@@ -3051,6 +3075,8 @@ T-5).
 
 ### 12.5 Reports (`reports-page.ts`) — §4.1 skeleton
 
+> **Amended 2026-10-20 (always-open sections).** The `section` / `default_open` note at the head of §12.3 applies to every listing in §12.3–§12.6.
+
 ```
 header      "<Store> — Reports"
 context     "1 Jul – 31 Jul 2026 (UTC) · Revenue is net order totals on paid-and-later
@@ -3091,24 +3117,23 @@ stats       max 4 items (R-16). ALL FOUR ARE FILLED in the ordinary single-curre
               to report. Its figure is stated in its own currency, in one line
             (zero currencies ⇒ one card, label "Revenue", value "—",
              description "No orders in range")
-accordion   block_id reports:revenue    label "Revenue by day"           ← AMENDED
+section     block_id reports:revenue    label "Revenue by day"           ← AMENDED
             ← NO "(N buckets)": a bucket is this codebase's word for a GROUP BY, not the
               operator's word for anything, and with the series now continuous the count
               only restated the length of the range                        (X-19, D-6)
-            default_open TRUE            ← the one open group (S-3)
+            (always open; was default_open true, the one open group under S-3)
             └─ context (cond: the series was NOT filled) — a sparse series is never left
                        to look continuous; the group says so, in one line, above the rows
             └─ table  block_id reports:revenue-table
                       Period (text) | Revenue (text, formatMoney)             2 columns
                       ← `Currency` badge column DELETED (T-5, M-2); when the range spans
                         several currencies, ONE table PER currency, each in its own
-                        accordion labeled "Revenue by day (USD)". No chart (R-19, §2).
-                        In that case the per-currency accordions REPLACE `reports:revenue` as
-                        siblings; the first (highest order count) is default_open TRUE, the
-                        rest false — S-3 still holds at exactly one open group.
+                        section headed "Revenue by day (USD)". No chart (R-19, §2).
+                        In that case the per-currency sections REPLACE `reports:revenue` as
+                        siblings (all always open; was: first open, rest closed under S-3).
                       page_action_id reports:page   // never fires
                       empty_text "No revenue in range."
-accordion   block_id reports:statuses   label "Orders by status (6)"   default_open false
+section     block_id reports:statuses   label "Orders by status (6)"   (always open; was default_open false)
             └─ table  Status (text) | Orders (number)   page_action_id reports:page
                       empty_text "No orders in range."
                       ← Status is PLAIN TEXT (INC-10) and the reason differs from every
@@ -3118,13 +3143,13 @@ accordion   block_id reports:statuses   label "Orders by status (6)"   default_o
                         report's whole point (which of these numbers is the one to worry
                         about?) rendered `paid` and `failed` at exactly the same weight.
                         The cell says the exception in words instead: `cancelled · closed`
-accordion   block_id reports:top        label "Top products (10)"      default_open false
+section     block_id reports:top        label "Top products (10)"      (always open; was default_open false)
             └─ context (cond: the range spans several currencies) — revenue is not shown
                        per product, because the wire carries no per-product currency and
                        summing across currencies is not a thing (M-2)
                table  Product | Qty (number) | Revenue (formatMoney)
                       page_action_id reports:page   empty_text "No sales in range."
-accordion   block_id reports:low        label "Low stock (3)"          default_open false
+section     block_id reports:low        label "Low stock (3)"          (always open; was default_open false)
             label     "Low stock (3) — at or below 5"   ← when the threshold is known (D-6)
             └─ table  Title | SKU (code) | On hand (text)      ← AMENDED (INC-03, INC-05)
                       page_action_id reports:page
@@ -3169,12 +3194,14 @@ adds one without the registration. That is the general rule; Reports is now the 
 having done it in the right order.
 
 Also: `divider` at `:124` deleted (R-4); the four `section` "headings" at `:125,136,146,157` become
-the accordion labels above (P-2); the legacy `{variant, text}` banner at `:81-84` becomes
+the section headings above (P-2); the legacy `{variant, text}` banner at `:81-84` becomes
 `{variant:"error", title, description}` (§2, M-9).
 
 ### 12.6 Settings (`settings-form.ts`) — §4.1 skeleton
 
-Three accordions. The fourth group this section once specified, `Service connection` (the
+> **Amended 2026-10-20 (always-open sections).** The `section` / `default_open` note at the head of §12.3 applies to every listing in §12.3–§12.6.
+
+Three sections (was accordions). The fourth group this section once specified, `Service connection` (the
 `X-Internal-Token` / `X-Service-Token` forms), was **retired** in work order 02 INC-D3a with the
 service it authenticated to (ADR-0020); its write-only-field discipline (INC-09, below) carries over
 unchanged to `Payments & email`, which holds **one form per credential** for the same reason the
@@ -3187,12 +3214,11 @@ header      "Settings"
 context     "Your store's name, how checkout holds stock, and the payment and email accounts
              the store uses."                                                     (≤140)
 banner      (cond) notice, or the fail-closed error banner (variant "error")
-── ALL THREE GROUPS RENDER `default_open: false` (INC-15). ZERO open groups is legal:
-   S-3 caps at one per response and sets no floor. Each LABEL carries its own current
-   values instead, which is why closing them costs the reader nothing.  ← AMENDED (D-6)
-accordion   block_id settings:store
+── ALL THREE GROUPS ARE ALWAYS-OPEN SECTIONS (amended 2026-10-20; INC-15 had them
+   `default_open: false`). Each heading still carries its own current values (D-6).
+section     block_id settings:store
             label "Store — <display name>"  |  "Store — no display name"
-            default_open FALSE                                            ← AMENDED
+            (always open; was default_open false)                                            ← AMENDED
             └─ form  cf{"settings:store", {displayName}}                         ← S-4
                      text_input  "Store display name"   initial_value <kv value>
                      submit "Save display name"          → save-display
@@ -3216,11 +3242,11 @@ accordion   block_id settings:store
                ← the display-name form stays the group's index-0 child. When the
                  settings read failed the currency form is replaced by a context line
                  ("The store currency could not be loaded right now…"), E-1.
-accordion   block_id settings:checkout
+section     block_id settings:checkout
             label "Checkout & holds — 15 min hold · low stock at 5"
                   |  "Checkout & holds — not loaded"   ← when the secondary read failed:
                      the label says so rather than implying a zero (E-3, D-6b)
-            default_open FALSE
+            (always open; was default_open false)
             └─ context "These apply to live checkout as soon as you save them."   (≤200)
                form  cf{"settings:ops", {holdTtl, lowStock}}                     ← S-4
                      text_input  "Cart hold time (minutes)"   initial_value "15"
@@ -3231,7 +3257,7 @@ accordion   block_id settings:checkout
                        nothing is saved; the form keeps what was typed (J6), the label
                        keeps what is stored. "Settings saved" states the new values.
                      submit "Save checkout settings"          → save-operational
-accordion   block_id settings:payments
+section     block_id settings:payments
             label "Payments & email — <Stripe> · <webhook> · <email>"
             ← U-8: states what card checkout and email have: "Stripe test" | "Stripe
               live" (from the key's prefix) | "Stripe key set" (an unchecked legacy
@@ -3240,7 +3266,7 @@ accordion   block_id settings:payments
               "Stripe test/live" means card checkout is ready; "webhook set" | "no webhook"; "email set" |
               "no email" (ADR-0031: whether the host hands over `ctx.email`). The optional edge key states its status on its
               own field. Longest render is exactly 60 (X-11).
-            default_open FALSE
+            (always open; was default_open false)
             └─ context "Keys are never shown once saved. Leave a field blank to keep the
                         key you saved before."                                    (≤200)
                per credential: context (the expected shape, e.g. "Starts with sk_live_ or
@@ -3373,7 +3399,7 @@ catch, exactly as every non-**H** row is — named, not silently dropped.
 | X-8 | | A destructive form submit with no confirm, or a red button on an act outside DA-5's definition. **Or** a second `style:"primary"` on one screen, or a `primary` on a form's submit — `primary` marks L-8's create button and nothing else. | DA-1, DA-5, L-8 |
 | X-9 | H | Money as raw minor units, or `number_input` / `format:"number"` on a money field or column. **Helper heuristic** (a helper cannot otherwise tell raw minor units from a legitimate integer): reject a cell or `fields` value matching `/^\d+$/` whose label matches `/amount\|total\|price\|revenue\|cost\|subtotal\|discount\|refund/i` **and does NOT match the count exclusion `/count\|recorded\|quantity\|qty\|items/i`.** Anything outside the heuristic is a human catch. | M-1, M-3, T-4 |
 | X-10 | H | A money ladder in a `fields` block instead of a two-column `table`. | M-4 |
-| X-11 | H | Any string over an **authored** §1 budget: page-level `context` 140, any other `context` 200, `banner.description` 240, `accordion.label` 60, `confirm.title` 60, `confirm.text` 200, `empty.description` 200. **Seven, not eight** — the `fields`-value 40 is explicitly **excluded** (X-11a). | §1 |
+| X-11 | H | Any string over an **authored** §1 budget: page-level `context` 140, any other `context` 200, `banner.description` 240, section-heading (`header` with a `block_id`; was `accordion.label`) 60, `confirm.title` 60, `confirm.text` 200, `empty.description` 200. **Seven, not eight** — the `fields`-value 40 is explicitly **excluded** (X-11a). | §1 |
 | X-11a | | A `fields` value over 40 chars **that the author wrote** — prose that belongs in a `context` line, or an address crammed into one entry. **Human catch only, never H:** the value is usually service data, so a 45-char buyer email or a tracking URL busts the budget through no authoring fault, and truncating a tracking number or URL destroys the operator's ability to copy it. Emails, tracking numbers, URLs and free-text reasons are left intact. | §1 |
 | X-12 | | `header` used for a subsection beyond P-2's one-per-panel exception; `section` used as a heading or a receipt. | P-2 |
 | X-13 | H | A raw wire timestamp on any operator-facing surface — an ISO instant of any precision, milliseconds, or a non-UTC offset. Every instant renders through `scaffold/datetime.ts`. | M-6 |
@@ -3381,8 +3407,8 @@ catch, exactly as every non-**H** row is — named, not silently dropped.
 | X-15 | H | Any `columns` or `chart` block. | §2 |
 | X-16 | H | A conditionally-present `tab` panel; `default_tab` other than 0; a panel count differing from D-2's table. | D-3, D-4 |
 | X-17 | H | A form without an explicit `block_id`; a context-carrying `block_id` with no `:u1.` segment; a prefilling form whose `block_id` did not come from `carriedForm`. | B-1, B-3, B-3a |
-| X-18 | H | More than one `default_open: true` **per rendered response**. **Counted on the emitted JSON only.** A screenshot showing two expanded groups is **not** an X-18 finding: client-side open state survives a re-render with an unchanged `block_id`, so a group opened by an earlier response stays open through a response carrying `default_open: false` (B-5) — and on any screen with a D-5 Rule-2 rank this is **permanent and accepted** (B-8). | D-5, B-5, B-8 |
-| X-19 | | A bare-noun accordion label where a count or total is available *on the wire the level already reads* (D-6). | D-6 |
+| X-18 | H | *(Vacuous on the current screens since 2026-10-20: no `accordion` is emitted.)* More than one `default_open: true` **per rendered response**. **Counted on the emitted JSON only.** A screenshot showing two expanded groups is **not** an X-18 finding: client-side open state survives a re-render with an unchanged `block_id`, so a group opened by an earlier response stays open through a response carrying `default_open: false` (B-5) — and on any screen with a D-5 Rule-2 rank this is **permanent and accepted** (B-8). | D-5, B-5, B-8 |
+| X-19 | | A bare-noun section heading / accordion label where a count or total is available *on the wire the level already reads* (D-6). | D-6 |
 | X-20 | H | The phrase "no oversell" / "oversold" / "overselling" in any **rendered string**. Code comments documenting the domain invariant are exempt and must not be changed. No live violation on any screen; a regression gate. | voice |
 | X-21 | | Apologetic degraded copy, or a raw status code / URL / exception in the UI. | E-4 |
 | X-22 | H | An "Open X" picker whose option **labels** contain the record id, whose option **value** is not the record id, more than one per list, or **that is a `select` rather than a `combobox`** — a `select` puts the id in the trigger (R-17a). | L-7, M-7, R-17b |
@@ -3394,12 +3420,12 @@ catch, exactly as every non-**H** row is — named, not silently dropped.
 | X-28 | H | An idempotency key or nonce anywhere in a form field, a carrier payload, or a `button.value`. **Except stock movements** — a per-click nonce in the action payload (ADR-0015 amended 2026-10-02). | F-2a |
 | X-29 | H | A DA-3 state-2 accordion that changes its `block_id` without `default_open: true`, or sets the flag without changing the id. | B-6 |
 | X-30 | | A prefilling `combobox`; or a `combobox` used for a closed set of ≤8 **whose values are already readable words** — a **record picker is a `combobox` at any count** and is never an X-30 (L-7). | F-6, R-12a, R-17b |
-| X-31 | H | More than 2 `banner`s at the top level of a screen (banners inside an accordion are not counted). | §2 |
+| X-31 | H | More than 2 page-level `banner`s — those before the first section heading; banners inside a section are not counted (amended 2026-10-20). | §2 |
 | X-32 | | A handler that can return non-2xx or let an exception escape. | E-6 |
 | X-33 | | A `condition` used to carry a field that is submitted but never drawn. | R-26, F-5b |
 | X-34 | | **The N-1 catch.** A diff that follows a §12 listing line against a §5–§10 rule or a §13 anti-pattern; **or** a correct deviation from a listing that the PR body does not disclose. Both are fails; the first ships a bug, the second leaves six teams to rediscover it. | N-1 |
-| X-35 | H | A destructive `accordion` whose label is a bare verb or noun (`Cancel order`, `Delete zone`, `Refund a different amount`) with no consequence clause. | D-6a |
-| X-36 | H | A D-6 label containing a degenerate ratio — `$0.00 of $0.00`, `0 of 0`, `0%` of nothing. | D-6b |
+| X-35 | H | A destructive group (a section whose body, or an `accordion`, holds a `style:"danger"` button with a confirm) whose heading/label is a bare verb or noun (`Cancel order`, `Delete zone`, `Refund a different amount`) with no consequence clause. | D-6a |
+| X-36 | H | A D-6 label (section heading or `accordion.label`; amended 2026-10-20) containing a degenerate ratio — `$0.00 of $0.00`, `0 of 0`, `0%` of nothing. | D-6b |
 | X-37 | H | **More than 4 `style:"danger"` buttons in one `actions` block**; or a DA-2c fan-out whose `confirm` lost its `style:"danger"` along with the button's. | DA-2c |
 | X-38 | H | A DA-2b/DA-3 `button.value` carrying no watermark, or a confirm handler that writes without re-reading. Countable on the payload; the re-read is asserted by the screen's own stale-watermark test. **A comparison skipped because the watermark was absent is this row, not an exemption from it** — see X-46. | DA-2a, DA-3a, DA-3a-iv |
 | X-39 | H | A DA-3a or DA-3c refusal that does not re-render **the same group**, forced open per B-6, with the submitted values prefilled and **flattened onto that group**. Assert the refused response's open-group id equals the staged group's, the form's `initial_value`s echo the submission, and the nested collect-group is absent from the response. | DA-3a-i |
