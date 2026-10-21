@@ -77,6 +77,12 @@ export {
 	type PaymentDeclineContractOptions,
 	type PaymentDeclineHarness,
 } from "./payment-decline-contract.js";
+export {
+	paidAmountMismatchContract,
+	type PaidAmountMismatchAnomaly,
+	type PaidAmountMismatchContractOptions,
+	type PaidAmountMismatchHarness,
+} from "./paid-amount-mismatch-contract.js";
 export { orderExpiryContract, type OrderExpiryContractOptions } from "./order-expiry-contract.js";
 export {
 	orderTimelineContract,

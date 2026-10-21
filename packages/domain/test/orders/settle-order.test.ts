@@ -167,7 +167,7 @@ describe("settleOrder", () => {
 		expect(h.inventory.onHand("SKU-1")).toBe(5); // returned exactly once
 	});
 
-	test("a mismatched-amount verified duplicate on an ALREADY-PAID order is a no-op success — no false AMOUNT_MISMATCH anomaly, no wrong-amount side-effects", async () => {
+	test("a mismatched-amount verified duplicate on an ALREADY-PAID order is a no-op success — no false AMOUNT_MISMATCH, only the low-severity PAID_AMOUNT_MISMATCH, no wrong-amount side-effects", async () => {
 		const order = await pendingPhysical();
 		const paid = await settleOrder(h.settleDeps, h.stripeGw, evt(order));
 		expect(paid.ok).toBe(true);
@@ -183,7 +183,9 @@ describe("settleOrder", () => {
 		);
 		expect(dup.ok).toBe(true);
 		if (dup.ok) expect(dup.noop).toBe(true);
-		expect(h.paymentEventStore.anomalies()).toHaveLength(0);
+		// Never AMOUNT_MISMATCH; the stray is kept as the informational kind (#35).
+		expect(h.paymentEventStore.anomalies().map((a) => a.kind)).toEqual(["PAID_AMOUNT_MISMATCH"]);
+		expect((await h.orderStore.getById(order.id))?.reconciliationFlag).toBeNull();
 		// And the wrong-amount confirmation re-drove nothing: one payment record.
 		expect(h.orderStore.payments(order.id)).toHaveLength(1);
 	});

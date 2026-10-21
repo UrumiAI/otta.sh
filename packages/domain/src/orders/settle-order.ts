@@ -52,8 +52,9 @@ type VerifiedSuccess = Extract<ConfirmationResult, { ok: true }>;
  * 3. Amount + currency MUST equal `order_totals.total` — mismatch ⇒ reject +
  *    record anomaly (§9 Risk 3); no auto-refund. Checked only while the order
  *    can still settle: a terminal order short-circuits FIRST (review G6), so a
- *    stray mismatched duplicate on an already-paid order is a plain no-op, not
- *    a false anomaly.
+ *    stray mismatched duplicate on an already-paid order is never a false
+ *    `AMOUNT_MISMATCH`. It moves nothing, but stays in the forensic trail as the
+ *    low-severity `PAID_AMOUNT_MISMATCH` anomaly, once per gateway event (#35).
  * 4. Guarded `pending → paid`; record the `payments` row; per line: physical ⇒
  *    `commit(reservationId)` (a lost adopted hold is the loud 0-row anomaly, §5);
  *    digital ⇒ grant entitlement (grant-once). An already-`paid` order re-drives
@@ -162,9 +163,25 @@ export async function settleOrder(
 	// grant-once entitlement) — only when the amounts MATCH (the crash-window
 	// heal is always a redelivery of the original, matching event; a
 	// wrong-amount stray re-drives nothing) — then no-op.
+	//
+	// A wrong-amount stray is still a fact worth keeping (#35): it is recorded as
+	// the LOW-SEVERITY `PAID_AMOUNT_MISMATCH` — no reconciliation flag, no state
+	// move. Gated on `claimed`, the event's own once-only: a redelivery of the
+	// same event arrives at a later instant, so the anomaly store's
+	// field-digest idempotency would not collapse it, but the dedupe claim does.
+	// (A crash between the claim and this write loses that one informational row;
+	// nothing about the order or the money depends on it.)
 	if (order.state === "paid") {
 		if (conf.amount === order.totals.total && conf.currency === order.totals.currency) {
 			await applyPaidSideEffects(deps, conf, order, now);
+		} else if (claimed) {
+			await deps.paymentEventStore.recordAnomaly({
+				orderId: order.id,
+				gateway: conf.gateway,
+				kind: "PAID_AMOUNT_MISMATCH",
+				detail: `verified success on already-paid order: got ${String(conf.amount)} ${conf.currency}, expected ${String(order.totals.total)} ${order.totals.currency} (event ${conf.dedupeKey})`,
+				now,
+			});
 		}
 		const fresh = await deps.orderStore.getById(order.id);
 		return { ok: true, order: fresh, noop: true };
