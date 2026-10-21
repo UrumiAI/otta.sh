@@ -27,7 +27,9 @@ export type PaymentAnomalyKind =
 	 *  The order settled at the right amount, so this is not `AMOUNT_MISMATCH` (which
 	 *  refuses a settle) and nothing is flagged or moved — it is kept only so the
 	 *  stray confirmation stays in the forensic trail. Recorded once per gateway
-	 *  event: only on that event's first delivery. */
+	 *  event: only on that event's first delivery. EXCEPTION: when the event names
+	 *  a payment the order never captured (a second, real charge), `settleOrder`
+	 *  also flags the order for manual reconciliation. */
 	| "PAID_AMOUNT_MISMATCH";
 
 /**

@@ -105,13 +105,21 @@ export function paidAmountMismatchContract(
 	describe(`paidAmountMismatchContract [${opts.dialect}]`, () => {
 		const gateway = new FakePaymentGateway({ id: "stripe" });
 
-		function event(order: Order, amount: number, dedupeKey: string) {
+		/** A verified success. By default it names the order's OWN PaymentIntent — the
+		 *  one the seed settle captured; `providerRef` names a different one. */
+		function event(
+			order: Order,
+			amount: number,
+			dedupeKey: string,
+			currencyCode = "USD",
+			providerRef = `pi_${order.id}`,
+		) {
 			return gateway.webhook({
 				outcome: "succeeded",
 				orderId: order.id,
-				providerRef: `pi_${order.id}`,
+				providerRef,
 				amount,
-				currency: "USD",
+				currency: currencyCode,
 				dedupeKey,
 			});
 		}
@@ -150,6 +158,72 @@ export function paidAmountMismatchContract(
 			expect(after.totals).toEqual(before.totals);
 			expect(await h.settleDeps.orderStore.getCapturedPayments(order.id)).toHaveLength(1);
 			expect(await h.settleDeps.inventoryStore.getOnHand(`SKU-PAIDMM-1`)).toBe(ON_HAND - QTY);
+		});
+
+		test("a same-amount stray in a DIFFERENT currency is a mismatch too: one PAID_AMOUNT_MISMATCH, nothing moved", async () => {
+			const h = await makeHarness();
+			const order = await paidOrder(h, "eur");
+
+			const res = await settleOrder(
+				h.settleDeps,
+				gateway,
+				event(order, TOTAL_CENTS, "evt_stray_eur", "EUR"),
+			);
+
+			expect(res.ok).toBe(true);
+			if (res.ok) expect(res.noop).toBe(true);
+			const found = await anomaliesOf(h, order.id, "PAID_AMOUNT_MISMATCH");
+			expect(found).toHaveLength(1);
+			expect(found[0]?.detail).toContain(`got ${String(TOTAL_CENTS)} EUR`);
+			const after = await state(h, order.id);
+			expect(after.state).toBe("paid");
+			expect(after.reconciliationFlag).toBeNull();
+			expect(await h.settleDeps.orderStore.getCapturedPayments(order.id)).toHaveLength(1);
+		});
+
+		test("a stray naming a payment this order NEVER captured is a double charge: anomaly AND reconciliation flag, once", async () => {
+			const h = await makeHarness();
+			const order = await paidOrder(h, "dbl");
+
+			for (let delivery = 0; delivery < 2; delivery++) {
+				h.advanceClock(60_000);
+				const res = await settleOrder(
+					h.settleDeps,
+					gateway,
+					event(order, 1, "evt_stray_dbl", "USD", "pi_second_intent"),
+				);
+				expect(res.ok, `delivery ${String(delivery)}`).toBe(true);
+				if (res.ok) expect(res.noop).toBe(true);
+			}
+
+			const found = await anomaliesOf(h, order.id, "PAID_AMOUNT_MISMATCH");
+			expect(found).toHaveLength(1);
+			expect(found[0]?.detail).toContain("pi_second_intent");
+			expect(found[0]?.detail).toContain("possible double charge");
+			const after = await state(h, order.id);
+			expect(after.state, "the flag alerts; it moves no state").toBe("paid");
+			expect(after.reconciliationFlag).toContain("possible double charge");
+			expect(after.reconciliationFlag).toContain("pi_second_intent");
+			// The second charge is NOT folded into this order's ledger: a human decides.
+			const captured = await h.settleDeps.orderStore.getCapturedPayments(order.id);
+			expect(captured.map((p) => p.providerRef)).toEqual([`pi_${order.id}`]);
+		});
+
+		test("a double-charge stray never overwrites a reconciliation flag already on the order", async () => {
+			const h = await makeHarness();
+			const order = await paidOrder(h, "preflag");
+			await h.settleDeps.orderStore.flagReconciliation(order.id, "operator: checking", {
+				expectedFlag: null,
+			});
+
+			await settleOrder(
+				h.settleDeps,
+				gateway,
+				event(order, 1, "evt_stray_preflag", "USD", "pi_other_intent"),
+			);
+
+			expect((await state(h, order.id)).reconciliationFlag).toBe("operator: checking");
+			expect(await anomaliesOf(h, order.id, "PAID_AMOUNT_MISMATCH")).toHaveLength(1);
 		});
 
 		test("a redelivery of the SAME stray event, at a later instant, does not duplicate the anomaly", async () => {

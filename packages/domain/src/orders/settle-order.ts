@@ -54,7 +54,9 @@ type VerifiedSuccess = Extract<ConfirmationResult, { ok: true }>;
  *    can still settle: a terminal order short-circuits FIRST (review G6), so a
  *    stray mismatched duplicate on an already-paid order is never a false
  *    `AMOUNT_MISMATCH`. It moves nothing, but stays in the forensic trail as the
- *    low-severity `PAID_AMOUNT_MISMATCH` anomaly, once per gateway event (#35).
+ *    low-severity `PAID_AMOUNT_MISMATCH` anomaly, once per gateway event (#35);
+ *    when it names a payment the order never captured (a double charge) the
+ *    order is also flagged for manual reconciliation.
  * 4. Guarded `pending → paid`; record the `payments` row; per line: physical ⇒
  *    `commit(reservationId)` (a lost adopted hold is the loud 0-row anomaly, §5);
  *    digital ⇒ grant entitlement (grant-once). An already-`paid` order re-drives
@@ -165,23 +167,49 @@ export async function settleOrder(
 	// wrong-amount stray re-drives nothing) — then no-op.
 	//
 	// A wrong-amount stray is still a fact worth keeping (#35): it is recorded as
-	// the LOW-SEVERITY `PAID_AMOUNT_MISMATCH` — no reconciliation flag, no state
-	// move. Gated on `claimed`, the event's own once-only: a redelivery of the
-	// same event arrives at a later instant, so the anomaly store's
-	// field-digest idempotency would not collapse it, but the dedupe claim does.
-	// (A crash between the claim and this write loses that one informational row;
-	// nothing about the order or the money depends on it.)
+	// the LOW-SEVERITY `PAID_AMOUNT_MISMATCH`, with no state move. The row is
+	// gated on `claimed`, the event's own once-only: a redelivery of the same
+	// event arrives at a later instant, so the anomaly store's field-digest
+	// idempotency would not collapse it, but the dedupe claim does. The cost: ANY
+	// failure between the claim and this write — a crash, or `recordAnomaly`
+	// itself throwing, answering 5xx so the gateway redelivers with
+	// `claimed === false` — loses that one informational row. Nothing about the
+	// order or the money depends on it.
+	//
+	// It stays informational ONLY while the stray names the payment this order
+	// already captured. A `providerRef` the ledger does not hold means a SECOND
+	// payment really succeeded against a paid order — a double charge, possible
+	// once the gateway's idempotency window on the intent has lapsed — so the
+	// order is also flagged for manual reconciliation, the operator alert. That
+	// flag is gated on the order being unflagged, not on `claimed`, so a failure
+	// before it is healed by the redelivery; the compare-and-set never overwrites
+	// a flag written since `order` was read (#364).
 	if (order.state === "paid") {
 		if (conf.amount === order.totals.total && conf.currency === order.totals.currency) {
 			await applyPaidSideEffects(deps, conf, order, now);
-		} else if (claimed) {
-			await deps.paymentEventStore.recordAnomaly({
-				orderId: order.id,
-				gateway: conf.gateway,
-				kind: "PAID_AMOUNT_MISMATCH",
-				detail: `verified success on already-paid order: got ${String(conf.amount)} ${conf.currency}, expected ${String(order.totals.total)} ${order.totals.currency} (event ${conf.dedupeKey})`,
-				now,
-			});
+		} else {
+			const captured = await deps.orderStore.getCapturedPayments(order.id);
+			const knownPayment = captured.some((p) => p.providerRef === conf.providerRef);
+			if (claimed) {
+				await deps.paymentEventStore.recordAnomaly({
+					orderId: order.id,
+					gateway: conf.gateway,
+					kind: "PAID_AMOUNT_MISMATCH",
+					detail:
+						`verified success on already-paid order: got ${String(conf.amount)} ${conf.currency}, expected ${String(order.totals.total)} ${order.totals.currency} (event ${conf.dedupeKey})` +
+						(knownPayment
+							? ""
+							: `; payment ${conf.providerRef} is not this order's captured payment — possible double charge`),
+					now,
+				});
+			}
+			if (!knownPayment && order.reconciliationFlag === null) {
+				await deps.orderStore.flagReconciliation(
+					order.id,
+					`possible double charge: unrecorded payment ${conf.providerRef} on paid order`,
+					{ expectedFlag: null },
+				);
+			}
 		}
 		const fresh = await deps.orderStore.getById(order.id);
 		return { ok: true, order: fresh, noop: true };
