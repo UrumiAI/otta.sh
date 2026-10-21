@@ -795,8 +795,16 @@ describe("storefront/checkout/summary — the buyer's selection (workerd sandbox
 			shippingMethod: { reason: "MISSING_SHIPPING_ADDRESS" },
 		});
 		const totals = totalsOf(result);
-		expect(totals["shipping"]).toEqual({ money: null, label: "Not calculated" });
-		expect(totals["tax"]).toEqual({ money: null, label: "Not calculated" });
+		expect(totals["shipping"]).toEqual({
+			state: "not_calculated",
+			money: null,
+			label: "Not calculated",
+		});
+		expect(totals["tax"]).toEqual({
+			state: "not_calculated",
+			money: null,
+			label: "Not calculated",
+		});
 		expect(result).toMatchObject({
 			shipping: { status: "address_needed", options: [] },
 			addressRequired: true,
@@ -859,7 +867,11 @@ describe("storefront/checkout/summary — the buyer's selection (workerd sandbox
 				shippingMethodId: null,
 				destination: { country: "US", region: null },
 			});
-			expect(totalsOf(result)["shipping"]).toEqual({ money: null, label: "Not calculated" });
+			expect(totalsOf(result)["shipping"]).toEqual({
+				state: "not_calculated",
+				money: null,
+				label: "Not calculated",
+			});
 		},
 	);
 
@@ -910,7 +922,11 @@ describe("storefront/checkout/summary — the buyer's selection (workerd sandbox
 
 		expect(result["ok"]).toBe(true);
 		const totals = totalsOf(result);
-		expect(totals["tax"]).toEqual({ money: null, label: "Not calculated" });
+		expect(totals["tax"]).toEqual({
+			state: "not_calculated",
+			money: null,
+			label: "Not calculated",
+		});
 		expect(totals["total"]!.label).toBe("$49.98");
 		expect(JSON.stringify(result)).not.toContain(ZONE_ID);
 	});
@@ -1143,7 +1159,11 @@ describe("storefront/checkout/summary — the zone derived from the destination 
 		});
 		expect(optionsOf(result).map((o) => o["id"])).toEqual([P2.DE_NORATE, P2.DE_STD]);
 		expect(totalsOf(result)["tax"]!.label).toBe("$5.70");
-		expect(totalsOf(result)["shipping"]).toEqual({ money: null, label: "Not calculated" });
+		expect(totalsOf(result)["shipping"]).toEqual({
+			state: "not_calculated",
+			money: null,
+			label: "Not calculated",
+		});
 	});
 
 	describe("the single-option preselect", () => {
@@ -1281,7 +1301,11 @@ describe("storefront/checkout/summary — the zone derived from the destination 
 			uncalculatedReason: "digital_only",
 		});
 		expect(result["selectionErrors"]).toEqual({});
-		expect(totalsOf(result)["tax"]).toEqual({ money: null, label: "Not calculated" });
+		expect(totalsOf(result)["tax"]).toEqual({
+			state: "not_calculated",
+			money: null,
+			label: "Not calculated",
+		});
 	});
 
 	test("the WORST fallback path is bounded: method NOT_IN_ZONE → coupon refused → bare → preselect = 4 quotes, 5 product reads", async () => {

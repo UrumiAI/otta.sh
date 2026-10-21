@@ -260,8 +260,9 @@ becomes a static filled track at 40% opacity.
   when it is above the price, in the same currency, on a product for sale; a store may keep a
   lower "was" during a price rise, and striking it would claim a discount nobody is giving. A
   page passes it only beside a live price, and the theme never compares two figures itself.
-- **"Not calculated" is not zero.** `totals.shipping.label` and `totals.tax.label` can mean
-  *this store has not configured it*. That renders as muted mono prose — `Not calculated` —
+- **"Not calculated" is not zero.** `totals.shipping.state` and `totals.tax.state` can be
+  `not_calculated` — *this store has not configured it*. Branch on `state`, never on the label
+  text (which is display copy and may be localised). That renders as muted mono prose — `Not calculated` —
   and **never** as `$0.00`, `—` alone, or "Free shipping". When `totalExcludesUncalculated`
   is set, the footnote below the total says which parts are missing.
 - Cart line totals are quantity-only; a cart line snapshots no price. Don't imply otherwise.

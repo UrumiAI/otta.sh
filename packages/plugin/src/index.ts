@@ -460,6 +460,7 @@ export {
 	NOT_CALCULATED_LABEL,
 	orderTotalsFlags,
 	stripeClientSecret,
+	type CheckoutAmountState,
 	type CheckoutAmountView,
 	type CheckoutLineView,
 	type CheckoutTaxRowView,

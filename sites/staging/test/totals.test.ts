@@ -30,22 +30,89 @@ import {
 } from "../src/lib/totals.js";
 
 const money = (formatted: string): CheckoutAmountView => ({
+	state: "calculated",
 	money: { amount: 4000, currency: "USD", formatted },
 	label: formatted,
 });
-const uncomputed = (label: string): CheckoutAmountView => ({ money: null, label });
+const notCalculated = (label: string = NOT_CALCULATED_LABEL): CheckoutAmountView => ({
+	state: "not_calculated",
+	money: null,
+	label,
+});
+const notApplicable = (label: string = NOT_APPLICABLE_LABEL): CheckoutAmountView => ({
+	state: "not_applicable",
+	money: null,
+	label,
+});
 
 describe("isUncalculated — figures and prose are told apart by the view model, not by parsing", () => {
 	test("a computed amount is a figure, even at zero", () => {
 		// A genuine free-shipping order is a real number and must render as one.
 		expect(
-			isUncalculated({ money: { amount: 0, currency: "USD", formatted: "$0.00" }, label: "$0.00" }),
+			isUncalculated({
+				state: "calculated",
+				money: { amount: 0, currency: "USD", formatted: "$0.00" },
+				label: "$0.00",
+			}),
 		).toBe(false);
 	});
 
 	test("an uncomputed amount is prose", () => {
-		expect(isUncalculated(uncomputed(NOT_CALCULATED_LABEL))).toBe(true);
-		expect(isUncalculated(uncomputed(NOT_APPLICABLE_LABEL))).toBe(true);
+		expect(isUncalculated(notCalculated())).toBe(true);
+		expect(isUncalculated(notApplicable())).toBe(true);
+	});
+});
+
+const reworded = (state: "not_calculated" | "not_applicable", label: string) =>
+	({ state, money: null, label }) satisfies CheckoutAmountView;
+
+/**
+ * #122: the theme decides by the view model's `state`, never by comparing the
+ * label to the plugin's English constants. A localised or reworded label must
+ * not change what a row means — the §7 rule cannot ride on spelling.
+ */
+describe("the amount's state decides, not its label (#122)", () => {
+	test("a not-applicable amount with a label other than the constant still never prints it raw", () => {
+		// A localised dash, or a plugin that rewords "—" to "n/a", is still
+		// "not applicable": the page's own prose (or the default) is printed.
+		expect(sumRowText({ label: "Discount", amount: reworded("not_applicable", "n/a") })).toBe(
+			NOT_APPLIED_LABEL,
+		);
+		expect(
+			sumRowText({
+				label: "Discount",
+				amount: reworded("not_applicable", "n/a"),
+				fallback: "No coupon applied",
+			}),
+		).toBe("No coupon applied");
+	});
+
+	test("a not-calculated amount with a localised label is still NAMED in the footnote", () => {
+		const rows = [
+			{ label: "Shipping", amount: reworded("not_calculated", "Nicht berechnet") },
+			{ label: "Tax", amount: reworded("not_calculated", "Nicht berechnet") },
+		];
+		const note = uncalculatedFootnote(rows, true) ?? "";
+		expect(note).toContain("shipping");
+		expect(note).toContain("tax");
+		expect(sumRowText(rows[0]!)).toBe("Nicht berechnet");
+	});
+
+	test("a not-applicable amount whose label happens to read 'Not calculated' is never named", () => {
+		const note =
+			uncalculatedFootnote(
+				[{ label: "Discount", amount: reworded("not_applicable", NOT_CALCULATED_LABEL) }],
+				true,
+			) ?? "";
+		expect(note).not.toContain("discount");
+	});
+
+	test("digital_only judges the tax by its state, not its label", () => {
+		const rows = [
+			{ label: "Shipping", amount: reworded("not_calculated", "Nicht berechnet") },
+			{ label: "Tax", amount: reworded("not_calculated", "Nicht berechnet") },
+		];
+		expect(checkoutFootnote("digital_only", rows, true)).toMatch(/no location-based tax/);
 	});
 });
 
@@ -92,9 +159,7 @@ describe("sumRowText — what a row actually prints", () => {
 	});
 
 	test("an uncomputed row prints its honest label", () => {
-		expect(sumRowText({ label: "Shipping", amount: uncomputed(NOT_CALCULATED_LABEL) })).toBe(
-			"Not calculated",
-		);
+		expect(sumRowText({ label: "Shipping", amount: notCalculated() })).toBe("Not calculated");
 	});
 
 	test("a bare em dash NEVER reaches the screen, even with no fallback supplied", () => {
@@ -103,19 +168,17 @@ describe("sumRowText — what a row actually prints", () => {
 		// implementation returned `row.amount.label` when the prop was omitted,
 		// printing exactly the lone dash §7 forbids. Every test in the suite
 		// happened to supply a fallback, so none of them saw it.
-		const text = sumRowText({ label: "Discount", amount: uncomputed(NOT_APPLICABLE_LABEL) });
+		const text = sumRowText({ label: "Discount", amount: notApplicable() });
 		expect(text).not.toBe(NOT_APPLICABLE_LABEL);
 		expect(text).toBe(NOT_APPLIED_LABEL);
 		expect(text.trim().length).toBeGreaterThan(1);
 	});
 
-	test("the default is keyed on the plugin's CONSTANT, not on a hard-coded dash", () => {
+	test("the default is keyed on the amount's STATE, not on a dash", () => {
 		// If the plugin ever changes what "not applicable" looks like, this has
-		// to keep working rather than silently start echoing the new label.
+		// to keep working rather than silently start echoing the new label (#122).
 		expect(NOT_APPLICABLE_LABEL).toBe("—");
-		expect(sumRowText({ label: "Discount", amount: uncomputed(NOT_APPLICABLE_LABEL) })).toBe(
-			NOT_APPLIED_LABEL,
-		);
+		expect(sumRowText({ label: "Discount", amount: notApplicable() })).toBe(NOT_APPLIED_LABEL);
 	});
 
 	test("a bare em dash is replaced by the row's own prose — §7 forbids it alone", () => {
@@ -126,7 +189,7 @@ describe("sumRowText — what a row actually prints", () => {
 		expect(
 			sumRowText({
 				label: "Discount",
-				amount: uncomputed(NOT_APPLICABLE_LABEL),
+				amount: notApplicable(),
 				fallback: "No coupon applied",
 			}),
 		).toBe("No coupon applied");
@@ -139,10 +202,10 @@ describe("sumRowText — what a row actually prints", () => {
 	});
 
 	test("nothing here can produce $0.00, an empty string, or the word Free", () => {
-		for (const label of [NOT_CALCULATED_LABEL, NOT_APPLICABLE_LABEL]) {
+		for (const amount of [notCalculated(), notApplicable()]) {
 			const text = sumRowText({
 				label: "Shipping",
-				amount: uncomputed(label),
+				amount,
 				fallback: "Not calculated",
 			});
 			expect(text).not.toBe("");
@@ -160,7 +223,7 @@ describe("sumRowText — what a row actually prints", () => {
 		// keystroke from the constant.
 		for (const label of ["", "  ", "–", "-", "—", "…"]) {
 			expect(
-				sumRowText({ label: "Shipping", amount: uncomputed(label) }),
+				sumRowText({ label: "Shipping", amount: notCalculated(label) }),
 				`label: ${JSON.stringify(label)}`,
 			).toBe(NOT_APPLIED_LABEL);
 		}
@@ -169,7 +232,7 @@ describe("sumRowText — what a row actually prints", () => {
 	test("a fallback that says nothing is not trusted either", () => {
 		for (const fallback of ["", "   ", "–"]) {
 			expect(
-				sumRowText({ label: "Discount", amount: uncomputed(NOT_APPLICABLE_LABEL), fallback }),
+				sumRowText({ label: "Discount", amount: notApplicable(), fallback }),
 				`fallback: ${JSON.stringify(fallback)}`,
 			).toBe(NOT_APPLIED_LABEL);
 		}
@@ -179,7 +242,7 @@ describe("sumRowText — what a row actually prints", () => {
 		// The guard is about substance, not about length, and it must not start
 		// swallowing honest prose — in any script.
 		for (const label of ["Not calculated", "Ask at checkout", "非課税", "0"]) {
-			expect(sumRowText({ label: "Shipping", amount: uncomputed(label) })).toBe(label);
+			expect(sumRowText({ label: "Shipping", amount: notCalculated(label) })).toBe(label);
 		}
 	});
 });
@@ -224,7 +287,7 @@ describe("moneyCellText — the same rule, for a line item's money cell (§7)", 
 
 	test("it agrees with sumRowText on the case the two share", () => {
 		expect(moneyCellText(NOT_APPLICABLE_LABEL)).toBe(
-			sumRowText({ label: "Discount", amount: uncomputed(NOT_APPLICABLE_LABEL) }),
+			sumRowText({ label: "Discount", amount: notApplicable() }),
 		);
 	});
 });
@@ -244,12 +307,12 @@ describe("isUnpricedText — the value decides, not a flag the caller may forget
 });
 
 describe("uncalculatedFootnote — the footnote NAMES what is missing", () => {
-	const shipping = { label: "Shipping", amount: uncomputed(NOT_CALCULATED_LABEL) };
-	const tax = { label: "Tax", amount: uncomputed(NOT_CALCULATED_LABEL) };
+	const shipping = { label: "Shipping", amount: notCalculated() };
+	const tax = { label: "Tax", amount: notCalculated() };
 	const subtotal = { label: "Subtotal", amount: money("$40.00") };
 	const discount = {
 		label: "Discount",
-		amount: uncomputed(NOT_APPLICABLE_LABEL),
+		amount: notApplicable(),
 		fallback: "No coupon applied",
 	};
 
@@ -315,8 +378,8 @@ describe("uncalculatedFootnote — the footnote NAMES what is missing", () => {
  * one of them. The review says the one that is true.
  */
 describe("checkoutFootnote — the reason the total is incomplete, stated truthfully", () => {
-	const shipping = { label: "Shipping", amount: uncomputed(NOT_CALCULATED_LABEL) };
-	const tax = { label: "Tax", amount: uncomputed(NOT_CALCULATED_LABEL) };
+	const shipping = { label: "Shipping", amount: notCalculated() };
+	const tax = { label: "Tax", amount: notCalculated() };
 	const rows = [shipping, tax];
 
 	test("no_zones (or no reason given) keeps the store-has-not-set-it-up footnote", () => {

@@ -135,6 +135,56 @@ describe("buildCheckoutTotals — honest zeros (§1.4)", () => {
 		expect(totals.appliedCouponCode).toBe("SAVE5");
 	});
 
+	test("every amount says WHY it has no money in `state` — themes never read the label to decide (#122)", () => {
+		const unconfigured = buildCheckoutTotals(BREAKDOWN, {
+			locale: LOCALE,
+			shippingSelected: false,
+			taxZoneSelected: false,
+		});
+		expect(unconfigured.subtotal.state).toBe("calculated");
+		expect(unconfigured.discount.state).toBe("not_applicable");
+		expect(unconfigured.shipping.state).toBe("not_calculated");
+		expect(unconfigured.tax.state).toBe("not_calculated");
+		expect(unconfigured.taxRows.map((row) => row.amount.state)).toEqual(["not_calculated"]);
+		expect(unconfigured.total.state).toBe("calculated");
+
+		// A computed zero is "calculated", whatever its figure.
+		const configured = buildCheckoutTotals(
+			{ ...BREAKDOWN, discountCents: 500, totalCents: 3498, appliedCouponCode: "SAVE5" },
+			{ locale: LOCALE, shippingSelected: true, taxZoneSelected: true },
+		);
+		for (const amount of [
+			configured.subtotal,
+			configured.discount,
+			configured.shipping,
+			configured.tax,
+			configured.total,
+		]) {
+			expect(amount.state).toBe("calculated");
+			expect(amount.money).not.toBeNull();
+		}
+	});
+
+	test("an uncalculated amount carries no money, so the state and the money never disagree", () => {
+		const totals = buildCheckoutTotals(BREAKDOWN, {
+			locale: LOCALE,
+			shippingSelected: false,
+			taxZoneSelected: false,
+		});
+		for (const amount of [totals.discount, totals.shipping, totals.tax]) {
+			expect(amount.state).not.toBe("calculated");
+			expect(amount.money).toBeNull();
+		}
+	});
+
+	test("the rounding row is a calculated amount", () => {
+		const totals = buildCheckoutTotals(
+			{ ...BREAKDOWN, roundingCents: -2, totalCents: 3996 },
+			{ locale: LOCALE, shippingSelected: true, taxZoneSelected: true },
+		);
+		expect(totals.rounding?.state).toBe("calculated");
+	});
+
 	test("totalExcludesUncalculated is true while either shipping or tax is uncomputed, and false once both are", () => {
 		const neither = buildCheckoutTotals(BREAKDOWN, {
 			locale: LOCALE,
@@ -390,8 +440,16 @@ describe("buildOrderView — honest zeros on the ORDER's own totals", () => {
 
 	test('neither method nor zone ⇒ shipping and tax are "Not calculated"', () => {
 		const view = buildOrderView(order({}), LOCALE);
-		expect(view.totals.shipping).toEqual({ money: null, label: NOT_CALCULATED_LABEL });
-		expect(view.totals.tax).toEqual({ money: null, label: NOT_CALCULATED_LABEL });
+		expect(view.totals.shipping).toEqual({
+			state: "not_calculated",
+			money: null,
+			label: NOT_CALCULATED_LABEL,
+		});
+		expect(view.totals.tax).toEqual({
+			state: "not_calculated",
+			money: null,
+			label: NOT_CALCULATED_LABEL,
+		});
 		expect(view.totals.totalExcludesUncalculated).toBe(true);
 	});
 
@@ -405,7 +463,11 @@ describe("buildOrderView — honest zeros on the ORDER's own totals", () => {
 			LOCALE,
 		);
 		expect(charged.totals.shipping.label).toBe("$5.99");
-		expect(charged.totals.tax).toEqual({ money: null, label: NOT_CALCULATED_LABEL });
+		expect(charged.totals.tax).toEqual({
+			state: "not_calculated",
+			money: null,
+			label: NOT_CALCULATED_LABEL,
+		});
 		expect(charged.totals.totalExcludesUncalculated).toBe(true);
 
 		// A method whose free threshold the order met: a COMPUTED zero, never an absence.
@@ -421,12 +483,20 @@ describe("buildOrderView — honest zeros on the ORDER's own totals", () => {
 		expect(view.totals.tax.label).toBe("$10.00");
 		expect(view.totals.taxRows.map((r) => r.amount.label)).toEqual(["$10.00"]);
 		// Only shipping (nothing ships) is still uncalculated — never the tax.
-		expect(view.totals.shipping).toEqual({ money: null, label: NOT_CALCULATED_LABEL });
+		expect(view.totals.shipping).toEqual({
+			state: "not_calculated",
+			money: null,
+			label: NOT_CALCULATED_LABEL,
+		});
 	});
 
 	test("an order without `taxLocated` (every order before ADR-0032's fix) keeps the zone rule", () => {
 		const view = buildOrderView(order({ taxCents: 0 }), LOCALE);
-		expect(view.totals.tax).toEqual({ money: null, label: NOT_CALCULATED_LABEL });
+		expect(view.totals.tax).toEqual({
+			state: "not_calculated",
+			money: null,
+			label: NOT_CALCULATED_LABEL,
+		});
 	});
 
 	test("zone + method ⇒ both computed, and the total excludes nothing", () => {

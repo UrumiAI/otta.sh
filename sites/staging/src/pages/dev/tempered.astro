@@ -72,17 +72,27 @@ const [
 const at = (seconds: number): string => new Date(Date.now() + seconds * 1000).toISOString();
 
 const money = (formatted: string): CheckoutAmountView => ({
+	state: "calculated",
 	money: { amount: 0, currency: "USD", formatted },
 	label: formatted,
 });
-const uncomputed = (label: string): CheckoutAmountView => ({ money: null, label });
+const notCalculated: CheckoutAmountView = {
+	state: "not_calculated",
+	money: null,
+	label: NOT_CALCULATED_LABEL,
+};
+const notApplicable: CheckoutAmountView = {
+	state: "not_applicable",
+	money: null,
+	label: NOT_APPLICABLE_LABEL,
+};
 
 /** The totals every store gets before anyone configures shipping or tax. */
 const UNCONFIGURED = [
 	{ label: "Subtotal", amount: money("$40.00") },
-	{ label: "Discount", amount: uncomputed(NOT_APPLICABLE_LABEL), fallback: "No coupon applied" },
-	{ label: "Shipping", amount: uncomputed(NOT_CALCULATED_LABEL) },
-	{ label: "Tax", amount: uncomputed(NOT_CALCULATED_LABEL) },
+	{ label: "Discount", amount: notApplicable, fallback: "No coupon applied" },
+	{ label: "Shipping", amount: notCalculated },
+	{ label: "Tax", amount: notCalculated },
 ];
 
 /** A store that HAS configured both — every row is a real figure. */

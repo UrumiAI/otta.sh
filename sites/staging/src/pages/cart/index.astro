@@ -368,8 +368,16 @@ const summary =
  * shipping, no synthetic zero, no tax this store has not calculated. What is
  * missing is named in prose, not marked with a dash.
  */
-const asMoney = (wire: CartMoneyWire): CheckoutAmountView => ({ money: wire, label: wire.formatted });
-const asProse = (label: string): CheckoutAmountView => ({ money: null, label });
+const asMoney = (wire: CartMoneyWire): CheckoutAmountView => ({
+	state: "calculated",
+	money: wire,
+	label: wire.formatted,
+});
+const asProse = (label: string): CheckoutAmountView => ({
+	state: "not_calculated",
+	money: null,
+	label,
+});
 
 const cartTotal = pricing?.total ?? null;
 /** Nothing on this cart carries a figure — and the two reasons for that read
