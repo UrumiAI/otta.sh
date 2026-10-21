@@ -1571,9 +1571,15 @@ function paymentsGroup(
 	emailStatus: EmailSendingStatus,
 	refusal?: PaymentRefusal,
 ): Block[] {
+	// A value the operator just typed is shown again even if its re-read failed:
+	// what is displayed is what they typed, not the stored value. Only a NON-empty
+	// one, though: a refused publishable key comes back as "", and a blank field
+	// over a failed read is exactly what #513 must never submit.
 	const plainForm = plainSettingsForm(
 		refusal === undefined ? plain : new Map([...plain, ...refusal.typed]),
-		unread,
+		refusal === undefined
+			? unread
+			: new Set([...unread].filter((key) => (refusal.typed.get(key) ?? "") === "")),
 	);
 	return section({
 		blockId: "settings:payments",
@@ -1891,7 +1897,7 @@ type SecretProblem = "unreadable" | "invalid";
  *  the way out; names nothing about the key. */
 const SECRET_PROBLEM_HELP: Readonly<Record<SecretProblem, string>> = {
 	unreadable:
-		"This key is saved encrypted, but this site cannot decrypt it, so it is not used. Whoever deployed the site restores the EMDASH_ENCRYPTION_KEY it was saved with (DEPLOYMENT.md §3), or enter the key again here.",
+		"This key is saved encrypted, but this site cannot decrypt it, so it is not used. Whoever deployed it restores the EMDASH_ENCRYPTION_KEY it was saved with (DEPLOYMENT.md §3), or enter the key again.",
 	invalid:
 		"This key is saved, but it is empty or not in the expected format (it may have been saved outside these Otta settings), so it is not used. Enter it again here, or remove it.",
 };

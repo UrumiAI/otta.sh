@@ -230,12 +230,39 @@ describe("a failed read never blanks a stored value (#513)", () => {
 		expect(kv.get(LOGIN_LINK_URL_KEY)).toBe(SIGN_IN);
 	});
 
+	test("a refused save whose re-read fails keeps the typed sign-in URL, and never shows a blank key", async () => {
+		const { ctx, kv, failingReads } = makeCtx({
+			[STRIPE_PUBLISHABLE_KEY_KEY]: PK_TEST,
+			[LOGIN_LINK_URL_KEY]: SIGN_IN,
+		});
+		const page = await invoke(ctx, { type: "page_load" });
+		// The refusal's re-render reads kv again, and both reads fail this time.
+		failingReads.add(STRIPE_PUBLISHABLE_KEY_KEY).add(LOGIN_LINK_URL_KEY);
+		const refused = await invoke(ctx, {
+			type: "form_submit",
+			action_id: "save-payment-settings",
+			values: submittedFrom(page.blocks, {
+				stripePublishableKey: "garbage",
+				loginLinkUrl: NEW_SIGN_IN,
+			}),
+		});
+		expect(refused.toast).not.toMatchObject({ type: "success" });
+		const form = formFor(refused.blocks, "save-payment-settings");
+		// What was typed is what is shown, so the sign-in URL field stays.
+		expect(field(form, "loginLinkUrl")).toMatchObject({ initial_value: NEW_SIGN_IN });
+		// The refused key comes back as "": over a failed read it is left out, not blank.
+		expect(field(form, "stripePublishableKey")).toBeUndefined();
+		expect(kv.get(STRIPE_PUBLISHABLE_KEY_KEY)).toBe(PK_TEST);
+		expect(kv.get(LOGIN_LINK_URL_KEY)).toBe(SIGN_IN);
+	});
+
 	test("every read fails: no payment-settings form to save, and the page still renders", async () => {
 		const page = await invoke(makeCtx({}, { kvFails: true }).ctx, { type: "page_load" });
 		expect(formFor(page.blocks, "save-payment-settings")).toBeUndefined();
 		const texts = contextTexts(page.blocks).join("\n");
 		expect(texts).toContain("The Stripe publishable key couldn't be loaded");
 		expect(texts).toContain("The sign-in page address couldn't be loaded");
+		assertBlockContract(page.blocks, { screen: "settings", level: "list" });
 	});
 
 	test("a stored empty value is not a failed read: the field is shown, blank", async () => {
