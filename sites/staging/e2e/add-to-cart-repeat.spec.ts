@@ -3,17 +3,28 @@
  *
  * The product page's form used to post the ONE idempotency key the server
  * rendered into it. Going Back from the cart usually hands the same document back
- * from the history cache, key and all, so a second press was replayed as the
- * first: no second unit, no error. The page's `add-to-cart-key.js` now mints a
- * key per submission, and this spec drives the two halves of that rule:
+ * from the history cache (bfcache), key and all, so a second press was replayed
+ * as the first: no second unit, no error. The page's `add-to-cart-key.js` now
+ * mints a key per submission. This spec drives the two halves end to end:
  *
- *  - an intentional second press — Back, press again — ADDS a unit;
- *  - a double-click (the same submission twice) still adds exactly ONE.
+ *  - Back, press again: a second unit;
+ *  - a double-click (the same submission twice): exactly one unit, one key.
  *
- * The unit tier pins the script's rule in happy-dom
- * (`test/add-to-cart-key-script.test.ts`) and the store's replay-vs-add over a
- * real store (`packages/plugin/test/cart-routes.sandbox.test.ts`). This is the
- * browser's own history cache and its own double submit, which neither can fake.
+ * WHAT THIS DOES NOT PROVE, measured rather than assumed: the history-cache case
+ * itself. Headless Chromium under Playwright never restores from bfcache, even
+ * with `--disable-back-forward-cache` removed from its launch args. CDP's
+ * `Page.backForwardCacheNotUsed` gives `BackForwardCacheDisabledForDelegate`
+ * (the automation embedder turns it off) and `BrowsingInstanceNotSwapped`,
+ * nothing about the page. So `goBack()` here is always a fresh render with a
+ * fresh server key, and BOTH tests would also pass against the pre-fix code. They
+ * guard the journey (a re-press adds; a double-click still dedupes once the
+ * script rewrites the key), not the regression.
+ *
+ * The regression guard is the unit tier: the script's rule, including a
+ * `pageshow` with `persisted: true`, in happy-dom
+ * (`test/add-to-cart-key-script.test.ts`, which fails on the pre-fix page), and
+ * the store's replay-versus-add over a real store
+ * (`packages/plugin/test/cart-routes.sandbox.test.ts`).
  *
  * IT WRITES: a cart per test, with up to two units of one product. Point it only
  * at a local stack. It needs a product with at least two units in stock.
@@ -66,9 +77,7 @@ test.describe("add to cart, pressed again (issue #37)", () => {
 	// A cold storefront compiles each page on first visit.
 	test.slow();
 
-	test("Back to the product page and press again: a second unit, not a silent replay", async ({
-		page,
-	}, testInfo) => {
+	test("Back to the product page and press again: a second unit", async ({ page }, testInfo) => {
 		await skipWithoutSite(testInfo);
 		const href = await findPurchasableProduct(page);
 		if (href === null) return skipWithoutPurchasableProduct(testInfo);
@@ -76,8 +85,9 @@ test.describe("add to cart, pressed again (issue #37)", () => {
 		await pressAddToCart(page);
 		expect(await cartQty(page)).toBe(1);
 
-		// The browser's own Back: the product page as the history cache keeps it
-		// (or a fresh render, where it does not) — either way, a NEW press.
+		// The browser's own Back. Under Playwright this is always a fresh render
+		// (see the module doc), so it proves the re-press path works end to end,
+		// not the history-cache case itself.
 		await page.goBack();
 		await expect(page).toHaveURL(new RegExp(`${href}$`));
 		await pressAddToCart(page);

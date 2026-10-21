@@ -126,7 +126,7 @@ const PERMITTED_CLIENT_JS: ReadonlyArray<readonly [string, string]> = [
 	// renders; `HoldRibbon.astro` is markup only. Still one page, still one
 	// component, still exactly this pair.
 	[path.join("cart", "index.astro"), "HoldClock.astro"],
-	// ADR-0034 (supersedes ADR-0012 in part): the THIRD and last exception —
+	// ADR-0034 (supersedes ADR-0012 in part): the THIRD exception —
 	// the review's optional state/province script. One external, first-party
 	// file (`public/scripts/region-picker.js`, no inline code, no framework),
 	// pure progressive enhancement: the page works unchanged without it.

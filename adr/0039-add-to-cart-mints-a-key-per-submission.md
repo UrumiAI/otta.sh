@@ -68,3 +68,8 @@ options were:
   showed a network error, and the shopper then goes Back to a history-restored page and
   presses again, that press counts as a new add. The cart shows two, and the shopper can
   change it. We prefer this to silently dropping intentional adds.
+- There is one known edge in the other direction. A Shift- or Ctrl/Cmd-click on Add to cart
+  submits into a new tab or window, so the original page stays in the same page life. A
+  second press there, with the same quantity, is "the same submission again": it keeps the
+  key and replays, so it does not add a second unit. The cart shows one, and pressing again
+  after a reload or a fresh visit adds as usual.

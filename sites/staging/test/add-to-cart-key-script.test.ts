@@ -30,26 +30,41 @@ const SCRIPT_PATH = path.resolve(
 /** The key the server rendered — what the form posts with no script at all. */
 const RENDERED_KEY = "rendered-key";
 
-/** The PDP's form as the theme draws it: the shared hidden fields, a quantity, a button. */
-function page(): { form: HTMLFormElement; qty: HTMLInputElement; key: () => string } {
-	document.body.innerHTML = `
-		<form class="pdp-buy" method="POST" action="/cart/add">
-			<input type="hidden" name="sku" value="SKU-1" />
-			<input type="hidden" name="productId" value="prod-1" />
+/** An add-to-cart form as the theme draws it: the shared hidden fields, a quantity, a button. */
+function addToCartForm(id: string, sku: string): string {
+	return `
+		<form id="${id}" class="pdp-buy" method="POST" action="/cart/add">
+			<input type="hidden" name="sku" value="${sku}" />
+			<input type="hidden" name="productId" value="prod-${sku}" />
 			<input type="hidden" name="idempotencyKey" value="${RENDERED_KEY}" />
 			<input type="hidden" name="returnTo" value="/products/one" />
 			<input type="number" name="qty" value="1" min="1" />
 			<button type="submit">Add to cart</button>
 		</form>`;
-	// The script is a classic file with no imports: run it as the page would.
-	new Function(readFileSync(SCRIPT_PATH, "utf8"))();
-	const form = document.querySelector("form") as HTMLFormElement;
+}
+
+interface Form {
+	form: HTMLFormElement;
+	qty: HTMLInputElement;
+	key: () => string;
+}
+
+function handles(form: HTMLFormElement): Form {
 	const field = form.querySelector('input[name="idempotencyKey"]') as HTMLInputElement;
 	return {
 		form,
 		qty: form.querySelector('input[name="qty"]') as HTMLInputElement,
 		key: () => field.value,
 	};
+}
+
+/** The PDP: its add-to-cart form, plus `extraHtml` — in the document BEFORE the
+ *  script runs, as everything server-rendered is. */
+function page(extraHtml = ""): Form {
+	document.body.innerHTML = addToCartForm("buy", "SKU-1") + extraHtml;
+	// The script is a classic file with no imports: run it as the page would.
+	new Function(readFileSync(SCRIPT_PATH, "utf8"))();
+	return handles(document.getElementById("buy") as HTMLFormElement);
 }
 
 /** One press of Add to cart, and the key the request it starts would carry (read
@@ -135,9 +150,9 @@ describe("add-to-cart-key.js — one key per submission (issue #37)", () => {
 	});
 
 	test("it touches only the add-to-cart form — another form's key is never rewritten", () => {
-		page();
-		document.body.insertAdjacentHTML(
-			"beforeend",
+		// The other form is server-rendered, so it is in the document when the
+		// script looks for forms: a selector that matched it would rewrite it.
+		page(
 			`<form method="POST" action="/cart/update"><input type="hidden" name="idempotencyKey" value="update-key" /></form>`,
 		);
 		const other = document.querySelector('form[action="/cart/update"]') as HTMLFormElement;
@@ -145,5 +160,16 @@ describe("add-to-cart-key.js — one key per submission (issue #37)", () => {
 		expect((other.elements.namedItem("idempotencyKey") as HTMLInputElement).value).toBe(
 			"update-key",
 		);
+	});
+
+	test("two add-to-cart forms keep separate submissions: pressing B never re-keys A's retry", () => {
+		page(addToCartForm("other", "SKU-2"));
+		const a = handles(document.getElementById("buy") as HTMLFormElement);
+		const b = handles(document.getElementById("other") as HTMLFormElement);
+		const first = press(a.form, a.key);
+		const other = press(b.form, b.key);
+		expect(other).not.toBe(first);
+		// A again is A's same submission: its key stands.
+		expect(press(a.form, a.key)).toBe(first);
 	});
 });
