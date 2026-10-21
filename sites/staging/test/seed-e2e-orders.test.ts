@@ -42,6 +42,7 @@ describe("pickPurchasable", () => {
 		active: true,
 		onHand: 40,
 		deletedAt: null,
+		title: "Otta Mug",
 	};
 
 	test("the first priced, active, live, stocked product", () => {
@@ -62,6 +63,8 @@ describe("pickPurchasable", () => {
 			{ ...buyable, productId: "sold-out", onHand: 0 },
 			{ ...buyable, productId: "no-stock-record", onHand: null },
 			{ ...buyable, productId: "no-currency", currency: null },
+			{ ...buyable, productId: "untitled", title: null },
+			{ ...buyable, productId: "empty-title", title: "" },
 		];
 		expect(pickPurchasable(rows)).toBeNull();
 		expect(pickPurchasable([...rows, buyable])?.productId).toBe("p-ok");
@@ -194,6 +197,7 @@ describe("seedPaidOrders", () => {
 							active: true,
 							onHand: 5,
 							deletedAt: null,
+							title: "Otta Mug",
 						},
 					],
 				});

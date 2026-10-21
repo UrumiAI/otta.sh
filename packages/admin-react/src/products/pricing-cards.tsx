@@ -936,8 +936,8 @@ export function PricingStockEditor({ productId }: { productId: string }): React.
 					{untitled && (
 						<div className="otta-pricing-callout" data-tone="warn">
 							<span>
-								Customers can't buy this product until it has a title. Fill in this entry's title
-								and save it.
+								Customers can't buy this product until it has a title. Otta reads it from this
+								entry's <code>title</code> field (up to 500 characters): fill it in and save.
 							</span>
 						</div>
 					)}

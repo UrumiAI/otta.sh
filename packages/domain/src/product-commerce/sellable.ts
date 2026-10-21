@@ -51,8 +51,9 @@ export function unsellableReasons(row: SellabilityFacts): UnsellableReason[] {
 	const reasons: UnsellableReason[] = [];
 	if (!row.active) reasons.push("unpublished");
 	if (row.price === null || row.price === undefined) reasons.push("unpriced");
-	// An empty title is no title: there is no name for an order line to snapshot.
-	if (row.title === null || row.title === "") reasons.push("untitled");
+	// An empty (or non-string, off the wire) title is no title: there is no name
+	// for an order line to snapshot.
+	if (typeof row.title !== "string" || row.title === "") reasons.push("untitled");
 	return reasons;
 }
 

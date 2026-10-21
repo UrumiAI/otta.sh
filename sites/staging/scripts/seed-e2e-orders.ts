@@ -106,9 +106,11 @@ export interface CatalogRow {
 	active: boolean;
 	onHand: number | null;
 	deletedAt: string | null;
+	/** The commerce title cache. Checkout refuses a product without one (#109). */
+	title: string | null;
 }
 
-/** A product a shopper could buy right now: priced, active, live and in stock. */
+/** A product a shopper could buy right now: priced, titled, active, live and in stock. */
 export interface Purchasable {
 	productId: string;
 	sku: string;
@@ -127,6 +129,8 @@ export function pickPurchasable(rows: readonly CatalogRow[]): Purchasable | null
 			row.priceCents !== null &&
 			row.priceCents > 0 &&
 			row.currency !== null &&
+			typeof row.title === "string" &&
+			row.title !== "" &&
 			row.onHand !== null &&
 			row.onHand > 0
 		) {
@@ -377,7 +381,7 @@ export async function findPurchasable(deps: SeedOrdersDeps): Promise<Purchasable
 	const picked = pickPurchasable(data.products);
 	if (picked === null) {
 		throw new Error(
-			"no product is priced, active and in stock, so there is nothing to buy. Run " +
+			"no product is priced, titled, active and in stock, so there is nothing to buy. Run " +
 				"sites/staging/scripts/seed-demo-commerce.ts first.",
 		);
 	}

@@ -765,8 +765,8 @@ export class InProcessCommerceClient implements CommerceClient {
 			const resolved = await this.#resolveSellableUnit(toProductId(productId), sku);
 			if (resolved.status === "unknown") return { ok: false, reason: "SKU_MISMATCH" };
 			if (resolved.status === "unpriced") {
-				// Correctly named, and not for sale — nobody has priced it, or it is
-				// unpublished. Refused HERE and by name so a shopper is told at the Add
+				// Correctly named, and not for sale — nobody has priced it, it is
+				// unpublished, or it has no title. Refused HERE and by name so a shopper is told at the Add
 				// button rather than at the last step, and so no stock is held for a
 				// line that could never be bought.
 				return { ok: false, reason: "PRODUCT_NOT_PRICED" };

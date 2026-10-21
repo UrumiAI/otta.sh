@@ -424,7 +424,7 @@ test("a priced product with no title says it cannot be sold until the entry has 
 	apiFetch.mockImplementation(() => Promise.resolve(detail({ title: null })));
 	const c = await mountPanel();
 	expect(c.textContent).toContain(
-		"Customers can't buy this product until it has a title. Fill in this entry's title and save it.",
+		"Customers can't buy this product until it has a title. Otta reads it from this entry's title field (up to 500 characters): fill it in and save.",
 	);
 	// Priced, so the price prompt does not show.
 	expect(c.textContent).not.toContain("Add a price so customers can buy this product.");
