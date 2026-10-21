@@ -74,12 +74,23 @@ export interface CheckoutLineView {
 	lineTotal: CartMoneyWire | null;
 }
 
+/**
+ * Why a totals row does or does not carry money — the discriminator a theme
+ * branches on (#122), so no rendering decision rides on the label's spelling:
+ *
+ *  - `calculated`: a real figure, even at zero (`money` is present).
+ *  - `not_calculated`: the store did not price it (no shipping method, no tax
+ *    zone). It must never render as `$0.00`, "Free" or a bare dash.
+ *  - `not_applicable`: genuinely absent for this order — no coupon applied.
+ */
+export type CheckoutAmountState = "calculated" | "not_calculated" | "not_applicable";
+
 /** One totals row: the money when it was computed, plus the string the theme
- *  renders either way. `label` is ALWAYS safe to print. */
-export interface CheckoutAmountView {
-	money: CartMoneyWire | null;
-	label: string;
-}
+ *  renders either way. `label` is ALWAYS safe to print; `state` says what it
+ *  means. The label is display text only — it may be localised or reworded. */
+export type CheckoutAmountView =
+	| { state: "calculated"; money: CartMoneyWire; label: string }
+	| { state: "not_calculated" | "not_applicable"; money: null; label: string };
 
 /** One tax row of the totals block. `label` is plain text — render it escaped. */
 export interface CheckoutTaxRowView {
@@ -137,7 +148,7 @@ function money(amount: number, currencyCode: Currency, locale: string): CartMone
 
 function computed(amount: number, currencyCode: Currency, locale: string): CheckoutAmountView {
 	const value = money(amount, currencyCode, locale);
-	return { money: value, label: value.formatted };
+	return { state: "calculated", money: value, label: value.formatted };
 }
 
 /** A signed adjustment (the rounding row): the money keeps its sign, and the
@@ -149,11 +160,15 @@ function signedComputed(
 ): CheckoutAmountView {
 	const magnitude = money(Math.abs(amount), currencyCode, locale);
 	const formatted = `${amount < 0 ? "−" : "+"}${magnitude.formatted}`;
-	return { money: { ...magnitude, amount, formatted }, label: formatted };
+	return { state: "calculated", money: { ...magnitude, amount, formatted }, label: formatted };
 }
 
-function uncomputed(label: string): CheckoutAmountView {
-	return { money: null, label };
+function notCalculated(): CheckoutAmountView {
+	return { state: "not_calculated", money: null, label: NOT_CALCULATED_LABEL };
+}
+
+function notApplicable(): CheckoutAmountView {
+	return { state: "not_applicable", money: null, label: NOT_APPLICABLE_LABEL };
 }
 
 /** Quote breakdown → the totals block the checkout page renders. */
@@ -172,9 +187,7 @@ export function buildCheckoutTotals(
 	const tax = breakdown.tax?.enabled === true ? breakdown.tax : undefined;
 	const taxComputed = options.taxZoneSelected || tax?.located === true;
 	const shown = taxComputed && tax !== undefined ? shownAmounts(breakdown, tax) : null;
-	const taxView = taxComputed
-		? computed(breakdown.taxCents, code, locale)
-		: uncomputed(NOT_CALCULATED_LABEL);
+	const taxView = taxComputed ? computed(breakdown.taxCents, code, locale) : notCalculated();
 
 	let taxRows: CheckoutTaxRowView[] = taxOff ? [] : [{ label: "Tax", amount: taxView }];
 	let taxIncludedNote: string | null = null;
@@ -201,10 +214,10 @@ export function buildCheckoutTotals(
 		subtotal: computed(shown?.subtotal ?? breakdown.subtotalCents, code, locale),
 		discount: hasDiscount
 			? computed(shown?.discount ?? breakdown.discountCents, code, locale)
-			: uncomputed(NOT_APPLICABLE_LABEL),
+			: notApplicable(),
 		shipping: options.shippingSelected
 			? computed(shown?.shipping ?? breakdown.shippingCents, code, locale)
-			: uncomputed(NOT_CALCULATED_LABEL),
+			: notCalculated(),
 		tax: taxView,
 		taxRows,
 		taxIncludedNote,

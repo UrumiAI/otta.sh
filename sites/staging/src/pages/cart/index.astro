@@ -368,8 +368,20 @@ const summary =
  * shipping, no synthetic zero, no tax this store has not calculated. What is
  * missing is named in prose, not marked with a dash.
  */
-const asMoney = (wire: CartMoneyWire): CheckoutAmountView => ({ money: wire, label: wire.formatted });
-const asProse = (label: string): CheckoutAmountView => ({ money: null, label });
+const asMoney = (wire: CartMoneyWire): CheckoutAmountView => ({
+	state: "calculated",
+	money: wire,
+	label: wire.formatted,
+});
+// Every prose amount here is "not_calculated", including "Unavailable right now"
+// for a failed pricing read. That is fine only because the cart passes no
+// `excludesUncalculated` to Sum: wiring `uncalculatedFootnote` in here would tell
+// a buyer during an outage that the store hasn't set the amount up.
+const asProse = (label: string): CheckoutAmountView => ({
+	state: "not_calculated",
+	money: null,
+	label,
+});
 
 const cartTotal = pricing?.total ?? null;
 /** Nothing on this cart carries a figure — and the two reasons for that read

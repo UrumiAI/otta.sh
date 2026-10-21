@@ -2,26 +2,23 @@
  * The totals block's rules (docs/theme/TEMPERED.md §7).
  *
  * The plugin's `CheckoutAmountView` already carries the distinction the theme
- * needs — `money: null` means "this store did not calculate it", `money`
- * present means "this is a real figure, even if it is zero". So the theme never
- * parses a string to decide how to render it, and there is exactly one way for
- * "Not calculated" to become "$0.00": someone deleting this rule.
+ * needs in its `state` — `calculated` is a real figure, even if it is zero;
+ * `not_calculated` means "this store did not calculate it"; `not_applicable`
+ * means "absent for this order" (no coupon). So the theme never parses or
+ * compares a string to decide how to render it (#122) — the label is display
+ * text and may be localised — and there is exactly one way for "Not
+ * calculated" to become "$0.00": someone deleting this rule.
  *
  * The second job here is the footnote. §7 requires that when
  * `totalExcludesUncalculated` is set, the line under the total says WHICH parts
  * are missing — "this total may be incomplete" tells a shopper nothing.
  */
-import {
-	NOT_APPLICABLE_LABEL,
-	NOT_CALCULATED_LABEL,
-	type CheckoutAmountView,
-	type UncalculatedReason,
-} from "@urumi.ai/otta-plugin";
+import type { CheckoutAmountView, UncalculatedReason } from "@urumi.ai/otta-plugin";
 
 /**
  * What a not-applicable row says when the page supplies nothing better.
  *
- * The view model's `NOT_APPLICABLE_LABEL` is a bare "—", and §7 forbids
+ * The view model's not-applicable label is a bare "—", and §7 forbids
  * exactly that: on its own a dash is indistinguishable from an outage, from a
  * free item, and from a row this store cannot price. The page usually knows
  * why the row is empty and passes a `fallback` ("No coupon applied"); this is
@@ -57,10 +54,10 @@ export interface SumRow {
 	code?: string;
 }
 
-/** Was this amount calculated at all? The view model says so; nothing here
- *  inspects the string. */
+/** Was this amount calculated at all? The view model's `state` says so;
+ *  nothing here inspects the string. */
 export function isUncalculated(amount: CheckoutAmountView): boolean {
-	return amount.money === null;
+	return amount.state !== "calculated";
 }
 
 /**
@@ -86,18 +83,18 @@ function orNotApplied(text: string | undefined): string {
 /**
  * The text a totals row prints — pre-formatted money, or honest prose.
  *
- * The `NOT_APPLICABLE_LABEL` branch is the §7 guarantee: the raw label is
- * never returned for it, with or without a `fallback`. The constant is
- * imported rather than string-matched against a literal, so if the plugin ever
- * changes what "not applicable" looks like this keeps working.
+ * The `not_applicable` branch is the §7 guarantee: the raw label is never
+ * returned for it, with or without a `fallback`. It is keyed on the view
+ * model's `state`, not on the label, so a plugin that rewords or localises
+ * what "not applicable" looks like cannot make this start echoing it (#122).
  *
  * Both uncalculated branches then pass through `orNotApplied`, which is the
- * backstop for the case the constant cannot cover: a `fallback` that is itself
- * blank, or a plugin label that is a different dash from the one we import.
+ * backstop for a `fallback` that is itself blank, or a not-calculated label
+ * that says nothing.
  */
 export function sumRowText(row: SumRow): string {
 	if (!isUncalculated(row.amount)) return row.amount.label;
-	if (row.amount.label === NOT_APPLICABLE_LABEL) return orNotApplied(row.fallback);
+	if (row.amount.state === "not_applicable") return orNotApplied(row.fallback);
 	return orNotApplied(row.fallback ?? row.amount.label);
 }
 
@@ -157,11 +154,11 @@ export function isUnpricedText(text: string): boolean {
 }
 
 /** Lower-cased names of the rows this store never configured. Deliberately
- *  keyed on `NOT_CALCULATED_LABEL` and not on "has no money": a discount that
- *  simply does not apply to this order is not an unconfigured store. */
+ *  keyed on the `not_calculated` state and not on "has no money": a discount
+ *  that simply does not apply to this order is not an unconfigured store. */
 function uncalculatedNames(rows: SumRow[]): string[] {
 	return rows
-		.filter((row) => isUncalculated(row.amount) && row.amount.label === NOT_CALCULATED_LABEL)
+		.filter((row) => row.amount.state === "not_calculated")
 		.map((row) => row.label.toLowerCase());
 }
 
@@ -173,7 +170,7 @@ function uncalculatedNames(rows: SumRow[]): string[] {
  * says, it does not re-derive it from the rows it happens to have been handed.
  *
  * Which leaves one hole worth closing: the flag can be set while none of the
- * rows PASSED IN carries the not-calculated label — a page that renders a
+ * rows PASSED IN is in the not-calculated state — a page that renders a
  * shortened totals block, or a pipeline that grows a component this theme does
  * not list yet. Naming nothing would be right; saying nothing would not, since
  * the flag means the total is incomplete and a shopper is about to act on it.

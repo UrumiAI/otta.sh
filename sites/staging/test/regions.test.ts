@@ -175,7 +175,7 @@ describe("the Tempered review, rendered", () => {
 		container = await AstroContainer.create();
 	});
 
-	const amount = { money: null, label: "—" };
+	const amount = { state: "not_applicable", money: null, label: "—" } as const;
 	const countries = countryOptions("en-US");
 
 	function model(

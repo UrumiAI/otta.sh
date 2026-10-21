@@ -58,8 +58,16 @@ describe("orderSumRows — the totals rows, by the order page's own rule", () =>
 		const rows = orderSumRows(totals);
 		expect(rows.map((row) => row.label)).toEqual(["Subtotal", "Discount", "Shipping", "Tax"]);
 		const byLabel = new Map(rows.map((row) => [row.label, row]));
-		expect(byLabel.get("Shipping")?.amount).toEqual({ money: null, label: "Not calculated" });
-		expect(byLabel.get("Tax")?.amount).toEqual({ money: null, label: "Not calculated" });
+		expect(byLabel.get("Shipping")?.amount).toEqual({
+			state: "not_calculated",
+			money: null,
+			label: "Not calculated",
+		});
+		expect(byLabel.get("Tax")?.amount).toEqual({
+			state: "not_calculated",
+			money: null,
+			label: "Not calculated",
+		});
 		expect(byLabel.get("Discount")?.fallback).toBe("No coupon applied");
 	});
 
