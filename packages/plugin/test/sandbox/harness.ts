@@ -286,7 +286,7 @@ function manifestSource(options: SandboxOptions): string {
 	// mirror, so this is now just the egress surface production actually has.
 	return [
 		'export const OTTA_PLUGIN_ID = "otta";',
-		'export const OTTA_PLUGIN_VERSION = "0.1.0";',
+		'export const OTTA_PLUGIN_VERSION = "0.1.1";',
 		'export const OTTA_PLUGIN_CAPABILITIES = ["content:read", "network:request", "email:send"];',
 		`export const ALLOWED_HOSTS = ${JSON.stringify(options.allowedHosts)};`,
 		"",

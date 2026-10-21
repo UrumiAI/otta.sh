@@ -13,7 +13,7 @@ host's `ctx.email`, ADR-0031).
 pnpm add @urumi.ai/otta-plugin
 ```
 
-ESM-only, for an EmDash site on `emdash` `^1.0.1` (the requirement of `@urumi.ai/otta-store-emdash`, which comes with it, as do `@urumi.ai/otta-domain`, `@urumi.ai/otta-payments-stripe` and `@urumi.ai/otta-admin-presentation`). Published entry points:
+ESM-only, for an EmDash site on `emdash` `^1.0.1` (a peer dependency, the same range `@urumi.ai/otta-store-emdash` requires). `@urumi.ai/otta-store-emdash`, `@urumi.ai/otta-domain`, `@urumi.ai/otta-payments-stripe` and `@urumi.ai/otta-admin-presentation` come with it as dependencies, and the plugin's types import domain's, so a `TaxCalculator` written against `@urumi.ai/otta-domain` is the one `createOttaPlugin` takes. Published entry points:
 
 | Import | What it is |
 |---|---|

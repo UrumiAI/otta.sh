@@ -51,6 +51,10 @@ jobs:
       # (sites/* run `astro check`).
       - run: pnpm typecheck
       - run: pnpm -r build
+      # Pack-and-consume type test (#510): packs the published packages from the
+      # build above, installs the tarballs into a scratch consumer (no registry,
+      # no peers) and type-checks a site's TaxCalculator against createOttaPlugin.
+      - run: pnpm test:pack-types
       # SQLite + fake contract suites; pg-required specs self-skip
       # because PG_CONNECTION_STRING is unset.
       - run: pnpm test

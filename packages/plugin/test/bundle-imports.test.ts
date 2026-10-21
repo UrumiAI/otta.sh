@@ -32,6 +32,7 @@
  */
 
 import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
+import { readFileSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -140,10 +141,10 @@ describe("emitted plugin bundle carries no un-bundled workspace or host import",
 	 * The plugin's context carries the injected document store, so its shape is
 	 * public API — and describing it with the host's own types (directly, or through
 	 * an adapter package that `import type`s them) puts `import … from "emdash"` in
-	 * the emitted declarations of a package whose manifest declares the host
-	 * NOWHERE and must not. A consumer would then have to resolve a dependency we
-	 * deliberately do not have, and it resolved for us only by accident, through the
-	 * adapter package's peer.
+	 * the emitted declarations. The manifest names the host only as a PEER, to
+	 * state the supported range (#514); the plugin's own type surface still must
+	 * not need the host's type graph to resolve, and before that peer existed it
+	 * resolved for us only by accident, through the adapter package's peer.
 	 *
 	 * The fix is a hand-mirrored structural shape in `src/types.ts`, checked for
 	 * drift at the composition site. This asserts the outcome: no import, export or
@@ -159,6 +160,66 @@ describe("emitted plugin bundle carries no un-bundled workspace or host import",
 				false,
 			);
 		}
+	});
+
+	/**
+	 * THE PUBLISHED TYPES IMPORT THE WORKSPACE PACKAGES, NEVER COPY THEM (#510).
+	 *
+	 * The JS bundle inlines `@urumi.ai/otta-domain` for workerd; the declarations
+	 * must not. Domain's money and id types are branded with
+	 * `declare const XBrand: unique symbol`, and a copy is a different symbol, so
+	 * 0.1.0's inlined copies made a `TaxCalculator` written against
+	 * `@urumi.ai/otta-domain` unassignable to `createOttaPlugin({ taxCalculator })`.
+	 * `scripts/pack-consume-types.mjs` (CI, after the build) proves the consumer
+	 * side end to end; this is the fast, local half.
+	 */
+	test("NO emitted declaration re-declares one of domain's `unique symbol` brands", () => {
+		const domainSrc = path.resolve(PKG_DIR, "../domain/src");
+		const brands = new Set<string>();
+		for (const file of readdirSync(domainSrc, { recursive: true, encoding: "utf8" })) {
+			if (!file.endsWith(".ts")) continue;
+			const source = readFileSync(path.join(domainSrc, file), "utf8");
+			for (const m of source.matchAll(/declare const (\w+): unique symbol/g)) brands.add(m[1]!);
+		}
+		expect(brands).toContain("CurrencyBrand");
+		expect(brands).toContain("CentsBrand");
+		for (const { file, source } of declarations) {
+			const redeclared = [...source.matchAll(/declare const (\w+): unique symbol/g)]
+				.map((m) => m[1]!)
+				.filter((name) => brands.has(name));
+			expect(redeclared, `${file} inlines domain brands`).toEqual([]);
+		}
+	});
+
+	test("`createOttaPlugin`'s options take domain's own `TaxCalculator`", () => {
+		const optionsChunk = declarations.filter(({ source }) =>
+			/interface OttaPluginOptions\b/.test(source),
+		);
+		expect(optionsChunk.map((d) => d.file)).toHaveLength(1);
+		expect(withoutComments(optionsChunk[0]!.source)).toMatch(
+			/import\s*(?:type\s*)?\{[^}]*\bTaxCalculator\b[^}]*\}\s*from\s*["']@urumi\.ai\/otta-domain["']/,
+		);
+	});
+
+	test("every workspace package the declarations import is a real `dependencies` entry", async () => {
+		const manifest = JSON.parse(await readFile(path.join(PKG_DIR, "package.json"), "utf8")) as {
+			dependencies?: Record<string, string>;
+		};
+		const dependencies = manifest.dependencies ?? {};
+		const imported = new Set<string>();
+		for (const { source } of declarations) {
+			for (const spec of bareSpecifiers(withoutComments(source))) {
+				const m = /^(@urumi\.ai\/otta-[^/]+)/.exec(spec);
+				if (m) imported.add(m[1]!);
+			}
+		}
+		expect(imported).toContain("@urumi.ai/otta-domain");
+		for (const name of imported) {
+			expect(dependencies[name], `${name} must be in dependencies`).toMatch(/^workspace:/);
+		}
+		// The store adapter's declarations `import type` the host, so naming it here
+		// would put `emdash` back into the plugin's type graph (see the test above).
+		expect(imported).not.toContain("@urumi.ai/otta-store-emdash");
 	});
 
 	test("the build emits at least the four declared entrypoints", () => {
