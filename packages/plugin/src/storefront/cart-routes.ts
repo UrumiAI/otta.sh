@@ -118,6 +118,13 @@ function cartCookieDescriptor(cartId: string): CartCookieDescriptor {
 // ── Input shapes (hand-validated — the routes are PUBLIC, ADR-0003) ───────
 
 export interface CartCreateRouteInput {
+	/**
+	 * Optional: the new cart's currency; absent, the store currency. Once the
+	 * operator has SAVED a store currency, a cart created here in a different one
+	 * reads back as stale (`cart/read`'s `staleCurrency`, #440), because nothing
+	 * priced in the store currency can be checked out of it — a theme that creates
+	 * explicit-currency carts in such a store should expect that notice.
+	 */
 	currency?: unknown;
 	/**
 	 * Optional: the SPENT cart this one replaces (the cookie's cart, checked out
@@ -392,6 +399,9 @@ export function createCartReadRouteHandler(): RouteHandler<CartReadRouteInput> {
 				),
 			];
 
+			// Started BESIDE the pricing join, not after it: /cart pays this read on
+			// every render, and it never fails the read (see `staleCurrencyOf`).
+			const staleCurrency = staleCurrencyOf(client, cart);
 			let pricing: CartPricingWire;
 			try {
 				// No batch call at all when there is nothing to look up (an empty
@@ -420,7 +430,7 @@ export function createCartReadRouteHandler(): RouteHandler<CartReadRouteInput> {
 				ok: true as const,
 				cart,
 				pricing,
-				staleCurrency: await staleCurrencyOf(client, cart),
+				staleCurrency: await staleCurrency,
 			};
 		});
 }

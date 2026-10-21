@@ -694,13 +694,17 @@ export class InProcessCommerceClient implements CommerceClient {
 	 * the operator SAVED. Never-saved is `CART_CURRENCY_CURRENT`, deliberately not
 	 * `effectiveStoreCurrency`'s USD: a store that never chose a currency has
 	 * nothing for a cart to be stale against, and a theme's explicit-currency cart
-	 * must not be emptied by it. The use-case owns every rule and every key.
+	 * must not be emptied by it. The use-case owns every rule and every key, and
+	 * bounds the call's cost (`STALE_CART_RELEASE_LIMIT`).
 	 */
 	async replaceStaleCurrencyCart(staleCartId: string): Promise<ReplaceStaleCurrencyCartResult> {
 		requireIdToken("cartId", staleCartId);
-		const saved = await this.getSavedStoreCurrency();
-		if (saved === null) return { ok: false, reason: "CART_CURRENCY_CURRENT" };
-		return replaceStaleCurrencyCart(await this.#liveCartDeps(), staleCartId, toCurrency(saved));
+		// ONE settings read. The hold window it also carries is not needed: the
+		// use-case runs no lazy expiry (a write per lapsed line) and stamps no
+		// deadline, so the plain cart deps are all it takes.
+		const saved = (await this.#stores.settingsStore.get()).currency;
+		if (saved === undefined) return { ok: false, reason: "CART_CURRENCY_CURRENT" };
+		return replaceStaleCurrencyCart(this.#cartDeps, staleCartId, toCurrency(saved));
 	}
 
 	async getSavedStoreCurrency(): Promise<string | null> {

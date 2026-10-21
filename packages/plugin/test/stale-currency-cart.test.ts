@@ -16,7 +16,9 @@
  * Every case goes through the CLIENT over a real document store.
  */
 import { idempotencyKey } from "@urumi.ai/otta-domain";
+import { SETTINGS_COLLECTION, type StorageAccess } from "@urumi.ai/otta-store-emdash";
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "vitest";
+import { InProcessCommerceClient } from "../src/commerce/in-process-commerce-client.js";
 import {
 	createCartCreateRouteHandler,
 	createCartReadRouteHandler,
@@ -111,8 +113,9 @@ describe("a cart left in the old currency after a store currency switch (#440)",
 			ok: true,
 			cart: { state: "active", currency: "EUR", lines: [] },
 		});
+		// The old cart keeps its currency (never rewritten); its hold is released.
 		const old = await h.client.getCart(cartId);
-		expect(old).toMatchObject({ ok: true, cart: { currency: "USD", lines: [] } });
+		expect(old).toMatchObject({ ok: true, cart: { currency: "USD" } });
 
 		// The old cart's hold is back on the shelf: the one unit can be added again,
 		// and it is quoted at its live EUR price — nothing converted.
@@ -249,4 +252,105 @@ describe("a cart left in the old currency after a store currency switch (#440)",
 		await setStoreCurrency("EUR");
 		expect(await createRoute(input)).toEqual({ ok: false, error: "INVALID_INPUT" });
 	});
+
+	test("cart/read still answers when the store-currency read rejects: staleCurrency is null", async () => {
+		await setStoreCurrency("EUR");
+		const { cartId } = await h.client.createCart("USD");
+		expect(await readRoute(cartId)).toMatchObject({
+			ok: true,
+			staleCurrency: { cartCurrency: "USD", storeCurrency: "EUR" },
+		});
+		// The cart read itself reads settings once (the hold TTL); every settings
+		// read after that one rejects — so only the stale-currency read fails.
+		let settingsReads = 0;
+		const failing = withCollection(h.ctx.storage as StorageAccess, SETTINGS_COLLECTION, () => {
+			settingsReads += 1;
+			if (settingsReads > 1) throw new Error("settings unreadable");
+		});
+		const read = (await createCartReadRouteHandler()(
+			{ input: { cartId } as never, request },
+			{ ...h.ctx, storage: failing },
+		)) as CartReadRouteResult;
+		expect(read).toMatchObject({ ok: true, cart: { cartId }, staleCurrency: null });
+		expect(settingsReads).toBeGreaterThan(1);
+	});
+
+	/** The queries one `replaceStaleCurrencyCart` costs for a stale cart of `n`
+	 *  held lines, counted at the storage seam (one D1 query per call). */
+	async function replaceCost(n: number, tag: string): Promise<number> {
+		await setStoreCurrency("USD");
+		const { cartId } = await h.client.createCart();
+		for (let i = 0; i < n; i++) {
+			const id = `prod-${tag}-${String(i)}`;
+			await seedProduct(id, `SKU-${tag}-${String(i)}`, "USD", 1);
+			const added = await h.client.addCartLine(
+				cartId,
+				`SKU-${tag}-${String(i)}`,
+				id,
+				1,
+				`add-${tag}-${String(i)}`,
+			);
+			if (!added.ok) throw new Error(added.reason);
+		}
+		await setStoreCurrency("EUR");
+		const counter = { calls: 0 };
+		const counted = new InProcessCommerceClient({
+			...h.ctx,
+			storage: countingStorage(h.ctx.storage as StorageAccess, counter),
+		});
+		const replaced = await counted.replaceStaleCurrencyCart(cartId);
+		expect(replaced.ok).toBe(true);
+		return counter.calls;
+	}
+
+	test("the cost is bounded: a 20-line stale cart fits Workers Free's 50 queries, and releases are capped", async () => {
+		// Measured: 4 fixed (settings, the cart document, the keyed create's two
+		// writes) + ONE hold lookup per line (the cart read — the same read /cart
+		// makes to render this cart) + about 7 per release, at most
+		// STALE_CART_RELEASE_LIMIT releases. 2 lines = 20, 20 lines = 38.
+		const small = await replaceCost(2, "q2");
+		const large = await replaceCost(20, "q20");
+		expect(large).toBeLessThanOrEqual(40);
+		// Growth is the read alone: one query per extra line, never a re-read of
+		// the cart or a release per line (the old `removeLine` loop cost ~15+R each).
+		expect(large - small).toBeLessThanOrEqual(18);
+	});
 });
+
+/** `base` with every call on `name` passed through `before` first. */
+function withCollection(base: StorageAccess, name: string, before: () => void): StorageAccess {
+	const collection = base[name];
+	if (collection === undefined) throw new Error(`no collection ${name}`);
+	return {
+		...base,
+		[name]: new Proxy(collection, {
+			get(target, prop, receiver) {
+				const value: unknown = Reflect.get(target, prop, receiver);
+				if (typeof value !== "function") return value;
+				return async (...args: unknown[]) => {
+					before();
+					return (value as (...a: unknown[]) => unknown).apply(target, args);
+				};
+			},
+		}),
+	};
+}
+
+/** The real store, counting every collection call — one D1 query each (the
+ *  seam `cron-sweep-budget.test.ts` counts at). */
+function countingStorage(base: StorageAccess, counter: { calls: number }): StorageAccess {
+	const wrapped: StorageAccess = {};
+	for (const [name, collection] of Object.entries(base)) {
+		wrapped[name] = new Proxy(collection, {
+			get(target, prop, receiver) {
+				const value: unknown = Reflect.get(target, prop, receiver);
+				if (typeof value !== "function") return value;
+				return (...args: unknown[]) => {
+					counter.calls++;
+					return (value as (...a: unknown[]) => unknown).apply(target, args);
+				};
+			},
+		});
+	}
+	return wrapped;
+}
