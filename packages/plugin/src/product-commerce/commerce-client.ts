@@ -49,8 +49,9 @@ export interface UpsertProductCommerceInput {
 	 *  `TITLE_FIELD` for the evidence — so the storefront heading and the order
 	 *  line can never drift. A row whose title is NULL is UNPURCHASABLE
 	 *  (`createOrderFromCart` rejects it with `PRODUCT_NOT_PRICED`). OMITTED —
-	 *  never sent as `""` — when the content has no usable title, which the store
-	 *  reads as "preserve whatever is already stored". */
+	 *  never sent as `""` — when the content carries no title (the store keeps
+	 *  what is stored); a present but unusable title is sent as
+	 *  `titleRejection` instead (#112). */
 	title?: string;
 	/** The content HAS a title and it cannot be stored (issue #112) — over-long,
 	 *  blank, or not text. The merchant-facing reason (≤500 chars). The store

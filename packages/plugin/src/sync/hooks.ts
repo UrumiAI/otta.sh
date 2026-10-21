@@ -296,8 +296,9 @@ function deriveContent(content: Record<string, unknown>): DerivedContent {
  *   - TITLE: taken from the CONTENT field `data.title` (not a top-level field —
  *     em-dash's `ContentItem` has none). Without it the row's title stays NULL
  *     and `createOrderFromCart` rejects the buyer's checkout with
- *     `PRODUCT_NOT_PRICED`. An unusable title is NOT a rejection: it omits only
- *     itself and logs, and the row is still created.
+ *     `PRODUCT_NOT_PRICED`. An ABSENT title omits only itself and logs; a
+ *     present but unusable one is sent as `titleRejection` (#112), which clears
+ *     the stored title. Either way the row is still created.
  *   - The upsert carries ONLY the title + the ordering watermark; it NEVER
  *     touches `active`/`deletedAt`. Activation is the guarded call below. It
  *     also never touches sku, price, stock, kind, tax class or dimensions —
@@ -695,7 +696,8 @@ async function readDocument(ctx: PluginContext, id: string, hook: string): Promi
  * FAILURE POSTURE — ONE class since PR 1b. The old plan §2.8 named two: a
  * VALIDATION failure (float price, bad currency, missing sku) and a TRANSPORT
  * failure. The validation class is gone with the commerce bag — the body is a
- * title, and an unusable title omits itself rather than rejecting — so only
+ * title; a missing title omits itself and an unusable one is sent as
+ * `titleRejection`, and neither rejects the upsert — so only
  * this rule remains:
  *
  *  - **Transport failure** (non-2xx / network) ⇒ FAIL CLOSED: no activate.

@@ -925,7 +925,8 @@ export function PricingStockEditor({ productId }: { productId: string }): React.
 					<div className="otta-pricing-callout" data-tone="warn" role="alert">
 						<strong>This product's title wasn't accepted</strong>
 						<span>
-							{p.titleRejection} Customers can't buy it until the entry's title is fixed and saved.
+							{p.titleRejection} Customers can't buy it until the entry's title is fixed and
+							published (saved, for an entry that isn't live).
 						</span>
 					</div>
 				)}
