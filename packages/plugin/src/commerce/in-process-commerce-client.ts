@@ -1111,6 +1111,7 @@ export class InProcessCommerceClient implements CommerceClient {
 		// The same by-sku fallback the order applies (issue #111), so the quote and
 		// the order agree on which lines can be priced.
 		const cartLines = await resolveLineProductIds(this.#stores.productCommerce, cart.lines);
+		const bySku = new Set(cart.lines.filter((l) => l.productId === null).map((l) => l.lineId));
 		const byId = await this.#stores.productCommerce.getManyByProductId(
 			cartLines
 				.map((line) => line.productId)
@@ -1124,6 +1125,11 @@ export class InProcessCommerceClient implements CommerceClient {
 			// An unpublished or deleted product is no longer for sale, even from a cart
 			// that held it first — the same liveness rule `createOrderFromCart` applies.
 			if (row === null || !isProductLive(row) || row.price === null) {
+				return { ok: false, reason: "PRODUCT_NOT_PRICED" };
+			}
+			// Resolved by sku: refused if the product renamed away from it since (see
+			// `createOrderFromCart`).
+			if (bySku.has(line.lineId) && row.sku !== line.sku) {
 				return { ok: false, reason: "PRODUCT_NOT_PRICED" };
 			}
 			if (row.price.currency !== cart.currency) return { ok: false, reason: "CURRENCY_MISMATCH" };

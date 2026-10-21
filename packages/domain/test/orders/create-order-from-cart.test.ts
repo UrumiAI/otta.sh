@@ -866,6 +866,41 @@ describe("createOrderFromCart resolves a line with no productId by its sku", () 
 		expect(res.order.totals.subtotal).toBe(1400);
 	});
 
+	test("a line resolved by sku is refused PRODUCT_NOT_PRICED when its product renamed away from the sku between the resolve and the snapshot read", async () => {
+		// Digital: no stock is held, so no hold refuses the rename — the guard is
+		// the only thing standing between this line and a sale under a dead sku.
+		await h.seedDigital({
+			productId: "d-drift",
+			sku: "DIG-DRIFT",
+			priceCents: 900,
+			title: "Drifting ebook",
+		});
+		const cartId = await h.cartWith([
+			{ sku: "DIG-DRIFT", productId: null, qty: 1, kind: "digital" },
+		]);
+
+		const store = h.productCommerce;
+		const original = store.getProductIdsBySku.bind(store);
+		store.getProductIdsBySku = async (skus) => {
+			const found = await original(skus);
+			const row = await store.getByProductId(brandProductId("d-drift"));
+			if (row === null) throw new Error("arrange: the product vanished");
+			const renamed = await store.updateCommerceFields(
+				{ productId: brandProductId("d-drift"), sku: brandSku("DIG-DRIFT-NEW") },
+				idempotencyKey("drift-rename"),
+				row.updatedAt.toISOString(),
+			);
+			if (!renamed.ok) throw new Error("arrange: the rename did not apply");
+			return found;
+		};
+
+		expect(await createOrderFromCart(h.createDeps, cmd(cartId))).toEqual({
+			ok: false,
+			reason: "PRODUCT_NOT_PRICED",
+		});
+		expect(await h.orderStore.getByIdempotencyKey(idempotencyKey("k-order"))).toBeNull();
+	});
+
 	test("a NULL-productId line whose sku no live product row holds is still refused PRODUCT_NOT_PRICED", async () => {
 		await h.seedPhysical({
 			productId: "p-gone",

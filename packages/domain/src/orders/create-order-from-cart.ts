@@ -279,6 +279,7 @@ export async function createOrderFromCart(
 	// A line with no productId is resolved through its sku first (issue #111), so
 	// it meets exactly the checks below; one that resolves to nothing stays null.
 	const cartLines = await resolveLineProductIds(deps.productCommerce, cart.lines);
+	const bySku = new Set(cart.lines.filter((l) => l.productId === null).map((l) => l.lineId));
 	const pcById = await deps.productCommerce.getManyByProductId(
 		cartLines
 			.map((line) => line.productId)
@@ -292,6 +293,12 @@ export async function createOrderFromCart(
 		// held it before the lifecycle event landed. Refused before anything is
 		// minted, so the line's hold stays `held` for a remove or the TTL sweep.
 		if (pc === null || !isProductLive(pc) || pc.price === null || pc.title === null) {
+			return { ok: false, reason: "PRODUCT_NOT_PRICED" };
+		}
+		// A line resolved BY SKU must still be that product's sku at this read: a
+		// rename between the two reads would otherwise sell it under a sku the
+		// product no longer owns (a digital product holds no stock to catch it).
+		if (bySku.has(line.lineId) && pc.sku !== line.sku) {
 			return { ok: false, reason: "PRODUCT_NOT_PRICED" };
 		}
 		if (pc.price.currency !== currency) {
