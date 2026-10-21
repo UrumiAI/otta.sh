@@ -62,6 +62,8 @@ export {
 	isCouponNotFoundError,
 } from "./coupon-errors.js";
 export {
+	BUMP_WAIT_MAX_DELAY_MS,
+	BUMP_WAIT_MAX_READS,
 	COUPON_BUMP_LEASE_MS,
 	EmdashCouponStore,
 	type EmdashCouponStoreOptions,

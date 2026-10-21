@@ -225,9 +225,9 @@ describe.skipIf(!PG_ENABLED)("coupon no-over-redeem [postgres]", () => {
 			// Non-owners that arrive while the owner holds the bump lease POLL the key
 			// (`redeemAwait`, jittered backoff): that count tracks how long the owner takes
 			// under load, not CAS contention, so the 8-attempt budget does not apply to it.
-			// It is bounded by the store's own wait patience (CAS_MAX_ATTEMPTS polls, about
-			// 0.5–1 s): a waiter that runs out throws StorageContentionError and fails the
-			// Promise.all above (issue #441 tracks that patience vs. the 10 s lease).
+			// It is bounded by the store's own wait patience, which is time and matches the
+			// owner's 10 s lease (`bumpWaitMs`): a waiter that runs out throws
+			// StorageContentionError and fails the Promise.all above.
 			// Pin the step names (a late arrival may read the finished state and never
 			// wait, so `redeemAwait` can be absent), so any new step on this path must get
 			// its own bound here.
