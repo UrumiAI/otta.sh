@@ -142,6 +142,84 @@ export async function replaceSpentCart(
 }
 
 /**
+ * Whether `cart` is STALE against the store currency: still `active` (a shopper's
+ * workspace, not an order's record) but in another currency than the one the
+ * store now sells in. A stale cart can still check out lines priced in its own
+ * currency, but nothing priced in the store currency can ever be quoted in it
+ * (`CURRENCY_MISMATCH`) — the case `replaceStaleCurrencyCart` exists for (#440).
+ */
+export function isStaleCurrencyCart(
+	cart: Pick<Cart, "state" | "currency">,
+	storeCurrency: Currency,
+): boolean {
+	return cart.state === "active" && cart.currency !== storeCurrency;
+}
+
+export type ReplaceStaleCurrencyCartResult =
+	| { ok: true; cartId: string }
+	| {
+			ok: false;
+			reason: "CART_NOT_FOUND" | "CART_CHECKED_OUT" | "CART_CURRENCY_CURRENT" | "LINE_CHECKED_OUT";
+	  };
+
+/**
+ * The cart that REPLACES a stale-currency one (#440): a new, EMPTY cart in
+ * `storeCurrency`, after every hold the stale cart has is released.
+ *
+ * A cart is never rewritten — its currency is fixed at creation, and the stale
+ * cart keeps its own. Nothing is converted and no line is carried over: a line's
+ * price is read live at quote time, so the shopper re-adds what they want and is
+ * quoted the current price in the new currency. Releasing the holds is what makes
+ * that possible: otherwise the old cart would sit on the stock until its TTL.
+ *
+ * Keys are derived HERE, never by a caller: `recurrency:<cartId>:<currency>` for
+ * the new cart and `recurrency:<cartId>:<currency>:<lineId>` for each release
+ * (`removeLine`, so a release replays by its ledger entry). The rule holds until
+ * the end — an emptied stale cart is still stale — so a retry after a crash
+ * finishes the releases and lands on the same new cart, and racers converge. A
+ * second switch to another currency is a different key and its own cart.
+ *
+ * Refused, in order: `CART_NOT_FOUND`; `CART_CHECKED_OUT` (its holds belong to
+ * an order now); `CART_CURRENCY_CURRENT` (nothing to replace); and the typed
+ * failure of a release that races a checkout (`CART_CHECKED_OUT` /
+ * `LINE_CHECKED_OUT`), in which case no cart is minted.
+ */
+export async function replaceStaleCurrencyCart(
+	deps: CartDeps,
+	staleCartId: string,
+	storeCurrency: Currency,
+): Promise<ReplaceStaleCurrencyCartResult> {
+	// Lazy expiry first: a lapsed hold is already back on the shelf.
+	const cart = await getCart(deps, staleCartId);
+	if (cart === null) return { ok: false, reason: "CART_NOT_FOUND" };
+	if (cart.state !== "active") return { ok: false, reason: "CART_CHECKED_OUT" };
+	if (!isStaleCurrencyCart(cart, storeCurrency)) {
+		return { ok: false, reason: "CART_CURRENCY_CURRENT" };
+	}
+	const base = `recurrency:${staleCartId}:${storeCurrency}`;
+	for (const line of cart.lines) {
+		const released = await removeLine(
+			deps,
+			staleCartId,
+			line.lineId,
+			brandIdempotencyKey(`${base}:${line.lineId}`),
+		);
+		if (!released.ok) {
+			const { reason } = released;
+			return {
+				ok: false,
+				reason:
+					reason === "CART_NOT_FOUND" || reason === "CART_CHECKED_OUT"
+						? reason
+						: "LINE_CHECKED_OUT",
+			};
+		}
+	}
+	const cartId = await deps.cartStore.create(storeCurrency, brandIdempotencyKey(base));
+	return { ok: true, cartId };
+}
+
+/**
  * Read a cart, running **lazy expiry first** (§5): any of this cart's held lines
  * whose hold has lapsed is released and dropped before the caller sees it, so a
  * shopper never acts on stock they no longer hold. The release is the store's
