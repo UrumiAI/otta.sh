@@ -264,6 +264,8 @@ interface PlainSettingSpec {
 	kvKey: string;
 	label: string;
 	placeholder: string;
+	/** What the field holds, mid-sentence — for the "couldn't be loaded" notice. */
+	noun: string;
 }
 
 const PLAIN_PAYMENT_SETTINGS: readonly PlainSettingSpec[] = [
@@ -275,6 +277,7 @@ const PLAIN_PAYMENT_SETTINGS: readonly PlainSettingSpec[] = [
 		kvKey: STRIPE_PUBLISHABLE_KEY_KEY,
 		label: "Stripe publishable key (pk_live_… or pk_test_…)",
 		placeholder: "pk_live_…",
+		noun: "Stripe publishable key",
 	},
 	// Issue #306 — where the emailed sign-in link points, and the ONLY place it may
 	// point: required for customer login (unset ⇒ no link is sent). Read back so
@@ -284,6 +287,7 @@ const PLAIN_PAYMENT_SETTINGS: readonly PlainSettingSpec[] = [
 		kvKey: LOGIN_LINK_URL_KEY,
 		label: "Sign-in page address (your storefront's /account/verify page)",
 		placeholder: "https://shop.example/account/verify",
+		noun: "sign-in page address",
 	},
 ];
 
@@ -357,6 +361,10 @@ interface SettingsPageState {
 	/** INC-C5: the NON-secret payment/email settings, keyed by kv key. These ARE
 	 *  the values, and they are rendered back — that is the tier difference. */
 	plainSettings: Map<string, string>;
+	/** #513: the kv keys of {@link plainSettings} whose READ failed — not "stored
+	 *  empty". Their fields are left out of the form, so a save cannot write the
+	 *  blank they would have shown over the stored value. */
+	plainUnread: ReadonlySet<string>;
 	/** The commerce sweep's per-tick query budget ("Background work per minute"),
 	 *  as the sweep would read it — the default when unset or unusable. */
 	backgroundWork: number;
@@ -371,17 +379,32 @@ interface SettingsPageState {
 	encryptionKey: EncryptionKeyStatus;
 }
 
-/** Read the three non-secret payment/email settings. FAIL-SOFT per key, for the
+/** Read the non-secret payment/email settings. FAIL-SOFT per key, for the
  *  same reason as everything else on this screen: a kv blip must leave the forms
- *  usable rather than deny the operator the only provisioning surface there is. */
-async function readPlainSettings(ctx: PluginContext): Promise<Map<string, string>> {
+ *  usable rather than deny the operator the only provisioning surface there is.
+ *
+ *  #513: but a failed read is NOT a stored empty value. It renders as `""` and is
+ *  also listed in `unread`, so the form leaves that field out: the fields share
+ *  one save, and a blank field submitted with an unrelated change would
+ *  otherwise overwrite the real value (the publishable key, turning card
+ *  checkout off) under a "saved" receipt. */
+async function readPlainSettings(
+	ctx: PluginContext,
+): Promise<{ values: Map<string, string>; unread: ReadonlySet<string> }> {
 	const entries = await Promise.all(
 		PLAIN_PAYMENT_SETTINGS.map(async (spec) => {
-			const value = await ctx.kv.get<string>(spec.kvKey).catch(() => null);
-			return [spec.kvKey, typeof value === "string" ? value : ""] as const;
+			try {
+				const value = await ctx.kv.get<string>(spec.kvKey);
+				return { key: spec.kvKey, value: typeof value === "string" ? value : "", ok: true };
+			} catch {
+				return { key: spec.kvKey, value: "", ok: false };
+			}
 		}),
 	);
-	return new Map(entries);
+	return {
+		values: new Map(entries.map((e) => [e.key, e.value] as const)),
+		unread: new Set(entries.filter((e) => !e.ok).map((e) => e.key)),
+	};
 }
 
 /**
@@ -398,7 +421,7 @@ async function readPlainSettings(ctx: PluginContext): Promise<Map<string, string
  * budget, the Stripe account and whether email is available: six concurrent reads.
  */
 async function readPageState(ctx: PluginContext): Promise<SettingsPageState> {
-	const [displayName, paymentSecrets, plainSettings, backgroundWork, stripeAccount, emailStatus] =
+	const [displayName, paymentSecrets, plain, backgroundWork, stripeAccount, emailStatus] =
 		await Promise.all([
 			// FAIL-SOFT alongside the rest (INC-C3): the display name is cosmetic, and
 			// a kv blip on it must not deny the operator the secret forms below.
@@ -420,7 +443,8 @@ async function readPageState(ctx: PluginContext): Promise<SettingsPageState> {
 		backgroundWork,
 		stripeAccount,
 		emailStatus,
-		plainSettings,
+		plainSettings: plain.values,
+		plainUnread: plain.unread,
 		displayName: displayName ?? "",
 		paymentSecrets,
 		encryptionKey: encryptionKeyStatus(),
@@ -1237,6 +1261,7 @@ function buildSettingsBlocks(args: {
 	persisted: OperationalSettingsWire | undefined;
 	paymentSecrets: Map<string, SecretRenderState>;
 	plainSettings: Map<string, string>;
+	plainUnread: ReadonlySet<string>;
 	backgroundWork: number;
 	stripeAccount: StripeAccountCountryStatus;
 	emailStatus: EmailSendingStatus;
@@ -1264,6 +1289,7 @@ function buildSettingsBlocks(args: {
 		...paymentsGroup(
 			args.paymentSecrets,
 			args.plainSettings,
+			args.plainUnread,
 			args.stripeAccount,
 			args.emailStatus,
 			args.paymentRefusal,
@@ -1540,13 +1566,24 @@ function checkoutGroup(
 function paymentsGroup(
 	state: Map<string, SecretRenderState>,
 	plain: Map<string, string>,
+	unread: ReadonlySet<string>,
 	stripeAccount: StripeAccountCountryStatus,
 	emailStatus: EmailSendingStatus,
 	refusal?: PaymentRefusal,
 ): Block[] {
+	// A value the operator just typed is shown again even if its re-read failed:
+	// what is displayed is what they typed, not the stored value. Only a NON-empty
+	// one, though: a refused publishable key comes back as "", and a blank field
+	// over a failed read is exactly what #513 must never submit.
+	const plainForm = plainSettingsForm(
+		refusal === undefined ? plain : new Map([...plain, ...refusal.typed]),
+		refusal === undefined
+			? unread
+			: new Set([...unread].filter((key) => (refusal.typed.get(key) ?? "") === "")),
+	);
 	return section({
 		blockId: "settings:payments",
-		title: paymentsGroupLabel(state, plain, emailStatus),
+		title: paymentsGroupLabel(state, plain, unread, emailStatus),
 		blocks: [
 			{
 				type: "context",
@@ -1583,7 +1620,8 @@ function paymentsGroup(
 			// A refused save states each rule in full beside the form, and the form
 			// keeps what was typed (J6).
 			...(refusal?.problems ?? []).map((problem): Block => ({ type: "context", text: problem })),
-			plainSettingsForm(refusal === undefined ? plain : new Map([...plain, ...refusal.typed])),
+			...unreadPlainSettingNotices(unread),
+			...(plainForm === undefined ? [] : [plainForm]),
 		],
 	});
 }
@@ -1694,16 +1732,36 @@ function legacySignInWarning(stored: string): Block[] {
 	];
 }
 
-/** The three non-secret payment/email settings, as ONE form. Prefilled from kv —
+/** #513: one line per setting whose read failed — its field is left out of the
+ *  form below, so the operator is told why it is missing and that a save keeps it. */
+function unreadPlainSettingNotices(unread: ReadonlySet<string>): Block[] {
+	return PLAIN_PAYMENT_SETTINGS.filter((spec) => unread.has(spec.kvKey)).map(
+		(spec): Block => ({
+			type: "context",
+			text: `The ${spec.noun} couldn't be loaded, so it isn't shown below and saving leaves it unchanged. Reload to edit it.`,
+		}),
+	);
+}
+
+/** The non-secret payment/email settings, as ONE form. Prefilled from kv —
  *  the visible difference from the write-only fields above it, and the whole
  *  reason they are a separate form rather than five more entries in
- *  {@link PAYMENT_SECRET_FIELDS}. */
-function plainSettingsForm(plain: Map<string, string>): FormBlock {
+ *  {@link PAYMENT_SECRET_FIELDS}.
+ *
+ *  #513: a field whose read failed is LEFT OUT, not rendered blank. The save
+ *  handler only writes the fields a submit carries (absent is not empty), so a
+ *  save then keeps the stored value. With every read failed there is no form. */
+function plainSettingsForm(
+	plain: Map<string, string>,
+	unread: ReadonlySet<string>,
+): FormBlock | undefined {
+	const specs = PLAIN_PAYMENT_SETTINGS.filter((spec) => !unread.has(spec.kvKey));
+	if (specs.length === 0) return undefined;
 	return carriedForm({
 		namespace: `settings:${SAVE_PAYMENT_SETTINGS_ACTION}`,
 		form: {
 			type: "form",
-			fields: PLAIN_PAYMENT_SETTINGS.map((spec) => ({
+			fields: specs.map((spec) => ({
 				type: "text_input" as const,
 				action_id: spec.fieldId,
 				label: spec.label,
@@ -1712,9 +1770,10 @@ function plainSettingsForm(plain: Map<string, string>): FormBlock {
 				// these settings, and may be a secret key) is never shown back; the
 				// warning above the form asks for it again.
 				initial_value:
-					spec.kvKey === STRIPE_PUBLISHABLE_KEY_KEY &&
-					stripePublishableKeyMode(plain.get(spec.kvKey) ?? "") === undefined
-						? ""
+					spec.kvKey === STRIPE_PUBLISHABLE_KEY_KEY
+						? stripePublishableKeyMode(plain.get(spec.kvKey) ?? "") === undefined
+							? ""
+							: (plain.get(spec.kvKey) ?? "").trim()
 						: (plain.get(spec.kvKey) ?? ""),
 			})),
 			submit: { label: "Save payment settings", action_id: SAVE_PAYMENT_SETTINGS_ACTION },
@@ -1739,6 +1798,7 @@ function plainSettingsForm(plain: Map<string, string>): FormBlock {
 function paymentsGroupLabel(
 	state: Map<string, SecretRenderState>,
 	plain: Map<string, string>,
+	unread: ReadonlySet<string>,
 	emailStatus: EmailSendingStatus,
 ): string {
 	const stripe = state.get(STRIPE_SECRET_KEY_KEY);
@@ -1748,13 +1808,16 @@ function paymentsGroupLabel(
 	const stripePart =
 		stripe?.set !== true
 			? "no Stripe key"
-			: publishableMode === undefined
-				? "no publishable"
-				: stripe.mode !== undefined && stripe.mode !== publishableMode
-					? "test/live mixed"
-					: stripe.mode === undefined
-						? "Stripe key set"
-						: `Stripe ${stripe.mode}`;
+			: unread.has(STRIPE_PUBLISHABLE_KEY_KEY)
+				? // #513: not known — never "no publishable", which reads as unset.
+					"pk not loaded"
+				: publishableMode === undefined
+					? "no publishable"
+					: stripe.mode !== undefined && stripe.mode !== publishableMode
+						? "test/live mixed"
+						: stripe.mode === undefined
+							? "Stripe key set"
+							: `Stripe ${stripe.mode}`;
 	const webhookPart =
 		state.get(STRIPE_WEBHOOK_SECRET_KEY)?.set === true ? "webhook set" : "no webhook";
 	const emailPart =
@@ -1834,7 +1897,7 @@ type SecretProblem = "unreadable" | "invalid";
  *  the way out; names nothing about the key. */
 const SECRET_PROBLEM_HELP: Readonly<Record<SecretProblem, string>> = {
 	unreadable:
-		"This key is saved encrypted, but this site cannot decrypt it, so it is not used. Whoever deployed the site restores the EMDASH_ENCRYPTION_KEY it was saved with (DEPLOYMENT.md §3), or enter the key again here.",
+		"This key is saved encrypted, but this site cannot decrypt it, so it is not used. Whoever deployed it restores the EMDASH_ENCRYPTION_KEY it was saved with (DEPLOYMENT.md §3), or enter the key again.",
 	invalid:
 		"This key is saved, but it is empty or not in the expected format (it may have been saved outside these Otta settings), so it is not used. Enter it again here, or remove it.",
 };
