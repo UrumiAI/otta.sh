@@ -231,6 +231,12 @@ export interface ProductCommerceDoc {
 	price: Money | null;
 	/** CMS-owned single-writer cache (ADR-0013). */
 	title: string | null;
+	/**
+	 * Why the CMS title was not accepted (issue #112), or null. OPTIONAL on the
+	 * stored shape — a document from before the field reads null
+	 * ({@link normalizeProductDoc}); no migration.
+	 */
+	titleRejection?: string | null;
 	/** INDEXED — `countByTaxClass`'s only predicate. */
 	taxClass: string | null;
 	/**
@@ -395,6 +401,7 @@ export function newShellProductDoc(productId: ProductId, at: string): ProductCom
 		sku: null,
 		price: null,
 		title: null,
+		titleRejection: null,
 		taxClass: null,
 		taxStatus: "taxable",
 		compareAtPrice: null,
@@ -444,6 +451,7 @@ export function normalizeProductDoc(doc: ProductCommerceDoc): ProductCommerceDoc
 		publishKey: publishKeyFor(doc.active),
 		downloadAsset: doc.downloadAsset ?? null,
 		taxStatus: isProductTaxStatus(doc.taxStatus) ? doc.taxStatus : "taxable",
+		titleRejection: doc.titleRejection ?? null,
 	};
 }
 
@@ -464,6 +472,7 @@ export function toProductCommerce(doc: ProductCommerceDoc): ProductCommerce {
 		sku: doc.sku,
 		price: doc.price,
 		title: doc.title,
+		titleRejection: doc.titleRejection ?? null,
 		taxClass: doc.taxClass,
 		taxStatus: isProductTaxStatus(doc.taxStatus) ? doc.taxStatus : "taxable",
 		compareAtPrice: doc.compareAtPrice,

@@ -691,6 +691,7 @@ export {
 	sanitizeDownloadFilename,
 	validateDownloadAsset,
 } from "./product-commerce/download-asset.js";
+export { NO_TITLE, resolveTitleWrite, type TitleState } from "./product-commerce/title-write.js";
 export {
 	HoldExpiredError,
 	type AdjustLineInput,

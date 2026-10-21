@@ -1,6 +1,7 @@
 import { cents, currency as toCurrency, money } from "../money/cents.js";
 import type { IdempotencyKey, ProductId } from "../money/ids.js";
 import type { Clock } from "../ports/clock.js";
+import { NO_TITLE, resolveTitleWrite } from "../product-commerce/title-write.js";
 import type {
 	ProductCommerce,
 	ProductCommerceStore,
@@ -244,7 +245,7 @@ export class InMemoryProductCommerceStore implements ProductCommerceStore {
 				...existing,
 				sku: input.sku !== undefined ? input.sku : existing.sku,
 				price: input.price !== undefined ? input.price : existing.price,
-				title: input.title !== undefined ? input.title : existing.title,
+				...resolveTitleWrite(input, existing),
 				taxClass: input.taxClass !== undefined ? input.taxClass : existing.taxClass,
 				weightGrams: input.weightGrams !== undefined ? input.weightGrams : existing.weightGrams,
 				lengthMm: input.lengthMm !== undefined ? input.lengthMm : existing.lengthMm,
@@ -266,7 +267,7 @@ export class InMemoryProductCommerceStore implements ProductCommerceStore {
 			productId: input.productId,
 			sku: input.sku ?? null,
 			price: input.price ?? null,
-			title: input.title ?? null,
+			...resolveTitleWrite(input, NO_TITLE),
 			taxClass: input.taxClass ?? null,
 			taxStatus: "taxable",
 			// compare-at / cost / inventory-policy are EDIT-ONLY (set via
@@ -1026,6 +1027,7 @@ export class InMemoryProductCommerceStore implements ProductCommerceStore {
 					? money(cents(row.priceCents), toCurrency(row.currency ?? "USD"))
 					: null,
 			title: row.title ?? null,
+			titleRejection: null,
 			taxClass: null,
 			taxStatus: "taxable",
 			compareAtPrice: null,

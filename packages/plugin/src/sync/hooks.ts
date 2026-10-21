@@ -212,8 +212,9 @@ export function hasPendingDraft(content: Record<string, unknown>): boolean {
 }
 
 /**
- * The ONLY fields the CMS sync may put on the wire — the title, and (added by
- * the callers) the ordering watermark.
+ * The ONLY fields the CMS sync may put on the wire — the title (or, issue #112,
+ * the reason the content's title was rejected), and (added by the callers) the
+ * ordering watermark.
  *
  * This is a `Pick`, not the full `UpsertProductCommerceInput`, and that is the
  * structural half of the guard. The wide type declares `sku`, `price`,
@@ -223,7 +224,10 @@ export function hasPendingDraft(content: Record<string, unknown>): boolean {
  * ADR-0013 argues for on the admin-edit side: the type first, the test second,
  * the prose third.
  */
-type SyncUpsertBody = Pick<UpsertProductCommerceInput, "title" | "contentUpdatedAt">;
+type SyncUpsertBody = Pick<
+	UpsertProductCommerceInput,
+	"title" | "titleRejection" | "contentUpdatedAt"
+>;
 
 /** The outcome of deriving a `product_commerce` upsert body from a content
  *  record. There is no "skip" and no "invalid" arm any more: the body carries
@@ -253,10 +257,19 @@ interface DerivedContent {
  *  - there is no sku to be missing, so the old "never mint a partial row" skip
  *    is gone. Minting the bare row IS the fix — it is what makes a CMS product
  *    show up in Pricing & inventory waiting to be priced;
- *  - an unusable title omits ONLY itself and surfaces as `titleProblem`. The
+ *  - an ABSENT title omits ONLY itself and surfaces as `titleProblem`. The
  *    row is still upserted (which keeps the "every CMS product has a row"
  *    invariant true for a collection with no `title` field at all), and the
- *    store PRESERVES any title already stored when the field is absent.
+ *    store PRESERVES any title already stored when the field is absent;
+ *  - a PRESENT but unusable title (over 500 characters, blank, not text) is
+ *    sent as `titleRejection` instead (issue #112). Omitting it used to keep the
+ *    PREVIOUS title, so the storefront showed the new name while a new order
+ *    snapshotted the old one, and the only signal was a log line. The store now
+ *    clears the stale title and records the reason, which the admin's Pricing &
+ *    inventory panel shows; the product cannot be ordered until the CMS entry is
+ *    renamed. The CMS save itself cannot be refused from here (see the module
+ *    header: the save hook returns a content bag, not a verdict, and a sandboxed
+ *    hook's error is logged while the save proceeds).
  */
 function deriveContent(content: Record<string, unknown>): DerivedContent {
 	// TITLE: read from `content.data.title` — the CONTENT's own field. One
@@ -264,6 +277,9 @@ function deriveContent(content: Record<string, unknown>): DerivedContent {
 	// cannot drift. Done here, in the SHARED derive, so both hooks carry it.
 	const parsed = parseProductTitle(readContentTitle(content));
 	if ("title" in parsed) return { body: { title: parsed.title } };
+	if (parsed.rejection !== undefined) {
+		return { body: { titleRejection: parsed.rejection }, titleProblem: parsed.problem };
+	}
 	return { body: {}, titleProblem: parsed.problem };
 }
 

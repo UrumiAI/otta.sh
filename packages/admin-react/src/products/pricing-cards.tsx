@@ -917,6 +917,18 @@ export function PricingStockEditor({ productId }: { productId: string }): React.
 			<h2 id={id("h-group")} className="otta-sr-only">
 				Pricing &amp; stock
 			</h2>
+			{typeof p.titleRejection === "string" &&
+				p.titleRejection.length > 0 && (
+					// Issue #112: the CMS title could not be stored, so the commerce row
+					// has none and checkout refuses the product. The fix is in the entry,
+					// not on this panel, so this says what is wrong and where to fix it.
+					<div className="otta-pricing-callout" data-tone="warn" role="alert">
+						<strong>This product's title wasn't accepted</strong>
+						<span>
+							{p.titleRejection} Customers can't buy it until the entry's title is fixed and saved.
+						</span>
+					</div>
+				)}
 
 			<fieldset className="otta-pricing-cardset" disabled={saving}>
 				<section className="otta-pricing-card" aria-labelledby={id("h-pricing")}>

@@ -440,6 +440,34 @@ test("an unpriced product asks for a price and saves it in the currency the merc
 	expect(writes()[0]?.["value"]).toMatchObject({ price: "18.00", currency: "EUR" });
 });
 
+// Issue #112: the CMS title was rejected, so the commerce row holds no title and
+// the product cannot be ordered. The panel is where a merchant sees why.
+test("a rejected title is shown with its reason, as an alert at the top of the panel", async () => {
+	apiFetch.mockResolvedValue(
+		detail({
+			title: null,
+			titleRejection: "The title is 612 characters long; the most it can be is 500.",
+		}),
+	);
+	const c = await mountPanel();
+	const alert = c.querySelector('[role="alert"]');
+	expect(alert?.textContent).toContain("This product's title wasn't accepted");
+	expect(alert?.textContent).toContain(
+		"The title is 612 characters long; the most it can be is 500.",
+	);
+	expect(alert?.textContent).toContain("Customers can't buy it until the entry's title is fixed");
+});
+
+test("no rejection, no alert — including from a plugin older than the field", async () => {
+	for (const over of [{}, { titleRejection: null }]) {
+		apiFetch.mockResolvedValue(detail(over));
+		const c = await mountPanel();
+		expect(c.textContent).not.toContain("wasn't accepted");
+		await mounted?.unmount();
+		mounted = null;
+	}
+});
+
 test("an unpriced product's currency starts on the store currency the detail read carried, and saves in it", async () => {
 	const unpriced = { priceCents: null, currency: null, compareAtCents: null, unitCostCents: null };
 	apiFetch.mockImplementation((_url, init) => {

@@ -52,6 +52,12 @@ export interface UpsertProductCommerceInput {
 	 *  never sent as `""` — when the content has no usable title, which the store
 	 *  reads as "preserve whatever is already stored". */
 	title?: string;
+	/** The content HAS a title and it cannot be stored (issue #112) — over-long,
+	 *  blank, or not text. The merchant-facing reason (≤500 chars). The store
+	 *  clears the stale title and records this, so the product is not ordered
+	 *  under its previous name and the admin can say why. Never sent with
+	 *  `title`. */
+	titleRejection?: string;
 	taxClass?: string | null;
 	weightGrams?: number | null;
 	lengthMm?: number | null;
