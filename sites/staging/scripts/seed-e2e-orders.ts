@@ -146,6 +146,15 @@ export function pickPurchasable(rows: readonly CatalogRow[]): Purchasable | null
  * live store.
  */
 export function stripeSecretKeyIsSet(settingsPage: unknown): boolean {
+	return secretFieldIsSet(settingsPage, "stripeSecretKey", "Stripe secret key");
+}
+
+/** #499: does the store hold a Stripe webhook signing secret? Read the same way. */
+export function stripeWebhookSecretIsSet(settingsPage: unknown): boolean {
+	return secretFieldIsSet(settingsPage, "stripeWebhookSecret", "Stripe webhook signing secret");
+}
+
+function secretFieldIsSet(settingsPage: unknown, actionId: string, name: string): boolean {
 	const labels: string[] = [];
 	const walk = (node: unknown): void => {
 		if (Array.isArray(node)) {
@@ -154,7 +163,7 @@ export function stripeSecretKeyIsSet(settingsPage: unknown): boolean {
 		}
 		if (node === null || typeof node !== "object") return;
 		const record = node as Record<string, unknown>;
-		if (record["action_id"] === "stripeSecretKey" && typeof record["label"] === "string") {
+		if (record["action_id"] === actionId && typeof record["label"] === "string") {
 			labels.push(record["label"]);
 		}
 		for (const value of Object.values(record)) walk(value);
@@ -163,13 +172,13 @@ export function stripeSecretKeyIsSet(settingsPage: unknown): boolean {
 	const label = labels[0];
 	if (labels.length !== 1 || label === undefined) {
 		throw new Error(
-			`could not find exactly one "Stripe secret key" field on the Settings page (found ` +
+			`could not find exactly one "${name}" field on the Settings page (found ` +
 				`${String(labels.length)}). Refusing to guess whether this store takes real payments.`,
 		);
 	}
 	if (label.endsWith("— not set")) return false;
 	if (label.endsWith("— set")) return true;
-	throw new Error(`unrecognised Stripe secret key label "${label}". Refusing to guess.`);
+	throw new Error(`unrecognised ${name} label "${label}". Refusing to guess.`);
 }
 
 export interface SeedOrdersDeps {
@@ -251,6 +260,27 @@ export async function provisionWebhookSecret(deps: SeedOrdersDeps): Promise<void
 				"without one (remove the key in Settings, or start from a fresh .wrangler state).",
 		);
 	}
+	await saveWebhookSecret(deps);
+}
+
+/**
+ * Issue #499: checkout offers card payment only when Stripe is fully set up, and
+ * on the e2e stack (the offline gateway, no secret key) that means a webhook
+ * secret beside the publishable key. A stack the run starts gets the e2e secret
+ * saved — unless one is already there, or the store has its own secret key (a
+ * developer's real Stripe test setup, which is theirs to complete).
+ */
+export async function provisionE2eWebhookSecret(deps: SeedOrdersDeps): Promise<void> {
+	const page = await admin(
+		deps,
+		{ type: "page_load", page: "/settings" },
+		"reading the Settings page",
+	);
+	if (stripeSecretKeyIsSet(page) || stripeWebhookSecretIsSet(page)) return;
+	await saveWebhookSecret(deps);
+}
+
+async function saveWebhookSecret(deps: SeedOrdersDeps): Promise<void> {
 	const saved = await admin(
 		deps,
 		{

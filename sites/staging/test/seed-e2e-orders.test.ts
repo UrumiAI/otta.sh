@@ -12,6 +12,7 @@ import {
 	assertLoopbackSite,
 	E2E_WEBHOOK_SECRET,
 	pickPurchasable,
+	provisionE2eWebhookSecret,
 	seedPaidOrders,
 	stripeSecretKeyIsSet,
 	type CatalogRow,
@@ -222,5 +223,58 @@ describe("seedPaidOrders", () => {
 		expect(placed).toEqual(["order-new"]);
 		expect(webhooks).toHaveLength(1);
 		expect(webhooks[0]).toMatch(/^t=\d+,v1=[0-9a-f]{64}$/);
+	});
+});
+
+/** A Settings page with both secret fields, labelled as the handler labels them. */
+function secretsPage(secretKey: "set" | "not set", webhook: "set" | "not set"): unknown {
+	return {
+		blocks: [
+			{
+				type: "form",
+				fields: [
+					{
+						type: "secret_input",
+						action_id: "stripeSecretKey",
+						label: `Stripe secret key — ${secretKey}`,
+					},
+				],
+			},
+			{
+				type: "form",
+				fields: [
+					{
+						type: "secret_input",
+						action_id: "stripeWebhookSecret",
+						label: `Stripe webhook signing secret — ${webhook}`,
+					},
+				],
+			},
+		],
+	};
+}
+
+describe("provisionE2eWebhookSecret (#499: a stack the run starts must be card-ready)", () => {
+	const saved = { blocks: [], toast: { type: "success", message: "Saved" } };
+
+	test("neither secret set: saves the e2e webhook secret, once", async () => {
+		const { deps, requests } = fakeSite((body) =>
+			body["type"] === "page_load" ? secretsPage("not set", "not set") : saved,
+		);
+		await provisionE2eWebhookSecret(deps);
+		expect(requests.map((r) => r.body["action_id"] ?? r.body["type"])).toEqual([
+			"page_load",
+			"save-stripe-webhook-secret",
+		]);
+		expect(requests[1]?.body["values"]).toEqual({ stripeWebhookSecret: E2E_WEBHOOK_SECRET });
+	});
+
+	test.each([
+		["a webhook secret is already saved", secretsPage("not set", "set")],
+		["the store has its own Stripe secret key", secretsPage("set", "not set")],
+	])("%s: writes nothing", async (_name, page) => {
+		const { deps, requests } = fakeSite(() => page);
+		await provisionE2eWebhookSecret(deps);
+		expect(requests).toHaveLength(1);
 	});
 });

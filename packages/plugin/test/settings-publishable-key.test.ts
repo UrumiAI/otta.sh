@@ -7,7 +7,8 @@
  *    and is never echoed back;
  *  - the group label reads ready only when both Stripe keys are set and agree on
  *    test/live, and a mismatch or an unusable stored value is explained;
- *  - the route answers the usable stored key or `null`, and nothing else.
+ *  - the route answers the usable stored key or `null`, and whether card payment
+ *    is ready (#499, `card-payment-readiness.test.ts`), and nothing else.
  *
  * Driven over a fake kv, like `settings-secrets.test.ts`.
  */
@@ -235,6 +236,8 @@ describe("storefront/payment-config", () => {
 		expect(await call(makeCtx({ [STRIPE_PUBLISHABLE_KEY_KEY]: ` ${PK_LIVE} ` }).ctx)).toEqual({
 			ok: true,
 			stripePublishableKey: PK_LIVE,
+			// #499: the key alone is not card payment — both secrets are missing.
+			cardPaymentReady: false,
 		});
 	});
 
@@ -243,7 +246,11 @@ describe("storefront/payment-config", () => {
 		[{ [STRIPE_PUBLISHABLE_KEY_KEY]: "" }],
 		[{ [STRIPE_PUBLISHABLE_KEY_KEY]: SK_TEST }],
 	])("answers null for %j — never a value Stripe.js would throw on", async (seed) => {
-		expect(await call(makeCtx(seed).ctx)).toEqual({ ok: true, stripePublishableKey: null });
+		expect(await call(makeCtx(seed).ctx)).toEqual({
+			ok: true,
+			stripePublishableKey: null,
+			cardPaymentReady: false,
+		});
 	});
 
 	test("a kv failure is a render failure, not 'no key'", async () => {
@@ -253,11 +260,15 @@ describe("storefront/payment-config", () => {
 		});
 	});
 
-	test("answers nothing but the publishable key", async () => {
+	test("answers nothing but the publishable key and whether card payment is ready", async () => {
 		const answer = await call(
 			makeCtx({ [STRIPE_PUBLISHABLE_KEY_KEY]: PK_TEST, [STRIPE_SECRET_KEY_KEY]: SK_TEST }).ctx,
 		);
-		expect(Object.keys(answer as object).toSorted()).toEqual(["ok", "stripePublishableKey"]);
+		expect(Object.keys(answer as object).toSorted()).toEqual([
+			"cardPaymentReady",
+			"ok",
+			"stripePublishableKey",
+		]);
 		expect(JSON.stringify(answer)).not.toContain(SK_TEST);
 	});
 });

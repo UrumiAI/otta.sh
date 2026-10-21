@@ -140,10 +140,11 @@ if (redirect !== null) {
 const summary = result as Extract<CheckoutSummaryRouteResult, { ok: true }>;
 const { lines, totals } = summary;
 
-/** No key ⇒ no payment step, and NO order is created: creating one would hold
- *  stock for a payment the buyer cannot make. The key is a Settings value read
- *  per request (#498); a read that failed is busy, never "not set up" — the same
- *  303 to /cart?error=BUSY a busy summary takes. */
+/** Not ready ⇒ no payment step, and NO order is created: creating one would hold
+ *  stock for a payment the buyer cannot make. Ready means the publishable key AND
+ *  both Stripe secrets (#499), all Settings values read per request (#498); a
+ *  read that failed is busy, never "not set up" — the same 303 to
+ *  /cart?error=BUSY a busy summary takes. */
 const stripeKey = await readStripePublishableKey(getPublicPluginApiRouteHandler(Astro.locals), Astro.url);
 if (stripeKey.state === "unavailable") return Astro.redirect("/cart?error=BUSY", 303);
 const paymentConfigured = stripeKey.state === "configured";

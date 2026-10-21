@@ -405,6 +405,17 @@ describe("no publishable key ⇒ NO ORDER (§1.7)", () => {
 		expect(response.headers.get("Retry-After")).not.toBeNull();
 		expect(calls).toHaveLength(0);
 	});
+
+	test("#499: the plugin refusing for a missing Stripe secret is 'not set up', never the generic retry", async () => {
+		const { handler } = makeHandler({ ok: false, reason: "STRIPE_NOT_CONFIGURED" });
+		const { context, cookieOps } = makeContext(VALID_FORM, handler);
+
+		const response = await PLACE_POST(context);
+
+		expect(response.status).toBe(303);
+		expect(response.headers.get("location")).toContain("error=STRIPE_NOT_CONFIGURED");
+		expect(cookieOps.filter((op) => op.name !== "otta_checkout_draft")).toHaveLength(0);
+	});
 });
 
 describe("6b — the idempotency key is the COOKIE cart's, checked against the form", () => {

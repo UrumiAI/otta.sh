@@ -88,7 +88,8 @@ admin, **Content › Products** lists each product's price and stock; open a pro
 They are the only place commercial fields are edited; the CMS owns the title, description and images.
 
 One thing to know: card checkout needs Stripe configured: the secret key, webhook signing secret
-and publishable key, all in admin Settings. A Digital product's file is attached in the same editor
+and publishable key, all in admin Settings. Locally, Stripe's webhooks reach the site only through
+`stripe listen`; see [Test card payments locally](./sites/staging/README.md#test-card-payments-locally). A Digital product's file is attached in the same editor
 (the **Download file** card) and needs a private `DOWNLOADS` bucket, which local dev
 simulates — see [Status](#status).
 

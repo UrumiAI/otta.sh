@@ -40,7 +40,11 @@ function answering(...answers: unknown[]): { handler: never; routes: string[] } 
 
 describe("8a — readStripePublishableKey", () => {
 	test("a stored key is configured, read from the plugin's payment-config route", async () => {
-		const { handler, routes } = answering({ ok: true, stripePublishableKey: "pk_live_51Abc0123" });
+		const { handler, routes } = answering({
+			ok: true,
+			stripePublishableKey: "pk_live_51Abc0123",
+			cardPaymentReady: true,
+		});
 		expect(await readStripePublishableKey(handler, SITE)).toEqual({
 			state: "configured",
 			key: "pk_live_51Abc0123",
@@ -63,10 +67,25 @@ describe("8a — readStripePublishableKey", () => {
 	test("BUSY then an answer is the answer (it is a read, so it is retried once)", async () => {
 		const { handler } = answering(
 			{ ok: false, error: "BUSY", retryable: true },
-			{ ok: true, stripePublishableKey: "pk_test_51Abc0123" },
+			{ ok: true, stripePublishableKey: "pk_test_51Abc0123", cardPaymentReady: true },
 		);
 		expect((await readStripePublishableKey(handler, SITE)).state).toBe("configured");
 	});
+
+	test.each([
+		["false", false],
+		["absent (fails closed)", undefined],
+	])(
+		"#499: a stored key with cardPaymentReady %s is unconfigured — no order, no pay step",
+		async (_name, cardPaymentReady) => {
+			const { handler } = answering({
+				ok: true,
+				stripePublishableKey: "pk_live_51Abc0123",
+				...(cardPaymentReady === undefined ? {} : { cardPaymentReady }),
+			});
+			expect(await readStripePublishableKey(handler, SITE)).toEqual({ state: "unconfigured" });
+		},
+	);
 
 	test.each([
 		["a render failure", { ok: false, error: "RENDER_FAILED" }],

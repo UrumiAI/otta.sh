@@ -38,6 +38,11 @@ import {
 	STRIPE_WEBHOOK_SECRET_KEY,
 	WEBHOOK_EDGE_TOKEN_KEY,
 } from "../payment-secrets.js";
+import {
+	cardPaymentReadiness,
+	cardPaymentsLine,
+	type CardPaymentReadiness,
+} from "../payments/card-payment-readiness.js";
 import { STRIPE_PUBLISHABLE_KEY_KEY } from "../payments/stripe-publishable-key.js";
 import { encryptionKeyStatus, type EncryptionKeyStatus } from "../encryption-key-status.js";
 import type {
@@ -1548,6 +1553,8 @@ function paymentsGroup(
 		blockId: "settings:payments",
 		title: paymentsGroupLabel(state, plain, emailStatus),
 		blocks: [
+			// #499: the one answer checkout uses, stated before the fields that set it.
+			{ type: "context", text: cardPaymentsLine(settingsCardReadiness(state, plain)) },
 			{
 				type: "context",
 				text: "Keys are never shown once saved. Leave a field blank to keep the key you saved before.",
@@ -1585,6 +1592,21 @@ function paymentsGroup(
 			...(refusal?.problems ?? []).map((problem): Block => ({ type: "context", text: problem })),
 			plainSettingsForm(refusal === undefined ? plain : new Map([...plain, ...refusal.typed])),
 		],
+	});
+}
+
+/** #499: card-payment readiness from what this screen already read — the same
+ *  decision `storefront/payment-config` makes, so the line and checkout agree. */
+function settingsCardReadiness(
+	state: Map<string, SecretRenderState>,
+	plain: Map<string, string>,
+): CardPaymentReadiness {
+	const secret = state.get(STRIPE_SECRET_KEY_KEY);
+	return cardPaymentReadiness({
+		publishableMode: stripePublishableKeyMode((plain.get(STRIPE_PUBLISHABLE_KEY_KEY) ?? "").trim()),
+		secretKeySet: secret?.set === true,
+		secretKeyMode: secret?.mode,
+		webhookSecretSet: state.get(STRIPE_WEBHOOK_SECRET_KEY)?.set === true,
 	});
 }
 
