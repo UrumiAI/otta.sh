@@ -441,7 +441,11 @@ describe("quoteCheckout's quote input, and the order the same cart places, as re
 });
 
 describe("quoteCheckout's line guards, as recorded", () => {
-	test("an untitled product still quotes (only the order needs the title)", async () => {
+	// Re-recorded deliberately (#109, #156): this case once pinned an untitled
+	// product QUOTING while its order was refused — the review promised a checkout
+	// that failed at the last step. The quote now applies the order's own
+	// sellability rule, so both refuse it, and nothing is quoted.
+	test("an untitled product is not priced, and nothing is quoted — the same answer the order gives", async () => {
 		await seed({
 			productId: "d1",
 			sku: "EBOOK",
@@ -455,10 +459,10 @@ describe("quoteCheckout's line guards, as recorded", () => {
 			{ productId: brandProductId("d1"), title: null },
 			idempotencyKey(`untitle-${seq++}`),
 		);
-		pin("untitled-quotes.quoteReply", await h.client.quoteCheckout({ cartId }));
-		pin("untitled-quotes.quoteCommand", quoteCommands()[0]);
+		pin("untitled.quoteReply", await h.client.quoteCheckout({ cartId }));
+		expect(quoteCommands()).toHaveLength(0);
 		pin(
-			"untitled-quotes.placeReply",
+			"untitled.placeReply",
 			await h.client.createOrder(
 				{ cartId, paymentMethod: "stripe", buyerRef: "ada@example.com" },
 				`place-${cartId}`,

@@ -420,6 +420,22 @@ test("a SKU the store refuses keeps what was typed, with the reason beside the S
 	expect(c.textContent).toContain('Another product uses "MUG".');
 });
 
+test("a priced product with no title says it cannot be sold until the entry has one (#166)", async () => {
+	apiFetch.mockImplementation(() => Promise.resolve(detail({ title: null })));
+	const c = await mountPanel();
+	expect(c.textContent).toContain(
+		"Customers can't buy this product until it has a title. Fill in this entry's title and save it.",
+	);
+	// Priced, so the price prompt does not show.
+	expect(c.textContent).not.toContain("Add a price so customers can buy this product.");
+});
+
+test("a titled product shows no title prompt", async () => {
+	apiFetch.mockImplementation(() => Promise.resolve(detail()));
+	const c = await mountPanel();
+	expect(c.textContent).not.toContain("until it has a title");
+});
+
 test("an unpriced product asks for a price and saves it in the currency the merchant picked", async () => {
 	apiFetch.mockImplementation((_url, init) => {
 		const body = JSON.parse(String(init?.body)) as Record<string, unknown>;

@@ -177,6 +177,9 @@ export interface ArrangedProduct {
 	productId: string;
 	sku: string;
 	price?: CommerceMoney;
+	/** The snapshot title. Absent ⇒ the tier seeds one (`Product <productId>`): a
+	 *  seeded product is a sellable one, and every sell path refuses an untitled
+	 *  row (#109). */
 	title?: string;
 	onHand?: number;
 	/** Whether the seeded product is PUBLISHED (its publish gate open), the state

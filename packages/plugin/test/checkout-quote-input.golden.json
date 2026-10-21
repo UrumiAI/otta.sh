@@ -349,56 +349,13 @@
 		"ok": false,
 		"reason": "PRODUCT_NOT_PRICED"
 	},
-	"untitled-quotes.placeReply": {
+	"untitled.placeReply": {
 		"ok": false,
 		"reason": "PRODUCT_NOT_PRICED"
 	},
-	"untitled-quotes.quoteCommand": {
-		"currency": "USD",
-		"lines": [
-			{
-				"unitPriceCents": 999,
-				"qty": 1,
-				"taxClassId": "standard",
-				"requiresShipping": false
-			}
-		],
-		"requiresShipping": false
-	},
-	"untitled-quotes.quoteReply": {
-		"ok": true,
-		"requiresShipping": false,
-		"destination": {
-			"status": "not_required",
-			"zoneId": null,
-			"matchedRegion": null
-		},
-		"discountedSubtotalCents": 999,
-		"breakdown": {
-			"currency": "USD",
-			"subtotalCents": 999,
-			"discountCents": 0,
-			"shippingCents": 0,
-			"taxCents": 0,
-			"totalCents": 999,
-			"appliedCouponCode": null,
-			"tax": {
-				"enabled": false,
-				"located": false,
-				"pricesIncludeTax": false,
-				"displayCart": "excl",
-				"totalsDisplay": "itemized",
-				"lineTaxCents": 0,
-				"lineTaxes": [
-					{
-						"lineId": "id-2",
-						"qty": 1,
-						"taxCents": 0
-					}
-				],
-				"itemized": []
-			}
-		}
+	"untitled.quoteReply": {
+		"ok": false,
+		"reason": "PRODUCT_NOT_PRICED"
 	},
 	"usd-digital-fixed.orderDocument": {
 		"orderId": "id-3",

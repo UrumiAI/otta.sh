@@ -51,6 +51,17 @@ describe("joinProduct", () => {
 		expect(joined.content.title).toBe("Bamboo Water Bottle");
 	});
 
+	test("returns purchasable:false for a priced, published record with NO TITLE (#109) — checkout could not snapshot a name", () => {
+		// `createOrderFromCart` refuses a null-title line with PRODUCT_NOT_PRICED, so
+		// a title-less product presented as buyable fails at the last step of checkout.
+		const joined = joinProduct(CONTENT, { ...COMMERCE, title: null });
+
+		expect(joined.purchasable).toBe(false);
+		expect(joined.commerce).not.toBeNull();
+		// The CMS content still renders under its own heading.
+		expect(joined.content.title).toBe("Bamboo Water Bottle");
+	});
+
 	test("returns purchasable:false and commerce:null when no commerce record exists", () => {
 		// Covers all three absences identically (§4.2): never synced ("create,
 		// then price" unfinished), soft-deleted, or simply omitted by the batch.

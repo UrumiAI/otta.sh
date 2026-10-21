@@ -68,7 +68,7 @@ import {
 	itemizeTaxLines,
 	InvalidProductFieldError,
 	isEmailTransportUnavailableError,
-	isProductLive,
+	isProductSellable,
 	listCustomerOrders,
 	listProductCommerceByIds,
 	loadCartPriceDisplay,
@@ -1113,9 +1113,10 @@ export class InProcessCommerceClient implements CommerceClient {
 		for (const line of cart.lines) {
 			if (line.productId === null) return { ok: false, reason: "PRODUCT_NOT_PRICED" };
 			const row = byId.get(toProductId(line.productId)) ?? null;
-			// An unpublished or deleted product is no longer for sale, even from a cart
-			// that held it first — the same liveness rule `createOrderFromCart` applies.
-			if (row === null || !isProductLive(row) || row.price === null) {
+			// The same sellability rule `createOrderFromCart` applies: an unpublished,
+			// deleted, unpriced or untitled product is not for sale, even from a cart
+			// that held it first — so the review never quotes an order that would fail.
+			if (row === null || !isProductSellable(row)) {
 				return { ok: false, reason: "PRODUCT_NOT_PRICED" };
 			}
 			if (row.price.currency !== cart.currency) return { ok: false, reason: "CURRENCY_MISMATCH" };
@@ -1510,7 +1511,8 @@ export class InProcessCommerceClient implements CommerceClient {
 	 * deliberately NOT the publish gate, which decides whether a storefront LISTS a
 	 * product and must never be conflated with whether a sku names a real thing.
 	 * PRICED is part of sellable: a unit nobody has priced cannot be sold, and one
-	 * priced at a row that is not its own is worse than unsold.
+	 * priced at a row that is not its own is worse than unsold. So is TITLED (#109):
+	 * an order line snapshots the title, and checkout refuses a row without one.
 	 *
 	 * A live, priced VARIANT is resolved and then REFUSED, and that is the whole of
 	 * the variant branch today: order pricing reads the snapshot price AND title
@@ -1532,9 +1534,10 @@ export class InProcessCommerceClient implements CommerceClient {
 		const product = await this.#stores.productCommerce.getByProductId(productId);
 		if (product === null || product.deletedAt !== null) return { status: "unknown" };
 		if (product.sku !== null && String(product.sku) === submittedSku) {
-			// Unpublished is refused with the unpriced token: either way the unit is
-			// not for sale, and the storefront already tells the shopper so.
-			return product.price === null || !isProductLive(product)
+			// Unpublished or untitled is refused with the unpriced token: either way the
+			// unit is not for sale (checkout would refuse it), and the storefront
+			// already tells the shopper so.
+			return !isProductSellable(product)
 				? { status: "unpriced" }
 				: { status: "ok", productKind: product.productKind };
 		}

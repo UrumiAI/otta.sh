@@ -249,8 +249,10 @@ export {
 	statusLabel,
 	statusTone,
 	stockTone,
+	unsellableReasons,
 	type ProductLifecycle,
 	type ProductTone,
+	type UnsellableReason,
 } from "./product-status.js";
 export { parseOnHandWatermark, parseStockQty } from "./stock-input.js";
 export { buyerRefHint } from "./buyer-ref-hint.js";
