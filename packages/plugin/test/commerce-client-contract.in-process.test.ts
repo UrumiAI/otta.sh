@@ -914,7 +914,12 @@ describe("in-process commerce: a cart line with no productId resolves by sku (#1
 		const { client } = harness;
 		await client.upsertProductCommerce(
 			"prod-hot",
-			{ sku: "SKU-HOT", price: { amount: 1000, currency: "USD" }, initialOnHand: 3 },
+			{
+				sku: "SKU-HOT",
+				title: "Hot product",
+				price: { amount: 1000, currency: "USD" },
+				initialOnHand: 3,
+			},
 			"hot-seed",
 		);
 		await client.activateProductCommerce("prod-hot", "hot-publish", "2026-01-01T00:00:00.000Z");
