@@ -16,6 +16,15 @@ export interface RevenueBucketWire {
 	currency: string;
 	revenueCents: number;
 	/**
+	 * How many orders produced `revenueCents` — the bucket's orders in a
+	 * revenue-counting state, never every order placed (`getOrdersByStatus`
+	 * counts those). What the Reports page draws "orders over time" from.
+	 *
+	 * Optional for the same reason as `refundedCents` below: a reader that
+	 * predates the field omits the key. The in-process client always emits it.
+	 */
+	revenueOrderCount?: number;
+	/**
 	 * Money refunded on the orders in this bucket — integer minor units in the
 	 * bucket's own `currency`, stated ALONGSIDE `revenueCents` and never netted
 	 * into it.

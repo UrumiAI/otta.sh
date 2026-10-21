@@ -1,6 +1,4 @@
-// `orderStateCell` is imported from the shared presentation package directly:
-// it used to be re-exported by `orders-page.ts`, which ADR-0015 retires.
-import { orderStateCell } from "@urumi.ai/otta-admin-presentation";
+import { formatDay } from "@urumi.ai/otta-admin-presentation";
 import { DEFAULT_OPERATIONAL_SETTINGS } from "@urumi.ai/otta-domain";
 import { formatMoney } from "../presentation/format-money.js";
 import { type Currency, cents as toCents, currency as toCurrency } from "../presentation/money.js";
@@ -14,17 +12,7 @@ import type {
 	StatItem,
 	TableBlock,
 } from "../types.js";
-import {
-	carriedForm,
-	dayOf,
-	DAY_MS,
-	decodeCarrier,
-	endOfDay,
-	failClosedResponse,
-	formatDay,
-	section,
-	startOfDay,
-} from "./scaffold/index.js";
+import { carriedForm, failClosedResponse, section } from "./scaffold/index.js";
 import { makeAdminClients } from "./make-admin-clients.js";
 import type {
 	LowStockWire,
@@ -33,36 +21,37 @@ import type {
 	StatusCountWire,
 	TopProductWire,
 } from "./reporting-settings-surface.js";
+import {
+	MAX_DAILY_POINTS,
+	ordersChart,
+	periodChange,
+	salesChart,
+	statusChart,
+	timeBuckets,
+	topProductsChart,
+	type TimeSeries,
+} from "./reports-charts.js";
+import {
+	comparisonPhrase,
+	DEFAULT_PRESET,
+	presetValue,
+	REPORTS_PERIOD_ACTION_ID,
+	REPORTS_PRESETS,
+	type ReportPeriod,
+	type ResolvedRange,
+	resolveReportsRange,
+} from "./reports-period.js";
 
-/** The admin Reports page's `admin.pages` manifest entry (§4.1). The page
- *  renders numbers and tables, NOT a chart.
+/** The admin Reports page's `admin.pages` manifest entry (§4.1): a Shopify-style
+ *  analytics overview — a period picker, four KPI cards with their change against
+ *  the previous period, and charts for sales, orders, statuses and top products.
  *
- *  Block Kit does ship a charting primitive — `chart` is ECharts-backed and has
- *  been dispatched by the renderer since ≤0.15.0 (an earlier version of this
- *  comment claimed otherwise and was wrong). The reason it is unused here is
- *  narrower and load-bearing: the renderer strips `formatter`, `rich`,
- *  `graphic` and `axisPointer` as XSS vectors, so a series cannot carry a money
- *  formatter — axis ticks and tooltips would print raw integer minor units
- *  (9900, not $99.00), which is exactly the money-display rule this console is
- *  built around. A continuous, formatted two-column table shows the same shape
- *  and states every figure in its currency. A chart over a NON-money series is
- *  a different question and is not ruled out by this.
+ *  The charts are em-dash `chart` blocks (ECharts). They state money as
+ *  pre-formatted strings, never raw minor units — see `reports-charts.ts` for
+ *  how, given that the renderer strips every `formatter` (ADR-0038).
  *
  *  Rendered by the single `admin` dispatch route (see `admin-route.ts`). */
 export const REPORTS_PAGE: AdminPageConfig = { path: "/reports", label: "Reports", icon: "chart" };
-
-/** Trailing 30 days (UTC), the plugin-side default — SURFACED, never silent:
- *  every KPI label says "last 30 days" and the subtitle states the two absolute
- *  dates it resolved to. (A UX nicety only — the service enforces the 400-day
- *  cap regardless, §4.4.) */
-const DEFAULT_RANGE_DAYS = 30;
-
-/** The service's own cap (§4.4). Checked here so a too-wide range renders THIS
- *  page with a banner naming the limit, instead of three 400s collapsing into
- *  the generic "Reports are unavailable" fail-closed screen — same outcome for
- *  the operator either way (a 200 with a banner), but only one of them says
- *  what to do next. */
-const MAX_RANGE_DAYS = 400;
 
 /** R-16 caps a `stats` block at 4 items. */
 const MAX_STATS_ITEMS = 4;
@@ -71,12 +60,10 @@ const MAX_STATS_ITEMS = 4;
  * The order states the SERVICE counts as revenue (`REVENUE_COUNTING_STATES` in
  * the domain's reporting port: payment confirmed and not reversed).
  *
- * Used for ONE thing: the denominator of the average-order-value tile, so AOV
- * divides revenue by the orders that actually produced it rather than by every
- * order placed (which includes `failed`/`expired`/`cancelled`). If the service
- * ever widens its allow-list, this list going stale would move AOV's
- * denominator only — which is why the tile states its own denominator in its
- * description instead of leaving the operator to infer it.
+ * Counts the "(N paid)" under the cards, and is the average-order-value card's
+ * denominator only on a reader too old to carry the per-currency
+ * `revenueOrderCount` — either way the orders that produced revenue, never every
+ * order placed (which includes `failed`/`expired`/`cancelled`).
  */
 const REVENUE_COUNTING_STATES: ReadonlySet<string> = new Set([
 	"paid",
@@ -90,274 +77,121 @@ const MONEY_LOCALE = "en-US";
 
 /**
  * The one page action every table on this screen sets (T-6/R-21: the
- * authoritative `TableBlock.page_action_id` is REQUIRED, even though nothing
- * on this screen can page — no `next_cursor`, no `sortable` column). It must
- * be registered as a no-op in the SAME change as the tables that set it:
- * `admin-route.ts` dispatches `SETTINGS_ACTION_IDS`/`ORDERS_ACTION_IDS`/etc.
- * but had NO `REPORTS_ACTION_IDS`, so a reports page action that ever fired
- * fell through to the dispatcher's `{blocks: []}` fallback — a blank console.
- * Nothing can fire this today (a sort needs `sortable`, forbidden by T-3; a
- * load-more needs `next_cursor`, never set here), which is exactly why it was
- * a LATENT trap rather than a failing test — it arms itself the instant
- * someone adds a `next_cursor` or a `sortable` column without also touching
- * this registration.
+ * authoritative `TableBlock.page_action_id` is REQUIRED, even though nothing on
+ * this screen can page). Registered as a no-op re-render so that, should it ever
+ * fire, it does not fall through the dispatcher to a blank `{blocks: []}`.
  */
 export const REPORTS_PAGE_ACTION_ID = "reports:page";
 
 /**
- * The From/To period form's submit. It is a REAL action — unlike
- * {@link REPORTS_PAGE_ACTION_ID} it fires on every period change — so the
- * registration below is not a latent precaution: an unregistered id falls
- * through the dispatcher to `{blocks: []}`, and the operator's period change
- * would blank the console. Pinned by the sandbox suite, which fires this id and
- * asserts the response still renders the page.
+ * The custom From/To form's submit. A REAL action — it fires on every custom
+ * period — so an unregistered id would blank the console. Pinned by the sandbox
+ * suite, which fires this id and asserts the page still renders.
  */
 export const REPORTS_RANGE_ACTION_ID = "reports:apply-range";
+
+export { REPORTS_PERIOD_ACTION_ID };
 
 export const REPORTS_ACTION_IDS: ReadonlySet<string> = new Set([
 	REPORTS_PAGE_ACTION_ID,
 	REPORTS_RANGE_ACTION_ID,
+	REPORTS_PERIOD_ACTION_ID,
 ]);
 
 export interface ReportsPageInput {
+	type?: unknown;
+	/** A `block_action`'s id — the period select fires {@link REPORTS_PERIOD_ACTION_ID}. */
+	action_id?: unknown;
+	/** A `block_action`'s value — the period select's chosen preset id. */
+	value?: unknown;
+	/** A preset id on a `page_load`. */
+	preset?: unknown;
 	from?: unknown;
 	to?: unknown;
-	interval?: unknown;
-	/** A `form_submit` carries its fields here (em-dash's `BlockInteraction`),
-	 *  which is where the period form's `from`/`to` arrive. The top-level
-	 *  `from`/`to` above stay supported: they are the shape a `page_load` can
-	 *  carry. */
+	/** A `form_submit` carries its fields here (em-dash `BlockInteraction`), which
+	 *  is where the custom form's `from`/`to` arrive. */
 	values?: unknown;
-	/** The originating form's `block_id`, echoed back on submit — the invisible
-	 *  channel the period form carries `interval` through (there is no visible
-	 *  field for it, and none is wanted). */
 	block_id?: unknown;
-}
-
-/**
- * The period this render is answering for, resolved ONCE and threaded into
- * every read, every KPI label and the subtitle — the whole point of the
- * increment is that these three can never disagree.
- *
- * `from`/`to` are the ISO instants sent to the service; `fromDay`/`toDay` are
- * the `YYYY-MM-DD` values the `date_input`s prefill with. `isDefault` is what
- * lets a label say "last 30 days" (true, and useful) rather than repeating the
- * absolute dates the subtitle already states. `problem` is set when the
- * operator submitted something unusable — the range falls back to the default
- * and the page renders the reason as a banner (never a 4xx: G5).
- */
-interface ResolvedRange {
-	from: string;
-	to: string;
-	fromDay: string;
-	toDay: string;
-	isDefault: boolean;
-	problem?: string;
-}
-
-/**
- * The trailing-30-day default, built from WHOLE DAYS through the same
- * {@link rangeFromDays} the form's own submit uses.
- *
- * It used to be instant-based (`now - 30d` → `now`), and every surface above it
- * presents days: the subtitle said `1 Jul – 31 Jul 2026` while the query ran
- * `…T17:54:33Z` to `…T17:54:33Z`, so re-submitting the untouched prefill —
- * which resolves to whole days — returned DIFFERENT figures under an identical
- * subtitle; the zero-fill drew a ~6-hour partial first day as a whole-day row
- * that could read `$0.00`; and "last 30 days" spanned 31 day-rows. Whole days
- * make the default and a hand-entered identical period the SAME query, and
- * `DEFAULT_RANGE_DAYS` day-rows exactly (today counts as one of them).
- */
-function defaultRange(problem?: string): ResolvedRange {
-	const toDay = dayOf(new Date());
-	const fromDay = dayOf(
-		new Date(Date.parse(startOfDay(toDay)) - (DEFAULT_RANGE_DAYS - 1) * DAY_MS),
-	);
-	return {
-		...rangeFromDays(fromDay, toDay),
-		isDefault: true,
-		...(problem !== undefined ? { problem } : {}),
-	};
-}
-
-/** A day pair → the resolved instants, `from` at the start of its day and `to`
- *  at the end of its. The ONE place a period becomes a query, so a default
- *  period and a typed one can never resolve differently. */
-function rangeFromDays(fromDay: string, toDay: string): Omit<ResolvedRange, "isDefault"> {
-	return { from: startOfDay(fromDay), to: endOfDay(toDay), fromDay, toDay };
-}
-
-/**
- * A submitted bound → an instant. A `date_input` yields `YYYY-MM-DD`, which is
- * a DAY, not an instant: the `to` bound therefore resolves to the END of that
- * day, because the service's window is inclusive and `2026-07-31T00:00:00Z`
- * would silently drop every order placed on the last day the operator asked
- * for. A full ISO string (the `page_load` shape) is taken as given.
- */
-function parseBound(value: string, edge: "from" | "to"): Date | undefined {
-	const trimmed = value.trim();
-	if (trimmed.length === 0) return undefined;
-	const at = new Date(edge === "from" ? startOfDay(trimmed) : endOfDay(trimmed));
-	return Number.isNaN(at.getTime()) ? undefined : at;
-}
-
-/** A `from`/`to` pair from wherever this interaction carried it: a form submit's
- *  `values`, else the route input itself. */
-function readBounds(input: ReportsPageInput): { from?: string; to?: string } {
-	const values =
-		typeof input.values === "object" && input.values !== null
-			? (input.values as Record<string, unknown>)
-			: {};
-	const from = values["from"] ?? input.from;
-	const to = values["to"] ?? input.to;
-	return {
-		...(typeof from === "string" ? { from } : {}),
-		...(typeof to === "string" ? { to } : {}),
-	};
-}
-
-/**
- * Resolve the period, falling back to the trailing-30-day default with a stated
- * reason on anything unusable. EVERY branch returns a range: this handler has no
- * failure mode that is allowed to be a non-2xx (G5), and a period the operator
- * cannot see is the defect this page is being fixed for — so a rejected range
- * announces itself instead of silently answering a different question.
- */
-function resolveRange(input: ReportsPageInput): ResolvedRange {
-	const bounds = readBounds(input);
-	const hasFrom = bounds.from !== undefined && bounds.from.trim().length > 0;
-	const hasTo = bounds.to !== undefined && bounds.to.trim().length > 0;
-	if (!hasFrom && !hasTo) return defaultRange();
-	if (!hasFrom || !hasTo) {
-		return defaultRange("Enter both a From and a To date to report on a custom period.");
-	}
-	const from = parseBound(bounds.from ?? "", "from");
-	const to = parseBound(bounds.to ?? "", "to");
-	if (from === undefined || to === undefined) {
-		return defaultRange("Enter both dates as a calendar date, then update the period.");
-	}
-	// Snap to whole days FIRST, then judge the snapped period — this screen has
-	// no surface that presents a time of day, so a period carrying one would be a
-	// window the operator can neither see nor reproduce, and every check has to
-	// run on the window actually queried.
-	const fromDay = dayOf(from);
-	const toDay = dayOf(to);
-	if (fromDay > toDay) {
-		return defaultRange("The From date falls after the To date. Swap them, then update again.");
-	}
-	// Judged on the SNAPPED span, never the raw one: `2025-01-01T23:59Z` to
-	// `2026-02-05T00:01Z` is 399 raw days but 401 whole days, so a raw check
-	// waved it through, the service answered 400 to all three reads, and the page
-	// collapsed into the generic fail-closed banner — which names a service
-	// connection or a console bug, never the cap the operator actually hit.
-	if (dayCount(fromDay, toDay) > MAX_RANGE_DAYS) {
-		return defaultRange(
-			`A reporting period covers up to ${MAX_RANGE_DAYS} days. Choose a shorter one.`,
-		);
-	}
-	return { ...rangeFromDays(fromDay, toDay), isDefault: false };
-}
-
-/** Whole days from `fromDay` to `toDay` INCLUSIVE — the unit the service caps,
- *  the table rows, and the labels all count in. */
-function dayCount(fromDay: string, toDay: string): number {
-	const start = Date.parse(`${fromDay}T00:00:00.000Z`);
-	const end = Date.parse(`${toDay}T00:00:00.000Z`);
-	return Math.round((end - start) / DAY_MS) + 1;
-}
-
-/**
- * The bucket granularity, from the route input or — on a period submit, which
- * carries no route input — from the form's own carrier.
- *
- * A `form_submit` replaces the whole interaction: without the carrier, changing
- * the period on a weekly report silently dropped it back to daily, and nothing
- * on screen said so. The form has no visible interval field (and wants none),
- * so it rides in `block_id`, which is the one thing a form echoes back.
- */
-function resolveInterval(input: ReportsPageInput): "day" | "week" | "month" {
-	const carried = decodeCarrier(input.block_id)?.["interval"];
-	const raw = input.interval ?? carried;
-	return raw === "week" || raw === "month" ? raw : "day";
 }
 
 /** The period in ABSOLUTE dates — `1 Jul – 31 Jul 2026`. The year is stated
  *  once when both ends share it, twice when they do not. */
-function absolutePeriod(range: ResolvedRange): string {
+function absolutePeriod(range: Pick<ReportPeriod, "fromDay" | "toDay">): string {
 	const sameYear = range.fromDay.slice(0, 4) === range.toDay.slice(0, 4);
 	return `${formatDay(range.fromDay, !sameYear)} – ${formatDay(range.toDay, true)}`;
 }
 
-/** What a KPI label says the figure covers. The default range names itself
- *  ("last 30 days" — shorter, and it tells the operator the period is the
- *  default rather than something they chose); a chosen range states its dates,
- *  because "last 30 days" would then be a lie. */
-function periodSuffix(range: ResolvedRange): string {
-	return range.isDefault ? `last ${DEFAULT_RANGE_DAYS} days` : absolutePeriod(range);
-}
-
 /**
- * The Reports page (§4.1 skeleton; `docs/admin/ADMIN-CONSOLE.md` §12.5).
- * Composes four Block Kit sections, each backed by one reporting call on the
- * surface `makeAdminClients` hands over — in-process against the plugin's own
- * document store, or over `ctx.http`, and this screen does not know which (work
- * order 02, INC-B10c-ii). Fails CLOSED either way: any error from that surface
- * — an allowlist rejection, a non-2xx, or an in-process store failure, including
- * one raised while the surface is being CONSTRUCTED — renders the E-7 fail-closed
- * banner rather than throwing into the host. Also handles the (currently
- * unreachable) `reports:page` no-op action by re-rendering the page unchanged,
- * and the period form's `reports:apply-range` submit by re-rendering it for the
- * submitted period — this function reads its range from `routeCtx.input`
- * (top-level, or a form submit's `values`) regardless of which of the three
- * interaction types delivered it.
+ * The Reports page. Eight reads on the surface `makeAdminClients` hands over —
+ * revenue, orders-by-status, top products (by revenue and by units), low stock
+ * and settings for the period, plus revenue and orders-by-status for the
+ * PREVIOUS period. All but top
+ * products and low stock read the `reporting_daily` rollup (day documents, never
+ * a per-order scan), so the comparison costs two more range reads of the same
+ * documents.
+ *
+ * Fails CLOSED: any error from a current-period read — including one raised while
+ * the surface is CONSTRUCTED — renders the E-7 fail-closed banner rather than
+ * throwing into the host. A failing PREVIOUS-period read only costs the deltas
+ * ("No comparison available"); the period's own figures still render.
  */
 export function createReportsPageHandler(): RouteHandler<ReportsPageInput> {
 	return async (routeCtx, ctx) => {
-		const range = resolveRange(routeCtx.input);
-		const interval = resolveInterval(routeCtx.input);
 		// Cosmetic label from ctx.kv (never the service) — the display-only tier.
 		const displayName = (await ctx.kv.get<string>("settings:storeDisplayName")) ?? "Store";
 
 		try {
-			// The composition root sources the guarded reads' `X-Internal-Token` from
-			// write-only kv on the http branch (em-dash's `page_load` carries NO
-			// token, so it can only come from there) and reads nothing at all on the
-			// in-process branch, where there is no service to authenticate to
-			// (ADR-0014 D3). This handler holds no tokens of its own either way.
-			//
-			// CONSTRUCTED INSIDE THE TRY, deliberately. The http client's constructor
-			// could not fail, so this line used to sit outside; the in-process branch
-			// builds every commerce adapter over `ctx.storage` and THROWS at
-			// construction when that store is absent. Outside the try that throw would
-			// escape into the host — the one in-process failure this page's fail-closed
-			// promise did not actually keep.
+			// Inside the try as defence in depth: the resolver refuses every bound it
+			// cannot shift or label, but a throw here would otherwise escape into the
+			// host rather than land on the fail-closed screen.
+			const range = resolveReportsRange(routeCtx.input);
+			// CONSTRUCTED INSIDE THE TRY, deliberately: the in-process branch builds
+			// every commerce adapter over `ctx.storage` and THROWS at construction
+			// when that store is absent.
 			const { reporting: client } = await makeAdminClients(ctx);
 			const settingsRead = client.getSettings().catch(() => undefined);
-			const [revenue, statuses, top, low, settings] = await Promise.all([
-				client.getRevenue(range, interval),
-				client.getOrdersByStatus(range),
-				client.getTopProducts(range, "revenue", 10),
-				// An explicit threshold avoids a second settings read inside the report.
-				settingsRead.then((savedSettings) =>
-					client.getLowStock(
-						savedSettings?.lowStockThreshold ?? DEFAULT_OPERATIONAL_SETTINGS.lowStockThreshold,
+			const revenueRead = client.getRevenue(range, "day");
+			// The units ranking is only drawn when the period has no single revenue
+			// currency, which the revenue read decides. It is a full scan in the
+			// store, so it is asked for only then — and a failure of it costs only
+			// the ranking's own order (the builder re-sorts the revenue list), never
+			// the page.
+			const topByUnitsRead = revenueRead.then((buckets) =>
+				hasSingleRevenueCurrency(buckets)
+					? undefined
+					: client.getTopProducts(range, "quantity", 10).catch(() => undefined),
+			);
+			const [revenue, statuses, top, topByUnits, low, settings, previousRevenue, previousStatuses] =
+				await Promise.all([
+					revenueRead,
+					client.getOrdersByStatus(range),
+					client.getTopProducts(range, "revenue", 10),
+					topByUnitsRead,
+					// An explicit threshold avoids a second settings read inside the report.
+					settingsRead.then((savedSettings) =>
+						client.getLowStock(
+							savedSettings?.lowStockThreshold ?? DEFAULT_OPERATIONAL_SETTINGS.lowStockThreshold,
+						),
 					),
-				),
-				settingsRead,
-			]);
+					settingsRead,
+					client.getRevenue(range.previous, "day").catch(() => undefined),
+					client.getOrdersByStatus(range.previous).catch(() => undefined),
+				]);
 			return buildReportsBlocks({
 				displayName,
-				interval,
 				range,
 				revenue,
 				statuses,
 				top,
+				...(topByUnits !== undefined ? { topByUnits } : {}),
 				low,
+				...(previousRevenue !== undefined ? { previousRevenue } : {}),
+				...(previousStatuses !== undefined ? { previousStatuses } : {}),
 				...(settings !== undefined ? { lowStockThreshold: settings.lowStockThreshold } : {}),
+				...(settings?.currency !== undefined ? { storeCurrency: settings.currency } : {}),
 			});
 		} catch {
-			// Fail CLOSED with E-7's normative copy — never leak the raw HTTP
-			// status/URL (e.g. an auth 401 from a missing/expired admin token), and
+			// Fail CLOSED with E-7's normative copy — never leak a raw status/URL, and
 			// never claim a single external cause: this path also catches a bug in
 			// this console's own code, so the copy says so.
 			return failClosedResponse({
@@ -371,47 +205,43 @@ export function createReportsPageHandler(): RouteHandler<ReportsPageInput> {
 	};
 }
 
-interface ReportsData {
+export interface ReportsData {
 	displayName: string;
-	interval: "day" | "week" | "month";
-	/** The period every figure on this page covers. */
+	/** The period every figure on this page covers, and its comparison period. */
 	range: ResolvedRange;
 	revenue: RevenueBucketWire[];
 	statuses: StatusCountWire[];
+	/** The top products ranked by revenue — drawn when the period has one currency. */
 	top: TopProductWire[];
+	/** The top products ranked by units sold — drawn when it has several (or none),
+	 *  since a revenue ranking would then sum minor units across currencies. Absent
+	 *  from an older caller: `top` is then re-sorted by units, and says so. */
+	topByUnits?: TopProductWire[];
 	low: LowStockWire[];
-	/** From `GET /settings` — the threshold the low-stock rows were selected by,
-	 *  so its group label can state it. Absent when that read failed. */
+	/** The previous period's reads. Absent when they failed: the deltas then say
+	 *  "No comparison available" rather than comparing against nothing. */
+	previousRevenue?: RevenueBucketWire[];
+	previousStatuses?: StatusCountWire[];
+	/** The threshold the low-stock rows were selected by, so its heading can state
+	 *  it. Absent when the settings read failed. */
 	lowStockThreshold?: number;
+	/** The SAVED store currency, for the money axis of a period that earned nothing.
+	 *  Absent when never saved or when the settings read failed. */
+	storeCurrency?: string;
 }
 
 export function buildReportsBlocks(data: ReportsData): BlockResponse {
+	const phrase = comparisonPhrase(data.range.days);
 	// THE CURRENCY MODE OF THIS PAGE IS DECIDED BY REVENUE, NOT BY THE BUCKET
-	// LIST (INC-23). Since the revenue wire started reporting refunds, a bucket
-	// exists when EITHER half contributes — so a single fully-refunded EUR order
-	// in an otherwise USD store puts an EUR bucket on the wire at
-	// `revenueCents: 0`. Read naively, that ONE row flips the whole screen into
-	// multi-currency: a phantom `€0.00` Revenue card appears, AOV and every
-	// per-product revenue figure dash out (they refuse to compare units), the
-	// day series stops being zero-filled, and — worst — the fourth card is now
-	// spent on the phantom, which truncates the REFUNDED card off R-16's cap in
-	// precisely the case that card exists to report.
-	//
-	// So the split is explicit: a currency is a REVENUE currency when it has at
-	// least one revenue-bearing bucket; everything else is refund-only and is
-	// handled as refunds (counted, stated in its own currency, disclosed) rather
-	// than as a zero-revenue currency. Against a service that predates
-	// `refundedCents` every bucket is revenue-bearing, so this is byte-for-byte
-	// the old behavior there.
+	// LIST (INC-23). A bucket exists when EITHER revenue or a refund contributes,
+	// so a single fully-refunded EUR order in a USD store puts an EUR bucket on the
+	// wire at `revenueCents: 0`. Read naively, that ONE row would flip the screen
+	// into multi-currency: a phantom `€0.00` card, AOV and per-product revenue
+	// dashed out, and the Refunded card truncated off R-16's cap. So a currency is
+	// a REVENUE currency only when it has a revenue-bearing bucket; everything else
+	// is refund-only and handled as refunds.
 	const revenueCurrencies = new Set(data.revenue.filter(isRevenueBearing).map((b) => b.currency));
-	// Buckets in a revenue currency — what the cards, the AOV denominator, the
-	// day series and the table are all computed from. A `revenueCents: 0` bucket
-	// in a currency that DOES earn elsewhere stays in (it is a real zero day, and
-	// the zero-fill would draw it anyway); only a wholly refund-only currency is
-	// held back.
 	const revenueBuckets = data.revenue.filter((b) => revenueCurrencies.has(b.currency));
-	// Currencies that appear ONLY because money came back in them. Deterministic
-	// order (ISO code), like the revenue cards.
 	const refundOnlyCurrencies = [
 		...new Set(
 			data.revenue.filter((b) => !revenueCurrencies.has(b.currency)).map((b) => b.currency),
@@ -422,209 +252,304 @@ export function buildReportsBlocks(data: ReportsData): BlockResponse {
 	for (const b of revenueBuckets) {
 		totalByCurrency.set(b.currency, (totalByCurrency.get(b.currency) ?? 0) + b.revenueCents);
 	}
-	// §12.5's listing asks for these cards ranked "by the most orders" — but
-	// `RevenueBucketWire` carries only `revenueCents`, no per-currency order
-	// count, and `StatusCountWire.orderCount` is bucketed by ORDER STATUS, not
-	// by currency. Director ruling: the ranking is scoped OUT — and that means
-	// no comparison across currencies at all, not a different comparison.
-	// Sorting by revenue instead of orders was tried and REJECTED on review:
-	// it still numerically compares incommensurable units (JPY minor units vs
-	// USD) to decide both selection and order, so it reinstates the exact
-	// defect (a low-price, high-volume currency can read as ranked below a
-	// high-price, low-volume one, confidently wrong, operator can't tell) with
-	// a different axis. Single-currency stores never trigger it, which is
-	// exactly why it looked fine in review. The fix: select AND order by a
-	// NON-COMPARATIVE, deterministic rule — alphabetical ISO currency code.
-	// This is reported as an N-1 spec defect (§12.5's listing), and the gap is
-	// also disclosed to the OPERATOR below, not only in the PR body (DA-7).
+	// Selected AND ordered by a NON-COMPARATIVE, deterministic rule — alphabetical
+	// ISO code. Ranking by revenue would numerically compare incommensurable minor
+	// units (JPY vs USD). The rule is disclosed to the operator.
 	const byCurrencyCode = [...totalByCurrency.entries()].toSorted((a, b) =>
 		a[0].localeCompare(b[0]),
 	);
-	const period = periodSuffix(data.range);
-	// EVERY tile states the period it covers. The subtitle states it too, in
-	// absolute dates — a KPI read out of the corner of an eye is the exact thing
-	// that used to be read as "all time" or "today", and a figure is only as
-	// good as the question it answers.
-	const revenueTiles: StatItem[] =
-		byCurrencyCode.length === 0
-			? [{ label: `Revenue — ${period}`, value: "—", description: "No paid orders in this period" }]
-			: byCurrencyCode.map(([currencyCode, revenueCents]) => ({
-					label: `Revenue (${currencyCode}) — ${period}`,
-					value: formatMoney(toCents(revenueCents), toCurrency(currencyCode), MONEY_LOCALE),
-				}));
-	// DA-7: no control can fix this (there is nothing to click), so one honest
-	// line names the gap and the remedy — rendered, not just disclosed in a
-	// PR body. Conditioned on there actually BEING more than one currency
-	// (T-8a's discipline: a caveat that cannot apply is noise, not honesty).
 	const multiCurrency = byCurrencyCode.length > 1;
-	const rankingGapNote =
-		"Cards are ordered alphabetically by currency code, not by order volume — the wire carries no per-currency order count. Ranking by volume needs a service change.";
-
-	// Top products' wire (`TopProductWire`) carries `revenueCents` but NO
-	// currency field at all — a second, independent wire gap from the stats
-	// ranking above. `formatMoney` requires a currency, so this can only be
-	// formatted correctly when the whole range is genuinely single-currency
-	// (the common case). Multi-currency ranges fall back to "—": a wrong
-	// number is worse than a missing one (M-1), and inventing a currency here
-	// would be the same category of mistake the stats ranking was scoped out
-	// to avoid.
 	const singleCurrency =
 		byCurrencyCode.length === 1 ? toCurrency(byCurrencyCode[0]![0]) : undefined;
 
-	// The other three tiles (DESIGNER §6: one number in one bordered card, 1 of
-	// 4 slots used, ~700px of empty card beside it). Order is Revenue, Orders,
-	// AOV, Refunded and the list is TRUNCATED to R-16's four — so a
-	// single-currency store (the ordinary case) gets exactly those four, and a
-	// multi-currency one spends the slots on the revenue it cannot combine into
-	// one figure.
+	const previousTotal = (code: string): number | undefined =>
+		data.previousRevenue === undefined
+			? undefined
+			: data.previousRevenue
+					.filter((b) => b.currency === code)
+					.reduce((sum, b) => sum + b.revenueCents, 0);
+
+	const revenueTiles: StatItem[] =
+		byCurrencyCode.length === 0
+			? [{ label: "Total sales", value: "—", description: "No paid orders in this period" }]
+			: byCurrencyCode.map(([currencyCode, revenueCents]) => ({
+					label: multiCurrency ? `Total sales (${currencyCode})` : "Total sales",
+					value: formatMoney(toCents(revenueCents), toCurrency(currencyCode), MONEY_LOCALE),
+					...periodChange(revenueCents, previousTotal(currencyCode), phrase),
+				}));
+
 	const orderCount = data.statuses.reduce((sum, s) => sum + s.orderCount, 0);
-	const paidOrderCount = data.statuses.reduce(
-		(sum, s) => (REVENUE_COUNTING_STATES.has(s.status) ? sum + s.orderCount : sum),
-		0,
-	);
+	const paidOrderCount = paidOrders(data.statuses);
+	const previousOrderCount = data.previousStatuses?.reduce((sum, s) => sum + s.orderCount, 0);
 	const ordersTile: StatItem = {
-		label: `Orders — ${period}`,
+		label: "Orders",
 		value: String(orderCount),
-		// Names the paid subset, because Revenue ÷ Orders does NOT equal the AOV
-		// beside it: this count includes cancelled, failed and expired orders,
-		// which produce no revenue. Without the second number the two tiles read
-		// as an arithmetic error.
-		description: `Every status; ${paidOrderCount} paid`,
+		...periodChange(orderCount, previousOrderCount, phrase),
 	};
-	const aovTile = averageOrderValueTile(byCurrencyCode, singleCurrency, paidOrderCount, period);
-	// The Refunded card's currency: the revenue currency when there is exactly
-	// one (the ordinary store), else — when NOTHING earned in this period but
-	// something came back — the single refund-only currency, so an all-refunds
-	// window still states its figure instead of dashing out. Anything genuinely
-	// plural stays "—": adding minor units across currencies is the one thing
-	// this screen never does.
+	const aovTile = averageOrderValueTile({
+		byCurrencyCode,
+		singleCurrency,
+		// The orders behind THIS currency's revenue, not every paid order (which
+		// spans every currency). A reader older than `revenueOrderCount` falls back
+		// to the paid-status count, as this card always did.
+		orderCount:
+			singleCurrency === undefined
+				? paidOrderCount
+				: (revenueOrdersFor(revenueBuckets, singleCurrency) ?? paidOrderCount),
+		previous:
+			singleCurrency === undefined
+				? { kind: "unknown" }
+				: previousAverage(data.previousRevenue, singleCurrency),
+		phrase,
+	});
+	// The Refunded card's currency: the revenue currency when there is exactly one,
+	// else — when NOTHING earned but something came back — the single refund-only
+	// currency. Anything genuinely plural stays "—".
 	const refundedCurrency =
 		singleCurrency ??
 		(byCurrencyCode.length === 0 && refundOnlyCurrencies.length === 1
 			? toCurrency(refundOnlyCurrencies[0]!)
 			: undefined);
-	const refundedTile = refundedTileFor(data.revenue, data.statuses, refundedCurrency, period);
+	const refundedTile = refundedTileFor({
+		revenue: data.revenue,
+		statuses: data.statuses,
+		currency: refundedCurrency,
+		previousRevenue: data.previousRevenue,
+		phrase,
+	});
 	const allTiles: StatItem[] = [...revenueTiles, ordersTile, aovTile, refundedTile];
 	const items: StatItem[] = allTiles.slice(0, MAX_STATS_ITEMS);
-	// R-16's cap is four cards. A multi-currency window spends them on revenue it
-	// cannot combine into one figure, so the tiles that fall off the end are
-	// NAMED — a card that vanishes without a word is the same silence this
-	// increment exists to remove (DA-7).
+	// The cards that fall off R-16's cap are NAMED — a card that vanishes without a
+	// word is a silence this page refuses (DA-7).
 	const droppedTileNames = allTiles.slice(MAX_STATS_ITEMS).map((tile) => tileName(tile.label));
 
-	const topRevenueSuppressed = singleCurrency === undefined && data.top.length > 0;
-	const topRows = data.top.map((t) => ({
-		titleSnapshot: t.titleSnapshot,
-		qtySold: t.qtySold,
-		revenue:
-			singleCurrency === undefined
-				? "—"
-				: formatMoney(toCents(t.revenueCents), singleCurrency, MONEY_LOCALE),
-	}));
-
-	// Bucket boundaries are date-only bounds (M-6), and the wire's
-	// millisecond-precision ISO string would otherwise trip X-13 — trim to
-	// YYYY-MM-DD. Each row's revenue is formatted through ITS OWN bucket
-	// currency (never summed across rows), so a range spanning several
-	// currencies still reads correctly without a per-currency Currency column
-	// (M-2 forbids one) and without the per-currency accordion split the
-	// listing describes, whose ordering depends on the same order-count data
-	// the stats ranking above does not have.
-	//
-	// Days with no orders are EMITTED, at zero, so the series is continuous
-	// (DESIGNER §6): the wire returns only days that had revenue, which made a
-	// month of steady sales and a month with a three-week hole render as the
-	// same four rows. A zero row is data — it is the shape a table can show
-	// without a chart.
-	// Over the REVENUE buckets only: a refund-only currency contributes no
-	// revenue row, and letting one in would make the window look multi-currency
-	// to the fill (a day × currency cross product it declines to draw), costing
-	// an ordinary single-currency store its continuous series over one refund.
-	const series = revenueSeries(data, revenueBuckets);
-	const revenueRows = series.points.map(({ day, currencyCode, revenueCents }) => ({
-		bucketStart: day,
-		revenue: formatMoney(toCents(revenueCents), toCurrency(currencyCode), MONEY_LOCALE),
-	}));
-
-	const revenueTable: TableBlock = {
-		type: "table",
-		block_id: "reports:revenue-table",
-		columns: [
-			{ key: "bucketStart", label: "Period" },
-			{ key: "revenue", label: "Revenue" },
-		],
-		rows: revenueRows,
-		page_action_id: REPORTS_PAGE_ACTION_ID, // never fires: no next_cursor, no sortable column
-		empty_text: "No revenue in range.",
-	};
-	const revenueSection = section({
-		blockId: "reports:revenue",
-		// No "(N buckets)": a bucket is this codebase's word for a GROUP BY, not
-		// the operator's word for anything, and with the series now continuous the
-		// count was only ever restating the length of the range.
-		title: `Revenue by ${data.interval}`,
-		blocks: [
-			...(multiCurrency ? [{ type: "context" as const, text: rankingGapNote }] : []),
-			// A sparse series is never left to look continuous: when the fill is
-			// declined the group says so, in one line, above the rows (DA-7).
-			...(series.filled ? [] : [{ type: "context" as const, text: SPARSE_SERIES_NOTE }]),
-			revenueTable,
-		],
-	});
-
-	const statusesTable: TableBlock = {
-		type: "table",
-		block_id: "reports:statuses-table",
-		columns: [
-			// PLAIN TEXT (INC-10). This table's values DO chunk — it is one row per
-			// status — so X-4 was never going to fire on it; the badge went for the
-			// other half of the rule. Every row got the identical pill, so the
-			// report's whole point (which of these numbers is the one to worry
-			// about?) was rendered as `paid` and `failed` carrying exactly the same
-			// weight. The exception says so in words instead.
-			{ key: "status", label: "Status" },
-			{ key: "orderCount", label: "Orders", format: "number" },
-		],
-		// Through the Orders screen's own renderer, never a second listing of the
-		// order vocabulary: Reports states the same field the list states, so a
-		// state that reads `cancelled · closed` on one screen cannot read
-		// `cancelled` on the other.
-		rows: data.statuses.map((s) => ({ ...s, status: orderStateCell(s.status) })),
-		page_action_id: REPORTS_PAGE_ACTION_ID, // never fires: no next_cursor, no sortable column
-		empty_text: "No orders in range.",
-	};
-	const statusesSection = section({
-		blockId: "reports:statuses",
-		title: `Orders by status (${data.statuses.length})`,
-		blocks: [statusesTable],
-	});
-
-	const topTable: TableBlock = {
-		type: "table",
-		block_id: "reports:top-table",
-		columns: [
-			{ key: "titleSnapshot", label: "Product" },
-			{ key: "qtySold", label: "Qty", format: "number" },
-			{ key: "revenue", label: "Revenue" },
-		],
-		rows: topRows,
-		page_action_id: REPORTS_PAGE_ACTION_ID, // never fires: no next_cursor, no sortable column
-		empty_text: "No sales in range.",
-	};
-	const topSection = section({
-		blockId: "reports:top",
-		title: `Top products (${data.top.length})`,
-		blocks: topRevenueSuppressed
+	const blocks: Block[] = [
+		{ type: "header", text: `${data.displayName} — Reports` },
+		{
+			type: "context",
+			// The period FIRST, in absolute dates, and the period it is compared with.
+			text: `${absolutePeriod(data.range)} (UTC) · compared with ${absolutePeriod(data.range.previous)}`,
+		},
+		...(data.range.problem !== undefined ? [rangeProblemBanner(data.range.problem)] : []),
+		periodPicker(data.range),
+		...(data.range.preset === "custom" ? [customRangeForm(data.range)] : []),
+		{ type: "stats", items },
+		...(droppedTileNames.length > 0
 			? [
 					{
-						type: "context",
-						text: "Revenue is not shown per product because this range spans more than one currency and the wire carries no per-product currency — a service change is needed to attribute it correctly.",
+						type: "context" as const,
+						text: `${listPhrase(droppedTileNames)} ${droppedTileNames.length === 1 ? "is" : "are"} not shown: the four cards are taken by one sales card per currency.`,
 					},
-					topTable,
 				]
-			: [topTable],
-	});
+			: []),
+		{
+			type: "context",
+			// What the cards count, said ONCE under them rather than crowding each card:
+			// Orders ÷ Total sales is not the AOV beside it (AOV divides by PAID orders),
+			// and the Refunded figure is retro-mutable and excludes refunds in flight.
+			text: `Orders counts every status (${paidOrderCount} paid). Refunded is by order date: a later refund changes this figure; refunds in progress are excluded.`,
+		},
+		...refundOnlyNotes(data.revenue, refundOnlyCurrencies, refundedCurrency),
+		...salesSection(data, revenueBuckets, singleCurrency, multiCurrency),
+		{
+			type: "columns",
+			columns: [ordersSection(data), statusesSection(data.statuses)],
+		},
+		{
+			type: "columns",
+			columns: [topSection(data, singleCurrency), lowStockSection(data)],
+		},
+	];
+	return { blocks };
+}
 
+function paidOrders(statuses: readonly StatusCountWire[]): number {
+	return statuses.reduce(
+		(sum, s) => (REVENUE_COUNTING_STATES.has(s.status) ? sum + s.orderCount : sum),
+		0,
+	);
+}
+
+/**
+ * Total sales over time. A chart when the period has ONE revenue currency (or
+ * none: an empty period draws a flat line at $0). With several, the series cannot
+ * share a money axis — adding or overlaying JPY and USD minor units is the one
+ * thing this screen never does — so the per-day figures render as a sparse
+ * table, each row in its own currency, with the reason stated.
+ */
+function salesSection(
+	data: ReportsData,
+	revenueBuckets: RevenueBucketWire[],
+	singleCurrency: Currency | undefined,
+	multiCurrency: boolean,
+): Block[] {
+	const note = "Net order totals of paid-and-later orders, by order date (UTC).";
+	if (multiCurrency) {
+		const table: TableBlock = {
+			type: "table",
+			block_id: "reports:revenue-table",
+			columns: [
+				{ key: "bucketStart", label: "Day" },
+				{ key: "revenue", label: "Sales" },
+			],
+			rows: revenueBuckets.map((b) => ({
+				bucketStart: b.bucketStart.slice(0, 10),
+				revenue: formatMoney(toCents(b.revenueCents), toCurrency(b.currency), MONEY_LOCALE),
+			})),
+			page_action_id: REPORTS_PAGE_ACTION_ID, // never fires: no next_cursor, no sortable column
+			empty_text: "No sales in this period.",
+		};
+		return section({
+			blockId: "reports:sales",
+			title: "Total sales over time",
+			blocks: [
+				{
+					type: "context",
+					text: "This period spans several currencies, so sales are listed per day in each one rather than charted on one axis. Days with no sales are omitted.",
+				},
+				{
+					type: "context",
+					text: "Cards are ordered alphabetically by currency code: amounts in different currencies are never compared.",
+				},
+				table,
+			],
+		});
+	}
+	const currency = singleCurrency ?? emptyPeriodCurrency(data);
+	const current = timeBuckets(data.range, data.revenue, currency);
+	const previous = timeBuckets(data.range.previous, data.previousRevenue ?? [], currency);
+	const points = pointsNote(data.range.days);
+	return section({
+		blockId: "reports:sales",
+		title: "Total sales over time",
+		note,
+		blocks: [
+			salesChart({ current, previous, currency }),
+			{
+				type: "context",
+				// The legend the renderer cannot draw (no LegendComponent is registered).
+				text:
+					data.previousRevenue === undefined
+						? `Solid line: ${absolutePeriod(data.range)}. ${points} The previous period could not be loaded.`
+						: `Solid line: ${absolutePeriod(data.range)} · Dashed line: ${absolutePeriod(data.range.previous)} (previous period). ${points}`,
+			},
+		],
+	});
+}
+
+/**
+ * The currency an EMPTY period's money axis is drawn in (nothing earned, so no
+ * revenue currency to take): the previous period's, when it earned in exactly
+ * one — so its dashed line is on the axis — else the store's saved currency,
+ * else USD (what a store that never saved one trades in). A refund-only or
+ * multi-currency previous period names nothing.
+ */
+function emptyPeriodCurrency(data: ReportsData): Currency {
+	const previous = [
+		...new Set((data.previousRevenue ?? []).filter(isRevenueBearing).map((b) => b.currency)),
+	];
+	const candidates = [previous.length === 1 ? previous[0] : undefined, data.storeCurrency];
+	const usable = candidates.find(
+		(code): code is string => code !== undefined && CURRENCY_CODE.test(code),
+	);
+	return toCurrency(usable ?? "USD");
+}
+
+const CURRENCY_CODE = /^[A-Z]{3}$/;
+
+/**
+ * How the over-time charts are bucketed, as a sentence. A folded series' LAST
+ * point usually covers fewer than seven days (365 = 52 × 7 + 1), and drawn
+ * without a word it reads as a cliff — so the note says how many it covers.
+ */
+function pointsNote(days: number): string {
+	if (days <= MAX_DAILY_POINTS) return "One point per day.";
+	const rest = partialLastPoint(days);
+	return rest === undefined
+		? "One point per week."
+		: `One point per week; the last point covers ${dayPhrase(rest)}.`;
+}
+
+/** The days the LAST point of a weekly-folded series covers, or `undefined` when
+ *  the series is daily or ends on a whole week. */
+function partialLastPoint(days: number): number | undefined {
+	if (days <= MAX_DAILY_POINTS) return undefined;
+	const rest = days % 7;
+	return rest === 0 ? undefined : rest;
+}
+
+function dayPhrase(days: number): string {
+	return days === 1 ? "1 day" : `${days} days`;
+}
+
+function ordersSection(data: ReportsData): Block[] {
+	const current: TimeSeries = timeBuckets(data.range, data.revenue, undefined);
+	const total = current.points.reduce((sum, p) => sum + p.orders, 0);
+	const unit = current.granularity === "day" ? "day" : "week";
+	const rest = current.granularity === "week" ? partialLastPoint(data.range.days) : undefined;
+	const partial = rest !== undefined ? ` The last point covers ${dayPhrase(rest)}.` : "";
+	return section({
+		blockId: "reports:orders",
+		title: "Orders over time",
+		blocks: current.ordersKnown
+			? [
+					ordersChart(current),
+					{
+						type: "context",
+						text: `Paid orders per ${unit} · ${total} in this period.${partial}`,
+					},
+				]
+			: [{ type: "context", text: "Orders over time is not reported by this store version." }],
+	});
+}
+
+function statusesSection(statuses: StatusCountWire[]): Block[] {
+	const total = statuses.reduce((sum, s) => sum + s.orderCount, 0);
+	return section({
+		blockId: "reports:statuses",
+		title: `Orders by status (${statuses.length})`,
+		blocks:
+			total === 0
+				? [{ type: "context", text: "No orders in this period." }]
+				: [
+						statusChart(statuses),
+						{
+							type: "context",
+							text: `${total} ${total === 1 ? "order" : "orders"} placed, every status.`,
+						},
+					],
+	});
+}
+
+function topSection(data: ReportsData, singleCurrency: Currency | undefined): Block[] {
+	// One currency: the revenue ranking, labelled with money. Otherwise the UNITS
+	// ranking — the server's own quantity ranking, so "ranked by units" is true of
+	// both the selection and the order (an older caller without it: the revenue
+	// top list re-sorted by units).
+	const top =
+		singleCurrency !== undefined
+			? data.top
+			: (data.topByUnits ?? data.top.toSorted((a, b) => b.qtySold - a.qtySold));
+	const suppressed = singleCurrency === undefined && top.length > 0;
+	return section({
+		blockId: "reports:top",
+		title: `Top products (${top.length})`,
+		blocks:
+			top.length === 0
+				? [{ type: "context", text: "No sales in this period." }]
+				: [
+						topProductsChart(top, singleCurrency),
+						{
+							type: "context",
+							text: suppressed
+								? "Ranked by units: this period spans more than one currency and the products report carries no per-product currency, so no revenue is stated."
+								: "By revenue, from the line prices frozen at purchase.",
+						},
+					],
+	});
+}
+
+function lowStockSection(data: ReportsData): Block[] {
 	const lowTable: TableBlock = {
 		type: "table",
 		block_id: "reports:low-table",
@@ -634,8 +559,7 @@ export function buildReportsBlocks(data: ReportsData): BlockResponse {
 			{ key: "onHand", label: "On hand" },
 		],
 		rows: data.low.map((r) => ({
-			// CMS-owned, same as the products list (products-page.ts) — `null`
-			// means no live product claims the sku, which is a different fact
+			// `null` means no live product claims the sku, which is a different fact
 			// from the sku itself, so it renders "(untitled)" and never the sku.
 			title: r.title ?? "(untitled)",
 			sku: r.sku,
@@ -644,7 +568,7 @@ export function buildReportsBlocks(data: ReportsData): BlockResponse {
 		page_action_id: REPORTS_PAGE_ACTION_ID, // never fires: no next_cursor, no sortable column
 		empty_text: "Nothing low on stock.",
 	};
-	const lowSection = section({
+	return section({
 		blockId: "reports:low",
 		// The count alone ("Low stock (3)") never said low COMPARED TO WHAT, and
 		// the threshold lives in Store settings, a page away. `GET /settings`
@@ -656,34 +580,150 @@ export function buildReportsBlocks(data: ReportsData): BlockResponse {
 				: `Low stock (${data.low.length}) — at or below ${data.lowStockThreshold}`,
 		blocks: [lowTable],
 	});
+}
 
-	const blocks: Block[] = [
-		{ type: "header", text: `${data.displayName} — Reports` },
-		{
-			type: "context",
-			// The period FIRST, in absolute dates: the screen used to state the
-			// definition of revenue and never the window it applied it to, so a
-			// figure covering 30 days read equally well as all-time or as today.
-			text: `${absolutePeriod(data.range)} (UTC) · Revenue is net order totals on paid-and-later orders, bucketed by order time.`,
+/**
+ * The period picker — Shopify's date-range menu: a select whose change re-renders
+ * the page at once (em-dash fires a `block_action` with the chosen value when a
+ * select sits outside a form). Its `block_id` names the preset, so the
+ * uncontrolled select REMOUNTS — and shows the new choice — whenever the period
+ * changes.
+ */
+function periodPicker(range: ResolvedRange): Block {
+	return {
+		type: "actions",
+		block_id: `reports:period-${range.preset}`,
+		elements: [
+			{
+				type: "select",
+				action_id: REPORTS_PERIOD_ACTION_ID,
+				label: "Date range",
+				// The VALUE is the label: the select's trigger shows the raw value
+				// (R-17a), so "Last 30 days" — never "30d" — is what it reads.
+				initial_value: presetValue(range.preset),
+				options: REPORTS_PRESETS.map((p) => ({ label: p.label, value: presetValue(p.id) })),
+			},
+		],
+	};
+}
+
+/**
+ * The custom period's From/To form, shown while "Custom range" is selected, and
+ * kept to a third of the width. `carriedForm` (never a hand-rolled `block_id`):
+ * the fields pick up a new `initial_value` only when the form REMOUNTS, and the
+ * prefill digest makes the key change whenever the rendered period does.
+ */
+function customRangeForm(range: ResolvedRange): Block {
+	const form: FormBlock = carriedForm({
+		namespace: "reports:range",
+		form: {
+			type: "form",
+			fields: [
+				{ type: "date_input", action_id: "from", label: "From", initial_value: range.fromDay },
+				{ type: "date_input", action_id: "to", label: "To", initial_value: range.toDay },
+			],
+			submit: { label: "Apply", action_id: REPORTS_RANGE_ACTION_ID },
 		},
-		...(data.range.problem !== undefined ? [rangeProblemBanner(data.range)] : []),
-		rangeForm(data.range, data.interval),
-		{ type: "stats", items },
-		...(droppedTileNames.length > 0
-			? [
-					{
-						type: "context" as const,
-						text: `${listPhrase(droppedTileNames)} ${droppedTileNames.length === 1 ? "is" : "are"} not shown: the four cards are taken by one revenue card per currency.`,
-					},
-				]
-			: []),
-		...refundOnlyNotes(data.revenue, refundOnlyCurrencies, refundedCurrency),
-		...revenueSection,
-		...statusesSection,
-		...topSection,
-		...lowSection,
-	];
-	return { blocks };
+	});
+	return { type: "columns", columns: [[form], [], []] };
+}
+
+/** An unusable custom period renders the default period plus this — a 200 with a
+ *  banner, never a 4xx (G5), and never a silent substitution. */
+function rangeProblemBanner(problem: string): BannerBlock {
+	const label = REPORTS_PRESETS.find((p) => p.id === DEFAULT_PRESET)?.label ?? "";
+	return {
+		type: "banner",
+		variant: "alert",
+		title: `Showing the ${label.toLowerCase()}`,
+		description: problem,
+	};
+}
+
+/**
+ * Average order value — revenue ÷ the orders that produced it.
+ *
+ * Never `$0.00` when there were no paid orders (a division with no answer is not
+ * zero), and no figure at all when the period spans several currencies. Both
+ * render "—" with the reason in the description.
+ */
+function averageOrderValueTile(args: {
+	byCurrencyCode: ReadonlyArray<readonly [string, number]>;
+	singleCurrency: Currency | undefined;
+	orderCount: number;
+	previous: PreviousAverage;
+	phrase: string;
+}): StatItem {
+	const { byCurrencyCode, singleCurrency, orderCount, previous, phrase } = args;
+	const label = "Average order value";
+	if (singleCurrency === undefined) {
+		return {
+			label,
+			value: "—",
+			description:
+				byCurrencyCode.length === 0
+					? "No paid orders in this period"
+					: "Orders in this period span several currencies",
+		};
+	}
+	if (orderCount === 0) {
+		return { label, value: "—", description: "No paid orders to average" };
+	}
+	const averageCents = Math.round((byCurrencyCode[0]?.[1] ?? 0) / orderCount);
+	const value = formatMoney(toCents(averageCents), singleCurrency, MONEY_LOCALE);
+	switch (previous.kind) {
+		case "unknown":
+			return { label, value, ...periodChange(averageCents, undefined, phrase) };
+		case "none":
+			// No orders before is a known fact, said as every other card says it —
+			// never a percentage over an average that has no answer.
+			return { label, value, description: `No data in ${phrase}` };
+		case "average":
+			return { label, value, ...periodChange(averageCents, previous.averageCents, phrase) };
+	}
+}
+
+/** What the AOV card compares with: a previous average, a previous period with
+ *  no orders to average, or nothing knowable. */
+type PreviousAverage =
+	| { kind: "average"; averageCents: number }
+	| { kind: "none" }
+	| { kind: "unknown" };
+
+/**
+ * The previous period's average order value in `code` — its revenue ÷ the orders
+ * behind that revenue (`revenueOrderCount`), both for that ONE currency.
+ *
+ * UNKNOWN (no comparison) when the read failed, when the previous period earned
+ * in any other currency (its revenue is not the same kind of figure), or when a
+ * bucket lacks the per-currency count. "none" when it earned nothing at all.
+ */
+function previousAverage(
+	previousRevenue: readonly RevenueBucketWire[] | undefined,
+	code: string,
+): PreviousAverage {
+	if (previousRevenue === undefined) return { kind: "unknown" };
+	const earning = previousRevenue.filter(isRevenueBearing);
+	const currencies = new Set(earning.map((b) => b.currency));
+	if (currencies.size === 0) return { kind: "none" };
+	if (currencies.size > 1 || !currencies.has(code)) return { kind: "unknown" };
+	const orders = revenueOrdersFor(earning, code);
+	if (orders === undefined) return { kind: "unknown" };
+	if (orders === 0) return { kind: "none" };
+	const revenue = earning.reduce((sum, b) => sum + b.revenueCents, 0);
+	return { kind: "average", averageCents: Math.round(revenue / orders) };
+}
+
+/** Σ `revenueOrderCount` over `code`'s buckets, or `undefined` when any of them
+ *  lacks it (a reader older than the field) — never a partial count. */
+function revenueOrdersFor(buckets: readonly RevenueBucketWire[], code: string): number | undefined {
+	let total = 0;
+	for (const b of buckets) {
+		if (b.currency !== code) continue;
+		if (b.revenueOrderCount === undefined) return undefined;
+		total += b.revenueOrderCount;
+	}
+	return total;
 }
 
 /**
@@ -747,45 +787,6 @@ function lowStockOnHandLabel(onHand: number): string {
 	return onHand === 0 ? `${onHand} · Out of stock` : `${onHand} · Low`;
 }
 
-/**
- * The period control (P0-3: the page hardcoded a trailing 30 days, read
- * `from`/`to` from its route input, and shipped no UI that could ever supply
- * them). Two `date_input`s, prefilled with the period being rendered, whose
- * submit re-enters this same handler through {@link REPORTS_RANGE_ACTION_ID}.
- *
- * `carriedForm` (never a hand-rolled `block_id`): Block Kit inputs are
- * uncontrolled, so the fields pick up a new `initial_value` only when the form
- * REMOUNTS — and the prefill digest in the token is what makes the key change
- * whenever the rendered period does. Without it, a rejected range would fall
- * back to the default while the fields still showed the rejected dates.
- */
-function rangeForm(range: ResolvedRange, interval: "day" | "week" | "month"): FormBlock {
-	return carriedForm({
-		namespace: "reports:range",
-		// The granularity the page is currently rendering, carried invisibly so a
-		// period change does not silently reset a weekly report to daily.
-		context: { interval },
-		form: {
-			type: "form",
-			fields: [
-				{
-					type: "date_input",
-					action_id: "from",
-					label: "From (inclusive)",
-					initial_value: range.fromDay,
-				},
-				{
-					type: "date_input",
-					action_id: "to",
-					label: "To (inclusive)",
-					initial_value: range.toDay,
-				},
-			],
-			submit: { label: "Update period", action_id: REPORTS_RANGE_ACTION_ID },
-		},
-	});
-}
-
 /** A tile's name without its currency and period — `Refunded (USD) — last 30
  *  days` → `Refunded` — for naming the cards that did not fit. Exported for its
  *  own test only. */
@@ -830,58 +831,6 @@ function listPhrase(parts: readonly string[]): string {
 	return `${parts.slice(0, -1).join(", ")} and ${parts[parts.length - 1]}`;
 }
 
-/** An unusable range renders the page for the default period plus this — a 200
- *  with a banner, never a 4xx (G5), and never a silent substitution. */
-function rangeProblemBanner(range: ResolvedRange): BannerBlock {
-	return {
-		type: "banner",
-		variant: "alert",
-		title: `Showing the last ${DEFAULT_RANGE_DAYS} days`,
-		description: range.problem ?? "",
-	};
-}
-
-/**
- * Average order value — revenue ÷ the orders that produced it.
- *
- * Two ways this must NOT render: `$0.00` when there were no orders (a division
- * with no answer is not zero, and "free" is not what happened), and a figure at
- * all when the period spans several currencies (dividing a sum of USD and JPY
- * minor units by a currency-less order count produces a number that means
- * nothing). Both render "—" with the reason in the description.
- */
-function averageOrderValueTile(
-	byCurrencyCode: ReadonlyArray<readonly [string, number]>,
-	singleCurrency: Currency | undefined,
-	paidOrderCount: number,
-	period: string,
-): StatItem {
-	const label = `AOV${singleCurrency === undefined ? "" : ` (${singleCurrency})`} — ${period}`;
-	if (singleCurrency === undefined) {
-		return {
-			label,
-			value: "—",
-			description:
-				byCurrencyCode.length === 0
-					? "Average order value — no paid orders in this period"
-					: "Average order value — orders in this period span several currencies",
-		};
-	}
-	if (paidOrderCount === 0) {
-		return { label, value: "—", description: "Average order value — no paid orders to average" };
-	}
-	const totalCents = byCurrencyCode[0]?.[1] ?? 0;
-	return {
-		label,
-		value: formatMoney(
-			toCents(Math.round(totalCents / paidOrderCount)),
-			singleCurrency,
-			MONEY_LOCALE,
-		),
-		description: `Average order value across ${paidOrderCount} paid ${paidOrderCount === 1 ? "order" : "orders"}`,
-	};
-}
-
 /**
  * Refunded money for the period — a real figure since the revenue wire started
  * carrying `refundedCents` (INC-23). This tile used to render "—" on every
@@ -904,29 +853,26 @@ function averageOrderValueTile(
  * Zero with the key present renders `$0.00`, because a period in which nothing
  * was refunded is a FACT a merchant is entitled to read as one.
  *
- * The description names the COHORT ("orders placed in this period"), which is
- * also what reconciles the two numbers on this tile: the amount includes PARTIAL
- * refunds, whose orders stay `paid`, so `$2.50 refunded` alongside "no order
- * refunded in full" is consistent rather than contradictory.
+ * The description is the change against the previous period. The COHORT (orders
+ * placed in the period, finalized refunds only, retro-mutable) is stated once in
+ * the line under the cards, since it changes what the number means.
  */
-function refundedTileFor(
-	revenue: RevenueBucketWire[],
-	statuses: StatusCountWire[],
-	currency: Currency | undefined,
-	period: string,
-): StatItem {
+function refundedTileFor(args: {
+	revenue: RevenueBucketWire[];
+	statuses: StatusCountWire[];
+	currency: Currency | undefined;
+	previousRevenue: RevenueBucketWire[] | undefined;
+	phrase: string;
+}): StatItem {
+	const { revenue, statuses, currency, previousRevenue, phrase } = args;
 	const refundedOrders = statuses.find((s) => s.status === "refunded")?.orderCount ?? 0;
-	const inFull =
-		refundedOrders === 0 ? "no order refunded in full" : `${refundedOrders} refunded in full`;
-	const label = `Refunded${currency === undefined ? "" : ` (${currency})`} — ${period}`;
+	const label = "Refunded";
 	if (currency === undefined) {
 		return {
 			label,
 			value: "—",
 			description:
-				revenue.length === 0
-					? "Money returned — no orders in this period"
-					: "Money returned — this period spans several currencies",
+				revenue.length === 0 ? "No orders in this period" : "This period spans several currencies",
 		};
 	}
 	const totalCents = refundedFor(revenue, currency);
@@ -940,22 +886,14 @@ function refundedTileFor(
 				: `${refundedOrders} fully refunded ${refundedOrders === 1 ? "order" : "orders"}`;
 		return { label, value: "—", description: `${known}; refunded amount not yet reported` };
 	}
-	return {
-		label,
-		value: formatMoney(toCents(totalCents), currency, MONEY_LOCALE),
-		// TWO DISCLOSURES RIDE HERE, because both change what the number means and
-		// neither is visible from the figure (DA-7):
-		//  - it is RETRO-MUTABLE. The cohort is orders PLACED in the period, so a
-		//    July order refunded in September moves July's figure — a closed month
-		//    re-run later does not have to match what it read at the time, and an
-		//    operator reconciling against a saved screenshot needs to know that.
-		//  - refunds still IN PROGRESS are excluded (`reserved`/`unverified` —
-		//    reserved ledger capacity whose gateway leg is unconfirmed or whose
-		//    fate is unknown). A store sitting on an ambiguous refund therefore
-		//    reads LOWER here than its own order screens suggest, and the reason
-		//    is not otherwise discoverable from this page.
-		description: `On orders placed in this period; ${inFull}. A later refund changes this figure; refunds in progress are excluded.`,
-	};
+	// NO TREND ARROW: the renderer colours by direction (up green, down red), and
+	// more money refunded is not good news. The signed delta still says which way.
+	const { description } = periodChange(
+		totalCents,
+		previousRevenue === undefined ? undefined : refundedFor(previousRevenue, currency),
+		phrase,
+	);
+	return { label, value: formatMoney(toCents(totalCents), currency, MONEY_LOCALE), description };
 }
 
 /**
@@ -990,6 +928,12 @@ function refundedFor(revenue: RevenueBucketWire[], currency: Currency): number |
  * EVERY bucket looks like on a service that predates `refundedCents`, which must
  * keep behaving exactly as it did.
  */
+/** True when exactly one currency has revenue-bearing buckets — the page's
+ *  single-currency mode (see `buildReportsBlocks`). */
+function hasSingleRevenueCurrency(buckets: readonly RevenueBucketWire[]): boolean {
+	return new Set(buckets.filter(isRevenueBearing).map((b) => b.currency)).size === 1;
+}
+
 function isRevenueBearing(b: RevenueBucketWire): boolean {
 	return b.revenueCents > 0 || (readRefunded(b) ?? 0) === 0;
 }
@@ -1017,105 +961,5 @@ function readRefunded(b: RevenueBucketWire): number | undefined {
 	return raw;
 }
 
-/** One row of the revenue table: a day, a currency, and that day's revenue in
- *  it — zero included. */
-interface RevenuePoint {
-	day: string;
-	currencyCode: string;
-	revenueCents: number;
-}
-
-/** The rows, plus whether the gaps were actually filled — a sparse series must
- *  never be presented as a continuous one. */
-interface RevenueSeries {
-	points: RevenuePoint[];
-	filled: boolean;
-}
-
-/**
- * The widest period whose day series is worth drawing row by row. A quarter of
- * daily rows is already a long table; past that, the zero rows stop showing
- * shape and start being the table. Beyond it the wire's own sparse series is
- * rendered instead, with the omission stated.
- */
-const MAX_ZERO_FILL_DAYS = 92;
-
-/** Rendered under the group label whenever the fill was declined. Names the
- *  omission, never the reasoning behind it. "Periods", not "Days": this group
- *  also renders weekly and monthly buckets, and the table's own first column is
- *  labelled `Period`. */
-const SPARSE_SERIES_NOTE = "Periods with no revenue are omitted for this range.";
-
-/**
- * The revenue series with its gaps filled in: every day of the period, in day
- * order — but only when filling is both cheap and unambiguous.
- *
- * THREE CASES PASS THROUGH UNFILLED, each stated to the operator rather than
- * silently drawn as continuous:
- *  - `interval` week/month — filling would have to reproduce the adapter's own
- *    bucket-start arithmetic to know which buckets are missing, and inventing a
- *    boundary that disagrees with the one the data was grouped by is worse than
- *    the gap. (Nothing in the UI selects an interval today.)
- *  - a period longer than {@link MAX_ZERO_FILL_DAYS}.
- *  - more than one currency in the window: a filled multi-currency series is a
- *    day × currency cross product, so a quiet currency contributes a column of
- *    `$0.00` rows that outnumber the real ones and read as activity that never
- *    happened.
- */
-function revenueSeries(data: ReportsData, buckets: RevenueBucketWire[]): RevenueSeries {
-	const passthrough = (filled: boolean): RevenueSeries => ({
-		points: buckets.map((b) => ({
-			day: b.bucketStart.slice(0, 10),
-			currencyCode: b.currency,
-			revenueCents: b.revenueCents,
-		})),
-		filled,
-	});
-	// An empty window has no gaps to fill and no rows to mislead anyone: the
-	// table's own `empty_text` covers it, so it is "filled" as far as the
-	// disclosure is concerned.
-	if (buckets.length === 0) return passthrough(true);
-	if (data.interval !== "day") return passthrough(false);
-
-	const byDay = new Map<string, number>();
-	const currencies = new Set<string>();
-	for (const b of buckets) {
-		currencies.add(b.currency);
-		const day = b.bucketStart.slice(0, 10);
-		byDay.set(day, (byDay.get(day) ?? 0) + b.revenueCents);
-	}
-	const currencyCode = currencies.size === 1 ? [...currencies][0] : undefined;
-	if (currencyCode === undefined) return passthrough(false);
-
-	const days = daysBetween(data.range.fromDay, data.range.toDay);
-	// A data day outside the requested window would be dropped by a strict fill,
-	// so fall back rather than lose a row.
-	const daySet = new Set(days);
-	if (
-		days.length === 0 ||
-		days.length > MAX_ZERO_FILL_DAYS ||
-		buckets.some((b) => !daySet.has(b.bucketStart.slice(0, 10)))
-	) {
-		return passthrough(false);
-	}
-	return {
-		points: days.map((day) => ({ day, currencyCode, revenueCents: byDay.get(day) ?? 0 })),
-		filled: true,
-	};
-}
-
-/** Every `YYYY-MM-DD` from `fromDay` to `toDay` inclusive (UTC). */
-function daysBetween(fromDay: string, toDay: string): string[] {
-	const start = Date.parse(`${fromDay}T00:00:00.000Z`);
-	const end = Date.parse(`${toDay}T00:00:00.000Z`);
-	if (Number.isNaN(start) || Number.isNaN(end) || end < start) return [];
-	const out: string[] = [];
-	for (let at = start; at <= end; at += DAY_MS) {
-		out.push(new Date(at).toISOString().slice(0, 10));
-	}
-	return out;
-}
-
-/** Re-export for the settings label helper — the reporting widget's title uses
- *  the same kv-backed display name. */
+/** Re-export for the settings label helper. */
 export type { OperationalSettingsWire };

@@ -1,6 +1,7 @@
 import { describe, expect, test } from "vitest";
 import type { RevenueBucketWire } from "../src/admin/reporting-settings-surface.js";
 import { buildReportsBlocks } from "../src/admin/reports-page.js";
+import { periodFromDays, previousPeriod } from "../src/admin/reports-period.js";
 import { findBlocks, type LooseBlock } from "./helpers/blocks.js";
 
 /**
@@ -30,11 +31,10 @@ import { findBlocks, type LooseBlock } from "./helpers/blocks.js";
  */
 
 const RANGE = {
-	from: "2026-07-10T00:00:00.000Z",
-	to: "2026-07-12T23:59:59.999Z",
-	fromDay: "2026-07-10",
-	toDay: "2026-07-12",
+	...periodFromDays("2026-07-10", "2026-07-12"),
+	preset: "custom" as const,
 	isDefault: false,
+	previous: previousPeriod({ fromDay: "2026-07-10", toDay: "2026-07-12" }),
 };
 
 /** The page's four stat tiles. Refunded is the fourth (R-16 caps the block at
@@ -47,7 +47,6 @@ function statItems(blocks: readonly LooseBlock[]): Array<Record<string, unknown>
 function refundedTile(revenue: RevenueBucketWire[], refundedOrders = 0): Record<string, unknown> {
 	const response = buildReportsBlocks({
 		displayName: "Test Store",
-		interval: "day",
 		range: RANGE,
 		revenue,
 		statuses: [

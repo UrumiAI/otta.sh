@@ -234,36 +234,42 @@ export const EXPECTED_REVENUE_BY_DAY = [
 		bucketStart: "2026-07-10T00:00:00.000Z",
 		currency: "EUR",
 		revenueCents: 3000,
+		revenueOrderCount: 1,
 		refundedCents: 300, // o4's two recorded rows, aggregated
 	},
 	{
 		bucketStart: "2026-07-10T00:00:00.000Z",
 		currency: "USD",
 		revenueCents: 3000,
+		revenueOrderCount: 2,
 		refundedCents: 250, // o1 partial — revenue is NOT netted down by it
 	},
 	{
 		bucketStart: "2026-07-11T00:00:00.000Z",
 		currency: "EUR",
 		revenueCents: 2500,
+		revenueOrderCount: 1,
 		refundedCents: 0, // o6's `reserved` 500 is not money that came back
 	},
 	{
 		bucketStart: "2026-07-11T00:00:00.000Z",
 		currency: "USD",
 		revenueCents: 5500,
+		revenueOrderCount: 2,
 		refundedCents: 0, // o5 `voided` 999 + o9 `unverified` 111, neither counted
 	},
 	{
 		bucketStart: "2026-07-12T00:00:00.000Z",
 		currency: "EUR",
 		revenueCents: 3500,
+		revenueOrderCount: 1,
 		refundedCents: 0,
 	},
 	{
 		bucketStart: "2026-07-12T00:00:00.000Z",
 		currency: "USD",
 		revenueCents: 3000,
+		revenueOrderCount: 2,
 		// o10 is `refunded` — EXCLUDED from revenue, so this 6666 is the whole
 		// reason the bucket carries a second figure at all.
 		refundedCents: 6666,

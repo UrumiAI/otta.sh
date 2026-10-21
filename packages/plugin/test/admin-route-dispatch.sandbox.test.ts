@@ -170,31 +170,43 @@ describe("admin route dispatch (workerd sandbox)", () => {
 		const outcome = await sandbox.invokeRoute("admin", { type: "page_load", page: "/reports" });
 		const blocks = blocksOf(outcome);
 		expect(blocks.length).toBeGreaterThan(0);
-		// §12.5: the four report groups are always-open sections, resolved by
-		// `block_id` (never by heading text — D-6 makes it carry live figures).
+		// The report sections are always-open, resolved by `block_id` (never by
+		// heading text). Since ADR-0038 the reports are charts; low stock stays a
+		// table.
 		const groupIds = sectionIds(blocks);
 		expect(groupIds).toEqual(
-			expect.arrayContaining(["reports:revenue", "reports:statuses", "reports:top", "reports:low"]),
+			expect.arrayContaining([
+				"reports:sales",
+				"reports:orders",
+				"reports:statuses",
+				"reports:top",
+				"reports:low",
+			]),
 		);
-		expect(findBlocks(blocks, "table")).toHaveLength(4);
+		expect(findBlocks(blocks, "table")).toHaveLength(1);
 
 		// INC-D3a: there is no service left to prove a token reached — what a
 		// genuine in-process render must prove instead is that these are the REAL
 		// figures read back off `ctx.storage`, not a stub's fixture.
-		const statusesTable = tableWithId(blocks, "reports:statuses-table");
-		expect(statusesTable?.rows).toEqual(
-			expect.arrayContaining([expect.objectContaining({ status: "paid", orderCount: 1 })]),
+		const chartData = (id: string): unknown[] => {
+			const chart = findBlocks(blocks, "chart").find((b) => b.block_id === id) as
+				| { config?: { options?: { series?: Array<{ data?: unknown[] }> } } }
+				| undefined;
+			return chart?.config?.options?.series?.[0]?.data ?? [];
+		};
+		expect(chartData("reports:statuses-chart")).toEqual(
+			expect.arrayContaining([expect.objectContaining({ name: "paid (1)", value: 1 })]),
 		);
-		const revenueTable = tableWithId(blocks, "reports:revenue-table");
-		const revenueRows = revenueTable?.rows as unknown[] | undefined;
-		expect(revenueRows, "reports:revenue-table must render its rows").toBeDefined();
-		expect(revenueRows?.length ?? 0).toBeGreaterThan(0);
-		const topTable = tableWithId(blocks, "reports:top-table");
-		expect(topTable?.rows).toEqual(
-			expect.arrayContaining([
-				expect.objectContaining({ titleSnapshot: "Reports Dispatch Widget", qtySold: 1 }),
-			]),
-		);
+		const salesPoints = chartData("reports:sales-chart") as Array<[number, number, string]>;
+		expect(salesPoints.length, "the sales chart must render its points").toBeGreaterThan(0);
+		expect(salesPoints.some(([, amount]) => amount > 0)).toBe(true);
+		expect(
+			(chartData("reports:top-chart") as Array<[number, number, string]>).map(([, , text]) => text),
+		).toEqual(expect.arrayContaining([expect.stringMatching(/ · 1 sold$/)]));
+		const topChart = findBlocks(blocks, "chart").find((b) => b.block_id === "reports:top-chart") as
+			| { config?: { options?: { yAxis?: { data?: string[] } } } }
+			| undefined;
+		expect(topChart?.config?.options?.yAxis?.data).toContain("Reports Dispatch Widget");
 		const lowTable = tableWithId(blocks, "reports:low-table");
 		expect(lowTable?.rows).toEqual(
 			expect.arrayContaining([expect.objectContaining({ sku: "REPORTS-LOW", onHand: "2 · Low" })]),

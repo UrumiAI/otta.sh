@@ -725,6 +725,10 @@ export interface StatItem {
 	label: string;
 	value: string;
 	description?: string;
+	/** An arrow beside the value (em-dash `StatItem.trend`): `up` green, `down`
+	 *  red, `neutral` a dash. The colour is fixed by direction, so it is set only
+	 *  where up is good news. */
+	trend?: "up" | "down" | "neutral";
 }
 export interface StatsBlock extends BlockBase {
 	type: "stats";
@@ -988,12 +992,34 @@ export interface MeterBlock extends BlockBase {
 }
 
 /**
+ * `chart` (em-dash `ChartBlock`), ECharts-backed. Only the `custom` config is
+ * mirrored: it is the one a money series can use, because the renderer strips
+ * every `formatter` (a DANGEROUS_KEY) and the `timeseries` config can therefore
+ * only ever print raw numbers. A `custom` option carries its money as
+ * PRE-FORMATTED strings instead (a tooltip/label dimension through `encode`, and
+ * a category axis of tick labels) — see `admin/reports-charts.ts` — so the plotted
+ * values stay integer minor units and no float reaches the money path.
+ *
+ * The renderer registers LineChart, BarChart and PieChart with the Aria,
+ * AxisPointer, Grid and Tooltip components only (`@emdash-cms/blocks`
+ * `blocks/chart.tsx`): no legend, title, dataset or markLine, so an option must
+ * not depend on them.
+ */
+export interface ChartBlock extends BlockBase {
+	type: "chart";
+	config: {
+		chart_type: "custom";
+		/** A raw ECharts option, JSON only (it crosses the sandbox boundary). */
+		options: Record<string, unknown>;
+		/** Pixels; the renderer defaults to 350. */
+		height?: number;
+	};
+}
+
+/**
  * The blocks Otta renders. Still a subset of em-dash's 18-member union: `code`
- * is supported by the renderer but nothing in Otta emits it, and `chart` is
- * DELIBERATELY excluded — `blocks/chart.tsx` formats its own values and has no
- * currency, so putting money on it would mean a display float on the money path
- * (money is integer minor units, always formatted through
- * `presentation/format-money.ts`).
+ * is supported by the renderer but nothing in Otta emits it. `chart` is used by
+ * the Reports page only (ADR-0038).
  *
  * `ColumnsBlock`, `TabBlock` and `AccordionBlock` refer back to `Block`, so this
  * union is RECURSIVE — a nested block is type-checked exactly like a top-level
@@ -1018,7 +1044,8 @@ export type Block =
 	| EmptyBlock
 	| AccordionBlock
 	| ImageBlock
-	| MeterBlock;
+	| MeterBlock
+	| ChartBlock;
 
 /** `BlockResponse` envelope (em-dash `types.ts:412-415`). */
 export interface BlockResponse {

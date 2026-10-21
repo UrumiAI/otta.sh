@@ -115,6 +115,7 @@ describeEachDialect("EmdashReportingStore recompute interleaving", (ctx) => {
 				bucketStart: "2026-07-04T00:00:00.000Z",
 				currency: "USD",
 				revenueCents: 5000,
+				revenueOrderCount: 2,
 				refundedCents: 0,
 			},
 		]);
@@ -171,6 +172,7 @@ describeEachDialect("EmdashReportingStore recompute interleaving", (ctx) => {
 				bucketStart: "2026-07-04T00:00:00.000Z",
 				currency: "USD",
 				revenueCents: 3700,
+				revenueOrderCount: 2,
 				refundedCents: 0,
 			},
 		]);

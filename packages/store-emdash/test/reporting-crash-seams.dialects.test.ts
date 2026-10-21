@@ -106,6 +106,7 @@ describeEachDialect("EmdashReportingStore crash seams", (ctx) => {
 				bucketStart: "2026-07-04T00:00:00.000Z",
 				currency: "USD",
 				revenueCents: 4000,
+				revenueOrderCount: 1,
 				refundedCents: 0,
 			},
 		]);
@@ -291,6 +292,7 @@ describeEachDialect("EmdashReportingStore crash seams", (ctx) => {
 				bucketStart: "2026-07-04T00:00:00.000Z",
 				currency: "USD",
 				revenueCents: 4000,
+				revenueOrderCount: 0,
 				refundedCents: 0,
 			},
 		]);

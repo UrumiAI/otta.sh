@@ -20,6 +20,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, test } from "vitest"
 import { assertBlockContract } from "./helpers/block-contract.js";
 import {
 	blocksOf,
+	buttons,
 	columnLabels,
 	columnsOf,
 	contextTexts,
@@ -99,6 +100,55 @@ function statItems(blocks: readonly LooseBlock[]): Array<Record<string, unknown>
 	return stats?.items ?? [];
 }
 
+/** A chart block's ECharts option, by `block_id`. */
+function chartOptions(blocks: readonly LooseBlock[], id: string): Record<string, unknown> {
+	const chart = findBlocks(blocks, "chart").find((b) => b.block_id === id) as
+		| { config?: { options?: Record<string, unknown> } }
+		| undefined;
+	return chart?.config?.options ?? {};
+}
+
+/** One series' data points, by series index. */
+function seriesData(blocks: readonly LooseBlock[], id: string, index = 0): unknown[] {
+	const series = (chartOptions(blocks, id)["series"] ?? []) as Array<{ data?: unknown[] }>;
+	return series[index]?.data ?? [];
+}
+
+/** The sales chart's CURRENT series as `[day label, minor units, tooltip text]`. */
+function salesPoints(blocks: readonly LooseBlock[]): Array<[string, number, string]> {
+	const labels =
+		((chartOptions(blocks, "reports:sales-chart")["xAxis"] ?? {}) as { data?: string[] }).data ??
+		[];
+	return (seriesData(blocks, "reports:sales-chart") as Array<[number, number, string]>).map(
+		([i, amount, text]) => [labels[i] ?? "?", amount, text],
+	);
+}
+
+/** The donut's slices as `[name, count]`. */
+function statusSlices(blocks: readonly LooseBlock[]): Array<[string, number]> {
+	return (
+		seriesData(blocks, "reports:statuses-chart") as Array<{ name: string; value: number }>
+	).map((d) => [d.name, d.value]);
+}
+
+/** The top-products bars as `[title, bar label]`. */
+function topBars(blocks: readonly LooseBlock[]): Array<[string, string]> {
+	const titles =
+		((chartOptions(blocks, "reports:top-chart")["yAxis"] ?? {}) as { data?: string[] }).data ?? [];
+	return (seriesData(blocks, "reports:top-chart") as Array<[number, number, string]>).map(
+		([, i, text]) => [titles[i] ?? "?", text],
+	);
+}
+
+/** "10 Jul" — the chart's day label for a `YYYY-MM-DD`. */
+function dayLabel(day: string): string {
+	return new Intl.DateTimeFormat("en-GB", {
+		day: "numeric",
+		month: "short",
+		timeZone: "UTC",
+	}).format(new Date(`${day}T00:00:00.000Z`));
+}
+
 /** A table's rows, as plain records. */
 function rowsOf(blocks: readonly LooseBlock[], id: string): Array<Record<string, unknown>> {
 	return (tableWithId(blocks, id)?.rows ?? []) as Array<Record<string, unknown>>;
@@ -135,6 +185,9 @@ interface DaySeed {
 	/** How many of the day's orders sit in each state RIGHT NOW. This is what
 	 *  `ordersByStatus` folds — the page's Orders card and statuses table. */
 	readonly stateCounts?: Record<string, number>;
+	/** The orders behind `revenueCents` (`revenueOrders`). Defaults to one per
+	 *  earning day; the Average order value card divides by it. */
+	readonly revenueOrders?: number;
 }
 
 /** One `reporting_daily` document, written directly: the rollup is normally
@@ -149,7 +202,7 @@ async function seedDay(seed: DaySeed): Promise<void> {
 		stateCounts: seed.stateCounts ?? {},
 		// A bucket EXISTS when either half contributed; `revenueOrders` is the
 		// contributor count behind the money, never the page's order count.
-		revenueOrders: revenueCents === 0 ? 0 : 1,
+		revenueOrders: seed.revenueOrders ?? (revenueCents === 0 ? 0 : 1),
 		revenueCents,
 		refundEntries: seed.refundEntries ?? 0,
 		refundedCents: seed.refundedCents ?? 0,
@@ -250,7 +303,12 @@ async function seedStandardRange(): Promise<void> {
 		refundEntries: 1,
 		stateCounts: { paid: 1 },
 	});
-	await seedDay({ day: "2026-07-11", revenueCents: 5500, stateCounts: { paid: 2 } });
+	await seedDay({
+		day: "2026-07-11",
+		revenueCents: 5500,
+		stateCounts: { paid: 2 },
+		revenueOrders: 2,
+	});
 	await seedOrder(`ord-gadget-${SFX}`, "2026-07-11T09:00:00.000Z", [
 		{ productId: "p2", title: "Gadget", quantity: 4, unitPrice: 1000 },
 	]);
@@ -267,7 +325,7 @@ async function seedStandardDefault(): Promise<void> {
 		refundEntries: 1,
 		stateCounts: { paid: 1 },
 	});
-	await seedDay({ day: TODAY, revenueCents: 5500, stateCounts: { paid: 2 } });
+	await seedDay({ day: TODAY, revenueCents: 5500, stateCounts: { paid: 2 }, revenueOrders: 2 });
 	await seedOrder(`ord-gadget-${SFX}`, `${TODAY}T09:00:00.000Z`, [
 		{ productId: "p2", title: "Gadget", quantity: 4, unitPrice: 1000 },
 	]);
@@ -275,78 +333,91 @@ async function seedStandardDefault(): Promise<void> {
 }
 
 describe("Reports admin page (workerd sandbox)", () => {
-	test("Reports page renders revenue, orders-by-status, top-products and low-stock groups from the plugin's own store", async () => {
+	test("Reports page renders sales, orders, orders-by-status, top-products and low-stock sections from the plugin's own store", async () => {
 		await seedStandardRange();
 
 		const blocks = blocksOf(await reports(RANGE));
 		assertBlockContract(blocks, { screen: "reports", level: "list" });
 
-		// §12.5: one always-open section per report, each a `header` resolved by
-		// `block_id`, never by its text (D-6 makes the headings dynamic) — in
-		// this order, and with nothing collapsed behind a dropdown.
+		// One always-open section per report, each a `header` resolved by
+		// `block_id`, never by its text — in this order, nothing collapsed.
 		expect(sectionIds(blocks)).toEqual([
-			"reports:revenue",
+			"reports:sales",
+			"reports:orders",
 			"reports:statuses",
 			"reports:top",
 			"reports:low",
 		]);
 		expect(findBlocks(blocks, "accordion")).toEqual([]);
-		// Each section holds its own report's table.
-		expect(sectionBlocks(blocks, "reports:revenue").map((b) => b.block_id)).toContain(
-			"reports:revenue-table",
+		// Each section holds its own report's chart (low stock stays a table: it
+		// is a to-do list, not a trend).
+		expect(sectionBlocks(blocks, "reports:sales").map((b) => b.block_id)).toContain(
+			"reports:sales-chart",
 		);
-		expect(sectionBlocks(blocks, "reports:statuses").map((b) => b.block_id)).toEqual([
-			"reports:statuses-table",
-		]);
+		expect(sectionBlocks(blocks, "reports:orders").map((b) => b.block_id)).toContain(
+			"reports:orders-chart",
+		);
+		expect(sectionBlocks(blocks, "reports:statuses").map((b) => b.block_id)).toContain(
+			"reports:statuses-chart",
+		);
+		expect(sectionBlocks(blocks, "reports:top").map((b) => b.block_id)).toContain(
+			"reports:top-chart",
+		);
 		expect(sectionBlocks(blocks, "reports:low").map((b) => b.block_id)).toEqual([
 			"reports:low-table",
 		]);
+		// The 30-row revenue table is gone: the chart replaces it.
+		expect(findBlocks(blocks, "table")).toHaveLength(1);
+		expect(findBlocks(blocks, "chart")).toHaveLength(4);
 
-		// Each report's data made it into a table, one per group.
-		expect(findBlocks(blocks, "table")).toHaveLength(4);
-
-		// ALL FOUR REPORTS WERE ACTUALLY ANSWERED — what the four recorded request
-		// URLs used to stand for, and this says more: the URLs proved four calls
-		// left the plugin, these prove four DIFFERENT seeded facts came back, each
-		// from its own collection, each in its own group.
-		expect(rowsOf(blocks, "reports:revenue-table").map((r) => r.revenue)).toEqual([
-			"$30.00",
-			"$55.00",
-			"$0.00",
+		// ALL FOUR REPORTS WERE ACTUALLY ANSWERED — four DIFFERENT seeded facts,
+		// each from its own collection, each in its own section.
+		expect(salesPoints(blocks)).toEqual([
+			["10 Jul", 3000, "$30.00"],
+			["11 Jul", 5500, "$55.00"],
+			["12 Jul", 0, "$0.00"],
 		]);
-		expect(rowsOf(blocks, "reports:statuses-table")).toEqual([{ status: "paid", orderCount: 3 }]);
-		expect(rowsOf(blocks, "reports:top-table")).toEqual([
-			{ titleSnapshot: "Gadget", qtySold: 4, revenue: "$40.00" },
-		]);
+		expect(seriesData(blocks, "reports:orders-chart")).toEqual([1, 2, 0]);
+		expect(statusSlices(blocks)).toEqual([["paid (3)", 3]]);
+		expect(topBars(blocks)).toEqual([["Gadget", "$40.00 · 4 sold"]]);
 		expect(rowsOf(blocks, "reports:low-table")).toEqual([
 			{ title: "Aluminum Water Bottle", sku: `SKU-A-${SFX}`, onHand: "0 · Out of stock" },
 		]);
 	});
 
-	test("Reports revenue table formats money (never raw minor units) and never a Currency column", async () => {
+	test("the sales chart states money as currency (never raw minor units) on its axis and in its tooltips", async () => {
 		await seedStandardRange();
 
 		const blocks = blocksOf(await reports(RANGE));
 		assertBlockContract(blocks, { screen: "reports", level: "list" });
 
-		const revenueTable = tableWithId(blocks, "reports:revenue-table");
-		const columns = (revenueTable?.columns ?? []) as Array<Record<string, unknown>>;
-		expect(columns.map((c) => c.label)).not.toContain("Currency");
-		const rows = rowsOf(blocks, "reports:revenue-table");
-		expect(rows.map((r) => r.revenue)).toEqual(["$30.00", "$55.00", "$0.00"]);
-		// Bucket periods are date-only (M-6) — no millisecond timestamp.
-		expect(rows.map((r) => r.bucketStart)).toEqual(["2026-07-10", "2026-07-11", "2026-07-12"]);
+		// Every money string a viewer can SEE is formatted: the tooltip text of
+		// both series, and the money axis's tick labels. The plotted values stay
+		// integer minor units, which no viewer sees.
+		expect(salesPoints(blocks).map(([, , text]) => text)).toEqual(["$30.00", "$55.00", "$0.00"]);
+		const [, ticks] = chartOptions(blocks, "reports:sales-chart")["yAxis"] as Array<{
+			data: string[];
+		}>;
+		expect(ticks?.data).toEqual(["$0", "$20", "$40", "$60"]);
+		// The comparison series names its own (earlier) dates.
+		expect(seriesData(blocks, "reports:sales-chart", 1)).toEqual([
+			[0, 0, "$0.00 · 7 Jul"],
+			[1, 0, "$0.00 · 8 Jul"],
+			[2, 0, "$0.00 · 9 Jul"],
+		]);
+		// Day labels are date-only (M-6) — no timestamp anywhere.
+		expect(salesPoints(blocks).map(([day]) => day)).toEqual(["10 Jul", "11 Jul", "12 Jul"]);
 
-		// The `stats` block carries pre-formatted money too, with NO "integer
-		// minor units" description (M-1 — that description was the bug), and every
-		// label states the period the figure covers.
+		// The `stats` block carries pre-formatted money too, and its change line
+		// names the period it compares with — here an empty one, so no percentage.
 		expect(statItems(blocks)[0]).toEqual({
-			label: "Revenue (USD) — 10 Jul – 12 Jul 2026",
+			label: "Total sales",
 			value: "$85.00",
+			description: "No data in previous 3 days",
 		});
 	});
 
-	test("all FOUR stat slots are filled — Revenue, Orders, AOV, Refunded — each labelled with its period", async () => {
+	test("all FOUR stat slots are filled — Total sales, Orders, Average order value, Refunded", async () => {
 		await seedStandardDefault();
 
 		const blocks = blocksOf(await reports());
@@ -357,22 +428,22 @@ describe("Reports admin page (workerd sandbox)", () => {
 		const items = statItems(blocks);
 		expect(items).toHaveLength(4);
 		expect(items.map((i) => i.label)).toEqual([
-			// The currency is stated ONCE, in the label, never per row (G1).
-			"Revenue (USD) — last 30 days",
-			"Orders — last 30 days",
-			"AOV (USD) — last 30 days",
-			"Refunded (USD) — last 30 days",
+			"Total sales",
+			"Orders",
+			"Average order value",
+			"Refunded",
 		]);
 		// Money is pre-formatted through formatMoney; the order count is a count.
 		expect(items[0]?.value).toBe("$85.00");
 		expect(items[1]?.value).toBe("3");
-		// Orders counts EVERY status, so Revenue ÷ Orders does not equal the AOV
-		// beside it — the tile names the paid subset so that reads as two
-		// different questions rather than as an arithmetic error.
-		expect(items[1]?.description).toBe("Every status; 3 paid");
-		// 8500 over the 3 `paid` orders the day counters hold.
+		// Orders counts EVERY status, so Total sales ÷ Orders does not equal the
+		// AOV beside it — the line under the cards names the paid subset so that
+		// reads as two different questions rather than as an arithmetic error.
+		expect(contextTexts(blocks)).toContainEqual(
+			expect.stringContaining("Orders counts every status (3 paid)."),
+		);
+		// 8500 over the 3 USD orders behind that revenue (`revenueOrders`).
 		expect(items[2]?.value).toBe("$28.33");
-		expect(items[2]?.description).toBe("Average order value across 3 paid orders");
 		// The refunded AMOUNT is a real figure: 250 on the earlier day + 0 on
 		// today, formatted through formatMoney like every other money value on
 		// this screen. The description names the cohort and reconciles the amount
@@ -380,9 +451,52 @@ describe("Reports admin page (workerd sandbox)", () => {
 		// ORDER at all, yet money still came back, which is exactly what a partial
 		// refund looks like.
 		expect(items[3]?.value).toBe("$2.50");
-		expect(items[3]?.description).toBe(
-			"On orders placed in this period; no order refunded in full. A later refund changes this figure; refunds in progress are excluded.",
-		);
+		// Nothing was seeded in the previous 30 days: no percentage is invented.
+		expect(items.map((i) => i.description)).toEqual([
+			"No data in previous 30 days",
+			"No data in previous 30 days",
+			"No data in previous 30 days",
+			"No data in previous 30 days",
+		]);
+		expect(items.map((i) => i.trend)).toEqual([undefined, undefined, undefined, undefined]);
+	});
+
+	test("each card states its change against the previous period of equal length, read from the same rollup", async () => {
+		await seedStandardDefault();
+		// The previous 30 days (30–59 days back): $42.50 over one paid order, and
+		// $5.00 refunded. The day just before the period (30 back) is in it too.
+		await seedDay({
+			day: dayBefore(TODAY, 40),
+			revenueCents: 4250,
+			refundedCents: 500,
+			refundEntries: 1,
+			stateCounts: { paid: 1 },
+		});
+		// 60 days back is outside both periods and must move nothing.
+		await seedDay({ day: dayBefore(TODAY, 60), revenueCents: 99_999, stateCounts: { paid: 9 } });
+
+		const blocks = blocksOf(await reports());
+		assertBlockContract(blocks, { screen: "reports", level: "list" });
+		const items = statItems(blocks);
+		// 8500 vs 4250: doubled.
+		expect(items[0]).toMatchObject({ description: "+100% vs previous 30 days", trend: "up" });
+		// 3 orders vs 1.
+		expect(items[1]).toMatchObject({ description: "+200% vs previous 30 days", trend: "up" });
+		// $28.33 vs $42.50.
+		expect(items[2]).toMatchObject({ description: "\u221233% vs previous 30 days", trend: "down" });
+		// $2.50 vs $5.00 refunded — signed, but no arrow: the renderer colours an
+		// arrow by direction, and less refunded is not "bad" red.
+		expect(items[3]).toEqual({
+			label: "Refunded",
+			value: "$2.50",
+			description: "\u221250% vs previous 30 days",
+		});
+		// The dashed comparison line carries the previous period's money.
+		const previous = seriesData(blocks, "reports:sales-chart", 1) as Array<
+			[number, number, string]
+		>;
+		expect(previous.reduce((sum, [, amount]) => sum + amount, 0)).toBe(4250);
+		expect(contextTexts(blocks)[0]).toMatch(/ \(UTC\) · compared with /);
 	});
 
 	test("Refunded renders $0.00 — not an em-dash — when the store reports zero refunds", async () => {
@@ -422,10 +536,10 @@ describe("Reports admin page (workerd sandbox)", () => {
 		// ONE revenue card, in the currency the store actually earns in — no
 		// `€0.00` phantom, and therefore no second card eating R-16's cap.
 		expect(items.map((i) => i.label)).toEqual([
-			"Revenue (USD) — 10 Jul – 12 Jul 2026",
-			"Orders — 10 Jul – 12 Jul 2026",
-			"AOV (USD) — 10 Jul – 12 Jul 2026",
-			"Refunded (USD) — 10 Jul – 12 Jul 2026",
+			"Total sales",
+			"Orders",
+			"Average order value",
+			"Refunded",
 		]);
 		// THE REFUNDED CARD SURVIVES — the card this whole increment exists for is
 		// exactly the one the phantom used to truncate off the end.
@@ -436,11 +550,14 @@ describe("Reports admin page (workerd sandbox)", () => {
 		expect(blocks.some((b) => String(b.text ?? "").includes("spans more than one currency"))).toBe(
 			false,
 		);
-		// The zero-fill survives: three continuous day rows, 12 Jul at $0.00 —
-		// a multi-currency window would have declined to fill and said so.
-		const rows = rowsOf(blocks, "reports:revenue-table");
-		expect(rows.map((r) => r.bucketStart)).toEqual(["2026-07-10", "2026-07-11", "2026-07-12"]);
-		expect(rows.map((r) => r.revenue)).toEqual(["$30.00", "$55.00", "$0.00"]);
+		// The chart survives: three continuous days, 12 Jul at $0.00 — a
+		// multi-currency window would have fallen back to a sparse table.
+		expect(salesPoints(blocks).map(([day, , text]) => [day, text])).toEqual([
+			["10 Jul", "$30.00"],
+			["11 Jul", "$55.00"],
+			["12 Jul", "$0.00"],
+		]);
+		expect(tableWithId(blocks, "reports:revenue-table")).toBeUndefined();
 		// And the EUR money is NOT swallowed: it is stated, in its own currency,
 		// beside the cards that cannot hold it.
 		const notes = blocks.filter((b) => b.type === "context").map((b) => String(b.text));
@@ -476,7 +593,9 @@ describe("Reports admin page (workerd sandbox)", () => {
 	test("the Refunded card discloses BOTH of its caveats: the figure is retro-mutable, and in-progress refunds are excluded", async () => {
 		await seedStandardDefault();
 
-		const description = String(statItems(blocksOf(await reports()))[3]?.description);
+		// Stated once, in the line under the cards (each card's own description is
+		// its change against the previous period).
+		const description = contextTexts(blocksOf(await reports())).join(" ");
 		// (a) A July order refunded in September moves July's figure — a closed
 		// period re-run later does not have to match what it read at the time.
 		expect(description).toMatch(/later refund changes this figure/i);
@@ -517,8 +636,9 @@ describe("Reports admin page (workerd sandbox)", () => {
 			const text = `${String(banner?.title ?? "")} ${String(banner?.description ?? "")}`;
 			expect(text).not.toMatch(/HTTP \d|\/reports\//);
 			expect(text).toMatch(/fault in the console itself/);
-			// Fail CLOSED means no half-rendered screen: not one report table.
+			// Fail CLOSED means no half-rendered screen: not one report table or chart.
 			expect(findBlocks(blocks, "table")).toHaveLength(0);
+			expect(findBlocks(blocks, "chart")).toHaveLength(0);
 		} finally {
 			await starved.close();
 		}
@@ -539,7 +659,7 @@ describe("Reports admin page (workerd sandbox)", () => {
 		);
 		assertBlockContract(blocks, { screen: "reports", level: "list" });
 		expect(blocks.length).toBeGreaterThan(0);
-		expect(sectionBlocks(blocks, "reports:revenue").length).toBeGreaterThan(0);
+		expect(sectionBlocks(blocks, "reports:sales").length).toBeGreaterThan(0);
 	});
 
 	test("multi-currency stats are ordered ALPHABETICALLY, never by revenue — and the ranking gap is disclosed to the operator", async () => {
@@ -558,35 +678,58 @@ describe("Reports admin page (workerd sandbox)", () => {
 		// BLOCKER FIX: selection AND order are alphabetical by currency code, not
 		// a comparison of revenue (or any other magnitude) across currencies.
 		const items = statItems(blocks);
-		expect(items.slice(0, 2)).toEqual([
-			{ label: "Revenue (EUR) — last 30 days", value: "€10.00" },
-			{ label: "Revenue (USD) — last 30 days", value: "$900.00" },
+		expect(items.slice(0, 2)).toMatchObject([
+			{ label: "Total sales (EUR)", value: "€10.00" },
+			{ label: "Total sales (USD)", value: "$900.00" },
 		]);
 		// R-16's cap still holds with the per-currency cards in front, and the
 		// money tiles that CANNOT be computed across currencies say so rather than
 		// dividing a sum of EUR and USD minor units by a currency-less count.
 		expect(items.length).toBeLessThanOrEqual(4);
-		const aov = items.find((i) => String(i.label).startsWith("AOV"));
+		const aov = items.find((i) => String(i.label).startsWith("Average order value"));
 		expect(aov?.value).toBe("—");
 		expect(String(aov?.description)).toMatch(/several currencies/);
 
-		// DA-7: the gap (nothing in the reporting port carries a per-currency
-		// ORDER COUNT, on either transport) is disclosed to the OPERATOR, inside
-		// the always-open "Revenue by day" group — not only in the PR body — and
-		// ONLY when it actually applies (multi-currency).
-		const revenueGroupText = sectionBlocks(blocks, "reports:revenue")
+		// DA-7: the ordering rule (alphabetical, because amounts in different
+		// currencies are never compared) is disclosed to the OPERATOR, inside the
+		// sales section — and ONLY when it actually applies (multi-currency).
+		const revenueGroupText = sectionBlocks(blocks, "reports:sales")
 			.filter((b) => b.type === "context")
 			.map((b) => b.text);
-		expect(revenueGroupText.some((t) => /no per-currency order count/.test(String(t)))).toBe(true);
+		expect(revenueGroupText.some((t) => /alphabetically by currency code/.test(String(t)))).toBe(
+			true,
+		);
 
 		// Top products carries no currency of its own, so it cannot be safely
 		// formatted across more than one — same "—" fallback as before, but with
 		// its own explanatory line inside the "Top products" group.
-		expect(rowsOf(blocks, "reports:top-table").map((r) => r.revenue)).toEqual(["—"]);
+		// Ranked by units, stating no money at all.
+		expect(topBars(blocks)).toEqual([["Widget", "1 sold"]]);
 		const topGroupText = sectionBlocks(blocks, "reports:top")
 			.filter((b) => b.type === "context")
 			.map((b) => b.text);
 		expect(topGroupText.some((t) => /more than one currency/.test(String(t)))).toBe(true);
+	});
+
+	test("a multi-currency period's top products are the server's UNITS ranking, so 'Ranked by units' is true", async () => {
+		await seedDay({ day: TODAY, currency: "USD", revenueCents: 90_000 });
+		await seedDay({ day: TODAY, currency: "EUR", revenueCents: 1_000 });
+		// By revenue Atlas leads ($900 from 1 unit); by units Bolt does (5 × $1).
+		await seedOrder(`ord-atlas-${SFX}`, `${TODAY}T09:00:00.000Z`, [
+			{ productId: "pa", title: "Atlas", quantity: 1, unitPrice: 90_000 },
+		]);
+		await seedOrder(`ord-bolt-${SFX}`, `${TODAY}T10:00:00.000Z`, [
+			{ productId: "pb", title: "Bolt", quantity: 5, unitPrice: 100 },
+		]);
+
+		const blocks = blocksOf(await reports());
+		assertBlockContract(blocks, { screen: "reports", level: "list" });
+		expect(topBars(blocks)).toEqual([
+			["Bolt", "5 sold"],
+			["Atlas", "1 sold"],
+		]);
+		const topGroupText = sectionBlocks(blocks, "reports:top").map((b) => String(b.text));
+		expect(topGroupText.some((t) => t.startsWith("Ranked by units"))).toBe(true);
 	});
 
 	test("single-currency reports carry NEITHER disclosure line (T-8a: a caveat that cannot apply is noise)", async () => {
@@ -596,8 +739,8 @@ describe("Reports admin page (workerd sandbox)", () => {
 		assertBlockContract(blocks, { screen: "reports", level: "list" });
 
 		expect(
-			sectionBlocks(blocks, "reports:revenue").some(
-				(b) => b.type === "context" && /order count/.test(String(b.text)),
+			sectionBlocks(blocks, "reports:sales").some(
+				(b) => b.type === "context" && /alphabetically by currency code/.test(String(b.text)),
 			),
 		).toBe(false);
 		expect(
@@ -607,7 +750,7 @@ describe("Reports admin page (workerd sandbox)", () => {
 		).toBe(false);
 	});
 
-	test("the DEFAULT period is whole days: 30 day-rows, both bounds exact, and re-submitting the untouched prefill asks the identical question", async () => {
+	test("the DEFAULT period is whole days: 30 day points, both bounds exact, and re-submitting the untouched prefill asks the identical question", async () => {
 		const first = dayBefore(TODAY, 29);
 		// Three day documents, placed to pin BOTH bounds by what comes back: the
 		// 30th day back is the first row, the day before it must not appear at
@@ -634,16 +777,29 @@ describe("Reports admin page (workerd sandbox)", () => {
 		//    answer for a day the window covers WHOLE, so a `to` at midnight would
 		//    have excluded today's document and recomputed the day from its orders
 		//    instead — of which there are none, leaving $0.00 in that last row.
-		const rows = rowsOf(blocks, "reports:revenue-table");
-		expect(rows).toHaveLength(30);
-		expect(rows[0]).toEqual({ bucketStart: first, revenue: "$10.00" });
-		expect(rows[29]).toEqual({ bucketStart: TODAY, revenue: "$30.00" });
-		expect(rows.map((r) => r.revenue)).not.toContain("$77.77");
+		const points = salesPoints(blocks);
+		expect(points).toHaveLength(30);
+		expect(points[0]).toEqual([dayLabel(first), 1000, "$10.00"]);
+		expect(points[29]).toEqual([dayLabel(TODAY), 3000, "$30.00"]);
+		expect(points.map(([, amount]) => amount)).not.toContain(7777);
+		// The day before the period is the LAST day of the comparison period.
+		const previous = seriesData(blocks, "reports:sales-chart", 1) as Array<
+			[number, number, string]
+		>;
+		expect(previous[29]?.[1]).toBe(7777);
 
-		// The prefill IS the default period: submitting it untouched must ask the
-		// identical question, or the same screen would answer differently under an
-		// unchanged subtitle.
-		const form = formFor(blocks, "reports:apply-range");
+		// Choosing "Custom range" opens the From/To form prefilled with the
+		// default period: submitting it untouched must ask the identical question,
+		// or the same screen would answer differently under an unchanged subtitle.
+		const custom = blocksOf(
+			await sandbox.invokeRoute("admin", {
+				type: "block_action",
+				action_id: "reports:period",
+				value: "Custom range",
+			}),
+		);
+		assertBlockContract(custom, { screen: "reports", level: "list" });
+		const form = formFor(custom, "reports:apply-range");
 		const resubmitted = blocksOf(
 			await sandbox.invokeRoute("admin", {
 				type: "form_submit",
@@ -655,37 +811,42 @@ describe("Reports admin page (workerd sandbox)", () => {
 				},
 			}),
 		);
-		expect(rowsOf(resubmitted, "reports:revenue-table")).toEqual(rows);
+		expect(salesPoints(resubmitted)).toEqual(points);
 		expect(statItems(resubmitted)[0]?.value).toBe(statItems(blocks)[0]?.value);
 		expect(contextTexts(resubmitted)[0]).toBe(contextTexts(blocks)[0]);
 	});
 
-	test("a period submit keeps the bucket interval it was rendered with", async () => {
-		await seedStandardRange();
+	test("the period select applies a preset at once, and a period past 92 days charts 7-day points", async () => {
+		await seedStandardDefault();
 
-		const weekly = blocksOf(await reports({ interval: "week" }));
-		expect(String(sectionHeading(weekly, "reports:revenue")?.text)).toBe("Revenue by week");
-
-		// A form_submit replaces the whole interaction and carries no route input,
-		// so without the carrier a period change silently reset a weekly report to
-		// daily — with nothing on screen saying so.
-		const submitted = blocksOf(
+		const blocks = blocksOf(
 			await sandbox.invokeRoute("admin", {
-				type: "form_submit",
-				action_id: "reports:apply-range",
-				block_id: formFor(weekly, "reports:apply-range")?.block_id,
-				values: { from: RANGE.from, to: RANGE.to },
+				type: "block_action",
+				action_id: "reports:period",
+				value: "Last 365 days",
 			}),
 		);
-		assertBlockContract(submitted, { screen: "reports", level: "list" });
-		expect(String(sectionHeading(submitted, "reports:revenue")?.text)).toBe("Revenue by week");
-		// The label is the cheap half. The interval reached the REPORT too: the
-		// two seeded days fold into ONE row whose period is the ISO week's Monday
-		// (6 Jul), which a daily report can never produce. That is what the
-		// `interval=week` query parameter used to assert, read off the answer.
-		expect(rowsOf(submitted, "reports:revenue-table")).toEqual([
-			{ bucketStart: "2026-07-06", revenue: "$85.00" },
-		]);
+		assertBlockContract(blocks, { screen: "reports", level: "list" });
+		// The select REMOUNTS showing the choice: its block id names the preset.
+		const picker = findBlocks(blocks, "actions").find((b) =>
+			String(b.block_id).startsWith("reports:period"),
+		);
+		expect(picker?.block_id).toBe("reports:period-365d");
+		const select = ((picker?.elements ?? []) as Array<Record<string, unknown>>)[0];
+		expect(select).toMatchObject({
+			type: "select",
+			action_id: "reports:period",
+			initial_value: "Last 365 days",
+		});
+		// No custom form for a preset.
+		expect(formFor(blocks, "reports:apply-range")).toBeUndefined();
+		// 365 days → 53 points of 7 days from the period's first day; the whole
+		// period's sales still add up.
+		const points = salesPoints(blocks);
+		expect(points).toHaveLength(53);
+		expect(points.reduce((sum, [, amount]) => sum + amount, 0)).toBe(8500);
+		expect(contextTexts(blocks).some((t) => t.includes("One point per week"))).toBe(true);
+		expect(statItems(blocks)[0]?.description).toMatch(/previous 365 days$/);
 	});
 
 	test("INC-13: the absorbed formatter left this screen's rendering byte-identical, and it states no wire timestamp", async () => {
@@ -727,6 +888,10 @@ describe("Reports admin page (workerd sandbox)", () => {
 		// the figures beneath it are for.
 		expect(field(form, "from")?.initial_value).toBe("2026-07-10");
 		expect(field(form, "to")?.initial_value).toBe("2026-07-12");
+		// And the select says the period is a custom one.
+		expect(buttons(blocks).find((e) => e.action_id === "reports:period")?.initial_value).toBe(
+			"Custom range",
+		);
 	});
 
 	test("submitting the From/To form re-renders the page for that period — the id round-trips, never {blocks: []}", async () => {
@@ -753,16 +918,12 @@ describe("Reports admin page (workerd sandbox)", () => {
 
 		// The rendered period changed with the submission…
 		expect(contextTexts(blocks)[0]).toMatch(/^10 Jul – 12 Jul 2026 \(UTC\)/);
-		expect(statItems(blocks).map((i) => i.label)).toEqual([
-			"Revenue (USD) — 10 Jul – 12 Jul 2026",
-			"Orders — 10 Jul – 12 Jul 2026",
-			"AOV (USD) — 10 Jul – 12 Jul 2026",
-			"Refunded (USD) — 10 Jul – 12 Jul 2026",
-		]);
+		expect(statItems(blocks)[1]?.description).toMatch(/previous 3 days$/);
+		expect(salesPoints(blocks).map(([day]) => day)).toEqual(["10 Jul", "11 Jul", "12 Jul"]);
 		// …and so did the window the REPORTS were computed over: the `to` bound
 		// covers the whole last day, so an order placed on 12 Jul at 18:00 is not
 		// silently dropped from the period the operator asked for.
-		expect(rowsOf(blocks, "reports:top-table").map((r) => r.titleSnapshot)).toContain("Late Sale");
+		expect(topBars(blocks).map(([title]) => title)).toContain("Late Sale");
 	});
 
 	test("a backwards range renders the page with a banner and the default period — never a 4xx", async () => {
@@ -784,8 +945,11 @@ describe("Reports admin page (workerd sandbox)", () => {
 		expect(String(banner?.description)).toMatch(/From date falls after the To date/);
 		// The substitution is never silent: the figures are labelled for the
 		// period actually rendered.
-		expect(statItems(blocks)[0]?.label).toBe("Revenue (USD) — last 30 days");
-		expect(sectionHeading(blocks, "reports:revenue")).toBeDefined();
+		expect(statItems(blocks)[0]?.description).toMatch(/previous 30 days$/);
+		expect(salesPoints(blocks)).toHaveLength(30);
+		expect(sectionHeading(blocks, "reports:sales")).toBeDefined();
+		// The form stays open so the operator can correct the dates.
+		expect(formFor(blocks, "reports:apply-range")).toBeDefined();
 	});
 
 	test("the 400-day cap is judged on the SNAPPED period, so a range that exceeds it only once whole days apply still gets the banner", async () => {
@@ -806,8 +970,8 @@ describe("Reports admin page (workerd sandbox)", () => {
 			"A reporting period covers up to 400 days. Choose a shorter one.",
 		);
 		// The page still renders, for the default period — not the fail-closed shell.
-		expect(findBlocks(blocks, "table")).toHaveLength(4);
-		expect(statItems(blocks)[0]?.label).toBe("Revenue (USD) — last 30 days");
+		expect(findBlocks(blocks, "chart")).toHaveLength(4);
+		expect(salesPoints(blocks)).toHaveLength(30);
 		expect(findBlocks(blocks, "banner").some((b) => b.variant === "error")).toBe(false);
 
 		// The boundary itself has not moved: 400 whole days is still accepted —
@@ -815,7 +979,7 @@ describe("Reports admin page (workerd sandbox)", () => {
 		// no cap banner, and no E-7 shell from the domain's own refusal either.
 		const atCap = blocksOf(await reports({ from: "2026-01-01", to: "2027-02-04" }));
 		expect(findBlocks(atCap, "banner")).toHaveLength(0);
-		expect(findBlocks(atCap, "table")).toHaveLength(4);
+		expect(salesPoints(atCap)).toHaveLength(58); // 400 days in 7-day points
 	});
 
 	test("the low-stock group states the threshold its rows were selected by", async () => {
@@ -830,8 +994,7 @@ describe("Reports admin page (workerd sandbox)", () => {
 		expect(String(sectionHeading(blocks, "reports:low")?.text)).toBe(
 			"Low stock (1) — at or below 5",
 		);
-		// The revenue group drops the internal "(N buckets)" vocabulary.
-		expect(String(sectionHeading(blocks, "reports:revenue")?.text)).toBe("Revenue by day");
+		expect(String(sectionHeading(blocks, "reports:sales")?.text)).toBe("Total sales over time");
 	});
 
 	test("a failed settings read degrades only the low-stock label (#287)", async () => {
@@ -846,12 +1009,10 @@ describe("Reports admin page (workerd sandbox)", () => {
 		try {
 			const blocks = blocksOf(await reports(RANGE));
 			assertBlockContract(blocks, { screen: "reports", level: "list" });
-			expect(findBlocks(blocks, "table")).toHaveLength(4);
+			expect(findBlocks(blocks, "chart")).toHaveLength(4);
 			expect(statItems(blocks)[0]?.value).toBe("$85.00");
-			expect(rowsOf(blocks, "reports:statuses-table")).toEqual([{ status: "paid", orderCount: 3 }]);
-			expect(rowsOf(blocks, "reports:top-table")).toEqual([
-				{ titleSnapshot: "Gadget", qtySold: 4, revenue: "$40.00" },
-			]);
+			expect(statusSlices(blocks)).toEqual([["paid (3)", 3]]);
+			expect(topBars(blocks)).toEqual([["Gadget", "$40.00 · 4 sold"]]);
 			expect(rowsOf(blocks, "reports:low-table").map((row) => row.sku)).toEqual([
 				`SKU-A-${SFX}`,
 				`SKU-B-${SFX}`,
@@ -878,6 +1039,40 @@ describe("Reports admin page (workerd sandbox)", () => {
 		);
 	});
 
+	test("a failed PREVIOUS-period read costs only the comparison — the period's own figures still render", async () => {
+		await seedStandardRange();
+		// Fail exactly the rollup reads for 7–9 Jul (RANGE's previous period):
+		// both the previous revenue and the previous orders-by-status read them.
+		const daily = collection(REPORTING_DAILY_COLLECTION);
+		const query = daily.query;
+		daily.query = async (options) => {
+			const where = (options as { where?: { date?: { gte?: unknown } } } | undefined)?.where;
+			if (where?.date?.gte === "2026-07-07") {
+				throw new Error("injected previous-period read failure");
+			}
+			return query.call(daily, options);
+		};
+		try {
+			const blocks = blocksOf(await reports(RANGE));
+			assertBlockContract(blocks, { screen: "reports", level: "list" });
+			expect(findBlocks(blocks, "banner")).toHaveLength(0);
+			expect(statItems(blocks)).toMatchObject([
+				{ label: "Total sales", value: "$85.00", description: "No comparison available" },
+				{ label: "Orders", value: "3", description: "No comparison available" },
+				{ label: "Average order value", value: "$28.33", description: "No comparison available" },
+				{ label: "Refunded", value: "$2.50", description: "No comparison available" },
+			]);
+			expect(findBlocks(blocks, "chart")).toHaveLength(4);
+			expect(
+				sectionBlocks(blocks, "reports:sales").some((b) =>
+					String(b.text).includes("The previous period could not be loaded."),
+				),
+			).toBe(true);
+		} finally {
+			daily.query = query;
+		}
+	});
+
 	test("a low-stock query failure still fails the reports page closed", async () => {
 		await seedStandardRange();
 		const inventory = collection(INVENTORY_COLLECTION);
@@ -888,6 +1083,7 @@ describe("Reports admin page (workerd sandbox)", () => {
 		try {
 			const blocks = blocksOf(await reports(RANGE));
 			expect(findBlocks(blocks, "table")).toHaveLength(0);
+			expect(findBlocks(blocks, "chart")).toHaveLength(0);
 			expect(findBlocks(blocks, "banner").find((b) => b.variant === "error")?.title).toBe(
 				"Reports are unavailable",
 			);
@@ -914,7 +1110,7 @@ describe("Reports admin page (workerd sandbox)", () => {
 		]);
 	});
 
-	test("INC-10: Orders by status is plain text, and it speaks the Orders screen's words", async () => {
+	test("INC-10: Orders by status speaks the Orders screen's words, with every count on the chart", async () => {
 		await seedDay({
 			day: TODAY,
 			revenueCents: 5000,
@@ -924,29 +1120,16 @@ describe("Reports admin page (workerd sandbox)", () => {
 		const blocks = blocksOf(await reports());
 		assertBlockContract(blocks, { screen: "reports", level: "list" });
 
-		const table = tableWithId(blocks, "reports:statuses-table");
-		// X-4 was never this column's problem — one row per status, so its values
-		// chunk by construction. The badge went for the other half of T-5: every
-		// row got the identical pill, which rendered `failed` and `paid` at
-		// exactly the same weight on the one screen whose question is "which of
-		// these numbers should worry me?".
-		expect(columnsOf(table).filter((c) => c.format === "badge")).toEqual([]);
 		// The words are the Orders screen's own (`orderStateCell`), not a second
 		// vocabulary for the same field: the dead ends mark themselves, the rest
-		// stay bare.
-		//
-		// The ORDER is now the reporting store's own: the report folds a map of
-		// per-state counters and sorts the result by status code, so the same data
-		// can never render two ways. The old expectation was the stub response's
-		// array order, which was a claim about the stub and nothing else.
-		const rows = rowsOf(blocks, "reports:statuses-table");
-		expect(rows.map((r) => r.status)).toEqual([
-			"failed · closed",
-			"paid",
-			"refunded · closed",
-			"shipped",
+		// stay bare — and every slice carries its count, so the numbers are on
+		// the chart, not only in a tooltip. Largest slice first.
+		expect(statusSlices(blocks)).toEqual([
+			["paid (12)", 12],
+			["shipped (4)", 4],
+			["failed · closed (2)", 2],
+			["refunded · closed (1)", 1],
 		]);
-		expect(rows.map((r) => r.orderCount)).toEqual([2, 12, 1, 4]);
 	});
 
 	test("a null title renders (untitled) and NEVER falls back to the SKU — they are different facts", async () => {
@@ -983,65 +1166,55 @@ describe("Reports admin page (workerd sandbox)", () => {
 		]);
 	});
 
-	test("the revenue series is continuous across a zero-revenue gap, and no chart block is emitted", async () => {
+	test("the sales series is continuous across a zero-revenue gap", async () => {
 		// Two days of sales with a three-day hole between them. The report returns
 		// only the days that had revenue: an empty period is OMITTED rather than
-		// zero-filled, because zero-filling is the renderer's job and it needs the
-		// report's own silence to know which days it is filling.
+		// zero-filled, because zero-filling is the renderer's job.
 		await seedDay({ day: "2026-07-01", revenueCents: 1000 });
 		await seedDay({ day: "2026-07-05", revenueCents: 2000 });
 
 		const blocks = blocksOf(await reports({ from: "2026-07-01", to: "2026-07-05" }));
 		assertBlockContract(blocks, { screen: "reports", level: "list" });
 
-		// DESIGNER §6: a month of steady sales and a month with a three-week hole
-		// used to render identically. The zero days are the shape.
-		const rows = rowsOf(blocks, "reports:revenue-table");
-		expect(rows.map((r) => r.bucketStart)).toEqual([
-			"2026-07-01",
-			"2026-07-02",
-			"2026-07-03",
-			"2026-07-04",
-			"2026-07-05",
+		// A month of steady sales and a month with a three-week hole used to
+		// render identically. The zero days are the shape.
+		expect(salesPoints(blocks)).toEqual([
+			["1 Jul", 1000, "$10.00"],
+			["2 Jul", 0, "$0.00"],
+			["3 Jul", 0, "$0.00"],
+			["4 Jul", 0, "$0.00"],
+			["5 Jul", 2000, "$20.00"],
 		]);
-		expect(rows.map((r) => r.revenue)).toEqual(["$10.00", "$0.00", "$0.00", "$0.00", "$20.00"]);
-		// A continuous table is the answer here, not a chart: the renderer strips
-		// the formatter a money axis would need (§1.2).
-		expect(findBlocks(blocks, "chart")).toHaveLength(0);
-		// The fill happened, so the group makes no claim about omitted days.
-		expect(sectionBlocks(blocks, "reports:revenue").map((b) => b.text)).not.toContain(
-			"Periods with no revenue are omitted for this range.",
-		);
+		expect(seriesData(blocks, "reports:orders-chart")).toEqual([1, 0, 0, 0, 1]);
 	});
 
-	test("zero-fill stops at 92 days, and the group says so when the series is left sparse", async () => {
+	test("92 days is charted a point per day; one day more folds into 7-day points, and says so", async () => {
 		await seedDay({ day: "2026-07-10", revenueCents: 3000, refundedCents: 250, refundEntries: 1 });
 		await seedDay({ day: "2026-07-11", revenueCents: 5500 });
 
-		const sparseNote = "Periods with no revenue are omitted for this range.";
 		const render = async (from: string, to: string) => {
 			const blocks = blocksOf(await reports({ from, to }));
 			assertBlockContract(blocks, { screen: "reports", level: "list" });
 			return {
-				rows: rowsOf(blocks, "reports:revenue-table"),
-				notes: sectionBlocks(blocks, "reports:revenue").map((b) => String(b.text)),
+				points: salesPoints(blocks),
+				notes: sectionBlocks(blocks, "reports:sales").map((b) => String(b.text)),
 			};
 		};
 
-		// 1 May – 31 Jul is exactly 92 days: still filled, still one row per day.
+		// 1 May – 31 Jul is exactly 92 days: one point per day.
 		const at92 = await render("2026-05-01", "2026-07-31");
-		expect(at92.rows).toHaveLength(92);
-		expect(at92.notes).not.toContain(sparseNote);
+		expect(at92.points).toHaveLength(92);
+		expect(at92.notes.some((t) => t.includes("One point per day"))).toBe(true);
 
-		// One day more and the zero rows would BE the table rather than show its
-		// shape — so the report's own sparse series renders, and the omission is
-		// stated rather than left to look continuous.
+		// 93 days: 13 weeks + 2 days → 14 points from 30 Apr; 10 + 11 Jul both
+		// fall in the week starting 9 Jul.
 		const at93 = await render("2026-04-30", "2026-07-31");
-		expect(at93.rows.map((r) => r.bucketStart)).toEqual(["2026-07-10", "2026-07-11"]);
-		expect(at93.notes).toContain(sparseNote);
+		expect(at93.points).toHaveLength(14);
+		expect(at93.points.filter(([, amount]) => amount > 0)).toEqual([["9 Jul", 8500, "$85.00"]]);
+		expect(at93.notes.some((t) => t.includes("One point per week"))).toBe(true);
 	});
 
-	test("a multi-currency window is left sparse and states it, and the tiles that do not fit are named", async () => {
+	test("a multi-currency window lists sales per day per currency instead of charting them, and the tiles that do not fit are named", async () => {
 		await seedDay({ day: "2026-07-10", currency: "USD", revenueCents: 3000 });
 		await seedDay({ day: "2026-07-10", currency: "EUR", revenueCents: 1000 });
 
@@ -1051,22 +1224,28 @@ describe("Reports admin page (workerd sandbox)", () => {
 		// Filling a multi-currency window is a day × currency cross product: a
 		// quiet currency would contribute more $0.00 rows than there are real
 		// ones, reading as activity that never happened. Sparse, and said.
-		expect(rowsOf(blocks, "reports:revenue-table")).toHaveLength(2);
-		expect(sectionBlocks(blocks, "reports:revenue").map((b) => String(b.text))).toContain(
-			"Periods with no revenue are omitted for this range.",
-		);
+		expect(rowsOf(blocks, "reports:revenue-table")).toEqual([
+			{ bucketStart: "2026-07-10", revenue: "€10.00" },
+			{ bucketStart: "2026-07-10", revenue: "$30.00" },
+		]);
+		expect(findBlocks(blocks, "chart").map((b) => b.block_id)).not.toContain("reports:sales-chart");
+		expect(
+			sectionBlocks(blocks, "reports:sales").some((b) =>
+				String(b.text).includes("Days with no sales are omitted."),
+			),
+		).toBe(true);
 
 		// Two revenue cards + Orders fill R-16's four, so Refunded falls off the
 		// end — and a card that vanishes without a word is the silence this
 		// increment exists to remove. Tile ORDER is unchanged.
-		expect(statItems(blocks).map((i) => String(i.label).split(" —")[0])).toEqual([
-			"Revenue (EUR)",
-			"Revenue (USD)",
+		expect(statItems(blocks).map((i) => i.label)).toEqual([
+			"Total sales (EUR)",
+			"Total sales (USD)",
 			"Orders",
-			"AOV",
+			"Average order value",
 		]);
 		expect(contextTexts(blocks)).toContain(
-			"Refunded is not shown: the four cards are taken by one revenue card per currency.",
+			"Refunded is not shown: the four cards are taken by one sales card per currency.",
 		);
 	});
 

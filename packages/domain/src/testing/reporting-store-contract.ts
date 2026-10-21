@@ -100,12 +100,14 @@ export function reportingStoreContract(
 					bucketStart: "2026-07-01T00:00:00.000Z",
 					currency: "EUR",
 					revenueCents: 9000,
+					revenueOrderCount: 3,
 					refundedCents: 300,
 				},
 				{
 					bucketStart: "2026-07-01T00:00:00.000Z",
 					currency: "USD",
 					revenueCents: 11_500,
+					revenueOrderCount: 6,
 					refundedCents: 6916,
 				},
 			]);
@@ -147,12 +149,14 @@ export function reportingStoreContract(
 					bucketStart: "2026-07-06T00:00:00.000Z",
 					currency: "USD",
 					revenueCents: 1000,
+					revenueOrderCount: 1,
 					refundedCents: 0,
 				},
 				{
 					bucketStart: "2026-07-13T00:00:00.000Z",
 					currency: "USD",
 					revenueCents: 2500,
+					revenueOrderCount: 2,
 					refundedCents: 0,
 				},
 			]);
@@ -171,6 +175,7 @@ export function reportingStoreContract(
 				bucketStart: "2026-07-10T00:00:00.000Z",
 				currency: "USD",
 				revenueCents: 3000,
+				revenueOrderCount: 2,
 				refundedCents: 250,
 			});
 			// o4's two rows aggregate (100 + 200), rather than the last one winning.
@@ -228,6 +233,7 @@ export function reportingStoreContract(
 					bucketStart: "2026-07-11T00:00:00.000Z",
 					currency: "USD",
 					revenueCents: 0,
+					revenueOrderCount: 0,
 					refundedCents: 4200,
 				},
 			]);

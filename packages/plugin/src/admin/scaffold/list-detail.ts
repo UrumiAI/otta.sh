@@ -873,6 +873,7 @@ function childBlockLists(block: Block): Block[][] | undefined {
 		case "empty":
 		case "image":
 		case "meter":
+		case "chart":
 			return undefined;
 		default: {
 			const exhaustive: never = block;

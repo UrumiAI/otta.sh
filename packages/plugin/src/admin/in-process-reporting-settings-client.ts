@@ -147,6 +147,7 @@ export class InProcessReportingSettingsClient implements ReportingSettingsSurfac
 			bucketStart: bucket.bucketStart,
 			currency: bucket.currency,
 			revenueCents: bucket.revenueCents,
+			revenueOrderCount: bucket.revenueOrderCount,
 			// ALWAYS, zero included — see the class doc.
 			refundedCents: bucket.refundedCents,
 		}));
