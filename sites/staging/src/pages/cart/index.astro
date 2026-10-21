@@ -373,6 +373,10 @@ const asMoney = (wire: CartMoneyWire): CheckoutAmountView => ({
 	money: wire,
 	label: wire.formatted,
 });
+// Every prose amount here is "not_calculated", including "Unavailable right now"
+// for a failed pricing read. That is fine only because the cart passes no
+// `excludesUncalculated` to Sum: wiring `uncalculatedFootnote` in here would tell
+// a buyer during an outage that the store hasn't set the amount up.
 const asProse = (label: string): CheckoutAmountView => ({
 	state: "not_calculated",
 	money: null,

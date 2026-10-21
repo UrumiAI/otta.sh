@@ -72,6 +72,14 @@ const reworded = (state: "not_calculated" | "not_applicable", label: string) =>
  * not change what a row means — the §7 rule cannot ride on spelling.
  */
 describe("the amount's state decides, not its label (#122)", () => {
+	test("an amount with no state (an older plugin) fails safe: prose, never a figure", () => {
+		// A plugin from before #122 sends no `state`. Anything not marked calculated
+		// is prose, so its "Not calculated" can never print as $0.00 or a bare figure.
+		const old = { money: null, label: "Not calculated" } as unknown as CheckoutAmountView;
+		expect(isUncalculated(old)).toBe(true);
+		expect(sumRowText({ label: "Shipping", amount: old })).toBe("Not calculated");
+	});
+
 	test("a not-applicable amount with a label other than the constant still never prints it raw", () => {
 		// A localised dash, or a plugin that rewords "—" to "n/a", is still
 		// "not applicable": the page's own prose (or the default) is printed.
