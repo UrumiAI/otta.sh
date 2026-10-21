@@ -248,7 +248,7 @@ function inProcessTier(): CommerceClientTier {
 					{
 						sku: spec.sku,
 						...(spec.price !== undefined ? { price: spec.price } : {}),
-						...(spec.title !== undefined ? { title: spec.title } : {}),
+						title: spec.title ?? `Product ${spec.productId}`,
 						...(spec.onHand !== undefined ? { initialOnHand: spec.onHand } : {}),
 						...(spec.productKind !== undefined ? { productKind: spec.productKind } : {}),
 					},
@@ -600,7 +600,12 @@ describe("in-process commerce: what is deliberately not wired yet", () => {
 		// asserted against the state it must not damage rather than against nothing.
 		await client.upsertProductCommerce(
 			"prod-nogw",
-			{ sku: "SKU-NOGW", price: { amount: 2500, currency: "USD" }, initialOnHand: 3 },
+			{
+				sku: "SKU-NOGW",
+				price: { amount: 2500, currency: "USD" },
+				title: "No gateway",
+				initialOnHand: 3,
+			},
 			"nogw-seed",
 		);
 		await client.activateProductCommerce("prod-nogw", "nogw-publish", "2026-01-01T00:00:00.000Z");
@@ -794,7 +799,12 @@ describe("in-process commerce: a zone tie-break is logged with ids only", () => 
 		await stores.shippingRules.createZone({ id: "tie-a", name: "A", regions: ["US"] });
 		await client.upsertProductCommerce(
 			"prod-tie",
-			{ sku: "SKU-TIE", price: { amount: 1000, currency: "USD" }, initialOnHand: 3 },
+			{
+				sku: "SKU-TIE",
+				price: { amount: 1000, currency: "USD" },
+				title: "Tie",
+				initialOnHand: 3,
+			},
 			"tie-seed",
 		);
 		await client.activateProductCommerce("prod-tie", "tie-publish", "2026-01-01T00:00:00.000Z");

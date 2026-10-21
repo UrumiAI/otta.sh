@@ -52,8 +52,8 @@ import { syncVariants } from "./variants.js";
  *    published, unpriced, sku-less product is now `active: true`, a state that
  *    could not previously occur. It is not purchasable: `listCommerceByIds`
  *    filters commerce-incomplete rows in SQL and `joinProduct` reports
- *    `purchasable: false`. The admin's status column says so ("active (not
- *    priced)").
+ *    `purchasable: false`. The admin's status label says so ("active (not
+ *    priced)"), and an untitled one reads "active (needs a title)".
  *  - **A content-only save churns `product_commerce.updated_at`.** A
  *    description edit or an image swap still mints a fresh idempotency key (see
  *    `derive-idempotency-key.ts`), applies a no-change upsert, and invalidates
@@ -408,7 +408,7 @@ export function createAfterSaveHandler(
 			// `joinProduct` reports `purchasable: false`. It is still LISTED on
 			// `/products` (that grid comes from CMS content), just with no price, no
 			// add-to-cart and a "not currently available" note. The admin status
-			// column distinguishes it ("active (not priced)").
+			// label distinguishes it ("active (not priced)").
 			if (event.content["status"] === PUBLISHED_STATUS && watermark !== undefined) {
 				await client.activateProductCommerce(
 					id,

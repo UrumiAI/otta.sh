@@ -803,6 +803,17 @@ describe("createOrderFromCart sells only live products (publish gate + tombstone
 		expect(res).toEqual({ ok: false, reason: "PRODUCT_NOT_PRICED" });
 	});
 
+	test("a cart line whose product LOST its title after the add is refused PRODUCT_NOT_PRICED, leaving its hold held (#109)", async () => {
+		// An order line snapshots the title; there is none to snapshot.
+		const { cartId, reservationId } = await heldCart();
+		await h.productCommerce.upsert(
+			{ productId: brandProductId("p1"), sku: brandSku("SKU-1"), title: null },
+			idempotencyKey("untitle-p1"),
+		);
+		expect((await h.productCommerce.getByProductId(brandProductId("p1")))?.title).toBeNull();
+		await expectRefusedAndUntouched(cartId, reservationId);
+	});
+
 	test("republishing restores the sale: the same cart then checks out", async () => {
 		const { cartId } = await heldCart();
 		await h.productCommerce.deactivate(

@@ -679,7 +679,13 @@ export {
 	upsertProductVariant,
 	type ProductCommerceDeps,
 } from "./product-commerce/use-cases.js";
-export { isProductLive } from "./product-commerce/sellable.js";
+export {
+	isProductLive,
+	isProductSellable,
+	unsellableReasons,
+	type SellabilityFacts,
+	type UnsellableReason,
+} from "./product-commerce/sellable.js";
 export {
 	DOWNLOAD_FALLBACK_CONTENT_TYPE,
 	DOWNLOAD_FALLBACK_FILENAME,

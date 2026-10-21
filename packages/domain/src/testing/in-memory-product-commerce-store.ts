@@ -451,7 +451,7 @@ export class InMemoryProductCommerceStore implements ProductCommerceStore {
 	 * live rows become views; `inStock` is the coarse `on_hand > 0`; missing
 	 * ids are omitted; duplicates collapse. Inactive rows are RETURNED with
 	 * `active: false` — the purchasability gate is the plugin's `joinProduct`
-	 * (`purchasable ⟺ commerce !== null && commerce.active`), not the store
+	 * (`purchasable ⟺ commerce !== null && isProductSellable(commerce)`), not the store
 	 * (see the port doc).
 	 */
 	async listCommerceByIds(productIds: ProductId[]): Promise<ProductCommerceView[]> {

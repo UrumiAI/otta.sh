@@ -116,7 +116,7 @@ export interface ProductCommerceBatchItem {
 	compareAtPrice: CommerceMoney | null;
 	inStock: boolean;
 	/** The publish gate: the join derives purchasability from it
-	 *  (`purchasable ⟺ present && active`). */
+	 *  (`purchasable ⟺ present && isProductSellable`: active, priced, titled). */
 	active: boolean;
 	/** The row's tax class (null ⇒ `standard`) and tax status, so a shop page that
 	 *  shows prices with or without tax (#423) taxes the product as checkout does.
@@ -186,7 +186,7 @@ export interface ProductVariantWire {
  *  nothing about the row above it, so it reads `true` for a stocked size of an
  *  unpublished or soft-deleted product. Offer a size only when its PARENT's
  *  `active` says the product is — the same join the product level already
- *  makes (`purchasable ⟺ commerce !== null && commerce.active`). */
+ *  makes (`purchasable ⟺ commerce !== null && isProductSellable(commerce)`). */
 export interface ProductVariantSummaryWire extends ProductVariantWire {
 	inStock: boolean;
 }

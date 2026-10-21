@@ -595,8 +595,8 @@ export interface ProductCommerceView {
 	 * iff commerce === null (or explicitly inactive)"). The store RETURNS
 	 * inactive rows, flagged — the ONE place purchasability is decided is the
 	 * plugin's `joinProduct` (`purchasable ⟺ commerce !== null &&
-	 * commerce.active`), so listing visibility and sellability stay separate
-	 * concerns.
+	 * isProductSellable(commerce)`: published, priced and titled), so listing
+	 * visibility and sellability stay separate concerns.
 	 */
 	active: boolean;
 }
