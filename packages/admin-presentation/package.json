@@ -1,6 +1,6 @@
 {
 	"name": "@urumi.ai/otta-admin-presentation",
-	"version": "0.1.0",
+	"version": "0.1.1",
 	"description": "Otta admin presentation primitives — money rendering, the console date dialect, git-style short ids and the order-status vocabulary. Pure functions: no IO, no React, no EmDash. Shared by the Block Kit plugin and the React console so neither surface can drift from the other.",
 	"homepage": "https://github.com/UrumiAI/otta.sh#readme",
 	"bugs": {

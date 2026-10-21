@@ -9,6 +9,7 @@
 		"test:pg": "vitest run $(./scripts/pg-test-files.sh)",
 		"test:d1": "pnpm -C packages/store-emdash test:d1",
 		"test:e2e": "playwright test",
+		"test:pack-types": "node scripts/pack-consume-types.mjs",
 		"format": "oxfmt",
 		"format:check": "oxfmt --check",
 		"build": "pnpm -r build"

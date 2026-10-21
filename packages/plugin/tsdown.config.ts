@@ -57,4 +57,29 @@ export default defineConfig({
 		"@urumi.ai/otta-payments-stripe",
 		"@urumi.ai/otta-store-emdash",
 	],
+	/**
+	 * …but NOT into the `.d.mts` files (issue #510). Bundling is a runtime
+	 * concern of workerd; declarations have no such constraint, and inlining them
+	 * is actively wrong: domain's money and id types are BRANDED with
+	 * `declare const XBrand: unique symbol`, and a copied declaration is a
+	 * DIFFERENT symbol. A consumer that wrote a `TaxCalculator` against
+	 * `@urumi.ai/otta-domain` could not pass it to `createOttaPlugin` (TS2322,
+	 * "Property '[CurrencyBrand]' is missing"). Left external, the declarations
+	 * `import … from "@urumi.ai/otta-*"` and resolve the one copy the consumer
+	 * has, through the plugin's real `dependencies` entries (which publish
+	 * rewrites from `workspace:*`).
+	 *
+	 * `deps.dts.neverBundle` applies only to imports made FROM a declaration file,
+	 * so the JS bundle above is unchanged. `test/bundle-imports.test.ts` asserts
+	 * both outcomes on the emitted files.
+	 *
+	 * The plugin declares no `@types/node` of its own: the root's copy serves it.
+	 * Adding it here back makes pnpm resolve a second `emdash` (now a peer), which
+	 * `sites/staging/test/host-pin.test.ts` refuses.
+	 */
+	deps: {
+		dts: {
+			neverBundle: [/^@urumi\.ai\/otta-/],
+		},
+	},
 });

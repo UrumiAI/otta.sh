@@ -1,6 +1,6 @@
 {
 	"name": "@urumi.ai/otta-plugin",
-	"version": "0.1.0",
+	"version": "0.1.1",
 	"description": "Otta EmDash plugin — sandbox-clean (workerd, Block Kit, ctx.http + allowedHosts only). Runs commerce in-process on the host-injected ctx.storage; no React, no DB driver.",
 	"homepage": "https://github.com/UrumiAI/otta.sh#readme",
 	"bugs": {
@@ -66,10 +66,12 @@
 		"@urumi.ai/otta-store-emdash": "workspace:*"
 	},
 	"devDependencies": {
-		"@types/node": "catalog:",
 		"tsdown": "catalog:",
 		"typescript": "catalog:",
 		"vitest": "catalog:",
 		"workerd": "^1.20260710.1"
+	},
+	"peerDependencies": {
+		"emdash": "^1.0.1"
 	}
 }

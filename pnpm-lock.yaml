@@ -195,10 +195,10 @@ importers:
       '@urumi.ai/otta-store-emdash':
         specifier: workspace:*
         version: link:../store-emdash
+      emdash:
+        specifier: ^1.0.1
+        version: 1.0.1(@astrojs/react@6.0.1(@types/node@26.1.1)(@types/react-dom@19.2.3(@types/react@19.2.17))(@types/react@19.2.17)(esbuild@0.28.1)(react-dom@19.2.7(react@19.2.7))(react@19.2.7)(yaml@2.9.1))(@atcute/cbor@2.3.7(@atcute/cid@2.4.2))(@atcute/cid@2.4.2)(@atcute/identity@2.0.1(@atcute/lexicons@2.0.2)(typescript@5.9.3))(@date-fns/tz@1.5.0)(@floating-ui/dom@1.7.6)(@tiptap/extensions@3.31.4(@tiptap/core@3.31.4(@tiptap/pm@3.31.4))(@tiptap/pm@3.31.4))(@types/react-dom@19.2.3(@types/react@19.2.17))(@types/react@19.2.17)(astro@7.3.6(@types/node@26.1.1)(yaml@2.9.1))(date-fns@4.4.0)(echarts@6.1.0)(prosemirror-model@1.25.12)(prosemirror-state@1.4.4)(prosemirror-view@1.42.6)(react-dom@19.2.7(react@19.2.7))(react@19.2.7)(typescript@5.9.3)
     devDependencies:
-      '@types/node':
-        specifier: 'catalog:'
-        version: 22.20.1
       tsdown:
         specifier: 'catalog:'
         version: 0.22.4(typescript@5.9.3)
@@ -207,7 +207,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: 'catalog:'
-        version: 4.1.11(@types/node@22.20.1)(happy-dom@20.11.1)(vite@8.3.3(@types/node@22.20.1)(esbuild@0.28.1)(yaml@2.9.1))
+        version: 4.1.11(@types/node@22.20.1)(happy-dom@20.11.1)(vite@8.3.3(@types/node@26.1.1)(esbuild@0.28.1)(yaml@2.9.1))
       workerd:
         specifier: ^1.20260710.1
         version: 1.20260710.1
