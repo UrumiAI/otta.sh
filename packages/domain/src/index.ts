@@ -725,6 +725,7 @@ export {
 	type ReplaceSpentCartResult,
 	type UpdateLineResult,
 } from "./cart/use-cases.js";
+export { resolveLineProductIds } from "./cart/line-products.js";
 // Phase 7: reporting (read-only) + settings tiering.
 export type {
 	DateRange,

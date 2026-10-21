@@ -3365,6 +3365,89 @@ export function productCommerceStoreContract(
 		// declared — the state the entire live catalog is in — not one assertion
 		// above changes, which is what the first case in this block pins.
 
+		describe("getProductIdsBySku: a live product row by its own sku (#111)", () => {
+			test("answers the live row carrying each sku; a missing sku is absent; duplicates collapse; an empty batch is empty", async () => {
+				const h = await makeStore();
+				await seedEditable(h, "prod-bysku-a", { sku: "BYSKU-A" });
+				await seedEditable(h, "prod-bysku-b", { sku: "BYSKU-B" });
+
+				const found = await h.store.getProductIdsBySku([
+					sku("BYSKU-A"),
+					sku("BYSKU-B"),
+					sku("BYSKU-A"),
+					sku("BYSKU-NOPE"),
+				]);
+				expect(found).toEqual(
+					new Map([
+						[sku("BYSKU-A"), productId("prod-bysku-a")],
+						[sku("BYSKU-B"), productId("prod-bysku-b")],
+					]),
+				);
+				expect(await h.store.getProductIdsBySku([])).toEqual(new Map());
+			});
+
+			test("ignores the publish gate and the price: an unpublished, unpriced row still answers (callers apply those checks)", async () => {
+				const h = await makeStore();
+				await h.store.upsert(
+					{ productId: productId("prod-bysku-raw"), sku: sku("BYSKU-RAW") },
+					idempotencyKey("bysku-raw"),
+				);
+				expect(await h.store.getProductIdsBySku([sku("BYSKU-RAW")])).toEqual(
+					new Map([[sku("BYSKU-RAW"), productId("prod-bysku-raw")]]),
+				);
+			});
+
+			test("a SOFT-DELETED row no longer answers, and a new product that reuses the freed sku does", async () => {
+				const h = await makeStore();
+				await seedEditable(h, "prod-bysku-old", { sku: "BYSKU-REUSED" });
+				await h.store.softDelete(productId("prod-bysku-old"), idempotencyKey("bysku-del"));
+				expect(await h.store.getProductIdsBySku([sku("BYSKU-REUSED")])).toEqual(new Map());
+
+				await seedEditable(h, "prod-bysku-new", { sku: "BYSKU-REUSED" });
+				expect(await h.store.getProductIdsBySku([sku("BYSKU-REUSED")])).toEqual(
+					new Map([[sku("BYSKU-REUSED"), productId("prod-bysku-new")]]),
+				);
+			});
+
+			test("a renamed row answers under its NEW sku only", async () => {
+				const h = await makeStore();
+				const seeded = await seedEditable(h, "prod-bysku-ren", { sku: "BYSKU-BEFORE" });
+				const renamed = await h.store.updateCommerceFields(
+					{ productId: productId("prod-bysku-ren"), sku: sku("BYSKU-AFTER") },
+					idempotencyKey("bysku-ren"),
+					seeded.updatedAt.toISOString(),
+				);
+				if (!renamed.ok) throw new Error("arrange: the rename did not apply");
+				expect(await h.store.getProductIdsBySku([sku("BYSKU-BEFORE"), sku("BYSKU-AFTER")])).toEqual(
+					new Map([[sku("BYSKU-AFTER"), productId("prod-bysku-ren")]]),
+				);
+			});
+
+			test("a sku a live VARIANT holds is absent — a size never resolves to its parent's row", async () => {
+				const h = await makeStore();
+				await seedEditable(h, "prod-bysku-v", { sku: "BYSKU-PARENT" });
+				const declared = await h.store.upsertVariant(
+					{
+						productId: productId("prod-bysku-v"),
+						variantKey: "large",
+						title: "Large",
+						contentUpdatedAt: WM,
+					},
+					idempotencyKey("bysku-v-declare"),
+				);
+				const priced = await h.store.updateVariantFields(
+					{ productId: productId("prod-bysku-v"), variantKey: "large", sku: sku("BYSKU-LARGE") },
+					idempotencyKey("bysku-v-sku"),
+					declared.updatedAt.toISOString(),
+				);
+				if (!priced.ok) throw new Error("arrange: the variant could not take its sku");
+
+				expect(await h.store.getProductIdsBySku([sku("BYSKU-LARGE"), sku("BYSKU-PARENT")])).toEqual(
+					new Map([[sku("BYSKU-PARENT"), productId("prod-bysku-v")]]),
+				);
+			});
+		});
+
 		describe("variants: one commerce row per sellable unit", () => {
 			/** The one instant every variant case uses where ordering is not the
 			 *  point (the presence watermark; distinct values below where it is). */

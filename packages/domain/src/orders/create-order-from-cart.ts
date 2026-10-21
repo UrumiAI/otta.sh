@@ -9,6 +9,7 @@ import {
 	reservationId as brandReservationId,
 	sku as brandSku,
 } from "../money/ids.js";
+import { resolveLineProductIds } from "../cart/line-products.js";
 import type { CartStore } from "../ports/cart-store.js";
 import type { Clock } from "../ports/clock.js";
 import type { CouponStore } from "../ports/coupon-store.js";
@@ -275,13 +276,16 @@ export async function createOrderFromCart(
 	// line's PRODUCT_NOT_PRICED precedence identical to the per-line read: a null
 	// line is never branded here, and each surviving line is re-branded lazily at
 	// its own map lookup below, AFTER its own null guard.
+	// A line with no productId is resolved through its sku first (issue #111), so
+	// it meets exactly the checks below; one that resolves to nothing stays null.
+	const cartLines = await resolveLineProductIds(deps.productCommerce, cart.lines);
 	const pcById = await deps.productCommerce.getManyByProductId(
-		cart.lines
+		cartLines
 			.map((line) => line.productId)
 			.filter((id): id is string => id !== null)
 			.map((id) => brandProductId(id)),
 	);
-	for (const line of cart.lines) {
+	for (const line of cartLines) {
 		if (line.productId === null) return { ok: false, reason: "PRODUCT_NOT_PRICED" };
 		const pc = pcById.get(brandProductId(line.productId)) ?? null;
 		// An unpublished or deleted product is not for sale, even from a cart that

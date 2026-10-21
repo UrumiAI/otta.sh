@@ -738,6 +738,24 @@ export interface ProductCommerceStore {
 	 * id, never by position.
 	 */
 	getManyByProductId(productIds: ProductId[]): Promise<Map<ProductId, ProductCommerce>>;
+	/**
+	 * Which LIVE product row carries each sku as its OWN sku (issue #111).
+	 *
+	 * A cart line added without a productId (a bare add, or a cart from before the
+	 * storefront threaded one) still carries its sku, and a live sku names exactly
+	 * one live sellable unit, so the sku is enough to find the line's product. This
+	 * is that lookup, and the callers feed its ids to `getManyByProductId` so the
+	 * per-line price / liveness / currency checks are the ones a threaded line gets.
+	 *
+	 * Only a NON-soft-deleted product row answers — the set the live-sku uniqueness
+	 * rule ranges over, so there is never more than one. A sku a live VARIANT holds
+	 * is ABSENT, deliberately: order pricing snapshots the product row's price and
+	 * title, so resolving a size to its parent would sell it at the parent's price.
+	 * The publish gate and the price are NOT consulted (callers check those, as on
+	 * every other path to checkout). Missing skus are absent, never null; duplicates
+	 * collapse; no ordering guarantee.
+	 */
+	getProductIdsBySku(skus: Sku[]): Promise<Map<Sku, ProductId>>;
 	/** Soft delete: sets `deletedAt` + `active=false`; retains the row. A
 	 *  replay with the same key (or an already-deleted / unknown row) is a
 	 *  no-op. */

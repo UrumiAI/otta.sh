@@ -1,5 +1,5 @@
 import { cents, currency as toCurrency, money } from "../money/cents.js";
-import type { IdempotencyKey, ProductId } from "../money/ids.js";
+import type { IdempotencyKey, ProductId, Sku } from "../money/ids.js";
 import type { Clock } from "../ports/clock.js";
 import type {
 	ProductCommerce,
@@ -440,6 +440,18 @@ export class InMemoryProductCommerceStore implements ProductCommerceStore {
 			const row = this.#rows.get(id);
 			if (row === undefined) continue; // miss: absent from the Map, never null.
 			result.set(id, row);
+		}
+		return result;
+	}
+
+	/** Live product rows by their OWN sku (port doc; issue #111). Variant skus never answer. */
+	async getProductIdsBySku(skus: Sku[]): Promise<Map<Sku, ProductId>> {
+		const wanted = new Set(skus);
+		const result = new Map<Sku, ProductId>();
+		if (wanted.size === 0) return result;
+		for (const row of this.#rows.values()) {
+			if (row.deletedAt !== null || row.sku === null || !wanted.has(row.sku)) continue;
+			result.set(row.sku, row.productId);
 		}
 		return result;
 	}

@@ -1140,18 +1140,62 @@ export function storefrontCommerceClientContract(tier: CommerceClientTier): void
 			},
 		);
 
-		test("a legacy add with NO productId (absent) is preserved as null and still quotes PRODUCT_NOT_PRICED", async () => {
-			await seedProduct({
+		// Issue #111: a line added without a productId (a bare add, or a cart from
+		// before the storefront threaded one) still carries its sku, and a sku names
+		// exactly one live product row. The cart read and both checkout paths fall
+		// back to that row, so such a cart prices and checks out instead of failing
+		// at the last step with PRODUCT_NOT_PRICED.
+		test("a legacy add with NO productId round-trips null at the add, and the cart read, the quote and the order resolve its product BY SKU (#111)", async () => {
+			const productId = await tier.arrange.product({
+				productId: "prod-for-SKU-LEGACY",
 				sku: "SKU-LEGACY",
-				onHand: 5,
+				title: "Legacy Widget",
 				price: { amount: 1500, currency: "USD" },
+				onHand: 5,
+				idempotencyKey: "seed-SKU-LEGACY",
 			});
 			const cartId = await tier.arrange.cart("USD");
 			const added = await client.addCartLine(cartId, "SKU-LEGACY", null, 1, "legacy-1");
 			if (!added.ok) throw new Error("unreachable");
 			expect(added.line.productId).toBeNull(); // absent ⇒ null round-trips
 
-			// A line with no product reference cannot be priced.
+			// The cart read names the product the sku belongs to, so the cart page
+			// can price the line.
+			expect(await client.getCart(cartId)).toMatchObject({
+				ok: true,
+				cart: { lines: [{ sku: "SKU-LEGACY", productId }] },
+			});
+
+			const quoted = await client.quoteCheckout({ cartId });
+			if (!quoted.ok) throw new Error(`quote failed: ${quoted.reason}`);
+			expect(quoted.breakdown.subtotalCents).toBe(1500);
+
+			if (tier.payments === undefined) return;
+			const placed = await client.createOrder(
+				{ cartId, paymentMethod: tier.payments.method, buyerRef: "legacy@example.test" },
+				"legacy-order",
+			);
+			if (!placed.ok) throw new Error(`checkout failed: ${placed.reason}`);
+			expect(placed.order.totals.subtotalCents).toBe(1500);
+		});
+
+		test("a legacy line whose sku no LIVE product row holds any more still quotes PRODUCT_NOT_PRICED (#111)", async () => {
+			const productId = await seedProduct({
+				sku: "SKU-LEGACY-GONE",
+				onHand: 5,
+				price: { amount: 1500, currency: "USD" },
+			});
+			const cartId = await tier.arrange.cart("USD");
+			const added = await client.addCartLine(cartId, "SKU-LEGACY-GONE", null, 1, "legacy-gone-1");
+			if (!added.ok) throw new Error("unreachable");
+			await client.softDeleteProductCommerce(productId, "legacy-gone-delete");
+
+			// A soft delete frees the sku, so nothing answers for it: the line stays
+			// unreferenced on the read and unpriceable at checkout.
+			expect(await client.getCart(cartId)).toMatchObject({
+				ok: true,
+				cart: { lines: [{ sku: "SKU-LEGACY-GONE", productId: null }] },
+			});
 			expect(await client.quoteCheckout({ cartId })).toEqual({
 				ok: false,
 				reason: "PRODUCT_NOT_PRICED",
