@@ -4,6 +4,9 @@
 - Date: 2026-10-09
 - Supersedes in part: [ADR-0012](./0012-storefront-checkout-loads-stripe-elements-in-the-browser.md)
   decision 2 (the client-JS fence) — it adds a third and last exception.
+- Superseded in part by: [ADR-0039](./0039-add-to-cart-mints-a-key-per-submission.md)
+  (2026-10-21) — decision 5 ("nothing else"): the product page gains one script, for the
+  add-to-cart key.
 
 ## Context
 

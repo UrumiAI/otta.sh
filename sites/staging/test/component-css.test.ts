@@ -282,19 +282,20 @@ describe("the boundary guard is not vacuous", () => {
 });
 
 describe("the motion budget (§2, §6, §11)", () => {
-	test("only the hold countdown and the checkout's region script (ADR-0034) ship client JavaScript", () => {
+	test("only the hold countdown, the checkout's region script (ADR-0034) and the add-to-cart key script (ADR-0039) ship client JavaScript", () => {
 		// "One countdown, one hover" is the whole budget. A component growing a
 		// script is a decision, not a detail. The countdown's script is
 		// `HoldClock` since the ribbon's markup and its script were split
 		// (storefront themes, Phase 3); `HoldRibbon` is the markup and runs
-		// nothing.
+		// nothing. `AddToCartKey` (ADR-0039) moves nothing on screen: it only
+		// rewrites a hidden field when the add-to-cart form is submitted.
 		//
 		// Judged on the TEMPLATE (`hasExecutableScript`, shared with the ADR-0012
 		// fence), not on the file: a component must be able to say in prose that
 		// it deliberately has no script without that sentence failing the test
 		// which guarantees it.
 		const withScripts = files.filter((name) => hasExecutableScript(source(name)));
-		expect(withScripts).toEqual(["HoldClock.astro", "RegionPicker.astro"]);
+		expect(withScripts).toEqual(["AddToCartKey.astro", "HoldClock.astro", "RegionPicker.astro"]);
 	});
 
 	test("only the two ribbons animate, and each declares both sides of the rule", () => {

@@ -6,9 +6,10 @@
  *
  *  - `sku`, `productId` — the line to add; `productId` is the CMS content id the
  *    created cart line must carry or it can never be priced (issue #80);
- *  - `idempotencyKey` — the PLUGIN's, minted fresh per rendered PDP, so a
- *    double-submit of one rendered form replays instead of duplicating while a
- *    reload mints a new key. Never minted here or by a theme;
+ *  - `idempotencyKey` — the PLUGIN's, minted fresh per rendered PDP. The page's
+ *    `AddToCartKey` script (ADR-0039) replaces it per SUBMISSION, so a second
+ *    press adds while a double-click replays; with no script this rendered key
+ *    is what posts. Never minted here or by a theme;
  *  - `returnTo` — where an error sends the shopper back to. `/cart/add` still
  *    runs it through `safeReturnPath`; the page computes it.
  *

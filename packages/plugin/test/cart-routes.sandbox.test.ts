@@ -304,6 +304,52 @@ describe("storefront cart routes (workerd sandbox)", () => {
 		expect(cart.lines[0]).toMatchObject({ productId: `prod-thread-${SUFFIX}` });
 	});
 
+	test("add-to-cart: a repeated key REPLAYS (no second unit), a fresh key ADDS — what the PDP's per-submit key relies on (issue #37)", async () => {
+		// The storefront's add-to-cart script (sites/staging, ADR-0039) mints a key
+		// per SUBMISSION and re-sends the same key for a double-click or an in-flight
+		// retry. That only works if the store treats the two cases this way: the
+		// same key is the same add, a new key is another add of the same product.
+		const sku = `SKU-REPEAT-${SUFFIX}`;
+		const productId = `prod-repeat-${SUFFIX}`;
+		await seedProduct({ id: productId, sku, amount: 1500 });
+		const cartId = await createCart();
+		const qtyInCart = async (): Promise<number> =>
+			totalQty((await readCart(cartId))["cart"] as CartWire);
+
+		const first = await addLine({
+			cartId,
+			sku,
+			productId,
+			qty: 1,
+			idempotencyKey: `press-1-${SUFFIX}`,
+		});
+		expect(first["ok"]).toBe(true);
+		// A double-click / retry of the SAME press: replayed, the cart still holds one.
+		const retried = await addLine({
+			cartId,
+			sku,
+			productId,
+			qty: 1,
+			idempotencyKey: `press-1-${SUFFIX}`,
+		});
+		expect(retried["ok"]).toBe(true);
+		expect(await qtyInCart()).toBe(1);
+
+		// A second, intentional press carries its own key: a second unit.
+		const second = await addLine({
+			cartId,
+			sku,
+			productId,
+			qty: 1,
+			idempotencyKey: `press-2-${SUFFIX}`,
+		});
+		expect(second["ok"]).toBe(true);
+		expect(await qtyInCart()).toBe(2);
+		// …and a third, so it is not a one-off.
+		await addLine({ cartId, sku, productId, qty: 1, idempotencyKey: `press-3-${SUFFIX}` });
+		expect(await qtyInCart()).toBe(3);
+	});
+
 	test("add-to-cart REFUSES a productId that does not own the submitted sku (SKU_MISMATCH — no stock is held)", async () => {
 		await seedProduct({ id: `prod-guard-${SUFFIX}`, sku: `SKU-GUARD-${SUFFIX}`, amount: 900 });
 		await seedStock(`SKU-OTHER-${SUFFIX}`);
