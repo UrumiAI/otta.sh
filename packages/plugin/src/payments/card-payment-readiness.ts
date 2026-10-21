@@ -22,7 +22,11 @@
  * SECURITY: the answer names which values are missing, never any part of one.
  */
 import { stripeKeyMode, stripePublishableKeyMode } from "../payment-secret-shapes.js";
-import { stripeSecretKeyFromKv, stripeWebhookSecretFromKv } from "../payment-secrets.js";
+import {
+	readSecret,
+	STRIPE_SECRET_KEY_KEY,
+	STRIPE_WEBHOOK_SECRET_KEY,
+} from "../payment-secrets.js";
 import type { PluginContext } from "../types.js";
 import { readStripePublishableKey } from "./stripe-publishable-key.js";
 import { devStripeOfflineEnabled } from "./stripe-wiring.js";
@@ -46,7 +50,7 @@ export interface CardPaymentFacts {
 	publishableMode: "test" | "live" | undefined;
 	/** A usable secret key is stored. */
 	secretKeySet: boolean;
-	/** Its mode, when its prefix says (`undefined` for a restricted key). */
+	/** Its mode (`rk_` keys included); `undefined` only for a prefix that names none. */
 	secretKeyMode?: "test" | "live" | undefined;
 	/** A usable webhook signing secret is stored. */
 	webhookSecretSet: boolean;
@@ -83,23 +87,27 @@ function gatewayAndKey(facts: CardPaymentFacts, withPublishable: boolean): CardP
 async function readSecretFacts(
 	ctx: PluginContext,
 ): Promise<Omit<CardPaymentFacts, "publishableMode">> {
-	// The gateway's own fail-closed readers: unset, unreadable and malformed are
-	// all "not there", exactly as `stripeGatewayFromCtx` sees them.
+	// Unset and malformed are "not there", exactly as `stripeGatewayFromCtx` sees
+	// them. A read that FAILED throws instead: a kv blip is busy, never "not set
+	// up" (#498's rule), so the caller's guard answers with a retryable failure.
 	const [secretKey, webhookSecret] = await Promise.all([
-		stripeSecretKeyFromKv(ctx),
-		stripeWebhookSecretFromKv(ctx),
+		readSecret(ctx, STRIPE_SECRET_KEY_KEY),
+		readSecret(ctx, STRIPE_WEBHOOK_SECRET_KEY),
 	]);
+	if (secretKey.state === "unreadable" || webhookSecret.state === "unreadable") {
+		throw new Error("a Stripe secret could not be read");
+	}
+	const secretKeyValue = secretKey.state === "set" ? secretKey.value : undefined;
 	return {
-		secretKeySet: secretKey !== undefined,
-		secretKeyMode: secretKey !== undefined ? stripeKeyMode(secretKey) : undefined,
-		webhookSecretSet: webhookSecret !== undefined,
+		secretKeySet: secretKeyValue !== undefined,
+		secretKeyMode: secretKeyValue !== undefined ? stripeKeyMode(secretKeyValue) : undefined,
+		webhookSecretSet: webhookSecret.state === "set",
 	};
 }
 
 /**
- * Read the full readiness and the usable publishable key. A kv failure on the
- * publishable key PROPAGATES (the caller answers busy, never "not set up"); the
- * secrets fail closed, like the gateway.
+ * Read the full readiness and the usable publishable key. A kv failure on any
+ * of the three PROPAGATES: the caller answers busy, never "not set up".
  */
 export async function readCardPaymentReadiness(
 	ctx: PluginContext,

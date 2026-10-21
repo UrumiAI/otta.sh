@@ -116,12 +116,27 @@ describe("storefront/payment-config — cardPaymentReady", () => {
 		});
 	});
 
-	test("an unreadable secret is not ready", async () => {
-		expect(await call(makeCtx(FULL_TEST, { failingKeys: [STRIPE_SECRET_KEY_KEY] }))).toEqual({
-			ok: true,
-			stripePublishableKey: PK_TEST,
-			cardPaymentReady: false,
-		});
+	test.each([STRIPE_SECRET_KEY_KEY, STRIPE_WEBHOOK_SECRET_KEY])(
+		"a failed read of %s is busy, never 'not set up'",
+		async (key) => {
+			expect(await call(makeCtx(FULL_TEST, { failingKeys: [key] }))).toEqual({
+				ok: false,
+				error: "RENDER_FAILED",
+			});
+		},
+	);
+
+	test("the dev-only offline arm stands in for the secret key, as it does for the gateway", async () => {
+		const seed = { [STRIPE_PUBLISHABLE_KEY_KEY]: PK_TEST, [STRIPE_WEBHOOK_SECRET_KEY]: WHSEC };
+		expect(await call(makeCtx(seed))).toMatchObject({ cardPaymentReady: false });
+		vi.stubGlobal("__OTTA_DEV_STRIPE_OFFLINE__", true);
+		vi.stubEnv("DEV", true);
+		try {
+			expect(await call(makeCtx(seed))).toMatchObject({ cardPaymentReady: true });
+		} finally {
+			vi.unstubAllGlobals();
+			vi.unstubAllEnvs();
+		}
 	});
 
 	test("both secrets but no publishable key is not ready", async () => {
@@ -180,6 +195,17 @@ describe("storefront/checkout/place on a store whose Stripe is not set up", () =
 		expect(logged).toHaveBeenCalledTimes(1);
 		const line = logged.mock.calls[0]!.map(String).join(" ");
 		expect(line).toContain("missing: secret key, webhook signing secret");
+	});
+
+	test("a failed secret read is NOT reported as unconfigured: the generic retry stands, nothing is named missing", async () => {
+		const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+		const result = await place(
+			makeCtx(FULL_TEST, { failingKeys: [STRIPE_SECRET_KEY_KEY, STRIPE_WEBHOOK_SECRET_KEY] }),
+		);
+
+		expect(result).toMatchObject({ ok: false });
+		expect(result).not.toEqual({ ok: false, reason: "STRIPE_NOT_CONFIGURED" });
+		expect(logged.mock.calls.flat().map(String).join(" ")).not.toContain("missing:");
 	});
 
 	test("the secret key saved, the webhook secret not: names only the webhook secret, never the key", async () => {

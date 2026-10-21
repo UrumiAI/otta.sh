@@ -1310,7 +1310,8 @@ describe("storefront/checkout/place (workerd sandbox)", () => {
 	 * UNCONFIGURED, CONTAINED. This boot provisions no Stripe secrets, so no
 	 * `stripe` gateway is armed (module doc). Issue #499: the route says so as the
 	 * typed STRIPE_NOT_CONFIGURED — the storefront's "card payment isn't set up",
-	 * not a generic "try again" no retry could fix — before the domain is asked.
+	 * not a generic "try again" no retry could fix — once the domain refuses the
+	 * method (it throws before touching the cart).
 	 * Two more things matter and are asserted here: the caller is told nothing
 	 * else about the plugin's insides, and — far more importantly — the buyer's
 	 * cart is not damaged on the way out. A refusal that consumed the cart or
