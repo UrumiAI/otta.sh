@@ -346,6 +346,7 @@ function sameSettings(a: OperationalSettings, b: OperationalSettings): boolean {
 		a.holdTtlMinutes === b.holdTtlMinutes &&
 		a.lowStockThreshold === b.lowStockThreshold &&
 		a.currency === b.currency &&
+		a.showHoldTimer === b.showHoldTimer &&
 		JSON.stringify(a.tax ?? null) === JSON.stringify(b.tax ?? null)
 	);
 }

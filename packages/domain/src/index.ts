@@ -757,6 +757,7 @@ export type {
 export {
 	DEFAULT_OPERATIONAL_SETTINGS,
 	DEFAULT_STORE_CURRENCY,
+	effectiveShowHoldTimer,
 	effectiveStoreCurrency,
 	readStoreCurrency,
 	isSettingsPreconditionFailedError,

@@ -156,6 +156,24 @@ async function resetOperationalSettings(): Promise<StorageAccess> {
 	return storage;
 }
 
+/** The hold-timer toggle in a rendered settings screen, if any. */
+function toggleOf(blocks: unknown): { initial_value?: unknown } | undefined {
+	let found: { initial_value?: unknown } | undefined;
+	JSON.stringify(blocks, (_key, value: unknown) => {
+		const v = value as { type?: unknown; action_id?: unknown };
+		if (
+			v !== null &&
+			typeof v === "object" &&
+			v.type === "toggle" &&
+			v.action_id === "showHoldTimer"
+		) {
+			found = v as { initial_value?: unknown };
+		}
+		return value;
+	});
+	return found;
+}
+
 describe("Settings admin form (workerd sandbox)", () => {
 	test("saving the display name re-renders the FULL screen — every real form survives (Bug A)", async () => {
 		sandbox = await loadPluginInSandbox({ allowedHosts: [], storage: true });
@@ -354,11 +372,47 @@ describe("Settings admin form (workerd sandbox)", () => {
 		const banner = findBlocks(blocks, "banner")[0];
 		expect(String(banner?.title)).toBe("Settings saved");
 		expect(String(banner?.description)).toBe(
-			"Cart hold time is 30 minutes and the low-stock threshold is 0.",
+			"Cart hold time is 30 minutes and the low-stock threshold is 0. The hold timer is hidden from shoppers.",
 		);
 		expect(groupLabels(blocks).get("settings:checkout")).toBe(
 			"Checkout & holds — 30 min hold · low stock at 0",
 		);
+	});
+
+	test("the hold-timer toggle is off by default, and saving it on (then off) sticks", async () => {
+		await resetOperationalSettings();
+		sandbox = await loadPluginInSandbox({ allowedHosts: [], storage: true });
+		const loaded = blocksOf(
+			await sandbox.invokeRoute("admin", { type: "page_load", page: "/settings" }),
+		);
+		expect(toggleOf(loaded)?.initial_value).toBe(false);
+
+		const on = blocksOf(
+			await sandbox.invokeRoute("admin", {
+				type: "form_submit",
+				action_id: "save-operational",
+				values: { holdTtlMinutes: "15", lowStockThreshold: "5", showHoldTimer: true },
+				idempotencyKey: "k-timer-on",
+			}),
+		);
+		expect(String(findBlocks(on, "banner")[0]?.description)).toContain(
+			"Shoppers see the hold timer.",
+		);
+		expect(toggleOf(on)?.initial_value).toBe(true);
+		const reloaded = blocksOf(
+			await sandbox.invokeRoute("admin", { type: "page_load", page: "/settings" }),
+		);
+		expect(toggleOf(reloaded)?.initial_value).toBe(true);
+
+		const off = blocksOf(
+			await sandbox.invokeRoute("admin", {
+				type: "form_submit",
+				action_id: "save-operational",
+				values: { holdTtlMinutes: "15", lowStockThreshold: "5", showHoldTimer: false },
+				idempotencyKey: "k-timer-off",
+			}),
+		);
+		expect(toggleOf(off)?.initial_value).toBe(false);
 	});
 
 	test("a real domain validation error surfaces inline and never zeroes an un-edited field", async () => {

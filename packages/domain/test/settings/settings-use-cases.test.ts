@@ -1,4 +1,5 @@
 import {
+	effectiveShowHoldTimer,
 	effectiveStoreCurrency,
 	getSettings,
 	idempotencyKey,
@@ -65,6 +66,33 @@ describe("settings use-cases (over the in-memory fake)", () => {
 		expect(result.currency).toBe("INR");
 		expect((await getSettings(store)).currency).toBe("INR");
 	});
+
+	test("the hold timer is off until the operator saves it on", async () => {
+		const store = new InMemorySettingsStore();
+		expect(effectiveShowHoldTimer(await getSettings(store))).toBe(false);
+		await updateSettings(store, { showHoldTimer: true }, idempotencyKey("k1"));
+		expect(effectiveShowHoldTimer(await getSettings(store))).toBe(true);
+		await updateSettings(store, { showHoldTimer: false }, idempotencyKey("k2"));
+		expect(effectiveShowHoldTimer(await getSettings(store))).toBe(false);
+	});
+
+	test.each(["true", 1, null])(
+		"updateSettings refuses showHoldTimer %j before it reaches the store",
+		async (value) => {
+			const store = new InMemorySettingsStore();
+			const refused = await updateSettings(
+				store,
+				{ showHoldTimer: value as unknown as boolean },
+				idempotencyKey("k1"),
+			).then(
+				() => undefined,
+				(err: unknown) => err,
+			);
+			expect(refused).toBeInstanceOf(InvalidSettingsError);
+			expect((refused as InvalidSettingsError).field).toBe("showHoldTimer");
+			expect((await getSettings(store)).showHoldTimer).toBeUndefined();
+		},
+	);
 
 	test.each(["usd", "XXX", "ISK", "", " EUR", "EURO"])(
 		"updateSettings refuses the store currency %j before it reaches the store",

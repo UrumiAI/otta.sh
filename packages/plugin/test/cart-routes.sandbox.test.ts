@@ -498,6 +498,23 @@ describe("storefront cart routes (workerd sandbox)", () => {
 		}
 	});
 
+	test("cart/read reports showHoldTimer: off until the admin saves it on (display only)", async () => {
+		const settings = new EmdashSettingsStore({ storage, clock: systemClock });
+		const before = (await settings.get()).showHoldTimer === true;
+		const cartId = await createCart();
+		try {
+			await settings.update({ showHoldTimer: false }, idempotencyKey(`cart-timer-off-${SUFFIX}`));
+			expect((await readCart(cartId))["showHoldTimer"]).toBe(false);
+			await settings.update({ showHoldTimer: true }, idempotencyKey(`cart-timer-on-${SUFFIX}`));
+			expect((await readCart(cartId))["showHoldTimer"]).toBe(true);
+		} finally {
+			await settings.update(
+				{ showHoldTimer: before },
+				idempotencyKey(`cart-timer-restore-${SUFFIX}`),
+			);
+		}
+	});
+
 	test("cart/read maps an unknown cart to the typed CART_NOT_FOUND reason (not a thrown error)", async () => {
 		const result = await readCart(`missing-cart-${SUFFIX}`);
 		expect(result).toEqual({ ok: false, reason: "CART_NOT_FOUND" });

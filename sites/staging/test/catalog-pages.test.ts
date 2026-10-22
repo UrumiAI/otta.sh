@@ -469,8 +469,14 @@ describe("the PDP's add-to-cart form is unchanged in behaviour", () => {
 		expect(PDP).toMatch(
 			/const cartHoldMinutes = result !== null && result\.ok \? result\.cartHoldMinutes/,
 		);
-		expect(PDP).toMatch(/holdNote: holdNote\(cartHoldMinutes\)/);
-		expect(PDP_VIEW).toMatch(/<p class="pdp-hold-note">\s*\{model\.purchase\.holdNote\}/);
+		// Shown only when the store turned the hold timer on (off by default).
+		expect(PDP).toMatch(
+			/const showHoldTimer = result !== null && result\.ok && result\.showHoldTimer;/,
+		);
+		expect(PDP).toMatch(/holdNote: showHoldTimer \? holdNote\(cartHoldMinutes\) : null/);
+		expect(PDP_VIEW).toMatch(
+			/\{model\.purchase\.holdNote !== null && \(\s*<p class="pdp-hold-note">\s*\{model\.purchase\.holdNote\}/,
+		);
 		for (const source of [PDP, PDP_VIEW]) {
 			expect(source).not.toContain("for 15 minutes");
 			expect(source).not.toContain("CART_HOLD_TTL_MS");

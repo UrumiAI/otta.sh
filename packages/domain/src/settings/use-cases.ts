@@ -70,6 +70,15 @@ export async function updateSettings(
 			);
 		}
 	}
+	if (patch.showHoldTimer !== undefined) {
+		const v: unknown = patch.showHoldTimer;
+		if (typeof v !== "boolean") {
+			throw new InvalidSettingsError(
+				"showHoldTimer",
+				`showHoldTimer must be true or false, got ${String(v)}`,
+			);
+		}
+	}
 	if ("tax" in patch) {
 		const tax = parseTaxSettings(patch.tax);
 		if ("field" in tax) throw new InvalidSettingsError(tax.field, tax.message);

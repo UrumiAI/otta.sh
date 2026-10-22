@@ -221,6 +221,9 @@ export type CartReadRouteResult =
 			cart: CartWire;
 			pricing: CartPricingWire;
 			staleCurrency: CartStaleCurrencyWire | null;
+			/** Whether to show shoppers the hold countdown (the admin's
+			 *  `showHoldTimer`; off by default, and off when the read fails). */
+			showHoldTimer: boolean;
 	  }
 	| { ok: false; error: "INVALID_CART_ID" }
 	| { ok: false; reason: CartFailureReason }
@@ -388,7 +391,17 @@ export function createCartReadRouteHandler(): RouteHandler<CartReadRouteInput> {
 			if (!isCartIdToken(cartId)) return { ok: false, error: "INVALID_CART_ID" } as const;
 
 			const client = await makeCommerceClient(ctx);
-			const result = await client.getCart(cartId);
+			const [result, showHoldTimer] = await Promise.all([
+				client.getCart(cartId),
+				// Display only — a failed read hides the countdown rather than failing the cart.
+				client.getShowHoldTimer().catch((err: unknown) => {
+					console.error(
+						`[otta] ${STOREFRONT_CART_READ_ROUTE} showHoldTimer read failed; hiding the timer:`,
+						err,
+					);
+					return false;
+				}),
+			]);
 			if (!result.ok) return { ok: false as const, reason: result.reason };
 			const cart = result.cart;
 			const locale = sanitizeLocale(routeCtx.input.locale);
@@ -431,6 +444,7 @@ export function createCartReadRouteHandler(): RouteHandler<CartReadRouteInput> {
 				cart,
 				pricing,
 				staleCurrency: await staleCurrency,
+				showHoldTimer,
 			};
 		});
 }

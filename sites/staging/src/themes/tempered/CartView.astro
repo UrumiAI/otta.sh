@@ -51,6 +51,7 @@ const {
 	totalAmount,
 	partialNote,
 	staleCurrency,
+	showHoldTimer,
 } = Astro.props.model;
 ---
 
@@ -130,12 +131,15 @@ const {
 		   empty-cart frame — a display-face line, one sentence saying what
 		   this store does for you, and a way out. Suppressed when the read
 		   was DEGRADED: a cart we could not reach is not an empty cart, and
-		   the banner above is already saying so. */
+		   the banner above is already saying so. The hold is only promised
+		   when the store shows the hold timer. */
 		!degraded && (
 			<div class="cart-empty">
-				<h2 class="cart-empty-title">Nothing held yet.</h2>
+				<h2 class="cart-empty-title">{showHoldTimer ? "Nothing held yet." : "Nothing here yet."}</h2>
 				<p>
-					Your cart is empty. Pick something and we'll hold the stock while you decide.
+					{showHoldTimer
+						? "Your cart is empty. Pick something and we'll hold the stock while you decide."
+						: "Your cart is empty. Browse the shop and add something you like."}
 				</p>
 				<a href="/products" class="u-btn u-btn-ghost">
 					Browse products
@@ -245,7 +249,7 @@ const {
 							    absolute expiry — this view only hands it the line's own
 							    `expiresAt`, and a line that never took a reservation
 							    renders no ribbon at all. */}
-							<HoldRibbon expiresAt={view.line.expiresAt} />
+							{showHoldTimer && <HoldRibbon expiresAt={view.line.expiresAt} />}
 						</div>
 						<div class="cart-line-right">
 							<span class="cart-line-money">
