@@ -188,11 +188,45 @@ describe("replaceStaleCurrencyCart", () => {
 		expect(await freed(skus)).toBe(0);
 	});
 
+	test("a hold ADOPTED between the cart read and its release is NOT released: LINE_CHECKED_OUT, and the order keeps its stock (#540)", async () => {
+		const { cartId, skus } = await wideCart(1);
+		const before = await h.cartStore.get(cartId);
+		const holdId = before?.lines[0]?.reservationId;
+		if (holdId === undefined || holdId === null) throw new Error("no hold");
+		// The race, on the real fakes: the use-case reads the cart (the line is
+		// still `held`), and a checkout in another tab adopts that hold before
+		// the release runs.
+		const get = h.cartStore.get.bind(h.cartStore);
+		h.cartStore.get = async (id) => {
+			const read = await get(id);
+			h.cartStore.get = get;
+			const adopted = await h.inventory.adopt({
+				reservationId: holdId,
+				orderId: "ord-racing-checkout",
+				holdExpiresAt: "2026-07-10T01:00:00.000Z",
+				now: h.clock.now().toISOString(),
+			});
+			expect(adopted).toMatchObject({ ok: true });
+			return read;
+		};
+
+		expect(await replaceStaleCurrencyCart(h.deps, cartId, EUR)).toEqual({
+			ok: false,
+			reason: "LINE_CHECKED_OUT",
+		});
+		// Nothing came back: the units are the order's, still adopted for it, and
+		// its settle commits them.
+		expect(await freed(skus)).toBe(0);
+		expect(h.inventory.reservationState(holdId)).toBe("adopted");
+		await h.inventory.commit(holdId);
+		expect(await freed(skus)).toBe(0);
+	});
+
 	test("a crash partway: the retry gets the SAME cart and releases the rest, each exactly once", async () => {
 		const { cartId, skus } = await wideCart(3);
-		const release = h.inventory.release.bind(h.inventory);
+		const release = h.inventory.releaseHeld.bind(h.inventory);
 		let calls = 0;
-		h.inventory.release = async (id) => {
+		h.inventory.releaseHeld = async (id) => {
 			calls += 1;
 			if (calls === 2) throw new Error("worker killed mid-release");
 			return release(id);
@@ -202,7 +236,7 @@ describe("replaceStaleCurrencyCart", () => {
 		);
 		expect(await freed(skus)).toBe(1);
 
-		h.inventory.release = release;
+		h.inventory.releaseHeld = release;
 		const replayed = await replaceStaleCurrencyCart(h.deps, cartId, EUR);
 		const again = await replaceStaleCurrencyCart(h.deps, cartId, EUR);
 		if (!replayed.ok || !again.ok) throw new Error("refused");

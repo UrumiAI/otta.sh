@@ -429,6 +429,82 @@ export class EmdashInventoryStore implements InventoryStore, HoldDeadlineStamper
 	}
 
 	/**
+	 * The CART-SCOPED release (#540): only a hold still `held` is freed, and that
+	 * is decided INSIDE the aggregate `compareAndSet` that returns its units — an
+	 * `adopt` flips the hold on that same document, so the two serialize and a
+	 * hold adopted after this call's first read is never released.
+	 *
+	 * Write order: the reserve key's answer (a hold exists, so the reserve
+	 * succeeded — the outcome-before-prune rule), then the guarded prune, then the
+	 * terminal state. The terminal state cannot go first, as it does in `#settle`:
+	 * it is written unconditionally, and this release may yet be refused. A crash
+	 * between the prune and the terminal state leaves the units returned and the
+	 * reservation with neither a hold nor a terminal state — read as `pending`,
+	 * which nothing adopts, commits or releases, so the units are never returned
+	 * twice and never sold under an order. Any later `releaseHeld` of that hold —
+	 * a concurrent one, or a retry — finds it pruned, completes that terminal
+	 * write and answers `true` (see `#releasedWithoutHold`).
+	 */
+	async releaseHeld(reservationId: string): Promise<boolean> {
+		const index = await this.#mustIndex(reservationId);
+		if (index.terminalState !== undefined) {
+			await this.#prune(index.sku, this.#pruneEntries(index, reservationId), "releaseHeld");
+			return index.terminalState === "released";
+		}
+		const hold = await this.#liveHold(index, reservationId);
+		if (hold === undefined) return this.#releasedWithoutHold(index.idempotencyKey, reservationId);
+		if (hold.state !== "held") return false;
+		await this.#markKeyTerminal(index.idempotencyKey, { ok: true, reservationId }, reservationId);
+		const released = await this.#cas<boolean | "gone">("releaseHeld", async () => {
+			const current = await this.#inventory.getVersioned(index.sku);
+			if (current === null) return casDone<"gone">("gone");
+			const doc = normalizeInventoryDoc(current.value);
+			const live = doc.holds[index.idempotencyKey];
+			if (live === undefined || live.reservationId !== reservationId)
+				return casDone<"gone">("gone");
+			if (live.state !== "held") return casDone(false);
+			const holds = { ...doc.holds };
+			delete holds[index.idempotencyKey];
+			const written = await this.#inventory.compareAndSet(index.sku, current.revision, {
+				...doc,
+				onHand: doc.onHand + live.qty,
+				holds,
+			});
+			return written.applied ? casDone(true) : CAS_RETRY;
+		});
+		if (released === false) return false;
+		if (released === "gone") return this.#releasedWithoutHold(index.idempotencyKey, reservationId);
+		await this.#setTerminalState(reservationId, "released");
+		return true;
+	}
+
+	/**
+	 * `releaseHeld`'s answer for a reservation whose hold is no longer in the
+	 * aggregate. A terminal state, once written, decides it. Without one, the
+	 * reserve key tells the two remaining shapes apart: every other path writes
+	 * its terminal state BEFORE it prunes, so a pruned hold whose key records this
+	 * reservation's successful reserve, with no terminal state yet, is a
+	 * `releaseHeld` between its prune and its terminal write — racing, or crashed
+	 * there. Its units are back, so this finishes that write and answers `true`.
+	 * A key still `claimed` is a reserve that never applied (W1): never held.
+	 */
+	async #releasedWithoutHold(reserveKey: string, reservationId: string): Promise<boolean> {
+		const index = await this.#index.get(reservationId);
+		if (index?.terminalState !== undefined) return index.terminalState === "released";
+		const key = await this.#keys.get(reserveKey);
+		if (
+			key === null ||
+			key.state !== "terminal" ||
+			!key.result.ok ||
+			key.reservationId !== reservationId
+		) {
+			return false;
+		}
+		await this.#setTerminalState(reservationId, "released");
+		return true;
+	}
+
+	/**
 	 * The ORDER-SCOPED release: an order may only release a hold IT adopted.
 	 * Anything else — unknown id, already terminal, another order's hold, a hold
 	 * still cart-`held` — is a silent no-op, never a throw: an unscoped release

@@ -32,6 +32,15 @@ export interface InventoryStore {
 	// vanished" member, and adding one is a domain-model change with its own PR.
 	commit(reservationId: string): Promise<void>;
 	release(reservationId: string): Promise<void>;
+	// Additive (#540): the CART-SCOPED release — the guarded `held → released`
+	// flip plus the stock return, deciding on the hold's state in the same write
+	// that returns the units. `release` also frees an `adopted` hold, so a cart
+	// that read its line as `held` and then called `release` could free a hold a
+	// checkout adopted in between; this one cannot. Answers `true` when the hold
+	// is released (by this call, or already), `false` — moving nothing — when it
+	// is not the cart's to free (`adopted`, `committed`, or never held). An id
+	// that does not exist throws `ReservationNotFoundError`, as `release` does.
+	releaseHeld(reservationId: string): Promise<boolean>;
 	// Additive (Phase 4 §5): the single guarded `held → adopted` flip that hands a
 	// cart's live reservation to an order. Sets `order_id` and re-points
 	// `expires_at` to the order's hold deadline, scoped `WHERE state='held' AND

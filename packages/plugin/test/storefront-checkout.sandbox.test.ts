@@ -45,6 +45,7 @@
  *    to its typed reason — with the real Stripe gateway armed from kv.
  */
 import {
+	addLine as addLineInDomain,
 	cents,
 	currency,
 	idempotencyKey,
@@ -54,6 +55,7 @@ import {
 } from "@urumi.ai/otta-domain";
 import { signStripeWebhook } from "@urumi.ai/otta-payments-stripe";
 import {
+	EmdashCartStore,
 	EmdashCouponStore,
 	EmdashInventoryStore,
 	EmdashOrderStore,
@@ -448,6 +450,30 @@ async function addLine(
 	expect(result, JSON.stringify(result)).toMatchObject({ ok: true });
 }
 
+/**
+ * A line with NO productId, over stock no product holds. The add route resolves
+ * a bare add's sku and refuses this one (#540), so such a line is one written
+ * before that — written here the way it was, through the domain add with a null
+ * productId, on the store the routes read.
+ */
+async function addLegacyLine(cartId: string, sku: string, qty: number): Promise<void> {
+	seq += 1;
+	const inventory = inventoryStore();
+	const added = await addLineInDomain(
+		{
+			cartStore: new EmdashCartStore({ storage, inventory, idGen: uuidIdGen, clock: systemClock }),
+			inventoryStore: inventory,
+			clock: systemClock,
+		},
+		cartId,
+		toSku(sku),
+		null,
+		qty,
+		idempotencyKey(`add-${NS}-${String(seq)}`),
+	);
+	expect(added.ok).toBe(true);
+}
+
 /** The three-line cart the totals cases price: 1×$19.99 + 2×$10.00 + 3×$3.33. */
 const LINE_SKUS = [`SKU-${NS}-1`, `SKU-${NS}-2`, `SKU-${NS}-3`];
 const LINE_PRODUCT_IDS = [`prod-${NS}-1`, `prod-${NS}-2`, `prod-${NS}-3`];
@@ -640,7 +666,7 @@ describe("storefront/checkout/summary (workerd sandbox)", () => {
 		// to price, because price and title are read off the product row.
 		await inventoryStore().seedOnHand(toSku(`SKU-${NS}-BARE`), 5);
 		const cartId = await createCart();
-		await addLine(cartId, `SKU-${NS}-BARE`, null, 1);
+		await addLegacyLine(cartId, `SKU-${NS}-BARE`, 1);
 
 		expect(await summary({ cartId })).toEqual({ ok: false, reason: "PRODUCT_NOT_PRICED" });
 	});
@@ -2169,7 +2195,7 @@ describe("storefront/checkout/place success path (workerd sandbox, Stripe stubbe
 	test("a line with no product reference is the typed PRODUCT_NOT_PRICED — with a gateway armed, not just without one", async () => {
 		await inventoryStore().seedOnHand(toSku(`SKU-${NS}-BARE-PLACE`), 5);
 		const cartId = await createCart();
-		await addLine(cartId, `SKU-${NS}-BARE-PLACE`, null, 1);
+		await addLegacyLine(cartId, `SKU-${NS}-BARE-PLACE`, 1);
 
 		expect(await placeCart(cartId)).toEqual({ ok: false, reason: "PRODUCT_NOT_PRICED" });
 		expect(stripe.requests).toHaveLength(0);

@@ -1,4 +1,5 @@
 import {
+	addLine as addLineInDomain,
 	cents,
 	currency,
 	idempotencyKey,
@@ -7,6 +8,7 @@ import {
 } from "@urumi.ai/otta-domain";
 import {
 	CARTS_COLLECTION,
+	EmdashCartStore,
 	EmdashInventoryStore,
 	EmdashProductCommerceStore,
 	EmdashSettingsStore,
@@ -171,8 +173,8 @@ async function seedProduct(product: SeedProduct): Promise<void> {
 	);
 }
 
-/** Stock WITHOUT a commerce row — what a legacy bare add (no productId) needs,
- *  since the guard is skipped for it but the reserve is not. */
+/** Stock WITHOUT a commerce row: a sku no product holds, which an add refuses
+ *  (threaded or bare, #540) — and the stock a line written before #540 held. */
 async function seedStock(sku: string, onHand = SEEDED_ON_HAND): Promise<void> {
 	await inventoryStore().seedOnHand(toSku(sku), onHand);
 }
@@ -397,8 +399,8 @@ describe("storefront cart routes (workerd sandbox)", () => {
 		expect(await inventoryStore().getOnHand(toSku(sku))).toBe(5);
 	});
 
-	test("add-to-cart WITHOUT productId (legacy caller) persists the line with productId null — absent, never a fabricated value", async () => {
-		await seedStock(`SKU-BARE-${SUFFIX}`);
+	test("add-to-cart WITHOUT productId resolves the sku and stores the product it names (#540)", async () => {
+		await seedProduct({ id: `prod-bare-${SUFFIX}`, sku: `SKU-BARE-${SUFFIX}`, amount: 700 });
 		const cartId = await createCart();
 
 		const result = await addLine({
@@ -409,7 +411,26 @@ describe("storefront cart routes (workerd sandbox)", () => {
 		});
 
 		expect(result["ok"]).toBe(true);
-		expect(result["line"]).toMatchObject({ sku: `SKU-BARE-${SUFFIX}`, productId: null });
+		expect(result["line"]).toMatchObject({
+			sku: `SKU-BARE-${SUFFIX}`,
+			productId: `prod-bare-${SUFFIX}`,
+		});
+	});
+
+	test("add-to-cart WITHOUT productId of a sku no product holds is refused SKU_MISMATCH, holding nothing (#540)", async () => {
+		await seedStock(`SKU-BARE-NONE-${SUFFIX}`);
+		const cartId = await createCart();
+
+		const result = await addLine({
+			cartId,
+			sku: `SKU-BARE-NONE-${SUFFIX}`,
+			qty: 1,
+			idempotencyKey: `idem-bare-none-${SUFFIX}`,
+		});
+
+		expect(result).toEqual({ ok: false, reason: "SKU_MISMATCH" });
+		expect(((await readCart(cartId))["cart"] as CartWire).lines).toEqual([]);
+		expect(await inventoryStore().getOnHand(toSku(`SKU-BARE-NONE-${SUFFIX}`))).toBe(SEEDED_ON_HAND);
 	});
 
 	test("add-to-cart rejects a present-but-blank productId before any store work (validated, not silently dropped)", async () => {
@@ -425,7 +446,7 @@ describe("storefront cart routes (workerd sandbox)", () => {
 	});
 
 	test("add-to-cart surfaces the typed OUT_OF_STOCK token (a normalized non-throw result), not an error", async () => {
-		await seedStock(`SKU-OOS-${SUFFIX}`);
+		await seedProduct({ id: `prod-oos-${SUFFIX}`, sku: `SKU-OOS-${SUFFIX}`, amount: 100 });
 		const cartId = await createCart();
 
 		const result = await addLine({
@@ -449,8 +470,8 @@ describe("storefront cart routes (workerd sandbox)", () => {
 	});
 
 	test("cart/read returns the live cart, from which totals derive", async () => {
-		await seedStock(`SKU-READ-A-${SUFFIX}`);
-		await seedStock(`SKU-READ-B-${SUFFIX}`);
+		await seedProduct({ id: `prod-read-a-${SUFFIX}`, sku: `SKU-READ-A-${SUFFIX}`, amount: 100 });
+		await seedProduct({ id: `prod-read-b-${SUFFIX}`, sku: `SKU-READ-B-${SUFFIX}`, amount: 100 });
 		const cartId = await createCart();
 		await addLine({
 			cartId,
@@ -527,7 +548,7 @@ describe("storefront cart routes (workerd sandbox)", () => {
 	});
 
 	test("cart/lines/update sets the TARGET qty (not a delta) and the cart re-reads at that qty", async () => {
-		await seedStock(`SKU-UPD-${SUFFIX}`);
+		await seedProduct({ id: `prod-upd-${SUFFIX}`, sku: `SKU-UPD-${SUFFIX}`, amount: 100 });
 		const cartId = await createCart();
 		const added = await addLine({
 			cartId,
@@ -554,7 +575,7 @@ describe("storefront cart routes (workerd sandbox)", () => {
 	});
 
 	test("cart/lines/remove returns a bare ok:true; the line is gone on re-read", async () => {
-		await seedStock(`SKU-REM-${SUFFIX}`);
+		await seedProduct({ id: `prod-rem-${SUFFIX}`, sku: `SKU-REM-${SUFFIX}`, amount: 100 });
 		const cartId = await createCart();
 		const added = await addLine({
 			cartId,
@@ -714,12 +735,28 @@ describe("storefront cart routes (workerd sandbox)", () => {
 		test("a cart of only legacy bare-add lines (no productId) issues NO commerce read at all; pricing.total stays null", async () => {
 			await seedStock(`SKU-ONLYBARE-${SUFFIX}`);
 			const cartId = await createCart();
-			await addLine({
+			// The route resolves a bare add now (#540), so a line with no productId
+			// is one written before that — written here the way it was, through the
+			// domain add with a null productId, on the same store.
+			const inventory = inventoryStore();
+			const legacy = await addLineInDomain(
+				{
+					cartStore: new EmdashCartStore({
+						storage,
+						inventory,
+						idGen: uuidIdGen,
+						clock: systemClock,
+					}),
+					inventoryStore: inventory,
+					clock: systemClock,
+				},
 				cartId,
-				sku: `SKU-ONLYBARE-${SUFFIX}`,
-				qty: 1,
-				idempotencyKey: `k-onlybare-${SUFFIX}`,
-			});
+				toSku(`SKU-ONLYBARE-${SUFFIX}`),
+				null,
+				1,
+				idempotencyKey(`k-onlybare-${SUFFIX}`),
+			);
+			expect(legacy.ok).toBe(true);
 			productCalls.reset();
 
 			const result = await readCart(cartId);

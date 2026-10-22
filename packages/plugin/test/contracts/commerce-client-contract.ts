@@ -1198,6 +1198,29 @@ export function storefrontCommerceClientContract(tier: CommerceClientTier): void
 			expect(await client.getCart(cartId)).toMatchObject({ ok: true, cart: { lines: [] } });
 		});
 
+		test("a BARE add (no productId) of an UNTITLED physical product's sku is refused PRODUCT_NOT_PRICED too — nothing held (#540)", async () => {
+			await tier.arrange.product({
+				productId: "prod-bare-untitled",
+				sku: "SKU-BARE-UNTITLED",
+				title: null,
+				price: { amount: 1400, currency: "USD" },
+				onHand: 5,
+				productKind: "physical",
+				idempotencyKey: "seed-bare-untitled",
+			});
+			const cartId = await tier.arrange.cart("USD");
+			const added = await client.addCartLine(
+				cartId,
+				"SKU-BARE-UNTITLED",
+				null,
+				1,
+				"bare-untitled-1",
+			);
+			expect(added).toEqual({ ok: false, reason: "PRODUCT_NOT_PRICED" });
+			// Refused before the reserve: no line, so no hold.
+			expect(await client.getCart(cartId)).toMatchObject({ ok: true, cart: { lines: [] } });
+		});
+
 		test("a cart whose product LOST its title after the add no longer QUOTES (PRODUCT_NOT_PRICED) — the same answer the order gives", async () => {
 			const productId = await tier.arrange.product({
 				productId: "prod-untitledq",
@@ -1237,7 +1260,7 @@ export function storefrontCommerceClientContract(tier: CommerceClientTier): void
 		// exactly one live product row. The cart read and both checkout paths fall
 		// back to that row, so such a cart prices and checks out instead of failing
 		// at the last step with PRODUCT_NOT_PRICED.
-		test("a legacy add with NO productId round-trips null at the add, and the cart read, the quote and the order resolve its product BY SKU (#111)", async () => {
+		test("a legacy add with NO productId stores the product its sku names (#540), and the cart read, the quote and the order price it (#111)", async () => {
 			const productId = await tier.arrange.product({
 				productId: "prod-for-SKU-LEGACY",
 				sku: "SKU-LEGACY",
@@ -1249,7 +1272,8 @@ export function storefrontCommerceClientContract(tier: CommerceClientTier): void
 			const cartId = await tier.arrange.cart("USD");
 			const added = await client.addCartLine(cartId, "SKU-LEGACY", null, 1, "legacy-1");
 			if (!added.ok) throw new Error("unreachable");
-			expect(added.line.productId).toBeNull(); // absent ⇒ null round-trips
+			// #540: the add resolves the sku itself and stores the product it names.
+			expect(added.line.productId).toBe(productId);
 
 			// The cart read names the product the sku belongs to, so the cart page
 			// can price the line.
@@ -1271,7 +1295,89 @@ export function storefrontCommerceClientContract(tier: CommerceClientTier): void
 			expect(placed.order.totals.subtotalCents).toBe(1500);
 		});
 
-		test("a legacy line whose sku no LIVE product row holds any more still quotes PRODUCT_NOT_PRICED (#111)", async () => {
+		// #540: a BARE add (no productId) resolves its sku at the add, to the one
+		// live product row whose own sku it is, and runs the sellable gate a
+		// threaded add runs. So a variant's, an unpriced or an unpublished sku is
+		// refused at the Add button with the threaded add's answer, and no stock is
+		// held for a line checkout would refuse.
+		test("a BARE add of a sellable sku stores the product it resolves to (#540)", async () => {
+			const productId = await seedProduct({
+				sku: "SKU-BARE-OK",
+				onHand: 5,
+				price: { amount: 1500, currency: "USD" },
+			});
+			const cartId = await tier.arrange.cart("USD");
+			const added = await client.addCartLine(cartId, "SKU-BARE-OK", null, 2, "bare-ok-1");
+			expect(added).toMatchObject({ ok: true, line: { sku: "SKU-BARE-OK", productId, qty: 2 } });
+			expect(await client.getCart(cartId)).toMatchObject({
+				ok: true,
+				cart: { lines: [{ sku: "SKU-BARE-OK", productId, qty: 2 }] },
+			});
+		});
+
+		test("a BARE add of an UNPRICED or UNPUBLISHED sku is refused PRODUCT_NOT_PRICED, holding nothing (#540)", async () => {
+			await seedProduct({ sku: "SKU-BARE-UNPRICED", onHand: 5 });
+			await tier.arrange.product({
+				productId: "prod-bare-draft",
+				sku: "SKU-BARE-DRAFT",
+				price: { amount: 1400, currency: "USD" },
+				onHand: 5,
+				published: false,
+				idempotencyKey: "seed-bare-draft",
+			});
+			const cartId = await tier.arrange.cart("USD");
+			for (const sku of ["SKU-BARE-UNPRICED", "SKU-BARE-DRAFT"]) {
+				expect(await client.addCartLine(cartId, sku, null, 1, `bare-${sku}`), sku).toEqual({
+					ok: false,
+					reason: "PRODUCT_NOT_PRICED",
+				});
+			}
+			// Refused before the reserve: no line, so no hold.
+			expect(await client.getCart(cartId)).toMatchObject({ ok: true, cart: { lines: [] } });
+		});
+
+		test("a BARE add of a VARIANT's sku, or of a sku no product holds, is refused SKU_MISMATCH, holding nothing (#540)", async () => {
+			const productId = await seedProduct({
+				sku: "SKU-BARE-VAR",
+				onHand: 5,
+				price: { amount: 2000, currency: "USD" },
+			});
+			// Stock the size as the variant test above does: free a donor's sku.
+			const donor = await seedProduct({
+				sku: "SKU-BARE-VAR-L",
+				onHand: 4,
+				price: { amount: 2500, currency: "USD" },
+			});
+			await client.softDeleteProductCommerce(donor, "bare-var-free-sku");
+			const declared = await client.upsertProductVariant(
+				productId,
+				"large",
+				{ title: "Large", contentUpdatedAt: "2026-08-08T00:00:00.000Z" },
+				"bare-var-declare",
+			);
+			const priced = await client.updateProductVariantFields(
+				productId,
+				"large",
+				{ sku: "SKU-BARE-VAR-L", price: { amount: 2500, currency: "USD" } },
+				declared.updatedAt,
+				"bare-var-price",
+			);
+			if (!priced.ok) throw new Error("unreachable");
+
+			const cartId = await tier.arrange.cart("USD");
+			expect(await client.addCartLine(cartId, "SKU-BARE-VAR-L", null, 1, "bare-var-add")).toEqual({
+				ok: false,
+				reason: "SKU_MISMATCH",
+			});
+			expect(await client.addCartLine(cartId, "SKU-BARE-NOBODY", null, 1, "bare-none")).toEqual({
+				ok: false,
+				reason: "SKU_MISMATCH",
+			});
+			// Refused before the reserve: no line, so no hold.
+			expect(await client.getCart(cartId)).toMatchObject({ ok: true, cart: { lines: [] } });
+		});
+
+		test("a bare-added line whose product is deleted afterwards still quotes PRODUCT_NOT_PRICED (#111, #540)", async () => {
 			const productId = await seedProduct({
 				sku: "SKU-LEGACY-GONE",
 				onHand: 5,
@@ -1282,11 +1388,11 @@ export function storefrontCommerceClientContract(tier: CommerceClientTier): void
 			if (!added.ok) throw new Error("unreachable");
 			await client.softDeleteProductCommerce(productId, "legacy-gone-delete");
 
-			// A soft delete frees the sku, so nothing answers for it: the line stays
-			// unreferenced on the read and unpriceable at checkout.
+			// The add stored the product it resolved to (#540); that row is deleted
+			// now, so the line names a product nobody sells and is unpriceable.
 			expect(await client.getCart(cartId)).toMatchObject({
 				ok: true,
-				cart: { lines: [{ sku: "SKU-LEGACY-GONE", productId: null }] },
+				cart: { lines: [{ sku: "SKU-LEGACY-GONE", productId }] },
 			});
 			expect(await client.quoteCheckout({ cartId })).toEqual({
 				ok: false,

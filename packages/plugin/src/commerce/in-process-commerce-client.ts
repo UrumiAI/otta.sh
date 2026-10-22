@@ -774,13 +774,14 @@ export class InProcessCommerceClient implements CommerceClient {
 	 * unit OF THE NAMED PRODUCT, and anything that does not resolve is refused
 	 * rather than reinterpreted.
 	 *
-	 * A BARE ADD (no productId) is stored exactly as it is, with a null productId.
-	 * The spoof this guard exists to stop is not expressible through it: there is
-	 * no second input to mismatch. Every reader that prices the cart (the cart
-	 * read, the quote, the order) resolves such a line through its sku to the ONE
-	 * live product row whose own sku it is (issue #111, `resolveLineProductIds`),
-	 * so the price, title and entitlement come from the very unit the line holds
-	 * stock for. A variant's sku never resolves, so a bare size stays unorderable.
+	 * A BARE ADD (no productId) is resolved through its sku to the ONE live
+	 * product row whose own sku it is (`getProductIdsBySku`, the lookup issue
+	 * #111's readers use), then gated exactly like a threaded add, and the line
+	 * stores the productId it resolved to (#540). So a variant's sku, or a sku no
+	 * product holds, is `SKU_MISMATCH`, and an unpriced, unpublished or untitled
+	 * one is `PRODUCT_NOT_PRICED` — at the Add button, with no stock held — rather
+	 * than a line that fails at checkout. The readers' fallback stays, for lines
+	 * stored without a productId before this.
 	 */
 	async addCartLine(
 		cartId: string,
@@ -798,27 +799,36 @@ export class InProcessCommerceClient implements CommerceClient {
 		if (productId !== null) requireBoundedProductId(productId);
 		requireQty(qty);
 		requireDocumentIdempotencyKey(idempotencyKey);
-		let kind: FulfillmentKind = "physical";
-		if (productId !== null) {
-			const resolved = await this.#resolveSellableUnit(toProductId(productId), sku);
-			if (resolved.status === "unknown") return { ok: false, reason: "SKU_MISMATCH" };
-			if (resolved.status === "unpriced") {
-				// Correctly named, and not for sale — nobody has priced it, it is
-				// unpublished, or it has no title. Refused HERE and by name so a shopper is told at the Add
-				// button rather than at the last step, and so no stock is held for a
-				// line that could never be bought.
-				return { ok: false, reason: "PRODUCT_NOT_PRICED" };
-			}
-			kind = resolved.productKind;
+		let lineProductId = productId;
+		if (lineProductId === null) {
+			// A BARE add resolves its sku HERE (#540), to the one live product row
+			// whose own sku it is — the lookup every pricing reader falls back to —
+			// so it meets the same gate a threaded add does, before any stock is held.
+			// A sku no live product row holds (a variant's, or nobody's) is refused as
+			// a threaded add of it would be.
+			const found = (await this.#stores.productCommerce.getProductIdsBySku([toSku(sku)])).get(
+				toSku(sku),
+			);
+			if (found === undefined) return { ok: false, reason: "SKU_MISMATCH" };
+			lineProductId = String(found);
+		}
+		const resolved = await this.#resolveSellableUnit(toProductId(lineProductId), sku);
+		if (resolved.status === "unknown") return { ok: false, reason: "SKU_MISMATCH" };
+		if (resolved.status === "unpriced") {
+			// Correctly named, and not for sale — nobody has priced it, it is
+			// unpublished, or it has no title. Refused HERE and by name so a shopper is told at the Add
+			// button rather than at the last step, and so no stock is held for a
+			// line that could never be bought.
+			return { ok: false, reason: "PRODUCT_NOT_PRICED" };
 		}
 		const result = await addLine(
 			await this.#liveCartDeps(),
 			cartId,
 			toSku(sku),
-			productId,
+			lineProductId,
 			qty,
 			toIdempotencyKey(idempotencyKey),
-			kind,
+			resolved.productKind,
 		);
 		if (!result.ok) return { ok: false, reason: result.reason };
 		return { ok: true, line: serializeLine(result.line) };

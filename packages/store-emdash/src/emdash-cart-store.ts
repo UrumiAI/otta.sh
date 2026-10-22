@@ -920,6 +920,11 @@ export class EmdashCartStore implements CartStore {
 	 * but which `#claimExpiry` still refuses — its inventory hold not `held`, or its
 	 * mutation locator missing. Telling those apart costs an inventory read per
 	 * line; they are crash residue, rare, and each costs only its own reads.
+	 * That includes a `releaseHeld` that crashed between returning the units and
+	 * writing its terminal state (#540): its units are already back, and the next
+	 * `releaseHeld` of that hold finishes the write, but the stale-currency cart
+	 * that holds it is not retried, so its line stays a candidate. Reading the
+	 * reserve key here would cost a read for every live candidate to find it.
 	 */
 	async #healDeadCandidates(cartId: string, dead: DeadCandidates): Promise<void> {
 		try {
