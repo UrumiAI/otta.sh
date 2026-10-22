@@ -553,6 +553,38 @@ export function storefrontCommerceClientContract(tier: CommerceClientTier): void
 			expect(replay).toEqual(first);
 		});
 
+		test("#112 a titleRejection clears the stored title, so the product is no longer ordered under its previous name", async () => {
+			await client.upsertProductCommerce(
+				"prod-c-tr",
+				{ sku: "SKU-C-TR", price: { amount: 100, currency: "USD" }, title: "Old name" },
+				"k-tr-1",
+			);
+			const before = await client.getCommerceBatch(["prod-c-tr"]);
+			expect(before[0]?.title).toBe("Old name");
+			await client.upsertProductCommerce(
+				"prod-c-tr",
+				{ titleRejection: "The title is blank." },
+				"k-tr-2",
+			);
+			// The batch read is what checkout and the review name a line from.
+			const [after] = await client.getCommerceBatch(["prod-c-tr"]);
+			expect(after?.productId).toBe("prod-c-tr");
+			expect(after?.title).toBeNull();
+		});
+
+		test("#112 a titleRejection is refused alongside a title, empty, or over 500 characters", async () => {
+			for (const input of [
+				{ title: "Mug", titleRejection: "The title is blank." },
+				{ titleRejection: "" },
+				{ titleRejection: "R".repeat(501) },
+			]) {
+				await expect(
+					client.upsertProductCommerce("prod-c-tr-bad", input, "k-tr-bad"),
+					JSON.stringify(input).slice(0, 80),
+				).rejects.toThrow(/titleRejection/);
+			}
+		});
+
 		test("getProductCommerce reads the row back; an unknown productId resolves to null (not a thrown error)", async () => {
 			await client.upsertProductCommerce("prod-c3", { sku: "SKU-C3" }, "k3");
 			const found = await client.getProductCommerce("prod-c3");
@@ -4318,6 +4350,7 @@ export function adminOrdersProductsClientContract(tier: CommerceClientTier): voi
 				productId: "adm-p-shape",
 				sku: "ADM-SHAPE",
 				title: "Shape",
+				titleRejection: null,
 				priceCents: 2599,
 				currency: "USD",
 				taxClass: null,

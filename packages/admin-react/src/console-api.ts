@@ -362,6 +362,10 @@ export interface ProductRecord {
 	readonly productId: string;
 	readonly sku: string | null;
 	readonly title: string | null;
+	/** Why the CMS title was not accepted (issue #112): the plugin's
+	 *  `ProductDetailWire.titleRejection`, mirrored. Null, or absent from a plugin
+	 *  older than the field, when there is nothing to report. */
+	readonly titleRejection?: string | null;
 	readonly priceCents: number | null;
 	readonly currency: string | null;
 	readonly taxClass: string | null;

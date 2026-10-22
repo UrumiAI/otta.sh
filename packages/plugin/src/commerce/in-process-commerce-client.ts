@@ -194,6 +194,7 @@ import {
 	requireSku,
 	requireSupportedCurrency,
 	requireTitle,
+	requireTitleRejection,
 	requireVariantKey,
 	requireWatermark,
 } from "./commerce-input.js";
@@ -338,6 +339,9 @@ export class InProcessCommerceClient implements CommerceClient {
 			requireSupportedCurrency("price.currency", input.price.currency);
 		}
 		if (input.title !== undefined) requireTitle(input.title);
+		if (input.titleRejection !== undefined) {
+			requireTitleRejection(input.titleRejection, input.title);
+		}
 		if (input.weightGrams !== undefined) requireNullableInteger("weightGrams", input.weightGrams);
 		if (input.lengthMm !== undefined) requireNullableInteger("lengthMm", input.lengthMm);
 		if (input.widthMm !== undefined) requireNullableInteger("widthMm", input.widthMm);
@@ -355,6 +359,7 @@ export class InProcessCommerceClient implements CommerceClient {
 				...(input.sku !== undefined ? { sku: toSku(input.sku) } : {}),
 				...(input.price !== undefined ? { price: toMoney(input.price) } : {}),
 				...(input.title !== undefined ? { title: input.title } : {}),
+				...(input.titleRejection !== undefined ? { titleRejection: input.titleRejection } : {}),
 				...(input.taxClass !== undefined ? { taxClass: input.taxClass } : {}),
 				...(input.weightGrams !== undefined ? { weightGrams: input.weightGrams } : {}),
 				...(input.lengthMm !== undefined ? { lengthMm: input.lengthMm } : {}),

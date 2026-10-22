@@ -698,7 +698,11 @@ export function PricingStockEditor({ productId }: { productId: string }): React.
 	/** The shared sellability rule's title arm (#166): checkout refuses a product
 	 *  with no title, and the title is the CMS entry's, so this panel can only say
 	 *  so. A deleted product is past selling and gets no prompt. */
-	const untitled = unsellableReasons(p).includes("untitled");
+	// A REJECTED title (#112) also leaves the row untitled, but the entry does have
+	// a title: the alert above says why it wasn't accepted, so "fill it in" would
+	// contradict it. One title message, never two.
+	const titleRejected = typeof p.titleRejection === "string" && p.titleRejection.length > 0;
+	const untitled = !titleRejected && unsellableReasons(p).includes("untitled");
 	const sale = salePreview(d.price, d.compareAt, currency);
 	const margin = marginSummary(d.price, d.unitCost, currency);
 	const stock = stockStatus(p.onHand, threshold);
@@ -922,6 +926,19 @@ export function PricingStockEditor({ productId }: { productId: string }): React.
 			<h2 id={id("h-group")} className="otta-sr-only">
 				Pricing &amp; stock
 			</h2>
+			{typeof p.titleRejection === "string" &&
+				p.titleRejection.length > 0 && (
+					// Issue #112: the CMS title could not be stored, so the commerce row
+					// has none and checkout refuses the product. The fix is in the entry,
+					// not on this panel, so this says what is wrong and where to fix it.
+					<div className="otta-pricing-callout" data-tone="warn" role="alert">
+						<strong>This product's title wasn't accepted</strong>
+						<span>
+							{p.titleRejection} Customers can't buy it until the entry's title is fixed and
+							published (saved, for an entry that isn't live).
+						</span>
+					</div>
+				)}
 
 			<fieldset className="otta-pricing-cardset" disabled={saving}>
 				<section className="otta-pricing-card" aria-labelledby={id("h-pricing")}>
