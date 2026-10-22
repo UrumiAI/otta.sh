@@ -99,6 +99,16 @@ export function productIdFromPath(pathname: string): string | null {
 	return id === "new" || id.length === 0 ? null : id;
 }
 
+/** The CMS title could not be stored (#112). */
+function isTitleRejected(p: ProductRecord): boolean {
+	return typeof p.titleRejection === "string" && p.titleRejection.length > 0;
+}
+
+/** Either title message shows: the title was rejected, or there is none (#166). */
+function titleBlocked(p: ProductRecord): boolean {
+	return isTitleRejected(p) || unsellableReasons(p).includes("untitled");
+}
+
 /** The field editor EmDash mounts in the product editor's main column. */
 export function PricingStockField(_props: PricingFieldProps): React.ReactElement {
 	usePricingStyles();
@@ -375,6 +385,22 @@ export function PricingStockEditor({ productId }: { productId: string }): React.
 		setReload(generation.current);
 		return generation.current;
 	};
+	/** The generation of a re-read the merchant asked for with Check again, until
+	 *  it lands: EmDash does not tell this field when the entry is saved (#540). */
+	const titleCheck = React.useRef<number | null>(null);
+	/** That re-read came back with the title still missing or rejected. */
+	const [stillNoTitle, setStillNoTitle] = React.useState(false);
+	/** Bumped when that re-read clears the title prompt, to hand focus on. */
+	const [titleCleared, setTitleCleared] = React.useState(0);
+	const checkTitle = (): void => {
+		setStillNoTitle(false);
+		titleCheck.current = rereadNow();
+	};
+	React.useEffect(() => {
+		// The Check again button went with the prompt; focus goes to the price,
+		// not the page.
+		if (titleCleared > 0) document.getElementById(`${idBase}-price`)?.focus();
+	}, [titleCleared, idBase]);
 	/** The open remove confirm, for the re-read to check against. */
 	const confirmRef = React.useRef<{ readonly n: number; readonly onHand: number } | null>(null);
 	confirmRef.current = confirmRemove;
@@ -442,6 +468,8 @@ export function PricingStockEditor({ productId }: { productId: string }): React.
 			const pendingReceipt = stockReceipt.current;
 			const receipt = pendingReceipt !== null && pendingReceipt.gen <= gen ? pendingReceipt : null;
 			const awaited = pendingReceipt !== null && receipt === null;
+			const checkedTitle = titleCheck.current !== null && titleCheck.current <= gen;
+			if (checkedTitle) titleCheck.current = null;
 			if (isFailure(result)) {
 				setLoad({
 					status: "failed",
@@ -457,6 +485,11 @@ export function PricingStockEditor({ productId }: { productId: string }): React.
 				return;
 			}
 			const record = result.product;
+			if (checkedTitle) {
+				const blocked = titleBlocked(record);
+				setStillNoTitle(blocked);
+				if (!blocked) setTitleCleared((n) => n + 1);
+			}
 			const read = storeCurrencyOf(result);
 			// What the current draft was seeded against, then what this read knows.
 			const seededStoreCurrency = knownStoreCurrency.current;
@@ -701,8 +734,17 @@ export function PricingStockEditor({ productId }: { productId: string }): React.
 	// A REJECTED title (#112) also leaves the row untitled, but the entry does have
 	// a title: the alert above says why it wasn't accepted, so "fill it in" would
 	// contradict it. One title message, never two.
-	const titleRejected = typeof p.titleRejection === "string" && p.titleRejection.length > 0;
+	const titleRejected = isTitleRejected(p);
 	const untitled = !titleRejected && unsellableReasons(p).includes("untitled");
+	/** Check again, and what the last one found, for either title message. */
+	const titleRecheck = (
+		<div>
+			{stillNoTitle && <p className="otta-pricing-hint">Still no title saved.</p>}
+			<button type="button" className="otta-pricing-btn" onClick={checkTitle}>
+				Check again
+			</button>
+		</div>
+	);
 	const sale = salePreview(d.price, d.compareAt, currency);
 	const margin = marginSummary(d.price, d.unitCost, currency);
 	const stock = stockStatus(p.onHand, threshold);
@@ -937,6 +979,7 @@ export function PricingStockEditor({ productId }: { productId: string }): React.
 							{p.titleRejection} Customers can't buy it until the entry's title is fixed and
 							published (saved, for an entry that isn't live).
 						</span>
+						{titleRecheck}
 					</div>
 				)}
 
@@ -951,11 +994,14 @@ export function PricingStockEditor({ productId }: { productId: string }): React.
 						</div>
 					)}
 					{untitled && (
-						<div className="otta-pricing-callout" data-tone="warn">
+						<div className="otta-pricing-callout" data-tone="warn" role="status">
 							<span>
 								Customers can't buy this product until it has a title. Otta reads it from this
 								entry's <code>title</code> field (up to 500 characters): fill it in and save.
 							</span>
+							{/* EmDash neither remounts this field nor tells it when the entry is
+							    saved (#540), so the prompt offers its own re-read. */}
+							{titleRecheck}
 						</div>
 					)}
 					<div className="otta-pricing-grid">

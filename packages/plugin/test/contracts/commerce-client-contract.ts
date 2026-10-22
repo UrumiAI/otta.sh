@@ -179,8 +179,8 @@ export interface ArrangedProduct {
 	price?: CommerceMoney;
 	/** The snapshot title. Absent ⇒ the tier seeds one (`Product <productId>`): a
 	 *  seeded product is a sellable one, and every sell path refuses an untitled
-	 *  row (#109). */
-	title?: string;
+	 *  row (#109). `null` ⇒ the tier seeds NO title, for a case about that refusal. */
+	title?: string | null;
 	onHand?: number;
 	/** Whether the seeded product is PUBLISHED (its publish gate open), the state
 	 *  `content:afterPublish` leaves it in. Defaults to `true`: a seeded product is a
@@ -1174,6 +1174,63 @@ export function storefrontCommerceClientContract(tier: CommerceClientTier): void
 				});
 			},
 		);
+
+		// ── the title is a SELL rule too (#109 / #156 / #166) ───────────────
+		// `createOrderFromCart` refuses a line whose product has a null title (an
+		// order line snapshots it), so the add and the quote refuse the same product
+		// with the same token. Otherwise a buyer adds it, sees a priced review, enters
+		// their address and fails at the last step. The tier seeds a title by
+		// default, so these cases ask for an untitled row explicitly.
+
+		test("an UNTITLED product is refused PRODUCT_NOT_PRICED at the ADD — nothing held, nothing persisted", async () => {
+			const productId = await tier.arrange.product({
+				productId: "prod-untitled",
+				sku: "SKU-UNTITLED",
+				title: null,
+				price: { amount: 1400, currency: "USD" },
+				onHand: 5,
+				productKind: "digital",
+				idempotencyKey: "seed-untitled",
+			});
+			const cartId = await tier.arrange.cart("USD");
+			const added = await client.addCartLine(cartId, "SKU-UNTITLED", productId, 1, "untitled-1");
+			expect(added).toEqual({ ok: false, reason: "PRODUCT_NOT_PRICED" });
+			expect(await client.getCart(cartId)).toMatchObject({ ok: true, cart: { lines: [] } });
+		});
+
+		test("a cart whose product LOST its title after the add no longer QUOTES (PRODUCT_NOT_PRICED) — the same answer the order gives", async () => {
+			const productId = await tier.arrange.product({
+				productId: "prod-untitledq",
+				sku: "SKU-UNTITLEDQ",
+				title: "Otta Tee",
+				price: { amount: 1400, currency: "USD" },
+				onHand: 5,
+				productKind: "digital",
+				idempotencyKey: "seed-untitledq",
+			});
+			const cartId = await tier.arrange.cart("USD");
+			const added = await client.addCartLine(cartId, "SKU-UNTITLEDQ", productId, 1, "untitledq-1");
+			if (!added.ok) throw new Error(`arrange failed: ${added.reason}`);
+			expect((await client.quoteCheckout({ cartId })).ok).toBe(true);
+
+			// The CMS sync's only way to clear a stored title (#112).
+			await client.upsertProductCommerce(
+				productId,
+				{ titleRejection: "The title is blank." },
+				"untitledq-clear",
+			);
+
+			expect(await client.quoteCheckout({ cartId })).toEqual({
+				ok: false,
+				reason: "PRODUCT_NOT_PRICED",
+			});
+			if (tier.payments === undefined) return;
+			const placed = await client.createOrder(
+				{ cartId, paymentMethod: tier.payments.method, buyerRef: "untitled@example.test" },
+				"untitledq-order",
+			);
+			expect(placed).toMatchObject({ ok: false, reason: "PRODUCT_NOT_PRICED" });
+		});
 
 		// Issue #111: a line added without a productId (a bare add, or a cart from
 		// before the storefront threaded one) still carries its sku, and a sku names

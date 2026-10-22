@@ -430,6 +430,48 @@ test("a priced product with no title says it cannot be sold until the entry has 
 	expect(c.textContent).not.toContain("Add a price so customers can buy this product.");
 });
 
+// #540 item 6: EmDash 1.0.1 neither remounts a plugin field editor on the
+// entry's Save nor hands it anything that changes, so the prompt offers its own
+// re-read: after the merchant saves a title, one click clears it in place.
+test("the title prompt re-reads on Check again, and clears once the title is saved", async () => {
+	apiFetch.mockImplementation(() => Promise.resolve(detail({ title: null })));
+	const c = await mountPanel();
+	expect(c.querySelector('[role="status"]')?.textContent).toContain("until it has a title");
+	const reads = sent().length;
+	// Not saved yet: the re-read says so, and the prompt stays.
+	await fire(button(c, "Check again"), "click");
+	await flush();
+	expect(sent().length).toBe(reads + 1);
+	expect(c.querySelector('[role="status"]')?.textContent).toContain("Still no title saved.");
+	// The merchant saves a title in the CMS form; nothing tells the cards.
+	apiFetch.mockImplementation(() => Promise.resolve(detail()));
+	await fire(button(c, "Check again"), "click");
+	await flush();
+	expect(sent().length).toBe(reads + 2);
+	expect(c.textContent).not.toContain("until it has a title");
+	expect(c.textContent).not.toContain("Still no title saved.");
+	// The button went with the prompt: focus lands on the price, not the page.
+	expect(document.activeElement).toBe(input(c, "Price"));
+});
+
+test("a rejected-title alert re-reads on Check again, and clears once a valid title is saved", async () => {
+	apiFetch.mockImplementation(() =>
+		Promise.resolve(detail({ title: null, titleRejection: "The title is blank." })),
+	);
+	const c = await mountPanel();
+	const alert = (): Element | null => c.querySelector('[role="alert"]');
+	expect(alert()?.textContent).toContain("This product's title wasn't accepted");
+	await fire(button(alert() as HTMLElement, "Check again"), "click");
+	await flush();
+	expect(alert()?.textContent).toContain("Still no title saved.");
+	apiFetch.mockImplementation(() => Promise.resolve(detail()));
+	await fire(button(alert() as HTMLElement, "Check again"), "click");
+	await flush();
+	expect(c.textContent).not.toContain("wasn't accepted");
+	expect(c.textContent).not.toContain("until it has a title");
+	expect(document.activeElement).toBe(input(c, "Price"));
+});
+
 test("a titled product shows no title prompt", async () => {
 	apiFetch.mockImplementation(() => Promise.resolve(detail()));
 	const c = await mountPanel();

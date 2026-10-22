@@ -163,10 +163,10 @@ decision, listed in the order they will be hit, weakest last:
   signal is a service log line: `synced WITHOUT a title (…) — checkout rejects an untitled product
   with PRODUCT_NOT_PRICED`. Nothing in the admin UI says so — worse, Pricing & inventory renders
   the product as a green "active", because its sellable predicate checks sku + price + currency and
-  **not** title. Tracked as
-  [#166](https://github.com/UrumiAI/otta.sh/issues/166), whose fix is to add `title !== null` to
-  that predicate and to the service's mirrored commerce-complete predicate, so the state at least
-  renders honestly as `active (not priced)`.
+  **not** title. This was tracked as
+  [#166](https://github.com/UrumiAI/otta.sh/issues/166), and
+  [#537](https://github.com/UrumiAI/otta.sh/pull/537) has closed it: see the amendment of
+  2026-10-22 below.
 
   This is accepted rather than solved here because the console input was never a *fix* — it papered
   over a misconfigured collection with a value the sync could not maintain, so the product broke
@@ -207,3 +207,22 @@ sellability rule from #109/#166), so the product stops being orderable under a n
 has. The Pricing & inventory panel shows the reason as an alert. Refusing the CMS save itself was
 considered and is not possible from a sandboxed save hook (see `packages/plugin/src/sync/hooks.ts`):
 the hook returns a content bag, not a verdict, and its error is logged while the save proceeds.
+
+## Amended 2026-10-22 — the untitled gap is closed by one shared sellability rule (#537)
+
+The accepted cost above described a gap: an untitled product listed, priced and went into a cart,
+and only checkout refused it, while the admin showed it as a plain `active`. That gap was tracked as
+#166, and #537 closed it.
+
+There is now one sellability rule, `unsellableReasons` / `isProductSellable` in
+`@urumi.ai/otta-domain` (`product-commerce/sellable.ts`). It counts a null or empty title as
+`untitled`, beside `deleted`, `unpublished` and `unpriced`. `createOrderFromCart`, the checkout
+quote, the add-to-cart guard and the storefront's `joinProduct` all use it, so an untitled product is
+refused `PRODUCT_NOT_PRICED` at the add and at the quote, and the storefront shows it as not for
+sale. The admin restates the same rule in `@urumi.ai/otta-admin-presentation` (it cannot import the
+domain), and a parity test keeps the two in step. The product list reads
+`active (needs a title)`, and the Pricing & stock cards say the product cannot be bought until the
+entry has a title.
+
+The repair is still a CMS change, a title in the entry's `title` field. What changed is that the
+merchant is now told, and no sell path accepts the product before checkout refuses it.
