@@ -25,6 +25,7 @@ import type {
 } from "@urumi.ai/otta-plugin";
 import type { CountryOption } from "../lib/countries.js";
 import type { RegionChoice } from "../lib/regions.js";
+import type { StaleCurrencyNotice } from "../lib/stale-currency.js";
 import type { TapeRow } from "../lib/tape.js";
 import type { SumRow } from "../lib/totals.js";
 import type { ThemeId } from "./manifest.js";
@@ -309,6 +310,10 @@ export interface CartModel {
 	totalAmount: CheckoutAmountView;
 	/** §7's footnote for a partial total. */
 	partialNote: string | null;
+	/** The cart is in another currency than the store now sells in (#440): the
+	 *  notice's copy, beside a `POST /cart/switch-currency` form whose button
+	 *  reads `action`. `null` for a current, terminal or unread cart. */
+	staleCurrency: StaleCurrencyNotice | null;
 }
 
 /** The order a review is locked to (it has already been created). */

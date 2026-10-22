@@ -50,6 +50,7 @@ const {
 	sumRows,
 	totalAmount,
 	partialNote,
+	staleCurrency,
 } = Astro.props.model;
 ---
 
@@ -68,6 +69,19 @@ const {
 {errorMessage !== null && (
 	<div class="cart-notice-slot">
 		<Notice>{errorMessage}</Notice>
+	</div>
+)}
+{/* #440: the cart is in a currency the shop no longer sells in. The notice
+    says what the button costs before it is clicked (the items are released,
+    not moved), and the button is the only way out a shopper had besides
+    clearing their cookies. A POST, so the origin guard covers it. */}
+{staleCurrency !== null && (
+	<div class="cart-notice-slot">
+		<Notice lead={staleCurrency.lead}>{staleCurrency.body}</Notice>
+		{/* Beside the notice, not in it: its body is a <p>, which holds no form. */}
+		<form method="POST" action="/cart/switch-currency" class="cart-currency-switch">
+			<button type="submit" class="u-btn">{staleCurrency.action}</button>
+		</form>
 	</div>
 )}
 {degraded && (

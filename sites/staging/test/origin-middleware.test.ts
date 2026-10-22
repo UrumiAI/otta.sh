@@ -94,6 +94,7 @@ const GUARDED: readonly string[] = [
 	"/account/verify/confirm",
 	"/cart/add",
 	"/cart/remove",
+	"/cart/switch-currency",
 	"/cart/update",
 	"/checkout/new-cart",
 	"/checkout/place",

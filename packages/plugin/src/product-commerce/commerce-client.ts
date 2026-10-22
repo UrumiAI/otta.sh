@@ -368,6 +368,22 @@ export interface CommerceClient {
 	 * the operator saved, else the spent cart's.
 	 */
 	replaceCart(spentCartId: string, currency?: string): Promise<ReplaceCartResult>;
+	/**
+	 * The replacement for a STALE-CURRENCY cart (#440): an active cart in another
+	 * currency than the one the operator SAVED, which nothing priced in the store
+	 * currency can be checked out of. Every hold the stale cart has is released and
+	 * a new, empty cart in the store currency is returned — nothing converted, no
+	 * line carried over. The key is derived server-side from the stale cart and the
+	 * store currency, so the same stale cart always gets the same new cart and
+	 * racers converge. Refused `CART_NOT_FOUND`, `CART_CHECKED_OUT`,
+	 * `LINE_CHECKED_OUT` (a release raced a checkout), or `CART_CURRENCY_CURRENT` —
+	 * the cart is in the store currency, or the store never saved one.
+	 */
+	replaceStaleCurrencyCart(staleCartId: string): Promise<ReplaceStaleCurrencyCartResult>;
+	/** The store currency the operator SAVED, or `null` when none ever was (the
+	 *  storefront then names none, so no cart can be stale against it). One
+	 *  settings read; for the cart page's stale-currency notice. */
+	getSavedStoreCurrency(): Promise<string | null>;
 	/** The effective cart-hold window in whole minutes — the admin's saved
 	 *  `holdTtlMinutes` (or its default), which every add/adjust stamps and every
 	 *  read measures against (issue #127). For shopper-facing copy. */
@@ -1003,6 +1019,14 @@ export interface ShopperStateWire {
 export type ReplaceCartResult =
 	| { ok: true; cartId: string }
 	| { ok: false; reason: "CART_NOT_FOUND" | "CART_NOT_CHECKED_OUT" | "ORDER_NOT_FINISHED" };
+
+/** `replaceStaleCurrencyCart`'s answer. */
+export type ReplaceStaleCurrencyCartResult =
+	| { ok: true; cartId: string }
+	| {
+			ok: false;
+			reason: "CART_NOT_FOUND" | "CART_CHECKED_OUT" | "CART_CURRENCY_CURRENT" | "LINE_CHECKED_OUT";
+	  };
 
 export interface CartWire {
 	cartId: string;
