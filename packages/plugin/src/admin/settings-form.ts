@@ -811,6 +811,8 @@ export function createSettingsFormHandler(): RouteHandler<SettingsFormInput> {
 			// in one pass. Each names the FIELD and the SHAPE, never the rejected
 			// value (the form, not the banner, keeps what was typed).
 			const problems: Array<{ field: string; rule: string }> = [];
+			// #530: whether the form this submit came from showed the stored key.
+			const pkShownIn = decodeCarrier(input.block_id)?.[PUBLISHABLE_KEY_SHOWN] === "1";
 			// Issue #498: the publishable key must be one, so a wrong paste is refused
 			// here rather than surfacing as "card payment isn't set up" at checkout.
 			const publishableKey = submitted.get(STRIPE_PUBLISHABLE_KEY_KEY) ?? "";
@@ -859,8 +861,11 @@ export function createSettingsFormHandler(): RouteHandler<SettingsFormInput> {
 				);
 				// #530: a refused key comes back blank, so that form does not claim to
 				// show the key: a save from it with the field still blank keeps the key.
+				// Nor does one re-rendered from a blank sent by a form that did not show
+				// it, or a second refusal (a URL typo) would bring the marker back.
 				const refusedKey =
-					publishableKey.length > 0 && !checkStripePublishableKey(publishableKey).ok;
+					(publishableKey.length > 0 && !checkStripePublishableKey(publishableKey).ok) ||
+					(submitted.get(STRIPE_PUBLISHABLE_KEY_KEY) === "" && !pkShownIn);
 				return renderPage(
 					ctx,
 					client,
@@ -876,10 +881,7 @@ export function createSettingsFormHandler(): RouteHandler<SettingsFormInput> {
 			// rendered a failed read as a blank field) does not clear a stored key.
 			// One kv read, on this path only; a failed read keeps the key too.
 			let keptPublishableKey = false;
-			if (
-				submitted.get(STRIPE_PUBLISHABLE_KEY_KEY) === "" &&
-				decodeCarrier(input.block_id)?.[PUBLISHABLE_KEY_SHOWN] !== "1"
-			) {
+			if (submitted.get(STRIPE_PUBLISHABLE_KEY_KEY) === "" && !pkShownIn) {
 				const stored = await ctx.kv.get<unknown>(STRIPE_PUBLISHABLE_KEY_KEY).then(
 					(value) => (typeof value === "string" ? value.trim() : ""),
 					() => undefined,
@@ -895,7 +897,7 @@ export function createSettingsFormHandler(): RouteHandler<SettingsFormInput> {
 					variant: "default",
 					title: "Stripe publishable key kept",
 					description:
-						"This form was opened before the key could be loaded, so its blank field was not taken as a request to clear the key. Other changes were saved. To clear it, reload the page, empty the field and save.",
+						"The publishable key field was blank on a form that didn't show the saved key, so the key was kept. Other changes were saved. To clear it, reload the page, empty the field and save.",
 				});
 				return {
 					...page,

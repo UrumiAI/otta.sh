@@ -191,7 +191,9 @@ describe("saving the publishable key", () => {
 					String(b.title).includes("publishable key"),
 				);
 				expect(String(banner?.title)).toBe("Stripe publishable key kept");
-				expect(String(banner?.description)).toContain("To clear it, reload the page");
+				expect(String(banner?.description)).toBe(
+					"The publishable key field was blank on a form that didn't show the saved key, so the key was kept. Other changes were saved. To clear it, reload the page, empty the field and save.",
+				);
 				expect(saved.toast).toMatchObject({ message: "Stripe publishable key kept", type: "info" });
 				expect(publishableField(saved.blocks)?.initial_value).toBe(PK_TEST);
 				assertBlockContract(saved.blocks, { screen: "settings", level: "list" });
@@ -216,6 +218,27 @@ describe("saving the publishable key", () => {
 				values: submittedFrom(refused.blocks, { loginLinkUrl: SIGN_IN }),
 				block_id: formFor(refused.blocks, "save-payment-settings")?.block_id,
 			});
+			expect(kv.get(STRIPE_PUBLISHABLE_KEY_KEY)).toBe(PK_TEST);
+			expect(kv.get(LOGIN_LINK_URL_KEY)).toBe(SIGN_IN);
+		});
+
+		test("a refused paste, then a refused URL with the key still blank, then a fixed save: the key is kept", async () => {
+			const { ctx, kv } = makeCtx({ [STRIPE_PUBLISHABLE_KEY_KEY]: PK_TEST });
+			const submitForm = (blocks: readonly LooseBlock[], changes: Record<string, string>) =>
+				invoke(ctx, {
+					type: "form_submit",
+					action_id: "save-payment-settings",
+					values: submittedFrom(blocks, changes),
+					block_id: formFor(blocks, "save-payment-settings")?.block_id,
+				});
+			const page = await invoke(ctx, { type: "page_load" });
+			const pasted = await submitForm(page.blocks, { stripePublishableKey: SK_LIVE });
+			expect(pasted.toast).not.toMatchObject({ type: "success" });
+			// A second refusal, for the sign-in URL only, with the key field left blank.
+			const typo = await submitForm(pasted.blocks, { loginLinkUrl: "http://shop.example/verify" });
+			expect(typo.toast).not.toMatchObject({ type: "success" });
+			expect(publishableField(typo.blocks)?.initial_value).toBe("");
+			await submitForm(typo.blocks, { loginLinkUrl: SIGN_IN });
 			expect(kv.get(STRIPE_PUBLISHABLE_KEY_KEY)).toBe(PK_TEST);
 			expect(kv.get(LOGIN_LINK_URL_KEY)).toBe(SIGN_IN);
 		});
