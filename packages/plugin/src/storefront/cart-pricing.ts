@@ -15,13 +15,15 @@
  * alongside the cart, never a field grafted onto it.
  *
  * A line is priced only when: it carries a non-null `productId`, a commerce
- * row was found for it, that row is `active`, AND its currency matches the
+ * row was found for it, that row is sellable (`isProductSellable`: published,
+ * priced and titled, the rule checkout applies), AND its currency matches the
  * cart's own currency (defensive — single-currency site assumed; a
  * mismatched-currency line degrades to unpriced rather than fabricating a
  * converted number — out of scope, see the plan). The cart `total` sums only
  * the priced lines' totals (partial total, never all-or-nothing) and
  * `allLinesPriced` tells the theme whether to caveat the total.
  */
+import { isProductSellable } from "@urumi.ai/otta-domain";
 import { formatMoney } from "../presentation/format-money.js";
 import { cents } from "../presentation/money.js";
 import type { Currency } from "../presentation/money.js";
@@ -38,7 +40,7 @@ export interface CartMoneyWire {
 export interface CartLinePricing {
 	lineId: string;
 	/** null when this line isn't priceable (no productId, unsynced commerce,
-	 *  inactive, or a currency mismatch) — never a fabricated number. */
+	 *  not sellable, or a currency mismatch) — never a fabricated number. */
 	unitPrice: CartMoneyWire | null;
 	lineTotal: CartMoneyWire | null;
 }
@@ -88,7 +90,9 @@ export function buildCartPricing(
 	const commerceOf = (line: CartLineWire): CatalogProductCommerce | null => {
 		const commerce = line.productId !== null ? (commerceById.get(line.productId) ?? null) : null;
 		const priced =
-			commerce !== null && commerce.active && (commerce.price.currency as string) === cartCurrency;
+			commerce !== null &&
+			isProductSellable(commerce) &&
+			(commerce.price.currency as string) === cartCurrency;
 		return priced ? commerce : null;
 	};
 	// The priced lines are priced TOGETHER, as checkout prices the cart (#478): with

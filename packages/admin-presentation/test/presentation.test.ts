@@ -104,6 +104,7 @@ import {
 	startOfDay,
 	statusLabel,
 	statusTone,
+	unsellableReasons,
 	stockTone,
 	stockDegradation,
 	taxClassLabel,
@@ -751,7 +752,14 @@ describe("the On hand cell keeps three cases apart that must never be folded", (
 });
 
 describe("the tone a cell is drawn in, derived from the record and never from the phrase", () => {
-	const base = { active: true, deletedAt: null, sku: "S", priceCents: 1, currency: "USD" };
+	const base = {
+		active: true,
+		deletedAt: null,
+		sku: "S",
+		priceCents: 1,
+		currency: "USD",
+		title: "Otta Tee",
+	};
 
 	test("the tone follows the LABEL's own ranking, on the same five fields", () => {
 		// Matching `"deleted"` or searching a rendered phrase for `"(not priced)"`
@@ -794,7 +802,14 @@ describe("the tone a cell is drawn in, derived from the record and never from th
 });
 
 describe("statusLabel mirrors the service's own sellability filter", () => {
-	const base = { active: true, deletedAt: null, sku: "S", priceCents: 1, currency: "USD" };
+	const base = {
+		active: true,
+		deletedAt: null,
+		sku: "S",
+		priceCents: 1,
+		currency: "USD",
+		title: "Otta Tee",
+	};
 
 	test("deleted OUTRANKS inactive", () => {
 		// A tombstoned row is always inactive too, but "deleted" is the honest,
@@ -818,6 +833,44 @@ describe("statusLabel mirrors the service's own sellability filter", () => {
 	test("a sellable row is one quiet word", () => {
 		expect(statusLabel(base)).toBe("active");
 		expect(statusLabel({ ...base, active: false })).toBe("inactive");
+	});
+
+	test("a priced, published row with NO TITLE is not a plain active — it says it needs one (#166)", () => {
+		// Checkout refuses an untitled line (an order line snapshots the title), so a
+		// bare "active" here would promise a sale that every checkout refuses.
+		expect(statusLabel({ ...base, title: null })).toBe("active (needs a title)");
+		expect(statusLabel({ ...base, title: "" })).toBe("active (needs a title)");
+		expect(statusTone({ ...base, title: null })).toBe("warn");
+	});
+
+	test("an unpriced row that also has no title leads with the price", () => {
+		expect(statusLabel({ ...base, priceCents: null, title: null })).toBe("active (not priced)");
+	});
+});
+
+describe("unsellableReasons — the admin's reading of the sellability rule", () => {
+	const base = {
+		active: true,
+		deletedAt: null,
+		sku: "S",
+		priceCents: 1,
+		currency: "USD",
+		title: "Otta Tee",
+	};
+
+	test("a live, priced, titled row has no reason against it", () => {
+		expect(unsellableReasons(base)).toEqual([]);
+	});
+
+	test("names every missing piece, title included", () => {
+		expect(unsellableReasons({ ...base, title: null })).toEqual(["untitled"]);
+		expect(unsellableReasons({ ...base, sku: null })).toEqual(["unpriced"]);
+		expect(
+			unsellableReasons({ ...base, active: false, priceCents: null, currency: null, title: null }),
+		).toEqual(["unpublished", "unpriced", "untitled"]);
+		expect(
+			unsellableReasons({ ...base, active: false, deletedAt: "2026-07-01T00:00:00.000Z" }),
+		).toEqual(["deleted"]);
 	});
 });
 

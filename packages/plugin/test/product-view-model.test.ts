@@ -93,3 +93,21 @@ describe("buildProductViewModel — the compare-at (was) price", () => {
 		expect(view.compareAtPrice?.formatted).toBe("$20.00");
 	});
 });
+
+describe("buildProductViewModel — a product with no commerce title (#109)", () => {
+	test("renders as not for sale: no price, no availability, no Add to cart", () => {
+		const view = buildProductViewModel(joinProduct(CONTENT, commerce({ title: null })), LOCALE);
+		expect(view.purchasable).toBe(false);
+		expect(view.price).toBeNull();
+		expect(view.availability).toBeNull();
+		expect(view.slots.addToCart).toBeNull();
+		// The page still has its CMS heading.
+		expect(view.title).toBe("Otta Tee");
+	});
+
+	test("the same product WITH a title is for sale (the gate is not over-eager)", () => {
+		const view = buildProductViewModel(joinProduct(CONTENT, commerce()), LOCALE);
+		expect(view.purchasable).toBe(true);
+		expect(view.slots.addToCart).not.toBeNull();
+	});
+});

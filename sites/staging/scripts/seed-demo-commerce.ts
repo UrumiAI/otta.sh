@@ -401,9 +401,9 @@ export function readCmsPage(items: unknown[]): CmsProductPage & { nextCursor?: s
 		}
 		const title = item.data?.["title"];
 		if (typeof title !== "string" || title.trim().length === 0) {
-			// NOT dropped. A row priced without a title is listed, active and
-			// rejected at checkout with PRODUCT_NOT_PRICED, so this must surface as
-			// its own failure rather than as "no such product".
+			// NOT dropped. A row priced without a title is listed but not for sale
+			// (every sell path refuses it with PRODUCT_NOT_PRICED), so this must
+			// surface as its own failure rather than as "no such product".
 			unusable.push({
 				slug,
 				reason: title === undefined ? "no `title` field" : `\`title\` is ${typeof title}`,

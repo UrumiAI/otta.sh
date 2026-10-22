@@ -177,6 +177,9 @@ export interface ArrangedProduct {
 	productId: string;
 	sku: string;
 	price?: CommerceMoney;
+	/** The snapshot title. Absent ⇒ the tier seeds one (`Product <productId>`): a
+	 *  seeded product is a sellable one, and every sell path refuses an untitled
+	 *  row (#109). */
 	title?: string;
 	onHand?: number;
 	/** Whether the seeded product is PUBLISHED (its publish gate open), the state
@@ -1797,9 +1800,8 @@ export function storefrontCommerceClientContract(tier: CommerceClientTier): void
 			const productId = await tier.arrange.product({
 				productId: `prod-q-${tag}`,
 				sku: `SKU-Q-${tag.toUpperCase()}`,
-				// createOrder refuses an untitled product (the quote doesn't — #156), so
-				// a fixture the order cases share must carry one. It only matters once
-				// the tier composes a payment gateway and those cases stop skipping.
+				// Every sell path refuses an untitled product, so a fixture the quote and
+				// order cases share must carry one.
 				title: `Quote product ${tag}`,
 				price: { amount: 1500, currency: "USD" },
 				onHand: 10,

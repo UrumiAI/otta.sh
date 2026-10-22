@@ -67,6 +67,7 @@ import {
 	parseStockQty,
 	TAX_STATUS_HINT,
 	TAX_STATUS_OPTIONS,
+	unsellableReasons,
 } from "@urumi.ai/otta-admin-presentation";
 
 /** What EmDash hands a plugin field editor. Declared structurally: this
@@ -694,6 +695,10 @@ export function PricingStockEditor({ productId }: { productId: string }): React.
 	);
 	const currency = p.currency ?? d.currency;
 	const priced = p.priceCents !== null;
+	/** The shared sellability rule's title arm (#166): checkout refuses a product
+	 *  with no title, and the title is the CMS entry's, so this panel can only say
+	 *  so. A deleted product is past selling and gets no prompt. */
+	const untitled = unsellableReasons(p).includes("untitled");
 	const sale = salePreview(d.price, d.compareAt, currency);
 	const margin = marginSummary(d.price, d.unitCost, currency);
 	const stock = stockStatus(p.onHand, threshold);
@@ -926,6 +931,14 @@ export function PricingStockEditor({ productId }: { productId: string }): React.
 					{!priced && (
 						<div className="otta-pricing-callout" data-tone="warn">
 							<span>Add a price so customers can buy this product.</span>
+						</div>
+					)}
+					{untitled && (
+						<div className="otta-pricing-callout" data-tone="warn">
+							<span>
+								Customers can't buy this product until it has a title. Otta reads it from this
+								entry's <code>title</code> field (up to 500 characters): fill it in and save.
+							</span>
 						</div>
 					)}
 					<div className="otta-pricing-grid">
