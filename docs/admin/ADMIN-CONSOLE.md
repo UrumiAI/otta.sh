@@ -3271,7 +3271,7 @@ section     block_id settings:payments
             label "Payments & email — <Stripe> · <webhook> · <email>"
             ← U-8: states what card checkout and email have: "Stripe test" | "Stripe
               live" (from the key's prefix) | "Stripe key set" (an unchecked legacy
-              value) | "no Stripe key"; #498: "no publishable" (secret key set, no usable
+              value) | "no secret key" (#531); #498: "no publishable" (secret key set, no usable
               publishable key) | "test/live mixed" (the two keys' modes differ) — so
               "Stripe test/live" means card checkout is ready; "webhook set" | "no webhook"; "email set" |
               "no email" (ADR-0031: whether the host hands over `ctx.email`). The optional edge key states its status on its

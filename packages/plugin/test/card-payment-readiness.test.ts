@@ -20,10 +20,12 @@ import { afterEach, describe, expect, test, vi } from "vitest";
 import { createSettingsFormHandler } from "../src/admin/settings-form.js";
 import { COMMERCE_STORAGE_COLLECTIONS } from "../src/commerce/commerce-storage.js";
 import { STRIPE_SECRET_KEY_KEY, STRIPE_WEBHOOK_SECRET_KEY } from "../src/payment-secrets.js";
+import { STRIPE_ACCOUNT_COUNTRY_KEY } from "../src/payments/stripe-account-country.js";
 import { STRIPE_PUBLISHABLE_KEY_KEY } from "../src/payments/stripe-publishable-key.js";
 import { createCheckoutPlaceRouteHandler } from "../src/storefront/checkout-routes.js";
 import { createPaymentConfigRouteHandler } from "../src/storefront/payment-config-route.js";
 import type { PluginContext } from "../src/types.js";
+import { STRIPE_WEBHOOK_LAST_VERIFIED_KEY } from "../src/webhooks/stripe-webhook-last-verified.js";
 import { assertBlockContract } from "./helpers/block-contract.js";
 import { contextTexts, type LooseBlock } from "./helpers/blocks.js";
 
@@ -266,5 +268,103 @@ describe("Settings — the card payments line", () => {
 		const line = await cardLine(seed);
 		expect(line).toBe(expected);
 		expect(line!.length).toBeLessThanOrEqual(200);
+	});
+});
+
+/** The stored account-country record for `secretKey`, as the Settings save writes
+ *  it (`stripe-account-country.ts`): the answer, tied to the key by its digest. */
+async function storedAccountCountry(secretKey: string, status: string): Promise<unknown> {
+	const bytes = new Uint8Array(
+		await crypto.subtle.digest("SHA-256", new TextEncoder().encode(secretKey)),
+	);
+	return {
+		keyDigest: Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join(""),
+		status,
+		...(status === "known" ? { country: "US" } : {}),
+		checkedAt: new Date().toISOString(),
+	};
+}
+
+async function settingsTexts(
+	seed: Record<string, unknown>,
+	options: { failingKeys?: readonly string[] } = {},
+): Promise<string[]> {
+	const handler = createSettingsFormHandler();
+	const page = (await handler(
+		{ input: { type: "page_load" }, request: req },
+		makeCtx(seed, options),
+	)) as unknown as { blocks: LooseBlock[] };
+	assertBlockContract(page.blocks, { screen: "settings", level: "list" });
+	return contextTexts(page.blocks);
+}
+
+describe("Settings — #531: a key Stripe refused is not 'ready'", () => {
+	test("all three saved, but the stored account check says Stripe refused the secret key", async () => {
+		const texts = await settingsTexts({
+			...FULL_TEST,
+			[STRIPE_ACCOUNT_COUNTRY_KEY]: await storedAccountCountry(SK_TEST, "authentication_failed"),
+		});
+		const line = texts.find((t) => t.startsWith("Card payments:"));
+		expect(line).toBe("Card payments: keys saved, but Stripe refused the secret key.");
+		expect(line!.length).toBeLessThanOrEqual(200);
+		expect(line).not.toContain(SK_TEST);
+	});
+
+	test("a stored answer that is not a refusal leaves 'ready' alone", async () => {
+		const texts = await settingsTexts({
+			...FULL_TEST,
+			[STRIPE_ACCOUNT_COUNTRY_KEY]: await storedAccountCountry(SK_TEST, "known"),
+		});
+		expect(texts.find((t) => t.startsWith("Card payments:"))).toBe("Card payments: ready.");
+	});
+
+	test("not ready stays not ready: the missing values are the more useful answer", async () => {
+		const texts = await settingsTexts({
+			[STRIPE_SECRET_KEY_KEY]: SK_TEST,
+			[STRIPE_ACCOUNT_COUNTRY_KEY]: await storedAccountCountry(SK_TEST, "authentication_failed"),
+		});
+		expect(texts.find((t) => t.startsWith("Card payments:"))).toBe(
+			"Card payments: not ready (missing: publishable key, webhook signing secret).",
+		);
+	});
+});
+
+function lastVerified(texts: string[]): string | undefined {
+	return texts.find((t) => t.startsWith("Last verified Stripe webhook:"));
+}
+
+describe("Settings — #531: the last verified Stripe webhook", () => {
+	test("none recorded: 'never', right after the card payments line", async () => {
+		const texts = await settingsTexts(FULL_TEST);
+		expect(lastVerified(texts)).toBe("Last verified Stripe webhook: never.");
+		const at = texts.findIndex((t) => t.startsWith("Card payments:"));
+		expect(texts[at + 1]).toBe(lastVerified(texts));
+	});
+
+	test("once one is recorded, its time (UTC, to the minute)", async () => {
+		const texts = await settingsTexts({
+			...FULL_TEST,
+			[STRIPE_WEBHOOK_LAST_VERIFIED_KEY]: "2026-10-22T14:03:27.000Z",
+		});
+		const line = lastVerified(texts);
+		expect(line).toBe("Last verified Stripe webhook: 2026-10-22 14:03 UTC.");
+		expect(line!.length).toBeLessThanOrEqual(200);
+	});
+
+	test("a garbled record reads as 'never', not as a time", async () => {
+		const texts = await settingsTexts({
+			...FULL_TEST,
+			[STRIPE_WEBHOOK_LAST_VERIFIED_KEY]: "not a time",
+		});
+		expect(lastVerified(texts)).toBe("Last verified Stripe webhook: never.");
+	});
+
+	test("a failed read says so, never 'never'", async () => {
+		const texts = await settingsTexts(FULL_TEST, {
+			failingKeys: [STRIPE_WEBHOOK_LAST_VERIFIED_KEY],
+		});
+		expect(lastVerified(texts)).toBe(
+			"Last verified Stripe webhook: unknown (it couldn't be read). Reload to try again.",
+		);
 	});
 });

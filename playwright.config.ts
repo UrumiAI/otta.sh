@@ -21,6 +21,10 @@
  */
 import { defineConfig, type PlaywrightTestConfig } from "@playwright/test";
 import { E2E_BASE_URL, E2E_STARTS_STACK, E2E_VIEWPORT } from "./sites/staging/e2e/harness.js";
+import {
+	markServerStartedCommand,
+	serverStartedMarkerPath,
+} from "./sites/staging/e2e/server-started-marker.js";
 
 /** Playwright does not export `TestConfigWebServer`, so it is reached through
  *  the config type. The annotation dates from when `stack` held two entries and
@@ -79,7 +83,11 @@ const stack: WebServer[] = [
 		// from config.webServer", with the server alive the whole time. The
 		// brackets of an IPv6 literal (`[::1]`) are not part of the address Vite
 		// takes.
+		// #531: the marker first — it tells the global setup THIS run started the
+		// server (Playwright skips the command when it reuses one), so placeholder
+		// Stripe values never land in a developer's own running store.
 		command:
+			`${markServerStartedCommand()} && ` +
 			`pnpm --filter @urumi.ai/otta-site-staging dev --port ${new URL(E2E_BASE_URL).port} ` +
 			`--host ${new URL(E2E_BASE_URL).hostname.replace(/^\[|\]$/g, "")}`,
 		url: E2E_BASE_URL,
@@ -91,6 +99,7 @@ const stack: WebServer[] = [
 		reuseExistingServer: process.env["CI"] === undefined,
 		timeout: 180_000,
 		env: {
+			OTTA_E2E_SERVER_STARTED_MARKER: serverStartedMarkerPath(),
 			// `astro@7`'s dev command DAEMONIZES ITSELF when it detects an agentic
 			// environment (via `am-i-vibing` — Claude Code, Cursor and friends): it
 			// spawns a background server and the foreground process exits, which

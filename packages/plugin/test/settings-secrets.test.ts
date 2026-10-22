@@ -297,7 +297,7 @@ describe("Settings: how a key field renders", () => {
 	test("the payments group label states the truth about card checkout and email", async () => {
 		const fresh = await invoke(makeCtx().ctx, { type: "page_load", page: "/settings" });
 		expect(paymentsLabel(fresh.blocks)).toBe(
-			"Payments & email — no Stripe key · no webhook · no email",
+			"Payments & email — no secret key · no webhook · no email",
 		);
 
 		const testMode = await invoke(
@@ -348,7 +348,7 @@ describe("Settings: how a key field renders", () => {
 			page: "/settings",
 		});
 		expect(paymentsLabel(legacy.blocks)).toBe(
-			"Payments & email — no Stripe key · no webhook · no email",
+			"Payments & email — no secret key · no webhook · no email",
 		);
 	});
 
@@ -456,7 +456,7 @@ describe("Settings: removing a key", () => {
 		);
 		expect(outcome.toast).toEqual({ message: "Stripe secret key removed", type: "success" });
 		expect(paymentsLabel(outcome.blocks)).toBe(
-			"Payments & email — no Stripe key · webhook set · no email",
+			"Payments & email — no secret key · webhook set · no email",
 		);
 		expect(removeButtons(outcome.blocks)).toHaveLength(1);
 	});
