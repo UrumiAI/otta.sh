@@ -526,6 +526,9 @@ export interface OrderDoc {
 	/** The buyer-address-requirement snapshot (issue #382); absent on documents
 	 *  written before it existed. Written once by the creating write. */
 	buyerAddressRequired?: boolean;
+	/** The payment that won the `pending → paid` flip, written in that flip's own
+	 *  compare-and-set (#543); absent on documents paid before it existed. */
+	paidProviderRef?: string;
 	/** Append-only state-change audit; appended inside the guarded flip. */
 	events: OrderEventDoc[];
 	/** At most one entry per `toState`; first-wins. */

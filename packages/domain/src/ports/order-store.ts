@@ -48,8 +48,16 @@ export interface OrderStore {
 	 * checkout of a checked-out cart (rejected `CART_CHECKED_OUT`, review G2).
 	 */
 	getByIdempotencyKey(key: IdempotencyKey): Promise<Order | null>;
-	/** Guarded `pending → paid` flip. 0 rows (not pending) ⇒ false. */
-	markPaid(orderId: OrderId): Promise<boolean>;
+	/**
+	 * Guarded `pending → paid` flip. 0 rows (not pending) ⇒ false.
+	 *
+	 * `providerRef` is the payment that settled the order: a won flip records it as
+	 * `Order.paidProviderRef` in the SAME guarded write, so a settle that loses the
+	 * flip can tell a concurrent redelivery of the winning payment from a SECOND
+	 * payment racing it (#543) even before the winner's `payments` row exists. A
+	 * lost flip records nothing. Omitted ⇒ nothing recorded (a bare flip).
+	 */
+	markPaid(orderId: OrderId, providerRef?: string): Promise<boolean>;
 	/**
 	 * Order-level guarded expiry (§5): `UPDATE orders SET state='expired' WHERE
 	 * id=:id AND state='pending' AND hold_expires_at<=:now RETURNING id`. Re-checks
