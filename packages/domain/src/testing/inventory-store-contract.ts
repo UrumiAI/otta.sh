@@ -1048,5 +1048,60 @@ export function inventoryStoreContract(
 				/unknown reservation/,
 			);
 		});
+
+		// -- #540 item 2: the CART-SCOPED release (releaseHeld) -------------------
+		//
+		// A cart that frees its own stock may only free a hold that is still the
+		// cart's. `release` also releases an ADOPTED hold (an order's), so a cart
+		// that read its line as `held` and then called `release` could free a hold a
+		// checkout adopted in between. `releaseHeld` decides on the hold's state in
+		// the same write that returns the units.
+
+		test("releaseHeld releases a cart-held hold and returns its units exactly once; a replay answers true and moves nothing", async () => {
+			const h = await makeStore();
+			await h.seed("SKU-A", 10);
+			const id = await h.holdWithExpiry("SKU-A", 3, "k-held", FUTURE);
+			expect(await h.onHand("SKU-A")).toBe(7);
+
+			expect(await h.store.releaseHeld(id)).toBe(true);
+			expect(await h.onHand("SKU-A")).toBe(10);
+			expect(await h.store.releaseHeld(id)).toBe(true);
+			expect(await h.onHand("SKU-A")).toBe(10);
+			// It is `released`: a commit calls it lost, and no order can adopt it.
+			expect((await h.store.commitMany([id])).lost).toEqual([id]);
+			expect(await adoptOne(h, id, "ord-1")).toBe("lost");
+		});
+
+		test("releaseHeld REFUSES an adopted hold: false, no units back, still the order's to commit", async () => {
+			const h = await makeStore();
+			await h.seed("SKU-A", 10);
+			const id = await adoptedHold(h, "SKU-A", 4, "k-adopted", "ord-1");
+			expect(await h.onHand("SKU-A")).toBe(6);
+
+			expect(await h.store.releaseHeld(id)).toBe(false);
+			expect(await h.store.releaseHeld(id)).toBe(false);
+			expect(await h.onHand("SKU-A")).toBe(6);
+			expect(await adoptOne(h, id, "ord-1")).toBe("adopted");
+			expect((await h.store.commitMany([id])).lost).toEqual([]);
+			expect(await h.onHand("SKU-A")).toBe(6);
+		});
+
+		test("releaseHeld REFUSES a committed hold: false, no units back", async () => {
+			const h = await makeStore();
+			await h.seed("SKU-A", 10);
+			const id = await adoptedHold(h, "SKU-A", 2, "k-sold", "ord-1");
+			await h.store.commit(id);
+
+			expect(await h.store.releaseHeld(id)).toBe(false);
+			expect(await h.onHand("SKU-A")).toBe(8);
+			expect((await h.store.commitMany([id])).lost).toEqual([]);
+		});
+
+		test("releaseHeld(unknownId) rejects with ReservationNotFoundError, like release", async () => {
+			const h = await makeStore();
+			await expect(h.store.releaseHeld("no-such-reservation")).rejects.toBeInstanceOf(
+				ReservationNotFoundError,
+			);
+		});
 	});
 }

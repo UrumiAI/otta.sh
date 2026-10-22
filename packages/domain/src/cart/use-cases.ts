@@ -203,10 +203,14 @@ export const STALE_CART_RELEASE_LIMIT = 2;
  * — a checkout is mid-flight on this cart (it adopts every hold before it flips
  * the cart), and its stock is the order's, not the shopper's to free.
  *
- * Accepted residual, shared with `removeLine`: a checkout that adopts a hold
- * between this read and its release. Releasing an adopted hold is the inventory
- * port's own rule (`held|adopted → released`); the window is one request wide and
- * needs the shopper to check the stale cart out in another tab at that instant.
+ * A checkout that adopts a hold BETWEEN this read and its release is refused the
+ * same way (#540): the release is the inventory port's cart-scoped `releaseHeld`,
+ * which decides on the hold's state in the write that returns the units, so an
+ * adopted hold is never freed. The call then answers `LINE_CHECKED_OUT` — the
+ * answer the read would have given a moment later — and releases nothing more.
+ * The replacement cart it already minted is the one a later retry is handed (the
+ * same key). A hold it released before the refusal stays released: it was still
+ * the cart's, and a checkout that then tries to adopt it is `RESERVATION_LOST`.
  */
 export async function replaceStaleCurrencyCart(
 	deps: Pick<CartDeps, "cartStore" | "inventoryStore" | "clock">,
@@ -244,7 +248,12 @@ export async function replaceStaleCurrencyCart(
 			(line.expiresAt === null || line.expiresAt > nowIso),
 	);
 	for (const line of live.slice(0, releaseLimit)) {
-		await deps.inventoryStore.release(line.reservationId);
+		// The cart-scoped release: a hold a checkout adopted since the read above
+		// is refused, never freed (#540), and the call answers as if the read had
+		// seen it adopted.
+		if (!(await deps.inventoryStore.releaseHeld(line.reservationId))) {
+			return { ok: false, reason: "LINE_CHECKED_OUT" };
+		}
 	}
 	return { ok: true, cartId };
 }

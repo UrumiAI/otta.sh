@@ -205,6 +205,16 @@ export class InMemoryInventoryStore implements InventoryStore {
 		this.#onHand.set(row.sku, (this.#onHand.get(row.sku) ?? 0) + row.qty);
 	}
 
+	/** Cart-scoped release (#540): only a still-`held` hold is freed. */
+	async releaseHeld(reservationId: string): Promise<boolean> {
+		const row = this.#mustGet(reservationId);
+		if (row.state === "released") return true;
+		if (row.state !== "held") return false;
+		row.state = "released";
+		this.#onHand.set(row.sku, (this.#onHand.get(row.sku) ?? 0) + row.qty);
+		return true;
+	}
+
 	/**
 	 * Order-scoped release (review G2): the guarded `adopted → released` flip
 	 * scoped to the OWNING order. Anything else — unknown id, released/committed,

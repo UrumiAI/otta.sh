@@ -218,6 +218,67 @@ describeEachDialect("EmdashInventoryStore document model", (ctx) => {
 		});
 	});
 
+	describe("releaseHeld decides in the aggregate write (#540)", () => {
+		/** A store whose next inventory update write is parked until released. */
+		function parkedStore() {
+			const raw = bound.storage[INVENTORY_COLLECTION];
+			if (raw === undefined) throw new Error("the inventory collection is not declared");
+			const gated = parkCall(raw, isUpdateWrite);
+			const store = new EmdashInventoryStore({
+				storage: withCollection(bound.storage, INVENTORY_COLLECTION, gated.collection),
+				idGen: new CountingIdGen("blocked"),
+				clock: new FixedClock(new Date("2026-07-10T00:00:00.000Z")),
+				sleep: async () => {},
+				random: () => 0,
+			});
+			return { gated, store };
+		}
+
+		it("a hold ADOPTED after its read but before its write is not released", async () => {
+			const h = harness();
+			await h.seed("SKU-RACE", 5);
+			const id = await h.holdWithExpiry("SKU-RACE", 2, "k-race", "2026-07-10T00:15:00.000Z");
+			const { gated, store } = parkedStore();
+
+			// releaseHeld has read the hold as `held` and is parked at its write.
+			const slow = store.releaseHeld(id);
+			await gated.arrived;
+			// A checkout adopts that hold in the window.
+			const adopted = await h.store.adoptMany({
+				reservationIds: [id],
+				orderId: "ord-1",
+				holdExpiresAt: "2026-07-10T00:30:00.000Z",
+				now: "2026-07-10T00:05:00.000Z",
+			});
+			expect(adopted).toEqual({ adopted: [id], lost: [] });
+
+			gated.release();
+			expect(await slow).toBe(false);
+			// The order's units stayed out, and its commit still lands.
+			expect(await h.onHand("SKU-RACE")).toBe(3);
+			expect(await h.holdCount("SKU-RACE")).toBe(1);
+			expect((await h.store.commitMany([id])).lost).toEqual([]);
+			expect(await h.onHand("SKU-RACE")).toBe(3);
+		});
+
+		it("two racing releases of one held hold both answer true and return its units once", async () => {
+			const h = harness();
+			await h.seed("SKU-TWICE", 5);
+			const id = await h.holdWithExpiry("SKU-TWICE", 2, "k-twice", "2026-07-10T00:15:00.000Z");
+			const { gated, store } = parkedStore();
+
+			const slow = store.releaseHeld(id);
+			await gated.arrived;
+			expect(await h.store.releaseHeld(id)).toBe(true);
+			expect(await h.onHand("SKU-TWICE")).toBe(5);
+
+			gated.release();
+			expect(await slow).toBe(true);
+			expect(await h.onHand("SKU-TWICE")).toBe(5);
+			expect(await h.holdCount("SKU-TWICE")).toBe(0);
+		});
+	});
+
 	describe("a reserve replay after the hold is pruned", () => {
 		it("answers from the key document after commit — the window a prune-first order would open", async () => {
 			const h = harness();

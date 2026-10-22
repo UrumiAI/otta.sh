@@ -70,6 +70,35 @@ describe("a product with no commerce title is not for sale", () => {
 		expect(await harness.client.getCart(cartId)).toMatchObject({ ok: true, cart: { lines: [] } });
 	});
 
+	test("a BARE add (no productId) of its sku is refused PRODUCT_NOT_PRICED too, and holds nothing (#540)", async () => {
+		await harness.stores.productCommerce.upsert(
+			{
+				productId: toProductId("p-bare-untitled"),
+				sku: toSku("SKU-BARE-UNTITLED"),
+				price: money(cents(1400), USD),
+				productKind: "physical",
+			},
+			toIdempotencyKey("seed-p-bare-untitled"),
+		);
+		await harness.stores.productCommerce.activate(
+			toProductId("p-bare-untitled"),
+			toIdempotencyKey("publish-p-bare-untitled"),
+			"2026-01-01T00:00:00.000Z",
+		);
+		await harness.stores.inventory.seedOnHand("SKU-BARE-UNTITLED", 5);
+		const { cartId } = await harness.client.createCart(USD);
+		const added = await harness.client.addCartLine(
+			cartId,
+			"SKU-BARE-UNTITLED",
+			null,
+			1,
+			"add-bare-untitled",
+		);
+		expect(added).toEqual({ ok: false, reason: "PRODUCT_NOT_PRICED" });
+		expect(await harness.client.getCart(cartId)).toMatchObject({ ok: true, cart: { lines: [] } });
+		expect(await harness.stores.inventory.getOnHand("SKU-BARE-UNTITLED")).toBe(5);
+	});
+
 	test("the QUOTE refuses a cart whose product lost its title after the add — the same answer the order gives", async () => {
 		await seed("p-renamed", "SKU-RENAMED", "Otta Tee");
 		const { cartId } = await harness.client.createCart(USD);

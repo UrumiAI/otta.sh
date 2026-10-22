@@ -967,6 +967,7 @@ function recordingInventory(inner: InMemoryInventoryStore): RecordingInventory {
 		reserve: (s, q, k) => inner.reserve(s, q, k),
 		commit: (id) => inner.commit(id),
 		release: (id) => inner.release(id),
+		releaseHeld: (id) => inner.releaseHeld(id),
 		adjust: (id, q, k) => inner.adjust(id, q, k),
 		adopt: (i) => inner.adopt(i),
 		adoptMany: (i) => inner.adoptMany(i),
