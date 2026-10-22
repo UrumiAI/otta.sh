@@ -167,6 +167,36 @@ test.describe("cart → checkout → order → account, in the browser", () => {
 		const orderId = decodeURIComponent(/^\/orders\/([^/?#]+)/.exec(orderPath)?.[1] ?? "");
 		expect(orderId, `the pay step's order link is ${orderPath}`).not.toBe("");
 
+		// ── Back from Stripe: the secret leaves the URL (ADR-0012, 2026-10-22) ─
+		// Stripe appends these to the return_url; the page records the intent id
+		// and status (never the secret) for this order and 303s to the bare path.
+		const stripeReturn = (status: string) =>
+			`/orders/${encodeURIComponent(orderId)}?payment_intent=pi_e2eReturn1&` +
+			`payment_intent_client_secret=pi_e2eReturn1_secret_e2e&redirect_status=${status}`;
+		const scrub = await page.request.get(stripeReturn("succeeded"), { maxRedirects: 0 });
+		expect(scrub.status()).toBe(303);
+		expect(scrub.headers()["location"]).toBe(`/orders/${encodeURIComponent(orderId)}`);
+		expect(scrub.headers()["cache-control"]).toBe("private, no-store");
+		const setCookie = scrub.headersArray().filter((h) => h.name.toLowerCase() === "set-cookie");
+		expect(setCookie.some((h) => h.value.startsWith("otta_order_return="))).toBe(true);
+		expect(setCookie.map((h) => h.value).join("\n")).not.toContain("secret");
+		// In a second tab, so this one keeps the pay step and its order link.
+		const returned = await page.context().newPage();
+		// A failed return (a bank redirect backed out of): no "confirming", the resume stays.
+		await returned.goto(stripeReturn("failed"));
+		expect(new URL(returned.url()).search).toBe("");
+		await expect(returned.getByText("Payment submitted.")).toHaveCount(0);
+		await expect(returned.getByRole("link", { name: "Complete payment" })).toBeVisible();
+		// A successful one: the bare URL, the confirming copy, and the poll.
+		await returned.goto(stripeReturn("succeeded"));
+		expect(new URL(returned.url()).pathname).toBe(`/orders/${encodeURIComponent(orderId)}`);
+		expect(new URL(returned.url()).search).toBe("");
+		await expect(returned.getByText("Payment submitted.")).toBeVisible();
+		await expect(returned.locator('meta[http-equiv="refresh"]')).toHaveCount(1);
+		// Leave no record behind for the steps below: a failed return clears it.
+		await returned.goto(stripeReturn("failed"));
+		await returned.close();
+
 		const deps: SeedOrdersDeps = {
 			siteUrl: E2E_BASE_URL,
 			authHeaders: await cmsAuthHeaders(E2E_BASE_URL),

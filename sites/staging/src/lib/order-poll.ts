@@ -16,10 +16,10 @@
  * the page. With the URL fixed, the count has to live somewhere else, and that
  * is this short-lived cookie, scoped to the order pages.
  *
- * Reloading the same URL also keeps Stripe's redirect parameters across hops,
- * so every hop shows the "confirming" copy (the old hop 2 onwards fell back to
- * "awaiting payment", with a resume button, mid-confirmation). The page still
- * never echoes them: the refresh names no URL at all.
+ * Every hop shows the "confirming" copy (the old hop 2 onwards fell back to
+ * "awaiting payment", with a resume button, mid-confirmation): the return from
+ * Stripe is recorded in its own cookie on arrival (`lib/order-return.ts`), not
+ * carried in the URL, and the refresh names no URL at all.
  */
 import type { CookieReader, CookieWriter } from "./checkout-cookie.js";
 

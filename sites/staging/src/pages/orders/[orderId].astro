@@ -20,13 +20,18 @@
  * their names may appear in this frontmatter and NOWHERE in the template below.
  *
  * ── What the page does about the secret in its own URL ───────────────────
- * Stripe also appends the intent's client secret, so it is already in history
- * and access logs by the time this renders (ADR-0012 decision 6 — accepted, and
- * not ours to change). The mitigations that ARE ours: the `no-referrer` policy
- * below, so it does not leak onward through subresource Referers; and deleting
- * the `otta_checkout` stash on arrival, so a spent secret does not linger in
- * the browser for the rest of the hold. That deletion is the entire
- * justification for the cookie's `path=/`.
+ * Stripe also appends the intent's client secret, which with the publishable key
+ * reads the PaymentIntent back — the buyer's name and shipping address included.
+ * So the page does not keep it (ADR-0012, 2026-10-22 amendment): on arrival it
+ * records the intent id and the status in a short-lived HttpOnly cookie for this
+ * order and 303s to the bare `/orders/<id>` (`lib/order-return.ts`). The one
+ * request that carried the secret still reaches the access logs, and the browser
+ * may keep it as a redirect source; the page the buyer stays on, reloads,
+ * bookmarks and shares holds no secret.
+ * The other mitigations stand: the `no-referrer` policy below; and deleting the
+ * `otta_checkout` stash on arrival, so a spent secret does not linger in the
+ * browser for the rest of the hold. That deletion is the entire justification
+ * for the cookie's `path=/`.
  *
  * ── Zero client JavaScript, and that is a rule (ADR-0012 decision 2) ─────
  * Polling is `<meta http-equiv="refresh">`, bounded to 8 hops (~30 s), then a
@@ -63,7 +68,7 @@ import { ORDER_PAGE_RESUME_ERRORS, resumeHref } from "../../lib/checkout-resume.
 import { downloadsBucketFrom } from "../../lib/download-delivery.js";
 import { downloadLinks } from "../../lib/download-links.js";
 import { cartErrorMessage } from "../../lib/error-messages.js";
-import { keepPrivate } from "../../lib/no-store.js";
+import { keepPrivate, PRIVATE_NO_STORE } from "../../lib/no-store.js";
 import {
 	MAX_ORDER_POLLS,
 	ORDER_POLL_SECONDS,
@@ -72,6 +77,14 @@ import {
 	recordOrderPollHop,
 	shouldPollOrder,
 } from "../../lib/order-poll.js";
+import {
+	forgetStripeReturn,
+	hasStripeReturn,
+	orderPathWithoutStripeReturn,
+	readStripeReturn,
+	recordStripeReturn,
+	returnPollIsOver,
+} from "../../lib/order-return.js";
 import { orderStamp } from "../../lib/order-stamp.js";
 import { orderProgress, orderReadOutcome, orderSumRows } from "../../lib/order-view.js";
 import { dispatchOttaRoute, isBusyResult, markBusy } from "../../lib/otta-api.js";
@@ -90,6 +103,23 @@ keepPrivate(Astro);
 // The stash has done its job the moment the buyer lands here — whether payment
 // succeeded, failed or was abandoned. Drop it either way.
 clearCheckoutCookie(Astro.cookies);
+
+/* Stripe's redirect back carries the intent's client secret in our URL. Record
+   the two values this page uses (the intent id and the status — never the
+   secret) for this order, then 303 to the bare order path, so the link the buyer
+   keeps, shares and syncs holds no secret (`lib/order-return.ts`, ADR-0012
+   2026-10-22 amendment). Before the order is read: nothing is asked of commerce
+   for a URL about to be dropped. The redirect sets a cookie, so it is private. */
+if (hasStripeReturn(Astro.url)) {
+	if (orderId !== undefined) recordStripeReturn(Astro.cookies, orderId, Astro.url);
+	return new Response(null, {
+		status: 303,
+		headers: {
+			Location: orderPathWithoutStripeReturn(Astro.url),
+			"Cache-Control": PRIVATE_NO_STORE,
+		},
+	});
+}
 
 const result =
 	orderId === undefined
@@ -125,14 +155,16 @@ if (order !== null) {
 const busy = isBusyResult(result);
 if (busy) markBusy(Astro.response);
 
-/** Did the buyer arrive via Stripe's redirect? Read ONLY to pick the pending
- *  copy — the value is never rendered, forwarded, or trusted. */
-const returnedFromStripe = Astro.url.searchParams.has("payment_intent");
+/** Did the buyer arrive via Stripe's redirect from a payment that went through
+ *  (succeeded or processing)? Recorded on arrival (above) and read back here
+ *  ONLY to pick the copy and the poll — never rendered, forwarded, or trusted. */
+const stripeReturn = orderId === undefined ? null : readStripeReturn(Astro.cookies, orderId);
+const returnedFromStripe = stripeReturn !== null;
 /** …and did Stripe say the payment went through (or is going through)? Read ONLY
  *  so a dead order's page does not say "Nothing was charged" before the webhook
  *  has recorded a late payment, and polls until its refund is (QA2 M3). Never
  *  rendered, forwarded, or trusted to decide anything about the order. */
-const returnStatus = Astro.url.searchParams.get("redirect_status");
+const returnStatus = stripeReturn?.status ?? null;
 const returnedPaid =
 	returnedFromStripe && (returnStatus === "succeeded" || returnStatus === "processing");
 /** Only processing — the refund is then promised only if it goes through. */
@@ -165,7 +197,7 @@ const holdLapsed =
 const pollKey =
 	order === null
 		? null
-		: orderPollKey(order.id, Astro.url.searchParams.get("payment_intent"));
+		: orderPollKey(order.id, stripeReturn?.paymentIntent ?? null);
 const pollHop =
 	pollKey !== null && returnedFromStripe ? orderPollHop(Astro.cookies, pollKey) : 1;
 const shouldPoll = shouldPollOrder({
@@ -177,8 +209,8 @@ const shouldPoll = shouldPollOrder({
 });
 if (shouldPoll && pollKey !== null) recordOrderPollHop(Astro.cookies, pollKey, pollHop);
 /* "Check again" reloads this same URL too: `""` is the document's own address,
-   which keeps the confirming copy for a buyer back from Stripe, adds no history
-   entry, and echoes none of the redirect parameters into the markup. */
+   which (with the recorded return, `lib/order-return.ts`) keeps the confirming
+   copy for a buyer back from Stripe and adds no history entry. */
 const nextPollUrl = "";
 
 /**
@@ -213,10 +245,12 @@ const stamp = orderStamp({
  * the offer reads as "try again", not "pay again".
  *
  * The door is a GET LINK TO /cart, NOT that POST, and it must stay one. This
- * page is `no-referrer` (ADR-0012 decision 6: its URL can hold the client
- * secret), and under `no-referrer` browsers send `Origin: null` on the page's
- * own form POSTs (Fetch, "append a request `Origin` header") — the guard 403s
- * that, so a new-cart form here could never work. /cart is not `no-referrer`,
+ * page is `no-referrer` (ADR-0012 decision 6 — defence in depth since the
+ * 2026-10-22 amendment: the rendered page's URL no longer holds the client
+ * secret, but the order id in it is the page's capability), and under
+ * `no-referrer` browsers send `Origin: null` on the page's own form POSTs
+ * (Fetch, "append a request `Origin` header") — the guard 403s that, so a
+ * new-cart form here could never work. /cart is not `no-referrer`,
  * and for the one cart that needs the door — `checked_out`, which is exactly
  * this order's — it renders the same `POST /checkout/new-cart` button with its
  * consequence stated. A buyer whose cookie holds some other cart, or none, lands
@@ -251,7 +285,15 @@ const ownsOrder =
    checkout on its own key, so the pay page gets the same PaymentIntent and the
    same client secret, re-stashed. The stash was just deleted above; the resume
    writes it again. */
-const canResume = state === "pending" && !returnedFromStripe && !holdLapsed;
+/* A recorded return whose poll has run out on a still-pending order no longer
+   holds the resume back (`returnPollIsOver`): the payment did not settle it, so
+   the buyer can pay again while the order is payable, and the record goes. */
+const returnOver = returnPollIsOver({ returnedFromStripe, pending: isPending, polling: shouldPoll });
+if (returnOver && order !== null) forgetStripeReturn(Astro.cookies, order.id);
+const canResume =
+	state === "pending" &&
+	!holdLapsed &&
+	(!returnedFromStripe || (returnOver && order !== null && isOrderPayable(order, new Date())));
 /* A late payment on a dead order whose refund is not recorded yet, once the
    poll has stopped: the stamp says "Check again in a minute", so the page
    offers it (QA2 M3). */

@@ -175,7 +175,7 @@ describe("the order page polls without piling up history", () => {
 
 	test("the poll decision is shouldPollOrder's, and its count is the cookie's", () => {
 		expect(frontmatter).toMatch(
-			/orderPollKey\(order\.id, Astro\.url\.searchParams\.get\("payment_intent"\)\)/,
+			/orderPollKey\(order\.id, stripeReturn\?\.paymentIntent \?\? null\)/,
 		);
 		expect(frontmatter).toMatch(/shouldPollOrder\(/);
 		expect(frontmatter).toMatch(/orderPollHop\(/);
@@ -185,7 +185,8 @@ describe("the order page polls without piling up history", () => {
 	test("QA2 M3: a successful return status is read for copy and polling only, and handed to both", () => {
 		// succeeded or processing — the two statuses Stripe returns for money that
 		// moved or is moving; a declined return keeps "Nothing was charged".
-		expect(frontmatter).toMatch(/searchParams\.get\("redirect_status"\)/);
+		// Recorded on arrival from Stripe's redirect (lib/order-return.ts), read back here.
+		expect(frontmatter).toMatch(/const returnStatus = stripeReturn\?\.status \?\? null;/);
 		expect(frontmatter).toMatch(
 			/const returnedPaid =\s*returnedFromStripe && \(\w+ === "succeeded" \|\| \w+ === "processing"\);/,
 		);

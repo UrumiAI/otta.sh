@@ -19,6 +19,9 @@
 - **Amended: 2026-10-17 — decision 4 is replaced**: the publishable key is a runtime Settings
   value read per request, not a build-time bake; `STRIPE_PUBLIC_KEY` is retired (issue #498).
   See "Amended 2026-10-17" at the end of this record.
+- Amended: 2026-10-22 — the order page 303s Stripe's return to the bare `/orders/<id>` and
+  records a succeeded or processing return in an HttpOnly per-order cookie (intent id and
+  status, never the client secret); see "Amended 2026-10-22" at the end of this record.
 ## Context
 
 The buyer journey dead-ends at `/cart`: `GET /checkout` is a themed 404, and nothing in the
@@ -518,3 +521,49 @@ a key: it ships in every build and is gated per request. A key typed into the wr
 account still passes the shape check; that remains Stripe's answer to give, as decision 4
 already accepted.
 
+## Amended 2026-10-22 — the confirmation page drops Stripe's redirect parameters from its URL
+
+**What changed and why.** Decision 6 accepted the client secret in the confirmation page's URL as
+Stripe's wire format. Its premise holds — Stripe still appends it — but the page then *kept* it:
+the thank-you link the buyer stays on, reloads, bookmarks and forwards carried it. With the store's
+publishable key (in every checkout page's source) that secret reads the PaymentIntent back: amount,
+description, card brand, last four and expiry, and the `shipping` block — the buyer's name and full
+address, which the public order page deliberately does not show (the 2026-10-02 second amendment
+already gates the resume path on exactly this). A forwarded or screenshotted thank-you link was a
+personal-data leak.
+
+**The amendment.**
+
+- On a request carrying any of `payment_intent`, `payment_intent_client_secret` or
+  `redirect_status`, `/orders/<id>` answers **303** to the same path without those three
+  parameters (`sites/staging/src/lib/order-return.ts`). The redirect runs before the order is
+  read and is `Cache-Control: private, no-store`.
+- Before redirecting, it records a return **that went through** — `redirect_status` `succeeded`
+  or `processing` — in `otta_order_return` (`<orderId>/<payment_intent id>:<status>`, HttpOnly,
+  `Secure`, `SameSite=Lax`, `path=/orders/<id>` so each order has its own record, one hour). The
+  secret is never stored. Any other return (failed, cancelled, malformed) records nothing and
+  clears an earlier record for that order.
+- What read the redirect parameters reads that record instead: decision 5's copy choice, the
+  bounded poll and its key (the third 2026-10-02 amendment), and QA2 M3's late-payment copy.
+  "Check again" and the poll's same-URL reload now reload the bare URL and find the record.
+
+**What that changes for the buyer.**
+
+- *Scope.* "Just back from Stripe" used to hold only on the URL Stripe returned to; it now holds on
+  every visit to that order's page in that browser for an hour — covering the 15-minute hold and a
+  late "Check again", including from the cart's or the account's link to the order.
+- *A failed return no longer gets the confirming copy.* Before, any return — `failed` included —
+  said "Payment submitted" and polled, with no resume. Now a failed or cancelled return (a
+  bank-redirect method the buyer backed out of; card declines stay on the pay page) shows the
+  order's own state: "awaiting payment" with its resume, so the buyer can try again.
+- *A browser that refuses the cookie* loses the confirming copy: straight after paying it sees
+  "awaiting payment" with no poll, until the webhook settles the order and a reload shows "paid".
+  Checkout itself already needs cookies (the cart, the `otta_checkout` stash), so this is a narrow
+  case, accepted.
+
+**What it does not change.** The one request that carried the secret still reaches the access logs
+of whatever sits in front of the site, and the browser may keep it as a redirect source.
+`no-referrer` and `private, no-store` stay, now as defence in depth. The link a buyer keeps is
+`/orders/<id>`, whose id remains the page's bearer capability.
+
+**The resume comes back when the poll ends.** A recorded return keeps the confirming copy only while its bounded poll runs. If the poll stops on an order that is still pending, the payment did not settle it: a `processing` payment can fail later, and `payment_intent.payment_failed` leaves the order pending and payable. The page then offers "Complete payment" again, while the order is payable, and drops the record (`returnPollIsOver` / `forgetStripeReturn`, `lib/order-return.ts`). Without this, a stale record (or one planted by anyone holding the order link) would hide the resume on every visit for the record's hour, longer than the hold itself.
