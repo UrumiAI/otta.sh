@@ -533,20 +533,33 @@ personal-data leak.
 **The amendment.**
 
 - On a request carrying any of `payment_intent`, `payment_intent_client_secret` or
-  `redirect_status`, `/orders/<id>` records the intent id and the status — never the secret — in
-  `otta_order_return` (`<orderId>/<payment_intent id>:<status>`, HttpOnly, `Secure`,
-  `SameSite=Lax`, `path=/orders/`, one hour), and answers **303** to the same path without those
-  three parameters (`sites/staging/src/lib/order-return.ts`). The redirect runs before the order
-  is read and is `Cache-Control: private, no-store`. Malformed values are not recorded.
-- Everything that read the redirect parameters reads that record instead: decision 5's copy
-  choice, the bounded poll and its key (the third 2026-10-02 amendment), and QA2 M3's late-payment
-  copy. Their rules are unchanged; "Check again" and the poll's same-URL reload now reload the bare
-  URL and find the record.
-- One hour covers the 15-minute hold plus a late "Check again". After it — or in a browser that
-  refuses the cookie — the page shows the order's ordinary copy for its true state, the same page a
-  buyer opening the link later sees.
+  `redirect_status`, `/orders/<id>` answers **303** to the same path without those three
+  parameters (`sites/staging/src/lib/order-return.ts`). The redirect runs before the order is
+  read and is `Cache-Control: private, no-store`.
+- Before redirecting, it records a return **that went through** — `redirect_status` `succeeded`
+  or `processing` — in `otta_order_return` (`<orderId>/<payment_intent id>:<status>`, HttpOnly,
+  `Secure`, `SameSite=Lax`, `path=/orders/<id>` so each order has its own record, one hour). The
+  secret is never stored. Any other return (failed, cancelled, malformed) records nothing and
+  clears an earlier record for that order.
+- What read the redirect parameters reads that record instead: decision 5's copy choice, the
+  bounded poll and its key (the third 2026-10-02 amendment), and QA2 M3's late-payment copy.
+  "Check again" and the poll's same-URL reload now reload the bare URL and find the record.
 
-**What it does not change.** The one request that carried the secret may still be recorded by the
-browser (a redirect source is not a history entry the buyer sees, but browsers can keep it) and is
-in the access logs of whatever sits in front of the site; `no-referrer` and `private, no-store` stay. Decision 6's other mitigations
-stand. The link a buyer keeps is now `/orders/<id>`, whose id remains the page's bearer capability.
+**What that changes for the buyer.**
+
+- *Scope.* "Just back from Stripe" used to hold only on the URL Stripe returned to; it now holds on
+  every visit to that order's page in that browser for an hour — covering the 15-minute hold and a
+  late "Check again", including from the cart's or the account's link to the order.
+- *A failed return no longer gets the confirming copy.* Before, any return — `failed` included —
+  said "Payment submitted" and polled, with no resume. Now a failed or cancelled return (a
+  bank-redirect method the buyer backed out of; card declines stay on the pay page) shows the
+  order's own state: "awaiting payment" with its resume, so the buyer can try again.
+- *A browser that refuses the cookie* loses the confirming copy: straight after paying it sees
+  "awaiting payment" with no poll, until the webhook settles the order and a reload shows "paid".
+  Checkout itself already needs cookies (the cart, the `otta_checkout` stash), so this is a narrow
+  case, accepted.
+
+**What it does not change.** The one request that carried the secret still reaches the access logs
+of whatever sits in front of the site, and the browser may keep it as a redirect source.
+`no-referrer` and `private, no-store` stay, now as defence in depth. The link a buyer keeps is
+`/orders/<id>`, whose id remains the page's bearer capability.

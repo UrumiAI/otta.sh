@@ -35,16 +35,26 @@ function stripeReturnUrl(extra = ""): URL {
 	);
 }
 
+/** A cookie jar that stores what a browser would: Astro URI-encodes a value on
+ *  set and decodes it on get, so the record round-trips through that encoding. */
 function jar(initial?: string) {
-	let value = initial;
+	let stored = initial === undefined ? undefined : encodeURIComponent(initial);
 	const sets: { name: string; value: string; options: CookieSetOptions }[] = [];
+	const deletes: { name: string; options: { path: string } }[] = [];
 	return {
 		sets,
+		deletes,
 		get: (name: string) =>
-			name === ORDER_RETURN_COOKIE_NAME && value !== undefined ? { value } : undefined,
+			name === ORDER_RETURN_COOKIE_NAME && stored !== undefined
+				? { value: decodeURIComponent(stored) }
+				: undefined,
 		set(name: string, next: string, options: CookieSetOptions) {
 			sets.push({ name, value: next, options });
-			value = next;
+			stored = encodeURIComponent(next);
+		},
+		delete(name: string, options: { path: string }) {
+			deletes.push({ name, options });
+			stored = undefined;
 		},
 	};
 }
@@ -91,17 +101,64 @@ describe("recordStripeReturn / readStripeReturn", () => {
 		expect(readStripeReturn(cookies, ORDER)).toEqual({ paymentIntent: PI, status: "succeeded" });
 	});
 
-	test("HttpOnly, Secure, SameSite=Lax, scoped to the order pages, short-lived", () => {
+	test("HttpOnly, Secure, SameSite=Lax, scoped to THIS order's page, short-lived", () => {
 		const cookies = jar();
 		recordStripeReturn(cookies, ORDER, stripeReturnUrl());
 		expect(cookies.sets[0]?.options).toEqual({
 			httpOnly: true,
 			secure: true,
 			sameSite: "lax",
-			path: "/orders/",
+			path: `/orders/${ORDER}`,
 			maxAge: ORDER_RETURN_MAX_AGE_SECONDS,
 		});
 		expect(ORDER_RETURN_MAX_AGE_SECONDS).toBeLessThanOrEqual(60 * 60);
+	});
+
+	test("one record per order: another order's lands on its own path", () => {
+		const cookies = jar();
+		recordStripeReturn(cookies, ORDER, stripeReturnUrl());
+		recordStripeReturn(cookies, "another-order", stripeReturnUrl());
+		expect(cookies.sets.map((set) => set.options.path)).toEqual([
+			`/orders/${ORDER}`,
+			"/orders/another-order",
+		]);
+	});
+
+	test("the path is the encoded form browsers match against", () => {
+		const cookies = jar();
+		recordStripeReturn(cookies, "a b/c", stripeReturnUrl());
+		expect(cookies.sets[0]?.options.path).toBe("/orders/a%20b%2Fc");
+	});
+
+	test("processing is recorded too — money that is moving", () => {
+		const cookies = jar();
+		recordStripeReturn(
+			cookies,
+			ORDER,
+			new URL(
+				`https://shop.example/orders/${ORDER}?payment_intent=${PI}&redirect_status=processing`,
+			),
+		);
+		expect(readStripeReturn(cookies, ORDER)).toEqual({ paymentIntent: PI, status: "processing" });
+	});
+
+	test("a failed or cancelled return records nothing and clears an earlier record", () => {
+		for (const status of ["failed", "requires_payment_method", "canceled"]) {
+			const cookies = jar();
+			recordStripeReturn(cookies, ORDER, stripeReturnUrl());
+			recordStripeReturn(
+				cookies,
+				ORDER,
+				new URL(
+					`https://shop.example/orders/${ORDER}?payment_intent=${PI}&redirect_status=${status}`,
+				),
+			);
+			expect(cookies.sets).toHaveLength(1);
+			expect(cookies.deletes).toEqual([
+				{ name: ORDER_RETURN_COOKIE_NAME, options: { path: `/orders/${ORDER}` } },
+			]);
+			expect(readStripeReturn(cookies, ORDER)).toBeNull();
+		}
 	});
 
 	test("a record for another order is not this order's return", () => {
@@ -119,6 +176,7 @@ describe("recordStripeReturn / readStripeReturn", () => {
 			`${ORDER}/pi_x`,
 			`${ORDER}/<script>:succeeded`,
 			`${ORDER}/pi_x:Succeeded!`,
+			`${ORDER}/${PI}:failed`,
 		]) {
 			expect(readStripeReturn(jar(raw), ORDER)).toBeNull();
 		}

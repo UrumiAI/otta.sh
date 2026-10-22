@@ -13,14 +13,24 @@
  * to the bare `/orders/<id>`. The secret is dropped, never stored.
  *
  * WHY A COOKIE AND NOT JUST DROPPING THEM. The page still needs to know "this
- * buyer just came back from paying" for the length of the confirming poll and
- * the "Check again" after it (decision 5 and the 2026-10-02 third amendment);
- * the URL used to carry that, and now this does. A browser that refuses the
- * cookie sees the order's ordinary copy — its true state, without the
- * "confirming" wording — which is the same page a buyer opening the link later
- * gets.
+ * buyer just paid" for the length of the confirming poll and the "Check again"
+ * after it (decision 5 and the 2026-10-02 third amendment); the URL used to
+ * carry that, and now this does.
+ *
+ * ONLY A PAYMENT THAT WENT THROUGH IS RECORDED (`succeeded` or `processing`). A
+ * failed or cancelled redirect (a bank-redirect method the buyer backed out of)
+ * records nothing and clears any earlier record for the order, so the page shows
+ * the order's own state — "awaiting payment" with its resume — instead of
+ * "confirming" a payment that is not coming.
+ *
+ * ONE RECORD PER ORDER. The cookie's path is the order's own page, so a second
+ * order paid in another tab neither overwrites this one nor rides its requests.
+ *
+ * A browser that refuses the cookie loses the confirming copy: right after paying
+ * it sees "awaiting payment" until the webhook lands and a reload shows "paid".
+ * Checkout itself already needs cookies (the cart, the `otta_checkout` stash).
  */
-import type { CookieReader, CookieWriter } from "./checkout-cookie.js";
+import type { CookieDeleter, CookieReader, CookieWriter } from "./checkout-cookie.js";
 
 export const ORDER_RETURN_COOKIE_NAME = "otta_order_return";
 
@@ -34,9 +44,10 @@ const STRIPE_RETURN_PARAMS = [
 	"redirect_status",
 ] as const;
 
-/** Stripe's ids are `pi_` plus alphanumerics; its statuses are lowercase words. */
+/** Stripe's intent ids are `pi_` plus alphanumerics. */
 const PAYMENT_INTENT_ID = /^pi_[A-Za-z0-9]{1,250}$/;
-const REDIRECT_STATUS = /^[a-z_]{1,32}$/;
+/** The returns worth remembering: money that moved, or is moving. */
+const PAID_STATUSES: ReadonlySet<string> = new Set(["succeeded", "processing"]);
 
 export interface StripeReturn {
 	paymentIntent: string;
@@ -56,21 +67,34 @@ export function orderPathWithoutStripeReturn(url: URL): string {
 	return `${url.pathname}${query.length > 0 ? `?${query}` : ""}`;
 }
 
+/** The cookie's path: this order's own page, in the encoded form browsers match. */
+function orderReturnPath(orderId: string): string {
+	return `/orders/${encodeURIComponent(orderId)}`;
+}
+
 /**
- * Remember, for this order, that the buyer came back from Stripe and with what
- * status. HttpOnly (no script reads it), `SameSite=Lax` (it is written on Stripe's
- * top-level redirect back), `path=/orders/` so it rides no other request. A
- * malformed id or status records nothing.
+ * Remember, for this order, that the buyer came back from a payment that went
+ * through. HttpOnly (no script reads it), `SameSite=Lax` (it is written on
+ * Stripe's top-level redirect back), path = this order's page so it rides no
+ * other request. Any other return — failed, cancelled, malformed — records
+ * nothing and clears an earlier record for this order.
  */
-export function recordStripeReturn(cookies: CookieWriter, orderId: string, url: URL): void {
+export function recordStripeReturn(
+	cookies: CookieWriter & CookieDeleter,
+	orderId: string,
+	url: URL,
+): void {
 	const paymentIntent = url.searchParams.get("payment_intent") ?? "";
 	const status = url.searchParams.get("redirect_status") ?? "";
-	if (!PAYMENT_INTENT_ID.test(paymentIntent) || !REDIRECT_STATUS.test(status)) return;
+	if (!PAYMENT_INTENT_ID.test(paymentIntent) || !PAID_STATUSES.has(status)) {
+		cookies.delete(ORDER_RETURN_COOKIE_NAME, { path: orderReturnPath(orderId) });
+		return;
+	}
 	cookies.set(ORDER_RETURN_COOKIE_NAME, `${orderId}/${paymentIntent}:${status}`, {
 		httpOnly: true,
 		secure: true,
 		sameSite: "lax",
-		path: "/orders/",
+		path: orderReturnPath(orderId),
 		maxAge: ORDER_RETURN_MAX_AGE_SECONDS,
 	});
 }
@@ -85,6 +109,6 @@ export function readStripeReturn(cookies: CookieReader, orderId: string): Stripe
 	if (split <= 0) return null;
 	const paymentIntent = rest.slice(0, split);
 	const status = rest.slice(split + 1);
-	if (!PAYMENT_INTENT_ID.test(paymentIntent) || !REDIRECT_STATUS.test(status)) return null;
+	if (!PAYMENT_INTENT_ID.test(paymentIntent) || !PAID_STATUSES.has(status)) return null;
 	return { paymentIntent, status };
 }

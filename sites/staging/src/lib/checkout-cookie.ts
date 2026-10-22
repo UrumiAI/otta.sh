@@ -15,11 +15,13 @@
  * ── What this cookie does NOT achieve (ADR-0012 decision 6) ───────────────
  * It keeps the secret out of OUR urls on the leg we control. It does not keep
  * it out of urls generally: Stripe's Payment Element redirect appends
- * `payment_intent_client_secret` to our `return_url`, so one hop later it is in
- * history, in the `Referer` of any subresource on the confirmation page, and in
- * Cloudflare's access logs. That is Stripe's wire format. Our mitigations are
- * the confirmation page's `no-referrer` meta, never echoing the parameters into
- * markup, and this cookie's own deletion on arrival.
+ * `payment_intent_client_secret` to our `return_url`. That is Stripe's wire
+ * format. The confirmation page answers that one request with a 303 to the bare
+ * `/orders/<id>` (`order-return.ts`, ADR-0012 2026-10-22 amendment), so the page
+ * the buyer keeps holds no secret; the redirecting request itself still reaches
+ * access logs, and the browser may keep it. The other mitigations: the page's
+ * `no-referrer` meta, never echoing the parameters into markup, and this
+ * cookie's own deletion on arrival.
  *
  * ── Why `path=/` ─────────────────────────────────────────────────────────
  * So `/orders/[orderId]` can DELETE it. A `path=/checkout` cookie is never sent
