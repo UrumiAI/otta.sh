@@ -36,6 +36,7 @@ import {
 import { STRIPE_PUBLISHABLE_KEY_KEY } from "../src/payments/stripe-publishable-key.js";
 import { LOGIN_LINK_URL_KEY } from "../src/storefront/login-link.js";
 import type { PluginContext } from "../src/types.js";
+import { STRIPE_WEBHOOK_LAST_VERIFIED_KEY } from "../src/webhooks/stripe-webhook-last-verified.js";
 import { assertBlockContract } from "./helpers/block-contract.js";
 import {
 	contextTexts,
@@ -674,5 +675,55 @@ describe("Settings: the Stripe account's country", () => {
 		const { ctx, urls } = withStripe({ status: 200, body: { country: "IN" } });
 		await saveSecret(ctx, "save-stripe-webhook-secret", "stripeWebhookSecret", WHSEC);
 		expect(urls).toHaveLength(0);
+	});
+});
+
+function lastVerified(blocks: readonly LooseBlock[]): string | undefined {
+	return contextTexts(blocks).find((t) => t.startsWith("Last verified Stripe webhook:"));
+}
+
+describe("#531: a NEW webhook signing secret starts the last-verified time from 'never'", () => {
+	const OTHER_WHSEC = ["whsec_", "AbCdEfGhIjKlMnOpQrStUvWxYz012345"].join("");
+	const RECORDED = "2026-10-22T14:03:27.000Z";
+
+	test("saving a different secret clears the recorded time", async () => {
+		const { ctx, kv } = makeCtx({
+			[STRIPE_SECRET_KEY_KEY]: SK_TEST,
+			[STRIPE_WEBHOOK_SECRET_KEY]: WHSEC,
+			[STRIPE_WEBHOOK_LAST_VERIFIED_KEY]: RECORDED,
+		});
+		const page = await saveSecret(
+			ctx,
+			"save-stripe-webhook-secret",
+			"stripeWebhookSecret",
+			OTHER_WHSEC,
+		);
+		expect(kv.get(STRIPE_WEBHOOK_SECRET_KEY)).toBe(OTHER_WHSEC);
+		expect(kv.has(STRIPE_WEBHOOK_LAST_VERIFIED_KEY)).toBe(false);
+		expect(lastVerified(page.blocks)).toBe("Last verified Stripe webhook: never.");
+	});
+
+	test("saving the first secret clears a time left from before", async () => {
+		const { ctx, kv } = makeCtx({ [STRIPE_WEBHOOK_LAST_VERIFIED_KEY]: RECORDED });
+		await saveSecret(ctx, "save-stripe-webhook-secret", "stripeWebhookSecret", WHSEC);
+		expect(kv.has(STRIPE_WEBHOOK_LAST_VERIFIED_KEY)).toBe(false);
+	});
+
+	test("re-saving the SAME secret keeps it", async () => {
+		const { ctx, kv } = makeCtx({
+			[STRIPE_WEBHOOK_SECRET_KEY]: WHSEC,
+			[STRIPE_WEBHOOK_LAST_VERIFIED_KEY]: RECORDED,
+		});
+		await saveSecret(ctx, "save-stripe-webhook-secret", "stripeWebhookSecret", WHSEC);
+		expect(kv.get(STRIPE_WEBHOOK_LAST_VERIFIED_KEY)).toBe(RECORDED);
+	});
+
+	test("saving another key (the secret key) keeps it", async () => {
+		const { ctx, kv } = makeCtx({
+			[STRIPE_WEBHOOK_SECRET_KEY]: WHSEC,
+			[STRIPE_WEBHOOK_LAST_VERIFIED_KEY]: RECORDED,
+		});
+		await saveSecret(ctx, "save-stripe-secret-key", "stripeSecretKey", SK_TEST);
+		expect(kv.get(STRIPE_WEBHOOK_LAST_VERIFIED_KEY)).toBe(RECORDED);
 	});
 });

@@ -359,6 +359,19 @@ describe("Settings — #531: the last verified Stripe webhook", () => {
 		expect(lastVerified(texts)).toBe("Last verified Stripe webhook: never.");
 	});
 
+	test.each([
+		["nothing saved", {}],
+		[
+			"the publishable key and webhook secret, but no secret key",
+			{
+				[STRIPE_PUBLISHABLE_KEY_KEY]: PK_TEST,
+				[STRIPE_WEBHOOK_SECRET_KEY]: WHSEC,
+			},
+		],
+	] as const)("Stripe not set up (%s): no line at all", async (_name, seed) => {
+		expect(lastVerified(await settingsTexts(seed))).toBeUndefined();
+	});
+
 	test("a failed read says so, never 'never'", async () => {
 		const texts = await settingsTexts(FULL_TEST, {
 			failingKeys: [STRIPE_WEBHOOK_LAST_VERIFIED_KEY],

@@ -45,6 +45,7 @@ import {
 } from "../payments/card-payment-readiness.js";
 import { STRIPE_PUBLISHABLE_KEY_KEY } from "../payments/stripe-publishable-key.js";
 import {
+	clearStripeWebhookLastVerified,
 	readStripeWebhookLastVerified,
 	stripeWebhookLastVerifiedLine,
 	type StripeWebhookLastVerified,
@@ -712,6 +713,12 @@ export function createSettingsFormHandler(): RouteHandler<SettingsFormInput> {
 				// already stored (if any) stays. The error itself is never shown. With
 				// a key known to be present (#497) the failure is something else, so
 				// the operator is not sent to the deployer for it.
+				// #531: a DIFFERENT webhook signing secret (possibly a wrong one) must
+				// not inherit the old secret's "last verified" time. Read before the
+				// write; anything but the same stored value counts as a change.
+				const webhookSecretChanged =
+					secretSpec.kvKey === STRIPE_WEBHOOK_SECRET_KEY &&
+					(await storedSecretDiffers(ctx, STRIPE_WEBHOOK_SECRET_KEY, checked.value));
 				try {
 					await ctx.kv.set(secretSpec.kvKey, checked.value);
 				} catch {
@@ -729,6 +736,7 @@ export function createSettingsFormHandler(): RouteHandler<SettingsFormInput> {
 					} satisfies BlockResponse;
 				}
 				await bumpSaveGen(ctx, secretSpec.genKey);
+				if (webhookSecretChanged) await clearStripeWebhookLastVerified(ctx);
 				// Issue #382: a new Stripe key may be another account — read its
 				// country NOW, so the answer is cached before the first checkout
 				// needs it and the screen below can state it. Never throws; a
@@ -1620,7 +1628,16 @@ function paymentsGroup(
 				}),
 			},
 			// #531: whether Stripe's deliveries arrive and verify — "never" is the warning.
-			{ type: "context", text: stripeWebhookLastVerifiedLine(webhookLastVerified) },
+			// Only once Stripe is set up (a secret key stored): before that, "never" is
+			// noise beside the line that already says what is missing.
+			...(stripeAccount.status === "not_configured"
+				? []
+				: [
+						{
+							type: "context",
+							text: stripeWebhookLastVerifiedLine(webhookLastVerified),
+						} satisfies Block,
+					]),
 			{
 				type: "context",
 				text: "Keys are never shown once saved. Leave a field blank to keep the key you saved before.",
@@ -1675,6 +1692,17 @@ function settingsCardReadiness(
 		secretKeyMode: secret?.mode,
 		webhookSecretSet: state.get(STRIPE_WEBHOOK_SECRET_KEY)?.set === true,
 	});
+}
+
+/** #531: is `value` anything but what is stored under `key`? Unset, invalid and
+ *  unreadable all count as different. */
+async function storedSecretDiffers(
+	ctx: PluginContext,
+	key: string,
+	value: string,
+): Promise<boolean> {
+	const before = await readSecret(ctx, key);
+	return before.state !== "set" || before.value !== value;
 }
 
 /** How long the Settings save waits on Stripe for the account's country. */

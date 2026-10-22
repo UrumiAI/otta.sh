@@ -1285,6 +1285,22 @@ describe("(xiv) #531: a VERIFIED delivery records when it arrived — and only a
 		expect(await harness.ctx.kv.get(STRIPE_WEBHOOK_LAST_VERIFIED_KEY)).toBeNull();
 	});
 
+	test("a delivery to a store with no webhook signing secret records nothing", async () => {
+		await seedPendingOrder("ord-lv-nosecret");
+		const res = await invoke(await signedDelivery("ord-lv-nosecret"), {}, { now: () => NOW });
+		expect(res).toEqual({ ok: false, status: 503, reason: "NOT_CONFIGURED" });
+		expect(await harness.ctx.kv.get(STRIPE_WEBHOOK_LAST_VERIFIED_KEY)).toBeNull();
+	});
+
+	test("a body that is not base64 records nothing", async () => {
+		await harness.ctx.kv.set(STRIPE_WEBHOOK_SECRET_KEY, WEBHOOK_SECRET);
+		await seedPendingOrder("ord-lv-garbled");
+		const delivery = await signedDelivery("ord-lv-garbled");
+		const res = await invoke({ ...delivery, rawBodyBase64: "!!" }, {}, { now: () => NOW });
+		expect(res).toEqual({ ok: false, status: 400, reason: "MALFORMED" });
+		expect(await harness.ctx.kv.get(STRIPE_WEBHOOK_LAST_VERIFIED_KEY)).toBeNull();
+	});
+
 	test("a delivery refused at the edge token records nothing", async () => {
 		await harness.ctx.kv.set(WEBHOOK_EDGE_TOKEN_KEY, EDGE_TOKEN);
 		await harness.ctx.kv.set(STRIPE_WEBHOOK_SECRET_KEY, WEBHOOK_SECRET);

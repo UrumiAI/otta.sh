@@ -29,6 +29,16 @@ export async function recordStripeWebhookVerified(
 	}
 }
 
+/** Forget the recorded time — a new webhook signing secret starts from "never".
+ *  Never throws: a failure is logged, and the save it follows still stands. */
+export async function clearStripeWebhookLastVerified(ctx: PluginContext): Promise<void> {
+	try {
+		await ctx.kv.delete(STRIPE_WEBHOOK_LAST_VERIFIED_KEY);
+	} catch (err) {
+		console.warn("[otta] could not clear the last verified Stripe webhook:", err);
+	}
+}
+
 export type StripeWebhookLastVerified =
 	| { status: "never" }
 	| { status: "at"; at: string }
