@@ -78,10 +78,12 @@ import {
 	shouldPollOrder,
 } from "../../lib/order-poll.js";
 import {
+	forgetStripeReturn,
 	hasStripeReturn,
 	orderPathWithoutStripeReturn,
 	readStripeReturn,
 	recordStripeReturn,
+	returnPollIsOver,
 } from "../../lib/order-return.js";
 import { orderStamp } from "../../lib/order-stamp.js";
 import { orderProgress, orderReadOutcome, orderSumRows } from "../../lib/order-view.js";
@@ -283,7 +285,15 @@ const ownsOrder =
    checkout on its own key, so the pay page gets the same PaymentIntent and the
    same client secret, re-stashed. The stash was just deleted above; the resume
    writes it again. */
-const canResume = state === "pending" && !returnedFromStripe && !holdLapsed;
+/* A recorded return whose poll has run out on a still-pending order no longer
+   holds the resume back (`returnPollIsOver`): the payment did not settle it, so
+   the buyer can pay again while the order is payable, and the record goes. */
+const returnOver = returnPollIsOver({ returnedFromStripe, pending: isPending, polling: shouldPoll });
+if (returnOver && order !== null) forgetStripeReturn(Astro.cookies, order.id);
+const canResume =
+	state === "pending" &&
+	!holdLapsed &&
+	(!returnedFromStripe || (returnOver && order !== null && isOrderPayable(order, new Date())));
 /* A late payment on a dead order whose refund is not recorded yet, once the
    poll has stopped: the stamp says "Check again in a minute", so the page
    offers it (QA2 M3). */

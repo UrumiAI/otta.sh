@@ -112,3 +112,25 @@ export function readStripeReturn(cookies: CookieReader, orderId: string): Stripe
 	if (!PAYMENT_INTENT_ID.test(paymentIntent) || !PAID_STATUSES.has(status)) return null;
 	return { paymentIntent, status };
 }
+
+/** Drop this order's recorded return (see {@link returnPollIsOver}). */
+export function forgetStripeReturn(cookies: CookieDeleter, orderId: string): void {
+	cookies.delete(ORDER_RETURN_COOKIE_NAME, { path: orderReturnPath(orderId) });
+}
+
+/**
+ * A recorded return only stands in for "just back from Stripe" while its bounded
+ * poll runs. Once the poll has stopped and the order is STILL pending, the
+ * payment did not settle it (a `processing` payment can fail later, and
+ * `payment_intent.payment_failed` leaves the order pending and payable), so the
+ * page offers the resume again and the record is dropped. Otherwise a stale or
+ * planted record would hide "Complete payment" on every visit for the record's
+ * hour, longer than the hold itself.
+ */
+export function returnPollIsOver(input: {
+	returnedFromStripe: boolean;
+	pending: boolean;
+	polling: boolean;
+}): boolean {
+	return input.returnedFromStripe && input.pending && !input.polling;
+}

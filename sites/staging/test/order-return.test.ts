@@ -18,10 +18,12 @@ import type { CookieSetOptions } from "../src/lib/checkout-cookie.js";
 import {
 	ORDER_RETURN_COOKIE_NAME,
 	ORDER_RETURN_MAX_AGE_SECONDS,
+	forgetStripeReturn,
 	hasStripeReturn,
 	orderPathWithoutStripeReturn,
 	readStripeReturn,
 	recordStripeReturn,
+	returnPollIsOver,
 } from "../src/lib/order-return.js";
 import { splitAstro } from "./astro-source.js";
 
@@ -192,6 +194,37 @@ describe("recordStripeReturn / readStripeReturn", () => {
 			recordStripeReturn(cookies, ORDER, new URL(`https://shop.example/orders/${ORDER}?${query}`));
 			expect(cookies.sets).toEqual([]);
 		}
+	});
+});
+
+describe("returnPollIsOver: a recorded return stops holding the resume back", () => {
+	test("pending, back from Stripe, poll stopped: over (offer the resume, drop the record)", () => {
+		expect(returnPollIsOver({ returnedFromStripe: true, pending: true, polling: false })).toBe(
+			true,
+		);
+	});
+	test("still polling, or not pending, or no record: not over", () => {
+		expect(returnPollIsOver({ returnedFromStripe: true, pending: true, polling: true })).toBe(
+			false,
+		);
+		expect(returnPollIsOver({ returnedFromStripe: true, pending: false, polling: false })).toBe(
+			false,
+		);
+		expect(returnPollIsOver({ returnedFromStripe: false, pending: true, polling: false })).toBe(
+			false,
+		);
+	});
+	test("forgetStripeReturn clears this order's record on its own path", () => {
+		const deleted: Array<{ name: string; path: string | undefined }> = [];
+		forgetStripeReturn(
+			{
+				delete: (name: string, opts: { path: string }) => {
+					deleted.push({ name, path: opts.path });
+				},
+			},
+			"order-1",
+		);
+		expect(deleted).toEqual([{ name: ORDER_RETURN_COOKIE_NAME, path: "/orders/order-1" }]);
 	});
 });
 

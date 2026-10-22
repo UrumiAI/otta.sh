@@ -19,6 +19,9 @@
 - **Amended: 2026-10-17 — decision 4 is replaced**: the publishable key is a runtime Settings
   value read per request, not a build-time bake; `STRIPE_PUBLIC_KEY` is retired (issue #498).
   See "Amended 2026-10-17" at the end of this record.
+- Amended: 2026-10-22 — the order page 303s Stripe's return to the bare `/orders/<id>` and
+  records a succeeded or processing return in an HttpOnly per-order cookie (intent id and
+  status, never the client secret); see "Amended 2026-10-22" at the end of this record.
 ## Context
 
 The buyer journey dead-ends at `/cart`: `GET /checkout` is a themed 404, and nothing in the
@@ -518,7 +521,6 @@ a key: it ships in every build and is gated per request. A key typed into the wr
 account still passes the shape check; that remains Stripe's answer to give, as decision 4
 already accepted.
 
-
 ## Amended 2026-10-22 — the confirmation page drops Stripe's redirect parameters from its URL
 
 **What changed and why.** Decision 6 accepted the client secret in the confirmation page's URL as
@@ -563,3 +565,5 @@ personal-data leak.
 of whatever sits in front of the site, and the browser may keep it as a redirect source.
 `no-referrer` and `private, no-store` stay, now as defence in depth. The link a buyer keeps is
 `/orders/<id>`, whose id remains the page's bearer capability.
+
+**The resume comes back when the poll ends.** A recorded return keeps the confirming copy only while its bounded poll runs. If the poll stops on an order that is still pending, the payment did not settle it: a `processing` payment can fail later, and `payment_intent.payment_failed` leaves the order pending and payable. The page then offers "Complete payment" again, while the order is payable, and drops the record (`returnPollIsOver` / `forgetStripeReturn`, `lib/order-return.ts`). Without this, a stale record (or one planted by anyone holding the order link) would hide the resume on every visit for the record's hour, longer than the hold itself.
