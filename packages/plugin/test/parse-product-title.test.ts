@@ -91,3 +91,36 @@ describe("parseProductTitle — text that is not well formed", () => {
 		expect(parseProductTitle("Mug \uD83D\uDE00")).toEqual({ title: "Mug \uD83D\uDE00" });
 	});
 });
+
+/** Issue #112: a title the CMS HAS but the store cannot hold is a REJECTION —
+ *  reported to the merchant on the commerce row — while a title the record does
+ *  not carry at all is only an absence, which preserves whatever is stored. */
+describe("parseProductTitle — rejection vs absence (#112)", () => {
+	test("absent or null carries NO rejection — absence never blanks a stored title", () => {
+		for (const value of [undefined, null]) {
+			expect(parseProductTitle(value)).not.toHaveProperty("rejection");
+		}
+	});
+
+	test("an over-long title is rejected with a merchant-facing reason naming both numbers", () => {
+		const over = parseProductTitle("T".repeat(612));
+		expect(over).toHaveProperty("rejection");
+		const { rejection } = over as { rejection: string };
+		expect(rejection).toBe("The title is 612 characters long; the most it can be is 500.");
+	});
+
+	test("blank and non-text titles are rejected too", () => {
+		expect(parseProductTitle("   ")).toMatchObject({ rejection: "The title is blank." });
+		expect(parseProductTitle(42)).toMatchObject({
+			rejection: "The title is not text (it is a number).",
+		});
+	});
+
+	test("every rejection fits a Block Kit nested context (≤200) and stores in the row's bound (≤500)", () => {
+		for (const value of ["T".repeat(1_000_000), "", { a: 1 }, true]) {
+			const result = parseProductTitle(value) as { rejection: string };
+			expect(result.rejection.length).toBeGreaterThan(0);
+			expect(result.rejection.length).toBeLessThanOrEqual(200);
+		}
+	});
+});

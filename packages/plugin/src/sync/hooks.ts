@@ -52,8 +52,8 @@ import { syncVariants } from "./variants.js";
  *    published, unpriced, sku-less product is now `active: true`, a state that
  *    could not previously occur. It is not purchasable: `listCommerceByIds`
  *    filters commerce-incomplete rows in SQL and `joinProduct` reports
- *    `purchasable: false`. The admin's status column says so ("active (not
- *    priced)").
+ *    `purchasable: false`. The admin's status label says so ("active (not
+ *    priced)"), and an untitled one reads "active (needs a title)".
  *  - **A content-only save churns `product_commerce.updated_at`.** A
  *    description edit or an image swap still mints a fresh idempotency key (see
  *    `derive-idempotency-key.ts`), applies a no-change upsert, and invalidates
@@ -212,8 +212,9 @@ export function hasPendingDraft(content: Record<string, unknown>): boolean {
 }
 
 /**
- * The ONLY fields the CMS sync may put on the wire — the title, and (added by
- * the callers) the ordering watermark.
+ * The ONLY fields the CMS sync may put on the wire — the title (or, issue #112,
+ * the reason the content's title was rejected), and (added by the callers) the
+ * ordering watermark.
  *
  * This is a `Pick`, not the full `UpsertProductCommerceInput`, and that is the
  * structural half of the guard. The wide type declares `sku`, `price`,
@@ -223,7 +224,10 @@ export function hasPendingDraft(content: Record<string, unknown>): boolean {
  * ADR-0013 argues for on the admin-edit side: the type first, the test second,
  * the prose third.
  */
-type SyncUpsertBody = Pick<UpsertProductCommerceInput, "title" | "contentUpdatedAt">;
+type SyncUpsertBody = Pick<
+	UpsertProductCommerceInput,
+	"title" | "titleRejection" | "contentUpdatedAt"
+>;
 
 /** The outcome of deriving a `product_commerce` upsert body from a content
  *  record. There is no "skip" and no "invalid" arm any more: the body carries
@@ -253,10 +257,19 @@ interface DerivedContent {
  *  - there is no sku to be missing, so the old "never mint a partial row" skip
  *    is gone. Minting the bare row IS the fix — it is what makes a CMS product
  *    show up in Pricing & inventory waiting to be priced;
- *  - an unusable title omits ONLY itself and surfaces as `titleProblem`. The
+ *  - an ABSENT title omits ONLY itself and surfaces as `titleProblem`. The
  *    row is still upserted (which keeps the "every CMS product has a row"
  *    invariant true for a collection with no `title` field at all), and the
- *    store PRESERVES any title already stored when the field is absent.
+ *    store PRESERVES any title already stored when the field is absent;
+ *  - a PRESENT but unusable title (over 500 characters, blank, not text) is
+ *    sent as `titleRejection` instead (issue #112). Omitting it used to keep the
+ *    PREVIOUS title, so the storefront showed the new name while a new order
+ *    snapshotted the old one, and the only signal was a log line. The store now
+ *    clears the stale title and records the reason, which the admin's Pricing &
+ *    inventory panel shows; the product cannot be ordered until the CMS entry is
+ *    renamed. The CMS save itself cannot be refused from here (see the module
+ *    header: the save hook returns a content bag, not a verdict, and a sandboxed
+ *    hook's error is logged while the save proceeds).
  */
 function deriveContent(content: Record<string, unknown>): DerivedContent {
 	// TITLE: read from `content.data.title` — the CONTENT's own field. One
@@ -264,6 +277,9 @@ function deriveContent(content: Record<string, unknown>): DerivedContent {
 	// cannot drift. Done here, in the SHARED derive, so both hooks carry it.
 	const parsed = parseProductTitle(readContentTitle(content));
 	if ("title" in parsed) return { body: { title: parsed.title } };
+	if (parsed.rejection !== undefined) {
+		return { body: { titleRejection: parsed.rejection }, titleProblem: parsed.problem };
+	}
 	return { body: {}, titleProblem: parsed.problem };
 }
 
@@ -280,8 +296,9 @@ function deriveContent(content: Record<string, unknown>): DerivedContent {
  *   - TITLE: taken from the CONTENT field `data.title` (not a top-level field —
  *     em-dash's `ContentItem` has none). Without it the row's title stays NULL
  *     and `createOrderFromCart` rejects the buyer's checkout with
- *     `PRODUCT_NOT_PRICED`. An unusable title is NOT a rejection: it omits only
- *     itself and logs, and the row is still created.
+ *     `PRODUCT_NOT_PRICED`. An ABSENT title omits only itself and logs; a
+ *     present but unusable one is sent as `titleRejection` (#112), which clears
+ *     the stored title. Either way the row is still created.
  *   - The upsert carries ONLY the title + the ordering watermark; it NEVER
  *     touches `active`/`deletedAt`. Activation is the guarded call below. It
  *     also never touches sku, price, stock, kind, tax class or dimensions —
@@ -391,7 +408,7 @@ export function createAfterSaveHandler(
 			// `joinProduct` reports `purchasable: false`. It is still LISTED on
 			// `/products` (that grid comes from CMS content), just with no price, no
 			// add-to-cart and a "not currently available" note. The admin status
-			// column distinguishes it ("active (not priced)").
+			// label distinguishes it ("active (not priced)").
 			if (event.content["status"] === PUBLISHED_STATUS && watermark !== undefined) {
 				await client.activateProductCommerce(
 					id,
@@ -679,7 +696,8 @@ async function readDocument(ctx: PluginContext, id: string, hook: string): Promi
  * FAILURE POSTURE — ONE class since PR 1b. The old plan §2.8 named two: a
  * VALIDATION failure (float price, bad currency, missing sku) and a TRANSPORT
  * failure. The validation class is gone with the commerce bag — the body is a
- * title, and an unusable title omits itself rather than rejecting — so only
+ * title; a missing title omits itself and an unusable one is sent as
+ * `titleRejection`, and neither rejects the upsert — so only
  * this rule remains:
  *
  *  - **Transport failure** (non-2xx / network) ⇒ FAIL CLOSED: no activate.

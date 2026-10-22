@@ -455,6 +455,7 @@ describe("createOrderFromCart", () => {
 		// day the per-cart-line loop is ever reintroduced.
 		let getOne = 0;
 		let getMany = 0;
+		let bySku = 0;
 		const base = h.productCommerce;
 		const spy: ProductCommerceStore = {
 			upsert: (input, key) => base.upsert(input, key),
@@ -465,6 +466,10 @@ describe("createOrderFromCart", () => {
 			getManyByProductId: (ids) => {
 				getMany++;
 				return base.getManyByProductId(ids);
+			},
+			getProductIdsBySku: (skus) => {
+				bySku++;
+				return base.getProductIdsBySku(skus);
 			},
 			softDelete: (id, key) => base.softDelete(id, key),
 			restore: (id, key, t, options) => base.restore(id, key, t, options),
@@ -486,6 +491,8 @@ describe("createOrderFromCart", () => {
 		expect(res.ok).toBe(true);
 		expect(getMany).toBe(1);
 		expect(getOne).toBe(0);
+		// Every line carries its productId, so the by-sku fallback (#111) costs nothing.
+		expect(bySku).toBe(0);
 	});
 
 	test("is idempotent: replay with same key returns the same order, no double snapshot, no re-adopt", async () => {
@@ -803,6 +810,17 @@ describe("createOrderFromCart sells only live products (publish gate + tombstone
 		expect(res).toEqual({ ok: false, reason: "PRODUCT_NOT_PRICED" });
 	});
 
+	test("a cart line whose product LOST its title after the add is refused PRODUCT_NOT_PRICED, leaving its hold held (#109)", async () => {
+		// An order line snapshots the title; there is none to snapshot.
+		const { cartId, reservationId } = await heldCart();
+		await h.productCommerce.upsert(
+			{ productId: brandProductId("p1"), sku: brandSku("SKU-1"), title: null },
+			idempotencyKey("untitle-p1"),
+		);
+		expect((await h.productCommerce.getByProductId(brandProductId("p1")))?.title).toBeNull();
+		await expectRefusedAndUntouched(cartId, reservationId);
+	});
+
 	test("republishing restores the sale: the same cart then checks out", async () => {
 		const { cartId } = await heldCart();
 		await h.productCommerce.deactivate(
@@ -821,5 +839,95 @@ describe("createOrderFromCart sells only live products (publish gate + tombstone
 		);
 		const res = await createOrderFromCart(h.createDeps, cmd(cartId, "k-2"));
 		expect(res.ok).toBe(true);
+	});
+});
+
+/**
+ * Issue #111: a cart line with NO productId (a bare add, or a cart from before
+ * the storefront threaded one) is resolved through its sku, which names exactly
+ * one live product row — so the cart checks out instead of failing on a
+ * reference the line never had. A sku nothing live answers for still refuses.
+ */
+describe("createOrderFromCart resolves a line with no productId by its sku", () => {
+	let h: OrderHarness;
+	beforeEach(() => {
+		h = makeOrderHarness();
+	});
+
+	test("a NULL-productId line is priced from the product row its sku names, and the order line snapshots that product", async () => {
+		await h.seedPhysical({
+			productId: "p-legacy",
+			sku: "SKU-LEGACY",
+			priceCents: 700,
+			title: "Legacy Widget",
+			onHand: 5,
+		});
+		const cartId = await h.cartWith([
+			{ sku: "SKU-LEGACY", productId: null, qty: 2, kind: "physical" },
+		]);
+		expect((await h.cartStore.get(cartId))!.lines[0]!.productId).toBeNull();
+
+		const res = await createOrderFromCart(h.createDeps, cmd(cartId));
+		if (!res.ok) throw new Error(`checkout failed: ${res.reason}`);
+		const line = res.order.lines[0]!;
+		expect(line.productId).toBe("p-legacy");
+		expect(line.sku).toBe("SKU-LEGACY");
+		expect(line.title).toBe("Legacy Widget");
+		expect(line.unitPrice).toBe(700);
+		expect(res.order.totals.subtotal).toBe(1400);
+	});
+
+	test("a line resolved by sku is refused PRODUCT_NOT_PRICED when its product renamed away from the sku between the resolve and the snapshot read", async () => {
+		// Digital: no stock is held, so no hold refuses the rename — the guard is
+		// the only thing standing between this line and a sale under a dead sku.
+		await h.seedDigital({
+			productId: "d-drift",
+			sku: "DIG-DRIFT",
+			priceCents: 900,
+			title: "Drifting ebook",
+		});
+		const cartId = await h.cartWith([
+			{ sku: "DIG-DRIFT", productId: null, qty: 1, kind: "digital" },
+		]);
+
+		const store = h.productCommerce;
+		const original = store.getProductIdsBySku.bind(store);
+		store.getProductIdsBySku = async (skus) => {
+			const found = await original(skus);
+			const row = await store.getByProductId(brandProductId("d-drift"));
+			if (row === null) throw new Error("arrange: the product vanished");
+			const renamed = await store.updateCommerceFields(
+				{ productId: brandProductId("d-drift"), sku: brandSku("DIG-DRIFT-NEW") },
+				idempotencyKey("drift-rename"),
+				row.updatedAt.toISOString(),
+			);
+			if (!renamed.ok) throw new Error("arrange: the rename did not apply");
+			return found;
+		};
+
+		expect(await createOrderFromCart(h.createDeps, cmd(cartId))).toEqual({
+			ok: false,
+			reason: "PRODUCT_NOT_PRICED",
+		});
+		expect(await h.orderStore.getByIdempotencyKey(idempotencyKey("k-order"))).toBeNull();
+	});
+
+	test("a NULL-productId line whose sku no live product row holds is still refused PRODUCT_NOT_PRICED", async () => {
+		await h.seedPhysical({
+			productId: "p-gone",
+			sku: "SKU-GONE",
+			priceCents: 700,
+			title: "Gone Widget",
+			onHand: 5,
+		});
+		const cartId = await h.cartWith([
+			{ sku: "SKU-GONE", productId: null, qty: 1, kind: "physical" },
+		]);
+		await h.productCommerce.softDelete(brandProductId("p-gone"), idempotencyKey("delete-gone"));
+
+		expect(await createOrderFromCart(h.createDeps, cmd(cartId))).toEqual({
+			ok: false,
+			reason: "PRODUCT_NOT_PRICED",
+		});
 	});
 });

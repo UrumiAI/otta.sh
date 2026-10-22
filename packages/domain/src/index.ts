@@ -679,7 +679,13 @@ export {
 	upsertProductVariant,
 	type ProductCommerceDeps,
 } from "./product-commerce/use-cases.js";
-export { isProductLive } from "./product-commerce/sellable.js";
+export {
+	isProductLive,
+	isProductSellable,
+	unsellableReasons,
+	type SellabilityFacts,
+	type UnsellableReason,
+} from "./product-commerce/sellable.js";
 export {
 	DOWNLOAD_FALLBACK_CONTENT_TYPE,
 	DOWNLOAD_FALLBACK_FILENAME,
@@ -691,6 +697,7 @@ export {
 	sanitizeDownloadFilename,
 	validateDownloadAsset,
 } from "./product-commerce/download-asset.js";
+export { NO_TITLE, resolveTitleWrite, type TitleState } from "./product-commerce/title-write.js";
 export {
 	HoldExpiredError,
 	type AdjustLineInput,
@@ -714,8 +721,11 @@ export {
 	expireHolds,
 	expireHoldsBatch,
 	getCart,
+	isStaleCurrencyCart,
 	removeLine,
 	replaceSpentCart,
+	replaceStaleCurrencyCart,
+	STALE_CART_RELEASE_LIMIT,
 	updateLine,
 	type AddLineResult,
 	type CartDeps,
@@ -723,8 +733,10 @@ export {
 	type RemoveLineResult,
 	type ReplaceSpentCartDeps,
 	type ReplaceSpentCartResult,
+	type ReplaceStaleCurrencyCartResult,
 	type UpdateLineResult,
 } from "./cart/use-cases.js";
+export { resolveLineProductIds } from "./cart/line-products.js";
 // Phase 7: reporting (read-only) + settings tiering.
 export type {
 	DateRange,

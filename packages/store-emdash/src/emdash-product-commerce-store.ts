@@ -49,6 +49,8 @@ import {
 	isValidLowStockThreshold,
 	MissingProductIdError,
 	MissingVariantKeyError,
+	NO_TITLE,
+	resolveTitleWrite,
 	SkuConflictError,
 	SkuHeldStockError,
 	SkuStockConflictError,
@@ -407,6 +409,40 @@ export class EmdashProductCommerceStore implements ProductCommerceStore {
 	}
 
 	/**
+	 * Live product rows by their own sku (port doc; issue #111), through the
+	 * `sku_owners/{sku}` claim — the one place a sku points back at its owner, since
+	 * product documents are keyed and indexed by product id, never by sku.
+	 *
+	 * A claim alone is not proof: it is written one round trip before the document
+	 * that holds the sku, so a crashed writer can leave a live claim nothing backs.
+	 * The owner's document is therefore read back and must still be live AND still
+	 * carry this sku. A variant's claim never answers (see the port).
+	 */
+	async getProductIdsBySku(skus: Sku[]): Promise<Map<Sku, ProductId>> {
+		const unique = [...new Set(skus)];
+		const result = new Map<Sku, ProductId>();
+		if (unique.length === 0) return result;
+		const claims = await Promise.all(unique.map((s) => this.#skuOwners.get(s)));
+		const candidates = new Map<Sku, ProductId>();
+		unique.forEach((s, i) => {
+			const claim = claims[i];
+			if (claim === null || claim === undefined) return;
+			if (!claim.live || claim.ownerKind !== "product") return;
+			candidates.set(s, claim.ownerId);
+		});
+		if (candidates.size === 0) return result;
+		const docs = new Map(
+			(await this.#readBatch([...candidates.values()])).map((doc) => [doc.productId, doc]),
+		);
+		for (const [s, owner] of candidates) {
+			const doc = docs.get(owner);
+			if (doc === undefined || doc.lifecycle !== "live" || doc.sku !== s) continue;
+			result.set(s, owner);
+		}
+		return result;
+	}
+
+	/**
 	 * Batch catalog read: a view per commerce-complete LIVE row (sku and price
 	 * set), inactive rows included and FLAGGED — the store reports state, and the
 	 * purchasability decision lives in the plugin's join.
@@ -696,7 +732,10 @@ export class EmdashProductCommerceStore implements ProductCommerceStore {
 					),
 					sku: input.sku ?? doc.sku,
 					price: input.price ?? doc.price,
-					title: input.title !== undefined ? input.title : doc.title,
+					...resolveTitleWrite(input, {
+						title: doc.title,
+						titleRejection: doc.titleRejection ?? null,
+					}),
 					taxClass: input.taxClass !== undefined ? input.taxClass : doc.taxClass,
 					weightGrams: input.weightGrams !== undefined ? input.weightGrams : doc.weightGrams,
 					lengthMm: input.lengthMm !== undefined ? input.lengthMm : doc.lengthMm,
@@ -731,7 +770,7 @@ export class EmdashProductCommerceStore implements ProductCommerceStore {
 				lifecycle: "live",
 				sku: input.sku ?? null,
 				price: input.price ?? null,
-				title: input.title ?? null,
+				...resolveTitleWrite(input, NO_TITLE),
 				taxClass: input.taxClass ?? null,
 				taxStatus: "taxable",
 				// compare-at / cost / inventory-policy are EDIT-ONLY: a fresh row starts at

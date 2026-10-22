@@ -186,3 +186,24 @@ removes the N-sequential-reads cost and restores merchant title search, at which
 `product_commerce.title` and sourcing order-line titles from the CMS becomes worth re-pricing.
 Named here so a future reader watches for the right upstream change instead of re-deriving this
 analysis.
+
+## Amended 2026-10-21 — a rejected title clears the cache and says why (#112)
+
+The sync used to treat every unusable title the same way: omit it, and let the store keep whatever
+title it already had. That is right when the content carries **no** title (absence says nothing about
+the name), but wrong when it carries one the store cannot hold — over 500 characters, blank, or not
+text. Then the previous name stayed on the row: the storefront showed the new title, a new order
+snapshotted the old one, and the only signal was a log line.
+
+The two cases are now told apart:
+
+- **Absent** — unchanged. The title is omitted and the stored one is preserved.
+- **Present but unusable** — the sync sends `titleRejection` (a merchant-facing reason) instead of a
+  title. The store sets `title` to null and records the reason on the row, under the same watermark
+  and replay key as a title write. The next accepted title clears it.
+
+A null title is already what every sell path refuses (`createOrderFromCart`, and the shared
+sellability rule from #109/#166), so the product stops being orderable under a name it no longer
+has. The Pricing & inventory panel shows the reason as an alert. Refusing the CMS save itself was
+considered and is not possible from a sandboxed save hook (see `packages/plugin/src/sync/hooks.ts`):
+the hook returns a content bag, not a verdict, and its error is logged while the save proceeds.

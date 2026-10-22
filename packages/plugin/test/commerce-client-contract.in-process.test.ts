@@ -40,8 +40,18 @@
  * The fake stands in for the PROVIDER only; the order store, the refund ledger
  * and its ceiling arbitration are the real adapters.
  */
-import { email as toEmail } from "@urumi.ai/otta-domain";
+import {
+	addLine,
+	cents,
+	currency as toCurrency,
+	email as toEmail,
+	idempotencyKey as toIdempotencyKey,
+	money,
+	productId as toProductId,
+	sku as toSku,
+} from "@urumi.ai/otta-domain";
 import { FakePaymentGateway, FixedClock } from "@urumi.ai/otta-domain/testing";
+import { EmdashProductCommerceStore } from "@urumi.ai/otta-store-emdash";
 import { afterAll, afterEach, beforeAll, describe, expect, test, vi } from "vitest";
 import {
 	IDEMPOTENCY_KEY_MAX,
@@ -248,7 +258,7 @@ function inProcessTier(): CommerceClientTier {
 					{
 						sku: spec.sku,
 						...(spec.price !== undefined ? { price: spec.price } : {}),
-						...(spec.title !== undefined ? { title: spec.title } : {}),
+						title: spec.title ?? `Product ${spec.productId}`,
 						...(spec.onHand !== undefined ? { initialOnHand: spec.onHand } : {}),
 						...(spec.productKind !== undefined ? { productKind: spec.productKind } : {}),
 					},
@@ -600,7 +610,12 @@ describe("in-process commerce: what is deliberately not wired yet", () => {
 		// asserted against the state it must not damage rather than against nothing.
 		await client.upsertProductCommerce(
 			"prod-nogw",
-			{ sku: "SKU-NOGW", price: { amount: 2500, currency: "USD" }, initialOnHand: 3 },
+			{
+				sku: "SKU-NOGW",
+				price: { amount: 2500, currency: "USD" },
+				title: "No gateway",
+				initialOnHand: 3,
+			},
 			"nogw-seed",
 		);
 		await client.activateProductCommerce("prod-nogw", "nogw-publish", "2026-01-01T00:00:00.000Z");
@@ -794,7 +809,12 @@ describe("in-process commerce: a zone tie-break is logged with ids only", () => 
 		await stores.shippingRules.createZone({ id: "tie-a", name: "A", regions: ["US"] });
 		await client.upsertProductCommerce(
 			"prod-tie",
-			{ sku: "SKU-TIE", price: { amount: 1000, currency: "USD" }, initialOnHand: 3 },
+			{
+				sku: "SKU-TIE",
+				price: { amount: 1000, currency: "USD" },
+				title: "Tie",
+				initialOnHand: 3,
+			},
 			"tie-seed",
 		);
 		await client.activateProductCommerce("prod-tie", "tie-publish", "2026-01-01T00:00:00.000Z");
@@ -862,6 +882,102 @@ describe("in-process admin rules: zone regions must be ISO codes", () => {
 		expect((await harness.stores.shippingRules.getZone("z-gb"))?.regions).toEqual(["GB", "US-CA"]);
 		expect(await rules.updateZone("z-gb", { name: "GB", regions: null })).toMatchObject({
 			ok: true,
+		});
+	});
+});
+
+/**
+ * Issue #111 — the by-sku fallback on the in-process client. Two facts no shared
+ * case can pin, because they need a hook between the client and its own store:
+ * a fully threaded cart never pays for the fallback, and a line resolved by sku
+ * is refused when the product renamed away from that sku before the price read.
+ */
+describe("in-process commerce: a cart line with no productId resolves by sku (#111)", () => {
+	let harness: InProcessCommerceHarness;
+
+	beforeAll(async () => {
+		harness = await makeInProcessCommerce();
+	}, 120_000);
+	afterAll(async () => {
+		await harness.close();
+	});
+	afterEach(() => {
+		vi.restoreAllMocks();
+	});
+
+	async function seedDigital(id: string, s: string): Promise<void> {
+		const pc = harness.stores.productCommerce;
+		await pc.upsert(
+			{
+				productId: toProductId(id),
+				sku: toSku(s),
+				price: money(cents(900), toCurrency("USD")),
+				title: `Product ${id}`,
+				productKind: "digital",
+			},
+			toIdempotencyKey(`seed-${id}`),
+		);
+		await pc.activate(toProductId(id), toIdempotencyKey(`pub-${id}`), "2026-01-01T00:00:00.000Z");
+	}
+
+	test("a fully threaded cart makes NO by-sku read on getCart or quoteCheckout", async () => {
+		const { client } = harness;
+		await client.upsertProductCommerce(
+			"prod-hot",
+			{
+				sku: "SKU-HOT",
+				title: "Hot product",
+				price: { amount: 1000, currency: "USD" },
+				initialOnHand: 3,
+			},
+			"hot-seed",
+		);
+		await client.activateProductCommerce("prod-hot", "hot-publish", "2026-01-01T00:00:00.000Z");
+		const { cartId } = await client.createCart("USD");
+		const added = await client.addCartLine(cartId, "SKU-HOT", "prod-hot", 1, "hot-add");
+		if (!added.ok) throw new Error(`arrange failed: ${added.reason}`);
+
+		const bySku = vi.spyOn(EmdashProductCommerceStore.prototype, "getProductIdsBySku");
+		expect((await client.getCart(cartId)).ok).toBe(true);
+		expect((await client.quoteCheckout({ cartId })).ok).toBe(true);
+		expect(bySku).not.toHaveBeenCalled();
+	});
+
+	test("a line resolved by sku is refused PRODUCT_NOT_PRICED when its product renamed away from the sku between the resolve and the price read", async () => {
+		const { client, stores } = harness;
+		await seedDigital("prod-drift", "SKU-DRIFT");
+		const { cartId } = await client.createCart("USD");
+		const added = await addLine(
+			{ cartStore: stores.cartStore, inventoryStore: stores.inventory, clock: stores.clock },
+			cartId,
+			toSku("SKU-DRIFT"),
+			null,
+			1,
+			toIdempotencyKey("drift-add"),
+			"digital",
+		);
+		if (!added.ok) throw new Error(`arrange failed: ${added.reason}`);
+		// Unraced, the line prices through its sku.
+		expect((await client.quoteCheckout({ cartId })).ok).toBe(true);
+
+		const original = EmdashProductCommerceStore.prototype.getProductIdsBySku;
+		vi.spyOn(EmdashProductCommerceStore.prototype, "getProductIdsBySku").mockImplementation(
+			async function (this: EmdashProductCommerceStore, skus) {
+				const found = await original.call(this, skus);
+				const row = await stores.productCommerce.getByProductId(toProductId("prod-drift"));
+				if (row === null) throw new Error("arrange: the product vanished");
+				const renamed = await stores.productCommerce.updateCommerceFields(
+					{ productId: toProductId("prod-drift"), sku: toSku("SKU-DRIFT-NEW") },
+					toIdempotencyKey("drift-rename"),
+					row.updatedAt.toISOString(),
+				);
+				if (!renamed.ok) throw new Error("arrange: the rename did not apply");
+				return found;
+			},
+		);
+		expect(await client.quoteCheckout({ cartId })).toEqual({
+			ok: false,
+			reason: "PRODUCT_NOT_PRICED",
 		});
 	});
 });

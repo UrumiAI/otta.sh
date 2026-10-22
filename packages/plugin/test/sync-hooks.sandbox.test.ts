@@ -526,25 +526,76 @@ describe("sync hooks — afterSave keeps product_commerce alive and its title cu
 			expect(doc.title).toBeNull();
 			expect(doc.contentUpdatedAt).toBe(WM);
 		}
+		// #112: a title that is THERE but unusable is recorded as a rejection the
+		// admin can show; an absent one is not (there is nothing to reject).
+		expect((await requireDoc(pid("prod-empty-title"))).titleRejection).toBe("The title is blank.");
+		expect((await requireDoc(pid("prod-blank-title"))).titleRejection).toBe("The title is blank.");
+		expect((await requireDoc(numericId)).titleRejection).toBe(
+			"The title is not text (it is a number).",
+		);
+		expect((await requireDoc(pid("prod-absent-title"))).titleRejection ?? null).toBeNull();
 	});
 
-	test("a title longer than the store's 500-char bound is omitted — a data problem never overwrites a good stored name", async () => {
+	test("#112 a title longer than the store's 500-char bound is REJECTED: the stale name is cleared and the reason recorded, so storefront and order lines cannot disagree", async () => {
 		const okId = pid("prod-title-500");
 		const overId = pid("prod-title-501");
-		// The over-long case runs against a row that ALREADY HAS a title, because
-		// "omitted" only means something against a stored value: an omitted field is
-		// preserved, and it is that preservation — not the absence of a wire key —
-		// that keeps the merchant's last good name on the column an order line
-		// snapshots.
+		// The over-long case runs against a row that ALREADY HAS a title. Before
+		// #112 the sync omitted the title and the store kept that previous name — so
+		// the storefront showed the new one while a new order snapshotted the old.
 		await seedPricedRow(overId, "SKU-SH-LONGTITLE");
 
 		await afterSave(productContent(okId, {}, "T".repeat(500)));
-		await afterSave(productContent(overId, {}, "T".repeat(501)));
+		const outcome = await afterSave(productContent(overId, {}, "T".repeat(501)));
+		expect(outcome).toEqual({ result: null }); // still never fails the CMS save.
 
-		expect((await requireDoc(okId)).title).toBe("T".repeat(500)); // exactly at the bound.
-		expect((await requireDoc(overId)).title).toBe("Priced by the admin");
-		// …and the row is still refreshed, so the sync is not withheld over it.
-		expect((await requireDoc(overId)).contentUpdatedAt).toBe(WM);
+		const ok = await requireDoc(okId);
+		expect(ok.title).toBe("T".repeat(500)); // exactly at the bound.
+		expect(ok.titleRejection ?? null).toBeNull();
+
+		const over = await requireDoc(overId);
+		expect(over.title).toBeNull();
+		expect(over.titleRejection).toBe(
+			"The title is 501 characters long; the most it can be is 500.",
+		);
+		// …and the row is still refreshed, its commercial columns untouched.
+		expect(over.contentUpdatedAt).toBe(WM);
+		expect(over.sku).toBe("SKU-SH-LONGTITLE");
+	});
+
+	test("#112 renaming back to a valid title clears the rejection on the next save", async () => {
+		const id = pid("prod-title-fixed");
+		await afterSave(productContent(id, {}, "T".repeat(700)));
+		expect((await requireDoc(id)).titleRejection).toBe(
+			"The title is 700 characters long; the most it can be is 500.",
+		);
+
+		await afterSave(productContent(id, { updatedAt: "2026-07-10T05:00:00.000Z" }, "Cobalt Mug"));
+
+		const fixed = await requireDoc(id);
+		expect(fixed.title).toBe("Cobalt Mug");
+		expect(fixed.titleRejection).toBeNull();
+	});
+
+	test("#112 an ABSENT title still preserves a good stored name — absence is not a rejection", async () => {
+		const id = pid("prod-title-absent-kept");
+		await seedPricedRow(id, "SKU-SH-ABSENT");
+
+		await afterSave(productContent(id, {}, null));
+
+		const doc = await requireDoc(id);
+		expect(doc.title).toBe("Priced by the admin");
+		expect(doc.titleRejection ?? null).toBeNull();
+	});
+
+	test("#112 a publish carries the rejection too — the same derive feeds both hooks", async () => {
+		const id = pid("prod-title-publish-reject");
+		await seedPricedRow(id, "SKU-SH-PUBREJ");
+
+		await afterPublish(productContent(id, { status: "published" }, "P".repeat(900)));
+
+		const doc = await requireDoc(id);
+		expect(doc.title).toBeNull();
+		expect(doc.titleRejection).toBe("The title is 900 characters long; the most it can be is 500.");
 	});
 
 	test("HEAL ON RE-SAVE: an existing NULL-title row gets its title on the merchant's next save (a fresh updatedAt ⇒ a fresh key ⇒ the upsert applies)", async () => {

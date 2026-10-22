@@ -416,6 +416,15 @@ export function requireTitle(value: string | null): string | null {
 	return requireWellFormedText("title", value);
 }
 
+/** Issue #112: the merchant-facing reason a CMS title was not accepted. Bounded
+ *  like the title it stands in for, and well-formed text like any stored string. */
+export function requireTitleRejection(value: string, title: string | null | undefined): string {
+	if (title !== undefined) fail("titleRejection", "must not be sent with title");
+	if (typeof value !== "string" || value.length === 0) fail("titleRejection", "must not be empty");
+	if (value.length > 500) fail("titleRejection", "must be at most 500 characters");
+	return requireWellFormedText("titleRejection", value);
+}
+
 export function requireQty(value: number): number {
 	if (!Number.isSafeInteger(value) || value <= 0) fail("qty", "must be a positive integer");
 	if (value > CART_LINE_MAX_QTY) {

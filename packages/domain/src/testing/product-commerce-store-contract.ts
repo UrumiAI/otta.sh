@@ -295,6 +295,124 @@ export function productCommerceStoreContract(
 			expect((await h.store.getByProductId(pid))?.title).toBe("Blue Mug");
 		});
 
+		// ── #112: a REJECTED title is a recorded state, never a silent keep ─────
+		// The CMS has a title the store cannot hold (over-long, blank, not text).
+		// Keeping the previous title would let an order line snapshot a name the
+		// storefront no longer shows; so the stale name stops being the row's
+		// title, and the reason is kept where the admin can show it.
+
+		test("#112 a fresh row reads titleRejection: null", async () => {
+			const h = await makeStore();
+			const row = await h.store.upsert(
+				{ productId: productId("prod-tr-fresh"), title: "Blue Mug" },
+				idempotencyKey("k1"),
+			);
+			expect(row.titleRejection).toBeNull();
+		});
+
+		test("#112 a titleRejection CLEARS the stored title and records the reason — the stale name is never what an order line snapshots", async () => {
+			const h = await makeStore();
+			const pid = productId("prod-tr-reject");
+			await h.store.upsert(
+				{ productId: pid, sku: sku("SKU-TR-1"), price: money(cents(900), currency("USD")) },
+				idempotencyKey("k0"),
+			);
+			await h.store.upsert({ productId: pid, title: "Blue Mug" }, idempotencyKey("k1"));
+
+			const rejected = await h.store.upsert(
+				{ productId: pid, titleRejection: "The title is 612 characters; the most is 500." },
+				idempotencyKey("k2"),
+			);
+
+			expect(rejected.title).toBeNull();
+			expect(rejected.titleRejection).toBe("The title is 612 characters; the most is 500.");
+			const read = await h.store.getByProductId(pid);
+			expect(read?.title).toBeNull();
+			expect(read?.titleRejection).toBe("The title is 612 characters; the most is 500.");
+			// Nothing else moves: the rejection is about the title alone.
+			expect(read?.sku).toBe("SKU-TR-1");
+			expect(read?.price).toEqual({ amount: 900, currency: "USD" });
+		});
+
+		test("#112 a rejected title is NOT the view's title — checkout reads the same cleared name", async () => {
+			const h = await makeStore();
+			const pid = productId("prod-tr-view");
+			await h.store.upsert(
+				{
+					productId: pid,
+					sku: sku("SKU-TR-V"),
+					price: money(cents(900), currency("USD")),
+					title: "Blue Mug",
+				},
+				idempotencyKey("k1"),
+			);
+			await h.store.upsert({ productId: pid, titleRejection: "too long" }, idempotencyKey("k2"));
+			const [view] = await h.store.listCommerceByIds([pid]);
+			expect(view?.title ?? null).toBeNull();
+		});
+
+		test("#112 the next ACCEPTED title clears the rejection", async () => {
+			const h = await makeStore();
+			const pid = productId("prod-tr-heal");
+			await h.store.upsert({ productId: pid, title: "Blue Mug" }, idempotencyKey("k1"));
+			await h.store.upsert({ productId: pid, titleRejection: "too long" }, idempotencyKey("k2"));
+
+			const healed = await h.store.upsert(
+				{ productId: pid, title: "Cobalt Mug" },
+				idempotencyKey("k3"),
+			);
+
+			expect(healed.title).toBe("Cobalt Mug");
+			expect(healed.titleRejection).toBeNull();
+		});
+
+		test("#112 an OMITTED title still preserves both the stored title and any recorded rejection", async () => {
+			const h = await makeStore();
+			const good = productId("prod-tr-omit-good");
+			await h.store.upsert({ productId: good, title: "Blue Mug" }, idempotencyKey("k1"));
+			const kept = await h.store.upsert({ productId: good, taxClass: null }, idempotencyKey("k2"));
+			// The pre-#112 protection, unchanged: absence never blanks a good title.
+			expect(kept.title).toBe("Blue Mug");
+			expect(kept.titleRejection).toBeNull();
+
+			const bad = productId("prod-tr-omit-bad");
+			await h.store.upsert({ productId: bad, titleRejection: "too long" }, idempotencyKey("k1"));
+			const still = await h.store.upsert({ productId: bad, taxClass: null }, idempotencyKey("k2"));
+			expect(still.title).toBeNull();
+			expect(still.titleRejection).toBe("too long");
+		});
+
+		test("#112 a rejection on a STALE watermark is dropped like any stale write — it never clears a newer title", async () => {
+			const h = await makeStore();
+			const pid = productId("prod-tr-stale");
+			await h.store.upsert(
+				{ productId: pid, title: "Cobalt Mug", contentUpdatedAt: "2026-07-10T02:00:00.000Z" },
+				idempotencyKey("k-new"),
+			);
+
+			const stale = await h.store.upsert(
+				{
+					productId: pid,
+					titleRejection: "too long",
+					contentUpdatedAt: "2026-07-10T01:00:00.000Z",
+				},
+				idempotencyKey("k-old"),
+			);
+
+			expect(stale.title).toBe("Cobalt Mug");
+			expect(stale.titleRejection).toBeNull();
+		});
+
+		test("#112 a rejection on a CREATE mints the row untitled, with the reason", async () => {
+			const h = await makeStore();
+			const row = await h.store.upsert(
+				{ productId: productId("prod-tr-create"), titleRejection: "The title is blank." },
+				idempotencyKey("k1"),
+			);
+			expect(row.title).toBeNull();
+			expect(row.titleRejection).toBe("The title is blank.");
+		});
+
 		test("upsert preserves fields omitted (undefined) from the input and clears fields explicitly set to null", async () => {
 			const h = await makeStore();
 			const pid = productId("prod-3");
@@ -3364,6 +3482,89 @@ export function productCommerceStoreContract(
 		// separately is a ROW. Everything below is ADDITIVE: with no variants
 		// declared — the state the entire live catalog is in — not one assertion
 		// above changes, which is what the first case in this block pins.
+
+		describe("getProductIdsBySku: a live product row by its own sku (#111)", () => {
+			test("answers the live row carrying each sku; a missing sku is absent; duplicates collapse; an empty batch is empty", async () => {
+				const h = await makeStore();
+				await seedEditable(h, "prod-bysku-a", { sku: "BYSKU-A" });
+				await seedEditable(h, "prod-bysku-b", { sku: "BYSKU-B" });
+
+				const found = await h.store.getProductIdsBySku([
+					sku("BYSKU-A"),
+					sku("BYSKU-B"),
+					sku("BYSKU-A"),
+					sku("BYSKU-NOPE"),
+				]);
+				expect(found).toEqual(
+					new Map([
+						[sku("BYSKU-A"), productId("prod-bysku-a")],
+						[sku("BYSKU-B"), productId("prod-bysku-b")],
+					]),
+				);
+				expect(await h.store.getProductIdsBySku([])).toEqual(new Map());
+			});
+
+			test("ignores the publish gate and the price: an unpublished, unpriced row still answers (callers apply those checks)", async () => {
+				const h = await makeStore();
+				await h.store.upsert(
+					{ productId: productId("prod-bysku-raw"), sku: sku("BYSKU-RAW") },
+					idempotencyKey("bysku-raw"),
+				);
+				expect(await h.store.getProductIdsBySku([sku("BYSKU-RAW")])).toEqual(
+					new Map([[sku("BYSKU-RAW"), productId("prod-bysku-raw")]]),
+				);
+			});
+
+			test("a SOFT-DELETED row no longer answers, and a new product that reuses the freed sku does", async () => {
+				const h = await makeStore();
+				await seedEditable(h, "prod-bysku-old", { sku: "BYSKU-REUSED" });
+				await h.store.softDelete(productId("prod-bysku-old"), idempotencyKey("bysku-del"));
+				expect(await h.store.getProductIdsBySku([sku("BYSKU-REUSED")])).toEqual(new Map());
+
+				await seedEditable(h, "prod-bysku-new", { sku: "BYSKU-REUSED" });
+				expect(await h.store.getProductIdsBySku([sku("BYSKU-REUSED")])).toEqual(
+					new Map([[sku("BYSKU-REUSED"), productId("prod-bysku-new")]]),
+				);
+			});
+
+			test("a renamed row answers under its NEW sku only", async () => {
+				const h = await makeStore();
+				const seeded = await seedEditable(h, "prod-bysku-ren", { sku: "BYSKU-BEFORE" });
+				const renamed = await h.store.updateCommerceFields(
+					{ productId: productId("prod-bysku-ren"), sku: sku("BYSKU-AFTER") },
+					idempotencyKey("bysku-ren"),
+					seeded.updatedAt.toISOString(),
+				);
+				if (!renamed.ok) throw new Error("arrange: the rename did not apply");
+				expect(await h.store.getProductIdsBySku([sku("BYSKU-BEFORE"), sku("BYSKU-AFTER")])).toEqual(
+					new Map([[sku("BYSKU-AFTER"), productId("prod-bysku-ren")]]),
+				);
+			});
+
+			test("a sku a live VARIANT holds is absent — a size never resolves to its parent's row", async () => {
+				const h = await makeStore();
+				await seedEditable(h, "prod-bysku-v", { sku: "BYSKU-PARENT" });
+				const declared = await h.store.upsertVariant(
+					{
+						productId: productId("prod-bysku-v"),
+						variantKey: "large",
+						title: "Large",
+						contentUpdatedAt: WM,
+					},
+					idempotencyKey("bysku-v-declare"),
+				);
+				const priced = await h.store.updateVariantFields(
+					{ productId: productId("prod-bysku-v"), variantKey: "large", sku: sku("BYSKU-LARGE") },
+					idempotencyKey("bysku-v-sku"),
+					declared.updatedAt.toISOString(),
+				);
+				if (!priced.ok) throw new Error("arrange: the variant could not take its sku");
+
+				expect(await h.store.getProductIdsBySku([sku("BYSKU-LARGE"), sku("BYSKU-PARENT")])).toEqual(
+					new Map([[sku("BYSKU-PARENT"), productId("prod-bysku-v")]]),
+				);
+			});
+		});
 
 		describe("variants: one commerce row per sellable unit", () => {
 			/** The one instant every variant case uses where ordering is not the

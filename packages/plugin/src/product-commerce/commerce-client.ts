@@ -49,9 +49,16 @@ export interface UpsertProductCommerceInput {
 	 *  `TITLE_FIELD` for the evidence — so the storefront heading and the order
 	 *  line can never drift. A row whose title is NULL is UNPURCHASABLE
 	 *  (`createOrderFromCart` rejects it with `PRODUCT_NOT_PRICED`). OMITTED —
-	 *  never sent as `""` — when the content has no usable title, which the store
-	 *  reads as "preserve whatever is already stored". */
+	 *  never sent as `""` — when the content carries no title (the store keeps
+	 *  what is stored); a present but unusable title is sent as
+	 *  `titleRejection` instead (#112). */
 	title?: string;
+	/** The content HAS a title and it cannot be stored (issue #112) — over-long,
+	 *  blank, or not text. The merchant-facing reason (≤500 chars). The store
+	 *  clears the stale title and records this, so the product is not ordered
+	 *  under its previous name and the admin can say why. Never sent with
+	 *  `title`. */
+	titleRejection?: string;
 	taxClass?: string | null;
 	weightGrams?: number | null;
 	lengthMm?: number | null;
@@ -109,7 +116,7 @@ export interface ProductCommerceBatchItem {
 	compareAtPrice: CommerceMoney | null;
 	inStock: boolean;
 	/** The publish gate: the join derives purchasability from it
-	 *  (`purchasable ⟺ present && active`). */
+	 *  (`purchasable ⟺ present && isProductSellable`: active, priced, titled). */
 	active: boolean;
 	/** The row's tax class (null ⇒ `standard`) and tax status, so a shop page that
 	 *  shows prices with or without tax (#423) taxes the product as checkout does.
@@ -179,7 +186,7 @@ export interface ProductVariantWire {
  *  nothing about the row above it, so it reads `true` for a stocked size of an
  *  unpublished or soft-deleted product. Offer a size only when its PARENT's
  *  `active` says the product is — the same join the product level already
- *  makes (`purchasable ⟺ commerce !== null && commerce.active`). */
+ *  makes (`purchasable ⟺ commerce !== null && isProductSellable(commerce)`). */
 export interface ProductVariantSummaryWire extends ProductVariantWire {
 	inStock: boolean;
 }
@@ -361,6 +368,22 @@ export interface CommerceClient {
 	 * the operator saved, else the spent cart's.
 	 */
 	replaceCart(spentCartId: string, currency?: string): Promise<ReplaceCartResult>;
+	/**
+	 * The replacement for a STALE-CURRENCY cart (#440): an active cart in another
+	 * currency than the one the operator SAVED, which nothing priced in the store
+	 * currency can be checked out of. Every hold the stale cart has is released and
+	 * a new, empty cart in the store currency is returned — nothing converted, no
+	 * line carried over. The key is derived server-side from the stale cart and the
+	 * store currency, so the same stale cart always gets the same new cart and
+	 * racers converge. Refused `CART_NOT_FOUND`, `CART_CHECKED_OUT`,
+	 * `LINE_CHECKED_OUT` (a release raced a checkout), or `CART_CURRENCY_CURRENT` —
+	 * the cart is in the store currency, or the store never saved one.
+	 */
+	replaceStaleCurrencyCart(staleCartId: string): Promise<ReplaceStaleCurrencyCartResult>;
+	/** The store currency the operator SAVED, or `null` when none ever was (the
+	 *  storefront then names none, so no cart can be stale against it). One
+	 *  settings read; for the cart page's stale-currency notice. */
+	getSavedStoreCurrency(): Promise<string | null>;
 	/** The effective cart-hold window in whole minutes — the admin's saved
 	 *  `holdTtlMinutes` (or its default), which every add/adjust stamps and every
 	 *  read measures against (issue #127). For shopper-facing copy. */
@@ -1000,6 +1023,14 @@ export interface ShopperStateWire {
 export type ReplaceCartResult =
 	| { ok: true; cartId: string }
 	| { ok: false; reason: "CART_NOT_FOUND" | "CART_NOT_CHECKED_OUT" | "ORDER_NOT_FINISHED" };
+
+/** `replaceStaleCurrencyCart`'s answer. */
+export type ReplaceStaleCurrencyCartResult =
+	| { ok: true; cartId: string }
+	| {
+			ok: false;
+			reason: "CART_NOT_FOUND" | "CART_CHECKED_OUT" | "CART_CURRENCY_CURRENT" | "LINE_CHECKED_OUT";
+	  };
 
 export interface CartWire {
 	cartId: string;

@@ -311,6 +311,7 @@ export {
 	type CartResult,
 	type CartWire,
 	type ReplaceCartResult,
+	type ReplaceStaleCurrencyCartResult,
 	type CommerceClient,
 	type CommerceMoney,
 	type CommerceProductKind,
@@ -379,6 +380,7 @@ export {
 	type CartLineUpdateRouteInput,
 	type CartReadRouteInput,
 	type CartReadRouteResult,
+	type CartStaleCurrencyWire,
 } from "./storefront/cart-routes.js";
 export {
 	type CartLinePricing,

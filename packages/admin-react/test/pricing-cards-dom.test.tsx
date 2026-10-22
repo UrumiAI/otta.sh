@@ -420,6 +420,22 @@ test("a SKU the store refuses keeps what was typed, with the reason beside the S
 	expect(c.textContent).toContain('Another product uses "MUG".');
 });
 
+test("a priced product with no title says it cannot be sold until the entry has one (#166)", async () => {
+	apiFetch.mockImplementation(() => Promise.resolve(detail({ title: null })));
+	const c = await mountPanel();
+	expect(c.textContent).toContain(
+		"Customers can't buy this product until it has a title. Otta reads it from this entry's title field (up to 500 characters): fill it in and save.",
+	);
+	// Priced, so the price prompt does not show.
+	expect(c.textContent).not.toContain("Add a price so customers can buy this product.");
+});
+
+test("a titled product shows no title prompt", async () => {
+	apiFetch.mockImplementation(() => Promise.resolve(detail()));
+	const c = await mountPanel();
+	expect(c.textContent).not.toContain("until it has a title");
+});
+
 test("an unpriced product asks for a price and saves it in the currency the merchant picked", async () => {
 	apiFetch.mockImplementation((_url, init) => {
 		const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
@@ -438,6 +454,37 @@ test("an unpriced product asks for a price and saves it in the currency the merc
 	await fire(button(c, "Save pricing & stock"), "click");
 	await flush();
 	expect(writes()[0]?.["value"]).toMatchObject({ price: "18.00", currency: "EUR" });
+});
+
+// Issue #112: the CMS title was rejected, so the commerce row holds no title and
+// the product cannot be ordered. The panel is where a merchant sees why.
+test("a rejected title is shown with its reason, as an alert at the top of the panel", async () => {
+	apiFetch.mockResolvedValue(
+		detail({
+			title: null,
+			titleRejection: "The title is 612 characters long; the most it can be is 500.",
+		}),
+	);
+	const c = await mountPanel();
+	const alert = c.querySelector('[role="alert"]');
+	expect(alert?.textContent).toContain("This product's title wasn't accepted");
+	expect(alert?.textContent).toContain(
+		"The title is 612 characters long; the most it can be is 500.",
+	);
+	expect(alert?.textContent).toContain("Customers can't buy it until the entry's title is fixed");
+	// One title message: the "fill in a title" prompt (#166) would contradict the
+	// alert, since the entry does have a title.
+	expect(c.textContent).not.toContain("until it has a title");
+});
+
+test("no rejection, no alert — including from a plugin older than the field", async () => {
+	for (const over of [{}, { titleRejection: null }]) {
+		apiFetch.mockResolvedValue(detail(over));
+		const c = await mountPanel();
+		expect(c.textContent).not.toContain("wasn't accepted");
+		await mounted?.unmount();
+		mounted = null;
+	}
 });
 
 test("an unpriced product's currency starts on the store currency the detail read carried, and saves in it", async () => {

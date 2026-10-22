@@ -6,7 +6,8 @@
  * **badge the exceptions, in words, and let the happy path be quiet.** INC-10
  * took that console-wide when it retired the last status pills, and both
  * functions here are it — `active` is one quiet word while every exception is
- * longer and says why (`inactive`, `deleted`, `active (not priced)`), and a
+ * longer and says why (`inactive`, `deleted`, `active (not priced)`,
+ * `active (needs a title)`), and a
  * healthy count is a bare number while `0` and a low count carry their own
  * suffix (`0 · Out of stock`, `3 · Low`). Splitting them across two modules
  * would let one drift into a badge while the other stayed prose.
@@ -68,13 +69,43 @@ export function onHandCell(onHand: number | null | undefined, threshold: number 
 
 /** The lifecycle facts `statusLabel` reads. A structural subset on purpose:
  *  both surfaces hold their own wire type for a product, and this names only
- *  the five fields the answer depends on. */
+ *  the six fields the answer depends on. */
 export interface ProductLifecycle {
 	readonly active: boolean;
 	readonly deletedAt: string | null;
 	readonly sku: string | null;
 	readonly priceCents: number | null;
 	readonly currency: string | null;
+	readonly title: string | null;
+}
+
+/**
+ * Why a product cannot be sold, in rank order. The SAME vocabulary as the
+ * domain's `UnsellableReason`.
+ */
+export type UnsellableReason = "deleted" | "unpublished" | "unpriced" | "untitled";
+
+/**
+ * THE SELLABILITY RULE, as the admin reads it (#166): live, priced and titled.
+ *
+ * It mirrors `unsellableReasons` in `@urumi.ai/otta-domain`, which every sell
+ * path applies (storefront, add to cart, quote, `createOrderFromCart`). This
+ * package cannot import the domain (it is dependency-free, and the React console
+ * may import nothing else), so the rule is restated here and a plugin test
+ * (`sellability-parity.test.ts`) holds the two equal over every combination.
+ *
+ * The one difference is the input: the admin sees a sku as well, and a row with
+ * no sku is `unpriced` — the catalog read drops it, so nothing can sell it.
+ *
+ * Every missing piece is returned, so a surface can say all of why.
+ */
+export function unsellableReasons(p: ProductLifecycle): UnsellableReason[] {
+	if (p.deletedAt !== null) return ["deleted"];
+	const reasons: UnsellableReason[] = [];
+	if (!p.active) reasons.push("unpublished");
+	if (p.sku === null || p.priceCents === null || p.currency === null) reasons.push("unpriced");
+	if (p.title === null || p.title === "") reasons.push("untitled");
+	return reasons;
 }
 
 /**
@@ -83,17 +114,21 @@ export interface ProductLifecycle {
  * is always inactive too, but "deleted" is the honest,
  * non-recoverable-from-here status a merchant needs to see).
  *
- * FOUR VALUES: the CMS sync upserts a `product_commerce` row for EVERY products
+ * FIVE VALUES: the CMS sync upserts a `product_commerce` row for EVERY products
  * document ("one home per field" PR 1b), so publishing a product that has never
- * been priced sets `active: true` on a row with no sku/price. A bare "active"
- * there would be a lie — the service's catalog read filters commerce-incomplete
- * rows — so this mirrors that exact filter.
+ * been priced sets `active: true` on a row with no sku/price, and a collection
+ * whose title field is not `title` leaves the row with no title. A bare
+ * "active" on either would be a lie — checkout refuses both — so a published
+ * row says what it still needs, price first (the merchant sets it on the same
+ * screen), from {@link unsellableReasons}.
  */
 export function statusLabel(p: ProductLifecycle): string {
-	if (p.deletedAt !== null) return "deleted";
-	if (!p.active) return "inactive";
-	const sellable = p.sku !== null && p.priceCents !== null && p.currency !== null;
-	return sellable ? "active" : "active (not priced)";
+	const reasons = unsellableReasons(p);
+	if (reasons[0] === "deleted") return "deleted";
+	if (reasons[0] === "unpublished") return "inactive";
+	if (reasons[0] === "unpriced") return "active (not priced)";
+	if (reasons[0] === "untitled") return "active (needs a title)";
+	return "active";
 }
 
 /**
@@ -112,18 +147,18 @@ export type ProductTone = "plain" | "warn" | "fail";
  * IT DERIVES FROM THE RECORD, NEVER FROM THE LABEL. Matching `"deleted"` or
  * testing for `"(not priced)"` in a rendered string would put the wording and
  * the ink one typo apart, and would break the moment a phrase is translated —
- * so both read the same five fields and neither reads the other's output.
+ * so both read the same rule and neither reads the other's output.
  *
- * `deleted` is the only irreversible one and is the only `fail`. `inactive` and
- * `active (not priced)` are both "this product is not being sold", which is a
- * state a merchant may well have chosen, so they warn rather than fail. A
- * sellable `active` is the quiet majority and gets nothing.
+ * `deleted` is the only irreversible one and is the only `fail`. `inactive`,
+ * `active (not priced)` and `active (needs a title)` are all "this product is
+ * not being sold", which is a state a merchant may well have chosen, so they
+ * warn rather than fail. A sellable `active` is the quiet majority and gets
+ * nothing.
  */
 export function statusTone(p: ProductLifecycle): ProductTone {
-	if (p.deletedAt !== null) return "fail";
-	if (!p.active) return "warn";
-	const sellable = p.sku !== null && p.priceCents !== null && p.currency !== null;
-	return sellable ? "plain" : "warn";
+	const reasons = unsellableReasons(p);
+	if (reasons[0] === "deleted") return "fail";
+	return reasons.length === 0 ? "plain" : "warn";
 }
 
 /**

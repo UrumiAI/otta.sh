@@ -314,8 +314,23 @@ export interface UpsertProductCommerceInput {
 	 *
 	 * Optional + nullable like every other commercial field (undefined preserves,
 	 * null clears); "create then price" may land a row before a title exists.
+	 * A string also CLEARS any recorded {@link titleRejection}.
 	 */
 	title?: string | null;
+	/**
+	 * The CMS HAS a title, and it cannot be stored (issue #112): over the length
+	 * bound, blank, or not text. The value is the merchant-facing reason.
+	 *
+	 * Supplying it sets `title` to null and records the reason on the row
+	 * (`ProductCommerce.titleRejection`), so the previous title stops being what an
+	 * order line snapshots while the storefront already shows the new one. That is
+	 * NOT the omitted-title case: an absent `title` with no rejection still
+	 * preserves the stored title, because absence says nothing about the name.
+	 *
+	 * Same single writer as `title` (the content sync), same ordering guard and
+	 * replay key. Never sent together with `title`.
+	 */
+	titleRejection?: string;
 	taxClass?: string | null;
 	weightGrams?: number | null;
 	lengthMm?: number | null;
@@ -473,8 +488,15 @@ export interface ProductCommerce {
 	 *  `adr/0013-product-title-is-cms-owned.md`). It exists so an order line can
 	 *  snapshot a title at purchase time without a cross-database read. Never
 	 *  merchant-editable, and eventually consistent: a failed sync leaves a stale
-	 *  value until the next save/publish. Null until the first sync carries one. */
+	 *  value until the next save/publish. Null until the first sync carries one,
+	 *  and null while {@link titleRejection} is set. */
 	title: string | null;
+	/** Why the CMS title was not accepted (issue #112), in words a merchant can
+	 *  act on; null when the last title the sync carried was accepted (or none
+	 *  has been carried). While set, `title` is null, so the product cannot be
+	 *  ordered until the CMS entry is renamed. Admin-facing only — never on the
+	 *  storefront view. */
+	titleRejection: string | null;
 	/** References a `TaxClass.id` (the `TaxRulesStore` registry); null ⇒ the
 	 *  checkout pipeline treats the line as `"standard"`. */
 	taxClass: string | null;
@@ -573,8 +595,8 @@ export interface ProductCommerceView {
 	 * iff commerce === null (or explicitly inactive)"). The store RETURNS
 	 * inactive rows, flagged — the ONE place purchasability is decided is the
 	 * plugin's `joinProduct` (`purchasable ⟺ commerce !== null &&
-	 * commerce.active`), so listing visibility and sellability stay separate
-	 * concerns.
+	 * isProductSellable(commerce)`: published, priced and titled), so listing
+	 * visibility and sellability stay separate concerns.
 	 */
 	active: boolean;
 }
@@ -738,6 +760,24 @@ export interface ProductCommerceStore {
 	 * id, never by position.
 	 */
 	getManyByProductId(productIds: ProductId[]): Promise<Map<ProductId, ProductCommerce>>;
+	/**
+	 * Which LIVE product row carries each sku as its OWN sku (issue #111).
+	 *
+	 * A cart line added without a productId (a bare add, or a cart from before the
+	 * storefront threaded one) still carries its sku, and a live sku names exactly
+	 * one live sellable unit, so the sku is enough to find the line's product. This
+	 * is that lookup, and the callers feed its ids to `getManyByProductId` so the
+	 * per-line price / liveness / currency checks are the ones a threaded line gets.
+	 *
+	 * Only a NON-soft-deleted product row answers — the set the live-sku uniqueness
+	 * rule ranges over, so there is never more than one. A sku a live VARIANT holds
+	 * is ABSENT, deliberately: order pricing snapshots the product row's price and
+	 * title, so resolving a size to its parent would sell it at the parent's price.
+	 * The publish gate and the price are NOT consulted (callers check those, as on
+	 * every other path to checkout). Missing skus are absent, never null; duplicates
+	 * collapse; no ordering guarantee.
+	 */
+	getProductIdsBySku(skus: Sku[]): Promise<Map<Sku, ProductId>>;
 	/** Soft delete: sets `deletedAt` + `active=false`; retains the row. A
 	 *  replay with the same key (or an already-deleted / unknown row) is a
 	 *  no-op. */

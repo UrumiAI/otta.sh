@@ -733,3 +733,54 @@ describe("storefront cart routes (workerd sandbox)", () => {
 		});
 	});
 });
+
+/**
+ * #440 under the real sandbox: a cart opened before the store currency moved is
+ * named stale by `cart/read`, and `cart/create` with `replacesStaleCurrencyCartId`
+ * hands back an empty cart in the store currency with the old holds released.
+ * LAST in the file because it saves a store currency on the shared document
+ * store; it puts USD back when it is done.
+ */
+describe("a cart left in the old currency after a store currency switch (#440, workerd sandbox)", () => {
+	test("cart/read flags it, and its replacement is an empty EUR cart that frees the held stock", async () => {
+		const settings = new EmdashSettingsStore({ storage, clock: systemClock });
+		await seedProduct({
+			id: `prod-stale-${SUFFIX}`,
+			sku: `SKU-STALE-${SUFFIX}`,
+			amount: 900,
+			onHand: 1,
+		});
+		const cartId = await createCart({ currency: "USD" });
+		const added = await addLine({
+			cartId,
+			sku: `SKU-STALE-${SUFFIX}`,
+			productId: `prod-stale-${SUFFIX}`,
+			qty: 1,
+			idempotencyKey: `k-stale-${SUFFIX}`,
+		});
+		expect(added["ok"]).toBe(true);
+		try {
+			await settings.update({ currency: "EUR" }, idempotencyKey(`stale-eur-${SUFFIX}`));
+			expect((await readCart(cartId))["staleCurrency"]).toEqual({
+				cartCurrency: "USD",
+				storeCurrency: "EUR",
+			});
+
+			const replaced = resultOf(
+				await sandboxHandle.invokeRoute("storefront/cart/create", {
+					replacesStaleCurrencyCartId: cartId,
+				}),
+			);
+			expect(replaced["ok"]).toBe(true);
+			const freshId = replaced["cartId"] as string;
+			expect(freshId).not.toBe(cartId);
+			const fresh = await readCart(freshId);
+			expect(fresh["staleCurrency"]).toBeNull();
+			expect(fresh["cart"]).toMatchObject({ state: "active", currency: "EUR", lines: [] });
+			// The one unit the old cart held is free again.
+			expect(await inventoryStore().getOnHand(toSku(`SKU-STALE-${SUFFIX}`))).toBe(1);
+		} finally {
+			await settings.update({ currency: "USD" }, idempotencyKey(`stale-usd-${SUFFIX}`));
+		}
+	});
+});

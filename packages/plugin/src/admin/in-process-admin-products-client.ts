@@ -483,6 +483,7 @@ function toProductDetailWire(
 		productId: product.productId,
 		sku: product.sku,
 		title: product.title,
+		titleRejection: product.titleRejection,
 		priceCents: product.price?.amount ?? null,
 		currency: product.price?.currency ?? null,
 		taxClass: product.taxClass,

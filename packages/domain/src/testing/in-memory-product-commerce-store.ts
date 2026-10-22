@@ -1,6 +1,7 @@
 import { cents, currency as toCurrency, money } from "../money/cents.js";
-import type { IdempotencyKey, ProductId } from "../money/ids.js";
+import type { IdempotencyKey, ProductId, Sku } from "../money/ids.js";
 import type { Clock } from "../ports/clock.js";
+import { NO_TITLE, resolveTitleWrite } from "../product-commerce/title-write.js";
 import type {
 	ProductCommerce,
 	ProductCommerceStore,
@@ -244,7 +245,7 @@ export class InMemoryProductCommerceStore implements ProductCommerceStore {
 				...existing,
 				sku: input.sku !== undefined ? input.sku : existing.sku,
 				price: input.price !== undefined ? input.price : existing.price,
-				title: input.title !== undefined ? input.title : existing.title,
+				...resolveTitleWrite(input, existing),
 				taxClass: input.taxClass !== undefined ? input.taxClass : existing.taxClass,
 				weightGrams: input.weightGrams !== undefined ? input.weightGrams : existing.weightGrams,
 				lengthMm: input.lengthMm !== undefined ? input.lengthMm : existing.lengthMm,
@@ -266,7 +267,7 @@ export class InMemoryProductCommerceStore implements ProductCommerceStore {
 			productId: input.productId,
 			sku: input.sku ?? null,
 			price: input.price ?? null,
-			title: input.title ?? null,
+			...resolveTitleWrite(input, NO_TITLE),
 			taxClass: input.taxClass ?? null,
 			taxStatus: "taxable",
 			// compare-at / cost / inventory-policy are EDIT-ONLY (set via
@@ -444,13 +445,25 @@ export class InMemoryProductCommerceStore implements ProductCommerceStore {
 		return result;
 	}
 
+	/** Live product rows by their OWN sku (port doc; issue #111). Variant skus never answer. */
+	async getProductIdsBySku(skus: Sku[]): Promise<Map<Sku, ProductId>> {
+		const wanted = new Set(skus);
+		const result = new Map<Sku, ProductId>();
+		if (wanted.size === 0) return result;
+		for (const row of this.#rows.values()) {
+			if (row.deletedAt !== null || row.sku === null || !wanted.has(row.sku)) continue;
+			result.set(row.sku, row.productId);
+		}
+		return result;
+	}
+
 	/**
 	 * Batch catalog read (Phase 2 §6) — mirrors the Kysely store's single
 	 * `product_commerce LEFT JOIN inventory` statement: only commerce-complete
 	 * live rows become views; `inStock` is the coarse `on_hand > 0`; missing
 	 * ids are omitted; duplicates collapse. Inactive rows are RETURNED with
 	 * `active: false` — the purchasability gate is the plugin's `joinProduct`
-	 * (`purchasable ⟺ commerce !== null && commerce.active`), not the store
+	 * (`purchasable ⟺ commerce !== null && isProductSellable(commerce)`), not the store
 	 * (see the port doc).
 	 */
 	async listCommerceByIds(productIds: ProductId[]): Promise<ProductCommerceView[]> {
@@ -1026,6 +1039,7 @@ export class InMemoryProductCommerceStore implements ProductCommerceStore {
 					? money(cents(row.priceCents), toCurrency(row.currency ?? "USD"))
 					: null,
 			title: row.title ?? null,
+			titleRejection: null,
 			taxClass: null,
 			taxStatus: "taxable",
 			compareAtPrice: null,

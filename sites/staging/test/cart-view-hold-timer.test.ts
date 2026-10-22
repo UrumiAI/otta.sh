@@ -25,6 +25,7 @@ function cart(showHoldTimer: boolean): CartModel {
 		empty: false,
 		terminal: false,
 		placedOrderId: null,
+		staleCurrency: null,
 		showHoldTimer,
 		lineViews: [
 			{

@@ -59,6 +59,10 @@ export interface ProductDetailWire {
 	productId: string;
 	sku: string | null;
 	title: string | null;
+	/** Why the CMS title was not accepted (issue #112), or null. While set,
+	 *  `title` is null and the product cannot be ordered; the Pricing & inventory
+	 *  panel shows this reason so the merchant knows what to fix in the entry. */
+	titleRejection: string | null;
 	priceCents: number | null;
 	currency: string | null;
 	taxClass: string | null;

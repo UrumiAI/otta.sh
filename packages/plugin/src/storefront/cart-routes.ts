@@ -39,7 +39,11 @@
  * Phase 5's session-cookie design, which makes the same now-disproven
  * assumption) — a candidate follow-up ADR, not resolved here.
  */
-import { isSupportedCurrency } from "@urumi.ai/otta-domain";
+import {
+	currency as toCurrency,
+	isStaleCurrencyCart,
+	isSupportedCurrency,
+} from "@urumi.ai/otta-domain";
 import {
 	CART_LINE_MAX_QTY,
 	isBoundedProductId,
@@ -114,6 +118,13 @@ function cartCookieDescriptor(cartId: string): CartCookieDescriptor {
 // ── Input shapes (hand-validated — the routes are PUBLIC, ADR-0003) ───────
 
 export interface CartCreateRouteInput {
+	/**
+	 * Optional: the new cart's currency; absent, the store currency. Once the
+	 * operator has SAVED a store currency, a cart created here in a different one
+	 * reads back as stale (`cart/read`'s `staleCurrency`, #440), because nothing
+	 * priced in the store currency can be checked out of it — a theme that creates
+	 * explicit-currency carts in such a store should expect that notice.
+	 */
 	currency?: unknown;
 	/**
 	 * Optional: the SPENT cart this one replaces (the cookie's cart, checked out
@@ -125,6 +136,15 @@ export interface CartCreateRouteInput {
 	 * requests converge on the first replacement, whatever currency each named.
 	 */
 	replacesCartId?: unknown;
+	/**
+	 * Optional: an ACTIVE cart left in another currency than the one the store now
+	 * sells in (#440) — the cookie's cart, whose read carried `staleCurrency`. The
+	 * plugin checks it, releases every hold it has and answers a new, EMPTY cart
+	 * in the saved store currency, keyed on the stale cart (and that currency) so
+	 * the same stale cart always gets the same replacement. Exclusive: it takes no
+	 * `currency` (the store's is the point) and no `replacesCartId`.
+	 */
+	replacesStaleCurrencyCartId?: unknown;
 }
 
 export interface CartReadRouteInput {
@@ -167,15 +187,40 @@ export type CartCreateRouteResult =
 	| { ok: true; cartId: string; cookie: CartCookieDescriptor }
 	| { ok: false; error: "INVALID_CURRENCY" | "INVALID_INPUT" }
 	/** `replacesCartId` names no cart, one still active (nothing to replace), or one
-	 *  whose order is not finished (a pending payment may still use it). */
-	| { ok: false; reason: "CART_NOT_FOUND" | "CART_NOT_CHECKED_OUT" | "ORDER_NOT_FINISHED" }
+	 *  whose order is not finished (a pending payment may still use it).
+	 *  `replacesStaleCurrencyCartId` names no cart, a checked-out one, one already
+	 *  in the store currency (or a store that saved none), or a release raced a
+	 *  checkout. */
+	| {
+			ok: false;
+			reason:
+				| "CART_NOT_FOUND"
+				| "CART_NOT_CHECKED_OUT"
+				| "ORDER_NOT_FINISHED"
+				| "CART_CHECKED_OUT"
+				| "CART_CURRENCY_CURRENT"
+				| "LINE_CHECKED_OUT";
+	  }
 	| RenderGuardFailure;
+
+/**
+ * The read's stale-currency fact (#440): the cart is ACTIVE and in another
+ * currency than the one the operator saved, so nothing priced in the store
+ * currency can be checked out of it. The storefront says so and offers
+ * `cart/create` with `replacesStaleCurrencyCartId`. `null` otherwise — including
+ * when the settings read failed, which never fails the cart read.
+ */
+export interface CartStaleCurrencyWire {
+	cartCurrency: string;
+	storeCurrency: string;
+}
 
 export type CartReadRouteResult =
 	| {
 			ok: true;
 			cart: CartWire;
 			pricing: CartPricingWire;
+			staleCurrency: CartStaleCurrencyWire | null;
 			/** Whether to show shoppers the hold countdown (the admin's
 			 *  `showHoldTimer`; off by default, and off when the read fails). */
 			showHoldTimer: boolean;
@@ -266,6 +311,26 @@ export function createCartCreateRouteHandler(): RouteHandler<CartCreateRouteInpu
 			if (raw !== undefined && (typeof raw !== "string" || !isSupportedCurrency(raw))) {
 				return { ok: false, error: "INVALID_CURRENCY" } as const;
 			}
+			const stale = routeCtx.input.replacesStaleCurrencyCartId;
+			if (stale !== undefined) {
+				// Refused, never dropped, like `replacesCartId`: dropped, a converging
+				// replacement would become a plain new cart per request.
+				if (
+					typeof stale !== "string" ||
+					!isIdToken(stale) ||
+					raw !== undefined ||
+					routeCtx.input.replacesCartId !== undefined
+				) {
+					return { ok: false, error: "INVALID_INPUT" } as const;
+				}
+				const replaced = await (await makeCommerceClient(ctx)).replaceStaleCurrencyCart(stale);
+				if (!replaced.ok) return { ok: false as const, reason: replaced.reason };
+				return {
+					ok: true as const,
+					cartId: replaced.cartId,
+					cookie: cartCookieDescriptor(replaced.cartId),
+				};
+			}
 			const replaces = routeCtx.input.replacesCartId;
 			if (replaces !== undefined) {
 				// Present-but-malformed is REFUSED, never dropped: dropped, it would turn
@@ -341,6 +406,9 @@ export function createCartReadRouteHandler(): RouteHandler<CartReadRouteInput> {
 				),
 			];
 
+			// Started BESIDE the pricing join, not after it: /cart pays this read on
+			// every render, and it never fails the read (see `staleCurrencyOf`).
+			const staleCurrency = staleCurrencyOf(client, cart);
 			let pricing: CartPricingWire;
 			try {
 				// No batch call at all when there is nothing to look up (an empty
@@ -365,8 +433,42 @@ export function createCartReadRouteHandler(): RouteHandler<CartReadRouteInput> {
 				pricing = DEGRADED_CART_PRICING;
 			}
 
-			return { ok: true as const, cart, pricing, showHoldTimer };
+			return {
+				ok: true as const,
+				cart,
+				pricing,
+				staleCurrency: await staleCurrency,
+				showHoldTimer,
+			};
 		});
+}
+
+/**
+ * {@link CartStaleCurrencyWire} for `cart`, by the domain's own rule. Only an
+ * ACTIVE cart pays the settings read, and a failed one is logged and answered
+ * `null`: the notice is a way out, never a reason the cart cannot be shown.
+ */
+async function staleCurrencyOf(
+	client: Awaited<ReturnType<typeof makeCommerceClient>>,
+	cart: CartWire,
+): Promise<CartStaleCurrencyWire | null> {
+	if (cart.state !== "active") return null;
+	let saved: string | null;
+	try {
+		saved = await client.getSavedStoreCurrency();
+	} catch (err) {
+		console.error(`[otta] ${STOREFRONT_CART_READ_ROUTE} store currency read failed:`, err);
+		return null;
+	}
+	if (saved === null || !isSupportedCurrency(saved) || !isSupportedCurrency(cart.currency)) {
+		return null;
+	}
+	return isStaleCurrencyCart(
+		{ state: "active", currency: toCurrency(cart.currency) },
+		toCurrency(saved),
+	)
+		? { cartCurrency: cart.currency, storeCurrency: saved }
+		: null;
 }
 
 /** Sum of line quantities — the one cart "total" computable without a live

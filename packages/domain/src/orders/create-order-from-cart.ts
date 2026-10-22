@@ -9,6 +9,7 @@ import {
 	reservationId as brandReservationId,
 	sku as brandSku,
 } from "../money/ids.js";
+import { resolveLineProductIds } from "../cart/line-products.js";
 import type { CartStore } from "../ports/cart-store.js";
 import type { Clock } from "../ports/clock.js";
 import type { CouponStore } from "../ports/coupon-store.js";
@@ -26,7 +27,7 @@ import {
 	type PaymentIntentHandle,
 } from "../ports/payment-gateway.js";
 import type { ProductCommerceStore, ProductTaxStatus } from "../ports/product-commerce-store.js";
-import { isProductLive } from "../product-commerce/sellable.js";
+import { isProductSellable } from "../product-commerce/sellable.js";
 import type { ShippingRulesStore } from "../ports/shipping-rules-store.js";
 import type { TaxRulesStore } from "../ports/tax-rules-store.js";
 import { computeQuote, type QuoteTax } from "../pricing/quote.js";
@@ -275,19 +276,31 @@ export async function createOrderFromCart(
 	// line's PRODUCT_NOT_PRICED precedence identical to the per-line read: a null
 	// line is never branded here, and each surviving line is re-branded lazily at
 	// its own map lookup below, AFTER its own null guard.
+	// A line with no productId is resolved through its sku first (issue #111), so
+	// it meets exactly the checks below; one that resolves to nothing stays null.
+	const cartLines = await resolveLineProductIds(deps.productCommerce, cart.lines);
+	const bySku = new Set(cart.lines.filter((l) => l.productId === null).map((l) => l.lineId));
 	const pcById = await deps.productCommerce.getManyByProductId(
-		cart.lines
+		cartLines
 			.map((line) => line.productId)
 			.filter((id): id is string => id !== null)
 			.map((id) => brandProductId(id)),
 	);
-	for (const line of cart.lines) {
+	for (const line of cartLines) {
 		if (line.productId === null) return { ok: false, reason: "PRODUCT_NOT_PRICED" };
 		const pc = pcById.get(brandProductId(line.productId)) ?? null;
-		// An unpublished or deleted product is not for sale, even from a cart that
-		// held it before the lifecycle event landed. Refused before anything is
-		// minted, so the line's hold stays `held` for a remove or the TTL sweep.
-		if (pc === null || !isProductLive(pc) || pc.price === null || pc.title === null) {
+		// The one sellability rule: live (an unpublished or deleted product is not
+		// for sale, even from a cart that held it before the lifecycle event
+		// landed), priced and titled (the line snapshots both). Refused before
+		// anything is minted, so the line's hold stays `held` for a remove or the
+		// TTL sweep.
+		if (pc === null || !isProductSellable(pc)) {
+			return { ok: false, reason: "PRODUCT_NOT_PRICED" };
+		}
+		// A line resolved BY SKU must still be that product's sku at this read: a
+		// rename between the two reads would otherwise sell it under a sku the
+		// product no longer owns (a digital product holds no stock to catch it).
+		if (bySku.has(line.lineId) && pc.sku !== line.sku) {
 			return { ok: false, reason: "PRODUCT_NOT_PRICED" };
 		}
 		if (pc.price.currency !== currency) {

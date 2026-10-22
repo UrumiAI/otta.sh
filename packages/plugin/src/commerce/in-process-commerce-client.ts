@@ -69,7 +69,7 @@ import {
 	itemizeTaxLines,
 	InvalidProductFieldError,
 	isEmailTransportUnavailableError,
-	isProductLive,
+	isProductSellable,
 	listCustomerOrders,
 	listProductCommerceByIds,
 	loadCartPriceDisplay,
@@ -82,7 +82,9 @@ import {
 	quoteShippingOptions,
 	removeLine,
 	replaceSpentCart,
+	replaceStaleCurrencyCart,
 	requestLogin,
+	resolveLineProductIds,
 	SkuConflictError,
 	SkuHeldStockError,
 	SkuStockConflictError,
@@ -155,6 +157,7 @@ import type {
 	QuoteDestinationWire,
 	QuoteRequestWire,
 	ReplaceCartResult,
+	ReplaceStaleCurrencyCartResult,
 	ShopperStateWire,
 	QuoteResult,
 	ResumeOrderPaymentResult,
@@ -195,6 +198,7 @@ import {
 	requireSku,
 	requireSupportedCurrency,
 	requireTitle,
+	requireTitleRejection,
 	requireVariantKey,
 	requireWatermark,
 } from "./commerce-input.js";
@@ -339,6 +343,9 @@ export class InProcessCommerceClient implements CommerceClient {
 			requireSupportedCurrency("price.currency", input.price.currency);
 		}
 		if (input.title !== undefined) requireTitle(input.title);
+		if (input.titleRejection !== undefined) {
+			requireTitleRejection(input.titleRejection, input.title);
+		}
 		if (input.weightGrams !== undefined) requireNullableInteger("weightGrams", input.weightGrams);
 		if (input.lengthMm !== undefined) requireNullableInteger("lengthMm", input.lengthMm);
 		if (input.widthMm !== undefined) requireNullableInteger("widthMm", input.widthMm);
@@ -356,6 +363,7 @@ export class InProcessCommerceClient implements CommerceClient {
 				...(input.sku !== undefined ? { sku: toSku(input.sku) } : {}),
 				...(input.price !== undefined ? { price: toMoney(input.price) } : {}),
 				...(input.title !== undefined ? { title: input.title } : {}),
+				...(input.titleRejection !== undefined ? { titleRejection: input.titleRejection } : {}),
 				...(input.taxClass !== undefined ? { taxClass: input.taxClass } : {}),
 				...(input.weightGrams !== undefined ? { weightGrams: input.weightGrams } : {}),
 				...(input.lengthMm !== undefined ? { lengthMm: input.lengthMm } : {}),
@@ -692,13 +700,38 @@ export class InProcessCommerceClient implements CommerceClient {
 		);
 	}
 
+	/**
+	 * The domain's `replaceStaleCurrencyCart` (#440), against the store currency
+	 * the operator SAVED. Never-saved is `CART_CURRENCY_CURRENT`, deliberately not
+	 * `effectiveStoreCurrency`'s USD: a store that never chose a currency has
+	 * nothing for a cart to be stale against, and a theme's explicit-currency cart
+	 * must not be emptied by it. The use-case owns every rule and every key, and
+	 * bounds the call's cost (`STALE_CART_RELEASE_LIMIT`).
+	 */
+	async replaceStaleCurrencyCart(staleCartId: string): Promise<ReplaceStaleCurrencyCartResult> {
+		requireIdToken("cartId", staleCartId);
+		// ONE settings read. The hold window it also carries is not needed: the
+		// use-case runs no lazy expiry (a write per lapsed line) and stamps no
+		// deadline, so the plain cart deps are all it takes.
+		const saved = (await this.#stores.settingsStore.get()).currency;
+		if (saved === undefined) return { ok: false, reason: "CART_CURRENCY_CURRENT" };
+		return replaceStaleCurrencyCart(this.#cartDeps, staleCartId, toCurrency(saved));
+	}
+
+	async getSavedStoreCurrency(): Promise<string | null> {
+		return (await this.#stores.settingsStore.get()).currency ?? null;
+	}
+
 	/** Runs the lazy hold expiry the use-case owns, then reads. An unknown cart is
 	 *  the typed token, never a rejection. */
 	async getCart(cartId: string): Promise<CartResult<{ cart: CartWire }>> {
 		requireIdToken("cartId", cartId);
 		const cart = await getCart(await this.#liveCartDeps(), cartId);
 		if (cart === null) return { ok: false, reason: "CART_NOT_FOUND" };
-		return { ok: true, cart: serializeCart(cart) };
+		// A line with no productId reads back with the one its sku names (issue
+		// #111), so the cart page and the checkout summary price it like any other.
+		const lines = await resolveLineProductIds(this.#stores.productCommerce, cart.lines);
+		return { ok: true, cart: serializeCart({ ...cart, lines }) };
 	}
 
 	/**
@@ -741,13 +774,13 @@ export class InProcessCommerceClient implements CommerceClient {
 	 * unit OF THE NAMED PRODUCT, and anything that does not resolve is refused
 	 * rather than reinterpreted.
 	 *
-	 * A BARE ADD (no productId) is left exactly as it is, deliberately: resolving a
-	 * bare sku means asking which unit across the whole catalog holds it, and the
-	 * port has no such lookup — every read on it is keyed by product. A bare line
-	 * is also unorderable by construction (both checkout paths refuse a null
-	 * productId before they price anything), so it can confer neither price nor
-	 * entitlement, and the spoof this guard exists to stop is not expressible
-	 * through it.
+	 * A BARE ADD (no productId) is stored exactly as it is, with a null productId.
+	 * The spoof this guard exists to stop is not expressible through it: there is
+	 * no second input to mismatch. Every reader that prices the cart (the cart
+	 * read, the quote, the order) resolves such a line through its sku to the ONE
+	 * live product row whose own sku it is (issue #111, `resolveLineProductIds`),
+	 * so the price, title and entitlement come from the very unit the line holds
+	 * stock for. A variant's sku never resolves, so a bare size stays unorderable.
 	 */
 	async addCartLine(
 		cartId: string,
@@ -770,8 +803,8 @@ export class InProcessCommerceClient implements CommerceClient {
 			const resolved = await this.#resolveSellableUnit(toProductId(productId), sku);
 			if (resolved.status === "unknown") return { ok: false, reason: "SKU_MISMATCH" };
 			if (resolved.status === "unpriced") {
-				// Correctly named, and not for sale — nobody has priced it, or it is
-				// unpublished. Refused HERE and by name so a shopper is told at the Add
+				// Correctly named, and not for sale — nobody has priced it, it is
+				// unpublished, or it has no title. Refused HERE and by name so a shopper is told at the Add
 				// button rather than at the last step, and so no stock is held for a
 				// line that could never be bought.
 				return { ok: false, reason: "PRODUCT_NOT_PRICED" };
@@ -1090,8 +1123,9 @@ export class InProcessCommerceClient implements CommerceClient {
 	 * edits their selection.
 	 *
 	 * The per-line price resolution is mirrored from the surface this replaces,
-	 * including its precedence: a line with no product reference cannot be priced
-	 * and answers PRODUCT_NOT_PRICED before any currency comparison happens. Every
+	 * including its precedence: a line with no product reference — none stored,
+	 * and none its sku resolves to (issue #111) — cannot be priced and answers
+	 * PRODUCT_NOT_PRICED before any currency comparison happens. Every
 	 * line's projection is fetched in ONE store round trip — a per-line read would
 	 * be an N+1 on the hottest path in checkout.
 	 */
@@ -1108,19 +1142,29 @@ export class InProcessCommerceClient implements CommerceClient {
 		if (cart === null) return { ok: false, reason: "CART_NOT_FOUND" };
 		if (cart.lines.length === 0) return { ok: false, reason: "CART_EMPTY" };
 
+		// The same by-sku fallback the order applies (issue #111), so the quote and
+		// the order agree on which lines can be priced.
+		const cartLines = await resolveLineProductIds(this.#stores.productCommerce, cart.lines);
+		const bySku = new Set(cart.lines.filter((l) => l.productId === null).map((l) => l.lineId));
 		const byId = await this.#stores.productCommerce.getManyByProductId(
-			cart.lines
+			cartLines
 				.map((line) => line.productId)
 				.filter((id): id is string => id !== null)
 				.map((id) => toProductId(id)),
 		);
 		const lines: PricedLine[] = [];
-		for (const line of cart.lines) {
+		for (const line of cartLines) {
 			if (line.productId === null) return { ok: false, reason: "PRODUCT_NOT_PRICED" };
 			const row = byId.get(toProductId(line.productId)) ?? null;
-			// An unpublished or deleted product is no longer for sale, even from a cart
-			// that held it first — the same liveness rule `createOrderFromCart` applies.
-			if (row === null || !isProductLive(row) || row.price === null) {
+			// The same sellability rule `createOrderFromCart` applies: an unpublished,
+			// deleted, unpriced or untitled product is not for sale, even from a cart
+			// that held it first — so the review never quotes an order that would fail.
+			if (row === null || !isProductSellable(row)) {
+				return { ok: false, reason: "PRODUCT_NOT_PRICED" };
+			}
+			// Resolved by sku: refused if the product renamed away from it since (see
+			// `createOrderFromCart`).
+			if (bySku.has(line.lineId) && row.sku !== line.sku) {
 				return { ok: false, reason: "PRODUCT_NOT_PRICED" };
 			}
 			if (row.price.currency !== cart.currency) return { ok: false, reason: "CURRENCY_MISMATCH" };
@@ -1515,7 +1559,8 @@ export class InProcessCommerceClient implements CommerceClient {
 	 * deliberately NOT the publish gate, which decides whether a storefront LISTS a
 	 * product and must never be conflated with whether a sku names a real thing.
 	 * PRICED is part of sellable: a unit nobody has priced cannot be sold, and one
-	 * priced at a row that is not its own is worse than unsold.
+	 * priced at a row that is not its own is worse than unsold. So is TITLED (#109):
+	 * an order line snapshots the title, and checkout refuses a row without one.
 	 *
 	 * A live, priced VARIANT is resolved and then REFUSED, and that is the whole of
 	 * the variant branch today: order pricing reads the snapshot price AND title
@@ -1537,9 +1582,10 @@ export class InProcessCommerceClient implements CommerceClient {
 		const product = await this.#stores.productCommerce.getByProductId(productId);
 		if (product === null || product.deletedAt !== null) return { status: "unknown" };
 		if (product.sku !== null && String(product.sku) === submittedSku) {
-			// Unpublished is refused with the unpriced token: either way the unit is
-			// not for sale, and the storefront already tells the shopper so.
-			return product.price === null || !isProductLive(product)
+			// Unpublished or untitled is refused with the unpriced token: either way the
+			// unit is not for sale (checkout would refuse it), and the storefront
+			// already tells the shopper so.
+			return !isProductSellable(product)
 				? { status: "unpriced" }
 				: { status: "ok", productKind: product.productKind };
 		}
