@@ -29,7 +29,10 @@ export type PaymentAnomalyKind =
 	 *  stray confirmation stays in the forensic trail. Recorded once per gateway
 	 *  event: only on that event's first delivery. EXCEPTION: when the event names
 	 *  a payment the order never captured (a second, real charge), `settleOrder`
-	 *  also flags the order for manual reconciliation. */
+	 *  also flags the order for manual reconciliation. The same holds for a success
+	 *  at the CORRECT amount under a payment the order never captured (#540): the
+	 *  amount matches, but it is the same stray-success-on-a-paid-order incident,
+	 *  and its detail says "possible double charge". */
 	| "PAID_AMOUNT_MISMATCH";
 
 /**

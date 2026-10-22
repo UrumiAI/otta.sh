@@ -226,6 +226,77 @@ export function paidAmountMismatchContract(
 			expect(await anomaliesOf(h, order.id, "PAID_AMOUNT_MISMATCH")).toHaveLength(1);
 		});
 
+		test("a CORRECT-amount success naming a payment this order never captured is a double charge: anomaly AND flag, once; the capture is kept on the ledger", async () => {
+			const h = await makeHarness();
+			const order = await paidOrder(h, "same");
+
+			// Three deliveries of ONE event (a gateway retry storm), each at a later instant.
+			for (let delivery = 0; delivery < 3; delivery++) {
+				h.advanceClock(60_000);
+				const res = await settleOrder(
+					h.settleDeps,
+					gateway,
+					event(order, TOTAL_CENTS, "evt_same_dbl", "USD", "pi_retry_intent"),
+				);
+				expect(res.ok, `delivery ${String(delivery)}`).toBe(true);
+				if (res.ok) expect(res.noop).toBe(true);
+			}
+
+			const found = await anomaliesOf(h, order.id, "PAID_AMOUNT_MISMATCH");
+			expect(found, "one incident per gateway event, not per delivery").toHaveLength(1);
+			expect(found[0]?.detail).toContain("pi_retry_intent");
+			expect(found[0]?.detail).toContain("possible double charge");
+			expect(found[0]?.detail).toContain("evt_same_dbl");
+			expect(found[0]?.detail).toContain(`${String(TOTAL_CENTS)} USD`);
+			expect(await anomaliesOf(h, order.id, "AMOUNT_MISMATCH")).toEqual([]);
+
+			const after = await state(h, order.id);
+			expect(after.state, "the flag alerts; it moves no state").toBe("paid");
+			expect(after.reconciliationFlag).toContain("possible double charge");
+			expect(after.reconciliationFlag).toContain("pi_retry_intent");
+			// The second capture is real money held against this order, at the order's
+			// own price: it stays on the ledger, once, so a refund can target it.
+			const captured = await h.settleDeps.orderStore.getCapturedPayments(order.id);
+			expect(captured.map((p) => p.providerRef)).toEqual([`pi_${order.id}`, "pi_retry_intent"]);
+			expect(await h.settleDeps.inventoryStore.getOnHand(`SKU-PAIDMM-same`)).toBe(ON_HAND - QTY);
+
+			// The order's OWN payment redelivered afterwards is still the silent heal.
+			await settleOrder(h.settleDeps, gateway, event(order, TOTAL_CENTS, "evt_ok_same"));
+			expect((await h.anomalies()).filter((a) => a.orderId === order.id)).toHaveLength(1);
+		});
+
+		test("a correct-amount double charge never overwrites a reconciliation flag already on the order", async () => {
+			const h = await makeHarness();
+			const order = await paidOrder(h, "samepre");
+			await h.settleDeps.orderStore.flagReconciliation(order.id, "operator: checking", {
+				expectedFlag: null,
+			});
+
+			await settleOrder(
+				h.settleDeps,
+				gateway,
+				event(order, TOTAL_CENTS, "evt_same_pre", "USD", "pi_other_retry"),
+			);
+
+			expect((await state(h, order.id)).reconciliationFlag).toBe("operator: checking");
+			expect(await anomaliesOf(h, order.id, "PAID_AMOUNT_MISMATCH")).toHaveLength(1);
+		});
+
+		test("a paid order with NO captured payment yet (a crash after the flip) is healed by its matching success, silently", async () => {
+			const h = await makeHarness();
+			const order = await seedPendingOrder(h, "heal");
+			// The flip landed; the process died before the payment row was written.
+			expect(await h.settleDeps.orderStore.markPaid(order.id)).toBe(true);
+
+			const res = await settleOrder(h.settleDeps, gateway, event(order, TOTAL_CENTS, "evt_heal"));
+
+			expect(res.ok).toBe(true);
+			const captured = await h.settleDeps.orderStore.getCapturedPayments(order.id);
+			expect(captured.map((p) => p.providerRef)).toEqual([`pi_${order.id}`]);
+			expect((await h.anomalies()).filter((a) => a.orderId === order.id)).toEqual([]);
+			expect((await state(h, order.id)).reconciliationFlag).toBeNull();
+		});
+
 		test("a redelivery of the SAME stray event, at a later instant, does not duplicate the anomaly", async () => {
 			const h = await makeHarness();
 			const order = await paidOrder(h, "2");
