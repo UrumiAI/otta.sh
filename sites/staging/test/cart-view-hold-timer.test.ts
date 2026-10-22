@@ -71,7 +71,7 @@ describe("the cart's hold countdown follows the hold-timer setting", () => {
 	test("an empty cart promises a hold only when the timer is shown", async () => {
 		const off = await render({ ...cart(false), empty: true, summary: null, lineViews: [] });
 		expect(off).toContain("Nothing here yet.");
-		expect(off).not.toContain("hold");
+		expect(off).not.toMatch(/\bhold\b/i);
 		const on = await render({ ...cart(true), empty: true, summary: null, lineViews: [] });
 		expect(on).toContain("Nothing held yet.");
 		expect(on).toContain("we&#39;ll hold the stock");
