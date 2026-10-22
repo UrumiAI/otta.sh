@@ -394,7 +394,13 @@ export function createCartReadRouteHandler(): RouteHandler<CartReadRouteInput> {
 			const [result, showHoldTimer] = await Promise.all([
 				client.getCart(cartId),
 				// Display only — a failed read hides the countdown rather than failing the cart.
-				client.getShowHoldTimer().catch(() => false),
+				client.getShowHoldTimer().catch((err: unknown) => {
+					console.error(
+						`[otta] ${STOREFRONT_CART_READ_ROUTE} showHoldTimer read failed; hiding the timer:`,
+						err,
+					);
+					return false;
+				}),
 			]);
 			if (!result.ok) return { ok: false as const, reason: result.reason };
 			const cart = result.cart;

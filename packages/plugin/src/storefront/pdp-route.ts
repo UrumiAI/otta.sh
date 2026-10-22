@@ -145,7 +145,13 @@ export function createPdpRouteHandler(): RouteHandler<PdpRouteInput> {
 			const [commerce, cartHoldMinutes, showHoldTimer, display] = await Promise.all([
 				commerceLoaderFor(client).load(content.id),
 				client.getCartHoldTtlMinutes(),
-				client.getShowHoldTimer().catch(() => false),
+				client.getShowHoldTimer().catch((err: unknown) => {
+					console.error(
+						"[otta] storefront/pdp showHoldTimer read failed; hiding the hold note:",
+						err,
+					);
+					return false;
+				}),
 				// A failed read shows the stored price rather than failing the page.
 				priceDisplayOrEntered(STOREFRONT_PRODUCT_ROUTE, () => client.getShopPriceDisplay()),
 			]);

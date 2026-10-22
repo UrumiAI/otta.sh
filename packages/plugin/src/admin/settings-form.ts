@@ -1536,7 +1536,7 @@ function checkoutGroup(
 			: [
 					{
 						type: "context",
-						text: "These apply to live checkout as soon as you save them.",
+						text: "These apply to live checkout as soon as you save them. The hold timer (cart countdown and product-page note) is display only: stock is held either way.",
 					},
 					carriedForm({
 						namespace: "settings:ops",
@@ -1553,7 +1553,7 @@ function checkoutGroup(
 									// Display only: stock is reserved for the hold time either way.
 									type: "toggle",
 									action_id: "showHoldTimer",
-									label: "Show the hold timer to shoppers (cart countdown and product-page note)",
+									label: "Show the hold timer to shoppers",
 									initial_value: settings.showHoldTimer,
 								},
 								{

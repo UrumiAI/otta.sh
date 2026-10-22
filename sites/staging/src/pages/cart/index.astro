@@ -5,7 +5,8 @@
  * Lines, not a table: media, name + SKU + the hold ribbon, then the money and
  * the controls on the right, with the totals block bottom-right. The ribbon is
  * the theme's signature and it is the reason this page exists in the shape it
- * does — every line carries one, wired to that line's own `expiresAt`.
+ * does — every held line carries one when the store shows the hold timer (a
+ * Store setting, off by default), wired to that line's own `expiresAt`.
  *
  * ── the shim contract (unchanged) ───────────────────────────────────────────
  * The theme side of ADR-0003's cart contract: this page reads ITS OWN

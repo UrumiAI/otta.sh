@@ -3257,9 +3257,13 @@ section     block_id settings:checkout
                   |  "Checkout & holds — not loaded"   ← when the secondary read failed:
                      the label says so rather than implying a zero (E-3, D-6b)
             (always open; was default_open false)
-            └─ context "These apply to live checkout as soon as you save them."   (≤200)
-               form  cf{"settings:ops", {holdTtl, lowStock}}                     ← S-4
+            └─ context "These apply to live checkout as soon as you save them. The hold
+                        timer (cart countdown and product-page note) is display only:
+                        stock is held either way."   (≤200)
+               form  cf{"settings:ops", {holdTtl, showHoldTimer, lowStock}}      ← S-4
                      text_input  "Cart hold time (minutes)"   initial_value "15"
+                     toggle      "Show the hold timer to shoppers"  initial_value false
+                                 (#546: display only; off by default)
                      text_input  "Low-stock threshold"         initial_value "5"
                      ← F-6: one `/^\d+$/` parse. U-8: ALL-OR-NOTHING — a present value
                        that is blank, signed, fractional, non-numeric or out of range
