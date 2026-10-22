@@ -122,8 +122,12 @@ function flipRace(h: PaidAmountMismatchHarness, n: number) {
 		const losersDone = pending.map((p) => p.then(() => undefined));
 		// n - 1 losers settle while the winner is parked; any one finishing is
 		// enough to know a loser ran its whole arm inside the window.
-		await Promise.race(losersDone);
-		releaseWinner?.();
+		// Released whatever happens, so a throwing loser never leaves the winner parked.
+		try {
+			await Promise.race(losersDone);
+		} finally {
+			releaseWinner?.();
+		}
 		return Promise.all(pending);
 	}
 	return { run, arrived: () => arrived };
@@ -439,6 +443,55 @@ export function paidAmountMismatchContract(
 			expect(await h.settleDeps.inventoryStore.getOnHand(`SKU-PAIDMM-redeliver`)).toBe(
 				ON_HAND - QTY,
 			);
+		});
+
+		test("a paid order whose flip RECORDED its payment, but no row yet, is healed by that payment's success, silently (#543)", async () => {
+			const h = await makeHarness();
+			const order = await seedPendingOrder(h, "healref");
+			// The flip landed with its winner; the process died before the payment row.
+			expect(await h.settleDeps.orderStore.markPaid(order.id, `pi_${order.id}`)).toBe(true);
+
+			const res = await settleOrder(h.settleDeps, gateway, event(order, TOTAL_CENTS, "evt_heal"));
+
+			expect(res.ok).toBe(true);
+			const captured = await h.settleDeps.orderStore.getCapturedPayments(order.id);
+			expect(captured.map((p) => p.providerRef)).toEqual([`pi_${order.id}`]);
+			expect((await h.anomalies()).filter((a) => a.orderId === order.id)).toEqual([]);
+			expect((await state(h, order.id)).reconciliationFlag).toBeNull();
+		});
+
+		test("a paid order whose flip RECORDED its payment, but no row yet, flags a DIFFERENT payment as a double charge (#543)", async () => {
+			const h = await makeHarness();
+			const order = await seedPendingOrder(h, "otherref");
+			expect(await h.settleDeps.orderStore.markPaid(order.id, `pi_${order.id}`)).toBe(true);
+
+			const res = await settleOrder(
+				h.settleDeps,
+				gateway,
+				event(order, TOTAL_CENTS, "evt_other", "USD", "pi_other"),
+			);
+
+			expect(res.ok).toBe(true);
+			if (res.ok) expect(res.noop).toBe(true);
+			const found = await anomaliesOf(h, order.id, "PAID_AMOUNT_MISMATCH");
+			expect(found).toHaveLength(1);
+			expect(found[0]?.detail).toContain("possible double charge");
+			expect(found[0]?.detail).toContain("pi_other");
+			const after = await state(h, order.id);
+			expect(after.reconciliationFlag).toContain("possible double charge");
+			expect(after.reconciliationFlag).toContain("pi_other");
+			const captured = await h.settleDeps.orderStore.getCapturedPayments(order.id);
+			expect(captured.map((p) => p.providerRef)).toEqual(["pi_other"]);
+
+			// The winner's own event, redelivered: the silent heal of its missing row.
+			h.advanceClock(60_000);
+			await settleOrder(h.settleDeps, gateway, event(order, TOTAL_CENTS, "evt_ok_otherref"));
+			const healed = await h.settleDeps.orderStore.getCapturedPayments(order.id);
+			// Ledger order is the stores' recording order, so compare as a set.
+			expect(healed.map((p) => p.providerRef).toSorted()).toEqual(
+				[`pi_${order.id}`, "pi_other"].toSorted(),
+			);
+			expect(await anomaliesOf(h, order.id, "PAID_AMOUNT_MISMATCH")).toHaveLength(1);
 		});
 
 		test("a redelivery of the SAME stray event, at a later instant, does not duplicate the anomaly", async () => {
