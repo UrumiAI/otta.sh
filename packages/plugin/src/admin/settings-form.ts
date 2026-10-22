@@ -44,6 +44,12 @@ import {
 	type CardPaymentReadiness,
 } from "../payments/card-payment-readiness.js";
 import { STRIPE_PUBLISHABLE_KEY_KEY } from "../payments/stripe-publishable-key.js";
+import {
+	clearStripeWebhookLastVerified,
+	readStripeWebhookLastVerified,
+	stripeWebhookLastVerifiedLine,
+	type StripeWebhookLastVerified,
+} from "../webhooks/stripe-webhook-last-verified.js";
 import { encryptionKeyStatus, type EncryptionKeyStatus } from "../encryption-key-status.js";
 import type {
 	AdminPageConfig,
@@ -392,6 +398,8 @@ interface SettingsPageState {
 	/** What is known about the EmDash host's email provider (`ctx.email`, ADR-0031):
 	 *  none, not yet confirmed by a send, or confirmed — two kv reads. */
 	emailStatus: EmailSendingStatus;
+	/** #531: when a Stripe webhook last verified — one kv read, fail-soft. */
+	stripeWebhookLastVerified: StripeWebhookLastVerified;
 	/** #497: whether a payment key saved now could be stored encrypted. Not kv,
 	 *  but read once with it. */
 	encryptionKey: EncryptionKeyStatus;
@@ -436,31 +444,42 @@ async function readPlainSettings(
  * authenticated to is gone — there is nothing left to derive from a
  * caller-supplied argument, so this reads everything itself: the display name,
  * the payment-secret state, the plain payment settings and the background-work
- * budget, the Stripe account and whether email is available: six concurrent reads.
+ * budget, the Stripe account, whether email is available and when a Stripe
+ * webhook last verified: seven concurrent reads.
  */
 async function readPageState(ctx: PluginContext): Promise<SettingsPageState> {
-	const [displayName, paymentSecrets, plain, backgroundWork, stripeAccount, emailStatus] =
-		await Promise.all([
-			// FAIL-SOFT alongside the rest (INC-C3): the display name is cosmetic, and
-			// a kv blip on it must not deny the operator the secret forms below.
-			ctx.kv.get<string>(STORE_DISPLAY_NAME_KEY).catch(() => null),
-			readPaymentSecretState(ctx),
-			readPlainSettings(ctx),
-			// Fail-soft inside (a kv blip reads as the default), and the SAME read the
-			// sweep makes, so the form shows the budget the next tick will use.
-			readBackgroundWork(ctx),
-			// Never throws. The ONE place besides the key's save that may ask
-			// Stripe: only when nothing usable is cached for the stored key (never
-			// cached, or an unknown answer past its back-off), so checkout never has to.
-			readStripeAccountCountry(ctx),
-			// ADR-0031: `ctx.email`, no recent "no email provider" answer, and whether a
-			// send has gone through it since (PR #418 review: three states).
-			emailSendingStatus(ctx),
-		]);
+	const [
+		displayName,
+		paymentSecrets,
+		plain,
+		backgroundWork,
+		stripeAccount,
+		emailStatus,
+		stripeWebhookLastVerified,
+	] = await Promise.all([
+		// FAIL-SOFT alongside the rest (INC-C3): the display name is cosmetic, and
+		// a kv blip on it must not deny the operator the secret forms below.
+		ctx.kv.get<string>(STORE_DISPLAY_NAME_KEY).catch(() => null),
+		readPaymentSecretState(ctx),
+		readPlainSettings(ctx),
+		// Fail-soft inside (a kv blip reads as the default), and the SAME read the
+		// sweep makes, so the form shows the budget the next tick will use.
+		readBackgroundWork(ctx),
+		// Never throws. The ONE place besides the key's save that may ask
+		// Stripe: only when nothing usable is cached for the stored key (never
+		// cached, or an unknown answer past its back-off), so checkout never has to.
+		readStripeAccountCountry(ctx),
+		// ADR-0031: `ctx.email`, no recent "no email provider" answer, and whether a
+		// send has gone through it since (PR #418 review: three states).
+		emailSendingStatus(ctx),
+		// #531: never throws; a failed read is its own state, never "never".
+		readStripeWebhookLastVerified(ctx),
+	]);
 	return {
 		backgroundWork,
 		stripeAccount,
 		emailStatus,
+		stripeWebhookLastVerified,
 		plainSettings: plain.values,
 		plainUnread: plain.unread,
 		displayName: displayName ?? "",
@@ -710,6 +729,12 @@ export function createSettingsFormHandler(): RouteHandler<SettingsFormInput> {
 				// already stored (if any) stays. The error itself is never shown. With
 				// a key known to be present (#497) the failure is something else, so
 				// the operator is not sent to the deployer for it.
+				// #531: a DIFFERENT webhook signing secret (possibly a wrong one) must
+				// not inherit the old secret's "last verified" time. Read before the
+				// write; anything but the same stored value counts as a change.
+				const webhookSecretChanged =
+					secretSpec.kvKey === STRIPE_WEBHOOK_SECRET_KEY &&
+					(await storedSecretDiffers(ctx, STRIPE_WEBHOOK_SECRET_KEY, checked.value));
 				try {
 					await ctx.kv.set(secretSpec.kvKey, checked.value);
 				} catch {
@@ -727,6 +752,7 @@ export function createSettingsFormHandler(): RouteHandler<SettingsFormInput> {
 					} satisfies BlockResponse;
 				}
 				await bumpSaveGen(ctx, secretSpec.genKey);
+				if (webhookSecretChanged) await clearStripeWebhookLastVerified(ctx);
 				// Issue #382: a new Stripe key may be another account — read its
 				// country NOW, so the answer is cached before the first checkout
 				// needs it and the screen below can state it. Never throws; a
@@ -1339,6 +1365,7 @@ function buildSettingsBlocks(args: {
 	backgroundWork: number;
 	stripeAccount: StripeAccountCountryStatus;
 	emailStatus: EmailSendingStatus;
+	stripeWebhookLastVerified: StripeWebhookLastVerified;
 	/** #497: whether a payment key typed below could be stored encrypted. */
 	encryptionKey: EncryptionKeyStatus;
 	notice?: Notice;
@@ -1366,6 +1393,7 @@ function buildSettingsBlocks(args: {
 			args.plainUnread,
 			args.stripeAccount,
 			args.emailStatus,
+			args.stripeWebhookLastVerified,
 			args.paymentRefusal,
 		),
 	);
@@ -1650,6 +1678,7 @@ function paymentsGroup(
 	unread: ReadonlySet<string>,
 	stripeAccount: StripeAccountCountryStatus,
 	emailStatus: EmailSendingStatus,
+	webhookLastVerified: StripeWebhookLastVerified,
 	refusal?: PaymentRefusal,
 ): Block[] {
 	// A value the operator just typed is shown again even if its re-read failed:
@@ -1668,7 +1697,24 @@ function paymentsGroup(
 		title: paymentsGroupLabel(state, plain, unread, emailStatus),
 		blocks: [
 			// #499: the one answer checkout uses, stated before the fields that set it.
-			{ type: "context", text: cardPaymentsLine(settingsCardReadiness(state, plain)) },
+			// #531: a key Stripe refused (the stored account check) is not plain "ready".
+			{
+				type: "context",
+				text: cardPaymentsLine(settingsCardReadiness(state, plain), {
+					secretKeyRefused: stripeAccount.status === "authentication_failed",
+				}),
+			},
+			// #531: whether Stripe's deliveries arrive and verify — "never" is the warning.
+			// Only once Stripe is set up (a secret key stored): before that, "never" is
+			// noise beside the line that already says what is missing.
+			...(stripeAccount.status === "not_configured"
+				? []
+				: [
+						{
+							type: "context",
+							text: stripeWebhookLastVerifiedLine(webhookLastVerified),
+						} satisfies Block,
+					]),
 			{
 				type: "context",
 				text: "Keys are never shown once saved. Leave a field blank to keep the key you saved before.",
@@ -1723,6 +1769,17 @@ function settingsCardReadiness(
 		secretKeyMode: secret?.mode,
 		webhookSecretSet: state.get(STRIPE_WEBHOOK_SECRET_KEY)?.set === true,
 	});
+}
+
+/** #531: is `value` anything but what is stored under `key`? Unset, invalid and
+ *  unreadable all count as different. */
+async function storedSecretDiffers(
+	ctx: PluginContext,
+	key: string,
+	value: string,
+): Promise<boolean> {
+	const before = await readSecret(ctx, key);
+	return before.state !== "set" || before.value !== value;
 }
 
 /** How long the Settings save waits on Stripe for the account's country. */
@@ -1914,7 +1971,8 @@ function paymentsGroupLabel(
 	const publishableMode = stripePublishableKeyMode(plain.get(STRIPE_PUBLISHABLE_KEY_KEY) ?? "");
 	const stripePart =
 		stripe?.set !== true
-			? "no Stripe key"
+			? // #531: the SECRET key — the line below names it the same way.
+				"no secret key"
 			: unread.has(STRIPE_PUBLISHABLE_KEY_KEY)
 				? // #513: not known — never "no publishable", which reads as unset.
 					"pk not loaded"

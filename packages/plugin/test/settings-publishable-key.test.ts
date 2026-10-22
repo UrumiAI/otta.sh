@@ -392,7 +392,7 @@ describe("a failed read never blanks a stored value (#513)", () => {
 
 describe("what Settings says about card checkout", () => {
 	test.each([
-		[{}, "no Stripe key"],
+		[{}, "no secret key"],
 		[{ [STRIPE_SECRET_KEY_KEY]: SK_TEST }, "no publishable"],
 		[{ [STRIPE_SECRET_KEY_KEY]: SK_TEST, [STRIPE_PUBLISHABLE_KEY_KEY]: PK_TEST }, "Stripe test"],
 		[{ [STRIPE_SECRET_KEY_KEY]: SK_LIVE, [STRIPE_PUBLISHABLE_KEY_KEY]: PK_LIVE }, "Stripe live"],

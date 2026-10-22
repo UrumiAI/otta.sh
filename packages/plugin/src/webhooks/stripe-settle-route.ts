@@ -63,6 +63,7 @@ import { boundedRefundStripeOptions } from "../payments/bounded-refund-options.j
 import { stripeGatewayFromCtx } from "../payments/stripe-wiring.js";
 import { settleDeadline } from "../settle-deadline.js";
 import type { RouteHandler } from "../types.js";
+import { recordStripeWebhookVerified } from "./stripe-webhook-last-verified.js";
 
 /** The PUBLIC route path a forwarded Stripe webhook posts to. Named for what it
  *  does — settle a Stripe webhook — in the repo's `<area>/<thing>/<verb>` route
@@ -191,6 +192,17 @@ export function settleResultToResponse(res: SettleResult): StripeWebhookSettleRe
 			// status Stripe retries on.
 			return { ok: false, status: 503, reason: res.reason, retryable: true };
 	}
+}
+
+/**
+ * #531: did this delivery's Stripe signature VERIFY? `settleOrder` verifies
+ * first and answers INVALID_SIGNATURE / MALFORMED from that step; every other
+ * outcome (ok, UNKNOWN_EVENT, ORDER_NOT_FOUND, …) is reached only past the HMAC.
+ * MALFORMED is treated as unverified even though a signed body that is not a
+ * Stripe event would also produce it: when unsure, the line must not look healthy.
+ */
+function signatureVerified(res: SettleResult): boolean {
+	return res.ok || (res.reason !== "INVALID_SIGNATURE" && res.reason !== "MALFORMED");
 }
 
 /**
@@ -335,6 +347,13 @@ export function createStripeWebhookSettleHandler(
 				return { ok: false, status: 503, reason: "BUSY", retryable: true };
 			}
 			throw err;
+		}
+
+		// #531: record that a verified delivery arrived — Settings shows it. After
+		// verification only, and best-effort: `recordStripeWebhookVerified` never
+		// throws, so a kv failure is logged and Stripe still hears `settled`.
+		if (signatureVerified(settled)) {
+			await recordStripeWebhookVerified(ctx, (options.now ?? Date.now)());
 		}
 
 		// ── The order's emails, NOW — best-effort, after the settle is decided ───

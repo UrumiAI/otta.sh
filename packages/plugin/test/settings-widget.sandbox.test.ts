@@ -929,7 +929,7 @@ describe("Settings admin form (workerd sandbox)", () => {
 		expect(String(banner?.title)).not.toMatch(/saved/i);
 		expect(toastOf(blank)).toEqual({ message: "Stripe secret key unchanged", type: "info" });
 		// Nothing was ever set, so the group label still lists it as missing.
-		expect(groupLabels(blocks).get("settings:payments")).toContain("no Stripe key");
+		expect(groupLabels(blocks).get("settings:payments")).toContain("no secret key");
 
 		// Save it for real, then submit blank — the earlier save must survive.
 		await sandbox.invokeRoute("admin", {
@@ -979,7 +979,7 @@ describe("Settings admin form (workerd sandbox)", () => {
 			// no longer reads as a missing piece. Email is the host's `ctx.email`
 			// (ADR-0031), always present in a sandboxed boot, and "email TBC" until
 			// a send has gone through it (PR #418 review).
-			"Payments & email — no Stripe key · no webhook · email TBC",
+			"Payments & email — no secret key · no webhook · email TBC",
 		);
 		for (const label of labels.values()) expect(label.length).toBeLessThanOrEqual(60);
 

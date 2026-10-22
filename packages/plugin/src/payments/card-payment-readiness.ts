@@ -128,9 +128,22 @@ export async function readStripeGatewayReadiness(
 	return stripeGatewayReadiness(await readSecretFacts(ctx));
 }
 
-/** The one Settings line. Within the nested-context budget (200). */
-export function cardPaymentsLine(readiness: CardPaymentReadiness): string {
-	if (readiness.ready) return "Card payments: ready.";
+/** The one Settings line. Within the nested-context budget (200).
+ *
+ *  #531: readiness checks presence, shape and decryptability, not whether Stripe
+ *  accepts the key. `secretKeyRefused` is the ALREADY-STORED account-country
+ *  answer (`stripe-account-country.ts`) saying Stripe refused the secret key; it
+ *  qualifies "ready" and asks Stripe nothing. A not-ready line is left as it is:
+ *  what is missing is the more useful answer there. */
+export function cardPaymentsLine(
+	readiness: CardPaymentReadiness,
+	options: { secretKeyRefused?: boolean } = {},
+): string {
+	if (readiness.ready) {
+		return options.secretKeyRefused === true
+			? "Card payments: keys saved, but Stripe refused the secret key."
+			: "Card payments: ready.";
+	}
 	if (readiness.missing.length > 0) {
 		return `Card payments: not ready (missing: ${readiness.missing.join(", ")}).`;
 	}

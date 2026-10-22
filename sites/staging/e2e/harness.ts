@@ -439,7 +439,8 @@ export async function skipWithoutPurchasableProduct(testInfo: TestInfo): Promise
  * shows STRIPE_NOT_CONFIGURED and, by design, no button — no order may hold stock
  * against a payment that cannot happen). It needs a publishable key and a webhook
  * signing secret, plus a secret key unless the offline gateway is armed (#499);
- * OTTA_E2E_SEED=1 or OTTA_E2E_START_STACK=1 saves placeholders (issue #498).
+ * OTTA_E2E_SEED=1, or a stack this run started (not a reused one, #531), saves
+ * placeholders (issue #498).
  */
 export async function skipWithoutPlaceButton(testInfo: TestInfo, reason: string): Promise<void> {
 	const how =
