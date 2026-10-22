@@ -1198,6 +1198,29 @@ export function storefrontCommerceClientContract(tier: CommerceClientTier): void
 			expect(await client.getCart(cartId)).toMatchObject({ ok: true, cart: { lines: [] } });
 		});
 
+		test("a BARE add (no productId) of an UNTITLED physical product's sku is refused PRODUCT_NOT_PRICED too — nothing held (#540)", async () => {
+			await tier.arrange.product({
+				productId: "prod-bare-untitled",
+				sku: "SKU-BARE-UNTITLED",
+				title: null,
+				price: { amount: 1400, currency: "USD" },
+				onHand: 5,
+				productKind: "physical",
+				idempotencyKey: "seed-bare-untitled",
+			});
+			const cartId = await tier.arrange.cart("USD");
+			const added = await client.addCartLine(
+				cartId,
+				"SKU-BARE-UNTITLED",
+				null,
+				1,
+				"bare-untitled-1",
+			);
+			expect(added).toEqual({ ok: false, reason: "PRODUCT_NOT_PRICED" });
+			// Refused before the reserve: no line, so no hold.
+			expect(await client.getCart(cartId)).toMatchObject({ ok: true, cart: { lines: [] } });
+		});
+
 		test("a cart whose product LOST its title after the add no longer QUOTES (PRODUCT_NOT_PRICED) — the same answer the order gives", async () => {
 			const productId = await tier.arrange.product({
 				productId: "prod-untitledq",
