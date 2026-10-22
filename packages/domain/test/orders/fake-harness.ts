@@ -70,7 +70,8 @@ interface SeedInput {
 
 interface CartLineSpec {
 	sku: string;
-	productId: string;
+	/** Null models a bare/legacy line (issue #111). */
+	productId: string | null;
 	qty: number;
 	kind: FulfillmentKind;
 }

@@ -83,6 +83,7 @@ import {
 	replaceSpentCart,
 	replaceStaleCurrencyCart,
 	requestLogin,
+	resolveLineProductIds,
 	SkuConflictError,
 	SkuHeldStockError,
 	SkuStockConflictError,
@@ -722,7 +723,10 @@ export class InProcessCommerceClient implements CommerceClient {
 		requireIdToken("cartId", cartId);
 		const cart = await getCart(await this.#liveCartDeps(), cartId);
 		if (cart === null) return { ok: false, reason: "CART_NOT_FOUND" };
-		return { ok: true, cart: serializeCart(cart) };
+		// A line with no productId reads back with the one its sku names (issue
+		// #111), so the cart page and the checkout summary price it like any other.
+		const lines = await resolveLineProductIds(this.#stores.productCommerce, cart.lines);
+		return { ok: true, cart: serializeCart({ ...cart, lines }) };
 	}
 
 	/**
@@ -765,13 +769,13 @@ export class InProcessCommerceClient implements CommerceClient {
 	 * unit OF THE NAMED PRODUCT, and anything that does not resolve is refused
 	 * rather than reinterpreted.
 	 *
-	 * A BARE ADD (no productId) is left exactly as it is, deliberately: resolving a
-	 * bare sku means asking which unit across the whole catalog holds it, and the
-	 * port has no such lookup — every read on it is keyed by product. A bare line
-	 * is also unorderable by construction (both checkout paths refuse a null
-	 * productId before they price anything), so it can confer neither price nor
-	 * entitlement, and the spoof this guard exists to stop is not expressible
-	 * through it.
+	 * A BARE ADD (no productId) is stored exactly as it is, with a null productId.
+	 * The spoof this guard exists to stop is not expressible through it: there is
+	 * no second input to mismatch. Every reader that prices the cart (the cart
+	 * read, the quote, the order) resolves such a line through its sku to the ONE
+	 * live product row whose own sku it is (issue #111, `resolveLineProductIds`),
+	 * so the price, title and entitlement come from the very unit the line holds
+	 * stock for. A variant's sku never resolves, so a bare size stays unorderable.
 	 */
 	async addCartLine(
 		cartId: string,
@@ -1114,8 +1118,9 @@ export class InProcessCommerceClient implements CommerceClient {
 	 * edits their selection.
 	 *
 	 * The per-line price resolution is mirrored from the surface this replaces,
-	 * including its precedence: a line with no product reference cannot be priced
-	 * and answers PRODUCT_NOT_PRICED before any currency comparison happens. Every
+	 * including its precedence: a line with no product reference — none stored,
+	 * and none its sku resolves to (issue #111) — cannot be priced and answers
+	 * PRODUCT_NOT_PRICED before any currency comparison happens. Every
 	 * line's projection is fetched in ONE store round trip — a per-line read would
 	 * be an N+1 on the hottest path in checkout.
 	 */
@@ -1132,20 +1137,29 @@ export class InProcessCommerceClient implements CommerceClient {
 		if (cart === null) return { ok: false, reason: "CART_NOT_FOUND" };
 		if (cart.lines.length === 0) return { ok: false, reason: "CART_EMPTY" };
 
+		// The same by-sku fallback the order applies (issue #111), so the quote and
+		// the order agree on which lines can be priced.
+		const cartLines = await resolveLineProductIds(this.#stores.productCommerce, cart.lines);
+		const bySku = new Set(cart.lines.filter((l) => l.productId === null).map((l) => l.lineId));
 		const byId = await this.#stores.productCommerce.getManyByProductId(
-			cart.lines
+			cartLines
 				.map((line) => line.productId)
 				.filter((id): id is string => id !== null)
 				.map((id) => toProductId(id)),
 		);
 		const lines: PricedLine[] = [];
-		for (const line of cart.lines) {
+		for (const line of cartLines) {
 			if (line.productId === null) return { ok: false, reason: "PRODUCT_NOT_PRICED" };
 			const row = byId.get(toProductId(line.productId)) ?? null;
 			// The same sellability rule `createOrderFromCart` applies: an unpublished,
 			// deleted, unpriced or untitled product is not for sale, even from a cart
 			// that held it first — so the review never quotes an order that would fail.
 			if (row === null || !isProductSellable(row)) {
+				return { ok: false, reason: "PRODUCT_NOT_PRICED" };
+			}
+			// Resolved by sku: refused if the product renamed away from it since (see
+			// `createOrderFromCart`).
+			if (bySku.has(line.lineId) && row.sku !== line.sku) {
 				return { ok: false, reason: "PRODUCT_NOT_PRICED" };
 			}
 			if (row.price.currency !== cart.currency) return { ok: false, reason: "CURRENCY_MISMATCH" };
