@@ -451,7 +451,9 @@ export function normalizeProductDoc(doc: ProductCommerceDoc): ProductCommerceDoc
 		publishKey: publishKeyFor(doc.active),
 		downloadAsset: doc.downloadAsset ?? null,
 		taxStatus: isProductTaxStatus(doc.taxStatus) ? doc.taxStatus : "taxable",
-		titleRejection: doc.titleRejection ?? null,
+		// A rejection says why there is NO title: beside a title it is a leftover
+		// (old code spreading the old document during a rollback, #540).
+		titleRejection: doc.title === null ? (doc.titleRejection ?? null) : null,
 	};
 }
 
@@ -472,7 +474,7 @@ export function toProductCommerce(doc: ProductCommerceDoc): ProductCommerce {
 		sku: doc.sku,
 		price: doc.price,
 		title: doc.title,
-		titleRejection: doc.titleRejection ?? null,
+		titleRejection: doc.title === null ? (doc.titleRejection ?? null) : null,
 		taxClass: doc.taxClass,
 		taxStatus: isProductTaxStatus(doc.taxStatus) ? doc.taxStatus : "taxable",
 		compareAtPrice: doc.compareAtPrice,

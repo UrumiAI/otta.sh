@@ -956,6 +956,13 @@ export function PricingStockEditor({ productId }: { productId: string }): React.
 								Customers can't buy this product until it has a title. Otta reads it from this
 								entry's <code>title</code> field (up to 500 characters): fill it in and save.
 							</span>
+							{/* EmDash neither remounts this field nor tells it when the entry is
+							    saved (#540), so the prompt offers its own re-read. */}
+							<div>
+								<button type="button" className="otta-pricing-btn" onClick={rereadNow}>
+									Check again
+								</button>
+							</div>
 						</div>
 					)}
 					<div className="otta-pricing-grid">
