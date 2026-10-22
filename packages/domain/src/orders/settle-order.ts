@@ -190,10 +190,8 @@ export async function settleOrder(
 	// A MATCHING amount under a payment the order never captured is the same
 	// double charge (#540) — the usual shape, since a retried checkout mints its
 	// second intent at the order's own price. It gets the same anomaly (once per
-	// event) and flag, and does not re-drive the side-effects. Unlike the
-	// wrong-amount stray, it IS recorded on the payments ledger: it is real money
-	// held against this order at its own price, and a refund can only target a
-	// payment the ledger holds (`refundOrder`'s `providerRef`). The ceiling stays
+	// event) and flag, and does not re-drive the side-effects. Its payment row is
+	// kept, as before, so the ledger shows the money held; the refund ceiling stays
 	// `min(Σ captured, total)`, so the row adds no refund capacity. The row is
 	// written after the flag, because a redelivery treats a recorded ref as known.
 	if (order.state === "paid") {
@@ -221,7 +219,7 @@ export async function settleOrder(
 			if (order.reconciliationFlag === null) {
 				await deps.orderStore.flagReconciliation(
 					order.id,
-					`possible double charge: second payment ${conf.providerRef} captured on paid order`,
+					`possible double charge: payment ${conf.providerRef} is a second capture on paid order`,
 					{ expectedFlag: null },
 				);
 			}

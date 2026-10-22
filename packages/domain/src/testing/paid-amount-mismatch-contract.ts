@@ -282,6 +282,44 @@ export function paidAmountMismatchContract(
 			expect(await anomaliesOf(h, order.id, "PAID_AMOUNT_MISMATCH")).toHaveLength(1);
 		});
 
+		test("a correct-amount double charge whose flag write fails leaves no payment row; the redelivery flags it AND records it", async () => {
+			const h = await makeHarness();
+			const order = await paidOrder(h, "flagfail");
+			// The flag write fails on its FIRST call only — a crash between the anomaly
+			// and the flag. Were the row written first, the redelivery would read the
+			// ref as known and re-drive silently, never flagging the double charge.
+			let failed = false;
+			const real = h.settleDeps.orderStore;
+			const orderStore = new Proxy(real, {
+				get(target, prop, receiver) {
+					if (prop === "flagReconciliation" && !failed) {
+						return async () => {
+							failed = true;
+							throw new Error("flag write failed");
+						};
+					}
+					const value: unknown = Reflect.get(target, prop, receiver);
+					return typeof value === "function" ? (value as Function).bind(target) : value;
+				},
+			});
+			const deps = { ...h.settleDeps, orderStore };
+			const dbl = () => event(order, TOTAL_CENTS, "evt_same_flagfail", "USD", "pi_retry_intent");
+
+			await expect(settleOrder(deps, gateway, dbl())).rejects.toThrow("flag write failed");
+			const before = await real.getCapturedPayments(order.id);
+			expect(before.map((p) => p.providerRef)).toEqual([`pi_${order.id}`]);
+
+			h.advanceClock(60_000);
+			const res = await settleOrder(deps, gateway, dbl());
+			expect(res.ok).toBe(true);
+			const after = await state(h, order.id);
+			expect(after.reconciliationFlag).toContain("possible double charge");
+			expect(after.reconciliationFlag).toContain("pi_retry_intent");
+			const captured = await real.getCapturedPayments(order.id);
+			expect(captured.map((p) => p.providerRef)).toEqual([`pi_${order.id}`, "pi_retry_intent"]);
+			expect(await anomaliesOf(h, order.id, "PAID_AMOUNT_MISMATCH")).toHaveLength(1);
+		});
+
 		test("a paid order with NO captured payment yet (a crash after the flip) is healed by its matching success, silently", async () => {
 			const h = await makeHarness();
 			const order = await seedPendingOrder(h, "heal");
