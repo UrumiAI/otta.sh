@@ -24,8 +24,10 @@ import {
 	isStorageContentionError,
 	newInventoryDoc,
 	normalizeInventoryDoc,
+	RESERVATION_INDEX_COLLECTION,
 	RESERVATION_KEYS_COLLECTION,
 	uuidIdGen,
+	type ReservationIndexDoc,
 } from "../src/index.js";
 import { describeEachDialect } from "./describe-each-dialect.js";
 import {
@@ -259,6 +261,40 @@ describeEachDialect("EmdashInventoryStore document model", (ctx) => {
 			expect(await h.holdCount("SKU-RACE")).toBe(1);
 			expect((await h.store.commitMany([id])).lost).toEqual([]);
 			expect(await h.onHand("SKU-RACE")).toBe(3);
+		});
+
+		it("a release that has returned the units but not yet written its terminal state reads as released, and the next releaseHeld finishes it", async () => {
+			const h = harness();
+			await h.seed("SKU-RESIDUE", 5);
+			const id = await h.holdWithExpiry("SKU-RESIDUE", 2, "k-residue", "2026-07-10T00:15:00.000Z");
+			const raw = bound.storage[RESERVATION_INDEX_COLLECTION];
+			if (raw === undefined) throw new Error("the reservation index collection is not declared");
+			// Park the FIRST call's terminal-state write: its prune has landed.
+			const gated = parkCall(raw, isUpdateWrite);
+			const first = new EmdashInventoryStore({
+				storage: withCollection(bound.storage, RESERVATION_INDEX_COLLECTION, gated.collection),
+				idGen: new CountingIdGen("blocked"),
+				clock: new FixedClock(new Date("2026-07-10T00:00:00.000Z")),
+				sleep: async () => {},
+				random: () => 0,
+			});
+			const slow = first.releaseHeld(id);
+			await gated.arrived;
+			expect(await h.onHand("SKU-RESIDUE")).toBe(5);
+			expect(await h.holdCount("SKU-RESIDUE")).toBe(0);
+			const index = collectionOf<ReservationIndexDoc>(bound.storage, RESERVATION_INDEX_COLLECTION);
+			expect((await index.get(id))?.terminalState).toBeUndefined();
+
+			// A second request (or a retry after a crash right here) is told the truth
+			// — released, not LINE_CHECKED_OUT — and finishes the terminal write.
+			expect(await h.store.releaseHeld(id)).toBe(true);
+			expect((await index.get(id))?.terminalState).toBe("released");
+			expect(await h.onHand("SKU-RESIDUE")).toBe(5);
+
+			gated.release();
+			expect(await slow).toBe(true);
+			expect(await h.onHand("SKU-RESIDUE")).toBe(5);
+			expect((await h.store.commitMany([id])).lost).toEqual([id]);
 		});
 
 		it("two racing releases of one held hold both answer true and return its units once", async () => {
