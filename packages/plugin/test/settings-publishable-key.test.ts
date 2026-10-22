@@ -198,6 +198,28 @@ describe("saving the publishable key", () => {
 			},
 		);
 
+		test("a refused paste, then a save of the refused form with the key still blank: the key is kept", async () => {
+			const { ctx, kv } = makeCtx({ [STRIPE_PUBLISHABLE_KEY_KEY]: PK_TEST });
+			const page = await invoke(ctx, { type: "page_load" });
+			const refused = await invoke(ctx, {
+				type: "form_submit",
+				action_id: "save-payment-settings",
+				values: submittedFrom(page.blocks, { stripePublishableKey: SK_LIVE }),
+				block_id: formFor(page.blocks, "save-payment-settings")?.block_id,
+			});
+			expect(refused.toast).not.toMatchObject({ type: "success" });
+			// The refused paste is not echoed back, so the field is blank.
+			expect(publishableField(refused.blocks)?.initial_value).toBe("");
+			await invoke(ctx, {
+				type: "form_submit",
+				action_id: "save-payment-settings",
+				values: submittedFrom(refused.blocks, { loginLinkUrl: SIGN_IN }),
+				block_id: formFor(refused.blocks, "save-payment-settings")?.block_id,
+			});
+			expect(kv.get(STRIPE_PUBLISHABLE_KEY_KEY)).toBe(PK_TEST);
+			expect(kv.get(LOGIN_LINK_URL_KEY)).toBe(SIGN_IN);
+		});
+
 		test("the stored key cannot be read on save: it is kept", async () => {
 			const { ctx, kv, failingReads } = makeCtx({ [STRIPE_PUBLISHABLE_KEY_KEY]: PK_TEST });
 			failingReads.add(STRIPE_PUBLISHABLE_KEY_KEY);

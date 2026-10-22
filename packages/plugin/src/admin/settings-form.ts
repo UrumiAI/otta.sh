@@ -857,11 +857,19 @@ export function createSettingsFormHandler(): RouteHandler<SettingsFormInput> {
 						return [[spec.kvKey, shown] as const];
 					}),
 				);
+				// #530: a refused key comes back blank, so that form does not claim to
+				// show the key: a save from it with the field still blank keeps the key.
+				const refusedKey =
+					publishableKey.length > 0 && !checkStripePublishableKey(publishableKey).ok;
 				return renderPage(
 					ctx,
 					client,
 					{ variant: "error", title: "Payment settings not saved", description },
-					{ problems: problems.map((p) => p.rule), typed },
+					{
+						problems: problems.map((p) => p.rule),
+						typed,
+						...(refusedKey ? { publishableKeyBlanked: true as const } : {}),
+					},
 				);
 			}
 			// #530: a blank key from a form that never showed the key (older code
@@ -1630,6 +1638,7 @@ function paymentsGroup(
 		refusal === undefined
 			? unread
 			: new Set([...unread].filter((key) => (refusal.typed.get(key) ?? "") === "")),
+		refusal?.publishableKeyBlanked !== true,
 	);
 	return section({
 		blockId: "settings:payments",
@@ -1781,6 +1790,8 @@ function publishableKeyWarnings(stored: string, state: Map<string, SecretRenderS
 interface PaymentRefusal {
 	problems: string[];
 	typed: Map<string, string>;
+	/** #530: the typed publishable key was refused and is shown blank. */
+	publishableKeyBlanked?: true;
 }
 
 /** Review nit: a STORED sign-in page that is valid but clear text off this
@@ -1821,10 +1832,13 @@ function unreadPlainSettingNotices(unread: ReadonlySet<string>): Block[] {
 function plainSettingsForm(
 	plain: Map<string, string>,
 	unread: ReadonlySet<string>,
+	/** #530: false when the field is blank only because a typed key was refused. */
+	publishableKeyShown: boolean,
 ): FormBlock | undefined {
 	const specs = PLAIN_PAYMENT_SETTINGS.filter((spec) => !unread.has(spec.kvKey));
 	if (specs.length === 0) return undefined;
-	const showsPublishableKey = specs.some((spec) => spec.kvKey === STRIPE_PUBLISHABLE_KEY_KEY);
+	const showsPublishableKey =
+		publishableKeyShown && specs.some((spec) => spec.kvKey === STRIPE_PUBLISHABLE_KEY_KEY);
 	return carriedForm({
 		namespace: `settings:${SAVE_PAYMENT_SETTINGS_ACTION}`,
 		// #530: lets the save tell a deliberate clear from an older form's blank.
