@@ -258,7 +258,7 @@ function inProcessTier(): CommerceClientTier {
 					{
 						sku: spec.sku,
 						...(spec.price !== undefined ? { price: spec.price } : {}),
-						title: spec.title ?? `Product ${spec.productId}`,
+						...(spec.title === null ? {} : { title: spec.title ?? `Product ${spec.productId}` }),
 						...(spec.onHand !== undefined ? { initialOnHand: spec.onHand } : {}),
 						...(spec.productKind !== undefined ? { productKind: spec.productKind } : {}),
 					},

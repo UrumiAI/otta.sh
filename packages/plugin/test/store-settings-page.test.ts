@@ -1,10 +1,23 @@
 import { describe, expect, test } from "vitest";
 import {
+	createSettingsFormHandler,
+	SETTINGS_ACTION_IDS,
+	SETTINGS_PAGE,
+} from "../src/admin/settings-form.js";
+import {
+	createShippingPageHandler,
+	SHIPPING_ACTION_IDS,
+	SHIPPING_PAGE,
+} from "../src/admin/shipping-page.js";
+import {
 	createStoreSettingsPageHandler,
 	type StoreSettingsPanel,
 } from "../src/admin/store-settings-page.js";
+import { createTaxPageHandler, TAX_ACTION_IDS, TAX_PAGE } from "../src/admin/tax-page.js";
+import { STRIPE_PUBLISHABLE_KEY_KEY } from "../src/payments/stripe-publishable-key.js";
 import type { PluginContext, SandboxedRouteContext } from "../src/types.js";
-import { panel, type LooseBlock } from "./helpers/blocks.js";
+import { buttons, field, formFor, panel, type LooseBlock } from "./helpers/blocks.js";
+import { makeInProcessCommerce } from "./helpers/in-process-commerce.js";
 
 // The wrapper's own rules, with stub screens: run order, failure containment and
 // toast pass-through. The real screens are covered through the sandbox in
@@ -99,5 +112,72 @@ describe("createStoreSettingsPageHandler", () => {
 			toast?: unknown;
 		};
 		expect(loaded).not.toHaveProperty("toast");
+	});
+});
+
+// #530 item 2, the #518 path: the real General, Tax and Shipping screens behind
+// the wrapper, over a real document store. An action in another tab re-loads
+// General; with the publishable key read failing then, General must leave the
+// key out of its payment-settings form (#513), so a save from it keeps the key.
+describe("Store settings tabs over the real screens", () => {
+	const PK_TEST = ["pk_test_", "51QaFixtureKey000000000000"].join("");
+
+	test("a Tax action re-renders General without the publishable key when its read fails", async () => {
+		const h = await makeInProcessCommerce();
+		try {
+			await h.ctx.kv.set(STRIPE_PUBLISHABLE_KEY_KEY, PK_TEST);
+			let failPublishableRead = false;
+			const kvCtx: PluginContext = {
+				...h.ctx,
+				kv: {
+					...h.ctx.kv,
+					get: <T>(key: string): Promise<T | null> =>
+						failPublishableRead && key === STRIPE_PUBLISHABLE_KEY_KEY
+							? Promise.reject(new Error("kv unavailable"))
+							: h.ctx.kv.get<T>(key),
+				},
+			};
+			const handler = createStoreSettingsPageHandler([
+				{
+					label: "General",
+					page: SETTINGS_PAGE.path,
+					actionIds: SETTINGS_ACTION_IDS,
+					handler: createSettingsFormHandler(),
+				},
+				{
+					label: "Tax",
+					page: TAX_PAGE.path,
+					actionIds: TAX_ACTION_IDS,
+					handler: createTaxPageHandler(),
+				},
+				{
+					label: "Shipping",
+					page: SHIPPING_PAGE.path,
+					actionIds: SHIPPING_ACTION_IDS,
+					handler: createShippingPageHandler(),
+				},
+			]);
+			const call = async (input: Record<string, unknown>) =>
+				(await handler(routeCtx(input) as never, kvCtx)) as { blocks: LooseBlock[] };
+
+			const loaded = await call({ type: "page_load" });
+			const newClass = buttons(panel(loaded.blocks, "Tax")).find(
+				(b) => b.action_id === "tax:show-new-class",
+			);
+			expect(newClass, "no New tax class button in the Tax tab").toBeDefined();
+
+			failPublishableRead = true;
+			const after = await call({
+				type: "block_action",
+				action_id: "tax:show-new-class",
+				value: newClass!.value,
+			});
+			const form = formFor(panel(after.blocks, "General"), "save-payment-settings");
+			expect(form, "no payment-settings form in the General tab").toBeDefined();
+			expect(field(form, "stripePublishableKey")).toBeUndefined();
+			expect(field(form, "loginLinkUrl")).toBeDefined();
+		} finally {
+			await h.close();
+		}
 	});
 });

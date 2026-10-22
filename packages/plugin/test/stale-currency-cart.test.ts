@@ -17,7 +17,7 @@
  */
 import { idempotencyKey } from "@urumi.ai/otta-domain";
 import { SETTINGS_COLLECTION, type StorageAccess } from "@urumi.ai/otta-store-emdash";
-import { afterAll, beforeAll, beforeEach, describe, expect, test } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
 import { InProcessCommerceClient } from "../src/commerce/in-process-commerce-client.js";
 import {
 	createCartCreateRouteHandler,
@@ -273,6 +273,32 @@ describe("a cart left in the old currency after a store currency switch (#440)",
 		)) as CartReadRouteResult;
 		expect(read).toMatchObject({ ok: true, cart: { cartId }, staleCurrency: null });
 		expect(settingsReads).toBeGreaterThan(1);
+	});
+
+	test("cart/read still answers when the hold-timer read rejects: the timer is hidden (#546)", async () => {
+		seq += 1;
+		await h.stores.settingsStore.update(
+			{ showHoldTimer: true },
+			idempotencyKey(`hold-timer-on-${String(seq)}`),
+		);
+		const { cartId } = await h.client.createCart("USD");
+		expect(await readRoute(cartId)).toMatchObject({ ok: true, showHoldTimer: true });
+		const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+		const failing = vi
+			.spyOn(InProcessCommerceClient.prototype, "getShowHoldTimer")
+			.mockRejectedValueOnce(new Error("settings unreadable"));
+		try {
+			expect(await readRoute(cartId)).toMatchObject({
+				ok: true,
+				cart: { cartId },
+				showHoldTimer: false,
+			});
+			expect(failing).toHaveBeenCalledTimes(1);
+			expect(errors.mock.calls.flat().map(String).join(" ")).toContain("showHoldTimer read failed");
+		} finally {
+			failing.mockRestore();
+			errors.mockRestore();
+		}
 	});
 
 	/** The queries one `replaceStaleCurrencyCart` costs for a stale cart of `n`

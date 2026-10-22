@@ -50,6 +50,7 @@ import {
 	type SendOrderEmailsNowOptions,
 } from "../src/email/send-order-emails-now.js";
 import { SETTLE_REQUEST_BUDGET_MS } from "../src/settle-deadline.js";
+import { STRIPE_WEBHOOK_LAST_VERIFIED_KEY } from "../src/webhooks/stripe-webhook-last-verified.js";
 import type { EmailMessage, PluginContext } from "../src/types.js";
 import { chargeRefundedEvent, signedStripeEvent } from "./helpers/signed-stripe-event.js";
 import {
@@ -1231,5 +1232,112 @@ describe("(xiii) the late-payment refund CREATE gets its full bound or is not st
 
 		expect(res).toEqual({ ok: true, status: 200 });
 		expect(calls).toEqual(["GET /v1/payment_intents/pi_ord-late-full", "POST /v1/refunds"]);
+	});
+});
+
+describe("(xiv) #531: a VERIFIED delivery records when it arrived — and only a verified one", () => {
+	const NOW = Date.parse("2026-10-22T14:03:27.000Z");
+
+	test("a correctly signed delivery records its time, last-write-wins", async () => {
+		await harness.ctx.kv.set(STRIPE_WEBHOOK_SECRET_KEY, WEBHOOK_SECRET);
+		await seedPendingOrder("ord-lv-a");
+		await seedPendingOrder("ord-lv-b");
+
+		expect((await invoke(await signedDelivery("ord-lv-a"), {}, { now: () => NOW })).ok).toBe(true);
+		expect(await harness.ctx.kv.get(STRIPE_WEBHOOK_LAST_VERIFIED_KEY)).toBe(
+			"2026-10-22T14:03:27.000Z",
+		);
+
+		const later = NOW + 60_000;
+		expect((await invoke(await signedDelivery("ord-lv-b"), {}, { now: () => later })).ok).toBe(
+			true,
+		);
+		expect(await harness.ctx.kv.get(STRIPE_WEBHOOK_LAST_VERIFIED_KEY)).toBe(
+			"2026-10-22T14:04:27.000Z",
+		);
+	});
+
+	test("a verified event Otta does not act on still counts: the signature is what was checked", async () => {
+		await harness.ctx.kv.set(STRIPE_WEBHOOK_SECRET_KEY, WEBHOOK_SECRET);
+		await seedPendingOrder("ord-lv-refunded");
+		const res = await invoke(
+			signedStripeEvent(chargeRefundedEvent("ord-lv-refunded", AMOUNT), WEBHOOK_SECRET, "wh-lv"),
+			{},
+			{ now: () => NOW },
+		);
+		expect(res).toMatchObject({ status: 200, reason: "UNKNOWN_EVENT" });
+		expect(await harness.ctx.kv.get(STRIPE_WEBHOOK_LAST_VERIFIED_KEY)).toBe(
+			"2026-10-22T14:03:27.000Z",
+		);
+	});
+
+	test("a delivery whose signature does NOT verify records nothing", async () => {
+		await harness.ctx.kv.set(STRIPE_WEBHOOK_SECRET_KEY, WEBHOOK_SECRET);
+		await seedPendingOrder("ord-lv-forged");
+		const res = await invoke(
+			await signedDelivery("ord-lv-forged", { secret: "whsec_attacker" }),
+			{},
+			{
+				now: () => NOW,
+			},
+		);
+		expect(res).toEqual({ ok: false, status: 400, reason: "INVALID_SIGNATURE" });
+		expect(await harness.ctx.kv.get(STRIPE_WEBHOOK_LAST_VERIFIED_KEY)).toBeNull();
+	});
+
+	test("a delivery to a store with no webhook signing secret records nothing", async () => {
+		await seedPendingOrder("ord-lv-nosecret");
+		const res = await invoke(await signedDelivery("ord-lv-nosecret"), {}, { now: () => NOW });
+		expect(res).toEqual({ ok: false, status: 503, reason: "NOT_CONFIGURED" });
+		expect(await harness.ctx.kv.get(STRIPE_WEBHOOK_LAST_VERIFIED_KEY)).toBeNull();
+	});
+
+	test("a body that is not base64 records nothing", async () => {
+		await harness.ctx.kv.set(STRIPE_WEBHOOK_SECRET_KEY, WEBHOOK_SECRET);
+		await seedPendingOrder("ord-lv-garbled");
+		const delivery = await signedDelivery("ord-lv-garbled");
+		const res = await invoke({ ...delivery, rawBodyBase64: "!!" }, {}, { now: () => NOW });
+		expect(res).toEqual({ ok: false, status: 400, reason: "MALFORMED" });
+		expect(await harness.ctx.kv.get(STRIPE_WEBHOOK_LAST_VERIFIED_KEY)).toBeNull();
+	});
+
+	test("a delivery refused at the edge token records nothing", async () => {
+		await harness.ctx.kv.set(WEBHOOK_EDGE_TOKEN_KEY, EDGE_TOKEN);
+		await harness.ctx.kv.set(STRIPE_WEBHOOK_SECRET_KEY, WEBHOOK_SECRET);
+		await seedPendingOrder("ord-lv-token");
+		const res = await invoke(await signedDelivery("ord-lv-token"), {
+			[WEBHOOK_EDGE_TOKEN_HEADER]: "wrong",
+		});
+		expect(res).toMatchObject({ status: 401 });
+		expect(await harness.ctx.kv.get(STRIPE_WEBHOOK_LAST_VERIFIED_KEY)).toBeNull();
+	});
+
+	test("a failed write is logged and the webhook still settles with a 200", async () => {
+		await harness.ctx.kv.set(STRIPE_WEBHOOK_SECRET_KEY, WEBHOOK_SECRET);
+		await seedPendingOrder("ord-lv-kvfail");
+		const kv = harness.ctx.kv;
+		const ctx: PluginContext = {
+			...harness.ctx,
+			kv: {
+				get: (key) => kv.get(key),
+				set: async (key, value) => {
+					if (key === STRIPE_WEBHOOK_LAST_VERIFIED_KEY) throw new Error("kv write refused");
+					await kv.set(key, value);
+				},
+				delete: (key) => kv.delete(key),
+				list: (prefix) => kv.list(prefix),
+			},
+		};
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+		const res = await invoke(await signedDelivery("ord-lv-kvfail"), {}, { ctx });
+
+		expect(res).toEqual({ ok: true, status: 200 });
+		expect(await orderState("ord-lv-kvfail")).toBe("paid");
+		expect(warn).toHaveBeenCalledWith(
+			expect.stringContaining("could not record the last verified Stripe webhook"),
+			expect.anything(),
+		);
+		expect(JSON.stringify(warn.mock.calls)).not.toContain(WEBHOOK_SECRET);
 	});
 });

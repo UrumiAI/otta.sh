@@ -242,6 +242,7 @@ export class InProcessReportingSettingsClient implements ReportingSettingsSurfac
 				: {}),
 			// Validated by the domain (`isSupportedCurrency`), like every other field.
 			...(patch.currency !== undefined ? { currency: patch.currency } : {}),
+			...(patch.showHoldTimer !== undefined ? { showHoldTimer: patch.showHoldTimer } : {}),
 		};
 
 		try {
@@ -318,5 +319,6 @@ function toSettingsWire(settings: OperationalSettings): OperationalSettingsWire 
 		// Only when saved: absent stays absent, so a store that never saved one
 		// reads exactly as it did before the setting existed.
 		...(settings.currency !== undefined ? { currency: settings.currency } : {}),
+		...(settings.showHoldTimer !== undefined ? { showHoldTimer: settings.showHoldTimer } : {}),
 	};
 }

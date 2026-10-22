@@ -198,9 +198,13 @@ describe("the Tempered cart: the page's wiring — every decision the view print
 	test("the countdown script renders only when a live line holds stock", () => {
 		// ADR-0012's one sanctioned pair (cart page → HoldClock), and only when
 		// there is something to count: not on the empty or terminal arms, and not
-		// on a live cart none of whose lines carries an `expiresAt`.
+		// on a live cart none of whose lines carries an `expiresAt` — and not at
+		// all unless the store shows the hold timer (off by default).
 		expect(source).toMatch(
-			/const hasLiveHolds =\s*!model\.empty && !terminal && lines\.some\(\(line\) => line\.expiresAt !== null\);/,
+			/const hasLiveHolds =\s*model\.showHoldTimer &&\s*!model\.empty &&\s*!terminal &&\s*lines\.some\(\(line\) => line\.expiresAt !== null\);/,
+		);
+		expect(source).toMatch(
+			/showHoldTimer: result !== null && result\.ok && result\.showHoldTimer,/,
 		);
 		expect(source).toContain('{hasLiveHolds && <HoldClock slot="head" />}');
 		expect(source.match(/<HoldClock\b/g) ?? []).toHaveLength(1);
@@ -548,10 +552,12 @@ describe("Tempered's cart view", () => {
 		// §8: "empty and degraded states are designed surfaces, not
 		// afterthoughts". The mockup's own empty-cart frame — a display-face
 		// line, one sentence about what this store does for you, and a way out.
-		expect(markup).toContain("Nothing held yet.");
+		// The hold is promised only when the store shows the hold timer.
+		expect(markup).toContain('showHoldTimer ? "Nothing held yet." : "Nothing here yet."');
 		expect(markup).toContain(
 			"Your cart is empty. Pick something and we'll hold the stock while you decide.",
 		);
+		expect(markup).toContain("Your cart is empty. Browse the shop and add something you like.");
 		expect(markup).toMatch(/<a href="\/products"[^>]*class="u-btn u-btn-ghost"/);
 	});
 

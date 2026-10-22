@@ -58,6 +58,7 @@ import {
 	createOrderFromCart,
 	currency as toCurrency,
 	deactivateProductCommerce,
+	effectiveShowHoldTimer,
 	effectiveStoreCurrency,
 	deactivateProductVariant,
 	email as toEmail,
@@ -641,6 +642,10 @@ export class InProcessCommerceClient implements CommerceClient {
 	 *  "we'll hold this for N minutes" must say. */
 	async getCartHoldTtlMinutes(): Promise<number> {
 		return (await this.#stores.settingsStore.get()).holdTtlMinutes;
+	}
+
+	async getShowHoldTimer(): Promise<boolean> {
+		return effectiveShowHoldTimer(await this.#stores.settingsStore.get());
 	}
 
 	/**

@@ -55,6 +55,11 @@ import {
 	E2E_STARTS_STACK,
 	siteIsUp,
 } from "./harness.js";
+import {
+	consumeServerStartedMarker,
+	provisionsE2ePlaceholders,
+	serverStartedMarkerPath,
+} from "./server-started-marker.js";
 
 /** The whole warm-up's ceiling. A cold dev server on a small machine takes
  *  well under this to compile the admin graph (measured: 5–25 s per fresh
@@ -221,6 +226,10 @@ async function somethingListens(): Promise<boolean> {
 }
 
 export default async function globalSetup(): Promise<void> {
+	// #531: read (and remove) the marker first, whatever happens below. It exists
+	// only if Playwright ran the webServer command — not on a reused server.
+	const serverStartedByThisRun =
+		E2E_STARTS_STACK && consumeServerStartedMarker(serverStartedMarkerPath());
 	if (!(await somethingListens())) return;
 	const deadline = Date.now() + WARM_UP_BUDGET_MS;
 	try {
@@ -245,7 +254,9 @@ export default async function globalSetup(): Promise<void> {
 		// Issue #498: the publishable key is a Settings value now, not a build
 		// variable the config injected — so a stack this run started, or one it
 		// seeds, gets the placeholder saved (never over a key already there).
-		if (E2E_SEEDS || E2E_STARTS_STACK) {
+		// #531: STARTED, not merely "OTTA_E2E_START_STACK=1": with
+		// `reuseExistingServer` that flag can adopt a developer's own dev store.
+		if (provisionsE2ePlaceholders({ seeds: E2E_SEEDS, serverStartedByThisRun })) {
 			assertLoopbackSite(E2E_BASE_URL);
 			const deps = {
 				siteUrl: E2E_BASE_URL,

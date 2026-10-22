@@ -42,6 +42,8 @@ export class InMemorySettingsStore implements SettingsStore {
 		if (tax !== undefined) next.tax = structuredClone(tax);
 		const currency = patch.currency ?? this.#current.currency;
 		if (currency !== undefined) next.currency = currency;
+		const showHoldTimer = patch.showHoldTimer ?? this.#current.showHoldTimer;
+		if (showHoldTimer !== undefined) next.showHoldTimer = showHoldTimer;
 		this.#current = next;
 		this.#ledger.set(idempotencyKey, structuredClone(next));
 		return structuredClone(next);
