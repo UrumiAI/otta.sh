@@ -552,10 +552,12 @@ describe("Tempered's cart view", () => {
 		// §8: "empty and degraded states are designed surfaces, not
 		// afterthoughts". The mockup's own empty-cart frame — a display-face
 		// line, one sentence about what this store does for you, and a way out.
-		expect(markup).toContain("Nothing held yet.");
+		// The hold is promised only when the store shows the hold timer.
+		expect(markup).toContain('showHoldTimer ? "Nothing held yet." : "Nothing here yet."');
 		expect(markup).toContain(
 			"Your cart is empty. Pick something and we'll hold the stock while you decide.",
 		);
+		expect(markup).toContain("Your cart is empty. Browse the shop and add something you like.");
 		expect(markup).toMatch(/<a href="\/products"[^>]*class="u-btn u-btn-ghost"/);
 	});
 
