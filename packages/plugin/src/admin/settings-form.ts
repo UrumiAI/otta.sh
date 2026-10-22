@@ -63,7 +63,14 @@ import type {
 	OperationalSettingsWire,
 	ReportingSettingsSurface,
 } from "./reporting-settings-surface.js";
-import { carriedForm, noticeBanner, section, valueLabel, type Notice } from "./scaffold/index.js";
+import {
+	carriedForm,
+	decodeCarrier,
+	noticeBanner,
+	section,
+	valueLabel,
+	type Notice,
+} from "./scaffold/index.js";
 
 /**
  * The admin Settings screen (§4.1 report/settings skeleton;
@@ -272,6 +279,12 @@ interface PlainSettingSpec {
 	/** What the field holds, mid-sentence — for the "couldn't be loaded" notice. */
 	noun: string;
 }
+
+/** #530: the payment-settings form's carrier key saying the publishable key
+ *  field was rendered by this code, which shows the key or leaves the field out
+ *  (#513). A blank key from a form WITHOUT it may be a failed read shown blank
+ *  by older code, not an operator clearing the key. */
+const PUBLISHABLE_KEY_SHOWN = "pkShown";
 
 const PLAIN_PAYMENT_SETTINGS: readonly PlainSettingSpec[] = [
 	// Issue #498 — the Stripe PUBLISHABLE key, the third value card checkout
@@ -563,6 +576,9 @@ export interface SettingsFormInput {
 	values?: Record<string, unknown>;
 	/** A button's payload (`block_action`): the Remove button's `{ secret }`. */
 	value?: unknown;
+	/** The submitted form's carrier (`form_submit`). #530: the payment-settings
+	 *  form marks in it that the publishable key was shown. */
+	block_id?: unknown;
 	/** Idempotency key for the privileged PUT (defaulted if absent). */
 	idempotencyKey?: unknown;
 }
@@ -795,6 +811,8 @@ export function createSettingsFormHandler(): RouteHandler<SettingsFormInput> {
 			// in one pass. Each names the FIELD and the SHAPE, never the rejected
 			// value (the form, not the banner, keeps what was typed).
 			const problems: Array<{ field: string; rule: string }> = [];
+			// #530: whether the form this submit came from showed the stored key.
+			const pkShownIn = decodeCarrier(input.block_id)?.[PUBLISHABLE_KEY_SHOWN] === "1";
 			// Issue #498: the publishable key must be one, so a wrong paste is refused
 			// here rather than surfacing as "card payment isn't set up" at checkout.
 			const publishableKey = submitted.get(STRIPE_PUBLISHABLE_KEY_KEY) ?? "";
@@ -841,14 +859,51 @@ export function createSettingsFormHandler(): RouteHandler<SettingsFormInput> {
 						return [[spec.kvKey, shown] as const];
 					}),
 				);
+				// #530: a refused key comes back blank, so that form does not claim to
+				// show the key: a save from it with the field still blank keeps the key.
+				// Nor does one re-rendered from a blank sent by a form that did not show
+				// it, or a second refusal (a URL typo) would bring the marker back.
+				const refusedKey =
+					(publishableKey.length > 0 && !checkStripePublishableKey(publishableKey).ok) ||
+					(submitted.get(STRIPE_PUBLISHABLE_KEY_KEY) === "" && !pkShownIn);
 				return renderPage(
 					ctx,
 					client,
 					{ variant: "error", title: "Payment settings not saved", description },
-					{ problems: problems.map((p) => p.rule), typed },
+					{
+						problems: problems.map((p) => p.rule),
+						typed,
+						...(refusedKey ? { publishableKeyBlanked: true as const } : {}),
+					},
 				);
 			}
+			// #530: a blank key from a form that never showed the key (older code
+			// rendered a failed read as a blank field) does not clear a stored key.
+			// One kv read, on this path only; a failed read keeps the key too.
+			let keptPublishableKey = false;
+			if (submitted.get(STRIPE_PUBLISHABLE_KEY_KEY) === "" && !pkShownIn) {
+				const stored = await ctx.kv.get<unknown>(STRIPE_PUBLISHABLE_KEY_KEY).then(
+					(value) => (typeof value === "string" ? value.trim() : ""),
+					() => undefined,
+				);
+				if (stored !== "") {
+					submitted.delete(STRIPE_PUBLISHABLE_KEY_KEY);
+					keptPublishableKey = true;
+				}
+			}
 			for (const [key, value] of submitted) await ctx.kv.set(key, value);
+			if (keptPublishableKey) {
+				const page = await renderPage(ctx, client, {
+					variant: "default",
+					title: "Stripe publishable key kept",
+					description:
+						"The publishable key field was blank on a form that didn't show the saved key, so the key was kept. Other changes were saved. To clear it, reload the page, empty the field and save.",
+				});
+				return {
+					...page,
+					toast: { message: "Stripe publishable key kept", type: "info" },
+				} satisfies BlockResponse;
+			}
 			const page = await renderPage(ctx, client, {
 				variant: "default",
 				title: "Payment settings saved",
@@ -1606,6 +1661,7 @@ function paymentsGroup(
 		refusal === undefined
 			? unread
 			: new Set([...unread].filter((key) => (refusal.typed.get(key) ?? "") === "")),
+		refusal?.publishableKeyBlanked !== true,
 	);
 	return section({
 		blockId: "settings:payments",
@@ -1757,6 +1813,8 @@ function publishableKeyWarnings(stored: string, state: Map<string, SecretRenderS
 interface PaymentRefusal {
 	problems: string[];
 	typed: Map<string, string>;
+	/** #530: the typed publishable key was refused and is shown blank. */
+	publishableKeyBlanked?: true;
 }
 
 /** Review nit: a STORED sign-in page that is valid but clear text off this
@@ -1797,11 +1855,17 @@ function unreadPlainSettingNotices(unread: ReadonlySet<string>): Block[] {
 function plainSettingsForm(
 	plain: Map<string, string>,
 	unread: ReadonlySet<string>,
+	/** #530: false when the field is blank only because a typed key was refused. */
+	publishableKeyShown: boolean,
 ): FormBlock | undefined {
 	const specs = PLAIN_PAYMENT_SETTINGS.filter((spec) => !unread.has(spec.kvKey));
 	if (specs.length === 0) return undefined;
+	const showsPublishableKey =
+		publishableKeyShown && specs.some((spec) => spec.kvKey === STRIPE_PUBLISHABLE_KEY_KEY);
 	return carriedForm({
 		namespace: `settings:${SAVE_PAYMENT_SETTINGS_ACTION}`,
+		// #530: lets the save tell a deliberate clear from an older form's blank.
+		...(showsPublishableKey ? { context: { [PUBLISHABLE_KEY_SHOWN]: "1" } } : {}),
 		form: {
 			type: "form",
 			fields: specs.map((spec) => ({

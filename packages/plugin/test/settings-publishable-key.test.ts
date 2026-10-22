@@ -14,6 +14,7 @@
  */
 import type { StorageAccess, StorageCollection } from "@urumi.ai/otta-store-emdash";
 import { describe, expect, test } from "vitest";
+import { encodeCarrier } from "../src/admin/scaffold/carrier.js";
 import { createSettingsFormHandler } from "../src/admin/settings-form.js";
 import { COMMERCE_STORAGE_COLLECTIONS } from "../src/commerce/commerce-storage.js";
 import { STRIPE_SECRET_KEY_KEY } from "../src/payment-secrets.js";
@@ -148,9 +149,123 @@ describe("saving the publishable key", () => {
 
 	test("an emptied field clears the key (card payment then says it is not set up)", async () => {
 		const { ctx, kv } = makeCtx({ [STRIPE_PUBLISHABLE_KEY_KEY]: PK_TEST });
-		await savePublishable(ctx, "");
+		// A deliberate clear: the form this page rendered, with the key shown in it.
+		const page = await invoke(ctx, { type: "page_load" });
+		const form = formFor(page.blocks, "save-payment-settings");
+		const saved = await invoke(ctx, {
+			type: "form_submit",
+			action_id: "save-payment-settings",
+			values: submittedFrom(page.blocks, { stripePublishableKey: "" }),
+			block_id: form?.block_id,
+		});
 		expect(kv.get(STRIPE_PUBLISHABLE_KEY_KEY)).toBe("");
 		expect(await readStripePublishableKey(ctx)).toBeUndefined();
+		expect(saved.toast).toMatchObject({ type: "success" });
+	});
+
+	// #530: a form rendered by code from before #527, after its key read failed,
+	// shows the key blank and has no "key shown" marker in its carrier. Its blank
+	// is not an instruction to clear a stored key.
+	describe("a blank key from a form that did not show the key (#530)", () => {
+		const SIGN_IN = "https://shop.example/account/verify-new";
+		// What that older form's block_id carried: the prefill digest, nothing else.
+		const OLD_FORM_BLOCK_ID = encodeCarrier("settings:save-payment-settings", { __v: "0" });
+
+		test.each([
+			["an older form's carrier", OLD_FORM_BLOCK_ID],
+			["no carrier at all", undefined],
+		])(
+			"over a stored key, with %s: the key is kept and the operator is told",
+			async (_, blockId) => {
+				const { ctx, kv } = makeCtx({ [STRIPE_PUBLISHABLE_KEY_KEY]: PK_TEST });
+				const saved = await invoke(ctx, {
+					type: "form_submit",
+					action_id: "save-payment-settings",
+					values: { stripePublishableKey: "", loginLinkUrl: SIGN_IN },
+					...(blockId === undefined ? {} : { block_id: blockId }),
+				});
+				expect(kv.get(STRIPE_PUBLISHABLE_KEY_KEY)).toBe(PK_TEST);
+				// The rest of the submit is still saved.
+				expect(kv.get(LOGIN_LINK_URL_KEY)).toBe(SIGN_IN);
+				const banner = findBlocks(saved.blocks, "banner").find((b) =>
+					String(b.title).includes("publishable key"),
+				);
+				expect(String(banner?.title)).toBe("Stripe publishable key kept");
+				expect(String(banner?.description)).toBe(
+					"The publishable key field was blank on a form that didn't show the saved key, so the key was kept. Other changes were saved. To clear it, reload the page, empty the field and save.",
+				);
+				expect(saved.toast).toMatchObject({ message: "Stripe publishable key kept", type: "info" });
+				expect(publishableField(saved.blocks)?.initial_value).toBe(PK_TEST);
+				assertBlockContract(saved.blocks, { screen: "settings", level: "list" });
+			},
+		);
+
+		test("a refused paste, then a save of the refused form with the key still blank: the key is kept", async () => {
+			const { ctx, kv } = makeCtx({ [STRIPE_PUBLISHABLE_KEY_KEY]: PK_TEST });
+			const page = await invoke(ctx, { type: "page_load" });
+			const refused = await invoke(ctx, {
+				type: "form_submit",
+				action_id: "save-payment-settings",
+				values: submittedFrom(page.blocks, { stripePublishableKey: SK_LIVE }),
+				block_id: formFor(page.blocks, "save-payment-settings")?.block_id,
+			});
+			expect(refused.toast).not.toMatchObject({ type: "success" });
+			// The refused paste is not echoed back, so the field is blank.
+			expect(publishableField(refused.blocks)?.initial_value).toBe("");
+			await invoke(ctx, {
+				type: "form_submit",
+				action_id: "save-payment-settings",
+				values: submittedFrom(refused.blocks, { loginLinkUrl: SIGN_IN }),
+				block_id: formFor(refused.blocks, "save-payment-settings")?.block_id,
+			});
+			expect(kv.get(STRIPE_PUBLISHABLE_KEY_KEY)).toBe(PK_TEST);
+			expect(kv.get(LOGIN_LINK_URL_KEY)).toBe(SIGN_IN);
+		});
+
+		test("a refused paste, then a refused URL with the key still blank, then a fixed save: the key is kept", async () => {
+			const { ctx, kv } = makeCtx({ [STRIPE_PUBLISHABLE_KEY_KEY]: PK_TEST });
+			const submitForm = (blocks: readonly LooseBlock[], changes: Record<string, string>) =>
+				invoke(ctx, {
+					type: "form_submit",
+					action_id: "save-payment-settings",
+					values: submittedFrom(blocks, changes),
+					block_id: formFor(blocks, "save-payment-settings")?.block_id,
+				});
+			const page = await invoke(ctx, { type: "page_load" });
+			const pasted = await submitForm(page.blocks, { stripePublishableKey: SK_LIVE });
+			expect(pasted.toast).not.toMatchObject({ type: "success" });
+			// A second refusal, for the sign-in URL only, with the key field left blank.
+			const typo = await submitForm(pasted.blocks, { loginLinkUrl: "http://shop.example/verify" });
+			expect(typo.toast).not.toMatchObject({ type: "success" });
+			expect(publishableField(typo.blocks)?.initial_value).toBe("");
+			await submitForm(typo.blocks, { loginLinkUrl: SIGN_IN });
+			expect(kv.get(STRIPE_PUBLISHABLE_KEY_KEY)).toBe(PK_TEST);
+			expect(kv.get(LOGIN_LINK_URL_KEY)).toBe(SIGN_IN);
+		});
+
+		test("the stored key cannot be read on save: it is kept", async () => {
+			const { ctx, kv, failingReads } = makeCtx({ [STRIPE_PUBLISHABLE_KEY_KEY]: PK_TEST });
+			failingReads.add(STRIPE_PUBLISHABLE_KEY_KEY);
+			await invoke(ctx, {
+				type: "form_submit",
+				action_id: "save-payment-settings",
+				values: { stripePublishableKey: "" },
+				block_id: OLD_FORM_BLOCK_ID,
+			});
+			expect(kv.get(STRIPE_PUBLISHABLE_KEY_KEY)).toBe(PK_TEST);
+		});
+
+		test("nothing stored: the blank is saved as before, with no warning", async () => {
+			const { ctx, kv } = makeCtx();
+			const saved = await invoke(ctx, {
+				type: "form_submit",
+				action_id: "save-payment-settings",
+				values: { stripePublishableKey: "" },
+				block_id: OLD_FORM_BLOCK_ID,
+			});
+			expect(kv.get(STRIPE_PUBLISHABLE_KEY_KEY)).toBe("");
+			expect(saved.toast).toMatchObject({ message: "Payment settings saved", type: "success" });
+		});
 	});
 
 	test("a submit without the field keeps the stored key (absent is not empty)", async () => {
