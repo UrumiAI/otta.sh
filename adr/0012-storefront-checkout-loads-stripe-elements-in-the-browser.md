@@ -518,3 +518,35 @@ a key: it ships in every build and is gated per request. A key typed into the wr
 account still passes the shape check; that remains Stripe's answer to give, as decision 4
 already accepted.
 
+
+## Amended 2026-10-22 — the confirmation page drops Stripe's redirect parameters from its URL
+
+**What changed and why.** Decision 6 accepted the client secret in the confirmation page's URL as
+Stripe's wire format. Its premise holds — Stripe still appends it — but the page then *kept* it:
+the thank-you link the buyer stays on, reloads, bookmarks and forwards carried it. With the store's
+publishable key (in every checkout page's source) that secret reads the PaymentIntent back: amount,
+description, card brand, last four and expiry, and the `shipping` block — the buyer's name and full
+address, which the public order page deliberately does not show (the 2026-10-02 second amendment
+already gates the resume path on exactly this). A forwarded or screenshotted thank-you link was a
+personal-data leak.
+
+**The amendment.**
+
+- On a request carrying any of `payment_intent`, `payment_intent_client_secret` or
+  `redirect_status`, `/orders/<id>` records the intent id and the status — never the secret — in
+  `otta_order_return` (`<orderId>/<payment_intent id>:<status>`, HttpOnly, `Secure`,
+  `SameSite=Lax`, `path=/orders/`, one hour), and answers **303** to the same path without those
+  three parameters (`sites/staging/src/lib/order-return.ts`). The redirect runs before the order
+  is read and is `Cache-Control: private, no-store`. Malformed values are not recorded.
+- Everything that read the redirect parameters reads that record instead: decision 5's copy
+  choice, the bounded poll and its key (the third 2026-10-02 amendment), and QA2 M3's late-payment
+  copy. Their rules are unchanged; "Check again" and the poll's same-URL reload now reload the bare
+  URL and find the record.
+- One hour covers the 15-minute hold plus a late "Check again". After it — or in a browser that
+  refuses the cookie — the page shows the order's ordinary copy for its true state, the same page a
+  buyer opening the link later sees.
+
+**What it does not change.** The one request that carried the secret may still be recorded by the
+browser (a redirect source is not a history entry the buyer sees, but browsers can keep it) and is
+in the access logs of whatever sits in front of the site; `no-referrer` and `private, no-store` stay. Decision 6's other mitigations
+stand. The link a buyer keeps is now `/orders/<id>`, whose id remains the page's bearer capability.

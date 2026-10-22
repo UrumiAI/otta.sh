@@ -20,13 +20,17 @@
  * their names may appear in this frontmatter and NOWHERE in the template below.
  *
  * ── What the page does about the secret in its own URL ───────────────────
- * Stripe also appends the intent's client secret, so it is already in history
- * and access logs by the time this renders (ADR-0012 decision 6 — accepted, and
- * not ours to change). The mitigations that ARE ours: the `no-referrer` policy
- * below, so it does not leak onward through subresource Referers; and deleting
- * the `otta_checkout` stash on arrival, so a spent secret does not linger in
- * the browser for the rest of the hold. That deletion is the entire
- * justification for the cookie's `path=/`.
+ * Stripe also appends the intent's client secret, which with the publishable key
+ * reads the PaymentIntent back — the buyer's name and shipping address included.
+ * So the page does not keep it (ADR-0012, 2026-10-22 amendment): on arrival it
+ * records the intent id and the status in a short-lived HttpOnly cookie for this
+ * order and 303s to the bare `/orders/<id>` (`lib/order-return.ts`). The one
+ * request that carried the secret is still in the browser's history and the
+ * access logs; the page the buyer stays on, reloads, bookmarks and shares is not.
+ * The other mitigations stand: the `no-referrer` policy below; and deleting the
+ * `otta_checkout` stash on arrival, so a spent secret does not linger in the
+ * browser for the rest of the hold. That deletion is the entire justification
+ * for the cookie's `path=/`.
  *
  * ── Zero client JavaScript, and that is a rule (ADR-0012 decision 2) ─────
  * Polling is `<meta http-equiv="refresh">`, bounded to 8 hops (~30 s), then a
@@ -63,7 +67,7 @@ import { ORDER_PAGE_RESUME_ERRORS, resumeHref } from "../../lib/checkout-resume.
 import { downloadsBucketFrom } from "../../lib/download-delivery.js";
 import { downloadLinks } from "../../lib/download-links.js";
 import { cartErrorMessage } from "../../lib/error-messages.js";
-import { keepPrivate } from "../../lib/no-store.js";
+import { keepPrivate, PRIVATE_NO_STORE } from "../../lib/no-store.js";
 import {
 	MAX_ORDER_POLLS,
 	ORDER_POLL_SECONDS,
@@ -72,6 +76,12 @@ import {
 	recordOrderPollHop,
 	shouldPollOrder,
 } from "../../lib/order-poll.js";
+import {
+	hasStripeReturn,
+	orderPathWithoutStripeReturn,
+	readStripeReturn,
+	recordStripeReturn,
+} from "../../lib/order-return.js";
 import { orderStamp } from "../../lib/order-stamp.js";
 import { orderProgress, orderReadOutcome, orderSumRows } from "../../lib/order-view.js";
 import { dispatchOttaRoute, isBusyResult, markBusy } from "../../lib/otta-api.js";
@@ -90,6 +100,23 @@ keepPrivate(Astro);
 // The stash has done its job the moment the buyer lands here — whether payment
 // succeeded, failed or was abandoned. Drop it either way.
 clearCheckoutCookie(Astro.cookies);
+
+/* Stripe's redirect back carries the intent's client secret in our URL. Record
+   the two values this page uses (the intent id and the status — never the
+   secret) for this order, then 303 to the bare order path, so the link the buyer
+   keeps, shares and syncs holds no secret (`lib/order-return.ts`, ADR-0012
+   2026-10-22 amendment). Before the order is read: nothing is asked of commerce
+   for a URL about to be dropped. The redirect sets a cookie, so it is private. */
+if (hasStripeReturn(Astro.url)) {
+	if (orderId !== undefined) recordStripeReturn(Astro.cookies, orderId, Astro.url);
+	return new Response(null, {
+		status: 303,
+		headers: {
+			Location: orderPathWithoutStripeReturn(Astro.url),
+			"Cache-Control": PRIVATE_NO_STORE,
+		},
+	});
+}
 
 const result =
 	orderId === undefined
@@ -125,14 +152,16 @@ if (order !== null) {
 const busy = isBusyResult(result);
 if (busy) markBusy(Astro.response);
 
-/** Did the buyer arrive via Stripe's redirect? Read ONLY to pick the pending
- *  copy — the value is never rendered, forwarded, or trusted. */
-const returnedFromStripe = Astro.url.searchParams.has("payment_intent");
+/** Did the buyer arrive via Stripe's redirect? Recorded on arrival (above) and
+ *  read back here ONLY to pick the pending copy — never rendered, forwarded, or
+ *  trusted. */
+const stripeReturn = orderId === undefined ? null : readStripeReturn(Astro.cookies, orderId);
+const returnedFromStripe = stripeReturn !== null;
 /** …and did Stripe say the payment went through (or is going through)? Read ONLY
  *  so a dead order's page does not say "Nothing was charged" before the webhook
  *  has recorded a late payment, and polls until its refund is (QA2 M3). Never
  *  rendered, forwarded, or trusted to decide anything about the order. */
-const returnStatus = Astro.url.searchParams.get("redirect_status");
+const returnStatus = stripeReturn?.status ?? null;
 const returnedPaid =
 	returnedFromStripe && (returnStatus === "succeeded" || returnStatus === "processing");
 /** Only processing — the refund is then promised only if it goes through. */
@@ -165,7 +194,7 @@ const holdLapsed =
 const pollKey =
 	order === null
 		? null
-		: orderPollKey(order.id, Astro.url.searchParams.get("payment_intent"));
+		: orderPollKey(order.id, stripeReturn?.paymentIntent ?? null);
 const pollHop =
 	pollKey !== null && returnedFromStripe ? orderPollHop(Astro.cookies, pollKey) : 1;
 const shouldPoll = shouldPollOrder({
@@ -177,8 +206,8 @@ const shouldPoll = shouldPollOrder({
 });
 if (shouldPoll && pollKey !== null) recordOrderPollHop(Astro.cookies, pollKey, pollHop);
 /* "Check again" reloads this same URL too: `""` is the document's own address,
-   which keeps the confirming copy for a buyer back from Stripe, adds no history
-   entry, and echoes none of the redirect parameters into the markup. */
+   which (with the recorded return, `lib/order-return.ts`) keeps the confirming
+   copy for a buyer back from Stripe and adds no history entry. */
 const nextPollUrl = "";
 
 /**
