@@ -312,6 +312,13 @@ export interface Order {
 	 */
 	buyerAddressRequired?: boolean;
 	/**
+	 * The payment whose settle WON the `pending → paid` flip, recorded by
+	 * `markPaid` in the flip's own write (#543). ABSENT on orders paid before it
+	 * existed, or flipped without one (a bare `markPaid`/`transition`); settle then
+	 * falls back to the captured-payments ledger.
+	 */
+	paidProviderRef?: string;
+	/**
 	 * Set when settle could not commit an adopted hold that should have been
 	 * present (§5): the order is `paid` (money received) but stock was lost, so
 	 * it is flagged for manual reconciliation — never a silent no-op. Null on the

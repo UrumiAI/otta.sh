@@ -452,6 +452,17 @@ export function orderStoreContract(
 			expect(await store.markPaid(orderId("ord-1"))).toBe(false);
 		});
 
+		test("markPaid records the WINNING payment with the flip; a lost flip never overwrites it (#543)", async () => {
+			const { store } = await makeHarness();
+			await store.createFromCart(physicalInput());
+			expect((await store.getById(orderId("ord-1")))?.paidProviderRef).toBeUndefined();
+			expect(await store.markPaid(orderId("ord-1"), "pi_winner")).toBe(true);
+			expect(await store.markPaid(orderId("ord-1"), "pi_loser")).toBe(false);
+			const order = await store.getById(orderId("ord-1"));
+			expect(order?.state).toBe("paid");
+			expect(order?.paidProviderRef).toBe("pi_winner");
+		});
+
 		test("markPaid on an expired order is rejected (illegal transition → false)", async () => {
 			const { store } = await makeHarness();
 			await store.createFromCart(physicalInput());

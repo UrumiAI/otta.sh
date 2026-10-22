@@ -447,16 +447,19 @@ export class EmdashOrderStore implements OrderStore {
 
 	// -- the guarded transitions ----------------------------------------------
 
-	async markPaid(orderId: OrderId): Promise<boolean> {
+	async markPaid(orderId: OrderId, providerRef?: string): Promise<boolean> {
 		// pending → paid enqueues the confirmation email AND records the commit
 		// intent, in the same write as the flip: settle's `commitMany` runs after
-		// this call returns, so the intent has to be durable before it does.
+		// this call returns, so the intent has to be durable before it does. The
+		// winning payment rides the same compare-and-set (#543), so a settle that
+		// loses the flip reads it back with the `paid` state, never one without it.
 		const { won } = await this.#flip({
 			orderId,
 			fromState: "pending",
 			toState: "paid",
 			enqueueEmail: true,
 			intent: "commit",
+			...(providerRef !== undefined ? { envelope: () => ({ paidProviderRef: providerRef }) } : {}),
 		});
 		return won;
 	}
@@ -3195,6 +3198,7 @@ function toOrder(doc: OrderDoc): Order {
 		...(doc.buyerAddressRequired !== undefined
 			? { buyerAddressRequired: doc.buyerAddressRequired }
 			: {}),
+		...(doc.paidProviderRef !== undefined ? { paidProviderRef: doc.paidProviderRef } : {}),
 		reconciliationFlag: doc.reconciliationFlag,
 		reconciliationResolution: doc.reconciliationResolution,
 		fulfillment: doc.fulfillment,

@@ -230,8 +230,15 @@ export class InMemoryOrderStore implements OrderStore {
 		return stored === undefined ? null : this.#clone(stored.order);
 	}
 
-	async markPaid(orderId: OrderId): Promise<boolean> {
-		return this.#guardedFlip(orderId, "pending", "paid");
+	async markPaid(orderId: OrderId, providerRef?: string): Promise<boolean> {
+		if (!this.#guardedFlip(orderId, "pending", "paid")) return false;
+		// The winning payment rides the won flip, as the real adapter's single write
+		// does (#543); a lost flip records nothing.
+		const stored = this.#orders.get(orderId);
+		if (stored !== undefined && providerRef !== undefined) {
+			stored.order.paidProviderRef = providerRef;
+		}
+		return true;
 	}
 
 	async expire(orderId: OrderId, now: string): Promise<boolean> {

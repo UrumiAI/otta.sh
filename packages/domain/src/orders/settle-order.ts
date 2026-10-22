@@ -61,7 +61,11 @@ type VerifiedSuccess = Extract<ConfirmationResult, { ok: true }>;
  * 4. Guarded `pending → paid`; record the `payments` row; per line: physical ⇒
  *    `commit(reservationId)` (a lost adopted hold is the loud 0-row anomaly, §5);
  *    digital ⇒ grant entitlement (grant-once). An already-`paid` order re-drives
- *    the side-effects idempotently and no-ops.
+ *    the side-effects idempotently and no-ops. The flip records the winning
+ *    payment (`paidProviderRef`), so a settle that loses it to ANOTHER settle
+ *    takes the already-paid arm against that record: the same payment re-drives,
+ *    a different one is the double charge above (#543). An order paid before the
+ *    record existed falls back to the captured-payments ledger.
  * 5. **Losing the `pending → paid` flip mid-flight** (an expiry/cancellation raced the
  *    settle between load and flip) is exactly as LOUD as finding the order
  *    already terminal: `PAID_FLIP_LOST` anomaly + manual-reconciliation flag —
@@ -194,70 +198,7 @@ export async function settleOrder(
 	// kept, as before, so the ledger shows the money held; the refund ceiling stays
 	// `min(Σ captured, total)`, so the row adds no refund capacity. The row is
 	// written after the flag, because a redelivery treats a recorded ref as known.
-	if (order.state === "paid") {
-		const amountMatches =
-			conf.amount === order.totals.total && conf.currency === order.totals.currency;
-		const captured = await deps.orderStore.getCapturedPayments(order.id);
-		const knownPayment = captured.some((p) => p.providerRef === conf.providerRef);
-		if (amountMatches && (knownPayment || captured.length === 0)) {
-			// The order's own payment (or, with nothing captured yet, the crash
-			// between the flip and its payment row): the idempotent re-drive.
-			await applyPaidSideEffects(deps, conf, order, now);
-		} else if (amountMatches) {
-			// The order's price, under a payment it never captured: a second
-			// PaymentIntent succeeded — a double charge (#540). Same alert as the
-			// wrong-amount one below; the paid side-effects are NOT re-run for it.
-			if (claimed) {
-				await deps.paymentEventStore.recordAnomaly({
-					orderId: order.id,
-					gateway: conf.gateway,
-					kind: "PAID_AMOUNT_MISMATCH",
-					detail: `verified success for the order total (${String(conf.amount)} ${conf.currency}) on already-paid order under payment ${conf.providerRef}, which is not this order's captured payment — possible double charge (event ${conf.dedupeKey})`,
-					now,
-				});
-			}
-			if (order.reconciliationFlag === null) {
-				await deps.orderStore.flagReconciliation(
-					order.id,
-					`possible double charge: payment ${conf.providerRef} is a second capture on paid order`,
-					{ expectedFlag: null },
-				);
-			}
-			// Recorded LAST: a recorded ref reads as known on a redelivery, so a crash
-			// before the flag would otherwise leave the double charge unflagged.
-			await deps.orderStore.recordPayment({
-				orderId: order.id,
-				gateway: conf.gateway,
-				providerRef: conf.providerRef,
-				amount: conf.amount,
-				currency: conf.currency,
-				status: "succeeded",
-			});
-		} else {
-			if (claimed) {
-				await deps.paymentEventStore.recordAnomaly({
-					orderId: order.id,
-					gateway: conf.gateway,
-					kind: "PAID_AMOUNT_MISMATCH",
-					detail:
-						`verified success on already-paid order: got ${String(conf.amount)} ${conf.currency}, expected ${String(order.totals.total)} ${order.totals.currency} (event ${conf.dedupeKey})` +
-						(knownPayment
-							? ""
-							: `; payment ${conf.providerRef} is not this order's captured payment — possible double charge`),
-					now,
-				});
-			}
-			if (!knownPayment && order.reconciliationFlag === null) {
-				await deps.orderStore.flagReconciliation(
-					order.id,
-					`possible double charge: unrecorded payment ${conf.providerRef} on paid order`,
-					{ expectedFlag: null },
-				);
-			}
-		}
-		const fresh = await deps.orderStore.getById(order.id);
-		return { ok: true, order: fresh, noop: true };
-	}
+	if (order.state === "paid") return settlePaidOrder(deps, conf, order, claimed, now);
 
 	// Terminal non-paid + a verified success: money moved but cannot settle.
 	// Also ahead of the amount check (G6): SETTLE_ON_NON_PENDING is the right
@@ -311,14 +252,18 @@ export async function settleOrder(
 	}
 
 	// 4. Guarded pending → paid.
-	const won = await deps.orderStore.markPaid(order.id);
+	// The winning payment rides the flip (#543), so a settle that loses it can tell
+	// a concurrent redelivery of this payment from a second one racing it.
+	const won = await deps.orderStore.markPaid(order.id, conf.providerRef);
 	if (!won) {
 		const fresh = await deps.orderStore.getById(order.id);
 		if (fresh !== null && fresh.state === "paid") {
-			// A concurrent settle won the flip: re-drive the side-effects
-			// idempotently (heals its crash windows too), then no-op.
-			await applyPaidSideEffects(deps, conf, fresh, now);
-			return { ok: true, order: await deps.orderStore.getById(order.id), noop: true };
+			// A concurrent settle won the flip. The same arm as an order found paid
+			// at load: the SAME payment re-drives the side-effects idempotently (heals
+			// the winner's crash windows too); a DIFFERENT one is a double charge,
+			// flagged — the winner's payment row may not exist yet, which is why the
+			// flip records the winner (#543).
+			return settlePaidOrder(deps, conf, fresh, claimed, now);
 		}
 		// F1: a verified, amount-checked success LOST the flip to a mid-flight
 		// expiry/cancellation — the customer was charged while the stock was released.
@@ -362,6 +307,89 @@ export async function settleOrder(
 	await applyPaidSideEffects(deps, conf, order, now);
 	const finalOrder = await deps.orderStore.getById(order.id);
 	return { ok: true, order: finalOrder, noop: false };
+}
+
+/**
+ * Step 4's already-paid arm (see `settleOrder`): a verified success on a `paid`
+ * order — found paid at load, or paid by a concurrent settle that won the flip
+ * (#543). The order's own payment re-drives the side-effects idempotently; any
+ * other payment is a stray, and a stray under a payment the order never captured
+ * is a double charge (anomaly + reconciliation flag, #540). Always a no-op.
+ */
+async function settlePaidOrder(
+	deps: SettleDeps,
+	conf: VerifiedSuccess,
+	order: Order,
+	claimed: boolean,
+	now: string,
+): Promise<SettleResult> {
+	const amountMatches =
+		conf.amount === order.totals.total && conf.currency === order.totals.currency;
+	const captured = await deps.orderStore.getCapturedPayments(order.id);
+	// The payment that won the flip (#543) is this order's own even before its
+	// payments row lands. Without one (an order paid before it was recorded), an
+	// empty ledger is read as the crash between the flip and the row, as before.
+	const winner = order.paidProviderRef;
+	const knownPayment =
+		winner === conf.providerRef || captured.some((p) => p.providerRef === conf.providerRef);
+	if (amountMatches && (knownPayment || (winner === undefined && captured.length === 0))) {
+		// The order's own payment (or, with nothing captured yet, the crash
+		// between the flip and its payment row): the idempotent re-drive.
+		await applyPaidSideEffects(deps, conf, order, now);
+	} else if (amountMatches) {
+		// The order's price, under a payment it never captured: a second
+		// PaymentIntent succeeded — a double charge (#540). Same alert as the
+		// wrong-amount one below; the paid side-effects are NOT re-run for it.
+		if (claimed) {
+			await deps.paymentEventStore.recordAnomaly({
+				orderId: order.id,
+				gateway: conf.gateway,
+				kind: "PAID_AMOUNT_MISMATCH",
+				detail: `verified success for the order total (${String(conf.amount)} ${conf.currency}) on already-paid order under payment ${conf.providerRef}, which is not this order's captured payment — possible double charge (event ${conf.dedupeKey})`,
+				now,
+			});
+		}
+		if (order.reconciliationFlag === null) {
+			await deps.orderStore.flagReconciliation(
+				order.id,
+				`possible double charge: payment ${conf.providerRef} is a second capture on paid order`,
+				{ expectedFlag: null },
+			);
+		}
+		// Recorded LAST: a recorded ref reads as known on a redelivery, so a crash
+		// before the flag would otherwise leave the double charge unflagged.
+		await deps.orderStore.recordPayment({
+			orderId: order.id,
+			gateway: conf.gateway,
+			providerRef: conf.providerRef,
+			amount: conf.amount,
+			currency: conf.currency,
+			status: "succeeded",
+		});
+	} else {
+		if (claimed) {
+			await deps.paymentEventStore.recordAnomaly({
+				orderId: order.id,
+				gateway: conf.gateway,
+				kind: "PAID_AMOUNT_MISMATCH",
+				detail:
+					`verified success on already-paid order: got ${String(conf.amount)} ${conf.currency}, expected ${String(order.totals.total)} ${order.totals.currency} (event ${conf.dedupeKey})` +
+					(knownPayment
+						? ""
+						: `; payment ${conf.providerRef} is not this order's captured payment — possible double charge`),
+				now,
+			});
+		}
+		if (!knownPayment && order.reconciliationFlag === null) {
+			await deps.orderStore.flagReconciliation(
+				order.id,
+				`possible double charge: unrecorded payment ${conf.providerRef} on paid order`,
+				{ expectedFlag: null },
+			);
+		}
+	}
+	const fresh = await deps.orderStore.getById(order.id);
+	return { ok: true, order: fresh, noop: true };
 }
 
 /**
