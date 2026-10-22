@@ -56,7 +56,8 @@ type VerifiedSuccess = Extract<ConfirmationResult, { ok: true }>;
  *    `AMOUNT_MISMATCH`. It moves nothing, but stays in the forensic trail as the
  *    low-severity `PAID_AMOUNT_MISMATCH` anomaly, once per gateway event (#35);
  *    when it names a payment the order never captured (a double charge) the
- *    order is also flagged for manual reconciliation.
+ *    order is also flagged for manual reconciliation — and so is a stray at the
+ *    RIGHT amount under a payment the order never captured (#540).
  * 4. Guarded `pending → paid`; record the `payments` row; per line: physical ⇒
  *    `commit(reservationId)` (a lost adopted hold is the loud 0-row anomaly, §5);
  *    digital ⇒ grant entitlement (grant-once). An already-`paid` order re-drives
@@ -162,8 +163,9 @@ export async function settleOrder(
 	// duplicate with a mismatched amount on a correctly-settled order must not
 	// record a false AMOUNT_MISMATCH anomaly. RE-DRIVE the side-effects — each is
 	// idempotent (provider_ref-keyed payment record, state-guarded commit,
-	// grant-once entitlement) — only when the amounts MATCH (the crash-window
-	// heal is always a redelivery of the original, matching event; a
+	// grant-once entitlement) — only when the amounts MATCH and the event names
+	// the payment this order captured, or the order has captured none yet (the
+	// crash-window heal is always a redelivery of the original, matching event; a
 	// wrong-amount stray re-drives nothing) — then no-op.
 	//
 	// A wrong-amount stray is still a fact worth keeping (#35): it is recorded as
@@ -184,12 +186,54 @@ export async function settleOrder(
 	// flag is gated on the order being unflagged, not on `claimed`, so a failure
 	// before it is healed by the redelivery; the compare-and-set never overwrites
 	// a flag written since `order` was read (#364).
+	//
+	// A MATCHING amount under a payment the order never captured is the same
+	// double charge (#540) — the usual shape, since a retried checkout mints its
+	// second intent at the order's own price. It gets the same anomaly (once per
+	// event) and flag, and does not re-drive the side-effects. Its payment row is
+	// kept, as before, so the ledger shows the money held; the refund ceiling stays
+	// `min(Σ captured, total)`, so the row adds no refund capacity. The row is
+	// written after the flag, because a redelivery treats a recorded ref as known.
 	if (order.state === "paid") {
-		if (conf.amount === order.totals.total && conf.currency === order.totals.currency) {
+		const amountMatches =
+			conf.amount === order.totals.total && conf.currency === order.totals.currency;
+		const captured = await deps.orderStore.getCapturedPayments(order.id);
+		const knownPayment = captured.some((p) => p.providerRef === conf.providerRef);
+		if (amountMatches && (knownPayment || captured.length === 0)) {
+			// The order's own payment (or, with nothing captured yet, the crash
+			// between the flip and its payment row): the idempotent re-drive.
 			await applyPaidSideEffects(deps, conf, order, now);
+		} else if (amountMatches) {
+			// The order's price, under a payment it never captured: a second
+			// PaymentIntent succeeded — a double charge (#540). Same alert as the
+			// wrong-amount one below; the paid side-effects are NOT re-run for it.
+			if (claimed) {
+				await deps.paymentEventStore.recordAnomaly({
+					orderId: order.id,
+					gateway: conf.gateway,
+					kind: "PAID_AMOUNT_MISMATCH",
+					detail: `verified success for the order total (${String(conf.amount)} ${conf.currency}) on already-paid order under payment ${conf.providerRef}, which is not this order's captured payment — possible double charge (event ${conf.dedupeKey})`,
+					now,
+				});
+			}
+			if (order.reconciliationFlag === null) {
+				await deps.orderStore.flagReconciliation(
+					order.id,
+					`possible double charge: payment ${conf.providerRef} is a second capture on paid order`,
+					{ expectedFlag: null },
+				);
+			}
+			// Recorded LAST: a recorded ref reads as known on a redelivery, so a crash
+			// before the flag would otherwise leave the double charge unflagged.
+			await deps.orderStore.recordPayment({
+				orderId: order.id,
+				gateway: conf.gateway,
+				providerRef: conf.providerRef,
+				amount: conf.amount,
+				currency: conf.currency,
+				status: "succeeded",
+			});
 		} else {
-			const captured = await deps.orderStore.getCapturedPayments(order.id);
-			const knownPayment = captured.some((p) => p.providerRef === conf.providerRef);
 			if (claimed) {
 				await deps.paymentEventStore.recordAnomaly({
 					orderId: order.id,
