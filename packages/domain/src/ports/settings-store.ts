@@ -97,6 +97,13 @@ export interface OperationalSettings {
 	 * currency they were created in.
 	 */
 	currency?: string;
+	/**
+	 * Whether the storefront SHOWS the cart hold to shoppers — the countdown on
+	 * cart lines and the product page's "we'll hold what you add" note. Display
+	 * only: stock is reserved for `holdTtlMinutes` either way. ABSENT means never
+	 * saved, which is OFF (`effectiveShowHoldTimer`), so `get()` never fills it.
+	 */
+	showHoldTimer?: boolean;
 }
 
 /** Defaults returned by `get()` before anything is persisted (§5.1). */
@@ -116,6 +123,13 @@ export const DEFAULT_STORE_CURRENCY = "USD";
  */
 export function effectiveStoreCurrency(settings: Pick<OperationalSettings, "currency">): string {
 	return settings.currency ?? DEFAULT_STORE_CURRENCY;
+}
+
+/** The hold-timer switch, read: on only when the operator saved it on. */
+export function effectiveShowHoldTimer(
+	settings: Pick<OperationalSettings, "showHoldTimer">,
+): boolean {
+	return settings.showHoldTimer === true;
 }
 
 /**

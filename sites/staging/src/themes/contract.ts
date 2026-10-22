@@ -168,8 +168,9 @@ export interface ProductPurchase {
 	addToCart: AddToCartModel | null;
 	/** The effective cart-hold window, in minutes, as the route reported it. */
 	cartHoldMinutes: number | undefined;
-	/** The sentence stating that window. */
-	holdNote: string;
+	/** The sentence stating that window, or `null` when the store hides the
+	 *  hold from shoppers (the admin's `showHoldTimer`, off by default). */
+	holdNote: string | null;
 	/** The explicit `out_of_stock` token — offers the way on. */
 	soldOut: boolean;
 }
@@ -309,6 +310,9 @@ export interface CartModel {
 	totalAmount: CheckoutAmountView;
 	/** §7's footnote for a partial total. */
 	partialNote: string | null;
+	/** Whether to draw the hold countdown on lines (the admin's `showHoldTimer`,
+	 *  off by default). Display only: the lines are held either way. */
+	showHoldTimer: boolean;
 }
 
 /** The order a review is locked to (it has already been created). */

@@ -1014,6 +1014,7 @@ export function createSettingsFormHandler(): RouteHandler<SettingsFormInput> {
 							holdTtlMinutes: checked.typed.holdTtlMinutes ?? String(stored?.holdTtlMinutes ?? ""),
 							lowStockThreshold:
 								checked.typed.lowStockThreshold ?? String(stored?.lowStockThreshold ?? ""),
+							showHoldTimer: checked.typed.showHoldTimer ?? stored?.showHoldTimer === true,
 						},
 						// INC-15: the LABEL reads as persisted state, so on a refusal it
 						// keeps stating what is stored ("not loaded" when that re-read
@@ -1144,12 +1145,15 @@ async function renderSettingsPage(
 interface OperationalFormValues {
 	holdTtlMinutes: string;
 	lowStockThreshold: string;
+	/** Never saved reads as off — the storefront hides the hold by default. */
+	showHoldTimer: boolean;
 }
 
 function formValuesOf(settings: OperationalSettingsWire): OperationalFormValues {
 	return {
 		holdTtlMinutes: String(settings.holdTtlMinutes),
 		lowStockThreshold: String(settings.lowStockThreshold),
+		showHoldTimer: settings.showHoldTimer === true,
 	};
 }
 
@@ -1212,6 +1216,12 @@ function checkOperationalValues(values: Record<string, unknown>): {
 		}
 		patch[spec.id] = value;
 	}
+	// A toggle submits a boolean (its `initial_value` is always set, so the host
+	// sends it on every submit); anything else is absent — left alone.
+	if (typeof values.showHoldTimer === "boolean") {
+		patch.showHoldTimer = values.showHoldTimer;
+		typed.showHoldTimer = values.showHoldTimer;
+	}
 	return { patch, typed, problems };
 }
 
@@ -1234,7 +1244,11 @@ function asSentence(message: string): string {
 /** The receipt for an accepted save: what is now in force, in words. */
 function savedOperationalSentence(settings: OperationalSettingsWire): string {
 	const minutes = settings.holdTtlMinutes === 1 ? "minute" : "minutes";
-	return `Cart hold time is ${String(settings.holdTtlMinutes)} ${minutes} and the low-stock threshold is ${String(settings.lowStockThreshold)}.`;
+	const timer =
+		settings.showHoldTimer === true
+			? "Shoppers see the hold timer."
+			: "The hold timer is hidden from shoppers.";
+	return `Cart hold time is ${String(settings.holdTtlMinutes)} ${minutes} and the low-stock threshold is ${String(settings.lowStockThreshold)}. ${timer}`;
 }
 
 /**
@@ -1534,6 +1548,13 @@ function checkoutGroup(
 									action_id: "holdTtlMinutes",
 									label: SETTINGS_SCHEMA.holdTtlMinutes.label,
 									initial_value: settings.holdTtlMinutes,
+								},
+								{
+									// Display only: stock is reserved for the hold time either way.
+									type: "toggle",
+									action_id: "showHoldTimer",
+									label: "Show the hold timer to shoppers (cart countdown and product-page note)",
+									initial_value: settings.showHoldTimer,
 								},
 								{
 									type: "text_input",

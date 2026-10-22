@@ -172,7 +172,14 @@ export type CartCreateRouteResult =
 	| RenderGuardFailure;
 
 export type CartReadRouteResult =
-	| { ok: true; cart: CartWire; pricing: CartPricingWire }
+	| {
+			ok: true;
+			cart: CartWire;
+			pricing: CartPricingWire;
+			/** Whether to show shoppers the hold countdown (the admin's
+			 *  `showHoldTimer`; off by default, and off when the read fails). */
+			showHoldTimer: boolean;
+	  }
 	| { ok: false; error: "INVALID_CART_ID" }
 	| { ok: false; reason: CartFailureReason }
 	| RenderGuardFailure;
@@ -319,7 +326,11 @@ export function createCartReadRouteHandler(): RouteHandler<CartReadRouteInput> {
 			if (!isCartIdToken(cartId)) return { ok: false, error: "INVALID_CART_ID" } as const;
 
 			const client = await makeCommerceClient(ctx);
-			const result = await client.getCart(cartId);
+			const [result, showHoldTimer] = await Promise.all([
+				client.getCart(cartId),
+				// Display only — a failed read hides the countdown rather than failing the cart.
+				client.getShowHoldTimer().catch(() => false),
+			]);
 			if (!result.ok) return { ok: false as const, reason: result.reason };
 			const cart = result.cart;
 			const locale = sanitizeLocale(routeCtx.input.locale);
@@ -354,7 +365,7 @@ export function createCartReadRouteHandler(): RouteHandler<CartReadRouteInput> {
 				pricing = DEGRADED_CART_PRICING;
 			}
 
-			return { ok: true as const, cart, pricing };
+			return { ok: true as const, cart, pricing, showHoldTimer };
 		});
 }
 

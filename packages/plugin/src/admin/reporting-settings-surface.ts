@@ -72,6 +72,9 @@ export interface OperationalSettingsWire {
 	/** The SAVED store currency (ISO 4217). Absent when never saved — the store
 	 *  then creates USD carts, as it always did (`effectiveStoreCurrency`). */
 	currency?: string;
+	/** Whether shoppers see the cart hold (countdown + product-page note).
+	 *  Absent when never saved — off (`effectiveShowHoldTimer`). */
+	showHoldTimer?: boolean;
 }
 
 export interface DateRangeInput {

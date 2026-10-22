@@ -259,6 +259,28 @@ describe("storefront PDP route (workerd sandbox)", () => {
 		}
 	});
 
+	test("the route reports showHoldTimer: off until the admin saves it on", async () => {
+		await seedProduct({
+			id: "pdp-prod-timer",
+			sku: "SKU-PDP-TIMER",
+			amount: 1999,
+			currency: "USD",
+			onHand: 5,
+		});
+		const settings = new EmdashSettingsStore({ storage, clock: systemClock });
+		const before = (await settings.get()).showHoldTimer === true;
+		try {
+			await settings.update({ showHoldTimer: false }, idempotencyKey("pdp-timer-off"));
+			const off = await renderProduct({ content: { ...CONTENT, id: "pdp-prod-timer" } });
+			expect(off["showHoldTimer"]).toBe(false);
+			await settings.update({ showHoldTimer: true }, idempotencyKey("pdp-timer-on"));
+			const on = await renderProduct({ content: { ...CONTENT, id: "pdp-prod-timer" } });
+			expect(on["showHoldTimer"]).toBe(true);
+		} finally {
+			await settings.update({ showHoldTimer: before }, idempotencyKey("pdp-timer-restore"));
+		}
+	});
+
 	test("the add-to-cart slot is null for a NON-purchasable product (no sku to add) — it rides the purchasable flag", async () => {
 		const result = await renderProduct({ content: { ...CONTENT, id: "pdp-prod-unsynced" } });
 		const product = result["product"] as Record<string, unknown>;

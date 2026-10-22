@@ -98,3 +98,17 @@ describe("the product page's price names the tax display when the merchant chose
 		expect(priceRow(await render(purchase()))).not.toContain("tax");
 	});
 });
+
+describe("the product page's hold note follows the store's hold-timer setting", () => {
+	test("a note ⇒ printed under add-to-cart", async () => {
+		const html = await render(purchase({ holdNote: "Held for 15 minutes." }));
+		expect(html).toContain("pdp-hold-note");
+		expect(html).toContain("Held for 15 minutes.");
+	});
+
+	test("no note (timer off, the default) ⇒ no hold sentence at all", async () => {
+		const html = await render(purchase({ holdNote: null }));
+		expect(html).not.toContain("pdp-hold-note");
+		expect(html).not.toContain("Held for");
+	});
+});

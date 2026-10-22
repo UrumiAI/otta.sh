@@ -55,6 +55,9 @@ export type PdpRouteResult =
 			 *  stamps its deadline with (issue #127). The hold note states THIS rather
 			 *  than a hard-coded default. */
 			cartHoldMinutes: number;
+			/** Whether to show shoppers the hold note (the admin's `showHoldTimer`;
+			 *  off by default, and off when the read fails). */
+			showHoldTimer: boolean;
 	  }
 	| { ok: false; error: "INVALID_CONTENT" }
 	| RenderGuardFailure;
@@ -139,9 +142,10 @@ export function createPdpRouteHandler(): RouteHandler<PdpRouteInput> {
 			const locale = sanitizeLocale(routeCtx.input.locale);
 
 			const client = await makeCommerceClient(ctx);
-			const [commerce, cartHoldMinutes, display] = await Promise.all([
+			const [commerce, cartHoldMinutes, showHoldTimer, display] = await Promise.all([
 				commerceLoaderFor(client).load(content.id),
 				client.getCartHoldTtlMinutes(),
+				client.getShowHoldTimer().catch(() => false),
 				// A failed read shows the stored price rather than failing the page.
 				priceDisplayOrEntered(STOREFRONT_PRODUCT_ROUTE, () => client.getShopPriceDisplay()),
 			]);
@@ -156,6 +160,7 @@ export function createPdpRouteHandler(): RouteHandler<PdpRouteInput> {
 				product: buildProductViewModel(joined, locale, display),
 				jsonLd: buildProductJsonLd(joined),
 				cartHoldMinutes,
+				showHoldTimer,
 			};
 		});
 }

@@ -428,6 +428,8 @@ const model: CartModel = {
 	empty: cart === null || lines.length === 0,
 	terminal,
 	placedOrderId,
+	/* Off unless the operator turned it on in Settings; a failed read is off. */
+	showHoldTimer: result !== null && result.ok && result.showHoldTimer,
 	lineViews,
 	sumRows,
 	totalAmount,
@@ -441,7 +443,10 @@ const model: CartModel = {
  * nothing, and the empty and terminal arms render no ribbon.
  */
 const hasLiveHolds =
-	!model.empty && !terminal && lines.some((line) => line.expiresAt !== null);
+	model.showHoldTimer &&
+	!model.empty &&
+	!terminal &&
+	lines.some((line) => line.expiresAt !== null);
 ---
 
 {/* The nav badge and the footer currency both reuse THIS page's cart read —

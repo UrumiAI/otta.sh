@@ -365,6 +365,10 @@ export interface CommerceClient {
 	 *  `holdTtlMinutes` (or its default), which every add/adjust stamps and every
 	 *  read measures against (issue #127). For shopper-facing copy. */
 	getCartHoldTtlMinutes(): Promise<number>;
+	/** Whether the storefront shows the cart hold to shoppers — the admin's
+	 *  `showHoldTimer`, off until saved on. Display only: the hold itself runs
+	 *  either way. */
+	getShowHoldTimer(): Promise<boolean>;
 	getCart(cartId: string): Promise<CartResult<{ cart: CartWire }>>;
 	/**
 	 * The storefront header's two facts, as cheaply as they can be known: the

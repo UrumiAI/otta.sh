@@ -50,6 +50,7 @@ const {
 	sumRows,
 	totalAmount,
 	partialNote,
+	showHoldTimer,
 } = Astro.props.model;
 ---
 
@@ -231,7 +232,7 @@ const {
 							    absolute expiry — this view only hands it the line's own
 							    `expiresAt`, and a line that never took a reservation
 							    renders no ribbon at all. */}
-							<HoldRibbon expiresAt={view.line.expiresAt} />
+							{showHoldTimer && <HoldRibbon expiresAt={view.line.expiresAt} />}
 						</div>
 						<div class="cart-line-right">
 							<span class="cart-line-money">

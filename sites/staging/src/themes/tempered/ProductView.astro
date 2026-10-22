@@ -151,9 +151,11 @@ const { model } = Astro.props;
 									    the useful part. The sentence states the
 									    store's EFFECTIVE window, as the page computed
 									    it from the route (issue #127). */}
-									<p class="pdp-hold-note">
-										{model.purchase.holdNote}
-									</p>
+									{model.purchase.holdNote !== null && (
+										<p class="pdp-hold-note">
+											{model.purchase.holdNote}
+										</p>
+									)}
 								</div>
 							)}
 

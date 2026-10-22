@@ -83,6 +83,9 @@ export interface SettingsDoc {
 	/** The store currency. Absent on every document written before it existed —
 	 *  and on any store that never saved one: that is "never saved" (USD). */
 	readonly currency?: string;
+	/** Whether shoppers see the cart hold. Absent on every document written before
+	 *  it existed — that is "never saved" (off). */
+	readonly showHoldTimer?: boolean;
 	readonly updatedAt: string;
 }
 
@@ -93,6 +96,7 @@ export interface SettingsPatchDoc {
 	/** Replaces the whole tax block. */
 	readonly tax?: TaxSettings;
 	readonly currency?: string;
+	readonly showHoldTimer?: boolean;
 }
 
 /**
@@ -131,6 +135,7 @@ export function toPatchDoc(patch: Partial<OperationalSettings>): SettingsPatchDo
 		lowStockThreshold?: number;
 		tax?: TaxSettings;
 		currency?: string;
+		showHoldTimer?: boolean;
 	} = {};
 	if (patch.holdTtlMinutes !== undefined) doc.holdTtlMinutes = patch.holdTtlMinutes;
 	if (patch.lowStockThreshold !== undefined) doc.lowStockThreshold = patch.lowStockThreshold;
@@ -140,6 +145,7 @@ export function toPatchDoc(patch: Partial<OperationalSettings>): SettingsPatchDo
 	if (tax !== undefined) doc.tax = tax;
 	const currency = readStoreCurrency(patch.currency);
 	if (currency !== undefined) doc.currency = currency;
+	if (typeof patch.showHoldTimer === "boolean") doc.showHoldTimer = patch.showHoldTimer;
 	return doc;
 }
 
@@ -159,6 +165,7 @@ export function toOperationalSettings(doc: SettingsDoc | null): OperationalSetti
 		},
 		readTaxSettings(doc.tax),
 		readStoreCurrency(doc.currency),
+		typeof doc.showHoldTimer === "boolean" ? doc.showHoldTimer : undefined,
 	);
 }
 
@@ -182,16 +189,19 @@ export function mergeSettings(
 		},
 		patch.tax ?? base.tax,
 		patch.currency ?? base.currency,
+		patch.showHoldTimer ?? base.showHoldTimer,
 	);
 }
 
-/** The settings with `tax` and `currency` only when there is one: absent stays
- *  absent (each is "never saved" when missing, never a default). */
+/** The settings with `tax`, `currency` and `showHoldTimer` only when there is
+ *  one: absent stays absent (each is "never saved" when missing, never a default). */
 function withOptional(
 	settings: OperationalSettings,
 	tax: TaxSettings | undefined,
 	currency: string | undefined,
+	showHoldTimer: boolean | undefined,
 ): OperationalSettings {
 	const out: OperationalSettings = tax === undefined ? settings : { ...settings, tax };
-	return currency === undefined ? out : { ...out, currency };
+	const withCurrency = currency === undefined ? out : { ...out, currency };
+	return showHoldTimer === undefined ? withCurrency : { ...withCurrency, showHoldTimer };
 }

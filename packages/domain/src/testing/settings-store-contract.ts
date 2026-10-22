@@ -142,6 +142,27 @@ export function settingsStoreContract(
 			});
 		});
 
+		// The hold-timer switch: absent means "never saved", which is OFF. Saving
+		// it on, then off, must both land (false is a value, not "keep").
+		test("showHoldTimer is absent until saved, round-trips on and off, and a partial update keeps it", async () => {
+			const { store } = await makeStore();
+			const fresh = await store.get();
+			expect("showHoldTimer" in fresh).toBe(false);
+			await store.update({ holdTtlMinutes: 30 }, idempotencyKey("k1"));
+			expect("showHoldTimer" in (await store.get())).toBe(false);
+			const on = await store.update({ showHoldTimer: true }, idempotencyKey("k2"));
+			expect(on).toEqual({ holdTtlMinutes: 30, lowStockThreshold: 5, showHoldTimer: true });
+			await store.update({ lowStockThreshold: 3 }, idempotencyKey("k3"));
+			expect((await store.get()).showHoldTimer).toBe(true);
+			await store.update({ showHoldTimer: false }, idempotencyKey("k4"));
+			expect((await store.get()).showHoldTimer).toBe(false);
+			// A same-key replay returns its recorded result and does not clobber.
+			expect(
+				(await store.update({ showHoldTimer: true }, idempotencyKey("k2"))).showHoldTimer,
+			).toBe(true);
+			expect((await store.get()).showHoldTimer).toBe(false);
+		});
+
 		test("ifTax guards a currency update too: refused while the tax block differs, nothing written", async () => {
 			const { store } = await makeStore();
 			await store.update({ tax: SAMPLE_TAX }, idempotencyKey("k1"));

@@ -134,6 +134,8 @@ const jsonLd = result !== null && result.ok ? result.jsonLd : null;
 const addToCart = product?.slots.addToCart ?? null;
 /** The store's effective cart-hold window (issue #127) — what the hold note states. */
 const cartHoldMinutes = result !== null && result.ok ? result.cartHoldMinutes : undefined;
+// Off unless the operator turned it on in Settings (and off on a failed read).
+const showHoldTimer = result !== null && result.ok && result.showHoldTimer;
 const degraded = content !== null && product === null;
 /* Storage contention (the plugin's BUSY, already retried once by the dispatch):
    the page still renders its content, but answers 503 + a short Retry-After so a
@@ -186,7 +188,7 @@ const purchase: ProductPurchase | null =
 				   hard-coded default, which was false on any store whose
 				   operator changed the setting. */
 				cartHoldMinutes,
-				holdNote: holdNote(cartHoldMinutes),
+				holdNote: showHoldTimer ? holdNote(cartHoldMinutes) : null,
 				soldOut,
 			}
 		: null;
