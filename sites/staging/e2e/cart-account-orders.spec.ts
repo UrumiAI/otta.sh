@@ -186,12 +186,15 @@ test.describe("cart → checkout → order → account, in the browser", () => {
 		await returned.goto(stripeReturn("failed"));
 		expect(new URL(returned.url()).search).toBe("");
 		await expect(returned.getByText("Payment submitted.")).toHaveCount(0);
+		await expect(returned.getByRole("link", { name: "Complete payment" })).toBeVisible();
 		// A successful one: the bare URL, the confirming copy, and the poll.
 		await returned.goto(stripeReturn("succeeded"));
 		expect(new URL(returned.url()).pathname).toBe(`/orders/${encodeURIComponent(orderId)}`);
 		expect(new URL(returned.url()).search).toBe("");
 		await expect(returned.getByText("Payment submitted.")).toBeVisible();
 		await expect(returned.locator('meta[http-equiv="refresh"]')).toHaveCount(1);
+		// Leave no record behind for the steps below: a failed return clears it.
+		await returned.goto(stripeReturn("failed"));
 		await returned.close();
 
 		const deps: SeedOrdersDeps = {
