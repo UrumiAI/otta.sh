@@ -61,6 +61,10 @@ const egress = {
 	),
 };
 
+/** The playground config (`astro.config.playground.ts`) registers the same
+ *  egress. Re-exported so the two builds cannot resolve hosts twice. */
+export { egress };
+
 /**
  * Issue #498: the Stripe publishable key is no longer a build setting — it is
  * entered in admin Settings and read per request. A build that still sets the
@@ -247,6 +251,10 @@ export default defineConfig({
 			// ALWAYS a string: baking `undefined` would leave the identifier
 			// undeclared, and `""` is what the plugin's `typeof` guard reads as none.
 			__OTTA_EXTRA_ALLOWED_HOSTS__: JSON.stringify(egress.extraAllowedHosts.join(",")),
+			// The disposable playground build sets this true and seeds demo
+			// commerce. The storefront deploy must stay false — see
+			// astro.config.playground.ts.
+			__OTTA_PLAYGROUND__: JSON.stringify(false),
 		},
 		ssr: {
 			// UNCONDITIONAL: if @urumi.ai/otta-plugin is ever externalized the defines

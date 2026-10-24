@@ -6,7 +6,9 @@
 	"type": "module",
 	"scripts": {
 		"dev": "astro dev",
+		"dev:playground": "astro dev --config astro.config.playground.ts",
 		"build": "astro build",
+		"build:playground": "astro build --config astro.config.playground.ts",
 		"preview": "astro preview",
 		"typecheck": "astro check",
 		"deploy": "wrangler deploy"

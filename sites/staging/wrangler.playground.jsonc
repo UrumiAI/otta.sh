@@ -1,0 +1,46 @@
+// Otta playground Worker. A visitor to /playground gets their own EmDash
+// database (one Durable Object) with the Otta plugin already registered.
+// No D1, no R2, no Worker Loader: commerce runs trusted in-process, the same
+// registration as the storefront (ADR-0006). The session database is the
+// Durable Object below, not a shared D1.
+//
+// Deploy from sites/staging AFTER `pnpm --filter @urumi.ai/otta-site-staging
+// build:playground`, with plain `wrangler deploy` (the build writes
+// .wrangler/deploy). The route below is the hostname the marketing CTA uses.
+// Attaching it needs the otta.sh zone on the same Cloudflare account;
+// `wrangler deploy` creates the DNS record when that zone is there.
+// SESSION is not listed: the Astro Cloudflare adapter adds the binding and
+// Wrangler provisions the namespace on deploy.
+{
+	"$schema": "node_modules/wrangler/config-schema.json",
+	"name": "otta-playground",
+	"main": "./src/playground-worker.ts",
+	"compatibility_date": "2026-02-24",
+	// NO global_fetch_strictly_public. The playground database is a Durable
+	// Object, not a D1 session, but the flag is still the one this repo
+	// refuses everywhere else (emdash #1273, issue #375).
+	"compatibility_flags": ["nodejs_compat"],
+	"durable_objects": {
+		"bindings": [
+			{
+				"name": "PLAYGROUND_DB",
+				"class_name": "EmDashPreviewDB",
+			},
+		],
+	},
+	"migrations": [
+		{
+			"tag": "v1",
+			"new_sqlite_classes": ["EmDashPreviewDB"],
+		},
+	],
+	"observability": {
+		"enabled": true,
+	},
+	"routes": [
+		{
+			"pattern": "try.otta.sh",
+			"custom_domain": true,
+		},
+	],
+}
