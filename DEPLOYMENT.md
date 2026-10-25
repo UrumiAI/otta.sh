@@ -990,8 +990,8 @@ plugin registered trusted in-process (the same registration as §2, still no
 Worker Loader), and the sample products priced on first open. Opening
 `/playground` lands on `/_emdash/admin`. The shop stays at `/products`. The
 sample photographs are static files under `public/playground-products/`
-(Unsplash License; see `CREDITS.txt` there), not the Cloudflare Images
-binding. The marketing site's "Try in Playground" link is
+(Otta-branded tee, mug, and sticker shots consistent with the marketing
+page; see `CREDITS.txt` there), not the Cloudflare Images binding. The marketing site's "Try in Playground" link is
 `https://try.otta.sh/playground`.
 
 ```bash

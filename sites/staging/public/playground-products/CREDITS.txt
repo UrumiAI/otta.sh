@@ -1,19 +1,22 @@
 Photographs shipped with the Otta playground sample products.
-Each file is a photograph from Unsplash, used under the Unsplash License
-(https://unsplash.com/license). They are product photographs, served as
-static files from this directory. They are not generated art.
+
+These are Otta-branded commerce shots of the three sample products, in the
+same lineup as the Otta marketing page (UrumiAI/otta-landing-page PR #9):
+a black heavyweight tee, a cream speckled mug, and a sheet of die-cut
+stickers, each with the OTTA wordmark, on a warm off-white studio ground.
+
+The landing repository is private to this workspace, so these files are
+not a byte copy of that repo's originals. They were produced to match the
+product photographs in the landing page's marketing frames, and they
+replace the earlier Unsplash photographs. They are static JPEGs in this
+directory. The playground serves them with a plain <img> and the passthrough
+image service. They do not use Cloudflare Images.
 
 otta-tee.jpg
-  A white cotton t-shirt on a hanger.
-  https://unsplash.com/photos/1521572163474
-  images.unsplash.com photo-1521572163474-6864f9cf17ab
+  A black heavyweight tee with the white OTTA wordmark.
 
 otta-mug.jpg
-  A white ceramic mug on a wooden table.
-  https://unsplash.com/photos/1517256064527
-  images.unsplash.com photo-1517256064527-09c73fc73e38
+  A cream speckled ceramic mug with the black OTTA wordmark.
 
 otta-stickers.jpg
-  A pile of die-cut stickers.
-  https://unsplash.com/photos/1611532736597
-  images.unsplash.com photo-1611532736597-de2d4265fba3
+  A sheet of die-cut stickers with the OTTA wordmark.

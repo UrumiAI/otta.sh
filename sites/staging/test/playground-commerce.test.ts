@@ -8,7 +8,11 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, test } from "vitest";
 import { injectBanner } from "../src/lib/playground-banner.js";
-import { PLAYGROUND_PRODUCT_PHOTOS, contentImageSrc } from "../src/lib/playground-photos.js";
+import {
+	PLAYGROUND_PRODUCT_PHOTOS,
+	contentImageSrc,
+	shouldAttachPlaygroundPhoto,
+} from "../src/lib/playground-photos.js";
 import { productImage } from "../src/lib/products.js";
 import {
 	PLAYGROUND_MAX_ATTEMPTS,
@@ -344,10 +348,25 @@ describe("playground product photographs", () => {
 		}
 	});
 
-	test("a product that already has a picture is not a candidate for a fill", () => {
+	test("a visitor's own picture is kept, and the shipped file's old alt is refreshed", () => {
+		const photo = PLAYGROUND_PRODUCT_PHOTOS["otta-tee"];
+		expect(photo).toBeDefined();
+		if (photo === undefined) return;
 		expect(contentImageSrc(undefined)).toBeNull();
 		expect(contentImageSrc({ images: null })).toBeNull();
 		expect(contentImageSrc({ images: { src: "/somewhere-else.jpg" } })).toBe("/somewhere-else.jpg");
+		expect(shouldAttachPlaygroundPhoto(undefined, photo)).toBe(true);
+		expect(shouldAttachPlaygroundPhoto({ images: null }, photo)).toBe(true);
+		expect(shouldAttachPlaygroundPhoto({ images: { src: "/somewhere-else.jpg" } }, photo)).toBe(
+			false,
+		);
+		expect(
+			shouldAttachPlaygroundPhoto(
+				{ images: { ...photo, alt: "A white cotton t-shirt on a hanger" } },
+				photo,
+			),
+		).toBe(true);
+		expect(shouldAttachPlaygroundPhoto({ images: photo }, photo)).toBe(false);
 	});
 });
 

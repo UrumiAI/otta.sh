@@ -87,12 +87,12 @@
 				"status": "published",
 				"data": {
 					"title": "Otta Tee",
-					"description": "Heavyweight cotton, unreasonably soft, with the coil across the chest.",
+					"description": "Heavyweight cotton, unreasonably soft, with OTTA across the chest.",
 					"images": {
 						"provider": "external",
 						"id": "playground-otta-tee",
 						"src": "/playground-products/otta-tee.jpg",
-						"alt": "A white cotton t-shirt on a hanger",
+						"alt": "A black heavyweight tee with the white OTTA wordmark",
 						"filename": "otta-tee.jpg",
 						"mimeType": "image/jpeg"
 					}
@@ -109,7 +109,7 @@
 						"provider": "external",
 						"id": "playground-otta-mug",
 						"src": "/playground-products/otta-mug.jpg",
-						"alt": "A white ceramic mug on a wooden table",
+						"alt": "A cream speckled ceramic mug with the black OTTA wordmark",
 						"filename": "otta-mug.jpg",
 						"mimeType": "image/jpeg"
 					}
@@ -126,7 +126,7 @@
 						"provider": "external",
 						"id": "playground-otta-stickers",
 						"src": "/playground-products/otta-stickers.jpg",
-						"alt": "A pile of die-cut stickers",
+						"alt": "A sheet of die-cut stickers with the OTTA wordmark",
 						"filename": "otta-stickers.jpg",
 						"mimeType": "image/jpeg"
 					}

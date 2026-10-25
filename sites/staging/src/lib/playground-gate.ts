@@ -16,7 +16,7 @@ import {
 } from "@urumi.ai/otta-plugin";
 import type { APIContext } from "astro";
 import { ContentRepository, OptionsRepository } from "emdash";
-import { PLAYGROUND_PRODUCT_PHOTOS, contentImageSrc } from "./playground-photos.js";
+import { PLAYGROUND_PRODUCT_PHOTOS, shouldAttachPlaygroundPhoto } from "./playground-photos.js";
 import {
 	injectPlaygroundBanner,
 	playgroundInterstitial,
@@ -187,9 +187,9 @@ async function prepareSession(context: APIContext, token: string): Promise<Prepa
 	return result;
 }
 
-/** Sessions minted before the photographs were added have a product row
- *  with no image. Write the shipped photo onto that row. A row that already
- *  points at it is left alone, including one a visitor replaced. */
+/** Write the shipped Otta photograph onto a sample product that has none,
+ *  and refresh a row that still points at the shipped file with an older
+ *  alt. A picture the visitor set to some other URL is left alone. */
 async function attachPlaygroundPhotos(context: APIContext, items: unknown[]): Promise<void> {
 	const db = (context.locals as unknown as Record<string, unknown>)["__playgroundDb"];
 	if (typeof db !== "object" || db === null) return;
@@ -200,7 +200,7 @@ async function attachPlaygroundPhotos(context: APIContext, items: unknown[]): Pr
 		if (typeof item.id !== "string" || typeof item.slug !== "string") continue;
 		const photo = PLAYGROUND_PRODUCT_PHOTOS[item.slug];
 		if (photo === undefined) continue;
-		if (contentImageSrc(item.data) !== null) continue;
+		if (!shouldAttachPlaygroundPhoto(item.data, photo)) continue;
 		await repo.update(PRODUCTS, item.id, { data: { images: photo } });
 	}
 }
