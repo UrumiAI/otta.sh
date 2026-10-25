@@ -987,8 +987,12 @@ reviewed tip, so a new one fails CI first).
 A second deploy of `sites/staging`, not a second copy of the store. It is
 EmDash's playground mode: one Durable Object database per visitor, the Otta
 plugin registered trusted in-process (the same registration as §2, still no
-Worker Loader), and the sample products priced on first open. The marketing
-site's "Try in Playground" link is `https://try.otta.sh/playground`.
+Worker Loader), and the sample products priced on first open. Opening
+`/playground` lands on `/_emdash/admin`. The shop stays at `/products`. The
+sample photographs are static files under `public/playground-products/`
+(Unsplash License; see `CREDITS.txt` there), not the Cloudflare Images
+binding. The marketing site's "Try in Playground" link is
+`https://try.otta.sh/playground`.
 
 ```bash
 pnpm --filter @urumi.ai/otta-site-staging build:playground

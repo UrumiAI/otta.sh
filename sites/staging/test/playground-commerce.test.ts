@@ -3,8 +3,13 @@
  * seed does not fire Otta's publish hook, so without this pass the shop
  * lists three products that cannot be bought.
  */
+import { readFileSync } from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { describe, expect, test } from "vitest";
 import { injectBanner } from "../src/lib/playground-banner.js";
+import { PLAYGROUND_PRODUCT_PHOTOS, contentImageSrc } from "../src/lib/playground-photos.js";
+import { productImage } from "../src/lib/products.js";
 import {
 	PLAYGROUND_MAX_ATTEMPTS,
 	isPlaygroundBoot,
@@ -177,7 +182,7 @@ describe("prepareDemoCommerce", () => {
 });
 
 describe("planPlaygroundNavigation", () => {
-	test("the boot admin request is sent to the shop once prices exist", () => {
+	test("the boot admin request stays in the admin once prices exist", () => {
 		expect(
 			planPlaygroundNavigation({
 				pathname: "/_emdash/admin",
@@ -185,7 +190,15 @@ describe("planPlaygroundNavigation", () => {
 				boot: true,
 				prepare: { kind: "ready" },
 			}),
-		).toEqual({ type: "redirect", location: "/products" });
+		).toEqual({ type: "render" });
+		expect(
+			planPlaygroundNavigation({
+				pathname: "/_emdash/admin/",
+				attempt: 0,
+				boot: true,
+				prepare: { kind: "ready" },
+			}),
+		).toEqual({ type: "render" });
 	});
 
 	test("a later visit to the admin is not redirected", () => {
@@ -217,15 +230,15 @@ describe("planPlaygroundNavigation", () => {
 		expect(stuck.type).toBe("stuck");
 	});
 
-	test("a reload after pricing drops the boot query", () => {
+	test("a reload after pricing returns to the admin without the boot query", () => {
 		expect(
 			planPlaygroundNavigation({
-				pathname: "/products",
+				pathname: "/_emdash/admin",
 				attempt: 2,
 				boot: true,
 				prepare: { kind: "ready" },
 			}),
-		).toEqual({ type: "redirect", location: "/products" });
+		).toEqual({ type: "redirect", location: "/_emdash/admin" });
 	});
 });
 
@@ -299,6 +312,42 @@ describe("itemsFromListResult", () => {
 		expect(() => itemsFromListResult({ success: false, error: { message: "no table" } })).toThrow(
 			/no table/,
 		);
+	});
+});
+
+describe("playground product photographs", () => {
+	const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+
+	test("the seed points each sample product at a JPEG in the repo", () => {
+		const seed = JSON.parse(readFileSync(path.join(root, "seed/seed.json"), "utf8")) as {
+			content: {
+				products: { id: string; slug: string; data: { title: string; images: unknown } }[];
+			};
+		};
+		const slugs = seed.content.products.map((entry) => entry.slug);
+		expect(slugs).toEqual(Object.keys(PLAYGROUND_PRODUCT_PHOTOS));
+		for (const entry of seed.content.products) {
+			const photo = PLAYGROUND_PRODUCT_PHOTOS[entry.slug];
+			expect(photo).toBeDefined();
+			expect(entry.data.images).toEqual(photo);
+			expect(
+				productImage({
+					id: entry.id,
+					slug: entry.slug,
+					title: entry.data.title,
+					images: entry.data.images as { src: string },
+				}),
+			).toBe(photo?.src);
+			const relative = (photo?.src ?? "").replace(/^\//, "");
+			const file = readFileSync(path.join(root, "public", relative));
+			expect(file.subarray(0, 3).toString("hex")).toBe("ffd8ff");
+		}
+	});
+
+	test("a product that already has a picture is not a candidate for a fill", () => {
+		expect(contentImageSrc(undefined)).toBeNull();
+		expect(contentImageSrc({ images: null })).toBeNull();
+		expect(contentImageSrc({ images: { src: "/somewhere-else.jpg" } })).toBe("/somewhere-else.jpg");
 	});
 });
 

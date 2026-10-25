@@ -87,7 +87,15 @@
 				"status": "published",
 				"data": {
 					"title": "Otta Tee",
-					"description": "Heavyweight cotton, unreasonably soft, with the coil across the chest."
+					"description": "Heavyweight cotton, unreasonably soft, with the coil across the chest.",
+					"images": {
+						"provider": "external",
+						"id": "playground-otta-tee",
+						"src": "/playground-products/otta-tee.jpg",
+						"alt": "A white cotton t-shirt on a hanger",
+						"filename": "otta-tee.jpg",
+						"mimeType": "image/jpeg"
+					}
 				}
 			},
 			{
@@ -96,7 +104,15 @@
 				"status": "published",
 				"data": {
 					"title": "Otta Mug",
-					"description": "Holds exactly one coffee. Survives the dishwasher and the commute."
+					"description": "Holds exactly one coffee. Survives the dishwasher and the commute.",
+					"images": {
+						"provider": "external",
+						"id": "playground-otta-mug",
+						"src": "/playground-products/otta-mug.jpg",
+						"alt": "A white ceramic mug on a wooden table",
+						"filename": "otta-mug.jpg",
+						"mimeType": "image/jpeg"
+					}
 				}
 			},
 			{
@@ -105,7 +121,15 @@
 				"status": "published",
 				"data": {
 					"title": "Otta Sticker Pack",
-					"description": "Ten die-cut vinyl stickers. Enough for the laptop, the water bottle, and one for whoever asks where you got them."
+					"description": "Ten die-cut vinyl stickers. Enough for the laptop, the water bottle, and one for whoever asks where you got them.",
+					"images": {
+						"provider": "external",
+						"id": "playground-otta-stickers",
+						"src": "/playground-products/otta-stickers.jpg",
+						"alt": "A pile of die-cut stickers",
+						"filename": "otta-stickers.jpg",
+						"mimeType": "image/jpeg"
+					}
 				}
 			}
 		]

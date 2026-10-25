@@ -1,0 +1,19 @@
+Photographs shipped with the Otta playground sample products.
+Each file is a photograph from Unsplash, used under the Unsplash License
+(https://unsplash.com/license). They are product photographs, served as
+static files from this directory. They are not generated art.
+
+otta-tee.jpg
+  A white cotton t-shirt on a hanger.
+  https://unsplash.com/photos/1521572163474
+  images.unsplash.com photo-1521572163474-6864f9cf17ab
+
+otta-mug.jpg
+  A white ceramic mug on a wooden table.
+  https://unsplash.com/photos/1517256064527
+  images.unsplash.com photo-1517256064527-09c73fc73e38
+
+otta-stickers.jpg
+  A pile of die-cut stickers.
+  https://unsplash.com/photos/1611532736597
+  images.unsplash.com photo-1611532736597-de2d4265fba3

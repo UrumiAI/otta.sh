@@ -100,9 +100,10 @@ To self-deploy this for free on Cloudflare Workers today, follow
 
 `https://try.otta.sh/playground` is a disposable store: EmDash's per-visitor
 playground, with the Otta plugin already installed and the three sample
-products priced and in stock. Opening it signs you in as the admin of that
-copy. The shop is at `/products`; the admin is the EmDash admin, including
-Otta's pricing, inventory and orders screens. The copy lasts about an hour.
+products priced, in stock, and photographed. Opening it signs you in as the
+admin of that copy and lands on `/_emdash/admin` — the EmDash admin, including
+Otta's pricing, inventory and orders screens. The shop is at `/products`,
+linked from the admin and from the note on each page. The copy lasts about an hour.
 
 Card payments are not connected there, so checkout will not charge a card.
 Sign-in email is not sent. Pay-per-crawl, MCP and x402 are not part of this

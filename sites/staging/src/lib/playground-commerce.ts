@@ -88,16 +88,11 @@ export function planPlaygroundNavigation(args: {
 		}
 		return { type: "wait", attempt: args.attempt + 1 };
 	}
-	if (args.boot && isPlaygroundAdminHome(args.pathname))
-		return { type: "redirect", location: "/products" };
+	// The boot stays in the admin. EmDash's loading page already sends
+	// `/playground` to `/_emdash/admin`; this pass only strips the wait query
+	// once prices exist. The shop is a link from there, not the landing.
 	if (args.attempt > 0) return { type: "redirect", location: args.pathname };
 	return { type: "render" };
-}
-
-/** The loading page's destination, and nothing under it. A later click into
- *  the admin must not be bounced back to the shop. */
-export function isPlaygroundAdminHome(pathname: string): boolean {
-	return pathname === "/_emdash/admin" || pathname === "/_emdash/admin/";
 }
 
 export function playgroundWaitPath(pathname: string, attempt: number): string {

@@ -5,8 +5,8 @@
  * EmDash's own playground middleware has already created the visitor's
  * database, applied the CMS seed and set `locals.user` by the time we run.
  * What it cannot do is price the products: the seed fires no Otta hooks.
- * {@link prepareDemoCommerce} does, then the boot request is sent to the
- * shop instead of being left in the CMS admin.
+ * {@link prepareDemoCommerce} does. The visitor stays on the admin EmDash
+ * opened; the shop is linked from the banner, not forced.
  */
 import {
 	CONSOLE_ACT_INTERACTION,
@@ -15,7 +15,8 @@ import {
 	PRODUCTS_CONSOLE_RESOURCE_PREFIX,
 } from "@urumi.ai/otta-plugin";
 import type { APIContext } from "astro";
-import { OptionsRepository } from "emdash";
+import { ContentRepository, OptionsRepository } from "emdash";
+import { PLAYGROUND_PRODUCT_PHOTOS, contentImageSrc } from "./playground-photos.js";
 import {
 	injectPlaygroundBanner,
 	playgroundInterstitial,
@@ -137,9 +138,11 @@ async function prepareSession(context: APIContext, token: string): Promise<Prepa
 		};
 	}
 	const origin = context.url.origin;
+	const items = await listProducts(list);
+	await attachPlaygroundPhotos(context, items);
 
 	const result = await prepareDemoCommerce({
-		listItems: () => listProducts(list),
+		listItems: async () => items,
 		publish: async (id) => {
 			const published = await publish(PRODUCTS, id, actor !== null ? { actor } : {});
 			if (!isSuccess(published)) {
@@ -182,6 +185,24 @@ async function prepareSession(context: APIContext, token: string): Promise<Prepa
 		readySessions.add(token);
 	}
 	return result;
+}
+
+/** Sessions minted before the photographs were added have a product row
+ *  with no image. Write the shipped photo onto that row. A row that already
+ *  points at it is left alone, including one a visitor replaced. */
+async function attachPlaygroundPhotos(context: APIContext, items: unknown[]): Promise<void> {
+	const db = (context.locals as unknown as Record<string, unknown>)["__playgroundDb"];
+	if (typeof db !== "object" || db === null) return;
+	const repo = new ContentRepository(db as ConstructorParameters<typeof ContentRepository>[0]);
+	for (const raw of items) {
+		if (typeof raw !== "object" || raw === null) continue;
+		const item = raw as { id?: unknown; slug?: unknown; data?: unknown };
+		if (typeof item.id !== "string" || typeof item.slug !== "string") continue;
+		const photo = PLAYGROUND_PRODUCT_PHOTOS[item.slug];
+		if (photo === undefined) continue;
+		if (contentImageSrc(item.data) !== null) continue;
+		await repo.update(PRODUCTS, item.id, { data: { images: photo } });
+	}
 }
 
 async function listProducts(
