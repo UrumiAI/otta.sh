@@ -981,3 +981,31 @@ reviewed tip, so a new one fails CI first).
 | Sweeps never run | Nothing has bootstrapped the schedule, or the runtime wired no cron executor — check that the site's Cron Trigger is present and load `/products` or a product page once (§5) |
 | An outbound call to Stripe never leaves | The host is not in the build-time `allowedHosts` allowlist (§4) — rebuild and redeploy |
 | Order or sign-in emails never arrive, the outbox keeps them `pending` | No EmDash email provider is selected (Settings → "Payments & email" says so) — install and select one (§3 Email) |
+
+## 7. Playground (`try.otta.sh`)
+
+A second deploy of `sites/staging`, not a second copy of the store. It is
+EmDash's playground mode: one Durable Object database per visitor, the Otta
+plugin registered trusted in-process (the same registration as §2, still no
+Worker Loader), and the sample products priced on first open. Opening
+`/playground` lands on `/_emdash/admin`. The shop stays at `/products`. The
+sample photographs are static files under `public/playground-products/`
+(Otta-branded tee, mug, and sticker shots consistent with the marketing
+page; see `CREDITS.txt` there), not the Cloudflare Images binding. The marketing site's "Try in Playground" link is
+`https://try.otta.sh/playground`.
+
+```bash
+pnpm --filter @urumi.ai/otta-site-staging build:playground
+cd sites/staging && wrangler deploy
+```
+
+`wrangler.playground.jsonc` is what the playground build reads. The route
+`try.otta.sh` is a custom domain. `wrangler deploy` creates that DNS record
+only when the `otta.sh` zone is on the same Cloudflare account the deploy
+token can edit. There is no shared Stripe key and no `EMDASH_ENCRYPTION_KEY`
+on this worker: checkout tells the visitor card payments are not set up, which
+is the truth. The Astro adapter adds a `SESSION` KV binding and Wrangler
+provisions it on deploy; do not put a namespace id in the tracked file.
+
+What this deploy is not: a one-click deploy of someone else's store, and not
+a place that claims pay-per-crawl, MCP or x402. Those are not in the build.

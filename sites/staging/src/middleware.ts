@@ -72,6 +72,7 @@ import { UPLOAD_MIN_ROLE } from "./lib/download-upload.js";
 import { isPrivateDownloadMediaRequest } from "./lib/media-deny.js";
 import { PRIVATE_NO_STORE } from "./lib/no-store.js";
 import { rejectCrossOrigin } from "./lib/origin-guard.js";
+import { playgroundGate, withPlaygroundBanner } from "./lib/playground-gate.js";
 import { themeFor } from "./themes/registry.js";
 import { DEFAULT_THEME_ID } from "./themes/manifest.js";
 
@@ -99,9 +100,16 @@ function skipRouteCache(context: { cache?: { set(options: false): void } }): voi
 }
 
 export const onRequest = defineMiddleware(async (context, next) => {
+	// Playground only (the storefront build no-ops). Prices the sample
+	// catalog before the page renders, and may answer the boot request
+	// itself — a wait page, or a redirect from the CMS admin onto the shop.
+	const gated = await playgroundGate(context);
+	if (gated !== null) return gated;
+
 	// CSRF first: a refused write never reaches its endpoint.
 	const forbidden = rejectCrossOrigin(context);
 	if (forbidden !== null) return forbidden;
+	const proceed = async () => withPlaygroundBanner(await next());
 
 	const { request, url, cookies } = context;
 	// Every method that can carry a body — the guard decides (it gates all but
@@ -116,7 +124,7 @@ export const onRequest = defineMiddleware(async (context, next) => {
 		attachBucketFrom(env),
 	);
 	if (refused !== null) return refused;
-	if (request.method !== "GET" && request.method !== "HEAD") return next();
+	if (request.method !== "GET" && request.method !== "HEAD") return proceed();
 	// Before the `/_` pass-through: the media route is under `/_emdash`. The same
 	// plain 404 EmDash answers for a key it does not have, and never stored.
 	if (isPrivateDownloadMediaRequest(url)) {
@@ -129,19 +137,19 @@ export const onRequest = defineMiddleware(async (context, next) => {
 			},
 		});
 	}
-	if (url.pathname.startsWith("/_")) return next();
+	if (url.pathname.startsWith("/_")) return proceed();
 
 	// A shopper with a cart or a session, on a theme whose chrome draws it. Every
 	// such GET, not only pages (an endpoint or a redirect too): the HTML check
 	// below is what decides the header.
 	const hasCart = (cookies.get(CART_COOKIE_NAME)?.value ?? "").length > 0;
 	const hasSession = (cookies.get(SESSION_COOKIE_NAME)?.value ?? "").length > 0;
-	if (!hasCart && !hasSession) return next();
+	if (!hasCart && !hasSession) return proceed();
 	// Constant for Tempered today (it sets shopperState); kept as a guard.
 	const drawsShopper = themeFor(DEFAULT_THEME_ID).chrome?.shopperState === true;
-	if (!drawsShopper) return next();
+	if (!drawsShopper) return proceed();
 	skipRouteCache(context);
-	const response = await next();
+	const response = await proceed();
 	// Again after the page (TWO CACHES above).
 	skipRouteCache(context);
 	const html = response.headers.get("Content-Type")?.includes("text/html") ?? false;

@@ -16,6 +16,7 @@
 		".astro/types.d.ts",
 		"emdash-env.d.ts",
 		"astro.config.ts",
+		"astro.config.playground.ts",
 		"vitest.config.ts"
 	],
 	"exclude": ["dist", ".wrangler", "node_modules"]

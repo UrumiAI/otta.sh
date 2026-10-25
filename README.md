@@ -96,6 +96,31 @@ simulates — see [Status](#status).
 To self-deploy this for free on Cloudflare Workers today, follow
 [`DEPLOYMENT.md`](./DEPLOYMENT.md) §2 (one-click deployment: see [Status](#status)).
 
+## Try it in the playground
+
+`https://try.otta.sh/playground` is a disposable store: EmDash's per-visitor
+playground, with the Otta plugin already installed and the three sample
+products priced, in stock, and photographed. Opening it signs you in as the
+admin of that copy and lands on `/_emdash/admin` — the EmDash admin, including
+Otta's pricing, inventory and orders screens. The shop is at `/products`,
+linked from the admin and from the note on each page. The copy lasts about an hour.
+
+Card payments are not connected there, so checkout will not charge a card.
+Sign-in email is not sent. Pay-per-crawl, MCP and x402 are not part of this
+sandbox. It is not a deploy of your own store — that is the self-deploy guide
+above, and a one-click deploy of your own store is still coming.
+
+Run the same playground locally:
+
+```bash
+pnpm --filter @urumi.ai/otta-site-staging dev:playground
+```
+
+Then open `http://localhost:4321/playground`. Deploying it is
+[`DEPLOYMENT.md`](./DEPLOYMENT.md) §7. The hostname has to be attached by
+someone who can add `try.otta.sh` to the Cloudflare account that owns the
+`otta.sh` zone.
+
 ## Install from npm
 
 The six packages are published to npm under `@urumi.ai/otta-*`, ESM-only, at `0.1.0`. A site that

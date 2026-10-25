@@ -21,6 +21,17 @@
 			}
 		},
 		{
+			"files": ["sites/staging/src/lib/playground-gate.ts"],
+			"rules": {
+				"no-underscore-dangle": [
+					"error",
+					{
+						"allow": ["__OTTA_PLAYGROUND__"]
+					}
+				]
+			}
+		},
+		{
 			"files": ["packages/plugin/src/payments/stripe-wiring.ts"],
 			"rules": {
 				"no-underscore-dangle": [
