@@ -118,7 +118,8 @@ describe("emitted plugin bundle carries no un-bundled workspace or host import",
 		// twenty seconds and buys back the whole build.
 		// Every config, in order: the JS build, then the declarations build (#510).
 		for (const config of tsdownConfigs) {
-			await build({ ...config, entry, outDir, logLevel: "silent" });
+			// `config: false`: build exactly this config, not the cwd's tsdown.config.ts on top.
+			await build({ ...config, config: false, entry, outDir, logLevel: "silent" });
 		}
 		const files = (await readdir(outDir)).filter((f) => f.endsWith(".mjs"));
 		const declarationFiles = (await readdir(outDir)).filter((f) => f.endsWith(".d.mts"));

@@ -14,7 +14,7 @@ import { noticeBanner } from "./scaffold/banner.js";
  *
  * Nothing about the three screens changes: each panel is the UNCHANGED output of
  * that screen's own handler. EmDash 1.0.1 gave a plugin no way to place a page
- * anywhere but the Plugins group (no `group`, no Settings-hub slot); 1.3 adds an
+ * anywhere but the Plugins group (no `group`, no Settings-hub slot); 1.2 added an
  * optional page `group` (a sidebar folder) but still no Settings-hub slot, so
  * merging pages stays the simplest lever on the sidebar.
  *
