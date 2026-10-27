@@ -237,6 +237,46 @@ describe("salesChart: the line chart's option carries money as formatted strings
 	});
 });
 
+describe("chart day labels carry the year only when the period crosses a calendar year", () => {
+	const labels = (from: string, to: string): string[] => {
+		const current = timeBuckets(periodFromDays(from, to), [], "USD");
+		const block = salesChart({ current, previous: undefined, currency: USD });
+		return (block.config.options["xAxis"] as { data: string[] }).data;
+	};
+
+	test('within one year → "10 Jul"', () => {
+		expect(labels("2026-07-10", "2026-07-12")).toEqual(["10 Jul", "11 Jul", "12 Jul"]);
+	});
+
+	test("across New Year → every label names its year", () => {
+		expect(labels("2025-12-30", "2026-01-02")).toEqual([
+			"30 Dec 2025",
+			"31 Dec 2025",
+			"1 Jan 2026",
+			"2 Jan 2026",
+		]);
+	});
+
+	test("the previous period crossing New Year puts the year on BOTH series, so a tooltip never mixes formats", () => {
+		// 10–30 Jan 2026 sits inside one year; the 21 days before it do not.
+		const current = timeBuckets(periodFromDays("2026-01-10", "2026-01-30"), [], "USD");
+		const previous = timeBuckets(periodFromDays("2025-12-20", "2026-01-09"), [], "USD");
+		const options = salesChart({ current, previous, currency: USD }).config.options;
+		expect((options["xAxis"] as { data: string[] }).data[0]).toBe("10 Jan 2026");
+		const [, before] = series(options);
+		const tooltips = before?.["data"] as Array<[number, number, string]> | undefined;
+		expect(tooltips?.[0]?.[2]).toBe("$0.00 · 20 Dec 2025");
+	});
+
+	test("the orders chart agrees", () => {
+		const current = timeBuckets(periodFromDays("2025-12-31", "2026-01-01"), [], "USD");
+		expect((ordersChart(current).config.options["xAxis"] as { data: string[] }).data).toEqual([
+			"31 Dec 2025",
+			"1 Jan 2026",
+		]);
+	});
+});
+
 describe("ordersChart / statusChart / topProductsChart", () => {
 	test("orders over time is a bar per day of paid orders", () => {
 		const current = timeBuckets(
