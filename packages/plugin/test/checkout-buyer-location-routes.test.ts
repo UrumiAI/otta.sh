@@ -16,6 +16,11 @@ vi.mock("../src/commerce/make-commerce-client.js", () => ({
 	makeCommerceClient: async () => ({
 		createOrder,
 		getCart,
+		// The summary reads the cart and the store's settings together.
+		getCartWithSettings: async (cartId: string) => ({
+			cart: await getCart(cartId),
+			settings: { savedStoreCurrency: null, holdTtlMinutes: 15, showHoldTimer: false },
+		}),
 		quoteCheckout,
 		listShippingOptions: async () => [],
 	}),

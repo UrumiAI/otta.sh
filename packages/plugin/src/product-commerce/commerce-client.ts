@@ -397,6 +397,11 @@ export interface CommerceClient {
 	 *  hold itself runs either way). */
 	getStorefrontSettings(): Promise<StorefrontSettings>;
 	getCart(cartId: string): Promise<CartResult<{ cart: CartWire }>>;
+	/** {@link getCart} plus the storefront settings, from the one settings read
+	 *  `getCart` already makes for the hold window — for a page that needs both. */
+	getCartWithSettings(
+		cartId: string,
+	): Promise<{ cart: CartResult<{ cart: CartWire }>; settings: StorefrontSettings }>;
 	/**
 	 * The storefront header's two facts, as cheaply as they can be known: the
 	 * cart's state and unit count (ONE cart-document read — no hold expiry, no

@@ -962,6 +962,16 @@ export function storefrontCommerceClientContract(tier: CommerceClientTier): void
 			expect(result).toEqual({ ok: false, reason: "CART_NOT_FOUND" });
 		});
 
+		test("getCartWithSettings is getCart plus getStorefrontSettings, from one read", async () => {
+			const cartId = await tier.arrange.cart();
+			const both = await client.getCartWithSettings(cartId);
+			expect(both.cart).toEqual(await client.getCart(cartId));
+			expect(both.settings).toEqual(await client.getStorefrontSettings());
+			expect(await client.getCartWithSettings("does-not-exist")).toMatchObject({
+				cart: { ok: false, reason: "CART_NOT_FOUND" },
+			});
+		});
+
 		// ── issue #80: the storefront now threads productId end-to-end ─────
 		test("addCartLine threads productId; the persisted line carries it (non-null) and the cart read reflects it", async () => {
 			const productId = await seedProduct({

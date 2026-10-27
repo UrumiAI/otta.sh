@@ -222,6 +222,9 @@ export interface CheckoutLockedOrderView {
 
 interface CheckoutSummaryViewBase {
 	ok: true;
+	/** Whether the store shows shoppers its cart hold (the admin's
+	 *  `showHoldTimer`) — so the page words a lapsed hold the way /cart does. */
+	showHoldTimer: boolean;
 	cartId: string;
 	currency: string;
 	lines: CheckoutLineView[];
@@ -426,7 +429,8 @@ export function createCheckoutSummaryRouteHandler(): RouteHandler<CheckoutSummar
 			if (input === null) return { ok: false, error: "INVALID_INPUT" } as const;
 
 			const client = await makeCommerceClient(ctx);
-			const cartResult = await client.getCart(input.cartId);
+			// The settings ride the read `getCart` already makes for the hold window.
+			const { cart: cartResult, settings } = await client.getCartWithSettings(input.cartId);
 			if (!cartResult.ok) return { ok: false as const, reason: cartResult.reason };
 			const cart = cartResult.cart;
 
@@ -438,7 +442,7 @@ export function createCheckoutSummaryRouteHandler(): RouteHandler<CheckoutSummar
 				// so the buyer is told what IS true: the cart has been checked out.
 				// `/cart` renders that state and offers the way on.
 				if (!order.ok) return { ok: false as const, reason: "CART_CHECKED_OUT" as const };
-				return lockedSummary(cart, order.order, input.locale);
+				return lockedSummary(cart, order.order, input.locale, settings.showHoldTimer);
 			}
 
 			const productIds = [
@@ -575,6 +579,7 @@ export function createCheckoutSummaryRouteHandler(): RouteHandler<CheckoutSummar
 
 			return {
 				ok: true as const,
+				showHoldTimer: settings.showHoldTimer,
 				cartId: cart.cartId,
 				currency: cart.currency,
 				// Shown with or without tax as `displayCart` says, from the quote's
@@ -660,6 +665,7 @@ function lockedSummary(
 	cart: CartWire,
 	order: PublicOrderWire,
 	locale: string,
+	showHoldTimer: boolean,
 ): CheckoutSummaryView {
 	const totals: QuoteBreakdownWire = order.totals;
 	const phase = lockedCheckoutPhase(order.state);
@@ -675,6 +681,7 @@ function lockedSummary(
 				: "not_required";
 	return {
 		ok: true,
+		showHoldTimer,
 		cartId: cart.cartId,
 		currency: order.currency,
 		lines: buildOrderLines(order, locale),
