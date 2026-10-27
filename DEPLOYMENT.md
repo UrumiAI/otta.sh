@@ -975,6 +975,26 @@ Otta's own code does not log the URL on that route.
   carry the URL in their `Event` field. Field names and options change, so confirm them in
   Cloudflare's [Logpush docs](https://developers.cloudflare.com/logs/logpush/) and
   [Workers Logs docs](https://developers.cloudflare.com/workers/observability/logs/workers-logs/).
+- **Caddy.** Inside the site block, filter the access log's request URI:
+
+  ```caddyfile
+  log {
+  	output file /var/log/caddy/access.log
+  	format filter {
+  		fields {
+  			request>uri query {
+  				delete payment_intent_client_secret
+  			}
+  		}
+  	}
+  }
+  ```
+
+  The `fields { … }` wrapper is the form Caddy's docs show for `format filter`, and older
+  versions may need it; leave it in. The filter acts on every request's URI, which is harmless
+  for other routes. Use `replace payment_intent_client_secret REDACTED` to keep a marker
+  instead. See Caddy's
+  [log directive docs](https://caddyserver.com/docs/caddyfile/directives/log#filter).
 - **nginx.** Log a URI with the query stripped for `/orders/`, instead of `$request`. This must
   **replace** your logging, not add to it: remove or change every existing `access_log`, in
   `http {}` and in any `server {}` or `location {}` that sets its own, because several
