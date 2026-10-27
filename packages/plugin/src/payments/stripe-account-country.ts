@@ -237,12 +237,12 @@ const warned = new Set<string>();
 
 const UNKNOWN_WARNING: Record<UnknownReason | "not_checked", string> = {
 	not_checked:
-		"it has not been read for the stored key yet; opening Settings, or saving the key again, reads it",
+		"it has not been read for the stored key yet; loading Store settings, or saving the key again, reads it",
 	permission_denied:
 		"the restricted key cannot read account details (Stripe answered 403). If the Stripe account is in India, give the key read access to account details and write access to customers, or use the secret key",
 	authentication_failed: "Stripe refused the secret key (401)",
 	unavailable:
-		"Stripe could not be reached; opening Settings asks again once a few minutes have passed, and saving the key again asks now",
+		"Stripe could not be reached; loading Store settings asks again once a few minutes have passed, and saving the key again asks now",
 };
 
 /**
