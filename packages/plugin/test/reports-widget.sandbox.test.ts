@@ -481,7 +481,8 @@ describe("Reports admin page (workerd sandbox)", () => {
 		// 8500 vs 4250: doubled.
 		expect(items[0]).toMatchObject({ description: "+100% vs previous 30 days", trend: "up" });
 		// 3 orders vs 1.
-		expect(items[1]).toMatchObject({ description: "+200% vs previous 30 days", trend: "up" });
+		expect(items[1]).toMatchObject({ description: "+200% vs previous 30 days" });
+		expect(items[1]).not.toHaveProperty("trend");
 		// $28.33 vs $42.50.
 		expect(items[2]).toMatchObject({ description: "\u221233% vs previous 30 days", trend: "down" });
 		// $2.50 vs $5.00 refunded — signed, but no arrow: the renderer colours an

@@ -287,7 +287,9 @@ export function buildReportsBlocks(data: ReportsData): BlockResponse {
 	const ordersTile: StatItem = {
 		label: "Orders",
 		value: String(orderCount),
-		...periodChange(orderCount, previousOrderCount, phrase),
+		// NO TREND ARROW: the count covers every status (cancelled and refunded
+		// included), so a rise is not good news; the signed delta still says which way.
+		description: periodChange(orderCount, previousOrderCount, phrase).description,
 	};
 	const aovTile = averageOrderValueTile({
 		byCurrencyCode,
