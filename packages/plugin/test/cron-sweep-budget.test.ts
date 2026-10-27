@@ -55,6 +55,7 @@ import { PRODUCT_COMMERCE_COLLECTION } from "@urumi.ai/otta-store-emdash";
 import { beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
 import {
 	ACTIVATE_SCHEDULE_BUDGET_MS,
+	BOOTSTRAP_RETRY_COOLDOWN_MS,
 	bootstrapSweepTask,
 	createActivateHandler,
 	createCronHandler,
@@ -812,11 +813,11 @@ describe("the hook's own bookkeeping", () => {
 			}
 		});
 
-		test("a late rejection after the timeout clears the latch: the next request retries, with no unhandled rejection", async () => {
+		test("a late rejection after the timeout clears the latch, after a cooldown, with no unhandled rejection", async () => {
 			const { ctx, first, calls } = stallingFirstList();
 			const logged = vi.spyOn(console, "error").mockImplementation(() => {});
-			// Belt and braces: the late rejection is observed in the source, and vitest
-			// fails on an unhandled rejection anyway.
+			// The late rejection is observed in the source. This listener proves it: it
+			// is asserted only after a real macrotask, which is when Node reports one.
 			const unhandled: unknown[] = [];
 			const onUnhandled = (reason: unknown) => unhandled.push(reason);
 			process.on("unhandledRejection", onUnhandled);
@@ -828,15 +829,88 @@ describe("the hook's own bookkeeping", () => {
 				first.reject(new Error("D1_ERROR: late"));
 				await vi.advanceTimersByTimeAsync(0);
 				expect(calls.list).toBe(1);
+				// An immediate request does not start a fresh attempt (and wait 3 s again).
+				expect(await Promise.race([bootstrapSweepTask(ctx), PENDING])).toBeUndefined();
+				expect(calls.list).toBe(1);
+				await vi.advanceTimersByTimeAsync(BOOTSTRAP_RETRY_COOLDOWN_MS - 1);
+				expect(await Promise.race([bootstrapSweepTask(ctx), PENDING])).toBeUndefined();
+				expect(calls.list).toBe(1);
+				// Once the cooldown has passed, a request retries.
+				await vi.advanceTimersByTimeAsync(1);
 				const retry = bootstrapSweepTask(ctx);
 				await vi.advanceTimersByTimeAsync(0);
 				expect(await Promise.race([retry, PENDING])).toBeUndefined();
 				expect(calls.list).toBeGreaterThanOrEqual(2); // retried
-				await vi.advanceTimersByTimeAsync(0);
+				vi.useRealTimers();
+				await new Promise((resolve) => setImmediate(resolve));
 				expect(unhandled).toEqual([]);
 			} finally {
 				process.off("unhandledRejection", onUnhandled);
 				vi.useRealTimers();
+				logged.mockRestore();
+			}
+		});
+
+		test("a fast failure cools down too: requests inside the cooldown do not list again", async () => {
+			let listed = 0;
+			const ctx = {
+				...context(storage),
+				cron: {
+					async schedule() {},
+					async cancel() {},
+					list: () => {
+						listed++;
+						return Promise.reject(new Error("D1_ERROR: transient"));
+					},
+				},
+			} as PluginContext;
+			const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+			// Let the (immediate) failure's promise chain settle before racing the sentinel.
+			async function request() {
+				const pending = bootstrapSweepTask(ctx);
+				await vi.advanceTimersByTimeAsync(0);
+				return Promise.race([pending, PENDING]);
+			}
+			vi.useFakeTimers();
+			try {
+				expect(await request()).toBeUndefined();
+				expect(listed).toBe(1);
+				expect(logged).toHaveBeenCalledTimes(1);
+				expect(await request()).toBeUndefined();
+				await vi.advanceTimersByTimeAsync(BOOTSTRAP_RETRY_COOLDOWN_MS - 1);
+				expect(await request()).toBeUndefined();
+				expect(listed).toBe(1); // no retry, no extra log line
+				expect(logged).toHaveBeenCalledTimes(1);
+				await vi.advanceTimersByTimeAsync(1);
+				expect(await request()).toBeUndefined();
+				expect(listed).toBe(2);
+			} finally {
+				vi.useRealTimers();
+				logged.mockRestore();
+			}
+		});
+
+		test("resetting the latch for a suite also clears the cooldown", async () => {
+			let listed = 0;
+			const ctx = {
+				...context(storage),
+				cron: {
+					async schedule() {},
+					async cancel() {},
+					list: () => {
+						listed++;
+						return Promise.reject(new Error("D1_ERROR: transient"));
+					},
+				},
+			} as PluginContext;
+			const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+			try {
+				await bootstrapSweepTask(ctx);
+				expect(listed).toBe(1);
+				resetSweepBootstrapForTest();
+				await bootstrapSweepTask(ctx);
+				expect(listed).toBe(2);
+			} finally {
 				logged.mockRestore();
 			}
 		});

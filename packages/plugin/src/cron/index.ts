@@ -33,12 +33,13 @@
  *
  * MEMOIZED PER ISOLATE, because those paths fire on every product save and every
  * PDP render and the registration is a database UPSERT. A module-scoped latch
- * makes it one write per isolate; a failure CLEARS the latch so the next request
- * retries rather than leaving the deployment permanently unscheduled.
+ * makes it one write per isolate; a failure CLEARS the latch so a later request
+ * retries (after a short cooldown) rather than leaving the deployment permanently
+ * unscheduled.
  *
  * AND IT NEVER FAILS ITS HOST HANDLER. A storefront page must not 500 because the
  * sweep schedule could not be written. The bootstrap swallows and logs, which is
- * safe precisely because it is retried on the next request.
+ * safe precisely because it is retried by a later request.
  *
  * The tick goes through the same latched bootstrap, so a cron-only isolate (one
  * that served no request) still re-affirms once. Re-affirming READS first and
@@ -166,10 +167,28 @@ export async function ensureSweepTaskScheduled(ctx: PluginContext): Promise<Swee
  */
 let bootstrapped = false;
 
-/** Reset the latch. Exported for suites, which must be able to drive the
- *  bootstrap more than once in one process. */
+/**
+ * How long a FAILED bootstrap waits before a request may try again. Without it a
+ * fast failure retries (and logs) on every request, and a slow one makes every
+ * request start a fresh attempt and wait the full budget again. Sweeps tick once a
+ * minute, so a minute's pause loses nothing.
+ */
+export const BOOTSTRAP_RETRY_COOLDOWN_MS = 60_000;
+
+/** No attempt starts before this `Date.now()`; set on every failure. */
+let retryNotBefore = 0;
+
+/** A failed attempt: release the latch, but not before the cooldown. */
+function coolDownAfterFailure(): void {
+	bootstrapped = false;
+	retryNotBefore = Date.now() + BOOTSTRAP_RETRY_COOLDOWN_MS;
+}
+
+/** Reset the latch and its retry cooldown. Exported for suites, which must be able
+ *  to drive the bootstrap more than once in one process. */
 export function resetSweepBootstrapForTest(): void {
 	bootstrapped = false;
+	retryNotBefore = 0;
 }
 
 /** How long `plugin:activate`, and the first-request bootstrap, may spend
@@ -177,8 +196,8 @@ export function resetSweepBootstrapForTest(): void {
  *  bootstrap lets the request proceed). Well under the host's 5000 ms default hook
  *  timeout, and inside a content after-hook it leaves at least 2 s of that timeout
  *  for the hook's own work; after-hooks run in waitUntil, so a save is not blocked.
- *  A timeout is a FAILED hook to the host, with the same consequence as a
- *  throw (see `createActivateHandler`). */
+ *  On activate, outrunning the host's hook timeout is a FAILED hook, with the same
+ *  consequence as a throw (see `createActivateHandler`). */
 export const ACTIVATE_SCHEDULE_BUDGET_MS = 3_000;
 
 /** Sentinel for a registration that outran its budget. */
@@ -210,7 +229,9 @@ async function raceScheduleBudget<T>(attempt: Promise<T>): Promise<T | typeof SC
  *
  * The latch is set BEFORE the await and cleared on failure: concurrent first
  * requests then make one attempt between them rather than a thundering herd, and a
- * failed attempt still leaves the next request free to retry.
+ * failed attempt still leaves a later request free to retry — once
+ * `BOOTSTRAP_RETRY_COOLDOWN_MS` has passed, so a failing table costs one attempt
+ * (and one log line) per isolate per minute, not one per request.
  *
  * BOUNDED by `ACTIVATE_SCHEDULE_BUDGET_MS`: every first request in the isolate
  * awaits this, so a stalled cron table must not hang the storefront. A timeout is
@@ -219,8 +240,8 @@ async function raceScheduleBudget<T>(attempt: Promise<T>): Promise<T | typeof SC
  * a stalled one) loop forever — every ~3 s one request per isolate would pay the
  * budget, log, and start another `list()`. Instead the abandoned attempt keeps
  * running, and settles the latch itself: a late SUCCESS leaves it set (the isolate
- * is done); a late REJECTION clears it, with a log line, so a later request
- * retries. The abandoned attempt never SETS the latch, it only clears it. So at
+ * is done); a late REJECTION clears it, with a log line, so a request after the
+ * cooldown retries. The abandoned attempt never SETS the latch, it only clears it. So at
  * most one attempt is ever in flight per isolate.
  *
  * Caveat, stated plainly: an attempt that never settles leaves the latch set for
@@ -232,31 +253,41 @@ async function raceScheduleBudget<T>(attempt: Promise<T>): Promise<T | typeof SC
  * re-affirms.
  */
 export async function bootstrapSweepTask(ctx: PluginContext): Promise<void> {
-	if (bootstrapped) return;
+	if (bootstrapped || Date.now() < retryNotBefore) return;
 	bootstrapped = true;
 	const attempt = ensureSweepTaskScheduled(ctx);
 	try {
 		const outcome = await raceScheduleBudget(attempt);
 		if (outcome === SCHEDULE_TIMED_OUT) {
 			console.error(
-				`[otta] cron sweep task registration exceeded ${String(ACTIVATE_SCHEDULE_BUDGET_MS)} ms (continuing; will retry if it fails)`,
+				`[otta] cron sweep task registration exceeded ${String(ACTIVATE_SCHEDULE_BUDGET_MS)} ms (continuing without it; the call keeps running and is retried only if it later fails — one that never answers is not retried in this isolate)`,
 			);
 			// Also keeps the late rejection observed (no unhandled rejection).
-			attempt.catch((err: unknown) => {
-				bootstrapped = false;
-				console.error(
-					"[otta] cron sweep task registration failed after its budget (will retry):",
-					err,
-				);
-			});
+			attempt.then(
+				(late) => {
+					if (late.scheduled) {
+						console.info("[otta] cron sweep task registered after its budget");
+					}
+				},
+				(err: unknown) => {
+					coolDownAfterFailure();
+					console.error(
+						`[otta] cron sweep task registration failed after its budget (will retry in ${String(BOOTSTRAP_RETRY_COOLDOWN_MS / 1000)} s):`,
+						err,
+					);
+				},
+			);
 		} else if (!outcome.scheduled) {
 			// Not an error: a runtime with no cron executor is a valid deployment. But
 			// it means no sweeps run, which an operator should be able to find out.
 			console.info("[otta] cron sweep task not registered — this runtime wired no cron");
 		}
 	} catch (err) {
-		bootstrapped = false;
-		console.error("[otta] cron sweep task registration failed (will retry):", err);
+		coolDownAfterFailure();
+		console.error(
+			`[otta] cron sweep task registration failed (will retry in ${String(BOOTSTRAP_RETRY_COOLDOWN_MS / 1000)} s):`,
+			err,
+		);
 	}
 }
 
