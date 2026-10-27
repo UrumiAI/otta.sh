@@ -181,7 +181,8 @@ describe("astro config wiring", () => {
 	});
 
 	describe("astro:config:setup drops the shell's path variables for a build only", () => {
-		const saved = { _: process.env._, EDITOR: process.env.EDITOR };
+		// The hook deletes every key in the list, so every one is put back.
+		const saved = Object.fromEntries(SHELL_PATH_ENV_KEYS.map((key) => [key, process.env[key]]));
 		afterEach(() => {
 			for (const [key, value] of Object.entries(saved)) {
 				if (value === undefined) delete process.env[key];
