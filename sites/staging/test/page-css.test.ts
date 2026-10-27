@@ -255,6 +255,20 @@ describe("the shared button shape is shared (§2)", () => {
 		["themes/tempered/commerce.css", "[data-theme-id] .checkout-back a", "Back to cart"],
 		["themes/tempered/commerce.css", "[data-theme-id] .pay-back a", "View your order"],
 		["pages/404.astro", ".home", "Go to the home page"],
+		// #556: the same shape, on the pages #147 did not name.
+		["themes/tempered/commerce.css", "[data-theme-id] .account-order-back a", "← Your orders"],
+		["pages/checkout/resume/email.astro", ".resume-back a", "Browse products / Back to your order"],
+		[
+			"themes/tempered/commerce.css",
+			"[data-theme-id] .account-verify-back a",
+			"Request a new sign-in link",
+		],
+		[
+			"themes/tempered/commerce.css",
+			"[data-theme-id] .account-login-signed-in-actions a",
+			"View your orders / Use a different email",
+		],
+		["themes/tempered/commerce.css", "[data-theme-id] .order-back a", "Browse products"],
 	])("%s: `%s` (%s) keeps a 24px target (§11, #147)", (name, selector) => {
 		// A paragraph whose only content is a link is a standalone target, and
 		// the inline exception to WCAG 2.5.8 does not reach it: at 13px these
