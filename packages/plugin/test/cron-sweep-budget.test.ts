@@ -62,6 +62,7 @@ import {
 	MAINTENANCE_LEG_INTERVAL_MS,
 	MAINTENANCE_LEGS,
 	resetSweepBootstrapForTest,
+	withSweepBootstrap,
 	runCommerceSweeps,
 	SWEEP_EMAIL_SEND_TIMEOUT_MS,
 	SWEEP_HOOK_TIMEOUT_MS,
@@ -724,6 +725,118 @@ describe("the hook's own bookkeeping", () => {
 		} finally {
 			vi.useRealTimers();
 		}
+	});
+
+	describe("the first-request bootstrap is bounded too", () => {
+		const PENDING = Promise.resolve("still-pending" as const);
+		const registered = [
+			{ name: SWEEP_TASK_NAME, schedule: SWEEP_SCHEDULE, nextRunAt: "", lastRunAt: null },
+		];
+		// The FIRST list() stalls until the test settles it; later ones answer at once.
+		function stallingFirstList() {
+			const first: {
+				resolve: (tasks: typeof registered | never[]) => void;
+				reject: (err: Error) => void;
+			} = { resolve: () => {}, reject: () => {} };
+			const calls = { list: 0 };
+			const ctx = {
+				...context(storage),
+				cron: {
+					async schedule() {},
+					async cancel() {},
+					list: () => {
+						calls.list++;
+						if (calls.list > 1) return Promise.resolve(registered);
+						return new Promise<typeof registered | never[]>((resolve, reject) => {
+							first.resolve = resolve;
+							first.reject = reject;
+						});
+					},
+				},
+			} as PluginContext;
+			return { ctx, first, calls };
+		}
+
+		test("a stalled cron table does not hang the wrapped handler", async () => {
+			const { ctx, calls } = stallingFirstList();
+			const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+			vi.useFakeTimers();
+			try {
+				const wrapped = withSweepBootstrap(() => "handled");
+				const pending = wrapped({}, ctx);
+				await vi.advanceTimersByTimeAsync(ACTIVATE_SCHEDULE_BUDGET_MS);
+				expect(await Promise.race([pending, PENDING])).toBe("handled");
+				expect(logged).toHaveBeenCalled();
+				expect(vi.getTimerCount()).toBe(0);
+				expect(calls.list).toBe(1);
+			} finally {
+				vi.useRealTimers();
+				logged.mockRestore();
+			}
+		});
+
+		test("a timeout keeps the latch: a still-stalled attempt is not restarted by the next request", async () => {
+			const { ctx, calls } = stallingFirstList();
+			const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+			vi.useFakeTimers();
+			try {
+				const first = bootstrapSweepTask(ctx);
+				await vi.advanceTimersByTimeAsync(ACTIVATE_SCHEDULE_BUDGET_MS);
+				expect(await Promise.race([first, PENDING])).toBeUndefined();
+				// At most one attempt in flight: later requests neither wait nor re-list.
+				expect(await Promise.race([bootstrapSweepTask(ctx), PENDING])).toBeUndefined();
+				expect(calls.list).toBe(1);
+			} finally {
+				vi.useRealTimers();
+				logged.mockRestore();
+			}
+		});
+
+		test("a late success after the timeout keeps the latch: the next request does not list again", async () => {
+			const { ctx, first, calls } = stallingFirstList();
+			const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+			vi.useFakeTimers();
+			try {
+				const timedOut = bootstrapSweepTask(ctx);
+				await vi.advanceTimersByTimeAsync(ACTIVATE_SCHEDULE_BUDGET_MS);
+				expect(await Promise.race([timedOut, PENDING])).toBeUndefined();
+				first.resolve(registered); // the abandoned attempt finishes late
+				await vi.advanceTimersByTimeAsync(0);
+				const listed = calls.list;
+				expect(await Promise.race([bootstrapSweepTask(ctx), PENDING])).toBeUndefined();
+				expect(calls.list).toBe(listed);
+			} finally {
+				vi.useRealTimers();
+				logged.mockRestore();
+			}
+		});
+
+		test("a late rejection after the timeout clears the latch: the next request retries, with no unhandled rejection", async () => {
+			const { ctx, first, calls } = stallingFirstList();
+			const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+			const unhandled: unknown[] = [];
+			const onUnhandled = (reason: unknown) => unhandled.push(reason);
+			process.on("unhandledRejection", onUnhandled);
+			vi.useFakeTimers();
+			try {
+				const timedOut = bootstrapSweepTask(ctx);
+				await vi.advanceTimersByTimeAsync(ACTIVATE_SCHEDULE_BUDGET_MS);
+				expect(await Promise.race([timedOut, PENDING])).toBeUndefined();
+				first.reject(new Error("D1_ERROR: late"));
+				await vi.advanceTimersByTimeAsync(0);
+				expect(calls.list).toBe(1);
+				const retry = bootstrapSweepTask(ctx);
+				await vi.advanceTimersByTimeAsync(0);
+				expect(await Promise.race([retry, PENDING])).toBeUndefined();
+				expect(calls.list).toBeGreaterThanOrEqual(2); // retried
+				await vi.advanceTimersByTimeAsync(0);
+				expect(unhandled).toEqual([]);
+			} finally {
+				process.off("unhandledRejection", onUnhandled);
+				vi.useRealTimers();
+				logged.mockRestore();
+			}
+		});
 	});
 
 	test("a failed activate leaves the bootstrap free to register the task", async () => {
