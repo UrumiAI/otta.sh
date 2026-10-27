@@ -52,6 +52,6 @@
 		"vitest": "catalog:"
 	},
 	"peerDependencies": {
-		"emdash": "^1.0.1"
+		"emdash": "^1.3.1"
 	}
 }

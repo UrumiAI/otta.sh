@@ -983,8 +983,21 @@ triggers on `_emdash_redirects`). No Otta table or plugin-storage row is touched
 D1 backup first. One behaviour change on the Worker: since 1.3.1, a site in the default `auto`
 migration mode whose migrations a request could not finish answers **503** until they are
 applied, instead of serving pages without content. If a deploy answers 503, read the Worker log
-and apply the pending migration with `pnpm emdash migrate` (a held lock: `--take-over-lock <id>`,
-see EmDash's core-migrations guide).
+and apply the pending migration from the CLI, after step 4's build (which writes
+`.emdash/migrations.json`) and with a `CLOUDFLARE_API_TOKEN` that can write the D1:
+
+```bash
+cd sites/staging
+pnpm exec emdash migrate --status    # what is pending, and any held lock's id
+pnpm exec emdash migrate             # apply; --take-over-lock <id> if a lock is stuck
+```
+
+A non-interactive run (CI) also needs `--expected-target-fingerprint` with the fingerprint
+`--status` prints. A site still on **0.38** that jumps straight to 1.3.1 should run this
+**before** deploying: 1.3.1's Worker no longer starts a content-sized migration
+(`079_datetime_normalization`, which rewrites every entry and revision) on a request, so it
+would answer 503 until it is applied. See EmDash's
+[core-migrations guide](https://docs.emdashcms.com/deployment/core-migrations/).
 
 ## 6. Troubleshooting
 
