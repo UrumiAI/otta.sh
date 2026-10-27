@@ -1023,8 +1023,11 @@ destinations). Rotation alone keeps them. Workers Logs age out after 3–7 days.
 cannot be revoked, so removing it from the logs is all there is to do. For example:
 
 ```sh
-# plain logs, in place
-sed -i -E 's/payment_intent_client_secret=[A-Za-z0-9_]*/payment_intent_client_secret=REDACTED/g' access.log access.log.1
+# the live log: rewrite it in place, keeping the same file, so the server keeps writing to it
+# (sed -i would swap in a new file and the server would go on writing to the deleted one)
+sed -E 's/payment_intent_client_secret=[A-Za-z0-9_]*/payment_intent_client_secret=REDACTED/g' access.log > access.log.tmp && cat access.log.tmp > access.log && rm access.log.tmp
+# rotated plain files (names vary: access.log.1 for nginx, access-<timestamp>.log for Caddy)
+sed -i -E 's/payment_intent_client_secret=[A-Za-z0-9_]*/payment_intent_client_secret=REDACTED/g' access.log.1
 # .gz archives: sed -i would match nothing in compressed data, so rewrite each one
 zcat access.log.2.gz | sed -E 's/payment_intent_client_secret=[A-Za-z0-9_]*/payment_intent_client_secret=REDACTED/g' | gzip > access.log.2.gz.new && mv access.log.2.gz.new access.log.2.gz
 ```
