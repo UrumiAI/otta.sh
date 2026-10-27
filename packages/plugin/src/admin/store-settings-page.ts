@@ -13,10 +13,11 @@ import { noticeBanner } from "./scaffold/banner.js";
  * used to carry three.
  *
  * Nothing about the three screens changes: each panel is the UNCHANGED output of
- * that screen's own handler. EmDash 1.0.1 gave a plugin no way to place a page
- * anywhere but the Plugins group (no `group`, no Settings-hub slot); 1.3 adds an
- * optional page `group` (a sidebar folder) but still no Settings-hub slot, so
- * merging pages stays the simplest lever on the sidebar.
+ * that screen's own handler (General alone drops its page heading; see below).
+ * EmDash 1.0.1 gave a plugin no way to place a page anywhere but the Plugins
+ * group (no `group`, no Settings-hub slot); 1.3 adds an optional page `group`
+ * (a sidebar folder) but still no Settings-hub slot, so merging pages stays the
+ * simplest lever on the sidebar.
  *
  * WHY EVERY RESPONSE REBUILDS EVERY PANEL. EmDash's page renderer replaces the
  * whole block tree with each response (`setBlocks(data.blocks)`), and a `tab`
@@ -48,7 +49,8 @@ import { noticeBanner } from "./scaffold/banner.js";
  *
  * WHEN AN ACTION RUNS, the other panels re-render from cache: General's Stripe
  * country read is peek-only, so a Tax or Shipping click never waits on Stripe.
- * The panels also drop their own page heading (this page supplies it).
+ * Only General drops its own page heading (this page supplies one) and peeks;
+ * Tax and Shipping render as they always did.
  */
 export const STORE_SETTINGS_PAGE: AdminPageConfig = {
 	path: "/store-settings",
