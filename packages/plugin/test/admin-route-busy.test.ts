@@ -108,4 +108,18 @@ describe("Store settings against a busy store", () => {
 		expect(panel(page, "Tax")).toEqual(await alone(TAX_PAGE.path));
 		expect(panel(page, "Shipping")).toEqual(await alone(SHIPPING_PAGE.path));
 	});
+
+	test("a General save that succeeds while the other panels are busy keeps its toast", async () => {
+		const outcome = (await invoke(
+			{
+				type: "form_submit",
+				action_id: "save-display",
+				page: STORE_SETTINGS_PAGE.path,
+				values: { storeDisplayName: "Lune & Ochre" },
+			},
+			loaded(),
+		)) as { toast?: unknown; blocks: LooseBlock[] };
+		expect(outcome.toast).toMatchObject({ message: "Display name saved", type: "success" });
+		expect(JSON.stringify(outcome.blocks)).not.toContain("Couldn't load");
+	});
 });
