@@ -34,8 +34,15 @@
 			"new_sqlite_classes": ["EmDashPreviewDB"],
 		},
 	],
+	// Console logs stay on. Per-request invocation logs are off: they record the
+	// request URL with its query, and the order return URL carries Stripe's
+	// payment_intent_client_secret (#551), which would be stored for 3-7 days.
 	"observability": {
 		"enabled": true,
+		"logs": {
+			"enabled": true,
+			"invocation_logs": false,
+		},
 	},
 	"routes": [
 		{

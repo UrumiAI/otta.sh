@@ -80,8 +80,15 @@
 			"bucket_name": "your-downloads-bucket",
 		},
 	],
+	// Console logs stay on. Per-request invocation logs are off: they record the
+	// request URL with its query, and the order return URL carries Stripe's
+	// payment_intent_client_secret (#551), which would be stored for 3-7 days.
 	"observability": {
 		"enabled": true,
+		"logs": {
+			"enabled": true,
+			"invocation_logs": false,
+		},
 	},
 	// Drives scheduled publishing, plugin cron, and maintenance (src/worker.ts).
 	// Every-minute matches EmDash's minute-granular scheduled publishing AND the
