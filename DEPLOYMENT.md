@@ -1017,6 +1017,20 @@ Otta's own code does not log the URL on that route.
   format cannot be changed. Restrict access to it and include it in the purge below. Also check
   any upstream or CDN logs.
 
+**Purge, do not just rotate.** Delete or scrub access logs written before the redaction was in
+place, including rotated `.1` and `.gz` archives and copies shipped elsewhere (a SIEM, Logpush
+destinations). Rotation alone keeps them. Workers Logs age out after 3–7 days. The secret
+cannot be revoked, so removing it from the logs is all there is to do. For example:
+
+```sh
+# plain logs, in place
+sed -i -E 's/payment_intent_client_secret=[A-Za-z0-9_]*/payment_intent_client_secret=REDACTED/g' access.log access.log.1
+# .gz archives: sed -i would match nothing in compressed data, so rewrite each one
+zcat access.log.2.gz | sed -E 's/payment_intent_client_secret=[A-Za-z0-9_]*/payment_intent_client_secret=REDACTED/g' | gzip > access.log.2.gz.new && mv access.log.2.gz.new access.log.2.gz
+```
+
+Or simply delete archives written before the redaction.
+
 **Upgrading and rolling back.** Deploy a new version **all at once** (`wrangler deploy`),
 not as a gradual rollout that keeps old and new Workers serving side by side. A release that
 changes a stored document's shape migrates it forward on first write, and an old Worker still
