@@ -182,9 +182,28 @@ const MESSAGES: Record<string, string> = {
 	LOGIN_LINK_INVALID: "That sign-in link isn't valid — request a new one below.",
 };
 
+/**
+ * The two refusals that name a hold, worded for a store that hides the hold
+ * timer (`showHoldTimer` off, #547): it never told the shopper their stock was
+ * held, so "your hold expired" would be the first they heard of it.
+ */
+const NO_TIMER_MESSAGES: Record<string, string> = {
+	HOLD_EXPIRED: "That item is no longer reserved for you — please try again.",
+	RESERVATION_LOST:
+		"One or more items are no longer reserved for you, so this checkout was closed — start a new cart to order again.",
+};
+
 /** Never returns the raw token, `undefined`, or an empty string — an
- *  unrecognized token (including `""`) falls back to the generic copy. */
-export function cartErrorMessage(token: string): string {
+ *  unrecognized token (including `""`) falls back to the generic copy.
+ *
+ *  `holdTimer: false` words the hold refusals without the word "hold"; the
+ *  default is the timer-on wording, so a page that cannot cheaply know the
+ *  store's setting says what it always said. */
+export function cartErrorMessage(token: string, opts: { holdTimer?: boolean } = {}): string {
+	if (opts.holdTimer === false) {
+		const variant = NO_TIMER_MESSAGES[token];
+		if (variant !== undefined) return variant;
+	}
 	return MESSAGES[token] ?? GENERIC_FALLBACK;
 }
 

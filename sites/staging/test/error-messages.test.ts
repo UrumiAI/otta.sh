@@ -149,7 +149,9 @@ describe("cartErrorMessage", () => {
 	});
 
 	test("the coupon and shipping copy is distinct per reason — a buyer can tell them apart", () => {
-		const coupon = SELECTION_TOKENS.filter((t) => t.startsWith("COUPON_")).map(cartErrorMessage);
+		const coupon = SELECTION_TOKENS.filter((t) => t.startsWith("COUPON_")).map((token) =>
+			cartErrorMessage(token),
+		);
 		expect(new Set(coupon).size).toBe(coupon.length);
 	});
 
@@ -181,7 +183,9 @@ describe("cartErrorMessage", () => {
 	});
 
 	test("the shipping copy is distinct per reason too", () => {
-		const shipping = SELECTION_TOKENS.filter((t) => !t.startsWith("COUPON_")).map(cartErrorMessage);
+		const shipping = SELECTION_TOKENS.filter((t) => !t.startsWith("COUPON_")).map((token) =>
+			cartErrorMessage(token),
+		);
 		expect(new Set(shipping).size).toBe(shipping.length);
 	});
 });

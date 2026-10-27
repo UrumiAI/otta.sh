@@ -82,6 +82,11 @@ export const HOLD_LABELS: Record<HoldState, string> = {
 export const HOLD_RELEASED_NEXT_STEP =
 	"Stock went back on sale. This item leaves your cart when the page reloads — add it again to hold it.";
 
+/** The same line for a store that hides the hold timer: it never showed the
+ *  shopper a hold, so it does not talk about holding either (#547). */
+export const HOLD_RELEASED_NEXT_STEP_NO_TIMER =
+	"Stock went back on sale. This item leaves your cart when the page reloads — add it again.";
+
 export interface HoldView {
 	state: HoldState;
 	/** Whole seconds left, floored at zero. */
