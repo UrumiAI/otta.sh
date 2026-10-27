@@ -174,10 +174,10 @@ export function resetSweepBootstrapForTest(): void {
 
 /** How long `plugin:activate`, and the first-request bootstrap, may spend
  *  registering the task before giving up (activate reports `scheduled: false`; the
- *  bootstrap lets the request proceed). The bootstrap's share comes out of a
- *  content after-hook's 5 s host timeout (after-hooks run in waitUntil, so a save
- *  is not blocked). Well under the host's 5000 ms default hook
- *  timeout: a timeout is a FAILED hook to the host, with the same consequence as a
+ *  bootstrap lets the request proceed). Well under the host's 5000 ms default hook
+ *  timeout, and inside a content after-hook it leaves at least 2 s of that timeout
+ *  for the hook's own work; after-hooks run in waitUntil, so a save is not blocked.
+ *  A timeout is a FAILED hook to the host, with the same consequence as a
  *  throw (see `createActivateHandler`). */
 export const ACTIVATE_SCHEDULE_BUDGET_MS = 3_000;
 
