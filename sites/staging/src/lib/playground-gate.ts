@@ -5,8 +5,8 @@
  * EmDash's own playground middleware has already created the visitor's
  * database, applied the CMS seed and set `locals.user` by the time we run.
  * What it cannot do is price the products: the seed fires no Otta hooks.
- * {@link prepareDemoCommerce} does. The visitor stays on the admin EmDash
- * opened; the shop is linked from the banner, not forced.
+ * {@link prepareDemoCommerce} does, then the boot request is sent to the
+ * shop instead of being left in the CMS admin.
  */
 import {
 	CONSOLE_ACT_INTERACTION,

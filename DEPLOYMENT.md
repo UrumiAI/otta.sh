@@ -988,10 +988,19 @@ A second deploy of `sites/staging`, not a second copy of the store. It is
 EmDash's playground mode: one Durable Object database per visitor, the Otta
 plugin registered trusted in-process (the same registration as §2, still no
 Worker Loader), and the sample products priced on first open. Opening
-`/playground` lands on `/_emdash/admin`. The shop stays at `/products`. The
-sample photographs are static files under `public/playground-products/`
-(Otta-branded tee, mug, and sticker shots consistent with the marketing
-page; see `CREDITS.txt` there), not the Cloudflare Images binding. The marketing site's "Try in Playground" link is
+`/playground` shows EmDash's loading page, which finishes at `/_emdash/admin`.
+Otta then sends that boot to the shop at `/products`. A later visit to
+`/_emdash/admin` stays in the admin; the note on each page links both.
+The sample product photographs are static files under
+`public/playground-products/` (Otta-branded tee, mug, and sticker shots
+consistent with the marketing page; see `CREDITS.txt` there), served as
+`<img src="/playground-products/…">`, not the Cloudflare Images binding.
+EmDash's media library is the other set: seven demo rows whose bytes are
+the static files under `public/playground-media/`. The library asks for
+`/_emdash/api/media/file/playground-v1-<filename>`, and the playground
+storage adapter loads that from `/playground-media/playground-v1-<filename>`
+on the Worker's asset binding. See `CREDITS.txt` in that directory.
+The marketing site's "Try in Playground" link is
 `https://try.otta.sh/playground`.
 
 ```bash
