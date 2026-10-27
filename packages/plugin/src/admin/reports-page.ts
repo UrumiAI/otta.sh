@@ -136,8 +136,8 @@ function absolutePeriod(range: Pick<ReportPeriod, "fromDay" | "toDay">): string 
 }
 
 /**
- * The Reports page. Eight reads on the surface `makeAdminClients` hands over —
- * revenue, orders-by-status, top products (by revenue and by units), low stock
+ * The Reports page. Seven reads on the surface `makeAdminClients` hands over —
+ * revenue, orders-by-status, top products (one read, ranked on the page), low stock
  * and settings for the period, plus revenue and orders-by-status for the
  * PREVIOUS period. All but top
  * products and low stock read the `reporting_daily` rollup (day documents, never
@@ -544,7 +544,9 @@ function topSection(data: ReportsData, singleCurrency: Currency | undefined): Bl
 	// ranking, taken from the same read (a second quantity scan is the cost this
 	// avoids), so "ranked by units" is true of both the selection and the order.
 	const top = (
-		singleCurrency !== undefined ? data.top : data.top.toSorted((a, b) => b.qtySold - a.qtySold)
+		singleCurrency !== undefined
+			? data.top
+			: data.top.toSorted((a, b) => b.qtySold - a.qtySold || a.productId.localeCompare(b.productId))
 	).slice(0, TOP_PRODUCTS_SHOWN);
 	const suppressed = singleCurrency === undefined && top.length > 0;
 	return section({
