@@ -762,6 +762,13 @@ const model: PayModel = {
 	.mount[hidden] {
 		display: none;
 	}
+	/* With scripting off nothing ever mounts: the box would be drawn empty
+	   above the <noscript> notice (#556). */
+	@media (scripting: none) {
+		.mount {
+			display: none;
+		}
+	}
 
 	/* Written by the script (`textContent`), so it stays a bare <p> and takes
 	   the Notice treatment in CSS instead: dashed bronze rules, no fill (§4).

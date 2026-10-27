@@ -841,7 +841,12 @@
 	margin: 2rem 0 0;
 	font-size: 0.8125rem;
 }
+/* A standalone link: `.cart-link-btn`'s pair, so the target is 24px
+   (WCAG 2.5.8, #147) and the label stays on its line. */
 [data-theme-id] .order-back a {
+	display: inline-flex;
+	align-items: center;
+	min-height: 1.5rem;
 	color: var(--u-mute);
 }
 [data-theme-id] .order-back a:hover {
@@ -927,7 +932,12 @@
 	gap: 0.75rem 1.25rem;
 }
 
+/* A standalone link: `.cart-link-btn`'s pair, so the target is 24px
+   (WCAG 2.5.8, #147) and the label stays on its line. */
 [data-theme-id] .account-login-signed-in-actions a {
+	display: inline-flex;
+	align-items: center;
+	min-height: 1.5rem;
 	color: var(--u-ink);
 	text-decoration: underline;
 	text-decoration-color: var(--u-edge);
@@ -979,7 +989,12 @@
 	margin: 0;
 	font-size: 0.8125rem;
 }
+/* A standalone link: `.cart-link-btn`'s pair, so the target is 24px
+   (WCAG 2.5.8, #147) and the label stays on its line. */
 [data-theme-id] .account-verify-back a {
+	display: inline-flex;
+	align-items: center;
+	min-height: 1.5rem;
 	color: var(--u-mute);
 }
 [data-theme-id] .account-verify-back a:hover {
@@ -1114,7 +1129,12 @@
 	margin: 0 0 1.5rem;
 	font-size: 0.8125rem;
 }
+/* A standalone link: `.cart-link-btn`'s pair, so the target is 24px
+   (WCAG 2.5.8, #147) and the label stays on its line. */
 [data-theme-id] .account-order-back a {
+	display: inline-flex;
+	align-items: center;
+	min-height: 1.5rem;
 	color: var(--u-mute);
 }
 [data-theme-id] .account-order-back a:hover {

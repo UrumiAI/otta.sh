@@ -94,6 +94,14 @@ test("the page's inline Stripe script is found", () => {
 	expect(PAY).toMatch(/\.mount\[hidden\]\s*\{\s*display:\s*none;\s*\}/);
 });
 
+test("with scripting off, the empty mount box is not drawn above the notice (#556)", () => {
+	// No script, no Stripe: `.mount` would stay an empty bordered, filled box
+	// over the `<noscript>` notice. The browser says scripting is off; the box goes.
+	expect(PAY).toMatch(
+		/@media \(scripting: none\)\s*\{\s*\.mount\s*\{\s*display:\s*none;\s*\}\s*\}/,
+	);
+});
+
 describe("a give-up hides the bordered mount box (#146)", () => {
 	test("Stripe.js did not load", () => {
 		render();
