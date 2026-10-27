@@ -960,6 +960,21 @@ reads the PaymentIntent back, including the buyer's name and shipping address. R
 string on `/orders/*` (at least `payment_intent_client_secret`) wherever you log requests.
 Otta's own code does not log the URL on that route.
 
+- **Cloudflare.** Workers' own `console` logs carry no URL unless code logs it, and the site
+  does not. **Workers Logs invocation logs do record the request method and URL, query
+  included,** and keep them for 3 days (Free) or 7 (Paid). The shipped `wrangler.jsonc` and
+  `wrangler.playground.jsonc` therefore set `observability.logs.invocation_logs` to `false`
+  (console logs stay on) because of this secret. If you turn invocation logs back on, the
+  secret sits in Workers Logs for 3–7 days. The same applies to Workers Observability traces
+  (`observability.traces`, off by default) if you enable them, because spans may record the
+  URL. `wrangler tail` shows the URL live and stores nothing; a Tail Worker receives
+  `event.request.url`, so don't let one persist the query. For Logpush, in the job's field
+  selection: on the `http_requests` dataset leave out `ClientRequestURI` and keep
+  `ClientRequestPath` (there is no `ClientRequestQuery` field in that dataset); on
+  `firewall_events`, drop `ClientRequestQuery` (and `ClientRefererQuery`); Workers Trace Events
+  carry the URL in their `Event` field. Field names and options change, so confirm them in
+  Cloudflare's [Logpush docs](https://developers.cloudflare.com/logs/logpush/) and
+  [Workers Logs docs](https://developers.cloudflare.com/workers/observability/logs/workers-logs/).
 **Upgrading and rolling back.** Deploy a new version **all at once** (`wrangler deploy`),
 not as a gradual rollout that keeps old and new Workers serving side by side. A release that
 changes a stored document's shape migrates it forward on first write, and an old Worker still
