@@ -28,6 +28,8 @@ const shared = {
  * `//# sourceMappingURL` comment into the `.d.mts` whenever the build that emits
  * it has `sourcemap` on, so the declarations come from their own build with it
  * off. `scripts/pack-consume-types.mjs` fails on any dangling map reference.
+ * The first build's `clean` empties dist once for both (tsdown cleans
+ * before either builds), which is why the second may say `clean: false`.
  */
 export default defineConfig([
 	{

@@ -19,9 +19,11 @@
  * ALSO GUARDS SOURCE MAPS. Every `//# sourceMappingURL=<x>` in a packed file must
  * name a file that is in the same tarball (a dangling one makes Vite log "Failed
  * to load source map" for every `ssr.noExternal` consumer), and no declaration
- * map (`*.d.mts.map`, which points at the unshipped `src/`) may ship.
+ * map (`*.d.mts.map`, which points at the unshipped `src/`) may ship. A map that
+ * does ship must be self-contained: one non-empty `sourcesContent` entry per
+ * source, since the `src/` its `sources` name is not in the tarball.
  *
- * WHY IT IS CHEAP. No registry access: the consumer depends on the five tarballs
+ * WHY IT IS CHEAP. No registry access: the consumer depends on the tarballs
  * only (their dependencies are each other), peers are not auto-installed (the
  * declarations under test name no `emdash` import), and `tsc` is the
  * workspace's own. Run it after `pnpm -r build`; it reads `dist/`.
@@ -115,7 +117,19 @@ function sourceMapProblems(tarball, scratch) {
 		if (file.endsWith(".d.mts.map")) {
 			problems.push(`${file}: declaration maps must not ship (they point at the unshipped src/)`);
 		}
-		if (!/\.(m?js|cjs|d\.[mc]?ts|css)$/.test(file)) continue;
+		if (file.endsWith(".map")) {
+			const map = JSON.parse(readFileSync(path.join(root, file), "utf8"));
+			const sources = Array.isArray(map.sources) ? map.sources : [];
+			const contents = Array.isArray(map.sourcesContent) ? map.sourcesContent : [];
+			if (
+				contents.length !== sources.length ||
+				contents.some((c) => typeof c !== "string" || c === "")
+			) {
+				problems.push(`${file}: map is not self-contained (sourcesContent missing or incomplete)`);
+			}
+			continue;
+		}
+		if (!/\.(m?js|cjs|d\.[mc]?ts)$/.test(file)) continue;
 		const text = readFileSync(path.join(root, file), "utf8");
 		for (const match of text.matchAll(/^\s*\/\/[#@]\s*sourceMappingURL=(\S+)\s*$/gm)) {
 			const target = match[1];
