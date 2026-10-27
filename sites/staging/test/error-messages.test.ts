@@ -5,6 +5,7 @@
  * what a shopper actually reads, and it must never echo a machine token
  * verbatim — including for a token this file doesn't yet know about.
  */
+import { readFileSync } from "node:fs";
 import { describe, expect, test } from "vitest";
 import { cartErrorMessage } from "../src/lib/error-messages.js";
 
@@ -218,5 +219,19 @@ describe("the hold refusals, worded for a store that hides the hold timer (#547)
 			cartErrorMessage("OUT_OF_STOCK"),
 		);
 		expect(cartErrorMessage("NOPE", { holdTimer: false })).toBe(cartErrorMessage("NOPE"));
+	});
+});
+
+describe("the pages that show a hold refusal pass the store's timer setting (#547)", () => {
+	test.each([
+		[
+			"pages/checkout/index.astro",
+			"cartErrorMessage(shownErrorToken, { holdTimer: summary.showHoldTimer })",
+		],
+		["pages/cart/index.astro", "cartErrorMessage(error, { holdTimer: showHoldTimer })"],
+		["pages/products/[slug].astro", "cartErrorMessage(error, { holdTimer: showHoldTimer })"],
+	])("%s words it from the settings its own read returned", (page, call) => {
+		const source = readFileSync(new URL(`../src/${page}`, import.meta.url), "utf8");
+		expect(source).toContain(call);
 	});
 });
