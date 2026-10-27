@@ -146,7 +146,7 @@ describe("Mark refunded is offered only where no money is left to return through
 	test("an x402 order whose money the ledger says came through x402 is refused too: no record-only shortcut is left", () => {
 		const x402 = { ...stripePaid, paymentMethod: "x402" as unknown as PaymentMethod };
 		const viaX402 = {
-			payments: [{ amount: 1000, status: "succeeded", gateway: "x402" }],
+			payments: [{ amount: 1000, status: "succeeded" }],
 			refunds: [],
 		};
 		expect(markRefundedRefusal(x402, viaX402)).toBe("REFUND_THROUGH_MONEY");

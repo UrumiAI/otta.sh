@@ -161,6 +161,9 @@ export type ProductLookup =
 			readonly notFound: boolean;
 	  }
 	| { readonly kind: "busy" }
+	/** The product's stored file record has no string key. A retry cannot fix
+	 *  it, unlike `failed`; the sweep reads it as `failed` all the same. */
+	| { readonly kind: "unreadable" }
 	| { readonly kind: "failed" };
 
 /** The in-process dispatcher for an authenticated plugin route —
@@ -244,11 +247,27 @@ export async function lookupProduct(
 	// number) is a failed read, never "no file".
 	if (asset !== null && typeof asset !== "object") return { kind: "failed" };
 	// And a descriptor must carry a string key: one whose key is `null`, absent
-	// or anything else (a version-skewed answer) is a failed read, never "no file".
+	// or anything else (a version-skewed answer) is an unreadable record, never
+	// "no file".
 	let assetKey: string | null = null;
 	if (asset !== null) {
-		const key = (asset as Record<string, unknown>)["key"];
-		if (typeof key !== "string") return { kind: "failed" };
+		const descriptor = asset as Record<string, unknown>;
+		const key = descriptor["key"];
+		if (typeof key !== "string") {
+			// Shape only, never values: the descriptor holds a filename. Neutral
+			// prefix (the orphan sweep reads products here too), JSON-quoted so a
+			// malformed record cannot add lines to the log, and capped in count and
+			// length.
+			console.error(
+				`[site-staging] download record unreadable: product ${JSON.stringify(row["productId"])} has no string key (key is ${key === null ? "null" : typeof key}; fields: ${JSON.stringify(
+					Object.keys(descriptor)
+						.toSorted()
+						.slice(0, 10)
+						.map((field) => field.slice(0, 64)),
+				)})`,
+			);
+			return { kind: "unreadable" };
+		}
 		assetKey = key;
 	}
 	return {
@@ -390,6 +409,14 @@ export async function handleDownloadUpload(
 				"BUSY",
 				"The store is busy. Wait a few seconds and upload the file again.",
 				{ "Retry-After": String(BUSY_RETRY_AFTER_SECONDS) },
+			);
+		case "unreadable":
+			// Permanent: 409 (the record's state blocks the upload), not a 5xx
+			// the console would invite the operator to retry.
+			return refuse(
+				409,
+				"DOWNLOAD_RECORD_UNREADABLE",
+				"This product's stored file record is unreadable, so a new file can't be attached. Uploading again won't help; ask your developer to look at it.",
 			);
 		case "failed":
 			return refuse(

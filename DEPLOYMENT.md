@@ -1026,6 +1026,7 @@ either way. See EmDash's
 | Sweeps never run | Nothing has bootstrapped the schedule, or the runtime wired no cron executor — check that the site's Cron Trigger is present and load `/products` or a product page once (§5) |
 | An outbound call to Stripe never leaves | The host is not in the build-time `allowedHosts` allowlist (§4) — rebuild and redeploy |
 | Order or sign-in emails never arrive, the outbox keeps them `pending` | No EmDash email provider is selected (Settings → "Payments & email" says so) — install and select one (§3 Email) |
+| Uploading a product's download file answers `DOWNLOAD_RECORD_UNREADABLE` ("This product's stored file record is unreadable…"), and the log shows `[site-staging] download record unreadable: product "<id>"` | That product's stored download record has no string `key` (a hand-edited or corrupted document; Otta's own writes can't produce one). Buyers of it are refused at download time, and the hourly download-orphan sweep stops at this product each pass. There is deliberately no detach button. Fix the record in plugin storage: plugin `otta`, collection `product_commerce`, the document for that product id. Set `downloadAsset` to `null`, then upload the file again from the product's editor. Or, if the file is still in the DOWNLOADS bucket under `dl/<productId>/`, set a descriptor whose `key` is that object's key. Take a D1 backup first |
 
 ## 7. Playground (`try.otta.sh`)
 
