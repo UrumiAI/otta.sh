@@ -14,7 +14,8 @@
 	},
 	"files": [
 		"dist",
-		"!dist/tsc"
+		"!dist/tsc",
+		"!dist/**/*.d.mts.map"
 	],
 	"type": "module",
 	"exports": {

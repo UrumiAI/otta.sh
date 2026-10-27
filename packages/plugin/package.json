@@ -15,6 +15,7 @@
 	"files": [
 		"dist",
 		"!dist/tsc",
+		"!dist/**/*.d.mts.map",
 		"THIRD_PARTY_NOTICES"
 	],
 	"type": "module",
