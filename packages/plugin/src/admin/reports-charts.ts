@@ -204,7 +204,8 @@ const CATEGORY_X = {
  */
 export function salesChart(args: {
 	current: TimeSeries;
-	previous: TimeSeries;
+	/** Absent: the previous period is not drawn at all. */
+	previous: TimeSeries | undefined;
 	currency: Currency;
 }): ChartBlock {
 	const { current, previous, currency } = args;
@@ -212,7 +213,7 @@ export function salesChart(args: {
 	const top = Math.max(
 		0,
 		...current.points.map((p) => p.revenueCents),
-		...previous.points.map((p) => p.revenueCents),
+		...(previous?.points ?? []).map((p) => p.revenueCents),
 	);
 	const axis = moneyAxis(top, currency);
 	const single = current.points.length <= 2;
@@ -282,18 +283,22 @@ export function salesChart(args: {
 						},
 						data: current.points.map((p, i) => [i, p.revenueCents, money(p.revenueCents)]),
 					},
-					{
-						...line,
-						name: "Previous period",
-						z: 2,
-						color: MUTED,
-						lineStyle: { width: 2, type: "dashed" },
-						data: previous.points.map((p, i) => [
-							i,
-							p.revenueCents,
-							`${money(p.revenueCents)} · ${previousLabel(p.startDay, previous.granularity)}`,
-						]),
-					},
+					...(previous === undefined
+						? []
+						: [
+								{
+									...line,
+									name: "Previous period",
+									z: 2,
+									color: MUTED,
+									lineStyle: { width: 2, type: "dashed" },
+									data: previous.points.map((p, i) => [
+										i,
+										p.revenueCents,
+										`${money(p.revenueCents)} · ${previousLabel(p.startDay, previous.granularity)}`,
+									]),
+								},
+							]),
 				],
 			},
 		},
