@@ -238,6 +238,10 @@ describe("Store settings tabs and the Stripe country check", () => {
 				value: taxButton!.value,
 			});
 			expect(formFor(panel(taxed.blocks, "General"), "save-display")).toBeDefined();
+			// Nothing cached, nothing asked: General says so, and how to get it checked.
+			expect(JSON.stringify(panel(taxed.blocks, "General"))).toContain(
+				"Stripe account country: not checked yet. Reloading this page or saving the key again checks it.",
+			);
 			expect(h.egressAttempts()).toBe(1);
 
 			await h.ctx.kv.delete(STRIPE_ACCOUNT_COUNTRY_KEY);

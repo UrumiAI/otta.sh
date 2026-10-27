@@ -1853,7 +1853,7 @@ function stripeAccountLine(found: StripeAccountCountryStatus): string | null {
 		case "unavailable":
 			return "Stripe account country: not checked yet — Stripe couldn't be reached. Opening this page again checks in a few minutes; saving the key again checks now.";
 		case "not_checked":
-			return "Stripe account country: not checked yet. Saving the key again checks now.";
+			return "Stripe account country: not checked yet. Reloading this page or saving the key again checks it.";
 	}
 }
 
