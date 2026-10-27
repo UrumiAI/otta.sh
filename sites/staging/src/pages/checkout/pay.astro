@@ -758,6 +758,10 @@ const model: PayModel = {
 		padding: 1.125rem;
 		background: var(--u-surface);
 	}
+	/* A give-up hides the box (#146); pinned so a later `display` here can't undo it. */
+	.mount[hidden] {
+		display: none;
+	}
 
 	/* Written by the script (`textContent`), so it stays a bare <p> and takes
 	   the Notice treatment in CSS instead: dashed bronze rules, no fill (§4).

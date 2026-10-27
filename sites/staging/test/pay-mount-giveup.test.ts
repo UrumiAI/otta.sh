@@ -90,6 +90,8 @@ test("the page's inline Stripe script is found", () => {
 	expect(INLINE).toBeDefined();
 	// The fixture's wrapper is the page's: `#payment-element` sits directly in `.mount`.
 	expect(PAY).toMatch(/<div class="mount">\s*<div\s+id="payment-element"/);
+	// `hidden` holds against any `display` the box's own rule may gain later.
+	expect(PAY).toMatch(/\.mount\[hidden\]\s*\{\s*display:\s*none;\s*\}/);
 });
 
 describe("a give-up hides the bordered mount box (#146)", () => {
