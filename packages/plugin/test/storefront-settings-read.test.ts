@@ -22,6 +22,11 @@ import {
 	createCartReadRouteHandler,
 	type CartReadRouteResult,
 } from "../src/storefront/cart-routes.js";
+import {
+	createCheckoutSummaryRouteHandler,
+	type CheckoutSummaryRouteResult,
+} from "../src/storefront/checkout-routes.js";
+import { InProcessCommerceClient } from "../src/commerce/in-process-commerce-client.js";
 import { createPdpRouteHandler, type PdpRouteResult } from "../src/storefront/pdp-route.js";
 import {
 	makeInProcessCommerce,
@@ -133,5 +138,40 @@ describe("storefront pages read the settings once per render (#547)", () => {
 		} finally {
 			warn.mockRestore();
 		}
+	});
+
+	test("getCartWithSettings rides the settings read getCart already makes: one read, same cart", async () => {
+		await save({ showHoldTimer: true, holdTtlMinutes: 20 });
+		const { cartId } = await h.client.createCart("USD");
+		let reads = 0;
+		const counted = new InProcessCommerceClient({
+			...h.ctx,
+			storage: withSettingsHook(h.ctx.storage as StorageAccess, () => void reads++),
+		});
+		const both = await counted.getCartWithSettings(cartId);
+		expect(reads).toBe(1);
+		expect(both.settings).toMatchObject({ holdTtlMinutes: 20, showHoldTimer: true });
+		expect(both.cart).toEqual(await h.client.getCart(cartId));
+		reads = 0;
+		await counted.getCart(cartId);
+		expect(reads).toBe(1);
+	});
+
+	test("the checkout summary reports showHoldTimer from that same read", async () => {
+		const added = async (): Promise<string> => {
+			const { cartId } = await h.client.createCart("USD");
+			const line = await h.client.addCartLine(cartId, "SKU-547", CONTENT.id, 1, `add-${cartId}`);
+			if (!line.ok) throw new Error(line.reason);
+			return cartId;
+		};
+		const summary = async (cartId: string): Promise<CheckoutSummaryRouteResult> =>
+			(await createCheckoutSummaryRouteHandler()(
+				{ input: { cartId, locale: "en-US" } as never, request },
+				h.ctx,
+			)) as CheckoutSummaryRouteResult;
+		const cartId = await added();
+		expect(await summary(cartId)).toMatchObject({ ok: true, showHoldTimer: false });
+		await save({ showHoldTimer: true });
+		expect(await summary(cartId)).toMatchObject({ ok: true, showHoldTimer: true });
 	});
 });
