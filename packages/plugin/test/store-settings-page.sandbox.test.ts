@@ -44,9 +44,13 @@ describe("Store settings page", () => {
 		expect(panelLabels(blocks)).toEqual(["General", "Tax", "Shipping"]);
 		expect(tabBlock(blocks)).toMatchObject({ block_id: "store-settings:tabs", default_tab: 0 });
 
-		expect(panel(blocks, "General")).toEqual(
-			await invoke({ type: "page_load", page: "/settings" }),
-		);
+		// General is the page minus its own "Settings" heading (this page has one).
+		const [settingsHeading, ...settingsBody] = await invoke({
+			type: "page_load",
+			page: "/settings",
+		});
+		expect(settingsHeading).toMatchObject({ type: "header", text: "Settings" });
+		expect(panel(blocks, "General")).toEqual(settingsBody);
 		expect(panel(blocks, "Tax")).toEqual(await invoke({ type: "page_load", page: "/tax" }));
 		expect(panel(blocks, "Shipping")).toEqual(
 			await invoke({ type: "page_load", page: "/shipping" }),

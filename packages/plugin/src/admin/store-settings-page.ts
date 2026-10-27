@@ -116,7 +116,12 @@ export function createStoreSettingsPageHandler(
 			// that may ask Stripe for the account country.
 			const loadCtx = {
 				...routeCtx,
-				input: { type: "page_load", page: panel.page, peekStripeCountry: actingIndex >= 0 },
+				input: {
+					type: "page_load",
+					page: panel.page,
+					embedded: true,
+					peekStripeCountry: actingIndex >= 0,
+				},
 			};
 			try {
 				return asBlockResponse(await panel.handler(loadCtx as SandboxedRouteContext<never>, ctx))
@@ -134,7 +139,8 @@ export function createStoreSettingsPageHandler(
 		let acting: BlockResponse | undefined;
 		if (actingIndex >= 0) {
 			const panel = panels[actingIndex]!;
-			acting = asBlockResponse(await panel.handler(routeCtx as SandboxedRouteContext<never>, ctx));
+			const actCtx = { ...routeCtx, input: { ...routeCtx.input, embedded: true } };
+			acting = asBlockResponse(await panel.handler(actCtx as SandboxedRouteContext<never>, ctx));
 		}
 		const panelBlocks = await Promise.all(
 			panels.map((panel, i) =>

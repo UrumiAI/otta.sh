@@ -1179,7 +1179,7 @@ export function createSettingsFormHandler(): RouteHandler<SettingsFormInput> {
 			undefined,
 			undefined,
 			undefined,
-			input.peekStripeCountry === true,
+			input.embedded === true && input.peekStripeCountry === true,
 		);
 	};
 	return async (routeCtx, ctx) => {
