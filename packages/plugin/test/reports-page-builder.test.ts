@@ -165,11 +165,12 @@ describe("reports builder: a failed previous-period read keeps the page", () => 
 				t.includes("The previous period could not be loaded."),
 			),
 		).toBe(true);
-		// The dashed line has nothing to draw: the previous series is all zero.
+		// No previous series at all: an all-zero dashed line would claim the previous
+		// period earned nothing.
 		const series = chartOptions(blocks, "reports:sales-chart")["series"] as Array<{
-			data: Array<[number, number, string]>;
+			name: string;
 		}>;
-		expect(series[1]?.data.every(([, amount]) => amount === 0)).toBe(true);
+		expect(series.map((x) => x.name)).toEqual(["This period"]);
 	});
 });
 

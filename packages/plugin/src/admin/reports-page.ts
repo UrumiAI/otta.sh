@@ -420,9 +420,21 @@ function salesSection(
 			],
 		});
 	}
-	const currency = singleCurrency ?? emptyPeriodCurrency(data);
+	const previousCurrencies = [
+		...new Set((data.previousRevenue ?? []).filter(isRevenueBearing).map((b) => b.currency)),
+	];
+	const currency = singleCurrency ?? emptyPeriodCurrency(data, previousCurrencies);
 	const current = timeBuckets(data.range, data.revenue, currency);
-	const previous = timeBuckets(data.range.previous, data.previousRevenue ?? [], currency);
+	// An empty period over a previous period in SEVERAL currencies has no currency
+	// to draw the previous line in, and drawing it in the store's would pass off
+	// another currency's sales as its own: the line is left out, without a note.
+	const omitPrevious = singleCurrency === undefined && previousCurrencies.length > 1;
+	// A previous period that failed to load has no series either: an empty one
+	// would draw a dashed zero line beside a legend saying it could not be loaded.
+	const previous =
+		omitPrevious || data.previousRevenue === undefined
+			? undefined
+			: timeBuckets(data.range.previous, data.previousRevenue, currency);
 	const points = pointsNote(data.range.days);
 	return section({
 		blockId: "reports:sales",
@@ -433,8 +445,9 @@ function salesSection(
 			{
 				type: "context",
 				// The legend the renderer cannot draw (no LegendComponent is registered).
-				text:
-					data.previousRevenue === undefined
+				text: omitPrevious
+					? `Solid line: ${absolutePeriod(data.range)}. ${points}`
+					: data.previousRevenue === undefined
 						? `Solid line: ${absolutePeriod(data.range)}. ${points} The previous period could not be loaded.`
 						: `Solid line: ${absolutePeriod(data.range)} · Dashed line: ${absolutePeriod(data.range.previous)} (previous period). ${points}`,
 			},
@@ -449,11 +462,11 @@ function salesSection(
  * else USD (what a store that never saved one trades in). A refund-only or
  * multi-currency previous period names nothing.
  */
-function emptyPeriodCurrency(data: ReportsData): Currency {
-	const previous = [
-		...new Set((data.previousRevenue ?? []).filter(isRevenueBearing).map((b) => b.currency)),
+function emptyPeriodCurrency(data: ReportsData, previousCurrencies: readonly string[]): Currency {
+	const candidates = [
+		previousCurrencies.length === 1 ? previousCurrencies[0] : undefined,
+		data.storeCurrency,
 	];
-	const candidates = [previous.length === 1 ? previous[0] : undefined, data.storeCurrency];
 	const usable = candidates.find(
 		(code): code is string => code !== undefined && CURRENCY_CODE.test(code),
 	);
