@@ -950,6 +950,110 @@ double-release or double-send. A hot aggregate therefore retries rather than blo
 contention budget is a measured number recorded in ADR-0019, not a hope. The scaling ceiling
 is that single D1 database.
 
+**Access logs and Stripe's return URL.** After a card payment Stripe redirects the buyer to
+`/orders/<id>?payment_intent=…&payment_intent_client_secret=…&redirect_status=…`. The order page
+answers that one request with a 303 to `/orders/<id>` (`private, no-store`) with Stripe's
+parameters removed (the page's own `error` parameter, if any, is kept), so the secret does not
+stay in the browser's URL, but **the request itself still appears in any access log in front of
+the site**. The client secret does not expire, and with the store's publishable key (public) it
+reads the PaymentIntent back, including the buyer's name and shipping address. Redact the query
+string on `/orders/*` (at least `payment_intent_client_secret`) wherever you log requests.
+Otta's own code does not log the URL on that route. The browser may still keep the URL it was
+redirected from, secret included, in its history; nothing on the server side can remove that.
+
+- **Cloudflare.** Otta's code logs nothing on the return request: it answers with the 303
+  first. **Workers Logs invocation logs do record the request method and URL, query
+  included,** and keep them for 3 days (Free) or 7 (Paid). The shipped `wrangler.jsonc` and
+  `wrangler.playground.jsonc` therefore set `observability.logs.invocation_logs` to `false`
+  (console logs stay on) because of this secret, so there is no per-request line for it.
+  Console lines that other code writes during a request may still carry that request's
+  metadata, so treat Workers Logs as sensitive for their retention window. If you turn
+  invocation logs back on, the secret sits in Workers Logs for 3–7 days. The same applies to
+  Workers Observability traces (`observability.traces`, off by default) if you enable them,
+  because spans may record the URL. `wrangler tail` shows the URL live and stores nothing; a Tail Worker receives
+  `event.request.url`, so don't let one persist the query. For Logpush, in the job's field
+  selection: on the `http_requests` dataset leave out `ClientRequestURI` and keep
+  `ClientRequestPath` (there is no `ClientRequestQuery` field in that dataset); on
+  `firewall_events`, drop `ClientRequestQuery` (and `ClientRefererQuery`); on
+  `workers_trace_events`, the URL is inside `Event`, which is one JSON object and cannot be
+  filtered field by field, so leave `Event` out of the job's fields or do not push that dataset
+  at all. Field names and options change, so confirm them in Cloudflare's
+  [Logpush docs](https://developers.cloudflare.com/logs/logpush/) and
+  [Workers Logs docs](https://developers.cloudflare.com/workers/observability/logs/workers-logs/).
+- **Caddy.** Inside the site block, filter the access log's request URI:
+
+  ```caddyfile
+  log {
+  	output file /var/log/caddy/access.log
+  	format filter {
+  		wrap json
+  		fields {
+  			request>uri query {
+  				delete payment_intent_client_secret
+  			}
+  		}
+  	}
+  }
+  ```
+
+  The `wrap json` line and the `fields { … }` wrapper are what Caddy 2.6 needs. Without
+  `wrap`, 2.6.2 refuses to load the config (`missing "wrap"`); newer versions accept both
+  lines, so leave them in. The filter acts on every request's URI, which is harmless for other
+  routes. Use `replace payment_intent_client_secret REDACTED` to keep a marker instead. Apply
+  it with `caddy validate --config /etc/caddy/Caddyfile` and then
+  `caddy reload --config /etc/caddy/Caddyfile` (or `systemctl reload caddy`), not a restart: a restart takes down
+  every site in the Caddyfile, and a reload with a bad config keeps the old one running. See
+  Caddy's [log directive docs](https://caddyserver.com/docs/caddyfile/directives/log#filter).
+
+  Caddy's error log is a separate matter, as nginx's is below. On a proxy error (the app
+  restarting while a buyer comes back from Stripe, say) the `http.log.error` logger records the
+  full request URI, query included, and the site's `log` block does not filter it: that block
+  covers the access log only. Under systemd that log goes to the journal, where `sed` cannot
+  reach it. Restrict who can read the journal (the `systemd-journal` and `adm` groups), and to
+  purge it, run `journalctl --rotate && journalctl --vacuum-time=1s` (or a longer age), which
+  drops archived entries of **every** unit on the host, not just Caddy's; or delete the old
+  journal files under `/var/log/journal/` yourself.
+- **nginx.** Log a URI with the query stripped for `/orders/`, instead of `$request`. This must
+  **replace** your logging, not add to it: remove or change every existing `access_log`, in
+  `http {}` and in any `server {}` or `location {}` that sets its own, because several
+  `access_log` directives all write, and any left in place keeps logging the full URL.
+
+  ```nginx
+  # http {} context
+  map $request_uri $otta_logged_uri {
+  	~^(?<orders_path>/orders/[^?]*)\? $orders_path;
+  	default $request_uri;
+  }
+  log_format otta '$remote_addr - $remote_user [$time_local] '
+                  '"$request_method $otta_logged_uri $server_protocol" '
+                  '$status $body_bytes_sent "$http_referer" "$http_user_agent"';
+  access_log /var/log/nginx/access.log otta;
+  ```
+
+  nginx's `error_log` is a separate matter: at the default `error` level it records
+  `request: "GET …?query"` for proxy errors (an upstream that is down, a timeout), and its
+  format cannot be changed. Restrict access to it and include it in the purge below. Also check
+  any upstream or CDN logs.
+
+**Purge, do not just rotate.** Delete or scrub access logs written before the redaction was in
+place, including rotated `.1` and `.gz` archives and copies shipped elsewhere (a SIEM, Logpush
+destinations). Rotation alone keeps them. Workers Logs age out after 3–7 days. The secret
+cannot be revoked, so removing it from the logs is all there is to do. For example:
+
+```sh
+# the live log: rewrite it in place, keeping the same file, so the server keeps writing to it
+# (sed -i would swap in a new file and the server would go on writing to the deleted one).
+# Lines written between the sed and the cat are lost or overwritten, so do it in a quiet period.
+sed -E 's/payment_intent_client_secret=[A-Za-z0-9_]*/payment_intent_client_secret=REDACTED/g' access.log > access.log.tmp && cat access.log.tmp > access.log && rm access.log.tmp
+# rotated plain files (names vary: access.log.1 for nginx)
+sed -i -E 's/payment_intent_client_secret=[A-Za-z0-9_]*/payment_intent_client_secret=REDACTED/g' access.log.1
+# .gz archives (access.log.2.gz for nginx; Caddy gzips by default: access-<timestamp>.log.gz):
+# sed -i would match nothing in compressed data, so rewrite each one
+zcat access.log.2.gz | sed -E 's/payment_intent_client_secret=[A-Za-z0-9_]*/payment_intent_client_secret=REDACTED/g' | gzip > access.log.2.gz.new && mv access.log.2.gz.new access.log.2.gz
+```
+
+Or simply delete archives written before the redaction.
+
 **Upgrading and rolling back.** Deploy a new version **all at once** (`wrangler deploy`),
 not as a gradual rollout that keeps old and new Workers serving side by side. A release that
 changes a stored document's shape migrates it forward on first write, and an old Worker still
@@ -965,6 +1069,17 @@ overlap can count one event twice) until a reconcile covering it runs, and
 the scheduled reconcile reaches a day only once it has closed. So after a rollback past such a
 release, or a rollout that overlapped versions, treat today's report figures as provisional
 until then. Orders, stock and payments are unaffected — only the reporting rollup is.
+
+The same rule covers the Stripe return scrub (PR #550). The 303 records the return in a cookie
+and the next request reads it, so in a gradual rollout the two can be served by different
+versions, and the order page can briefly show "awaiting payment" with **Complete payment** for an
+order that was paid. That does not double-charge, but it does not fix itself either: the page
+keeps showing it until the buyer reloads. A buyer who presses **Complete payment** and pays
+again is paying on an order that is still `pending`, and **Complete payment** resumes that
+order's own PaymentIntent (`lib/checkout-resume.ts`), not a new one. Stripe refuses to confirm a
+PaymentIntent that has already succeeded or is processing, and the pay page treats that refusal
+as "landed" (`refusalOf` in `pages/checkout/pay.astro`) and sends the buyer back to the order
+page. No second charge is made. A reload after the cut-over shows the right state.
 
 **Upgrading the EmDash host (0.38 → 1.0.1).** The host runs its own schema migrations on the
 **first request** after the deploy, with no separate step: EmDash 1.0.1 adds
