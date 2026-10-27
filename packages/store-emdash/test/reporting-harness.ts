@@ -372,6 +372,7 @@ export function makeReportingHarness(
 				lifecycle: lifecycleFor(row.deletedAt ?? null),
 				sku: brandSku(row.sku),
 				title: row.title,
+				productKind: row.productKind ?? "physical",
 				active: true,
 				publishKey: publishKeyFor(true),
 				deletedAt: row.deletedAt ?? null,

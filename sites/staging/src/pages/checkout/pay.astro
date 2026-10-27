@@ -762,6 +762,14 @@ const model: PayModel = {
 	.mount[hidden] {
 		display: none;
 	}
+	/* With scripting off nothing ever mounts: the form would draw an empty box
+	   and a Pay button that does nothing above the <noscript> notice (#556).
+	   After `#payment-form`'s own rule, so its `display: flex` can't win. */
+	@media (scripting: none) {
+		#payment-form {
+			display: none;
+		}
+	}
 
 	/* Written by the script (`textContent`), so it stays a bare <p> and takes
 	   the Notice treatment in CSS instead: dashed bronze rules, no fill (§4).

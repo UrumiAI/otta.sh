@@ -37,13 +37,10 @@ import { FakePaymentGateway } from "@urumi.ai/otta-domain/testing";
 import {
 	collectionOf,
 	INVENTORY_COLLECTION,
-	ORDER_SKU_INDEX_COLLECTION,
-	orderSkuIndexId,
 	ORDERS_COLLECTION,
 	PRODUCT_COMMERCE_COLLECTION,
 	type InventoryDoc,
 	type OrderDoc,
-	type OrderSkuIndexDoc,
 	type ProductCommerceDoc,
 	type StorageAccess,
 } from "@urumi.ai/otta-store-emdash";
@@ -398,16 +395,16 @@ describe("one real unit of each leg fits its LEG_QUERY_COSTS estimate", () => {
 
 	test("order-sku-index: one order's pointer, found already healed", async () => {
 		const placed = await placeOrder("index", new Date(Date.now() + DAY_MS).toISOString());
-		const pointers = collectionOf<OrderSkuIndexDoc>(wrappedStorage(), ORDER_SKU_INDEX_COLLECTION);
-		const id = orderSkuIndexId(placed.sku.toLowerCase(), placed.id);
+		// The leg gets the order document from its window page, so the read is not the unit's.
+		const doc = await collectionOf<OrderDoc>(storage, ORDERS_COLLECTION).get(placed.id);
+		if (doc === null) throw new Error("the placed order must exist");
+		const s = counted();
+		let healed: { written: number } | undefined;
 		const used = await cost(async () => {
-			const applied = await pointers.compareAndSet(id, null, {
-				sku: placed.sku.toLowerCase(),
-				orderId: placed.id,
-				createdAt: new Date().toISOString(),
-			});
-			if (!applied.applied) await pointers.get(id);
+			healed = await s.orderStore.healOrderSkuIndex(doc);
 		});
+		// Found already healed: the refused create and its read-back, nothing written.
+		expect(healed?.written).toBe(0);
 		expect(used).toBeLessThanOrEqual(LEG_QUERY_COSTS["order-sku-index"].unit);
 	});
 
