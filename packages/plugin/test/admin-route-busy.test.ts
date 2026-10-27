@@ -7,7 +7,10 @@
  *  - a Block Kit screen still renders its blocks (each page's own degraded
  *    state). That is ALL this file asserts for them — Block Kit screens have no
  *    busy-specific banner (yet), only the guarantee that a busy store is not a
- *    host 500.
+ *    host 500. Store settings hosts three of them as tabs and turns a panel's
+ *    throw into a "Couldn't load" banner, so for it "renders blocks" proves
+ *    nothing: it must also show no such banner, and each panel must be its own
+ *    page's busy answer.
  */
 import { afterAll, afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { ADMIN_ROUTE, createAdminRouteHandler } from "../src/admin/admin-route.js";
@@ -19,6 +22,7 @@ import { SHIPPING_PAGE } from "../src/admin/shipping-page.js";
 import { STORE_SETTINGS_PAGE } from "../src/admin/store-settings-page.js";
 import { TAX_PAGE } from "../src/admin/tax-page.js";
 import type { PluginContext } from "../src/types.js";
+import { blocksOf, panel, type LooseBlock } from "./helpers/blocks.js";
 import { busyStorage } from "./helpers/busy-storage.js";
 import {
 	makeInProcessCommerce,
@@ -82,5 +86,26 @@ describe("Block Kit screens", () => {
 		await expect(invoke({ type: "page_load", page: page.path }, loaded())).resolves.toEqual(
 			expect.objectContaining({ blocks: expect.any(Array) }),
 		);
+	});
+});
+
+// `invoke` returns the bare envelope here; `blocksOf` wants the sandbox's wrapper.
+const blocks = (response: unknown) => blocksOf({ result: response });
+
+describe("Store settings against a busy store", () => {
+	test("no panel crashed, and each is its own page's busy answer", async () => {
+		const page = blocks(
+			await invoke({ type: "page_load", page: STORE_SETTINGS_PAGE.path }, loaded()),
+		);
+		expect(JSON.stringify(page)).not.toContain("Couldn't load");
+
+		const alone = async (path: string): Promise<LooseBlock[]> =>
+			blocks(await invoke({ type: "page_load", page: path }, loaded()));
+		// General drops its own heading inside the tabs (the page supplies one).
+		const [heading, ...general] = await alone(SETTINGS_PAGE.path);
+		expect(heading).toMatchObject({ type: "header", text: "Settings" });
+		expect(panel(page, "General")).toEqual(general);
+		expect(panel(page, "Tax")).toEqual(await alone(TAX_PAGE.path));
+		expect(panel(page, "Shipping")).toEqual(await alone(SHIPPING_PAGE.path));
 	});
 });
