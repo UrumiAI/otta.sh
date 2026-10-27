@@ -189,3 +189,34 @@ describe("cartErrorMessage", () => {
 		expect(new Set(shipping).size).toBe(shipping.length);
 	});
 });
+
+describe("the hold refusals, worded for a store that hides the hold timer (#547)", () => {
+	test("timer on (and the default) is the wording it always was", () => {
+		expect(cartErrorMessage("HOLD_EXPIRED")).toBe(
+			"Your hold on that item expired — please try again.",
+		);
+		expect(cartErrorMessage("HOLD_EXPIRED", { holdTimer: true })).toBe(
+			cartErrorMessage("HOLD_EXPIRED"),
+		);
+		expect(cartErrorMessage("RESERVATION_LOST")).toBe(
+			"Your hold on one or more items expired before payment, so this checkout was closed — start a new cart to order again.",
+		);
+	});
+
+	test("timer off never says hold, and keeps each message's guidance", () => {
+		const expired = cartErrorMessage("HOLD_EXPIRED", { holdTimer: false });
+		expect(expired).toBe("That item is no longer reserved for you — please try again.");
+		const lost = cartErrorMessage("RESERVATION_LOST", { holdTimer: false });
+		expect(lost).toBe(
+			"One or more items are no longer reserved for you, so this checkout was closed — start a new cart to order again.",
+		);
+		for (const message of [expired, lost]) expect(message).not.toMatch(/hold/i);
+	});
+
+	test("timer off changes nothing else", () => {
+		expect(cartErrorMessage("OUT_OF_STOCK", { holdTimer: false })).toBe(
+			cartErrorMessage("OUT_OF_STOCK"),
+		);
+		expect(cartErrorMessage("NOPE", { holdTimer: false })).toBe(cartErrorMessage("NOPE"));
+	});
+});
