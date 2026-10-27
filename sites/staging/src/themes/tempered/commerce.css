@@ -224,6 +224,17 @@
 	min-width: 0;
 	max-width: 34rem;
 }
+/* The store hides the hold timer: while the hold is live the ribbon root holds
+   only a hidden note and a visually-hidden live region, but it is still a flex
+   item and would add one `gap` (0.625rem) of dead space under the line. Out of
+   flow, not `display: none` — that would drop the live region the release is
+   announced through. `position: absolute` takes it out of flow and leaves it in
+   the accessibility tree; with no offsets it stays at its static position. It
+   switches itself off at release, when HoldClock rewrites `data-state` and the
+   note takes its place in the flow. */
+[data-theme-id] .hold[data-countdown="off"]:not([data-state="released"]) {
+	position: absolute;
+}
 [data-theme-id] .cart-line-id {
 	display: flex;
 	flex-direction: column;
