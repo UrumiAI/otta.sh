@@ -1,4 +1,5 @@
 import { describe, expect, test } from "vitest";
+import type { ProductKind } from "../ports/product-commerce-store.js";
 import type { ReportingStore } from "../ports/reporting-store.js";
 import {
 	EXPECTED_ACTIVE_REFUND_SUM,
@@ -51,8 +52,14 @@ export interface ReportingStoreHarness {
 	/** Seed a `product_commerce` row behind a sku, for `lowStock`'s title join.
 	 *  Several rows MAY share one sku as long as at most one is live — that is
 	 *  exactly what the partial unique index permits, and the case the join's
-	 *  `deleted_at IS NULL` predicate exists to survive. */
-	seedProduct(row: { sku: string; title: string | null; deletedAt?: string | null }): Promise<void>;
+	 *  `deleted_at IS NULL` predicate exists to survive. `productKind` defaults
+	 *  to `"physical"`, the column default. */
+	seedProduct(row: {
+		sku: string;
+		title: string | null;
+		deletedAt?: string | null;
+		productKind?: ProductKind;
+	}): Promise<void>;
 }
 
 export interface ReportingStoreContractOptions {
@@ -353,6 +360,46 @@ export function reportingStoreContract(
 			// (inventory is the driving table) but a dead product cannot title it.
 			expect(rows.filter((r) => r.sku === "SKU-E")).toHaveLength(1);
 			expect(rows.find((r) => r.sku === "SKU-E")?.title).toBeNull();
+		});
+
+		test("lowStock omits a LIVE digital product's sku — it holds no stock, so it could never clear", async () => {
+			const h = await seeded();
+			const before = await h.store.lowStock(5);
+			// Every sku'd product is seeded an inventory row at 0, digital included
+			// (the "a product with a sku has an inventory row" invariant), but a
+			// digital product never reserves or restocks: listed, it would sit in the
+			// report at 0 forever.
+			await h.seedInventory({ sku: "SKU-EBOOK", onHand: 0 });
+			await h.seedProduct({ sku: "SKU-EBOOK", title: "Field Guide (PDF)", productKind: "digital" });
+			expect(await h.store.lowStock(5)).toEqual(before);
+			// The control: the same seed as a PHYSICAL product does list, so the
+			// omission is the kind rule and not the seed path.
+			await h.seedInventory({ sku: "SKU-POSTER", onHand: 0 });
+			await h.seedProduct({ sku: "SKU-POSTER", title: "Field Poster", productKind: "physical" });
+			expect((await h.store.lowStock(5)).find((r) => r.sku === "SKU-POSTER")).toEqual({
+				sku: "SKU-POSTER",
+				onHand: 0,
+				title: "Field Poster",
+			});
+		});
+
+		test("lowStock titles and kind-filters every row of a long report, not just the first page of it", async () => {
+			const h = await makeStore();
+			// 120 low skus — past any batch an adapter reads its owners in — every
+			// third one digital. Each physical row keeps its own title; no digital one lists.
+			const expected: { sku: string; onHand: number; title: string }[] = [];
+			for (let i = 0; i < 120; i++) {
+				const sku = `SKU-BULK-${String(i).padStart(3, "0")}`;
+				const digital = i % 3 === 0;
+				await h.seedInventory({ sku, onHand: 1 });
+				await h.seedProduct({
+					sku,
+					title: `Bulk ${String(i)}`,
+					productKind: digital ? "digital" : "physical",
+				});
+				if (!digital) expected.push({ sku, onHand: 1, title: `Bulk ${String(i)}` });
+			}
+			expect(await h.store.lowStock(5)).toEqual(expected);
 		});
 
 		test("lowStock: a sku with no product row at all reports title null, never the sku", async () => {
