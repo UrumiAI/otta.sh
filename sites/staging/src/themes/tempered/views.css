@@ -443,7 +443,12 @@
 [data-theme-id="tempered"] .pdp-crumb {
 	margin: 0 0 1.5rem;
 }
+/* A standalone link: `.cart-link-btn`'s pair, so the target is 24px
+   (WCAG 2.5.8, #147) and the label stays on its line. */
 [data-theme-id="tempered"] .pdp-crumb a {
+	display: inline-flex;
+	align-items: center;
+	min-height: 1.5rem;
 	color: var(--u-mute);
 	font-size: 0.8125rem;
 	text-decoration: none;

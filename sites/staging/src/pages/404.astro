@@ -81,7 +81,11 @@ import Storefront from "../layouts/Storefront.astro";
 		gap: 0.75rem 1.5rem;
 		padding-top: 0.25rem;
 	}
+	/* `.cart-link-btn`'s pair: a 24px target (WCAG 2.5.8, #147), label on its line. */
 	.home {
+		display: inline-flex;
+		align-items: center;
+		min-height: 1.5rem;
 		font-size: 0.8125rem;
 		color: var(--u-mute);
 	}
