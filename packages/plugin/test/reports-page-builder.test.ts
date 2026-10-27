@@ -13,8 +13,9 @@ import { findBlocks, sectionBlocks, type LooseBlock } from "./helpers/blocks.js"
  * `buildReportsBlocks` — the pure `ReportsData → BlockResponse` half of the
  * Reports page — for the rules that are a function of the reads alone: the AOV
  * comparison's per-currency denominator, a failed previous-period read, the
- * empty period's axis currency, the units ranking of a multi-currency period's
- * top products, and the partial last week of a folded series.
+ * empty period's axis currency and its previous-period line, the Orders card's
+ * missing arrow, the units top ten of a multi-currency period's top products, and
+ * the partial last week of a folded series.
  */
 
 function rangeOf(fromDay: string, toDay: string): ReportsData["range"] {
