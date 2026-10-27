@@ -9,6 +9,20 @@
  * slot rendered into the page — and is forwarded verbatim; this endpoint never
  * invents one (a double-submit must replay, not duplicate). A missing key is a
  * 400, mirroring the plugin route's own input guard.
+ *
+ * With no cart yet, the key also keys the CREATE (issue #39), so a double-submitted
+ * first add lands in one cart instead of minting an orphan per request — but only
+ * when the key is this visitor's alone. A create key answers its cart to whoever
+ * sends it, and the key the page RENDERED (the no-script fallback) may have been
+ * served to every visitor from a shared cache, so the form posts it again as
+ * `renderedKey` and the create is keyed only when the two differ: the page's script
+ * minted this one for this submission. Equal, or no `renderedKey` at all, the
+ * create is unkeyed, as before.
+ *
+ * The plugin applies the same rule itself (a rendered key carries the `pdp:` mark
+ * and never keys a create), so this check is the second of two. It is not
+ * redundant: a page rendered — and cached — before the mark existed carries an
+ * UNMARKED rendered key, which only the missing `renderedKey` field gives away.
  */
 import {
 	CART_LINE_MAX_QTY,
@@ -62,6 +76,7 @@ export const POST: APIRoute = async (context) => {
 	// productId (it does — `content.id` is always present).
 	const productId = formString(form.get("productId"));
 	const idempotencyKey = formString(form.get("idempotencyKey"));
+	const renderedKey = formString(form.get("renderedKey"));
 	const returnTo = safeReturnPath(form.get("returnTo"), "/products");
 
 	// Absent/blank qty defaults to 1; a PRESENT-but-invalid qty ("abc",
@@ -162,10 +177,14 @@ export const POST: APIRoute = async (context) => {
 			context.url,
 		);
 
-	const cart = await ensureCartId(context, handler);
+	const cart = await ensureCartId(
+		context,
+		handler,
+		renderedKey !== undefined && renderedKey !== idempotencyKey ? { idempotencyKey } : {},
+	);
 	if (!cart.ok) {
-		// A busy `cart/create` (key-less, so never auto-retried) is the busy 503;
-		// any other failure is the ordinary SERVICE_UNAVAILABLE turn.
+		// A busy `cart/create` (still busy after a keyed create's one retry) is the
+		// busy 503; any other failure is the ordinary SERVICE_UNAVAILABLE turn.
 		if (cart.reason === "busy") return busyResponse(returnTo);
 		return seeOther(context, returnTo, SERVICE_UNAVAILABLE);
 	}

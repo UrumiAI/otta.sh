@@ -120,15 +120,22 @@ export type EnsureCartResult =
  * Ensure a cart exists: reuse the cookie's id, else mint one via the
  * plugin's `storefront/cart/create` and apply its cookie DESCRIPTOR to this
  * response (the plugin cannot set headers — the shim owns Set-Cookie).
- * `cart/create` carries no key, so a BUSY here is never auto-retried.
+ * A KEYED create replays, so its BUSY is retried once (`dispatchOttaRoute`); an
+ * unkeyed one never is.
  */
 export async function ensureCartId(
 	context: APIContext,
 	handler: PublicPluginApiRouteHandler | undefined,
-	/** When there is no cart, mint the REPLACEMENT for this spent cart: the plugin
-	 *  checks it and derives the key, so the same spent cart always gets the same new
-	 *  cart (cart-rotation.ts). */
-	opts: { replacesCartId?: string } = {},
+	/**
+	 * At most one of:
+	 *  - `replacesCartId` — when there is no cart, mint the REPLACEMENT for this
+	 *    spent cart: the plugin checks it and derives the key, so the same spent cart
+	 *    always gets the same new cart (cart-rotation.ts);
+	 *  - `idempotencyKey` — mint the cart under this key, so a replay of the same
+	 *    request lands in the same cart (#39). It answers that cart to whoever sends
+	 *    it: pass only a key this visitor alone holds (see `/cart/add`).
+	 */
+	opts: { replacesCartId?: string; idempotencyKey?: string } = {},
 ): Promise<EnsureCartResult> {
 	const existing = currentCartId(context);
 	if (existing !== undefined) return { ok: true, cartId: existing };
@@ -136,7 +143,11 @@ export async function ensureCartId(
 	const created = await dispatchOttaRoute<CartCreateRouteResult>(
 		handler,
 		STOREFRONT_CART_CREATE_ROUTE,
-		opts.replacesCartId !== undefined ? { replacesCartId: opts.replacesCartId } : {},
+		opts.replacesCartId !== undefined
+			? { replacesCartId: opts.replacesCartId }
+			: opts.idempotencyKey !== undefined
+				? { idempotencyKey: opts.idempotencyKey }
+				: {},
 		context.url,
 	);
 	if (isBusyResult(created)) return { ok: false, reason: "busy" };

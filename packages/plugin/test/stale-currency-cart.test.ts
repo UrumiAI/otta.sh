@@ -248,6 +248,8 @@ describe("a cart left in the old currency after a store currency switch (#440)",
 		[{ replacesStaleCurrencyCartId: "x".repeat(201) }],
 		[{ replacesStaleCurrencyCartId: "cart-1", currency: "EUR" }],
 		[{ replacesStaleCurrencyCartId: "cart-1", replacesCartId: "cart-2" }],
+		// #39: a replacement's key is the plugin's, never the caller's.
+		[{ replacesStaleCurrencyCartId: "cart-1", idempotencyKey: "press-stale" }],
 	])("cart/create refuses %p INVALID_INPUT, minting nothing", async (input) => {
 		await setStoreCurrency("EUR");
 		expect(await createRoute(input)).toEqual({ ok: false, error: "INVALID_INPUT" });

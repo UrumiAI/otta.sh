@@ -220,6 +220,9 @@ describe("storefront PDP route (workerd sandbox)", () => {
 		expect(slot["productId"]).toBe("pdp-prod-slot");
 		expect(typeof slot["idempotencyKey"]).toBe("string");
 		expect((slot["idempotencyKey"] as string).length).toBeGreaterThan(0);
+		// #39: the rendered key is MARKED, so cart/create can tell a key a page may
+		// have shown every visitor from one a browser minted for one submission.
+		expect(slot["idempotencyKey"]).toMatch(/^pdp:[0-9a-f-]{36}$/);
 
 		const elements = slot["elements"] as Array<Record<string, unknown>>;
 		expect(elements.map((e) => e["type"])).toEqual(["number_input", "button"]);

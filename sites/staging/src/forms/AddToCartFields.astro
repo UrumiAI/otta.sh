@@ -10,6 +10,10 @@
  *    `AddToCartKey` script (ADR-0039) replaces it per SUBMISSION, so a second
  *    press adds while a double-click replays; with no script this rendered key
  *    is what posts. Never minted here or by a theme;
+ *  - `renderedKey` — that same rendered key again, which the script never
+ *    touches. `/cart/add` keys a first add's cart on `idempotencyKey` only when
+ *    the two differ (issue #39): a rendered key may be served to every visitor
+ *    from a shared cache, and a create key answers its cart to whoever sends it;
  *  - `returnTo` — where an error sends the shopper back to. `/cart/add` still
  *    runs it through `safeReturnPath`; the page computes it.
  *
@@ -28,4 +32,5 @@ const { fields } = Astro.props;
 <input type="hidden" name="sku" value={fields.sku} />
 <input type="hidden" name="productId" value={fields.productId} />
 <input type="hidden" name="idempotencyKey" value={fields.idempotencyKey} />
+<input type="hidden" name="renderedKey" value={fields.idempotencyKey} />
 <input type="hidden" name="returnTo" value={fields.returnTo} />
