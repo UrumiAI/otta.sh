@@ -17,6 +17,7 @@ import { parseExtraAllowedHosts } from "@urumi.ai/otta-plugin";
 import { parseDotEnv } from "./src/lib/dot-env.js";
 import { buildEmdashOptions } from "./src/emdash-options.js";
 import { assertDownloadsBucketPrivate } from "./src/lib/downloads-bucket.js";
+import { buildPathScrub } from "./src/lib/build-path-scrub.js";
 import { devStripeOfflineIntegration } from "./src/lib/e2e-stripe-offline.js";
 
 /** Astro does NOT load .env into process.env for THIS module (verified —
@@ -234,7 +235,14 @@ export default defineConfig({
 	// `astro dev` with OTTA_E2E_STRIPE_OFFLINE=1, for the e2e suite's order seed
 	// (issue #378). An integration because only a hook can see the command; see
 	// src/lib/e2e-stripe-offline.ts.
-	integrations: [react(), emdash(buildEmdashOptions(egress)), devStripeOfflineIntegration()],
+	// `buildPathScrub` (issue #121) removes the builder's absolute paths from the
+	// worker bundle once the build is done; see src/lib/build-path-scrub.ts.
+	integrations: [
+		react(),
+		emdash(buildEmdashOptions(egress)),
+		devStripeOfflineIntegration(),
+		buildPathScrub(),
+	],
 	// CSRF: Astro's `security.checkOrigin` does NOT protect the storefront's
 	// endpoints — the emdash integration force-injects `checkOrigin: false`
 	// and its replacement layer covers only /_emdash/api/* routes. The

@@ -14,6 +14,7 @@ import react from "@astrojs/react";
 import emdash from "emdash/astro";
 import staging from "./astro.config.ts";
 import { egress } from "./astro.config.ts";
+import { buildPathScrub } from "./src/lib/build-path-scrub.ts";
 import { buildPlaygroundEmdashOptions } from "./src/playground-options.ts";
 
 // Not wrapped in a second `defineConfig`. Spreading the storefront config
@@ -28,7 +29,7 @@ const playground = {
 		configPath: "wrangler.playground.jsonc",
 		imageService: "passthrough",
 	}),
-	integrations: [react(), emdash(buildPlaygroundEmdashOptions(egress))],
+	integrations: [react(), emdash(buildPlaygroundEmdashOptions(egress)), buildPathScrub()],
 	vite: {
 		...staging.vite,
 		define: {
