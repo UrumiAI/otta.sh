@@ -144,10 +144,10 @@ describe("the cart hold follows the admin's holdTtlMinutes setting", () => {
 	});
 
 	test("the client reports the effective window, following the setting live", async () => {
-		expect(await h.client.getCartHoldTtlMinutes()).toBe(
+		expect((await h.client.getStorefrontSettings()).holdTtlMinutes).toBe(
 			DEFAULT_OPERATIONAL_SETTINGS.holdTtlMinutes,
 		);
 		await setHoldTtl(25);
-		expect(await h.client.getCartHoldTtlMinutes()).toBe(25);
+		expect((await h.client.getStorefrontSettings()).holdTtlMinutes).toBe(25);
 	});
 });

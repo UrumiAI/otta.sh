@@ -33,6 +33,7 @@ import type { CommerceClient } from "../product-commerce/commerce-client.js";
 import type { PluginContext, RouteHandler } from "../types.js";
 import { buildProductViewModel, type ProductViewModel } from "./product-view-model.js";
 import { parseCmsProductContent, sanitizeLocale } from "./route-input.js";
+import { readStorefrontSettings } from "./storefront-settings.js";
 
 /** Public route name — dispatched at
  *  `POST /_emdash/api/plugins/otta/storefront/product`. */
@@ -142,16 +143,10 @@ export function createPdpRouteHandler(): RouteHandler<PdpRouteInput> {
 			const locale = sanitizeLocale(routeCtx.input.locale);
 
 			const client = await makeCommerceClient(ctx);
-			const [commerce, cartHoldMinutes, showHoldTimer, display] = await Promise.all([
+			const [commerce, settings, display] = await Promise.all([
 				commerceLoaderFor(client).load(content.id),
-				client.getCartHoldTtlMinutes(),
-				client.getShowHoldTimer().catch((err: unknown) => {
-					console.error(
-						"[otta] storefront/pdp showHoldTimer read failed; hiding the hold note:",
-						err,
-					);
-					return false;
-				}),
+				// One settings read; a failed one shows no hold note rather than failing the page.
+				readStorefrontSettings(STOREFRONT_PRODUCT_ROUTE, client),
 				// A failed read shows the stored price rather than failing the page.
 				priceDisplayOrEntered(STOREFRONT_PRODUCT_ROUTE, () => client.getShopPriceDisplay()),
 			]);
@@ -165,8 +160,8 @@ export function createPdpRouteHandler(): RouteHandler<PdpRouteInput> {
 				ok: true as const,
 				product: buildProductViewModel(joined, locale, display),
 				jsonLd: buildProductJsonLd(joined),
-				cartHoldMinutes,
-				showHoldTimer,
+				cartHoldMinutes: settings.holdTtlMinutes,
+				showHoldTimer: settings.showHoldTimer,
 			};
 		});
 }

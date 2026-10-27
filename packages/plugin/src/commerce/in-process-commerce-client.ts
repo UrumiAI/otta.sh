@@ -164,6 +164,7 @@ import type {
 	ResumeProof,
 	ShippingOptionsRequestWire,
 	ShippingOptionWire,
+	StorefrontSettings,
 	UpdateProductVariantFieldsInput,
 	UpsertProductCommerceInput,
 	UpsertProductVariantInput,
@@ -635,17 +636,23 @@ export class InProcessCommerceClient implements CommerceClient {
 	 * fresh store behaves exactly as before.
 	 */
 	async #liveCartDeps(): Promise<CartDeps> {
-		return { ...this.#cartDeps, ttlMs: (await this.getCartHoldTtlMinutes()) * 60_000 };
+		return { ...this.#cartDeps, ttlMs: (await this.#holdTtlMinutes()) * 60_000 };
 	}
 
-	/** The effective cart-hold window, in whole minutes — what a shopper-facing
-	 *  "we'll hold this for N minutes" must say. */
-	async getCartHoldTtlMinutes(): Promise<number> {
+	/** The effective cart-hold window, in whole minutes. Storefront pages get it
+	 *  from {@link getStorefrontSettings}. */
+	async #holdTtlMinutes(): Promise<number> {
 		return (await this.#stores.settingsStore.get()).holdTtlMinutes;
 	}
 
-	async getShowHoldTimer(): Promise<boolean> {
-		return effectiveShowHoldTimer(await this.#stores.settingsStore.get());
+	/** One settings read for everything a storefront page shows from it. */
+	async getStorefrontSettings(): Promise<StorefrontSettings> {
+		const settings = await this.#stores.settingsStore.get();
+		return {
+			savedStoreCurrency: settings.currency ?? null,
+			holdTtlMinutes: settings.holdTtlMinutes,
+			showHoldTimer: effectiveShowHoldTimer(settings),
+		};
 	}
 
 	/**
@@ -716,10 +723,6 @@ export class InProcessCommerceClient implements CommerceClient {
 		const saved = (await this.#stores.settingsStore.get()).currency;
 		if (saved === undefined) return { ok: false, reason: "CART_CURRENCY_CURRENT" };
 		return replaceStaleCurrencyCart(this.#cartDeps, staleCartId, toCurrency(saved));
-	}
-
-	async getSavedStoreCurrency(): Promise<string | null> {
-		return (await this.#stores.settingsStore.get()).currency ?? null;
 	}
 
 	/** Runs the lazy hold expiry the use-case owns, then reads. An unknown cart is

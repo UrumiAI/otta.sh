@@ -180,9 +180,9 @@ describe("a cart left in the old currency after a store currency switch (#440)",
 	});
 
 	test("the saved store currency is readable for the storefront's notice", async () => {
-		expect(await h.client.getSavedStoreCurrency()).toBeNull();
+		expect((await h.client.getStorefrontSettings()).savedStoreCurrency).toBeNull();
 		await setStoreCurrency("EUR");
-		expect(await h.client.getSavedStoreCurrency()).toBe("EUR");
+		expect((await h.client.getStorefrontSettings()).savedStoreCurrency).toBe("EUR");
 	});
 
 	// ── the storefront routes the cart page and its "Start a new cart" use ──
@@ -261,7 +261,7 @@ describe("a cart left in the old currency after a store currency switch (#440)",
 			staleCurrency: { cartCurrency: "USD", storeCurrency: "EUR" },
 		});
 		// The cart read itself reads settings once (the hold TTL); every settings
-		// read after that one rejects — so only the stale-currency read fails.
+		// read after that one rejects — so only the storefront-settings read fails.
 		let settingsReads = 0;
 		const failing = withCollection(h.ctx.storage as StorageAccess, SETTINGS_COLLECTION, () => {
 			settingsReads += 1;
@@ -275,7 +275,7 @@ describe("a cart left in the old currency after a store currency switch (#440)",
 		expect(settingsReads).toBeGreaterThan(1);
 	});
 
-	test("cart/read still answers when the hold-timer read rejects: the timer is hidden (#546)", async () => {
+	test("cart/read still answers when the storefront-settings read rejects: the timer is hidden (#546, #547)", async () => {
 		seq += 1;
 		await h.stores.settingsStore.update(
 			{ showHoldTimer: true },
@@ -285,7 +285,7 @@ describe("a cart left in the old currency after a store currency switch (#440)",
 		expect(await readRoute(cartId)).toMatchObject({ ok: true, showHoldTimer: true });
 		const errors = vi.spyOn(console, "error").mockImplementation(() => {});
 		const failing = vi
-			.spyOn(InProcessCommerceClient.prototype, "getShowHoldTimer")
+			.spyOn(InProcessCommerceClient.prototype, "getStorefrontSettings")
 			.mockRejectedValueOnce(new Error("settings unreadable"));
 		try {
 			expect(await readRoute(cartId)).toMatchObject({
@@ -294,7 +294,7 @@ describe("a cart left in the old currency after a store currency switch (#440)",
 				showHoldTimer: false,
 			});
 			expect(failing).toHaveBeenCalledTimes(1);
-			expect(errors.mock.calls.flat().map(String).join(" ")).toContain("showHoldTimer read failed");
+			expect(errors.mock.calls.flat().map(String).join(" ")).toContain("settings read failed");
 		} finally {
 			failing.mockRestore();
 			errors.mockRestore();
