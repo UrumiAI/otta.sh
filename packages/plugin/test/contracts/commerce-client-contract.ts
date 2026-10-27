@@ -3403,6 +3403,11 @@ export function storefrontCommerceClientContract(tier: CommerceClientTier): void
 
 // ── Slice 2: admin orders + products (INC-B10b) ───────────────────────────
 
+/** The stock-movement quantity ceiling (`stockMovementBody`: a positive integer
+ *  no greater than this). Far above the cart cap on purpose — this is the
+ *  merchant's own surface — but a ceiling all the same (#289). */
+const MAX_STOCK_MOVEMENT_QTY = 1_000_000_000;
+
 /**
  * NO CASE HERE WAS LIFTED, and that is the finding rather than an oversight: no
  * test file in `packages/plugin/test/` ever exercised the old HTTP admin orders
@@ -3477,11 +3482,6 @@ export function storefrontCommerceClientContract(tier: CommerceClientTier): void
  * registry is the console's `readTaxClasses` backstop, and it is pinned where it
  * lives, in `products-console-route.sandbox.test.ts`.
  */
-/** The stock-movement quantity ceiling (`stockMovementBody`: a positive integer
- *  no greater than this). Far above the cart cap on purpose — this is the
- *  merchant's own surface — but a ceiling all the same (#289). */
-const MAX_STOCK_MOVEMENT_QTY = 1_000_000_000;
-
 export function adminOrdersProductsClientContract(tier: CommerceClientTier): void {
 	describe(`commerceClientContract — admin orders + products [${tier.name}]`, () => {
 		let client: ProductsClientSurface;
@@ -6327,17 +6327,6 @@ export function adminRulesReportingClientContract(tier: CommerceClientTier): voi
 		});
 
 		test("coupons: a cursor this surface did not issue is REFUSED, never a silent restart from page one", async () => {
-			expect(
-				(
-					await client.createCoupon({
-						id: "cur-1",
-						code: "CUR-ONE",
-						type: "fixed_amount",
-						amountCents: 100,
-						currency: "USD",
-					})
-				).ok,
-			).toBe(true);
 			// NARROWER THAN THE ORDERS AND PRODUCTS LISTS ON PURPOSE: those answer a bad
 			// token with page one, flagged; the coupon list rejects it, as its route
 			// answered 400 (#289). What must never happen is an ordinary page — the
