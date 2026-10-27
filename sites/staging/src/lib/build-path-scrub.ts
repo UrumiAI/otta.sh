@@ -36,11 +36,33 @@
  *    all of `dist/`;
  *  - the site emits no source maps. The rewrite only shortens strings inside a
  *    line, so line numbers in a stack trace still match the chunk.
+ *
+ * ANCHORED, not a bare substring replace. In a real build the root only ever
+ * starts a string literal (`"<root>/…"`, 309 times) or a file URL
+ * (`file://<root>/…`, 7 times). Matching only there is what keeps a short root
+ * (a Docker WORKDIR such as `/otta` or `/app`) from rewriting real literals:
+ * `"/_emdash/api/plugins/otta/admin"` contains `/otta/` but does not start with
+ * it.
+ *
+ * THE SECOND LEAK: SHELL VARIABLES. Astro loads ALL of `process.env` as private
+ * env (`loadEnv(mode, root, "")` in astro's `env/env-loader.js`). In every
+ * server module that uses a bare `import.meta.env`, it then inlines each
+ * variable whose NAME is a substring of that module's source
+ * (`getReferencedPrivateKeys`: `source.includes(key)`, in
+ * `env/vite-plugin-import-meta-env.js`). `_` is a substring of nearly every
+ * module, so the shell's `_` (the path of the binary that started the build,
+ * e.g. `/home/runner/setup-pnpm/node_modules/.bin/pnpm`) was baked into eight
+ * chunks; `NODE` and `EDITOR` were too. No Astro 7.3.6 option narrows this:
+ * `vite.envPrefix` only names PUBLIC prefixes, `env.schema` only adds secrets,
+ * and `envDir` only moves the `.env` files. So the integration drops the shell's
+ * own path variables ({@link SHELL_PATH_ENV_KEYS}) from `process.env` in
+ * `astro:config:setup`, which runs before Astro reads the env. It does this for
+ * `build` only, so `astro dev` keeps `EDITOR`/`VISUAL` for open-in-editor.
  */
 import { existsSync } from "node:fs";
 import { readdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import type { AstroIntegration } from "astro";
 
 export const BUILD_PATH_SCRUB_INTEGRATION = "otta:build-path-scrub";
@@ -57,12 +79,38 @@ export function workspaceRoot(): string {
 }
 
 /**
- * Every `<root>/` becomes `/`. The trailing slash is part of the match, so a
- * sibling such as `<root>-other/` is left alone.
+ * Shell bookkeeping variables whose values are paths on the build machine and
+ * which nothing in a build reads as configuration: `_` (the last command run),
+ * `PWD`/`OLDPWD`, `NODE` (pnpm/npm set it to the node binary) and the editor
+ * pair. Values that are not paths (`CI`, `NODE_ENV`) are left alone.
+ */
+export const SHELL_PATH_ENV_KEYS = ["_", "PWD", "OLDPWD", "NODE", "EDITOR", "VISUAL"] as const;
+
+/** Removes {@link SHELL_PATH_ENV_KEYS} from `env` in place. */
+export function dropShellPathEnv(env: NodeJS.ProcessEnv): void {
+	for (const key of SHELL_PATH_ENV_KEYS) delete env[key];
+}
+
+function escapeRegExp(text: string): string {
+	return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/**
+ * Removes the root where it STARTS a path: right after a string quote
+ * (`"<root>/x"` → `"/x"`) or as the path of a file URL, plain or percent-encoded
+ * (`file://<root>/x` → `file:///x`). The trailing slash is part of the match, so
+ * a sibling such as `<root>-other/` is left alone.
  */
 export function scrubBuildPaths(code: string, root: string): string {
-	const prefix = `${root.replace(/\/+$/, "")}/`;
-	return code.split(prefix).join("/");
+	const bare = root.replace(/\/+$/, "");
+	const forms = [
+		`(["'\`])${escapeRegExp(bare)}/`,
+		`file://${escapeRegExp(bare)}/`,
+		`${escapeRegExp(pathToFileURL(bare).href)}/`,
+	];
+	return code.replace(new RegExp(forms.join("|"), "g"), (_match, quote: string | undefined) =>
+		quote === undefined ? "file:///" : `${quote}/`,
+	);
 }
 
 /** Rewrites every `.mjs`/`.js` file under `dir` in place; returns how many changed. */
@@ -85,6 +133,9 @@ export function buildPathScrub(root: string = workspaceRoot()): AstroIntegration
 	return {
 		name: BUILD_PATH_SCRUB_INTEGRATION,
 		hooks: {
+			"astro:config:setup": ({ command }) => {
+				if (command === "build") dropShellPathEnv(process.env);
+			},
 			"astro:config:done": ({ config }) => {
 				serverDir = config.build.server;
 			},
