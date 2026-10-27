@@ -63,7 +63,20 @@
  * dispatches it, because the plugin cannot reach R2 and a key with no object
  * would 404 every buyer (`lib/download-attach-guard.ts`). Every other write
  * passes through.
+ *
+ * THE PAY PAGE'S PERMISSIONS-POLICY (issue #108). EmDash stamps
+ * `Permissions-Policy: camera=(), microphone=(), geolocation=(), payment=()` on
+ * any response that has none, and `payment=()` keeps Google Pay (and the other
+ * Payment Request wallets in Chromium browsers) out of the Payment Element: its
+ * frames cannot reach the Payment Request API. Safari ignores the header; Apple
+ * Pay there needs the domain registered with Stripe (DEPLOYMENT.md §3).
+ * `/checkout/pay` — the one page that loads Stripe.js (ADR-0012) — answers with
+ * the same policy but `payment` allowed for this origin and Stripe.js's frames.
+ * The header is SET here, so it wins whichever middleware runs first, and
+ * EmDash's finalize only fills one in when none is present. Every other route
+ * keeps EmDash's baseline.
  */
+import type { APIContext, MiddlewareNext } from "astro";
 import { CART_COOKIE_NAME, SESSION_COOKIE_NAME } from "@urumi.ai/otta-plugin";
 import { defineMiddleware } from "astro:middleware";
 import { env } from "virtual:emdash/env";
@@ -80,18 +93,32 @@ import { DEFAULT_THEME_ID } from "./themes/manifest.js";
  *  private, no-store constant, under the name its callers already use. */
 export { PRIVATE_NO_STORE as PER_SHOPPER_NO_STORE } from "./lib/no-store.js";
 
-/** Mark a response private. A `Response` built by `Response.redirect()` (or
- *  handed through from elsewhere) can carry IMMUTABLE headers, so a refusal to
- *  set is answered by copying the response rather than by sending it cacheable. */
-function noStore(response: Response, value: string = PRIVATE_NO_STORE): Response {
+/** The route whose page mounts Stripe's Payment Element. */
+const PAY_ROUTE = "/checkout/pay";
+
+/** The pay page's `Permissions-Policy`: EmDash's baseline, with `payment`
+ *  opened to this origin and the frames Stripe.js starts (`js.stripe.com` and
+ *  its `*.js.stripe.com` subdomains — Stripe's own `frame-src` list). */
+export const PAY_PERMISSIONS_POLICY =
+	'camera=(), microphone=(), geolocation=(), payment=(self "https://js.stripe.com" "https://*.js.stripe.com")';
+
+/** Set one header. A `Response` built by `Response.redirect()` (or handed
+ *  through from elsewhere) can carry IMMUTABLE headers, so a refusal to set is
+ *  answered by copying the response rather than by sending it without. */
+function withHeader(response: Response, name: string, value: string): Response {
 	try {
-		response.headers.set("Cache-Control", value);
+		response.headers.set(name, value);
 		return response;
 	} catch {
 		const copy = new Response(response.body, response);
-		copy.headers.set("Cache-Control", value);
+		copy.headers.set(name, value);
 		return copy;
 	}
+}
+
+/** Mark a response private (never sent cacheable — see `withHeader`). */
+function noStore(response: Response, value: string = PRIVATE_NO_STORE): Response {
+	return withHeader(response, "Cache-Control", value);
 }
 
 /** Opt this request out of Astro's route cache (see TWO CACHES above). */
@@ -100,6 +127,13 @@ function skipRouteCache(context: { cache?: { set(options: false): void } }): voi
 }
 
 export const onRequest = defineMiddleware(async (context, next) => {
+	const response = await handle(context, next);
+	return context.routePattern === PAY_ROUTE
+		? withHeader(response, "Permissions-Policy", PAY_PERMISSIONS_POLICY)
+		: response;
+});
+
+async function handle(context: APIContext, next: MiddlewareNext): Promise<Response> {
 	// Playground only (the storefront build no-ops). Prices the sample
 	// catalog before the page renders, and may answer the boot request
 	// itself — a wait page, or a redirect from the CMS admin onto the shop.
@@ -154,4 +188,4 @@ export const onRequest = defineMiddleware(async (context, next) => {
 	skipRouteCache(context);
 	const html = response.headers.get("Content-Type")?.includes("text/html") ?? false;
 	return html ? noStore(response, PRIVATE_NO_STORE) : response;
-});
+}
