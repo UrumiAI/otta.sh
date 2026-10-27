@@ -598,7 +598,12 @@
 	margin: 2.5rem 0 0;
 	font-size: 0.8125rem;
 }
+/* A standalone link: `.cart-link-btn`'s pair, so the target is 24px
+   (WCAG 2.5.8, #147) and the label stays on its line. */
 [data-theme-id] .checkout-back a {
+	display: inline-flex;
+	align-items: center;
+	min-height: 1.5rem;
 	color: var(--u-mute);
 }
 [data-theme-id] .checkout-back a:hover {
@@ -693,7 +698,12 @@
 	margin: 2.5rem 0 0;
 	font-size: 0.8125rem;
 }
+/* A standalone link: `.cart-link-btn`'s pair, so the target is 24px
+   (WCAG 2.5.8, #147) and the label stays on its line. */
 [data-theme-id] .pay-back a {
+	display: inline-flex;
+	align-items: center;
+	min-height: 1.5rem;
 	color: var(--u-mute);
 }
 [data-theme-id] .pay-back a:hover {

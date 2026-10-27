@@ -250,6 +250,26 @@ describe("the shared button shape is shared (§2)", () => {
 		expect(rule, "what makes min-height apply").toMatch(/display:\s*inline-flex/);
 	});
 
+	test.each([
+		["themes/tempered/views.css", '[data-theme-id="tempered"] .pdp-crumb a', "← All products"],
+		["themes/tempered/commerce.css", "[data-theme-id] .checkout-back a", "Back to cart"],
+		["themes/tempered/commerce.css", "[data-theme-id] .pay-back a", "View your order"],
+		["pages/404.astro", ".home", "Go to the home page"],
+	])("%s: `%s` (%s) keeps a 24px target (§11, #147)", (name, selector) => {
+		// A paragraph whose only content is a link is a standalone target, and
+		// the inline exception to WCAG 2.5.8 does not reach it: at 13px these
+		// measured 16px tall. Same pair as `.cart-link-btn` above — `min-height`
+		// buys the height, `inline-flex` + `align-items: center` is what makes
+		// it apply to an `<a>` and keeps the label on the line it was on.
+		const css = declarations(name);
+		const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+		const [, rule = ""] = new RegExp(`(?:^|\\})\\s*${escaped}\\s*\\{([^}]*)\\}`).exec(css) ?? [];
+		expect(rule, `no \`${selector}\` rule in ${name}`).not.toBe("");
+		expect(rule, "the 24px tap-target floor").toMatch(/min-height:\s*1\.5rem/);
+		expect(rule, "what makes min-height apply").toMatch(/display:\s*inline-flex/);
+		expect(rule, "keeps the label on its optical line").toMatch(/align-items:\s*center/);
+	});
+
 	test.each(FILES)("%s does not redefine a class the global sheet owns", (name) => {
 		// Same rule the component sweep applies: `.u-` classes may be USED
 		// anywhere — that is what they are for — but a scoped redefinition beats
