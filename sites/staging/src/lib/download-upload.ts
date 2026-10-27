@@ -255,10 +255,16 @@ export async function lookupProduct(
 		const key = descriptor["key"];
 		if (typeof key !== "string") {
 			// Shape only, never values: the descriptor holds a filename. Neutral
-			// prefix (the orphan sweep reads products here too), and JSON-quoted so
-			// a malformed record cannot add lines to the log.
+			// prefix (the orphan sweep reads products here too), JSON-quoted so a
+			// malformed record cannot add lines to the log, and capped in count and
+			// length.
 			console.error(
-				`[site-staging] download record unreadable: product ${JSON.stringify(row["productId"])} has no string key (key is ${key === null ? "null" : typeof key}; fields: ${JSON.stringify(Object.keys(descriptor).toSorted().slice(0, 10))})`,
+				`[site-staging] download record unreadable: product ${JSON.stringify(row["productId"])} has no string key (key is ${key === null ? "null" : typeof key}; fields: ${JSON.stringify(
+					Object.keys(descriptor)
+						.toSorted()
+						.slice(0, 10)
+						.map((field) => field.slice(0, 64)),
+				)})`,
 			);
 			return { kind: "unreadable" };
 		}
