@@ -172,6 +172,36 @@ export function resetSweepBootstrapForTest(): void {
 	bootstrapped = false;
 }
 
+/** How long `plugin:activate` may spend registering the task before it gives up
+ *  and reports `scheduled: false`. Well under the host's 5000 ms default hook
+ *  timeout: a timeout is a FAILED hook to the host, with the same consequence as a
+ *  throw (see `createActivateHandler`). */
+export const ACTIVATE_SCHEDULE_BUDGET_MS = 3_000;
+
+/** Sentinel for a registration that outran its budget. */
+const SCHEDULE_TIMED_OUT = Symbol("schedule-timed-out");
+
+/**
+ * Race a registration against `ACTIVATE_SCHEDULE_BUDGET_MS`. Resolves to the
+ * attempt's value, rejects with its error, or resolves to `SCHEDULE_TIMED_OUT`.
+ * Shared by activate and the bootstrap so the two cannot drift. The attempt is not
+ * cancelled (it cannot be); a late rejection has nobody awaiting it, so it is
+ * observed here rather than surfacing as an unhandled rejection — each caller
+ * logs the failure it cares about. The timer is always cleared.
+ */
+async function raceScheduleBudget<T>(attempt: Promise<T>): Promise<T | typeof SCHEDULE_TIMED_OUT> {
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	attempt.catch(() => {});
+	const deadline = new Promise<typeof SCHEDULE_TIMED_OUT>((resolve) => {
+		timer = setTimeout(() => resolve(SCHEDULE_TIMED_OUT), ACTIVATE_SCHEDULE_BUDGET_MS);
+	});
+	try {
+		return await Promise.race([attempt, deadline]);
+	} finally {
+		clearTimeout(timer);
+	}
+}
+
 /**
  * Ensure the task exists, at most once per isolate, never throwing.
  *
@@ -214,12 +244,6 @@ export function withSweepBootstrap<A, R>(
 	};
 }
 
-/** How long `plugin:activate` may spend registering the task before it gives up
- *  and reports `scheduled: false`. Well under the host's 5000 ms default hook
- *  timeout: a timeout is a FAILED hook to the host, with the same consequence as a
- *  throw (see `createActivateHandler`). */
-export const ACTIVATE_SCHEDULE_BUDGET_MS = 3_000;
-
 /** The `plugin:activate` handler: the host's own registration moment — an
  *  operator's admin enable toggle, a marketplace install, and, since EmDash 1.2,
  *  the FIRST BOOT of a config-array deployment (the host runs install → activate
@@ -242,17 +266,9 @@ export function createActivateHandler(): HookHandler<PluginLifecycleEvent> {
 			schedule: SWEEP_SCHEDULE,
 			tasks: [],
 		};
-		let timer: ReturnType<typeof setTimeout> | undefined;
-		const attempt = ensureSweepTaskScheduled(ctx);
-		// A late rejection after the deadline has nobody awaiting it; observe it so it
-		// does not surface as an unhandled rejection. The retry logs its own failure.
-		attempt.catch(() => {});
-		const deadline = new Promise<"timeout">((resolve) => {
-			timer = setTimeout(() => resolve("timeout"), ACTIVATE_SCHEDULE_BUDGET_MS);
-		});
 		try {
-			const result = await Promise.race([attempt, deadline]);
-			if (result === "timeout") {
+			const result = await raceScheduleBudget(ensureSweepTaskScheduled(ctx));
+			if (result === SCHEDULE_TIMED_OUT) {
 				console.error(
 					`[otta] cron sweep task registration on activate exceeded ${String(ACTIVATE_SCHEDULE_BUDGET_MS)} ms (will retry)`,
 				);
@@ -262,8 +278,6 @@ export function createActivateHandler(): HookHandler<PluginLifecycleEvent> {
 		} catch (err) {
 			console.error("[otta] cron sweep task registration on activate failed (will retry):", err);
 			return unscheduled;
-		} finally {
-			clearTimeout(timer);
 		}
 	};
 }
