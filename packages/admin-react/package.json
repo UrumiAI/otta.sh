@@ -1,6 +1,6 @@
 {
 	"name": "@urumi.ai/otta-admin-react",
-	"version": "0.1.1",
+	"version": "0.2.0",
 	"description": "Otta React admin console — the `otta-console` native-format EmDash descriptor (ADR-0014). Zero capabilities, zero allowedHosts; reaches commerce only through the existing authenticated `otta` admin routes.",
 	"homepage": "https://github.com/UrumiAI/otta.sh#readme",
 	"bugs": {
@@ -14,7 +14,8 @@
 	},
 	"files": [
 		"dist",
-		"!dist/tsc"
+		"!dist/tsc",
+		"!dist/**/*.d.mts.map"
 	],
 	"type": "module",
 	"exports": {

@@ -98,7 +98,12 @@ interface ReadCall {
 }
 
 type ProductAnswer =
-	| { productKind: string; deletedAt?: string | null; productId?: string }
+	| {
+			productKind: string;
+			deletedAt?: string | null;
+			productId?: string;
+			downloadAsset?: unknown;
+	  }
 	| { refusal: Record<string, unknown> }
 	| { envelope: Record<string, unknown> }
 	| { throws: true };
@@ -121,7 +126,7 @@ function makeDispatcher(answer: ProductAnswer) {
 						deletedAt: answer.deletedAt ?? null,
 						// The plugin's product wire always carries the field; a row
 						// without it is a failed read (issue #447).
-						downloadAsset: null,
+						downloadAsset: answer.downloadAsset === undefined ? null : answer.downloadAsset,
 						updatedAt: "2026-10-06T00:00:00.000Z",
 					},
 				},
@@ -433,6 +438,31 @@ describe("which product", () => {
 			const failed = await upload({ answer });
 			expect(failed.response.status, JSON.stringify(answer)).toBe(503);
 			expect(failed.r2.puts).toEqual([]);
+		}
+	});
+
+	test("a keyless file record → 409 that does not say to retry, logged with its shape, nothing stored", async () => {
+		const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+		try {
+			const { response, json, r2 } = await upload({
+				answer: {
+					productKind: "digital",
+					downloadAsset: { key: null, filename: "secret-name.pdf" },
+				},
+			});
+			expect(response.status).toBe(409);
+			expect(json.error?.code).toBe("DOWNLOAD_RECORD_UNREADABLE");
+			expect(json.error?.message).toContain("unreadable");
+			expect(json.error?.message).not.toMatch(/again in a moment|Wait a few seconds/);
+			expect(response.headers.get("Retry-After")).toBeNull();
+			expect(r2.puts).toEqual([]);
+			const logged = spy.mock.calls.map((call) => call.join(" ")).join("\n");
+			expect(logged).toContain("[site-staging] download record unreadable:");
+			expect(logged).toContain(PRODUCT);
+			expect(logged).toContain(`["filename","key"]`);
+			expect(logged).not.toContain("secret-name.pdf");
+		} finally {
+			spy.mockRestore();
 		}
 	});
 

@@ -1,6 +1,6 @@
 {
 	"name": "@urumi.ai/otta-store-emdash",
-	"version": "0.1.1",
+	"version": "0.2.0",
 	"description": "Commerce store adapters for Otta over the EmDash plugin-storage primitives — bound to a structural StorageAccess port, never to the host at runtime. REQUIRES the conditional-write primitives (updateIf/getVersioned/compareAndSet/compareAndDelete), first published in emdash 0.38.0.",
 	"homepage": "https://github.com/UrumiAI/otta.sh#readme",
 	"bugs": {
@@ -14,7 +14,8 @@
 	},
 	"files": [
 		"dist",
-		"!dist/tsc"
+		"!dist/tsc",
+		"!dist/**/*.d.mts.map"
 	],
 	"type": "module",
 	"exports": {

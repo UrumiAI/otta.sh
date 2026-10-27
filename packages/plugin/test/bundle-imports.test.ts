@@ -38,7 +38,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { build } from "tsdown";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
-import tsdownConfig from "../tsdown.config.js";
+import tsdownConfigs from "../tsdown.config.js";
 
 const PKG_DIR = fileURLToPath(new URL("..", import.meta.url));
 
@@ -104,7 +104,9 @@ let declarations: Array<{ file: string; source: string }> = [];
 describe("emitted plugin bundle carries no un-bundled workspace or host import", () => {
 	beforeAll(async () => {
 		outDir = await mkdtemp(path.join(tmpdir(), "otta-plugin-bundle-"));
-		const entry = (tsdownConfig.entry as string[]).map((e) => path.resolve(PKG_DIR, e));
+		const entry = (tsdownConfigs[0] as { entry: string[] }).entry.map((e) =>
+			path.resolve(PKG_DIR, e),
+		);
 		// EXACTLY the package's own build, declarations included. The `dts: false`
 		// this used to pass was defensible while declarations were a per-file
 		// compile of this package alone — but `src/` now imports two workspace
@@ -114,7 +116,11 @@ describe("emitted plugin bundle carries no un-bundled workspace or host import",
 		// which is
 		// the one failure a packaging guard exists to catch. It costs this suite about
 		// twenty seconds and buys back the whole build.
-		await build({ ...tsdownConfig, entry, outDir, logLevel: "silent" });
+		// Every config, in order: the JS build, then the declarations build (#510).
+		for (const config of tsdownConfigs) {
+			// `config: false`: build exactly this config, not the cwd's tsdown.config.ts on top.
+			await build({ ...config, config: false, entry, outDir, logLevel: "silent" });
+		}
 		const files = (await readdir(outDir)).filter((f) => f.endsWith(".mjs"));
 		const declarationFiles = (await readdir(outDir)).filter((f) => f.endsWith(".d.mts"));
 		declarations = await Promise.all(

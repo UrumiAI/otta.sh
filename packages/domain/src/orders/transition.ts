@@ -188,8 +188,7 @@ export function manualPaymentAllowed(method: PaymentMethod | null): boolean {
 
 /** The two ledgers Mark refunded is decided from. */
 export interface RefundLedgerFacts {
-	/** `gateway`: the method the payment came through (not read by the decision today). */
-	payments: readonly { amount: number; status: string; gateway?: string }[];
+	payments: readonly { amount: number; status: string }[];
 	refunds: readonly { amount: number; status: string }[];
 }
 

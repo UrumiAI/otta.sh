@@ -1248,6 +1248,51 @@ test("a NEW click after a lost answer is a new move with a fresh nonce, and the 
 	expect(retryButton(c)).toBeNull();
 });
 
+test("a REMOUNTED card after a lost Add shows no Retry, and its next Add carries a fresh nonce", async () => {
+	// The held move is component state (`HeldMove`), and the nonce is minted per
+	// click: nothing of a lost Add outlives its card (`movement-nonce.ts`). The
+	// admin tears the card down when the operator navigates away and back, reloads,
+	// or opens another product; Save does not remount it (see the #540 note).
+	const server = stockServer(24, ["lose-after"]);
+	const first = await mountPanel();
+	await add(first, "5");
+	expect(retryButton(first)).not.toBeNull();
+	const lost = nonces()[0];
+	expect(lost).toMatch(HEX_NONCE);
+
+	// A real remount: the old tree is torn down, a new one mounted.
+	await mounted?.unmount();
+	mounted = null;
+	expect(first.isConnected).toBe(false);
+	const second = await mountPanel();
+	expect(retryButton(second)).toBeNull();
+	expect(heldText(second)).toBe("");
+	// The lost move landed (29); the fresh card reads that count.
+	expect(onHandShown(second)).toBe("29");
+
+	await add(second, "5");
+	const keys = nonces();
+	expect(keys).toHaveLength(2);
+	expect(keys[1]).toMatch(HEX_NONCE);
+	expect(keys[1]).not.toBe(lost);
+	expect(server.onHand()).toBe(34); // a new move, not a replay of the lost one
+	expect(second.textContent).toContain("Added 5 — now 34 in stock");
+	// A guard against a future Web Storage cache: the card persists nothing today,
+	// so these loops find no entries unless someone adds one. On Node 25+ the
+	// runtime's own (unconfigured) Web Storage globals can shadow happy-dom's and
+	// read as undefined, so a store that isn't there is skipped, not a crash.
+	const stores = [window.sessionStorage, window.localStorage].filter(
+		(store): store is Storage => store !== undefined && store !== null,
+	);
+	for (const store of stores) {
+		for (let i = 0; i < store.length; i++) {
+			const key = store.key(i) ?? "";
+			expect(key).not.toContain(String(lost));
+			expect(store.getItem(key) ?? "").not.toContain(String(lost));
+		}
+	}
+});
+
 test("Cancel on the remove confirm keeps the Retry; confirming a removal replaces it", async () => {
 	stockServer(24, ["lose-after"]);
 	const c = await mountPanel();

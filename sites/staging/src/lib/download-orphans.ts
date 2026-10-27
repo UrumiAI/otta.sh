@@ -115,7 +115,10 @@ export function currentDownloadOf(lookup: ProductLookup): CurrentDownload {
 			return lookup.notFound ? { kind: "gone" } : { kind: "failed" };
 		case "busy":
 			return { kind: "busy" };
+		case "unreadable":
 		case "failed":
+			// An unreadable file record fails closed like any failed read: the
+			// sweep must not guess the live file.
 			return { kind: "failed" };
 	}
 }
