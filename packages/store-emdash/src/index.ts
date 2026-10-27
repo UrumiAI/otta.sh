@@ -275,6 +275,7 @@ export {
 	type ConditionalDeleteResult,
 	type ConditionalWriteResult,
 	type HostCronAccess,
+	type HostCronEvent,
 	type NumericDelta,
 	type OrderBy,
 	type QueryOptions,

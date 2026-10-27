@@ -236,9 +236,9 @@ export type StorageAccess = Record<string, StorageCollection>;
  * `schedule` is an UPSERT on `(plugin, name)`, which is what makes calling it on
  * every activation — and on every tick — safe rather than duplicative.
  *
- * `cron/index.ts` checks assignability in both directions against `HostCronAccess`,
- * derived from the host by `@urumi.ai/otta-store-emdash`. The cron type test also checks
- * exact agreement, including method parameters.
+ * `test/cron-access.type-test.ts` pins this against `HostCronAccess`, derived
+ * from the host by `@urumi.ai/otta-store-emdash`, by exact type equality —
+ * stricter than assignability, since it also catches narrower method parameters.
  */
 export interface CronAccess {
 	schedule(name: string, opts: { schedule: string; data?: Record<string, unknown> }): Promise<void>;
@@ -255,7 +255,8 @@ export interface CronTaskInfo {
 }
 
 /** The event the `cron` hook receives — one per DUE TASK, not one per tick, so
- *  `name` is what a multi-task plugin dispatches on. */
+ *  `name` is what a multi-task plugin dispatches on. Pinned against the host's
+ *  `HostCronEvent` by exact type equality in `test/cron-access.type-test.ts`. */
 export interface CronEvent {
 	name: string;
 	data?: Record<string, unknown>;
