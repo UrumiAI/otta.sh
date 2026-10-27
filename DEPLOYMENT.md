@@ -950,6 +950,16 @@ double-release or double-send. A hot aggregate therefore retries rather than blo
 contention budget is a measured number recorded in ADR-0019, not a hope. The scaling ceiling
 is that single D1 database.
 
+**Access logs and Stripe's return URL.** After a card payment Stripe redirects the buyer to
+`/orders/<id>?payment_intent=…&payment_intent_client_secret=…&redirect_status=…`. The order page
+answers that one request with a 303 to `/orders/<id>` (`private, no-store`) with Stripe's
+parameters removed (the page's own `error` parameter, if any, is kept), so the secret does not
+stay in the browser's URL, but **the request itself still appears in any access log in front of
+the site**. The client secret does not expire, and with the store's publishable key (public) it
+reads the PaymentIntent back, including the buyer's name and shipping address. Redact the query
+string on `/orders/*` (at least `payment_intent_client_secret`) wherever you log requests.
+Otta's own code does not log the URL on that route.
+
 **Upgrading and rolling back.** Deploy a new version **all at once** (`wrangler deploy`),
 not as a gradual rollout that keeps old and new Workers serving side by side. A release that
 changes a stored document's shape migrates it forward on first write, and an old Worker still
