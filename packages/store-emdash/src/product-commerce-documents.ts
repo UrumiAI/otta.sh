@@ -90,7 +90,8 @@ export interface CollectionIndexDeclaration {
  * one `productId in [...]` query instead of a `get` per id. That is the surviving
  * half of the port's anti-N+1 invariant: a document store has no join, so the stock
  * a view needs is still one read per distinct sku, but the product half stays one
- * statement per 100 ids exactly as the SQL was one statement per batch.
+ * statement per 50 ids (D1's 100-parameter bound, issue #578) where the SQL was one
+ * statement per batch.
  *
  * `lifecycle`, `publishKey`, `productKind` and `taxClass` are the equality axes the
  * admin list and `countByTaxClass` filter on; `createdAt` is what the list
