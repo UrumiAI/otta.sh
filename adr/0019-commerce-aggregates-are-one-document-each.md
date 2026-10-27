@@ -1695,5 +1695,5 @@ cart: the line landed in one, and the shopper could keep the cookie of the empty
   the cart is gone re-creates the same cart id, empty (`#createKeyed` create-if-absents the cart),
   which is harmless but means the prune should delete both. No TTL otherwise: the key is per press,
   and a late replay is the same press.
-- The decision is unchanged; this adds one row to §4.
+- The decision is unchanged; this widens one row of §4.
 
