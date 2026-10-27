@@ -3,7 +3,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](./LICENSE)
 [![npm](https://img.shields.io/npm/v/@urumi.ai/otta-plugin.svg)](https://www.npmjs.com/package/@urumi.ai/otta-plugin)
 
-Open source (MIT), version 0.1.0. The WooCommerce-equivalent for
+Open source (MIT). Latest published release: 0.1.0 (`main` is 0.2.0, unreleased). The WooCommerce-equivalent for
 [EmDash](https://github.com/emdash-cms/emdash), Cloudflare's TypeScript CMS.
 
 > [!WARNING]
@@ -200,8 +200,8 @@ process, so it verifies the SQL is correct, not that it's race-safe under conten
 
 ## Status
 
-**v0.1.0 — in active development.** The `@urumi.ai/otta-*` packages
-are all at `0.1.0` and published to npm (`pnpm add @urumi.ai/otta-plugin`; see
+**In active development.** The latest published release is `0.1.0`; `main` is `0.2.0`
+(unreleased). The `@urumi.ai/otta-*` packages are on npm (`pnpm add @urumi.ai/otta-plugin`; see
 [Install from npm](#install-from-npm)); work on Otta itself from the workspace. Expect
 breaking changes before 1.0.
 

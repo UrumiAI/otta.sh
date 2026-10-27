@@ -10,7 +10,7 @@
  */
 
 export const OTTA_PLUGIN_ID = "otta";
-export const OTTA_PLUGIN_VERSION = "0.1.1";
+export const OTTA_PLUGIN_VERSION = "0.2.0";
 
 /**
  * Sandbox-clean guard (DEVELOPMENT.md §5, plan §5): EXACTLY these three

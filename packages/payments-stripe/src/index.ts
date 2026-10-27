@@ -216,8 +216,10 @@ function toStripeShipping(shipTo: CreateIntentShipTo | undefined): StripeShippin
 export interface StripePaymentGatewayOptions {
 	/**
 	 * Stripe webhook signing secret (`whsec_…`). Used to HMAC-verify the raw
-	 * webhook body. In Otta it is entered on the admin Store settings page (General tab) and stored
-	 * encrypted at rest (ADR-0037).
+	 * webhook body. In Otta it is entered on the admin Store settings page (General tab). It is
+	 * encrypted at rest when the site declares `PAYMENT_SECRET_SETTINGS_SCHEMA` (EmDash then
+	 * requires `EMDASH_ENCRYPTION_KEY` and refuses the save without it); a site that doesn't
+	 * declare the schema stores it as plain text (ADR-0037).
 	 */
 	webhookSecret: string;
 	/**
