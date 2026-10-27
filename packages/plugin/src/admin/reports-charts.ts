@@ -180,9 +180,10 @@ function axisMoney(amount: number, currency: Currency): string {
 
 // -- charts ------------------------------------------------------------------
 
-/** The day a point is labelled with on the axis: "10 Jul". */
-function axisDay(day: string): string {
-	return formatDay(day, false);
+/** Whether a series' first and last points fall in different calendar years. */
+function crossesYear(series: TimeSeries): boolean {
+	const first = series.points[0]?.startDay.slice(0, 4);
+	return first !== undefined && first !== series.points.at(-1)?.startDay.slice(0, 4);
 }
 
 /** Show about six x labels whatever the point count. */
@@ -204,15 +205,19 @@ const CATEGORY_X = {
  */
 export function salesChart(args: {
 	current: TimeSeries;
-	previous: TimeSeries;
+	/** Absent: the previous period is not drawn at all. */
+	previous: TimeSeries | undefined;
 	currency: Currency;
 }): ChartBlock {
 	const { current, previous, currency } = args;
+	// One format for both lines: either series crossing New Year puts the year on
+	// every label and tooltip, so a tooltip never mixes "20 Dec 2025" and "10 Jan".
+	const withYear = crossesYear(current) || (previous !== undefined && crossesYear(previous));
 	const money = (amount: number): string => formatMoney(toCents(amount), currency, MONEY_LOCALE);
 	const top = Math.max(
 		0,
 		...current.points.map((p) => p.revenueCents),
-		...previous.points.map((p) => p.revenueCents),
+		...(previous?.points ?? []).map((p) => p.revenueCents),
 	);
 	const axis = moneyAxis(top, currency);
 	const single = current.points.length <= 2;
@@ -237,7 +242,7 @@ export function salesChart(args: {
 				tooltip: { trigger: "axis" },
 				xAxis: {
 					...CATEGORY_X,
-					data: current.points.map((p) => axisDay(p.startDay)),
+					data: current.points.map((p) => formatDay(p.startDay, withYear)),
 					boundaryGap: false,
 					axisLabel: { interval: labelInterval(current.points.length) },
 				},
@@ -282,26 +287,31 @@ export function salesChart(args: {
 						},
 						data: current.points.map((p, i) => [i, p.revenueCents, money(p.revenueCents)]),
 					},
-					{
-						...line,
-						name: "Previous period",
-						z: 2,
-						color: MUTED,
-						lineStyle: { width: 2, type: "dashed" },
-						data: previous.points.map((p, i) => [
-							i,
-							p.revenueCents,
-							`${money(p.revenueCents)} · ${previousLabel(p.startDay, previous.granularity)}`,
-						]),
-					},
+					...(previous === undefined
+						? []
+						: [
+								{
+									...line,
+									name: "Previous period",
+									z: 2,
+									color: MUTED,
+									lineStyle: { width: 2, type: "dashed" },
+									data: previous.points.map((p, i) => [
+										i,
+										p.revenueCents,
+										`${money(p.revenueCents)} · ${previousLabel(p.startDay, previous.granularity, withYear)}`,
+									]),
+								},
+							]),
 				],
 			},
 		},
 	};
 }
 
-function previousLabel(day: string, granularity: "day" | "week"): string {
-	return granularity === "day" ? axisDay(day) : `week of ${axisDay(day)}`;
+function previousLabel(day: string, granularity: "day" | "week", withYear: boolean): string {
+	const label = formatDay(day, withYear);
+	return granularity === "day" ? label : `week of ${label}`;
 }
 
 /** Room for the widest money tick label (≈7px a character at 12px). */
@@ -323,7 +333,7 @@ export function ordersChart(current: TimeSeries): ChartBlock {
 				tooltip: { trigger: "axis" },
 				xAxis: {
 					...CATEGORY_X,
-					data: current.points.map((p) => axisDay(p.startDay)),
+					data: current.points.map((p) => formatDay(p.startDay, crossesYear(current))),
 					axisLabel: { interval: labelInterval(current.points.length) },
 				},
 				yAxis: {

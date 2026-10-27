@@ -13,6 +13,7 @@ import type {
 	TableBlock,
 } from "../types.js";
 import { carriedForm, failClosedResponse, section } from "./scaffold/index.js";
+import { MAX_TOP_PRODUCTS_LIMIT } from "./in-process-reporting-settings-client.js";
 import { makeAdminClients } from "./make-admin-clients.js";
 import type {
 	LowStockWire,
@@ -55,6 +56,19 @@ export const REPORTS_PAGE: AdminPageConfig = { path: "/reports", label: "Reports
 
 /** R-16 caps a `stats` block at 4 items. */
 const MAX_STATS_ITEMS = 4;
+
+/** Products the page shows. */
+const TOP_PRODUCTS_SHOWN = 10;
+
+/**
+ * Products the page READS: the surface's own cap (`MAX_TOP_PRODUCTS_LIMIT`, shared
+ * so a lowered cap cannot make this read throw and fail the page closed). The store
+ * groups every product in the one order scan it makes whatever the limit, so asking
+ * for all of them costs no extra query, and the page can then pick its ten by the
+ * metric it shows — by units on several currencies, where the store's revenue order
+ * sums minor units across currencies and would drop a cheap best seller.
+ */
+const TOP_PRODUCTS_READ_LIMIT = MAX_TOP_PRODUCTS_LIMIT;
 
 /**
  * The order states the SERVICE counts as revenue (`REVENUE_COUNTING_STATES` in
@@ -122,8 +136,8 @@ function absolutePeriod(range: Pick<ReportPeriod, "fromDay" | "toDay">): string 
 }
 
 /**
- * The Reports page. Eight reads on the surface `makeAdminClients` hands over —
- * revenue, orders-by-status, top products (by revenue and by units), low stock
+ * The Reports page. Seven reads on the surface `makeAdminClients` hands over —
+ * revenue, orders-by-status, top products (one read, ranked on the page), low stock
  * and settings for the period, plus revenue and orders-by-status for the
  * PREVIOUS period. All but top
  * products and low stock read the `reporting_daily` rollup (day documents, never
@@ -151,22 +165,11 @@ export function createReportsPageHandler(): RouteHandler<ReportsPageInput> {
 			const { reporting: client } = await makeAdminClients(ctx);
 			const settingsRead = client.getSettings().catch(() => undefined);
 			const revenueRead = client.getRevenue(range, "day");
-			// The units ranking is only drawn when the period has no single revenue
-			// currency, which the revenue read decides. It is a full scan in the
-			// store, so it is asked for only then — and a failure of it costs only
-			// the ranking's own order (the builder re-sorts the revenue list), never
-			// the page.
-			const topByUnitsRead = revenueRead.then((buckets) =>
-				hasSingleRevenueCurrency(buckets)
-					? undefined
-					: client.getTopProducts(range, "quantity", 10).catch(() => undefined),
-			);
-			const [revenue, statuses, top, topByUnits, low, settings, previousRevenue, previousStatuses] =
+			const [revenue, statuses, top, low, settings, previousRevenue, previousStatuses] =
 				await Promise.all([
 					revenueRead,
 					client.getOrdersByStatus(range),
-					client.getTopProducts(range, "revenue", 10),
-					topByUnitsRead,
+					client.getTopProducts(range, "revenue", TOP_PRODUCTS_READ_LIMIT),
 					// An explicit threshold avoids a second settings read inside the report.
 					settingsRead.then((savedSettings) =>
 						client.getLowStock(
@@ -183,7 +186,6 @@ export function createReportsPageHandler(): RouteHandler<ReportsPageInput> {
 				revenue,
 				statuses,
 				top,
-				...(topByUnits !== undefined ? { topByUnits } : {}),
 				low,
 				...(previousRevenue !== undefined ? { previousRevenue } : {}),
 				...(previousStatuses !== undefined ? { previousStatuses } : {}),
@@ -211,12 +213,13 @@ export interface ReportsData {
 	range: ResolvedRange;
 	revenue: RevenueBucketWire[];
 	statuses: StatusCountWire[];
-	/** The top products ranked by revenue — drawn when the period has one currency. */
+	/** The products sold, ranked by revenue (the store's order), up to the surface's
+	 *  1000-row cap. The page takes its ten: by revenue for one currency, by units
+	 *  for several (or none), since a revenue ranking would sum minor units across
+	 *  currencies. Rare edge: a period with more than 1000 distinct product/title
+	 *  pairs is cut by the store's cross-currency revenue order before the page
+	 *  ranks by units. */
 	top: TopProductWire[];
-	/** The top products ranked by units sold — drawn when it has several (or none),
-	 *  since a revenue ranking would then sum minor units across currencies. Absent
-	 *  from an older caller: `top` is then re-sorted by units, and says so. */
-	topByUnits?: TopProductWire[];
 	low: LowStockWire[];
 	/** The previous period's reads. Absent when they failed: the deltas then say
 	 *  "No comparison available" rather than comparing against nothing. */
@@ -284,7 +287,9 @@ export function buildReportsBlocks(data: ReportsData): BlockResponse {
 	const ordersTile: StatItem = {
 		label: "Orders",
 		value: String(orderCount),
-		...periodChange(orderCount, previousOrderCount, phrase),
+		// NO TREND ARROW: the count covers every status (cancelled and refunded
+		// included), so a rise is not good news; the signed delta still says which way.
+		description: periodChange(orderCount, previousOrderCount, phrase).description,
 	};
 	const aovTile = averageOrderValueTile({
 		byCurrencyCode,
@@ -415,9 +420,21 @@ function salesSection(
 			],
 		});
 	}
-	const currency = singleCurrency ?? emptyPeriodCurrency(data);
+	const previousCurrencies = [
+		...new Set((data.previousRevenue ?? []).filter(isRevenueBearing).map((b) => b.currency)),
+	];
+	const currency = singleCurrency ?? emptyPeriodCurrency(data, previousCurrencies);
 	const current = timeBuckets(data.range, data.revenue, currency);
-	const previous = timeBuckets(data.range.previous, data.previousRevenue ?? [], currency);
+	// An empty period over a previous period in SEVERAL currencies has no currency
+	// to draw the previous line in, and drawing it in the store's would pass off
+	// another currency's sales as its own: the line is left out, without a note.
+	const omitPrevious = singleCurrency === undefined && previousCurrencies.length > 1;
+	// A previous period that failed to load has no series either: an empty one
+	// would draw a dashed zero line beside a legend saying it could not be loaded.
+	const previous =
+		omitPrevious || data.previousRevenue === undefined
+			? undefined
+			: timeBuckets(data.range.previous, data.previousRevenue, currency);
 	const points = pointsNote(data.range.days);
 	return section({
 		blockId: "reports:sales",
@@ -428,8 +445,9 @@ function salesSection(
 			{
 				type: "context",
 				// The legend the renderer cannot draw (no LegendComponent is registered).
-				text:
-					data.previousRevenue === undefined
+				text: omitPrevious
+					? `Solid line: ${absolutePeriod(data.range)}. ${points}`
+					: data.previousRevenue === undefined
 						? `Solid line: ${absolutePeriod(data.range)}. ${points} The previous period could not be loaded.`
 						: `Solid line: ${absolutePeriod(data.range)} · Dashed line: ${absolutePeriod(data.range.previous)} (previous period). ${points}`,
 			},
@@ -444,11 +462,11 @@ function salesSection(
  * else USD (what a store that never saved one trades in). A refund-only or
  * multi-currency previous period names nothing.
  */
-function emptyPeriodCurrency(data: ReportsData): Currency {
-	const previous = [
-		...new Set((data.previousRevenue ?? []).filter(isRevenueBearing).map((b) => b.currency)),
+function emptyPeriodCurrency(data: ReportsData, previousCurrencies: readonly string[]): Currency {
+	const candidates = [
+		previousCurrencies.length === 1 ? previousCurrencies[0] : undefined,
+		data.storeCurrency,
 	];
-	const candidates = [previous.length === 1 ? previous[0] : undefined, data.storeCurrency];
 	const usable = candidates.find(
 		(code): code is string => code !== undefined && CURRENCY_CODE.test(code),
 	);
@@ -523,13 +541,13 @@ function statusesSection(statuses: StatusCountWire[]): Block[] {
 
 function topSection(data: ReportsData, singleCurrency: Currency | undefined): Block[] {
 	// One currency: the revenue ranking, labelled with money. Otherwise the UNITS
-	// ranking — the server's own quantity ranking, so "ranked by units" is true of
-	// both the selection and the order (an older caller without it: the revenue
-	// top list re-sorted by units).
-	const top =
+	// ranking, taken from the same read (a second quantity scan is the cost this
+	// avoids), so "ranked by units" is true of both the selection and the order.
+	const top = (
 		singleCurrency !== undefined
 			? data.top
-			: (data.topByUnits ?? data.top.toSorted((a, b) => b.qtySold - a.qtySold));
+			: data.top.toSorted((a, b) => b.qtySold - a.qtySold || a.productId.localeCompare(b.productId))
+	).slice(0, TOP_PRODUCTS_SHOWN);
 	const suppressed = singleCurrency === undefined && top.length > 0;
 	return section({
 		blockId: "reports:top",
@@ -928,12 +946,6 @@ function refundedFor(revenue: RevenueBucketWire[], currency: Currency): number |
  * EVERY bucket looks like on a service that predates `refundedCents`, which must
  * keep behaving exactly as it did.
  */
-/** True when exactly one currency has revenue-bearing buckets — the page's
- *  single-currency mode (see `buildReportsBlocks`). */
-function hasSingleRevenueCurrency(buckets: readonly RevenueBucketWire[]): boolean {
-	return new Set(buckets.filter(isRevenueBearing).map((b) => b.currency)).size === 1;
-}
-
 function isRevenueBearing(b: RevenueBucketWire): boolean {
 	return b.revenueCents > 0 || (readRefunded(b) ?? 0) === 0;
 }

@@ -13,8 +13,9 @@ import { findBlocks, sectionBlocks, type LooseBlock } from "./helpers/blocks.js"
  * `buildReportsBlocks` — the pure `ReportsData → BlockResponse` half of the
  * Reports page — for the rules that are a function of the reads alone: the AOV
  * comparison's per-currency denominator, a failed previous-period read, the
- * empty period's axis currency, the units ranking of a multi-currency period's
- * top products, and the partial last week of a folded series.
+ * empty period's axis currency and its previous-period line, the Orders card's
+ * missing arrow, the units top ten of a multi-currency period's top products, and
+ * the partial last week of a folded series.
  */
 
 function rangeOf(fromDay: string, toDay: string): ReportsData["range"] {
@@ -165,11 +166,12 @@ describe("reports builder: a failed previous-period read keeps the page", () => 
 				t.includes("The previous period could not be loaded."),
 			),
 		).toBe(true);
-		// The dashed line has nothing to draw: the previous series is all zero.
+		// No previous series at all: an all-zero dashed line would claim the previous
+		// period earned nothing.
 		const series = chartOptions(blocks, "reports:sales-chart")["series"] as Array<{
-			data: Array<[number, number, string]>;
+			name: string;
 		}>;
-		expect(series[1]?.data.every(([, amount]) => amount === 0)).toBe(true);
+		expect(series.map((x) => x.name)).toEqual(["This period"]);
 	});
 });
 
@@ -214,41 +216,105 @@ describe("reports builder: an empty period's money axis is in the store's curren
 	});
 });
 
-describe("reports builder: a multi-currency period's top products are the UNITS ranking", () => {
+describe("reports builder: a multi-currency period's top products are ranked by UNITS", () => {
 	const byRevenue: TopProductWire[] = [
 		{ productId: "a", titleSnapshot: "Atlas", qtySold: 1, revenueCents: 90_000 },
 		{ productId: "b", titleSnapshot: "Bolt", qtySold: 5, revenueCents: 500 },
+		{ productId: "c", titleSnapshot: "Cog", qtySold: 3, revenueCents: 100 },
 	];
-	const byUnits: TopProductWire[] = [byRevenue[1]!, byRevenue[0]!];
 	const multi = [bucket("2026-07-10", 3000, 1), bucket("2026-07-10", 1000, 1, "EUR")];
 
 	function titles(blocks: readonly LooseBlock[]): string[] {
 		return (chartOptions(blocks, "reports:top-chart")["yAxis"] as { data: string[] }).data;
 	}
 
-	test("several currencies → the quantity ranking is drawn, and the copy says so", () => {
-		const blocks = render({ revenue: multi, top: byRevenue, topByUnits: byUnits });
-		expect(titles(blocks)).toEqual(["Bolt", "Atlas"]);
+	test("several currencies → the revenue list re-sorted by units, and the copy says so", () => {
+		const blocks = render({ revenue: multi, top: byRevenue });
+		expect(titles(blocks)).toEqual(["Bolt", "Cog", "Atlas"]);
 		expect(sectionTexts(blocks, "reports:top")[0]).toMatch(/^Ranked by units/);
 	});
 
-	test("one currency → the revenue ranking, whatever the units ranking says", () => {
-		const blocks = render({ revenue: USD_CURRENT, top: byRevenue, topByUnits: byUnits });
-		expect(titles(blocks)).toEqual(["Atlas", "Bolt"]);
+	test("one currency → the revenue ranking", () => {
+		const blocks = render({ revenue: USD_CURRENT, top: byRevenue });
+		expect(titles(blocks)).toEqual(["Atlas", "Bolt", "Cog"]);
 		expect(sectionTexts(blocks, "reports:top")[0]).toMatch(/^By revenue/);
 	});
 });
 
-describe("reports builder: no units ranking supplied", () => {
-	test("a multi-currency period re-sorts the revenue list by units sold", () => {
-		const top: TopProductWire[] = [
-			{ productId: "a", titleSnapshot: "Atlas", qtySold: 1, revenueCents: 90_000 },
-			{ productId: "b", titleSnapshot: "Bolt", qtySold: 5, revenueCents: 500 },
-			{ productId: "c", titleSnapshot: "Cog", qtySold: 3, revenueCents: 100 },
-		];
-		const multi = [bucket("2026-07-10", 3000, 1), bucket("2026-07-10", 1000, 1, "EUR")];
-		const chart = chartOptions(render({ revenue: multi, top }), "reports:top-chart");
-		expect((chart["yAxis"] as { data: string[] }).data).toEqual(["Bolt", "Cog", "Atlas"]);
+describe("reports builder: the units top ten is chosen by units", () => {
+	// 14 products. The store ranks by revenue summed ACROSS currencies, so "Bolt",
+	// cheap and by far the best seller, sits outside its first ten. The page is
+	// handed the whole list and takes the ten itself.
+	const catalogue: TopProductWire[] = [
+		...Array.from({ length: 13 }, (_, i) => ({
+			productId: `p${i}`,
+			titleSnapshot: `Premium ${i}`,
+			qtySold: 1,
+			revenueCents: 90_000 - i * 100,
+		})),
+		{ productId: "bolt", titleSnapshot: "Bolt", qtySold: 500, revenueCents: 500 },
+	];
+	const multi = [bucket("2026-07-10", 3000, 1), bucket("2026-07-10", 1000, 1, "EUR")];
+	const titles = (blocks: readonly LooseBlock[]): string[] =>
+		(chartOptions(blocks, "reports:top-chart")["yAxis"] as { data: string[] }).data;
+
+	test("several currencies → a cheap high-volume product past the revenue top ten leads", () => {
+		const shown = titles(render({ revenue: multi, top: catalogue }));
+		expect(shown).toHaveLength(10);
+		expect(shown[0]).toBe("Bolt");
+	});
+
+	test("one currency → the first ten by revenue, in the store's order", () => {
+		const shown = titles(render({ revenue: USD_CURRENT, top: catalogue.slice(0, 13) }));
+		expect(shown).toEqual(catalogue.slice(0, 10).map((p) => p.titleSnapshot));
+	});
+});
+
+describe("reports builder: the Orders card carries no trend arrow", () => {
+	// The count is every status, cancelled and refunded included, so a rise is not
+	// good news and a green arrow would say it is.
+	test("the signed change is stated, the arrow is not", () => {
+		const blocks = render({
+			revenue: USD_CURRENT,
+			statuses: [{ status: "paid", orderCount: 3 }],
+			previousRevenue: [bucket("2026-07-08", 1000, 1)],
+			previousStatuses: [{ status: "paid", orderCount: 1 }],
+		});
+		const orders = tile(blocks, "Orders");
+		expect(orders).toMatchObject({ value: "3", description: "+200% vs previous 3 days" });
+		expect(orders).not.toHaveProperty("trend");
+	});
+});
+
+describe("reports builder: the previous-period line of an empty period", () => {
+	const seriesNames = (blocks: readonly LooseBlock[]): string[] =>
+		(chartOptions(blocks, "reports:sales-chart")["series"] as Array<{ name: string }>).map(
+			(s) => s.name,
+		);
+
+	test("empty now, one currency before → the previous line is drawn, on that currency", () => {
+		const blocks = render({ previousRevenue: [bucket("2026-07-08", 1250, 1, "EUR")] });
+		expect(seriesNames(blocks)).toEqual(["This period", "Previous period"]);
+		expect(sectionTexts(blocks, "reports:sales").join(" ")).toContain("Dashed line");
+	});
+
+	test("empty now, several currencies before → the previous line is omitted, with no note", () => {
+		const blocks = render({
+			previousRevenue: [bucket("2026-07-08", 1250, 1, "EUR"), bucket("2026-07-08", 900, 1, "USD")],
+		});
+		expect(seriesNames(blocks)).toEqual(["This period"]);
+		const texts = sectionTexts(blocks, "reports:sales").join(" ");
+		expect(texts).toContain("Solid line");
+		expect(texts).not.toContain("Dashed line");
+		expect(texts).not.toContain("previous period");
+	});
+
+	test("a period with sales keeps its previous line", () => {
+		const blocks = render({
+			revenue: USD_CURRENT,
+			previousRevenue: [bucket("2026-07-08", 1250, 1, "EUR"), bucket("2026-07-08", 900, 1, "USD")],
+		});
+		expect(seriesNames(blocks)).toEqual(["This period", "Previous period"]);
 	});
 });
 
