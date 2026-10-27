@@ -427,6 +427,7 @@ const staleCurrency = staleWire === null ? null : staleCurrencyNotice(staleWire)
  * somehow carries no lines still gets the invitation), and a DEGRADED read is
  * not an empty cart — the view shows the invitation only when `!degraded`.
  */
+const showHoldTimer = result !== null && result.ok && result.showHoldTimer;
 const model: CartModel = {
 	summary,
 	/* With the notice up, CURRENCY_MISMATCH's generic "no longer available" (what
@@ -435,7 +436,7 @@ const model: CartModel = {
 	errorMessage:
 		error === null || (staleCurrency !== null && error === "CURRENCY_MISMATCH")
 			? null
-			: cartErrorMessage(error),
+			: cartErrorMessage(error, { holdTimer: showHoldTimer }),
 	degraded,
 	/* BUSY is the page's to say, never a theme's: the view gets the copy. */
 	degradedLead: busy ? cartErrorMessage(BUSY) : "Your cart is unavailable right now.",
@@ -447,7 +448,7 @@ const model: CartModel = {
 	terminal,
 	placedOrderId,
 	/* Off unless the operator turned it on in Settings; a failed read is off. */
-	showHoldTimer: result !== null && result.ok && result.showHoldTimer,
+	showHoldTimer,
 	lineViews,
 	sumRows,
 	totalAmount,
@@ -459,10 +460,11 @@ const model: CartModel = {
  * The countdown's script (ADR-0012's one sanctioned pair: this page →
  * HoldClock). Only on the LIVE arm, and only when some line actually holds
  * stock — a module script on a page with nothing to count is weight for
- * nothing, and the empty and terminal arms render no ribbon.
+ * nothing, and the empty and terminal arms render no ribbon. Not gated on
+ * `showHoldTimer`: with the timer hidden the script still reveals the lapsed
+ * hold's note.
  */
 const hasLiveHolds =
-	model.showHoldTimer &&
 	!model.empty &&
 	!terminal &&
 	lines.some((line) => line.expiresAt !== null);

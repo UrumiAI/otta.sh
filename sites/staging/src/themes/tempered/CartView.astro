@@ -23,6 +23,7 @@ import Notice from "../../components/Notice.astro";
 import PriceTag from "../../components/PriceTag.astro";
 import QtyField from "../../components/QtyField.astro";
 import Sum from "../../components/Sum.astro";
+import { HOLD_RELEASED_NEXT_STEP_NO_TIMER } from "../../lib/hold.js";
 import {
 	CART_CHECKED_OUT_BODY,
 	CART_CHECKED_OUT_TITLE,
@@ -248,8 +249,14 @@ const {
 							    three states, the released line's next step and the no-JS
 							    absolute expiry — this view only hands it the line's own
 							    `expiresAt`, and a line that never took a reservation
-							    renders no ribbon at all. */}
-							{showHoldTimer && <HoldRibbon expiresAt={view.line.expiresAt} />}
+							    renders no ribbon at all. With the store's timer hidden the
+							    ribbon draws no countdown, but a hold that lapses still gets
+							    its next-step note (#547). */}
+							<HoldRibbon
+								expiresAt={view.line.expiresAt}
+								countdown={showHoldTimer}
+								nextStep={showHoldTimer ? undefined : HOLD_RELEASED_NEXT_STEP_NO_TIMER}
+							/>
 						</div>
 						<div class="cart-line-right">
 							<span class="cart-line-money">

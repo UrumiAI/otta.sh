@@ -57,12 +57,18 @@ interface Props extends HTMLAttributes<"div"> {
 	windowSeconds?: number;
 	/** What the shopper should do once it has lapsed (§6). */
 	nextStep?: string;
+	/** `false` — the store hides the hold timer — draws NO countdown (no track,
+	 *  clock or hold copy) while the hold is live, and only the next-step note once
+	 *  it lapses. The root keeps the `data-hold*` hooks, so the same `HoldClock`
+	 *  script reveals the note at the moment the hold ends (#547). */
+	countdown?: boolean;
 }
 
 const {
 	expiresAt = null,
 	windowSeconds = HOLD_WINDOW_SECONDS,
 	nextStep = HOLD_RELEASED_NEXT_STEP,
+	countdown = true,
 	class: className,
 	...rest
 } = Astro.props;
@@ -79,22 +85,27 @@ const expiry = absoluteExpiry(expiresAt);
 			data-state={view.state}
 			data-expires={expiresAt}
 			data-window={windowSeconds}
+			data-countdown={countdown ? undefined : "off"}
 			{...restProps(rest)}
 		>
-			{/* The exemption tokens.css grants covers this element AND its
-			    subtree — the fill inside is what actually moves. */}
-			<div class="track" data-motion="essential">
-				<div class="fill" data-hold-fill style={`--pct: ${view.percent.toFixed(1)}%`} />
-			</div>
-			<div class="meta" role="timer">
-				<span class="u-label label" data-hold-label>
-					{view.label}
-				</span>
-				{/* Replaced with the live mm:ss on the script's first tick. */}
-				<span class="u-mono clock" data-hold-clock>
-					{expiry}
-				</span>
-			</div>
+			{countdown && (
+				<>
+					{/* The exemption tokens.css grants covers this element AND its
+					    subtree — the fill inside is what actually moves. */}
+					<div class="track" data-motion="essential">
+						<div class="fill" data-hold-fill style={`--pct: ${view.percent.toFixed(1)}%`} />
+					</div>
+					<div class="meta" role="timer">
+						<span class="u-label label" data-hold-label>
+							{view.label}
+						</span>
+						{/* Replaced with the live mm:ss on the script's first tick. */}
+						<span class="u-mono clock" data-hold-clock>
+							{expiry}
+						</span>
+					</div>
+				</>
+			)}
 			{/* Written only when the STATE changes, never on a tick. */}
 			<span class="u-sr-only" data-hold-announce aria-live="polite" />
 			<p class="note" data-hold-note hidden={view.state !== "released"}>
