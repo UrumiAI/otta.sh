@@ -33,9 +33,14 @@ const T0 = Date.parse("2026-07-28T14:00:00.000Z");
 
 /** One ribbon on screen, as a recorder. `shownState` starts where the SERVER
  *  rendered it, exactly as the script reads it back off `data-state`. */
-function ribbon(secondsLeft: number, shownState = ""): HoldRibbonPort & { frames: HoldFrame[] } {
+function ribbon(
+	secondsLeft: number,
+	shownState = "",
+	quietAnnounce?: string,
+): HoldRibbonPort & { frames: HoldFrame[] } {
 	const frames: HoldFrame[] = [];
 	return {
+		...(quietAnnounce === undefined ? {} : { quietAnnounce }),
 		expiry: T0 + secondsLeft * 1000,
 		window: HOLD_WINDOW_SECONDS,
 		shownState,
@@ -157,6 +162,39 @@ describe("the polite region is written per STATE CHANGE, never per tick (b)", ()
 		const r = ribbon(540, "held");
 		for (let second = 0; second < 20; second++) tickHoldRibbons([r], T0 + second * 1000);
 		expect(announcements(r)).toEqual([]);
+	});
+});
+
+describe("a quiet ribbon (the countdown is off, #547) announces only its release", () => {
+	const NOTE = "This item leaves your cart when the page reloads — add it again.";
+
+	test("held → expiring → released: silent until release, then the note, not a label", () => {
+		const r = ribbon(120, "held", NOTE);
+		for (const second of [0, 30, 61, 90, 119, 120, 200]) {
+			tickHoldRibbons([r], T0 + second * 1000);
+		}
+		expect(announcements(r)).toEqual([NOTE]);
+	});
+
+	test("a back/forward-cache restore after the hold lapsed, interval resumed, announces the note once", () => {
+		const r = ribbon(-30, "held", NOTE);
+		tickHoldRibbons([r], T0);
+		tickHoldRibbons([r], T0 + 1000);
+		expect(announcements(r)).toEqual([NOTE]);
+	});
+
+	test("a ribbon the server already rendered released stays silent", () => {
+		const r = ribbon(-30, "released", NOTE);
+		tickHoldRibbons([r], T0);
+		expect(announcements(r)).toEqual([]);
+	});
+
+	test("the state still advances, so the note is revealed on time", () => {
+		const r = ribbon(30, "held", NOTE);
+		tickHoldRibbons([r], T0);
+		expect(r.frames[0]?.state).toBe("expiring");
+		tickHoldRibbons([r], T0 + 31_000);
+		expect(r.frames[1]?.state).toBe("released");
 	});
 });
 

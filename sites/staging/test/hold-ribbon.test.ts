@@ -307,4 +307,11 @@ describe("HoldClock — the client script", () => {
 		expect(script).toContain("frame.announce !== null");
 		expect(script.match(/announce\.textContent/g) ?? []).toHaveLength(1);
 	});
+
+	test("a countdown-off ribbon is quiet: the script derives quietAnnounce from data-countdown and the note", () => {
+		// The decision (silent until release, then the note) is hold-ribbon.ts's and
+		// is driven by a fake clock; this pins that the script feeds it.
+		expect(script).toContain('el.dataset.countdown === "off"');
+		expect(script).toMatch(/quietAnnounce:\s*quiet \? \(note\?\.textContent \?\? ""\) : undefined/);
+	});
 });
