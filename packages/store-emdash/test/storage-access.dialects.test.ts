@@ -120,6 +120,23 @@ describeEachDialect("the StorageAccess port over a real PluginStorageRepository"
 		expect(capped.hasMore).toBe(true);
 	});
 
+	it("a page the bucket fills exactly reports no more rows", async () => {
+		// The host reads one row past the limit to decide `hasMore`, so a full page
+		// costs no extra empty read. The product batch chunks at 50 under a limit of
+		// 100 and so never fills a page (#578); this is where that look-ahead is pinned.
+		await counters().put("c1", { n: 1, bucket: "a" });
+		await counters().put("c2", { n: 2, bucket: "a" });
+		await counters().put("c3", { n: 3, bucket: "b" });
+
+		const page = await counters().query({
+			where: { bucket: "a" },
+			orderBy: { n: "asc" },
+			limit: 2,
+		});
+		expect(page.items.map((item) => item.id)).toEqual(["c1", "c2"]);
+		expect(page.hasMore).toBe(false);
+	});
+
 	it("queries a field declared only as a unique index", async () => {
 		// The repository is constructed with indexes AND uniqueIndexes composed
 		// into one allow-list, exactly as the host composes them — so `key` is

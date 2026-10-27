@@ -123,6 +123,17 @@ import type { OrderBy, StorageAccess, StorageCollection, WhereClause } from "./s
 /** The host clamps `limit` at 100, so a scan pages at the ceiling. */
 const LIST_PAGE_SIZE = 100;
 
+/**
+ * The most values one `in` query carries — EmDash's own `SQL_BATCH_SIZE`, and a
+ * DIFFERENT bound from {@link LIST_PAGE_SIZE}. D1 binds at most 100 parameters per
+ * statement and the host binds `plugin_id`, `collection` and the `limit` beside the
+ * values (two more on a cursor page), so an `in` set at the page size is over it
+ * (issue #578). The well-formed-storage widening (up to 2x values for ill-formed
+ * ids) is deliberately not reserved: every entry point refuses ill-formed ids except
+ * `getProductIdsBySku`'s stored owner ids, which only a legacy row can hold.
+ */
+const IN_BATCH = 50;
+
 /** Default page ceiling for a bounded scan. 1000 × 100 pointers. */
 const MAX_LIST_PAGES = 1000;
 
@@ -487,8 +498,9 @@ export class EmdashProductCommerceStore implements ProductCommerceStore {
 	 * One batch of product documents, read with `productId in [...]` rather than a
 	 * `get` per id — the anti-N+1 shape both batch methods exist for.
 	 *
-	 * Chunked at the host's `limit` ceiling of 100, so a batch of N ids is
-	 * `ceil(N / 100)` statements and the common case is ONE. Missing ids are simply
+	 * Chunked at {@link IN_BATCH} ids, NOT at the page size: D1's 100-parameter
+	 * bound counts the host's own parameters too. A batch of N ids is
+	 * `ceil(N / 50)` statements, so the common case is still ONE. Missing ids are simply
 	 * absent (never a null entry, never an error) and duplicates collapse, because a
 	 * document matches a value set once. No ordering is requested: the port
 	 * guarantees none and says to look results up by id.
@@ -497,8 +509,8 @@ export class EmdashProductCommerceStore implements ProductCommerceStore {
 		const unique = [...new Set(productIds)];
 		if (unique.length === 0) return [];
 		const docs: ProductCommerceDoc[] = [];
-		for (let start = 0; start < unique.length; start += LIST_PAGE_SIZE) {
-			const chunk = unique.slice(start, start + LIST_PAGE_SIZE);
+		for (let start = 0; start < unique.length; start += IN_BATCH) {
+			const chunk = unique.slice(start, start + IN_BATCH);
 			let cursor: string | undefined;
 			do {
 				const result = await this.#products.query({
