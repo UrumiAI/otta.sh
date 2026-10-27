@@ -268,6 +268,17 @@ export default defineConfig({
 			// cannot be externalized. It carries no build-time define.
 			noExternal: ["@urumi.ai/otta-plugin", "@urumi.ai/otta-admin-react"],
 		},
+		optimizeDeps: {
+			// Dev only (issue #568). Both are first imported when the admin loads —
+			// PluginRegistry by EmDash's admin.astro, plugin-utils by
+			// packages/admin-react/src/console-api.ts — so Vite's crawl misses them,
+			// discovers them mid-session, re-bundles and reloads the admin SPA under
+			// a running e2e test. Listing them pre-bundles both at startup. Bare
+			// specifiers resolve from this site, which depends on emdash directly
+			// (same 1.3.1 instance admin-react gets). Merged with the emdash
+			// integration's own `include`; a production build does not use it.
+			include: ["emdash/internal/routes/PluginRegistry", "emdash/plugin-utils"],
+		},
 	},
 	devToolbar: { enabled: false },
 });

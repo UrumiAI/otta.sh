@@ -44,6 +44,7 @@
  */
 import { fileURLToPath } from "node:url";
 import { expect, test as base, type Page, type TestInfo } from "@playwright/test";
+import { probeSite } from "./site-probe.js";
 
 /**
  * The screenshot viewport. Playwright's `fullPage: true` truncates these pages, so
@@ -249,7 +250,8 @@ export { MIGRATED_SCREENS, NEVER_MIGRATED_PATHS } from "./registry.js";
 export const REPO_ROOT = fileURLToPath(new URL("../../../", import.meta.url)).replace(/\/$/, "");
 
 /**
- * Does the server at `E2E_BASE_URL` belong to THIS worktree?
+ * Does the server at `E2E_BASE_URL` belong to THIS worktree? (Part of
+ * `siteIsUp()` below.)
  *
  * It matters because ports are shared and worktrees are not. A stray
  * `astro dev --port 4500` from a sibling worktree was live on this box while
@@ -271,19 +273,13 @@ export const REPO_ROOT = fileURLToPath(new URL("../../../", import.meta.url)).re
  * must not be read as attribution. The cost of the strict reading is a skip
  * (or, under `OTTA_E2E_REQUIRE_SITE=1`, a loud failure) when someone points the
  * harness at a preview server — visible, and fixed by running `astro dev`.
+ *
+ * The probe itself lives in `site-probe.ts` (vitest-loadable, tested against
+ * real servers). It is patient with a SLOW site — each request waits 5 s and a
+ * timeout is retried once (issue #568: under load `/` took 3.0-3.3 s, past the
+ * old 3 s cut-off) — and as quick as before with an ABSENT one, because a
+ * refused connection is never retried.
  */
-async function serverIsThisWorktree(): Promise<boolean> {
-	try {
-		const res = await fetch(`${E2E_BASE_URL}/@fs${REPO_ROOT}/package.json`, {
-			redirect: "manual",
-			signal: AbortSignal.timeout(3_000),
-		});
-		return res.ok;
-	} catch {
-		return false;
-	}
-}
-
 let sitePromise: Promise<boolean> | undefined;
 
 /**
@@ -293,18 +289,7 @@ let sitePromise: Promise<boolean> | undefined;
  * rather than silently grade the wrong code.
  */
 export function siteIsUp(): Promise<boolean> {
-	sitePromise ??= (async () => {
-		try {
-			const res = await fetch(E2E_BASE_URL, {
-				redirect: "manual",
-				signal: AbortSignal.timeout(3_000),
-			});
-			if (res.status >= 500) return false;
-		} catch {
-			return false;
-		}
-		return serverIsThisWorktree();
-	})();
+	sitePromise ??= probeSite(E2E_BASE_URL, REPO_ROOT);
 	return sitePromise;
 }
 
