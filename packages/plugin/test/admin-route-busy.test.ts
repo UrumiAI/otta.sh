@@ -92,12 +92,20 @@ describe("Block Kit screens", () => {
 // `invoke` returns the bare envelope here; `blocksOf` wants the sandbox's wrapper.
 const blocks = (response: unknown) => blocksOf({ result: response });
 
+// The exact banner a panel that threw gets (`panelFailedBlocks`), so a screen's
+// own legitimate copy can never trip it.
+function expectNoFailedPanel(shown: unknown): void {
+	for (const label of ["General", "Tax", "Shipping"]) {
+		expect(JSON.stringify(shown)).not.toContain(`"title":"Couldn't load ${label}"`);
+	}
+}
+
 describe("Store settings against a busy store", () => {
 	test("no panel crashed, and each is its own page's busy answer", async () => {
 		const page = blocks(
 			await invoke({ type: "page_load", page: STORE_SETTINGS_PAGE.path }, loaded()),
 		);
-		expect(JSON.stringify(page)).not.toContain("Couldn't load");
+		expectNoFailedPanel(page);
 
 		const alone = async (path: string): Promise<LooseBlock[]> =>
 			blocks(await invoke({ type: "page_load", page: path }, loaded()));
@@ -120,6 +128,6 @@ describe("Store settings against a busy store", () => {
 			loaded(),
 		)) as { toast?: unknown; blocks: LooseBlock[] };
 		expect(outcome.toast).toMatchObject({ message: "Display name saved", type: "success" });
-		expect(JSON.stringify(outcome.blocks)).not.toContain("Couldn't load");
+		expectNoFailedPanel(outcome.blocks);
 	});
 });
