@@ -40,7 +40,15 @@ import { noticeBanner } from "./scaffold/banner.js";
  * changed) renders the new state, not the old.
  *
  * The old `/settings`, `/tax` and `/shipping` pages stay served by the dispatcher
- * for bookmarks; only an interaction that names THIS page is wrapped.
+ * for bookmarks; only an interaction that names THIS page is wrapped. Those
+ * bookmarks work in TRUSTED placement only: for a sandboxed plugin EmDash's
+ * `resolvePluginUiContext` answers 400 "Plugin admin page is not declared" to a
+ * page missing from the entry's `adminPages` (emdash 1.3.1), and only this page
+ * is declared. A trusted plugin is not held to its declarations.
+ *
+ * WHEN AN ACTION RUNS, the other panels re-render from cache: General's Stripe
+ * country read is peek-only, so a Tax or Shipping click never waits on Stripe.
+ * The panels also drop their own page heading (this page supplies it).
  */
 export const STORE_SETTINGS_PAGE: AdminPageConfig = {
 	path: "/store-settings",
