@@ -14,6 +14,7 @@ import { emailSendingStatus, type EmailSendingStatus } from "../email/ctx-email-
 import { STORE_DISPLAY_NAME_KEY } from "../email/email-render-context.js";
 import {
 	countryRequiresBuyerAddress,
+	peekStripeAccountCountry,
 	readStripeAccountCountry,
 	refreshStripeAccountCountry,
 	type StripeAccountCountryStatus,
@@ -59,6 +60,7 @@ import type {
 	FormBlock,
 	PluginContext,
 	RouteHandler,
+	SandboxedRouteContext,
 	SettingsFieldSpec,
 } from "../types.js";
 import type { ProductCommerceStore } from "@urumi.ai/otta-domain";
@@ -447,7 +449,7 @@ async function readPlainSettings(
  * budget, the Stripe account, whether email is available and when a Stripe
  * webhook last verified: seven concurrent reads.
  */
-async function readPageState(ctx: PluginContext): Promise<SettingsPageState> {
+async function readPageState(ctx: PluginContext, peekCountry = false): Promise<SettingsPageState> {
 	const [
 		displayName,
 		paymentSecrets,
@@ -468,7 +470,9 @@ async function readPageState(ctx: PluginContext): Promise<SettingsPageState> {
 		// Never throws. The ONE place besides the key's save that may ask
 		// Stripe: only when nothing usable is cached for the stored key (never
 		// cached, or an unknown answer past its back-off), so checkout never has to.
-		readStripeAccountCountry(ctx),
+		// `peekCountry` (a sibling tab re-rendering around another panel's action)
+		// reads only what is cached: that action never waits on Stripe.
+		peekCountry ? peekStripeAccountCountry(ctx) : readStripeAccountCountry(ctx),
 		// ADR-0031: `ctx.email`, no recent "no email provider" answer, and whether a
 		// send has gone through it since (PR #418 review: three states).
 		emailSendingStatus(ctx),
@@ -600,7 +604,16 @@ export interface SettingsFormInput {
 	block_id?: unknown;
 	/** Idempotency key for the privileged PUT (defaulted if absent). */
 	idempotencyKey?: unknown;
+	/** Set by the Store settings page, which supplies the page heading: this
+	 *  screen then leaves out its own "Settings" header. */
+	embedded?: unknown;
+	/** With `embedded`, on a page load: show the cached Stripe country, never ask
+	 *  Stripe. Set when another tab is the one acting. */
+	peekStripeCountry?: unknown;
 }
+
+/** The screen's own page heading — also what an embedded render strips. */
+const SETTINGS_HEADING = "Settings";
 
 export function createSettingsFormHandler(): RouteHandler<SettingsFormInput> {
 	const renderPage = (
@@ -610,9 +623,13 @@ export function createSettingsFormHandler(): RouteHandler<SettingsFormInput> {
 		paymentRefusal?: PaymentRefusal,
 		settings?: OperationalSettingsWire,
 		currencySwitch?: CurrencySwitchAsk,
+		peekCountry?: boolean,
 	): Promise<BlockResponse> =>
-		renderSettingsPage(ctx, client, notice, paymentRefusal, settings, currencySwitch);
-	return async (routeCtx, ctx) => {
+		renderSettingsPage(ctx, client, notice, paymentRefusal, settings, currencySwitch, peekCountry);
+	const handle = async (
+		routeCtx: SandboxedRouteContext<SettingsFormInput>,
+		ctx: PluginContext,
+	): Promise<BlockResponse> => {
 		const input = routeCtx.input;
 		const action = typeof input.action_id === "string" ? input.action_id : "load";
 		// THE COMPOSITION ROOT, not a constructor (work order 02, INC-B10c-ii):
@@ -1162,7 +1179,24 @@ export function createSettingsFormHandler(): RouteHandler<SettingsFormInput> {
 		}
 
 		// -- page load: render current values (kv + GET /settings) ------------------
-		return renderPage(ctx, client);
+		return renderPage(
+			ctx,
+			client,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			input.embedded === true && input.peekStripeCountry === true,
+		);
+	};
+	return async (routeCtx, ctx) => {
+		const response = await handle(routeCtx, ctx);
+		if (routeCtx.input.embedded !== true) return response;
+		// The page that hosts this screen as a tab has its own heading.
+		const [first, ...rest] = response.blocks;
+		return first?.type === "header" && first.text === SETTINGS_HEADING
+			? { ...response, blocks: rest }
+			: response;
 	};
 }
 
@@ -1191,8 +1225,9 @@ async function renderSettingsPage(
 	/** A settings read the caller already made on this request — reused, not repeated. */
 	alreadyRead?: OperationalSettingsWire,
 	currencySwitch?: CurrencySwitchAsk,
+	peekCountry?: boolean,
 ): Promise<BlockResponse> {
-	const state = await readPageState(ctx);
+	const state = await readPageState(ctx, peekCountry);
 	try {
 		// Nothing was attempted on this path, so what the form shows and what the
 		// label states are the same read (see `persisted` in `buildSettingsBlocks`).
@@ -1374,7 +1409,7 @@ function buildSettingsBlocks(args: {
 	currencySwitch?: CurrencySwitchAsk;
 }): Block[] {
 	const blocks: Block[] = [
-		{ type: "header", text: "Settings" },
+		{ type: "header", text: SETTINGS_HEADING },
 		{
 			type: "context",
 			text: "Your store's name, how checkout holds stock, and the payment and email accounts the store uses.",
@@ -1816,9 +1851,9 @@ function stripeAccountLine(found: StripeAccountCountryStatus): string | null {
 		case "authentication_failed":
 			return "Stripe account country: unknown — Stripe refused this key. Check the key and save it again.";
 		case "unavailable":
-			return "Stripe account country: not checked yet — Stripe couldn't be reached. Opening this page again checks in a few minutes; saving the key again checks now.";
+			return "Stripe account country: not checked yet — Stripe couldn't be reached. Reloading this page checks again once a few minutes have passed; saving the key again checks now.";
 		case "not_checked":
-			return "Stripe account country: not checked yet. Saving the key again checks now.";
+			return "Stripe account country: not checked yet. Reloading this page or saving the key again checks it.";
 	}
 }
 

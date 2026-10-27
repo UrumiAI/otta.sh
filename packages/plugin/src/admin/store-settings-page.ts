@@ -13,10 +13,11 @@ import { noticeBanner } from "./scaffold/banner.js";
  * used to carry three.
  *
  * Nothing about the three screens changes: each panel is the UNCHANGED output of
- * that screen's own handler. EmDash 1.0.1 gave a plugin no way to place a page
- * anywhere but the Plugins group (no `group`, no Settings-hub slot); 1.2 added an
- * optional page `group` (a sidebar folder) but still no Settings-hub slot, so
- * merging pages stays the simplest lever on the sidebar.
+ * that screen's own handler (General alone drops its page heading; see below).
+ * EmDash 1.0.1 gave a plugin no way to place a page anywhere but the Plugins
+ * group (no `group`, no Settings-hub slot); 1.2 added an optional page `group`
+ * (a sidebar folder) but still no Settings-hub slot, so merging pages stays the
+ * simplest lever on the sidebar.
  *
  * WHY EVERY RESPONSE REBUILDS EVERY PANEL. EmDash's page renderer replaces the
  * whole block tree with each response (`setBlocks(data.blocks)`), and a `tab`
@@ -40,7 +41,16 @@ import { noticeBanner } from "./scaffold/banner.js";
  * changed) renders the new state, not the old.
  *
  * The old `/settings`, `/tax` and `/shipping` pages stay served by the dispatcher
- * for bookmarks; only an interaction that names THIS page is wrapped.
+ * for bookmarks; only an interaction that names THIS page is wrapped. Those
+ * bookmarks work in TRUSTED placement only: for a sandboxed plugin EmDash's
+ * `resolvePluginUiContext` answers 400 "Plugin admin page is not declared" to a
+ * page missing from the entry's `adminPages` (emdash 1.3.1), and only this page
+ * is declared. A trusted plugin is not held to its declarations.
+ *
+ * WHEN AN ACTION RUNS, the other panels re-render from cache: General's Stripe
+ * country read is peek-only, so a Tax or Shipping click never waits on Stripe.
+ * Only General drops its own page heading (this page supplies one) and peeks;
+ * Tax and Shipping render as they always did.
  */
 export const STORE_SETTINGS_PAGE: AdminPageConfig = {
 	path: "/store-settings",
@@ -112,7 +122,17 @@ export function createStoreSettingsPageHandler(
 		const actingIndex = findActingPanel(panels, actionId);
 
 		const loadPanel = async (panel: StoreSettingsPanel): Promise<Block[]> => {
-			const loadCtx = { ...routeCtx, input: { type: "page_load", page: panel.page } };
+			// Only while another panel acts: a page_load of this page is the one place
+			// that may ask Stripe for the account country.
+			const loadCtx = {
+				...routeCtx,
+				input: {
+					type: "page_load",
+					page: panel.page,
+					embedded: true,
+					peekStripeCountry: actingIndex >= 0,
+				},
+			};
 			try {
 				return asBlockResponse(await panel.handler(loadCtx as SandboxedRouteContext<never>, ctx))
 					.blocks;
@@ -129,7 +149,8 @@ export function createStoreSettingsPageHandler(
 		let acting: BlockResponse | undefined;
 		if (actingIndex >= 0) {
 			const panel = panels[actingIndex]!;
-			acting = asBlockResponse(await panel.handler(routeCtx as SandboxedRouteContext<never>, ctx));
+			const actCtx = { ...routeCtx, input: { ...routeCtx.input, embedded: true } };
+			acting = asBlockResponse(await panel.handler(actCtx as SandboxedRouteContext<never>, ctx));
 		}
 		const panelBlocks = await Promise.all(
 			panels.map((panel, i) =>
