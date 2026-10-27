@@ -108,7 +108,10 @@ const PAGE_SIZE = 100;
 /**
  * Values per `in` query. Each value is a bound parameter, D1 allows 100 per
  * statement, and the host spends some on the plugin, the collection and the
- * cursor — so a batch stays well under the limit rather than at it.
+ * cursor — so a batch stays well under the limit rather than at it. The host's
+ * own precedent is the same number: emdash's `SQL_BATCH_SIZE = 50`
+ * (`src/utils/chunks.ts`), there "to keep SQL `IN (?, ?, …)` clauses within
+ * Cloudflare D1's bound-parameter limit".
  */
 const IN_BATCH = 50;
 
@@ -240,6 +243,17 @@ interface PageBudget {
 interface LiveSkuOwner {
 	readonly claim: SkuOwnerDoc;
 	readonly product: ProductCommerceDoc;
+}
+
+/**
+ * Whether the owner document really holds the claimed sku. A claim is written one
+ * round trip before its owner, so a crashed writer can leave a live claim nothing
+ * backs (`getProductIdsBySku` guards the same way). Such an owner must neither
+ * title the row nor hide it by its kind, so the row lists untitled.
+ */
+function holdsClaimedSku(product: ProductCommerceDoc, claim: SkuOwnerDoc): boolean {
+	if (claim.ownerKind === "product") return product.sku === claim.sku;
+	return claim.variantKey !== null && product.variants?.[claim.variantKey]?.sku === claim.sku;
 }
 
 /** The live PRODUCT row's title for a sku, or null — never the sku. */
@@ -1085,8 +1099,8 @@ export class EmdashReportingStore implements ReportingStore {
 
 	/**
 	 * Each sku's LIVE claim paired with the not-soft-deleted document it names, in
-	 * batches. A sku with no live claim, or whose owner is gone or tombstoned, is
-	 * absent from the map.
+	 * batches. A sku with no live claim, or whose owner is gone, tombstoned or no
+	 * longer holds the sku, is absent from the map.
 	 */
 	async #liveOwnersOf(skus: readonly string[]): Promise<Map<string, LiveSkuOwner>> {
 		const claims = (await queryIn(this.#skuOwners, "sku", [...new Set(skus)])).filter(
@@ -1100,7 +1114,9 @@ export class EmdashReportingStore implements ReportingStore {
 		const owners = new Map<string, LiveSkuOwner>();
 		for (const claim of claims) {
 			const product = products.get(claim.ownerId);
-			if (product !== undefined) owners.set(claim.sku, { claim, product });
+			if (product !== undefined && holdsClaimedSku(product, claim)) {
+				owners.set(claim.sku, { claim, product });
+			}
 		}
 		return owners;
 	}

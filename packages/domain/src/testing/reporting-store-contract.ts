@@ -372,6 +372,22 @@ export function reportingStoreContract(
 			await h.seedInventory({ sku: "SKU-EBOOK", onHand: 0 });
 			await h.seedProduct({ sku: "SKU-EBOOK", title: "Field Guide (PDF)", productKind: "digital" });
 			expect(await h.store.lowStock(5)).toEqual(before);
+			// A SOFT-DELETED digital product's sku still lists, untitled: with no live
+			// owner its kind is unknown, so it falls under the orphan rule. Whether a
+			// tombstone should hide its sku is undecided (issue #158) — this pins the
+			// current answer so changing it is deliberate.
+			await h.seedInventory({ sku: "SKU-OLD-EBOOK", onHand: 0 });
+			await h.seedProduct({
+				sku: "SKU-OLD-EBOOK",
+				title: "Retired Guide (PDF)",
+				productKind: "digital",
+				deletedAt: "2026-07-01T00:00:00.000Z",
+			});
+			expect((await h.store.lowStock(5)).find((r) => r.sku === "SKU-OLD-EBOOK")).toEqual({
+				sku: "SKU-OLD-EBOOK",
+				onHand: 0,
+				title: null,
+			});
 			// The control: the same seed as a PHYSICAL product does list, so the
 			// omission is the kind rule and not the seed path.
 			await h.seedInventory({ sku: "SKU-POSTER", onHand: 0 });
