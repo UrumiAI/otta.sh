@@ -2,12 +2,16 @@
  * Photographs for the three sample products.
  *
  * The files live in `public/playground-products/` and are served as static
- * assets, so the playground does not need the paid Cloudflare Images binding
- * or the playground's bundled media library (that library only has EmDash's
- * own demo pictures, and its storage refuses uploads). The image field stores
- * `provider: "external"` with this `src`. EmDash keeps `src` on an external
- * value, and the storefront's `productImage` renders it directly as a plain
- * `<img>`.
+ * assets, so the playground does not need the paid Cloudflare Images binding.
+ * The image field stores `provider: "external"` with this `src`. EmDash keeps
+ * `src` on an external value, and the storefront's `productImage` renders it
+ * directly as a plain `<img>`.
+ *
+ * EmDash's own media library is a separate path. Its initializer inserts
+ * seven demo rows, and its storage adapter loads each file from the Worker's
+ * static assets at `/playground-media/<storageKey>` (see
+ * `public/playground-media/`). That adapter refuses uploads, so a product
+ * photograph cannot be pushed into the library; it stays an external image.
  *
  * The shots are the Otta products from the marketing page: a black tee, a
  * cream speckled mug, and a sticker sheet, each carrying the OTTA wordmark.

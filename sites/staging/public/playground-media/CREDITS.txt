@@ -1,0 +1,37 @@
+Photographs for EmDash's playground media library.
+
+EmDash's playground initializer inserts seven media rows
+(`@emdash-cms/cloudflare` `PLAYGROUND_MEDIA_ASSETS`). The admin asks for each
+one at `/_emdash/api/media/file/<storageKey>`. That route reads the playground
+storage adapter, which loads the bytes from the Worker's static assets at
+`/playground-media/<storageKey>` — it does not store the file in the visitor's
+database, and it refuses uploads. These JPEGs are the files that path names.
+They are the bytes shipped with EmDash 1.0.1
+(`demos/playground/public/playground-media` at tag `emdash@1.0.1`). The byte
+length has to match the size recorded on the media row: the file route sends
+that size as Content-Length.
+
+The Otta sample products do not use this library. Their photographs are
+`/playground-products/*.jpg`, stored on the product as an external image and
+rendered by a plain `<img>`.
+
+playground-v1-building-long-term.jpg
+  Code on a monitor in a dark room.
+
+playground-v1-case-for-static.jpg
+  Laptop and coffee on a wooden table.
+
+playground-v1-learning-in-public.jpg
+  Notebook and pen on a desk.
+
+playground-v1-small-tools.jpg
+  Wrenches and hand tools hanging on a workshop wall.
+
+playground-v1-designing-with-constraints.jpg
+  Pencils and design tools on a desk.
+
+playground-v1-weekend-side-project.jpg
+  Code on a screen with a dark theme.
+
+playground-v1-notes-on-simplicity.jpg
+  Geometric pattern carved into white paper.

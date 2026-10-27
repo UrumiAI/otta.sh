@@ -16,6 +16,7 @@ import {
 import { productImage } from "../src/lib/products.js";
 import {
 	PLAYGROUND_MAX_ATTEMPTS,
+	isPlaygroundAdminHome,
 	isPlaygroundBoot,
 	isPlaygroundDocument,
 	itemsFromListResult,
@@ -186,7 +187,10 @@ describe("prepareDemoCommerce", () => {
 });
 
 describe("planPlaygroundNavigation", () => {
-	test("the boot admin request stays in the admin once prices exist", () => {
+	test("the boot admin request opens the shop once prices exist", () => {
+		expect(isPlaygroundAdminHome("/_emdash/admin")).toBe(true);
+		expect(isPlaygroundAdminHome("/_emdash/admin/")).toBe(true);
+		expect(isPlaygroundAdminHome("/_emdash/admin/content")).toBe(false);
 		expect(
 			planPlaygroundNavigation({
 				pathname: "/_emdash/admin",
@@ -194,7 +198,7 @@ describe("planPlaygroundNavigation", () => {
 				boot: true,
 				prepare: { kind: "ready" },
 			}),
-		).toEqual({ type: "render" });
+		).toEqual({ type: "redirect", location: "/products" });
 		expect(
 			planPlaygroundNavigation({
 				pathname: "/_emdash/admin/",
@@ -202,10 +206,18 @@ describe("planPlaygroundNavigation", () => {
 				boot: true,
 				prepare: { kind: "ready" },
 			}),
-		).toEqual({ type: "render" });
+		).toEqual({ type: "redirect", location: "/products" });
 	});
 
 	test("a later visit to the admin is not redirected", () => {
+		expect(
+			planPlaygroundNavigation({
+				pathname: "/_emdash/admin",
+				attempt: 0,
+				boot: false,
+				prepare: { kind: "ready" },
+			}),
+		).toEqual({ type: "render" });
 		expect(
 			planPlaygroundNavigation({
 				pathname: "/_emdash/admin/content",
@@ -234,7 +246,7 @@ describe("planPlaygroundNavigation", () => {
 		expect(stuck.type).toBe("stuck");
 	});
 
-	test("a reload after pricing returns to the admin without the boot query", () => {
+	test("a priced boot still opens the shop, and a priced shop reload only drops the wait query", () => {
 		expect(
 			planPlaygroundNavigation({
 				pathname: "/_emdash/admin",
@@ -242,7 +254,15 @@ describe("planPlaygroundNavigation", () => {
 				boot: true,
 				prepare: { kind: "ready" },
 			}),
-		).toEqual({ type: "redirect", location: "/_emdash/admin" });
+		).toEqual({ type: "redirect", location: "/products" });
+		expect(
+			planPlaygroundNavigation({
+				pathname: "/products",
+				attempt: 2,
+				boot: true,
+				prepare: { kind: "ready" },
+			}),
+		).toEqual({ type: "redirect", location: "/products" });
 	});
 });
 

@@ -5,6 +5,7 @@
  * staging D1.
  */
 import { readFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, test } from "vitest";
@@ -82,5 +83,36 @@ describe("playground build files", () => {
 		expect(playground).toMatch(/__OTTA_PLAYGROUND__:\s*JSON\.stringify\(true\)/);
 		expect(storefront).toMatch(/__OTTA_PLAYGROUND__:\s*JSON\.stringify\(false\)/);
 		expect(storefront).toMatch(/emdash\(\s*buildEmdashOptions\(egress\)\s*\)/);
+	});
+});
+
+describe("playground media library files", () => {
+	test("each host demo asset is a JPEG at the path the storage adapter fetches", () => {
+		const require = createRequire(import.meta.url);
+		// `package.json` is not an export. The playground entry is `dist/db/`,
+		// two levels under the package root, next to `src/`.
+		const entry = require.resolve("@emdash-cms/cloudflare/db/playground");
+		const pkg = path.resolve(path.dirname(entry), "../..");
+		const source = readFileSync(path.join(pkg, "src/db/playground-assets-storage.ts"), "utf8");
+		expect(source).toContain("storageKey: `playground-v1-${filename}`");
+		expect(source).toContain("/playground-media/${asset.storageKey}");
+		expect(source).toContain("/playground-media/${key}");
+
+		const assets = [
+			...source.matchAll(/mediaAsset\(\s*"([^"]+)",\s*"([^"]+\.jpg)",\s*"([^"]+)",\s*([\d_]+),/g),
+		];
+		expect(assets.length).toBeGreaterThan(0);
+		for (const match of assets) {
+			const filename = match[2];
+			const sizeText = match[4];
+			if (filename === undefined || sizeText === undefined) {
+				throw new Error("the playground media asset list could not be read");
+			}
+			const file = readFileSync(
+				path.join(root, "public/playground-media", `playground-v1-${filename}`),
+			);
+			expect(file.byteLength).toBe(Number(sizeText.replaceAll("_", "")));
+			expect(file.subarray(0, 3).toString("hex")).toBe("ffd8ff");
+		}
 	});
 });
