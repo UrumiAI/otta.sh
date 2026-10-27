@@ -612,6 +612,9 @@ export interface SettingsFormInput {
 	peekStripeCountry?: unknown;
 }
 
+/** The screen's own page heading — also what an embedded render strips. */
+const SETTINGS_HEADING = "Settings";
+
 export function createSettingsFormHandler(): RouteHandler<SettingsFormInput> {
 	const renderPage = (
 		ctx: PluginContext,
@@ -1191,7 +1194,7 @@ export function createSettingsFormHandler(): RouteHandler<SettingsFormInput> {
 		if (routeCtx.input.embedded !== true) return response;
 		// The page that hosts this screen as a tab has its own heading.
 		const [first, ...rest] = response.blocks;
-		return first?.type === "header" && first.text === "Settings"
+		return first?.type === "header" && first.text === SETTINGS_HEADING
 			? { ...response, blocks: rest }
 			: response;
 	};
@@ -1406,7 +1409,7 @@ function buildSettingsBlocks(args: {
 	currencySwitch?: CurrencySwitchAsk;
 }): Block[] {
 	const blocks: Block[] = [
-		{ type: "header", text: "Settings" },
+		{ type: "header", text: SETTINGS_HEADING },
 		{
 			type: "context",
 			text: "Your store's name, how checkout holds stock, and the payment and email accounts the store uses.",
