@@ -20,11 +20,13 @@ export interface CartStore {
 	 * many race — answers the same cart (created by whichever call won). The id is
 	 * still minted, never derived from the key.
 	 *
-	 * KEYS ARE SERVER-DERIVED, never caller-chosen: a key answers its cart's id. The
-	 * only producer is `replaceSpentCart`, which derives `rotate:<spentCartId>` after
-	 * checking the spent cart exists, is checked out and its order is finished — so
-	 * the one thing a key reveals is the replacement of a cart the caller already
-	 * holds the id of (cart ids are bearer secrets).
+	 * A key answers its cart's id, so the use-cases own every key and namespace
+	 * each kind: `replaceSpentCart` derives `rotate:<spentCartId>` and
+	 * `replaceStaleCurrencyCart` `recurrency:<cartId>:<currency>`, after checking
+	 * the cart they replace, so what those reveal is the replacement of a cart the
+	 * caller already holds the id of (cart ids are bearer secrets); `createCart`
+	 * keys a plain create on the caller's request key as `create:<key>`, which no
+	 * derived key can collide with, and which is a bearer secret of its own.
 	 *
 	 * The answer is the cart the key minted, IN WHATEVER STATE IT IS NOW: a keyed
 	 * create asked again after its cart has itself been checked out returns that

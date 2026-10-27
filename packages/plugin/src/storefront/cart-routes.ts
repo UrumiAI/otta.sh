@@ -146,6 +146,17 @@ export interface CartCreateRouteInput {
 	 * `currency` (the store's is the point) and no `replacesCartId`.
 	 */
 	replacesStaleCurrencyCartId?: unknown;
+	/**
+	 * Optional (issue #39): the caller's once-only key for a PLAIN create — the
+	 * storefront's per-submission add-to-cart key, so a double-submitted first add
+	 * lands in one cart. The same key answers the same cart and the same cookie.
+	 * The key is a bearer secret: send only a key one visitor alone holds, never one
+	 * shown to many (a key rendered into a page a shared cache may serve to every
+	 * visitor). Absent, every create mints a new cart, as before. Exclusive with
+	 * both replacements, whose key the plugin derives; a malformed key is refused
+	 * `INVALID_INPUT`, never dropped.
+	 */
+	idempotencyKey?: unknown;
 }
 
 export interface CartReadRouteInput {
@@ -301,7 +312,8 @@ function isOverCartQtyCap(value: number): boolean {
 
 /**
  * `POST /carts` proxy — mints a fresh anonymous cart and returns its id
- * plus the cookie descriptor the theme shim applies (see module doc).
+ * plus the cookie descriptor the theme shim applies (see module doc); under the
+ * caller's `idempotencyKey`, the same cart and cookie on every replay.
  */
 export function createCartCreateRouteHandler(): RouteHandler<CartCreateRouteInput> {
 	return (routeCtx, ctx): Promise<CartCreateRouteResult> =>
@@ -312,6 +324,7 @@ export function createCartCreateRouteHandler(): RouteHandler<CartCreateRouteInpu
 			if (raw !== undefined && (typeof raw !== "string" || !isSupportedCurrency(raw))) {
 				return { ok: false, error: "INVALID_CURRENCY" } as const;
 			}
+			const key = routeCtx.input.idempotencyKey;
 			const stale = routeCtx.input.replacesStaleCurrencyCartId;
 			if (stale !== undefined) {
 				// Refused, never dropped, like `replacesCartId`: dropped, a converging
@@ -320,7 +333,8 @@ export function createCartCreateRouteHandler(): RouteHandler<CartCreateRouteInpu
 					typeof stale !== "string" ||
 					!isIdToken(stale) ||
 					raw !== undefined ||
-					routeCtx.input.replacesCartId !== undefined
+					routeCtx.input.replacesCartId !== undefined ||
+					key !== undefined
 				) {
 					return { ok: false, error: "INVALID_INPUT" } as const;
 				}
@@ -335,8 +349,9 @@ export function createCartCreateRouteHandler(): RouteHandler<CartCreateRouteInpu
 			const replaces = routeCtx.input.replacesCartId;
 			if (replaces !== undefined) {
 				// Present-but-malformed is REFUSED, never dropped: dropped, it would turn
-				// a converging replacement into one cart per racing request.
-				if (typeof replaces !== "string" || !isIdToken(replaces)) {
+				// a converging replacement into one cart per racing request. A caller's
+				// key is refused too: a replacement is keyed on the cart it replaces.
+				if (typeof replaces !== "string" || !isIdToken(replaces) || key !== undefined) {
 					return { ok: false, error: "INVALID_INPUT" } as const;
 				}
 				const replaced = await (
@@ -349,8 +364,13 @@ export function createCartCreateRouteHandler(): RouteHandler<CartCreateRouteInpu
 					cookie: cartCookieDescriptor(replaced.cartId),
 				};
 			}
+			// Present-but-malformed is REFUSED, never dropped: dropped, a double-submit
+			// would mint one cart per request again.
+			if (key !== undefined && !isIdempotencyKey(key)) {
+				return { ok: false, error: "INVALID_INPUT" } as const;
+			}
 			const client = await makeCommerceClient(ctx);
-			const { cartId } = await client.createCart(raw as string | undefined);
+			const { cartId } = await client.createCart(raw as string | undefined, key);
 			return { ok: true as const, cartId, cookie: cartCookieDescriptor(cartId) };
 		});
 }

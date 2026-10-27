@@ -671,11 +671,21 @@ export class InProcessCommerceClient implements CommerceClient {
 	 * A failed settings read FAILS the create, deliberately: falling back to USD
 	 * would silently mint wrong-currency carts in a store that saved another one,
 	 * and every later cart operation reads the same document anyway (hold TTL).
+	 *
+	 * With an `idempotencyKey` the use-case keys the create (`create:<key>`, see the
+	 * port); the key is bounded like every cart mutation's, since it becomes a
+	 * document id. A replay still pays the settings read when no currency is named:
+	 * the store answers the first cart either way.
 	 */
-	async createCart(currency?: string): Promise<{ cartId: string }> {
+	async createCart(currency?: string, idempotencyKey?: string): Promise<{ cartId: string }> {
 		if (currency !== undefined) requireSupportedCurrency("currency", currency);
+		if (idempotencyKey !== undefined) requireDocumentIdempotencyKey(idempotencyKey);
 		const chosen = currency ?? effectiveStoreCurrency(await this.#stores.settingsStore.get());
-		const cartId = await createCart(this.#cartDeps, toCurrency(chosen));
+		const cartId = await createCart(
+			this.#cartDeps,
+			toCurrency(chosen),
+			idempotencyKey === undefined ? undefined : toIdempotencyKey(idempotencyKey),
+		);
 		return { cartId };
 	}
 

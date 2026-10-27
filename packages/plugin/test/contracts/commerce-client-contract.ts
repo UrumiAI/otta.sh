@@ -874,6 +874,63 @@ export function storefrontCommerceClientContract(tier: CommerceClientTier): void
 			});
 		});
 
+		// Issue #39: a plain create may carry the caller's idempotency key — the
+		// storefront's per-submission add-to-cart key — so a double-submitted first
+		// add lands in ONE cart instead of minting an orphan per request.
+		test("createCart replayed under the same idempotency key answers the same cart and mints nothing", async () => {
+			const productId = await seedProduct({
+				sku: "SKU-CREATE-KEY",
+				onHand: 5,
+				price: { amount: 900, currency: "USD" },
+			});
+			const { cartId } = await client.createCart(undefined, "create-key-1");
+			const added = await client.addCartLine(
+				cartId,
+				"SKU-CREATE-KEY",
+				productId,
+				1,
+				"create-key-1",
+			);
+			if (!added.ok) throw new Error(`arrange failed: ${added.reason}`);
+
+			// The replay names a different currency on purpose: the first create
+			// decided the cart, and a replay neither rewrites nor replaces it.
+			const replay = await client.createCart("EUR", "create-key-1");
+			expect(replay).toEqual({ cartId });
+			expect(await client.getCart(cartId)).toMatchObject({
+				ok: true,
+				cart: { currency: "USD", state: "active", lines: [{ sku: "SKU-CREATE-KEY", qty: 1 }] },
+			});
+		});
+
+		test("createCart under two different idempotency keys mints two carts, and a keyless create always mints its own", async () => {
+			const a = await client.createCart(undefined, "create-key-a");
+			const b = await client.createCart(undefined, "create-key-b");
+			const bare = await client.createCart();
+			expect(new Set([a.cartId, b.cartId, bare.cartId]).size).toBe(3);
+		});
+
+		// What scopes a create key to ONE visitor is that only that visitor holds it:
+		// the key is a bearer secret, as the cart id it answers is. The client cannot
+		// see visitors (the routes are cookie-blind), so it guarantees the rest — a
+		// key reaches only the cart minted under that exact key, never one the server
+		// keyed itself, and never one minted without a key.
+		test("a different visitor's create — under its own key, or none — never answers the first visitor's cart", async () => {
+			const first = await client.createCart(undefined, "create-key-visitor-1");
+			const otherKey = await client.createCart(undefined, "create-key-visitor-2");
+			const keyless = await client.createCart();
+			// A caller that names the first cart's id AS a key gets a cart of its own.
+			const byId = await client.createCart(undefined, first.cartId);
+			expect(new Set([first.cartId, otherKey.cartId, keyless.cartId, byId.cartId]).size).toBe(4);
+		});
+
+		test("createCart refuses a malformed idempotency key rather than minting an unkeyed cart", async () => {
+			const refused = { code: "INVALID_INPUT", field: "idempotencyKey" };
+			await expect(client.createCart(undefined, "")).rejects.toMatchObject(refused);
+			await expect(client.createCart(undefined, "k\u0000nul")).rejects.toMatchObject(refused);
+			await expect(client.createCart(undefined, "k".repeat(513))).rejects.toMatchObject(refused);
+		});
+
 		test("a currency-shaped code outside the currency table (XYZ) is refused on every non-admin write that names one", async () => {
 			// Three letters passes the shape check; the table is what every money
 			// boundary (checkout rounding, Stripe's exponent) knows. Issue #457.

@@ -3,9 +3,10 @@
  * refused step, safe to try again) at the site boundary.
  *
  *  - `dispatchOttaRoute` retries it ONCE, and only for an ALLOWLISTED call: a
- *    read route, or a keyed cart-line mutation whose replay the domain dedupes.
- *    Everything else — `cart/create`, `checkout/place`, the Stripe webhook, and
- *    any route added later — is never retried here.
+ *    read route, or a keyed cart mutation (a line change, or a `cart/create` that
+ *    carries a key) whose replay the domain dedupes. Everything else — an unkeyed
+ *    `cart/create`, `checkout/place`, the Stripe webhook, and any route added
+ *    later — is never retried here.
  *  - A form POST that still ends BUSY answers 503 + a short `Retry-After` with
  *    friendly copy — never the generic "something went wrong" 303.
  *  - A GET page that ends BUSY is marked 503 + `Retry-After` by `markBusy`.
@@ -207,6 +208,24 @@ describe("dispatchOttaRoute — one automatic retry, only when replay is safe", 
 
 		expect(result).toEqual(BUSY_RESULT);
 		expect(calls).toHaveLength(1);
+	});
+
+	test("a KEYED cart/create is retried once with the same key — the same key is the same cart (#39)", async () => {
+		const ok = { ok: true, cartId: "c-1", cookie: {} };
+		const { handler, calls } = scripted({ [STOREFRONT_CART_CREATE_ROUTE]: [BUSY_RESULT, ok] });
+
+		const result = await dispatchOttaRoute(
+			handler,
+			STOREFRONT_CART_CREATE_ROUTE,
+			{ idempotencyKey: "press-1" },
+			new URL(SITE),
+		);
+
+		expect(result).toEqual(ok);
+		expect(calls.map((c) => c.body)).toEqual([
+			{ idempotencyKey: "press-1" },
+			{ idempotencyKey: "press-1" },
+		]);
 	});
 
 	test("checkout/place is NEVER auto-retried, even though it carries an idempotencyKey", async () => {
