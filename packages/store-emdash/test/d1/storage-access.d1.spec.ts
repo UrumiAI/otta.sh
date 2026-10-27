@@ -68,7 +68,7 @@ describe("the migrated D1 schema", () => {
 		expect(columns.rows.map((row) => row.name)).toContain("revision");
 	});
 
-	it("carries both revision triggers from the conditional-write migration", async () => {
+	it("carries exactly the reviewed revision triggers", async () => {
 		// The whole design rests on these two objects existing. They are created by
 		// the migration's NON-Postgres branch, which is the branch D1 takes, and a
 		// database without them would let every compare-and-set agree with itself.

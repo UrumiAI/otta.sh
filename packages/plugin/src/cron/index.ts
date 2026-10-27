@@ -12,12 +12,12 @@
  * WHY `plugin:activate` IS NOT ENOUGH, which is the defect this file used to have.
  * The host fires `plugin:activate` from the admin's enable toggle (`setPluginStatus`)
  * and from the marketplace/registry install and update lifecycles — and, since
- * EmDash 1.1, once at the first boot of a config-array plugin with no state row
+ * EmDash 1.2, once at the first boot of a config-array plugin with no state row
  * (see `createActivateHandler`). Otta is registered in the SITE CONFIG's `plugins`
- * array; on EmDash 1.0.x it is enabled by absence (`isPluginEnabled` treats a
+ * array; before EmDash 1.2 it is enabled by absence (`isPluginEnabled` treats a
  * plugin with no status row as active), its hooks and routes run from the first
- * request, and nobody ever toggles it. A config-array deployment on 1.0.x therefore
- * reaches `plugin:activate` NEVER, and even on 1.1+ that single attempt is not
+ * request, and nobody ever toggles it. A config-array deployment before 1.2 therefore
+ * reaches `plugin:activate` NEVER, and even on 1.2+ that single attempt is not
  * retried by the host. The first cut of this file scheduled the task only from there and from the tick — a tick
  * that cannot happen until something schedules. Registration could not bootstrap
  * itself.
@@ -221,10 +221,10 @@ export function withSweepBootstrap<A, R>(
 export const ACTIVATE_SCHEDULE_BUDGET_MS = 3_000;
 
 /** The `plugin:activate` handler: the host's own registration moment — an
- *  operator's admin enable toggle, a marketplace install, and, since EmDash 1.1,
+ *  operator's admin enable toggle, a marketplace install, and, since EmDash 1.2,
  *  the FIRST BOOT of a config-array deployment (the host runs install → activate
- *  once for a config plugin with no state row). Not the only moment: on EmDash
- *  1.0.x a config-array deployment never reaches it, hence the bootstrap.
+ *  once for a config plugin with no state row). Not the only moment: before
+ *  EmDash 1.2 a config-array deployment never reaches it, hence the bootstrap.
  *
  *  NEVER FAILS — neither rejects nor outruns the host's hook timeout. On that
  *  first-boot path a failed hook (a throw OR a timeout) makes the host DISABLE the

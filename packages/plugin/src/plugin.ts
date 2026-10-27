@@ -113,8 +113,8 @@ const plugin: SandboxedPlugin = {
 	hooks: {
 		// Work order 02 INC-C4: `withSweepBootstrap` is what actually gets the sweep
 		// task REGISTERED on this deployment. Otta is hand-registered in the site's
-		// `plugins` array, so EmDash 1.0.x never fires `plugin:activate` for it (that
-		// runs only from an admin enable toggle; 1.1+ also fires it once at first
+		// `plugins` array, so EmDash before 1.2 never fires `plugin:activate` for it (that
+		// runs only from an admin enable toggle; 1.2+ also fires it once at first
 		// boot, and cannot be relied on to retry) — but these four content hooks and the
 		// storefront routes below do fire, with a live `ctx.cron` on each. The wrapper
 		// ensures the task exists, once per isolate, and can neither slow nor fail the
@@ -129,7 +129,7 @@ const plugin: SandboxedPlugin = {
 		// declare it as it stands, and the declared capabilities stay exactly
 		// `content:read` + `network:request` + `email:send`. `plugin:activate` is the host's own
 		// registration moment (an admin toggle, a marketplace install, and on EmDash
-		// 1.1+ one unretried attempt at first boot — so it must never fail, see
+		// 1.2+ one unretried attempt at first boot — so it must never fail, see
 		// `createActivateHandler`); the tick re-affirms; the wrappers above cover the
 		// configured deployment that reaches none of them, or whose attempt failed.
 		"plugin:activate": { handler: createActivateHandler() },

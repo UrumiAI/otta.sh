@@ -924,7 +924,8 @@ provider), and D1's "too many API requests by single Worker invocation" (the hos
 that event used more of the 50 than the 20 the sweep leaves it).
 
 Nothing needs to register that task by hand. The site lists the plugin in its `plugins`
-array, so the host never fires `plugin:activate` for it; instead the plugin wraps its four
+array, so the host fires `plugin:activate` for it at most once (EmDash 1.2+, at the first
+boot with no plugin state row, never retried); the plugin does not rely on that. It wraps its four
 content-sync hooks and the two public catalog routes (product list and product page) in
 `withSweepBootstrap` (`packages/plugin/src/cron/index.ts`), which ensures the task exists
 once per isolate on the first such request (the tick does the same, for a cron-only isolate)
@@ -980,7 +981,10 @@ redirects table and neither reversible: `090_redirect_enable_loop_guard` (a trig
 to re-enable a redirect into a loop) and `091_redirect_artifacts` (new `_emdash_redirect_state`,
 `_emdash_redirect_artifacts` and `_emdash_redirect_generation_artifacts` tables, plus revision
 triggers on `_emdash_redirects`). No Otta table or plugin-storage row is touched. Take the same
-D1 backup first. One behaviour change on the Worker: since 1.3.1, a site in the default `auto`
+D1 backup first. The first boot on 1.3.1 also runs each config plugin's `plugin:install` /
+`plugin:activate` once (new in 1.2). Otta's handler never fails, but if the Worker log shows
+`EmDash: plugin:activate failed for config plugin "…"; disabling it`, that plugin and its cron
+stay off until an admin re-enables it under **Plugins**. One behaviour change on the Worker: since 1.3.1, a site in the default `auto`
 migration mode whose migrations a request could not finish answers **503** until they are
 applied, instead of serving pages without content. If a deploy answers 503, read the Worker log
 and apply the pending migration from the CLI, after step 4's build (which writes

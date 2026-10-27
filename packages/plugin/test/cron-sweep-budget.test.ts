@@ -649,7 +649,7 @@ describe("the hook's own bookkeeping", () => {
 	});
 
 	test("plugin:activate never rejects when the task cannot be registered", async () => {
-		// EmDash 1.1+ runs install → activate once, at first boot, for a config-array
+		// EmDash 1.2+ runs install → activate once, at first boot, for a config-array
 		// plugin with no state row, and DISABLES the plugin (and its cron) for good
 		// if the hook fails. A transient cron-table error there must not take the
 		// store offline: the latched bootstrap on the next request retries.
