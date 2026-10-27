@@ -975,6 +975,28 @@ Otta's own code does not log the URL on that route.
   carry the URL in their `Event` field. Field names and options change, so confirm them in
   Cloudflare's [Logpush docs](https://developers.cloudflare.com/logs/logpush/) and
   [Workers Logs docs](https://developers.cloudflare.com/workers/observability/logs/workers-logs/).
+- **nginx.** Log a URI with the query stripped for `/orders/`, instead of `$request`. This must
+  **replace** your logging, not add to it: remove or change every existing `access_log`, in
+  `http {}` and in any `server {}` or `location {}` that sets its own, because several
+  `access_log` directives all write, and any left in place keeps logging the full URL.
+
+  ```nginx
+  # http {} context
+  map $request_uri $otta_logged_uri {
+  	~^(?<orders_path>/orders/[^?]*)\? $orders_path;
+  	default $request_uri;
+  }
+  log_format otta '$remote_addr - $remote_user [$time_local] '
+                  '"$request_method $otta_logged_uri $server_protocol" '
+                  '$status $body_bytes_sent "$http_referer" "$http_user_agent"';
+  access_log /var/log/nginx/access.log otta;
+  ```
+
+  nginx's `error_log` is a separate matter: at the default `error` level it records
+  `request: "GET …?query"` for proxy errors (an upstream that is down, a timeout), and its
+  format cannot be changed. Restrict access to it and include it in the purge below. Also check
+  any upstream or CDN logs.
+
 **Upgrading and rolling back.** Deploy a new version **all at once** (`wrangler deploy`),
 not as a gradual rollout that keeps old and new Workers serving side by side. A release that
 changes a stored document's shape migrates it forward on first write, and an old Worker still
