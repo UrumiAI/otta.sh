@@ -26,7 +26,7 @@
  * `cronReschedule` into BOTH the hook-pipeline context factory and the per-route
  * `PluginRouteRegistry`, so `ctx.cron` is present on every hook invocation and
  * every route invocation. `withSweepBootstrap` wraps handlers that a live
- * deployment is certain to reach — the four content-sync hooks and the two public
+ * deployment is certain to reach — the five content-sync hooks and the two public
  * storefront routes — and each wrapped handler ensures the task exists before
  * doing its own work. No host hook list changes and no call site outside this
  * package is touched: the plugin bootstraps its own schedule.
