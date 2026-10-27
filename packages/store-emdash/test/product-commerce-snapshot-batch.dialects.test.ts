@@ -8,10 +8,11 @@
  * indexed `productId in [...]` query for the batch, zero per-id reads. Only the
  * unit changes, from a root SQL statement to a storage-port call.
  *
- * The batch is chunked at the host's `limit` ceiling of 100, so a batch LARGER
- * than that is `ceil(N / 100)` calls rather than one; the second case pins that
- * shape, because "one call" silently becoming "one call per row" at 101 ids would
- * be exactly the regression this file exists to catch.
+ * The batch is chunked at 50 ids — not at the host's `limit` ceiling of 100, since
+ * D1 binds at most 100 parameters and the host binds three of its own (issue #578)
+ * — so a batch LARGER than that is `ceil(N / 50)` calls rather than one; the second
+ * case pins that shape, because "one call" silently becoming "one call per row"
+ * would be exactly the regression this file exists to catch.
  *
  * The behavioral cases live in `productCommerceStoreContract`. The caller-level
  * half — that the checkout paths call the bulk method once instead of looping
@@ -81,7 +82,7 @@ describeEachDialect("getManyByProductId call count", (ctx) => {
 		expect(counted.counts.of("get")).toBe(0);
 	});
 
-	test("a batch past the host's limit ceiling pages — one call per 100 ids, not one per id", async () => {
+	test("a batch past the in-set bound chunks — one call per 50 ids, not one per id", async () => {
 		const h = makeProductCommerceHarness(bound.storage);
 		const ids = await seedProducts(h, "prod-page", 120);
 		const counted = countedStore(h);
@@ -89,15 +90,11 @@ describeEachDialect("getManyByProductId call count", (ctx) => {
 		const map = await counted.store.getManyByProductId(ids);
 
 		expect(map.size).toBe(120);
-		// TWO calls for 120 ids, exactly: one per chunk of 100. A chunk that fills its
-		// page costs no extra read, because the host looks one row past the limit to
-		// decide `hasMore` rather than making the caller discover it with an empty page.
-		// Asserted as an equality — a bound that drifted upward is the regression this
-		// case exists to catch, and one that drifted to 120 is the one it is named for. It
-		// also pins the host's look-ahead: if the build this package is written for stopped
-		// reading one row past the limit, a full page would report `hasMore` and this would
-		// become 3 — a change in the host, caught here rather than in production.
-		expect(counted.counts.of("query")).toBe(2);
+		// THREE calls for 120 ids, exactly: chunks of 50, 50 and 20. Asserted as an
+		// equality — a chunk that drifted back up to the page size is the D1 bug of
+		// #578 (fewer calls here, "too many SQL variables" on D1), and one that drifted
+		// to 120 is the per-row regression this case is named for.
+		expect(counted.counts.of("query")).toBe(3);
 		expect(counted.counts.of("get")).toBe(0);
 	});
 

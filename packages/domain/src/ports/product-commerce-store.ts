@@ -106,7 +106,9 @@ export interface ProductListFilter {
 	 * ordered by `created_at`). Both happen to be inclusive at the boundary
 	 * today, so the two agree there — but they are independent definitions
 	 * with independent absent-row rules, and a future change to either one's
-	 * boundary or absent-row decision must update BOTH docs, not just one.
+	 * boundary or absent-row decision must update BOTH docs, not just one. The
+	 * report also omits digital skus (issue #158); this filter does not, and
+	 * leaves kind to its own `productKind` axis.
 	 *
 	 * OMITTED (`undefined`) ⇒ no stock-based filtering — the unchanged
 	 * default every existing caller keeps seeing. This is also the correct
@@ -541,6 +543,15 @@ export interface ProductCommerce {
 	 *  watermark); null until a sync has ever carried one. */
 	contentUpdatedAt: string | null;
 	createdAt: Date;
+	/**
+	 * The compare-and-set watermark `updateCommerceFields` guards on — what an open
+	 * admin edit form carries back as `expectedUpdatedAt`. Every applied edit and
+	 * lifecycle flip moves it. An applied `upsert` moves it ONLY when an owned field
+	 * changed (sku, price, title / titleRejection, tax class, dimensions, kind —
+	 * `upsertChangesOwnedFields`, issue #153): a CMS save that re-sends what the
+	 * row already holds stamps its key and `contentUpdatedAt` and leaves this
+	 * alone, so it cannot make a form that conflicts with nothing stale.
+	 */
 	updatedAt: Date;
 }
 

@@ -47,9 +47,8 @@
  * first isolate after a deploy at the cost of one write, and an unchanged one
  * costs a read per isolate — not a write per minute.
  */
-import type { HostCronAccess } from "@urumi.ai/otta-store-emdash";
 import { encryptStoredPaymentSecrets } from "../encrypt-payment-secrets.js";
-import type { CronAccess, CronEvent, CronTaskInfo, HookHandler, PluginContext } from "../types.js";
+import type { CronEvent, CronTaskInfo, HookHandler, PluginContext } from "../types.js";
 import type { PluginLifecycleEvent } from "../types.js";
 import {
 	runCommerceSweeps,
@@ -132,13 +131,10 @@ export interface SweepScheduleOutcome {
  * the operator should see, not a boot failure.
  */
 export async function ensureSweepTaskScheduled(ctx: PluginContext): Promise<SweepScheduleOutcome> {
-	const cron: HostCronAccess | undefined = ctx.cron;
+	const cron = ctx.cron;
 	if (cron === undefined) {
 		return { scheduled: false, task: SWEEP_TASK_NAME, schedule: SWEEP_SCHEDULE, tasks: [] };
 	}
-	// Check the reverse assignment too, so neither shape can silently lose a method.
-	const mirrored: CronAccess = cron;
-	void mirrored;
 	// READ FIRST, write only on a difference. The host's `schedule` is an upsert
 	// that also resets the row's `next_run_at`; issued from inside a running tick it
 	// nudges the very row the executor is about to reschedule, and issued on every

@@ -30,6 +30,7 @@ import type {
 	ConditionalWriteResult,
 	NumericDelta,
 	PluginContext,
+	PluginHooks,
 	StorageCollection as HostStorageCollection,
 	UpdateIfArgs,
 	UpdateIfResult,
@@ -52,6 +53,15 @@ export type Versioned<T> = VersionedValue<T>;
 
 /** The host's cron API, derived because EmDash does not export it by name. */
 export type HostCronAccess = NonNullable<PluginContext["cron"]>;
+
+/**
+ * The event the host's `cron` hook receives, derived because the `emdash` entry
+ * does not export it by name. `cron` is a bare handler or a config object, so the
+ * function member is extracted before its first parameter is read.
+ */
+export type HostCronEvent = Parameters<
+	Extract<NonNullable<PluginHooks["cron"]>, (...args: never[]) => unknown>
+>[0];
 
 /**
  * The host's `where` algebra: field → scalar, range, `in` set, or prefix. It is

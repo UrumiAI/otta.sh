@@ -19,8 +19,9 @@ productCommerceStoreContract(
 		// `reservations` rows the dialect harnesses insert, feeding step 0 of THE
 		// SKU-RENAME RULE (a rename away from a held sku is refused).
 		const liveHolds = new Map<string, number>();
+		const clock = new FixedClock(new Date("2026-07-10T00:00:00.000Z"));
 		const store = new InMemoryProductCommerceStore({
-			clock: new FixedClock(new Date("2026-07-10T00:00:00.000Z")),
+			clock,
 			inventoryOnHand: (sku) => onHand.get(sku) ?? null,
 			liveHoldsOnSku: (sku) => liveHolds.get(sku) ?? 0,
 		});
@@ -34,6 +35,9 @@ productCommerceStoreContract(
 			},
 			async seedHold(sku) {
 				liveHolds.set(sku, (liveHolds.get(sku) ?? 0) + 1);
+			},
+			advanceClock(ms) {
+				clock.advance(ms);
 			},
 		};
 	},

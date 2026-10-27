@@ -612,6 +612,42 @@ describe("the five new sweepers, each from an injected partial state", () => {
 		expect(await pointers.get(pointerId)).toEqual(healed);
 	}, 180_000);
 
+	test("order-sku-index RECORDS a pointer held by another order and never overwrites it", async () => {
+		const suffix = "index-held";
+		const placed = await placeOrder(suffix, {
+			at: new Date(Date.now() - 60_000),
+			holdExpiresAt: new Date(Date.now() + DAY_MS).toISOString(),
+		});
+		const pointers = collectionOf<OrderSkuIndexDoc>(storage, ORDER_SKU_INDEX_COLLECTION);
+		const orders = collectionOf<OrderDoc>(storage, ORDERS_COLLECTION);
+		const pointerId = orderSkuIndexId(placed.sku.toLowerCase(), placed.id);
+
+		// THE INJECTED PARTIAL STATE: this order's pair id now names somebody else —
+		// a collided id source or a hand-written pointer.
+		expect(await pointers.delete(pointerId)).toBe(true);
+		const foreign = {
+			sku: placed.sku.toLowerCase(),
+			orderId: "ord-other",
+			createdAt: new Date(Date.now() - DAY_MS).toISOString(),
+		};
+		expect((await pointers.compareAndSet(pointerId, null, foreign)).applied).toBe(true);
+
+		const swept = await tickUntilRan("order-sku-index");
+		expect(swept.anomalies ?? []).toContain(
+			`${ORDER_SKU_INDEX_COLLECTION}/${pointerId}: held by ord-other`,
+		);
+		// Durable, not just in the summary the cron executor throws away.
+		expect((await orders.get(placed.id))?.reconciliationFlag).toBe(
+			`sku pointer ${pointerId} is held by order ord-other`,
+		);
+		// Create-if-absent only: the incumbent is reported, never clobbered.
+		expect(await pointers.get(pointerId)).toEqual(foreign);
+
+		// Leave the shared store clean: without the foreign incumbent, the next tick heals
+		// the pair back to this order instead of re-raising the anomaly in later cases.
+		expect(await pointers.delete(pointerId)).toBe(true);
+	}, 180_000);
+
 	test("hold-intents completes a half-done adoption from the order's OWN recorded intent", async () => {
 		const suffix = "intent";
 		const holdExpiresAt = new Date(Date.now() + DAY_MS).toISOString();

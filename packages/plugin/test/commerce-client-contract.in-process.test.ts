@@ -981,3 +981,133 @@ describe("in-process commerce: a cart line with no productId resolves by sku (#1
 		});
 	});
 });
+
+/** The coupon cursor's encoding, mirrored for the #289 case below: base64url
+ *  over the JSON payload. */
+function decodeToken(token: string): Record<string, unknown> {
+	return JSON.parse(Buffer.from(token, "base64url").toString("utf8")) as Record<string, unknown>;
+}
+function encodeToken(payload: unknown): string {
+	return Buffer.from(JSON.stringify(payload), "utf8").toString("base64url");
+}
+
+/**
+ * Issue #289 — two admin-client bounds the shared contract cannot pin, each for
+ * its own reason.
+ *
+ * THE COUPON CURSOR'S FORGED HALF. The contract refuses an undecodable token,
+ * which any transport owes. A token that DECODES but carries a position or a
+ * filter this surface would never have minted can only be built by knowing the
+ * token's encoding, and that encoding is this client's, not the port's.
+ *
+ * THE EXACT SKU-CONFLICT TRANSLATION. The contract's rename case admits either
+ * `sku_taken` or `sku_stock_conflict`, because which guard fires first is a
+ * store's business. The document store's order is fixed (the `sku_owners` claim
+ * outranks both stock refusals), so here the store really raises
+ * `SkuConflictError` and the case pins that it reaches the caller as the typed
+ * `sku_taken` naming the sku — never the store's own error.
+ */
+describe("in-process admin clients: the forged coupon cursor and the sku-conflict translation (#289)", () => {
+	let harness: InProcessCommerceHarness;
+	let rules: InProcessAdminRulesClient;
+	let products: InProcessAdminProductsClient;
+
+	beforeAll(async () => {
+		harness = await makeInProcessCommerce();
+		rules = new InProcessAdminRulesClient(harness.ctx);
+		products = new InProcessAdminProductsClient(harness.ctx);
+	}, 120_000);
+	afterEach(async () => {
+		await harness.reset();
+	});
+	afterAll(async () => {
+		await harness.close();
+	});
+
+	test("a coupon cursor that decodes but was not issued — bad position, unrevalidatable filter, not an object — is refused, never a restart", async () => {
+		for (const [id, code] of [
+			["cur-f-1", "CUR-F-ONE"],
+			["cur-f-2", "CUR-F-TWO"],
+		] as const) {
+			const created = await rules.createCoupon({
+				id,
+				code,
+				type: "fixed_amount",
+				amountCents: 100,
+				currency: "USD",
+			});
+			expect(created.ok).toBe(true);
+		}
+		const first = await rules.listCoupons({}, { limit: 1 });
+		const issued = first.nextCursor;
+		if (issued === null) throw new Error("arrange: the first page named no cursor");
+		// THE CONTROL: the token as issued pages on, so every refusal below is the
+		// tampering's and not a token this client could never have read.
+		const second = await rules.listCoupons({}, { cursor: issued });
+		expect(second.coupons).toHaveLength(1);
+		expect(second.coupons[0]?.id).not.toBe(first.coupons[0]?.id);
+
+		const real = decodeToken(issued);
+		const pos = real["pos"] as { createdAt: string; couponId: string };
+		const forged: [string, string][] = [
+			// The position: an instant the keyset predicate cannot compare, and a
+			// coupon id outside its bounds.
+			[
+				"createdAt not an instant",
+				encodeToken({ ...real, pos: { ...pos, createdAt: "yesterday" } }),
+			],
+			[
+				"createdAt with an offset",
+				encodeToken({ ...real, pos: { ...pos, createdAt: "2026-01-01T00:00:00+01:00" } }),
+			],
+			["empty couponId", encodeToken({ ...real, pos: { ...pos, couponId: "" } })],
+			["over-long couponId", encodeToken({ ...real, pos: { ...pos, couponId: "c".repeat(201) } })],
+			["no position", encodeToken({ ...real, pos: null })],
+			// The filter: an axis the list does not have, and a search outside its bounds.
+			["unknown filter axis", encodeToken({ ...real, filter: { status: "active" } })],
+			["empty search", encodeToken({ ...real, filter: { search: "" } })],
+			["over-long search", encodeToken({ ...real, filter: { search: "s".repeat(201) } })],
+			["filter not an object", encodeToken({ ...real, filter: "everything" })],
+			// The payload itself: valid base64url, but not a cursor object.
+			["JSON null", encodeToken(null)],
+			["not JSON", Buffer.from("{nope", "utf8").toString("base64url")],
+		];
+		for (const [why, cursor] of forged) {
+			let raised: unknown = null;
+			const page = await rules.listCoupons({}, { cursor }).catch((err: unknown) => {
+				raised = err;
+				return null;
+			});
+			expect(page, `${why}: no page is served`).toBeNull();
+			expect(isCommerceInputError(raised), `${why}: a typed input error`).toBe(true);
+			expect((raised as { field?: unknown }).field, `${why}: names the cursor`).toBe("cursor");
+		}
+	});
+
+	test("renaming onto a sku another live product holds is the typed sku_taken naming that sku", async () => {
+		const { client } = harness;
+		for (const [productId, sku] of [
+			["prod-sku-a", "SKU-TAKEN-A"],
+			["prod-sku-b", "SKU-TAKEN-B"],
+		] as const) {
+			await client.upsertProductCommerce(
+				productId,
+				{ sku, title: productId, price: { amount: 500, currency: "USD" } },
+				`seed-${productId}`,
+			);
+		}
+		const watermark = (await products.getProduct("prod-sku-a"))?.updatedAt;
+		if (watermark === undefined) throw new Error("arrange: prod-sku-a did not read back");
+
+		expect(
+			await products.updateProduct(
+				"prod-sku-a",
+				{ expectedUpdatedAt: watermark, sku: "SKU-TAKEN-B" },
+				"rename-onto-b",
+			),
+		).toEqual({ ok: false, reason: "sku_taken", sku: "SKU-TAKEN-B" });
+		// Refused whole: neither product's sku moved.
+		expect((await products.getProduct("prod-sku-a"))?.sku).toBe("SKU-TAKEN-A");
+		expect((await products.getProduct("prod-sku-b"))?.sku).toBe("SKU-TAKEN-B");
+	});
+});
