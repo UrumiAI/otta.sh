@@ -112,7 +112,12 @@ export function createStoreSettingsPageHandler(
 		const actingIndex = findActingPanel(panels, actionId);
 
 		const loadPanel = async (panel: StoreSettingsPanel): Promise<Block[]> => {
-			const loadCtx = { ...routeCtx, input: { type: "page_load", page: panel.page } };
+			// Only while another panel acts: a page_load of this page is the one place
+			// that may ask Stripe for the account country.
+			const loadCtx = {
+				...routeCtx,
+				input: { type: "page_load", page: panel.page, peekStripeCountry: actingIndex >= 0 },
+			};
 			try {
 				return asBlockResponse(await panel.handler(loadCtx as SandboxedRouteContext<never>, ctx))
 					.blocks;
