@@ -94,12 +94,16 @@ test("the page's inline Stripe script is found", () => {
 	expect(PAY).toMatch(/\.mount\[hidden\]\s*\{\s*display:\s*none;\s*\}/);
 });
 
-test("with scripting off, the empty mount box is not drawn above the notice (#556)", () => {
-	// No script, no Stripe: `.mount` would stay an empty bordered, filled box
-	// over the `<noscript>` notice. The browser says scripting is off; the box goes.
-	expect(PAY).toMatch(
-		/@media \(scripting: none\)\s*\{\s*\.mount\s*\{\s*display:\s*none;\s*\}\s*\}/,
+test("with scripting off, the form is not drawn above the notice (#556)", () => {
+	// No script, no Stripe: the form would be an empty bordered box and a dead
+	// Pay button over the `<noscript>` notice. The browser says scripting is off;
+	// the form goes. Source order is what lets it beat the form's `display: flex`.
+	const base = PAY.search(/#payment-form\s*\{\s*display:\s*flex;/);
+	const off = PAY.search(
+		/@media \(scripting: none\)\s*\{\s*#payment-form\s*\{\s*display:\s*none;\s*\}\s*\}/,
 	);
+	expect(base).toBeGreaterThan(-1);
+	expect(off).toBeGreaterThan(base);
 });
 
 describe("a give-up hides the bordered mount box (#146)", () => {

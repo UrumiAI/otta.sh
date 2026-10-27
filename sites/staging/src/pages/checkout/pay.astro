@@ -762,10 +762,11 @@ const model: PayModel = {
 	.mount[hidden] {
 		display: none;
 	}
-	/* With scripting off nothing ever mounts: the box would be drawn empty
-	   above the <noscript> notice (#556). */
+	/* With scripting off nothing ever mounts: the form would draw an empty box
+	   and a Pay button that does nothing above the <noscript> notice (#556).
+	   After `#payment-form`'s own rule, so its `display: flex` can't win. */
 	@media (scripting: none) {
-		.mount {
+		#payment-form {
 			display: none;
 		}
 	}
