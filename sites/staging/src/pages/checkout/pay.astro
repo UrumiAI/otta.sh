@@ -212,6 +212,18 @@ const model: PayModel = {
 							submit.disabled = true;
 						}
 
+						/**
+						 * The page cannot take payment at all (#146): say why, and take
+						 * the bordered box the fields sit in away with them, so no empty
+						 * frame is left above the error. Only for a terminal failure — a
+						 * declined card goes through `fail` alone and keeps its fields.
+						 */
+						function giveUp(message) {
+							var box = mount.closest(".mount");
+							if (box) box.hidden = true;
+							fail(message);
+						}
+
 						/** Set by the deadline script (below) when the hold runs out
 						 *  while this page is open (QA2 M1c). */
 						function payClosed() {
@@ -275,7 +287,7 @@ const model: PayModel = {
 						}
 
 						if (typeof Stripe !== "function") {
-							fail(
+							giveUp(
 								"We couldn't load our payment provider. No charge has been made — please check your connection and reload.",
 							);
 							return;
@@ -463,7 +475,7 @@ const model: PayModel = {
 						try {
 							stripe = Stripe(mount.dataset.publishableKey);
 						} catch (err) {
-							fail("We couldn't reach our payment provider. Refresh to try again.");
+							giveUp("We couldn't reach our payment provider. Refresh to try again.");
 							return;
 						}
 
@@ -531,7 +543,7 @@ const model: PayModel = {
 								// written into the node. Idempotent — the retry's own
 								// discard already ran on the other route.
 								discardMount();
-								fail(
+								giveUp(
 									"This store's payment provider is running in offline test mode; this order cannot be paid. No charge has been made.",
 								);
 								return;
