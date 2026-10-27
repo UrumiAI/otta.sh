@@ -115,6 +115,10 @@ describe("Store settings against a busy store", () => {
 		expect(panel(page, "General")).toEqual(general);
 		expect(panel(page, "Tax")).toEqual(await alone(TAX_PAGE.path));
 		expect(panel(page, "Shipping")).toEqual(await alone(SHIPPING_PAGE.path));
+		// An empty panel would equal an empty standalone page; each must render something.
+		for (const label of ["General", "Tax", "Shipping"]) {
+			expect(panel(page, label).length).toBeGreaterThan(0);
+		}
 	});
 
 	test("a General save that succeeds while the other panels are busy keeps its toast", async () => {

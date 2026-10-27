@@ -649,7 +649,7 @@ describe("Settings: the Stripe account's country", () => {
 		expect(kv.get("settings:stripeSecretKey")).toBe(SK_TEST);
 		expect(saved.toast?.type).toBe("success");
 		expect(countryLine(saved.blocks)).toBe(
-			"Stripe account country: not checked yet — Stripe couldn't be reached. Opening this page again checks in a few minutes; saving the key again checks now.",
+			"Stripe account country: not checked yet — Stripe couldn't be reached. Reloading this page checks again once a few minutes have passed; saving the key again checks now.",
 		);
 	});
 
