@@ -1250,8 +1250,9 @@ test("a NEW click after a lost answer is a new move with a fresh nonce, and the 
 
 test("a REMOUNTED card after a lost Add shows no Retry, and its next Add carries a fresh nonce", async () => {
 	// The held move is component state (`HeldMove`), and the nonce is minted per
-	// click: nothing of a lost Add outlives its card, so a reload or a second tab
-	// never inherits a move to re-send (`movement-nonce.ts`).
+	// click: nothing of a lost Add outlives its card (`movement-nonce.ts`). The
+	// admin tears the card down when the operator navigates away and back, reloads,
+	// or opens another product; Save does not remount it (see the #540 note).
 	const server = stockServer(24, ["lose-after"]);
 	const first = await mountPanel();
 	await add(first, "5");
@@ -1262,8 +1263,8 @@ test("a REMOUNTED card after a lost Add shows no Retry, and its next Add carries
 	// A real remount: the old tree is torn down, a new one mounted.
 	await mounted?.unmount();
 	mounted = null;
+	expect(first.isConnected).toBe(false);
 	const second = await mountPanel();
-	expect(second).not.toBe(first);
 	expect(retryButton(second)).toBeNull();
 	expect(heldText(second)).toBe("");
 	// The lost move landed (29); the fresh card reads that count.
@@ -1276,7 +1277,8 @@ test("a REMOUNTED card after a lost Add shows no Retry, and its next Add carries
 	expect(keys[1]).not.toBe(lost);
 	expect(server.onHand()).toBe(34); // a new move, not a replay of the lost one
 	expect(second.textContent).toContain("Added 5 — now 34 in stock");
-	// Nothing is persisted for a later mount to find.
+	// A guard against a future Web Storage cache: the card persists nothing today,
+	// so these loops find no entries unless someone adds one.
 	for (const store of [window.sessionStorage, window.localStorage]) {
 		for (let i = 0; i < store.length; i++) {
 			const key = store.key(i) ?? "";
