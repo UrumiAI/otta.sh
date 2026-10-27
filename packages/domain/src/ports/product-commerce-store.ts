@@ -543,6 +543,15 @@ export interface ProductCommerce {
 	 *  watermark); null until a sync has ever carried one. */
 	contentUpdatedAt: string | null;
 	createdAt: Date;
+	/**
+	 * The compare-and-set watermark `updateCommerceFields` guards on — what an open
+	 * admin edit form carries back as `expectedUpdatedAt`. Every applied edit and
+	 * lifecycle flip moves it. An applied `upsert` moves it ONLY when an owned field
+	 * changed (sku, price, title / titleRejection, tax class, dimensions, kind —
+	 * `upsertChangesOwnedFields`, issue #153): a CMS save that re-sends what the
+	 * row already holds stamps its key and `contentUpdatedAt` and leaves this
+	 * alone, so it cannot make a form that conflicts with nothing stale.
+	 */
 	updatedAt: Date;
 }
 

@@ -51,6 +51,7 @@ import {
 	MissingVariantKeyError,
 	NO_TITLE,
 	resolveTitleWrite,
+	upsertChangesOwnedFields,
 	SkuConflictError,
 	SkuHeldStockError,
 	SkuStockConflictError,
@@ -736,7 +737,7 @@ export class EmdashProductCommerceStore implements ProductCommerceStore {
 				EmdashProductCommerceStore.#refuseWhileOwed(owed, doc.sku, input.sku);
 				const prepared = await this.#prepareSku(ledger, ref, doc.sku, input.sku, key);
 				if (prepared === CONTENDED) return CAS_RETRY;
-				const next: ProductCommerceDoc = {
+				const applied: ProductCommerceDoc = {
 					...doc,
 					pendingRenames: EmdashProductCommerceStore.#withRecord(
 						doc.pendingRenames,
@@ -756,7 +757,15 @@ export class EmdashProductCommerceStore implements ProductCommerceStore {
 					productKind: input.productKind ?? doc.productKind,
 					idempotencyKey: key,
 					contentUpdatedAt: input.contentUpdatedAt ?? doc.contentUpdatedAt,
-					updatedAt: now,
+				};
+				// `updatedAt` is the guarded edit's watermark, so it moves only when an owned
+				// field did (#153). A content-only CMS save, or a save redelivered after the
+				// publish overwrote its key, still stamps the key and the sync watermark
+				// above — ordering and once-only replay are unchanged — but leaves an open
+				// Pricing & inventory form saveable.
+				const next: ProductCommerceDoc = {
+					...applied,
+					updatedAt: upsertChangesOwnedFields(doc, applied) ? now : doc.updatedAt,
 				};
 				if (current === null) throw new Error("unreachable: a read row has a revision");
 				// The claim is re-asserted HERE, adjacent to the commit, so a takeover that
