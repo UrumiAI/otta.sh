@@ -7,9 +7,9 @@ packages:
 # merge of upstream `main` and its then-open conditional-write PR, vendored as
 # `file:` tarballs and held in place by four overrides. `emdash@0.38.0` was the
 # first release to ship that PR, so the manifests name the release directly; the
-# repo now runs on `emdash@1.0.1`, and the store resolves a single copy on its
-# own: the released `@emdash-cms/cloudflare@1.0.1` pins `emdash` EXACTLY at
-# `1.0.1`, which is the same version the manifests ask for, and
+# repo now runs on `emdash@1.3.1`, and the store resolves a single copy on its
+# own: the released `@emdash-cms/cloudflare@1.3.1` pins `emdash` EXACTLY at
+# `1.3.1`, which is the same version the manifests ask for, and
 # `@emdash-cms/admin` / `@emdash-cms/registry-client` export the subpaths
 # (`./portable-text-table`, `./listing-policy`) whose absence once forced them
 # to be vendored alongside the core.
@@ -92,16 +92,16 @@ minimumReleaseAgeExclude:
   # `@emdash-cms/admin`, `@emdash-cms/cloudflare` and `@emdash-cms/registry-client`
   # because they came from `vendor/` as `file:` tarballs, which bypass the
   # release-age check entirely; they resolve from the registry again, so they
-  # need the exclusion like every sibling. The 1.0.1 train is younger than a
+  # need the exclusion like every sibling. The 1.3.1 train is younger than a
   # typical threshold.
-  - "emdash@1.0.1"
-  - "@emdash-cms/admin@1.0.1"
-  - "@emdash-cms/auth@1.0.1"
-  - "@emdash-cms/blocks@1.0.1"
-  - "@emdash-cms/cloudflare@1.0.1"
-  - "@emdash-cms/gutenberg-to-portable-text@1.0.1"
-  - "@emdash-cms/plugin-types@0.5.0"
-  - "@emdash-cms/registry-client@0.7.0"
+  - "emdash@1.3.1"
+  - "@emdash-cms/admin@1.3.1"
+  - "@emdash-cms/auth@1.3.1"
+  - "@emdash-cms/blocks@1.3.1"
+  - "@emdash-cms/cloudflare@1.3.1"
+  - "@emdash-cms/gutenberg-to-portable-text@1.3.1"
+  - "@emdash-cms/plugin-types@0.6.0"
+  - "@emdash-cms/registry-client@0.7.1"
   - "@emdash-cms/registry-lexicons@0.7.0"
   - "@emdash-cms/registry-moderation@0.2.0"
-  - "@emdash-cms/registry-verification@0.3.3"
+  - "@emdash-cms/registry-verification@0.3.4"

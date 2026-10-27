@@ -68,10 +68,11 @@ describe("the migrated D1 schema", () => {
 		expect(columns.rows.map((row) => row.name)).toContain("revision");
 	});
 
-	it("carries both revision triggers from the conditional-write migration", async () => {
-		// The whole design rests on these two objects existing. They are created by
-		// the migration's NON-Postgres branch, which is the branch D1 takes, and a
-		// database without them would let every compare-and-set agree with itself.
+	it("carries exactly the reviewed revision triggers", async () => {
+		// The whole design rests on the two `_plugin_storage` triggers existing. They
+		// are created by the migration's NON-Postgres branch, which is the branch D1
+		// takes, and a database without them would let every compare-and-set agree
+		// with itself.
 		const triggers = await sql<{ name: string }>`
 			SELECT name FROM sqlite_master WHERE type = 'trigger' AND name LIKE 'emdash_%revision%'
 		`.execute(db.db);
@@ -84,6 +85,11 @@ describe("the migrated D1 schema", () => {
 			// the same way; listed so a host release that adds or drops a revision
 			// trigger still fails here and is looked at.
 			"emdash_redirect_revision_update",
+			// EmDash 1.1's `091_redirect_artifacts` counts redirect writes into
+			// `_emdash_redirect_state`; host-owned, no plugin-storage table involved.
+			"emdash_redirect_state_revision_delete",
+			"emdash_redirect_state_revision_insert",
+			"emdash_redirect_state_revision_update",
 		]);
 	});
 

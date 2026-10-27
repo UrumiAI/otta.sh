@@ -7,9 +7,9 @@ The package README (`packages/store-emdash/README.md`) is the short overview; th
 
 The port is written against the **conditional-write primitives** — `updateIf`,
 `getVersioned`, `compareAndSet`, `compareAndDelete`. `emdash@0.38.0` is the first
-published release that carried them. The repo now runs on `emdash@1.0.1`, which
+published release that carried them. The repo now runs on `emdash@1.3.1`, which
 the manifest names exactly as a dev dependency, with a peer range of
-`^1.0.1` (the full unit and D1 suites were also run against `emdash@1.3.0`); there is no vendored build and no workspace override any more
+`^1.3.1`; there is no vendored build and no workspace override any more
 (see `pnpm-workspace.yaml`). A host older than `0.38.0` lacks the primitives, and
 the failure is a type error against a real installed package rather than a
 missing dependency.

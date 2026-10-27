@@ -40,11 +40,11 @@
 	},
 	"devDependencies": {
 		"@cloudflare/vitest-plugin": "^1.1.8",
-		"@emdash-cms/cloudflare": "1.0.1",
+		"@emdash-cms/cloudflare": "1.3.1",
 		"@types/better-sqlite3": "catalog:",
 		"@types/pg": "catalog:",
 		"better-sqlite3": "catalog:",
-		"emdash": "1.0.1",
+		"emdash": "1.3.1",
 		"kysely": "catalog:",
 		"pg": "catalog:",
 		"tsdown": "catalog:",
@@ -52,6 +52,6 @@
 		"vitest": "catalog:"
 	},
 	"peerDependencies": {
-		"emdash": "^1.0.1"
+		"emdash": "^1.3.1"
 	}
 }

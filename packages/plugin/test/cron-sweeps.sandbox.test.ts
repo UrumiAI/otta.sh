@@ -205,8 +205,8 @@ describe("the cron hook", () => {
 	// so anything that registered the task before it would make it vacuous.
 	test("a storefront route registers the task, for a deployment that never activates", async () => {
 		// THE REGISTRATION GAP, pinned. Otta is hand-registered in the site config's
-		// `plugins` array, so on EmDash 1.0.x the host fires `plugin:activate` for it
-		// NEVER (1.1+ fires it once at first boot, unretried) — while its routes and content hooks run
+		// `plugins` array, so before EmDash 1.2 the host fires `plugin:activate` for it
+		// NEVER (1.2+ fires it once at first boot, unretried) — while its routes and content hooks run
 		// from the first request. A plugin that registered its task only on activation
 		// would have a declared `cron` hook and no task row, forever, and every sweep
 		// in this suite would be dead code in production. So reaching an ordinary

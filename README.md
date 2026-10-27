@@ -123,8 +123,9 @@ someone who can add `try.otta.sh` to the Cloudflare account that owns the
 
 ## Install from npm
 
-The six packages are published to npm under `@urumi.ai/otta-*`, ESM-only, at `0.1.0`. A site that
-runs on EmDash `^1.0.1` (tested on 1.0.1 and 1.3.0) installs what it registers:
+The six packages are published to npm under `@urumi.ai/otta-*`, ESM-only, at `0.1.0`, which accepts
+EmDash `^1.0.1`. `main` now needs EmDash `^1.3.1`; that floor ships with the next release
+(`0.2.0`). A site installs what it registers:
 
 ```bash
 pnpm add @urumi.ai/otta-plugin @urumi.ai/otta-admin-react
