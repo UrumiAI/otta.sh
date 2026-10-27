@@ -344,7 +344,7 @@ const model: CheckoutModel = {
 		/* A list update beside a refusal of the destination (the country refused,
 		   or a region REQUIRED): only that refusal is said — never "leave it blank". */
 		!(shownErrorToken === "REGION_LIST_UPDATED" && destinationError !== null)
-			? cartErrorMessage(shownErrorToken)
+			? cartErrorMessage(shownErrorToken, { holdTimer: summary.showHoldTimer })
 			: null,
 	checkedOut,
 	locked:
