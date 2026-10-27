@@ -285,6 +285,38 @@ describe("reports builder: the Orders card carries no trend arrow", () => {
 	});
 });
 
+describe("reports builder: the previous-period line of an empty period", () => {
+	const seriesNames = (blocks: readonly LooseBlock[]): string[] =>
+		(chartOptions(blocks, "reports:sales-chart")["series"] as Array<{ name: string }>).map(
+			(s) => s.name,
+		);
+
+	test("empty now, one currency before → the previous line is drawn, on that currency", () => {
+		const blocks = render({ previousRevenue: [bucket("2026-07-08", 1250, 1, "EUR")] });
+		expect(seriesNames(blocks)).toEqual(["This period", "Previous period"]);
+		expect(sectionTexts(blocks, "reports:sales").join(" ")).toContain("Dashed line");
+	});
+
+	test("empty now, several currencies before → the previous line is omitted, with no note", () => {
+		const blocks = render({
+			previousRevenue: [bucket("2026-07-08", 1250, 1, "EUR"), bucket("2026-07-08", 900, 1, "USD")],
+		});
+		expect(seriesNames(blocks)).toEqual(["This period"]);
+		const texts = sectionTexts(blocks, "reports:sales").join(" ");
+		expect(texts).toContain("Solid line");
+		expect(texts).not.toContain("Dashed line");
+		expect(texts).not.toContain("previous period");
+	});
+
+	test("a period with sales keeps its previous line", () => {
+		const blocks = render({
+			revenue: USD_CURRENT,
+			previousRevenue: [bucket("2026-07-08", 1250, 1, "EUR"), bucket("2026-07-08", 900, 1, "USD")],
+		});
+		expect(seriesNames(blocks)).toEqual(["This period", "Previous period"]);
+	});
+});
+
 describe("reports builder: average order value with a bucket lacking revenueOrderCount", () => {
 	test("falls back to the paid-order count rather than a partial sum", () => {
 		const blocks = render({
