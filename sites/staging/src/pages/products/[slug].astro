@@ -172,7 +172,7 @@ const purchase: ProductPurchase | null =
 				/* The sale decision is the plugin's (null unless above the price). */
 				compareAtFormatted: product.compareAtPrice?.formatted ?? null,
 				...(product.price.taxNote !== undefined ? { taxNote: product.price.taxNote } : {}),
-				priceStruck: !inStock,
+				priceStruck: soldOut,
 				availability: product.availability,
 				sku: product.sku,
 				addToCart:

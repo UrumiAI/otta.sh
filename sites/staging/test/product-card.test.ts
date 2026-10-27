@@ -214,8 +214,21 @@ describe("StockRule — a rule, not a coloured badge (§4)", () => {
 		expect((await stock({ availability: null })).trim()).toBe("");
 	});
 
-	test("the wording is overridable for a store that shows counts", async () => {
-		expect(await stock({ availability: "in_stock", label: "3 left" })).toContain("3 left");
+	test.each(["preorder", "backorder"])(
+		"unknown availability %s renders nothing",
+		async (availability) => {
+			expect((await stock({ availability })).trim()).toBe("");
+			expect((await stock({ availability, label: "3 left" })).trim()).toBe("");
+		},
+	);
+
+	test.each([
+		["in_stock", "3 left", "in"],
+		["out_of_stock", "Unavailable", "out"],
+	])("%s with label '%s' preserves the stock state", async (availability, label, state) => {
+		const html = await stock({ availability, label });
+		expect(html).toContain(`data-state="${state}"`);
+		expect(html).toContain(`>${label}</span>`);
 	});
 
 	test("spends no tempering colour — those belong to states a shopper waits on", async () => {

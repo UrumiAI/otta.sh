@@ -183,14 +183,11 @@ model carries an availability *token*, not a number, so every surface that shows
 hero tape, the card foot, the PDP spec ledger — renders `In stock` or `Sold out` and stops
 there. The mockup's `12 in stock`, `3 left` and the tape's bare `12` are superseded: they
 draw a figure nothing on the wire can supply. `StockRule` keeps a `label` override for the
-day a store really does carry an exact count. The rule for a third token — a future
-`preorder`, `backorder` — is that the positive `in_stock` earns the words, not the absence of
-`out_of_stock`, and the surfaces do not yet agree on it: the hero tape keys positively and
-leaves the cell blank, while `StockRule` (the card foot and the spec ledger) still tests
-`!== "in_stock"` and would fold anything else into `Sold out` — only a `null` availability
-renders nothing there. Unreachable today, since `AvailabilityToken` is a two-value union.
-Bringing `StockRule` onto positive keying is a code follow-up, not something this file can
-declare done.
+day a store really does carry an exact count. Only the explicit `in_stock` and
+`out_of_stock` tokens make a stock claim. Both the hero tape and `StockRule` (the card foot
+and the spec ledger) render no stock words for `null` or an unrecognised token such as a
+future `preorder` or `backorder`. `AvailabilityToken` currently exposes only the two known
+values.
 
 Focus: `outline: 2px solid var(--u-straw); outline-offset: 2px` on every interactive element.
 Keyboard focus must be visible on all of them.

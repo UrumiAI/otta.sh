@@ -36,7 +36,7 @@ const text = label ?? (availability === "in_stock" ? "In stock" : "Sold out");
 ---
 
 {
-	availability !== null && (
+	(availability === "in_stock" || availability === "out_of_stock") && (
 		<span class:list={["u-label", "stock", className]} data-state={state} {...restProps(rest)}>
 			{text}
 		</span>
