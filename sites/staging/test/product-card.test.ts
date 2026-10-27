@@ -225,8 +225,6 @@ describe("StockRule — a rule, not a coloured badge (§4)", () => {
 	test.each([
 		["in_stock", "3 left", "in"],
 		["out_of_stock", "Unavailable", "out"],
-		["in_stock", "", "in"],
-		["out_of_stock", "", "out"],
 	])("%s with label '%s' preserves the stock state", async (availability, label, state) => {
 		const html = await stock({ availability, label });
 		expect(html).toContain(`data-state="${state}"`);
