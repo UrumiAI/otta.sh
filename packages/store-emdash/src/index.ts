@@ -80,6 +80,7 @@ export {
 	EmdashOrderStore,
 	type EmdashOrderStoreOptions,
 	type HoldCompletionResult,
+	type OrderSkuIndexHealResult,
 } from "./emdash-order-store.js";
 export {
 	EmdashInventoryStore,

@@ -26,7 +26,9 @@
  * - **`linkGuestOrders` rewrites `customerKey`**, or the customer filter would stop
  *   finding an order the moment it was linked (ADR-0019 R3);
  * - **the by-sku index heals idempotently**: a deleted index document is rebuilt by a
- *   replay, and rebuilt ONCE;
+ *   replay, and rebuilt ONCE — and `healOrderSkuIndex`, the sweeper's entry to the same
+ *   write, rebuilds it from the order document alone, never clobbers a pointer another
+ *   order holds, and reports that conflict rather than throwing on it;
  * - **the locator**: a settle finds its entry by id with no index walk, and a settle of
  *   an already-drained entry is a no-op.
  *
@@ -360,6 +362,63 @@ export function orderListCases(storage: () => StorageAccess): void {
 		const page = await h.store.listOrders({ search: "sku-heal" }, { limit: 25 });
 		expect(page.orders.map((o) => o.id)).toEqual(["ord-heal"]);
 		expect(await h.store.countOrders({ search: "sku-heal" })).toBe(1);
+	});
+
+	test("healOrderSkuIndex rebuilds a missing pointer from the order document, once", async () => {
+		const h = makeOrderHarness(storage());
+		await lined(h.store, { id: "ord-sweep", skus: ["SKU-SW", "SKU-SW", "SKU-KEEP"] });
+		const lost = orderSkuIndexId("sku-sw", "ord-sweep");
+		const kept = orderSkuIndexId("sku-keep", "ord-sweep");
+		const keptBefore = await skuIndex().get(kept);
+		expect(await skuIndex().delete(lost)).toBe(true);
+		const doc = await orders().get("ord-sweep");
+		if (doc === null) throw new Error("the order document must exist");
+
+		// The sweeper's call: no key, no replay — just the order document it already read.
+		expect(await h.store.healOrderSkuIndex(doc)).toEqual({ written: 1, conflicts: [] });
+		// The same write shape the checkout writes, and the untouched pointer untouched.
+		expect(await skuIndex().get(lost)).toEqual({
+			sku: "sku-sw",
+			orderId: "ord-sweep",
+			createdAt: "2026-07-10T00:00:00.000Z",
+		});
+		expect(await skuIndex().get(kept)).toEqual(keptBefore);
+		const page = await h.store.listOrders({ search: "sku-sw" }, { limit: 25 });
+		expect(page.orders.map((o) => o.id)).toEqual(["ord-sweep"]);
+
+		// Create-if-absent: a second heal finds both pointers present and writes nothing.
+		expect(await h.store.healOrderSkuIndex(doc)).toEqual({ written: 0, conflicts: [] });
+	});
+
+	test("healOrderSkuIndex never clobbers a pointer held by another order, and heals past it", async () => {
+		const h = makeOrderHarness(storage());
+		await lined(h.store, { id: "ord-own", skus: ["SKU-HELD", "SKU-GONE"] });
+		const held = orderSkuIndexId("sku-held", "ord-own");
+		const gone = orderSkuIndexId("sku-gone", "ord-own");
+		// A hand-written incumbent under this order's pair id, naming somebody else.
+		expect(await skuIndex().delete(held)).toBe(true);
+		const foreign = {
+			sku: "sku-held",
+			orderId: "ord-other",
+			createdAt: "2026-07-09T00:00:00.000Z",
+		};
+		expect((await skuIndex().compareAndSet(held, null, foreign)).applied).toBe(true);
+		expect(await skuIndex().delete(gone)).toBe(true);
+		const doc = await orders().get("ord-own");
+		if (doc === null) throw new Error("the order document must exist");
+
+		// REPORTED, not thrown: the conflicting sku comes first on the order, and the heal
+		// still reaches the one after it.
+		expect(await h.store.healOrderSkuIndex(doc)).toEqual({
+			written: 1,
+			conflicts: [{ pointerId: held, foundOrderId: "ord-other" }],
+		});
+		expect(await skuIndex().get(held)).toEqual(foreign);
+		expect(await skuIndex().get(gone)).toEqual({
+			sku: "sku-gone",
+			orderId: "ord-own",
+			createdAt: "2026-07-10T00:00:00.000Z",
+		});
 	});
 
 	test("the outbox locator finds an entry by id, and a settle on a drained entry is a no-op", async () => {
