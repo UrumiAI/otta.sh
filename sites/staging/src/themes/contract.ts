@@ -258,6 +258,11 @@ export interface LedgerLine {
  *    a root that ships `data-minutes` has it kept current — opt-in, so a
  *    stylesheet can switch copy at a minute boundary (e.g. under five minutes,
  *    "Check out soon"). Ship the server's first frame in each.
+ *  - `data-countdown="off"` on the root marks a QUIET ribbon — the store hides the
+ *    hold timer (`showHoldTimer` off). It ships only `[data-hold-note]` and
+ *    `[data-hold-announce]`: no countdown while the hold is live, the note
+ *    unhidden on release. Its live region says nothing until release, then
+ *    reads out the note (`lib/hold-ribbon.ts` decides, not the script).
  *
  * `components/HoldRibbon.astro` is Tempered's rendering of exactly this, with
  * the server-side first frame (`lib/hold.ts`'s `holdView`) already in it. Any
@@ -316,7 +321,8 @@ export interface CartModel {
 	 *  reads `action`. `null` for a current, terminal or unread cart. */
 	staleCurrency: StaleCurrencyNotice | null;
 	/** Whether to draw the hold countdown on lines (the admin's `showHoldTimer`,
-	 *  off by default). Display only: the lines are held either way. */
+	 *  off by default). Display only: the lines are held either way. Off, no
+	 *  countdown is drawn, but a lapsed hold still shows its next-step note. */
 	showHoldTimer: boolean;
 }
 
