@@ -776,7 +776,7 @@ describe("the hook's own bookkeeping", () => {
 		});
 
 		test("a timeout keeps the latch: a still-stalled attempt is not restarted by the next request", async () => {
-			const { ctx, calls } = stallingFirstList();
+			const { ctx, first: stalled, calls } = stallingFirstList();
 			const logged = vi.spyOn(console, "error").mockImplementation(() => {});
 			vi.useFakeTimers();
 			try {
@@ -787,6 +787,7 @@ describe("the hook's own bookkeeping", () => {
 				expect(await Promise.race([bootstrapSweepTask(ctx), PENDING])).toBeUndefined();
 				expect(calls.list).toBe(1);
 			} finally {
+				stalled.resolve([]); // settle the stalled list() so nothing is left pending
 				vi.useRealTimers();
 				logged.mockRestore();
 			}
@@ -814,6 +815,8 @@ describe("the hook's own bookkeeping", () => {
 		test("a late rejection after the timeout clears the latch: the next request retries, with no unhandled rejection", async () => {
 			const { ctx, first, calls } = stallingFirstList();
 			const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+			// Belt and braces: the late rejection is observed in the source, and vitest
+			// fails on an unhandled rejection anyway.
 			const unhandled: unknown[] = [];
 			const onUnhandled = (reason: unknown) => unhandled.push(reason);
 			process.on("unhandledRejection", onUnhandled);
