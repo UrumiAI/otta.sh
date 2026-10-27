@@ -359,9 +359,20 @@ export interface CommerceClient {
 	// ── Phase 3 group E: cart (plan §6) ────────────────────────────────────
 	// Hand-rolled like the wire types above: these modules declare no runtime
 	// dependency on @urumi.ai/otta-domain, which is what keeps them sandbox-clean. ──
-	/** A new cart in `currency`, or — when none is named — in the store currency
-	 *  (the operator's saved setting; USD for a store that never saved one). */
-	createCart(currency?: string): Promise<{ cartId: string }>;
+	/**
+	 * A new cart in `currency`, or — when none is named — in the store currency
+	 * (the operator's saved setting; USD for a store that never saved one).
+	 *
+	 * With an `idempotencyKey` (issue #39) the create is once-only: the same key
+	 * answers the same cart, in whatever state it is now and in the currency the
+	 * first create chose, so a double-submitted first add lands in one cart. The key
+	 * is a bearer secret — whoever presents it gets that cart — so a caller sends
+	 * only a key that one visitor alone holds (the storefront's per-submission
+	 * add-to-cart key), never one shown to many. It is namespaced apart from the
+	 * keys the replacements derive, which no caller can name. A malformed key is
+	 * refused `INVALID_INPUT`, never dropped.
+	 */
+	createCart(currency?: string, idempotencyKey?: string): Promise<{ cartId: string }>;
 	/**
 	 * The replacement for a SPENT cart — one checked out into an order that is no
 	 * longer pending. The caller names only the spent cart; the key that makes this

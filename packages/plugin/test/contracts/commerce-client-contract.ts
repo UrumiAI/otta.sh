@@ -874,6 +874,63 @@ export function storefrontCommerceClientContract(tier: CommerceClientTier): void
 			});
 		});
 
+		// Issue #39: a plain create may carry the caller's idempotency key — the
+		// storefront's per-submission add-to-cart key — so a double-submitted first
+		// add lands in ONE cart instead of minting an orphan per request.
+		test("createCart replayed under the same idempotency key answers the same cart and mints nothing", async () => {
+			const productId = await seedProduct({
+				sku: "SKU-CREATE-KEY",
+				onHand: 5,
+				price: { amount: 900, currency: "USD" },
+			});
+			const { cartId } = await client.createCart(undefined, "create-key-1");
+			const added = await client.addCartLine(
+				cartId,
+				"SKU-CREATE-KEY",
+				productId,
+				1,
+				"create-key-1",
+			);
+			if (!added.ok) throw new Error(`arrange failed: ${added.reason}`);
+
+			// The replay names a different currency on purpose: the first create
+			// decided the cart, and a replay neither rewrites nor replaces it.
+			const replay = await client.createCart("EUR", "create-key-1");
+			expect(replay).toEqual({ cartId });
+			expect(await client.getCart(cartId)).toMatchObject({
+				ok: true,
+				cart: { currency: "USD", state: "active", lines: [{ sku: "SKU-CREATE-KEY", qty: 1 }] },
+			});
+		});
+
+		test("createCart under two different idempotency keys mints two carts, and a keyless create always mints its own", async () => {
+			const a = await client.createCart(undefined, "create-key-a");
+			const b = await client.createCart(undefined, "create-key-b");
+			const bare = await client.createCart();
+			expect(new Set([a.cartId, b.cartId, bare.cartId]).size).toBe(3);
+		});
+
+		// What scopes a create key to ONE visitor is that only that visitor holds it:
+		// the key is a bearer secret, as the cart id it answers is. The client cannot
+		// see visitors (the routes are cookie-blind), so it guarantees the rest — a
+		// key reaches only the cart minted under that exact key, never one the server
+		// keyed itself, and never one minted without a key.
+		test("a different visitor's create — under its own key, or none — never answers the first visitor's cart", async () => {
+			const first = await client.createCart(undefined, "create-key-visitor-1");
+			const otherKey = await client.createCart(undefined, "create-key-visitor-2");
+			const keyless = await client.createCart();
+			// A caller that names the first cart's id AS a key gets a cart of its own.
+			const byId = await client.createCart(undefined, first.cartId);
+			expect(new Set([first.cartId, otherKey.cartId, keyless.cartId, byId.cartId]).size).toBe(4);
+		});
+
+		test("createCart refuses a malformed idempotency key rather than minting an unkeyed cart", async () => {
+			const refused = { code: "INVALID_INPUT", field: "idempotencyKey" };
+			await expect(client.createCart(undefined, "")).rejects.toMatchObject(refused);
+			await expect(client.createCart(undefined, "k\u0000nul")).rejects.toMatchObject(refused);
+			await expect(client.createCart(undefined, "k".repeat(513))).rejects.toMatchObject(refused);
+		});
+
 		test("a currency-shaped code outside the currency table (XYZ) is refused on every non-admin write that names one", async () => {
 			// Three letters passes the shape check; the table is what every money
 			// boundary (checkout rounding, Stripe's exponent) knows. Issue #457.
@@ -3403,6 +3460,11 @@ export function storefrontCommerceClientContract(tier: CommerceClientTier): void
 
 // ── Slice 2: admin orders + products (INC-B10b) ───────────────────────────
 
+/** The stock-movement quantity ceiling (`stockMovementBody`: a positive integer
+ *  no greater than this). Far above the cart cap on purpose — this is the
+ *  merchant's own surface — but a ceiling all the same (#289). */
+const MAX_STOCK_MOVEMENT_QTY = 1_000_000_000;
+
 /**
  * NO CASE HERE WAS LIFTED, and that is the finding rather than an oversight: no
  * test file in `packages/plugin/test/` ever exercised the old HTTP admin orders
@@ -5138,7 +5200,7 @@ export function adminOrdersProductsClientContract(tier: CommerceClientTier): voi
 		test("a malformed quantity or a missing key is refused as a typed result", async () => {
 			await seed({ productId: "adm-sm-bad", sku: "ADM-SM-BAD", onHand: 5 });
 
-			for (const qty of [0, -1, 1.5]) {
+			for (const qty of [0, -1, 1.5, MAX_STOCK_MOVEMENT_QTY + 1]) {
 				expect(await client.restock("adm-sm-bad", qty, "adm-sm-bad-q")).toMatchObject({
 					ok: false,
 					reason: "invalid",
@@ -5154,8 +5216,26 @@ export function adminOrdersProductsClientContract(tier: CommerceClientTier): voi
 				ok: false,
 				reason: "invalid",
 			});
+			// THE CEILING HOLDS ON THE REMOVAL TOO — refused as `invalid` at the
+			// boundary, not as `insufficient_stock` from the store, which is what an
+			// unbounded quantity would have fallen through to.
+			expect(
+				await client.removeStock("adm-sm-bad", MAX_STOCK_MOVEMENT_QTY + 1, "adm-sm-bad-rc"),
+			).toMatchObject({ ok: false, reason: "invalid" });
 			// Nothing moved.
 			expect((await client.getProduct("adm-sm-bad"))?.onHand).toBe(5);
+		});
+
+		test("a movement of exactly the ceiling applies — the bound is inclusive", async () => {
+			await seed({ productId: "adm-sm-cap", sku: "ADM-SM-CAP", onHand: 0 });
+
+			expect(await client.restock("adm-sm-cap", MAX_STOCK_MOVEMENT_QTY, "adm-sm-cap-1")).toEqual({
+				ok: true,
+				onHand: MAX_STOCK_MOVEMENT_QTY,
+			});
+			expect(
+				await client.removeStock("adm-sm-cap", MAX_STOCK_MOVEMENT_QTY, "adm-sm-cap-2"),
+			).toEqual({ ok: true, onHand: 0 });
 		});
 
 		test("a removal pinned to a count that has moved is stale_on_hand with the live count; a current one applies", async () => {
@@ -5646,6 +5726,12 @@ export function adminRulesReportingClientContract(tier: CommerceClientTier): voi
 		test("a threshold that is not a non-negative integer is REFUSED", async () => {
 			await expectRejectedInput(reporting.getLowStock(-1), "threshold");
 			await expectRejectedInput(reporting.getLowStock(2.5), "threshold");
+			// THE CEILING, on the READ path as well as the settings write (#289): a
+			// threshold past `int4` could never be compared against the on-hand
+			// column, so it is refused rather than passed through to the report.
+			await expectRejectedInput(reporting.getLowStock(MAX_LOW_STOCK_THRESHOLD + 1), "threshold");
+			// …and the ceiling itself is a legal threshold: the bound is inclusive.
+			expect(Array.isArray(await reporting.getLowStock(MAX_LOW_STOCK_THRESHOLD))).toBe(true);
 		});
 
 		// ── settings: getSettings + updateSettings ────────────────────────
@@ -6295,6 +6381,14 @@ export function adminRulesReportingClientContract(tier: CommerceClientTier): voi
 			expect(bare.coupons[0]?.expiresAt).toBeNull();
 			const noMatch = await client.listCoupons({ search: "list-alph" }); // substring must NOT match
 			expect(noMatch.coupons).toEqual([]);
+		});
+
+		test("coupons: a cursor this surface did not issue is REFUSED, never a silent restart from page one", async () => {
+			// NARROWER THAN THE ORDERS AND PRODUCTS LISTS ON PURPOSE: those answer a bad
+			// token with page one, flagged; the coupon list rejects it, as its route
+			// answered 400 (#289). What must never happen is an ordinary page — the
+			// operator would read the first page as the one they asked for.
+			await expectRejectedInput(client.listCoupons({}, { cursor: "not-a-real-cursor" }), "cursor");
 		});
 
 		// ── the registry reads, and the LWW edits that carry no money ──────

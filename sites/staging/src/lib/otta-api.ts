@@ -12,6 +12,7 @@
  */
 import {
 	OTTA_PLUGIN_ID,
+	STOREFRONT_CART_CREATE_ROUTE,
 	STOREFRONT_CART_LINE_ADD_ROUTE,
 	STOREFRONT_CART_LINE_REMOVE_ROUTE,
 	STOREFRONT_CART_LINE_UPDATE_ROUTE,
@@ -150,12 +151,14 @@ const READ_ROUTES: ReadonlySet<string> = new Set([
 ]);
 
 /**
- * The keyed cart-line mutations: each carries the form's `idempotencyKey`, the
- * domain enforces once-only on it (DEVELOPMENT.md §4), and the route is a single
- * line change — so a replay with the SAME key converges on the first attempt's
- * outcome instead of repeating its effect.
+ * The keyed cart mutations: each carries an `idempotencyKey`, the domain enforces
+ * once-only on it (DEVELOPMENT.md §4), and the route is a single change — one line,
+ * or one cart minted — so a replay with the SAME key converges on the first
+ * attempt's outcome instead of repeating its effect. `cart/create` is keyed only
+ * when the caller sends one (#39, `/cart/add`); without it, it is not retried.
  */
 const KEYED_REPLAY_ROUTES: ReadonlySet<string> = new Set([
+	STOREFRONT_CART_CREATE_ROUTE,
 	STOREFRONT_CART_LINE_ADD_ROUTE,
 	STOREFRONT_CART_LINE_UPDATE_ROUTE,
 	STOREFRONT_CART_LINE_REMOVE_ROUTE,
@@ -185,11 +188,11 @@ const REPLAYING_ROUTES: ReadonlySet<string> = new Set([
  * repeating the whole call provably cannot double anything:
  *  - a read route ({@link READ_ROUTES}); or
  *  - a route that replays its own key ({@link REPLAYING_ROUTES}); or
- *  - a keyed cart-line mutation ({@link KEYED_REPLAY_ROUTES}) that actually
- *    carries its key — without one there is nothing to converge on.
+ *  - a keyed cart mutation ({@link KEYED_REPLAY_ROUTES}) that actually carries
+ *    its key — without one there is nothing to converge on (an unkeyed
+ *    `cart/create` could mint a second cart).
  *
  * Deliberately NOT listed, though some carry a key:
- *  - `cart/create`: no key; a replay could mint a second cart.
  *  - `checkout/place`: its key is `checkout:<cartId>`. Since #337 a same-key
  *    replay FINISHES a partial first attempt (adoption, cart flip) instead of
  *    short-circuiting past it, so a buyer who reloads the 503 is safe — but it
@@ -238,7 +241,7 @@ export async function dispatchOttaRoute<TResult>(
 	// it into a storm: it is a single retry (never a loop, so worst case is 2x the
 	// store's bounded budget per request), it waits a jittered pause first so
 	// concurrent losers do not re-collide in lockstep, and it applies only to
-	// reads and keyed line mutations whose replay converges. A second BUSY means
+	// reads and keyed cart mutations whose replay converges. A second BUSY means
 	// real pressure — it goes back to the caller as a 503 rather than more load.
 	if (!isBusyResult(first) || !isRetrySafe(route, input)) return first;
 	console.warn(`[site-staging] otta route ${route} busy — retrying once`);

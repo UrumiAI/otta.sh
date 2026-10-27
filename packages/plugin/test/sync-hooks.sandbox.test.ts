@@ -380,6 +380,50 @@ describe("sync hooks — afterSave keeps product_commerce alive and its title cu
 		expect(after.inventoryPolicy).toBe("deny");
 	});
 
+	// #153. The merchant opened Pricing & inventory, then edited the description in
+	// the CMS. The save re-sends the same title, so it changes nothing the row owns,
+	// and the form's `expectedUpdatedAt` must still be the row's watermark.
+	test("#153 a CONTENT-ONLY save leaves updatedAt alone, so an edit form opened before it still saves", async () => {
+		const id = pid("prod-153-content");
+		await seedPricedRow(id, "SKU-SH-153-CONTENT");
+		const before = await requireDoc(id);
+		// Real time must pass, or an advancing write and a skipped one stamp alike.
+		await new Promise((resolve) => setTimeout(resolve, 5));
+
+		await afterSave(productContent(id, {}, "Priced by the admin"));
+
+		const after = await requireDoc(id);
+		expect(after.updatedAt).toBe(before.updatedAt);
+		// The sync still applied: its watermark and replay key were stamped.
+		expect(after.contentUpdatedAt).toBe(WM);
+		expect(after.idempotencyKey).toBe(`products:${id}:${WM}:1`);
+
+		const edit = await commerceStore().updateCommerceFields(
+			{ productId: toProductId(id), price: { amount: cents(2499), currency: currency("USD") } },
+			idempotencyKey(`edit-${id}`),
+			before.updatedAt,
+		);
+		expect(edit.ok).toBe(true);
+	});
+
+	test("#153 a save that RENAMES the product still advances updatedAt, and the form opened before it is stale", async () => {
+		const id = pid("prod-153-rename");
+		await seedPricedRow(id, "SKU-SH-153-RENAME");
+		const before = await requireDoc(id);
+		await new Promise((resolve) => setTimeout(resolve, 5));
+
+		await afterSave(productContent(id, {}, "Renamed in the CMS"));
+
+		const after = await requireDoc(id);
+		expect(after.updatedAt > before.updatedAt).toBe(true);
+		const edit = await commerceStore().updateCommerceFields(
+			{ productId: toProductId(id), price: { amount: cents(2499), currency: currency("USD") } },
+			idempotencyKey(`edit-${id}`),
+			before.updatedAt,
+		);
+		expect(edit).toMatchObject({ ok: false, reason: "stale" });
+	});
+
 	test("THE INVISIBLE-PRODUCT FIX: a save carrying nothing but a title still upserts — every CMS product gets a row", async () => {
 		const id = pid("prod-bare");
 

@@ -2,6 +2,7 @@ import { cents, currency as toCurrency, money } from "../money/cents.js";
 import type { IdempotencyKey, ProductId, Sku } from "../money/ids.js";
 import type { Clock } from "../ports/clock.js";
 import { NO_TITLE, resolveTitleWrite } from "../product-commerce/title-write.js";
+import { upsertChangesOwnedFields } from "../product-commerce/upsert-owned-fields.js";
 import type {
 	ProductCommerce,
 	ProductCommerceStore,
@@ -241,7 +242,7 @@ export class InMemoryProductCommerceStore implements ProductCommerceStore {
 			if (input.sku !== undefined && existing.sku !== null) {
 				this.#carrySkuStock(existing.sku, input.sku);
 			}
-			const updated: ProductCommerce = {
+			const applied: ProductCommerce = {
 				...existing,
 				sku: input.sku !== undefined ? input.sku : existing.sku,
 				price: input.price !== undefined ? input.price : existing.price,
@@ -255,7 +256,12 @@ export class InMemoryProductCommerceStore implements ProductCommerceStore {
 				idempotencyKey: key,
 				contentUpdatedAt:
 					input.contentUpdatedAt !== undefined ? input.contentUpdatedAt : existing.contentUpdatedAt,
-				updatedAt: now,
+			};
+			// The edit watermark moves only with an owned field (#153); the key and the
+			// sync watermark above are stamped either way.
+			const updated: ProductCommerce = {
+				...applied,
+				updatedAt: upsertChangesOwnedFields(existing, applied) ? now : existing.updatedAt,
 			};
 			this.#rows.set(input.productId, updated);
 			return updated;

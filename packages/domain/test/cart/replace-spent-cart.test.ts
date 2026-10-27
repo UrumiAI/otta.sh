@@ -7,10 +7,12 @@
  */
 import {
 	cents,
+	createCart,
 	currency,
 	idempotencyKey,
 	orderId,
 	replaceSpentCart,
+	replaceStaleCurrencyCart,
 	type CreateOrderInput,
 } from "@urumi.ai/otta-domain";
 import { CountingIdGen, InMemoryOrderStore } from "@urumi.ai/otta-domain/testing";
@@ -158,5 +160,47 @@ describe("replaceSpentCart", () => {
 		// A later ask, whatever it resolves, gets that same cart.
 		const later = await replaceSpentCart(deps(), cartId, async () => currency("GBP"));
 		expect(later.ok && later.cartId).toBe(ids[0]);
+	});
+});
+
+// A caller's REQUEST key on a plain create (issue #39): the storefront's own
+// per-submission add-to-cart key, so a double-submitted first add lands in ONE
+// cart. It lives in its own namespace, `create:<key>`, so no caller-chosen key
+// can ever name a key the server derives for itself.
+describe("createCart under a request key", () => {
+	test("the same key answers the same cart; another key, or none, mints a fresh one", async () => {
+		const first = await createCart(h.deps, USD, idempotencyKey("press-1"));
+		const again = await createCart(h.deps, currency("EUR"), idempotencyKey("press-1"));
+		expect(again).toBe(first);
+		// The first create decided the cart: a replay never rewrites it.
+		expect(await h.cartStore.get(first)).toMatchObject({ state: "active", currency: "USD" });
+		const other = await createCart(h.deps, USD, idempotencyKey("press-2"));
+		const unkeyed = await createCart(h.deps, USD);
+		expect(new Set([first, other, unkeyed]).size).toBe(3);
+	});
+
+	test("racing creates under one key converge on one cart", async () => {
+		const racing = await Promise.all([
+			createCart(h.deps, USD, idempotencyKey("press-race")),
+			createCart(h.deps, USD, idempotencyKey("press-race")),
+			createCart(h.deps, USD, idempotencyKey("press-race")),
+		]);
+		expect(new Set(racing).size).toBe(1);
+	});
+
+	test("a request key can never reach a server-derived key: `rotate:<spent>` is not the spent cart's replacement", async () => {
+		const cartId = await spent("ns-rotate", "paid");
+		const replaced = await replaceSpentCart(deps(), cartId);
+		if (!replaced.ok) throw new Error(replaced.reason);
+		const named = await createCart(h.deps, USD, idempotencyKey(`rotate:${cartId}`));
+		expect(named).not.toBe(replaced.cartId);
+	});
+
+	test("nor `recurrency:<id>:<cur>`: a request key is not a stale-currency cart's replacement", async () => {
+		const stale = await h.cartStore.create(USD);
+		const replaced = await replaceStaleCurrencyCart(h.deps, stale, currency("EUR"));
+		if (!replaced.ok) throw new Error(replaced.reason);
+		const named = await createCart(h.deps, USD, idempotencyKey(`recurrency:${stale}:EUR`));
+		expect(named).not.toBe(replaced.cartId);
 	});
 });

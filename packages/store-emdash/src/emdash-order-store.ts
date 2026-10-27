@@ -356,6 +356,17 @@ export interface HoldCompletionResult {
 	lost: string[];
 }
 
+/**
+ * The outcome of {@link EmdashOrderStore.healOrderSkuIndex}: how many pointers this call
+ * wrote, and every pointer it found held by a DIFFERENT order (left untouched).
+ */
+export interface OrderSkuIndexHealResult {
+	/** Pointers this call created — zero when every one was already there. */
+	written: number;
+	/** `order_sku_index` ids whose incumbent names another order (loud anomalies). */
+	conflicts: { pointerId: string; foundOrderId: string }[];
+}
+
 /** What one guarded flip reports back: whether it won, and the resulting document. */
 interface FlipOutcome {
 	won: boolean;
@@ -1010,6 +1021,36 @@ export class EmdashOrderStore implements OrderStore {
 		}
 		await this.#stampIntent(orderId, "holdsReleased");
 		return { completed: true, lost: [] };
+	}
+
+	// -- the derived by-sku index's heal ---------------------------------------
+
+	/**
+	 * Re-assert the derived `order_sku_index` pointers for ONE order document — the
+	 * sweeper's heal (ADR-0019 sweeper concern 7), over the exact write the checkout and
+	 * every resolve already make.
+	 *
+	 * Create-if-absent per `(sku, orderId)` pair, so it never overwrites a pointer and
+	 * cannot clobber a live writer; a refused create is read back and compared, as it is
+	 * on the write path. The one difference is what a DISAGREEING incumbent does: the
+	 * write path throws `DerivedPointerConflictError` at the first one, while a heal
+	 * reports each in `conflicts` and carries on with the order's remaining skus — the
+	 * caller decides what an anomaly costs (the sweeper flags the order for
+	 * reconciliation). It takes the document the caller already read rather than an id,
+	 * so a heal costs no extra order read.
+	 */
+	async healOrderSkuIndex(
+		doc: Pick<OrderDoc, "orderId" | "createdAt" | "items">,
+	): Promise<OrderSkuIndexHealResult> {
+		const result: OrderSkuIndexHealResult = { written: 0, conflicts: [] };
+		for (const sku of orderSkuKeys(doc)) {
+			const pointer = await this.#writeSkuPointer(doc, sku);
+			if (pointer.applied) result.written++;
+			else if (pointer.foundOrderId !== null) {
+				result.conflicts.push({ pointerId: pointer.id, foundOrderId: pointer.foundOrderId });
+			}
+		}
+		return result;
 	}
 
 	// -- the refunds ledger, and its capacity ---------------------------------
@@ -2409,23 +2450,41 @@ export class EmdashOrderStore implements OrderStore {
 	 */
 	async #indexOrderSkus(doc: OrderDoc): Promise<void> {
 		for (const sku of orderSkuKeys(doc)) {
-			const id = orderSkuIndexId(sku, doc.orderId);
-			const written = await this.#skuIndex.compareAndSet(id, null, {
-				sku,
-				orderId: doc.orderId,
-				// The order's own creation instant, frozen: what makes the arm a keyset arm.
-				createdAt: doc.createdAt,
-			});
-			// A refused create means "already there", which is the point — but it is only SAFE
-			// if the incumbent agrees, so it is read back and compared rather than assumed.
-			await this.#assertPointerAgrees(
-				written.applied,
-				ORDER_SKU_INDEX_COLLECTION,
-				id,
-				doc.orderId,
-				() => this.#skuIndex.get(id),
-			);
+			const pointer = await this.#writeSkuPointer(doc, sku);
+			if (pointer.foundOrderId !== null) {
+				throw new DerivedPointerConflictError(
+					ORDER_SKU_INDEX_COLLECTION,
+					pointer.id,
+					doc.orderId,
+					pointer.foundOrderId,
+				);
+			}
 		}
+	}
+
+	/**
+	 * One by-sku pointer: the create-if-absent write and its read-back, shared by the
+	 * write path ({@link #indexOrderSkus}, which throws on a conflict) and the heal
+	 * ({@link healOrderSkuIndex}, which reports it). `foundOrderId` is the disagreeing
+	 * incumbent's order, or null when the write applied or the incumbent agrees.
+	 */
+	async #writeSkuPointer(
+		doc: Pick<OrderDoc, "orderId" | "createdAt">,
+		sku: string,
+	): Promise<{ id: string; applied: boolean; foundOrderId: string | null }> {
+		const id = orderSkuIndexId(sku, doc.orderId);
+		const written = await this.#skuIndex.compareAndSet(id, null, {
+			sku,
+			orderId: doc.orderId,
+			// The order's own creation instant, frozen: what makes the arm a keyset arm.
+			createdAt: doc.createdAt,
+		});
+		// A refused create means "already there", which is the point — but it is only SAFE
+		// if the incumbent agrees, so it is read back and compared rather than assumed.
+		const foundOrderId = await this.#disagreeingIncumbent(written.applied, doc.orderId, () =>
+			this.#skuIndex.get(id),
+		);
+		return { id, applied: written.applied, foundOrderId };
 	}
 
 	/**
@@ -2447,15 +2506,22 @@ export class EmdashOrderStore implements OrderStore {
 		expectedOrderId: string,
 		read: () => Promise<{ orderId: string } | null>,
 	): Promise<void> {
-		if (applied) return;
+		const found = await this.#disagreeingIncumbent(applied, expectedOrderId, read);
+		if (found === null) return;
+		throw new DerivedPointerConflictError(collection, pointerId, expectedOrderId, found);
+	}
+
+	/** The comparison {@link #assertPointerAgrees} throws on: the incumbent's order id
+	 *  when a refused create found one naming ANOTHER order, else null. */
+	async #disagreeingIncumbent(
+		applied: boolean,
+		expectedOrderId: string,
+		read: () => Promise<{ orderId: string } | null>,
+	): Promise<string | null> {
+		if (applied) return null;
 		const incumbent = await read();
-		if (incumbent === null || incumbent.orderId === expectedOrderId) return;
-		throw new DerivedPointerConflictError(
-			collection,
-			pointerId,
-			expectedOrderId,
-			incumbent.orderId,
-		);
+		if (incumbent === null || incumbent.orderId === expectedOrderId) return null;
+		return incumbent.orderId;
 	}
 
 	/**

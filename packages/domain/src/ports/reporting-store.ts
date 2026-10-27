@@ -61,13 +61,21 @@ export interface ReportingStore {
 	 * tombstone predicate the join is at most 1:1, and only a live product can
 	 * title a row.
 	 *
+	 * A sku whose LIVE product is `productKind: "digital"` is OMITTED (issue
+	 * #158). Digital goods never reserve and are never restocked, but the
+	 * product write paths seed every sku an inventory row at 0, so a digital
+	 * sku would otherwise sit in this report permanently. The kind is only
+	 * known through a live product, so an orphan sku still lists (below).
+	 *
 	 * A SECOND, DELIBERATELY DIFFERENT "low stock" lives at
 	 * `ProductCommerceStore`'s `ProductListFilter.lowStockThreshold`: this
 	 * report is INVENTORY-first (an orphan sku with no live product still
 	 * lists here), while that filter is PRODUCT-first (a rowless product is
 	 * excluded there). Both are inclusive at the boundary today, so the two
 	 * agree there, but they are independent definitions — a future change to
-	 * either one's boundary or absent-row rule must update both docs.
+	 * either one's boundary or absent-row rule must update both docs. They
+	 * also differ on kind: this report omits digital skus, while that filter
+	 * leaves kind to its own `productKind` axis.
 	 */
 	lowStock(threshold: number): Promise<LowStockRow[]>;
 }

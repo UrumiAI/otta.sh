@@ -16,6 +16,7 @@ import type {
 	ProductCommerceStore,
 	ProductVariant,
 	ProductVariantSummary,
+	UpsertProductCommerceInput,
 } from "../ports/product-commerce-store.js";
 import type { SeedProductSummaryRow } from "./in-memory-product-commerce-store.js";
 
@@ -43,6 +44,13 @@ export interface ProductCommerceStoreHarness {
 	 * Seed the sku's stock first: `reservations.sku` references `inventory.sku`.
 	 */
 	seedHold(sku: string, qty: number): Promise<void>;
+	/**
+	 * Move the store's clock forward (issue #153). The watermark cases need time
+	 * to pass between two writes: on a frozen clock an applying write and a
+	 * skipped one stamp the same `updatedAt`, so "did not advance" could never
+	 * fail. Both harnesses drive the store from a `FixedClock`.
+	 */
+	advanceClock(ms: number): void;
 }
 
 /** Seed a priced live product via upsert; return its post-seed row (its
@@ -2032,6 +2040,167 @@ export function productCommerceStoreContract(
 			// …and the ordering watermark advanced, which is what keeps a delayed
 			// out-of-order save from reinstating the old name.
 			expect(after?.contentUpdatedAt).toBe("2026-07-26T11:00:00.000Z");
+		});
+
+		// -- #153: a content-only save does not move the edit watermark ----------
+		// `updatedAt` is the compare-and-set watermark an open Pricing & inventory
+		// form carries. A CMS save that changes no field this row owns (a
+		// description edit, an image swap: the sync re-sends the SAME title) used to
+		// advance it anyway, so the merchant's next Save was refused as stale against
+		// a change that never touched the row. The sync still applies — its ordering
+		// watermark and replay key move — but `updatedAt` stays where it was.
+		test("#153 a sync upsert whose owned fields are unchanged does not advance updatedAt; a guarded edit with the earlier watermark then succeeds", async () => {
+			const h = await makeStore();
+			const pid = productId("prod-153-same");
+			const seeded = await seedEditable(h, "prod-153-same", { taxClass: "standard" });
+			await h.store.upsert(
+				{
+					productId: pid,
+					title: "Product prod-153-same",
+					contentUpdatedAt: "2026-07-26T10:00:00.000Z",
+				},
+				idempotencyKey("153-sync-1"),
+			);
+			h.advanceClock(60_000);
+
+			// A content-only CMS save: the title is re-sent unchanged, with a newer
+			// watermark and a fresh per-save key. The commercial fields are re-sent too,
+			// as fresh objects, so the comparison is by value and not by identity.
+			const synced = await h.store.upsert(
+				{
+					productId: pid,
+					sku: sku("SKU-prod-153-same"),
+					price: money(cents(1000), currency("USD")),
+					title: "Product prod-153-same",
+					taxClass: "standard",
+					productKind: "physical",
+					contentUpdatedAt: "2026-07-26T11:00:00.000Z",
+				},
+				idempotencyKey("153-sync-2"),
+			);
+			expect(synced.updatedAt.toISOString()).toBe(seeded.updatedAt.toISOString());
+			// The sync itself still applied: its ordering watermark and its replay key
+			// moved, so a redelivery stays once-only…
+			expect(synced.contentUpdatedAt).toBe("2026-07-26T11:00:00.000Z");
+			expect(synced.idempotencyKey).toBe("153-sync-2");
+			// …and a delayed OLDER save is still dropped against the advanced
+			// watermark — the title cache cannot be walked back (the trap that rules
+			// out a payload-derived key, #153).
+			await h.store.upsert(
+				{ productId: pid, title: "Old name", contentUpdatedAt: "2026-07-26T10:30:00.000Z" },
+				idempotencyKey("153-sync-delayed"),
+			);
+			expect((await h.store.getByProductId(pid))?.title).toBe("Product prod-153-same");
+
+			// The form the merchant opened before the save still saves.
+			const edit = await h.store.updateCommerceFields(
+				{ productId: pid, taxClass: "reduced" },
+				idempotencyKey("153-edit"),
+				seeded.updatedAt.toISOString(),
+			);
+			expect(edit.ok).toBe(true);
+			expect((await h.store.getByProductId(pid))?.taxClass).toBe("reduced");
+		});
+
+		test("#153 a sync upsert that DOES change the title still advances updatedAt, and the edit opened before it is stale", async () => {
+			const h = await makeStore();
+			const pid = productId("prod-153-rename");
+			const seeded = await seedEditable(h, "prod-153-rename", { taxClass: "standard" });
+			h.advanceClock(60_000);
+
+			const synced = await h.store.upsert(
+				{
+					productId: pid,
+					title: "Renamed in the CMS",
+					contentUpdatedAt: "2026-07-26T11:00:00.000Z",
+				},
+				idempotencyKey("153-sync-rename"),
+			);
+			expect(synced.updatedAt.getTime()).toBeGreaterThan(seeded.updatedAt.getTime());
+
+			const edit = await h.store.updateCommerceFields(
+				{ productId: pid, taxClass: "reduced" },
+				idempotencyKey("153-edit"),
+				seeded.updatedAt.toISOString(),
+			);
+			expect(edit).toMatchObject({ ok: false, reason: "stale" });
+			expect((await h.store.getByProductId(pid))?.taxClass).toBe("standard");
+		});
+
+		// One row per field `upsert` writes, so dropping any comparison from
+		// `upsertChangesOwnedFields` fails exactly its row. `prior` is an extra write
+		// a row needs to have something to change FROM (a stored rejection).
+		const OWNED_FIELD_CHANGES: readonly {
+			field: string;
+			prior?: Omit<UpsertProductCommerceInput, "productId">;
+			change: Omit<UpsertProductCommerceInput, "productId">;
+		}[] = [
+			{ field: "sku", change: { sku: sku("SKU-153-RENAMED") } },
+			{ field: "price amount", change: { price: money(cents(1200), currency("USD")) } },
+			{ field: "price currency", change: { price: money(cents(1000), currency("EUR")) } },
+			{ field: "title", change: { title: "Renamed in the CMS" } },
+			{ field: "title → titleRejection", change: { titleRejection: "too long" } },
+			{
+				field: "titleRejection (another reason)",
+				prior: { titleRejection: "too long" },
+				change: { titleRejection: "not text" },
+			},
+			{ field: "taxClass", change: { taxClass: "reduced" } },
+			{ field: "weightGrams", change: { weightGrams: 250 } },
+			{ field: "lengthMm", change: { lengthMm: 100 } },
+			{ field: "widthMm", change: { widthMm: 80 } },
+			{ field: "heightMm", change: { heightMm: 90 } },
+			{ field: "productKind", change: { productKind: "digital" } },
+		];
+		for (const row of OWNED_FIELD_CHANGES) {
+			test(`#153 an upsert that changes ${row.field} advances updatedAt, and the edit opened before it is stale`, async () => {
+				const h = await makeStore();
+				const id = `prod-153-${row.field.replace(/[^a-z]+/gi, "-")}`;
+				const pid = productId(id);
+				await seedEditable(h, id, { taxClass: "standard" });
+				if (row.prior !== undefined) {
+					await h.store.upsert({ productId: pid, ...row.prior }, idempotencyKey("153-prior"));
+				}
+				const opened = await h.store.getByProductId(pid);
+				if (opened === null) throw new Error("seed wrote no row");
+				h.advanceClock(60_000);
+
+				const synced = await h.store.upsert(
+					{ productId: pid, ...row.change },
+					idempotencyKey("153-change"),
+				);
+				expect(synced.updatedAt.getTime()).toBeGreaterThan(opened.updatedAt.getTime());
+
+				const edit = await h.store.updateCommerceFields(
+					{ productId: pid, weightGrams: 999 },
+					idempotencyKey("153-edit"),
+					opened.updatedAt.toISOString(),
+				);
+				expect(edit).toMatchObject({ ok: false, reason: "stale" });
+			});
+		}
+
+		// #94's leftover: `activate` overwrites the row's single replay key, so a
+		// REDELIVERED save after a first publish no longer matches it and applies
+		// again. Its fields are the ones already stored, so it must not move the
+		// watermark an open form holds.
+		test("#153 / #94 a save redelivered after the publish overwrote its replay key does not advance updatedAt", async () => {
+			const h = await makeStore();
+			const pid = productId("prod-153-redeliver");
+			const save = {
+				productId: pid,
+				title: "Mug",
+				contentUpdatedAt: "2026-07-26T10:00:00.000Z",
+			};
+			await h.store.upsert(save, idempotencyKey("153-save"));
+			await h.store.activate(pid, idempotencyKey("153-publish"), "2026-07-26T10:00:00.000Z");
+			const published = await h.store.getByProductId(pid);
+			expect(published?.idempotencyKey).toBe("153-publish");
+			h.advanceClock(60_000);
+
+			const redelivered = await h.store.upsert(save, idempotencyKey("153-save"));
+			expect(redelivered.updatedAt.toISOString()).toBe(published?.updatedAt.toISOString());
+			expect(redelivered.active).toBe(true);
 		});
 
 		// §4.4 — the state PR 1b creates. The CMS sync now upserts a row for

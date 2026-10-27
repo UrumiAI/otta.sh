@@ -699,6 +699,10 @@ export {
 } from "./product-commerce/download-asset.js";
 export { NO_TITLE, resolveTitleWrite, type TitleState } from "./product-commerce/title-write.js";
 export {
+	type UpsertOwnedFields,
+	upsertChangesOwnedFields,
+} from "./product-commerce/upsert-owned-fields.js";
+export {
 	HoldExpiredError,
 	type AdjustLineInput,
 	type Cart,

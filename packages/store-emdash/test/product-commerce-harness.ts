@@ -1,7 +1,7 @@
 /**
  * The wiring every product-commerce suite shares: a real
  * `EmdashProductCommerceStore` over real plugin-storage repositories, plus the
- * four test-surface hooks the domain's `ProductCommerceStoreHarness` asks for.
+ * test-surface hooks the domain's `ProductCommerceStoreHarness` asks for.
  *
  * Each hook writes the SAME documents the adapters write, never a parallel
  * fixture:
@@ -135,6 +135,9 @@ export function makeProductCommerceHarness(
 					},
 				},
 			});
+		},
+		advanceClock(ms) {
+			clock.advance(ms);
 		},
 		async seedProduct(row) {
 			const at = row.createdAt;

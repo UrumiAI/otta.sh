@@ -1,6 +1,9 @@
 # 0039. The product page may load one script, to mint an add-to-cart key per submission
 
-- Status: accepted
+- Status: accepted; **extended 2026-10-27** by
+  [ADR-0019's amendment of that date](./0019-commerce-aggregates-are-one-document-each.md#amendment-2026-10-27--a-plain-cart-create-may-carry-the-callers-key)
+  (issue #39): the browser-minted key now also keys a first add's cart create; the rendered
+  fallback key is marked `pdp:` and never does
 - Date: 2026-10-21
 - Supersedes in part: [ADR-0012](./0012-storefront-checkout-loads-stripe-elements-in-the-browser.md)
   decision 2 (the client-JS fence) and [ADR-0034](./0034-checkout-region-list-progressive-enhancement.md)

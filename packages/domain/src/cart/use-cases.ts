@@ -82,10 +82,26 @@ function isExpiredHeld(
 	);
 }
 
-/** Mint a new cart. There is no keyed variant here on purpose: the only code that
- *  makes a create key is `replaceSpentCart`, which derives it server-side. */
-export async function createCart(deps: CartDeps, currency: Currency): Promise<string> {
-	return deps.cartStore.create(currency);
+/**
+ * Mint a new cart; with the caller's `requestKey`, idempotently (issue #39) — the
+ * storefront's per-submission add-to-cart key, so a double-submitted first add
+ * lands in one cart rather than one per request. The same key answers the same
+ * cart, in the currency the FIRST create chose.
+ *
+ * The store key is `create:<requestKey>`: a namespace of its own, so no
+ * caller-chosen key can ever name one the server derives (`rotate:`,
+ * `recurrency:`). Within it, a key is a bearer secret, exactly as the cart id it
+ * answers is: whoever presents it gets that cart. A caller may therefore only
+ * send a key that one visitor alone holds — never one shown to many, such as a
+ * key rendered into a page a shared cache serves to everybody.
+ */
+export async function createCart(
+	deps: CartDeps,
+	currency: Currency,
+	requestKey?: IdempotencyKey,
+): Promise<string> {
+	if (requestKey === undefined) return deps.cartStore.create(currency);
+	return deps.cartStore.create(currency, brandIdempotencyKey(`create:${requestKey}`));
 }
 
 export type ReplaceSpentCartResult =
@@ -101,8 +117,9 @@ export interface ReplaceSpentCartDeps extends CartDeps {
  * The cart that REPLACES a spent one — a cart checked out into an order that can
  * no longer be paid.
  *
- * The key is derived HERE, `rotate:<spentCartId>`, and this is the only code that
- * makes a create key: the same spent cart always has the same replacement, so two
+ * The key is derived HERE, `rotate:<spentCartId>`, and no caller can name it (a
+ * caller's own create key is namespaced `create:`, see {@link createCart}): the
+ * same spent cart always has the same replacement, so two
  * requests racing to replace it converge on one cart. Cart ids are bearer secrets,
  * so a spent cart's id grants access to the cart that replaces it — exactly as it
  * already grants access to the spent cart itself.

@@ -252,6 +252,19 @@ describe("storefront cart routes (workerd sandbox)", () => {
 		expect(cart["ok"]).toBe(true);
 	});
 
+	// Issue #39: a double-submitted first add sends two creates under one key.
+	test("cart/create under one idempotencyKey answers one cart and one cookie; another key, another cart", async () => {
+		const first = resultOf(
+			await sandboxHandle.invokeRoute("storefront/cart/create", { idempotencyKey: "sbx-press-1" }),
+		);
+		const again = resultOf(
+			await sandboxHandle.invokeRoute("storefront/cart/create", { idempotencyKey: "sbx-press-1" }),
+		);
+		expect(first["ok"]).toBe(true);
+		expect(again).toEqual(first);
+		expect(await createCart({ idempotencyKey: "sbx-press-2" })).not.toBe(first["cartId"]);
+	});
+
 	test("cart/create rejects a malformed currency BEFORE any store work (pure route validation)", async () => {
 		const result = resultOf(
 			await sandboxHandle.invokeRoute("storefront/cart/create", { currency: "dollars" }),

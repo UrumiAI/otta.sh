@@ -355,6 +355,10 @@ export {
 	type ProductPriceViewModel,
 	type ProductViewModel,
 } from "./storefront/product-view-model.js";
+export {
+	isRenderedAddToCartKey,
+	RENDERED_ADD_TO_CART_KEY_PREFIX,
+} from "./storefront/rendered-add-key.js";
 // ── end Phase 2 catalog display ──────────────────────────────────────────────
 // ── Phase 3 group E: cart (plan §7 step E1, shape per ADR-0003) ─────────────
 export {
