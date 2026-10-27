@@ -128,7 +128,9 @@ const LIST_PAGE_SIZE = 100;
  * DIFFERENT bound from {@link LIST_PAGE_SIZE}. D1 binds at most 100 parameters per
  * statement and the host binds `plugin_id`, `collection` and the `limit` beside the
  * values (two more on a cursor page), so an `in` set at the page size is over it
- * (issue #578).
+ * (issue #578). The well-formed-storage widening (up to 2x values for ill-formed
+ * ids) is deliberately not reserved: every entry point refuses ill-formed ids except
+ * `getProductIdsBySku`'s stored owner ids, which only a legacy row can hold.
  */
 const IN_BATCH = 50;
 
