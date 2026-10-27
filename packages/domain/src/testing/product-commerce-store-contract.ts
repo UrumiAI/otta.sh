@@ -16,6 +16,7 @@ import type {
 	ProductCommerceStore,
 	ProductVariant,
 	ProductVariantSummary,
+	UpsertProductCommerceInput,
 } from "../ports/product-commerce-store.js";
 import type { SeedProductSummaryRow } from "./in-memory-product-commerce-store.js";
 
@@ -2126,18 +2127,58 @@ export function productCommerceStoreContract(
 			expect((await h.store.getByProductId(pid))?.taxClass).toBe("standard");
 		});
 
-		test("#153 an owned field other than the title (a price) still advances updatedAt", async () => {
-			const h = await makeStore();
-			const pid = productId("prod-153-price");
-			const seeded = await seedEditable(h, "prod-153-price", { priceCents: 1000 });
-			h.advanceClock(60_000);
+		// One row per field `upsert` writes, so dropping any comparison from
+		// `upsertChangesOwnedFields` fails exactly its row. `prior` is an extra write
+		// a row needs to have something to change FROM (a stored rejection).
+		const OWNED_FIELD_CHANGES: readonly {
+			field: string;
+			prior?: Omit<UpsertProductCommerceInput, "productId">;
+			change: Omit<UpsertProductCommerceInput, "productId">;
+		}[] = [
+			{ field: "sku", change: { sku: sku("SKU-153-RENAMED") } },
+			{ field: "price amount", change: { price: money(cents(1200), currency("USD")) } },
+			{ field: "price currency", change: { price: money(cents(1000), currency("EUR")) } },
+			{ field: "title", change: { title: "Renamed in the CMS" } },
+			{ field: "title → titleRejection", change: { titleRejection: "too long" } },
+			{
+				field: "titleRejection (another reason)",
+				prior: { titleRejection: "too long" },
+				change: { titleRejection: "not text" },
+			},
+			{ field: "taxClass", change: { taxClass: "reduced" } },
+			{ field: "weightGrams", change: { weightGrams: 250 } },
+			{ field: "lengthMm", change: { lengthMm: 100 } },
+			{ field: "widthMm", change: { widthMm: 80 } },
+			{ field: "heightMm", change: { heightMm: 90 } },
+			{ field: "productKind", change: { productKind: "digital" } },
+		];
+		for (const row of OWNED_FIELD_CHANGES) {
+			test(`#153 an upsert that changes ${row.field} advances updatedAt, and the edit opened before it is stale`, async () => {
+				const h = await makeStore();
+				const id = `prod-153-${row.field.replace(/[^a-z]+/gi, "-")}`;
+				const pid = productId(id);
+				await seedEditable(h, id, { taxClass: "standard" });
+				if (row.prior !== undefined) {
+					await h.store.upsert({ productId: pid, ...row.prior }, idempotencyKey("153-prior"));
+				}
+				const opened = await h.store.getByProductId(pid);
+				if (opened === null) throw new Error("seed wrote no row");
+				h.advanceClock(60_000);
 
-			const synced = await h.store.upsert(
-				{ productId: pid, price: money(cents(1200), currency("USD")) },
-				idempotencyKey("153-panel-price"),
-			);
-			expect(synced.updatedAt.getTime()).toBeGreaterThan(seeded.updatedAt.getTime());
-		});
+				const synced = await h.store.upsert(
+					{ productId: pid, ...row.change },
+					idempotencyKey("153-change"),
+				);
+				expect(synced.updatedAt.getTime()).toBeGreaterThan(opened.updatedAt.getTime());
+
+				const edit = await h.store.updateCommerceFields(
+					{ productId: pid, weightGrams: 999 },
+					idempotencyKey("153-edit"),
+					opened.updatedAt.toISOString(),
+				);
+				expect(edit).toMatchObject({ ok: false, reason: "stale" });
+			});
+		}
 
 		// #94's leftover: `activate` overwrites the row's single replay key, so a
 		// REDELIVERED save after a first publish no longer matches it and applies
