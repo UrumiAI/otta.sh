@@ -172,8 +172,9 @@ export function resetSweepBootstrapForTest(): void {
 	bootstrapped = false;
 }
 
-/** How long `plugin:activate` may spend registering the task before it gives up
- *  and reports `scheduled: false`. Well under the host's 5000 ms default hook
+/** How long `plugin:activate`, and the first-request bootstrap, may spend
+ *  registering the task before giving up (activate reports `scheduled: false`; the
+ *  bootstrap lets the request proceed). Well under the host's 5000 ms default hook
  *  timeout: a timeout is a FAILED hook to the host, with the same consequence as a
  *  throw (see `createActivateHandler`). */
 export const ACTIVATE_SCHEDULE_BUDGET_MS = 3_000;
@@ -208,13 +209,43 @@ async function raceScheduleBudget<T>(attempt: Promise<T>): Promise<T | typeof SC
  * The latch is set BEFORE the await and cleared on failure: concurrent first
  * requests then make one attempt between them rather than a thundering herd, and a
  * failed attempt still leaves the next request free to retry.
+ *
+ * BOUNDED by `ACTIVATE_SCHEDULE_BUDGET_MS`: every first request in the isolate
+ * awaits this, so a stalled cron table must not hang the storefront. A timeout is
+ * logged and the caller proceeds, but the latch STAYS SET: it follows the attempt,
+ * not the timer. Releasing it on the timer would make a slow-but-working table (or
+ * a stalled one) loop forever — every ~3 s one request per isolate would pay the
+ * budget, log, and start another `list()`. Instead the abandoned attempt keeps
+ * running, and settles the latch itself: a late SUCCESS leaves it set (the isolate
+ * is done); a late REJECTION clears it, with a log line, so a later request
+ * retries. The abandoned attempt never SETS the latch, it only clears it. So at
+ * most one attempt is ever in flight per isolate.
+ *
+ * Caveat, stated plainly: an attempt that never settles leaves the latch set for
+ * the isolate's lifetime (as before this budget existed), and the cron tick does
+ * not rescue that isolate, because the tick runs this same latched bootstrap. A
+ * fresh isolate re-affirms. In sandboxed mode the abandoned bridge call is cut off
+ * when its request ends and rejects, which clears the latch.
  */
 export async function bootstrapSweepTask(ctx: PluginContext): Promise<void> {
 	if (bootstrapped) return;
 	bootstrapped = true;
+	const attempt = ensureSweepTaskScheduled(ctx);
 	try {
-		const outcome = await ensureSweepTaskScheduled(ctx);
-		if (!outcome.scheduled) {
+		const outcome = await raceScheduleBudget(attempt);
+		if (outcome === SCHEDULE_TIMED_OUT) {
+			console.error(
+				`[otta] cron sweep task registration exceeded ${String(ACTIVATE_SCHEDULE_BUDGET_MS)} ms (continuing; a late failure will release the latch)`,
+			);
+			// Also keeps the late rejection observed (no unhandled rejection).
+			attempt.catch((err: unknown) => {
+				bootstrapped = false;
+				console.error(
+					"[otta] cron sweep task registration failed after its budget (will retry):",
+					err,
+				);
+			});
+		} else if (!outcome.scheduled) {
 			// Not an error: a runtime with no cron executor is a valid deployment. But
 			// it means no sweeps run, which an operator should be able to find out.
 			console.info("[otta] cron sweep task not registered — this runtime wired no cron");
