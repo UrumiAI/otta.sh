@@ -1,4 +1,5 @@
 import { cents, currency as toCurrency } from "../money/cents.js";
+import type { ProductKind } from "../ports/product-commerce-store.js";
 import {
 	type DateRange,
 	type LowStockRow,
@@ -60,6 +61,9 @@ export interface SeedProductTitleRow {
 	 *  because live-sku uniqueness is only a PARTIAL index (migration 0002), so
 	 *  a live row and any number of tombstones can share one sku. */
 	deletedAt?: string | null;
+	/** Defaults to `"physical"`. A LIVE digital row drops its sku from
+	 *  `lowStock` entirely (port doc): digital holds no stock. */
+	productKind?: ProductKind;
 }
 
 const REVENUE_STATES: ReadonlySet<string> = new Set(REVENUE_COUNTING_STATES);
@@ -215,16 +219,17 @@ export class InMemoryReportingStore implements ReportingStore {
 	/** EXACT parity with `KyselyReportingStore.lowStock`, including the title
 	 *  join's tombstone predicate: only a LIVE product row can title a sku, so a
 	 *  soft-deleted row sharing the sku neither duplicates the row nor supplies
-	 *  its title. No live match ⇒ `title: null`, never the sku (port doc). */
+	 *  its title. No live match ⇒ `title: null`, never the sku (port doc). A
+	 *  LIVE digital row drops the sku altogether. */
 	async lowStock(threshold: number): Promise<LowStockRow[]> {
-		const liveTitle = (sku: string): string | null =>
-			this.#products.find((p) => p.sku === sku && (p.deletedAt ?? null) === null)?.title ?? null;
+		const liveProduct = (sku: string): SeedProductTitleRow | undefined =>
+			this.#products.find((p) => p.sku === sku && (p.deletedAt ?? null) === null);
 		return this.#inventory
-			.filter((r) => r.onHand <= threshold)
+			.filter((r) => r.onHand <= threshold && liveProduct(r.sku)?.productKind !== "digital")
 			.toSorted((a, b) =>
 				a.onHand === b.onHand ? a.sku.localeCompare(b.sku) : a.onHand - b.onHand,
 			)
-			.map((r) => ({ sku: r.sku, onHand: r.onHand, title: liveTitle(r.sku) }));
+			.map((r) => ({ sku: r.sku, onHand: r.onHand, title: liveProduct(r.sku)?.title ?? null }));
 	}
 }
 

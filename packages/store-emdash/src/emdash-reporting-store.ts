@@ -106,6 +106,16 @@ import type {
 const PAGE_SIZE = 100;
 
 /**
+ * Values per `in` query. Each value is a bound parameter, D1 allows 100 per
+ * statement, and the host spends some on the plugin, the collection and the
+ * cursor — so a batch stays well under the limit rather than at it. The host's
+ * own precedent is the same number: emdash's `SQL_BATCH_SIZE = 50`
+ * (`src/utils/chunks.ts`), there "to keep SQL `IN (?, ?, …)` clauses within
+ * Cloudflare D1's bound-parameter limit".
+ */
+const IN_BATCH = 50;
+
+/**
  * The separator that joins two values into one grouping key.
  *
  * Written as the ESCAPE, never as a literal control character: a raw one in the source
@@ -227,6 +237,55 @@ interface PageBudget {
 	used: number;
 	scanned: number;
 	readonly option: string;
+}
+
+/** A sku's live claim and the not-soft-deleted document it names. */
+interface LiveSkuOwner {
+	readonly claim: SkuOwnerDoc;
+	readonly product: ProductCommerceDoc;
+}
+
+/**
+ * Whether the owner document really holds the claimed sku. A claim is written one
+ * round trip before its owner, so a crashed writer can leave a live claim nothing
+ * backs (`getProductIdsBySku` guards the same way). Such an owner must neither
+ * title the row nor hide it by its kind, so the row lists untitled.
+ */
+function holdsClaimedSku(product: ProductCommerceDoc, claim: SkuOwnerDoc): boolean {
+	if (claim.ownerKind === "product") return product.sku === claim.sku;
+	return claim.variantKey !== null && product.variants?.[claim.variantKey]?.sku === claim.sku;
+}
+
+/** The live PRODUCT row's title for a sku, or null — never the sku. */
+function liveTitleOf(owner: LiveSkuOwner | undefined): string | null {
+	if (owner === undefined || owner.claim.ownerKind !== "product") return null;
+	return owner.product.lifecycle === "live" ? owner.product.title : null;
+}
+
+/**
+ * Every document whose indexed `field` is one of `values`, {@link IN_BATCH}
+ * values per `in` query, each query paged to its end.
+ */
+async function queryIn<T extends object>(
+	collection: StorageCollection<T>,
+	field: string,
+	values: readonly string[],
+): Promise<T[]> {
+	const docs: T[] = [];
+	for (let start = 0; start < values.length; start += IN_BATCH) {
+		const chunk = values.slice(start, start + IN_BATCH);
+		let cursor: string | undefined;
+		do {
+			const page = await collection.query({
+				where: { [field]: { in: [...chunk] } },
+				limit: PAGE_SIZE,
+				cursor,
+			});
+			for (const { data } of page.items) docs.push(data);
+			cursor = page.hasMore ? page.cursor : undefined;
+		} while (cursor !== undefined);
+	}
+	return docs;
 }
 
 export class EmdashReportingStore implements ReportingStore {
@@ -993,6 +1052,17 @@ export class EmdashReportingStore implements ReportingStore {
 	 * A missing claim over a product that really is live therefore reads as an untitled
 	 * row rather than a wrong one — the safe direction, and the reason the claim being a
 	 * fast path rather than the definition of existence (rule (b)) costs nothing here.
+	 *
+	 * **A sku whose live claim names a live DIGITAL product is omitted** (issue #158).
+	 * Digital goods never reserve and are never restocked, yet every sku'd product is
+	 * seeded an inventory row at 0, so listing one would park it in the report at 0
+	 * forever. The kind is read off the same owner document the title comes from, for
+	 * a product's claim and a variant's alike (a variant sells as its product's kind).
+	 * Without a live claim the kind is unknown and the row lists, untitled — the
+	 * orphan rule above, unchanged.
+	 *
+	 * The claims and their owners are read in BATCHES — one `sku in [...]` query and
+	 * one `productId in [...]` query per fifty low skus — never a read per row.
 	 */
 	async lowStock(threshold: number): Promise<LowStockRow[]> {
 		const budget: PageBudget = {
@@ -1015,22 +1085,40 @@ export class EmdashReportingStore implements ReportingStore {
 			if (!page.hasMore || page.cursor === undefined) break;
 			cursor = page.cursor;
 		}
+		const owners = await this.#liveOwnersOf(low.map((doc) => doc.sku));
 		const rows: LowStockRow[] = [];
 		for (const doc of low.toSorted((a, b) =>
 			a.onHand === b.onHand ? a.sku.localeCompare(b.sku) : a.onHand - b.onHand,
 		)) {
-			rows.push({ sku: doc.sku, onHand: doc.onHand, title: await this.#liveTitleFor(doc.sku) });
+			const owner = owners.get(doc.sku);
+			if (owner?.product.productKind === "digital") continue;
+			rows.push({ sku: doc.sku, onHand: doc.onHand, title: liveTitleOf(owner) });
 		}
 		return rows;
 	}
 
-	/** The live PRODUCT row's title for a sku, or null — never the sku. */
-	async #liveTitleFor(sku: string): Promise<string | null> {
-		const claim = await this.#skuOwners.get(sku);
-		if (claim === null || !claim.live || claim.ownerKind !== "product") return null;
-		const product = await this.#products.get(claim.ownerId);
-		if (product === null || product.deletedAt !== null || product.lifecycle !== "live") return null;
-		return product.title;
+	/**
+	 * Each sku's LIVE claim paired with the not-soft-deleted document it names, in
+	 * batches. A sku with no live claim, or whose owner is gone, tombstoned or no
+	 * longer holds the sku, is absent from the map.
+	 */
+	async #liveOwnersOf(skus: readonly string[]): Promise<Map<string, LiveSkuOwner>> {
+		const claims = (await queryIn(this.#skuOwners, "sku", [...new Set(skus)])).filter(
+			(claim) => claim.live,
+		);
+		const products = new Map(
+			(await queryIn(this.#products, "productId", [...new Set(claims.map((c) => c.ownerId))]))
+				.filter((product) => product.deletedAt === null)
+				.map((product) => [product.productId, product]),
+		);
+		const owners = new Map<string, LiveSkuOwner>();
+		for (const claim of claims) {
+			const product = products.get(claim.ownerId);
+			if (product !== undefined && holdsClaimedSku(product, claim)) {
+				owners.set(claim.sku, { claim, product });
+			}
+		}
+		return owners;
 	}
 
 	// -- the scans -------------------------------------------------------------
