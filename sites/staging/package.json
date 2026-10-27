@@ -33,7 +33,7 @@
 		"@urumi.ai/otta-domain": "workspace:*",
 		"@urumi.ai/otta-payments-stripe": "workspace:*",
 		"better-sqlite3": "catalog:",
-		"happy-dom": "^20.11.1",
+		"happy-dom": "^21.0.4",
 		"kysely": "catalog:",
 		"typescript": "catalog:",
 		"vitest": "catalog:",
