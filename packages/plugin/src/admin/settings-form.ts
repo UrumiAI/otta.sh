@@ -603,7 +603,10 @@ export interface SettingsFormInput {
 	block_id?: unknown;
 	/** Idempotency key for the privileged PUT (defaulted if absent). */
 	idempotencyKey?: unknown;
-	/** On a page load: show the cached Stripe country, never ask
+	/** Set by the Store settings page, which supplies the page heading: this
+	 *  screen then leaves out its own "Settings" header. */
+	embedded?: unknown;
+	/** With `embedded`, on a page load: show the cached Stripe country, never ask
 	 *  Stripe. Set when another tab is the one acting. */
 	peekStripeCountry?: unknown;
 }
@@ -619,7 +622,7 @@ export function createSettingsFormHandler(): RouteHandler<SettingsFormInput> {
 		peekCountry?: boolean,
 	): Promise<BlockResponse> =>
 		renderSettingsPage(ctx, client, notice, paymentRefusal, settings, currencySwitch, peekCountry);
-	return async (routeCtx, ctx) => {
+	const handle: RouteHandler<SettingsFormInput> = async (routeCtx, ctx) => {
 		const input = routeCtx.input;
 		const action = typeof input.action_id === "string" ? input.action_id : "load";
 		// THE COMPOSITION ROOT, not a constructor (work order 02, INC-B10c-ii):
@@ -1178,6 +1181,15 @@ export function createSettingsFormHandler(): RouteHandler<SettingsFormInput> {
 			undefined,
 			input.peekStripeCountry === true,
 		);
+	};
+	return async (routeCtx, ctx) => {
+		const response = (await handle(routeCtx, ctx)) as BlockResponse;
+		if (routeCtx.input.embedded !== true) return response;
+		// The page that hosts this screen as a tab has its own heading.
+		const [first, ...rest] = response.blocks;
+		return first?.type === "header" && first.text === "Settings"
+			? { ...response, blocks: rest }
+			: response;
 	};
 }
 
