@@ -3403,6 +3403,11 @@ export function storefrontCommerceClientContract(tier: CommerceClientTier): void
 
 // ── Slice 2: admin orders + products (INC-B10b) ───────────────────────────
 
+/** The stock-movement quantity ceiling (`stockMovementBody`: a positive integer
+ *  no greater than this). Far above the cart cap on purpose — this is the
+ *  merchant's own surface — but a ceiling all the same (#289). */
+const MAX_STOCK_MOVEMENT_QTY = 1_000_000_000;
+
 /**
  * NO CASE HERE WAS LIFTED, and that is the finding rather than an oversight: no
  * test file in `packages/plugin/test/` ever exercised the old HTTP admin orders
@@ -5138,7 +5143,7 @@ export function adminOrdersProductsClientContract(tier: CommerceClientTier): voi
 		test("a malformed quantity or a missing key is refused as a typed result", async () => {
 			await seed({ productId: "adm-sm-bad", sku: "ADM-SM-BAD", onHand: 5 });
 
-			for (const qty of [0, -1, 1.5]) {
+			for (const qty of [0, -1, 1.5, MAX_STOCK_MOVEMENT_QTY + 1]) {
 				expect(await client.restock("adm-sm-bad", qty, "adm-sm-bad-q")).toMatchObject({
 					ok: false,
 					reason: "invalid",
@@ -5154,8 +5159,26 @@ export function adminOrdersProductsClientContract(tier: CommerceClientTier): voi
 				ok: false,
 				reason: "invalid",
 			});
+			// THE CEILING HOLDS ON THE REMOVAL TOO — refused as `invalid` at the
+			// boundary, not as `insufficient_stock` from the store, which is what an
+			// unbounded quantity would have fallen through to.
+			expect(
+				await client.removeStock("adm-sm-bad", MAX_STOCK_MOVEMENT_QTY + 1, "adm-sm-bad-rc"),
+			).toMatchObject({ ok: false, reason: "invalid" });
 			// Nothing moved.
 			expect((await client.getProduct("adm-sm-bad"))?.onHand).toBe(5);
+		});
+
+		test("a movement of exactly the ceiling applies — the bound is inclusive", async () => {
+			await seed({ productId: "adm-sm-cap", sku: "ADM-SM-CAP", onHand: 0 });
+
+			expect(await client.restock("adm-sm-cap", MAX_STOCK_MOVEMENT_QTY, "adm-sm-cap-1")).toEqual({
+				ok: true,
+				onHand: MAX_STOCK_MOVEMENT_QTY,
+			});
+			expect(
+				await client.removeStock("adm-sm-cap", MAX_STOCK_MOVEMENT_QTY, "adm-sm-cap-2"),
+			).toEqual({ ok: true, onHand: 0 });
 		});
 
 		test("a removal pinned to a count that has moved is stale_on_hand with the live count; a current one applies", async () => {
@@ -5646,6 +5669,12 @@ export function adminRulesReportingClientContract(tier: CommerceClientTier): voi
 		test("a threshold that is not a non-negative integer is REFUSED", async () => {
 			await expectRejectedInput(reporting.getLowStock(-1), "threshold");
 			await expectRejectedInput(reporting.getLowStock(2.5), "threshold");
+			// THE CEILING, on the READ path as well as the settings write (#289): a
+			// threshold past `int4` could never be compared against the on-hand
+			// column, so it is refused rather than passed through to the report.
+			await expectRejectedInput(reporting.getLowStock(MAX_LOW_STOCK_THRESHOLD + 1), "threshold");
+			// …and the ceiling itself is a legal threshold: the bound is inclusive.
+			expect(Array.isArray(await reporting.getLowStock(MAX_LOW_STOCK_THRESHOLD))).toBe(true);
 		});
 
 		// ── settings: getSettings + updateSettings ────────────────────────
@@ -6295,6 +6324,14 @@ export function adminRulesReportingClientContract(tier: CommerceClientTier): voi
 			expect(bare.coupons[0]?.expiresAt).toBeNull();
 			const noMatch = await client.listCoupons({ search: "list-alph" }); // substring must NOT match
 			expect(noMatch.coupons).toEqual([]);
+		});
+
+		test("coupons: a cursor this surface did not issue is REFUSED, never a silent restart from page one", async () => {
+			// NARROWER THAN THE ORDERS AND PRODUCTS LISTS ON PURPOSE: those answer a bad
+			// token with page one, flagged; the coupon list rejects it, as its route
+			// answered 400 (#289). What must never happen is an ordinary page — the
+			// operator would read the first page as the one they asked for.
+			await expectRejectedInput(client.listCoupons({}, { cursor: "not-a-real-cursor" }), "cursor");
 		});
 
 		// ── the registry reads, and the LWW edits that carry no money ──────
