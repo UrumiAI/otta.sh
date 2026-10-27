@@ -100,7 +100,7 @@ import type {
 
 /** `topProductsQuery.limit`: `z.coerce.number().int().positive().max(1000)`.
  *  Mirrored, not imported — the service package goes away. */
-const MAX_TOP_PRODUCTS_LIMIT = 1000;
+export const MAX_TOP_PRODUCTS_LIMIT = 1000;
 
 /** `lowStockQuery.threshold` / `settingsBody.lowStockThreshold`: bounded by
  *  `int4`'s maximum, because the threshold is compared against an `integer`

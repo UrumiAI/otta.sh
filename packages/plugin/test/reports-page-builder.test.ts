@@ -214,41 +214,28 @@ describe("reports builder: an empty period's money axis is in the store's curren
 	});
 });
 
-describe("reports builder: a multi-currency period's top products are the UNITS ranking", () => {
+describe("reports builder: a multi-currency period's top products are ranked by UNITS", () => {
 	const byRevenue: TopProductWire[] = [
 		{ productId: "a", titleSnapshot: "Atlas", qtySold: 1, revenueCents: 90_000 },
 		{ productId: "b", titleSnapshot: "Bolt", qtySold: 5, revenueCents: 500 },
+		{ productId: "c", titleSnapshot: "Cog", qtySold: 3, revenueCents: 100 },
 	];
-	const byUnits: TopProductWire[] = [byRevenue[1]!, byRevenue[0]!];
 	const multi = [bucket("2026-07-10", 3000, 1), bucket("2026-07-10", 1000, 1, "EUR")];
 
 	function titles(blocks: readonly LooseBlock[]): string[] {
 		return (chartOptions(blocks, "reports:top-chart")["yAxis"] as { data: string[] }).data;
 	}
 
-	test("several currencies → the quantity ranking is drawn, and the copy says so", () => {
-		const blocks = render({ revenue: multi, top: byRevenue, topByUnits: byUnits });
-		expect(titles(blocks)).toEqual(["Bolt", "Atlas"]);
+	test("several currencies → the revenue list re-sorted by units, and the copy says so", () => {
+		const blocks = render({ revenue: multi, top: byRevenue });
+		expect(titles(blocks)).toEqual(["Bolt", "Cog", "Atlas"]);
 		expect(sectionTexts(blocks, "reports:top")[0]).toMatch(/^Ranked by units/);
 	});
 
-	test("one currency → the revenue ranking, whatever the units ranking says", () => {
-		const blocks = render({ revenue: USD_CURRENT, top: byRevenue, topByUnits: byUnits });
-		expect(titles(blocks)).toEqual(["Atlas", "Bolt"]);
+	test("one currency → the revenue ranking", () => {
+		const blocks = render({ revenue: USD_CURRENT, top: byRevenue });
+		expect(titles(blocks)).toEqual(["Atlas", "Bolt", "Cog"]);
 		expect(sectionTexts(blocks, "reports:top")[0]).toMatch(/^By revenue/);
-	});
-});
-
-describe("reports builder: no units ranking supplied", () => {
-	test("a multi-currency period re-sorts the revenue list by units sold", () => {
-		const top: TopProductWire[] = [
-			{ productId: "a", titleSnapshot: "Atlas", qtySold: 1, revenueCents: 90_000 },
-			{ productId: "b", titleSnapshot: "Bolt", qtySold: 5, revenueCents: 500 },
-			{ productId: "c", titleSnapshot: "Cog", qtySold: 3, revenueCents: 100 },
-		];
-		const multi = [bucket("2026-07-10", 3000, 1), bucket("2026-07-10", 1000, 1, "EUR")];
-		const chart = chartOptions(render({ revenue: multi, top }), "reports:top-chart");
-		expect((chart["yAxis"] as { data: string[] }).data).toEqual(["Bolt", "Cog", "Atlas"]);
 	});
 });
 
