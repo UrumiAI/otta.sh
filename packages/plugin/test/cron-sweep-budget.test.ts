@@ -692,11 +692,37 @@ describe("the hook's own bookkeeping", () => {
 		try {
 			const pending = createActivateHandler()({}, ctx);
 			await vi.advanceTimersByTimeAsync(ACTIVATE_SCHEDULE_BUDGET_MS);
-			expect(await pending).toMatchObject({ scheduled: false, task: SWEEP_TASK_NAME });
+			// Race a sentinel so a regression fails here, not at vitest's 5 s timeout.
+			const settled = await Promise.race([pending, Promise.resolve("still-pending" as const)]);
+			expect(settled).toMatchObject({ scheduled: false, task: SWEEP_TASK_NAME });
 			expect(logged).toHaveBeenCalled();
 		} finally {
 			vi.useRealTimers();
 			logged.mockRestore();
+		}
+	});
+
+	test("the budget timer is cleared once registration finishes (activate and bootstrap)", async () => {
+		const ctx = {
+			...context(storage),
+			cron: {
+				async schedule() {},
+				async cancel() {},
+				async list() {
+					return [
+						{ name: SWEEP_TASK_NAME, schedule: SWEEP_SCHEDULE, nextRunAt: "", lastRunAt: null },
+					];
+				},
+			},
+		} as PluginContext;
+		vi.useFakeTimers();
+		try {
+			expect(await createActivateHandler()({}, ctx)).toMatchObject({ scheduled: true });
+			expect(vi.getTimerCount()).toBe(0);
+			await bootstrapSweepTask(ctx);
+			expect(vi.getTimerCount()).toBe(0);
+		} finally {
+			vi.useRealTimers();
 		}
 	});
 
