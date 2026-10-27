@@ -14,6 +14,7 @@ import { emailSendingStatus, type EmailSendingStatus } from "../email/ctx-email-
 import { STORE_DISPLAY_NAME_KEY } from "../email/email-render-context.js";
 import {
 	countryRequiresBuyerAddress,
+	peekStripeAccountCountry,
 	readStripeAccountCountry,
 	refreshStripeAccountCountry,
 	type StripeAccountCountryStatus,
@@ -447,7 +448,7 @@ async function readPlainSettings(
  * budget, the Stripe account, whether email is available and when a Stripe
  * webhook last verified: seven concurrent reads.
  */
-async function readPageState(ctx: PluginContext): Promise<SettingsPageState> {
+async function readPageState(ctx: PluginContext, peekCountry = false): Promise<SettingsPageState> {
 	const [
 		displayName,
 		paymentSecrets,
@@ -468,7 +469,9 @@ async function readPageState(ctx: PluginContext): Promise<SettingsPageState> {
 		// Never throws. The ONE place besides the key's save that may ask
 		// Stripe: only when nothing usable is cached for the stored key (never
 		// cached, or an unknown answer past its back-off), so checkout never has to.
-		readStripeAccountCountry(ctx),
+		// `peekCountry` (a sibling tab re-rendering around another panel's action)
+		// reads only what is cached: that action never waits on Stripe.
+		peekCountry ? peekStripeAccountCountry(ctx) : readStripeAccountCountry(ctx),
 		// ADR-0031: `ctx.email`, no recent "no email provider" answer, and whether a
 		// send has gone through it since (PR #418 review: three states).
 		emailSendingStatus(ctx),
@@ -600,6 +603,9 @@ export interface SettingsFormInput {
 	block_id?: unknown;
 	/** Idempotency key for the privileged PUT (defaulted if absent). */
 	idempotencyKey?: unknown;
+	/** On a page load: show the cached Stripe country, never ask
+	 *  Stripe. Set when another tab is the one acting. */
+	peekStripeCountry?: unknown;
 }
 
 export function createSettingsFormHandler(): RouteHandler<SettingsFormInput> {
@@ -610,8 +616,9 @@ export function createSettingsFormHandler(): RouteHandler<SettingsFormInput> {
 		paymentRefusal?: PaymentRefusal,
 		settings?: OperationalSettingsWire,
 		currencySwitch?: CurrencySwitchAsk,
+		peekCountry?: boolean,
 	): Promise<BlockResponse> =>
-		renderSettingsPage(ctx, client, notice, paymentRefusal, settings, currencySwitch);
+		renderSettingsPage(ctx, client, notice, paymentRefusal, settings, currencySwitch, peekCountry);
 	return async (routeCtx, ctx) => {
 		const input = routeCtx.input;
 		const action = typeof input.action_id === "string" ? input.action_id : "load";
@@ -1162,7 +1169,15 @@ export function createSettingsFormHandler(): RouteHandler<SettingsFormInput> {
 		}
 
 		// -- page load: render current values (kv + GET /settings) ------------------
-		return renderPage(ctx, client);
+		return renderPage(
+			ctx,
+			client,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			input.peekStripeCountry === true,
+		);
 	};
 }
 
@@ -1191,8 +1206,9 @@ async function renderSettingsPage(
 	/** A settings read the caller already made on this request — reused, not repeated. */
 	alreadyRead?: OperationalSettingsWire,
 	currencySwitch?: CurrencySwitchAsk,
+	peekCountry?: boolean,
 ): Promise<BlockResponse> {
-	const state = await readPageState(ctx);
+	const state = await readPageState(ctx, peekCountry);
 	try {
 		// Nothing was attempted on this path, so what the form shows and what the
 		// label states are the same read (see `persisted` in `buildSettingsBlocks`).
