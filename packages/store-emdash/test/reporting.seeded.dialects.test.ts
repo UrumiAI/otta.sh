@@ -18,9 +18,27 @@
  * one).
  */
 import { InMemoryReportingStore } from "@urumi.ai/otta-domain/testing";
-import type { DateRange, ReportInterval } from "@urumi.ai/otta-domain";
+import {
+	idempotencyKey,
+	productId as brandProductId,
+	sku as brandSku,
+	type DateRange,
+	type ProductKind,
+	type ReportInterval,
+} from "@urumi.ai/otta-domain";
 import { describe, expect, test } from "vitest";
-import { isScanPageLimitError } from "../src/index.js";
+import {
+	collectionOf,
+	INVENTORY_COLLECTION,
+	isScanPageLimitError,
+	newShellProductDoc,
+	PRODUCT_COMMERCE_COLLECTION,
+	publishKeyFor,
+	SKU_OWNERS_COLLECTION,
+	type InventoryDoc,
+	type ProductCommerceDoc,
+	type SkuOwnerDoc,
+} from "../src/index.js";
 import { describeEachDialect } from "./describe-each-dialect.js";
 import { REPORTING_LAYOUT } from "./reporting-collections.js";
 import { makeReportingHarness, type ReportingHarness } from "./reporting-harness.js";
@@ -269,6 +287,97 @@ describeEachDialect("EmdashReportingStore seeded aggregates", (ctx) => {
 			});
 		});
 	}
+
+	describe("lowStock over a VARIANT's sku (issue #158)", () => {
+		/** A live product of `kind` with one live variant holding `variantSku`, the
+		 *  variant's live claim, and the variant sku's inventory at 0. */
+		async function seedVariantProduct(id: string, kind: ProductKind, variantSku: string) {
+			const at = "2026-07-10T00:00:00.000Z";
+			const productId = brandProductId(id);
+			const products = collectionOf<ProductCommerceDoc>(bound.storage, PRODUCT_COMMERCE_COLLECTION);
+			await products.put(productId, {
+				...newShellProductDoc(productId, at),
+				lifecycle: "live",
+				sku: brandSku(`${variantSku}-PARENT`),
+				title: `${id} title`,
+				productKind: kind,
+				active: true,
+				publishKey: publishKeyFor(true),
+				variants: {
+					v1: {
+						variantKey: "v1",
+						sku: brandSku(variantSku),
+						price: null,
+						title: `${id} variant`,
+						orphanedAt: null,
+						idempotencyKey: idempotencyKey(`seed-${id}-v1`),
+						contentUpdatedAt: at,
+						createdAt: at,
+						updatedAt: at,
+					},
+				},
+			});
+			const claim: SkuOwnerDoc = {
+				sku: variantSku,
+				ownerKind: "variant",
+				ownerId: productId,
+				variantKey: "v1",
+				live: true,
+				claimedAt: at,
+			};
+			await collectionOf<SkuOwnerDoc>(bound.storage, SKU_OWNERS_COLLECTION).put(variantSku, claim);
+			const inventory: InventoryDoc = { sku: variantSku, onHand: 0, holds: {} };
+			await collectionOf<InventoryDoc>(bound.storage, INVENTORY_COLLECTION).put(
+				variantSku,
+				inventory,
+			);
+		}
+
+		test("a digital product's variant sku is omitted; a physical product's variant sku lists, untitled", async () => {
+			const h = makeReportingHarness(bound.storage);
+			await seedVariantProduct("p-ebook", "digital", "SKU-EBOOK-EPUB");
+			await seedVariantProduct("p-mug", "physical", "SKU-MUG-RED");
+			// The variant inherits its product's kind, so the digital one never lists.
+			// The physical one does, and its title stays null: only a PRODUCT claim
+			// titles a row (a variant's sku is not the product row's own sku).
+			expect(await h.store.lowStock(5)).toEqual([{ sku: "SKU-MUG-RED", onHand: 0, title: null }]);
+		});
+
+		test("a live claim on a digital product that does NOT hold the sku neither hides nor titles the row", async () => {
+			const h = makeReportingHarness(bound.storage);
+			const at = "2026-07-10T00:00:00.000Z";
+			const productId = brandProductId("p-crashed");
+			// Crash residue: the claim on SKU-STRAY was won, but the owner document was
+			// never rewritten to hold it — it still carries its old sku.
+			await collectionOf<ProductCommerceDoc>(bound.storage, PRODUCT_COMMERCE_COLLECTION).put(
+				productId,
+				{
+					...newShellProductDoc(productId, at),
+					lifecycle: "live",
+					sku: brandSku("SKU-OTHER"),
+					title: "Crashed Ebook",
+					productKind: "digital",
+					active: true,
+					publishKey: publishKeyFor(true),
+				},
+			);
+			const claim: SkuOwnerDoc = {
+				sku: "SKU-STRAY",
+				ownerKind: "product",
+				ownerId: productId,
+				variantKey: null,
+				live: true,
+				claimedAt: at,
+			};
+			await collectionOf<SkuOwnerDoc>(bound.storage, SKU_OWNERS_COLLECTION).put("SKU-STRAY", claim);
+			const inventory: InventoryDoc = { sku: "SKU-STRAY", onHand: 0, holds: {} };
+			await collectionOf<InventoryDoc>(bound.storage, INVENTORY_COLLECTION).put(
+				"SKU-STRAY",
+				inventory,
+			);
+			expect(await h.store.lowStock(5)).toEqual([{ sku: "SKU-STRAY", onHand: 0, title: null }]);
+		});
+	});
 
 	test("a zero-total order in a revenue-counting state is a bucket at revenueCents 0", async () => {
 		const h = await seeded(makeReportingHarness(bound.storage));

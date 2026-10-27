@@ -106,7 +106,9 @@ export interface ProductListFilter {
 	 * ordered by `created_at`). Both happen to be inclusive at the boundary
 	 * today, so the two agree there — but they are independent definitions
 	 * with independent absent-row rules, and a future change to either one's
-	 * boundary or absent-row decision must update BOTH docs, not just one.
+	 * boundary or absent-row decision must update BOTH docs, not just one. The
+	 * report also omits digital skus (issue #158); this filter does not, and
+	 * leaves kind to its own `productKind` axis.
 	 *
 	 * OMITTED (`undefined`) ⇒ no stock-based filtering — the unchanged
 	 * default every existing caller keeps seeing. This is also the correct
