@@ -317,6 +317,7 @@ export {
 	type CommerceProductKind,
 	type ProductCommerce,
 	type ProductCommerceBatchItem,
+	type StorefrontSettings,
 	type UpsertProductCommerceInput,
 } from "./product-commerce/commerce-client.js";
 // ── Phase 2: catalog display (plan §7 steps 4–10, route shape per ADR-0003) ──
